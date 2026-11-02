@@ -15,6 +15,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__mips64)
+#include <dlfcn.h>
+#include <unistd.h>
+#endif
 
 static int failures;
 
@@ -355,6 +359,97 @@ static void loongarch_relocations(void) {
               !snx_elf_call_relocation(EM_LOONGARCH, SNX_LA_CALL36) &&
               snx_elf_relative_type(EM_LOONGARCH) == SNX_LA_RELATIVE,
           "LoongArch relocation classes");
+}
+
+/* MIPS64's instruction relocated, in the host's byte order as its objects are: whether snx_elf_relocate gave rc and
+   left want */
+static void mips_insn(const char* what, uint32_t insn, unsigned type, uint64_t S, int64_t A, uint64_t gp, uint64_t slot,
+                      int rc, uint32_t want) {
+    unsigned char p[4];
+    int got;
+    set32(p, insn);
+    got = snx_elf_relocate(EM_MIPS, p, sizeof(p), type, S, A, 0, gp, slot);
+    if (got != rc || host32(p) != want) {
+        printf("FAIL: MIPS64 %s: rc %d (want %d), %08x (want %08x)\n", what, got, rc, (unsigned)host32(p),
+               (unsigned)want);
+        ++failures;
+    }
+}
+
+/* MIPS64's (n64) fields, from the MIPS64 ISA's I-type immediate and the ELF64 ABI's composites, and its r_info, the
+   symbol word then a special symbol and three types last to first, in either byte order */
+static void mips_relocations(void) {
+    const uint64_t gp = 0x20007FF0; /* a GOT at 0x20000000 */
+    unsigned char p[8], b[8];
+    uint32_t word = 0x01020304;
+    Elf64_Xword info;
+    /* lui $1, %hi(%neg(%gp_rel(f))) and daddiu $gp, $1, %lo(...): gp - f, rounded for the %lo added sign-extended */
+    mips_insn("GPREL HI", 0x3C010000u, SNX_MIPS_GPREL_HI, 0x1000, 0, gp, 0, 0, 0x3C012000u);
+    mips_insn("GPREL LO", 0x643C0000u, SNX_MIPS_GPREL_LO, 0x1000, 0, gp, 0, 0, 0x643C6FF0u);
+    mips_insn("GPREL HI rounded", 0x3C010000u, SNX_MIPS_GPREL_HI, 0x9000, 0, gp, 0, 0, 0x3C012000u);
+    mips_insn("GPREL LO negative", 0x643C0000u, SNX_MIPS_GPREL_LO, 0x9000, 0, gp, 0, 0, 0x643CEFF0u);
+    mips_insn("GPREL HI, f above gp", 0x3C010000u, SNX_MIPS_GPREL_HI, 0x30000000, 0, gp, 0, 0, 0x3C01F000u);
+    mips_insn("GPREL HI at 2 GiB", 0x3C010000u, SNX_MIPS_GPREL_HI, gp - 0x80000000u, 0, gp, 0, SNX_LINK_RANGE,
+              0x3C010000u);
+    /* ld $1, %got_page(x)($gp) and daddiu $2, $1, %got_ofst(x): the page's slot from gp, x from its page */
+    mips_insn("GOT_PAGE", 0xDF810000u, SNX_MIPS_GOT_PAGE, 0x12345678, 0, gp, 0x20000018, 0, 0xDF818028u);
+    mips_insn("GOT_PAGE out of reach", 0xDF810000u, SNX_MIPS_GOT_PAGE, 0, 0, gp, gp + 0x8000, SNX_LINK_RANGE,
+              0xDF810000u);
+    mips_insn("GOT_OFST", 0x64220000u, SNX_MIPS_GOT_OFST, 0x12345678, 0, gp, 0, 0, 0x64225678u);
+    mips_insn("GOT_OFST negative", 0x64220000u, SNX_MIPS_GOT_OFST, 0x1234ABC0, 0xD, gp, 0, 0, 0x6422ABCDu);
+    check(snx_elf_mips_page(0x12345678) == 0x12340000 && snx_elf_mips_page(0x1234ABCD) == 0x12350000,
+          "MIPS64 GOT_PAGE's page, rounded to the nearest");
+    /* lui $1, %call_hi(f); daddu $1, $1, $gp; ld $25, %call_lo(f)($1): the slot from gp in 32 bits */
+    mips_insn("CALL_HI16", 0x3C010000u, SNX_MIPS_CALL_HI16, 0, 0, gp, gp + 0x12348, 0, 0x3C010001u);
+    mips_insn("CALL_LO16", 0xDC390000u, SNX_MIPS_CALL_LO16, 0, 0, gp, gp + 0x12348, 0, 0xDC392348u);
+    mips_insn("GOT_HI16 rounded", 0x3C010000u, SNX_MIPS_GOT_HI16, 0, 0, gp, gp + 0x18000, 0, 0x3C010002u);
+    mips_insn("GOT_LO16 negative", 0xDC220000u, SNX_MIPS_GOT_LO16, 0, 0, gp, gp + 0x18000, 0, 0xDC228000u);
+    mips_insn("CALL16", 0xDF990000u, SNX_MIPS_CALL16, 0, 0, gp, gp - 0x7FF0, 0, 0xDF998010u);
+    mips_insn("GOT_DISP", 0xDF820000u, SNX_MIPS_GOT_DISP, 0, 0, gp, gp + 0x10, 0, 0xDF820010u);
+    mips_insn("CALL_HI16 with an addend", 0x3C010000u, SNX_MIPS_CALL_HI16, 0x40, 8, gp, gp + 8, SNX_LINK_UNSUPPORTED,
+              0x3C010000u);
+    mips_insn("JALR, a hint", 0x0320F809u, SNX_MIPS_JALR, 0x1234, 0, gp, 0, 0, 0x0320F809u);
+    mips_insn("HI16, absolute", 0x3C010000u, SNX_MIPS_HI16, 0x12345678, 0, gp, 0, SNX_LINK_UNSUPPORTED, 0x3C010000u);
+    memset(p, 0xAA, sizeof(p));
+    check(snx_elf_relocate(EM_MIPS, p, 2, SNX_MIPS_GOT_OFST, 0, 0, 0, gp, 0) == SNX_LINK_OUTSIDE && p[0] == 0xAA,
+          "MIPS64 instruction past its section");
+    /* .dword f and a jump table's .gpdword, 64 bits */
+    check(!snx_elf_relocate(EM_MIPS, p, 8, SNX_MIPS_64, 0x1122334455667788ull, 8, 0, gp, 0) &&
+              !memcmp(p, &(uint64_t){0x1122334455667790ull}, 8),
+          "MIPS64 64");
+    check(!snx_elf_relocate(EM_MIPS, p, 8, SNX_MIPS_GPREL32_64, 0x1000, 0x10, 0, gp, 0) &&
+              !memcmp(p, &(uint64_t){0x1010 - gp}, 8),
+          "MIPS64 GPREL32 with 64, a label below gp");
+    check(snx_elf_relocate(EM_MIPS, p, 8, SNX_MIPS_GPREL32_64, gp + 0x80000000u, 0, 0, gp, 0) == SNX_LINK_RANGE,
+          "MIPS64 GPREL32 with 64 at 2 GiB");
+    /* .eh_frame's pointer to its function, 32 bits from P */
+    memset(p, 0xAA, sizeof(p));
+    check(!snx_elf_relocate(EM_MIPS, p, 4, SNX_MIPS_PC32, 0x1000, 4, 0x2000, gp, 0) && host32(p) == 0xFFFFF004u &&
+              p[4] == 0xAA,
+          "MIPS64 PC32 backwards, 4 bytes");
+    check(snx_elf_relocate(EM_MIPS, p, 4, SNX_MIPS_PC32, 0x80001000u, 0, 0x1000, gp, 0) == SNX_LINK_RANGE,
+          "MIPS64 PC32 at 2 GiB");
+    check(snx_elf_got_relocation(EM_MIPS, SNX_MIPS_CALL_HI16) && snx_elf_got_relocation(EM_MIPS, SNX_MIPS_GOT_LO16) &&
+              !snx_elf_got_relocation(EM_MIPS, SNX_MIPS_GOT_PAGE) &&
+              snx_elf_mips_page_relocation(EM_MIPS, SNX_MIPS_GOT_PAGE) &&
+              !snx_elf_mips_page_relocation(EM_RISCV, SNX_MIPS_GOT_PAGE) &&
+              snx_elf_absolute_relocation(EM_MIPS, SNX_MIPS_64) && !snx_elf_call_relocation(EM_MIPS, SNX_MIPS_CALL16) &&
+              snx_elf_relative_type(EM_MIPS) == (SNX_MIPS_REL32 | SNX_MIPS_64 << 8),
+          "MIPS64 relocation classes");
+    /* r_info as the ABI lays it out: the symbol word, then ssym, type3, type2, type1 */
+    memcpy(b, &word, 4);
+    b[4] = 0;
+    b[5] = SNX_MIPS_HI16;
+    b[6] = SNX_MIPS_SUB;
+    b[7] = SNX_MIPS_GPREL16;
+    memcpy(&info, b, 8);
+    check(snx_elf_type(EM_MIPS, info) == SNX_MIPS_GPREL_HI && snx_elf_symbol(EM_MIPS, info) == 0x01020304 &&
+              snx_elf_info(EM_MIPS, 0x01020304, SNX_MIPS_GPREL_HI) == info,
+          "MIPS64 r_info: the symbol word, then the types last to first");
+    check(snx_elf_type(EM_X86_64, ELF64_R_INFO(7ull, 9u)) == 9 &&
+              snx_elf_symbol(EM_X86_64, ELF64_R_INFO(7ull, 9u)) == 7 &&
+              snx_elf_info(EM_RISCV, 7, 9) == ELF64_R_INFO(7ull, 9u),
+          "r_info of the other machines, ELF64_R_TYPE and ELF64_R_SYM");
 }
 
 /* ---- the LLVM backend's AArch64 objects ---- */
@@ -1116,6 +1211,231 @@ static int other_objects(const char* triple, unsigned machine, const char* what)
     free(defs_data);
     return 0;
 }
+
+#if defined(__mips64)
+/* ---- MIPS64 modules, made, linked and run on a MIPS64 host: its objects are the recompiler's for this host only
+   (+xgot, MIPS64r2 and its tail calls, ir.c) ---- */
+
+/* a dynamic tag's value in a linked module, and whether it has the tag */
+static int dynamic_tag(const unsigned char* module, int64_t tag, uint64_t* value) {
+    const Elf64_Ehdr* eh = (const Elf64_Ehdr*)(const void*)module;
+    const Elf64_Shdr* sh = (const Elf64_Shdr*)(const void*)(module + eh->e_shoff);
+    for (size_t i = 0; i < eh->e_shnum; ++i)
+        if (sh[i].sh_type == SHT_DYNAMIC) {
+            const Elf64_Dyn* d = (const Elf64_Dyn*)(const void*)(module + sh[i].sh_offset);
+            for (size_t k = 0; k < sh[i].sh_size / sizeof(Elf64_Dyn) && d[k].d_tag != DT_NULL; ++k)
+                if (d[k].d_tag == tag) {
+                    *value = d[k].d_un.d_val;
+                    return 1;
+                }
+        }
+    return 0;
+}
+
+/* the module's section of a name; NULL for none */
+static const Elf64_Shdr* section_named(const unsigned char* module, const char* name) {
+    const Elf64_Ehdr* eh = (const Elf64_Ehdr*)(const void*)module;
+    const Elf64_Shdr* sh = (const Elf64_Shdr*)(const void*)(module + eh->e_shoff);
+    const char* names = (const char*)module + sh[eh->e_shstrndx].sh_offset;
+    for (size_t i = 0; i < eh->e_shnum; ++i)
+        if (!strcmp(names + sh[i].sh_name, name)) return &sh[i];
+    return NULL;
+}
+
+/* how many of an object's relocations are of type */
+static size_t object_relocations(const unsigned char* object, unsigned type) {
+    const Elf64_Ehdr* eh = (const Elf64_Ehdr*)(const void*)object;
+    const Elf64_Shdr* sh = (const Elf64_Shdr*)(const void*)(object + eh->e_shoff);
+    size_t n = 0;
+    for (size_t i = 0; i < eh->e_shnum; ++i)
+        if (sh[i].sh_type == SHT_RELA) {
+            const Elf64_Rela* r = (const Elf64_Rela*)(const void*)(object + sh[i].sh_offset);
+            for (size_t k = 0; k < sh[i].sh_size / sizeof(Elf64_Rela); ++k)
+                n += snx_elf_type(EM_MIPS, r[k].r_info) == type;
+        }
+    return n;
+}
+
+/* caller() = ext_fn(ext_data + 1) + 1; pick(x) one of six operations on ext_data by x, a jump table; tail_direct(x)
+   and tail_pointer(x) are musttail calls of ext_fn, declared with default visibility, and of ext_pointer's function;
+   third() = ext_table[2] */
+static int mips_caller_object(unsigned char** data, size_t* size) {
+    char error[1024];
+    SnxIr* ir = snx_ir_new("caller", '2', error, sizeof(error));
+    if (!ir) return snx_error("%s", error);
+    LLVMTypeRef i64 = ir->t_i64, unary = LLVMFunctionType(i64, &i64, 1, 0);
+    LLVMValueRef value = LLVMAddGlobal(ir->mod, i64, "ext_data");
+    LLVMValueRef pointer = LLVMAddGlobal(ir->mod, ir->t_ptr, "ext_pointer");
+    LLVMValueRef ext_fn = LLVMAddFunction(ir->mod, "ext_fn", unary);
+    LLVMValueRef caller = LLVMAddFunction(ir->mod, "caller", LLVMFunctionType(i64, NULL, 0, 0));
+    LLVMValueRef one = LLVMConstInt(i64, 1, 0), args[1], result, site;
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, caller, "entry"));
+    args[0] = LLVMBuildAdd(ir->b, LLVMBuildLoad2(ir->b, i64, value, ""), one, "");
+    result = LLVMBuildCall2(ir->b, unary, ext_fn, args, 1, "");
+    LLVMBuildRet(ir->b, LLVMBuildAdd(ir->b, result, one, ""));
+
+    LLVMValueRef pick = LLVMAddFunction(ir->mod, "pick", unary);
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ir->ctx, pick, "entry");
+    LLVMBasicBlockRef other = LLVMAppendBasicBlockInContext(ir->ctx, pick, "other");
+    LLVMPositionBuilderAtEnd(ir->b, other);
+    LLVMBuildRet(ir->b, LLVMConstInt(i64, 0, 0));
+    LLVMPositionBuilderAtEnd(ir->b, entry);
+    LLVMValueRef d = LLVMBuildLoad2(ir->b, i64, value, "");
+    LLVMValueRef choice = LLVMBuildSwitch(ir->b, LLVMGetParam(pick, 0), other, 6);
+    for (unsigned k = 0; k < 6; ++k) {
+        LLVMBasicBlockRef block = LLVMAppendBasicBlockInContext(ir->ctx, pick, "case");
+        LLVMAddCase(choice, LLVMConstInt(i64, k, 0), block);
+        LLVMPositionBuilderAtEnd(ir->b, block);
+        LLVMValueRef c = LLVMConstInt(i64, k == 0 ? 100 : k == 1 ? 3 : k == 2 ? 7 : k == 3 ? 0xFF : k == 4 ? 4 : 2, 0);
+        LLVMBuildRet(ir->b, k == 0   ? LLVMBuildAdd(ir->b, d, c, "")
+                            : k == 1 ? LLVMBuildMul(ir->b, d, c, "")
+                            : k == 2 ? LLVMBuildSub(ir->b, d, c, "")
+                            : k == 3 ? LLVMBuildXor(ir->b, d, c, "")
+                            : k == 4 ? LLVMBuildShl(ir->b, d, c, "")
+                                     : LLVMBuildUDiv(ir->b, d, c, ""));
+    }
+
+    LLVMValueRef direct = LLVMAddFunction(ir->mod, "tail_direct", unary);
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, direct, "entry"));
+    args[0] = LLVMGetParam(direct, 0);
+    site = LLVMBuildCall2(ir->b, unary, ext_fn, args, 1, "");
+    LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
+    LLVMBuildRet(ir->b, site);
+
+    LLVMValueRef through = LLVMAddFunction(ir->mod, "tail_pointer", unary);
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, through, "entry"));
+    args[0] = LLVMGetParam(through, 0);
+    site = LLVMBuildCall2(ir->b, unary, LLVMBuildLoad2(ir->b, ir->t_ptr, pointer, ""), args, 1, "");
+    LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
+    LLVMBuildRet(ir->b, site);
+
+    LLVMValueRef table = LLVMAddGlobal(ir->mod, i64, "ext_table");
+    LLVMValueRef third = LLVMAddFunction(ir->mod, "third", LLVMFunctionType(i64, NULL, 0, 0));
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, third, "entry"));
+    LLVMValueRef two = LLVMConstInt(i64, 2, 0);
+    LLVMBuildRet(ir->b, LLVMBuildLoad2(ir->b, i64, LLVMBuildGEP2(ir->b, i64, table, &two, 1, ""), ""));
+    if (snx_ir_object(ir, '2', data, size, error, sizeof(error))) return snx_error("%s", error);
+    snx_ir_free(ir);
+    return 0;
+}
+
+/* ext_data = 41, ext_fn(x) = 3x, and ext_pointer = ext_fn, an address in data */
+static int mips_definitions_object(unsigned char** data, size_t* size) {
+    char error[1024];
+    SnxIr* ir = snx_ir_new("definitions", '2', error, sizeof(error));
+    if (!ir) return snx_error("%s", error);
+    LLVMTypeRef i64 = ir->t_i64, unary = LLVMFunctionType(i64, &i64, 1, 0);
+    LLVMValueRef value = LLVMAddGlobal(ir->mod, i64, "ext_data");
+    LLVMSetInitializer(value, LLVMConstInt(i64, 41, 0));
+    LLVMValueRef ext_fn = LLVMAddFunction(ir->mod, "ext_fn", unary);
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, ext_fn, "entry"));
+    LLVMBuildRet(ir->b, LLVMBuildMul(ir->b, LLVMGetParam(ext_fn, 0), LLVMConstInt(i64, 3, 0), ""));
+    LLVMValueRef pointer = LLVMAddGlobal(ir->mod, ir->t_ptr, "ext_pointer");
+    LLVMSetInitializer(pointer, ext_fn);
+    if (snx_ir_object(ir, '2', data, size, error, sizeof(error))) return snx_error("%s", error);
+    snx_ir_free(ir);
+    return 0;
+}
+
+/* ext_table = {5, 6, 7}, an object of data alone, whose e_flags have no noreorder as the others' do */
+static int mips_table_object(unsigned char** data, size_t* size) {
+    char error[1024];
+    SnxIr* ir = snx_ir_new("table", '0', error, sizeof(error));
+    if (!ir) return snx_error("%s", error);
+    LLVMValueRef values[3] = {LLVMConstInt(ir->t_i64, 5, 0), LLVMConstInt(ir->t_i64, 6, 0),
+                              LLVMConstInt(ir->t_i64, 7, 0)};
+    LLVMValueRef table = LLVMAddGlobal(ir->mod, LLVMArrayType2(ir->t_i64, 3), "ext_table");
+    LLVMSetInitializer(table, LLVMConstArray2(ir->t_i64, values, 3));
+    if (snx_ir_object(ir, '0', data, size, error, sizeof(error))) return snx_error("%s", error);
+    snx_ir_free(ir);
+    return 0;
+}
+
+/* The module the three objects link into: its header repeats the code's, its GOT is the one glibc's MIPS loader relocates
+   (DT_PLTGOT and DT_MIPS_LOCAL_GOTNO its slots, no dynamic symbol with a slot), its only dynamic relocations are
+   REL32 with 64 (no DT_RELACOUNT, which glibc's MIPS loader would skip), and loaded with dlopen its code runs: gp from
+   each function's address, calls and loads through 32-bit GOT offsets, the jump table through a GOT_PAGE and gp, the
+   musttail calls as jumps, and a load from the object of data */
+static int mips_module(void) {
+    typedef int64_t (*Unary)(int64_t);
+    char error[1024];
+    const char* exports[5] = {"caller", "pick", "tail_direct", "tail_pointer", "third"};
+    unsigned char *caller_data, *defs_data, *table_data;
+    size_t caller_size, defs_size, table_size, relatives = 0, others = 0;
+    SnxLinkInput inputs[3];
+    SnxLinkOutput linked;
+    uint64_t got = 0, local = 0, gotsym = 0, symtabno = 0, count = 0;
+    if (mips_caller_object(&caller_data, &caller_size) || mips_definitions_object(&defs_data, &defs_size) ||
+        mips_table_object(&table_data, &table_size))
+        return 1;
+    check(!(((const Elf64_Ehdr*)(const void*)table_data)->e_flags & SNX_EF_MIPS_NOREORDER) &&
+              (((const Elf64_Ehdr*)(const void*)caller_data)->e_flags & SNX_EF_MIPS_NOREORDER),
+          "MIPS64 objects: noreorder on the code's e_flags, not on the data's");
+    check(object_relocations(caller_data, SNX_MIPS_CALL_HI16) && object_relocations(caller_data, SNX_MIPS_GOT_HI16) &&
+              object_relocations(caller_data, SNX_MIPS_GPREL_HI) &&
+              object_relocations(caller_data, SNX_MIPS_GOT_PAGE) &&
+              object_relocations(caller_data, SNX_MIPS_GPREL32_64) && !object_relocations(caller_data, SNX_MIPS_CALL16),
+          "MIPS64 caller object: 32-bit GOT offsets, gp from its address and a jump table");
+    inputs[0].data = caller_data;
+    inputs[0].size = caller_size;
+    inputs[0].name = "caller";
+    inputs[1].data = defs_data;
+    inputs[1].size = defs_size;
+    inputs[1].name = "definitions";
+    inputs[2].data = table_data;
+    inputs[2].size = table_size;
+    inputs[2].name = "table";
+    if (snx_link(inputs, 3, exports, 5, "caller.so", &linked, error, sizeof(error)))
+        return snx_error("MIPS64 link: %s", error);
+    const Elf64_Ehdr* eh = (const Elf64_Ehdr*)(const void*)linked.data;
+    check(eh->e_machine == EM_MIPS && eh->e_type == ET_DYN &&
+              eh->e_flags == ((const Elf64_Ehdr*)(const void*)caller_data)->e_flags,
+          "MIPS64 module header, the objects' e_flags");
+    const Elf64_Shdr *got_section = section_named(linked.data, ".got"), *dynsym = section_named(linked.data, ".dynsym"),
+                     *rela = section_named(linked.data, ".rela.dyn");
+    check(got_section && dynsym && rela && dynamic_tag(linked.data, DT_PLTGOT, &got) && got == got_section->sh_addr &&
+              dynamic_tag(linked.data, 0x7000000a, &local) && local == got_section->sh_size / 8 &&
+              dynamic_tag(linked.data, 0x70000013, &gotsym) && dynamic_tag(linked.data, 0x70000011, &symtabno) &&
+              gotsym == symtabno && symtabno == dynsym->sh_size / sizeof(Elf64_Sym) &&
+              !dynamic_tag(linked.data, 0x6ffffff9, &count),
+          "MIPS64 module's GOT tags: every slot local, no DT_RELACOUNT");
+    for (size_t k = 0; rela && k < rela->sh_size / sizeof(Elf64_Rela); ++k) {
+        const Elf64_Rela* r = (const Elf64_Rela*)(const void*)(linked.data + rela->sh_offset) + k;
+        snx_elf_type(EM_MIPS, r->r_info) == SNX_MIPS_RELATIVE && !snx_elf_symbol(EM_MIPS, r->r_info) ? ++relatives
+                                                                                                     : ++others;
+    }
+    check(relatives == 1 && !others, "MIPS64 module's dynamic relocation, ext_pointer's REL32 with 64");
+    /* loaded and run by the system's loader, as library.c's load_image does */
+    char path[4096];
+    const char* tmp = getenv("TMPDIR");
+    snprintf(path, sizeof path, "%s/snx-mips64-module-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+    int fd = mkstemp(path);
+    if (fd < 0 || write(fd, linked.data, linked.size) != (ssize_t)linked.size)
+        return snx_error("%s: cannot write", path);
+    close(fd);
+    void* module = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    unlink(path);
+    if (!module) return snx_error("MIPS64 module: dlopen: %s", dlerror());
+    Unary pick = (Unary)(uintptr_t)dlsym(module, "pick");
+    Unary direct = (Unary)(uintptr_t)dlsym(module, "tail_direct");
+    Unary through = (Unary)(uintptr_t)dlsym(module, "tail_pointer");
+    int64_t (*caller)(void) = (int64_t (*)(void))(uintptr_t)dlsym(module, "caller");
+    int64_t (*third)(void) = (int64_t (*)(void))(uintptr_t)dlsym(module, "third");
+    check(caller && caller() == 127, "MIPS64 module's call through its GOT: ext_fn(ext_data + 1) + 1");
+    check(pick && pick(0) == 141 && pick(1) == 123 && pick(2) == 34 && pick(3) == (41 ^ 0xFF) && pick(4) == 656 &&
+              pick(5) == 20 && pick(6) == 0,
+          "MIPS64 module's jump table");
+    check(direct && direct(5) == 15, "MIPS64 module's musttail call of a declared function");
+    check(through && through(7) == 21, "MIPS64 module's musttail call through a pointer");
+    check(third && third() == 7, "MIPS64 module's load from the object of data");
+    dlclose(module);
+    free(linked.data);
+    free(caller_data);
+    free(defs_data);
+    free(table_data);
+    return 0;
+}
+#endif
 #endif
 
 int main(void) {
@@ -1125,6 +1445,7 @@ int main(void) {
     ppc_relocations();
     riscv_relocations();
     loongarch_relocations();
+    mips_relocations();
     need_too_large();
     if (llvm_objects()) ++failures;
 #ifndef __APPLE__ /* AOT modules, which macOS doesn't link as ELF (link_elf.c) */
@@ -1132,6 +1453,9 @@ int main(void) {
     if (other_objects("riscv64-unknown-linux-gnu", EM_RISCV, "RISC-V") ||
         other_objects("loongarch64-unknown-linux-gnu", EM_LOONGARCH, "LoongArch"))
         ++failures;
+#if defined(__mips64)
+    if (mips_module()) ++failures;
+#endif
 #endif
     if (failures) {
         printf("%d failures\n", failures);
