@@ -83,7 +83,7 @@ static const u32 l_code[] = {
 static const u32 e_code[] = {0xD4000521u, 0xD65F03C0u};
 #define E_AT 0x500u
 
-static u8 g_exit_stack[0x2000] __attribute__((aligned(16)));
+static _Alignas(16) u8 g_exit_stack[0x2000];
 static int g_exit_after;
 static void* exit_thread(void* p) {
     CPU* c = (CPU*)p;

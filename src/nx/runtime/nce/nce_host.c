@@ -48,7 +48,7 @@ typedef struct {
     CPU* cpu;
     NceHost* host;
 } NceTls;
-static __thread NceTls t_nce __attribute__((tls_model("initial-exec")));
+static _Thread_local NceTls t_nce __attribute__((tls_model("initial-exec")));
 /* the distance from TPIDR_EL0 to t_nce, which is the same in each thread: static TLS. Only the asm reads it, so it
    is external: clang takes a static one that C code never reads as unused (-Wunused-but-set-global) */
 extern u64 g_nce_tls __attribute__((visibility("hidden")));
@@ -60,7 +60,7 @@ static int g_sig_enter, g_sig_kick;
 /* the asm's entries, local to this file */
 void nce_outcall(void) __attribute__((visibility("hidden")));
 int nce_host_save(NceHost* h) __attribute__((visibility("hidden"), returns_twice));
-void nce_host_jump(NceHost* h) __attribute__((visibility("hidden"), noreturn));
+_Noreturn void nce_host_jump(NceHost* h) __attribute__((visibility("hidden")));
 CPU* nce_outcall_c(CPU* c, u64 code, u64 ret, u64 nzcv) __attribute__((visibility("hidden")));
 
 /* The outcall. The stub comes here with BLR X17 and the outcall's code in x16. It lowered the guest's sp by NCE_FRAME
