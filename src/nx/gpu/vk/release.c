@@ -477,6 +477,7 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
    read meets a release, and those go on at once */
 int vk_release_read(u64 gva, void* dst, u64 len) {
     int r = 0;
+    u64 sgate = 0; /* the submit that the samples reports there count up to */
     if (!len || vk_result_landing()) return len ? -1 : 0;
     vk_lock();
     if (!pend_hit(&g_rpages, gva, len)) {
@@ -486,25 +487,52 @@ int vk_release_read(u64 gva, void* dst, u64 len) {
     Backing range = {0};
     backing_of(&range, gva, len);
     pm_lock(&g_rlock);
-    u64 from = latest_over(&range) < 0 ? g_rhead : g_rtail; /* through the queue only when a release is there */
-    for (u64 i = from; i < g_rhead && r >= 0; i++) {
+    u64 head = g_rhead, from = latest_over(&range) < 0 ? head : g_rtail; /* the queue only when a release is there */
+    for (u64 i = from; i < head && r >= 0; i++) {
         const Release* q = &g_rq[i % RQ_N];
         if (!release_overlaps(q, &range)) continue;
-        /* a count the GPU hasn't given yet, or the same memory through another address: not known here */
-        r = !q->samples && gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 ? 1 : -1;
+        /* the same memory through another address: not known here. A samples report's count is known once its
+           submit is done: a render enable comparing two of them read them so, and landed every queued result on the
+           GPU thread to get them (a twentieth of one game's GPU thread) */
+        r = gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 ? 1 : -1;
+        if (r > 0 && q->samples && q->gate > sgate) sgate = q->gate;
     }
     pm_unlock(&g_rlock);
     if (r > 0 && (vk_compute_pending(gva, len) || vk_buf_pending(gva, len) || vk_gfx_image_pending(gva, len))) r = -1;
+    if (r > 0 && sgate) {
+        /* the releases are needed now, as release_match has them: the stream holds them no longer, and the release
+           thread performs them (and lands the results before them) while the stream goes on. Held to the stream's end,
+           a game's threads waited longer for them. They stay queued until this read is done: vk_lock keeps
+           release_through from taking them */
+        pm_lock(&g_rlock);
+        hold_inplace(g_rheld, g_rhead);
+        g_rheld = g_rhead;
+        if (g_rthread) pc_broadcast(&g_rcv);
+        pm_unlock(&g_rlock);
+        submit_through(sgate);
+        vk_wait_submit(sgate);
+    }
     if (r > 0) {
         pm_lock(&g_rlock);
         gmem_read_raw(gva, dst, len);
-        for (u64 i = g_rtail; i < g_rhead; i++) {
+        for (u64 i = g_rtail; i < head; i++) {
             const Release* q = &g_rq[i % RQ_N];
             u64 lo, hi;
             if (!q->gva || gva >= q->gva + q->len || q->gva >= gva + len) continue;
             lo = q->gva > gva ? q->gva : gva;
             hi = q->gva + q->len < gva + len ? q->gva + q->len : gva + len;
-            memcpy((u8*)dst + (lo - gva), q->data + (lo - q->gva), (size_t)(hi - lo));
+            u8 data[sizeof q->data];
+            const u8* from_data = q->data;
+            if (q->samples) { /* the count as perform writes it, with the timestamp after it */
+                u64 v = vk_query_peek(q->qch, q->qfirst, q->qend);
+                memcpy(data, q->data, sizeof data);
+                if (q->len == 4)
+                    snx_st_le32(data, (u32)v);
+                else
+                    snx_st_le64(data, v);
+                from_data = data;
+            }
+            memcpy((u8*)dst + (lo - gva), from_data + (lo - q->gva), (size_t)(hi - lo));
         }
         pm_unlock(&g_rlock);
         __atomic_add_fetch(&g_vk_release_forwards, 1, __ATOMIC_RELAXED);

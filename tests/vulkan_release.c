@@ -37,6 +37,7 @@ int vk_uma(void);
 u64 vk_uma_bound(void);
 void vk_rt_before_write(u64, u64);
 u64 vk_query_value(u32, u64, u64);
+u64 vk_query_peek(u32, u64, u64);
 #define VK_PRED_EQUAL 0x80000000u
 #define VK_QUERY_COUNTERS 8
 enum { VK_PRED_PREV_NONE, VK_PRED_PREV_ZERO, VK_PRED_PREV_NONZERO, VK_PRED_PREV_SLOT };
@@ -223,6 +224,11 @@ void vk_submit(u64 a, u64 b, u64 c) {
 u64 vk_query_value(u32 counter, u64 first, u64 end) {
     assert(lock_depth && !vk_result_landing() && counter == 3);
     query_reads++;
+    return (end - first) * 100 + first;
+}
+/* the same count, read out of order before the report is performed (vk_release_read) */
+u64 vk_query_peek(u32 counter, u64 first, u64 end) {
+    assert(lock_depth && counter == 3);
     return (end - first) * 100 + first;
 }
 /* render enable predicates (query.c): a report of segments [first, end) gets slot first when its count isn't known,
@@ -425,8 +431,8 @@ int main(void) {
     assert(completed[6] == 1 && g_rhead == g_rtail && events_signaled == 3 && !events_due);
     pending = 0;
     /* a read over queued releases takes their payloads, in their order, without waiting for the work before them or
-       writing memory; the same memory through another address, another pending result there or a samples-passed count
-       not known yet make it decline, and the caller waits as before */
+       writing memory; the same memory through another address or another pending result there make it decline, and
+       the caller waits as before. A samples-passed count is read once its submit is done, without performing it */
     mapping = 4096; /* 0x10000 and 0x20000 name the same page */
     pending = 1;
     u64 waited = waited_graphics;
@@ -446,7 +452,13 @@ int main(void) {
     assert(vk_release_read(0x10040, got, 1) == -1 && vk_release_read(0x10060, got, 1) == 0);
     other_pending = 0;
     vk_release_samples(0x10048, 4, 3, 1, 2, 0);
-    assert(vk_release_read(0x10048, got, 4) == -1 && vk_release_read(0x10050, got, 1) == 0);
+    unsigned reads_before = query_reads;
+    u64 queued = g_rhead - g_rtail;
+    u64 sgate = g_rq[(g_rhead - 1) % RQ_N].gate;
+    u8 count[4] = {0};
+    assert(vk_release_read(0x10048, count, 4) == 1 && snx_ld_le32(count) == 101);
+    assert(vk_release_read(0x10050, got, 1) == 0);
+    assert(waited_graphics >= sgate && query_reads == reads_before && g_rhead - g_rtail == queued);
     vk_release_drain();
     assert(memory[4096 + 0x40] == 25 && memory[4096 + 0x41] == 23 && g_rhead == g_rtail);
     /* the render enable's comparison of a count not known yet with a zero 16 bytes on: a predicate for each queued

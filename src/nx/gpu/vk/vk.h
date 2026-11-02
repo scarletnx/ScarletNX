@@ -986,6 +986,7 @@ void vk_query_enable(u32 owner, int on);
 int vk_query_report(u32 owner, u64 gva, u32 len, u64 ticks);
 /* a report performed (release.c): the count of counter's segments [first, end) */
 u64 vk_query_value(u32 counter, u64 first, u64 end);
+u64 vk_query_peek(u32 counter, u64 first, u64 end); /* the same, out of order, changing nothing */
 #define VK_QUERY_COUNTERS 8 /* query.c's samples-passed counters, a draw owner's each */
 /* render enable predicates (release.c's vk_render_predicate): a queued report of counter's segments [first, end) gets
    a predicate slot, held once, that the next vk_query_pred_flush writes (2, *slot set), or its count is known now: 1
