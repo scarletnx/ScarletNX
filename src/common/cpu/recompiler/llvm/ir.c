@@ -428,6 +428,9 @@ static void size_attributes(LLVMModuleRef module, char opt) {
 void ir_clean_function(SnxIr* ir, LLVMValueRef fn) {
     const char* passes = ir->tuning ? ir->tuning->clean : SNX_IR_CLEAN_PASSES;
     if (!passes) return;
+    /* LLVMRunPassesOnFunction came in LLVM 20 (FreeBSD's llvm package is 19): before it, the unit's pipeline takes the
+       function as emitted, as it does one whose passes fail */
+#if LLVM_VERSION_MAJOR >= 20
     LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
     if (ir->tuning && ir->tuning->builder) ir->tuning->builder(options);
     LLVMErrorRef failure = LLVMRunPassesOnFunction(fn, passes, ir->tm, options);
@@ -438,6 +441,7 @@ void ir_clean_function(SnxIr* ir, LLVMValueRef fn) {
                 LLVMGetValueName(fn), message);
         LLVMDisposeErrorMessage(message);
     }
+#endif
     /* the unit cache keys the bitcode, and a function's names go into it in the order of its symbol table, which the
        names SROA made and numbered (in an order that changes from run to run) leave different: no name stays */
     for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
