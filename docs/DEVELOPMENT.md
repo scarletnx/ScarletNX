@@ -23,6 +23,41 @@ the examples name its folders on Linux, and `--data DIR` keeps a run's files in 
 games=~/.local/share/scarletnx/recompiled work=~/.cache/scarletnx/work
 ```
 
+## Measure NVN storage ordering
+
+`nvn_storage_order=2` is the default. It defers each storage-order requirement until a dependent buffer use.
+Mode 1 emits the required barriers at their command-stream points. Mode 0 retains conservative per-draw storage
+dependencies for controlled comparisons or older command recordings. NVN permits draws to overlap until an explicit
+ordering command. A writable storage view can cover the same buffer in many draws even when each draw writes a
+different word. Treating that view alone as a dependency ended the render pass at each reuse. NVN graphics draws now use the command stream's execution and shader-data barriers for that
+ordering. Barrier flags survive recording and command copies. Shader instruction invalidation remains separate.
+
+Maxwell draws, compute bindings and transform feedback retain conservative write ordering. Read-only consumers,
+internal copies, submission boundaries and CPU readbacks keep their visibility and lifetime checks.
+Upstream fragment and texture barriers remain in the NVN command path. The descriptor-buffer setting retains its
+existing choice of whether those barriers can be omitted.
+
+```sh
+cmake --build build --target snx-test-vulkan
+python3 tools/bench_nvn_draws.py --out /local/scratch/nvn-draw-search
+```
+
+The Python search checks descriptor sets and descriptor buffers, each with and without the recording thread.
+Every supported backend first runs the exact headless renderer checks. The fixture also checks a dependent GPU read
+and a read followed by an in-place overwrite, with no host wait between the operations. Then shuffled serial rounds
+compare the conservative, immediate explicit and deferred explicit ordering paths on identical synthetic draws. One
+vertex writes one distinct word per draw through overlapping storage views. The fixture checks every output byte
+and records render-pass counts.
+It warms pipelines before timing and includes GPU completion in each batch's time.
+
+A candidate must run the requested backend and pass every output check. The explicit path must beat its matching
+conservative baseline by at least 3 percent in every paired round to qualify. Logs and the binary fingerprint go
+into the output folder. The result is specific to this workload and does not establish a game FPS improvement.
+
+When the upstream ABI changes, build a matching AOT module before the gameplay comparison. A cold JIT-only boot
+that compiles guest code but submits no GPU work has not exercised draw barriers. A successful exit without presented
+frames does not verify the renderer.
+
 ## Measure descriptor submission
 
 `VK_EXT_descriptor_buffer` is an optional graphics path (`--vk_descriptors=1`). It writes descriptor tables into
@@ -46,8 +81,9 @@ configurations. This is a CPU submission benchmark, not a prediction of game FPS
 ## Search for faster GPU settings
 
 `tools/tune_gpu.py` tests execution strategies and then tries combinations around the fastest candidates.
-It searches descriptor sets versus descriptor buffers, Vulkan recording, guest thread scheduling and buffer memory paths. It searches compiler worker counts
-when the logs show compilation. Resolution, shadows, filtering and effects stay fixed. Async pipelines stay off,
+It searches NVN storage ordering, descriptor sets versus descriptor buffers, Vulkan recording, guest thread scheduling
+and buffer memory paths. Storage ordering only competes when the log confirms that the NVN loader is active.
+It searches compiler worker counts when the logs show compilation. Resolution, shadows, filtering and effects stay fixed. Async pipelines stay off,
 so a candidate cannot win by skipping draws. It does not edit source code or apply settings.
 
 ```sh

@@ -138,8 +138,8 @@ static struct {
        advance writes. A writable reuse still needs ordering against intervening readers. */
     struct {
         u64 writes, visible, submit, work;
-        u64 barriers, read_reuses, counted_work;
-        int reused_write;
+        u64 barriers, read_reuses, counted_work, explicit_barriers, parallel_writes;
+        int reused_write, read_pending, required;
     } order;
 } g_buffer;
 static void own_link(u32 i) {
@@ -1047,7 +1047,7 @@ static int out_take_into_submit(GfxOut* m) {
    with the other's results, which gave it nothing. A result of the frame before is read where it is too (transform
    feedback captures the same buffers every frame, over the last frame's capture), its frame's rings held until the
    reader is done (vk_frame_hold) */
-static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, u64 align) {
+static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, u64 align, int ordered) {
     GfxOut *match = NULL, *newest = NULL;
     int count = 0, before = 0;
     RangePages q;
@@ -1096,17 +1096,17 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     if (count == 1 && gva >= match->addr && gva + len <= match->addr + match->size &&
         !((match->off + (gva - match->addr)) & (align - 1)) &&
         (!writable || match->frame == vk_submit_number() || out_take_into_submit(match))) {
-        /* The barrier makes all earlier buffer writes visible to later graphics and compute consumers.
-           Keep that visibility across read-only draws instead of ending a pass for each consumer. A writable
-           binding must also wait for reads since the last barrier, so retain the per-work check for it. */
+        /* Maxwell bindings retain conservative read/write ordering. NVN permits overlapping draws and supplies
+           storage dependencies through explicit barriers; a writable view alone does not create a dependency.
+           Read-only consumers and new submissions retain their automatic visibility checks. */
         u64 work = g_vk_drawn + g_vk_dispatches;
         int new_write = match->written > g_buffer.order.visible;
         /* A writable binding below stamps the next generation before its draw is recorded. Later bindings of
            this same draw need no second barrier. After commit, work advances and its consumers see the stamp.
            An aborted setup can leave a future stamp, which only causes an extra barrier, never a missing one. */
         if (g_buffer.order.submit != vk_submit_number() ||
-            ((writable || new_write) &&
-             (g_buffer.order.work != work || g_buffer.order.visible != g_buffer.order.writes))) {
+            (((writable && (ordered || g_buffer.order.required)) || (!writable && new_write)) &&
+             (g_buffer.order.work != work || g_buffer.order.visible != g_buffer.order.writes || g_buffer.order.required))) {
             vk_render_end();
             copy_barrier(out_stages(), out_access(),
                          VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1114,18 +1114,25 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
             g_buffer.order.submit = vk_submit_number();
             g_buffer.order.work = work;
             g_buffer.order.visible = g_buffer.order.writes;
+            g_buffer.order.read_pending = 0;
+            g_buffer.order.required = 0;
             if (copy_stats_on()) {
                 g_buffer.order.barriers++;
                 g_buffer.order.counted_work = work;
             }
-        } else if (!writable && copy_stats_on() && g_buffer.order.counted_work != work) {
+        } else if (copy_stats_on() && g_buffer.order.counted_work != work) {
             /* Count omitted barriers once per consumer, excluding bindings the old per-work check skipped too. */
-            g_buffer.order.read_reuses++;
+            if (writable && !ordered) g_buffer.order.parallel_writes++;
+            else if (!writable) g_buffer.order.read_reuses++;
             g_buffer.order.counted_work = work;
         }
         if (writable) {
             match->written = g_buffer.order.writes + 1;
             g_buffer.order.reused_write = 1;
+        } else {
+            /* A later in-place writer must wait for this read at the front end's execution-order point.
+               An abandoned setup may leave the flag set, which only adds a conservative barrier. */
+            g_buffer.order.read_pending = 1;
         }
         *buf = match->buf;
         *off = match->off + (gva - match->addr);
@@ -1605,7 +1612,7 @@ static const u8* draw_bytes(u64 gva, u64 len, SamplesCount* counts, u32 max, u32
 }
 
 int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off) {
-    int src = gva ? gfx_gpu_src(gva, len, buf, off, 0, vk_stage_align()) : 0;
+    int src = gva ? gfx_gpu_src(gva, len, buf, off, 0, vk_stage_align(), 1) : 0;
     if (src == 1) return 1;
     if (src == 2) return gfx_composed(gva, len, buf, off);
     u8* p = vk_stage(len ? len : 16, vk_stage_align(), buf, off);
@@ -1651,7 +1658,7 @@ static void gap_copy(void* user, u8* to, u64 a, u64 b) {
 }
 /* Each writable binding keeps its original bytes until its draw's frame completes. The guest can keep writing RAM:
    vk_write_changed resolves those writes against the GPU result at the fence. */
-int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
+int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered) {
     GfxOut* o;
     if (!gva) return vk_buf_copy(0, len, buf, off);
     /* Repeated bindings of one writable range in the same draw must name the same storage. */
@@ -1667,7 +1674,7 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
     if (bind_align < g_vk.props.limits.minTexelBufferOffsetAlignment)
         bind_align = g_vk.props.limits.minTexelBufferOffsetAlignment;
     if (bind_align < 4) bind_align = 4;
-    int pending = gfx_gpu_src(gva, len, buf, off, 1, bind_align);
+    int pending = gfx_gpu_src(gva, len, buf, off, 1, bind_align, ordered);
     if (pending == 1) return 1;
     if (!pending) gmem_need(gva, len);
     int owned = !pending && range_owned(gva, len);
@@ -2260,7 +2267,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     /* Pending results over the range, unless none was added since they were last checked for here (only the sweep in
        vk_buf_frame frees entries, and only this function adds them, so e stays good meanwhile) */
     if (!e || e->cs_adds != vk_compute_adds() || e->gfx_adds != vk_buf_adds()) {
-        pending = gfx_gpu_src(gva, len, buf, off, 0, align);
+        pending = gfx_gpu_src(gva, len, buf, off, 0, align, 1);
         if (pending == 1) return 1;
         if (pending == 2) return gfx_composed(gva, len, buf, off); /* newer than any cached copy */
         if (vk_compute_gpu_src(gva, len, buf, off)) return 1;      /* a compute result that hasn't landed yet */
@@ -2536,6 +2543,22 @@ u64 vk_buf_reclaim(u32 before, u64 want) {
     }
     return freed;
 }
+/* A front end with explicit storage ordering supplies these barriers in command-stream order. */
+int vk_buf_order_pending(int writes_only) {
+    return g_buffer.order.writes != g_buffer.order.visible || (!writes_only && g_buffer.order.read_pending);
+}
+void vk_buf_order_request(int writes_only) {
+    /* One later dependency covers every earlier point. Readbacks and surface consumers retain their own orders. */
+    if (vk_buf_order_pending(writes_only)) g_buffer.order.required = 1;
+}
+void vk_buf_ordered(void) {
+    g_buffer.order.submit = vk_submit_number();
+    g_buffer.order.work = g_vk_drawn + g_vk_dispatches;
+    g_buffer.order.visible = g_buffer.order.writes;
+    g_buffer.order.read_pending = 0;
+    g_buffer.order.required = 0;
+    if (copy_stats_on()) g_buffer.order.explicit_barriers++;
+}
 void vk_buf_stats(u32* count, u64* bytes) {
     *count = g_buffer.n;
     *bytes = g_buffer.bytes;
@@ -2552,9 +2575,11 @@ void vk_buf_frame(void) {
             (unsigned long long)g_read_bound, (unsigned long long)g_owned_bound, (unsigned long long)g_wb_outputs,
             (unsigned long long)g_wb_bytes, (unsigned long long)g_wb_waits,
             (unsigned long long)(g_wb_wait_ns / 1000000), (unsigned long long)g_wb_reuses);
-        LOG("vulkan: buffer dependencies: %llu barriers, %llu consumer barriers avoided\n",
-            (unsigned long long)g_buffer.order.barriers, (unsigned long long)g_buffer.order.read_reuses);
+        LOG("vulkan: buffer dependencies: %llu barriers, %llu consumer barriers avoided, %llu parallel writes, %llu explicit barriers\n",
+            (unsigned long long)g_buffer.order.barriers, (unsigned long long)g_buffer.order.read_reuses,
+            (unsigned long long)g_buffer.order.parallel_writes, (unsigned long long)g_buffer.order.explicit_barriers);
         g_buffer.order.barriers = g_buffer.order.read_reuses = 0;
+        g_buffer.order.parallel_writes = g_buffer.order.explicit_barriers = 0;
         stage_report();
         vk_stage_report();
         LOG("vulkan: buffer waits: draw=%llu/%llums read=%llu/%llums write=%llu/%llums signal=%llu/%llums syncwait=%llu/%llums map=%llu/%llums draw_landed=old_frame:%llu changed:%llu composed=%llu+%llu\n",

@@ -1418,7 +1418,7 @@ static int dw_buffer_image(DescWrites* d, VkDescriptorSet set, int i, const u32*
     }
     VkBuffer b;
     u64 o, frame = vk_frame_id() + 1;
-    if (!vk_buf_copy_writable(bi.gva, bi.bytes, &b, &o)) return 0;
+    if (!vk_buf_copy_writable(bi.gva, bi.bytes, &b, &o, 1)) return 0;
     d->bvci[i] = (VkBufferViewCreateInfo){.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
                                           .buffer = b,
                                           .format = bi.fmt,
@@ -1735,6 +1735,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         if (!cb_get(ds, stage, i, sz, &b, &o)) return VK_NULL_HANDLE;
         dw_buffer(&d, set, SNX_VKB_CB + i, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, sz);
     }
+    int ordered = !(ds->owner & 0x80000000u) || !g_settings.nvn_storage_ordering;
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
         const VkDrawGbuf* gb = &draw->b[stage ? 1 : 0][i];
         u64 addr = gb->addr;
@@ -1743,7 +1744,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         VkBuffer b;
         u64 o;
         int ok = gb->aliased            ? (b = gb->buf, o = gb->off, 1)
-                 : addr && gb->writable ? vk_buf_copy_writable(addr, size, &b, &o)
+                 : addr && gb->writable ? vk_buf_copy_writable(addr, size, &b, &o, ordered)
                  : addr && gb->bare     ? vk_buf_get_window(addr, size, &b, &o)
                  : addr                 ? vk_buf_get_input(addr, size, sa, &b, &o)
                                         : vk_buf_copy(0, size, &b, &o);
@@ -3181,7 +3182,7 @@ retry:
         i32 size = (i32)ds->bind.xfb[i].size;
         u64 a = ds->bind.xfb[i].addr;
         if (!ds->bind.xfb[i].on || size <= 0) continue;
-        if (!vk_buf_copy_writable(a, (u32)size, &xbuf[i], &xoff[i])) {
+        if (!vk_buf_copy_writable(a, (u32)size, &xbuf[i], &xoff[i], 1)) {
             draw_images_discard(&images);
             g_vk_skipped++;
             return;

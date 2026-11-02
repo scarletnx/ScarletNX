@@ -975,7 +975,12 @@ int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off); /* no delayed 
 int vk_buf_get_copy_src(u64 gva, u64 len, VkBuffer* buf, u64* off);
 /* a copy of len bytes made now (data that changes within a frame), or of zeros when gva is 0 */
 int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off);
-int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off);
+/* ordered=0 only for a front end that supplies execution and shader-data barriers explicitly. */
+int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered);
+/* Shader-data invalidation needs writes only. Execution order also covers reads before an in-place writer. */
+int vk_buf_order_pending(int writes_only);
+void vk_buf_order_request(int writes_only);
+void vk_buf_ordered(void);
 typedef struct {
     u64 addr;
     u32 size;

@@ -18,7 +18,7 @@ static int check_owned_readback(void) {
         VkSemaphoreCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &type};
         CHECK(owner && VK_OK(vkCreateSemaphore(g_vk.dev, &ci, NULL, &gate)));
         memset(GP(cpu), 0x11, 0x1000);
-        CHECK(vk_buf_copy_writable(gva, 256, &output, &offset));
+        CHECK(vk_buf_copy_writable(gva, 256, &output, &offset, 1));
         VkBuffer upload;
         u64 at;
         u8* data = vk_stage_upload(512, 16, &upload, &at);
@@ -92,7 +92,7 @@ static int check_owned_writable(void) {
         u64 lands = own_landings(), submits = vk_submit_number();
         VkBuffer output;
         u64 at;
-        CHECK(vk_buf_copy_writable(gva, 0x1000, &output, &at));
+        CHECK(vk_buf_copy_writable(gva, 0x1000, &output, &at, 1));
         CHECK(own_landings() == lands && vk_submit_number() == submits);
         vk_buf_writable_commit();
         /* An unchanged second binding reuses the pending buffer without reading
@@ -100,7 +100,7 @@ static int check_owned_writable(void) {
         if (vk_written_since(gmem_host(gva, 0x1000), 0x1000, vk_ww_now()) == 0) {
             VkBuffer reused;
             u64 reused_at;
-            CHECK(vk_buf_copy_writable(gva, 0x1000, &reused, &reused_at));
+            CHECK(vk_buf_copy_writable(gva, 0x1000, &reused, &reused_at, 1));
             CHECK(reused == output && reused_at == at);
             CHECK(own_landings() == lands && vk_submit_number() == submits);
         }
@@ -130,7 +130,7 @@ static int check_owned_writable(void) {
     vk_own_publish(cpu + 0x4000, 256, owner, 0);
     u64 lands = own_landings(), submits = vk_submit_number(), at;
     VkBuffer output;
-    CHECK(vk_buf_copy_writable(gva, 0x3000, &output, &at));
+    CHECK(vk_buf_copy_writable(gva, 0x3000, &output, &at, 1));
     CHECK(own_landings() == lands && vk_submit_number() == submits);
     vk_buf_writable_commit();
     CHECK(!owned_test_fill(output, at + 0x1000, 4, 0x44));

@@ -1030,6 +1030,13 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             i32 bits;
             memcpy(&bits, GP(payload), 4);
             if (!g_renderer->method_barrier) return 1;
+            if (g_settings.nvn_storage_ordering) {
+                if (bits & (NVN_BARRIER_ORDER_PRIMITIVES_BIT | NVN_BARRIER_ORDER_FRAGMENTS_BIT |
+                            NVN_BARRIER_ORDER_FRAGMENTS_TILED_BIT | NVN_BARRIER_ORDER_INDIRECT_DATA_BIT))
+                    g_renderer->method_barrier(6);
+                else if (bits & NVN_BARRIER_INVALIDATE_SHADER_BIT)
+                    g_renderer->method_barrier(7);
+            }
             if (bits & NVN_BARRIER_INVALIDATE_SHADER_BIT) g_renderer->method_barrier(5);
             if (bits & (NVN_BARRIER_ORDER_FRAGMENTS_BIT | NVN_BARRIER_INVALIDATE_TEXTURE_BIT))
                 g_renderer->method_barrier(0);

@@ -1258,7 +1258,7 @@ rebind:
         } else if (deferred) {
             /* written: a pending result of its own, from its original bytes; read: the bytes draws would read,
                which may be an earlier draw's or dispatch's result on the GPU */
-            int ok = (p->si.gbuf_wmask >> i) & 1 ? vk_buf_copy_writable(sa[i], ss[i], &sbuf, &o)
+            int ok = (p->si.gbuf_wmask >> i) & 1 ? vk_buf_copy_writable(sa[i], ss[i], &sbuf, &o, 1)
                      : sa[i]                     ? vk_buf_get_strict(sa[i], ss[i], &sbuf, &o)
                                                  : vk_buf_copy(0, ss[i], &sbuf, &o);
             if (!ok) {
@@ -1416,7 +1416,7 @@ rebind:
                 bufimg_buf[i] = bufimg_buf[alias];
                 if (bimg[i].bytes > bimg[alias].bytes) bimg[i].bytes = bimg[alias].bytes;
             } else if (deferred) { /* a pending result, like a written storage buffer */
-                if (!vk_buf_copy_writable(bimg[i].gva, (u32)bimg[i].bytes, &bufimg_buf[i], &bufimg_off[i])) {
+                if (!vk_buf_copy_writable(bimg[i].gva, (u32)bimg[i].bytes, &bufimg_buf[i], &bufimg_off[i], 1)) {
                     for (k = 0; k < i; k++)
                         if (bufimg_view[k]) vk_defer_buffer_view(bufimg_view[k]);
                     g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
