@@ -254,42 +254,42 @@ void Try(uint s, int a0, int a1, int a2, int a3, int b0, int b1, int b2, int b3)
     }
 }
 
-/* the least squares fit of subset s's ends to the weights fit_ holds: sums of (64 - w)^2, (64 - w) w and w^2, a
-   sixteenth of each so that the products in Solve stay under 2^31, and their determinant, nought when every texel
-   took one weight */
-int fit_a;
-int fit_b;
-int fit_d;
+/* the least squares fit of subset s's ends to the weights fit_ holds, the line v = e0 + (e1 - e0) w / 64 nearest its
+   texels: how many there are, the sums of their weights and of the weights' squares, and the determinant n W2 - W W,
+   nought when every texel took one weight. Whole sums: each product in Solve stays under 2^28, its numerator under
+   2^29 */
+int fit_n;
+int fit_w;
+int fit_w2;
 int Fit(uint s) {
-    fit_a = 0;
-    fit_b = 0;
-    fit_d = 0;
+    fit_n = 0;
+    fit_w = 0;
+    fit_w2 = 0;
     for (uint k = 0u; k < 16u; k++) {
         if (SubsetOf(k) != s) continue;
         const int w = int(Weight(Index(fit_lo, fit_hi, k)));
-        fit_a += (64 - w) * (64 - w);
-        fit_b += (64 - w) * w;
-        fit_d += w * w;
+        fit_n++;
+        fit_w += w;
+        fit_w2 += w * w;
     }
-    fit_a >>= 4;
-    fit_b >>= 4;
-    fit_d >>= 4;
-    return fit_a * fit_d - fit_b * fit_b;
+    return fit_n * fit_w2 - fit_w * fit_w;
 }
 
-/* channel c's end (side 0 or 1) of subset s's fit whose determinant det is positive, rounded and held to 0 to 255 */
+/* channel c's end (side 0 or 1) of subset s's fit whose determinant det is positive, rounded and held to 0 to 255:
+   from the sums of the values (V) and of each by its weight (WV), e0 = (V W2 - W WV) / det and e1 = e0 + 64 (n WV -
+   W V) / det. A channel of one value gets that value at both ends */
 int Solve(uint s, uint c, uint side, int det) {
-    int x = 0, y = 0;
+    int v = 0, wv = 0;
     for (uint k = 0u; k < 16u; k++) {
         if (SubsetOf(k) != s) continue;
         const int w = int(Weight(Index(fit_lo, fit_hi, k)));
-        const int v = int(Ch(px[k], c));
-        x += (64 - w) * v;
-        y += w * v;
+        const int x = int(Ch(px[k], c));
+        v += x;
+        wv += w * x;
     }
-    const int num = side == 0u ? fit_d * x - fit_b * y : fit_a * y - fit_b * x;
-    const int den = det * 16;
-    return clamp(num >= 0 ? (num + den / 2) / den : -((-num + den / 2) / den), 0, 255);
+    int num = v * fit_w2 - fit_w * wv;
+    if (side != 0u) num += 64 * (fit_n * wv - fit_w * v);
+    return clamp(num >= 0 ? (num + det / 2) / det : -((-num + det / 2) / det), 0, 255);
 }
 
 /* fits subset s of the shape: fit_err and the rest */

@@ -180,11 +180,11 @@ whose subsets spread least around their means, a pass over the block each.
 
 A subset's line starts from its bounding box, each channel turned to run with the channel the subset spans most (the
 sign of their covariance), pulled in by a sixteenth from each end and tried as it is too; then a least squares fit
-to the weights the texels took, twice. The ends' p-bits are tried in every combination the mode allows, but a subset
-whose every alpha is 255 (or 0) takes the one bit that keeps it exactly: a nearly opaque texel blends, and a nearly
-clear one passes an alpha test of more than nought. Each texel takes the best of the three weights around its
-projection. All of it is integer arithmetic in the part of GLSL that is also C++, so the tests run the same file on
-the CPU and get the GPU's bytes.
+to the weights the texels took, twice, solved from whole sums, so a channel of one value keeps that value. The ends'
+p-bits are tried in every combination the mode allows, but a subset whose every alpha is 255 (or 0) takes the one
+bit that keeps it exactly: a nearly opaque texel blends, and a nearly clear one passes an alpha test of more than
+nought. Each texel takes the best of the three weights around its projection. All of it is integer arithmetic in the
+part of GLSL that is also C++, so the tests run the same file on the CPU and get the GPU's bytes.
 
 What it costs, as PSNR against what it encodes, on edenprobe's astcimage picture (gradients, hard edges where three
 colours meet in a block, noise, and alpha) decoded from ASTC: 35.0 dB over the picture at 4x4 (gradients 47.6,
@@ -259,7 +259,8 @@ separate SPIRV-Tools is needed.
   error. `build/src/nx/snx-test-astc-vulkan --large` decodes a 2D texture of 11584x11584 (4x4 blocks) and a 3D one of
   512^3 (8x8 blocks), 512 MiB each, past the 256 MiB cap, and compares every byte.
 - `bc7_glsl` (ctest, no GPU) runs `bc7_encode.glsl` on the CPU (`tests/glsl/bc7_cpu.cpp`) and decodes its blocks
-  with the CPU reference, `tests/support/bcn.c`: the encoder's 16 weights are the format's, blocks of one colour and
+  with the CPU reference, `tests/support/bcn.c`: the encoder's 16 weights are the format's, its least squares fit
+  gives a line's ends back and a constant alpha its value in every subset of every partition, blocks of one colour and
   blocks that lie on a line mode 6 holds come back exact, edenprobe's astcimage picture comes back no worse than
   the PSNR each region is held to, and a 13x7 image of three slices encodes slice by slice as each alone.
   `astc_vulkan` and `astc_vulkan_pieces` also upload random blocks into BC7 images, footprints whose strips step

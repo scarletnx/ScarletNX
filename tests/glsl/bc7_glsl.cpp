@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
 // The BC7 encoder's body (src/nx/gpu/texture/bc7_encode.glsl) run on the CPU through tests/glsl/glsl.hpp, its blocks
-// decoded by the CPU reference (tests/support/bcn.c): a block of one colour comes back exact, so does a line of
-// two endpoints the format holds, and a picture of gradients, hard edges, noise and alpha comes back no worse than
-// the PSNR each region is held to; sizes that are not a multiple of 4 and strips of several slices encode as vk/astc.c
-// dispatches them. No GPU is needed.
+// decoded by the CPU reference (tests/support/bcn.c): its least squares fit gives a line's ends back, a block of one
+// colour comes back exact, so does a line of two endpoints the format holds, and a picture of gradients, hard edges,
+// noise and alpha comes back no worse than the PSNR each region is held to; sizes that are not a multiple of 4 and
+// strips of several slices encode as vk/astc.c dispatches them. No GPU is needed.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -118,6 +118,79 @@ static void weights() {
                 return;
             }
     std::puts("PASS the 2, 3 and 4-bit weights are the format's");
+}
+
+static uint32_t xorshift(uint32_t& s) {
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+    return s;
+}
+
+// the encoder's least squares fit to the weights its texels took. 16 texels on a line between two ends, texel k at the
+// weight of an index of 2, 3 or 4 bits (each index as often as the others), give the ends back, within one where the
+// texels were rounded; in each subset of every two and three subset partition, at random indices, a channel of one
+// value (alpha 0 or 255, which a block keeps exactly) gets that value at both ends. Whole blocks do not show a wrong
+// fit: the encoder keeps the bounding box's line where the fit's is worse
+static void least_squares() {
+    uint32_t s = 0x6C8E9CF5u, worst = 0;
+    for (uint32_t bits = 2; bits <= 4; bits++)
+        for (uint32_t n = 0; n < 32; n++) {
+            const uint32_t e0 = xorshift(s), e1 = xorshift(s);
+            uint32_t texels[16], ends[2];
+            uint8_t index[16];
+            for (uint32_t k = 0; k < 16; k++) {
+                index[k] = uint8_t((k * 5 + n) & ((1u << bits) - 1));
+                const uint32_t w = bc7_weight_cpu(bits, index[k]);
+                texels[k] = 0;
+                for (uint32_t c = 0; c < 4; c++)
+                    texels[k] |= ((64 - w) * (e0 >> (c * 8) & 0xFF) + w * (e1 >> (c * 8) & 0xFF) + 32) >> 6 << (c * 8);
+            }
+            if (!bc7_least_squares_cpu(texels, index, bits, 1, 0, 0, ends)) {
+                std::fprintf(stderr, "FAIL least squares, %u-bit indices: no fit of 16 texels at every weight\n", bits);
+                failures++;
+                return;
+            }
+            for (uint32_t c = 0; c < 4; c++)
+                for (uint32_t side = 0; side < 2; side++) {
+                    const int want = int((side ? e1 : e0) >> (c * 8) & 0xFF), got = int(ends[side] >> (c * 8) & 0xFF);
+                    const uint32_t d = uint32_t(got > want ? got - want : want - got);
+                    if (d > worst) worst = d;
+                    if (d > 1) {
+                        std::fprintf(stderr,
+                                     "FAIL least squares, %u-bit indices: end %u channel %u is %d, the line's %d\n",
+                                     bits, side, c, got, want);
+                        failures++;
+                        return;
+                    }
+                }
+        }
+    uint32_t fits = 0;
+    for (uint32_t subsets = 2; subsets <= 3; subsets++)
+        for (uint32_t part = 0; part < 64; part++)
+            for (uint32_t subset = 0; subset < subsets; subset++)
+                for (uint32_t bits = 2; bits <= 4; bits++) {
+                    const uint32_t alpha = xorshift(s) & 1 ? 255 : 0;
+                    uint32_t texels[16], ends[2];
+                    uint8_t index[16];
+                    for (uint32_t k = 0; k < 16; k++) {
+                        texels[k] = (xorshift(s) & 0xFFFFFFu) | alpha << 24;
+                        index[k] = uint8_t(xorshift(s) & ((1u << bits) - 1));
+                    }
+                    if (!bc7_least_squares_cpu(texels, index, bits, subsets, part, subset, ends)) continue;
+                    fits++;
+                    if (ends[0] >> 24 != alpha || ends[1] >> 24 != alpha) {
+                        std::fprintf(
+                            stderr,
+                            "FAIL least squares, subset %u of %u subset partition %u, %u-bit indices: alpha %u "
+                            "fits to ends of alpha %u and %u\n",
+                            subset, subsets, part, bits, alpha, ends[0] >> 24, ends[1] >> 24);
+                        failures++;
+                        return;
+                    }
+                }
+    std::printf("PASS the least squares fit gives 96 lines' ends back, at most %u away, and %u subsets' one alpha\n",
+                worst, fits);
 }
 
 // a block of one colour, alpha included, whose four channels share their low bit: mode 6 holds it exactly (both ends
@@ -262,7 +335,7 @@ static void picture_psnr() {
         const char* name;
         uint32_t x0, y0;
         double floor;
-    } regions[4] = {{"gradients", 0, 0, 47.0}, {"edges", 64, 0, 40.0}, {"noise", 0, 64, 27.0}, {"alpha", 64, 64, 38.5}};
+    } regions[4] = {{"gradients", 0, 0, 47.8}, {"edges", 64, 0, 41.3}, {"noise", 0, 64, 28.0}, {"alpha", 64, 64, 40.3}};
     for (const auto& r : regions) {
         const double db = psnr(texels, got, 128, r.x0, r.y0, r.x0 + 64, r.y0 + 64);
         std::printf("%s %s: %.2f dB, at least %.1f\n", db >= r.floor ? "PASS" : "FAIL", r.name, db, r.floor);
@@ -319,6 +392,7 @@ static void shapes() {
 int main() {
     tables();
     weights();
+    least_squares();
     constant_blocks();
     exact_lines();
     partitioned("two colours on each two subset partition, in mode 1", two_subsets, opaque1, 1);
