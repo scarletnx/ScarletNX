@@ -63,7 +63,7 @@ if(SNX_TEST_SANITIZERS)
         snx_switch_program
         # the menu, its splash, icon and pads
         scarletnx-gui snx_gui_support snx_gui_ui snx_i18n snx_gui_languages snx_gui_languages_test snx_splash snx-test-splash
-        snx_window_icon snx-test-window-icon snx_pad_sdl snx_gui_pad
+        snx_window_icon snx-test-window-icon snx_pad_sdl snx_keybind snx_gui_pad
         # GLSL ES into SPIR-V
         snx_glslc snx-glslc-cli snx-test-glslc-lex snx-test-glslc-parse snx-test-glslc-emit snx-test-glslc-fuzz
         # the code generators, which tests run on files they refuse

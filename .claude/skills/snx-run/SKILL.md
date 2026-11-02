@@ -17,7 +17,7 @@ XDG_RUNTIME_DIR="$SCRATCH/rt" kwin_wayland --virtual --width 1920 --height 1080 
 ```
 
 Run the game with the private Wayland socket (`WAYLAND_DISPLAY=wayland-test`, `SDL_VIDEODRIVER=wayland`), or with its
-Xwayland display. The Xwayland sockets are `/tmp/.X11-unix/X*`; `DISPLAY=:2 xdpyinfo` says which one is the headless
+Xwayland display. The Xwayland sockets are `/tmp/.X11-unix/X*`. `DISPLAY=:2 xdpyinfo` says which one is the headless
 instance and its size. A test that needs no window uses `-H`. Use the user's desktop only when the user asks for it, or
 when the bug needs the desktop.
 
