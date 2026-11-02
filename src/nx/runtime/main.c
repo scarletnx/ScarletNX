@@ -625,8 +625,8 @@ static void frontend_loop(void) {
         } else if (now - changed >= STALL_NS && stalls < 4) {
             stalls++;
             changed = now;
-            WARN("No new frame for %llu seconds (%d shown): the game's threads\n",
-                 (unsigned long long)(STALL_NS / 1000000000u), frames);
+            WARN("No new frame for %llu seconds (%d shown, %llu GPU submissions): the game's threads\n",
+                 (unsigned long long)(STALL_NS / 1000000000u), frames, (unsigned long long)g_gpu_submits);
             kernel_dump_threads();
             gpu_report_stall();
             report_lock_waits();

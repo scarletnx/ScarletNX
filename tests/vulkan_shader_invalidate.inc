@@ -19,7 +19,7 @@ static int invalidate_write_code(u64 address, const u64 *code, size_t count)
 	return !gmem_write(address, bytes, count * sizeof(u64));
 }
 
-static VkSh *invalidate_fragment(MxRegs *channel, u64 address)
+static VkSh *invalidate_fragment(GpuChannel *channel, u64 address)
 {
 	VkSh *shader;
 
@@ -33,7 +33,7 @@ static VkSh *invalidate_fragment(MxRegs *channel, u64 address)
 }
 
 /* a launch as the compute engine hands it to the renderer */
-static void invalidate_dispatch(MxRegs *channel, const u32 *qmd, u64 code)
+static void invalidate_dispatch(GpuChannel *channel, const u32 *qmd, u64 code)
 {
 	DispatchState d;
 
@@ -41,7 +41,7 @@ static void invalidate_dispatch(MxRegs *channel, const u32 *qmd, u64 code)
 	vk_dispatch(&d);
 }
 
-static void invalidate_draw(MxRegs *channel)
+static void invalidate_draw(GpuChannel *channel)
 {
 	DrawCall call = {4, 0, 0, 3, 0, 0, 1}; /* a triangle list of 3 vertices */
 
@@ -53,7 +53,7 @@ static void invalidate_draw(MxRegs *channel)
 }
 
 /* The draw cache must not bypass the refreshed shader address lookup. */
-static int check_kept_shader_invalidation(MxRegs *channel, u64 address,
+static int check_kept_shader_invalidation(GpuChannel *channel, u64 address,
 					u64 *fragment)
 {
 	u64 vertex[64] = {0};
@@ -96,7 +96,7 @@ static int check_kept_shader_invalidation(MxRegs *channel, u64 address,
 
 	fragment[11] = invalidate_mov(0, 0x3e800000);
 	CHECK(invalidate_write_code(address, fragment, 64));
-	mx_invalidate_shaders(1);
+	maxwell3d_method(channel, 0x369, 1, 1);
 	CHECK(g_vk_epoch == epoch);
 	invalidate_draw(channel);
 	CHECK(g_vk_drawn == drawn + 3 && g_vk_draw_kept == kept);
@@ -114,7 +114,7 @@ static int check_shader_invalidation(void)
 	const u64 address = 0x400000000ull;
 	u64 code[64] = {0};
 	u32 qmd[64] = {0};
-	MxRegs *channel = calloc(1, sizeof(*channel));
+	GpuChannel *channel = calloc(1, sizeof(*channel));
 	VkSh *first, *second;
 	u64 generation, finishes, dispatches;
 	u32 epoch;
@@ -138,20 +138,20 @@ static int check_shader_invalidation(void)
 
 	code[11] = invalidate_mov(0, 0x3f800000);
 	CHECK(invalidate_write_code(address, code, 64));
-	mx_invalidate_shaders(0);
-	mx_invalidate_shaders(0x1010);
+	maxwell3d_method(channel, 0x369, 0, 1);
+	maxwell3d_method(channel, 0x369, 0x1010, 1);
 	CHECK(g_vk.shader_generation == generation);
-	mx_invalidate_shaders(1);
+	maxwell3d_method(channel, 0x369, 1, 1);
 	CHECK(g_vk.shader_generation == generation + 1);
 	CHECK(g_vk_epoch == epoch && g_vk_finishes == finishes);
 	second = invalidate_fragment(channel, address);
 	CHECK(second && !second->failed && second->mod);
 	CHECK(second != first && second->mod != first->mod);
 	CHECK(second->qh != first->qh);
-	mx_invalidate_shaders(1);
+	maxwell3d_method(channel, 0x369, 1, 1);
 	CHECK(invalidate_fragment(channel, address) == second);
 	CHECK(g_vk_epoch == epoch && g_vk_finishes == finishes);
-	mx_invalidate_shaders(1);
+	maxwell3d_method(channel, 0x87, 1, 1);
 	CHECK(g_vk.shader_generation == generation + 3);
 	CHECK(invalidate_fragment(channel, address) == second);
 	CHECK(!check_kept_shader_invalidation(channel, address, code));
@@ -178,10 +178,10 @@ static int check_shader_invalidation(void)
 	finishes = g_vk_finishes;
 	code[1] = 0xe33000000007000full;
 	CHECK(invalidate_write_code(address + 0x20000, code, 64));
-	mx_invalidate_shaders(0);
-	mx_invalidate_shaders(0x10);
+	compute_method(channel, 0x87, 0, 1);
+	compute_method(channel, 0x87, 0x10, 1);
 	CHECK(g_vk.shader_generation == generation);
-	mx_invalidate_shaders(1);
+	compute_method(channel, 0x87, 1, 1);
 	CHECK(g_vk.shader_generation == generation + 1);
 	CHECK(g_vk_epoch == epoch && g_vk_finishes == finishes);
 	vk_lock();
@@ -192,7 +192,7 @@ static int check_shader_invalidation(void)
 
 	code[1] = invalidate_mov(0, 42);
 	CHECK(invalidate_write_code(address + 0x20000, code, 64));
-	mx_invalidate_shaders(1);
+	compute_method(channel, 0x5a6, 1, 1);
 	vk_lock();
 	invalidate_dispatch(channel, qmd, address + 0x20000);
 	vk_compute_land();

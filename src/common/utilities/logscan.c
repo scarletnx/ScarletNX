@@ -615,7 +615,7 @@ static int gap_pair(SnxLogScan* s, int kind, Span a, Span b) {
 /* What the runtime missed, in the words it logs it: a shader the translator can't express (gpu/vk/pipeline.c,
    compute.c), methods of a class no engine runs and the GPU operations it skips (gpu.c, maxwell/engines.c,
    fermi2d.c), a macro with no native form, one the compiler can't follow and an operation the interpreter doesn't
-   know (maxwell/mme.c, mme_jit.c), an SVC with no handler or an argument it doesn't know (hle/svc/svc.c, svc_mem.c),
+   know (maxwell/mme.c), an SVC with no handler or an argument it doesn't know (hle/svc/svc.c, svc_mem.c),
    and the guest code the recompiler missed (runtime/guest_jit.c). 1 when line is one of them */
 static int gap_line(SnxLogScan* s, Span line) {
     Span rest = line;

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The per-page write generations behind gpu_mem_dirty_since: exact per page, at any distance and any range size */
-#include "nx/gpu/write_pages.h"
+#include "nx/gpu/maxwell/write_pages.h"
 #include <stdio.h>
 #include <stdlib.h>
 
