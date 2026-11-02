@@ -190,10 +190,11 @@ static int attr_format(u32 f, u8* size, u8* type) {
         {0x1B, 0x0F, 0x05, 0x03}, /* 16 */
         {0x12, 0x04, 0x02, 0x01}, /* 32 */
     };
+    /* R, RG, RGB, RGBA and RGBX: 12 formats each, in this order */
+    static const u8 kinds[12] = {2, 1, 4, 3, 7, 2, 1, 4, 3, 7, 4, 3};
+    static const u8 width[12] = {0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2};
     u32 comps = 0, bits = 0, kind = 0;
-    if (f >= NVN_FORMAT_R8 && f <= NVN_FORMAT_RGBA32I) { /* R, RG, RGB, RGBA: 12 formats each */
-        static const u8 kinds[12] = {2, 1, 4, 3, 7, 2, 1, 4, 3, 7, 4, 3};
-        static const u8 width[12] = {0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2};
+    if (f >= NVN_FORMAT_R8 && f <= NVN_FORMAT_RGBA32I) {
         u32 i = (f - NVN_FORMAT_R8) % 12;
         comps = (f - NVN_FORMAT_R8) / 12 + 1;
         kind = kinds[i];
@@ -204,14 +205,10 @@ static int attr_format(u32 f, u8* size, u8* type) {
         kind = i & 1 ? 6 : 5;
         bits = i / 2;
     } else if (f >= NVN_FORMAT_RGBX8 && f <= NVN_FORMAT_RGBX32I) { /* four components, as RGBA's */
-        static const u8 kinds[11] = {2, 1, 4, 3, 7, 2, 1, 4, 3, 7, 4};
-        static const u8 width[11] = {0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2};
         u32 i = f - NVN_FORMAT_RGBX8;
         comps = 4;
-        kind = i == 10 ? 3 : kinds[i]; /* RGBX32F, RGBX32UI, RGBX32I */
+        kind = kinds[i];
         bits = width[i];
-        if (f == NVN_FORMAT_RGBX32F) kind = 7;
-        if (f == NVN_FORMAT_RGBX32UI) kind = 4;
     } else {
         switch (f) {
             case NVN_FORMAT_RGB10A2: *size = 0x30, *type = 2; return 1;
