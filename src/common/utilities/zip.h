@@ -23,6 +23,9 @@ bool snx_zip_find(const SnxZip* zip, const char* name, uint32_t* index);
 /* the member's bytes, *size of them (with one zero byte after them), the caller's to free. NULL with error filled
    when it can't be read or its CRC doesn't match */
 unsigned char* snx_zip_read(SnxZip* zip, uint32_t index, size_t* size, char* error, size_t error_size);
+/* the member written to the file at path (made or replaced). A stored member is copied in pieces, so its size
+   doesn't need memory; a deflated one is read whole first. False with error filled, and no file left */
+bool snx_zip_extract(SnxZip* zip, uint32_t index, const char* path, char* error, size_t error_size);
 /* one member's bytes by name, as snx_zip_read, opening and closing the zip */
 unsigned char* snx_zip_member(const char* path, const char* name, size_t* size, char* error, size_t error_size);
 /* a member's name as a path inside a folder: relative, '/' between parts, no "." or ".." part and no drive */
