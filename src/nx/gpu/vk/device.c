@@ -53,9 +53,34 @@ int vk_trylock(void) {
 }
 u32 vk_lock_owner(void) { return __atomic_load_n(&g_vk_owner, __ATOMIC_RELAXED); }
 
+/* What held the memory at an out-of-memory, at the first ones: each heap as VMA counts it, and the descriptor pools,
+   which MoltenVK backs with Metal memory that VMA's blocks do not hold (cmd.c). The heap's use less its blocks is
+   what the driver and the other allocations of the process took. Any thread can fail, and VMA's statistics take its
+   own lock */
+#define OOM_REPORTS 3
+static void oom_report(VkResult r) {
+    static u32 reports;
+    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    const VkPhysicalDeviceMemoryProperties* mp;
+    if (r != VK_ERROR_OUT_OF_DEVICE_MEMORY && r != VK_ERROR_OUT_OF_HOST_MEMORY) return;
+    if (!g_vk.vma || __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) >= OOM_REPORTS) return;
+    vmaGetHeapBudgets(g_vk.vma, b);
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    for (u32 h = 0; h < mp->memoryHeapCount; h++)
+        LOG("vulkan: out of memory, heap %u%s: use %llu MiB, budget %llu MiB, VMA blocks %u (%llu MiB), allocations "
+            "%u (%llu MiB), heap size %llu MiB\n",
+            h, mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? " (device local)" : "",
+            (unsigned long long)(b[h].usage >> 20), (unsigned long long)(b[h].budget >> 20),
+            b[h].statistics.blockCount, (unsigned long long)(b[h].statistics.blockBytes >> 20),
+            b[h].statistics.allocationCount, (unsigned long long)(b[h].statistics.allocationBytes >> 20),
+            (unsigned long long)(mp->memoryHeaps[h].size >> 20));
+    LOG("vulkan: out of memory with %u descriptor pools\n", vk_desc_pools());
+}
+
 int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     if (r >= 0) return 1;
     WARN("vulkan: %s failed: %s (%d) at %s:%d\n", what, snx_vk_result_str(r), (int)r, file, line);
+    oom_report(r);
     return 0;
 }
 
