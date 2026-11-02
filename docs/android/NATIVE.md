@@ -153,5 +153,9 @@ says so once when called and returns 0.
 The recompiler's `android` target (`a64.profile`) is a phone's Armv8.2 CPU without pointer authentication, and
 `getauxval(AT_HWCAP)` reports the same features.
 
-Next: signals, libandroid's window, looper, sensor and asset functions,
+- libandroid: `ANativeWindow` is the `SurfaceView`'s surface, which is the host window at the view's size. The looper
+  is an epoll set, the sensor manager has no sensors, and `AAssetManager` reads the assets of the APK and its splits.
+  A stored asset opens as its APK's file descriptor with the asset's place in it.
+
+Next: signals,
 OpenSL ES and the media codecs, the EGL and GLES libraries that report no display, and the Vulkan pass-through.

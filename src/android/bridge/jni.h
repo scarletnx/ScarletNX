@@ -4,7 +4,10 @@
 #define SNX_ANDROID_BRIDGE_JNI_H
 #include <jni.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 /* snx.android.nativebridge.NativeBridge's natives: a library loaded with its JNI_OnLoad, and native methods called */
 bool android_bridge_register(JNIEnv* env);
+/* the host's JNIEnv of a guest JNIEnv* */
+JNIEnv* bridge_jni_host(uint64_t guest_env);
 #endif

@@ -81,6 +81,64 @@ void android_app_close(void) {
     memset(&app, 0, sizeof app);
 }
 
+/* ---- the app's assets for the native bridge (hle_android.c) ---- */
+
+static unsigned char* asset_read(const char* name, size_t* size) {
+    uint32_t index;
+    char path[1024];
+    snprintf(path, sizeof path, "assets/%s", name);
+    SnxZip* zip = find(path, &index);
+    if (!zip) return NULL;
+    char error[256];
+    return snx_zip_read(zip, index, size, error, sizeof error);
+}
+static bool asset_locate(const char* name, const char** apk, uint64_t* offset, uint64_t* size) {
+    uint32_t index;
+    char path[1024];
+    snprintf(path, sizeof path, "assets/%s", name);
+    SnxZip* zip = find(path, &index);
+    if (!zip || !snx_zip_stored_at(zip, index, offset)) return false;
+    *size = snx_zip_size(zip, index);
+    for (unsigned i = 0; i < app.zip_count; ++i)
+        if (app.zips[i] == zip) *apk = i ? app.install->splits[i - 1] : app.install->base;
+    return true;
+}
+/* the names directly in an asset folder ("" the top): each once, the caller's to free with the array */
+static char** asset_list(const char* dir, size_t* count) {
+    char prefix[1024];
+    snprintf(prefix, sizeof prefix, dir[0] ? "assets/%s/" : "assets/", dir);
+    size_t n = strlen(prefix), have = 0, capacity = 64;
+    char** names = malloc(capacity * sizeof *names);
+    for (unsigned z = 0; names && z < app.zip_count; ++z)
+        for (uint32_t i = 0; i < snx_zip_count(app.zips[z]); ++i) {
+            const char* m = snx_zip_name(app.zips[z], i);
+            if (strncmp(m, prefix, n)) continue;
+            const char* rest = m + n;
+            const char* slash = strchr(rest, '/');
+            size_t len = slash ? (size_t)(slash - rest) : strlen(rest);
+            if (!len) continue;
+            bool seen = false;
+            for (size_t k = 0; k < have && !seen; ++k) seen = strlen(names[k]) == len && !strncmp(names[k], rest, len);
+            if (seen) continue;
+            if (have == capacity) {
+                capacity *= 2;
+                char** grown = realloc(names, capacity * sizeof *names);
+                if (!grown) break;
+                names = grown;
+            }
+            names[have] = malloc(len + 1);
+            if (!names[have]) break;
+            memcpy(names[have], rest, len);
+            names[have++][len] = 0;
+        }
+    *count = have;
+    return names;
+}
+const AndroidAssets* android_app_assets(void) {
+    static const AndroidAssets assets = {asset_read, asset_locate, asset_list};
+    return &assets;
+}
+
 /* AppClassLoader.translate: "a.b.C" as the class file of La/b/C; */
 static jbyteArray JNICALL translate(JNIEnv* env, jclass unused, jstring name) {
     (void)unused;
