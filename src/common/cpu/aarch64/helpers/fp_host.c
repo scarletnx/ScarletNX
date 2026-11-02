@@ -374,6 +374,12 @@ typedef int64_t FpHostL4 __attribute__((vector_size(32)));
 
 #define FP_HOST_DNAN32 0x7FC00000u
 
+/* A 32-byte vector goes to a call in memory without AVX and in a register with it. These helpers are static, so all
+   their calls are built with the same flags; Clang 19 (FreeBSD's system Clang) warns at each all the same, which
+   -Werror makes an error */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wpsabi"
+
 static FpHostU4 fp_host_sel4(FpHostM4 m, FpHostU4 a, FpHostU4 b) { return (a & (FpHostU4)m) | (b & ~(FpHostU4)m); }
 static FpHostD4 fp_host_wide4(FpHostF4 f) { return __builtin_convertvector(f, FpHostD4); }
 static FpHostM4 fp_host_mask4(FpHostL4 m) { return __builtin_convertvector(m, FpHostM4); }
@@ -560,6 +566,7 @@ static FpHostU4 fp_host_minmax4(const SnxFpEnv* c, FpHostU4 a, FpHostU4 b, int m
     *flags |= f;
     return fp_host_sel4(nan, nans, r);
 }
+#pragma clang diagnostic pop
 #endif
 
 /* ---- the entry points (cpu.h): the host's result where the above takes the operation, else the soft-float's ---- */
