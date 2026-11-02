@@ -1808,6 +1808,11 @@ if(SNX_JEMALLOC AND NOT CMAKE_CROSSCOMPILING)
     add_test(NAME jemalloc COMMAND "${CMAKE_COMMAND}" "-DPROGRAM=$<TARGET_FILE:scarletnx>"
         "-DVERSION=${snx_jemalloc_version}" "-DCONF=${snx_jemalloc_conf}" "-DNM=${snx_jemalloc_nm}"
         "-DPRELOAD=${snx_jemalloc_preload}" -P "${CMAKE_CURRENT_SOURCE_DIR}/jemalloc.cmake")
+elseif(SNX_JEMALLOC AND ANDROID)
+    # Android's program, the driver's executable (src/nx), runs on a device only: what it exports is read here
+    list(JOIN SNX_JEMALLOC_EXPORTS "," snx_jemalloc_names)
+    add_test(NAME jemalloc COMMAND "${CMAKE_COMMAND}" "-DPROGRAM=$<TARGET_FILE:scarletnx-run>" "-DNM=${CMAKE_NM}"
+        "-DNAMES=${snx_jemalloc_names}" -P "${CMAKE_CURRENT_SOURCE_DIR}/jemalloc.cmake")
 endif()
 # the module contract's layout as recorded when SNX_ABI last rose (docs/ARCHITECTURE.md, Module ABI)
 add_executable(snx-test-module-contract module_contract.c)
