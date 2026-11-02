@@ -17,6 +17,15 @@ struct Encoder : Invocation {
     leuvec4* bc7_blocks;
 #include "nx/gpu/texture/bc7_encode.glsl"
 };
+// the same without modes 4 and 5, which bc7_glsl.cpp measures them against
+#undef SNX_BC7_MODES_4_5
+#define SNX_BC7_MODES_4_5 0
+struct EncoderWithout45 : Invocation {
+    uint width, height, blocks_x, blocks_y;
+    const leuint* rgba;
+    leuvec4* bc7_blocks;
+#include "nx/gpu/texture/bc7_encode.glsl"
+};
 } // namespace bc7_shader
 
 extern "C" uint32_t bc7_weight_cpu(uint32_t bits, uint32_t index) {
@@ -31,6 +40,7 @@ extern "C" int bc7_least_squares_cpu(const uint32_t texels[16], const uint8_t in
     e.sh_ns = subsets;
     e.sh_part = partition;
     e.sh_ib = bits;
+    e.sh_mask = 15u;
     e.fit_lo = 0u;
     e.fit_hi = 0u;
     for (uint32_t k = 0; k < 16; k++) {
@@ -50,19 +60,26 @@ extern "C" int bc7_least_squares_cpu(const uint32_t texels[16], const uint8_t in
 
 extern "C" uint32_t bc7_partition3_cpu(uint32_t partition) { return bc7_shader::Encoder().P3[partition]; }
 
-extern "C" void bc7_encode_cpu(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
+template <typename E> static void encode(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
     const uint32_t bx = (w + 3) / 4, by = (h + 3) / 4;
     std::vector<glsl::leuint> texels((size_t)w * h * depth);
     std::memcpy(texels.data(), rgba, texels.size() * 4);
     std::vector<glsl::leuvec4> blocks((size_t)bx * by * depth, glsl::uvec4(0xdeadbeefu));
-    glsl::dispatch<bc7_shader::Encoder>(glsl::uvec3((bx + 63) / 64, by, depth), glsl::uvec3(64u, 1u, 1u),
-                                        [&](bc7_shader::Encoder& e) {
-                                            e.width = w;
-                                            e.height = h;
-                                            e.blocks_x = bx;
-                                            e.blocks_y = by;
-                                            e.rgba = texels.data();
-                                            e.bc7_blocks = blocks.data();
-                                        });
+    glsl::dispatch<E>(glsl::uvec3((bx + 63) / 64, by, depth), glsl::uvec3(64u, 1u, 1u), [&](E& e) {
+        e.width = w;
+        e.height = h;
+        e.blocks_x = bx;
+        e.blocks_y = by;
+        e.rgba = texels.data();
+        e.bc7_blocks = blocks.data();
+    });
     std::memcpy(out, blocks.data(), blocks.size() * 16);
+}
+
+extern "C" void bc7_encode_cpu(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
+    encode<bc7_shader::Encoder>(rgba, w, h, depth, out);
+}
+
+extern "C" void bc7_encode_cpu_without_45(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
+    encode<bc7_shader::EncoderWithout45>(rgba, w, h, depth, out);
 }

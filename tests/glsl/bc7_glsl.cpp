@@ -2,9 +2,11 @@
 // Copyright 2026 the ScarletNX contributors
 // The BC7 encoder's body (src/nx/gpu/texture/bc7_encode.glsl) run on the CPU through tests/glsl/glsl.hpp, its blocks
 // decoded by the CPU reference (tests/support/bcn.c): its least squares fit gives a line's ends back, a block of one
-// colour comes back exact, so does a line of two endpoints the format holds, and a picture of gradients, hard edges,
-// noise and alpha comes back no worse than the PSNR each region is held to; sizes that are not a multiple of 4 and
-// strips of several slices encode as vk/astc.c dispatches them. No GPU is needed.
+// colour comes back exact, so does a line of two endpoints the format holds and a block each mode holds, blocks with a
+// channel apart come back closer than the encoder without modes 4 and 5 brings them, and a picture of gradients, hard
+// edges, noise and alpha comes back no worse than the PSNR each region is held to; sizes that are not a multiple of 4
+// and strips of several slices encode as vk/astc.c dispatches them. No GPU is needed.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -27,6 +29,14 @@ static std::vector<glsl::leuvec4> encode(const std::vector<glsl::leuint>& texels
     return blocks;
 }
 
+// the same by the encoder without modes 4 and 5
+static std::vector<glsl::leuvec4> encode_without_45(const std::vector<glsl::leuint>& texels, uint32_t w, uint32_t h) {
+    std::vector<glsl::leuvec4> blocks((size_t)((w + 3) / 4) * ((h + 3) / 4));
+    bc7_encode_cpu_without_45(reinterpret_cast<const uint8_t*>(texels.data()), w, h, 1,
+                              reinterpret_cast<uint8_t*>(blocks.data()));
+    return blocks;
+}
+
 // one slice's blocks decoded back to RGBA8 bytes, w x h
 static std::vector<uint8_t> decode(const glsl::leuvec4* blocks, uint32_t w, uint32_t h) {
     std::vector<uint8_t> out((size_t)w * h * 4);
@@ -36,13 +46,14 @@ static std::vector<uint8_t> decode(const glsl::leuvec4* blocks, uint32_t w, uint
 
 static uint8_t byte_of(const glsl::leuint& word, uint32_t c) { return uint8_t(uint32_t(word) >> (c * 8)); }
 
-// every block is one of the modes the encoder writes (1, 2, 3, 6 or 7), and how many of each, for the picture's line
+// every block has a mode (0 is the one the encoder never writes, three subsets of 4-bit ends), and how many of each,
+// for the picture's line
 static bool known_modes(const std::vector<glsl::leuvec4>& blocks, const char* what, uint32_t count[8]) {
     for (size_t i = 0; i < blocks.size(); i++) {
         const uint32_t first = uint32_t(blocks[i].x) & 0xFFu;
         uint32_t mode = 0;
         while (mode < 8 && !(first >> mode & 1)) mode++;
-        if (mode == 8 || mode == 0 || mode == 4 || mode == 5) {
+        if (mode == 8 || mode == 0) {
             std::fprintf(stderr, "FAIL %s: block %zu starts %08x, a mode the encoder does not write\n", what, i,
                          uint32_t(blocks[i].x));
             failures++;
@@ -328,19 +339,140 @@ static void picture_psnr() {
         for (uint32_t x = 0; x < 128; x++) texels[(size_t)y * 128 + x] = picture(x, y);
     const auto blocks = encode(texels, 128, 128, 1);
     const auto got = decode(blocks.data(), 128, 128);
+    const auto without = decode(encode_without_45(texels, 128, 128).data(), 128, 128);
     uint32_t modes[8] = {0};
     known_modes(blocks, "picture", modes);
-    std::printf("picture modes: 1 %u, 2 %u, 3 %u, 6 %u, 7 %u\n", modes[1], modes[2], modes[3], modes[6], modes[7]);
+    std::printf("picture modes: 1 %u, 2 %u, 3 %u, 4 %u, 5 %u, 6 %u, 7 %u\n", modes[1], modes[2], modes[3], modes[4],
+                modes[5], modes[6], modes[7]);
     static const struct {
         const char* name;
         uint32_t x0, y0;
         double floor;
-    } regions[4] = {{"gradients", 0, 0, 47.8}, {"edges", 64, 0, 41.3}, {"noise", 0, 64, 28.0}, {"alpha", 64, 64, 40.3}};
+    } regions[4] = {{"gradients", 0, 0, 50.8}, {"edges", 64, 0, 48.7}, {"noise", 0, 64, 28.7}, {"alpha", 64, 64, 47.6}};
     for (const auto& r : regions) {
         const double db = psnr(texels, got, 128, r.x0, r.y0, r.x0 + 64, r.y0 + 64);
-        std::printf("%s %s: %.2f dB, at least %.1f\n", db >= r.floor ? "PASS" : "FAIL", r.name, db, r.floor);
+        std::printf("%s %s: %.2f dB, at least %.1f (%.2f without modes 4 and 5)\n", db >= r.floor ? "PASS" : "FAIL",
+                    r.name, db, r.floor, psnr(texels, without, 128, r.x0, r.y0, r.x0 + 64, r.y0 + 64));
         if (db < r.floor) failures++;
     }
+}
+
+// what a mode 4 or 5 block decodes to: each channel of the texel from the ends e0 and e1 (RGBA, as widened) at the
+// colour's weight cw or alpha's aw, then alpha swapped with red, green or blue (rot 1 to 3)
+static uint32_t dual_texel(const uint32_t e0[4], const uint32_t e1[4], uint32_t cw, uint32_t aw, uint32_t rot) {
+    uint32_t v[4];
+    for (uint32_t c = 0; c < 4; c++) {
+        const uint32_t w = c < 3 ? cw : aw;
+        v[c] = ((64 - w) * e0[c] + w * e1[c] + 32) >> 6;
+    }
+    if (rot) {
+        const uint32_t t = v[3];
+        v[3] = v[rot - 1];
+        v[rot - 1] = t;
+    }
+    return rgba_of(v[0], v[1], v[2], v[3]);
+}
+
+// blocks that mode 5 (colour of 7 bits, alpha of 8, 2-bit weights each) or mode 4 (colour of 5 bits and alpha of 6,
+// one with 3-bit weights and the other 2-bit, either way round) holds exactly, alpha's weights apart from colour's, in
+// each rotation: they come back exact in the mode they were made for, which needs both modes' layout, the rotation and
+// index selection bits, and the swap that keeps each weight set's first texel under its top bit
+static void exact_dual() {
+    std::vector<glsl::leuint> texels(16 * 96);
+    uint32_t s = 0x1B873593u, want[96];
+    for (uint32_t b = 0; b < 96; b++) {
+        const uint32_t kind = b / 4 % 3, rot = b % 4; // mode 5, mode 4 with isb 0, mode 4 with isb 1
+        const uint32_t cb = kind ? 5 : 7, ab = kind ? 6 : 8, cbits = kind == 2 ? 3 : 2, abits = kind == 1 ? 3 : 2;
+        uint32_t e0[4], e1[4];
+        for (uint32_t c = 0; c < 4; c++) {
+            const uint32_t bits = c < 3 ? cb : ab, mask = (1u << bits) - 1;
+            const uint32_t v0 = xorshift(s) & mask, v1 = xorshift(s) & mask;
+            e0[c] = bits == 8 ? v0 : (v0 << (8 - bits) | v0 >> (2 * bits - 8));
+            e1[c] = bits == 8 ? v1 : (v1 << (8 - bits) | v1 >> (2 * bits - 8));
+        }
+        // every colour weight and every alpha weight in the block, neither a function of the other (all 16 pairs of
+        // 2-bit ones), each set's order changed by a random xor and the texels' by a random step
+        const uint32_t ctop = (1u << cbits) - 1, atop = (1u << abits) - 1, r = xorshift(s);
+        for (uint32_t t = 0; t < 16; t++) {
+            const uint32_t three = cbits == 3 || abits == 3, lo = t & (three ? 7 : 3), hi = (t >> (three ? 3 : 2)) + t;
+            const uint32_t ci = ((abits == 3 ? hi : lo) ^ r) & ctop, ai = ((abits == 3 ? lo : hi) ^ r >> 4) & atop;
+            const uint32_t at = (t * 5 + (r >> 8)) & 15;
+            texels[(size_t)(at / 4) * 384 + b * 4 + at % 4] =
+                dual_texel(e0, e1, bc7_weight_cpu(cbits, ci), bc7_weight_cpu(abits, ai), rot);
+        }
+        want[b] = (kind ? 4u : 5u) | rot << 4 | (kind == 2 ? 1u : 0u) << 6;
+    }
+    const auto blocks = encode(texels, 384, 4, 1);
+    const auto got = decode(blocks.data(), 384, 4);
+    known_modes(blocks, "exact dual", nullptr);
+    for (uint32_t b = 0; b < 96; b++) {
+        // the mode, then modes 4 and 5's rotation (2 bits) and mode 4's index selection bit
+        const uint32_t first = uint32_t(blocks[b].x);
+        uint32_t mode = 0;
+        while (mode < 8 && !(first >> mode & 1)) mode++;
+        const uint32_t dual = mode == 4 || mode == 5, rot = dual ? first >> (mode + 1) & 3 : 0;
+        const uint32_t isb = mode == 4 ? first >> 7 & 1 : 0;
+        if ((mode | rot << 4 | isb << 6) != want[b]) {
+            std::fprintf(stderr,
+                         "FAIL exact dual: block %u is mode %u rotation %u isb %u, not mode %u rotation %u isb %u\n", b,
+                         mode, rot, isb, want[b] & 15, want[b] >> 4 & 3, want[b] >> 6);
+            failures++;
+            return;
+        }
+    }
+    for (size_t i = 0; i < texels.size(); i++)
+        for (uint32_t c = 0; c < 4; c++)
+            if (got[i * 4 + c] != byte_of(texels[i], c)) {
+                std::fprintf(stderr,
+                             "FAIL exact dual: block %zu texel %zu channel %u is %u, not %u (block starts %08x)\n",
+                             (i % 384) / 4, (i / 384) * 4 + i % 4, c, got[i * 4 + c], byte_of(texels[i], c),
+                             uint32_t(blocks[(i % 384) / 4].x));
+                failures++;
+                return;
+            }
+    std::puts("PASS 96 blocks of modes 4 and 5, each rotation and index selection, come back exact");
+}
+
+// blocks of a colour gradient across with one channel apart (alpha, or red, green or blue in each rotation): a
+// gradient down or noise, as ASTC's second plane makes. Modes 4 and 5 fit that channel on its own: the worst channel
+// error over the blocks and their PSNR, against the same encoder without them, and held to what the encoder reached
+// when it was written (gate values a little over and under)
+static void channel_apart() {
+    const uint32_t w = 256, h = 16; // 64 x 4 blocks
+    std::vector<glsl::leuint> texels((size_t)w * h);
+    uint32_t s = 0x85EBCA6Bu;
+    for (uint32_t by = 0; by < h / 4; by++)
+        for (uint32_t bx = 0; bx < w / 4; bx++) {
+            const uint32_t c0 = xorshift(s), c1 = xorshift(s), apart = (bx + by) % 4, noise = bx / 4 % 2;
+            const uint32_t a0 = xorshift(s) & 0xFF, a1 = xorshift(s) & 0xFF;
+            for (uint32_t t = 0; t < 16; t++) {
+                const uint32_t x = t % 4, y = t / 4;
+                uint32_t v = 0;
+                for (uint32_t c = 0; c < 4; c++) {
+                    uint32_t ch = ((3 - x) * (c0 >> (c * 8) & 0xFF) + x * (c1 >> (c * 8) & 0xFF) + 1) / 3;
+                    if (c == apart) ch = noise ? xorshift(s) & 0xFF : ((3 - y) * a0 + y * a1 + 1) / 3;
+                    v |= ch << (c * 8);
+                }
+                texels[(size_t)(by * 4 + y) * w + bx * 4 + x] = v;
+            }
+        }
+    const auto blocks = encode(texels, w, h, 1);
+    const auto got = decode(blocks.data(), w, h);
+    const auto without = decode(encode_without_45(texels, w, h).data(), w, h);
+    uint32_t modes[8] = {0}, worst = 0, worst_without = 0;
+    known_modes(blocks, "channel apart", modes);
+    for (size_t i = 0; i < texels.size(); i++)
+        for (uint32_t c = 0; c < 4; c++) {
+            const int v = byte_of(texels[i], c);
+            worst = std::max(worst, uint32_t(std::abs(int(got[i * 4 + c]) - v)));
+            worst_without = std::max(worst_without, uint32_t(std::abs(int(without[i * 4 + c]) - v)));
+        }
+    const double db = psnr(texels, got, w, 0, 0, w, h), db_without = psnr(texels, without, w, 0, 0, w, h);
+    const bool pass = worst <= 24 && worst < worst_without && db >= 37.9 && db > db_without;
+    std::printf("%s a channel apart: worst channel %u away and %.2f dB in modes 4 and 5 (%u blocks of 256), %u and "
+                "%.2f dB without them; at most 24 and at least 37.9\n",
+                pass ? "PASS" : "FAIL", worst, db, modes[4] + modes[5], worst_without, db_without);
+    if (!pass) failures++;
 }
 
 // a block whose every alpha is 255 comes back with every alpha 255, and one whose every alpha is 0 with every alpha 0,
@@ -399,6 +531,8 @@ int main() {
     partitioned("two colours on each two subset partition, in mode 3", two_subsets, opaque2, 3);
     partitioned("three colours on each three subset partition, in mode 2", three_subsets, opaque3, 2);
     partitioned("two colours with alpha on each two subset partition, in mode 7", two_subsets, alpha2, 7);
+    exact_dual();
+    channel_apart();
     picture_psnr();
     alpha_kept();
     shapes();
