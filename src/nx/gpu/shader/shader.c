@@ -313,18 +313,20 @@ int shader_brx_targets(const u64* words, u32 index, u32 count, u32* targets, int
     return n ? n : -1;
 }
 
-/* The program's length in bytes (out_len) and a 64-bit FNV-1a hash of that many bytes. The scan follows every
-   branch target forward and ends at an EXIT that always runs once no target lies past it, at an unconditional
-   backward BRA past every target, or at an unconditional RET past every target when the program has calls. A jump
-   table that can't be read leaves targets unknown: then no instruction ends it, but an all-zero instruction word
-   ends the scan before it, as it does in every case. That word is no Maxwell instruction, so control never reaches
-   it, and the compiler fills bundles with NOPs, leaving zeros only as the padding after a program. NVN packs
-   programs into one pool, so the window goes on past that padding into the next program, which an unknown jump
-   table would otherwise take for its own code. */
+/* The program's length in bytes (out_len) and a 64-bit FNV-1a hash of that many bytes. The scan follows every branch
+   target forward and ends at an EXIT that always runs once no target lies past it, at an unconditional backward BRA
+   past every target, or at an unconditional RET past every target when the program has calls. A jump table that
+   can't be read leaves targets unknown: then only the compiler's own end of the program ends it, an unconditional
+   EXIT and right after it a BRA to itself, which the compiler puts once, after all of the program's code (one game's
+   program kept its jump table right after that end, which the scan read as instructions). Else an all-zero
+   instruction word ends the scan before it, as it does in every case. That word is no Maxwell instruction, so
+   control never reaches it, and the compiler fills bundles with NOPs, leaving zeros only as the padding after a
+   program. NVN packs programs into one pool, so the window goes on past that padding into the next program, which an
+   unknown jump table would otherwise take for its own code. */
 u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len) {
     const u64* words;
     u64* copy;
-    u32 n = max_bytes / 8, i, last = 10, furthest = 0, len;
+    u32 n = max_bytes / 8, i, last = 10, furthest = 0, len, exit_at = 0;
     int resolved = 1, calls = 0;
     u64 h = 1469598103934665603ull;
     if (n > SH_SCAN_WORDS) n = SH_SCAN_WORDS;
@@ -351,6 +353,10 @@ u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len) {
                 t = bra_target(w, i);
                 if (t < n && t > furthest) furthest = t;
                 if (op->id == O_BRA && resolved && flow_always(w) && t <= i && i >= furthest) goto done;
+                /* the compiler's end: a BRA to itself right after an unconditional EXIT, whatever the targets */
+                if (op->id == O_BRA && flow_always(w) && t == i && exit_at &&
+                    exit_at == (IDX_OK(i - 1) ? i - 1 : i - 2))
+                    goto done;
                 break;
             case O_BRX: {
                 u32 targets[64];
@@ -362,6 +368,7 @@ u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len) {
             }
             case O_EXIT:
                 if (flow_always(w) && i >= furthest && resolved) goto done;
+                if (flow_always(w)) exit_at = i;
                 break;
             case O_RET:
                 if (calls && resolved && flow_always(w) && i >= furthest) goto done;
