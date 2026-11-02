@@ -85,7 +85,7 @@ void options_room_set(const IniOpt* o, const char* v) {
     if (v[strcspn(v, " \t\r")]) fatal("settings: room=%.64s is not host or host:port", v);
 }
 
-/* MB: below 1 no cap but the heap region's own, which also caps a larger one */
+/* MiB: below 1 means no cap. The memory SVC checks the process's region after the NPDM selects its layout. */
 void options_heap_max_set(const IniOpt* o, const char* v) {
     char* end;
     double mb = strtod(v, &end);
@@ -94,7 +94,7 @@ void options_heap_max_set(const IniOpt* o, const char* v) {
     if (mb < 1)
         g_heap_max = 0;
     else
-        g_heap_max = mb * 1048576.0 >= (double)HEAP_SIZE ? HEAP_SIZE : (u64)(mb * 1048576.0);
+        g_heap_max = mb * 1048576.0 >= (double)~0ull ? ~0ull : (u64)(mb * 1048576.0);
 }
 
 /* key's row in a section, with whether it is one of the runtime's own; NULL for none */

@@ -7,9 +7,10 @@
 
 /* plat_ns() at guest time 0, moved on by each pause's length as it ends, and the guest time a pause stopped at plus
    1 (0 while none is in force). A resume stores start before it clears frozen, so a reader that sees no pause sees the
-   start that goes with it */
+   start that goes with it. switch2: the system tick runs at the Switch 2's 31.25 MHz, set once before any guest code */
 static struct {
     u64 start, frozen;
+    int switch2;
 } g_clock;
 
 void clock_start(void) { __atomic_store_n(&g_clock.start, plat_ns(), __ATOMIC_RELEASE); }
@@ -37,9 +38,12 @@ void clock_set(u64 ns) {
         __atomic_store_n(&g_clock.start, plat_ns() - ns, __ATOMIC_RELEASE);
 }
 
-/* 19.2 MHz is 192 ticks every 10 us: whole 10 us steps, then the rest, so neither part overflows or rounds the way
-   a double would after a few hours */
+void clock_switch2(void) { g_clock.switch2 = 1; }
+
+/* 19.2 MHz is 192 ticks every 10 us, 31.25 MHz 125 every 4 us: whole steps, then the rest, so neither part overflows
+   or rounds the way a double would after a few hours */
 u64 guest_ticks(void) {
     u64 ns = guest_ns();
+    if (g_clock.switch2) return ns / 4000u * 125u + ns % 4000u * 125u / 4000u;
     return ns / 10000u * 192u + ns % 10000u * 192u / 10000u;
 }

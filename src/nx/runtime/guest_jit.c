@@ -12,6 +12,7 @@
 #include "nx/runtime/rtapi.h"
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/hle/hook/hook.h"
+#include "nx/loader/codegen_view.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -174,7 +175,7 @@ static void jit_log(const SnxJitReport* r) {
              (unsigned long)r->instructions, (unsigned long)(r->bytes >> 10), r->seconds * 1000.0);
 }
 
-void jit_init(void) {
+void jit_init(SnxHw hw) {
     SnxJitConfig config;
     SnxJitStats stats;
     char error[512];
@@ -224,6 +225,7 @@ void jit_init(void) {
     /* with NVN taken, its handlers sit in dispatch slots, which only calls through the table see */
     config.hook_direct_calls = nvn_loader_active();
     config.direct_svc = 1; /* g_rtapi's svcs, as the AOT module calls them */
+    config.features = snx_hw_a64(hw); /* the console's CPU, as the AOT module was made for it */
     config.threads = (unsigned)g_settings.jit_threads;
     config.region_instructions = (size_t)g_settings.jit_region_size;
     config.live_budget = (size_t)g_settings.jit_live_budget;

@@ -131,6 +131,9 @@ u32 svc_unmap_physical(u64 addr, u64 size);
 u32 svc_get_info(u32 id0, u32 h, u64 id1, u64* out);
 u32 svc_set_mem_perm(u64 addr, u64 size, u32 perm);
 u32 svc_set_mem_attr(u64 addr, u64 size, u32 mask, u32 attr);
+/* Switch 2's svcSetGpuMemoryAttribute: svcSetMemoryAttribute for the GpuAccessible bit alone. NotImplemented for a
+   Switch program */
+u32 svc_set_gpu_mem_attr(u64 addr, u64 size, u32 mask, u32 attr);
 /* the new object comes back in *out, for svc.c to make its handle */
 u32 svc_tmem_new(u64 addr, u64 size, u32 perm, KTmem** out);
 u32 svc_codemem_new(u64 addr, u64 size, KObj** out);
@@ -175,6 +178,7 @@ typedef struct {
 typedef struct {
     u64 title_id;
     u64 sysres_size; /* the npdm's system resource size */
+    SnxHw hw;        /* the console the npdm says the program is built for (main.c's npdm_layout) */
     u64 next_tid;    /* the next thread's id, under g_klock */
     /* the crash report's ring of the last 64 SVCs: svc_ring_n counts every one recorded */
     SvcRec svc_ring[64];

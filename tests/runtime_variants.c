@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
     g_settings.jit_optimization[1] = 0;
     g_settings.jit_threads = 1;
 
-    jit_init();
+    jit_init(SNX_HW_SWITCH);
     CHECK(g_jit_started == 1);
     if (argc == 2 && !strcmp(argv[1], "--bench-no-pack")) {
         g_variants = NULL;

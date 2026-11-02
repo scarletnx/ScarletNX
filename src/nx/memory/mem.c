@@ -123,6 +123,17 @@ void mem_layout36(void) {
     g_layout.kern_end = AS36;
 }
 
+/* The Switch 2 prototype's heap region holds the larger application pool (svc_mem.c). Keep the alias region as it
+   is, and move the stack and kernel pages after the heap. A smaller host reservation still bounds every region. */
+void mem_layout_switch2(void) {
+    u64 kernel_size = g_layout.kern_end - g_layout.kern;
+    u64 room = g_layout.end - g_layout.heap - g_layout.stack_size - kernel_size;
+    g_layout.heap_size = room < 12 * GIB ? room : 12 * GIB;
+    g_layout.stack = g_layout.heap + g_layout.heap_size;
+    g_layout.kern = g_layout.stack + g_layout.stack_size;
+    g_layout.kern_end = g_layout.kern + kernel_size;
+}
+
 /* The 32-bit layouts (Eden's 32-bit entries in k_address_space_info.cpp): the code region from 2 MiB to 1 GiB, which
    is the stack region too, then from 1 GiB the 1 GiB alias region and the 1 GiB heap region, or a 2 GiB heap region
    without an alias region. The kernel's pages go in the last GiB, above both */

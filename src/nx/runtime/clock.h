@@ -13,6 +13,7 @@ u64 guest_ns(void);     /* nanoseconds since clock_start, less the time paused *
 void clock_pause(void);
 void clock_resume(void);
 void clock_set(u64 ns); /* a save state's load: guest time ns from here */
-u64 guest_ticks(void);  /* the same time as the console's 19.2 MHz system tick (svcGetSystemTick, CNTPCT_EL0) */
+u64 guest_ticks(void);  /* the same time as the console's system tick (svcGetSystemTick, CNTPCT_EL0) */
+void clock_switch2(void); /* the system tick at the Switch 2's 31.25 MHz, not the Switch's 19.2 MHz, from here */
 
 #endif

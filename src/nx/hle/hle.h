@@ -61,6 +61,8 @@ typedef struct {
 } Hle;
 
 extern Hle g_hle;
+/* the program's guest CPU cores, 0 to kernel_cores() - 1: a Switch program's 4, a Switch 2 program's 6 (NCORES) */
+static inline int kernel_cores(void) { return g_hle.kernel.hw == SNX_HW_SWITCH2 ? NCORES : 4; }
 /* The HLE's host side: what g_hle's members keep that a save state never holds, the locks and condition variables,
    one struct per file as g_hle's, beside it in .bss. hle_init sets them up */
 typedef struct {

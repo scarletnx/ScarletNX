@@ -23,11 +23,11 @@
    apart from the other cores' shares, and a thread's host thread runs on the share of the core it holds */
 
 /* the core a thread would run on, kept within the cores the runtime has */
-static int core_of(const KThread* t) { return t->core >= 0 && t->core < NCORES ? t->core : 0; }
+static int core_of(const KThread* t) { return t->core >= 0 && t->core < kernel_cores() ? t->core : 0; }
 /* the lowest core of t's mask that nobody holds, or -1 */
 static int core_idle_nl(const KThread* t) {
     int j;
-    for (j = 0; j < NCORES; j++)
+    for (j = 0; j < kernel_cores(); j++)
         if (((t->affinity >> j) & 1) && !g_hle.thread.core_owner[j]) return j;
     return -1;
 }
@@ -98,7 +98,7 @@ static void core_handoff_nl(int k) {
     for (w = kt_at(g_hle.thread.core_wait[k]); w; w = kt_at(w->core_next))
         if (!best || core_before(w, best)) best = w;
     if (!best)
-        for (j = 0; j < NCORES; j++) {
+        for (j = 0; j < kernel_cores(); j++) {
             if (j == k || !g_hle.thread.core_owner[j]) continue;
             for (w = kt_at(g_hle.thread.core_wait[j]); w; w = kt_at(w->core_next))
                 if (((w->affinity >> k) & 1) && w->prio >= kt_at(g_hle.thread.core_owner[j])->prio &&
@@ -108,7 +108,7 @@ static void core_handoff_nl(int k) {
                 }
         }
     if (!best) { /* a holder with a waiter elsewhere may move here */
-        for (j = 0; j < NCORES; j++)
+        for (j = 0; j < kernel_cores(); j++)
             if (j != k && g_hle.thread.core_wait[j]) core_flag_nl(j);
         return;
     }
@@ -237,8 +237,8 @@ void core_poll(KThread* t) {
    moved away from (HighestCoreMigrationAllowedPriority). NULL for none, else its core in *from */
 static KThread* core_suggested_nl(const KThread* t, int k, int* from) {
     KThread *best = NULL, *w;
-    int j;
-    for (j = 0; j < NCORES; j++) {
+    int j, cores = kernel_cores();
+    for (j = 0; j < cores; j++) {
         if (j == k || (g_hle.thread.core_owner[j] && kt_at(g_hle.thread.core_owner[j])->prio < 2)) continue;
         for (w = kt_at(g_hle.thread.core_wait[j]); w; w = kt_at(w->core_next))
             if (((w->affinity >> k) & 1) && w->prio <= t->prio && (!best || core_before(w, best))) {
@@ -265,8 +265,9 @@ void core_yield(KThread* t, int migrate) {
     }
     /* nobody waits for any core: nothing to hand over or take in, so no lock. One that lines up meanwhile has
        flagged t if it would preempt it, and otherwise comes after this yield, as if it had arrived a moment later */
-    for (k = 0; k < NCORES && !__atomic_load_n(&g_hle.thread.core_wait[k], __ATOMIC_RELAXED); k++) {}
-    if (k == NCORES) return;
+    int cores = kernel_cores();
+    for (k = 0; k < cores && !__atomic_load_n(&g_hle.thread.core_wait[k], __ATOMIC_RELAXED); k++) {}
+    if (k == cores) return;
     pm_lock(&g_host.thread.core_lk);
     k = t->on_core;
     if (k >= 0 && g_hle.thread.core_wait[k]) {
@@ -644,7 +645,7 @@ int kernel_hold(int timeout_ms) {
     __atomic_store_n(&g_hle.thread.hold, 1, __ATOMIC_SEQ_CST);
     /* under the cores' lock, so that no core_flag_nl that read hold before it was set clears a flag after this */
     pm_lock(&g_host.thread.core_lk);
-    for (k = 0; k < NCORES; k++) core_flag_nl(k);
+    for (k = 0; k < kernel_cores(); k++) core_flag_nl(k);
     if (!g_settings.emulated_cores) { /* no thread holds a core: each one running game code is asked itself */
         pm_lock(&g_host.kernel.pool_lk);
         FOR_LIVE_THREADS(t) __atomic_store_n(&t->cpu.poll, 1u, __ATOMIC_RELAXED);
@@ -697,7 +698,7 @@ void kernel_run_main(u64 entry, u64 stack_size, int prio, int core) {
     u32 h;
     KThread* t;
     stack_size = (stack_size + 0xFFF) & ~0xFFFull;
-    if (core < 0 || core >= NCORES || !((g_hle.svcmem.core_mask >> core) & 1))
+    if (core < 0 || core >= kernel_cores() || !((g_hle.svcmem.core_mask >> core) & 1))
         fatal("The game asks for CPU core %d, which its own settings don't allow (cores %llx)", core,
               (unsigned long long)g_hle.svcmem.core_mask);
     if (g_code_memory + g_hle.kernel.sysres_size + stack_size > mem_total())

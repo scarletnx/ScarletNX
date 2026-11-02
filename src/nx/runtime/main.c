@@ -9,6 +9,7 @@
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/mods.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/gpu/nvn/nvn_state.h"
@@ -455,19 +456,42 @@ static u32 rd32le(const u8* p) { return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] <
    its blocks in and the loader places the code at. The npdm is read through the fs, which fs_init has just brought
    up. A 64-bit program of type 1 is the console's pre-2.0 36-bit one, and mem_layout36's comment says what the
    layout has to guarantee for it: what its SDK marshals into an IPC buffer descriptor drops every address bit above
-   36, and the 39-bit layout's stack and heap, above 64 GiB, came back as addresses with no memory behind them */
+   36, and the 39-bit layout's stack and heap, above 64 GiB, came back as addresses with no memory behind them.
+   And the console the program is built for (hw.h), before the JIT and the kernel start: the recompile decided the
+   same from the same npdm, and its made line says so, so a module made for the other console stops here */
 static void npdm_layout(void) {
     u64 size = 0;
     unsigned char* d = fs_read_file("exefs/main.npdm", &size);
-    if (!d) return;
-    if (size >= 0x80 && size <= 0x4000 && !memcmp(d, "META", 4)) {
+    char base[sizeof g_exedir + sizeof g_exename];
+    SnxGameMade made;
+    if (d && size >= 0x80 && size <= 0x4000 && !memcmp(d, "META", 4)) {
         unsigned flags = d[0x0c];
         if ((flags & 1) && ((flags >> 1) & 7) == 1) {
             mem_layout36();
             LOG("npdm: a 36-bit address space: 64 GiB, the code region at a fixed 128 MiB\n");
         }
+        g_hle.kernel.hw = snx_npdm_hw(d, (size_t)size);
+        if (g_hle.kernel.hw == SNX_HW_SWITCH2 && (flags & 1) && ((flags >> 1) & 7) == 3)
+            mem_layout_switch2();
+        /* the program ID's top byte, 01 for a Switch title and 04 for a Switch 2 one: a second sign, logged when it
+           disagrees with the ACID's */
+        u32 aci = rd32le(d + 0x70);
+        if (aci <= size - 0x18 && !memcmp(d + aci, "ACI0", 4) &&
+            (d[aci + 0x17] == 0x04) != (g_hle.kernel.hw == SNX_HW_SWITCH2))
+            WARN("npdm: its program ID %02x%02x... and its ACID name different consoles; the ACID's applies\n",
+                 d[aci + 0x17], d[aci + 0x16]);
     }
     free(d);
+    snprintf(base, sizeof base, "%s%s", g_exedir, g_exename);
+    snx_game_made_read(base, &made); /* switch2 0 without a made line: no module from before it is a Switch 2 one */
+    if (made.switch2 != (g_hle.kernel.hw == SNX_HW_SWITCH2))
+        fatal("The game was recompiled for the %s, but its files are a %s game. Recompile it.",
+              made.switch2 ? "Switch 2" : "Switch", g_hle.kernel.hw == SNX_HW_SWITCH2 ? "Switch 2" : "Switch");
+    if (g_hle.kernel.hw == SNX_HW_SWITCH2) {
+        clock_switch2();
+        LOG("npdm: a Switch 2 program: its CPU's instructions, %d cores, a 31.25 MHz system tick, a %llu MiB heap "
+            "region\n", kernel_cores(), (unsigned long long)(HEAP_SIZE >> 20));
+    }
 }
 
 /* exefs/main.npdm: the system resource size (newer SDKs set up their memory allocator only with one) and the cores
@@ -496,7 +520,7 @@ static void read_npdm(void) {
             highest = cap >> 10 & 63;
             min_core = cap >> 16 & 255;
             max_core = cap >> 24 & 255;
-            if (highest > lowest || min_core > max_core || max_core >= NCORES) {
+            if (highest > lowest || min_core > max_core || max_core >= (u32)kernel_cores()) {
                 WARN("npdm: its thread capability %08x is not one the kernel takes, the defaults apply\n", cap);
                 break;
             }
@@ -981,7 +1005,7 @@ int snx_main(int argc, char** argv) {
     nvn_loader_init();
     /* after NVN, which says whether calls must go through the slots it takes. The JIT compiles A64: a 32-bit
        game's blocks are arm.c's, and its hints are A32 block keys the JIT must not warm-compile */
-    if (!g_arm_mod) jit_init();
+    if (!g_arm_mod) jit_init(g_hle.kernel.hw);
     read_npdm();
     svc_core_init();
     {

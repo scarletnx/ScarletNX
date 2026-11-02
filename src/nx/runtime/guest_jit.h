@@ -6,11 +6,13 @@
 #ifndef SNX_RUNTIME_GUEST_JIT_H
 #define SNX_RUNTIME_GUEST_JIT_H
 #include "common/cpu/aarch64/cpu.h"
+#include "nx/loader/hw.h"
 
 /* once the game's executables are loaded, the dispatch table built and the variant table stored, before any guest
-   thread runs: builds the images the hash reads, the dense variant leader index, starts the JIT and registers the
-   invalidation. A module without a table is normal: the JIT handles every miss and writes its cache */
-void jit_init(void);
+   thread runs: builds the images the hash reads, the dense variant leader index, starts the JIT for the CPU of hw (as
+   the AOT module was made for it) and registers the invalidation. A module without a table is normal: the JIT handles
+   every miss and writes its cache */
+void jit_init(SnxHw hw);
 /* the AOT function for pc: the dispatch table inside the code range, else the variant table; when the pack has no
    matching variant, the JIT's code or wait for it */
 GuestFn jit_resolve(u64 pc);

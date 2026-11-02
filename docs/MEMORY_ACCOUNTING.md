@@ -38,14 +38,20 @@ implementation in ScarletNX, not a port of Atmosphere's GPL-2.0-only code.
   is not the same quantity as the slab usage returned by GetInfo 17.
 - Use application pool sizes of 3285, 4916 and 6964 MiB for the 4, 6 and 8 GiB
   layouts. The latter two are 417 MiB smaller than the previous extended settings.
+- Switch 2 uses a provisional 9809 MiB application pool from Eden's 12 GB layout, independent of `memory_gb`.
+  Its 39-bit heap region grows to 12 GiB where the host reservation permits, with stack and kernel pages after it.
+  The alias region is unchanged. This is a startup-compatible emulator policy, not a verified console budget.
+  [SWITCH2.md](SWITCH2.md#kernel-and-memory) gives the SDK's heap calculation.
 - With `memory_fit=1` (iOS's default), the pool the game is told is at most what
   the host can still give the process as the game starts, plus what the process
   holds, less what the rest takes (the runtime then and 256 MiB for the graphics,
   700 MiB at least), never under 1 GiB (`mem_fit_budget`). Every GetInfo above and
   the heap's limit follow it.
-- Validate heap requests in 2 MiB steps and reject sizes at or above 8 GiB with
-  InvalidSize. Keep the heap-region/process maximum and optional `heap_max_mb`
-  checks separate from resource-limit failures.
+- Validate heap requests in 2 MiB steps. Switch 1 rejects sizes at or above 8 GiB with InvalidSize.
+  Switch 2 uses a fixed 12 GiB exclusive bound, so requests above 8 GiB can succeed.
+  The selected region and process maximum impose OutOfMemory, separately from resource-limit failures
+  (LimitReached). The optional `heap_max_mb` cap is converted to bytes before the NPDM selects the memory
+  layout and is not clamped to the initial Switch 1 region.
 - Cap GetInfo 6/21 at the process's heap region, as Mesosphere's
   `m_max_process_memory` does: a 32-bit process sees 2 GiB without an alias
   region and 1 GiB with one, however large the application pool is. A 64-bit
@@ -117,6 +123,10 @@ last 2 MiB of the shared heap/physical budget. It also switches to both 32-bit
 layouts and checks that GetInfo 6/21 name the heap region (2 GiB without an alias
 region, 1 GiB with one), that the application pool's total is still refused, and
 that a request just inside the region succeeds.
+
+The Switch 2 cases accept a 9750 MiB heap, refuse growth beyond the remaining pool without changing the old heap,
+and check region boundaries, `heap_max_mb`, private system resources and `memory_fit`. Switch 1's 8 GiB
+InvalidSize boundary remains covered. The smaller-host layout checks include 24 GiB and 16 GiB reservations.
 
 Run it through the normal CMake/CTest configuration on a Unix host, or without the
 runtime's third-party dependencies from the repository root:

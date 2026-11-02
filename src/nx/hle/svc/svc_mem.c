@@ -85,9 +85,11 @@ static int user_writable(u64 a, u64 size) {
 }
 
 /* ============================================================ accounting */
-/* The application pool for each memory_gb (Mesosphere's KSystemControl application pool sizes for the 4, 6 and 8 GiB
-   boards), see docs/MEMORY_ACCOUNTING.md */
+/* The Switch 1 application pools follow Mesosphere's 4, 6 and 8 GiB boards (docs/MEMORY_ACCOUNTING.md).
+   Switch 2 provisionally uses Eden's 12 GB pool, 9809 MiB. This is an emulator policy, not a verified console
+   budget. See docs/SWITCH2.md for the SDK's heap calculation and the remaining uncertainty. */
 static u64 pool(void) {
+    if (g_hle.kernel.hw == SNX_HW_SWITCH2) return 9809 * MIB;
     if (g_settings.memory_gb >= 8) return 6964 * MIB;
     if (g_settings.memory_gb >= 6) return 4916 * MIB;
     return 3285 * MIB;
@@ -151,13 +153,13 @@ void mem_report(char* out, int n) {
 }
 
 /* ============================================================ the heap and physical memory */
-/* svcSetHeapSize: 2 MiB steps below 8 GiB (InvalidSize), within what the heap region leaves beside the process's own
-   memory and within heap_max_mb (OutOfMemory), then the resource limit (LimitReached). Each request is logged: a
-   refused one is often why a game stops at boot */
+/* svcSetHeapSize: 2 MiB steps below 8 GiB on Switch 1 or 12 GiB on Switch 2 (InvalidSize). The process region and
+   heap_max_mb impose OutOfMemory, while the shared resource budget imposes LimitReached. Each request is logged
+   because a refused startup heap often precedes an SDK abort or null access. */
 u32 svc_set_heap_size(u64 size) {
     u64 proc = g_code_memory + g_main_stack_size;
     u32 r;
-    if ((size & 0x1FFFFF) || size >= (8ull << 30))
+    if ((size & 0x1FFFFF) || size >= (g_hle.kernel.hw == SNX_HW_SWITCH2 ? (12ull << 30) : (8ull << 30)))
         r = R_BADSIZE;
     else if (proc > HEAP_SIZE || size > HEAP_SIZE - proc || (g_heap_max && size > g_heap_max))
         r = R_OUTOFMEM;
@@ -203,6 +205,9 @@ u32 svc_set_mem_perm(u64 addr, u64 size, u32 perm) {
     pm_unlock(&g_host.svcmem.map_lk);
     return r;
 }
+/* GPU accessibility does not prevent the native SDK from changing CPU cache attributes. Keep the profile check:
+   Switch 1 must still reject this attribute if it reaches a memory block through an invalid state. */
+static u32 attr_preserved(void) { return MA_SET_MASK | (g_hle.kernel.hw == SNX_HW_SWITCH2 ? MA_GPU_ACCESSIBLE : 0); }
 /* the first block of [addr, addr + size) that svcSetMemoryAttribute can't change: 1 and b when there is one, 0 when
    the whole range allows the change */
 static int attr_blocked(u64 addr, u64 size, MemBlock* b) {
@@ -210,7 +215,7 @@ static int attr_blocked(u64 addr, u64 size, MemBlock* b) {
     while (addr < end) {
         mem_query(addr, b);
         if (b->addr > addr || b->addr + b->size <= addr) return 1;
-        if (!(b->state & MSF_CAN_CHANGE_ATTR) || (b->attr & ~MA_SET_MASK)) return 1;
+        if (!(b->state & MSF_CAN_CHANGE_ATTR) || (b->attr & ~attr_preserved())) return 1;
         addr = b->addr + b->size;
     }
     return 0;
@@ -332,11 +337,11 @@ int svc_mem_range_locked(u64 addr, u64 size) {
    PermissionLocked; the memory's state must allow it and it must be neither locked nor shared with a device */
 static u32 set_mem_attr_locked(u64 addr, u64 size, u32 mask, u32 attr) {
     MemBlock b;
-    if (!in_region(addr, size, 0, AS_END) || !range_ok(addr, size, 0, MSF_CAN_CHANGE_ATTR, ANY, ~MA_SET_MASK, 0)) {
+    if (!in_region(addr, size, 0, AS_END) || !range_ok(addr, size, 0, MSF_CAN_CHANGE_ATTR, ANY, ~attr_preserved(), 0)) {
         /* a lock with no owner is this runtime's alone: the console would never have it, so release it and try once
            more before refusing as the console would */
         if (in_region(addr, size, 0, AS_END) && release_unowned(addr, size) &&
-            range_ok(addr, size, 0, MSF_CAN_CHANGE_ATTR, ANY, ~MA_SET_MASK, 0)) {
+            range_ok(addr, size, 0, MSF_CAN_CHANGE_ATTR, ANY, ~attr_preserved(), 0)) {
             mem_set_attr(addr, size, mask, attr);
             R_SUCCEED();
         }
@@ -358,6 +363,19 @@ u32 svc_set_mem_attr(u64 addr, u64 size, u32 mask, u32 attr) {
     u32 r;
     R_TRY(check_range(addr, size));
     R_UNLESS((mask | attr) == mask && (mask | attr | MA_SET_MASK) == MA_SET_MASK, R_BADCOMBO);
+    pm_lock(&g_host.svcmem.map_lk);
+    r = set_mem_attr_locked(addr, size, mask, attr);
+    pm_unlock(&g_host.svcmem.map_lk);
+    return r;
+}
+/* nn::gpu::sdk sets GpuAccessible before it registers memory with the GPU session (worker 101) and clears it when it
+   destroys that memory. The checks are svcSetMemoryAttribute's, for that bit alone, as eden-ns2 and Eglantine make them.
+   A block may hold the bit already: clearing it is the point */
+u32 svc_set_gpu_mem_attr(u64 addr, u64 size, u32 mask, u32 attr) {
+    u32 r;
+    R_UNLESS(g_hle.kernel.hw == SNX_HW_SWITCH2, R_NOTIMPL);
+    R_TRY(check_range(addr, size));
+    R_UNLESS((mask | attr) == mask && !((mask | attr) & ~(u32)MA_GPU_ACCESSIBLE), R_BADCOMBO);
     pm_lock(&g_host.svcmem.map_lk);
     r = set_mem_attr_locked(addr, size, mask, attr);
     pm_unlock(&g_host.svcmem.map_lk);
@@ -843,26 +861,41 @@ static u32 process_info(u32 id, u64* out) {
             R_SUCCEED();
         }
         case 28: *out = 0; R_SUCCEED(); /* AliasRegionExtraSize: no extra alias region */
+        /* the Switch 2 kernel's (svc_get_info asks only for a Switch 2 program). The SDK's nnosInitialize reads the
+           remote region (29, 30) for an allocator of 64 KiB granules, nn::os::GetRemoteMemoryUsage the memory used
+           and the total of it (31, 32), and nn::ro and the address space manager the mapping alignment (33) as a mask.
+           As in eden-ns2's svc_info.cpp: no remote region, so no remote memory, and mappings aligned to a 4 KiB page */
+        case 29: case 30: case 31: case 32: *out = 0; R_SUCCEED();
+        case 33: *out = 0x1000; R_SUCCEED();
         default: R_THROW(R_BADENUM);
     }
+}
+/* an id nobody answers: InvalidEnumValue, as the console's kernel does, and a line saying which */
+static u32 unknown_info(u32 id0, u64 id1) {
+    WARN_LIMIT(16, "svcGetInfo %x (sub-id %llx): unknown, InvalidEnumValue\n", id0, (unsigned long long)id1);
+    R_THROW(R_BADENUM);
+}
+/* a process id: subtype 0 (InvalidEnumValue otherwise) and the process's handle (InvalidHandle otherwise) */
+static u32 process_get(u32 id0, u32 h, u64 id1, u64* out) {
+    R_UNLESS(!id1, R_BADENUM);
+    if (h != H_CUR_PROC) {
+        KObj* p = h_get_ref(h, KO_PROCESS);
+        R_UNLESS(p, R_BADHANDLE);
+        kobj_unref(p);
+    }
+    return process_info(id0, out);
 }
 /* The rest of svcGetInfo; ResourceLimit (9), which makes a handle, is svc.c's */
 u32 svc_get_info(u32 id0, u32 h, u64 id1, u64* out) {
     switch (id0) {
+        case 29: case 30: case 31: case 32: case 33: /* the Switch 2 kernel's: the Switch's has none of them */
+            if (g_hle.kernel.hw != SNX_HW_SWITCH2) return unknown_info(id0, id1);
+            return process_get(id0, h, id1, out);
         case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 12: case 13: case 14: case 15: case 16:
-        case 17: case 18: case 20: case 21: case 22: case 23: case 24: case 28: {
-            KObj* p;
-            R_UNLESS(!id1, R_BADENUM);
-            if (h != H_CUR_PROC) {
-                p = h_get_ref(h, KO_PROCESS);
-                R_UNLESS(p, R_BADHANDLE);
-                kobj_unref(p);
-            }
-            return process_info(id0, out);
-        }
+        case 17: case 18: case 20: case 21: case 22: case 23: case 24: case 28: return process_get(id0, h, id1, out);
         case 8: *out = 0; R_SUCCEED(); /* DebuggerAttached */
         case 10:                    /* IdleTickCount: a core, or -1 for all of them */
-            if (id1 != ~0ull && id1 >= NCORES) R_THROW(R_BADCOMBO);
+            if (id1 != ~0ull && id1 >= (u64)kernel_cores()) R_THROW(R_BADCOMBO);
             R_UNLESS(!h, R_BADHANDLE);
             *out = 0;
             R_SUCCEED();
@@ -879,7 +912,7 @@ u32 svc_get_info(u32 id0, u32 h, u64 id1, u64* out) {
         case 25:
         case 0xF0000002: { /* ThreadTickCount (0xF0000002 before 13.0.0): -1 for the thread's total, or a core's */
             KObj* t;
-            if (id1 != ~0ull && id1 >= NCORES) R_THROW(R_BADCOMBO);
+            if (id1 != ~0ull && id1 >= (u64)kernel_cores()) R_THROW(R_BADCOMBO);
             t = h_get_ref(h, KO_THREAD);
             R_UNLESS(t, R_BADHANDLE);
             kobj_unref(t);
@@ -887,8 +920,6 @@ u32 svc_get_info(u32 id0, u32 h, u64 id1, u64* out) {
             *out = guest_ticks();
             R_SUCCEED();
         }
-        default:
-            WARN_LIMIT(16, "svcGetInfo %x (sub-id %llx): unknown, InvalidEnumValue\n", id0, (unsigned long long)id1);
-            R_THROW(R_BADENUM);
+        default: return unknown_info(id0, id1);
     }
 }

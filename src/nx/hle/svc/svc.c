@@ -82,8 +82,8 @@ static void pause_settle_nl(KThread* cur, KThread* t) {
 static int core_allowed(const KThread* t) {
     u64 mask = __atomic_load_n(&t->affinity, __ATOMIC_RELAXED);
     int ideal = __atomic_load_n(&t->ideal_core, __ATOMIC_RELAXED), k;
-    if (ideal >= 0 && ideal < NCORES && ((mask >> ideal) & 1)) return ideal;
-    for (k = NCORES - 1; k >= 0; k--)
+    if (ideal >= 0 && ideal < kernel_cores() && ((mask >> ideal) & 1)) return ideal;
+    for (k = kernel_cores() - 1; k >= 0; k--)
         if ((mask >> k) & 1) return k;
     return t->core;
 }
@@ -101,7 +101,8 @@ static void svc_enter(KThread* t) {
    its SVC or the thread sees the pause. A paused thread holds no core, so nobody waits for it */
 static void svc_leave(KThread* t) {
     g_host.thread.committed[kt_ix(t) - 1] = 0; /* its request, if it served one, is answered */
-    if (t->core < 0 || t->core >= NCORES || !((__atomic_load_n(&t->affinity, __ATOMIC_RELAXED) >> t->core) & 1)) {
+    if (t->core < 0 || t->core >= kernel_cores() ||
+        !((__atomic_load_n(&t->affinity, __ATOMIC_RELAXED) >> t->core) & 1)) {
         core_leave(t);
         t->core = core_allowed(t);
     }
@@ -148,7 +149,7 @@ void svc_service_retry(KThread* t) {
 static u32 create_thread(u64 entry, u64 arg, u64 stack_top, i32 prio, i32 core, u32* out) {
     KThread* t;
     if (core == -2) core = g_hle.thread.default_core;
-    R_UNLESS(core >= 0 && core < NCORES && ((g_hle.svcmem.core_mask >> core) & 1), R_BADCORE);
+    R_UNLESS(core >= 0 && core < kernel_cores() && ((g_hle.svcmem.core_mask >> core) & 1), R_BADCORE);
     R_UNLESS(valid_prio(prio), R_BADPRIO);
     t = kthread_create(entry, arg, stack_top, prio, core);
     return give_handle(&t->o, out);
@@ -211,7 +212,7 @@ static u32 set_thread_core_mask(KThread* cur, u32 h, i32 core, u64 mask) {
     } else {
         R_UNLESS((mask | g_hle.svcmem.core_mask) == g_hle.svcmem.core_mask, R_BADCORE);
         R_UNLESS(mask, R_BADCOMBO);
-        if (core >= 0 && core < NCORES) {
+        if (core >= 0 && core < kernel_cores()) {
             if (!((mask >> core) & 1)) R_THROW(R_BADCOMBO);
         } else if (core != -3 && core != -1)
             R_THROW(R_BADCORE);
@@ -366,16 +367,14 @@ static u32 cancel_sync(u32 h) {
 /* ============================================================ events */
 static u32 create_event(u32* wh, u32* rh) {
     KEvent* r = kevent_new("event");
-    KWEvent* w;
-    pm_lock(&g_host.kernel.pool_lk);
-    w = (KWEvent*)POOL_TAKE(g_hle.svc.wevents, g_hle.svc.wevent_next, "writable events");
-    w->o.type = KO_WEVENT;
-    pm_unlock(&g_host.kernel.pool_lk);
-    kobj_set_name(&w->o, "writable event");
-    w->r = kobj_id(&r->o);
     kobj_ref(&r->o);
-    R_TRY(give_handle(&w->o, wh));
+    *wh = kevent_write_handle(r);
+    if (!*wh) {
+        kobj_unref(&r->o);
+        R_THROW(R_OUTOFHANDLES);
+    }
     *rh = h_new(&r->o);
+    kobj_unref(&r->o);
     if (!*rh) {
         h_close(*wh);
         R_THROW(R_OUTOFHANDLES);
@@ -601,6 +600,9 @@ static u32 svc_SetHeapSize(u64* out_address, u64 size) {
 static u32 svc_SetMemoryPermission(u64 address, u64 size, u32 perm) { return svc_set_mem_perm(address, size, perm); }
 static u32 svc_SetMemoryAttribute(u64 address, u64 size, u32 mask, u32 attr) {
     return svc_set_mem_attr(address, size, mask, attr);
+}
+static u32 svc_SetGpuMemoryAttribute(u64 address, u64 size, u32 mask, u32 attr) {
+    return svc_set_gpu_mem_attr(address, size, mask, attr);
 }
 static u32 svc_MapMemory(u64 dst_address, u64 src_address, u64 size) {
     return svc_map_memory(dst_address, src_address, size);

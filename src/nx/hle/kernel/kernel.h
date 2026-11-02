@@ -10,7 +10,7 @@
 
 /* the one application process's id, which IPC PID descriptors carry too */
 #define K_PROCESS_ID 0x51ull
-#define NCORES       4 /* guest CPU cores */
+#define NCORES       6 /* the most guest CPU cores, a Switch 2 program's: what the per-core arrays hold */
 #define THREAD_MAX   96 /* the application's ThreadCountMax: creating one more answers R_LIMIT */
 #define H_MAX        1024 /* handles: the most the console's handle table holds */
 
@@ -153,6 +153,8 @@ int svc_mem_range_locked(u64 addr, u64 size);
 KObj* h_get_ref(u32 h, int t);
 
 KEvent* kevent_new(const char* name);
+/* A new writable-end handle for an existing readable event, or 0 when the handle table is full. */
+u32 kevent_write_handle(KEvent* event);
 void kevent_signal(KEvent* e);
 void kevent_clear(KEvent* e);
 

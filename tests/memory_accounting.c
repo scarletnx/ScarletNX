@@ -224,6 +224,44 @@ static void test_heap32(void) {
     CHECK(svc_set_heap_size(0) == 0);
     g_layout = saved;
 }
+/* A larger application pool must not be clipped to the Switch 1 heap region. A synthetic SDK-style reserve
+   leaves a 3200 MiB heap, while the same calculation cannot fit in the Switch 1 pool. */
+static void test_heap_switch2(void) {
+    MemLayout saved = g_layout;
+    base_process();
+    g_hle.kernel.hw = SNX_HW_SWITCH2;
+    mem_layout_switch2();
+    g_code_memory = 128 * MIB;
+    CHECK(info(6) == 9809 * MIB && info(21) == 9809 * MIB);
+    CHECK(g_layout.heap + g_layout.heap_size <= g_layout.stack);
+    CHECK(g_layout.stack + g_layout.stack_size <= g_layout.kern && g_layout.kern_end <= g_layout.end);
+    u64 heap = ((info(21) - info(22)) & ~(2 * MIB - 1)) - 0x195000000ull;
+    CHECK(heap == 3200 * MIB);
+    CHECK(svc_set_heap_size(heap) == 0 && g_heap_size == heap);
+    CHECK(info(7) == (128 + 1 + 3200) * MIB);
+    CHECK(svc_set_heap_size(0) == 0);
+    g_code_memory = 57 * MIB;
+    CHECK(svc_set_heap_size(9750 * MIB) == 0 && g_heap_size == 9750 * MIB);
+    CHECK(svc_set_heap_size(9752 * MIB) == R_LIMIT && g_heap_size == 9750 * MIB);
+    CHECK(svc_set_heap_size(0) == 0);
+    CHECK(svc_set_heap_size(HEAP_SIZE) == R_BADSIZE);
+    CHECK(svc_set_heap_size(HEAP_SIZE + 2 * MIB) == R_BADSIZE);
+    CHECK(svc_set_heap_size(HEAP_SIZE - 2 * MIB) == R_OUTOFMEM);
+    CHECK(svc_set_heap_size(9750 * MIB + 1) == R_BADSIZE);
+    g_heap_max = 9000 * MIB;
+    CHECK(svc_set_heap_size(9750 * MIB) == R_OUTOFMEM);
+    g_heap_max = 0;
+    g_hle.kernel.sysres_size = 64 * MIB;
+    CHECK(info(21) == (9809 - 64) * MIB);
+    CHECK(svc_set_heap_size(9750 * MIB) == R_LIMIT);
+    g_hle.kernel.sysres_size = 0;
+    mem_fit(1, 9000 * MIB, 1000 * MIB);
+    CHECK(svc_set_heap_size(9750 * MIB) == R_LIMIT);
+    mem_fit(0, 0, 0);
+    g_hle.kernel.hw = SNX_HW_SWITCH;
+    g_layout = saved;
+    CHECK(info(6) == 3285 * MIB);
+}
 /* memory_fit: the game is told the budget the measure leaves, at most Memory (GB)'s, and the console's amount when
    the system told nothing */
 static void test_fit(void) {
@@ -411,6 +449,26 @@ static void test_map_memory(void) {
     CHECK(svc_set_mem_attr(src, 0x1000, 1, 1) == R_BADCOMBO);
     CHECK(svc_set_mem_attr(src, 0x1000, 8, 8) == 0);
     CHECK(svc_set_mem_attr(src, 0x1000, 8, 0) == 0);
+    CHECK(svc_set_gpu_mem_attr(src, 0x1000, MA_GPU_ACCESSIBLE, MA_GPU_ACCESSIBLE) == R_NOTIMPL);
+    g_hle.kernel.hw = SNX_HW_SWITCH2;
+    CHECK(svc_set_gpu_mem_attr(src + 1, 0x1000, MA_GPU_ACCESSIBLE, MA_GPU_ACCESSIBLE) == R_BADADDR);
+    CHECK(svc_set_gpu_mem_attr(src, 0, MA_GPU_ACCESSIBLE, MA_GPU_ACCESSIBLE) == R_BADSIZE);
+    CHECK(svc_set_gpu_mem_attr(src, 0x1000, MA_UNCACHED, MA_UNCACHED) == R_BADCOMBO);
+    /* A real alias still owns its source lock. An orphan lock must recover through the common setter. */
+    CHECK(svc_set_mem_perm(src, 0x1000, PERM_RW) == 0);
+    CHECK(svc_map_memory(dst, src, 0x1000) == 0);
+    CHECK(svc_set_gpu_mem_attr(src, 0x1000, MA_GPU_ACCESSIBLE, MA_GPU_ACCESSIBLE) == R_BADMEMSTATE);
+    CHECK(svc_query(info, src) == 0 && gr32(info + 20) == MA_LOCKED);
+    CHECK(svc_unmap_memory(dst, src, 0x1000) == 0);
+    CHECK(mem_set_attr(src, 0x1000, MA_LOCKED, MA_LOCKED) == 0);
+    CHECK(svc_set_gpu_mem_attr(src, 0x1000, MA_GPU_ACCESSIBLE, MA_GPU_ACCESSIBLE) == 0);
+    CHECK(svc_set_mem_attr(src, 0x1000, MA_UNCACHED, MA_UNCACHED) == 0);
+    CHECK(svc_query(info, src) == 0 && gr32(info + 20) == (MA_GPU_ACCESSIBLE | MA_UNCACHED));
+    CHECK(svc_set_gpu_mem_attr(src, 0x1000, MA_GPU_ACCESSIBLE, 0) == 0);
+    CHECK(svc_query(info, src) == 0 && gr32(info + 20) == MA_UNCACHED);
+    CHECK(svc_set_mem_attr(src, 0x1000, MA_UNCACHED, 0) == 0);
+    CHECK(svc_set_gpu_mem_attr(AS_END, 0x1000, MA_GPU_ACCESSIBLE, MA_GPU_ACCESSIBLE) == R_BADMEMSTATE);
+    g_hle.kernel.hw = SNX_HW_SWITCH;
     CHECK(svc_set_mem_perm(src, 0x1000, PERM_RW) == 0);
     CHECK(mem_unmap(info, 0x1000) == 0);
     CHECK(svc_set_heap_size(0) == 0);
@@ -495,6 +553,7 @@ int main(void) {
         mem_init();
         test_heap();
         test_heap32();
+        test_heap_switch2();
         test_fit();
         test_system_resource();
         test_rollback();
@@ -518,6 +577,22 @@ int main(void) {
     CHECK(g_layout.alias == 4ull << 30 && g_layout.alias_size == 4ull << 30 && g_layout.heap == 8ull << 30 &&
           g_layout.heap_size == 8ull << 30 && g_layout.stack == 16ull << 30 && g_layout.stack_size == 2ull << 30 &&
           g_layout.kern == 23ull << 30 && g_layout.kern_end == 24ull << 30);
+    mem_layout_switch2();
+    CHECK(g_layout.heap_size == 12ull << 30 && g_layout.stack == 20ull << 30 &&
+          g_layout.kern_end <= g_layout.end);
+    CHECK(munmap(reservation, reservation_size) == 0);
+    g_mem = NULL;
+    refuse_above = 16ull << 30;
+    mem_reserve();
+    mem_layout_switch2();
+    CHECK(g_as_size == 16ull << 30 && g_layout.heap_size == 5ull << 30);
+    CHECK(g_layout.stack == 13ull << 30 && g_layout.kern == 15ull << 30 &&
+          g_layout.kern_end == g_layout.end);
+    base_process();
+    g_hle.kernel.hw = SNX_HW_SWITCH2;
+    CHECK(svc_set_heap_size(6ull << 30) == R_OUTOFMEM);
+    CHECK(svc_set_heap_size(12ull << 30) == R_BADSIZE);
+    g_hle.kernel.hw = SNX_HW_SWITCH;
     CHECK(munmap(reservation, reservation_size) == 0);
     g_mem = NULL;
     refuse_above = 0;
