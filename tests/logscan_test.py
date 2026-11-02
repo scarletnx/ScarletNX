@@ -157,6 +157,17 @@ THREEDS = (
     '3ds gpu: the driver cannot import the VRAM region\n'
     'No Vulkan device: no frames will be drawn, shown or saved\n'
 )
+# and how it stopped: its service calls the runtime has no model of (3ds/ipc/ipc.c, services/system.c), and the stop
+# (3ds/aot/run.c), whose counts after the pc differ from run to run
+THREEDS_STOP = THREEDS + (
+    '3ds ipc: stub answered apt command 0x000e (header 0x000e0080)\n'
+    '3ds ipc: stub answered apt command 0x000e (header 0x000e0080)\n'
+    '3ds ipc: ndm:u command 0x0014 (header 0x00140040) answered success\n'
+    '3ds ipc: gsp command 0x000c has a form the runtime does not take: 000c0000\n'
+    'scarletnx-3ds: unsupported guest operation or missing static entry: pc=0x0013be3c exit=4 syndrome=0x00000032 '
+    'blocks=351846 svcs=192 last_svc=0x32 ipc_service=7 ipc_header=0x000c0000 wait_service=\n'
+    '\n[ended, status 3]\n'
+)
 VITA = 'Game: Some Vita Game - ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)\n'
 # the GBA's: its title and console on the Switch's header line, its build, and its game code (agb/runtime/main.c)
 GBA = (
@@ -398,6 +409,21 @@ def main():
         f"the GBA's header: {gb['title']} {gb['title_id']} {gb['console']} {gb['commit']}",
     )
     check(scan(SVC_BREAK)['console'] == 'Switch' and scan(LAUNCHER)['console'] == 'Switch', "the Switch's console")
+    st = scan(THREEDS_STOP)
+    check(
+        st['outcome'] == 'fatal'
+        and st['failure']['fatal'] == 'unsupported guest operation or missing static entry: pc=0x0013be3c'
+        and st['signature'] == 'fatal unsupported guest operation or missing static entry: pc=N',
+        f"the 3DS's stop: {st['outcome']} {st['signature']}",
+    )
+    calls = {(i['kind'], i['interface'], i['command']): i['count'] for i in st['ipc']}
+    check(
+        calls == {('undeclared', 'apt', 0xE): 2, ('undeclared', 'ndm:u', 0x14): 1, ('bad request', 'gsp', 0xC): 1},
+        f"the 3DS's service calls: {calls}",
+    )
+    vstop = scan(VITA + 'scarletnx-vita: cannot resolve the game\'s folder for X\n')
+    check(vstop['outcome'] == 'fatal' and vstop['failure']['fatal'] == "cannot resolve the game's folder for X", 'the Vita')
+    check(scan(HEADER + 'scarletnx: Game failed (exit status 1).\n')['outcome'] == 'no failure logged', "not a frontend's")
     vi = scan(VITA)
     check(
         (vi['title'], vi['title_id'], vi['console'], vi['commit']) == ('Some Vita Game', None, 'Vita', '1234abc'),
@@ -409,6 +435,12 @@ def main():
         f"another game's log does not stand for the run: {lo['title']} {lo['title_id']} {lo['outcome']}",
     )
     check(lo['signature'] == r['signature'], f"the run's own failure: {lo['signature']}")
+    # a game log long enough that the pool grows while it is read, the run's scan kept from before
+    long_other = LAUNCHER_OTHER + ''.join(
+        f'[ 3.00] vulkan: vertex {i:016x} not translated: reason {i} ' + 'x' * 200 + '\n' for i in range(60)
+    )
+    lo = scan(long_other)
+    check(lo['title_id'] == '0100CCCC00000000', f"the run's title ID after the pool grew: {lo['title_id']}")
     check(
         la['launcher']['message'] == 'The game stopped (svcBreak). See ~\\AppData\\x.log',
         f"the launcher's message, shortened: {la['launcher']['message']}",
