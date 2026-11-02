@@ -5346,7 +5346,7 @@ msgid "AOT threads"
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last fifth left free, so the machine stays responsive; N = that many"
+msgid "The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last quarter left free, so the machine stays responsive; N = that many"
 msgstr ""
 
 #: src/nx/runtime/settings.txt

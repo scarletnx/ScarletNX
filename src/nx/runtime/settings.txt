@@ -1208,7 +1208,7 @@ setting AOT threads
     int 0 1024
     default 0
     words Auto|#
-    help The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last fifth
+    help The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last quarter
     help left free, so the machine stays responsive; N = that many
 setting Unit size
     key unit_instructions

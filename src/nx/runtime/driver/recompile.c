@@ -35,7 +35,7 @@ static void usage(void) {
          "  --name NAME            Output name (default: the title ID, else the NPDM's or input name)\n"
          "  --outdir DIR           Where the game's folder goes (default: recompiled/)\n"
          "  -O LEVEL               Optimization: 0,1,2,3,s,z (default: 2), the setting opt\n"
-         "  --jobs N               Parallel compiles (default: cores, a fifth left free), the setting aot_threads");
+         "  --jobs N               Parallel compiles (default: cores, a quarter left free), the setting aot_threads");
     puts("  --jit-cache FILE       Link a profile run's .jitcache into the module as runtime code\n"
          "  --layout FILE          Put the code of these functions first, in this order (hex PCs, one per line):\n"
          "                         a profile's hot functions, as tools/layout.py orders them\n"
