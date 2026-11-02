@@ -1995,7 +1995,7 @@ set(SNX_AARCH64_GCC_TOOLCHAIN "" CACHE PATH "The GCC toolchain of SNX_AARCH64_SY
 set(nce_host_sources "${CMAKE_CURRENT_SOURCE_DIR}/nce_host.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_host.c")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
     add_executable(snx-test-nce-host ${nce_host_sources})
-    snx_test_target(snx-test-nce-host 99)
+    snx_test_target(snx-test-nce-host 11) # nce_host.c's _Thread_local and _Noreturn
     target_compile_definitions(snx-test-nce-host PRIVATE _GNU_SOURCE)
     target_link_libraries(snx-test-nce-host PRIVATE snx_driver Threads::Threads)
     add_test(NAME nce_host COMMAND snx-test-nce-host)
@@ -2010,7 +2010,7 @@ else()
         # the scanner's half of nce_patch.c is never called: --gc-sections drops it, with what it needs of the build
         add_custom_command(OUTPUT "${nce_host_out}"
             COMMAND "${CMAKE_C_COMPILER}" --target=aarch64-linux-gnu "--sysroot=${SNX_AARCH64_SYSROOT}"
-                    ${nce_host_toolchain} -fuse-ld=lld -static -O2 -std=c99 -pedantic -Wall -Wextra -Werror
+                    ${nce_host_toolchain} -fuse-ld=lld -static -O2 -std=c11 -pedantic -Wall -Wextra -Werror
                     -ffunction-sections -fdata-sections -Wl,--gc-sections "-I${PROJECT_SOURCE_DIR}/src"
                     "-I${PROJECT_BINARY_DIR}/src/common/a64dec" ${nce_host_sources}
                     "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_patch.c" -lpthread -o "${nce_host_out}"

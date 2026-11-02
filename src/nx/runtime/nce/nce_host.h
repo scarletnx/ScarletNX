@@ -50,9 +50,9 @@ void nce_host_kick(int tid);
    handler that calls the guest's own function): the runs nest */
 void nce_host_run(CPU* c);
 /* from dispatch: the innermost nce_host_run returns, with the guest's state in its CPU */
-void nce_host_leave(void) __attribute__((noreturn));
+_Noreturn void nce_host_leave(void);
 /* from dispatch, preempted or trapped: the guest goes on at once from the whole of c */
-void nce_host_resume(CPU* c) __attribute__((noreturn));
+_Noreturn void nce_host_resume(CPU* c);
 /* the guest's state in a signal's context (a ucontext_t) into c, when the signal stopped this thread's guest code: 1,
    else 0. For a crash report, which then shows the guest's registers */
 int nce_host_context(const void* context, CPU* c);
