@@ -9,6 +9,7 @@
 #include "nx/loader/module.h"
 #include "nx/loader/module_llvm.h"
 #include "nx/loader/codegen_view.h"
+#include "nx/runtime/nce/nce_host.h"
 #include "nx/runtime/nce/nce_patch.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 
@@ -747,7 +748,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     {
         char* stale = snx_format("%s.nce", base);
         int nce = 0;
-#if defined(__aarch64__) && defined(__linux__)
+#if SNX_NCE_HOST /* where the runtime runs it: else its JIT would compile all of the code */
         nce = !ios && program.npdm.is64 && g_settings.nce;
 #endif
         if (nce) gen.interp_only = 1;

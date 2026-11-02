@@ -13,12 +13,20 @@
 #include "common/cpu/aarch64/cpu.h"
 #include <stddef.h>
 
-/* not Android: its runtime is a library that the app loads, and bionic refuses the initial-exec TLS of the stubs in
-   such a library */
+/* the hosts that run NCE, and the only ones the recompile makes an NCE recompile for (recompile.c). Not Android: its
+   runtime is a library that the app loads, and bionic refuses the initial-exec TLS of the stubs in such a library */
 #if defined(__aarch64__) && defined(__linux__) && !defined(__ANDROID__)
 #define SNX_NCE_HOST 1
 #else
 #define SNX_NCE_HOST 0
+#endif
+/* C11's _Noreturn, which the C99 recompile (it reads SNX_NCE_HOST here) has not: plat.h's SNX_NORETURN */
+#ifndef SNX_NORETURN
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define SNX_NORETURN _Noreturn
+#else
+#define SNX_NORETURN
+#endif
 #endif
 
 /* What the runtime gives the machine layer. Each function runs on the host's stack of the thread's innermost
@@ -50,9 +58,9 @@ void nce_host_kick(int tid);
    handler that calls the guest's own function): the runs nest */
 void nce_host_run(CPU* c);
 /* from dispatch: the innermost nce_host_run returns, with the guest's state in its CPU */
-_Noreturn void nce_host_leave(void);
+SNX_NORETURN void nce_host_leave(void);
 /* from dispatch, preempted or trapped: the guest goes on at once from the whole of c */
-_Noreturn void nce_host_resume(CPU* c);
+SNX_NORETURN void nce_host_resume(CPU* c);
 /* the guest's state in a signal's context (a ucontext_t) into c, when the signal stopped this thread's guest code: 1,
    else 0. For a crash report, which then shows the guest's registers */
 int nce_host_context(const void* context, CPU* c);
