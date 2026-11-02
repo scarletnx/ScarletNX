@@ -234,6 +234,7 @@ static void check_targets(void) {
     /* a format the encoder has no entry for: an empty descriptor */
     t = texture(0x19, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
     check(!nvn_tic_encode(&t, NULL, 0, 0, tic) && !tic[0] && !tic[1], "RGB8: no descriptor", 0x19);
+    check(NVN_FORMAT_RGB8 == 0x19 && NVN_FORMAT_RGB16I == 0x21, "NVN's names for RGB8 to RGB16I", 0x19);
     t = texture(0x9D, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
     check(!nvn_tic_encode(&t, NULL, 0, 0, tic) && !tic[0] && !tic[1], "past NVN's formats: no descriptor", 0x9D);
 }
