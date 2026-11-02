@@ -146,6 +146,8 @@ static void check_rt_formats(void) {
         {0x35, 0x14, 1}, /* DEPTH24_STENCIL8: Z24_UNORM_S8_UINT */
         {0x36, 0x19, 1}, /* DEPTH32F_STENCIL8: Z32_FLOAT_X24S8_UINT */
         {0x22, 0x00, 0}, /* RGB32F: sampled, never a target */
+        {0x19, 0x00, 0}, /* RGB8: no entry */
+        {0x9D, 0x00, 0}, /* past NVN's formats */
     };
     unsigned i;
     for (i = 0; i < sizeof rt / sizeof *rt; i++) {
@@ -232,6 +234,8 @@ static void check_targets(void) {
     /* a format the encoder has no entry for: an empty descriptor */
     t = texture(0x19, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
     check(!nvn_tic_encode(&t, NULL, 0, 0, tic) && !tic[0] && !tic[1], "RGB8: no descriptor", 0x19);
+    t = texture(0x9D, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
+    check(!nvn_tic_encode(&t, NULL, 0, 0, tic) && !tic[0] && !tic[1], "past NVN's formats: no descriptor", 0x9D);
 }
 
 /* A depth or stencil texture's word 0 as each driver writes it: its channels, then the game's swizzle over them

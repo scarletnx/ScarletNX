@@ -47,7 +47,6 @@
        4-7 border color r g b a */
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/nvn/nvn_tex.h"
-#include "nx/runtime/platform/log.h"
 #include <math.h>
 #include <string.h>
 
@@ -59,7 +58,7 @@ typedef struct {
     u8 raw_int, srgb, depth, rt;
 } TicFormat;
 
-static const TicFormat nvn_format(u32 format) {
+static TicFormat nvn_format(u32 format) {
     switch (format) {
 #define NVN_TIC_FORMAT(i, p0, p1, p2, p3, p4, name)                                                                    \
     case NVN_FORMAT_##name: {                                                                                          \
@@ -67,8 +66,9 @@ static const TicFormat nvn_format(u32 format) {
         return f;                                                                                                      \
     }
 #include "nx/gpu/nvn/nvn_tic_format.inc"
-    default: fatal("invalid format %u", format);
     }
+    TicFormat none = {0}; /* a format with no entry: no descriptor and no render target, which the callers log */
+    return none;
 }
 
 u32 nvn_rt_format(u32 format, int* depth) {
