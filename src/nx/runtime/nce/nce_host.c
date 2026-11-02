@@ -49,8 +49,10 @@ typedef struct {
     NceHost* host;
 } NceTls;
 static __thread NceTls t_nce __attribute__((tls_model("initial-exec")));
-/* the distance from TPIDR_EL0 to t_nce, which is the same in each thread: static TLS */
-__attribute__((used)) static u64 g_nce_tls;
+/* the distance from TPIDR_EL0 to t_nce, which is the same in each thread: static TLS. Only the asm reads it, so it
+   is external: clang takes a static one that C code never reads as unused (-Wunused-but-set-global) */
+extern u64 g_nce_tls __attribute__((visibility("hidden")));
+u64 g_nce_tls;
 static NceHostConfig g_config;
 static struct sigaction g_old_ill, g_old_trap;
 static int g_sig_enter, g_sig_kick;
