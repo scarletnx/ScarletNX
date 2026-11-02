@@ -629,6 +629,11 @@ int vk_gfx_image_in_flight(int unsubmitted);
 /* the submissions up to sub are done: the write-backs recorded in them land (cmd.c's landing, vk_lock) */
 void vk_gfx_image_frame_done(u64 sub);
 int vk_gfx_image_holds(const Surf* s); /* s has a storage result waiting to land in memory */
+/* depth_pack.c: a zeta format's packing of depth and stencil, -1 for one that doesn't pack; layer of the packed target
+   s (unscaled, single-sampled, in TRANSFER_SRC_OPTIMAL) into buf at at in the guest's layout, rows pitch bytes apart:
+   1, or 0 when it can't */
+int vk_depth_pack_mode(u32 zeta);
+int vk_depth_pack(VkCommandBuffer cb, const Surf* s, u32 layer, VkBuffer buf, u64 at, u32 pitch);
 u64 vk_surf_guest_size(const Surf* s);
 int vk_surf_can_writeback(const Surf* s);
 void vk_surf_flush(Surf* s, const u8* original); /* original preserves newer guest writes for storage images */

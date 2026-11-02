@@ -644,17 +644,23 @@ void vk_rt_reload(u64 gva) {
 }
 
 /* a depth target whose Vulkan format holds the guest's bytes (Z32F as D32_SFLOAT, Z16 as D16_UNORM): its depth
-   aspect copies out in the guest's own layout. The packed ones (the Z24S8 kinds, Z32F_X24S8) would need converting,
-   and a scaled one a depth blit; those stay on the GPU */
+   aspect copies out in the guest's own layout. The packed ones (the Z24S8 kinds, Z32F_X24S8) are packed on the GPU
+   (vk_depth_pack); a scaled or multisampled packed one would need a depth blit first and stays on the GPU */
 static int depth_copies_raw(const Surf* s) {
     return (s->f.vk == VK_FORMAT_D32_SFLOAT || s->f.vk == VK_FORMAT_D16_UNORM) && s->sw == s->w && s->sh == s->h &&
            (!s->msaa || vk_ms_moves(s));
+}
+static int depth_packs(const Surf* s) {
+    return !depth_copies_raw(s) && vk_depth_pack_mode(s->fkey & 0xFFFF) >= 0 && s->sw == s->w && s->sh == s->h &&
+           !s->msaa;
 }
 /* the bytes s's pixels take read back, or 0 when they don't go to memory: a format guest memory can't hold as it is, no
    pixels, or not drawn to since it was last written back or loaded (memory has it already, and a CPU write since then
    is newer than the target). A block linear target comes back in its guest layout, swizzled on the GPU */
 static u64 flush_bytes(const Surf* s) {
-    if (!s || (s->f.depth ? !depth_copies_raw(s) : !s->f.raw) || s->layout == VK_IMAGE_LAYOUT_UNDEFINED) return 0;
+    if (!s || (s->f.depth ? !depth_copies_raw(s) && !depth_packs(s) : !s->f.raw) ||
+        s->layout == VK_IMAGE_LAYOUT_UNDEFINED)
+        return 0;
     if (s->mem_wgen == s->wgen || !moves_scaled(s)) return 0;
     return s->bl ? rt_bytes(s) : (u64)guest_w(s) * s->f.bpp * guest_h(s) * s->layers;
 }
@@ -679,6 +685,10 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
     vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     for (u32 layer = 0; layer < s->layers; layer++) {
+        if (depth_packs(s)) { /* flush_bytes took it: it packs */
+            vk_depth_pack(cb, s, layer, buf, at + (u64)layer * slice, pitch);
+            continue;
+        }
         VkBufferImageCopy c = {
             .bufferOffset = at + (u64)layer * slice,
             .bufferRowLength = pitch / s->f.bpp,
