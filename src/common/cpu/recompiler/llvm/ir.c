@@ -112,6 +112,7 @@ int snx_ir_init(char* error, size_t error_size) {
         snx_ir_host.gfni = has_feature(f, "gfni");
         snx_ir_host.fma = has_feature(f, "fma");
         snx_ir_host.f16c = has_feature(f, "f16c");
+        snx_ir_host.avx = has_feature(f, "avx");
         snx_ir_host.avx2 = has_feature(f, "avx2");
         snx_ir_host.avx512bw = has_feature(f, "avx512bw");
         snx_ir_host.avx512vl = has_feature(f, "avx512vl");

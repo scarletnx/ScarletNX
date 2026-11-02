@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The FP helpers touch no memory, and the vector one (snx_fp_host_lanes) only the locals it is given, so neither is
    a site for ir_promote_registers: a lane-wide instruction's X live across its helper call is not stored and
-   reloaded, and nothing declares the helpers snx-noregs. */
+   reloaded, and nothing declares the helpers snx-noregs. On x86-64 and AArch64 the vector one is called with
+   preserve_all, through snx_fp_host_lanes_kept. */
 #include "common/cpu/recompiler/llvm/ir_vec.h"
 #include "common/cpu/aarch64/cpu.h"
 #include <llvm-c/Analysis.h>
@@ -41,8 +42,23 @@ int main(void) {
     ir_promote_registers(ir, fn);
     ir_stats_function(ir, fn);
     unsigned reloads = (unsigned)ir->stats.sync_reloads, call_stores = (unsigned)ir->stats.call_stores;
-    LLVMValueRef lanes = LLVMGetNamedFunction(ir->mod, "snx_fp_host_lanes");
+    /* on x86-64 and AArch64 the call keeps what preserve_all keeps, through snx_fp_host_lanes_kept (cpu.h) */
+    int kept = ir->features->x86 || ir->features->aarch64;
+    const char* name = !kept               ? "snx_fp_host_lanes"
+                       : ir->features->avx ? "snx_fp_host_lanes_kept_avx"
+                                           : "snx_fp_host_lanes_kept";
+    LLVMValueRef lanes = LLVMGetNamedFunction(ir->mod, name);
     int marked = memory(lanes) == 3 && !noregs(lanes); /* its arguments' memory alone */
+    unsigned convention = kept ? LLVMPreserveAllCallConv : LLVMCCallConv, call_convention = ~0u;
+    for (LLVMUseRef use = lanes ? LLVMGetFirstUse(lanes) : NULL; use; use = LLVMGetNextUse(use)) {
+        LLVMValueRef user = LLVMGetUser(use);
+        if (LLVMIsACallInst(user)) call_convention = LLVMGetInstructionCallConv(user);
+    }
+    int convention_right = lanes && LLVMGetFunctionCallConv(lanes) == convention && call_convention == convention;
+    if (!convention_right)
+        fprintf(stderr, "FAIL: %s is %s with convention %u, called with %u, where %u is right\n", name,
+                lanes ? "declared" : "not declared", lanes ? LLVMGetFunctionCallConv(lanes) : 0, call_convention,
+                convention);
     LLVMValueRef other = LLVMAddFunction(ir->mod, "writes_vectors", LLVMFunctionType(ir->t_void, params, 2, 0));
     snx_ir_begin(ir, other);
     LLVMValueRef operands[] = {ir_i32(ir, 0), ir_i32(ir, 1), ir_i32(ir, 2), ir_i32(ir, 0)};
@@ -74,5 +90,5 @@ int main(void) {
     if (invalid && message) fprintf(stderr, "%s\n", message);
     if (message) LLVMDisposeMessage(message);
     snx_ir_free(ir);
-    return !marked || unsafe || invalid || !counts;
+    return !marked || unsafe || invalid || !counts || !convention_right;
 }

@@ -662,6 +662,17 @@ if(NOT WIN32)
     target_link_libraries(snx-test-fp-host PRIVATE m)
 endif()
 add_test(NAME fp_host_witnesses COMMAND snx-test-fp-host)
+
+# the preserve_all thunks of the lanes helper (cpu.h snx_fp_host_lanes_kept): every register the convention keeps
+# comes back from a call made in assembly, and the reply and lanes are the helper's
+add_executable(snx-test-fp-lanes-kept fp_lanes_kept.c "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-fp-lanes-kept 11)
+snx_cpu_helpers_flags(snx-test-fp-lanes-kept)
+if(NOT WIN32)
+    target_link_libraries(snx-test-fp-lanes-kept PRIVATE m)
+endif()
+add_test(NAME fp_lanes_kept COMMAND snx-test-fp-lanes-kept)
+set_tests_properties(fp_lanes_kept PROPERTIES SKIP_RETURN_CODE 77)
 add_executable(snx-test-llvm-recpe llvm_recpe.c llvm_steps.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
 snx_test_target(snx-test-llvm-recpe 11)

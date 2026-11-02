@@ -160,13 +160,23 @@ static V spill(SnxIr* ir, V v) {
 }
 
 /* snx_fp_host_lanes(out, x, y, z, desc, FPCR, FPSR): it touches only its pointers' memory, the locals here, and
-   returns FPSR after the lanes, which goes into FPSR */
+   returns FPSR after the lanes, which goes into FPSR. On x86-64 and AArch64 the call keeps the registers preserve_all
+   keeps (cpu.h's snx_fp_host_lanes_kept): a call that clobbered the vectors at each slow path of a function with
+   hundreds of them left the greedy register allocator splitting their ranges around every call, for minutes */
 static void lanes_call(SnxIr* ir, V* ops) {
     LLVMTypeRef params[7] = {ir->t_ptr, ir->t_ptr, ir->t_ptr, ir->t_ptr, ir->t_i32, ir->t_i32, ir->t_i32};
     V args[7] = {ops[0], ops[1], ops[2], ops[3], ops[4], fpcr(ir), fpsr(ir)};
-    V function = ir_extern(ir, "snx_fp_host_lanes", ir->t_i32, params, 7);
+    int kept = ir->features->x86 || ir->features->aarch64;
+    const char* name = !kept               ? "snx_fp_host_lanes"
+                       : ir->features->avx ? "snx_fp_host_lanes_kept_avx"
+                                           : "snx_fp_host_lanes_kept";
+    V function = ir_extern(ir, name, ir->t_i32, params, 7);
     ir_argmem(ir, function);
     V flags = LLVMBuildCall2(B, LLVMFunctionType(ir->t_i32, params, 7, 0), function, args, 7, "");
+    if (kept) {
+        LLVMSetFunctionCallConv(function, LLVMPreserveAllCallConv);
+        LLVMSetInstructionCallConv(flags, LLVMPreserveAllCallConv);
+    }
     ir_cpu_store(ir, LLVMBuildOr(B, fpsr(ir), flags, ""), offsetof(CPU, fpsr));
 }
 

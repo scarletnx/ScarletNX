@@ -743,3 +743,137 @@ u32 snx_fp_host_lanes(void* out, const void* x, const void* y, const void* z, u3
                                  fp_host_get(b, i * bytes, width), fp_host_get(d, i * bytes, width)));
     return env.fpsr;
 }
+
+/* the same, keeping what preserve_all keeps: the attribute makes the compiler save each such register the call
+   clobbers, and the AVX one saves ymm0-15 whole. No tail call, which would leave before the registers come back */
+#if defined(__x86_64__) || defined(__aarch64__)
+__attribute__((preserve_all, disable_tail_calls))
+u32 snx_fp_host_lanes_kept(void* out, const void* x, const void* y, const void* z, u32 desc, u32 fpcr, u32 fpsr) {
+    return snx_fp_host_lanes(out, x, y, z, desc, fpcr, fpsr);
+}
+#endif
+#if defined(__x86_64__)
+/* In assembly: a compiled function that uses ymm ends in a vzeroupper, which would clear the upper halves it just
+   restored. It keeps the general registers the C convention doesn't (SysV: rcx, rdx, rsi, rdi, r8-r10; Windows: rcx,
+   rdx, r8-r10) and ymm0-15 whole, passes the arguments on as they came (the stack's below its saves; on Windows the
+   caller's are right above the return address, as LLVM gives a preserve_all call no 32-byte home space, and the
+   helper's call gets one) and calls the helper with the upper halves clean */
+#if defined(__APPLE__)
+#define SNX_LANES "_snx_fp_host_lanes"
+#else
+#define SNX_LANES "snx_fp_host_lanes"
+#endif
+__attribute__((naked, preserve_all)) u32 snx_fp_host_lanes_kept_avx(void* out, const void* x, const void* y,
+                                                                    const void* z, u32 desc, u32 fpcr, u32 fpsr) {
+#if defined(_WIN32)
+    __asm__("push %r10\n"
+            "push %r9\n"
+            "push %r8\n"
+            "push %rdx\n"
+            "push %rcx\n"
+            "sub $576, %rsp\n"
+            "vmovdqu %ymm0, 64(%rsp)\n"
+            "vmovdqu %ymm1, 96(%rsp)\n"
+            "vmovdqu %ymm2, 128(%rsp)\n"
+            "vmovdqu %ymm3, 160(%rsp)\n"
+            "vmovdqu %ymm4, 192(%rsp)\n"
+            "vmovdqu %ymm5, 224(%rsp)\n"
+            "vmovdqu %ymm6, 256(%rsp)\n"
+            "vmovdqu %ymm7, 288(%rsp)\n"
+            "vmovdqu %ymm8, 320(%rsp)\n"
+            "vmovdqu %ymm9, 352(%rsp)\n"
+            "vmovdqu %ymm10, 384(%rsp)\n"
+            "vmovdqu %ymm11, 416(%rsp)\n"
+            "vmovdqu %ymm12, 448(%rsp)\n"
+            "vmovdqu %ymm13, 480(%rsp)\n"
+            "vmovdqu %ymm14, 512(%rsp)\n"
+            "vmovdqu %ymm15, 544(%rsp)\n"
+            "mov 624(%rsp), %eax\n"
+            "mov %eax, 32(%rsp)\n"
+            "mov 632(%rsp), %eax\n"
+            "mov %eax, 40(%rsp)\n"
+            "mov 640(%rsp), %eax\n"
+            "mov %eax, 48(%rsp)\n"
+            "vzeroupper\n"
+            "call " SNX_LANES "\n"
+            "vmovdqu 64(%rsp), %ymm0\n"
+            "vmovdqu 96(%rsp), %ymm1\n"
+            "vmovdqu 128(%rsp), %ymm2\n"
+            "vmovdqu 160(%rsp), %ymm3\n"
+            "vmovdqu 192(%rsp), %ymm4\n"
+            "vmovdqu 224(%rsp), %ymm5\n"
+            "vmovdqu 256(%rsp), %ymm6\n"
+            "vmovdqu 288(%rsp), %ymm7\n"
+            "vmovdqu 320(%rsp), %ymm8\n"
+            "vmovdqu 352(%rsp), %ymm9\n"
+            "vmovdqu 384(%rsp), %ymm10\n"
+            "vmovdqu 416(%rsp), %ymm11\n"
+            "vmovdqu 448(%rsp), %ymm12\n"
+            "vmovdqu 480(%rsp), %ymm13\n"
+            "vmovdqu 512(%rsp), %ymm14\n"
+            "vmovdqu 544(%rsp), %ymm15\n"
+            "add $576, %rsp\n"
+            "pop %rcx\n"
+            "pop %rdx\n"
+            "pop %r8\n"
+            "pop %r9\n"
+            "pop %r10\n"
+            "ret\n");
+#else
+    __asm__("push %r10\n"
+            "push %r9\n"
+            "push %r8\n"
+            "push %rdi\n"
+            "push %rsi\n"
+            "push %rdx\n"
+            "push %rcx\n"
+            "sub $528, %rsp\n"
+            "vmovdqu %ymm0, 16(%rsp)\n"
+            "vmovdqu %ymm1, 48(%rsp)\n"
+            "vmovdqu %ymm2, 80(%rsp)\n"
+            "vmovdqu %ymm3, 112(%rsp)\n"
+            "vmovdqu %ymm4, 144(%rsp)\n"
+            "vmovdqu %ymm5, 176(%rsp)\n"
+            "vmovdqu %ymm6, 208(%rsp)\n"
+            "vmovdqu %ymm7, 240(%rsp)\n"
+            "vmovdqu %ymm8, 272(%rsp)\n"
+            "vmovdqu %ymm9, 304(%rsp)\n"
+            "vmovdqu %ymm10, 336(%rsp)\n"
+            "vmovdqu %ymm11, 368(%rsp)\n"
+            "vmovdqu %ymm12, 400(%rsp)\n"
+            "vmovdqu %ymm13, 432(%rsp)\n"
+            "vmovdqu %ymm14, 464(%rsp)\n"
+            "vmovdqu %ymm15, 496(%rsp)\n"
+            "mov 592(%rsp), %eax\n"
+            "mov %eax, (%rsp)\n"
+            "vzeroupper\n"
+            "call " SNX_LANES "\n"
+            "vmovdqu 16(%rsp), %ymm0\n"
+            "vmovdqu 48(%rsp), %ymm1\n"
+            "vmovdqu 80(%rsp), %ymm2\n"
+            "vmovdqu 112(%rsp), %ymm3\n"
+            "vmovdqu 144(%rsp), %ymm4\n"
+            "vmovdqu 176(%rsp), %ymm5\n"
+            "vmovdqu 208(%rsp), %ymm6\n"
+            "vmovdqu 240(%rsp), %ymm7\n"
+            "vmovdqu 272(%rsp), %ymm8\n"
+            "vmovdqu 304(%rsp), %ymm9\n"
+            "vmovdqu 336(%rsp), %ymm10\n"
+            "vmovdqu 368(%rsp), %ymm11\n"
+            "vmovdqu 400(%rsp), %ymm12\n"
+            "vmovdqu 432(%rsp), %ymm13\n"
+            "vmovdqu 464(%rsp), %ymm14\n"
+            "vmovdqu 496(%rsp), %ymm15\n"
+            "add $528, %rsp\n"
+            "pop %rcx\n"
+            "pop %rdx\n"
+            "pop %rsi\n"
+            "pop %rdi\n"
+            "pop %r8\n"
+            "pop %r9\n"
+            "pop %r10\n"
+            "ret\n");
+#endif
+}
+#undef SNX_LANES
+#endif

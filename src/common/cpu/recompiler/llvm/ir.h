@@ -67,7 +67,7 @@ enum {
 typedef struct {
     unsigned x86 : 1; /* x86-64 target: x86 intrinsics are available at all */
     unsigned sse42 : 1, crc32 : 1, pclmul : 1, aes : 1, sha_ni : 1, gfni : 1, fma : 1, f16c : 1; /* x86 extensions */
-    unsigned avx2 : 1, avx512bw : 1, avx512vl : 1, avx512bitalg : 1;
+    unsigned avx : 1, avx2 : 1, avx512bw : 1, avx512vl : 1, avx512bitalg : 1;
     unsigned aarch64 : 1;                /* AArch64 target: AArch64 intrinsics are available at all */
     unsigned arm_aes : 1, arm_sha2 : 1; /* AArch64 crypto extensions (PMULL comes with AES) */
     unsigned arm_crc : 1;                /* AArch64 CRC32 extension */

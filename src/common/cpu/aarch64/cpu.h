@@ -491,6 +491,18 @@ SnxFpReply snx_fp_host_minmax(u64 a, u64 b, int width, int minimum, int numeric,
    3 minmax), the width in bytes, the lane count, the operation and minmax's numeric. It touches only the memory of
    its pointers, and returns FPSR after the lanes (fpsr in, for snx_fp_host_binary's lanes) */
 u32 snx_fp_host_lanes(void* out, const void* x, const void* y, const void* z, u32 desc, u32 fpcr, u32 fpsr);
+/* snx_fp_host_lanes for generated code on x86-64 and AArch64, called with LLVM's preserve_all convention: it keeps
+   every register that convention keeps (all general registers but r11 and the reply's, and xmm0-15, or ymm0-15 for
+   code with AVX; x9-x15, x19-x30 and q8-q31), so the vectors a function holds across its slow paths stay in their
+   registers. The _avx one is for code with AVX: the helper's libc calls may leave the upper halves zeroed */
+#if defined(__x86_64__) || defined(__aarch64__)
+__attribute__((preserve_all)) u32 snx_fp_host_lanes_kept(void* out, const void* x, const void* y, const void* z,
+                                                         u32 desc, u32 fpcr, u32 fpsr);
+#endif
+#if defined(__x86_64__)
+__attribute__((preserve_all)) u32 snx_fp_host_lanes_kept_avx(void* out, const void* x, const void* y, const void* z,
+                                                             u32 desc, u32 fpcr, u32 fpsr);
+#endif
 
 /* the same against a CPU structure, for the tests that drive them directly */
 static inline u64 snx_fp_host_binary_c(CPU* c, u64 a, u64 b, int width, int op) {
