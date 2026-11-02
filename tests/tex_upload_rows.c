@@ -91,7 +91,7 @@ static u8* mem_of(VkBuffer b) { return b == STAGE_BUF ? stage : b == SCRATCH_BUF
 /* the copies into the image, with the bytes each copies taken when it is recorded (the scratch buffer is reused):
    a region's bufferOffset is where its bytes start in copied */
 static VkBufferImageCopy regs[1024];
-static u32 nregs;
+static u32 nregs, regs_bars[1024], all_bars; /* each region's count of vk_all_barrier before it */
 static u8 copied[16u << 20];
 static u64 copied_used;
 static void VKAPI_CALL copy_to_image(VkCommandBuffer cb, VkBuffer b, VkImage img, VkImageLayout l, uint32_t n,
@@ -107,6 +107,7 @@ static void VKAPI_CALL copy_to_image(VkCommandBuffer cb, VkBuffer b, VkImage img
         memcpy(copied + copied_used, mem_of(b) + c.bufferOffset, size);
         c.bufferOffset = copied_used;
         copied_used += size;
+        regs_bars[nregs] = all_bars;
         regs[nregs++] = c;
     }
 }
@@ -348,11 +349,33 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
 }
 u32 vk_ww_now(void) { return g_tracking.clock; }
 u32 vk_ww_epoch(void) { return g_tracking.epoch; }
-int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) {
-    (void)since, (void)a, (void)sz;
-    return 0;
+/* the pages of the CPU's write that fall in [host, host + len), at their offsets in it */
+void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) {
+    u64 o = (u64)(host - guest), lo = g_tracking.at & ~4095ull, hi = (g_tracking.at + g_tracking.len + 4095) & ~4095ull;
+    if (!stamped(o, len, since)) return;
+    if (!g_tracking.len || lo < o) lo = o;
+    if (!g_tracking.len || hi > o + len) hi = o + len;
+    fn(user, lo - o, hi - lo);
 }
-u64 gpu_mem_generation(void) { return 0; }
+/* GPU-side writes (a mapping, an engine's): the last one, its generation on GPU bytes [at, at + len) */
+static struct {
+    u64 gen, at, len;
+} g_gpu_writes;
+int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) {
+    return g_gpu_writes.gen > since && g_gpu_writes.at < a + sz && a < g_gpu_writes.at + g_gpu_writes.len;
+}
+void gpu_mem_dirty_runs(u64 since, u64 a, u64 sz, void (*fn)(void* ctx, u64 at, u64 n), void* ctx) {
+    u64 lo = g_gpu_writes.at & ~4095ull, hi = (g_gpu_writes.at + g_gpu_writes.len + 4095) & ~4095ull;
+    if (!gpu_mem_dirty_since(since, a, sz)) return;
+    if (lo < a) lo = a;
+    if (hi > a + sz) hi = a + sz;
+    fn(ctx, lo, hi - lo);
+}
+u64 gpu_mem_generation(void) { return g_gpu_writes.gen; }
+void vk_all_barrier(VkCommandBuffer cb) {
+    (void)cb;
+    all_bars++;
+}
 VkResult vmaCreateImage(VmaAllocator a, const VkImageCreateInfo* ii, const VmaAllocationCreateInfo* ai, VkImage* img,
                         VmaAllocation* mem, VmaAllocationInfo* info) {
     (void)a, (void)ii, (void)ai, (void)img, (void)mem, (void)info;
@@ -509,6 +532,39 @@ static Surf sparse_volume(u32 levels) {
     g_tracking.clock = t.wseen = 20;
     t.ww_epoch = g_tracking.epoch;
     return t;
+}
+
+/* a piecewise texture's image, level 0 of 208x64x32 RGBA8 texels: what the regions recorded so far put in it */
+static u8 model[208 * 64 * 32 * 4];
+static void model_apply(void) {
+    for (u32 i = 0; i < nregs; i++) {
+        const VkBufferImageCopy* r = &regs[i];
+        u32 rl = r->bufferRowLength ? r->bufferRowLength : r->imageExtent.width;
+        u32 ih = r->bufferImageHeight ? r->bufferImageHeight : r->imageExtent.height;
+        for (u32 z = 0; z < r->imageExtent.depth; z++)
+            for (u32 y = 0; y < r->imageExtent.height; y++)
+                for (u32 x = 0; x < r->imageExtent.width; x++)
+                    memcpy(model + ((((u64)z + r->imageOffset.z) * 64 + y + r->imageOffset.y) * 208 + x +
+                                    r->imageOffset.x) *
+                                       4,
+                           copied + r->bufferOffset + (((u64)z * ih + y) * rl + x) * 4, 4);
+    }
+}
+/* texels of the model that aren't memory's where the volume is mapped (g_map) and zeros in its holes: how many */
+static u32 model_wrong(void) {
+    u32 wrong = 0;
+    for (u32 z = 0; z < 32; z++)
+        for (u32 y = 0; y < 64; y++)
+            for (u32 x = 0; x < 208; x++) {
+                u64 o = bl_offset(x * 4, y, z, 832, 64, 0, 4);
+                u32 want = 0, have;
+                for (u32 i = 0; i < g_map.count; i++)
+                    if (GVA + o >= g_map.gva[i] && GVA + o < g_map.gva[i] + g_map.n[i])
+                        want = guest_texel(0, x, y, z, 832, 64, 0, 4);
+                memcpy(&have, model + (((u64)z * 64 + y) * 208 + x) * 4, 4);
+                wrong += have != want;
+            }
+    return wrong;
 }
 
 int main(void) {
@@ -696,6 +752,62 @@ int main(void) {
         guest[o] ^= 0x5A;
         g_map.count = 0;
         memset(&g_tracking, 0, sizeof g_tracking);
+    }
+    /* loaded a piece at a time: made with tiles 0 and 2 mapped, its image is zeros, then after a barrier those tiles'
+       blocks (8 KiB each: a GOB across, 8 rows, 16 slices), 128 KiB read of its 1.6 MB. Then the CPU writing a page of
+       tile 2 loads that page's block, and tile 1 mapped (a GPU-side write of its pages) loads its 8 blocks: 5 at the
+       end of the first row of blocks and 3 at the start of the next. A check that finds nothing loads nothing */
+    {
+        Surf t = sparse_volume(1);
+        u64 uploads, bytes, uploads2, bytes2;
+        t.piecewise = 1;
+        t.hash = 0;
+        stage_used = copied_used = nregs = all_bars = 0;
+        memset(model, 0xEE, sizeof model);
+        vk_tex_stats(&uploads, &bytes);
+        CHECK(tex_load_pieces(&t) && t.upload_valid);
+        vk_tex_stats(&uploads2, &bytes2);
+        CHECK(bytes2 - bytes == 2 * 0x10000 && uploads2 - uploads == 1);
+        u32 zeros = 0;
+        while (zeros < nregs && regs_bars[zeros] == 0) zeros++;
+        CHECK(zeros && zeros < nregs);
+        CHECK(nregs - zeros == 2); /* each tile a run of 8 blocks of one row of blocks: 8 GOBs, 128 texels across */
+        for (u32 i = zeros; i < nregs; i++) CHECK(regs_bars[i] == 1 && regs[i].imageExtent.width == 128);
+        model_apply();
+        CHECK(model_wrong() == 0);
+        const u32 x = 3 * 16 + 1, y = 9, z = 6; /* tile 2 */
+        const u64 o = bl_offset(x * 4, y, z, 832, 64, 0, 4);
+        guest[o] ^= 0x5A;
+        g_tracking.stamp = ++g_tracking.clock;
+        g_tracking.at = o, g_tracking.len = 1;
+        g_vk_present++;
+        g_tracking.epoch++;
+        stage_used = copied_used = nregs = 0;
+        vk_tex_stats(&uploads, &bytes);
+        CHECK(tex_check(&t, t.gva) == &t);
+        vk_tex_stats(&uploads2, &bytes2);
+        CHECK(bytes2 - bytes == 8192 && nregs == 1);
+        model_apply();
+        CHECK(model_wrong() == 0);
+        g_map.count = 3;
+        g_map.gva[2] = GVA + 0x10000, g_map.n[2] = 0x10000;
+        g_gpu_writes.gen = 1, g_gpu_writes.at = GVA + 0x10000, g_gpu_writes.len = 0x10000;
+        g_vk_present++;
+        stage_used = copied_used = nregs = 0;
+        vk_tex_stats(&uploads, &bytes);
+        CHECK(tex_check(&t, t.gva) == &t);
+        vk_tex_stats(&uploads2, &bytes2);
+        CHECK(bytes2 - bytes == 0x10000 && nregs == 2);
+        model_apply();
+        CHECK(model_wrong() == 0);
+        g_vk_present++;
+        g_tracking.epoch++;
+        stage_used = copied_used = nregs = 0;
+        CHECK(tex_check(&t, t.gva) == &t && nregs == 0);
+        guest[o] ^= 0x5A;
+        g_map.count = 0;
+        memset(&g_tracking, 0, sizeof g_tracking);
+        memset(&g_gpu_writes, 0, sizeof g_gpu_writes);
     }
     printf("tex_upload_rows: %u checks passed\n", checks);
     return 0;
