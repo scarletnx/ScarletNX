@@ -493,6 +493,28 @@ static int build_line(SnxLogScan* s, Span line) {
     return 1;
 }
 
+/* the other frontends' header, the title, its ID when there is one, and the build on one line (3ds/aot/run.c,
+   vita/runtime/main.c): "Game: <title> (<title ID>) - ScarletNX ...", "Game: <title> - ScarletNX ..." */
+static int frontend_header(SnxLogScan* s, Span rest) {
+    long at = find(rest, " - ScarletNX ");
+    if (at <= 0) return 0;
+    Span title = span(rest.p, (size_t)at);
+    if (title.n > 19 && title.p[title.n - 1] == ')' && title.p[title.n - 18] == '(' && title.p[title.n - 19] == ' ') {
+        char id[17];
+        size_t k;
+        for (k = 0; k < 16 && snx_is_hex(title.p[title.n - 17 + k]); k++)
+            id[k] = (char)snx_to_upper(title.p[title.n - 17 + k]);
+        if (k == 16) {
+            id[16] = 0;
+            s->title_id = add_c(s, id);
+            title.n -= 19;
+        }
+    }
+    s->title = add(s, title);
+    if (!s->build) build_line(s, skip(rest, (size_t)at + 3));
+    return 1;
+}
+
 static int ipc_line(SnxLogScan* s, Span line) {
     static const char* const kinds[] = {"[bad request] ", "[undeclared] ", "[unknown] "};
     Span rest = line, iface;
@@ -1066,6 +1088,9 @@ void snx_logscan_line(SnxLogScan* s, const char* p, size_t n) {
             break;
         case 'b':
             if (!s->build && take_lit(&rest, "build: ") && build_line(s, rest)) return;
+            break;
+        case 'G':
+            if (!s->title && take_lit(&rest, "Game: ") && frontend_header(s, rest)) return;
             break;
         case 's': /* "system: <OS and version>, <CPU>, <n> threads, <n> GB RAM" (plat_system_info) */
             if (!s->system && take_lit(&rest, "system: ") && rest.n) {
