@@ -993,6 +993,15 @@ setting CTR resolution scale
     words #x
     help The 3D picture drawn at this many times the console's resolution (1 = the console's own). Costs the GPU
     help that many squared
+setting CTR target memory
+    key ctr_target_memory
+    int 0 1048576
+    default 0
+    startup
+    words Automatic|#MB
+    help The video memory, in megabytes, that the 3D pictures kept between frames may take together. 0 = half of the
+    help video memory. When they take more, the least used are stored in the console's memory and drawn again from
+    help there on their next use. A higher resolution scale takes the square of the scale
 setting CTR screen layout
     key ctr_screen_layout
     int 0 5
@@ -1006,6 +1015,15 @@ setting CTR anti-aliasing
     words Off|FXAA
     help Smooths the jagged edges of the window's picture. FXAA is a filter on the final picture, and costs little.
     help A higher resolution scale smooths the edges of the 3D picture itself
+setting CTR multisampling
+    key ctr_msaa
+    int 0 3
+    default 0
+    startup
+    words Off|2x|4x|8x
+    help The 3D picture drawn with this many samples to a pixel, which smooths the edges of the polygons. It takes the
+    help most the video card can draw and resolve (a card with fewer takes its own most). Memory and drawing cost
+    help grow with the samples, and the resolution scale multiplies them
 setting CTR scaling filter
     key ctr_scaling_filter
     int 0 1

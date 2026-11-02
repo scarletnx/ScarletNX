@@ -31,6 +31,7 @@
 static int failures;
 static bool uber_pass; /* the draws use the uber shader (shaders/uber.frag) instead of the generated ones */
 static unsigned scaled;  /* the resolution scale of the pass, 0 for the console's own */
+static bool multisampled; /* the pass draws with multisampling: the edges are smoothed, only the interiors are compared */
 static uint32_t seed = 0x3d5u;
 static uint32_t next(void) {
     seed = seed * 1664525u + 1013904223u;
@@ -160,6 +161,17 @@ static bool draw(SnxCtrMemory* m, const Scene* s, const SnxCtrPicaHost* host, un
     return ok;
 }
 
+/* pixel i of the reference differs from one of its eight neighbours: on an edge, which multisampling smooths */
+static bool on_edge(const unsigned char* image, unsigned bpp, unsigned i) {
+    int x = (int)(i % W), y = (int)(i / W);
+    for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx) {
+            int nx = x + dx, ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= (int)W || ny >= (int)H) continue;
+            if (memcmp(image + i * bpp, image + ((unsigned)ny * W + (unsigned)nx) * bpp, bpp)) return true;
+        }
+    return false;
+}
 static void compare(const Scene* s, const unsigned char* sw, const unsigned char* gpu, const unsigned char* sw_depth,
                     const unsigned char* gpu_depth) {
     static const unsigned formats[5] = {SNX_CTR_PIX_RGBA8, SNX_CTR_PIX_RGB8, SNX_CTR_PIX_RGB5A1, SNX_CTR_PIX_RGB565,
@@ -173,6 +185,7 @@ static void compare(const Scene* s, const unsigned char* sw, const unsigned char
         snx_ctr_pixel_decode(format, sw + i * bpp, a);
         snx_ctr_pixel_decode(format, gpu + i * bpp, b);
         unsigned d = 0;
+        if (multisampled && on_edge(sw, bpp, i)) continue;
         for (unsigned c = 0; c < 4; ++c) {
             unsigned e = a[c] > b[c] ? a[c] - b[c] : b[c] - a[c];
             if (e > d) d = e;
@@ -187,6 +200,7 @@ static void compare(const Scene* s, const unsigned char* sw, const unsigned char
             for (unsigned k = 0; k < (dbpp == 4 ? 3u : dbpp); ++k)
                 a |= (uint32_t)sw_depth[i * dbpp + k] << (8 * k), b |= (uint32_t)gpu_depth[i * dbpp + k] << (8 * k);
             uint32_t e = a > b ? a - b : b - a;
+            if (multisampled && on_edge(sw_depth, dbpp, i)) continue;
             bool stencil = dbpp == 4 && sw_depth[i * 4 + 3] != gpu_depth[i * 4 + 3];
             /* the reference snaps positions to 12.4 fixed point, the host to its own subpixel grid: depths differ by
                their slope times a fraction of a pixel */
@@ -198,9 +212,9 @@ static void compare(const Scene* s, const unsigned char* sw, const unsigned char
         }
     }
     /* edges: a pixel's worth of the target's outline and the triangles' */
-    bool ok = off <= W * H / 25 && depth_off <= W * H / 25;
-    printf("%s%-24s %4u pixels off by more than %u (largest %u), %4u depth or stencil values off: %s\n",
-           uber_pass ? "uber: " : scaled ? (scaled == 2 ? "x2: " : "x3: ") : "", s->name, off, tolerance, worst, depth_off, ok ? "ok" : "FAIL");
+    bool ok = multisampled ? off <= W * H / 100 && depth_off <= W * H / 100 : off <= W * H / 25 && depth_off <= W * H / 25;
+    printf("%s%s%-24s %4u pixels off by more than %u (largest %u), %4u depth or stencil values off: %s\n",
+           multisampled ? "msaa: " : "", uber_pass ? "uber: " : scaled ? (scaled == 2 ? "x2: " : "x3: ") : "", s->name, off, tolerance, worst, depth_off, ok ? "ok" : "FAIL");
     if (!ok) ++failures;
 }
 
@@ -499,6 +513,27 @@ int main(void) {
         uber_pass = false;
         scenes(m);
     }
+    /* and with a budget that holds a few targets at most: the least used are stored and let go of, the scenes agree */
+    scaled = 2;
+    snx_ctr_vk_free();
+    if (snx_ctr_vk_init(m, why, sizeof why)) {
+        g_settings.ctr_resolution_scale = 2;
+        g_settings.ctr_target_memory = 1;
+        scenes(m);
+        g_settings.ctr_target_memory = 0;
+    }
+    /* and with multisampling, at the console's resolution and at 2x: the interiors of the polygons agree, their edges are
+       smoothed (the tolerance of the edge pixels) */
+    for (scaled = 0; scaled <= 2; scaled += 2) {
+        snx_ctr_vk_free();
+        if (!snx_ctr_vk_init(m, why, sizeof why)) break;
+        g_settings.ctr_resolution_scale = scaled ? (int)scaled : 1;
+        g_settings.ctr_multisampling = 2;
+        multisampled = true;
+        scenes(m);
+    }
+    multisampled = false;
+    g_settings.ctr_multisampling = 0;
     g_settings.ctr_resolution_scale = 1;
     snx_ctr_vk_free();
     snx_ctr_memory_free(m);

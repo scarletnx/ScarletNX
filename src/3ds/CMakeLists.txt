@@ -32,6 +32,14 @@ foreach(shader fill display_transfer display_hires fxaa texture_copy present tex
     snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/${shader}.comp NAME snx_ctr_${shader}_spv
                    HEADER 3ds/gpu/vk/shaders/${shader}_spv.h)
 endforeach()
+# the draws that fill a multisampled target from its single-sample image (the ctr_msaa setting)
+foreach(shader msaa.vert:msaa_vert msaa_color.frag:msaa_color msaa_depth.frag:msaa_depth msaa_stencil.frag:msaa_stencil)
+    string(REPLACE ":" ";" parts "${shader}")
+    list(GET parts 0 file)
+    list(GET parts 1 name)
+    snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/${file} NAME snx_ctr_${name}_spv
+                   HEADER 3ds/gpu/vk/shaders/${name}_spv.h)
+endforeach()
 # the texture environment as one fragment shader, for a draw whose exact shader is still being built
 snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/uber.frag NAME snx_ctr_uber_spv HEADER 3ds/gpu/vk/shaders/uber_spv.h)
 # the PICA's software back end (clipping, rasterizing, texturing), ported from Azahar's: the CPU reference the GPU's

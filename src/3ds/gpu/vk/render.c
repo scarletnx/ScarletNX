@@ -12,6 +12,10 @@
 #include "3ds/gpu/vk/shaders/color_spv.h"
 #include "3ds/gpu/vk/shaders/depth_spv.h"
 #include "3ds/gpu/vk/shaders/depth_scale_spv.h"
+#include "3ds/gpu/vk/shaders/msaa_color_spv.h"
+#include "3ds/gpu/vk/shaders/msaa_depth_spv.h"
+#include "3ds/gpu/vk/shaders/msaa_stencil_spv.h"
+#include "3ds/gpu/vk/shaders/msaa_vert_spv.h"
 #include "3ds/gpu/vk/shaders/display_hires_spv.h"
 #include "3ds/gpu/vk/shaders/texture_spv.h"
 #include "3ds/gpu/vk/shaders/uber_spv.h"
@@ -75,6 +79,7 @@ typedef struct {
     VkDeviceMemory memory;
     VkImageView view;       /* every level and layer: sampled (2D or cube) or attached */
     VkImageView levels[11]; /* textures: each level as an array, for the decoder to store into */
+    VkImageView aspects[2]; /* a depth and stencil image sampled: its depth alone and its stencil alone */
     uint32_t width, height, level_count, layers;
 } Image;
 
@@ -96,6 +101,10 @@ typedef struct {
     VkDeviceSize scaled_stencil_at;
     bool color_valid, depth_valid, color_dirty, depth_dirty;
     uint64_t used; /* the last submission's serial that drew into it or read it */
+    VkDeviceSize bytes; /* the device memory its images and buffers take (target_cost) */
+    /* with multisampling: the images the draws go to, which the single-sample ones above are resolved from at the end of
+       each pass, so those are what is stored and shown; the draws fill these from them when the target is loaded */
+    Image ms_color, ms_depth;
 } Target;
 
 /* A displayed framebuffer kept at the resolution scale: what a display transfer made of a scaled target, as the
@@ -222,6 +231,12 @@ static struct {
     Hires hires_frames[HIRES_FRAMES];
     VkDescriptorSetLayout set0, set1;
     VkPipelineLayout layout;
+    /* multisampling: the samples of a target's draws (1 for none), and the draws that fill a multisampled target from the
+       single-sample image */
+    VkSampleCountFlagBits samples;
+    VkSampler msaa_sampler;
+    VkPipelineLayout msaa_layout;
+    VkPipeline msaa_color, msaa_depth, msaa_stencil;
     VkFormat depth_format;
     bool depth_float;
     VkBuffer ring;
@@ -241,8 +256,9 @@ static struct {
     size_t fs_count, fs_capacity;
     Pipe* pipes;
     size_t pipe_count, pipe_capacity;
-    Target targets[TARGETS];
+    Target targets[TARGETS]; /* a slot of no width is free */
     unsigned target_count;
+    VkDeviceSize target_bytes, target_budget; /* what the targets kept take, and what they may take together */
     /* the target the draws go to, and whether its rendering pass is open */
     unsigned open;
     bool opened, rendering;
@@ -283,6 +299,8 @@ static VkDevice device(void) { return snx_ctr_vk()->device; }
 static void image_free(Image* m) {
     VkDevice d = device();
     if (m->view) vkDestroyImageView(d, m->view, NULL);
+    for (unsigned i = 0; i < 2; ++i)
+        if (m->aspects[i]) vkDestroyImageView(d, m->aspects[i], NULL);
     for (unsigned i = 0; i < 11; ++i)
         if (m->levels[i]) vkDestroyImageView(d, m->levels[i], NULL);
     if (m->image) vkDestroyImage(d, m->image, NULL);
@@ -292,8 +310,8 @@ static void image_free(Image* m) {
 static void end_rendering(void);
 /* an image in the GENERAL layout, which every use of it here takes: color (RGBA8) or the depth format, with layers 1
    or 6 (a cube), and storage views of each level for a texture */
-static bool image_new(VkFormat format, uint32_t width, uint32_t height, uint32_t levels, uint32_t layers,
-                      VkImageUsageFlags usage, Image* m) {
+static bool image_make(VkFormat format, uint32_t width, uint32_t height, uint32_t levels, uint32_t layers,
+                       VkImageUsageFlags usage, VkSampleCountFlagBits samples, Image* m) {
     VkDevice d = device();
     bool depth = format != VK_FORMAT_R8G8B8A8_UNORM;
     VkImageAspectFlags aspect = depth ? VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT
@@ -306,7 +324,7 @@ static bool image_new(VkFormat format, uint32_t width, uint32_t height, uint32_t
                             .extent = {width, height, 1},
                             .mipLevels = levels,
                             .arrayLayers = layers,
-                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .samples = samples,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = usage,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
@@ -333,7 +351,16 @@ static bool image_new(VkFormat format, uint32_t width, uint32_t height, uint32_t
         image_free(m);
         return false;
     }
-    if (usage & VK_IMAGE_USAGE_SAMPLED_BIT)
+    if ((usage & VK_IMAGE_USAGE_SAMPLED_BIT) && depth)
+        for (unsigned i = 0; i < 2; ++i) {
+            vi.subresourceRange = (VkImageSubresourceRange){i ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT,
+                                                            0, 1, 0, 1};
+            if (vkCreateImageView(d, &vi, NULL, &m->aspects[i]) != VK_SUCCESS) {
+                image_free(m);
+                return false;
+            }
+        }
+    else if (usage & VK_IMAGE_USAGE_SAMPLED_BIT)
         for (uint32_t i = 0; i < levels && i < 11; ++i) {
             vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
             vi.subresourceRange = (VkImageSubresourceRange){aspect, i, 1, 0, layers};
@@ -358,6 +385,10 @@ static bool image_new(VkFormat format, uint32_t width, uint32_t height, uint32_t
     vkCmdPipelineBarrier(snx_ctr_vk_commands(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                          0, 0, NULL, 0, NULL, 1, &b);
     return true;
+}
+static bool image_new(VkFormat format, uint32_t width, uint32_t height, uint32_t levels, uint32_t layers,
+                      VkImageUsageFlags usage, Image* m) {
+    return image_make(format, width, height, levels, layers, usage, VK_SAMPLE_COUNT_1_BIT, m);
 }
 
 static bool buffer_new(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer,
@@ -392,6 +423,9 @@ static bool depth_usable(VkFormat format) {
                                 VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     return (p.optimalTilingFeatures & want) == want;
 }
+static VkSampleCountFlagBits msaa_samples(const SnxCtrVk* v);
+static bool msaa_make(void);
+static void msaa_free(VkDevice d);
 static bool made(void) {
     if (g.made || g.failed) return g.made;
     SnxCtrVk* v = snx_ctr_vk();
@@ -410,6 +444,15 @@ static bool made(void) {
         g.scale = (unsigned)g_settings.ctr_resolution_scale < most ? (unsigned)g_settings.ctr_resolution_scale : most;
         if (g.scale < 1) g.scale = 1;
     }
+    /* half of the largest device-local heap: the rest is for the textures, the buffers, the displays and the window */
+    for (uint32_t i = 0; i < v->memory_properties.memoryHeapCount; ++i) {
+        const VkMemoryHeap* heap = &v->memory_properties.memoryHeaps[i];
+        if ((heap->flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && heap->size / 2 > g.target_budget)
+            g.target_budget = heap->size / 2;
+    }
+    if (g_settings.ctr_target_memory > 0) g.target_budget = (VkDeviceSize)g_settings.ctr_target_memory << 20;
+    if (!g.target_budget) g.target_budget = UINT64_MAX;
+    g.samples = msaa_samples(v);
     if (depth_usable(VK_FORMAT_D24_UNORM_S8_UINT))
         g.depth_format = VK_FORMAT_D24_UNORM_S8_UINT;
     else if (depth_usable(VK_FORMAT_D32_SFLOAT_S8_UINT)) {
@@ -443,6 +486,11 @@ static bool made(void) {
                                      .pushConstantRangeCount = 1,
                                      .pPushConstantRanges = &uber_range};
     if (vkCreatePipelineLayout(v->device, &li, NULL, &g.layout) != VK_SUCCESS) return false;
+    if (g.samples > 1 && !msaa_make()) {
+        fprintf(stderr, "3ds gpu: multisampling cannot be set up: the draws are not multisampled\n");
+        msaa_free(v->device);
+        g.samples = VK_SAMPLE_COUNT_1_BIT;
+    }
     if (v->shader_object) bins_load();
     if (v->shader_object && !uber_init()) {
         fprintf(stderr, "3ds gpu: the uber shader cannot be made: a draw waits for its exact shaders\n");
@@ -691,6 +739,226 @@ static void end_rendering(void) {
     vkCmdEndRendering(snx_ctr_vk_commands());
     g.rendering = false;
 }
+/* ---- multisampling: a target's draws go to images of g.samples samples, resolved into its single-sample ones ---- */
+/* one of the three draws that fill a multisampled target from the single-sample image (0 colour, 1 depth, 2 stencil, a
+   bit a draw): a triangle over the target, without a vertex buffer */
+static VkPipeline msaa_pipeline(unsigned kind) {
+    static const struct {
+        const uint32_t* words;
+        const uint64_t* size;
+    } fragment[3] = {{snx_ctr_msaa_color_spv, &snx_ctr_msaa_color_spv_size},
+                     {snx_ctr_msaa_depth_spv, &snx_ctr_msaa_depth_spv_size},
+                     {snx_ctr_msaa_stencil_spv, &snx_ctr_msaa_stencil_spv_size}};
+    VkDevice d = device();
+    VkShaderModule modules[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkShaderModuleCreateInfo mi[2] = {
+        {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+         .codeSize = (size_t)snx_ctr_msaa_vert_spv_size,
+         .pCode = snx_ctr_msaa_vert_spv},
+        {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+         .codeSize = (size_t)*fragment[kind].size,
+         .pCode = fragment[kind].words}};
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(d, &mi[0], NULL, &modules[0]) != VK_SUCCESS ||
+        vkCreateShaderModule(d, &mi[1], NULL, &modules[1]) != VK_SUCCESS) {
+        if (modules[0]) vkDestroyShaderModule(d, modules[0], NULL);
+        return VK_NULL_HANDLE;
+    }
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+         .stage = VK_SHADER_STAGE_VERTEX_BIT,
+         .module = modules[0],
+         .pName = "main"},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+         .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+         .module = modules[1],
+         .pName = "main"}};
+    VkPipelineVertexInputStateCreateInfo input = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo assembly = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                       .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+    VkPipelineViewportStateCreateInfo viewport = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+                                                  .viewportCount = 1,
+                                                  .scissorCount = 1};
+    VkPipelineRasterizationStateCreateInfo raster = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                     .polygonMode = VK_POLYGON_MODE_FILL,
+                                                     .cullMode = VK_CULL_MODE_NONE,
+                                                     .lineWidth = 1.0f};
+    VkPipelineMultisampleStateCreateInfo multisample = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                                        .rasterizationSamples = g.samples};
+    /* the depth draw writes every sample's depth, the stencil draws replace the stencil with ones under one bit's mask */
+    VkStencilOpState replace = {.passOp = VK_STENCIL_OP_REPLACE,
+                                .compareOp = VK_COMPARE_OP_ALWAYS,
+                                .compareMask = 0xff,
+                                .reference = 0xff};
+    VkPipelineDepthStencilStateCreateInfo depth = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                                                   .depthTestEnable = kind == 1,
+                                                   .depthWriteEnable = kind == 1,
+                                                   .depthCompareOp = VK_COMPARE_OP_ALWAYS,
+                                                   .stencilTestEnable = kind == 2,
+                                                   .front = replace,
+                                                   .back = replace};
+    VkPipelineColorBlendAttachmentState attachment = {.colorWriteMask = 0xf};
+    VkPipelineColorBlendStateCreateInfo blend = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                                 .attachmentCount = kind == 0,
+                                                 .pAttachments = &attachment};
+    VkDynamicState dynamic[3] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK};
+    VkPipelineDynamicStateCreateInfo dynamic_state = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                                                      .dynamicStateCount = kind == 2 ? 3u : 2u,
+                                                      .pDynamicStates = dynamic};
+    VkFormat color_format = VK_FORMAT_R8G8B8A8_UNORM;
+    VkPipelineRenderingCreateInfo rendering = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                                               .colorAttachmentCount = kind == 0,
+                                               .pColorAttachmentFormats = &color_format,
+                                               .depthAttachmentFormat = kind ? g.depth_format : VK_FORMAT_UNDEFINED,
+                                               .stencilAttachmentFormat = kind ? g.depth_format : VK_FORMAT_UNDEFINED};
+    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+                                       .pNext = &rendering,
+                                       .stageCount = 2,
+                                       .pStages = stages,
+                                       .pVertexInputState = &input,
+                                       .pInputAssemblyState = &assembly,
+                                       .pViewportState = &viewport,
+                                       .pRasterizationState = &raster,
+                                       .pMultisampleState = &multisample,
+                                       .pDepthStencilState = &depth,
+                                       .pColorBlendState = &blend,
+                                       .pDynamicState = &dynamic_state,
+                                       .layout = g.msaa_layout};
+    if (vkCreateGraphicsPipelines(d, snx_ctr_vk()->pipeline_cache, 1, &pi, NULL, &pipeline) != VK_SUCCESS)
+        pipeline = VK_NULL_HANDLE;
+    vkDestroyShaderModule(d, modules[0], NULL);
+    vkDestroyShaderModule(d, modules[1], NULL);
+    return pipeline;
+}
+static void msaa_free(VkDevice d) {
+    if (g.msaa_color) vkDestroyPipeline(d, g.msaa_color, NULL);
+    if (g.msaa_depth) vkDestroyPipeline(d, g.msaa_depth, NULL);
+    if (g.msaa_stencil) vkDestroyPipeline(d, g.msaa_stencil, NULL);
+    if (g.msaa_layout) vkDestroyPipelineLayout(d, g.msaa_layout, NULL);
+    if (g.msaa_sampler) vkDestroySampler(d, g.msaa_sampler, NULL);
+    g.msaa_color = g.msaa_depth = g.msaa_stencil = VK_NULL_HANDLE;
+    g.msaa_layout = VK_NULL_HANDLE;
+    g.msaa_sampler = VK_NULL_HANDLE;
+}
+/* the samples the setting asks for (2 ^ ctr_msaa) or the most below that the device draws and resolves colour and
+   depth with, 1 for none */
+static VkSampleCountFlagBits msaa_samples(const SnxCtrVk* v) {
+    VkPhysicalDeviceDepthStencilResolveProperties resolve = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES};
+    VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &resolve};
+    if (g_settings.ctr_multisampling < 1) return VK_SAMPLE_COUNT_1_BIT;
+    vkGetPhysicalDeviceProperties2(v->phys, &properties);
+    if (!(resolve.supportedDepthResolveModes & VK_RESOLVE_MODE_SAMPLE_ZERO_BIT) ||
+        !(resolve.supportedStencilResolveModes & VK_RESOLVE_MODE_SAMPLE_ZERO_BIT))
+        return VK_SAMPLE_COUNT_1_BIT;
+    VkSampleCountFlags drawn = v->properties.limits.framebufferColorSampleCounts &
+                               v->properties.limits.framebufferDepthSampleCounts &
+                               v->properties.limits.framebufferStencilSampleCounts;
+    for (unsigned want = 1u << (g_settings.ctr_multisampling > 3 ? 3 : g_settings.ctr_multisampling); want > 1; want >>= 1)
+        if (drawn & want) return (VkSampleCountFlagBits)want;
+    return VK_SAMPLE_COUNT_1_BIT;
+}
+/* the draws that fill the multisampled images, made when g.samples is above 1 */
+static bool msaa_make(void) {
+    VkDevice d = device();
+    VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                              .magFilter = VK_FILTER_NEAREST,
+                              .minFilter = VK_FILTER_NEAREST,
+                              .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                              .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                              .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                              .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+    VkPushConstantRange range = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(uint32_t)};
+    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                     .setLayoutCount = 1,
+                                     .pSetLayouts = &g.set1,
+                                     .pushConstantRangeCount = 1,
+                                     .pPushConstantRanges = &range};
+    if (vkCreateSampler(d, &si, NULL, &g.msaa_sampler) != VK_SUCCESS ||
+        vkCreatePipelineLayout(d, &li, NULL, &g.msaa_layout) != VK_SUCCESS)
+        return false;
+    g.msaa_color = msaa_pipeline(0);
+    g.msaa_depth = msaa_pipeline(1);
+    g.msaa_stencil = msaa_pipeline(2);
+    return g.msaa_color && g.msaa_depth && g.msaa_stencil;
+}
+/* set's binding 0 the view, sampled by texelFetch */
+static void msaa_source(VkDescriptorSet set, VkImageView view) {
+    VkDescriptorImageInfo image = {g.msaa_sampler, view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                  .dstSet = set,
+                                  .descriptorCount = 1,
+                                  .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                  .pImageInfo = &image};
+    vkUpdateDescriptorSets(device(), 1, &write, 0, NULL);
+}
+/* the target's colour and depth just loaded into its single-sample images, copied to every sample of its multisampled
+   ones: a triangle for the colour, one for the depth, and a draw for each bit of the stencil. False when the recording
+   is out of descriptors */
+static bool msaa_load(Target* t, bool color, bool depth) {
+    VkCommandBuffer cb = snx_ctr_vk_commands();
+    uint32_t width = t->key.width * g.scale, height = t->key.height * g.scale;
+    VkViewport viewport = {0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f};
+    VkRect2D area = {{0, 0}, {width, height}};
+    VkDescriptorSet color_set = VK_NULL_HANDLE, depth_set = VK_NULL_HANDLE, stencil_set = VK_NULL_HANDLE;
+    depth = depth && t->key.depth_format != NO_DEPTH;
+    if ((color && !(color_set = snx_ctr_vk_set(g.set1))) ||
+        (depth && (!(depth_set = snx_ctr_vk_set(g.set1)) || !(stencil_set = snx_ctr_vk_set(g.set1)))))
+        return false;
+    snx_ctr_vk_barrier(cb);
+    if (color) {
+        msaa_source(color_set, t->color.view);
+        VkRenderingAttachmentInfo attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                                .imageView = t->ms_color.view,
+                                                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                                .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                                .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+        VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                              .renderArea = area,
+                              .layerCount = 1,
+                              .colorAttachmentCount = 1,
+                              .pColorAttachments = &attachment};
+        vkCmdBeginRendering(cb, &ri);
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.msaa_color);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.msaa_layout, 0, 1, &color_set, 0, NULL);
+        vkCmdSetViewport(cb, 0, 1, &viewport);
+        vkCmdSetScissor(cb, 0, 1, &area);
+        vkCmdDraw(cb, 3, 1, 0, 0);
+        vkCmdEndRendering(cb);
+        snx_ctr_vk_barrier(cb);
+    }
+    if (depth) {
+        msaa_source(depth_set, t->depth.aspects[0]);
+        msaa_source(stencil_set, t->depth.aspects[1]);
+        VkRenderingAttachmentInfo attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                                .imageView = t->ms_depth.view,
+                                                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                                .clearValue = {.depthStencil = {1.0f, 0}}};
+        VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                              .renderArea = area,
+                              .layerCount = 1,
+                              .pDepthAttachment = &attachment,
+                              .pStencilAttachment = &attachment};
+        vkCmdBeginRendering(cb, &ri);
+        vkCmdSetViewport(cb, 0, 1, &viewport);
+        vkCmdSetScissor(cb, 0, 1, &area);
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.msaa_depth);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.msaa_layout, 0, 1, &depth_set, 0, NULL);
+        vkCmdDraw(cb, 3, 1, 0, 0);
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.msaa_stencil);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.msaa_layout, 0, 1, &stencil_set, 0, NULL);
+        for (uint32_t bit = 0; bit < 8; ++bit) {
+            vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 1u << bit);
+            vkCmdPushConstants(cb, g.msaa_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof bit, &bit);
+            vkCmdDraw(cb, 3, 1, 0, 0);
+        }
+        vkCmdEndRendering(cb);
+        snx_ctr_vk_barrier(cb);
+    }
+    return true;
+}
 /* the target's colour, and its depth and stencil, moved between the guest's memory and its images (store: to memory,
    which is then the GPU's until the recording is done) */
 static bool target_move(Target* t, bool store, bool color, bool depth) {
@@ -798,7 +1066,8 @@ static void stale(uint32_t pa, uint64_t size) {
     }
 }
 static void target_free(Target* t);
-static bool target_images(Target* t, uint32_t width, uint32_t height) {
+static bool target_images(Target* t, const TargetKey* key) {
+    uint32_t width = key->width, height = key->height;
     VkDeviceSize pixels = (VkDeviceSize)width * height;
     VkDeviceSize alignment = snx_ctr_vk()->properties.limits.minStorageBufferOffsetAlignment;
     if (alignment < 4) alignment = 4;
@@ -808,12 +1077,19 @@ static bool target_images(Target* t, uint32_t width, uint32_t height) {
     t->scaled_stencil_at = (scaled_pixels * 4 + alignment - 1) / alignment * alignment;
     VkBufferUsageFlags buffer_usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                       VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VkImageUsageFlags sampled = g.samples > 1 ? VK_IMAGE_USAGE_SAMPLED_BIT : 0; /* what fills the multisampled images */
     if (!image_new(VK_FORMAT_R8G8B8A8_UNORM, scaled_width, scaled_height, 1, 1,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT, &t->color) ||
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | sampled, &t->color) ||
         !image_new(g.depth_format, scaled_width, scaled_height, 1, 1,
                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                       VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                       VK_IMAGE_USAGE_TRANSFER_DST_BIT | sampled,
                    &t->depth) ||
+        (g.samples > 1 &&
+         (!image_make(VK_FORMAT_R8G8B8A8_UNORM, scaled_width, scaled_height, 1, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                      g.samples, &t->ms_color) ||
+          (key->depth_format != NO_DEPTH &&
+           !image_make(g.depth_format, scaled_width, scaled_height, 1, 1, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                       g.samples, &t->ms_depth)))) ||
         !buffer_new(t->stencil_at + (pixels + 3) / 4 * 4, buffer_usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &t->scratch,
                     &t->scratch_memory) ||
         (g.scale > 1 && !buffer_new(t->scaled_stencil_at + (scaled_pixels + 3) / 4 * 4, buffer_usage,
@@ -826,6 +1102,8 @@ static bool target_images(Target* t, uint32_t width, uint32_t height) {
 static void target_free(Target* t) {
     image_free(&t->color);
     image_free(&t->depth);
+    image_free(&t->ms_color);
+    image_free(&t->ms_depth);
     if (t->scratch) vkDestroyBuffer(device(), t->scratch, NULL);
     if (t->scratch_memory) vkFreeMemory(device(), t->scratch_memory, NULL);
     t->scratch = VK_NULL_HANDLE;
@@ -835,30 +1113,65 @@ static void target_free(Target* t) {
     t->scaled = VK_NULL_HANDLE;
     t->scaled_memory = VK_NULL_HANDLE;
 }
-/* a target for key: the one kept, or a new one (the least used one stored and let go of when they are all taken) */
+/* the device memory a target of this size takes: the colour image, the depth and stencil image (8 bytes a pixel at
+   most), the scaled buffer with a resolution scale, and the guest-size scratch */
+static VkDeviceSize target_cost(uint32_t width, uint32_t height) {
+    VkDeviceSize pixels = (VkDeviceSize)width * height, scaled = pixels * g.scale * g.scale;
+    return scaled * (4 + 8) * (g.samples > 1 ? 1 + g.samples : 1) + (g.scale > 1 ? scaled * 5 : 0) + pixels * 5;
+}
+/* the least used target kept that is not the open one, NULL when there is none */
+static Target* target_idle(void) {
+    Target* t = NULL;
+    for (unsigned i = 0; i < g.target_count; ++i) {
+        Target* u = &g.targets[i];
+        if (!u->key.width || (g.opened && g.open == i)) continue;
+        if (!t || u->used < t->used) t = u;
+    }
+    return t;
+}
+/* a target stored and let go of: its slot is free */
+static bool target_evict(Target* t) {
+    if (!target_store(t)) return false;
+    set_color(t, false, false);
+    set_depth(t, false, false);
+    /* its images may be in the recordings in flight: they go when those are done */
+    bury(&t->color, NULL, NULL);
+    bury(&t->depth, &t->scratch, &t->scratch_memory);
+    Image none = {0};
+    bury(&none, &t->scaled, &t->scaled_memory);
+    bury(&t->ms_color, NULL, NULL);
+    bury(&t->ms_depth, NULL, NULL);
+    g.target_bytes -= t->bytes;
+    *t = (Target){0};
+    return true;
+}
+/* a target for key: the one kept, or a new one. The least used ones are stored and let go of while the targets would
+   take more than the budget, or the slots are all taken, or the device has no memory for the new one */
 static Target* target_find(const TargetKey* k) {
     for (unsigned i = 0; i < g.target_count; ++i)
         if (!memcmp(&g.targets[i].key, k, sizeof *k)) return &g.targets[i];
-    Target* t = NULL;
-    if (g.target_count < TARGETS)
-        t = &g.targets[g.target_count];
-    else {
-        for (unsigned i = 0; i < TARGETS; ++i)
-            if ((!g.opened || g.open != i) && (!t || g.targets[i].used < t->used)) t = &g.targets[i];
-        if (!target_store(t)) return NULL;
-        set_color(t, false, false);
-        set_depth(t, false, false);
-        /* its images may be in the recordings in flight: they go when those are done */
-        bury(&t->color, NULL, NULL);
-        bury(&t->depth, &t->scratch, &t->scratch_memory);
-        Image none = {0};
-        bury(&none, &t->scaled, &t->scaled_memory);
+    VkDeviceSize cost = target_cost(k->width, k->height);
+    for (;;) {
+        Target* t = NULL;
+        for (unsigned i = 0; i < g.target_count && !t; ++i)
+            if (!g.targets[i].key.width) t = &g.targets[i];
+        if (!t && g.target_count < TARGETS) t = &g.targets[g.target_count];
+        /* over the budget with nothing else to let go of, the target is made anyway: it is the one the draw needs */
+        Target* idle = target_idle();
+        if (!t || (g.target_bytes + cost > g.target_budget && idle)) {
+            if (!idle || !target_evict(idle)) return NULL;
+            continue;
+        }
+        *t = (Target){0};
+        if (target_images(t, k)) {
+            t->key = *k;
+            t->bytes = cost;
+            g.target_bytes += cost;
+            if (t == &g.targets[g.target_count]) ++g.target_count;
+            return t;
+        }
+        if (!idle || !target_evict(idle)) return NULL; /* no memory: a target less, then again */
     }
-    *t = (Target){0};
-    if (!target_images(t, k->width, k->height)) return NULL;
-    t->key = *k;
-    if (t == &g.targets[g.target_count]) ++g.target_count;
-    return t;
 }
 /* the draw's target open: the one kept for key, loaded from memory unless its images hold what memory does. Other
    targets over the same memory are stored first, and are stale from now on */
@@ -882,6 +1195,7 @@ static SnxCtrPicaResult target_open(const TargetKey* k) {
     }
     bool color = !t->color_valid, depth = !t->depth_valid && k->depth_format != NO_DEPTH;
     if ((color || depth) && !target_move(t, false, color, depth)) return AGAIN;
+    if (g.samples > 1 && (color || depth) && !msaa_load(t, color, depth)) return AGAIN;
     set_color(t, true, t->color_dirty);
     set_depth(t, true, t->depth_dirty);
     t->used = snx_ctr_vk_serial();
@@ -1370,7 +1684,7 @@ static void pipe_state(const PipeKey* k, PipeState* st) {
         .lineWidth = 1.0f};
     st->multisample = (VkPipelineMultisampleStateCreateInfo){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+        .rasterizationSamples = g.samples};
     /* the values are the draw's (set_depth_state); the pipeline only has the state dynamic */
     st->depth = (VkPipelineDepthStencilStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     st->attachment = (VkPipelineColorBlendAttachmentState){
@@ -1434,7 +1748,7 @@ static void set_object_state(VkCommandBuffer cb, const PipeKey* k) {
     vkCmdSetDepthBiasEnable(cb, VK_FALSE);
     vkCmdSetDepthClampEnableEXT(cb, VK_FALSE);
     vkCmdSetDepthBoundsTestEnable(cb, VK_FALSE);
-    vkCmdSetRasterizationSamplesEXT(cb, VK_SAMPLE_COUNT_1_BIT);
+    vkCmdSetRasterizationSamplesEXT(cb, g.samples);
     const VkSampleMask mask = 0xffffffffu;
     vkCmdSetSampleMaskEXT(cb, VK_SAMPLE_COUNT_1_BIT, &mask);
     vkCmdSetAlphaToCoverageEnableEXT(cb, VK_FALSE);
@@ -2276,6 +2590,16 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
                                            .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
         VkRenderingAttachmentInfo ds = color;
         ds.imageView = t->depth.view;
+        if (g.samples > 1) { /* drawn to the multisampled images, resolved into the single-sample ones at the pass's end */
+            color.imageView = t->ms_color.view;
+            color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+            color.resolveImageView = t->color.view;
+            color.resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            ds.imageView = t->ms_depth.view;
+            ds.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+            ds.resolveImageView = t->depth.view;
+            ds.resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        }
         VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
                               .renderArea = {{0, 0}, {t->key.width * g.scale, t->key.height * g.scale}},
                               .layerCount = 1,
@@ -2468,6 +2792,7 @@ void snx_ctr_vk_render_free(void) {
     if (g.ring) vkDestroyBuffer(d, g.ring, NULL);
     if (g.ring_memory) vkFreeMemory(d, g.ring_memory, NULL);
     if (g.layout) vkDestroyPipelineLayout(d, g.layout, NULL);
+    msaa_free(d);
     if (g.set0) vkDestroyDescriptorSetLayout(d, g.set0, NULL);
     if (g.set1) vkDestroyDescriptorSetLayout(d, g.set1, NULL);
     snx_ctr_vk_compute_free(&g.color);

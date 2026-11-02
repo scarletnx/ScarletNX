@@ -660,7 +660,9 @@ the ones that were picked to the 3DS driver as `--key=value` when it starts a ga
 | `ctr_gamepad_map`, `ctr_gamepad_swap_ab`, `ctr_gamepad_deadzone` | `south:B east:A`, 0 or 1, 0 to 90 | The gamepad's controls by where they sit, the A and B swap, and the dead zone of the sticks. |
 | `ctr_anisotropy` | 0 to 16 | Anisotropic filtering of the samplers that filter linearly. 0 is as the game asks. |
 | `ctr_resolution_scale` | 1 to 4 | The 3D picture drawn at this multiple of the console's resolution (see below). |
+| `ctr_target_memory` | megabytes, 0 | The video memory that the 3D pictures kept between frames may take together. 0 is half of the video memory. Over that, the least used picture is stored to the console's memory and drawn again from there when a draw needs it. |
 | `ctr_anti_aliasing` | 0 or 1 | 1 filters the window's picture with FXAA. |
+| `ctr_msaa` | 0 to 3 | The 3D picture drawn with 1 (0), 2, 4 or 8 samples to a pixel. The draws go to multisampled images, which are resolved into the single-sample ones at the end of each pass, so the stores and the window see the resolved picture. A device that draws fewer samples takes its own most. The depth that goes back to the console's memory is the first sample's. |
 | `ctr_screen_layout` | 0 to 5 | Stacked, side by side, large top, large bottom, top only, bottom only. F10 goes to the next one. The touch screen follows the bottom screen. |
 | `ctr_scaling_filter`, `ctr_integer_scale` | 0 or 1 | Nearest or linear stretch to the window, and a whole number of window pixels to each console pixel. |
 | `ctr_vsync`, `ctr_fullscreen` | 0 or 1 | Presentation at the display's refresh rate or at once, and the window fullscreen at the start (F11 or Alt and Enter toggles it). |
