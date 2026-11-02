@@ -800,6 +800,9 @@ int vk_guest_read_seen(u64 gva, u64 size, VkBuffer buf, u64 at);
    holds come back as a pattern of their owner (which a new owner changes, and the CPU's own bytes replace once it
    touches them): nothing lands */
 void vk_guest_peek(u64 gva, void* dst, u64 size);
+/* 1 when one GPU-owned range holds all of guest bytes [gva, gva + size), one run of the GPU's page table, with *tag its
+   identity at gva as vk_guest_peek writes it there (its owner's serial, the offset in it); else 0 */
+int vk_guest_owned_whole(u64 gva, u64 size, u64* tag);
 /* everything recorded so far done before what follows reads or writes what it did (the engines' steps) */
 void vk_all_barrier(VkCommandBuffer cb);
 /* rows rows of row_bytes from src (rows src_pitch apart) over dst's rows (dst_pitch apart), a region a row */
