@@ -131,19 +131,26 @@ static bool parse(CtrReader* r, const CtrSource* s, CtrNcch* n, bool overlay) {
     bool ok = stored && n->code ? ctr_read(r, files[code_index], 0, stored, stored_size)
                                 : ctr_fail(r, SNX_CTR_EXTRACT_LIMIT, "out of memory");
     size_t expanded = stored_size;
-    if (ok && (exheader[0xd] & 1)) {
-        if (stored_size < 8 || (uint64_t)stored_size + snx_ld_le32(stored + stored_size - 4) > expected)
-            ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "BLZ expansion exceeds segment sizes");
-        else {
-            expanded += snx_ld_le32(stored + stored_size - 4);
-            if (!snx_ctr_blz(stored, stored_size, n->code, expanded))
-                ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid ExeFS BLZ stream");
-        }
-    } else if (ok) {
+    /* A dump made with a tool that expands .code and leaves the ExHeader's compressed flag set holds plain code: a
+       stream with no BLZ footer is taken as that when it fits the segments, as the console's loader would not have
+       run it either */
+    bool compressed = exheader[0xd] & 1;
+    if (ok && compressed &&
+        (stored_size < 8 || (uint64_t)stored_size + snx_ld_le32(stored + stored_size - 4) > expected ||
+         !snx_ctr_blz(stored, stored_size, n->code, stored_size + snx_ld_le32(stored + stored_size - 4)))) {
+        if (stored_size > expected)
+            ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid ExeFS BLZ stream");
+        else
+            compressed = false;
+    } else if (ok && compressed)
+        expanded += snx_ld_le32(stored + stored_size - 4);
+    if (ok && !compressed) {
         if (stored_size > expected)
             ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "code exceeds process segment sizes");
-        else
+        else {
+            memset(n->code, 0, n->code_size); /* a failed expansion may have written some */
             memcpy(n->code, stored, stored_size);
+        }
     }
     free(stored);
     if (!ok) return false;
