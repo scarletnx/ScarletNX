@@ -71,6 +71,7 @@ public final class Main {
     }
 
     private static void boot() throws Throwable {
+        Network.install();
         android.os.Looper.prepareMainLooper();
         android.content.res.Resources res = android.content.res.Resources.getSystem();
         Package pkg = Package.get();

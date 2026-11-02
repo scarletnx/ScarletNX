@@ -24,17 +24,21 @@ public class ConnectivityManager {
 
     private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
 
-    public Network getActiveNetwork() { return Network.HOST; }
-    @Deprecated public NetworkInfo getActiveNetworkInfo() { return new NetworkInfo(); }
-    @Deprecated public NetworkInfo getNetworkInfo(Network network) { return new NetworkInfo(); }
-    @Deprecated public NetworkInfo[] getAllNetworkInfo() { return new NetworkInfo[] {new NetworkInfo()}; }
-    public Network[] getAllNetworks() { return new Network[] {Network.HOST}; }
-    public NetworkCapabilities getNetworkCapabilities(Network network) { return new NetworkCapabilities(); }
+    /* the host's connection while ScarletNX's Network setting is on; offline, no network at all */
+    private static boolean online() { return snx.android.Network.online(); }
+    public Network getActiveNetwork() { return online() ? Network.HOST : null; }
+    @Deprecated public NetworkInfo getActiveNetworkInfo() { return online() ? new NetworkInfo() : null; }
+    @Deprecated public NetworkInfo getNetworkInfo(Network network) { return online() ? new NetworkInfo() : null; }
+    @Deprecated public NetworkInfo getNetworkInfo(int networkType) { return online() && networkType == TYPE_ETHERNET ? new NetworkInfo() : null; }
+    @Deprecated public NetworkInfo[] getAllNetworkInfo() { return online() ? new NetworkInfo[] {new NetworkInfo()} : new NetworkInfo[0]; }
+    public Network[] getAllNetworks() { return online() ? new Network[] {Network.HOST} : new Network[0]; }
+    public NetworkCapabilities getNetworkCapabilities(Network network) { return online() && network != null ? new NetworkCapabilities() : null; }
     public boolean isActiveNetworkMetered() { return false; }
     public int getRestrictBackgroundStatus() { return RESTRICT_BACKGROUND_STATUS_DISABLED; }
     public boolean bindProcessToNetwork(Network network) { return true; }
     public Network getBoundNetworkForProcess() { return null; }
     private void available(NetworkCallback cb) {
+        if (!online()) return;
         handler.post(() -> { cb.onAvailable(Network.HOST); cb.onCapabilitiesChanged(Network.HOST, new NetworkCapabilities()); });
     }
     public void registerNetworkCallback(NetworkRequest request, NetworkCallback networkCallback) { available(networkCallback); }

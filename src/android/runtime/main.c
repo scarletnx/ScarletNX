@@ -7,6 +7,7 @@
 #include "android/bridge/jni.h"
 #include "android/bridge/native.h"
 #include "android/bridge/hle_assets.h"
+#include "common/utilities/ini_lines.h"
 #include "android/hwui/render.h"
 #include "android/hwui/text.h"
 #include "android/res/xml_jni.h"
@@ -201,6 +202,29 @@ static char* framework_jar(const char* argv0) {
     return jar;
 }
 
+/* ScarletNX's Network setting (settings.txt's network: 1 online, 0 offline with loopback only, the default), as the
+   launcher keeps it for every run in settings.ini of its config folder */
+static bool network_online(void) {
+    char* data = snx_user_data_dir();
+    char* config = data ? snx_app_kind_dir(data, SNX_USER_CONFIG) : NULL;
+    char* path = config ? snx_path_join(config, "settings.ini") : NULL;
+    free(data);
+    free(config);
+    size_t size;
+    char* text = path ? (char*)snx_read_file(path, &size) : NULL;
+    free(path);
+    bool online = false;
+    if (text) {
+        SnxIni ini;
+        char *key, *value;
+        snx_ini_start(&ini, text);
+        while (snx_ini_next(&ini, &key, &value))
+            if (!strcmp(key, "network")) online = atoi(value) == 1;
+        free(text);
+    }
+    return online;
+}
+
 static int run_apk(const char* argv0, const char* apk, char** options, size_t option_count) {
     char error[1024];
     AndroidInstall install;
@@ -227,14 +251,19 @@ static int run_apk(const char* argv0, const char* apk, char** options, size_t op
     char* folder = snx_dirname(jar);
     char* fonts = folder ? snx_path_join(folder, "android-fonts") : NULL;
     char* fonts_option = fonts ? snx_format("-Dsnx.android.fonts=%s", fonts) : NULL;
-    /* the app's data folder, which the install made */
+    /* the app's data folder, which the install made, and whether it has the network (on both sides of the bridge) */
+    bool online = network_online();
+    hle_set_network(online);
+    fprintf(stderr, "scarletnx-android: the network is %s (the Network setting)\n", online ? "on" : "off");
     char* data_option = snx_format("-Dsnx.android.data=%s", install.data_dir);
-    char** all = calloc(option_count + 2, sizeof *all);
+    char* network_option = snx_format("-Dsnx.android.network=%d", online ? 1 : 0);
+    char** all = calloc(option_count + 3, sizeof *all);
     free(folder);
     free(fonts);
-    if (!fonts_option || !data_option || !all) {
+    if (!fonts_option || !data_option || !network_option || !all) {
         free(fonts_option);
         free(data_option);
+        free(network_option);
         free(all);
         free(jar);
         android_app_close();
@@ -243,8 +272,9 @@ static int run_apk(const char* argv0, const char* apk, char** options, size_t op
     }
     all[0] = fonts_option;
     all[1] = data_option;
-    for (size_t i = 0; i < option_count; ++i) all[i + 2] = options[i];
-    Run run = {jar, all, option_count + 2, 1};
+    all[2] = network_option;
+    for (size_t i = 0; i < option_count; ++i) all[i + 3] = options[i];
+    Run run = {jar, all, option_count + 3, 1};
 #ifdef _WIN32
     HANDLE thread = CreateThread(NULL, 16u << 20, run_thread, &run, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
     if (thread) {
@@ -262,6 +292,7 @@ static int run_apk(const char* argv0, const char* apk, char** options, size_t op
     free(all);
     free(fonts_option);
     free(data_option);
+    free(network_option);
     free(jar);
     android_app_close();
     android_install_free(&install);
