@@ -61,6 +61,15 @@ public final class Device {
         c.seq = 1;
     }
 
+    /**
+     * The window's new size: the display's. Apps see it in the metrics and the configuration they read next; no
+     * configuration change goes to the activities yet.
+     */
+    public static synchronized void resize(int width, int height) {
+        if (width <= 0 || height <= 0) return;
+        set(width, height, metrics.densityDpi, (configuration.uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES);
+    }
+
     /** A copy of the display's metrics. */
     public static synchronized DisplayMetrics metrics() {
         DisplayMetrics m = new DisplayMetrics();

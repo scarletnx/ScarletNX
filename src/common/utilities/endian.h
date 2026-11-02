@@ -54,6 +54,13 @@ static inline uint64_t snx_ld_le64(const void* p) {
     memcpy(&v, p, sizeof v);
     return SNX_LE64(v);
 }
+/* an IEEE single in little-endian order (a float's bytes are in the host's integer order) */
+static inline float snx_ld_lef32(const void* p) {
+    uint32_t bits = snx_ld_le32(p);
+    float v;
+    memcpy(&v, &bits, sizeof v);
+    return v;
+}
 static inline void snx_st_le16(void* p, uint16_t v) {
     v = SNX_LE16(v);
     memcpy(p, &v, sizeof v);

@@ -82,6 +82,11 @@ public final class Activities {
 
     public static void finish(Activity activity) { main.post(() -> remove(activity)); }
 
+    /** Every activity finished, from the top down, as the window's close does: the process then ends */
+    public static void finishAll() {
+        for (int i = stack.size() - 1; i >= 0; --i) stack.get(i).activity().finish();
+    }
+
     private static void remove(Activity activity) {
         Record r = record(activity);
         if (r == null) return;
