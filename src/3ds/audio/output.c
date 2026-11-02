@@ -16,6 +16,7 @@ static struct {
     SDL_AudioStream* stream;
     FILE* wav;
     uint32_t wav_bytes;
+    bool silent; /* unlimited speed: nothing is played */
 } o;
 
 static void wav_header(uint32_t data_bytes) {
@@ -34,8 +35,9 @@ static void wav_header(uint32_t data_bytes) {
         o.wav = NULL;
     }
 }
-bool snx_ctr_audio_init(const char* wav_path) {
+bool snx_ctr_audio_init(const char* wav_path, unsigned speed_percent) {
     if (o.stream || o.wav) return true;
+    o.silent = !speed_percent;
     if (SDL_InitSubSystem(SDL_INIT_AUDIO)) {
         SDL_AudioSpec spec = {SDL_AUDIO_S16LE, 2, (int)SNX_CTR_DSP_RATE};
         o.stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
@@ -43,6 +45,9 @@ bool snx_ctr_audio_init(const char* wav_path) {
             SDL_DestroyAudioStream(o.stream);
             o.stream = NULL;
         }
+        /* the guest runs at ctr_speed_limit percent: the sound plays at that speed too (none when unlimited) */
+        if (o.stream && speed_percent)
+            (void)SDL_SetAudioStreamFrequencyRatio(o.stream, speed_percent / 100.0f);
         if (!o.stream) SDL_QuitSubSystem(SDL_INIT_AUDIO);
     }
     if (wav_path && (o.wav = fopen(wav_path, "wb")) != NULL) wav_header(0);
@@ -55,7 +60,7 @@ void snx_ctr_audio_frame(const int16_t frame[SNX_CTR_DSP_SAMPLES][2]) {
         bytes[i * 2] = (unsigned char)sample;
         bytes[i * 2 + 1] = (unsigned char)(sample >> 8);
     }
-    if (o.stream && SDL_GetAudioStreamQueued(o.stream) < (int)MAX_QUEUED)
+    if (o.stream && !o.silent && SDL_GetAudioStreamQueued(o.stream) < (int)MAX_QUEUED)
         (void)SDL_PutAudioStreamData(o.stream, bytes, (int)sizeof bytes);
     if (o.wav && o.wav_bytes < WAV_LIMIT) {
         if (fwrite(bytes, sizeof bytes, 1, o.wav) == 1) {

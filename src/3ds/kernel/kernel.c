@@ -1018,7 +1018,7 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
             return SNX_CTR_SVC_RETURN;
         }
         case 0x28: {
-            double elapsed = snx_seconds() - p->clock_origin;
+            double elapsed = snx_ctr_seconds() - p->clock_origin;
             if (!(elapsed >= 0 && elapsed < 0x1p64 / 268111856.0)) return SNX_CTR_SVC_UNSUPPORTED;
             uint64_t ticks = (uint64_t)(elapsed * 268111856.0);
             r[0] = (uint32_t)ticks;

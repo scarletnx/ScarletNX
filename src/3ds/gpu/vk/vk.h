@@ -31,6 +31,7 @@ typedef struct {
     VkPhysicalDeviceMemoryProperties memory_properties;
     bool index8, logic_op; /* VK_EXT_index_type_uint8; the logicOp feature */
     bool clip_distance;    /* shaderClipDistance */
+    float max_anisotropy;  /* the sampler anisotropy the device allows, 0 when the feature is off */
     VkPipelineCache pipeline_cache; /* the pipelines' cache, kept in the file snx_ctr_vk_cache_file names */
     bool shader_object; /* VK_EXT_shader_object with the dynamic state it draws with: no pipelines */
     bool preserve_infnan;  /* shaderSignedZeroInfNanPreserveFloat32: the generated shaders keep infinities and NaNs */

@@ -97,7 +97,7 @@ static bool local_1900_ms(uint64_t* out) {
 void snx_ctr_shared_page_time(SnxCtrProcess* p) {
     /* Azahar's UpdateTimeCallback: the entry the counter's parity does not select gets the time, the tick it was
        taken at and the tick rate; then the counter moves on, so readers (index counter & 1) switch to it whole */
-    uint64_t rtc, ticks = (uint64_t)((snx_seconds() - p->clock_origin) * 268111856.0), values[4];
+    uint64_t rtc, ticks = (uint64_t)((snx_ctr_seconds() - p->clock_origin) * 268111856.0), values[4];
     p->time_update_ns = snx_ctr_now_ns() + UINT64_C(3600000000000);
     unsigned char counter[4];
     if (!local_1900_ms(&rtc) || snx_ctr_phys_read(p->memory, 0x1ff81000, counter, 4) != SNX_CTR_MEM_OK) return;
@@ -223,7 +223,7 @@ SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) 
        Host-paced monotonic ticks, not an instruction/cycle-accuracy claim. */
     uint64_t rtc;
     if (!local_1900_ms(&rtc)) goto fail;
-    p->clock_origin = snx_seconds();
+    p->clock_origin = snx_ctr_seconds();
     unsigned char shared[4096] = {0};
     shared[0x04] = 1;    /* running_hw: product */
     shared[0x66] = 3;    /* wifi_link_level: best */

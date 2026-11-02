@@ -8,6 +8,7 @@
   * [Kernel-bootstrap subset (2b4)](#kernel-bootstrap-subset-2b4)
   * [Initial CTR IPC/services (3a)](#initial-ctr-ipcservices-3a)
   * [Current limits and trust](#current-limits-and-trust)
+  * [Play settings](#play-settings)
   * [Build and test](#build-and-test)
 * [Source provenance and licensing](#source-provenance-and-licensing)
 * [Boundaries and prerequisites for stage 2b](#boundaries-and-prerequisites-for-stage-2b)
@@ -645,6 +646,41 @@ code the static graph lacks does. The static graph is bounded by the text itself
 are capped at 1 GiB and the linked module at 1 GiB, and only the module is kept in
 `native/`. Tiny-image code uses O2, and larger-image chunks use O1, with 512
 entries per LLVM module, compiled by a worker per host core.
+
+### Play settings
+
+The play settings are keys of the game's `<title ID>.ini` (flat or under `[Game]`) and of the command line
+(`--key=value`, which also applies to that run only). They are the `g_ctr_ini` table of
+`src/nx/runtime/settings.txt`, and `--help` lists them.
+
+| Key | Values | Does |
+| --- | --- | --- |
+| `ctr_keyboard_map` | `a:X,Space zl:1 cpad_up:W` | The keys of each 3DS button and of each direction of the circle pad (`cpad_*`) and the C-stick (`cstick_*`). A button named has exactly the keys listed, the others keep the default layout. Keys have SDL's names, an `_` for a space. |
+| `ctr_gamepad_map`, `ctr_gamepad_swap_ab`, `ctr_gamepad_deadzone` | `south:B east:A`, 0 or 1, 0 to 90 | The gamepad's controls by where they sit, the A and B swap, and the dead zone of the sticks. |
+| `ctr_anisotropy` | 0 to 16 | Anisotropic filtering of the samplers that filter linearly. 0 is as the game asks. |
+| `ctr_resolution_scale` | 1 to 4 | The 3D picture drawn at this multiple of the console's resolution (see below). |
+| `ctr_anti_aliasing` | 0 or 1 | 1 filters the window's picture with FXAA. |
+| `ctr_screen_layout` | 0 to 5 | Stacked, side by side, large top, large bottom, top only, bottom only. F10 goes to the next one. The touch screen follows the bottom screen. |
+| `ctr_scaling_filter`, `ctr_integer_scale` | 0 or 1 | Nearest or linear stretch to the window, and a whole number of window pixels to each console pixel. |
+| `ctr_vsync`, `ctr_fullscreen` | 0 or 1 | Presentation at the display's refresh rate or at once, and the window fullscreen at the start (F11 or Alt and Enter toggles it). |
+| `ctr_speed` | 0 to 500 | The game's speed in percent of the console's. 0 is as fast as the host can run, with no sound. |
+
+**The resolution scale.** A render target's images are the console's times the scale, and the viewport, the
+scissor and the fragment shaders' `FragCoord` follow. The guest's memory keeps the console's resolution: a target is
+stored to it by taking the pixel at the middle of each block, and loaded from it by copying the pixel over the block
+(depth and stencil likewise, through `depth_scale.comp`). An even scale moves the picture by half a scaled pixel, so
+that the stored pixel is where the console's own raster samples. What a game then does with that memory (it reads a
+frame as a texture, for an effect) sees the console's resolution. A display transfer from a kept target to a
+framebuffer is also made at the scale (`display_hires.comp`, with the game's own 2x1 and 2x2 box filters), as the
+landscape image the window shows, and that image is used for as long as the framebuffer in memory is what the
+transfer wrote. A screen that reaches the display another way, or a transfer the shader does not cover (a crop with a
+flip, a linear input), shows the memory at the console's resolution. `tests/3ds_vk_draw.c` draws every scene at the
+scale 2 and 3 and compares the stored result with the CPU reference. The frame dumps keep `frame-<screen>-hires.ppm`
+for such a picture, and `frame-window.ppm` for the window's picture when FXAA is on.
+
+Not done: multisampling. A render target is kept as single-sample images that are loaded from memory and stored to it
+whole, and a multisampled one has no load from memory without drawing it in, so the resolution scale (which gives
+supersampling) and FXAA are the anti-aliasing there is.
 
 ### Build and test
 

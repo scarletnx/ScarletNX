@@ -8,6 +8,7 @@
 #include "3ds/services/uds.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
+#include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
 #include "snx_settings.h"
 #include <errno.h>
@@ -56,6 +57,12 @@ static void usage(FILE* out) {
         "                  --ctr_ipc_trace=1 logs each service request, --ctr_jit_trace=1 each block\n"
         "                  compiled while the game runs, --script=ms:buttons,... (ctr_script) presses\n"
         "                  buttons, --ctr_auto_stub_ipc=0 stops at a service command the runtime lacks\n"
+        "  --KEY=VALUE     A play setting (g_ctr_ini), kept in the game's .ini when written there: --ctr_keyboard_map,\n"
+        "                  --ctr_gamepad_map, --ctr_gamepad_swap_ab, --ctr_gamepad_deadzone, --ctr_anisotropy=0..16,\n"
+        "                  --ctr_vsync=0|1, --ctr_fullscreen=0|1 (F11 toggles it), --ctr_speed=PERCENT (0 = unlimited),\n"
+        "                  --ctr_resolution_scale=1..4, --ctr_anti_aliasing=0|1 (FXAA), --ctr_screen_layout=0..5\n"
+        "                  (stacked, side by side, large top, large bottom, top only, bottom only; F10 goes to the\n"
+        "                  next), --ctr_scaling_filter=0|1, --ctr_integer_scale=0|1\n"
         "  --ipc-stubs L   With --ctr_auto_stub_ipc=0, still answer a service command the runtime lacks with\n"
         "                  success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid, gsp,\n"
         "                  cfg, dsp, system. Given more than once, the lists add up\n"
@@ -368,18 +375,42 @@ static bool read_game_ini(const char* folder, char** source, SnxCtrModel* model)
 }
 static bool write_game_ini(const char* folder, const char* source, SnxCtrModel model) {
     char *path = snx_ctr_game_file(folder, ".ini"), *full = snx_absolute(source);
-    char* text =
-        full ? snx_format("source=%s\nmodel=%s\nsystem=3ds\n", full, model == SNX_CTR_OLD ? "old" : model == SNX_CTR_NEW ? "new" : "auto") : NULL;
-    bool written = path && text && !snx_write_file(path, text, strlen(text));
+    /* each key in its place, the rest of the file (the play settings) kept */
+    bool written = path && full && !snx_ini_record(path, "source", full) &&
+                   !snx_ini_record(path, "model", model == SNX_CTR_OLD ? "old" : model == SNX_CTR_NEW ? "new" : "auto") &&
+                   !snx_ini_record(path, "system", "3ds");
     if (!written) {
         char why[256];
         fprintf(stderr, "scarletnx-3ds: cannot write %s: %s\n", path ? path : "the game's .ini",
                 snx_os_error(why, sizeof why));
     }
-    free(text);
     free(full);
     free(path);
     return written;
+}
+/* The play settings (g_ctr_ini) the game's .ini holds, in any section, then the ones --key=value gave, which win */
+static struct {
+    const IniOpt* option;
+    char* value;
+} g_given[32];
+static unsigned g_given_count;
+static void apply_play_settings(const char* folder) {
+    char *path = snx_ctr_game_file(folder, ".ini"), *key, *value;
+    size_t size;
+    char* text = path ? (char*)snx_read_file(path, &size) : NULL;
+    SnxIni ini;
+    if (text) snx_ini_start(&ini, text);
+    while (text && snx_ini_next(&ini, &key, &value)) {
+        const IniOpt* o = ini_find(g_ctr_ini, key);
+        if (o) ini_read(o, value);
+    }
+    free(text);
+    free(path);
+    for (unsigned i = 0; i < g_given_count; ++i) {
+        ini_read(g_given[i].option, g_given[i].value);
+        free(g_given[i].value);
+    }
+    g_given_count = 0;
 }
 /* An older version kept the game's state (saves, SD card) in work/3ds/<the game's name>: moved into the game's new
    folder the first time, which is made then */
@@ -500,6 +531,12 @@ int snx_ctr_main(int argc, char** argv) {
                 memcpy(key, arg + 2, length);
                 key[length] = 0;
                 o = ini_find(g_ctr_debug_ini, !strcmp(key, "script") ? "ctr_script" : key);
+                const IniOpt* play = o ? NULL : ini_find(g_ctr_ini, key);
+                if (play && g_given_count < sizeof g_given / sizeof *g_given) {
+                    g_given[g_given_count].option = play;
+                    g_given[g_given_count++].value = snx_strdup(strchr(arg, '=') + 1);
+                    continue;
+                }
             }
             if (!o) {
                 fprintf(stderr, "scarletnx-3ds: unknown setting: %s\n", arg);
@@ -558,6 +595,7 @@ int snx_ctr_main(int argc, char** argv) {
             return 1;
         }
         if (!model_set) model = recorded;
+        apply_play_settings(folder);
         if (holds_extraction(folder))
             extract_container = true;
         else if (!named) {
@@ -647,6 +685,7 @@ int snx_ctr_main(int argc, char** argv) {
         (void)read_game_ini(folder, &recorded, &model);
         free(recorded);
     }
+    if (folder) apply_play_settings(folder);
     bool made = folder && !extract_only && !snx_is_link(folder) && !snx_mkdirs(folder);
     if (!folder || (made && !write_game_ini(folder, readable, model))) {
         snx_ctr_source_close(source);

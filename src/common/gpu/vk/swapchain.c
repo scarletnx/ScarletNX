@@ -46,6 +46,21 @@ void snx_vk_swapchain_free(VkDevice device, SnxVkSwapchain* sc) {
     *sc = (SnxVkSwapchain){0};
 }
 
+/* FIFO, the one mode every surface has, or with unsynced the first of mailbox and immediate it offers */
+static VkPresentModeKHR present_mode(VkPhysicalDevice phys, VkSurfaceKHR surface, bool unsynced) {
+    if (!unsynced) return VK_PRESENT_MODE_FIFO_KHR;
+    VkPresentModeKHR modes[16];
+    uint32_t n = 16;
+    VkPresentModeKHR found = VK_PRESENT_MODE_FIFO_KHR;
+    if (vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &n, modes) >= 0) {
+        for (uint32_t i = 0; i < n; ++i)
+            if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) return modes[i];
+        for (uint32_t i = 0; i < n; ++i)
+            if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) found = modes[i];
+    }
+    return found;
+}
+
 bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSwapchainInfo* info,
                            SnxVkSwapchain* sc) {
     VkSwapchainKHR old = sc->swapchain;
@@ -72,7 +87,7 @@ bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSw
                                        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
                                        .preTransform = caps.currentTransform,
                                        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-                                       .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+                                       .presentMode = present_mode(phys, info->surface, info->unsynced),
                                        .clipped = VK_TRUE,
                                        .oldSwapchain = old};
         if (vkCreateSwapchainKHR(device, &ci, NULL, &made) != VK_SUCCESS) made = VK_NULL_HANDLE;

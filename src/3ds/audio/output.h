@@ -7,8 +7,9 @@
 #include "3ds/audio/dsp.h"
 #include <stdbool.h>
 
-/* Opens the device and the recording (either may be missing, NULL wav_path records nothing). False when neither */
-bool snx_ctr_audio_init(const char* wav_path);
+/* Opens the device and the recording (either may be missing, NULL wav_path records nothing). False when neither. The
+   device plays at speed_percent of the rate (the game runs at that speed), and for 0 (unlimited) plays nothing */
+bool snx_ctr_audio_init(const char* wav_path, unsigned speed_percent);
 /* Before init, or with no output, the frame is dropped */
 void snx_ctr_audio_frame(const int16_t frame[SNX_CTR_DSP_SAMPLES][2]);
 /* How many frames the device still has queued, or UINT32_MAX with no device (a recording alone has no clock) */

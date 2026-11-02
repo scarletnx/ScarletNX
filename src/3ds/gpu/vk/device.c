@@ -122,6 +122,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     want.features.fragmentStoresAndAtomics = features.features.fragmentStoresAndAtomics;
     want.features.shaderClipDistance = features.features.shaderClipDistance;
     want.features.shaderInt16 = features.features.shaderInt16;
+    want.features.samplerAnisotropy = features.features.samplerAnisotropy;
     void* const enable[] = {&want,
                             &want12,
                             &want13,
@@ -141,6 +142,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
     vkGetPhysicalDeviceProperties2(phys, &properties);
     v->preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32;
+    v->max_anisotropy = features.features.samplerAnisotropy ? properties.properties.limits.maxSamplerAnisotropy : 0;
     return true;
 }
 static bool import_ram(SnxCtrVk* v, SnxCtrMemory* memory, char* error, size_t error_size) {

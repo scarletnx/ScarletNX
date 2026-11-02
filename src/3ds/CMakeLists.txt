@@ -20,7 +20,7 @@ target_sources(snx_ctr_process PRIVATE "${PROJECT_BINARY_DIR}/generated/ctr_syst
 target_sources(snx_ctr_process PRIVATE services/uds.c)
 target_link_libraries(snx_ctr_process PUBLIC scarletnx-ldn)
 # the player's input lives beside the presenter, whose window's events it reads
-add_library(snx_ctr_gpu STATIC gpu/present.c input/input.c gpu/transfer.c gpu/y2r.c gpu/vk/y2r.c gpu/vk/device.c gpu/vk/transfer.c
+add_library(snx_ctr_gpu STATIC gpu/present.c input/input.c input/map.c gpu/screens.c gpu/transfer.c gpu/y2r.c gpu/vk/y2r.c gpu/vk/device.c gpu/vk/transfer.c
             gpu/vk/vsgen.c gpu/vk/fsgen.c gpu/vk/render.c gpu/pica.c gpu/shader.c gpu/draw.c "${volk_SOURCE_DIR}/volk.c")
 target_include_directories(snx_ctr_gpu PUBLIC "${volk_SOURCE_DIR}")
 target_link_libraries(snx_ctr_gpu PUBLIC snx_ctr_memory scarletnx-common Vulkan::Headers SDL3::SDL3 snx_settings snx_build_info
@@ -28,7 +28,7 @@ target_link_libraries(snx_ctr_gpu PUBLIC snx_ctr_memory scarletnx-common Vulkan:
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
 # the GPU's compute shaders, compiled at build time (cmake/glsl.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
-foreach(shader fill display_transfer texture_copy present texture color depth y2r)
+foreach(shader fill display_transfer display_hires fxaa texture_copy present texture color depth depth_scale y2r)
     snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/${shader}.comp NAME snx_ctr_${shader}_spv
                    HEADER 3ds/gpu/vk/shaders/${shader}_spv.h)
 endforeach()

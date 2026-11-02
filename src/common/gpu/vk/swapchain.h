@@ -26,13 +26,15 @@ typedef struct {
     uint32_t count;
 } SnxVkSwapchain;
 /* what a swapchain is made of: the formats wanted, in order (the surface's first one when it has none of them), its
-   images' usage, the window's size in pixels and FIFO presentation, an image more than the least */
+   images' usage, the window's size in pixels and FIFO presentation (unless unsynced asks for the first of mailbox and
+   immediate the surface has), an image more than the least */
 typedef struct {
     VkSurfaceKHR surface;
     const VkFormat* formats;
     uint32_t format_count;
     VkImageUsageFlags usage;
     VkExtent2D window;
+    bool unsynced;
 } SnxVkSwapchainInfo;
 /* The swapchain made anew for the surface's size, in place of the one sc holds (which goes whether or not the new one
    is made, after the device is idle). False with none when it can't be */

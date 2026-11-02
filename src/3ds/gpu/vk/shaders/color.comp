@@ -3,6 +3,8 @@
 // A color render target loaded from, or stored to, the tiled framebuffer the guest has in memory: one invocation per
 // pixel, at the offsets gpu/raster.c (the CPU reference) gives a pixel. The image's row r is the rasterizer's y = r;
 // memory holds the rows from the top (y = height - 1) down, unless the framebuffer's flip bit says from y = 0 up.
+// The image is scale times the size (the resolution scale): a store takes the pixel at the middle of the scale x scale
+// block over the guest's pixel, a load fills the block with it.
 #version 450
 #extension GL_EXT_shader_8bit_storage : require
 #extension GL_GOOGLE_include_directive : require
@@ -10,7 +12,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(std430, set = 0, binding = 0) buffer Memory { uint8_t MEM[]; };
 layout(set = 0, binding = 1, rgba8) uniform image2D image;
 layout(push_constant) uniform Target {
-    uint offset, width, height, format, flip, store;
+    uint offset, width, height, format, flip, store, scale;
 };
 #define SRC MEM
 #define DST MEM
@@ -20,8 +22,12 @@ void main() {
     if (x >= width || r >= height) return;
     uint y = flip != 0u ? r : height - 1u - r, bpp = pixel_bytes(format);
     uint at = offset + morton(x, y, bpp) + (y & ~7u) * width * bpp;
-    if (store != 0u)
-        encode(format, uvec4(round(imageLoad(image, ivec2(int(x), int(r))) * 255.0)), at);
-    else
-        imageStore(image, ivec2(int(x), int(r)), vec4(decode(format, at)) / 255.0);
+    if (store != 0u) {
+        ivec2 centre = ivec2(int(x * scale + scale / 2u), int(r * scale + scale / 2u));
+        encode(format, uvec4(round(imageLoad(image, centre) * 255.0)), at);
+    } else {
+        vec4 c = vec4(decode(format, at)) / 255.0;
+        for (uint b = 0u; b < scale; ++b)
+            for (uint a = 0u; a < scale; ++a) imageStore(image, ivec2(int(x * scale + a), int(r * scale + b)), c);
+    }
 }

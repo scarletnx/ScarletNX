@@ -307,6 +307,8 @@ void snx_ctr_thread_priorities(SnxCtrProcess* p, uint32_t* priority);
 bool snx_ctr_waitable(uint32_t type);
 /* host monotonic nanoseconds, the clock every deadline is on */
 uint64_t snx_ctr_now_ns(void);
+/* the same clock in seconds, the one the system tick counts */
+double snx_ctr_seconds(void);
 SnxCtrSvcResult snx_ctr_wait_many(SnxCtrProcess* p, uint32_t* registers);
 void snx_ctr_wake_waiters(SnxCtrProcess* p, uint32_t object);
 /* The current thread's wait or sleep deadline from an SVC's s64 nanoseconds (low, high words): -1 is none, another

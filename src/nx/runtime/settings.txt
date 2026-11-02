@@ -925,6 +925,100 @@ setting CTR script
     help buttons in hex as hid:USER's pad has them (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down,
     help 100 R, 200 L, 400 X, 800 Y), each held for press_len ms
 
+# ---- the 3DS driver's play settings (<title ID>.ini, or --key=value), in no section of the Switch game's .ini ----
+
+table g_ctr_ini
+setting CTR keyboard map
+    key ctr_keyboard_map
+    text 512
+    default ""
+    help The keys of a 3DS game, button:key with a comma between a button's keys and a space between buttons, as
+    help "a:X,Space zl:1 cpad_up:W". Buttons a b x y l r zl zr start select up down left right, and the directions
+    help cpad_up cpad_down cpad_left cpad_right cstick_up cstick_down cstick_left cstick_right. Keys by SDL's names,
+    help an _ for a space. A button named has exactly the keys listed (none unbinds it), the others keep theirs
+setting CTR anisotropic filtering
+    key ctr_anisotropy
+    int 0 16
+    default 0
+    startup
+    words Game's|#x
+    help 0 = textures filtered as the game asks, 2 to 16 = sharper surfaces seen at an angle (the filtering samplers)
+setting CTR gamepad map
+    key ctr_gamepad_map
+    text 192
+    default ""
+    help A gamepad control by where it sits and the 3DS button it sends, as south:B east:A. Controls south east west
+    help north lb rb lt rt ls rs back start up down left right; buttons A B X Y L R ZL ZR Plus (Start) Minus (Select)
+    help Up Down Left Right None. One left out sends the button in its place. The left stick is the circle pad and the
+    help right stick the C-stick
+setting CTR swap A/B
+    key ctr_gamepad_swap_ab
+    int 0 1
+    default 0
+    words Off|On
+    help 1 = a gamepad's A and B swapped: 0 = where the console's are (A right, B bottom)
+setting CTR stick dead zone
+    key ctr_gamepad_deadzone
+    int 0 90
+    default 20
+    words #%
+    step 5
+    help The sticks' dead zone, in percent of their travel
+setting CTR vsync
+    key ctr_vsync
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = the window shows a picture at the display's refresh, 0 = at once (can tear)
+setting CTR fullscreen
+    key ctr_fullscreen
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = the window starts fullscreen
+setting CTR speed limit
+    key ctr_speed
+    int 0 500
+    default 100
+    words Unlimited|#%
+    step 10
+    help The game's speed in percent of the console's, 100 = as fast as the console. 0 = as fast as the host can
+setting CTR resolution scale
+    key ctr_resolution_scale
+    int 1 4
+    default 1
+    startup
+    words #x
+    help The 3D picture drawn at this many times the console's resolution (1 = the console's own). Costs the GPU
+    help that many squared
+setting CTR screen layout
+    key ctr_screen_layout
+    int 0 5
+    default 0
+    words Stacked|Side by side|Large top|Large bottom|Top only|Bottom only
+    help How the window shows the two screens (F10 goes to the next). The touch screen follows the bottom one
+setting CTR anti-aliasing
+    key ctr_anti_aliasing
+    int 0 1
+    default 0
+    words Off|FXAA
+    help Smooths the jagged edges of the window's picture. FXAA is a filter on the final picture, and costs little.
+    help A higher resolution scale smooths the edges of the 3D picture itself
+setting CTR scaling filter
+    key ctr_scaling_filter
+    int 0 1
+    default 0
+    words Nearest|Linear
+    help How the screens are stretched to the window: 0 = sharp pixels, 1 = smoothed
+setting CTR integer scale
+    key ctr_integer_scale
+    int 0 1
+    default 0
+    words Off|On
+    help 1 = the screens are drawn at a whole number of window pixels to each console pixel (black bars around)
+
 # ---- the Vita driver's (scarletnx-vita --key=value), in no section of the game's .ini ----
 
 table g_vita_debug_ini

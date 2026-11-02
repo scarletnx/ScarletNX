@@ -3,6 +3,7 @@
    Serialized, bounded single-core thread contexts; no host threads or JIT.
    SVC register layout from Azahar kernel/svc_wrapper.h (revision in 3DS.md). */
 #include "3ds/runtime/internal.h"
+#include "snx_settings.h"
 #include "common/utilities/endian.h"
 #include "3ds/audio/dsp.h"
 #include "3ds/audio/output.h"
@@ -46,7 +47,15 @@ void snx_ctr_thread_block(SnxCtrProcess* p, uint32_t id, uint32_t address) {
     ++p->objects[id].refs;
 }
 void snx_ctr_thread_ready(SnxCtrProcess* p, uint32_t id) { p->objects[id].data.thread.ready_seq = ++p->sched_seq; }
-uint64_t snx_ctr_now_ns(void) { return (uint64_t)(snx_seconds() * 1e9); }
+/* The guest's clock: the host's, run at ctr_speed_limit percent of the console's, and for the unlimited speed with the
+   time the host would have slept moved over (sleep_until). Every time the guest reads comes from here */
+static double g_skipped; /* seconds the unlimited speed has not waited */
+static double speed_scale(void) {
+    int limit = g_settings.ctr_speed_limit;
+    return limit > 0 ? limit / 100.0 : 1.0;
+}
+double snx_ctr_seconds(void) { return snx_seconds() * speed_scale() + g_skipped; }
+uint64_t snx_ctr_now_ns(void) { return (uint64_t)(snx_ctr_seconds() * 1e9); }
 /* Every thread's effective priority: its own, improved to the best effective priority of the threads waiting on a
    mutex it holds, transitively (Azahar Mutex::UpdatePriority and Thread::UpdatePriority). A chain is at most as long
    as the threads, and each round that changes nothing ends it. */
@@ -348,6 +357,13 @@ SnxCtrSvcResult snx_ctr_thread_exit(SnxCtrProcess* p) {
 static void sleep_until(uint64_t deadline) {
     uint64_t now = now_ns();
     if (deadline <= now) return;
+    if (!g_settings.ctr_speed_limit) {
+        /* unlimited: the wait passes at once */
+        g_skipped += (double)(deadline - now) / 1e9;
+        return;
+    }
+    /* the host waits the guest's time at the speed it runs */
+    deadline = now + (uint64_t)((double)(deadline - now) / speed_scale());
 #if defined(_WIN32)
     /* Sleep() rounds to the system tick (15.6 ms unless raised), far longer than a 4.9 ms audio frame: a high-resolution
        waitable timer (Windows 10 1803 and later) waits the exact time, Sleep() remains where it is missing */

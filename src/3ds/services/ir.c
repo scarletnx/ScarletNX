@@ -57,7 +57,7 @@ static void sample(SnxCtrProcess* p) {
     if (!index) {
         put32(p, 8, get32(p, 0));
         put32(p, 12, get32(p, 4));
-        double elapsed = snx_seconds() - p->clock_origin;
+        double elapsed = snx_ctr_seconds() - p->clock_origin;
         uint64_t now = elapsed > 0 ? (uint64_t)(elapsed * (double)SNX_CTR_BASE_CLOCK_HZ) : 0;
         put32(p, 0, (uint32_t)now);
         put32(p, 4, (uint32_t)(now >> 32));

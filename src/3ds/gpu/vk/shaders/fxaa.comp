@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 the ScarletNX contributors
+// Fast approximate anti-aliasing of the window's picture (the ctr_anti_aliasing setting): where the luma of a pixel and
+// its four diagonal neighbours differs enough to be an edge, the pixel is blurred along the edge. The picture is
+// searched along the direction of the edge by two pairs of taps, and the wider pair is kept when it does not leave the
+// range of the neighbourhood's luma. One invocation per pixel.
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba8) uniform readonly image2D src;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D dst;
+layout(push_constant) uniform Size {
+    uint width, height;
+};
+const float EDGE_MIN = 1.0 / 24.0;  // an edge is a luma range of at least this
+const float EDGE_RELATIVE = 0.125;  // and of this part of the brightest neighbour
+const float REDUCE_MIN = 1.0 / 128.0, REDUCE_RELATIVE = 1.0 / 8.0;
+const float SPAN_MAX = 8.0; // the search's reach, in pixels
+
+vec3 fetch(ivec2 p) { return imageLoad(src, clamp(p, ivec2(0), ivec2(int(width) - 1, int(height) - 1))).rgb; }
+// the picture at a point in pixels, the pixel centres at half a pixel, filtered bilinearly
+vec3 bilinear(vec2 point) {
+    vec2 q = point - 0.5;
+    ivec2 i = ivec2(floor(q));
+    vec2 f = q - vec2(i);
+    return mix(mix(fetch(i), fetch(i + ivec2(1, 0)), f.x), mix(fetch(i + ivec2(0, 1)), fetch(i + ivec2(1, 1)), f.x), f.y);
+}
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(width) || p.y >= int(height)) return;
+    vec3 middle = fetch(p);
+    float lm = luma(middle), nw = luma(fetch(p + ivec2(-1, -1))), ne = luma(fetch(p + ivec2(1, -1))),
+          sw = luma(fetch(p + ivec2(-1, 1))), se = luma(fetch(p + ivec2(1, 1)));
+    float low = min(lm, min(min(nw, ne), min(sw, se))), high = max(lm, max(max(nw, ne), max(sw, se)));
+    if (high - low < max(EDGE_MIN, high * EDGE_RELATIVE)) {
+        imageStore(dst, p, vec4(middle, 1.0));
+        return;
+    }
+    vec2 dir = vec2(-((nw + ne) - (sw + se)), (nw + sw) - (ne + se));
+    float reduce = max((nw + ne + sw + se) * 0.25 * REDUCE_RELATIVE, REDUCE_MIN);
+    dir = clamp(dir / (min(abs(dir.x), abs(dir.y)) + reduce), -SPAN_MAX, SPAN_MAX);
+    vec2 centre = vec2(p) + 0.5;
+    vec3 narrow = 0.5 * (bilinear(centre + dir * (1.0 / 3.0 - 0.5)) + bilinear(centre + dir * (2.0 / 3.0 - 0.5)));
+    vec3 wide = narrow * 0.5 + 0.25 * (bilinear(centre - dir * 0.5) + bilinear(centre + dir * 0.5));
+    float l = luma(wide);
+    imageStore(dst, p, vec4(l < low || l > high ? narrow : wide, 1.0));
+}

@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 the ScarletNX contributors
+// A display transfer's picture at the resolution scale: the same transfer display_transfer.comp does, from the scaled
+// colour target in place of the guest's memory, to the landscape image the window shows. The target and the transfer
+// are counted in scaled pixels (the guest's times scale), the rows as color.comp and the transfer have them: memory
+// row y is the image's row height - 1 - y (y unless the target is flipped), the output's row is y or, flipped,
+// out_h - 1 - y, and the framebuffer's pixel (column c, row f) is the screen's (f, width - 1 - c) as present.comp has it.
+// The transfer's box filter (a game's own anti-aliasing: two columns, or two columns and two rows, of the target to
+// one pixel) averages the scaled target's pixels the same way.
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba8) uniform readonly image2D target;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D screen;
+layout(push_constant) uniform Hires {
+    uint width, height;    // the framebuffer's, scaled: its row (240 times scale) and its rows
+    uint target_height;    // the colour target's rows, scaled
+    uint flags;            // 1 the transfer flips, 2 the target is flipped, 4 the output has no alpha
+    uint hs, vs;           // the transfer's filter: log2 of the columns and of the rows it averages
+};
+void main() {
+    uint column = gl_GlobalInvocationID.x, row = gl_GlobalInvocationID.y; // the framebuffer's pixel, row
+    if (column >= width || row >= height) return;
+    uint y = (flags & 1u) != 0u ? height - 1u - row : row;
+    vec4 c = vec4(0.0);
+    for (uint j = 0u; j < (1u << vs); ++j) {
+        uint memory_row = (y << vs) + j;
+        uint image_row = (flags & 2u) != 0u ? memory_row : target_height - 1u - memory_row;
+        for (uint i = 0u; i < (1u << hs); ++i) c += imageLoad(target, ivec2(int((column << hs) + i), int(image_row)));
+    }
+    c /= float(1u << (hs + vs));
+    if ((flags & 4u) != 0u) c.a = 1.0;
+    imageStore(screen, ivec2(int(row), int(width - 1u - column)), c);
+}

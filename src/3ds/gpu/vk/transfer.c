@@ -102,6 +102,11 @@ SnxCtrXferResult snx_ctr_vk_display_transfer(const SnxCtrDisplayTransfer* t, uin
     snx_ctr_vk_barrier(cb);
     bind(cb, &g_transfer.display, w, 2, push, sizeof push);
     vkCmdDispatch(cb, (push[3] + 7) / 8, (push[4] + 7) / 8, 1);
+    /* the plain case, a target's tiled rows to a linear framebuffer, is also made at the resolution scale */
+    if (!(flags & (SNX_CTR_XFER_LINEAR | SNX_CTR_XFER_NO_SWIZZLE)) && !skew)
+        (void)snx_ctr_vk_hires_make(input, in_w, output, push[3], push[4], (uint32_t)out_bytes,
+                                    (flags & SNX_CTR_XFER_FLIP) != 0, out_fmt == 1 || out_fmt == 2, scaling != 0,
+                                    scaling == 2);
     return SNX_CTR_XFER_OK;
 }
 

@@ -3,6 +3,8 @@
 /* hid:USER: the replies of its commands, and the samples its shared memory gets at each update, with a scripted press
    as the player's input (Azahar's hid.cpp, 3dbrew's HID Shared Memory) */
 #include "3ds/input/input.h"
+#include "3ds/gpu/screens.h"
+#include <math.h>
 #include "3ds/runtime/internal.h"
 #include "3ds/ipc/ctr_ipc.h"
 #include "3ds/services/hid.h"
@@ -36,7 +38,7 @@ static uint32_t shared(SnxCtrProcess* p, uint32_t offset, unsigned size) {
 /* Where a point of the window's image is on the bottom screen (400x240 above 320x240, scaled as one 400x480 block) */
 static void touch_locate(void) {
     unsigned x, y;
-    SnxCtrWindowLayout l = {800, 960, 400, 240, 320, 240}; /* twice the size: the bottom screen starts at (80, 480) */
+    SnxCtrWindowLayout l = {800, 960, 400, 240, 320, 240, SNX_CTR_SCREENS_STACKED, false}; /* twice the size: the bottom screen starts at (80, 480) */
     assert(snx_ctr_touch_locate(&l, 80, 480, &x, &y) && x == 0 && y == 0);
     assert(snx_ctr_touch_locate(&l, 280, 580, &x, &y) && x == 100 && y == 50);
     assert(snx_ctr_touch_locate(&l, 718.9, 958.9, &x, &y) && x == 319 && y == 239);
@@ -48,6 +50,36 @@ static void touch_locate(void) {
     assert(snx_ctr_touch_locate(&l, 100, 480, &x, &y) == false && x == 0);
     l.image_w = 0; /* no window yet */
     assert(!snx_ctr_touch_locate(&l, 100, 600, &x, &y) && !x && !y);
+}
+/* The screens' arrangements: where each one falls in the image, and the touch screen following the bottom one */
+static void screens_layouts(void) {
+    SnxCtrScreenRect r[2];
+    SnxCtrWindowLayout l = {720, 480, 400, 240, 320, 240, SNX_CTR_SCREENS_SIDE_BY_SIDE, false};
+    snx_ctr_screens_place(&l, r); /* 720x240 in 720x480: one to one, centred up and down */
+    assert(r[0].x == 0 && r[0].y == 120 && r[0].w == 400 && r[0].h == 240);
+    assert(r[1].x == 400 && r[1].y == 120 && r[1].w == 320 && r[1].h == 240);
+    l.mode = SNX_CTR_SCREENS_LARGE_TOP; /* the bottom screen 0.4 of its size at the lower right */
+    snx_ctr_screens_place(&l, r);
+    assert(fabs(r[0].x) < 1e-6 && fabs(r[1].x - r[0].w) < 1e-6 && fabs(r[1].y + r[1].h - r[0].y - r[0].h) < 1e-6);
+    assert(r[1].w < r[0].w / 3 && fabs(r[1].w / r[1].h - 320.0 / 240) < 1e-9);
+    l.mode = SNX_CTR_SCREENS_TOP_ONLY;
+    snx_ctr_screens_place(&l, r);
+    assert(r[0].w > 0 && !r[1].w);
+    unsigned x, y;
+    assert(!snx_ctr_touch_locate(&l, 10, 10, &x, &y)); /* no bottom screen to touch */
+    l.mode = SNX_CTR_SCREENS_BOTTOM_ONLY;
+    assert(snx_ctr_touch_locate(&l, 360, 240, &x, &y) && x == 160 && y == 120); /* 320x240 at 2x, from 40 */
+    l.mode = SNX_CTR_SCREENS_LARGE_BOTTOM;
+    snx_ctr_screens_place(&l, r);
+    assert(snx_ctr_touch_locate(&l, r[1].x + r[1].w / 2, r[1].y + r[1].h / 2, &x, &y) && x == 160 && y == 120);
+    /* whole-number scale: 400x480 in 1000x1000 is 2x, on whole pixels, the pair centred */
+    l = (SnxCtrWindowLayout){1000, 1000, 400, 240, 320, 240, SNX_CTR_SCREENS_STACKED, true};
+    snx_ctr_screens_place(&l, r);
+    assert(r[0].w == 800 && r[0].h == 480 && r[0].x == 100 && r[0].y == 20 && r[1].w == 640 && r[1].x == 180);
+    l.image_w = 300; /* smaller than one pixel each: scaled down all the same */
+    l.image_h = 400;
+    snx_ctr_screens_place(&l, r);
+    assert(r[0].w > 0 && r[0].w <= 300);
 }
 /* A gamepad's motion in Azahar's axes: a pad held upright reads +y of gravity, which is the console's rest value (y at
    -1 g, -512 raw), and the rates come out in degrees a second with x and z negated */
@@ -65,6 +97,7 @@ static void motion_axes(void) {
 }
 int main(void) {
     touch_locate();
+    screens_layouts();
     motion_axes();
     unsigned char code[0x3000] = {0};
     SnxCtrImage image = {.segment = {{0x100000, 1, 16}, {0x200000, 1, 4}, {0x300000, 1, 4}},

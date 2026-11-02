@@ -30,6 +30,7 @@
 
 static int failures;
 static bool uber_pass; /* the draws use the uber shader (shaders/uber.frag) instead of the generated ones */
+static unsigned scaled;  /* the resolution scale of the pass, 0 for the console's own */
 static uint32_t seed = 0x3d5u;
 static uint32_t next(void) {
     seed = seed * 1664525u + 1013904223u;
@@ -199,7 +200,7 @@ static void compare(const Scene* s, const unsigned char* sw, const unsigned char
     /* edges: a pixel's worth of the target's outline and the triangles' */
     bool ok = off <= W * H / 25 && depth_off <= W * H / 25;
     printf("%s%-24s %4u pixels off by more than %u (largest %u), %4u depth or stencil values off: %s\n",
-           uber_pass ? "uber: " : "", s->name, off, tolerance, worst, depth_off, ok ? "ok" : "FAIL");
+           uber_pass ? "uber: " : scaled ? (scaled == 2 ? "x2: " : "x3: ") : "", s->name, off, tolerance, worst, depth_off, ok ? "ok" : "FAIL");
     if (!ok) ++failures;
 }
 
@@ -489,6 +490,16 @@ int main(void) {
         uber_pass = true;
         scenes(m);
     }
+    /* the same scenes drawn at the resolution scale, stored down to the guest's own pixels */
+    for (scaled = 2; scaled <= 3; ++scaled) {
+        snx_ctr_vk_free();
+        if (!snx_ctr_vk_init(m, why, sizeof why)) break;
+        g_settings.ctr_resolution_scale = (int)scaled;
+        g_settings.ctr_async_pipelines = 0;
+        uber_pass = false;
+        scenes(m);
+    }
+    g_settings.ctr_resolution_scale = 1;
     snx_ctr_vk_free();
     snx_ctr_memory_free(m);
     if (failures) {

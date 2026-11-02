@@ -62,7 +62,7 @@ static uint32_t get32(SnxCtrProcess* p, uint32_t offset) {
 }
 /* the system tick, as svcGetSystemTick counts it */
 static uint64_t ticks(const SnxCtrProcess* p) {
-    double elapsed = snx_seconds() - p->clock_origin;
+    double elapsed = snx_ctr_seconds() - p->clock_origin;
     return elapsed > 0 ? (uint64_t)(elapsed * HID_TICK_HZ) : 0;
 }
 /* The section's next index, written once its entry is: at a wrap to 0 the ticks move on, the current one becoming the

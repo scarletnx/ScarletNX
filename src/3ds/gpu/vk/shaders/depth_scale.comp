@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 the ScarletNX contributors
+// A depth and stencil target's words between the guest's resolution and the resolution scale: the buffers hold them as
+// the buffer-image copies lay them out (a 32-bit depth word and a stencil byte a pixel, rows from the image's row 0).
+// A store (mode 1, one invocation per guest pixel) takes the pixel at the middle of the scale x scale block over it, a
+// load (mode 0, one invocation per scaled pixel) copies the guest pixel over the block.
+#version 450
+#extension GL_EXT_shader_8bit_storage : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(std430, set = 0, binding = 0) buffer GuestDepth { uint GUEST_DEPTH[]; };
+layout(std430, set = 0, binding = 1) buffer GuestStencil { uint8_t GUEST_STENCIL[]; };
+layout(std430, set = 0, binding = 2) buffer ScaledDepth { uint SCALED_DEPTH[]; };
+layout(std430, set = 0, binding = 3) buffer ScaledStencil { uint8_t SCALED_STENCIL[]; };
+layout(push_constant) uniform Scale {
+    uint width, height, scale, store; // the guest's size
+};
+void main() {
+    uint x = gl_GlobalInvocationID.x, r = gl_GlobalInvocationID.y;
+    uint scaled_width = width * scale;
+    if (store != 0u) {
+        if (x >= width || r >= height) return;
+        uint from = (r * scale + scale / 2u) * scaled_width + x * scale + scale / 2u, to = r * width + x;
+        GUEST_DEPTH[to] = SCALED_DEPTH[from];
+        GUEST_STENCIL[to] = SCALED_STENCIL[from];
+    } else {
+        if (x >= scaled_width || r >= height * scale) return;
+        uint from = (r / scale) * width + x / scale, to = r * scaled_width + x;
+        SCALED_DEPTH[to] = GUEST_DEPTH[from];
+        SCALED_STENCIL[to] = GUEST_STENCIL[from];
+    }
+}

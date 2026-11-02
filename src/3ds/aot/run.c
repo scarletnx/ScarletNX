@@ -15,6 +15,7 @@
 #include "3ds/audio/output.h"
 #include "3ds/input/input.h"
 #include "common/filesystem/host.h"
+#include "snx_settings.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -211,7 +212,7 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         snx_ctr_present_title(process->title[0] ? process->title : id, "");
     /* the DSP's output plays on the default device, and its first two minutes go to <output>/audio.wav */
     wav = snx_path_join(directory, "audio.wav");
-    if (!snx_ctr_audio_init(wav)) printf("No audio output: the DSP's frames will not be heard or saved\n");
+    if (!snx_ctr_audio_init(wav, (unsigned)g_settings.ctr_speed_limit)) printf("No audio output: the DSP's frames will not be heard or saved\n");
     snx_ctr_input_init(); /* the scripted presses count from here */
     /* Runs until the game exits or its window is closed, as a Switch game does, or for the --max-blocks budget. The
        dispatch goes in slices so the window's events are seen between them */

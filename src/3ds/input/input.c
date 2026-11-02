@@ -1,12 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The player's input for the 3DS game. The keys are a Switch game's (the SDL backend's keyboard_buttons): X or Space
-   A, Z B, C X, V Y, Q L, E R, Enter Start, Backspace Select, the arrows the D-pad and WASD the circle pad. A gamepad's
-   buttons go by where they are, as on the console (east A, south B, north X, west Y), gamepad_swap_ab swapping A and
-   B, its left stick the circle pad past gamepad_deadzone. The New 3DS's ZL and ZR are 1 and 3 or a pad's triggers, and
-   its C-stick IJKL or a pad's right stick. The script (ctr_script) is unattended.c's for a Switch game:
+/* The player's input for the 3DS game. The keys are a Switch game's (the SDL backend's keyboard_buttons) unless
+   ctr_keyboard_map names others: X or Space A, Z B, C X, V Y, Q L, E R, Enter Start, Backspace Select, the arrows the
+   D-pad and WASD the circle pad. A gamepad's buttons go by where they are, as on the console (east A, south B, north
+   X, west Y) unless ctr_gamepad_map says otherwise, ctr_gamepad_swap_ab swapping A and B, its left stick the circle
+   pad past ctr_gamepad_deadzone. The New 3DS's ZL and ZR are 1 and 3 or a pad's triggers, and its C-stick IJKL or a
+   pad's right stick. The script (ctr_script) is unattended.c's for a Switch game:
    ms:hex presses, each held for press_len ms */
 #include "3ds/input/input.h"
+#include "3ds/gpu/screens.h"
+#include "3ds/input/map.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/utilities/script.h"
@@ -31,10 +34,19 @@ static struct {
     size_t presses;
     double start; /* snx_seconds() at snx_ctr_input_init */
     bool gamepads;
+    SnxCtrKeyMap keys; /* ctr_keyboard_map over the default layout */
+    SnxPadMap pad;     /* ctr_gamepad_map over the console's, A and B swapped as ctr_gamepad_swap_ab says */
 } g_input;
 
 void snx_ctr_input_init(void) {
     g_input.start = snx_seconds();
+    char word[64];
+    snx_ctr_keys_default(&g_input.keys);
+    if (snx_ctr_keys_read(&g_input.keys, g_settings.ctr_keyboard_map, word, sizeof word))
+        fprintf(stderr, "scarletnx-3ds: ctr_keyboard_map's \"%s\" is not a button and its keys (a:X,Space)\n", word);
+    if (snx_ctr_pad_map(&g_input.pad, g_settings.ctr_gamepad_map, g_settings.ctr_swap_a_b, word, sizeof word))
+        fprintf(stderr, "scarletnx-3ds: ctr_gamepad_map's \"%s\" is not a control and the button it sends (south:B)\n",
+                word);
     g_input.presses = snx_script_parse("scarletnx-3ds", g_settings.ctr_script,
                                       SNX_CTR_PAD_BUTTONS | SNX_CTR_PAD_NEW, &g_input.script);
     /* SDL sends an added event for each gamepad already connected */
@@ -65,13 +77,11 @@ void snx_ctr_input_event(const union SDL_Event* event) {
 }
 bool snx_ctr_touch_locate(const SnxCtrWindowLayout* l, double x, double y, unsigned* px, unsigned* py) {
     *px = *py = 0;
-    unsigned layout_w = snx_max_u32(l->top_w, l->bottom_w), layout_h = l->top_h + l->bottom_h;
-    if (!l->image_w || !l->image_h || !layout_w || !l->bottom_w || !l->bottom_h) return false;
-    double scale = fmin((double)l->image_w / layout_w, (double)l->image_h / layout_h);
-    /* the bottom screen's corner, where show_screens blits it: under the top screen, centred across the pair */
-    double left = (l->image_w - layout_w * scale) / 2 + (layout_w - l->bottom_w) * scale / 2;
-    double top = (l->image_h - layout_h * scale) / 2 + l->top_h * scale;
-    double u = (x - left) / scale, v = (y - top) / scale;
+    SnxCtrScreenRect rects[2];
+    snx_ctr_screens_place(l, rects);
+    const SnxCtrScreenRect* b = &rects[1];
+    if (!b->w) return false; /* no picture, or the bottom screen is not shown */
+    double u = (x - b->x) / b->w * l->bottom_w, v = (y - b->y) / b->h * l->bottom_h;
     *px = (unsigned)snx_clamp_double(floor(u), 0, l->bottom_w - 1);
     *py = (unsigned)snx_clamp_double(floor(v), 0, l->bottom_h - 1);
     return u >= 0 && v >= 0 && u < l->bottom_w && v < l->bottom_h;
@@ -107,29 +117,14 @@ static float axis(SDL_Gamepad* pad, SDL_GamepadAxis which) {
     return v < -1 ? -1 : v;
 }
 void snx_ctr_input_read(SnxCtrInput* input) {
-    static const struct {
-        SDL_Scancode key;
-        uint32_t bit;
-    } keys[] = {
-        {SDL_SCANCODE_X, SNX_CTR_PAD_A},           {SDL_SCANCODE_SPACE, SNX_CTR_PAD_A},
-        {SDL_SCANCODE_Z, SNX_CTR_PAD_B},           {SDL_SCANCODE_C, SNX_CTR_PAD_X},
-        {SDL_SCANCODE_V, SNX_CTR_PAD_Y},           {SDL_SCANCODE_Q, SNX_CTR_PAD_L},
-        {SDL_SCANCODE_E, SNX_CTR_PAD_R},           {SDL_SCANCODE_RETURN, SNX_CTR_PAD_START},
-        {SDL_SCANCODE_BACKSPACE, SNX_CTR_PAD_SELECT}, {SDL_SCANCODE_LEFT, SNX_CTR_PAD_LEFT},
-        {SDL_SCANCODE_UP, SNX_CTR_PAD_UP},         {SDL_SCANCODE_RIGHT, SNX_CTR_PAD_RIGHT},
-        {SDL_SCANCODE_DOWN, SNX_CTR_PAD_DOWN},
-    };
-    static const struct {
-        SDL_GamepadButton button;
-        uint32_t bit;
-    } buttons[] = {
-        {SDL_GAMEPAD_BUTTON_EAST, SNX_CTR_PAD_A},           {SDL_GAMEPAD_BUTTON_SOUTH, SNX_CTR_PAD_B},
-        {SDL_GAMEPAD_BUTTON_NORTH, SNX_CTR_PAD_X},          {SDL_GAMEPAD_BUTTON_WEST, SNX_CTR_PAD_Y},
-        {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, SNX_CTR_PAD_L},  {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, SNX_CTR_PAD_R},
-        {SDL_GAMEPAD_BUTTON_START, SNX_CTR_PAD_START},      {SDL_GAMEPAD_BUTTON_BACK, SNX_CTR_PAD_SELECT},
-        {SDL_GAMEPAD_BUTTON_DPAD_LEFT, SNX_CTR_PAD_LEFT},   {SDL_GAMEPAD_BUTTON_DPAD_UP, SNX_CTR_PAD_UP},
-        {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, SNX_CTR_PAD_RIGHT}, {SDL_GAMEPAD_BUTTON_DPAD_DOWN, SNX_CTR_PAD_DOWN},
-    };
+    /* a control's SDL button, by where it sits (pad_map.h's order); the triggers are axes */
+    static const SDL_GamepadButton buttons[SNX_PAD_CONTROLS] = {
+        SDL_GAMEPAD_BUTTON_SOUTH,          SDL_GAMEPAD_BUTTON_EAST,           SDL_GAMEPAD_BUTTON_WEST,
+        SDL_GAMEPAD_BUTTON_NORTH,          SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,  SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,
+        SDL_GAMEPAD_BUTTON_INVALID,        SDL_GAMEPAD_BUTTON_INVALID,        SDL_GAMEPAD_BUTTON_LEFT_STICK,
+        SDL_GAMEPAD_BUTTON_RIGHT_STICK,    SDL_GAMEPAD_BUTTON_BACK,           SDL_GAMEPAD_BUTTON_START,
+        SDL_GAMEPAD_BUTTON_DPAD_UP,        SDL_GAMEPAD_BUTTON_DPAD_DOWN,      SDL_GAMEPAD_BUTTON_DPAD_LEFT,
+        SDL_GAMEPAD_BUTTON_DPAD_RIGHT};
     *input = (SnxCtrInput){0};
     uint32_t touch = __atomic_load_n(&g_touch, __ATOMIC_RELAXED);
     if (touch >> 31) {
@@ -140,31 +135,30 @@ void snx_ctr_input_read(SnxCtrInput* input) {
     /* the window's keys, which SDL keeps for a window with the focus: none without a window */
     const bool* held = SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
     if (held) {
-        for (size_t i = 0; i < sizeof keys / sizeof *keys; ++i)
-            if (held[keys[i].key]) input->buttons |= keys[i].bit;
-        input->circle[0] = (float)(held[SDL_SCANCODE_D] - held[SDL_SCANCODE_A]);
-        input->circle[1] = (float)(held[SDL_SCANCODE_W] - held[SDL_SCANCODE_S]);
-        input->cstick[0] = (float)(held[SDL_SCANCODE_L] - held[SDL_SCANCODE_J]);
-        input->cstick[1] = (float)(held[SDL_SCANCODE_I] - held[SDL_SCANCODE_K]);
-        if (held[SDL_SCANCODE_1]) input->buttons |= SNX_CTR_PAD_ZL;
-        if (held[SDL_SCANCODE_3]) input->buttons |= SNX_CTR_PAD_ZR;
+        bool bound[SNX_CTR_BINDS] = {false};
+        for (unsigned b = 0; b < SNX_CTR_BINDS; ++b)
+            for (unsigned k = 0; k < SNX_CTR_BIND_KEYS; ++k)
+                bound[b] |= g_input.keys.key[b][k] && held[g_input.keys.key[b][k]];
+        for (unsigned b = 0; b < SNX_CTR_BIND_CPAD_UP; ++b)
+            if (bound[b]) input->buttons |= snx_ctr_bind_bit(b);
+        input->circle[0] = (float)(bound[SNX_CTR_BIND_CPAD_RIGHT] - bound[SNX_CTR_BIND_CPAD_LEFT]);
+        input->circle[1] = (float)(bound[SNX_CTR_BIND_CPAD_UP] - bound[SNX_CTR_BIND_CPAD_DOWN]);
+        input->cstick[0] = (float)(bound[SNX_CTR_BIND_CSTICK_RIGHT] - bound[SNX_CTR_BIND_CSTICK_LEFT]);
+        input->cstick[1] = (float)(bound[SNX_CTR_BIND_CSTICK_UP] - bound[SNX_CTR_BIND_CSTICK_DOWN]);
     }
-    float dead = (float)g_settings.stick_dead_zone / 100.0f;
+    float dead = (float)g_settings.ctr_stick_dead_zone / 100.0f;
     for (unsigned p = 0; p < INPUT_PADS; ++p) {
         SDL_Gamepad* pad = g_input.pads[p];
         if (!pad) continue;
-        for (size_t i = 0; i < sizeof buttons / sizeof *buttons; ++i)
-            if (SDL_GetGamepadButton(pad, buttons[i].button)) {
-                uint32_t bit = buttons[i].bit;
-                if (g_settings.swap_a_b && (bit == SNX_CTR_PAD_A || bit == SNX_CTR_PAD_B))
-                    bit ^= SNX_CTR_PAD_A | SNX_CTR_PAD_B;
-                input->buttons |= bit;
-            }
+        for (unsigned c = 0; c < SNX_PAD_CONTROLS; ++c) {
+            bool down = buttons[c] == SDL_GAMEPAD_BUTTON_INVALID
+                            ? SDL_GetGamepadAxis(pad, c == SNX_PAD_LT ? SDL_GAMEPAD_AXIS_LEFT_TRIGGER
+                                                                      : SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TRIGGER_PRESSED
+                            : SDL_GetGamepadButton(pad, buttons[c]);
+            if (down) input->buttons |= snx_ctr_pad_bit(g_input.pad.bit[c]);
+        }
         stick(axis(pad, SDL_GAMEPAD_AXIS_LEFTX), -axis(pad, SDL_GAMEPAD_AXIS_LEFTY), dead, input->circle);
         stick(axis(pad, SDL_GAMEPAD_AXIS_RIGHTX), -axis(pad, SDL_GAMEPAD_AXIS_RIGHTY), dead, input->cstick);
-        /* the triggers are the New 3DS's ZL and ZR, as far as they are held */
-        if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIGGER_PRESSED) input->buttons |= SNX_CTR_PAD_ZL;
-        if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TRIGGER_PRESSED) input->buttons |= SNX_CTR_PAD_ZR;
         /* the first pad with a motion sensor is the console's */
         float accel[3], gyro[3];
         if (!input->motion && SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, accel, 3) &&

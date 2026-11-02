@@ -45,10 +45,12 @@ typedef struct {
    the player) in the axes of Azahar's motion device (its SDL input: x and z of the acceleration as they are, y
    negated, and x and z of the rotation negated), as the input's accel and gyro */
 void snx_ctr_input_motion(const float sdl_accel[3], const float sdl_gyro[3], SnxCtrInput* input);
-/* The window's picture as the presenter draws it (gpu/present.c): an image of image_w by image_h pixels with the top
-   screen above the bottom one, both centred, the pair scaled as one to fit. The screens' sizes are the frames' */
+/* The window's picture as the presenter draws it (gpu/present.c): an image of image_w by image_h pixels with the two
+   screens placed by mode (gpu/screens.h, the top one above the bottom one at 0). The screens' sizes are the frames' */
 typedef struct {
     unsigned image_w, image_h, top_w, top_h, bottom_w, bottom_h;
+    unsigned mode;  /* the screens' arrangement (gpu/screens.h), 0 the stacked one */
+    bool integer;   /* the scale is a whole number */
 } SnxCtrWindowLayout;
 /* Where the point (x, y) of the window's image is on the bottom screen, as its pixel in px and py, held inside the
    screen. True when the point is on the screen, false when it is not (px and py are the nearest pixel then, 0 and 0
