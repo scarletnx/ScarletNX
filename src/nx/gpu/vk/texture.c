@@ -732,11 +732,12 @@ static Surf* tex_check(Surf* t, u64 gva) {
         t->gw = gpu_mem_generation();
     /* the CPU's writes, once a frame and again after each submission or stream wait that can make new ones the
        stream's to see (vk_ww_epoch): write tracking proves the memory unchanged without hashing its texels */
-    if (t->checked != g_vk_present || t->ww_epoch != vk_ww_epoch()) {
+    u32 ww_epoch = vk_ww_epoch(); /* before the check */
+    if (t->checked != g_vk_present || t->ww_epoch != ww_epoch) {
         u32 wnow = vk_ww_now();
         int wr = vk_written_since(gmem_host(gva, t->size), t->size, t->wseen);
-        int epoch = t->ww_epoch != vk_ww_epoch();
-        t->ww_epoch = vk_ww_epoch();
+        int epoch = t->ww_epoch != ww_epoch;
+        t->ww_epoch = ww_epoch;
         if (wr >= 0) {
             t->checked = g_vk_present;
             /* Written: hashed again after the check took in the scans that found the writes, so the new contents hold
@@ -931,13 +932,13 @@ texture_from_memory:
     u64 sz = 0;
     for (u32 l = 0; l < levels; l++) sz += bl ? bl_level_size(gw, gh, d3, &f, bh, bd, l, NULL, NULL) : stride;
     t->size = stride * (layers - 1) + sz;
+    t->ww_epoch = vk_ww_epoch(); /* hashed in this epoch: read before the hash */
     t->wseen = vk_ww_now();
     vk_written_since(gmem_host(gva, t->size), t->size, 0); /* starts tracking it */
     t->wseen = vk_ww_now();
     t->gw = gpu_mem_generation();
     t->hash = mem_hash(gva, t->size);
     t->checked = g_vk_present;
-    t->ww_epoch = vk_ww_epoch(); /* hashed in this epoch */
     t->next_check = g_vk_present + 4;
     return tex_upload(t) ? t : NULL;
 }

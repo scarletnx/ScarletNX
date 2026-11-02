@@ -543,18 +543,19 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
     u64 hk = (gva * 0x9E3779B97F4A7C15ull) ^ (gva_a * 0xC2B2AE3D27D4EB4Full) ^ ((u64)mix << 24) ^ (u64)stage;
     ShA* set = &g_sha[(u32)((hk * 0x9E3779B97F4A7C15ull) >> 52) & 4094];
     ShA* ca = NULL;
+    u32 epoch = vk_ww_epoch(); /* before the code is checked or read */
     for (int w = 0; w < 2 && !ca; w++)
         if (set[w].s && set[w].gva == gva && set[w].gva_a == gva_a && set[w].stage == stage &&
             !memcmp(set[w].mask, mask, sizeof mask))
             ca = &set[w];
     if (ca) {
         VkSh* s = ca->s;
-	int same = (ca->epoch == g_vk_epoch && ca->shader_generation == g_vk.shader_generation) ||
+	int same = (ca->epoch == epoch && ca->shader_generation == g_vk.shader_generation) ||
 		(code_same(ca, gva, s->clen, s->qh) &&
 		 (!gva_a || code_same(ca, gva_a, s->clen_a, s->qh_a)));
-        if (same && (ca->epoch != g_vk_epoch || ca->shader_generation != g_vk.shader_generation)) {
+        if (same && (ca->epoch != epoch || ca->shader_generation != g_vk.shader_generation)) {
             ca->shader_generation = g_vk.shader_generation;
-            ca->epoch = g_vk_epoch;
+            ca->epoch = epoch;
             ca->wseen = vk_ww_now();
             ca->gw = gpu_mem_generation();
         }
@@ -633,7 +634,7 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
     ca->gva_a = gva_a;
     memcpy(ca->mask, mask, sizeof mask);
     ca->stage = stage;
-    ca->epoch = g_vk_epoch;
+    ca->epoch = epoch;
     ca->wseen = wseen;
     ca->gw = gw;
 	ca->shader_generation = g_vk.shader_generation;

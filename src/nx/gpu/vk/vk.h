@@ -316,8 +316,8 @@ void vk_hash128(const void* p, u64 size, u64 hash[2]);
 u64 vk_hash_copy(void* dst, const void* src, u64 size); /* vk_hash(src, size), with src copied into dst on the way */
 /* a hash of guest memory: all of it when small, else its ends and 62 samples between them */
 u64 vk_sample_hash(u64 gva, u64 len);
-/* guest submits processed so far, and frames presented: what the caches check memory against */
-extern u32 g_vk_epoch, g_vk_present;
+/* frames presented: what the caches check memory against once a frame, beside the write epoch (vk_ww_epoch) */
+extern u32 g_vk_present;
 
 /* record.c: the frame's command buffer is recorded on a thread of its own. rec_Cmd* take vkCmd*'s arguments and
    record into that command buffer from the ring, or into any other one at once */
@@ -1053,6 +1053,9 @@ int vk_written_since(const u8* host, u64 len, u32 since);
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user);
 u32 vk_ww_now(void);
 void vk_ww_new_epoch(void); /* the CPU may have written what a GPU stream reads next: write tracking scans again */
+/* The epoch of the CPU's writes the calling thread's checks see: a cache that trusts a check for the rest of its epoch
+   stamps this one, read before the check (or the read of memory) it stands for. A job's checks see the epoch it began
+   in, not a later submission's: a check stamped with that one would vouch for writes it never looked for */
 u32 vk_ww_epoch(void);
 /* the calling thread runs a job of a stream (1: its checks see the CPU's writes from before the newest epoch now, and
    from before the waits it ends) or stops (0: they see every epoch's) */

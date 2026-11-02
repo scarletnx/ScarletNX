@@ -886,6 +886,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     u64 tic_at = tic_base + (handle & 0xFFFFF) * 32ull, tsc_at = tsc_base + ((handle >> 20) & 0xFFF) * 32ull;
     TexMemo* m = &g_tex_memo[(handle * 0x9E3779B1u) >> 20];
     u64 gw = gpu_mem_generation();
+    u32 epoch = vk_ww_epoch(); /* before the headers are read */
     x->handle = handle;
     x->have = 1;
     /* an index past its pool's limit names no header: no texture, or the
@@ -908,7 +909,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         return;
     }
     if (m->t && m->ds == ds && m->handle == handle && m->tic_base == tic_base && m->tsc_base == tsc_base &&
-        m->surf_epoch == vk_surf_epoch_at(m->t_gva) && m->ww_epoch == vk_ww_epoch() && !g_gfx_img_any &&
+        m->surf_epoch == vk_surf_epoch_at(m->t_gva) && m->ww_epoch == epoch && !g_gfx_img_any &&
         m->adds == __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED) &&
         (m->gw == gw || (!gpu_mem_dirty_since(m->gw, tic_at, 32) && !gpu_mem_dirty_since(m->gw, tsc_at, 32)))) {
         m->gw = gw;
@@ -942,7 +943,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         m->adds = __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED);
         m->t_gva = x->t->gva;
         m->surf_epoch = vk_surf_epoch_at(x->t->gva);
-        m->ww_epoch = vk_ww_epoch();
+        m->ww_epoch = epoch;
         memcpy(m->tic, x->tic, sizeof m->tic);
         memcpy(m->tsc, x->tsc, sizeof m->tsc);
         m->t = x->t;
@@ -1226,8 +1227,8 @@ typedef struct {
 } CbEntry;
 /* e holds a's bytes, sz of them at least, for this draw: checked as it is cached, and with adds, with no compute or
    graphics result added since (none can cover it, and only a write of its memory leaves the copy stale) */
-static int cb_kept(const CbEntry* e, u64 a, u32 sz, int adds) {
-    return a && e->a == a && e->epoch == g_vk_epoch && e->frame == vk_submit_number() && e->sz >= sz &&
+static int cb_kept(const CbEntry* e, u64 a, u32 sz, int adds, u32 epoch) {
+    return a && e->a == a && e->epoch == epoch && e->frame == vk_submit_number() && e->sz >= sz &&
            (!adds || (e->cs_adds == vk_compute_adds() && e->gfx_adds == vk_buf_adds())) &&
            !gpu_mem_dirty_since(e->gw, a, sz);
 }
@@ -1257,11 +1258,12 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
         return 1;
     }
     u64 a = ds->bind.cb_addr[stage][i];
+    u32 epoch = vk_ww_epoch(); /* before the buffer is checked */
     CbEntry* e = &c[stage][i];
     CbEntry* x = &by_addr[(u32)((a >> 8) * 0x9E3779B97F4A7C15ull >> 54)];
     /* The pending checks were the most of cb_get's time in one game: an entry is taken first while no result was
        added since it was made */
-    if (cb_kept(e, a, sz, 1) || (cb_kept(x, a, sz, 1) && (*e = *x, 1))) {
+    if (cb_kept(e, a, sz, 1, epoch) || (cb_kept(x, a, sz, 1, epoch) && (*e = *x, 1))) {
         *buf = e->buf;
         *off = e->off;
         return 1;
@@ -1270,7 +1272,7 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
        below see: the buffer then comes from vk_buf_get_strict, which reads it on the GPU, and isn't cached */
     if (g_cs_any && a) vk_compute_mem_need(a, sz);
     int pending = g_gfx_any && a && vk_buf_pending(a, sz);
-    if (!pending && (cb_kept(e, a, sz, 0) || (cb_kept(x, a, sz, 0) && (*e = *x, 1)))) {
+    if (!pending && (cb_kept(e, a, sz, 0, epoch) || (cb_kept(x, a, sz, 0, epoch) && (*e = *x, 1)))) {
         *buf = e->buf;
         *off = e->off;
         return 1;
@@ -1286,7 +1288,7 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
                    .gw = gpu_mem_generation(),
                    .frame = vk_submit_number(),
                    .sz = sz,
-                   .epoch = g_vk_epoch,
+                   .epoch = epoch,
                    .buf = *buf,
                    .off = *off};
     if (a) *x = *e;
@@ -2048,7 +2050,7 @@ static struct {
     u32 ch_id;        /* the owner of the state it was made from */
     u64 gen[DS_GENS]; /* that state's generations */
     u32 topology; /* the draw's argument, before tessellation makes it a patch list */
-    u32 epoch;    /* g_vk_epoch */
+    u32 epoch;    /* vk_ww_epoch */
 	u64 shader_generation; /* instruction invalidations also expire kept draws */
     DrawShaders sh; /* the rest holds when sh.vs is set */
     FsKey fkey;
@@ -2703,7 +2705,7 @@ retry:
     first = initial_first;
     count = initial_count;
     u64 setup_frame = vk_submit_number();
-    u32 epoch = __atomic_load_n(&g_vk_epoch, __ATOMIC_RELAXED);
+    u32 epoch = vk_ww_epoch();
     /* kept: the state the last draw made holds for this one, as far as each check below tells. Each part is made
        here when it doesn't (and when SNX_DIRTY_CHECK compares) */
     int kept = draw_kept(ds, draw_topo, epoch);

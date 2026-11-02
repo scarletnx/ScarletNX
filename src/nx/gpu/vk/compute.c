@@ -921,19 +921,20 @@ void vk_dispatch(const DispatchState* d) {
     };
     static struct cs_fast fc[64];
     u64 pa = d->code;
+    u32 epoch = vk_ww_epoch(); /* before the code is checked or read */
     struct cs_fast* fe = &fc[((pa >> 8) ^ (pa >> 16)) & 63];
     CsPipe* p = fe->p;
     int same = p && fe->addr == pa && fe->lx == lx && fe->ly == ly && fe->lz == lz && fe->shm == shm &&
                vk_cb_reads_hold(&p->cbr, cs_cb_read);
-    if (same && (fe->shader_generation != g_vk.shader_generation || fe->epoch != g_vk_epoch)) {
+    if (same && (fe->shader_generation != g_vk.shader_generation || fe->epoch != epoch)) {
         if (cs_code_unchanged(pa, fe->code_len, fe->gw, fe->wseen)) {
             fe->shader_generation = g_vk.shader_generation;
-            fe->epoch = g_vk_epoch;
+            fe->epoch = epoch;
             fe->wseen = vk_ww_now();
             fe->gw = gpu_mem_generation();
         }
     }
-    if (!same || fe->shader_generation != g_vk.shader_generation || fe->epoch != g_vk_epoch) {
+    if (!same || fe->shader_generation != g_vk.shader_generation || fe->epoch != epoch) {
         static u8 code_buf[0x10000 + 80]; /* compute programs have no header: 80 zero bytes stand in for one */
         CsKey unkeyed = {0};
         u32 wseen = vk_ww_now();
@@ -950,7 +951,7 @@ void vk_dispatch(const DispatchState* d) {
         }
         fe->addr = pa;
         fe->shader_generation = g_vk.shader_generation;
-        fe->epoch = g_vk_epoch;
+        fe->epoch = epoch;
         fe->wseen = wseen;
         fe->gw = gw;
         fe->code_len = code_len;
