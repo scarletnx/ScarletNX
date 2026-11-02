@@ -621,11 +621,17 @@ static int gap_line(SnxLogScan* s, Span line) {
     Span rest = line;
     long at;
     switch (line.p[0]) {
-        case 'v': /* "vulkan: shader <hash> (stage <n>) not translated: <why>", "vulkan: compute <hash> ..." */
+        case 'v': { /* "vulkan: shader <hash> (stage <n>) not translated: <why>", "vulkan: compute <hash> ...", and a
+                       program the game ships, "vulkan: <stage> <hash> not translated: <why>" (shipped_stage_name) */
+            static const char* const shaders[] = {
+                "shader ",   "vertex ",   "paired vertex ",          "tessellation control ",
+                "geometry ", "fragment ", "tessellation evaluation "};
             if (!take_lit(&rest, "vulkan: ") || (at = find(rest, " not translated: ")) < 0) return 0;
-            if (starts(rest, "shader ")) return gap(s, SNX_GAP_SHADER, skip(rest, (size_t)at + 17));
+            for (size_t k = 0; k < sizeof shaders / sizeof *shaders; ++k)
+                if (starts(rest, shaders[k])) return gap(s, SNX_GAP_SHADER, skip(rest, (size_t)at + 17));
             if (starts(rest, "compute ")) return gap(s, SNX_GAP_COMPUTE, skip(rest, (size_t)at + 17));
             return 0;
+        }
         case 'g':
             if (!take_lit(&rest, "gpu: ")) return 0;
             if (take_lit(&rest,
