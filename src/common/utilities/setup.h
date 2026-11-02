@@ -26,7 +26,7 @@ typedef struct {
     const char *what, *before, *now, *row;
     int systems;
 } SnxNotice;
-#define SNX_NOTICES 18
+#define SNX_NOTICES 19
 extern const SnxNotice snx_notices[SNX_NOTICES]; /* the oldest first */
 int snx_notice_here(int notice);                 /* 1 for one of this system's */
 
