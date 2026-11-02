@@ -6,9 +6,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 /* The shown framebuffers, on the GPU (present.c). init brings up the 3DS's Vulkan device on memory (vk/vk.h) with a
-   window when it can make one; without a Vulkan device that can, it fails and nothing is shown. frame_dir receives
-   bounded PPM dumps (the 3DS framebuffer is 240x400/320 portrait, shown rotated 90 degrees clockwise, like the
-   console's landscape screens). */
+   window when it can make one; without a Vulkan device that can, it fails and nothing is shown. The 3DS display's
+   Separate screens setting gives each screen its own window. frame_dir receives bounded PPM dumps (the 3DS framebuffer
+   is 240x400/320 portrait, shown rotated 90 degrees clockwise, like the console's landscape screens). */
 bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir);
 /* The window's title, as a Switch game's: the game's name, what it is played with in parentheses when anything (an
    update, DLC), then the build ("ScarletNX <branch> <commit> (<compiler>, <OS> <arch>)"); and the program's icon */

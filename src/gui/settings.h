@@ -90,6 +90,8 @@ const char* gui_settings_value(const GuiSettings* settings, const char* key);
 /* argv's options for a run: --key=value for each setting picked; with launch the launcher's too, -S -s for the stub,
    --tmpfs and --extract-container. Their count, count + 1 at most */
 size_t gui_settings_options(GuiSettings* settings, int launch, const char** argv);
+/* argv's --key=value for each of the 3DS driver's settings picked (keys that start with ctr_): its count */
+size_t gui_settings_ctr_options(GuiSettings* settings, const char** argv);
 /* Extract to tmpfs: --tmpfs while it is on, else NULL (extractions on disk) */
 const char* gui_settings_tmpfs(const GuiSettings* settings);
 /* Extract dump: --extract-container while it is on, else NULL (a dump read in place, nothing extracted).

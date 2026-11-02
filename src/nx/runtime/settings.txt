@@ -1048,6 +1048,35 @@ setting State checks
     help Save state round trips, a comma between: at saves the game at that many ms of the scripted input's clock into
     help the check slot, loads it back at once, and logs whether guest memory and guest time came back the same
 
+# ---- the 3DS driver's display ----
+
+table g_ctr_display_ini
+setting CTR separate screens
+    key ctr_separate_windows
+    label Separate screens
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = the top and bottom screens each have a window of their own, each taking its whole window, instead of the
+    help top screen above the bottom one in one window
+setting CTR top resolution
+    key ctr_top_resolution
+    label Top screen resolution
+    int 1 16
+    default 1
+    startup
+    help The scale of the top screen's 3D rendering, 1 to 16: 1 = the console's 400x240, 2 = 800x480. The screen is
+    help scaled to its window
+setting CTR bottom resolution
+    key ctr_bottom_resolution
+    label Bottom screen resolution
+    int 1 16
+    default 1
+    startup
+    help The scale of the bottom screen's 3D rendering, 1 to 16: 1 = the console's 320x240, 2 = 640x480. The screen
+    help is scaled to its window
+
 # ---- the 3DS driver's (scarletnx-3ds --key=value), in no section of the game's .ini ----
 
 table g_ctr_debug_ini
@@ -1167,6 +1196,7 @@ setting Vita lockstep steps
 section Game: g_game_ini
 section Display: g_display_ini
 section Graphics: g_graphics_ini
+section 3DS: g_ctr_display_ini
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend
 section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player    backend

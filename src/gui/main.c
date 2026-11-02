@@ -7837,7 +7837,8 @@ static unsigned group_icon(const char* name) {
         unsigned icon;
     } icons[] = {{"App", GUI_ICON_APP_WINDOW},  {"Launch", GUI_ICON_ROCKET},
                  {"Game", GUI_ICON_JOYSTICK},   {"Display", GUI_ICON_MONITOR},
-                 {"Graphics", GUI_ICON_IMAGE},  {"Performance", GUI_ICON_GAUGE},
+                 {"Graphics", GUI_ICON_IMAGE},  {"3DS", GUI_ICON_MONITOR},
+                 {"Performance", GUI_ICON_GAUGE},
                  {"Overlay", GUI_ICON_POINTER}, {"Controllers", GUI_ICON_GAMEPAD_2},
                  {"Network", GUI_ICON_WIFI},    {"User", GUI_ICON_USER},
                  {"Debug", GUI_ICON_BUG}};
@@ -12600,9 +12601,10 @@ static int play(App* app, const char* game) {
     size_t n;
     int ok;
     argv[0] = option;
-    n = 1 + gui_settings_options(s, 0, argv + 1);
-    if (driver) argv[n++] = driver;
-    if (freedreno) argv[n++] = freedreno;
+    n = 1 + (app->menu.selected == GUI_3DS ? gui_settings_ctr_options(s, argv + 1)
+                                            : gui_settings_options(s, 0, argv + 1));
+    if (app->menu.selected == GUI_SWITCH && driver) argv[n++] = driver;
+    if (app->menu.selected == GUI_SWITCH && freedreno) argv[n++] = freedreno;
     argv[n] = NULL;
     SDL_GetCurrentTime(&app->played_at);
     ok = gui_android_play(argv, app->message, sizeof(app->message));
@@ -13830,6 +13832,7 @@ static void launch(App* app, char* absolute, bool prepared) {
         if (app->aot_hook) argv[n++] = "--hook-direct-calls";
     }
     if (app->menu.selected == GUI_SWITCH && !make) n += gui_settings_options(s, 1, argv + n);
+    if (app->menu.selected == GUI_3DS && !make) n += gui_settings_ctr_options(s, argv + n);
     /* the launcher's GPU driver and Freedreno variables, where the game's .ini has none of its own */
     if (app->menu.selected == GUI_SWITCH && !make) {
         char* ini = game_ini_of(absolute);

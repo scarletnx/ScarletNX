@@ -25,6 +25,7 @@ def main():
     help_text = run(['--help'], 0, 'recompiled if needed,\n                  then played')
     assert '--recomp' in help_text and '--extract' in help_text and 'scarletnx-3ds-aot' not in help_text
     assert '--extract-container' in help_text and 'read where it lies' in help_text
+    assert '--ctr_separate_windows=1' in help_text and '--ctr_top_resolution=2' in help_text
     run(['--board-info', '--extract-container'], 2, 'Usage:')
     run(['-x', '-r', 'game.cia'], 2, 'Usage:')
     run(['-r', '--max-blocks', '5', 'game.cia'], 2, 'Usage:')
@@ -37,9 +38,11 @@ def main():
     run(['--model'], 2, 'requires old or new')
     run(['--model', 'other', '--board-info'], 2, 'requires old or new')
     run(['--board-info'], 0, 'Old 3DS\nARM11 cores: 2\nBase clock: 268111856 Hz\nFCRAM: 128 MiB')
+    run(['--board-info', '--ctr_separate_windows=1', '--ctr_top_resolution=2', '--ctr_bottom_resolution=2'], 0,
+        'Old 3DS\nARM11 cores: 2')
     run(['--model', 'new', '--board-info'], 0, 'New 3DS\nARM11 cores: 4')
     run(['--board-info', 'game.cia'], 2, 'Usage:')
-    run(['--backend=gcc'], 2, 'unknown setting: --backend=gcc')  # --key=value is the 3DS debug table's
+    run(['--backend=gcc'], 2, 'unknown setting: --backend=gcc')  # --key=value is the 3DS tables'
     # an older version's packet trace (docs/DEPRECATIONS.md): still ctr_uds_trace=1, under the command line's own
     old = 'SNX_3DS_UDS_PACKET_TRACE'
     run(

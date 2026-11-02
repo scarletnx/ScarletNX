@@ -52,10 +52,12 @@ static void usage(FILE* out) {
         "  --max-blocks N  Stop after N native blocks (default: run until the game exits or its window\n"
         "                  closes)\n"
         "  --seconds N     Stop after N seconds, reporting where each thread is (--seconds=N too)\n"
-        "  --KEY=VALUE     A setting of the 3DS debug table (g_ctr_debug_ini in src/nx/runtime/settings.txt):\n"
-        "                  --ctr_ipc_trace=1 logs each service request, --ctr_jit_trace=1 each block\n"
-        "                  compiled while the game runs, --script=ms:buttons,... (ctr_script) presses\n"
-        "                  buttons, --ctr_auto_stub_ipc=0 stops at a service command the runtime lacks\n"
+        "  --KEY=VALUE     A setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini in\n"
+        "                  src/nx/runtime/settings.txt): --ctr_separate_windows=1 puts each screen in a window of\n"
+        "                  its own, --ctr_top_resolution=2 and --ctr_bottom_resolution=2 render them at twice the\n"
+        "                  console's, --ctr_ipc_trace=1 logs each service request, --ctr_jit_trace=1 each block\n"
+        "                  compiled while the game runs, --script=ms:buttons,... (ctr_script) presses buttons,\n"
+        "                  --ctr_auto_stub_ipc=0 stops at a service command the runtime lacks\n"
         "  --ipc-stubs L   With --ctr_auto_stub_ipc=0, still answer a service command the runtime lacks with\n"
         "                  success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid, gsp,\n"
         "                  cfg, dsp, system. Given more than once, the lists add up\n"
@@ -532,15 +534,16 @@ int snx_ctr_main(int argc, char** argv) {
             model = !strcmp(argv[i], "old") ? SNX_CTR_OLD : SNX_CTR_NEW;
             model_set = true;
         } else if (!positional && !strncmp(arg, "--", 2) && strchr(arg, '=')) {
-            /* a setting of the 3DS debug table (g_ctr_debug_ini, src/nx/runtime/settings.txt), --key=value; --script=
-               is ctr_script, a Switch game's name for it */
+            /* a setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini, in
+               src/nx/runtime/settings.txt), --key=value; --script= is ctr_script, a Switch game's name for it */
             char key[64];
             size_t length = (size_t)(strchr(arg, '=') - arg - 2);
             const IniOpt* o = NULL;
             if (length < sizeof key) {
                 memcpy(key, arg + 2, length);
                 key[length] = 0;
-                o = ini_find(g_ctr_debug_ini, !strcmp(key, "script") ? "ctr_script" : key);
+                o = ini_find(g_ctr_display_ini, key);
+                if (!o) o = ini_find(g_ctr_debug_ini, !strcmp(key, "script") ? "ctr_script" : key);
             }
             if (!o) {
                 fprintf(stderr, "scarletnx-3ds: unknown setting: %s\n", arg);
