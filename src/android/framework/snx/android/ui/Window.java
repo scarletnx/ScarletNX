@@ -23,6 +23,37 @@ public final class Window {
     private static final float[] events = new float[8 * 64];
     private static long downTime;
     private static final int POLL_MS = 4;
+    /** Scripted taps for runs without a user (SNX_ANDROID_TAPS="FRAME:X,Y ..."): a finger down at the frame, up 3 later */
+    private static final long[] tapFrames;
+    private static final float[][] tapPoints;
+    private static long frames;
+    /** Scripted text (SNX_ANDROID_KEYS="FRAME:TEXT|FRAME:TEXT"): its characters as key presses, from the frame on */
+    private static final long[] keyFrames;
+    /** The frames between scripted keys (SNX_ANDROID_KEY_FRAMES, 4 when not given: about 66 ms, a fast typist's) */
+    private static final int keyPace = Math.max(1, Integer.parseInt(System.getenv().getOrDefault("SNX_ANDROID_KEY_FRAMES", "4")));
+    private static final String[] keyTexts;
+    static {
+        String keys = System.getenv("SNX_ANDROID_KEYS");
+        String[] parts = keys != null && !keys.isEmpty() ? keys.split("\\|") : new String[0];
+        keyFrames = new long[parts.length];
+        keyTexts = new String[parts.length];
+        for (int i = 0; i < parts.length; ++i) {
+            int colon = parts[i].indexOf(':');
+            keyFrames[i] = Long.parseLong(parts[i].substring(0, colon));
+            keyTexts[i] = parts[i].substring(colon + 1).replace("\\n", "\n");
+        }
+    }
+    static {
+        String script = System.getenv("SNX_ANDROID_TAPS");
+        String[] items = script != null && !script.isBlank() ? script.trim().split("\\s+") : new String[0];
+        tapFrames = new long[items.length];
+        tapPoints = new float[items.length][];
+        for (int i = 0; i < items.length; ++i) {
+            String[] fx = items[i].split(":"), xy = fx[1].split(",");
+            tapFrames[i] = Long.parseLong(fx[0]);
+            tapPoints[i] = new float[] {Float.parseFloat(xy[0]), Float.parseFloat(xy[1])};
+        }
+    }
 
     private Window() {}
 
@@ -38,8 +69,20 @@ public final class Window {
                 }
                 if (nativeHasWindow()) Looper.getMainLooper().getQueue().setWaiter(new Pump());
             }
-            nativePresent(frame.width, frame.height, frame.bytes(), frame.size(),
-                frame.bitmaps().toArray(new android.graphics.Bitmap[0]));
+            java.util.List<android.graphics.Bitmap> bitmaps = frame.bitmaps();
+            int n = bitmaps.size();
+            int[] info = new int[3 * n];
+            for (int i = 0; i < n; ++i) {
+                android.graphics.Bitmap b = bitmaps.get(i);
+                info[3 * i] = b.id();
+                info[3 * i + 1] = b.getWidth();
+                info[3 * i + 2] = b.getHeight();
+            }
+            nativePresent(frame.width, frame.height, frame.bytes(), frame.size(), info,
+                frame.uploads().toArray(new int[0][]), frame.drawings().toArray(new byte[0][]),
+                android.graphics.Bitmap.takeFreed());
+            script(++frames);
+            scriptKeys(frames);
         } catch (UnsatisfiedLinkError e) {
             failed = true;
             android.util.Log.w("snx", "no renderer in this runtime: running headless");
@@ -54,6 +97,54 @@ public final class Window {
             poll();
         }
         @Override public void wake(MessageQueue queue) { queue.notifyAll(); }
+    }
+
+    /** The scripted taps of a frame, posted to the main thread as the window's events are */
+    private static void script(long frame) {
+        for (int i = 0; i < tapFrames.length; ++i) {
+            int action = frame == tapFrames[i] ? MotionEvent.ACTION_DOWN : frame == tapFrames[i] + 3 ? MotionEvent.ACTION_UP : -1;
+            if (action < 0) continue;
+            float x = tapPoints[i][0], y = tapPoints[i][1];
+            new android.os.Handler(Looper.getMainLooper()).post(() -> {
+                ViewRootImpl root = Host.top();
+                if (root == null) return;
+                long now = SystemClock.uptimeMillis();
+                if (action == MotionEvent.ACTION_DOWN) downTime = now;
+                MotionEvent e = MotionEvent.obtain(downTime, now, action, x, y, 0);
+                e.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+                root.dispatchInputEvent(e);
+            });
+        }
+    }
+
+    /** A character as the key and modifiers that type it on a US keyboard: {code, meta}, or null */
+    static int[] keyOf(char c) {
+        if (c == '\n') return new int[] {KeyEvent.KEYCODE_ENTER, 0};
+        for (int meta : new int[] {0, KeyEvent.META_SHIFT_ON})
+            for (int code = 1; code < 300; ++code)
+                if (new KeyEvent(0, 0, KeyEvent.ACTION_DOWN, code, 0, meta).getUnicodeChar() == c) return new int[] {code, meta};
+        return null;
+    }
+
+    /**
+     * The scripted text due at a frame: from its frame on, one character every keyPace frames, a press and a
+     * release. A text field that the app controls takes each key through a recomposition, and a new line through
+     * more, as a person's typing gives it time to
+     */
+    private static void scriptKeys(long frame) {
+        for (int i = 0; i < keyFrames.length; ++i) {
+            long k = frame - keyFrames[i];
+            if (k < 0 || k % keyPace != 0 || k / keyPace >= keyTexts[i].length()) continue;
+            char c = keyTexts[i].charAt((int) (k / keyPace));
+            new android.os.Handler(Looper.getMainLooper()).post(() -> {
+                int[] key = keyOf(c);
+                ViewRootImpl root = Host.top();
+                if (key == null || root == null) return;
+                long now = SystemClock.uptimeMillis();
+                root.dispatchInputEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, key[0], 0, key[1]));
+                root.dispatchInputEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, key[0], 0, key[1]));
+            });
+        }
     }
 
     /** The window's events, each dispatched to the top window's root on the main thread. */
@@ -138,6 +229,11 @@ public final class Window {
 
     private static native boolean nativeOpen(int width, int height, String title);
     private static native boolean nativeHasWindow();
-    private static native void nativePresent(int width, int height, byte[] list, int size, android.graphics.Bitmap[] bitmaps);
+    /**
+     * A frame: its list, and its bitmaps (ID, width and height in info, three ints each) with the pixels to upload and
+     * the operations to draw into each first (null for none), and the bitmaps the app let go.
+     */
+    private static native void nativePresent(int width, int height, byte[] list, int size, int[] info, int[][] pixels,
+                                             byte[][] drawings, int[] freed);
     private static native int nativePoll(float[] events);
 }

@@ -27,6 +27,11 @@ public final class Bitmap implements android.os.Parcelable {
     private int density = android.util.DisplayMetrics.DENSITY_DEVICE_STABLE;
     private int generation;
     private DisplayList drawing;
+    /** Pixels the app set that the renderer has not taken yet (its image holds what was drawn) */
+    private boolean pixelsDirty;
+    /** The bitmaps that the app no longer holds, whose images the renderer frees */
+    private static final java.util.concurrent.ConcurrentLinkedQueue<Integer> FREED = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private static final java.lang.ref.Cleaner CLEANER = java.lang.ref.Cleaner.create();
     private ColorSpace colorSpace = ColorSpace.get(ColorSpace.Named.SRGB);
 
     private Bitmap(int width, int height, Config config) {
@@ -35,12 +40,35 @@ public final class Bitmap implements android.os.Parcelable {
         this.height = height;
         this.config = config != null ? config : Config.ARGB_8888;
         pixels = new int[width * height];
+        int freedId = id;
+        CLEANER.register(this, () -> FREED.add(freedId));
+    }
+
+    /** The IDs of the bitmaps gone since the last call */
+    public static int[] takeFreed() {
+        java.util.ArrayList<Integer> ids = new java.util.ArrayList<>();
+        for (Integer i; (i = FREED.poll()) != null;) ids.add(i);
+        int[] out = new int[ids.size()];
+        for (int k = 0; k < out.length; ++k) out[k] = ids.get(k);
+        return out;
+    }
+    private void markPixels() {
+        pixelsDirty = true;
+        ++generation;
+    }
+    /** The pixels to upload (all of them), or null when the app set none since the last call */
+    public int[] takePixels() {
+        if (!pixelsDirty) return null;
+        pixelsDirty = false;
+        return pixels;
     }
 
     /** The bitmap's number for the renderer, and its pixels' generation. */
     public int id() { return id; }
     public int generation() { return generation; }
     public int[] pixels() { return pixels; }
+    /** What canvases drew into the bitmap since the renderer last took it, or null */
+    public DisplayList drawingOrNull() { return drawing; }
     DisplayList drawing() {
         if (drawing == null) drawing = new DisplayList();
         ++generation;
@@ -71,34 +99,25 @@ public final class Bitmap implements android.os.Parcelable {
     }
     public static Bitmap createBitmap(Bitmap src) { return createBitmap(src, 0, 0, src.width, src.height); }
     public static Bitmap createBitmap(Bitmap src, int x, int y, int width, int height) {
-        Bitmap b = new Bitmap(width, height, src.config);
-        for (int row = 0; row < height; ++row) System.arraycopy(src.pixels, (y + row) * src.width + x, b.pixels, row * width, width);
-        b.hasAlpha = src.hasAlpha;
-        return b;
+        return createBitmap(src, x, y, width, height, null, false);
     }
+    /** A part of src through a matrix, drawn on the GPU as Android's Skia draws it */
     public static Bitmap createBitmap(Bitmap src, int x, int y, int width, int height, Matrix m, boolean filter) {
-        if (m == null || m.isIdentity()) return createBitmap(src, x, y, width, height);
-        RectF r = new RectF(0, 0, width, height);
-        m.mapRect(r);
-        int w = Math.max(1, Math.round(r.width())), h = Math.max(1, Math.round(r.height()));
-        Matrix inverse = new Matrix();
-        m.invert(inverse);
+        RectF bounds = new RectF(0, 0, width, height);
+        if (m != null) m.mapRect(bounds);
+        int w = Math.max(1, Math.round(bounds.width())), h = Math.max(1, Math.round(bounds.height()));
         Bitmap b = new Bitmap(w, h, src.config);
-        float[] p = new float[2];
-        for (int j = 0; j < h; ++j)
-            for (int i = 0; i < w; ++i) {
-                p[0] = i + 0.5f + r.left; p[1] = j + 0.5f + r.top;
-                inverse.mapPoints(p);
-                int sx = (int) Math.floor(p[0]) + x, sy = (int) Math.floor(p[1]) + y;
-                if (sx >= x && sy >= y && sx < x + width && sy < y + height) b.pixels[j * w + i] = src.pixels[sy * src.width + sx];
-            }
+        b.hasAlpha = src.hasAlpha;
+        Canvas c = new Canvas(b);
+        c.translate(-bounds.left, -bounds.top);
+        if (m != null) c.concat(m);
+        c.drawBitmap(src, new Rect(x, y, x + width, y + height), new RectF(0, 0, width, height), filter ? new Paint(Paint.FILTER_BITMAP_FLAG) : null);
         return b;
     }
     public static Bitmap createScaledBitmap(Bitmap src, int dstWidth, int dstHeight, boolean filter) {
         Bitmap b = new Bitmap(dstWidth, dstHeight, src.config);
-        for (int j = 0; j < dstHeight; ++j)
-            for (int i = 0; i < dstWidth; ++i)
-                b.pixels[j * dstWidth + i] = src.pixels[(j * src.height / dstHeight) * src.width + i * src.width / dstWidth];
+        b.hasAlpha = src.hasAlpha;
+        new Canvas(b).drawBitmap(src, null, new RectF(0, 0, dstWidth, dstHeight), filter ? new Paint(Paint.FILTER_BITMAP_FLAG) : null);
         return b;
     }
     public static Bitmap createBitmap(Picture source) { return createBitmap(source, source.getWidth(), source.getHeight(), Config.ARGB_8888); }
@@ -141,20 +160,24 @@ public final class Bitmap implements android.os.Parcelable {
         this.height = height;
         this.config = config;
         if (pixels.length < width * height) pixels = new int[width * height];
-        ++generation;
+        markPixels();
     }
 
     public int getPixel(int x, int y) { return pixels[y * width + x]; }
     public Color getColor(int x, int y) { return Color.valueOf(getPixel(x, y)); }
-    public void setPixel(int x, int y, int color) { pixels[y * width + x] = color; ++generation; }
+    public void setPixel(int x, int y, int color) { pixels[y * width + x] = color; markPixels(); }
     public void getPixels(int[] out, int offset, int stride, int x, int y, int width, int height) {
         for (int row = 0; row < height; ++row) System.arraycopy(pixels, (y + row) * this.width + x, out, offset + row * stride, width);
     }
     public void setPixels(int[] in, int offset, int stride, int x, int y, int width, int height) {
         for (int row = 0; row < height; ++row) System.arraycopy(in, offset + row * stride, pixels, (y + row) * this.width + x, width);
-        ++generation;
+        markPixels();
     }
-    public void eraseColor(int c) { java.util.Arrays.fill(pixels, c); drawing = null; ++generation; }
+    public void eraseColor(int c) {
+        java.util.Arrays.fill(pixels, c);
+        if (drawing != null) drawing.clear(); /* an open canvas keeps writing to it */
+        markPixels();
+    }
     public void eraseColor(long color) { eraseColor(Color.toArgb(color)); }
 
     /** The pixels as RGBA bytes (the order ARGB_8888 has in memory on Android). */
@@ -178,10 +201,10 @@ public final class Bitmap implements android.os.Parcelable {
                 pixels[i] = a << 24 | r << 16 | g << 8 | bl;
             }
         }
-        ++generation;
+        markPixels();
     }
     public Bitmap copy(Config config, boolean isMutable) {
-        Bitmap b = createBitmap(this);
+        Bitmap b = createBitmap(this, 0, 0, width, height, null, false);
         b.config = config;
         b.mutable = isMutable;
         return b;
@@ -189,6 +212,7 @@ public final class Bitmap implements android.os.Parcelable {
     public Bitmap extractAlpha() {
         Bitmap b = new Bitmap(width, height, Config.ALPHA_8);
         for (int i = 0; i < pixels.length; ++i) b.pixels[i] = pixels[i] & 0xff000000;
+        b.markPixels();
         return b;
     }
     public boolean sameAs(Bitmap other) {

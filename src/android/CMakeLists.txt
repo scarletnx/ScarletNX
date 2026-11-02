@@ -48,6 +48,8 @@ set_source_files_properties("${volk_SOURCE_DIR}/volk.c" TARGET_DIRECTORY snx_and
 include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
 snx_glsl_spirv(snx_android_program SOURCE hwui/draw.vert NAME android_draw_vert_spv HEADER android/hwui/draw_vert_spv.h)
 snx_glsl_spirv(snx_android_program SOURCE hwui/draw.frag NAME android_draw_frag_spv HEADER android/hwui/draw_frag_spv.h)
+snx_glsl_spirv(snx_android_program SOURCE hwui/texture.frag NAME android_texture_frag_spv
+               HEADER android/hwui/texture_frag_spv.h)
 target_include_directories(snx_android_program SYSTEM PUBLIC "${SNX_JAVA_HOME}/include"
                            "${SNX_JAVA_HOME}/include/${snx_jni_system}")
 target_compile_definitions(snx_android_program PRIVATE SNX_JAVA_HOME="${SNX_JAVA_HOME}")

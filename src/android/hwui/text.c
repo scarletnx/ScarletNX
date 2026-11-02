@@ -188,7 +188,8 @@ static void JNICALL bounds(JNIEnv* env, jclass unused, jint handle, jfloat size,
         for (jint g = 0; glyphs && positions && g < count; ++g) {
             hb_glyph_extents_t e;
             if (!hb_font_get_glyph_extents(font, (hb_codepoint_t)glyphs[g], &e) || !e.width || !e.height) continue;
-            float left = positions[2 * g] + (float)e.x_bearing * scale, top = positions[2 * g + 1] - (float)e.y_bearing * scale;
+            float left = positions[2 * g] + (float)e.x_bearing * scale;
+            float top = positions[2 * g + 1] - (float)e.y_bearing * scale;
             float right = left + (float)e.width * scale, bottom = top - (float)e.height * scale;
             if (!any || left < box[0]) box[0] = left;
             if (!any || top < box[1]) box[1] = top;
