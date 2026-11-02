@@ -103,6 +103,14 @@ static void lru_add(Surf* s, int kind) {
     g_held[kind].n++;
     g_held[kind].bytes += s->bytes;
 }
+void vk_surf_set_bytes(Surf* s, u64 bytes) {
+    if (s->lru) {
+        int kind = lru_kind(s);
+        g_held[kind].bytes -= s->bytes;
+        g_held[kind].bytes += bytes;
+    }
+    s->bytes = bytes;
+}
 void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked) {
     *count = g_held[kind].n;
     *bytes = g_held[kind].bytes;
@@ -936,6 +944,7 @@ static void rt_retire_over(u64 gva, u64 size) {
    each, a fifth of the run. A pitch-linear one's rows go at the guest's pitch, over the bytes between them as the
    guest has them. 0 when it can't be (pitch-linear rows of part texels, or layers not a pitch's rows apart, no room):
    the caller flushes at once */
+static void publish_overlay(const Surf* s, u64 size, VkBuffer buf, u64 at);
 int vk_surf_publish(Surf* s) {
     u64 size = flush_bytes(s), off = 0;
     u32 mem_wgen = s ? s->mem_wgen : 0;
@@ -977,10 +986,10 @@ int vk_surf_publish(Surf* s) {
         }
         vk_all_barrier(cb);
     }
-    /* the other targets over the span: s's own pixels go over them below, in the guest's layout, so a target leaves
-       itself out (its tight rows would be a pitch-linear one's padding) */
+    /* the other targets over the span, through any GPU address: s's own pixels go over them below, in the guest's
+       layout, so a target leaves itself out (its tight rows would be a pitch-linear one's padding) */
     s->mem_wgen = s->wgen;
-    vk_rt_overlay(s->gva, size, r->buf, 0);
+    publish_overlay(s, size, r->buf, 0);
     s->mem_wgen = mem_wgen;
     cb = vk_cmd();
     vk_all_barrier(cb);
@@ -1119,6 +1128,71 @@ void vk_rt_before_write_cpu(u64 cpu, u64 size) {
     if (pending.surfaces != local) free(pending.surfaces);
     g_rt_flushing = 0;
     vk_unlock();
+}
+
+/* where guest memory [cpu, cpu + bytes) lies in s's span of size bytes, when one run of the span holds all of it */
+static int span_offset(const Surf* s, u64 size, u64 cpu, u64 bytes, u64* at) {
+    for (u64 off = 0; off < size;) {
+        u64 run = 0, n = gmmu_run(s->gva + off, size - off, &run);
+        if (!n) {
+            n = 0x1000 - ((s->gva + off) & 0xFFF);
+            off += n < size - off ? n : size - off;
+            continue;
+        }
+        if (cpu >= run && bytes <= n && cpu - run <= n - bytes) {
+            *at = off + (cpu - run);
+            return 1;
+        }
+        off += n;
+    }
+    return 0;
+}
+/* The targets over s's span with pixels memory hasn't got, oldest first: at s's own GPU addresses (as vk_rt_overlay),
+   and at the others that show its guest memory (gmmu_aliases). Each one in the span has its pixels copied on the GPU
+   into buf there, under s's. A block linear one is then in its guest layout and counts as written back, because the
+   buffer published over the span holds it. It was written back with a wait for the GPU, only for the published buffer
+   to hide those bytes. One game's compute pass writes a storage image over the memory of a 2880x1620 target that its
+   draws use at another address, several times a frame, and those waits took 90 ms of each 105 ms frame. One at s's
+   addresses that reaches past the span is written back now, as vk_rt_overlay does. vk_rt_before_write_cpu writes
+   back the others, which this can't take, as before */
+static void publish_overlay(const Surf* s, u64 size, VkBuffer buf, u64 at) {
+    Surf* local[16];
+    RtPendingList pending = {local, 0, 16};
+    rt_pending_alias(&pending, s->gva, size);
+    for (u64 off = 0; off < size;) {
+        u64 cpu = 0, n = gmmu_run(s->gva + off, size - off, &cpu);
+        if (!n) { /* an unmapped page shows no target */
+            n = 0x1000 - ((s->gva + off) & 0xFFF);
+            off += n < size - off ? n : size - off;
+            continue;
+        }
+        gmmu_aliases(cpu, n, rt_pending_alias, &pending);
+        off += n;
+    }
+    for (u32 i = 0; i < pending.count; i++) {
+        Surf* t = pending.surfaces[i];
+        u64 bytes = rt_bytes(t), tcpu = 0, to = 0;
+        int own = t->gva < s->gva + size && t->gva + bytes > s->gva;
+        int inside = own ? t->gva >= s->gva && t->gva + bytes <= s->gva + size
+                         : t->bl && gmmu_run(t->gva, bytes, &tcpu) == bytes && span_offset(s, size, tcpu, bytes, &to);
+        if (own) to = t->gva - s->gva;
+        if (inside) {
+            vk_render_end();
+            if (flush_record(vk_cmd(), t, buf, at + to)) {
+                if (t->bl) {
+                    t->mem_wgen = t->wgen;
+                    t->gw = gpu_mem_generation();
+                    vk_surf_relist(t);
+                }
+                continue;
+            }
+        }
+        if (own) {
+            g_vk_rt_readbacks++;
+            vk_surf_flush(t, NULL);
+        }
+    }
+    if (pending.surfaces != local) free(pending.surfaces);
 }
 
 static void zt_restore(Surf* s);

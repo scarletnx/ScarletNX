@@ -204,3 +204,52 @@ static int check_owned_in_place_write(void) {
     puts("Owned ranges written in place land the newest write");
     return 0;
 }
+
+/* A staging snapshot survives host submissions, but not a guest write or reuse of its frame's rings. Read the bytes
+   back after several frame resets, so a stale cache entry cannot hide behind a buffer handle that is still live. */
+static int check_buffer_frame_snapshots(void) {
+    const u64 cpu = HEAP_BASE + 0x750000, gva = 0xa500000;
+    gmmu_map(gva, cpu, 0x1000);
+    vk_lock();
+    vk_finish();
+    VkBuffer back;
+    u8* result = vk_readback_buffer(4096, &back);
+    CHECK(result);
+    for (u32 frame = 0; frame < 4; frame++) {
+        memset(GP(cpu), 0x10 + frame, 256);
+        gpu_mem_written(gva, 256);
+        g_renderer->mem_may_have_changed();
+        for (u32 step = 0; step < 4; step++) {
+            if (step == 1) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+            if (step == 2) {
+                memset(GP(cpu) + 64, 0xa0 + frame, 64);
+                gpu_mem_written(gva + 64, 64);
+            }
+            if (step == 3) {
+                vk_frame_next();
+                memset(GP(cpu), 0xc0 + frame, 256);
+                gpu_mem_written(gva, 256);
+            }
+            VkBuffer buffer;
+            u64 at;
+            CHECK(vk_buf_get(gva, 256, &buffer, &at));
+            vk_all_barrier(vk_cmd());
+            VkBufferCopy copy = {at, (frame * 4 + step) * 256, 256};
+            rec_CmdCopyBuffer(vk_cmd(), buffer, back, 1, &copy);
+        }
+        vk_frame_next();
+        vk_cmd();
+    }
+    vk_finish();
+    vk_readback_ready();
+    for (u32 frame = 0; frame < 4; frame++)
+        for (u32 step = 0; step < 4; step++)
+            for (u32 i = 0; i < 256; i++) {
+                u8 expected = step == 3 ? 0xc0 + frame
+                              : step == 2 && i >= 64 && i < 128 ? 0xa0 + frame : 0x10 + frame;
+                CHECK(result[(frame * 4 + step) * 256 + i] == expected);
+            }
+    vk_unlock();
+    puts("Buffer snapshots preserve draw-time bytes across submissions, guest writes and frame-ring reuse");
+    return 0;
+}

@@ -50,6 +50,25 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
 }
 void vk_guest_peek(u64 gva, void* dst, u64 size) { gmem_read(gva, dst, size); }
 u8* gmem_host(u64 gva, u64 size) { return gmem_ptr(gva, size); }
+void gmem_need(u64 gva, u64 size) { (void)gva, (void)size; }
+/* the GPU mapping is the identity, guest memory its host bytes */
+u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
+    *cpu = gva;
+    return gva >= GVA && gva < guest_end ? (max < guest_end - gva ? max : guest_end - gva) : 0;
+}
+/* one owner, while own.res is set: [own.addr, own.addr + own.size) is its, from own.res_off on */
+static OwnRange own;
+u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
+    if (!own.res || own.addr >= addr + size || own.addr + own.size <= addr) return 0;
+    u64 lo = own.addr > addr ? own.addr : addr, hi = own.addr + own.size < addr + size ? own.addr + own.size : addr + size;
+    if (max) out[0] = (OwnRange){lo, hi - lo, own.res, own.res_off + (lo - own.addr)};
+    return 1;
+}
+u64 own_landings(void) { return 0; }
+void gmmu_pieces(u64 gva, u64 size, void (*fn)(void*, u64, u64, u64), void* ctx) {
+    u64 lo = gva > GVA ? gva : GVA, hi = gva + size < guest_end ? gva + size : guest_end;
+    if (lo < hi) fn(ctx, lo, lo, hi - lo);
+}
 #define STAGE (8u << 20)
 #define STAGE_BUF ((VkBuffer)(uintptr_t)0x5157)
 #define SCRATCH_BUF ((VkBuffer)(uintptr_t)0x5C2A)
@@ -259,6 +278,7 @@ VkFormat vk_srgb_as(VkFormat f, int srgb) {
     return f;
 }
 void vk_surf_add(Surf* s) { (void)s; }
+void vk_surf_set_bytes(Surf* s, u64 bytes) { s->bytes = bytes; }
 void vk_surf_touch(Surf* s) { (void)s; }
 void vk_surf_relist(Surf* s) { (void)s; }
 u32 vk_surf_gen(void) {
@@ -335,6 +355,10 @@ VkResult vmaCreateImage(VmaAllocator a, const VkImageCreateInfo* ii, const VmaAl
 }
 int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u64* bytes) {
     (void)ii, (void)img, (void)mem, (void)bytes;
+    return 0;
+}
+int vk_image_resident_create(const VkImageCreateInfo* ii, u32* masks, VkImage* img, u64* bytes) {
+    (void)ii, (void)masks, (void)img, (void)bytes;
     return 0;
 }
 /* the block linear layout: GOBs of 64 bytes by 8 rows in blocks of 1 << bh by 1 << bd GOBs, the GOB's 16 byte groups
@@ -510,6 +534,29 @@ int main(void) {
         guest[0x20000 + 4096 + 100] ^= 0x5A;
         CHECK(mem_hash(at, size) != owned);
         guest[0x20000 + 4096 + 100] ^= 0x5A;
+        g_own_any = 0;
+    }
+    /* a piece one owner holds whole hashes as that owner: the same owner the same, a new write (its serial) or another
+       place in its resource differently. A piece it holds only part of is read through vk_guest_peek */
+    {
+        const u64 at = GVA + 0x20000, size = 4 * 4096;
+        VkOwnRes res = {.serial = 7};
+        u64 plain = mem_hash(at, size), first;
+        g_own_any = 1;
+        own = (OwnRange){at + 4096, 4096, &res, 0x3000};
+        first = mem_hash(at, size);
+        CHECK(first != plain && mem_hash(at, size) == first);
+        guest[0x20000 + 4096 + 100] ^= 0x5A; /* the stale bytes under the owner don't count */
+        CHECK(mem_hash(at, size) == first);
+        guest[0x20000 + 4096 + 100] ^= 0x5A;
+        res.serial = 8;
+        CHECK(mem_hash(at, size) != first);
+        res.serial = 7;
+        own.res_off = 0x4000;
+        CHECK(mem_hash(at, size) != first);
+        own = (OwnRange){at + 4096 + 512, 4096 - 512, &res, 0x3000};
+        CHECK(mem_hash(at, size) == plain); /* this test's vk_guest_peek reads the bytes */
+        own = (OwnRange){0};
         g_own_any = 0;
     }
     /* A clean scan does not advance the write clock. Its cached texture must

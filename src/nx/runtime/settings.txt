@@ -773,7 +773,8 @@ setting GPU profile
     default 0
     startup
     words Off|On
-    help 1 = the GPU's time per rendering pass, summed per target and logged every 10 seconds (Vulkan timestamps)
+    help 1 = the GPU's time per rendering pass, summed per target, and per compute program dispatched on the graphics
+    help queue, logged every 10 seconds (Vulkan timestamps). A timed dispatch waits for the work before it
 setting Guest memory
     key vk_memory
     int 0 2

@@ -11,7 +11,9 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/maxwell/maxwell_3d_regs.h"
 #include "nx/gpu/shader/shader.h"
+#include "nx/gpu/shader/ampere.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
@@ -54,7 +56,7 @@ int g_vk_ftz; /* SH_FTZ_*: how translations flush FP32 subnormals (vk_pipeline_i
 static void pf_start_load(void);
 static void pf_merge(void);
 static void pf_shader_record(const VkSh* s, const u32* spv, size_t nw, const u8* code, u32 ncode, const ShXfb* xfb);
-static u32 src_bytes(u32 mlen);
+static u32 src_bytes(u32 mlen, u32 capacity);
 static void pf_ship_found(VkSh* s);
 static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[20], u32 len, u64 qh, u32 len_a, u64 qh_a);
 /* the draw state and stage whose bound constant buffers the translator reads, for the vk_shader_get call running */
@@ -62,7 +64,12 @@ static const DsState* g_sh_ds;
 static int g_sh_bind;
 
 static int sh_cb_read(u32 idx, u32 off, u32* out) {
-    if (idx >= 18 || !g_sh_ds) return 0;
+    if (!g_sh_ds) return 0;
+    if (idx >= 24 && idx < 32 && g_sh_ds->prog.native && !(off & 3) && off <= 252) {
+        *out = snx_ld_le32(g_sh_ds->nat.roots[idx - 24] + off);
+        return 1;
+    }
+    if (idx >= 18) return 0;
     DsCbBlock in = ds_cb_inline(g_sh_ds, g_sh_bind, idx);
     u64 a = g_sh_ds->bind.cb_addr[g_sh_bind][idx];
     u32 sz = g_sh_ds->bind.cb_size[g_sh_bind][idx];
@@ -133,12 +140,6 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
 static PMutex g_xlate_lock = PMUTEX_INIT;
 u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, VkCbReader read,
                         VkCbReads* reads) {
-    pm_lock(&g_xlate_lock);
-    int (*old)(u32, u32, u32*) = g_shader_cb_read;
-    g_rec_read = read;
-    g_rec = reads;
-    g_rec_failed = 0;
-    g_shader_cb_read = rec_read;
     const VkShaderStageFlagBits stages[] = {VK_SHADER_STAGE_VERTEX_BIT,
                                             VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                                             VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
@@ -146,8 +147,33 @@ u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si
                                             VK_SHADER_STAGE_FRAGMENT_BIT,
                                             VK_SHADER_STAGE_COMPUTE_BIT};
     VkShaderStageFlagBits shader_stage = stages[stage];
+    int task = si->task != 0, mesh = si->mesh[0] != 0 && !task;
+    if ((task || mesh) && !g_vk.has_mesh) {
+        snprintf(si->first_unsupported, sizeof si->first_unsupported, "native mesh programs need VK_EXT_mesh_shader");
+        si->unsupported = 1;
+        return NULL;
+    }
+    if (task && !g_vk.has_task) {
+        snprintf(si->first_unsupported, sizeof si->first_unsupported, "native task programs need the device's taskShader");
+        si->unsupported = 1;
+        return NULL;
+    }
+    pm_lock(&g_xlate_lock);
+    int (*old)(u32, u32, u32*) = g_shader_cb_read;
+    g_rec_read = read;
+    g_rec = reads;
+    g_rec_failed = 0;
+    g_shader_cb_read = rec_read;
+    if (task) shader_stage = VK_SHADER_STAGE_TASK_BIT_EXT;
+    else if (mesh) shader_stage = VK_SHADER_STAGE_MESH_BIT_EXT;
+    int subgroup_caps = (g_vk_subgroup_stages & shader_stage) ? SH_SUBGROUP_OPERATIONS : 0;
+    if (subgroup_caps && (g_vk.subgroup_size == 32 ||
+                          ((stage == ST_CS || task || mesh ||
+                            (stage == ST_FS && (snx_ld_le32(code) >> 5 & 31) == 4)) &&
+                           (g_vk.subgroup32_stages & shader_stage))))
+        subgroup_caps |= SH_SUBGROUP_32;
     u32* result = shader_to_spirv(code, max_bytes, stage, si, words, g_vk_ftz, g_vk_preserve_infnan,
-                                  g_vk_preserve_infnan64, (g_vk_subgroup_stages & shader_stage) != 0);
+                                  g_vk_preserve_infnan64, subgroup_caps);
     g_shader_cb_read = old;
     g_rec = NULL;
     int failed = g_rec_failed;
@@ -158,6 +184,7 @@ u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si
     }
     if (result) {
         const char* reason = vk_spirv_unavailable(result, *words);
+        if ((u32)si->ngbuf > g_vk.storage_buffer_slots) reason = "storage buffer count exceeds this GPU's descriptor limit";
         if (reason) {
             snprintf(si->first_unsupported, sizeof si->first_unsupported, "%s", reason);
             si->unsupported = 1;
@@ -179,13 +206,13 @@ u64 vk_shader_hash(const u8* code, u32 max_bytes, u32* out_len, VkCbReader read)
     pm_unlock(&g_xlate_lock);
     return h;
 }
-/* VertexA a and VertexB b (SH_CODE bytes each) merged into m, sizing them with shader_hash through read as the
+/* VertexA a and VertexB b (capacity bytes each) merged into m, sizing them with shader_hash through read as the
    translation would: 1 when merged */
-static int sh_merge_dual(const u8* a, const u8* b, u8* m, VkCbReader read) {
+static int sh_merge_dual(const u8* a, const u8* b, u8* m, u32 capacity, VkCbReader read) {
     pm_lock(&g_xlate_lock);
     int (*old)(u32, u32, u32*) = g_shader_cb_read;
     g_shader_cb_read = read;
-    int merged = shader_merge_dual(a, b, m, SH_CODE);
+    int merged = shader_merge_dual(a, b, m, capacity);
     g_shader_cb_read = old;
     pm_unlock(&g_xlate_lock);
     return merged;
@@ -203,8 +230,14 @@ int vk_cb_reads_hold(const VkCbReads* reads, VkCbReader read) {
 u32 g_vk_buffer_image_slots;
 
 /* descriptors of each type in one set: the binding ranges in shader.h */
+static int storage_slot(u32 binding) {
+    if (binding >= SNX_VKB_SSBO_EXT && binding < SNX_VKB_ROOT) return (int)(binding - SNX_VKB_SSBO_EXT) + 16;
+    if (binding >= SNX_VKB_SSBO && binding < SNX_VKB_TEX) return (int)(binding - SNX_VKB_SSBO);
+    return -1;
+}
 static VkDescriptorType binding_type(u32 i) {
-    if (i == SNX_VKB_SMAP) return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    if (i == SNX_VKB_ROOT) return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    if (i == SNX_VKB_SMAP || i >= SNX_VKB_SSBO_EXT) return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     if (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     if (i == SNX_VKB_TEXFUNCS || i == SNX_VKB_TEXMAP) return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     if (i >= SNX_VKB_IMGBUF) return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
@@ -222,8 +255,11 @@ void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets) {
     for (k = 0; k < VK_POOL_TYPES; k++) {
         u32 n = 0;
         u32 i;
-        for (i = 0; i < SNX_VKB_END; i++)
+        for (i = 0; i < SNX_VKB_END; i++) {
+            int slot = storage_slot(i);
+            if (slot >= 0 && (u32)slot >= g_vk.storage_buffer_slots) continue;
             if (binding_type(i) == ty[k]) n += (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? SNX_TEX_ARRAY : 1;
+        }
         sz[k] = (VkDescriptorPoolSize){ty[k], n * sets};
     }
 }
@@ -257,12 +293,21 @@ void vk_pipeline_init(void) {
     pm_lock_announce(&g_xlate_lock, "shader translate");
     /* a layout per set, the same bindings, each visible to the stage that uses the set (shader_vk_set): within the
        per-stage limits a device has, which all stages seeing every set would multiply by five */
-    static const VkShaderStageFlags vis[5] = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
-                                              VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
-                                              VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
-                                              VK_SHADER_STAGE_GEOMETRY_BIT};
+    const VkShaderStageFlags vis[5] = {
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT |
+            (g_vk.has_mesh ? VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT : 0),
+        VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+        VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | (g_vk.has_mesh ? VK_SHADER_STAGE_MESH_BIT_EXT : 0),
+        VK_SHADER_STAGE_GEOMETRY_BIT};
     /* the tessellation and geometry stages' sets come after the first two, where the device binds that many */
     g_vk_stage_sets = g_vk.props.limits.maxBoundDescriptorSets >= 5 ? 5 : 2;
+    const VkPhysicalDeviceLimits* limits = &g_vk.props.limits;
+    /* Every shared set reserves its alias-map descriptor, including the compute-visible set. */
+    u32 storage = limits->maxDescriptorSetStorageBuffers / g_vk_stage_sets;
+    if (storage > limits->maxPerStageDescriptorStorageBuffers) storage = limits->maxPerStageDescriptorStorageBuffers;
+    if (!storage) fatal("vulkan: not enough storage buffer descriptors for the shared stage layouts");
+    g_vk.storage_buffer_slots = storage - 1;
+    if (g_vk.storage_buffer_slots > SH_MAXGBUF) g_vk.storage_buffer_slots = SH_MAXGBUF;
     for (int s = 0; s < 5; s++) {
         VkDescriptorSetLayoutBinding b[SNX_VKB_END];
         u32 count = 0;
@@ -286,7 +331,7 @@ void vk_pipeline_init(void) {
         for (i = 0; i < SNX_VKB_END; i++) {
             /* storage images and buffer images: compute, vertex and fragment */
             if (i >= SNX_VKB_IMG && i < SNX_VKB_RS && (s >= 2 || i - SNX_VKB_IMG >= image_slots)) continue;
-            if (i >= SNX_VKB_TEXARRAY && !g_shader_texture_arrays) continue;
+            if (i >= SNX_VKB_TEXARRAY && i < SNX_VKB_SSBO_EXT && !g_shader_texture_arrays) continue;
             if (i >= SNX_VKB_IMGBUF && i < SNX_VKB_TEXARRAY && (s >= 2 || i - SNX_VKB_IMGBUF >= buffer_slots)) continue;
             b[count++] = (VkDescriptorSetLayoutBinding){
                 .binding = i,
@@ -294,9 +339,27 @@ void vk_pipeline_init(void) {
                 .descriptorCount = (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? SNX_TEX_ARRAY : 1,
                 .stageFlags = vis[s]};
         }
-        for (int arrays = 0; arrays < 2; arrays++) {
+        /* Set 0 has every resource kind, so its non-storage resources bound all shared stages. */
+        if (!s) {
+            u32 resources = 0;
+            for (i = 0; i < count; i++)
+                if (storage_slot(b[i].binding) < 0) resources += b[i].descriptorCount;
+            u32 slots = limits->maxPerStageResources > resources ? limits->maxPerStageResources - resources : 0;
+            if (g_vk.storage_buffer_slots > slots) g_vk.storage_buffer_slots = slots;
+        }
+        u32 kept = 0;
+        for (i = 0; i < count; i++) {
+            int slot = storage_slot(b[i].binding);
+            if (slot < 0 || (u32)slot < g_vk.storage_buffer_slots) b[kept++] = b[i];
+        }
+        count = kept;
+        for (int arrays = 1; arrays >= 0; arrays--) {
             u32 n = count;
-            while (!arrays && n && b[n - 1].binding >= SNX_VKB_TEXARRAY) n--; /* the arrays are the last bindings */
+            if (!arrays) {
+                n = 0;
+                for (i = 0; i < count; i++)
+                    if (b[i].binding < SNX_VKB_TEXARRAY || b[i].binding >= SNX_VKB_SSBO_EXT) b[n++] = b[i];
+            }
             VkDescriptorSetLayoutCreateInfo dl = {
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                 .flags = g_vk.has_descriptor_buffers ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0,
@@ -430,6 +493,7 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
         si->tex_dc_color_funcs = mask[9];
         si->in_unfed_mask = mask[10];
         si->early_fragment_tests = mask[11];
+        si->per_primitive_mask = mask[12];
     } else {
         si->attr_int_mask = ints;
         si->attr_sint_mask = sints;
@@ -438,17 +502,25 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
         si->tex_sint_mask = mask[10];
         si->rt_int_mask = mask[4]; /* the tessellation or geometry primitive */
         si->clip_enable = mask[6];
-        memcpy(si->gp_skip_mask, mask + 12, sizeof si->gp_skip_mask);
+        if (stage == ST_GS) {
+            memcpy(si->gp_skip_mask, mask + 12, sizeof si->gp_skip_mask);
+        } else if (stage == ST_VS) {
+            memcpy(si->mesh, mask + 12, sizeof si->mesh);
+            si->task = (u8)(mask[11] & SH_MESH_TASK);
+        } else if (stage == ST_TES) {
+            memcpy(si->mesh, mask + 12, sizeof si->mesh);
+            si->mesh_task = (u8)(mask[11] & SH_MESH_TASKED);
+        }
         if (xfb) si->xfb = *xfb;
     }
 }
-/* s for its key, from code (SH_CODE bytes: the merged program, for VertexA and VertexB) whose whole code hashes to h,
+/* s for its key, from code (code_bytes bytes: the merged program, for VertexA and VertexB) whose code hashes to h,
    each part with its length and hash, translated: its SPIR-V (malloc'd, nw words), the constant buffers the
    translation read through read in s->cbr. NULL when it can't be (si.first_unsupported says why). shipped: a program
    the game ships, translated before any draw (ship_make), which fails when its translation read a constant buffer: a
    draw's lookup checks those reads against its own buffers, which no read without them matches */
-static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[20], u32 len, u64 qh, u32 len_a,
-                     u64 qh_a, const ShXfb* xfb, VkCbReader read, int shipped, size_t* nw) {
+static u32* sh_spirv(VkSh* s, const u8* code, u32 code_bytes, u64 h, int stage, const u32 mask[20], u32 len, u64 qh, u32 len_a,
+                     u64 qh_a, const ShXfb* xfb, VkCbReader read, int shipped, size_t* nw, const char* refusal) {
     s->shipped = shipped;
     s->hash = h;
     s->stage = stage;
@@ -459,9 +531,14 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[2
     s->qh_a = qh_a;
     sh_key_info(&s->si, stage, mask, xfb);
     *nw = 0;
+    if (refusal) {
+        s->si.unsupported = 1;
+        snprintf(s->si.first_unsupported, sizeof s->si.first_unsupported, "%s", refusal);
+        return NULL;
+    }
     SNX_ZONE(z_translate, "shader translate");
     SNX_ZONE_TEXT(z_translate, "%s hash %08x", stage < 6 ? vk_tracy_stage[stage] : "stage?", (unsigned)h);
-    u32* spv = vk_translate_spirv(code, SH_CODE, stage, &s->si, nw, read, &s->cbr);
+    u32* spv = vk_translate_spirv(code, code_bytes, stage, &s->si, nw, read, &s->cbr);
     SNX_ZONE_VALUE(z_translate, *nw);
     SNX_ZONE_END(z_translate);
     for (int i = 0; i < s->si.ntex; i++) s->indexed |= (s->si.tex[i].flags & SNX_TEX_INDEXED) != 0;
@@ -485,18 +562,26 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[2
                      "storage image stage, feature or descriptor limit");
         }
     }
+    /* a tessellation or geometry program's stores to memory need the device's vertexPipelineStoresAndAtomics (a
+       mesh program in the tessellation slot doesn't) */
+    if (spv && s->si.gbuf_wmask && (stage == ST_TCS || stage == ST_TES || stage == ST_GS) && !s->si.mesh[0] &&
+        !g_vk.feat.vertexPipelineStoresAndAtomics) {
+        free(spv);
+        spv = NULL;
+        snprintf(s->si.first_unsupported, sizeof s->si.first_unsupported, "memory stores before rasterization");
+    }
     return spv;
 }
 /* A draw's shader (sh_spirv's arguments, and mlen, the bytes of code the translation reads): translated, its module
    made, kept in the shader file with its program. One that couldn't be translated comes back failed; NULL when out
    of memory */
-static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[20], u32 len, u64 qh, u32 len_a,
-                     u64 qh_a, const ShXfb* xfb, VkCbReader read) {
+static VkSh* sh_make(const u8* code, u32 code_bytes, u32 mlen, u64 h, int stage, const u32 mask[20], u32 len, u64 qh, u32 len_a,
+                     u64 qh_a, const ShXfb* xfb, VkCbReader read, const char* refusal) {
     size_t nw;
     VkSh* s = calloc(1, sizeof *s);
     if (!s) return NULL;
     SNX_ZONE(z, "shader translate");
-    u32* spv = sh_spirv(s, code, h, stage, mask, len, qh, len_a, qh_a, xfb, read, 0, &nw);
+    u32* spv = sh_spirv(s, code, code_bytes, h, stage, mask, len, qh, len_a, qh_a, xfb, read, 0, &nw, refusal);
     SNX_ZONE_END(z);
     if (spv) {
         VkShaderModuleCreateInfo mi = {
@@ -505,11 +590,66 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
             s->failed = 1;
             snprintf(s->si.first_unsupported, sizeof s->si.first_unsupported, "vkCreateShaderModule failed");
         } else
-            pf_shader_record(s, spv, nw, code, src_bytes(mlen), xfb);
+            pf_shader_record(s, spv, nw, code, src_bytes(mlen, code_bytes), xfb);
         free(spv);
     } else
         s->failed = 1;
     return s;
+}
+/* Keep the source fingerprint separate from the lowered program's key. Instruction invalidation checks guest
+   bytes, while disk records and the SPIR-V frontend use only normalized Maxwell code. */
+static int sh_read_program(u64 gva, u8** source, u32* code_bytes, int native, u32* len, u64* qh, ShaderInfo* refusal) {
+    u8* code = *source;
+    if (!native) {
+        sh_read_code(gva, code, len);
+        *qh = vk_hash(code, *len);
+        return 1;
+    }
+    gmem_read_code(gva, code, *code_bytes);
+    /* Native graphics has the same referenced-body extent rule as compute. Keep the initial read small, then
+       grow only when the branch/return scan asks for more, including the 128-byte graphics header. */
+    u32 bytes = *code_bytes - 128;
+    for (;;) {
+        u32 needed = shader_ampere_read_extent(code + 128, bytes);
+        if (needed <= bytes || bytes == SHADER_AMPERE_NATIVE_MAX) break;
+        u32 next = (u32)snx_align_up(needed, 0x1000);
+        if (next < bytes * 2) next = bytes * 2;
+        if (next > SHADER_AMPERE_NATIVE_MAX) next = SHADER_AMPERE_NATIVE_MAX;
+        u8* grown = realloc(code, next + 128);
+        if (!grown) return 0;
+        *source = code = grown;
+        gmem_read_code(gva + 128 + bytes, code + 128 + bytes, next - bytes);
+        bytes = next;
+        *code_bytes = bytes + 128;
+    }
+    if (g_settings.shader_captures) {
+        char path[1200];
+        snprintf(path, sizeof path, "%scaptures", g_exedir);
+        plat_mkdir(path);
+        snprintf(path, sizeof path, "%scaptures/native", g_exedir);
+        plat_mkdir(path);
+        snprintf(path, sizeof path, "%scaptures/native/gfx_%010llx.bin", g_exedir, (unsigned long long)gva);
+        FILE* f = fopen(path, "wb");
+        if (f) {
+            if (fwrite(code, 1, *code_bytes, f) != *code_bytes) WARN_LIMIT(1, "gpu: %s wasn't written\n", path);
+            fclose(f);
+        }
+    }
+    u8* lowered = malloc(SHADER_AMPERE_LOWERED_MAX);
+    if (!lowered) return 0;
+    u32 consumed = 0;
+    u32 size = shader_ampere_lower(code + 128, bytes, lowered, SHADER_AMPERE_LOWERED_MAX, refusal, &consumed);
+    *len = size ? 128 + consumed : *code_bytes;
+    *qh = vk_hash(code, *len);
+    if (size) {
+        memcpy(lowered, code, 80);
+        memset(lowered + size, 0, SHADER_AMPERE_LOWERED_MAX - size);
+        free(code);
+        *source = lowered;
+        *code_bytes = SHADER_AMPERE_LOWERED_MAX;
+    } else
+        free(lowered);
+    return 1;
 }
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                     u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb) {
@@ -530,6 +670,27 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
                     unfed};
     if (stage == ST_FS && p) mask[11] = p->early_z;
     if (stage == ST_GS && p) memcpy(mask + 12, p->gs_skip, 8 * sizeof(u32));
+    if (p && p->mesh && (stage == ST_VS || stage == ST_TES || stage == ST_FS)) {
+        /* a mesh program with a task: the task in the vertex slot, the mesh in the tessellation slot, the geometry
+           slot's header naming the per-primitive outputs */
+        int task = (p->on >> 3) & 1;
+        u32 primitive[6] = {0};
+        if ((p->on >> 4) & 1) {
+            u8 header[80];
+            gmem_read_code(p->code[4], header, sizeof header);
+            for (u32 i = 0; i < 6; ++i) primitive[i] = snx_ld_le32(header + (12 + i) * 4);
+        }
+        if (stage == ST_FS) {
+            for (u32 i = 0; i < 32; ++i)
+                for (u32 k = 0; k < 4; ++k)
+                    if (shader_mesh_omap_bit(primitive, 32 + i * 4 + k)) mask[12] |= 1u << i;
+        } else {
+            mask[12] = p->mesh_shader[0];
+            mask[13] = p->mesh_shader[1];
+            memcpy(mask + 14, primitive, sizeof primitive);
+            mask[11] = stage == ST_VS ? (task ? SH_MESH_TASK : 0) : SH_MESH_TASKED;
+        }
+    }
     /* a capture's layout, in the words only the fragment stage's key uses otherwise */
     if (stage != ST_FS && xfb) {
         u64 xh = vk_hash(xfb, sizeof *xfb);
@@ -537,7 +698,7 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
         mask[8] = (u32)(xh >> 32);
     }
     u32 mix = (u32)vk_hash(mask, 12 * sizeof(u32));
-    if (stage == ST_GS) mix ^= (u32)vk_hash(mask + 12, 8 * sizeof(u32));
+    if (stage == ST_GS || mask[12]) mix ^= (u32)vk_hash(mask + 12, 8 * sizeof(u32));
     /* the set from every bit of the key, mixed by multiplying: programs are 256-byte aligned, and a shift and xor of
        their addresses left most sets unused */
     u64 hk = (gva * 0x9E3779B97F4A7C15ull) ^ (gva_a * 0xC2B2AE3D27D4EB4Full) ^ ((u64)mix << 24) ^ (u64)stage;
@@ -563,38 +724,52 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
         ca = !set[0].s || (set[1].s && (i32)(set[0].epoch - set[1].epoch) <= 0) ? &set[0] : &set[1];
     u32 wseen = vk_ww_now();
     u64 gw = gpu_mem_generation();
+    u32 code_bytes = SH_CODE;
     u8* code = malloc(SH_CODE);
     if (!code) return NULL;
+    int native = p && p->native;
+    ShaderInfo refusal = {0};
     u32 len, len_a = 0;
     u64 qh, qh_a = 0;
-    sh_read_code(gva, code, &len);
-    qh = vk_hash(code, len);
+    if (!sh_read_program(gva, &code, &code_bytes, native, &len, &qh, &refusal)) {
+        free(code);
+        return NULL;
+    }
     if (gva_a) { /* VertexA + VertexB: one merged program */
+        u32 a_bytes = SH_CODE;
         u8* a = malloc(SH_CODE);
         if (!a) {
             free(code);
             return NULL;
         }
-        sh_read_code(gva_a, a, &len_a);
-        qh_a = vk_hash(a, len_a);
-        u8* m = malloc(SH_CODE);
+        if (!sh_read_program(gva_a, &a, &a_bytes, native, &len_a, &qh_a, &refusal)) {
+            free(a);
+            free(code);
+            return NULL;
+        }
+        u8* m = malloc(code_bytes);
         if (!m) {
             free(a);
             free(code);
             return NULL;
         }
-        if (sh_merge_dual(a, code, m, sh_cb_read)) {
+        if (!refusal.unsupported && sh_merge_dual(a, code, m, code_bytes, sh_cb_read)) {
             free(code);
             code = m;
         } else {
             free(m);
-            WARN_LIMIT(8, "vulkan: VertexA %llx and VertexB %llx couldn't be merged: VertexB runs alone\n",
-                       (unsigned long long)gva_a, (unsigned long long)gva);
+            if (!refusal.unsupported && native) {
+                refusal.unsupported = 1;
+                snprintf(refusal.first_unsupported, sizeof refusal.first_unsupported, "Ampere vertex programs cannot be merged");
+            } else if (!refusal.unsupported)
+                WARN_LIMIT(8, "vulkan: VertexA %llx and VertexB %llx couldn't be merged: VertexB runs alone\n",
+                           (unsigned long long)gva_a, (unsigned long long)gva);
         }
         free(a);
     }
-    u32 mlen;
-    u64 h = vk_shader_hash(code, SH_CODE, &mlen, sh_cb_read);
+    u32 mlen = code_bytes;
+    u64 h = refusal.unsupported ? vk_hash(code, code_bytes) ^ 0x416d706572650001ull
+                               : vk_shader_hash(code, code_bytes, &mlen, sh_cb_read);
     VkSh* s = NULL;
     /* one made for the same program: its whole code hashes the same (the merged program's, and each part's with its
        length, which ShA's checks compare memory with later), with the same key and constant buffer reads. Shaders of
@@ -609,13 +784,14 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
         g_shh[h & 1023] = s;
     }
     if (!s) {
-        if (vk_corpus_dir()) { /* the key's words as sh_make takes them into si, which the corpus keeps */
+        if (!refusal.unsupported && vk_corpus_dir()) { /* normalized code only, never raw native instructions */
             ShaderInfo si;
             sh_key_info(&si, stage, mask, xfb);
-            shader_corpus_save(vk_corpus_dir(), code, mlen, SH_CODE, stage, &si, h ^ mix);
+            shader_corpus_save(vk_corpus_dir(), code, mlen, code_bytes, stage, &si, h ^ mix);
         }
         u64 t0 = plat_ns();
-        s = sh_make(code, mlen, h, stage, mask, len, qh, len_a, qh_a, xfb, sh_cb_read);
+        s = sh_make(code, code_bytes, mlen, h, stage, mask, len, qh, len_a, qh_a, xfb, sh_cb_read,
+                    refusal.unsupported ? refusal.first_unsupported : NULL);
         if (!s) {
             free(code);
             return NULL;
@@ -768,6 +944,9 @@ static VkPipeline pipe_create(const Pipe* e) {
                                                   VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
                                                   VK_SHADER_STAGE_GEOMETRY_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
     VkPipelineTessellationStateCreateInfo ts;
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo subgroup = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+        .requiredSubgroupSize = 32};
     u32 nst = 0, s;
     modules[0] = k->vs;
     modules[1] = k->tcs;
@@ -778,7 +957,11 @@ static VkPipeline pipe_create(const Pipe* e) {
         if (!modules[s]) continue;
         memset(&st[nst], 0, sizeof st[nst]);
         st[nst].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        st[nst].stage = bits[s];
+        st[nst].stage = s == 0 && k->mesh ? (k->task ? VK_SHADER_STAGE_TASK_BIT_EXT : VK_SHADER_STAGE_MESH_BIT_EXT)
+                        : s == 1 && k->task ? VK_SHADER_STAGE_MESH_BIT_EXT
+                                            : bits[s];
+        if ((s == 0 && k->mesh) || (s == 1 && k->task) || (s == 4 && k->fragment_subgroup32))
+            if (g_vk.subgroup32_stages & st[nst].stage) st[nst].pNext = &subgroup;
         st[nst].module = modules[s];
         st[nst].pName = "main";
         nst++;
@@ -909,6 +1092,13 @@ static VkPipeline pipe_create(const Pipe* e) {
                                   VK_DYNAMIC_STATE_STENCIL_REFERENCE,
                                   VK_DYNAMIC_STATE_DEPTH_BOUNDS};
     u32 ndyn = 21; /* the states above, which every pipeline has */
+    if (k->mesh) {
+        u32 out = 0;
+        for (u32 i = 0; i < ndyn; ++i)
+            if (dyn[i] != VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY && dyn[i] != VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE)
+                dyn[out++] = dyn[i];
+        ndyn = out;
+    }
     /* without the feedback loop's dynamic state, a pipeline enables the loop with a flag (k->feedback) instead */
     if (g_vk.has_feedback_dynamic) dyn[ndyn++] = VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT;
     /* the stride is set by vkCmdBindVertexBuffers2, which a draw without vertex buffers never calls: a pipeline without
@@ -942,8 +1132,8 @@ static VkPipeline pipe_create(const Pipe* e) {
                                            (k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0),
                                        .stageCount = nst,
                                        .pStages = st,
-                                       .pVertexInputState = &vi,
-                                       .pInputAssemblyState = &ia,
+                                       .pVertexInputState = k->mesh ? NULL : &vi,
+                                       .pInputAssemblyState = k->mesh ? NULL : &ia,
                                        .pTessellationState = k->tes ? &ts : NULL,
                                        .pViewportState = &vp,
                                        .pRasterizationState = &rs,
@@ -1289,9 +1479,9 @@ typedef char pf_cbr_words[sizeof(VkCbRead) == 16 ? 1 : -1]; /* the file's reads 
 
 /* the bytes of a program kept with its shader (PF_SOURCE): mlen, the program as shader_hash sizes it, which is what
    the translation reads, with the words after it that a lookahead past its last instruction would read */
-static u32 src_bytes(u32 mlen) {
+static u32 src_bytes(u32 mlen, u32 capacity) {
     u32 n = ((mlen + 7u) & ~7u) + 64u;
-    return n < SH_CODE ? n : SH_CODE;
+    return n < capacity ? n : capacity;
 }
 /* s's record, of spv (nw words), into pf for module (0 for none): where it starts in the file, 0 when not written.
    With code (its first ncode bytes, src_bytes) and xfb, the program it was translated from goes before it
@@ -1413,17 +1603,18 @@ static int replay_read(u32 idx, u32 off, u32* out) {
 static u64 pf_load_source(void* ctx, const PfSource* r, const u32* cbr, const u8* code, const ShXfb* xfb) {
     VkCbRead* reads = r->ncbr ? malloc(r->ncbr * sizeof *reads) : NULL;
     VkCbReads replay = {reads, r->ncbr};
-    u8* window = calloc(1, SH_CODE);
+    u32 capacity = r->ncode > SH_CODE ? r->ncode : SH_CODE;
+    u8* window = capacity <= SHADER_AMPERE_LOWERED_MAX ? calloc(1, capacity) : NULL;
     VkSh* s = calloc(1, sizeof *s);
     u32* spv = NULL;
     size_t nw = 0;
     (void)ctx;
-    if ((r->ncbr && !reads) || !window || !s || r->ncode > SH_CODE) goto fail;
+    if ((r->ncbr && !reads) || !window || !s) goto fail;
     if (r->ncbr) memcpy(reads, cbr, r->ncbr * sizeof *reads);
     memcpy(window, code, r->ncode);
     g_replay = &replay;
-    spv = sh_spirv(s, window, r->hash, (int)r->stage, r->mask, r->clen, r->qh, r->clen_a, r->qh_a, xfb, replay_read, 0,
-                   &nw);
+    spv = sh_spirv(s, window, capacity, r->hash, (int)r->stage, r->mask, r->clen, r->qh, r->clen_a, r->qh_a, xfb, replay_read, 0,
+                   &nw, NULL);
     g_replay = NULL;
     if (!spv || vk_spirv_unavailable(spv, nw) || !(s->mod = vk_module_spv(spv, nw))) goto fail;
     pf_shader_into(&g_pf.file, s, mod_bits(s->mod), spv, nw, window, r->ncode, xfb);
@@ -1541,6 +1732,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   (u32)g_vk.has_conservative,
                   g_vk_stage_sets,
                   g_vk_buffer_image_slots,
+                  g_vk.storage_buffer_slots,
                   d->limits.maxPerStageDescriptorStorageImages,
                   d->limits.maxDescriptorSetStorageImages};
     /* a tree with changes builds under one commit name: the runtime's own bytes tell those builds apart. Not its
@@ -1756,7 +1948,7 @@ static int ship_make(const u8* code, u64 h, int stage, u32 len, u64 qh, u32 len_
     mask[6] = ship_clip(stage);
     e = idx_slot(h, stage, mask[6], len, qh, len_a, qh_a);
     if (e && e->at) return SHIP_KNOWN;
-    u32* spv = sh_spirv(&s, code, h, stage, mask, len, qh, len_a, qh_a, NULL, ship_no_read, 1, &nw);
+    u32* spv = sh_spirv(&s, code, SH_CODE, h, stage, mask, len, qh, len_a, qh_a, NULL, ship_no_read, 1, &nw, NULL);
     int translated = spv != NULL;
     if (spv) at = pf_shader_into(&g_pf.ship, &s, 0, spv, nw, NULL, 0, NULL);
     free(spv);
@@ -1795,7 +1987,7 @@ static int ship_dual(const u8* sph, size_t avail) {
             rc = SHIP_LACKED;
         else {
             vk_shader_hash(b, SH_CODE, &len, ship_no_read);
-            if (sh_merge_dual(a, b, m, ship_no_read)) {
+            if (sh_merge_dual(a, b, m, SH_CODE, ship_no_read)) {
                 u64 h = vk_shader_hash(m, SH_CODE, &mlen, ship_no_read);
                 rc = ship_make(m, h, ST_VS, len, vk_hash(b, len), len_a, qh_a);
             }

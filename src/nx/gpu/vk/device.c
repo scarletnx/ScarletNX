@@ -205,11 +205,15 @@ static int create_device(void) {
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
     u32 gfx_queues = 0;
     device_score(g_vk.phys, &g_vk.props, &g_vk.gfx_family, &g_vk.compute_family, &gfx_queues);
-    VkPhysicalDeviceSubgroupProperties subgroup = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+    VkPhysicalDeviceSubgroupSizeControlProperties size_control = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES};
+    VkPhysicalDeviceSubgroupProperties subgroup = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES,
+                                                    .pNext = &size_control};
     VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES,
                                               .pNext = &subgroup};
     VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
     vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
+    g_vk.subgroup_size = subgroup.subgroupSize;
     g_vk_subgroup_stages =
         subgroup.subgroupSize >= 32 &&
                 (subgroup.supportedOperations & (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
@@ -313,7 +317,10 @@ static int create_device(void) {
         sparse_queue = g_vk.gfx_family < nq && (q[g_vk.gfx_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT);
         free(q);
     }
-    if (sparse_queue) WANT(sparseBinding);
+    if (sparse_queue) {
+        WANT(sparseBinding);
+        WANT(sparseResidencyImage2D);
+    }
 #undef WANT
     /* points out of tessellation and geometry programs take the size those write, as the vertex program's do */
     g_shader_stage_point_size = want->shaderTessellationAndGeometryPointSize != 0;
@@ -330,6 +337,7 @@ static int create_device(void) {
     int has_host_import = 0, has_placed = 0;
     int has_descriptor_buffer = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
+    int has_mesh = 0;
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     {
         SnxVkExtensions e;
@@ -348,6 +356,7 @@ static int create_device(void) {
         g_vk.has_conservative = snx_vk_extensions_has(&e, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
         has_pipeline_robustness = snx_vk_extensions_has(&e, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
         has_robustness2 = snx_vk_extensions_has(&e, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+        has_mesh = snx_vk_extensions_has(&e, VK_EXT_MESH_SHADER_EXTENSION_NAME);
         /* the driver's budget for each heap, the other processes' use taken out, for VMA: without it VMA took
            80% of a heap's size as its budget, blind to what the desktop and other programs hold */
         has_budget = snx_vk_extensions_has(&e, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
@@ -419,6 +428,7 @@ static int create_device(void) {
     VkPhysicalDeviceRobustness2FeaturesEXT qrobust = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
     VkPhysicalDeviceVulkan12Features q12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceVulkan13Features q13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceVulkan11Features q11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
@@ -432,6 +442,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT};
     VkPhysicalDeviceProvokingVertexFeaturesEXT qprov = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
+    VkPhysicalDeviceMeshShaderFeaturesEXT qmesh = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR qindex8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR};
     /* with the subset enabled, each of its features is off until the device asks for it: a view's swizzle, for one */
@@ -452,6 +464,7 @@ static int create_device(void) {
                            has_descriptor_buffer ? &qdesc : NULL,
                            &q11,
                            &q12,
+                           &q13,
                            g_vk.has_divisor ? &fdiv : NULL,
                            g_vk.has_border_color ? &fbc : NULL,
                            g_vk.has_xfb ? &fxfb : NULL,
@@ -464,22 +477,35 @@ static int create_device(void) {
                            has_portability ? &qport : NULL,
                            has_reconvergence ? &qreconv : NULL,
                            robustness ? &qpipeline : NULL,
-                           robustness ? &qrobust : NULL,
+                           has_robustness2 ? &qrobust : NULL,
                            present_wait ? &qpid : NULL,
                            present_wait ? &qpwait : NULL,
                            has_present_v2 ? &qpid2 : NULL,
                            has_present_v2 ? &qpwait2 : NULL,
                            has_present_v2 ? &qtiming : NULL,
-                           has_shader_clock ? &qclock : NULL};
+                           has_shader_clock ? &qclock : NULL,
+                           has_mesh ? &qmesh : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
+    g_vk.subgroup32_stages = q13.subgroupSizeControl && size_control.minSubgroupSize <= 32 &&
+                                    size_control.maxSubgroupSize >= 32
+                                ? size_control.requiredSubgroupSizeStages : 0;
     g_vk.has_present_wait = has_present_id && has_present_wait && qpid.presentId && qpwait.presentWait;
     g_vk.has_present_timing = g_vk.has_present_wait && has_present_v2 && qpid2.presentId2 && qpwait2.presentWait2 &&
                               qtiming.presentTiming && qtiming.presentAtAbsoluteTime;
     g_vk.has_display_timing = has_google_timing && !g_vk.has_present_wait;
     g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2;
+    g_vk.has_null_descriptor = qrobust.nullDescriptor;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
+    g_vk.has_mesh = has_mesh && qmesh.meshShader;
+    g_vk.has_task = g_vk.has_mesh && qmesh.taskShader;
+    if (g_vk.has_mesh) {
+        g_vk.mesh_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT;
+        VkPhysicalDeviceProperties2 mp = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &g_vk.mesh_props};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &mp);
+    }
     g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
     /* the dynamic state and the barriers within a pass only serve feedback loops */
     g_vk.has_feedback = g_vk.has_feedback && qloop.attachmentFeedbackLoopLayout;
@@ -551,9 +577,17 @@ static int create_device(void) {
                                             .pNext = &f12,
                                             .synchronization2 = VK_TRUE,
                                             .dynamicRendering = VK_TRUE,
+                                            .subgroupSizeControl = q13.subgroupSizeControl,
                                             /* KIL demotes the lane; S2R queries its helper status */
                                             .shaderDemoteToHelperInvocation = VK_TRUE};
     void* chain = &f13;
+    if (g_vk.has_mesh) {
+        qmesh = (VkPhysicalDeviceMeshShaderFeaturesEXT){
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
+            .pNext = chain, .meshShader = VK_TRUE, .taskShader = g_vk.has_task ? VK_TRUE : VK_FALSE};
+        chain = &qmesh;
+        ext[next++] = VK_EXT_MESH_SHADER_EXTENSION_NAME;
+    }
     VkPhysicalDeviceDescriptorBufferFeaturesEXT fdesc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
         .pNext = chain, .descriptorBuffer = VK_TRUE};
@@ -702,6 +736,13 @@ static int create_device(void) {
     if (g_vk.has_vertex_robustness2) {
         chain = &fpipeline;
         ext[next++] = VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceRobustness2FeaturesEXT frobust = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
+        .pNext = chain,
+        .nullDescriptor = (VkBool32)g_vk.has_null_descriptor};
+    if (g_vk.has_vertex_robustness2 || g_vk.has_null_descriptor) {
+        chain = &frobust;
         ext[next++] = VK_EXT_ROBUSTNESS_2_EXTENSION_NAME;
     }
     u32 nq = g_vk.compute_family == g_vk.gfx_family ? 1 : 2;

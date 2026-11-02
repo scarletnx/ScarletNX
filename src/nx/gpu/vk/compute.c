@@ -17,6 +17,8 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/shader/shader.h"
+#include "nx/gpu/shader/ampere.h"
+#include "common/utilities/bits.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
@@ -316,7 +318,12 @@ static void cs_submit(void) {
                                  .semaphore = g_vk_csem,
                                  .value = ++g_cval,
                                  .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    VkSemaphoreSubmitInfo sparse = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                     .semaphore = g_vk.sparse_sem, .value = g_vk.sparse_value,
+                                     .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                        .waitSemaphoreInfoCount = g_vk.sparse_value ? 1 : 0,
+                        .pWaitSemaphoreInfos = &sparse,
                         .commandBufferInfoCount = 1,
                         .pCommandBufferInfos = &c,
                         .signalSemaphoreInfoCount = 1,
@@ -641,16 +648,38 @@ typedef struct {
     u32 image, image_sint;
 } CsKey;
 static CsPipe g_cs_alloc_failed = {.failed = 1}; /* out of memory: not cached, retried */
-static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k) {
-    u32 blen;
-    u64 key = vk_shader_hash(code, 0x10000 + 80, &blen, cs_cb_read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^
+static CsPipe* cs_pipe_make(const u8* code, u32 code_bytes, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k, int native) {
+    u32 blen = code_bytes;
+    u8* lowered = NULL; /* SHADER_AMPERE_LOWERED_MAX: too large for the stack */
+    ShaderInfo lowering = {0};
+    if (native) {
+        lowered = malloc(SHADER_AMPERE_LOWERED_MAX);
+        if (!lowered) return &g_cs_alloc_failed;
+        blen = shader_ampere_lower(code + 80, code_bytes - 80, lowered, SHADER_AMPERE_LOWERED_MAX, &lowering, NULL);
+        if (blen) {
+            code = lowered;
+            code_bytes = blen;
+        }
+    }
+    /* Hash the normalized program, not unrelated memory after the native EXIT. Equivalent programs use the same
+       pipeline, and constant-buffer reads still distinguish translation variants. Refusals keep their source key. */
+    u64 hash = lowering.unsupported ? vk_hash(code, code_bytes) ^ 0x416d706572650001ull
+                                   : vk_shader_hash(code, code_bytes, &blen, cs_cb_read);
+    u64 key = hash ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^
               ((u64)lz << 56) ^ ((u64)shm << 20) ^ ((u64)k.image << 32) ^ (u64)k.tex_int * 0x9E3779B97F4A7C15ull ^
-              (u64)k.tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k.image_sint * 0xA24BAED4963EE407ull;
+              (u64)k.tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k.image_sint * 0xA24BAED4963EE407ull ^
+              (u64)native * 0xD6E8FEB86659FD93ull;
     CsPipe* p = g_csp[key & 255];
     while (p && (p->key != key || !vk_cb_reads_hold(&p->cbr, cs_cb_read))) p = p->next;
-    if (p) return p;
+    if (p) {
+        free(lowered);
+        return p;
+    }
     p = calloc(1, sizeof *p);
-    if (!p) return &g_cs_alloc_failed;
+    if (!p) {
+        free(lowered);
+        return &g_cs_alloc_failed;
+    }
     p->key = key;
     p->next = g_csp[key & 255];
     g_csp[key & 255] = p;
@@ -662,10 +691,19 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k)
     p->si.rt_sint_mask = k.image_sint << 8;
     p->si.tex_int_mask = k.tex_int;
     p->si.tex_sint_mask = k.tex_sint;
+    p->si.gbuf_native = native;
+    if (lowering.unsupported) {
+        p->failed = p->si.unsupported = 1;
+        snprintf(p->si.first_unsupported, sizeof p->si.first_unsupported, "%s", lowering.first_unsupported);
+        LOG("vulkan: compute %016llx not lowered: %s\n", (unsigned long long)key, p->si.first_unsupported);
+        free(lowered);
+        return p;
+    }
     const char* corpus = vk_corpus_dir();
-    if (corpus) shader_corpus_save(corpus, code, blen, 0x10000 + 80, ST_CS, &p->si, key);
+    if (corpus) shader_corpus_save(corpus, code, blen, code_bytes, ST_CS, &p->si, key);
     size_t nw = 0;
-    u32* spv = vk_translate_spirv(code, 0x10000 + 80, ST_CS, &p->si, &nw, cs_cb_read, &p->cbr);
+    u32* spv = vk_translate_spirv(code, code_bytes, ST_CS, &p->si, &nw, cs_cb_read, &p->cbr);
+    free(lowered);
     if (!spv || p->si.unsupported) {
         p->failed = 1;
         LOG("vulkan: compute %016llx not translated: %s\n", (unsigned long long)key,
@@ -691,8 +729,13 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k)
         p->failed = 1;
         return p;
     }
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo subgroup = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+        .requiredSubgroupSize = 32};
     VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                                       .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                .pNext = native && (g_vk.subgroup32_stages & VK_SHADER_STAGE_COMPUTE_BIT)
+                                                             ? &subgroup : NULL,
                                                 .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                                                 .module = m,
                                                 .pName = "main"},
@@ -702,6 +745,28 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k)
     if (!p->failed)
         LOG_LIMIT(12, "vulkan: compute %016llx ready: block %ux%ux%u, %d global buffers, %d textures, %d images\n",
                   (unsigned long long)key, lx, ly, lz, p->si.ngbuf, p->si.ntex, p->si.nimg);
+    return p;
+}
+/* The pipelines by the exact code they were made from, so that a program met again is not lowered and hashed again
+   to find its pipeline. One pipeline can have several (a program's bytes after its EXIT differ) */
+typedef struct CsSrc {
+    u64 key; /* the code's hash and the launch parameters */
+    CsPipe* p;
+    struct CsSrc* next;
+} CsSrc;
+static CsSrc* g_css[256];
+static CsPipe* cs_pipe(const u8* code, u32 code_bytes, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k, int native) {
+    u64 key = vk_hash(code, code_bytes) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^ ((u64)lz << 56) ^ ((u64)shm << 20) ^
+              ((u64)k.image << 32) ^ (u64)k.tex_int * 0x9E3779B97F4A7C15ull ^ (u64)k.tex_sint * 0xC2B2AE3D27D4EB4Full ^
+              (u64)k.image_sint * 0xA24BAED4963EE407ull ^ (u64)native * 0xD6E8FEB86659FD93ull;
+    for (const CsSrc* s = g_css[key & 255]; s; s = s->next)
+        if (s->key == key && vk_cb_reads_hold(&s->p->cbr, cs_cb_read)) return s->p;
+    CsPipe* p = cs_pipe_make(code, code_bytes, lx, ly, lz, shm, k, native);
+    CsSrc* s = p == &g_cs_alloc_failed ? NULL : malloc(sizeof *s);
+    if (s) {
+        *s = (CsSrc){key, p, g_css[key & 255]};
+        g_css[key & 255] = s;
+    }
     return p;
 }
 
@@ -755,9 +820,29 @@ int vk_buffer_image(const u32* tic, int kind, VkBufImg* out) {
     return 1;
 }
 
+static int cs_null_tic(const u32* tic, int native) {
+    /* PokeDinner's texture cache treats a zero image address as unbound. Require the actual Vulkan discard/zero
+       semantics, not a dummy image whose writes could leak into later loads. Keep the Maxwell path unchanged. */
+    return native && g_vk.has_null_descriptor && !tic[1] && !(tic[2] & 0xffff);
+}
+
 /* Both the initial translation and format specialization use the same bounded program. */
-static void cs_read_code(u64 pa, u8* dst) {
+static u32 cs_read_code(u64 pa, u8* dst, int native) {
     u32 code_size = 0x10000;
+    if (native) {
+        memset(dst, 0, 80);
+        gmem_read_code(pa, dst + 80, code_size);
+        for (;;) {
+            u32 needed = shader_ampere_read_extent(dst + 80, code_size);
+            if (needed <= code_size) return needed + 80;
+            if (code_size == SHADER_AMPERE_NATIVE_MAX) return code_size + 80;
+            u32 next = (u32)snx_align_up(needed, 0x1000);
+            if (next < code_size * 2) next = code_size * 2;
+            if (next > SHADER_AMPERE_NATIVE_MAX) next = SHADER_AMPERE_NATIVE_MAX;
+            gmem_read_code(pa + code_size, dst + 80 + code_size, next - code_size);
+            code_size = next;
+        }
+    }
     /* NVN puts a header with its program size 0x100 bytes before compute code. Bounded by it, a BRX whose
        targets aren't resolved can't scan into the unrelated programs that follow in the same window. Other
        clients keep the whole window. */
@@ -776,6 +861,7 @@ static void cs_read_code(u64 pa, u8* dst) {
         vk_shader_hash(dst, 0x10000 + 80, &len, cs_cb_read);
         if (gmem_code_cut(len, 80 + cpu, 80 + code_size)) gmem_read_code(pa, dst + 80, code_size);
     }
+    return 0x10000 + 80;
 }
 
 /* Storage buffers kept on the GPU (the model of Citron Neo's buffer cache, buffer_cache.h's
@@ -852,7 +938,7 @@ static void res_unref_all(VkOwnRes** made, int n) {
         }
 }
 
-void vk_dispatch(const DispatchState* d) {
+int vk_dispatch(const DispatchState* d) {
     u32 gx = d->grid[0], gy = d->grid[1], gz = d->grid[2], lx = d->block[0], ly = d->block[1], lz = d->block[2],
         shm = d->shared;
     CsKey ck = {0};
@@ -862,7 +948,8 @@ void vk_dispatch(const DispatchState* d) {
     int i;
     vk_frame_check();
     if (d->indirect) gx = gy = gz = 1; /* the GPU's: these only say there is a grid */
-    if (!gx || !gy || !gz || !lx || !ly || !lz) return;
+    if (!gx || !gy || !gz) return 1;
+    if (!lx || !ly || !lz) return 0;
     const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
     if (gx > lim->maxComputeWorkGroupCount[0] || gy > lim->maxComputeWorkGroupCount[1] ||
         gz > lim->maxComputeWorkGroupCount[2] || lx > lim->maxComputeWorkGroupSize[0] ||
@@ -873,7 +960,7 @@ void vk_dispatch(const DispatchState* d) {
                   "(skipped)\n",
                   gx, gy, gz, lx, ly, lz, shm);
         g_cs_skips[CS_SKIP_LIMITS]++;
-        return;
+        return 0;
     }
     cs_init();
     /* the constant buffers bound (reading them lands results they overlap), or the dispatch's inline blocks */
@@ -891,37 +978,55 @@ void vk_dispatch(const DispatchState* d) {
         g_cbn[i] = sz;
         gmem_read(d->cb_addr[i], g_cb[i], sz);
     }
-    /* Recheck code at a new submit or instruction invalidation, as vk_shader_get does. */
+    /* Recheck code at a new submit or instruction invalidation, as vk_shader_get does: through the write tracking and
+       the front end's writes, as code_same does, and only then by reading and hashing it again */
     struct cs_fast {
         u64 addr;
         u64 shader_generation;
         u64 code_hash; /* of the code window cs_pipe translated */
-        u32 epoch, lx, ly, lz, shm;
+        u64 gw;        /* gpu_mem_generation and the write clock when it was read */
+        u32 wseen, len; /* its bytes from addr on */
+        u32 epoch, lx, ly, lz, shm, native;
         CsPipe* p;
     };
     static struct cs_fast fc[64];
     u64 pa = d->code;
     struct cs_fast* fe = &fc[((pa >> 8) ^ (pa >> 16)) & 63];
     CsPipe* p = fe->p;
+    int native = d->native;
     int same = p && fe->addr == pa && fe->lx == lx && fe->ly == ly && fe->lz == lz && fe->shm == shm &&
-               vk_cb_reads_hold(&p->cbr, cs_cb_read);
+               fe->native == (u32)native && vk_cb_reads_hold(&p->cbr, cs_cb_read);
+    if (same && fe->shader_generation == g_vk.shader_generation && fe->epoch != g_vk_epoch) {
+        gmem_need(pa, fe->len); /* pending results over the code land first, as the write tracking then sees them */
+        if (!gpu_mem_dirty_since(fe->gw, pa, fe->len) &&
+            vk_written_since(gmem_host(pa, fe->len), fe->len, fe->wseen) == 0) {
+            fe->epoch = g_vk_epoch;
+            fe->gw = gpu_mem_generation();
+        }
+    }
     if (!same || fe->shader_generation != g_vk.shader_generation || fe->epoch != g_vk_epoch) {
-        static u8 code_buf[0x10000 + 80]; /* compute programs have no header: 80 zero bytes stand in for one */
+        static u8 code_buf[SHADER_AMPERE_NATIVE_MAX + 80]; /* synthetic header before compute instructions */
         CsKey unkeyed = {0};
-        cs_read_code(pa, code_buf);
+        u64 gw = gpu_mem_generation();
+        u32 wseen = vk_ww_now();
+        u32 code_bytes = cs_read_code(pa, code_buf, native);
         /* same window and cbuf reads: same program, so skip vk_shader_hash's walk (5% of one game's GPU thread) */
-        u64 h = vk_hash(code_buf, sizeof code_buf);
+        u64 h = vk_hash(code_buf, code_bytes);
         if (!same || h != fe->code_hash) {
-            p = cs_pipe(code_buf, lx, ly, lz, shm, unkeyed);
+            p = cs_pipe(code_buf, code_bytes, lx, ly, lz, shm, unkeyed, native);
             fe->code_hash = h;
         }
         fe->addr = pa;
         fe->shader_generation = g_vk.shader_generation;
         fe->epoch = g_vk_epoch;
+        fe->gw = gw;
+        fe->wseen = wseen;
+        fe->len = code_bytes - 80;
         fe->lx = lx;
         fe->ly = ly;
         fe->lz = lz;
         fe->shm = shm;
+        fe->native = (u32)native;
         fe->p = p == &g_cs_alloc_failed ? NULL : p;
     }
     /* Stores default to unsigned for bindless images and float for bound ones. Descriptors of another class,
@@ -950,7 +1055,7 @@ void vk_dispatch(const DispatchState* d) {
         for (i = 0; i < p->si.nimg && i < 8; i++) {
             u32 h = 0, tic[8];
             if (!vk_image_keyable(&p->si, i)) continue;
-            if (!cs_cb_read(p->si.img[i].bindless ? (p->si.img[i].bl_cbuf & 7) : tcb_key, p->si.img[i].cbuf_off * 4,
+            if (!cs_cb_read(p->si.img[i].bindless ? p->si.img[i].bl_cbuf : tcb_key, p->si.img[i].cbuf_off * 4,
                             &h))
                 continue;
             vk_gmem_words(tic_key_base + (h & 0xFFFFF) * 32ull, tic, 8);
@@ -960,15 +1065,15 @@ void vk_dispatch(const DispatchState* d) {
     if (ck.tex_int || ck.image || ck.image_sint) {
         if (!p->keyed || (p->keyed->si.rt_int_mask >> 8) != ck.image || p->keyed->si.tex_int_mask != ck.tex_int ||
             p->keyed->si.tex_sint_mask != ck.tex_sint || (p->keyed->si.rt_sint_mask >> 8) != ck.image_sint) {
-            static u8 keyed_code[0x10000 + 80];
-            cs_read_code(pa, keyed_code);
-            p->keyed = cs_pipe(keyed_code, lx, ly, lz, shm, ck);
+            static u8 keyed_code[SHADER_AMPERE_NATIVE_MAX + 80];
+            u32 code_bytes = cs_read_code(pa, keyed_code, native);
+            p->keyed = cs_pipe(keyed_code, code_bytes, lx, ly, lz, shm, ck, native);
         }
         p = p->keyed;
     }
     if (p->failed) {
         g_cs_skips[CS_SKIP_UNTRANSLATED]++;
-        return;
+        return 0;
     }
     int needs_unformatted_image = 0;
     for (i = 0; i < p->si.nimg; i++)
@@ -976,19 +1081,31 @@ void vk_dispatch(const DispatchState* d) {
     if (needs_unformatted_image && !g_vk.feat.shaderStorageImageWriteWithoutFormat) {
         LOG_LIMIT(1, "vulkan: storage image writes need shaderStorageImageWriteWithoutFormat (skipped)\n");
         g_cs_skips[CS_SKIP_FEATURE]++;
-        return;
+        return 0;
     }
-    /* storage buffers: {address, size} in constant buffer 0 */
-    u64 sa[16];
-    u32 ss[16];
-    int ng = p->si.ngbuf > 16 ? 16 : p->si.ngbuf;
+    /* Storage descriptors, or bare 64-bit pointers, in the constant buffer the program read. */
+    u64 sa[SH_MAXGBUF];
+    u32 ss[SH_MAXGBUF];
+    int ng = p->si.ngbuf;
     u64 need = 0;
     for (int i = 0; i < ng; i++) {
         u32 v[3] = {0, 0, 0};
-        cs_cb_read(0, p->si.gbuf_cbuf_off[i], &v[0]);
-        cs_cb_read(0, p->si.gbuf_cbuf_off[i] + 4, &v[1]);
-        cs_cb_read(0, p->si.gbuf_cbuf_off[i] + 8, &v[2]);
-        ss[i] = vk_gbuf_desc(ST_CS, p->si.gbuf_cbuf_off[i], v, &sa[i]);
+        u32 descriptor = p->si.gbuf_cbuf_off[i], bank = SH_GBUF_BANK(descriptor), offset = SH_GBUF_OFFSET(descriptor);
+        cs_cb_read(bank, offset, &v[0]);
+        cs_cb_read(bank, offset + 4, &v[1]);
+        if (shader_gbuf_sized(ST_CS, descriptor)) cs_cb_read(bank, offset + 8, &v[2]);
+        /* A native program's storage buffers are NVN2 descriptors in cbuf 0 below NVN's: {address, size}, 16 bytes
+           apart (seen from 0x20 to 0x100). Bound by the mapping alone, one game's three 704-byte buffers each took
+           16 MiB, which was copied, read back and compared whole at every dispatch. The word after the address is the
+           size when it is a nonzero multiple of 16 with a zero word after it, as every size that game gave was (from
+           0x160 to 0x102edc0), and vk_gbuf_desc takes it when it fits in the mapped memory. Anything else, such as a
+           count beside a bare pointer of the program's own, leaves the mapping. global_dynamic reads it the same way */
+        else if (p->si.gbuf_native && !bank && !(offset & 15)) {
+            u32 size = 0, hi = 1;
+            if (cs_cb_read(bank, offset + 8, &size) && cs_cb_read(bank, offset + 12, &hi) && !hi && !(size & 15))
+                v[2] = size;
+        }
+        ss[i] = vk_gbuf_desc(ST_CS, descriptor, v, &sa[i]);
         need += ss[i] + vk_stage_align();
     }
     for (int i = 0; i < 8; i++)
@@ -1000,16 +1117,16 @@ void vk_dispatch(const DispatchState* d) {
         if (p->si.img[i].type != 1) continue;
         tic_base = d->tex_pool;
         if ((u32)i >= g_vk_buffer_image_slots ||
-            !cs_cb_read(p->si.img[i].bindless ? (p->si.img[i].bl_cbuf & 7) : d->tex_bank, p->si.img[i].cbuf_off * 4,
+            !cs_cb_read(p->si.img[i].bindless ? p->si.img[i].bl_cbuf : d->tex_bank, p->si.img[i].cbuf_off * 4,
                         &h)) {
             g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
-            return;
+            return 0;
         }
         vk_gmem_words(tic_base + (h & 0xFFFFF) * 32ull, tic, 8);
         if (!vk_buffer_image(tic, p->si.img[i].kind, &bimg[i])) {
             LOG_LIMIT(4, "vulkan: unsupported compute buffer image (header word 0 %08x, skipped)\n", tic[0]);
             g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
-            return;
+            return 0;
         }
         need += bimg[i].bytes + vk_stage_align();
     }
@@ -1048,11 +1165,11 @@ void vk_dispatch(const DispatchState* d) {
 #endif
         }
     }
-    VkOwnRes* made[16] = {0};
+    VkOwnRes* made[SH_MAXGBUF] = {0};
     deferred = deferred || resident;
     /* a read-only input inside a pending result of this batch is read from the arena on the GPU, after a barrier
        (multi-pass skinning reads what the pass before wrote); any other overlap lands the results first */
-    i64 chain[16];
+    i64 chain[SH_MAXGBUF];
     for (int i = 0; i < ng; i++) {
         chain[i] = -1;
         if (!pend_hit(&g_pages, sa[i], ss[i])) continue;
@@ -1082,7 +1199,7 @@ void vk_dispatch(const DispatchState* d) {
         }
         if (!g_recording && !arena_fit(need)) {
             g_cs_skips[CS_SKIP_RESOURCES]++;
-            return;
+            return 0;
         }
     }
 
@@ -1095,7 +1212,7 @@ rebind:
         set = vk_desc_alloc(g_vk.cs_dslayout);
         if (!set) {
             g_cs_skips[CS_SKIP_RESOURCES]++;
-            return;
+            return 0;
         }
     } else {
         VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -1106,12 +1223,12 @@ rebind:
             cs_land();
             if (!VK_OK(vkAllocateDescriptorSets(g_vk.dev, &dai, &set))) {
                 g_cs_skips[CS_SKIP_RESOURCES]++;
-                return;
+                return 0;
             }
         }
     }
     VkWriteDescriptorSet w[SNX_VKB_END];
-    VkDescriptorBufferInfo bi[80];
+    VkDescriptorBufferInfo bi[SNX_VKB_END];
     VkDescriptorImageInfo ii[SH_MAXTEX + 8];
     Surf* images[8] = {0};
     u8* originals[8] = {0};
@@ -1136,7 +1253,7 @@ rebind:
                 dst = vk_stage(range, vk_stage_align(), &cbuf, &o);
                 if (!dst) {
                     g_cs_skips[CS_SKIP_RESOURCES]++;
-                    return;
+                    return 0;
                 }
             } else {
                 o = arena_alloc(range);
@@ -1158,8 +1275,8 @@ rebind:
                                            .pBufferInfo = &bi[nw]};
             nw++;
         }
-    u64 so[16];
-    VkBuffer bi_buf[16];
+    u64 so[SH_MAXGBUF];
+    VkBuffer bi_buf[SH_MAXGBUF];
     int chained = 0;
     for (int i = 0; i < ng; i++) {
         VkBuffer sbuf = g_ar;
@@ -1175,7 +1292,7 @@ rebind:
             if (!res_bind(sa[i], ss[i], (p->si.gbuf_wmask >> i) & 1, &sbuf, &o, &made[i])) {
                 res_unref_all(made, ng);
                 g_cs_skips[CS_SKIP_STORAGE_BUFFER]++;
-                return;
+                return 0;
             }
             so[i] = o;
         } else if (deferred) {
@@ -1187,7 +1304,7 @@ rebind:
             if (!ok) {
                 vk_buf_writable_abort();
                 g_cs_skips[CS_SKIP_STORAGE_BUFFER]++;
-                return;
+                return 0;
             }
             so[i] = o;
         } else {
@@ -1204,7 +1321,7 @@ rebind:
         bi[nw] = (VkDescriptorBufferInfo){sbuf, o, ss[i]};
         w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
-                                       .dstBinding = SNX_VKB_SSBO + i,
+                                       .dstBinding = shader_vk_gbuf_binding((u32)i),
                                        .descriptorCount = 1,
                                        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                        .pBufferInfo = &bi[nw]};
@@ -1230,16 +1347,17 @@ rebind:
             vk_gmem_words(tic_base + (u64)texture_handle_tic_id(h) * TEXTURE_POOL_ENTRY_BYTES, tic, 8);
             vk_gmem_words(tsc_base + (u64)texture_handle_tsc_id(h) * TEXTURE_POOL_ENTRY_BYTES, tsc, 8);
             VkImageViewType want = vk_tex_view_type(st);
-            Surf* t = st->flags & 1 ? vk_tex_from_tic_raw(tic) : vk_tex_from_tic(tic);
+            int null_image = cs_null_tic(tic, native);
+            Surf* t = null_image ? NULL : st->flags & 1 ? vk_tex_from_tic_raw(tic) : vk_tex_from_tic(tic);
             /* a program fetching samples (flags bit 1) reads a multisampled image, others a single-sampled one: an
                image of other samples reads zeros, as a missing texture does */
             int ms = (st->flags & 2) != 0;
             if (t && ms != (t->msaa != 0)) t = NULL;
-            if ((st->flags & 1) && !t) {
+            if ((st->flags & 1) && !t && !null_image) {
                 LOG_LIMIT(4, "vulkan: raw surface load requires a 32-bit color format (skipped)\n");
                 g_cs_skips[CS_SKIP_TEXTURE]++;
                 cs_abandon_binding(originals);
-                return;
+                return 0;
             }
             int num = st->flags & 1                      ? 1
                       : !((p->si.tex_int_mask >> i) & 1) ? 0
@@ -1253,15 +1371,15 @@ rebind:
             const Surf* sampled = v ? t : NULL; /* the texture whose own view is bound, for the sampler */
             if (v)
                 vk_surf_use(vk_cmd(), t, sampled_layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-            else {
+            else if (!null_image) {
                 v = vk_null_view(want, num, ms);
                 sampled_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
             VkSampler smp = vk_tex_bind_sampler(tsc, tic, st, num, sampled, want);
-            if (!v || !smp) { /* before any output is recorded: nothing of this dispatch lands */
+            if ((!v && !null_image) || !smp) { /* before any output is recorded: nothing of this dispatch lands */
                 g_cs_skips[CS_SKIP_TEXTURE]++;
                 cs_abandon_binding(originals);
-                return;
+                return 0;
             }
             ii[i] = (VkDescriptorImageInfo){smp, v, sampled_layout};
             w[nw++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -1283,40 +1401,47 @@ rebind:
             if (p->si.img[i].type == 1) continue; /* buffer images are bound below */
             const u32 off = p->si.img[i].cbuf_off;
             u32 h = 0, tic[8];
-            if (!cs_cb_read(p->si.img[i].bindless ? (p->si.img[i].bl_cbuf & 7) : tcb, off * 4, &h)) {
+            if (!cs_cb_read(p->si.img[i].bindless ? p->si.img[i].bl_cbuf : tcb, off * 4, &h)) {
                 g_cs_skips[CS_SKIP_STORAGE_IMAGE]++;
                 cs_abandon_binding(originals);
-                return;
+                return 0;
             }
             vk_gmem_words(tic_base + (h & 0xFFFFF) * 32ull, tic, 8);
-            Surf* t = vk_tex_from_tic_storage(tic);
+            int null_image = cs_null_tic(tic, native);
+            Surf* t = null_image ? NULL : vk_tex_from_tic_storage(tic);
             u64 image_bytes;
-            VkImageView view = vk_storage_image_view(t, &p->si, i, &image_bytes);
-            if (!view) {
-                LOG_LIMIT(4, "vulkan: unsupported compute storage image (header word 0 %08x, kind %d, skipped)\n",
-                          tic[0], p->si.img[i].kind);
+            VkImageView view = null_image ? VK_NULL_HANDLE : vk_storage_image_view(t, &p->si, i, &image_bytes);
+            if (!view && !null_image) {
+                LOG_LIMIT(4, "vulkan: compute %016llx at %llx: storage image %d not bound, kind %u, "
+                             "c[%u][%x]=%08x, TIC %llx: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+                          (unsigned long long)p->key, (unsigned long long)pa, i, p->si.img[i].kind,
+                          p->si.img[i].bindless ? p->si.img[i].bl_cbuf : tcb, off * 4, h,
+                          (unsigned long long)(tic_base + (h & 0xFFFFF) * 32ull),
+                          tic[0], tic[1], tic[2], tic[3], tic[4], tic[5], tic[6], tic[7]);
                 g_cs_skips[CS_SKIP_STORAGE_IMAGE]++;
                 cs_abandon_binding(originals);
-                return;
+                return 0;
             }
-            int seen = 0;
-            for (int k = 0; k < i; k++)
-                if (images[k] == t) {
-                    seen = 1;
-                    break;
+            if (t) {
+                int seen = 0;
+                for (int k = 0; k < i; k++)
+                    if (images[k] == t) {
+                        seen = 1;
+                        break;
+                    }
+                if (!seen && !deferred) { /* a published image keeps no merge: its owner takes the span whole */
+                    originals[i] = malloc(image_bytes);
+                    if (!originals[i]) {
+                        g_cs_skips[CS_SKIP_RESOURCES]++;
+                        cs_abandon_binding(originals);
+                        return 0;
+                    }
+                    gmem_read(t->gva, originals[i], image_bytes);
                 }
-            if (!seen && !deferred) { /* a published image keeps no merge: its owner takes the span whole */
-                originals[i] = malloc(image_bytes);
-                if (!originals[i]) {
-                    g_cs_skips[CS_SKIP_RESOURCES]++;
-                    cs_abandon_binding(originals);
-                    return;
-                }
-                gmem_read(t->gva, originals[i], image_bytes);
+                vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            VK_STORAGE_IMAGE_ACCESS);
+                images[i] = t;
             }
-            vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                        VK_STORAGE_IMAGE_ACCESS);
-            images[i] = t;
             ii[p->si.ntex + i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
             w[nw++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                              .dstSet = set,
@@ -1345,7 +1470,7 @@ rebind:
                         if (bufimg_view[k]) vk_defer_buffer_view(bufimg_view[k]);
                     g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
                     cs_abandon_binding(originals);
-                    return;
+                    return 0;
                 }
             } else {
                 bufimg_off[i] = arena_alloc(bimg[i].bytes);
@@ -1363,7 +1488,7 @@ rebind:
                     if (bufimg_view[k]) vk_defer_buffer_view(bufimg_view[k]); /* a draw may still use the set */
                 g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
                 cs_abandon_binding(originals);
-                return;
+                return 0;
             }
             memset(&w[nw], 0, sizeof w[nw]);
             w[nw].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1385,7 +1510,7 @@ rebind:
                         if (bufimg_view[i]) vk_defer_buffer_view(bufimg_view[i]);
                     g_cs_skips[CS_SKIP_RESOURCES]++;
                     cs_abandon_binding(originals);
-                    return;
+                    return 0;
                 }
             } else {
                 o = arena_alloc(sizeof fmt);
@@ -1410,7 +1535,7 @@ rebind:
         vk_buf_writable_abort();
         res_unref_all(made, ng);
         g_cs_skips[CS_SKIP_INPUTS_MOVED]++;
-        return;
+        return 0;
     }
     /* reading an input landed results and submitted: what was read before may be stale, as in a draw's setup */
     if (deferred && setup_sub != vk_submit_number()) {
@@ -1423,7 +1548,7 @@ rebind:
         res_unref_all(made, ng);
         if (++retries < 4) goto rebind;
         g_cs_skips[CS_SKIP_INPUTS_MOVED]++;
-        return;
+        return 0;
     }
     /* the outputs, once every input is read (an input can alias another storage buffer's output) */
     for (int i = 0; i < ng && !deferred; i++)
@@ -1495,10 +1620,12 @@ rebind:
     }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk.cs_playout, 0, 1, &set, 0, NULL);
+    if (gfx || resident) vk_gpuprof_dispatch_begin(cb, p->key);
     if (d->indirect)
         rec_CmdDispatchIndirect(cb, grid_buf, grid_off);
     else
         rec_CmdDispatch(cb, gx, gy, gz);
+    if (gfx || resident) vk_gpuprof_dispatch_end(cb);
     if (resident) {
         vk_all_barrier(cb); /* its writes before what reads them next */
         for (int i = 0; i < ng; i++) {
@@ -1511,7 +1638,7 @@ rebind:
         }
         res_unref_all(made, ng);
         g_vk_dispatches++;
-        return;
+        return 1;
     }
     if (deferred) {
         /* pending from here: the submit copies them where the host reads them (vk_buf_host_barrier). Submitted at
@@ -1531,7 +1658,7 @@ rebind:
         }
         g_vk_dispatches++;
         vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
-        return;
+        return 1;
     }
     /* results visible to the host */
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -1570,7 +1697,8 @@ rebind:
         g_ar_used = 0;
         vkResetDescriptorPool(g_vk.dev, g_dpool, 0);
         g_landing = 0;
-        return;
+        return 1;
     }
     cs_any_update();
+    return 1;
 }

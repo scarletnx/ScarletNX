@@ -178,6 +178,8 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bl_pipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bl_layout, 0, 1, &set, 0, NULL);
     rec_CmdPushConstants(cb, g_bl_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+    vk_gpuprof_dispatch_begin(cb, VK_GPUPROF_BLOCKLINEAR);
     rec_CmdDispatch(cb, gx, gy, m->slices);
+    vk_gpuprof_dispatch_end(cb);
     return 1;
 }

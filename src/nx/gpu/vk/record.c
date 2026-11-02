@@ -192,7 +192,7 @@ void vk_rec_begin(VkCommandBuffer cb) {
 
 typedef struct {
     VkCommandBuffer cb;
-    VkSemaphoreSubmitInfo w[2], s[2];
+    VkSemaphoreSubmitInfo w[3], s[2];
     u32 nw, ns;
     VkSemaphore timeline;
     u64 value;
@@ -416,6 +416,23 @@ void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 indices, u32 instances, u32 firs
     }
     DrawIndexedArgs* x = rec_push(draw_indexed_run, sizeof *x);
     *x = (DrawIndexedArgs){cb, indices, instances, first_index, vertex_offset, first_instance};
+    rec_commit();
+}
+typedef struct {
+    VkCommandBuffer cb;
+    u32 groups;
+} DrawMeshTasksArgs;
+static void draw_mesh_tasks_run(const void* p) {
+    const DrawMeshTasksArgs* x = p;
+    if (!rec_drop_draw()) vkCmdDrawMeshTasksEXT(x->cb, x->groups, 1, 1);
+}
+void rec_CmdDrawMeshTasks(VkCommandBuffer cb, u32 groups) {
+    if (!rec_on(cb)) {
+        vkCmdDrawMeshTasksEXT(cb, groups, 1, 1);
+        return;
+    }
+    DrawMeshTasksArgs* x = rec_push(draw_mesh_tasks_run, sizeof *x);
+    *x = (DrawMeshTasksArgs){cb, groups};
     rec_commit();
 }
 /* the indirect draws: kind bit 0 indexed, bit 1 limited by the count at count_buf */

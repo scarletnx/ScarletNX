@@ -648,7 +648,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `profile` | `0` | `1` writes `profile.txt` every 10 seconds. The CPU profiler is Windows only |
 | `shader_corpus` | empty | A folder that keeps each translated shader for `snx-shaderc`. With it every shader is translated, and none is kept for the next run |
 | `gpu_trace_target` | empty | `address[:bytes]`: logs the clears and draws that write a render target starting in that GPU address range |
-| `vk_gpu_profile` | `0` | `1` logs the GPU's time per rendering pass every 10 seconds |
+| `vk_gpu_profile` | `0` | `1` logs the GPU's time per rendering pass and per compute program on the graphics queue every 10 seconds. The timed dispatches wait for the work before them |
 | `vk_buffer_stats` | `0` | `1` logs what the renderer copies between guest memory and its buffers |
 | `vk_record` | `1` | `0` records Vulkan commands on the GPU thread instead of a thread of their own |
 | `compute` | `1` | `0` skips every compute shader dispatch |

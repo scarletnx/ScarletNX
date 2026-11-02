@@ -41,6 +41,9 @@ typedef struct {
     /* a samples report's render enable predicate (query.c): 0 none made, slot + 1 while it holds one, or what the count
        is known to be without the GPU, PRED_ZERO or PRED_NONZERO, or PRED_NONE when no predicate can be had */
     int pred;
+    /* a reduction: 1 + gpu.h's GPU_RED_* on the len bytes at gva, with data's payload, 0 for a plain write. Its value
+       is the memory's when it is performed, so the stream can't read past it before then */
+    u8 reduce, reduce_signed;
     u64 cpu; /* the guest address of its payload, translated when it was queued, 0 when it isn't in the word index */
 } Release;
 enum { PRED_NONE = -3, PRED_ZERO = -2, PRED_NONZERO = -1 };
@@ -143,7 +146,12 @@ static void perform(Release* r) {
             snx_st_le64(r->data, v);
     }
     vk_result_begin();
-    if (r->gva)
+    if (r->reduce) { /* on what the releases before it left there */
+        u8 d[8] = {0};
+        gmem_read_raw(r->gva, d, r->len);
+        snx_st_le64(d, gpu_reduce(r->reduce - 1u, r->reduce_signed, r->len, snx_ld_le64(d), snx_ld_le64(r->data)));
+        gmem_write(r->gva, d, r->len);
+    } else if (r->gva)
         gmem_write(r->gva, r->data, r->len);
     else
         syncpt_add_quiet(r->id, 1); /* under vk_lock: the events it reaches are signaled as it is let go */
@@ -279,6 +287,16 @@ void vk_release_write(u64 gva, const void* data, u32 len) {
     r.gva = gva;
     r.len = len < sizeof r.data ? len : (u32)sizeof r.data;
     memcpy(r.data, data, r.len);
+    release(&r);
+}
+void vk_release_reduce(u64 gva, u32 op, int is_signed, u32 bytes, u64 payload) {
+    Release r;
+    memset(&r, 0, sizeof r);
+    r.gva = gva;
+    r.len = bytes == 8 ? 8 : 4;
+    r.reduce = (u8)(op + 1);
+    r.reduce_signed = (u8)(is_signed != 0);
+    snx_st_le64(r.data, payload);
     release(&r);
 }
 /* the GPFIFO submission ended or waits: the stream's releases go, those no GPU work holds at once, and a release still
@@ -490,8 +508,11 @@ int vk_release_read(u64 gva, void* dst, u64 len) {
     for (u64 i = from; i < g_rhead && r >= 0; i++) {
         const Release* q = &g_rq[i % RQ_N];
         if (!release_overlaps(q, &range)) continue;
-        /* a count the GPU hasn't given yet, or the same memory through another address: not known here */
-        r = !q->samples && gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 ? 1 : -1;
+        /* A reduction is known from memory and older queued writes only when its whole operand is read. Aliases,
+           partial operands and counts the GPU has not given still need their results landed. */
+        r = !q->samples && gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 &&
+                    (!q->reduce || (q->gva >= gva && q->gva + q->len <= gva + len))
+                ? 1 : -1;
     }
     pm_unlock(&g_rlock);
     if (r > 0 && (vk_compute_pending(gva, len) || vk_buf_pending(gva, len) || vk_gfx_image_pending(gva, len))) r = -1;
@@ -504,7 +525,14 @@ int vk_release_read(u64 gva, void* dst, u64 len) {
             if (!q->gva || gva >= q->gva + q->len || q->gva >= gva + len) continue;
             lo = q->gva > gva ? q->gva : gva;
             hi = q->gva + q->len < gva + len ? q->gva + q->len : gva + len;
-            memcpy((u8*)dst + (lo - gva), q->data + (lo - q->gva), (size_t)(hi - lo));
+            if (q->reduce) {
+                u8 value[8] = {0};
+                memcpy(value, (const u8*)dst + (lo - gva), q->len);
+                snx_st_le64(value, gpu_reduce(q->reduce - 1u, q->reduce_signed, q->len,
+                                             snx_ld_le64(value), snx_ld_le64(q->data)));
+                memcpy((u8*)dst + (lo - gva), value, q->len);
+            } else
+                memcpy((u8*)dst + (lo - gva), q->data + (lo - q->gva), (size_t)(hi - lo));
         }
         pm_unlock(&g_rlock);
         __atomic_add_fetch(&g_vk_release_forwards, 1, __ATOMIC_RELAXED);

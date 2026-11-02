@@ -37,6 +37,11 @@ typedef struct {
     u32 qi; /* its begin's timestamp in the slot's pool, its end's the one after */
 } GpPass;
 #define GP_SUBS 512 /* submissions per frame slot: cmd.c's slots take at most 128 */
+#define GP_DISPS 2048 /* dispatches on the graphics queue per frame slot */
+typedef struct {
+    u64 key; /* the compute program's */
+    u32 qi;  /* its begin's timestamp in the slot's pool, its end's the one after */
+} GpDisp;
 typedef struct {
     u32 q0, q1; /* its begin's and its end's timestamps, q1 0 while it is not submitted */
     u64 cpu;    /* CLOCK_MONOTONIC at its submit */
@@ -47,15 +52,22 @@ typedef struct {
     VkQueryPool pool;
     u32 used; /* timestamps written in this slot since its reset */
     int reset; /* the reset is recorded for this use of the slot */
-    u32 npass, nsub;
+    u32 npass, nsub, ndisp;
     GpPass pass[GP_QUERIES / 2];
     GpSub sub[GP_SUBS];
+    GpDisp disp[GP_DISPS];
 } GpSlot;
 typedef struct {
     u64 gva;
     u32 w, h, fmt;
     u64 ns, passes, draws;
 } GpKey;
+typedef struct {
+    u64 key, ns, n;
+} GpProg;
+static GpProg g_prog[GP_KEYS]; /* the dispatches' times by program, summed over the report's window */
+static u64 g_disp_ns, g_disp_lost;
+static VkCommandBuffer g_cb; /* the frame's command buffer that is recording, between cb_begin and cb_end */
 
 static int g_on = -1;
 static GpSlot* g_slot[VK_FRAMES];
@@ -140,13 +152,14 @@ static GpSlot* gp_slot_reset(VkCommandBuffer cb) {
     if (!g->reset) {
         rec_CmdResetQueryPool(cb, g->pool, 0, GP_QUERIES);
         g->reset = 1;
-        g->used = g->npass = g->nsub = 0;
+        g->used = g->npass = g->nsub = g->ndisp = 0;
     }
     return g;
 }
 /* a command buffer of the frame begun (cmd.c's vk_cmd) */
 void vk_gpuprof_cb_begin(VkCommandBuffer cb) {
     GpSlot* g = gp_slot_reset(cb);
+    g_cb = cb;
     if (!g) return;
     if (g->used + 1 > GP_QUERIES || g->nsub >= GP_SUBS) {
         g_lost++;
@@ -160,6 +173,7 @@ void vk_gpuprof_cb_begin(VkCommandBuffer cb) {
 void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value) {
     GpSlot* g = gp_on() ? g_slot[vk_frame_slot()] : NULL;
     GpSub* s;
+    g_cb = VK_NULL_HANDLE;
     if (!g || !g->reset || !g->nsub || (s = &g->sub[g->nsub - 1])->q1) return;
     if (g->used + 1 > GP_QUERIES) {
         g_lost++;
@@ -231,6 +245,37 @@ void vk_gpuprof_pass_end(VkCommandBuffer cb) {
     /* the end goes out whenever the begin did: a dropped pair never reaches the server apart */
     if (p->q0) p->q1 = snx_tracy_gpu_zone_end(p->q0, VK_GPU_CTX_GRAPHICS, p->ep);
 #endif
+}
+/* around a dispatch, outside any pass. Only the frame's command buffer on the graphics queue is timed (the slot's pool
+   is reset in it). Both timestamps wait for all the work before them, so the time is the dispatch's own (and the
+   profiled run loses the overlap of dispatches). key is the compute program's, or a VK_GPUPROF_* of the runtime's */
+void vk_gpuprof_dispatch_begin(VkCommandBuffer cb, u64 key) {
+    GpSlot* g;
+    if (cb != g_cb || !(g = gp_slot_reset(cb))) return;
+    if (g->used + 2 > GP_QUERIES || g->ndisp >= GP_DISPS) {
+        g_disp_lost++;
+        return;
+    }
+    g->disp[g->ndisp] = (GpDisp){.key = key, .qi = g->used};
+    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g->pool, g->used);
+    g->used += 2;
+    g->ndisp++;
+}
+void vk_gpuprof_dispatch_end(VkCommandBuffer cb) {
+    GpSlot* g = gp_on() ? g_slot[vk_frame_slot()] : NULL;
+    if (cb != g_cb || !g || !g->reset || !g->ndisp || g->disp[g->ndisp - 1].qi + 2 != g->used) return;
+    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g->pool, g->used - 1);
+}
+static GpProg* gp_prog(u64 key) {
+    for (u32 i = 0; i < GP_KEYS; i++) {
+        GpProg* k = &g_prog[(key + i) & (GP_KEYS - 1)];
+        if (!k->n) {
+            k->key = key;
+            return k;
+        }
+        if (k->key == key) return k;
+    }
+    return NULL;
 }
 static void gp_report(void);
 /* the slot's submissions into the sums of busy and idle time, on the CPU's clock: one calibrated pair of the two clocks
@@ -345,6 +390,15 @@ void vk_gpuprof_frame_done(u32 slot) {
         k->passes++;
         k->draws += p->draws;
     }
+    for (u32 i = 0; i < g->ndisp; i++) {
+        const GpDisp* d = &g->disp[i];
+        u64 ns = (u64)((double)(ts[d->qi + 1] - ts[d->qi]) * period);
+        GpProg* k = gp_prog(d->key);
+        g_disp_ns += ns;
+        if (!k) continue;
+        k->ns += ns;
+        k->n++;
+    }
     gp_idle(g, ts, period);
     for (u32 i = 1; i < g->npass; i++) {
         const GpPass* p = &g->pass[i];
@@ -436,6 +490,10 @@ static int key_cmp(const void* a, const void* b) {
     u64 x = ((const GpKey*)a)->ns, y = ((const GpKey*)b)->ns;
     return x < y ? 1 : x > y ? -1 : 0;
 }
+static int prog_cmp(const void* a, const void* b) {
+    u64 x = ((const GpProg*)a)->ns, y = ((const GpProg*)b)->ns;
+    return x < y ? 1 : x > y ? -1 : 0;
+}
 /* the targets that took the most GPU time, then a fresh sum */
 static void gp_report(void) {
     if (g_on <= 0 || !g_frames) return;
@@ -467,6 +525,24 @@ static void gp_report(void) {
             (unsigned long long)sorted[i].draws, (unsigned long long)sorted[i].gva, sorted[i].w, sorted[i].h,
             sorted[i].fmt);
     memset(g_key, 0, sizeof g_key);
-    g_pass_ns = g_span_ns = g_frames = g_lost = 0;
+    static GpProg progs[GP_KEYS];
+    memcpy(progs, g_prog, sizeof progs);
+    qsort(progs, GP_KEYS, sizeof *progs, prog_cmp);
+    LOG("vulkan: GPU   dispatches on the graphics queue: %.2f ms a frame, %llu untimed\n",
+        (double)g_disp_ns / 1e6 / (double)g_frames, (unsigned long long)g_disp_lost);
+    for (int i = 0; i < 12 && progs[i].n; i++) {
+        static const char* const own[VK_GPUPROF_N] = {"", "block linear", "texture conversion", "ASTC decode",
+                                                      "BC7 encode"};
+        char name[32];
+        if (progs[i].key < VK_GPUPROF_N)
+            snprintf(name, sizeof name, "the runtime's %s", own[progs[i].key]);
+        else
+            snprintf(name, sizeof name, "program %016llx", (unsigned long long)progs[i].key);
+        LOG("vulkan: GPU     %.2f ms a frame: %llu dispatches (%.1f us each), %s\n",
+            (double)progs[i].ns / 1e6 / (double)g_frames, (unsigned long long)progs[i].n,
+            (double)progs[i].ns / 1e3 / (double)progs[i].n, name);
+    }
+    memset(g_prog, 0, sizeof g_prog);
+    g_pass_ns = g_span_ns = g_frames = g_lost = g_disp_ns = g_disp_lost = 0;
     gp_idle_report();
 }

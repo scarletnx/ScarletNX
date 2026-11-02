@@ -7,6 +7,7 @@
 #include "nx/gpu/maxwell/draw_state.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/shader/ampere.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
@@ -24,9 +25,11 @@
 #include "spirv_emitter_fixture.h"
 #include "support/dma_ref.h"
 #include "support/fermi2d_ref.h"
+#include "support/half.h"
 #include "support/nvdec_ref.h"
 #include "support/vic_ref.h"
 #include <libavutil/buffer.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -718,6 +721,98 @@ static int run_compute(const u32* code, size_t words, u32* data, u32 count, VkIm
     return 0;
 }
 
+/* A virtual array larger than the old 512 MiB guard, with only selected layer/mip ranges mapped. The guest's
+   64 KiB sparse layer pitch differs from its 4 KiB block-linear pitch. Sample resident levels, holes and a tail,
+   then remap a level and add another without changing the pixels an earlier image still holds. */
+static int check_sparse_texture_arrays(void) {
+    if (!g_vk.sparse || !g_vk.feat.sparseResidencyImage2D ||
+        !g_vk.props.sparseProperties.residencyNonResidentStrict) {
+        printf("Sparse texture arrays: no strict sparse 2D residency, skipped\n");
+        return 0;
+    }
+    const u64 gva = 0x6500000000, stride = 0x15560000, level5 = 0x15500000;
+    const u64 cpu = HEAP_BASE + 0x200000;
+    const u32 values[] = {0x3e800000, 0x3f400000, 0x3f000000, 0x3e000000}; /* .25, .75, .5, .125 */
+    for (u32 i = 0; i < 0x40000 / 4; i++) {
+        snx_st_le32(GP(cpu) + i * 4, values[0]);
+        snx_st_le32(GP(cpu + 0x40000) + i * 4, values[1]);
+    }
+    for (u32 i = 0; i < 0x1000 / 4; i++) snx_st_le32(GP(cpu + 0x80000) + i * 4, values[2]);
+    for (u32 i = 0; i < 0x400000 / 4; i++) snx_st_le32(GP(cpu + 0x100000) + i * 4, values[3]);
+    gmmu_map(gva + stride + level5, cpu, 0x40000);
+    gmmu_map(gva + 2 * stride + level5, cpu + 0x40000, 0x40000);
+    gmmu_map(gva + 2 * stride + 0x15555000, cpu + 0x80000, 0x1000);
+    gmmu_map(gva + 0x15000000, cpu + 0x100000, 0x400000);
+    u32 tic[8] = {0x0f | 7u << 7 | 7u << 10 | 7u << 13 | 7u << 16,
+                  (u32)gva, (u32)(gva >> 32) | 3u << 21, 13u << 28 | 1u << 12 | 3u << 3,
+                  8191u | 5u << 23, 8191u | 2u << 16, 0, 13u << 4};
+    size_t words = 0;
+    u32* code = snx_test_spirv_sample(&words);
+    CHECK(code);
+    u32 tsc[8] = {2u | 2u << 3 | 2u << 6, 1u | 1u << 4 | 1u << 6};
+    ShTex plain = {0};
+    const u32 layer[] = {0, 0, 1, 2, 2, 1, 0};
+    const u32 level[] = {0, 3, 5, 5, 13, 13, 5};
+    u64 saved_cap = g_vk.alloc_cap;
+    g_vk.alloc_cap = 1u << 20;
+    /* Three allocations cut across tile rows: first and last pieces end partway through a row. Clear on the GPU
+       so the ordinary upload's scratch-buffer limit does not constrain this binding witness. */
+    Surf split = {.w = 768, .sw = 768, .h = 1024, .sh = 1024, .layers = 1, .levels = 1,
+                   .f = {.vk = VK_FORMAT_R32_SFLOAT}};
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                            .format = split.f.vk, .extent = {split.w, split.h, 1}, .mipLevels = 1, .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+    u32 mask = 1;
+    vk_lock();
+    CHECK(vk_image_resident_create(&ii, &mask, &split.img, &split.bytes));
+    g_vk.alloc_cap = saved_cap;
+    vk_surf_use(vk_cmd(), &split, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkClearColorValue clear = {.float32 = {.125f}};
+    VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    rec_CmdClearColorImage(vk_cmd(), split.img, split.layout, &clear, 1, &range);
+    vk_surf_use(vk_cmd(), &split, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    vk_unlock();
+    VkImage previous = VK_NULL_HANDLE;
+    for (u32 phase = 0; phase < 3; phase++) {
+        if (phase == 1) gmmu_map(gva + stride + level5, cpu + 0x40000, 0x40000);
+        if (phase == 2) gmmu_map(gva + level5, cpu, 0x40000);
+        vk_lock();
+        Surf* t = vk_tex_from_tic(tic);
+        CHECK(t && t->upload_valid && t->f.vk == VK_FORMAT_R32_SFLOAT);
+        CHECK(t->layer_size == stride && t->bytes < (6u << 20));
+        VkSampler sampler = vk_tex_bind_sampler(tsc, tic, &plain, 0, t, VK_IMAGE_VIEW_TYPE_2D);
+        CHECK(sampler);
+        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        vk_finish();
+        for (u32 sample = 0; sample < 8 + (phase == 1); sample++) {
+            u32 l = sample < 7 ? layer[sample] : sample == 7 ? 0 : 1;
+            u32 mip = sample < 7 ? level[sample] : sample == 7 ? 0 : 5;
+            VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                        .image = sample < 7 ? t->img : sample == 7 ? split.img : previous,
+                                        .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R32_SFLOAT,
+                                        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, l, 1}};
+            VkImageView view;
+            CHECK(vkCreateImageView(g_vk.dev, &vi, NULL, &view) == VK_SUCCESS);
+            u32 result = 0;
+            CHECK(!run_compute(code, words, &result, 1, view, sampler));
+            u32 want[] = {0, values[3], values[phase ? 1 : 0], values[1], values[2], 0,
+                           phase == 2 ? values[0] : 0, values[3], values[0]};
+            CHECK(result == want[sample]);
+            vkDestroyImageView(g_vk.dev, view, NULL);
+        }
+        previous = t->img;
+        vk_unlock();
+    }
+    vk_image_destroy(split.img, VK_NULL_HANDLE);
+    free(code);
+    printf("Sparse texture arrays: resident mips, holes, tails and remaps passed\n");
+    return 0;
+}
+
 static int run_storage_compute(const u32* code, size_t words, u32* data, u32 count) {
     return run_compute(code, words, data, count, VK_NULL_HANDLE, VK_NULL_HANDLE);
 }
@@ -1225,6 +1320,43 @@ static int check_dma_texture(void) {
     puts("dma into a texture: its image takes the lines, nothing loads again, memory matches the reference");
     return 0;
 }
+
+/* A front end write (a copy, a compute result, a change of the GPU mapping) to one row of blocks of a 4 MiB block
+   linear texture loads that row of blocks again (texture.c tex_refresh_written), not the whole texture: the row's
+   texels take memory's new bytes, the rows around it keep theirs, and the bytes loaded are the row's */
+static int check_written_rows(void) {
+    const u64 cpu = HEAP_BASE + 0x1000000, ga = 0x3c0000000ull, size = 4u << 20, block_row = 64 * 512;
+    const u32 rgba8 = 0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16;
+    const u32 tic[8] = {rgba8, (u32)ga, (u32)(ga >> 32) | 3u << 21, 0, 1023u | 1u << 23, 1023u, 0, 0};
+    CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(ga, cpu, size);
+    for (u64 i = 0; i < size; i += 4) snx_st_le32(GP(cpu) + i, 0x11000000u | (u32)(i >> 12));
+    u64 uploads, bytes, uploads2, bytes2;
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    CHECK(t && t->upload_valid && t->bl && t->w == 1024 && t->h == 1024 && t->size == size);
+    vk_tex_stats(&uploads, &bytes);
+    /* the sixth row of blocks (texel rows 40 to 47, one GOB high) is new in memory, written by the front end */
+    for (u64 i = 5 * block_row; i < 6 * block_row; i += 4) snx_st_le32(GP(cpu) + i, 0x22334455u);
+    gpu_mem_written(ga + 5 * block_row, block_row);
+    Surf* same = vk_tex_from_tic(tic);
+    vk_tex_stats(&uploads2, &bytes2);
+    u32 inside = same ? dma_texel(same, 7, 43) : 0, before = same ? dma_texel(same, 7, 39) : 0,
+        after = same ? dma_texel(same, 7, 48) : 0, old_before = snx_ld_le32(GP(cpu) + 4 * block_row + 7 * 4),
+        old_after = snx_ld_le32(GP(cpu) + 6 * block_row + 7 * 4);
+    vk_unlock();
+    if (same != t || uploads2 != uploads + 1 || bytes2 - bytes != block_row || inside != 0x22334455u ||
+        (before & 0xFF000000u) != 0x11000000u || after != old_after)
+        fprintf(stderr,
+                "written rows: the same texture %d, %llu loads and %llu bytes again, texel (7, 43) %08x, (7, 39) %08x, "
+                "(7, 48) %08x expected %08x (row 4's first word %08x)\n",
+                same == t, (unsigned long long)(uploads2 - uploads), (unsigned long long)(bytes2 - bytes), inside,
+                before, after, old_after, old_before);
+    CHECK(same == t && uploads2 == uploads + 1 && bytes2 - bytes == block_row && inside == 0x22334455u);
+    CHECK((before & 0xFF000000u) == 0x11000000u && after == old_after);
+    puts("written rows: a front end write to one row of blocks loads that row again, not the texture");
+    return 0;
+}
 static int check_dma(void) {
     GpuDmaOp o;
     gmmu_map(DMA_GA, DMA_A, DMA_SPAN);
@@ -1568,6 +1700,7 @@ static int check_rt_overlap(void) {
 #include "vulkan_vertex_restride.inc"
 #include "vulkan_msaa.inc"
 #include "vulkan_targetless_stores.inc"
+#include "vulkan_ampere.inc"
 
 #include "vulkan_descriptor_bench.inc"
 
@@ -1591,6 +1724,7 @@ int main(int argc, char** argv) {
         if (!strcmp(argv[i], "--vk_memory=2")) g_settings.guest_memory = 2; /* guest memory read in place */
     }
     snprintf(g_exedir, 1024, "%s/", root);
+    snprintf(g_cachedir, sizeof g_cachedir, "%s/", root); /* do not replay another fixture's shaders at startup */
     shot = snx_path_join(root, "frame");
     ppm = snx_format("%s.ppm", shot);
     mem_init(); /* the real reservation and alias pool: the renderer traps what the GPU owns where the host can */
@@ -1599,6 +1733,27 @@ int main(int argc, char** argv) {
     g_settings.vulkan_video_decode = 1; /* a Vulkan Video decode queue where the device has one (lavapipe has none) */
     video_init("Headless Vulkan fixture", "");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
+    if (getenv("SNX_TEST_SPARSE_ONLY") || getenv("SNX_TEST_AMPERE_ONLY")) {
+        if (getenv("SNX_TEST_SPARSE_ONLY"))
+            CHECK(!check_sparse_texture_arrays());
+        else {
+            CHECK(!check_ampere_compute());
+            CHECK(!check_storage_capacity());
+            CHECK(!check_native_descriptor_sizes());
+            CHECK(!check_native_jump_table());
+            CHECK(!check_ampere_matrix());
+            CHECK(!check_ampere_graphics());
+            if (g_vk.has_mesh) CHECK(!check_ampere_mesh());
+            else printf("mesh shaders: this GPU has no VK_EXT_mesh_shader, the native mesh witness is skipped\n");
+        }
+        vk_pipeline_quiesce();
+        CHECK(!g_vk_validation_messages);
+        CHECK(!snx_remove_tree(root));
+        free(root);
+        free(shot);
+        free(ppm);
+        return 0;
+    }
     if (g_settings.descriptor_buffers && !g_vk.has_descriptor_buffers) {
         puts("SKIP descriptor-buffer checks: the device does not support this path");
         vk_pipeline_quiesce(); /* the earlier runs' pipelines, which workers still make, before the driver's exit */
@@ -1631,12 +1786,15 @@ int main(int argc, char** argv) {
     }
     CHECK(!check_hash_copy());
     CHECK(!check_staging_overflow());
+    CHECK(!check_buffer_frame_snapshots());
     CHECK(!check_owned_readback());
     CHECK(!check_owned_writable());
     CHECK(!check_owned_in_place_write());
     CHECK(!check_owned_peek_identity());
     CHECK(!check_storage_suffix());
     CHECK(!check_buffer_texture_rows());
+    CHECK(!check_written_rows());
+    CHECK(!check_sparse_texture_arrays());
     CHECK(!check_storage_image_formats());
     CHECK(!check_volume_surface_atomics());
     CHECK(!check_layered_surface_loads());

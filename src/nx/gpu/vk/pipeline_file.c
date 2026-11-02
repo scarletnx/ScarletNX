@@ -17,7 +17,7 @@
 #endif
 
 #define PF_MAGIC   "SNXVKSH\n"
-#define PF_VERSION 2 /* 2: PF_SOURCE records, and a key whose guest part comes first */
+#define PF_VERSION 7 /* 7: the merge of main's pipeline key (samples, conservative rasterization) with the native one */
 
 /* the check of a payload: words of it after its type and size (FNV-1a over 32-bit words, with a last mix) */
 static u64 pf_mix(u64 h, const void* p, size_t n) {

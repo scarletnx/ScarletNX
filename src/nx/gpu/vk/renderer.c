@@ -229,9 +229,9 @@ static int vkr_dispatch(const DispatchState* d) {
     if (!g_settings.compute_dispatches) return 0;
     r3d_pending_flush(); /* a merged draw the front end is holding comes first */
     vk_lock();
-    vk_dispatch(d);
+    int recorded = vk_dispatch(d);
     vk_unlock();
-    return 1;
+    return recorded;
 }
 /* Pending shader results land before the stream signals or waits. */
 static void vkr_before_syncwait(void) {
@@ -901,6 +901,7 @@ const Renderer vk_renderer = {
     .before_syncwait = vkr_before_syncwait,
     .stream_incr = vkr_stream_incr,
     .release_write = vk_release_write,
+    .release_reduce = vk_release_reduce,
     .release_need = vk_release_need,
     .release_read = vk_release_read,
     .release_value = vk_release_value,

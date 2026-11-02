@@ -30,6 +30,18 @@ typedef struct {
 static Pieces** g_pieces;
 static u32 g_npieces, g_cappieces;
 
+static int pieces_add(Pieces* p) {
+    if (g_npieces == g_cappieces) {
+        u32 cap = g_cappieces ? g_cappieces * 2 : 8;
+        Pieces** grown = realloc(g_pieces, cap * sizeof *grown);
+        if (!grown) return 0;
+        g_pieces = grown;
+        g_cappieces = cap;
+    }
+    g_pieces[g_npieces++] = p;
+    return 1;
+}
+
 /* VMA allocations as Tracy memory events. */
 #if defined(SNX_TRACY)
 void vk_mem_track(VmaAllocation a) {
@@ -53,6 +65,10 @@ void vk_mem_init(int sparse_queue) {
     if (m3.maxMemoryAllocationSize && cap > m3.maxMemoryAllocationSize) cap = m3.maxMemoryAllocationSize;
     g_vk.alloc_cap = cap;
     g_vk.sparse = sparse_queue && g_vk.feat.sparseBinding;
+    VkSemaphoreTypeCreateInfo ti = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                    .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+    VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &ti};
+    VK_OK(vkCreateSemaphore(g_vk.dev, &si, NULL, &g_vk.sparse_sem));
     LOG("vulkan: allocations of at most %llu MiB, bigger images %s\n", (unsigned long long)(cap >> 20),
         g_vk.sparse ? "in pieces (sparse binding)" : "in one allocation (no sparse binding)");
 }
@@ -119,15 +135,7 @@ static int image_in_pieces(const VkImageCreateInfo* ii, VkImage* img, VkResult* 
     u64 chunk = req.alignment ? g_vk.alloc_cap / req.alignment * req.alignment : 0;
     u32 n = chunk ? (u32)((req.size + chunk - 1) / chunk) : 0;
     Pieces* p = n ? calloc(1, sizeof *p + n * sizeof p->pages[0]) : NULL;
-    if (g_npieces == g_cappieces && p) {
-        u32 cap = g_cappieces ? g_cappieces * 2 : 8;
-        Pieces** grown = realloc(g_pieces, cap * sizeof *grown);
-        if (grown) {
-            g_pieces = grown;
-            g_cappieces = cap;
-        }
-    }
-    if (!p || g_npieces == g_cappieces || !pieces_bind(*img, &req, p, res)) {
+    if (!p || !pieces_bind(*img, &req, p, res) || !pieces_add(p)) {
         WARN("vulkan: cannot bind a %llu MiB image in %u pieces of %llu MiB\n", (unsigned long long)(req.size >> 20), n,
              (unsigned long long)(chunk >> 20));
         vkDestroyImage(g_vk.dev, *img, NULL);
@@ -136,9 +144,166 @@ static int image_in_pieces(const VkImageCreateInfo* ii, VkImage* img, VkResult* 
         return 0;
     }
     p->img = *img;
-    g_pieces[g_npieces++] = p;
     LOG_LIMIT(8, "vulkan: a %ux%ux%u image of %llu MiB, bound in %u pieces\n", ii->extent.width, ii->extent.height,
               ii->extent.depth * ii->arrayLayers, (unsigned long long)(req.size >> 20), n);
+    return 1;
+}
+
+/* A streamed array is a new image on each upload. Earlier draws keep their old image until their frame is done,
+   so binding new levels neither changes an earlier draw nor needs a GPU wait during draw setup. */
+typedef struct {
+    VkMemoryRequirements req;
+    VkSparseImageMemoryRequirements sparse;
+    VkExtent3D extent;
+    Pieces* pieces;
+    VkSparseImageMemoryBind* images;
+    VkSparseMemoryBind* opaque;
+    u32 ni, no;
+    u64 bytes;
+} ResidentImage;
+
+static int resident_alloc(ResidentImage* r, u64 size, VmaAllocationInfo* info) {
+    VkMemoryRequirements req = {.size = size, .alignment = r->req.alignment, .memoryTypeBits = r->req.memoryTypeBits};
+    VmaAllocationCreateInfo aci = {.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+                                   .preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+    VmaAllocation* a = &r->pieces->pages[r->pieces->n];
+    if (!VK_OK(vmaAllocateMemory(g_vk.vma, &req, &aci, a, info))) return 0;
+    r->pieces->n++;
+    r->bytes += info->size;
+    vk_mem_track(*a);
+    return 1;
+}
+
+static int resident_level(ResidentImage* r, u32 layer, u32 level) {
+    VkExtent3D gran = r->sparse.formatProperties.imageGranularity;
+    u32 w = r->extent.width >> level ? r->extent.width >> level : 1;
+    u32 h = r->extent.height >> level ? r->extent.height >> level : 1;
+    u32 nx = (w + gran.width - 1) / gran.width, ny = (h + gran.height - 1) / gran.height;
+    u64 tiles = (u64)nx * ny, per = g_vk.alloc_cap / r->req.alignment;
+    for (u64 at = 0; at < tiles; at += per) {
+        u64 n = tiles - at < per ? tiles - at : per;
+        VmaAllocationInfo info;
+        if (!resident_alloc(r, n * r->req.alignment, &info)) return 0;
+        /* A piece is at most a partial first row, complete rows, then a partial last row. */
+        for (u64 tile = at, end = at + n; tile < end;) {
+            u32 x = (u32)(tile % nx), y = (u32)(tile / nx);
+            u32 cols = end - tile < nx - x ? (u32)(end - tile) : nx - x;
+            u32 rows = !x && cols == nx ? (u32)((end - tile) / nx) : 1;
+            u32 ew = cols * gran.width, eh = rows * gran.height;
+            if (ew > w - x * gran.width) ew = w - x * gran.width;
+            if (eh > h - y * gran.height) eh = h - y * gran.height;
+            r->images[r->ni++] = (VkSparseImageMemoryBind){
+                .subresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer},
+                .offset = {(i32)(x * gran.width), (i32)(y * gran.height), 0},
+                .extent = {ew, eh, 1}, .memory = info.deviceMemory,
+                .memoryOffset = info.offset + (tile - at) * r->req.alignment};
+            tile += (u64)cols * rows;
+        }
+    }
+    return 1;
+}
+
+static int resident_tail(ResidentImage* r, u32 layer) {
+    u64 chunk = g_vk.alloc_cap / r->req.alignment * r->req.alignment;
+    u64 base = r->sparse.imageMipTailOffset + layer * r->sparse.imageMipTailStride;
+    for (u64 at = 0; at < r->sparse.imageMipTailSize; at += chunk) {
+        u64 size = r->sparse.imageMipTailSize - at < chunk ? r->sparse.imageMipTailSize - at : chunk;
+        VmaAllocationInfo info;
+        if (!resident_alloc(r, size, &info)) return 0;
+        r->opaque[r->no++] = (VkSparseMemoryBind){
+            .resourceOffset = base + at, .size = size, .memory = info.deviceMemory, .memoryOffset = info.offset};
+    }
+    return 1;
+}
+
+int vk_image_resident_create(const VkImageCreateInfo* ii, u32* masks, VkImage* img, u64* bytes) {
+    *img = VK_NULL_HANDLE;
+    *bytes = 0;
+    if (!g_vk.sparse || !g_vk.feat.sparseResidencyImage2D ||
+        !g_vk.props.sparseProperties.residencyNonResidentStrict) {
+        LOG_LIMIT(1, "vulkan: streamed textures need sparse 2D residency with zero reads of unbound texels\n");
+        return 0;
+    }
+    VkImageCreateInfo si = *ii;
+    si.flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
+    if (!VK_OK(vkCreateImage(g_vk.dev, &si, NULL, img))) return 0;
+    ResidentImage r = {.extent = ii->extent};
+    vkGetImageMemoryRequirements(g_vk.dev, *img, &r.req);
+    u32 count = 0;
+    vkGetImageSparseMemoryRequirements(g_vk.dev, *img, &count, NULL);
+    if (count == 1) vkGetImageSparseMemoryRequirements(g_vk.dev, *img, &count, &r.sparse);
+    u64 chunk = r.req.alignment ? g_vk.alloc_cap / r.req.alignment * r.req.alignment : 0;
+    if (count != 1 || r.sparse.formatProperties.aspectMask != VK_IMAGE_ASPECT_COLOR_BIT || !chunk) {
+        LOG_LIMIT(1, "vulkan: the streamed texture format has no supported sparse color layout\n");
+        vkDestroyImage(g_vk.dev, *img, NULL);
+        *img = VK_NULL_HANDLE;
+        return 0;
+    }
+    u64 total = 0;
+    u32 n = 0, tail_bit = r.sparse.imageMipTailFirstLod < ii->mipLevels
+                             ? ((1u << ii->mipLevels) - 1) & (~0u << r.sparse.imageMipTailFirstLod) : 0;
+    int single = (r.sparse.formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT) != 0;
+    u32 tail_layers = 0;
+    VkExtent3D gran = r.sparse.formatProperties.imageGranularity;
+    for (u32 layer = 0; layer < ii->arrayLayers; layer++) {
+        for (u32 l = 0; l < ii->mipLevels && l < r.sparse.imageMipTailFirstLod; l++) {
+            if (!(masks[layer] & (1u << l))) continue;
+            u32 w = ii->extent.width >> l ? ii->extent.width >> l : 1;
+            u32 h = ii->extent.height >> l ? ii->extent.height >> l : 1;
+            u64 size = (u64)((w + gran.width - 1) / gran.width) * ((h + gran.height - 1) / gran.height) * r.req.alignment;
+            total += size;
+            n += (u32)((size + chunk - 1) / chunk);
+        }
+        if (masks[layer] & tail_bit) tail_layers++;
+    }
+    if (single && tail_layers) tail_layers = 1;
+    total += tail_layers * r.sparse.imageMipTailSize;
+    n += tail_layers * (u32)((r.sparse.imageMipTailSize + chunk - 1) / chunk);
+    /* Upload every level sharing a bound tail, including zero guest bytes of its unmapped levels. */
+    for (u32 layer = 0; layer < ii->arrayLayers; layer++)
+        if ((single && tail_layers) || (masks[layer] & tail_bit)) masks[layer] |= tail_bit;
+    vk_mem_trim(total, 0);
+    r.pieces = calloc(1, sizeof *r.pieces + n * sizeof r.pieces->pages[0]);
+    /* One piece needs at most three rectangular image binds, or one opaque tail bind. */
+    r.images = calloc(n ? n : 1, 3 * sizeof *r.images + sizeof *r.opaque);
+    r.opaque = r.images ? (VkSparseMemoryBind*)(r.images + 3 * n) : NULL;
+    int ok = r.pieces && r.images;
+    u32 tails = 0;
+    for (u32 layer = 0; layer < ii->arrayLayers && ok; layer++) {
+        for (u32 l = 0; l < ii->mipLevels && l < r.sparse.imageMipTailFirstLod && ok; l++)
+            if (masks[layer] & (1u << l)) ok = resident_level(&r, layer, l);
+        if (ok && (masks[layer] & tail_bit) && (!single || !tails++))
+            ok = resident_tail(&r, single ? 0 : layer);
+    }
+    if (ok) {
+        r.pieces->img = *img;
+        ok = pieces_add(r.pieces);
+    }
+    if (ok && n) {
+        /* The bind signals a timeline value consumed by both queues' normal submissions. It does not submit the
+           draw's command buffer, wait on the CPU, or land storage results into guest memory. */
+        u64 value = g_vk.sparse_value + 1;
+        VkTimelineSemaphoreSubmitInfo ti = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                            .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &value};
+        VkSparseImageMemoryBindInfo images = {.image = *img, .bindCount = r.ni, .pBinds = r.images};
+        VkSparseImageOpaqueMemoryBindInfo opaque = {.image = *img, .bindCount = r.no, .pBinds = r.opaque};
+        VkBindSparseInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, .pNext = &ti,
+                               .imageBindCount = r.ni ? 1 : 0, .pImageBinds = &images,
+                               .imageOpaqueBindCount = r.no ? 1 : 0, .pImageOpaqueBinds = &opaque,
+                               .signalSemaphoreCount = 1, .pSignalSemaphores = &g_vk.sparse_sem};
+        vk_rec_queue(g_vk.gfx);
+        ok = VK_OK(vkQueueBindSparse(g_vk.gfx, 1, &bi, VK_NULL_HANDLE));
+        if (ok) g_vk.sparse_value = value;
+        else g_npieces--; /* registered immediately above, but no bind was queued */
+    }
+    free(r.images);
+    if (!ok) {
+        vkDestroyImage(g_vk.dev, *img, NULL);
+        *img = VK_NULL_HANDLE;
+        if (r.pieces) pieces_free(r.pieces);
+        return 0;
+    }
+    *bytes = r.bytes;
     return 1;
 }
 

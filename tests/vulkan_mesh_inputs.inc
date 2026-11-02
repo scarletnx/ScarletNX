@@ -15,15 +15,15 @@ static int mesh_program(u64 address, const u64* ops, u32 count, int fragment) {
     return invalidate_write_code(address, code, 64);
 }
 
-static int mesh_pixel_check(GpuChannel* channel, u64 target, u32 instance, const u8 expected[4], u32 mask) {
-    u64 drawn = g_vk_drawn;
+static int mesh_pixel_check(GpuChannel* channel, u64 target, u32 instance, const u8 expected[4], u32 mask, u32 recorded) {
+    u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
     vk_lock();
     rt_clear(channel, target, 4, 4, 0, 0);
     channel->r3d_dirty = ~0u; /* the registers were set directly */
     mx_draw_state_sync(channel);
     DrawCall call = {.topology = 4, .count = 3, .base_instance = instance, .instances = 1};
     vk_render_draw(&channel->ds, &call, &channel->owner);
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(g_vk_drawn == drawn + recorded && g_vk_skipped == skipped + !recorded);
     vk_render_end();
     Surf* surface = vk_rt_find(target);
     VkBuffer buffer;
@@ -49,7 +49,7 @@ static int mesh_pixel_check(GpuChannel* channel, u64 target, u32 instance, const
 }
 
 static int mesh_pixel(GpuChannel* channel, u64 target, u32 instance, const u8 expected[4]) {
-    return mesh_pixel_check(channel, target, instance, expected, 15);
+    return mesh_pixel_check(channel, target, instance, expected, 15, 1);
 }
 
 /* The backing allocation deliberately contains a second record beyond the
@@ -159,7 +159,7 @@ static int check_mesh_inputs(void) {
     CHECK(!gmem_write(colors + 16, bytes, 4));
     r[0x459] = 1 | 4u << 7 | 1u << 21 | 7u << 27;
     channel->r3d_dirty = ~0u;
-    CHECK(!mesh_pixel_check(channel, target, 0, (const u8[4]){0, 0, 0, 0}, 8));
+    CHECK(!mesh_pixel_check(channel, target, 0, (const u8[4]){0, 0, 0, 0}, 8, 1));
     /* Splitting a large relative offset into another Vulkan binding must not
        expand a short guest binding, or place its offset outside the allocation. */
     for (u32 i = 0; i < 4; i++) snx_st_le32(bytes + i * 4, yellow[i]);

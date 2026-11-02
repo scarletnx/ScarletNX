@@ -150,7 +150,9 @@ static int tc_dispatch(VkCommandBuffer cb, const TcParams* p, u32 gx, u32 rows, 
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_tc_pipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_tc_layout, 0, 1, &set, 0, NULL);
     rec_CmdPushConstants(cb, g_tc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof *p, p);
+    vk_gpuprof_dispatch_begin(cb, VK_GPUPROF_TEXCONV);
     rec_CmdDispatch(cb, gx, rows, slices);
+    vk_gpuprof_dispatch_end(cb);
     return 1;
 }
 static u64 storage_align(void) {

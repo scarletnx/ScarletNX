@@ -345,6 +345,63 @@ static void check_writeback_merge(void)
 	writeback_direct = 0;
 }
 
+/* Reductions consume the value left by older releases, not the host bytes at queue time. Whole operands read in the
+   stream can use that value without publishing it to the CPU. A GPU alias or a partial operand still waits. */
+static void check_reductions(void) {
+    mapping = 4096;
+    pending = 1;
+    static const struct {
+        u32 op, signed_value, bytes;
+        u64 current, payload, expected;
+    } cases[] = {
+        {GPU_RED_ADD, 0, 4, 0xffffffff, 2, 1},
+        {GPU_RED_ADD, 0, 8, ~0ull, 2, 1},
+        {GPU_RED_ADD, 0, 8, 0xffffffff, 1, 0x100000000ull},
+        {GPU_RED_MIN, 0, 4, 0xffffffff, 1, 1},
+        {GPU_RED_MIN, 1, 4, 0xffffffff, 1, 0xffffffff},
+        {GPU_RED_MIN, 1, 8, 0x8000000000000000ull, 1, 0x8000000000000000ull},
+        {GPU_RED_MAX, 0, 8, ~0ull, 1, ~0ull},
+        {GPU_RED_MAX, 1, 8, ~0ull, 1, 1},
+        {GPU_RED_MAX, 1, 4, 0x80000000, 0x7fffffff, 0x7fffffff},
+        {GPU_RED_INC, 0, 4, 2, 3, 3},
+        {GPU_RED_INC, 0, 4, 3, 3, 0},
+        {GPU_RED_INC, 0, 4, 4, 3, 0},
+        {GPU_RED_DEC, 0, 4, 0, 3, 3},
+        {GPU_RED_DEC, 0, 4, 4, 3, 3},
+        {GPU_RED_DEC, 0, 4, 2, 3, 1},
+        {GPU_RED_AND, 0, 8, 0x123456789abcdef0ull, 0xff00ff00ff00ff00ull, 0x120056009a00de00ull},
+        {GPU_RED_OR, 0, 4, 0x12345678, 0xff00ff00, 0xff34ff78},
+        {GPU_RED_XOR, 0, 4, 0x12345678, 0xff00ff00, 0xed34a978},
+    };
+    for (u32 i = 0; i < sizeof cases / sizeof *cases; ++i) {
+        u8 bytes[8], got[8] = {0};
+        snx_st_le64(bytes, cases[i].current);
+        snx_st_le64(memory + mapping + 0x180, 0x5555555555555555ull);
+        vk_release_write(0x10180, bytes, cases[i].bytes);
+        next_compute = waited_compute + 1;
+        u64 gate = next_compute;
+        vk_release_reduce(0x10180, cases[i].op, cases[i].signed_value, cases[i].bytes, cases[i].payload);
+        u64 before = waited_compute;
+        assert(vk_release_read(0x10180, got, cases[i].bytes) == 1);
+        assert(snx_ld_le64(got) == cases[i].expected && waited_compute == before);
+        assert(vk_release_read(0x20180, got, cases[i].bytes) == -1);
+        assert(vk_release_read(0x10181, got, cases[i].bytes - 1) == -1);
+        assert(snx_ld_le64(memory + mapping + 0x180) == 0x5555555555555555ull);
+        vk_release_need(0x10180, cases[i].bytes);
+        assert(waited_compute == gate);
+        assert((cases[i].bytes == 8 ? snx_ld_le64(memory + mapping + 0x180)
+                                    : snx_ld_le32(memory + mapping + 0x180)) == cases[i].expected);
+        if (cases[i].bytes == 4) assert(snx_ld_le32(memory + mapping + 0x184) == 0x55555555);
+    }
+    u8 bytes[4], got[4];
+    snx_st_le32(bytes, 42);
+    vk_release_reduce(0x10180, GPU_RED_ADD, 0, 4, 5);
+    vk_release_write(0x10180, bytes, sizeof bytes);
+    assert(vk_release_read(0x10180, got, sizeof got) == 1 && snx_ld_le32(got) == 42);
+    vk_release_drain();
+    assert(snx_ld_le32(memory + mapping + 0x180) == 42);
+}
+
 int main(void) {
     pending = 1;
     next_compute = 9;
@@ -533,5 +590,6 @@ int main(void) {
     assert(!g_rpg[rix_find(g_rpg, RPG_N - 1, 4096)].key && !g_rpg[rix_find(g_rpg, RPG_N - 1, 0x7000)].key);
     assert(lock_depth == 0 && events_signaled == 3 && !events_due); /* payload writes signal nothing */
 	check_writeback_merge();
+    check_reductions();
     return 0;
 }

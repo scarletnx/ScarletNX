@@ -266,10 +266,11 @@ static void out_pages(const GfxOut* o, int delta) {
         pend_add_pages(&g_out_pages, o->pages[i], o->pages[j - 1], delta);
     }
 }
-/* where and how pending results were written: shader stores, copies, and transform feedback's captures when the device
-   has it (its flags are invalid without the extension) */
+/* where and how pending results were written: shader stores (the vertex, tessellation, geometry, task and mesh stages
+   are the pre-rasterization ones), copies, and transform feedback's captures when the device has it (its flags are
+   invalid without the extension) */
 static VkPipelineStageFlags2 out_stages(void) {
-    return VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+    return VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT |
            (g_vk.has_xfb ? VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT : 0);
 }
@@ -1701,7 +1702,7 @@ static u64 draw_page_key(u64 gva) {
 }
 static DrawPage* draw_pages(const VkDrawStorage* draw, size_t* count) {
     size_t n = 0;
-    for (int s = 0; s < 2; s++)
+    for (int s = 0; s < 3; s++)
         for (int i = 0; i < draw->n[s]; i++) {
             const VkDrawGbuf* b = &draw->b[s][i];
             if (b->addr) n += ((b->addr & 4095) + b->size + 4095) >> 12;
@@ -1709,19 +1710,19 @@ static DrawPage* draw_pages(const VkDrawStorage* draw, size_t* count) {
     DrawPage* p = malloc((n ? n : 1) * sizeof *p);
     if (!p) return NULL;
     size_t k = 0;
-    for (int s = 0; s < 2; s++)
+    for (int s = 0; s < 3; s++)
         for (int i = 0; i < draw->n[s]; i++) {
             const VkDrawGbuf* b = &draw->b[s][i];
             if (!b->addr) continue;
             for (u64 g = b->addr & ~4095ull, e = b->addr + b->size; g < e; g += 4096)
-                p[k++] = (DrawPage){draw_page_key(g), g, b->writable, s * 16 + i};
+                p[k++] = (DrawPage){draw_page_key(g), g, b->writable, s * SH_MAXGBUF + i};
         }
     qsort(p, k, sizeof *p, draw_page_cmp);
     *count = k;
     return p;
 }
-static int draw_alias_bindings(const DrawPage* p, size_t n, u8 active[32]) {
-    memset(active, 0, 32);
+static int draw_alias_bindings(const DrawPage* p, size_t n, u8 active[3 * SH_MAXGBUF]) {
+    memset(active, 0, 3 * SH_MAXGBUF);
     int alias = 0;
     for (size_t i = 0; i < n;) {
         size_t j = i + 1;
@@ -1736,7 +1737,7 @@ static int draw_alias_bindings(const DrawPage* p, size_t n, u8 active[32]) {
     return alias;
 }
 static int draw_has_writable(const VkDrawStorage* draw) {
-    for (int s = 0; s < 2; s++)
+    for (int s = 0; s < 3; s++)
         for (int i = 0; i < draw->n[s]; i++)
             if (draw->b[s][i].addr && draw->b[s][i].writable) return 1;
     return 0;
@@ -1745,9 +1746,9 @@ static int draw_has_writable(const VkDrawStorage* draw) {
    memory and their page ranges, compared pairwise, meet no writable one's, 1 otherwise (the page list decides). Every
    draw with storage asked the page list, allocated and sorted, twice: a twentieth of the GPU thread in one game */
 static int draw_may_alias(const VkDrawStorage* draw) {
-    u64 lo[32], hi[32];
-    int w[32], k = 0;
-    for (int s = 0; s < 2; s++)
+    u64 lo[3 * SH_MAXGBUF], hi[3 * SH_MAXGBUF];
+    int w[3 * SH_MAXGBUF], k = 0;
+    for (int s = 0; s < 3; s++)
         for (int i = 0; i < draw->n[s]; i++) {
             const VkDrawGbuf* b = &draw->b[s][i];
             u64 cpu = 0;
@@ -1767,7 +1768,7 @@ int vk_buf_draw_has_alias(const VkDrawStorage* draw) {
     size_t n;
     DrawPage* p = draw_pages(draw, &n);
     if (!p) return -1;
-    u8 active[32];
+    u8 active[3 * SH_MAXGBUF];
     int alias = draw_alias_bindings(p, n, active);
     free(p);
     return alias;
@@ -1881,7 +1882,7 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
     int writable = draw_has_writable(draw) && draw_may_alias(draw);
     DrawPage* p = writable ? draw_pages(draw, &n) : NULL;
     if (writable && !p) return 0;
-    u8 active[32] = {0};
+    u8 active[3 * SH_MAXGBUF] = {0};
     int alias = p ? draw_alias_bindings(p, n, active) : 0;
     size_t unique = 0;
     if (alias)
@@ -1909,13 +1910,13 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
         composed = atlas_fill(p, unique, ptr, atlas, atlas_off);
         copy_note(1, atlas_size);
     }
-    for (int s = 0; s < 2; s++) {
+    for (int s = 0; s < 3; s++) {
         if (!draw->n[s]) continue;
-        size_t words = 48;
+        size_t header = draw->n[s] > 16 ? 96 : 48, words = header;
         if (alias)
             for (int i = 0; i < draw->n[s]; i++) {
                 VkDrawGbuf* b = &draw->b[s][i];
-                if (b->addr && active[s * 16 + i]) words += ((b->addr & 4095) + b->size + 4095) >> 12;
+                if (b->addr && active[s * SH_MAXGBUF + i]) words += ((b->addr & 4095) + b->size + 4095) >> 12;
             }
         u32* map = (u32*)vk_stage(words * 4, vk_stage_align(), &draw->map_buf[s], &draw->map_off[s]);
         if (!map) {
@@ -1923,17 +1924,16 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
             return 0;
         }
         draw->map_size[s] = words * 4;
-        for (int i = 0; i < 16; i++) map[i] = ~0u;
-        for (int i = 16; i < 32; i++) map[i] = 0;
-        for (int i = 32; i < 48; i++) map[i] = 0;
-        size_t at = 48;
+        memset(map, 0, header * 4);
+        for (int i = 0; i < draw->n[s]; i++) map[shader_gbuf_map_index((u32)i, 0)] = ~0u;
+        size_t at = header;
         if (alias)
             for (int i = 0; i < draw->n[s]; i++) {
                 VkDrawGbuf* b = &draw->b[s][i];
-                if (!b->addr || !active[s * 16 + i]) continue;
-                map[i] = (u32)at;
-                map[16 + i] = (u32)((b->addr & 4095) >> 2);
-                map[32 + i] = b->size >> 2;
+                if (!b->addr || !active[s * SH_MAXGBUF + i]) continue;
+                map[shader_gbuf_map_index((u32)i, 0)] = (u32)at;
+                map[shader_gbuf_map_index((u32)i, 1)] = (u32)((b->addr & 4095) >> 2);
+                map[shader_gbuf_map_index((u32)i, 2)] = b->size >> 2;
                 for (u64 g = b->addr & ~4095ull, e = b->addr + b->size; g < e; g += 4096)
                     map[at++] = draw_page_index(p, unique, draw_page_key(g));
                 b->aliased = 1;
@@ -2169,10 +2169,9 @@ static int range_owned(u64 gva, u64 len) {
     return 0;
 }
 /* A range over bytes the GPU holds: copied into this frame's device ring, the CPU's bytes staged by the CPU and the
-   owned ones from their owners by the GPU (vk_guest_read_device), with nothing landed. It isn't hashed (the CPU's copy of the
-   owned bytes is stale) or given a buffer of its own: it is copied again when the GPU writes those bytes again
-   (gpu_mem_dirty_since) or a later submit reads it. Draws over the results of the GPU's engines landed them, a wait
-   for the GPU each */
+   owned ones from their owners by the GPU (vk_guest_read_device), with nothing landed. It isn't hashed (the CPU's
+   copy of the owned bytes is stale) or given a buffer of its own. A GPU write, a new guest epoch or a frame-ring
+   reset expires it. Host submissions do not: the rings stay alive through all submissions of their frame. */
 static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, VkBuffer* buf, u64* off) {
     VkBuffer sb;
     u64 so;
@@ -2192,7 +2191,7 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, VkBuffer* b
     if (copy_stats_on()) g_copy_stage += len;
     e->buf = sb;
     e->off = so;
-    e->frame = vk_submit_number();
+    e->frame = vk_frame_id();
     e->epoch = e->chk_epoch = g_vk_epoch;
     if (strict) e->strict_epoch = g_vk_epoch;
     e->gw = gpu_mem_generation();
@@ -2232,7 +2231,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     if (inplace && vk_uma() && !range_owned(gva, len) && vk_uma_get(gva, len, align, buf, off)) return 1;
     if (inplace == IN_ONLY) return 0;
     /* valid: the data is where draws can read it this frame */
-    int valid = e && e->buf && (e->own || e->frame == vk_submit_number());
+    int valid = e && e->buf && (e->own || e->frame == vk_frame_id());
     if (valid && !gpu_mem_dirty_since(e->gw, gva, len)) {
         if (e->epoch == g_vk_epoch && (!strict || e->strict_epoch == g_vk_epoch)) {
             use(i, buf, off);
@@ -2328,7 +2327,8 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         e->gfx_adds = vk_buf_adds();
     }
     int changed = e->hash != h;
-    if (e->hash == h && e->stable < 100000)
+    /* Repeated uses within a present do not prove stability: streamed constants may be overwritten between draws. */
+    if (e->hash == h && e->stable < 100000 && e->used != g_vk_present)
         e->stable++;
     else if (e->hash != h) {
         e->hash = h;
@@ -2357,7 +2357,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
                 g_copy_stage += len;
                 stage_note(why, changed, gva, len);
             }
-            e->frame = vk_submit_number();
+            e->frame = vk_frame_id();
         }
     }
     use(i, buf, off);

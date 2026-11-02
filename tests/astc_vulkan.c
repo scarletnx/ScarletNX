@@ -97,6 +97,11 @@ void vk_gpuprof_waited(u64 value, int kind) {
     (void)value;
     (void)kind;
 }
+void vk_gpuprof_dispatch_begin(VkCommandBuffer cb, u64 key) {
+    (void)cb;
+    (void)key;
+}
+void vk_gpuprof_dispatch_end(VkCommandBuffer cb) { (void)cb; }
 /* record.c's presents tell display.c they were made, which isn't here (nor are presents) */
 void vk_display_made(u64 id, VkResult r) {
     (void)id;

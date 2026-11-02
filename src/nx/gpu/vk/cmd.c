@@ -536,7 +536,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     /* staging memory may not be host coherent: the host writes are made visible to the GPU here */
     if (f->stage.mem) vmaFlushAllocation(g_vk.vma, f->stage.mem, 0, VK_WHOLE_SIZE);
     if (f->output.mem) vmaFlushAllocation(g_vk.vma, f->output.mem, 0, VK_WHOLE_SIZE);
-    VkSemaphoreSubmitInfo w[2];
+    VkSemaphoreSubmitInfo w[3];
     u32 nw = 0;
     if (g_after[0].semaphore) { /* at most one of the two: vk_submit_after's comes with no other */
         xw = &g_after[0];
@@ -550,6 +550,11 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
                                           .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
         g_vk_cs_wait_value = 0;
     }
+    if (g_vk.sparse_value)
+        w[nw++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                          .semaphore = g_vk.sparse_sem,
+                                          .value = g_vk.sparse_value,
+                                          .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
     VkSemaphoreSubmitInfo s[2] = {{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                    .semaphore = g_gsem,
                                    .value = g_gval + 1,

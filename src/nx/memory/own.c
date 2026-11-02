@@ -413,20 +413,22 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     return n;
 }
 
-/* the CPU's bytes of [a, b) into dst at a - addr: page by page, a page an owner is on through the mirror (its CPU
-   bytes are in the pool), the others as they are. A page landed meanwhile reads the same through either */
+/* The CPU's bytes of [a, b) into dst at a - addr. Skip whole gaps between trapped pages, rather than take the ownership
+   lock once per page of a large buffer. The caller holds the producer's lock, so the entries and their pool backing
+   stay valid after the snapshot. An owner's pool offset also locates the CPU bytes beside it on the same page. */
 static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
     while (a < b) {
-        u64 end = (a & ~(g_page - 1)) + g_page, off;
-        int owned;
-        if (end > b) end = b;
+        u64 page = a & ~(g_page - 1), end = b, off = 0;
         pm_lock(&g_own_lk);
-        owned = page_owned_nl(a & ~(g_page - 1));
+        u32 i = first_after_nl(page);
+        int owned = i < g_nown && g_own[i].lo < page + g_page;
+        if (owned) {
+            end = page + g_page < b ? page + g_page : b;
+            off = g_own[i].pool + (a - g_own[i].lo);
+        } else if (i < g_nown && (g_own[i].lo & ~(g_page - 1)) < end)
+            end = g_own[i].lo & ~(g_page - 1);
         pm_unlock(&g_own_lk);
-        if (owned && !mem_pool_offset(a, &off))
-            memcpy(dst + (a - addr), mirror + off, (size_t)(end - a));
-        else
-            memcpy(dst + (a - addr), GP(a), (size_t)(end - a));
+        memcpy(dst + (a - addr), owned ? mirror + off : GP(a), (size_t)(end - a));
         a = end;
     }
 }

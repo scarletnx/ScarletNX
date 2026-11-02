@@ -274,10 +274,10 @@ static void test_drop_sparse(void) {
 /* staging reads the CPU's bytes around owned ones through the mirror and lands nothing: the owned parts come back for
    the caller to copy from their resources */
 static void test_stage(void) {
-    u64 a = region(R0 + 0x380000, 0x4000), i;
+    u64 a = region(R0 + 0x380000, 0x14000), i;
     Res* r = res_new(0x1000, 0x70);
     int lands = g_lands;
-    u8 dst[0x3000];
+    u8 dst[0x13000];
     OwnRange o[4];
     CHECK(own_begin(a + 0x1800, 0x1000, r, 0) == 0);
     GP(a)[0x3800] = 0x99; /* a page with no owner on it: written as ever */
@@ -302,7 +302,19 @@ static void test_stage(void) {
         else
             CHECK(dst[i] == (i == 0x2800 ? 0x99 : (u8)(0x11 + 0x1000 + i)));
     CHECK(own_lookup(a, 0x4000, o, 4) == 2 && g_lands == lands);
-    CHECK(mem_unmap(a, 0x4000) == 0 && refs(r) == 0 && refs(r2) == 0);
+    /* No owner in the bytes requested, but one beside them on the same trapped page. */
+    CHECK(own_stage(a + 0x1000, 0x800, dst, o, 4) == 0 && g_lands == lands);
+    for (i = 0; i < 0x800; i++) CHECK(dst[i] == (u8)(0x11 + i));
+    /* A long ordinary run between trapped edge pages must preserve both CPU and GPU bytes. */
+    CHECK(own_begin(a + 0x11010, 0x100, r2, 0) == 0);
+    memset(dst, 0xEE, sizeof dst);
+    CHECK(own_stage(a + 0x1000, sizeof dst, dst, o, 4) == 3 && g_lands == lands);
+    for (i = 0; i < sizeof dst; i++)
+        if ((i >= 0x800 && i < 0x1800) || (i >= 0x2200 && i < 0x2400) || (i >= 0x10010 && i < 0x10110))
+            CHECK(dst[i] == 0xEE);
+        else
+            CHECK(dst[i] == (i == 0x2800 ? 0x99 : (u8)(0x11 + i)));
+    CHECK(mem_unmap(a, 0x14000) == 0 && refs(r) == 0 && refs(r2) == 0);
     res_free(r);
     res_free(r2);
 }
