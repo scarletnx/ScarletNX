@@ -173,6 +173,9 @@ MISSED = HEADER.replace('[   0.', '[   0,') + (
     '[   2,11] vulkan: vertex 3333456789abcdef not translated: a jump table in a constant buffer\n'
     '[   2,12] vulkan: paired vertex 4444456789abcdef not translated: a jump table in a constant buffer\n'
     '[   2,13] vulkan: fragment 5555456789abcdef not translated: TEXS encoding 3, fp32 1\n'
+    '[   2,14] vulkan: unsupported render target format c4, drawn as RGBA8\n'
+    '[   2,15] vulkan: unsupported depth format 11, using D32F\n'
+    "[   2,16] vulkan: a 4-sample texture of format 52 can't be loaded from memory (not drawn)\n"
     '[   2,20] vulkan: compute 2222456789abcdef not translated: global memory base R4 not tracked at 1a0: no write '
     'before\n'
     '[   2,30] gpu: method 100 for class b1c0 on subchannel 2: no engine here runs that class\n'
@@ -226,7 +229,11 @@ def main():
         },
         f'ipc: {ipc}',
     )
-    check(any('texture format' in w['message'] for w in r['warnings']), 'warnings')
+    check(
+        [(g['area'], g['kind'], g['what']) for g in r['missed']] == [('gpu', 'texture format', '3f')],
+        f"a texture format the runtime doesn't map is missed: {r['missed']}",
+    )
+    check(not any('texture format' in w['message'] for w in r['warnings']), 'and is not a warning')
     check(r['game_output'] == ['loading ~/save.bin'], f'game output, its path shortened: {r["game_output"]}')
 
     old = scan(OLD_SVC_BREAK)
@@ -290,6 +297,10 @@ def main():
             ('gpu', 'shader', 'a jump table in a constant buffer'): 2,
             ('gpu', 'compute shader', 'global memory base R4 not tracked at 1a0: no write before'): 1,
             ('gpu', 'class', 'b1c0'): 2,
+            ('gpu', 'texture format', '3f'): 1,
+            ('gpu', 'target format', 'c4'): 1,
+            ('gpu', 'depth format', '11'): 1,
+            ('gpu', 'gpu', "a 4-sample texture of format 52 can't be loaded from memory"): 1,
             ('gpu', 'gpu', 'semaphore operation 3a400040 is unknown'): 1,
             ('gpu', 'gpu', "a 2D blit from format c0 to ca isn't done"): 1,
             ('mme', 'macro', 'bcbf04909857a72f'): 1,
@@ -314,6 +325,9 @@ def main():
         '**What else the runtime missed:**',
         '- **GPU:**\n  - shader not translated: `TEXS encoding 3, fp32 1` (3 shaders)',
         '  - methods of class `b1c0`, which no engine runs (2x)',
+        "  - texture format `3f`, which the runtime doesn't map (not drawn)",
+        "  - render target format `c4`, which the runtime doesn't map (drawn as RGBA8)",
+        "  - depth format `11`, which the runtime doesn't map (drawn as D32F)",
         '  - macro with no native form: `bcbf04909857a72f`',
         '  - interpreted most, by hash: `bcbf04909857a72f 100000`',
         '  - `svc 7f (CallSecureMonitor)` not implemented (2x)',
@@ -321,8 +335,22 @@ def main():
     ):
         check(want in md, f'markdown missed: {want!r} not in\n{md}')
     check('someone' not in md, 'the JIT cache path is not quoted')
+    # a table of what was missed full of shaders' reasons still takes a texture format that comes after them
+    crowded = scan(
+        HEADER
+        + ''.join(f'[ 2.00] vulkan: vertex {i:016x} not translated: unknown opcode {i:016x}\n' for i in range(80))
+        + '[ 3.00] vulkan: unsupported texture format 72, header word 0 00000072 (not drawn)\n'
+    )
+    kinds = [g['kind'] for g in crowded['missed']]
+    check(
+        len(kinds) == 64 and kinds.count('texture format') == 2 and kinds.count('shader') == 62,
+        f'a full table of shaders keeps room for a texture format: {kinds.count("texture format")}',
+    )
     native = scan(HEADER + '[ 4.00] mme: 1000000 macro calls, 1000000 native, 0 compiled and 0 interpreted\n')
-    check(native['mme'] is None and native['missed'] == [], f'every macro native: {native["mme"]}')
+    check(
+        native['mme'] is None and not [g for g in native['missed'] if g['area'] == 'mme'],
+        f'every macro native: {native["mme"]}',
+    )
 
     la = scan(LAUNCHER)
     check(
@@ -358,7 +386,7 @@ def main():
     heading = md.splitlines()[0]
     check(heading.startswith('### `' + title.replace('`', "'") + '` ('), f'the title is a code span:\n{heading}')
     for line in md.splitlines():
-        if line.startswith('- **'):
+        if line.startswith('- **') and not line.endswith(':**'):  # an area of what the runtime missed has no value
             value = line.split(':** ', 1)[1]
             check(value.startswith('`') or value.split(' ')[0].isalpha(), f'a value outside a code span: {line}')
     check('\n```\n```' not in md and "'" in md, 'a fence in a line is broken')

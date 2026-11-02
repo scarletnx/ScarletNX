@@ -45,13 +45,17 @@ enum {
 /* the service command lines, in the order the summary sorts them */
 enum { SNX_IPC_BAD_REQUEST, SNX_IPC_UNDECLARED, SNX_IPC_UNKNOWN, SNX_IPC_UNKNOWN_CONTROL };
 /* what the runtime missed, in the order the summary lists them. The GPU's: a graphics or compute shader the translator
-   can't express, methods of a class no engine runs, another GPU operation skipped. The macros': one with no native
+   can't express, methods of a class no engine runs, a texture, render target or depth format the runtime doesn't map,
+   another GPU operation skipped. The macros': one with no native
    form, one the compiler can't follow, an operation the interpreter doesn't know. The CPU's: an SVC with no handler,
    another SVC's unknown argument */
 enum {
     SNX_GAP_SHADER,
     SNX_GAP_COMPUTE,
     SNX_GAP_CLASS,
+    SNX_GAP_TEXTURE,
+    SNX_GAP_TARGET,
+    SNX_GAP_DEPTH,
     SNX_GAP_GPU,
     SNX_GAP_MACRO,
     SNX_GAP_MACRO_COMPILE,
