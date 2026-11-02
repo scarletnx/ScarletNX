@@ -22,7 +22,7 @@ bool hle_is_system_library(const char* name) {
     return false;
 }
 
-static const HleSymbol* const tables[] = {hle_libc, hle_posix, hle_thread, hle_dl, hle_sles, hle_media};
+static const HleSymbol* const tables[] = {hle_libc, hle_posix, hle_thread, hle_dl, hle_sles, hle_media, hle_android};
 
 static struct {
     const HleSymbol** sorted;

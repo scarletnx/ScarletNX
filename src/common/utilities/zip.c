@@ -187,6 +187,15 @@ unsigned char* snx_zip_read(SnxZip* zip, uint32_t index, size_t* size, char* err
     *size = m->size;
     return out;
 }
+bool snx_zip_stored_at(SnxZip* zip, uint32_t index, uint64_t* offset) {
+    const Member* m = &zip->members[index];
+    unsigned char local[30];
+    if (m->method != 0 || m->packed != m->size || !read_at(zip->file, m->local, local, sizeof local) ||
+        snx_ld_le32(local) != LOCAL_SIGNATURE)
+        return false;
+    *offset = (uint64_t)m->local + 30 + snx_ld_le16(local + 26) + snx_ld_le16(local + 28);
+    return true;
+}
 bool snx_zip_extract(SnxZip* zip, uint32_t index, const char* path, char* error, size_t error_size) {
     const Member* m = &zip->members[index];
     const char* name = zip->names + m->name;
