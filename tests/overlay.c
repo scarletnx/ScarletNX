@@ -52,6 +52,10 @@ void options_language_set(const IniOpt* o, const char* v) {
     (void)o;
     (void)v;
 }
+void options_tv_mode_set(const IniOpt* o, const char* v) {
+    (void)o;
+    (void)v;
+}
 /* the platform's lock and the backend's touch screen, without either */
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }

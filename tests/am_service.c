@@ -738,6 +738,20 @@ static void test_messages(void) {
     close_handles();
     am_events_release();
 }
+/* the display resolution change event, and the performance mode message, when docked's Auto changes the TV mode */
+static void test_display_mode_changed(void) {
+    nn_am_AppletMessage m = 0;
+    am_init();
+    while (nn_am_service_ICommonStateGetter_ReceiveMessage(NULL, &m) == 0) continue;
+    CHECK(!kev(g_hle.am.msg_event)->signaled);
+    CHECK(!kev(g_hle.am.resolution_event)->signaled);
+    am_display_mode_changed();
+    CHECK(kev(g_hle.am.resolution_event)->signaled);
+    CHECK(kev(g_hle.am.msg_event)->signaled);
+    CHECK(nn_am_service_ICommonStateGetter_ReceiveMessage(NULL, &m) == 0 && m == 31);
+    CHECK(!kev(g_hle.am.msg_event)->signaled);
+    am_events_release();
+}
 /* the Mii editor (0x12), which a game opens with nn::mii::AppendMii: with no editor here, appending is
    cancelled as when the player backs out, an edit hands the Mii back, and each answer is the size the SDK reads */
 static SvcObj* mii_edit(u32 mode, const u8* charinfo, u32 out_size) {
@@ -854,6 +868,7 @@ int main(void) {
     test_applets();
     CHECK(test_objects == 0 && test_kobjs == 0);
     test_messages();
+    test_display_mode_changed();
     test_state_getter();
     test_self_settings();
     CHECK(test_kobjs == 0);

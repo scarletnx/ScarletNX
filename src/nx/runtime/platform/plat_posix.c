@@ -28,6 +28,9 @@
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #include <sys/ucontext.h>
+#if !TARGET_OS_IPHONE
+#include <IOKit/ps/IOPowerSources.h>
+#endif
 #else
 #include <ucontext.h>
 #endif
@@ -35,9 +38,11 @@
 #include <linux/falloc.h>
 #include <linux/fs.h>
 #include <linux/futex.h>
+#include <linux/netlink.h>
 #include <linux/userfaultfd.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #if defined(__aarch64__)
@@ -45,6 +50,7 @@
 #endif
 #endif
 #if defined(__ANDROID__)
+#include <jni.h>
 #include <sys/system_properties.h>
 #endif
 #if defined(__APPLE__)
@@ -250,6 +256,82 @@ void plat_thread_exit(void) {
     SDL_CleanupTLS();
     pthread_exit(NULL);
 }
+
+/* ================================================================ the host's power source */
+/* the watcher's thread marks this; the main thread takes it, so only there does the runtime ask SDL for the new state */
+static int g_power_changed;
+void plat_power_mark_changed(void) { __atomic_store_n(&g_power_changed, 1, __ATOMIC_RELEASE); }
+int plat_power_take_change(void) { return __atomic_exchange_n(&g_power_changed, 0, __ATOMIC_ACQ_REL); }
+#if defined(__linux__) && !defined(__ANDROID__)
+/* The kernel's uevents on NETLINK_KOBJECT_UEVENT: a power_supply change (the charger in or out) marks the change. The
+   thread blocks in recv, so nothing polls the state */
+static void power_watch_thread(void* arg) {
+    int fd = (int)(intptr_t)arg;
+    char buf[4096];
+    for (;;) {
+        ssize_t n = recv(fd, buf, sizeof buf, 0);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) continue;
+            break;
+        }
+        if (memmem(buf, (size_t)n, "SUBSYSTEM=power_supply", 23)) plat_power_mark_changed();
+    }
+    close(fd);
+}
+int plat_power_watch(void) {
+    static int started;
+    struct sockaddr_nl sa;
+    int fd;
+    if (started) return 0;
+    fd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_KOBJECT_UEVENT);
+    if (fd < 0) return -1;
+    memset(&sa, 0, sizeof sa);
+    sa.nl_family = AF_NETLINK;
+    sa.nl_groups = 1;
+    if (bind(fd, (struct sockaddr*)&sa, sizeof sa)) {
+        close(fd);
+        return -1;
+    }
+    if (plat_thread(power_watch_thread, (void*)(intptr_t)fd, 0)) {
+        close(fd);
+        return -1;
+    }
+    started = 1;
+    return 0;
+}
+#elif defined(__ANDROID__)
+/* GameActivity's receiver calls this when the charger comes or goes */
+JNIEXPORT void JNICALL Java_org_scarletnx_GameActivity_nativePowerChanged(JNIEnv* env, jobject thiz);
+JNIEXPORT void JNICALL Java_org_scarletnx_GameActivity_nativePowerChanged(JNIEnv* env, jobject thiz) {
+    (void)env;
+    (void)thiz;
+    plat_power_mark_changed();
+}
+int plat_power_watch(void) { return 0; } /* the receiver is registered with the activity */
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+/* iOS's battery state notification is in apple.m, which the app links */
+extern int snx_apple_power_watch(void) __attribute__((weak));
+int plat_power_watch(void) { return snx_apple_power_watch ? snx_apple_power_watch() : -1; }
+#elif defined(__APPLE__)
+/* macOS's IOKit power source run loop: the thread blocks in the run loop, so nothing polls the state */
+static void apple_power_changed(void* context) {
+    (void)context;
+    plat_power_mark_changed();
+}
+static void apple_power_thread(void* arg) {
+    CFRunLoopSourceRef source = IOPSNotificationCreateRunLoopSource(apple_power_changed, NULL);
+    (void)arg;
+    if (!source) return;
+    CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopDefaultMode);
+    CFRunLoopRun();
+}
+int plat_power_watch(void) {
+    if (plat_thread(apple_power_thread, NULL, 0)) return -1;
+    return 0;
+}
+#else
+int plat_power_watch(void) { return -1; } /* no watcher here: the caller polls */
+#endif
 /* Linux only: Android's CPUs differ in speed, so a fixed share of them would make a core slow */
 #if defined(__linux__) && !defined(__ANDROID__)
 int plat_cpus(int* ids, int max) {

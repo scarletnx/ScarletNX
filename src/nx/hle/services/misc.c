@@ -65,7 +65,7 @@ static int nn_apm_IManager_OpenSession(SvcObj* self, SvcObj** session) {
 /* Boost when docked, Normal in handheld mode */
 static int nn_apm_IManager_GetPerformanceMode(SvcObj* self, nn_apm_PerformanceMode* mode) {
     (void)self;
-    *mode = g_settings.tv_mode ? 1 : 0;
+    *mode = snx_tv_mode() ? 1 : 0;
     R_SUCCEED();
 }
 static int nn_apm_ISession_SetPerformanceConfiguration(SvcObj* self, nn_apm_PerformanceMode mode,

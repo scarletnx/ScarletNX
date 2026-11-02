@@ -635,7 +635,7 @@ static void test_hid(void) {
     }
     CHECK(npad_style_at(8) == 1u << 1);
     g_settings.tv_mode = 1;
-    hid_update();
+    hid_mode_changed();
     CHECK(npad_style_at(8) == 0);
     g_settings.tv_mode = 0;
     hid_update();
