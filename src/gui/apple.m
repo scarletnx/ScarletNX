@@ -18,6 +18,7 @@
 #include <mach/mach.h>
 #include <time.h>
 #import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
 #if TARGET_OS_IPHONE
 #import <UIKit/UIKit.h>
 #endif
@@ -104,10 +105,17 @@ void gui_apple_stats(char* out, size_t size) {
     if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) == KERN_SUCCESS)
         footprint = info.phys_footprint >> 20;
     if (getrusage(RUSAGE_SELF, &usage)) memset(&usage, 0, sizeof usage);
+    /* what Metal holds for the app, which MoltenVK's descriptor pools, pipelines and buffers take from too, and
+       VMA's heap budget does not count; past the working set Metal refuses allocations the footprint still has room
+       for. The system's default device is the one MoltenVK uses */
+    static id<MTLDevice> metal;
+    if (!metal) metal = MTLCreateSystemDefaultDevice();
     snprintf(out, size,
-             "resources: footprint %llu MiB, may still take %llu MiB, cpu %.1f s user %.1f s system, thermal %ld, "
-             "low power %d",
+             "resources: footprint %llu MiB, may still take %llu MiB, Metal %llu of %llu MiB, cpu %.1f s user %.1f s "
+             "system, thermal %ld, low power %d",
              footprint, (unsigned long long)(os_proc_available_memory() >> 20),
+             (unsigned long long)(metal.currentAllocatedSize >> 20),
+             (unsigned long long)(metal.recommendedMaxWorkingSetSize >> 20),
              usage.ru_utime.tv_sec + usage.ru_utime.tv_usec / 1e6, usage.ru_stime.tv_sec + usage.ru_stime.tv_usec / 1e6,
              (long)NSProcessInfo.processInfo.thermalState, (int)NSProcessInfo.processInfo.lowPowerModeEnabled);
 #else
