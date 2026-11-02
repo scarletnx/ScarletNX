@@ -162,21 +162,28 @@ static unsigned log2u(u32 v) {
     while (v > 1) v >>= 1, s++;
     return s;
 }
+/* the GOBs across a 64 KiB tile of blocks 2^tile_h GOBs high and 2^tile_d deep (log2), one at least */
+static unsigned tile_gobs_across(unsigned tile_h, unsigned tile_d) {
+    return tile_h + tile_d >= 7 ? 0 : 7 - tile_h - tile_d;
+}
+/* the GOBs across a level lwb bytes wide, lh rows high and ld slices deep: whole tiles of 2^tile_w GOBs when it is at
+   least a tile in every direction (tile_h and tile_d the texture's, not the level's) */
+static u32 row_gobs(u32 lwb, u32 lh, u32 ld, unsigned tile_w, unsigned tile_h, unsigned tile_d) {
+    u32 g = (lwb + 63) / 64, tw = 1u << tile_w;
+    if (tile_w && lwb >= 64u << tile_w && lh >= 8u << tile_h && ld >= 1u << tile_d) g = (g + tw - 1) / tw * tw;
+    return g;
+}
 /* the offset of a level from its layer's start */
-static u64 level_offset(const NvnTexDesc* d, unsigned level, unsigned dpl, u32 w, u32 h, u32 z, unsigned tile_h,
-                        unsigned tile_d, Fmt t) {
-    u32 sx, sy, tw = 128u >> (tile_h + tile_d);
-    int tiled = sparse_of(d);
+static u64 level_offset(const NvnTexDesc* d, unsigned level, unsigned dpl, u32 w, u32 h, u32 z, unsigned tile_w,
+                        unsigned tile_h, unsigned tile_d, Fmt t) {
+    u32 sx, sy;
     u64 off = 0;
     unsigned i;
     samples_xy(d->samples, &sx, &sy);
-    if (!tw) tw = 1; /* GOB columns of a 64 KB tile */
     for (i = 0;; i++) {
         u32 lw = blk(mip(w * sx, i), t.bw), lh = dpl >= 2 ? blk(mip(h * sy, i), t.bh) : 1, ld = dpl >= 3 ? mip(z, i) : 1;
-        u32 lwb = lw * t.bpb, wg = (lwb + 63) / 64, hg = (lh + 7) / 8, ht, dt;
+        u32 wg = row_gobs(lw * t.bpb, lh, ld, tile_w, tile_h, tile_d), hg = (lh + 7) / 8, ht, dt;
         unsigned th = adj_tile(tile_h, 8, lh), td = adj_tile(tile_d, 1, ld);
-        tiled = tiled && lwb >= tw * 64 && lh >= 8u << tile_h && ld >= 1u << tile_d;
-        if (tiled) wg = (wg + tw - 1) / tw * tw;
         if (i == level) return off;
         ht = (hg + (1u << th) - 1) >> th;
         dt = (ld + (1u << td) - 1) >> td;
@@ -193,7 +200,7 @@ void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
     shape(d, &dpl, &layered, &w, &h, &z);
     samples_xy(d->samples, &sx, &sy);
     o->bpb = t.bpb;
-    o->tile_h = o->tile_d = 0;
+    o->tile_h = o->tile_d = o->tile_w = 0;
     o->layers = layered ? z : 1;
     if (!t.bpb) {
         o->size = o->layer_size = 0;
@@ -226,12 +233,13 @@ void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
         tile_d = pick_tile(z + z / 2);
     o->tile_h = tile_h;
     o->tile_d = tile_d;
+    o->tile_w = sparse_of(d) ? tile_gobs_across(tile_h, tile_d) : 0;
     /* multisampled and rectangle textures have one level, whatever the builder says (the driver's layout) */
     levels = d->target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE || d->target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY ||
                      d->target == NVN_TEXTURE_TARGET_RECTANGLE || !d->levels
                  ? 1
                  : d->levels;
-    ls = level_offset(d, levels, dpl, w, h, z, tile_h, tile_d, t);
+    ls = level_offset(d, levels, dpl, w, h, z, o->tile_w, tile_h, tile_d, t);
     if (sparse_of(d)) ls = (ls + SPARSE_TILE - 1) & ~(u64)(SPARSE_TILE - 1);
     if (layered) { /* a layer is block aligned */
         u32 hh = blk(h, t.bh);
@@ -257,7 +265,7 @@ u64 nvn_tex_level_offset(const NvnTexDesc* d, unsigned level) {
     shape(d, &dpl, &layered, &w, &h, &z);
     if (!t.bpb || (d->flags & NVN_TEX_LINEAR) || d->target == NVN_TEXTURE_TARGET_BUFFER) return 0;
     nvn_tex_layout(d, &l);
-    return level_offset(d, level, dpl, w, h, z, l.tile_h, l.tile_d, t);
+    return level_offset(d, level, dpl, w, h, z, l.tile_w, l.tile_h, l.tile_d, t);
 }
 
 void nvn_tex_level_tiles(const NvnTexDesc* d, unsigned level, unsigned* tile_h, unsigned* tile_d) {

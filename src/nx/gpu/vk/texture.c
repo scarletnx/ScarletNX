@@ -31,11 +31,23 @@ static void bl_level_blocks(u32 h, u32 d, const VkFmt* f, u32 bh, u32 bd, u32 le
     *lbh = bh;
     *lbd = bd;
 }
+/* whether a sparse texture's block-linear level lwb bytes wide, lh rows (of texels or blocks) high and ld slices deep
+   is at least a tile in every direction: its tile 2^tile_w GOBs across (the header's tile width), 2^bh high and 2^bd
+   deep (the header's block, not the level's shrunk one). The hardware pads such a level's rows to whole tiles */
+static int bl_level_tiled(u32 lwb, u32 lh, u32 ld, u32 bh, u32 bd, u32 tile_w) {
+    return tile_w && lwb >= 64u << tile_w && lh >= 8u << bh && ld >= 1u << bd;
+}
+/* the GOBs across that level's rows: its bytes in whole GOBs, or in whole tiles */
+static u32 bl_level_gobs_x(u32 lwb, u32 lh, u32 ld, u32 bh, u32 bd, u32 tile_w) {
+    u32 g = (lwb + 63) / 64, n = 1u << tile_w;
+    return bl_level_tiled(lwb, lh, ld, bh, bd, tile_w) ? (g + n - 1) / n * n : g;
+}
 /* bytes of one mip level of a block-linear texture; lbh and lbd (may be NULL) get its block height and depth */
-static u64 bl_level_size(u32 w, u32 h, u32 d, const VkFmt* f, u32 bh, u32 bd, u32 level, u32* lbh, u32* lbd) {
+static u64 bl_level_size(u32 w, u32 h, u32 d, const VkFmt* f, u32 bh, u32 bd, u32 tile_w, u32 level, u32* lbh,
+                         u32* lbd) {
     u32 lw = w >> level ? w >> level : 1, lh = h >> level ? h >> level : 1, ld = d >> level ? d >> level : 1;
     u32 tw = (lw + f->bw - 1) / f->bw, th = (lh + f->bh - 1) / f->bh;
-    u32 gx = (tw * f->bpp + 63) / 64, gy = (th + 7) / 8, b, bdd;
+    u32 gx = bl_level_gobs_x(tw * f->bpp, th, ld, bh, bd, tile_w), gy = (th + 7) / 8, b, bdd;
     bl_level_blocks(h, d, f, bh, bd, level, &b, &bdd);
     if (lbh) *lbh = b;
     if (lbd) *lbd = bdd;
@@ -44,31 +56,35 @@ static u64 bl_level_size(u32 w, u32 h, u32 d, const VkFmt* f, u32 bh, u32 bd, u3
     return (u64)gx * gys * lds * 512;
 }
 /* bytes from one layer of a block-linear texture to the next: all its levels, aligned to a block of GOBs that is
-   shrunk for a small base level (Ryujinx's AlignLayerSize) */
-static u64 bl_layer_size(u32 w, u32 h, u32 d, const VkFmt* f, u32 bh, u32 bd, u32 levels) {
+   shrunk for a small base level, or to a sparse texture's whole tile (Ryujinx's AlignLayerSize) */
+static u64 bl_layer_size(u32 w, u32 h, u32 d, const VkFmt* f, u32 bh, u32 bd, u32 tile_w, u32 levels) {
     /* the sizes asked last, by shape: every lookup of a texture asks this, and it costs divisions by the block size
        over each level, the levels' block sizes each a loop of its own */
     static struct {
-        u32 w, h, d, bh, bd, levels, fbw, fbh, fbpp;
+        u32 w, h, d, bh, bd, tile_w, levels, fbw, fbh, fbpp;
         u64 sz;
     } memo[256];
-    u32 m = (u32)(((((u64)w * 0x9E3779B1u) ^ h) * 0x85EBCA77u ^ ((u64)d << 20 | (u64)levels << 14 | bh << 8 | bd << 4) ^
-                   (u64)f->bpp << 24 ^ (u64)f->bw << 28 ^ (u64)f->bh << 32) *
+    u32 m = (u32)(((((u64)w * 0x9E3779B1u) ^ h) * 0x85EBCA77u ^
+                   ((u64)d << 20 | (u64)levels << 14 | tile_w << 12 | bh << 8 | bd << 4) ^ (u64)f->bpp << 24 ^
+                   (u64)f->bw << 28 ^ (u64)f->bh << 32) *
                       0x9E3779B97F4A7C15ull >>
                   56);
     if (memo[m].w == w && memo[m].h == h && memo[m].d == d && memo[m].bh == bh && memo[m].bd == bd &&
-        memo[m].levels == levels && memo[m].fbw == f->bw && memo[m].fbh == f->bh && memo[m].fbpp == f->bpp && w)
+        memo[m].tile_w == tile_w && memo[m].levels == levels && memo[m].fbw == f->bw && memo[m].fbh == f->bh &&
+        memo[m].fbpp == f->bpp && w)
         return memo[m].sz;
     u32 w0 = w, h0 = h, d0 = d, bh0 = bh, bd0 = bd;
     u64 sz = 0;
-    for (u32 l = 0; l < levels; l++) sz += bl_level_size(w, h, d, f, bh, bd, l, NULL, NULL);
+    for (u32 l = 0; l < levels; l++) sz += bl_level_size(w, h, d, f, bh, bd, tile_w, l, NULL, NULL);
     u32 gy = ((h + f->bh - 1) / f->bh + 7) / 8;
-    while (bh > 0 && gy <= (1u << (bh - 1))) bh--;
-    while (bd > 0 && d <= (1u << (bd - 1))) bd--;
-    u64 al = 512ull << (bh + bd);
+    if (!tile_w) {
+        while (bh > 0 && gy <= (1u << (bh - 1))) bh--;
+        while (bd > 0 && d <= (1u << (bd - 1))) bd--;
+    }
+    u64 al = 512ull << (tile_w + bh + bd);
     sz = (sz + al - 1) / al * al;
-    memo[m].w = w0, memo[m].h = h0, memo[m].d = d0, memo[m].bh = bh0, memo[m].bd = bd0, memo[m].levels = levels;
-    memo[m].fbw = f->bw, memo[m].fbh = f->bh, memo[m].fbpp = f->bpp, memo[m].sz = sz;
+    memo[m].w = w0, memo[m].h = h0, memo[m].d = d0, memo[m].bh = bh0, memo[m].bd = bd0, memo[m].tile_w = tile_w;
+    memo[m].levels = levels, memo[m].fbw = f->bw, memo[m].fbh = f->bh, memo[m].fbpp = f->bpp, memo[m].sz = sz;
     return sz;
 }
 
@@ -91,7 +107,7 @@ typedef struct {
     Surf* t;
     u64 gva;
     u64 lsz;
-    u32 rowb, th, lbh, lbd;
+    u32 rowb, th, lbh, lbd, gobs_x;
 } LevelSource;
 /* A guest read while staging lands GPU results, and landing can submit the frame's command buffer: the upload's
    commands then belong to the one recording after it, with the image's transfer use established there again */
@@ -107,7 +123,7 @@ static VkCommandBuffer upload_cb(Surf* t, VkCommandBuffer cb) {
 static int astc_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32 n, VkBuffer* buf, u64* off) {
     LevelSource* l = ctx;
     if (l->t->bl) {
-        VkBlMove m = {l->rowb, l->th, l->lbh, l->lbd, y, n, z, nz, l->rowb}; /* 16 byte blocks: rows of whole runs */
+        VkBlMove m = {l->rowb, l->th, l->lbh, l->lbd, y, n, z, nz, l->rowb, l->gobs_x}; /* 16 byte blocks: whole runs */
         VkBuffer staged;
         u64 at;
         u64 cap;
@@ -217,6 +233,7 @@ typedef struct {
     u32 conv;     /* converted on the GPU (vk_tc_converts) */
     VkTcShape tc; /* the conversion's shape */
     u32 pitch;    /* the linear rows' pitch: deswizzled, or repacked from a pitch linear level */
+    u32 gobs_x;   /* a block linear level's GOBs across (bl_level_gobs_x) */
 } UpLevel;
 /* units rows y to y + n (rows of texels, or of blocks) of slices z to z + nz, in linear rows in_pitch bytes apart at
    in_at in in (staging, or the scratch buffer once the batch's moves are done), converted when they need to be and
@@ -270,13 +287,14 @@ static int up_move(Upload* u, const UpLevel* lv, const VkBlMove* m, VkBuffer sta
 static int level_upload_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 lbh, u32 lbd, u64 band) {
     u32 rowb = lv->rowb, th = lv->th, ld = lv->ld, pitch = lv->pitch;
     u32 gobs_x = (rowb + 63) >> 6, nz = ld < (1u << lbd) ? ld : 1u << lbd;
-    u64 block = 512ull << (lbh + lbd), block_row = gobs_x * block;
+    /* a sparse texture's rows of whole tiles are wider than its texels' GOBs */
+    u64 block = 512ull << (lbh + lbd), block_row = (u64)lv->gobs_x * block;
     /* scratch bytes a row of units takes: deswizzled, and converted */
     u64 per_row = pitch + (lv->conv ? vk_tc_out_size(&lv->tc, 1, 1) : 0);
     VkBuffer staged;
     u64 staged_at;
     if (per_row * th * ld <= band && lsz <= band) {
-        VkBlMove m = {rowb, th, lbh, lbd, 0, th, 0, ld, pitch};
+        VkBlMove m = {rowb, th, lbh, lbd, 0, th, 0, ld, pitch, lv->gobs_x};
         return stage_bl(&m, gva, lsz, &staged, &staged_at) && up_move(u, lv, &m, staged, staged_at, 0, 0);
     }
     u64 rows_cost = per_row * (8u << lbh) * nz;
@@ -285,7 +303,8 @@ static int level_upload_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 l
         u32 n = (u32)k * (8u << lbh);
         for (u32 z = 0; z < ld; z += nz)
             for (u32 y = 0; y < th; y += n) {
-                VkBlMove m = {rowb, th, lbh, lbd, y, th - y < n ? th - y : n, z, ld - z < nz ? ld - z : nz, pitch};
+                u32 rows = th - y < n ? th - y : n, slices = ld - z < nz ? ld - z : nz;
+                VkBlMove m = {rowb, th, lbh, lbd, y, rows, z, slices, pitch, lv->gobs_x};
                 if (!stage_bl(&m, gva, lsz, &staged, &staged_at) ||
                     !up_move(u, lv, &m, staged, staged_at, z, y))
                     return 0;
@@ -401,10 +420,12 @@ static int tex_upload_(Surf* t) {
             if (!ld) ld = 1;
             u32 tw = (lw + f->bw - 1) / f->bw, th = (lh + f->bh - 1) / f->bh;
             u32 rowb = tw * f->bpp, lbh = 0, lbd = 0;
-            u64 lsz = t->bl ? bl_level_size(t->w, t->h, d3, f, t->bh, t->bd, l, &lbh, &lbd) : (u64)t->pitch * th * ld;
+            u64 lsz = t->bl ? bl_level_size(t->w, t->h, d3, f, t->bh, t->bd, t->tile_w, l, &lbh, &lbd)
+                            : (u64)t->pitch * th * ld;
+            u32 gobs_x = bl_level_gobs_x(rowb, th, ld, t->bh, t->bd, t->tile_w);
             if (f->conv == VKC_ASTC) { /* decoded on the GPU from its block rows, deswizzled on the GPU */
                 complete = up_flush(&u);
-                LevelSource ls = {t, t->gva + at, lsz, rowb, th, lbh, lbd};
+                LevelSource ls = {t, t->gva + at, lsz, rowb, th, lbh, lbd, gobs_x};
                 complete = complete && vk_astc_upload(u.cb, t, lw, lh, ld, l, layer, astc_rows, &ls);
                 u.scratch = VK_NULL_HANDLE; /* astc_rows may have grown the scratch buffer: asked for again */
                 u.cap = 0;
@@ -416,6 +437,7 @@ static int tex_upload_(Surf* t) {
                     if (lv.tc.in_align > align) align = lv.tc.in_align;
                 }
                 lv.pitch = (rowb + align - 1) / align * align;
+                lv.gobs_x = gobs_x;
                 complete = t->bl ? level_upload_bl(&u, &lv, t->gva + at, lsz, lbh, lbd, band)
                                  : level_upload_pitch(&u, &lv, t->gva + at, lsz, band);
             }
@@ -466,7 +488,7 @@ int vk_tex_dma_rows(u64 gva, u32 wb, u32 bh, u32 ox, u32 oy, u32 line_bytes, u32
         u32 tw = (t->w + f->bw - 1) / f->bw, th = (t->h + f->bh - 1) / f->bh;
         /* the same layout: as many GOBs a row (their addresses don't depend on the height), the rows within level 0
            of a texture with more of them after it */
-        if (((u64)tw * f->bpp + 63) >> 6 != ((u64)wb + 63) >> 6 || oy >= th ||
+        if (bl_level_gobs_x(tw * f->bpp, th, 1, t->bh, t->bd, t->tile_w) != ((u64)wb + 63) >> 6 || oy >= th ||
             ((t->levels > 1 || t->layers > 1) && oy + rows > th))
             continue;
         /* what an engine wrote since its last check would be lost */
@@ -520,7 +542,7 @@ static int format_samples(VkFormat f) {
 
 /* a texture of w by h pixels, with the samples of the sample layout msaa (DS_MSAA_, canonical) */
 static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, VkImageViewType type, VkFmt f, u32 fkey,
-                        u32 bl, u32 bh, u32 bd, u32 pitch, u64 layer_size, u32 msaa) {
+                        u32 bl, u32 bh, u32 bd, u32 tile_w, u32 pitch, u64 layer_size, u32 msaa) {
     /* a multisampled one is loaded by drawing its samples from the guest's layout of them, through a view of their
        raw bytes (gpu/vk/msaa.c) */
     VkFormat raw = msaa ? vk_raw_format(f.bpp) : VK_FORMAT_UNDEFINED;
@@ -549,6 +571,7 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     t->bl = bl;
     t->bh = bh;
     t->bd = bd;
+    t->tile_w = tile_w;
     t->pitch = pitch;
     t->layer_size = layer_size;
     t->layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -832,7 +855,7 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
     u32 type = tf.type;
     int srgb = (int)tf.srgb;
     u32 glevels = tf.levels;
-    u32 bh = tf.block_h, bd = tf.block_d, pitch = bl ? 0 : tf.pitch;
+    u32 bh = tf.block_h, bd = tf.block_d, tile_w = bl ? tf.tile_w : 0, pitch = bl ? 0 : tf.pitch;
     if (!gva) return NULL;
     if (hv == 0 || type == 6) {
         /* Buffer TICs describe a linear row of texels, bound as a 2D image the shader's 1D fetch reads at
@@ -848,7 +871,7 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
         }
         glevels = 1;
         bl = 0;
-        bh = bd = 0;
+        bh = bd = tile_w = 0;
     }
     /* a multisampled texture (2D, 2D array, 2D without levels) is its pixels' size; guest memory holds its samples, a
        block of them for each pixel (gpu/vk/msaa.c), one level */
@@ -882,7 +905,8 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
     u32 layers = vt == VK_IMAGE_VIEW_TYPE_3D ? 1 : d, d3 = vt == VK_IMAGE_VIEW_TYPE_3D ? d : 1;
     if (vt == VK_IMAGE_VIEW_TYPE_3D && !raw) f = vk_tic_format_3d(tic[0], srgb);
     /* bytes from one layer to the next: all the levels the header has, whichever of them it shows */
-    u64 stride = bl ? bl_layer_size(gw, gh, d3, &f, bh, bd, glevels) : (u64)pitch * ((gh + f.bh - 1) / f.bh) * d3;
+    u64 stride =
+        bl ? bl_layer_size(gw, gh, d3, &f, bh, bd, tile_w, glevels) : (u64)pitch * ((gh + f.bh - 1) / f.bh) * d3;
     /* A texture upload reads guest memory. Complete any compute storage writes that overlap it first. */
     if (g_cs_any) vk_compute_mem_need(gva, stride * layers);
     /* the levels the shader sees, base level to max level (word 7), as a texture of their own the way Ryujinx makes
@@ -890,7 +914,12 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
     u32 levels = bl ? glevels : 1;
     u32 base = tf.base_level, maxl = tf.max_level;
     if (bl && base < glevels && (base || maxl + 1 != glevels)) {
-        for (u32 l = 0; l < base; l++) gva += bl_level_size(w, h, d3, &f, bh, bd, l, NULL, NULL);
+        for (u32 l = 0; l < base; l++) gva += bl_level_size(w, h, d3, &f, bh, bd, tile_w, l, NULL, NULL);
+        /* the tile width pads the levels at least a tile in size: none from a base level smaller than that on. At
+           one that big the block isn't shrunk, so the levels the view shows are padded as the texture's are */
+        u32 base_w = ((w >> base ? w >> base : 1) + f.bw - 1) / f.bw,
+            base_h = ((h >> base ? h >> base : 1) + f.bh - 1) / f.bh;
+        if (!bl_level_tiled(base_w * f.bpp, base_h, d3 >> base ? d3 >> base : 1, bh, bd, tile_w)) tile_w = 0;
         bl_level_blocks(h, d3, &f, bh, bd, base, &bh, &bd);
         w = w >> base ? w >> base : 1;
         h = h >> base ? h >> base : 1;
@@ -954,16 +983,16 @@ texture_from_memory:
     for (Surf* t = vk_surf_first(gva); t; t = t->next) {
         if (t->is_rt || t->gva != gva || t->w != w || t->h != h || t->layers != layers || t->depth3d != d3 ||
             t->fkey != fkey || t->levels != levels || t->type != vt || t->bl != (u32)bl || t->bh != bh || t->bd != bd ||
-            t->pitch != pitch || t->layer_size != stride || t->msaa != msaa)
+            t->tile_w != tile_w || t->pitch != pitch || t->layer_size != stride || t->msaa != msaa)
             continue;
         return tex_check(t, gva);
     }
     if (!format_samples(f.vk)) return NULL;
-    Surf* t = tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, pitch, stride, msaa);
+    Surf* t = tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, tile_w, pitch, stride, msaa);
     if (!t) return NULL;
     /* this texture's levels in one layer; the layers before the last one take their whole stride */
     u64 sz = 0;
-    for (u32 l = 0; l < levels; l++) sz += bl ? bl_level_size(gw, gh, d3, &f, bh, bd, l, NULL, NULL) : stride;
+    for (u32 l = 0; l < levels; l++) sz += bl ? bl_level_size(gw, gh, d3, &f, bh, bd, tile_w, l, NULL, NULL) : stride;
     t->size = stride * (layers - 1) + sz;
     t->ww_epoch = vk_ww_epoch(); /* hashed in this epoch: read before the hash */
     t->wseen = vk_ww_now();
@@ -1443,8 +1472,8 @@ static void tex_take_drawn(Surf* t) {
             for (u32 l = 0; l < t->levels; l++) {
                 u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
                 u32 ld = t->depth3d >> l ? t->depth3d >> l : 1, lbh, lbd;
-                u64 size = bl_level_size(t->w, t->h, t->depth3d, &t->f, t->bh, t->bd, l, &lbh, &lbd);
-                u32 rowb = lw * t->f.bpp, gobs_x = (rowb + 63) / 64;
+                u64 size = bl_level_size(t->w, t->h, t->depth3d, &t->f, t->bh, t->bd, t->tile_w, l, &lbh, &lbd);
+                u32 rowb = lw * t->f.bpp, gobs_x = bl_level_gobs_x(rowb, lh, ld, t->bh, t->bd, t->tile_w);
                 u32 blocks_y = ((lh + 7) / 8 + (1u << lbh) - 1) >> lbh;
                 /* A block is one GOB wide, 2^lbh high and 2^lbd deep, its GOBs Y first and then Z, and the blocks of
                    a level go X, then Y, then Z. So slice z's first GOB is at block z >> lbd's depth plane, z & (2^lbd
@@ -1452,7 +1481,7 @@ static void tex_take_drawn(Surf* t) {
                    a plane (slab) apart across them. Without block depth that is a slice after another */
                 u64 slab = (u64)gobs_x * blocks_y * (512ull << (lbh + lbd)), step = 512ull << lbh;
                 u32 sbh;
-                u64 source_size = bl_level_size(s->w, s->h, 1, &s->f, s->bh, 0, 0, &sbh, NULL);
+                u64 source_size = bl_level_size(s->w, s->h, 1, &s->f, s->bh, 0, 0, 0, &sbh, NULL);
                 if (off >= lo && off - lo < size && (off - lo) % slab % step == 0 &&
                     (off - lo) % slab / step < (1u << lbd) && s->w >= lw && s->h == lh &&
                     sbh == lbh && (lbd || source_size == slab) && vk_rt_drawn_fresh(s)) {
@@ -1478,8 +1507,9 @@ static void tex_take_drawn(Surf* t) {
             /* a block-linear level's rows take whole GOBs (64 bytes), so a target drawn as wide as them covers the
                level (a 120-texel depth pyramid level drawn 128 wide, a cube mip narrower than a GOB one GOB wide, a
                230-texel BC5 label's 58 blocks drawn 60 wide): only its left lw texels are the level's */
-            int padded_row = t->bl && s->bl && (s->f.vk == t->f.vk || t->f.bw > 1) && s->w > lw &&
-                             ((u64)s->w * s->f.bpp + 63) / 64 == ((u64)lw * t->f.bpp + 63) / 64;
+            int padded_row =
+                t->bl && s->bl && (s->f.vk == t->f.vk || t->f.bw > 1) && s->w > lw &&
+                ((u64)s->w * s->f.bpp + 63) / 64 == bl_level_gobs_x(lw * t->f.bpp, lh, 1, t->bh, t->bd, t->tile_w);
             if (rem == lo && (s->w == lw || padded_row) && s->h == lh) {
                 if (!vk_rt_drawn_fresh(s)) break; /* newer guest memory at this address takes precedence */
                 /* a layered target spaced as the texture's layers fills as many of them as it has, at any level: one
@@ -1494,7 +1524,7 @@ static void tex_take_drawn(Surf* t) {
                 break;
             }
             if (!t->bl) break;
-            lo += bl_level_size(t->w, t->h, 1, &t->f, t->bh, t->bd, l, NULL, NULL);
+            lo += bl_level_size(t->w, t->h, 1, &t->f, t->bh, t->bd, t->tile_w, l, NULL, NULL);
         }
     }
     if (d != small) free(d);

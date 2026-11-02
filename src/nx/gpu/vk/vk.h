@@ -510,6 +510,8 @@ typedef struct Surf {
                     in bit 31, raw (vk_tex_from_tic_raw) in bit 30 */
     VkFmt f;
     u32 bl, bh, bd, pitch; /* guest layout: block linear with block height 2^bh GOBs, or pitch linear */
+    u32 tile_w;            /* a sparse texture's tile width (log2 GOBs): its levels at least a tile in size have rows
+                              of whole tiles (the header's TILE_WIDTH_IN_GOBS) */
     u64 layer_size;        /* bytes from one layer to the next in guest memory */
     u64 rt_size;           /* a render target's guest bytes, all layers (its shape is fixed when it is made) */
     int is_rt;
@@ -716,11 +718,13 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
    height rows high, in blocks of 2^bh GOBs high and 2^bd deep, already shrunk for small surfaces as the hardware
    does; the move takes rows y0 to y0 + rows of slices z0 to z0 + slices. Its linear rows are lin_pitch bytes apart
    (a multiple of 16, at least row_bytes rounded up to 16: whole 16 byte pieces move, so a row's last one carries
-   padding along), a slice's rows after another's */
+   padding along), a slice's rows after another's. gobs_x: the GOBs across a row of blocks when there are more than
+   row_bytes takes (a sparse texture's rows of whole tiles), else 0 */
 typedef struct {
     u32 row_bytes, height, bh, bd;
     u32 y0, rows, z0, slices;
     u32 lin_pitch;
+    u32 gobs_x;
 } VkBlMove;
 /* the layout's bytes [*lo, *hi) the move reads or writes: whole rows of blocks */
 void vk_bl_range(const VkBlMove* m, u64* lo, u64* hi);

@@ -1461,42 +1461,55 @@ static int check_sparse_volume(void) {
     puts("sparse volume: a tile mapped, written by the CPU or by DMA shows in the next frame");
     return 0;
 }
-/* A sparse volume as a game makes one through NVN (nvn_tex_layout, nvn_tic_encode): 3 tiles across, 2 down and 2
-   deep, three of them mapped at the offsets the game gives them, the tiles across, then down, then deep, each page
-   holding one block's bytes over and over. Every block of the image in a mapped tile's brick is that block and every
-   other one is zeros: each 64 KiB page is one tile. BC1 and BC6H, as one game's light volumes, and RGBA8, which every
-   device samples in 3D */
+/* A sparse texture as a game makes one through NVN (nvn_tex_layout, nvn_tic_encode): 3 tiles across, 2 down and (a
+   volume) 2 deep, three of them mapped at the offsets the game gives them, the tiles across, then down, then deep,
+   each page holding one block's bytes over and over. Every block of the image in a mapped tile's brick is that block
+   and every other one is zeros: each 64 KiB page is one tile. BC1 and BC6H volumes, as one game's light volumes, and
+   RGBA8, which every device samples in 3D; then a BC1 and an RGBA8 volume and an RGBA8 2D texture that end half a
+   tile short of their third tile across, whose rows are still whole tiles (the header's tile width). The 2D one has a
+   second level, 160x128, a tile high and more than one wide: a view of it alone has rows of whole tiles too, its
+   second tile mapped */
 typedef struct {
     const char* name;
     int format;
     u32 eb, bw;   /* bytes of a texel or block, and its texels across and down */
     VkFormat vk;  /* what the device has to sample it as, or the check is skipped */
-    u64 gva, cpu; /* the volume, and the pages of its mapped tiles */
+    u64 gva, cpu; /* the texture, and the pages of its mapped tiles */
+    int is3d;     /* a volume, else a 2D texture */
+    u32 cut;      /* blocks short of the third tile across */
+    u32 levels;
 } StCase;
 static int sparse_tiles(const StCase* c) {
-    static const u32 mapped[3] = {1, 5, 10}; /* tiles (1, 0, 0), (2, 1, 0) and (1, 1, 1) */
+    static const u32 mapped3d[3] = {1, 5, 10}; /* tiles (1, 0, 0), (2, 1, 0) and (1, 1, 1) */
+    static const u32 mapped2d[3] = {1, 3, 5};  /* tiles (1, 0), (0, 1) and (2, 1) */
+    const u32* mapped = c->is3d ? mapped3d : mapped2d;
     NvnTexture tex = {0};
     NvnTexLayout lay;
-    u32 tile[3] = {0}, tic[8], first[4] = {0}, bad = 0;
+    u32 tile[3] = {0}, tic[8], first[4] = {0}, bad = 0, tiles = c->is3d ? 12 : 6;
     VkBuffer buffer;
-    tex.d.target = NVN_TEXTURE_TARGET_3D;
+    tex.d.target = c->is3d ? NVN_TEXTURE_TARGET_3D : NVN_TEXTURE_TARGET_2D;
     tex.d.format = (u16)c->format;
-    tex.d.levels = 1;
+    tex.d.levels = (u8)c->levels;
     tex.d.flags = NVN_TEXTURE_FLAGS_SPARSE;
     CHECK(nvn_tex_sparse_tile(&tex.d, tile));
-    tex.d.width = 3 * tile[0] * c->bw, tex.d.height = 2 * tile[1] * c->bw, tex.d.depth = 2 * tile[2];
+    tex.d.width = (3 * tile[0] - c->cut) * c->bw, tex.d.height = 2 * tile[1] * c->bw;
+    tex.d.depth = c->is3d ? 2 * tile[2] : 1;
     tex.gpu = c->gva;
     nvn_tex_layout(&tex.d, &lay);
-    CHECK(lay.size == 12 * SV_TILE);
+    /* a 2D texture's second level: 2 tiles across (whole ones), one down, after the first's */
+    CHECK(lay.size == (tiles + (c->levels > 1 ? 2 : 0)) * SV_TILE);
+    CHECK(c->levels == 1 || nvn_tex_level_offset(&tex.d, 1) == tiles * SV_TILE);
     CHECK(nvn_tic_encode(&tex, NULL, 0, 0, tic));
-    if (vk_tic_format_3d(tic[0], 0).vk != c->vk) {
-        printf("sparse tiles %s: the GPU has no such 3D images, skipped\n", c->name);
+    if ((c->is3d ? vk_tic_format_3d(tic[0], 0) : vk_tic_format(tic[0], 0)).vk != c->vk) {
+        printf("sparse tiles %s: the GPU has no such %s images, skipped\n", c->name, c->is3d ? "3D" : "2D");
         return 0;
     }
-    CHECK(mem_map(c->cpu, 3 * SV_TILE, MS_NORMAL, PERM_RW) == 0);
-    for (u32 k = 0; k < 3; k++) {
+    CHECK(mem_map(c->cpu, 4 * SV_TILE, MS_NORMAL, PERM_RW) == 0);
+    for (u32 k = 0; k < 4; k++) {
         for (u32 i = 0; i < SV_TILE; i++) GP(c->cpu + k * SV_TILE)[i] = (u8)(0x31 * (k + 1) + i % c->eb * 7);
-        gmmu_map(c->gva + mapped[k] * SV_TILE, c->cpu + k * SV_TILE, SV_TILE);
+        /* the fourth page: the second level's second tile */
+        if (k < 3 || c->levels > 1)
+            gmmu_map(c->gva + (k < 3 ? mapped[k] : tiles + 1) * SV_TILE, c->cpu + k * SV_TILE, SV_TILE);
     }
     vk_lock();
     Surf* t = vk_tex_from_tic(tic);
@@ -1511,8 +1524,8 @@ static int sparse_tiles(const StCase* c) {
         vk_readback_ready();
     }
     vk_unlock();
-    CHECK(t && t->type == VK_IMAGE_VIEW_TYPE_3D && image);
-    const u32 across = 3 * tile[0], down = 2 * tile[1], deep = 2 * tile[2];
+    CHECK(t && t->type == (c->is3d ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D) && image);
+    const u32 across = 3 * tile[0] - c->cut, down = 2 * tile[1], deep = c->is3d ? 2 * tile[2] : 1;
     for (u32 z = 0; z < deep; z++)
         for (u32 y = 0; y < down; y++)
             for (u32 x = 0; x < across; x++) {
@@ -1528,21 +1541,138 @@ static int sparse_tiles(const StCase* c) {
     if (bad) {
         fprintf(stderr,
                 "sparse tiles %s: %u of %u blocks aren't their tile's, the first (%u, %u, %u) of tile %u, which is %s; "
-                "blocks %u GOBs high and %u deep\n",
+                "blocks %u GOBs high and %u deep, tiles %u GOBs across (the header's %u)\n",
                 c->name, bad, across * down * deep, first[0], first[1], first[2], first[3],
-                first[3] == 1 || first[3] == 5 || first[3] == 10 ? "mapped" : "a hole", 1u << lay.tile_h,
-                1u << lay.tile_d);
+                first[3] == mapped[0] || first[3] == mapped[1] || first[3] == mapped[2] ? "mapped" : "a hole",
+                1u << lay.tile_h, 1u << lay.tile_d, 1u << lay.tile_w, 1u << ((tic[3] >> 10) & 7));
         return 1;
     }
-    printf("sparse tiles %s: each of the 3 mapped tiles fills its %ux%ux%u brick, the holes are zeros\n", c->name,
-           tile[0] * c->bw, tile[1] * c->bw, tile[2]);
+    if (c->levels > 1) { /* the second level, through a view of it alone */
+        NvnView v = {0};
+        u32 w1 = tex.d.width / 2, h1 = tex.d.height / 2, across1 = w1 / c->bw, down1 = h1 / c->bw;
+        v.set = NVN_VIEW_LEVELS;
+        v.base_level = 1;
+        v.levels = 1;
+        CHECK(nvn_tic_encode(&tex, &v, 0, 0, tic));
+        vk_lock();
+        Surf* t1 = vk_tex_from_tic(tic);
+        VkBufferImageCopy copy1 = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                   .imageExtent = {w1, h1, 1}};
+        image = t1 ? vk_readback_buffer((u64)across1 * down1 * c->eb, &buffer) : NULL;
+        if (image) {
+            vk_surf_use(vk_cmd(), t1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                        VK_ACCESS_2_TRANSFER_READ_BIT);
+            rec_CmdCopyImageToBuffer(vk_cmd(), t1->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy1);
+            vk_finish();
+            vk_readback_ready();
+        }
+        vk_unlock();
+        CHECK(t1 && t1->w == w1 && t1->levels == 1 && image);
+        for (u32 y = 0; y < down1; y++)
+            for (u32 x = 0; x < across1; x++) {
+                const u8* in = image + ((u64)y * across1 + x) * c->eb;
+                for (u32 i = 0; i < c->eb; i++)
+                    if (in[i] != (x >= tile[0] ? (u8)(0x31 * 4 + i * 7) : 0)) {
+                        if (!bad++) first[0] = x, first[1] = y;
+                        break;
+                    }
+            }
+        if (bad) {
+            fprintf(stderr,
+                    "sparse tiles %s, level 1 (%ux%u): %u of %u blocks aren't their tile's, the first (%u, %u); tile 1 "
+                    "is mapped, tile 0 a hole\n",
+                    c->name, w1, h1, bad, across1 * down1, first[0], first[1]);
+            return 1;
+        }
+    }
+    printf("sparse tiles %s: each of the %u mapped tiles fills its %ux%ux%u brick of a %ux%ux%u texture of %u levels, "
+           "the holes are zeros\n",
+           c->name, c->levels > 1 ? 4 : 3, tile[0] * c->bw, tile[1] * c->bw, c->is3d ? tile[2] : 1, tex.d.width,
+           tex.d.height, tex.d.depth, c->levels);
+    return 0;
+}
+/* A view of levels 1 and 2 of a sparse texture, both smaller than a tile: RGBA16F 320x64 in tiles of 128x64 texels (16
+   GOBs across, blocks 8 high). Level 1, 160x32, starts after level 0's 3 tiles and is half a tile high, so its rows
+   are its own 20 GOBs, though the block shrunk to it (4 GOBs) is as high as it; level 2, 80x16, follows those rows.
+   Every texel of both levels of the view is memory's */
+static int check_sparse_view(void) {
+    static const struct {
+        u32 w, h, at, bh; /* a level's texels, its offset in the mapped page, its block height (log2 GOBs) */
+    } lv[2] = {{160, 32, 0, 2}, {80, 16, 20u << 11, 1}}; /* level 2 after 20 GOBs of 4-GOB blocks */
+    const u64 gva = 0x350000000ull, cpu = HEAP_BASE + 0xEC0000;
+    NvnTexture tex = {0};
+    NvnView v = {0};
+    NvnTexLayout lay;
+    u32 tic[8], bad = 0, first[3] = {0};
+    VkBuffer buffer;
+    tex.d.target = NVN_TEXTURE_TARGET_2D;
+    tex.d.format = NVN_FORMAT_RGBA16F;
+    tex.d.levels = 3;
+    tex.d.flags = NVN_TEXTURE_FLAGS_SPARSE;
+    tex.d.width = 320, tex.d.height = 64, tex.d.depth = 1;
+    tex.gpu = gva;
+    nvn_tex_layout(&tex.d, &lay);
+    CHECK(lay.tile_w == 4 && lay.tile_h == 3 && nvn_tex_level_offset(&tex.d, 1) == 3 * SV_TILE + lv[0].at &&
+          nvn_tex_level_offset(&tex.d, 2) == 3 * SV_TILE + lv[1].at && lay.size == 4 * SV_TILE);
+    v.set = NVN_VIEW_LEVELS;
+    v.base_level = 1;
+    v.levels = 2;
+    CHECK(nvn_tic_encode(&tex, &v, 0, 0, tic));
+    if (vk_tic_format(tic[0], 0).vk != VK_FORMAT_R16G16B16A16_SFLOAT) {
+        printf("sparse view: the GPU has no RGBA16F images, skipped\n");
+        return 0;
+    }
+    CHECK(mem_map(cpu, SV_TILE, MS_NORMAL, PERM_RW) == 0);
+    for (u32 i = 0; i < SV_TILE; i++) GP(cpu)[i] = (u8)(i * 13 + (i >> 9) * 7 + 1);
+    gmmu_map(gva + 3 * SV_TILE, cpu, SV_TILE);
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    VkBufferImageCopy copy[2] = {
+        {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {lv[0].w, lv[0].h, 1}},
+        {.bufferOffset = lv[0].w * lv[0].h * 8,
+         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 1, 0, 1},
+         .imageExtent = {lv[1].w, lv[1].h, 1}}};
+    u8* image = t && t->levels == 2 ? vk_readback_buffer((lv[0].w * lv[0].h + lv[1].w * lv[1].h) * 8, &buffer) : NULL;
+    if (image) {
+        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 2, copy);
+        vk_finish();
+        vk_readback_ready();
+    }
+    vk_unlock();
+    CHECK(t && t->w == 160 && t->h == 32 && t->levels == 2 && image);
+    for (u32 l = 0; l < 2; l++)
+        for (u32 y = 0; y < lv[l].h; y++)
+            for (u32 x = 0; x < lv[l].w; x++) {
+                const u8* in = image + copy[l].bufferOffset + ((u64)y * lv[l].w + x) * 8;
+                if (memcmp(in, GP(cpu) + lv[l].at + bl_offset(x * 8, y, 0, lv[l].w * 8, lv[l].h, lv[l].bh, 0), 8) &&
+                    !bad++)
+                    first[0] = l + 1, first[1] = x, first[2] = y;
+            }
+    if (bad) {
+        fprintf(stderr,
+                "sparse view: %u texels of levels 1 and 2 aren't memory's, the first (%u, %u) of level %u; level 1's "
+                "rows 20 GOBs across, the view's tile width %u\n",
+                bad, first[1], first[2], first[0], t->tile_w);
+        return 1;
+    }
+    puts("sparse view: a view of a sparse texture's levels smaller than a tile reads rows of their own GOBs");
     return 0;
 }
 static int check_sparse_tiles(void) {
     const StCase cases[] = {
-        {"BC1", NVN_FORMAT_RGBA_DXT1, 8, 4, VK_FORMAT_BC1_RGBA_UNORM_BLOCK, 0x2C0000000ull, HEAP_BASE + 0xD00000},
-        {"BC6H", NVN_FORMAT_BPTC_UFLOAT, 16, 4, VK_FORMAT_BC6H_UFLOAT_BLOCK, 0x2D0000000ull, HEAP_BASE + 0xD40000},
-        {"RGBA8", NVN_FORMAT_RGBA8, 4, 1, VK_FORMAT_R8G8B8A8_UNORM, 0x2E0000000ull, HEAP_BASE + 0xD80000},
+        {"BC1", NVN_FORMAT_RGBA_DXT1, 8, 4, VK_FORMAT_BC1_RGBA_UNORM_BLOCK, 0x2C0000000ull, HEAP_BASE + 0xD00000, 1, 0,
+         1},
+        {"BC6H", NVN_FORMAT_BPTC_UFLOAT, 16, 4, VK_FORMAT_BC6H_UFLOAT_BLOCK, 0x2D0000000ull, HEAP_BASE + 0xD40000, 1, 0,
+         1},
+        {"RGBA8", NVN_FORMAT_RGBA8, 4, 1, VK_FORMAT_R8G8B8A8_UNORM, 0x2E0000000ull, HEAP_BASE + 0xD80000, 1, 0, 1},
+        {"BC1 short", NVN_FORMAT_RGBA_DXT1, 8, 4, VK_FORMAT_BC1_RGBA_UNORM_BLOCK, 0x2F0000000ull, HEAP_BASE + 0xDC0000,
+         1, 16, 1},
+        {"RGBA8 short", NVN_FORMAT_RGBA8, 4, 1, VK_FORMAT_R8G8B8A8_UNORM, 0x320000000ull, HEAP_BASE + 0xE00000, 1, 16,
+         1},
+        {"RGBA8 2D short", NVN_FORMAT_RGBA8, 4, 1, VK_FORMAT_R8G8B8A8_UNORM, 0x330000000ull, HEAP_BASE + 0xE40000, 0,
+         64, 2},
     };
     int failed = 0;
     for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) failed |= sparse_tiles(&cases[i]);
@@ -2071,6 +2201,7 @@ int main(int argc, char** argv) {
     CHECK(!check_dma());
     CHECK(!check_dma_texture());
     CHECK(!check_sparse_volume());
+    CHECK(!check_sparse_view());
     CHECK(!check_sparse_tiles());
     CHECK(!check_dma_untracked_source());
     CHECK(!check_blit());
