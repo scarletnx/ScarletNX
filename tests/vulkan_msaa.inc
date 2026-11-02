@@ -18,7 +18,7 @@ static int ms_green(u32 x, u32 y, u32 s) { return 8 * (x + y) + g_ms_sx[s] + g_m
 
 /* texel (x, y) of the 8x8 RGBA8 surface at bytes p: one GOB in block linear, rows of 32 bytes in pitch linear */
 static const u8* ms_texel(const u8* p, int bl, u32 x, u32 y) {
-    return p + (bl ? gob_x_offset(x * 4) + gob_y_offset(y) : y * 32 + x * 4);
+    return p + (bl ? gob_x_offset(x * 4, 0) + gob_y_offset(y, 0) : y * 32 + x * 4);
 }
 
 /* the target at gva of 4x4 pixels in the 2x2 sample layout, in block linear (one GOB high blocks) or pitch linear
@@ -558,7 +558,7 @@ static int check_msaa_nvn(void) {
     for (u32 y = 0; y < 16; y++)
         for (u32 x = 0; x < 32; x++) {
             u32 s = (x & 1) | (y & 1) << 1, xb = x * 4;
-            memcpy(lay + ((y / 8) * 2 + xb / 64) * 512 + gob_x_offset(xb % 64) + gob_y_offset(y % 8),
+            memcpy(lay + ((y / 8) * 2 + xb / 64) * 512 + gob_x_offset(xb % 64, 0) + gob_y_offset(y % 8, 0),
                    s == 0 || s == 3 ? green : blue, 4);
         }
     CHECK(!gmem_write(ms, lay, sizeof lay));

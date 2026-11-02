@@ -24,7 +24,7 @@ scattering 16 byte pieces.
 ## The shaders
 
 `gpu/texture/blocklinear.comp` (body `blocklinear.glsl`, host `vk/blocklinear.c`) moves 16 byte runs. A workgroup is
-two GOBs side by side, 64 invocations, and lane `k` of a GOB is its run `k` in memory order:
+two GOBs side by side, 64 invocations, and lane `k` of a GOB is its run `k` in Switch 1 memory order:
 
 | Bits of `k` | Meaning | Bytes in the GOB (gpu.c's `bl_x`, `bl_yz`) |
 | --- | --- | --- |
@@ -39,6 +39,12 @@ place in the block) is the same for the GOB's lanes. The host passes the shifts 
 the layout's first byte anywhere in the bound range (it wraps modulo 2^32, as the shader adds it). A move's rows may
 start inside a GOB: the row relative to the first moved wraps past `rows` for the rows above it, so one unsigned
 compare drops those and the ones past the end.
+
+Switch 2 native GOBs exchange byte-address bits 5 and 6, or run-index bits 1 and 2. The shader maps a lane to
+the corresponding coordinates but retains lane order for the block-linear buffer accesses. Specialization
+constant 0 selects the console profile when the pipeline is made. Only one variant is made in a process,
+so this does not add a second pipeline or a per-dispatch layout flag. Inline writes and `bl_land` select
+the same ordering, including partial GOBs whose padding must remain untouched.
 
 A swizzle changes only valid row bytes. When the row width is not a multiple of 16, the final run merges its valid
 bytes with the destination using four word masks computed by the host. Full runs still perform one vector load and
@@ -111,16 +117,18 @@ conversion. Otherwise each row is copied into rows that do.
 ## Tests
 
 - `blocklinear_glsl` and `texconv_glsl` run the bodies on the CPU (`tests/glsl/glsl.hpp`). The first checks moves
-  both ways against `bl_offset` byte by byte, with random shapes, blocks, biases and moves starting inside a GOB, and
-  that nothing outside the valid swizzled row bytes is written. Every partial-run width is also checked explicitly.
+  both ways against `bl_offset` byte by byte, in both console layouts, with random shapes, blocks, biases and moves
+  starting inside a GOB, and that nothing outside the valid swizzled row bytes is written. Every partial-run width
+  is also checked explicitly.
   Disabling the partial-run mask fails both this test and `vulkan_headless`'s selected-mip writeback test.
   The second checks every 2 byte texel and vi pixel, every 24 bit
   depth, RGB32F, depth and stencil rows, and random ETC2, EAC and BCn blocks of every kind against `etc2.c` and
   `bcn.c` (`tests/support/`). `bcn_decode` checks `bcn.c` itself on blocks built by hand.
 - `tex_upload_rows` runs `texture.c` with a CPU model of the dispatches, which checks the barriers' order, and checks
   every copied byte against the layout. It covers each strip mode and a converted format.
-- `astc_vulkan` (with `SNX_TEST_VULKAN`, on lavapipe) runs the SPIR-V: moves both ways for a range of shapes, banded
+- `astc_vulkan` (with `SNX_TEST_VULKAN`) runs the SPIR-V: moves both ways for a range of shapes, banded
   and by slice, a swizzle landed with `bl_land` over other memory, ASTC fed from block linear blocks, and conversions.
+  `astc_vulkan_native` runs the same checks with the Switch 2 profile (`snx-test-astc-vulkan --native`).
   Where the device samples BCn it also compares the device's own decoding of random BCn blocks with `bcn.c`: BC6H and
   BC7 exactly, BC1 to BC5 within two steps, the rounding the specification leaves to the device.
   `vulkan_headless` converts packed depth and stencil on the device.

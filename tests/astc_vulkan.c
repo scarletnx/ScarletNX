@@ -13,6 +13,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include "nx/gpu/gpu.h"
+#include "nx/hle/hle.h"
 #include "nx/gpu/vk/vk.h"
 #include "support/astc.h"
 #include "nx/gpu/texture/blocklinear.h"
@@ -27,6 +28,7 @@
 VkState g_vk;
 VkSemaphore g_vk_csem;
 u64 g_vk_cs_wait_value;
+Hle g_hle;
 static unsigned errors;
 
 /* Only the window/game and guest pipeline services are stubbed. cmd.c and
@@ -54,6 +56,7 @@ void vk_render_end_at(const char* file, int line) {
     (void)line;
 }
 /* The standalone upload test has no guest buffer cache to flush or retire. */
+void vk_mem_trim(u64 extra, int force) { (void)extra, (void)force; }
 void vk_buf_frame_done(u64 frame) { (void)frame; }
 void vk_gfx_image_frame_done(u64 sub) { (void)sub; }
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
@@ -226,8 +229,11 @@ static u64 ref_bl(u32 x, u32 y, u32 z, u32 wb, u32 h, u32 bh, u32 bd) {
     u64 gobs_x = (wb + 63) >> 6, gy = y >> 3;
     u64 rows = ((((u64)h + 7) >> 3) + (1u << bh) - 1) >> bh, block = (u64)512 << (bh + bd);
     u64 in_block = ((((u64)z & ((1u << bd) - 1)) << bh) + (gy & ((1u << bh) - 1))) << 9;
-    return ((u64)(x >> 6) << (9 + bh + bd)) + ((x & 32) << 3) + ((x & 16) << 1) + (x & 15) +
-           (((u64)(z >> bd) * rows + (gy >> bh)) * gobs_x) * block + in_block + (((y & 7) >> 1) << 6) + ((y & 1) << 4);
+    u64 at = ((u64)(x >> 6) << (9 + bh + bd)) + ((x & 32) << 3) + ((x & 16) << 1) + (x & 15) +
+             (((u64)(z >> bd) * rows + (gy >> bh)) * gobs_x) * block + in_block +
+             (((y & 7) >> 1) << 6) + ((y & 1) << 4);
+    if (g_hle.kernel.hw == SNX_HW_SWITCH2) at = (at & ~96ull) | ((at & 32) << 1) | ((at & 64) >> 1);
+    return at;
 }
 
 /* a level's blocks in memory, handed to vk_astc_upload as texture.c hands it guest memory: rows of blocks, or (bl not
@@ -561,7 +567,7 @@ static void bl_case(u32 row_bytes, u32 h, u32 d, u32 bh, u32 bd, u32 band, int b
     /* landed over guest memory: the surface's bytes and nothing else */
     u8* landed = malloc(hi);
     memcpy(landed, guest, hi);
-    bl_land(landed, out, row_bytes, h, d, bh, bd);
+    bl_land(landed, out, row_bytes, h, d, bh, bd, g_hle.kernel.hw == SNX_HW_SWITCH2);
     memset(moved, 0, hi);
     for (u32 z = 0; z < d; z++)
         for (u32 y = 0; y < h; y++)
@@ -829,6 +835,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++)
         if (!strncmp(argv[i], "--vk_max_allocation_mb=", 23)) g_settings.vulkan_allocation_cap = atoi(argv[i] + 23);
         else if (!strcmp(argv[i], "--large")) large = 1;
+        else if (!strcmp(argv[i], "--native")) g_hle.kernel.hw = SNX_HW_SWITCH2;
     init();
     if (large) {
         /* 512 MiB each once decoded, as some games' textures are: a square 2D one (11584 is a multiple of 4 and 8)

@@ -11,6 +11,7 @@
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/renderer.h"
 #include "support/dma_ref.h"
+#include "nx/hle/hle.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/clock.h"
@@ -27,6 +28,7 @@
 /* guest memory, aligned as the console's (the semaphores are written as u32s, the pushbuffers read as u32s) */
 static u64 guest[0x10000 / 8];
 u8* g_mem = (u8*)guest;
+Hle g_hle;
 _Atomic int g_cs_any, g_gfx_any, g_gfx_img_any;
 int g_renderer_up = 1;
 u64 g_draws;

@@ -11,7 +11,7 @@
    row of blocks when the row's width is a multiple of 64 bytes) are one memcpy. GOB g of the layout is GOB in of
    block g >> (bh + bd); blocks go gobs_x to a row of blocks, block_rows rows to a slab of 2^bd slices, and inside a
    block GOB in is row in & (2^bh - 1) of slice in >> bh */
-void bl_land(u8* dst, const u8* src, u32 row_bytes, u32 h, u32 d, u32 bh, u32 bd) {
+void bl_land(u8* dst, const u8* src, u32 row_bytes, u32 h, u32 d, u32 bh, u32 bd, int native) {
     u32 gobs_x = (u32)bl_gobs_x(row_bytes), block_gobs_log2 = bh + bd;
     u64 block_rows = bl_block_rows(h, bh);
     u64 slabs = ((u64)d + (1u << bd) - 1) >> bd;
@@ -31,7 +31,7 @@ void bl_land(u8* dst, const u8* src, u32 row_bytes, u32 h, u32 d, u32 bh, u32 bd
         u32 cols = row_bytes - gx * GOB_SIZE_X < GOB_SIZE_X ? row_bytes - gx * GOB_SIZE_X : GOB_SIZE_X;
         for (y = 0; y < rows; y++)
             for (x = 0; x < cols; x += GOB_RUN) {
-                u64 at = g * GOB_SIZE + gob_y_offset(y) + gob_x_offset(x);
+                u64 at = g * GOB_SIZE + gob_y_offset(y, native) + gob_x_offset(x, native);
                 memcpy(dst + at, src + at, cols - x < GOB_RUN ? cols - x : GOB_RUN);
             }
     }

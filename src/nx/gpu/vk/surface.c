@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
+#include "nx/hle/hle.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
@@ -771,12 +772,13 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen) {
         dst = tmp;
     }
     if (s->bl && surf_volume(s))
-        bl_land(dst, p, (u32)row, gh, surf_slices(s), bl_height(gh, s->bh), s->bd);
+        bl_land(dst, p, (u32)row, gh, surf_slices(s), bl_height(gh, s->bh), s->bd, g_hle.kernel.hw == SNX_HW_SWITCH2);
     else
         for (u32 layer = 0; layer < s->layers; layer++) {
             u8* layer_dst = dst + (u64)layer * s->layer_size;
             if (s->bl)
-                bl_land(layer_dst, p + (u64)layer * s->layer_size, (u32)row, gh, 1, bl_height(gh, s->bh), 0);
+                bl_land(layer_dst, p + (u64)layer * s->layer_size, (u32)row, gh, 1, bl_height(gh, s->bh), 0,
+                        g_hle.kernel.hw == SNX_HW_SWITCH2);
             else
                 for (u32 y = 0; y < gh; y++)
                     memcpy(layer_dst + (u64)y * s->pitch, p + (u64)layer * slice + y * row, row);

@@ -12,6 +12,8 @@
    Lane x of a workgroup is that k, so a GOB's 32 lanes read or write its 512 bytes in order, and each row's four
    runs (64 bytes) on the linear side are four neighboring lanes' worth. The workgroup's y lanes are two GOBs side by
    side: each linear row gets 128 bytes in a row from a workgroup.
+   Native GOBs exchange address bits 5 and 6, or run-index bits 1 and 2. Map the lane to the old
+   coordinate ordering, but keep its memory offset in lane order for coalesced block-linear accesses.
 
    Everything but k is the same for the GOB's 32 lanes: its block's place (a column of blocks, a row of blocks, a slab
    of 2^bd slices) and its place in the block. The host hands in the shifts and strides (vk/blocklinear.c), and
@@ -24,7 +26,9 @@
    reference checks every tail width and randomized layouts, both directions. */
 
 void main() {
-    uint k = gl_LocalInvocationID.x;
+    uint lane = gl_LocalInvocationID.x;
+    uint k = lane;
+    if (native_gob != 0u) k = (lane & ~6u) | ((lane & 2u) << 1) | ((lane & 4u) >> 1);
     uint run = ((gl_WorkGroupID.x * 2u + gl_LocalInvocationID.y) << 2) | ((k >> 1) & 1u) | ((k >> 3) & 2u);
     uint gy = gob_y0 + gl_WorkGroupID.y;
     /* the row relative to the first one moved: wraps past rows for the rows of the first GOB above y0, so one
@@ -33,7 +37,7 @@ void main() {
     if (run >= runs || y >= rows) return;
     uint z = z0 + gl_WorkGroupID.z;
     uint gob = ((z & dmask) << bh) | (gy & hmask);
-    uint bl = bl_bias + (z >> bd) * slab + (gy >> bh) * block_row + ((run >> 2) << bsh) + (gob << 5) + k;
+    uint bl = bl_bias + (z >> bd) * slab + (gy >> bh) * block_row + ((run >> 2) << bsh) + (gob << 5) + lane;
     uint lin = lin_bias + (gl_WorkGroupID.z * rows + y) * lin_runs + run;
     if (to_bl != 0u && run + 1u == runs && tail_mask[3] != 0xffffffffu) {
         uvec4 prior = dst[bl];

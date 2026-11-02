@@ -9,6 +9,7 @@
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/texture/blocklinear_spv.h" /* compiled from blocklinear.comp by the build (cmake/glsl.cmake) */
 #include "nx/runtime/platform/log.h"
+#include "nx/hle/hle.h"
 
 /* blocklinear.comp's push constants, member for member */
 typedef struct {
@@ -45,11 +46,18 @@ static void bl_init(void) {
                                    .pCode = blocklinear_spv};
     VkShaderModule module;
     if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &module))) fatal("vulkan: cannot load the block linear shader");
+    u32 native_gob = g_hle.kernel.hw == SNX_HW_SWITCH2;
+    VkSpecializationMapEntry entry = {0, 0, sizeof(native_gob)};
+    VkSpecializationInfo spec = {.mapEntryCount = 1,
+                                .pMapEntries = &entry,
+                                .dataSize = sizeof(native_gob),
+                                .pData = &native_gob};
     VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                                       .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                 .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                                                 .module = module,
-                                                .pName = "main"},
+                                                .pName = "main",
+                                                .pSpecializationInfo = &spec},
                                       .layout = g_bl_layout};
     if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_bl_pipe)))
         fatal("vulkan: cannot create the block linear compute pipeline");

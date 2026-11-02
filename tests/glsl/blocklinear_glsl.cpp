@@ -17,6 +17,7 @@ using namespace glsl;
 struct Mover : Invocation {
     uint runs, rows, lin_runs, y0, gob_y0, z0, bh, hmask, bd, dmask, bsh, block_row, slab, bl_bias, lin_bias, to_bl;
     uvec4 tail_mask;
+    uint native_gob;
     const uvec4* src;
     uvec4* dst;
 #include "nx/gpu/texture/blocklinear.glsl"
@@ -55,6 +56,7 @@ static void one(uint32_t row_bytes, uint32_t h, uint32_t d, uint32_t bh, uint32_
     uint64_t size = ((d + (1u << bd) - 1) >> bd) * slab;
     uint64_t lo = (uint64_t)(z0 >> bd) * slab + (uint64_t)((y0 >> 3) >> bh) * block_row;
     std::vector<glsl::uvec4> bl(size / 16 + pad), lin((size_t)lin_runs * rows * slices + lin_pad);
+    for (uint32_t native = 0; native < 2; native++)
     for (int to_bl = 0; to_bl < 2; to_bl++) {
         for (auto& v : bl) v = glsl::uvec4(random_word(), random_word(), random_word(), random_word());
         for (auto& v : lin) v = glsl::uvec4(random_word(), random_word(), random_word(), random_word());
@@ -68,6 +70,7 @@ static void one(uint32_t row_bytes, uint32_t h, uint32_t d, uint32_t bh, uint32_
                                   m.z0 = z0, m.bh = bh, m.hmask = (1u << bh) - 1, m.bd = bd, m.dmask = (1u << bd) - 1;
                                   m.bsh = 5 + bh + bd, m.block_row = (uint32_t)(block_row / 16);
                                   m.slab = (uint32_t)(slab / 16), m.to_bl = (uint32_t)to_bl;
+                                  m.native_gob = native;
                                   // the block linear buffer starts lo - pad * 16 bytes into the layout
                                   m.bl_bias = bl_bias, m.lin_bias = lin_pad;
                                   m.src = to_bl ? lin.data() : bl_bound;
@@ -85,6 +88,7 @@ static void one(uint32_t row_bytes, uint32_t h, uint32_t d, uint32_t bh, uint32_
             for (uint32_t y = 0; y < rows; y++)
                 for (uint32_t x = 0; x < (to_bl ? row_bytes : runs * 16); x++) {
                     uint64_t o = bl_offset(x, y0 + y, z0 + z, row_bytes, h, bh, bd);
+                    if (native) o = (o & ~96ull) | ((o & 32) << 1) | ((o & 64) >> 1);
                     uint64_t li = ((uint64_t)z * rows + y) * lin_runs * 16 + x;
                     moved[pad * 16 - lo + o] = 1;
                     lmoved[lin_pad * 16 + li] = 1;

@@ -39,6 +39,7 @@
 #include "nx/gpu/maxwell/fermi2d_regs.h"
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/gpu/renderer.h"
+#include "nx/hle/hle.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
@@ -230,7 +231,8 @@ int gmem_code_cut(u64 len, u64 cpu, u64 size) { return cpu < size && cpu < len +
    computed apart. The x part: the block column x falls in (x / 64, blocks are 2^(9 + bh + bd) bytes) and the byte's
    place in its GOB's row */
 static u64 bl_x(u32 x, u32 bh, u32 bd) {
-    return ((u64)(x >> GOB_SIZE_X_SHIFT) << (GOB_SIZE_SHIFT + bh + bd)) + gob_x_offset(x);
+    return ((u64)(x >> GOB_SIZE_X_SHIFT) << (GOB_SIZE_SHIFT + bh + bd)) +
+           gob_x_offset(x, g_hle.kernel.hw == SNX_HW_SWITCH2);
 }
 /* the (y, z) part: z's slab of 2^bd slices (each rows of blocks, gobs_x blocks to a row), the row of blocks y's GOB
    row gy falls in, the GOB's place in its block (slice z mod 2^bd, then GOB row gy mod 2^bh) and the row's place in
@@ -240,7 +242,8 @@ static u64 bl_yz(u32 y, u32 z, u32 wb, u32 h, u32 bh, u32 bd) {
     u64 rows = bl_block_rows(h, bh); /* rows of blocks in a slab */
     u64 block = bl_block_size(bh, bd);
     u64 in_block = ((((u64)z & ((1u << bd) - 1)) << bh) + (gy & ((1u << bh) - 1))) << GOB_SIZE_SHIFT;
-    return (((u64)(z >> bd) * rows + (gy >> bh)) * gobs_x) * block + in_block + gob_y_offset(y);
+    return (((u64)(z >> bd) * rows + (gy >> bh)) * gobs_x) * block + in_block +
+           gob_y_offset(y, g_hle.kernel.hw == SNX_HW_SWITCH2);
 }
 u64 bl_offset(u32 x_bytes, u32 y, u32 z, u32 width_bytes, u32 height, u32 bh_log2, u32 bd_log2) {
     return bl_x(x_bytes, bh_log2, bd_log2) + bl_yz(y, z, width_bytes, height, bh_log2, bd_log2);

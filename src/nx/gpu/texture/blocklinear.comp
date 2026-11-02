@@ -15,6 +15,9 @@
 /* a GOB's 32 runs on x, two GOBs side by side on y: 64 invocations, the size every vendor runs well */
 layout(local_size_x = 32, local_size_y = 2, local_size_z = 1) in;
 
+/* The console profile is fixed before this pipeline is made. */
+layout(constant_id = 0) const uint native_gob = 0u;
+
 /* the move's shape, in 16 byte runs (vk/blocklinear.c's BlParams, member for member) */
 layout(push_constant) uniform Params {
     uint runs;      /* runs moved in a row */
