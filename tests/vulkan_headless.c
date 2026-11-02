@@ -376,6 +376,59 @@ static void engine_clear(GpuChannel* ch, u32 v) {
     mx_draw_clear(ch->r3d, v, &c);
     vk_render_clear(&ch->ds, &c, &ch->owner);
 }
+/* Packed depth and stencil targets written back in the guest's layout (vk/depth_pack.c): each zeta format cleared to
+   depth 0.25 and stencil 0x5A, written back, and every pixel read from guest memory as its format lays one. They used
+   to stay on the GPU, so a copy of one through memory read zeros. 0.25 is 0x400000 in 24 bits with no tie to round */
+static int check_depth_writeback(void) {
+    static const struct {
+        u32 zeta, bpp, lo, hi;
+    } c[] = {
+        {0x19, 8, 0x3E800000u, 0x5Au}, /* Z32_FLOAT_X24S8: the float, then the stencil byte */
+        {0x14, 4, 0x4000005Au, 0},     /* Z24_UNORM_S8: the stencil in the low byte */
+        {0x16, 4, 0x5A400000u, 0},     /* S8Z24: the stencil in the high byte */
+        {0x15, 4, 0x00400000u, 0},     /* X8Z24 */
+    };
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    u32* r = ch->r3d;
+    float depth = 0.25f;
+    const u64 base = HEAP_BASE + 0xA00000; /* past the heap and the blit case's region */
+    CHECK(mem_map(base, 0x40000, MS_NORMAL, PERM_RW) == 0);
+    for (u32 k = 0; k < sizeof c / sizeof *c; k++) {
+        u64 gva = 0x9000000ull + (u64)k * 0x10000, cpu = base + (u64)k * 0x10000;
+        u8 out[16 * 16 * 8];
+        gmmu_map(gva, cpu, 0x10000);
+        memset(GP(cpu), 0, 0x10000);
+        r[0x54E] = 1;
+        r[0x3F8] = 0;
+        r[0x3F9] = (u32)gva;
+        r[0x3FA] = c[k].zeta;
+        r[0x3FB] = 0x1000; /* pitch linear */
+        r[0x3FC] = 512;
+        r[0x48A] = r[0x48B] = 16;
+        r[0x48C] = 1;
+        memcpy(&r[0x364], &depth, 4);
+        r[0x368] = 0x5A;
+        engine_clear(ch, 3);
+        vk_render_end();
+        CHECK(vk_rt_find(gva));
+        vk_rt_flush(gva);
+        CHECK(!gmem_read(gva, out, 16 * 16 * c[k].bpp));
+        for (u32 i = 0; i < 16 * 16; i++) {
+            u32 lo, hi = 0;
+            memcpy(&lo, out + i * c[k].bpp, 4);
+            if (c[k].bpp == 8) memcpy(&hi, out + i * 8 + 4, 4);
+            if (lo != c[k].lo || hi != c[k].hi) {
+                fprintf(stderr, "depth write-back of zeta %#x, pixel %u: %08x %08x, not %08x %08x\n", c[k].zeta, i, lo,
+                        hi, c[k].lo, c[k].hi);
+                return 1;
+            }
+        }
+    }
+    CHECK(mem_unmap(base, 0x40000) == 0);
+    free(ch);
+    return 0;
+}
 static int check_depth_array(void) {
     GpuChannel* ch = calloc(1, sizeof *ch);
     CHECK(ch);
@@ -1648,6 +1701,7 @@ int main(int argc, char** argv) {
     CHECK(!check_targetless_stores());
     CHECK(!check_packed_depth());
     CHECK(!check_depth_array());
+    CHECK(!check_depth_writeback());
     CHECK(!check_srgb_write());
     CHECK(!check_clear_load_op());
     CHECK(!check_sparse_while_submitting());
