@@ -256,6 +256,10 @@ int vk_uma_held(u64 cpu, u64 len);     /* one import holds guest memory [cpu, cp
 int vk_uma_can_place(void);
 int vk_uma_placed(int on);
 int vk_uma_placed_at(u64 cpu, u64 len);
+/* whether the device exports a chunk as a dma-buf (VK_KHR_external_memory_fd, VK_EXT_external_memory_dma_buf), told
+   before it is made: a view of the heap (MapMemory's) then maps the chunk's pages again, else it is a copy */
+void vk_uma_dmabuf(int has);
+int vk_uma_can_view(void);
 void vk_uma_settle(u64 ended);         /* a draw or dispatch begins: the ones before it recorded up to submit ended */
 u32 vk_uma_imports(u64 cpu, u64 size); /* the imports the driver holds over guest memory [cpu, cpu + size) (vk_lock) */
 /* the first import the driver holds over guest memory [cpu, end), on any thread: where it starts there, with where it

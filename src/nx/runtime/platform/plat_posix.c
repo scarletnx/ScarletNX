@@ -1362,6 +1362,16 @@ int plat_alias_unmap(u8* p, u64 size) {
     ww_remapped(p, size); /* the anonymous mapping is a new one too */
     return 0;
 }
+int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off) {
+    int r;
+    wp_hold(p, size, WP_MAPPED);
+    r = mmap(p, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, (off_t)off) == MAP_FAILED;
+    wp_let(p, size, WP_MAPPED, !r);
+    return r ? -1 : 0;
+}
+void plat_vm_fd_close(int fd) {
+    if (fd >= 0) close(fd);
+}
 int plat_alias_write(u64 off, const void* src, u64 size) {
     const u8* s = (const u8*)src;
     while (size) {

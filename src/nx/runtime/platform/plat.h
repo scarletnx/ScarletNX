@@ -144,6 +144,12 @@ int plat_alias_init(u64 size); /* 0, or -1 when the host has no pool */
 int plat_alias_map(u8* p, u64 off, u64 size);
 /* p back to the reservation's own memory, decommitted as plat_vm_decommit leaves it: 0, or -1 */
 int plat_alias_unmap(u8* p, u64 size);
+/* [off, off + size) of the file fd (a GPU memory object's dma-buf) at p in the reservation, shared, readable and
+   writable: 0, or -1 (and p as a failed MAP_FIXED leaves it: plat_alias_unmap gives the reservation back). No write
+   tracking registers it, as userfaultfd refuses a driver's mapping: the caller keeps it from the scans. Linux and
+   Android; -1 elsewhere */
+int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off);
+void plat_vm_fd_close(int fd);
 /* copies between host memory and the pool: 0, or -1 */
 int plat_alias_write(u64 off, const void* src, u64 size);
 int plat_alias_read(u64 off, void* dst, u64 size);

@@ -340,6 +340,14 @@ int plat_alias_unmap(u8* p, u64 size) {
     (void)size;
     return -1;
 }
+int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off) {
+    (void)p;
+    (void)size;
+    (void)fd;
+    (void)off;
+    return -1;
+}
+void plat_vm_fd_close(int fd) { (void)fd; }
 int plat_alias_write(u64 off, const void* src, u64 size) {
     (void)off;
     (void)src;

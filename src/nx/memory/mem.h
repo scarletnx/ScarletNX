@@ -141,13 +141,15 @@ int mem_movable(u64 a, u64 size);
    lock and the renderer's: commit makes it readable and writable and zero, 0, or -1 when the window isn't the
    renderer's (host pages then); decommit makes it inaccessible, 1, or 0 when it isn't the renderer's; held tells
    whether a page of [a, a + size), any windows, is the renderer's. Its pages are never moved into the alias pool nor
-   into a GPU's buffer (mem_migrate), and a window with pages in one is never the renderer's: a view of them is a
-   copy, and the GPU's results over them aren't trapped */
+   into a GPU's buffer (mem_migrate), a window with pages in one is never the renderer's, and the GPU's results over
+   them aren't trapped: a view of them (MapMemory's, code memory's) is view(dst, src, size), the same pages mapped at
+   free dst again, 0, or -1 when it can't be (a copy then) */
 #define MEM_PLACED (2ull << 20)
 typedef struct {
     int (*commit)(u64 a, u64 size);
     int (*decommit)(u64 a, u64 size);
     int (*held)(u64 a, u64 size);
+    int (*view)(u64 dst, u64 src, u64 size);
 } MemPlaced;
 void mem_set_placed(const MemPlaced* p);
 int mem_set_state(u64 addr, u64 size, u32 state, u32 perm);
