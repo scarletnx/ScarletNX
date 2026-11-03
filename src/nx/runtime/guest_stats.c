@@ -53,6 +53,7 @@ void guest_stats_svc(u32 ix, u32 imm) {
     bump(ix, &g_guest_stats.slot[ix].svc[imm < SNX_SVC_COUNT ? imm : SNX_SVC_COUNT]);
 }
 void guest_stats_add(u32 ix, unsigned what) { bump(ix, &g_guest_stats.slot[ix].count[what]); }
+u64* guest_stats_counter(u32 ix, unsigned what) { return &g_guest_stats.slot[ix].count[what]; }
 void guest_stats_hook(u32 ix, unsigned family) { bump(ix, &g_guest_stats.slot[ix].hook[family]); }
 unsigned guest_stats_family(const char* name) {
     unsigned i;
@@ -231,12 +232,13 @@ void guest_stats_log(u64 now_ns, u64 presents) {
                                (unsigned long long)w.hook[top[i]]);
     if (!at) snprintf(list, sizeof list, " none");
     {
-        u64 outcalls = w.count[GSTAT_NCE_SVC] + w.count[GSTAT_NCE_TICKS] + w.hooks + w.count[GSTAT_NCE_TRAP];
-        LOG("nce: in those %.2f s, %llu outcalls (%.0f a second): %llu SVCs, %llu counter reads, %llu calls of hooked "
-            "functions (by family:%s), %llu returns of native runs; %llu native runs started, %llu kicks\n",
+        u64 outcalls = w.count[GSTAT_NCE_SVC] + w.hooks + w.count[GSTAT_NCE_TRAP];
+        LOG("nce: in those %.2f s, %llu outcalls (%.0f a second): %llu SVCs, %llu calls of hooked functions (by "
+            "family:%s), %llu returns of native runs; %llu counter reads in their stubs, %llu native runs started, %llu "
+            "kicks\n",
             seconds(w.ns), (unsigned long long)outcalls, (double)outcalls * 1e9 / (double)w.ns,
-            (unsigned long long)w.count[GSTAT_NCE_SVC], (unsigned long long)w.count[GSTAT_NCE_TICKS],
-            (unsigned long long)w.hooks, list, (unsigned long long)w.count[GSTAT_NCE_TRAP],
+            (unsigned long long)w.count[GSTAT_NCE_SVC], (unsigned long long)w.hooks, list,
+            (unsigned long long)w.count[GSTAT_NCE_TRAP], (unsigned long long)w.count[GSTAT_NCE_TICKS],
             (unsigned long long)w.count[GSTAT_NCE_RUN], (unsigned long long)w.count[GSTAT_NCE_KICK]);
     }
 }

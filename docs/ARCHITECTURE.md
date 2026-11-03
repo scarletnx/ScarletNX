@@ -271,7 +271,8 @@ Each module moves up to leave a pool for its stubs after it, in the reach of a B
 `<game>.nce`. With that file, the runtime reserves the guest's address space at the guest's own addresses (`g_mem` is
 0, and all of it is executable; on Android the whole layout first moves above 64 GiB), and patches the code after
 the load (`nce.c`). A stub calls the outcall of `nce_host.c`. The outcall
-puts the guest's state in its `CPU`, and calls the runtime on the host's stack through `RtAPI` (svcs, ticks, poll).
+puts the guest's state in its `CPU`, and calls the runtime on the host's stack through `RtAPI` (svcs, poll). A read
+of the counter registers is made in its stub, from the host's counter, which guest time then follows.
 A run of native code starts from the whole `CPU` through a signal that the thread sends to itself, and sigreturn
 loads it. The same signal resumes the guest after a kick (another signal) stopped it for `CPU.poll`, or after
 `SIGILL` or `SIGTRAP`. A hook or NVN takes a function as in the recompiled code, by its dispatch slot. Under NCE,

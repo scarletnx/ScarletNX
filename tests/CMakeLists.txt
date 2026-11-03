@@ -2077,7 +2077,8 @@ add_test(NAME nce_patch COMMAND snx-test-nce-patch "${CMAKE_CURRENT_BINARY_DIR}"
 # it runs under qemu-aarch64. Without them there is no such test
 set(SNX_AARCH64_SYSROOT "" CACHE PATH "A glibc sysroot of aarch64-linux-gnu, for the NCE test under qemu-aarch64")
 set(SNX_AARCH64_GCC_TOOLCHAIN "" CACHE PATH "The GCC toolchain of SNX_AARCH64_SYSROOT (Clang's --gcc-toolchain)")
-set(nce_host_sources "${CMAKE_CURRENT_SOURCE_DIR}/nce_host.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_host.c")
+set(nce_host_sources "${CMAKE_CURRENT_SOURCE_DIR}/nce_host.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_host.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/clock.c")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
     # twice: as Linux runs it, and in Android's indirect form (TLS_SLOT_APP), with an initial-exec pointer as the word
     foreach(form "" "-indirect")

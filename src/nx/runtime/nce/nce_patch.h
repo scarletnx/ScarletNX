@@ -18,7 +18,7 @@ typedef enum {
     NCE_TPIDRRO,   /* MRS Xt, TPIDRRO_EL0: CPU.tpidrro */
     NCE_TPIDR,     /* MRS Xt, TPIDR_EL0: CPU.tpidr */
     NCE_TPIDR_SET, /* MSR TPIDR_EL0, Xt: CPU.tpidr */
-    NCE_TICKS,     /* MRS Xt, CNTPCT_EL0 or CNTVCT_EL0: guest_ticks, through an outcall */
+    NCE_TICKS,     /* MRS Xt, CNTPCT_EL0 or CNTVCT_EL0: guest_ticks, from the host's counter in the stub (NceEnv) */
     NCE_FREQ,      /* MRS Xt, CNTFRQ_EL0: the console's 19.2 MHz */
     NCE_EXCLUSIVE, /* LDXR, STXR, LDXP, STXP: made ordered in place, with no stub */
     NCE_HOOK       /* the entry of a function that the runtime hooks: an outcall (nce_divert), never in a scan */
@@ -27,8 +27,7 @@ typedef enum {
 /* the frequency of the console's system counter */
 #define NCE_CNTFRQ 19200000u
 
-/* the outcall's x16: the kind in bits 16 and up, the SVC number, the register of NCE_TICKS or the divert's index in
-   the low 16 */
+/* the outcall's x16: the kind in bits 16 and up, the SVC number or the divert's index in the low 16 */
 #define NCE_OUTCALL(kind, imm) (((SnxU64)(kind) << 16) | ((SnxU64)(imm) & 0xFFFFu))
 
 /* the kind of word, NCE_NONE for one that runs as it is. reg: Rt; imm: the SVC's number */
@@ -54,14 +53,18 @@ typedef struct {
 void nce_find_sites(const SnxCodegen* codegen, NceSites* out);
 void nce_sites_free(NceSites* sites);
 
-/* what the stubs need of the runtime. tls: the distance from the host's TPIDR_EL0 to the thread-local CPU pointer
-   (nce_host.c), below 16 MiB and a multiple of 8. With indirect, the word there holds a pointer to the thread's block,
-   whose first word is the CPU pointer: tls is then below 32 KiB, an LDR's reach (Android's TLS_SLOT_APP, nce_host.c).
-   outcall: the host address of nce_outcall */
+/* what the stubs need of the runtime. tls: the distance from the host's TPIDR_EL0 to the thread's block (nce_host.c),
+   whose first word is the thread's CPU pointer and whose word at NCE_TLS_READS points to its count of counter reads;
+   below 16 MiB and a multiple of 8. With indirect, the word there holds a pointer to the block: tls is then below 32
+   KiB, an LDR's reach (Android's TLS_SLOT_APP, nce_host.c). outcall: the host address of nce_outcall. clock: the
+   address of the guest clock's two words, frozen and then start, and ns_lo, ns_hi and ns_origin its reading in the
+   host's counter: cnt * ns_hi + (cnt * ns_lo >> 64) - ns_origin nanoseconds (runtime/clock.h's ClockCounter) */
 typedef struct {
     SnxU64 tls, outcall;
     int indirect;
+    SnxU64 clock, ns_lo, ns_hi, ns_origin;
 } NceEnv;
+#define NCE_TLS_READS 16
 
 /* where stubs go: size bytes at buf, which the guest sees at addr. used grows, a multiple of 8 */
 typedef struct {
@@ -69,7 +72,10 @@ typedef struct {
     SnxU64 addr, size, used;
 } NcePool;
 
-/* the bytes of the stub of kind, 0 for NCE_EXCLUSIVE */
+/* the bytes of the stub of kind, 0 for NCE_EXCLUSIVE. NCE_TICKS's reads the guest clock as guest_ticks does
+   (runtime/clock.c), with no outcall: the host's counter, after an ISB as Linux's vDSO reads it so that no read goes
+   back against another, made nanoseconds and then 19.2 MHz ticks, or the time a pause stopped the clock at, and adds
+   one to the thread's count. It needs NceEnv.clock */
 SnxU64 nce_stub_size(NceKind kind);
 /* the stub of site, in the first pool that has room for it and that it and its return branch reach. *patch: the
    word that goes at site->addr (NCE_EXCLUSIVE: the ordered form, with no stub). 0, or -1 with no pool in reach */

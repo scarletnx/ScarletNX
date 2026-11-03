@@ -2,11 +2,20 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # NCE (native code execution)
 
+## Index
+
+* [The thread's CPU: TLS_SLOT_APP](#the-threads-cpu-tls_slot_app)
+  * [Before Android 10](#before-android-10)
+* [The guest's addresses: moved above 64 GiB](#the-guests-addresses-moved-above-64-gib)
+* [The system counter: read in its stub](#the-system-counter-read-in-its-stub)
+* [Against the recompiled code](#against-the-recompiled-code)
+* [Tests](#tests)
+
 On an AArch64 host the game's 64-bit code can run on the host's CPU (`src/nx/runtime/nce/`, the setting `nce`). The
 recompile makes no code ahead of time: it writes `<game>.nce`, the words to patch (SVC, the TLS and counter
 registers, the exclusives) and the pools for their stubs. The runtime maps the guest at the host's own addresses and
 patches the code after the load. [Architecture](./ARCHITECTURE.md) has the flow; this page has the two design calls
-the Android port rests on, their limits, and how a run measures it.
+the Android port rests on, the counter's stub, their limits, and how a run measures it.
 
 | Host | NCE |
 |---|---|
@@ -72,6 +81,23 @@ The path for the 36-bit games is to run the runtime outside ART: an executable c
 already is (`libscarletnx-run.so`), whose low addresses are free. The window would come from the app over a socket
 (`AHardwareBuffer`). Built for API 29, such an executable could also take static TLS.
 
+## The system counter: read in its stub
+
+The SDK's system tick is the game reading the counter register itself (`MRS CNTPCT_EL0` or `CNTVCT_EL0`), which a game
+that times its work closely does often. Its stub makes no outcall: it reads the host's virtual counter after an `ISB`,
+as Linux's vDSO reads it, makes it nanoseconds with a 64.64 factor of the host's frequency (Eden's `WriteCntpctHandler`
+scales it the same way), takes away the guest clock's start (or reads where a pause stopped the clock), and makes
+19.2 MHz ticks as `guest_ticks` does (`runtime/clock.c`). So that these reads and `svcGetSystemTick`, which still goes
+through an outcall, never go back against each other, guest time under NCE follows the host's counter too
+(`clock_from_counter`), from where it was when NCE started, in the stub's arithmetic.
+
+Limits:
+
+- Guest time then follows the counter, not `plat_ns` (SDL's clock). They drift apart by the kernel's rounding of the
+  counter's frequency, which was not measured; what puts guest time beside `plat_ns` (`g_t0_ns`) sees that drift.
+- The stub is 176 bytes, an outcall's 56. A `.nce` of version 2 has pools sized for the outcall, so it is refused
+  and the game has to be recompiled.
+
 ## Against the recompiled code
 
 The renderer's first present and every 600 after log what the game's threads cost the host (`runtime/guest_stats.c`),
@@ -79,9 +105,9 @@ the same whichever way the code runs, so runs with `nce=1` and `nce=0` (each rec
 compare window by window. `cpu:` gives the game's threads' time on the host's processors, in all, per present and for
 the busiest, beside the whole process's (native code changes the first; the frame rate only when the processors set
 it), then the SVCs by number and the calls the dispatch table had no code for (RtAPI.miss). Under NCE, `nce:` gives
-the outcalls by kind (SVC, counter, a hooked function's by family, a native run's return), the native runs started
-and the kicks: an outcall saves and loads the guest's registers, and a run or a kick is a signal. Each thread adds to
-counters of its own, with no lock.
+the outcalls by kind (SVC, a hooked function's by family, a native run's return), the counter reads that their stubs
+made with no outcall, the native runs started and the kicks: an outcall saves and loads the guest's registers, and a
+run or a kick is a signal. Each thread adds to counters of its own, with no lock.
 
 ## Tests
 
@@ -89,7 +115,9 @@ counters of its own, with no lock.
   games each host takes (`nce_refused`).
 - `nce_host` and `nce_host_indirect`: guest code runs natively in the direct form and in Android's. They run on an
   AArch64 Linux host, or under qemu-aarch64 with `SNX_AARCH64_SYSROOT` (and `SNX_AARCH64_GCC_TOOLCHAIN`,
-  `SNX_QEMU_AARCH64`). The indirect one also takes a word another library holds and checks the refusal.
+  `SNX_QEMU_AARCH64`). The indirect one also takes a word another library holds and checks the refusal. The counter's
+  stubs read between `guest_ticks` before and after them, keep their scratch registers, count each read, and read
+  where a pause stopped the clock.
 - `guest_stats`, any host: a window's SVCs, misses, outcalls and families, a thread's time read from another thread,
   and the lines that say them.
 - `memory_accounting`: the 48 GiB tier moved past a page held at 65 GiB, its regions, a mapping there, and a 36-bit

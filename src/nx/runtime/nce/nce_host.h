@@ -60,9 +60,10 @@ int nce_host_init(const NceHostConfig* config, u64* tls, int* indirect, u64* out
 /* whether this thread can run NCE, before anything is reserved for it: on Android the API level (29 or later) and the
    thread's word that the stubs read (TLS_SLOT_APP: 0, or this layer's). 0, or -1 with what was found in why */
 int nce_host_check(char* why, size_t size);
-/* this host thread runs c's guest code from here: before its first nce_host_run. 0, or -1 with the reason in why when
-   another library of the process holds the thread's word that the stubs read */
-int nce_host_attach(CPU* c, char* why, size_t size);
+/* this host thread runs c's guest code from here: before its first nce_host_run. reads: the thread's count of counter
+   reads, which the stubs of NCE_TICKS add to. 0, or -1 with the reason in why when another library of the process
+   holds the thread's word that the stubs read */
+int nce_host_attach(CPU* c, u64* reads, char* why, size_t size);
 /* this host thread's id, which nce_host_kick takes */
 int nce_host_tid(void);
 /* the guest code that thread tid runs, if it runs any, stops and calls preempted. Any thread */
