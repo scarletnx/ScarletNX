@@ -70,9 +70,13 @@ content is.
 
 An encrypted CIA, as a console dump is, is decrypted once with the user's own keys
 into a copy beside the title's folder (`<folder>.decrypted.cia`, published only
-complete), which is read from then on (`src/3ds/loader/decrypt.c`). The keys are an `aes_keys.txt` in Azahar's
-format, looked for in `~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows) as
-the Switch driver looks in `~/.switch`, or named with `--keys FILE`. They are
+complete), which is read from then on (`src/3ds/loader/decrypt.c`). The keys are an `aes_keys.txt` (Azahar's format,
+or the plain key dumps that call the constant `generator=` rather than `generatorConstant=`; GodMode9 itself keeps
+its keys in a binary `aeskeydb.bin` and writes no `aes_keys.txt`), looked for in
+`~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows) as
+the Switch driver looks in `~/.switch`, or named with `--keys FILE`; the launcher's
+**Install Keys** installs it there too (docs/GUI.md). Only encrypted 3DS files need it: a decrypted or homebrew 3DS
+game runs without an `aes_keys.txt`. The keys are
 never part of ScarletNX. Both layers come off: each content's AES-CBC under the
 ticket's title key (itself under the common key), and the NCCH's AES-CTR under
 the primary key (slot 0x2C) and the secondary one its crypto method names (0x2C,
