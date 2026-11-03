@@ -146,16 +146,15 @@ int shader_direct_image_slot(const ShaderInfo* info, u32 off, int bindless, u32 
     return slot;
 }
 
-/* The 2D texture slot a TXQ queries, bound or by a tracked handle, when nothing else says what the texture is
-   (shader_direct_query_type). */
+/* The texture slot a TXQ queries, bound or by a tracked handle, when nothing else says what the texture is
+   (shader_direct_query_type): of the type the key's hint gave it (ShaderInfo.tex_query_hint), 2D without one */
 int shader_direct_query_slot(const ShTex* textures, int count, u32 off, int bindless, u32 bank, int handle_count,
                              u32 bank2, u32 off2, u32 indexed, u32 ldc) {
     int slot = 0;
-    while (
-        slot < count &&
-        (textures[slot].cbuf_off != off || textures[slot].type != 1 || textures[slot].array || textures[slot].shadow ||
-         (textures[slot].flags & 3) || textures[slot].bindless != bindless ||
-         (bindless && !shader_direct_bindless_matches(&textures[slot], bank, handle_count, bank2, off2, indexed, ldc))))
+    while (slot < count && (textures[slot].cbuf_off != off || textures[slot].shadow || (textures[slot].flags & 3) ||
+                            textures[slot].bindless != bindless ||
+                            (bindless && !shader_direct_bindless_matches(&textures[slot], bank, handle_count, bank2,
+                                                                         off2, indexed, ldc))))
         slot++;
     return slot;
 }
@@ -757,9 +756,14 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         if (!indexed && shader_direct_query_type(insn, n, bindless, bank, off, &qtype, &qarray))
             slot = shader_direct_typed_slot(textures, texture_count, off, qtype, qarray, 0, 0, bindless, bank,
                                             handle_count, bank2, off2, indexed, ldc);
-        else
+        else {
             slot = shader_direct_query_slot(textures, texture_count, off, bindless, bank, handle_count, bank2, off2,
                                             indexed, ldc);
+            if (slot < texture_count) { /* the key's hint typed it (tex_query_hint); 2D without one */
+                qtype = textures[slot].type;
+                qarray = textures[slot].array;
+            }
+        }
         if (textures[slot].flags & SNX_TEX_INDEXED) shader_direct_swap_element(c, slot);
         /* a 3D texture's depth, or an array's layers, is the third component; a 1D texture is bound as a 2D one of
            height 1, a cube's faces are no layers */

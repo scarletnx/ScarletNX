@@ -257,10 +257,10 @@ static u64 arena_alloc(u64 size) {
    own two-query pool, so a landed batch's results survive the batches recorded after it */
 static VkQueryPool g_cqpool;
 static u16 g_cq0, g_cq1;
-static u64 g_cq_ep;        /* the connection the batch's begin went out on */
-static i64 g_cs_cal_prev;  /* the client's clock at the track's last calibration pair */
-static u64 g_cs_cal_conn;  /* the connection that baseline was taken on */
-static int g_cs_cal_ok;    /* the context was announced calibrated, so calibration events are for it */
+static u64 g_cq_ep;       /* the connection the batch's begin went out on */
+static i64 g_cs_cal_prev; /* the client's clock at the track's last calibration pair */
+static u64 g_cs_cal_conn; /* the connection that baseline was taken on */
+static int g_cs_cal_ok;   /* the context was announced calibrated, so calibration events are for it */
 /* the landed batch's timestamps onto the track: the context announced at its first read-back (with the calibration
    clock's pair for its anchor when it has one), then calibrated or anchored, then the pair of timestamps its zone
    went out with */
@@ -418,8 +418,8 @@ static void cs_put_aside(void) {
         VkDescriptorPoolCreateInfo dci = {0};
         VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &b->cb));
 #if defined(SNX_TRACY)
-        VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
-                                    .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 2};
+        VkQueryPoolCreateInfo qi = {
+            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 2};
         VK_OK(vkCreateQueryPool(g_vk.dev, &qi, NULL, &b->qpool));
 #endif
         vk_pool_sizes(sz, 1024);
@@ -515,8 +515,10 @@ int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     for (int i = 0; i < g_nout; i++) {
         CsOut* o = &g_out[i];
         if (gva >= o->addr + o->size || o->addr >= gva + len) {
-            if (vk_backing_overlap(gva, len, o->addr, o->size)) cs_land();
-            else continue;
+            if (vk_backing_overlap(gva, len, o->addr, o->size))
+                cs_land();
+            else
+                continue;
             return 0;
         }
         /* partly covered, or at an offset that suits no use of it (index, storage and uniform buffers): it lands */
@@ -537,8 +539,10 @@ int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         for (int i = 0; i < b->nout; i++) {
             CsOut* o = &b->out[i];
             if (gva >= o->addr + o->size || o->addr >= gva + len) {
-                if (vk_backing_overlap(gva, len, o->addr, o->size)) cs_land();
-                else continue;
+                if (vk_backing_overlap(gva, len, o->addr, o->size))
+                    cs_land();
+                else
+                    continue;
                 return 0;
             }
             if (gva < o->addr || gva + len > o->addr + o->size ||
@@ -606,10 +610,10 @@ static void cs_mem_need(u64 a, u64 n) {
         }
         while (found && g_ptail != last) cs_land_oldest();
         for (int i = 0; i < g_nout; i++)
-                if (vk_backing_overlap(a, n, g_out[i].addr, g_out[i].size)) {
-                    cs_land();
-                    break;
-                }
+            if (vk_backing_overlap(a, n, g_out[i].addr, g_out[i].size)) {
+                cs_land();
+                break;
+            }
     }
 }
 void vk_compute_mem_need(u64 a, u64 n) {
@@ -641,6 +645,7 @@ void vk_compute_mem_need_map(u64 a, u64 n) {
 typedef struct {
     u64 tex_int, tex_sint, tex_rect;
     u32 image, image_sint;
+    u8 query[SH_MAXTEX]; /* the dimension of each texture only a TXQ names (ShaderInfo.tex_query_hint) */
 } CsKey;
 static CsPipe g_cs_alloc_failed = {.failed = 1}; /* out of memory: not cached, retried */
 static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k) {
@@ -649,6 +654,7 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k)
               ((u64)lz << 56) ^ ((u64)shm << 20) ^ ((u64)k.image << 32) ^ (u64)k.tex_int * 0x9E3779B97F4A7C15ull ^
               (u64)k.tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k.image_sint * 0xA24BAED4963EE407ull ^
               (u64)k.tex_rect * 0x165667B19E3779F9ull;
+    for (u32 q = 0; q < SH_MAXTEX; q++) key ^= (u64)k.query[q] * (0x9E3779B97F4A7C15ull + 2 * q + 1) << (q & 15);
     CsPipe* p = g_csp[key & 255];
     while (p && (p->key != key || !vk_cb_reads_hold(&p->cbr, cs_cb_read))) p = p->next;
     if (p) return p;
@@ -689,6 +695,7 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k)
     p->si.tex_int_mask = k.tex_int;
     p->si.tex_sint_mask = k.tex_sint;
     p->si.tex_rect_mask = k.tex_rect;
+    memcpy(p->si.tex_query_hint, k.query, sizeof p->si.tex_query_hint);
     const char* corpus = vk_corpus_dir();
     if (corpus) shader_corpus_save(corpus, code, blen, 0x10000 + 80, ST_CS, &p->si, key);
     size_t nw = 0;
@@ -1003,6 +1010,9 @@ void vk_dispatch(const DispatchState* d) {
                 h |= h2;
             vk_gmem_words(tic_key_base + (h & 0xFFFFF) * 32ull, tic, 8);
             if (vk_tic_unnormalized(tic) == 1) ck.tex_rect |= 1ull << i;
+            /* a texture only a TXQ names: translated as a 2D query until the header says what it is (a 3D
+               query answers its depth, which a 2D slot can't) */
+            if (p->si.tex_query_mask >> i & 1) ck.query[i] = vk_tic_query_hint(tic);
             if (st->shadow) continue;
             /* by the header alone: textures are resolved only when bound, a color texture's surface has its header's
                number type, and depth isn't sampled here */
@@ -1021,10 +1031,13 @@ void vk_dispatch(const DispatchState* d) {
             if (vk_image_key(&p->si, i, tic)) ck.image |= 1u << i;
             if (vk_tex_num(tic, NULL) == 2) ck.image_sint |= 1u << i;
         }
-    if (ck.tex_int || ck.image || ck.image_sint || ck.tex_rect) {
+    int queried = 0;
+    for (i = 0; i < SH_MAXTEX; i++) queried |= ck.query[i] != 0;
+    if (ck.tex_int || ck.image || ck.image_sint || ck.tex_rect || queried) {
         if (!p->keyed || (p->keyed->si.rt_int_mask >> 8) != ck.image || p->keyed->si.tex_int_mask != ck.tex_int ||
             p->keyed->si.tex_sint_mask != ck.tex_sint || (p->keyed->si.rt_sint_mask >> 8) != ck.image_sint ||
-            p->keyed->si.tex_rect_mask != ck.tex_rect) {
+            p->keyed->si.tex_rect_mask != ck.tex_rect ||
+            memcmp(p->keyed->si.tex_query_hint, ck.query, sizeof ck.query) != 0) {
             static u8 keyed_code[0x10000 + 80];
             cs_read_code(pa, keyed_code);
             p->keyed = cs_pipe(keyed_code, lx, ly, lz, shm, ck);
@@ -1036,8 +1049,7 @@ void vk_dispatch(const DispatchState* d) {
         return;
     }
     int needs_unformatted_image = 0;
-    for (i = 0; i < p->si.nimg; i++)
-        needs_unformatted_image |= p->si.img[i].kind != 1;
+    for (i = 0; i < p->si.nimg; i++) needs_unformatted_image |= p->si.img[i].kind != 1;
     if (needs_unformatted_image && !g_vk.feat.shaderStorageImageWriteWithoutFormat) {
         LOG_LIMIT(1, "vulkan: storage image writes need shaderStorageImageWriteWithoutFormat (skipped)\n");
         g_cs_skips[CS_SKIP_FEATURE]++;
@@ -1310,9 +1322,8 @@ rebind:
                       : !((p->si.tex_int_mask >> i) & 1) ? 0
                       : ((p->si.tex_sint_mask >> i) & 1) ? 2
                                                          : 1;
-            VkImageView v =
-                t && (!t->f.depth || vk_tic_reads_stencil(tic)) ? vk_tex_bind_view(t, want, tic, tsc, num)
-                                                                : VK_NULL_HANDLE;
+            VkImageView v = t && (!t->f.depth || vk_tic_reads_stencil(tic)) ? vk_tex_bind_view(t, want, tic, tsc, num)
+                                                                            : VK_NULL_HANDLE;
             VkImageLayout sampled_layout =
                 p->si.nimg ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             const Surf* sampled = v ? t : NULL; /* the texture whose own view is bound, for the sampler */
@@ -1526,7 +1537,8 @@ rebind:
             if (snx_tracy_attached() && g_vk.props.limits.timestampComputeAndGraphics) {
                 if (!g_cqpool) {
                     VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
-                                                .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 2};
+                                                .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                                .queryCount = 2};
                     vkCreateQueryPool(g_vk.dev, &qi, NULL, &g_cqpool);
                 }
                 if (g_cqpool) {

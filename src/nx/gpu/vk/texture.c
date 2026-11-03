@@ -307,8 +307,7 @@ static int level_upload_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 l
             for (u32 y = 0; y < th; y += n) {
                 u32 rows = th - y < n ? th - y : n, slices = ld - z < nz ? ld - z : nz;
                 VkBlMove m = {rowb, th, lbh, lbd, y, rows, z, slices, pitch, lv->gobs_x};
-                if (!stage_bl(&m, gva, lsz, &staged, &staged_at) ||
-                    !up_move(u, lv, &m, staged, staged_at, z, y))
+                if (!stage_bl(&m, gva, lsz, &staged, &staged_at) || !up_move(u, lv, &m, staged, staged_at, z, y))
                     return 0;
             }
         return 1;
@@ -471,10 +470,10 @@ static int tex_upload_(Surf* t) {
     g_tex_uploads++;
     if (!t->bricks) g_tex_upload_bytes += t->size; /* a brick at a time for the others */
     t->upload_valid = 0;
-    t->wgen = vk_surf_gen();      /* even a new texture at a reused address invalidates an old target's copy */
-    t->took_drawn = 0;            /* memory's own texels again, until tex_take_drawn copies targets in */
+    t->wgen = vk_surf_gen(); /* even a new texture at a reused address invalidates an old target's copy */
+    t->took_drawn = 0;       /* memory's own texels again, until tex_take_drawn copies targets in */
     vk_surf_relist(t);
-    vk_render_end();              /* copies and clears happen outside rendering passes */
+    vk_render_end();                                     /* copies and clears happen outside rendering passes */
     if (t->msaa) return t->upload_valid = vk_ms_load(t); /* its samples drawn from the guest's layout of them */
     if (t->bricks) return t->upload_valid = resident_upload(t);
     VkCommandBuffer cb = vk_cmd();
@@ -702,7 +701,8 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
         ii.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
         t->storage_capable = 1;
     }
-    if (type != VK_IMAGE_VIEW_TYPE_3D && layers >= 6 && w == h && !msaa) ii.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    if (type != VK_IMAGE_VIEW_TYPE_3D && layers >= 6 && w == h && !msaa)
+        ii.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     VkViewFormats vf;
     vk_view_formats(&ii, &vf, raw);
     if (holes && resident_image(t, &ii)) {
@@ -754,11 +754,11 @@ static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) {
         c->f = f;
         c->fkey = rt->fkey;
         c->type = rt->type;
-        c->is_rt = 1; /* sampled like one; not in the table, so never found as one */
+        c->is_rt = 1;       /* sampled like one; not in the table, so never found as one */
         c->msaa = rt->msaa; /* a multisampled target's copy has its samples, which a copy takes as they are */
         c->layout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (c->msaa && !vk_ms_supported(f.vk, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0,
-                                        c->msaa)) {
+        if (c->msaa &&
+            !vk_ms_supported(f.vk, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0, c->msaa)) {
             free(c);
             return rt;
         }
@@ -806,8 +806,8 @@ static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) {
         r[1] = r[0];
         r[1].srcSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
         r[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
-        rec_CmdCopyImage(cb, rt->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, c->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       rt->f.stencil ? 2 : 1, r);
+        rec_CmdCopyImage(cb, rt->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, c->img,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rt->f.stencil ? 2 : 1, r);
         c->crop_gen = rt->wgen;
     }
     return c;
@@ -1241,6 +1241,24 @@ static Surf* tex_check(Surf* t, u64 gva) {
         }
     }
     return t->upload_valid ? t : NULL;
+}
+/* the dimension of the texture a header describes, as ShaderInfo.tex_query_hint keys a TXQ's texture on it: 1 + its
+   ShTex type (0 1D, 1 2D, 2 3D, 3 cube), + 4 for an array (a 2D header of several slices is one, as tic_view_type
+   binds it) */
+u8 vk_tic_query_hint(const u32* tic) {
+    TicFields tf;
+    tic_decode(tic, &tf);
+    switch (tf.type) {
+        case 0: return 1;         /* 1D */
+        case 2: return 1 + 2;     /* 3D */
+        case 3: return 1 + 3;     /* cube */
+        case 4: return 1 + 4;     /* 1D array */
+        case 5: return 1 + 1 + 4; /* 2D array */
+        case 8: return 1 + 3 + 4; /* cube array */
+        case 1:
+        case 7: return tf.depth > 1 ? 1 + 1 + 4 : 1 + 1; /* 2D, and 2D of several slices */
+    }
+    return 1 + 1; /* a buffer: queried as 2D, as before */
 }
 static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
     TicFields tf;
@@ -1798,10 +1816,10 @@ static void tex_take_drawn(Surf* t) {
         /* a multisampled target read as a single-sampled texture of its samples' size, the guest's layout of them
            (gpu/vk/msaa.c: a program resolving the samples itself): each layer's samples unpacked into that layout and
            copied into the texture's first level. A multisampled texture takes nothing of targets: memory has them */
-        if (s->msaa && !t->msaa && s->gva == t->gva && t->type != VK_IMAGE_VIEW_TYPE_3D && !t->f.depth &&
-            !s->f.depth && t->f.bw == 1 && s->f.bpp == t->f.bpp && t->w == s->w << ds_msaa_log2_x(s->msaa) &&
-            t->h == s->h << ds_msaa_log2_y(s->msaa) && (s->layers == 1 || s->layer_size == stride) &&
-            vk_ms_moves(s) && !copied_into(s, t) && vk_rt_drawn_fresh(s)) {
+        if (s->msaa && !t->msaa && s->gva == t->gva && t->type != VK_IMAGE_VIEW_TYPE_3D && !t->f.depth && !s->f.depth &&
+            t->f.bw == 1 && s->f.bpp == t->f.bpp && t->w == s->w << ds_msaa_log2_x(s->msaa) &&
+            t->h == s->h << ds_msaa_log2_y(s->msaa) && (s->layers == 1 || s->layer_size == stride) && vk_ms_moves(s) &&
+            !copied_into(s, t) && vk_rt_drawn_fresh(s)) {
             u32 count = s->layers < t->layers ? s->layers : t->layers;
             vk_render_end();
             VkCommandBuffer cb = vk_cmd();
@@ -1853,7 +1871,7 @@ static void tex_take_drawn(Surf* t) {
                                VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                     rec_CmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, mid,
-                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_NEAREST);
+                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_NEAREST);
                     vk_barrier(cb, mid, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT,
                                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
@@ -1863,7 +1881,7 @@ static void tex_take_drawn(Surf* t) {
                                      .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                      .extent = {t->w, t->h, t->depth3d}};
                     rec_CmdCopyImage(cb, mid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img,
-                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
                     vk_defer_image(mid, mm, VK_NULL_HANDLE, VK_NULL_HANDLE); /* freed once the frame is done */
                 } else
                     copy_layers(cb, s, t, 0, 0, t->depth3d, t->w, t->h, 1);
@@ -1888,8 +1906,8 @@ static void tex_take_drawn(Surf* t) {
                 u32 sbh;
                 u64 source_size = bl_level_size(s->w, s->h, 1, &s->f, s->bh, 0, 0, 0, &sbh, NULL);
                 if (off >= lo && off - lo < size && (off - lo) % slab % step == 0 &&
-                    (off - lo) % slab / step < (1u << lbd) && s->w >= lw && s->h == lh &&
-                    sbh == lbh && (lbd || source_size == slab) && vk_rt_drawn_fresh(s)) {
+                    (off - lo) % slab / step < (1u << lbd) && s->w >= lw && s->h == lh && sbh == lbh &&
+                    (lbd || source_size == slab) && vk_rt_drawn_fresh(s)) {
                     u64 z = ((off - lo) / slab << lbd) + (off - lo) % slab / step;
                     if (z < ld) {
                         copy_layers(copy_begin(s, t), s, t, l, (u32)z, 1, lw, lh, 1);
