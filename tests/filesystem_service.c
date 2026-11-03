@@ -1570,7 +1570,7 @@ static void mods_write(int image, int stale) {
               !snx_write_file("mods-data/0100000000AB0000_data/romfs/dir/c.bin", "the game's c", 12));
     }
 #if !defined(_WIN32)
-    CHECK(!symlink("a.bin", "mods-data/0100000000AB0000_data/mods/3 off/romfs/link"));
+    CHECK(!snx_symlink("a.bin", "mods-data/0100000000AB0000_data/mods/3 off/romfs/link"));
 #endif
     strcpy(g_exedir, "mods-data/");
     strcpy(g_exename, "0100000000AB0000");
