@@ -533,6 +533,7 @@ typedef struct App {
     GuiPads pads;
     bool pads_failed, pad_driven;
     char pads_error[256];
+    bool hid_held; /* an SDL_hid_init of its own, from the first pads started to cleanup (pads_hold) */
     float pointer_travel;
     /* the Settings' groups: App, then a group per section of the settings, its first row and rows; a row each */
     int groups, group_first[GUI_GROUPS_MAX], group_rows[GUI_GROUPS_MAX];
@@ -10016,6 +10017,14 @@ static void joycon_pairs(App* app) {
     const char* pair = gui_settings_value(&app->settings, "gamepad_joycon_pair");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_COMBINE_JOY_CONS, pair && !atoi(pair) ? "0" : "1");
 }
+/* an SDL_hid_init of the menu's own, from the first pads started until cleanup: SDL would else stop its HIDAPI each
+   time the last of its gamepads closes (a page, a Controller row, a run's LAUNCH), and FreeBSD's libusb_exit, with no
+   devd or netlink to hear USB from, waits for its hotplug thread's next look, 4 s apart */
+static void pads_hold(App* app) {
+    if (app->hid_held) return;
+    app->hid_held = SDL_hid_init() == 0;
+    if (!app->hid_held) gui_log("SDL's HIDAPI cannot start: %s", SDL_GetError());
+}
 /* the button map of map's row (row: what to come back to), A and B as swap's row says, for player (0: every one) */
 static void open_pad_on(App* app, int row, int map, int swap, int player) {
     leave_editor(app);
@@ -10033,8 +10042,10 @@ static void open_pad_on(App* app, int row, int map, int swap, int player) {
     app->pads_read = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
     if (!app->pads_read)
         snprintf(app->pad.note, sizeof app->pad.note, "Controllers cannot be read: %s", SDL_GetError());
-    else
+    else {
+        pads_hold(app);
         pad_load_mappings(app);
+    }
     pad_attach(app);
 }
 /* the Button map page's: every player's map */
@@ -10157,6 +10168,7 @@ static void device_listen(App* app, int row) {
         say_failure(app, app->editor.note);
         return;
     }
+    pads_hold(app);
     pad_load_mappings(app);
     app->device_listen = row + 1;
     device_open(app);
@@ -16081,9 +16093,10 @@ static void pads_follow(App* app) {
     }
     if (!app->pads.started && !app->pads_failed) {
         joycon_pairs(app);
-        if (gui_pads_start(&app->pads))
+        if (gui_pads_start(&app->pads)) {
+            pads_hold(app);
             pad_load_mappings(app);
-        else
+        } else
             pads_fail(app);
     }
     if (app->pads_failed) say_failure(app, app->pads_error); /* each frame until the box can show it, then once */
@@ -16693,6 +16706,9 @@ static void forget(App* app) {
 static void cleanup(App* app) {
     forget(app);
     gui_pads_stop(&app->pads);
+    /* pads_hold's, the window already gone: FreeBSD's libusb_exit may still wait out its 4 s here */
+    if (app->hid_held && SDL_hid_exit() < 0) gui_log("SDL's HIDAPI did not close: %s", SDL_GetError());
+    app->hid_held = false;
     SDL_Quit();
 }
 /* the settings, its picks and its game folders in a file each */

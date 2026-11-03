@@ -642,6 +642,13 @@ static const SnxPadShape* drawn(const App* app, int id, int kind, int style) {
     }
     return NULL;
 }
+/* whether SDL's HIDAPI starts here at all, as it needs libudev or libusb: a reference taken and given back, which costs
+   nothing while the menu holds one (pads_hold) */
+static bool hid_starts(void) {
+    if (SDL_hid_init() < 0) return false;
+    SDL_hid_exit();
+    return true;
+}
 /* the page's events as the loop gets them, after the virtual pad's changes */
 static void pads(App* app) {
     SDL_Event e;
@@ -715,7 +722,7 @@ static void players_view(App* app) {
         assert(app->device_listen && strstr(app->editor.note, "Press a button on player 1's controller"));
         key(app, SDLK_ESCAPE);
         assert(!app->device_listen && !gui_settings_value(&app->settings, "gamepad_p1_device") &&
-               app->form == GUI_FORM_GROUP && !SDL_WasInit(SDL_INIT_GAMEPAD));
+               app->form == GUI_FORM_GROUP && !SDL_WasInit(SDL_INIT_GAMEPAD) && app->hid_held == hid_starts());
         key(app, SDLK_RETURN);
         assert(SDL_InitSubSystem(SDL_INIT_JOYSTICK)); /* the pads stay between the waits, as real ones do */
         SDL_INIT_INTERFACE(&d);
@@ -1073,10 +1080,10 @@ static void button_map(App* app) {
         free(file);
         free(folder);
     }
-    /* ESC: back to the page's row, the pads closed */
+    /* ESC: back to the page's row, the pads closed and SDL's HIDAPI not (pads_hold) */
     key(app, SDLK_ESCAPE);
     assert(app->form == GUI_FORM_GROUP && app->page < 0 && app->editor.row == page - app->first);
-    assert(!app->pads_read && !SDL_WasInit(SDL_INIT_GAMEPAD));
+    assert(!app->pads_read && !SDL_WasInit(SDL_INIT_GAMEPAD) && app->hid_held == hid_starts());
     /* a map it cannot read is named, in the failure colour, and the page shows the labels' */
     assert(gui_settings_set(&app->settings, "gamepad_map", "south:Q"));
     assert(gui_settings_set(&app->settings, "gamepad_joycon_pair", "0")); /* and the Joy-Cons apart */
@@ -3829,8 +3836,14 @@ int main(int argc, char** argv) {
         pads_follow(&app);
         assert(app.pads.started);
         gui_steps_feed(&app.steps, "ScarletNX - pad game\n", 21, 0);
-        pads_follow(&app);
-        assert(!app.pads.started);
+        {
+            Uint64 took = SDL_GetTicks();
+            pads_follow(&app);
+            took = SDL_GetTicks() - took;
+            /* closed for the game at once, SDL's HIDAPI kept: closing it waits 4 s in FreeBSD's libusb_exit */
+            assert(!app.pads.started && !SDL_WasInit(SDL_INIT_GAMEPAD) && app.hid_held == hid_starts());
+            assert(took < 2000);
+        }
         app.menu.running = false;
         pads_follow(&app);
         assert(app.pads.started && !app.confirm.shown);
@@ -12642,6 +12655,7 @@ int main(int argc, char** argv) {
     event(&app, &e);
     assert(app.menu.quit);
     cleanup(&app);
+    assert(!app.hid_held);
     assert(!snx_remove_tree(temporary));
     free(temporary);
     assert(!snx_remove_tree(own_home)); /* the file over XDG's too */
