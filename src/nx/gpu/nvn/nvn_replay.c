@@ -188,7 +188,7 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
                counter to 1, clears when it differs from the word 16 bytes on, and then reports a timestamp over it */
             const NvnPReportCounter* r = NVN_OBJ(const NvnPReportCounter, payload);
             u8 v[16];
-            u64 ticks = guest_ticks();
+            u64 ticks = guest_gpu_ticks();
             if (r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && nvn_draw_samples(&q->d, r->address, ticks)) break;
             snx_st_le64(v, r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? 1000 : 0);
             snx_st_le64(v + 8, ticks);

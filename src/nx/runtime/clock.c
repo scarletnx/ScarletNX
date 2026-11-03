@@ -10,6 +10,7 @@
    start that goes with it */
 static struct {
     u64 start, frozen;
+    u8 ounce; /* the system tick is the Ounce's 31.25 MHz */
 } g_clock;
 
 void clock_start(void) { __atomic_store_n(&g_clock.start, plat_ns(), __ATOMIC_RELEASE); }
@@ -37,9 +38,18 @@ void clock_set(u64 ns) {
         __atomic_store_n(&g_clock.start, plat_ns() - ns, __ATOMIC_RELEASE);
 }
 
-/* 19.2 MHz is 192 ticks every 10 us: whole 10 us steps, then the rest, so neither part overflows or rounds the way
-   a double would after a few hours */
-u64 guest_ticks(void) {
+/* 19.2 MHz is 192 ticks every 10 us, and 31.25 MHz is 125 ticks every 4 us: whole steps, then the rest, so neither
+   part overflows or rounds the way a double would after a few hours */
+u64 guest_gpu_ticks(void) {
     u64 ns = guest_ns();
     return ns / 10000u * 192u + ns % 10000u * 192u / 10000u;
+}
+/* An Ounce SDK's nn::os::GetSystemTickFrequency returns 31,250,000 as a constant (MOVZ and MOVK), and its tick
+   conversions use the same constant. It never reads CNTFRQ_EL0. With 19.2 MHz ticks, the game's time ran at 0.61 of
+   real time */
+void clock_ounce(void) { g_clock.ounce = 1; }
+u64 guest_ticks(void) {
+    if (!g_clock.ounce) return guest_gpu_ticks();
+    u64 ns = guest_ns();
+    return ns / 4000u * 125u + ns % 4000u * 125u / 4000u;
 }

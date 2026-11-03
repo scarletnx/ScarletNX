@@ -13,6 +13,10 @@ u64 guest_ns(void);     /* nanoseconds since clock_start, less the time paused *
 void clock_pause(void);
 void clock_resume(void);
 void clock_set(u64 ns); /* a save state's load: guest time ns from here */
-u64 guest_ticks(void);  /* the same time as the console's 19.2 MHz system tick (svcGetSystemTick, CNTPCT_EL0) */
+/* the same time as the console's system tick (svcGetSystemTick, CNTPCT_EL0): 19.2 MHz, or an Ounce's 31.25 MHz after
+   clock_ounce */
+u64 guest_ticks(void);
+void clock_ounce(void);    /* an Ounce game's tick, set once before the game's first thread */
+u64 guest_gpu_ticks(void); /* the GPU's 19.2 MHz timestamps, which the NVN handlers convert back to nanoseconds */
 
 #endif

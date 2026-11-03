@@ -2488,7 +2488,7 @@ i32 nvn_DeviceGetDepthMode(CPU* c, u64 d) {
 u64 nvn_DeviceGetCurrentTimestampInNanoseconds(CPU* c, u64 d) {
     (void)c;
     (void)d;
-    return guest_ticks() * 625 / 12;
+    return guest_gpu_ticks() * 625 / 12;
 }
 
 /* ============================================================ builder getters: what was set */

@@ -458,13 +458,23 @@ static u32 rd32le(const u8* p) { return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] <
    its blocks in and the loader places the code at. The npdm is read through the fs, which fs_init has just brought
    up. A 64-bit program of type 1 is the console's pre-2.0 36-bit one, and mem_layout36's comment says what the
    layout has to guarantee for it: what its SDK marshals into an IPC buffer descriptor drops every address bit above
-   36, and the 39-bit layout's stack and heap, above 64 GiB, came back as addresses with no memory behind them */
+   36, and the 39-bit layout's stack and heap, above 64 GiB, came back as addresses with no memory behind them.
+
+   It also tells an Ounce program: its ACID's signature and key are 0x180 bytes each, where a Switch's are 0x100, so
+   its magic is at 0x300 in the ACID, not at 0x200 (Switchbrew's NPDM page). An Ounce program gets SM70+ shaders, the
+   T239's GOB and the 31.25 MHz tick */
 static void npdm_layout(void) {
     u64 size = 0;
     unsigned char* d = fs_read_file("exefs/main.npdm", &size);
     if (!d) return;
     if (size >= 0x80 && size <= 0x4000 && !memcmp(d, "META", 4)) {
         unsigned flags = d[0x0c];
+        u32 acid = rd32le(d + 0x78), acid_size = rd32le(d + 0x7c);
+        if (acid < size && acid_size >= 0x304 && acid_size <= size - acid && !memcmp(d + acid + 0x300, "ACID", 4)) {
+            g_ounce = g_shader_sm70 = g_gob_native = 1;
+            clock_ounce();
+            LOG("npdm: an Ounce program\n");
+        }
         if ((flags & 1) && ((flags >> 1) & 7) == 1) {
             mem_layout36();
             LOG("npdm: a 36-bit address space: 64 GiB, the code region at a fixed 128 MiB\n");
@@ -903,8 +913,6 @@ int snx_main(int argc, char** argv) {
     game_dirs();
     if (g_arm_mod) mem_layout32(g_arm_mod->aspace); /* before anything sizes or reads guest memory */
     if (mod->title_id) g_hle.kernel.title_id = mod->title_id;
-    g_ounce = (g_hle.kernel.title_id >> 56) == 0x04;
-    if (g_ounce) g_shader_sm70 = g_gob_native = 1;
     /* this run's settings: each --key=value before a "--" (-v is log=2); -f and --fullscreen=0|1 through startup.c's
        record of the last given, which a --fullscreen=... here would only repeat */
     for (i = 1; i < argc && strcmp(argv[i], "--"); i++) {
