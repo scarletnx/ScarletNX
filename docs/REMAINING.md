@@ -31,3 +31,20 @@ sentinel `docs/.work-complete` only when every box is checked. Do not push to an
 - If a test fails, find the mechanism before changing code. Record anything that cannot be finished in `docs/issues/`.
 - When every box is checked and the full verification passed, run the demo update, then create
   `docs/.work-complete` with the date and the commit hash.
+
+## Phase 2, after the feature work and its full verification
+
+The feature branch is documented in `docs/REMAINING.md`, `docs/issues/` and the demo folder. When every feature
+box above is checked, the work continues on the repository's open issues, off the latest `origin/main`, one branch
+per issue, easiest first. `docs/SIDE_ISSUES.md` is the ledger.
+
+- [ ] Fetch `origin/main` and record its commit in `docs/SIDE_ISSUES.md`.
+- [ ] List every open issue and rank it: easy, medium, hard, or blocked on hardware, keys, a game or another issue.
+- [ ] For each issue that can be fixed on this device, make `fix/issue-<number>-<short>` from that `origin/main`
+      commit, fix it, build, test, and commit it signed. Document the mechanism, files, tests, run commands, known
+      limits, a suggested PR title and a suggested PR body in `docs/SIDE_ISSUES.md`.
+- [ ] For each issue that cannot be fixed here, write why in `docs/SIDE_ISSUES.md` and leave it for the user.
+- [ ] Never push a branch. The user does the PR work later, possibly with other agents, from the ledger.
+- [ ] Re-read the open issues after the last fix. If a new easy issue appeared, add it and continue.
+- [ ] Only when every open issue is either fixed on a branch or documented as blocked, create `docs/.work-complete`
+      with the feature branch commit and the list of side branches.

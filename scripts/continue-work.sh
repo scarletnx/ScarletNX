@@ -16,7 +16,7 @@ delay="${OPENCODE_CONTINUE_DELAY:-15}"
 exec 9>"$root/docs/.continue.lock"
 flock -n 9 || exit 0
 
-prompt='Continue the ScarletNX work. Read CLAUDE.md and docs/REMAINING.md first. Work through the checklist in order. Do not stop while a box is unchecked. Build, run the tests, and commit each verified step with an SSH signature. Never push. When every box is checked and the full verification passed, update the demo folder and create docs/.work-complete with the date and commit hash. If a task cannot be finished, write the mechanism and the next step in docs/issues/ and leave the box unchecked, then continue with the next box. Do not ask the user anything.'
+prompt='Continue the ScarletNX work. Read CLAUDE.md, docs/REMAINING.md and docs/SIDE_ISSUES.md first. Work through the feature checklist in order. When it is complete and verified, work the repository open issues off the latest origin/main, one branch per issue, easiest first, and write each into docs/SIDE_ISSUES.md. Do not push. Do not stop while a box is unchecked or an issue is neither fixed on a branch nor documented as blocked. Build, run the tests, and commit each verified step with an SSH signature. Never push. When every feature box is checked, every open issue is fixed on a branch or documented as blocked, and the full verification passed, update the demo folder and create docs/.work-complete with the date, the feature commit and the side branches. If a task cannot be finished, write the mechanism and the next step in docs/issues/ and leave the box unchecked, then continue with the next box. Do not ask the user anything.'
 
 mkdir -p "$(dirname -- "$log")"
 : >"$log"
