@@ -2258,11 +2258,10 @@ static void outline(App* app, GuiRect r, GuiRgb c) {
     fill_rect(app, gui_rect(r.x, r.y, s, r.h), c);
     fill_rect(app, gui_rect(r.x + r.w - s, r.y, s, r.h), c);
 }
-/* value from pixel x, y up to the right edge of r: a line too long for it slides as the theme says */
-static void text_in(App* app, GuiRect r, int x, int y, const char* value, SDL_Color color) {
-    int w = cell_w(app), room = (r.x + r.w - x) / w, skip;
+/* value from pixel x, y up to the right edge of r, from its column skip on: the letters past that edge left out */
+static void text_from(App* app, GuiRect r, int x, int y, const char* value, int skip, SDL_Color color) {
+    int w = cell_w(app), room = (r.x + r.w - x) / w;
     if (room <= 0) return;
-    skip = gui_slide(gui_text_cols(value) - room, now_ms(app), app->theme.scroll_ms);
     value = gui_cols_skip(value, skip);
     SDL_SetTextureColorMod(app->font, color.r, color.g, color.b);
     while (*value) {
@@ -2272,6 +2271,22 @@ static void text_in(App* app, GuiRect r, int x, int y, const char* value, SDL_Co
         room -= n;
         x += n * w;
     }
+}
+/* value from pixel x, y up to the right edge of r: a line too long for it slides as the theme says */
+static void text_in(App* app, GuiRect r, int x, int y, const char* value, SDL_Color color) {
+    int room = (r.x + r.w - x) / cell_w(app);
+    text_from(app, r, x, y, value, gui_slide(gui_text_cols(value) - room, now_ms(app), app->theme.scroll_ms), color);
+}
+/* a list's row's text, as text_in's, but only the focused row's slides: any other's start shows, "..." where it is cut
+   (the focused one's too where the theme slides nothing), as rows sliding at once show names cut at their start */
+static void row_text_in(App* app, GuiRect r, int x, int y, const char* value, bool focused, SDL_Color color) {
+    char cut[1100];
+    if (focused && app->theme.scroll_ms) {
+        text_in(app, r, x, y, value, color);
+        return;
+    }
+    gui_text_fit(value, (r.x + r.w - x) / cell_w(app), cut, sizeof cut);
+    text_from(app, r, x, y, cut, 0, color);
 }
 /* a box framed in the dim colour, filled with the page's (fill) or the frame alone (line); with a head when label is
    not NULL, its label on a band of ink (fill) or over a rule (line). Where its text starts */
@@ -3002,7 +3017,7 @@ void ui_draw_row(App* app, GuiRect r, const char* text, unsigned icon, const voi
     GuiRect b = ui_row_box(app, r);
     char label[400];
     if (attr & UI_ATTR_LABEL) { /* between rows, as "Recent Games": no box, no marker */
-        text_in(app, b, b.x, ui_text_y(app, b), text, rgb(t->soft));
+        row_text_in(app, b, b.x, ui_text_y(app, b), text, focused, rgb(t->soft));
         row_arrows(app, b, ui_text_y(app, b), attr, rgb(t->soft)); /* a list's first or last row too */
         return;
     }
@@ -3011,7 +3026,7 @@ void ui_draw_row(App* app, GuiRect r, const char* text, unsigned icon, const voi
             fill_rect(app, r, t->ink);
         else
             fill_rect(app, gui_rect(r.x, r.y + r.h - app->scale, r.w, app->scale), t->dim);
-        text_in(app, r, r.x + cell_w(app) / 2, ui_text_y(app, r), text, rgb(filled ? t->page : t->ink));
+        row_text_in(app, r, r.x + cell_w(app) / 2, ui_text_y(app, r), text, focused, rgb(filled ? t->page : t->ink));
         return;
     }
     snprintf(label, sizeof label, "%s%s%s%s", t->marker, gui_icon_utf8(icon, glyph), icon ? " " : "", text);
@@ -3030,13 +3045,13 @@ void ui_draw_row(App* app, GuiRect r, const char* text, unsigned icon, const voi
         int x = b.x + cell_w(app) / 2, side = user_side(app, b.h);
         if (image && side > 0) { /* the marker, the image as big as the head's user picture, then the text */
             SDL_FRect at;
-            text_in(app, inner(app, b), x, ui_text_y(app, b), t->marker, ink);
+            row_text_in(app, inner(app, b), x, ui_text_y(app, b), t->marker, focused, ink);
             x += gui_text_cols(t->marker) * cell_w(app);
             at = (SDL_FRect){(float)x, (float)(b.y + 2 * app->scale), (float)side, (float)side};
             SDL_RenderTexture(app->renderer, (SDL_Texture*)image, NULL, &at);
-            text_in(app, inner(app, b), x + side + cell_w(app) / 2, ui_text_y(app, b), text, ink);
+            row_text_in(app, inner(app, b), x + side + cell_w(app) / 2, ui_text_y(app, b), text, focused, ink);
         } else
-            text_in(app, inner(app, b), x, ui_text_y(app, b), label, ink);
+            row_text_in(app, inner(app, b), x, ui_text_y(app, b), label, focused, ink);
     }
     if (focused && t->cursor[0]) text_in(app, r, r.x, ui_text_y(app, b), t->cursor, rgb(t->focus));
     row_arrows(app, b, ui_text_y(app, b), attr, rgb(failing || inverted ? t->page : t->soft));
@@ -3046,8 +3061,8 @@ void ui_draw_label(App* app, GuiRect r, const char* text, unsigned color) {
     text_in(app, r, r.x, item_text_y(app, r), text, rgb(ui_colour(app, color, app->theme.soft)));
 }
 /* a tile of a tile list (Games' grid), framed as a row's box is in its look: the image a square in the middle of its
-   top, the text under it in the middle (from its left, sliding, where it is longer than the tile), the arrows of the
-   rows hidden above and below at its top right; greyed as a row (UI_ATTR_OFF) */
+   top, the text under it in the middle (from its left where it is longer than the tile, cut as a row's: row_text_in),
+   the arrows of the rows hidden above and below at its top right; greyed as a row (UI_ATTR_OFF) */
 void ui_draw_tile(App* app, GuiRect r, const char* text, const void* image, unsigned color, unsigned attr,
                   bool focused) {
     const GuiTheme* t = &app->theme;
@@ -3074,7 +3089,7 @@ void ui_draw_tile(App* app, GuiRect r, const char* text, const void* image, unsi
         SDL_FRect at = {(float)(r.x + (r.w - side) / 2), (float)(r.y + 2 * s), (float)side, (float)side};
         SDL_RenderTexture(app->renderer, (SDL_Texture*)image, NULL, &at);
     }
-    text_in(app, in, cols < room ? r.x + (r.w - cols * cw) / 2 : in.x, r.y + r.h - ch - 2 * s, text, ink);
+    row_text_in(app, in, cols < room ? r.x + (r.w - cols * cw) / 2 : in.x, r.y + r.h - ch - 2 * s, text, focused, ink);
     row_arrows(app, r, r.y + 2 * s, attr, soft);
 }
 const char* ui_tr(const char* english) { return snx_tr(english); }
@@ -4476,7 +4491,7 @@ static void addons_boxes(App* app, GuiAddonsBoxes* d) {
    marker) */
 bool ui_addons_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
     char why[1024];
-    (void)width; /* a long name slides, as the menu's rows do */
+    (void)width; /* a long name is cut, or slides while focused, as the menu's rows (row_text_in) */
     if (row >= (size_t)addons_rows(app)) return false;
     addons_label(app, (int)row, app->row_text, sizeof app->row_text);
     info->label = app->row_text + strlen(app->theme.marker);
@@ -6284,7 +6299,7 @@ static size_t games_selected(const App* app, size_t row) {
 bool ui_games_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
     char* label = app->row_text;
     size_t lead = (size_t)games_lead(app), items = gui_browser_items(&app->browser), i, start;
-    (void)width; /* a game's name slides when it is too long, as the menu's rows */
+    (void)width; /* a game's name too long is cut, or slides while focused, as the menu's rows (row_text_in) */
     start = app->browser.page * app->browser.page_size;
     if (row == 0 && lead) {
         info->label = snx_tr("Recent Games");
@@ -6738,7 +6753,7 @@ static void job_console_size(App* app, int* cols, int* rows) {
 bool ui_queue_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
     char where[64];
     const GuiJob* job;
-    (void)width; /* a name too long for its row slides, as Games' rows do */
+    (void)width; /* a name too long for its row is cut, or slides while focused, as Games' rows (row_text_in) */
     if (row >= (size_t)app->queue.count) return false;
     job = &app->queue.job[row];
     job_where(app, (int)row, false, where, sizeof where);
@@ -10698,11 +10713,11 @@ static void form_line(App* app, const GuiEditor* e, int r, int labels, int room,
     }
     pad = SDL_max(labels - gui_text_cols(label), 0); /* the labels' columns, not their bytes */
     if (k && k->numeric && !k->whole) pad = 0;      /* the scale's value left, its row under the box's width */
-    if (value[0]) { /* a row too long for its box gives up the labels' column first, and slides only past that */
+    if (value[0]) { /* a row too long for its box gives up the labels' column first, and is cut only past that */
         int over = gui_text_cols(app->theme.marker) + gui_text_cols(label) + pad + 1 + gui_text_cols(value) - room;
         if (over > 0) pad = SDL_max(pad - over, 0);
         snprintf(line, size, "%s%s%*s %s", app->theme.marker, label, pad, "", value);
-    } else /* no value to line up: padding would make a short row too long for its box, and slide */
+    } else /* no value to line up: padding would make a short row too long for its box, and cut */
         snprintf(line, size, "%s%s", app->theme.marker, label);
 }
 static int clean_inis(App* app, GuiCleaned* done);
@@ -12130,7 +12145,7 @@ static void setup_pointer(App* app, float x, float y, bool click) {
 /* Appearance's row: its name, then its value at appearance_column (ui_draw_row puts the marker) */
 bool ui_appearance_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
     if (row >= GUI_APPEARANCE_NEXT) return false;
-    (void)width; /* a row too long for it slides */
+    (void)width; /* a row too long for it is cut, or slides while focused (row_text_in) */
     appearance_row(app, (int)row, app->row_text, sizeof app->row_text);
     info->label = app->row_text + strlen(app->theme.marker);
     if (row == GUI_APPEARANCE_ICONS && option_off(app, GUI_OPTION_ICONS)) info->attr |= UI_ATTR_OFF;
@@ -15309,7 +15324,7 @@ static const char* choice_text(App* app, int of, int i, char* out, size_t size) 
 }
 /* Choices' row: the choice's text, drawn with the theme's marker */
 bool ui_choices_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
-    (void)width; /* a choice too long for its row slides, as the menu's rows do */
+    (void)width; /* a choice too long for its row is cut, or slides while focused, as the menu's rows (row_text_in) */
     info->label = row < 64 ? choice_text(app, app->choices_of, (int)row, app->row_text, sizeof app->row_text) : NULL;
     if (app->choices_of == GUI_CHOICES_SIZES && !row && size_why(app, NULL, 0)) info->attr |= UI_ATTR_OFF; /* OK */
     return info->label != NULL;

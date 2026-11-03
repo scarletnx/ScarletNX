@@ -54,6 +54,16 @@ const char* gui_cols_skip(const char* text, int cols) {
     while (cols > 0 && *text) cols -= cols_of(gui_utf8_step(&text));
     return text;
 }
+void gui_text_fit(const char* text, int cols, char* out, size_t size) {
+    size_t n;
+    if (!size) return;
+    if (gui_text_cols(text) <= cols || cols < 4) {
+        snprintf(out, size, "%.*s", (int)gui_cols_fit(text, cols), text);
+        return;
+    }
+    for (n = gui_cols_fit(text, cols - 3); n && text[n - 1] == ' ';) --n; /* "the..." rather than "the ..." */
+    snprintf(out, size, "%.*s...", (int)n, text);
+}
 static int separator(char c) { return c == '/' || c == '\\'; }
 /* the columns of text's first n bytes */
 static int prefix_cols(const char* text, size_t n) {

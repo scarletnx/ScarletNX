@@ -10338,6 +10338,51 @@ int main(int argc, char** argv) {
             text_px_is(&app, x + side + cw / 2, b.y + (40 * s - 16 * s + s) / 2, "Exit", normal, black);
             SDL_DestroyTexture(red);
         }
+        { /* a text too long for its row: the focused row's slides where the theme slides, and only it; any other's
+             start shows, "..." where it is cut, never its start slid out of sight; where the theme slides nothing the
+             focused one's is cut so too. A tile (Games' grid) the same */
+            static const char name[] = "A name far longer than the row it is drawn in, past its right edge";
+            char line[128], want[128];
+            int ty = b.y + (40 * s - 16 * s + s) / 2, room = (b.w - cw - cw / 2) / cw; /* text_in's, half a cell in */
+            Uint32 kept = app.theme.scroll_ms;
+            Uint64 clock = app.clock;
+            snprintf(line, sizeof line, "- %s", name);
+            assert(gui_text_cols(line) > room + 3 && room > 6);
+            app.theme.scroll_ms = 100; /* the default theme slides nothing */
+            for (app.clock = 1; gui_slide(gui_text_cols(line) - room, app.clock, app.theme.scroll_ms) != 3;)
+                app.clock += 100;
+            fill_rect(&app, b, app.theme.page);
+            ui_draw_row(&app, b, name, 0, NULL, UI_COLOR_NONE, 0, false);
+            gui_text_fit(line, room, want, sizeof want);
+            assert(gui_text_cols(want) <= room && !strncmp(want, "- A name", 8) &&
+                   !strcmp(want + strlen(want) - 3, "..."));
+            text_px_is(&app, b.x + cw / 2, ty, want, normal, black);
+            fill_rect(&app, b, app.theme.page);
+            ui_draw_row(&app, b, name, 0, NULL, UI_COLOR_NONE, 0, true); /* 3 columns on, as the clock has it */
+            snprintf(want, sizeof want, "%.*s", (int)gui_cols_fit(line + 3, room), line + 3);
+            text_px_is(&app, b.x + cw / 2, ty, want, yellow, black);
+            app.theme.scroll_ms = 0;
+            fill_rect(&app, b, app.theme.page);
+            ui_draw_row(&app, b, name, 0, NULL, UI_COLOR_NONE, 0, true);
+            gui_text_fit(line, room, want, sizeof want);
+            text_px_is(&app, b.x + cw / 2, ty, want, yellow, black);
+            { /* a tile 12 columns wide: 11 for its text, from half a cell in */
+                GuiRect tile = gui_rect(b.x, b.y, 12 * cw, 4 * 16 * s + 8 * s);
+                int tty = tile.y + tile.h - 16 * s - 2 * s;
+                app.theme.scroll_ms = 100;
+                for (app.clock = 1; gui_slide(gui_text_cols(name) - 11, app.clock, app.theme.scroll_ms) != 3;)
+                    app.clock += 100;
+                fill_rect(&app, tile, app.theme.page);
+                ui_draw_tile(&app, tile, name, NULL, UI_COLOR_NONE, 0, false);
+                text_px_is(&app, tile.x + cw / 2, tty, "A name f...", normal, black);
+                fill_rect(&app, tile, app.theme.page);
+                ui_draw_tile(&app, tile, name, NULL, UI_COLOR_NONE, 0, true);
+                text_px_is(&app, tile.x + cw / 2, tty, "ame far lon", yellow, black);
+                fill_rect(&app, tile, app.theme.page);
+            }
+            app.theme.scroll_ms = kept;
+            app.clock = clock;
+        }
         { /* a row with nothing to do now (UI_ATTR_OFF): greyed, still there, its text in the soft colour, focused or
              not, activated or not; framed in the focus colour while focused; a failure's look over it */
             int ty = b.y + (40 * s - 16 * s + s) / 2;
@@ -12512,16 +12557,17 @@ int main(int argc, char** argv) {
     players_view(&app);
     icons_named();
     step_line();
-    /* a row too long for its box with the labels' column gives the column up first, and slides only past that: 1280x720
+    /* a row too long for its box with the labels' column gives the column up first, and is cut only past that: 1280x720
        at 2x leaves a group's rows fewer columns than Vulkan Video's label and a value, and Shadows ends its row whole and
-       still beside it, where Vulkan Video's slides */
+       still beside it, where Vulkan Video's ends in "..." beside the groups and slides once its group is open, the focus
+       on it */
     {
         static const char list[] =
             "Graphics\tvideo\t0\tint\t0\t1\tVulkan Video\tVulkan Video decode (experimental)\t0=Off|1=On\n"
             "Graphics\tshadows\t1\tint\t0\t1\tShadows\tShadows\t0=Off|1=On\n";
         GuiFormBoxes f;
         UiRowInfo info = {0};
-        char line[200];
+        char line[200], full[200], shadows[200];
         int w, h, row, room;
         assert(SDL_GetWindowSize(app.window, &w, &h) && SDL_SetWindowSize(app.window, 1280, 720));
         SDL_SyncWindow(app.window);
@@ -12544,8 +12590,22 @@ int main(int argc, char** argv) {
         assert(ui_form_side_rows_get_row_info(&app, 1, ui_form_side_row(f.right, app.scale, UI_FORM_SIDE_ROWS, 1).w,
                                               &info) &&
                !strcmp(info.label, line + 2));
-        hides(&app, "- Vulkan Video", normal); /* a column on */
-        shows(&app, " Vulkan Video decode (experimental) Off", normal);
+        snprintf(shadows, sizeof shadows, "%s", line);
+        assert(ui_form_side_rows_get_row_info(&app, 0, ui_form_side_row(f.right, app.scale, UI_FORM_SIDE_ROWS, 0).w,
+                                              &info));
+        snprintf(full, sizeof full, "%s%s", app.theme.marker, info.label);
+        assert(gui_text_cols(full) > room && !strncmp(info.label, "Vulkan Video decode (experimental)", 34));
+        gui_text_fit(full, room, line, sizeof line);
+        shows(&app, line, normal); /* its start, still: the focus is on the groups */
+        hides(&app, " Vulkan Video decode (experimental) Off", normal);
+        key(&app, SDLK_RETURN);
+        assert(app.form == GUI_FORM_GROUP && app.editor.row == 0);
+        render(&app);
+        hides(&app, "- Vulkan Video", yellow); /* a column on */
+        shows(&app, " Vulkan Video decode (experimental) Off", yellow);
+        shows(&app, shadows, normal); /* whole, not focused */
+        key(&app, SDLK_ESCAPE);
+        assert(app.form == GUI_FORM_SETTINGS);
         app.theme.scroll_ms = gui_theme_builtin("default")->scroll_ms;
         app.clock = 0;
         app.menu.text_size = 0;
