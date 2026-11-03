@@ -116,9 +116,12 @@ shader needed (`the shader has 32769 tokens after preprocessing, more than the 3
 
 The module is what a Vulkan pipeline takes; the OpenGL ES side of it is the backend's, through `result.reflect`.
 
-- **Locations.** An `in` or `out` without a location takes the first free one, in declaration order, after the
-  given ones; a matrix takes one per column, an array one per element. `gl_FragColor` and `gl_FragData` are output
-  location 0. OpenGL ES matches a vertex output to a fragment input by name: the backend matches the two lists.
+- **Locations follow declaration order.** An `in` or `out` without a location takes the first free one after the
+  given ones, in the order the shader declares them; a matrix takes one per column, an array one per element.
+  `gl_FragColor` and `gl_FragData` are output location 0. OpenGL ES links a vertex output to a fragment input by name
+  and Vulkan by location, so a backend matches the two stages' `result.reflect` lists by name, or keeps their
+  declarations in the same order: a vertex shader that declares `out vec2 uv; out vec4 color;` and a fragment shader
+  that declares `in vec4 color; in vec2 uv;` give `uv` locations 0 and 1.
 - **Bindings.** OpenGL ES numbers texture units, image units, uniform blocks and buffer blocks apart, and Vulkan has
   one binding space per set, so the backend places them: `GlslcOptions.bind`, a function, with `bind_user` its first
   argument. glslc calls it for each sampler, image and block in declaration order, with its kind, name, array size,

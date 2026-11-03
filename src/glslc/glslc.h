@@ -7,10 +7,15 @@
    Vulkan's. Nothing in the build compiles a shader with it: ScarletNX's own shaders are Vulkan GLSL, compiled by the
    host's glslangValidator (cmake/glsl.cmake).
 
+   Locations follow declaration order. An in or out variable without layout(location) takes the first free location
+   after the given ones, in the order the shader declares them: a matrix one per column, an array one per element.
+   OpenGL ES links a vertex output to a fragment input by name, and SPIR-V by location, so a backend matches the two
+   stages' result.reflect lists by name, or keeps their declarations in the same order.
+
    The source stays where the caller keeps it: every token and name is a view of it, a 16-bit position and length.
    Tokens, syntax nodes, types and symbols are arrays of fixed-size records that refer to each other by 16-bit index,
-   carved from the caller's workspace by each compilation. Each array has the upper bound below; a shader that needs more is
-   refused with an error that names the bound and how much it needed. */
+   carved from the caller's workspace by each compilation. Each array has the upper bound below; a shader that needs
+   more is refused with an error that names the bound and how much it needed. */
 #ifndef SNX_GLSLC_H
 #define SNX_GLSLC_H
 #include <stddef.h>
