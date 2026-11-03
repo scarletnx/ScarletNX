@@ -711,21 +711,25 @@ static int check_srgb_write(void) {
     return 0;
 }
 
-/* a single-layer target's pixel 0 as its image holds it */
-static int read_pixel0(Surf* target, u8 out[4]) {
+/* a single-layer target's pixel at (x, y) as its image holds it */
+static int read_pixel_at(Surf* target, u32 x, u32 y, u8 out[4]) {
     VkBuffer buffer;
     u8* data = vk_readback_buffer(4, &buffer);
     CHECK(data);
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .imageOffset = {(i32)x, (i32)y, 0},
+                              .imageExtent = {1, 1, 1}};
     rec_CmdCopyImageToBuffer(cb, target->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
     vk_finish();
     vk_readback_ready();
     memcpy(out, data, 4);
     return 0;
 }
+/* a single-layer target's pixel 0 as its image holds it */
+static int read_pixel0(Surf* target, u8 out[4]) { return read_pixel_at(target, 0, 0, out); }
 
 /* Clears as load ops: a whole-target clear before any draw of its pass is the pass's LOAD_OP_CLEAR, and gives the
    pixels a vkCmdClearAttachments gave. A discarded target's next pass loads it as DONT_CARE, and what that pass writes
@@ -2504,6 +2508,7 @@ static int check_rt_overlap(void) {
     GpuChannel* ch = calloc(1, sizeof *ch);
     GpuDmaOp o;
     u64 readbacks;
+    u8 px[4];
     CHECK(ch);
     memset(&o, 0, sizeof o);
     o.multi = 1;
@@ -2523,6 +2528,25 @@ static int check_rt_overlap(void) {
     rt_clear(ch, DMA_GA + 0x10000, 64, 64, 3, 0);
     rt_clear(ch, DMA_GA, 160, 128, 4, 1);
     g_renderer->rt_flush(DMA_GA);
+    vk_rt_before_write(DMA_GA, 0x14000);
+    guest_done(DMA_A, 0x14000);
+    CHECK(all_blue(GP(DMA_A), 0x14000));
+    /* the older one written back alone: under the newer one, which keeps its pixels in a copy of it and goes on top
+       when it is written back */
+    rt_clear(ch, DMA_GA + 0x10000, 64, 64, 3, 0);
+    rt_clear(ch, DMA_GA, 160, 128, 4, 1);
+    g_renderer->rt_flush(DMA_GA + 0x10000);
+    guest_done(DMA_A + 0x10000, 4);
+    CHECK(GP(DMA_A + 0x10000)[0] == 255 && GP(DMA_A + 0x10000)[2] == 0); /* it landed */
+    vk_lock();
+    Surf* newer = vk_rt_find(DMA_GA);
+    CHECK(newer);
+    vk_rt_note_read(newer); /* a use of it, as a texture bind asks */
+    CHECK(!read_pixel_at(newer, 140, 10, px) && px[0] == 0 && px[2] == 255);
+    vk_unlock();
+    CHECK(g_renderer->dma_copy(&o));
+    guest_done(DMA_A + 0x40000, 160 * 128 * 4);
+    CHECK(all_blue(GP(DMA_A + 0x40000), 160 * 128 * 4));
     vk_rt_before_write(DMA_GA, 0x14000);
     guest_done(DMA_A, 0x14000);
     CHECK(all_blue(GP(DMA_A), 0x14000));
