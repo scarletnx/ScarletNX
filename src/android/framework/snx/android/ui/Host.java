@@ -13,7 +13,7 @@ import java.util.ArrayList;
 public final class Host {
     private static final ArrayList<ViewRootImpl> roots = new ArrayList<>();
     private static long frames;
-    private static final boolean TRACE = System.getenv("SNX_ANDROID_TRACE_FRAMES") != null;
+    private static final boolean TRACE = Boolean.getBoolean("snx.android.trace_frames");
 
     private Host() {}
 

@@ -25,7 +25,7 @@
 static struct {
     GnuKernel kernel; /* base 0: the guest's addresses are the host's */
     int carrier;
-    bool verbose; /* SNX_ANDROID_SIGNALS=1: each action, send and delivery on stderr */
+    bool verbose; /* --log-signals: each action, send and delivery on stderr */
 } s;
 
 static _Thread_local struct {
@@ -157,7 +157,7 @@ void signals_in_export(uint64_t address) {
     if (t_signal.self) __atomic_store_n(&t_signal.self->in_export, address, __ATOMIC_RELAXED);
 }
 
-/* SNX_ANDROID_SAMPLE=1: every 5 seconds, each guest thread's pc, x30 and the export it is in, for a stall. The CPU
+/* --sample: every 5 seconds, each guest thread's pc, x30 and the export it is in, for a stall. The CPU
    fields are read as another thread writes them: a sample, which may be torn between them */
 static void* sampler(void* unused) {
     (void)unused;
@@ -192,17 +192,20 @@ static void* sampler(void* unused) {
     return NULL;
 }
 
+static bool option_log, option_sample;
+void signals_set_options(bool log, bool sample) {
+    option_log = log;
+    option_sample = sample;
+}
+
 void signals_init(void) {
     gnu_kernel_init(&s.kernel, &g_ops, NULL, NULL, (uint32_t)getpid());
     s.kernel.sigreturn = bridge_sigreturn();
-    const char* sample = getenv("SNX_ANDROID_SAMPLE");
     pthread_t thread;
-    if (sample && *sample && strcmp(sample, "0") && !pthread_create(&thread, NULL, sampler, NULL))
-        pthread_detach(thread);
+    if (option_sample && !pthread_create(&thread, NULL, sampler, NULL)) pthread_detach(thread);
     /* a real-time signal past glibc's own (SIGRTMIN is after them) that the JVM leaves alone */
     s.carrier = SIGRTMIN + 4;
-    const char* verbose = getenv("SNX_ANDROID_SIGNALS");
-    s.verbose = verbose && *verbose && strcmp(verbose, "0");
+    s.verbose = option_log;
     struct sigaction a = {0};
     a.sa_sigaction = carrier;
     /* SA_RESTART: a host call the carrier interrupts goes on after the guest's handler, as the guest's SA_RESTART

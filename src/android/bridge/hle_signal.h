@@ -28,9 +28,12 @@ typedef struct GuestSignals {
     int parked;          /* atomic: in an HLE call that waits */
     int busy;            /* atomic: the depth of guest calls and deliveries on this thread */
     unsigned delivered;  /* atomic: the handlers this thread ran */
-    uint64_t in_export;  /* atomic: the export it is in, for SNX_ANDROID_SAMPLE */
+    uint64_t in_export;  /* atomic: the export it is in, for --sample */
 } GuestSignals;
 
+/* each action, send and delivery on stderr (--log-signals), and each guest thread's pc, x30 and HLE call every 5
+   seconds (--sample): before bridge_init */
+void signals_set_options(bool log, bool sample);
 /* the kernel and the carrier's host handler: once, from bridge_init */
 void signals_init(void);
 void signals_thread_start(GuestSignals* t, CPU* c);
@@ -38,7 +41,7 @@ void signals_thread_end(GuestSignals* t);
 /* the mask that the threads the calling one creates start with: set in the new thread before its first guest call */
 void signals_inherit(uint64_t mask);
 uint64_t signals_mask(void);
-/* the export the calling thread enters (0 as it leaves), for SNX_ANDROID_SAMPLE */
+/* the export the calling thread enters (0 as it leaves), for --sample */
 void signals_in_export(uint64_t address);
 /* the signals ready for the calling thread run their handlers: c's registers must all be in place */
 void signals_check(CPU* c);
