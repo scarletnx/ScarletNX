@@ -1239,6 +1239,12 @@ snx_test_target(snx-test-guest-stats 11)
 target_include_directories(snx-test-guest-stats PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-guest-stats PRIVATE scarletnx-common scarletnx-filesystem)
 add_test(NAME guest_stats COMMAND snx-test-guest-stats)
+# nce_module (runtime/nce/nce.c): the modules of a layout that NCE moved up (Android), and the main thread's entry in
+# them, the moved one
+add_executable(snx-test-nce-module nce_module.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce.c")
+snx_test_target(snx-test-nce-module 23)
+target_link_libraries(snx-test-nce-module PRIVATE snx_nx_flags snx_settings_runtime)
+add_test(NAME nce_module COMMAND snx-test-nce-module)
 
 add_executable(snx-test-ini-deprecated ini_deprecated.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-ini-deprecated 11)

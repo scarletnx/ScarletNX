@@ -884,6 +884,7 @@ int snx_main(int argc, char** argv) {
     char *keys = NULL, *title_keys = NULL;
     const char *game, *title;
     const SnxModule* mod;
+    u64 entry = 0; /* the main thread's, in the module as it runs (nce_module) */
     int status, i;
     hle_init(); /* before anything, the options included, touches g_hle */
     nvn_init(); /* and g_nvn */
@@ -960,7 +961,7 @@ int snx_main(int argc, char** argv) {
     hints_init();
     plat_install_crash_handler();
     clock_start();
-    g_mod = nce_module(mod); /* from here the log is a file, in the state folder */
+    mod = g_mod = nce_module(mod, &entry); /* from here the log is a file, in the state folder */
     title = game_shown(mod->title && mod->title[0] ? mod->title : g_exename, shown, sizeof shown, why, sizeof why);
 #if defined(SNX_TRACY)
     if (g_settings.tracy_profiler) g_opt_tracy_client = 1; /* the .ini's Debug section asks for the client */
@@ -1062,9 +1063,7 @@ int snx_main(int argc, char** argv) {
 #endif
     }
     prepare_wait(title);
-    if (!g_quit)
-        kernel_run_main(mod->mods[0].base + mod->mods[0].text_off, mod->main_stack, (int)mod->main_prio,
-                        (int)mod->main_core);
+    if (!g_quit) kernel_run_main(entry, mod->main_stack, (int)mod->main_prio, (int)mod->main_core);
     frontend_loop();
     status = 0;
 done:
