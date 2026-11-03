@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The game's clock: real time since the run started, in nanoseconds and in the console's system ticks, less the time
    the game spent paused */
+#include "common/utilities/bits.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/plat.h"
 #include <stddef.h>
@@ -30,9 +31,9 @@ static u64 clock_now(void) {
 #if defined(__aarch64__)
     u64 hi = __atomic_load_n(&g_clock.counter.mul_hi, __ATOMIC_ACQUIRE);
     if (hi) {
-        __extension__ typedef unsigned __int128 u128;
-        u64 cnt = counter_read();
-        return cnt * hi + (u64)(((u128)cnt * g_clock.counter.mul_lo) >> 64) - g_clock.counter.origin;
+        u64 cnt = counter_read(), top;
+        snx_mul_wide(cnt, g_clock.counter.mul_lo, &top);
+        return cnt * hi + top - g_clock.counter.origin;
     }
 #endif
     return plat_ns();
@@ -65,8 +66,7 @@ void clock_set(u64 ns) {
 
 int clock_from_counter(ClockCounter* out) {
 #if defined(__aarch64__)
-    __extension__ typedef unsigned __int128 u128;
-    u64 freq, cnt, ns;
+    u64 freq, cnt, ns, rem, top;
     ClockCounter c;
     __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
     out->freq = freq;
@@ -74,12 +74,13 @@ int clock_from_counter(ClockCounter* out) {
     c.freq = freq;
     c.words = (u64)(uintptr_t)&g_clock;
     c.mul_hi = 1000000000u / freq;
-    c.mul_lo = (u64)(((u128)(1000000000u % freq) << 64) / freq);
+    c.mul_lo = snx_div_wide(1000000000u % freq, 0, freq, &rem);
     /* the counter's nanoseconds start where plat_ns is now, so guest time goes on from where it is: the counter first,
        so its clock is ahead of plat_ns by the time between the reads, and a reader of both never goes back */
     cnt = counter_read();
     ns = plat_ns();
-    c.origin = cnt * c.mul_hi + (u64)(((u128)cnt * c.mul_lo) >> 64) - ns;
+    snx_mul_wide(cnt, c.mul_lo, &top);
+    c.origin = cnt * c.mul_hi + top - ns;
     g_clock.counter.words = c.words;
     g_clock.counter.mul_lo = c.mul_lo;
     g_clock.counter.origin = c.origin;

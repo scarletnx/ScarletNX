@@ -12,6 +12,7 @@
 #define _GNU_SOURCE 1
 #endif
 #include "common/cpu/aarch64/cpu.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/nce/nce_host.h"
@@ -253,9 +254,9 @@ static u64 counter_now(void) {
 static u64 g_clock19[2];
 #define F19 19200000u
 static u64 ticks19(u64 cnt) {
-    __extension__ typedef unsigned __int128 u128;
-    u64 hi = 1000000000u / F19, lo = (u64)(((u128)(1000000000u % F19) << 64) / F19);
-    u64 ns = cnt * hi + (u64)(((u128)cnt * lo) >> 64) - g_clock19[1];
+    u64 rem, top, hi = 1000000000u / F19, lo = snx_div_wide(1000000000u % F19, 0, F19, &rem);
+    snx_mul_wide(cnt, lo, &top);
+    u64 ns = cnt * hi + top - g_clock19[1];
     return ns / 10000u * 192u + ns % 10000u * 192u / 10000u;
 }
 
@@ -342,11 +343,11 @@ int main(void) {
     patch(K_AT, sizeof k_code / 4);
     put(U_AT, u_code, sizeof u_code / 4); /* left as it is: no stub for its SVC */
     {
-        __extension__ typedef unsigned __int128 u128;
         NceEnv env = g_env;
+        u64 rem;
         env.clock = (u64)(uintptr_t)g_clock19;
         env.ns_hi = 1000000000u / F19;
-        env.ns_lo = (u64)(((u128)(1000000000u % F19) << 64) / F19);
+        env.ns_lo = snx_div_wide(1000000000u % F19, 0, F19, &rem);
         env.ns_origin = 0;
         g_clock19[1] = counter_now() * env.ns_hi - 1000000000u; /* about a second of guest time */
         put(K19_AT, k_code, sizeof k_code / 4);
