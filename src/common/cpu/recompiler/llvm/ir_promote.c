@@ -150,9 +150,9 @@ static int locals_only(LLVMValueRef call) {
     return 1;
 }
 /* what a call can see of the registers in the CPU structure: NONE for an intrinsic, a function that touches no
-   memory (ir_pure), or one that touches only its arguments' memory (ir_argmem, the argument bits of "memory") given
-   locals alone (snx_fp_host_lanes); ENV for a helper that uses only FPCR, FPSR and the exclusive monitor
-   (ir_noregs); ALL else */
+   memory (ir_pure), one that touches only its arguments' memory (ir_argmem, the argument bits of "memory") given
+   locals alone (snx_fp_host_lanes), or a helper not given c that writes guest memory alone (ir_nocpu: DC ZVA's);
+   ENV for a helper that uses only FPCR, FPSR and the exclusive monitor (ir_noregs); ALL else */
 enum { NONE, ENV, ALL };
 static int call_site(LLVMValueRef call) {
     LLVMValueRef callee = LLVMGetCalledValue(call);
@@ -163,6 +163,7 @@ static int call_site(LLVMValueRef call) {
                                              LLVMGetEnumAttributeKindForName("memory", 6));
         if (memory && LLVMGetEnumAttributeValue(memory) == 0) return NONE;
         if (memory && !(LLVMGetEnumAttributeValue(memory) & ~3ull) && locals_only(call)) return NONE;
+        if (LLVMGetStringAttributeAtIndex(callee, LLVMAttributeFunctionIndex, "snx-nocpu", 9)) return NONE;
         if (LLVMGetStringAttributeAtIndex(callee, LLVMAttributeFunctionIndex, "snx-noregs", 10)) return ENV;
     }
     return ALL;

@@ -450,6 +450,35 @@ static void test_scan_owned(void) {
     res_free(r);
 }
 
+/* a page a trap lets go reads as written to the next scan, with the write of the thread it wakes, though the trap
+   isn't disarmed yet (a landing disarms right after it lets go; own_fault lets a page with no entry on it go, one cut
+   and not let go yet, and its let_go disarms it later). A scan that skipped the page after the write would stand for
+   its write epoch, and a cache's check in that epoch would take memory without the write */
+static void test_let_go_watched(void) {
+    u64 a = region(R0 + 0xB00000, 0x2000);
+    Res* r = res_new(0x1000, 0x70);
+    if (plat_ww_scan(GP(a), 0x2000, on_scan)) { /* no write tracking here */
+        CHECK(mem_unmap(a, 0x2000) == 0);
+        res_free(r);
+        return;
+    }
+    CHECK(own_begin(a, 0x1000, r, 0) == 0);
+    own_drop(a, 0x1000); /* the page let go, in the pool */
+    CHECK(refs(r) == 0 && plat_ww_scan(GP(a), 0x2000, on_scan) == 0);
+    CHECK(plat_trap_arm(GP(a), 0x1000) == 0);
+    GP(a)[0x10] = 0x39; /* faults: no entry on it, so the trap's thread lets it go and the write goes on */
+    g_scan_lo = g_scan_hi = 0;
+    CHECK(plat_ww_scan(GP(a), 0x2000, on_scan) == 0);
+    if (g_scan_lo != a || g_scan_hi != a + 0x1000)
+        fprintf(stderr, "let go: the scan after the write reported [%llx, %llx), not the written page at %llx\n",
+                (unsigned long long)g_scan_lo, (unsigned long long)g_scan_hi, (unsigned long long)a);
+    CHECK(g_scan_lo == a && g_scan_hi == a + 0x1000);
+    plat_trap_disarm(GP(a), 0x1000);
+    CHECK(GP(a)[0x10] == 0x39);
+    CHECK(mem_unmap(a, 0x2000) == 0);
+    res_free(r);
+}
+
 /* many threads fault on many owned pages at once while the owners change between rounds */
 #define THREADS 8
 static u64 g_sa;
@@ -543,6 +572,7 @@ int main(int argc, char** argv) {
     test_release_order();
     test_busy_unowned();
     test_scan_owned();
+    test_let_go_watched();
     test_stress();
     CHECK(!g_own_any);
     printf("memory_own: %u checks passed (%d landings, %d bytes)\n", checks, g_lands, g_landed_bytes);

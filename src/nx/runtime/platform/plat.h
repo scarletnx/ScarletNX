@@ -143,7 +143,8 @@ u32 plat_tid(void); /* the calling thread's id, as the system numbers threads */
 int plat_thread_in_fault(u32 tid);
 /* Best-effort fatal diagnostics for the blocked thread, not the trap handler. Never resumes it. */
 void plat_dump_fault_thread(u32 tid);
-/* every page of [p, p + size), whole host pages of pool memory, armed / let go (0, or -1) */
+/* every page of [p, p + size), whole host pages of pool memory, armed / let go (0, or -1). A page let go reads as
+   written to plat_ww_scan, as does what any thread writes on it from then on */
 int plat_trap_arm(u8* p, u64 size);
 int plat_trap_continue(u8* p, u64 size);
 /* [p, p + size) not trapped any more: a page not yet let go reads the pool's contents when it is touched */

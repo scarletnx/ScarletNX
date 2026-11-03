@@ -581,6 +581,12 @@ int main(void) {
         g[2].signaled = 1;
         pc_broadcast(&g[2].cv);
         pm_unlock(&g[2].m);
+        /* its host thread gets to the hold point once the host runs it, which a loaded host may put off past any fixed
+           wait: it has 2 s. Then 30 ms more for a thread that ran on to show its steps */
+        for (int i = 0; i < 2000 && __atomic_load_n(&g[2].t->stopped, __ATOMIC_SEQ_CST) != 2; i++) {
+            struct timespec pause = {0, 1000000};
+            nanosleep(&pause, NULL);
+        }
         {
             struct timespec pause = {0, 30000000};
             nanosleep(&pause, NULL);
@@ -610,8 +616,9 @@ int main(void) {
         CHECK(settle(g[3].t, 0) == 0, "it runs on core 0: %d", on_core(g[3].t));
         CHECK(kernel_hold(50) == -1 && !g_hle.thread.hold, "the pause gives up and lets go");
         seen[0] = __atomic_load_n(&g[3].steps, __ATOMIC_SEQ_CST);
-        {
-            struct timespec pause = {0, 5000000};
+        /* a loaded host may not run it within any fixed wait: it has 2 s to take a step */
+        for (int i = 0; i < 2000 && __atomic_load_n(&g[3].steps, __ATOMIC_SEQ_CST) == seen[0]; i++) {
+            struct timespec pause = {0, 1000000};
             nanosleep(&pause, NULL);
         }
         CHECK(__atomic_load_n(&g[3].steps, __ATOMIC_SEQ_CST) > seen[0], "it goes on");

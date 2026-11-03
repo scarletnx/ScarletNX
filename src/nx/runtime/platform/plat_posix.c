@@ -918,6 +918,26 @@ void plat_ww_close(u8* p, u64 size) {
         }
 }
 
+#if defined(__linux__) && defined(PAGEMAP_SCAN)
+/* A trap letting pages go maps them (UFFDIO_CONTINUE) in minor mode, which PAGEMAP_SCAN skips, and then registers them
+   for the write watch again, where they read as written: a thread writes them in between, and a scan then would stand
+   for its write epoch without the write (gpu/vk: vk_written_since scans memory once an epoch). So a let-go waits for
+   the scans running when it starts, and those that start after wait for it to end. Registered before they are mapped,
+   the pages would read as written to a scan in between and again once mapped (the mapping drops the scan's marker),
+   the second time as the CPU's write, not the landing's (vk_ww_landed) */
+static int g_ww_letgo; /* atomic: 1 while a let-go maps and registers pages */
+static int g_ww_scans; /* atomic: the scans running */
+static void ww_scans_begin(void) {
+    for (;;) {
+        while (__atomic_load_n(&g_ww_letgo, __ATOMIC_SEQ_CST)) sched_yield();
+        __atomic_fetch_add(&g_ww_scans, 1, __ATOMIC_SEQ_CST);
+        if (!__atomic_load_n(&g_ww_letgo, __ATOMIC_SEQ_CST)) return;
+        __atomic_fetch_sub(&g_ww_scans, 1, __ATOMIC_SEQ_CST); /* a let-go started first: it goes first */
+    }
+}
+static void ww_scans_end(void) { __atomic_fetch_sub(&g_ww_scans, 1, __ATOMIC_SEQ_CST); }
+#endif
+
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
     if (__atomic_load_n(&g_wp, __ATOMIC_ACQUIRE) && g_wp_track) return wp_scan(p, size, cb);
 #if defined(__linux__) && defined(PAGEMAP_SCAN)
@@ -927,6 +947,7 @@ int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
     u64 start = (u64)(uintptr_t)p & ~mask, end = ((u64)(uintptr_t)p + size + mask) & ~mask;
     int pm = __atomic_load_n(&g_pagemap, __ATOMIC_ACQUIRE);
     if (pm < 0) return -1;
+    ww_scans_begin();
     while (start < end) {
         int i, n;
         memset(&arg, 0, sizeof arg);
@@ -942,12 +963,16 @@ int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
         arg.category_mask = PAGE_IS_WRITTEN;
         arg.return_mask = PAGE_IS_WRITTEN;
         n = ioctl(pm, PAGEMAP_SCAN, &arg);
-        if (n < 0) return -1;
+        if (n < 0) {
+            ww_scans_end();
+            return -1;
+        }
         for (i = 0; i < n; i++) cb((u8*)(uintptr_t)regions[i].start, regions[i].end - regions[i].start);
         /* a full vector may have stopped the walk early: go on from where it stopped */
         if ((u64)n < arg.vec_len || !arg.walk_end || arg.walk_end >= end) break;
         start = arg.walk_end;
     }
+    ww_scans_end();
     return 0;
 #else
     (void)p;
@@ -1444,6 +1469,15 @@ static int trap_signal_arm(u8* p, u64 size) {
     }
     return r;
 }
+/* [p, p + size), which a trap lets go, watched for writes again and read as written: what landed came through the
+   mirror. A trap by protection opens the pages only after, since a write made between the opening and the watch would
+   be in no scan's sight, and a scan then would stand for its write epoch without it (gpu/vk: vk_written_since scans
+   memory once an epoch). They stay mapped meanwhile, so what a scan in between protects stays protected once open
+   (userfaultfd's let-go maps them first: plat_trap_continue) */
+static void trap_watched(u8* p, u64 size) {
+    wp_armed(p, size, 0);
+    if (__atomic_load_n(&g_pagemap, __ATOMIC_ACQUIRE) >= 0) ww_remapped(p, size);
+}
 int plat_trap_arm(u8* p, u64 size) {
     if (__atomic_load_n(&g_trap_signal, __ATOMIC_ACQUIRE)) return trap_signal_arm(p, size);
 #if SNX_UFFD_MINOR
@@ -1470,12 +1504,23 @@ int plat_trap_arm(u8* p, u64 size) {
 }
 int plat_trap_continue(u8* p, u64 size) {
     if (__atomic_load_n(&g_trap_signal, __ATOMIC_ACQUIRE)) {
+        trap_watched(p, size);
         trap_open(p, size);
         return 0;
     }
 #if SNX_UFFD_MINOR
     u64 page = (u64)sysconf(_SC_PAGESIZE), at = (u64)(uintptr_t)p, end = at + size;
     int one = 0; /* page by page: a range over two runs of pool pages is two mappings, which one call can't span */
+    int watch = __atomic_load_n(&g_pagemap, __ATOMIC_ACQUIRE) >= 0;
+    wp_armed(p, size, 0); /* the tracking by protection's scans see the pages from now (PAGEMAP_SCAN's: below) */
+    if (watch) {
+        int none = 0; /* no scan runs until the write watch has the pages (g_ww_letgo) */
+        while (!__atomic_compare_exchange_n(&g_ww_letgo, &none, 1, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+            none = 0;
+            sched_yield();
+        }
+        while (__atomic_load_n(&g_ww_scans, __ATOMIC_SEQ_CST)) sched_yield();
+    }
     while (at < end) {
         struct uffdio_continue c;
         struct uffdio_range w;
@@ -1504,6 +1549,10 @@ int plat_trap_continue(u8* p, u64 size) {
         at += page;
         one = 0;
     }
+    if (watch) {
+        ww_remapped(p, size); /* the write watch's registration in place of the trap's */
+        __atomic_store_n(&g_ww_letgo, 0, __ATOMIC_SEQ_CST);
+    }
     return 0;
 #else
     (void)p;
@@ -1512,19 +1561,14 @@ int plat_trap_continue(u8* p, u64 size) {
 #endif
 }
 void plat_trap_disarm(u8* p, u64 size) {
+    trap_watched(p, size);
     if (__atomic_load_n(&g_trap_signal, __ATOMIC_ACQUIRE)) {
-        trap_open(p, size);   /* a page not let go yet reads the pool's contents */
-        wp_armed(p, size, 0); /* landed through the mirror, which no protection watches */
-        if (__atomic_load_n(&g_pagemap, __ATOMIC_ACQUIRE) >= 0) ww_remapped(p, size);
+        trap_open(p, size); /* a page not let go yet reads the pool's contents */
         return;
     }
-    wp_armed(p, size, 0);
 #if SNX_UFFD_MINOR
     struct uffdio_range r;
-    if (__atomic_load_n(&g_pagemap, __ATOMIC_ACQUIRE) >= 0) {
-        ww_remapped(p, size); /* written-page tracking again, in place of the trap */
-        return;
-    }
+    if (__atomic_load_n(&g_pagemap, __ATOMIC_ACQUIRE) >= 0) return; /* the write watch's registration took its place */
     r.start = (u64)(uintptr_t)p;
     r.len = size;
     ioctl(g_uffd, UFFDIO_UNREGISTER, &r);

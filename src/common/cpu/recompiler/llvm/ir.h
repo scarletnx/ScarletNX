@@ -359,6 +359,9 @@ void ir_no_memory(SnxIr* ir, LLVMValueRef function);
 /* a helper that takes c but touches none of its registers (X, SP, NZCV, V), only FPCR, FPSR or the exclusive
    monitor: ir_promote_registers needs the CPU structure to hold none of them around its calls */
 void ir_noregs(SnxIr* ir, LLVMValueRef function);
+/* a helper that is not given c and reaches no part of the CPU structure, only guest memory through M (DC ZVA's):
+   ir_promote_registers makes no site of its calls, as of a guest store */
+void ir_nocpu(SnxIr* ir, LLVMValueRef function);
 /* if (condition) { then() } else { otherwise() }: blocks positioned by the caller */
 LLVMBasicBlockRef ir_block(SnxIr* ir, const char* name);
 /* a stack slot in the entry block, as a C local whose address is taken */

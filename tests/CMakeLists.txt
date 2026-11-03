@@ -470,6 +470,12 @@ if(TARGET hactool_internals)
         add_test(NAME filesystem_dump_source COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-source)
         add_test(NAME filesystem_dump_none COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-none)
         add_test(NAME filesystem_dump_gone COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-gone)
+        add_test(NAME filesystem_dump_keys COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-keys)
+        add_test(NAME filesystem_dump_cut COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-cut)
+        add_test(NAME filesystem_dump_romfs_cut
+                 COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-romfs-cut)
+        add_test(NAME filesystem_dump_romfs_zeros
+                 COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-romfs-zeros)
         add_test(NAME filesystem_dump_update COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-update)
         add_test(NAME filesystem_mods_image COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods-image)
         add_test(NAME filesystem_dump_update_extracted
@@ -723,6 +729,14 @@ add_executable(snx-test-llvm-fp-helper-effects llvm_fp_helper_effects.c)
 snx_test_target(snx-test-llvm-fp-helper-effects 11)
 target_link_libraries(snx-test-llvm-fp-helper-effects PRIVATE snx_llvm snx_driver)
 add_test(NAME llvm_fp_helper_effects COMMAND snx-test-llvm-fp-helper-effects)
+
+# ir_promote_registers at every boundary (SVC, BL, BLR, poll, dispatch entry, stale code, each helper class, a
+# register left in the CPU structure) with every register kind, against a C model and the same program at O0
+add_executable(snx-test-llvm-promote-sync llvm_promote_sync.c llvm_steps.c)
+snx_test_target(snx-test-llvm-promote-sync 99)
+target_link_libraries(snx-test-llvm-promote-sync PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_promote_sync COMMAND snx-test-llvm-promote-sync)
+add_test(NAME llvm_promote_sync_portable COMMAND snx-test-llvm-promote-sync --portable)
 
 add_executable(snx-test-llvm-fp-reply-abi llvm_fp_reply_abi.c)
 snx_test_target(snx-test-llvm-fp-reply-abi 11)

@@ -309,8 +309,8 @@ int main(void) {
     /* One game's short recordings: a call and a uniform buffer, 48 bytes of records for the 20 the driver counts. Such
        a recording stays in the runtime's memory, in a block of the small store, not in a segment that recordings grow
        in, and its handle is a JUMP there from where the driver's commands would be. The game builds it again in the
-       same range: the handle stays, and runs the new one. The last one's piece stays while a JUMP reaches it, and
-       comes back at the next look once the new one's JUMP took its place. The next such recording takes its block */
+       same range: the handle stays, and runs the new one. The last one's piece comes back as the new one's JUMP takes
+       its place, not at the next sweep, and the next such recording takes its block */
     {
         const u64 cbg = 0xb80, callee = 0x4f8;
         u64 hg, hg2 = 0, block;
@@ -338,13 +338,13 @@ int main(void) {
               "the recording walks from its block");
         for (int n = 0; n < 2; n++) { /* the game records over it, and again */
             nvn_CommandBufferAddCommandMemory(&cpu, cbg, 1, 0xfa00, 0x80);
-            if (n) g_nvn.cmd.sweep = 0; /* the next cut looks at the pieces */
+            if (n) g_nvn.cmd.sweep = 0; /* the next cut looks at the pieces: nothing is left for it */
             nvn_CommandBufferBeginRecording(&cpu, cbg);
             nvn_CommandBufferCallCommands(&cpu, cbg, 1, callee);
             nvn_CommandBufferBindUniformBuffer(&cpu, cbg, 0, 2, 0x605640000ull, 0x100);
             hg2 = nvn_CommandBufferEndRecording(&cpu, cbg);
-            check(hg2 == hg && g_nvn.cmd.np == before + 2,
-                  "the last recording's piece stays until a look finds the new JUMP in its place");
+            check(hg2 == hg && g_nvn.cmd.np == before + 1,
+                  "the last recording's piece comes back as the new one's JUMP takes its place");
         }
         walk(hg, &a);
         check(gr64(hg + 8) == block && a.n == 2 && gr32(a.at[1] + 8 + offsetof(NvnPBindBuf, index)) == 2,

@@ -2,27 +2,36 @@
 # Copyright 2026 the ScarletNX contributors
 name: Pull request checks
 
-# What a pull request is held by besides its build, a job each:
-# - title: a pull request whose title still holds a donotmerge mark ([donotmerge needs #N]) fails until the mark is out.
-#   An issue or pull request opened, or whose title changed, gets the labels its [area] prefix and words ask for
+# What a pull request is held by besides its build, one job for each kind of event, so an event takes one runner:
+# - title and assignees: a pull request whose title still holds a donotmerge mark ([donotmerge needs #N]) fails until
+#   the mark is out, and so does one while someone assigned to it, its author aside, has not approved it: assigning
+#   someone whose pending work it touches holds its merge for their approval, and taking them off lets it go. An issue
+#   or pull request opened, or whose title changed, gets the labels its [area] prefix and words ask for
 #   (scripts/area-labels.py); labels are only added, so one a maintainer took off stays off until the title changes
-# - assignees: a pull request fails while someone assigned to it, its author aside, has not approved it: assigning
-#   someone whose pending work it touches holds its merge for their approval, and taking them off lets it go
-# - tracked material: what the tracked files may not hold (tests/tracked_material.py): keys, dumps, the console maker's
-#   name as a word and the names of piracy sites. It reads every tracked file, documentation included, so it runs on
-#   every pull request, including those build.yml skips for touching only files no build or test reads
-# - docs: the documentation held to the checkout (scripts/check-docs.py): links and anchors that resolve, the ## Index
-#   of each long doc, docs/README.md linking every doc, and docs/SETTINGS.md saying each key and default settings.txt
-#   has. It runs on every pull request for the same reason, as one that changes only docs skips build.yml
-# As required checks of main the title and the assignees keep the merge button off.
+# - tracked material and docs: what the tracked files may not hold (tests/tracked_material.py): keys, dumps, the
+#   console maker's name as a word and the names of piracy sites; and the documentation held to the checkout
+#   (scripts/check-docs.py): links and anchors that resolve, the ## Index of each long doc, docs/README.md linking
+#   every doc, and docs/SETTINGS.md saying each key and default settings.txt has. Both read files build.yml skips a
+#   pull request for (those no build or test reads), so they run on every pull request
+# - links: once a Build run of a pull request ends, one comment on the pull request, which each run rewrites, links its
+#   builds and names the jobs that did not build (scripts/pr-builds.sh). A workflow_run shows no check on the pull
+#   request, so nothing waits for it
+# Each run of a check checks all it stands for, so its newest run on a commit is the whole answer. A ruleset of main
+# that held the merge would require them by the names they run under: "Title and assignees" and "Tracked material and
+# docs".
 #
 # The title and the assignees run on pull_request_target, which takes this workflow and its scripts from the base
 # branch, so a pull request can't change the check it is held by, and lets the token label a pull request from a fork;
-# nothing of the pull request is checked out or run. Tracked material runs the pull request's own script on its own
-# files, so it runs on pull_request, whose token can't write for a fork, and never on pull_request_target. Every event
-# starts every job, and one that is not for the event is skipped: it takes another name than its check's, as a skipped
-# job passes and would stand for the check of that name, and a concurrency group of its run alone, so it can't drop a
-# job that runs
+# a review's run (pull_request_review) checks out the base branch's scripts too. Nothing of the pull request is checked
+# out or run. Tracked material and docs run the pull request's own scripts on
+# its own files, so they run on pull_request, whose token can't write for a fork, and never on pull_request_target.
+# The links run on workflow_run, from the default branch's workflow and script too, and check out nothing of the pull
+# request. A fork's pull request gets no comment: its Build ran the fork's workflow, which names the builds and jobs
+# the comment would show.
+# Every event starts every job, and one that is not for the event is skipped: it takes another name than its check's,
+# as a skipped job passes and would stand for the check of that name, and a concurrency group of its run alone, so it
+# can't drop a job that runs. An edit that changes neither the title nor the base runs nothing: the check of the
+# commit, which no edit changes, stays the one before it
 on:
   pull_request_target:
     types: [opened, edited, reopened, synchronize, assigned, unassigned]
@@ -31,38 +40,57 @@ on:
   pull_request:
   issues:
     types: [opened, edited]
+  # main's Build links nothing, so its end starts no run
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+    branches-ignore: [main]
   workflow_dispatch:
 
 permissions: {}
 
 jobs:
-  title:
+  title-and-assignees:
     # the required check's name on a pull request; an issue only gets its labels
     name: >-
-      ${{ github.event_name == 'pull_request_target' && 'No donotmerge in the title'
-      || github.event_name == 'issues' && 'Label the area' || 'Title (runs on pull_request_target and issues)' }}
-    if: github.event_name == 'pull_request_target' || github.event_name == 'issues'
+      ${{ (github.event_name == 'pull_request_target' &&
+      (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base) ||
+      github.event_name == 'pull_request_review') && 'Title and assignees' ||
+      github.event_name == 'issues' && (github.event.action == 'opened' || github.event.changes.title)
+      && 'Label the area' || 'Title and assignees (not for this event, or an edit of neither the title nor the base)' }}
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base) ||
+      github.event_name == 'pull_request_review' ||
+      github.event_name == 'issues' && (github.event.action == 'opened' || github.event.changes.title)
     runs-on: ubuntu-26.04
+    timeout-minutes: 5
     permissions:
       contents: read
       issues: write
       pull-requests: write
-    # one at a time per issue or pull request: of a burst of edits the newest waits and those before it are dropped.
-    # Never skipped on a pull_request_target event, as a skipped required check passes
+    # one at a time per issue or pull request: of a burst of events the newest waits and those before it are dropped,
+    # and the one that runs checks everything anew. Never skipped on an event it runs for, as a skipped check passes
     concurrency:
       group: >-
-        title-${{ (github.event_name == 'pull_request_target' || github.event_name == 'issues')
+        title-and-assignees-${{ (github.event_name == 'pull_request_target' &&
+        (github.event.action != 'edited' || github.event.changes.title || github.event.changes.base) ||
+        github.event_name == 'pull_request_review' ||
+        github.event_name == 'issues' && (github.event.action == 'opened' || github.event.changes.title))
         && (github.event.pull_request.number || github.event.issue.number) || format('skipped-{0}', github.run_id) }}
     steps:
-      # the base branch as it is now (the default branch for an issue), never the pull request
+      # the scripts of the branch it merges into, as it is now (the default branch for an issue), never the pull request
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.base.ref }}
           sparse-checkout: |
             scripts/pr-title.py
             scripts/area-labels.py
+            scripts/pr-assignees.py
           sparse-checkout-cone-mode: false
+      # on every pull request event, a review's too: a run that checked less would pass for the title it did not read
       - name: Check the title
-        if: github.event_name == 'pull_request_target'
+        if: github.event_name != 'issues'
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: python3 scripts/pr-title.py "$TITLE"
@@ -85,30 +113,10 @@ jobs:
             add+=(-f "labels[]=$label")
           done <<<"$wanted"
           gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/labels" "${add[@]}" >/dev/null
-
-  assignees:
-    name: >-
-      ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review')
-      && 'Assignees approved' || 'Assignees (run on pull_request_target and pull_request_review)' }}
-    if: github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review'
-    runs-on: ubuntu-26.04
-    permissions:
-      contents: read
-      pull-requests: read
-    # one at a time per pull request, as the title: the newest of a burst waits and those before it are dropped
-    concurrency:
-      group: >-
-        pr-assignees-${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review')
-        && github.event.pull_request.number || format('skipped-{0}', github.run_id) }}
-    steps:
-      # the script of the branch it merges into, as it is now
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.base.ref }}
-          sparse-checkout: scripts/pr-assignees.py
-          sparse-checkout-cone-mode: false
-      # read now, not from the event: an assignment or a review that came after it counts
+      # read now, not from the event: an assignment or a review that came after it counts. Also under a donotmerge
+      # mark, so the run says both
       - name: Read the assignees and the reviews
+        if: ${{ !cancelled() && github.event_name != 'issues' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
@@ -118,6 +126,7 @@ jobs:
             jq -s . >reviews.json
           jq -s '.[0] + {reviews: .[1]}' pr.json reviews.json >state.json
       - name: Check every assignee approved
+        if: ${{ !cancelled() && github.event_name != 'issues' }}
         env:
           BASE: ${{ github.event.pull_request.base.ref }}
         run: |
@@ -127,10 +136,10 @@ jobs:
           fi
           python3 scripts/pr-assignees.py state.json
 
-  tracked-material:
+  tracked-material-and-docs:
     name: >-
       ${{ (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
-      && 'Tracked material' || 'Tracked material (runs on pull_request)' }}
+      && 'Tracked material and docs' || 'Tracked material and docs (runs on pull_request)' }}
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
@@ -139,33 +148,58 @@ jobs:
     # a push cancels the run of the commit before it
     concurrency:
       group: >-
-        tracked-material-${{ github.event_name == 'pull_request' && github.event.pull_request.number
+        tracked-material-and-docs-${{ github.event_name == 'pull_request' && github.event.pull_request.number
         || github.run_id }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v7
-      - name: Self-test, then the checkout
+      - name: Tracked material, its self-test then the checkout
         run: |
           python3 tests/tracked_material.py --self-test
           python3 tests/tracked_material.py .
-
-  docs:
-    name: >-
-      ${{ (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
-      && 'Docs' || 'Docs (runs on pull_request)' }}
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    # a push cancels the run of the commit before it
-    concurrency:
-      group: >-
-        docs-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
-      cancel-in-progress: true
-    steps:
-      - uses: actions/checkout@v7
-      - name: The checks on checkouts made to fail them, then the checkout
+      # also after tracked material failed, so the run says both
+      - name: Docs, the checks on checkouts made to fail them then the checkout
+        if: ${{ !cancelled() }}
         run: |
           python3 tests/docs_test.py
           python3 scripts/check-docs.py
+
+  links:
+    name: >-
+      ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+      && 'Link the builds' || 'Link the builds (runs when a Build of a pull request ends)' }}
+    # a Build a newer push cancelled has its own after it
+    if: >-
+      github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: read # the run's artifacts and jobs
+      checks: read # edenprobe's notice
+      contents: read
+      pull-requests: write # the comment
+    # one at a time per branch: of a burst of runs ending, the newest waits and those before it are dropped
+    concurrency:
+      group: >-
+        links-${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.conclusion != 'cancelled' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+        && github.event.workflow_run.head_branch || format('skipped-{0}', github.run_id) }}
+    steps:
+      # the default branch's script, never the pull request's
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/pr-builds.sh
+          sparse-checkout-cone-mode: false
+      # PR empty when the run names none: the script asks which open pull request has the commit as its head
+      - name: Link the builds from the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+          RUN: ${{ github.event.workflow_run.id }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: scripts/pr-builds.sh "$GITHUB_REPOSITORY" "$PR" "$RUN" "$SHA"

@@ -17,7 +17,8 @@
 name beside it, opens its launcher: a small SDL3 menu for the command-line drivers. A copy named
 after a game, without its code, says so and never opens it. It uses an
 embedded public-domain 8x16 VGA BIOS font, with GNU Unifont's 8x16 glyphs fitted to it for the Latin letters its CP437
-lacks and its 16x16 ones, two columns each, for the wide letters a language shows (Chinese), and nearest-neighbor
+lacks and its 16x16 ones, two columns each, for the letters game titles are written in (Chinese, Japanese and Korean)
+and the wide letters a language shows, and nearest-neighbor
 integer scaling; its words are English or a language compiled into it ([Languages](#languages)). An item of a menu
 has an icon beside its name, 16x16 in the font's stroke (`src/gui/icons.hex`): the menu's, the groups of the Settings and
 their rows that open a screen or do something (the others keep its columns), a game's box's actions, the setup's pages
@@ -630,7 +631,8 @@ a box of files. Their rows are 2 pixels apart times the text's size (on Android 
 2x by default, so 96, about 37 dp at a density of 2.6, Android's 48 dp touch target at 3x; the desktop's are 17), the focused one kept in the middle (on a
 group's screen, the group open in the groups' list; Games' grid by its lines) as the keys, a pad or the wheel move
 it, and a list still when the mouse, a pen or a tap moves it, the cursor inside each row, which a click takes
-whole as a tap does. Every list whose rows do not all show, Games' grid too, has a scroll bar a letter wide at its
+whole as a tap does. A row's text too long for it shows its start and ends in `...`, but for the focused row's, which
+slides where the theme slides (`scroll_ms`): one name moves at a time. Every list whose rows do not all show, Games' grid too, has a scroll bar a letter wide at its
 right, the rows beside it: its thumb as tall as the share of the rows shown and where they are, which a click takes
 there and drags, and a finger too from two letters of the bar's right edge; the rows stay where the thumb or a finger
 put them, the focus where it was, until a key, a pad or the wheel moves the focus. Under a box over the screen, only the box's
@@ -861,13 +863,17 @@ brings a translation up to the code; a phrase it leaves empty, or marks `fuzzy`,
   same file translates it (`#, snx-key`, as `Back`), since a click on the foot finds a key by its word, and a sentence
   greyed (`~`, one its screen cannot do now) stays greyed;
 - has a letter the menu's font does not draw, which would show as `?`: the font is CP437, the Latin letters of
-  U+00A0 to U+024F past it and the wide letters the languages show, GNU Unifont's. `scripts/build-glyphs.py --from`
-  keeps them from a Unifont `.hex` (`unifont-<version>.hex` or `unifont_all-<version>.hex`): the Latin ones in
-  `src/gui/unifont-latin.hex`, which the build draws with the VGA font's stems and baseline, and in
-  `src/gui/unifont-wide.hex` the 16x16 glyphs of every other letter of `po/*.po` and `tests/po/*.po`, as Chinese,
-  which the menu draws two columns wide: every width, cut, wrap and slide of its text counts them so (`src/gui/wide.h`),
-  and a row breaks after one as at a space. A language that shows a new letter runs it again; the `gui_glyphs_kept`
-  test checks the files hold each of them once, and no other;
+  U+00A0 to U+024F past it, the blocks game titles are written in and the wide letters the languages show, GNU
+  Unifont's. `scripts/build-glyphs.py --from` keeps them from a Unifont `.hex` (`unifont-<version>.hex` or
+  `unifont_all-<version>.hex`): the Latin ones in `src/gui/unifont-latin.hex`, which the build draws with the VGA
+  font's stems and baseline; in `src/gui/unifont-titles.hex` every code point of the CJK and Hangul blocks of its
+  `TITLE_RANGES` (CJK Unified Ideographs without Extension A, Hiragana, Katakana, Hangul Syllables, their punctuation
+  and the halfwidth and fullwidth forms), whatever the languages show; and in `src/gui/unifont-wide.hex` the 16x16
+  glyphs of every other letter of `po/*.po` and `tests/po/*.po`. The menu draws a 16x16 one two columns wide: every
+  width, cut, wrap and slide of its text counts them so (`src/gui/wide.h`), and a row breaks after one as at a space.
+  The font's texture holds the others whole and 2048 of the 16x16 ones at a time, those drawn longest ago giving their
+  place to the next. A language that shows a new letter runs it again; the `gui_glyphs_kept` test checks the files
+  hold each of them once, and no other, and `--check --from` the `.hex` compares their glyphs with Unifont's too;
 - has contexts (`msgctxt`), plurals (`msgid_plural`), a phrase twice, or is not UTF-8.
 
 The runtime's settings stay as the runtime names them (their groups, names, help and words come from
@@ -916,10 +922,10 @@ the keys, the first user) and refuses, users.ini kept or overwritten, the fixed 
 alone after an update, `--no-setup`, and the question where `options-dialog` puts it.
 Language tests cover a catalog's search in either byte order, catalogs cut or pointing out of themselves, the language
 Auto picks from the system's locales, English where a language has none, the Language row and `app.ini`'s key, and
-the script's refusals; they use a language of their own, `tests/po/xx.po`. Glyph tests cover the Latin and the wide
-letters' lookup, each way the menu draws a line with them (a wide one's two columns in widths, cuts, wraps, slides, a
-foot's keys and typed text), UTF-8 read with a `?` for each byte no character starts, and the script that keeps
-them.
+the script's refusals; they use a language of their own, `tests/po/xx.po`. Glyph tests cover the Latin, the titles'
+and the wide letters' lookup and rows against Unifont's, each way the menu draws a line with them (a wide one's two
+columns in widths, cuts, wraps, slides, a foot's keys and typed text), more wide letters on a row than the texture's
+slots, UTF-8 read with a `?` for each byte no character starts, and the script that keeps them.
 Settings tests cover the runtime's list read into rows, picks, the options each combination
 passes, and the screens of its groups and App; menu tests cover mouse hover versus explicit
 activation, the menu without the games and Games with its recent games' show-more row and P,

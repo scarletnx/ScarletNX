@@ -161,6 +161,10 @@ void ir_noregs(SnxIr* ir, LLVMValueRef function) {
     LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex,
                             LLVMCreateStringAttribute(ir->ctx, "snx-noregs", 10, "", 0));
 }
+void ir_nocpu(SnxIr* ir, LLVMValueRef function) {
+    LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex,
+                            LLVMCreateStringAttribute(ir->ctx, "snx-nocpu", 9, "", 0));
+}
 
 void ir_stats_function(SnxIr* ir, LLVMValueRef fn) {
     if (!ir->stats.enabled) return;

@@ -483,13 +483,13 @@ def check_entry(msgid, msgstr, keys, words, where):
 
 
 def drawable(root):
-    """the code points past ASCII the menu's font draws: CP437's, and the Latin and the wide letters kept from GNU
-    Unifont"""
+    """the code points past ASCII the menu's font draws: CP437's, and the Latin letters, the titles' blocks and the
+    wide letters kept from GNU Unifont"""
     spec = importlib.util.spec_from_file_location('build_glyphs', Path(__file__).with_name('build-glyphs.py'))
     glyphs = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(glyphs)
     drawn = glyphs.codepage(root)
-    for kept in (root / glyphs.KEPT, root / glyphs.WIDE_KEPT):
+    for kept in (root / glyphs.KEPT, root / glyphs.TITLES_KEPT, root / glyphs.WIDE_KEPT):
         drawn |= set(glyphs.read_hex(kept.read_text().splitlines(), kept))
     return drawn
 

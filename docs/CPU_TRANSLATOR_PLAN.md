@@ -474,7 +474,8 @@ drawback for an A64 guest on x86-64.
 **ScarletNX now.** Guest registers are fields of `CPU`. After emission, `ir_promote.c` turns them into SSA values for
 the whole function. At each call site it stores the registers written since the last site and reloads the live ones
 after the call. A call to a helper that touches only FPCR, FPSR and the exclusive monitor (`snx-noregs`) syncs only
-those, and every other call syncs all (`call_site` in `ir_promote.c`).
+those, one that touches no register (`snx-nocpu`: DC ZVA's) or only memory it is given syncs none, and every other call
+syncs all (`call_site` in `ir_promote.c`).
 
 **On each host.** A64 has 31 general registers, SP and 32 vector registers. x86-64 has 16 and 16 (32 with AVX-512), so
 a full map is impossible there, and fewer stores and reloads at calls are the gain. AArch64 has the guest's own

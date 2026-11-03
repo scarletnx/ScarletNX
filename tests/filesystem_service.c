@@ -165,7 +165,8 @@ void own_acquire(u64 addr, u64 size) { (void)addr, (void)size; }
 /* platform/plat_posix.c: no page here is protected for the write tracking */
 void plat_ww_open(u8* p, u64 size) { (void)p, (void)size; }
 void plat_ww_close(u8* p, u64 size) { (void)p, (void)size; }
-static char test_fs_text[1024]; /* the last warning of fs.c's own, "fs: ..." */
+static char test_fs_text[1024];    /* the last warning of fs.c's own, "fs: ..." */
+static char test_romfs_text[1024]; /* the last warning about the RomFS, "RomFS: ..." */
 void logf_(int level, const char* format, ...) {
     char text[1024];
     va_list args;
@@ -177,6 +178,7 @@ void logf_(int level, const char* format, ...) {
         snprintf(test_left_text, sizeof test_left_text, "%s", text);
     }
     if (!level && !strncmp(text, "fs: ", 4)) snprintf(test_fs_text, sizeof test_fs_text, "%s", text);
+    if (!level && !strncmp(text, "RomFS: ", 7)) snprintf(test_romfs_text, sizeof test_romfs_text, "%s", text);
 }
 /* options.c's: the game's settings, where the runtime read them */
 const char* ini_file(void) { return "config/Game.ini"; }
@@ -1146,16 +1148,37 @@ static blob_t dump_npdm(void) {
     b.data[0x40] = 0x2A; /* told apart from a blank one */
     return b;
 }
-static void dump_write(int source) {
+/* synthetic keys, never a console's: a header_key (dump_header_key as bytes, its XTS halves apart as OpenSSL requires)
+   and key area keys up to master key 19 */
+#define DUMP_SECRET "0123456789abcdef0123456789abcdef"
+static const char dump_keys[] = "header_key = " DUMP_SECRET "fedcba9876543210fedcba9876543210\n"
+                                "key_area_key_application_00 = " DUMP_SECRET "\n"
+                                "key_area_key_application_13 = " DUMP_SECRET "\n";
+static const unsigned char dump_header_key[32] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+                                                  0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+                                                  0x32, 0x10, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10};
+/* how dump_write_nsp makes the dump: whole; its program NCA encrypted with master key 20, past what
+   dump-data/prod.keys (dump_keys) has; its RomFS behind a compression table that lists 0x20 bytes past what it stores,
+   or 64 MiB of zeros past its image (bigger than the dump, and whole); or the file cut 1024 bytes short of its table */
+enum { DUMP_WHOLE, DUMP_SEALED, DUMP_ROMFS_CUT, DUMP_ROMFS_ZEROS, DUMP_CUT_SHORT };
+static u64 dump_table_end; /* where the NSP's table puts its last file's end */
+static void dump_write_nsp(int source, int kind) {
     blob_t code = {zalloc(sizeof dump_code - 1), sizeof dump_code - 1}, asset = {zalloc(sizeof dump_asset - 1), 0};
     blob_t meta = dump_npdm(), nsp;
     asset.size = sizeof dump_asset - 1;
     memcpy(code.data, dump_code, code.size);
     memcpy(asset.data, dump_asset, asset.size);
     romfs_file_t exefs[2] = {{"main.npdm", meta}, {"main", code}}, romfs[1] = {{"asset.bin", asset}};
-    romfs_file_t ncas[1] = {
-        {"program.nca", dnca_build(NCACONTENTTYPE_PROGRAM, 0x0100000000AB0000ULL, exefs, 2, romfs, 1)}};
+    romfs_file_t ncas[1] = {{"program.nca", dnca_build_romfs(NCACONTENTTYPE_PROGRAM, 0x0100000000AB0000ULL, exefs, 2,
+                                                             romfs, 1, kind == DUMP_ROMFS_CUT ? 0x20 : 0,
+                                                             kind == DUMP_ROMFS_ZEROS ? 64ull << 20 : 0)}};
+    if (kind == DUMP_SEALED) {
+        nca_encrypt(&ncas[0].content, dump_header_key, 20);
+        CHECK(!snx_mkdirs("dump-data") && !snx_write_file("dump-data/prod.keys", dump_keys, sizeof dump_keys - 1));
+    }
     nsp = partition_build(MAGIC_PFS0, ncas, 1, 0x200);
+    dump_table_end = pfs0_files_end(nsp.data);
+    if (kind == DUMP_CUT_SHORT) nsp.size = (size_t)dump_table_end - 1024;
     CHECK(!snx_mkdirs("dump-data/Game_data") && !snx_write_file("dump-data/Game.nsp", nsp.data, nsp.size));
     if (source)
         CHECK(!snx_write_file("dump-data/Game.source", "no dump", 7));
@@ -1167,6 +1190,10 @@ static void dump_write(int source) {
     free(asset.data);
     free(meta.data);
 }
+static void dump_write(int source) { dump_write_nsp(source, DUMP_WHOLE); }
+/* the error lines the dump's reading says (snx_error_sink), the last in test_error_text */
+static char test_error_text[2048];
+static void test_error_line(const char* line) { snprintf(test_error_text, sizeof test_error_text, "%s", line); }
 static void test_dump(SvcObj* proxy) {
     blob_t meta = dump_npdm();
     PFileMap map;
@@ -2112,6 +2139,122 @@ int main(int argc, char** argv) {
         cleanup_service();
         free(g_mem);
         printf("PASS %u add-on checks\n", test_checks);
+        return 0;
+    }
+    /* a dump whose program NCA needs master key 20 and a keys file that goes up to 19: the game stops before reading
+       it, naming both and the keys file, where it would read garbage and miss its modules */
+    if (argc == 4 && !strcmp(argv[3], "dump-keys")) {
+        jmp_buf jump;
+        char *keys, *named;
+        dump_write_nsp(0, DUMP_SEALED);
+        keys = snx_absolute("dump-data/prod.keys");
+        named =
+            snx_format("and %s goes up to master key 19 (firmware 20.0.0 and later): it needs the keys of a console "
+                       "with master key 20, on its firmware or a later one",
+                       keys);
+        strcpy(g_datadir, "dump-data/Game_data/");
+        snx_error_sink(test_error_line);
+        test_fatal_text[0] = 0;
+        test_fatal_jump = &jump;
+        if (!setjmp(jump)) {
+            fs_init("dump-data/prod.keys", NULL);
+            CHECK(!"a dump its keys can't read did not stop the game");
+        }
+        test_fatal_jump = NULL;
+        snx_error_sink(NULL);
+        if (!strstr(test_error_text, named)) fprintf(stderr, "said: %s\nfatal: %s\n", test_error_text, test_fatal_text);
+        CHECK(!strcmp(
+            test_fatal_text,
+            "A dump the game reads in place needs keys its keys file does not have: the line before says which"));
+        CHECK(strstr(test_error_text, "The game's Program NCA is encrypted with master key 20 (a firmware newer than "
+                                      "20.0.0), and ") == test_error_text);
+        CHECK(strstr(test_error_text, named) != NULL);
+        CHECK(g_hle.fs.dfs == NULL); /* nothing read out of it */
+        free(named);
+        free(keys);
+        free(g_mem);
+        printf("PASS %u checks: a dump its keys file stops short of names the master key it needs and the file\n",
+               test_checks);
+        return 0; /* the fatal left the tree locked: nothing more of it */
+    }
+    /* a dump whose file is cut short of its table: the game stops at start, naming both sizes, where the dump could
+       not be mapped */
+    if (argc == 4 && !strcmp(argv[3], "dump-cut")) {
+        jmp_buf jump;
+        char has[32], needs[32], *said;
+        dump_write_nsp(1, DUMP_CUT_SHORT);
+        strcpy(g_settings.game_dump, "dump-data/Game.nsp");
+        strcpy(g_datadir, "dump-data/Game_data/");
+        snx_size_text(dump_table_end - 1024, has, sizeof has);
+        snx_size_text(dump_table_end, needs, sizeof needs);
+        said = snx_format("dump-data/Game.nsp is %s (%llu bytes), and its table puts its files up to %s (%llu bytes): "
+                          "the dump is incomplete, 1024 bytes short. Copy or dump it again",
+                          has, (unsigned long long)(dump_table_end - 1024), needs, (unsigned long long)dump_table_end);
+        snx_error_sink(test_error_line);
+        test_fatal_jump = &jump;
+        if (!setjmp(jump)) {
+            fs_init(NULL, NULL);
+            CHECK(!"a dump cut short did not stop the game");
+        }
+        test_fatal_jump = NULL;
+        snx_error_sink(NULL);
+        if (strcmp(test_error_text, said)) fprintf(stderr, "said:     %s\nexpected: %s\n", test_error_text, said);
+        CHECK(!strcmp(test_error_text, said));
+        CHECK(strstr(test_fatal_text, "the line before says why") != NULL && g_hle.fs.dfs == NULL);
+        free(said);
+        free(g_mem);
+        printf("PASS %u checks: a dump cut short says so at start, with its size and its table's\n", test_checks);
+        return 0; /* the fatal left the tree locked: nothing more of it */
+    }
+    /* a dump whose RomFS can't be read to its end (its compression table lists 0x20 bytes past what it stores): said at
+       start with the image's size and the dump's, and still where the game reads there. One whose image is far bigger
+       than the dump, all of it there (zeros past its files), is said nothing of */
+    if (argc == 4 && (!strcmp(argv[3], "dump-romfs-cut") || !strcmp(argv[3], "dump-romfs-zeros"))) {
+        int cut = !strcmp(argv[3], "dump-romfs-cut");
+        Request r;
+        SvcObj *proxy, *storage;
+        char image[32], mapped[32], *said;
+        dump_write_nsp(0, cut ? DUMP_ROMFS_CUT : DUMP_ROMFS_ZEROS);
+        strcpy(g_datadir, "dump-data/Game_data/");
+        fs_init(NULL, NULL);
+        test_scans_allowed = 0;
+        svc_fs_init();
+        romfs_init();
+        CHECK(g_hle.fs.dfs != NULL && g_hle.fs.rtotal > 0x50);
+        snx_size_text(g_hle.fs.rtotal, image, sizeof image);
+        snx_size_text(g_hle.fs.dmap.size, mapped, sizeof mapped);
+        said = snx_format("RomFS: the dump's image is %s, and its last byte, at %llx, can't be read from the dump's %s "
+                          "(hactool: Storage read out of range (0x",
+                          image, (unsigned long long)(g_hle.fs.rtotal - 1), mapped);
+        if (cut && strncmp(test_romfs_text, said, strlen(said)))
+            fprintf(stderr, "said:     %sexpected: %s...\n", test_romfs_text, said);
+        CHECK(cut ? !strncmp(test_romfs_text, said, strlen(said)) &&
+                        strstr(test_romfs_text, "!): the dump is incomplete or damaged\n") != NULL
+                  : !test_romfs_text[0] && g_hle.fs.rtotal > snx_file_size("dump-data/Game.nsp"));
+        /* the image's last 0x10 bytes as the game reads them: the read's own warning, or zeros */
+        proxy = new_fsp();
+        request(&r, 200);
+        dispatch(proxy, &r, 0);
+        CHECK(r.c.nout_objs == 1);
+        storage = r.c.out_objs[0];
+        request(&r, 0);
+        argument64(&r, 0, g_hle.fs.rtotal - 0x10);
+        argument64(&r, 8, 0x10);
+        output_buffer(&r, 0x10);
+        test_romfs_text[0] = 0;
+        dispatch(storage, &r, cut ? FS_OUT_OF_RANGE : 0);
+        free(said);
+        said = snx_format("RomFS: could not read the dump at %llx (10 bytes): the game gets zeros\n",
+                          (unsigned long long)(g_hle.fs.rtotal - 0x10));
+        CHECK(cut ? !strcmp(test_romfs_text, said) : !test_romfs_text[0]);
+        free(said);
+        svcobj_unref(storage);
+        svcobj_unref(proxy);
+        CHECK(test_objects == 0);
+        cleanup_service();
+        free(g_mem);
+        printf("PASS %u checks: a dump's RomFS %s\n", test_checks,
+               cut ? "that can't be read to its end is said at start" : "bigger than the dump, all there, is not");
         return 0;
     }
     /* a game read from its dump that finds none: where it looked, its .ini and the link an older version made */
