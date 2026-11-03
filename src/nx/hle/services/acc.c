@@ -538,13 +538,13 @@ static int acc_trash_move(const char* path, const char* to, char (*done)[2][FS_T
 }
 /* A user deleted (SwitchBrew acc:su 203), as rEden's Core::Profiles::DeleteUser does it: into the Trash, trash/ of the
    data folder, a folder of its own (user.<uid>.<UTC time>, a number after it rather than over one there): its
-   users.ini section, its picture and the folders of its saves this run reaches (fs_user_saves_take), each said where
-   it went; then the users after it a place up. The user playing is refused, as rEden refuses it in its frontends; a
+   users.ini section, its picture and the folders of its saves this run reaches (fs_user_saves_take), each with the
+   note beside it (SNX_SAVE_NOTE), each said where it went; then the users after it a place up. The user playing is refused, as rEden refuses it in its frontends; a
    move that fails puts back what moved and deletes nothing */
 static int nn_account_IAccountServiceForAdministrator_DeleteUser(SvcObj* self, const nn_account_Uid* uid) {
     const SnxUser* u = acc_user(uid);
     char hex[33], when[32], why[512], picture[FS_TREE_PATH_MAX], saves[2][FS_TREE_PATH_MAX],
-        done[3][2][FS_TREE_PATH_MAX];
+        done[5][2][FS_TREE_PATH_MAX], note[FS_TREE_PATH_MAX];
     char *data, *trash = NULL, *section = NULL, *place;
     time_t now = time(NULL);
     const struct tm* utc = gmtime(&now);
@@ -602,6 +602,20 @@ static int nn_account_IAccountServiceForAdministrator_DeleteUser(SvcObj* self, c
                  number, saves[i], place ? place : trash);
             free(place);
             goto back;
+        }
+        snprintf(note, sizeof note, "%s" SNX_SAVE_NOTE, saves[i]);
+        if (snx_is_file(note)) {
+            char* to = snx_format("%s" SNX_SAVE_NOTE, place);
+            n = !to || acc_trash_move(note, to, done, &moved);
+            if (n)
+                WARN("acc: user %d is not deleted: %s could not be moved to %s; the game sees those saves again at its "
+                     "next start\n",
+                     number, note, to ? to : trash);
+            free(to);
+            if (n) {
+                free(place);
+                goto back;
+            }
         }
         free(place);
     }

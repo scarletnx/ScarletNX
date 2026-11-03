@@ -19,6 +19,9 @@ void fs_saves_init(const char* root);
    folder's save/user.<uid>/ (save_layout=global's, every title's) and this game's own save/user.<uid> (game's). Their
    host paths into paths, max of them; how many */
 int fs_user_saves_take(const u64 uid[2], char (*paths)[FS_TREE_PATH_MAX], int max);
+/* the line said when a save opened this run was last written by a newer version of the program (fs.c's save_note), for
+   a crash report to say again: nothing when none was. Takes no lock, as a crash's handler may run while one is held */
+void fs_save_report(void);
 extern u64 g_fs_bytes_read, g_fs_bytes_written; /* the game's file I/O, for the rate plot */
 /* Lookups by a path in the index. *size is 0 when the file isn't there */
 FILE* fs_open_read(const char* path, u64* size);
@@ -86,6 +89,7 @@ typedef struct {
 typedef struct {
     u32 obj;
     FsNode* root;
+    u32 noted; /* 1 for an Account, Device or BCAT save, whose commits write its note (save_note) */
 } FsData;
 /* an IFile, or a system archive's IStorage (the RomFS's has no data). f is NULL for a node held in memory */
 typedef struct {
@@ -164,6 +168,7 @@ typedef struct {
     FsShare romfs;
     char save_root[FS_TREE_PATH_MAX]; /* save_layout=global's folder, the data folder's save/ (fs_saves_init) */
     unsigned save_told;               /* the save types whose folder of the other layout was said, a bit each */
+    char save_newer[FS_TREE_PATH_MAX + 256]; /* the last save opened that a newer version wrote, said (save_note) */
 } HostFs;
 /* all zero: fs_init sets the tree up */
 extern const StateFnTable g_fs_state_fns; /* the functions a save state may hold of fs.c */

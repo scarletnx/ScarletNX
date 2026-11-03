@@ -5396,6 +5396,13 @@ int main(int argc, char** argv) {
             }
             assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/bcat", game) &&
                    !snx_mkdirs(path));
+            /* the notes of the user's and the Device save beside their folders (fs.c's save_note) go with them */
+            assert(!snx_path_format(path, sizeof path,
+                                    "%s/0100000000ABC000_data/save/user.0123456789abcdeffedcba9876543210.version",
+                                    game) &&
+                   !snx_write_file(path, "u", 1));
+            assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/device.version", game) &&
+                   !snx_write_file(path, "d", 1));
             app.data_dir = data_saves;
             left_behind(&app);
             for (i = 0; i < sizeof said / sizeof *said; ++i)
@@ -5403,11 +5410,23 @@ int main(int argc, char** argv) {
             assert(app.lefts == 3 && strstr(app.left, want[0]) && strstr(app.left, want[1]) &&
                    strstr(app.left, want[2]) && !strstr(app.left, want[3]) && !strstr(app.left, want[4]) &&
                    !strstr(app.left, want[5]));
-            assert(move_old(&app, &done, true) == 3);
+            assert(move_old(&app, &done, true) == 5);
             for (i = 0; i < sizeof now / sizeof *now; ++i) {
                 assert(!snx_path_format(path, sizeof path, "%s/save/%s", data_saves, now[i]));
                 assert(snx_is_file(path));
             }
+            assert(!snx_path_format(path, sizeof path,
+                                    "%s/save/user.0123456789abcdeffedcba9876543210/0100000000ABC000.version",
+                                    data_saves) &&
+                   snx_is_file(path));
+            assert(!snx_path_format(path, sizeof path, "%s/save/device/0100000000ABC000.version", data_saves) &&
+                   snx_is_file(path));
+            assert(!snx_path_format(path, sizeof path,
+                                    "%s/0100000000ABC000_data/save/user.0123456789abcdeffedcba9876543210.version",
+                                    game) &&
+                   !snx_path_exists(path));
+            assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/device.version", game) &&
+                   !snx_path_exists(path));
             assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/system/s.bin", game) &&
                    snx_is_file(path));
             gui_cleaned_free(&done);

@@ -43,6 +43,7 @@ static void rt_undef(CPU* c, u64 pc, u32 w) {
 }
 static void rt_brk(CPU* c, u64 pc, u32 imm) {
     WARN("\n*** The game stopped at BRK #%x at %llx ***\n", imm, (unsigned long long)pc);
+    fs_save_report(); /* a save a newer version wrote, which a game's own checks often stop on */
     kernel_dump_regs(c);
     save_hints();
     fatal("The game stopped at a breakpoint (BRK #%x at %llx). See the .log for details.", imm,

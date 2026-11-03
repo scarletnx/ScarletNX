@@ -480,6 +480,7 @@ static void svc_break(CPU* c, u32 reason, u64 info, u64 size) {
         }
         if (n < size) WARN("  (the rest, from info+%llx, isn't mapped)\n", (unsigned long long)n);
     }
+    fs_save_report(); /* a save a newer version wrote, which a game's own checks often stop on */
     kernel_dump_regs(c);
     kernel_dump_threads();
     save_hints();
