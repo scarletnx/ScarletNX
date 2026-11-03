@@ -249,6 +249,26 @@ setting Upscaling target mult
     words 1x|2x|3x|4x
     help The multiple of the screen rectangle the upscaler writes: 1 = its size, so the frame is upscaled to the
     help display, and 2 = twice it, which the presenter downsamples. Each step costs four times the filter's memory
+setting Anti aliasing
+    key aa
+    text 8
+    default auto
+    startup
+    words off=Off|auto=Auto|fxaa=FXAA|smaa=SMAA|ssaa2=SSAA 2x|ssaa4=SSAA 4x
+    help The anti aliasing of the presented frame. Auto runs FXAA only where the display shows the frame at least
+    help 1.25 times its rendered size in each direction, the point an upscale starts to make an edge visible, and
+    help leaves a frame that is the display's size or larger alone. FXAA and SMAA are the post process filters.
+    help SSAA 2x and 4x render the pass larger and downsample it, which smooths edges a post process cannot see.
+    help MSAA belongs to the renderer that draws the game, not to the presented frame. The aa_key cycles it live
+setting Frame interpolation
+    key frame_interp
+    text 8
+    default off
+    startup
+    words off=Off|auto=Auto|blend=Blend
+    help The frames shown between the game's frames. Auto runs only where the display refreshes at least twice the
+    help game's rate. Blend averages the previous and current frame, a temporal blend until a motion compensated
+    help pass lands. The frame_interp_key cycles it live
 setting HDR
     key hdr
     text 8
@@ -690,6 +710,27 @@ setting HDR key
     default ctrl+h
     help The key that turns HDR on and off while a game runs. The launcher's row takes the next key you press, with
     help Ctrl, Shift, Alt or the system key held. It does not change the .ini
+setting Anti aliasing key
+    key aa_key
+    label Anti aliasing key
+    text 64
+    default ctrl+shift+a
+    help The key that cycles the anti aliasing while a game runs. The launcher's row takes the next key you press,
+    help with Ctrl, Shift, Alt or the system key held. It does not change the .ini
+setting Frame interpolation key
+    key frame_interp_key
+    label Frame interpolation key
+    text 64
+    default ctrl+shift+f
+    help The key that cycles frame interpolation while a game runs: Off, Auto and Blend. The launcher's row takes
+    help the next key you press, with Ctrl, Shift, Alt or the system key held. It does not change the .ini
+setting TV mode key
+    key docked_key
+    label TV mode key
+    text 64
+    default ctrl+d
+    help The key that cycles the console's TV mode while a game runs: On, Off, Auto and round. The launcher's row
+    help takes the next key you press, with Ctrl, Shift, Alt or the system key held. It does not change the .ini
 table g_network_ini
 setting Network
     key network

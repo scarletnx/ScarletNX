@@ -3341,6 +3341,16 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Anti aliasing key: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "TV mode key: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Press the key, with Ctrl, Shift or Alt held if you want them. ESC keeps %s"
 msgstr ""
 

@@ -466,7 +466,13 @@ The pair keeps its shape in a window of any size. The 3DS display's Separate
 screens setting gives each screen a window of its own instead, which fills with
 that screen. Top screen resolution and Bottom screen resolution scale the 3D
 rendering of that screen, 1 to 16 times the console's 400x240 and 320x240, and
-the window scales the larger image to its size. Bounded PPM snapshots land in
+the window scales the larger image to its size. The presented frame then takes
+the shared effects of every Vulkan frontend (`src/common/gpu/vk/present_fx.c`):
+the spatial upscaler (`upscaler`, `upscaler_sharpness`, `upscaler_mult`), the
+anti aliasing (`aa`, after the upscale and before the encode) and HDR (`hdr*`).
+Each screen is upscaled and anti aliased at its own rectangle. In one window the
+pair is composited first and the HDR passes encode the whole window, so the
+letterbox is composed with the screens. Bounded PPM snapshots land in
 `<output>/frames` in every mode. Without a display the window path is
 unavailable and frames are only recorded; without a Vulkan device the presenter
 reports unavailability and no frame is fabricated.

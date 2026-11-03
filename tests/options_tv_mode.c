@@ -38,6 +38,8 @@ static struct {
     int changed;    /* the watcher's mark, which plat_power_take_change takes */
     u64 ns;         /* plat_ns */
     int queries;    /* plat_power_on_charger's calls */
+    int watch_calls; /* plat_power_watch's calls */
+    int ini_writes; /* backend_ini's calls */
     int am, hid;    /* am_display_mode_changed's and hid_mode_changed's calls */
     int lines;      /* the log's lines */
     char logged[256];
@@ -48,7 +50,10 @@ int plat_power_on_charger(void) {
     g_test.queries++;
     return g_test.on_charger;
 }
-int plat_power_watch(void) { return g_test.watch; }
+int plat_power_watch(void) {
+    g_test.watch_calls++;
+    return g_test.watch;
+}
 int plat_power_take_change(void) {
     int was = g_test.changed;
     g_test.changed = 0;
@@ -92,6 +97,7 @@ int plat_replace_file(const char* tmp, const char* dst) {
 int backend_ini(const char* k, const char* v) {
     (void)k;
     (void)v;
+    g_test.ini_writes++;
     return 0;
 }
 int hud_debug_set(const char* text) {
@@ -200,6 +206,7 @@ static void test_auto_watched(void) {
 /* Auto on a host with no watcher: asked as the game starts, then every 15 s and not before */
 static void test_auto_polled(void) {
     int queries;
+    options_tv_mode_forget_watcher();
     g_test.watch = -1;
     g_test.on_charger = 0;
     g_test.ns = 100 * POLL_NS;
@@ -235,11 +242,44 @@ static void test_key_twice(void) {
     free(dir);
 }
 
+/* the docked_key hotkey: On -> Off -> Auto -> On, its events only on a real change, the watcher started once, and no
+   write of the .ini */
+static void test_cycle(void) {
+    int before;
+    options_tv_mode_forget_watcher();
+    g_test.watch = 0;
+    g_test.on_charger = 0;
+    g_test.watch_calls = 0;
+    g_test.ini_writes = 0;
+    docked("1");
+    CHECK(mode() == 1);
+    before = g_test.am;
+    CHECK(options_tv_mode_next() == 0);
+    CHECK(mode() == 0 && g_test.am == before + 1 && g_test.hid >= 1);
+    CHECK(options_tv_mode_next() == 2);
+    CHECK(mode() == 0); /* Auto picks the battery */
+    CHECK(g_test.watch_calls <= 1);
+    {
+        int calls = g_test.watch_calls;
+        CHECK(options_tv_mode_next() == 1);
+        CHECK(mode() == 1);
+        CHECK(options_tv_mode_next() == 0); /* Off */
+        CHECK(options_tv_mode_next() == 2); /* Auto again: the watcher it started is not started again */
+        CHECK(g_test.watch_calls == calls);
+    }
+    CHECK(options_tv_mode_next() == 1); /* On */
+    CHECK(g_test.ini_writes == 0);
+}
+
 int main(void) {
     test_fixed();
     test_auto_watched();
     test_auto_polled();
+<<<<<<< HEAD
     test_key_twice(); /* last: the file's every setting applied, which the TV mode tests count from nought */
+=======
+    test_cycle();
+>>>>>>> 214a4cd4 ([runtime] Cycle TV mode and the presented effects live)
     printf("options_tv_mode: ok\n");
     return 0;
 }

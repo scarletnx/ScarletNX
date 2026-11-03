@@ -55,6 +55,10 @@ void options_tv_mode_set(const IniOpt* o, const char* v);
 void options_tv_mode_start(void);
 /* the watcher's change, each frame: the new mode, its events, and the log line when it changed */
 void options_tv_mode_update(void);
+/* the docked_key hotkey: On, Off, Auto and round (On -> Off -> Auto -> On); the choice now. The .ini is not changed */
+int options_tv_mode_next(void);
+/* tests only: forget that the host's watcher was started, so a test can give the runtime another host */
+void options_tv_mode_forget_watcher(void);
 /* ldn, read: local wireless over the LAN (ldn_mitm's protocol), through an Eden room, or off
    (hle/services/network/ldn.c) */
 enum { SNX_OPT_LDN_LAN, SNX_OPT_LDN_ROOM, SNX_OPT_LDN_OFF };

@@ -404,6 +404,10 @@ void video_init(const char* title, const char* addons) {
             WARN("video: hdr_key '%s' is not a key: use ctrl+h, alt+h, shift+f14 or f14\n", g_settings.hdr_key);
         else
             LOG("video: hdr key %s\n", g_settings.hdr_key);
+        if (!snx_keybind_parse(g_settings.tv_mode_key, &key))
+            WARN("video: docked_key '%s' is not a key: use ctrl+d, alt+d, shift+f15 or f15\n", g_settings.tv_mode_key);
+        else
+            LOG("video: docked key %s\n", g_settings.tv_mode_key);
     }
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
     gamepad_scan();
@@ -907,11 +911,15 @@ static void title_paused(int paused) {
 static const char* help_text(char* out, size_t size) {
     const char* esc = strstr(HELP, "  Esc  quit");
     if (esc)
-        snprintf(out, size, "%.*s  %s  cycle the spatial upscaler (upscaler_key)\n  %s  HDR on and off (hdr_key)\n%s",
-                 (int)(esc - HELP), HELP, g_settings.upscaler_cycle_key, g_settings.hdr_key, esc);
+        snprintf(out, size,
+                 "%.*s  %s  cycle the spatial upscaler (upscaler_key)\n  %s  HDR on and off (hdr_key)\n"
+                 "  %s  TV mode On, Off and Auto (docked_key)\n%s",
+                 (int)(esc - HELP), HELP, g_settings.upscaler_cycle_key, g_settings.hdr_key, g_settings.tv_mode_key, esc);
     else
-        snprintf(out, size, "%s\n  %s  cycle the spatial upscaler (upscaler_key)\n  %s  HDR on and off (hdr_key)", HELP,
-                 g_settings.upscaler_cycle_key, g_settings.hdr_key);
+        snprintf(out, size,
+                 "%s\n  %s  cycle the spatial upscaler (upscaler_key)\n  %s  HDR on and off (hdr_key)\n"
+                 "  %s  TV mode On, Off and Auto (docked_key)",
+                 HELP, g_settings.upscaler_cycle_key, g_settings.hdr_key, g_settings.tv_mode_key);
     return out;
 }
 /* the live upscaler cycle, at the key the .ini names: 1 when the event was that key (a repeat included, so the game
@@ -949,6 +957,28 @@ static int hdr_key_event(const SDL_KeyboardEvent* e) {
     SnxKeybind bind;
     if (!snx_keybind_parse(g_settings.hdr_key, &bind) || !snx_keybind_match(&bind, e)) return 0;
     if (!e->repeat) hdr_toggled(g_settings.hdr_key);
+    return 1;
+}
+/* the docked_key hotkey: the choice cycles On, Off and Auto while the game runs, with a toast that names it and, in
+   Auto, the mode it picked and why. The .ini is not changed. */
+static int docked_key_event(const SDL_KeyboardEvent* e) {
+    SnxKeybind bind;
+    if (!snx_keybind_parse(g_settings.tv_mode_key, &bind) || !snx_keybind_match(&bind, e)) return 0;
+    if (!e->repeat) {
+        int choice = options_tv_mode_next();
+        char text[128];
+        if (choice == 2) {
+            int on = plat_power_on_charger();
+            snprintf(text, sizeof text, "TV mode: Auto (%s, %s)", snx_tv_mode() ? "TV mode" : "handheld mode",
+                     on > 0 ? "on the charger" : on == 0 ? "on the battery" : "power state not readable");
+        } else {
+            snprintf(text, sizeof text, "TV mode: %s", choice ? "On" : "Off");
+        }
+        ui_lock();
+        overlay_toast(text, plat_ns());
+        ui_unlock();
+        LOG("%s (%s)\n", text, g_settings.tv_mode_key);
+    }
     return 1;
 }
 static void hotkey(SDL_Keycode k) {
@@ -1455,6 +1485,7 @@ void video_poll(void) {
                 }
                 if (upscale_key_event(&e.key)) break;
                 if (hdr_key_event(&e.key)) break;
+                if (docked_key_event(&e.key)) break;
                 /* not with Ctrl, Alt or the system key: Alt+F4 also arrives as F4 on Windows */
                 if (!e.key.repeat && !(e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) hotkey(e.key.key);
                 /* a repeat doesn't press again: a key held as the menu closed (which cleared keys_held) stays from

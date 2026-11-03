@@ -10512,9 +10512,11 @@ static void device_take(App* app, SDL_JoystickID id) {
     app->editor.dirty = true;
     keep_settings(app);
 }
-/* a hotkey row (upscaler_key, hdr_key): Enter waits for the next key, which is kept as ctrl+u or f13 */
+/* a hotkey row (upscaler_key, hdr_key, aa_key, docked_key): Enter waits for the next key, which is kept as ctrl+u or
+   f13 */
 static bool key_row(const GuiSetting* v) {
-    return v->key && (!strcmp(v->key, "upscaler_key") || !strcmp(v->key, "hdr_key"));
+    return v->key && (!strcmp(v->key, "upscaler_key") || !strcmp(v->key, "hdr_key") || !strcmp(v->key, "aa_key") ||
+                      !strcmp(v->key, "docked_key"));
 }
 static const char* key_shown(const GuiSetting* v) {
     return v->text[0] ? v->text : v->fallback ? v->fallback : "";
@@ -10525,6 +10527,10 @@ static void key_taken_note(App* app, const GuiSetting* v, const char* text) {
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Upscaler cycle key: %s"), text);
     else if (v->key && !strcmp(v->key, "hdr_key"))
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("HDR key: %s"), text);
+    else if (v->key && !strcmp(v->key, "aa_key"))
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Anti aliasing key: %s"), text);
+    else if (v->key && !strcmp(v->key, "docked_key"))
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("TV mode key: %s"), text);
     else
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s: %s"),
                  app->settings.keys[app->key_listen - 1].key, text);
