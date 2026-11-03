@@ -125,7 +125,8 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_bans.cmake")
     add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/driver_tag.c gpu/vk/extension_bans.c
                                      "${PROJECT_BINARY_DIR}/generated/vk_extension_bans_text.c" gpu/vk/ring.c
-                                     gpu/vk/shader_object.c gpu/vk/swapchain.c gpu/vk/window.c)
+                                     gpu/vk/shader_object.c gpu/vk/swapchain.c gpu/vk/window.c gpu/vk/present_fx.c
+                                     gpu/vk/fx/fx_fsr.c)
     set_target_properties(snx_vk_common PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_vk_common PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                                  -Werror=missing-variable-declarations)
@@ -134,4 +135,21 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     # scarletnx-common: on macOS the window names the Vulkan driver beside the program (snx_executable,
     # snx_vulkan_driver)
     target_link_libraries(snx_vk_common PUBLIC Vulkan::Headers SDL3::SDL3 scarletnx-common)
+    # the spatial upscalers and the anti aliasing (gpu/vk/present_fx.c, gpu/vk/fx/)
+    include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
+    foreach(pair IN ITEMS "fsr.vert=fx_fsr_vert" "copy.frag=fx_copy" "copy_linear.frag=fx_copy_linear"
+                          "fsr_easu.frag=fx_fsr_easu" "fsr_rcas.frag=fx_fsr_rcas" "fxaa.frag=fx_fxaa"
+                          "smaa_edge.frag=fx_smaa_edge" "smaa_weights.frag=fx_smaa_weights"
+                          "smaa_blend.frag=fx_smaa_blend")
+        string(REPLACE "=" ";" parts "${pair}")
+        list(GET parts 0 shader)
+        list(GET parts 1 symbol)
+        snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/${shader} NAME ${symbol}_spv
+                       HEADER common/gpu/vk/fx_spv.h)
+    endforeach()
+    # FSR 1's fp16 builds of the same two passes, where the device's shaderFloat16 runs them
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/fsr_easu.frag NAME fx_fsr_easu_fp16_spv
+                   HEADER common/gpu/vk/fx_spv.h DEFINES A_HALF=1)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/fsr_rcas.frag NAME fx_fsr_rcas_fp16_spv
+                   HEADER common/gpu/vk/fx_spv.h DEFINES A_HALF=1)
 endif()
