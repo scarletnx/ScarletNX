@@ -48,13 +48,44 @@ public abstract class Drawable {
         public boolean canApplyTheme() { return false; }
     }
 
-    /** The drawable of a resource: a color, or for now nothing else (snx: drawables are loaded as apps reach them). */
+    /**
+     * The drawable of a resource, as Android's ResourcesImpl.loadDrawable makes it: a color is a ColorDrawable, an
+     * XML file is inflated by the class of its root tag, and an image file is decoded at the resource's density (a
+     * BitmapDrawable, or a NinePatchDrawable when the PNG has a nine-patch chunk).
+     */
     public static Drawable load(Resources res, int id, Resources.Theme theme) {
         TypedValue v = new TypedValue();
         res.getValue(id, v, true);
         if (v.type >= TypedValue.TYPE_FIRST_COLOR_INT && v.type <= TypedValue.TYPE_LAST_COLOR_INT)
             return new ColorDrawable(v.data);
-        throw new UnsupportedOperationException("snx: the drawable " + v.string + " (resource #0x" + Integer.toHexString(id) + ")");
+        String file = v.type == TypedValue.TYPE_STRING && v.string != null ? v.string.toString() : null;
+        if (file == null)
+            throw new Resources.NotFoundException("Resource ID #0x" + Integer.toHexString(id) + " is not a drawable (type 0x" + Integer.toHexString(v.type) + ")");
+        if (file.endsWith(".xml")) {
+            try (android.content.res.XmlResourceParser parser = res.getXml(id)) {
+                return createFromXml(res, parser, theme);
+            } catch (XmlPullParserException | IOException e) {
+                throw new Resources.NotFoundException("File " + file + " from drawable resource ID #0x" + Integer.toHexString(id), e);
+            }
+        }
+        try (InputStream is = res.openRawResource(id)) {
+            Drawable d = createFromResourceStream(res, v, is, file, null);
+            if (d == null) throw new Resources.NotFoundException("File " + file + " from drawable resource ID #0x" + Integer.toHexString(id) + " does not decode");
+            return d;
+        } catch (IOException e) {
+            throw new Resources.NotFoundException("File " + file + " from drawable resource ID #0x" + Integer.toHexString(id), e);
+        }
+    }
+
+    /** The drawable of an XML document: its first element, inflated by createFromXmlInner. */
+    public static Drawable createFromXml(Resources r, XmlPullParser parser) throws XmlPullParserException, IOException {
+        return createFromXml(r, parser, null);
+    }
+    public static Drawable createFromXml(Resources r, XmlPullParser parser, Resources.Theme theme) throws XmlPullParserException, IOException {
+        int type;
+        while ((type = parser.next()) != XmlPullParser.START_TAG && type != XmlPullParser.END_DOCUMENT) {}
+        if (type != XmlPullParser.START_TAG) throw new XmlPullParserException("No start tag found");
+        return createFromXmlInner(r, parser, android.util.Xml.asAttributeSet(parser), theme);
     }
 
     /** A drawable of an encoded image: a BitmapDrawable, or a NinePatchDrawable when the image has a nine-patch chunk. */

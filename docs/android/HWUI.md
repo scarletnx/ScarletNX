@@ -108,6 +108,19 @@ A `Bitmap` is a GPU image, as a hardware bitmap is on Android. The CPU never dra
 `getPixel` and the other reads see only the pixels the app set, not what a canvas drew: a readback is the last
 resort, for an app that reads them.
 
+An encoded image (`BitmapFactory`, `ImageDecoder`, a drawable resource) decodes on the CPU into a bitmap's pixels,
+which then go up as the app's own pixels do. `src/android/hwui/image.c` is the codec, the HLE of Skia's: FFmpeg's
+PNG, JPEG, WebP, GIF and BMP decoders find the format from its signature, and libswscale converts the decoder's
+format to Android's int colors (`AV_PIX_FMT_RGB32`, 0xAARRGGBB in the host's byte order, as a `jint` holds it). It
+also does the sample size (rounded down, up for a JPEG, as Skia's codecs do) and the density scale of a resource
+(`(int)(size * scale + 0.5f)`, as `BitmapFactory` does) with area averaging, in the same pass. `Bitmap.compress`
+encodes PNG and JPEG with FFmpeg's encoders.
+
+A PNG's `npTc` chunk, which aapt writes for a `.9.png`, becomes the bitmap's nine-patch chunk in a device's byte
+order (little-endian), as Android's `NinePatchPeeker` makes it, scaled with the bitmap. A drawable resource with it
+is a `NinePatchDrawable` with the chunk's padding. `Canvas.drawPatch` draws the nine parts: the fixed ones keep their
+size (they shrink together when the rectangle is smaller), and the stretchable ones share the rest.
+
 ## Over an app's own Vulkan
 
 A game draws into its `SurfaceView`'s surface with its own device and swapchain on the window (the Vulkan
@@ -143,7 +156,9 @@ Android's.
 
 ## What is missing
 
-- Image decoders (`BitmapFactory`, `ImageDecoder`) for the APK's PNG and WebP resources.
+- An animated GIF or WebP decodes to its first frame (`Movie` and `AnimatedImageDrawable` do not play). An animated
+  WebP does not decode, as FFmpeg's WebP decoder has no animation.
+- `Bitmap.compress` writes PNG and JPEG, not WebP, and only the pixels the app set.
 - Gradients and bitmap shaders draw as one color, the average of their colors.
 - Clips to a rounded outline or a path clip to their bounds. A clip of difference does not clip.
 - Layers (`saveLayer`, a node's layer) multiply their alpha into what they hold, with no offscreen image.

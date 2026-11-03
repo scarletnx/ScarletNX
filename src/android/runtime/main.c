@@ -13,6 +13,7 @@
 #include "android/bridge/native.h"
 #include "android/bridge/hle_assets.h"
 #include "common/utilities/ini_lines.h"
+#include "android/hwui/image.h"
 #include "android/hwui/render.h"
 #include "android/hwui/text.h"
 #include "android/res/xml_jni.h"
@@ -182,7 +183,7 @@ static void run_app(Run* run) {
     JNIEnv* env = jvm.env;
     run->status = 1;
     if (!android_app_register(env) || !android_xml_register(env) || !android_assets_register(env) ||
-        !android_sqlite_register(env) || !android_text_register(env) ||
+        !android_sqlite_register(env) || !android_text_register(env) || !android_image_register(env) ||
         !android_render_register(env) || !android_bridge_register(env)) return;
     jclass main_class = (*env)->FindClass(env, "snx/android/Main");
     jmethodID main = main_class ? (*env)->GetStaticMethodID(env, main_class, "main", "([Ljava/lang/String;)V") : NULL;

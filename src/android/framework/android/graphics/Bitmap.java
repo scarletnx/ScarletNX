@@ -36,14 +36,23 @@ public final class Bitmap implements android.os.Parcelable {
     /** The nine-patch chunk of a decoded image, or null */
     byte[] ninePatchChunk;
 
-    private Bitmap(int width, int height, Config config) {
+    private Bitmap(int width, int height, Config config) { this(width, height, config, null); }
+    private Bitmap(int width, int height, Config config, int[] pixels) {
         if (width <= 0 || height <= 0) throw new IllegalArgumentException("width and height must be > 0");
         this.width = width;
         this.height = height;
         this.config = config != null ? config : Config.ARGB_8888;
-        pixels = new int[width * height];
+        this.pixels = pixels != null ? pixels : new int[width * height];
         int freedId = id;
         CLEANER.register(this, () -> FREED.add(freedId));
+    }
+    /** A bitmap that keeps pixels (width * height of them) as its own, as BitmapFactory's decoder gives them */
+    static Bitmap ofPixels(int[] pixels, int width, int height, Config config, boolean mutable) {
+        if (pixels.length != width * height) throw new IllegalArgumentException("the pixels are not width * height");
+        Bitmap b = new Bitmap(width, height, config, pixels);
+        b.mutable = mutable;
+        b.markPixels();
+        return b;
     }
 
     /** The IDs of the bitmaps gone since the last call */
@@ -226,11 +235,25 @@ public final class Bitmap implements android.os.Parcelable {
     public boolean sameAs(Bitmap other) {
         return other != null && other.width == width && other.height == height && java.util.Arrays.equals(other.pixels, pixels);
     }
+    /**
+     * The pixels the app set, encoded as a PNG or a JPEG by the runtime's codec (snx.android.hwui.Image). What a
+     * canvas drew stays on the GPU and is not in them. WebP has no encoder here: compress gives false for it.
+     */
     public boolean compress(CompressFormat format, int quality, java.io.OutputStream stream) {
+        if (stream == null) throw new NullPointerException();
+        if (quality < 0 || quality > 100) throw new IllegalArgumentException("quality must be 0..100");
+        if (recycled) throw new IllegalStateException("Can't compress a recycled bitmap");
+        if (format != CompressFormat.PNG && format != CompressFormat.JPEG) {
+            android.util.Log.w("Bitmap", "snx: compress to " + format + " is not implemented (no WebP encoder)");
+            return false;
+        }
+        boolean jpeg = format == CompressFormat.JPEG;
+        byte[] file = snx.android.hwui.Image.encode(pixels, width, height, jpeg ? snx.android.hwui.Image.JPEG : snx.android.hwui.Image.PNG,
+                                                    quality, hasAlpha && !jpeg);
+        if (file == null) return false;
         try {
-            java.awt.image.BufferedImage image = new java.awt.image.BufferedImage(width, height, java.awt.image.BufferedImage.TYPE_INT_ARGB);
-            image.setRGB(0, 0, width, height, pixels, 0, width);
-            return javax.imageio.ImageIO.write(image, format == CompressFormat.JPEG ? "jpg" : "png", stream);
+            stream.write(file);
+            return true;
         } catch (java.io.IOException e) {
             return false;
         }

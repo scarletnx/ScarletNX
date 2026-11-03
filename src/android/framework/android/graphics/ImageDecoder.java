@@ -12,7 +12,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 
-/** Decodes images into bitmaps and drawables, through BitmapFactory's host readers. */
+/** Decodes images into bitmaps and drawables, through BitmapFactory and the runtime's codec. */
 public final class ImageDecoder implements AutoCloseable {
     public static final int ALLOCATOR_DEFAULT = 0, ALLOCATOR_SOFTWARE = 1, ALLOCATOR_SHARED_MEMORY = 2, ALLOCATOR_HARDWARE = 3;
     public static final int MEMORY_POLICY_DEFAULT = 1, MEMORY_POLICY_LOW_RAM = 0;
