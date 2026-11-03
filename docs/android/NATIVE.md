@@ -98,6 +98,10 @@ mask. A handler runs in the frame Linux gives it (`common/runtime/linux_signal.c
 the thread's CPU structure: at `RtAPI.poll`, as an HLE call returns, or, for a thread that waits in a blocking HLE
 call (`pthread_cond_wait`, `sem_wait`, a read) or runs no guest code, from the handler of a host real-time signal
 that the sender gives it. A host fault in generated code still ends the app, as its registers are not exact there.
+An undefined instruction is exact (the code stores every register before it calls `RtAPI.undef`), so it is the
+guest's `SIGILL` with `ILL_ILLOPC` and the instruction's address, as Linux's `force_sig_fault` gives it: the handler
+runs when the guest has one that the thread does not block, and the app ends otherwise. OpenSSL finds the CPU's
+extensions this way: it runs an instruction of each one (SHA-512, SHA-3) under a handler that longjmps out.
 A host fault in generated code (SIGSEGV, SIGBUS, SIGILL, SIGFPE, or an exception on Windows) prints the guest's
 report before the JVM writes its own, which knows nothing of the guest (`fault.c`): the guest function or block whose
 compiled code holds the faulting host instruction, with its library and offset, then the pc and registers the code

@@ -19,6 +19,11 @@ int64_t gnu_signal_call_mask(GnuKernelThread* thread, uint64_t number, const uin
    NULL to the process. 0, or -GNU_EAGAIN when the queue is full */
 int gnu_signal_send(GnuKernel* process, GnuKernelThread* thread, int signo, int code, int32_t pid,
                     uint32_t uid, uint64_t value);
+/* a fault of thread at an instruction (SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP), with addr as the siginfo's
+   si_addr, as Linux's force_sig_fault gives it: queued for thread when it has a handler for signo that it does not
+   block, 1, and the next delivery point enters the handler. 0 when Linux would take the default action (no handler,
+   SIG_IGN, or the signal blocked, which force_sig_fault makes SIG_DFL): the runtime ends the process itself */
+int gnu_signal_fault(GnuKernelThread* thread, int signo, int code, uint64_t addr);
 /* whether thread has a reason to leave its wait: a signal it takes, or the end of the process. Clears its interrupt
    first, so a signal sent after the check sets it again */
 int gnu_signal_wanted(GnuKernelThread* thread);

@@ -31,6 +31,7 @@ typedef struct {
 #define SNX_SA_NODEFER   0x40000000u
 #define SNX_SA_RESETHAND 0x80000000u
 
+#define SNX_SIGILL 4
 #define SNX_SIGKILL 9
 #define SNX_SIGSTOP 19
 #define SNX_SIGCONT 18
@@ -42,6 +43,7 @@ typedef struct {
 #define SNX_SI_QUEUE  (-1)
 #define SNX_SI_TIMER  (-2)
 #define SNX_SI_TKILL  (-6)
+#define SNX_ILL_ILLOPC 1 /* SIGILL's: an illegal opcode */
 
 /* a signal's bit in a mask: signal 1 is bit 0 */
 #define SNX_SIGBIT(sig) (1ull << ((sig) - 1))

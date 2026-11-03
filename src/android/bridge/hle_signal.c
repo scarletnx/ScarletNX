@@ -320,6 +320,16 @@ uint64_t signals_mask(void) {
     return mask;
 }
 
+bool signals_fault(CPU* c, int sig, int code, uint64_t address) {
+    GuestSignals* t = t_signal.self;
+    if (!t || t->cpu != c || !gnu_signal_fault(&t->k, sig, code, address)) return false;
+    if (s.verbose)
+        fprintf(stderr, "scarletnx-android: signal %d (code %d) at 0x%llx on thread %d\n", sig, code,
+                (unsigned long long)c->pc, (int)t->k.tid);
+    deliver(c, t);
+    return true;
+}
+
 void signals_check(CPU* c) {
     GuestSignals* t = t_signal.self;
     if (t && t->cpu == c && gnu_signal_maybe(&t->k)) deliver(c, t);

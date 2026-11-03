@@ -114,6 +114,18 @@ int gnu_signal_send(GnuKernel* p, GnuKernelThread* target, int signo, int code, 
     return r;
 }
 
+int gnu_signal_fault(GnuKernelThread* t, int signo, int code, uint64_t addr) {
+    GnuKernel* p = t->kernel;
+    if (signo < 1 || signo > 31) return 0;
+    SnxLinuxSiginfo info = {signo, code, 0, 0, 0, 0, addr};
+    uint64_t bit = SNX_SIGBIT(signo);
+    gnu_mutex_lock(&p->lock);
+    uint64_t handler = p->actions[signo].handler;
+    int taken = handler > 1 && !(t->signal_mask & bit) && !(t->queue.pending & bit) && !enqueue(&t->queue, &info);
+    gnu_mutex_unlock(&p->lock);
+    return taken;
+}
+
 /* the next signal t takes, under the lock: 0 for none */
 static int next_locked(const GnuKernelThread* t) {
     const GnuKernel* p = t->kernel;
