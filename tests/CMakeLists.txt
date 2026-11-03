@@ -2232,6 +2232,11 @@ add_executable(snx-test-draw-texture draw_texture.c "${PROJECT_SOURCE_DIR}/src/n
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
 snx_test_target(snx-test-draw-texture 23)
 add_test(NAME draw_texture COMMAND snx-test-draw-texture)
+# its blit's rectangles, cut together to both images at the console's pixels (gpu/vk/draw_texture.c)
+add_executable(snx-test-vk-draw-texture-blit vk_draw_texture_blit.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/draw_texture.c")
+snx_test_target(snx-test-vk-draw-texture-blit 99)
+target_link_libraries(snx-test-vk-draw-texture-blit PRIVATE m)
+add_test(NAME vk_draw_texture_blit COMMAND snx-test-vk-draw-texture-blit)
 
 # gpu.c's queue over the real puller, 3D engine and macros: a channel waiting on a semaphore, a syncpoint, a fence or
 # inside a macro lets the others run, and goes on where it stopped (its platform stand-ins are pthreads)

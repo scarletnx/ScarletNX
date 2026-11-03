@@ -22,6 +22,7 @@
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/descriptor_key.h"
 #include "nx/gpu/texture/texconv_modes.glsl"
+#include "nx/gpu/vk/draw_texture.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/quad_indices.h"
 #include "nx/memory/own.h"
@@ -3498,7 +3499,8 @@ retry:
 /* DRAW_TEXTURE (3D 0x420-0x42B, drawn when 0x42B is written): a texture's rectangle blitted onto color target 0, as
    Eden's DrawManager::DrawTexture reads the registers: the destination in 20.12 fixed point, the source's start the
    same and its steps per destination pixel in 32.32, and y from the bottom in a lower-left window (0x4EB bit 0, the
-   height from the surface clip, 0x3FE). The sampler's magnification filter filters it */
+   height from the surface clip, 0x3FE), both rectangles cut to their images together (vk/draw_texture.c). The
+   sampler's magnification filter filters it */
 static int format_has(VkFormat f, VkFormatFeatureFlags need) {
     VkFormatProperties p;
     vkGetPhysicalDeviceFormatProperties(g_vk.phys, f, &p);
@@ -3506,10 +3508,6 @@ static int format_has(VkFormat f, VkFormatFeatureFlags need) {
 }
 /* the texture draw dt onto the first color target ds names */
 void vk_render_draw_texture(const DsState* ds, const DrawTexture* dt) {
-    float x0 = dt->x0, y0 = dt->y0, w = dt->w, h = dt->h, sx0 = dt->sx0, sy0 = dt->sy0;
-    double du = dt->du, dv = dt->dv;
-    if (ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) y0 = (float)ds->dyn.clip_height - y0;
-    float sx1 = sx0 + (float)(du * w), sy1 = sy0 + (float)(dv * h);
     TexRes x;
     tex_resolve(ds, dt->handle, &x);
     Surf *rt[8], *zt, *t = x.t;
@@ -3531,12 +3529,28 @@ void vk_render_draw_texture(const DsState* ds, const DrawTexture* dt) {
         return;
     }
     /* in the images' pixels: a target is scaled, and a texture made from one is too */
-    float tsx = (float)t->sw / (float)t->w, tsy = (float)t->sh / (float)t->h;
-    VkImageBlit b = {
-        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-        .srcOffsets = {{(i32)(sx0 * tsx), (i32)(sy0 * tsy), 0}, {(i32)(sx1 * tsx), (i32)(sy1 * tsy), 1}},
-        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-        .dstOffsets = {{(i32)vk_scf(x0), (i32)vk_scf(y0), 0}, {(i32)vk_scf(x0 + w), (i32)vk_scf(y0 + h), 1}}};
+    DrawTextureImage si = {(double)t->sw / t->w, (double)t->sh / t->h, t->sw, t->sh};
+    DrawTextureImage di = {g_vk_scale, g_vk_scale, d->sw, d->sh};
+    DrawTextureBlit r;
+    int lower_left = (ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0;
+    int drawn = vk_draw_texture_blit(dt, lower_left, ds->dyn.clip_height, &si, &di, &r);
+    /* the console samples past the texture's edges by the sampler's wrap mode, which a blit has none of */
+    double sx1 = dt->sx0 + dt->du * dt->w, sy1 = dt->sy0 + dt->dv * dt->h;
+    if (r.cut && drawn)
+        LOG_LIMIT(1,
+                  "vulkan: a draw texture reads texels %g,%g to %g,%g past its %ux%u texture: only %d,%d to %d,%d "
+                  "of the %ux%u target is drawn\n",
+                  dt->sx0, dt->sy0, sx1, sy1, t->w, t->h, r.dst[0], r.dst[1], r.dst[2], r.dst[3], d->sw, d->sh);
+    else if (r.cut)
+        LOG_LIMIT(1,
+                  "vulkan: a draw texture reads texels %g,%g to %g,%g, none inside its %ux%u texture where it lands "
+                  "on the target: nothing is drawn\n",
+                  dt->sx0, dt->sy0, sx1, sy1, t->w, t->h);
+    if (!drawn) return;
+    VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                     .srcOffsets = {{r.src[0], r.src[1], 0}, {r.src[2], r.src[3], 1}},
+                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                     .dstOffsets = {{r.dst[0], r.dst[1], 0}, {r.dst[2], r.dst[3], 1}}};
     int linear =
         (x.tsc[1] & 3) == 2 && !t->f.is_int && format_has(t->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
     vk_render_end(); /* blits happen outside rendering passes */
