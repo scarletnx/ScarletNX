@@ -90,4 +90,10 @@ typedef struct {
     GlslcReflect reflect[SNX_GLSLC_MAX_REFLECT];
 } GlslcResult;
 
+/* Compiles size bytes of GLSL ES at source for stage into a SPIR-V module at words, which holds capacity words.
+   Returns 0 when the module is written, -1 when the source has an error (result->error, line, column) or the module
+   needs more than capacity words (result->words says how many). The source needs no terminating NUL, and must stay
+   while result's views are read. One allocation, freed before returning; -1 with "out of memory" when it fails */
+int snx_glslc_compile(GlslcStage stage, const char* source, size_t size, uint32_t* words, size_t capacity,
+                      GlslcResult* result);
 #endif
