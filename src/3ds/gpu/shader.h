@@ -11,15 +11,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* one unit's registers. A batch keeps one unit for all its vertices, so temporaries carry over between them as on
-   Azahar's software path */
-typedef struct {
-    int32_t address[3]; /* a0.x, a0.y, aL */
-    bool cc[2];
-    float input[16][4], temporary[16][4], output[2][16][4];
-    unsigned output_bank; /* the geometry shader's double-buffered outputs; 0 for vertex shaders */
-} SnxCtrShaderUnit;
-
 /* the geometry emitter (EMIT, SETEMIT); NULL for vertex shaders, where both are ignored */
 typedef struct {
     void* context;

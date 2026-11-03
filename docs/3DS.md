@@ -431,8 +431,7 @@ raises P3D without running. Draws go to the GPU (see above). The software render
 ported from Azahar's (`gpu/shader.c`, `gpu/draw.c`, `gpu/raster.c`, `gpu/lighting.c`,
 `gpu/texture.c`) is only built into the tests, as the reference the GPU's draws are
 compared with. It samples the nearest texel only, as Azahar's does, so texture
-filtering has no reference. Geometry shaders and shadow textures and rendering are not
-drawn yet: a draw that needs one stops the run and names it. The ExHeader's address-mapping capabilities
+filtering has no reference. Shadow textures and rendering are not drawn yet: a draw that needs one stops the run and names it. The ExHeader's address-mapping capabilities
 are applied at process creation (VRAM, DSP RAM, New 3DS extra RAM), as Azahar's
 `HandleSpecialMapping` does; MMIO areas stay unmapped. SetBufferSwap and the shared
 FrameBufferUpdate blocks latch real framebuffer descriptors in the five formats
@@ -774,7 +773,7 @@ The command processor ports `video_core/pica/pica_core.cpp`, `shader_setup.cpp`,
 `packed_attribute.h`, `pica_types.h` and the register layouts of `regs_*.h`
 (GPL-2.0-or-later) at the same revision.
 The software pipeline ports `video_core/shader/shader_interpreter.cpp`,
-`video_core/pica/{shader_unit,vertex_loader,primitive_assembly,output_vertex}.cpp`,
+`video_core/pica/{shader_unit,vertex_loader,primitive_assembly,output_vertex,geometry_pipeline}.cpp`,
 `video_core/renderer_software/{sw_rasterizer,sw_clipper,sw_texturing,sw_framebuffer,sw_lighting}.cpp`
 and `video_core/texture/{texture_decode,etc1}.cpp` (GPL-2.0-or-later), with the shader
 instruction encoding of nihstro's `shader_bytecode.h` (BSD-3-Clause, notice kept in
@@ -860,7 +859,7 @@ recorded under [Source provenance and licensing](#source-provenance-and-licensin
 | F1 Kernel and time (done 2026-10-17, audited 2026-10-19) | The scheduler delivers every deadline (vblank, DSP frame, timers, wait timeouts, sleeps, the shared page's hourly time). The dispatcher reaches it every 4096 blocks, so a thread a deadline wakes with a better priority preempts one that makes no SVC. Priorities are effective ones, with mutex priority inheritance. WaitSynchronization1 and N and the arbiter take finite timeouts. SleepThread 0 yields and -1 sleeps forever. ExitThread ends the process at its last thread. Timers and pulse events exist. CreateThread runs threads on processors -2 to 3 within the APPLICATION limit's priority, and the resource limit's counts are enforced. Also implemented: GetHandleInfo, GetSystemInfo (Luma's queries too), GetProcessInfo, GetThreadInfo, GetProcessIdOfThread, the resource limit SVCs, Break, the cache SVCs and Luma's 0x93 and 0x94, QueryMemory with the console's register layout and memory states, CreateMemoryBlock, UnmapMemoryBlock, MapMemoryBlock of the application's own blocks and ControlMemory MAP and UNMAP. Any well-formed IPC descriptor is translated, buffers are checked against the caller's memory and moved handles are closed. `--ipc-stubs` answers the unknown commands of the services it names. The shared page has its retail, battery, Wi-Fi and hourly local time fields. Guest time stays host time. Subtracting slow HLE work from it waits for the GPU thread (F2), since the audio device plays in host time | `core_timing.*`, `kernel/{svc,thread,timer,mutex,semaphore,address_arbiter,resource_limit,shared_memory,process,shared_page,vm_manager,hle_ipc}.cpp`, `service/service.cpp`, `service/gsp/gsp_gpu.cpp` |
 | F2 SuperTux playable | Presenter without readback or queue waits, on its own thread; both screens and the Default, Single, Large, Side-by-side and Hybrid layouts; keyboard, SDL3 gamepad, touch and motion input; full `hid:USER`/`hid:SPVR` rings and `ir:rst`; GX work on a GPU thread with interrupts delivered by the poll; banded raster threads; audio prebuffer and hold-last-frame | `frontend/framebuffer_layout.cpp`, `frontend/emu_window.cpp`, `service/hid/hid.*`, `service/ir/ir_rst.*`, `renderer_software/sw_rasterizer.cpp`, `audio_core/dsp_interface.cpp` |
 | F3 OS for retail titles | cfg blocks; APT:U/APT:A and the `aptMainLoop` lifecycle; shared font; HLE applets (swkbd first); FS save data, extdata, system save data, the NCCH archive and the SDMC write-only archive; ptm:u, ac:u and registered stubs for the small services; err:f | `service/{cfg,apt,fs,ptm,ac,err}/`, `hle/applets/`, `file_sys/archive_*` |
-| F4 Software GPU | Geometry shaders, procedural textures, shadow textures and rendering, VRAM save and restore, the stereo right eye | `pica/geometry_pipeline.cpp`, `pica/shader_unit.cpp`, `renderer_software/{sw_proctex,sw_framebuffer,sw_rasterizer}.cpp` |
+| F4 Software GPU | Procedural textures, shadow textures and rendering, VRAM save and restore, the stereo right eye | `renderer_software/{sw_proctex,sw_framebuffer,sw_rasterizer}.cpp` |
 | F5 Dynamic code | ldr:ro CROs compiled ahead of time, with a design for their run-time base and relocations; a log of missed targets for a second discovery pass; an explicit result for self-modifying code | `service/ldr_ro/` |
 | F6 Audio | The DSP's AAC pipe on FFmpeg; CSND; time stretching if gaps remain | `audio_core/hle/aac_decoder.cpp`, `audio_core/csnd.cpp`, `service/csnd/`, `audio_core/time_stretch.cpp` |
 | F7 Peripherals and network | y2r, mic, cam (no camera), ir:USER (its startup, events and the no-accessory answers are in place; a Circle Pad Pro is not emulated), soc:U, then ssl and http | `service/{cam,mic,ir,soc,ssl,http}/`, `hw/y2r.cpp` |

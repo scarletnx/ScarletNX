@@ -70,6 +70,27 @@ typedef struct {
     uint32_t queue[4]; /* the float uniform being assembled (PackedAttribute) */
     unsigned queued;
 } SnxCtrShaderSetup;
+/* one unit's registers. A batch keeps one unit for all its vertices, so temporaries carry over between them as on
+   Azahar's software path */
+typedef struct {
+    int32_t address[3]; /* a0.x, a0.y, aL */
+    bool cc[2];
+    float input[16][4], temporary[16][4], output[2][16][4];
+    unsigned output_bank; /* the geometry shader's double-buffered outputs; 0 for vertex shaders */
+} SnxCtrShaderUnit;
+/* the geometry pipeline (GeometryPipeline): the unit the geometry shader runs on, whose registers stay from one draw
+   to the next as the hardware's do, the vertices it emitted (GeometryEmitter's) and its next inputs: the attribute
+   buffer in point mode, the uniforms otherwise */
+typedef struct {
+    SnxCtrShaderUnit unit;
+    float inputs[16][4], emitted[3][16][4];
+    uint32_t at;                    /* the input or uniform written next */
+    uint32_t main_left, total_left; /* VariablePrimitive's vertices to come in the batch */
+    uint16_t begin, end;            /* FixedPrimitive's first uniform, and where a run's inputs end */
+    uint8_t mode, outputs;          /* 0 or GSMode + 1, and the vertex shader's outputs a vertex, as Reconfigure set */
+    unsigned need_index : 1;        /* VariablePrimitive: the next index is a batch's vertex count */
+    unsigned vertex_id : 2, prim_emit : 1, winding : 1; /* SETEMIT's */
+} SnxCtrGeometry;
 
 /* OutputVertex: the rasterizer's attributes, in the semantic order of RasterizerRegs::VSOutputAttributes */
 typedef struct {
@@ -86,7 +107,8 @@ typedef struct {
 typedef struct SnxCtrPica SnxCtrPica;
 typedef enum {
     SNX_CTR_PICA_OK,          /* the list ran to its end or to an interrupt with autostop */
-    SNX_CTR_PICA_UNSUPPORTED, /* a draw using a part not ported yet (stop_reason), or a list past the staging bound */
+    SNX_CTR_PICA_UNSUPPORTED, /* a draw using a part not ported yet or a setup Azahar does not run (stop_reason), or a
+                                 list past the staging bound */
     SNX_CTR_PICA_FAULT        /* a jump to a list outside the board's memory */
 } SnxCtrPicaResult;
 /* the host side of the command processor: the P3D interrupt, and the renderer the draws go to (none: they draw
@@ -117,6 +139,7 @@ struct SnxCtrPica {
     uint32_t vs_version;  /* counts the vertex program's code and swizzle uploads: a renderer's cache key */
     /* the primitive assembler (PrimitiveAssembler), kept across draws; topology and restart writes reset it */
     SnxCtrAssembler assembler;
+    SnxCtrGeometry geometry;
     /* the list being run, a staged copy of guest memory; a jump (a command buffer trigger) replaces it */
     uint32_t* list;
     uint32_t list_address, list_words, list_index;
@@ -128,10 +151,18 @@ struct SnxCtrPica {
 void snx_ctr_pica_init(SnxCtrPica* pica);
 void snx_ctr_pica_free(SnxCtrPica* pica);
 
-/* the software renderer's draws (draw.c, the CPU reference): DrawArrays, indexed or not, and DrawImmediate for the
+/* the software renderer's draws (raster.c, the CPU reference): DrawArrays, indexed or not, and DrawImmediate for the
    vertex immediate mode formed */
 SnxCtrPicaResult snx_ctr_pica_draw(SnxCtrPica* pica, SnxCtrMemory* memory, bool indexed);
 SnxCtrPicaResult snx_ctr_pica_draw_immediate(SnxCtrPica* pica, SnxCtrMemory* memory);
+/* where a draw's triangles go, in the order the primitive assembler gives them */
+typedef void (*SnxCtrTriangle)(void* context, const SnxCtrVertex* v0, const SnxCtrVertex* v1, const SnxCtrVertex* v2);
+/* those draws' vertices on the CPU: through the vertex shader, the geometry pipeline and the primitive assembler, each
+   triangle given to triangle(context, ...). UNSUPPORTED, with stop_reason, for a geometry pipeline Azahar does not run
+   either */
+SnxCtrPicaResult snx_ctr_pica_triangles(SnxCtrPica* pica, SnxCtrMemory* memory, bool indexed, SnxCtrTriangle triangle,
+                                        void* context);
+SnxCtrPicaResult snx_ctr_pica_triangles_immediate(SnxCtrPica* pica, SnxCtrTriangle triangle, void* context);
 /* Runs the command list of size bytes at physical address (GPU::SubmitCmdList's checks are the caller's). A list
    outside memory raises P3D and does nothing, as the GPU does */
 SnxCtrPicaResult snx_ctr_pica_run(SnxCtrPica* pica, SnxCtrMemory* memory, uint32_t address, uint32_t size,
