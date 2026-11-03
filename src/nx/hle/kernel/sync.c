@@ -306,20 +306,33 @@ static u32 addr_finish_nl(KThread* t, int woke) {
     }
     return R_TIMEOUT;
 }
-/* svcWaitForAddress (Eden's KAddressArbiter::WaitIfLessThan and WaitIfEqual). type 0: wait if the word is less than
-   value; 1: the same, decrementing it first; 2: wait if it equals value */
-u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i32 value, i64 timeout) {
+/* svcWaitForAddress (Eden's KAddressArbiter::WaitIfLessThan and WaitIfEqual, and the console kernel's WaitIfEqual64).
+   type 0: wait if the word is less than value; 1: the same, decrementing it first; 2: wait if it equals value; 3: wait
+   if the 8-byte-aligned doubleword at addr equals value, all 64 bits of it. Types 0 to 2 take value's low 32 bits. The
+   console checks the address, then its alignment (8 for type 3), then the type. A type 3 waiter waits on addr as the
+   others do, so any SignalToAddress on addr wakes it */
+u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i64 value, i64 timeout) {
     u32* p;
     u32 cur;
     u32 r;
-    R_TRY(check_word(addr));
-    R_UNLESS(type <= 2, R_BADENUM);
+    int unmet;
+    if (type == 3) {
+        R_UNLESS(addr <= AS_SIZE - 8, R_BADMEMSTATE);
+        R_UNLESS(!(addr & 7), R_BADADDR);
+    } else
+        R_TRY(check_word(addr));
+    R_UNLESS(type <= 3, R_BADENUM);
     p = uword(addr);
     pm_lock(&g_host.kernel.klock);
-    cur = word_load(p);
-    if (type == 1)
-        while ((i32)cur < value && !word_cas(p, &cur, cur - 1u, 1)) {}
-    if (type == 2 ? (i32)cur != value : (i32)cur >= value) {
+    if (type == 3)
+        unmet = (i64)snx_le64(__atomic_load_n((u64*)(void*)GP(addr), __ATOMIC_SEQ_CST)) != value;
+    else {
+        cur = word_load(p);
+        if (type == 1)
+            while ((i32)cur < (i32)value && !word_cas(p, &cur, cur - 1u, 1)) {}
+        unmet = type == 2 ? (i32)cur != (i32)value : (i32)cur >= (i32)value;
+    }
+    if (unmet) {
         klock_unlock();
         R_THROW(R_BADSTATE);
     }

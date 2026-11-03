@@ -734,8 +734,12 @@ static u32 svc_SetThreadActivity(u32 thread_handle, u32 thread_activity) {
 static u32 svc_GetThreadContext3(u64 out_context, u32 thread_handle) {
     return get_thread_context(kthread_cur(), out_context, thread_handle);
 }
+/* The console's kernel takes value as 64 bits: WaitIfEqual64 (type 3) compares all of X2. The declaration the dispatch
+   follows (Eden's) has 32, so a 64-bit game's value comes from X2 itself; a 32-bit game's is R2 */
 static u32 svc_WaitForAddress(u64 address, u32 arb_type, i32 value, i64 timeout_ns) {
-    return svc_wait_addr(kthread_cur(), address, arb_type, value, timeout_ns);
+    KThread* t = kthread_cur();
+    i64 v = g_arm_mod ? (i64)value : (i64)t->cpu.x[2];
+    return svc_wait_addr(t, address, arb_type, v, timeout_ns);
 }
 static u32 svc_SignalToAddress(u64 address, u32 signal_type, i32 value, i32 count) {
     return svc_signal_addr(address, signal_type, value, count);

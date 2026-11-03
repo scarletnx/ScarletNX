@@ -112,7 +112,7 @@ void prio_set_base_nl(KThread* t, int prio);
 void sync_owner_runs(const KThread* t);
 u32 svc_wait_cv(KThread* t, u64 maddr, u64 key, u32 tag, i64 timeout);
 u32 svc_signal_cv(u64 key, i32 count);
-u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i32 value, i64 timeout);
+u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i64 value, i64 timeout);
 u32 svc_signal_addr(u64 addr, u32 type, i32 value, i32 count);
 u32 svc_wait_sync(KThread* t, u64 hptr, u32 n, i64 timeout, u32* out_idx);
 
