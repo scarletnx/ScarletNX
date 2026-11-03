@@ -17,6 +17,7 @@
 #include "android/bridge/hle_impl.h"
 #include "android/bridge/hle_signal.h"
 #include "android/bridge/host.h"
+#include "android/bridge/hle_proc.h"
 #include "common/network/net_host.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
@@ -249,6 +250,11 @@ static const char* file_mode(const char* mode, char out[16]) {
 }
 static void g_fopen(CPU* c, void* data) {
     (void)data;
+    int own = hle_proc_open(STR(0)); /* the app's own /proc files (hle_proc.h) */
+    if (own != -2) {
+        X(0) = (uint64_t)(uintptr_t)(own < 0 ? NULL : fdopen(own, "r"));
+        return;
+    }
     char mode[16];
     X(0) = (uint64_t)(uintptr_t)fopen(STR(0), file_mode(STR(1), mode));
 }
@@ -323,10 +329,20 @@ static uint64_t guest_flags(int host) {
 #endif
 static void g_open(CPU* c, void* data) {
     (void)data;
+    int own = hle_proc_open(STR(0));
+    if (own != -2) {
+        X(0) = wide_int(own);
+        return;
+    }
     X(0) = wide_int(open(STR(0), open_flags(X(1)), (int)X(2)));
 }
 static void g_open_2(CPU* c, void* data) {
     (void)data;
+    int own = hle_proc_open(STR(0));
+    if (own != -2) {
+        X(0) = wide_int(own);
+        return;
+    }
     X(0) = wide_int(open(STR(0), open_flags(X(1))));
 }
 
@@ -461,9 +477,54 @@ static void put_stat(CPU* c, int r, uint64_t guest, const GnuHostStat* s) {
     }
     X(0) = wide_int(r);
 }
+/* stat of one of the app's own /proc files: true when it was one, its result in c */
+static bool proc_stat(CPU* c, GnuHostStat* s) {
+    int own = hle_proc_open(STR(0));
+    if (own == -2) return false;
+#ifdef _WIN32
+    int r = own < 0 ? -1 : _fstat64(own, s);
+#else
+    int r = own < 0 ? -1 : fstat(own, s);
+#endif
+    if (own >= 0) host_close(own);
+    put_stat(c, r, X(1), s);
+    return true;
+}
+#ifdef _WIN32
+static void g_access(CPU* c, void* data);
+#endif
+/* access and readlink, with the app's own /proc files */
+static void g_access_proc(CPU* c, void* data) {
+    int own = hle_proc_open(STR(0));
+    if (own != -2) {
+        if (own >= 0) host_close(own);
+        X(0) = wide_int(own < 0 ? -1 : 0);
+        return;
+    }
+#ifdef _WIN32
+    g_access(c, data);
+#else
+    (void)data;
+    X(0) = wide_int(access(STR(0), (int)X(1)));
+#endif
+}
+static void g_readlink_proc(CPU* c, void* data) {
+    long own = hle_proc_readlink(STR(0), PTR(1), (size_t)X(2));
+    if (own != -2) {
+        X(0) = (uint64_t)(int64_t)own;
+        return;
+    }
+#ifdef _WIN32
+    refused(c, data);
+#else
+    (void)data;
+    X(0) = wide_int(readlink(STR(0), PTR(1), (size_t)X(2)));
+#endif
+}
 static void g_stat(CPU* c, void* data) {
     (void)data;
     GnuHostStat s;
+    if (proc_stat(c, &s)) return;
 #ifdef _WIN32
     int r = _stat64(STR(0), &s);
 #else
@@ -474,6 +535,7 @@ static void g_stat(CPU* c, void* data) {
 static void g_lstat(CPU* c, void* data) {
     (void)data;
     GnuHostStat s;
+    if (proc_stat(c, &s)) return;
 #ifdef _WIN32
     int r = _stat64(STR(0), &s); /* the host follows its links itself */
 #else
@@ -1857,13 +1919,13 @@ const HleSymbol hle_posix[] = {
     A(stat, g_stat), A(lstat, g_lstat), A(fstat, g_fstat), A(fstat64, g_fstat), A(close, g_close),
     P(chmod), P(dup), P(dup2), P(isatty), P(rmdir), P(unlink), P(opendir), P(closedir),
 #if defined(_WIN32)
-    A(statfs, g_statfs), A(access, g_access), A(fchmod, refused), A(flock, g_flock), A(fsync, g_fsync),
+    A(statfs, g_statfs), A(access, g_access_proc), A(fchmod, refused), A(flock, g_flock), A(fsync, g_fsync),
     A(ftruncate, g_ftruncate), A(lseek, g_lseek), A(lseek64, g_lseek), A(mkdir, g_mkdir), A(pipe, g_pipe),
-    A(pread, g_pread), A(read, g_read), A(readlink, refused), A(realpath, g_realpath), A(truncate, g_truncate),
+    A(pread, g_pread), A(read, g_read), A(readlink, g_readlink_proc), A(realpath, g_realpath), A(truncate, g_truncate),
     A(utime, g_utime), A(write, g_write), A(getcwd, g_getcwd), A(readdir, g_readdir),
 #else
-    P(access), P(fchmod), P(flock), P(fsync), P(ftruncate), P(lseek), P(mkdir), P(pipe), P(pread), P(read),
-    P(readlink), P(realpath), P(truncate), P(utime), P(write), P(getcwd),
+    A(access, g_access_proc), P(fchmod), P(flock), P(fsync), P(ftruncate), P(lseek), P(mkdir), P(pipe), P(pread), P(read),
+    A(readlink, g_readlink_proc), P(realpath), P(truncate), P(utime), P(write), P(getcwd),
 #if defined(__linux__)
     P(statfs), P(lseek64), P(readdir),
 #else
