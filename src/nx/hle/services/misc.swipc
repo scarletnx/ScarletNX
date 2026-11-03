@@ -59,6 +59,7 @@ interface nn::pctl::detail::ipc::IParentalControlService {
 type nn::friends::detail::ipc::SizedFriendFilter = bytes<0x10, 8>;
 type nn::friends::detail::ipc::SizedNotificationInfo = bytes<0x10, 8>;
 type nn::friends::detail::FriendImpl = bytes<0x200>;
+type nn::friends::PlayHistoryRegistrationKey = bytes<0x40>;
 
 interface nn::friends::detail::ipc::IServiceCreator is friend:u, friend:v, friend:a {
     [0] CreateFriendService() -> object<nn::friends::detail::ipc::IFriendService> service;
@@ -76,6 +77,11 @@ interface nn::friends::detail::ipc::IFriendService {
                                 pid, array<nn::friends::detail::FriendImpl, 6> friends) -> i32 count;
     @stub [10102] UpdateFriendInfo(nn::account::Uid uid, pid, array<nn::account::NetworkServiceAccountId, 9> ids,
                                    array<nn::friends::detail::FriendImpl, 6> friends);
+    # nn::friends::CheckFriendListAvailability: the list of no friends is always there to read
+    [10120] IsFriendListCacheAvailable(nn::account::Uid uid) -> b8 available;
+    # nn::friends::GetPlayHistoryRegistrationKey: a key another console adds a play history with, from no network
+    [10700] GetPlayHistoryRegistrationKey(b8 include_local, nn::account::Uid uid,
+                                          buffer<nn::friends::PlayHistoryRegistrationKey, 0x1a> key);
 }
 interface nn::friends::detail::ipc::INotificationService {
     [0] GetEvent() -> handle<copy, event> event;
