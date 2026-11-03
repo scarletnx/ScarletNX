@@ -18,6 +18,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#endif
 
 #define MIB (1ull << 20)
 static unsigned checks;
@@ -364,6 +368,78 @@ static void test_cycles(void) {
     check_tracking(HEAP_BASE, 0x3000); /* the heap's own pages beside it */
 }
 
+#if defined(__linux__)
+/* a buffer a GPU would share (an AHardwareBuffer's on Android), a memfd here, and another view of its pages */
+static int buffer(u64 size, u8** view) {
+    int fd = (int)syscall(SYS_memfd_create, "snx-test-gpu", 1u /* MFD_CLOEXEC */);
+    CHECK(fd >= 0 && ftruncate(fd, (off_t)size) == 0);
+    *view = (u8*)mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    CHECK(*view != (u8*)MAP_FAILED);
+    return fd;
+}
+static u8 fill(u64 i) { return (u8)(i * 7 + 3); }
+/* Guest memory moved to a buffer's pages (mem_migrate, as gpu/vk/uma.c moves it where the GPU can't import host
+   memory) and back: the same bytes at the same addresses, one memory with the buffer's other view while moved, moved on
+   from one buffer into a bigger one, back in the reservation's own pages; a part unmapped while moved reads zero when
+   mapped again and the buffer keeps its bytes; only the guest's data on the reservation's own pages moves, and write
+   tracking keeps working over all of it */
+static void test_migrate(void) {
+    const u64 a = HEAP_BASE + 32 * MIB, size = MIB, src = HEAP_BASE + MIB, dst = STACK_BASE + 0x200000;
+    u8 *v1, *v2;
+    int f1 = buffer(size, &v1), f2 = buffer(2 * size, &v2), zero = 1;
+    CHECK(mem_map(a, 2 * size, MS_NORMAL, PERM_RW) == 0);
+    u8* g = GP(a);
+    for (u64 i = 0; i < 2 * size; i++) g[i] = fill(i);
+    CHECK(mem_movable(a, 2 * size) && !mem_movable(a, 2 * size + 0x1000) && !mem_movable(a + 0x800, 0x1000));
+    CHECK(mem_migrate(a, size, f1) == 0);
+    for (u64 i = 0; i < size; i += 4093) CHECK(v1[i] == fill(i) && g[i] == v1[i]);
+    g[100] = 0x77;
+    v1[200] = 0x55;
+    CHECK(v1[100] == 0x77 && g[200] == 0x55);
+    check_tracking(a, size);
+    /* the first megabyte moves on from f1's pages, with the second from the reservation's */
+    CHECK(mem_migrate(a, 2 * size, f2) == 0);
+    CHECK(v2[100] == 0x77 && v2[200] == 0x55 && v2[size + 5] == fill(size + 5));
+    g[300] = 0x11;
+    CHECK(v2[300] == 0x11 && v1[300] != 0x11);
+    /* a part unmapped: fresh pages when mapped again, the buffer keeps its bytes, the rest stays moved */
+    CHECK(mem_unmap(a + size, 0x10000) == 0 && mem_map(a + size, 0x10000, MS_NORMAL, PERM_RW) == 0);
+    CHECK(g[size] == 0 && g[size + 0xFFFF] == 0 && v2[size] == fill(size));
+    g[size] = 0x22;
+    g[400] = 0x33;
+    CHECK(v2[size] != 0x22 && v2[400] == 0x33);
+    /* back in the reservation's own pages, each with its bytes */
+    CHECK(mem_unmigrate(a, 2 * size) == 0);
+    g[500] = 0x44;
+    CHECK(v2[500] != 0x44 && g[100] == 0x77 && g[300] == 0x11 && g[400] == 0x33 && g[size] == 0x22 &&
+          g[size + 0x10000] == fill(size + 0x10000));
+    check_tracking(a, 2 * size);
+    CHECK(mem_unmigrate(a, 2 * size) == 0); /* none moved */
+    /* moved, then unmapped: zero when mapped again, the buffer's bytes its own */
+    g[100] = 0x99;
+    CHECK(mem_migrate(a, size, f1) == 0 && mem_unmap(a, 2 * size) == 0 &&
+          mem_map(a, 2 * size, MS_NORMAL, PERM_RW) == 0);
+    for (u64 i = 0; i < 2 * size && zero; i += 512) zero = g[i] == 0;
+    CHECK(zero && v1[100] == 0x99);
+    /* moved, then the source of a view (MapMemory): its pages move on into the pool, which a move back leaves alone */
+    gw32(src, 0x600d);
+    CHECK(mem_migrate(src, 0x4000, f1) == 0 && svc_map_memory(dst, src, 0x4000) == 0 && gr32(dst) == 0x600d);
+    CHECK(mem_unmigrate(src, 0x4000) == 0);
+    gw32(src, 0x1234abcd);
+    CHECK(gr32(dst) == 0x1234abcd && snx_ld_le32(v1) == 0x600d); /* the buffer keeps what it had */
+    /* only the guest's data on the reservation's own pages: not past the mapped pages, not code, not the pool's */
+    CHECK(mem_migrate(a + 2 * size - 0x1000, 0x2000, f1) == MEM_BADSTATE);
+    CHECK(mem_map(a + 4 * size, 0x1000, MS_CODE, PERM_RX) == 0);
+    CHECK(!mem_movable(a + 4 * size, 0x1000) && mem_migrate(a + 4 * size, 0x1000, f1) == MEM_BADSTATE);
+    CHECK(!mem_movable(src, 0x4000) && mem_migrate(src, 0x4000, f1) == MEM_BADSTATE);
+    CHECK(svc_unmap_memory(dst, src, 0x4000) == 0);
+    CHECK(mem_unmap(a, 2 * size) == 0 && mem_unmap(a + 4 * size, 0x1000) == 0);
+    munmap(v1, (size_t)size);
+    munmap(v2, (size_t)(2 * size));
+    close(f1);
+    close(f2);
+}
+#endif
 
 /* GPU-owned physical pages retain their normal guest state after moving into the alias pool. */
 static void test_physical_pool(void)
@@ -448,6 +524,9 @@ int main(int argc, char** argv) {
     test_pool_full(info);
     test_cycles();
     test_physical_pool();
+#if defined(__linux__)
+    test_migrate();
+#endif
     CHECK(mapping_depth == 0);
     if (g_ww) CHECK(plat_ww_scan(g_mem, AS_SIZE, on_written) == 0); /* tracking never went off */
     printf("memory alias: %u checks passed%s\n", checks, g_ww ? "" : " (no write tracking)");

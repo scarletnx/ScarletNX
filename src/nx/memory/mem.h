@@ -125,6 +125,17 @@ void mem_query(u64 addr, MemBlock* out);
 u64 mem_mapped_run(u64 addr, u64 size);
 /* fn(a, size) when the host pages under guest memory [a, a + size) are replaced or go, under mem.c's lock */
 void mem_set_pages_replaced(void (*fn)(u64 a, u64 size));
+/* Guest memory a GPU reads in place from a buffer of its own (gpu/vk/uma.c, where the driver can't import host memory,
+   as on Android): [a, a + size), in whole host pages, moves to the pages of fd, a buffer that large, with its bytes,
+   pages another buffer had included; mem_unmigrate moves the parts of [a, a + size) still in one back to the
+   reservation's own pages with their bytes. Unmapping or decommitting moved pages, or moving them into the pool, puts
+   other pages there; the moves themselves don't call the hook above, as the caller holds the buffer. 0, MEM_BADSTATE
+   (not all of it is what mem_movable says), or MEM_NOMEM when the host can't share them */
+int mem_migrate(u64 a, u64 size, int fd);
+int mem_unmigrate(u64 a, u64 size);
+/* whether [a, a + size) is all the guest's data, in whole host pages, on the reservation's own pages (not the pool's,
+   which other mappings share): what mem_migrate moves */
+int mem_movable(u64 a, u64 size);
 int mem_set_state(u64 addr, u64 size, u32 state, u32 perm);
 int mem_set_attr(u64 addr, u64 size, u32 mask, u32 attr);
 /* Called with no memory lock held after a mapping change that can make compiled guest code stale: an unmap, a state

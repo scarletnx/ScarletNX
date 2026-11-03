@@ -328,6 +328,80 @@ static int range_is_nl(u64 a, u64 size, u32 state, u32 perm, u32 attr) {
     }
     return 1;
 }
+/* a state whose pages hold the guest's data: code and its aliases are the code's, I/O and the kernel's aren't the
+   guest's */
+static int data_state(u32 st) {
+    return st != MS_FREE && st != MS_CODE && st != MS_ALIASCODE && st != MS_SHAREDCODE && st != MS_GENCODE &&
+           st != MS_CODEOUT && st != MS_IO && st != MS_KERNEL && st != MS_INACCESSIBLE && st != MS_TLS;
+}
+/* [a, a + size) is all the guest's data on the reservation's own pages: not the pool's, which other mappings share */
+static int movable_nl(u64 a, u64 size) {
+    u64 end = a + size;
+    u32 i;
+    if (!g_nblk) return 0;
+    for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++)
+        if (g_blk[i].pool || !data_state(g_blk[i].state)) return 0;
+    return 1;
+}
+/* Guest memory whose pages are a buffer a GPU shares (mem_migrate): runs sorted and disjoint, under g_mem_lk */
+typedef struct {
+    u64 a, b;
+} ExtRun;
+static struct {
+    ExtRun* run;
+    u32 n, cap;
+} g_ext;
+/* room for more runs: 0, or -1 */
+static int ext_room_nl(u32 more) {
+    u32 cap = g_ext.cap ? g_ext.cap : 16;
+    ExtRun* v;
+    while (cap < g_ext.n + more) cap *= 2;
+    if (cap == g_ext.cap) return 0;
+    v = (ExtRun*)realloc(g_ext.run, sizeof *v * (size_t)cap);
+    if (!v) return -1;
+    g_ext.run = v;
+    g_ext.cap = cap;
+    return 0;
+}
+/* [a, b) isn't a buffer's any more: the runs over it cut around it */
+static void ext_cut_nl(u64 a, u64 b) {
+    for (u32 i = 0; i < g_ext.n; i++) {
+        ExtRun r = g_ext.run[i];
+        if (r.b <= a || b <= r.a) continue;
+        if (r.a < a && b < r.b) { /* split in two */
+            if (ext_room_nl(1)) fatal("Out of memory noting guest memory a GPU shares");
+            memmove(&g_ext.run[i + 2], &g_ext.run[i + 1], sizeof *g_ext.run * (size_t)(g_ext.n - i - 1));
+            g_ext.run[i] = (ExtRun){r.a, a};
+            g_ext.run[i + 1] = (ExtRun){b, r.b};
+            g_ext.n++;
+            return;
+        }
+        if (r.a < a)
+            g_ext.run[i].b = a;
+        else if (b < r.b)
+            g_ext.run[i].a = b;
+        else {
+            memmove(&g_ext.run[i], &g_ext.run[i + 1], sizeof *g_ext.run * (size_t)(g_ext.n - i - 1));
+            g_ext.n--;
+            i--;
+        }
+    }
+}
+/* [a, a + size) decommitted: where its pages are a buffer's, fresh inaccessible ones are mapped over them instead, as
+   decommitting shared pages keeps their bytes */
+static void give_back_nl(u64 a, u64 size) {
+    u64 end = a + size, at = a;
+    for (u32 i = 0; i < g_ext.n && at < end; i++) {
+        u64 lo = g_ext.run[i].a > at ? g_ext.run[i].a : at, hi = g_ext.run[i].b < end ? g_ext.run[i].b : end;
+        if (lo >= hi) continue;
+        if (lo > at) plat_vm_decommit(GP(at), lo - at);
+        if (plat_alias_unmap(GP(lo), hi - lo))
+            fatal("Could not give back %llu KiB of guest memory a GPU shared", (unsigned long long)((hi - lo) >> 10));
+        at = hi;
+    }
+    if (at < end) plat_vm_decommit(GP(at), end - at);
+    ext_cut_nl(a, end);
+}
 /* host memory under [a, a + size): the host pages it touches committed, whole */
 static int commit_nl(u64 a, u64 size) {
     u64 mask = g_host_page - 1, lo = a & ~mask, hi = (a + size + mask) & ~mask;
@@ -342,7 +416,7 @@ static void decommit_nl(u64 a, u64 size) {
     pages_replaced_nl(a, size);
     own_drop(a, size);
     if (!((a | end) & mask)) { /* whole host pages, all of them free */
-        plat_vm_decommit(GP(a), size);
+        give_back_nl(a, size);
         return;
     }
     edge[n++] = first;
@@ -350,13 +424,13 @@ static void decommit_nl(u64 a, u64 size) {
     for (i = 0; i < n; i++) {
         u64 lo = edge[i] > a ? edge[i] : a, hi = edge[i] + g_host_page < end ? edge[i] + g_host_page : end;
         if (range_is_nl(edge[i], g_host_page, MS_FREE, ANY, ANY))
-            plat_vm_decommit(GP(edge[i]), g_host_page);
+            give_back_nl(edge[i], g_host_page);
         else {
             own_acquire(edge[i], g_host_page); /* a neighbour's bytes the GPU holds land before the page is written */
             memset(GP(lo), 0, (size_t)(hi - lo));
         }
     }
-    if (last > first + g_host_page) plat_vm_decommit(GP(first + g_host_page), last - first - g_host_page);
+    if (last > first + g_host_page) give_back_nl(first + g_host_page, last - first - g_host_page);
 }
 /* [a, a + size) widened to whole pages, inside the address space [AS_BASE, AS_END) and not empty: 0 when it can't be */
 static int page_range(u64* a, u64* size) {
@@ -508,7 +582,7 @@ static void unmap_nl(u64 a, u64 size) {
                 fatal("Could not unmap %llu KiB of guest memory from the alias pool",
                       (unsigned long long)((hi - lo) >> 10));
         } else if (g_host_page == PAGE)
-            plat_vm_decommit(GP(lo), hi - lo);
+            give_back_nl(lo, hi - lo);
     }
     blk_set_nl(a, size, MS_FREE, PERM_NONE, 0);
     if (g_host_page != PAGE) decommit_nl(a, size); /* no pool with larger pages (mem_init) */
@@ -551,6 +625,7 @@ static int promote_nl(u64 a, u64 size) {
         return MEM_NOMEM;
     }
     pages_replaced_nl(a, size); /* the pool's pages over the reservation's */
+    ext_cut_nl(a, end);         /* and over a buffer's, or fresh ones when that fails */
     if (plat_alias_map(GP(a), off, size)) {
         unpool_nl(a, size, &off);
         pool_free_nl(off, size);
@@ -1043,11 +1118,7 @@ int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
     mem_lock();
     for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
         const MemBlock* b = &g_blk[i];
-        u32 st = b->state;
-        /* data only: code and its aliases are the code's, I/O and the kernel's aren't the guest's */
-        if (st == MS_FREE || st == MS_CODE || st == MS_ALIASCODE || st == MS_SHAREDCODE || st == MS_GENCODE ||
-            st == MS_CODEOUT || st == MS_IO || st == MS_KERNEL || st == MS_INACCESSIBLE || st == MS_TLS)
-            goto out;
+        if (!data_state(b->state)) goto out;
         if (b->pool) { /* pool pages already: only when mapped here alone */
             u64 lo = b->addr > a ? b->addr : a, hi = blk_end(b) < end ? blk_end(b) : end;
             u64 boff = b->pool - 1 + (lo - b->addr);
@@ -1095,6 +1166,69 @@ int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
     }
     r = 0;
 out:
+    mem_unlock();
+    return r;
+}
+int mem_movable(u64 a, u64 size) {
+    int r;
+    if (!size || (a | size) & (g_host_page - 1) || a < AS_BASE || a + size > AS_END || a + size < a) return 0;
+    mem_lock();
+    r = movable_nl(a, size);
+    mem_unlock();
+    return r;
+}
+int mem_migrate(u64 a, u64 size, int fd) {
+    u64 end = a + size;
+    u32 at;
+    int r = 0, s;
+    if (!size || (a | size) & (g_host_page - 1) || a < AS_BASE || end > AS_END || end < a) return MEM_BADSTATE;
+    mem_lock();
+    if (!movable_nl(a, size)) {
+        r = MEM_BADSTATE;
+        goto out;
+    }
+    if (ext_room_nl(2)) { /* a run cut in two, and this one */
+        r = MEM_NOMEM;
+        goto out;
+    }
+    plat_freeze(GP(a), size);
+    s = plat_vm_share(GP(a), fd, size);
+    plat_thaw();
+    if (s == -2) fatal("Could not move %llu KiB of guest memory to a GPU's buffer", (unsigned long long)(size >> 10));
+    if (s) {
+        r = MEM_NOMEM;
+        goto out;
+    }
+    ext_cut_nl(a, end); /* pages another buffer had are this one's now */
+    for (at = 0; at < g_ext.n && g_ext.run[at].a < a; at++) {}
+    memmove(&g_ext.run[at + 1], &g_ext.run[at], sizeof *g_ext.run * (size_t)(g_ext.n - at));
+    g_ext.run[at] = (ExtRun){a, end};
+    g_ext.n++;
+out:
+    mem_unlock();
+    return r;
+}
+int mem_unmigrate(u64 a, u64 size) {
+    u64 end = a + size, at = a;
+    int r = 0;
+    mem_lock();
+    for (;;) {
+        u32 i = 0;
+        while (i < g_ext.n && g_ext.run[i].b <= at) i++;
+        if (i == g_ext.n || g_ext.run[i].a >= end) break;
+        u64 lo = g_ext.run[i].a > at ? g_ext.run[i].a : at, hi = g_ext.run[i].b < end ? g_ext.run[i].b : end;
+        plat_freeze(GP(lo), hi - lo);
+        int u = plat_vm_unshare(GP(lo), hi - lo);
+        plat_thaw();
+        if (u == -2)
+            fatal("Could not move %llu KiB of guest memory back from a GPU's buffer",
+                  (unsigned long long)((hi - lo) >> 10));
+        if (u)
+            r = MEM_NOMEM;
+        else
+            ext_cut_nl(lo, hi);
+        at = hi;
+    }
     mem_unlock();
     return r;
 }
