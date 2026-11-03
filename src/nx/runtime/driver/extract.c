@@ -5,6 +5,7 @@
    error, keys left out */
 #include "nx/runtime/driver/extract.h"
 #include "nx/runtime/driver/container.h"
+#include "nx/loader/loader.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -437,6 +438,23 @@ int snx_extract(int argc, char** argv, const SnxPaths* paths) {
     }
     return cleanup(&state, result);
 }
+/* an NRO's icon, from its assets, into to: 0, else said why */
+static int nro_icon(const char* nro, const char* to) {
+    unsigned char* jpeg;
+    size_t size;
+    char error[512];
+    int none = snx_nro_icon(nro, &jpeg, &size, error, sizeof error), result = 1;
+    if (none < 0)
+        snx_error("Games shows no icon for %s: %s", nro, error);
+    else if (none)
+        snx_error("Games shows no icon for %s: its assets hold none", nro);
+    else if (snx_write_file(to, jpeg, size))
+        snx_error("Games shows no icon for %s: %s cannot be written", nro, to);
+    else
+        result = 0;
+    free(jpeg);
+    return result;
+}
 int snx_extract_icon(const char* dump, const SnxPaths* paths, const char* out) {
     ExtractState state;
     SnxU64 title, game;
@@ -445,6 +463,11 @@ int snx_extract_icon(const char* dump, const SnxPaths* paths, const char* out) {
     char* to = snx_path_join(out, "icon.jpg");
     size_t size = 0;
     int result;
+    if (snx_ends_with_nocase(dump, ".nro")) { /* no extraction: its assets after its code */
+        result = to ? nro_icon(dump, to) : snx_error("cannot resolve %s", dump);
+        free(to);
+        return result;
+    }
     memset(&state, 0, sizeof state);
     state.base = snx_absolute(dump);
     if (!state.base || !to)
