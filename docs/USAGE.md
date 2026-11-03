@@ -168,9 +168,11 @@ dump's folder in `Download/`), iOS's the app's Documents alone, so there a folde
 says so.
 
 The box also has **Open Folder**, the game's other folders a row each: its dump's (as the recompile named it), the game's
-own, its saves (`<id>_data/save/`), its settings, its logs and its caches, each where the table below puts it. One not
-known (a game made before the recompile named its dump) or not there yet is greyed, and pressed it says why and makes
-nothing; Back goes back to the box's rows. **Clean Cache** deletes the game's shader cache (`shader_cache/` of its cache
+own, its saves (the user playing's where the game plays them: the data folder's `save/user.<uid>/<title ID>/`, the
+game's `<id>_data/save/` while only that is there, for a homebrew and with `save_layout=game`, [Users](#users)), its
+settings, its logs and its caches, each where the table below puts it. One not known (a game made before the recompile
+named its dump) or not there yet is greyed, and pressed it says why and makes nothing; Back goes back to the box's rows.
+**Clean Cache** deletes the game's shader cache (`shader_cache/` of its cache
 folder: the pipeline cache, the translated shaders and those prepared ahead of time) and its code cache
 (`<id>.jitcache`), asked first with each one's size and folder; the game makes them again as it runs, and its saves,
 settings and dump stay. It is greyed while the game has neither.

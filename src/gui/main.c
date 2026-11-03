@@ -4391,13 +4391,37 @@ static void addons_folder_off(const App* app, int i, char* out, size_t size) {
     const char* path = app->addons_folders[i];
     out[0] = 0;
     if (!path)
-        snprintf(out, size, "%s", snx_tr("its dump is not known: the game was made before the recompile named it"));
+        snprintf(out, size, "%s",
+                 i == GUI_FOLDER_DUMP ? snx_tr("its dump is not known: the game was made before the recompile named it")
+                                      : snx_tr("not known"));
     else if (!snx_is_dir(path))
         snprintf(out, size, snx_tr("%s is not there yet"), path);
 #ifdef SDL_PLATFORM_IOS /* the app's Library, where its settings, state and caches are, is not in it */
     else if (!app->data_dir || !snx_path_within(path, app->data_dir))
         snprintf(out, size, snx_tr("%s is out of the Files app's reach, which shows the app's Documents alone"), path);
 #endif
+}
+static bool saves_global(const App* app);
+/* Open Folder's Saves of the game name in folder, its own data folder data: where fs.c's save_folder plays the user
+   playing's saves. With save_layout=global, user.<uid>/<title ID> of the save/ of the data folder the game's run has
+   (main.c's fs_saves_init); the game's own save/ while only that is there, where an older version left them. A game
+   with no title ID of its own (a homebrew's) and save_layout=game keep their own. NULL with no data folder (no home to
+   find one by), where the game does not run */
+static char* addons_saves(const App* app, const char* folder, const char* name, const char* data) {
+    char *own = snx_path_join(data, "save"), *root, *global, uid[33];
+    SnxU64 id;
+    if (!snx_title_parse(name, &id) || !saves_global(app)) return own;
+    root = snx_menu_dir(folder, SNX_USER_DATA);
+    snx_users_uid_text(snx_users_selected()->uid, uid);
+    global = root ? snx_format("%s/save/user.%s/%s", root, uid, name) : NULL;
+    free(root);
+    if (global) snx_path_native(global);
+    if (global && !snx_is_dir(global) && snx_is_dir(own)) {
+        free(global);
+        return own;
+    }
+    free(own);
+    return global;
 }
 /* Open Folder: the game's folders as they are now, on its page, the box's focus kept to go back to */
 static void addons_folders_open(App* app) {
@@ -4410,7 +4434,7 @@ static void addons_folders_open(App* app) {
     dump = snx_game_source(folder, name, &recorded);
     app->addons_folders[GUI_FOLDER_DUMP] = recorded && dump ? snx_dirname(dump) : NULL;
     app->addons_folders[GUI_FOLDER_GAME] = snx_strdup(folder);
-    app->addons_folders[GUI_FOLDER_SAVES] = snx_path_join(data, "save");
+    app->addons_folders[GUI_FOLDER_SAVES] = addons_saves(app, folder, name, data);
     app->addons_folders[GUI_FOLDER_SETTINGS] = gui_game_kind_dir(folder, name, SNX_USER_CONFIG);
     app->addons_folders[GUI_FOLDER_LOGS] = gui_game_kind_dir(folder, name, SNX_USER_STATE);
     app->addons_folders[GUI_FOLDER_CACHES] = gui_game_kind_dir(folder, name, SNX_USER_CACHE);
