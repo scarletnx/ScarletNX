@@ -151,6 +151,11 @@ void crash_report(void* host_pc, void* fault, int sig) {
     else
         WARN(" ***\n");
     WARN("  %s\n", kind);
+    if (fault && mem_reserved()) { /* a layout smaller than the console's ends where a game may still reach */
+        char place[256];
+        mem_place(fault, place, sizeof place);
+        WARN("  %s\n", place);
+    }
     report_place(host_pc);
     /* the low pages are never mapped: a pointer the game failed to get (an allocation it ran out of memory for) plus
        a field's offset lands there */

@@ -112,6 +112,10 @@ int mem_identity(void);
    not say. Nothing of the runtime gives back a page of the reservation, so anything there is another owner's: a
    mapping made over guest memory, or one given a run that was handed back */
 int mem_foreign(char* out, size_t size);
+/* Where host address p lies against the guest's reservation, as a crash report says it: in it (with its game
+   address), below its start, or past its end (with the start or the end and how far, and the layout's size beside the
+   console's 512 GiB), or that none is reserved yet */
+void mem_place(const void* p, char* out, size_t size);
 /* NCE's reservation at the guest's own addresses (mem.c says why), the layout moved up by from or more: 1, or 0 with
    the reason logged. POSIX only */
 int mem_reserve_identity(u64 from);
