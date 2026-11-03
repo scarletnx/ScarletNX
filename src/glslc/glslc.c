@@ -28,7 +28,7 @@ static size_t place(size_t* at, size_t count, size_t size) {
 
 typedef struct {
     size_t synth, toks, macros, mtoks, exp, marks, nodes, types, members, syms, sym_hash, params, calls, walk;
-    size_t type_ids, sym_ids, sym_types, hash, stack;
+    size_t type_ids, sym_ids, sym_types, sampler_ids, hash, stack;
     size_t caps, imports, entry, modes, names, annotations, globals, functions, locals, body;
     size_t total;
 } Layout;
@@ -52,6 +52,7 @@ static void layout(Layout* l) {
     l->type_ids = place(&at, (size_t)SNX_GLSLC_MAX_TYPES * 3u, sizeof(uint32_t));
     l->sym_ids = place(&at, SNX_GLSLC_MAX_SYMBOLS, sizeof(uint32_t));
     l->sym_types = place(&at, SNX_GLSLC_MAX_SYMBOLS, sizeof(uint32_t));
+    l->sampler_ids = place(&at, SNX_GLSLC_MAX_SYMBOLS, sizeof(uint32_t));
     l->hash = place(&at, GLSLC_HASH_SIZE, sizeof(GlslcHashEntry));
     l->stack = place(&at, GLSLC_STACK_WORDS, sizeof(uint32_t));
     l->caps = place(&at, WORDS_CAPS, sizeof(uint32_t));
@@ -174,6 +175,8 @@ Glslc* glslc_open(void* memory, size_t memory_size, GlslcStage stage, const char
     memset(g->e.sym_ids, 0, SNX_GLSLC_MAX_SYMBOLS * sizeof(uint32_t));
     g->e.sym_types = (uint32_t*)(void*)(block + l.sym_types);
     memset(g->e.sym_types, 0, SNX_GLSLC_MAX_SYMBOLS * sizeof(uint32_t));
+    g->e.sampler_ids = (uint32_t*)(void*)(block + l.sampler_ids);
+    memset(g->e.sampler_ids, 0, SNX_GLSLC_MAX_SYMBOLS * sizeof(uint32_t));
     g->e.hash = (GlslcHashEntry*)(void*)(block + l.hash);
     memset(g->e.hash, 0, GLSLC_HASH_SIZE * sizeof(GlslcHashEntry));
     g->e.stack = (uint32_t*)(void*)(block + l.stack);

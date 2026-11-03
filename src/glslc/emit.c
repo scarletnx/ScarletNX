@@ -185,7 +185,7 @@ enum {
     CAP_IMAGE_QUERY = 50
 };
 enum { IMG_BIAS = 1, IMG_LOD = 2, IMG_GRAD = 4, IMG_CONST_OFFSET = 8, IMG_SAMPLE = 0x40 };
-enum { K_PTR = 1, K_CONST, K_IMAGE, K_PAIR, K_SPLAT, K_UNDEF };
+enum { K_PTR = 1, K_CONST, K_IMAGE, K_PAIR, K_SPLAT, K_UNDEF, K_ARRAY };
 /* the image formats' SPIR-V numbers, in GLSLC_FMT_* order */
 static const uint32_t spirv_formats[] = {0, 1, 2, 3, 4, 5, 21, 22, 23, 24, 30, 31, 32, 33};
 /* GLSL.std.450 */
@@ -291,6 +291,37 @@ static GlslcHashEntry* slot(Glslc* g, uint32_t k0, uint32_t k1, uint32_t k2, uin
     return NULL;
 }
 
+static uint32_t element_of(const Glslc* g, uint32_t t) {
+    while (ty(g, t)->kind == GLSLC_T_ARRAY) t = ty(g, t)->elem;
+    return t;
+}
+
+/* A struct's samplers are no members of its SPIR-V struct, which Vulkan keeps to numbers: each is a variable of its
+   own (sampler_variables), or a parameter of its own (emit_function), reached through the uniform or parameter that
+   holds the struct. A struct holds samplers one deep, in one array dimension at most (parser.c) */
+static int is_sampler_member(const Glslc* g, uint32_t t) { return ty(g, element_of(g, t))->kind == GLSLC_T_SAMPLER; }
+
+/* t is a struct that holds samplers, or an array of them */
+static int holds_samplers(const Glslc* g, uint32_t t) {
+    const GlslcType* y = ty(g, element_of(g, t));
+    return y->kind == GLSLC_T_STRUCT && (y->tflags & GLSLC_TF_OPAQUE);
+}
+
+/* member m of struct t as its SPIR-V struct numbers it, without the samplers before it */
+static uint32_t spirv_member(const Glslc* g, uint32_t t, uint32_t m) {
+    const GlslcType* y = ty(g, t);
+    if (y->kind != GLSLC_T_STRUCT || !(y->tflags & GLSLC_TF_OPAQUE)) return m;
+    uint32_t r = 0;
+    for (uint32_t i = 0; i < m; i++) r += !is_sampler_member(g, g->members[y->first + i].type);
+    return r;
+}
+
+/* the members of t's struct (t a struct, or an array of them) its SPIR-V struct has: none for samplers alone */
+static uint32_t spirv_members(const Glslc* g, uint32_t t) {
+    uint32_t e = element_of(g, t);
+    return spirv_member(g, e, ty(g, e)->len);
+}
+
 /* layouts */
 
 static int needs_layout(const Glslc* g, uint32_t t) {
@@ -349,6 +380,7 @@ static void lay(const Glslc* g, uint32_t t, uint32_t layout, int row_major, uint
             uint32_t offset = 0, max = 4;
             for (uint32_t m = 0; m < y->len; m++) {
                 const GlslcMember* mb = &g->members[y->first + m];
+                if (is_sampler_member(g, mb->type)) continue;
                 uint32_t a, s;
                 lay(g, mb->type, layout, (mb->mflags & GLSLC_MEM_ROW_MAJOR) != 0, &a, &s);
                 offset = round_up(offset, a) + s;
@@ -437,8 +469,9 @@ static uint32_t image_type(Glslc* g, uint32_t t, uint32_t format) {
 static void member_decorations(Glslc* g, uint32_t r, uint32_t t, uint32_t layout, int is_block) {
     const GlslcType* y = ty(g, t);
     uint32_t offset = 0;
-    for (uint32_t m = 0; m < y->len; m++) {
-        const GlslcMember* mb = &g->members[y->first + m];
+    for (uint32_t i = 0, m = 0; i < y->len; i++) {
+        const GlslcMember* mb = &g->members[y->first + i];
+        if (is_sampler_member(g, mb->type)) continue;
         int row_major = is_block && (mb->mflags & GLSLC_MEM_ROW_MAJOR);
         uint32_t a, s;
         lay(g, mb->type, layout, row_major, &a, &s);
@@ -456,6 +489,7 @@ static void member_decorations(Glslc* g, uint32_t r, uint32_t t, uint32_t layout
         if (is_block && (mb->mflags & GLSLC_MEM_WRITEONLY))
             EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, r, m, DEC_NON_READABLE);
         offset += s;
+        m++;
     }
 }
 
@@ -523,7 +557,10 @@ static uint32_t type_id(Glslc* g, uint32_t t, uint32_t layout) {
         case GLSLC_T_BLOCK: {
             uint32_t at = mark(g);
             push(g, 0);
-            for (uint32_t m = 0; m < y->len; m++) push(g, type_id(g, g->members[y->first + m].type, layout));
+            for (uint32_t m = 0; m < y->len; m++) {
+                uint32_t mt = g->members[y->first + m].type;
+                if (!is_sampler_member(g, mt)) push(g, type_id(g, mt, layout));
+            }
             r = id(g);
             g->e.stack[at] = r;
             inst_stack(g, &g->e.globals, OP_TYPE_STRUCT, at);
@@ -531,7 +568,8 @@ static uint32_t type_id(Glslc* g, uint32_t t, uint32_t layout) {
             name(g, r, y->name);
             for (uint32_t m = 0; m < y->len; m++) {
                 GlslcView v = g->members[y->first + m].name;
-                uint32_t pre[2] = {r, m};
+                if (is_sampler_member(g, g->members[y->first + m].type)) continue;
+                uint32_t pre[2] = {r, spirv_member(g, t, m)};
                 inst_string(g, &g->e.names, OP_MEMBER_NAME, pre, 2, glslc_view_text(g, v), v.len, NULL, 0);
             }
             break;
@@ -543,6 +581,20 @@ static uint32_t type_id(Glslc* g, uint32_t t, uint32_t layout) {
 }
 
 static uint32_t val_type(Glslc* g, uint32_t t) { return type_id(g, t, 0); }
+
+/* the type of a struct's sampler variable or parameter: the member's, in the holder's array when it is one */
+static uint32_t sampler_type(Glslc* g, uint32_t holder, uint32_t member) {
+    uint32_t t = val_type(g, member);
+    if (ty(g, holder)->kind != GLSLC_T_ARRAY) return t;
+    uint32_t n = ty(g, holder)->len;
+    GlslcHashEntry* e = slot(g, K_ARRAY, t, n, 0);
+    if (e->id) return e->id;
+    uint32_t r = id(g), len = constant(g, GT_UINT, n);
+    EMIT(g, &g->e.globals, OP_TYPE_ARRAY, r, t, len);
+    e = slot(g, K_ARRAY, t, n, 0); /* constant() may have taken the slot */
+    e->id = r;
+    return r;
+}
 
 /* a struct of two members, for the instructions that give two results (modf, uaddCarry...) */
 static uint32_t pair_type(Glslc* g, uint32_t a, uint32_t b) {
@@ -660,9 +712,10 @@ static uint32_t from_layout(Glslc* g, uint32_t v, uint32_t t, uint32_t layout, i
     uint32_t r = id(g), at = mark(g);
     push(g, into ? val_type(g, t) : type_id(g, t, layout));
     push(g, r);
-    for (uint32_t i = 0; i < n; i++) {
+    for (uint32_t i = 0, k = 0; i < n; i++) {
         uint32_t et = y->kind == GLSLC_T_ARRAY ? y->elem : g->members[y->first + i].type;
-        uint32_t e = extract(g, into ? type_id(g, et, layout) : val_type(g, et), v, i);
+        if (y->kind != GLSLC_T_ARRAY && is_sampler_member(g, et)) continue;
+        uint32_t e = extract(g, into ? type_id(g, et, layout) : val_type(g, et), v, k++);
         push(g, from_layout(g, e, et, layout, into));
     }
     inst_stack(g, &g->e.body, OP_COMPOSITE_CONSTRUCT, at);
@@ -834,6 +887,21 @@ static void access_push(Glslc* g, Access* a, uint32_t index) {
     a->idx[a->nidx++] = index;
 }
 
+/* how many of struct t's members before m are samplers: m's variable or parameter after the holder's first */
+static uint32_t sampler_ordinal(const Glslc* g, uint32_t t, uint32_t m) { return m - spirv_member(g, t, m); }
+
+/* sampler member m of the struct n names: VAR s, or INDEX(VAR s, i) of an array of them (parser.c's sampler_holder) */
+static void sampler_access(Glslc* g, uint32_t n, uint32_t m, Access* a) {
+    const GlslcNode* x = nd(g, n);
+    uint32_t s = x->kind == GLSLC_N_INDEX ? nd(g, x->a)->a : x->a;
+    uint32_t st = element_of(g, g->syms[s].type);
+    memset(a, 0, sizeof *a);
+    a->base = g->e.sampler_ids[s] + sampler_ordinal(g, st, m);
+    a->storage = SC_UNIFORM_CONSTANT;
+    a->type = g->members[ty(g, st)->first + m].type;
+    if (x->kind == GLSLC_N_INDEX) a->idx[a->nidx++] = rvalue(g, x->b);
+}
+
 /* the memory n names, or 0 when n is a value */
 static int access(Glslc* g, uint32_t n, Access* a) {
     const GlslcNode* x = nd(g, n);
@@ -874,11 +942,17 @@ static int access(Glslc* g, uint32_t n, Access* a) {
             access_push(g, a, rvalue(g, x->b));
             a->type = x->type;
             return 1;
-        case GLSLC_N_FIELD:
+        case GLSLC_N_FIELD: {
+            uint32_t st = nd(g, x->a)->type;
+            if (ty(g, st)->kind == GLSLC_T_STRUCT && is_sampler_member(g, x->type)) {
+                sampler_access(g, x->a, x->b, a);
+                return 1;
+            }
             if (!access(g, x->a, a)) return 0;
-            access_push(g, a, const_int(g, x->b));
+            access_push(g, a, const_int(g, (int32_t)spirv_member(g, st, x->b)));
             a->type = x->type;
             return 1;
+        }
         case GLSLC_N_SWIZZLE:
             if (!access(g, x->a, a) || a->nswizzle) return 0;
             if (x->op == 1) {
@@ -1494,11 +1568,27 @@ static uint32_t call_value(Glslc* g, uint32_t n) {
     const GlslcNode* x = nd(g, n);
     const GlslcSymbol* f = &g->syms[x->b];
     Access outs[16];
-    uint32_t temps[16], out_args[16], nouts = 0, i = 0;
+    uint32_t temps[16], out_args[16], nouts = 0, i = 0, nvals = 0;
     uint32_t vals[64];
     for (uint32_t a = x->a; a; a = nd(g, a)->next, i++) {
         const GlslcParam* p = &g->params[f->aux + i];
         uint32_t v;
+        if (holds_samplers(g, p->type)) { /* as sampler_parameters takes it */
+            const GlslcType* st = ty(g, element_of(g, p->type));
+            uint32_t plain = spirv_members(g, p->type);
+            if (nvals + (plain ? 1u : 0u) + st->len - plain > 64)
+                glslc_fail(g, g->e.site,
+                           "a call passes more than the 64 SPIR-V arguments glslc takes: a struct's samplers are one "
+                           "each");
+            if (plain) vals[nvals++] = rvalue(g, a);
+            for (uint32_t m = 0; m < st->len; m++) {
+                if (!is_sampler_member(g, g->members[st->first + m].type)) continue;
+                Access acc;
+                sampler_access(g, a, m, &acc); /* the struct's, or the array's of them, as the parameter is */
+                vals[nvals++] = pointer_of(g, &acc);
+            }
+            continue;
+        }
         if (p->storage == GLSLC_ST_PARAM_IN) {
             uint32_t e = p->type;
             while (ty(g, e)->kind == GLSLC_T_ARRAY) e = ty(g, e)->elem;
@@ -1518,14 +1608,14 @@ static uint32_t call_value(Glslc* g, uint32_t n) {
             if (p->storage == GLSLC_ST_PARAM_INOUT) EMIT(g, &g->e.body, OP_STORE, temps[nouts], load(g, &outs[nouts]));
             v = temps[nouts++];
         }
-        if (i == 64) glslc_fail(g, g->e.site, "a call has more than the 64 arguments glslc takes");
-        vals[i] = v;
+        if (nvals == 64) glslc_fail(g, g->e.site, "a call has more than the 64 arguments glslc takes");
+        vals[nvals++] = v;
     }
     uint32_t r = id(g), at = mark(g);
     push(g, val_type(g, f->type));
     push(g, r);
     push(g, g->e.sym_ids[x->b]);
-    for (uint32_t k = 0; k < i; k++) push(g, vals[k]);
+    for (uint32_t k = 0; k < nvals; k++) push(g, vals[k]);
     inst_stack(g, &g->e.body, OP_FUNCTION_CALL, at);
     for (uint32_t k = 0; k < nouts; k++) {
         uint32_t pt = g->params[f->aux].type;
@@ -1571,11 +1661,14 @@ static uint32_t rvalue(Glslc* g, uint32_t n) {
         case GLSLC_N_SWIZZLE: {
             uint32_t c = x->kind == GLSLC_N_VAR ? emit_constant(g, n, 0) : 0;
             if (c) return c;
+            /* a struct of samplers alone, which is no SPIR-V value: what reads it, a statement or the left of a
+               comma, drops it, and the rest read its members (parser.c) */
+            if (holds_samplers(g, t) && !spirv_members(g, t)) return 0;
             Access a;
             if (access(g, n, &a)) return load(g, &a);
             uint32_t base = rvalue(g, x->a);
             uint32_t bt = nd(g, x->a)->type;
-            if (x->kind == GLSLC_N_FIELD) return extract(g, val_type(g, t), base, x->b);
+            if (x->kind == GLSLC_N_FIELD) return extract(g, val_type(g, t), base, spirv_member(g, bt, x->b));
             if (x->kind == GLSLC_N_SWIZZLE) {
                 if (x->op == 1) return extract(g, val_type(g, t), base, x->b & 3u);
                 uint32_t r = id(g), at = mark(g);
@@ -1681,11 +1774,6 @@ static uint32_t rvalue(Glslc* g, uint32_t n) {
 }
 
 /* statements */
-
-static uint32_t element_of(const Glslc* g, uint32_t t) {
-    while (ty(g, t)->kind == GLSLC_T_ARRAY) t = ty(g, t)->elem;
-    return t;
-}
 
 static void relaxed(Glslc* g, uint32_t target, uint32_t t, uint8_t prec) {
     uint32_t e = element_of(g, t);
@@ -1901,8 +1989,46 @@ static uint32_t function_type_of(Glslc* g, uint32_t s) {
     const GlslcSymbol* f = &g->syms[s];
     uint32_t at = mark(g);
     push(g, val_type(g, f->type));
-    for (uint32_t i = 0; i < f->aux2; i++) push(g, param_type(g, &g->params[f->aux + i]));
+    for (uint32_t i = 0; i < f->aux2; i++) {
+        const GlslcParam* p = &g->params[f->aux + i];
+        if (!holds_samplers(g, p->type)) {
+            push(g, param_type(g, p));
+            continue;
+        }
+        if (spirv_members(g, p->type)) push(g, val_type(g, p->type)); /* as sampler_parameters gives them */
+        const GlslcType* st = ty(g, element_of(g, p->type));
+        for (uint32_t m = 0; m < st->len; m++) {
+            uint32_t mt = g->members[st->first + m].type;
+            if (is_sampler_member(g, mt)) push(g, ptr_type(g, SC_UNIFORM_CONSTANT, sampler_type(g, p->type, mt)));
+        }
+    }
     return function_type(g, at);
+}
+
+/* a parameter of a struct that holds samplers: the struct's other members as a value, then a pointer for each
+   sampler, at the ids after the first (sampler_variables) */
+static void sampler_parameters(Glslc* g, const GlslcParam* p) {
+    if (spirv_members(g, p->type)) {
+        uint32_t pid = id(g);
+        EMIT(g, &g->e.functions, OP_FUNCTION_PARAMETER, val_type(g, p->type), pid);
+        if (p->sym) { /* an in parameter is the function's to change */
+            uint32_t var = local_var(g, p->type);
+            EMIT(g, &g->e.body, OP_STORE, var, pid);
+            g->e.sym_ids[p->sym] = var;
+            name(g, var, p->name);
+        }
+    }
+    const GlslcType* st = ty(g, element_of(g, p->type));
+    uint32_t first = g->e.next_id;
+    g->e.next_id += st->len - spirv_members(g, p->type);
+    if (p->sym) g->e.sampler_ids[p->sym] = first;
+    for (uint32_t m = 0, v = first; m < st->len; m++) {
+        uint32_t mt = g->members[st->first + m].type;
+        if (!is_sampler_member(g, mt)) continue;
+        uint32_t pt = ptr_type(g, SC_UNIFORM_CONSTANT, sampler_type(g, p->type, mt));
+        EMIT(g, &g->e.functions, OP_FUNCTION_PARAMETER, pt, v);
+        v++;
+    }
 }
 
 static void emit_function(Glslc* g, uint32_t n) {
@@ -1917,6 +2043,10 @@ static void emit_function(Glslc* g, uint32_t n) {
     name(g, fid, f->name);
     for (uint32_t i = 0; i < f->aux2; i++) {
         const GlslcParam* p = &g->params[f->aux + i];
+        if (holds_samplers(g, p->type)) {
+            sampler_parameters(g, p);
+            continue;
+        }
         uint32_t pid = id(g);
         EMIT(g, &g->e.functions, OP_FUNCTION_PARAMETER, param_type(g, p), pid);
         if (!p->sym) continue;
@@ -2093,6 +2223,49 @@ static void mapped_binding(Glslc* g, const GlslcResource* r, uint32_t* set, uint
         glslc_fail(g, r->name.pos, "the binding map puts %.*s at set %u binding %u, which another resource has",
                    (int)r->name.len, glslc_view_text(g, r->name), *set, *binding);
     take_binding(g, *set, *binding, r->name);
+}
+
+/* the samplers of uniform s, a struct or an array of structs: a variable each, at the ids after the first, in the
+   order the struct declares them, placed as the shader's other samplers are */
+static void sampler_variables(Glslc* g, uint32_t s) {
+    const GlslcSymbol* y = &g->syms[s];
+    const GlslcType* st = ty(g, element_of(g, y->type));
+    uint32_t holder_len = ty(g, y->type)->kind == GLSLC_T_ARRAY ? ty(g, y->type)->len : 0;
+    uint32_t first = g->e.next_id;
+    g->e.next_id += st->len - spirv_members(g, y->type);
+    g->e.sampler_ids[s] = first;
+    for (uint32_t m = 0, v = first; m < st->len; m++) {
+        const GlslcMember* mb = &g->members[st->first + m];
+        if (!is_sampler_member(g, mb->type)) continue;
+        uint32_t pointee = sampler_type(g, y->type, mb->type), set, binding;
+        EMIT(g, &g->e.globals, OP_VARIABLE, ptr_type(g, SC_UNIFORM_CONSTANT, pointee), v, SC_UNIFORM_CONSTANT);
+        char text[256]; /* a debug name, cut at 255 bytes */
+        int len = snprintf(text, sizeof text, "%.*s.%.*s", (int)y->name.len, glslc_view_text(g, y->name),
+                           (int)mb->name.len, glslc_view_text(g, mb->name));
+        inst_string(g, &g->e.names, OP_NAME, &v, 1, text, len < (int)sizeof text ? (uint32_t)len : sizeof text - 1,
+                    NULL, 0);
+        uint32_t array = holder_len ? holder_len : ty(g, mb->type)->kind == GLSLC_T_ARRAY ? ty(g, mb->type)->len : 0;
+        if (g->bind) {
+            GlslcResource r = {0};
+            r.name = y->name;
+            r.member = mb->name;
+            r.kind = SNX_GLSLC_REFLECT_SAMPLER;
+            r.texel_buffer = ty(g, element_of(g, mb->type))->dim == GLSLC_DIM_BUFFER;
+            r.array = (uint16_t)array;
+            r.set = r.binding = -1;
+            mapped_binding(g, &r, &set, &binding);
+        } else {
+            set = 0;
+            binding = free_binding(g, y->name);
+        }
+        EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_DESCRIPTOR_SET, set);
+        EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_BINDING, binding);
+        reflect(g, SNX_GLSLC_REFLECT_SAMPLER, y->name, mb->type, binding, set, 0);
+        GlslcReflect* e = &g->result->reflect[g->result->reflect_count - 1];
+        e->member = mb->name;
+        e->array = (uint16_t)array;
+        v++;
+    }
 }
 
 /* an in or out block: the block's location, or the members' own, and each member after the one before it */
@@ -2322,7 +2495,11 @@ static void global_variables(Glslc* g) {
             case GLSLC_ST_BUFFER:
                 if (is_resource(g, s)) {
                     resource_variable(g, s);
-                } else { /* a loose uniform: a member of the default uniform block */
+                    break;
+                }
+                if (holds_samplers(g, y->type)) sampler_variables(g, s);
+                if (!holds_samplers(g, y->type) || spirv_members(g, y->type)) {
+                    /* a loose uniform, or a struct's members that are no samplers: the default uniform block's */
                     g->e.sym_types[s] = 0xffffffffu;
                     g->e.sym_ids[s] = g->e.default_members++;
                 }

@@ -558,10 +558,12 @@ typedef struct {
 #define GLSLC_MAX_RESOURCES 256u  /* samplers, images and blocks: their (set, binding) pairs */
 #define GLSLC_MAX_LOCATION  1024u /* an in or out variable's last location, plus one */
 typedef struct {
-    uint32_t* type_ids;   /* each type's SPIR-V type, by layout: [type * 3 + GLSLC_LAYOUT_*] */
-    uint32_t* sym_ids;    /* each symbol's variable (a pointer) or function; a loose uniform's member */
-    uint32_t* sym_types;  /* variables: their SPIR-V storage class plus one; functions: their OpTypeFunction */
-    GlslcHashEntry* hash; /* pointer types, constants and image types made: open addressing on GLSLC_HASH_SIZE */
+    uint32_t* type_ids;    /* each type's SPIR-V type, by layout: [type * 3 + GLSLC_LAYOUT_*] */
+    uint32_t* sym_ids;     /* each symbol's variable (a pointer) or function; a loose uniform's member */
+    uint32_t* sym_types;   /* variables: their SPIR-V storage class plus one; functions: their OpTypeFunction */
+    uint32_t* sampler_ids; /* a uniform or parameter of a struct that holds samplers: its first sampler's variable or
+                              parameter, the next sampler's at the next id */
+    GlslcHashEntry* hash;  /* pointer, image and sampler array types, constants: open addressing on GLSLC_HASH_SIZE */
     GlslcWords caps, imports, entry, modes, names, annotations, globals, functions, locals, body;
     uint32_t next_id;
     uint32_t glsl_ext;  /* the GLSL.std.450 import */

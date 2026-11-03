@@ -98,7 +98,8 @@ static int is_opaque_kind(uint8_t kind) {
     return kind == GLSLC_T_SAMPLER || kind == GLSLC_T_IMAGE || kind == GLSLC_T_ATOMIC;
 }
 static int has_opaque(const Glslc* g, uint32_t t) {
-    return is_opaque_kind(ty(g, t)->kind) || ((ty(g, t)->tflags & GLSLC_TF_OPAQUE) && ty(g, t)->kind == GLSLC_T_ARRAY);
+    uint8_t k = ty(g, t)->kind;
+    return is_opaque_kind(k) || ((ty(g, t)->tflags & GLSLC_TF_OPAQUE) && (k == GLSLC_T_ARRAY || k == GLSLC_T_STRUCT));
 }
 static uint32_t element_of(const Glslc* g, uint32_t t) {
     while (ty(g, t)->kind == GLSLC_T_ARRAY) t = ty(g, t)->elem;
@@ -790,11 +791,21 @@ static uint32_t parse_struct(Glslc* g, int nested) {
             if (element_of(g, full) == GT_VOID) glslc_fail(g, site(g, mn), "member %.*s cannot be void", TOKV(g, mn));
             if (ty(g, full)->kind == GLSLC_T_ARRAY && ty(g, full)->len == 0)
                 glslc_fail(g, site(g, mn), "member %.*s is an array with no size", TOKV(g, mn));
-            if (has_opaque(g, full))
-                glslc_fail(g, site(g, mn),
-                           "member %.*s is %s: glslc compiles no sampler or image inside a struct (Vulkan has no "
-                           "such member)",
-                           TOKV(g, mn), name);
+            if (has_opaque(g, full)) { /* each sampler becomes a variable of its own (emit.c) */
+                uint8_t k = ty(g, element_of(g, full))->kind;
+                if (k == GLSLC_T_STRUCT)
+                    glslc_fail(g, site(g, mn),
+                               "member %.*s is %s, which holds a sampler: glslc takes samplers one "
+                               "struct deep",
+                               TOKV(g, mn), name);
+                if (k != GLSLC_T_SAMPLER)
+                    glslc_fail(g, site(g, mn), "member %.*s is %s: a struct holds samplers, and no image", TOKV(g, mn),
+                               name);
+                if (ty(g, full)->kind == GLSLC_T_ARRAY && ty(g, ty(g, full)->elem)->kind == GLSLC_T_ARRAY)
+                    glslc_fail(g, site(g, mn), "member %.*s is %s: a Vulkan descriptor's array has one dimension",
+                               TOKV(g, mn), name);
+                g->types[t].tflags |= GLSLC_TF_OPAQUE;
+            }
             for (uint32_t m = g->types[t].first; m < g->nmembers; m++) {
                 if (glslc_views_equal(g, g->members[m].name, tk(g, mn)->text))
                     glslc_fail(g, site(g, mn), "the struct has two members named %.*s", TOKV(g, mn));
@@ -979,6 +990,42 @@ static uint32_t make_unary(Glslc* g, uint8_t op, uint32_t tok, uint32_t a) {
     return n;
 }
 
+/* a struct's samplers are variables of their own (emit.c), read through the uniform or parameter that holds the
+   struct, or an element of its array */
+static void sampler_holder(Glslc* g, uint32_t n) {
+    const GlslcNode* x = nd(g, n);
+    uint32_t v = x->kind == GLSLC_N_INDEX ? x->a : n;
+    char name[64];
+    glslc_type_name(g, nd(g, v)->type, name, sizeof name);
+    if (nd(g, v)->kind != GLSLC_N_VAR)
+        glslc_fail(g, site(g, x->tok),
+                   "this %s holds a sampler: glslc reads one through the uniform or parameter that holds it", name);
+    if (x->kind == GLSLC_N_INDEX && nd(g, x->b)->kind != GLSLC_N_CONST && g->vi < GLSLC_V320)
+        glslc_fail(g, site(g, x->tok), "%s holds samplers: it is indexed by a constant expression only in GLSL ES %s",
+                   name, version_name(g));
+}
+
+/* the samplers of a struct in an array have the array's dimension, and a Vulkan descriptor's array has one */
+static void sampler_dimensions(Glslc* g, uint32_t type, uint32_t name_tok) {
+    if (ty(g, type)->kind != GLSLC_T_ARRAY || !has_opaque(g, type)) return;
+    char name[64];
+    glslc_type_name(g, type, name, sizeof name);
+    if (ty(g, ty(g, type)->elem)->kind == GLSLC_T_ARRAY)
+        glslc_fail(g, site(g, name_tok), "%.*s is %s: a Vulkan descriptor's array has one dimension", TOKV(g, name_tok),
+                   name);
+    const GlslcType* st = ty(g, ty(g, type)->elem);
+    for (uint32_t m = 0; st->kind == GLSLC_T_STRUCT && m < st->len; m++) {
+        const GlslcMember* mb = &g->members[st->first + m];
+        if (ty(g, mb->type)->kind != GLSLC_T_ARRAY || !has_opaque(g, mb->type)) continue;
+        char mname[64];
+        glslc_type_name(g, mb->type, mname, sizeof mname);
+        glslc_fail(g, site(g, name_tok),
+                   "%.*s is %s, and its member %.*s is %s: a Vulkan descriptor's array has one "
+                   "dimension",
+                   TOKV(g, name_tok), name, VIEWV(g, mb->name), mname);
+    }
+}
+
 static uint32_t make_index(Glslc* g, uint32_t tok, uint32_t base, uint32_t index) {
     uint32_t bt = nd(g, base)->type, it = nd(g, index)->type;
     const GlslcType* b = ty(g, bt);
@@ -1013,7 +1060,8 @@ static uint32_t make_index(Glslc* g, uint32_t tok, uint32_t base, uint32_t index
         if (b->kind == GLSLC_T_VECTOR && const_component(g, base, (uint32_t)i, &bits))
             return make_const(g, tok, t, bits);
     } else if (g->vi < GLSLC_V320 && b->kind == GLSLC_T_ARRAY &&
-               (has_opaque(g, b->elem) || ty(g, element_of(g, bt))->kind == GLSLC_T_BLOCK)) {
+               (is_opaque_kind(ty(g, element_of(g, bt))->kind) || ty(g, element_of(g, bt))->kind == GLSLC_T_BLOCK)) {
+        /* an array of structs that hold samplers: where a sampler is read from one (sampler_holder) */
         glslc_fail(g, site(g, tok), "%s is indexed by a constant expression only in GLSL ES %s", name, version_name(g));
     }
     uint32_t n = node(g, GLSLC_N_INDEX, tok, t);
@@ -1070,6 +1118,7 @@ static uint32_t make_field(Glslc* g, uint32_t tok, uint32_t base) {
     if (b->kind == GLSLC_T_STRUCT || b->kind == GLSLC_T_BLOCK) {
         for (uint32_t m = 0; m < b->len; m++) {
             if (glslc_views_equal(g, g->members[b->first + m].name, tk(g, tok)->text)) {
+                if (b->kind == GLSLC_T_STRUCT && has_opaque(g, g->members[b->first + m].type)) sampler_holder(g, base);
                 uint32_t n = node(g, GLSLC_N_FIELD, tok, g->members[b->first + m].type);
                 nd(g, n)->a = (uint16_t)base;
                 nd(g, n)->b = (uint16_t)m;
@@ -1126,6 +1175,7 @@ static uint32_t make_constructor(Glslc* g, uint32_t type, uint32_t tok, uint32_t
             }
         }
     } else if (t->kind == GLSLC_T_STRUCT) {
+        if (has_opaque(g, type)) glslc_fail(g, site(g, tok), "%s holds a sampler, so it has no constructor", name);
         if (count != t->len)
             glslc_fail(g, site(g, tok), "%s has %u members, and %u values are given", name, (unsigned)t->len, count);
         uint32_t i = 0;
@@ -1533,6 +1583,8 @@ static uint32_t function_call(Glslc* g, uint32_t name_tok, uint32_t first) {
     uint32_t i = 0;
     for (uint32_t a = first; a; a = g->nodes[a].next, i++) {
         uint8_t st = g->params[g->syms[found].aux + i].storage;
+        if (ty(g, element_of(g, g->nodes[a].type))->kind == GLSLC_T_STRUCT && has_opaque(g, g->nodes[a].type))
+            sampler_holder(g, a);
         if (st == GLSLC_ST_PARAM_OUT || st == GLSLC_ST_PARAM_INOUT)
             need_lvalue(g, a, g->nodes[a].tok, st == GLSLC_ST_PARAM_OUT ? "an out argument" : "an inout argument");
     }
@@ -1984,10 +2036,7 @@ static uint32_t declare_variable(Glslc* g, const Qual* q, uint32_t type, uint32_
     } else if (storage == GLSLC_ST_CONST) {
         glslc_fail(g, site(g, name_tok), "the constant %.*s needs an initializer", TOKV(g, name_tok));
     }
-    if (storage == GLSLC_ST_UNIFORM && ty(g, type)->kind == GLSLC_T_ARRAY &&
-        ty(g, ty(g, type)->elem)->kind == GLSLC_T_ARRAY && has_opaque(g, type))
-        glslc_fail(g, site(g, name_tok), "%.*s is %s: a Vulkan descriptor's array has one dimension", TOKV(g, name_tok),
-                   name);
+    if (storage == GLSLC_ST_UNIFORM) sampler_dimensions(g, type, name_tok);
     if (global) {
         switch (storage) {
             case GLSLC_ST_IN:
@@ -2032,7 +2081,8 @@ static uint32_t declare_variable(Glslc* g, const Qual* q, uint32_t type, uint32_
         if (q->location >= 0 && storage != GLSLC_ST_IN && storage != GLSLC_ST_OUT &&
             !(storage == GLSLC_ST_UNIFORM && g->vi >= GLSLC_V310))
             glslc_fail(g, site(g, q->tok), "layout(location) is for in and out variables");
-        if ((q->binding >= 0 || q->set >= 0) && !(storage == GLSLC_ST_UNIFORM && has_opaque(g, type)))
+        if ((q->binding >= 0 || q->set >= 0) &&
+            !(storage == GLSLC_ST_UNIFORM && is_opaque_kind(ty(g, element_of(g, type))->kind)))
             glslc_fail(g, site(g, q->tok), "layout(binding) and layout(set) are for samplers, images and blocks");
     } else {
         if (q->storage && q->storage != GLSLC_ST_CONST)
@@ -2750,6 +2800,7 @@ static void parse_function(Glslc* g, const Qual* q, uint32_t ret, uint32_t name_
                 glslc_fail(g, site(g, ptok), "a parameter cannot be an array with no size");
             if (has_opaque(g, pt) && st != GLSLC_ST_PARAM_IN)
                 glslc_fail(g, site(g, ptok), "%s is an in parameter only", pn);
+            sampler_dimensions(g, pt, pname ? pname : ptok);
             if (ty(g, element_of(g, pt))->kind == GLSLC_T_IMAGE)
                 glslc_fail(g, site(g, ptok), "glslc passes no image to a function: use the image's uniform in it");
             if (g->nparams >= SNX_GLSLC_MAX_PARAMS)

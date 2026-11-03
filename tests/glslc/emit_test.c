@@ -52,6 +52,20 @@ static const GlslcReflect* find(const char* source, const char* name, uint8_t ki
     exit(1);
 }
 
+/* a sampler inside a struct: the entry of uniform name's member */
+static const GlslcReflect* find_member(const char* source, const char* name, const char* member) {
+    const GlslcResult* r = &g_emit_test.result;
+    for (uint32_t i = 0; i < r->reflect_count; i++) {
+        const GlslcReflect* e = &r->reflect[i];
+        if (e->kind == SNX_GLSLC_REFLECT_SAMPLER && e->name.len == strlen(name) &&
+            !memcmp(source + e->name.pos, name, e->name.len) && e->member.len == strlen(member) &&
+            !memcmp(source + e->member.pos, member, e->member.len))
+            return e;
+    }
+    fprintf(stderr, "no reflection entry %s.%s\n", name, member);
+    exit(1);
+}
+
 /* the operands of the first instruction op in the module whose operand at is value (any operand when at is -1), or
    NULL */
 static const uint32_t* instruction_with(uint32_t op, int at, uint32_t value) {
@@ -304,6 +318,64 @@ static int compile_mapped(GlslcBindFn bind, const char* source) {
                              &g_emit_test.result);
 }
 
+/* samplers inside structs: a variable each, placed in declaration order among the other samplers, reported by the
+   uniform's name and the member's; the struct's other members in the default uniform block, laid out without them */
+static void struct_samplers(void) {
+    static const char frag[] =
+        "#version 310 es\n#extension GL_EXT_texture_buffer : require\nprecision highp float;\n"
+        "struct M { sampler2D albedo; float scale; samplerCube sky; vec2 shift; vec3 tint; };\n"
+        "struct P { sampler2D a; highp samplerBuffer b; };\n"
+        "uniform sampler2D before;\nuniform M m;\nuniform M ms[3];\nuniform P p;\n"
+        "layout(binding = 9) uniform sampler2D fixed1;\nuniform float after;\nlayout(location = 0) out vec4 c;\n"
+        "void main() { c = texture(m.albedo, vec2(0.0)) * m.scale + texture(ms[2].sky, vec3(1.0)) +\n"
+        "  texture(p.a, vec2(after)) + texelFetch(p.b, 0) + texture(fixed1, vec2(0.0)) + texture(before, vec2(0.0));\n"
+        "  c.rgb += ms[1].tint; }\n";
+    if (compile(SNX_GLSLC_FRAGMENT, frag)) {
+        fprintf(stderr, "struct_samplers: %u:%u: %s\n", g_emit_test.result.line, g_emit_test.result.column,
+                g_emit_test.result.error);
+        exit(1);
+    }
+    static const struct {
+        const char *name, *member;
+        uint16_t binding, array;
+    } want[] = {{"m", "albedo", 1, 0}, {"m", "sky", 2, 0}, {"ms", "albedo", 3, 3},
+                {"ms", "sky", 4, 3},   {"p", "a", 5, 0},   {"p", "b", 6, 0}};
+    assert(find(frag, "before", SNX_GLSLC_REFLECT_SAMPLER)->location == 0 &&
+           find(frag, "before", SNX_GLSLC_REFLECT_SAMPLER)->member.len == 0);
+    assert(find(frag, "fixed1", SNX_GLSLC_REFLECT_SAMPLER)->location == 9);
+    for (uint32_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        const GlslcReflect* e = find_member(frag, want[i].name, want[i].member);
+        if (e->location != want[i].binding || e->set != 0 || e->array != want[i].array ||
+            e->base != SNX_GLSLC_BASE_OPAQUE) {
+            fprintf(stderr, "struct_samplers: %s.%s at binding %u with %u elements, want %u and %u\n", want[i].name,
+                    want[i].member, e->location, e->array, want[i].binding, want[i].array);
+            exit(1);
+        }
+    }
+    /* std140 without the samplers: M is scale at 0, shift at 8, tint at 16, 32 bytes (48 with them); p has none */
+    const GlslcReflect* e = find(frag, "m", SNX_GLSLC_REFLECT_UNIFORM);
+    assert(e->offset == 0 && e->base == SNX_GLSLC_BASE_STRUCT);
+    e = find(frag, "ms", SNX_GLSLC_REFLECT_UNIFORM);
+    assert(e->offset == 32 && e->array == 3);
+    assert(find(frag, "after", SNX_GLSLC_REFLECT_UNIFORM)->offset == 128);
+    for (uint32_t i = 0; i < g_emit_test.result.reflect_count; i++) {
+        const GlslcReflect* u = &g_emit_test.result.reflect[i];
+        assert(!(u->kind == SNX_GLSLC_REFLECT_UNIFORM && u->name.len == 1 && frag[u->name.pos] == 'p'));
+    }
+    e = find(frag, "", SNX_GLSLC_REFLECT_UNIFORM_BLOCK);
+    assert(e->location == 7 && e->offset == 144);
+    /* the binding map sees each sampler of a struct with its member's name */
+    assert(compile_mapped(map_by_kind, frag) == 0);
+    const Map* m = &g_emit_test.map;
+    assert(m->seen == 8 && m->got[1].kind == SNX_GLSLC_REFLECT_SAMPLER && m->got[1].binding == -1);
+    assert(frag[m->got[1].name.pos] == 'm' && m->got[1].name.len == 1 && m->got[1].member.len == 6 &&
+           !memcmp(frag + m->got[1].member.pos, "albedo", 6));
+    assert(m->got[3].array == 3 && m->got[3].name.len == 2 && !memcmp(frag + m->got[3].member.pos, "albedo", 6));
+    assert(m->got[6].texel_buffer == 1 && frag[m->got[6].member.pos] == 'b' && m->got[0].member.len == 0);
+    assert(find_member(frag, "p", "b")->location == 6 &&
+           find(frag, "fixed1", SNX_GLSLC_REFLECT_SAMPLER)->location == 9);
+}
+
 /* the backend's binding map: what it sees, in declaration order, where the resources go, and its errors */
 static void binding_map(void) {
     static const char frag[] =
@@ -363,10 +435,12 @@ int main(void) {
     assert(snx_glslc_workspace_init(&g_emit_test.workspace, malloc(size), size, &g_emit_test.result) == 0);
     workspace();
     binding_map();
+    struct_samplers();
     module();
     interface();
     bounds();
     free(g_emit_test.workspace.memory);
-    printf("glslc_emit: the workspace, the binding map, the module, its interface and its bounds checked\n");
+    printf("glslc_emit: the workspace, the binding map, samplers in structs, the module, its interface and its "
+           "bounds checked\n");
     return 0;
 }

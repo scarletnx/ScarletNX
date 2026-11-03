@@ -73,6 +73,7 @@ typedef enum {
 
 typedef struct {
     GlslcView name;    /* the name the source declares it with; a gl_ name is a view of its first use */
+    GlslcView member;  /* a sampler inside a struct: its member's name, name being the uniform's; empty otherwise */
     uint8_t kind;      /* GlslcReflectKind */
     uint8_t base;      /* GlslcBase of the type, or of an array's elements */
     uint8_t rows;      /* components of a vector, rows of a matrix, 1 for a scalar */
@@ -99,6 +100,7 @@ typedef struct {
 /* A sampler, image or block as the backend's binding map sees it, in the order the shader declares them */
 typedef struct {
     GlslcView name;       /* a sampler's or image's name, a block's own (not its instance's) */
+    GlslcView member;     /* a sampler inside a struct: its member's name, name being the uniform's; empty otherwise */
     uint8_t kind;         /* SNX_GLSLC_REFLECT_SAMPLER, IMAGE, UNIFORM_BLOCK or BUFFER_BLOCK */
     uint8_t texel_buffer; /* 1 for a samplerBuffer or imageBuffer: a texel buffer's descriptor */
     uint16_t array;       /* elements of an array of them, 0 for one */

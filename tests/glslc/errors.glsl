@@ -492,3 +492,156 @@ precision mediump float;
 uniform B { vec4 v; } b[2][3];
 layout(location = 0) out vec4 c;
 void main() { c = b[1][2].v; }
+--- struct_image_member.comp 3:26: member img is image2D: a struct holds samplers, and no image
+--- glslang accepts: a struct member takes no format, so no shader reads or writes its image
+#version 310 es
+layout(local_size_x = 1) in;
+struct S { highp image2D img; };
+uniform S s;
+void main() {}
+--- struct_nested_sampler.frag 4:14: member a is A, which holds a sampler: glslc takes samplers one struct deep
+--- glslang accepts: OpenGL ES nests them, and glslc keeps samplers one struct deep
+#version 300 es
+precision mediump float;
+struct A { sampler2D t; };
+struct B { A a; float f; };
+uniform B b;
+out vec4 c;
+void main() { c = texture(b.a.t, vec2(0.0)) * b.f; }
+--- struct_sampler_array_of_arrays.frag 3:22: member t is sampler2D[2][2]: a Vulkan descriptor's array has one dimension
+--- glslang accepts: OpenGL ES 3.10 has arrays of arrays, and a Vulkan descriptor array one dimension
+#version 310 es
+precision mediump float;
+struct S { sampler2D t[2][2]; };
+uniform S s;
+layout(location = 0) out vec4 c;
+void main() { c = texture(s.t[1][1], vec2(0.0)); }
+--- struct_array_sampler_array.frag 4:11: s is S[3], and its member t is sampler2D[2]: a Vulkan descriptor's array has one dimension
+--- glslang accepts: OpenGL ES has both dimensions, and a Vulkan descriptor array one
+#version 300 es
+precision mediump float;
+struct S { sampler2D t[2]; float f; };
+uniform S s[3];
+out vec4 c;
+void main() { c = texture(s[1].t[1], vec2(0.0)); }
+--- struct_sampler_array_of_arrays_uniform.frag 4:11: s is S[2][2]: a Vulkan descriptor's array has one dimension
+--- glslang accepts: OpenGL ES 3.10 has arrays of arrays, and a Vulkan descriptor array one dimension
+#version 310 es
+precision mediump float;
+struct S { sampler2D t; };
+uniform S s[2][2];
+layout(location = 0) out vec4 c;
+void main() { c = texture(s[1][0].t, vec2(0.0)); }
+--- struct_sampler_binding.frag 4:1: layout(binding) and layout(set) are for samplers, images and blocks
+#version 310 es
+precision mediump float;
+struct S { sampler2D t; };
+layout(binding = 2) uniform S s;
+layout(location = 0) out vec4 c;
+void main() { c = texture(s.t, vec2(0.0)); }
+--- struct_sampler_local.frag 6:17: S cannot be initialized
+#version 300 es
+precision mediump float;
+struct S { sampler2D t; };
+uniform S s;
+out vec4 c;
+void main() { S l = s; c = texture(l.t, vec2(0.0)); }
+--- struct_sampler_global.frag 4:3: S g must be a uniform
+#version 300 es
+precision mediump float;
+struct S { sampler2D t; float f; };
+S g;
+out vec4 c;
+void main() { c = vec4(0.0); }
+--- struct_sampler_out.frag 4:6: in v is S: in variables are numbers, vectors or matrices
+#version 300 es
+precision mediump float;
+struct S { sampler2D t; };
+in S v;
+out vec4 c;
+void main() { c = vec4(0.0); }
+--- struct_sampler_in_block.frag 4:15: member s is S: a block holds no sampler or image
+#version 300 es
+precision mediump float;
+struct S { sampler2D t; };
+uniform U { S s; };
+out vec4 c;
+void main() { c = vec4(0.0); }
+--- struct_sampler_constructor.frag 6:27: S holds a sampler, so it has no constructor
+#version 300 es
+precision mediump float;
+struct S { sampler2D t; };
+uniform sampler2D u;
+out vec4 c;
+void main() { c = texture(S(u).t, vec2(0.0)); }
+--- struct_sampler_assign.frag 7:17: this assignment cannot write to a uniform
+#version 300 es
+precision mediump float;
+struct S { sampler2D t; float f; };
+uniform S s;
+uniform S r;
+out vec4 c;
+void main() { s = r; c = vec4(0.0); }
+--- struct_sampler_equal.frag 7:26: no operator == takes S and S (GLSL ES converts neither)
+#version 300 es
+precision mediump float;
+struct S { sampler2D t; float f; };
+uniform S s;
+uniform S r;
+out vec4 c;
+void main() { c = vec4(s == r); }
+--- struct_sampler_ternary.frag 8:30: ?: cannot choose between two S
+--- glslang accepts: it keeps samplers, not structs that hold them, out of ?:
+#version 300 es
+precision mediump float;
+struct S { sampler2D t; float f; };
+uniform S s;
+uniform S r;
+uniform bool b;
+out vec4 c;
+void main() { c = texture((b ? s : r).t, vec2(0.0)); }
+--- struct_sampler_comma.frag 6:29: this S holds a sampler: glslc reads one through the uniform or parameter that holds it
+--- glslang accepts: glslc reads a struct's sampler through the uniform or parameter that holds it only
+#version 300 es
+precision mediump float;
+struct S { sampler2D t; float f; };
+uniform S s;
+out vec4 c;
+void main() { c = texture((s, s).t, vec2(0.0)); }
+--- struct_sampler_out_param.frag 5:12: S is an in parameter only
+--- glslang accepts: it keeps samplers, not structs that hold them, to in parameters
+#version 300 es
+precision mediump float;
+struct S { sampler2D t; float f; };
+uniform S s;
+void f(out S m) {}
+out vec4 c;
+void main() { c = vec4(0.0); }
+--- struct_sampler_return.frag 5:3: a function cannot return S
+--- glslang accepts: it keeps samplers, not structs that hold them, from being returned
+#version 300 es
+precision mediump float;
+struct S { sampler2D t; float f; };
+uniform S s;
+S f() { return s; }
+out vec4 c;
+void main() { c = vec4(0.0); }
+--- struct_sampler_dynamic_index.frag 7:28: S[3] holds samplers: it is indexed by a constant expression only in GLSL ES 3.00
+--- glslang accepts: it keeps the constant index to arrays of samplers, and GLSL ES 1.00's appendix A to arrays of structs that hold them too
+#version 300 es
+precision mediump float;
+struct S { sampler2D t; float f; };
+uniform S s[3];
+uniform int i;
+out vec4 c;
+void main() { c = texture(s[i].t, vec2(0.0)); }
+--- struct_sampler_dynamic_argument.frag 8:22: S[3] holds samplers: it is indexed by a constant expression only in GLSL ES 3.10
+--- glslang accepts: it keeps the constant index to arrays of samplers, and GLSL ES 1.00's appendix A to arrays of structs that hold them too
+#version 310 es
+precision mediump float;
+struct S { sampler2D t; float f; };
+uniform S s[3];
+uniform int i;
+layout(location = 0) out vec4 c;
+vec4 f(S m) { return texture(m.t, vec2(0.0)); }
+void main() { c = f(s[i]); }

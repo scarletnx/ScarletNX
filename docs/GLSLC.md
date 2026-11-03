@@ -40,7 +40,7 @@ if (snx_glslc_compile(&workspace, &options, source, size, words, SNX_GLSLC_MAX_W
     fprintf(stderr, "%u:%u: %s\n", result.line, result.column, result.error);
 ```
 
-- The workspace is the caller's memory, 16-byte aligned and `snx_glslc_workspace_size()` bytes (3.6 MiB): one per
+- The workspace is the caller's memory, 16-byte aligned and `snx_glslc_workspace_size()` bytes (3.7 MiB): one per
   thread, reused by every compilation on it, one at a time. Each compilation carves its arrays from it anew, so
   nothing of one reaches the next. A workspace too small or misaligned is refused with its size and the size needed.
 - `result.words` is the module's size. With a buffer too small (or `NULL`) the call returns -1 and still says how
@@ -99,7 +99,8 @@ shader needed (`the shader has 32769 tokens after preprocessing, more than the 3
   (`location`, `binding`, `set`, `std140`, `std430`, `row_major`, `local_size_*`, `early_fragment_tests`, the image
   formats), precision and the default precision rules, uniform blocks, buffer blocks with a runtime-sized last
   member, in and out blocks between stages (3.20, or 3.10 with `GL_EXT_shader_io_blocks`; arrays of them, flat,
-  centroid and sample members), `shared`, functions with `in`, `out`, `inout` and `const` parameters.
+  centroid and sample members), samplers inside uniform structs, `shared`, functions with `in`, `out`, `inout` and
+  `const` parameters.
 - Every statement and operator, the constructors with their conversions, swizzles, `length()`.
 - The built-in functions: angles and trigonometry, exponentials, the common ones, geometry, matrices, vector
   relations, integers (3.10), packing, derivatives, the texture functions of every sampler (shadow, cube, arrays,
@@ -137,6 +138,13 @@ The module is what a Vulkan pipeline takes; the OpenGL ES side of it is the back
   free binding of set 0 once every other resource is placed, whether by the source, by glslc or by a binding map;
   the map is not asked about it. Its entry in `result.reflect` has an empty name and that binding, and each
   uniform's entry its offset in it.
+- **Samplers inside structs.** Vulkan keeps a struct to numbers, so each sampler member of a uniform struct is a
+  variable of its own, named `uniform.member` in the module, placed with the shader's other samplers in declaration
+  order (by the binding map too). Its `result.reflect` entry, and what the map sees, has the uniform's name and the
+  member's in `member`. An array of such structs gives each sampler member's variable that array: `mats[2].albedo` is
+  element 2 of the descriptor array `mats` `albedo` has. The struct's other members stay in the default uniform
+  block, laid out without the samplers, and a uniform whose struct holds samplers alone has no member there. A
+  function parameter of such a struct takes those other members as a value, then a pointer to each sampler.
 - **Blocks** are std140 for uniform blocks and std430 for buffer blocks unless they say otherwise; `shared` and
   `packed` are laid out as std140. A buffer block is a StorageBuffer variable, as SPIR-V 1.3 has them. Their offsets
   and strides are glslangValidator's, which the tests check. A bool in a block is a uint there, as Vulkan has no bool
@@ -154,7 +162,9 @@ Each of these is refused with an error that names it, or is a name the shader ca
 
 - the geometry and tessellation stages, core in 3.20;
 - atomic counters (`atomic_uint`), which have no Vulkan form;
-- samplers and images inside structs; images as function parameters;
+- images inside structs, and images as function parameters;
+- a struct that holds samplers inside another struct, an array of structs whose sampler member is an array, and a
+  struct's sampler read through anything but the uniform or parameter that holds it, such as a comma or `?:`;
 - `interpolateAtCentroid`, `interpolateAtSample`, `interpolateAtOffset`; `textureGatherOffsets`;
   `gl_DepthRange`; `gl_MaxComputeWorkGroupCount` and `gl_MaxComputeWorkGroupSize`;
 - arrays of arrays of samplers, images or blocks: a Vulkan descriptor's array has one dimension;
@@ -169,7 +179,10 @@ Each of these is refused with an error that names it, or is a name the shader ca
 called and never defined, recursion, `gl_FragColor` with `gl_FragData`), and refuses a compute shader without a local
 size, as GLSL ES does, where glslang takes 1. It takes vertical tab and form feed as white space, as GLSL ES says, and
 `layout(set)` in 3.10, as glslang does only when it compiles for Vulkan. glslang has no `GL_EXT_draw_buffers`, and
-takes an array of arrays of samplers or images, writing a module spirv-val refuses for Vulkan.
+takes an array of arrays of samplers or images, writing a module spirv-val refuses for Vulkan. It lays a struct's
+samplers out as a UniformConstant struct, which Vulkan does not take, and with `-R` gives each element of an array of
+such structs variables of its own, so that an index known only when the shader runs, or a struct's array of samplers
+passed to a function, makes a module spirv-val refuses.
 
 ## Tests
 
@@ -180,7 +193,9 @@ takes an array of arrays of samplers or images, writing a module spirv-val refus
 - `glslc_keywords`: every word of the keyword table in each version, against glslangValidator;
 - `glslc_shaders`: every shader of `shaders/` valid for Vulkan 1.1 by spirv-val, taken by glslangValidator, with
   the same block layouts, capabilities and interface decorations;
-- `glslc_semantics`: `semantics/values.comp` folded by spirv-opt from both compilers' modules into the same constants;
+- `glslc_semantics`: `semantics/values.comp` folded by spirv-opt from both compilers' modules into the same constants,
+  and `semantics/samplers.frag` inlined from glslc's module and glslangValidator -R's, each texture call reading the
+  same sampler at the same coordinate, and the same uniform members read;
 - `glslc_fuzz`: 3000 mutants of the shaders in one workspace, compiled or refused with a message, never a crash
   (with `SNX_TEST_SANITIZERS`, under ASan and UBSan), and every 16th again over the workspace filled with another
   pattern, with the same result;
