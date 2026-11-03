@@ -90,7 +90,10 @@ static int check_numbers(void) {
         float c = (float)i / 400.0f;
         CHECK(NEAR(snx_hdr_srgb_to_linear(c), hdr_ref_srgb_to_linear(c), 2e-6));
         CHECK(NEAR(snx_hdr_linear_to_srgb(c), hdr_ref_linear_to_srgb(c), 2e-6));
-        CHECK(NEAR(snx_hdr_pq_encode(c * 10000.0f), hdr_ref_pq_encode(c * 10000.0), 1e-5));
+        /* the float encode carries about 1e-5 of its own: m2 (78.8) amplifies the 1-ulp error of the inner powf, 9.4e-6
+           at worst with Apple's, a little more with glibc's and MSVC's. A 10-bit code step is 9.8e-4, so this still holds
+           the encode to the standard */
+        CHECK(NEAR(snx_hdr_pq_encode(c * 10000.0f), hdr_ref_pq_encode(c * 10000.0), 3e-5));
         CHECK(NEAR(snx_hdr_pq_decode(c), hdr_ref_pq_decode(c), hdr_ref_pq_decode(c) * 1e-3 + 1e-3));
     }
     /* the SDR boost: white at paper, and the fourth power only at the top */
