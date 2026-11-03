@@ -6,6 +6,7 @@
     glslc_test.py shaders  --cli CLI --spirv-val V --spirv-dis D [--glslang G]
     glslc_test.py keywords --cli CLI --glslang G
     glslc_test.py semantics --cli CLI --spirv-opt O --spirv-dis D --glslang G
+    glslc_test.py sources
 
 errors: every case of errors.glsl is refused with its line, column and message, and glslangValidator refuses it too,
 but where the case says glslang accepts it (an error glslang only finds when it links), which is checked as well.
@@ -15,7 +16,8 @@ by member, as glslc does. keywords: every word glslc's table knows is a name, a 
 same GLSL ES versions for glslc and for glslangValidator. semantics: each shader of semantics/ stores expressions on
 constants in slots of a buffer; spirv-opt folds glslc's module and glslangValidator's into the constants they store,
 which must be the same in every slot both fold (and both must fold enough of them for the test to mean something).
-Without glslangValidator the comparisons are left out, and the test says so.
+sources: src/glslc calls no allocator: a compilation uses the caller's workspace only. Without glslangValidator the
+comparisons are left out, and the test says so.
 """
 
 import argparse
@@ -307,19 +309,38 @@ def check_semantics(args, failures):
             print(f'semantics: {shader.name}: {len(both)} of {len(theirs)} slots folded in both, compared')
 
 
+ALLOCATION = re.compile(r'\b(malloc|calloc|realloc|free|strdup|strndup|aligned_alloc|posix_memalign)\s*\(')
+
+
+def check_sources(failures):
+    files = sorted((HERE.parent.parent / 'src' / 'glslc').glob('*.[ch]'))
+    for path in files:
+        text = re.sub(
+            r'/\*.*?\*/', lambda m: re.sub(r'[^\n]', ' ', m.group(0)), path.read_text(encoding='utf-8'), flags=re.DOTALL
+        )
+        for number, line in enumerate(text.splitlines(), 1):
+            if ALLOCATION.search(line):
+                failures.append(f'{path.name}:{number}: {line.strip()}: glslc allocates nothing, it has the workspace')
+    print(f'sources: {len(files)} files of src/glslc, no allocation')
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=('errors', 'shaders', 'keywords', 'semantics'))
-    parser.add_argument('--cli', required=True)
+    parser.add_argument('mode', choices=('errors', 'shaders', 'keywords', 'semantics', 'sources'))
+    parser.add_argument('--cli')
     parser.add_argument('--spirv-val')
     parser.add_argument('--spirv-dis')
     parser.add_argument('--spirv-opt')
     parser.add_argument('--glslang')
     args = parser.parse_args()
     failures = []
-    if not args.glslang:
+    if args.mode != 'sources' and not args.cli:
+        parser.error(f'{args.mode} needs --cli')
+    if args.mode != 'sources' and not args.glslang:
         print('glslangValidator not given: the comparisons with it are left out')
-    if args.mode == 'errors':
+    if args.mode == 'sources':
+        check_sources(failures)
+    elif args.mode == 'errors':
         check_errors(args, failures)
     elif args.mode == 'shaders':
         if not args.spirv_val or not args.spirv_dis:

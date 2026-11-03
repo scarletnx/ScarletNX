@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A compilation: one block holds its every array (internal.h), sized by glslc.h's bounds and carved by offsets. An
-   error longjmps back to glslc_run, and glslc_close frees the block. */
+/* A compilation: the caller's workspace holds its every array (internal.h), sized by glslc.h's bounds and carved by
+   offsets anew each time, so nothing is allocated and nothing lives in it between two compilations. An error
+   longjmps back to glslc_run. */
 #include "glslc/internal.h"
 #include <stdarg.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 /* the SPIR-V sections' capacities, in words: a section past its own says so */
@@ -74,7 +74,48 @@ static void words_at(GlslcWords* w, char* block, size_t offset, uint32_t cap, co
     w->what = what;
 }
 
-Glslc* glslc_open(GlslcStage stage, const char* source, size_t size, GlslcResult* result) {
+size_t snx_glslc_workspace_size(void) {
+    Layout l;
+    layout(&l);
+    return l.total;
+}
+
+/* 0 when memory can be a workspace; otherwise -1 and the error */
+static int check_workspace(const void* memory, size_t size, GlslcResult* result) {
+    size_t need = snx_glslc_workspace_size();
+    if (!memory) {
+        snprintf(result->error, sizeof result->error,
+                 "the workspace's memory is NULL, and a compilation needs %zu bytes", need);
+        return -1;
+    }
+    if ((uintptr_t)memory % 16u) {
+        snprintf(
+            result->error, sizeof result->error,
+            "the workspace at %p is %u bytes past a multiple of 16: a workspace is 16-byte aligned, as malloc's memory is",
+            memory, (unsigned)((uintptr_t)memory % 16u));
+        return -1;
+    }
+    if (size < need) {
+        snprintf(result->error, sizeof result->error,
+                 "the workspace is %zu bytes, and a compilation needs %zu (snx_glslc_workspace_size)", size, need);
+        return -1;
+    }
+    return 0;
+}
+
+int snx_glslc_workspace_init(GlslcWorkspace* workspace, void* memory, size_t size, GlslcResult* result) {
+    memset(result, 0, sizeof *result);
+    workspace->memory = NULL;
+    workspace->size = 0;
+    if (check_workspace(memory, size, result)) return -1;
+    workspace->memory = memory;
+    workspace->size = size;
+    return 0;
+}
+
+Glslc* glslc_open(void* memory, size_t memory_size, GlslcStage stage, const char* source, size_t size,
+                  GlslcResult* result) {
+    if (check_workspace(memory, memory_size, result)) return NULL;
     if ((unsigned)stage > (unsigned)SNX_GLSLC_COMPUTE) {
         snprintf(result->error, sizeof result->error,
                  "stage %u is not one glslc compiles: vertex (0), fragment (1) or compute (2)", (unsigned)stage);
@@ -93,11 +134,7 @@ Glslc* glslc_open(GlslcStage stage, const char* source, size_t size, GlslcResult
     if (!source) source = "";
     Layout l;
     layout(&l);
-    char* block = malloc(l.total);
-    if (!block) {
-        snprintf(result->error, sizeof result->error, "out of memory: a compilation needs %zu bytes", l.total);
-        return NULL;
-    }
+    char* block = memory;
     /* what the passes read before writing: the counts, the hash heads, the emitter's ids */
     memset(block, 0, sizeof(Glslc));
     Glslc* g = (Glslc*)(void*)block;
@@ -164,16 +201,12 @@ int glslc_run(Glslc* g, int last, uint32_t* words, size_t capacity) {
     return 0;
 }
 
-void glslc_close(Glslc* g) { free(g); }
-
-int snx_glslc_compile(GlslcStage stage, const char* source, size_t size, uint32_t* words, size_t capacity,
-                      GlslcResult* result) {
+int snx_glslc_compile(GlslcWorkspace* workspace, GlslcStage stage, const char* source, size_t size, uint32_t* words,
+                      size_t capacity, GlslcResult* result) {
     memset(result, 0, sizeof *result);
-    Glslc* g = glslc_open(stage, source, size, result);
+    Glslc* g = glslc_open(workspace->memory, workspace->size, stage, source, size, result);
     if (!g) return -1;
-    int r = glslc_run(g, GLSLC_PASS_EMIT, words, capacity);
-    glslc_close(g);
-    return r;
+    return glslc_run(g, GLSLC_PASS_EMIT, words, capacity);
 }
 
 /* a line ends at a line feed, or at a carriage return with no line feed after it */

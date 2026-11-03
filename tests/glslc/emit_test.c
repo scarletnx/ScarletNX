@@ -11,6 +11,7 @@
 #include <string.h>
 
 typedef struct {
+    GlslcWorkspace workspace; /* every compilation's, as a caller keeps one per thread */
     GlslcResult result, again;
     uint32_t words[SNX_GLSLC_MAX_WORDS];
     uint32_t words2[SNX_GLSLC_MAX_WORDS];
@@ -20,8 +21,8 @@ typedef struct {
 static EmitTest g_emit_test;
 
 static int compile(GlslcStage stage, const char* source) {
-    return snx_glslc_compile(stage, source, strlen(source), g_emit_test.words, SNX_GLSLC_MAX_WORDS,
-                             &g_emit_test.result);
+    return snx_glslc_compile(&g_emit_test.workspace, stage, source, strlen(source), g_emit_test.words,
+                             SNX_GLSLC_MAX_WORDS, &g_emit_test.result);
 }
 
 static void must_compile(GlslcStage stage, const char* source) {
@@ -78,16 +79,20 @@ static void module(void) {
     assert(r->words == n && !memcmp(g_emit_test.words, g_emit_test.words2, n * sizeof(uint32_t)));
     /* a buffer too small: -1, and the size it needs */
     GlslcResult* small = &g_emit_test.again;
-    assert(snx_glslc_compile(SNX_GLSLC_COMPUTE, source, sizeof source - 1, g_emit_test.words2, 7, small) == -1);
+    assert(snx_glslc_compile(&g_emit_test.workspace, SNX_GLSLC_COMPUTE, source, sizeof source - 1, g_emit_test.words2,
+                             7, small) == -1);
     assert(small->words == n && small->line == 0);
     char want[128];
     snprintf(want, sizeof want, "the SPIR-V module has %u words, and the buffer holds 7", n);
     assert(!strcmp(small->error, want));
-    assert(snx_glslc_compile(SNX_GLSLC_COMPUTE, source, sizeof source - 1, NULL, 0, small) == -1 && small->words == n);
+    assert(snx_glslc_compile(&g_emit_test.workspace, SNX_GLSLC_COMPUTE, source, sizeof source - 1, NULL, 0, small) ==
+               -1 &&
+           small->words == n);
     /* what the API refuses before compiling */
-    assert(snx_glslc_compile((GlslcStage)3, source, sizeof source - 1, g_emit_test.words2, 7, small) == -1);
+    assert(snx_glslc_compile(&g_emit_test.workspace, (GlslcStage)3, source, sizeof source - 1, g_emit_test.words2, 7,
+                             small) == -1);
     assert(!strcmp(small->error, "stage 3 is not one glslc compiles: vertex (0), fragment (1) or compute (2)"));
-    assert(snx_glslc_compile(SNX_GLSLC_VERTEX, NULL, 4, g_emit_test.words2, 7, small) == -1);
+    assert(snx_glslc_compile(&g_emit_test.workspace, SNX_GLSLC_VERTEX, NULL, 4, g_emit_test.words2, 7, small) == -1);
     assert(!strcmp(small->error, "the source is NULL with a size of 4 bytes"));
     /* an error's place and the warning's */
     assert(compile(SNX_GLSLC_FRAGMENT, "#version 300 es\n#extension GL_FOO_x : warn\nprecision highp float;\n"
@@ -178,10 +183,64 @@ static void bounds(void) {
     assert(compile(SNX_GLSLC_VERTEX, big) == -1 && strstr(g_emit_test.result.error, "more than the 256 entries"));
 }
 
+/* the workspace: refused with its size or place, and reused without a trace of the compilation before */
+static void workspace(void) {
+    GlslcResult* r = &g_emit_test.again;
+    GlslcWorkspace w;
+    size_t need = snx_glslc_workspace_size();
+    char want[256];
+    assert(need > 1000000 && need < 8000000);
+    assert(snx_glslc_workspace_init(&w, NULL, need, r) == -1 && !w.memory);
+    snprintf(want, sizeof want, "the workspace's memory is NULL, and a compilation needs %zu bytes", need);
+    assert(!strcmp(r->error, want));
+    char* memory = g_emit_test.workspace.memory;
+    assert(snx_glslc_workspace_init(&w, memory, need - 1, r) == -1);
+    snprintf(want, sizeof want, "the workspace is %zu bytes, and a compilation needs %zu (snx_glslc_workspace_size)",
+             need - 1, need);
+    assert(!strcmp(r->error, want));
+    assert(snx_glslc_workspace_init(&w, memory + 4, need, r) == -1 &&
+           strstr(r->error, "is 4 bytes past a multiple of 16"));
+    /* a compilation checks the workspace it is given too */
+    w.memory = memory;
+    w.size = 16;
+    static const char frag[] =
+        "#version 300 es\nprecision mediump float;\nout vec4 c;\nvoid main() { c = vec4(1.0); }\n";
+    assert(snx_glslc_compile(&w, SNX_GLSLC_FRAGMENT, frag, sizeof frag - 1, g_emit_test.words, SNX_GLSLC_MAX_WORDS,
+                             r) == -1);
+    snprintf(want, sizeof want, "the workspace is 16 bytes, and a compilation needs %zu (snx_glslc_workspace_size)",
+             need);
+    assert(!strcmp(r->error, want));
+    /* one shader, another, then the first again over a workspace filled with another pattern: the same words */
+    static const char comp[] = "#version 310 es\nlayout(local_size_x = 4) in;\n"
+                               "layout(std430, binding = 0) buffer B { uint v[]; };\nvoid main() { v[0] = 7u; }\n";
+    must_compile(SNX_GLSLC_FRAGMENT, frag);
+    uint32_t n = g_emit_test.result.words;
+    memcpy(g_emit_test.words2, g_emit_test.words, n * sizeof(uint32_t));
+    must_compile(SNX_GLSLC_COMPUTE, comp);
+    memset(memory, 0xa5, g_emit_test.workspace.size);
+    must_compile(SNX_GLSLC_FRAGMENT, frag);
+    assert(g_emit_test.result.words == n && !memcmp(g_emit_test.words, g_emit_test.words2, n * sizeof(uint32_t)));
+    /* and an error the same way, its message and place */
+    static const char bad[] = "#version 300 es\nprecision mediump float;\nout vec4 c;\nvoid main() { c = 1; }\n";
+    assert(compile(SNX_GLSLC_FRAGMENT, bad) == -1);
+    snprintf(want, sizeof want, "%u:%u: %s", g_emit_test.result.line, g_emit_test.result.column,
+             g_emit_test.result.error);
+    memset(memory, 0x5a, g_emit_test.workspace.size);
+    assert(compile(SNX_GLSLC_FRAGMENT, bad) == -1);
+    char again[300];
+    snprintf(again, sizeof again, "%u:%u: %s", g_emit_test.result.line, g_emit_test.result.column,
+             g_emit_test.result.error);
+    assert(!strcmp(want, again) && strstr(want, "4:17: cannot assign int to vec4"));
+}
+
 int main(void) {
+    size_t size = snx_glslc_workspace_size();
+    assert(snx_glslc_workspace_init(&g_emit_test.workspace, malloc(size), size, &g_emit_test.result) == 0);
+    workspace();
     module();
     interface();
     bounds();
-    printf("glslc_emit: the module, its interface and its bounds checked\n");
+    free(g_emit_test.workspace.memory);
+    printf("glslc_emit: the workspace, the module, its interface and its bounds checked\n");
     return 0;
 }

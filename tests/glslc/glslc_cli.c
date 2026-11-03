@@ -14,6 +14,7 @@ typedef struct {
     char source[SNX_GLSLC_MAX_SOURCE + 2];
     uint32_t words[SNX_GLSLC_MAX_WORDS];
     GlslcResult result;
+    GlslcWorkspace workspace; /* every file's */
 } Cli;
 
 static Cli g_cli;
@@ -40,7 +41,7 @@ static int compile_file(const char* path, const char* out) {
     size_t size = fread(g_cli.source, 1, sizeof g_cli.source, f);
     fclose(f);
     GlslcResult* r = &g_cli.result;
-    if (snx_glslc_compile(stage, g_cli.source, size, g_cli.words, SNX_GLSLC_MAX_WORDS, r)) {
+    if (snx_glslc_compile(&g_cli.workspace, stage, g_cli.source, size, g_cli.words, SNX_GLSLC_MAX_WORDS, r)) {
         printf("%s:%u:%u: %s\n", path, r->line, r->column, r->error);
         return 1;
     }
@@ -66,10 +67,16 @@ int main(int argc, char** argv) {
         fprintf(stderr, "usage: %s [-o OUT.spv] FILE... (-o with one file)\n", argv[0]);
         return 2;
     }
+    size_t workspace_size = snx_glslc_workspace_size();
+    if (snx_glslc_workspace_init(&g_cli.workspace, malloc(workspace_size), workspace_size, &g_cli.result)) {
+        fprintf(stderr, "%s\n", g_cli.result.error);
+        return 2;
+    }
     int status = 0;
     for (int i = first; i < argc; i++) {
         int r = compile_file(argv[i], out);
         if (r > status) status = r;
     }
+    free(g_cli.workspace.memory);
     return status;
 }
