@@ -11,9 +11,17 @@ option(SNX_RECOMPILER_SHARED "Also build the recompiler as a shared library (lib
 # artifacts are made from, keeps to the emulator unless asked
 option(SNX_RECOMPILER_INSTALL "Install the recompiler library, its headers and its CMake package" ${SNX_TOOLS_ONLY})
 include(GNUInstallDirs)
-# libdeflate's objects with common's, whose control.nacp reader inflates titles kept in deflate
-set(snx_recompiler_parts scarletnx-common snx_llvm snx_arm_llvm snx_arm_decode snx_arm_rt snx_libdeflate)
+# libdeflate's objects with common's, whose control.nacp reader inflates titles kept in deflate, when it is built in
+# this tree; the distribution's library is linked instead (cmake/system_deps.cmake)
+set(snx_recompiler_parts scarletnx-common snx_llvm snx_arm_llvm snx_arm_decode snx_arm_rt)
+if(snx_libdeflate_from_source)
+    list(APPEND snx_recompiler_parts snx_libdeflate)
+endif()
 set(snx_recompiler_external ${SNX_LLVM_LIBS} ${SNX_LLVM_SYSTEM_LIBS} Threads::Threads ${CMAKE_DL_LIBS})
+if(NOT snx_libdeflate_from_source)
+    # the distribution's libdeflate is not an object this archive holds: its consumers link it
+    list(APPEND snx_recompiler_external ${snx_libdeflate_LINK_LIBRARIES})
+endif()
 set(snx_recompiler_defines _CRT_SECURE_NO_WARNINGS)
 if(WIN32)
     list(APPEND snx_recompiler_external advapi32)

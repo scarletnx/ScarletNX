@@ -43,40 +43,61 @@ function(snx_quiet)
     endforeach()
 endfunction()
 
+# The Linux system libraries first, and the pinned source for the rest (cmake/system_deps.cmake)
+include("${PROJECT_SOURCE_DIR}/cmake/system_deps.cmake")
+
 # LZ4's block decoder for NSO segments (src/nx/loader/loader.c, src/nx/runtime/loader.c) and hactool's NSO
 # extraction. Only lib/lz4.c is built (BSD-2-Clause): the rest of LZ4 is its frame format, the HC compressor and the
 # command-line program, none of which an NSO uses
+set(snx_lz4_from_source OFF)
 if(SNX_BUILD_NX)
-    CPMAddPackage(NAME lz4 VERSION 1.10.0
-                  URL https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz
-                  URL_HASH SHA256=537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b
-                  DOWNLOAD_ONLY YES)
-    add_library(snx_lz4 STATIC "${lz4_SOURCE_DIR}/lib/lz4.c")
-    target_include_directories(snx_lz4 PUBLIC "${lz4_SOURCE_DIR}/lib")
-    snx_quiet(snx_lz4)
+    snx_system_library(snx_lz4_system snx_lz4 PC liblz4 HEADER lz4.h LIBRARY lz4)
+    if(NOT snx_lz4_system)
+        set(snx_lz4_from_source ON)
+        CPMAddPackage(NAME lz4 VERSION 1.10.0
+                      URL https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz
+                      URL_HASH SHA256=537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b
+                      DOWNLOAD_ONLY YES)
+        add_library(snx_lz4 STATIC "${lz4_SOURCE_DIR}/lib/lz4.c")
+        target_include_directories(snx_lz4 PUBLIC "${lz4_SOURCE_DIR}/lib")
+        snx_quiet(snx_lz4)
+    endif()
 endif()
 
 # yyjson (MIT) for the driver's MCP server (src/nx/runtime/driver/mcp*.c) and, in every build, the GPU driver packages'
 # meta.json (src/common/utilities/gpu_driver.c)
-CPMAddPackage(NAME yyjson VERSION 0.13.0
-              URL https://github.com/ibireme/yyjson/archive/refs/tags/0.13.0.tar.gz
-              URL_HASH SHA256=34e0f62a2bc11ab20d601e8ca1cc2b2079503aa45119a19133d89d19b94a0fae
-              DOWNLOAD_ONLY YES)
-add_library(snx_yyjson STATIC "${yyjson_SOURCE_DIR}/src/yyjson.c")
-target_include_directories(snx_yyjson PUBLIC "${yyjson_SOURCE_DIR}/src")
-snx_quiet(snx_yyjson)
+set(snx_yyjson_from_source OFF)
+snx_system_library(snx_yyjson_system snx_yyjson PC yyjson HEADER yyjson.h LIBRARY yyjson)
+if(NOT snx_yyjson_system)
+    set(snx_yyjson_from_source ON)
+    CPMAddPackage(NAME yyjson VERSION 0.13.0
+                  URL https://github.com/ibireme/yyjson/archive/refs/tags/0.13.0.tar.gz
+                  URL_HASH SHA256=34e0f62a2bc11ab20d601e8ca1cc2b2079503aa45119a19133d89d19b94a0fae
+                  DOWNLOAD_ONLY YES)
+    add_library(snx_yyjson STATIC "${yyjson_SOURCE_DIR}/src/yyjson.c")
+    target_include_directories(snx_yyjson PUBLIC "${yyjson_SOURCE_DIR}/src")
+    snx_quiet(snx_yyjson)
+endif()
 
 # xxHash (BSD-2-Clause) for the renderer's content hashes (src/nx/gpu/vk/cmd.c's vk_hash): XXH3, about three times
 # XXH64's speed. src/nx/gpu/vk/xxh3.c builds the dispatcher on x86 (the CPU's SSE2, AVX2 or AVX-512 loop, chosen at
-# run time) and xxhash.c on every other architecture, by the compiler's own macros
+# run time) and xxhash.c on every other architecture, by the compiler's own macros. The system's library has no
+# dispatcher, so cmd.c calls its XXH3 functions directly
+set(snx_xxhash_from_source OFF)
 if(SNX_BUILD_NX)
-    CPMAddPackage(NAME xxhash VERSION 0.8.4
-                  URL https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.4.tar.gz
-                  URL_HASH SHA256=5738270935e7c3d38a79b3adf7c9692566ce7895a25f67de43ad52ab504acd32
-                  DOWNLOAD_ONLY YES)
-    add_library(snx_xxhash STATIC "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/xxh3.c")
-    target_include_directories(snx_xxhash PUBLIC "${xxhash_SOURCE_DIR}")
-    snx_quiet(snx_xxhash)
+    snx_system_library(snx_xxhash_system snx_xxhash PC libxxhash VERSION 0.8.0 HEADER xxhash.h LIBRARY xxhash)
+    if(snx_xxhash_system)
+        target_compile_definitions(snx_xxhash INTERFACE SNX_XXHASH_SYSTEM=1)
+    else()
+        set(snx_xxhash_from_source ON)
+        CPMAddPackage(NAME xxhash VERSION 0.8.4
+                      URL https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.4.tar.gz
+                      URL_HASH SHA256=5738270935e7c3d38a79b3adf7c9692566ce7895a25f67de43ad52ab504acd32
+                      DOWNLOAD_ONLY YES)
+        add_library(snx_xxhash STATIC "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/xxh3.c")
+        target_include_directories(snx_xxhash PUBLIC "${xxhash_SOURCE_DIR}")
+        snx_quiet(snx_xxhash)
+    endif()
 endif()
 
 # jsmolka's gba-tests (MIT), ROMs that check the ARM7TDMI, the BIOS's open bus, the memory map, the save memory and
@@ -93,33 +114,43 @@ endif()
 # and a game's datagrams in it are zstd frames. ENet's own sources, with the POSIX calls every target but Windows
 # has; zstd's compressor and decompressor alone, in C (no assembly, so every target builds the same). The tests of
 # the network services link them in a build without the runtime too
+set(snx_enet_from_source OFF)
+set(snx_zstd_from_source OFF)
 if(SNX_BUILD_NX OR SNX_BUILD_3DS OR BUILD_TESTING)
-    CPMAddPackage(NAME enet VERSION 1.3.18
-                  URL https://github.com/lsalzman/enet/archive/refs/tags/v1.3.18.tar.gz
-                  URL_HASH SHA256=28603c895f9ed24a846478180ee72c7376b39b4bb1287b73877e5eae7d96b0dd
-                  DOWNLOAD_ONLY YES)
-    add_library(snx_enet STATIC "${enet_SOURCE_DIR}/callbacks.c" "${enet_SOURCE_DIR}/compress.c"
-                "${enet_SOURCE_DIR}/host.c" "${enet_SOURCE_DIR}/list.c" "${enet_SOURCE_DIR}/packet.c"
-                "${enet_SOURCE_DIR}/peer.c" "${enet_SOURCE_DIR}/protocol.c" "${enet_SOURCE_DIR}/unix.c"
-                "${enet_SOURCE_DIR}/win32.c")
-    target_include_directories(snx_enet PUBLIC "${enet_SOURCE_DIR}/include")
-    if(WIN32)
-        target_link_libraries(snx_enet PUBLIC ws2_32 winmm)
-    else()
-        target_compile_definitions(snx_enet PRIVATE HAS_FCNTL=1 HAS_POLL=1 HAS_GETADDRINFO=1 HAS_GETNAMEINFO=1
-                                   HAS_INET_PTON=1 HAS_INET_NTOP=1 HAS_MSGHDR_FLAGS=1 HAS_SOCKLEN_T=1)
+    snx_system_library(snx_enet_system snx_enet HEADER enet/enet.h LIBRARY enet)
+    if(NOT snx_enet_system)
+        set(snx_enet_from_source ON)
+        CPMAddPackage(NAME enet VERSION 1.3.18
+                      URL https://github.com/lsalzman/enet/archive/refs/tags/v1.3.18.tar.gz
+                      URL_HASH SHA256=28603c895f9ed24a846478180ee72c7376b39b4bb1287b73877e5eae7d96b0dd
+                      DOWNLOAD_ONLY YES)
+        add_library(snx_enet STATIC "${enet_SOURCE_DIR}/callbacks.c" "${enet_SOURCE_DIR}/compress.c"
+                    "${enet_SOURCE_DIR}/host.c" "${enet_SOURCE_DIR}/list.c" "${enet_SOURCE_DIR}/packet.c"
+                    "${enet_SOURCE_DIR}/peer.c" "${enet_SOURCE_DIR}/protocol.c" "${enet_SOURCE_DIR}/unix.c"
+                    "${enet_SOURCE_DIR}/win32.c")
+        target_include_directories(snx_enet PUBLIC "${enet_SOURCE_DIR}/include")
+        if(WIN32)
+            target_link_libraries(snx_enet PUBLIC ws2_32 winmm)
+        else()
+            target_compile_definitions(snx_enet PRIVATE HAS_FCNTL=1 HAS_POLL=1 HAS_GETADDRINFO=1 HAS_GETNAMEINFO=1
+                                       HAS_INET_PTON=1 HAS_INET_NTOP=1 HAS_MSGHDR_FLAGS=1 HAS_SOCKLEN_T=1)
+        endif()
+        snx_quiet(snx_enet)
     endif()
-    snx_quiet(snx_enet)
-    CPMAddPackage(NAME zstd VERSION 1.5.7
-                  URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
-                  URL_HASH SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
-                  DOWNLOAD_ONLY YES)
-    file(GLOB snx_zstd_sources "${zstd_SOURCE_DIR}/lib/common/*.c" "${zstd_SOURCE_DIR}/lib/compress/*.c"
-         "${zstd_SOURCE_DIR}/lib/decompress/*.c")
-    add_library(snx_zstd STATIC ${snx_zstd_sources})
-    target_include_directories(snx_zstd PUBLIC "${zstd_SOURCE_DIR}/lib")
-    target_compile_definitions(snx_zstd PRIVATE ZSTD_DISABLE_ASM=1 ZSTD_MULTITHREAD_SUPPORT_DEFAULT=0)
-    snx_quiet(snx_zstd)
+    snx_system_library(snx_zstd_system snx_zstd PC libzstd HEADER zstd.h LIBRARY zstd)
+    if(NOT snx_zstd_system)
+        set(snx_zstd_from_source ON)
+        CPMAddPackage(NAME zstd VERSION 1.5.7
+                      URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+                      URL_HASH SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+                      DOWNLOAD_ONLY YES)
+        file(GLOB snx_zstd_sources "${zstd_SOURCE_DIR}/lib/common/*.c" "${zstd_SOURCE_DIR}/lib/compress/*.c"
+             "${zstd_SOURCE_DIR}/lib/decompress/*.c")
+        add_library(snx_zstd STATIC ${snx_zstd_sources})
+        target_include_directories(snx_zstd PUBLIC "${zstd_SOURCE_DIR}/lib")
+        target_compile_definitions(snx_zstd PRIVATE ZSTD_DISABLE_ASM=1 ZSTD_MULTITHREAD_SUPPORT_DEFAULT=0)
+        snx_quiet(snx_zstd)
+    endif()
 endif()
 
 # the Vita driver (src/vita), which the root CMakeLists.txt adds when it is built and the build isn't tools-only: its
@@ -130,29 +161,59 @@ else()
     set(snx_vita_runtime OFF)
 endif()
 
-# OpenSSL for the hashes and ciphers (the NX, 3DS and Vita loaders, ldr, csrng, hactool) and the ssl service's TLS. It
-# builds with its own Configure and make, which cmake/openssl.cmake runs
+# OpenSSL for the hashes and ciphers (the NX, 3DS and Vita loaders, ldr, csrng, hactool) and the ssl service's TLS. The
+# system's libssl and libcrypto are used where it has them. Otherwise OpenSSL builds with its own Configure and make,
+# which cmake/openssl.cmake runs
 # The archives' SHA-256 are also part of their cache keys (cmake/deps_cache.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/deps_cache.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/apple.cmake")
+set(snx_openssl_from_source ON)
 if(SNX_BUILD_NX OR SNX_BUILD_3DS OR SNX_BUILD_GNUABI OR snx_vita_runtime) # the GNU ABI runtime's random bytes and TLS sockets
-    set(snx_openssl_sha256 325b5c806167c13b40b1ffeadfe0248197c00eccc4cf123ec1e28d2d2fd216d9)
-    CPMAddPackage(NAME OpenSSL VERSION 4.0.3
-                  URL https://github.com/openssl/openssl/releases/download/openssl-4.0.3/openssl-4.0.3.tar.gz
-                  URL_HASH SHA256=${snx_openssl_sha256}
-                  DOWNLOAD_ONLY YES)
-    include("${PROJECT_SOURCE_DIR}/cmake/openssl.cmake")
+    if(SNX_SYSTEM_DEPS)
+        # 3.0 for the EVP_MAC and OSSL_PARAM calls of the hactool code; the pinned 4.x build is used where the system
+        # is older
+        find_package(OpenSSL 3.0 QUIET)
+        if(OpenSSL_FOUND AND TARGET OpenSSL::SSL AND TARGET OpenSSL::Crypto)
+            set(snx_openssl_from_source OFF)
+            message(STATUS "Using the system's OpenSSL ${OPENSSL_VERSION}")
+        endif()
+    endif()
+    if(snx_openssl_from_source)
+        set(snx_openssl_sha256 325b5c806167c13b40b1ffeadfe0248197c00eccc4cf123ec1e28d2d2fd216d9)
+        CPMAddPackage(NAME OpenSSL VERSION 4.0.3
+                      URL https://github.com/openssl/openssl/releases/download/openssl-4.0.3/openssl-4.0.3.tar.gz
+                      URL_HASH SHA256=${snx_openssl_sha256}
+                      DOWNLOAD_ONLY YES)
+        include("${PROJECT_SOURCE_DIR}/cmake/openssl.cmake")
+        set(snx_openssl_key "source: ${snx_openssl_sha256}")
+    else()
+        set(snx_openssl_key "system: ${OPENSSL_VERSION}")
+    endif()
 endif()
 
 # libcurl (curl's MIT-like license) for the launcher's downloads (src/common/network/https.c), built after OpenSSL
 # (cmake/curl.cmake), and the roots it trusts: Mozilla's, curl's dated extract of them (cmake/cacert.cmake)
+set(snx_curl_from_source OFF)
 if(TARGET OpenSSL::SSL)
-    set(snx_curl_sha256 8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5)
-    CPMAddPackage(NAME curl VERSION 8.23.0
-                  URL https://curl.se/download/curl-8.23.0.tar.xz
-                  URL_HASH SHA256=${snx_curl_sha256}
-                  DOWNLOAD_ONLY YES)
-    include("${PROJECT_SOURCE_DIR}/cmake/curl.cmake")
+    if(SNX_SYSTEM_DEPS)
+        # 7.85 for CURLOPT_PROTOCOLS_STR, the scheme limit src/common/network/https.c sets
+        find_package(CURL 7.85 QUIET)
+        if(CURL_FOUND AND TARGET CURL::libcurl)
+            message(STATUS "Using the system's libcurl ${CURL_VERSION_STRING}")
+        else()
+            set(snx_curl_from_source ON)
+        endif()
+    else()
+        set(snx_curl_from_source ON)
+    endif()
+    if(snx_curl_from_source)
+        set(snx_curl_sha256 8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5)
+        CPMAddPackage(NAME curl VERSION 8.23.0
+                      URL https://curl.se/download/curl-8.23.0.tar.xz
+                      URL_HASH SHA256=${snx_curl_sha256}
+                      DOWNLOAD_ONLY YES)
+        include("${PROJECT_SOURCE_DIR}/cmake/curl.cmake")
+    endif()
     set(snx_cacert_date 2026-10-20)
     CPMAddPackage(NAME cacert VERSION 2026.10.20
                   URL https://curl.se/ca/cacert-${snx_cacert_date}.pem
@@ -199,6 +260,11 @@ if(SNX_JEMALLOC)
                             "(src/nx), which this build does not make (SNX_BUILD_NX=${SNX_BUILD_NX}, "
                             "SNX_TOOLS_ONLY=${SNX_TOOLS_ONLY}). Configure with -DSNX_JEMALLOC=OFF.")
     endif()
+    # Always the pinned source: its configure leaves background threads out (cmake/jemalloc_defs.cmake), and the
+    # distribution's library initialises their condition variables inside malloc's first call even when they are off.
+    # A preloaded library that allocates in pthread_cond_init, as the AppImage's cross-libc-dlopen.so does, then waits
+    # on malloc's lock forever (tests/jemalloc.cmake)
+    set(snx_jemalloc_from_source ON)
     set(snx_jemalloc_version 5.4.0) # also what tests/jemalloc.cmake finds in the program
     set(snx_jemalloc_sha256 200776fac271093e7c2f21edd6d62657ecd2be578d9328633f2a86bfa6ef4f1d)
     CPMAddPackage(NAME jemalloc VERSION ${snx_jemalloc_version}
@@ -208,12 +274,43 @@ if(SNX_JEMALLOC)
     include("${PROJECT_SOURCE_DIR}/cmake/jemalloc.cmake")
 endif()
 
+set(snx_vulkan_from_source OFF)
+set(snx_vulkan_old FALSE)
+set(snx_vulkan_include_dir "")
 if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
-    CPMAddPackage(NAME Vulkan-Headers VERSION 1.4.367
-                  URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.367.tar.gz
-                  URL_HASH SHA256=0df7d58b5df617e0a6a17dec521af459206719f9c7cb12d05d09275597c16f70
-                  EXCLUDE_FROM_ALL YES)
-    # volk.c is compiled into the vk components, VMA is a header
+    if(SNX_SYSTEM_DEPS)
+        # VK_EXT_present_timing arrives in 1.4.335, and device.c asks for its features: an older system header
+        # would not compile, so it falls back to the pinned headers
+        find_package(Vulkan QUIET)
+        if(NOT TARGET Vulkan::Headers)
+            find_path(SNX_VULKAN_INCLUDE_DIR NAMES vulkan/vulkan.h)
+            if(SNX_VULKAN_INCLUDE_DIR)
+                add_library(Vulkan::Headers INTERFACE IMPORTED GLOBAL)
+                target_include_directories(Vulkan::Headers INTERFACE "${SNX_VULKAN_INCLUDE_DIR}")
+                set(Vulkan_INCLUDE_DIR "${SNX_VULKAN_INCLUDE_DIR}")
+            endif()
+        endif()
+        if(TARGET Vulkan::Headers AND Vulkan_INCLUDE_DIR)
+            file(STRINGS "${Vulkan_INCLUDE_DIR}/vulkan/vulkan_core.h" snx_vulkan_present_timing
+                 REGEX "#define VK_EXT_present_timing ")
+            if(NOT snx_vulkan_present_timing)
+                message(STATUS "The system's Vulkan headers are older than VK_EXT_present_timing; using the pinned ones")
+                set(snx_vulkan_old TRUE)
+            endif()
+        endif()
+    endif()
+    if(snx_vulkan_old OR NOT TARGET Vulkan::Headers OR NOT Vulkan_INCLUDE_DIR)
+        set(snx_vulkan_from_source ON)
+        CPMAddPackage(NAME Vulkan-Headers VERSION 1.4.367
+                      URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.367.tar.gz
+                      URL_HASH SHA256=0df7d58b5df617e0a6a17dec521af459206719f9c7cb12d05d09275597c16f70
+                      EXCLUDE_FROM_ALL YES)
+        set(snx_vulkan_include_dir "${Vulkan-Headers_SOURCE_DIR}/include")
+    else()
+        set(snx_vulkan_include_dir "${Vulkan_INCLUDE_DIR}")
+        message(STATUS "Using the system's Vulkan headers ${Vulkan_INCLUDE_DIR}")
+    endif()
+    # volk.c is compiled into the vk components
     CPMAddPackage(NAME volk VERSION 1.4.363
                   URL https://github.com/zeux/volk/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz
                   URL_HASH SHA256=1547d8d74395d4048fb3f4a6313da56db626e89b55db238d0d7e8944c8a645f3
@@ -248,9 +345,13 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
     endif()
 endif()
 
-# FFmpeg for the Switch runtime's NVDEC and hwopus, the 3DS DSP's AAC decoder and the Vita's movies. It builds with its
-# own configure and make, which cmake/ffmpeg.cmake runs
+# FFmpeg for the Switch runtime's NVDEC and hwopus, the 3DS DSP's AAC decoder and the Vita's movies. Not the
+# distribution's: the pinned build carries ScarletNX's VP9 NVDEC change (cmake/ffmpeg-vp9-nvdec.patch), and a system
+# FFmpeg would decode VP9 jobs with other probabilities. It builds with its own configure and make, which
+# cmake/ffmpeg.cmake runs
+set(snx_ffmpeg_from_source OFF)
 if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
+    set(snx_ffmpeg_from_source ON)
     set(snx_ffmpeg_sha256 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e)
     CPMAddPackage(NAME FFmpeg VERSION 9.0.2
                   URL https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
@@ -300,10 +401,33 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
                   DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
     include("${PROJECT_SOURCE_DIR}/cmake/shared_fonts.cmake")
 
-    CPMAddPackage(NAME VulkanMemoryAllocator VERSION 3.5.0
-                  URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.5.0.tar.gz
-                  URL_HASH SHA256=c5f3db848fca9cb9726b41f256cc3007773321fa92a86d1e0902e66474e8a9e3
-                  DOWNLOAD_ONLY YES)
+    # VMA is a header, so the system's copy is a package's include folder. It needs 3.1 for the host access flags
+    # that gpu/vk uses
+    set(snx_vma_from_source OFF)
+    set(snx_vma_include_dir "")
+    if(SNX_SYSTEM_DEPS)
+        find_path(SNX_VMA_INCLUDE_DIR NAMES vk_mem_alloc.h)
+        if(SNX_VMA_INCLUDE_DIR)
+            file(STRINGS "${SNX_VMA_INCLUDE_DIR}/vk_mem_alloc.h" snx_vma_version_line REGEX "#define VMA_VERSION ")
+            if(snx_vma_version_line MATCHES "VK_MAKE_VERSION\\(([0-9]+), *([0-9]+), *([0-9]+)\\)")
+                math(EXPR snx_vma_version
+                     "${CMAKE_MATCH_1} * 10000 + ${CMAKE_MATCH_2} * 100 + ${CMAKE_MATCH_3}")
+                if(snx_vma_version GREATER_EQUAL 30100)
+                    set(snx_vma_include_dir "${SNX_VMA_INCLUDE_DIR}")
+                    message(STATUS "Using the system's VulkanMemoryAllocator ${CMAKE_MATCH_1}.${CMAKE_MATCH_2}."
+                                   "${CMAKE_MATCH_3}")
+                endif()
+            endif()
+        endif()
+    endif()
+    if(NOT snx_vma_include_dir)
+        set(snx_vma_from_source ON)
+        CPMAddPackage(NAME VulkanMemoryAllocator VERSION 3.5.0
+                      URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.5.0.tar.gz
+                      URL_HASH SHA256=c5f3db848fca9cb9726b41f256cc3007773321fa92a86d1e0902e66474e8a9e3
+                      DOWNLOAD_ONLY YES)
+        set(snx_vma_include_dir "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+    endif()
     # RenderDoc's in-application API, one header (renderdoc, gpu/vk/renderdoc.c), from the release tag
     CPMAddPackage(NAME renderdoc_app VERSION 1.46
                   URL https://raw.githubusercontent.com/baldurk/renderdoc/v1.46/renderdoc/api/app/renderdoc_app.h
@@ -338,7 +462,9 @@ set(SNX_SDL3_FROM_SOURCE OFF)
 # The system's SDL3 from find_package, or CPM's pinned source build. FreeBSD's ports package lags the pin (3.4.16
 # against 3.4.18), so CPM's version check refuses it and builds SDL3 itself: SNX_SYSTEM_SDL3 takes the native package
 # instead, which needs only 3.4.16, the version every SDL call in the tree is in. It is the default on FreeBSD, whose
-# build installs the sdl3 package (docs/BUILD.md); the pinned source build is had with -DSNX_SYSTEM_SDL3=OFF
+# build installs the sdl3 package (docs/BUILD.md); the pinned source build is had with -DSNX_SYSTEM_SDL3=OFF. On Linux
+# CPMFindPackage looks for the distribution's package first, at the same 3.4.16 minimum, and builds the pinned source
+# only when none is found
 set(snx_sdl3_system_default OFF)
 if(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
     set(snx_sdl3_system_default ON)
@@ -360,7 +486,11 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR sn
     # Prefer a compatible system package. CPM handles the pinned static fallback and user overrides. SDL_ALTIVEC only
     # changes PowerPC builds: SDL's AltiVec blitters prefetch with dstt, which the ISA phased out and qemu's POWER10
     # traps as illegal (the window icon's and the menu's software surfaces, which nothing here needs fast)
-    CPMFindPackage(NAME SDL3 VERSION 3.4.18 FIND_PACKAGE_ARGUMENTS CONFIG
+    set(snx_sdl3_min 3.4.18)
+    if(SNX_SYSTEM_DEPS)
+        set(snx_sdl3_min 3.4.16)
+    endif()
+    CPMFindPackage(NAME SDL3 VERSION ${snx_sdl3_min} FIND_PACKAGE_ARGUMENTS CONFIG
                    URL https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.4.18.tar.gz
                    URL_HASH SHA256=c4b08b950bd29d83caae0ab8d884298d27046a9d30700fb42841c50992665c90
                    EXCLUDE_FROM_ALL YES SYSTEM YES
@@ -379,25 +509,30 @@ endif()
 
 # libdeflate (MIT), every deflate the project writes or reads: the titles a control.nacp keeps in deflate
 # (src/common/utilities/common.c, so every build), the launcher's Share Log (src/gui/logzip.c), the Vita driver's VPK
-# members and compressed eboot segments (src/vita/loader/inflate.c), and their CRC-32. Its library without gzip, from
-# its own sources; it picks the CPU's SIMD loops at run time
-CPMAddPackage(NAME libdeflate VERSION 1.26
-              URL https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.26.tar.gz
-              URL_HASH SHA256=bba03fffc5538576213675ce6968fcff6ce2e67d82e4d5febea2d05f9f13cf85
-              DOWNLOAD_ONLY YES)
-add_library(snx_libdeflate STATIC
-    "${libdeflate_SOURCE_DIR}/lib/utils.c" "${libdeflate_SOURCE_DIR}/lib/arm/cpu_features.c"
-    "${libdeflate_SOURCE_DIR}/lib/x86/cpu_features.c" "${libdeflate_SOURCE_DIR}/lib/deflate_compress.c"
-    "${libdeflate_SOURCE_DIR}/lib/deflate_decompress.c" "${libdeflate_SOURCE_DIR}/lib/adler32.c"
-    "${libdeflate_SOURCE_DIR}/lib/zlib_compress.c" "${libdeflate_SOURCE_DIR}/lib/zlib_decompress.c"
-    "${libdeflate_SOURCE_DIR}/lib/crc32.c")
-target_include_directories(snx_libdeflate SYSTEM PUBLIC "${libdeflate_SOURCE_DIR}")
-snx_quiet(snx_libdeflate)
+# members and compressed eboot segments (src/vita/loader/inflate.c), and their CRC-32. The distribution's copy where
+# it has one; otherwise its library without gzip, from its own sources; it picks the CPU's SIMD loops at run time
+set(snx_libdeflate_from_source OFF)
+snx_system_library(snx_libdeflate_system snx_libdeflate PC libdeflate HEADER libdeflate.h LIBRARY deflate)
+if(NOT snx_libdeflate_system)
+    set(snx_libdeflate_from_source ON)
+    CPMAddPackage(NAME libdeflate VERSION 1.26
+                  URL https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.26.tar.gz
+                  URL_HASH SHA256=bba03fffc5538576213675ce6968fcff6ce2e67d82e4d5febea2d05f9f13cf85
+                  DOWNLOAD_ONLY YES)
+    add_library(snx_libdeflate STATIC
+        "${libdeflate_SOURCE_DIR}/lib/utils.c" "${libdeflate_SOURCE_DIR}/lib/arm/cpu_features.c"
+        "${libdeflate_SOURCE_DIR}/lib/x86/cpu_features.c" "${libdeflate_SOURCE_DIR}/lib/deflate_compress.c"
+        "${libdeflate_SOURCE_DIR}/lib/deflate_decompress.c" "${libdeflate_SOURCE_DIR}/lib/adler32.c"
+        "${libdeflate_SOURCE_DIR}/lib/zlib_compress.c" "${libdeflate_SOURCE_DIR}/lib/zlib_decompress.c"
+        "${libdeflate_SOURCE_DIR}/lib/crc32.c")
+    target_include_directories(snx_libdeflate SYSTEM PUBLIC "${libdeflate_SOURCE_DIR}")
+    snx_quiet(snx_libdeflate)
+endif()
 
 # miniz (MIT) for the launcher's Share Log, the logs in one zip (src/gui/logzip.c): the zip around the deflate
-# libdeflate makes. Its one-file release, miniz.c, built alone, without its stdio functions (the zip is made in memory
-# and written as every file is, for Windows' UTF-8 paths) and without zlib's names, which another library's zlib could
-# share
+# libdeflate makes. Always the source: its one-file release, miniz.c, built alone, without its stdio functions (the zip
+# is made in memory and written as every file is, for Windows' UTF-8 paths) and without zlib's names, which the
+# runtime's libcurl would otherwise resolve to miniz's incompatible ones.
 if(SNX_BUILD_GUI)
     CPMAddPackage(NAME miniz VERSION 3.1.2
                   URL https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip
@@ -410,17 +545,35 @@ if(SNX_BUILD_GUI)
 endif()
 
 # The boot splash's drawings are SVGs, drawn at the splash's size by lunasvg (MIT) on plutovg (MIT; its rasterizer and
-# stroker come from FreeType, under the FreeType License, source/FTL.TXT). cmake/splash.cmake builds both. The runtime
-# draws one too, the user's picture (hle/services/acc.c)
+# stroker come from FreeType, under the FreeType License, source/FTL.TXT). cmake/splash.cmake builds both, or links the
+# distribution's copies. The runtime draws one too, the user's picture (hle/services/acc.c)
+set(snx_splash_from_source OFF)
 if(SNX_BUILD_GUI OR (SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY))
-    CPMAddPackage(NAME plutovg VERSION 1.3.3
-                  URL https://github.com/sammycage/plutovg/archive/refs/tags/v1.3.3.tar.gz
-                  URL_HASH SHA256=2b0d17a6e016f47b86f9c00e2cb82600041b1ea1f7d2a00c2d46ae542cbfed3c
-                  DOWNLOAD_ONLY YES)
-    CPMAddPackage(NAME lunasvg VERSION 3.5.0
-                  URL https://github.com/sammycage/lunasvg/archive/refs/tags/v3.5.0.tar.gz
-                  URL_HASH SHA256=1abf1472ee6c4d19797916e8cc3c2e4b628e0d81178ffac60bdb0d457e32c690
-                  DOWNLOAD_ONLY YES)
+    snx_system_library(snx_lunasvg_system snx_lunasvg PC lunasvg HEADER lunasvg.h LIBRARY lunasvg)
+    snx_system_library(snx_plutovg_system snx_plutovg PC plutovg HEADER plutovg.h LIBRARY plutovg)
+    if(snx_lunasvg_system AND snx_plutovg_system)
+        # tests/CMakeLists.txt adds ${plutovg_SOURCE_DIR}/include for the header its acc test reads, a line written for
+        # the source build that stays as it is across an upstream merge. The package's include folder is what that line
+        # must name, so its parent goes in the variable
+        if(SNX_PC_snx_plutovg_INCLUDE_DIRS)
+            list(GET SNX_PC_snx_plutovg_INCLUDE_DIRS 0 snx_plutovg_include_dir)
+        else()
+            set(snx_plutovg_include_dir "${SNX_snx_plutovg_INCLUDE_DIR}")
+        endif()
+        if(snx_plutovg_include_dir)
+            get_filename_component(plutovg_SOURCE_DIR "${snx_plutovg_include_dir}" DIRECTORY)
+        endif()
+    else()
+        set(snx_splash_from_source ON)
+        CPMAddPackage(NAME plutovg VERSION 1.3.3
+                      URL https://github.com/sammycage/plutovg/archive/refs/tags/v1.3.3.tar.gz
+                      URL_HASH SHA256=2b0d17a6e016f47b86f9c00e2cb82600041b1ea1f7d2a00c2d46ae542cbfed3c
+                      DOWNLOAD_ONLY YES)
+        CPMAddPackage(NAME lunasvg VERSION 3.5.0
+                      URL https://github.com/sammycage/lunasvg/archive/refs/tags/v3.5.0.tar.gz
+                      URL_HASH SHA256=1abf1472ee6c4d19797916e8cc3c2e4b628e0d81178ffac60bdb0d457e32c690
+                      DOWNLOAD_ONLY YES)
+    endif()
 endif()
 
 # hactool, in the tree (src/nx/runtime/driver/hactool), which scarletnx --extract calls in its own process

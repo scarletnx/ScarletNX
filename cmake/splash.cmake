@@ -65,42 +65,52 @@ const SnxSplashSvg snx_splash_svgs[] = {
 const int snx_splash_svg_count = @snx_splash_count@;
 ")
 
-set(plutovg_sources blend canvas font ft-math ft-raster ft-stroker matrix paint path rasterize surface)
-list(TRANSFORM plutovg_sources REPLACE "(.+)" "${plutovg_SOURCE_DIR}/source/plutovg-\\1.c")
-file(GLOB lunasvg_sources "${lunasvg_SOURCE_DIR}/source/*.cpp")
-add_library(snx_splash STATIC "${PROJECT_SOURCE_DIR}/src/gui/splash.cpp" "${PROJECT_BINARY_DIR}/generated/splash_svgs.c"
-            ${plutovg_sources} ${lunasvg_sources})
+add_library(snx_splash STATIC "${PROJECT_SOURCE_DIR}/src/gui/splash.cpp" "${PROJECT_BINARY_DIR}/generated/splash_svgs.c")
 target_include_directories(snx_splash PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_include_directories(snx_splash SYSTEM PRIVATE "${plutovg_SOURCE_DIR}/include" "${plutovg_SOURCE_DIR}/source"
-                           "${lunasvg_SOURCE_DIR}/include" "${lunasvg_SOURCE_DIR}/source")
-# static, built here; no font of the system is looked for, as the drawings have no text
-target_compile_definitions(snx_splash PRIVATE PLUTOVG_BUILD PLUTOVG_BUILD_STATIC LUNASVG_BUILD LUNASVG_BUILD_STATIC
-                           PLUTOVG_DISABLE_FONT_FACE_CACHE_LOAD LUNASVG_DISABLE_LOAD_SYSTEM_FONTS)
 set_target_properties(snx_splash PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON C_STANDARD 11
                       POSITION_INDEPENDENT_CODE ON)
 # drawn once a boot: built for size. The libraries' own warnings stay out of the output, ours (splash.cpp) do not
 target_compile_options(snx_splash PRIVATE -Os)
-set_source_files_properties(${plutovg_sources} ${lunasvg_sources} PROPERTIES COMPILE_OPTIONS -w)
-# the stb_image_write plutovg-surface.c holds shifts its JPEG bit buffer, an int, into the sign bit: UBSan's shift-base
-# off for that file of theirs alone (SNX_TEST_SANITIZERS)
-if(SNX_TEST_SANITIZERS)
-    set_source_files_properties("${plutovg_SOURCE_DIR}/source/plutovg-surface.c" PROPERTIES COMPILE_OPTIONS
-                                "-w;-fno-sanitize=shift-base")
-endif()
 set_source_files_properties("${PROJECT_SOURCE_DIR}/src/gui/splash.cpp" PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
-if(NOT MSVC AND NOT WIN32)
-    target_link_libraries(snx_splash PRIVATE m)
+if(snx_splash_from_source)
+    set(plutovg_sources blend canvas font ft-math ft-raster ft-stroker matrix paint path rasterize surface)
+    list(TRANSFORM plutovg_sources REPLACE "(.+)" "${plutovg_SOURCE_DIR}/source/plutovg-\\1.c")
+    file(GLOB lunasvg_sources "${lunasvg_SOURCE_DIR}/source/*.cpp")
+    target_sources(snx_splash PRIVATE ${plutovg_sources} ${lunasvg_sources})
+    target_include_directories(snx_splash SYSTEM PRIVATE "${plutovg_SOURCE_DIR}/include" "${plutovg_SOURCE_DIR}/source"
+                               "${lunasvg_SOURCE_DIR}/include" "${lunasvg_SOURCE_DIR}/source")
+    # static, built here; no font of the system is looked for, as the drawings have no text
+    target_compile_definitions(snx_splash PRIVATE PLUTOVG_BUILD PLUTOVG_BUILD_STATIC LUNASVG_BUILD LUNASVG_BUILD_STATIC
+                               PLUTOVG_DISABLE_FONT_FACE_CACHE_LOAD LUNASVG_DISABLE_LOAD_SYSTEM_FONTS)
+    set_source_files_properties(${plutovg_sources} ${lunasvg_sources} PROPERTIES COMPILE_OPTIONS -w)
+    # the stb_image_write plutovg-surface.c holds shifts its JPEG bit buffer, an int, into the sign bit: UBSan's
+    # shift-base off for that file of theirs alone (SNX_TEST_SANITIZERS)
+    if(SNX_TEST_SANITIZERS)
+        set_source_files_properties("${plutovg_SOURCE_DIR}/source/plutovg-surface.c" PROPERTIES COMPILE_OPTIONS
+                                    "-w;-fno-sanitize=shift-base")
+    endif()
+    if(NOT MSVC AND NOT WIN32)
+        target_link_libraries(snx_splash PRIVATE m)
+    endif()
+else()
+    # The distribution's shared libraries (cmake/dependencies.cmake). plutovg is PUBLIC because tests/splash.c
+    # includes its header and makes the JPEGs the pictures are drawn from
+    target_link_libraries(snx_splash PUBLIC snx_plutovg PRIVATE snx_lunasvg)
+    target_compile_definitions(snx_splash PRIVATE LUNASVG_DISABLE_LOAD_SYSTEM_FONTS)
 endif()
 include(GNUInstallDirs) # its folders, before the first install of a fresh configure
-install(FILES "${lunasvg_SOURCE_DIR}/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx/lunasvg)
-install(FILES "${plutovg_SOURCE_DIR}/LICENSE" "${plutovg_SOURCE_DIR}/source/FTL.TXT"
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx/plutovg)
+if(snx_splash_from_source)
+    install(FILES "${lunasvg_SOURCE_DIR}/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx/lunasvg)
+    install(FILES "${plutovg_SOURCE_DIR}/LICENSE" "${plutovg_SOURCE_DIR}/source/FTL.TXT"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx/plutovg)
+endif()
 if(BUILD_TESTING)
     add_executable(snx-test-splash "${PROJECT_SOURCE_DIR}/tests/splash.c")
     target_link_libraries(snx-test-splash PRIVATE snx_splash SDL3::SDL3)
-    # plutovg, built into snx_splash, makes the JPEGs the pictures are drawn from
-    target_include_directories(snx-test-splash SYSTEM PRIVATE "${plutovg_SOURCE_DIR}/include")
-    target_compile_definitions(snx-test-splash PRIVATE PLUTOVG_BUILD_STATIC)
+    if(snx_splash_from_source)
+        target_include_directories(snx-test-splash SYSTEM PRIVATE "${plutovg_SOURCE_DIR}/include")
+        target_compile_definitions(snx-test-splash PRIVATE PLUTOVG_BUILD_STATIC)
+    endif()
     target_compile_definitions(snx-test-splash PRIVATE
                                SNX_SPLASH_ICON="${PROJECT_SOURCE_DIR}/dist/icons/hicolor/256x256/apps/wimsy.png")
     target_compile_options(snx-test-splash PRIVATE -Wall -Wextra -Werror -UNDEBUG)

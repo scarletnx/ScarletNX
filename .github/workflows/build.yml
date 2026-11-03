@@ -10,7 +10,8 @@ on:
     # a draft builds less (each job that reads pull_request.draft says what), so leaving draft starts the whole build
     types: [opened, synchronize, reopened, ready_for_review]
     # skipped when the change is only in files that no build or test reads. tracked_material.py reads them all and runs
-    # on its own (pr-checks.yml). docs/ARCHITECTURE.md, DEPRECATIONS.md and GUI.md are test inputs: they build
+    # on its own (tracked-material-and-docs.yml). docs/ARCHITECTURE.md, DEPRECATIONS.md and GUI.md are test inputs:
+    # they build
     paths:
       - '**'
       - '!**/*.md'
@@ -1487,11 +1488,13 @@ jobs:
         env:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
-      # The libraries the install links, and lavapipe; each pacman install tried 3 times, as in the Linux job
+      # The libraries the install links, the system ones a native Linux build uses (docs/BUILD.md), and lavapipe; each
+      # pacman install tried 3 times, as in the Linux job
       - name: Install the runtime's libraries and lavapipe
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed python llvm-libs sdl3 vulkan-icd-loader vulkan-swrast spirv-tools && break
+            pacman -Syu --noconfirm --needed python llvm-libs sdl3 vulkan-icd-loader vulkan-swrast spirv-tools \
+              lz4 yyjson xxhash enet zstd libdeflate curl openssl && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done

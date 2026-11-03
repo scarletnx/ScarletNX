@@ -314,11 +314,14 @@ static void conn_prepare(SslConn* c) {
     if (x->client_cert) SSL_use_cert_and_key(c->ssl, x->client_cert, x->client_key, x->client_chain, 1);
     pm_unlock(&x->lk);
     if (c->host[0]) {
-        ip = SSL_set1_ipaddr(c->ssl, c->host);
+        /* the verification parameter holds the address or the name, as SSL_set1_ipaddr and SSL_set1_dnsname do in
+           OpenSSL 4, and the distribution's 3.x has the calls that set them */
+        X509_VERIFY_PARAM* param = SSL_get0_param(c->ssl);
+        ip = X509_VERIFY_PARAM_set1_ip_asc(param, c->host);
         /* no server name for an address (RFC 6066) */
         if (!ip) {
             SSL_set_tlsext_host_name(c->ssl, c->host);
-            SSL_set1_dnsname(c->ssl, c->host);
+            X509_VERIFY_PARAM_set1_host(param, c->host, 0);
         }
     }
     if (c->renegotiation == RENEGOTIATION_NONE) SSL_set_options(c->ssl, SSL_OP_NO_RENEGOTIATION);

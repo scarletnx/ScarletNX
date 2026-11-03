@@ -61,14 +61,25 @@ endif()
 list(APPEND snx_curl_args "-DCMAKE_EXE_LINKER_FLAGS=${snx_curl_ld_flags}")
 # OpenSSL by its files, not a search: the NDK's toolchain looks for libraries inside its sysroot only. FindOpenSSL would
 # also ask pkg-config, which knows the system's OpenSSL and its dependencies (zlib on some distributions), not the
-# build's
+# build's. A system OpenSSL is named by the files find_package found in cmake/dependencies.cmake
+if(snx_openssl_from_source)
+    set(snx_curl_openssl_include "${snx_openssl_prefix}/include")
+    set(snx_curl_openssl_crypto "${snx_openssl_prefix}/lib/libcrypto.a")
+    set(snx_curl_openssl_ssl "${snx_openssl_prefix}/lib/libssl.a")
+    set(snx_curl_openssl_static ON)
+else()
+    set(snx_curl_openssl_include "${OPENSSL_INCLUDE_DIR}")
+    set(snx_curl_openssl_crypto "${OPENSSL_CRYPTO_LIBRARY}")
+    set(snx_curl_openssl_ssl "${OPENSSL_SSL_LIBRARY}")
+    set(snx_curl_openssl_static OFF)
+endif()
 list(APPEND snx_curl_args
      -DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON
      -DCURL_USE_OPENSSL=ON
-     -DOPENSSL_USE_STATIC_LIBS=ON
-     -DOPENSSL_INCLUDE_DIR=${snx_openssl_prefix}/include
-     -DOPENSSL_CRYPTO_LIBRARY=${snx_openssl_prefix}/lib/libcrypto.a
-     -DOPENSSL_SSL_LIBRARY=${snx_openssl_prefix}/lib/libssl.a)
+     -DOPENSSL_USE_STATIC_LIBS=${snx_curl_openssl_static}
+     -DOPENSSL_INCLUDE_DIR=${snx_curl_openssl_include}
+     -DOPENSSL_CRYPTO_LIBRARY=${snx_curl_openssl_crypto}
+     -DOPENSSL_SSL_LIBRARY=${snx_curl_openssl_ssl})
 list(APPEND snx_curl_args
      -DBUILD_SHARED_LIBS=OFF
      -DBUILD_STATIC_LIBS=ON
@@ -111,7 +122,7 @@ list(APPEND snx_curl_args
      -DCURL_DISABLE_WEBSOCKETS=ON)
 
 snx_deps_cached(curl snx_curl_cache "source: ${snx_curl_sha256}" "configure: ${snx_curl_args}"
-                "openssl: ${snx_openssl_sha256}")
+                "openssl: ${snx_openssl_key}")
 if(snx_curl_cache_FOUND)
     set(snx_curl_prefix "${snx_curl_cache_DIR}")
 else()

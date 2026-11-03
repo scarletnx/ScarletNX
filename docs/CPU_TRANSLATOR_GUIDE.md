@@ -79,9 +79,9 @@ cmake --preset default -B build && cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The first build downloads the third-party libraries once into `.cache/cpm`. Every build deploys the runtime into each
-game in the data folder (`~/.local/share/scarletnx/recompiled/` on Linux), so do not build while a timing-sensitive test
-or game run is going.
+The first build downloads the third-party libraries that the system lacks once into `.cache/cpm`. Every build deploys the
+runtime into each game in the data folder (`~/.local/share/scarletnx/recompiled/` on Linux), so do not build while a
+timing-sensitive test or game run is going.
 
 The commands you will use most, from the table in `CLAUDE.md`:
 

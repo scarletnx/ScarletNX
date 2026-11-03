@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+name: Pull request builds
+
+# Once a Build run of a pull request ends, one comment on the pull request, which each run rewrites, links its builds
+# and names the jobs that did not build (scripts/pr-builds.sh). The links run on workflow_run, from the default
+# branch's workflow and script too, and check out nothing of the pull request. A fork's pull request gets no comment:
+# its Build ran the fork's workflow, which names the builds and jobs the comment would show. A workflow_run shows no
+# check on the pull request, so nothing waits for it.
+on:
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+    branches-ignore: [main]
+
+permissions: {}
+
+jobs:
+  links:
+    name: Link the builds
+    # a Build a newer push cancelled has its own after it
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: read # the run's artifacts and jobs
+      checks: read # edenprobe's notice
+      contents: read
+      pull-requests: write # the comment
+    # one at a time per branch: of a burst of runs ending, the newest waits and those before it are dropped
+    concurrency:
+      group: >-
+        links-${{ github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.conclusion != 'cancelled' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+        && github.event.workflow_run.head_branch || format('skipped-{0}', github.run_id) }}
+    steps:
+      # the default branch's script, never the pull request's
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/pr-builds.sh
+          sparse-checkout-cone-mode: false
+      # PR empty when the run names none: the script asks which open pull request has the commit as its head
+      - name: Link the builds from the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+          RUN: ${{ github.event.workflow_run.id }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: scripts/pr-builds.sh "$GITHUB_REPOSITORY" "$PR" "$RUN" "$SHA"

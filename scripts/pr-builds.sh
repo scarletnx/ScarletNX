@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# Links a pull request's builds from one comment, which .github/workflows/pr-checks.yml rewrites each time a run of
+# Links a pull request's builds from one comment, which .github/workflows/pr-builds.yml rewrites each time a run of
 # .github/workflows/build.yml on it ends, so they can be had from the pull request itself. A run of a commit that is no
 # longer the branch's head leaves the comment alone.
 #

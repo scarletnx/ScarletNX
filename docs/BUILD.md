@@ -9,6 +9,7 @@
   * [Debian / Ubuntu](#debian--ubuntu)
   * [Fedora](#fedora)
   * [Arch Linux](#arch-linux)
+  * [System libraries on Linux](#system-libraries-on-linux)
   * [FreeBSD](#freebsd)
   * [Configure and build](#configure-and-build)
   * [SDL3 troubleshooting](#sdl3-troubleshooting)
@@ -36,16 +37,19 @@ Run from checkout root. [Extract/AOT/run](USAGE.md) · [Tests/diagnostics](DEVEL
   MinGW LLVM's `llvm-config` set with `-DSNX_LLVM_CONFIG=/path/to/llvm-config`. CMake fails without it.
 - **Display:** a Vulkan 1.3 driver. Headless runs use Vulkan offscreen and skip SDL video initialization.
   SDL3 remains a required build dependency.
-- **FFmpeg:** required by every NX runtime build. CMake builds the pinned source release.
-  Avoid spaces in checkout/cache paths.
-- **OpenSSL:** required by every build with the NX or 3DS loaders (hashes, ciphers, the ssl service's TLS). CMake
-  builds the pinned source release with OpenSSL's Configure, which needs **Perl**.
+- **FFmpeg:** required by every NX runtime build. CMake always builds the pinned source release, which carries
+  ScarletNX's VP9 NVDEC change. Avoid spaces in checkout/cache paths.
+- **OpenSSL:** required by every build with the NX or 3DS loaders (hashes, ciphers, the ssl service's TLS). A native
+  Linux build uses the distribution's package when it has 3.0 or newer; otherwise CMake builds the pinned source release
+  with OpenSSL's Configure, which needs **Perl**.
+- **Other libraries:** a native Linux build uses the distribution's shared development packages where they exist
+  ([details](#system-libraries-on-linux)). A library the system lacks builds from its pinned source.
 
 ## Linux / FreeBSD
 
 Install dependencies before configuring. The default preset uses **Ninja** and **Clang/Clang++**.
-FFmpeg also uses **GNU make** and, on x86-64, **NASM**, and OpenSSL uses **Perl** and GNU make. These tools are not
-downloaded by CMake.
+FFmpeg also uses **GNU make** and, on x86-64, **NASM**. OpenSSL uses **Perl** and GNU make when it builds from
+source. These tools are not downloaded by CMake.
 The build patches its copy of FFmpeg with `patch`, which `build-essential`, `base-devel` and FreeBSD's base
 system include; Fedora lists it below.
 
@@ -111,8 +115,36 @@ sudo dnf install wayland-devel libxkbcommon-devel wayland-protocols-devel libdec
 ### Arch Linux
 
 ```sh
-sudo pacman -Syu --needed base-devel git cmake ninja clang llvm nasm perl pkgconf python sdl3
+sudo pacman -Syu --needed base-devel git cmake ninja clang llvm nasm perl pkgconf python sdl3 \
+  lz4 xxhash zstd enet curl yyjson openssl libdeflate
 ```
+
+### System libraries on Linux
+
+A native Linux build uses the distribution's development packages before it downloads the pinned source
+(`SNX_SYSTEM_DEPS`, default ON). The libraries it finds are linked as shared libraries, so a package update also updates
+the copy the runtime uses: LZ4, yyjson, xxHash, ENet, zstd, libdeflate, libcurl, OpenSSL, SDL3, the Vulkan headers,
+VMA, lunasvg and plutovg. A package that is missing, or that is older than the build accepts, falls back to the pinned
+source, so none of these packages is required.
+
+FFmpeg, jemalloc and miniz always build from the pinned source. FFmpeg carries ScarletNX's VP9 NVDEC change, jemalloc is
+built without background threads (which a preloaded library could otherwise deadlock in malloc's first call), and miniz
+is compiled without zlib's names, which would interpose on libcurl's zlib.
+
+`-DSNX_SYSTEM_DEPS=OFF` builds every one of these libraries from the pinned source. It is the default on Windows, macOS,
+FreeBSD, Android, iOS and cross builds, which keep the pinned static libraries they had. `SNX_JEMALLOC=OFF` removes
+jemalloc from a Linux build.
+
+The system copies must be development packages, with headers and the shared library. On Debian or Ubuntu, for example,
+install the ones your release has:
+
+```sh
+sudo apt install liblz4-dev libxxhash-dev libzstd-dev libenet-dev libcurl4-openssl-dev libssl-dev libdeflate-dev
+```
+
+Add `libsdl3-dev`, `libyyjson-dev`, `liblunasvg-dev` and `libplutovg-dev` where your release packages them. On Fedora
+the same packages end in `-devel`, for example `lz4-devel xxhash-devel libzstd-devel enet-devel libcurl-devel
+openssl-devel libdeflate-devel`.
 
 ### FreeBSD
 
@@ -136,9 +168,10 @@ cmake --preset default -B build && cmake --build build
 
 ### SDL3 troubleshooting
 
-On all platforms, CPM first looks for a compatible SDL3 development package (3.4.18 or newer) through
-`SDL3Config.cmake`. If none is found, CPM downloads and builds the SHA-256-pinned SDL3. The fallback is static, so no separate SDL3 runtime
-installation is needed. It still needs your platform's window-system development libraries.
+On all platforms, CPM first looks for a compatible SDL3 development package through `SDL3Config.cmake`: 3.4.18 or
+newer normally, and 3.4.16 on a native Linux build with `SNX_SYSTEM_DEPS` on (the default) or on FreeBSD with
+`SNX_SYSTEM_SDL3` on. If none is found, CPM downloads and builds the SHA-256-pinned SDL3. The fallback is static, so no
+separate SDL3 runtime installation is needed. It still needs your platform's window-system development libraries.
 
 - `SNX_SYSTEM_SDL3=ON` (the default on FreeBSD) takes the system's package from `find_package` whatever its version,
   needing only 3.4.16, the version every SDL call in the tree is in, and never downloads. FreeBSD's ports `sdl3`
@@ -328,10 +361,15 @@ The Switch runtime's shared font stand-ins download only when it is built ([SHAR
 Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 uses CPM's system-package discovery with a pinned static
 source fallback. Use `-DCPM_DOWNLOAD_SDL3=ON` to request the bundled source build.
 
-FFmpeg, OpenSSL and jemalloc build with their own configure and make, in each build tree. With `SNX_DEPS_CACHE` (CMake
-or env) naming a folder, a tree reuses a finished build there whose inputs match (source, configure line, compiler, C
-headers and the cmake file that builds it, see [deps_cache.cmake](../cmake/deps_cache.cmake)) and publishes the ones
-it builds, so other trees and branches skip them. A change to any input is a new folder; old ones are only left behind.
+On a native Linux build, `SNX_SYSTEM_DEPS` (default ON) takes the distribution's shared libraries where they exist, as
+described in [System libraries on Linux](#system-libraries-on-linux); a missing package falls back to its pinned source.
+FFmpeg, jemalloc and miniz always build from the pinned source, which carries ScarletNX's VP9 NVDEC change,
+jemalloc's background-thread removal and miniz's zlib-name removal. OpenSSL builds from the pinned source when the
+system has none. FFmpeg, OpenSSL and jemalloc build with their own configure and make, in each build tree. With
+`SNX_DEPS_CACHE` (CMake or env) naming a folder, a tree reuses a finished build there whose inputs match (source,
+configure line, compiler, C headers and the cmake file that builds it, see
+[deps_cache.cmake](../cmake/deps_cache.cmake)) and publishes the ones it builds, so other trees and branches skip
+them. A change to any input is a new folder; old ones are only left behind.
 
 ## Build variants
 
@@ -346,6 +384,9 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 
 - `-DSNX_FFMPEG_ASM=OFF`: omit x86-64 NASM assembly; slower FFmpeg decoding.
 - `-DCPM_DOWNLOAD_SDL3=ON`: build the pinned SDL3 instead of using a system SDL3 development package.
+- `-DSNX_SYSTEM_DEPS=OFF`: on native Linux, build every third-party library from its pinned source instead of using the
+  distribution's shared packages. The default is ON on native Linux and OFF elsewhere. FFmpeg, jemalloc and miniz stay
+  pinned either way.
 - `-DSNX_DEPLOY=OFF`: disable runtime deployment.
 - `-DSNX_JEMALLOC=OFF`: keep the C library's malloc in `scarletnx` instead of the pinned jemalloc (default ON on Linux,
   FreeBSD, macOS and Android, where it goes into the driver's executable `libscarletnx-run.so` that runs recompiles;
@@ -358,8 +399,8 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
   tree's driver uses). `SNX_GAMES_DIR`, its name before, is still taken while it is empty, said as it configures. A
   tree whose value is the checkout's `games/`, the default before, is set back to empty.
 - `-DCPM_SOURCE_CACHE=/path`: override source-download cache.
-- `-DSNX_DEPS_CACHE=/path`: reuse and publish finished FFmpeg, OpenSSL and jemalloc builds there (default: the
-  environment's `SNX_DEPS_CACHE`, else none).
+- `-DSNX_DEPS_CACHE=/path`: reuse and publish finished FFmpeg, OpenSSL (when it builds from source) and jemalloc
+  builds there (default: the environment's `SNX_DEPS_CACHE`, else none).
 - `-DSNX_BUILD_NX=OFF`: omit the Switch runtime (default ON).
 - `-DSNX_BUILD_GNUABI=OFF`: omit the CPU-only Linux AArch64 runtime, see [GNUABI.md](GNUABI.md) (default ON).
 - `-DSNX_BUILD_3DS=OFF`: omit the 3DS layer, see [3DS.md](3DS.md) (default ON).

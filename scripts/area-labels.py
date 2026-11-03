@@ -3,7 +3,8 @@
 # Copyright 2026 the ScarletNX contributors
 """area-labels.py TITLE: prints the labels a title's `[area]` prefix and words ask for, one a line. A prefix is one
 or more areas, as in `[gpu]` or `[macos, linux]`; the areas that name no label are skipped.
-.github/workflows/pr-checks.yml adds the labels to the issue or pull request whose title was opened or edited."""
+.github/workflows/pr-checks.yml adds the labels to a pull request whose title was opened or edited,
+and .github/workflows/issue-labels.yml to an issue."""
 
 import re
 import sys
