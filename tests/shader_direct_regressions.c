@@ -43,7 +43,7 @@ static const char* xfb_path;
 static const char* passthrough_paths[6];
 static const char* structured_paths[2];
 static const char* fswzadd_path;
-static char* fixture_paths[94];
+static char* fixture_paths[95];
 static size_t fixture_count;
 
 static const char* fixture_path(const char* directory, const char* name) {
@@ -904,6 +904,111 @@ static void f2f_half_rounding(void) {
     u32* code = translate(&plain, 1, ST_FS, &info, &words, 1);
     check_translated(code, &info, "F2F between halves without rounding translates");
     if (code) check(glsl_ext_count(code, words, 8) == 0, "F2F between halves without bit 42 does not floor");
+    free(code);
+}
+
+/* the word at which the instruction whose first word is head (its width and opcode) defines id, its result, or 0 */
+static size_t defined_as(const u32* code, size_t words, u32 id, u32 head) {
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return 0;
+        if (code[i] == head && width > 2 && code[i + 2] == id) return i;
+        i += width;
+    }
+    return 0;
+}
+/* whether id is OpBitwiseAnd(OpBitcast(x), 0x7fffffff) in either order: x's bits without the sign */
+static int magnitude_bits_of(const u32* code, size_t words, u32 id, u32 x) {
+    size_t at = defined_as(code, words, id, 5u << 16 | 199);
+    if (!at) return 0;
+    for (int k = 0; k < 2; k++) {
+        size_t cast = defined_as(code, words, code[at + 3 + k], 4u << 16 | 124);
+        if (cast && code[cast + 3] == x && is_constant_value(code, words, code[at + 4 - k], 0x7fffffffu)) return 1;
+    }
+    return 0;
+}
+/* .SAT's FClamp(x, 0, 1) results (*clamps), and how many of them an OpSelect replaces with +0 where x's bits are a
+   NaN's, 0x7f800000 < (x & 0x7fffffff): GLSL.std.450 leaves FClamp's result undefined for a NaN, and the console's
+   saturate gives +0 */
+static void saturate_guards(const u32* code, size_t words, int* clamps, int* guarded) {
+    *clamps = *guarded = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return;
+        if ((code[i] & 0xffff) == 12 && width == 8 && code[i + 4] == 43 &&
+            is_constant_value(code, words, code[i + 6], 0) &&
+            is_constant_value(code, words, code[i + 7], 0x3f800000u)) {
+            u32 clamp = code[i + 2], x = code[i + 5];
+            ++*clamps;
+            for (size_t s = 5; s < words;) {
+                u32 sw = code[s] >> 16;
+                if (!sw || s + sw > words) return;
+                if (code[s] == (6u << 16 | 169) && code[s + 5] == clamp &&
+                    is_constant_value(code, words, code[s + 4], 0)) {
+                    size_t test = defined_as(code, words, code[s + 3], 5u << 16 | 176);
+                    if (test && is_constant_value(code, words, code[test + 3], 0x7f800000u) &&
+                        magnitude_bits_of(code, words, code[test + 4], x)) {
+                        ++*guarded;
+                        break;
+                    }
+                }
+                s += sw;
+            }
+        }
+        i += width;
+    }
+}
+static const char* saturate_path;
+/* Every float .SAT (FADD, FMUL, FFMA, MUFU, F2F, IPA and each half of HADD2) gives +0 for a NaN, with or without the
+   module keeping NaNs (SignedZeroInfNanPreserve), and an instruction without .SAT clamps nothing (issue #865) */
+static void saturate_nan(void) {
+    static const struct {
+        u64 insn;
+        int clamps;
+        const char* what;
+    } cases[] = {
+        {0x5C58000000070000ull | 1ull << 50, 1, "FADD.SAT R0, R0, R0"},
+        {0x5C68000000070000ull | 1ull << 50, 1, "FMUL.SAT R0, R0, R0"},
+        {0x5980000000070000ull | 1ull << 50, 1, "FFMA.SAT R0, R0, R0, R0"},
+        {0x5080000000470000ull | 1ull << 50, 1, "MUFU.RCP.SAT R0, R0"},
+        {0x5CA8000000070A00ull | 1ull << 50, 1, "F2F.F32.F32.SAT R0, R0"},
+        {0xe003ff880ff7ff00ull | 1ull << 51, 1, "IPA.SAT R0, a[0x80]"},
+        {0x5D10000100070000ull, 2, "HADD2.SAT R0, R0, R0: each half"},
+        {0x5C58000000070000ull, 0, "FADD R0, R0, R0 without .SAT"},
+    };
+    u64 all[sizeof cases / sizeof *cases];
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        all[i] = cases[i].insn;
+        for (int preserve = 0; preserve < 2; preserve++) {
+            size_t slots, words = 0;
+            u64* program = guest_program(&cases[i].insn, 1, NULL, &slots);
+            ShaderInfo info;
+            memset(&info, 0, sizeof info);
+            u32* code =
+                program ? spirv_of(program, slots * sizeof *program, ST_FS, &info, &words, 1, preserve, 1, 1) : NULL;
+            free(program);
+            check_translated(code, &info, cases[i].what);
+            if (code) {
+                int clamps, guarded;
+                saturate_guards(code, words, &clamps, &guarded);
+                if (clamps != cases[i].clamps || guarded != clamps)
+                    fprintf(stderr, "%s (NaNs %s): %d clamps to [0, 1] (%d expected), %d of them +0 for a NaN\n",
+                            cases[i].what, preserve ? "kept" : "not kept", clamps, cases[i].clamps, guarded);
+                check(clamps == cases[i].clamps && guarded == clamps, "a float .SAT gives +0 for a NaN");
+            }
+            free(code);
+        }
+    }
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code = translate(all, (int)(sizeof all / sizeof *all), ST_FS, &info, &words, 1);
+    check_translated(code, &info, "every float .SAT in one program translates");
+    if (code) {
+        int clamps, guarded;
+        saturate_guards(code, words, &clamps, &guarded);
+        check(clamps == 8 && guarded == 8, "every float .SAT in one program gives +0 for a NaN");
+        if (saturate_path) save_fixture(saturate_path, code, words);
+    }
     free(code);
 }
 
@@ -3446,6 +3551,7 @@ int main(int argc, char** argv) {
             structured_paths[i] = fixture_path(argv[1], name);
         }
         fswzadd_path = fixture_path(argv[1], "fswzadd");
+        saturate_path = fixture_path(argv[1], "saturate");
         if (fixture_count != sizeof fixture_paths / sizeof *fixture_paths) {
             fprintf(stderr, "failed to allocate fixture paths\n");
             return 2;
@@ -3464,6 +3570,7 @@ int main(int argc, char** argv) {
     float_controls();
     precise_math();
     f2f_half_rounding();
+    saturate_nan();
     hfma2_immediate();
     tlds_fp16();
     scaled_texel_fetch();

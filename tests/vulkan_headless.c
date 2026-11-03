@@ -950,6 +950,58 @@ static int check_flush_subnormal(void) {
     return 0;
 }
 
+/* The float .SAT (spv_emit_saturate) on this device, against the console's: NaNs of either sign, quiet or signaling,
+   give +0, and the rest is clamped to [0, 1] (a zero keeps either sign: FClamp may return the bound or the input). With
+   NaNs kept by the module and without, as the translator declares them. What FClamp alone gives a NaN is printed: the
+   device is free to give anything (issue #865) */
+static int check_saturate(void) {
+    static const struct {
+        u32 in, want;
+    } cases[] = {{0x7fc00000u, 0},
+                 {0xffc00000u, 0},
+                 {0x7f800001u, 0},
+                 {0xff800001u, 0},
+                 {0x7fffffffu, 0},
+                 {0xffffffffu, 0},
+                 {0x7fa00001u, 0},
+                 {0x3f000000u, 0x3f000000u},
+                 {0x3f800000u, 0x3f800000u},
+                 {0x40000000u, 0x3f800000u},
+                 {0x7f800000u, 0x3f800000u},
+                 {0x7f7fffffu, 0x3f800000u},
+                 {0xbf800000u, 0},
+                 {0xff800000u, 0},
+                 {0xff7fffffu, 0},
+                 {0x3e800000u, 0x3e800000u},
+                 {0x3f7fffffu, 0x3f7fffffu},
+                 {0x00000000u, 0},
+                 {0x80000000u, 0}};
+    enum { N = sizeof cases / sizeof *cases };
+    for (int keep = 0; keep < 2; keep++) {
+        if (keep && !g_vk_preserve_infnan) continue;
+        size_t words = 0;
+        u32 *code = snx_test_spirv_saturate(N, keep, &words), data[3 * N] = {0};
+        for (u32 k = 0; k < N; k++) data[k] = cases[k].in;
+        int r = run_storage_compute(code, words, data, 3 * N);
+        free(code);
+        CHECK(!r);
+        int nan_clamps = 0;
+        for (u32 k = 0; k < N; k++) {
+            u32 got = data[N + k], want = cases[k].want;
+            if (got != want && !(want == 0 && got == 0x80000000u && (cases[k].in & 0x7fffffffu) == 0)) {
+                printf("saturate (NaNs %s): %08x gave %08x, not %08x\n", keep ? "kept" : "not kept", cases[k].in, got,
+                       want);
+                return 1;
+            }
+            if ((cases[k].in & 0x7fffffffu) > 0x7f800000u && data[2 * N + k] != 0) nan_clamps++;
+        }
+        printf("saturate (NaNs %s): every input as the console's .SAT gives it; FClamp alone gave %d of 7 NaNs other "
+               "than +0\n",
+               keep ? "kept" : "not kept", nan_clamps);
+    }
+    return 0;
+}
+
 /* VIC through the compute shader: raw YUV and alpha, odd starts kept, luma-only NV12, an NV21 slot over the background
    colour, the background with no slot, bytes outside the target and the slots untouched, a colour matrix, and NV12
    rows that aren't word aligned (the shader's unaligned build). The planes are guest memory, as VIC's always are: the
@@ -1791,6 +1843,7 @@ int main(int argc, char** argv) {
     CHECK(!check_msaa_nvn());
     CHECK(!check_direct_spirv());
     CHECK(!check_flush_subnormal());
+    CHECK(!check_saturate());
     CHECK(!check_sampler_reduction());
     CHECK(!check_shader_invalidation());
     CHECK(!check_vic());
