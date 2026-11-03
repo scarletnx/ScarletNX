@@ -65,7 +65,7 @@ if(SNX_TEST_SANITIZERS)
         scarletnx-gui snx_gui_support snx_gui_ui snx_i18n snx_gui_languages snx_gui_languages_test snx_splash snx-test-splash
         snx_window_icon snx-test-window-icon snx_pad_sdl snx_gui_pad
         # GLSL ES into SPIR-V
-        snx_glslc snx-test-glslc-lex
+        snx_glslc snx-test-glslc-lex snx-test-glslc-parse
         # the code generators, which tests run on files they refuse
         snx-swipc snx-svcgen snx-hookgen snx-shaderdec snx-settingsgen snx-uigen snx-a64dec)
 endif()
