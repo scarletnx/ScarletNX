@@ -1799,7 +1799,9 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             plain.shadow = 0;
             st = &plain;
         }
-        u32 handle = tex_handle(ds, stage, tcb, st);
+        /* the fragment stage's handle as fs_key read it from the same constant buffer in this draw, which the key it
+           made was built from */
+        u32 handle = res && res[i].have ? res[i].handle : tex_handle(ds, stage, tcb, st);
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
         TexRes own, *x = res ? &res[i] : NULL;
