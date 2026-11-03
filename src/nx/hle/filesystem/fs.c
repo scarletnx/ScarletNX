@@ -1739,37 +1739,48 @@ static void ngword2_name(u32 i, char name[32]) {
         snprintf(name, 32, "version.dat");
 }
 static u32 ngword2_file_size(u32 i) { return i < NGWORD2_AC_COUNT ? NGWORD2_AC_SIZE : 4; }
-static void ngword2_file_write(u32 i, u8* out) {
+static u32 ngword2_file_write(u32 i, u8* out) {
     memcpy(out, i < NGWORD2_AC_COUNT ? ngword2_ac : ngword2_version, ngword2_file_size(i));
+    return ngword2_file_size(i);
 }
 
 /* MiiModel (0100000000000802) when the game's data folder has none of the player's in system/archives: the one
-   mii_model.c draws, its six files a few MB, made on the game's first open of it so that a game without Miis never
+   mii_model.c draws, its six files about 1 MB, made on the game's first open of it so that a game without Miis never
    makes it */
-static u32 miimodel_file_size(u32 i) { return snx_mii_model_write(i, NULL); }
-static void miimodel_file_write(u32 i, u8* out) { snx_mii_model_write(i, out); }
+static u32 miimodel_file_room(u32 i) { return snx_mii_model_write(i, NULL); }
+static u32 miimodel_file_write(u32 i, u8* out) { return snx_mii_model_write(i, out); }
 
 /* a synthesized archive's files, in a RomFS laid out like romfs_build's with every file in its root folder, into m
-   (cap bytes, nought where a file's writer leaves it); gives the bytes used. A file file_same names an earlier one
-   for (file_same NULL: none) has that one's bytes, and shares them */
+   (cap bytes, nought where a file's writer leaves it); gives the bytes used. file_room(i) is the most bytes file i
+   takes, and file_write(i, out) writes it and gives its bytes, 0 when it could not be made. A file file_same names an
+   earlier one for (file_same NULL: none) has that one's bytes, and shares them */
 #define FILESROM_MAX 64u
-static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, char[32]), u32 (*file_size)(u32),
-                         void (*file_write)(u32, u8*), u32 (*file_same)(u32), const char* what) {
+static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, char[32]), u32 (*file_room)(u32),
+                         u32 (*file_write)(u32, u8*), u32 (*file_same)(u32), const char* what) {
     u32 dbuckets = hcount(1), fbuckets = hcount(count);
     u64 dhash = 0x50;
     u64 dtab = dhash + (u64)dbuckets * 4;
     u64 fhash = dtab + ROM_DIR_ENTRY;
     u64 ftab = fhash + (u64)fbuckets * 4;
-    u64 fsize = 0, dsize = 0, fdata, off = 0, at[FILESROM_MAX], sizes[FILESROM_MAX];
+    u64 fsize = 0, room = 0, dsize = 0, fdata, off = 0, at[FILESROM_MAX], sizes[FILESROM_MAX];
     u32 i;
     char name[32];
 
     if (count > FILESROM_MAX)
         fatal("%s: %u files, more than a synthesized archive holds (%u)\n", what, count, FILESROM_MAX);
     for (i = 0; i < count; i++) {
-        u32 same = file_same ? file_same(i) : i;
         file_name(i, name);
         fsize += entry_size(ROM_FILE_ENTRY, name);
+        if (!file_same || file_same(i) == i) room = ((room + 15) & ~(u64)15) + file_room(i);
+    }
+    fdata = (ftab + fsize + 0x1FF) & ~(u64)0x1FF;
+    if (fdata + room > cap)
+        fatal("%s: the synthesized archive takes up to %llu bytes, and has room for %llu\n", what,
+              (unsigned long long)(fdata + room), (unsigned long long)cap);
+    memset(m, 0, (size_t)(fdata + room));
+    /* the files' bytes, each right after the one before: as none takes more than its room, they fit the rooms' sum */
+    for (i = 0; i < count; i++) {
+        u32 same = file_same ? file_same(i) : i;
         if (same != i) {
             at[i] = at[same];
             sizes[i] = sizes[same];
@@ -1777,14 +1788,13 @@ static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, ch
         }
         dsize = (dsize + 15) & ~(u64)15;
         at[i] = dsize;
-        sizes[i] = file_size(i);
+        sizes[i] = file_write(i, m + fdata + at[i]);
+        if (!sizes[i]) {
+            file_name(i, name);
+            fatal("%s: %s could not be made: no memory for it\n", what, name);
+        }
         dsize += sizes[i];
     }
-    fdata = (ftab + fsize + 0x1FF) & ~(u64)0x1FF;
-    if (fdata + dsize > cap)
-        fatal("%s: the synthesized archive takes %llu bytes, and has room for %llu\n", what,
-              (unsigned long long)(fdata + dsize), (unsigned long long)cap);
-    memset(m, 0, (size_t)(fdata + dsize));
     memset(m + dhash, 0xFF, (size_t)dbuckets * 4);
     memset(m + fhash, 0xFF, (size_t)fbuckets * 4);
     /* the root folder, its files starting at table offset 0 */
@@ -1810,7 +1820,6 @@ static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, ch
         put32(m + fhash + (u64)b * 4, (u32)off);
         put32(e + 28, len);
         memcpy(e + ROM_FILE_ENTRY, name, len);
-        if (!file_same || file_same(i) == i) file_write(i, m + fdata + at[i]);
         off += entry_size(ROM_FILE_ENTRY, name);
     }
     put64(m, 0x50);
@@ -2343,7 +2352,7 @@ static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByDataId(SvcObj* self, nn
         } else if (data_id == SNX_MII_MODEL_DATA_ID) {
             if (!g_hle.fs.miimodelrom_size)
                 g_hle.fs.miimodelrom_size = filesrom_init(g_hle.fs.miimodelrom, sizeof g_hle.fs.miimodelrom,
-                                                          SNX_MII_MODEL_FILES, snx_mii_model_name, miimodel_file_size,
+                                                          SNX_MII_MODEL_FILES, snx_mii_model_name, miimodel_file_room,
                                                           miimodel_file_write, snx_mii_model_same, "MiiModel");
             r = fs_tree_add_virtual(&g_hle.fs.tree, p, g_hle.fs.miimodelrom, g_hle.fs.miimodelrom_size, &node);
             if (!r)

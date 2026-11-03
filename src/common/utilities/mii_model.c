@@ -4,6 +4,7 @@
    functions, each in the console's layout so that the SDK's resource loader and shaders take it. */
 #include "common/utilities/mii_model.h"
 #include "common/utilities/endian.h"
+#include <libdeflate.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -256,12 +257,15 @@ static u16 half_of(float f) {
     return (u16)(sign | ((u32)exp << 10) | (mant >> 13));
 }
 
-/* ============================================================ the output and zlib's stored blocks */
+/* ============================================================ the output and its zlib streams */
 
-/* where a file's bytes go (NULL: only measured) and the next free byte of its data */
+/* where a file's bytes go (NULL: only measured) and the next free byte of its data; while it is written, the part
+   being made (raw, cap bytes) and the compressor that deflates it */
 typedef struct {
     u8* b;
-    u32 at;
+    u32 at, cap;
+    u8* raw;
+    struct libdeflate_compressor* z;
 } Out;
 
 static u32 adler32(const u8* p, u32 n) {
@@ -295,6 +299,38 @@ static void zstored_wrap(Out* o, u32 n) {
         snx_st_le16(hdr + 3, (u16)~len);
     }
     snx_st_be32(z + 2 + 5u * blocks + n, adler);
+}
+/* the n bytes of o->raw into a zlib stream at o->at, deflated at zlib's default level as the console's parts are, or
+   in stored blocks where that takes no more: its bytes, zstored_size(n) at most. The SDK reads a file whole into a
+   heap the game sizes for the console's files */
+static u32 zpart(Out* o, u32 n) {
+    size_t z = libdeflate_zlib_compress(o->z, o->raw, n, o->b + o->at, zstored_size(n));
+    if (z) return (u32)z;
+    memcpy(zstored_raw(o, n), o->raw, n);
+    zstored_wrap(o, n);
+    return zstored_size(n);
+}
+/* a file's compressor, for o->b (its part buffer grows as parts need it): 0, or -1 when there is no memory for it */
+static int out_open(Out* o) {
+    o->raw = NULL;
+    o->cap = 0;
+    o->z = o->b ? libdeflate_alloc_compressor(6) : NULL;
+    return o->b && !o->z ? -1 : 0;
+}
+static void out_close(Out* o) {
+    free(o->raw);
+    libdeflate_free_compressor(o->z);
+}
+/* o->raw zeroed for a part of n bytes, as a drawing writes only what it covers: NULL when there is no memory for it */
+static u8* part_buffer(Out* o, u32 n) {
+    if (n > o->cap) {
+        u8* r = (u8*)realloc(o->raw, n);
+        if (!r) return NULL;
+        o->raw = r;
+        o->cap = n;
+    }
+    memset(o->raw, 0, n);
+    return o->raw;
 }
 
 /* ============================================================ the head */
@@ -1156,6 +1192,7 @@ static u32 texture_file(u32 mid, u8* b) {
     memset(placed, 0, sizeof placed);
     o.b = b;
     o.at = TEX_DATA;
+    if (out_open(&o)) return 0;
     for (kind = 0; kind < T_KINDS; kind++)
         for (i = 0; i < tex_counts[kind]; i++, e++) {
             TexGeom g = tex_geom(kind, i, mid);
@@ -1168,8 +1205,13 @@ static u32 texture_file(u32 mid, u8* b) {
                 p->raw = raw;
                 p->stored = zstored_size(raw);
                 if (b) {
-                    tex_write(kind, v, &g, zstored_raw(&o, raw));
-                    zstored_wrap(&o, raw);
+                    u8* r = part_buffer(&o, raw);
+                    if (!r) {
+                        out_close(&o);
+                        return 0;
+                    }
+                    tex_write(kind, v, &g, r);
+                    p->stored = zpart(&o, raw);
                 }
                 o.at += p->stored;
             }
@@ -1196,6 +1238,7 @@ static u32 texture_file(u32 mid, u8* b) {
             snx_st_le32(b + 0xc + 4 * T_KINDS + 4 * kind, TEX_ALIGN);
         }
     }
+    out_close(&o);
     return o.at;
 }
 
@@ -1206,6 +1249,7 @@ static u32 shape_file(u8* b) {
     memset(placed, 0, sizeof placed);
     o.b = b;
     o.at = SHAPE_DATA;
+    if (out_open(&o)) return 0;
     for (kind = 0; kind < S_KINDS; kind++)
         for (i = 0; i < shape_counts[kind]; i++, e++) {
             Shape sh = shape_of(kind, shape_variant(kind, i));
@@ -1218,8 +1262,13 @@ static u32 shape_file(u8* b) {
                 p->raw = raw;
                 p->stored = zstored_size(raw);
                 if (b) {
-                    shape_write(&sh, zstored_raw(&o, raw), p->box);
-                    zstored_wrap(&o, raw);
+                    u8* r = part_buffer(&o, raw);
+                    if (!r) {
+                        out_close(&o);
+                        return 0;
+                    }
+                    shape_write(&sh, r, p->box);
+                    p->stored = zpart(&o, raw);
                 }
                 o.at += p->stored;
             }
@@ -1271,6 +1320,7 @@ static u32 shape_file(u8* b) {
             }
         }
     }
+    out_close(&o);
     return o.at;
 }
 
