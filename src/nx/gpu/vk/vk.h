@@ -220,6 +220,7 @@ void vk_uma_forget_all(void);
 void vk_uma_owning(u64 cpu, u64 size);        /* that guest memory becomes GPU-owned next, trapped (vk_own_publish) */
 void vk_uma_mapping_begin(u64 cpu, u64 size); /* mem.c changes that guest memory next (size ~0: all) */
 void vk_uma_mapping_end(void);                /* they changed: before anything else is submitted */
+void vk_uma_before_write(u64 gva, u64 len);   /* the runtime writes GPU range [gva, gva + len) next (vk_lock held) */
 void vk_uma_settle(u64 ended);         /* a draw or dispatch begins: the ones before it recorded up to submit ended */
 u32 vk_uma_imports(u64 cpu, u64 size); /* the imports the driver holds over guest memory [cpu, cpu + size) (vk_lock) */
 /* the first import the driver holds over guest memory [cpu, end), on any thread: where it starts there, with where it

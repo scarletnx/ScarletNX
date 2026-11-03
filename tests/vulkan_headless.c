@@ -2709,10 +2709,23 @@ int main(int argc, char** argv) {
         printf("PASS headless Vulkan vertex input only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_UMA_ONLY") && strcmp(getenv("SNX_TEST_UMA_ONLY"), "1")) { /* one of them, by name */
+        const char* name = getenv("SNX_TEST_UMA_ONLY");
+        int ran = 0;
+        if (!strcmp(name, "runtime_write") && ++ran) CHECK(!check_uma_runtime_write());
+        if (!ran) {
+            fprintf(stderr, "SNX_TEST_UMA_ONLY=%s names no check: 1 or runtime_write\n", name);
+            return 2;
+        }
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan in place, %s: %u validation messages\n", name, g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_UMA_ONLY")) { /* the checks of guest memory read in place alone, for a quick run on a GPU */
         CHECK(!check_uma_in_flight());
         CHECK(!check_uma_trap_ranges());
         CHECK(!check_uma_lookup_then_submit());
+        CHECK(!check_uma_runtime_write());
         CHECK(!check_uma_page_changes());
         CHECK(!check_uma());
         vk_pipeline_quiesce();
@@ -2782,6 +2795,7 @@ int main(int argc, char** argv) {
     CHECK(!check_uma_in_flight());
     CHECK(!check_uma_trap_ranges());
     CHECK(!check_uma_lookup_then_submit());
+    CHECK(!check_uma_runtime_write());
     CHECK(!check_uma_page_changes());
     CHECK(!check_rt_overlap());
     CHECK(!check_uma());

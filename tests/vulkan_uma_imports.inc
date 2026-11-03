@@ -199,3 +199,47 @@ static int check_uma_lookup_then_submit(void) {
            "next draw began\n");
     return 0;
 }
+
+/* A write of the runtime's own (the front end's inline write to memory, gmem_write) to a page a recorded, unsubmitted
+   command reads in place waits for that command: the GPU reads the bytes from before the write, as the console's GPU
+   ran it before the write. The page is copied from then on (the runtime wrote it), so a next write there waits for
+   nothing, and a guest CPU write elsewhere in the import still reaches the GPU in place */
+#define UMA_T  (HEAP_BASE + 0x2e00000)
+#define UMA_GT 0x4da000000ull
+static int check_uma_runtime_write(void) {
+    VkBuffer b, b2, rb;
+    u64 o, o2;
+    u8 bytes[256];
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    CHECK(mem_map(UMA_T, 0x200000, MS_NORMAL, PERM_RW) == 0); /* a whole window: one import for every page of it */
+    gmmu_map(UMA_GT, UMA_T, 0x200000);
+    memset(GP(UMA_T), 0x81, 0x10000);
+    vk_lock();
+    u8* result = vk_readback_buffer(768, &rb);
+    CHECK(result && vk_buf_get_input(UMA_GT + 0x100, 256, 4, &b, &o) && vk_uma_imports(UMA_T, 0x10000) == 1);
+    uma_read(b, o, rb, 0); /* recorded, not submitted */
+    vk_unlock();
+    memset(bytes, 0x82, sizeof bytes);
+    CHECK(!gmem_write(UMA_GT + 0x100, bytes, sizeof bytes)); /* the runtime's write: after the copy reads */
+    vk_lock();
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 256; i++) CHECK(result[i] == 0x81);
+    /* the written page copied from now on, with the runtime's bytes; a page beside it still read in place */
+    CHECK(vk_buf_get_input(UMA_GT + 0x100, 256, 4, &b2, &o2) && b2 != b);
+    uma_read(b2, o2, rb, 256);
+    CHECK(vk_buf_get_input(UMA_GT + 0x2100, 256, 4, &b2, &o2) && b2 == b);
+    memset(GP(UMA_T) + 0x2100, 0x83, 256); /* the guest CPU's, after the binding: in place, the GPU reads it */
+    uma_read(b2, o2, rb, 512);
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 256; i < 768; i++) CHECK(result[i] == (i < 512 ? 0x82 : 0x83));
+    vk_unlock();
+    CHECK(mem_unmap(UMA_T, 0x200000) == 0);
+    printf("in place: a runtime write to a page an unsubmitted command reads waits for it, and the page is copied "
+           "from then on\n");
+    return 0;
+}
