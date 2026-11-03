@@ -4,6 +4,9 @@
 #ifndef __FreeBSD__
 #define _POSIX_C_SOURCE 200809L
 #endif
+#ifdef __NetBSD__
+#define _NETBSD_SOURCE /* sysctl's KERN_PROC2, which the POSIX name above hides */
+#endif
 #ifdef __APPLE__
 #define _DARWIN_C_SOURCE /* libproc's types, which the POSIX name above hides */
 #endif
@@ -31,6 +34,10 @@
 #include <sys/sysctl.h>
 #include <sys/types.h>
 #include <sys/user.h>
+#endif
+#ifdef __NetBSD__
+#include <sys/proc.h>
+#include <sys/sysctl.h>
 #endif
 #ifdef __APPLE__
 #include <TargetConditionals.h>
@@ -166,6 +173,40 @@ static Sample* snapshot(size_t* count) {
         }
     free(entries);
     return samples;
+#elif defined(__NetBSD__)
+    /* one entry per process (KERN_PROC2), its children's times in p_uctime. The sixth name is how many entries fit:
+       0 asks for the size, which can grow before the read as it does on FreeBSD */
+    int mib[] = {CTL_KERN, KERN_PROC2, KERN_PROC_ALL, 0, (int)sizeof(struct kinfo_proc2), 0};
+    const u_int names = sizeof mib / sizeof *mib;
+    size_t size = 0;
+    struct kinfo_proc2* entries = NULL;
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        mib[5] = 0;
+        if (sysctl(mib, names, NULL, &size, NULL, 0)) return NULL;
+        size += 16 * sizeof(*entries);
+        entries = malloc(size);
+        if (!entries) return NULL;
+        mib[5] = (int)(size / sizeof(*entries));
+        if (!sysctl(mib, names, entries, &size, NULL, 0)) break;
+        free(entries);
+        entries = NULL;
+        if (errno != ENOMEM) return NULL;
+    }
+    if (!entries) return NULL;
+    *count = size / sizeof(*entries);
+    Sample* samples = calloc(*count, sizeof(*samples));
+    if (samples)
+        for (size_t i = 0; i < *count; ++i) {
+            const struct kinfo_proc2* k = &entries[i];
+            samples[i].pid = k->p_pid;
+            samples[i].session = k->p_sid;
+            samples[i].live = k->p_realstat != SZOMB && k->p_realstat != SDEAD;
+            samples[i].resident = (uint64_t)k->p_vm_rssize * (uint64_t)sysconf(_SC_PAGESIZE);
+            samples[i].cpu = (double)k->p_uutime_sec + (double)k->p_ustime_sec + (double)k->p_uctime_sec +
+                             (double)((uint64_t)k->p_uutime_usec + k->p_ustime_usec + k->p_uctime_usec) / 1e6;
+        }
+    free(entries);
+    return samples;
 #elif defined(__APPLE__) && !TARGET_OS_IPHONE
     /* a zombie has no task to describe and is left out, which counts it as gone */
     int listed = proc_listallpids(NULL, 0);
@@ -195,7 +236,7 @@ static Sample* snapshot(size_t* count) {
     /* iOS starts no processes (gui_process_start): there is none to count */
     return NULL;
 #else
-#error "scarletnx-gui process accounting currently supports Linux, FreeBSD, macOS and Windows"
+#error "scarletnx-gui process accounting currently supports Linux, FreeBSD, NetBSD, macOS and Windows"
 #endif
 }
 GuiProcess* gui_process_create(void) {
