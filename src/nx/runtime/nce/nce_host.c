@@ -21,14 +21,22 @@ int nce_host_init(const NceHostConfig* config, u64* tls, int* indirect, u64* out
     return -1;
 }
 #else
+#include <errno.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <ucontext.h>
 #include <unistd.h>
 #if defined(__ANDROID__)
 #include <android/api-level.h>
+#endif
+#ifndef SYS_SECCOMP
+#define SYS_SECCOMP 1 /* a seccomp trap's si_code (asm-generic/siginfo.h), which glibc's headers leave out */
 #endif
 
 /* where a run of native code came from on the host: the registers that the C code of nce_host_run keeps (x19 to x30,
@@ -76,7 +84,12 @@ static _Thread_local NceTls t_nce __attribute__((tls_model("initial-exec")));
 extern u64 g_nce_tls __attribute__((visibility("hidden")));
 u64 g_nce_tls;
 static NceHostConfig g_config;
-static struct sigaction g_old_ill, g_old_trap;
+static struct sigaction g_old_ill, g_old_trap, g_old_sys;
+typedef char nce_check_bpf[sizeof(NceBpf) == sizeof(struct sock_filter) && offsetof(NceBpf, jt) == 2 &&
+                                   offsetof(struct sock_filter, jt) == 2 && offsetof(NceBpf, k) == 4 &&
+                                   offsetof(struct sock_filter, k) == 4
+                               ? 1
+                               : -1];
 static int g_sig_enter, g_sig_kick;
 
 #if NCE_INDIRECT
@@ -393,14 +406,8 @@ static void kick_signal(int sig, siginfo_t* si, void* ctx) {
     (void)si;
     if (stopped_guest((ucontext_t*)ctx)) redirect((ucontext_t*)ctx, preempted, sig);
 }
-/* SIGILL and SIGTRAP: the guest's (an instruction it has no use for, a BRK) go to the runtime, the host's to the
-   handler before this one */
-static void trap_signal(int sig, siginfo_t* si, void* ctx) {
-    const struct sigaction* old = sig == SIGILL ? &g_old_ill : &g_old_trap;
-    if (stopped_guest((ucontext_t*)ctx)) {
-        redirect((ucontext_t*)ctx, trapped, sig);
-        return;
-    }
+/* a signal that is not the guest's, to the handler before ours */
+static void chain(int sig, siginfo_t* si, void* ctx, const struct sigaction* old) {
     if (old->sa_flags & SA_SIGINFO) {
         if (old->sa_sigaction) old->sa_sigaction(sig, si, ctx);
     } else if (old->sa_handler == SIG_DFL) {
@@ -408,6 +415,26 @@ static void trap_signal(int sig, siginfo_t* si, void* ctx) {
     } else if (old->sa_handler != SIG_IGN) {
         old->sa_handler(sig);
     }
+}
+/* SIGILL and SIGTRAP: the guest's (an instruction it has no use for, a BRK) go to the runtime, the host's to the
+   handler before this one */
+static void trap_signal(int sig, siginfo_t* si, void* ctx) {
+    if (stopped_guest((ucontext_t*)ctx)) {
+        redirect((ucontext_t*)ctx, trapped, sig);
+        return;
+    }
+    chain(sig, si, ctx, sig == SIGILL ? &g_old_ill : &g_old_trap);
+}
+/* SIGSYS from the net (nce_host_net): an SVC of the guest's that no stub holds, its system call not made. The
+   context's pc is past it, and the runtime gets the SVC's own */
+static void sys_signal(int sig, siginfo_t* si, void* ctx) {
+    ucontext_t* uc = (ucontext_t*)ctx;
+    if (si->si_code == SYS_SECCOMP && stopped_guest(uc)) {
+        uc->uc_mcontext.pc -= 4;
+        redirect(uc, trapped, sig);
+        return;
+    }
+    chain(sig, si, ctx, &g_old_sys);
 }
 
 static int handle(int sig, void (*fn)(int, siginfo_t*, void*), struct sigaction* old) {
@@ -464,7 +491,8 @@ int nce_host_init(const NceHostConfig* config, u64* tls, int* indirect, u64* out
     g_sig_enter = SIGRTMIN + 4;
     g_sig_kick = SIGRTMIN + 5;
     if (g_sig_kick > SIGRTMAX || handle(g_sig_enter, enter_signal, NULL) || handle(g_sig_kick, kick_signal, NULL) ||
-        handle(SIGILL, trap_signal, &g_old_ill) || handle(SIGTRAP, trap_signal, &g_old_trap)) {
+        handle(SIGILL, trap_signal, &g_old_ill) || handle(SIGTRAP, trap_signal, &g_old_trap) ||
+        handle(SIGSYS, sys_signal, &g_old_sys)) {
         snprintf(why, size, "the signal handlers could not be installed");
         return -1;
     }
@@ -484,6 +512,30 @@ int nce_host_attach(CPU* c, u64* reads, char* why, size_t size) {
     (void)size;
     t_nce.cpu = c;
     t_nce.reads = reads;
+    return 0;
+}
+
+int nce_host_net(char* why, size_t size) {
+    NceBpf prog[NCE_NET_WORDS];
+    struct sock_fprog fp;
+    long r;
+    fp.len = (unsigned short)nce_net_filter(g_config.lo, g_config.hi, AUDIT_ARCH_AARCH64, prog);
+    fp.filter = (struct sock_filter*)(void*)prog;
+    /* a filter of an unprivileged process needs no_new_privs: a setuid program it runs gains nothing */
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+        snprintf(why, size, "prctl(PR_SET_NO_NEW_PRIVS) failed: %s", strerror(errno));
+        return -1;
+    }
+    /* every thread of the process, those made before too: a guest thread may come from any */
+    r = syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, &fp);
+    if (r < 0) {
+        snprintf(why, size, "seccomp(SECCOMP_SET_MODE_FILTER) failed: %s", strerror(errno));
+        return -1;
+    }
+    if (r > 0) {
+        snprintf(why, size, "thread %ld of the process cannot take the seccomp filter (another filter of its own)", r);
+        return -1;
+    }
     return 0;
 }
 

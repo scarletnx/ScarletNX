@@ -3,7 +3,11 @@
 /* NCE's patcher on a synthetic module (src/nx/runtime/nce/nce_patch.c): each kind of word that Eden's patcher
    changes is found in the code, and the words of the same encodings that the code reads as data, or that lie outside
    every function, keep their bytes. Then the stubs: each patched word branches to its stub, the stub does its work in
-   the words that the runtime's outcall expects, and comes back to the next word. Words only: any host runs this */
+   the words that the runtime's outcall expects, and comes back to the next word. Words only: any host runs this. The
+   net's seccomp filter is words too, run here by a small BPF interpreter, and on Linux by the kernel itself */
+#if defined(__linux__)
+#define _GNU_SOURCE 1 /* fork, syscall and the SIGSYS fields of siginfo_t, for the net's run by the kernel */
+#endif
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/utilities/common.h"
@@ -14,6 +18,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <signal.h>
+#include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#define NET_LIVE 1
+#endif
 
 static int failures;
 
@@ -142,6 +158,9 @@ static void scan_test(NceSites* sites) {
     expect(sites, 25, NCE_SVC, 0, "an SVC inside an FDE that no flow reaches, which Eden would patch too");
     check(sites->proven == 11 && sites->unproven == 1, "eleven sites in the flow and one more in a function");
     check(sites->data == 4 && sites->outside == 1, "four words of data and one outside");
+    check(sites->outside_kind[NCE_SVC] == 1, "the one outside is an SVC, counted by its kind");
+    check(!strcmp(nce_kind_name(NCE_SVC), "SVC") && !strcmp(nce_kind_name(NCE_TPIDRRO), "MRS TPIDRRO_EL0"),
+          "the kinds' names");
 }
 
 /* the counter's stub of site at stub, its scratch registers a and b, its block's word reached by the three words of
@@ -461,6 +480,135 @@ static void trap_file_test(const NceSites* found, const char* dir) {
     remove(path);
 }
 
+/* ---- the net ---- */
+
+#define ACT_TRAP  0x00030000u /* SECCOMP_RET_TRAP */
+#define ACT_ALLOW 0x7FFF0000u /* SECCOMP_RET_ALLOW */
+#define ARCH_A64  0xC00000B7u /* AUDIT_ARCH_AARCH64 */
+
+/* classic BPF as the kernel runs a seccomp filter, for the words that nce_net_filter makes: the action for a system
+   call of arch made from ip, the seccomp_data's words little-endian */
+static SnxU32 run_bpf(const NceBpf* prog, size_t n, SnxU32 arch, SnxU64 ip) {
+    unsigned char data[64];
+    SnxU32 a = 0;
+    memset(data, 0, sizeof data);
+    snx_st_le32(data + 4, arch);
+    snx_st_le64(data + 8, ip);
+    for (size_t pc = 0; pc < n; pc++) {
+        const NceBpf* b = &prog[pc];
+        switch (b->code) {
+            case 0x20: a = b->k + 4 <= sizeof data ? snx_ld_le32(data + b->k) : 0; break; /* LD W ABS */
+            case 0x15: pc += a == b->k ? b->jt : b->jf; break;                            /* JEQ K */
+            case 0x25: pc += a > b->k ? b->jt : b->jf; break;                             /* JGT K */
+            case 0x35: pc += a >= b->k ? b->jt : b->jf; break;                            /* JGE K */
+            case 0x06: return b->k;                                                       /* RET K */
+            default: return 0xFFFFFFFFu;
+        }
+    }
+    return 0xFFFFFFFFu; /* past the end, which the kernel refuses */
+}
+
+/* the filter's range, at the words' edges: [lo, hi) traps, the rest of the addresses and another arch go through */
+static void net_words_test(void) {
+    static const struct {
+        SnxU64 lo, hi;
+    } ranges[] = {
+        {0x0000000FFFFFF000ull, 0x0000001000003000ull}, /* across a 4 GiB line: the high words differ */
+        {0x0000000008000000ull, 0x0000002000000000ull}, /* the console's code region to 128 GiB */
+        {0x0000001008000000ull, 0x0000001008200000ull}, /* one high word, as Android's moved layout may have */
+    };
+    for (size_t i = 0; i < sizeof ranges / sizeof *ranges; i++) {
+        NceBpf prog[NCE_NET_WORDS];
+        SnxU64 lo = ranges[i].lo, hi = ranges[i].hi;
+        size_t n = nce_net_filter(lo, hi, ARCH_A64, prog);
+        char what[160];
+        const struct {
+            SnxU64 ip;
+            SnxU32 act;
+        } calls[] = {{lo - 4, ACT_ALLOW},
+                     {lo, ACT_TRAP},
+                     {(lo | 0xFFFFFFFFull) < hi ? (lo | 0xFFFFFFFFull) - 3 : lo + 4, ACT_TRAP},
+                     {(lo | 0xFFFFFFFFull) + 1 < hi ? (lo | 0xFFFFFFFFull) + 1 : hi - 8, ACT_TRAP},
+                     {hi - 4, ACT_TRAP},
+                     {hi, ACT_ALLOW},
+                     {hi + 0x100000000ull, ACT_ALLOW},
+                     {0, ACT_ALLOW},
+                     {~(SnxU64)0, ACT_ALLOW}};
+        check(n == NCE_NET_WORDS, "the net's words");
+        for (size_t k = 0; k < sizeof calls / sizeof *calls; k++) {
+            snprintf(what, sizeof what, "a call from %#llx with [%#llx, %#llx) watched: %s",
+                     (unsigned long long)calls[k].ip, (unsigned long long)lo, (unsigned long long)hi,
+                     calls[k].act == ACT_TRAP ? "trapped" : "let through");
+            check(run_bpf(prog, n, ARCH_A64, calls[k].ip) == calls[k].act, what);
+        }
+        check(run_bpf(prog, n, 0xC000003Eu, lo) == ACT_ALLOW, "another architecture's call goes through");
+    }
+}
+
+#if NET_LIVE
+/* the host's code of a system call (getpid) and a return, in a page of its own */
+#if defined(__x86_64__)
+#define NET_ARCH AUDIT_ARCH_X86_64
+static const unsigned char net_code[] = {0xB8, 0x27, 0, 0, 0, 0x0F, 0x05, 0xC3}; /* MOV EAX, 39; SYSCALL; RET */
+#else
+#define NET_ARCH AUDIT_ARCH_AARCH64
+static const unsigned char net_code[] = {0x88, 0x15, 0x80, 0xD2,  /* MOV X8, #172 */
+                                         0x01, 0x00, 0x00, 0xD4,  /* SVC #0 */
+                                         0xC0, 0x03, 0x5F, 0xD6}; /* RET */
+#endif
+static uintptr_t g_net_page;
+static void net_sigsys(int sig, siginfo_t* si, void* ctx) {
+    (void)sig;
+    (void)ctx;
+    _exit(si->si_code == 1 && (uintptr_t)si->si_call_addr - g_net_page < 4096 ? 42 : 43);
+}
+/* in a child: the filter over the page (inside) or the page after it, then a call from libc and one from the page.
+   The child's end says what the kernel did: 42 the page's call trapped, 0 both went through, 77 no seccomp here */
+static void net_child(int inside) {
+    void* page = mmap(NULL, 8192, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    long (*fn)(void);
+    NceBpf prog[NCE_NET_WORDS];
+    struct sock_fprog fp;
+    struct sigaction sa;
+    SnxU64 lo;
+    if (page == MAP_FAILED) _exit(77);
+    memcpy(page, net_code, sizeof net_code);
+    __builtin___clear_cache((char*)page, (char*)page + sizeof net_code);
+    memcpy(&fn, &page, sizeof fn); /* ISO C has no conversion from an object pointer to a function pointer */
+    g_net_page = (uintptr_t)page;
+    lo = (SnxU64)g_net_page + (inside ? 0 : 4096);
+    fp.len = (unsigned short)nce_net_filter(lo, lo + 4096, NET_ARCH, prog);
+    fp.filter = (struct sock_filter*)(void*)prog;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = net_sigsys;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSYS, &sa, NULL);
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) || syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &fp)) {
+        perror("nce_patch: the net's seccomp filter");
+        _exit(77);
+    }
+    if (getppid() <= 0) _exit(44); /* libc's call, outside the range */
+    if (fn() != (long)getpid()) _exit(45);
+    _exit(0);
+}
+static void net_live_test(void) {
+    int status[2] = {0, 0};
+    for (int inside = 0; inside < 2; inside++) {
+        pid_t pid;
+        fflush(NULL);
+        pid = fork();
+        if (!pid) net_child(inside);
+        check(pid > 0 && waitpid(pid, &status[inside], 0) == pid && WIFEXITED(status[inside]), "the net's child ends");
+    }
+    if (WEXITSTATUS(status[0]) == 77 || WEXITSTATUS(status[1]) == 77) {
+        puts("nce_patch: the kernel took no seccomp filter here: the net's run by the kernel skipped");
+        return;
+    }
+    check(WEXITSTATUS(status[1]) == 42, "the kernel traps a system call made from the watched page, at it");
+    check(WEXITSTATUS(status[0]) == 0, "and lets through the same call from a page outside the range, and libc's");
+}
+#endif
+
 int main(int argc, char** argv) {
     NceSites sites;
     scan_test(&sites);
@@ -470,6 +618,10 @@ int main(int argc, char** argv) {
     nce_sites_free(&sites);
     divert_test();
     refused_test();
+    net_words_test();
+#if NET_LIVE
+    net_live_test();
+#endif
     if (failures) {
         fprintf(stderr, "%d failures\n", failures);
         return 1;

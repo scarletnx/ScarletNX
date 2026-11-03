@@ -8,6 +8,7 @@
   * [Before Android 10](#before-android-10)
 * [The guest's addresses: moved above 64 GiB](#the-guests-addresses-moved-above-64-gib)
 * [The system counter: read in its stub](#the-system-counter-read-in-its-stub)
+* [An SVC outside the analysed code: the net](#an-svc-outside-the-analysed-code-the-net)
 * [Against the recompiled code](#against-the-recompiled-code)
 * [Tests](#tests)
 
@@ -98,6 +99,26 @@ Limits:
 - The stub is 176 bytes, an outcall's 56. A `.nce` of version 2 has pools sized for the outcall, so it is refused
   and the game has to be recompiled.
 
+## An SVC outside the analysed code: the net
+
+The patcher changes the words that the recompiler's analysis finds as code, and the unproven ones inside its
+functions. A word of those encodings outside every function keeps its bytes, so a literal of the same value stays as
+it is (Eden patches every such word of `.text`). If one of them is code after all, a function only a table reaches,
+an SVC there would run as a system call of the host, `x8` its number. The runtime puts a seccomp filter under the
+game's code (`nce_host_net`, its words from `nce_net_filter`): a system call made from the guest's addresses traps
+with `SIGSYS`, is not made, and the game stops with the SVC's address and immediate. The recompile's line counts the
+words outside the functions by kind.
+
+Limits:
+
+- Every system call of the process, in each thread (`SECCOMP_FILTER_FLAG_TSYNC`), runs the filter's 14 words first.
+  What that costs was not measured.
+- The filter needs `PR_SET_NO_NEW_PRIVS`: a setuid program that the process starts gains nothing.
+- The other kinds outside the functions (the TLS and counter registers' MRS) read the host's registers, which no
+  filter sees: only the recompile's count shows them.
+- A kernel without seccomp filters, and qemu-user, which has none, run without the net and say so in the log.
+- An app's process on Android has the system's filter already, and ours stacks on it: only a phone shows it does.
+
 ## Against the recompiled code
 
 The renderer's first present and every 600 after log what the game's threads cost the host (`runtime/guest_stats.c`),
@@ -111,13 +132,15 @@ run or a kick is a signal. Each thread adds to counters of its own, with no lock
 
 ## Tests
 
-- `nce_patch`, any host: the sites, the stubs in both forms, the `.nce` file read back from a moved base, and which
-  games each host takes (`nce_refused`).
+- `nce_patch`, any host: the sites, the stubs in both forms, the `.nce` file read back from a moved base, which
+  games each host takes (`nce_refused`), and the net's filter at the edges of its range, by an interpreter and, on
+  Linux, by the kernel in a child.
 - `nce_host` and `nce_host_indirect`: guest code runs natively in the direct form and in Android's. They run on an
   AArch64 Linux host, or under qemu-aarch64 with `SNX_AARCH64_SYSROOT` (and `SNX_AARCH64_GCC_TOOLCHAIN`,
   `SNX_QEMU_AARCH64`). The indirect one also takes a word another library holds and checks the refusal. The counter's
   stubs read between `guest_ticks` before and after them, keep their scratch registers, count each read, and read
-  where a pause stopped the clock.
+  where a pause stopped the clock. Under the net, an SVC that no stub holds stops in the runtime with no system
+  call made (a host with seccomp filters: qemu-user skips it).
 - `guest_stats`, any host: a window's SVCs, misses, outcalls and families, a thread's time read from another thread,
   and the lines that say them.
 - `memory_accounting`: the 48 GiB tier moved past a page held at 65 GiB, its regions, a mapping there, and a 36-bit

@@ -5,7 +5,8 @@
    the flags and FPCR while the host's code changes them. A hook runs its handler, or the function's own code from
    its moved first word. A handler runs guest code again (a nested run). A kick stops a loop of guest code that makes
    no outcall, and the loop goes on with its registers. A BRK stops in the runtime, which steps past it. The counter's
-   stubs read the guest clock as guest_ticks does (runtime/clock.c), across a pause and a resume */
+   stubs read the guest clock as guest_ticks does (runtime/clock.c), across a pause and a resume. Under the net, an SVC
+   that no stub holds stops in the runtime instead of reaching the kernel (a host with seccomp filters, not qemu-user) */
 /* the native build defines it (tests/CMakeLists.txt), the qemu one does not */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
@@ -95,6 +96,9 @@ static const u32 k_code[] = {
 #define K_AT   0x600u
 /* the same at 0x700, whose stubs read a clock of a 19.2 MHz counter (a phone's), whose factor has a fraction */
 #define K19_AT 0x700u
+/* u, at 0x800: getpid's number in x8, then SVC #0x30, which no stub holds, then RET */
+static const u32 u_code[] = {0xD2801588u, 0xD4000601u, 0xD65F03C0u};
+#define U_AT 0x800u
 
 /* the clock that plat_ns is (plat_sdl.c's SDL_GetTicksNS), which the guest clock follows until the counter's stubs
    take it to the host's counter. Twice as fast as CLOCK_MONOTONIC: qemu-user's counter keeps the host clock's pace, so
@@ -189,8 +193,17 @@ static void preempted(CPU* c) {
     check(c->x[16] == 0x55 && c->x[17] == 0x66, "a kick keeps x16 and x17");
     g_flag = 1;
 }
+static unsigned g_nets;
 static void trapped(CPU* c, int sig) {
     u32 w = snx_ld_le32((const u8*)(uintptr_t)c->pc);
+    if (sig == SIGSYS) {
+        check(w == 0xD4000601u && c->pc == at(U_AT + 4) && c->x[8] == 172,
+              "the net stops at the SVC that no stub holds, with the guest's registers");
+        g_nets++;
+        c->x[0] = 0x5151; /* the runtime's answer, not the kernel's */
+        c->pc += 4;
+        return;
+    }
     check(sig == SIGTRAP && w == 0xD42000A0u, "BRK #5 stops in the runtime at its word");
     g_traps++;
     c->pc += 4;
@@ -327,6 +340,7 @@ int main(void) {
     patch(E_AT, 2);
     put(K_AT, k_code, sizeof k_code / 4);
     patch(K_AT, sizeof k_code / 4);
+    put(U_AT, u_code, sizeof u_code / 4); /* left as it is: no stub for its SVC */
     {
         __extension__ typedef unsigned __int128 u128;
         NceEnv env = g_env;
@@ -389,6 +403,13 @@ int main(void) {
         pthread_create(&th, NULL, exit_thread, &e);
         pthread_join(th, NULL);
         check(!g_exit_after, "an outcall ends its host thread with pthread_exit");
+    }
+    if (nce_host_net(why, sizeof why))
+        printf("nce_host: the net is not under the guest's code here (%s): its check skipped\n", why);
+    else {
+        c.x[0] = 0;
+        run_from(&c, at(U_AT));
+        check(g_nets == 1 && c.x[0] == 0x5151, "an SVC that no stub holds made no system call, and went on past it");
     }
     if (g_env.indirect) {
         pthread_t th;
