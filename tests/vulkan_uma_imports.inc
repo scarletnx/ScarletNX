@@ -243,3 +243,80 @@ static int check_uma_runtime_write(void) {
            "from then on\n");
     return 0;
 }
+
+/* A constant buffer is read in place, as vertices are, but the pages the runtime wrote (front, copied as before): a
+   vertex program takes the green of its color from c[0][0x644], 1.0 then 0.0 written by the guest's CPU, then 1.0 by
+   the runtime (gmem_write) */
+#define UMA_C  (HEAP_BASE + 0x3200000) /* a window of its own: the constant buffer */
+#define UMA_GC 0x4db000000ull
+static int check_uma_constants(void) {
+    const u64 address = 0x4dc000000ull, cpu = HEAP_BASE + 0x740000;
+    const u64 stream = address + 0x12000, target = address + 0x18000;
+    const u64 vertex[] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
+                          0xeff1ff800707ff00ull, /* position */
+                          0xefd9ff800907ff00ull, /* ALD R0..3, a[0x90] */
+                          0x4c98078019170001ull, /* MOV R1, c[0x0][0x644] */
+                          0xeff1ff800807ff00ull, /* color varying */
+                          0xe30000000007000full};
+    const float position[12] = {-1, -1, 0, 1, 3, -1, 0, 1, -1, 3, 0, 1}, red[4] = {1, 0, 0, 1};
+    const float one = 1.0f, zero = 0.0f;
+    u64 fragment[5];
+    u8 bytes[96];
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    GpuChannel* channel = calloc(1, sizeof *channel);
+    CHECK(channel);
+    channel->id = 125;
+    CHECK(mem_map(UMA_C, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GC, UMA_C, 0x200000);
+    memset(GP(UMA_C), 0, 0x1000);
+    memcpy(GP(UMA_C) + 0x644, &one, 4);
+    gmmu_map(address, cpu, 0x20000);
+    for (u32 i = 0; i < 4; i++) fragment[i] = 0xe000000000070000ull | (0x20ull + i) << 30 | i;
+    fragment[4] = 0xe30000000007000full;
+    CHECK(mesh_program(address, vertex, 6, 0));
+    CHECK(mesh_program(address + 0x10000, fragment, 5, 1));
+    for (u32 v = 0; v < 3; v++) {
+        memcpy(bytes + v * 32, position + 4 * v, 16);
+        memcpy(bytes + v * 32 + 16, red, 16);
+    }
+    CHECK(!gmem_write(stream, bytes, sizeof bytes));
+    u32* r = channel->r3d;
+    r[0x582] = (u32)(address >> 32);
+    r[0x583] = (u32)address;
+    r[0x850] = 1;
+    r[0x851] = 0x10000;
+    r[0x64b] = 1;
+    r[0x286] = 0x6420;
+    r[0x3fd] = r[0x3fe] = 4u << 16;
+    r[0x680] = 0x1111;
+    r[MAXWELL3D_RASTERIZE_ENABLE] = 1;
+    const float transform[6] = {2, 2, 0.5f, 2, 2, 0.5f};
+    memcpy(r + 0x280, transform, sizeof transform);
+    r[0x458] = 0 | 0u << 7 | 1u << 21 | 7u << 27;  /* stream 0 at 0: RGBA32F */
+    r[0x459] = 0 | 16u << 7 | 1u << 21 | 7u << 27; /* stream 0 at 16: RGBA32F */
+    r[0x700] = 0x1000 | 32;
+    r[0x701] = (u32)(stream >> 32);
+    r[0x702] = (u32)stream;
+    r[0x7c0] = (u32)((stream + sizeof bytes - 1) >> 32);
+    r[0x7c1] = (u32)(stream + sizeof bytes - 1);
+    channel->ds.bind.cb_addr[0][0] = UMA_GC;
+    channel->ds.bind.cb_size[0][0] = 0x1000;
+    CHECK(!mesh_pixel(channel, target, 0, (const u8[4]){255, 255, 0, 255}));
+    int inplace = vk_uma_imports(UMA_C, 0x1000);
+    memcpy(GP(UMA_C) + 0x644, &zero, 4); /* the guest CPU's write */
+    g_renderer->mem_may_have_changed();
+    CHECK(!mesh_pixel(channel, target, 0, (const u8[4]){255, 0, 0, 255}));
+    CHECK(!gmem_write(UMA_GC + 0x644, &one, 4)); /* the runtime's: copied from now on */
+    CHECK(!mesh_pixel(channel, target, 0, (const u8[4]){255, 255, 0, 255}));
+    channel->ds.bind.cb_addr[0][0] = 0;
+    channel->ds.bind.cb_size[0][0] = 0;
+    free(channel);
+    CHECK(mem_unmap(UMA_C, 0x200000) == 0);
+    if (!inplace) fprintf(stderr, "constant buffer: copied, not read in place\n");
+    CHECK(inplace);
+    printf("in place: a constant buffer read where the guest's CPU wrote it, and copied once the runtime wrote it\n");
+    return 0;
+}

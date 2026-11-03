@@ -181,11 +181,10 @@ more per MiB imported in one import, from 16 MiB to 512 MiB, and 7.2 us per MiB 
 
 ### What still copies, and why
 
-- Constant buffers. The GPU front end writes them between draws (`CONST_BUFFER_DATA`, `r3d_const_upload`) on the CPU,
-  when the GPU thread meets the method. A draw recorded before the write but run by the GPU after it would read the
-  new constants. In place, they need the write done on the GPU in order (`vkCmdUpdateBuffer` into the import), with a
-  CPU copy for the runtime's own readers (bindless texture handles are read from constant buffers when a draw is
-  recorded).
+- The constant buffers the GPU front end writes between draws (`CONST_BUFFER_DATA`, `r3d_const_upload`) on the CPU,
+  when the GPU thread meets the method, and every other page the runtime wrote (`front`). A draw recorded before the
+  write but run by the GPU after it would read the new constants. The other constant buffers, the ones the game's CPU
+  or GPU writes, are read in place (`vk_buf_get_uniform`).
 - Writable storage and transform feedback. Their results land through the pending results (`GfxOut`), which the
   runtime's own readers (texture uploads, the shader translator, `gmem_need`) wait for. In place, the GPU writes guest
   memory at once, and that is the next step: the pending results then only need the fence, not the copy back. That is
@@ -219,7 +218,8 @@ more per MiB imported in one import, from 16 MiB to 512 MiB, and 7.2 us per MiB 
   `vulkan_headless` (`check_uma`) unmaps and maps a range again, and checks that the GPU reads the new bytes;
   `check_uma_page_changes` unmaps, traps and drops imports with a submission after each; `vulkan_uma_imports.inc`
   traps pages under a read still running, under two imports, under the import made after a page landed, after an
-  unmap, and under a lookup used after a submit (`SNX_TEST_UMA_ONLY=1` runs these alone, `runtime_write` one by name).
+  unmap, and under a lookup used after a submit (`SNX_TEST_UMA_ONLY=1` runs these alone, `runtime_write` or
+  `constants` one by name).
 - Write tracking. amdgpu takes an import's pages again, writable, at each submission, which undoes the protection a
   scan put on them: the next scan reports every imported page written with no CPU write (16 pages of 16 after each
   submission, none without the import). Trusted, those reports made a render target's write-back keep memory's old

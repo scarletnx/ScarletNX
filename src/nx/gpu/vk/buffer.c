@@ -2517,6 +2517,11 @@ void vk_buf_prefetch(u64 gva, u64 len, int step) {
 int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     return buf_get(gva, len, buf, off, 1, vk_stage_align(), IN_NO);
 }
+/* a constant buffer: read in place where it can be, as vertices are, but the pages the runtime wrote (uma.c's front,
+   its constant buffer updates among them), which are copied as before */
+int vk_buf_get_uniform(u64 gva, u64 len, VkBuffer* buf, u64* off) {
+    return buf_get(gva, len, buf, off, 1, vk_stage_align(), IN_TRY);
+}
 int vk_buf_get_copy_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     return buf_get(gva, len, buf, off, 2, vk_stage_align(), IN_NO);
 }
