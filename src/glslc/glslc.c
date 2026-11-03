@@ -201,11 +201,17 @@ int glslc_run(Glslc* g, int last, uint32_t* words, size_t capacity) {
     return 0;
 }
 
-int snx_glslc_compile(GlslcWorkspace* workspace, GlslcStage stage, const char* source, size_t size, uint32_t* words,
-                      size_t capacity, GlslcResult* result) {
+int snx_glslc_compile(GlslcWorkspace* workspace, const GlslcOptions* options, const char* source, size_t size,
+                      uint32_t* words, size_t capacity, GlslcResult* result) {
     memset(result, 0, sizeof *result);
-    Glslc* g = glslc_open(workspace->memory, workspace->size, stage, source, size, result);
+    if (!options) {
+        snprintf(result->error, sizeof result->error, "the options are NULL: they give the stage at least");
+        return -1;
+    }
+    Glslc* g = glslc_open(workspace->memory, workspace->size, options->stage, source, size, result);
     if (!g) return -1;
+    g->bind = options->bind;
+    g->bind_user = options->bind_user;
     return glslc_run(g, GLSLC_PASS_EMIT, words, capacity);
 }
 

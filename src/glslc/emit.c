@@ -2075,11 +2075,47 @@ static void interface_variable(Glslc* g, uint32_t s) {
     reflect(g, in ? SNX_GLSLC_REFLECT_INPUT : SNX_GLSLC_REFLECT_OUTPUT, y->name, y->type, (uint32_t)loc, 0, 0);
 }
 
+/* where the backend's map puts resource r: its answer, checked */
+static void mapped_binding(Glslc* g, const GlslcResource* r, uint32_t* set, uint32_t* binding) {
+    *set = r->set >= 0 ? (uint32_t)r->set : 0;
+    *binding = r->binding >= 0 ? (uint32_t)r->binding : 0;
+    int answer = g->bind(g->bind_user, r, set, binding);
+    if (answer)
+        glslc_fail(g, r->name.pos, "the binding map refuses %.*s (it returns %d)", (int)r->name.len,
+                   glslc_view_text(g, r->name), answer);
+    if (*set > 0xffffu || *binding > 0xffffu)
+        glslc_fail(g, r->name.pos, "the binding map puts %.*s at set %u binding %u: glslc takes 0 to 65535 for each",
+                   (int)r->name.len, glslc_view_text(g, r->name), *set, *binding);
+    if (binding_taken(g, *set, *binding))
+        glslc_fail(g, r->name.pos, "the binding map puts %.*s at set %u binding %u, which another resource has",
+                   (int)r->name.len, glslc_view_text(g, r->name), *set, *binding);
+    take_binding(g, *set, *binding, r->name);
+}
+
 static void resource_variable(Glslc* g, uint32_t s) {
     GlslcSymbol* y = &g->syms[s];
-    uint32_t e = element_of(g, y->type), set = y->set >= 0 ? (uint32_t)y->set : 0;
+    uint32_t e = element_of(g, y->type), set, binding;
     const GlslcType* et = ty(g, e);
-    uint32_t binding = y->binding >= 0 ? (uint32_t)y->binding : free_binding(g, y->name);
+    uint8_t kind = et->kind == GLSLC_T_SAMPLER     ? SNX_GLSLC_REFLECT_SAMPLER
+                   : et->kind == GLSLC_T_IMAGE     ? SNX_GLSLC_REFLECT_IMAGE
+                   : y->storage == GLSLC_ST_BUFFER ? SNX_GLSLC_REFLECT_BUFFER_BLOCK
+                                                   : SNX_GLSLC_REFLECT_UNIFORM_BLOCK;
+    uint32_t size = 0, align;
+    if (et->kind == GLSLC_T_BLOCK) lay(g, e, block_layout(y->packing), 0, &align, &size);
+    if (g->bind) {
+        GlslcResource r = {0};
+        r.name = et->kind == GLSLC_T_BLOCK ? et->name : y->name;
+        r.kind = kind;
+        r.texel_buffer = et->kind != GLSLC_T_BLOCK && et->dim == GLSLC_DIM_BUFFER;
+        r.array = ty(g, y->type)->kind == GLSLC_T_ARRAY ? ty(g, y->type)->len : 0;
+        r.set = y->set;
+        r.binding = y->binding;
+        r.size = size;
+        mapped_binding(g, &r, &set, &binding);
+    } else {
+        set = y->set >= 0 ? (uint32_t)y->set : 0;
+        binding = y->binding >= 0 ? (uint32_t)y->binding : free_binding(g, y->name);
+    }
     uint32_t pointee, v;
     if (et->kind == GLSLC_T_IMAGE) {
         pointee = image_type(g, e, y->packing);
@@ -2102,12 +2138,6 @@ static void resource_variable(Glslc* g, uint32_t s) {
     if (y->qual & GLSLC_Q_COHERENT) EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_COHERENT);
     if (y->qual & GLSLC_Q_VOLATILE) EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_VOLATILE);
     if (y->qual & GLSLC_Q_RESTRICT) EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_RESTRICT);
-    uint8_t kind = et->kind == GLSLC_T_SAMPLER     ? SNX_GLSLC_REFLECT_SAMPLER
-                   : et->kind == GLSLC_T_IMAGE     ? SNX_GLSLC_REFLECT_IMAGE
-                   : y->storage == GLSLC_ST_BUFFER ? SNX_GLSLC_REFLECT_BUFFER_BLOCK
-                                                   : SNX_GLSLC_REFLECT_UNIFORM_BLOCK;
-    uint32_t size = 0, align;
-    if (et->kind == GLSLC_T_BLOCK) lay(g, e, block_layout(y->packing), 0, &align, &size);
     reflect(g, kind, et->kind == GLSLC_T_BLOCK ? et->name : y->name, y->type, binding, set, size);
 }
 
@@ -2204,7 +2234,7 @@ static void global_variables(Glslc* g) {
         if ((y->storage == GLSLC_ST_IN || y->storage == GLSLC_ST_OUT) && y->location >= 0)
             mark_location(g, y->storage == GLSLC_ST_IN ? g->e.in_locations : g->e.out_locations, y->location,
                           location_count(g, y->type), y->name);
-        if (is_resource(g, nd(g, d)->a) && y->binding >= 0) {
+        if (is_resource(g, nd(g, d)->a) && y->binding >= 0 && !g->bind) { /* a map places every one itself */
             uint32_t set = y->set >= 0 ? (uint32_t)y->set : 0;
             if (binding_taken(g, set, (uint32_t)y->binding))
                 glslc_fail(g, y->name.pos, "set %u binding %d is another resource's too", set, (int)y->binding);
