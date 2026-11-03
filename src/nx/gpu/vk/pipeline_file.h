@@ -24,12 +24,19 @@
    ShaderInfo of a PF_SHADER record depend on. A file whose guest part is the same is rebuilt rather than started
    over: each shader translated again from the program its PF_SOURCE record keeps, and each pipeline made again, into
    a file of the new key. After an update of the runtime or the driver every pipeline would otherwise be new again,
-   made as the game first draws with it, with the frame waiting (a second on NVIDIA for one game's largest) */
+   made as the game first draws with it, with the frame waiting (a second on NVIDIA for one game's largest)
+
+   The main file packs its records: once those after its last unit reach PF_UNIT_BYTES (pipeline_file.c), they are
+   read back, packed into one zstd frame and written over themselves as a PF_UNIT record. So the file is its units,
+   then the records of the open unit as they were appended, and reading unpacks each unit in its place. A crash while a unit is written
+   over its records loses them, as the unit's check then fails, the way a record cut short ends the reading. The
+   shipped file isn't packed: its records are read in place, by where each starts (pf_payload) */
 #define PF_SHADER  1
 #define PF_PIPE    2
 #define PF_SCAN    3 /* the shipped programs' walk (gpu/shipped_pass.c) read a file, or all of them: two u64s */
 #define PF_SHIPREF 4 /* a shader of the shipped file, by where its record starts there and the record's check */
 #define PF_SOURCE  5 /* what the PF_SHADER record right after it was translated from (PfSource) */
+#define PF_UNIT    6 /* records packed together: a PfUnit, then one zstd frame of them, padded to 8 */
 #define PF_MAX     (256u << 20) /* past this size nothing more is appended */
 #define PF_REC     16           /* a record's header: type, payload bytes, check */
 /* a shader record: this, then ncbr constant buffer reads ({idx, off, ok, v}, VkCbRead's words) and nspv SPIR-V
@@ -69,6 +76,8 @@ typedef struct {
     u64 size; /* the file's bytes */
     u64 max;  /* past this size nothing more is appended: PF_MAX for 0 */
     int kept; /* pf_open_mapped's file that is there but couldn't be mapped or rewritten: never appended to */
+    u64 open; /* pf_open's file: where the open unit's records start, packed once they reach PF_UNIT_BYTES. 0 in
+                 pf_open_mapped's, which isn't packed */
     PFileMap view; /* pf_open_mapped's: the file as it was mapped, its records read from there */
     /* pf_open's files only: the shader records in it, and each module with a record, its number and check, by open
        addressing on the handle (cap a power of two), for pf_pipe */
@@ -93,12 +102,13 @@ typedef struct {
 /* opens path: the records written there with the same key go to load in their order, and what follows is appended.
    A missing file, or one with another key, is started over, except that one whose key's first guest bytes are the
    same is rebuilt: started over, with each PF_SOURCE record handed to load->source (which records the shader in the
-   new file), and each pipeline whose shaders were made to load->pipe. The counts of shader and pipeline records
-   handed on go in loaded[0] and [1] */
+   new file), and each pipeline whose shaders were made to load->pipe. A file of version 2, whose records are those of
+   this one unpacked, is rebuilt so too. The counts of shader and pipeline records handed on go in loaded[0] and [1] */
 void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad* load, u32 loaded[2]);
 /* a shader record for module (made from spv; 0 for none), whose number pf_pipe then refers to; skipped once the file
    is full. With src (its reads src_cbr, its program code, xfb with PF_SRC_XFB), a PF_SOURCE record right before it.
-   Where the shader record starts in the file, 0 when it wasn't written */
+   Where the shader record starts in the file (pf_open_mapped's: pf_open's records move as they are packed), 0 when it
+   wasn't written */
 u64 pf_shader(PFile* pf, u64 module, const PfShader* s, const u32* cbr, const u32* spv, const PfSource* src,
               const u8* code, const ShXfb* xfb);
 /* a pipeline record with modules (vs, tcs, tes, gs, fs; 0 for none): skipped when one of them has no record */
