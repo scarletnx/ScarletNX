@@ -16,6 +16,8 @@ typedef struct {
     int steps;                     /* layout = steps: labelled steps; console: the lines as printed */
     int texture;                   /* faint lines over the page */
     int progress;                  /* a step's progress: SNX_RUN_PROGRESS_* */
+    int text_size; /* app.ini's [app] ui_scale, the launcher's letters as 8x16 pixels times it (1 to 4); 0 when it
+                      has no number, which the launcher takes as twice the display's scale (its Auto) */
 } SnxRunTheme;
 
 /* The seconds a step has left at its pace so far, as the launcher's time left reads it (steps.c gui_step_progress):

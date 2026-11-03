@@ -166,7 +166,21 @@ static void run_theme(void) {
     assert(!strcmp(out.name, gui_theme_builtin("yorha")->name) && out.ink != out.page);
     app_ini(config, "[app]\ntheme = gone\n");
     gui_run_theme(game, &out);
-    assert(!strcmp(out.name, gui_theme_builtin("yorha")->name));
+    assert(!strcmp(out.name, gui_theme_builtin("yorha")->name) && out.text_size == 0); /* none: its Auto */
+    /* the launcher's UI scale, as it reads it: ui_scale, text_size as an older version named it; Auto, a word an
+       older version wrote, or past its 4x read as none */
+    app_ini(config, "[app]\ntheme = mine\nui_scale = 3\n");
+    gui_run_theme(game, &out);
+    assert(!strcmp(out.name, "Mine") && out.text_size == 3);
+    app_ini(config, "[app]\ntext_size = 1\n");
+    gui_run_theme(game, &out);
+    assert(out.text_size == 1);
+    app_ini(config, "[app]\nui_scale = auto\n");
+    gui_run_theme(game, &out);
+    assert(out.text_size == 0);
+    app_ini(config, "[app]\nui_scale = 5\n");
+    gui_run_theme(game, &out);
+    assert(out.text_size == 0);
     assert(!snx_remove_tree(root));
     free(picked_themes);
     free(picked);
