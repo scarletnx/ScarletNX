@@ -168,6 +168,9 @@ list(TRANSFORM components PREPEND snx_)
 add_library(scarletnx-nx STATIC)
 set_target_properties(scarletnx-nx PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(scarletnx-nx PUBLIC snx_nx_flags ${components} snx_driver)
+if(CMAKE_SYSTEM_NAME STREQUAL "NetBSD")
+    target_link_libraries(scarletnx-nx PUBLIC execinfo) # backtrace, for the crash report's host frames (crash.c)
+endif()
 # The Switch driver's entry (runtime/entry.c's snx_switch_main), which scarletnx runs (src/multicall). Started with
 # nothing to run it opens the menu (src/gui), which runs games with it; Android's app has the menu as a library of its
 # own
