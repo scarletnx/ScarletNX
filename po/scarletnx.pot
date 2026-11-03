@@ -1579,7 +1579,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "user=%d is deprecated: user_uid=%s (%s) replaces it"
+msgid "user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"
 msgstr ""
 
 #: src/gui/main.c

@@ -11663,7 +11663,8 @@ int main(int argc, char** argv) {
                 assert(!kept || !strstr(kept, "user_uid="));
                 free(kept);
                 /* settings.ini of an older version, user=2 (the deprecated number) and no user_uid: Xuji plays, and
-                   user_uid is written in its place once, said with both; read again, user_uid names them */
+                   user_uid is written in its place once, said by the uid and the number, never the nickname, for the
+                   launcher's log takes it and players attach that to public reports; read again, user_uid names them */
                 {
                     FILE* f = fopen(app.settings_file, "ab");
                     assert(f && fputs("\n[User]\nuser=2\n", f) >= 0 && !fclose(f));
@@ -11671,9 +11672,10 @@ int main(int argc, char** argv) {
                     app.message[0] = 0;
                     users_read(&app);
                     assert(app.user == 2 && !strcmp(app.user_name, "Xuji"));
-                    assert(
-                        !strcmp(app.message,
-                                "user=2 is deprecated: user_uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e (Xuji) replaces it"));
+                    assert(!strstr(app.message, "Xuji"));
+                    assert(!strcmp(
+                        app.message,
+                        "user=2 is deprecated: user_uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e, [user2]'s, replaces it"));
                     kept = (char*)snx_read_file(app.settings_file, &size);
                     assert(kept && strstr(kept, "user_uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e"));
                     free(kept);

@@ -1582,8 +1582,8 @@ msgstr "user=%d 是旧的设置，而设置中没有可写入 %s 的 user_uid"
 
 #: src/gui/main.c
 #, c-format
-msgid "user=%d is deprecated: user_uid=%s (%s) replaces it"
-msgstr "user=%d 是旧的设置：由 user_uid=%s（%s）取代"
+msgid "user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"
+msgstr "user=%d 是旧的设置：由 user_uid=%s（[user%d] 的）取代"
 
 #: src/gui/main.c
 #, c-format
@@ -5543,6 +5543,9 @@ msgstr "启动"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "LLVM 内部选项"
+
+#~ msgid "user=%d is deprecated: user_uid=%s (%s) replaces it"
+#~ msgstr "user=%d 是旧的设置：由 user_uid=%s（%s）取代"
 
 #~ msgid "nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
 #~ msgstr "昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
