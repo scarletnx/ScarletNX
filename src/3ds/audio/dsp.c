@@ -1,10 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    The HLE DSP's frame loop, pipes and power states. Ported from Azahar audio_core/hle/hle.cpp (GPL-2.0-or-later,
-   Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project) at azahar-emu/azahar a4b335e. The shared
-   memory lives in DSP RAM, which the DSP reads and writes as a bus master (snx_ctr_phys_read/write), never through
-   a host pointer. */
+   Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project) at azahar-emu/azahar a4b335e. The binary pipe's
+   AAC decoder follows audio_core/hle/decoder.h and aac_decoder.cpp at azahar-emu/azahar 6e42de8, with FFmpeg's decoder
+   in place of FAAD2. The shared memory lives in DSP RAM, which the DSP reads and writes as a bus master
+   (snx_ctr_phys_read/write), never through a host pointer. */
 #include "3ds/audio/internal.h"
+#include "common/utilities/endian.h"
+#include <libavcodec/avcodec.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -23,6 +27,10 @@ struct SnxCtrDsp {
     DspSource sources[DSP_SOURCES];
     DspMixers mixers;
     uint8_t* backup; /* DSP RAM across sleep, DSP_RAM_SIZE */
+    /* the binary pipe's AAC decoder: all three, or none while aac is NULL */
+    AVCodecContext* aac;
+    AVPacket* packet;
+    AVFrame* decoded;
 };
 
 static bool pipe_append(Pipe* pipe, const void* data, size_t size) {
@@ -45,12 +53,17 @@ static uint32_t region(unsigned index) { return SNX_CTR_DSP_RAM + (index ? DSP_R
 static bool ram_read(SnxCtrDsp* dsp, uint32_t address, void* out, size_t size) {
     return snx_ctr_phys_read(dsp->memory, address, out, size) == SNX_CTR_MEM_OK;
 }
-static void ram_write(SnxCtrDsp* dsp, uint32_t address, const void* data, size_t size) {
-    (void)snx_ctr_phys_write(dsp->memory, address, data, size);
+static bool ram_write(SnxCtrDsp* dsp, uint32_t address, const void* data, size_t size) {
+    return snx_ctr_phys_write(dsp->memory, address, data, size) == SNX_CTR_MEM_OK;
 }
 static void ram_clear(SnxCtrDsp* dsp) {
     static const uint8_t zero[0x1000];
     for (uint32_t at = 0; at < DSP_RAM_SIZE; at += sizeof zero) ram_write(dsp, SNX_CTR_DSP_RAM + at, zero, sizeof zero);
+}
+static void aac_close(SnxCtrDsp* dsp) {
+    avcodec_free_context(&dsp->aac);
+    av_packet_free(&dsp->packet);
+    av_frame_free(&dsp->decoded);
 }
 
 SnxCtrDsp* snx_ctr_dsp_new(SnxCtrMemory* memory, SnxCtrDspInterrupt interrupt, void* context) {
@@ -69,6 +82,7 @@ void snx_ctr_dsp_free(SnxCtrDsp* dsp) {
     for (unsigned i = 0; i < DSP_SOURCES; ++i) dsp_source_free(&dsp->sources[i]);
     dsp_mixers_free(&dsp->mixers);
     for (unsigned i = 0; i < SNX_CTR_DSP_PIPES; ++i) free(dsp->pipes[i].data);
+    aac_close(dsp);
     free(dsp->backup);
     free(dsp);
 }
@@ -94,6 +108,7 @@ static void write_struct_addresses(SnxCtrDsp* dsp) {
 }
 /* Initialize: not quite what the hardware resets, but a clean, consistent state every time, as Azahar does */
 static void initialize(SnxCtrDsp* dsp) {
+    aac_close(dsp);
     ram_clear(dsp);
     dsp_mixers_reset(&dsp->mixers);
     for (unsigned i = 0; i < DSP_SOURCES; ++i) dsp_source_reset(&dsp->sources[i]);
@@ -107,6 +122,7 @@ static void sleep_state(SnxCtrDsp* dsp) {
     for (unsigned i = 0; i < DSP_SOURCES; ++i) dsp_source_sleep(&dsp->sources[i]);
 }
 static void wakeup(SnxCtrDsp* dsp) {
+    aac_close(dsp);
     if (dsp->backup) {
         ram_write(dsp, SNX_CTR_DSP_RAM, dsp->backup, DSP_RAM_SIZE);
         memset(dsp->backup, 0, DSP_RAM_SIZE);
@@ -114,6 +130,173 @@ static void wakeup(SnxCtrDsp* dsp) {
     dsp_mixers_wakeup(&dsp->mixers);
     for (unsigned i = 0; i < DSP_SOURCES; ++i) dsp_source_wakeup(&dsp->sources[i]);
     reset_pipes(dsp);
+}
+
+/* The binary pipe carries the AAC decoder's requests and answers, 32 bytes each: a codec, a command, a result and six
+   words, every field little endian (Azahar audio_core/hle/decoder.h) */
+#define BINARY_MESSAGE_SIZE 32u
+typedef struct {
+    uint16_t codec, command;
+    uint32_t result;
+    uint32_t argument[6];
+} BinaryMessage;
+enum { CODEC_AAC = 1 };
+enum { AAC_INIT, AAC_DECODE, AAC_SHUTDOWN, AAC_LOAD_STATE, AAC_SAVE_STATE };
+enum { AAC_SUCCESS, AAC_ERROR };
+/* an AAC-LC frame holds 1024 samples of each channel */
+#define AAC_SAMPLES 1024u
+
+static BinaryMessage binary_load(const uint8_t* data) {
+    BinaryMessage message = {
+        .codec = snx_ld_le16(data), .command = snx_ld_le16(data + 2), .result = snx_ld_le32(data + 4)};
+    for (unsigned i = 0; i < 6; ++i) message.argument[i] = snx_ld_le32(data + 8 + 4 * i);
+    return message;
+}
+static void binary_store(uint8_t* data, const BinaryMessage* message) {
+    snx_st_le16(data, message->codec);
+    snx_st_le16(data + 2, message->command);
+    snx_st_le32(data + 4, message->result);
+    for (unsigned i = 0; i < 6; ++i) snx_st_le32(data + 8 + 4 * i, message->argument[i]);
+}
+static bool aac_open(SnxCtrDsp* dsp) {
+    if (dsp->aac) return true;
+    const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_AAC);
+    dsp->aac = codec ? avcodec_alloc_context3(codec) : NULL;
+    dsp->packet = av_packet_alloc();
+    dsp->decoded = av_frame_alloc();
+    if (dsp->aac && dsp->packet && dsp->decoded && avcodec_open2(dsp->aac, codec, NULL) >= 0) return true;
+    aac_close(dsp);
+    return false;
+}
+/* The answer names the rate by its index in the nine rates the DSP knows. A stream at another rate is refused, where
+   Azahar answers 48 kHz for it and the game would play it at the wrong speed. */
+static bool aac_rate(int rate, uint32_t* code) {
+    static const int rates[] = {48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000};
+    for (uint32_t i = 0; i < sizeof rates / sizeof *rates; ++i)
+        if (rates[i] == rate) {
+            *code = i;
+            return true;
+        }
+    return false;
+}
+/* The length of the ADTS frame at data (a sync word, layer 0 and one raw data block), or 0 when it is not one */
+static size_t adts_frame(const uint8_t* data, size_t size) {
+    if (size < 7 || data[0] != 0xff || (data[1] & 0xf6) != 0xf0 || (data[6] & 0x03) != 0) return 0;
+    size_t length = (size_t)(data[3] & 0x03) << 11 | (size_t)data[4] << 3 | (size_t)(data[5] >> 5);
+    return length >= 7 && length <= size ? length : 0;
+}
+/* The number of ADTS frames that make up the whole request, or 0 when a byte is not part of one */
+static size_t adts_frames(const uint8_t* data, size_t size) {
+    size_t count = 0;
+    for (size_t at = 0, length; at < size; at += length, ++count)
+        if (!(length = adts_frame(data + at, size - at))) return 0;
+    return count;
+}
+/* the DSP reads and writes guest RAM as a bus master, never VRAM, its own RAM or MMIO */
+static bool ram_range(const SnxCtrDsp* dsp, uint32_t address, uint32_t size) {
+    const SnxCtrRegion* region = snx_ctr_physical_region(snx_ctr_memory_profile(dsp->memory), address, size);
+    return region && region->kind == SNX_CTR_RAM;
+}
+static int16_t pcm16(float sample) {
+    if (isnan(sample)) return 0;
+    float scaled = sample * 32767.0f;
+    if (scaled >= 32767.0f) return 32767;
+    if (scaled <= -32768.0f) return -32768;
+    return (int16_t)(scaled < 0.0f ? scaled - 0.5f : scaled + 0.5f);
+}
+/* Decodes every frame of the input into pcm, channel 0 first and channel 1 channel_bytes after it. Every frame has to
+   decode to one frame of the first frame's rate and channel count. */
+static bool aac_frames(SnxCtrDsp* dsp, const uint8_t* input, size_t size, uint8_t* pcm, size_t channel_bytes,
+                       BinaryMessage* answer) {
+    size_t sample = 0;
+    for (size_t at = 0, length; at < size; at += length, sample += AAC_SAMPLES) {
+        length = adts_frame(input + at, size - at);
+        av_packet_unref(dsp->packet);
+        if (av_new_packet(dsp->packet, (int)length) < 0) return false;
+        memcpy(dsp->packet->data, input + at, length);
+        if (avcodec_send_packet(dsp->aac, dsp->packet) < 0 || avcodec_receive_frame(dsp->aac, dsp->decoded) < 0)
+            return false;
+        uint32_t rate, channels = (uint32_t)dsp->decoded->ch_layout.nb_channels;
+        bool usable = dsp->decoded->format == AV_SAMPLE_FMT_FLTP && dsp->decoded->nb_samples == (int)AAC_SAMPLES &&
+                      channels >= 1 && channels <= 2 && aac_rate(dsp->decoded->sample_rate, &rate);
+        if (!usable || (sample && (rate != answer->argument[0] || channels != answer->argument[1]))) return false;
+        answer->argument[0] = rate;
+        answer->argument[1] = channels;
+        for (uint32_t channel = 0; channel < channels; ++channel) {
+            const float* decoded = (const float*)dsp->decoded->extended_data[channel];
+            uint8_t* out = pcm + channel * channel_bytes + sample * 2;
+            for (unsigned i = 0; i < AAC_SAMPLES; ++i) snx_st_le16(out + 2 * i, (uint16_t)pcm16(decoded[i]));
+        }
+        av_frame_unref(dsp->decoded);
+    }
+    return true;
+}
+/* A request is the source and its size, then the left and right destinations. It decodes every frame before it writes
+   a destination, so a request it refuses writes nothing. A mono stream writes only the left destination, as Azahar
+   skips the empty right channel. The answer echoes the size and counts the samples of the whole request. Azahar answers
+   success with made-up values when a decode fails. This answers the error instead, so the game is not told of samples
+   that were never written. */
+static bool aac_decode(SnxCtrDsp* dsp, const BinaryMessage* request, BinaryMessage* answer) {
+    uint32_t source = request->argument[0], size = request->argument[1];
+    uint32_t left = request->argument[2], right = request->argument[3];
+    if (!size || !ram_range(dsp, source, size) || !aac_open(dsp)) return false;
+    uint8_t* input = malloc(size);
+    if (!input) return false;
+    bool decoded = false;
+    size_t frames = ram_read(dsp, source, input, size) ? adts_frames(input, size) : 0;
+    uint64_t channel_bytes = (uint64_t)frames * AAC_SAMPLES * 2u;
+    /* the input, then both channels of PCM, in one block */
+    uint8_t* block = frames && channel_bytes <= UINT32_MAX && ram_range(dsp, left, (uint32_t)channel_bytes)
+                         ? realloc(input, size + 2u * (size_t)channel_bytes)
+                         : NULL;
+    if (block) {
+        input = block;
+        uint8_t* pcm = block + size;
+        decoded = aac_frames(dsp, input, size, pcm, (size_t)channel_bytes, answer);
+        if (decoded && answer->argument[1] == 2)
+            decoded = ram_range(dsp, right, (uint32_t)channel_bytes) &&
+                      ram_write(dsp, left, pcm, (size_t)channel_bytes) &&
+                      ram_write(dsp, right, pcm + channel_bytes, (size_t)channel_bytes);
+        else if (decoded)
+            decoded = ram_write(dsp, left, pcm, (size_t)channel_bytes);
+    }
+    free(input);
+    if (!decoded) {
+        aac_close(dsp); /* the next request starts from a new decoder, with nothing of this stream left in it */
+        return false;
+    }
+    answer->argument[2] = size;
+    answer->argument[5] = (uint32_t)(frames * AAC_SAMPLES);
+    return true;
+}
+static void binary_request(SnxCtrDsp* dsp, const uint8_t* data, size_t size) {
+    if (size != BINARY_MESSAGE_SIZE) return; /* a message of another size gets no answer, as in Azahar */
+    BinaryMessage request = binary_load(data);
+    BinaryMessage answer = {.codec = request.codec, .command = request.command, .result = AAC_ERROR};
+    bool done = false;
+    if (request.codec == CODEC_AAC) {
+        switch (request.command) {
+            case AAC_INIT:
+                done = aac_open(dsp);
+                if (done) avcodec_flush_buffers(dsp->aac);
+                break;
+            case AAC_DECODE: done = aac_decode(dsp, &request, &answer); break;
+            case AAC_SHUTDOWN:
+                aac_close(dsp);
+                done = true;
+                break;
+            case AAC_LOAD_STATE:
+            case AAC_SAVE_STATE: done = true; break; /* answered, with nothing to keep, as Azahar answers them */
+            default: break;
+        }
+    }
+    if (done && request.command != AAC_DECODE) answer = request;
+    if (done) answer.result = AAC_SUCCESS;
+    uint8_t bytes[BINARY_MESSAGE_SIZE];
+    binary_store(bytes, &answer);
+    dsp->pipes[SNX_CTR_DSP_PIPE_BINARY].size = 0; /* one answer at a time, as Azahar leaves the pipe */
+    (void)pipe_append(&dsp->pipes[SNX_CTR_DSP_PIPE_BINARY], bytes, sizeof bytes);
+    dsp->interrupt(dsp->context, SNX_CTR_DSP_PIPE_BINARY);
 }
 
 const char* snx_ctr_dsp_pipe_write(SnxCtrDsp* dsp, unsigned pipe, const uint8_t* data, size_t size) {
@@ -141,7 +324,10 @@ const char* snx_ctr_dsp_pipe_write(SnxCtrDsp* dsp, unsigned pipe, const uint8_t*
         }
         return NULL;
     }
-    if (pipe == SNX_CTR_DSP_PIPE_BINARY) return "the DSP's AAC decoder (the binary pipe) is not ported yet";
+    if (pipe == SNX_CTR_DSP_PIPE_BINARY) {
+        binary_request(dsp, data, size);
+        return NULL;
+    }
     return "only the DSP's audio and binary pipes are implemented";
 }
 size_t snx_ctr_dsp_pipe_readable(const SnxCtrDsp* dsp, unsigned pipe) {
