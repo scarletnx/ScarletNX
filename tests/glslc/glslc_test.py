@@ -157,6 +157,11 @@ def interface(dis):
         name = names.get(m.group(1), '')
         if name and m.group(2) in INTERFACE:
             decorations.setdefault(name, set()).add(f'{m.group(2)} {m.group(3)}'.strip())
+    # an in or out block's members (gl_PerVertex is glslang's own block of built-ins)
+    for m in re.finditer(r'OpMemberDecorate %(\d+) (\d+) (\w+) ?(\w*)', dis):
+        name = names.get(m.group(1), '')
+        if name and not name.startswith('gl_') and m.group(3) in ('Location', 'Flat', 'Centroid', 'Sample'):
+            decorations.setdefault(f'{name}.{m.group(2)}', set()).add(f'{m.group(3)} {m.group(4)}'.strip())
     return capabilities, decorations
 
 

@@ -2472,17 +2472,34 @@ static void add_global(Glslc* g, uint32_t first, uint32_t last) {
 static void parse_block(Glslc* g, const Qual* q) {
     uint32_t name_tok = next_tok(g);
     uint8_t st = q->storage;
-    if (st == GLSLC_ST_IN || st == GLSLC_ST_OUT)
-        glslc_fail(g, site(g, name_tok),
-                   "glslc does not compile in and out blocks yet: declare the members one by one");
-    need_version(g, name_tok, st == GLSLC_ST_BUFFER ? GLSLC_V310 : GLSLC_V300,
-                 st == GLSLC_ST_BUFFER ? "a buffer block" : "a uniform block");
-    if (q->qual & ~(GLSLC_Q_READONLY | GLSLC_Q_WRITEONLY | GLSLC_Q_COHERENT | GLSLC_Q_VOLATILE | GLSLC_Q_RESTRICT))
-        glslc_fail(g, site(g, q->tok), "a block takes layout, storage and memory qualifiers only");
-    if (st == GLSLC_ST_UNIFORM &&
-        (q->qual & (GLSLC_Q_READONLY | GLSLC_Q_WRITEONLY | GLSLC_Q_COHERENT | GLSLC_Q_VOLATILE | GLSLC_Q_RESTRICT)))
-        glslc_fail(g, site(g, q->tok), "memory qualifiers are for buffer blocks");
-    if (q->location >= 0 || q->format) glslc_fail(g, site(g, q->tok), "a block takes no location or format");
+    int io = st == GLSLC_ST_IN || st == GLSLC_ST_OUT, vertex = g->stage == SNX_GLSLC_VERTEX;
+    int fragment = g->stage == SNX_GLSLC_FRAGMENT;
+    if (io) {
+        if (g->vi < GLSLC_V320 && !(g->vi == GLSLC_V310 && g->ext[GLSLC_EXT_IO_BLOCKS] != GLSLC_BEHAVIOR_DISABLE))
+            glslc_fail(g, site(g, name_tok),
+                       "an in or out block needs GLSL ES 3.20, or 3.10 with GL_EXT_shader_io_blocks, and this shader "
+                       "is GLSL ES %s",
+                       version_name(g));
+        if (g->stage == SNX_GLSLC_COMPUTE || (vertex && st == GLSLC_ST_IN) || (fragment && st == GLSLC_ST_OUT))
+            glslc_fail(g, site(g, name_tok),
+                       "a %s shader has no %s blocks: in and out blocks are what one stage gives the next",
+                       vertex     ? "vertex"
+                       : fragment ? "fragment"
+                                  : "compute",
+                       st == GLSLC_ST_IN ? "in" : "out");
+        if ((q->qual & ~(GLSLC_Q_FLAT | GLSLC_Q_SMOOTH | GLSLC_Q_CENTROID | GLSLC_Q_SAMPLE)) || q->binding >= 0 ||
+            q->set >= 0 || q->format || q->packing || q->matrix)
+            glslc_fail(g, site(g, q->tok), "an in or out block takes interpolation qualifiers and a location only");
+    } else {
+        need_version(g, name_tok, st == GLSLC_ST_BUFFER ? GLSLC_V310 : GLSLC_V300,
+                     st == GLSLC_ST_BUFFER ? "a buffer block" : "a uniform block");
+        if (q->qual & ~(GLSLC_Q_READONLY | GLSLC_Q_WRITEONLY | GLSLC_Q_COHERENT | GLSLC_Q_VOLATILE | GLSLC_Q_RESTRICT))
+            glslc_fail(g, site(g, q->tok), "a block takes layout, storage and memory qualifiers only");
+        if (st == GLSLC_ST_UNIFORM &&
+            (q->qual & (GLSLC_Q_READONLY | GLSLC_Q_WRITEONLY | GLSLC_Q_COHERENT | GLSLC_Q_VOLATILE | GLSLC_Q_RESTRICT)))
+            glslc_fail(g, site(g, q->tok), "memory qualifiers are for buffer blocks");
+        if (q->location >= 0 || q->format) glslc_fail(g, site(g, q->tok), "a block takes no location or format");
+    }
     g->pos++; /* { */
     uint32_t t = new_type(g, name_tok);
     g->types[t].kind = GLSLC_T_BLOCK;
@@ -2492,20 +2509,31 @@ static void parse_block(Glslc* g, const Qual* q) {
     uint8_t packing = q->packing ? q->packing : st == GLSLC_ST_BUFFER ? g->buffer_packing : g->uniform_packing;
     uint8_t row_major = q->matrix ? q->matrix == 1 : st == GLSLC_ST_BUFFER ? g->buffer_row_major : g->uniform_row_major;
     if (!packing) packing = st == GLSLC_ST_BUFFER ? GLSLC_PACK_STD430 : GLSLC_PACK_STD140;
-    uint32_t count = 0, unsized_at = 0;
+    if (io) packing = GLSLC_PACK_NONE; /* an interface, laid out by location, not by offset */
+    uint32_t count = 0, unsized_at = 0, located = 0;
     while (kind_at(g, 0) != TK_RBRACE) {
         if (kind_at(g, 0) == TK_EOF) expect(g, TK_RBRACE, "'}' at the end of the block");
         Qual mq;
         parse_qualifiers(g, &mq);
         if (mq.storage && mq.storage != st)
             glslc_fail(g, site(g, mq.tok), "a block member takes its block's storage, if any");
-        if (mq.qual & ~(GLSLC_Q_READONLY | GLSLC_Q_WRITEONLY | GLSLC_Q_COHERENT | GLSLC_Q_VOLATILE | GLSLC_Q_RESTRICT))
-            glslc_fail(g, site(g, mq.tok), "a block member takes no interpolation or invariant qualifier");
-        if ((mq.qual & (GLSLC_Q_READONLY | GLSLC_Q_WRITEONLY)) && st != GLSLC_ST_BUFFER)
-            glslc_fail(g, site(g, mq.tok), "memory qualifiers are for buffer blocks");
-        if (mq.location >= 0 || mq.binding >= 0 || mq.set >= 0 || mq.format || mq.packing)
-            glslc_fail(g, site(g, mq.tok), "a block member takes row_major or column_major only");
+        if (io) {
+            if ((mq.qual & ~(GLSLC_Q_FLAT | GLSLC_Q_SMOOTH | GLSLC_Q_CENTROID | GLSLC_Q_SAMPLE)) || mq.binding >= 0 ||
+                mq.set >= 0 || mq.format || mq.packing || mq.matrix)
+                glslc_fail(g, site(g, mq.tok),
+                           "a member of an in or out block takes interpolation qualifiers, a location and a precision "
+                           "only");
+        } else {
+            if (mq.qual &
+                ~(GLSLC_Q_READONLY | GLSLC_Q_WRITEONLY | GLSLC_Q_COHERENT | GLSLC_Q_VOLATILE | GLSLC_Q_RESTRICT))
+                glslc_fail(g, site(g, mq.tok), "a block member takes no interpolation or invariant qualifier");
+            if ((mq.qual & (GLSLC_Q_READONLY | GLSLC_Q_WRITEONLY)) && st != GLSLC_ST_BUFFER)
+                glslc_fail(g, site(g, mq.tok), "memory qualifiers are for buffer blocks");
+            if (mq.location >= 0 || mq.binding >= 0 || mq.set >= 0 || mq.format || mq.packing)
+                glslc_fail(g, site(g, mq.tok), "a block member takes row_major or column_major only");
+        }
         uint32_t mt = parse_type_specifier(g, 1);
+        int first_declarator = 1;
         do {
             uint32_t mn = expect(g, TK_IDENT, "a member name");
             uint32_t full = parse_array_suffix(g, mt);
@@ -2524,6 +2552,19 @@ static void parse_block(Glslc* g, const Qual* q) {
             if (element_of(g, full) == GT_VOID) glslc_fail(g, site(g, mn), "member %.*s cannot be void", TOKV(g, mn));
             if (has_opaque(g, full))
                 glslc_fail(g, site(g, mn), "member %.*s is %s: a block holds no sampler or image", TOKV(g, mn), tname);
+            uint16_t interp =
+                (uint16_t)((mq.qual | q->qual) & (GLSLC_Q_FLAT | GLSLC_Q_SMOOTH | GLSLC_Q_CENTROID | GLSLC_Q_SAMPLE));
+            if (io) {
+                const GlslcType* et = ty(g, element_of(g, full));
+                if (!is_svm(g, element_of(g, full)) || et->base == SNX_GLSLC_BASE_BOOL)
+                    glslc_fail(g, site(g, mn),
+                               "member %.*s is %s: an in or out block holds numbers, vectors and matrices", TOKV(g, mn),
+                               tname);
+                /* the fragment input is what interpolates: a vertex output member needs no flat (glslang's rule) */
+                if (et->base != SNX_GLSLC_BASE_FLOAT && fragment && !(interp & GLSLC_Q_FLAT))
+                    glslc_fail(g, site(g, mn), "member %.*s is %s: an integer fragment input must be flat", TOKV(g, mn),
+                               tname);
+            }
             for (uint32_t m = g->types[t].first; m < g->nmembers; m++) {
                 if (glslc_views_equal(g, g->members[m].name, tk(g, mn)->text))
                     glslc_fail(g, site(g, mn), "the block has two members named %.*s", TOKV(g, mn));
@@ -2541,18 +2582,33 @@ static void parse_block(Glslc* g, const Qual* q) {
             m->mflags = (uint8_t)(rm ? GLSLC_MEM_ROW_MAJOR : GLSLC_MEM_COL_MAJOR);
             if ((mq.qual | q->qual) & GLSLC_Q_READONLY) m->mflags |= GLSLC_MEM_READONLY;
             if ((mq.qual | q->qual) & GLSLC_Q_WRITEONLY) m->mflags |= GLSLC_MEM_WRITEONLY;
+            if (interp & GLSLC_Q_FLAT) m->mflags |= GLSLC_MEM_FLAT;
+            if (interp & GLSLC_Q_CENTROID) m->mflags |= GLSLC_MEM_CENTROID;
+            if (interp & GLSLC_Q_SAMPLE) m->mflags |= GLSLC_MEM_SAMPLE;
+            if (io && first_declarator && mq.location >= 0) { /* the declarators after it follow it */
+                m->location = mq.location;
+                located++;
+            }
+            first_declarator = 0;
             count++;
         } while (accept(g, TK_COMMA));
         expect(g, TK_SEMICOLON, "';' after a block member");
     }
     g->pos++;
     if (!count) glslc_fail(g, site(g, name_tok), "a block needs at least one member");
+    if (io && q->location < 0 && located && located != count)
+        glslc_fail(g, site(g, name_tok),
+                   "block %.*s has no location, and %u of its %u members have one: every member has one, or none",
+                   TOKV(g, name_tok), located, count);
     g->types[t].len = (uint16_t)count;
     g->types[t].dim = packing;
     uint32_t s;
     if (kind_at(g, 0) == TK_IDENT) {
         uint32_t inst = next_tok(g);
         uint32_t full = parse_array_suffix(g, t);
+        if (io && full != t && (ty(g, ty(g, full)->elem)->kind != GLSLC_T_BLOCK || located))
+            glslc_fail(g, site(g, inst),
+                       "an array of in or out blocks has one dimension, and its members take no location of their own");
         if (ty(g, full)->kind == GLSLC_T_ARRAY && ty(g, full)->len == 0)
             glslc_fail(g, site(g, inst), "an array of blocks needs a size");
         s = declare(g, tk(g, inst)->text, site(g, inst), GLSLC_SK_VAR);
@@ -2575,6 +2631,7 @@ static void parse_block(Glslc* g, const Qual* q) {
     y->storage = st;
     y->binding = q->binding;
     y->set = q->set;
+    y->location = q->location;
     y->packing = packing;
     y->qual = q->qual;
     uint32_t n = node(g, GLSLC_N_GLOBAL, name_tok, 0);

@@ -164,6 +164,28 @@ static void interface(void) {
                    "#version 300 es\nlayout(location = 1) in vec4 a;\nlayout(location = 1) in vec4 b;\n"
                    "void main() {}\n") == -1);
     assert(strstr(g_emit_test.result.error, "location 1 of b is another variable's too"));
+    /* in and out blocks: the members after the block's location, at their own, from the first free run, and each
+       element of an array after the one before */
+    static const char blocks[] = "#version 320 es\nlayout(location = 0) out vec4 first;\n"
+                                 "layout(location = 4) out A { vec4 a0; mat2 a1; } a;\n"
+                                 "out B { layout(location = 9) vec2 b0; layout(location = 1) float b1; };\n"
+                                 "out C { vec3 c0; vec4 c1; } c[2];\n"
+                                 "void main() { first = a.a0; a.a1 = mat2(1.0); b0 = vec2(0.0); b1 = 0.0;\n"
+                                 "  c[1].c0 = vec3(1.0); gl_Position = first; }\n";
+    must_compile(SNX_GLSLC_VERTEX, blocks);
+    static const struct {
+        const char* name;
+        uint16_t location;
+    } at[] = {{"first", 0}, {"a0", 4}, {"a1", 5}, {"b0", 9}, {"b1", 1}};
+    for (uint32_t i = 0; i < sizeof at / sizeof at[0]; i++)
+        assert(find(blocks, at[i].name, SNX_GLSLC_REFLECT_OUTPUT)->location == at[i].location);
+    /* C's two elements, four locations, in the first free run: 2 and 3 (the free ones before 4) are too few */
+    uint16_t c_at[4], k = 0;
+    for (uint32_t i = 0; i < g_emit_test.result.reflect_count && k < 4; i++) {
+        const GlslcReflect* e = &g_emit_test.result.reflect[i];
+        if (e->kind == SNX_GLSLC_REFLECT_OUTPUT && blocks[e->name.pos] == 'c') c_at[k++] = e->location;
+    }
+    assert(k == 4 && c_at[0] == 10 && c_at[1] == 11 && c_at[2] == 12 && c_at[3] == 13);
     /* gl_FragColor is output 0, and 1.00's attributes are numbered in their order */
     static const char old[] = "precision mediump float;\nuniform vec4 c;\nvoid main() { gl_FragColor = c; }\n";
     must_compile(SNX_GLSLC_FRAGMENT, old);

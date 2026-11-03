@@ -237,7 +237,8 @@ static void bounds(void) {
     /* macro definitions */
     n = (size_t)snprintf(big, sizeof g_lex_test.big, "#version 300 es\n");
     for (uint32_t i = 0; i < 520; i++) n += (size_t)snprintf(big + n, sizeof g_lex_test.big - n, "#define M%u\n", i);
-    expect_error(SNX_GLSLC_FRAGMENT, big, n, 2 + SNX_GLSLC_MAX_MACROS - 1 - 5 - 13, 9, "more than the 511 macros");
+    expect_error(SNX_GLSLC_FRAGMENT, big, n, 2 + SNX_GLSLC_MAX_MACROS - 1 - 5 - glslc_extension_count, 9,
+                 "more than the 511 macros");
 }
 
 int main(void) {

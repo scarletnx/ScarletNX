@@ -431,3 +431,45 @@ precision mediump float;
 out vec4 c;
 uniform sampler2D s;
 void main() { c = textureOffset(s, vec2(0.0), ivec2(1, -9)); }
+--- vertex_in_block.vert 2:4: a vertex shader has no in blocks: in and out blocks are what one stage gives the next
+#version 320 es
+in V { vec4 p; };
+void main() { gl_Position = p; }
+--- fragment_out_block.frag 3:5: a fragment shader has no out blocks: in and out blocks are what one stage gives the next
+#version 320 es
+precision mediump float;
+out F { vec4 c; };
+void main() { c = vec4(1.0); }
+--- io_block_in_310_without_extension.vert 2:5: an in or out block needs GLSL ES 3.20, or 3.10 with GL_EXT_shader_io_blocks, and this shader is GLSL ES 3.10
+#version 310 es
+out V { vec4 c; };
+void main() { c = vec4(1.0); gl_Position = c; }
+--- io_block_integer_input_not_flat.frag 3:12: member i is int: an integer fragment input must be flat
+--- glslang accepts: it checks flat on an integer input variable, not on an in block's member
+#version 320 es
+precision mediump float;
+in V { int i; };
+layout(location = 0) out vec4 c;
+void main() { c = vec4(float(i)); }
+--- io_block_half_located.vert 2:5: block V has no location, and 1 of its 2 members have one: every member has one, or none
+#version 320 es
+out V { layout(location = 0) vec4 a; vec4 b; };
+void main() { a = b = vec4(1.0); gl_Position = a; }
+--- io_block_bool_member.vert 2:14: member b is bool: an in or out block holds numbers, vectors and matrices
+#version 320 es
+out V { bool b; };
+void main() { b = true; gl_Position = vec4(1.0); }
+--- io_block_input_written.frag 5:19: this assignment cannot write to an input
+#version 320 es
+precision mediump float;
+in V { vec4 a; } v;
+layout(location = 0) out vec4 c;
+void main() { v.a = vec4(1.0); c = v.a; }
+--- io_block_array_of_arrays.vert 2:19: an array of in or out blocks has one dimension, and its members take no location of their own
+#version 320 es
+out V { vec4 a; } v[2][2];
+void main() { gl_Position = vec4(1.0); }
+--- io_block_binding.vert 2:1: an in or out block takes interpolation qualifiers and a location only
+#version 320 es
+layout(binding = 1) out V { vec4 a; };
+void main() { a = vec4(1.0); gl_Position = a; }
