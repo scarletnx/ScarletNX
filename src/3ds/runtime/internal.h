@@ -195,6 +195,8 @@ struct SnxCtrProcess {
     /* the cores take turns on the one host thread: the one the next scheduling serves, and each one's thread last run */
     uint32_t next_core, core_thread[4];
     uint32_t last_ipc_service, last_ipc_header;
+    /* why a service ended the run, when one did (a GX command with no GPU): the run's last line; "" otherwise */
+    char stopped[640];
     uint32_t apt_lock;         /* manager-owned object index; independent of client sessions */
     uint32_t srv_notification; /* srv:'s notification semaphore (retained), made at the first EnableNotification */
     uint32_t apt_phase, apt_notification, apt_parameter;

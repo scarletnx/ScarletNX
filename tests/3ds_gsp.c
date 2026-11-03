@@ -8,6 +8,7 @@
 #include "3ds/ipc/ctr_ipc.h"
 #include "3ds/services/gsp.h"
 #include "3ds/gpu/present.h"
+#include "3ds/gpu/vk/vk.h"
 #include "common/filesystem/host.h"
 #include "common/utilities/common.h"
 #include "support/3ds_guest.h"
@@ -61,6 +62,50 @@ static void fill_rgba8(SnxCtrProcess* p, uint32_t address, unsigned char r, unsi
     assert(snx_ctr_write_ram(p->space, address, pixels, 240u * 400 * 4) == SNX_CTR_MEM_OK);
     free(pixels);
 }
+/* With no Vulkan device, the first GX command that needs one ends the run (a failed request) at once, saying why:
+   the reason the device did not start, which the run's last line is (aot/run.c) */
+static void gx_without_device(const SnxCtrImage* image) {
+    assert(!snx_ctr_vk());
+    SnxCtrProcess* p = snx_ctr_process_new(image, SNX_CTR_OLD);
+    assert(p);
+    uint32_t gsp, event = 0, target = 0;
+    assert(!snx_ctr_session_create(p, SNX_CTR_SERVICE_GSP, &gsp));
+    assert(!snx_ctr_object_create(p, CTR_OBJ_EVENT, &event));
+    uint32_t acquire[] = {0x00160042, 0, 0, CTR_PROCESS_HANDLE};
+    ctr_call(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, 0);
+    uint32_t register_relay[] = {0x00130042, 1, 0, event};
+    ctr_call(p, gsp, register_relay, 4, SNX_CTR_SVC_RETURN, 0);
+    p->cpu.state.cpu.r[0] = ctr_command_word(p, 4);
+    p->cpu.state.cpu.r[1] = QUEUE;
+    p->cpu.state.cpu.r[2] = 3;
+    p->cpu.state.cpu.r[3] = 0x10000000;
+    assert(snx_ctr_svc(p, 0x1f) == SNX_CTR_SVC_RETURN && !p->cpu.state.cpu.r[0]);
+    /* a DMA needs no device and runs; the MemoryFill after it is the queue's last command */
+    assert(!snx_ctr_kernel_memory(p, 0x10003, 0, 0, 0x2000, 3, &target) && target);
+    ctr_put(p, target, 0xa5a5a5a5);
+    ctr_put(p, QUEUE + 0x800, 0x200); /* two commands queued */
+    ctr_put(p, QUEUE + 0x820, 0);     /* RequestDma: 4 bytes from target to target + 0x1000 */
+    ctr_put(p, QUEUE + 0x824, target);
+    ctr_put(p, QUEUE + 0x828, target + 0x1000);
+    ctr_put(p, QUEUE + 0x82c, 4);
+    ctr_put(p, QUEUE + 0x840, 2); /* MemoryFill, triggered */
+    ctr_put(p, QUEUE + 0x844, target);
+    ctr_put(p, QUEUE + 0x848, 0x11223344);
+    ctr_put(p, QUEUE + 0x84c, target + 0x1000);
+    ctr_put(p, QUEUE + 0x85c, 0x0201);
+    uint32_t trigger[] = {0x000c0000};
+    ctr_call(p, gsp, trigger, 1, SNX_CTR_SVC_UNSUPPORTED, 0);
+    assert(ctr_word(p, target + 0x1000) == 0xa5a5a5a5 && ctr_word(p, target) == 0xa5a5a5a5);
+    char want[sizeof p->stopped];
+    const char* why = snx_ctr_vk_error();
+    snprintf(want, sizeof want, "GX command 0x02 needs the 3DS GPU, which did not start%s%s", why[0] ? ": " : "", why);
+    if (strcmp(p->stopped, want)) {
+        fprintf(stderr, "stopped: %s\nwant:    %s\n", p->stopped, want);
+        abort();
+    }
+    printf("no device: %s\n", p->stopped);
+    snx_ctr_process_free(p);
+}
 int main(int argc, char** argv) {
     assert(argc == 2);
 
@@ -74,13 +119,15 @@ int main(int argc, char** argv) {
         }
     unsigned char code[0x3000] = {0};
     SnxCtrImage image = ctr_image(code, sizeof code, 0x3000);
+    gx_without_device(&image); /* before any start: the device was not tried */
     for (unsigned model = 0; model < 2; ++model) {
         SnxCtrProcess* p = snx_ctr_process_new(&image, (SnxCtrModel)model);
         assert(p);
         if (!snx_ctr_present_init(p->memory, argv[1])) {
             assert(!model);
-            printf("no Vulkan device: presentation checks skipped\n");
             snx_ctr_process_free(p);
+            gx_without_device(&image); /* and with the reason this host's start gave */
+            printf("no Vulkan device: presentation checks skipped\n");
             return 77;
         }
         uint32_t gsp;

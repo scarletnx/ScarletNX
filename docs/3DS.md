@@ -470,9 +470,14 @@ The separate windows and the two render resolutions are checked by `3ds_windows`
 screen takes its own setting's scale and no other's, both screens present, and the PPM
 dumps stay the framebuffer's own size whatever the scale. With Separate screens on, that
 test fails unless both windows present, and it skips where the host makes no window (CI).
-On a host whose Vulkan driver cannot import the board's shared RAM
-(`VK_EXT_external_memory_host`), as the development host once could not, the 3DS device
-does not start: the CPU side, the AOT modules and the settings still run there.
+On a host whose Vulkan driver cannot import the board's RAM (`VK_EXT_external_memory_host`),
+the 3DS device does not start, and its error says which call refused which region, the
+`VkResult`, and the device and driver. The RAM is one shared mapping (a memfd on Linux), so
+that every guest view of a page is the same memory, and RADV imports a host pointer as an
+amdgpu user pointer of private anonymous memory only: its `vkAllocateMemory` gives
+`VK_ERROR_INVALID_EXTERNAL_HANDLE` for the first region, VRAM. The CPU side, the AOT modules
+and the settings still run; the game ends at its first GX command that needs the GPU (a
+command list, fill, display transfer or texture copy), with that error as the run's last line.
 
 Audio runs on a high-level DSP (`src/3ds/audio/`, ported from Azahar's HLE audio core):
 dsp::DSP (`services/dsp.c`) takes the application's pipe writes, interrupt events, the
