@@ -108,7 +108,7 @@ int sm70_find_programs(const u8* data, u32 size, Sm70Program* out, int max);
    textures, global buffers, attributes. Returns malloc'd words, their count in *word_count, or NULL with
    si->unsupported and si->first_unsupported set */
 u32* sm70_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count);
-/* Debug: with the environment variable SNX_SM70_DUMP naming a folder, the bytes (and the 32 SPH words, NULL for
+/* Debug: with g_shader_sm70_dump (the sm70_dump setting) naming a folder, the bytes (and the 32 SPH words, NULL for
    none) go to DIR/sm70_<kind>_<hash>.bin (and .sph), and why to DIR/sm70_<kind>_<hash>.txt. sm70_to_spirv writes each
    program it refuses, sm70_find_programs each block without a complete program. The files are game data: keep
    them out of the repository */
