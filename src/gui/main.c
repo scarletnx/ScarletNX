@@ -14881,38 +14881,120 @@ static char* log_tail(const char* path, size_t max) {
     free(data);
     return text;
 }
-/* the game log written last, games/<game>/<game>.log, or an older version's games/<game>.log: beside the games, or an
-   installed build's in its state folder */
+/* whether file, in the folder name of a game in the state folder, is a log the runtime writes there, named after the
+   program that ran: the game's own, <name>.log, or an update's, <name>_<its title ID>v<version>.log (snx_addon_name;
+   a DLC's program of an older version's, without the version). Not the runtime's own Share Log, scarletnx.log */
+static bool game_run_log(const char* name, const char* file) {
+    size_t n = strlen(file);
+    char* stem;
+    bool is;
+    if (n < 5 || strcmp(file + n - 4, ".log")) return false;
+    stem = snx_format("%.*s", (int)(n - 4), file);
+    is = stem && (!strcmp(stem, name) || snx_addon_name(name, stem, NULL));
+    free(stem);
+    return is;
+}
+/* the game log written last, games/<game>/<game>.log or an update's beside it (game_run_log), or an older version's
+   games/<game>.log: beside the games, or an installed build's in its state folder */
 static char* newest_log(const App* app) {
     char *folder = snx_user_path(app->games_dir, SNX_USER_STATE), *newest = NULL, **names = NULL;
-    size_t count = 0, i, n;
+    size_t count = 0, i, j, n;
     SDL_Time time = 0;
     if (folder) snx_list_dir(folder, &names, &count);
     for (i = 0; i < count; ++i) {
-        SDL_PathInfo info;
-        char *path = snx_path_join(folder, names[i]), *log = NULL;
+        char *path = snx_path_join(folder, names[i]), **logs = NULL;
+        size_t found = 0;
         n = strlen(names[i]);
-        if (path && snx_is_dir(path)) { /* a game's folder: its own log */
-            char* own = snx_format("%s.log", names[i]);
-            log = snx_path_join(path, own);
-            free(own);
+        if (path && snx_is_dir(path)) { /* a game's folder: its logs */
+            char** files = NULL;
+            size_t listed = 0;
+            if (!snx_list_dir(path, &files, &listed)) {
+                logs = (char**)snx_alloc((listed + 1) * sizeof *logs);
+                for (j = 0; j < listed; ++j)
+                    if (game_run_log(names[i], files[j])) logs[found++] = snx_path_join(path, files[j]);
+            }
+            snx_free_strings(files, listed);
         } else if (n > 4 && !strcmp(names[i] + n - 4, ".log")) {
-            log = path;
+            logs = (char**)snx_alloc(sizeof *logs);
+            logs[found++] = path;
             path = NULL;
         }
-        if (log && SDL_GetPathInfo(log, &info) && info.type == SDL_PATHTYPE_FILE &&
-            (!newest || info.modify_time > time)) {
-            free(newest);
-            newest = log;
-            log = NULL;
-            time = info.modify_time;
+        for (j = 0; j < found; ++j) {
+            SDL_PathInfo info;
+            if (logs[j] && SDL_GetPathInfo(logs[j], &info) && info.type == SDL_PATHTYPE_FILE &&
+                (!newest || info.modify_time > time)) {
+                free(newest);
+                newest = logs[j];
+                logs[j] = NULL;
+                time = info.modify_time;
+            }
         }
-        free(log);
+        snx_free_strings(logs, found);
         free(path);
     }
     snx_free_strings(names, count);
     free(folder);
     return newest;
+}
+#if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS) /* where a game plays as one of the menu's runs */
+/* the game log the last run's runtime made, as its output (run_log) names it on the line SNX_LOG_WRITTEN starts, the
+   last such: owned, NULL when it names none. *ran set when run_log holds any output, a run kept */
+static char* run_named_log(const char* run_log, bool* ran) {
+    char line[4096], *named = NULL;
+    size_t n = strlen(SNX_LOG_WRITTEN);
+    bool start = true; /* line begins one of the file's: a longer one comes in pieces */
+    FILE* f = run_log ? snx_fopen(run_log, "rb") : NULL;
+    *ran = false;
+    while (f && fgets(line, sizeof line, f)) {
+        size_t length = strlen(line);
+        bool ends = length && line[length - 1] == '\n';
+        *ran = true;
+        if (start && ends && !strncmp(line, SNX_LOG_WRITTEN, n)) {
+            while (length > n && (line[length - 1] == '\n' || line[length - 1] == '\r')) line[--length] = 0;
+            free(named);
+            named = snx_strdup(line + n);
+        }
+        start = ends;
+    }
+    if (f) fclose(f);
+    return named;
+}
+#endif
+/* Share Log's game log, owned: the one the last run's output names, made by the run it reports; with no run kept, the
+   newest. NULL when that run named none, or the one it named is gone, why into why ("" otherwise). On Android and iOS
+   a game plays outside the menu's runs (in the game activity; in this process once the menu has closed), its output in
+   no run log: the newest, and on Android none when it is older than the game played last */
+static char* share_game_log(const App* app, char* why, size_t size) {
+    char* log;
+    why[0] = 0;
+#if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
+    log = newest_log(app);
+#ifdef SDL_PLATFORM_ANDROID
+    SDL_PathInfo info;
+    if (log && app->played_at && SDL_GetPathInfo(log, &info) && info.modify_time < app->played_at) {
+        snprintf(why, size, "the game played last wrote none since it started; the newest, %s, is an earlier run's",
+                 log);
+        free(log);
+        log = NULL;
+    }
+#endif
+    (void)size;
+#else
+    bool ran;
+    log = run_named_log(app->run_log, &ran);
+    if (!ran) return newest_log(app);
+    if (!log)
+        snprintf(why, size,
+                 "the last run's output names none: a game's runtime names its log there (\"%s<path>\") as it makes "
+                 "it, once the game's code is loaded",
+                 SNX_LOG_WRITTEN);
+    else if (!snx_is_file(log)) {
+        snprintf(why, size, "%s, which the last run's output names, is not there", log);
+        free(log);
+        log = NULL;
+    }
+#endif
+    return log;
 }
 /* the game log's summary (common/utilities/logscan.h) under "== summary ==", for the top of the shared file: how
    the run ended and where, without the log's last lines, which follow. The file itself, streamed whole: the shared
@@ -15006,20 +15088,21 @@ static void log_stamp(SnxU64 when, char* out, size_t size) {
     if (localtime_r(&t, &tm)) strftime(out, size, "%Y-%m-%d_%H-%M-%S", &tm);
 #endif
 }
-/* the games' logs written in the last GUI_LOG_DAYS days, under games/<zip_game_label>/: each game's of this run by when
-   it was last written, as it is named once the next run moves it into logs/, and its runs before in logs/; an older
-   version's games/<game>.log under its name */
+/* the games' logs written in the last GUI_LOG_DAYS days, under games/<zip_game_label>/: each game's of its last run,
+   its own program's and its updates' (game_run_log), by when it was last written, as it is named once the next run
+   moves it into logs/ (-2 for a second one of that second), and its runs before in logs/; an older version's
+   games/<game>.log under its name */
 static void games_logs(const App* app, LogFiles* l) {
     char *state = snx_user_path(app->games_dir, SNX_USER_STATE), **names = NULL, stamp[32];
-    size_t count = 0, i, j;
+    size_t count = 0, i, j, k;
     SnxU64 since = (SnxU64)time(NULL) - (SnxU64)GUI_LOG_DAYS * 86400;
     if (!state || snx_list_dir(state, &names, &count)) {
         free(state);
         return;
     }
     for (i = 0; i < count; ++i) {
-        char *path = snx_path_join(state, names[i]), *own, *log, *runs, *label, **old = NULL;
-        size_t olds = 0;
+        char *path = snx_path_join(state, names[i]), *runs, *label, **old = NULL, **files = NULL;
+        size_t olds = 0, listed = 0, first = l->count;
         if (!snx_is_dir(path)) {
             if (named_log(names[i], "") && snx_file_time(path) >= since)
                 log_files_add(l, path, snx_format("games/%s", names[i]));
@@ -15028,13 +15111,27 @@ static void games_logs(const App* app, LogFiles* l) {
             continue;
         }
         label = zip_game_label(app, names[i]);
-        own = snx_format("%s.log", names[i]);
-        log = snx_path_join(path, own);
-        if (snx_file_time(log) >= since) {
-            log_stamp(snx_file_time(log), stamp, sizeof stamp);
-            log_files_add(l, log, snx_format("games/%s/%s.log", label, stamp));
-        } else
-            free(log);
+        if (!snx_list_dir(path, &files, &listed))
+            for (j = 0; j < listed; ++j) {
+                char *log, *name;
+                int n = 1;
+                if (!game_run_log(names[i], files[j])) continue;
+                log = snx_path_join(path, files[j]);
+                if (snx_file_time(log) < since) {
+                    free(log);
+                    continue;
+                }
+                log_stamp(snx_file_time(log), stamp, sizeof stamp);
+                name = snx_format("games/%s/%s.log", label, stamp);
+                for (;;) { /* a name another of this game's has: the next -N */
+                    for (k = first; k < l->count && strcmp(l->files[k].name, name); ++k) continue;
+                    if (k == l->count) break;
+                    free(name);
+                    name = snx_format("games/%s/%s-%d.log", label, stamp, ++n);
+                }
+                log_files_add(l, log, name);
+            }
+        snx_free_strings(files, listed);
         runs = snx_path_join(path, "logs");
         if (!snx_list_dir(runs, &old, &olds))
             for (j = 0; j < olds; ++j) {
@@ -15046,7 +15143,6 @@ static void games_logs(const App* app, LogFiles* l) {
             }
         snx_free_strings(old, olds);
         free(runs);
-        free(own);
         free(label);
         free(path);
     }
@@ -15097,23 +15193,24 @@ static int share_folder_empty(App* app, const char* share) {
     snx_free_strings(names, count);
     return rc;
 }
-/* the message on the screen, the summary of the newest game log, the last run's output, the launcher's own log and its
-   fatal errors, and that game log, in share/ of logs_folder, emptied first: with zip as summary.txt of
-   scarletnx-logs-<when>.zip beside the launcher's logs and the games' of the last GUI_LOG_DAYS days (gui/logzip.h),
-   else as scarletnx.log alone; then that folder opened in the system's file manager, to share from there */
+/* the message on the screen, the summary of the last run's game log (share_game_log), the last run's output, the
+   launcher's own log and its fatal errors, and that game log, or why there is none under "== no game log ==", in
+   share/ of logs_folder, emptied first: with zip as summary.txt of scarletnx-logs-<when>.zip beside the launcher's
+   logs and the games' of the last GUI_LOG_DAYS days (gui/logzip.h), else as scarletnx.log alone; then that folder
+   opened in the system's file manager, to share from there */
 static void share_log(App* app, bool zip) {
     char *game, *run, *recompiled, *said, *fatal, *played, *summary, *text, *saved = NULL, *share, *logs;
-    char console[4096], errors[4096];
+    char console[4096], errors[4096], no_game[4400];
     bool written = false, ready;
     left_behind(app);
-    game = newest_log(app);
+    game = share_game_log(app, no_game, sizeof no_game);
     run = log_tail(app->run_log, 1 << 20);
     recompiled = log_tail(app->job_log, 1 << 20);
     gui_log_path(SNX_CONSOLE_LOG, console, sizeof console);
     gui_log_path(SNX_ERROR_LOG, errors, sizeof errors);
     said = log_tail(console[0] ? console : NULL, 1 << 20);
     fatal = log_tail(errors[0] ? errors : NULL, 64 << 10);
-    played = log_tail(game, 4 << 20);
+    played = game ? log_tail(game, 4 << 20) : snx_strdup(no_game);
     summary = game ? log_summary(game) : snx_strdup("");
     text = snx_format(
         "%s\nMessage: %s\n%s%s%s%s\n%s== the last run: %s ==\n%s\n\n== the last recompile of the queue: %s "

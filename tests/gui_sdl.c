@@ -43,6 +43,19 @@ static char* shared_path(const App* app) {
     free(folder);
     return path;
 }
+/* a run's output as the launcher keeps it in run_log: its command, then the runtime's lines, CRLF as on Windows, the
+   one naming the game log it made (SNX_LOG_WRITTEN, by its absolute path) when log is not NULL, and how it ended. 0
+   when written */
+static int run_kept(const char* run_log, const char* program, const char* log, int status) {
+    char *full = log ? snx_absolute(log) : NULL, *named = full ? snx_format(SNX_LOG_WRITTEN "%s\r\n", full) : NULL;
+    char* text = snx_format("$ scarletnx %s --fullscreen=0\nScarletNX - a game\r\n%s%s\n[ended, status %d]\n", program,
+                            named ? named : "", status ? "*** Crash: signal 11 ***\r\n" : "Exit.\r\n", status);
+    int failed = (log && !named) || !text || snx_write_file(run_log, text, strlen(text));
+    free(text);
+    free(named);
+    free(full);
+    return failed;
+}
 /* the file named name of the zip at path, as text, owned; NULL when it has none */
 static char* zip_text(const char* path, const char* name) {
     size_t size = 0, n = 0;
@@ -12222,8 +12235,8 @@ int main(int argc, char** argv) {
     /* Share Log, on every system: share/ of Folders' Logs emptied of what was shared before, scarletnx-logs-<when>.zip
        in it (its summary.txt with the message and the last run's output), and that folder opened */
     {
-        char *installed_dir = app.data_dir, *own_state = app.state_dir, *share, *stale, *zip, *url, *want;
-        size_t size = 0;
+        char *installed_dir = app.data_dir, *own_state = app.state_dir, *share, *stale, *zip, *url, *want, *run_was;
+        size_t size = 0, run_was_size = 0;
         char* text;
         SDL_free(app.cwd);
         app.cwd = SDL_strdup(temporary);
@@ -12246,9 +12259,14 @@ int main(int argc, char** argv) {
         free(zip);
         free(want);
         free(url);
-        /* with the newest game log's summary at its top: how the run ended, demangled, before the run's output and the
-           log itself */
+        /* with the last run's game log's summary at its top: how the run ended, demangled, before the run's output and
+           the log itself */
         app.data_dir = snx_strdup(temporary);
+        /* the runs below say which game log each names, in the last run's log, which gets its own back after them: the
+           zip's entries stay the launcher's own (two of its launcher/ names are alike here, a name of the run log's
+           more would change which one a lookup by name reads) */
+        assert(app.run_log);
+        run_was = (char*)snx_read_file(app.run_log, &run_was_size);
         {
             char *game = snx_path_join(app.games_dir, "Some Game"), *log = snx_path_join(game, "Some Game.log");
             /* with CRLF lines, as a game log is on Windows (plat.c writes it in text mode) */
@@ -12277,6 +12295,7 @@ int main(int argc, char** argv) {
             assert(strstr(text, "] a fatal error the log keeps\n"));
             free(text);
             assert(!snx_mkdirs(game) && !snx_write_file(log, crashed, sizeof crashed - 1));
+            assert(!run_kept(app.run_log, game, log, 1)); /* the run that wrote it, which named it */
             snprintf(app.message, sizeof(app.message), "before the log");
             share_pick(&app, 0);
             zip = shared_path(&app);
@@ -12373,6 +12392,103 @@ int main(int argc, char** argv) {
             free(log);
             free(game);
         }
+        /* the last run's game log as its output names it, never another game's: the run of an update's program, whose
+           log the runtime names after that program, beside the game's own older one, with another game's log written
+           after it; a run that crashed before its game's code loaded names none: no game log and why, neither game's
+           attached; one it names that is gone, said; with no run kept the newest, an update's too. The zip has the
+           game's logs, its update's beside its own, the second of one second as -2. Not where a game plays outside
+           the menu's runs (share_game_log) */
+#if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS)
+        {
+            static const char base_text[] = "[   0.00] ScarletNX - the game's own run\r\n";
+            static const char update_text[] = "[   0.00] ScarletNX - the update's run\r\n";
+            static const char other_text[] = "[   0.00] ScarletNX - another game's run\r\n";
+            SnxU64 now = (SnxU64)time(NULL);
+            char *own = snx_path_join(app.games_dir, "0100FEED00010000"), *other;
+            char *base_log = snx_path_join(own, "0100FEED00010000.log"), *other_log, *update, *update_log;
+            char *one = snx_path_join(share, "scarletnx.log"), *full, *header, *gone, *said, stamp[32];
+            other = snx_path_join(app.games_dir, "0100FEED00020000");
+            other_log = snx_path_join(other, "0100FEED00020000.log");
+            update = snx_path_join(own, "0100FEED00010000_0100FEED00010800v65536.exe");
+            update_log = snx_path_join(own, "0100FEED00010000_0100FEED00010800v65536.log");
+            assert(!snx_mkdirs(own) && !snx_mkdirs(other));
+            assert(!snx_write_file(base_log, base_text, sizeof base_text - 1) &&
+                   !snx_set_file_time(base_log, now - 3000));
+            assert(!snx_write_file(update_log, update_text, sizeof update_text - 1) &&
+                   !snx_set_file_time(update_log, now - 2000));
+            assert(!snx_write_file(other_log, other_text, sizeof other_text - 1) &&
+                   !snx_set_file_time(other_log, now - 1000));
+            full = snx_absolute(update_log);
+            header = snx_format("== %s ==\n", full);
+            assert(!run_kept(app.run_log, update, update_log, 0));
+            share_pick(&app, 1);
+            text = (char*)snx_read_file(one, &size);
+            assert(text && strstr(text, header) && strstr(text, "ScarletNX - the update's run\n"));
+            assert(!strstr(text, "another game's run") && !strstr(text, "the game's own run"));
+            free(text);
+            assert(!run_kept(app.run_log, update, NULL, 3)); /* crashed before its log */
+            share_pick(&app, 1);
+            text = (char*)snx_read_file(one, &size);
+            assert(text && strstr(text, "== no game log ==\nthe last run's output names none: ") &&
+                   !strstr(text, "== summary =="));
+            assert(!strstr(text, "another game's run") && !strstr(text, "the game's own run") &&
+                   !strstr(text, "the update's run"));
+            free(text);
+            gone = snx_path_join(own, "0100FEED00010000_0100FEED00010800v0.log");
+            assert(!run_kept(app.run_log, update, gone, 0));
+            free(gone);
+            gone = snx_absolute(own);
+            said = snx_format("== no game log ==\n%s", gone); /* named by its absolute path */
+            share_pick(&app, 1);
+            text = (char*)snx_read_file(one, &size);
+            assert(text && strstr(text, said) &&
+                   strstr(text, "0100FEED00010800v0.log, which the last run's output names, is not there\n"));
+            assert(!strstr(text, "another game's run") && !strstr(text, "the update's run"));
+            free(text);
+            free(said);
+            free(gone);
+            /* no run kept: the newest, the update's (by the path the state folder's listing gives, \ on Windows) */
+            assert(!snx_write_file(app.run_log, "", 0) && !snx_set_file_time(update_log, now + 600));
+            share_pick(&app, 1);
+            text = (char*)snx_read_file(one, &size);
+            assert(text && strstr(text, "0100FEED00010000_0100FEED00010800v65536.log ==\n") &&
+                   strstr(text, "ScarletNX - the update's run\n") && !strstr(text, "another game's run"));
+            free(text);
+            /* the zip: the game's own log and its update's, last written in the same second */
+            assert(!snx_set_file_time(base_log, now - 100) && !snx_set_file_time(update_log, now - 100));
+            assert(!run_kept(app.run_log, update, update_log, 0));
+            share_pick(&app, 0);
+            zip = shared_path(&app);
+            log_stamp(now - 100, stamp, sizeof stamp);
+            {
+                char *first = snx_format("games/0100FEED00010000/%s.log", stamp), *inside[2];
+                char* second = snx_format("games/0100FEED00010000/%s-2.log", stamp);
+                inside[0] = zip_text(zip, first);
+                inside[1] = zip_text(zip, second);
+                assert(inside[0] && inside[1] && strcmp(inside[0], inside[1]));
+                for (int k = 0; k < 2; ++k)
+                    assert(strstr(inside[k], "the game's own run") || strstr(inside[k], "the update's run"));
+                free(inside[0]);
+                free(inside[1]);
+                free(second);
+                free(first);
+            }
+            text = zip_text(zip, "summary.txt");
+            assert(text && strstr(text, header) && strstr(text, "ScarletNX - the update's run\n"));
+            free(text);
+            free(zip);
+            assert(!snx_remove_tree(own) && !snx_remove_tree(other));
+            free(header);
+            free(full);
+            free(one);
+            free(update_log);
+            free(update);
+            free(other_log);
+            free(base_log);
+            free(other);
+            free(own);
+        }
+#endif
         { /* a file manager that does not open: where the file is, and why */
             char* said = snx_format("scarletnx.log is in %s; Could not open %s: no file manager here", share, share);
             app.open_url = refuse_url;
@@ -12425,6 +12541,8 @@ int main(int argc, char** argv) {
         }
         free(app.data_dir);
         app.data_dir = installed_dir;
+        assert(run_was ? !snx_write_file(app.run_log, run_was, run_was_size) : !remove(app.run_log));
+        free(run_was);
         assert(!snx_remove_tree(app.state_dir));
         free(app.state_dir);
         app.state_dir = own_state;

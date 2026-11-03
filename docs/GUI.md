@@ -317,10 +317,13 @@ two; left out, none) and `language` (`auto`, `en` or a
   `zh-SG` simplified, `zh-TW`, `zh-HK`, `zh-MO` traditional): a system in one never takes a catalog of the other. The
   words change at once; a phrase the language has not translated stays English.
 - **Share Log** asks how. **Share Zip** saves `scarletnx-logs-2026-10-28_14-05-33.zip`. Its `summary.txt` holds the message on the screen,
-  the newest game log's summary, the last run's output, the queue's recompiles' (`last-recompile.log`), the launcher's
-  own log and its fatal errors (below) and the game log. Beside it, whole, the launcher's logs (`launcher/`) and the
-  games' logs of the last 14 days, each game's runs under `games/<its name> [<its folder>]/` by when each was last
-  written; in every file a home folder is written `~`. **Share Log** saves that summary alone as `scarletnx.log`. Either
+  the summary of the last run's game log, the last run's output, the queue's recompiles' (`last-recompile.log`), the
+  launcher's own log and its fatal errors (below) and that game log: the one the run's output names (`log: written to
+  <path>`, which the runtime prints as it makes it), an update's named after its program. A run that names none (it
+  ended before its game's code loaded) shares `== no game log ==` and why, never another game's log; with no run kept,
+  the newest game log. Beside it, whole, the launcher's logs (`launcher/`) and the games' logs of the last 14 days, each
+  game's runs, its updates' too, under `games/<its name> [<its folder>]/` by when each was last written; in every file
+  a home folder is written `~`. **Share Log** saves that summary alone as `scarletnx.log`. Either
   goes in `share/` of Folders' Logs (`~/.local/state/scarletnx/share/`; on iOS Documents' `logs/share/`, which the Files
   app shows), emptied of what was shared before, and that folder opens in the system's file manager, to share from
   there. **Open Logs Folder** opens Folders' Logs, where they all are. After a run or a recompile of the queue that
