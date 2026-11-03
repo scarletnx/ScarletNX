@@ -126,9 +126,10 @@ The module is what a Vulkan pipeline takes; the OpenGL ES side of it is the back
   gave (-1 for none), and takes the set and binding it writes. A nonzero answer refuses the shader, and two resources
   at one place, or a set or binding past 65535, are errors. Without a map (`bind` NULL), a resource keeps the set and
   binding it gives, and one without a binding takes the first free binding of set 0, in declaration order.
-- **Loose uniforms** are the members of one block, `gl_DefaultUniformBlock`, laid out as std140, at the first free
-  binding of set 0 after every other resource. Its entry in `result.reflect` has an empty name, and each uniform's
-  entry its offset.
+- **Loose uniforms** are the members of one block, `gl_DefaultUniformBlock`, laid out as std140. It takes the first
+  free binding of set 0 once every other resource is placed, whether by the source, by glslc or by a binding map;
+  the map is not asked about it. Its entry in `result.reflect` has an empty name and that binding, and each
+  uniform's entry its offset in it.
 - **Blocks** are std140 for uniform blocks and std430 for buffer blocks unless they say otherwise; `shared` and
   `packed` are laid out as std140. A buffer block is a StorageBuffer variable, as SPIR-V 1.3 has them. Their offsets
   and strides are glslangValidator's, which the tests check. A bool in a block is a uint there, as Vulkan has no bool
