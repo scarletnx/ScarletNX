@@ -942,9 +942,8 @@ static struct {
         size_t size;
     } * items;
     size_t count, capacity;
-    uint64_t random;      /* rand()'s state */
     unsigned char locale; /* the locale_t that newlocale and uselocale give: the C locale */
-} g_win = {PTHREAD_MUTEX_INITIALIZER, NULL, 0, 0, 1, 0};
+} g_win = {PTHREAD_MUTEX_INITIALIZER, NULL, 0, 0, 0};
 static void c_locale(CPU* c, void* data) {
     (void)data;
     X(0) = (uint64_t)(uintptr_t)&g_win.locale;
@@ -1041,23 +1040,55 @@ static void g_malloc_usable_size(CPU* c, void* data) {
     X(0) = aligned ? size : X(0) ? _msize(PTR(0)) : 0;
 }
 /* bionic's rand() is random(): 31 bits, where Windows' RAND_MAX is 32767 */
-static void g_rand(CPU* c, void* data) {
-    (void)data;
-    pthread_mutex_lock(&g_win.lock);
-    g_win.random ^= g_win.random << 13;
-    g_win.random ^= g_win.random >> 7;
-    g_win.random ^= g_win.random << 17;
-    uint64_t r = g_win.random;
-    pthread_mutex_unlock(&g_win.lock);
-    X(0) = (r >> 33) & 0x7fffffff;
-}
-static void g_srand(CPU* c, void* data) {
-    (void)data;
-    pthread_mutex_lock(&g_win.lock);
-    g_win.random = X(0) ? (uint64_t)(uint32_t)X(0) * 0x9e3779b97f4a7c15ull : 1;
-    pthread_mutex_unlock(&g_win.lock);
-}
 #endif
+
+/* ---- rand and random: bionic's sequence on every host ----
+   bionic's rand() is random(), the BSD additive feedback generator: 31 words of state, the feedback 3 words apart,
+   seeded by the Park-Miller recurrence (16807 x mod 2^31 - 1) and run 310 times. glibc's rand() is the same, but
+   FreeBSD's and macOS's are other generators, and a game that seeds it with a constant to make a key (a decryption's
+   table) needs this one's numbers. A seed of 0 is 1, as glibc's (the game's numbers were made on it) */
+static struct {
+    pthread_mutex_t lock;
+    uint32_t state[31];
+    int front, rear;
+    bool seeded;
+} g_random_state = {.lock = PTHREAD_MUTEX_INITIALIZER};
+
+static int32_t park_miller(int32_t x) {
+    int32_t hi = x / 127773, lo = x % 127773;
+    x = 16807 * lo - 2836 * hi; /* Schrage's: no product passes 2^31 */
+    return x < 0 ? x + 0x7fffffff : x;
+}
+static uint32_t next_random(void) {
+    uint32_t* s = g_random_state.state;
+    s[g_random_state.front] += s[g_random_state.rear];
+    uint32_t v = (s[g_random_state.front] >> 1) & 0x7fffffff;
+    if (++g_random_state.front == 31) g_random_state.front = 0;
+    if (++g_random_state.rear == 31) g_random_state.rear = 0;
+    return v;
+}
+static void seed_random(uint32_t seed) {
+    uint32_t* s = g_random_state.state;
+    s[0] = seed ? seed : 1;
+    for (int i = 1; i < 31; ++i) s[i] = (uint32_t)park_miller((int32_t)s[i - 1]);
+    g_random_state.front = 3;
+    g_random_state.rear = 0;
+    for (int i = 0; i < 310; ++i) next_random();
+    g_random_state.seeded = true;
+}
+static void g_random(CPU* c, void* data) {
+    (void)data;
+    pthread_mutex_lock(&g_random_state.lock);
+    if (!g_random_state.seeded) seed_random(1); /* as srand(1), before any call */
+    X(0) = next_random();
+    pthread_mutex_unlock(&g_random_state.lock);
+}
+static void g_srandom(CPU* c, void* data) {
+    (void)data;
+    pthread_mutex_lock(&g_random_state.lock);
+    seed_random((uint32_t)X(0));
+    pthread_mutex_unlock(&g_random_state.lock);
+}
 
 /* the host functions that PASS calls: GNU C takes a function's address as a data pointer */
 #define P(name)          {#name, hle_pass, (void*)name}
@@ -1170,11 +1201,7 @@ const HleSymbol hle_libc[] = {
     T(ldexp, d_di), T(frexp, d_dp), T(modf, d_dp), T(frexpf, f_fp), T(modff, f_fp),
     T(atof, d_p), T(strtod, d_pp), T(strtof, f_pp),
     {"sincos", sincos_d, NULL}, {"sincosf", sincos_f, NULL}, {"difftime", difftime_, NULL},
-#ifdef _WIN32
-    {"rand", g_rand, NULL}, {"srand", g_srand, NULL},
-#else
-    P(rand), P(srand),
-#endif
+    {"rand", g_random, NULL}, {"random", g_random, NULL}, {"srand", g_srandom, NULL}, {"srandom", g_srandom, NULL},
     P(div), P(feclearexcept), P(fetestexcept),
     {"", NULL, NULL},
 };
