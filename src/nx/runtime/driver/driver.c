@@ -199,6 +199,51 @@ static int stamped(const char* base) {
     free(made);
     return same;
 }
+/* size bytes of text on one line: a line break as \n, any other byte that is not printable ASCII as ?. Owned */
+static char* one_line(const char* text, size_t size) {
+    char* out = (char*)snx_alloc(size * 2 + 1);
+    size_t i, n = 0;
+    for (i = 0; i < size; ++i)
+        if (text[i] == '\n') {
+            out[n++] = '\\';
+            out[n++] = 'n';
+        } else
+            out[n++] = text[i] >= ' ' && text[i] <= '~' ? text[i] : '?';
+    out[n] = 0;
+    return out;
+}
+/* why a game made before is recompiled before it plays (the condition in play_dump): its code gone, or its stamp not
+   the one this build makes with the mods its game plays now, the one found and the one expected named */
+static void say_remade(const char* code, const char* base) {
+    char *made, *expected, *stamp, *found, *shown, *wanted;
+    size_t size = 0;
+    if (!snx_is_file(code)) {
+        printf("%s is not there: the game is recompiled before it plays\n", code);
+        return;
+    }
+    made = snx_game_mods_stamp(base);
+    expected = snx_game_stamp(made);
+    if (!snx_game_stamp_is(base, expected)) {
+        stamp = snx_format("%s.abi", base);
+        found = (char*)snx_read_file(stamp, &size);
+        wanted = one_line(expected, strlen(expected));
+        if (found) {
+            shown = one_line(found, snx_game_stamp_size(found, size));
+            printf("%s holds \"%s\", and this build with the mods played now makes \"%s\": the game is recompiled "
+                   "before it plays\n",
+                   stamp, shown, wanted);
+            free(shown);
+        } else
+            printf("%s is not there, and this build with the mods played now makes \"%s\": the game is recompiled "
+                   "before it plays\n",
+                   stamp, wanted);
+        free(wanted);
+        free(found);
+        free(stamp);
+    }
+    free(expected);
+    free(made);
+}
 #endif
 /* a game the recompile made, named by its folder (recompiled/<id>) or its program there (recompiled/<id>/<id>, .exe on
    Windows): 1 with its folder and name, owned when asked for. A game an older version laid out beside the others is not
@@ -894,6 +939,7 @@ made:
 #ifdef SNX_IOS
     if (nro || (flags & SNX_RECOMP) || !snx_is_file(code)) {
 #else
+    if (!nro && !(flags & SNX_RECOMP) && snx_is_file(game)) say_remade(code, base); /* a made game's: why */
     if (nro || (flags & SNX_RECOMP) || !snx_is_file(game) || !snx_is_file(code) || !stamped(base)) {
 #endif
         command[5] = "-r";
