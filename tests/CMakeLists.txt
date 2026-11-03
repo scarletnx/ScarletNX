@@ -1209,6 +1209,14 @@ snx_test_target(snx-test-upscale-select 99)
 target_include_directories(snx-test-upscale-select PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME upscale_select COMMAND snx-test-upscale-select)
 
+# the HDR setting's names and the numbers the shaders run (gpu/vk/hdr_select.c), held to the standards
+add_executable(snx-test-hdr-select hdr_select.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/hdr_select.c"
+    "${PROJECT_SOURCE_DIR}/tests/support/hdr_ref.c")
+snx_test_target(snx-test-hdr-select 99)
+target_include_directories(snx-test-hdr-select PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/tests")
+target_link_libraries(snx-test-hdr-select PRIVATE m)
+add_test(NAME hdr_select COMMAND snx-test-hdr-select)
+
 # a runtime hotkey's setting (common/utilities/keybind.c): its names, modifiers, spaces, the event and the capture
 include("${PROJECT_SOURCE_DIR}/cmake/keybind.cmake")
 add_executable(snx-test-keybind keybind.c)

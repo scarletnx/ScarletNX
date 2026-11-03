@@ -695,7 +695,8 @@ static bool picks_have(App* app, const char* line) {
 /* Settings > Hotkeys: Enter on the cycle key waits, a modifier alone still waits, Ctrl+T is kept, and ESC keeps it */
 static void hotkey_capture(App* app) {
     static const char list[] =
-        "Hotkeys\tupscaler_key\tctrl+u\ttext\t0\t0\tThe key that cycles the upscaler\tUpscaler cycle key\t\n";
+        "Hotkeys\tupscaler_key\tctrl+u\ttext\t0\t0\tThe key that cycles the upscaler\tUpscaler cycle key\t\n"
+        "Hotkeys\thdr_key\tctrl+h\ttext\t0\t0\tThe key that turns HDR on and off\tHDR key\t\n";
     int row;
     settings_forget(app);
     assert(!gui_settings_read(&app->settings, list));
@@ -717,6 +718,15 @@ static void hotkey_capture(App* app) {
     assert(app->key_listen);
     key(app, SDLK_ESCAPE); /* keeps the key it had */
     assert(!app->key_listen && !strcmp(gui_settings_value(&app->settings, "upscaler_key"), "ctrl+t"));
+    /* the row after it takes a key the same way, and its note names the row */
+    row = row_of(app, setting_row(app, "hdr_key"));
+    assert(row >= 0);
+    app->editor.row = row;
+    key(app, SDLK_RETURN);
+    assert(app->key_listen && strstr(app->editor.note, "Press the key"));
+    key_with(app, SDLK_J, SDL_KMOD_CTRL);
+    assert(!app->key_listen && !strcmp(gui_settings_value(&app->settings, "hdr_key"), "ctrl+j"));
+    assert(strstr(app->editor.note, "HDR key: ctrl+j"));
     settings_forget(app);
 }
 static void players_view(App* app) {
