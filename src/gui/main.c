@@ -48,6 +48,8 @@
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/pad_screen.h"
 #include "common/utilities/users.h"
+#include "common/utilities/mii_db.h"
+#include "common/utilities/mii_model.h"
 #include "common/utilities/setup.h"
 #ifdef SDL_PLATFORM_ANDROID
 #include "gui/android.h"
@@ -102,10 +104,12 @@ enum {
     GUI_FORM_FREEDRENO, /* Settings > App > Freedreno Settings, or a game's own */
     GUI_FORM_FETCH      /* GPU Drivers > Download Driver */
 };
-/* Settings > User's values: who the games play as, then each user's nickname as it is typed */
+/* Settings > User's values: who the games play as, then each user's nickname as it is typed and Mii (its place in
+   the Mii database, common/utilities/mii_db.h) */
 typedef struct {
     char plays[64];
     char nick[SNX_USERS_MAX][SNX_USERS_NICKNAME_MAX + 1];
+    int mii[SNX_USERS_MAX];
 } GuiUsersForm;
 /* Settings > App > Folders' rows, in the order of their keys in app.ini's [folders] */
 enum { GUI_PLACE_DATA, GUI_PLACE_GAMES, GUI_PLACE_WORK, GUI_PLACE_STATE, GUI_PLACE_CACHE, GUI_PLACES };
@@ -458,6 +462,7 @@ typedef struct App {
     int user;
     char user_name[SNX_USERS_NICKNAME + 1];
     unsigned char* user_jpeg; /* users/<uid>.jpg, user_jpeg_size bytes; NULL for Wimsy */
+    int user_mii;             /* the Mii its picture is drawn from (users.ini's picture=mii), or -1 for the JPEG */
     size_t user_jpeg_size;
     SDL_Texture* user_picture; /* drawn user_side pixels square, in the shape it was drawn for */
     GuiIcon icons[GUI_ICONS];  /* the games' icons drawn so far (game_icon), the oldest replaced first */
@@ -564,7 +569,7 @@ typedef struct App {
     GuiAppForm app_form;
     GuiFrame frame; /* what place_screen measured of the screen it lays out */
     GuiUsersForm users_form;
-    GuiThemeKey users_keys[SNX_USERS_MAX + 1]; /* Current user, then a row a user */
+    GuiThemeKey users_keys[2 * SNX_USERS_MAX + 1]; /* Current user, then a user's nickname and Mii each */
     /* Settings > App > GPU Drivers (gui/gpu_driver.h): the packages of drivers_dir, the launcher's pick for every game
        (app.ini's gpu_driver, "" the system's) and its Freedreno variables (freedreno_env); its page's rows and
        Freedreno Settings', for the launcher's picks or, with drivers_game (a game's program, drivers_title its name),
@@ -613,6 +618,7 @@ typedef struct App {
     char* run_driver; /* the run's --gpu_driver= and --freedreno_env= (gui_run_option), until the next run */
     char* run_freedreno;
     char users_label[SNX_USERS_MAX][32];
+    char users_mii_label[SNX_USERS_MAX][32];
     int language;        /* Settings > App's Language: 0 Auto (the system's), else snx_gui_languages' index + 1 */
     char* games_key;     /* [folders] games = as app.ini had it, recompiled = before it was named so: written again */
     char* text_size_key; /* [app] text_size = as app.ini had it, ui_scale = before it was named so: written again */
@@ -3441,6 +3447,7 @@ static void users_read(App* app) {
     uint32_t size;
     int was;
     app->user = 0;
+    app->user_mii = -1;
     free(app->user_jpeg);
     app->user_jpeg = NULL;
     app->user_jpeg_size = 0;
@@ -3454,6 +3461,7 @@ static void users_read(App* app) {
         snprintf(app->message, sizeof app->message, snx_tr("No user shown: %s"), why);
         return;
     }
+    if (snx_users_notes()[0]) gui_log("%s", snx_users_notes()); /* a Mii or picture not as users.ini says */
     u = snx_users_selected();
     jpeg = snx_users_picture(u, &size);
     if (jpeg && (app->user_jpeg = malloc(size)) != NULL) {
@@ -3461,6 +3469,7 @@ static void users_read(App* app) {
         app->user_jpeg_size = size;
     }
     snprintf(app->user_name, sizeof app->user_name, "%s", u->nickname);
+    app->user_mii = u->picture_mii ? u->mii : -1;
     app->user = snx_users_selected_number();
     if (was) users_migrate(app, was);
 }
@@ -3483,6 +3492,38 @@ static SDL_Texture* picture_texture(App* app, const unsigned char* jpeg, size_t 
         texture = NULL;
     }
     free(pixels);
+    return texture;
+}
+/* database Mii mii's picture (mii_model.h) side pixels square in the theme's shape, as picture_texture makes a
+   JPEG's; *failed when it could not be drawn (no memory) */
+static SDL_Texture* mii_texture(App* app, int mii, int side, bool* failed) {
+    int round = app->theme.picture == GUI_PICTURE_ROUND, x, y;
+    uint8_t charinfo[SNX_MII_CHARINFO], *rgba = side > 0 ? malloc((size_t)side * (size_t)side * 4) : NULL;
+    SnxMiiLook look;
+    SDL_Texture* texture = NULL;
+    *failed = true;
+    if (!rgba) return NULL;
+    snx_mii_db_charinfo((uint32_t)mii, charinfo);
+    snx_mii_db_look((uint32_t)mii, &look);
+    if (!snx_mii_picture(charinfo, &look, side, rgba)) {
+        /* ARGB8888 (B, G, R, A in memory) with the alpha premultiplied, cut to the circle when the theme's is round */
+        for (y = 0; y < side; ++y)
+            for (x = 0; x < side; ++x) {
+                uint8_t* p = rgba + 4 * ((size_t)y * (size_t)side + (size_t)x);
+                float dx = (float)x + 0.5f - (float)side / 2, dy = (float)y + 0.5f - (float)side / 2;
+                float a = round ? SDL_clamp((float)side / 2 - SDL_sqrtf(dx * dx + dy * dy) + 0.5f, 0.0f, 1.0f) : 1.0f;
+                uint8_t r = p[0], g = p[1], b = p[2];
+                p[0] = (uint8_t)(b * a), p[1] = (uint8_t)(g * a), p[2] = (uint8_t)(r * a), p[3] = (uint8_t)(255 * a);
+            }
+        texture = SDL_CreateTexture(app->renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, side, side);
+        if (texture && (!SDL_UpdateTexture(texture, NULL, rgba, side * 4) ||
+                        !SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND_PREMULTIPLIED))) {
+            SDL_DestroyTexture(texture);
+            texture = NULL;
+        }
+        *failed = !texture;
+    }
+    free(rgba);
     return texture;
 }
 /* the icon of the game whose program is at path, as its row shows it: its icon.jpg drawn once, then kept; NULL for
@@ -3947,7 +3988,8 @@ static SDL_Texture* user_texture(App* app, int side) {
     bool failed;
     if (!app->previewing && app->user_picture && app->user_side == side && app->user_shape == (int)app->theme.picture)
         return app->user_picture;
-    texture = picture_texture(app, app->user_jpeg, app->user_jpeg_size, side, &failed);
+    texture = app->user_mii >= 0 ? mii_texture(app, app->user_mii, side, &failed)
+                                 : picture_texture(app, app->user_jpeg, app->user_jpeg_size, side, &failed);
     if (app->previewing) return texture;
     if (failed) {
         snprintf(app->message, sizeof app->message, snx_tr("%s's picture could not be drawn: Wimsy shows"),
@@ -4064,7 +4106,8 @@ static void render_users(App* app) {
             const unsigned char* jpeg = snx_users_picture(&g_users[user], &size);
             bool failed;
             SDL_DestroyTexture(app->users_pictures[user]);
-            app->users_pictures[user] = picture_texture(app, jpeg, size, side, &failed);
+            app->users_pictures[user] = g_users[user].picture_mii ? mii_texture(app, g_users[user].mii, side, &failed)
+                                                                  : picture_texture(app, jpeg, size, side, &failed);
         }
         if (app->users_pictures[user]) {
             SDL_FRect at = {(float)(b.x + b.w - 2 * s - side), (float)(b.y + 2 * s), (float)side, (float)side};
@@ -8693,7 +8736,7 @@ static void group_view(App* app, int g) {
 static bool users_group(const App* app, int g) {
     return g > 0 && g < app->groups && !strcmp(app->group_keys[g].key, "User");
 }
-/* its rows, Current user then a user each with its nickname: how many */
+/* its rows, Current user then a user each with its nickname and its Mii: how many */
 static int users_fill(App* app) {
     int i, plays = settings_user(app);
     snprintf(app->users_form.plays, sizeof app->users_form.plays, snx_tr("User %d: %s"), plays,
@@ -8725,8 +8768,31 @@ static int users_fill(App* app) {
             0,
             NULL};
     }
-    return i + 1;
+    /* each user's rows: its nickname, then its Mii, one of the Mii database's */
+    for (i = g_user_count < SNX_USERS_MAX ? g_user_count : SNX_USERS_MAX; i-- > 0;) {
+        snprintf(app->users_mii_label[i], sizeof app->users_mii_label[i], snx_tr("User %d Mii"), i + 1);
+        app->users_form.mii[i] = g_users[i].mii;
+        app->users_keys[2 * i + 1] = app->users_keys[i + 1];
+        app->users_keys[2 * i + 2] = (GuiThemeKey){"",
+                                                   app->users_mii_label[i],
+                                                   GUI_KEY_WORD,
+                                                   offsetof(GuiUsersForm, mii) + (size_t)i * sizeof(int),
+                                                   sizeof(int),
+                                                   snx_mii_db_names(),
+                                                   0,
+                                                   SNX_TR_NOOP("Its Mii, which the games get as the user's and its "
+                                                               "picture shows unless it has a picture file"),
+                                                   0,
+                                                   0,
+                                                   0,
+                                                   0,
+                                                   NULL};
+    }
+    return 2 * (g_user_count < SNX_USERS_MAX ? g_user_count : SNX_USERS_MAX) + 1;
 }
+/* a row of Settings > User past Current user: its user's number, and whether it is the Mii's row */
+static int users_row_user(int row) { return (row + 1) / 2; }
+static bool users_row_mii(int row) { return row > 0 && !(row % 2); }
 static void open_users(App* app, int g, int row) {
     int n = users_fill(app);
     gui_editor_form(&app->editor, app->users_keys, n, &app->users_form, NULL);
@@ -9637,10 +9703,25 @@ static void plays_as_step(App* app, int step) {
    the user's number, the row showing the nickname users.ini has: the note reaches the launcher's log, which players
    attach to public reports */
 static void users_commit(App* app) {
-    int number = app->editor.row;
+    int number = users_row_user(app->editor.row);
     char why[512], *nick;
     app->editor.dirty = false;
     if (number < 1 || number > g_user_count) return;
+    if (users_row_mii(app->editor.row)) { /* a Mii picked: users.ini's mii=, and the pictures drawn again */
+        const char* name = snx_mii_db_name((uint32_t)app->users_form.mii[number - 1]);
+        if (!name || app->users_form.mii[number - 1] == g_users[number - 1].mii) return;
+        if (!app->users_dir || snx_users_set(app->users_dir, number, "mii", name, why, sizeof why)) {
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("User %d's Mii is not written: %s"), number,
+                     app->users_dir ? why : snx_tr("no users/ folder"));
+            say_failure(app, app->editor.note);
+        } else {
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("User %d's Mii is %s now"), number, name);
+            users_read(app);  /* the head's picture */
+            users_close(app); /* the box's pictures, drawn again when it opens */
+        }
+        users_fill(app);
+        return;
+    }
     nick = app->users_form.nick[number - 1];
     if (!strcmp(nick, g_users[number - 1].nickname)) return;
     if (!app->users_dir || snx_users_rename(app->users_dir, number, nick, why, sizeof why)) {
@@ -10541,6 +10622,7 @@ static void editor_key(App* app, GuiKey key) {
     app->warn_until = 0;
     app->warn_key[0] = 0;
     if (app->form == GUI_FORM_USERS && app->editor.typing && key == GUI_SELECT && app->editor.row > 0 &&
+        !users_row_mii(app->editor.row) &&
         !snx_users_nickname_valid(app->editor.text)) { /* a nickname refused in its dialog, which goes on */
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s is not a nickname: %s"), app->editor.text,
                  snx_tr(SAY_SETUP_NICKNAME));
@@ -11110,7 +11192,7 @@ static const char* const typed_choices[2] = {SNX_TR_NOOP("OK"), SNX_TR_NOOP("Can
 #define SAY_NICKNAME_TAKES SNX_TR_NOOP("A nickname, 1 to 32 bytes, no control character, no space at either end")
 /* what the row typed takes, in out: its key's, a nickname's on Settings > User */
 static void typed_takes(const App* app, char* out, size_t size) {
-    if (app->form == GUI_FORM_USERS && app->editor.row > 0)
+    if (app->form == GUI_FORM_USERS && app->editor.row > 0 && !users_row_mii(app->editor.row))
         snprintf(out, size, "%s", snx_tr(SAY_NICKNAME_TAKES));
     else
         gui_editor_takes(&app->editor, out, size);

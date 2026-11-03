@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The generated MiiModel archive (src/nx/hle/filesystem/mii_model.c, included for its drawing functions) against the
+/* The generated MiiModel archive (src/common/utilities/mii_model.c, included for its drawing functions) against the
    layout the SDK reads: each file's header and part tables, every part of the console's part list present (and none
    of its absent ones), each part's zlib stream and the data in it. A texture's size is the block linear layout's for
    its format, size and levels (the largest of each kind sizes the SDK's pool), and every level, taken out of the
    layout and decoded by tests/support's ASTC and BCn decoders, is the drawing it was made from; a shape's attributes,
    triangles and box agree, its normals face out of the head, and the mask maps the SDK's composed texture where the
    face is. */
-#include "nx/hle/filesystem/mii_model.c"
+#include "common/utilities/mii_model.c"
 #include "nx/gpu/texture/blocklinear.h"
 #include "common/utilities/endian.h"
 #include "support/astc.h"
@@ -400,6 +400,60 @@ static void check_shapes(const u8* f, u32 size) {
         CHECK(snx_ld_le32(f + 0xc + 4 * k) == largest[k] && largest[k] && snx_ld_le32(f + 0x3c + 4 * k) == 4);
 }
 
+/* a pixel of a picture side pixels wide at the model's (x, y): its RGB */
+static const u8* pic_at(const u8* rgba, int side, float x, float y) {
+    int px = (int)((x + 42.0f) / 84.0f * (float)side), py = (int)((76.0f - y) / 84.0f * (float)side);
+    return rgba + 4 * (py * side + px);
+}
+/* count of the pixels in the box (x0, y0)-(x1, y1) of model units that pass is */
+static int pic_count(const u8* rgba, int side, float x0, float y0, float x1, float y1, int (*is)(const u8*)) {
+    int n = 0;
+    float x, y;
+    for (y = y0; y <= y1; y += 0.5f)
+        for (x = x0; x <= x1; x += 0.5f) n += is(pic_at(rgba, side, x, y));
+    return n;
+}
+static int is_red_eye(const u8* p) { return p[0] > 110 && p[1] < 60 && p[2] < 60; }
+static int is_white(const u8* p) { return p[0] > 215 && p[1] > 215 && p[2] > 215; }
+static int is_crimson(const u8* p) { return p[0] > 2 * p[1] && p[2] > p[1] && p[0] > 90; }
+static int is_teal(const u8* p) { return p[1] > p[0] + 40 && p[2] > p[0] + 30; }
+static const u8* g_pic_corner; /* is_corner's picture */
+static int is_corner(const u8* p) {
+    return abs(p[0] - g_pic_corner[0]) < 40 && abs(p[1] - g_pic_corner[1]) < 40 && abs(p[2] - g_pic_corner[2]) < 40;
+}
+/* the pictures (snx_mii_picture) of our own Miis: the background of the favorite color, the hair on top and in two
+   tails at the sides, skin in the middle, the eyes in their color with their whites on the face */
+static void check_picture(void) {
+    static u8 rgba[128 * 128 * 4];
+    u8 ci[SNX_MII_CHARINFO];
+    SnxMiiLook look;
+    const u8* p;
+    snx_mii_db_charinfo(0, ci); /* Baguette: crimson twin tails, red eyes, red favorite */
+    snx_mii_db_look(0, &look);
+    CHECK(snx_mii_picture(ci, &look, 15, rgba) == -1 && snx_mii_picture(ci, &look, 1025, rgba) == -1);
+    CHECK(snx_mii_picture(ci, &look, 128, rgba) == 0);
+    p = rgba; /* a corner: the background, the favorite red lightened */
+    CHECK(p[3] == 255 && p[0] > p[1] + 30 && p[0] > 200);
+    CHECK(is_crimson(pic_at(rgba, 128, 0, 64)));                    /* the crown */
+    p = pic_at(rgba, 128, 0, 28);                                   /* between the eyes and the mouth */
+    CHECK(p[0] > 170 && p[1] > 130 && p[2] > 90 && !is_crimson(p)); /* skin */
+    CHECK(pic_count(rgba, 128, -16, 30, -3, 38, is_red_eye) > 3);   /* an eye, red */
+    CHECK(pic_count(rgba, 128, 3, 30, 16, 38, is_red_eye) > 3);     /* the other */
+    CHECK(pic_count(rgba, 128, -16, 30, 16, 38, is_white) > 3);     /* their whites */
+    CHECK(pic_count(rgba, 128, -40, 0, -27, 30, is_crimson) > 20);  /* a tail at each side */
+    CHECK(pic_count(rgba, 128, 27, 0, 40, 30, is_crimson) > 20);
+    CHECK(pic_count(rgba, 128, -12, 21, 12, 27, is_crimson) == 0); /* no hair over the cheeks, between eyes and mouth */
+    snx_mii_db_charinfo(1, ci);                                    /* Leek Girl: teal */
+    snx_mii_db_look(1, &look);
+    CHECK(snx_mii_picture(ci, &look, 128, rgba) == 0);
+    CHECK(is_teal(pic_at(rgba, 128, 0, 64)) && pic_count(rgba, 128, -40, 0, -27, 40, is_teal) > 20);
+    snx_mii_db_charinfo(3, ci); /* Alex: short hair, no tails */
+    snx_mii_db_look(3, &look);
+    CHECK(snx_mii_picture(ci, &look, 128, rgba) == 0);
+    g_pic_corner = rgba; /* nothing of it beside the cheeks: the background there, as in its corner */
+    CHECK(pic_count(rgba, 128, -40, 10, -32, 24, is_corner) > 100 && !is_teal(pic_at(rgba, 128, 0, 64)));
+}
+
 int main(void) {
     u32 i, sizes[6];
     for (i = 0; i < SNX_MII_MODEL_FILES; i++) {
@@ -424,6 +478,7 @@ int main(void) {
     check_textures(g_mii_model.files[0], sizes[0], 0);
     check_textures(g_mii_model.files[2], sizes[2], 1);
     check_shapes(g_mii_model.files[4], sizes[4]);
+    check_picture();
     /* the six files with the RomFS's tables fit the room fs.h keeps for them */
     CHECK(sizes[0] + sizes[2] + sizes[4] + 0x1000 <= 0x500000);
     if (g_mii_model.fails) return 1;

@@ -2865,6 +2865,15 @@ msgid "Its nickname, as the games show it: 1 to 32 bytes, no control character, 
 msgstr "O apelido, como os jogos o mostram: 1 a 32 bytes, sem caractere de controle, sem espaço nas pontas"
 
 #: src/gui/main.c
+#, c-format
+msgid "User %d Mii"
+msgstr "Mii do usuário %d"
+
+#: src/gui/main.c
+msgid "Its Mii, which the games get as the user's and its picture shows unless it has a picture file"
+msgstr "O Mii dele, que os jogos recebem como o do usuário e que a foto mostra quando ele não tem um arquivo de foto"
+
+#: src/gui/main.c
 msgid "System driver"
 msgstr ""
 
@@ -3238,12 +3247,22 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "User %d's new nickname is not written: %s"
-msgstr "O novo apelido do usuário %d não foi gravado: %s"
+msgid "User %d's Mii is not written: %s"
+msgstr "O Mii do usuário %d não foi gravado: %s"
 
 #: src/gui/main.c
 msgid "no users/ folder"
 msgstr "sem pasta users/"
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's Mii is %s now"
+msgstr "O Mii do usuário %d agora é %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's new nickname is not written: %s"
+msgstr "O novo apelido do usuário %d não foi gravado: %s"
 
 #: src/gui/main.c
 #, c-format

@@ -25,5 +25,7 @@ void snx_users_init(void) {
     memcpy(g_host.acc.users_dir, dir, strlen(dir) + 1); /* where acc:su writes users.ini */
     /* neither the folder nor the nickname: players attach the log to public reports, and both can name them */
     LOG("acc: %d user%s, playing as user %d\n", g_user_count, g_user_count == 1 ? "" : "s", snx_users_selected_number());
+    /* each user's Mii and picture not taken as users.ini says them: what it says and what is in effect */
+    if (snx_users_notes()[0]) LOG("%s", snx_users_notes());
     free(dir);
 }

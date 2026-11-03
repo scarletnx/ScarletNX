@@ -6,7 +6,11 @@
    a [user1] without one) the uid ScarletNX always gave it (SNX_USERS_FIRST_UID0 and 1), so the saves made before there
    were others stay its own. Without users.ini it is the only user, "Player". A nickname is what the console's account
    service keeps (SwitchBrew's ProfileBase): 1 to 32 bytes of UTF-8, with no control character, and no space at
-   either end, which users.ini would not keep. Anything users.ini says that is not a user is refused */
+   either end, which users.ini would not keep. Anything users.ini says that is not a user is refused, but for a user's
+   Mii and picture, which never stop anything: mii= names the user's Mii in the Mii database (mii_db.h), its first
+   (Baguette) without one or for a name the database does not hold; picture= mii draws the user's picture from that
+   Mii, file takes users/<uid>.jpg, and without one (or for another word) it is file when the user has that file, else
+   mii. What was read where it was not taken is in snx_users_notes */
 #ifndef SNX_COMMON_USERS_H
 #define SNX_COMMON_USERS_H
 #include <stddef.h>
@@ -25,6 +29,8 @@ typedef struct {
     unsigned char user_data[SNX_USERS_DATA]; /* users.ini's user_data, as a program stored it; zeros without one */
     int unsaved;                             /* registered (snx_users_begin), not yet in users.ini (snx_users_save) */
     uint32_t picture_at, picture_size; /* users/<uid>.jpg, in users.c's one block of pictures */
+    uint8_t mii;                       /* the user's Mii: its place in the Mii database */
+    uint8_t picture_mii;               /* 1: the picture is drawn from the Mii; 0: users/<uid>.jpg (or Wimsy) */
 } SnxUser;
 extern SnxUser g_users[SNX_USERS_MAX]; /* user 1 first, g_user_count of them */
 extern int g_user_count;
@@ -43,6 +49,12 @@ const SnxUser* snx_users_find(const uint64_t uid[2]);                        /* 
 const SnxUser* snx_users_selected(void);                                     /* the user playing (the .ini's user) */
 int snx_users_selected_number(void);                                         /* and its number, 1 to g_user_count */
 const unsigned char* snx_users_picture(const SnxUser* user, uint32_t* size); /* the JPEG, or NULL and 0 */
+/* the last load's lines about a user's mii= and picture=, each the value read (or none) and the one in effect, a
+   line a user: "" when every user had both, as they are taken */
+const char* snx_users_notes(void);
+/* user number's (1-based) key= in dir's users.ini set to value, its other lines as they were; with no users.ini, user
+   1's starts it. mii takes a database Mii's name, picture mii or file: 0, or -1 with why */
+int snx_users_set(const char* dir, int number, const char* key, const char* value, char* why, size_t why_size);
 /* 1 when nickname follows the rule: SNX_USERS_NICKNAME_MIN to _MAX bytes of UTF-8 (no overlong form, no surrogate, up
    to U+10FFFF), no control character (C0, DEL, C1), and no space at either end */
 int snx_users_nickname_valid(const char* nickname);

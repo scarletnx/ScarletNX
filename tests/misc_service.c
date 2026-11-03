@@ -1416,6 +1416,37 @@ static void test_mii_own(void) {
     svcobj_unref(db);
     svcobj_unref(service);
 }
+/* the user playing's Mii (users.ini's mii=) first in the database, the others after it in their order: a game that
+   takes the database's first takes it, and finds each Mii again at its listed place */
+static void test_mii_user(void) {
+    SvcObj* service = new_mii();
+    Request r;
+    static const u32 order[11] = {2, 0, 1, 3, 4, 5, 6, 7, 8, 9, 10};
+    u32 i;
+    request(&r, 0);
+    call(service, &r);
+    SvcObj* db = r.c.out_objs[0];
+    g_users[0].mii = 2; /* Phone Girl */
+    request(&r, 4);
+    argument32(&r, 0, 1);
+    r.c.nb = 1;
+    r.c.b[0].addr = 0x6000;
+    r.c.b[0].size = 11 * 0x58;
+    call(db, &r);
+    CHECK(reply32(&r, 0) == 11);
+    for (i = 0; i < 11; i++) {
+        u8 want[SNX_MII_CHARINFO];
+        snx_mii_db_charinfo(order[i], want);
+        CHECK(!memcmp(g_mem + 0x6000 + i * 0x58, want, sizeof want));
+        request(&r, 21);
+        memcpy(r.raw, want, sizeof want);
+        call(db, &r);
+        CHECK(reply32(&r, 0) == i);
+    }
+    g_users[0].mii = 0;
+    svcobj_unref(db);
+    svcobj_unref(service);
+}
 /* UpdateLatest (5) and GetIndex (21) of a Mii not in the database (a default's random create id): NotFound, whatever
    the source. A game that asks UpdateLatest for the Mii its save holds at boot got an empty CharInfo from a success,
    built no Mii from it, and crashed. A database Mii is found by its create id */
@@ -1551,6 +1582,7 @@ int main(void) {
     test_mii_random();
     test_mii_database();
     test_mii_own();
+    test_mii_user();
     test_acc_resource_cache();
     test_prepo_reports();
     test_mii_latest();

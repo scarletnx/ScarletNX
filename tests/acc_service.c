@@ -1377,6 +1377,55 @@ static void test_refused(void) {
 
 void pm_init(PMutex* m) { (void)m; }
 
+/* a user's Mii and picture (users.ini's mii= and picture=): never a stop. With no users.ini, no key or a name the Mii
+   database does not hold, the database's first (Baguette); picture= mii or file, else file for a user with a picture
+   file and mii for one without. Every one not taken as read leaves a line with the value read and the one in effect */
+static void test_mii(void) {
+    char why[512], *text;
+    size_t size;
+    gone("users.ini");
+    gone(UID1 ".jpg");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    CHECK(g_users[0].mii == 0 && g_users[0].picture_mii == 1);
+    CHECK(strstr(snx_users_notes(), "[user1] mii=(none): Baguette; picture=(none): mii") != NULL);
+    /* a name from the database, as written; one it does not hold is the first, said with what was read */
+    put_ini("[user1]\nmii=Leek Girl\npicture=mii\n[user2]\nuid=" UID2 "\nnickname=Second\nmii=Bogus Name\n"
+            "picture=photo\n");
+    put(UID2 ".jpg", jpeg, sizeof jpeg);
+    CHECK(snx_users_load(DIR, 2, why, sizeof why) == 0);
+    if (strstr(snx_users_notes(), "[user1]")) fprintf(stderr, "notes: %s", snx_users_notes());
+    CHECK(g_users[0].mii == 1 && g_users[0].picture_mii == 1 && !strstr(snx_users_notes(), "[user1]"));
+    CHECK(g_users[1].mii == 0 && g_users[1].picture_mii == 0);
+    CHECK(strstr(snx_users_notes(), "[user2] mii=Bogus Name, no Mii of the database: Baguette; "
+                                    "picture=photo, neither mii nor file: file") != NULL);
+    /* picture=file without a file is Wimsy's, picture=mii with one the Mii's; a case other than the name's is none */
+    put_ini("[user1]\nmii=phone girl\npicture=file\n[user2]\nuid=" UID2 "\nnickname=Second\nmii=Phone Girl\n"
+            "picture=mii\n");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    CHECK(g_users[0].mii == 0 && g_users[0].picture_mii == 0 && g_users[1].mii == 2 && g_users[1].picture_mii == 1);
+    CHECK(strstr(snx_users_notes(), "[user1] mii=phone girl, no Mii of the database: Baguette; picture=file: file"));
+    /* set: the line written over the old one, the rest as it was; a name not in the database refused with it */
+    CHECK(snx_users_set(DIR, 1, "mii", "Phone Girl", why, sizeof why) == 0 && g_users[0].mii == 2);
+    CHECK(snx_users_set(DIR, 2, "picture", "file", why, sizeof why) == 0 && g_users[1].picture_mii == 0);
+    CHECK(snx_users_set(DIR, 1, "mii", "Nobody", why, sizeof why) == -1 && strstr(why, "mii=Nobody"));
+    CHECK(snx_users_set(DIR, 1, "picture", "both", why, sizeof why) == -1 && strstr(why, "picture=both"));
+    CHECK(snx_users_set(DIR, 1, "colour", "red", why, sizeof why) == -1 && strstr(why, "colour"));
+    text = (char*)snx_read_file(DIR "/users.ini", &size);
+    CHECK(text && !strcmp(text, "[user1]\nmii=Phone Girl\npicture=file\n[user2]\nuid=" UID2
+                                "\nnickname=Second\nmii=Phone Girl\npicture=file\n"));
+    free(text);
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_users[0].mii == 2 && !g_users[1].picture_mii);
+    /* with no users.ini, user 1's Mii set starts one */
+    gone("users.ini");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    CHECK(snx_users_set(DIR, 1, "mii", "Leek Girl", why, sizeof why) == 0);
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_users[0].mii == 1 &&
+          !strcmp(g_users[0].nickname, "Player"));
+    gone("users.ini");
+    gone(UID2 ".jpg");
+    puts("PASS a user's Mii and picture from users.ini, never a stop");
+}
+
 int main(void) {
     hle_init();
     snx_remove_tree(DIR);
@@ -1408,6 +1457,7 @@ int main(void) {
     test_start();
     test_rename();
     test_refused();
+    test_mii();
     gone("users.ini");
     snx_remove_tree(DIR);
     CHECK(test_objects == 0);

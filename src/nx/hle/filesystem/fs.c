@@ -6,7 +6,7 @@
    the game's dump read in place), save data, the SD card and the system archives */
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/filesystem/fs_tree.h"
-#include "nx/hle/filesystem/mii_model.h"
+#include "common/utilities/mii_model.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/state_io.h"
 #include "nx/runtime/options.h"
