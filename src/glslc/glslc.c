@@ -154,12 +154,13 @@ Glslc* glslc_open(GlslcStage stage, const char* source, size_t size, GlslcResult
 }
 
 int glslc_run(Glslc* g, int last, uint32_t* words, size_t capacity) {
-    (void)last;
     (void)words;
     (void)capacity;
     if (setjmp(g->fail)) return -1;
     glslc_lex(g);
     g->result->version = g->version;
+    if (last == GLSLC_PASS_LEX) return 0;
+    glslc_parse(g);
     return 0;
 }
 
