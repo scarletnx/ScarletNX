@@ -439,6 +439,45 @@ static void test_migrate(void) {
     close(f1);
     close(f2);
 }
+/* The renderer's placed windows (mem_set_placed) and the moves into a GPU's buffer never take the same window: a
+   window the renderer holds doesn't move, and the rest of a window with pages moved isn't offered to the renderer when
+   physical memory commits it (host pages then) */
+static u64 g_fake_held, g_fake_ask; /* the window the renderer holds; the one whose commits it counts */
+static u32 g_fake_asked;
+static int fake_commit(u64 a, u64 size) {
+    (void)size;
+    if ((a & ~(MEM_PLACED - 1)) == g_fake_ask) g_fake_asked++;
+    return -1;
+}
+static int fake_decommit(u64 a, u64 size) {
+    (void)a;
+    (void)size;
+    return 0;
+}
+static int fake_held(u64 a, u64 size) { return g_fake_held && a < g_fake_held + MEM_PLACED && g_fake_held < a + size; }
+static void test_migrate_placed(void) {
+    static const MemPlaced fake = {fake_commit, fake_decommit, fake_held};
+    const u64 a = HEAP_BASE + 40 * MIB, p = (ALIAS_BASE + 0x4000000 + MEM_PLACED - 1) & ~(MEM_PLACED - 1);
+    u8* v;
+    int f = buffer(MIB, &v);
+    mem_set_placed(&fake);
+    CHECK(mem_map(a, 2 * MIB, MS_NORMAL, PERM_RW) == 0);
+    g_fake_held = a; /* the renderer's: it stays */
+    CHECK(!mem_movable(a, MIB) && mem_migrate(a, MIB, f) == MEM_BADSTATE);
+    g_fake_held = 0;
+    CHECK(mem_movable(a, MIB));
+    CHECK(mem_unmap(a, 2 * MIB) == 0);
+    g_fake_ask = p; /* half a window of physical memory, moved, then the other half committed */
+    CHECK(mem_map_physical(p, MIB, 1ull << 30) == 0 && g_fake_asked == 1);
+    CHECK(mem_migrate(p, MIB, f) == 0);
+    CHECK(mem_map_physical(p + MIB, MIB, 1ull << 30) == 0);
+    if (g_fake_asked != 1) fprintf(stderr, "placed: the renderer was offered a window with moved pages\n");
+    CHECK(g_fake_asked == 1);
+    CHECK(mem_unmap_physical(p, 2 * MIB) == 0);
+    mem_set_placed(NULL);
+    munmap(v, (size_t)MIB);
+    close(f);
+}
 #endif
 
 /* GPU-owned physical pages retain their normal guest state after moving into the alias pool. */
@@ -526,6 +565,7 @@ int main(int argc, char** argv) {
     test_physical_pool();
 #if defined(__linux__)
     test_migrate();
+    test_migrate_placed();
 #endif
     CHECK(mapping_depth == 0);
     if (g_ww) CHECK(plat_ww_scan(g_mem, AS_SIZE, on_written) == 0); /* tracking never went off */

@@ -571,6 +571,66 @@ static int check_uma_dispatch(void) {
     return 0;
 }
 
+/* Physical memory as GPU memory where it is (placed maps, VK_EXT_map_memory_placed): a window mapped whole is a chunk
+   of device memory at its guest address, which the GPU reads and writes in place with no import, the CPU's and the
+   GPU's writes each seen by the other; given back and mapped again it reads zero, a new chunk. Write tracking leaves it
+   alone (userfaultfd can't register the driver's mapping) */
+#define UMA_L  (HEAP_BASE + 0x3e00000)
+#define UMA_GL 0x4e5000000ull
+static int check_uma_placed(void) {
+    VkBuffer r, w, rb;
+    u64 ro, wo;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    if (!vk_uma_can_place()) {
+        printf("skip: the device can't map memory where it is told (VK_EXT_map_memory_placed, its unmap reserve)\n");
+        return 0;
+    }
+    int was = vk_uma_placed(1);
+    CHECK(mem_map_physical(UMA_L, 0x200000, ~0ull) == 0);
+    gmmu_map(UMA_GL, UMA_L, 0x200000);
+    CHECK(GP(UMA_L)[0] == 0 && GP(UMA_L)[0x1fffff] == 0);
+    memset(GP(UMA_L) + 0x100, 0x5c, 256); /* the guest CPU's write */
+    vk_lock();
+    u8* result = vk_readback_buffer(256, &rb);
+    CHECK(result && vk_buf_get_input(UMA_GL + 0x100, 256, 4, &r, &ro)); /* a draw's read in place */
+    int placed = vk_uma_placed_at(UMA_L + 0x100, 256), imports = (int)vk_uma_imports(UMA_L, 0x200000);
+    uma_read(r, ro, rb, 0);
+    CHECK(vk_buf_copy_writable(UMA_GL + 0x400, 256, &w, &wo, 1)); /* a shader's write in place */
+    CHECK(!owned_test_fill(w, wo, 256, 0x6d));
+    vk_buf_writable_commit();
+    int written = vk_uma_placed_at(UMA_L + 0x400, 256) && !vk_buf_pending(UMA_GL + 0x400, 256);
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 256; i++) CHECK(result[i] == 0x5c);
+    int tracked = vk_written_since(GP(UMA_L), 0x1000, 0);
+    vk_unlock();
+    CHECK(GP(UMA_L)[0x400] == 0x6d && GP(UMA_L)[0x4ff] == 0x6d && GP(UMA_L)[0x500] == 0);
+    /* given back, then mapped again: zero, in a new chunk */
+    CHECK(mem_unmap_physical(UMA_L, 0x200000) == 0);
+    vk_lock();
+    int gone = !vk_uma_placed_at(UMA_L, 0x1000);
+    vk_unlock();
+    CHECK(mem_map_physical(UMA_L, 0x200000, ~0ull) == 0);
+    CHECK(GP(UMA_L)[0x100] == 0 && GP(UMA_L)[0x400] == 0);
+    vk_lock();
+    int again = vk_uma_placed_at(UMA_L, 0x200000);
+    vk_unlock();
+    CHECK(mem_unmap_physical(UMA_L, 0x200000) == 0);
+    vk_uma_placed(was);
+    if (!placed || imports || !written || tracked != -1 || !gone || !again)
+        fprintf(stderr,
+                "placed: read in a chunk %d with %d imports, written in a chunk %d, write tracking %d (-1: leaves it "
+                "alone), gone after the unmap %d, a chunk again %d\n",
+                placed, imports, written, tracked, gone, again);
+    CHECK(placed && !imports && written && tracked == -1 && gone && again);
+    printf("in place: physical memory as GPU memory where it is, read and written there with no import, given back and "
+           "zero when mapped again\n");
+    return 0;
+}
+
 /* vk_memory's auto (0) never moves guest memory into AHardwareBuffers: on a device that shares memory, takes them and
    has no VK_EXT_external_memory_host, it copies, and only vk_memory=2 moves. An import where it is stays auto's on such
    a device, and 1 copies everywhere */

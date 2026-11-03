@@ -134,8 +134,22 @@ void mem_set_pages_replaced(void (*fn)(u64 a, u64 size));
 int mem_migrate(u64 a, u64 size, int fd);
 int mem_unmigrate(u64 a, u64 size);
 /* whether [a, a + size) is all the guest's data, in whole host pages, on the reservation's own pages (not the pool's,
-   which other mappings share): what mem_migrate moves */
+   which other mappings share, nor the renderer's placed windows below): what mem_migrate moves */
 int mem_movable(u64 a, u64 size);
+/* The renderer's GPU memory under the heap and physical memory (gpu/vk/uma.c, VK_EXT_map_memory_placed), a window of
+   MEM_PLACED bytes at a time, mapped at its guest address. Each call takes a range within one window, under mem.c's
+   lock and the renderer's: commit makes it readable and writable and zero, 0, or -1 when the window isn't the
+   renderer's (host pages then); decommit makes it inaccessible, 1, or 0 when it isn't the renderer's; held tells
+   whether a page of [a, a + size), any windows, is the renderer's. Its pages are never moved into the alias pool nor
+   into a GPU's buffer (mem_migrate), and a window with pages in one is never the renderer's: a view of them is a
+   copy, and the GPU's results over them aren't trapped */
+#define MEM_PLACED (2ull << 20)
+typedef struct {
+    int (*commit)(u64 a, u64 size);
+    int (*decommit)(u64 a, u64 size);
+    int (*held)(u64 a, u64 size);
+} MemPlaced;
+void mem_set_placed(const MemPlaced* p);
 int mem_set_state(u64 addr, u64 size, u32 state, u32 perm);
 int mem_set_attr(u64 addr, u64 size, u32 mask, u32 attr);
 /* Called with no memory lock held after a mapping change that can make compiled guest code stale: an unmap, a state

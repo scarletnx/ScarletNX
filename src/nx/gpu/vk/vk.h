@@ -250,6 +250,12 @@ int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off);
    (vk_own_publish). 0 elsewhere: then it is published GPU-owned, as without UMA. vk_lock held */
 int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off);
 int vk_uma_held(u64 cpu, u64 len);     /* one import holds guest memory [cpu, cpu + len) now (vk_lock held) */
+/* placed maps (uma.c): whether the device can map the heap's windows as GPU memory where they are; turning it on
+   (returning what it was), which takes the windows the heap and physical memory commit whole from then on; and
+   whether one chunk of it holds [cpu, cpu + len) (vk_lock held) */
+int vk_uma_can_place(void);
+int vk_uma_placed(int on);
+int vk_uma_placed_at(u64 cpu, u64 len);
 void vk_uma_settle(u64 ended);         /* a draw or dispatch begins: the ones before it recorded up to submit ended */
 u32 vk_uma_imports(u64 cpu, u64 size); /* the imports the driver holds over guest memory [cpu, cpu + size) (vk_lock) */
 /* the first import the driver holds over guest memory [cpu, end), on any thread: where it starts there, with where it
