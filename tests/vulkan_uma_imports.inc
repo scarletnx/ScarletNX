@@ -108,7 +108,7 @@ static int check_uma_trap_ranges(void) {
     VkOwnRes* owner = uma_owner(2 * page, 0x63);
     CHECK(owner);
     vk_own_publish_owned(edge - page, 2 * page, owner, 0); /* a page of each window: both imports go */
-    uma_read(d, od, rb, 256);                        /* work of its own for a submission after the trap */
+    uma_read(d, od, rb, 256);                              /* work of its own for a submission after the trap */
     vk_finish();
     vk_readback_ready();
     CHECK(vk_uma_imports(UMA_W, span) == 0 && vk_uma_imports(UMA_D, 0x10000) == 1);
@@ -860,10 +860,10 @@ static int check_uma_region_writes(void) {
         printf("skip: the driver imports no buffer's pages as host memory, which the migrate way needs here\n");
         return 0;
     }
-    CHECK(mem_map(UMA_RW, window, MS_NORMAL, PERM_RW) == 0);
-    gmmu_map(UMA_GRW, UMA_RW, window);
+    CHECK(mem_map(UMA_RW, 3 * window, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GRW, UMA_RW, 3 * window);
     u8* g = GP(UMA_RW);
-    memset(g, 0x91, 0x6000);
+    for (u32 i = 0; i < 3; i++) memset(g + i * window, 0x91, 0x6000);
     vk_lock();
     CHECK(vk_uma_migrate(1));
     /* written in place in a region, then its page trapped before anything waited for the write */
@@ -873,19 +873,24 @@ static int check_uma_region_writes(void) {
     vk_buf_writable_commit();
     VkOwnRes* owner = uma_owner(256, 0x42);
     CHECK(owner);
-    vk_own_publish(UMA_RW + 0x800, 256, owner, 0); /* the same host page */
+    vk_own_publish_owned(UMA_RW + 0x800, 256, owner, 0); /* the same host page, GPU-owned: a trap */
     vk_finish();
     vk_unlock();
     CHECK(!uma_landed(UMA_RW + 0x800, 256, 0x42));
     vk_own_res_unref(owner);
     CHECK(g[0x100] == 0x92 && g[0x1ff] == 0x92 && g[0xff] == 0x91 && g[0x200] == 0x91);
-    /* written in place in a region, which then moves back with the way */
+    /* written in place in a region of the next window (the trap left the first one's pages in the pool), which then
+       moves back with the way before anything waited for the write */
+    u8* g2 = g + window;
     vk_lock();
-    CHECK(vk_buf_copy_writable(UMA_GRW + 0x2100, 256, &w, &wo, 1));
-    int region2 = vk_uma_imports(UMA_RW + 0x2000, 0x1000) == 1 && uma_in_buffer(g + 0x2000) == 1;
+    CHECK(vk_buf_copy_writable(UMA_GRW + window + 0x2100, 256, &w, &wo, 1));
+    int region2 = vk_uma_imports(UMA_RW + window + 0x2000, 0x1000) == 1 && uma_in_buffer(g2 + 0x2000) == 1;
     CHECK(!owned_test_fill(w, wo, 256, 0x93));
     vk_buf_writable_commit();
+    CHECK(vk_uma_migrate(0)); /* every region moves back first */
+    vk_finish();
     vk_unlock();
+    CHECK(g2[0x2100] == 0x93 && g2[0x21ff] == 0x93 && g2[0x20ff] == 0x91 && uma_in_buffer(g2 + 0x2000) == 0);
     /* an engine's result over a region: a region is an import (vk_uma_held), so the result is copied there in place */
     const u64 src = 0x4df000000ull, src_cpu = HEAP_BASE + 0x700000;
     u8 bytes[256];
@@ -894,6 +899,7 @@ static int check_uma_region_writes(void) {
     gmmu_map(src, src_cpu, 0x10000);
     memset(GP(src_cpu), 0xa1, 0x1000);
     vk_lock();
+    CHECK(vk_uma_migrate(1));
     CHECK(vk_buf_get_input(UMA_GRW + 0x4100, 256, 4, &r, &ro));
     int held = vk_uma_held(UMA_RW + 0x4100, 256) && uma_in_buffer(g + 0x4000) == 1;
     vk_unlock();
@@ -901,19 +907,31 @@ static int check_uma_region_writes(void) {
     int owned = own_lookup(UMA_RW + 0x4100, 256, NULL, 0) != 0;
     CHECK(!gmem_read(UMA_GRW + 0x4100, bytes, sizeof bytes));
     for (u32 i = 0; i < 256; i++) CHECK(bytes[i] == 0xa1);
+    /* written in place in a region of a third window, whose page a view then takes before anything waited for the
+       write: mem_alias_begin moves the source's pages into the pool */
+    u8* g3 = g + 2 * window;
     vk_lock();
-    CHECK(vk_uma_migrate(0)); /* every region moves back first */
+    CHECK(vk_buf_copy_writable(UMA_GRW + 2 * window + 0x100, 256, &w, &wo, 1));
+    int region3 = vk_uma_imports(UMA_RW + 2 * window, 0x1000) == 1 && uma_in_buffer(g3) == 1;
+    CHECK(!owned_test_fill(w, wo, 256, 0x94));
+    vk_buf_writable_commit();
+    vk_unlock();
+    CHECK(mem_alias_begin(UMA_RW + 2 * window, 0x1000) == 0);
+    CHECK(g3[0x100] == 0x94 && g3[0x1ff] == 0x94 && g3[0xff] == 0x91 && g3[0x200] == 0x91);
+    mem_alias_end(UMA_RW + 2 * window, 0x1000);
+    vk_lock();
+    CHECK(vk_uma_migrate(0));
     vk_finish();
     vk_unlock();
-    CHECK(g[0x2100] == 0x93 && g[0x21ff] == 0x93 && g[0x20ff] == 0x91 && uma_in_buffer(g + 0x2000) == 0);
     CHECK(g[0x4100] == 0xa1 && g[0x41ff] == 0xa1 && g[0x4200] == 0x91);
     if (!held || owned) fprintf(stderr, "region publish: held %d, owned %d\n", held, owned);
     CHECK(held && !owned);
-    CHECK(mem_unmap(UMA_RW, window) == 0);
-    if (!region || !region2) fprintf(stderr, "region writes: no region made (%d, %d)\n", region, region2);
-    CHECK(region && region2);
-    printf("in place, the migrate way: a write in place in a region lands in guest memory when its pages move on or "
-           "the region moves back before the write's submit, and an engine's result over a region is copied there, "
-           "nothing GPU-owned\n");
+    CHECK(mem_unmap(UMA_RW, 3 * window) == 0);
+    if (!region || !region2 || !region3)
+        fprintf(stderr, "region writes: no region made (%d, %d, %d)\n", region, region2, region3);
+    CHECK(region && region2 && region3);
+    printf("in place, the migrate way: a write in place in a region lands in guest memory when its pages move on (a "
+           "trap, a view) or the region moves back before the write's submit, and an engine's result over a region is "
+           "copied there, nothing GPU-owned\n");
     return 0;
 }
