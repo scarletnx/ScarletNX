@@ -13,13 +13,21 @@ name: Pull request checks
 #   (scripts/check-docs.py): links and anchors that resolve, the ## Index of each long doc, docs/README.md linking
 #   every doc, and docs/SETTINGS.md saying each key and default settings.txt has. Both read files build.yml skips a
 #   pull request for (those no build or test reads), so they run on every pull request
+# - links: once a Build run of a pull request ends, one comment on the pull request, which each run rewrites, links its
+#   builds and names the jobs that did not build (scripts/pr-builds.sh). A workflow_run shows no check on the pull
+#   request, so nothing waits for it
 # Each run of a check checks all it stands for, so its newest run on a commit is the whole answer. A ruleset of main
-# requires them by the names they run under: "Title and assignees" and "Tracked material and docs".
+# that held the merge would require them by the names they run under: "Title and assignees" and "Tracked material and
+# docs".
 #
-# The title and the assignees run on pull_request_target and pull_request_review, from the base branch's workflow and
-# scripts, so a pull request can't change the check it is held by, and the token may label a pull request from a fork;
-# nothing of the pull request is checked out or run. Tracked material and docs run the pull request's own scripts on
+# The title and the assignees run on pull_request_target, which takes this workflow and its scripts from the base
+# branch, so a pull request can't change the check it is held by, and lets the token label a pull request from a fork;
+# a review's run (pull_request_review) checks out the base branch's scripts too. Nothing of the pull request is checked
+# out or run. Tracked material and docs run the pull request's own scripts on
 # its own files, so they run on pull_request, whose token can't write for a fork, and never on pull_request_target.
+# The links run on workflow_run, from the default branch's workflow and script too, and check out nothing of the pull
+# request. A fork's pull request gets no comment: its Build ran the fork's workflow, which names the builds and jobs
+# the comment would show.
 # Every event starts every job, and one that is not for the event is skipped: it takes another name than its check's,
 # as a skipped job passes and would stand for the check of that name, and a concurrency group of its run alone, so it
 # can't drop a job that runs. An edit that changes neither the title nor the base runs nothing: the check of the
@@ -32,6 +40,11 @@ on:
   pull_request:
   issues:
     types: [opened, edited]
+  # main's Build links nothing, so its end starts no run
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+    branches-ignore: [main]
   workflow_dispatch:
 
 permissions: {}
@@ -150,3 +163,43 @@ jobs:
         run: |
           python3 tests/docs_test.py
           python3 scripts/check-docs.py
+
+  links:
+    name: >-
+      ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+      && 'Link the builds' || 'Link the builds (runs when a Build of a pull request ends)' }}
+    # a Build a newer push cancelled has its own after it
+    if: >-
+      github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: read # the run's artifacts and jobs
+      checks: read # edenprobe's notice
+      contents: read
+      pull-requests: write # the comment
+    # one at a time per branch: of a burst of runs ending, the newest waits and those before it are dropped
+    concurrency:
+      group: >-
+        links-${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.conclusion != 'cancelled' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+        && github.event.workflow_run.head_branch || format('skipped-{0}', github.run_id) }}
+    steps:
+      # the default branch's script, never the pull request's
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/pr-builds.sh
+          sparse-checkout-cone-mode: false
+      # PR empty when the run names none: the script asks which open pull request has the commit as its head
+      - name: Link the builds from the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+          RUN: ${{ github.event.workflow_run.id }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: scripts/pr-builds.sh "$GITHUB_REPOSITORY" "$PR" "$RUN" "$SHA"

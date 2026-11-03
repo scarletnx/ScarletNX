@@ -54,6 +54,11 @@ sentences, no spaced hyphen as a dash.
 
 ## Pull requests
 
+When a run of the Build workflow (`.github/workflows/build.yml`) on a pull request ends, the Pull request checks
+workflow rewrites one comment on it, marked `<!-- scarletnx-builds -->`, that links the Linux, AppImage, Windows and
+Android builds of the head commit and names any job that did not build (`scripts/pr-builds.sh`). A pull request from a
+fork gets no comment, since its Build ran the fork's own workflow.
+
 A draft pull request builds Linux x86-64 (with edenprobe, and ASan and UBSan), the x86-64 AppImage, Windows and
 Android. Out of draft it also builds Linux and the AppImage on AArch64, macOS and iOS, and the cross-built AppImages
 (PowerPC64, RISC-V, LoongArch): marking it ready for review starts that build.
