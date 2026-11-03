@@ -227,8 +227,10 @@ called the recordings made there. The counts, from one NVN 55 driver's code:
 | a recording still open when the game adds control memory | 0x10, the link to the new memory |
 
 The driver keeps the last 0x10 bytes of the memory for that link. When the entries don't fit, it calls the memory
-callback with event 1 and 0x100 bytes at least, and stops the game if there is still no room: nvn counts nothing
-more then. It merges a range with the one before it when the two touch, which nvn doesn't model, so its count can be
+callback with event 1 and 0x100 bytes, and stops the game if there is still no room: nvn counts nothing
+more then. The room it checks is the entry's own bytes (0x20 for a range entry, also one of 0x18). The 0x100 is only
+what it asks the callback for, so a game that gives 0x100 bytes records there without a callback (the NVN drivers of
+SDK 6.5 and 19.3 both do this). It merges a range with the one before it when the two touch, which nvn doesn't model, so its count can be
 higher. A call also copies the callee's other entries (its compute binds), which nvn doesn't count: the handles of
 recordings in the runtime's memory are used again once their pieces come back, so a count kept by handle went to the
 wrong recording (a recording that calls the one before it at the same handle counted 0x18 more each frame, and one
