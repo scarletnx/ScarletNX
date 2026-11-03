@@ -56,7 +56,8 @@ static const char usage[] =
     "  --log-level=L     The least android.util.Log level printed: V, D (the default), I, W, E or A\n"
     "  --log-signals     Each guest signal action, send and delivery\n"
     "  --sample          Every 5 s, each guest thread's pc, x30 and HLE call, and the Vulkan presents\n"
-    "  --jit-verbose     Each unit the JIT compiles, with its time\n"
+    "  --jit-verbose     Each unit the JIT compiles, before and after, with its time\n"
+    "  --jit-keep-ir=DIR The LLVM IR of each unit the JIT compiles, saved in DIR\n"
     "  --linker-verbose  Each native library and its load address\n"
     "  --native-test LIB [SYMBOL...]  Load an AArch64 library through the native bridge and call each function\n"
     ;
@@ -389,6 +390,10 @@ int snx_android_main(int argc, char** argv) {
             log_signals |= argv[i][2] == 'l';
             sample |= argv[i][2] == 's';
             signals_set_options(log_signals, sample);
+            continue;
+        }
+        if ((value = value_of(argv[i], "--jit-keep-ir"))) {
+            bridge_set_keep_ir(value);
             continue;
         }
         if (!strcmp(argv[i], "--jit-verbose")) {
