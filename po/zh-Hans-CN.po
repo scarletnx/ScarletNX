@@ -5349,8 +5349,8 @@ msgid "AOT threads"
 msgstr "AOT 线程数"
 
 #: src/nx/runtime/settings.txt
-msgid "The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores"
-msgstr "重新编译时编译游戏代码的线程数：0 = 电脑每个核心一个"
+msgid "The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last quarter left free, so the machine stays responsive; N = that many"
+msgstr "重新编译时编译游戏代码的线程数：0（自动）= 留出四分之一的核心空闲，使电脑保持响应；N = 该数量"
 
 #: src/nx/runtime/settings.txt
 msgid "Unit size"
@@ -5495,6 +5495,9 @@ msgstr "启动"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "LLVM 内部选项"
+
+#~ msgid "The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores"
+#~ msgstr "重新编译时编译游戏代码的线程数：0 = 电脑每个核心一个"
 
 #~ msgid "The log could not be shown: it is at %s"
 #~ msgstr "无法显示日志：它位于 %s"

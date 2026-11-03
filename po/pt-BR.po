@@ -5349,8 +5349,8 @@ msgid "AOT threads"
 msgstr "Threads AOT"
 
 #: src/nx/runtime/settings.txt
-msgid "The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores"
-msgstr "As threads que compilam o código do jogo ao recompilar: 0 = uma para cada núcleo do computador"
+msgid "The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last quarter left free, so the machine stays responsive; N = that many"
+msgstr "As threads que compilam o código do jogo ao recompilar: 0 (Auto) = os núcleos deixando o último quarto livre, para o computador seguir respondendo; N = esse número"
 
 #: src/nx/runtime/settings.txt
 msgid "Unit size"
@@ -5495,6 +5495,9 @@ msgstr "Inicialização"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "Internos do LLVM"
+
+#~ msgid "The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores"
+#~ msgstr "As threads que compilam o código do jogo ao recompilar: 0 = uma para cada núcleo do computador"
 
 #~ msgid "The log could not be shown: it is at %s"
 #~ msgstr "Não foi possível mostrar o log: ele está em %s"
