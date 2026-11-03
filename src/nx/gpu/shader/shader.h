@@ -35,6 +35,14 @@ static inline int shader_same_indexed_table(const ShTex* a, const ShTex* b) {
     return a->bl_cbuf == b->bl_cbuf && a->cbuf_off == b->cbuf_off && a->flags == b->flags && a->type == b->type &&
            a->array == b->array && a->shadow == b->shadow;
 }
+/* Whether two indexed slots view their elements as the same kind of image, with the integer and signed integer
+   texture masks. Each kind has its own SPIR-V array, all of them on SNX_VKB_TEXARRAY (and the shadow kinds' also on
+   SNX_VKB_TEXDEPTH). An element is read only through the array of its own kind, so its view always matches the type
+   of the array that reads it. */
+static inline int shader_same_indexed_kind(const ShTex* tex, u64 int_mask, u64 sint_mask, int a, int b) {
+    return tex[a].type == tex[b].type && tex[a].array == tex[b].array && tex[a].shadow == tex[b].shadow &&
+           ((int_mask >> a) & 1) == ((int_mask >> b) & 1) && ((sint_mask >> a) & 1) == ((sint_mask >> b) & 1);
+}
 /* A global buffer (ShaderInfo.gbuf_cbuf_off) is named by where its 64-bit address is: the constant buffer in bits 16-20,
    the byte offset in it in bits 0-15. NVN's storage buffer descriptors, in cbuf 0 from 0x110 to 0x410 (compute) or
    0x830, follow the address with the buffer's size (shader_gbuf_sized). A graphics program may also keep a bare
@@ -74,7 +82,7 @@ typedef struct {
     u32 gbuf_cbuf_off[16]; /* the global buffers found, by where a constant buffer holds their address (SH_GBUF_*) */
     int ngbuf;
     int unsupported; /* instructions or forms translation refused */
-    char first_unsupported[96]; /* the longest: an untracked global memory base with its writer */
+    char first_unsupported[96]; /* the longest: an untracked handle with its writer's constant (93 bytes) */
     u32 cs_local[3];
     int shared_size;
     u32 gbuf_wmask; /* global buffers the program writes */
@@ -109,6 +117,10 @@ typedef struct {
     u32 early_fragment_tests;
     ShXfb xfb; /* key: transform feedback's capture of this program's outputs */
     int writes_viewport; /* the last vertex stage selects one of the 16 viewport/scissor pairs */
+    /* key (fragment, vertex and compute programs): texture slots whose header takes unnormalized coordinates (TIC
+       word 5 bit 31 clear, NVN's rectangle textures, 2D): their sample coordinates are texels, divided here by the
+       size, as Ryujinx's TexturePass and Eden's texture_pass do */
+    u64 tex_rect_mask;
 } ShaderInfo;
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs has room for */
 /* Each stage has a descriptor set (shader_vk_set), its bindings grouped by kind. */
@@ -181,6 +193,17 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                      int can_preserve, int can_preserve_f64, int can_subgroup);
 u32* shader_compute_to_spirv(const u8* code, u32 max_bytes, ShaderInfo* si, size_t* word_count, int can_flush,
                              int can_preserve);
+/* shared_reach.c: one past the highest byte of shared memory a compute program (code, readable up to max_bytes, of
+   blocks local[0] x local[1] x local[2]) can touch with LDS, STS, ATOMS and ATOMS.CAS as its translation runs it, 0
+   for none, and SH_SHARED_ANY when an address has no bound the walk proves: a value from memory or a constant buffer,
+   a loop's counter, a 32-bit product of registers, a call, a jump table or more than 4096 blocks */
+#define SH_SHARED_ANY 0xFFFFFFFFu
+u32 shader_shared_reach(const u8* code, u32 max_bytes, const u32 local[3]);
+/* the shared memory a compute program declares on a device that gives a block device_max bytes, for a launch asking
+   for shm: 1 with shm in *size when it fits, or device_max when shader_shared_reach (in *reach) proves no access goes
+   past that; 0 when one may, the dispatch then left out */
+int shader_shared_fit(const u8* code, u32 max_bytes, const u32 local[3], u32 shm, u32 device_max, u32* size,
+                      u32* reach);
 /* reads word off (bytes) of constant buffer idx for jump tables, into *out as a host number: 1 when it could. Set by
    whoever translates, NULL offline */
 extern int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);

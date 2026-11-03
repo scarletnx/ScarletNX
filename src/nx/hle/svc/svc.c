@@ -12,6 +12,7 @@
 #include "nx/hle/hle.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/guest_stats.h"
 #include "nx/runtime/platform/tracy.h"
 
 #define R_BADPERM      0xD801 /* InvalidNewMemoryPermission */
@@ -107,6 +108,7 @@ static void svc_leave(KThread* t) {
     }
     core_enter(t);
     core_preempt(t);
+    sync_owner_runs(t);
     __atomic_store_n(&t->in_svc, 0, __ATOMIC_SEQ_CST);
     if (pause_point(t, 2)) core_enter(t);
     if (kthread_hold_point(t, PARK_RUN)) core_enter(t);
@@ -533,6 +535,7 @@ static u32 svc_begin(KThread* t, SvcRec* in, u32 imm, int flags) {
         n = __atomic_fetch_add(&g_hle.kernel.svc_ring_n, 1, __ATOMIC_RELAXED);
         g_hle.kernel.svc_ring[n & 63] = *in;
     }
+    guest_stats_svc(kt_ix(t), imm);
     svc_enter(t);
     return n;
 }
@@ -589,6 +592,7 @@ static void svc32_unknown(SnxArmCPU* a, u32 imm) {
     svc_end(t, &in, n, 0, a->r[0], a->r[1]);
 }
 
+const char* svc_name(u32 imm) { return imm < SNX_SVC_COUNT ? g_svc_name[imm] : NULL; }
 void snx_svc(CPU* c, u32 imm) { (imm < SNX_SVC_COUNT ? g_svc64[imm] : svc64_unknown)(c, imm); }
 void snx_svc32(SnxArmCPU* a, u32 imm) { (imm < SNX_SVC_COUNT ? g_svc32[imm] : svc32_unknown)(a, imm); }
 
@@ -733,8 +737,12 @@ static u32 svc_SetThreadActivity(u32 thread_handle, u32 thread_activity) {
 static u32 svc_GetThreadContext3(u64 out_context, u32 thread_handle) {
     return get_thread_context(kthread_cur(), out_context, thread_handle);
 }
+/* The console's kernel takes value as 64 bits: WaitIfEqual64 (type 3) compares all of X2. The declaration the dispatch
+   follows (Eden's) has 32, so a 64-bit game's value comes from X2 itself; a 32-bit game's is R2 */
 static u32 svc_WaitForAddress(u64 address, u32 arb_type, i32 value, i64 timeout_ns) {
-    return svc_wait_addr(kthread_cur(), address, arb_type, value, timeout_ns);
+    KThread* t = kthread_cur();
+    i64 v = g_arm_mod ? (i64)value : (i64)t->cpu.x[2];
+    return svc_wait_addr(t, address, arb_type, v, timeout_ns);
 }
 static u32 svc_SignalToAddress(u64 address, u32 signal_type, i32 value, i32 count) {
     return svc_signal_addr(address, signal_type, value, count);

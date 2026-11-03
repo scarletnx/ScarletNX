@@ -2,6 +2,19 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Development
 
+## Index
+
+* [Measure descriptor submission](#measure-descriptor-submission)
+* [Search for faster GPU settings](#search-for-faster-gpu-settings)
+* [Rebuild / checks](#rebuild--checks)
+* [Run / diagnose](#run--diagnose)
+* [Measure host scheduling](#measure-host-scheduling)
+* [Profiling](#profiling)
+* [Shaders](#shaders)
+* [Vertex input](#vertex-input)
+* [SVCs](#svcs)
+* [Provenance](#provenance)
+
 [Architecture](ARCHITECTURE.md) · [build/toolchains](BUILD.md) · [usage](USAGE.md) · [agent rules](../CLAUDE.md) · [contributing](../CONTRIBUTING.md).
 Run from checkout. POSIX examples: Windows uses `python`, `.exe`, PowerShell env syntax.
 The build tree's drivers work in the user's data folder, as an installed copy does ([Folders](USAGE.md#folders));
@@ -85,7 +98,8 @@ FS tests use production tree/HLE + synthetic temp data; `--only tree|service` se
 
 CI: Linux/Windows builds, ABI syntax, native tool/FS regressions, optional Python diagnostics, the Linux AppImages
 and the Windows zip (each then run as installed), the Android APK, and [edenprobe](EDENPROBE.md)'s probes on lavapipe
-against the cases that passed before (`scripts/edenprobe.py`). `.github/workflows/publish.yml` publishes what
+against the cases that passed before (`scripts/edenprobe.py`). A push to `main` cancels the build of the one before it
+still running, as a push to a pull request does that pull request's. `.github/workflows/publish.yml` publishes what
 builds everywhere, each said on Discord (`scripts/publish-builds.py`): a version tag pushed (`v1.0.0`; `v1.0.0-rc1` a
 prerelease) as this repository's release of it, the latest, its notes listing the changes since the version before;
 each push to `main` as a release of [scarletnx/nightly](https://github.com/scarletnx/nightly/releases), the newest 30
@@ -93,7 +107,7 @@ kept (this repository's `nightly` prerelease shows the latest's notes); each pul
 `pr-<number>`. The notes and the messages link each download with its size and list what changed (a pull request's
 commits). A fork's pull request is published once someone of the team labels it `publish builds`, after each
 push. The Discord cards of each pull request, each issue and each push to `main` are ReiWimsy's, the bot of
-[scarletnx/discord-bots](https://github.com/scarletnx/discord-bots), which asks GitHub what changed every 30 s: no job
+[scarletnx/wimsy-core](https://github.com/scarletnx/wimsy-core), which asks GitHub what changed every 30 s: no job
 of this repository draws them. The secrets: `NIGHTLY_TOKEN` (writes that repository's contents) and
 `DISCORD_WEBHOOK_RELEASES` (a version's message).
 Verify affected scenes manually, repeat intermittent failures, record evidence/scope.
@@ -159,7 +173,7 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   `~/.cache/scarletnx/module-dumps`. The dump's format is described in `src/nx/loader/loader.h`.
   `--log=2`: verbose; Windows `--profile=1`: `profile.txt` every 10 s.
 
-The game's `[Debug]` settings ([USAGE.md](USAGE.md#settings--input)) are for investigating. Each is also given for one run as
+The game's `[Debug]` settings ([Settings](SETTINGS.md#debug)) are for investigating. Each is also given for one run as
 `--key=value` on the game's command line. One not at its default, and the GDB stub, is said at the top of the game's
 picture while it runs (`Debug on: log=2, gdbstub`, a text setting by its key alone), in the log's header
 (`debug: log=2 (default 1), gdbstub`), and in the launcher, as `(Debug on)` on the game's row and its Play and the list
@@ -345,6 +359,33 @@ that one is tried first. A new opcode is a row there (its `O_` name then exists 
 `ctest -R 'shaderdec|shader_decode'` checks the spec and decodes every row back to itself.
 `[Debug] shader_corpus=` in the game's INI does the same for every run. Where the game gets no command line
 (Android), its INI's `[Debug] diag=1` keeps each shader's entry in `captures/shaders` beside the game, for the same `snx-shaderc`.
+
+## Vertex input
+
+A pipeline is made per key (`src/nx/gpu/vk/pipeline.c`, `PipeKey`), and the vertex layout a program is drawn with,
+its attributes' formats and offsets and its bindings' strides and divisors, is part of the key unless it is dynamic
+state. Where the GPU's driver has `VK_EXT_vertex_input_dynamic_state` and its `vertexInputDynamicState` feature,
+each draw sets its layout in the command buffer instead (`vkCmdSetVertexInputEXT`), and one pipeline serves every layout
+of a program: the pipelines kept across runs of one game, 1984 with the layout in the key, come to 1218. The setting
+is `vertex_input_dynamic_state` ([Settings](SETTINGS.md#graphics)): `auto`, `on` or `off`, with the drivers known to
+draw it wrong (`src/nx/gpu/vk/vertex_input.c`) taking the layout in the key under `auto`. The log's
+`vulkan: vertex_input_dynamic_state=` line says which a run takes, with the device, its driver and version.
+
+A draw sets the layout when it differs from the one its command buffer has. A new command buffer, a pipeline that
+holds its own layout (the multisample resolves, the on-screen controls) and the renderer's own draws (a clear of some
+color components, which reads no vertices) leave the next draw to set it again. The pipelines kept for the next run
+(`<id>.vkshaders`) are made again when the choice changes: the file's key holds it.
+
+```sh
+"$games/Game/Game" --vertex_input_dynamic_state=off   # a pipeline per layout, to compare
+ctest --test-dir build -R 'vk_vertex_input|vulkan_headless'
+```
+
+`vk_vertex_input` checks the setting's values, its row read from a game's `.ini` written before it, the bans against
+stand-in devices and the log line of each case. `vulkan_headless` (`-DSNX_TEST_VULKAN=ON`) watches what every draw
+of its checks finds in its command buffer: a draw with a dynamic layout and none set fails it. Its vertex input check
+draws one program with three layouts in one command buffer, and `vulkan_headless_vertex_input_off` runs every check
+again with the layout in the key.
 
 ## SVCs
 

@@ -60,6 +60,8 @@ static int tex_plane(const NvnTexture* t, const NvnView* v, TexPlane* p) {
     p->bl = 1;
     p->bh = th;
     p->bd = td;
+    /* a sparse texture's level of rows of whole tiles: the surface is that wide in memory */
+    if (l.tile_w) p->wb = nvn_tex_level_gobs(&t->d, level) * 64;
     return 1;
 }
 /* the plane's side of a copy of the region at texels (x, y) of slice or layer z */

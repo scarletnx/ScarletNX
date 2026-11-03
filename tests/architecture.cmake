@@ -23,8 +23,9 @@ if(Python3_Interpreter_FOUND) # tests/CMakeLists.txt looked it up
         add_test(NAME nx_runtime_homebrew_64k_pages
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/nx_runtime_smoke.py"
                 --runtime $<TARGET_FILE:scarletnx> --repo "${PROJECT_SOURCE_DIR}"
-                --artifact-dir "${PROJECT_BINARY_DIR}/nx-smoke-64k-failures")
-        set_tests_properties(nx_runtime_homebrew_64k_pages PROPERTIES TIMEOUT 150 ENVIRONMENT SNX_HOST_PAGE=65536)
+                --artifact-dir "${PROJECT_BINARY_DIR}/nx-smoke-64k-failures"
+                --runtime-arg=--host_page=65536 "--log-has=memory: 64 KiB host pages")
+        set_tests_properties(nx_runtime_homebrew_64k_pages PROPERTIES TIMEOUT 150)
         # a 32-bit program, A32 and Thumb, built by the project's Clang for AArch32 (no ARM linker needed)
         add_test(NAME nx_runtime_arm32
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/nx_arm32_smoke.py"

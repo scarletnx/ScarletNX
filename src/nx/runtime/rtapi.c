@@ -3,10 +3,12 @@
 /* What generated code calls in the runtime (RtAPI), and the hints those calls record */
 #include "nx/runtime/rtapi.h"
 #include "common/utilities/endian.h"
+#include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/guest_jit.h"
+#include "nx/runtime/guest_stats.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/log.h"
@@ -66,7 +68,9 @@ static void rt_poll(CPU* c) { core_poll((KThread*)c->thread); }
    off the guest core, so the core's other threads run meanwhile. It is noted as a hint, so the next AOT build can put
    the function in the pack: not code the game mapped, which the pack never holds and which lands elsewhere next time */
 static void rt_miss(CPU* c, u64 pc) {
-    GuestFn f = jit_resolve_or_add(pc);
+    GuestFn f;
+    guest_stats_add(kt_ix((KThread*)c->thread), GSTAT_MISS);
+    f = jit_resolve_or_add(pc);
     if (!f) {
         KThread* t = kthread_cur();
         if (t) core_leave(t);

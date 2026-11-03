@@ -1,12 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/gpu/shader/shipped.h"
+#include "common/utilities/bits.h"
+#include "common/utilities/endian.h"
 #include "nx/gpu/shader/shader.h"
+#include <stdlib.h>
 #include <string.h>
 
 #define NVN_WRAP     0x12345678u /* a graphics program's wrapper, 0x30 bytes before its SPH */
 #define NVN_FILE     0x19866891u /* a bare NVN shader file: the control section, then the SPH at NVN_FILE_SPH */
 #define NVN_FILE_SPH 0xB50u
+#define NVN_CONTROL  0x98761234u /* a stage's control section (gpu/nvn/nvn_object.c's stage_of) */
 #define SPH_BYTES    0x50u
 
 static u32 le32(const u8* p) { return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24; }
@@ -157,21 +161,74 @@ int shipped_sph_stage(const u8* sph) {
            : shader == 4 ? ST_GS
                          : -1;
 }
+/* A program's constants in d: the offset of its code area (where its wrapper is), and [at, end) its constants, bank 1,
+   which the game's driver binds from the code area's offset the control section's 0x700 gives */
+typedef struct {
+    u64 code, at, end;
+} Consts;
+/* The code records of the BNSH at b, whose size is at 0x1C: 0x40 bytes each, with 0x08 the stage's control section
+   and 0x10 its code area, both from b, and 0x18 the code area's bytes, which the control section's 0x704 holds too.
+   Each that the control section and the wrapper confirm, as stage_of checks them, is added to *out (*count of them,
+   room for *room): 0, or -1 when out of memory */
+static int bnsh_consts(const u8* d, size_t n, size_t b, Consts** out, size_t* count, size_t* room) {
+    size_t size = snx_ld_le32(d + b + 0x1C);
+    if (size > n - b) size = n - b;
+    for (size_t r = 0; size >= 0x40 && r <= size - 0x40; r += 8) {
+        u64 control = snx_ld_le64(d + b + r + 0x08), code = snx_ld_le64(d + b + r + 0x10);
+        u32 bytes = snx_ld_le32(d + b + r + 0x18);
+        if (size < 0x720 || control > size - 0x720 || code >= size || bytes > size - code || bytes < 0x30 + SPH_BYTES ||
+            snx_ld_le32(d + b + control) != NVN_CONTROL || snx_ld_le32(d + b + code) != NVN_WRAP ||
+            snx_ld_le32(d + b + control + 0x704) != bytes)
+            continue;
+        u32 constants = snx_ld_le32(d + b + control + 0x700), program = snx_ld_le32(d + b + control + 0x708);
+        if (constants > bytes || (constants & 0xFF) || program != 0x30) continue;
+        if (*count == *room) {
+            size_t more = *room ? *room * 2 : 64;
+            Consts* grown = realloc(*out, more * sizeof *grown);
+            if (!grown) return -1;
+            *out = grown;
+            *room = more;
+        }
+        (*out)[(*count)++] = (Consts){b + code, b + code + constants, b + code + bytes};
+    }
+    return 0;
+}
+/* the constants of every BNSH in d, by their code areas' offsets: NULL when there are none, or no memory for them (the
+   programs are then handed without their constants, as from any other container) */
+static Consts* all_consts(const u8* d, size_t n, size_t* count) {
+    Consts* c = NULL;
+    size_t room = 0;
+    *count = 0;
+    for (size_t b = 0; n >= 0x40 && b <= n - 0x40; b += 4)
+        if (!memcmp(d + b, "BNSH", 4) && bnsh_consts(d, n, b, &c, count, &room)) {
+            free(c);
+            *count = 0;
+            return NULL;
+        }
+    if (*count) qsort(c, *count, sizeof *c, snx_compare_u64);
+    return c;
+}
 u32 shipped_programs(const u8* d, size_t n, ShippedEach each, void* ctx) {
     u32 handed = 0;
     if (n >= NVN_FILE_SPH + SPH_BYTES && le32(d) == NVN_FILE) { /* one program, after its control section */
         int stage = shipped_sph_stage(d + NVN_FILE_SPH);
-        if (stage != -1 && !each(ctx, d + NVN_FILE_SPH, n - NVN_FILE_SPH, stage)) handed++;
+        if (stage != -1 && !each(ctx, d + NVN_FILE_SPH, n - NVN_FILE_SPH, stage, NULL, 0)) handed++;
         return handed;
     }
+    size_t nconsts, k = 0;
+    Consts* consts = all_consts(d, n, &nconsts);
     /* the wrappers start code pool slots, 256-byte aligned in the containers, but an executable keeps a program as an
        array of bytes the compiler aligns to 8 (one game's were 8 past a multiple of 16), which the game copies into
        its pool: every word is looked at */
     for (size_t at = 0; n >= 0x30 + SPH_BYTES && at <= n - 0x30 - SPH_BYTES; at += 4) {
         int stage;
         if (le32(d + at) != NVN_WRAP || (stage = shipped_sph_stage(d + at + 0x30)) == -1) continue;
-        if (each(ctx, d + at + 0x30, n - at - 0x30, stage)) return handed;
+        while (k < nconsts && consts[k].code < at) k++; /* both go up through d */
+        const Consts* c = k < nconsts && consts[k].code == at ? &consts[k] : NULL;
+        if (each(ctx, d + at + 0x30, n - at - 0x30, stage, c ? d + c->at : NULL, c ? (size_t)(c->end - c->at) : 0))
+            break;
         handed++;
     }
+    free(consts);
     return handed;
 }

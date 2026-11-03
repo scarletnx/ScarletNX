@@ -3,6 +3,7 @@
 #include "common/utilities/users.h"
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/mii_db.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,7 @@ SnxUser g_users[SNX_USERS_MAX];
 int g_user_count;
 static int g_user_selected;            /* g_users' index of the user the game runs as */
 static unsigned char* g_user_pictures; /* every user's picture, one after another */
+static char g_user_notes[1024];        /* snx_users_notes */
 
 void snx_users_uid_text(const uint64_t uid[2], char text[33]) {
     snprintf(text, 33, "%016llx%016llx", (unsigned long long)uid[0], (unsigned long long)uid[1]);
@@ -36,6 +38,19 @@ static int users_uid_parse(const char* text, uint64_t uid[2]) {
     return text[32] ? -1 : 0;
 }
 
+/* user_data's 2 * SNX_USERS_DATA hex digits into data, an empty one zeros: 0, else -1 */
+static int users_data_parse(const char* text, unsigned char data[SNX_USERS_DATA]) {
+    memset(data, 0, SNX_USERS_DATA);
+    if (!text[0]) return 0;
+    if (strlen(text) != 2 * SNX_USERS_DATA) return -1;
+    for (int i = 0; i < 2 * SNX_USERS_DATA; i++) {
+        char c = text[i];
+        int d = c >= '0' && c <= '9' ? c - '0' : (c | 0x20) >= 'a' && (c | 0x20) <= 'f' ? (c | 0x20) - 'a' + 10 : -1;
+        if (d < 0) return -1;
+        data[i / 2] = (unsigned char)(data[i / 2] << 4 | d);
+    }
+    return 0;
+}
 const SnxUser* snx_users_find(const uint64_t uid[2]) {
     for (int i = 0; i < g_user_count; i++)
         if (g_users[i].uid[0] == uid[0] && g_users[i].uid[1] == uid[1]) return &g_users[i];
@@ -48,16 +63,58 @@ const unsigned char* snx_users_picture(const SnxUser* user, uint32_t* size) {
     return user->picture_size ? g_user_pictures + user->picture_at : NULL;
 }
 
+/* the first byte of nickname the rule refuses, or its length when it refuses none: a space at either end, a control
+   character (C0, DEL, C1), or bytes that are no UTF-8 (cut short, an overlong form, a surrogate, past U+10FFFF) */
+static size_t nickname_refused_at(const char* nickname) {
+    const unsigned char* p = (const unsigned char*)nickname;
+    size_t n = strlen(nickname), i = 0;
+    if (n && p[0] == ' ') return 0;
+    while (i < n) {
+        unsigned c = p[i], code, follow, k;
+        if (c < 0x80) {
+            if (c < 0x20 || c == 0x7F) return i;
+            i++;
+            continue;
+        }
+        if (c >= 0xC2 && c <= 0xDF)
+            follow = 1, code = c & 0x1F;
+        else if (c >= 0xE0 && c <= 0xEF)
+            follow = 2, code = c & 0x0F;
+        else if (c >= 0xF0 && c <= 0xF4)
+            follow = 3, code = c & 0x07;
+        else
+            return i;
+        if (n - i <= follow) return i;
+        for (k = 1; k <= follow; k++) {
+            if ((p[i + k] & 0xC0) != 0x80) return i;
+            code = code << 6 | (p[i + k] & 0x3F);
+        }
+        if ((follow == 2 && code < 0x800) || (follow == 3 && (code < 0x10000 || code > 0x10FFFF)) ||
+            (code >= 0xD800 && code <= 0xDFFF) || (code >= 0x80 && code <= 0x9F))
+            return i;
+        i += follow + 1;
+    }
+    return n && p[n - 1] == ' ' ? n - 1 : n;
+}
 int snx_users_nickname_valid(const char* nickname) {
     size_t n = strlen(nickname);
-    if (n < SNX_USERS_NICKNAME_MIN || n > SNX_USERS_NICKNAME_MAX) return 0;
-    for (size_t i = 0; i < n; i++) {
-        char c = nickname[i];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ' ' || c == '.' ||
-              c == '_' || c == '-'))
-            return 0;
+    return n >= SNX_USERS_NICKNAME_MIN && n <= SNX_USERS_NICKNAME_MAX && nickname_refused_at(nickname) == n;
+}
+const char* snx_users_room_nickname(const SnxUser* user) { return user->nickname; }
+/* appended to why: what is wrong with nickname, its length or its first byte the rule refuses, never the nickname
+   itself: a game's stop carries why to the log, which players attach to public reports */
+static void nickname_refused(char* why, size_t why_size, const char* nickname) {
+    size_t at = strlen(why), n = strlen(nickname), i;
+    if (n < SNX_USERS_NICKNAME_MIN || n > SNX_USERS_NICKNAME_MAX)
+        snprintf(why + at, why_size - at, "has %zu bytes: ", n);
+    else {
+        i = nickname_refused_at(nickname);
+        snprintf(why + at, why_size - at, "has 0x%02x at byte %zu: ", (unsigned)(unsigned char)nickname[i], i + 1);
     }
-    return 1;
+    at = strlen(why);
+    snprintf(why + at, why_size - at,
+             "the account service keeps %d to %d bytes of UTF-8 with no control character nor a space at either end",
+             SNX_USERS_NICKNAME_MIN, SNX_USERS_NICKNAME_MAX);
 }
 
 /* the [userN] of section, 1 to 8, or 0 */
@@ -91,7 +148,8 @@ static const char* users_lines(const char* text, int* count) {
     return *count ? NULL : "no [user1]";
 }
 
-/* users/<uid>.jpg of each user, read into one block: a JPEG (FF D8 to FF D9) of at most 128 KiB, or none */
+/* users/<uid>.jpg of each user, read into one block: the bytes the account service keeps, as a program stored them
+   (a JPEG from the console's editor), at most 128 KiB, the most a program takes; an empty file or none is no picture */
 static int users_read_pictures(const char* dir, char* why, size_t why_size) {
     unsigned char* data[SNX_USERS_MAX];
     size_t size[SNX_USERS_MAX], total = 0;
@@ -107,9 +165,9 @@ static int users_read_pictures(const char* dir, char* why, size_t why_size) {
         if (snx_is_file(path) && !data[i]) {
             snprintf(why, why_size, "%s could not be read", path);
             rc = -1;
-        } else if (data[i] && (size[i] < 4 || size[i] > USERS_PICTURE || data[i][0] != 0xFF || data[i][1] != 0xD8 ||
-                               data[i][size[i] - 2] != 0xFF || data[i][size[i] - 1] != 0xD9)) {
-            snprintf(why, why_size, "%s is not a JPEG of at most %u bytes", path, (unsigned)USERS_PICTURE);
+        } else if (data[i] && size[i] > USERS_PICTURE) {
+            snprintf(why, why_size, "%s is %zu bytes, past the %u a user's picture holds", path, size[i],
+                     (unsigned)USERS_PICTURE);
             rc = -1;
         }
         if (!data[i]) size[i] = 0;
@@ -140,8 +198,8 @@ int snx_users_start(const char* dir, const uint64_t uid[2], const char* nickname
     char *old = snx_format("%s.old", path), *staged = snx_format("%s.new", path), *text = NULL, hex[33];
     int rc = -1;
     if (!snx_users_nickname_valid(nickname)) {
-        snprintf(why, why_size, "nickname %.40s is not %d to %d letters, digits, spaces, '.', '_' or '-'", nickname,
-                 SNX_USERS_NICKNAME_MIN, SNX_USERS_NICKNAME_MAX);
+        snprintf(why, why_size, "the nickname ");
+        nickname_refused(why, why_size, nickname);
         goto done;
     }
     if (!uid[0] && !uid[1]) {
@@ -179,22 +237,22 @@ done:
     free(path);
     return rc;
 }
-int snx_users_rename(const char* dir, int number, const char* nickname, char* why, size_t why_size) {
+/* [user<number>]'s key=value in users.ini of dir, the file's other lines as they were; without users.ini user 1's
+   starts it (snx_users_start). 0, else -1 with why: nothing changed */
+static int users_set_key(const char* dir, int number, const char* key, const char* value, char* why, size_t why_size) {
     char *path = snx_path_join(dir, USERS_FILE), *staged = snx_format("%s.new", path), *text = NULL, *out = NULL;
     const char *line, *end, *p, *q;
-    size_t size = 0, len, n, cut = 0, cut_end = 0, after = 0;
+    size_t size = 0, len, n, cut = 0, cut_end = 0, after = 0, key_len = strlen(key);
     int section = 0, rc = -1;
-    if (!snx_users_nickname_valid(nickname)) {
-        snprintf(why, why_size, "nickname %.40s is not %d to %d letters, digits, spaces, '.', '_' or '-'", nickname,
-                 SNX_USERS_NICKNAME_MIN, SNX_USERS_NICKNAME_MAX);
-        goto done;
-    }
     if (number < 1 || number > g_user_count) {
         snprintf(why, why_size, "there is no user %d: %d user%s", number, g_user_count, g_user_count > 1 ? "s" : "");
         goto done;
     }
     if (!snx_is_file(path)) {
-        if (number == 1) rc = snx_users_start(dir, g_users[0].uid, nickname, why, why_size);
+        if (number == 1 && !snx_users_start(dir, g_users[0].uid, g_users[0].nickname, why, why_size))
+            rc = strcmp(key, "nickname") || strcmp(value, g_users[0].nickname)
+                     ? users_set_key(dir, number, key, value, why, why_size)
+                     : 0;
         if (number != 1) snprintf(why, why_size, "%s is not there: only user 1 is", path);
         goto done;
     }
@@ -203,7 +261,7 @@ int snx_users_rename(const char* dir, int number, const char* nickname, char* wh
         snprintf(why, why_size, "%s could not be read", path);
         goto done;
     }
-    /* [userN]'s nickname= line, else where one goes after its section line */
+    /* [userN]'s key= line, else where one goes: after the section's last line that is not empty */
     for (line = text; *line; line += len) {
         end = strchr(line, '\n');
         len = end ? (size_t)(end - line) + 1 : strlen(line);
@@ -213,10 +271,12 @@ int snx_users_rename(const char* dir, int number, const char* nickname, char* wh
             if (section == number) after = (size_t)(line - text) + len;
             continue;
         }
-        if (section != number || cut_end) continue;
+        if (section != number) continue;
+        if (*p && *p != '\r' && *p != '\n') after = (size_t)(line - text) + len;
+        if (cut_end) continue;
         for (q = p; *q && *q != '=' && *q != '\n'; ++q) {}
         for (n = (size_t)(q - p); n && (p[n - 1] == ' ' || p[n - 1] == '\t'); --n) {}
-        if (*q == '=' && n == 8 && !strncmp(p, "nickname", 8)) {
+        if (*q == '=' && n == key_len && !strncmp(p, key, key_len)) {
             cut = (size_t)(line - text);
             cut_end = cut + len;
         }
@@ -226,7 +286,7 @@ int snx_users_rename(const char* dir, int number, const char* nickname, char* wh
         goto done;
     }
     if (!cut_end) cut = cut_end = after;
-    out = snx_format("%.*s%snickname=%s\n%s", (int)cut, text, cut && text[cut - 1] != '\n' ? "\n" : "", nickname,
+    out = snx_format("%.*s%s%s=%s\n%s", (int)cut, text, cut && text[cut - 1] != '\n' ? "\n" : "", key, value,
                      text + cut_end);
     /* written beside it first: a full disk leaves users.ini as it was */
     if (!out || snx_write_file(staged, out, strlen(out))) {
@@ -239,7 +299,6 @@ int snx_users_rename(const char* dir, int number, const char* nickname, char* wh
         remove(staged);
         goto done;
     }
-    snprintf(g_users[number - 1].nickname, sizeof g_users[number - 1].nickname, "%s", nickname);
     rc = 0;
 done:
     free(out);
@@ -248,12 +307,390 @@ done:
     free(path);
     return rc;
 }
+int snx_users_set_picture(const char* dir, int number, const unsigned char* data, uint32_t size, char* why,
+                          size_t why_size) {
+    char name[40], *path, *staged;
+    unsigned char* block;
+    size_t total = size;
+    int rc = -1, i;
+    if (number < 1 || number > g_user_count) {
+        snprintf(why, why_size, "there is no user %d: %d user%s", number, g_user_count, g_user_count > 1 ? "s" : "");
+        return -1;
+    }
+    if (size > USERS_PICTURE) {
+        snprintf(why, why_size, "a picture of %u bytes is past the %u a user's picture holds", (unsigned)size,
+                 (unsigned)USERS_PICTURE);
+        return -1;
+    }
+    snx_users_uid_text(g_users[number - 1].uid, name);
+    strcat(name, ".jpg");
+    path = snx_path_join(dir, name);
+    staged = snx_format("%s.new", path);
+    /* written beside it first: a full disk leaves the picture as it was */
+    if (snx_mkdirs(dir) || snx_write_file(staged, data, size)) {
+        snprintf(why, why_size, "%s could not be written", staged);
+        remove(staged);
+        goto done;
+    }
+    if (snx_replace(staged, path)) {
+        snprintf(why, why_size, "%s could not be put in place of %s", staged, path);
+        remove(staged);
+        goto done;
+    }
+    /* the block of every picture made again, this user's the new one */
+    for (i = 0; i < g_user_count; i++)
+        if (i != number - 1) total += g_users[i].picture_size;
+    block = total ? (unsigned char*)snx_alloc(total) : NULL;
+    total = 0;
+    for (i = 0; i < g_user_count; i++) {
+        const unsigned char* from = i == number - 1 ? data : g_user_pictures + g_users[i].picture_at;
+        uint32_t n = i == number - 1 ? size : g_users[i].picture_size;
+        if (n) memcpy(block + total, from, n);
+        g_users[i].picture_at = (uint32_t)total;
+        g_users[i].picture_size = n;
+        total += n;
+    }
+    free(g_user_pictures);
+    g_user_pictures = block;
+    rc = 0;
+done:
+    free(staged);
+    free(path);
+    return rc;
+}
+/* the users from index i out, those after it a place up, the one playing the same user */
+static void users_drop(int i) {
+    memmove(&g_users[i], &g_users[i + 1], sizeof g_users[0] * (size_t)(g_user_count - i - 1));
+    memset(&g_users[--g_user_count], 0, sizeof g_users[0]);
+    if (g_user_selected > i) g_user_selected--;
+}
+int snx_users_remove(const char* dir, int number, char* why, size_t why_size) {
+    char *path = snx_path_join(dir, USERS_FILE), *staged = snx_format("%s.new", path), *text = NULL, *out = NULL, *at;
+    const char *line, *end, *p, *q;
+    size_t size = 0, len;
+    int section = 0, rc = -1, k;
+    if (number < 1 || number > g_user_count) {
+        snprintf(why, why_size, "there is no user %d: %d user%s", number, g_user_count, g_user_count > 1 ? "s" : "");
+        goto done;
+    }
+    if (g_users[number - 1].unsaved) {
+        users_drop(number - 1);
+        rc = 0;
+        goto done;
+    }
+    text = (char*)snx_read_file(path, &size);
+    if (!text) {
+        snprintf(why, why_size, "%s could not be read", path);
+        goto done;
+    }
+    /* the file again, [userN]'s lines left out and the sections after it numbered a place down */
+    out = (char*)snx_alloc(size + 1);
+    at = out;
+    for (line = text; *line; line += len) {
+        end = strchr(line, '\n');
+        len = end ? (size_t)(end - line) + 1 : strlen(line);
+        for (p = line; *p == ' ' || *p == '\t'; ++p) {}
+        if (*p == '[' && (q = strchr(p, ']')) != NULL && q < line + len) {
+            section = users_section(p + 1, (size_t)(q - p - 1));
+            if (section > number) {
+                k = snprintf(at, size + 1 - (size_t)(at - out), "%.*s[user%d]%.*s", (int)(p - line), line, section - 1,
+                             (int)(line + len - q - 1), q + 1);
+                at += k;
+                continue;
+            }
+        }
+        if (section == number) continue;
+        memcpy(at, line, len);
+        at += len;
+    }
+    *at = 0;
+    /* written beside it first: a full disk leaves users.ini as it was */
+    if (snx_write_file(staged, out, strlen(out))) {
+        snprintf(why, why_size, "%s could not be written", staged);
+        remove(staged);
+        goto done;
+    }
+    if (snx_replace(staged, path)) {
+        snprintf(why, why_size, "%s could not be put in place of %s", staged, path);
+        remove(staged);
+        goto done;
+    }
+    users_drop(number - 1);
+    rc = 0;
+done:
+    free(out);
+    free(text);
+    free(staged);
+    free(path);
+    return rc;
+}
+/* whether a line of from to to sets key */
+static int users_has_key(const char* from, const char* to, const char* key) {
+    const char *line, *p, *end;
+    size_t n = strlen(key);
+    for (line = from; line < to; line = end ? end + 1 : to) {
+        end = memchr(line, '\n', (size_t)(to - line));
+        for (p = line; *p == ' ' || *p == '\t'; ++p) {}
+        if (!strncmp(p, key, n) && (p[n] == '=' || p[n] == ' ' || p[n] == '\t')) return 1;
+    }
+    return 0;
+}
+int snx_users_move(const char* dir, int number, int position, char* why, size_t why_size) {
+    char *path = snx_path_join(dir, USERS_FILE), *staged = snx_format("%s.new", path), *text = NULL, *out = NULL, *more,
+         hex[33];
+    const char *line, *end, *p, *q, *start[SNX_USERS_MAX + 1];
+    size_t size = 0, len;
+    int order[SNX_USERS_MAX], count = 0, rc = -1, i, j, selected = 0;
+    SnxUser moved[SNX_USERS_MAX];
+    if (number < 1 || number > g_user_count || position < 1 || position > g_user_count) {
+        snprintf(why, why_size, "user %d to place %d: there are %d user%s", number, position, g_user_count,
+                 g_user_count > 1 ? "s" : "");
+        goto done;
+    }
+    if (number == position) {
+        rc = 0;
+        goto done;
+    }
+    if (snx_users_save(dir, g_user_count, why, why_size)) goto done;
+    text = (char*)snx_read_file(path, &size);
+    if (!text) {
+        snprintf(why, why_size, "%s could not be read", path);
+        goto done;
+    }
+    /* where each [userN] starts, and where the file ends */
+    for (line = text; *line; line += len) {
+        end = strchr(line, '\n');
+        len = end ? (size_t)(end - line) + 1 : strlen(line);
+        for (p = line; *p == ' ' || *p == '\t'; ++p) {}
+        if (*p == '[' && (q = strchr(p, ']')) != NULL && q < line + len && count < SNX_USERS_MAX &&
+            users_section(p + 1, (size_t)(q - p - 1)) == count + 1)
+            start[count++] = line;
+    }
+    start[count] = text + strlen(text);
+    if (count != g_user_count) {
+        snprintf(why, why_size, "%s has %d users, where %d were read", path, count, g_user_count);
+        goto done;
+    }
+    for (i = 0, j = 0; i < count; i++) /* the new order, by the old indices */
+        if (i != number - 1) order[j++] = i;
+    memmove(order + position, order + position - 1, sizeof order[0] * (size_t)(count - position));
+    order[position - 1] = number - 1;
+    /* user 1 may go without a uid or a nickname line (it has the ones it always had): written when it leaves. A
+       header line ends in a newline: the one that could end the file is [user1]'s alone, and it doesn't move */
+    out = snx_format("%.*s", (int)(start[0] - text), text);
+    for (j = 0; out && j < count; j++) {
+        const char *from = start[order[j]], *to = start[order[j] + 1], *body = memchr(from, '\n', (size_t)(to - from));
+        const SnxUser* u = &g_users[order[j]];
+        int uid = 1, nickname = 1;
+        body = body ? body + 1 : to;
+        for (p = from; *p == ' ' || *p == '\t'; ++p) {}
+        q = strchr(p, ']');
+        if (j) {
+            uid = users_has_key(body, to, "uid");
+            nickname = users_has_key(body, to, "nickname");
+        }
+        snx_users_uid_text(u->uid, hex);
+        more = snx_format("%s%.*s[user%d]%.*s%s%s%s%s%s%s%.*s%s", out, (int)(p - from), from, j + 1,
+                          (int)(body - q - 1), q + 1, uid ? "" : "uid=", uid ? "" : hex, uid ? "" : "\n",
+                          nickname ? "" : "nickname=", nickname ? "" : u->nickname, nickname ? "" : "\n",
+                          (int)(to - body), body, to > body && to[-1] != '\n' ? "\n" : "");
+        free(out);
+        out = more;
+    }
+    /* written beside it first: a full disk leaves users.ini as it was */
+    if (!out || snx_write_file(staged, out, strlen(out))) {
+        snprintf(why, why_size, "%s could not be written", staged);
+        remove(staged);
+        goto done;
+    }
+    if (snx_replace(staged, path)) {
+        snprintf(why, why_size, "%s could not be put in place of %s", staged, path);
+        remove(staged);
+        goto done;
+    }
+    for (j = 0; j < count; j++) {
+        moved[j] = g_users[order[j]];
+        if (order[j] == g_user_selected) selected = j;
+    }
+    memcpy(g_users, moved, sizeof g_users[0] * (size_t)count);
+    g_user_selected = selected;
+    rc = 0;
+done:
+    free(out);
+    free(text);
+    free(staged);
+    free(path);
+    return rc;
+}
+int snx_users_begin(const uint64_t uid[2], char* why, size_t why_size) {
+    SnxUser* u;
+    if (g_user_count >= SNX_USERS_MAX) {
+        snprintf(why, why_size, "there are %d users, the most there can be", g_user_count);
+        return -1;
+    }
+    if ((!uid[0] && !uid[1]) || snx_users_find(uid)) {
+        snprintf(why, why_size, "a uid of zero, or a user's already, is no new user's");
+        return -1;
+    }
+    u = &g_users[g_user_count++];
+    memset(u, 0, sizeof *u);
+    u->uid[0] = uid[0];
+    u->uid[1] = uid[1];
+    strcpy(u->nickname, USERS_FIRST_NAME);
+    u->picture_mii = 1; /* no users/<uid>.jpg yet: its picture is its Mii's, the database's first */
+    u->unsaved = 1;
+    return 0;
+}
+int snx_users_save(const char* dir, int number, char* why, size_t why_size) {
+    char *path = snx_path_join(dir, USERS_FILE), *staged = snx_format("%s.new", path), *text = NULL, *out = NULL, *more;
+    char hex[33], data[2 * SNX_USERS_DATA + 1];
+    size_t size = 0;
+    int rc = -1, i, any, k;
+    if (number < 1 || number > g_user_count) {
+        snprintf(why, why_size, "there is no user %d: %d user%s", number, g_user_count, g_user_count > 1 ? "s" : "");
+        goto done;
+    }
+    for (i = 0; i < number && !g_users[i].unsaved; i++) {}
+    if (i == number) {
+        rc = 0; /* all of them in users.ini already */
+        goto done;
+    }
+    if (!snx_is_file(path) && snx_users_start(dir, g_users[0].uid, g_users[0].nickname, why, why_size)) goto done;
+    text = (char*)snx_read_file(path, &size);
+    if (!text) {
+        snprintf(why, why_size, "%s could not be read", path);
+        goto done;
+    }
+    out = snx_format("%s%s", text, size && text[size - 1] != '\n' ? "\n" : "");
+    for (; out && i < number; i++) {
+        snx_users_uid_text(g_users[i].uid, hex);
+        for (k = 0, any = 0; k < SNX_USERS_DATA; k++) {
+            snprintf(data + 2 * k, 3, "%02x", g_users[i].user_data[k]);
+            any |= g_users[i].user_data[k];
+        }
+        more = snx_format("%s[user%d]\nuid=%s\nnickname=%s\n%s%s%s", out, i + 1, hex, g_users[i].nickname,
+                          any ? "user_data=" : "", any ? data : "", any ? "\n" : "");
+        free(out);
+        out = more;
+    }
+    /* written beside it first: a full disk leaves users.ini as it was */
+    if (!out || snx_write_file(staged, out, strlen(out))) {
+        snprintf(why, why_size, "%s could not be written", staged);
+        remove(staged);
+        goto done;
+    }
+    if (snx_replace(staged, path)) {
+        snprintf(why, why_size, "%s could not be put in place of %s", staged, path);
+        remove(staged);
+        goto done;
+    }
+    for (i = 0; i < number; i++) g_users[i].unsaved = 0;
+    rc = 0;
+done:
+    free(out);
+    free(text);
+    free(staged);
+    free(path);
+    return rc;
+}
+int snx_users_rename(const char* dir, int number, const char* nickname, char* why, size_t why_size) {
+    if (!snx_users_nickname_valid(nickname)) {
+        snprintf(why, why_size, "the nickname ");
+        nickname_refused(why, why_size, nickname);
+        return -1;
+    }
+    if (number >= 1 && number <= g_user_count && g_users[number - 1].unsaved) { /* in users.ini with it */
+        char old[sizeof g_users[0].nickname];
+        memcpy(old, g_users[number - 1].nickname, sizeof old);
+        snprintf(g_users[number - 1].nickname, sizeof g_users[number - 1].nickname, "%s", nickname);
+        if (!snx_users_save(dir, number, why, why_size)) return 0;
+        memcpy(g_users[number - 1].nickname, old, sizeof old);
+        return -1;
+    }
+    if (users_set_key(dir, number, "nickname", nickname, why, why_size)) return -1;
+    snprintf(g_users[number - 1].nickname, sizeof g_users[number - 1].nickname, "%s", nickname);
+    return 0;
+}
+int snx_users_set_data(const char* dir, int number, const unsigned char data[SNX_USERS_DATA], char* why,
+                       size_t why_size) {
+    char hex[2 * SNX_USERS_DATA + 1];
+    int any = 0;
+    for (int i = 0; i < SNX_USERS_DATA; i++) {
+        snprintf(hex + 2 * i, 3, "%02x", data[i]);
+        any |= data[i];
+    }
+    if (number >= 1 && number <= g_user_count && g_users[number - 1].unsaved) { /* in users.ini with it */
+        unsigned char old[SNX_USERS_DATA];
+        memcpy(old, g_users[number - 1].user_data, sizeof old);
+        memcpy(g_users[number - 1].user_data, data, SNX_USERS_DATA);
+        if (!snx_users_save(dir, number, why, why_size)) return 0;
+        memcpy(g_users[number - 1].user_data, old, sizeof old);
+        return -1;
+    }
+    if (users_set_key(dir, number, "user_data", any ? hex : "", why, why_size)) return -1;
+    memcpy(g_users[number - 1].user_data, data, SNX_USERS_DATA);
+    return 0;
+}
+int snx_users_set(const char* dir, int number, const char* key, const char* value, char* why, size_t why_size) {
+    int mii = -1;
+    if (!strcmp(key, "nickname")) return snx_users_rename(dir, number, value, why, why_size);
+    if (!strcmp(key, "mii")) {
+        if ((mii = snx_mii_db_find(value)) < 0) {
+            snprintf(why, why_size, "mii=%s is no Mii of the database", value);
+            return -1;
+        }
+    } else if (!strcmp(key, "picture")) {
+        if (strcmp(value, "mii") && strcmp(value, "file")) {
+            snprintf(why, why_size, "picture=%s is neither mii nor file", value);
+            return -1;
+        }
+    } else {
+        snprintf(why, why_size, "%s is not a setting: nickname, mii, picture", key);
+        return -1;
+    }
+    if (users_set_key(dir, number, key, value, why, why_size)) return -1;
+    if (mii >= 0)
+        g_users[number - 1].mii = (uint8_t)mii;
+    else
+        g_users[number - 1].picture_mii = !strcmp(value, "mii");
+    return 0;
+}
+const char* snx_users_notes(void) { return g_user_notes; }
+/* user i's Mii and picture from what users.ini said (NULL: nothing), a line in g_user_notes for each not taken as
+   read: the value read and the one in effect. Neither ever stops anything */
+static void users_mii(int i, const char* mii, const char* picture) {
+    SnxUser* u = &g_users[i];
+    size_t at = strlen(g_user_notes);
+    int found = mii ? snx_mii_db_find(mii) : -1,
+        word = picture && (!strcmp(picture, "mii") || !strcmp(picture, "file"));
+    u->mii = (uint8_t)(found < 0 ? 0 : found);
+    u->picture_mii = word ? !strcmp(picture, "mii") : !u->picture_size;
+    if (found >= 0 && word) return;
+    snprintf(g_user_notes + at, sizeof g_user_notes - at, "users: [user%d] mii=%s%s: %s; picture=%s%s: %s\n", i + 1,
+             mii ? mii : "(none)", mii && found < 0 ? ", no Mii of the database" : "", snx_mii_db_name(u->mii),
+             picture ? picture : "(none)", picture && !word ? ", neither mii nor file" : "",
+             u->picture_mii ? "mii" : "file");
+}
+/* user 1 alone, as without users.ini: what a users.ini that is refused leaves */
+static void users_reset(void) {
+    free(g_user_pictures);
+    g_user_pictures = NULL;
+    memset(g_users, 0, sizeof g_users);
+    g_users[0].uid[0] = SNX_USERS_FIRST_UID0;
+    g_users[0].uid[1] = SNX_USERS_FIRST_UID1;
+    strcpy(g_users[0].nickname, USERS_FIRST_NAME);
+    g_user_count = 1;
+    g_user_selected = 0;
+}
 int snx_users_load(const char* dir, int selected, char* why, size_t why_size) {
     char *path = snx_path_join(dir, USERS_FILE), *text, *key, *value;
     const char* bad;
     size_t size;
     SnxIni ini;
     int count = 1, i, j, n, rc = -1;
+    /* each user's mii= and picture= as read: NULL for none (pointers into text) */
+    const char *mii_read[SNX_USERS_MAX] = {0}, *picture_read[SNX_USERS_MAX] = {0};
+    g_user_notes[0] = 0;
     free(g_user_pictures);
     g_user_pictures = NULL;
     memset(g_users, 0, sizeof g_users);
@@ -283,15 +720,24 @@ int snx_users_load(const char* dir, int selected, char* why, size_t why_size) {
                 u->uid[1] = uid[1];
             } else if (!strcmp(key, "nickname")) {
                 if (!snx_users_nickname_valid(value)) {
-                    snprintf(why, why_size,
-                             "%s: [user%d] nickname=%.40s is not %d to %d letters, digits, spaces, '.', '_' or '-', "
-                             "as Eden's rooms take it",
-                             path, n, value, SNX_USERS_NICKNAME_MIN, SNX_USERS_NICKNAME_MAX);
+                    snprintf(why, why_size, "%s: [user%d] nickname= ", path, n);
+                    nickname_refused(why, why_size, value);
                     goto done;
                 }
                 memcpy(u->nickname, value, strlen(value) + 1);
+            } else if (!strcmp(key, "user_data")) {
+                if (users_data_parse(value, u->user_data)) {
+                    snprintf(why, why_size, "%s: [user%d] user_data=%.40s is not %d hex digits, nor empty", path, n,
+                             value, 2 * SNX_USERS_DATA);
+                    goto done;
+                }
+            } else if (!strcmp(key, "mii")) {
+                mii_read[n - 1] = value;
+            } else if (!strcmp(key, "picture")) {
+                picture_read[n - 1] = value;
             } else {
-                snprintf(why, why_size, "%s: [user%d] %s is not a setting: uid, nickname", path, n, key);
+                snprintf(why, why_size, "%s: [user%d] %s is not a setting: uid, nickname, user_data, mii, picture", path,
+                         n, key);
                 goto done;
             }
         }
@@ -325,16 +771,47 @@ int snx_users_load(const char* dir, int selected, char* why, size_t why_size) {
     }
     g_user_selected = selected - 1;
     rc = users_read_pictures(dir, why, why_size);
+    for (i = 0; !rc && i < g_user_count; i++) users_mii(i, mii_read[i], picture_read[i]);
 done:
-    if (rc) { /* nothing half read stays: the caller stops the game */
-        memset(g_users, 0, sizeof g_users);
-        g_users[0].uid[0] = SNX_USERS_FIRST_UID0;
-        g_users[0].uid[1] = SNX_USERS_FIRST_UID1;
-        strcpy(g_users[0].nickname, USERS_FIRST_NAME);
-        g_user_count = 1;
-        g_user_selected = 0;
-    }
+    if (rc) users_reset(); /* nothing half read stays: the caller stops the game */
     free(text);
     free(path);
     return rc;
+}
+int snx_users_choose(const char* dir, const char* uid_text, const char* old_number, int* old, char* why,
+                     size_t why_size) {
+    uint64_t uid[2];
+    char* end;
+    long number;
+    *old = 0;
+    if (uid_text && uid_text[0]) {
+        if (users_uid_parse(uid_text, uid) || (!uid[0] && !uid[1])) {
+            snprintf(why, why_size, "user_uid=%.40s is not 32 hex digits, nor zero", uid_text);
+            users_reset();
+            return -1;
+        }
+        if (snx_users_load(dir, 1, why, why_size)) return -1;
+        for (int i = 0; i < g_user_count; i++)
+            if (g_users[i].uid[0] == uid[0] && g_users[i].uid[1] == uid[1]) {
+                g_user_selected = i;
+                return 0;
+            }
+        snprintf(why, why_size, "user_uid=%s is no user's: users.ini of %s has %d user%s", uid_text, dir, g_user_count,
+                 g_user_count == 1 ? "" : "s");
+        users_reset();
+        return -1;
+    }
+    if (old_number && old_number[0]) {
+        number = strtol(old_number, &end, 10);
+        if (*end || end == old_number || number < 1 || number > SNX_USERS_MAX) {
+            snprintf(why, why_size, "user=%.40s, which user_uid replaces, is not a number from 1 to %d", old_number,
+                     SNX_USERS_MAX);
+            users_reset();
+            return -1;
+        }
+        if (snx_users_load(dir, (int)number, why, why_size)) return -1;
+        *old = (int)number;
+        return 0;
+    }
+    return snx_users_load(dir, 1, why, why_size);
 }

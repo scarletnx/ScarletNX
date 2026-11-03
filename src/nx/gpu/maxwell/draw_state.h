@@ -11,7 +11,7 @@
 /* ch's draw state (GpuChannel.ds) brought up to its registers: before each draw, clear and texture draw */
 void mx_draw_state_sync(GpuChannel* ch);
 /* the groups (bit DS_ per group) of ch's draw state that differ from its registers read again: none, unless a
-   register a group reads is missing from its register group (SNX_DIRTY_CHECK) */
+   register a group reads is missing from its register group (draw_state_check) */
 u32 mx_draw_state_stale(const GpuChannel* ch);
 /* a draw's dynamic state and viewports from the registers r, in guest units */
 void mx_draw_dynamic(const u32* r, DsDynamic* d);

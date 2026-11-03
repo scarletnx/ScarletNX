@@ -21,6 +21,7 @@ static struct {
     int region_budget; /* snx_ir_init's, of the greedy allocator's growRegion */
     int fpsr_loose; /* snx_ir_fpsr_flags(0)'s */
     int volatile_memory; /* snx_ir_volatile_memory's */
+    int mips_tail_calls; /* snx_ir_init's, of LLVM's MIPS tail calls */
     int stats, dump;     /* snx_ir_diagnostics's: ir_stats, and whether ir_dump_pc names a function */
     SnxU64 dump_pc;
 } g_ir;
@@ -61,18 +62,20 @@ int snx_ir_init(char* error, size_t error_size) {
         snprintf(error, error_size, "LLVM has no code generator for this host");
         return -1;
     }
-    /* x86-64, AArch64, PowerPC64, RISC-V and LoongArch hosts: the guest's barriers, acquires, releases and exclusives
-       are fences and seq_cst atomics (cpu.h), so its plain accesses need no ordering of their own from the host. POWER
-       is not multi-copy atomic as ARMv8 is, which only a program ordering plain accesses on three threads without
-       barriers could see; its seq_cst fence (hwsync) is cumulative, as DMB is */
+    /* x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 and s390x hosts: the guest's barriers, acquires, releases
+       and exclusives are fences and seq_cst atomics (cpu.h), so its plain accesses need no ordering of their own from
+       the host. POWER is not multi-copy atomic as ARMv8 is, which only a program ordering plain accesses on three
+       threads without barriers could see; its seq_cst fence (hwsync) is cumulative, as DMB is */
     char* triple = LLVMGetDefaultTargetTriple();
     int x86 = !strncmp(triple, "x86_64", 6);
     int arm = !strncmp(triple, "aarch64", 7) || !strncmp(triple, "arm64", 5); /* Apple names AArch64 arm64 */
     int ppc = !strncmp(triple, "powerpc64", 9) || !strncmp(triple, "ppc64", 5);
-    int other = riscv_triple(triple) || loongarch_triple(triple);
+    int other = riscv_triple(triple) || loongarch_triple(triple) || !strncmp(triple, "mips64", 6) ||
+                !strncmp(triple, "s390x", 5);
     if (!x86 && !arm && !ppc && !other)
         snprintf(error, error_size,
-                 "the LLVM backend targets x86-64, AArch64, PowerPC64, RISC-V and LoongArch hosts, this one is %s",
+                 "the LLVM backend targets x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 and s390x hosts, this "
+                 "one is %s",
                  triple);
     LLVMDisposeMessage(triple);
     if (x86 && !g_ir.domain_off) {
@@ -83,6 +86,16 @@ int snx_ir_init(char* error, size_t error_size) {
         LLVMParseCommandLineOptions(2, off, NULL);
         g_ir.domain_off = 1;
     }
+#if defined(__mips64)
+    if (!g_ir.mips_tail_calls) {
+        /* LLVM's MIPS backend makes a call a jump only with this option, and a musttail one that it can't make a jump
+           a fatal error: every guest tail call. It jumps to a pointer, or to a function that it may take for the
+           module's own, local or hidden, as mips_tail_callees makes them. Once per process, as the others */
+        static const char* const tail[] = {"scarletnx", "-mips-tail-calls"};
+        LLVMParseCommandLineOptions(2, tail, NULL);
+        g_ir.mips_tail_calls = 1;
+    }
+#endif
     if (!g_ir.region_budget) {
         /* the greedy allocator's growRegion, at LLVM's budget of 10000, did not end on a 4310-block function with a
            cold helper call at each of its 714 vector FP sites; at 2000 that function takes 4 s, and its whole unit 76 s */
@@ -216,6 +229,33 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
             cpu = LLVMCreateMessage(riscv_triple(triple) ? "generic-rv64" : "generic-la64");
         }
     }
+#if defined(__mips64)
+    /* MIPS64: MIPS64 Release 2 at least, as cmake/cross.cmake builds the runtime, where LLVM names no CPU (it has no
+       MIPS host detection, and its generic CPU is Release 1). +xgot: a call or an address through a GOT slot takes a
+       32-bit offset from gp (lui, daddu, ld), as a game's calls between its units need more slots than a 16-bit
+       offset reaches (8190); link_elf.c lays the GOT out */
+    if (!target_triple) {
+        char* all = (char*)malloc(strlen(features) + sizeof(",+xgot"));
+        if (all) {
+            sprintf(all, "%s%s+xgot", features, *features ? "," : "");
+            LLVMDisposeMessage(features);
+            features = LLVMCreateMessage(all);
+            free(all);
+        }
+        if (!*cpu || !strcmp(cpu, "generic")) {
+            LLVMDisposeMessage(cpu);
+            cpu = LLVMCreateMessage("mips64r2");
+        }
+    }
+#endif
+#if defined(__s390x__)
+    /* s390x: z13 at least, as cmake/cross.cmake builds the runtime, where LLVM names no CPU (/proc/cpuinfo has no
+       machine number it knows): its generic CPU calls libgcc for 128-bit shifts */
+    if (!target_triple && (!*cpu || !strcmp(cpu, "generic"))) {
+        LLVMDisposeMessage(cpu);
+        cpu = LLVMCreateMessage("z13");
+    }
+#endif
     /* PowerPC64's ABI. The host's code is the runtime's own, which a triple doesn't settle: big-endian glibc is ELFv1
        on Debian's ports and ELFv2 on Arch POWER, and their LLVMs pick each for powerpc64-*-linux-gnu. Another
        triple's is what Clang picks for it: ELFv2 for little-endian and musl, ELFv1 for big-endian glibc */
@@ -298,6 +338,7 @@ void snx_ir_free(SnxIr* ir) {
     LLVMDisposeModule(ir->mod);
     LLVMContextDispose(ir->ctx);
     LLVMDisposeTargetMachine(ir->tm);
+    ir_summaries_free(ir);
     free(ir);
 }
 
@@ -388,6 +429,26 @@ static void ppc_tail_calls(SnxIr* ir) {
             }
 }
 
+#if defined(__mips64)
+/* ---- MIPS64's guest tail calls ----
+   LLVM's MIPS backend makes a musttail call a jump (snx_ir_init's -mips-tail-calls) to a pointer, or to a function it
+   may take for the module's own: local, or hidden or protected where it is declared, dso_local where it is defined.
+   Guest functions are hidden (snx_ir_guest_function); a callee of default visibility, such as an AArch32 block's
+   successor (module_arm.c), becomes hidden too, as every function a module calls is linked into it (link_elf.c) */
+static void mips_tail_callees(LLVMModuleRef module) {
+    for (LLVMValueRef function = LLVMGetFirstFunction(module); function; function = LLVMGetNextFunction(function))
+        for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(function); block; block = LLVMGetNextBasicBlock(block))
+            for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst; inst = LLVMGetNextInstruction(inst)) {
+                if (!LLVMIsACallInst(inst) || LLVMGetTailCallKind(inst) != LLVMTailCallKindMustTail) continue;
+                LLVMValueRef callee = LLVMGetCalledValue(inst);
+                LLVMLinkage linkage = LLVMIsAFunction(callee) ? LLVMGetLinkage(callee) : LLVMInternalLinkage;
+                if (linkage != LLVMInternalLinkage && linkage != LLVMPrivateLinkage &&
+                    LLVMGetVisibility(callee) == LLVMDefaultVisibility)
+                    LLVMSetVisibility(callee, LLVMHiddenVisibility);
+            }
+}
+#endif
+
 int snx_ir_object(SnxIr* ir, char opt, unsigned char** data, size_t* size, char* error, size_t error_size) {
     *data = NULL;
     *size = 0;
@@ -428,6 +489,9 @@ static void size_attributes(LLVMModuleRef module, char opt) {
 void ir_clean_function(SnxIr* ir, LLVMValueRef fn) {
     const char* passes = ir->tuning ? ir->tuning->clean : SNX_IR_CLEAN_PASSES;
     if (!passes) return;
+    /* LLVMRunPassesOnFunction came in LLVM 20 (FreeBSD's llvm package is 19): before it, the unit's pipeline takes the
+       function as emitted, as it does one whose passes fail */
+#if LLVM_VERSION_MAJOR >= 20
     LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
     if (ir->tuning && ir->tuning->builder) ir->tuning->builder(options);
     LLVMErrorRef failure = LLVMRunPassesOnFunction(fn, passes, ir->tm, options);
@@ -438,6 +502,7 @@ void ir_clean_function(SnxIr* ir, LLVMValueRef fn) {
                 LLVMGetValueName(fn), message);
         LLVMDisposeErrorMessage(message);
     }
+#endif
     /* the unit cache keys the bitcode, and a function's names go into it in the order of its symbol table, which the
        names SROA made and numbered (in an order that changes from run to run) leave different: no name stays */
     for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
@@ -506,6 +571,9 @@ int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned cha
             return -1;
         }
     }
+#if defined(__mips64)
+    mips_tail_callees(module);
+#endif
     message = NULL;
     if (LLVMTargetMachineEmitToMemoryBuffer(ir->tm, module, LLVMObjectFile, &message, &buffer)) {
         snprintf(error, error_size, "LLVM code generation: %s", message ? message : "");

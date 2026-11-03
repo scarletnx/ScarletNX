@@ -7,6 +7,7 @@
 #include "nx/hle/services/services_int.h"
 #include "common/utilities/common.h"
 #include <plutovg.h>
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 
@@ -19,6 +20,23 @@ const u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull};
 /* acc.c's IsUserAccountSwitchLocked asks am.c, which this test doesn't compile: the NACP field is a switch here */
 static int test_account_switch_lock;
 int am_user_account_switch_lock(void) { return test_account_switch_lock; }
+/* fs.c's, which this test doesn't compile: the folders of saves test_saves names, as fs_user_saves_take gives them */
+static char test_saves[2][FS_TREE_PATH_MAX];
+static int test_saves_count, test_saves_held;
+/* acc's lock, counted: how deep it is held, and how often it was taken */
+static int test_users_held, test_users_locks;
+int fs_user_saves_take(const u64 uid[2], char (*paths)[FS_TREE_PATH_MAX], int max) {
+    int i;
+    (void)uid;
+    test_saves_held = test_users_held;
+    for (i = 0; i < test_saves_count && i < max; i++) memcpy(paths[i], test_saves[i], FS_TREE_PATH_MAX);
+    return i;
+}
+/* the runtime's users.c reads the deprecated user through options.c, which this test doesn't compile */
+const char* ini_deprecated_value(const char* key) {
+    (void)key;
+    return NULL;
+}
 char g_exedir[1024];
 static unsigned test_checks, test_objects;
 
@@ -43,8 +61,12 @@ void fatal(const char* format, ...) {
     va_end(args);
     exit(1);
 }
-void pm_lock(PMutex* m) { (void)m; }
-void pm_unlock(PMutex* m) { (void)m; }
+void pm_lock(PMutex* m) {
+    if (m == &g_host.acc.users_lk) test_users_held++, test_users_locks++;
+}
+void pm_unlock(PMutex* m) {
+    if (m == &g_host.acc.users_lk) test_users_held--;
+}
 SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
     SvcObj* obj = calloc(1, sizeof *obj);
     CHECK(obj != NULL);
@@ -216,6 +238,9 @@ static void test_picture(void) {
 #define UID2   "00000000000000020000000000000002"
 #define UID3   "0000000000000003000000000000000a"
 #define NICK20 "Ab9 x.y_z-0123456789" /* the longest a room takes, with every kind of character */
+#define NICK32   "Jo\xc3\xa3o \xf0\x9f\x8e\xae 0123456789abcdefghijk" /* 32 bytes: the most there is, of UTF-8 */
+#define NICK33   NICK32 "l"
+#define NOT_NICK "bytes of UTF-8 with no control character nor a space at either end"
 static const unsigned char jpeg[] = {0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 0xFF, 0xD9};
 
 static void put(const char* name, const void* data, size_t size) {
@@ -236,6 +261,17 @@ static void refused(const char* text, int selected, const char* why_has) {
     CHECK(snx_users_load(DIR, selected, why, sizeof why) == -1);
     if (!strstr(why, why_has)) fprintf(stderr, "why: %s\n", why);
     CHECK(strstr(why, why_has) != NULL);
+    CHECK(g_user_count == 1 && !strcmp(g_users[0].nickname, "Player"));
+}
+/* a [user1] nickname the rule refuses, with why saying what is wrong with it but never the nickname: the game's stop
+   carries it to the log, which players attach to public reports */
+static void refused_nickname(const char* nickname, const char* why_has) {
+    char text[128], why[512];
+    snprintf(text, sizeof text, "[user1]\nnickname=%s\n", nickname);
+    put_ini(text);
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == -1);
+    if (!strstr(why, why_has) || (nickname[0] && strstr(why, nickname))) fprintf(stderr, "why: %s\n", why);
+    CHECK(strstr(why, why_has) != NULL && !(nickname[0] && strstr(why, nickname)));
     CHECK(g_user_count == 1 && !strcmp(g_users[0].nickname, "Player"));
 }
 static void uid_of(const char* text, nn_account_Uid* uid) {
@@ -717,6 +753,31 @@ static void test_administrator(void) {
     puts("PASS the administrator's account: no license, no online account linked");
 }
 
+/* the one playing, as the settings say (snx_users_choose): by user_uid's uid, in either case; without one by the
+   deprecated user's number, which *old says; else user 1. A uid no user has, a uid that is none, and a number that is no
+   user's are refused, user 1 left alone */
+static void test_choose(void) {
+    char why[512];
+    int old = -1;
+    put_ini("[user1]\nnickname=Aogo\n[user2]\nuid=" UID2 "\nnickname=Xuji\n");
+    CHECK(!snx_users_choose(DIR, UID2, NULL, &old, why, sizeof why) && !old && snx_users_selected_number() == 2);
+    CHECK(!snx_users_choose(DIR, "0123456789ABCDEFFEDCBA9876543210", NULL, &old, why, sizeof why) &&
+          snx_users_selected_number() == 1);
+    CHECK(!snx_users_choose(DIR, UID2, "1", &old, why, sizeof why) && !old && snx_users_selected_number() == 2);
+    CHECK(snx_users_choose(DIR, UID3, NULL, &old, why, sizeof why) == -1 &&
+          strstr(why, "user_uid=" UID3 " is no user's") && strstr(why, "has 2 users") && g_user_count == 1);
+    CHECK(snx_users_choose(DIR, "5f3c", NULL, &old, why, sizeof why) == -1 &&
+          strstr(why, "user_uid=5f3c is not 32 hex digits"));
+    CHECK(!snx_users_choose(DIR, "", "2", &old, why, sizeof why) && old == 2 && snx_users_selected_number() == 2);
+    CHECK(snx_users_choose(DIR, NULL, "9", &old, why, sizeof why) == -1 &&
+          strstr(why, "user=9, which user_uid replaces, is not a number from 1 to 8") && !old);
+    CHECK(snx_users_choose(DIR, NULL, "2x", &old, why, sizeof why) == -1 && strstr(why, "user=2x"));
+    CHECK(snx_users_choose(DIR, NULL, "3", &old, why, sizeof why) == -1 && strstr(why, "user=3, and"));
+    CHECK(!snx_users_choose(DIR, NULL, NULL, &old, why, sizeof why) && !old && snx_users_selected_number() == 1);
+    gone("users.ini");
+    puts("PASS the one playing by user_uid's uid, the deprecated user's number without one, else user 1");
+}
+
 /* user 1 has the uid users.ini gives it (a setup's random one), and the fixed one only when it gives none */
 static void test_first_uid(void) {
     static u8 memory[0x400];
@@ -757,13 +818,403 @@ static char* got(const char* name) {
     free(path);
     return text;
 }
+/* a profile's UserData (icon, colour, Mii), users.ini's user_data: 256 hex digits read and given to the game by Get,
+   empty or none zeros, anything else refused; written back as a program stores it, the file's other lines kept */
+static void test_user_data(void) {
+    static u8 memory[0x200];
+    char why[512], hex[257], *now;
+    unsigned char data[SNX_USERS_DATA], zeros[SNX_USERS_DATA] = {0};
+    nn_account_profile_ProfileBase base;
+    nn_account_Uid uid;
+    SvcObj* profile = NULL;
+    IpcBuf buffer;
+    int i;
+    g_mem = memory;
+    for (i = 0; i < SNX_USERS_DATA; i++) data[i] = (unsigned char)(i * 7 + 1);
+    for (i = 0; i < SNX_USERS_DATA; i++) snprintf(hex + 2 * i, 3, "%02X", data[i]);
+    {
+        char* text =
+            snx_format("[user1]\nnickname=Aogo\nuser_data=\n[user2]\nuid=" UID2 "\nnickname=Xuji\nuser_data=%s\n", hex);
+        put_ini(text);
+        free(text);
+    }
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && !memcmp(g_users[0].user_data, zeros, sizeof zeros) &&
+          !memcmp(g_users[1].user_data, data, sizeof data));
+    uid_of(UID2, &uid);
+    CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == 0);
+    memset(memory, 0xAA, sizeof memory);
+    buffer.addr = 0x10;
+    buffer.size = SNX_USERS_DATA;
+    CHECK(nn_account_profile_IProfile_Get(profile, buffer, &base) == 0 && !memcmp(memory + 0x10, data, sizeof data) &&
+          memory[0x10 + SNX_USERS_DATA] == 0xAA);
+    svcobj_unref(profile);
+    /* stored: user 1's now, in hex, and user 2's zeros as an empty key */
+    CHECK(snx_users_set_data(DIR, 1, data, why, sizeof why) == 0 &&
+          snx_users_set_data(DIR, 2, zeros, why, sizeof why) == 0);
+    now = got("users.ini");
+    for (i = 0; hex[i]; i++) hex[i] = (char)tolower((unsigned char)hex[i]);
+    CHECK(now && strstr(now, "[user1]\nnickname=Aogo\nuser_data=") && strstr(now, hex) &&
+          strstr(now, "nickname=Xuji\nuser_data=\n"));
+    free(now);
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && !memcmp(g_users[0].user_data, data, sizeof data) &&
+          !memcmp(g_users[1].user_data, zeros, sizeof zeros));
+    CHECK(snx_users_set_data(DIR, 3, data, why, sizeof why) == -1 && strstr(why, "there is no user 3: 2 users"));
+    gone("users.ini");
+    refused("[user1]\nuser_data=0123\n", 1, "user_data=0123 is not 256 hex digits, nor empty");
+    puts("PASS a profile's UserData as users.ini's user_data: read, given to the game, written back");
+}
+
+/* acc:su's registration (BeginUserRegistration 200, CompleteUserRegistration 201): a new uid, a version 4 UUID's, in
+   the users at once as the first user's nickname ("Player", rEden's own name for it), users.ini as it was until
+   Complete writes it after the others; a ninth refused, an unknown uid, and no users folder to write in */
+static void test_registration(void) {
+    static u8 memory[0x400];
+    char why[512], hex[33], *before, *now, *want;
+    SvcObj* su = new_acc_admin();
+    Request r;
+    nn_account_Uid uid;
+    u64 v[2];
+    int i;
+    g_mem = memory;
+    snprintf(g_host.acc.users_dir, sizeof g_host.acc.users_dir, "%s", DIR);
+    put_ini("; mine\n[user1]\nnickname=Aogo\n");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_user_count == 1);
+    before = got("users.ini");
+    request(&r, 200);
+    call(su, &r);
+    CHECK(r.c.out_size == 16);
+    memcpy(uid.v, r.c.out, 16);
+    acc_uid_get(&uid, v);
+    CHECK((v[0] || v[1]) && (v[0] >> 12 & 0xF) == 4 && (v[1] >> 62) == 2 && g_user_count == 2);
+    CHECK(!strcmp(g_users[1].nickname, "Player") && g_users[1].unsaved);
+    now = got("users.ini");
+    CHECK(now && before && !strcmp(now, before));
+    free(now);
+    /* listed at once */
+    memset(memory, 0xAA, sizeof memory);
+    request(&r, 2);
+    r.c.nc = 1;
+    r.c.c[0].addr = 0x100;
+    r.c.c[0].size = 0x20;
+    call(su, &r);
+    CHECK(!memcmp(memory + 0x110, uid.v, 16));
+    /* Complete: written after the others, the file's lines as they were */
+    request(&r, 201);
+    memcpy(r.raw, uid.v, 16);
+    call(su, &r);
+    snx_users_uid_text(v, hex);
+    want = snx_format("%s[user2]\nuid=%s\nnickname=Player\n", before, hex);
+    now = got("users.ini");
+    CHECK(now && want && !strcmp(now, want) && !g_users[1].unsaved);
+    free(now);
+    request(&r, 201);
+    memcpy(r.raw, uid.v, 16);
+    call(su, &r); /* again: nothing to write */
+    now = got("users.ini");
+    CHECK(now && !strcmp(now, want));
+    free(now);
+    free(want);
+    free(before);
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_user_count == 2 && same_uid(uid.v, g_users[1].uid));
+    /* up to eight; a ninth is refused, said */
+    for (i = 3; i <= SNX_USERS_MAX; i++) {
+        request(&r, 200);
+        call(su, &r);
+    }
+    request(&r, 200);
+    CHECK(su->dispatch(su, &r.c) == RC(124, 100) && g_user_count == SNX_USERS_MAX);
+    request(&r, 201);
+    uid_of("00000000000000090000000000000009", &uid);
+    memcpy(r.raw, uid.v, 16);
+    CHECK(su->dispatch(su, &r.c) == RC(124, 20));
+    /* no users folder: nothing written */
+    g_host.acc.users_dir[0] = 0;
+    request(&r, 201);
+    acc_uid_put(r.raw, g_users[2].uid);
+    CHECK(su->dispatch(su, &r.c) == RC(124, 100) && g_users[2].unsaved);
+    svcobj_unref(su);
+    gone("users.ini");
+    gone("users.ini.old");
+    puts("PASS acc:su's registration: a new uid in the users at once, in users.ini from Complete");
+}
+
+/* Store (100) and StoreWithImage (101) of acc:su's profile editor (GetProfileEditor 205): ProfileBase in the raw data,
+   the UserData in an X buffer, the picture in an A one */
+static void store_request(Request* r, u8* raw, u32 cmd, const u64 uid[2], const char* nickname, u64 data_size,
+                          u64 image_size) {
+    request(r, cmd);
+    memset(raw, 0, 0x40);
+    acc_uid_put(raw, uid);
+    memcpy(raw + 0x18, nickname, strlen(nickname) < 32 ? strlen(nickname) : 32);
+    r->c.raw = raw;
+    r->c.raw_size = 0x40;
+    r->c.nx = 1;
+    r->c.x[0].addr = 0x100;
+    r->c.x[0].size = data_size;
+    if (image_size) {
+        r->c.na = 1;
+        r->c.a[0].addr = 0x200;
+        r->c.a[0].size = image_size;
+    }
+}
+/* the profile editor: a registered user's nickname, UserData and picture stored as the program gives them, into
+   users.ini at once (as rEden writes profiles.dat at a Store), and read back by the profile; a nickname the service
+   would not keep, another user's uid, a short UserData and a picture past 128 KiB refused, nothing written */
+static void test_profile_editor(void) {
+    static u8 memory[0x400];
+    static const u8 picture[] = {0xFF, 0xD8, 0xFF, 0xE0, 9, 8, 7, 0xFF, 0xD9};
+    char why[512], hex[33], *now, *path;
+    u8 raw[0x40];
+    SvcObj *su = new_acc_admin(), *editor, *profile = NULL;
+    Request r;
+    nn_account_Uid uid;
+    nn_account_profile_ProfileBase base;
+    u64 v[2];
+    u32 size;
+    int i;
+    g_mem = memory;
+    snprintf(g_host.acc.users_dir, sizeof g_host.acc.users_dir, "%s", DIR);
+    put_ini("[user1]\nnickname=Aogo\n");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    request(&r, 200);
+    call(su, &r);
+    memcpy(uid.v, r.c.out, 16);
+    acc_uid_get(&uid, v);
+    snx_users_uid_text(v, hex);
+    request(&r, 205);
+    memcpy(r.raw, uid.v, 16);
+    call(su, &r);
+    CHECK(r.c.nout_objs == 1);
+    editor = r.c.out_objs[0];
+    for (i = 0; i < SNX_USERS_DATA; i++) memory[0x100 + i] = (u8)(0x80 + i);
+    memcpy(memory + 0x200, picture, sizeof picture);
+    store_request(&r, raw, 101, v, "Jo\xc3\xa3o", SNX_USERS_DATA, sizeof picture);
+    call(editor, &r);
+    now = got("users.ini");
+    CHECK(now && strstr(now, "[user2]\nuid=") && strstr(now, hex) &&
+          strstr(now, "nickname=Jo\xc3\xa3o\nuser_data=8081"));
+    free(now);
+    path = snx_format("%s/%s.jpg", DIR, hex);
+    {
+        size_t n = 0;
+        unsigned char* kept = snx_read_file(path, &n);
+        CHECK(kept && n == sizeof picture && !memcmp(kept, picture, n));
+        free(kept);
+    }
+    CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == 0);
+    CHECK(nn_account_profile_IProfile_GetBase(profile, &base) == 0 && !memcmp(base.nickname, "Jo\xc3\xa3o", 5));
+    CHECK(nn_account_profile_IProfile_GetImageSize(profile, &size) == 0 && size == sizeof picture);
+    svcobj_unref(profile);
+    /* Store alone: the nickname, the picture as it was */
+    store_request(&r, raw, 100, v, "Xuji", SNX_USERS_DATA, 0);
+    call(editor, &r);
+    CHECK(!strcmp(g_users[1].nickname, "Xuji") && g_users[1].picture_size == sizeof picture);
+    now = got("users.ini");
+    CHECK(now && strstr(now, "nickname=Xuji\nuser_data=8081"));
+    /* refused, nothing changed: no nickname, a space at its end, another user's uid, a short UserData, a big picture */
+    store_request(&r, raw, 100, v, "", SNX_USERS_DATA, 0);
+    CHECK(editor->dispatch(editor, &r.c) == RC(124, 100));
+    store_request(&r, raw, 100, v, "Xuji ", SNX_USERS_DATA, 0);
+    CHECK(editor->dispatch(editor, &r.c) == RC(124, 100));
+    store_request(&r, raw, 100, g_users[0].uid, "Xuji", SNX_USERS_DATA, 0);
+    CHECK(editor->dispatch(editor, &r.c) == RC(124, 20));
+    store_request(&r, raw, 100, v, "Xuji", 0x40, 0);
+    CHECK(editor->dispatch(editor, &r.c) == RC(124, 32));
+    store_request(&r, raw, 101, v, "Xuji", SNX_USERS_DATA, 0x20001);
+    CHECK(editor->dispatch(editor, &r.c) == RC(124, 32));
+    {
+        char* again = got("users.ini");
+        CHECK(again && !strcmp(again, now));
+        free(again);
+    }
+    free(now);
+    svcobj_unref(editor);
+    svcobj_unref(su);
+    remove(path);
+    free(path);
+    gone("users.ini");
+    gone("users.ini.old");
+    puts("PASS the profile editor: nickname, UserData and picture stored as given, into users.ini at once");
+}
+
+/* DeleteUser (acc:su 203): the user into the Trash of the data folder, trash/user.<uid>.<when>/, its users.ini
+   section, picture and saves there, the users after it a place up with the one playing the same; the one playing is
+   refused, an unknown uid too; a move that fails puts back what moved, users.ini as it was, no Trash left. A profile
+   of the user deleted answers InvalidUserId, its picture the default */
+static void test_delete_user(void) {
+    static u8 memory[0x400];
+    char why[512], *path, *now, *trash = NULL, **names = NULL;
+    const char* users = DIR "/users";
+    SvcObj *su = new_acc_admin(), *profile = NULL;
+    Request r;
+    nn_account_Uid uid;
+    nn_account_profile_ProfileBase base;
+    size_t count = 0;
+    u32 size;
+    g_mem = memory;
+    CHECK(!snx_mkdirs(users) && !snx_mkdirs(DIR "/saves-of-2"));
+    path = snx_path_join(users, "users.ini");
+    CHECK(!snx_write_file(
+        path, "[user1]\nnickname=Aogo\n[user2]\nuid=" UID2 "\nnickname=Xuji\n[user3]\nuid=" UID3 "\nnickname=Afugo\n",
+        strlen("[user1]\nnickname=Aogo\n[user2]\nuid=" UID2 "\nnickname=Xuji\n[user3]\nuid=" UID3
+               "\nnickname=Afugo\n")));
+    CHECK(!snx_write_file(DIR "/users/" UID2 ".jpg", jpeg, sizeof jpeg) &&
+          !snx_write_file(DIR "/users/" UID3 ".jpg", jpeg, sizeof jpeg));
+    CHECK(!snx_write_file(DIR "/saves-of-2/slot.bin", "save", 4));
+    CHECK(snx_users_load(users, 1, why, sizeof why) == 0 && g_user_count == 3);
+    snprintf(g_host.acc.users_dir, sizeof g_host.acc.users_dir, "%s", users);
+    uid_of(UID2, &uid);
+    CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == 0);
+    /* user 2 deleted */
+    snprintf(test_saves[0], sizeof test_saves[0], "%s", DIR "/saves-of-2");
+    test_saves_count = 1;
+    request(&r, 203);
+    memcpy(r.raw, uid.v, 16);
+    call(su, &r);
+    CHECK(g_user_count == 2 && !strcmp(g_users[1].nickname, "Afugo") && snx_users_selected_number() == 1);
+    CHECK(test_saves_held == 1 && !test_users_held); /* the saves taken under acc's lock */
+    now = (char*)snx_read_file(path, &count);
+    CHECK(now && !strcmp(now, "[user1]\nnickname=Aogo\n[user2]\nuid=" UID3 "\nnickname=Afugo\n"));
+    free(now);
+    CHECK(!snx_is_file(DIR "/users/" UID2 ".jpg") && !snx_is_dir(DIR "/saves-of-2"));
+    CHECK(!snx_list_dir(DIR "/trash", &names, &count) && count == 1 && !strncmp(names[0], "user." UID2 ".", 38));
+    trash = snx_format("%s/trash/%s", DIR, names[0]);
+    snx_free_strings(names, count);
+    {
+        char *section = snx_format("%s/users.ini", trash), *kept;
+        size_t n;
+        kept = (char*)snx_read_file(section, &n);
+        CHECK(kept && !strcmp(kept, "[user2]\nuid=" UID2 "\nnickname=Xuji\n"));
+        free(kept);
+        free(section);
+        section = snx_format("%s/" UID2 ".jpg", trash);
+        CHECK(snx_is_file(section));
+        free(section);
+        section = snx_format("%s/save.1/slot.bin", trash);
+        CHECK(snx_is_file(section));
+        free(section);
+    }
+    /* its profile: gone, its picture the default */
+    CHECK(nn_account_profile_IProfile_GetBase(profile, &base) == RC(124, 20));
+    CHECK(nn_account_profile_IProfile_GetImageSize(profile, &size) == 0 && size == acc_picture());
+    svcobj_unref(profile);
+    /* the one playing, and a uid no user has: refused */
+    test_saves_count = 0;
+    request(&r, 203);
+    acc_uid_put(r.raw, g_users[0].uid);
+    CHECK(su->dispatch(su, &r.c) == RC(124, 100) && g_user_count == 2);
+    request(&r, 203);
+    memcpy(r.raw, uid.v, 16);
+    CHECK(su->dispatch(su, &r.c) == RC(124, 20));
+    /* a move that fails: the picture back, users.ini as it was, no other Trash */
+    snprintf(test_saves[0], sizeof test_saves[0], "%s", DIR "/no-such-saves");
+    test_saves_count = 1;
+    request(&r, 203);
+    uid_of(UID3, &uid);
+    memcpy(r.raw, uid.v, 16);
+    CHECK(su->dispatch(su, &r.c) == RC(124, 100) && g_user_count == 2 && snx_is_file(DIR "/users/" UID3 ".jpg"));
+    now = (char*)snx_read_file(path, &count);
+    CHECK(now && strstr(now, "uid=" UID3));
+    free(now);
+    CHECK(!snx_list_dir(DIR "/trash", &names, &count) && count == 1);
+    snx_free_strings(names, count);
+    test_saves_count = 0;
+    g_host.acc.users_dir[0] = 0;
+    svcobj_unref(su);
+    free(trash);
+    free(path);
+    CHECK(!snx_remove_tree(DIR "/trash") && !snx_remove_tree(users));
+    puts("PASS DeleteUser: into the Trash with its picture and saves, the users after it a place up");
+}
+
+/* acc_playing: the uid and nickname of the user playing, under acc's lock, as every acc command runs */
+static void test_playing(void) {
+    char why[512], nickname[SNX_USERS_NICKNAME + 1], text[33];
+    u64 uid[2];
+    SvcObj* su = new_acc_admin();
+    Request r;
+    int locks = test_users_locks;
+    put_ini("[user1]\nnickname=Aogo\n[user2]\nuid=" UID2 "\nnickname=Xuji\n");
+    CHECK(snx_users_load(DIR, 2, why, sizeof why) == 0);
+    acc_playing(uid, nickname, sizeof nickname);
+    snx_users_uid_text(uid, text);
+    CHECK(!strcmp(text, UID2) && !strcmp(nickname, "Xuji") && test_users_locks == locks + 1 && !test_users_held);
+    acc_playing(NULL, nickname, 3);
+    CHECK(!strcmp(nickname, "Xu"));
+    request(&r, 0); /* GetUserCount */
+    call(su, &r);
+    CHECK(reply32(&r, 0) == 2 && test_users_locks == locks + 3 && !test_users_held);
+    svcobj_unref(su);
+    gone("users.ini");
+    puts("PASS acc_playing: the user playing, read under acc's lock");
+}
+/* SetUserPosition (acc:su 204): position (0 the first) and the uid; the users in their new order in users.ini and in
+   the users, user 1's uid and nickname written as it leaves [user1], the one playing the same user; a place past them
+   or a uid no user's changes nothing and succeeds, as rEden's */
+static void test_user_position(void) {
+    static u8 memory[0x100];
+    char why[512], text[33], *now, *again;
+    SvcObj* su = new_acc_admin();
+    Request r;
+    g_mem = memory;
+    snprintf(g_host.acc.users_dir, sizeof g_host.acc.users_dir, "%s", DIR);
+    put_ini("; mine\n  [user1]\n\n[user2]\nuid=" UID2 "\nnickname=Xuji\n\n[user3]\nuid=" UID3 "\nnickname=Afugo");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_user_count == 3);
+    /* user 1 to the end */
+    request(&r, 204);
+    snx_st_le64(r.raw, 2);
+    acc_uid_put(r.raw + 8, g_users[0].uid);
+    call(su, &r);
+    now = got("users.ini");
+    CHECK(now && !strcmp(now, "; mine\n[user1]\nuid=" UID2 "\nnickname=Xuji\n\n[user2]\nuid=" UID3
+                              "\nnickname=Afugo\n  [user3]\nuid=" UID1 "\nnickname=Player\n\n"));
+    free(now);
+    snx_users_uid_text(g_users[2].uid, text);
+    CHECK(!strcmp(text, UID1) && !strcmp(g_users[0].nickname, "Xuji") && snx_users_selected_number() == 3);
+    CHECK(snx_users_load(DIR, 3, why, sizeof why) == 0 && !strcmp(g_users[2].nickname, "Player"));
+    snx_users_uid_text(g_users[2].uid, text);
+    CHECK(!strcmp(text, UID1));
+    /* and back to the front: the lines it was given stay */
+    request(&r, 204);
+    acc_uid_put(r.raw + 8, g_users[2].uid);
+    call(su, &r);
+    CHECK(!strcmp(g_users[0].nickname, "Player") && !strcmp(g_users[2].nickname, "Afugo") &&
+          snx_users_selected_number() == 1);
+    now = got("users.ini");
+    CHECK(now && !strcmp(now, "; mine\n  [user1]\nuid=" UID1 "\nnickname=Player\n\n[user2]\nuid=" UID2
+                              "\nnickname=Xuji\n\n[user3]\nuid=" UID3 "\nnickname=Afugo\n"));
+    /* a place past the users, or no user's uid: nothing, and success */
+    request(&r, 204);
+    snx_st_le64(r.raw, 3);
+    acc_uid_put(r.raw + 8, g_users[1].uid);
+    call(su, &r);
+    request(&r, 204);
+    uid_of("00000000000000090000000000000009", (nn_account_Uid*)(r.raw + 8));
+    call(su, &r);
+    again = got("users.ini");
+    CHECK(again && !strcmp(again, now) && !strcmp(g_users[1].nickname, "Xuji"));
+    free(again);
+    free(now);
+    /* users.ini that can't be written: refused, the users as they were */
+    snprintf(g_host.acc.users_dir, sizeof g_host.acc.users_dir, "%s", DIR "/no-such-folder");
+    request(&r, 204);
+    acc_uid_put(r.raw + 8, g_users[2].uid);
+    CHECK(su->dispatch(su, &r.c) == RC(124, 100) && !strcmp(g_users[2].nickname, "Afugo"));
+    g_host.acc.users_dir[0] = 0;
+    svcobj_unref(su);
+    gone("users.ini");
+    puts("PASS SetUserPosition: the users in their new order, user 1's uid and nickname written as it leaves");
+}
+
 /* users.ini started over with one user: the one before kept as users.ini.old, nothing written for what is refused */
 static void test_start(void) {
     static const uint64_t three[2] = {3, 10}, two[2] = {2, 2}, zero[2] = {0, 0};
     char why[512], text[33], *before, *now, *old;
     gone("users.ini");
     gone("users.ini.old");
-    CHECK(snx_users_start(DIR, three, "Ada", why, sizeof why) == -1 && strstr(why, "nickname Ada is not 4 to 20"));
+    CHECK(snx_users_start(DIR, three, NICK33, why, sizeof why) == -1 &&
+          strstr(why, "the nickname has 33 bytes: the account service keeps 1 to 32 " NOT_NICK) &&
+          !strstr(why, "Jo\xc3\xa3o"));
     CHECK(snx_users_start(DIR, zero, "Aogo", why, sizeof why) == -1 && strstr(why, "zero"));
     CHECK(!got("users.ini") && !got("users.ini.old") && !got("users.ini.new"));
     /* none before: the new one alone, read as user 1 of that uid */
@@ -810,7 +1261,8 @@ static void test_rename(void) {
     free(now);
     CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && !strcmp(g_users[0].nickname, "Aogo.55") &&
           !strcmp(g_users[1].nickname, "Xuji Two"));
-    CHECK(snx_users_rename(DIR, 2, "Ada", why, sizeof why) == -1 && strstr(why, "nickname Ada is not 4 to 20"));
+    CHECK(snx_users_rename(DIR, 2, " Ada", why, sizeof why) == -1 &&
+          strstr(why, "the nickname has 0x20 at byte 1: the account service keeps 1 to 32") && !strstr(why, "Ada"));
     CHECK(snx_users_rename(DIR, 3, "Afugo", why, sizeof why) == -1 && strstr(why, "there is no user 3: 2 users"));
     now = got("users.ini");
     CHECK(now && strstr(now, "nickname=Xuji Two\n")); /* as it was */
@@ -847,13 +1299,37 @@ static void test_refused(void) {
             "[user3] has the uid of [user2]");
     refused("[user1]\n[user2]\nuid=00000000000000000000000000000000\nnickname=Xuji\n", 1, "nor zero");
     refused("[user1]\n[user2]\nuid=0123\nnickname=Xuji\n", 1, "not 32 hex digits");
-    /* a nickname a room wouldn't take: too long, too short, empty, a letter outside ASCII, a sign, a tab */
-    refused("[user1]\nnickname=" NICK20 "x\n", 1, "nickname=" NICK20 "x is not 4 to 20 letters");
-    refused("[user1]\nnickname=Ada\n", 1, "nickname=Ada is not 4 to 20 letters");
-    refused("[user1]\nnickname=\n", 1, "nickname= is not 4 to 20 letters");
-    refused("[user1]\nnickname=Jo\xc3\xa3o\n", 1, "is not 4 to 20 letters");
-    refused("[user1]\nnickname=Ada/Bob\n", 1, "is not 4 to 20 letters");
-    refused("[user1]\nnickname=Ada\tBob\n", 1, "is not 4 to 20 letters");
+    /* a nickname the service would not keep: too long, empty, a control character (C0, DEL, C1), a space at either end,
+       which users.ini would lose, and bytes that are no UTF-8 (one cut short, an overlong form, a surrogate); said by its
+       length or its first byte the rule refuses */
+    refused_nickname(NICK33, "[user1] nickname= has 33 bytes: the account service keeps 1 to 32 " NOT_NICK);
+    refused_nickname("", "[user1] nickname= has 0 bytes: the account service keeps 1 to 32 ");
+    refused_nickname("Ada\tBob", "[user1] nickname= has 0x09 at byte 4: ");
+    refused_nickname("Ada\x7f", "[user1] nickname= has 0x7f at byte 4: ");
+    refused_nickname("Ada\xc2\x85", "[user1] nickname= has 0xc2 at byte 4: ");
+    refused_nickname("Jo\xc3", "[user1] nickname= has 0xc3 at byte 3: ");
+    refused_nickname("A\xc0\xaf"
+                     "B",
+                     "[user1] nickname= has 0xc0 at byte 2: ");
+    refused_nickname("A\xed\xa0\x80"
+                     "B",
+                     "[user1] nickname= has 0xed at byte 2: ");
+    refused_nickname("A\xf4\x90\x80\x80", "[user1] nickname= has 0xf4 at byte 2: ");
+    CHECK(!snx_users_nickname_valid(" Ada") && !snx_users_nickname_valid("Ada ") && snx_users_nickname_valid("A d"));
+    /* and what it keeps: 32 bytes of UTF-8 (an accent, an emoji), one letter, and signs a room would refuse */
+    put_ini("[user1]\nnickname=" NICK32 "\n[user2]\nuid=" UID2 "\nnickname=A\n[user3]\nuid=" UID3
+            "\nnickname=Ada/Bob\n");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_user_count == 3 && !strcmp(g_users[0].nickname, NICK32) &&
+          !strcmp(g_users[1].nickname, "A") && !strcmp(g_users[2].nickname, "Ada/Bob"));
+    {
+        nn_account_profile_ProfileBase base;
+        nn_account_Uid uid;
+        SvcObj* profile = NULL;
+        acc_uid_put(uid.v, g_users[0].uid);
+        CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == 0);
+        CHECK(nn_account_profile_IProfile_GetBase(profile, &base) == 0 && !memcmp(base.nickname, NICK32, 32));
+        svcobj_unref(profile);
+    }
     refused("[user1]\npassword=hunter2\n", 1, "is not a setting: uid, nickname");
     refused("[user1]\n[user2]\nuid=" UID2 "\nnickname=Xuji\n", 3, "user=3");
     refused("nickname=Aogo\n[user1]\n", 1, "before [user1]");
@@ -861,16 +1337,33 @@ static void test_refused(void) {
     refused("[user1]\nnickname Aogo\n", 1, "neither");
     refused("; nothing\n", 1, "no [user1]");
     refused("[user1\n", 1, "no ]");
-    /* a picture that is no JPEG, or too big */
+    /* a picture is the bytes the service keeps, as a program stored them: one that is no JPEG goes to the game as it
+       is, an empty file is none (Wimsy), and past 128 KiB, more than a program takes, it is refused with its size */
     put_ini("[user1]\n");
     put(UID1 ".jpg", "GIF89a", 6);
-    CHECK(snx_users_load(DIR, 1, why, sizeof why) == -1 && strstr(why, "not a JPEG"));
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_users[0].picture_size == 6);
+    {
+        nn_account_Uid uid;
+        u32 size = 0;
+        SvcObj* profile = NULL;
+        IpcBuf image;
+        static u8 memory[0x100];
+        g_mem = memory;
+        image.addr = 0x10;
+        image.size = 0x40;
+        acc_uid_put(uid.v, g_users[0].uid);
+        CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == 0);
+        CHECK(nn_account_profile_IProfile_GetImageSize(profile, &size) == 0 && size == 6);
+        CHECK(nn_account_profile_IProfile_LoadImage(profile, image, &size) == 0 && size == 6 &&
+              !memcmp(memory + 0x10, "GIF89a", 6));
+        svcobj_unref(profile);
+    }
+    put(UID1 ".jpg", "", 0);
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_users[0].picture_size == 0);
     {
         unsigned char* big = (unsigned char*)calloc(1, 0x20001);
-        big[0] = 0xFF, big[1] = 0xD8, big[0x1FFFF] = 0xFF, big[0x20000] = 0xD9;
         put(UID1 ".jpg", big, 0x20001);
-        CHECK(snx_users_load(DIR, 1, why, sizeof why) == -1 && strstr(why, "not a JPEG"));
-        big[0x1FFFF - 1] = 0xFF, big[0x1FFFF] = 0xD9;
+        CHECK(snx_users_load(DIR, 1, why, sizeof why) == -1 && strstr(why, "is 131073 bytes, past the 131072"));
         put(UID1 ".jpg", big, 0x20000);
         CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_users[0].picture_size == 0x20000);
         free(big);
@@ -883,6 +1376,55 @@ static void test_refused(void) {
 }
 
 void pm_init(PMutex* m) { (void)m; }
+
+/* a user's Mii and picture (users.ini's mii= and picture=): never a stop. With no users.ini, no key or a name the Mii
+   database does not hold, the database's first (Baguette); picture= mii or file, else file for a user with a picture
+   file and mii for one without. Every one not taken as read leaves a line with the value read and the one in effect */
+static void test_mii(void) {
+    char why[512], *text;
+    size_t size;
+    gone("users.ini");
+    gone(UID1 ".jpg");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    CHECK(g_users[0].mii == 0 && g_users[0].picture_mii == 1);
+    CHECK(strstr(snx_users_notes(), "[user1] mii=(none): Baguette; picture=(none): mii") != NULL);
+    /* a name from the database, as written; one it does not hold is the first, said with what was read */
+    put_ini("[user1]\nmii=Leek Girl\npicture=mii\n[user2]\nuid=" UID2 "\nnickname=Second\nmii=Bogus Name\n"
+            "picture=photo\n");
+    put(UID2 ".jpg", jpeg, sizeof jpeg);
+    CHECK(snx_users_load(DIR, 2, why, sizeof why) == 0);
+    if (strstr(snx_users_notes(), "[user1]")) fprintf(stderr, "notes: %s", snx_users_notes());
+    CHECK(g_users[0].mii == 1 && g_users[0].picture_mii == 1 && !strstr(snx_users_notes(), "[user1]"));
+    CHECK(g_users[1].mii == 0 && g_users[1].picture_mii == 0);
+    CHECK(strstr(snx_users_notes(), "[user2] mii=Bogus Name, no Mii of the database: Baguette; "
+                                    "picture=photo, neither mii nor file: file") != NULL);
+    /* picture=file without a file is Wimsy's, picture=mii with one the Mii's; a case other than the name's is none */
+    put_ini("[user1]\nmii=phone girl\npicture=file\n[user2]\nuid=" UID2 "\nnickname=Second\nmii=Phone Girl\n"
+            "picture=mii\n");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    CHECK(g_users[0].mii == 0 && g_users[0].picture_mii == 0 && g_users[1].mii == 2 && g_users[1].picture_mii == 1);
+    CHECK(strstr(snx_users_notes(), "[user1] mii=phone girl, no Mii of the database: Baguette; picture=file: file"));
+    /* set: the line written over the old one, the rest as it was; a name not in the database refused with it */
+    CHECK(snx_users_set(DIR, 1, "mii", "Phone Girl", why, sizeof why) == 0 && g_users[0].mii == 2);
+    CHECK(snx_users_set(DIR, 2, "picture", "file", why, sizeof why) == 0 && g_users[1].picture_mii == 0);
+    CHECK(snx_users_set(DIR, 1, "mii", "Nobody", why, sizeof why) == -1 && strstr(why, "mii=Nobody"));
+    CHECK(snx_users_set(DIR, 1, "picture", "both", why, sizeof why) == -1 && strstr(why, "picture=both"));
+    CHECK(snx_users_set(DIR, 1, "colour", "red", why, sizeof why) == -1 && strstr(why, "colour"));
+    text = (char*)snx_read_file(DIR "/users.ini", &size);
+    CHECK(text && !strcmp(text, "[user1]\nmii=Phone Girl\npicture=file\n[user2]\nuid=" UID2
+                                "\nnickname=Second\nmii=Phone Girl\npicture=file\n"));
+    free(text);
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_users[0].mii == 2 && !g_users[1].picture_mii);
+    /* with no users.ini, user 1's Mii set starts one */
+    gone("users.ini");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    CHECK(snx_users_set(DIR, 1, "mii", "Leek Girl", why, sizeof why) == 0);
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_users[0].mii == 1 &&
+          !strcmp(g_users[0].nickname, "Player"));
+    gone("users.ini");
+    gone(UID2 ".jpg");
+    puts("PASS a user's Mii and picture from users.ini, never a stop");
+}
 
 int main(void) {
     hle_init();
@@ -900,6 +1442,13 @@ int main(void) {
     test_initialize_application_info_v2();
     test_account_command_replies();
     test_users();
+    test_choose();
+    test_registration();
+    test_profile_editor();
+    test_delete_user();
+    test_user_position();
+    test_playing();
+    test_user_data();
     test_system_service();
     test_administrator_service();
     test_system_manager();
@@ -908,6 +1457,7 @@ int main(void) {
     test_start();
     test_rename();
     test_refused();
+    test_mii();
     gone("users.ini");
     snx_remove_tree(DIR);
     CHECK(test_objects == 0);

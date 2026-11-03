@@ -17,6 +17,10 @@
 #include <unistd.h>
 #endif
 
+/* the most free space the cache leaves on its disk: a large disk's tenth (100 GB of 1 TB) would stop the cache with
+   tens of GB free, far more than the rest of the disk needs while the cache grows */
+#define SNX_UNIT_RESERVE_MAX 10000000000ull
+
 /* the folder's path and its NUL, then the identity's bytes as each key hashes them first */
 struct SnxUnitCache {
     char opt;
@@ -246,14 +250,15 @@ static int first_said(SnxUnitCache* cache, unsigned reason) {
     cache->said |= reason;
     return 1;
 }
-/* room for a kept object of size bytes on the cache's disk, which always keeps a tenth of itself free: the cache's
-   oldest objects removed for it when it is short, never one the caller reads back (held). 0 to keep it; -1 when there
-   is none, each reason said for the first unit it stops and the units counted for the close */
+/* room for a kept object of size bytes on the cache's disk, which always keeps a tenth of itself free, at most
+   SNX_UNIT_RESERVE_MAX: the cache's oldest objects removed for it when it is short, never one the caller reads back
+   (held). 0 to keep it; -1 when there is none, each reason said for the first unit it stops and the units counted for
+   the close */
 static int room(SnxUnitCache* cache, SnxU64 size) {
     const char* folder = snx_unit_cache_folder(cache);
     SnxU64 free_bytes = 0, total = 0, reserve, need;
     SnxUnitTrim trim;
-    char reason[256], error[512];
+    char reason[256], error[512], why[64];
     if (cache->disk(folder, &free_bytes, &total)) {
         if (first_said(cache, UNIT_SAID_DISK))
             snx_error("unit cache: cannot read the free space of %s (%s): units are not cached", folder,
@@ -261,10 +266,11 @@ static int room(SnxUnitCache* cache, SnxU64 size) {
         not_cached(cache, size);
         return -1;
     }
-    reserve = total / 10;
+    reserve = total / 10 < SNX_UNIT_RESERVE_MAX ? total / 10 : SNX_UNIT_RESERVE_MAX;
     if (free_bytes >= reserve + size) return 0;
     need = reserve + size - free_bytes;
-    if (trim_files(folder, 0, need, "the disk's tenth kept free", &cache->held, &trim, error, sizeof error)) {
+    snprintf(why, sizeof why, "the %.1f GB the cache leaves free", GB(reserve));
+    if (trim_files(folder, 0, need, why, &cache->held, &trim, error, sizeof error)) {
         if (first_said(cache, UNIT_SAID_TRIM)) snx_error("unit cache: %s: units are not cached", error);
         not_cached(cache, size);
         return -1;
@@ -274,9 +280,10 @@ static int room(SnxUnitCache* cache, SnxU64 size) {
     cache->reserve = reserve;
     if (trim.removed_bytes < need) {
         if (first_said(cache, UNIT_SAID_ROOM))
-            snx_error("unit cache: %.1f GB free on %s, under the %.1f GB (a tenth of %.1f GB) it leaves free: units "
-                      "without room are not cached",
-                      GB(free_bytes), folder, GB(reserve), GB(total));
+            snx_error(
+                "unit cache: %.1f GB free on %s, short of the %.1f GB it leaves free (a tenth of the disk's %.1f GB, "
+                "at most %.1f GB) and a unit of %llu bytes: units without room are not cached",
+                GB(free_bytes), folder, GB(reserve), GB(total), GB(SNX_UNIT_RESERVE_MAX), (unsigned long long)size);
         not_cached(cache, size);
         return -1;
     }

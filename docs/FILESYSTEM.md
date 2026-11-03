@@ -2,6 +2,12 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Filesystem
 
+## Index
+
+* [Paths](#paths)
+* [State + I/O](#state--io)
+* [Shared fonts](#shared-fonts)
+
 `src/nx/hle/filesystem/fs_tree.{c,h}` indexes `<Game>_data/` once, capturing its absolute base.
 Subsequent game-data lookup, metadata and enumeration use the tree; content I/O requires indexed nodes.
 No host rediscovery. External edits require restart.
@@ -30,6 +36,24 @@ folder, is played where an older version left it: `save/user`, the one Account s
 nonempty `save/system` ([DEPRECATIONS](DEPRECATIONS.md)). With `save/user` and its folder both there the game stops
 and leaves both, for the player to keep one.
 
+`save_layout=global` (the default) keeps the saves apart from the game, in the data folder's `save/` (`users/`'s
+folder), as the console keeps them:
+
+| Save | Folder |
+| --- | --- |
+| Account | `save/user.<uid>/<title ID>/` |
+| Device | `save/device/<title ID>/` |
+| BCAT | `save/bcat/<title ID>/` |
+| Cache storage | `save/cache/<title ID>/<index>/` |
+| System, SystemBcat | `save/system/<save ID>/`, `save/sysbcat/<save ID>/` |
+
+Temporary storage stays the game's `save/temp`, and every save of a program with no title ID of its own (a homebrew's)
+stays in its own folder. `save_layout=game` keeps each in the game's `save/<type>` as above. Each of those folders is a
+graft of the index, writable: the ones there at startup are indexed then (`fs_saves_init`, after the users), and one
+made later is made empty, so nothing is enumerated after startup (`fs_tree_graft_new`). A save only the other layout
+holds is played where it is, the game's log and stderr saying once a run where it goes; both holding one stops the
+game, which leaves both.
+
 Init rejects scan/stat errors, symlinks/junctions, regular-file hardlinks, special files and invalid names.
 Tree limits: 4096-byte path buffers including NUL, 256 directory levels below the data root.
 IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
@@ -42,14 +66,18 @@ IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
 - Live directory cursor: `strcmp` order, last visited name, latched EOF; counts reflect current children.
 - RomFS: prefer indexed `romfs.bin`; otherwise synthesize from `romfs/`.
 - Readonly RAM copies: missing system archives become valid empty images at `system/archives/<16-hex-id>.romfs`. No
-  persistent host copy. One there in the data directory is served instead: a game that draws Miis (Mario Kart 8
-  Deluxe) needs the console's Mii models, system data `0100000000000802`, whose RomFS goes there from your own
-  firmware. Without it, `0100000000000802` is a stand-in whose parts draw nothing: its six resource files
-  (`NXTexture{Low,Mid}{Linear,SRGB}.dat`, `Shape{High,Mid}.dat`), each a magic (`NFTR` or `NFSR`, as Eden's stand-in
-  has them), version 1 and each part kind's largest size and alignment, then a part table whose every texture names
-  one blank 8 by 8 image and every shape one degenerate triangle. The SDK's loader reads a file whole and indexes its
-  part tables from its start without checking the header; a game that composes a Mii's face registers the composed
-  textures, and crashes on a null one when the parts are absent.
+  persistent host copy. One there in the data directory is served instead.
+- `0100000000000802` (MiiModel), the Mii parts' shapes and textures a game that draws Miis builds their heads from, is
+  generated when absent (`hle/filesystem/mii_model.c`): every shape a parametric surface (the head and the face's front
+  per faceline, 24 hair forms in normal and cap form, tails for the twin-tail and ponytail styles, noses, a beard,
+  the caps, ties, bands, bow and clip of the hat parts, the noseline's and the glasses' quads) and every texture
+  drawn from distance functions (eyes, brows, mouths, glasses, mustaches, beards, lines, make-up, the mole, the
+  noselines, the hats), none of the console's own. Its six files
+  (`NXTexture{Low,Mid}{Linear,SRGB}.dat`, `Shape{Mid,High}.dat`, the copies sharing their bytes) keep the console's
+  layout: the part tables with each kind's largest part and alignment, the console's list of parts (which are
+  absent), each texture in its format (BC4, BC5 or ASTC 4x4), size and levels, block linear, and each part a zlib
+  stream. It is about 4.5 MiB, made at the game's first open of it. The player's own firmware's (its RomFS as
+  `system/archives/0100000000000802.romfs`) is still served first and looks like the console.
 - `0100000000000823` (NgWord2) is the exception: when absent, it is synthesized with firmware 11.0.1's 52-file
   profanity-filter set (the `ac_*` pattern files and `version.dat` 0x1A), from Eden's stand-in archive, in place of an
   empty image. A game that calls `CheckProfanityWords` (Yo-kai Watch) reads the pattern files, and stops on the empty

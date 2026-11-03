@@ -2,11 +2,15 @@
    Copyright 2026 the ScarletNX contributors */
 /* The console's users, which the runtime's acc lists, am selects and fs keeps the saves of, and the launcher shows at
    the right of its head: users/users.ini of a data folder, up to eight, each a [userN] section in the console's order,
-   and their pictures beside it as users/<uid>.jpg. User 1 has the uid users.ini gives it; with none (no users.ini, or
+   and their pictures beside it as users/<uid>.jpg (the bytes the account service keeps, 128 KiB at most). User 1 has the uid users.ini gives it; with none (no users.ini, or
    a [user1] without one) the uid ScarletNX always gave it (SNX_USERS_FIRST_UID0 and 1), so the saves made before there
-   were others stay its own. Without users.ini it is the only user, "Player". A nickname follows the rule of Eden's
-   rooms, where it is the member's name: 4 to 20 letters, digits, spaces, '.', '_' or '-'. Anything users.ini says that
-   is not a user is refused */
+   were others stay its own. Without users.ini it is the only user, "Player". A nickname is what the console's account
+   service keeps (SwitchBrew's ProfileBase): 1 to 32 bytes of UTF-8, with no control character, and no space at
+   either end, which users.ini would not keep. Anything users.ini says that is not a user is refused, but for a user's
+   Mii and picture, which never stop anything: mii= names the user's Mii in the Mii database (mii_db.h), its first
+   (Baguette) without one or for a name the database does not hold; picture= mii draws the user's picture from that
+   Mii, file takes users/<uid>.jpg, and without one (or for another word) it is file when the user has that file, else
+   mii. What was read where it was not taken is in snx_users_notes */
 #ifndef SNX_COMMON_USERS_H
 #define SNX_COMMON_USERS_H
 #include <stddef.h>
@@ -14,14 +18,19 @@
 
 #define SNX_USERS_MAX          8  /* the console's users, at most (its limit) */
 #define SNX_USERS_NICKNAME     32 /* nn::account::Nickname's bytes before its NUL */
-#define SNX_USERS_NICKNAME_MIN 4  /* a nickname's length, as Eden's rooms take it (room.cpp's IsValidNickname) */
-#define SNX_USERS_NICKNAME_MAX 20
+#define SNX_USERS_NICKNAME_MIN 1  /* a nickname's bytes, as the account service keeps it */
+#define SNX_USERS_NICKNAME_MAX 32
 #define SNX_USERS_FIRST_UID0   0x0123456789ABCDEFull
 #define SNX_USERS_FIRST_UID1   0xFEDCBA9876543210ull
+#define SNX_USERS_DATA 0x80 /* nn::account::profile::UserData: the icon, its colour, the Mii (SwitchBrew UserData) */
 typedef struct {
     uint64_t uid[2]; /* nn::account::Uid's two halves */
     char nickname[SNX_USERS_NICKNAME + 1];
+    unsigned char user_data[SNX_USERS_DATA]; /* users.ini's user_data, as a program stored it; zeros without one */
+    int unsaved;                             /* registered (snx_users_begin), not yet in users.ini (snx_users_save) */
     uint32_t picture_at, picture_size; /* users/<uid>.jpg, in users.c's one block of pictures */
+    uint8_t mii;                       /* the user's Mii: its place in the Mii database */
+    uint8_t picture_mii;               /* 1: the picture is drawn from the Mii; 0: users/<uid>.jpg (or Wimsy) */
 } SnxUser;
 extern SnxUser g_users[SNX_USERS_MAX]; /* user 1 first, g_user_count of them */
 extern int g_user_count;
@@ -29,14 +38,28 @@ extern int g_user_count;
 /* the users of users.ini in dir (one, user 1, without it), the one playing selected (1-based): 0, or -1 with why the
    file or selected is no list of users, and user 1 alone */
 int snx_users_load(const char* dir, int selected, char* why, size_t why_size);
+/* the users of users.ini in dir, the one playing chosen as the settings say: by uid_text, user_uid's 32 hex digits;
+   without it by old_number, the deprecated user's number, which *old is set to then (0 otherwise); else [user1].
+   0, or -1 with why (a uid no user has, a number that is none) and user 1 alone */
+int snx_users_choose(const char* dir, const char* uid_text, const char* old_number, int* old, char* why,
+                     size_t why_size);
 /* the users/ folder of the data folder that folder is in (snx_menu_dir's), or NULL out of memory */
 char* snx_users_dir(const char* folder);
 const SnxUser* snx_users_find(const uint64_t uid[2]);                        /* NULL for no user */
 const SnxUser* snx_users_selected(void);                                     /* the user playing (the .ini's user) */
 int snx_users_selected_number(void);                                         /* and its number, 1 to g_user_count */
 const unsigned char* snx_users_picture(const SnxUser* user, uint32_t* size); /* the JPEG, or NULL and 0 */
-/* 1 when nickname follows the rule: SNX_USERS_NICKNAME_MIN to _MAX of [ a-zA-Z0-9._-] */
+/* the last load's lines about a user's mii= and picture=, each the value read (or none) and the one in effect, a
+   line a user: "" when every user had both, as they are taken */
+const char* snx_users_notes(void);
+/* user number's (1-based) key= in dir's users.ini set to value, its other lines as they were; with no users.ini, user
+   1's starts it. mii takes a database Mii's name, picture mii or file: 0, or -1 with why */
+int snx_users_set(const char* dir, int number, const char* key, const char* value, char* why, size_t why_size);
+/* 1 when nickname follows the rule: SNX_USERS_NICKNAME_MIN to _MAX bytes of UTF-8 (no overlong form, no surrogate, up
+   to U+10FFFF), no control character (C0, DEL, C1), and no space at either end */
 int snx_users_nickname_valid(const char* nickname);
+/* the nickname an Eden room knows user by: its own, which a room whose rule refuses it says (net_room.c) */
+const char* snx_users_room_nickname(const SnxUser* user);
 /* uid as 32 hex digits, uid[0] first: users.ini's, the pictures' and the saves' */
 void snx_users_uid_text(const uint64_t uid[2], char text[33]);
 /* users.ini in dir started over with one user, user 1 of uid (not zero) and nickname (the rule's), the one there before
@@ -46,4 +69,28 @@ int snx_users_start(const char* dir, const uint64_t uid[2], const char* nickname
 /* user number's (1-based, of those loaded) nickname in users.ini of dir made nickname (the rule's), the file's other
    lines as they were; without users.ini user 1's starts it (snx_users_start). 0, else -1 with why: nothing changed */
 int snx_users_rename(const char* dir, int number, const char* nickname, char* why, size_t why_size);
+/* a user registered after the ones loaded, as the account service's BeginUserRegistration makes one: uid (not zero,
+   no user's yet), the nickname a users.ini without users gives its first ("Player") until one is stored, in g_users
+   alone until snx_users_save. 0, else -1 with why: SNX_USERS_MAX users already, or that uid */
+int snx_users_begin(const uint64_t uid[2], char* why, size_t why_size);
+/* users 1 to number written to users.ini of dir where they are not yet (snx_users_begin's), each a [userN] after the
+   others with its uid, nickname and user_data; without users.ini user 1's starts it. 0, else -1 with why */
+int snx_users_save(const char* dir, int number, char* why, size_t why_size);
+/* user number out of users.ini of dir and of the users: its [userN] section cut, the users after it a place up (their
+   sections renumbered, the file's other lines as they were); one only registered, of the users alone. The one
+   playing stays the same user. 0, else -1 with why: nothing changed */
+int snx_users_remove(const char* dir, int number, char* why, size_t why_size);
+/* user number moved to place position (1-based) in users.ini of dir and in the users, those between a place over: the
+   sections in their new order and numbered so, the one leaving [user1] given the uid and nickname lines it may go
+   without, the file's other lines as they were; users only registered written first. The one playing stays the same
+   user. 0, else -1 with why: nothing changed */
+int snx_users_move(const char* dir, int number, int position, char* why, size_t why_size);
+/* user number's picture, users/<uid>.jpg of dir, made data's size bytes (at most 128 KiB, the most a program takes; 0
+   is none), as the account service keeps what a program stores. 0, else -1 with why: nothing changed */
+int snx_users_set_picture(const char* dir, int number, const unsigned char* data, uint32_t size, char* why,
+                          size_t why_size);
+/* user number's UserData in users.ini of dir, user_data= its hex digits (empty for zeros), the file's other lines as
+   they were; without users.ini user 1's starts it. 0, else -1 with why: nothing changed */
+int snx_users_set_data(const char* dir, int number, const unsigned char data[SNX_USERS_DATA], char* why,
+                       size_t why_size);
 #endif

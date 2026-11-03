@@ -30,6 +30,10 @@ void options_language_set(const IniOpt* o, const char* v) {
     (void)o;
     (void)v;
 }
+void options_tv_mode_set(const IniOpt* o, const char* v) {
+    (void)o;
+    (void)v;
+}
 static char logged[256]; /* the last line logged */
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;

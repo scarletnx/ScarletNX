@@ -4,6 +4,7 @@
    users.c has it without users.ini */
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/services/services_int.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -57,8 +58,16 @@ u8* fs_read_file(const char* path, u64* size) {
     return d;
 }
 
+/* the users' array, which am reads only through acc_playing, under acc's lock: an answer of Player or of the fixed uid
+   says it read the array unlocked */
 const SnxUser* snx_users_selected(void) {
-    static SnxUser first = {.nickname = "Nadia"}; /* not users.c's "Player": a keyboard that answers it says which */
+    static SnxUser first = {.nickname = "Player"};
     memcpy(first.uid, g_user_id, 16);
     return &first;
+}
+const u64 test_playing_uid[2] = {0x1111222233334444ull, 0x5555666677778888ull};
+/* not users.c's "Player": a keyboard that answers it says which */
+void acc_playing(u64 uid[2], char* nickname, size_t size) {
+    if (uid) memcpy(uid, test_playing_uid, sizeof test_playing_uid);
+    if (size) snprintf(nickname, size, "%s", "Nadia");
 }

@@ -6,11 +6,14 @@
 --pot writes po/scarletnx.pot from the phrases of src/gui (snx_tr, SNX_TR_NOOP, SNX_TR_KEYS, SNX_TR_KEY, and the texts
 of the items of its scenes, ui.txt, which main.c draws through snx_tr), the setup's
 notices it shows (src/common/utilities/setup.c) and the launcher's own rows in src/nx/runtime/settings.txt (their
-names, labels, help and sections, which its Settings show through snx_tr); --check fails when it is not what the code
-makes, or a po/*.po would not compile. --out FILE PO... makes FILE, the C source of every language's catalog (the .mo
-format, read by snx_mo_lookup). A .po is refused when a translation changes the printf conversions of its phrase (C's
-printf takes the arguments in order), changes a foot's keys, has a letter the menu's font does not draw
-(scripts/build-glyphs.py), or is not a plain UTF-8 .po of single phrases.
+names, labels, help and sections, which its Settings show through snx_tr), and brings each po/*.po to it as msgmerge
+does: a phrase it lacks added untranslated, in the .pot's order with its comments, and the translation of a phrase the
+code no longer has kept as an obsolete entry (#~). --check fails when the .pot is not what the code makes, a po/*.po
+would not compile, or a po/*.po lacks a phrase of the .pot or translates one it no longer has. --out FILE PO... makes
+FILE, the C source of every language's catalog (the .mo format, read by snx_mo_lookup). A .po is refused when a
+translation changes the printf conversions of its phrase (C's printf takes the arguments in order) or its {name}
+placeholders, changes a foot's keys, has a letter the menu's font does not draw (scripts/build-glyphs.py), or is not a
+plain UTF-8 .po of single phrases.
 """
 
 import argparse
@@ -32,6 +35,7 @@ CODE = re.compile(r'[a-z]{2,3}(-[A-Z][a-z]{3})?(-([A-Z]{2}|[0-9]{3}))?$')  # BCP
 ESCAPES = {'n': '\n', 't': '\t', 'r': '\r', 'a': '\a', 'b': '\b', 'f': '\f', 'v': '\v'}
 ESCAPES.update({c: c for c in '\\"\'?'})
 CHAR = re.compile(r"'(?:\\.[^']*|[^'\\])'")
+BRACES = re.compile(r'\{[A-Za-z_][A-Za-z0-9_]*\}')  # a {name} placeholder, filled by name, not in order
 
 
 class Refused(Exception):
@@ -211,6 +215,23 @@ def po_quote(s):
     return '""\n' + '\n'.join(f'"{p}"' for p in pieces)
 
 
+def entry_comments(phrase, flags, files, fuzzy=False):
+    """the comments the .pot gives a phrase, and a .po too: what its marks ask of a translation, the files that have it,
+    and its flags (a .po's fuzzy first)"""
+    out = []
+    if 'snx-keys' in flags:
+        out.append(
+            '#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~'
+        )
+    if 'snx-key' in flags:
+        out.append("#. A key of the foot's sentences, which a click finds by this word")
+    out.append('#: ' + ' '.join(files))
+    marks = (['fuzzy'] if fuzzy else []) + sorted(flags) + (['c-format'] if conversions(phrase, 'the code') else [])
+    if marks:
+        out.append('#, ' + ', '.join(marks))
+    return out
+
+
 def pot_text(phrases):
     out = [
         '# The phrases of the ScarletNX menu (src/gui), made by scripts/build-languages.py --pot. Do not edit.',
@@ -226,16 +247,7 @@ def pot_text(phrases):
         '',
     ]
     for phrase, (flags, files) in phrases.items():
-        if 'snx-keys' in flags:
-            out.append(
-                '#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~'
-            )
-        if 'snx-key' in flags:
-            out.append("#. A key of the foot's sentences, which a click finds by this word")
-        out.append('#: ' + ' '.join(files))
-        marks = sorted(flags) + (['c-format'] if conversions(phrase, 'the code') else [])
-        if marks:
-            out.append('#, ' + ', '.join(marks))
+        out += entry_comments(phrase, flags, files)
         out.append('msgid ' + po_quote(phrase))
         out.append('msgstr ""')
         out.append('')
@@ -303,6 +315,86 @@ def read_po(path):
     return entries
 
 
+def read_obsolete(path):
+    """a .po's obsolete entries (#~ msgid, #~ msgstr): {msgid: msgstr}"""
+    out, entry, field = {}, {}, None
+    for number, line in enumerate(path.read_text(encoding='utf-8').splitlines() + [''], 1):
+        line = line.strip()
+        if not line.startswith('#~'):
+            if 'msgid' in entry and 'msgstr' in entry:
+                out[entry['msgid']] = entry['msgstr']
+            entry, field = {}, None
+            continue
+        line = line[2:].strip()
+        keyword = line.split(None, 1)[0] if line else ''
+        if keyword in ('msgid', 'msgstr'):
+            field = keyword
+            entry[field] = po_string(line[len(keyword) :].strip(), f'{path}:{number}')
+        elif line.startswith('"') and field:
+            entry[field] += po_string(line, f'{path}:{number}')
+    return out
+
+
+def po_header(path):
+    """a .po's lines up to the end of its header entry (msgid ""), its comments above it with them"""
+    lines = path.read_text(encoding='utf-8').splitlines()
+    start = next((i for i, line in enumerate(lines) if line.strip() == 'msgid ""'), None)
+    if start is None:
+        raise Refused(f'{path}: no header (the msgid "" first)')
+    end = start + 1
+    while end < len(lines) and lines[end].strip():
+        end += 1
+    return lines[:end]
+
+
+def merged_po(path, phrases):
+    """the text of the .po at path brought to phrases, as msgmerge would without its guesses: its header kept, then each
+    phrase in their order with its comments and the translation the .po had (fuzzy still marked), else none; then the
+    translations of the phrases left out, its obsolete ones among them, as obsolete entries (#~)"""
+    translated = {msgid: (msgstr, 'fuzzy' in flags) for msgid, msgstr, flags, _ in read_po(path)[1:]}
+    obsolete = read_obsolete(path)
+    out = po_header(path) + ['']
+    for phrase, (flags, files) in phrases.items():
+        msgstr, fuzzy = translated.get(phrase, (obsolete.get(phrase, ''), False))
+        out += entry_comments(phrase, flags, files, fuzzy and bool(msgstr))
+        out += ['msgid ' + po_quote(phrase), 'msgstr ' + po_quote(msgstr), '']
+    kept = {m: s for m, (s, _) in translated.items() if s}
+    kept.update({m: s for m, s in obsolete.items() if s and m not in kept})
+    for msgid, msgstr in kept.items():
+        if msgid not in phrases:
+            for keyword, value in (('msgid', msgid), ('msgstr', msgstr)):
+                out += ['#~ ' + line for line in f'{keyword} {po_quote(value)}'.split('\n')]
+            out.append('')
+    return '\n'.join(out)
+
+
+def po_drift(path, pot):
+    """where the .po at path and the .pot (its path) differ: each phrase of the .pot it has no entry for, and each
+    entry of a phrase the .pot no longer has"""
+    have = {msgid: line for msgid, _, _, line in read_po(path)[1:]}
+    listed = {msgid: line for msgid, _, _, line in read_po(pot)[1:]}
+    rel = path.parent.name + '/' + path.name
+    out = [f'{rel}: {msgid!r} ({POT}:{line}) has no entry' for msgid, line in listed.items() if msgid not in have]
+    out += [f'{rel}:{line}: {msgid!r} is no phrase of {POT}' for msgid, line in have.items() if msgid not in listed]
+    return out
+
+
+def lagging(folder, pot, drawn):
+    """compiles each .po of folder against the .pot (what one refuses raises), and gives the warnings for where one
+    lags the .pot: a language may, since the menu shows the English for a phrase it lacks, so a phrase the code added or
+    changed never fails the check of the languages nobody has translated it into yet"""
+    phrases, drift = pot_phrases(pot), []
+    for po in sorted(folder.glob('*.po')):
+        compile_po(po, phrases, drawn)
+        drift += po_drift(po, pot)
+    if drift:
+        drift.append(
+            f'{len(drift)} entries lag {POT}, which the menu shows in English: scripts/build-languages.py --pot adds '
+            'each phrase untranslated and keeps the translation of one the code no longer has as obsolete (#~)'
+        )
+    return drift
+
+
 def header_of(msgstr):
     fields = {}
     for line in msgstr.split('\n'):
@@ -363,6 +455,11 @@ def sentences_keys(s):
 def check_entry(msgid, msgstr, keys, words, where):
     if '%' in msgstr and '%' not in msgid:  # a phrase may be shown through a format
         raise Refused(f'{where}: {msgstr!r} has a % its English does not')
+    if sorted(BRACES.findall(msgstr)) != sorted(BRACES.findall(msgid)):
+        raise Refused(
+            f'{where}: {msgstr!r} has the placeholders {sorted(BRACES.findall(msgstr))}, '
+            f'its English {sorted(BRACES.findall(msgid))}'
+        )
     if conversions(msgstr, where) != conversions(msgid, where):
         raise Refused(f'{where}: {msgstr!r} does not take the arguments {msgid!r} does, in the same order')
     if not keys:
@@ -386,13 +483,13 @@ def check_entry(msgid, msgstr, keys, words, where):
 
 
 def drawable(root):
-    """the code points past ASCII the menu's font draws: CP437's, and the Latin and the wide letters kept from GNU
-    Unifont"""
+    """the code points past ASCII the menu's font draws: CP437's, and the Latin letters, the titles' blocks and the
+    wide letters kept from GNU Unifont"""
     spec = importlib.util.spec_from_file_location('build_glyphs', Path(__file__).with_name('build-glyphs.py'))
     glyphs = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(glyphs)
     drawn = glyphs.codepage(root)
-    for kept in (root / glyphs.KEPT, root / glyphs.WIDE_KEPT):
+    for kept in (root / glyphs.KEPT, root / glyphs.TITLES_KEPT, root / glyphs.WIDE_KEPT):
         drawn |= set(glyphs.read_hex(kept.read_text().splitlines(), kept))
     return drawn
 
@@ -504,24 +601,33 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--root', type=Path, default=ROOT, help="the checkout (default: this script's)")
     parser.add_argument('--pot', action='store_true', help=f'write {POT} from the code')
-    parser.add_argument('--check', action='store_true', help=f'fail when {POT} or a po/*.po is not what it should be')
+    parser.add_argument(
+        '--check',
+        action='store_true',
+        help=f'fail when {POT} is not what the code says or a po/*.po does not compile; warn where a .po lags {POT}',
+    )
     parser.add_argument('--out', type=Path, help='the C source of the catalogs of the .po files given')
     parser.add_argument('--phrases', type=Path, help="the .pot the .po files translate (default: the checkout's)")
     parser.add_argument('po', nargs='*', type=Path)
     args = parser.parse_args()
     try:
         if args.pot or args.check:
-            text = pot_text(code_phrases(args.root))
+            code = code_phrases(args.root)
+            text = pot_text(code)
             pot = args.root / POT
             if args.pot:
                 pot.parent.mkdir(exist_ok=True)
                 pot.write_bytes(text.encode())
+                for po in sorted((args.root / 'po').glob('*.po')):
+                    merged = merged_po(po, code)
+                    if po.read_text(encoding='utf-8') != merged:
+                        po.write_text(merged, encoding='utf-8')
+                        print(f'{po.relative_to(args.root).as_posix()}: brought to {POT}')
                 return 0
             if not pot.exists() or pot.read_bytes().decode().replace('\r\n', '\n') != text:
                 raise Refused(f'{POT} is not what the code says: run scripts/build-languages.py --pot')
-            phrases, drawn = pot_phrases(pot), drawable(args.root)
-            for po in sorted((args.root / 'po').glob('*.po')):
-                compile_po(po, phrases, drawn)
+            for line in lagging(args.root / 'po', pot, drawable(args.root)):
+                print(f'build-languages.py: {line}', file=sys.stderr)
             return 0
         if not args.out:
             parser.error('--pot, --check or --out')

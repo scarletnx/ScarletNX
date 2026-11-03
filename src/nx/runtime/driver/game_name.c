@@ -35,9 +35,15 @@ char* snx_game_title(const char* name, const SnxNpdm* npdm, const char* input) {
     }
     return out;
 }
-char* snx_game_shown(const char* name, const SnxProgram* program) {
+char* snx_game_shown(const char* name, const SnxProgram* program, char* why, size_t why_size) {
     char shown[0x200];
-    if (!name && snx_nacp_name(program->nacp, program->nacp_size, shown, sizeof shown)) return snx_strdup(shown);
+    SnxU64 id;
+    if (why_size) why[0] = 0;
+    /* a title ID names the game's files, as the driver names a dump's game read in place; nobody calls it that */
+    if ((!name || snx_title_parse(name, &id)) &&
+        snx_nacp_name_why(program->nacp, program->nacp_size, shown, sizeof shown, program->nacp ? why : NULL,
+                          program->nacp ? why_size : 0))
+        return snx_strdup(shown);
     return snx_game_title(name, &program->npdm, program->entry_path);
 }
 char* snx_game_name(const char* name, const SnxNpdm* npdm, const char* input) {

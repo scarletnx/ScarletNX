@@ -17,7 +17,8 @@
 name beside it, opens its launcher: a small SDL3 menu for the command-line drivers. A copy named
 after a game, without its code, says so and never opens it. It uses an
 embedded public-domain 8x16 VGA BIOS font, with GNU Unifont's 8x16 glyphs fitted to it for the Latin letters its CP437
-lacks and its 16x16 ones, two columns each, for the wide letters a language shows (Chinese), and nearest-neighbor
+lacks and its 16x16 ones, two columns each, for the letters game titles are written in (Chinese, Japanese and Korean)
+and the wide letters a language shows, and nearest-neighbor
 integer scaling; its words are English or a language compiled into it ([Languages](#languages)). An item of a menu
 has an icon beside its name, 16x16 in the font's stroke (`src/gui/icons.hex`): the menu's, the groups of the Settings and
 their rows that open a screen or do something (the others keep its columns), a game's box's actions, the setup's pages
@@ -220,15 +221,20 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   takes a letter out; a click off the dialog is Cancel. A phone's keyboard comes up with it, its number pad for a whole
   number never under 0 (SDL's pad has no point and no minus). Nothing changes before OK, and OK takes nothing the
   row does not take whole, a number past its range too: the dialog stays, saying the value typed and what holds
-  (`20 is not a number from 0.25 to 16, two decimals at most`, `Ab is not a nickname: ...`). A setting not picked shows
-  the runtime's default and `[default]` (*Off [default]*):
-  the run takes the game's `.ini`'s, which starts as that; one picked goes to every
-  Switch run as `--key=value`, over the `.ini` ([USAGE](USAGE.md)), and is kept for every game:
+  (`20 is not a number from 0.25 to 16, two decimals at most`, `Ab is not a nickname: ...`). A setting's words are
+  its values alone, the runtime's default marked `[default]` (*Off [default]*, *On*); one typed shows its default and
+  `[default]` while it is empty (*1 [default]*). At its default the run takes the game's `.ini`'s, which starts as
+  that. Where a row's default is none of its words (a control not yet shown or hidden, LLVM's own options),
+  `[default]` is a value of its own, the same way. Another value, and a number typed even as its default (Current
+  user 1 over a game's `.ini` that has another), goes to every Switch run as `--key=value`, over the `.ini`
+  ([USAGE](USAGE.md)), and is kept for every game:
   what was changed, by the `.ini`'s sections and keys, in `settings.ini` of the config folder on
   Linux (`~/.config/scarletnx/`), else the data folder's `config/`. A run takes a setting from what that
   run picks, then from the game's own picks (to come), then from these, and last from the game's
-  `.ini`. Del puts a setting back to its default, and App's **Reset to Defaults** every one. The launcher's own choices start picked: `fullscreen` 0, `controls` 0 (on Android 1,
-  and `fullscreen` puts the launcher itself on the whole screen too).
+  `.ini`. Del puts a setting back to its default, and App's **Reset to Defaults** every one. **Fullscreen** and
+  **Show controls** are the launcher's own choices, Off or On, passed to every run over the `.ini`; `[default]` marks
+  the one the launcher starts with: Off on a computer, On on a phone, where Fullscreen puts the launcher itself on the
+  whole screen too.
   **gdbstub** passes `-S` and `-s`, the
   runtime's stub on port 1234 waiting for the debugger at startup (UNIX only), and **Extract to tmpfs**
   passes `--tmpfs`: a dump's extraction goes to `/tmp/scarletnx/work/<title ID>` (`$TMPDIR` when set, the
@@ -244,7 +250,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   is read the same way. On, a dump is extracted as before, into the game's folder or with *Extract to tmpfs* into
   tmpfs, which implies it. Turning it off again takes a game's extraction away on its next run.
   **Optimization level** (0, 1, 2, 3 or z, 2 by default) is LLVM's level for the game's code, **AOT threads** the
-  threads compiling it (0, the default, one for each core), **Unit cache limit** the GB the compiled code units kept
+  threads compiling it (0, the default Auto: the machine's cores with a quarter left free, the physical cores
+  where it says them, at most 75%, so a recompile does not make the computer stutter), **Unit cache limit** the GB
+  the compiled code units kept
   for the next recompile may hold (20 by default, 0 for no limit; [USAGE](USAGE.md)), and the **LLVM Internals** page
   turns each pass of LLVM's pipelines off and sets the options LLVM's C API takes, its **All** stepping every row. They
   are passed as `--key=value` when the game is recompiled: by **R**, or by a run that has to (a dump played the first
@@ -489,7 +497,8 @@ cannot be read is named and the others still listed.
   own takes the launcher's. On
   another row, a dump, a package or another console's game, it says what it opens. The side panel of a recompiled
   game says how its code was made (`Made with: O2, AOT 81%`, `?` for one an older version made), or, in the failure
-  colour, `Needs Recompile` when Play compiles it first.
+  colour, `Needs Recompile` when Play compiles it first: of the program Play runs, the checked update's when it has
+  one.
 - The list is one page that scrolls, by pixels: past its height a scroll bar at its right, as every list has (below),
   which a click and a finger take. Up/Down move the focus
   and the rows glide to show it (at once with Animations off); Left/Right and PgUp/PgDown move it a screen of rows,
@@ -622,7 +631,8 @@ a box of files. Their rows are 2 pixels apart times the text's size (on Android 
 2x by default, so 96, about 37 dp at a density of 2.6, Android's 48 dp touch target at 3x; the desktop's are 17), the focused one kept in the middle (on a
 group's screen, the group open in the groups' list; Games' grid by its lines) as the keys, a pad or the wheel move
 it, and a list still when the mouse, a pen or a tap moves it, the cursor inside each row, which a click takes
-whole as a tap does. Every list whose rows do not all show, Games' grid too, has a scroll bar a letter wide at its
+whole as a tap does. A row's text too long for it shows its start and ends in `...`, but for the focused row's, which
+slides where the theme slides (`scroll_ms`): one name moves at a time. Every list whose rows do not all show, Games' grid too, has a scroll bar a letter wide at its
 right, the rows beside it: its thumb as tall as the share of the rows shown and where they are, which a click takes
 there and drags, and a finger too from two letters of the bar's right edge; the rows stay where the thumb or a finger
 put them, the focus where it was, until a key, a pad or the wheel moves the focus. Under a box over the screen, only the box's
@@ -831,7 +841,8 @@ ErET needs `[theme] layout`, so the built-in files carry one: `debug` and `menu`
 The menu's phrases are English in its code, each through `snx_tr` (`src/gui/i18n.h`), and so are the setup's notices,
 marked in `src/common/utilities/setup.c`, which the terminal shows as they are. `po/scarletnx.pot` lists
 them, made from the code by `scripts/build-languages.py --pot`; the `gui_languages_pot` test fails when it is not what
-the code says. A language is a `po/<tag>.po`, named by its BCP 47 tag as language-Script-REGION, each part only
+the code says, and only warns where a `.po` lags it (a phrase missing or one the code dropped): the menu shows such a
+phrase in English, and `--pot` adds each one untranslated. A language is a `po/<tag>.po`, named by its BCP 47 tag as language-Script-REGION, each part only
 when it tells the language apart (`de.po`, `pt-BR.po`, `zh-Hans-CN.po`), in gettext's format: the build makes each one a
 catalog of gettext's `.mo` format compiled into the menu, which reads it with musl's `__mo_lookup`
 (`src/gui/i18n.c`). A new one starts as a copy of the `.pot` whose header names it, in UTF-8:
@@ -852,13 +863,17 @@ brings a translation up to the code; a phrase it leaves empty, or marks `fuzzy`,
   same file translates it (`#, snx-key`, as `Back`), since a click on the foot finds a key by its word, and a sentence
   greyed (`~`, one its screen cannot do now) stays greyed;
 - has a letter the menu's font does not draw, which would show as `?`: the font is CP437, the Latin letters of
-  U+00A0 to U+024F past it and the wide letters the languages show, GNU Unifont's. `scripts/build-glyphs.py --from`
-  keeps them from a Unifont `.hex` (`unifont-<version>.hex` or `unifont_all-<version>.hex`): the Latin ones in
-  `src/gui/unifont-latin.hex`, which the build draws with the VGA font's stems and baseline, and in
-  `src/gui/unifont-wide.hex` the 16x16 glyphs of every other letter of `po/*.po` and `tests/po/*.po`, as Chinese,
-  which the menu draws two columns wide: every width, cut, wrap and slide of its text counts them so (`src/gui/wide.h`),
-  and a row breaks after one as at a space. A language that shows a new letter runs it again; the `gui_glyphs_kept`
-  test checks the files hold each of them once, and no other;
+  U+00A0 to U+024F past it, the blocks game titles are written in and the wide letters the languages show, GNU
+  Unifont's. `scripts/build-glyphs.py --from` keeps them from a Unifont `.hex` (`unifont-<version>.hex` or
+  `unifont_all-<version>.hex`): the Latin ones in `src/gui/unifont-latin.hex`, which the build draws with the VGA
+  font's stems and baseline; in `src/gui/unifont-titles.hex` every code point of the CJK and Hangul blocks of its
+  `TITLE_RANGES` (CJK Unified Ideographs without Extension A, Hiragana, Katakana, Hangul Syllables, their punctuation
+  and the halfwidth and fullwidth forms), whatever the languages show; and in `src/gui/unifont-wide.hex` the 16x16
+  glyphs of every other letter of `po/*.po` and `tests/po/*.po`. The menu draws a 16x16 one two columns wide: every
+  width, cut, wrap and slide of its text counts them so (`src/gui/wide.h`), and a row breaks after one as at a space.
+  The font's texture holds the others whole and 2048 of the 16x16 ones at a time, those drawn longest ago giving their
+  place to the next. A language that shows a new letter runs it again; the `gui_glyphs_kept` test checks the files
+  hold each of them once, and no other, and `--check --from` the `.hex` compares their glyphs with Unifont's too;
 - has contexts (`msgctxt`), plurals (`msgid_plural`), a phrase twice, or is not UTF-8.
 
 The runtime's settings stay as the runtime names them (their groups, names, help and words come from
@@ -907,10 +922,10 @@ the keys, the first user) and refuses, users.ini kept or overwritten, the fixed 
 alone after an update, `--no-setup`, and the question where `options-dialog` puts it.
 Language tests cover a catalog's search in either byte order, catalogs cut or pointing out of themselves, the language
 Auto picks from the system's locales, English where a language has none, the Language row and `app.ini`'s key, and
-the script's refusals; they use a language of their own, `tests/po/xx.po`. Glyph tests cover the Latin and the wide
-letters' lookup, each way the menu draws a line with them (a wide one's two columns in widths, cuts, wraps, slides, a
-foot's keys and typed text), UTF-8 read with a `?` for each byte no character starts, and the script that keeps
-them.
+the script's refusals; they use a language of their own, `tests/po/xx.po`. Glyph tests cover the Latin, the titles'
+and the wide letters' lookup and rows against Unifont's, each way the menu draws a line with them (a wide one's two
+columns in widths, cuts, wraps, slides, a foot's keys and typed text), more wide letters on a row than the texture's
+slots, UTF-8 read with a `?` for each byte no character starts, and the script that keeps them.
 Settings tests cover the runtime's list read into rows, picks, the options each combination
 passes, and the screens of its groups and App; menu tests cover mouse hover versus explicit
 activation, the menu without the games and Games with its recent games' show-more row and P,

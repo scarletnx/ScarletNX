@@ -2,6 +2,12 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # CPU plan implementation and candidate measurements
 
+## Index
+
+* [Prepare the next implementation](#prepare-the-next-implementation)
+* [Search a bounded set of exact candidates](#search-a-bounded-set-of-exact-candidates)
+* [Compiler diagnostics](#compiler-diagnostics)
+
 The [plan](CPU_TRANSLATOR_PLAN.md) contains 41 items. Its full active backlog is the implementation scope,
 starting with the [SIMD milestone](CPU_SIMD_MILESTONE.md). This is not a claim that all items are implemented.
 `cpu_plan_status.json` records verified progress separately from unverified existing code, research, deferred and

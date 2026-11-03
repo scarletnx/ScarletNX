@@ -54,7 +54,19 @@ const SnxNotice snx_notices[SNX_NOTICES] = {
      SNX_TR_NOOP("off, as LLVM 23 can break a module with it: Settings > Debug turns it on"), "LLVM's SLP vectorizer",
      SNX_NOTICE_ALL},
     {SNX_TR_NOOP("The launcher's UI scale"), SNX_TR_NOOP("Auto, and 0.25, 0.5 and 0.75 of it"),
-     SNX_TR_NOOP("1x to 4x: the number Auto gave that screen"), "`ui_scale = auto`", SNX_NOTICE_ALL}};
+     SNX_TR_NOOP("1x to 4x: the number Auto gave that screen"), "`ui_scale = auto`", SNX_NOTICE_ALL},
+    {SNX_TR_NOOP("Saves"), SNX_TR_NOOP("each game's own, in its <id>_data/save/"),
+     SNX_TR_NOOP("the data folder's save/, by user and title: Move Old Files moves them"), "A game's saves in its own",
+     SNX_NOTICE_ALL},
+    {SNX_TR_NOOP("Environment variables"), SNX_TR_NOOP("SNX_WW, SNX_HOST_PAGE, VITA_LOCKSTEP and others set for a run"),
+     SNX_TR_NOOP("settings and the drivers' options; a variable still set works, and the run says so"),
+     "Environment variable", SNX_NOTICE_ALL},
+    {SNX_TR_NOOP("Fullscreen and Show controls"), SNX_TR_NOOP("Off, On, or each game's .ini, shown as Off [default]"),
+     SNX_TR_NOOP("Off or On, given to every run: Off on a computer, On on a phone"), "`fullscreen=.ini`",
+     SNX_NOTICE_ALL},
+    {SNX_TR_NOOP("A setting's default"), SNX_TR_NOOP("a value of its own, [default], beside the same value picked"),
+     SNX_TR_NOOP("[default] on that value, which no run is given: the game's .ini keeps it"),
+     "`<key>=.ini` for any other setting", SNX_NOTICE_ALL}};
 int snx_notice_here(int notice) {
     int systems = snx_notices[notice].systems;
 #if defined(__ANDROID__)
@@ -208,24 +220,36 @@ int snx_setup_uid(uint64_t uid[2]) {
     uid[1] = (uid[1] & ~((uint64_t)3 << 62)) | ((uint64_t)2 << 62);
     return 0;
 }
-int snx_setup_first_saves(const char* games) {
+int snx_setup_first_saves(const char* games, const char* data) {
     static const uint64_t first[2] = {SNX_USERS_FIRST_UID0, SNX_USERS_FIRST_UID1};
-    char **names = NULL, text[33];
+    char **names = NULL, text[33], global[SNX_PATH_SIZE];
     size_t count = 0;
     int found = 0;
-    if (!games || snx_list_dir(games, &names, &count)) return 0;
     snx_users_uid_text(first, text);
-    for (size_t i = 0; i < count; ++i) {
-        char save[SNX_PATH_SIZE];
-        found += !snx_path_format(save, sizeof save, "%s/%s/%s_data/save/user.%s", games, names[i], names[i], text) &&
-                 snx_is_dir(save);
+    if (games && !snx_list_dir(games, &names, &count)) {
+        for (size_t i = 0; i < count; ++i) {
+            char save[SNX_PATH_SIZE];
+            found +=
+                !snx_path_format(save, sizeof save, "%s/%s/%s_data/save/user.%s", games, names[i], names[i], text) &&
+                snx_is_dir(save);
+        }
+        snx_free_strings(names, count);
+        names = NULL;
+        count = 0;
     }
-    snx_free_strings(names, count);
+    if (data && !snx_path_format(global, sizeof global, "%s/save/user.%s", data, text) &&
+        !snx_list_dir(global, &names, &count)) {
+        for (size_t i = 0; i < count; ++i) {
+            char save[SNX_PATH_SIZE];
+            found += !snx_path_format(save, sizeof save, "%s/%s", global, names[i]) && snx_is_dir(save);
+        }
+        snx_free_strings(names, count);
+    }
     return found;
 }
 
-int snx_setup_first_uid(const char* games, uint64_t uid[2]) {
-    int saves = snx_setup_first_saves(games);
+int snx_setup_first_uid(const char* games, const char* data, uint64_t uid[2]) {
+    int saves = snx_setup_first_saves(games, data);
     if (saves) { /* they stay its own */
         uid[0] = SNX_USERS_FIRST_UID0;
         uid[1] = SNX_USERS_FIRST_UID1;

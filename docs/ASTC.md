@@ -1,5 +1,17 @@
 # ASTC compute uploads
 
+## Index
+
+* [The shader](#the-shader)
+  * [Written for the machine](#written-for-the-machine)
+  * [Interface](#interface)
+  * [Where it differs from Eden](#where-it-differs-from-eden)
+* [The upload path](#the-upload-path)
+* [Encoded again as BC7](#encoded-again-as-bc7)
+* [Textures bigger than one allocation](#textures-bigger-than-one-allocation)
+* [Building the shader](#building-the-shader)
+* [Tests](#tests)
+
 ASTC textures are decoded on the GPU by a compute shader, `src/nx/gpu/texture/astc.comp` with its body in
 `astc_decode.glsl`. It is a GLSL port of Eden's `src/video_core/host_shaders/astc_decoder.comp` (GPL-3.0-or-later, with yuzu's GPL-2.0-or-later parts). The
 CPU decoder in `tests/support/astc.c` is a C port of Eden's `src/video_core/textures/astc.cpp`, which
@@ -176,20 +188,26 @@ block (every alpha 255) also takes the modes that store no alpha and so keep it 
 one of the format's 64 partitions, each with a line of its own (6-bit ends and 3-bit weights, or 7-bit and 2-bit),
 for an edge between two colours, and mode 2, three subsets, for three colours meeting. Any other block takes mode 7,
 two subsets with alpha. The partitions tried are the two of 64 two-subset ones, and the one of 64 three-subset ones,
-whose subsets spread least around their means, a pass over the block each.
+whose subsets spread least around their means, a pass over the block each. Last, every block takes modes 4 and 5,
+one subset whose colour and alpha are two lines, each with weights of its own, in each of the format's four
+rotations: alpha apart, or red, green or blue apart in alpha's place, as ASTC's second plane keeps one channel. Mode 5
+stores the colour in 7 bits and alpha in 8, both with 2-bit weights; mode 4 the colour in 5 and alpha in 6, one of
+the two with 3-bit weights (the index selection bit says which). The colour's line is fitted first, and the alpha's
+only when the colour's error alone is still under the best block so far.
 
 A subset's line starts from its bounding box, each channel turned to run with the channel the subset spans most (the
 sign of their covariance), pulled in by a sixteenth from each end and tried as it is too; then a least squares fit
-to the weights the texels took, twice. The ends' p-bits are tried in every combination the mode allows, but a subset
-whose every alpha is 255 (or 0) takes the one bit that keeps it exactly: a nearly opaque texel blends, and a nearly
-clear one passes an alpha test of more than nought. Each texel takes the best of the three weights around its
-projection. All of it is integer arithmetic in the part of GLSL that is also C++, so the tests run the same file on
-the CPU and get the GPU's bytes.
+to the weights the texels took, twice, solved from whole sums, so a channel of one value keeps that value. The ends'
+p-bits are tried in every combination the mode allows, but a subset whose every alpha is 255 (or 0) takes the one
+bit that keeps it exactly: a nearly opaque texel blends, and a nearly clear one passes an alpha test of more than
+nought. Modes 4 and 5 have no p-bits and hold 255 and 0 as they are. Each texel takes the best of the three weights
+around its projection. All of it is integer arithmetic in the part of GLSL that is also C++, so the tests run the
+same file on the CPU and get the GPU's bytes.
 
 What it costs, as PSNR against what it encodes, on edenprobe's astcimage picture (gradients, hard edges where three
-colours meet in a block, noise, and alpha) decoded from ASTC: 35.0 dB over the picture at 4x4 (gradients 47.6,
-edges 40.5, noise 29.9, alpha 38.5), 36.7 at 6x6, 42.2 at 8x8 and 42.5 at 12x12. Mode 6 alone gave 27.6 at 4x4, its
-edges 23.5. Noise is what BC7 holds worst: a block of independent texels is a line or two of them at best.
+colours meet in a block, noise, and alpha) decoded from ASTC: 39.9 dB over the picture at 4x4 (gradients 53.1,
+edges 48.9, noise 34.2, alpha 50.9), 40.4 at 6x6, 46.2 at 8x8 and 45.2 at 12x12. Mode 6 alone gave 27.6 at 4x4,
+its edges 23.5. Noise is what BC7 holds worst: a block of independent texels is a line or two of them at best.
 
 ## Textures bigger than one allocation
 
@@ -226,6 +244,10 @@ separate SPIRV-Tools is needed.
 - `astc_decode` (ctest) checks the CPU decoder on void-extent blocks (the color in both decode modes, the
   reserved bits, HDR void extents and empty extents), and on edenprobe's illegal block and HDR partition block
   against its reference decoder's texels.
+- `astc_blocks` (ctest) holds the CPU decoder to single blocks from rEden's decoder tests, texel for texel: an
+  illegal block at each error exit, HDR partitions, color data cut short inside a trit or quint group under every
+  value of the unallocated bits, the color value limits, void extents with their bounds in and out of order, and
+  astcenc's blocks.
 - `astc_glsl` (ctest, no GPU) runs `astc_decode.glsl` on the CPU through `tests/glsl/glsl.hpp`, compiled as C++, and
   compares it byte for byte with the CPU decoder: all 14 footprints in both decode modes, random blocks through all
   2048 block modes, sizes that are not a multiple of the footprint, strips of several slices, and all 7 tile
@@ -255,9 +277,13 @@ separate SPIRV-Tools is needed.
   error. `build/src/nx/snx-test-astc-vulkan --large` decodes a 2D texture of 11584x11584 (4x4 blocks) and a 3D one of
   512^3 (8x8 blocks), 512 MiB each, past the 256 MiB cap, and compares every byte.
 - `bc7_glsl` (ctest, no GPU) runs `bc7_encode.glsl` on the CPU (`tests/glsl/bc7_cpu.cpp`) and decodes its blocks
-  with the CPU reference, `tests/support/bcn.c`: the encoder's 16 weights are the format's, blocks of one colour and
-  blocks that lie on a line mode 6 holds come back exact, edenprobe's astcimage picture comes back no worse than
-  the PSNR each region is held to, and a 13x7 image of three slices encodes slice by slice as each alone.
+  with the CPU reference, `tests/support/bcn.c`: the encoder's 16 weights are the format's, its least squares fit
+  gives a line's ends back and a constant alpha its value in every subset of every partition, blocks of one colour,
+  blocks that lie on a line mode 6 holds and blocks each other mode holds (modes 4 and 5 in each rotation and index
+  selection) come back exact, blocks with one channel apart come back closer than the same encoder built without
+  modes 4 and 5 brings them (`SNX_BC7_MODES_4_5` 0, `bc7_encode_cpu_without_45`), edenprobe's astcimage picture comes
+  back no worse than the PSNR each region is held to, and a 13x7 image of three slices encodes slice by slice as each
+  alone.
   `astc_vulkan` and `astc_vulkan_pieces` also upload random blocks into BC7 images, footprints whose strips step
   4, 2 and 1 block rows, with mips, layers, slices and many strips, and compare the GPU's blocks with the same
   encoder run on the CPU over the CPU decoder's texels, byte for byte.

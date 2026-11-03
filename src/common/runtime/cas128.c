@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* RtAPI.cas128 (interface.h): STXP's 16-byte compare-and-swap, for the modules of the hosts that have no such
-   instruction on every machine (RISC-V before Zacas, LoongArch before v1.1, PowerPC64 before POWER8) */
+   instruction on every machine (RISC-V before Zacas, LoongArch before v1.1, PowerPC64 before POWER8, MIPS64) */
 #include "common/runtime/interface.h"
 #if defined(__powerpc64__) && !defined(_ARCH_PWR8)
 #include <sys/auxv.h> /* AT_HWCAP2's PPC_FEATURE2_ARCH_2_07: whether the machine has lqarx/stqcx. */
@@ -12,16 +12,18 @@
 #include <unistd.h>
 #endif
 
-/* a 16-byte compare-and-swap has no ISO C form: it takes the compiler's 128-bit integer */
+/* a 16-byte compare-and-swap has no ISO C form: it takes the compiler's 128-bit integer, may_alias as p's halves are
+   uint64_t, and 16-byte aligned as STXP's pair is (s390x's is 8-byte aligned, and its CDSG then a libatomic call) */
 #if !defined(__SIZEOF_INT128__)
 #error "STXP's 16-byte compare-and-swap needs the compiler's 128-bit integer, which this compiler has not"
 #endif
-__extension__ typedef unsigned __int128 snx_cas_u128;
+__extension__ typedef unsigned __int128 __attribute__((may_alias, aligned(16))) snx_cas_u128;
 
 /* The host's instruction: amocas.q on RISC-V, LL.D and SC.Q on LoongArch, cmpxchg16b (this file is built with -mcx16,
    src/common/CMakeLists.txt: the attribute alone was inlined into a libatomic call), LDAXP/STLXP and lqarx/stqcx.
    elsewhere. Clang warns that 16 bytes may become a libatomic call; a call would fail the link, as nothing here links
    libatomic */
+#if !defined(__mips64) /* which has none (snx_runtime_cas128) */
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Watomic-alignment"
 #if defined(__loongarch__)
@@ -98,6 +100,7 @@ static int native_cas(void) {
     return 1;
 #endif
 }
+#endif
 
 #define CAS_STRIPES 64
 static uint32_t g_stripes[CAS_STRIPES]; /* a spin lock for each 16-byte stripe of the address space */
@@ -120,6 +123,11 @@ uint32_t snx_runtime_cas128_locked(uint64_t* p, uint64_t o0, uint64_t o1, uint64
 }
 
 uint32_t snx_runtime_cas128(uint64_t* p, uint64_t o0, uint64_t o1, uint64_t n0, uint64_t n1) {
+#if defined(__mips64)
+    /* MIPS64 has no 16-byte compare-and-swap every core runs: Release 6's paired LLDP and SCDP are optional, and the
+       releases before have no paired form */
+    return snx_runtime_cas128_locked(p, o0, o1, n0, n1);
+#else
     static int g_native = -1; /* unknown until the first call; threads that race to it find the same */
     int native = __atomic_load_n(&g_native, __ATOMIC_RELAXED);
     if (native < 0) {
@@ -127,4 +135,5 @@ uint32_t snx_runtime_cas128(uint64_t* p, uint64_t o0, uint64_t o1, uint64_t n0, 
         __atomic_store_n(&g_native, native, __ATOMIC_RELAXED);
     }
     return native ? cas_native(p, o0, o1, n0, n1) : snx_runtime_cas128_locked(p, o0, o1, n0, n1);
+#endif
 }

@@ -19,13 +19,14 @@ endif()
 
 # The largest page the target's kernels use, as a power of two: a jemalloc made for smaller pages stops at startup on
 # a kernel with bigger ones ("Unsupported system page size"), and one made for bigger pages runs on smaller ones.
-# AArch64 and PowerPC64 kernels come with 4, 16 or 64 KiB pages and LoongArch's with 16 KiB by default; Apple's arm64
-# Macs have 16 KiB, the most a Mac has
+# AArch64, PowerPC64 and MIPS64 kernels come with 4, 16 or 64 KiB pages and LoongArch's with 16 KiB by default; Apple's
+# arm64 Macs have 16 KiB, the most a Mac has
 if(APPLE)
     set(snx_jemalloc_lg_page 14)
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|riscv64)$")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|riscv64|s390x)$")
     set(snx_jemalloc_lg_page 12)
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ppc64|ppc64le|powerpc64|powerpc64le|loongarch64)$")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES
+       "^(aarch64|arm64|ppc64|ppc64le|powerpc64|powerpc64le|loongarch64|mips64|mips64el)$")
     set(snx_jemalloc_lg_page 16)
 else()
     message(FATAL_ERROR "SNX_JEMALLOC=ON for ${CMAKE_SYSTEM_PROCESSOR}: cmake/jemalloc.cmake knows no page size for "

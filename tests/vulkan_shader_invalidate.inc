@@ -27,7 +27,7 @@ static VkSh *invalidate_fragment(GpuChannel *channel, u64 address)
 	channel->r3d_dirty = ~0u; /* the registers were set directly */
 	mx_draw_state_sync(channel); /* the state as the draw reads it */
 	shader = vk_shader_get(&channel->ds, address, 0, ST_FS, 0, 0, 0, 0,
-			       0, 0, 0, 0, NULL);
+			       0, 0, 0, 0, 0, NULL);
 	vk_unlock();
 	return shader;
 }
@@ -92,12 +92,12 @@ static int check_kept_shader_invalidation(GpuChannel *channel, u64 address,
 	invalidate_draw(channel);
 	CHECK(g_vk_drawn == drawn + 2 && g_vk_draw_kept == kept + 1);
 	kept = g_vk_draw_kept;
-	epoch = g_vk_epoch;
+	epoch = vk_ww_epoch();
 
 	fragment[11] = invalidate_mov(0, 0x3e800000);
 	CHECK(invalidate_write_code(address, fragment, 64));
 	maxwell3d_method(channel, 0x369, 1, 1);
-	CHECK(g_vk_epoch == epoch);
+	CHECK(vk_ww_epoch() == epoch);
 	invalidate_draw(channel);
 	CHECK(g_vk_drawn == drawn + 3 && g_vk_draw_kept == kept);
 	invalidate_draw(channel);
@@ -132,7 +132,7 @@ static int check_shader_invalidation(void)
 	CHECK(invalidate_write_code(address, code, 64));
 	first = invalidate_fragment(channel, address);
 	CHECK(first && !first->failed && first->mod);
-	epoch = g_vk_epoch;
+	epoch = vk_ww_epoch();
 	generation = g_vk.shader_generation;
 	finishes = g_vk_finishes;
 
@@ -143,14 +143,14 @@ static int check_shader_invalidation(void)
 	CHECK(g_vk.shader_generation == generation);
 	maxwell3d_method(channel, 0x369, 1, 1);
 	CHECK(g_vk.shader_generation == generation + 1);
-	CHECK(g_vk_epoch == epoch && g_vk_finishes == finishes);
+	CHECK(vk_ww_epoch() == epoch && g_vk_finishes == finishes);
 	second = invalidate_fragment(channel, address);
 	CHECK(second && !second->failed && second->mod);
 	CHECK(second != first && second->mod != first->mod);
 	CHECK(second->qh != first->qh);
 	maxwell3d_method(channel, 0x369, 1, 1);
 	CHECK(invalidate_fragment(channel, address) == second);
-	CHECK(g_vk_epoch == epoch && g_vk_finishes == finishes);
+	CHECK(vk_ww_epoch() == epoch && g_vk_finishes == finishes);
 	maxwell3d_method(channel, 0x87, 1, 1);
 	CHECK(g_vk.shader_generation == generation + 3);
 	CHECK(invalidate_fragment(channel, address) == second);
@@ -173,7 +173,7 @@ static int check_shader_invalidation(void)
 	invalidate_dispatch(channel, qmd, address + 0x20000);
 	vk_unlock();
 	CHECK(g_vk_dispatches == dispatches + 1);
-	epoch = g_vk_epoch;
+	epoch = vk_ww_epoch();
 	generation = g_vk.shader_generation;
 	finishes = g_vk_finishes;
 	code[1] = 0xe33000000007000full;
@@ -183,12 +183,12 @@ static int check_shader_invalidation(void)
 	CHECK(g_vk.shader_generation == generation);
 	compute_method(channel, 0x87, 1, 1);
 	CHECK(g_vk.shader_generation == generation + 1);
-	CHECK(g_vk_epoch == epoch && g_vk_finishes == finishes);
+	CHECK(vk_ww_epoch() == epoch && g_vk_finishes == finishes);
 	vk_lock();
 	invalidate_dispatch(channel, qmd, address + 0x20000);
 	vk_unlock();
 	CHECK(g_vk_dispatches == dispatches + 1);
-	CHECK(g_vk_epoch == epoch && g_vk_finishes == finishes);
+	CHECK(vk_ww_epoch() == epoch && g_vk_finishes == finishes);
 
 	code[1] = invalidate_mov(0, 42);
 	CHECK(invalidate_write_code(address + 0x20000, code, 64));

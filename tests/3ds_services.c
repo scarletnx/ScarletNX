@@ -288,9 +288,10 @@ int main(void) {
         ctr_request(p, utility, 6);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 0) == 0x4b0082);
+        /* the NotifyToWait before each later wakeup (a library applet's) succeeds and leaves the startup done */
         ctr_request(p, ready, 2);
-        ctr_send(p, apt, SNX_CTR_SVC_UNSUPPORTED, 0);
-        assert(p->apt_phase == 4);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x430040 && !ctr_command_word(p, 1) && p->apt_phase == 4);
         ctr_request(p, receive, 3);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 1) == 0xc8a0cfef && p->apt_phase == 4);
@@ -337,6 +338,19 @@ int main(void) {
         for (unsigned i = 0; i < 10; ++i)
             assert(name_bytes[i * 2] == (unsigned char)"Mario_Test"[i] && !name_bytes[i * 2 + 1]);
         for (unsigned i = 20; i < sizeof name_bytes; ++i) assert(!name_bytes[i]);
+        /* a nickname of UTF-8 as UTF-16: an accent one unit, an emoji its surrogate pair, the rest zero */
+        {
+            static const uint16_t units[] = {'J', 'o', 0xE3, 'o', ' ', 0xD83C, 0xDFAE};
+            strcpy(g_users[0].nickname, "Jo\xc3\xa3o \xf0\x9f\x8e\xae");
+            assert(snx_ctr_write_ram(p->space, 0x300000, (const unsigned char[0x1c]){0}, 0x1c) == SNX_CTR_MEM_OK);
+            ctr_request(p, username, 5);
+            ctr_send(p, cfg, SNX_CTR_SVC_RETURN, 0);
+            assert(!ctr_command_word(p, 1));
+            assert(snx_ctr_read_ram(p->space, 0x300000, name_bytes, sizeof name_bytes) == SNX_CTR_MEM_OK);
+            for (unsigned i = 0; i < sizeof units / sizeof *units; ++i)
+                assert(name_bytes[i * 2] == (units[i] & 0xFF) && name_bytes[i * 2 + 1] == units[i] >> 8);
+            for (unsigned i = 14; i < sizeof name_bytes; ++i) assert(!name_bytes[i]);
+        }
         memcpy(g_users[0].nickname, old_nickname, sizeof old_nickname);
         sound[3] = 4 << 4 | 0xc;
         ctr_request(p, sound, 5);

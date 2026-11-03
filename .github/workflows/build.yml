@@ -7,6 +7,8 @@ on:
     branches: [main]
     tags: ['v*'] # a version's release (publish.yml)
   pull_request:
+    # a draft builds less (each job that reads pull_request.draft says what), so leaving draft starts the whole build
+    types: [opened, synchronize, reopened, ready_for_review]
     # skipped when the change is only in files that no build or test reads. tracked_material.py reads them all and runs
     # on its own (pr-checks.yml). docs/ARCHITECTURE.md, DEPRECATIONS.md and GUI.md are test inputs: they build
     paths:
@@ -25,13 +27,14 @@ on:
 permissions:
   contents: read
 
-# a push to a pull request cancels that pull request's build still running: only its newest commit is built. main and
-# the tags build every commit
+# a push to a pull request cancels that pull request's build still running, and a push to main main's: only the newest
+# commit is built, and publish.yml publishes the newest that built everywhere. A tag and a run by hand build every time
 concurrency:
   group: >-
     build-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number)
-    || format('run-{0}', github.run_id) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    || github.event_name == 'push' && github.ref == 'refs/heads/main' && 'main' || format('run-{0}', github.run_id) }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 # Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
 # recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
@@ -44,20 +47,15 @@ concurrency:
 jobs:
   linux:
     name: Linux (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
     timeout-minutes: 60
-    container: ${{ matrix.container }}
+    # Arch's image is x86-64 only; pkgforge's (the AppImage's) is Arch Linux ARM on AArch64, with the same LLVM
+    container: ${{ matrix.arch == 'aarch64' && 'ghcr.io/pkgforge-dev/archlinux:latest' || 'archlinux:latest' }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-26.04
-            container: archlinux:latest
-          # Arch's image is x86-64 only; pkgforge's (the AppImage's) is Arch Linux ARM on AArch64, with the same LLVM
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
-            container: ghcr.io/pkgforge-dev/archlinux:latest
+        # a draft pull request builds x86-64 alone, whose install edenprobe runs; out of draft, both
+        arch: ${{ fromJSON(github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -198,7 +196,7 @@ jobs:
           path: .cache/deps
           key: ${{ steps.deps-used.outputs.key }}
       - name: Test headless Vulkan and NX runtime
-        run: ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_vic_validation|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages)$' --output-on-failure
+        run: ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages)$' --output-on-failure
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
         run: clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
@@ -304,17 +302,14 @@ jobs:
 
   appimage:
     name: Linux AppImage (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
     # LLVM's build (scripts/linux-llvm.sh) adds about half an hour where its cache misses
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-26.04
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
+        # x86-64's alone in a draft pull request, as the linux job
+        arch: ${{ fromJSON(github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
     # pkgforge's Arch image and tools (https://github.com/pkgforge-dev/Anylinux-AppImages), see scripts/make-appimage.sh
     container: ghcr.io/pkgforge-dev/archlinux:latest
     steps:
@@ -473,9 +468,11 @@ jobs:
   # LoongArch). Big-endian ppc64's has every runtime (the 3DS one builds there but isn't ported to a big-endian host):
   # Arch POWER's glibc there is ELFv2, not Debian ports' ELFv1, which the linux-ppc64 job tests. No POWER, RISC-V or
   # LoongArch machine has run the AppImages yet, so like the macOS and iOS jobs they may fail without failing the run
-  # (scripts/publish-builds.py, OPTIONAL)
+  # (scripts/publish-builds.py, OPTIONAL). A pull request builds them once it is ready for review, as they are 4 of
+  # every 10 runner minutes of a run; appimage-cross-check, which needs them, goes with them
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-26.04
     # LLVM's cross build (scripts/linux-llvm.sh) adds about half an hour where its cache misses
     timeout-minutes: 180
@@ -1146,9 +1143,11 @@ jobs:
   # fail the run (continue-on-error), which would hold back the nightly: they are new, and no Mac checked them before
   # CI. iOS builds even when macOS failed, and each one's app is made from its own build alone. Each app carries
   # Ryujinx's MoltenVK (V380-Ori/Ryujinx.MoltenVK): mainline's lacks patches emulators' pipelines need. The release's
-  # tars, their SHA-256 the ones GitHub lists for them
+  # tars, their SHA-256 the ones GitHub lists for them. A draft pull request skips it, as it skips the AArch64 builds:
+  # the organization runs 20 jobs at once
   apple:
     name: macOS and iOS (arm64)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: macos-26
     timeout-minutes: 240
     continue-on-error: true
@@ -1317,16 +1316,13 @@ jobs:
   appimage-check:
     name: Linux AppImage (${{ matrix.arch }}), as installed
     needs: appimage
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-26.04
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
+        # the AppImages the appimage job made
+        arch: ${{ fromJSON(github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -1471,8 +1467,6 @@ jobs:
       # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
       # its suites write their own GPU command buffers, which draw nothing now that NVN is the GPU path (docs/EDENPROBE.md)
       EDENPROBE_MODE: quick notime fatal cpu fs video display kernel audio
-    outputs:
-      result: ${{ steps.probe.outputs.result }}
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -1503,16 +1497,17 @@ jobs:
           curl -fsSL --retry 3 -o edenprobe.nro \
             "https://github.com/scarletnx/edenprobe/releases/download/$EDENPROBE_VERSION/edenprobe.nro"
           echo "$EDENPROBE_SHA256  edenprobe.nro" | sha256sum -c -
-      # Artifacts drop the executable bit. The summary's title is the line of the pull request's comment (links)
+      # Artifacts drop the executable bit. The summary's title is the line of the pull request's comment, as a notice
+      # of this job that scripts/pr-builds.sh reads back once the run ends; on one line, % is all a notice escapes
       - name: Run edenprobe
-        id: probe
         run: |
           chmod +x stage/bin/*
           status=0
           python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx --nro edenprobe.nro --mode "$EDENPROBE_MODE" \
             --out edenprobe --baseline tests/edenprobe/linux-x86_64.txt --summary "$GITHUB_STEP_SUMMARY" || status=$?
           if [ -f edenprobe/summary.md ]; then
-            echo "result=$(head -n 1 edenprobe/summary.md | cut -c5-)" >> "$GITHUB_OUTPUT"
+            result=$(head -n 1 edenprobe/summary.md | cut -c5-)
+            echo "::notice title=edenprobe::${result//%/%25}"
           fi
           exit "$status"
       # edenprobe's main, cases the release has not got yet: beside the release's report it only warns, and a nightly
@@ -1547,30 +1542,3 @@ jobs:
             !edenprobe/work
             edenprobe-main
             !edenprobe-main/work
-
-  # A pull request's builds, linked from a comment on it that each run rewrites, as soon as they are built
-  # (scripts/pr-builds.sh). A pull request from a fork gets a token that may not write, so it gets none
-  links:
-    name: Links to the builds
-    if: >-
-      !cancelled() && github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    needs: [linux, appimage, appimage-cross, windows, android, apple, edenprobe]
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          sparse-checkout: scripts/pr-builds.sh
-          sparse-checkout-cone-mode: false
-      - name: Link the builds from the pull request
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEEDS: ${{ toJSON(needs) }}
-          PR: ${{ github.event.pull_request.number }}
-          SHA: ${{ github.event.pull_request.head.sha }}
-        run: scripts/pr-builds.sh "$GITHUB_REPOSITORY" "$PR" "$GITHUB_RUN_ID" "$SHA"

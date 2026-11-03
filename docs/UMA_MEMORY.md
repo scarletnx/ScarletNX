@@ -1,8 +1,11 @@
 # Guest buffers on unified memory
 
-ScarletNX does not currently import guest RAM into Vulkan. `vk_stage` maps a Vulkan buffer that the GPU reads directly,
-but `vk_buf_copy` first copies bytes out of guest RAM. Exporting the final image as a dma-buf, as desktop compositors do,
-would not remove this copy: ScarletNX already presents its Vulkan image without an app-managed dma-buf handoff.
+On a GPU that shares system memory, guest vertex, index and read-only storage ranges are imported into Vulkan
+(`VK_EXT_external_memory_host`) and read in place: [GPU-owned guest memory](./GPU_OWNERSHIP.md#memory-that-the-cpu-and-the-gpu-share-uma)
+says how, what still copies, and what keeps it correct. Every other range takes the copy path this page is about:
+`vk_buf_copy` copies bytes out of guest RAM into a buffer that `vk_stage` maps and the GPU reads. Exporting the final
+image as a dma-buf, as desktop compositors do, would not remove this copy: ScarletNX already presents its Vulkan image
+without an app-managed dma-buf handoff.
 
 ## Measured workload
 
@@ -45,23 +48,6 @@ The 110-second TotK cave run with graphics writeback and same-frame reuse comple
 for the earlier staging run on this machine. A 600-present interval reused 7,429 GPU buffers but still forced 1,985
 lands, totaling 14.7 seconds of waits. The scenes and shader caches vary, so this is a correctness smoke test, not a
 controlled performance comparison. The resulting cave image still has known cyan rendering artifacts.
-
-## Import eligibility
-
-`VK_EXT_external_memory_host` imports a host pointer, not a dma-buf. An import candidate needs a contiguous,
-committed, correctly aligned host range and a buffer-compatible, host-visible memory type reported by
-`vkGetMemoryHostPointerPropertiesEXT`. The pointer and its backing storage must stay valid for the entire Vulkan
-allocation lifetime. Import is enabled only on a unified-memory device after the page-ownership and synchronization
-rules above are implemented. The existing snapshot staging path remains the fallback for fragmented, mutable, or
-unsupported ranges and for discrete GPUs. `VK_EXT_map_memory_placed` may help place Vulkan-owned allocations inside
-the guest address reservation, but changing `mem.c` to use such allocations is a separate memory-system change.
-
-## Validation gate
-
-Before enabling import by default, run the same TotK cave and Super Mario Odyssey scenes on an actual unified-memory
-device with Vulkan validation. Compare frame hashes or aligned screenshots, graphics and compute storage output,
-CPU writes during in-flight draws, unmap/decommit behavior, buffer-copy counts, frame time, and memory use against the
-staging fallback. A device reporting the extension alone is not evidence of a faster or safe path.
 
 Vulkan references: [host pointer import](https://docs.vulkan.org/spec/latest/chapters/memory.html#host-external-memory),
 [host/device synchronization](https://docs.vulkan.org/spec/latest/chapters/synchronization.html), and

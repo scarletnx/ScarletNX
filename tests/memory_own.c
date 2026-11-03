@@ -6,10 +6,15 @@
    move into the pool loses nothing, a system call fails on owned memory until it is acquired, dropping and unmapping
    land nothing, a view of owned memory lands it first, a fault on the thread holding the producer's lock ends the
    process, the write watch's scan skips owned spans, and threads faulting at once on many pages while owners come
-   and go read every owner's bytes. Skips (77) where the host has no traps */
+   and go read every owner's bytes. Skips (77) where the host has no traps. Debug settings come as the runtime takes
+   them, --key=value (--write_tracking=1, --memory_traps=1: the protection's paths); with memory_traps=2, or 1 and no
+   pool, it checks only that the log says why there are no traps */
 #include "nx/memory/mem.h"
+#include "nx/runtime/nce/nce.h"
 #include "nx/memory/own.h"
+#include "nx/runtime/ini.h"
 #include "nx/runtime/platform/plat.h"
+#include "snx_settings.h"
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
@@ -26,6 +31,10 @@
 
 static unsigned checks;
 static int diagnostic_log;
+static char g_log[4096]; /* the log's lines until the threads start (g_log_on), as far as they fit */
+static int g_log_on = 1;
+static const char* g_settings_given[8]; /* the command line's --key=value, again for each child */
+static int g_settings_count;
 static void test_fail(const char* expr, int line) {
     fprintf(stderr, "memory_own.c:%d: %s\n", line, expr);
     exit(1);
@@ -38,7 +47,13 @@ static void test_fail(const char* expr, int line) {
 
 void logf_(int level, const char* fmt, ...) {
     va_list ap;
+    size_t n = g_log_on ? strlen(g_log) : 0;
     (void)level;
+    if (g_log_on) {
+        va_start(ap, fmt);
+        vsnprintf(g_log + n, sizeof g_log - n, fmt, ap);
+        va_end(ap);
+    }
     if (!diagnostic_log) return;
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
@@ -57,6 +72,10 @@ void fatal(const char* fmt, ...) {
     abort();
 }
 void log_crash_mode(void) {}
+/* nce.c, whose NCE no game here is of: mem.c's reservation asks it first, and the crash handler gives it the
+   signal's context */
+int nce_wanted(void) { return 0; }
+void nce_crash_context(const void* context) { (void)context; }
 void crash_report(void* host_pc, void* fault, int sig) {
     (void)host_pc;
     (void)fault;
@@ -358,8 +377,11 @@ static void test_busy(const char* self, int write, int restricted) {
     pid = fork();
     CHECK(pid >= 0);
     if (!pid) {
+        const char* mode = restricted ? "--busy-private" : write ? "--busy-write" : "--busy";
+        const char* args[sizeof g_settings_given / sizeof *g_settings_given + 3] = {self, mode};
+        memcpy(args + 2, g_settings_given, (size_t)g_settings_count * sizeof *args);
         if (dup2(fileno(output), STDERR_FILENO) < 0) _exit(6);
-        execl(self, self, restricted ? "--busy-private" : write ? "--busy-write" : "--busy", (char*)NULL);
+        execv(self, (char* const*)args);
         _exit(5);
     }
     CHECK(waitpid(pid, &status, 0) == pid && WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
@@ -417,7 +439,7 @@ static void on_scan(u8* p, u64 size) {
 static void test_scan_owned(void) {
     u64 a = region(R0 + 0xA00000, 0x8000);
     Res* r = res_new(0x2000, 0x40);
-    if (plat_ww_scan(GP(a), 0x8000, on_scan)) { /* no write tracking here (SNX_NO_WW, or before Linux 6.7) */
+    if (plat_ww_scan(GP(a), 0x8000, on_scan)) { /* no write tracking here (write_tracking=2, or before Linux 6.7) */
         CHECK(mem_unmap(a, 0x8000) == 0);
         res_free(r);
         return;
@@ -430,6 +452,35 @@ static void test_scan_owned(void) {
     own_acquire(a + 0x2000, 0x2000);
     CHECK(refs(r) == 0 && GP(a)[0x2000] == 0x40);
     CHECK(mem_unmap(a, 0x8000) == 0);
+    res_free(r);
+}
+
+/* a page a trap lets go reads as written to the next scan, with the write of the thread it wakes, though the trap
+   isn't disarmed yet (a landing disarms right after it lets go; own_fault lets a page with no entry on it go, one cut
+   and not let go yet, and its let_go disarms it later). A scan that skipped the page after the write would stand for
+   its write epoch, and a cache's check in that epoch would take memory without the write */
+static void test_let_go_watched(void) {
+    u64 a = region(R0 + 0xB00000, 0x2000);
+    Res* r = res_new(0x1000, 0x70);
+    if (plat_ww_scan(GP(a), 0x2000, on_scan)) { /* no write tracking here */
+        CHECK(mem_unmap(a, 0x2000) == 0);
+        res_free(r);
+        return;
+    }
+    CHECK(own_begin(a, 0x1000, r, 0) == 0);
+    own_drop(a, 0x1000); /* the page let go, in the pool */
+    CHECK(refs(r) == 0 && plat_ww_scan(GP(a), 0x2000, on_scan) == 0);
+    CHECK(plat_trap_arm(GP(a), 0x1000) == 0);
+    GP(a)[0x10] = 0x39; /* faults: no entry on it, so the trap's thread lets it go and the write goes on */
+    g_scan_lo = g_scan_hi = 0;
+    CHECK(plat_ww_scan(GP(a), 0x2000, on_scan) == 0);
+    if (g_scan_lo != a || g_scan_hi != a + 0x1000)
+        fprintf(stderr, "let go: the scan after the write reported [%llx, %llx), not the written page at %llx\n",
+                (unsigned long long)g_scan_lo, (unsigned long long)g_scan_hi, (unsigned long long)a);
+    CHECK(g_scan_lo == a && g_scan_hi == a + 0x1000);
+    plat_trap_disarm(GP(a), 0x1000);
+    CHECK(GP(a)[0x10] == 0x39);
+    CHECK(mem_unmap(a, 0x2000) == 0);
     res_free(r);
 }
 
@@ -480,15 +531,36 @@ int main(int argc, char** argv) {
     pthread_mutexattr_settype(&recursive, PTHREAD_MUTEX_RECURSIVE);
     pthread_mutex_init(&g_producer, &recursive);
     pthread_mutexattr_destroy(&recursive);
+    for (int i = 1; i < argc; i++) {
+        const char* eq = strchr(argv[i], '=');
+        char key[64];
+        if (!eq) continue; /* --busy and the others, below */
+        CHECK(!strncmp(argv[i], "--", 2) && (size_t)(eq - argv[i] - 2) < sizeof key);
+        CHECK(g_settings_count < (int)(sizeof g_settings_given / sizeof *g_settings_given));
+        snprintf(key, sizeof key, "%.*s", (int)(eq - argv[i] - 2), argv[i] + 2);
+        CHECK(ini_find(g_debug_ini, key));
+        ini_read(ini_find(g_debug_ini, key), eq + 1);
+        g_settings_given[g_settings_count++] = argv[i];
+    }
     if (sysconf(_SC_PAGESIZE) != 4096) {
         printf("skipped: this host's pages are %ld bytes, and the pool needs 4 KiB ones\n", sysconf(_SC_PAGESIZE));
         return 77;
     }
     mem_init();
     if (own_init(&h)) {
+        /* none asked for, or none the protection can make without the pool: the log says which, with the value */
+        if (g_settings.memory_traps == 2 || (g_settings.memory_traps == 1 && !g_settings.alias_pool)) {
+            CHECK(strstr(g_log, g_settings.memory_traps == 2
+                                    ? "memory: no traps (memory_traps=2): GPU engines land"
+                                    : "memory: no traps (memory_traps=1, page protection, has none on this host)"));
+            printf("memory_own: memory_traps=%d runs without traps, and the log says so\n", g_settings.memory_traps);
+            return 0;
+        }
         printf("skipped: no traps on this host (userfaultfd minor faults on shared memory)\n");
         return 77;
     }
+    CHECK(g_settings.memory_traps != 2);
+    g_log_on = 0; /* threads log from here */
     if (argc > 1 && !strcmp(argv[1], "--busy")) return busy_child(0, 0);
     if (argc > 1 && !strcmp(argv[1], "--busy-write")) return busy_child(1, 0);
     if (argc > 1 && !strcmp(argv[1], "--busy-private")) return busy_child(0, 1);
@@ -505,6 +577,7 @@ int main(int argc, char** argv) {
     test_release_order();
     test_busy_unowned();
     test_scan_owned();
+    test_let_go_watched();
     test_stress();
     CHECK(!g_own_any);
     printf("memory_own: %u checks passed (%d landings, %d bytes)\n", checks, g_lands, g_landed_bytes);

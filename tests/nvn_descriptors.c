@@ -2,9 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* nvn's TIC and TSC encoders (gpu/nvn/nvn_tic.c) read back through the decoders the renderer makes its textures
    and samplers from (gpu/texture/descriptor.h): every NVN texture format two games initialize, the targets, views,
-   linear and buffer textures, and the sampler state. The format word is held to a table of the hardware's own format
-   codes, written out here from the Maxwell texture formats (envytools), with their texel blocks and component types,
-   apart from the encoder's table it checks */
+   linear and buffer textures, a sparse texture's tile width, and the sampler state. The format word is held to a
+   table of the hardware's own format codes, written out here from the Maxwell texture formats (envytools), with their
+   texel blocks and component types, apart from the encoder's table it checks */
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/texture/descriptor.h"
@@ -123,9 +123,38 @@ static void check_formats(void) {
         check(d.width == 300 && d.height == 200 && d.depth == 1, "its size", f);
         check(d.levels == 5 && d.base_level == 0 && d.max_level == 4, "its levels", f);
         check(d.block_h == l.tile_h && d.block_d == l.tile_d, "the block height the storage size assumed", f);
+        check(d.tile_w == 0, "no tile width: the texture isn't sparse", f);
         if (!is_depth(f)) /* R G B A shows the format's own channels */
             check(((d.format >> 19) & 7) == ((tic[0] >> 19) & 7) && ((d.format >> 19) & 7) == 2,
                   "red reads the red channel", f);
+    }
+}
+
+/* the render target format each NVN format takes, from the encoder's table: the 3D engine's color format, or its
+   depth format with depth set (Eden's RenderTargetFormat and DepthFormat), 0 for a format no target takes */
+static void check_rt_formats(void) {
+    static const struct {
+        u16 nvn;
+        u8 rt, depth;
+    } rt[] = {
+        {0x25, 0xD5, 0}, /* RGBA8: A8B8G8R8_UNORM */
+        {0x38, 0xD6, 0}, /* RGBA8_SRGB: A8B8G8R8_SRGB */
+        {0x9A, 0xCF, 0}, /* BGRA8: A8R8G8B8_UNORM */
+        {0x29, 0xCA, 0}, /* RGBA16F: R16G16B16A16_FLOAT */
+        {0x3F, 0xE0, 0}, /* R11G11B10F: B10G11R11_FLOAT */
+        {0x32, 0x13, 1}, /* DEPTH16: Z16_UNORM */
+        {0x34, 0x0A, 1}, /* DEPTH32F: Z32_FLOAT */
+        {0x35, 0x14, 1}, /* DEPTH24_STENCIL8: Z24_UNORM_S8_UINT */
+        {0x36, 0x19, 1}, /* DEPTH32F_STENCIL8: Z32_FLOAT_X24S8_UINT */
+        {0x22, 0x00, 0}, /* RGB32F: sampled, never a target */
+        {0x19, 0x00, 0}, /* RGB8: no entry */
+        {0x9D, 0x00, 0}, /* past NVN's formats */
+    };
+    unsigned i;
+    for (i = 0; i < sizeof rt / sizeof *rt; i++) {
+        int depth = -1;
+        check(nvn_rt_format(rt[i].nvn, &depth) == rt[i].rt && depth == rt[i].depth, "the render target format",
+              rt[i].nvn);
     }
 }
 
@@ -206,6 +235,39 @@ static void check_targets(void) {
     /* a format the encoder has no entry for: an empty descriptor */
     t = texture(0x19, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
     check(!nvn_tic_encode(&t, NULL, 0, 0, tic) && !tic[0] && !tic[1], "RGB8: no descriptor", 0x19);
+    check(NVN_FORMAT_RGB8 == 0x19 && NVN_FORMAT_RGB16I == 0x21, "NVN's names for RGB8 to RGB16I", 0x19);
+    t = texture(0x9D, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
+    check(!nvn_tic_encode(&t, NULL, 0, 0, tic) && !tic[0] && !tic[1], "past NVN's formats: no descriptor", 0x9D);
+}
+
+/* A sparse texture's header gives its tile's GOBs across (word 3 bits 10-12, log2), with which the renderer pads the
+   rows of its levels at least a tile in size to whole tiles, as the storage lays them out: a 256x256 DXT5 texture of 9
+   levels (tiles of 64x64 blocks: 16 GOBs across, 8 high) has the word 3 a game's driver wrote for one, and a BC1
+   volume's tile is 4 GOBs across, 2 high and 16 deep */
+static void check_sparse(void) {
+    u32 tic[8];
+    TicFields d;
+    NvnTexLayout l;
+    NvnTexture t = texture(NVN_FORMAT_RGBA_DXT5, NVN_TEXTURE_TARGET_2D, 256, 256, 1, 9);
+    t.d.flags = NVN_TEXTURE_FLAGS_SPARSE;
+    nvn_tex_layout(&t.d, &l);
+    check(nvn_tic_encode(&t, NULL, 0, 0, tic), "a descriptor for a sparse texture", NVN_FORMAT_RGBA_DXT5);
+    tic_decode(tic, &d);
+    check(tic[3] == 0x80071018u, "a sparse 256x256 DXT5 texture's word 3 as the game's driver writes it",
+          NVN_FORMAT_RGBA_DXT5);
+    check(d.tile_w == 4 && d.tile_w == l.tile_w && d.block_h == 3, "its tile: 16 GOBs across, blocks 8 GOBs high",
+          NVN_FORMAT_RGBA_DXT5);
+    t = texture(NVN_FORMAT_RGBA_DXT1, NVN_TEXTURE_TARGET_3D, 416, 128, 32, 1);
+    t.d.flags = NVN_TEXTURE_FLAGS_SPARSE;
+    nvn_tex_layout(&t.d, &l);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
+    tic_decode(tic, &d);
+    check(d.tile_w == 2 && d.tile_w == l.tile_w && d.block_h == 1 && d.block_d == 4,
+          "a sparse BC1 volume's tile: 4 GOBs across, 2 high, 16 deep", NVN_FORMAT_RGBA_DXT1);
+    t.d.flags = 0;
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
+    tic_decode(tic, &d);
+    check(d.tile_w == 0, "the same volume, not sparse: no tile width", NVN_FORMAT_RGBA_DXT1);
 }
 
 /* A depth or stencil texture's word 0 as each driver writes it: its channels, then the game's swizzle over them
@@ -309,7 +371,9 @@ static void check_samplers(void) {
 
 int main(void) {
     check_formats();
+    check_rt_formats();
     check_targets();
+    check_sparse();
     check_depth();
     check_samplers();
     if (!failures) printf("NVN's TIC and TSC entries decode as the renderer reads them (%d checks)\n", checks);

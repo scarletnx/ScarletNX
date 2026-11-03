@@ -68,3 +68,46 @@ int write_pages_since(const WritePages* t, u64 since, u64 a, u64 size) {
     }
     return 0;
 }
+/* the pages [first, past) of a run, as bytes of [a, a + size) */
+static void run_out(u64 a, u64 size, u64 first, u64 past, void (*fn)(void*, u64, u64), void* ctx) {
+    u64 lo = first << 12 > a ? first << 12 : a, hi = past << 12 < a + size ? past << 12 : a + size;
+    fn(ctx, lo, hi - lo);
+}
+void write_pages_runs(const WritePages* t, u64 since, u64 a, u64 size, void (*fn)(void* ctx, u64 at, u64 n),
+                      void* ctx) {
+    u64 p, e, first = 0;
+    int in = 0;
+    if (!size) return;
+    if (__atomic_load_n(&t->overflow, __ATOMIC_ACQUIRE) > since || a + size - 1 < a) {
+        fn(ctx, a, size);
+        return;
+    }
+    e = (a + size - 1) >> 12;
+    /* the leaves and groups nothing wrote since end a run where they start, as a clean page would */
+    for (p = a >> 12; p <= e && !(p >> 28);) {
+        u64 end = (p | (LEAF_PAGES - 1)) < e ? p | (LEAF_PAGES - 1) : e;
+        const WritePageLeaf* l = __atomic_load_n(&t->leaf[p >> 12], __ATOMIC_ACQUIRE);
+        if (!l || __atomic_load_n(&l->max, __ATOMIC_ACQUIRE) <= since) {
+            if (in) run_out(a, size, first, p, fn, ctx);
+            in = 0;
+            p = end + 1;
+            continue;
+        }
+        for (u64 group = p; group <= end;) {
+            u64 group_end = (group | (GROUP_PAGES - 1)) < end ? group | (GROUP_PAGES - 1) : end;
+            if (__atomic_load_n(&l->group_max[(group & (LEAF_PAGES - 1)) / GROUP_PAGES], __ATOMIC_ACQUIRE) <= since) {
+                if (in) run_out(a, size, first, group, fn, ctx);
+                in = 0;
+            } else
+                for (u64 q = group; q <= group_end; q++) {
+                    int w = __atomic_load_n(&l->gen[q & (LEAF_PAGES - 1)], __ATOMIC_RELAXED) > since;
+                    if (w && !in) first = q;
+                    if (!w && in) run_out(a, size, first, q, fn, ctx);
+                    in = w;
+                }
+            group = group_end + 1;
+        }
+        p = end + 1;
+    }
+    if (in) run_out(a, size, first, p, fn, ctx);
+}

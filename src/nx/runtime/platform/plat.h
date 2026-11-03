@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The operating system under the runtime. plat_sdl.c implements what SDL does the same way everywhere (the clocks,
-   sleeping, libraries, path queries), and one of plat_posix.c and plat_win32.c the rest (threads, condition variables,
-   the guest's address space, file maps, the crash handler); profiler_win32.c samples threads on Windows, and the host
-   audio output lives in the window backend. Paths are UTF-8 everywhere. */
+   sleeping, libraries, path queries and the host's power state), and one of plat_posix.c and plat_win32.c the rest
+   (threads, condition variables, the guest's address space, file maps, the crash handler); profiler_win32.c samples
+   threads on Windows, and the host audio output lives in the window backend. Paths are UTF-8 everywhere. */
 #ifndef SNX_PLAT_H
 #define SNX_PLAT_H
 #include "common/cpu/aarch64/cpu.h"
@@ -74,24 +74,46 @@ u64 plat_monotonic_ns(void);
 i64 plat_unix_time(void); /* seconds since 1970 UTC */
 i64 plat_tz_offset(void); /* local time minus UTC, in seconds */
 
+/* ---- power */
+/* Whether the host runs from its charger: 1 plugged in, 0 on its battery, -1 when that cannot be read. Call it on the
+   main thread: SDL's power query is not thread safe */
+int plat_power_on_charger(void);
+/* Starts the watcher of the host's power source, where the platform has one: a change marks the flag that
+   plat_power_take_change reports. 0 when watching, -1 when this host has no watcher (the caller polls) */
+int plat_power_watch(void);
+/* 1 when the watcher saw the host's power source change since the last call, and clears it */
+int plat_power_take_change(void);
+/* marks a change from a platform watcher's callback (Android's receiver, Apple's notification) */
+void plat_power_mark_changed(void);
+
 /* ---- the guest's address space */
 /* The host's page, which the reservation is committed, decommitted and aliased in: 4 KiB, the Switch's own, on x86-64
    and most AArch64 systems, 16 KiB on Apple silicon and some Android kernels, 64 KiB on most PowerPC64 and some
-   AArch64 distributions (mem.c). SNX_HOST_PAGE in the environment, a larger power of two up to 1 MiB, makes a host
-   with smaller pages work in those, to test the larger pages' paths on any machine */
+   AArch64 distributions (mem.c). The setting host_page, a larger power of two up to 1 MiB, makes a host with smaller
+   pages work in those, to test the larger pages' paths on any machine; another value is said once */
 u64 plat_vm_page(void);
-u8* plat_vm_reserve(u64 size); /* aligned to plat_vm_page, inaccessible until committed; NULL, the reason in errno */
+#define SNX_PLAT_PAGE_MAX ((u64)1 << 20) /* the largest page plat_vm_page works in */
+/* Inaccessible until committed; NULL, the reason in errno. Aligned to SNX_PLAT_PAGE_MAX, so it can be made before the
+   settings say which page the runtime works in (Windows: its 64 KiB allocation granularity, as it commits any 4 KiB
+   page) */
+u8* plat_vm_reserve(u64 size);
+/* The written-page tracking (plat_ww_scan) and the traps' page states (plat_trap_init) of the reservation [p, p +
+   size): once, after the settings are read and before a page of it is committed (mem_init) */
+void plat_vm_track(u8* p, u64 size);
 /* The process's address space now: what is mapped or reserved in all, and its largest free run between them, for a
    run that fails for want of it (a thread's stack, a mapping). Whether the system told it (Linux, macOS, iOS and
    Windows do) */
 int plat_address_space(u64* mapped, u64* largest_free);
+/* plat_vm_reserve at the host address addr, where the guest's addresses are the host's (NCE): all of the guest's
+   memory is then executable too. POSIX only. NULL when the range is taken, the reason in errno */
+u8* plat_vm_reserve_at(u64 addr, u64 size);
 int plat_vm_commit(u8* p, u64 size);       /* readable and writable; 0, or -1 */
 void plat_vm_decommit(u8* p, u64 size);    /* inaccessible again, and zero when committed next */
 /* Calls cb for each run of pages in [p, p + size) written since they were last scanned, and watches them again.
    -1 when the host can't tell (the caller then compares contents). Linux 6.7 and later use userfaultfd's asynchronous
    write protection with PAGEMAP_SCAN, Windows the write watch of the reservation. The other POSIX hosts (macOS,
    FreeBSD, Android, older Linux) protect what a scan reported and take the first write to it in the fault handler;
-   SNX_WW=signal takes that path on any Linux, and SNX_NO_WW in the environment turns all of them off */
+   write_tracking=1 takes that path on any Linux, and write_tracking=2 turns all of them off */
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size));
 /* [p, p + size) of the reservation is about to be written by the kernel (a system call given guest memory to fill),
    which the protection plat_ww_scan uses on some hosts would fail with EFAULT: the pages open, written, and no scan
@@ -125,7 +147,7 @@ u8* plat_alias_mirror(void);
 /* Traps on pool pages of the reservation (memory/own.c, docs/GPU_OWNERSHIP.md): an access to an armed page, by any
    thread, waits while fault (on a thread of the trap's own, never in a signal handler) gets the page's contents into
    the pool and lets it go on with plat_trap_continue. Linux 5.13 and later use userfaultfd's minor faults on shared
-   memory. Other hosts with the pool (older Linux, Android, or SNX_TRAPS=signal on any Linux) make the pages
+   memory. Other hosts with the pool (older Linux, Android, or memory_traps=1 on any Linux) make the pages
    inaccessible, and the faulting thread waits in the signal handler while the trap's thread lands them. Without the
    pool plat_trap_init says -1. An access from the kernel (a system call given a pointer into an armed
    page) fails with EFAULT instead of waiting, so the runtime opens a range before it hands it to the kernel. tid is
@@ -136,7 +158,8 @@ u32 plat_tid(void); /* the calling thread's id, as the system numbers threads */
 int plat_thread_in_fault(u32 tid);
 /* Best-effort fatal diagnostics for the blocked thread, not the trap handler. Never resumes it. */
 void plat_dump_fault_thread(u32 tid);
-/* every page of [p, p + size), whole host pages of pool memory, armed / let go (0, or -1) */
+/* every page of [p, p + size), whole host pages of pool memory, armed / let go (0, or -1). A page let go reads as
+   written to plat_ww_scan, as does what any thread writes on it from then on */
 int plat_trap_arm(u8* p, u64 size);
 int plat_trap_continue(u8* p, u64 size);
 /* [p, p + size) not trapped any more: a page not yet let go reads the pool's contents when it is touched */

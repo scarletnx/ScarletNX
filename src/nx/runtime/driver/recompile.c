@@ -8,6 +8,12 @@
 #include "nx/loader/loader.h"
 #include "nx/loader/module.h"
 #include "nx/loader/module_llvm.h"
+#include "nx/loader/codegen_view.h"
+#include "nx/runtime/nce/nce_host.h"
+#include "nx/runtime/nce/nce_patch.h"
+#if defined(__ANDROID__)
+#include <android/api-level.h>
+#endif
 #include "common/cpu/recompiler/llvm/ir.h"
 
 /* the triple of the iOS app's code: Darwin's calling convention and the generic AArch64 CPU, in the object format the
@@ -35,7 +41,7 @@ static void usage(void) {
          "  --name NAME            Output name (default: the title ID, else the NPDM's or input name)\n"
          "  --outdir DIR           Where the game's folder goes (default: recompiled/)\n"
          "  -O LEVEL               Optimization: 0,1,2,3,s,z (default: 2), the setting opt\n"
-         "  --jobs N               Parallel compiles (default: CPU count), the setting aot_threads");
+         "  --jobs N               Parallel compiles (default: cores, a quarter left free), the setting aot_threads");
     puts("  --jit-cache FILE       Link a profile run's .jitcache into the module as runtime code\n"
          "  --layout FILE          Put the code of these functions first, in this order (hex PCs, one per line):\n"
          "                         a profile's hot functions, as tools/layout.py orders them\n"
@@ -59,6 +65,26 @@ static void usage(void) {
          "An update's dump is made beside its game, <ID>/<ID>_<its own title ID>, which runs with the game's\n"
          "settings and saves and reads the dump in place. A DLC has no program: the driver checks it for its game.\n"
          "Hints: <outdir>/<NAME>/<NAME>.hints (hex PCs, one per line).");
+}
+/* SNX_LLVM_BRANCH_PROFILE, which an older version read (docs/DEPRECATIONS.md): for this version still the value of
+   ir_branch_profile when the recompile is given none, and said either way. Removed with tests/architecture.py's
+   ENV_DEPRECATED row */
+static void old_branch_profile(void) {
+    const char* old = getenv("SNX_LLVM_BRANCH_PROFILE");
+    if (!old) return;
+    if (g_settings.ir_branch_profile[0])
+        snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated, and the recompile gives ir_branch_profile first: "
+                  "ir_branch_profile=%s (docs/DEPRECATIONS.md)",
+                  old, g_settings.ir_branch_profile);
+    else if (strlen(old) < sizeof g_settings.ir_branch_profile) {
+        memcpy(g_settings.ir_branch_profile, old, strlen(old) + 1);
+        snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated: this recompile reads it as --ir_branch_profile=%s "
+                  "(docs/DEPRECATIONS.md)",
+                  old, old);
+    } else
+        snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated, and longer than ir_branch_profile's %u bytes: "
+                  "ir_branch_profile is empty, no branch weights (docs/DEPRECATIONS.md)",
+                  old, (unsigned)sizeof g_settings.ir_branch_profile - 1);
 }
 static unsigned number(const char* text, unsigned max) {
     char* end;
@@ -236,8 +262,8 @@ static int load_dump(const char* dump, const char* update, const SnxPaths* paths
     size_t nacp_size = 0;
     /* an update's ExeFS is whole: read without its game's, which only its RomFS is made of */
     int rc = snx_dump_open(&opened, update ? NULL : dump, update, paths->keys, paths->title_keys, paths->repo, !quiet);
-    if (!rc && opened.program.found) rc = snx_nca_keys(&opened.program, "The game's Program NCA");
-    if (!rc && opened.patch.found) rc = snx_nca_keys(&opened.patch, "The update's Program NCA");
+    if (!rc && opened.program.found) rc = snx_nca_keys(&opened, &opened.program, "The game's Program NCA");
+    if (!rc && opened.patch.found) rc = snx_nca_keys(&opened, &opened.patch, "The update's Program NCA");
     if (!rc && !(fs = snx_dump_fs(&opened))) rc = 1;
     if (!rc) {
         nacp = snx_dump_nacp(&opened, &nacp_size, &why);
@@ -350,6 +376,59 @@ static int copy_data(const SnxProgram* p, const char* dir, int quiet, int tmpfs)
 }
 /* the played mods' patches (common/utilities/patches.h) written over each NSO module of program they are made for,
    every one said: 0, else nonzero with the patch that could not be applied said */
+/* NCE (the setting nce, on an AArch64 Linux host): the game's code runs natively on the host's CPU, so the module
+   holds no code made ahead of time (as --jit-only). The analysis finds here the words that the runtime patches
+   (nce_patch.h), with the FDEs and the symbols of the modules. Each module then moves up to leave a pool for the stubs
+   of its sites after it, which the branches of its sites reach. The pools and the sites go in <base>.nce, which the
+   runtime reads. A recompile without NCE removes that file, because its addresses are of another layout */
+#define NCE_GUARD 0x1000ull
+#define NCE_CODE_END 0x2000000000ull
+static int nce_prepare(SnxProgram* p, const char* base, int quiet) {
+    SnxCodegen cg;
+    NceSites sites;
+    NceRange* pools;
+    SnxU64* old;
+    SnxU64 cursor;
+    char* path = snx_format("%s.nce", base);
+    int r = 0;
+    if (!p->module_count) {
+        free(path);
+        return snx_error("NCE: the program has no modules");
+    }
+    if (snx_nx_codegen_analyze(&cg, p, NULL, 0, quiet)) {
+        free(path);
+        return snx_error("NCE: the analysis of the game's code failed");
+    }
+    nce_find_sites(&cg, &sites);
+    snx_codegen_free(&cg);
+    pools = (NceRange*)snx_alloc(p->module_count * sizeof *pools);
+    old = (SnxU64*)snx_alloc(p->module_count * sizeof *old);
+    cursor = p->modules[0].base;
+    for (size_t i = 0; i < p->module_count && !r; i++) {
+        SnxModuleImage* m = &p->modules[i];
+        SnxU64 end = (m->base + m->size + 0xFFFu) & ~0xFFFull;
+        old[i] = m->base;
+        pools[i].size = nce_pool_size(&sites, m->base, m->base + m->size);
+        pools[i].addr = cursor + (end - m->base);
+        m->base = cursor;
+        cursor = pools[i].addr + pools[i].size + NCE_GUARD;
+        if (cursor > NCE_CODE_END) r = snx_error("NCE: the modules and their pools exceed the code region");
+    }
+    /* the last module first: a module moves up past the old place of the next, never past its new place */
+    for (size_t i = p->module_count; i-- > 0 && !r;)
+        nce_sites_move(&sites, old[i], old[i] + p->modules[i].size, p->modules[i].base - old[i]);
+    if (!r && nce_file_write(path, p->modules[0].base, pools, p->module_count, &sites))
+        r = snx_error("cannot write %s", path);
+    if (!r && !quiet)
+        printf("NCE: %zu words to patch (%zu that the flow reaches), %zu kept as data, %zu outside the functions\n",
+               sites.count, sites.proven, sites.data, sites.outside);
+    nce_sites_free(&sites);
+    free(pools);
+    free(old);
+    free(path);
+    return r;
+}
+
 static int patch_modules(SnxProgram* program, const char* mods, const char* off, int quiet) {
     char error[1024], **patches;
     size_t count = snx_mods_patches(mods, off, &patches), i, j;
@@ -381,7 +460,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     char *ini = NULL, *ini_text = NULL, *run = NULL, *exe = NULL, *mods = NULL, *mods_off = NULL, *mods_stamp = NULL;
     char **mod_names = NULL, **mod_files = NULL;
     size_t mod_count = 0, found = 0;
-    char error[1024], option[64], why[256];
+    char error[1024], option[64], why[256], reason[256];
     const char* equal;
     size_t option_size;
     int i, rc = 1, ios = 0, no_build = 0, keep_c = 0, host_win = 0, positional = 0, tmpfs = 0, dump = 0;
@@ -507,7 +586,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         return snx_error("llvm_batch = ipo takes the place of -O1 to -O3, s and z's passes: opt = 0 runs none");
     compile.opt = g_settings.optimization_level;
     gen.chunk_instrs = (size_t)g_settings.unit_size;
-    compile.jobs = g_settings.aot_threads > 0 ? (unsigned)g_settings.aot_threads : snx_cpu_count();
+    compile.jobs = g_settings.aot_threads > 0 ? (unsigned)g_settings.aot_threads : snx_build_threads();
     if (!strcmp(target, "win64"))
         compile.target_win = 1;
     else if (!strcmp(target, "linux"))
@@ -547,7 +626,9 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         snx_free_program(&program);
         return 1;
     }
-    title = snx_game_shown(name, &program);
+    title = snx_game_shown(name, &program, reason, sizeof reason);
+    if (reason[0] && !compile.quiet)
+        printf("The game's control.nacp gives it no name, %s: it shows as %s\n", reason, title);
     if (addon) { /* <game>_<add-on>, in the game's folder */
         char own[32], of[17];
         snx_addon_entry(owner, addon, version, own); /* an update's with its version: each version its own */
@@ -640,6 +721,18 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
             goto done;
         }
     }
+    if (program.module_count == 1 && program.modules[0].is_nro) { /* its icon for Games, as an extraction keeps one */
+        unsigned char* jpeg;
+        size_t size;
+        char why[512], *icon = NULL;
+        int none = snx_nro_icon(program.entry_path, &jpeg, &size, why, sizeof why);
+        if (none < 0)
+            printf("Games shows no icon for the game: %s\n", why);
+        else if (!none && (!(icon = snx_path_join(data, "icon.jpg")) || snx_write_file(icon, jpeg, size)))
+            printf("Games shows no icon for the game: its icon.jpg could not be written in %s\n", data);
+        free(icon);
+        free(jpeg);
+    }
     ini = settings_path(folder, game);
     if (!ini) {
         snx_error("cannot create the settings folder for %s", title);
@@ -668,6 +761,30 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         snx_error("--target ios: 32-bit games are not supported yet");
         goto done;
     }
+    {
+        char* stale = snx_format("%s.nce", base);
+        int nce = 0;
+#if SNX_NCE_HOST /* where the runtime runs it: else its JIT would compile all of the code */
+        nce = !ios && program.npdm.is64 && g_settings.nce;
+        if (nce) {
+            char why[240];
+#if defined(__ANDROID__)
+            int android = 1, api = android_get_device_api_level();
+#else
+            int android = 0, api = 0;
+#endif
+            if (nce_refused(why, sizeof why, program.npdm.aspace, android, api)) {
+                printf("NCE: nce=1, but %s: this recompile makes the code ahead of time (nce=0)\n", why);
+                nce = 0;
+            }
+        }
+#endif
+        if (nce) gen.interp_only = 1;
+        i = nce ? nce_prepare(&program, base, compile.quiet) : snx_is_file(stale) && remove(stale) ? -1 : 0;
+        if (i && !nce) snx_error("cannot remove %s, which is of an NCE recompile", stale);
+        free(stale);
+        if (i) goto done;
+    }
     code = ios ? snx_format("%s_code.snxobj", base) : snx_format("%s_code.%s", base, compile.target_win ? "dll" : "so");
     {
         char *kept = keep_c ? snx_format("%s_build", base) : NULL, *units = NULL;
@@ -678,6 +795,8 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         snx_ir_fpsr_flags(g_settings.fpsr_flags);
         snx_ir_volatile_memory(g_settings.volatile_load_stores);
         snx_ir_diagnostics(g_settings.ir_stats, g_settings.ir_dump_pc);
+        old_branch_profile();
+        snx_ir_branch_profile(g_settings.ir_branch_profile);
         llvm.tuning = snx_llvm_tuning(llvm.opt, error, sizeof error);
         if (!llvm.tuning) {
             snx_error("%s", error);

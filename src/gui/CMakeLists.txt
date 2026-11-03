@@ -22,19 +22,22 @@ function(snx_gui_languages target folder out)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-languages.py" --out "${out}" ${pos}
         DEPENDS "${PROJECT_SOURCE_DIR}/scripts/build-languages.py" "${PROJECT_SOURCE_DIR}/po/scarletnx.pot" ${pos}
                 "${PROJECT_SOURCE_DIR}/scripts/build-glyphs.py" "${CMAKE_CURRENT_SOURCE_DIR}/unifont-latin.hex"
-                "${CMAKE_CURRENT_SOURCE_DIR}/unifont-wide.hex" "${PROJECT_SOURCE_DIR}/src/common/utilities/font.c"
+                "${CMAKE_CURRENT_SOURCE_DIR}/unifont-wide.hex" "${CMAKE_CURRENT_SOURCE_DIR}/unifont-titles.hex"
+                "${PROJECT_SOURCE_DIR}/src/common/utilities/font.c"
         COMMENT "The menu's languages from ${folder}" VERBATIM)
     add_library(${target} STATIC "${out}")
 endfunction()
 snx_gui_languages(snx_gui_languages "${PROJECT_SOURCE_DIR}/po" "${PROJECT_BINARY_DIR}/generated/gui_languages.c")
-# The letters past the VGA font's CP437: GNU Unifont's, the Latin ones (latin.h) kept in unifont-latin.hex and the wide
-# ones the languages show (wide.h) in unifont-wide.hex
-add_custom_command(OUTPUT "${PROJECT_BINARY_DIR}/generated/gui_glyphs.c"
+# The letters past the VGA font's CP437: GNU Unifont's, the Latin ones (latin.h) kept in unifont-latin.hex, the CJK and
+# Hangul blocks of game titles (titles.h) in unifont-titles.hex and the other wide ones the languages show (wide.h) in
+# unifont-wide.hex
+add_custom_command(OUTPUT "${PROJECT_BINARY_DIR}/generated/gui_glyphs.c" "${PROJECT_BINARY_DIR}/generated/gui_titles.c"
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-glyphs.py"
             --out "${PROJECT_BINARY_DIR}/generated/gui_glyphs.c"
+            --titles-out "${PROJECT_BINARY_DIR}/generated/gui_titles.c"
     DEPENDS "${PROJECT_SOURCE_DIR}/scripts/build-glyphs.py" "${CMAKE_CURRENT_SOURCE_DIR}/unifont-latin.hex"
-            "${CMAKE_CURRENT_SOURCE_DIR}/unifont-wide.hex"
-    COMMENT "The menu's Latin and wide glyphs" VERBATIM)
+            "${CMAKE_CURRENT_SOURCE_DIR}/unifont-wide.hex" "${CMAKE_CURRENT_SOURCE_DIR}/unifont-titles.hex"
+    COMMENT "The menu's Latin, wide and titles' glyphs" VERBATIM)
 # the launcher's scenes, generated from ui.txt by tools/uigen: gui/ui.h and gui/ui.c, whose drawing and callbacks
 # main.c defines, so they go into what compiles main.c
 include("${PROJECT_SOURCE_DIR}/cmake/ui.cmake")
@@ -50,7 +53,8 @@ set_target_properties(snx_gui_ui PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
 target_compile_options(snx_gui_ui PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 add_library(snx_gui_support STATIC aot.c model.c browser.c steps.c theme.c recent.c editor.c settings.c place.c clean.c
             queue.c latin.c wide.c log.c logzip.c gpu_driver.c gpu_driver_fetch.c ${gui_process}
-            "${PROJECT_BINARY_DIR}/generated/gui_themes.c" "${PROJECT_BINARY_DIR}/generated/gui_glyphs.c")
+            "${PROJECT_BINARY_DIR}/generated/gui_themes.c" "${PROJECT_BINARY_DIR}/generated/gui_glyphs.c"
+            "${PROJECT_BINARY_DIR}/generated/gui_titles.c")
 target_link_libraries(snx_gui_support PUBLIC scarletnx-common snx_setup snx_i18n snx_settings snx_miniz PRIVATE snx_libdeflate)
 target_link_libraries(snx_gui_support PRIVATE snx_yyjson) # Download Driver's GitHub lists (gpu_driver_fetch.c)
 target_include_directories(snx_gui_support PRIVATE "${PROJECT_BINARY_DIR}/generated")
@@ -112,6 +116,9 @@ if(APPLE)
     set_source_files_properties(apple.m PROPERTIES COMPILE_OPTIONS -fobjc-arc)
     # PUBLIC: the link folders above go with it to the program that links the menu
     target_link_libraries(scarletnx-gui PUBLIC snx_apple_frontend "-framework Foundation")
+    if(IOS)
+        target_link_libraries(scarletnx-gui PUBLIC "-framework UIKit") # the battery state notification
+    endif()
     # not Swift's, which linking a Swift library made CMake pick: the archive was made by swiftc, given the C flags.
     # C++: the menu alone (no Switch runtime) is a program, and links the splash's C++ (lunasvg)
     set_target_properties(scarletnx-gui PROPERTIES LINKER_LANGUAGE CXX)
@@ -223,8 +230,8 @@ if(BUILD_TESTING)
         add_test(NAME uigen COMMAND "${CMAKE_COMMAND}" "-DUIGEN=$<TARGET_FILE:snx-uigen>"
                  "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/uigen-test" -P "${PROJECT_SOURCE_DIR}/tests/uigen.cmake")
     endif()
-    # unifont-latin.hex holds the Latin letters CP437 lacks, unifont-wide.hex the wide ones the languages show, each
-    # once, in order
+    # unifont-latin.hex holds the Latin letters CP437 lacks, unifont-titles.hex every code point of the titles' blocks,
+    # unifont-wide.hex the other wide ones the languages show, each once, in order
     add_test(NAME gui_glyphs_kept COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-glyphs.py" --check)
     add_test(NAME gui_glyphs_script COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/glyphs_test.py")
     add_executable(snx-test-gui-log "${PROJECT_SOURCE_DIR}/tests/gui_log.c")
@@ -258,6 +265,9 @@ if(BUILD_TESTING)
     if(APPLE) # it compiles main.c itself, which calls the frontend (apple.m and its Swift), as scarletnx-gui links it
         target_sources(snx-test-gui-sdl PRIVATE apple.m)
         target_link_libraries(snx-test-gui-sdl PRIVATE snx_apple_frontend "-framework Foundation")
+        if(IOS)
+            target_link_libraries(snx-test-gui-sdl PRIVATE "-framework UIKit")
+        endif()
         set_target_properties(snx-test-gui-sdl PROPERTIES LINKER_LANGUAGE CXX)
     endif()
     # the runtime's sections and pages, each of which has an icon in the Settings
@@ -277,6 +287,9 @@ if(BUILD_TESTING)
     if(APPLE)
         target_sources(snx-test-gui-setup PRIVATE apple.m)
         target_link_libraries(snx-test-gui-setup PRIVATE snx_apple_frontend "-framework Foundation")
+        if(IOS)
+            target_link_libraries(snx-test-gui-setup PRIVATE "-framework UIKit")
+        endif()
         set_target_properties(snx-test-gui-setup PROPERTIES LINKER_LANGUAGE CXX)
     else()
         add_test(NAME gui_setup COMMAND snx-test-gui-setup)

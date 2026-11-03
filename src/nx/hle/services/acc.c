@@ -8,12 +8,19 @@
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "gui/splash.h"
+#include "nx/hle/filesystem/fs.h"
+#include <openssl/rand.h>
+#include <time.h>
 
 #include "hle/services/acc.swipc.inc"
+
+static int acc_profile_dispatch(SvcObj* o, IpcCtx* c);
+static SvcObj* acc_with(SvcObj* o, int (*dispatch)(SvcObj*, IpcCtx*));
 
 #define ACC_INVALID_USER_ID RC(124, 20)
 #define ACC_INVALID_APPLICATION RC(124, 22)
 #define ACC_INVALID_LENGTH  RC(124, 32)
+#define ACC_UPDATE_FAILED       RC(124, 100) /* rEden's ResultAccountUpdateFailed: the users could not be written */
 #define ACC_UNDER_MAINTENANCE   RC(124, 5249) /* the online account service is not there: "not available right now" */
 #define ACC_THUMBNAIL_SIZE  0x24000      /* a save's thumbnail: 256x144 RGBA */
 #define ACC_LAST_EDIT       1546300800   /* the user's profile was last changed on the first day of 2019 */
@@ -80,7 +87,10 @@ static int nn_account_IAccountServiceForApplication_GetProfile(SvcObj* self, con
                                                                SvcObj** profile) {
     (void)self;
     R_UNLESS(acc_user(uid), ACC_INVALID_USER_ID);
-    *profile = acc_for_user(nn_account_profile_IProfile_new_data(g_hle.acc.users, g_hle.acc.user_next, "acc profiles and managers"), uid);
+    *profile = acc_with(acc_for_user(nn_account_profile_IProfile_new_data(g_hle.acc.users, g_hle.acc.user_next,
+                                                                          "acc profiles and managers"),
+                                     uid),
+                        acc_profile_dispatch);
     R_SUCCEED();
 }
 /* both games and applets may register a user, as Eden's ProfileManager::CanSystemRegisterUser answers */
@@ -152,22 +162,26 @@ static int nn_account_IAccountServiceForApplication_StoreSaveDataThumbnail(SvcOb
 }
 
 static const SnxUser* acc_profile_user(SvcObj* self) {
-    return snx_users_find(((const AccUser*)self->data)->uid); /* GetProfile made it for a user, and users don't go while the game runs */
+    return snx_users_find(((const AccUser*)self->data)->uid); /* NULL for one acc:su deleted since */
 }
 static void acc_profile_base(SvcObj* self, nn_account_profile_ProfileBase* base) {
-    const SnxUser* u = acc_profile_user(self);
+    const SnxUser* u = acc_profile_user(self); /* there: Get and GetBase see to it */
     memset(base, 0, sizeof *base);
     acc_uid_put(base->uid.v, ((const AccUser*)self->data)->uid);
     base->last_edit_timestamp = ACC_LAST_EDIT;
     memcpy(base->nickname, u->nickname, strlen(u->nickname)); /* 32 bytes at most: the field's, with no NUL then */
 }
-/* the user data (icon, colors) is all zeros: the default icon */
+/* the user data (icon, colours, Mii) a program stored, users.ini's user_data: zeros, the default icon, without one */
 static int nn_account_profile_IProfile_Get(SvcObj* self, IpcBuf user_data, nn_account_profile_ProfileBase* base) {
-    memset(GP(user_data.addr), 0, (size_t)user_data.size);
+    const SnxUser* u = acc_profile_user(self);
+    R_UNLESS(u, ACC_INVALID_USER_ID); /* deleted since (acc:su 203): rEden answers its profile manager's failure */
+    memcpy(GP(user_data.addr), u->user_data,
+           (size_t)(user_data.size < sizeof u->user_data ? user_data.size : sizeof u->user_data));
     acc_profile_base(self, base);
     R_SUCCEED();
 }
 static int nn_account_profile_IProfile_GetBase(SvcObj* self, nn_account_profile_ProfileBase* base) {
+    R_UNLESS(acc_profile_user(self), ACC_INVALID_USER_ID);
     acc_profile_base(self, base);
     R_SUCCEED();
 }
@@ -204,11 +218,13 @@ static u32 acc_picture(void) {
 /* GetImageSize tells the size LoadImage writes, so a game reserves what it gets: the user's own picture
    (users/<uid>.jpg), else Wimsy */
 static int nn_account_profile_IProfile_GetImageSize(SvcObj* self, u32* size) {
-    if (!snx_users_picture(acc_profile_user(self), size)) *size = acc_picture();
+    const SnxUser* u = acc_profile_user(self);
+    if (!u || !snx_users_picture(u, size)) *size = acc_picture(); /* a user deleted since: the default, as rEden */
     R_SUCCEED();
 }
 static int nn_account_profile_IProfile_LoadImage(SvcObj* self, IpcBuf image, u32* size) {
-    const unsigned char* jpeg = snx_users_picture(acc_profile_user(self), size);
+    const SnxUser* u = acc_profile_user(self);
+    const unsigned char* jpeg = u ? snx_users_picture(u, size) : NULL;
     if (!jpeg) {
         *size = acc_picture();
         jpeg = g_hle.acc.pic.d;
@@ -475,6 +491,279 @@ static int nn_account_IAccountServiceForAdministrator_GetPinCodeLength(SvcObj* s
     return nn_account_IAccountServiceForSystemService_GetPinCodeLength(self, length);
 }
 
-SvcObj* new_acc(void) { return nn_account_IAccountServiceForApplication_new(); }
-SvcObj* new_acc_system(void) { return nn_account_IAccountServiceForSystemService_new(); }
-SvcObj* new_acc_admin(void) { return nn_account_IAccountServiceForAdministrator_new(); }
+/* a user registered (SwitchBrew acc:su 200): a uid of random bits, an RFC 4122 version 4 UUID's as the launcher's
+   setup makes them (setup.c's snx_setup_uid), in the users from now and written by Complete */
+static int nn_account_IAccountServiceForAdministrator_BeginUserRegistration(SvcObj* self, nn_account_Uid* uid) {
+    unsigned char bytes[16];
+    char why[256];
+    u64 v[2];
+    (void)self;
+    do {
+        if (RAND_bytes(bytes, sizeof bytes) != 1) fatal("The host's random number generator failed");
+        v[0] = (snx_ld_be64(bytes) & ~(u64)0xF000) | 0x4000;
+        v[1] = (snx_ld_be64(bytes + 8) & ~((u64)3 << 62)) | ((u64)2 << 62);
+    } while (snx_users_find(v));
+    if (snx_users_begin(v, why, sizeof why)) {
+        WARN("acc: no user registered: %s\n", why);
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    acc_uid_put(uid->v, v);
+    R_SUCCEED();
+}
+/* the user registered, written to users.ini (and those registered before it); one there already changes nothing */
+static int nn_account_IAccountServiceForAdministrator_CompleteUserRegistration(SvcObj* self,
+                                                                               const nn_account_Uid* uid) {
+    const SnxUser* u = acc_user(uid);
+    char why[512];
+    (void)self;
+    R_UNLESS(u, ACC_INVALID_USER_ID);
+    if (!g_host.acc.users_dir[0]) {
+        WARN("acc: the user registered is not written: there is no users folder\n");
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    if (snx_users_save(g_host.acc.users_dir, (int)(u - g_users) + 1, why, sizeof why)) {
+        WARN("acc: the user registered is not written: %s\n", why);
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    R_SUCCEED();
+}
+
+/* path moved to to; done[] keeps it to be put back */
+static int acc_trash_move(const char* path, const char* to, char (*done)[2][FS_TREE_PATH_MAX], int* moved) {
+    if (snx_replace(path, to)) return -1;
+    snprintf(done[*moved][0], FS_TREE_PATH_MAX, "%s", path);
+    snprintf(done[*moved][1], FS_TREE_PATH_MAX, "%s", to);
+    ++*moved;
+    return 0;
+}
+/* A user deleted (SwitchBrew acc:su 203), as rEden's Core::Profiles::DeleteUser does it: into the Trash, trash/ of the
+   data folder, a folder of its own (user.<uid>.<UTC time>, a number after it rather than over one there): its
+   users.ini section, its picture and the folders of its saves this run reaches (fs_user_saves_take), each said where
+   it went; then the users after it a place up. The user playing is refused, as rEden refuses it in its frontends; a
+   move that fails puts back what moved and deletes nothing */
+static int nn_account_IAccountServiceForAdministrator_DeleteUser(SvcObj* self, const nn_account_Uid* uid) {
+    const SnxUser* u = acc_user(uid);
+    char hex[33], when[32], why[512], picture[FS_TREE_PATH_MAX], saves[2][FS_TREE_PATH_MAX],
+        done[3][2][FS_TREE_PATH_MAX];
+    char *data, *trash = NULL, *section = NULL, *place;
+    time_t now = time(NULL);
+    const struct tm* utc = gmtime(&now);
+    int number, moved = 0, n, i, rc = ACC_UPDATE_FAILED;
+    (void)self;
+    R_UNLESS(u, ACC_INVALID_USER_ID);
+    number = (int)(u - g_users) + 1;
+    if (u == snx_users_selected()) {
+        WARN("acc: user %d is not deleted: it is the one playing\n", number);
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    if (!g_host.acc.users_dir[0]) {
+        WARN("acc: user %d is not deleted: there is no users folder\n", number);
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    snx_users_uid_text(u->uid, hex);
+    data = snx_dirname(g_host.acc.users_dir);
+    if (!utc || !strftime(when, sizeof when, "%Y%m%d-%H%M%S", utc)) snprintf(when, sizeof when, "%lld", (long long)now);
+    for (i = 1; i < 100 && !trash; i++) {
+        place = i == 1 ? snx_format("%s/trash/user.%s.%s", data, hex, when)
+                       : snx_format("%s/trash/user.%s.%s-%d", data, hex, when, i);
+        if (place && !snx_path_exists(place))
+            trash = place;
+        else
+            free(place);
+    }
+    if (!trash || snx_mkdirs(trash)) {
+        WARN("acc: user %d is not deleted: no folder in %s/trash could be made\n", number, data);
+        goto done;
+    }
+    section = snx_format("[user%d]\nuid=%s\nnickname=%s\n", number, hex, u->nickname);
+    place = snx_path_join(trash, "users.ini");
+    n = !section || !place || snx_write_file(place, section, strlen(section));
+    free(place);
+    if (n) {
+        WARN("acc: user %d is not deleted: %s/users.ini could not be written\n", number, trash);
+        goto done;
+    }
+    snprintf(picture, sizeof picture, "%s/%s.jpg", g_host.acc.users_dir, hex);
+    if (snx_is_file(picture)) {
+        place = snx_format("%s/%s.jpg", trash, hex);
+        n = !place || acc_trash_move(picture, place, done, &moved);
+        free(place);
+        if (n) {
+            WARN("acc: user %d is not deleted: %s could not be moved to %s\n", number, picture, trash);
+            goto back;
+        }
+    }
+    n = fs_user_saves_take(u->uid, saves, 2);
+    for (i = 0; i < n; i++) {
+        place = snx_format("%s/save.%d", trash, i + 1);
+        if (!place || acc_trash_move(saves[i], place, done, &moved)) {
+            WARN("acc: user %d is not deleted: %s could not be moved to %s; the game sees those saves again at its "
+                 "next start\n",
+                 number, saves[i], place ? place : trash);
+            free(place);
+            goto back;
+        }
+        free(place);
+    }
+    if (snx_users_remove(g_host.acc.users_dir, number, why, sizeof why)) {
+        WARN("acc: user %d is not deleted: %s\n", number, why);
+        goto back;
+    }
+    for (i = 0; i < moved; i++) LOG("acc: %s is in the Trash now, %s\n", done[i][0], done[i][1]);
+    LOG("acc: user %d is deleted, into %s\n", number, trash);
+    rc = 0;
+    goto done;
+back:
+    for (i = moved - 1; i >= 0; i--)
+        if (snx_replace(done[i][1], done[i][0]))
+            WARN("acc: %s could not be put back from %s\n", done[i][0], done[i][1]);
+done:
+    if (rc && trash) { /* the Trash's folder made for it, with what went in it first */
+        place = snx_path_join(trash, "users.ini");
+        if (place) remove(place);
+        free(place);
+        snx_remove_empty_dir(trash);
+    }
+    free(section);
+    free(trash);
+    free(data);
+    return rc;
+}
+/* A user moved to place position, 0 the first (SwitchBrew acc:su 204), the users between a place over, the one playing
+   the same user. A place past the users or a uid no user has changes nothing and succeeds, as rEden's ProfileManager
+   SetUserPosition does, said in the log; users.ini that can't be written is a failure */
+static int nn_account_IAccountServiceForAdministrator_SetUserPosition(SvcObj* self, u64 position,
+                                                                      const nn_account_Uid* uid) {
+    const SnxUser* u = acc_user(uid);
+    char why[512], hex[33];
+    u64 v[2];
+    int number;
+    (void)self;
+    if (!u) {
+        acc_uid_get(uid, v);
+        snx_users_uid_text(v, hex);
+        WARN("acc: no user moved: uid %s is no user's\n", hex);
+        R_SUCCEED();
+    }
+    if (position >= (u64)g_user_count) {
+        WARN("acc: no user moved: place %llu is past the %d users\n", (unsigned long long)position, g_user_count);
+        R_SUCCEED();
+    }
+    number = (int)(u - g_users) + 1;
+    if (!g_host.acc.users_dir[0] || snx_users_move(g_host.acc.users_dir, number, (int)position + 1, why, sizeof why)) {
+        WARN("acc: user %d is not moved to place %llu: %s\n", number, (unsigned long long)position,
+             g_host.acc.users_dir[0] ? why : "there is no users folder");
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    R_SUCCEED();
+}
+/* a user's profile to change (SwitchBrew acc:su 205): a user's only, a registered one's too */
+static int acc_editor_dispatch(SvcObj* o, IpcCtx* c);
+static int nn_account_IAccountServiceForAdministrator_GetProfileEditor(SvcObj* self, const nn_account_Uid* uid,
+                                                                       SvcObj** editor) {
+    (void)self;
+    R_UNLESS(acc_user(uid), ACC_INVALID_USER_ID);
+    *editor = acc_with(acc_for_user(nn_account_profile_IProfileEditor_new_data(g_hle.acc.users, g_hle.acc.user_next,
+                                                                               "acc profiles and managers"),
+                                    uid),
+                       acc_editor_dispatch);
+    R_SUCCEED();
+}
+/* ============================================================ IProfileEditor: IProfile's, and the profile stored */
+static int nn_account_profile_IProfileEditor_Get(SvcObj* self, IpcBuf user_data, nn_account_profile_ProfileBase* base) {
+    return nn_account_profile_IProfile_Get(self, user_data, base);
+}
+static int nn_account_profile_IProfileEditor_GetBase(SvcObj* self, nn_account_profile_ProfileBase* base) {
+    return nn_account_profile_IProfile_GetBase(self, base);
+}
+static int nn_account_profile_IProfileEditor_GetImageSize(SvcObj* self, u32* size) {
+    return nn_account_profile_IProfile_GetImageSize(self, size);
+}
+static int nn_account_profile_IProfileEditor_LoadImage(SvcObj* self, IpcBuf image, u32* size) {
+    return nn_account_profile_IProfile_LoadImage(self, image, size);
+}
+/* The profile a program stores, written as it gives it: the nickname of the base's 32 bytes (strncpy's, as SwitchBrew's
+   ProfileBase says), which the service's rule takes (users.c), the UserData's 0x80 bytes, and with an image, the
+   picture. A user only registered goes into users.ini with it, as rEden's ProfileManager writes profiles.dat at a
+   Store. A base of another user's uid is refused, where rEden takes the uid too: the user would lose its saves and
+   picture, which go by uid. The timestamp is not kept: users.ini has no key for it */
+static int acc_store(SvcObj* self, const nn_account_profile_ProfileBase* base, IpcBuf user_data, const IpcBuf* image) {
+    const AccUser* who = (const AccUser*)self->data;
+    const SnxUser* u = snx_users_find(who->uid);
+    char nickname[SNX_USERS_NICKNAME + 1], why[512];
+    unsigned char data[SNX_USERS_DATA];
+    u64 uid[2];
+    int number;
+    R_UNLESS(u, ACC_INVALID_USER_ID);
+    R_UNLESS(user_data.size >= SNX_USERS_DATA, ACC_INVALID_LENGTH);
+    R_UNLESS(!image || image->size <= SNX_ACC_PICTURE_MAX, ACC_INVALID_LENGTH);
+    acc_uid_get(&base->uid, uid);
+    R_UNLESS(uid[0] == who->uid[0] && uid[1] == who->uid[1], ACC_INVALID_USER_ID);
+    memcpy(nickname, base->nickname, SNX_USERS_NICKNAME);
+    nickname[SNX_USERS_NICKNAME] = 0;
+    memcpy(data, GP(user_data.addr), sizeof data);
+    number = (int)(u - g_users) + 1;
+    if (!g_host.acc.users_dir[0]) {
+        WARN("acc: the profile of user %d is not stored: there is no users folder\n", number);
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    if ((strcmp(nickname, u->nickname) && snx_users_rename(g_host.acc.users_dir, number, nickname, why, sizeof why)) ||
+        (memcmp(data, u->user_data, sizeof data) &&
+         snx_users_set_data(g_host.acc.users_dir, number, data, why, sizeof why)) ||
+        (image && snx_users_set_picture(g_host.acc.users_dir, number, GP(image->addr), (uint32_t)image->size, why,
+                                        sizeof why)) ||
+        snx_users_save(g_host.acc.users_dir, number, why, sizeof why)) {
+        WARN("acc: the profile of user %d is not stored: %s\n", number, why);
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    R_SUCCEED();
+}
+static int nn_account_profile_IProfileEditor_Store(SvcObj* self, const nn_account_profile_ProfileBase* base,
+                                                   IpcBuf user_data) {
+    return acc_store(self, base, user_data, NULL);
+}
+static int nn_account_profile_IProfileEditor_StoreWithImage(SvcObj* self, const nn_account_profile_ProfileBase* base,
+                                                            IpcBuf user_data, IpcBuf image) {
+    return acc_store(self, base, user_data, &image);
+}
+
+void acc_playing(u64 uid[2], char* nickname, size_t size) {
+    const SnxUser* u;
+    pm_lock(&g_host.acc.users_lk);
+    u = snx_users_selected();
+    if (uid) {
+        uid[0] = u->uid[0];
+        uid[1] = u->uid[1];
+    }
+    if (size) snprintf(nickname, size, "%s", u->nickname);
+    pm_unlock(&g_host.acc.users_lk);
+}
+/* every command of an object that reads or changes the users, under g_host.acc.users_lk: acc:su changes them while the
+   game's threads read them */
+static int acc_locked(SvcObj* o, IpcCtx* c, int (*dispatch)(SvcObj*, IpcCtx*)) {
+    int rc;
+    pm_lock(&g_host.acc.users_lk);
+    rc = dispatch(o, c);
+    pm_unlock(&g_host.acc.users_lk);
+    return rc;
+}
+static int acc_u0_dispatch(SvcObj* o, IpcCtx* c) {
+    return acc_locked(o, c, nn_account_IAccountServiceForApplication_dispatch);
+}
+static int acc_u1_dispatch(SvcObj* o, IpcCtx* c) {
+    return acc_locked(o, c, nn_account_IAccountServiceForSystemService_dispatch);
+}
+static int acc_su_dispatch(SvcObj* o, IpcCtx* c) {
+    return acc_locked(o, c, nn_account_IAccountServiceForAdministrator_dispatch);
+}
+static int acc_profile_dispatch(SvcObj* o, IpcCtx* c) { return acc_locked(o, c, nn_account_profile_IProfile_dispatch); }
+static int acc_editor_dispatch(SvcObj* o, IpcCtx* c) {
+    return acc_locked(o, c, nn_account_profile_IProfileEditor_dispatch);
+}
+static SvcObj* acc_with(SvcObj* o, int (*dispatch)(SvcObj*, IpcCtx*)) {
+    o->dispatch = dispatch;
+    return o;
+}
+SvcObj* new_acc(void) { return acc_with(nn_account_IAccountServiceForApplication_new(), acc_u0_dispatch); }
+SvcObj* new_acc_system(void) { return acc_with(nn_account_IAccountServiceForSystemService_new(), acc_u1_dispatch); }
+SvcObj* new_acc_admin(void) { return acc_with(nn_account_IAccountServiceForAdministrator_new(), acc_su_dispatch); }

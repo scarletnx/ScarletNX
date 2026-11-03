@@ -44,6 +44,27 @@ static void location_names(uint8_t* out, const char* name) {
     for (unsigned i = 0; i < 16; ++i)
         for (unsigned j = 0; name[j]; ++j) out[i * 0x80 + j * 2] = (uint8_t)name[j];
 }
+uint32_t snx_ctr_cfg_username(uint16_t out[SNX_CTR_CFG_USERNAME]) {
+    const SnxUser* user = snx_users_selected();
+    /* the nickname is UTF-8 (users.c checks it is), up to ten UTF-16 units here: a character past them, or whose
+       surrogate pair would not fit, is left out */
+    const unsigned char* name = (const unsigned char*)(user && user->nickname[0] ? user->nickname : "Player");
+    uint32_t units = 0;
+    while (*name && units < SNX_CTR_CFG_USERNAME) {
+        unsigned c = *name, follow = c < 0x80 ? 0 : c < 0xE0 ? 1 : c < 0xF0 ? 2 : 3, k;
+        c = follow ? c & (0x3Fu >> follow) : c;
+        for (k = 1; k <= follow && name[k]; ++k) c = c << 6 | (name[k] & 0x3Fu);
+        name += k;
+        if (c >= 0x10000) {
+            if (units > SNX_CTR_CFG_USERNAME - 2) break;
+            c -= 0x10000;
+            out[units++] = (uint16_t)(0xD800 + (c >> 10));
+            c = 0xDC00 + (c & 0x3FF);
+        }
+        out[units++] = (uint16_t)c;
+    }
+    return units;
+}
 /* the block's default and its size, 0 for a block with none (cfg_defaults.cpp) */
 static uint32_t block(SnxCtrProcess* p, uint32_t id, uint8_t out[0x800]) {
     memset(out, 0, 0x800);
@@ -66,11 +87,9 @@ static uint32_t block(SnxCtrProcess* p, uint32_t id, uint8_t out[0x800]) {
         case 0x00090001: return 8;             /* ConsoleUniqueID2 */
         case 0x00090002: return 4;             /* ConsoleUniqueID3 */
         case 0x000a0000: {                     /* Console username: ten UTF-16 units, then two zero words. */
-            const SnxUser* user = snx_users_selected();
-            /* ScarletNX validates profile names as ASCII. The 3DS limit is ten
-               characters, shorter than the launcher's twenty-character limit. */
-            const char* name = user && user->nickname[0] ? user->nickname : "Player";
-            for (unsigned i = 0; i < 10 && name[i]; ++i) out[i * 2] = (uint8_t)name[i];
+            uint16_t name[SNX_CTR_CFG_USERNAME];
+            uint32_t n = snx_ctr_cfg_username(name);
+            for (uint32_t i = 0; i < n; ++i) snx_st_le16(out + i * 2, name[i]);
             return 0x1c;
         }
         case 0x000a0001: out[0] = 11, out[1] = 7; return 2; /* Birthday: November 7th */

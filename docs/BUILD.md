@@ -414,7 +414,8 @@ ctest --test-dir build/headless-vk -R vulkan_headless --output-on-failure
 
 The test uses synthetic pixels, not a game. It checks offscreen submissions, frame recycling, cropping,
 readback hashes and PPM contents without WSI. Validation requires the Khronos validation layer to be installed.
-`SNX_TEST_VULKAN` is off by default so ordinary unit tests do not require an ICD.
+It takes the runtime's settings as `--KEY=VALUE` (`--vk_memory=2`, `--memory_traps=2`) and stops on any
+other argument. `SNX_TEST_VULKAN` is off by default so ordinary unit tests do not require an ICD.
 
 A cross-built driver extracts too: hactool is part of it. The recompiler still requires LLVM development
 files for the target. `SNX_LLVM_CONFIG` must run on the build machine and describe that target installation,

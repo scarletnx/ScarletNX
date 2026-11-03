@@ -6,6 +6,8 @@
 #include "nx/hle/services/services_int.h"
 #include "nx/gpu/gpu.h"
 #include "nx/hle/hle.c"
+#include "nx/runtime/nce/nce.h"
+#include <errno.h>
 #include <openssl/evp.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -32,15 +34,11 @@ void pm_init(PMutex* m) { CHECK(!pthread_mutex_init(&m->l, NULL)); }
 void pm_lock(PMutex* m) { CHECK(!pthread_mutex_lock(&m->l)); }
 void pm_unlock(PMutex* m) { CHECK(!pthread_mutex_unlock(&m->l)); }
 void pm_lock_announce(PMutex* m, const char* name) { (void)m, (void)name; }
-/* this host's pages, or SNX_HOST_PAGE's larger ones (ldr_service_64k_pages), as plat_posix.c */
+/* this host's pages, or the larger ones of --host_page=N (ldr_service_64k_pages), as plat_posix.c */
+static u64 g_host_page;
 u64 plat_vm_page(void) {
     u64 page = (u64)sysconf(_SC_PAGESIZE);
-    const char* forced = getenv("SNX_HOST_PAGE");
-    if (forced) {
-        CHECK(strtoull(forced, NULL, 0) > page);
-        page = strtoull(forced, NULL, 0);
-    }
-    return page;
+    return g_host_page > page ? g_host_page : page;
 }
 /* aligned to plat_vm_page, a page more reserved for that */
 u8* plat_vm_reserve(u64 size) {
@@ -48,6 +46,16 @@ u8* plat_vm_reserve(u64 size) {
     void* p = mmap(NULL, size + page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     return p == MAP_FAILED ? NULL : (u8*)(((uintptr_t)p + page - 1) & ~(uintptr_t)(page - 1));
 }
+void plat_vm_track(u8* p, u64 size) { (void)p, (void)size; } /* no tracking here */
+/* mem.c's reservation at the guest's own addresses, which nce_wanted's 0 never takes: an AArch64 Linux host links it */
+u8* plat_vm_reserve_at(u64 addr, u64 size) {
+    (void)addr, (void)size;
+    errno = ENOSYS;
+    return NULL;
+}
+/* nce.c, whose NCE no game here is of: mem.c's reservation asks it first, and ldr:ro gives it each NRO it maps */
+int nce_wanted(void) { return 0; }
+void nce_code_added(u64 base, u64 text_size) { (void)base, (void)text_size; }
 int plat_vm_commit(u8* p, u64 size) {
     if (fail_commit) {
         fail_commit = 0;
@@ -349,7 +357,12 @@ static void limits(void) {
     svcobj_unref(o);
     CHECK(!mem_heap_set(0x10000, 0x200000));
 }
-int main(void) {
+int main(int argc, char** argv) {
+    if (argc > 1) {
+        CHECK(argc == 2 && !strncmp(argv[1], "--host_page=", 12));
+        g_host_page = strtoull(argv[1] + 12, NULL, 0);
+        CHECK(g_host_page > (u64)sysconf(_SC_PAGESIZE) && !(g_host_page & (g_host_page - 1)));
+    }
     hle_init();
     mem_init();
     CHECK(!mem_heap_set(0x10000, 0x10000));

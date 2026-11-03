@@ -2,15 +2,25 @@
    Copyright 2026 the ScarletNX contributors */
 /* The POSIX platform layer (platform/plat_posix.c, with plat_sdl.c): written-page tracking, decommit zeroing, pread,
    file maps, replace, folders, timed waits and threads. Written-page tracking needs Linux 6.7 for userfaultfd's;
-   SNX_WW=signal (and every host without it) tracks by protection, and SNX_NO_WW must make the scan say -1 */
+   write_tracking=1 (and every host without it) tracks by protection, and write_tracking=2 must make the scan say -1.
+   The arguments: the folder for its files, then Debug settings as the runtime takes them, --key=value */
 #include "nx/runtime/platform/plat_posix.c"
+#include "nx/runtime/ini.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <sys/wait.h>
 
+static char g_log[1024]; /* the log's lines while g_log_on, as far as they fit */
+static int g_log_on;
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
+    size_t n = g_log_on ? strlen(g_log) : 0;
     (void)lvl;
+    if (g_log_on) {
+        va_start(ap, fmt);
+        vsnprintf(g_log + n, sizeof g_log - n, fmt, ap);
+        va_end(ap);
+    }
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
@@ -23,6 +33,8 @@ void fatal(const char* fmt, ...) {
     exit(2);
 }
 void log_crash_mode(void) {}
+/* nce.c, whose NCE no game here is of: the crash handler gives it the signal's context */
+void nce_crash_context(const void* context) { (void)context; }
 static int g_reports;     /* crash reports made */
 static int g_report_exit; /* a child's: a report ends it with 42, which its parent checks */
 void crash_report(void* host_pc, void* fault, int sig) {
@@ -239,8 +251,10 @@ static void test_guest_memory(const char* dir) {
     printf("written-page tracking\n");
     g_base = plat_vm_reserve((u64)1 << 30);
     CHECK(g_base != NULL, "no reservation");
+    CHECK(!((uintptr_t)g_base & (SNX_PLAT_PAGE_MAX - 1)), "the reservation is not aligned to SNX_PLAT_PAGE_MAX");
+    plat_vm_track(g_base, (u64)1 << 30);
     CHECK(!plat_vm_commit(g_base, 64 * 4096), "commit failed");
-    if (getenv("SNX_NO_WW") || plat_ww_scan(g_base, 4096, on_written) < 0) {
+    if (g_settings.write_tracking == 2 || plat_ww_scan(g_base, 4096, on_written) < 0) {
         printf("written-page tracking unavailable here: only checking that it says so\n");
         CHECK(scan() == ~0ull, "a scan without tracking did not fail");
     } else {
@@ -279,6 +293,35 @@ static void test_guest_memory(const char* dir) {
     CHECK(!plat_vm_commit(g_base, 64 * 4096) && g_base[9 * 4096] == 0, "memory not zero after decommit");
 }
 
+/* host_page: the host's page, or a larger power of two up to SNX_PLAT_PAGE_MAX; another value is said once, with the
+   page the runtime works in instead */
+static void test_host_page(void) {
+    u64 host = (u64)sysconf(_SC_PAGESIZE);
+    int given = g_settings.host_page_size;
+    char want[256];
+    printf("host_page\n");
+    g_settings.host_page_size = 0;
+    CHECK(plat_vm_page() == host, "host_page=0 is not the host's page");
+    g_settings.host_page_size = (int)host;
+    CHECK(plat_vm_page() == host, "host_page as the host's page is not that page");
+    if (host * 16 <= SNX_PLAT_PAGE_MAX) {
+        g_settings.host_page_size = (int)(host * 16);
+        CHECK(plat_vm_page() == host * 16, "a larger power of two is not the page");
+    }
+    g_log_on = 1;
+    g_settings.host_page_size = (int)(host * 3);
+    CHECK(plat_vm_page() == host, "a page of three host pages is taken");
+    snprintf(want, sizeof want,
+             "memory: host_page=%llu is not a power of two from the host's page, %llu bytes, to 1048576: the runtime "
+             "works in %llu-byte pages\n",
+             (unsigned long long)host * 3, (unsigned long long)host, (unsigned long long)host);
+    CHECK(!strcmp(g_log, want), "host_page's refusal does not name the value given and the page in effect");
+    g_log[0] = 0;
+    CHECK(plat_vm_page() == host && !g_log[0], "host_page's refusal is said again");
+    g_log_on = 0;
+    g_settings.host_page_size = given;
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     char path[1200], tmp[1200], sub[1200];
@@ -292,6 +335,21 @@ int main(int argc, char** argv) {
     u64 t;
 
     setvbuf(stdout, NULL, _IONBF, 0); /* each section says it started, so a crash shows where it happened */
+    for (i = 2; i < argc; i++) {
+        const char* eq = strchr(argv[i], '=');
+        char key[64];
+        if (strncmp(argv[i], "--", 2) || !eq || (size_t)(eq - argv[i] - 2) >= sizeof key) {
+            printf("not --key=value: %s\n", argv[i]);
+            return 2;
+        }
+        snprintf(key, sizeof key, "%.*s", (int)(eq - argv[i] - 2), argv[i] + 2);
+        if (!ini_find(g_debug_ini, key)) {
+            printf("not a Debug setting: %s\n", argv[i]);
+            return 2;
+        }
+        ini_read(ini_find(g_debug_ini, key), eq + 1);
+    }
+    test_host_page();
     if (sysconf(_SC_PAGESIZE) == 4096)
         test_guest_memory(dir);
     else /* plat_vm_reserve refuses the host: guest memory needs 4 KiB pages, and Apple silicon's are 16 KiB */

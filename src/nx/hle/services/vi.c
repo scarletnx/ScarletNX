@@ -678,8 +678,8 @@ static int nn_visrv_sf_ISystemDisplayService_GetDisplayLogicalResolution(SvcObj*
 }
 static int nn_visrv_sf_ISystemDisplayService_GetDisplayMode(SvcObj* self, u64 display_id, nn_vi_DisplayModeInfo* mode) {
     (void)self, (void)display_id;
-    mode->width = g_settings.tv_mode ? 1920 : VI_WIDTH;
-    mode->height = g_settings.tv_mode ? 1080 : VI_HEIGHT;
+    mode->width = snx_tv_mode() ? 1920 : VI_WIDTH;
+    mode->height = snx_tv_mode() ? 1080 : VI_HEIGHT;
     mode->refresh_rate = (float)VI_REFRESH_HZ;
     mode->unknown = 0;
     R_SUCCEED();

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""Check source include ownership and optional CMake Graphviz dependency closure."""
+"""Check source include ownership, the environment variables src/ reads, and optional CMake Graphviz dependency
+closure."""
 
 import argparse
 import json
@@ -16,6 +17,8 @@ BOUNDARIES = {
     '3ds': {'3ds', 'common'},
     'vita': {'vita', 'common'},
     'agb': {'agb', 'common'},
+    # GLSL ES into SPIR-V: the C library only, for any backend to link
+    'glslc': {'glslc'},
     # scarletnx's main, every driver the build has: their entries, by the name it runs under
     'multicall': {'multicall', 'nx', 'gnuabi', '3ds', 'vita', 'agb', 'gui', 'common'},
 }
@@ -63,6 +66,152 @@ def check_sources(repo):
     for legacy in ('runtime', 'scarletnx'):
         if any(path.suffix in {'.c', '.h', '.cpp', '.hpp', '.inc'} for path in (repo / legacy).rglob('*')):
             errors.append(f'legacy source files still present: {legacy}/')
+    return errors
+
+
+# The environment variables the code in src/ reads: the system's, SDL's and the package's (CLAUDE.md, "Settings, not
+# environment variables, in src/"). An option of a program in src/ is a setting of src/nx/runtime/settings.txt, or a
+# command-line option of a driver with no settings table
+ENV_SYSTEM = {
+    'HOME',
+    'USERPROFILE',
+    'APPDATA',
+    'PATH',
+    'TMPDIR',
+    'LANG',
+    'APPIMAGE',
+    'APPDIR',
+    'SSL_CERT_FILE',
+    'SSL_CERT_DIR',
+    'SDL_GAMECONTROLLERCONFIG_FILE',
+}
+ENV_SYSTEM_PREFIXES = ('XDG_',)
+# The variables an older version read for what are settings or options now, still read for one version
+# (docs/DEPRECATIONS.md), each in the files named here alone. The change that removes one removes its row
+ENV_DEPRECATED = {
+    'SNX_WW': {'src/nx/runtime/deprecated_env.c'},
+    'SNX_NO_WW': {'src/nx/runtime/deprecated_env.c'},
+    'SNX_TRAPS': {'src/nx/runtime/deprecated_env.c'},
+    'SNX_NO_TRAPS': {'src/nx/runtime/deprecated_env.c'},
+    'SNX_HOST_PAGE': {'src/nx/runtime/deprecated_env.c', 'src/gnuabi/runtime/main.c'},
+    'SNX_ALIAS_CHECK': {'src/nx/runtime/deprecated_env.c'},
+    'SNX_DIRTY_CHECK': {'src/nx/runtime/deprecated_env.c'},
+    'SNX_LLVM_BRANCH_PROFILE': {
+        'src/nx/runtime/deprecated_env.c',
+        'src/nx/runtime/driver/recompile.c',
+        'src/gnuabi/runtime/main.c',
+    },
+    'SNX_3DS_UDS_PACKET_TRACE': {'src/3ds/runtime/main.c'},
+    'SNX_3DS_ROOM': {'src/3ds/services/uds.c'},
+    'SNX_3DS_ROOM_PASSWORD': {'src/3ds/services/uds.c'},
+    'SNX_3DS_NICKNAME': {'src/3ds/services/uds.c'},
+    'VITA_LOCKSTEP': {'src/vita/runtime/main.c'},
+    'VITA_LOCKSTEP_STEPS': {'src/vita/runtime/main.c'},
+    'SNX_GNU_STRACE': {'src/gnuabi/runtime/main.c'},
+    'SNX_GNU_SAMPLE': {'src/gnuabi/runtime/main.c'},
+    'SNX_LINUX_SYSROOT': {'src/gnuabi/runtime/main.c'},
+}
+# the calls that read one variable, and which argument names it (_dupenv_s: the third)
+ENV_READ = re.compile(
+    r'(?<![A-Za-z0-9_])(getenv|SDL_getenv|SDL_getenv_unsafe|secure_getenv|_wgetenv|_dupenv_s|_wdupenv_s|'
+    r'GetEnvironmentVariable[AW]?)\s*\('
+)
+ENV_NAME_ARGUMENT = {'_dupenv_s': 2, '_wdupenv_s': 2}
+ENV_LITERAL = re.compile(r'^(?:L|u8)?"([^"\\]*)"$')
+
+
+def without_comments(source, literals=True):
+    """source with each comment's characters blank and its newlines kept; string and character literals as they are,
+    or with literals=False their insides blank too"""
+    out, i, n = [], 0, len(source)
+    while i < n:
+        c = source[i]
+        if source.startswith('//', i):
+            end = source.find('\n', i)
+            end = n if end < 0 else end
+            out.append(' ' * (end - i))
+            i = end
+        elif source.startswith('/*', i):
+            end = source.find('*/', i + 2)
+            end = n if end < 0 else end + 2
+            out.append(''.join(ch if ch == '\n' else ' ' for ch in source[i:end]))
+            i = end
+        elif c in '"\'':
+            j = i + 1
+            while j < n and source[j] != c and source[j] != '\n':
+                j += 2 if source[j] == '\\' else 1
+            text = source[i : j + 1]
+            if not literals and len(text) > 1:
+                text = c + ' ' * (len(text) - 2) + text[-1]
+            out.append(text)
+            i = j + 1
+        else:
+            out.append(c)
+            i += 1
+    return ''.join(out)
+
+
+def call_arguments(source, start):
+    """the top-level arguments of the call whose ( is at start, each stripped"""
+    arguments, depth, i, begin = [], 0, start, start + 1
+    while i < len(source):
+        c = source[i]
+        if c in '"\'':
+            j = i + 1
+            while j < len(source) and source[j] != c:
+                j += 2 if source[j] == '\\' else 1
+            i = j
+        elif c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+            if not depth:
+                arguments.append(source[begin:i].strip())
+                return arguments
+        elif c == ',' and depth == 1:
+            arguments.append(source[begin:i].strip())
+            begin = i + 1
+        i += 1
+    return arguments
+
+
+def check_environment(repo):
+    """every read of an environment variable in src/ names one of ENV_SYSTEM, or a deprecated one in its own files"""
+    errors = []
+    src = repo / 'src'
+    for path in sorted(src.rglob('*')):
+        if path.suffix not in {'.c', '.h', '.cpp', '.hpp', '.inc'}:
+            continue
+        text = path.read_text(encoding='utf-8', errors='replace')
+        source = without_comments(text)
+        shown = path.relative_to(repo).as_posix()
+        for match in ENV_READ.finditer(without_comments(text, literals=False)):  # a call, not a string naming one
+            line = source.count('\n', 0, match.start()) + 1
+            call = match.group(1)
+            arguments = call_arguments(source, match.end() - 1)
+            index = ENV_NAME_ARGUMENT.get(call, 0)
+            literal = ENV_LITERAL.match(arguments[index]) if index < len(arguments) else None
+            if not literal:
+                errors.append(
+                    f'{shown}:{line}: {call} of a name that is not a string literal: name the variable, so this check '
+                    "can tell whether it is the system's"
+                )
+                continue
+            name = literal.group(1)
+            if name in ENV_SYSTEM or name.startswith(ENV_SYSTEM_PREFIXES):
+                continue
+            if shown in ENV_DEPRECATED.get(name, ()):
+                continue
+            where = (
+                f'deprecated, and read only in {", ".join(sorted(ENV_DEPRECATED[name]))}'
+                if name in ENV_DEPRECATED
+                else "not the system's, SDL's or the package's"
+            )
+            errors.append(
+                f'{shown}:{line}: {call}("{name}"): {name} is {where}. An option is a setting of '
+                'src/nx/runtime/settings.txt, or a command-line option of a driver with no settings table (CLAUDE.md, '
+                '"Settings, not environment variables, in src/")'
+            )
     return errors
 
 
@@ -428,7 +577,11 @@ def main():
     args = parser.parse_args()
     if args.sanitizers and not args.build:
         parser.error('--sanitizers checks the build tree --build names')
-    errors = check_sources(args.repo.resolve()) + check_include_flags(args.repo.resolve())
+    errors = (
+        check_sources(args.repo.resolve())
+        + check_include_flags(args.repo.resolve())
+        + check_environment(args.repo.resolve())
+    )
     if args.build:
         graph = args.build.resolve() / 'architecture-targets.dot'
         query = args.build.resolve() / '.cmake/api/v1/query/codemodel-v2'
@@ -470,7 +623,7 @@ def main():
     if errors:
         print('\n'.join(errors), file=sys.stderr)
         return 1
-    print('Runtime source boundaries and requested CMake dependency graph passed.')
+    print('Runtime source boundaries, the environment src/ reads and requested CMake dependency graph passed.')
     return 0
 
 

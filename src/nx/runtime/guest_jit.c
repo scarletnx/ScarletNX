@@ -210,7 +210,11 @@ void jit_init(void) {
     opt = '0';
 #else
     opt = g_settings.jit_optimization[0];
-    if (!opt || !strchr("0123sz", opt)) opt = '0'; /* an empty or hand-edited .ini */
+    /* ini_read takes any text that fits, as a hand-edited .ini has it; strchr finds an empty one's NUL */
+    if (!opt || !strchr("0123sz", opt)) {
+        opt = '2'; /* settings.txt's default, as a setting keeps its earlier value for one it does not take */
+        WARN("jit: jit_opt=%s is not 0, 1, 2, 3, s or z: it compiles at O%c\n", g_settings.jit_optimization, opt);
+    }
 #endif
     config.opt = opt;
     config.images = g_jit_images;

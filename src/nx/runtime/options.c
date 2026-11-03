@@ -8,6 +8,7 @@
 #include "common/utilities/ini_lines.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/ini.h"
@@ -34,6 +35,72 @@ void options_language_set(const IniOpt* o, const char* v) {
     long n = strtol(v, &end, 10);
     (void)o;
     if (end != v && (n < 0 || n >= set_language_count())) g_settings.language = 1;
+}
+
+/* ---- TV mode ---- */
+/* docked's choice, which the .ini keeps: 0 Off, 1 On, 2 Auto. g_settings.tv_mode holds the mode in effect, 0 or 1,
+   so every service reads it as it always has */
+static int g_tv_mode_choice = 1;
+static int g_tv_on_charger; /* the host's state at the last update: 1, 0 or -1 */
+static int g_tv_power_logged;
+static int g_tv_watch; /* 1 when the platform watches the power source, 0 when the fallback polls it */
+static int g_tv_first = 1;
+static u64 g_tv_poll_next; /* the fallback's next query, in plat_ns */
+/* a host with no watcher: rarely, since a charger is not a thing that changes every second */
+#define TV_POLL_NS (15ull * 1000000000ull)
+/* Auto picks TV mode unless the host runs on its battery. A host whose state cannot be read is on TV mode */
+static int tv_mode_now(void) {
+    if (g_tv_mode_choice != 2) return g_tv_mode_choice;
+    return plat_power_on_charger() != 0;
+}
+void options_tv_mode_set(const IniOpt* o, const char* v) {
+    char* end;
+    long n = strtol(v, &end, 10);
+    (void)o;
+    if (end == v) return;
+    g_tv_mode_choice = n < 0 ? 0 : n > 2 ? 2 : (int)n;
+    __atomic_store_n(&g_settings.tv_mode, tv_mode_now(), __ATOMIC_RELAXED);
+}
+void options_tv_mode_start(void) {
+    if (g_tv_mode_choice != 2) return; /* fixed On and Off need no watcher */
+    g_tv_watch = plat_power_watch() == 0;
+    g_tv_first = 1;
+    options_tv_mode_update();
+}
+void options_tv_mode_update(void) {
+    int mode, on, was;
+    if (g_tv_mode_choice != 2) return;
+    if (!g_tv_first) {
+        if (g_tv_watch) {
+            if (!plat_power_take_change()) return;
+        } else {
+            /* no watcher on this host: ask rarely, and nowhere else */
+            u64 now = plat_ns();
+            if (now < g_tv_poll_next) return;
+            g_tv_poll_next = now + TV_POLL_NS;
+        }
+    } else if (g_tv_watch) {
+        (void)plat_power_take_change(); /* the watcher's first event, already in the state below */
+    }
+    on = plat_power_on_charger();
+    mode = on != 0;
+    was = __atomic_load_n(&g_settings.tv_mode, __ATOMIC_RELAXED);
+    if (!g_tv_power_logged || on != g_tv_on_charger || mode != was) {
+        if (on > 0)
+            LOG("power: the host is on its charger: TV mode Auto picks %s\n", mode ? "TV mode" : "handheld mode");
+        else if (on == 0)
+            LOG("power: the host is on its battery: TV mode Auto picks %s\n", mode ? "TV mode" : "handheld mode");
+        else
+            LOG("power: the host's power state cannot be read: TV mode Auto picks TV mode\n");
+        g_tv_power_logged = 1;
+    }
+    g_tv_on_charger = on;
+    g_tv_first = 0;
+    if (!g_tv_watch) g_tv_poll_next = plat_ns() + TV_POLL_NS;
+    if (mode == was) return;
+    __atomic_store_n(&g_settings.tv_mode, mode, __ATOMIC_RELAXED);
+    am_display_mode_changed();
+    hid_mode_changed();
 }
 
 /* "game" in any case, or a number: 0 and below 1 unlimited, 10 to 1000 frames a second (clamped), and the values an
@@ -210,6 +277,15 @@ static const char* value_of(const IniOpt* o) {
     return e ? e->value : o->def;
 }
 
+const char* ini_deprecated_value(const char* key) {
+    const char* v = override_of(key);
+    const Entry* e;
+    if (!ini_deprecated(key)) return NULL;
+    if (v) return v;
+    e = store_find(key);
+    return e ? e->value : NULL;
+}
+
 void ini_override(const char* k, const char* v) {
     size_t n = strlen(k);
     int i;
@@ -223,6 +299,8 @@ void ini_override(const char* k, const char* v) {
     if (i == g_nover) memcpy(g_over[g_nover++].key, k, n + 1);
     g_over[i].value = v;
 }
+
+const char* ini_overridden(const char* k) { return override_of(k); }
 
 void ini_set(const char* k, const char* v) {
     size_t kn = strlen(k), vn = strlen(v);
@@ -440,12 +518,14 @@ void ini_open(const char* path) {
     ini_set_say(say_setting);
     for (i = 0; i < g_nover; i++)
         if (!snx_setting_known(g_over[i].key)) WARN("--%s is not a setting, so it does nothing\n", g_over[i].key);
+    options_old_environment();
     text = snx_read_file(g_path, &size);
     if (!text) snx_os_error(why, sizeof why);
     if (!text && snx_path_exists(g_path)) {
         WARN("settings: cannot read %s (%s): every setting takes its default, and the file is not written over\n",
              g_path, why);
         apply_all();
+        options_old_environment_say();
         debug_shown(0);
         g_started = 1;
         return;
@@ -458,6 +538,7 @@ void ini_open(const char* path) {
     n = pending_take(taken);
     say_deprecated();
     apply_all();
+    options_old_environment_say();
     debug_shown(0);
     if (!write_file()) pending_written(taken, n);
     g_started = 1;

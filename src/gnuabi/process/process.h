@@ -43,8 +43,11 @@ typedef struct GnuProcess {
 int gnu_random_bytes(void* destination, size_t size);
 int gnu_clock_gettime(int clock_id, int64_t* seconds, int64_t* nanoseconds);
 void gnu_sleep(int64_t seconds, int64_t nanoseconds);
-/* runtime.c: SNX_GNU_SAMPLE's watchdog for this process, once per host process */
+/* runtime.c: --sample-pc's watchdog for this process, once per host process (POSIX: Windows has none) */
 void gnu_start_sampler(GnuProcess* process);
+#ifndef _WIN32
+void gnu_sample_pc(int on); /* --sample-pc, before the guest starts */
+#endif
 /* A process, its program the file at host path path. sysroot: the host-backed namespace's (gnu_vfs_set_root), NULL
    for the isolated one. The JIT must be initialized (gnu_jit_init) before */
 int gnu_process_init(GnuProcess* process, const char* path, int argc, const char* const* argv,
@@ -58,6 +61,7 @@ void gnu_process_destroy(GnuProcess* process);
 void gnu_process_exit(GnuProcess* process, int status);
 void gnu_process_fault(GnuProcess* process, int signal, const char* reason);
 int64_t gnu_syscall(GnuProcess* process, uint64_t number, const uint64_t arguments[6]);
+void gnu_syscall_trace(int on); /* syscalls.c: --strace, each syscall on stderr; before the guest starts */
 /* spawn.c: processes (clone as fork and vfork, execve, wait4, waitid, kill), and pipes. false for another call */
 bool gnu_spawn_syscall(GnuProcess* process, uint64_t number, const uint64_t arguments[6], int64_t* result);
 /* execve's point of no return, at the top of the runtime: the old program goes, the new one is loaded */

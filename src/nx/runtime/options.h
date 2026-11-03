@@ -12,6 +12,12 @@
 
 /* --key=value: k's value for this run, over the file's, which keeps its own. Before ini_open; v is kept, not copied */
 void ini_override(const char* k, const char* v);
+const char* ini_overridden(const char* k); /* k's value for this run, NULL when nothing gave one */
+/* deprecated_env.c: the environment variables an older version read for settings the .ini has now
+   (docs/DEPRECATIONS.md). ini_open makes each one set this run's value for its setting as ini_override does, unless
+   the command line or a variable before it gives that key; then says each, with the value in effect */
+void options_old_environment(void);
+void options_old_environment_say(void);
 /* a value the game's menu set, already applied: written to the file at the next poll, even over an edit made meanwhile */
 void ini_set(const char* k, const char* v);
 /* every setting of the file's sections but the game's own (a control's place), a line each on stdout, nine fields
@@ -39,6 +45,16 @@ void ini_poll(int final);
 #define SNX_FPS_GAME (-1)
 extern int g_opt_fps;                              /* atomic: the game's threads read it */
 void fps_limit_text(int fps, char* out, size_t n); /* g_opt_fps as fps_limit's value: "game", "0", "30"... */
+
+/* The TV mode in effect now: 0 handheld, 1 TV (docked). docked's Auto asks the host's power state, and
+   options_tv_mode_update keeps g_settings.tv_mode at the mode it picks */
+static inline int snx_tv_mode(void) { return g_settings.tv_mode; }
+/* docked's set function: 0 Off, 1 On, 2 Auto, which picks the mode in effect now */
+void options_tv_mode_set(const IniOpt* o, const char* v);
+/* starts the host's power watcher and logs the mode Auto picks, once the window backend is up */
+void options_tv_mode_start(void);
+/* the watcher's change, each frame: the new mode, its events, and the log line when it changed */
+void options_tv_mode_update(void);
 /* ldn, read: local wireless over the LAN (ldn_mitm's protocol), through an Eden room, or off
    (hle/services/network/ldn.c) */
 enum { SNX_OPT_LDN_LAN, SNX_OPT_LDN_ROOM, SNX_OPT_LDN_OFF };

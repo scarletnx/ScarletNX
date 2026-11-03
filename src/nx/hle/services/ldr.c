@@ -10,6 +10,7 @@
 #include "hle/services/ldr.swipc.inc"
 #include "nx/runtime/guest_jit.h"
 #include <openssl/evp.h>
+#include "nx/runtime/nce/nce.h"
 
 #define RO_ERROR(d) RC(22, d)
 
@@ -134,6 +135,7 @@ static int ro_load_nro(RoState* s, u64 source, u64 size, u64 bss, u64 bss_size, 
     }
     slot->map = m;
     memcpy(slot->id, GP(m.base + 0x40), 32);
+    nce_code_added(m.base, text); /* before the game runs it: an SVC would be a system call of the host */
     *address = m.base;
     LOG("ldr:ro: mapped NRO at %llx (%llu bytes, %s)\n", (unsigned long long)m.base,
         (unsigned long long)(m.size + m.bss_size),

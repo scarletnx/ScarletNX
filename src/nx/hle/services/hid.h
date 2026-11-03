@@ -31,6 +31,8 @@ typedef struct {
 } PadState;
 
 void hid_update(void); /* the next samples in shared memory, touch screen included */
+/* the TV mode changed while the game runs: the handheld Npad's style set is written now */
+void hid_mode_changed(void);
 /* the number of connected players, and the Npad id of the first in *first_id */
 int hid_connected_players(u32* first_id);
 /* ---- HLE state in g_hle (hle.h) */

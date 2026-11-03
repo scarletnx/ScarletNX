@@ -41,7 +41,8 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | GUI menu icons (`src/gui/icons.hex`), drawn after Lucide 1.61.0's (some derived from Feather) | GPL-3.0-or-later, after Lucide's ISC and Feather's MIT (in `src/gui/FONT-NOTICE.txt`) |
 | GUI VGA BIOS font (SeaBIOS `vgafont16`, originally Joseph Gil's font collection) | Public domain |
 | GUI Latin letters past CP437 (GNU Unifont 18.0.01's 8x16 glyphs, `src/gui/unifont-latin.hex`, fitted to the VGA font) | GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1 |
-| GUI wide letters the languages show, as Chinese (GNU Unifont 18.0.01's 16x16 glyphs, `src/gui/unifont-wide.hex`) | GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1 |
+| GUI letters of game titles, the CJK and Hangul blocks (GNU Unifont 18.0.01's 16x16 and 8x16 glyphs, `src/gui/unifont-titles.hex`) | GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1 |
+| GUI wide letters the languages show past those blocks (GNU Unifont 18.0.01's 16x16 glyphs, `src/gui/unifont-wide.hex`) | GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1 |
 
 The GUI fonts' notices and pinned sources are preserved in
 [`src/gui/FONT-NOTICE.txt`](../src/gui/FONT-NOTICE.txt).
@@ -52,7 +53,7 @@ a source keep that source's copyright lines and license, most with the revision 
 
 | Where | From | License |
 | --- | --- | --- |
-| `src/nx/gpu/gpu.c` (safe reads of compute-inline payloads) and `src/nx/gpu/shader/spirv_translate.c` (constant geometry invocation information) | Citron, Zephyron's Princess Peach: Showtime! fixes in [`acfb1dcc1ad9adf25b960c4f8f25c5bf78849406`](https://github.com/citron-neo/emulator/commit/acfb1dcc1ad9adf25b960c4f8f25c5bf78849406), `video_core/dma_pusher.cpp` and `shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp`; original code copyright 2018 and 2021 yuzu Emulator Project | GPL-2.0-or-later |
+| `src/nx/gpu/gpu.c` (safe reads of compute-inline payloads) and `src/nx/gpu/shader/emit_thread.c` (constant geometry invocation information) | Citron, Zephyron's Princess Peach: Showtime! fixes in [`acfb1dcc1ad9adf25b960c4f8f25c5bf78849406`](https://github.com/citron-neo/emulator/commit/acfb1dcc1ad9adf25b960c4f8f25c5bf78849406), `video_core/dma_pusher.cpp` and `shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp`; original code copyright 2018 and 2021 yuzu Emulator Project | GPL-2.0-or-later |
 | `src/nx/runtime/driver/hactool/storage.c` and `storage.h` (the storages added to hactool) | LibHac, as Ryubing maintains it | MIT |
 | `src/3ds/gpu/`, `src/3ds/audio/`, `src/3ds/services/dsp.c`, `src/3ds/services/cfg.c` (the config blocks' defaults), `src/3ds/services/hid.c` (HID's samples, their layout and pace) | Azahar (Citra) | GPL-2.0-or-later |
 | `src/3ds/services/ldr.c` and `ldr.h` (ldr:ro), `cro.c` and `cro.h` (the CRO format, its relocations, imports and exports) | Azahar (Citra) at `a4b335e`: `src/core/hle/service/ldr_ro/ldr_ro.cpp` and `ldr_ro.h`, `cro_helper.cpp` and `cro_helper.h`; original code copyright 2014 to 2025 Citra Emulator Project / Azahar Emulator Project | GPL-2.0-or-later |
@@ -61,7 +62,9 @@ a source keep that source's copyright lines and license, most with the revision 
 | `src/vita/hle/ngs.c` (SceNgs's voices, players, patches and master buss, the voice states and the parameter blocks) | Vita3K (`modules/SceNgsUser/SceNgs.cpp`, `ngs/`) | GPL-2.0-or-later |
 | `hevag_decode` and `hevag_coefficients` in `src/vita/hle/ngs.c` (HE-ADPCM) | Vita3K (`codec/src/pcm.cpp`), after vgmstream's HEVAG decoder | GPL-2.0-or-later, vgmstream's ISC-style license |
 | `src/vita/hle/` (the NIDs and the error codes) | vita-headers (`db/`, `include/psp2/`) | MIT |
+| `src/nx/runtime/nce/nce_patch.c` (the instructions that NCE patches, and the ordered forms of the exclusives) | Eden and yuzu (`src/core/arm/nce/patcher.cpp`, `instructions.h`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/3ds/gpu/shader.c` and `shader.h` (the instruction fields) | nihstro | BSD-3-Clause |
+| `src/agb/` (the board and its memory, the APU, the PPU, the HLE BIOS, the cartridge and the runner: the files whose header names the mGBA contributors) | mGBA | MPL-2.0 |
 | `src/common/cpu/` (the recompiler's instruction semantics: `recompiler/llvm/ir_int.c`, `ir_ldst.c`, `ir_fpu.c`, `ir_vec.c`, `ir_vec_fp.c` and `ir_vec_crypto.c`, the integer, branch, system, load/store, scalar floating-point and AdvSIMD emitters ported from `translate-a64.c`'s `trans_*` functions, `gengvec.c`, `vec_helper.c` and `translate.c`'s `asimd_imm_const`, and the A32/T32 block compiler) | QEMU's `target/arm/tcg/` | LGPL-2.1-or-later |
 | `src/common/cpu/aarch64/decode/a64.decode` (the A64 encodings, unmodified, from commit `a19f59a`, which `tools/a64dec` generates the decoder from; [README](../src/common/cpu/aarch64/decode/README.md)) | QEMU's `target/arm/tcg/a64.decode` | LGPL-2.1-or-later |
 | `src/common/cpu/aarch64/` (`cpu.h`, `cpu_helpers.c` and `helpers/`, the generated code's FP, SIMD, integer and crypto helpers) | QEMU's `target/arm/` and its softfloat, with the SoftFloat-2a notice | LGPL-2.1-or-later, SoftFloat-2a, BSD |
@@ -99,9 +102,7 @@ packaged ([FAQ](https://github.com/pkgforge-dev/Anylinux-AppImages/blob/main/FAQ
 Installed license texts: `share/licenses/scarletnx/`. AppImage system-library licenses
 and package manifest: `share/licenses/`. Component license files contain the full terms.
 
-Community credits: [README](../README.md#special-thanks).
-
-Wimsy ([SVG metadata](../dist/wimsy.svg)): drawn by Liz, GPL-3.0-or-later.
+Wimsy, the mascot and the runtime's icon ([SVG metadata](../dist/wimsy.svg)): drawn by Liz, GPL-3.0-or-later.
 The splash's Fuddles ([SVG metadata](../dist/splash/wimsy-fuddles.svg)): Wimsy with Fuddles' tails, circuits and
 colours, by AO55 after Liz's Wimsy, GPL-3.0-or-later.
 
@@ -109,3 +110,14 @@ The 3DS UDS command layouts and encrypted beacon framing in `src/3ds/services/ud
 are adapted from Azahar's `nwm_uds.cpp` and `uds_beacon.cpp` at
 `18c7ff10604659edc8e82d86b7c772f6f709c466` (Citra/Azahar contributors, GPL-2.0-or-later).
 The ScarletNX-to-ScarletNX room transport is separate from Azahar's room protocol.
+
+## Special thanks
+
+- yuzu, Suyu, Torzu, Ryujinx, [Ryubing](https://git.ryujinx.app/ryubing/ryujinx) (Ryujinx's continuation), [Citron](https://git.citron-emu.org/citron/emulator) and [Eden](https://git.eden-emu.dev/eden-emu/eden).
+- [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)
+- LibHac.
+- [NeXium](https://nexium-emu.org/) for research and development.
+- [Switchbrew](https://switchbrew.org) for research.
+- [Azahar](https://github.com/azahar-emu/azahar) and Citra, for all of the 3DS emulation.
+- [Vita3K](https://github.com/Vita3K/Vita3K), for the PS Vita's GXM and shader translation, and [vita-headers](https://github.com/vitasdk/vita-headers) for its NIDs.
+- [mGBA](https://github.com/mgba-emu/mgba) as a direct reference for the AGB board.

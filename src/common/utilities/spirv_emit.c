@@ -1264,6 +1264,19 @@ uint32_t spv_emit_flush_subnormal(SpvEmitter* e, uint32_t f32_type, uint32_t u32
     return spv_emit_bitcast(e, f32_type, flushed);
 }
 
+/* PTX's add, sub, mul, fma and cvt .sat flush a NaN result to +0, and GLSL.std.450 leaves FClamp's result undefined for
+   a NaN. The NaN is found on the bits: without SignedZeroInfNanPreserve a driver may take no float for a NaN, and an
+   OpIsNan for false */
+uint32_t spv_emit_saturate(SpvEmitter* e, uint32_t f32_type, uint32_t u32_type, uint32_t bool_type, uint32_t glsl,
+                           uint32_t value) {
+    uint32_t zero = spv_emit_constant_u32(e, f32_type, 0), one = spv_emit_constant_u32(e, f32_type, 0x3f800000u);
+    uint32_t clamped = spv_emit_glsl_ternary(e, f32_type, glsl, SPV_GLSL_F_CLAMP, value, zero, one);
+    uint32_t magnitude = spv_emit_bitwise_and_u32(e, u32_type, spv_emit_bitcast(e, u32_type, value),
+                                                  spv_emit_constant_u32(e, u32_type, 0x7fffffffu));
+    uint32_t nan = spv_emit_u_less(e, bool_type, spv_emit_constant_u32(e, u32_type, 0x7f800000u), magnitude);
+    return spv_emit_select(e, f32_type, nan, zero, clamped);
+}
+
 uint32_t spv_emit_bool_not(SpvEmitter* e, uint32_t bool_type, uint32_t value) {
     uint32_t id = spv_emit_id(e);
     instruction(&e->functions, SPV_OP_LOGICAL_NOT, 4);

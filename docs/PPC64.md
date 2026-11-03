@@ -9,6 +9,7 @@
 * [Host pages larger than 4 KiB](#host-pages-larger-than-4-kib)
 * [What differs from the other hosts](#what-differs-from-the-other-hosts)
 * [Big-endian hosts](#big-endian-hosts)
+  * [The Switch runtime](#the-switch-runtime)
 * [The PowerPC 970 and POWER4](#the-powerpc-970-and-power4)
 
 ScarletNX builds for 64-bit PowerPC Linux from POWER8 on, and big-endian builds from the PowerPC 970 (the PowerMac
@@ -82,9 +83,10 @@ when mapped again, as on the console. The differences from a 4 KiB host:
 - The Linux runtime (`src/gnuabi/`) protects each host page as the most permissive of its guest pages, so a write to
   compiled code beside writable data in one host page isn't seen.
 
-`SNX_HOST_PAGE=16384` or `65536` in the environment makes any machine work in those pages, which is how the tests
-and CI check these paths on 4 KiB hosts (`ldr_service_64k_pages`, `gnuabi_memory_64k_pages`,
-`nx_runtime_homebrew_64k_pages`); `memory_accounting` runs as on 16 and 64 KiB hosts by itself.
+The runtime's setting `host_page=16384` or `65536` (`scarletnx-gnuabi --host-page=N`) makes any machine work in those
+pages, which is how the tests and CI check these paths on 4 KiB hosts (`ldr_service_64k_pages`,
+`nx_runtime_homebrew_64k_pages`, `gnuabi_memory_64k_pages`); `memory_accounting` runs as on 16 and 64 KiB hosts by
+itself.
 
 ## What differs from the other hosts
 

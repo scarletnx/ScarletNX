@@ -2,6 +2,31 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # NVN reference
 
+## Index
+
+* [Status and direction](#status-and-direction)
+  * [Why the first replay was abandoned](#why-the-first-replay-was-abandoned)
+* [What remains in the tree](#what-remains-in-the-tree)
+  * [GPU compatibility coverage](#gpu-compatibility-coverage)
+* [Measured against the game's driver](#measured-against-the-games-driver)
+  * [Texture storage answers](#texture-storage-answers)
+  * [What the first runs found (one game, SDK NVN 55.15)](#what-the-first-runs-found-one-game-sdk-nvn-5515)
+* [32-bit games](#32-bit-games)
+* [A recording written over while it is submitted](#a-recording-written-over-while-it-is-submitted)
+* [Control memory, counted as the driver writes it](#control-memory-counted-as-the-driver-writes-it)
+* [Observing NVN calls](#observing-nvn-calls)
+* [Queue and submission observations](#queue-and-submission-observations)
+* [Command buffer layout (two games' SDK observations)](#command-buffer-layout-two-games-sdk-observations)
+* [Other SDK object layouts](#other-sdk-object-layouts)
+* [Shader blobs](#shader-blobs)
+* [Constant buffer banks](#constant-buffer-banks)
+* [Maxwell methods and macros observed](#maxwell-methods-and-macros-observed)
+* [NVN formats](#nvn-formats)
+* [Per-device and per-submission state](#per-device-and-per-submission-state)
+* [Emulator fixes kept from the investigation](#emulator-fixes-kept-from-the-investigation)
+* [Techniques and pitfalls](#techniques-and-pitfalls)
+* [References](#references)
+
 Switch games draw through NVN, NVIDIA's graphics API, which runs as guest code. On the console it writes Maxwell
 pushbuffers and submits them through nvdrv. ScarletNX runs the game's NVN calls itself (`src/nx/gpu/nvn/`): the loader
 (`nvn_loader.c`) takes every NVN function the game resolves, the queue replays its recordings on the GPU thread
@@ -96,6 +121,12 @@ drivers' code (NVN 12.3 and 55.15, the same rules):
 - The ZCull area: 0 for a format without depth bits (stencil only counts with ZCULL_SUPPORT_STENCIL). Else 0x20 bytes
   for each 32x32 tile of each layer, plus 0xE0 of headers (nvdrv's ZCULL_GET_INFO answer).
 - A multisampled or rectangle texture has one level, whatever the builder says.
+- A SPARSE block-linear texture is mapped in 64 KiB tiles of the standard shapes (2D 256x256 to 64x64 blocks, 3D
+  64x32x32 to 16x16x16, by the block's bytes): its blocks are as high and deep as the tile, a level at least a tile
+  wide, high and deep has rows of whole tiles, and the storage is whole tiles. Each page is then one tile, the tiles
+  across, down and deep, where the game maps it, whether or not the texture ends inside its last tile across. Its
+  texture header gives the tile's GOBs across (word 3 bits 10-12, log2), as the driver writes it, and the renderer
+  pads the same rows with it.
 
 The layout (`nvn_tex_layout`) stays the texture's extent, which `tests/nvn_tex_storage.c` keeps inside the answered
 size over targets, formats, sizes, levels, samples and flags. The verify mode's storage sweep ran the driver's
@@ -255,7 +286,7 @@ segments, then a 58-word queue tail that writes the window origin. The queue pac
 backing, not from the command pool the game supplied. The recorded segments' GPU addresses follow from the command
 buffer's chunk fields (next section).
 
-## Command buffer layout (Catherine USA v2.0 and TotK v1.0.0 SDK observations)
+## Command buffer layout (two games' SDK observations)
 
 `NVNcommandBuffer` fields, from disassembly of the two SDKs:
 

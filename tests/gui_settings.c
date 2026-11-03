@@ -94,11 +94,12 @@ int main(int argc, char** argv) {
     assert(!tracy || (!strcmp(s.keys[3].section, "Launch") && !strcmp(s.values[3].key, "tracy_capture") &&
                       words(&s.keys[3]) == 2 && strstr(s.keys[3].about, "PATH")));
     assert(!gui_settings_extract(&s)); /* off: a dump read in place */
-    /* the recompiler's: none passed until picked, then --key=value; the optimization level takes 0 to 3 and z, the
+    /* the recompiler's: none passed at its default, then --key=value; the optimization level takes 0 to 3 and z, the
        LLVM batch full or ipo, the AOT threads a number (0 the cores), the unit size a number of instructions, the unit
        cache limit a number of GB (0 none), and LLVM Internals is a page of its own */
     assert(!strcmp(s.keys[opt].section, "Launch") && !strcmp(s.keys[opt].key, "Optimization level") &&
-           !strcmp(s.values[opt].key, "opt") && words(&s.keys[opt]) == 7 && !gui_settings_recompile(&s, options));
+           !strcmp(s.values[opt].key, "opt") && words(&s.keys[opt]) == 6 && !gui_settings_recompile(&s, options));
+    assert(gui_settings_set(&s, "opt", "2") && !gui_settings_recompile(&s, options)); /* the default: no pick */
     assert(gui_settings_set(&s, "opt", "z") && gui_settings_recompile(&s, options) == 1 && !strcmp(options[0], "--opt=z"));
     assert(!gui_settings_set(&s, "opt", "q") && gui_settings_set(&s, "opt", "s") &&
            gui_settings_set(&s, "aot_threads", "4"));
@@ -106,10 +107,11 @@ int main(int argc, char** argv) {
            !strcmp(options[1], "--aot_threads=4"));
     assert(!strcmp(s.keys[opt + 1].section, "Launch") && !strcmp(s.keys[opt + 1].key, "LLVM batch") &&
            !strcmp(s.values[opt + 1].key, "llvm_batch") && !strcmp(s.values[opt + 1].def, "full") &&
-           words(&s.keys[opt + 1]) == 3); /* full, ipo and not passed, as opt's six and one */
+           words(&s.keys[opt + 1]) == 2); /* full, the default, which is not passed, and ipo */
     assert(!gui_settings_set(&s, "llvm_batch", "fast") && gui_settings_set(&s, "llvm_batch", "ipo") &&
            gui_settings_recompile(&s, options) == 3 && !strcmp(options[1], "--llvm_batch=ipo") &&
-           !strcmp(options[2], "--aot_threads=4") && gui_settings_set(&s, "llvm_batch", ".ini"));
+           !strcmp(options[2], "--aot_threads=4") && !gui_settings_set(&s, "llvm_batch", ".ini") &&
+           gui_settings_set(&s, "llvm_batch", "full") && gui_settings_recompile(&s, options) == 2);
     assert(!strcmp(s.keys[opt + 3].section, "Launch") && !strcmp(s.keys[opt + 3].key, "Unit size") &&
            !strcmp(s.values[opt + 3].key, "unit_instructions") && !strcmp(s.values[opt + 3].def, "90000"));
     assert(gui_settings_set(&s, "unit_instructions", "20000") && gui_settings_recompile(&s, options) == 3 &&
@@ -117,28 +119,30 @@ int main(int argc, char** argv) {
     assert(!strcmp(s.keys[opt + 4].section, "Launch") && !strcmp(s.keys[opt + 4].key, "Unit cache limit") &&
            !strcmp(s.values[opt + 4].key, "unit_cache_gb") && strstr(s.keys[opt + 4].about, "0 = no limit"));
     assert(!strcmp(s.values[opt + 4].def, "0") &&
-           strstr(s.keys[opt + 4].about, "a tenth of its disk free")); /* no limit */
+           strstr(s.keys[opt + 4].about, "a tenth of its disk free, at most 10 GB")); /* no limit */
     assert(gui_settings_set(&s, "unit_cache_gb", "50") && gui_settings_recompile(&s, options) == 3 &&
            !strcmp(options[2], "--unit_cache_gb=50") && gui_settings_set(&s, "unit_cache_gb", ""));
     assert(!strcmp(s.keys[opt + 5].section, "Launch") && s.values[opt + 5].kind == GUI_SETTING_PAGE &&
            !strcmp(s.keys[opt + 5].key, "LLVM Internals"));
-    assert(gui_settings_set(&s, "opt", ".ini") && gui_settings_set(&s, "aot_threads", "") &&
+    assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "aot_threads", "") &&
            !gui_settings_recompile(&s, options));
     /* a game's setting alone, as R's recompile takes Debug's SLP vectorizer: once picked, and never a launcher's own */
     assert(!gui_settings_one(&s, "slp_vectorizer", options) && gui_settings_set(&s, "slp_vectorizer", "1"));
     assert(gui_settings_one(&s, "slp_vectorizer", options) == 1 && !strcmp(options[0], "--slp_vectorizer=1"));
     assert(gui_settings_set(&s, "opt", "z") && !gui_settings_one(&s, "opt", options) &&
-           gui_settings_set(&s, "opt", ".ini"));
-    assert(gui_settings_set(&s, "slp_vectorizer", ".ini") && !gui_settings_one(&s, "slp_vectorizer", options));
+           gui_settings_set(&s, "opt", "2"));
+    assert(gui_settings_set(&s, "slp_vectorizer", "0") && !gui_settings_one(&s, "slp_vectorizer", options));
     assert(!strcmp(s.keys[s.own].section, "Display") && !strcmp(s.keys[s.own].key, "docked"));
     assert(!strcmp(s.keys[s.own].about, "1 = TV mode") && !strcmp(key(&s, "fullscreen")->about, "1 = start in fullscreen"));
     assert(!strcmp(s.keys[s.count - 1].key, "log") && !strcmp(s.keys[s.count - 1].about, "Log detail"));
-    /* a setting with values goes round .ini and their words, named as the game's menu names it; the others are
-       typed, an older runtime's and one with a value missing its word among them */
+    /* a setting with values goes round their words, named as the game's menu names it, its default's among them; one
+       whose default has no word (an empty one) has .ini besides; the others are typed, an older runtime's and one
+       with a value missing its word among them */
     assert(!strcmp(key(&s, "controls")->key, "Show controls") && key(&s, "controls")->type == GUI_KEY_WORD);
-    assert(words(key(&s, "touch")) == 4 && !strcmp(key(&s, "touch")->key, "Touch screen"));
-    assert(!strcmp(key(&s, "touch")->words[0], ".ini") && !strcmp(key(&s, "touch")->words[3], "Fingers and mouse"));
-    assert(words(key(&s, "anisotropy")) == 18 && !strcmp(key(&s, "anisotropy")->words[17], "16"));
+    assert(words(key(&s, "touch")) == 3 && !strcmp(key(&s, "touch")->key, "Touch screen"));
+    assert(!strcmp(key(&s, "touch")->words[0], "Off") && !strcmp(key(&s, "touch")->words[2], "Fingers and mouse"));
+    assert(words(key(&s, "anisotropy")) == 17 && !strcmp(key(&s, "anisotropy")->words[16], "16"));
+    assert(words(key(&s, "controls_a_shown")) == 3 && !strcmp(key(&s, "controls_a_shown")->words[0], ".ini"));
     assert(key(&s, "language")->type == GUI_KEY_TEXT && key(&s, "resolution")->type == GUI_KEY_TEXT);
     /* a number's row takes any value of its range and the fraction a scale needs, the closest value in range past
        either end, and refuses what is not a number, as 3x or high were, where it keeps what it had */
@@ -180,7 +184,7 @@ int main(int argc, char** argv) {
            !strcmp(options[0], "--resolution=1.22"));
     assert(gui_settings_set(&s, "resolution", "") && !gui_settings_value(&s, "resolution"));
     assert(key(&s, "old")->type == GUI_KEY_TEXT && key(&s, "broken")->type == GUI_KEY_TEXT);
-    assert(!strcmp(shown(&s, "touch"), ".ini") && !strcmp(shown(&s, "log"), ".ini"));
+    assert(!strcmp(shown(&s, "touch"), "Fingers and mouse") && !strcmp(shown(&s, "log"), "1"));
     /* the page: its row in its section opens the rows after its All, which steps them */
     page = at(&s, "Buttons");
     all = page + 1;
@@ -192,8 +196,11 @@ int main(int argc, char** argv) {
     assert(!strcmp(key(&s, "controls_b_shown")->key, "B") && at(&s, "controls_b_shown") == all + 2);
     assert(!strcmp(s.keys[all + 2].section, "On-screen controls/Buttons") && !strcmp(shown(&s, "All"), ".ini"));
 
-    /* a pick: a value of its row or a text, never a word; nothing picked is the .ini's */
+    /* a pick: a value of its row or a text, never a word; a row at its default is none, the .ini's no value of a
+       row whose default is a word */
     assert(!gui_settings_value(&s, "touch") && !gui_settings_value(&s, "language") && !gui_settings_value(&s, "x"));
+    assert(gui_settings_set(&s, "touch", "2") && !gui_settings_value(&s, "touch") &&
+           !gui_settings_set(&s, "touch", ".ini"));
     assert(gui_settings_set(&s, "touch", "1") && !strcmp(gui_settings_value(&s, "touch"), "1"));
     assert(!strcmp(shown(&s, "touch"), "Fingers"));
     assert(!gui_settings_set(&s, "touch", "3") && !gui_settings_set(&s, "touch", "Fingers and mouse"));
@@ -212,7 +219,7 @@ int main(int argc, char** argv) {
     assert(!gui_settings_set(&s, "Buttons", ">") && !gui_settings_set(&s, "All", ".ini"));
     assert(gui_settings_options(&s, 1, options) == 2 && !strcmp(options[0], "--old=0.5 0.5 100 1"));
     assert(!strcmp(options[1], "--touch=1"));
-    assert(gui_settings_set(&s, "touch", ".ini") && gui_settings_set(&s, "old", ""));
+    assert(gui_settings_set(&s, "touch", "2") && gui_settings_set(&s, "old", ""));
 
     /* All: every row of its page to the first one's next word, either way; Mixed when they differ */
     assert(!gui_settings_step_all(&s, page, 1) && !gui_settings_step_all(&s, at(&s, "touch"), 1));
@@ -232,18 +239,63 @@ int main(int argc, char** argv) {
     gui_settings_reset(&s, page);
     assert(!strcmp(shown(&s, "All"), "Shown") && !strcmp(gui_settings_value(&s, "controls_b_shown"), "1"));
     gui_settings_free(&s);
+    /* an All of rows whose defaults are words: the word they share with [default] while none is picked, [default]
+       alone while their defaults differ, the word without it once one is picked */
+    {
+        static const char passes[] = "Debug/Passes\tpass_a\t1\tint\t0\t1\tA pass\tA\t0=Off|1=On\n"
+                                     "Debug/Passes\tpass_b\t1\tint\t0\t1\tA pass\tB\t0=Off|1=On\n";
+        static const char own[] = "Debug/Passes\tpass_a\t1\tint\t0\t1\tA pass\tA\t0=Off|1=On\n"
+                                  "Debug/Passes\tpass_b\t1\tint\t0\t1\tA pass\tB\t0=Off|1=On\n"
+                                  "Debug/Passes\tother\t\tint\t0\t1\tLLVM's own value\tC\t0=Off|1=On\n";
+        int passes_all;
+        assert(!gui_settings_read(&s, passes));
+        passes_all = at(&s, "pass_a") - 1;
+        assert(s.values[passes_all].kind == GUI_SETTING_ALL && !strcmp(on_screen(&s, "pass_a"), "On [default]"));
+        {
+            char line[64];
+            gui_settings_shown(&s, passes_all, line, sizeof line);
+            assert(!strcmp(line, "On [default]"));
+            assert(gui_settings_step_all(&s, passes_all, 1));
+            gui_settings_shown(&s, passes_all, line, sizeof line);
+            assert(!strcmp(line, "Off") && !strcmp(gui_settings_value(&s, "pass_b"), "0"));
+            assert(gui_settings_step_all(&s, passes_all, 1) && !gui_settings_value(&s, "pass_a"));
+            gui_settings_shown(&s, passes_all, line, sizeof line);
+            assert(!strcmp(line, "On [default]"));
+            gui_settings_free(&s);
+            assert(!gui_settings_read(&s, own));
+            passes_all = at(&s, "pass_a") - 1;
+            gui_settings_shown(&s, passes_all, line, sizeof line);
+            assert(!strcmp(line, "[default]") && !strcmp(on_screen(&s, "other"), "[default]"));
+            assert(gui_settings_step_all(&s, passes_all, -1)); /* Off for every one, the first's words round */
+            gui_settings_shown(&s, passes_all, line, sizeof line);
+            assert(!strcmp(line, "Off") && !strcmp(gui_settings_value(&s, "other"), "0"));
+            assert(gui_settings_step_all(&s, passes_all, 1) && !gui_settings_value(&s, "pass_a"));
+            gui_settings_shown(&s, passes_all, line, sizeof line);
+            assert(!strcmp(line, "On") && !strcmp(gui_settings_value(&s, "other"), "1")); /* picked: no [default] */
+        }
+        gui_settings_free(&s);
+    }
     assert(!gui_settings_read(&s, list));
 
-    /* the form edits them: Left and Right go round a row's words, .ini among them */
+    /* the form edits them: Left and Right go round a row's words, its default's no pick, shown [default] */
     gui_editor_form(&form, s.keys, s.count, s.values, NULL);
     form.row = at(&s, "fullscreen");
+    assert(!gui_settings_value(&s, "fullscreen") && !strcmp(on_screen(&s, "fullscreen"), "0 [default]"));
     gui_editor_key(&form, GUI_RIGHT);
-    assert(!strcmp(gui_settings_value(&s, "fullscreen"), "0"));
+    assert(!strcmp(gui_settings_value(&s, "fullscreen"), "1") && !strcmp(on_screen(&s, "fullscreen"), "1"));
     gui_editor_key(&form, GUI_RIGHT);
-    gui_editor_key(&form, GUI_RIGHT);
-    assert(!gui_settings_value(&s, "fullscreen"));
+    assert(!gui_settings_value(&s, "fullscreen") && !strcmp(on_screen(&s, "fullscreen"), "0 [default]"));
     gui_editor_key(&form, GUI_LEFT);
     assert(!strcmp(gui_settings_value(&s, "fullscreen"), "1"));
+    gui_editor_key(&form, GUI_LEFT);
+    assert(!gui_settings_value(&s, "fullscreen"));
+    form.row = at(&s, "touch"); /* three words, the default the last: round them in their order */
+    gui_editor_key(&form, GUI_RIGHT);
+    assert(!strcmp(gui_settings_value(&s, "touch"), "0") && !strcmp(on_screen(&s, "touch"), "Off"));
+    gui_editor_key(&form, GUI_RIGHT);
+    assert(!strcmp(on_screen(&s, "touch"), "Fingers"));
+    gui_editor_key(&form, GUI_RIGHT);
+    assert(!gui_settings_value(&s, "touch") && !strcmp(on_screen(&s, "touch"), "Fingers and mouse [default]"));
     /* the resolution typed, not stepped: 1.61 taken as any scale, a third decimal and a letter left out, and 3x's
        digits are all that reach the row; a value past the range is refused, said with the value typed and the range,
        the row keeping what it had and the typing going on */
@@ -305,13 +357,13 @@ int main(int argc, char** argv) {
     gui_editor_stop(&form);
 
     /* a run's options: --key=value for each pick in the list's order; the launcher's own with launch */
-    for (fullscreen = 0; fullscreen < 3; ++fullscreen)
-        for (touch = 0; touch < 4; ++touch)
+    for (fullscreen = 0; fullscreen < 2; ++fullscreen)
+        for (touch = 0; touch < 3; ++touch)
             for (stub = 0; stub < 2; ++stub)
                 for (tmpfs = 0; tmpfs < 2; ++tmpfs)
                     for (extract = 0; extract < 2; ++extract)
                     for (launch = 0; launch < 2; ++launch) {
-                        static const char* const picks[] = {".ini", "0", "1", "2"};
+                        static const char* const picks[] = {"0", "1", "2"}; /* fullscreen's 0, touch's 2: defaults */
                         size_t n, i = 0;
                         char want[32];
                         assert(gui_settings_set(&s, "fullscreen", picks[fullscreen]));
@@ -328,7 +380,7 @@ int main(int argc, char** argv) {
                             snprintf(want, sizeof want, "--fullscreen=%s", picks[fullscreen]);
                             assert(i < n && !strcmp(options[i++], want));
                         }
-                        if (touch) {
+                        if (touch != 2) {
                             snprintf(want, sizeof want, "--touch=%s", picks[touch]);
                             assert(i < n && !strcmp(options[i++], want));
                         }
@@ -359,40 +411,40 @@ int main(int argc, char** argv) {
     {
         char *dir = snx_temp_dir(NULL), *path = snx_path_join(dir, "config/settings.ini"), *text;
         size_t size;
-        assert(!gui_settings_read(&s, list) && gui_settings_set(&s, "fullscreen", "0"));
+        assert(!gui_settings_read(&s, list) && gui_settings_always(&s, "fullscreen", "0"));
         gui_settings_mark(&s); /* the launcher's own choice, fullscreen 0, is where it starts */
-        assert(gui_settings_set(&s, "gdbstub", "on") && gui_settings_set(&s, "touch", "2"));
-        assert(gui_settings_set(&s, "language", "3") && gui_settings_set(&s, "fullscreen", ".ini"));
-        assert(gui_settings_set(&s, "log", "2") && gui_settings_set(&s, "log", ".ini"));
+        assert(gui_settings_set(&s, "gdbstub", "on") && gui_settings_set(&s, "touch", "1"));
+        assert(gui_settings_set(&s, "language", "3") && gui_settings_set(&s, "fullscreen", "1"));
+        assert(gui_settings_set(&s, "log", "2") && gui_settings_set(&s, "log", "1")); /* back at its default */
         assert(gui_settings_set(&s, "controls_b_shown", "0"));
         assert(!gui_settings_save(&s, path));
         text = (char*)snx_read_file(path, &size);
         assert(text &&
-               strstr(text, "\n[Launch]\ngdbstub=on\n[Display]\nfullscreen=.ini\nlanguage=3\n"
-                            "[On-screen controls]\ntouch=2\n[On-screen controls/Buttons]\ncontrols_b_shown=0\n"));
+               strstr(text, "\n[Launch]\ngdbstub=on\n[Display]\nfullscreen=1\nlanguage=3\n"
+                            "[On-screen controls]\ntouch=1\n[On-screen controls/Buttons]\ncontrols_b_shown=0\n"));
         assert(!strstr(text, "log=") && !strstr(text, "docked") && !strstr(text, "All"));
         free(text);
         gui_settings_free(&s);
-        assert(!gui_settings_read(&s, list) && gui_settings_set(&s, "fullscreen", "0"));
+        assert(!gui_settings_read(&s, list) && gui_settings_always(&s, "fullscreen", "0"));
         gui_settings_mark(&s);
-        gui_settings_load(&s, path);
+        assert(!gui_settings_load(&s, path, NULL, 0));
         assert(!strcmp(gui_settings_value(&s, "gdbstub"), "on") && !strcmp(gui_settings_value(&s, "language"), "3"));
-        assert(!gui_settings_value(&s, "fullscreen") && !strcmp(gui_settings_value(&s, "touch"), "2"));
+        assert(!strcmp(gui_settings_value(&s, "fullscreen"), "1") && !strcmp(gui_settings_value(&s, "touch"), "1"));
         assert(!gui_settings_value(&s, "log") && !strcmp(gui_settings_value(&s, "controls_b_shown"), "0"));
-        assert(!strcmp(shown(&s, "All"), "Mixed") && gui_settings_options(&s, 1, options) == 5);
+        assert(!strcmp(shown(&s, "All"), "Mixed") && gui_settings_options(&s, 1, options) == 6);
         /* a row back to where it started, then every one; how many a reset of every one changes, counted */
         changed = gui_settings_changed(&s); /* gdbstub, language, fullscreen, touch, B; not the All made Mixed */
         assert(changed == 5);
         gui_settings_reset(&s, at(&s, "language"));
-        assert(!gui_settings_value(&s, "language") && !strcmp(gui_settings_value(&s, "touch"), "2"));
+        assert(!gui_settings_value(&s, "language") && !strcmp(gui_settings_value(&s, "touch"), "1"));
         assert(gui_settings_changed(&s) == changed - 1);
         gui_settings_reset(&s, -1);
         assert(!gui_settings_changed(&s));
         assert(!strcmp(gui_settings_value(&s, "fullscreen"), "0") && !gui_settings_value(&s, "touch"));
         assert(!gui_settings_value(&s, "gdbstub") && gui_settings_options(&s, 1, options) == 1);
         assert(!strcmp(shown(&s, "All"), ".ini"));
-        gui_settings_load(&s, path);                        /* and the file's picks again */
-        gui_settings_load(&s, "/nonexistent/settings.ini"); /* none: nothing changes */
+        gui_settings_load(&s, path, NULL, 0);                        /* and the file's picks again */
+        gui_settings_load(&s, "/nonexistent/settings.ini", NULL, 0); /* none: nothing changes */
         assert(!strcmp(gui_settings_value(&s, "language"), "3"));
         /* what the file holds that no row takes, a key gone from the runtime or a value its row does not have, named
            without changing the rows; the next save leaves it out */
@@ -410,7 +462,7 @@ int main(int argc, char** argv) {
             free(text);
             assert(gui_settings_unread(&s, path, unread, sizeof unread) == 2);
             assert(!strcmp(unread, "renderer=opengl, touch=9"));
-            assert(!strcmp(gui_settings_value(&s, "language"), "3") && !strcmp(gui_settings_value(&s, "touch"), "2"));
+            assert(!strcmp(gui_settings_value(&s, "language"), "3") && !strcmp(gui_settings_value(&s, "touch"), "1"));
             assert(gui_settings_unread(&s, path, unread, 10) == 2 && !strcmp(unread, "renderer="));
             assert(!gui_settings_save(&s, path) && !gui_settings_unread(&s, path, unread, sizeof unread));
         }
@@ -420,6 +472,110 @@ int main(int argc, char** argv) {
             free(under);
             free(plain);
         }
+        gui_settings_free(&s);
+        assert(!snx_remove_tree(dir));
+        free(path);
+        free(dir);
+    }
+    /* Fullscreen and Show controls, the launcher's own choices: Off or On to every run, never the .ini's, [default]
+       after the one they start with, which Del and a reset put back. An older version's .ini, which passed nothing,
+       is read as that one and said with the value now */
+    {
+        char *dir = snx_temp_dir(NULL), *path = snx_path_join(dir, "settings.ini"), *text, old[512];
+        const char* older = "[Display]\nfullscreen=.ini\nlanguage=3\n[On-screen controls]\ncontrols=.ini\n";
+        size_t size;
+        int row;
+        assert(!gui_settings_read(&s, list));
+        /* a word row of the runtime's with values, set to one of them */
+        assert(!gui_settings_always(&s, "language", "0") && !gui_settings_always(&s, "gdbstub", "on"));
+        assert(!gui_settings_always(&s, "nothing", "0") && !gui_settings_always(&s, "Buttons", ">"));
+        assert(!gui_settings_always(&s, "controls", ".ini") && !gui_settings_always(&s, "controls", "2"));
+        assert(words(key(&s, "controls")) == 2 && !gui_settings_value(&s, "controls")); /* plain, at its default */
+        assert(gui_settings_always(&s, "fullscreen", "0") && gui_settings_always(&s, "controls", "0"));
+        assert(words(key(&s, "controls")) == 2 && !strcmp(key(&s, "controls")->words[0], "Off") &&
+               !strcmp(key(&s, "controls")->words[1], "On"));
+        assert(gui_settings_always(&s, "controls", "0") && words(key(&s, "controls")) == 2); /* again: as it was */
+        gui_settings_mark(&s);
+        assert(!strcmp(on_screen(&s, "controls"), "Off [default]") && !strcmp(gui_settings_value(&s, "controls"), "0"));
+        assert(!strcmp(on_screen(&s, "fullscreen"), "0 [default]") && !gui_settings_changed(&s));
+        assert(gui_settings_options(&s, 0, options) == 2 && !strcmp(options[0], "--fullscreen=0") &&
+               !strcmp(options[1], "--controls=0"));
+        /* the form goes round Off and On, either way, and Select steps */
+        gui_editor_form(&form, s.keys, s.count, s.values, NULL);
+        form.row = row = at(&s, "controls");
+        gui_editor_key(&form, GUI_RIGHT);
+        assert(!strcmp(gui_settings_value(&s, "controls"), "1") && !strcmp(on_screen(&s, "controls"), "On"));
+        gui_editor_key(&form, GUI_RIGHT);
+        assert(!strcmp(gui_settings_value(&s, "controls"), "0") && !strcmp(on_screen(&s, "controls"), "Off [default]"));
+        gui_editor_key(&form, GUI_LEFT);
+        assert(!strcmp(gui_settings_value(&s, "controls"), "1") && !strcmp(on_screen(&s, "controls"), "On"));
+        gui_editor_key(&form, GUI_LEFT);
+        assert(!strcmp(on_screen(&s, "controls"), "Off [default]") && gui_settings_at_start(&s, row));
+        gui_editor_key(&form, GUI_SELECT);
+        assert(!strcmp(on_screen(&s, "controls"), "On") && !gui_settings_at_start(&s, row));
+        assert(gui_settings_changed(&s) == 1);
+        gui_editor_stop(&form);
+        /* .ini is no value of theirs; Del puts the start back */
+        assert(!gui_settings_set(&s, "controls", ".ini") && !strcmp(gui_settings_value(&s, "controls"), "1"));
+        assert(!gui_settings_set(&s, "fullscreen", ".ini") && !strcmp(gui_settings_value(&s, "fullscreen"), "0"));
+        gui_settings_reset(&s, row);
+        assert(gui_settings_at_start(&s, row) && !strcmp(on_screen(&s, "controls"), "Off [default]"));
+        /* kept: one off its start alone */
+        assert(gui_settings_set(&s, "fullscreen", "1") && !strcmp(on_screen(&s, "fullscreen"), "1"));
+        assert(!gui_settings_save(&s, path));
+        text = (char*)snx_read_file(path, &size);
+        assert(text && strstr(text, "\n[Display]\nfullscreen=1\n") && !strstr(text, "controls"));
+        free(text);
+        /* an older version's .ini: each the value its row starts with, a phone's On too, said with it */
+        assert(!snx_write_file(path, older, strlen(older)));
+        gui_settings_free(&s);
+        assert(!gui_settings_read(&s, list) && gui_settings_always(&s, "fullscreen", "0") &&
+               gui_settings_always(&s, "controls", "1"));
+        gui_settings_mark(&s);
+        assert(gui_settings_load(&s, path, old, sizeof old) == 2);
+        assert(!strcmp(old, "fullscreen=.ini is no longer a value of fullscreen: fullscreen=0 now; "
+                            "controls=.ini is no longer a value of Show controls: controls=1 now"));
+        assert(!strcmp(gui_settings_value(&s, "fullscreen"), "0") && !strcmp(gui_settings_value(&s, "controls"), "1"));
+        assert(!strcmp(gui_settings_value(&s, "language"), "3") && gui_settings_changed(&s) == 1);
+        assert(!strcmp(on_screen(&s, "controls"), "On [default]") && gui_settings_set(&s, "controls", "0") &&
+               !strcmp(on_screen(&s, "controls"), "Off") && gui_settings_set(&s, "controls", "1"));
+        assert(gui_settings_load(&s, path, old, 20) == 2 && !strcmp(old, "fullscreen=.ini is ")); /* cut */
+        assert(gui_settings_load(&s, path, NULL, 0) == 2);
+        /* as the next start finds it once written again: neither, nothing said */
+        assert(!gui_settings_save(&s, path));
+        text = (char*)snx_read_file(path, &size);
+        assert(text && strstr(text, "\n[Display]\nlanguage=3\n") && !strstr(text, "fullscreen") &&
+               !strstr(text, "controls"));
+        free(text);
+        assert(!gui_settings_load(&s, path, old, sizeof old) && !old[0]);
+        gui_settings_free(&s);
+        /* the same for every row whose default is a word: its .ini read as that default, and the default picked, which
+           runs were given over the game's .ini, no pick now, each said; an empty default's .ini is still its value */
+        {
+            const char* older_rows = "[Display]\ndocked=1\n[On-screen controls]\ntouch=.ini\n"
+                                     "[On-screen controls/Buttons]\ncontrols_b_shown=.ini\n[Debug]\nlog=2\n";
+            assert(!snx_write_file(path, older_rows, strlen(older_rows)));
+            assert(!gui_settings_read(&s, list));
+            gui_settings_mark(&s);
+            assert(gui_settings_load(&s, path, old, sizeof old) == 2);
+            assert(!strcmp(old, "docked=1 is the default of docked: no run is given it over the game's .ini; "
+                                "touch=.ini is no longer a value of Touch screen: touch=2 now"));
+            assert(!gui_settings_value(&s, "docked") && !gui_settings_value(&s, "touch") &&
+                   !gui_settings_value(&s, "controls_b_shown") && !strcmp(gui_settings_value(&s, "log"), "2"));
+            assert(!strcmp(on_screen(&s, "docked"), "1 [default]") && gui_settings_options(&s, 0, options) == 1 &&
+                   !strcmp(options[0], "--log=2"));
+            assert(!gui_settings_save(&s, path));
+            text = (char*)snx_read_file(path, &size);
+            assert(text && strstr(text, "\n[Debug]\nlog=2\n") && !strstr(text, "docked") && !strstr(text, "touch") &&
+                   !strstr(text, "controls_b_shown"));
+            free(text);
+            assert(!gui_settings_load(&s, path, old, sizeof old) && !old[0]);
+            gui_settings_free(&s);
+        }
+        /* a default none of its words has is no value of an always row either: never its first word */
+        assert(!gui_settings_read(&s, "Display\tshape\t2\tint\t0\t2\tA default no word has\tShape\t0=Off|1=On\n"));
+        assert(gui_settings_always(&s, "shape", "1") && !gui_settings_set(&s, "shape", "2"));
+        assert(!strcmp(gui_settings_value(&s, "shape"), "1"));
         gui_settings_free(&s);
         assert(!snx_remove_tree(dir));
         free(path);
@@ -436,7 +592,7 @@ int main(int argc, char** argv) {
         size_t size;
         assert(!snx_write_file(path, picks, strlen(picks)));
         gui_settings_mark(&s);
-        gui_settings_load(&s, path);
+        gui_settings_load(&s, path, NULL, 0);
         assert(!strcmp(gui_settings_value(&s, "gdbstub"), "on") && gui_settings_set(&s, "gdbstub", ".ini"));
         assert(!gui_settings_save(&s, path));
         text = (char*)snx_read_file(path, &size);
@@ -472,7 +628,7 @@ int main(int argc, char** argv) {
             gui_settings_free(&s);
             assert(!gui_settings_read(&s, list) && gui_settings_set(&s, "fullscreen", "0"));
             gui_settings_mark(&s);
-            gui_settings_load(&s, path);
+            gui_settings_load(&s, path, NULL, 0);
             assert(!gui_settings_value(&s, "resolution"));
             assert(!strcmp(on_screen(&s, "resolution"), "1 [default]"));
             {
@@ -487,7 +643,7 @@ int main(int argc, char** argv) {
             gui_settings_free(&s);
             assert(!gui_settings_read(&s, list) && gui_settings_set(&s, "fullscreen", "0"));
             gui_settings_mark(&s);
-            gui_settings_load(&s, path);
+            gui_settings_load(&s, path, NULL, 0);
             assert(!strcmp(gui_settings_value(&s, "resolution"), "8.2"));
             {
                 size_t n = gui_settings_options(&s, 0, options), j;
@@ -522,16 +678,37 @@ int main(int argc, char** argv) {
         }
         assert(pages > 0 && !gui_settings_read(&s, output) && s.count == s.own + lines + 2 * pages);
         /* each player's own, on Controllers' Player page: a word row whose default is every player's */
-        assert(words(key(&s, "gamepad_p1_swap_ab")) == 4 && !strcmp(key(&s, "gamepad_p8_swap_ab")->words[1], "As All"));
+        assert(words(key(&s, "gamepad_p1_swap_ab")) == 3 && !strcmp(key(&s, "gamepad_p8_swap_ab")->words[0], "As All"));
+        assert(!strcmp(on_screen(&s, "gamepad_p8_swap_ab"), "As All [default]"));
+        /* every word row: its words alone, the default's shown [default], or .ini first where its default has none */
+        {
+            int i, w, plain = 0;
+            for (i = 0; i < s.count; ++i) {
+                char line[160];
+                if (s.keys[i].type != GUI_KEY_WORD || s.values[i].kind) continue;
+                gui_settings_shown(&s, i, line, sizeof line);
+                assert(strstr(line, "[default]"));
+                plain += s.values[i].plain;
+                for (w = 0; s.keys[i].words[w]; ++w)
+                    assert(!strcmp(s.keys[i].words[w], ".ini") == (!s.values[i].plain && !w));
+            }
+            assert(plain > 50);
+        }
         assert(key(&s, "gamepad_p3_device")->type == GUI_KEY_TEXT &&
                !strcmp(key(&s, "gamepad_p3_device")->section, "Controllers/Player"));
         assert(!strcmp(s.keys[s.own].section, "Game") && !strcmp(s.keys[s.count - 1].section, "Debug"));
-        assert(words(key(&s, "fullscreen")) == 3 && words(key(&s, "touch")) == 4 && words(key(&s, "controls")) == 3);
+        assert(words(key(&s, "fullscreen")) == 2 && words(key(&s, "touch")) == 3 && words(key(&s, "controls")) == 2);
         assert(!strcmp(key(&s, "controls")->key, "Show controls") &&
-               !strcmp(key(&s, "touch")->words[3], "Fingers and mouse"));
-        assert(!strcmp(key(&s, "gamepad_rumble")->words[1], "Off") && !key(&s, "controls_a"));
+               !strcmp(key(&s, "touch")->words[2], "Fingers and mouse"));
+        assert(!strcmp(key(&s, "gamepad_rumble")->words[0], "Off") && !key(&s, "controls_a"));
         assert(gui_settings_set(&s, "fullscreen", "0") && gui_settings_set(&s, "touch", "1"));
         assert(gui_settings_set(&s, "controls", "0") && key(&s, "resolution")->type == GUI_KEY_TEXT);
+        /* as the launcher has them: Off or On, Off its [default] */
+        assert(gui_settings_always(&s, "fullscreen", "0") && gui_settings_always(&s, "controls", "0"));
+        gui_settings_mark(&s);
+        assert(words(key(&s, "fullscreen")) == 2 && words(key(&s, "controls")) == 2);
+        assert(!strcmp(on_screen(&s, "fullscreen"), "Off [default]") &&
+               !strcmp(on_screen(&s, "controls"), "Off [default]"));
         /* a range as settings.txt has it, a large one to the last digit, which a typed value's dialog says */
         assert(key(&s, "map_limit_mb")->numeric && key(&s, "map_limit_mb")->hi == 1048576.0);
         assert(key(&s, "resolution")->lo == 0.25 && key(&s, "resolution")->hi == 16.0);

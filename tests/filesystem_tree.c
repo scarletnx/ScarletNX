@@ -484,6 +484,100 @@ static void test_graft(const char* scratch) {
     puts("PASS a graft reads its own folder, readonly, and the rest stays in the data directory");
 }
 
+/* path, a full one, is on the host, as host_exists asks */
+static int host_there(const char* path) {
+#if defined(_WIN32)
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+#else
+    struct stat st;
+    return !stat(path, &st);
+#endif
+}
+/* fs_tree_graft_writable: a folder elsewhere the guest changes, its host paths in that folder (a save in the folder of
+   every game's). fs_tree_graft_new: a folder made now, empty, with nothing enumerated; one there already is refused,
+   as only a scan could index it */
+static void test_graft_writable(const char* scratch) {
+    char base[FS_TREE_PATH_MAX], saves[FS_TREE_PATH_MAX], path[FS_TREE_PATH_MAX];
+    FsTree other;
+    FsNode *file = NULL, *dir = NULL, *made = NULL;
+    FILE* f;
+    CHECK(snprintf(base, sizeof base, "%s/writable-base", scratch) < (int)sizeof base);
+    CHECK(snprintf(saves, sizeof saves, "%s/writable-saves", scratch) < (int)sizeof saves);
+    CHECK(!plat_mkdir(base) && !plat_mkdir(saves));
+    CHECK(snprintf(path, sizeof path, "%s/old.bin", saves) < (int)sizeof path);
+    f = fopen(path, "wb");
+    CHECK(f != NULL && fwrite("save", 1, 4, f) == 4 && !fclose(f));
+    scans_allowed = 1;
+    OK(fs_tree_init(&other, base));
+    pm_lock(&other.lock);
+    OK(fs_tree_graft_writable(&other, "global-user", saves));
+    scans_allowed = 0;
+    OK(fs_tree_lookup(&other, NULL, "global-user/old.bin", &file));
+    CHECK(file->size == 4 && !file->readonly);
+    OK(fs_tree_lookup(&other, NULL, "global-user", &dir));
+    OK(fs_tree_create(&other, dir, "new.bin", 0, 2, &made));
+    OK(fs_tree_path(&other, made, path, sizeof path));
+    CHECK(strstr(path, "/writable-saves/new.bin") != NULL);
+    f = fopen(path, "rb");
+    CHECK(f != NULL && !fclose(f));
+    OK(fs_tree_rename(&other, dir, "new.bin", "renamed.bin", 0));
+    CHECK(snprintf(path, sizeof path, "%s/renamed.bin", saves) < (int)sizeof path && host_there(path));
+    OK(fs_tree_remove(&other, dir, "old.bin", 0, 0, 0));
+    CHECK(snprintf(path, sizeof path, "%s/old.bin", saves) < (int)sizeof path && !host_there(path));
+    /* a folder made now: grafted empty, with no scan, and its files on the host there */
+    CHECK(snprintf(path, sizeof path, "%s/fresh", saves) < (int)sizeof path);
+    OK(fs_tree_graft_new(&other, "global-device", path));
+    CHECK(host_there(path));
+    OK(fs_tree_lookup(&other, NULL, "global-device", &dir));
+    CHECK(!dir->children && !dir->readonly);
+    OK(fs_tree_create(&other, dir, "d.bin", 0, 1, &made));
+    OK(fs_tree_path(&other, made, path, sizeof path));
+    CHECK(strstr(path, "/writable-saves/fresh/d.bin") != NULL);
+    /* one there already, or a name taken, or no parent: refused, nothing made */
+    CHECK(snprintf(path, sizeof path, "%s/fresh", saves) < (int)sizeof path);
+    CHECK(fs_tree_graft_new(&other, "global-bcat", path) == FS_TREE_EXISTS);
+    CHECK(fs_tree_lookup(&other, NULL, "global-bcat", &dir) == FS_TREE_NOTFOUND);
+    CHECK(fs_tree_graft_new(&other, "global-device", saves) == FS_TREE_EXISTS);
+    CHECK(snprintf(path, sizeof path, "%s/no-parent/child", saves) < (int)sizeof path);
+    CHECK(fs_tree_graft_new(&other, "global-cache", path) == FS_TREE_IO);
+    CHECK(fs_tree_lookup(&other, NULL, "global-cache", &dir) == FS_TREE_NOTFOUND);
+    fs_tree_destroy(&other);
+    pm_unlock(&other.lock);
+    puts("PASS a writable graft changes its own folder; a new one is made empty, with nothing scanned");
+}
+
+/* fs_tree_forget: a folder out of the index, its files on the host as they were, to move; a handle open in it reads
+   nothing more; the root and the guest's root can't go */
+static void test_forget(const char* scratch) {
+    char base[FS_TREE_PATH_MAX], path[FS_TREE_PATH_MAX];
+    FsTree other;
+    FsNode *file = NULL, *dir = NULL;
+    FILE* f;
+    CHECK(snprintf(base, sizeof base, "%s/forget-base", scratch) < (int)sizeof base);
+    CHECK(!plat_mkdir(base));
+    CHECK(snprintf(path, sizeof path, "%s/save", base) < (int)sizeof path && !plat_mkdir(path));
+    CHECK(snprintf(path, sizeof path, "%s/save/user.1", base) < (int)sizeof path && !plat_mkdir(path));
+    CHECK(snprintf(path, sizeof path, "%s/save/user.1/s.bin", base) < (int)sizeof path);
+    f = fopen(path, "wb");
+    CHECK(f != NULL && fwrite("save", 1, 4, f) == 4 && !fclose(f));
+    scans_allowed = 1;
+    OK(fs_tree_init(&other, base));
+    scans_allowed = 0;
+    pm_lock(&other.lock);
+    OK(fs_tree_lookup(&other, NULL, "save/user.1/s.bin", &file));
+    fs_tree_retain(file); /* a handle open on it */
+    OK(fs_tree_forget(&other, "save/user.1"));
+    CHECK(fs_tree_lookup(&other, NULL, "save/user.1", &dir) == FS_TREE_NOTFOUND && host_there(path));
+    CHECK(fs_tree_path(&other, file, base, sizeof base) != FS_TREE_OK);
+    fs_tree_release(file);
+    OK(fs_tree_lookup(&other, NULL, "save", &dir));
+    CHECK(fs_tree_forget(&other, "root") == FS_TREE_NOTDELETABLE || fs_tree_forget(&other, "root") == FS_TREE_NOTFOUND);
+    CHECK(fs_tree_forget(&other, "nothing") == FS_TREE_NOTFOUND);
+    fs_tree_destroy(&other);
+    pm_unlock(&other.lock);
+    puts("PASS a folder forgotten by the index, its files where they were");
+}
+
 /* fs_tree_share maps what its limits let it, in bytes and in files; the rest is left to be read on demand, counted
    apart from what failed. A lazy share maps nothing but makes the files readonly, and fs_tree_map maps each when
    asked, within the same limits */
@@ -571,6 +665,8 @@ int main(int argc, char** argv) {
     test_missing_root(argv[1]);
     test_failed_initialization(argv[1]);
     test_graft(argv[1]);
+    test_graft_writable(argv[1]);
+    test_forget(argv[1]);
     test_share_limits(argv[1]);
     CHECK(!host_chdir(argv[1]));
     printf("PASS %u checks; native enumeration was restricted to initialization (%u opens)\n", checks, scan_count);

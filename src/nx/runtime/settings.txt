@@ -120,15 +120,26 @@ setting Save state backup
     default 1
     words Off|On
     help 1 = the game is saved to the auto slot before each save state is loaded over it, so a load can be undone
+setting Save layout
+    key save_layout
+    text 8
+    default global
+    startup
+    words global=Global|game=Per game
+    help Where the saves are: global = one folder of every game's, save/ of the data folder, as the console keeps
+    help them (an Account save in user.<uid>/<title ID>/); game = each game's own, save/ in its <id>_data/. A save the
+    help other one holds is played where it is, said once a run, until Settings > App > Move Old Files moves it
 
 table g_display_ini
 setting TV mode
     key docked
-    int 0 1
+    int 0 2
     default 1
     startup
-    words Off|On
-    help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720)
+    set options_tv_mode_set
+    words Off|On|Auto
+    help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720), 2 = Auto: TV mode while the
+    help host is on its charger, handheld mode on its battery. Auto switches while the game runs
 setting Fullscreen
     key fullscreen
     int 0 1
@@ -224,6 +235,17 @@ setting Vulkan Video decode
     help 1 = H.264 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver
     help have an H.264 decode queue. Experimental and untested. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
+setting Vertex input dynamic state
+    key vertex_input_dynamic_state
+    text 16
+    default auto
+    startup
+    words auto=Auto|on=On|off=Off
+    help How a draw gives the GPU its vertex layout. auto = as dynamic state (VK_EXT_vertex_input_dynamic_state) where
+    help the GPU's driver has it, but NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0, which
+    help draw it wrong; on = as dynamic state wherever the driver has it, those too; off = in the pipeline. Dynamic,
+    help one pipeline serves every layout a program is drawn with, so fewer pipelines are made; in the pipeline, each
+    help layout takes one of its own. Any other value stops the game, saying so
 
 table g_performance_ini
 setting FPS limit
@@ -311,6 +333,18 @@ setting Prepare shaders
     help background, used once all are ready. Before starting = a loading screen waits for them and for the shader cache
     help of earlier sessions. Any key, button or tap starts the game at once and the rest is prepared while you play.
     help Esc quits (on Android, back opens the menu)
+setting NCE
+    key nce
+    int 0 1
+    default 1
+    startup
+    recompile
+    words Off|On
+    help On an AArch64 Linux host or Android 10 and later on arm64, 1 = the game's 64-bit code runs natively on the
+    help host's CPU (native code execution), with the words patched that cannot run as they are: SVCs, the TLS
+    help registers, the counter registers, and the exclusives made ordered, as Eden patches them. The recompile then
+    help makes no code ahead of time. 0 = the code is recompiled. Other hosts, 32-bit games and, on Android, games of
+    help the 36-bit address space always recompile, whatever this says
 setting JIT threads
     key jit_threads
     int 0 4
@@ -562,13 +596,13 @@ setting Eden room
     help and a room's password is room_password in users/online.ini
 
 table g_user_ini
-setting User
-    key user
-    int 1 SNX_USERS_MAX
-    default 1
+setting User uid
+    key user_uid
+    text 33
+    default ""
     startup
-    help The console's user the game plays as: 1 to 8, as users/users.ini of the data folder lists them (1, "Player",
-    help without one). A number with no user stops the game
+    help The console's user the game plays as, by its uid: 32 hex digits, as users/users.ini of the data folder lists
+    help them; empty is its [user1] ("Player" without one). A uid no user has stops the game
 
 table g_debug_ini
 setting Log level
@@ -713,6 +747,15 @@ setting IR dump PC
     recompile
     help The address in hex (100000) of a function the recompiler found: it prints the function's leaders, where its
     help flags come from, the registers it promoted and its IR before and after the promotion. Empty: none
+setting IR branch profile
+    key ir_branch_profile
+    text 1024
+    default ""
+    startup
+    recompile
+    help A file of branch counts, a line each: the branch's address and instruction word in hex, then how many times
+    help it was taken and not taken. The recompiler gives LLVM those odds for each branch whose address and word
+    help match. Empty: none. It applies to the next recompile, and to the JIT's next run
 setting GDB JIT symbols
     key gdb_jit
     int 0 1
@@ -732,6 +775,54 @@ setting Alias pool
     help host pages, as the console's do, where the host's pages are 4 KiB (Linux and Android). 0 = every view is a
     help copy: a write through it reaches the source at its unmap, or at a flushed line (IC IVAU, DC CVAC) after the
     help write, as hosts without a pool run (Windows among them). For tests of that path, and a diagnosis
+setting Write tracking
+    key write_tracking
+    int 0 2
+    default 0
+    startup
+    words Auto|Protection|Off
+    help How the runtime finds the guest pages written since the caches last looked (docs/ARCHITECTURE.md). 0 = the
+    help host's own: userfaultfd's write protection on Linux 6.7 and later, the reservation's write watch on Windows,
+    help page protection on the other hosts. 1 = page protection and the fault handler, as macOS, FreeBSD, Android
+    help and older Linux track (not on Windows, which says so at start). 2 = none: the caches compare guest memory's
+    help contents, to measure and test that path
+setting Memory traps
+    key memory_traps
+    int 0 2
+    default 0
+    startup
+    words Auto|Protection|Off
+    help How the runtime traps guest memory the GPU owns until the CPU touches it (docs/GPU_OWNERSHIP.md). 0 =
+    help userfaultfd's minor faults where Linux has them, else page protection; none yet on Windows, macOS and
+    help FreeBSD. 1 = page protection and the fault handler, as Android and Linux before 5.13 trap (Linux and Android
+    help only: elsewhere it says so at start). 2 = none: a GPU result lands in guest memory at its fence, to measure
+    help and test that path
+setting Host page size
+    key host_page
+    int 0 1048576
+    default 0
+    startup
+    help The page size the runtime works in, in bytes: a power of two larger than the host's own, up to 1 MiB.
+    help 16384 or 65536 run as a host with 16 or 64 KiB pages does (views copy, a host page holds several guest
+    help pages: docs/PPC64.md). 0 = the host's own. Any other value runs with the host's own, said at start
+setting GPU page check
+    key gpu_page_check
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = the GPU's written pages (gpu/writes.c) and the renderer's pending results (gpu/vk/pending_pages.c), which
+    help the runtime counts by GPU page, are also counted by guest address, and each lookup translates its range
+    help through the GMMU too: the log warns of each write or result only that finds. Slow: for checking those tables
+setting Draw state check
+    key draw_state_check
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = a draw that keeps the last draw's shaders and pipeline makes them again to compare, and the log names
+    help each difference (a register missing from a group, an input that is not compared). Slow: for checking what
+    help a draw keeps
 setting Profiler
     key profile
     int 0 1
@@ -990,6 +1081,13 @@ setting CTR GPU trace
     default 0
     words Off|On
     help 1 = logs each GX command the 3DS game queues, and each framebuffer swap the display takes or drops (and why)
+setting CTR UDS trace
+    key ctr_uds_trace
+    int 0 1
+    default 0
+    words Off|On
+    help 1 = logs each local wireless packet of the 3DS game that goes through an Eden room (sent, received,
+    help delivered): its direction, the time, its size and its first 96 bytes in hex
 setting CTR run-time compile trace
     key ctr_jit_trace
     int 0 1
@@ -1061,6 +1159,21 @@ setting Vita screenshot interval
     default 0
     help With --shot=PATH, also a screenshot every this many vblanks (60 a second), PATH_0000.ppm on; 0 = only the
     help last frame's
+setting Vita lockstep
+    key vita_lockstep
+    int -1 INT_MAX
+    default -1
+    words Off|#
+    help From this import call on (0 = the first), every instruction group of the Vita game also runs in Unicorn, and
+    help the first difference in registers, flags or written memory stops the run with both states (docs/VITA.md).
+    help Only in a build configured with -DSNX_VITA_LOCKSTEP=ON: another build says so at start. -1 = off
+setting Vita lockstep steps
+    key vita_lockstep_steps
+    int 0 INT_MAX
+    default 0
+    words No limit|#
+    help With vita_lockstep, how many instruction groups are compared before the game runs on without Unicorn.
+    help 0 = no limit
 
 section Game: g_game_ini
 section Display: g_display_ini
@@ -1131,7 +1244,8 @@ setting AOT threads
     int 0 1024
     default 0
     words Auto|#
-    help The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores
+    help The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last quarter
+    help left free, so the machine stays responsive; N = that many
 setting Unit size
     key unit_instructions
     int 1 INT_MAX
@@ -1150,7 +1264,7 @@ setting Unit cache limit
     words No limit|# GB
     help The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile
     help finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either
-    help way the cache always leaves a tenth of its disk free, removing its oldest units for a new one
+    help way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one
 
 # LLVM's own: every pass of its pipelines for -O0 to -Oz, on unless turned off, and each option LLVM's C API sets on the
 # pass builder and the target machine, LLVM's own value until it is set

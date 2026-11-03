@@ -6,6 +6,7 @@
 
 * [Extract → AOT → run](#extract--aot--run)
   * [Updates and DLC](#updates-and-dlc)
+  * [Mods](#mods)
   * [NRO applications](#nro-applications)
 * [GDB (Linux)](#gdb-linux)
   * [GDB through the MCP server](#gdb-through-the-mcp-server)
@@ -14,7 +15,7 @@
 * [Folders](#folders)
 * [Users](#users)
 * [Setup](#setup)
-* [Settings / input](#settings--input)
+* [Playing](#playing)
   * [On-screen controls](#on-screen-controls)
 
 Setup: [BUILD](BUILD.md). Checkout CWD; own dumps/keys.
@@ -167,9 +168,11 @@ dump's folder in `Download/`), iOS's the app's Documents alone, so there a folde
 says so.
 
 The box also has **Open Folder**, the game's other folders a row each: its dump's (as the recompile named it), the game's
-own, its saves (`<id>_data/save/`), its settings, its logs and its caches, each where the table below puts it. One not
-known (a game made before the recompile named its dump) or not there yet is greyed, and pressed it says why and makes
-nothing; Back goes back to the box's rows. **Clean Cache** deletes the game's shader cache (`shader_cache/` of its cache
+own, its saves (the user playing's where the game plays them: the data folder's `save/user.<uid>/<title ID>/`, the
+game's `<id>_data/save/` while only that is there, for a homebrew and with `save_layout=game`, [Users](#users)), its
+settings, its logs and its caches, each where the table below puts it. One not known (a game made before the recompile
+named its dump) or not there yet is greyed, and pressed it says why and makes nothing; Back goes back to the box's rows.
+**Clean Cache** deletes the game's shader cache (`shader_cache/` of its cache
 folder: the pipeline cache, the translated shaders and those prepared ahead of time) and its code cache
 (`<id>.jitcache`), asked first with each one's size and folder; the game makes them again as it runs, and its saves,
 settings and dump stay. It is greyed while the game has neither.
@@ -281,7 +284,12 @@ Remaining examples: POSIX.
 - **Recompile:** AOT → module (LLVM) →
   final runtime deployment, for this machine's CPU. Shaders compile directly to SPIR-V at runtime.
   `-O 0..3,s,z` (`--opt=`) sets the optimization level (2 by default), and `--jobs N` (`--aot_threads=N`) the threads
-  compiling (0 or none, one for each core). Every pass of LLVM's pipelines can be turned off for the game's code,
+  compiling (0 or none: the machine's cores with a quarter left free, the physical cores where it says them,
+  else the logical ones, at most 75%, so a recompile does not make the computer stutter). The quarter is
+  deliberate: a large game's recompile runs for minutes, a pass that took every core would keep the machine
+  unusable that long and heat a phone, while an LLVM pass gains little from a hyperthread. At most 75%, rounded
+  down, leaves one whole core free on a machine of 4, and a quarter of the largest ones. Every pass of LLVM's
+  pipelines can be turned off for the game's code,
   `--llvm_pass_<pass>=0` (`--llvm_pass_instcombine=0`), and each option LLVM's C API sets on the pass builder and the
   target machine set, `--llvm_<option>=N` (`--llvm_inliner_threshold=50`). `scarletnx --settings=recompile` lists
   them, as the launcher's LLVM Internals page shows them: the passes are those of the pipelines the build's LLVM prints
@@ -303,11 +311,11 @@ Remaining examples: POSIX.
   code changed in a few units, or one cut short, which goes on from the units it had compiled), and the last line says
   how many were (`unit cache: 241 of 259 units reused (310.2 MB) from ...`). The module
   descriptor and the link are made each time. A kept object that is not whole is compiled again, and said. The cache
-  always leaves a tenth of its disk free: when a new unit would take that, the units reused longest ago are removed
-  for it, and a unit there is still no room for is not cached (said once, with the disk's free bytes, and how many
-  units at the end; the units removed for room are summed there too). `--unit_cache_gb=N`
-  (0, no limit, by default) also holds the folder to N GB after each recompile, the units reused longest ago removed
-  first. A cache folder that cannot be made stops the recompile, saying why.
+  always leaves a tenth of its disk free, at most 10 GB: when a new unit would take that, the units reused longest ago
+  are removed for it, and a unit there is still no room for is not cached (said once, with the disk's free bytes, the
+  unit's size and that rule, and how many units at the end; the units removed for room are summed there too).
+  `--unit_cache_gb=N` (0, no limit, by default) also holds the folder to N GB after each recompile, the units reused
+  longest ago removed first. A cache folder that cannot be made stops the recompile, saying why.
   `--keep-ir` saves the generated code (LLVM IR) in `<outdir>/<NAME>/<NAME>_build/`.
   `--hook-direct-calls` sends calls and branches between guest functions through the dispatch table too, so the
   runtime's NVN handlers also take calls made by direct branch.
@@ -484,6 +492,7 @@ list). The user's data folder and a portable copy's keep each kind of file apart
 | the menu's Share Log, `scarletnx-logs-<date>.zip` or `scarletnx.log` (iOS: `logs/share/` of its Documents) | - | `~/.local/state/scarletnx/share/` | `state/share/` |
 | `prod.keys`, read before `~/.switch` | the folder | `~/.local/share/scarletnx/` | the folder |
 | the console's users, `users.ini` and `<uid>.jpg` ([Users](#users)), and `online.ini`, an Eden room's password (`room`) | `users/` of the user's data folder | `~/.local/share/scarletnx/users/` | `users/` |
+| the users a program deleted, each in `user.<uid>.<UTC time>/` with its users.ini section, picture and saves ([Users](#users)) | `trash/` of the user's data folder | `~/.local/share/scarletnx/trash/` | `trash/` |
 
 The menu works in the user's data folder or a portable copy's, unless its Settings > App > Folders picks a data
 folder, a games folder or an extractions folder ([GUI](GUI.md)): it passes them to the driver as `--data`, `--outdir`
@@ -521,8 +530,10 @@ as [DEPRECATIONS](DEPRECATIONS.md) says.
 The console's users are in `users/users.ini` of the data folder ([Folders](#folders)), every game's: up to 8, each a
 section in the console's order. Without the file there is one, `Player`. User 1 has the uid users.ini gives it; with
 none it has the one it always had, `0123456789abcdeffedcba9876543210`, so the saves made before there were others stay
-its own. Each other one needs a uid of 32 hex digits of its own (not zero) and a nickname. A nickname is 4 to 20
-letters, digits, spaces, `.`, `_` or `-`, the names Eden's rooms take; any other stops the game and says why:
+its own. Each other one needs a uid of 32 hex digits of its own (not zero) and a nickname. A nickname is what the
+console's account service keeps: 1 to 32 bytes of UTF-8, with no control character and no space at either end; any
+other stops the game and says why. An Eden room takes 4 to 20 letters, digits, spaces, `.`, `_` or `-`, and says so
+when it refuses another:
 
 ```ini
 [user1]
@@ -532,16 +543,37 @@ uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e
 nickname=Xuji
 ```
 
-`uid` and `nickname` are the keys; any other key, a section out of order or twice, or a line that is no key stops the
-game and says why. The launcher's Settings > User renames a user (Enter types its nickname, the rule above checked) and
-picks the one the games play as; the file's other lines stay as they are. A user's picture is `users/<uid>.jpg`, a JPEG of at most 128 KiB (256x256 as the console's), read
-when the game starts; without one it is Wimsy. The game plays as the user its `.ini`'s `user` names (`--user=N` for one
-run): with one user, the game picks it on its own; with more, the game's user selector gets that user. Each user's
-Account saves are `save/user.<uid>` in the game's `<id>_data/`; those an older version left in `save/user`, of the uid
+`uid`, `nickname`, `user_data`, `mii` and `picture` are the keys: `user_data` is the profile's UserData a program stored
+(its icon, colour and Mii), 256 hex digits, empty or left out for zeros; any other key, a section out of order or twice,
+or a line that is no key stops the game and says why. `mii` is the user's Mii, one of the Mii database's by its name:
+`Baguette` (the default), `Leek Girl`, `Phone Girl`, `Alex`, `Sam`, `Kai`, `Robin`, `Jamie`, `Taylor`, `Morgan` or
+`Riley`, as written. A game that takes the database's first Mii as the player's takes it. `picture` is `mii`, the
+user's picture drawn from that Mii, or `file`, `users/<uid>.jpg`; without the key it is `file` for a user with that
+file and `mii` for one without. Neither ever stops the game: no key, no users.ini, a name the database does not hold or
+another word is the default, and the game's log and the launcher's say what was read and what is in effect. The
+launcher's Settings > User renames a user (Enter types its nickname, the rule above checked), picks each user's Mii
+(its `User N Mii` row, left and right) and the one the games play as; the file's other lines stay as they are. A
+user's picture file is `users/<uid>.jpg`, the bytes the account service keeps (a JPEG, 256x256 as the console's, from
+its editor), at most 128 KiB, read when the game starts; with `picture=file` and none, or an empty file, it is Wimsy,
+and a launcher that cannot draw it says so and shows Wimsy. The game plays as the user its `.ini`'s `user_uid` names by
+its uid, empty for `[user1]` (`--user_uid=<uid>` for one run): with one user, the game picks it on its own; with more,
+the game's user selector gets that user. Each user's Account saves are in the data folder's
+`save/user.<uid>/<title ID>/`, every save of a game in the data folder's `save/` as the console keeps them
+(`save_layout=global`, the default, [FILESYSTEM](FILESYSTEM.md)); with
+`save_layout=game` they are `save/user.<uid>` in the game's `<id>_data/`. A save in the other layout's folder is played
+there until Settings > App > Move Old Files moves it. Those an older version left in a game's `save/user`, of the uid
 `0123456789abcdeffedcba9876543210`, are played there until you move them ([DEPRECATIONS](DEPRECATIONS.md)). The game's
 menu (Home, F2) shows the user playing in a box at its head's right, their nickname and picture, and the launcher the
-one its Settings' `user` names, where a click picks another ([GUI](GUI.md)); a users.ini that lists no users is said in
-the launcher's foot.
+one its Settings' `user_uid` names, where a click picks another ([GUI](GUI.md)); a users.ini that lists no users is said
+in the launcher's foot.
+
+A program with the console's administrator account service (acc:su, as the system's user settings) changes users.ini as
+the console's does, and the log says each change: a user it registers is the next `[userN]`, `Player` until it stores
+the profile; a profile it stores writes the nickname (the rule above), the UserData and the picture; a user it deletes
+goes to the Trash, a folder `trash/user.<uid>.<UTC time>/` of the data folder with its users.ini section, its picture
+and its saves in `save/user.<uid>/` (with `save_layout=game`, the running game's), the users after it a place up, and
+the user playing is refused; a user it moves takes its new place, those between a place over, user 1 given its uid and
+nickname lines as it leaves `[user1]`. An empty `user_uid` plays as whoever is `[user1]` then.
 
 ## Setup
 
@@ -584,76 +616,9 @@ printf '\n\n\n\n\nAogo\n' | ./build/scarletnx --setup  # its answers a line each
 A run whose stdin or stdout is no terminal (a pipe, the launcher's runs) asks nothing. With `--no-setup` nothing is
 written, so a data folder with no users.ini plays as `Player`, uid `0123456789abcdeffedcba9876543210`.
 
-## Settings / input
+## Playing
 
-`Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
-Restart for `docked`, `fullscreen`, `language`, `resolution`, `anisotropy`, `memory_gb`, `memory_fit`, `heap_max_mb`,
-`thread_stack_mb`, `map_limit_mb`, `map_limit_files`, `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `prepare_shaders`, `jit_threads`, and the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
-`scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
-type, range and help, tab-separated. Every setting, the recompiler's too, is described once in
-`src/nx/runtime/settings.txt`, which the build generates the tables and `g_settings` from.
-
-| Key | Default | Effect |
-| --- | --- | --- |
-| `source` | none | The dump the game was made from, which the recompile writes. Without `--extract-container` the game reads its ExeFS and RomFS from it. Left out, the `<id>.source` link older versions made is read instead |
-| `state_slots` | `10` | The save state slots the menu's Save states page lists and F9 steps through, 1 to 32 |
-| `state_auto_backup` | `1` | `1` saves the game to the auto slot before a save state is loaded over it, so the load can be undone |
-| `docked` | `1` | `1` is TV mode, `0` handheld mode (1280x720) |
-| `fullscreen` | `0` | `1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets it for one run. F11 or Alt+Enter switches without changing it |
-| `language` | `1` | The game's language, English (US). The `.ini` lists the others, `0` to `17`. One the runtime doesn't know is English (US) |
-| `showcase` | `0` | `1` draws player 1's buttons and sticks, as the game gets them, and the frames a second in a corner of the window, for a video. F6 turns it on and off |
-| `showcase_corner` | `br` | The corner `showcase` draws in: `tl` top left, `tr` top right, `bl` bottom left, `br` bottom right |
-| `stats` | `0` | `1` draws the frames a second, the last frame's time, the processor and memory the game takes (`?` where the system does not tell) and a graph of its last 120 frames' times (guides at 60 and 30 FPS, a frame slower than 30 FPS in red) in a corner over the game. F12 or the game's menu turns it on and off |
-| `stats_corner` | `tl` | The corner `stats` draws in, as `showcase_corner`'s; in showcase's own corner it goes beside showcase's box, toward the middle |
-| `resolution` | `1` | Internal 3D scale, `0.25` to `16`: `1` native, `2` double, `0.75` and `0.5` faster. The launcher's Settings takes only the digits, three in all with two decimals at most, and refuses a value past the range, its dialog saying so. It warns below `0.5` and above `4`, where a game may use too much GPU memory or fall apart |
-| `shadows` | `1` | `0` skips shadow maps |
-| `vsync` | `1` | Images are shown only on the display's refresh, so nothing tears. `0` doesn't wait for it: the newest image is shown on the next refresh where the display can do that, else at once (which may tear). A display that can do neither waits for the refresh as `1` does |
-| `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle |
-| `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS |
-| `memory_gb` | `0` | Memory the game sees. Below `6` it is the console's 3.2 GB, `6` gives 4.8 GB and `8` gives 6.8 GB. Games that run out of memory on 3.2 GB need `6` |
-| `memory_fit` | `0` (iOS `1`) | `1` tells the game no more of `memory_gb`'s memory than the device can still give it, measured as the game starts, less what the rest of ScarletNX takes, so a device with less than the console has is not run out of memory. The log says what it measured. `0` tells it all of it |
-| `heap_max_mb` | `0` | The most heap the game can allocate, in MB. `0` is as much as the memory allows |
-| `map_limit_mb` | `0` (iOS `256`) | The most of the game's RomFS and ExeFS files mapped into memory, in MB: the ExeFS and a `romfs.bin` at start, a `romfs` folder's files as the game first reads them. `0` is no limit. A file past it is read from disk when the game asks, which is slower and leaves address space for threads and graphics where a device has little |
-| `map_limit_files` | `0` (iOS `2048`) | The most of those files mapped. `0` is no limit. Each mapped file holds a descriptor, of which a device may give the whole app a few thousand |
-| `thread_stack_mb` | `32` (iOS `8`) | The host stack of each of the game's threads, in MB, which a game's deep calls take. Less leaves address space for more threads where a device has little, and a game that calls very deep may then stop |
-| `pipeline_threads` | `0` | Threads that make the GPU's new pipelines while the game goes on, and those of earlier runs before it starts with `prepare_shaders=2`. `0` uses all the computer's threads but two, two to twelve. `1` to `32` is that many. More make a first run's new pipelines sooner, with less CPU left for the game |
-| `async_pipelines` | `0` | `1` skips what a new shader draws while its pipeline is made, where the game would otherwise pause until it is ready. The game no longer stops where a new shader first appears, and the things that shader draws show up a few frames later. `0` waits for every pipeline |
-| `prepare_shaders` | `2` | Prepares the shaders the game ships in its files and executables ahead of time, so the game's draws needn't make them and it stutters less. They are prepared again after ScarletNX, the GPU or its driver is updated. `0` (Off) makes each shader only when the game first draws with it. `1` (While playing) prepares them in the background, and the game uses them once all are ready. `2` (Before starting) prepares them behind a loading screen in the launcher theme's look, which also waits for the shader cache of earlier sessions, so an opening movie doesn't stutter. A key that types, an arrow or the keypad, a gamepad button other than Home, or a tap starts the game at once, and the rest is prepared while it runs. Esc quits (on Android, back opens the menu, whose Exit quits). F2 or a gamepad's Home opens the menu, and F11 or Alt+Enter switches fullscreen, without starting the game. The screen shows only when the wait passes a quarter second, its words are in English, and a timed run (`--seconds`) starts its clock after it |
-| `jit_threads` | `0` | Threads compiling the game code the recompiler missed, which a thread waits for when it reaches it. `0` uses every CPU the game may run on but two, at most 4. They run below the game's threads |
-| `network` | `0` | `0` reports offline and lets the game reach only loopback, which is not a network sandbox. `1` uses the computer's connection, and the resolver blocks known console service domains. Local wireless works either way (`ldn`) |
-| `airplane_mode` | `0` | `1` is the console in airplane mode: offline whatever `network` says, no local wireless, as the game hears it, and in no Eden room |
-| `ldn` | `lan` | Local wireless. `lan` is over the LAN with ldn_mitm's protocol, with another ScarletNX, a Ryujinx or a console running ldn_mitm: with `network=1` the console is the computer's address, with `0` it is `127.0.0.N`, one per ScarletNX on the machine, so two of them play together through loopback. `room` is through the Eden room `room` names, with the Edens and ScarletNXs in it. `off` is local wireless disabled, as the game hears it. Another word stops the game |
-| `room` | empty | The Eden room `ldn=room` joins at start: `host` or `host:port` (`24872` without one); empty with `ldn=room`, or with a space in it, stops the game. The console is there as the user playing, by its nickname ([Users](#users)), at the address the room gives it (`192.168.x.y`), which nifm gives the game too, and the game's datagrams go through the room. A room with a password takes it from `users/online.ini` ([Folders](#folders)), a file only you may read (`chmod 600`, not checked on Windows) that holds `room_password=...` alone: another key or a section stops the game. A room that refuses stops the game and says why |
-| `user` | `1` | The console's user the game plays as, `1` to `8`, as [Users](#users) lists them. A number with no user stops the game |
-| `touch` | `2` | The game's touch screen: `2` fingers and the mouse's left button, `1` fingers, `0` off |
-| `controls` | `1` on Android, else `0` | The [on-screen controls](#on-screen-controls) shown |
-| `controls_snap`, `controls_scale`, `controls_opacity`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics` | `0`, `50`, `100`, `1`, `1`, `1` | As [On-screen controls](#on-screen-controls) describes them. `controls_scale` runs from `0` to `100` for 50% to 150% |
-| `gamepad_swap_ab` | `0` | `1` swaps a gamepad's A and B. `0` sends A, B, X and Y where the console's are |
-| `gamepad_map` | none | The player's map over that, below |
-| `gamepad_deadzone` | `20` | The sticks' dead zone, in percent of their travel (`0` to `90`) |
-| `gamepad_rumble` | `100` | How strongly gamepads vibrate when the game asks, in percent. `0` is never |
-| `gamepad_background` | `0` | `1` keeps gamepads playing while the window is not focused |
-| `gamepad_joycon_pair` | `1` | `1` plays a left and right Joy-Con together, `0` separately. Restart the game after changing it |
-| `gamepad_p<N>_device` (N from 1 to 8) | empty | Player N's controller: empty takes the next to connect, else its SDL GUID as the log names it, `/2` after it for the second of two alike |
-| `gamepad_p<N>_connected` | `1` | `0`: the game never sees player N. It always sees player 1, which the keyboard drives |
-| `gamepad_p<N>_type` | `0` | The controller the game sees for player N: `0` as it is, `1` Pro Controller, `2` two Joy-Cons, `3` a left Joy-Con, `4` a right one |
-| `gamepad_p<N>_swap_ab`, `gamepad_p<N>_rumble`, `gamepad_p<N>_map` | `-1`, `-10`, empty | Player N's own `gamepad_swap_ab`, `gamepad_rumble` and `gamepad_map`; at these values, every player's |
-| `log` | `1` | Log detail. `2` logs everything, which adds runtime overhead |
-| `auto_stub_ipc` | `1` | A service command the runtime doesn't know answers success, logged as `[undeclared]`, and a service it doesn't have answers every command that way. `0` answers them with the console's UnknownCommandId instead, which shows the gap where the game makes the call |
-| `diag` | `0` | `1` saves the data of each new compute shader to `captures/compute`, and each new shader's snx-shaderc corpus entry to `captures/shaders`, for debugging |
-| `vk_validation` | `0` | `1` turns on the Vulkan validation layer (`VK_LAYER_KHRONOS_validation`, from the Vulkan SDK or the distribution's validation layers package), which logs each misuse of Vulkan it finds. It slows the game down a lot. Without the layer installed the run only warns |
-| `slp_vectorizer` | `0` | `1` runs LLVM's SLP vectorizer, which packs scalar instructions into SIMD ones, in the recompile and the JIT; the next recompile and the JIT's next run take it. Off while LLVM 23 can break a module with it and stop the recompile (llvm-project issue 231525). LLVM Internals' `llvm_slp_vectorization` leaves it running |
-| `fpsr_flags` | `1` | `1` keeps FPSR's cumulative flags (IOC, DZC, OFC, UFC, IXC and QC) as the console raises them, which costs every floating-point or saturating operation a test of its result. `0` keeps only the results exact; a game that never reads FPSR (few do) runs floating-point and saturating code faster. The next recompile and the JIT's next run take it |
-| `gdb_jit` | `0` | `1`, with the GDB stub (`-S` or `-s`), hands the code the JIT compiles to GDB ([GDB](#gdb-linux)). GDB stops the game for each compile while it is attached, and each compile's object stays in memory for the run |
-| `profile` | `0` | `1` writes `profile.txt` every 10 seconds. The CPU profiler is Windows only |
-| `shader_corpus` | empty | A folder that keeps each translated shader for `snx-shaderc`. With it every shader is translated, and none is kept for the next run |
-| `gpu_trace_target` | empty | `address[:bytes]`: logs the clears and draws that write a render target starting in that GPU address range |
-| `vk_gpu_profile` | `0` | `1` logs the GPU's time per rendering pass every 10 seconds |
-| `vk_buffer_stats` | `0` | `1` logs what the renderer copies between guest memory and its buffers |
-| `vk_record` | `1` | `0` records Vulkan commands on the GPU thread instead of a thread of their own |
-| `compute` | `1` | `0` skips every compute shader dispatch |
-| `vk_max_allocation_mb`, `vk_budget_mb` | `0`, `0` | A smaller cap on each Vulkan allocation and on the GPU memory the caches keep, in MiB, for testing. `0` is the device's |
-| `renderdoc`, `renderdoc_frames` | empty | RenderDoc captures to that path's stem of the presents listed (`500,800`, or `45s` for the first after 45 seconds) |
+Every setting of the game's `.ini`, with its default and what it does: [Settings](SETTINGS.md).
 
 A gamepad's motion sensors, a Joy-Con's among them, go to the game when SDL exposes them. No setting turns them off.
 

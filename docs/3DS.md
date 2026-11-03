@@ -12,12 +12,14 @@
 * [Source provenance and licensing](#source-provenance-and-licensing)
 * [Boundaries and prerequisites for stage 2b](#boundaries-and-prerequisites-for-stage-2b)
 * [Parity roadmap (Azahar)](#parity-roadmap-azahar)
+  * [Gaps the F0/F1 audit left to later phases](#gaps-the-f0f1-audit-left-to-later-phases)
 * [Staged roadmap (stages 2–6, superseded by the parity roadmap)](#staged-roadmap-stages-26-superseded-by-the-parity-roadmap)
   * [2. CIA extraction, memory controller and static execution](#2-cia-extraction-memory-controller-and-static-execution)
   * [3. Basic HLE OS and a SwIPC-derived generator](#3-basic-hle-os-and-a-swipc-derived-generator)
   * [4. Audio DSP](#4-audio-dsp)
   * [5. Video graphics](#5-video-graphics)
   * [6. HID and remaining peripherals](#6-hid-and-remaining-peripherals)
+  * [Experimental local wireless over rooms](#experimental-local-wireless-over-rooms)
 
 ## Status: stage 1 + stage 2a + stages 2b1–2b4 + initial 3a/3b/FS
 
@@ -91,7 +93,7 @@ recompile (`-r`) seeds discovery with, so it is static from then on. A
 commercial title's 7 MiB of text compiles to about 340000 blocks in about six
 and a half minutes on six cores (the chunks compile in parallel).
 
-Since 2026-10-21 a commercial title, decrypted this way, runs its startup
+A commercial title, decrypted this way, runs its startup
 (cfg, FS with its save data, APT, and the system services the runtime answers
 generically), creates its save data and stops at its first prompt for the A
 button, drawn through the PICA renderer. Input is the next gap.
@@ -171,7 +173,7 @@ block compiled at run time. A run ended by `--seconds` (or a stop) reports each
 thread's core, priority, pc, what it waits on (whose event it is) and the return
 addresses on its stack, how long the process sat idle, and its most frequent SVCs.
 
-Since 2026-10-16, SuperTux runs past `main` and its RomFS reads. It draws its title and loading
+SuperTux runs past `main` and its RomFS reads. It draws its title and loading
 screens through a software port of Azahar's PICA pipeline (command processor,
 shader interpreter, rasterizer, texturing, combiners, lighting) and plays its
 title music through a port of Azahar's HLE DSP. A run of about 2 billion native
@@ -510,6 +512,30 @@ extracted tree. Once the module is ready the driver copies itself into the folde
 game's runtime, unless the copy there is the same program. The GUI uses this same
 driver path, not a separate engine.
 
+The software keyboard (`src/3ds/services/swkbd.c`) and the Mii selector
+(`src/3ds/services/mii_selector.c`) are the library applets the runtime plays, in the
+applets' place as Azahar's HLE ones do. A game that asks for a
+text through the keyboard (a name, a password) is answered at once, with no box over the game to
+ask the player in: `swkbd_text` when it is set, else the game's own initial text, else the
+console's user name (the user's nickname, `Player` without one), cut to the game's most
+characters and checked against its input rule and filters. A text that breaks one is
+answered with Cancel where the keyboard has one. A game that checks the text itself
+(the callback filter) gets it first, and its answer closes the keyboard or lets the text
+through. The log says what was answered and why (`3ds swkbd: ...`), with the user
+name's length in place of the name. APT answers each step a game takes:
+PrepareToStartLibraryApplet, IsRegistered, the Request for the capture block and its
+Response, StartLibraryApplet, the NotifyToWait before the wakeup, and the WakeupByExit
+the game wakes with, which carries the answer. Any other library applet (the error
+display, say) is one the runtime does not have: preparing it answers as an unknown
+command does.
+
+A game that has the player pick a Mii through the Mii selector (its StreetPass Mii,
+say) gets ScarletNX's own Mii at once, as a Mii of the console's database, as Azahar's
+default selector answers with its standard Mii: Baguette, a girl with red curled twin
+tails, made of her own fields in the 3DS's Mii format, no console's Mii; her author is
+the console's user name. The game's configuration (its title, Cancel, the Guest Miis)
+is in the log (`3ds mii selector: ...`); the answer is the same whatever it asks.
+
 A launch runs until the game exits or its window is closed, as a Switch game does.
 `--max-blocks N` stops it after N native blocks instead. A larger-image block may
 execute up to 32 instructions, so this is not a cycle or exact instruction budget.
@@ -692,6 +718,14 @@ and Unicorn 2.1.4's ARM11 MPCore model are test references, not runtime engines.
 Stage 2b2 process mappings/BSS policy refer to Azahar `src/core/loader/ncch.cpp`
 and kernel process layout at the same revision; the new image/module/compiler/
 dispatch implementation is project C code, not an adapted Azahar CPU engine.
+The software keyboard, the Mii selector and APT's parameter and library applet commands
+port `hle/applets/{swkbd,mii_selector}.{cpp,h}`, `hle/mii.{cpp,h}`,
+`frontend/applets/{swkbd,mii_selector}.cpp` and
+`hle/service/apt/{apt,applet_manager}.cpp` at Azahar `ac4a97e27723a501fbd79db75e94a5a8b3cbb8b1`
+(GPL-2.0-or-later): the configurations' and the Mii selector's result's layouts, the
+result codes, the Request, Message and Finalize steps, the default keyboard's answer
+with the user name and its checks, the Mii's checksum; the C implementation is new. The
+Mii's fields are laid out as 3dbrew's Mii page gives them.
 Stage 2b4 references GPL-2.0-or-later kernel `svc.cpp`, `errors.h`,
 `handle_table.cpp`, `address_arbiter.cpp`, `config_mem.*`, `memory.cpp` and
 `process.cpp` at the same revision for SVC register/result semantics, object

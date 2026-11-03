@@ -43,6 +43,9 @@ def main():
         data, config, state, cache = (homes[kind] / 'scarletnx' for kind in ('DATA', 'CONFIG', 'STATE', 'CACHE'))
         games = data / 'recompiled'
         folder = games / 'Smoke'  # the game's own
+        # code units, which the unit cache's checks count: an NCE recompile (nce=1, the default where the runtime runs
+        # NCE) makes none
+        aot = ['--nce=0']
 
         def run(command, cwd=root, environment=None):
             p = subprocess.run(
@@ -72,7 +75,9 @@ def main():
         nro.write_bytes(make_nro())
 
         # recompiled into the data folder (--repo names it, as the menu does): the settings in the config folder
-        status, out = run([driver, '--repo', str(data), '-r', str(nro), 'Smoke', '--runtime', driver, '--jobs', '2'])
+        status, out = run(
+            [driver, '--repo', str(data), '-r', str(nro), 'Smoke', '--runtime', driver, '--jobs', '2', *aot]
+        )
         check(status == 0 and (folder / 'Smoke').is_file(), 'the recompile did not put Smoke in recompiled/Smoke/', out)
         ini = config / 'recompiled/Smoke/Smoke.ini'
         older = 'kept from the older build'
@@ -91,7 +96,9 @@ def main():
 
         # an older version's game of that name, its program a file where the folder goes: said, nothing touched
         (games / 'InTheWay').write_bytes(b'older program')
-        status, out = run([driver, '--repo', str(data), '-r', str(nro), 'InTheWay', '--runtime', driver, '--jobs', '2'])
+        status, out = run(
+            [driver, '--repo', str(data), '-r', str(nro), 'InTheWay', '--runtime', driver, '--jobs', '2', *aot]
+        )
         check(
             status != 0 and "is a file where this game's folder goes" in out,
             'the recompile did not say a file is where the folder goes',
@@ -101,7 +108,7 @@ def main():
 
         # the build tree's own driver with no --repo works there too (#318), never in the checkout it was built from
         checkout = Path(__file__).resolve().parents[1]
-        status, out = run([driver, '-r', str(nro), 'Tree', '--runtime', driver, '--jobs', '2'])
+        status, out = run([driver, '-r', str(nro), 'Tree', '--runtime', driver, '--jobs', '2', *aot])
         check(status == 0 and (games / 'Tree/Tree').is_file(), 'the driver without --repo did not use recompiled/', out)
         check(
             f'unit cache: {kept} of {kept} units reused' in out,
@@ -176,7 +183,7 @@ def main():
         # a folder of its own (a checkout's or a portable copy's games/, --outdir): everything beside the game
         beside = root / 'portable/games/Beside'
         status, out = run(
-            [driver, '--repo', str(data), '-r', str(nro), 'Beside', '--runtime', driver, '--jobs', '2']
+            [driver, '--repo', str(data), '-r', str(nro), 'Beside', '--runtime', driver, '--jobs', '2', *aot]
             + ['--outdir', str(beside.parent)]
         )
         check(status == 0 and (beside / 'Beside.ini').is_file(), 'the --outdir recompile did not keep Beside.ini', out)
@@ -196,7 +203,7 @@ def main():
         portable = root / 'copy/.scarletnx'
         port = portable / 'games/Port'
         status, out = run(
-            [driver, '--repo', str(portable), '-r', str(nro), 'Port', '--runtime', driver, '--jobs', '2']
+            [driver, '--repo', str(portable), '-r', str(nro), 'Port', '--runtime', driver, '--jobs', '2', *aot]
             + ['--outdir', str(port.parent)]
         )
         check(
@@ -246,7 +253,7 @@ def main():
         for name, (environment, made_data, made_config, made_state, made_cache) in made.items():
             game = made_data / 'recompiled' / name
             status, out = run(
-                [driver, '--repo', str(made_data), '-r', str(nro), name, '--runtime', driver, '--jobs', '2'],
+                [driver, '--repo', str(made_data), '-r', str(nro), name, '--runtime', driver, '--jobs', '2', *aot],
                 environment=environment,
             )
             record = game / f'{name}.folders'

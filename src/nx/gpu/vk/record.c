@@ -677,6 +677,31 @@ void rec_CmdBindVertexBuffers(VkCommandBuffer cb, u32 first, u32 n, const VkBuff
     rec_CmdBindVertexBuffers2(cb, first, n, bufs, offs, NULL, NULL);
 }
 
+/* a draw's vertex layout as dynamic state: the bindings, then the attributes */
+typedef struct {
+    VkCommandBuffer cb;
+    u32 nb, na;
+} VertexInputArgs;
+static void vertex_input_run(const void* p) {
+    const VertexInputArgs* x = p;
+    const u8* q = (const u8*)p + REC_AL(sizeof *x);
+    vkCmdSetVertexInputEXT(x->cb, x->nb, (const void*)q, x->na,
+                           (const void*)(q + REC_AL(x->nb * sizeof(VkVertexInputBindingDescription2EXT))));
+}
+void rec_CmdSetVertexInputEXT(VkCommandBuffer cb, u32 nb, const VkVertexInputBindingDescription2EXT* b, u32 na,
+                              const VkVertexInputAttributeDescription2EXT* a) {
+    if (!rec_on(cb)) {
+        vkCmdSetVertexInputEXT(cb, nb, b, na, a);
+        return;
+    }
+    u64 h = REC_AL(sizeof(VertexInputArgs)), bn = REC_AL(nb * sizeof *b);
+    VertexInputArgs* x = rec_push(vertex_input_run, h + bn + na * sizeof *a);
+    *x = (VertexInputArgs){cb, nb, na};
+    if (nb) memcpy((u8*)x + h, b, nb * sizeof *b);
+    if (na) memcpy((u8*)x + h + bn, a, na * sizeof *a);
+    rec_commit();
+}
+
 /* transform feedback (VK_EXT_transform_feedback): the buffers with their offsets and sizes (bind), or the counter
    buffers begin resumes from and end writes (NULL: none), each an array of n after the arguments */
 typedef struct {

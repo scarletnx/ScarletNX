@@ -23,11 +23,16 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/nce/nce.h"
 
 VkState g_vk;
 VkSemaphore g_vk_csem;
 u64 g_vk_cs_wait_value;
 static unsigned errors;
+/* compute.c isn't here: no compute batches for memory.c's binds to wait for */
+void vk_compute_progress(u64* submitted, u64* done) { *submitted = *done = 0; }
+/* nor uma.c: no guest memory read in place for cmd.c's draws to settle */
+void vk_uma_settle(u64 ended) { (void)ended; }
 
 /* Only the window/game and guest pipeline services are stubbed. cmd.c and
    vk/astc.c are linked unchanged, including staging flushes and frame reuse. */
@@ -105,8 +110,9 @@ int gpu_wait_note(const char* what, u64 value) {
     (void)value;
     return 0;
 }
-/* plat_posix.c's crash handler, which the test never installs */
+/* plat_posix.c's crash handler, which the test never installs, and the nce.c function it calls */
 void log_crash_mode(void) {}
+void nce_crash_context(const void* context) { (void)context; }
 void crash_report(void* host_pc, void* fault, int sig) {
     (void)host_pc;
     (void)fault;

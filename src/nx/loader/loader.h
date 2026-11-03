@@ -120,6 +120,9 @@ int snx_load_nso(const char* path, const char* name, SnxModuleImage* module, cha
    its functions and relptrs keep bit 0 when it marks Thumb code */
 int snx_load_nso32(const char* path, const char* name, SnxModuleImage* module, char* error, size_t error_size);
 int snx_load_nro(const char* path, SnxModuleImage* module, char* error, size_t error_size);
+/* An NRO's icon, the JPEG of its assets (ASET), the one Games shows: 0 with it in *icon (malloc'd) and *size, 1 when it
+   has none, -1 said in error when the file is no NRO or cannot be read */
+int snx_nro_icon(const char* path, unsigned char** icon, size_t* size, char* error, size_t error_size);
 void snx_free_module(SnxModuleImage* module);
 /* data NULL with size 0 gives the defaults of a program without an NPDM */
 int snx_parse_npdm(const unsigned char* data, size_t size, SnxNpdm* npdm, char* error, size_t error_size);
@@ -133,9 +136,13 @@ int snx_load_npdm(const char* entry, SnxNpdm* npdm, char* error, size_t error_si
        program 1 <is64: 1 or 0>
        module <name> <base> <size> <image size>
        symbol <value> <size> <type> <name>
+       match <value> <instructions> <name>
+       matched <functions named> <signatures> <ambiguous> <repeated> <skipped>
 
-   Each symbol line belongs to the module line before it; its value is module-relative and the name runs to the end
-   of the line. 0, or -1 with a message */
+   Each symbol and match line belongs to the module line before it; its value is module-relative and the name runs to
+   the end of the line. A match is a function the module doesn't export, named from the sdk module's exports
+   (match.h), with the instructions its code matched; the last line counts what the matcher named and left unnamed
+   (SnxMatchStats), in decimal. 0, or -1 with a message */
 int snx_dump_program(const char* entry, const char* outdir, char* error, size_t error_size);
 
 #endif

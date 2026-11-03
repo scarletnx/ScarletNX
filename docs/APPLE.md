@@ -2,6 +2,16 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # macOS and iOS
 
+## Index
+
+* [The frontend](#the-frontend)
+  * [macOS](#macos)
+  * [iOS](#ios)
+  * [Running a game on iOS](#running-a-game-on-ios)
+  * [Installing from a Mac](#installing-from-a-mac)
+* [What is missing](#what-is-missing)
+* [Building](#building)
+
 Both build on a Mac with Xcode, for Apple silicon (arm64), with Xcode's Clang, and the CI builds both on every push
 (`.github/workflows/build.yml`). They are new. On a Mac, one game's module loads and runs as far as its title
 background, without the logo or the menu. On an iPhone, one game has been prepared on the device and played with JIT on.

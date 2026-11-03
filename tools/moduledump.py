@@ -20,12 +20,13 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 class Module:
     """name, base and size (the whole mapping, BSS included), image (the bytes mapped, without the BSS), and the
-    symbols: syms {module offset: name}, sizes {module offset: size in bytes, 0 when unknown}"""
+    symbols: syms {module offset: name}, sizes {module offset: size in bytes, 0 when unknown}; matched {module offset:
+    (instructions, name)}, the functions it doesn't export that the loader named from the sdk module's exports"""
 
     def __init__(self, name, base, size):
         self.name, self.base, self.size = name, base, size
         self.image = b''
-        self.syms, self.sizes = {}, {}
+        self.syms, self.sizes, self.matched = {}, {}, {}
 
 
 def scarletnx():
@@ -103,4 +104,7 @@ def load_program(program):
                 value, size, _, name = rest.split(' ', 3)
                 current.syms[int(value, 16)] = name
                 current.sizes[int(value, 16)] = int(size, 16)
+            elif kind == 'match' and current is not None:
+                value, words, name = rest.split(' ', 2)
+                current.matched[int(value, 16)] = (int(words), name)
     return mods, is64

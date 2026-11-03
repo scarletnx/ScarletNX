@@ -26,7 +26,7 @@ typedef struct {
     const char *what, *before, *now, *row;
     int systems;
 } SnxNotice;
-#define SNX_NOTICES 17
+#define SNX_NOTICES 21
 extern const SnxNotice snx_notices[SNX_NOTICES]; /* the oldest first */
 int snx_notice_here(int notice);                 /* 1 for one of this system's */
 
@@ -53,11 +53,12 @@ int snx_setup_options(int argc, char** argv, char* why, size_t why_size);
 /* a new user's uid: 16 bytes of the system's generator (RAND_bytes), its text (users.h) a UUID's of RFC 4122's version
    4 and variant. 0, else -1 */
 int snx_setup_uid(uint64_t uid[2]);
-/* the folders of games with Account saves of the fixed uid (users.h), which user 1 with another uid does not see */
-int snx_setup_first_saves(const char* games);
-/* the uid of a new users.ini's first user: the fixed one while games has saves of it, else snx_setup_uid's. How many
-   games have them, else -1 when the generator failed */
-int snx_setup_first_uid(const char* games, uint64_t uid[2]);
+/* the games with Account saves of the fixed uid (users.h), which user 1 with another uid does not see: those of games
+   in their own folders, and those in the data folder data's save/ (save_layout=global's, user.<uid>/<title ID>) */
+int snx_setup_first_saves(const char* games, const char* data);
+/* the uid of a new users.ini's first user: the fixed one while games or data has saves of it, else snx_setup_uid's. How
+   many games have them, else -1 when the generator failed */
+int snx_setup_first_uid(const char* games, const char* data, uint64_t uid[2]);
 
 /* 1 for text as a prod.keys or a title.keys has it: no NUL byte, and a line "name = hex" at least */
 int snx_keys_text(const char* data, size_t size);

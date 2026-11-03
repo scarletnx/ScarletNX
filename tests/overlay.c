@@ -15,6 +15,9 @@
 #include "gui/icons.h"
 #include "gui_theme_colors.h"
 #include "common/utilities/users.h"
+#include "common/utilities/mii_db.h"
+#include "common/utilities/mii_model.h"
+#include "common/utilities/common.h"
 #include "gui/splash.h"
 #include "common/utilities/endian.h"
 /* the menu's page colour, its letters on the head's band, as R G B A bytes */
@@ -46,6 +49,10 @@ void fatal(const char* fmt, ...) {
 }
 /* settings.txt's Display table, which holds the menu's Stats, names options.c's setter of the game's language */
 void options_language_set(const IniOpt* o, const char* v) {
+    (void)o;
+    (void)v;
+}
+void options_tv_mode_set(const IniOpt* o, const char* v) {
     (void)o;
     (void)v;
 }
@@ -114,10 +121,14 @@ static int tap(int row, int col) {
     C = overlay_cols(SW, s);
     return overlay_tap((float)(px + col * 8 * s + 2), (float)(py + (3 + row) * 16 * s + 5), SW, SH);
 }
-/* ui.c's warning for a picture that does not draw */
+/* ui.c's warning for a picture that does not draw: the last one */
+static char warned[512];
 void logf_(int lvl, const char* fmt, ...) {
+    va_list ap;
     (void)lvl;
-    (void)fmt;
+    va_start(ap, fmt);
+    vsnprintf(warned, sizeof warned, fmt, ap);
+    va_end(ap);
 }
 static SnxUiQuad quads[2048];
 static SnxUiList list;
@@ -994,9 +1005,10 @@ int main(void) {
         assert(!fatal_log_url("", url, sizeof url) && !*url);
         assert(!fatal_log_url("/tmp/a.log", NULL, 0));
     }
-    /* the user playing on the head's band: Player, without users.ini, and Wimsy, as the YoRHa theme has it (square),
-       in the atlas under the sprites; on the right of the band, its frame in the page colour and the nickname before
-       it; none on a stopped game's panel */
+    /* the user playing on the head's band: Player, without users.ini, as the YoRHa theme has it (square), in the
+       atlas under the sprites: its picture its Mii's (Baguette's: users.ini's picture= is mii for a user with no
+       picture file), and Wimsy with picture=file and no file; on the right of the band, its frame in the page colour
+       and the nickname before it; none on a stopped game's panel */
     {
         char why[256];
         u32* sprites = calloc((size_t)SNX_CONTROLS_ATLAS_WIDTH * SNX_CONTROLS_ATLAS_HEIGHT, 4);
@@ -1008,6 +1020,26 @@ int main(void) {
         assert(sprites && !snx_users_load("/nonexistent/users", 1, why, sizeof why));
         assert(g_user_count == 1 && !strcmp(snx_users_selected()->nickname, "Player"));
         assert(SNX_GUI_THEME_YORHA_PICTURE == 1); /* square: the frame is the fills' */
+        assert(snx_users_selected()->picture_mii && snx_users_selected()->mii == 0);
+        ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
+        a = ui_atlas(&w, &h, &version);
+        assert(a && h == SNX_CONTROLS_ATLAS_HEIGHT + SNX_UI_PICTURE);
+        { /* texel for texel the Mii's picture (mii_model.h), R G B A from the low byte, opaque */
+            static uint8_t rgba[SNX_UI_PICTURE * SNX_UI_PICTURE * 4];
+            uint8_t charinfo[SNX_MII_CHARINFO];
+            SnxMiiLook look;
+            snx_mii_db_charinfo(0, charinfo);
+            snx_mii_db_look(0, &look);
+            assert(!snx_mii_picture(charinfo, &look, SNX_UI_PICTURE, rgba));
+            for (y = 0; y < SNX_UI_PICTURE; ++y)
+                for (x = 0; x < SNX_UI_PICTURE; ++x) {
+                    const uint8_t* p = rgba + 4 * (y * SNX_UI_PICTURE + x);
+                    assert(snx_le32(a[(SNX_CONTROLS_ATLAS_HEIGHT + y) * w + x]) ==
+                           ((u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | 0xFF000000u));
+                }
+        }
+        ui_atlas_done();
+        g_users[0].picture_mii = 0; /* picture=file, and no users/<uid>.jpg: Wimsy */
         ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
         a = ui_atlas(&w, &h, &version);
         assert(a && h == SNX_CONTROLS_ATLAS_HEIGHT + SNX_UI_PICTURE);
@@ -1064,8 +1096,34 @@ int main(void) {
         for (i = 0, pictures = 0; i < list.n; ++i) pictures += list.q[i].v == SNX_CONTROLS_ATLAS_HEIGHT;
         assert(!pictures && !shows("Player"));
     }
+    /* a picture that does not draw: Wimsy shows, and the warning names the user by number, never by nickname, which
+       players attach to public reports with the log */
+    {
+        static const unsigned char broken[] = {0xFF, 0xD8, 'n', 'o', 't', 0xFF, 0xD9}; /* a JPEG's ends alone */
+        static const char ini[] = "[user1]\nnickname=Wanda Maximoff\n";
+        const uint64_t first[2] = {SNX_USERS_FIRST_UID0, SNX_USERS_FIRST_UID1};
+        u32* sprites = calloc((size_t)SNX_CONTROLS_ATLAS_WIDTH * SNX_CONTROLS_ATLAS_HEIGHT, 4);
+        char why[256], uid[33], *jpg;
+        snx_remove_tree("overlay_users");
+        assert(sprites && !snx_mkdirs("overlay_users"));
+        assert(!snx_write_file("overlay_users/users.ini", ini, sizeof ini - 1));
+        snx_users_uid_text(first, uid);
+        jpg = snx_format("overlay_users/%s.jpg", uid);
+        assert(jpg && !snx_write_file(jpg, broken, sizeof broken));
+        assert(!snx_users_load("overlay_users", 1, why, sizeof why));
+        assert(!strcmp(snx_users_selected()->nickname, "Wanda Maximoff"));
+        warned[0] = 0;
+        ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
+        ui_atlas_done();
+        assert(!strcmp(warned, "ui: user 1's picture could not be drawn, Wimsy shows in the menu\n"));
+        free(jpg);
+        free(sprites);
+        assert(!snx_users_load("/nonexistent/users", 1, why, sizeof why)); /* Player again */
+        snx_remove_tree("overlay_users");
+    }
     keyboard_box();
-    puts("overlay: placing, pages, taps, keys, values, scrolling, look, the error's panel, the atlas, the user and the "
-         "keyboard's box passed");
+    puts(
+        "overlay: placing, pages, taps, keys, values, scrolling, look, the error's panel, the atlas, the user, a picture "
+        "that does not draw and the keyboard's box passed");
     return 0;
 }

@@ -89,7 +89,9 @@ static const int start_prio[] = {46, 44, 45, 40, 50, 30};
 static KThread* reset(const int* prio) {
     memset(snx_kmt_thread, 0, sizeof snx_kmt_thread);
     memset(g_mem, 0, 0x1000);
+    memset(g_host.thread.handed, 0, sizeof g_host.thread.handed);
     g_hle.sync.mwait = 0;
+    memset(g_hle.sync.cvwait, 0, sizeof g_hle.sync.cvwait);
     for (int i = 0; i < SNX_KMT_THREADS; i++) {
         snx_kmt_thread[i].o.type = KO_THREAD;
         snx_kmt_thread[i].prio = snx_kmt_thread[i].base_prio = prio[i];
@@ -177,6 +179,62 @@ int main(void) {
           "the mutex went to its waiter (word %x) with the condition variable at %u", word(SNX_KMT_M), g_watched);
     g_watch = 0;
 
+    /* A mutex the kernel handed to a thread that has yet to run: a thread that comes for it then (late) would on the
+       console have come after that owner's turn, so a waiter a condition variable's signal moves here goes ahead of
+       it, and a pool that signals one waiter only when it gets back its first free item loses no wake. w waits on the
+       condition variable; x gets the mutex from s's unlock; d comes while x has yet to run; x runs, signals w and
+       unlocks */
+    t = reset((const int[]){46, 46, 46, 46, 50, 30});
+    KThread *s = &t[0], *x = &t[1], *dl = &t[2], *w = &t[3];
+    mine = handle(w);
+    snx_st_le32(g_mem + SNX_KMT_M, mine);
+    CHECK(svc_wait_cv(w, SNX_KMT_M, SNX_KMT_CV, handle(w), -1) == 0, "w waits on the condition variable");
+    held = handle(s);
+    snx_st_le32(g_mem + SNX_KMT_M, held);
+    lock(x, s, SNX_KMT_M);
+    svc_arbitrate_unlock(SNX_KMT_M);
+    CHECK(x->woken && word(SNX_KMT_M) == handle(x), "s hands the mutex to x: word %x", word(SNX_KMT_M));
+    lock(dl, x, SNX_KMT_M);
+    sync_owner_runs(x);
+    svc_signal_cv(SNX_KMT_CV, 1);
+    CHECK(w->wait_kind == 2 && w->lock_owner == kt_ix(x), "w signalled into the mutex x holds: kind %d", w->wait_kind);
+    svc_arbitrate_unlock(SNX_KMT_M);
+    CHECK(w->woken && !dl->woken && word(SNX_KMT_M) == (handle(w) | HANDLE_WAIT) && dl->lock_owner == kt_ix(w),
+          "the signalled waiter first, the late one after it: word %x", word(SNX_KMT_M));
+
+    /* one that came while the owner ran keeps its place ahead of a waiter signalled after it, as on the console */
+    t = reset((const int[]){46, 46, 46, 46, 50, 30});
+    s = &t[0], x = &t[1], dl = &t[2], w = &t[3];
+    mine = handle(w);
+    snx_st_le32(g_mem + SNX_KMT_M, mine);
+    CHECK(svc_wait_cv(w, SNX_KMT_M, SNX_KMT_CV, handle(w), -1) == 0, "w waits on the condition variable");
+    held = handle(s);
+    snx_st_le32(g_mem + SNX_KMT_M, held);
+    lock(x, s, SNX_KMT_M);
+    svc_arbitrate_unlock(SNX_KMT_M);
+    sync_owner_runs(x);
+    lock(dl, x, SNX_KMT_M);
+    svc_signal_cv(SNX_KMT_CV, 1);
+    svc_arbitrate_unlock(SNX_KMT_M);
+    CHECK(dl->woken && !w->woken && word(SNX_KMT_M) == (handle(dl) | HANDLE_WAIT), "the earlier waiter first: word %x",
+          word(SNX_KMT_M));
+
+    /* and priority still comes first: a late waiter of better priority goes ahead of a signalled one */
+    t = reset((const int[]){46, 46, 44, 46, 50, 30});
+    s = &t[0], x = &t[1], dl = &t[2], w = &t[3];
+    mine = handle(w);
+    snx_st_le32(g_mem + SNX_KMT_M, mine);
+    CHECK(svc_wait_cv(w, SNX_KMT_M, SNX_KMT_CV, handle(w), -1) == 0, "w waits on the condition variable");
+    held = handle(s);
+    snx_st_le32(g_mem + SNX_KMT_M, held);
+    lock(x, s, SNX_KMT_M);
+    svc_arbitrate_unlock(SNX_KMT_M);
+    lock(dl, x, SNX_KMT_M);
+    sync_owner_runs(x);
+    svc_signal_cv(SNX_KMT_CV, 1);
+    svc_arbitrate_unlock(SNX_KMT_M);
+    CHECK(dl->woken && !w->woken, "44 late ahead of 46 signalled: %d %d", dl->woken, w->woken);
+
     /* a join: the thread dump names the thread waited for */
     t = reset(start_prio);
     a = &t[0], b = &t[1];
@@ -261,6 +319,38 @@ int main(void) {
         t[0].woken = 0;
         CHECK(svc_signal_addr(SNX_KMT_ARB, 2, 5, 1) == R_BADSTATE && !t[0].woken && word(SNX_KMT_ARB) == 7,
               "another value: InvalidState, nobody woken");
+    }
+
+    /* WaitIfEqual64 (type 3): the 8-byte-aligned doubleword against all 64 bits of the value, then the wait and the wakes
+       of WaitIfEqual. The console checks the address, its alignment (8 for type 3), then the type */
+    {
+        enum { SNX_KMT_ARB64 = 0x600 };
+        u64 word64 = 0x100000005ull;
+        t = reset(start_prio);
+        memset(g_hle.sync.arbwait, 0, sizeof g_hle.sync.arbwait);
+        snx_st_le64(g_mem + SNX_KMT_ARB64, word64);
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 3, 5, -1) == R_BADSTATE && !g_hle.sync.arbwait[bucket(SNX_KMT_ARB64)],
+              "the low half equal, the high half not: InvalidState");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 3, 0x100000005ll, 0) == R_TIMEOUT, "equal, no timeout: TimedOut");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64 + 4, 3, 0x100000005ll, -1) == R_BADADDR,
+              "4-byte aligned: InvalidAddress");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64 + 4, 2, 1, -1) == 0, "4-byte aligned is enough for WaitIfEqual");
+        memset(g_hle.sync.arbwait, 0, sizeof g_hle.sync.arbwait);
+        CHECK(svc_wait_addr(&t[0], AS_SIZE - 4, 3, 0, -1) == R_BADMEMSTATE,
+              "past the address space: InvalidCurrentMemory");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 4, 0, -1) == R_BADENUM, "type 4: InvalidEnumValue");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64 + 2, 4, 0, -1) == R_BADADDR, "the alignment before the type");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 3, 0x100000005ll, -1) == 0 && t[0].wait_kind == 4 &&
+                  t[0].wait_addr == SNX_KMT_ARB64,
+              "equal: it waits on the address (kind %d)", t[0].wait_kind);
+        CHECK(svc_wait_addr(&t[1], SNX_KMT_ARB64, 3, 0x100000005ll, -1) == 0, "a second waiter");
+        t[0].woken = t[1].woken = 0;
+        CHECK(svc_signal_addr(SNX_KMT_ARB64, 0, 0, 1) == 0 && t[1].woken && !t[0].woken,
+              "a Signal wakes the best waiter (44) of the two");
+        CHECK(svc_signal_addr(SNX_KMT_ARB64, 1, 5, 1) == 0 && t[0].woken && word(SNX_KMT_ARB64) == 6 &&
+                  snx_ld_le64(g_mem + SNX_KMT_ARB64) == 0x100000006ull,
+              "SignalAndIncrementIfEqual on its low word wakes the other: %llx",
+              (unsigned long long)snx_ld_le64(g_mem + SNX_KMT_ARB64));
     }
 
     printf("%u checks, %u failed\n", checks, failures);

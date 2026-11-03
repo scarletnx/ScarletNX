@@ -16,6 +16,7 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/ini_lines.h"
+#include <libdeflate.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -41,6 +42,7 @@
 #include <sys/statvfs.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <pthread.h> /* a thread's CPU clock (snx_thread_clock) */
 #include <unistd.h>
 #endif
 
@@ -54,6 +56,7 @@
 #include <libkern/OSCacheControl.h> /* sys_icache_invalidate */
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
+#include <sys/sysctl.h> /* sysctlbyname: the physical cores (snx_physical_cores) */
 #if TARGET_OS_IPHONE
 #include <os/proc.h>
 #endif
@@ -155,15 +158,64 @@ int snx_error(const char* fmt, ...) {
 }
 char* snx_os_error(char* out, size_t size) {
 #ifdef _WIN32
+    /* the wide text: FormatMessageA's is in the system's code page, which every reader of out takes for UTF-8 */
     DWORD code = GetLastError();
-    DWORD n = size ? FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, code, 0, out,
-                                    (DWORD)size, NULL)
-                   : 0;
-    while (n && (out[n - 1] == '\n' || out[n - 1] == '\r' || out[n - 1] == ' ' || out[n - 1] == '.')) out[--n] = 0;
-    if (!n && size) snprintf(out, size, "Windows error %lu", (unsigned long)code);
+    WCHAR text[512];
+    DWORD n = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, code, 0, text,
+                             (DWORD)(sizeof text / sizeof *text), NULL);
+    snx_windows_reason((const uint16_t*)text, n, (unsigned long)code, out, size);
 #else
     if (size) snprintf(out, size, "%s", strerror(errno));
 #endif
+    return out;
+}
+char* snx_windows_reason(const uint16_t* text, size_t n, unsigned long code, char* out, size_t size) {
+    char tail[40];
+    size_t at = 0, room, i;
+    if (!size) return out;
+    for (i = 0; i < n && text[i]; ++i) {}
+    n = i;
+    while (n && (text[n - 1] == '\n' || text[n - 1] == '\r' || text[n - 1] == ' ' || text[n - 1] == '.' ||
+                 text[n - 1] == 0x3002)) /* the ideographic full stop too */
+        --n;
+    if (!n) {
+        snprintf(out, size, "Windows error %lu", code);
+        return out;
+    }
+    snprintf(tail, sizeof tail, " (Windows error %lu)", code);
+    room = size - 1 > strlen(tail) ? size - 1 - strlen(tail) : size - 1; /* the code after it where both fit */
+    for (i = 0; i < n; ++i) {
+        uint32_t c = text[i];
+        unsigned char utf8[4];
+        size_t k;
+        if (c >= 0xD800 && c < 0xDC00 && i + 1 < n && text[i + 1] >= 0xDC00 && text[i + 1] < 0xE000)
+            c = 0x10000 + ((c - 0xD800) << 10) + (uint32_t)(text[++i] - 0xDC00);
+        else if (c >= 0xD800 && c < 0xE000)
+            c = 0xFFFD;
+        if (c < 0x80) {
+            utf8[0] = (unsigned char)c;
+            k = 1;
+        } else if (c < 0x800) {
+            utf8[0] = (unsigned char)(0xC0 | c >> 6);
+            utf8[1] = (unsigned char)(0x80 | (c & 0x3F));
+            k = 2;
+        } else if (c < 0x10000) {
+            utf8[0] = (unsigned char)(0xE0 | c >> 12);
+            utf8[1] = (unsigned char)(0x80 | (c >> 6 & 0x3F));
+            utf8[2] = (unsigned char)(0x80 | (c & 0x3F));
+            k = 3;
+        } else {
+            utf8[0] = (unsigned char)(0xF0 | c >> 18);
+            utf8[1] = (unsigned char)(0x80 | (c >> 12 & 0x3F));
+            utf8[2] = (unsigned char)(0x80 | (c >> 6 & 0x3F));
+            utf8[3] = (unsigned char)(0x80 | (c & 0x3F));
+            k = 4;
+        }
+        if (at + k > room) break;
+        memcpy(out + at, utf8, k);
+        at += k;
+    }
+    snprintf(out + at, size - at, "%s", strlen(tail) < size - at ? tail : "");
     return out;
 }
 char* snx_path_join(const char* a, const char* b) {
@@ -1066,9 +1118,10 @@ int snx_same_file(const char* a, const char* b) {
    the folders SDL_GetPrefPath("scarletnx", ...) gives the GUI; the app's Documents on iOS. NULL when the environment
    names no home */
 #if !defined(_WIN32) && !defined(SNX_IOS)
-/* $var/scarletnx, else ~/fallback/scarletnx: the XDG spec ignores a relative path */
-static char* home_folder(const char* var, const char* fallback) {
-    const char* base = var ? getenv(var) : NULL;
+/* xdg/scarletnx (xdg an XDG variable's value, NULL for none), else ~/fallback/scarletnx: the XDG spec ignores a
+   relative path */
+static char* home_folder(const char* xdg, const char* fallback) {
+    const char* base = xdg;
     if (base && base[0] == '/') return snx_path_join(base, "scarletnx");
     base = getenv("HOME");
     if (!base || !base[0]) return NULL;
@@ -1089,16 +1142,16 @@ char* snx_user_data_dir(void) {
 #elif defined(__APPLE__)
     return home_folder(NULL, "Library/Application Support");
 #else
-    return home_folder("XDG_DATA_HOME", ".local/share");
+    return home_folder(getenv("XDG_DATA_HOME"), ".local/share");
 #endif
 }
 static const char* const kind_names[] = {NULL, "config", "state", "cache"};
 char* snx_user_dir(int kind) {
     char *data, *dir;
 #ifdef SNX_XDG
-    if (kind == SNX_USER_CONFIG) return home_folder("XDG_CONFIG_HOME", ".config");
-    if (kind == SNX_USER_STATE) return home_folder("XDG_STATE_HOME", ".local/state");
-    if (kind == SNX_USER_CACHE) return home_folder("XDG_CACHE_HOME", ".cache");
+    if (kind == SNX_USER_CONFIG) return home_folder(getenv("XDG_CONFIG_HOME"), ".config");
+    if (kind == SNX_USER_STATE) return home_folder(getenv("XDG_STATE_HOME"), ".local/state");
+    if (kind == SNX_USER_CACHE) return home_folder(getenv("XDG_CACHE_HOME"), ".cache");
 #endif
 #ifdef SNX_IOS
     /* the Files app shows Documents: what is not the player's to move (settings, state, caches) is in Library, which the system makes */
@@ -1447,6 +1500,73 @@ unsigned snx_cpu_count(void) {
     return ncpu;
 #endif
 }
+/* The physical cores, where the system says them: how many a whole thread can use before two share one core's
+   throughput. 0 where it does not say (Windows, an ARM board's /proc/cpuinfo) */
+static unsigned snx_physical_cores(void) {
+#if defined(__APPLE__)
+    int cores = 0;
+    size_t len = sizeof(cores);
+    return sysctlbyname("hw.physicalcpu", &cores, &len, NULL, 0) ? 0 : cores > 0 ? (unsigned)cores : 0;
+#elif defined(__linux__)
+    /* /proc/cpuinfo names each processor in a block, blank lines between, its "physical id" and "core id": a pair
+       is one physical core, and the threads of a hyperthread share its pair. Where a block names neither id (ARM)
+       none count, and the caller takes the logical count instead */
+    unsigned pair[512][2], n = 0, cores = 0, phys = 0, core = 0;
+    char line[256];
+    int have = 0, saw = 0;
+    FILE* f = fopen("/proc/cpuinfo", "r");
+    if (!f) return 0;
+    for (;;) {
+        int full = fgets(line, sizeof line, f) != NULL;
+        char* colon = full ? strchr(line, ':') : NULL;
+        if (!colon) {
+            if (saw && have) { /* a processor's block ended, at a blank line or the file's end */
+                int found = 0, i;
+                for (i = 0; i < (int)n; ++i)
+                    if (pair[i][0] == phys && pair[i][1] == core) found = 1;
+                if (!found && n < sizeof pair / sizeof *pair) {
+                    pair[n][0] = phys;
+                    pair[n][1] = core;
+                    ++n;
+                    ++cores;
+                }
+            }
+            saw = 0;
+            have = 0;
+            if (!full) break;
+        } else {
+            char* field = line;
+            while (*field == ' ' || *field == '\t') ++field;
+            if (!strncmp(field, "physical id", 11)) {
+                phys = (unsigned)strtoul(colon + 1, NULL, 10);
+                saw = 1;
+            } else if (!strncmp(field, "core id", 7)) {
+                core = (unsigned)strtoul(colon + 1, NULL, 10);
+                have = 1;
+                saw = 1;
+            }
+        }
+    }
+    fclose(f);
+    return cores;
+#else
+    return 0;
+#endif
+}
+/* The threads an AOT pass (a game's recompile) is given when its count is left open, the recompile setting's Auto: a
+   core each, the physical cores where the system says them, else the processors, capped so a part of the machine
+   stays free for the rest of it. A pass that took every core would make the computer it shares stutter for the
+   minutes a large game's recompile runs and heat a phone, and an LLVM pass gains little from a hyperthread anyway:
+   two threads on one physical core only split its throughput. The cap is a reserve of one whole core, or a quarter
+   of the machine where that is more, which is at most 75% rounded down: a machine of 4 keeps a thread off, 6 and 8
+   keep two, 16 keep four, 32 keep eight. Never 0, and never more than the online processors */
+unsigned snx_build_threads(void) {
+    unsigned logical = snx_cpu_count(), cores = snx_physical_cores();
+    unsigned jobs = (cores ? cores : logical) * 75u / 100u;
+    if (jobs < 1u) jobs = 1u;
+    if (jobs > logical) jobs = logical;
+    return jobs;
+}
 /* Code arenas (code_loader.c) reserve their address space once and give each page access only when it is used: the
    loader writes into read-write pages and makes them executable before anything jumps there */
 void snx_abort_request(int on) { g_common.abort_requested = on; }
@@ -1500,6 +1620,54 @@ SnxU64 snx_process_cpu_ns(void) {
     struct timespec t;
     if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t)) return 0;
     return (SnxU64)t.tv_sec * 1000000000u + (SnxU64)t.tv_nsec;
+#endif
+}
+SnxU64 snx_thread_clock(void) {
+#if defined(_WIN32)
+    HANDLE h = NULL;
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &h, 0, FALSE,
+                         DUPLICATE_SAME_ACCESS))
+        return 0;
+    return (SnxU64)(uintptr_t)h;
+#elif defined(__APPLE__)
+    return (SnxU64)pthread_mach_thread_np(pthread_self()); /* the library's own right: nothing to let go of */
+#else
+    clockid_t id;
+    SnxU64 clock = 0;
+    if (pthread_getcpuclockid(pthread_self(), &id)) return 0;
+    memcpy(&clock, &id, sizeof id); /* a thread's clock is never CLOCK_REALTIME, 0 */
+    return clock;
+#endif
+}
+int snx_thread_cpu_ns(SnxU64 clock, SnxU64* ns) {
+#if defined(_WIN32)
+    FILETIME created, exited, kernel, user;
+    if (!GetThreadTimes((HANDLE)(uintptr_t)clock, &created, &exited, &kernel, &user)) return -1;
+    *ns = (((SnxU64)kernel.dwHighDateTime << 32 | kernel.dwLowDateTime) +
+           ((SnxU64)user.dwHighDateTime << 32 | user.dwLowDateTime)) *
+          100; /* 100 ns ticks */
+    return 0;
+#elif defined(__APPLE__)
+    thread_basic_info_data_t info;
+    mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+    if (thread_info((thread_act_t)clock, THREAD_BASIC_INFO, (thread_info_t)&info, &count) != KERN_SUCCESS) return -1;
+    *ns = ((SnxU64)info.user_time.seconds + (SnxU64)info.system_time.seconds) * 1000000000u +
+          ((SnxU64)info.user_time.microseconds + (SnxU64)info.system_time.microseconds) * 1000u;
+    return 0;
+#else
+    clockid_t id;
+    struct timespec t;
+    memcpy(&id, &clock, sizeof id);
+    if (clock_gettime(id, &t)) return -1;
+    *ns = (SnxU64)t.tv_sec * 1000000000u + (SnxU64)t.tv_nsec;
+    return 0;
+#endif
+}
+void snx_thread_clock_close(SnxU64 clock) {
+#if defined(_WIN32)
+    if (clock) CloseHandle((HANDLE)(uintptr_t)clock);
+#else
+    (void)clock;
 #endif
 }
 int snx_memory_available(SnxU64* bytes) {
@@ -1910,29 +2078,126 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
     return waited < 0 ? 1 : WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 #endif
 }
-int snx_nacp_name(const unsigned char* nacp, size_t size, char* name, size_t name_size) {
-    /* 16 languages of 0x300 bytes, each a name of 0x200 then a publisher; American English first */
-    size_t language, i, n = 0;
-    const unsigned char* title;
-    if (name_size) name[0] = 0;
-    for (language = 0; nacp && name_size && language < 16 && (language + 1) * 0x300 <= size && !name[0]; ++language) {
-        title = nacp + language * 0x300;
-        for (i = 0, n = 0; i < 0x200 && title[i] && n + 1 < name_size; ++i)
-            if (title[i] >= 0x20 && title[i] != 0x7f) name[n++] = (char)title[i];
-        while (n && name[n - 1] == ' ') --n;
-        /* a name cut in a UTF-8 sequence loses the sequence */
-        i = n;
-        while (i && ((unsigned char)name[i - 1] & 0xc0) == 0x80) --i;
-        if (i && ((unsigned char)name[i - 1] & 0x80)) {
-            unsigned char lead = (unsigned char)name[i - 1];
-            size_t want = (lead & 0xe0) == 0xc0 ? 2 : (lead & 0xf0) == 0xe0 ? 3 : (lead & 0xf8) == 0xf0 ? 4 : 1;
-            if (n - (i - 1) < want) n = i - 1;
+/* a control.nacp's titles, one a language: its name (0x200 bytes), then its publisher. A NACP keeps 16 of them at its
+   start as they are, or, when its TitleCompression byte is 1, a u16 size there and the titles in raw deflate, up to 32
+   languages (firmware 20.0.0's) */
+#define SNX_NACP_TITLE             0x300
+#define SNX_NACP_TITLES            16
+#define SNX_NACP_TITLES_PACKED     32
+#define SNX_NACP_TITLE_COMPRESSION 0x3215
+int snx_utf8_valid(const char* text, size_t n, char* hex, size_t hex_size) {
+    const unsigned char* s = (const unsigned char*)text;
+    size_t i = 0, want, k, at;
+    unsigned long c;
+    if (hex_size) hex[0] = 0;
+    while (i < n) {
+        if (s[i] < 0x80) {
+            ++i;
+            continue;
         }
-        name[n] = 0;
-        for (i = 0; name[i] == ' '; ++i) {}
-        if (i) memmove(name, name + i, n - i + 1);
+        want = (s[i] & 0xe0) == 0xc0 ? 2 : (s[i] & 0xf0) == 0xe0 ? 3 : (s[i] & 0xf8) == 0xf0 ? 4 : 0;
+        if (!want || want > n - i) break;
+        c = s[i] & (0x7fu >> want);
+        for (k = 1; k < want && (s[i + k] & 0xc0) == 0x80; ++k) c = c << 6 | (s[i + k] & 0x3fu);
+        if (k < want ||
+            c < (want == 2   ? 0x80ul
+                 : want == 3 ? 0x800ul
+                             : 0x10000ul) ||
+            c > 0x10fffful || (c >= 0xd800ul && c <= 0xdffful))
+            break;
+        i += want;
     }
-    return name_size && name[0];
+    if (i == n) return 1;
+    for (i = 0, at = 0; i < n && i < 16 && at + 4 < hex_size; ++i, at = strlen(hex))
+        snprintf(hex + at, hex_size - at, "%s%02x", i ? " " : "", (unsigned)s[i]);
+    if (n > 16 && hex_size && strlen(hex) + 4 < hex_size) strcat(hex, "...");
+    return 0;
+}
+/* one language's name (title, 0x200 bytes at most) into name: control characters left out, spaces trimmed, a sequence
+   that name_size cuts dropped. 1 with a name, else 0 and "": its bytes in hex into bad (when given) when they are not
+   UTF-8, which a name never shows as */
+static int title_name(const unsigned char* title, char* name, size_t name_size, char* bad, size_t bad_size) {
+    size_t i, n = 0;
+    for (i = 0; i < 0x200 && title[i] && n + 1 < name_size; ++i)
+        if (title[i] >= 0x20 && title[i] != 0x7f) name[n++] = (char)title[i];
+    while (n && name[n - 1] == ' ') --n;
+    /* a name cut in a UTF-8 sequence loses the sequence */
+    i = n;
+    while (i && ((unsigned char)name[i - 1] & 0xc0) == 0x80) --i;
+    if (i && ((unsigned char)name[i - 1] & 0x80)) {
+        unsigned char lead = (unsigned char)name[i - 1];
+        size_t want = (lead & 0xe0) == 0xc0 ? 2 : (lead & 0xf0) == 0xe0 ? 3 : (lead & 0xf8) == 0xf0 ? 4 : 1;
+        if (n - (i - 1) < want) n = i - 1;
+    }
+    name[n] = 0;
+    if (!snx_utf8_valid(name, n, bad, bad ? bad_size : 0)) {
+        name[0] = 0;
+        return 0;
+    }
+    for (i = 0; name[i] == ' '; ++i) {}
+    if (i) memmove(name, name + i, n - i + 1);
+    return name[0] != 0;
+}
+int snx_nacp_name_why(const unsigned char* nacp, size_t size, char* name, size_t name_size, char* why,
+                      size_t why_size) {
+    unsigned char* unpacked = NULL;
+    const unsigned char* titles = nacp;
+    struct libdeflate_decompressor* inflater;
+    size_t count = SNX_NACP_TITLES, language, packed, got = 0, bad_language = 0;
+    char bad[64] = {0};
+    int format = nacp && size > SNX_NACP_TITLE_COMPRESSION ? nacp[SNX_NACP_TITLE_COMPRESSION] : 0;
+    if (why_size) why[0] = 0;
+    if (!name_size) return 0;
+    name[0] = 0;
+    if (!nacp || size < SNX_NACP_TITLE) {
+        if (why_size) snprintf(why, why_size, "it is %zu bytes, short of one language's title (768)", nacp ? size : 0);
+        return 0;
+    }
+    if (format > 1) {
+        if (why_size)
+            snprintf(why, why_size,
+                     "its TitleCompression is %d, where 0 (its titles as they are) and 1 (in deflate) are "
+                     "the formats known",
+                     format);
+        return 0;
+    }
+    if (format == 1) { /* the titles region's u16 size, then the deflate */
+        packed = snx_ld_le16(nacp);
+        unpacked = (unsigned char*)malloc(SNX_NACP_TITLES_PACKED * SNX_NACP_TITLE);
+        inflater = unpacked && packed <= SNX_NACP_TITLES * SNX_NACP_TITLE - 2 ? libdeflate_alloc_decompressor() : NULL;
+        if (!inflater ||
+            libdeflate_deflate_decompress(inflater, nacp + 2, packed, unpacked, SNX_NACP_TITLES_PACKED * SNX_NACP_TITLE,
+                                          &got) != LIBDEFLATE_SUCCESS) {
+            if (why_size)
+                snprintf(why, why_size,
+                         "its titles are in deflate (TitleCompression 1), %zu bytes that do not inflate to "
+                         "%d languages' titles or fewer",
+                         packed, SNX_NACP_TITLES_PACKED);
+            libdeflate_free_decompressor(inflater);
+            free(unpacked);
+            return 0;
+        }
+        libdeflate_free_decompressor(inflater);
+        titles = unpacked;
+        size = got;
+        count = SNX_NACP_TITLES_PACKED;
+    }
+    for (language = 0; language < count && (language + 1) * SNX_NACP_TITLE <= size && !name[0]; ++language)
+        if (!title_name(titles + language * SNX_NACP_TITLE, name, name_size, bad_language ? NULL : bad, sizeof bad) &&
+            bad[0] && !bad_language)
+            bad_language = language + 1;
+    if (!name[0] && why_size) {
+        if (bad_language)
+            snprintf(why, why_size, "the name of its language %zu is not UTF-8 (%s), and no other language has one",
+                     bad_language - 1, bad);
+        else
+            snprintf(why, why_size, "it names the game in none of its %zu languages", language);
+    }
+    free(unpacked);
+    return name[0] != 0;
+}
+int snx_nacp_name(const unsigned char* nacp, size_t size, char* name, size_t name_size) {
+    return snx_nacp_name_why(nacp, size, name, name_size, NULL, 0);
 }
 SnxU64 snx_npdm_title(const unsigned char* npdm, size_t size) {
     if (!npdm || size < 0x80 || memcmp(npdm, "META", 4)) return SNX_NPDM_DEFAULT_TITLE;

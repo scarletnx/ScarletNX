@@ -2,6 +2,15 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # PS Vita driver
 
+## Index
+
+* [How it fits together](#how-it-fits-together)
+* [The shader corpus](#the-shader-corpus)
+* [Code compiled at run time](#code-compiled-at-run-time)
+* [Checking the CPU backend](#checking-the-cpu-backend)
+* [Limits](#limits)
+* [Sources](#sources)
+
 `scarletnx-vita` runs a homebrew VPK the way the other drivers run their games. The VPK is extracted once into the
 data folder's `recompiled/<title ID>/` (`app/` holds the package, `ux0/` the writable storage), the eboot's code is
 compiled ahead of time into `<title ID>_code.so`, and a copy of the runtime named after the title ID plays it; its
@@ -65,9 +74,9 @@ lacks make it compile the module again with them, so the next runs have them ahe
 ## Checking the CPU backend
 
 Configure with `-DSNX_VITA_LOCKSTEP=ON` (and `SNX_UNICORN_INCLUDE`, `SNX_UNICORN_LIBRARY` pointing at Unicorn 2) and
-run with `VITA_LOCKSTEP=N`: from the Nth import call on, every instruction group runs in Unicorn too, and the first
-difference in registers, flags or written memory stops the run with both states. This is how the Thumb backend's
-bugs this driver ran into were found.
+run with `--vita_lockstep=N`: from the Nth import call on, every instruction group runs in Unicorn too, and the first
+difference in registers, flags or written memory stops the run with both states (`--vita_lockstep_steps=M` stops
+comparing after M groups). This is how the Thumb backend's bugs this driver ran into were found.
 
 ## Limits
 

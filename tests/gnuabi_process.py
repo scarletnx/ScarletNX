@@ -150,6 +150,39 @@ def main():
             if result.returncode != 42:
                 print(f"{name}: exit {result.returncode}, expected 42\n{result.stderr.decode(errors='replace')}")
                 failures += 1
+
+        def run(arguments, environment, status, *lines):
+            # the fork program with options or the variables an older version read: its status, and lines of stderr
+            nonlocal failures
+            result = subprocess.run(
+                [runtime, *arguments, os.path.join(folder, "fork")],
+                capture_output=True,
+                timeout=120,
+                env={**os.environ, **environment},
+            )
+            text = result.stderr.decode(errors="replace")
+            missing = [line for line in lines if line not in text]
+            if result.returncode != status or missing:
+                print(f"{arguments} {environment}: exit {result.returncode}, expected {status}, lacking {missing}")
+                print(text)
+                failures += 1
+
+        jit = ["--jit-cache=" + cache]
+        # each system call on stderr with the process id, the forked child's too: its pipe2 and the child's write
+        run(["-L", root, *jit, "--strace"], {}, 42, "] 59(", "] 64(0x")
+        run(["-L", root, *jit, "--sample-pc", "--host-page=65536"], {}, 42)
+        refused = "--host-page=12288 is not a power of two from the host's page"
+        run(["-L", root, *jit, "--host-page=12288"], {}, 2, refused)
+        # the variables an older version read (docs/DEPRECATIONS.md), still read
+        run([*jit], {"SNX_LINUX_SYSROOT": root}, 42, f"SNX_LINUX_SYSROOT={root} is deprecated, replaced by -L DIR")
+        run(
+            ["-L", root, *jit],
+            {"SNX_GNU_STRACE": "1", "SNX_HOST_PAGE": "12288"},
+            42,
+            "SNX_GNU_STRACE=1 is deprecated, and this run reads it as --strace",
+            "] 59(",
+            "SNX_HOST_PAGE=12288 is deprecated, and not a power of two from the host's page",
+        )
     if not failures:
         print("GNU ABI pipe, fork, vfork, execve through the sysroot and wait4 passed")
     return 1 if failures else 0

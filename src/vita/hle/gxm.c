@@ -720,11 +720,11 @@ static void texture_write(VitaProcess* p, uint32_t address, const GxmTexture* te
 }
 /* init_texture_base: clamped, point sampled, the size in the type's form, the data's address in word 2 */
 static uint32_t texture_init(VitaProcess* p, uint32_t address, uint32_t data, uint32_t format, uint32_t width,
-                             uint32_t height, uint32_t mips, uint32_t type) {
+                             uint32_t height, uint32_t levels, uint32_t type) {
     if (!address) return SCE_GXM_ERROR_INVALID_POINTER;
-    if (width > 4096 || height > 4096 || mips > 13 || !width || !height) return SCE_GXM_ERROR_INVALID_VALUE;
+    if (width > 4096 || height > 4096 || levels > 13 || !width || !height) return SCE_GXM_ERROR_INVALID_VALUE;
     GxmTexture x = {{0}};
-    gxm_set_bits(&x.w[0], 17, 4, (mips ? mips - 1 : 0) > 15 ? 15 : (mips ? mips - 1 : 0));
+    gxm_set_bits(&x.w[0], 17, 4, (levels ? levels - 1 : 0) > 15 ? 15 : (levels ? levels - 1 : 0));
     gxm_set_bits(&x.w[0], 31, 1, format >> 31);
     gxm_set_bits(&x.w[0], 21, 6, 31); /* the LOD bias */
     gxm_set_bits(&x.w[0], 6, 3, 1);   /* SCE_GXM_TEXTURE_ADDR_CLAMP, u and v */

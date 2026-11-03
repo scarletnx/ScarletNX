@@ -170,29 +170,62 @@ static size_t utf8_len(const unsigned char* p, size_t n) {
     return len;
 }
 
-/* How long the home folder's part is at s: "/home/<user>", "/var/home/<user>" (Silverblue's), "/Users/<user>",
-   "/media/<user>" and "/run/media/<user>" (the drives a desktop mounts for its user, where games often are),
-   "C:\Users\<user>" (either slash, any case), Android's "/data/user/<n>/<package>"; 0 elsewhere. The player's account
-   name stays out of a public report */
+static int is_sep(char c) { return c == '/' || c == '\\'; }
+/* a drive at s, "C:\" or "C:/", or WSL's "/mnt/c/": the length before its separator, 0 for none */
+static size_t drive_at(Span s) {
+    if (s.n >= 3 && snx_is_alpha(s.p[0]) && s.p[1] == ':' && is_sep(s.p[2])) return 2;
+    if (s.n >= 7 && starts(s, "/mnt/") && snx_is_alpha(s.p[5]) && s.p[6] == '/') return 6;
+    return 0;
+}
+/* "\Users\" at s, either slash: its length, 0 for none. In any case after a drive, Windows' names having none;
+   elsewhere only as macOS and Windows write it, the data folder's own users/ being no home */
+static size_t users_at(Span s, int any_case) {
+    if (s.n < 7 || !is_sep(s.p[0]) || !is_sep(s.p[6])) return 0;
+    for (size_t k = 0; k < 5; k++)
+        if (any_case ? snx_to_lower(s.p[1 + k]) != "users"[k] : s.p[1 + k] != "Users"[k]) return 0;
+    return 7;
+}
+/* a byte no account's name holds on the systems the runtime runs on: a control, a line's end among them, or one that
+   Windows refuses in a name, passwd's ':' with them. A space is a name's: Windows' often hold one */
+static int ends_name(char c) { return (unsigned char)c < 0x20 || c == 0x7f || strchr("\"*+,:;<=>?[]|", c); }
+/* the length of the account's folder at s, past a home's prefix: up to the separator its path goes on with. A name
+   that no separator follows cannot be told from the words after it, which go with it to the line's end or the first
+   byte no name holds, its last blanks left out; a blank, then a separator or a drive, starts another path */
+static size_t name_len(Span s) {
+    size_t i, end = 0;
+    if (!s.n || s.p[0] == ' ') return 0;
+    for (i = 0; i < s.n && !ends_name(s.p[i]) && !is_sep(s.p[i]); i++) {
+        if (s.p[i] != ' ')
+            end = i + 1;
+        else if (i + 1 < s.n && (is_sep(s.p[i + 1]) || drive_at(skip(s, i + 1))))
+            break;
+    }
+    return end;
+}
+
+/* How long the home folder's part is at s: "/home/<user>", "/usr/home/<user>" (FreeBSD's), "/var/home/<user>"
+   (Silverblue's), "/Users/<user>", "/media/<user>" and "/run/media/<user>" (the drives a desktop mounts for its user,
+   where games often are), "C:\Users\<user>" (either slash) and WSL's "/mnt/c/Users/<user>", "\Users\<user>" on a
+   share or another volume, Android's "/data/user/<n>/<package>"; 0 elsewhere. The player's account name stays out of
+   a public report, spaces and all */
 static size_t home_at(Span s) {
-    static const char* const homes[] = {"/home/", "/var/home/", "/Users/", "/run/media/", "/media/"};
-    size_t i = 0, k;
-    if (!s.n || (s.p[0] != '/' && !snx_is_alpha(s.p[0]))) return 0;
-    for (k = 0; k < sizeof homes / sizeof homes[0] && !i; k++)
+    static const char* const homes[] = {"/home/", "/usr/home/", "/var/home/", "/run/media/", "/media/"};
+    size_t i = 0, k, drive;
+    if (!s.n || (!is_sep(s.p[0]) && !snx_is_alpha(s.p[0]))) return 0;
+    for (k = 0; k < sizeof homes / sizeof homes[0] && !i && s.p[0] == '/'; k++)
         if (starts(s, homes[k])) i = strlen(homes[k]);
-    if (!i && s.n > 9 && snx_is_alpha(s.p[0]) && s.p[1] == ':' && (s.p[2] == '\\' || s.p[2] == '/') &&
-        (s.p[8] == '\\' || s.p[8] == '/')) {
-        for (k = 0; k < 5 && snx_to_lower(s.p[3 + k]) == "users"[k]; k++) {}
-        if (k == 5) i = 9;
+    if (!i) {
+        drive = drive_at(s);
+        k = users_at(skip(s, drive), drive != 0);
+        if (k) i = drive + k;
     }
     if (!i && starts(s, "/data/user/")) {
         i = 11 + dec_run(skip(s, 11));
         if (i == 11 || i >= s.n || s.p[i] != '/') return 0;
         i++;
     }
-    if (!i || i >= s.n || s.p[i] == '/' || s.p[i] == '\\' || snx_is_blank(s.p[i])) return 0;
-    while (i < s.n && s.p[i] != '/' && s.p[i] != '\\' && !snx_is_blank(s.p[i])) i++;
-    return i;
+    k = i ? name_len(skip(s, i)) : 0;
+    return k ? i + k : 0;
 }
 
 /* room for n more bytes in the pool: 0, or -1 out of memory, the pool as it was. Its offsets are unsigned */
@@ -455,13 +488,17 @@ static int marker(Span line, Marker* m) {
 /* ============================================================ the scan */
 /* A game log is all of itself. The launcher's Share Log file (src/gui/main.c's share_log) starts with snx_build_info's
    line, "ScarletNX <branch> <commit> (<compiler>, <system>)", then its message and sections: the last run's output
-   under "== the last run: <path> ==" and the newest game log under "== <path> ==". The game log's lines are scanned,
-   else the run's output when it had none */
+   under "== the last run: <path> ==" and the newest game log under "== <path> ==", which can come alone, without the
+   run's. The game log's lines are scanned, else the run's output when it had none. The newest game log can be another game's, one played before: the run's
+   output is kept while it is read, and stands for itself when its title ID is not the game log's */
 enum { PHASE_START, PHASE_LOG, PHASE_HEAD, PHASE_RUN, PHASE_GAME, PHASE_DONE };
 
-/* "ScarletNX - <title>", what an older build followed with " (<folder>)", which is cut */
+/* "ScarletNX - <title>", what an older build followed with " (<folder>)", which is cut, and the GBA's runtime with
+   " (GBA)" (agb/runtime/main.c), which is cut too: the console says it */
 static void header(SnxLogScan* s, Span title) {
     size_t i;
+    s->console = ends(title, " (GBA)") ? SNX_CONSOLE_GBA : SNX_CONSOLE_SWITCH;
+    if (s->console == SNX_CONSOLE_GBA) title.n -= 6;
     for (i = title.n; i > 2; i--)
         if (title.p[i - 1] == '(' && title.p[i - 2] == ' ') {
             Span path = skip(title, i);
@@ -492,6 +529,66 @@ static int build_line(SnxLogScan* s, Span line) {
     return 1;
 }
 
+/* the other frontends' header, the title, its ID when there is one, and the build on one line (3ds/aot/run.c,
+   vita/runtime/main.c): "Game: <title> (<title ID>) - ScarletNX ...", "Game: <title> - ScarletNX ..." */
+static int frontend_header(SnxLogScan* s, Span rest) {
+    long at = find(rest, " - ScarletNX ");
+    if (at <= 0) return 0;
+    Span title = span(rest.p, (size_t)at);
+    if (title.n > 19 && title.p[title.n - 1] == ')' && title.p[title.n - 18] == '(' && title.p[title.n - 19] == ' ') {
+        char id[17];
+        size_t k;
+        for (k = 0; k < 16 && snx_is_hex(title.p[title.n - 17 + k]); k++)
+            id[k] = (char)snx_to_upper(title.p[title.n - 17 + k]);
+        if (k == 16) {
+            id[16] = 0;
+            s->title_id = add_c(s, id);
+            title.n -= 19;
+        }
+    }
+    s->console = s->title_id ? SNX_CONSOLE_3DS : SNX_CONSOLE_VITA; /* the Vita's has no title ID */
+    s->title = add(s, title);
+    if (!s->build) build_line(s, skip(rest, (size_t)at + 3));
+    return 1;
+}
+
+/* what ipc_line and ctr_ipc_line read: kind's iface and cmd counted again, or added */
+static void ipc_add(SnxLogScan* s, int kind, Span iface, unsigned cmd) {
+    for (int k = 0; k < s->nipc; k++) {
+        const char* name = snx_logscan_text(s, s->ipc[k].iface);
+        if (s->ipc[k].kind == kind && s->ipc[k].command == cmd && strlen(name) == iface.n &&
+            !memcmp(name, iface.p, iface.n)) {
+            s->ipc[k].count++;
+            return;
+        }
+    }
+    if (s->nipc < SNX_LOGSCAN_IPC) {
+        s->ipc[s->nipc].kind = kind;
+        s->ipc[s->nipc].iface = add(s, iface);
+        s->ipc[s->nipc].command = cmd;
+        s->ipc[s->nipc].count = 1;
+        s->nipc++;
+    }
+}
+
+/* a frontend's error that ends its run, as the 3DS's, the Vita's and the GBA's runtimes write it on stderr:
+   "scarletnx-<frontend>: <what>". The 3DS's stop (3ds/aot/run.c) is cut after its pc ("unsupported guest operation or
+   missing static entry: pc=0x0013be3c"): the counts after it differ from run to run */
+static int frontend_error(SnxLogScan* s, Span line) {
+    Span rest = line;
+    size_t n = 0;
+    if (!take_lit(&rest, "scarletnx-")) return 0;
+    while (n < rest.n && n < 8 && (snx_is_lower(rest.p[n]) || snx_is_digit(rest.p[n]))) n++; /* 3ds, vita, agb */
+    if (!n || n >= rest.n || !starts(skip(rest, n), ": ")) return 0;
+    rest = skip(rest, n + 2);
+    long at = find(rest, ": pc=0x");
+    if (at > 0 && rest.n >= (size_t)at + 15) rest.n = (size_t)at + 15;
+    if (!rest.n) return 0;
+    s->outcome = SNX_LOG_FATAL;
+    s->fatal = add(s, rest);
+    return 1;
+}
+
 static int ipc_line(SnxLogScan* s, Span line) {
     static const char* const kinds[] = {"[bad request] ", "[undeclared] ", "[unknown] "};
     Span rest = line, iface;
@@ -518,21 +615,27 @@ static int ipc_line(SnxLogScan* s, Span line) {
     size_t d = dec_run(rest);
     if (!d || d > 9) return 0;
     for (unsigned i = 0; i < d; i++) cmd = cmd * 10 + (unsigned)(rest.p[i] - '0');
-    for (int k = 0; k < s->nipc; k++) {
-        const char* name = snx_logscan_text(s, s->ipc[k].iface);
-        if (s->ipc[k].kind == kind && s->ipc[k].command == cmd && strlen(name) == iface.n &&
-            !memcmp(name, iface.p, iface.n)) {
-            s->ipc[k].count++;
-            return 1;
-        }
-    }
-    if (s->nipc < SNX_LOGSCAN_IPC) {
-        s->ipc[s->nipc].kind = kind;
-        s->ipc[s->nipc].iface = add(s, iface);
-        s->ipc[s->nipc].command = cmd;
-        s->ipc[s->nipc].count = 1;
-        s->nipc++;
-    }
+    ipc_add(s, kind, iface, cmd);
+    return 1;
+}
+
+/* the 3DS's service calls the runtime has no model of (3ds/ipc/ipc.c, services/system.c): "stub answered <service>
+   command 0x<n> (header ...)" and "<service> command 0x<n> (header ...) answered success", which it answers without
+   doing what they ask, as the Switch's undeclared ones; "<service> command 0x<n> has a form the runtime does not take:
+   ...", a bad request. rest is what follows "3ds ipc: " */
+static int ctr_ipc_line(SnxLogScan* s, Span rest) {
+    int kind = take_lit(&rest, "stub answered ") ? SNX_IPC_UNDECLARED : -1;
+    long at = find(rest, " command 0x");
+    unsigned cmd = 0;
+    if (at <= 0) return 0;
+    Span iface = span(rest.p, (size_t)at), after = skip(rest, (size_t)at + 11);
+    size_t d = 0;
+    while (d < after.n && d < 8 && snx_is_hex(after.p[d])) cmd = cmd << 4 | (unsigned)snx_hex_value(after.p[d++]);
+    if (!d) return 0;
+    if (kind < 0 && find(after, " answered success") >= 0) kind = SNX_IPC_UNDECLARED;
+    if (kind < 0 && find(after, " has a form the runtime does not take") >= 0) kind = SNX_IPC_BAD_REQUEST;
+    if (kind < 0) return 0;
+    ipc_add(s, kind, iface, cmd);
     return 1;
 }
 
@@ -600,8 +703,23 @@ static int gap(SnxLogScan* s, int kind, Span what) {
         s->gaps[s->ngaps].what = at;
         s->gaps[s->ngaps].count = 1;
         s->ngaps++;
-    } else
+        return 1;
+    }
+    /* full: a kind with fewer entries takes the place of the least seen of the kind with the most, so a texture
+       format or an SVC that comes late is not lost behind many shaders' reasons */
+    int counts[SNX_GAP_CPU + 1] = {0}, most = kind, victim = -1;
+    for (k = 0; k < s->ngaps; k++) counts[s->gaps[k].kind]++;
+    for (k = 0; k <= SNX_GAP_CPU; k++)
+        if (counts[k] > counts[most]) most = k;
+    for (k = 0; most != kind && k < s->ngaps; k++)
+        if (s->gaps[k].kind == most && (victim < 0 || s->gaps[k].count <= s->gaps[victim].count)) victim = k;
+    if (victim < 0) {
         s->used = mark;
+        return 1;
+    }
+    s->gaps[victim].kind = kind;
+    s->gaps[victim].what = at;
+    s->gaps[victim].count = 1;
     return 1;
 }
 /* "<a>: <b>" as one gap, for a reason that goes with the macro it is about */
@@ -621,11 +739,29 @@ static int gap_line(SnxLogScan* s, Span line) {
     Span rest = line;
     long at;
     switch (line.p[0]) {
-        case 'v': /* "vulkan: shader <hash> (stage <n>) not translated: <why>", "vulkan: compute <hash> ..." */
-            if (!take_lit(&rest, "vulkan: ") || (at = find(rest, " not translated: ")) < 0) return 0;
-            if (starts(rest, "shader ")) return gap(s, SNX_GAP_SHADER, skip(rest, (size_t)at + 17));
-            if (starts(rest, "compute ")) return gap(s, SNX_GAP_COMPUTE, skip(rest, (size_t)at + 17));
+        case 'v': { /* "vulkan: shader <hash> (stage <n>) not translated: <why>", "vulkan: compute <hash> ...", and a
+                       program the game ships, "vulkan: <stage> <hash> not translated: <why>" (shipped_stage_name) */
+            static const char* const shipped[] = {"vertex ",   "paired vertex ", "tessellation control ",
+                                                  "geometry ", "fragment ",      "tessellation evaluation "};
+            if (!take_lit(&rest, "vulkan: ")) return 0;
+            if ((at = find(rest, " not translated: ")) >= 0) {
+                if (starts(rest, "shader ")) return gap(s, SNX_GAP_SHADER, skip(rest, (size_t)at + 17));
+                for (size_t k = 0; k < sizeof shipped / sizeof *shipped; ++k)
+                    if (starts(rest, shipped[k])) return gap(s, SNX_GAP_SHIPPED, skip(rest, (size_t)at + 17));
+                if (starts(rest, "compute ")) return gap(s, SNX_GAP_COMPUTE, skip(rest, (size_t)at + 17));
+                return 0;
+            }
+            /* a format the runtime doesn't map (vk/format.c): "unsupported texture format <f>, header word 0 <w>
+               (not drawn)", "unsupported render target format <f>, drawn as RGBA8", "unsupported depth format <f>,
+               using D32F"; a texture or a draw texture it can't make (vk/texture.c, render.c): "... (not drawn)" */
+            if (take_lit(&rest, "unsupported texture format "))
+                return gap(s, SNX_GAP_TEXTURE, span(rest.p, hex_run(rest)));
+            if (take_lit(&rest, "unsupported render target format "))
+                return gap(s, SNX_GAP_TARGET, span(rest.p, hex_run(rest)));
+            if (take_lit(&rest, "unsupported depth format ")) return gap(s, SNX_GAP_DEPTH, span(rest.p, hex_run(rest)));
+            if (ends(rest, " (not drawn)")) return gap(s, SNX_GAP_GPU, span(rest.p, rest.n - 12));
             return 0;
+        }
         case 'g':
             if (!take_lit(&rest, "gpu: ")) return 0;
             if (take_lit(&rest,
@@ -820,6 +956,11 @@ static void normalized(Buf* b, const char* text) {
 static const char* const outcome_names[] = {"no failure logged", "crash",      "svcBreak",
                                             "exception",         "brk",        "unsupported instruction",
                                             "thread stopped",    "host abort", "fatal"};
+const char* snx_logscan_console_name(int console) {
+    static const char* const names[] = {NULL, "Switch", "3DS", "Vita", "GBA"};
+    return console > 0 && console <= SNX_CONSOLE_GBA ? names[console] : NULL;
+}
+
 const char* snx_logscan_outcome_name(int outcome) {
     return outcome >= 0 && outcome <= SNX_LOG_FATAL ? outcome_names[outcome] : "?";
 }
@@ -953,12 +1094,16 @@ static void keep_raw(char (*raw)[SNX_LOGSCAN_RAW], unsigned* len, unsigned long*
 static void restart(SnxLogScan* s) {
     unsigned build = s->launcher_build, message = s->launcher_message;
     char* pool = s->pool;
-    size_t cap = s->cap, mark = s->mark;
+    size_t cap = s->cap, mark = s->mark, used = s->used;
     unsigned long seen = s->seen;
+    SnxLogScan* run = malloc(sizeof *run); /* the run's scan, NULL out of memory: the game log's alone, as before */
+    if (run) *run = *s;
     memset(s, 0, sizeof *s);
     s->pool = pool;
     s->cap = cap;
-    s->used = s->mark = mark;
+    s->used = run ? used : mark; /* the run's texts kept for it */
+    s->mark = mark;
+    s->run = run;
     s->seen = seen;
     s->launcher_build = build;
     s->launcher_message = message;
@@ -998,7 +1143,8 @@ void snx_logscan_line(SnxLogScan* s, const char* p, size_t n) {
             if (section(line) && starts(line, "== the last run:")) {
                 s->phase = PHASE_RUN;
                 s->mark = s->used;
-            }
+            } else if (section(line) && !starts(line, "== summary ==")) /* a game log with no run before it */
+                s->phase = PHASE_GAME;
             return;
         case PHASE_RUN:
             if (section(line)) {
@@ -1029,11 +1175,28 @@ void snx_logscan_line(SnxLogScan* s, const char* p, size_t n) {
         case 'b':
             if (!s->build && take_lit(&rest, "build: ") && build_line(s, rest)) return;
             break;
+        case 'G':
+            if (!s->title && take_lit(&rest, "Game: ") && frontend_header(s, rest)) return;
+            break;
+        case 'c': /* the GBA's game code (agb/runtime/main.c), its title ID: "cartridge: <4 letters or digits>" */
+            if (s->console == SNX_CONSOLE_GBA && !s->title_id && take_lit(&rest, "cartridge: ") && rest.n == 4 &&
+                snx_is_alnum(rest.p[0]) && snx_is_alnum(rest.p[1]) && snx_is_alnum(rest.p[2]) &&
+                snx_is_alnum(rest.p[3])) {
+                char code[5] = {(char)snx_to_upper(rest.p[0]), (char)snx_to_upper(rest.p[1]),
+                                (char)snx_to_upper(rest.p[2]), (char)snx_to_upper(rest.p[3]), 0};
+                s->title_id = add_c(s, code);
+                return;
+            }
+            break;
         case 's': /* "system: <OS and version>, <CPU>, <n> threads, <n> GB RAM" (plat_system_info) */
             if (!s->system && take_lit(&rest, "system: ") && rest.n) {
                 s->system = add(s, rest);
                 return;
             }
+            if (!s->outcome && frontend_error(s, line)) return;
+            break;
+        case '3': /* the 3DS's service calls */
+            if (take_lit(&rest, "3ds ipc: ") && ctr_ipc_line(s, rest)) return;
             break;
         case 'g':
             if (!s->title_id && take_lit(&rest, "game: ") && hex_run(rest) == 16 &&
@@ -1043,6 +1206,7 @@ void snx_logscan_line(SnxLogScan* s, const char* p, size_t n) {
                 id[16] = 0;
                 s->title_id = add_c(s, id);
                 s->game_version = add(s, skip(rest, 26));
+                if (!s->console) s->console = SNX_CONSOLE_SWITCH;
                 return;
             }
             break;
@@ -1107,6 +1271,19 @@ static int from_ring(SnxLogScan* s, char (*raw)[SNX_LOGSCAN_RAW], const unsigned
 }
 
 void snx_logscan_end(SnxLogScan* s) {
+    SnxLogScan* run = s->run;
+    s->run = NULL;
+    /* the run's texts are in s's pool, which may have moved since the run's scan was kept: each read through s */
+    if (run && run->title_id &&
+        (!s->title_id || strcmp(snx_logscan_text(s, run->title_id), snx_logscan_text(s, s->title_id)))) {
+        char* pool = s->pool; /* the game log is another game's: the run's scan, its texts in the pool */
+        size_t cap = s->cap, used = s->used;
+        *s = *run;
+        s->pool = pool;
+        s->cap = cap;
+        s->used = used;
+    }
+    free(run);
     sort_ipc(s);
     sort_gaps(s);
     /* the macro calls' line only when some were interpreted: "..., <n> compiled and <n> interpreted" */
@@ -1172,6 +1349,7 @@ int snx_logscan_file(SnxLogScan* s, FILE* f) {
 }
 
 void snx_logscan_free(SnxLogScan* s) {
+    free(s->run);
     free(s->pool);
     memset(s, 0, sizeof *s);
 }
@@ -1245,8 +1423,19 @@ static void json_list(Buf* b, const SnxLogScan* s, const unsigned* items, int n)
 }
 
 /* a gap's kind and the area it is in, by kind (SNX_GAP_*) */
-static const char* const gap_kinds[] = {
-    "shader", "compute shader", "class", "gpu", "macro", "macro compile", "mme", "svc", "cpu"};
+static const char* const gap_kinds[] = {"shader",
+                                        "compute shader",
+                                        "shipped shader",
+                                        "class",
+                                        "texture format",
+                                        "target format",
+                                        "depth format",
+                                        "gpu",
+                                        "macro",
+                                        "macro compile",
+                                        "mme",
+                                        "svc",
+                                        "cpu"};
 /* 0 the GPU, 1 the macros, 2 the CPU */
 static int gap_area(int kind) { return kind <= SNX_GAP_GPU ? 0 : kind <= SNX_GAP_MME ? 1 : 2; }
 /* the JIT compiled or queued guest code the recompiler missed, in this run or earlier ones */
@@ -1265,6 +1454,11 @@ char* snx_logscan_json(const SnxLogScan* s, SnxDemangle demangle) {
     put_num(&b, SNX_LOGSCAN_SCHEMA);
     json_field(&b, s, "title", s->title, 0);
     json_field(&b, s, "title_id", s->title_id, 0);
+    put(&b, ", \"console\": ");
+    if (s->console)
+        json_string(&b, snx_logscan_console_name(s->console));
+    else
+        put(&b, "null");
     json_field(&b, s, "game_version", s->game_version, 0);
     json_field(&b, s, "build", s->build, 0);
     json_field(&b, s, "commit", s->commit, 0);
@@ -1423,14 +1617,30 @@ char* snx_logscan_json(const SnxLogScan* s, SnxDemangle demangle) {
 /* A gap in the summary: what goes before its text and after it, by kind */
 static const char* const gap_before[] = {"shader not translated: ",
                                          "compute shader not translated: ",
+                                         "a program in the game's files not translated before it ran: ",
                                          "methods of class ",
+                                         "texture format ",
+                                         "render target format ",
+                                         "depth format ",
                                          "",
                                          "macro with no native form: ",
                                          "macro not compiled: ",
                                          "",
                                          "",
                                          ""};
-static const char* const gap_after[] = {"", "", ", which no engine runs", "", "", "", "", " not implemented", ""};
+static const char* const gap_after[] = {"",
+                                        "",
+                                        "",
+                                        ", which no engine runs",
+                                        ", which the runtime doesn't map (not drawn)",
+                                        ", which the runtime doesn't map (drawn as RGBA8)",
+                                        ", which the runtime doesn't map (drawn as D32F)",
+                                        "",
+                                        "",
+                                        "",
+                                        "",
+                                        " not implemented",
+                                        ""};
 
 /* Markdown of what a log says, which anyone can write: a summary a bot posts must not ping people, link, embed or close
    its own code blocks. GitHub links an issue reference (#N, GH-N, owner/repo#N), a URL or www. even escaped, but
@@ -1478,11 +1688,19 @@ char* snx_logscan_markdown(const SnxLogScan* s, const char* name, const char* he
     if (s->title_id) {
         put(&b, " (");
         md_code(&b, snx_logscan_text(s, s->title_id));
-        put(&b, ", version ");
-        md_code(&b, snx_logscan_text(s, s->game_version));
+        if (s->game_version) {
+            put(&b, ", version ");
+            md_code(&b, snx_logscan_text(s, s->game_version));
+        }
         put(&b, ")");
     }
-    put(&b, "\n\n- **Build:** ");
+    put(&b, "\n\n");
+    if (s->console) {
+        put(&b, "- **Console:** ");
+        put(&b, snx_logscan_console_name(s->console));
+        put(&b, "\n");
+    }
+    put(&b, "- **Build:** ");
     if (s->build)
         md_code(&b, snx_logscan_text(s, s->build));
     else
@@ -1625,7 +1843,7 @@ char* snx_logscan_markdown(const SnxLogScan* s, const char* name, const char* he
                 if (s->gaps[i].count > 1) {
                     put(&b, " (");
                     put_num(&b, s->gaps[i].count);
-                    put(&b, kind == SNX_GAP_SHADER || kind == SNX_GAP_COMPUTE ? " shaders)" : "x)");
+                    put(&b, kind <= SNX_GAP_SHIPPED ? " shaders)" : "x)");
                 }
                 put(&b, "\n");
             }

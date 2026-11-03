@@ -6,6 +6,7 @@
    the game's dump read in place), save data, the SD card and the system archives */
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/filesystem/fs_tree.h"
+#include "common/utilities/mii_model.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/state_io.h"
 #include "nx/runtime/options.h"
@@ -104,13 +105,18 @@ static SnxU64 game_title(void) {
     return snx_title_parse(g_gamename, &id) ? id : 0;
 }
 /* dump opened as snx_dump_open takes it (base, addon, either NULL) and each container mapped read-only for the whole
-   run: the base's into base_map, the add-on's into addon_map. Ends the run on a dump that cannot be read */
+   run: the base's into base_map, the add-on's into addon_map. Ends the run on a dump that cannot be read, and on one
+   whose keys the keys file lacks, which would read as garbage: no ExeFS, its modules missing */
 static void dump_map(SnxDump* dump, PFileMap* base_map, PFileMap* addon_map, const char* base, const char* addon,
                      const char* keys, const char* title_keys, const char* repo) {
     snx_hac_on_exit(dump_exit, NULL);
     if (snx_dump_open(dump, base, addon, keys, title_keys, repo, 0))
         fatal("Could not read the game's dump %s, which it reads its files from: the line before says why",
               addon ? addon : base);
+    if ((dump->program.found && snx_nca_keys(dump, &dump->program, "The game's Program NCA")) ||
+        (dump->patch.found && snx_nca_keys(dump, &dump->patch, "The update's Program NCA")) ||
+        (dump->aoc.found && snx_nca_keys(dump, &dump->aoc, "The DLC's Data NCA")))
+        fatal("A dump the game reads in place needs keys its keys file does not have: the line before says which");
     if (base && (plat_file_map_sized(base_map, base, snx_file_size(base)) ||
                  snx_hac_map(dump->hac, dump->base, base_map->data, base_map->size)))
         fatal("Could not map the game's dump %s", base);
@@ -118,6 +124,21 @@ static void dump_map(SnxDump* dump, PFileMap* base_map, PFileMap* addon_map, con
                   snx_hac_map(dump->hac, dump->update, addon_map->data, addon_map->size)))
         fatal("Could not map the add-on's dump %s", addon);
     snx_hac_on_exit(NULL, NULL);
+}
+
+/* the folder games/ is in, where the driver looks for the keys: g_datadir is <repo>/games/<name>/<name>_data/. In
+   repo, of g_datadir's size, which holds it: on the stack, so a fatal() while a dump is read leaves nothing allocated
+   that only the caller's frame points at */
+static void data_repo(char* repo, size_t size) {
+    char *path = snx_strdup(g_datadir), *up;
+    int i;
+    for (i = 0; i < 3; ++i) {
+        up = snx_dirname(path);
+        free(path);
+        path = up;
+    }
+    snprintf(repo, size, "%s", path);
+    free(path);
 }
 
 /* Extract dump off: a data folder without an ExeFS of its own reads its ExeFS and RomFS from the dump the
@@ -130,7 +151,7 @@ static void dump_map(SnxDump* dump, PFileMap* base_map, PFileMap* addon_map, con
    is made of the game's), and a DLC's RomFS image beside the game's files (dump_aoc). At startup, under tree.lock */
 static void dump_open(const char* keys, const char* title_keys) {
     FsNode* node;
-    char *data, *source, *folder, *games, *repo, *ini, *addon = NULL, *own, *at;
+    char *data, *source, *ini, *addon = NULL, *own, *at, repo[sizeof g_datadir];
     size_t n = strlen(g_datadir);
     int kind = g_addon ? SNX_ADDON_UPDATE : SNX_ADDON_NONE, extracted = 0;
     if (kind != SNX_ADDON_NONE) { /* its extraction, laid over the game's (fs_init), else its dump */
@@ -155,10 +176,7 @@ static void dump_open(const char* keys, const char* title_keys) {
     }
     data[n - 5] = 0;
     source = g_settings.game_dump[0] ? snx_strdup(g_settings.game_dump) : snx_format("%s.source", data);
-    folder = snx_dirname(data);
     free(data);
-    games = snx_dirname(folder);
-    repo = snx_dirname(games);
     if (!snx_is_file(source)) {
         ini = snx_absolute(ini_file()); /* a game beside its .ini runs in its folder: "./Game.ini" */
         /* the loader also takes the main module from the data folder's root, as older versions put it */
@@ -176,11 +194,9 @@ static void dump_open(const char* keys, const char* title_keys) {
                  g_datadir, ini ? ini : ini_file(), source);
         free(ini);
         free(source);
-        free(folder);
-        free(games);
-        free(repo);
         goto done;
     }
+    data_repo(repo, sizeof repo);
     /* an update over the game: both in one hactool, its Patch RomFS reading the game's */
     dump_map(&g_hle.fs.dump, &g_hle.fs.dmap, &g_hle.fs.amap, source,
              kind == SNX_ADDON_UPDATE ? addon : NULL, keys, title_keys, repo);
@@ -198,9 +214,6 @@ static void dump_open(const char* keys, const char* title_keys) {
         LOG("fs: ExeFS and RomFS read from the dump %s (%.1f MB mapped)\n", source,
             (double)g_hle.fs.dmap.size / 1048576.0);
     free(source);
-    free(folder);
-    free(games);
-    free(repo);
 done:
     free(addon);
 }
@@ -213,13 +226,8 @@ done:
 static void dlcs_open(const char* keys, const char* title_keys) {
     SnxAddon* ids = malloc(SNX_ADDONS_MAX * sizeof *ids);
     size_t count, i;
-    char *data = snx_strdup(g_datadir), *folder, *games, *repo;
-    size_t n = strlen(data);
-    /* g_datadir is <repo>/games/<name>/<name>_data/ */
-    while (n > 1 && (data[n - 1] == '/' || data[n - 1] == '\\')) data[--n] = 0;
-    folder = snx_dirname(data);
-    games = snx_dirname(folder);
-    repo = snx_dirname(games);
+    char repo[sizeof g_datadir];
+    data_repo(repo, sizeof repo);
     if (!ids) fatal("Out of memory for the game's DLCs");
     count = snx_addons_parse(g_settings.game_addons, g_gamename, ids, SNX_ADDONS_MAX);
     g_hle.fs.aocs = calloc(count ? count : 1, sizeof *g_hle.fs.aocs);
@@ -266,10 +274,6 @@ static void dlcs_open(const char* keys, const char* title_keys) {
     }
     if (g_hle.fs.naocs && !g_hle.fs.dfs) pm_init(&g_host.fs.dlock); /* dump_open, before this, made it for the game */
     free(ids);
-    free(data);
-    free(folder);
-    free(games);
-    free(repo);
 }
 
 /* The mods played (common/utilities/mods.h), from the game's mods folder, which the data folder's index leaves out:
@@ -918,6 +922,25 @@ static int rnode_image(RNode* root, u64 total) {
     return rc;
 }
 
+/* The dump's RomFS image read to its last byte at startup, which a dump cut short or damaged can't give: said here, not
+   first where the game reads there. The image's size against the dump's tells nothing alone: compressed blocks and
+   blocks of zeros make an image bigger than its dump */
+static void dump_romfs_end(void) {
+    char image[32], dump[32];
+    u8 last;
+    int rc;
+    pm_lock(&g_host.fs.dlock);
+    rc = snx_hac_fs_read_romfs(g_hle.fs.dfs, g_hle.fs.rtotal - 1, &last, 1);
+    pm_unlock(&g_host.fs.dlock);
+    if (!rc) return;
+    snx_size_text(g_hle.fs.rtotal, image, sizeof image);
+    snx_size_text(g_hle.fs.dmap.size + g_hle.fs.amap.size, dump, sizeof dump);
+    WARN("RomFS: the dump's image is %s, and its last byte, at %llx, can't be read from the dump's %s (hactool: %s): "
+         "the dump is incomplete or damaged\n",
+         image, (unsigned long long)(g_hle.fs.rtotal - 1), dump,
+         snx_hac_message()[0] ? snx_hac_message() : "no reason given");
+}
+
 /* The RomFS the game reads: the game's own image, else the image made up from its romfs/ folder; with mods played, made
    up from either with the mods' romfs/ folders laid over it (mods_open grafts them as mods.<i>) */
 void romfs_init(void) {
@@ -945,12 +968,14 @@ void romfs_init(void) {
         image = 1;
         LOG("RomFS: the update's over the game's dump, read in place (%.1f MB)\n",
             (double)g_hle.fs.rtotal / 1048576.0);
+        dump_romfs_end();
     } else if (!fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs:/", &node) && node->is_dir) {
         folder = node;
     } else if (g_hle.fs.dfs && snx_hac_fs_romfs_size(g_hle.fs.dfs)) {
         g_hle.fs.rtotal = snx_hac_fs_romfs_size(g_hle.fs.dfs);
         image = 1;
         LOG("RomFS: the dump's, read in place (%.1f MB)\n", (double)g_hle.fs.rtotal / 1048576.0);
+        dump_romfs_end();
     } else if (g_hle.fs.dfs) {
         LOG("RomFS: none in the game's dump\n");
     } else {
@@ -1697,136 +1722,48 @@ static void ngword2_file_write(u32 i, u8* out) {
     memcpy(out, i < NGWORD2_AC_COUNT ? ngword2_ac : ngword2_version, ngword2_file_size(i));
 }
 
-/* MiiModel, the Mii parts' shapes and textures, as a placeholder with no textures in it and every shape one degenerate
-   triangle, ported from nxnative's dm/host/hle_mii.c. The SDK's resource loader (as a game links it, nn::mii::detail)
-   reads each file whole and indexes it from its start, checking nothing of its header: the first 0xc bytes are a magic
-   (NFTR for the textures, NFSR for the shapes), then a version, then two arrays of a u32 per part kind, each kind's
-   largest decompressed part and its alignment, then a table of entries, then the hair and faceline transforms. A part
-   whose decompressed size is 0 is absent and skipped, so nought tables hold no texture; the shapes may not all be
-   absent, because a model draws its faceline without checking that it has one (a null buffer read), and the largest
-   sizes may not be 0 either, since they size the model's memory pool and its first alignment is the pool's.
-   The textures may not all be absent either: a game composes a Mii's face into textures of its own from them and
-   registers those in its texture pool, a null one when there is no part to compose (a crash at a null texture).
-   The firmware's own files are not ours to ship, so every texture is one blank image and every shape one degenerate
-   triangle: it builds, and draws nothing */
-#define MIIMODEL_DATA_ID      0x0100000000000802ull
-#define MIIMODEL_FILES        6
-/* a texture file: 0xc bytes of header, then 11 largest sizes (a page each) and their alignments from +0xc, then one
-   0x1c-byte entry per part from +0x64: 327 entries of texture (hats 132, eyes 62, eyebrows 24, beards 2, wrinkles 12,
-   make-up 12, glasses 20, moles 2, mouths 37, mustaches 6, noselines 18) */
-#define MIIMODEL_TEXTURE_TABLES (0x64u + 0x1cu * 327u)
-/* the one image every texture entry names: 8 by 8, one mip level, 0x200 bytes of zeros (transparent) in a zlib block,
-   past the tables on its own 16-byte alignment; zlib's header, a stored block (BFINAL, the length 0x200 and its
-   complement), then the Adler-32 of 0x200 zeros, 0x02000001, big-endian */
-#define MIIMODEL_IMAGE_AT       0x2430u
-#define MIIMODEL_IMAGE          0x200u
-#define MIIMODEL_IMAGE_Z_SIZE   (7u + MIIMODEL_IMAGE + 4u)
-#define MIIMODEL_TEXTURE_SIZE   (MIIMODEL_IMAGE_AT + MIIMODEL_IMAGE_Z_SIZE)
-/* a shape file: 0xc bytes of header, then 12 largest sizes and their alignments from +0xc, then from +0x6c one 0x58-byte
-   entry per part: offset, inflated size, stored size, a u32 of zlib parameters, the five vertex attribute offsets and
-   their sizes, the index offset and its byte size, and a bounding box. 857 entries of shape (beards 4, facelines 12,
-   masks 12, hats, foreheads and hair in normal and cap form 132 each, glasses 1, noses 18, noselines 18), then the hair
-   transforms (132 of 72 bytes) and the faceline transforms (12 of 36) */
-#define MIIMODEL_SHAPE_TABLES (0x6cu + 0x58u * 857u + 0x48u * 132u + 0x24u * 12u)
-/* the one mesh every shape entry names: one vertex at the origin (attribute 0, four halves) and the triangle (0, 0, 0)
-   (three u16 indices at +0x10), 32 bytes of zeros in a zlib block, past the tables on its own 16-byte alignment */
-#define MIIMODEL_MESH_AT      0x14de0u
-#define MIIMODEL_MESH         0x20u
-/* zlib of 32 zero bytes: its header, then a stored block of them (BFINAL, the length 32 and its complement), then the
-   Adler-32 of 32 zeros, 0x00200001, in the big-endian order the format gives it */
-#define MIIMODEL_MESH_Z_SIZE  (7u + MIIMODEL_MESH + 4u)
-#define MIIMODEL_SHAPE_SIZE   (MIIMODEL_MESH_AT + MIIMODEL_MESH_Z_SIZE)
-_Static_assert(MIIMODEL_TEXTURE_TABLES == 0x2428u, "the MiiModel texture stand-in's tables");
-_Static_assert(MIIMODEL_SHAPE_TABLES == 0x14dd4u, "the MiiModel shape stand-in's tables");
-static void miimodel_name(u32 i, char name[32]) {
-    static const char* const names[MIIMODEL_FILES] = {"NXTextureLowLinear.dat", "NXTextureLowSRGB.dat",
-                                                      "NXTextureMidLinear.dat", "NXTextureMidSRGB.dat",
-                                                      "ShapeMid.dat",           "ShapeHigh.dat"};
-    snprintf(name, 32, "%s", names[i]);
-}
-static u32 miimodel_file_size(u32 i) { return i < 4 ? MIIMODEL_TEXTURE_SIZE : MIIMODEL_SHAPE_SIZE; }
-/* every shape entry names the one mesh: its offset and sizes, attribute 0 as one 8-byte vertex, and the three indices.
-   The entries are zero to begin with, so only these fields need setting and the others keep their absent value */
-static void miimodel_shapes(u8* b) {
-    u32 i;
-    for (i = 0; i < 857; i++) {
-        u32* e = (u32*)(void*)(b + 0x6c + 0x58 * i);
-        e[0] = MIIMODEL_MESH_AT;                /* the data's offset in the file */
-        e[1] = MIIMODEL_MESH;                   /* its inflated size */
-        e[2] = MIIMODEL_MESH_Z_SIZE;            /* its stored size */
-        e[9] = 8;                               /* attribute 0's size: one vertex, the others absent */
-        e[14] = 0x10;                           /* the indices' offset in the mesh */
-        e[15] = 6;                              /* their byte size: three of them */
-    }
-}
-/* every texture entry names the one image: its offset and sizes, the alignment the console's parts take, 8 by 8, one
-   mip level, in the format its kind's parts are in on the console, which the model's shaders read them as */
-static void miimodel_textures(u8* b) {
-    static const struct {
-        u16 count;
-        u8 format;
-    } kinds[11] = {{132, 4}, {62, 8}, {24, 8}, {2, 10}, {12, 10}, {12, 10}, {20, 1}, {2, 8}, {37, 8}, {6, 9}, {18, 1}};
-    u32 k, i, n = 0;
-    for (k = 0; k < 11; k++)
-        for (i = 0; i < kinds[k].count; i++, n++) {
-            u8* e = b + 0x64 + 0x1c * n;
-            put32(e, MIIMODEL_IMAGE_AT);         /* the data's offset in the file */
-            put32(e + 4, MIIMODEL_IMAGE);        /* its inflated size */
-            put32(e + 8, MIIMODEL_IMAGE_Z_SIZE); /* its stored size */
-            put32(e + 0x10, 0x200);              /* its alignment */
-            snx_st_le16(e + 0x14, 8);            /* width */
-            snx_st_le16(e + 0x16, 8);            /* height */
-            e[0x18] = 1;                         /* mip levels */
-            e[0x19] = kinds[k].format;
-        }
-}
-static void miimodel_file_write(u32 i, u8* out) {
-    static const u8 mesh[] = {
-        0x78, 0x01,                                     /* zlib's header */
-        0x01, 0x20, 0x00, 0xdf, 0xff,                   /* a stored block of 32 bytes: final, the length, its complement */
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* the vertex: four halves at the origin */
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* and 16 more bytes of it, the indices among them */
-        0x00, 0x20, 0x00, 0x01,                         /* the Adler-32 of 32 zeros, big-endian */
-    };
-    u32 kinds = i < 4 ? 11 : 12, k;
-    memcpy(out, i < 4 ? "NFTR" : "NFSR", 4);
-    put32(out + 4, 1);
-    for (k = 0; k < kinds; k++) {
-        put32(out + 0xc + 4 * k, 0x1000);                /* each kind's largest decompressed part */
-        put32(out + 0xc + 4 * kinds + 4 * k, 0x1000);    /* and its alignment, which the pool takes from the first */
-    }
-    if (i >= 4) {
-        miimodel_shapes(out);
-        memcpy(out + MIIMODEL_MESH_AT, mesh, sizeof mesh);
-        return;
-    }
-    miimodel_textures(out);
-    memcpy(out + MIIMODEL_IMAGE_AT, "\x78\x01\x01\x00\x02\xff\xfd", 7); /* the image's zeros nought already */
-    memcpy(out + MIIMODEL_IMAGE_AT + 7 + MIIMODEL_IMAGE, "\x02\x00\x00\x01", 4);
-}
+/* MiiModel (0100000000000802) when the game's data folder has none of the player's in system/archives: the one
+   mii_model.c draws, its six files a few MB, made on the game's first open of it so that a game without Miis never
+   makes it */
+static u32 miimodel_file_size(u32 i) { return snx_mii_model_write(i, NULL); }
+static void miimodel_file_write(u32 i, u8* out) { snx_mii_model_write(i, out); }
 
 /* a synthesized archive's files, in a RomFS laid out like romfs_build's with every file in its root folder, into m
-   (cap bytes, nought where a file's writer leaves it); gives the bytes used */
+   (cap bytes, nought where a file's writer leaves it); gives the bytes used. A file file_same names an earlier one
+   for (file_same NULL: none) has that one's bytes, and shares them */
+#define FILESROM_MAX 64u
 static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, char[32]), u32 (*file_size)(u32),
-                         void (*file_write)(u32, u8*), const char* what) {
+                         void (*file_write)(u32, u8*), u32 (*file_same)(u32), const char* what) {
     u32 dbuckets = hcount(1), fbuckets = hcount(count);
     u64 dhash = 0x50;
     u64 dtab = dhash + (u64)dbuckets * 4;
     u64 fhash = dtab + ROM_DIR_ENTRY;
     u64 ftab = fhash + (u64)fbuckets * 4;
-    u64 fsize = 0, dsize = 0, fdata, data = 0, off = 0;
+    u64 fsize = 0, dsize = 0, fdata, off = 0, at[FILESROM_MAX], sizes[FILESROM_MAX];
     u32 i;
     char name[32];
 
+    if (count > FILESROM_MAX)
+        fatal("%s: %u files, more than a synthesized archive holds (%u)\n", what, count, FILESROM_MAX);
     for (i = 0; i < count; i++) {
+        u32 same = file_same ? file_same(i) : i;
         file_name(i, name);
         fsize += entry_size(ROM_FILE_ENTRY, name);
+        if (same != i) {
+            at[i] = at[same];
+            sizes[i] = sizes[same];
+            continue;
+        }
         dsize = (dsize + 15) & ~(u64)15;
-        dsize += file_size(i);
+        at[i] = dsize;
+        sizes[i] = file_size(i);
+        dsize += sizes[i];
     }
     fdata = (ftab + fsize + 0x1FF) & ~(u64)0x1FF;
-    if (fdata + dsize > cap) fatal("%s: the synthesized archive does not fit\n", what);
-    memset(m, 0, cap);
+    if (fdata + dsize > cap)
+        fatal("%s: the synthesized archive takes %llu bytes, and has room for %llu\n", what,
+              (unsigned long long)(fdata + dsize), (unsigned long long)cap);
+    memset(m, 0, (size_t)(fdata + dsize));
     memset(m + dhash, 0xFF, (size_t)dbuckets * 4);
     memset(m + fhash, 0xFF, (size_t)fbuckets * 4);
     /* the root folder, its files starting at table offset 0 */
@@ -1839,23 +1776,20 @@ static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, ch
     put32(m + dtab + 20, 0);
     for (i = 0; i < count; i++) {
         u32 len, b;
-        u64 size = file_size(i);
         u8* e;
         file_name(i, name);
         len = (u32)strlen(name);
-        data = (data + 15) & ~(u64)15;
         e = m + ftab + off;
         put32(e, 0); /* the root folder */
         put32(e + 4, i + 1 < count ? (u32)(off + entry_size(ROM_FILE_ENTRY, name)) : ROM_NONE);
-        put64(e + 8, data);
-        put64(e + 16, size);
+        put64(e + 8, at[i]);
+        put64(e + 16, sizes[i]);
         b = rhash(0, name) % fbuckets;
         memcpy(e + 24, m + fhash + (u64)b * 4, 4);
         put32(m + fhash + (u64)b * 4, (u32)off);
         put32(e + 28, len);
         memcpy(e + ROM_FILE_ENTRY, name, len);
-        file_write(i, m + fdata + data);
-        data += size;
+        if (!file_same || file_same(i) == i) file_write(i, m + fdata + at[i]);
         off += entry_size(ROM_FILE_ENTRY, name);
     }
     put64(m, 0x50);
@@ -1868,10 +1802,16 @@ static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, ch
     put64(m + 56, ftab);
     put64(m + 64, fsize);
     put64(m + 72, fdata);
-    return fdata + data;
+    return fdata + dsize;
 }
 /* save data folders, by SaveDataType */
 static const char* const g_save_kinds[] = {"system", "user", "bcat", "device", "temp", "cache", "sysbcat"};
+/* save_layout=global is in effect: its folder is known (fs_saves_init) and the program has a title ID of its own */
+static int save_layout_global(void) {
+    char title[17];
+    return g_host.fs.save_root[0] && strcmp(g_settings.save_layout, "game") &&
+           snx_title_text(g_hle.kernel.title_id, title);
+}
 /* An Account save is save/user.<uid>, the folder of its user (users.c). The fixed uid's (am.c's g_user_id, user 1's
    when users.ini gives it none), while it has none, is the one an older version left, played where it is and said once
    a run (docs/DEPRECATIONS.md): save/user, from before there were other users, else a nonempty save/system (earlier
@@ -1900,10 +1840,11 @@ static u32 save_user(const nn_fs_SaveDataAttribute* attribute, char* p, size_t n
         *both = 1;
         R_THROW(FS_EXISTS);
     }
-    WARN_LIMIT(1,
-               "fs: %s%s, the first user's saves, was left by an older version: this one keeps them in %s%s. The game "
-               "plays them where they are until you move the folder there (docs/DEPRECATIONS.md)\n",
-               g_datadir, old, g_datadir, p);
+    if (!save_layout_global()) /* save_layout=global says where it goes itself (save_folder) */
+        WARN_LIMIT(1,
+                   "fs: %s%s, the first user's saves, was left by an older version: this one keeps them in %s%s. The "
+                   "game plays them where they are until you move the folder there (docs/DEPRECATIONS.md)\n",
+                   g_datadir, old, g_datadir, p);
     snprintf(p, n, "%s", old);
     R_SUCCEED();
 }
@@ -1991,22 +1932,173 @@ static int nn_fssrv_sf_IFileSystemProxy_GetProgramIndexForAccessLog(SvcObj* self
     *program_count = 1;
     R_SUCCEED();
 }
-/* save/<kind>, by the attribute's SaveDataType, and an Account save its user's (save_user) */
-static int open_save(const nn_fs_SaveDataAttribute* attribute, SvcObj** filesystem) {
-    char p[64];
+/* save_layout=global: each save in one folder of every game's, the data folder's save/ (g_host.fs.save_root), apart
+   from the games as the console keeps them: an Account save in user.<uid>/<title ID>/, Device's in device/<title ID>/,
+   BCAT's in bcat/<title ID>/, cache storage in cache/<title ID>/<index>/, the system's in system/<save ID>/ and
+   sysbcat/<save ID>/. Temporary storage stays the game's, which every start empties, and so do the saves of a program
+   with no title ID of its own (a homebrew's), which would share one. Each folder is a graft of the tree: name, of host;
+   the save is in it, or in its folder sub (an index, a save ID). 0 when the save has none */
+static int save_global(const nn_fs_SaveDataAttribute* attribute, char* name, size_t name_size, char* host,
+                       size_t host_size, char* sub, size_t sub_size) {
+    char title[17], uid_text[33];
+    u8 type = attribute->type;
+    u64 uid[2];
+    sub[0] = 0;
+    if (type == 4 || !g_host.fs.save_root[0] || !snx_title_text(g_hle.kernel.title_id, title)) return 0;
+    if (type == 1) {
+        uid[0] = snx_ld_le64(attribute->uid.v);
+        uid[1] = snx_ld_le64(attribute->uid.v + 8);
+        snx_users_uid_text(uid, uid_text);
+        snprintf(name, name_size, "global-user.%s", uid_text);
+        snprintf(host, host_size, "%s/user.%s/%s", g_host.fs.save_root, uid_text, title);
+    } else if (type == 2 || type == 3 || type == 5) {
+        const char* kind = g_save_kinds[type];
+        snprintf(name, name_size, "global-%s", kind);
+        snprintf(host, host_size, "%s/%s/%s", g_host.fs.save_root, kind, title);
+        if (type == 5) snprintf(sub, sub_size, "%u", (unsigned)attribute->index);
+    } else { /* System, SystemBcat and the types sf doesn't name, which go as System */
+        const char* kind = type == 6 ? "sysbcat" : "system";
+        snprintf(name, name_size, "global-%s", kind);
+        snprintf(host, host_size, "%s/%s", g_host.fs.save_root, kind);
+        snprintf(sub, sub_size, "%016llX", (unsigned long long)attribute->system_save_data_id);
+    }
+    return 1;
+}
+/* path in the tree is a folder with something in it: a save, not one a mount made and nothing wrote */
+static int save_there(const char* path) { /* tree.lock held */
+    FsNode* node;
+    return !fs_tree_lookup(&g_hle.fs.tree, NULL, path, &node) && node->is_dir && node->children;
+}
+/* save_layout=global's folders of this title there now, grafted: a save is found then without enumerating anything
+   later. Called at startup, after the users are known */
+void fs_saves_init(const char* root) {
+    static const u8 types[] = {2, 3, 5, 0, 6};
+    nn_fs_SaveDataAttribute a;
+    char name[64], host[FS_TREE_PATH_MAX], sub[24];
+    int i;
+    snprintf(g_host.fs.save_root, sizeof g_host.fs.save_root, "%s", root ? root : "");
+    pm_lock(&g_hle.fs.tree.lock);
+    for (i = 0; i < g_user_count + (int)sizeof types; i++) {
+        memset(&a, 0, sizeof a);
+        if (i < g_user_count) {
+            a.type = 1;
+            snx_st_le64(a.uid.v, g_users[i].uid[0]);
+            snx_st_le64(a.uid.v + 8, g_users[i].uid[1]);
+        } else
+            a.type = types[i - g_user_count];
+        if (!save_global(&a, name, sizeof name, host, sizeof host, sub, sizeof sub) || !snx_is_dir(host)) continue;
+        FsTreeResult r = fs_tree_graft_writable(&g_hle.fs.tree, name, host);
+        if (r != FS_TREE_OK && r != FS_TREE_EXISTS) fatal("Could not index the saves in %s (error %d)", host, r);
+    }
+    pm_unlock(&g_hle.fs.tree.lock);
+}
+int fs_user_saves_take(const u64 uid[2], char (*paths)[FS_TREE_PATH_MAX], int max) {
+    char text[33], name[64], game[64];
+    FsNode* node;
+    int n = 0;
+    snx_users_uid_text(uid, text);
+    snprintf(name, sizeof name, "global-user.%s", text);
+    snprintf(game, sizeof game, "save/user.%s", text);
+    pm_lock(&g_hle.fs.tree.lock);
+    if (g_host.fs.save_root[0] && n < max) {
+        snprintf(paths[n], FS_TREE_PATH_MAX, "%s/user.%s", g_host.fs.save_root, text);
+        if (snx_is_dir(paths[n])) {
+            if (!fs_tree_lookup(&g_hle.fs.tree, NULL, name, &node)) fs_tree_forget(&g_hle.fs.tree, name);
+            n++;
+        }
+    }
+    if (n < max && !fs_tree_lookup(&g_hle.fs.tree, NULL, game, &node) && node->is_dir &&
+        !fs_tree_path(&g_hle.fs.tree, node, paths[n], FS_TREE_PATH_MAX) && !fs_tree_forget(&g_hle.fs.tree, game))
+        n++;
+    pm_unlock(&g_hle.fs.tree.lock);
+    return n;
+}
+/* The folder of the attribute's save in the tree, into p, as save_layout says: global's (save_global), game's
+   save/<kind> of the game's data folder, an Account save its user's (save_user). The other layout's while only it
+   holds the save, played where it is and said once a run; both holding one is two saves of it, which stop says and
+   the game stops for, leaving both */
+static u32 save_folder(const nn_fs_SaveDataAttribute* attribute, char* p, size_t n, char* stop, size_t stop_size) {
+    char name[64], host[FS_TREE_PATH_MAX], sub[24], global[96], game[64];
     u8 type = attribute->type;
     const char* kind = type < sizeof g_save_kinds / sizeof g_save_kinds[0] ? g_save_kinds[type] : "system";
-    int both = 0;
+    int both = 0, mine = strcmp(g_settings.save_layout, "game"), in_global, in_game;
+    FsNode* node;
     u32 rc = 0;
-    snprintf(p, sizeof p, "save/%s", kind);
+    stop[0] = 0;
+    snprintf(game, sizeof game, "save/%s", kind);
+    if (type == 1) rc = save_user(attribute, game, sizeof game, &both);
+    if (both) {
+        snprintf(stop, stop_size,
+                 "Two saves of the first user: %ssave/user, from before there were other users, and %s%s. Keep the "
+                 "one you play and move the other out of %ssave/, then start the game again",
+                 g_datadir, g_datadir, game, g_datadir);
+        return rc;
+    }
+    if (R_FAILED(rc)) return rc;
+    if (!save_global(attribute, name, sizeof name, host, sizeof host, sub, sizeof sub)) {
+        snprintf(p, n, "%s", game);
+        R_SUCCEED();
+    }
+    snprintf(global, sizeof global, "%s%s%s", name, sub[0] ? "/" : "", sub);
+    in_global = save_there(global);
+    in_game = save_there(game);
+    if (in_global && in_game) {
+        snprintf(stop, stop_size,
+                 "Two saves of this game's %s save: %s%s, each game's own, and %s%s%s, the one of every game's "
+                 "(save_layout). Keep the one you play and move the other out, then start the game again",
+                 kind, g_datadir, game, host, sub[0] ? "/" : "", sub);
+        R_SUCCEED();
+    }
+    if (mine ? in_game : in_global) {
+        unsigned bit = type < 8 ? type : 0;
+        if (!(g_host.fs.save_told >> bit & 1)) {
+            g_host.fs.save_told |= 1u << bit;
+            if (mine)
+                WARN("fs: %s%s holds this game's %s save, which save_layout=global keeps in %s%s%s. The game plays it "
+                     "where it is until you move the folder there (Settings > App > Move Old Files, "
+                     "docs/DEPRECATIONS.md)\n",
+                     g_datadir, game, kind, host, sub[0] ? "/" : "", sub);
+            else
+                WARN("fs: %s%s%s holds this game's %s save, which save_layout=game keeps in %s%s. The game plays it "
+                     "where it is until you move the folder there\n",
+                     host, sub[0] ? "/" : "", sub, kind, g_datadir, game);
+        }
+        snprintf(p, n, "%s", mine ? game : global);
+        R_SUCCEED();
+    }
+    if (!mine) {
+        snprintf(p, n, "%s", game);
+        R_SUCCEED();
+    }
+    /* global's, made now when it is not there: the folder above it first, then the graft */
+    if (fs_tree_lookup(&g_hle.fs.tree, NULL, name, &node)) {
+        char* parent = snx_strdup(host);
+        char* cut = strrchr(parent, '/');
+        if (cut) *cut = 0;
+        if (cut && snx_mkdirs(parent)) {
+            WARN("fs: could not make %s for this game's %s save\n", parent, kind);
+            free(parent);
+            R_THROW(RC(2, 1)); /* PathNotFound */
+        }
+        free(parent);
+        FsTreeResult r = fs_tree_graft_new(&g_hle.fs.tree, name, host);
+        if (r != FS_TREE_OK) {
+            WARN("fs: could not make %s for this game's %s save (error %d)\n", host, kind, r);
+            return tree_result(r);
+        }
+    }
+    snprintf(p, n, "%s", global);
+    R_SUCCEED();
+}
+/* the attribute's save, where save_folder says */
+static int open_save(const nn_fs_SaveDataAttribute* attribute, SvcObj** filesystem) {
+    char p[96], stop[FS_TREE_PATH_MAX * 2 + 512];
+    u32 rc;
     pm_lock(&g_hle.fs.tree.lock);
-    if (type == 1) rc = save_user(attribute, p, sizeof p, &both);
-    *filesystem = R_FAILED(rc) ? NULL : hostfs_new(p, &rc);
+    rc = save_folder(attribute, p, sizeof p, stop, sizeof stop);
+    *filesystem = R_FAILED(rc) || stop[0] ? NULL : hostfs_new(p, &rc);
     pm_unlock(&g_hle.fs.tree.lock);
-    if (both)
-        fatal("Two saves of the first user: %ssave/user, from before there were other users, and %s%s. Keep the one "
-              "you play and move the other out of %ssave/, then start the game again",
-              g_datadir, g_datadir, p, g_datadir);
+    if (stop[0]) fatal("%s", stop);
     return (int)rc;
 }
 static int nn_fssrv_sf_IFileSystemProxy_OpenSaveDataFileSystem(SvcObj* self, nn_fs_SaveDataSpaceId space_id,
@@ -2077,11 +2169,16 @@ static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByDataId(SvcObj* self, nn
         if (data_id == NGWORD2_DATA_ID) {
             r = fs_tree_add_virtual(&g_hle.fs.tree, p, g_hle.fs.ngword2rom, g_hle.fs.ngword2rom_size, &node);
             if (!r) LOG("fs: provided synthesized NgWord2 system archive %016llx\n", (unsigned long long)data_id);
-        } else if (data_id == MIIMODEL_DATA_ID) {
+        } else if (data_id == SNX_MII_MODEL_DATA_ID) {
+            if (!g_hle.fs.miimodelrom_size)
+                g_hle.fs.miimodelrom_size = filesrom_init(g_hle.fs.miimodelrom, sizeof g_hle.fs.miimodelrom,
+                                                          SNX_MII_MODEL_FILES, snx_mii_model_name, miimodel_file_size,
+                                                          miimodel_file_write, snx_mii_model_same, "MiiModel");
             r = fs_tree_add_virtual(&g_hle.fs.tree, p, g_hle.fs.miimodelrom, g_hle.fs.miimodelrom_size, &node);
             if (!r)
-                LOG("fs: provided placeholder MiiModel system archive %016llx: its Mii parts are blank, so Miis draw "
-                    "without faces (your firmware's goes in system/archives)\n",
+                LOG("fs: provided generated MiiModel system archive %016llx (%.1f MB): ScarletNX's own Mii parts, "
+                    "not the console's (the player's firmware's goes in system/archives/%016llx.romfs)\n",
+                    (unsigned long long)data_id, (double)g_hle.fs.miimodelrom_size / 1048576.0,
                     (unsigned long long)data_id);
         } else {
             r = fs_tree_add_virtual(&g_hle.fs.tree, p, g_hle.fs.emptyrom, sizeof g_hle.fs.emptyrom, &node);
@@ -2141,9 +2238,7 @@ static SvcObj* new_fspldr(void) { return nn_fssrv_sf_IFileSystemProxyForLoader_n
 void svc_fs_init(void) {
     emptyrom_init();
     g_hle.fs.ngword2rom_size = filesrom_init(g_hle.fs.ngword2rom, sizeof g_hle.fs.ngword2rom, NGWORD2_FILES,
-                                             ngword2_name, ngword2_file_size, ngword2_file_write, "NgWord2");
-    g_hle.fs.miimodelrom_size = filesrom_init(g_hle.fs.miimodelrom, sizeof g_hle.fs.miimodelrom, MIIMODEL_FILES,
-                                              miimodel_name, miimodel_file_size, miimodel_file_write, "MiiModel");
+                                             ngword2_name, ngword2_file_size, ngword2_file_write, NULL, "NgWord2");
     nn_fssrv_sf_IFileSystemProxy_register(new_fsp);
     nn_fssrv_sf_IProgramRegistry_register(new_fsppr);
     nn_fssrv_sf_IFileSystemProxyForLoader_register(new_fspldr);

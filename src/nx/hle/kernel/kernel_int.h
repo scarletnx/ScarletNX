@@ -108,9 +108,11 @@ void core_set_prio(KThread* t, int prio); /* the effective priority, reordering 
 u32 svc_arbitrate_lock(KThread* t, u32 owner, u64 addr, u32 tag);
 u32 svc_arbitrate_unlock(u64 addr);
 void prio_set_base_nl(KThread* t, int prio);
+/* t, back in the game's code from the SVC it waited in, runs as the owner of a mutex the kernel handed it */
+void sync_owner_runs(const KThread* t);
 u32 svc_wait_cv(KThread* t, u64 maddr, u64 key, u32 tag, i64 timeout);
 u32 svc_signal_cv(u64 key, i32 count);
-u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i32 value, i64 timeout);
+u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i64 value, i64 timeout);
 u32 svc_signal_addr(u64 addr, u32 type, i32 value, i32 count);
 u32 svc_wait_sync(KThread* t, u64 hptr, u32 n, i64 timeout, u32* out_idx);
 
@@ -243,6 +245,11 @@ typedef struct {
     } waiting_on[KTHREAD_MAX];
     /* the request each thread serves changed what a service holds (kthread_commit), until its SVC leaves */
     u8 committed[KTHREAD_MAX];
+    /* sync.c's mutex hand-offs, per thread slot, under g_klock: handed, the kernel made the thread a mutex's owner and
+       it has yet to leave the SVC it waited in (svc_leave clears it, without the lock); mwait_how, how a thread waiting
+       on a mutex came to it (MWAIT_*) */
+    u8 handed[KTHREAD_MAX];
+    u8 mwait_how[KTHREAD_MAX];
 } HostThread;
 /* thread's thread state, t_hle.thread (hle.h's) */
 enum { KT_LATER = 16 };

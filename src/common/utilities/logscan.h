@@ -45,13 +45,19 @@ enum {
 /* the service command lines, in the order the summary sorts them */
 enum { SNX_IPC_BAD_REQUEST, SNX_IPC_UNDECLARED, SNX_IPC_UNKNOWN, SNX_IPC_UNKNOWN_CONTROL };
 /* what the runtime missed, in the order the summary lists them. The GPU's: a graphics or compute shader the translator
-   can't express, methods of a class no engine runs, another GPU operation skipped. The macros': one with no native
+   can't express, methods of a class no engine runs, a texture, render target or depth format the runtime doesn't map,
+   another GPU operation skipped. The macros': one with no native
    form, one the compiler can't follow, an operation the interpreter doesn't know. The CPU's: an SVC with no handler,
    another SVC's unknown argument */
 enum {
     SNX_GAP_SHADER,
     SNX_GAP_COMPUTE,
+    SNX_GAP_SHIPPED, /* a program in the game's files, which the pass before the game couldn't translate; a draw that
+                        uses it translates it again, with its constant buffers, and says so as SNX_GAP_SHADER */
     SNX_GAP_CLASS,
+    SNX_GAP_TEXTURE,
+    SNX_GAP_TARGET,
+    SNX_GAP_DEPTH,
     SNX_GAP_GPU,
     SNX_GAP_MACRO,
     SNX_GAP_MACRO_COMPILE,
@@ -61,6 +67,9 @@ enum {
 };
 /* where a crash report put the host pc */
 enum { SNX_PLACE_NONE, SNX_PLACE_GAME, SNX_PLACE_BLOCK, SNX_PLACE_RUNTIME, SNX_PLACE_LIBRARY };
+/* the console the game is of, by its runtime's header: the Switch's, the 3DS's and the Vita's ("Game: ..."), the
+   GBA's ("ScarletNX - <title> (GBA)") */
+enum { SNX_CONSOLE_NONE, SNX_CONSOLE_SWITCH, SNX_CONSOLE_3DS, SNX_CONSOLE_VITA, SNX_CONSOLE_GBA };
 
 /* Every text is an offset into the scan's pool, 0 for none (the pool's first byte is an empty string) */
 typedef struct {
@@ -82,11 +91,12 @@ typedef struct {
     unsigned what, count; /* count: the lines, for a shader the shaders */
 } SnxLogGap;
 
-typedef struct {
+typedef struct SnxLogScan {
     char* pool; /* the texts, each terminated, grown as the scan adds them */
     size_t used, cap;
     /* the header: the game log's lines, else the launcher's build line */
     unsigned title, title_id, game_version, build, branch, commit, system, gpu, vulkan, driver;
+    int console;                               /* SNX_CONSOLE_* */
     unsigned launcher_build, launcher_message; /* the Share Log file's; launcher_build 0 for a game log */
     long centiseconds;                         /* the last line's time, -1 without one */
     int outcome;
@@ -127,10 +137,12 @@ typedef struct {
     unsigned tail[SNX_LOGSCAN_TAIL]; /* the last lines that aren't dumps, from snx_logscan_end */
     int ntail;
     /* the scan's state between lines */
-    int phase;          /* a game log, or which section of the launcher's file the lines are in */
-    int report_left;    /* lines the failure's report may still take, 0 once it ended */
-    size_t mark;        /* the pool's size when the launcher's run section began */
-    unsigned long seen; /* lines read */
+    int phase;              /* a game log, or which section of the launcher's file the lines are in */
+    int report_left;        /* lines the failure's report may still take, 0 once it ended */
+    size_t mark;            /* the pool's size when the launcher's run section began */
+    struct SnxLogScan* run; /* the last run's scan while the game log after it is read, malloc'd; its texts stay in
+                               the pool */
+    unsigned long seen;     /* lines read */
     /* the newest lines as read, rings by seen and output_seen, made texts of the summary at the end */
     char tail_raw[SNX_LOGSCAN_TAIL][SNX_LOGSCAN_RAW];
     unsigned tail_len[SNX_LOGSCAN_TAIL];
@@ -161,6 +173,8 @@ int snx_logscan_file(SnxLogScan* s, FILE* f);
 void snx_logscan_free(SnxLogScan* s);
 const char* snx_logscan_text(const SnxLogScan* s, unsigned at);
 const char* snx_logscan_outcome_name(int outcome);
+/* "Switch", "3DS", "Vita", "GBA"; NULL for SNX_CONSOLE_NONE */
+const char* snx_logscan_console_name(int console);
 const SnxLogSym* snx_logscan_function(const SnxLogScan* s);
 /* The summary as one JSON object (one line) or as markdown for an issue or the Share Log file, malloc'd, NULL out of
    memory. The markdown escapes everything the log said (no mentions, links, images or closed code blocks): heading is
@@ -169,7 +183,8 @@ const SnxLogSym* snx_logscan_function(const SnxLogScan* s);
 char* snx_logscan_json(const SnxLogScan* s, SnxDemangle demangle);
 char* snx_logscan_markdown(const SnxLogScan* s, const char* name, const char* heading, int brief, SnxDemangle demangle);
 /* the n bytes of text with each home folder's part as ~, as a report writes it (/home/<user>, C:\Users\<user>, Android's
-   /data/user/<n>/<package>...), allocated and ended by a 0, its length in *size; NULL out of memory */
+   /data/user/<n>/<package>..., the account's name whole, spaces and all), allocated and ended by a 0, its length in
+   *size; NULL out of memory */
 char* snx_logscan_tilde(const char* text, size_t n, size_t* size);
 /* scarletnx --scan-log: LOG... (- for stdin) [--format json|markdown] [--name NAME], a JSON object a line or a summary
    a log, NAME the markdown's title for a log without a title line (its path otherwise). argv[0] is the command's name */

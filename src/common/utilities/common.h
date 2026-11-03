@@ -46,8 +46,13 @@ void snx_option_renamed(const char* old, const char* now);
    no other way to keep them in), NULL for stderr again. Set before the threads that say errors start */
 void snx_error_sink(void (*sink)(const char* line));
 /* the system's reason for the file or folder call that just failed, into out: strerror(errno), or on Windows the
-   text of GetLastError, which its calls set instead of errno */
+   text of GetLastError, which its calls set instead of errno (snx_windows_reason) */
 char* snx_os_error(char* out, size_t size);
+/* the reason Windows gives for an error code, the n UTF-16 units of text (FormatMessageW's, in the system's language),
+   into out as UTF-8 without the line break and full stop it ends in, the code after it: "<text> (Windows error
+   <code>)", or "Windows error <code>" for no text. A unit that is no character is U+FFFD; a short out keeps whole
+   characters of the text, and the code after them only whole */
+char* snx_windows_reason(const uint16_t* text, size_t n, unsigned long code, char* out, size_t size);
 /* a, then b, a separator between: one path in the system's separators (snx_path_native) */
 char* snx_path_join(const char* a, const char* b);
 char* snx_dirname(const char* path);
@@ -212,6 +217,10 @@ SnxU64 snx_file_time(const char* path);
 int snx_set_file_time(const char* path, SnxU64 seconds);
 int snx_make_executable(const char* path);
 unsigned snx_cpu_count(void);
+/* the threads an AOT pass (a game's recompile) is given when its count is left open: the physical cores where the
+   system says them, else the processors, capped at 75% of that (a reserve of one whole core, or a quarter), so a
+   part of the computer stays free; at least 1, never more than snx_cpu_count() */
+unsigned snx_build_threads(void);
 /* seconds on a monotonic clock, for durations */
 double snx_seconds(void);
 /* Address space for code the process writes and then runs: reserved without access, then given access in whole pages.
@@ -227,6 +236,13 @@ int snx_abort_requested(void);
 SnxU64 snx_footprint(void);
 /* the processor time this process has used, every thread's together, in ns; 0 where the system does not tell */
 SnxU64 snx_process_cpu_ns(void);
+/* a thread's time on the processors, which any thread of the process reads: snx_thread_clock gives the calling
+   thread's clock, never 0, or 0 where the system gives none; snx_thread_cpu_ns the time its thread has run so far, in
+   ns, into *ns, and -1 once the thread has ended; snx_thread_clock_close lets go of the clock (a handle on Windows),
+   after which no thread reads it */
+SnxU64 snx_thread_clock(void);
+int snx_thread_cpu_ns(SnxU64 clock, SnxU64* ns);
+void snx_thread_clock_close(SnxU64 clock);
 /* the memory the system can still give this process, in bytes, into *bytes: what iOS lets the app take before it ends
    it, the memory available on Linux and Android (MemAvailable), on macOS (free, inactive and purgeable pages) and on
    Windows (available physical memory); whether the system told it */
@@ -278,9 +294,15 @@ int snx_seek(FILE* f, SnxU64 offset);
 /* f's offset from its start, past 2 GiB too; signed, so that -1 can report an error */
 int64_t snx_tell(FILE* f);
 
+/* 1 when the n bytes at text are well-formed UTF-8 (no overlong form, surrogate, or code point past U+10FFFF), else 0
+   and the first 16 of them in hex into hex ("2a 9c e3", "..." after when there are more), when hex_size is not 0 */
+int snx_utf8_valid(const char* text, size_t n, char* hex, size_t hex_size);
 /* The game's name in a control.nacp: American English's, else the first language's that has one, in UTF-8 without
-   control characters. 1 when it has one, else 0 and "" */
+   control characters, its titles inflated when the NACP keeps them in deflate (TitleCompression). A name whose bytes
+   are not UTF-8 counts as none. 1 when it has one, else 0 and "" */
 int snx_nacp_name(const unsigned char* nacp, size_t size, char* name, size_t name_size);
+/* snx_nacp_name, and when it has no name, why into why (its bytes in hex for a name that is not UTF-8); "" else */
+int snx_nacp_name_why(const unsigned char* nacp, size_t size, char* name, size_t name_size, char* why, size_t why_size);
 /* The title ID of a program without an NPDM (an NRO, an ExeFS without main.npdm): none of its own */
 #define SNX_NPDM_DEFAULT_TITLE 0x0100000000001000ull
 /* The title ID a main.npdm's ACI0 gives its program, as the loader reads it, for one not loaded; SNX_NPDM_DEFAULT_TITLE

@@ -162,6 +162,27 @@ static inline blob_t partition_build(uint32_t magic, const romfs_file_t* files, 
     return out;
 }
 
+/* The end of the last file of a PFS0 as partition_build lays it out: where a dump cut short is cut from. */
+static inline size_t pfs0_files_end(const unsigned char* pfs0) {
+    uint32_t count = 0, strings = 0;
+    size_t end = 0;
+    for (unsigned b = 0; b < 4; b++) {
+        count |= (uint32_t)pfs0[4 + b] << (8 * b);
+        strings |= (uint32_t)pfs0[8 + b] << (8 * b);
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        const unsigned char* e = pfs0 + 0x10 + (size_t)i * sizeof(pfs0_file_entry_t);
+        uint64_t offset = 0, size = 0;
+        for (unsigned b = 0; b < 8; b++) {
+            offset |= (uint64_t)e[b] << (8 * b);
+            size |= (uint64_t)e[8 + b] << (8 * b);
+        }
+        size_t last = 0x10 + (size_t)count * sizeof(pfs0_file_entry_t) + strings + (size_t)(offset + size);
+        if (last > end) end = last;
+    }
+    return end;
+}
+
 /* A section image holding a PFS0 after its hash table, and its superblock. */
 static inline blob_t pfs0_section_build(const blob_t* pfs0, pfs0_superblock_t* sb) {
     uint32_t block = 0x1000;
@@ -183,10 +204,41 @@ static inline blob_t pfs0_section_build(const blob_t* pfs0, pfs0_superblock_t* s
     return section;
 }
 
+/* A RomFS image stored behind a compression table (LibHac's CompressedStorage, one entry set): the image as is (a
+   NONE entry) but for its last cut bytes, which the table still lists, then zeros bytes of zeros past it (a ZEROED
+   entry), which take no room. The stored data, then the table, as the hashes cover them; info says where the table is */
+static inline blob_t compressed_build(const blob_t* image, size_t cut, uint64_t zeros, nca_compression_info_t* info) {
+    uint32_t count = zeros ? 2 : 1;
+    uint64_t end = image->size + zeros;
+    size_t kept = image->size - cut, table_offset = align_up(kept, 0x10), table_size = 2 * BUCKET_TREE_NODE_SIZE;
+    blob_t out = {zalloc(table_offset + table_size), table_offset + table_size};
+    unsigned char *table = out.data + table_offset, *set = table + BUCKET_TREE_NODE_SIZE, *entry = set + 0x10;
+    CHECK(cut < image->size && kept > 0);
+    memcpy(out.data, image->data, kept);
+    put32(table + 4, 1); /* the L1 node: one entry set, from 0 */
+    put64(table + 8, end);
+    put32(set + 4, count); /* the entry set: index 0 */
+    put64(set + 8, end);
+    entry[0x10] = COMPRESSION_NONE; /* virtual 0, physical 0 */
+    put32(entry + 0x14, (uint32_t)image->size);
+    if (zeros) {
+        put64(entry + COMPRESSED_ENTRY_SIZE, image->size);
+        entry[COMPRESSED_ENTRY_SIZE + 0x10] = COMPRESSION_ZEROED;
+    }
+    info->table_offset = table_offset;
+    info->table_size = table_size;
+    info->table_header.magic = BUCKET_TREE_MAGIC;
+    info->table_header.version = 1;
+    info->table_header.entry_count = (int32_t)count;
+    return out;
+}
+
 /* A decrypted NCA (DNCA) of content_type: an ExeFS of exefs_count files when exefs is not NULL (main.npdm makes it
-   one), then a RomFS of romfs_count files when romfs is not NULL. */
-static inline blob_t dnca_build(uint8_t content_type, uint64_t title_id, const romfs_file_t* exefs, unsigned exefs_count,
-                         const romfs_file_t* romfs, unsigned romfs_count) {
+   one), then a RomFS of romfs_count files when romfs is not NULL, stored as compressed_build stores it when romfs_cut
+   or romfs_zeros is nonzero. */
+static inline blob_t dnca_build_romfs(uint8_t content_type, uint64_t title_id, const romfs_file_t* exefs,
+                                      unsigned exefs_count, const romfs_file_t* romfs, unsigned romfs_count,
+                                      size_t romfs_cut, uint64_t romfs_zeros) {
     nca_header_t header;
     blob_t sections[2] = {{0}}, body;
     unsigned n = 0;
@@ -211,6 +263,11 @@ static inline blob_t dnca_build(uint8_t content_type, uint64_t title_id, const r
         fs->partition_type = PARTITION_ROMFS;
         fs->fs_type = FS_TYPE_ROMFS;
         fs->crypt_type = CRYPT_NONE;
+        if (romfs_cut || romfs_zeros) {
+            blob_t stored = compressed_build(&image, romfs_cut, romfs_zeros, &fs->compression_info);
+            free(image.data);
+            image = stored;
+        }
         sections[n++] = ivfc_build(&image, &fs->romfs_superblock.ivfc_header);
         free(image.data);
     }
@@ -231,6 +288,32 @@ static inline blob_t dnca_build(uint8_t content_type, uint64_t title_id, const r
     memcpy(nca.data + 0xC00, body.data, body.size);
     free(body.data);
     return nca;
+}
+static inline blob_t dnca_build(uint8_t content_type, uint64_t title_id, const romfs_file_t* exefs,
+                                unsigned exefs_count, const romfs_file_t* romfs, unsigned romfs_count) {
+    return dnca_build_romfs(content_type, title_id, exefs, exefs_count, romfs, romfs_count, 0, 0);
+}
+
+/* A dnca_build NCA turned into an encrypted one of master key generation: an NCA3 header encrypted with header_key
+   (AES-XTS, 0x200-byte sectors from 0, as nca.c decrypts it) whose sections are AES-CTR, its key area left zero. Only
+   its header can be read: it says what the keys file must have, which the tests' keys files lack */
+static inline void nca_encrypt(blob_t* nca, const unsigned char header_key[32], unsigned generation) {
+    nca_header_t header;
+    unsigned char sealed[0xC00];
+    CHECK(nca->size >= 0xC00 && sizeof(header) == 0xC00 && generation < 0xFF);
+    memcpy(&header, nca->data, sizeof(header));
+    nca_header_swap(&header); /* the host's order, then the file's again */
+    header.magic = MAGIC_NCA3;
+    header.crypto_type = 2;
+    header.crypto_type2 = (uint8_t)(generation + 1); /* 0 and 1 are both master key 0 */
+    header.kaek_ind = 0;
+    for (unsigned i = 0; i < 4; i++)
+        if (header.section_entries[i].media_start_offset) header.fs_headers[i].crypt_type = CRYPT_CTR;
+    nca_header_swap(&header);
+    aes_ctx_t* aes = new_aes_ctx(header_key, 32, AES_MODE_XTS);
+    aes_xts_encrypt(aes, sealed, &header, sizeof(sealed), 0, 0x200);
+    free_aes_ctx(aes);
+    memcpy(nca->data, sealed, sizeof(sealed));
 }
 
 /* A gamecard (DXCI) whose root partition holds a secure one of files, after the card's key area when key_area. */

@@ -10,6 +10,7 @@
 #include "agb/cpu/recomp.h"
 #include "agb/runtime/host.h"
 #include "agb/runtime/main.h"
+#include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/script.h"
@@ -329,6 +330,10 @@ int snx_agb_main(int argc, char** argv) {
             }
         }
         printf("ScarletNX - %s (GBA)\n", board.cartridge.title[0] ? board.cartridge.title : name);
+        /* the build and the cartridge's game code, which the log summary reads (common/utilities/logscan.c): the code
+           names the game where the cartridge's title is 12 letters at most */
+        printf("build: %s\n", snx_build_info());
+        if (board.cartridge.game_code[0]) printf("cartridge: %s\n", board.cartridge.game_code);
         press_count = snx_script_parse("scarletnx-agb", script, SCRIPT_KEYS, &presses);
         for (long frame = 0; frames < 0 || frame < frames; ++frame) {
             uint32_t written = 0;

@@ -13,8 +13,17 @@ msgstr ""
 "X-Language-Name: 简体中文\n"
 
 #: src/gui/android.c
+msgid "an exception that says nothing"
+msgstr ""
+
+#: src/gui/android.c
 msgid "No Android activity to ask."
 msgstr "没有可调用的 Android 活动。"
+
+#: src/gui/android.c
+#, c-format
+msgid "MainActivity.%s did not run: %s"
+msgstr ""
 
 #: src/gui/android.c
 #, c-format
@@ -28,11 +37,6 @@ msgstr "文档选择器未能打开。"
 #: src/gui/apple.m
 msgid "No window to show the picker over."
 msgstr "没有可显示选择器的窗口。"
-
-#: src/gui/apple.m
-#, c-format
-msgid "The log could not be shown: it is at %s"
-msgstr "无法显示日志：它位于 %s"
 
 #: src/gui/browser.c
 #, c-format
@@ -157,6 +161,16 @@ msgid "Removed: it was empty"
 msgstr "已移除：它原本是空的"
 
 #: src/gui/editor.c
+#, c-format
+msgid "Select to type it: a whole number from %.0f to %.0f"
+msgstr ""
+
+#: src/gui/editor.c
+#, c-format
+msgid "Select to type it: a number from %g to %g, three digits and two decimals at most"
+msgstr ""
+
+#: src/gui/editor.c
 msgid "Select to pick it, or type it as #RRGGBB"
 msgstr "选中以选取，或输入为 #RRGGBB"
 
@@ -169,25 +183,86 @@ msgid "Select to type it: #RRGGBB"
 msgstr "选中以输入：#RRGGBB"
 
 #: src/gui/editor.c
-msgid "A folder name: letters, digits, spaces, - _ and ., not starting with ."
-msgstr "文件夹名：字母、数字、空格、- _ 和 .，不以 . 开头"
+#, c-format
+msgid "%s is not a folder name: letters, digits, spaces, - _ and ., not starting with ."
+msgstr ""
 
 #: src/gui/editor.c
 #, c-format
-msgid "At most %u bytes"
-msgstr "最多 %u 字节"
+msgid "%s is not a color #RRGGBB, as #1A2B3C"
+msgstr ""
+
+#: src/gui/editor.c
+#, c-format
+msgid "%s is not a whole number from 0 to %lu"
+msgstr ""
+
+#: src/gui/editor.c
+#, c-format
+msgid "%s is not a whole number from %.0f to %.0f"
+msgstr ""
+
+#: src/gui/editor.c
+#, c-format
+msgid "%s is not a number from %g to %g, two decimals at most"
+msgstr ""
+
+#: src/gui/editor.c
+#, c-format
+msgid "%s is more than %u bytes"
+msgstr ""
+
+#: src/gui/editor.c
+msgid "Not saved: ESC again leaves without it, Save keeps it"
+msgstr "未保存：再按 ESC 不保存离开，「保存」则保留"
+
+#: src/gui/editor.c
+#, c-format
+msgid "Only the digits of a whole number from %.0f to %.0f"
+msgstr ""
+
+#: src/gui/editor.c
+#, c-format
+msgid "Only the digits of a number from %g to %g, three digits and two decimals at most"
+msgstr ""
+
+#: src/gui/editor.c
+msgid "A folder name: letters, digits, spaces, - _ and ., not starting with ."
+msgstr "文件夹名：字母、数字、空格、- _ 和 .，不以 . 开头"
 
 #: src/gui/editor.c
 msgid "A color: #RRGGBB, as #1A2B3C"
 msgstr "颜色：#RRGGBB，例如 #1A2B3C"
 
 #: src/gui/editor.c
-msgid "A whole number, 0 to 10000"
-msgstr "整数，0 到 10000"
+#, c-format
+msgid "A whole number from 0 to %lu"
+msgstr ""
 
 #: src/gui/editor.c
-msgid "Not saved: ESC again leaves without it, Save keeps it"
-msgstr "未保存：再按 ESC 不保存离开，「保存」则保留"
+#, c-format
+msgid "A whole number from %.0f to %.0f; empty, the default %s"
+msgstr ""
+
+#: src/gui/editor.c
+#, c-format
+msgid "A whole number from %.0f to %.0f"
+msgstr ""
+
+#: src/gui/editor.c
+#, c-format
+msgid "A number from %g to %g, two decimals at most; empty, the default %s"
+msgstr ""
+
+#: src/gui/editor.c
+#, c-format
+msgid "A number from %g to %g, two decimals at most"
+msgstr ""
+
+#: src/gui/editor.c
+#, c-format
+msgid "Text, up to %u bytes"
+msgstr ""
 
 #: src/gui/editor.c
 msgid "Folder"
@@ -211,46 +286,294 @@ msgstr "主题文件夹"
 msgid "Saved in %s"
 msgstr "已保存到 %s"
 
+#: src/gui/gpu_driver.c
+msgid "Debug - CPU Memory"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Use CPU memory (slower but more stable)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Debug - No UBWC"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Disable UBWC compression for debugging"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Debug - No Binning"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Disable binning optimization"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Capture - Renderpass"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Capture command stream data for debugging"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Capture - First 100 Frames"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Capture command stream for first 100 frames only"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Shader Debug"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Enable IR3 shader compiler debugging"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "GPU Hang Trace"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Trace GPU progress for debugging hangs"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Dev - UBWC Flag Hint"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Enable TP UBWC flag hint for development"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Performance - Default"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Clear all debug options for performance"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s is not a zip (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's entry %u does not read (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's %s is %s; a driver's files are at the zip's top"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "a folder"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "not a file at the zip's top"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s unpacks to %llu bytes, over the %llu a driver takes"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s has no meta.json at its top"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's meta.json is %llu bytes, over the %d a driver's takes"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's meta.json does not unpack (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s: %s"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s has no %s, the library its meta.json names"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s needs Android API %d; this device has API %d"
+msgstr ""
+
+#: src/gui/gpu_driver.c src/gui/main.c
+#, c-format
+msgid "Not added: %s"
+msgstr "未添加：%s"
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Already added: %s (%s/%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s/%s holds %s %s already; remove it first"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "a package whose meta.json does not read,"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: no memory for %s's paths"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s could not be made (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's %s does not unpack (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's %s %s"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s could not be written (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s could not become %s (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Added %s (%s), in %s/%s"
+msgstr ""
+
+#: src/gui/gpu_driver.c src/gui/main.c
+msgid "no driverVersion"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Removed %s/%s"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not removed: %s is no driver's folder name"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not removed: %s is not there"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not removed: %s could not be deleted (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver_fetch.c
+#, c-format
+msgid "GitHub says of %s: %s"
+msgstr ""
+
+#: src/gui/gpu_driver_fetch.c
+#, c-format
+msgid "%s's releases are not GitHub's list of them (%zu bytes)"
+msgstr ""
+
+#: src/gui/gpu_driver_fetch.c
+#, c-format
+msgid "no memory for %s's %zu releases and %zu assets"
+msgstr ""
+
+#: src/gui/gpu_driver_fetch.c
+msgid "Unsupported"
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: select. Refresh. Back."
 msgstr "轻触: 选择. 更新. 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: select. Refresh."
 msgstr "轻触: 选择. 更新."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Tap: open. Swipe: page. Refresh. Back."
-msgstr "轻触: 打开. 滑动: 翻页. 更新. 返回."
+msgid "Tap: open. Drag: scroll. Refresh. Back."
+msgstr ""
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Tap: open. Swipe: page. Refresh."
-msgstr "轻触: 打开. 滑动: 翻页. 更新."
+msgid "Tap: open. Drag: scroll. Refresh."
+msgstr ""
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Play."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Recompile."
 msgstr "重新编译."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Mods."
 msgstr "模组."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "AOT pack."
 msgstr "AOT 包."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Save states."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Back."
 msgstr "返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Pick the prod.keys file."
@@ -280,101 +603,163 @@ msgstr "轻触此处中止并返回菜单"
 msgid "No games in recompiled/ or dumps/: put a game's .nro, .xci or .nsp in dumps/."
 msgstr "recompiled/ 或 dumps/ 中没有游戏：把游戏的 .nro、.xci 或 .nsp 放入 dumps/。"
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: change. Back."
 msgstr "轻触: 更改. 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: change."
 msgstr "轻触: 更改."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Drag: change. Tap #RRGGBB: type. Tap outside: OK. Back: cancel."
 msgstr "拖动: 更改. 轻触 #RRGGBB: 输入. 轻触外面: 确定. 返回: 取消."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Drag: change. Tap #RRGGBB: type. Tap outside: OK."
 msgstr "拖动: 更改. 轻触 #RRGGBB: 输入. 轻触外面: 确定."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: open. Back."
 msgstr "轻触: 打开. 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: open."
 msgstr "轻触: 打开."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Refresh. Back."
 msgstr "更新. 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Refresh."
 msgstr "更新."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Tap: delete."
-msgstr "轻触: 删除."
+msgid "Tap: open or change."
+msgstr ""
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: open or remove."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: add."
 msgstr "轻触: 添加."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: reset."
 msgstr "轻触: 恢复."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: select. Tap again: press. Back."
 msgstr "轻触: 选择. 再次轻触: 按下. 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: select. Tap again: press."
 msgstr "轻触: 选择. 再次轻触: 按下."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: rename. Back."
 msgstr "轻触: 重命名. 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: rename."
 msgstr "轻触: 重命名."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: use, add or remove. Back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: downloads, or fetch again. Back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: apply, type, remove or save. Back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: use, add or remove."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: downloads, or fetch again."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: apply, type, remove or save."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: select."
 msgstr "轻触: 选择."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Games."
 msgstr "游戏."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Take out."
 msgstr "移出."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Back: abort."
 msgstr "返回: 中止."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap again: play."
@@ -388,40 +773,59 @@ msgstr "返回: 回到游戏. 再轻触其所在行: 运行"
 msgid "Back: to Games"
 msgstr "返回: 回到游戏"
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Arrows/mouse: move. Space/Enter/click: select."
 msgstr "方向键/鼠标: 移动. 空格/Enter/点击: 选择."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Up/Down: select. Enter/Space: open. Left/Right/PgUp/PgDown: page. F5: refresh."
-msgstr "上/下: 选择. Enter/空格: 打开. 左/右/PgUp/PgDown: 翻页. F5: 更新."
+msgid "Up/Down: select. Enter/Space: open. Left/Right/PgUp/PgDown: scroll. F5: refresh."
+msgstr ""
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Arrows: select. Enter/Space: open. PgUp/PgDown: page. F5: refresh."
-msgstr "方向键: 选择. Enter/空格: 打开. PgUp/PgDown: 翻页. F5: 更新."
+msgid "Arrows: select. Enter/Space: open. PgUp/PgDown: scroll. F5: refresh."
+msgstr ""
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "L: play."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "R: recompile."
 msgstr "R: 重新编译."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "M: mods."
 msgstr "M: 模组."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "B: AOT pack."
 msgstr "B: AOT 包."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "S: save states."
+msgstr ""
+
 #: src/gui/main.c
 msgid "click the box (or Enter) to open the file picker"
 msgstr "点击此框（或按 Enter）打开文件选择器"
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Ctrl+V: paste. ESC: back."
@@ -447,96 +851,145 @@ msgstr "按 [ESC] 中止并返回菜单"
 msgid "No games in recompiled/, dumps/ or the libraries of Settings > App > Folders."
 msgstr "recompiled/、dumps/ 和「设置 > 应用 > 文件夹」的游戏库中都没有游戏。"
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: key. Left/Right: change. Enter: edit. Ctrl+S: save. ESC: back."
 msgstr "上/下: 选项. 左/右: 更改. Enter: 编辑. Ctrl+S: 保存. ESC: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: row. Left/Right: step 1. PgUp/PgDn: step 16. Enter: OK. ESC: cancel."
 msgstr "上/下: 行. 左/右: 步进 1. PgUp/PgDn: 步进 16. Enter: 确定. ESC: 取消."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: setting. Left/Right: change. Enter: type. ESC: back."
 msgstr "上/下: 设置项. 左/右: 更改. Enter: 输入. ESC: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Del: default."
 msgstr "Del: 默认."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: group. Enter: open. ESC: back."
 msgstr "上/下: 分组. Enter: 打开. ESC: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: row. Left/Right: change. Enter: change or open. ESC: back."
 msgstr "上/下: 行. 左/右: 更改. Enter: 更改或打开. ESC: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: folder. F5: refresh. ESC: back."
 msgstr "上/下: 文件夹. F5: 更新. ESC: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Enter: change."
-msgstr "Enter: 更改."
+msgid "Enter: open or change."
+msgstr ""
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Del: delete."
 msgstr "Del: 删除."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Enter: open or remove."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Enter: open."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Enter: add."
 msgstr "Enter: 添加."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Enter: reset."
 msgstr "Enter: 恢复."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Arrows/pad: move, change. Enter/A: select. Del: default. ESC: back."
 msgstr "方向键/手柄: 移动、更改. Enter/A: 选择. Del: 默认. ESC: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: user. Left/Right: current user. Enter: rename. ESC: back."
 msgstr "上/下: 用户. 左/右: 当前用户. Enter: 重命名. ESC: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: row. Enter: use, add or remove. Del: remove. ESC: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: row. Enter: downloads, or fetch again. ESC: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: row. Enter: apply, type, remove or save. Del: remove. ESC: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: queue."
 msgstr "上/下: 队列."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tab: games."
 msgstr "Tab: 游戏."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Del: take out."
 msgstr "Del: 移出."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "ESC: abort."
 msgstr "ESC: 中止."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "ESC: games."
 msgstr "ESC: 游戏."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Enter: play."
@@ -550,126 +1003,193 @@ msgstr "按 [ESC] 返回游戏，按 Enter 运行"
 msgid "Press [ESC] to return to Games"
 msgstr "按 [ESC] 返回游戏"
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: move. A: select. Start: refresh. B: back."
 msgstr "十字键: 移动. A: 选择. Start: 更新. B: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "D-pad: select. A: open. LT/RT: page. Start: refresh. B: back."
-msgstr "十字键: 选择. A: 打开. LT/RT: 翻页. Start: 更新. B: 返回."
+msgid "D-pad: select. A: open. LT/RT: scroll. Start: refresh. B: back."
+msgstr ""
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Right stick: play."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Y: recompile."
 msgstr "Y: 重新编译."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "L3: mods."
 msgstr "L3: 模组."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "R3: AOT pack."
 msgstr "R3: AOT 包."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "X: save states."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "A: pick a file. B: back."
 msgstr "A: 选取文件. B: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: key, change. A: edit. B: back."
 msgstr "十字键: 选项、更改. A: 编辑. B: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: row, step 1. LT/RT: step 16. A: OK. B: cancel."
 msgstr "十字键: 行、步进 1. LT/RT: 步进 16. A: 确定. B: 取消."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: setting, change. A: type. B: back."
 msgstr "十字键: 设置项、更改. A: 输入. B: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "X: default."
 msgstr "X: 默认."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: group. A: open. B: back."
 msgstr "十字键: 分组. A: 打开. B: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: row, change. A: change or open. B: back."
 msgstr "十字键: 行、更改. A: 更改或打开. B: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: folder. Start: refresh. B: back."
 msgstr "十字键: 文件夹. Start: 更新. B: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "A: change."
-msgstr "A: 更改."
+msgid "A: open or change."
+msgstr ""
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "A: open or remove."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "A: open."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "X: delete."
 msgstr "X: 删除."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "A: add."
 msgstr "A: 添加."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "A: reset."
 msgstr "A: 恢复."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: user, current user. A: rename. B: back."
 msgstr "十字键: 用户、当前用户. A: 重命名. B: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: row. A: use, add or remove. X: remove. B: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: row. A: downloads, or fetch again. B: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: row. A: apply, type, remove or save. X: remove. B: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "LB/RB: screen."
 msgstr "LB/RB: 画面."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: queue."
 msgstr "十字键: 队列."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "RB: games."
 msgstr "RB: 游戏."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "X: take out."
 msgstr "X: 移出."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "B: abort."
 msgstr "B: 中止."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "B: games."
 msgstr "B: 游戏."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "A: play."
@@ -753,6 +1273,7 @@ msgstr "标题"
 msgid "Last opened"
 msgstr "上次打开"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "View"
@@ -819,44 +1340,57 @@ msgstr "%s：text_size = %s 现在是 ui_scale = %s"
 
 #: src/gui/main.c
 #, c-format
+msgid "%s: %s is no longer a UI scale: ui_scale = %d now"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Recent Games not kept: %s could not be written."
 msgstr "未保留最近游戏：无法写入 %s。"
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tab: screen. F2: side box."
 msgstr "Tab: 切换画面. F2: 侧框."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Folders."
 msgstr "文件夹."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "View."
 msgstr "视图."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "P: folders."
 msgstr "P: 文件夹."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "V: view."
 msgstr "V: 视图."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "ESC: back."
 msgstr "ESC: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "F1: help."
 msgstr "F1: 帮助."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Select: help."
@@ -998,14 +1532,6 @@ msgid "Run Anyway"
 msgstr "仍然运行"
 
 #: src/gui/main.c
-msgid "Revert"
-msgstr "还原"
-
-#: src/gui/main.c
-msgid "Keep"
-msgstr "保留"
-
-#: src/gui/main.c
 msgid "Clean"
 msgstr "清理"
 
@@ -1022,23 +1548,42 @@ msgid "Move"
 msgstr "移动"
 
 #: src/gui/main.c
+msgid "Delete"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
 msgid "Play"
 msgstr "运行"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Recompile"
 msgstr "重新编译"
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Arrows/mouse: move. Space/Enter/click: select. F5: refresh. ESC: exit."
 msgstr "方向键/鼠标: 移动. 空格/Enter/点击: 选择. F5: 更新. ESC: 退出."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "F2: side box."
 msgstr "F2: 侧栏."
+
+#: src/gui/main.c
+#, c-format
+msgid "user=%d is deprecated, and the Settings have no user_uid to write %s in"
+msgstr "user=%d 是旧的设置，而设置中没有可写入 %s 的 user_uid"
+
+#: src/gui/main.c
+#, c-format
+msgid "user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"
+msgstr "user=%d 是旧的设置：由 user_uid=%s（[user%d] 的）取代"
 
 #: src/gui/main.c
 #, c-format
@@ -1047,13 +1592,41 @@ msgstr "未显示用户：%s"
 
 #: src/gui/main.c
 #, c-format
+msgid "%s cannot be made: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Cannot start the run: out of memory"
+msgstr "无法开始运行：内存不足"
+
+#: src/gui/main.c
+#, c-format
+msgid "the driver gave no answer in %d s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "the driver ended with status %d"
+msgstr ""
+
+#: src/gui/main.c
+msgid "the driver ended without one"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Cannot find %s beside ScarletNX or on PATH."
+msgstr "在 ScarletNX 旁边或 PATH 中找不到 %s。"
+
+#: src/gui/main.c
+#, c-format
 msgid "The dumps' icons are not asked for (%s)"
 msgstr "未能读取转储的图标（%s）"
 
 #: src/gui/main.c
 #, c-format
-msgid "%s could not be drawn: the game shows no icon"
-msgstr "无法绘制 %s：该游戏不显示图标"
+msgid "%s could not be drawn: the game shows Wimsy in grey"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -1088,6 +1661,74 @@ msgid "out of memory"
 msgstr "内存不足"
 
 #: src/gui/main.c
+msgid "Dump"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Game"
+msgstr ""
+
+#: src/gui/main.c src/common/utilities/setup.c
+msgid "Saves"
+msgstr "存档"
+
+#: src/gui/main.c src/gui/ui.txt
+msgid "Settings"
+msgstr "设置"
+
+#: src/gui/main.c
+msgid "its dump is not known: the game was made before the recompile named it"
+msgstr ""
+
+#: src/gui/main.c
+msgid "not known"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not there yet"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is out of the Files app's reach, which shows the app's Documents alone"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no cache to delete: no %s, no %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Delete the caches of %s? The shader cache, %s (%s), and the code cache, %s (%s). The game makes them again as it runs; its saves, settings and dump stay."
+msgstr ""
+
+#: src/gui/main.c
+msgid "none"
+msgstr "无"
+
+#: src/gui/main.c
+#, c-format
+msgid "Could not delete %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Deleted the caches of %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "GPU Driver: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Global (%s)"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Mod %s"
 msgstr "模组 %s"
@@ -1116,6 +1757,22 @@ msgstr "添加金手指"
 #: src/gui/main.c
 msgid "Open Cheats Folder"
 msgstr "打开金手指文件夹"
+
+#: src/gui/main.c
+msgid "Open Folder"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Clean Cache"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Save States"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Freedreno Settings"
+msgstr ""
 
 #: src/gui/main.c
 msgid "  (Debug on)"
@@ -1165,11 +1822,6 @@ msgstr "未添加：模组文件夹中已有 %s：%s"
 #, c-format
 msgid "Not added: cannot make %s: %s"
 msgstr "未添加：无法创建 %s：%s"
-
-#: src/gui/main.c
-#, c-format
-msgid "Not added: %s"
-msgstr "未添加：%s"
 
 #: src/gui/main.c
 #, c-format
@@ -1269,6 +1921,16 @@ msgstr "未添加：%s 在为其打开的对话框关闭后才返回"
 
 #: src/gui/main.c
 #, c-format
+msgid "%s is a dump: its recompiled game keeps its own GPU driver and Freedreno variables"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is a dump: its recompiled game keeps the save states"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "\"%s\" always runs: a | in its name, which cheats_off= puts between two"
 msgstr "「%s」始终生效：其名称中有 |，这是 cheats_off= 用来分隔两个名称的符号"
 
@@ -1278,8 +1940,51 @@ msgid "%s: its updates, DLCs, mods and cheats kept"
 msgstr "%s：保留其更新、DLC、模组和金手指"
 
 #: src/gui/main.c
+msgid "Icon size is the grid's: View is List"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Side panel"
 msgstr "侧栏"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: save states"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Slot %s  %s  %u:%02u:%02u"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Auto  %s  %u:%02u:%02u"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no save states: F7 saves one while it plays, the menu's Save states page too."
+msgstr ""
+
+#: src/gui/main.c
+msgid "S lists the save states of a recompiled Switch game in focus."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "It can't be played from that state: %s."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Delete the save state %s?"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not deleted: %s could not be removed"
+msgstr ""
 
 #: src/gui/main.c
 msgid "SCARLETNX  /  SETTINGS"
@@ -1313,6 +2018,18 @@ msgid "SCARLETNX  /  SETTINGS  /  FOLDERS"
 msgstr "SCARLETNX  /  设置  /  文件夹"
 
 #: src/gui/main.c
+msgid "SCARLETNX  /  SETTINGS  /  GPU DRIVERS"
+msgstr ""
+
+#: src/gui/main.c
+msgid "SCARLETNX  /  SETTINGS  /  GPU DRIVERS  /  DOWNLOAD"
+msgstr ""
+
+#: src/gui/main.c
+msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Background recompile: %s"
 msgstr "后台重新编译：%s"
@@ -1326,14 +2043,11 @@ msgstr "任务栏：未显示进度（%s）"
 msgid "Menu"
 msgstr "菜单"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c src/common/utilities/setup.c
 #, snx-key
 msgid "Games"
 msgstr "游戏"
-
-#: src/gui/main.c src/gui/ui.txt
-msgid "Settings"
-msgstr "设置"
 
 #: src/gui/main.c
 msgid "Compile"
@@ -1360,7 +2074,8 @@ msgstr "外观"
 msgid "Install"
 msgstr "安装"
 
-#: src/gui/main.c
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c src/gui/ui.txt
 #, snx-key
 msgid "Folders"
 msgstr "文件夹"
@@ -1390,8 +2105,8 @@ msgid "Runs a Linux ARM program, 64 or 32-bit"
 msgstr "运行 Linux ARM 程序，64 位或 32 位"
 
 #: src/gui/main.c
-msgid "Recompiles a 3DS .cia, then runs it"
-msgstr "重新编译 3DS .cia，然后运行"
+msgid "Recompiles a 3DS game, then runs it"
+msgstr ""
 
 #: src/gui/main.c
 msgid "Recompiles a PS Vita homebrew .vpk, then runs it"
@@ -1419,10 +2134,6 @@ msgid "In use: %s"
 msgstr "使用中：%s"
 
 #: src/gui/main.c
-msgid "none"
-msgstr "无"
-
-#: src/gui/main.c
 msgid "Show More"
 msgstr "显示更多"
 
@@ -1441,6 +2152,11 @@ msgstr "GBA 游戏，可以运行"
 #: src/gui/main.c
 msgid "Ready to run"
 msgstr "可以运行"
+
+#: src/gui/main.c
+#, c-format
+msgid ". No icon: %s"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -1514,9 +2230,27 @@ msgid "R on another game: it joins the queue"
 msgstr "在另一个游戏上按 R：它会加入队列"
 
 #: src/gui/main.c
+msgid "Made with: ?"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Made with: O%c, JIT only"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Made with: O%c, AOT %s"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Debug on: %s"
 msgstr "调试已开：%s"
+
+#: src/gui/main.c
+msgid "Needs Recompile"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -1545,11 +2279,6 @@ msgstr "JIT 缓存：无法读取。运行一次即可重建。"
 #, c-format
 msgid "%zu game(s)"
 msgstr "%zu 个游戏"
-
-#: src/gui/main.c
-#, c-format
-msgid "Page %zu/%zu, %zu game(s)"
-msgstr "第 %zu/%zu 页，%zu 个游戏"
 
 #: src/gui/main.c
 #, c-format
@@ -1626,10 +2355,6 @@ msgid "Queue"
 msgstr "队列"
 
 #: src/gui/main.c
-msgid "Cannot start the run: out of memory"
-msgstr "无法开始运行：内存不足"
-
-#: src/gui/main.c
 msgid "Theme"
 msgstr "主题"
 
@@ -1642,8 +2367,8 @@ msgid "UI scale"
 msgstr "显示大小"
 
 #: src/gui/main.c
-msgid "Auto fits the screen. A new scale asks to be kept"
-msgstr "自动会适应屏幕。新的显示大小会询问是否保留"
+msgid "1x to 4x. A new one asks to be kept"
+msgstr ""
 
 #: src/gui/main.c
 msgid "Language"
@@ -1686,6 +2411,18 @@ msgid "The data and the extractions, and the libraries Games lists: recompiled g
 msgstr "数据和提取，以及游戏列出的游戏库：已重编译的游戏和转储"
 
 #: src/gui/main.c
+msgid "GPU Drivers"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Vulkan drivers for Adreno GPUs on Android, Turnip among them: add, remove, and the one games use"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Mesa's Freedreno and Turnip variables every game starts with (TU_DEBUG...), and their presets"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Clean Old Settings"
 msgstr "清理旧设置"
 
@@ -1711,8 +2448,8 @@ msgstr "将 App 之后各组的所有设置恢复默认。会先询问"
 
 #: src/gui/main.c
 #, c-format
-msgid "%s of Auto: %dx"
-msgstr "「自动」的 %s：%dx"
+msgid "%dx (%dx in this window)"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -1737,6 +2474,15 @@ msgstr "默认，%d 个另外的文件夹"
 #: src/gui/main.c
 msgid "Defaults"
 msgstr "默认"
+
+#: src/gui/main.c
+#, c-format
+msgid "%d set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "None"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -1770,8 +2516,8 @@ msgid "%s: each folder of an older version's lines is in a library now: %s"
 msgstr "%s：旧版本各行的文件夹现已放入游戏库：%s"
 
 #: src/gui/main.c
-msgid "Dumps put here are listed, its subfolders' too: .nsp, .xci and .nro files. It stays on the list"
-msgstr "放在这里的转储会被列出，其子文件夹中的也会：.nsp、.xci 和 .nro 文件。它会留在列表中"
+msgid "Dumps put here are listed (.nsp, .xci and .nro), its subfolders' too with + subfolders. Remove from Library takes it off, its files kept"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -1781,6 +2527,11 @@ msgstr "不是文件夹：%s"
 #: src/gui/main.c
 msgid "(none)"
 msgstr "（无）"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is the dumps library's Main row, taken off it: its Add to Library puts it back"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -1822,6 +2573,41 @@ msgstr "文件夹：%s"
 #, c-format
 msgid "%s removed from the library. Its games stay in the folder"
 msgstr "已从游戏库中移除 %s。其游戏仍留在文件夹中"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s removed from the library. Its games stay in the folder; new games go to an Extra"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Dumps Library again, but could not be made"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Recompiled Library again, but could not be made"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Dumps Library again: Games lists its games"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Recompiled Library again: Games lists its games"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Remove %s from the Dumps Library? Its games stay in the folder, which ScarletNX no longer makes as it starts."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Remove %s from the Recompiled Library? Its games stay in the folder, and new games go to an Extra of it."
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -1903,12 +2689,12 @@ msgid "App Folders"
 msgstr "应用文件夹"
 
 #: src/gui/main.c
-msgid "Recompiled Library"
-msgstr "已重编译游戏库"
-
-#: src/gui/main.c
 msgid "Dumps Library"
 msgstr "转储游戏库"
+
+#: src/gui/main.c
+msgid "Recompiled Library"
+msgstr "已重编译游戏库"
 
 #: src/gui/main.c
 msgid "Removes it from the library; its games stay in the folder"
@@ -1925,6 +2711,10 @@ msgstr "选取、拖入或粘贴一个转储文件夹：游戏也会列出它们
 #: src/gui/main.c
 msgid "Main"
 msgstr "主文件夹"
+
+#: src/gui/main.c
+msgid "not listed"
+msgstr ""
 
 #: src/gui/main.c
 msgid "outside the app"
@@ -1972,6 +2762,11 @@ msgstr "日志和缓存未更改：无法写入 %s，运行时从中读取它们
 #, c-format
 msgid "Used, not kept for the next start: %s could not be written"
 msgstr "已使用，但下次启动不保留：无法写入 %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "%d launchers hold the run logs of %s: this one's runs keep none"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -2044,8 +2839,8 @@ msgid "The settings of All, or of player 1 to 8"
 msgstr "「全部」或玩家 1 到 8 的设置"
 
 #: src/gui/main.c
-msgid "nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr "昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+msgid "nickname of 1 to 32 bytes, no control character, no space at either end"
+msgstr "昵称为 1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
 #, c-format
@@ -2070,18 +2865,390 @@ msgid "User %d"
 msgstr "用户 %d"
 
 #: src/gui/main.c
-msgid "Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr "其昵称，游戏和 Eden 房间中显示为：4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+msgid "Its nickname, as the games show it: 1 to 32 bytes, no control character, no space at either end"
+msgstr "昵称，按游戏中的显示：1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
 #, c-format
-msgid "%s is not a nickname: %s"
-msgstr "%s 不是有效的昵称：%s"
+msgid "User %d Mii"
+msgstr "用户 %d 的 Mii"
+
+#: src/gui/main.c
+msgid "Its Mii, which the games get as the user's and its picture shows unless it has a picture file"
+msgstr "它的 Mii：游戏把它当作该用户的 Mii，没有头像文件时头像也显示它"
+
+#: src/gui/main.c
+msgid "System driver"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "User %d keeps %s: %s"
-msgstr "用户 %d 保持 %s：%s"
+msgid "No Vulkan loader: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Vulkan did not start: VkResult %d"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Vulkan lists no GPU"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, Vulkan %u.%u.%u, driver %08x"
+msgstr ""
+
+#: src/gui/main.c
+msgid "This build of the launcher reads no Vulkan driver"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The GPU driver Settings > App > GPU Drivers picks for every game"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "The system's own: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s/%s does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, %s, by %s, package %s, Android API %d or newer, in %s/%s. %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "no vendor"
+msgstr ""
+
+#: src/gui/main.c
+msgid "no author"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Download Driver"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded and added as Add Driver adds a zip. A GPU maker's own drivers are marked proprietary, no license"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Add Driver"
+msgstr ""
+
+#: src/gui/main.c
+msgid "A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's releases are: unpacked into gpu_drivers/ of the user's data folder"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: its own GPU driver. %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid " %zu more packages are not listed."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not picked: %s/%s does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not picked: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "GPU driver for every game: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not kept: %s could not be written"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: the GPU driver for every game (%s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: GPU driver %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Remove the driver %s? Games set to it will not start until another is picked."
+msgstr ""
+
+#: src/gui/main.c
+msgid "; the GPU driver for every game is the System driver now"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Driver package"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Add Driver: the file picker could not open: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "No file was picked."
+msgstr "未选取文件。"
+
+#: src/gui/main.c
+#, c-format
+msgid "Not added: %s is %lld bytes, over the %llu a driver takes"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not added: %s does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "GET %s: HTTP %d, %.200s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "GET %s: HTTP %d"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Download Driver: no thread: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, %zu downloads. %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Latest, Recommended"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Recommended"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Latest"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Prerelease"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu release"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu releases"
+msgstr ""
+
+#: src/gui/main.c
+msgid "No releases"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Fetch Again"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Loading..."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Failed"
+msgstr "失败"
+
+#: src/gui/main.c
+msgid "Less"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Only its latest and the recommended release"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "More (%zu)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "GPU: %s. Recommended: %s."
+msgstr ""
+
+#: src/gui/main.c
+msgid "This build of the launcher has no HTTPS client: Add Driver takes a zip downloaded by hand"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no download"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, %s (proprietary, no license)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s downloads already: one at a time"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Downloading %s..."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Downloading %s: %s of %s (%d%%)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Downloading %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not downloaded: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "every variable cleared"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s=%s. A press removes it"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Variable Name (e.g., TU_DEBUG)"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Capitals, digits and _, starting TU_, FD_ or IR3_"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Variable Value"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Its value, without ;"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Add Variable"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The name and value typed above, set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Clear All"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Every variable taken out"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "freedreno_env does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: its own Freedreno variables"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: none of its own, the launcher's go"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Mesa's Freedreno and Turnip read these as a game starts (docs.mesa3d.org/drivers/freedreno.html). Save keeps them"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not saved: the variables take over %d bytes"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Freedreno configuration saved"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Preset '%s' applied"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Variable %s removed"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Variable name cannot be empty"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s's value \"%s\" has a ;, which ends it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not added: the variables take %d bytes at most"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Variable %s added"
+msgstr ""
+
+#: src/gui/main.c
+msgid "All Freedreno variables cleared"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's Mii is not written: %s"
+msgstr "用户 %d 的 Mii 未写入：%s"
 
 #: src/gui/main.c
 msgid "no users/ folder"
@@ -2089,20 +3256,33 @@ msgstr "没有 users/ 文件夹"
 
 #: src/gui/main.c
 #, c-format
+msgid "User %d's Mii is %s now"
+msgstr "用户 %d 的 Mii 现在是 %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's new nickname is not written: %s"
+msgstr "用户 %d 的新昵称未写入：%s"
+
+#: src/gui/main.c
+#, c-format
 msgid "User %d is %s now"
 msgstr "用户 %d 现在是 %s"
 
 #: src/gui/main.c
-msgid "0.25 of Auto"
-msgstr "「自动」的 0.25"
+msgid "Keep"
+msgstr "保留"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Back"
+msgstr "返回"
 
 #: src/gui/main.c
-msgid "0.5 of Auto"
-msgstr "「自动」的 0.5"
-
-#: src/gui/main.c
-msgid "0.75 of Auto"
-msgstr "「自动」的 0.75"
+#, c-format
+msgid "%dx needs a window %d pixels high: this one is %d"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -2157,6 +3337,23 @@ msgid "Looking for controllers..."
 msgstr "正在查找手柄..."
 
 #: src/gui/main.c
+msgid "Over 4x: this takes a lot of GPU memory, and a game may slow down or crash. Beyond this, severe graphical issues may occur"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Under 0.5x: the picture may look very low quality. Beyond this, severe graphical issues may occur"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Non-standard resolution, experimental."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not a nickname: %s"
+msgstr "%s 不是有效的昵称：%s"
+
+#: src/gui/main.c
 msgid "Paste one local folder's path"
 msgstr "粘贴一个本地文件夹的路径"
 
@@ -2169,12 +3366,20 @@ msgid "Data, Logs, Caches, Extractions and the recompiled library's Main"
 msgstr "数据、日志、缓存、提取和已重编译游戏库的主文件夹"
 
 #: src/gui/main.c
+msgid "The runtime listed no settings"
+msgstr "运行时未列出任何设置"
+
+#: src/gui/main.c
+msgid "For the next runs, over the game's .ini"
+msgstr "用于之后的运行，优先于游戏的 .ini"
+
+#: src/gui/main.c
 msgid "For the next runs. [default]: as the game's .ini says"
 msgstr "用于之后的运行。[默认]：按游戏的 .ini"
 
-#: src/gui/main.c
-msgid "The runtime listed no settings"
-msgstr "运行时未列出任何设置"
+#: src/gui/main.c src/gui/settings.c
+msgid "[default]"
+msgstr "[默认]"
 
 #: src/gui/main.c
 msgid "Custom >"
@@ -2195,6 +3400,10 @@ msgstr "保存它的 themes/ 中的文件夹"
 #: src/gui/main.c
 msgid "Ctrl+S saves too"
 msgstr "Ctrl+S 也可保存"
+
+#: src/gui/main.c
+msgid "A nickname, 1 to 32 bytes, no control character, no space at either end"
+msgstr "昵称，1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
 msgid "Preview"
@@ -2221,71 +3430,85 @@ msgstr "（没有主题文件夹）"
 msgid "was"
 msgstr "原为"
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: choose. Back."
 msgstr "轻触: 选择. 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: choose."
 msgstr "轻触: 选择."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Type the nickname. Back."
 msgstr "输入昵称. 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Type the nickname."
 msgstr "输入昵称."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: choose. Enter: next. ESC: back."
 msgstr "上/下: 选择. Enter: 下一步. ESC: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: choose. Enter: next. ESC: exit."
 msgstr "上/下: 选择. Enter: 下一步. ESC: 退出."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Type the nickname. Enter: done. ESC: back."
 msgstr "输入昵称. Enter: 完成. ESC: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Left/Right: choose. Enter: OK. ESC: exit."
 msgstr "左/右: 选择. Enter: 确定. ESC: 退出."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: row. Left/Right: change. Enter: change. ESC: back."
 msgstr "上/下: 行. 左/右: 更改. Enter: 更改. ESC: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: row. Left/Right: change. Enter: change. ESC: exit."
 msgstr "上/下: 行. 左/右: 更改. Enter: 更改. ESC: 退出."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Up/Down: row. Enter: open. ESC: back."
-msgstr "上/下: 行. Enter: 打开. ESC: 返回."
+msgid "Up/Down: row. Left/Right: change. Enter: open. ESC: back."
+msgstr ""
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Up/Down: row. Enter: open. ESC: exit."
-msgstr "上/下: 行. Enter: 打开. ESC: 退出."
+msgid "Up/Down: row. Left/Right: change. Enter: open. ESC: exit."
+msgstr ""
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: row. Enter: next. ESC: back."
 msgstr "上/下: 行. Enter: 下一步. ESC: 返回."
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: row. Enter: next. ESC: exit."
@@ -2383,11 +3606,6 @@ msgid "Next"
 msgstr "下一步"
 
 #: src/gui/main.c
-#, snx-key
-msgid "Back"
-msgstr "返回"
-
-#: src/gui/main.c
 msgid "Skip"
 msgstr "跳过"
 
@@ -2443,13 +3661,8 @@ msgid "Tip: Menu > Install Keys changes them"
 msgstr "提示：「菜单 > 安装密钥」可更改它们"
 
 #: src/gui/main.c
-msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr "提示：昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
-
-#: src/gui/main.c
-#, c-format
-msgid "Auto (%dx)"
-msgstr "自动（%dx）"
+msgid "Tip: nickname of 1 to 32 bytes, no control character, no space at either end"
+msgstr "提示：昵称为 1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
 msgid "before"
@@ -2548,6 +3761,10 @@ msgid "beside the program, made then"
 msgstr "在程序旁边，届时创建"
 
 #: src/gui/main.c
+msgid " (not listed)"
+msgstr ""
+
+#: src/gui/main.c
 msgid " + subfolders"
 msgstr " + 子文件夹"
 
@@ -2590,6 +3807,20 @@ msgstr "保留到下次启动："
 #: src/gui/main.c
 msgid "Nothing to keep: no file of the menu's"
 msgstr "无需保留：菜单没有任何文件"
+
+#: src/gui/main.c
+msgid "the game wrote no log"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "the game wrote no log since it started; the newest is %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "The game stopped: %s"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -2708,10 +3939,6 @@ msgid "The run ended with status %d."
 msgstr "运行结束，状态 %d。"
 
 #: src/gui/main.c
-msgid "Failed"
-msgstr "失败"
-
-#: src/gui/main.c
 msgid "Ready"
 msgstr "就绪"
 
@@ -2736,6 +3963,61 @@ msgid "  default, %s free"
 msgstr "  默认，%s 可用"
 
 #: src/gui/main.c
+msgid "Share Zip"
+msgstr ""
+
+#: src/gui/main.c src/gui/ui.txt
+msgid "Share Log"
+msgstr "分享日志"
+
+#: src/gui/main.c
+msgid "Open Logs Folder"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Change Folder"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Reset to Default"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Remove from Library"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Subfolders"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Add to Library"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Use"
+msgstr ""
+
+#: src/gui/main.c
+msgid "How to share the logs?"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: its subfolders' games are listed too"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: its own games alone are listed, not its subfolders'"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no folder to open"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "%s is compiled already, in %s"
 msgstr "%s 已编译，位于 %s"
@@ -2750,13 +4032,12 @@ msgid "%s is compiling (%d%%): the game plays once the queue ends"
 msgstr "%s 正在编译（%d%%）：队列结束后游戏即可运行"
 
 #: src/gui/main.c
-#, c-format
-msgid "Cannot find %s beside ScarletNX or on PATH."
-msgstr "在 ScarletNX 旁边或 PATH 中找不到 %s。"
-
-#: src/gui/main.c
 msgid "the selected driver"
 msgstr "所选的驱动程序"
+
+#: src/gui/main.c
+msgid "The Recompiled Library's Main is off and no Extra of it can take a game: Add to Library on its Main, or add a folder to it, in Settings > App > Folders"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -2891,6 +4172,10 @@ msgid "R recompiles games: a Linux program runs as it is."
 msgstr "R 重新编译游戏：Linux 程序直接运行。"
 
 #: src/gui/main.c
+msgid "No game in focus to play."
+msgstr ""
+
+#: src/gui/main.c
 msgid "B builds an AOT pack for a prepared Switch game in focus."
 msgstr "B 为选中的已准备 Switch 游戏构建 AOT 包。"
 
@@ -2955,12 +4240,41 @@ msgid "Pick the file from this computer's storage (%s)."
 msgstr "请从这台电脑的存储中选取文件（%s）。"
 
 #: src/gui/main.c
+#, c-format
+msgid "%s opens with %s: cannot find %s beside ScarletNX or on PATH."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s opens with %s, not %s."
+msgstr ""
+
+#: src/gui/main.c
 msgid "Drop one local file path, not a list or remote URL."
 msgstr "请拖入一个本地文件的路径，不要拖入列表或远程 URL。"
 
 #: src/gui/main.c
-msgid "The log could not be saved: no working folder"
-msgstr "无法保存日志：没有工作目录"
+msgid "the launcher's log has no folder in Documents"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Settings > App > Folders' Logs names no folder"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "The logs could not be saved: cannot make %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "The logs could not be saved: %s, of what was shared before, could not be deleted: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "The logs could not be saved: %s"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -2969,13 +4283,13 @@ msgstr "无法将日志保存到 %s：%s"
 
 #: src/gui/main.c
 #, c-format
-msgid "Log saved to %s"
-msgstr "日志已保存到 %s"
+msgid "%s is in %s, opened"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Log saved to %s (path copied)"
-msgstr "日志已保存到 %s（已复制路径）"
+msgid "%s is in %s; %s"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -2999,229 +4313,287 @@ msgstr "无法自动发现新游戏（%s）：按 F5 更新"
 msgid "Not saved: Ctrl+S saves it, ESC again leaves without it"
 msgstr "未保存：Ctrl+S 可保存，再按 ESC 则不保存离开"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "A"
 msgstr "A"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "B"
 msgstr "B"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "X"
 msgstr "X"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Y"
 msgstr "Y"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Cross"
 msgstr "Cross"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Circle"
 msgstr "Circle"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Square"
 msgstr "Square"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Triangle"
 msgstr "Triangle"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "LB"
 msgstr "LB"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "RB"
 msgstr "RB"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "LT"
 msgstr "LT"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "RT"
 msgstr "RT"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Start"
 msgstr "Start"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "L3"
 msgstr "L3"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "R3"
 msgstr "R3"
 
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Right stick"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "ESC"
 msgstr "ESC"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Tab"
 msgstr "Tab"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Enter"
 msgstr "Enter"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Space"
 msgstr "空格"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "click"
 msgstr "点击"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Tap"
 msgstr "轻触"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Up"
 msgstr "上"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Down"
 msgstr "下"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Left"
 msgstr "左"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Right"
 msgstr "右"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "PgUp"
 msgstr "PgUp"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "PgDn"
 msgstr "PgDn"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "PgDown"
 msgstr "PgDown"
 
-#: src/gui/main.c
-#, snx-key
-msgid "Swipe"
-msgstr "滑动"
-
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Del"
 msgstr "Del"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Take out"
 msgstr "移出"
 
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "L"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "R"
 msgstr "R"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "AOT pack"
 msgstr "AOT 包"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "M"
 msgstr "M"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Mods"
 msgstr "模组"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "P"
 msgstr "P"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "V"
 msgstr "V"
 
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "S"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Save states"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Ctrl+S"
 msgstr "Ctrl+S"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Ctrl+V"
 msgstr "Ctrl+V"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "F5"
 msgstr "F5"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "F2"
 msgstr "F2"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "F1"
 msgstr "F1"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Select"
 msgstr "Select"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Refresh"
 msgstr "更新"
-
-#: src/gui/main.c
-msgid "No file was picked."
-msgstr "未选取文件。"
 
 #: src/gui/main.c
 #, c-format
@@ -3292,16 +4664,12 @@ msgid "The game's .ini settings, the launcher's for the next runs, and its theme
 msgstr "游戏 .ini 中的设置、启动器用于之后运行的设置，以及主题"
 
 #: src/gui/model.c
-msgid "Saves the last run's output and game log to scarletnx.log in the data folder, then shares it"
-msgstr "把上次运行的输出和游戏日志保存到数据文件夹中的 scarletnx.log，然后分享"
+msgid "Saves the logs as one zip or as scarletnx.log in a folder it opens to share from, or opens their folder"
+msgstr ""
 
 #: src/gui/model.c
-msgid "Saves the last run's output and game log to scarletnx.log and copies its path"
-msgstr "把上次运行的输出和游戏日志保存到 scarletnx.log，并复制其路径"
-
-#: src/gui/model.c
-msgid "Opens the data folder, recompiled/ and the keys in it, in the system's Files app"
-msgstr "在系统的文件应用中打开数据文件夹、recompiled/ 及其中的密钥"
+msgid "Where the app keeps each kind of its files, and the libraries: each folder opened or changed"
+msgstr ""
 
 #: src/gui/process_posix.c
 #, c-format
@@ -3368,12 +4736,18 @@ msgid "Every row of this page at once"
 msgstr "一次设置此页的所有行"
 
 #: src/gui/settings.c
-msgid "Mixed"
-msgstr "混合"
+#, c-format
+msgid "%s=.ini is no longer a value of %s: %s=%s now"
+msgstr "%s=.ini 已不再是 %s 的值：现在为 %s=%s"
 
 #: src/gui/settings.c
-msgid "[default]"
-msgstr "[默认]"
+#, c-format
+msgid "%s=%s is the default of %s: no run is given it over the game's .ini"
+msgstr "%s=%s 是 %s 的默认值：运行时不再以它覆盖游戏的 .ini"
+
+#: src/gui/settings.c
+msgid "Mixed"
+msgstr "混合"
 
 #: src/gui/steps.c
 msgid "EXTRACT"
@@ -3769,14 +5143,6 @@ msgstr "载入 GBA ROM"
 msgid "Install Keys"
 msgstr "安装密钥"
 
-#: src/gui/ui.txt
-msgid "Share Log"
-msgstr "分享日志"
-
-#: src/gui/ui.txt
-msgid "Open Data Folder"
-msgstr "打开数据文件夹"
-
 #: src/common/utilities/setup.c
 msgid "Game settings"
 msgstr "游戏设置"
@@ -3933,6 +5299,62 @@ msgstr "LLVM 的，在重新编译和 JIT 中均启用"
 msgid "off, as LLVM 23 can break a module with it: Settings > Debug turns it on"
 msgstr "关闭，因为 LLVM 23 可能因此破坏模块：「设置 > Debug」可开启"
 
+#: src/common/utilities/setup.c
+msgid "The launcher's UI scale"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "Auto, and 0.25, 0.5 and 0.75 of it"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "1x to 4x: the number Auto gave that screen"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "each game's own, in its <id>_data/save/"
+msgstr "每个游戏自己的，在其 <id>_data/save/ 中"
+
+#: src/common/utilities/setup.c
+msgid "the data folder's save/, by user and title: Move Old Files moves them"
+msgstr "数据文件夹中的 save/，按用户和游戏分开：移动旧文件会移动它们"
+
+#: src/common/utilities/setup.c
+msgid "Environment variables"
+msgstr "环境变量"
+
+#: src/common/utilities/setup.c
+msgid "SNX_WW, SNX_HOST_PAGE, VITA_LOCKSTEP and others set for a run"
+msgstr "为一次运行设置的 SNX_WW、SNX_HOST_PAGE、VITA_LOCKSTEP 等"
+
+#: src/common/utilities/setup.c
+msgid "settings and the drivers' options; a variable still set works, and the run says so"
+msgstr "设置和驱动程序的选项；仍设置的变量依然有效，运行时会提示"
+
+#: src/common/utilities/setup.c
+msgid "Fullscreen and Show controls"
+msgstr "Fullscreen 和 Show controls"
+
+#: src/common/utilities/setup.c
+msgid "Off, On, or each game's .ini, shown as Off [default]"
+msgstr "关、开或各游戏的 .ini，显示为 关 [默认]"
+
+#: src/common/utilities/setup.c
+msgid "Off or On, given to every run: Off on a computer, On on a phone"
+msgstr "关或开，用于每次运行：电脑上为关，手机上为开"
+
+#: src/common/utilities/setup.c
+msgid "A setting's default"
+msgstr "设置的默认值"
+
+#: src/common/utilities/setup.c
+msgid "a value of its own, [default], beside the same value picked"
+msgstr "单独的一个值 [默认]，与选中的同一值并列"
+
+#: src/common/utilities/setup.c
+msgid "[default] on that value, which no run is given: the game's .ini keeps it"
+msgstr "[默认] 标在该值上，任何运行都不会收到它：由游戏的 .ini 保持"
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr "gdbstub"
@@ -3970,8 +5392,8 @@ msgid "Tracy capture"
 msgstr "Tracy 捕获"
 
 #: src/nx/runtime/settings.txt
-msgid "Records Switch runs to captures/ beside the game, and opens the trace in the profiler when the run ends. Off, the client does not start; F7 starts a 60-second capture. tracy-capture must be on PATH, and the runtime must be built with SNX_TRACY"
-msgstr "把 Switch 运行记录到游戏旁的 captures/，并在运行结束时用分析器打开跟踪记录。关闭时不会启动客户端；F7 开始 60 秒的捕获。tracy-capture 必须在 PATH 中，且运行时必须使用 SNX_TRACY 构建"
+msgid "Records Switch runs to captures/ beside the game, and opens the trace in the profiler when the run ends. Off, the client does not start; F10 starts a 60-second capture. tracy-capture must be on PATH, and the runtime must be built with SNX_TRACY"
+msgstr ""
 
 #: src/nx/runtime/settings.txt
 msgid "Optimization level"
@@ -3994,8 +5416,8 @@ msgid "AOT threads"
 msgstr "AOT 线程数"
 
 #: src/nx/runtime/settings.txt
-msgid "The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores"
-msgstr "重新编译时编译游戏代码的线程数：0 = 电脑每个核心一个"
+msgid "The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last quarter left free, so the machine stays responsive; N = that many"
+msgstr "重新编译时编译游戏代码的线程数：0（自动）= 留出四分之一的核心空闲，使电脑保持响应；N = 该数量"
 
 #: src/nx/runtime/settings.txt
 msgid "Unit size"
@@ -4010,8 +5432,8 @@ msgid "Unit cache limit"
 msgstr "单元缓存上限"
 
 #: src/nx/runtime/settings.txt
-msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, removing its oldest units for a new one"
-msgstr "已编译代码单元缓存的最大容量，单位为 GB：缓存文件夹中的 units/，每次重新编译都会在其中找到之前编译的单元。超过上限时，最久未使用的单元会被删除。0 = 无限制。无论是否设限，缓存始终保留磁盘的十分之一空闲，为新单元删除最旧的单元"
+msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
+msgstr "已编译代码单元缓存的最大容量，单位为 GB：缓存文件夹中的 units/，每次重新编译都会在其中找到之前编译的单元。超过上限时，最久未使用的单元会被删除。0 = 无限制。无论是否设限，缓存始终保留磁盘的十分之一空闲（最多 10 GB），为新单元删除最旧的单元"
 
 #: src/nx/runtime/settings.txt
 msgid "Instruction combining"
@@ -4140,3 +5562,117 @@ msgstr "启动"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "LLVM 内部选项"
+
+#~ msgid "user=%d is deprecated: user_uid=%s (%s) replaces it"
+#~ msgstr "user=%d 是旧的设置：由 user_uid=%s（%s）取代"
+
+#~ msgid "nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
+#~ msgstr "昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+
+#~ msgid "Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"
+#~ msgstr "其昵称，游戏和 Eden 房间中显示为：4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+
+#~ msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
+#~ msgstr "提示：昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+
+#~ msgid "The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores"
+#~ msgstr "重新编译时编译游戏代码的线程数：0 = 电脑每个核心一个"
+
+#~ msgid "The log could not be shown: it is at %s"
+#~ msgstr "无法显示日志：它位于 %s"
+
+#~ msgid "At most %u bytes"
+#~ msgstr "最多 %u 字节"
+
+#~ msgid "A whole number, 0 to 10000"
+#~ msgstr "整数，0 到 10000"
+
+#~ msgid "Tap: open. Swipe: page. Refresh. Back."
+#~ msgstr "轻触: 打开. 滑动: 翻页. 更新. 返回."
+
+#~ msgid "Tap: open. Swipe: page. Refresh."
+#~ msgstr "轻触: 打开. 滑动: 翻页. 更新."
+
+#~ msgid "Tap: delete."
+#~ msgstr "轻触: 删除."
+
+#~ msgid "Up/Down: select. Enter/Space: open. Left/Right/PgUp/PgDown: page. F5: refresh."
+#~ msgstr "上/下: 选择. Enter/空格: 打开. 左/右/PgUp/PgDown: 翻页. F5: 更新."
+
+#~ msgid "Arrows: select. Enter/Space: open. PgUp/PgDown: page. F5: refresh."
+#~ msgstr "方向键: 选择. Enter/空格: 打开. PgUp/PgDown: 翻页. F5: 更新."
+
+#~ msgid "Enter: change."
+#~ msgstr "Enter: 更改."
+
+#~ msgid "D-pad: select. A: open. LT/RT: page. Start: refresh. B: back."
+#~ msgstr "十字键: 选择. A: 打开. LT/RT: 翻页. Start: 更新. B: 返回."
+
+#~ msgid "A: change."
+#~ msgstr "A: 更改."
+
+#~ msgid "Revert"
+#~ msgstr "还原"
+
+#~ msgid "%s could not be drawn: the game shows no icon"
+#~ msgstr "无法绘制 %s：该游戏不显示图标"
+
+#~ msgid "Recompiles a 3DS .cia, then runs it"
+#~ msgstr "重新编译 3DS .cia，然后运行"
+
+#~ msgid "Page %zu/%zu, %zu game(s)"
+#~ msgstr "第 %zu/%zu 页，%zu 个游戏"
+
+#~ msgid "Auto fits the screen. A new scale asks to be kept"
+#~ msgstr "自动会适应屏幕。新的显示大小会询问是否保留"
+
+#~ msgid "%s of Auto: %dx"
+#~ msgstr "「自动」的 %s：%dx"
+
+#~ msgid "Dumps put here are listed, its subfolders' too: .nsp, .xci and .nro files. It stays on the list"
+#~ msgstr "放在这里的转储会被列出，其子文件夹中的也会：.nsp、.xci 和 .nro 文件。它会留在列表中"
+
+#~ msgid "0.25 of Auto"
+#~ msgstr "「自动」的 0.25"
+
+#~ msgid "0.5 of Auto"
+#~ msgstr "「自动」的 0.5"
+
+#~ msgid "0.75 of Auto"
+#~ msgstr "「自动」的 0.75"
+
+#~ msgid "Up/Down: row. Enter: open. ESC: back."
+#~ msgstr "上/下: 行. Enter: 打开. ESC: 返回."
+
+#~ msgid "Up/Down: row. Enter: open. ESC: exit."
+#~ msgstr "上/下: 行. Enter: 打开. ESC: 退出."
+
+#~ msgid "Auto (%dx)"
+#~ msgstr "自动（%dx）"
+
+#~ msgid "The log could not be saved: no working folder"
+#~ msgstr "无法保存日志：没有工作目录"
+
+#~ msgid "Log saved to %s"
+#~ msgstr "日志已保存到 %s"
+
+#~ msgid "Log saved to %s (path copied)"
+#~ msgstr "日志已保存到 %s（已复制路径）"
+
+#~ msgid "Swipe"
+#~ msgstr "滑动"
+
+#~ msgid "Saves the last run's output and game log to scarletnx.log in the data folder, then shares it"
+#~ msgstr "把上次运行的输出和游戏日志保存到数据文件夹中的 scarletnx.log，然后分享"
+
+#~ msgid "Saves the last run's output and game log to scarletnx.log and copies its path"
+#~ msgstr "把上次运行的输出和游戏日志保存到 scarletnx.log，并复制其路径"
+
+#~ msgid "Opens the data folder, recompiled/ and the keys in it, in the system's Files app"
+#~ msgstr "在系统的文件应用中打开数据文件夹、recompiled/ 及其中的密钥"
+
+#~ msgid "Open Data Folder"
+#~ msgstr "打开数据文件夹"
+
+#~ msgid "Records Switch runs to captures/ beside the game, and opens the trace in the profiler when the run ends. Off, the client does not start; F7 starts a 60-second capture. tracy-capture must be on PATH, and the runtime must be built with SNX_TRACY"
+#~ msgstr "把 Switch 运行记录到游戏旁的 captures/，并在运行结束时用分析器打开跟踪记录。关闭时不会启动客户端；F7 开始 60 秒的捕获。tracy-capture 必须在 PATH 中，且运行时必须使用 SNX_TRACY 构建"

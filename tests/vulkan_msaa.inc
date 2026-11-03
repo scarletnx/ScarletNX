@@ -483,29 +483,51 @@ static int check_msaa_nvn_depth(NvnDraw* d, u64 gpu, u64 cpu) {
     }
     return 0;
 }
-/* NVN's copy between two DEPTH24_STENCIL8 textures of one size (nvn_copy.c's copy_texture_texture): the game's
-   driver copies them with the 2D engine, and the renderer's packed depth and stencil target never goes to guest
-   memory, so a copy through memory left the destination undefined (one game's lighting then tested against garbage
-   depth and drew black). The source, bound as the depth target and cleared to 0.25 and stencil 0x5A, is copied
-   into the destination on the GPU: its every texel the source's depth and stencil */
-static int check_nvn_depth_copy(NvnDraw* d, u64 gpu, u64 cpu) {
-    const u64 src = gpu + 0x2000, dst = gpu + 0x3000, snap_src = cpu + 0x9A00, snap_dst = cpu + 0x9B00,
-              set_rt = cpu + 0xA000, clear = cpu + 0xA800, copy = cpu + 0xA900;
-    ms_nvn_texture_of(snap_src, src, 1, NVN_FORMAT_DEPTH24_STENCIL8);
-    ms_nvn_texture_of(snap_dst, dst, 1, NVN_FORMAT_DEPTH24_STENCIL8);
+/* the depth texture whose snapshot is at snapshot bound as NVN's depth target and cleared, its packets at at */
+static int nvn_depth_clear(NvnDraw* d, u64 snapshot, u64 at, float depth, u8 stencil) {
     NvnPSetRT rt;
     memset(&rt, 0, sizeof rt);
-    rt.depth = snap_src;
-    memcpy(GP(set_rt), &rt, sizeof rt);
-    NvnPClearDS c = {.depth = 0.25f, .depth_mask = 1, .stencil = 0x5A, .stencil_mask = 0xFF};
-    memcpy(GP(clear), &c, sizeof c);
+    rt.depth = snapshot;
+    memcpy(GP(at), &rt, sizeof rt);
+    NvnPClearDS c = {.depth = depth, .depth_mask = 1, .stencil = stencil, .stencil_mask = 0xFF};
+    memcpy(GP(at + 0x600), &c, sizeof c);
     vk_lock();
-    CHECK(nvn_draw_record(d, OP_SET_RT, set_rt, sizeof rt));
-    CHECK(nvn_draw_record(d, OP_CLEAR_DS, clear, sizeof c));
+    CHECK(nvn_draw_record(d, OP_SET_RT, at, sizeof rt));
+    CHECK(nvn_draw_record(d, OP_CLEAR_DS, at + 0x600, sizeof c));
     vk_render_end();
     vk_unlock();
+    return 0;
+}
+/* NVN's copy between two packed depth and stencil textures of one size and format (nvn_copy.c's
+   copy_texture_texture), which the game's driver makes with the 2D engine on the color format of the texels' bytes:
+   the source, cleared to 0.25 and stencil 0x5A, is copied into the destination, a depth target already (cleared to
+   0.75 and 0xA5), image to image on the GPU (vk/surface.c blit_depth). Through guest memory the source would be
+   packed in the guest's layout and copied there, and the destination target's pixels dropped, as a depth target
+   never loads from memory. Guest memory under both (at offsets soff and doff of gpu, mapped at cpu) holds depth 0.5
+   and stencil 0x33 in the format's layout, which the copy leaves as it is, and the destination's every texel is the
+   source's */
+static int nvn_depth_copy(NvnDraw* d, u16 format, u64 gpu, u64 cpu, u64 soff, u64 doff, u64 at) {
+    const u64 src = gpu + soff, dst = gpu + doff, snap_src = at, snap_dst = at + 0x100, copy = at + 0x200,
+              bind = at + 0x400;
+    const int d32 = format == NVN_FORMAT_DEPTH32F_STENCIL8;
+    const u32 bytes = 16 * 8 * (d32 ? 8 : 4);
+    u8 before[1024], after[1024];
+    /* DEPTH32F_STENCIL8: the float, then the stencil byte; DEPTH24_STENCIL8: the stencil in the low byte */
+    for (u32 i = 0; i < bytes; i += d32 ? 8 : 4) {
+        snx_st_le32(before + i, d32 ? 0x3F000000u : 0x80000033u);
+        if (d32) snx_st_le32(before + i + 4, 0x33u);
+    }
+    memcpy(GP(cpu + soff), before, bytes);
+    memcpy(GP(cpu + doff), before, bytes);
+    ms_nvn_texture_of(snap_src, src, 1, format);
+    ms_nvn_texture_of(snap_dst, dst, 1, format);
+    CHECK(!nvn_depth_clear(d, snap_dst, bind, 0.75f, 0xA5));
+    CHECK(!nvn_depth_clear(d, snap_src, bind, 0.25f, 0x5A));
     Surf* z = vk_rt_find(src);
+    Surf* t = vk_rt_find(dst);
     CHECK(z && z->f.depth && z->f.stencil && z->w == 16 && z->h == 8);
+    CHECK(t && t != z && t->f.vk == z->f.vk && t->w == 16 && t->h == 8);
+    u64 generation = gpu_mem_generation(), readbacks = g_vk_rt_readbacks;
     NvnPCopyT2T r;
     memset(&r, 0, sizeof r);
     r.src = snap_src;
@@ -515,8 +537,14 @@ static int check_nvn_depth_copy(NvnDraw* d, u64 gpu, u64 cpu) {
     memcpy(GP(copy), &r, sizeof r);
     i64 stride[2] = {0, 0};
     CHECK(nvn_copy_record(OP_COPY_T2T, copy, sizeof r, stride));
-    Surf* t = vk_rt_find(dst);
-    CHECK(t && t->f.depth && t->f.stencil && t->w == 16 && t->h == 8 && t->layout != VK_IMAGE_LAYOUT_UNDEFINED);
+    /* nothing reached guest memory: no copy published there, no target written back */
+    if (gpu_mem_generation() != generation || g_vk_rt_readbacks != readbacks) {
+        fprintf(stderr, "nvn depth copy of format %#x: guest memory written %llu times, targets written back %llu\n",
+                format, (unsigned long long)(gpu_mem_generation() - generation),
+                (unsigned long long)(g_vk_rt_readbacks - readbacks));
+        return 1;
+    }
+    CHECK(vk_rt_find(dst) == t && t->layout != VK_IMAGE_LAYOUT_UNDEFINED && z->mem_wgen != z->wgen);
     vk_lock();
     VkBuffer buffer;
     u8* data = vk_readback_buffer(16 * 8 * 5, &buffer);
@@ -539,11 +567,18 @@ static int check_nvn_depth_copy(NvnDraw* d, u64 gpu, u64 cpu) {
         memcpy(&v, &w, 4);
         double depth = t->f.vk == VK_FORMAT_D24_UNORM_S8_UINT ? (w & 0xFFFFFF) / 16777215.0 : (double)v;
         if (depth < 0.2499 || depth > 0.2501 || data[16 * 8 * 4 + i] != 0x5A) {
-            fprintf(stderr, "nvn depth copy: texel %u has depth %g and stencil %#x\n", i, depth,
+            fprintf(stderr, "nvn depth copy of format %#x: texel %u has depth %g and stencil %#x\n", format, i, depth,
                     data[16 * 8 * 4 + i]);
             return 1;
         }
     }
+    CHECK(!gmem_read(src, after, bytes) && !memcmp(after, before, bytes));
+    CHECK(!gmem_read(dst, after, bytes) && !memcmp(after, before, bytes));
+    return 0;
+}
+static int check_nvn_depth_copy(NvnDraw* d, u64 gpu, u64 cpu) {
+    CHECK(!nvn_depth_copy(d, NVN_FORMAT_DEPTH24_STENCIL8, gpu, cpu, 0x2000, 0x3000, cpu + 0x9A00));
+    CHECK(!nvn_depth_copy(d, NVN_FORMAT_DEPTH32F_STENCIL8, gpu, cpu, 0x5000, 0x7000, cpu + 0xB000));
     return 0;
 }
 static int check_msaa_nvn(void) {
@@ -612,6 +647,7 @@ static int check_msaa_nvn(void) {
     CHECK(!check_nvn_depth_copy(d, gpu, cpu));
     CHECK(g_vk_validation_messages == validation);
     puts("msaa nvn: a multisampled texture bound as NVN's render target, cleared at every sample and downsampled, "
-         "a multisampled depth texture downsampled on the GPU, and a depth and stencil texture copied on the GPU");
+         "a multisampled depth texture downsampled on the GPU, and 24 and 32-bit depth and stencil textures copied "
+         "on the GPU, guest memory untouched");
     return 0;
 }

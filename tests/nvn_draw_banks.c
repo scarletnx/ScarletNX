@@ -77,6 +77,11 @@ u64 nvn_tex_slice_offset(const NvnTexDesc* d, unsigned level, u32 z) {
     (void)z;
     return 0;
 }
+u32 nvn_tex_level_gobs(const NvnTexDesc* d, unsigned level) {
+    (void)d;
+    (void)level;
+    return 0;
+}
 u32 nvn_tex_msaa(int samples) {
     (void)samples;
     return 0;
@@ -277,12 +282,44 @@ static void test_stencil_faces(void) {
           y->face[1].pass);
 }
 
+/* OP_BIND_VATTR then a draw: each attribute's size code and type (Eden's VertexAttribute::Size and Type), an RGBX
+   format as its RGBA twin */
+#define VATTR 0x3800u
+static void test_vertex_formats(void) {
+    static const struct {
+        u32 format;
+        u8 size, type;
+    } cases[] = {
+        {NVN_FORMAT_RGBA8, 0x0A, 2},   {NVN_FORMAT_RGBA32I, 0x01, 3}, {NVN_FORMAT_RGBX8, 0x0A, 2},
+        {NVN_FORMAT_RGBX16F, 0x03, 7}, {NVN_FORMAT_RGBX32F, 0x01, 7}, {NVN_FORMAT_RGBX32UI, 0x01, 4},
+        {NVN_FORMAT_RGBX32I, 0x01, 3}, {NVN_FORMAT_R8_UI2F, 0x1D, 5}, {NVN_FORMAT_RGB10A2, 0x30, 2},
+        {NVN_FORMAT_BGRA8, 0x0A, 2},
+    };
+    const u32 n = sizeof cases / sizeof *cases;
+    NvnPBindVAttr va = {0};
+    NvnPDraw r = {0};
+    va.count = (i32)n;
+    for (u32 i = 0; i < n; i++) va.st[i] = (u32)nvn_set_field(0, NVN_VA_FORMAT, cases[i].format);
+    memcpy(g_mem + VATTR, &va, sizeof va);
+    r.count = 3;
+    memcpy(g_mem + DRAW, &r, sizeof r);
+    memset(&d, 0, sizeof d);
+    nvn_draw_init(&d, 0);
+    check(nvn_draw_record(&d, OP_BIND_VATTR, VATTR, sizeof va) == 1, "OP_BIND_VATTR was not taken");
+    check(nvn_draw_record(&d, OP_DRAW, DRAW, sizeof r) == 1, "OP_DRAW was not taken");
+    for (u32 i = 0; i < n; i++)
+        check(d.ds.vfmt.size[i] == cases[i].size && d.ds.vfmt.type[i] == cases[i].type,
+              "attribute format %#x: expected size %#x type %u, found size %#x type %u", cases[i].format, cases[i].size,
+              cases[i].type, d.ds.vfmt.size[i], d.ds.vfmt.type[i]);
+}
+
 int main(void) {
     nvn_init();
     test_init();
     test_bind_program();
     test_window_origin();
     test_stencil_faces();
+    test_vertex_formats();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

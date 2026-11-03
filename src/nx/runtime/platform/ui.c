@@ -7,9 +7,12 @@
 #include "common/utilities/endian.h"
 #include "common/utilities/font.h"
 #include "common/utilities/users.h"
+#include "common/utilities/mii_db.h"
+#include "common/utilities/mii_model.h"
 #include "gui/icons.h"
 #include "gui/splash.h"
 #include "gui_theme_colors.h"
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -55,8 +58,34 @@ int ui_picture(SnxUiList* l, float x, float y, float side) {
     quad(l, x, y, side, side, 0, UI_PICTURE_Y, SNX_UI_PICTURE, SNX_UI_PICTURE, 0xFFFFFFFFu, 0, UI_BLEND);
     return 1;
 }
+/* the user's Mii (users.ini's picture=mii) as its picture at at, w texels a row, R G B A from the low byte with the
+   alpha premultiplied, cut to the circle the square holds when round: 0, or -1 when it could not be drawn */
+static int user_mii_picture(const SnxUser* u, u32* at, int w, int round) {
+    u8 charinfo[SNX_MII_CHARINFO], *rgba = (u8*)malloc((size_t)SNX_UI_PICTURE * SNX_UI_PICTURE * 4);
+    SnxMiiLook look;
+    int x, y;
+    if (!rgba) return -1;
+    snx_mii_db_charinfo(u->mii, charinfo);
+    snx_mii_db_look(u->mii, &look);
+    if (snx_mii_picture(charinfo, &look, SNX_UI_PICTURE, rgba)) {
+        free(rgba);
+        return -1;
+    }
+    for (y = 0; y < SNX_UI_PICTURE; ++y)
+        for (x = 0; x < SNX_UI_PICTURE; ++x) {
+            const u8* p = rgba + 4 * ((size_t)y * SNX_UI_PICTURE + (size_t)x);
+            float dx = (float)x + 0.5f - SNX_UI_PICTURE / 2.0f, dy = (float)y + 0.5f - SNX_UI_PICTURE / 2.0f;
+            float c = round ? SNX_UI_PICTURE / 2.0f - sqrtf(dx * dx + dy * dy) + 0.5f : 1.0f;
+            c = c < 0 ? 0 : c > 1 ? 1 : c;
+            at[(size_t)y * (size_t)w + (size_t)x] =
+                (u32)(p[0] * c) | (u32)(p[1] * c) << 8 | (u32)(p[2] * c) << 16 | (u32)(255 * c) << 24;
+        }
+    free(rgba);
+    return 0;
+}
 /* the picture of the user playing into the atlas's rows from UI_PICTURE_Y, w texels a row; transparent when there is
-   no user yet or the theme shows none. A JPEG that does not draw shows Wimsy, said */
+   no user yet or the theme shows none. Its Mii's with picture=mii; a JPEG (or Mii) that does not draw shows Wimsy,
+   said */
 static void user_picture(u32* a, int w) {
     const SnxUser* u = g_user_count ? snx_users_selected() : NULL;
     const unsigned char* jpeg;
@@ -64,9 +93,14 @@ static void user_picture(u32* a, int w) {
     int round = SNX_GUI_THEME_YORHA_PICTURE == 2, i, y;
     u32* at = a + (size_t)UI_PICTURE_Y * (size_t)w;
     if (!u || !SNX_GUI_THEME_YORHA_PICTURE) return;
-    jpeg = snx_users_picture(u, &size);
+    if (u->picture_mii) {
+        if (!user_mii_picture(u, at, w, round)) return;
+        WARN("ui: user %d's Mii could not be drawn, Wimsy shows in the menu\n", snx_users_selected_number());
+    }
+    jpeg = u->picture_mii ? NULL : snx_users_picture(u, &size);
     if (snx_splash_picture(jpeg, size, SNX_UI_PICTURE, round, at, w * 4)) {
-        WARN("ui: %s's picture could not be drawn, Wimsy shows in the menu\n", u->nickname);
+        /* the user by number: a nickname can name the player, and players attach the log to public reports */
+        WARN("ui: user %d's picture could not be drawn, Wimsy shows in the menu\n", snx_users_selected_number());
         snx_splash_picture(NULL, 0, SNX_UI_PICTURE, round, at, w * 4);
     }
     for (y = 0; y < SNX_UI_PICTURE; ++y) /* ARGB to R G B A from the low byte, the alpha premultiplied as it was */

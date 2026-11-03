@@ -12,6 +12,8 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/hle/hle.h"
+#include "nx/runtime/nce/nce.h"
+#include "nx/runtime/guest_stats.h"
 
 /* ============================================================ the cores */
 /* The cores' state is g_hle.thread's core_* (kernel_int.h has how they are ordered and locked).
@@ -45,7 +47,9 @@ static void core_flag_nl(int k) {
                 (g_hle.thread.core_wait[k] && core_idle_nl(o) >= 0)
             ? 1u
             : 0u;
-    if (__atomic_load_n(&o->cpu.poll, __ATOMIC_RELAXED) != v) __atomic_store_n(&o->cpu.poll, v, __ATOMIC_RELAXED);
+    if (__atomic_load_n(&o->cpu.poll, __ATOMIC_RELAXED) == v) return;
+    __atomic_store_n(&o->cpu.poll, v, __ATOMIC_RELAXED);
+    if (v) nce_kick(o); /* native code reads no poll: it is stopped */
 }
 static void core_rebest_nl(int k) {
     KThread* w;
@@ -128,8 +132,29 @@ static void core_queue_nl(KThread* t, int k) {
     if (t->prio < g_hle.thread.core_best[k]) g_hle.thread.core_best[k] = t->prio;
     core_flag_nl(k);
 }
-/* the calling thread t, lined up for a core, waits without the lock until it is handed one */
+/* a hint to the host CPU that this thread spins: it gives the other hardware thread of the core its share */
+static void spin_hint(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    __builtin_arm_yield();
+#endif
+}
+/* the calling thread t, lined up for a core, waits without the lock until it is handed one. It watches its own word
+   for CORE_SPIN_NS first, so a handoff within that costs no sleep and no wake: one game's handoffs took 150 us on
+   average with its cores held half the time while threads waited for them, and 125 us with the watch. Watching
+   changes nothing of who gets the core next, only how soon the one handed it runs. Where the host has fewer than two
+   CPUs a core it sleeps at once, as the time spent watching would be another thread's */
+#define CORE_SPIN_NS 20000
 static void core_await(KThread* t) {
+    if (g_hle.thread.host_ncpu >= 2 * NCORES) {
+        u64 until = plat_ns() + CORE_SPIN_NS;
+        for (u32 i = 1;; i++) {
+            if (__atomic_load_n(&t->on_core, __ATOMIC_ACQUIRE) != -2) return;
+            if (!(i & 31) && plat_ns() >= until) break;
+            spin_hint();
+        }
+    }
     for (;;) {
         u32 seq = kt_seq(t);
         if (__atomic_load_n(&t->on_core, __ATOMIC_ACQUIRE) != -2) break;
@@ -390,6 +415,8 @@ KThread* kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core) {
     t = (KThread*)POOL_TAKE(g_hle.thread.threads, g_hle.thread.thread_next, "threads");
     t->o.type = KO_THREAD;
     pm_unlock(&g_host.kernel.pool_lk);
+    /* a slot's earlier thread may have ended inside an SVC, as a save state's load ends them where they stopped */
+    __atomic_store_n(&g_host.thread.handed[kt_ix(t) - 1], 0, __ATOMIC_RELAXED);
     kobj_set_name(&t->o, "thread");
     t->prio = t->base_prio = prio;
     t->core = t->ideal_core = core;
@@ -442,14 +469,19 @@ static void thread_run(KThread* t, u64 pc) {
     snx_fpcr_apply(&t->cpu);
     if (g_arm_mod)
         arm_thread_run(t);
+    else if (nce_on())
+        nce_thread_run(t, pc); /* the code runs natively until the entry function returns */
     else
         do snx_lookup(&t->cpu, pc)(&t->cpu, pc);
         while ((pc = t->cpu.pc) != 0);
     svc_exit_thread(t); /* its entry function returned: there is nothing to return to */
 }
+/* every kt_ix has a slot of counters */
+typedef char snx_check_guest_stats_slots[KTHREAD_MAX < GSTAT_SLOTS ? 1 : -1];
 static void thread_main(void* p) {
     KThread* t = (KThread*)p;
     t_hle.thread.cur = t;
+    guest_stats_thread_start(kt_ix(t));
     SNX_THREAD_NAME(t->name[0] ? t->name : "guest");
     __atomic_add_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
     thread_run(t, t->entry);
@@ -486,6 +518,7 @@ void svc_exit_thread(KThread* t) {
     klock_unlock();
     LOGV("ExitThread %llu\n", (unsigned long long)t->id);
     core_leave(t);
+    guest_stats_thread_end(kt_ix(t));
     kobj_unref(&t->o);
     __atomic_sub_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
     plat_thread_exit();
@@ -559,6 +592,7 @@ int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) {
 void kthread_retire_check(PMutex* held) {
     if (!__atomic_load_n(&g_host.thread.retire, __ATOMIC_ACQUIRE)) return;
     if (held) pm_unlock(held);
+    guest_stats_thread_end(kt_ix(kthread_cur()));
     __atomic_sub_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
     plat_thread_exit();
 }
@@ -649,7 +683,10 @@ int kernel_hold(int timeout_ms) {
     for (k = 0; k < NCORES; k++) core_flag_nl(k);
     if (!g_settings.emulated_cores) { /* no thread holds a core: each one running game code is asked itself */
         pm_lock(&g_host.kernel.pool_lk);
-        FOR_LIVE_THREADS(t) __atomic_store_n(&t->cpu.poll, 1u, __ATOMIC_RELAXED);
+        FOR_LIVE_THREADS(t) {
+            __atomic_store_n(&t->cpu.poll, 1u, __ATOMIC_RELAXED);
+            nce_kick(t);
+        }
         pm_unlock(&g_host.kernel.pool_lk);
     }
     pm_unlock(&g_host.thread.core_lk);

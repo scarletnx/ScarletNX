@@ -29,6 +29,10 @@ void options_language_set(const IniOpt* o, const char* v) {
     (void)o;
     (void)v;
 }
+void options_tv_mode_set(const IniOpt* o, const char* v) {
+    (void)o;
+    (void)v;
+}
 /* the test's state: the last line logged, the quads drawn, and the line line_at read */
 static struct {
     char logged[256];

@@ -42,6 +42,7 @@
 #include "nx/gpu/shader/shader.h"
 
 #define VK_FRAMES 2  /* frames in flight */
+#define VK_FRAME_RING_CAPS 4  /* a frame ends once it has written this many allocations to its rings (vk_frame_check) */
 #define VK_SC_MAX 16 /* swapchain images */
 
 typedef struct {
@@ -96,6 +97,9 @@ typedef struct {
     /* optional features that were enabled */
     VkPhysicalDeviceFeatures feat;
     int has_divisor;      /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
+    /* VK_EXT_vertex_input_dynamic_state in effect (vertex_input.h's choice): each draw sets its vertex layout, which
+       pipelines leave out of their keys */
+    int vertex_input_dynamic;
     int has_dynamic_stride; /* a binding's stride is dynamic state, which MoltenVK refuses: a pipeline holds it then */
     int has_vertex_robustness2; /* exact zero/default components for out-of-range mesh fetches */
     int has_calibrated_host; /* VK_EXT_calibrated_timestamps with CLOCK_MONOTONIC_RAW: the GPU's clock goes next to
@@ -111,6 +115,9 @@ typedef struct {
     int has_draw_indirect_count;    /* drawIndirectCount: an indirect draw's count from the GPU's memory */
     u64 alloc_cap; /* the most one device memory allocation may be (memory.c) */
     int sparse;    /* sparseBinding on the graphics queue: images bigger than alloc_cap are bound in pieces */
+    /* sparse residency of 3D images too, what isn't bound reading as zeros: a 3D texture with holes in its mapping has
+       memory only where it is mapped */
+    int resident;
     /* VK_EXT_attachment_feedback_loop_layout: a draw samples a color target it renders to in place (gpu/vk/render.c),
        with the loop enabled per draw by dynamic state (VK_EXT_attachment_feedback_loop_dynamic_state) or else by a
        pipeline flag, and ordered within the pass by a barrier there (dynamicRenderingLocalRead) or else by beginning
@@ -184,6 +191,16 @@ int vk_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* me
 /* the same, with the result of the call that failed in res (VK_ERROR_OUT_OF_DEVICE_MEMORY: no memory for it) */
 int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, VkResult* res);
 void vk_image_destroy(VkImage img, VmaAllocation mem);
+/* A 3D image with memory only where it is bound, what isn't reading as zeros (g_vk.resident). vk_resident_block: the
+   texels of the blocks the device binds 3D images of format f in, 0 when it can't. vk_image_create_resident: such an
+   image of one level and one layer, in those blocks (block, which it is refused without), with none bound; destroyed
+   with vk_image_destroy. vk_image_resident binds memory to its blocks whose want[] is set and releases it from the
+   others (n: all of them, x first, then y, then z), after the work recorded before, which it submits; *bytes gets the
+   memory bound. 0 when memory ran out or the bind failed: the blocks that got memory are bound, the others as they
+   were */
+int vk_resident_block(VkFormat f, VkImageUsageFlags usage, VkExtent3D* block);
+int vk_image_create_resident(const VkImageCreateInfo* ii, const VkExtent3D* block, VkImage* img);
+int vk_image_resident(VkImage img, const u8* want, u32 n, u64* bytes);
 /* Tracy memory events for VMA allocations. */
 #if defined(SNX_TRACY)
 void vk_mem_track(VmaAllocation a);
@@ -191,6 +208,7 @@ void vk_mem_untrack(VmaAllocation a);
 #else
 static inline void vk_mem_track(VmaAllocation a) { (void)a; }
 static inline void vk_mem_untrack(VmaAllocation a) { (void)a; }
+#endif
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
 int vk_uma_choose(int has_import, int has_placed); /* before the device is made: 1 to enable external_memory_host */
 void vk_uma_init(void);                            /* after it */
@@ -199,9 +217,15 @@ int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
 void vk_uma_frame(void);
 void vk_uma_forget_all(void);
-void vk_uma_quiesce(u64 cpu, u64 size); /* before a trap or a remap there (size ~0: all): its in-place readers run */
+void vk_uma_owning(u64 cpu, u64 size);        /* that guest memory becomes GPU-owned next, trapped (vk_own_publish) */
+void vk_uma_mapping_begin(u64 cpu, u64 size); /* mem.c changes that guest memory next (size ~0: all) */
+void vk_uma_mapping_end(void);                /* they changed: before anything else is submitted */
+void vk_uma_settle(u64 ended);         /* a draw or dispatch begins: the ones before it recorded up to submit ended */
+u32 vk_uma_imports(u64 cpu, u64 size); /* the imports the driver holds over guest memory [cpu, cpu + size) (vk_lock) */
+/* the first import the driver holds over guest memory [cpu, end), on any thread: where it starts there, with where it
+   ends in *hi (end at most); end for none. Write tracking leaves those pages alone */
+u64 vk_uma_import_in(u64 cpu, u64 end, u64* hi);
 
-#endif
 /* The caches of textures, render targets and buffers are kept within the driver's budget for the heap images go to
    (VK_EXT_memory_budget through VMA; vk_budget_mb lowers it, for testing): past it the driver pages memory out,
    which took 160 ms frames and then the device in one game. Ages are kept in presents, and measured in time as well
@@ -255,6 +279,7 @@ void vk_zt_forget(void);
 extern u64 g_vk_finishes, g_vk_finish_ns; /* statistics: vk_finish calls and their wait (the GPU thread idles) */
 void vk_frame_next(void);                 /* ends the frame (a present): the next records in the other slot */
 void vk_frame_check(void);                /* at the start of a draw or dispatch: ends a frame that has grown too big */
+u64 vk_ring_bytes(void);                  /* ring memory every frame slot holds, spares and outgrown ones too */
 /* a buffer for GPU -> host copies: record the copy into it, vk_finish(), vk_readback_ready(), then read */
 u8* vk_readback_buffer(u64 size, VkBuffer* buf);
 void vk_readback_ready(void);
@@ -316,8 +341,8 @@ void vk_hash128(const void* p, u64 size, u64 hash[2]);
 u64 vk_hash_copy(void* dst, const void* src, u64 size); /* vk_hash(src, size), with src copied into dst on the way */
 /* a hash of guest memory: all of it when small, else its ends and 62 samples between them */
 u64 vk_sample_hash(u64 gva, u64 len);
-/* guest submits processed so far, and frames presented: what the caches check memory against */
-extern u32 g_vk_epoch, g_vk_present;
+/* frames presented: what the caches check memory against once a frame, beside the write epoch (vk_ww_epoch) */
+extern u32 g_vk_present;
 
 /* record.c: the frame's command buffer is recorded on a thread of its own. rec_Cmd* take vkCmd*'s arguments and
    record into that command buffer from the ring, or into any other one at once */
@@ -400,6 +425,8 @@ void rec_CmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPip
 void rec_CmdBindVertexBuffers2(VkCommandBuffer cb, u32 first, u32 n, const VkBuffer* bufs, const VkDeviceSize* offs,
                                const VkDeviceSize* sizes, const VkDeviceSize* strides);
 void rec_CmdBindVertexBuffers(VkCommandBuffer cb, u32 first, u32 n, const VkBuffer* bufs, const VkDeviceSize* offs);
+void rec_CmdSetVertexInputEXT(VkCommandBuffer cb, u32 nb, const VkVertexInputBindingDescription2EXT* b, u32 na,
+                              const VkVertexInputAttributeDescription2EXT* a);
 void rec_CmdBindTransformFeedbackBuffersEXT(VkCommandBuffer cb, u32 first, u32 n, const VkBuffer* bufs,
                                             const VkDeviceSize* offs, const VkDeviceSize* sizes);
 void rec_CmdBeginTransformFeedbackEXT(VkCommandBuffer cb, u32 first, u32 n, const VkBuffer* counters,
@@ -510,6 +537,8 @@ typedef struct Surf {
                     in bit 31, raw (vk_tex_from_tic_raw) in bit 30 */
     VkFmt f;
     u32 bl, bh, bd, pitch; /* guest layout: block linear with block height 2^bh GOBs, or pitch linear */
+    u32 tile_w;            /* a sparse texture's tile width (log2 GOBs): its levels at least a tile in size have rows
+                              of whole tiles (the header's TILE_WIDTH_IN_GOBS) */
     u64 layer_size;        /* bytes from one layer to the next in guest memory */
     u64 rt_size;           /* a render target's guest bytes, all layers (its shape is fixed when it is made) */
     int is_rt;
@@ -560,6 +589,7 @@ typedef struct Surf {
     int nsv;
     u64 size, hash, shash;
     int upload_valid; /* textures: every subresource was uploaded (a failed upload is retried) */
+    int piecewise;    /* textures: holes in its mapping when made, loaded a piece at a time (texture.c tex_patch) */
     u32 checked, next_check, stable, tfull;
     u32 wseen;    /* write-tracking clock when it last matched memory */
     u32 ww_epoch; /* the write epoch (vk_ww_epoch) of its last check for CPU writes */
@@ -574,6 +604,10 @@ typedef struct Surf {
     struct Surf *lru_prev, *lru_next;
     u64 bytes;
     int took_drawn; /* textures: pixels copied from render targets since the last upload (memory may not have them) */
+    /* textures whose image has memory only where they are mapped (vk_image_create_resident): bricks of grain texels,
+       each brick_bytes of the guest's layout in one range, x first, then y, then z. 0 bricks for every other image */
+    u32 bricks, brick_bytes;
+    VkExtent3D grain;
     /* depth targets: undefined but for draws and clears predicated on the GPU, which may not have run, so they count
        as no draw (render.c zt_written) */
     int pred_undefined;
@@ -613,6 +647,12 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
 #define VK_SAMPLED_STAGES (VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
 VkImageView vk_rt_attachment(Surf* s, int srgb_write);
 void vk_rt_flush(u64 gva);
+/* a draw's writes to s's storage image, size bytes, to write back over original, s's bytes from before the draw
+   (the queue frees it), or over the bytes the write-back after leaves */
+void vk_gfx_image_record(Surf* s, u8* original, u32 size, u64 after);
+/* the write-back a draw's writes to s go on from (its landed bytes become their original, NULL until then), 0: none */
+u64 vk_gfx_image_after(Surf* s, u32 size);
+int vk_gfx_image_unrecorded(const Surf* s); /* s has a write-back whose copy isn't recorded: a draw's writes join it */
 void vk_gfx_image_mem_need(u64 gva, u64 size);
 int vk_gfx_image_pending(u64 gva, u64 size);
 void vk_gfx_image_land(void);
@@ -623,6 +663,11 @@ int vk_gfx_image_in_flight(int unsubmitted);
 /* the submissions up to sub are done: the write-backs recorded in them land (cmd.c's landing, vk_lock) */
 void vk_gfx_image_frame_done(u64 sub);
 int vk_gfx_image_holds(const Surf* s); /* s has a storage result waiting to land in memory */
+/* depth_pack.c: a zeta format's packing of depth and stencil, -1 for one that doesn't pack; layer of the packed target
+   s (unscaled, single-sampled, in TRANSFER_SRC_OPTIMAL) into buf at at in the guest's layout, rows pitch bytes apart:
+   1, or 0 when it can't */
+int vk_depth_pack_mode(u32 zeta);
+int vk_depth_pack(VkCommandBuffer cb, const Surf* s, u32 layer, VkBuffer buf, u64 at, u32 pitch);
 u64 vk_surf_guest_size(const Surf* s);
 int vk_surf_can_writeback(const Surf* s);
 void vk_surf_flush(Surf* s, const u8* original); /* original preserves newer guest writes for storage images */
@@ -646,7 +691,8 @@ int vk_rt_over(u64 gva, u64 size);
 extern u64 g_vk_rt_readbacks;
 u64 vk_surf_flush_size(const Surf* s);
 void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at);
-void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen);
+/* keep: when non-NULL (and original is), the image's bytes as the landing leaves them, malloc'd, keep_size of them */
+void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** keep, u64* keep_size);
 void vk_tex_note_writeback(Surf* s);
 /* A DMA copy's rows of block linear destination gva (wb bytes a row, blocks 2^bh GOBs high), line_bytes of each from
    byte ox of row oy on, as they are at rows_at in buf (rows_pitch bytes apart): copied into each texture whose level 0
@@ -665,6 +711,7 @@ void vk_rt_reload(u64 gva);
 /* textures share the surface table. g_vk_surf_epoch changes whenever a surface enters it, leaves it or moves (a
    target parked or taken back), so what was found there can be kept until it changes */
 extern u32 g_vk_surf_epoch;
+u32 vk_surf_epoch_at(u64 gva); /* the same, for the surfaces of gva's bucket of the table only */
 Surf* vk_surf_first(u64 gva);
 void vk_surf_add(Surf* s); /* a texture, into the table and the textures' recency list */
 /* s used now: last_used is this present, and it moves to the recent end of its list */
@@ -695,6 +742,8 @@ u64 vk_mem_trimmed(void); /* statistics: the bytes vk_mem_trim freed */
    forced trim makes room for later, and images as big fail at once for the rest of the present. bytes: the device
    memory it takes */
 int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u64* bytes);
+/* the device memory a surface of the caches takes now: an image whose memory follows its mapping grows and shrinks */
+void vk_surf_bytes(Surf* s, u64 bytes);
 int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
               double sdy);
 
@@ -703,11 +752,13 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
    height rows high, in blocks of 2^bh GOBs high and 2^bd deep, already shrunk for small surfaces as the hardware
    does; the move takes rows y0 to y0 + rows of slices z0 to z0 + slices. Its linear rows are lin_pitch bytes apart
    (a multiple of 16, at least row_bytes rounded up to 16: whole 16 byte pieces move, so a row's last one carries
-   padding along), a slice's rows after another's */
+   padding along), a slice's rows after another's. gobs_x: the GOBs across a row of blocks when there are more than
+   row_bytes takes (a sparse texture's rows of whole tiles), else 0 */
 typedef struct {
     u32 row_bytes, height, bh, bd;
     u32 y0, rows, z0, slices;
     u32 lin_pitch;
+    u32 gobs_x;
 } VkBlMove;
 /* the layout's bytes [*lo, *hi) the move reads or writes: whole rows of blocks */
 void vk_bl_range(const VkBlMove* m, u64* lo, u64* hi);
@@ -743,7 +794,10 @@ VkOwnRes* vk_own_res_new(u64 size); /* with the caller's reference; NULL when ou
 void vk_own_res_unref(VkOwnRes* r);
 /* r's bytes are written by work recorded in the submission being recorded: a landing of them waits for that
    submission (owned.c own_land). vk_own_publish does it. A writer that keeps an owned range in place, with no new
-   publish, calls it itself. Under vk_lock */
+   publish, calls it itself. Every writer of r records its writes outside rendering passes, after a barrier from what
+   read r before (a new r has no readers), and a barrier to all later work before it calls this: what reads r later,
+   inside a pass too, reads it where it is with no barrier of its own (buffer.c buf_get_owned, compute.c res_bind).
+   Under vk_lock */
 void vk_own_res_wrote(VkOwnRes* r);
 /* the guest CPU bytes [cpu, cpu + size) hold r's bytes from off on once the work recorded so far is done: owned, or,
    where the host can't trap them, landed at once (the GPU waited for). Under vk_lock */
@@ -763,6 +817,9 @@ int vk_guest_read_seen(u64 gva, u64 size, VkBuffer buf, u64 at);
    holds come back as a pattern of their owner (which a new owner changes, and the CPU's own bytes replace once it
    touches them): nothing lands */
 void vk_guest_peek(u64 gva, void* dst, u64 size);
+/* 1 when one GPU-owned range holds all of guest bytes [gva, gva + size), one run of the GPU's page table, with *tag its
+   identity at gva as vk_guest_peek writes it there (its owner's serial, the offset in it); else 0 */
+int vk_guest_owned_whole(u64 gva, u64 size, u64* tag);
 /* everything recorded so far done before what follows reads or writes what it did (the engines' steps) */
 void vk_all_barrier(VkCommandBuffer cb);
 /* rows rows of row_bytes from src (rows src_pitch apart) over dst's rows (dst_pitch apart), a region a row */
@@ -943,6 +1000,8 @@ void vk_buf_mem_need(u64 gva, u64 len);
 u64 vk_buf_reclaim(u32 before, u64 want);
 void vk_buf_stats(u32* count, u64* bytes);
 int vk_buf_pending(u64 gva, u64 len); /* a pending graphics result overlaps the range */
+/* GPU-owned bytes are on the range's pages (memory/own.c): reading them on the CPU lands them, a wait for the GPU */
+int vk_buf_owned(u64 gva, u64 len);
 u64 vk_buf_adds(void);                /* graphics results committed so far: as vk_compute_adds */
 int vk_buf_pending_any(void);         /* any graphics result is pending */
 int vk_buf_pending_unsubmitted(void); /* one is in the commands recorded since the last submit */
@@ -961,6 +1020,15 @@ void vk_release_queued(u64* n, u64* gate, u64* cgate); /* the queue's length and
 void vk_release_submit(void); /* the GPFIFO submission ended or waits: a release gated on the recording submits */
 void vk_release_need(u64 gva, u64 len);
 int vk_release_read(u64 gva, void* dst, u64 len);
+/* a samples-passed report a draw reads before it is performed: its count, len bytes (4 or 8) at byte at of what was
+   read, is counter's segments [first, end), written there on the GPU (vk_query_counts) */
+typedef struct {
+    u32 counter, at, len;
+    u64 first, end;
+} SamplesCount;
+/* vk_release_read's, with the samples-passed reports queued over the range that the GPU can write there left out of dst
+   (zeros) and listed in counts, at most max of them, *n set: no wait for those */
+int vk_release_read_counts(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 max, u32* n);
 extern u64 g_vk_release_forwards;           /* statistics: reads vk_release_read answered */
 extern u64 g_vk_dset_new, g_vk_dset_reused; /* statistics: descriptor sets written, reused for the same contents */
 u32 vk_release_value(u32 id);
@@ -985,6 +1053,11 @@ void vk_query_enable(u32 owner, int on);
 int vk_query_report(u32 owner, u64 gva, u32 len, u64 ticks);
 /* a report performed (release.c): the count of counter's segments [first, end) */
 u64 vk_query_value(u32 counter, u64 first, u64 end);
+u64 vk_query_peek(u32 counter, u64 first, u64 end); /* the same, out of order, changing nothing */
+/* writes the n counts of reports not performed yet into buf, whose bytes from off on were read at their at: 1, or 0
+   when they can't be counted on the GPU (the caller then reads the reports performed) */
+int vk_query_counts(VkBuffer buf, u64 off, const SamplesCount* counts, u32 n);
+extern u64 g_vk_counts_on_gpu; /* statistics: the counts vk_query_counts wrote */
 #define VK_QUERY_COUNTERS 8 /* query.c's samples-passed counters, a draw owner's each */
 /* render enable predicates (release.c's vk_render_predicate): a queued report of counter's segments [first, end) gets
    a predicate slot, held once, that the next vk_query_pred_flush writes (2, *slot set), or its count is known now: 1
@@ -1026,6 +1099,9 @@ int vk_written_since(const u8* host, u64 len, u32 since);
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user);
 u32 vk_ww_now(void);
 void vk_ww_new_epoch(void); /* the CPU may have written what a GPU stream reads next: write tracking scans again */
+/* The epoch of the CPU's writes the calling thread's checks see: a cache that trusts a check for the rest of its epoch
+   stamps this one, read before the check (or the read of memory) it stands for. A job's checks see the epoch it began
+   in, not a later submission's: a check stamped with that one would vouch for writes it never looked for */
 u32 vk_ww_epoch(void);
 /* the calling thread runs a job of a stream (1: its checks see the CPU's writes from before the newest epoch now, and
    from before the waits it ends) or stops (0: they see every epoch's) */
@@ -1101,12 +1177,25 @@ void vk_pipeline_init(void);
    enables, and SNX_SH_NOT_LAST (the stages before rasterization). xfb: what transform feedback captures of the last stage before
    rasterization's outputs (ShaderInfo.xfb), NULL for none. ds: the draw state whose programs key a fragment program
    (its early fragment tests) and a geometry program (its passthrough mask), and whose bound constant buffers the
-   translator reads to resolve indirect branches. NULL for none */
+   translator reads to resolve indirect branches. NULL for none. rect: the textures a fragment or vertex program
+   samples whose headers take unnormalized coordinates (ShaderInfo.tex_rect_mask) */
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
-                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb);
+                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb);
 /* whether the constant buffer words s's translation read still hold in ds's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s);
+/* a draw's vertex layout: attributes by location and the bindings they read, as a pipeline's vertex input state
+   holds them or vkCmdSetVertexInputEXT sets them */
+typedef struct {
+    u32 nattr, nbind;
+    struct {
+        u32 loc, binding, format, offset;
+    } attr[32];
+    struct {
+        u32 divisor; /* 0: per vertex */
+        u32 stride;  /* only without has_dynamic_stride, else 0 */
+    } bind[33];      /* bindings 0..nbind-1: a binding per attribute at most, and one for constant attributes */
+} VertexLayout;
 typedef struct {
     VkShaderModule vs, fs;
     VkShaderModule tcs, tes, gs; /* tessellation control and evaluation, geometry: VK_NULL_HANDLE when off */
@@ -1116,14 +1205,9 @@ typedef struct {
     u32 topo_class;
     u32 polygon;
     u32 depth_clamp;
-    u32 nattr, nbind;
-    struct {
-        u32 loc, binding, format, offset;
-    } attr[32];
-    struct {
-        u32 divisor; /* 0: per vertex */
-        u32 stride;  /* only without has_dynamic_stride, else 0 */
-    } bind[33];      /* bindings 0..nbind-1: a binding per attribute at most, and one for constant attributes */
+    /* all zero with dynamic vertex input (g_vk.vertex_input_dynamic): each draw sets its own (render.c), and one
+       pipeline serves every layout its programs are drawn with */
+    VertexLayout vi;
     u32 ncolor;
     u32 color[8];
     u32 depth, stencil;
@@ -1145,6 +1229,10 @@ VkPipeline vk_pipeline_get(const PipeKey* k);
 /* the threads making new pipelines: setting (pipeline_threads) when it is one or more, else a quarter of cpus, two
    to six */
 int vk_pipeline_worker_count(int setting, int cpus);
+/* the key a file of earlier runs' shaders and pipelines must have to be read: the device, the build, and what changes
+   what a pipeline key means (dynamic vertex input among them), into out; the length of its guest part, which the
+   pipelines depend on, in *guest */
+void vk_pipeline_file_key(char* out, size_t n, size_t* guest);
 /* a draw's pipeline: the pipeline, or a stand-in the recording thread waits for at its bind (vk_pipeline_resolve, the
    pipeline a stand-in names, or h itself) */
 VkPipeline vk_pipeline_get_deferred(const PipeKey* k);
@@ -1272,11 +1360,15 @@ VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, i
    including the intervening mip data that writeback preserves.
    A draw also refuses its own attachments, which a dispatch, outside any rendering pass, can write.
    vk_gbuf_desc: a storage buffer's address (*addr) and size from its descriptor's words {address low, address high,
-   size} at off (SH_GBUF_*), where gbuf_tag (spirv_translate.c) found it for stage (ST_VS, ST_FS or ST_CS).
+   size} at off (SH_GBUF_*), where shader_gbuf_tag (shader/forms.c) found it for stage (ST_VS, ST_FS or ST_CS).
    No size takes 16 bytes, and sizes are capped at 16 MiB and rounded up to words. The vertex stage's 0xb0 holds a
-   bare 64-bit pointer with no size after it, 16 bytes (gbuf_tag tags it for the vertex stage alone). A bare address
-   in a program's own constant buffer (gbuf_tag_any, v[2] unread) takes what is mapped from it on, to the cap. */
+   bare 64-bit pointer with no size after it, 16 bytes (shader_gbuf_tag tags it for the vertex stage alone). A bare address
+   in a program's own constant buffer (shader_gbuf_tag_any, v[2] unread) takes what is mapped from it on, to the cap. */
 int vk_tex_num(const u32* tic, const Surf* t);
+/* whether a texture header takes unnormalized coordinates (word 5 bit 31 clear: NVN's rectangle textures): 1 for a 2D
+   one, which the translator normalizes (ShaderInfo.tex_rect_mask), 2 for another type, which it can't (texture type
+   in word 4 bits 23-26; buffers' word 5 holds no such bit), 0 for none */
+int vk_tic_unnormalized(const u32* tic);
 int vk_image_keyable(const ShaderInfo* si, int i);
 int vk_image_key(const ShaderInfo* si, int i, const u32* tic);
 VkImageView vk_storage_image_view(Surf* t, const ShaderInfo* si, int i, u64* bytes);
@@ -1285,7 +1377,7 @@ u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr);
    accesses a barrier names see the writes before it */
 #define VK_STORAGE_IMAGE_ACCESS (VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)
 extern u64 g_vk_drawn, g_vk_skipped; /* draws recorded, and draws skipped (unsupported topology, failed shader) */
-/* draws that kept the last draw's shaders and pipeline key, and those of them SNX_DIRTY_CHECK made again to compare */
+/* draws that kept the last draw's shaders and pipeline key, and those of them draw_state_check made again to compare */
 extern u64 g_vk_draw_kept, g_vk_draw_checked;
 /* draws that sampled a color target they render to in place, the barriers ordering them within a pass, the passes
    begun again for them (a target's layout, or ordering without those barriers), and draws that sampled a target

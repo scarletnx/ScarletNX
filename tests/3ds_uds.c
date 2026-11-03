@@ -5,6 +5,7 @@
 #include "3ds/services/uds.h"
 #include "3ds/audio/dsp.h"
 #include "common/network/net_room.h"
+#include "common/utilities/common.h"
 #include "common/network/net_internal.h"
 #include "fake_room.h"
 #include "snx_settings.h"
@@ -14,9 +15,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 #define BUFFER  0x300000u
 #define NET     0x300900u
 #define DATA    0x300b00u
+/* a request's answer: no transport error, and a result code of 0 */
+static void replied(SnxCtrProcess* p, const uint32_t* words, uint32_t result) {
+    assert(!result);
+    if (ctr_word(p, CTR_COMMAND + 4)) fprintf(stderr, "command %08x -> %08x\n", words[0], ctr_word(p, CTR_COMMAND + 4));
+    assert(!ctr_word(p, CTR_COMMAND + 4));
+}
 static void request(SnxCtrProcess* p, uint32_t handle, const uint32_t* words, unsigned count) {
     ctr_request(p, words, count);
     uint32_t result = 0;
@@ -48,17 +61,125 @@ static void request(SnxCtrProcess* p, uint32_t handle, const uint32_t* words, un
         assert(ctr_word(p, CTR_COMMAND) == 0x1e0040);
     } else
         assert(state == SNX_CTR_SVC_RETURN);
-    assert(!result);
-    if (ctr_word(p, CTR_COMMAND + 4)) fprintf(stderr, "command %08x -> %08x\n", words[0], ctr_word(p, CTR_COMMAND + 4));
-    assert(!ctr_word(p, CTR_COMMAND + 4));
+    replied(p, words, result);
 }
+/* NULL: not set */
 static void env(const char* key, const char* value) {
 #ifdef _WIN32
-    assert(!_putenv_s(key, value));
+    assert(!_putenv_s(key, value ? value : ""));
 #else
-    assert(!setenv(key, value, 1));
+    assert(value ? !setenv(key, value, 1) : !unsetenv(key));
 #endif
 }
+#ifndef _WIN32
+/* stderr into a file of this process alone until capture_end; *saved keeps stderr's own. ctest runs this program's two
+   modes at once in one folder, where a file found by its name is the other's to truncate and remove: tmpfile's has none */
+static FILE* capture_begin(int* saved) {
+    FILE* f = tmpfile();
+    fflush(stderr);
+    assert(f && (*saved = dup(2)) >= 0 && dup2(fileno(f), 2) == 2);
+    return f;
+}
+/* what reached stderr since capture_begin, cut to size - 1 bytes, and their count; stderr back where it was. fd 2 must
+   be the capture's file to its end: what closed or replaced it inside took the lines written after */
+static size_t capture_end(FILE* f, int saved, char* said, size_t size) {
+    struct stat now, mine;
+    fflush(stderr);
+    int open2 = !fstat(2, &now),
+        same = open2 && !fstat(fileno(f), &mine) && now.st_dev == mine.st_dev && now.st_ino == mine.st_ino;
+    assert(dup2(saved, 2) == 2);
+    close(saved);
+    if (!open2)
+        fputs("3ds_uds.c: fd 2 is closed at the capture's end: something inside it closed the capture's file\n",
+              stderr);
+    else if (!same)
+        fprintf(stderr,
+                "3ds_uds.c: fd 2 is %s of mode %o (inode %llu) at the capture's end, not the capture's file (inode "
+                "%llu): something inside it closed or replaced fd 2\n",
+                S_ISFIFO(now.st_mode)  ? "a pipe"
+                : S_ISREG(now.st_mode) ? "another file"
+                                       : "neither file nor pipe",
+                (unsigned)now.st_mode, (unsigned long long)now.st_ino, (unsigned long long)mine.st_ino);
+    assert(same);
+    rewind(f);
+    size_t n = fread(said, 1, size - 1, f);
+    fclose(f);
+    said[n] = 0;
+    return n;
+}
+/* a capture beside another process's, as the two modes make them: each reads its own lines, all of them */
+static void captures_apart(void) {
+    char said[64];
+    int saved;
+    FILE* f = capture_begin(&saved);
+    fputs("first\n", stderr);
+    pid_t other = fork();
+    assert(other >= 0);
+    if (!other) {
+        int its;
+        FILE* g = capture_begin(&its);
+        fputs("other\n", stderr);
+        capture_end(g, its, said, sizeof said);
+        if (!strcmp(said, "other\n")) _exit(0);
+        fputs(said, stderr); /* into the first capture, which says it */
+        _exit(1);
+    }
+    int status = 0;
+    assert(waitpid(other, &status, 0) == other);
+    fputs("first again\n", stderr);
+    capture_end(f, saved, said, sizeof said);
+    if (strcmp(said, "first\nfirst again\n")) fputs(said, stderr); /* what it read instead */
+    assert(!strcmp(said, "first\nfirst again\n") && WIFEXITED(status) && !WEXITSTATUS(status));
+    puts("UDS: a capture of stderr beside another process's keeps its own lines");
+}
+static void exit_on_abort(int sig) { _exit(sig); } /* no core, no crash report */
+/* a capture whose fd 2 something inside replaced, here with a pipe: its end says so, and stops */
+static void capture_lost_fd(void) {
+    char said[512];
+    int saved;
+    FILE* f = capture_begin(&saved);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (!child) {
+        int its, ends[2];
+        signal(SIGABRT, exit_on_abort);
+        FILE* g = capture_begin(&its);
+        if (pipe(ends) || dup2(ends[0], 2) != 2) _exit(1);
+        capture_end(g, its, said, sizeof said);
+        _exit(0);
+    }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    capture_end(f, saved, said, sizeof said);
+    if (!strstr(said, "3ds_uds.c: fd 2 is a pipe of mode ")) fputs(said, stderr); /* what it said instead */
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == SIGABRT && strstr(said, "3ds_uds.c: fd 2 is a pipe of mode "));
+    puts("UDS: a capture whose fd 2 was replaced says so");
+}
+#endif
+/* the init request, which joins the relay: the 3DS runtime says so on stderr, its log, which players attach to public
+   reports, so the nickname is never in it, nor in what the members already in say of the join. Read where fd 2 can be
+   swapped for a file */
+static void init_unnamed(SnxCtrProcess* p, uint32_t handle, const uint32_t* init, const char* nickname) {
+#ifndef _WIN32
+    char said[4096];
+    int saved;
+    uint32_t result = 0;
+    FILE* f = capture_begin(&saved);
+    ctr_request(p, init, 15);
+    SnxCtrSvcResult state = snx_ctr_ipc_send(p, handle, &result); /* checked once stderr can say why */
+    size_t n = capture_end(f, saved, said, sizeof said);
+    fputs(said, stderr); /* where it would have gone */
+    if (strlen(said) < n)
+        fprintf(stderr, "3ds_uds.c: a NUL at byte %zu of the capture's %zu hides the rest\n", strlen(said), n);
+    assert(state == SNX_CTR_SVC_RETURN);
+    replied(p, init, result);
+    assert(strstr(said, "3ds uds: joined the relay as ") && !strstr(said, nickname));
+#else
+    (void)nickname;
+    request(p, handle, init, 15);
+#endif
+}
+/* nickname: what the join takes, the user's or an old variable's, which the log never shows */
 static SnxCtrProcess* process(uint32_t* handle, const char* nickname) {
     uint8_t code[0x3000] = {0};
     SnxCtrImage image = {.segment = {{0x100000, 1, 16}, {0x200000, 1, 4}, {BUFFER, 1, 4096}},
@@ -77,8 +198,7 @@ static SnxCtrProcess* process(uint32_t* handle, const char* nickname) {
     uint32_t init[15] = {0x1b0302, 4096};
     init[12] = 0x400;
     init[14] = shared;
-    env("SNX_3DS_NICKNAME", nickname);
-    request(p, *handle, init, 15);
+    init_unnamed(p, *handle, init, nickname);
     assert(ctr_word(p, CTR_COMMAND) == 0x1b0042);
     assert(ctr_word(p, CTR_COMMAND + 12));
     return p;
@@ -144,7 +264,7 @@ static void join_failures(void) {
     FakeRoom* relay = fake_room_start();
     char endpoint[64];
     snprintf(endpoint, sizeof endpoint, "127.0.0.1:%u", fake_room_port(relay));
-    env("SNX_3DS_ROOM", endpoint);
+    snprintf(g_settings.eden_room, sizeof g_settings.eden_room, "%s", endpoint);
     SnxRoom* room = NULL;
     int why;
     assert(!snx_room_join(&room, "127.0.0.1", fake_room_port(relay), "WireHost", "secret", "fixture", 0, "", &why));
@@ -153,9 +273,7 @@ static void join_failures(void) {
     snx_room_fake_ip(room, host_ip);
     for (unsigned scenario = 0; scenario < 5; ++scenario) {
         uint32_t handle;
-        char nickname[20];
-        snprintf(nickname, sizeof nickname, "FailureClient%u", scenario);
-        SnxCtrProcess* p = process(&handle, nickname);
+        SnxCtrProcess* p = process(&handle, "Player");
         uint8_t state[952] = {'S', 'N', 'U', 'D', 1, 1, 0xa8, 3, 42};
         state[16] = 2;
         state[17] = 0x53;
@@ -265,6 +383,62 @@ static void join_failures(void) {
     fake_room_stop(relay);
     puts("UDS: join timeout, early CLOSE, disconnect, shutdown, dead caller, guest scheduling, display and DSP passed");
 }
+/* the launcher's data folder for the room's password, users/online.ini's room_password (empty: no file) */
+static char* data_folder(const char* password) {
+    char *root = snx_temp_dir("."), *app = root ? snx_path_join(root, ".scarletnx") : NULL;
+    char *users = app ? snx_path_join(app, "users") : NULL, *online = users ? snx_path_join(users, "online.ini") : NULL;
+    char line[300];
+    int n = snprintf(line, sizeof line, "room_password=%s\n", password);
+    assert(online && !snx_mkdirs(users) && (!*password || !snx_write_file(online, line, (size_t)n)));
+    snx_ctr_uds_settings(app);
+    free(online);
+    free(users);
+    free(app);
+    return root;
+}
+static char g_said[2048]; /* snx_error's lines */
+static void said(const char* line) {
+    size_t n = strlen(g_said);
+    snprintf(g_said + n, sizeof g_said - n, "%s\n", line);
+}
+/* The variables an older version read for the room, its password and the nickname (docs/DEPRECATIONS.md): still read
+   over the settings, each said once a run with what the run takes */
+static void old_variables(void) {
+    FakeRoom* relay = fake_room_start();
+    char endpoint[64], want[256], *root = data_folder("not-the-room's");
+    uint32_t handle;
+    snprintf(endpoint, sizeof endpoint, "127.0.0.1:%u", fake_room_port(relay));
+    g_settings.eden_room[0] = 0;
+    env("SNX_3DS_ROOM", endpoint);
+    env("SNX_3DS_ROOM_PASSWORD", "secret");
+    env("SNX_3DS_NICKNAME", "OldVariable");
+    snx_error_sink(said);
+    /* the join needs the room and the password the variables name */
+    SnxCtrProcess* p = process(&handle, "OldVariable");
+    snprintf(want, sizeof want,
+             "3ds uds: SNX_3DS_ROOM=%s is deprecated, replaced by the room of the launcher's Network settings (\"\" "
+             "there): this run joins %s (docs/DEPRECATIONS.md)\n",
+             endpoint, endpoint);
+    assert(strstr(g_said, want));
+    assert(strstr(g_said, "3ds uds: SNX_3DS_NICKNAME is deprecated, with nothing in its place: this run joins as its "
+                          "value, later ones as the user's nickname and a random suffix"));
+    assert(!strstr(g_said, "OldVariable")); /* the nickname, which can name the player, never in the log */
+    assert(strstr(g_said, "3ds uds: SNX_3DS_ROOM_PASSWORD is deprecated, replaced by room_password in "
+                          "users/online.ini: this run joins with its value, not online.ini's"));
+    snx_ctr_process_free(p);
+    g_said[0] = 0;
+    p = process(&handle, "OldVariable");
+    assert(!g_said[0]); /* once a run */
+    snx_ctr_process_free(p);
+    snx_error_sink(NULL);
+    env("SNX_3DS_ROOM", NULL);
+    env("SNX_3DS_ROOM_PASSWORD", NULL);
+    env("SNX_3DS_NICKNAME", NULL);
+    assert(!snx_remove_tree(root));
+    free(root);
+    fake_room_stop(relay);
+    puts("UDS: an older version's room, password and nickname variables, still read and said");
+}
 int main(int argc, char** argv) {
     const char* public_endpoint = getenv("SNX_TEST_UDS_ROOM");
     int public_room = argc == 2 && !strcmp(argv[1], "--public");
@@ -272,16 +446,20 @@ int main(int argc, char** argv) {
         fprintf(stderr, "--public needs SNX_TEST_UDS_ROOM=host:port\n");
         return 2;
     }
+#ifndef _WIN32
+    captures_apart(); /* before any thread: these fork */
+    capture_lost_fd();
+#endif
     snprintf(g_settings.local_wireless, sizeof g_settings.local_wireless, "room");
     int delayed = argc == 2 && !strcmp(argv[1], "--delay");
     FakeRoom* room = public_room ? NULL : fake_room_start();
     if (delayed) fake_room_datagram_delay(room, 120);
     char endpoint[64];
     if (room) snprintf(endpoint, sizeof endpoint, "127.0.0.1:%u", fake_room_port(room));
-    env("SNX_3DS_ROOM", public_room ? public_endpoint : endpoint);
-    env("SNX_3DS_ROOM_PASSWORD", public_room ? "" : "secret");
+    snprintf(g_settings.eden_room, sizeof g_settings.eden_room, "%s", public_room ? public_endpoint : endpoint);
+    char* data = data_folder(public_room ? "" : "secret");
     uint32_t host_h, client_h;
-    SnxCtrProcess* host = process(&host_h, "UDS-Host");
+    SnxCtrProcess* host = process(&host_h, "Player");
     uint8_t network[264] = {0};
     network[6] = 11;
     network[16] = 0x12;
@@ -297,7 +475,7 @@ int main(int argc, char** argv) {
     bind_channel(host, host_h);
     Pump task = {.p = host};
     assert(!snx_net_thread(pump, &task));
-    SnxCtrProcess* client = process(&client_h, "UDS-Client");
+    SnxCtrProcess* client = process(&client_h, "Player");
     if (room) {
         char game_name[192];
         uint64_t game_id = UINT64_MAX;
@@ -479,7 +657,10 @@ int main(int argc, char** argv) {
     if (room) {
         fake_room_stop(room);
         join_failures();
+        old_variables();
     }
+    assert(!snx_remove_tree(data));
+    free(data);
     puts(
         "UDS: real IPC initialization, relay discovery, host/join, bidirectional packets, queue drain and disconnect passed");
     return 0;

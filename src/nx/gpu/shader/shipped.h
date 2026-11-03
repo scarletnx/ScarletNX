@@ -46,8 +46,10 @@ int shipped_sarc_wants(const u8* d, size_t n);
 int shipped_sph_stage(const u8* sph);
 /* a stage's name as the log says it (shipped_sph_stage's, SHIPPED_VERTEX_A included) */
 const char* shipped_stage_name(int stage);
-/* each program in d[0, n) to each, in order while it returns 0: its SPH, the bytes from there to the end of d, and
-   its stage (shipped_sph_stage's, SHIPPED_VERTEX_A included). Returns how many each took (returned 0 for) */
-typedef int (*ShippedEach)(void* ctx, const u8* sph, size_t avail, int stage);
+/* each program in d[0, n) to each, in order while it returns 0: its SPH, the bytes from there to the end of d, its
+   stage (shipped_sph_stage's, SHIPPED_VERTEX_A included), and its constants, the bytes the game's driver binds as
+   constant buffer 1 (the compiler's jump tables of BRX among them), when a BNSH's code record names its control
+   section (NULL and 0 otherwise). Returns how many each took (returned 0 for) */
+typedef int (*ShippedEach)(void* ctx, const u8* sph, size_t avail, int stage, const u8* consts, size_t nconsts);
 u32 shipped_programs(const u8* d, size_t n, ShippedEach each, void* ctx);
 #endif

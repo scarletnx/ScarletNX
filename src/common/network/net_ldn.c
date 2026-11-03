@@ -15,7 +15,10 @@
    lan_discovery.cpp sends them: a Scan to every member, answered with the host's NetworkInfo, a Connect with the
    station's node to the host, a SyncNetwork to every station whenever the network changes, a Disconnect from a
    station that leaves, a DestroyNetwork to each when the host closes it. The room's thread delivers them; there is
-   no thread here then */
+   no thread here then.
+
+   The log names a node by its number and address, never by its user_name: players attach the log to public reports,
+   and a nickname can name them */
 #include "common/network/net_ldn.h"
 #include "common/network/net_room.h"
 #include "common/network/net_internal.h"
@@ -281,7 +284,8 @@ static void station_sync(SnxLdn* l, const uint8_t* payload) {
     memcpy(&l->info, payload, sizeof l->info);
     note_changes(l, &before, &l->info);
     if (!l->connected)
-        snx_net_log("ldn: joined %s's network, %u of %u nodes", l->info.nodes[0].user_name, l->info.node_count,
+        snx_net_log("ldn: joined the network of the host at %u.%u.%u.%u, %u of %u nodes", l->info.nodes[0].ipv4[3],
+                    l->info.nodes[0].ipv4[2], l->info.nodes[0].ipv4[1], l->info.nodes[0].ipv4[0], l->info.node_count,
                     l->info.node_count_max);
     else if (before.node_count != l->info.node_count)
         snx_net_log("ldn: the network has %u nodes now", l->info.node_count);
@@ -337,9 +341,9 @@ static int frames_in(SnxLdn* l, uint8_t* rx, size_t* rxn, SnxSocket* s, int stat
                 st->node = i;
                 l->info.node_count = (uint8_t)(l->info.node_count + 1);
                 l->updates[i] |= SNX_LDN_NODE_CONNECT;
-                snx_net_log("ldn: %s joined as node %d from %u.%u.%u.%u, %u of %u nodes", l->info.nodes[i].user_name, i,
-                            l->info.nodes[i].ipv4[3], l->info.nodes[i].ipv4[2], l->info.nodes[i].ipv4[1],
-                            l->info.nodes[i].ipv4[0], l->info.node_count, l->info.node_count_max);
+                snx_net_log("ldn: node %d joined from %u.%u.%u.%u, %u of %u nodes", i, l->info.nodes[i].ipv4[3],
+                            l->info.nodes[i].ipv4[2], l->info.nodes[i].ipv4[1], l->info.nodes[i].ipv4[0],
+                            l->info.node_count, l->info.node_count_max);
                 sync_stations(l);
                 changed = 1;
             }
@@ -387,7 +391,7 @@ static void accept_station(SnxLdn* l) {
 /* the node a station held leaves the network */
 static void station_gone(SnxLdn* l, LdnStation* st) {
     if (st->node) {
-        snx_net_log("ldn: node %d (%s) left", st->node, l->info.nodes[st->node].user_name);
+        snx_net_log("ldn: node %d left", st->node);
         memset(&l->info.nodes[st->node], 0, sizeof(SnxLdnNodeInfo));
         l->info.nodes[st->node].node_id = (int8_t)st->node;
         l->info.node_count = (uint8_t)(l->info.node_count - 1);
@@ -423,8 +427,8 @@ static int room_station_in(SnxLdn* l, const uint8_t ip[4], const uint8_t* data) 
     l->info.nodes[i].is_connected = 1;
     if (fresh) {
         l->updates[i] |= SNX_LDN_NODE_CONNECT;
-        snx_net_log("ldn: %s joined as node %d from %u.%u.%u.%u, %u of %u nodes", l->info.nodes[i].user_name, i, ip[0],
-                    ip[1], ip[2], ip[3], l->info.node_count, l->info.node_count_max);
+        snx_net_log("ldn: node %d joined from %u.%u.%u.%u, %u of %u nodes", i, ip[0], ip[1], ip[2], ip[3],
+                    l->info.node_count, l->info.node_count_max);
     }
     sync_stations(l);
     return 1;

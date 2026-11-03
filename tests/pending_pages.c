@@ -47,7 +47,7 @@ void gmmu_pieces(u64 gva, u64 size, void (*fn)(void* ctx, u64 gva, u64 cpu, u64 
     for (u64 p = gva >> 12; p <= (gva + size - 1) >> 12 && p < GPU_PAGES; p++)
         if (gmmu[p] & 1) fn(ctx, p << 12, gmmu[p] & ~0xFFFull, 0x1000);
 }
-/* SNX_ALIAS_CHECK's warnings: pend_hit answered no where translating the range finds a result */
+/* gpu_page_check's warnings: pend_hit answered no where translating the range finds a result */
 static int warnings;
 void logf_(int level, const char* fmt, ...) {
     va_list ap;
@@ -76,8 +76,7 @@ int main(void) {
     /* tables that last, as the runtime's: none frees the leaves it makes */
     static PendPages tables[3];
     PendPages* t = &tables[0];
-    static char check_env[] = "SNX_ALIAS_CHECK=1"; /* every no is checked against the translated range */
-    putenv(check_env);
+    g_settings.gpu_page_check = 1;           /* every no is checked against the translated range */
     map(0x100000, 0x80000000ull, 0x10000);   /* 16 pages */
     map(0x400000, 0x80004000ull, 0x2000);    /* aliases pages 4 and 5 of the range above */
     map(0x600000, 0x90000000ull, 0x4000000); /* 64 MiB: crosses table leaves (16 MiB of guest pages each) */

@@ -1,5 +1,16 @@
 # Hooks
 
+## Index
+
+* [How a call reaches a hook](#how-a-call-reaches-a-hook)
+* [Declaring a hook](#declaring-a-hook)
+  * [Function types](#function-types)
+* [Versions](#versions)
+* [Struct layouts](#struct-layouts)
+* [Verify mode](#verify-mode)
+* [Checking a hook](#checking-a-hook)
+* [What the guest profile showed](#what-the-guest-profile-showed)
+
 A hook runs a function the game exports with a native handler of the runtime's instead of its recompiled code. The
 handlers are accelerators: each does what its function is known to do from reading the function's code, on the
 guest's own data as the function would leave it. They never copy or reference the SDK. A hook is installed when the
@@ -237,6 +248,11 @@ The `hooks` setting (`[Debug]`, on by default) turns every hook off, to tell whe
 log names each module's SDK version and each hooked function at startup (`hook: memcpy at ... runs hook_memmove`). A handler that wants to hand a
 case back to the function's own code calls `hook_original(addr)` with the CPU as the call left it. A hook is on by
 default only once it passes verify mode (or, for one that isn't pure, its recorded-input test).
+
+The `diag` family's hook only logs: each of the SDK's NN_ABORT overloads ends in `nn::diag::detail::VAbortImpl`, and its
+handler (`diag.c`) writes the condition, the SDK function, its file and line, the Result (and the error code it makes)
+and the message's format as the SDK passed them, then runs the function's own code through `hook_original`, which stops
+the game as it would (`tests/diag_abort.c`).
 
 ## What the guest profile showed
 

@@ -1,5 +1,15 @@
 # Block linear surfaces and texture conversions on the GPU
 
+## Index
+
+* [Where it is used](#where-it-is-used)
+* [The shaders](#the-shaders)
+  * [One shader each, not one per direction or format](#one-shader-each-not-one-per-direction-or-format)
+* [Multisampled surfaces](#multisampled-surfaces)
+* [Batches and barriers](#batches-and-barriers)
+* [Strips](#strips)
+* [Tests](#tests)
+
 Guest memory holds most surfaces in the GPU's block linear layout. ScarletNX moves them between that layout and the
 linear rows Vulkan's buffer copies take on the GPU, and converts the formats the host can't sample as they are there
 too. The CPU only copies guest memory into staging, and staging into guest memory, as whole ranges. It never takes a
@@ -105,6 +115,10 @@ A level bigger than the band (64 MiB, or the allocation cap when that is lower) 
   each block's piece of them is contiguous in it, so they are staged one block after another, which is the layout of a
   surface of one row of blocks `2^k` GOBs high. The shader moves that like any surface.
 
+A sparse texture's levels at least a tile wide, high and deep have rows of whole tiles (the header's tile width, word
+3 bits 10-12), more GOBs than their texels take. A move then carries the row's GOBs (`VkBlMove.gobs_x`), so its rows of
+blocks are as far apart as the guest's; the GOB-row strips stage only the GOBs that hold texels.
+
 Pitch linear levels are staged as whole rows, slices after another, when the guest's pitch suits the copy and the
 conversion. Otherwise each row is copied into rows that do.
 
@@ -118,7 +132,8 @@ conversion. Otherwise each row is copied into rows that do.
   depth, RGB32F, depth and stencil rows, and random ETC2, EAC and BCn blocks of every kind against `etc2.c` and
   `bcn.c` (`tests/support/`). `bcn_decode` checks `bcn.c` itself on blocks built by hand.
 - `tex_upload_rows` runs `texture.c` with a CPU model of the dispatches, which checks the barriers' order, and checks
-  every copied byte against the layout. It covers each strip mode and a converted format.
+  every copied byte against the layout. It covers each strip mode, a converted format, and a sparse texture's rows of
+  whole tiles.
 - `astc_vulkan` (with `SNX_TEST_VULKAN`, on lavapipe) runs the SPIR-V: moves both ways for a range of shapes, banded
   and by slice, a swizzle landed with `bl_land` over other memory, ASTC fed from block linear blocks, and conversions.
   Where the device samples BCn it also compares the device's own decoding of random BCn blocks with `bcn.c`: BC6H and

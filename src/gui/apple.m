@@ -18,9 +18,37 @@
 #include <mach/mach.h>
 #include <time.h>
 #import <Foundation/Foundation.h>
+#if TARGET_OS_IPHONE
+#import <UIKit/UIKit.h>
+#endif
 
 /* dist/apple/Frontend.swift. window is the SDL window's UIWindow or NSWindow; done gets the path picked, NULL for none */
 extern bool snx_apple_pick(void* window, bool folder, void (*done)(void* data, const char* path), void* data);
+/* plat_posix.c: the runtime's power watcher marks a change, which its main thread takes */
+extern void plat_power_mark_changed(void);
+/* plat_posix.c's weak watcher entry, which this file fills on iOS */
+int snx_apple_power_watch(void);
+
+/* the host's power source, for TV mode Auto: iOS's battery state notification. macOS's is plat_posix.c's IOKit one */
+#if TARGET_OS_IPHONE
+static id g_power_observer;
+int snx_apple_power_watch(void) {
+    if (g_power_observer) return 0;
+    UIDevice* device = UIDevice.currentDevice;
+    device.batteryMonitoringEnabled = YES;
+    g_power_observer = [NSNotificationCenter.defaultCenter addObserverForName:UIDeviceBatteryStateDidChangeNotification
+                                                                     object:nil
+                                                                      queue:nil
+                                                                 usingBlock:^(NSNotification* note) {
+        (void)note;
+        plat_power_mark_changed();
+    }];
+    return g_power_observer ? 0 : -1;
+}
+#else
+/* macOS: the watcher is plat_posix.c's, which the runtime links */
+int snx_apple_power_watch(void) { return -1; }
+#endif
 
 #if TARGET_OS_IPHONE
 extern size_t os_proc_available_memory(void); /* <os/proc.h>, which not every SDK header set declares the same way */

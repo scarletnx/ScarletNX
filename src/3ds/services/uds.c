@@ -28,6 +28,7 @@
 #define UDS_NETWORK   0xc8a113f8u
 static struct {
     char password[256], nickname[21];
+    unsigned said; /* the old variables room_open said, a bit each */
 } g_uds;
 void snx_ctr_uds_settings(const char* data) {
     g_uds.password[0] = g_uds.nickname[0] = 0;
@@ -35,15 +36,18 @@ void snx_ctr_uds_settings(const char* data) {
     char* settings = config ? snx_path_join(config, "settings.ini") : NULL;
     size_t size = 0;
     char* text = settings ? (char*)snx_read_file(settings, &size) : NULL;
+    char uid[64] = "", old[16] = ""; /* [User]'s user_uid, and the deprecated user's number it replaces */
+    int was;
     if (text) {
         SnxIni ini;
         char *key, *value;
         snx_ini_start(&ini, text);
         while (snx_ini_next(&ini, &key, &value)) {
-            if (!strcmp(ini.section, "User") && !strcmp(key, "user")) {
-                char* end = NULL;
-                long user = strtol(value, &end, 10);
-                if (*value && !*end && user >= 1 && user <= SNX_USERS_MAX) g_settings.user = (int)user;
+            if (!strcmp(ini.section, "User") && (!strcmp(key, "user_uid") || !strcmp(key, "user"))) {
+                if (key[4])
+                    snprintf(uid, sizeof uid, "%s", value);
+                else
+                    snprintf(old, sizeof old, "%s", value);
                 continue;
             }
             if (strcmp(ini.section, "Network")) continue;
@@ -61,7 +65,7 @@ void snx_ctr_uds_settings(const char* data) {
     free(config);
     char* users = snx_users_dir(data);
     char why[256];
-    if (users && !snx_users_load(users, g_settings.user, why, sizeof why)) {
+    if (users && !snx_users_choose(users, uid, uid[0] ? NULL : old, &was, why, sizeof why)) {
         const SnxUser* user = snx_users_selected();
         if (user) snprintf(g_uds.nickname, sizeof g_uds.nickname, "%.20s", user->nickname);
     }
@@ -128,9 +132,8 @@ static unsigned population(uint16_t m) {
     return n;
 }
 static void trace_packet(const SnxCtrProcess* p, const char* direction, const uint8_t* bytes, unsigned size) {
-    const char* enabled = getenv("SNX_3DS_UDS_PACKET_TRACE");
     (void)p;
-    if (!enabled || strcmp(enabled, "1")) return;
+    if (!g_settings.ctr_uds_trace) return;
     fprintf(stderr, "uds packet %s %.3f %u:", direction, snx_ctr_now_ns() / 1000000.0, size);
     for (unsigned i = 0; i < size && i < 96; ++i) fprintf(stderr, "%02x", bytes[i]);
     fputc('\n', stderr);
@@ -455,9 +458,21 @@ void snx_ctr_uds_poll(SnxCtrProcess* p) {
         fprintf(stderr, "3ds uds: peer timed out\n");
     }
 }
+/* The variables an older version read for the room, its password and the nickname (docs/DEPRECATIONS.md), still read
+   for this version, each said once a run. Removed with tests/architecture.py's ENV_DEPRECATED rows */
+enum { OLD_ROOM = 1, OLD_PASSWORD = 2, OLD_NICKNAME = 4 };
+static int old_said(unsigned which) {
+    int first = !(g_uds.said & which);
+    g_uds.said |= which;
+    return first;
+}
 static int room_open(SnxCtrProcess* p) {
     struct SnxCtrUds* u = p->uds;
     const char* room = getenv("SNX_3DS_ROOM");
+    if (room && *room && old_said(OLD_ROOM))
+        snx_error("3ds uds: SNX_3DS_ROOM=%s is deprecated, replaced by the room of the launcher's Network settings "
+                  "(\"%s\" there): this run joins %s (docs/DEPRECATIONS.md)",
+                  room, g_settings.eden_room, room);
     if (!room || !*room) room = g_settings.eden_room;
     if (!*room) {
         fprintf(stderr, "3ds uds: select an Eden room in Network settings before enabling room wireless\n");
@@ -484,7 +499,21 @@ static int room_open(SnxCtrProcess* p) {
         if (RAND_bytes((unsigned char*)&random, 4) != 1) return 0;
         snprintf(nickname, sizeof nickname, "%.11s-%08x", g_uds.nickname[0] ? g_uds.nickname : "Player", random);
     }
+    /* its length, never the nickname: it can name the player, and players attach the log to public reports */
+    if (name && old_said(OLD_NICKNAME)) {
+        if (strcmp(name, nickname))
+            snx_error("3ds uds: SNX_3DS_NICKNAME is deprecated, with nothing in its place, and has %zu bytes, not 4 to "
+                      "20: this run joins as the user's nickname and a random suffix, as later ones do "
+                      "(docs/DEPRECATIONS.md)",
+                      strlen(name));
+        else
+            snx_error("3ds uds: SNX_3DS_NICKNAME is deprecated, with nothing in its place: this run joins as its "
+                      "value, later ones as the user's nickname and a random suffix (docs/DEPRECATIONS.md)");
+    }
     const char* password = getenv("SNX_3DS_ROOM_PASSWORD");
+    if (password && old_said(OLD_PASSWORD))
+        snx_error("3ds uds: SNX_3DS_ROOM_PASSWORD is deprecated, replaced by room_password in users/online.ini: this "
+                  "run joins with its value, not online.ini's (docs/DEPRECATIONS.md)");
     int why = 0;
     /* The room's title metadata is Switch-specific. Its unknown-title sentinel
        permits a 3DS name without sending an invalid Switch title ID. Actual UDS
@@ -509,7 +538,8 @@ static int room_open(SnxCtrProcess* p) {
         snx_socket_setsockopt(u->socket, SNX_SOL_SOCKET, SNX_SO_BROADCAST, &enabled, 4) ||
         snx_socket_bind(u->socket, &a))
         return 0;
-    fprintf(stderr, "3ds uds: joined relay as %s, %u.%u.%u.%u\n", nickname, u->ip[0], u->ip[1], u->ip[2], u->ip[3]);
+    /* by its address in the room: the nickname can name the player, and players attach the log to public reports */
+    fprintf(stderr, "3ds uds: joined the relay as %u.%u.%u.%u\n", u->ip[0], u->ip[1], u->ip[2], u->ip[3]);
     return 1;
 }
 static int passphrase(SnxCtrIpc* c, unsigned id, uint32_t size, uint8_t hash[32]) {

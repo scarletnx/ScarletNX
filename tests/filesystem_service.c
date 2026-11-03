@@ -22,6 +22,7 @@
 
 /* Including the production file exposes its service constructors without test hooks in the runtime. */
 #include "nx/hle/filesystem/fs.c"
+#include "common/utilities/mii_model.h"
 #include "nx/hle/hle.c"
 #include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 
@@ -165,7 +166,8 @@ void own_acquire(u64 addr, u64 size) { (void)addr, (void)size; }
 /* platform/plat_posix.c: no page here is protected for the write tracking */
 void plat_ww_open(u8* p, u64 size) { (void)p, (void)size; }
 void plat_ww_close(u8* p, u64 size) { (void)p, (void)size; }
-static char test_fs_text[1024]; /* the last warning of fs.c's own, "fs: ..." */
+static char test_fs_text[1024];    /* the last warning of fs.c's own, "fs: ..." */
+static char test_romfs_text[1024]; /* the last warning about the RomFS, "RomFS: ..." */
 void logf_(int level, const char* format, ...) {
     char text[1024];
     va_list args;
@@ -177,6 +179,7 @@ void logf_(int level, const char* format, ...) {
         snprintf(test_left_text, sizeof test_left_text, "%s", text);
     }
     if (!level && !strncmp(text, "fs: ", 4)) snprintf(test_fs_text, sizeof test_fs_text, "%s", text);
+    if (!level && !strncmp(text, "RomFS: ", 7)) snprintf(test_romfs_text, sizeof test_romfs_text, "%s", text);
 }
 /* options.c's: the game's settings, where the runtime read them */
 const char* ini_file(void) { return "config/Game.ini"; }
@@ -836,25 +839,22 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
         svcobj_unref(ngword);
     }
 
-    /* MiiModel (0100000000000802), with none in system/archives: a stand-in of the six resource files, each a magic
-       (NFTR for the textures, NFSR for the shapes), version 1 and each part kind's largest size and alignment; every
-       texture entry names one blank 8 by 8 image and every shape entry one degenerate triangle, each a stored zlib
-       block past the tables: a game that composes a Mii's face gets textures to compose, none null */
+    /* MiiModel (0100000000000802), with none in system/archives: the archive mii_model.c generates (its parts are
+       checked in mii_model), made at the first open and not before; its six files, a Linear and an SRGB copy and the
+       two shape qualities sharing their bytes */
     {
-        static const char* const names[6] = {"NXTextureLowLinear.dat", "NXTextureLowSRGB.dat", "NXTextureMidLinear.dat",
-                                             "NXTextureMidSRGB.dat",   "ShapeMid.dat",         "ShapeHigh.dat"};
-        static const u8 formats[11] = {4, 8, 8, 10, 10, 10, 1, 8, 8, 9, 1};
-        static const u16 counts[11] = {132, 62, 24, 2, 12, 12, 20, 2, 37, 6, 18};
-        static u8 file[0x15000];
+        static u8 file[0x280000];
         Request a;
         unsigned i;
+        u64 at[6];
+        CHECK(g_hle.fs.miimodelrom_size == 0);
         request(&a, 202);
         argument64(&a, 8, 0x0100000000000802ull);
         dispatch(proxy, &a, 0);
         CHECK(a.c.nout_objs == 1);
         SvcObj* model = a.c.out_objs[0];
         u64 model_size = get_size(model);
-        CHECK(model_size > 4 * 0x263b + 2 * 0x14e0b && model_size <= 0x34000);
+        CHECK(model_size == g_hle.fs.miimodelrom_size && model_size <= sizeof g_hle.fs.miimodelrom);
         test_storage_contracts(model, model_size);
         /* the RomFS header and tables, then each file read whole in pieces the test's guest memory holds */
         u8 tables[0x400];
@@ -868,14 +868,20 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
         memcpy(header, tables, sizeof header);
         snx_le64_array(header, 10);
         CHECK(header[0] == 0x50 && header[9] <= sizeof tables && header[9] < model_size);
-        for (i = 0; i < 6; i++) {
-            u32 entry = romfs_find(tables, header, 0, 0, names[i]), kinds = i < 4 ? 11 : 12, k, n, e;
+        for (i = 0; i < SNX_MII_MODEL_FILES; i++) {
+            char name[32];
+            u32 entry;
             u64 offset, size, done;
+            snx_mii_model_name(i, name);
+            entry = romfs_find(tables, header, 0, 0, name);
             CHECK(entry != UINT32_MAX);
             offset = snx_ld_le64(tables + header[7] + entry + 8);
             size = snx_ld_le64(tables + header[7] + entry + 16);
-            CHECK(size == (i < 4 ? 0x263bu : 0x14e0bu) && header[9] + offset + size <= model_size);
-            for (done = 0; done < size; done += 0x8000) {
+            at[i] = offset;
+            CHECK(size == snx_mii_model_write(i, NULL) && size <= sizeof file &&
+                  header[9] + offset + size <= model_size);
+            CHECK(snx_mii_model_same(i) == i || at[snx_mii_model_same(i)] == offset);
+            for (done = 0; done < size && size <= sizeof file; done += 0x8000) {
                 u64 len = size - done < 0x8000 ? size - done : 0x8000;
                 request(&a, 0);
                 argument64(&a, 0, header[9] + offset + done);
@@ -884,29 +890,7 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
                 dispatch(model, &a, 0);
                 memcpy(file + done, GP(0x5000), (size_t)len);
             }
-            CHECK(!memcmp(file, i < 4 ? "NFTR\1\0\0\0" : "NFSR\1\0\0\0", 8));
-            for (k = 0; k < kinds; k++) /* each kind's largest part and its alignment: the model's pool, never 0 */
-                CHECK(snx_ld_le32(file + 0xc + 4 * k) == 0x1000 && snx_ld_le32(file + 0xc + 4 * (kinds + k)) == 0x1000);
-            if (i < 4) { /* 327 texture entries, each the 8 by 8 image at 0x2430 in its kind's format */
-                for (k = 0, e = 0; k < 11; k++)
-                    for (n = 0; n < counts[k]; n++, e++) {
-                        const u8* t = file + 0x64 + 0x1c * e;
-                        CHECK(snx_ld_le32(t) == 0x2430 && snx_ld_le32(t + 4) == 0x200 && snx_ld_le32(t + 8) == 0x20b &&
-                              snx_ld_le32(t + 0x10) == 0x200 && snx_ld_le16(t + 0x14) == 8 &&
-                              snx_ld_le16(t + 0x16) == 8 && t[0x18] == 1 && t[0x19] == formats[k]);
-                    }
-                CHECK(e == 327 && !memcmp(file + 0x2430, "\x78\x01\x01\x00\x02\xff\xfd", 7) &&
-                      !memcmp(file + 0x2430 + 7 + 0x200, "\x02\x00\x00\x01", 4));
-                for (n = 0; n < 0x200; n++) CHECK(file[0x2430 + 7 + n] == 0);
-            } else { /* 857 shape entries, each the one triangle at 0x14de0 */
-                for (e = 0; e < 857; e++) {
-                    const u8* t = file + 0x6c + 0x58 * e;
-                    CHECK(snx_ld_le32(t) == 0x14de0 && snx_ld_le32(t + 4) == 0x20 && snx_ld_le32(t + 8) == 0x2b &&
-                          snx_ld_le32(t + 36) == 8 && snx_ld_le32(t + 56) == 0x10 && snx_ld_le32(t + 60) == 6);
-                }
-                CHECK(!memcmp(file + 0x14de0, "\x78\x01\x01\x20\x00\xdf\xff", 7) &&
-                      !memcmp(file + 0x14de0 + 7 + 0x20, "\x00\x20\x00\x01", 4));
-            }
+            CHECK(!memcmp(file, i < 4 ? "NFTR\1\0\0\0" : "NFSR\1\0\0\0", 8) && snx_ld_le32(file + 8) == size);
         }
         svcobj_unref(model);
     }
@@ -1146,16 +1130,37 @@ static blob_t dump_npdm(void) {
     b.data[0x40] = 0x2A; /* told apart from a blank one */
     return b;
 }
-static void dump_write(int source) {
+/* synthetic keys, never a console's: a header_key (dump_header_key as bytes, its XTS halves apart as OpenSSL requires)
+   and key area keys up to master key 19 */
+#define DUMP_SECRET "0123456789abcdef0123456789abcdef"
+static const char dump_keys[] = "header_key = " DUMP_SECRET "fedcba9876543210fedcba9876543210\n"
+                                "key_area_key_application_00 = " DUMP_SECRET "\n"
+                                "key_area_key_application_13 = " DUMP_SECRET "\n";
+static const unsigned char dump_header_key[32] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+                                                  0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+                                                  0x32, 0x10, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10};
+/* how dump_write_nsp makes the dump: whole; its program NCA encrypted with master key 20, past what
+   dump-data/prod.keys (dump_keys) has; its RomFS behind a compression table that lists 0x20 bytes past what it stores,
+   or 64 MiB of zeros past its image (bigger than the dump, and whole); or the file cut 1024 bytes short of its table */
+enum { DUMP_WHOLE, DUMP_SEALED, DUMP_ROMFS_CUT, DUMP_ROMFS_ZEROS, DUMP_CUT_SHORT };
+static u64 dump_table_end; /* where the NSP's table puts its last file's end */
+static void dump_write_nsp(int source, int kind) {
     blob_t code = {zalloc(sizeof dump_code - 1), sizeof dump_code - 1}, asset = {zalloc(sizeof dump_asset - 1), 0};
     blob_t meta = dump_npdm(), nsp;
     asset.size = sizeof dump_asset - 1;
     memcpy(code.data, dump_code, code.size);
     memcpy(asset.data, dump_asset, asset.size);
     romfs_file_t exefs[2] = {{"main.npdm", meta}, {"main", code}}, romfs[1] = {{"asset.bin", asset}};
-    romfs_file_t ncas[1] = {
-        {"program.nca", dnca_build(NCACONTENTTYPE_PROGRAM, 0x0100000000AB0000ULL, exefs, 2, romfs, 1)}};
+    romfs_file_t ncas[1] = {{"program.nca", dnca_build_romfs(NCACONTENTTYPE_PROGRAM, 0x0100000000AB0000ULL, exefs, 2,
+                                                             romfs, 1, kind == DUMP_ROMFS_CUT ? 0x20 : 0,
+                                                             kind == DUMP_ROMFS_ZEROS ? 64ull << 20 : 0)}};
+    if (kind == DUMP_SEALED) {
+        nca_encrypt(&ncas[0].content, dump_header_key, 20);
+        CHECK(!snx_mkdirs("dump-data") && !snx_write_file("dump-data/prod.keys", dump_keys, sizeof dump_keys - 1));
+    }
     nsp = partition_build(MAGIC_PFS0, ncas, 1, 0x200);
+    dump_table_end = pfs0_files_end(nsp.data);
+    if (kind == DUMP_CUT_SHORT) nsp.size = (size_t)dump_table_end - 1024;
     CHECK(!snx_mkdirs("dump-data/Game_data") && !snx_write_file("dump-data/Game.nsp", nsp.data, nsp.size));
     if (source)
         CHECK(!snx_write_file("dump-data/Game.source", "no dump", 7));
@@ -1167,6 +1172,10 @@ static void dump_write(int source) {
     free(asset.data);
     free(meta.data);
 }
+static void dump_write(int source) { dump_write_nsp(source, DUMP_WHOLE); }
+/* the error lines the dump's reading says (snx_error_sink), the last in test_error_text */
+static char test_error_text[2048];
+static void test_error_line(const char* line) { snprintf(test_error_text, sizeof test_error_text, "%s", line); }
 static void test_dump(SvcObj* proxy) {
     blob_t meta = dump_npdm();
     PFileMap map;
@@ -1899,6 +1908,151 @@ static void test_save_data(SvcObj* proxy) {
         "refused, IsSdCardAccessible and the access log's program index");
 }
 
+/* path on the host is a file */
+static int host_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (f) fclose(f);
+    return f != NULL;
+}
+/* a file at path on the host, made with its folders */
+static void host_put(const char* path) {
+    char* folder = snx_strdup(path);
+    *strrchr(folder, '/') = 0;
+    CHECK(!snx_mkdirs(folder));
+    free(folder);
+    FILE* f = fopen(path, "wb");
+    CHECK(f && fwrite("save", 1, 4, f) == 4 && !fclose(f));
+}
+/* save_layout (fs.c's save_folder): global keeps a save in the data folder's save/, apart from the game, as the
+   console does (user.<uid>/<title ID>, device/<title ID>, bcat/<title ID>, cache/<title ID>/<index>); a save only the
+   other layout holds is played where it is, said once; both holding one stops the game, which keeps both. Temporary
+   storage and a program with no title ID of its own stay the game's. Each folder there at startup is grafted then,
+   and one made later is made with nothing enumerated */
+static void test_save_layout(SvcObj* proxy) {
+    char *root = snx_absolute("../../layout-saves"), path[2048];
+    jmp_buf jump;
+    Request r;
+    SvcObj* save;
+    FsNode* node;
+#define TITLE "0100000000010000"
+    snprintf(path, sizeof path, "%s/user.0123456789abcdeffedcba9876543210/" TITLE "/kept.bin", root);
+    host_put(path);
+    snprintf(path, sizeof path, "%s/bcat/" TITLE "/b.bin", root);
+    host_put(path);
+    save = open_save_data(proxy, 51, 2); /* the game's own BCAT save, which has a file now: two of it */
+    fs_command(save, 0, "/p.bin", 4, 0);
+    svcobj_unref(save);
+    pm_lock(&g_hle.fs.tree.lock);
+    CHECK(!fs_tree_remove(&g_hle.fs.tree, NULL, "save/user", 1, 1, 0)); /* test_save_data's two first-user saves */
+    pm_unlock(&g_hle.fs.tree.lock);
+    g_user_count = 2;
+    memcpy(g_users[0].uid, g_user_id, sizeof g_users[0].uid);
+    memcpy(g_users[1].uid, test_other_user, sizeof g_users[1].uid);
+    strcpy(g_settings.save_layout, "global");
+    test_scans_allowed = 1;
+    fs_saves_init(root);
+    test_scans_allowed = 0;
+    pm_lock(&g_hle.fs.tree.lock);
+    CHECK(!fs_tree_lookup(&g_hle.fs.tree, NULL, "global-user.0123456789abcdeffedcba9876543210/kept.bin", &node));
+    CHECK(fs_tree_lookup(&g_hle.fs.tree, NULL, "global-device", &node) == FS_TREE_NOTFOUND);
+    pm_unlock(&g_hle.fs.tree.lock);
+    /* the first user's: in both, the game's own (test_save_data's) and the global one, so the game stops */
+    save_request(&r, 51, 1, g_user_id);
+    test_fatal_text[0] = 0;
+    test_fatal_jump = &jump;
+    if (!setjmp(jump)) {
+        dispatch(proxy, &r, 0);
+        CHECK(!"two saves of one user's did not stop the game");
+    }
+    test_fatal_jump = NULL;
+    CHECK(strstr(test_fatal_text, "Two saves of this game's user save") && strstr(test_fatal_text, FIRST_SAVE) &&
+          strstr(test_fatal_text, "layout-saves/user.0123456789abcdeffedcba9876543210/" TITLE));
+    /* with the game's own moved out, the global one */
+    pm_lock(&g_hle.fs.tree.lock);
+    CHECK(!fs_tree_remove(&g_hle.fs.tree, NULL, FIRST_SAVE, 1, 1, 0));
+    pm_unlock(&g_hle.fs.tree.lock);
+    save = open_user_save(proxy, g_user_id);
+    fs_command(save, 7, "/kept.bin", 0, 0);
+    fs_command(save, 0, "/new.bin", 4, 0);
+    svcobj_unref(save);
+    snprintf(path, sizeof path, "%s/user.0123456789abcdeffedcba9876543210/" TITLE "/new.bin", root);
+    CHECK(host_file(path) && !tree_has(FIRST_SAVE));
+    /* another user's, only in the game's own folder: played there, said once with where it goes */
+    test_fs_text[0] = 0;
+    save = open_user_save(proxy, test_other_user);
+    fs_command(save, 7, "/other-user.bin", 0, 0);
+    svcobj_unref(save);
+    CHECK(strstr(test_fs_text, OTHER_SAVE) && strstr(test_fs_text, "save_layout=global keeps in") &&
+          strstr(test_fs_text, "layout-saves/user.04040404040404040404040404040404/" TITLE));
+    snprintf(path, sizeof path, "%s/user.04040404040404040404040404040404", root);
+    CHECK(!snx_is_dir(path));
+    test_fs_text[0] = 0;
+    save = open_user_save(proxy, test_other_user);
+    svcobj_unref(save);
+    CHECK(!test_fs_text[0]);
+    /* the Device save, in neither (the game's own empty): made in the global folder, nothing enumerated */
+    save = open_save_data(proxy, 51, 3);
+    fs_command(save, 0, "/d.bin", 4, 0);
+    svcobj_unref(save);
+    snprintf(path, sizeof path, "%s/device/" TITLE "/d.bin", root);
+    CHECK(host_file(path) && !tree_has("save/device/d.bin"));
+    /* cache storage, by its index */
+    save_request(&r, 51, 5, NULL);
+    snx_st_le16(r.raw + 0x2a, 3); /* the attribute's index, at 0x22 in it */
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.nout_objs == 1);
+    fs_command(r.c.out_objs[0], 0, "/c.bin", 4, 0);
+    svcobj_unref(r.c.out_objs[0]);
+    snprintf(path, sizeof path, "%s/cache/" TITLE "/3/c.bin", root);
+    CHECK(host_file(path));
+    /* BCAT in both: the game stops, and keeps both */
+    save_request(&r, 51, 2, NULL);
+    test_fatal_text[0] = 0;
+    test_fatal_jump = &jump;
+    if (!setjmp(jump)) {
+        dispatch(proxy, &r, 0);
+        CHECK(!"two BCAT saves did not stop the game");
+    }
+    test_fatal_jump = NULL;
+    CHECK(strstr(test_fatal_text, "Two saves of this game's bcat save") && tree_has("save/bcat/p.bin"));
+    snprintf(path, sizeof path, "%s/bcat/" TITLE "/b.bin", root);
+    CHECK(host_file(path));
+    /* temporary storage is the game's */
+    save = open_save_data(proxy, 51, 4);
+    svcobj_unref(save);
+    CHECK(tree_has("save/temp"));
+    /* save_layout=game: the game's own, and a save only the global folder holds played there, said */
+    strcpy(g_settings.save_layout, "game");
+    test_fs_text[0] = 0;
+    save = open_save_data(proxy, 51, 3);
+    fs_command(save, 7, "/d.bin", 0, 0);
+    svcobj_unref(save);
+    CHECK(strstr(test_fs_text, "save_layout=game keeps in") && strstr(test_fs_text, "save/device"));
+    /* a program with no title ID of its own: every save its own folder's */
+    strcpy(g_settings.save_layout, "global");
+    g_hle.kernel.title_id = SNX_NPDM_DEFAULT_TITLE;
+    save = open_save_data(proxy, 51, 5);
+    fs_command(save, 0, "/homebrew.bin", 4, 0);
+    svcobj_unref(save);
+    CHECK(tree_has("save/cache/homebrew.bin"));
+    g_hle.kernel.title_id = 0x0100000000010000ull;
+    /* fs_user_saves_take, DeleteUser's: the folders of a user's saves, out of the index and their host paths */
+    {
+        char paths[2][FS_TREE_PATH_MAX];
+        int n = fs_user_saves_take(g_user_id, paths, 2);
+        CHECK(n == 1 && strstr(paths[0], "layout-saves/user.0123456789abcdeffedcba9876543210") &&
+              !tree_has("global-user.0123456789abcdeffedcba9876543210"));
+        n = fs_user_saves_take(test_other_user, paths, 2);
+        CHECK(n == 1 && strstr(paths[0], OTHER_SAVE) && !tree_has(OTHER_SAVE) && snx_is_dir(paths[0]));
+    }
+    g_user_count = 0;
+    g_settings.save_layout[0] = 0;
+    g_host.fs.save_root[0] = 0;
+    free(root);
+#undef TITLE
+    puts("PASS save_layout: global's folders, game's, a save played where it is, two of one refused");
+}
+
 static void cleanup_service(void) {
     pm_lock(&g_hle.fs.tree.lock);
     for (unsigned i = 0; i < NOPEN; i++)
@@ -1976,6 +2130,122 @@ int main(int argc, char** argv) {
         cleanup_service();
         free(g_mem);
         printf("PASS %u add-on checks\n", test_checks);
+        return 0;
+    }
+    /* a dump whose program NCA needs master key 20 and a keys file that goes up to 19: the game stops before reading
+       it, naming both and the keys file, where it would read garbage and miss its modules */
+    if (argc == 4 && !strcmp(argv[3], "dump-keys")) {
+        jmp_buf jump;
+        char *keys, *named;
+        dump_write_nsp(0, DUMP_SEALED);
+        keys = snx_absolute("dump-data/prod.keys");
+        named =
+            snx_format("and %s goes up to master key 19 (firmware 20.0.0 and later): it needs the keys of a console "
+                       "with master key 20, on its firmware or a later one",
+                       keys);
+        strcpy(g_datadir, "dump-data/Game_data/");
+        snx_error_sink(test_error_line);
+        test_fatal_text[0] = 0;
+        test_fatal_jump = &jump;
+        if (!setjmp(jump)) {
+            fs_init("dump-data/prod.keys", NULL);
+            CHECK(!"a dump its keys can't read did not stop the game");
+        }
+        test_fatal_jump = NULL;
+        snx_error_sink(NULL);
+        if (!strstr(test_error_text, named)) fprintf(stderr, "said: %s\nfatal: %s\n", test_error_text, test_fatal_text);
+        CHECK(!strcmp(
+            test_fatal_text,
+            "A dump the game reads in place needs keys its keys file does not have: the line before says which"));
+        CHECK(strstr(test_error_text, "The game's Program NCA is encrypted with master key 20 (a firmware newer than "
+                                      "20.0.0), and ") == test_error_text);
+        CHECK(strstr(test_error_text, named) != NULL);
+        CHECK(g_hle.fs.dfs == NULL); /* nothing read out of it */
+        free(named);
+        free(keys);
+        free(g_mem);
+        printf("PASS %u checks: a dump its keys file stops short of names the master key it needs and the file\n",
+               test_checks);
+        return 0; /* the fatal left the tree locked: nothing more of it */
+    }
+    /* a dump whose file is cut short of its table: the game stops at start, naming both sizes, where the dump could
+       not be mapped */
+    if (argc == 4 && !strcmp(argv[3], "dump-cut")) {
+        jmp_buf jump;
+        char has[32], needs[32], *said;
+        dump_write_nsp(1, DUMP_CUT_SHORT);
+        strcpy(g_settings.game_dump, "dump-data/Game.nsp");
+        strcpy(g_datadir, "dump-data/Game_data/");
+        snx_size_text(dump_table_end - 1024, has, sizeof has);
+        snx_size_text(dump_table_end, needs, sizeof needs);
+        said = snx_format("dump-data/Game.nsp is %s (%llu bytes), and its table puts its files up to %s (%llu bytes): "
+                          "the dump is incomplete, 1024 bytes short. Copy or dump it again",
+                          has, (unsigned long long)(dump_table_end - 1024), needs, (unsigned long long)dump_table_end);
+        snx_error_sink(test_error_line);
+        test_fatal_jump = &jump;
+        if (!setjmp(jump)) {
+            fs_init(NULL, NULL);
+            CHECK(!"a dump cut short did not stop the game");
+        }
+        test_fatal_jump = NULL;
+        snx_error_sink(NULL);
+        if (strcmp(test_error_text, said)) fprintf(stderr, "said:     %s\nexpected: %s\n", test_error_text, said);
+        CHECK(!strcmp(test_error_text, said));
+        CHECK(strstr(test_fatal_text, "the line before says why") != NULL && g_hle.fs.dfs == NULL);
+        free(said);
+        free(g_mem);
+        printf("PASS %u checks: a dump cut short says so at start, with its size and its table's\n", test_checks);
+        return 0; /* the fatal left the tree locked: nothing more of it */
+    }
+    /* a dump whose RomFS can't be read to its end (its compression table lists 0x20 bytes past what it stores): said at
+       start with the image's size and the dump's, and still where the game reads there. One whose image is far bigger
+       than the dump, all of it there (zeros past its files), is said nothing of */
+    if (argc == 4 && (!strcmp(argv[3], "dump-romfs-cut") || !strcmp(argv[3], "dump-romfs-zeros"))) {
+        int cut = !strcmp(argv[3], "dump-romfs-cut");
+        Request r;
+        SvcObj *proxy, *storage;
+        char image[32], mapped[32], *said;
+        dump_write_nsp(0, cut ? DUMP_ROMFS_CUT : DUMP_ROMFS_ZEROS);
+        strcpy(g_datadir, "dump-data/Game_data/");
+        fs_init(NULL, NULL);
+        test_scans_allowed = 0;
+        svc_fs_init();
+        romfs_init();
+        CHECK(g_hle.fs.dfs != NULL && g_hle.fs.rtotal > 0x50);
+        snx_size_text(g_hle.fs.rtotal, image, sizeof image);
+        snx_size_text(g_hle.fs.dmap.size, mapped, sizeof mapped);
+        said = snx_format("RomFS: the dump's image is %s, and its last byte, at %llx, can't be read from the dump's %s "
+                          "(hactool: Storage read out of range (0x",
+                          image, (unsigned long long)(g_hle.fs.rtotal - 1), mapped);
+        if (cut && strncmp(test_romfs_text, said, strlen(said)))
+            fprintf(stderr, "said:     %sexpected: %s...\n", test_romfs_text, said);
+        CHECK(cut ? !strncmp(test_romfs_text, said, strlen(said)) &&
+                        strstr(test_romfs_text, "!): the dump is incomplete or damaged\n") != NULL
+                  : !test_romfs_text[0] && g_hle.fs.rtotal > snx_file_size("dump-data/Game.nsp"));
+        /* the image's last 0x10 bytes as the game reads them: the read's own warning, or zeros */
+        proxy = new_fsp();
+        request(&r, 200);
+        dispatch(proxy, &r, 0);
+        CHECK(r.c.nout_objs == 1);
+        storage = r.c.out_objs[0];
+        request(&r, 0);
+        argument64(&r, 0, g_hle.fs.rtotal - 0x10);
+        argument64(&r, 8, 0x10);
+        output_buffer(&r, 0x10);
+        test_romfs_text[0] = 0;
+        dispatch(storage, &r, cut ? FS_OUT_OF_RANGE : 0);
+        free(said);
+        said = snx_format("RomFS: could not read the dump at %llx (10 bytes): the game gets zeros\n",
+                          (unsigned long long)(g_hle.fs.rtotal - 0x10));
+        CHECK(cut ? !strcmp(test_romfs_text, said) : !test_romfs_text[0]);
+        free(said);
+        svcobj_unref(storage);
+        svcobj_unref(proxy);
+        CHECK(test_objects == 0);
+        cleanup_service();
+        free(g_mem);
+        printf("PASS %u checks: a dump's RomFS %s\n", test_checks,
+               cut ? "that can't be read to its end is said at start" : "bigger than the dump, all there, is not");
         return 0;
     }
     /* a game read from its dump that finds none: where it looked, its .ini and the link an older version made */
@@ -2064,6 +2334,7 @@ int main(int argc, char** argv) {
     test_virtual_services(fs, proxy);
     test_extracted_romfs(proxy);
     test_save_data(proxy);
+    test_save_layout(proxy);
     test_state_temp(proxy);
     test_notifiers_and_program_index(proxy);
     svcobj_unref(fs);

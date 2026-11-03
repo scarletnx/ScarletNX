@@ -22,6 +22,17 @@ i64 plat_tz_offset(void) {
     if (!SDL_GetCurrentTime(&t) || !SDL_TimeToDateTime(t, &dt, true)) return 0;
     return (i64)dt.utc_offset;
 }
+/* SDL_GetPowerInfo reads the host's battery and charger on every platform SDL supports. Only a host on its battery
+   is not on its charger; a state it doesn't know (or cannot read) is -1, which TV mode Auto takes as On */
+int plat_power_on_charger(void) {
+    switch (SDL_GetPowerInfo(NULL, NULL)) {
+    case SDL_POWERSTATE_ON_BATTERY: return 0;
+    case SDL_POWERSTATE_NO_BATTERY:
+    case SDL_POWERSTATE_CHARGING:
+    case SDL_POWERSTATE_CHARGED: return 1;
+    default: return -1;
+    }
+}
 /* a thread's own high-resolution waitable timer on Windows, nanosleep elsewhere */
 void plat_sleep_ns(i64 ns) {
     if (ns <= 0)

@@ -46,7 +46,7 @@ target_link_libraries(snx_vita_program PUBLIC snx_arm_llvm snx_llvm)
 target_compile_definitions(snx_vita_program PRIVATE _CRT_SECURE_NO_WARNINGS)
 # The backend checked against Unicorn as the game runs (runtime/lockstep.h), for debugging the AArch32 backend: Unicorn's
 # headers and library (its Python package's libunicorn.so.2 will do) where the build is told
-option(SNX_VITA_LOCKSTEP "Check the Vita's AArch32 code against Unicorn while it runs (VITA_LOCKSTEP=import call)" OFF)
+option(SNX_VITA_LOCKSTEP "Check the Vita's AArch32 code against Unicorn while it runs (--vita_lockstep=N)" OFF)
 if(SNX_VITA_LOCKSTEP)
     find_path(SNX_UNICORN_INCLUDE unicorn/unicorn.h REQUIRED)
     find_library(SNX_UNICORN_LIBRARY NAMES unicorn libunicorn.so.2 REQUIRED)

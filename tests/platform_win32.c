@@ -1,15 +1,22 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The Windows platform layer's written-page tracking (platform/plat_win32.c): the reservation's write watch reports
-   the pages written since the last scan, the kernel's writes (ReadFile into guest memory) among them, and SNX_NO_WW
-   must make the scan say -1 */
+   the pages written since the last scan, the kernel's writes (ReadFile into guest memory) among them, and
+   write_tracking=2 must make the scan say -1. write_tracking=1 has no Windows version: the watch tracks, said once.
+   The arguments: the folder for its files, then Debug settings as the runtime takes them, --key=value */
 #include "nx/runtime/platform/plat_win32.c"
+#include "nx/runtime/ini.h"
 #include <stdarg.h>
 #include <stdio.h>
 
+static char g_log[1024]; /* the log's lines, as far as they fit */
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
+    size_t n = strlen(g_log);
     (void)lvl;
+    va_start(ap, fmt);
+    vsnprintf(g_log + n, sizeof g_log - n, fmt, ap);
+    va_end(ap);
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
@@ -62,11 +69,44 @@ int main(int argc, char** argv) {
     FILE* f;
 
     setvbuf(stdout, NULL, _IONBF, 0);
+    for (int i = 2; i < argc; i++) {
+        const char* eq = strchr(argv[i], '=');
+        char key[64];
+        if (strncmp(argv[i], "--", 2) || !eq || (size_t)(eq - argv[i] - 2) >= sizeof key) {
+            printf("not --key=value: %s\n", argv[i]);
+            return 2;
+        }
+        snprintf(key, sizeof key, "%.*s", (int)(eq - argv[i] - 2), argv[i] + 2);
+        if (!ini_find(g_debug_ini, key)) {
+            printf("not a Debug setting: %s\n", argv[i]);
+            return 2;
+        }
+        ini_read(ini_find(g_debug_ini, key), eq + 1);
+    }
+    printf("host_page\n");
+    {
+        int given = g_settings.host_page_size;
+        g_settings.host_page_size = 65536;
+        CHECK(plat_vm_page() == 65536, "host_page=65536 is not the page");
+        g_log[0] = 0;
+        g_settings.host_page_size = 12288;
+        CHECK(plat_vm_page() == 4096, "host_page=12288 is taken");
+        CHECK(!strcmp(g_log, "memory: host_page=12288 is not a power of two from the host's page, 4096 bytes, to "
+                             "1048576: the runtime works in 4096-byte pages\n"),
+              "host_page's refusal does not name the value given and the page in effect");
+        g_settings.host_page_size = given;
+    }
     printf("written-page tracking\n");
     g_base = plat_vm_reserve((u64)1 << 30);
     CHECK(g_base != NULL, "no reservation");
+    g_log[0] = 0;
+    plat_vm_track(g_base, (u64)1 << 30);
+    if (g_settings.write_tracking == 1)
+        CHECK(!strcmp(g_log, "memory: write_tracking=1 (page protection) has no Windows version: the reservation's "
+                             "write watch tracks writes, as write_tracking=0 does\n"),
+              "write_tracking=1 is not said with the tracking in effect");
     CHECK(!plat_vm_commit(g_base, 64 * 4096), "commit failed");
-    if (getenv("SNX_NO_WW")) {
+    if (g_settings.write_tracking == 2) {
         CHECK(scan() == ~0ull, "a scan without tracking did not fail");
     } else {
         scan();
