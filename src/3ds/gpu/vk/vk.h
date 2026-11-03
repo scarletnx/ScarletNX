@@ -35,6 +35,7 @@ typedef struct {
     VkPhysicalDeviceProperties properties;
     VkPhysicalDeviceMemoryProperties memory_properties;
     bool index8, logic_op; /* VK_EXT_index_type_uint8; the logicOp feature */
+    bool dma_buf; /* VK_EXT_external_memory_dma_buf: the board RAM as a udmabuf where host import fails */
     bool clip_distance;    /* shaderClipDistance */
     bool preserve_infnan;  /* shaderSignedZeroInfNanPreserveFloat32: the generated shaders keep infinities and NaNs */
     bool import_host;      /* VK_EXT_external_memory_host */

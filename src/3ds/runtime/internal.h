@@ -122,6 +122,7 @@ typedef struct {
 typedef struct {
     uint32_t shared_object;              /* CTR_OBJ_SHARED backing the 0x1000 block */
     uint32_t thread_mask, rights_thread; /* the session object holding the GPU right, 0xffffffff: none */
+    uint32_t relay_thread;               /* the registered relay queue the process triggers, 0xffffffff: none */
     uint32_t first_registration;         /* one genuine FirstInitialization reply */
     uint32_t lcd_black, frame_seq, vblank_count;
     uint32_t event_object[CTR_GSP_THREADS]; /* registered interrupt events (retained) */

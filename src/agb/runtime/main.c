@@ -14,6 +14,8 @@
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/script.h"
+#include "nx/runtime/ini.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -133,6 +135,19 @@ static int save_read(AgbBoard* board, const char* path) {
     return 1;
 }
 
+/* the game's settings from its .ini into g_settings, as the other drivers do: every key of the tables the build made */
+static void read_settings(const char* ini) {
+    for (int i = 0; i < g_ini_sections_count; ++i)
+        for (int j = 0; j < 3 && g_ini_sections[i].table[j]; ++j)
+            for (const IniOpt* o = g_ini_sections[i].table[j]; o->key; ++o) {
+                char* value = snx_ini_value(ini, o->key);
+                if (value) {
+                    ini_read(o, value);
+                    free(value);
+                }
+            }
+}
+
 /* the board's save memory, its kind's size, to path: 0, else -1 with a line saying why */
 static int save_write(AgbBoard* board, const char* path) {
     char why[256];
@@ -241,6 +256,7 @@ int snx_agb_main(int argc, char** argv) {
             return 1;
         }
         path = rom;
+        if (ini) read_settings(ini);
         agb_board_init(&board);
         if (agb_board_insert(&board, image, length, error, sizeof error)) {
             fprintf(stderr, "scarletnx-agb: %s: %s\n", path, error);

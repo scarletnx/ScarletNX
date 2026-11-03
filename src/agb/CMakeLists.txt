@@ -26,8 +26,10 @@ target_compile_options(scarletnx-agb PRIVATE -Wall -Wextra -Werror)
 
 # the runner: the board in a window, with sound and the keypad (runtime/host.c), SDL here and never in the board. Its
 # command line goes beside every GBA game (recompiled/<name>/<name>, its .ini saying system=gba)
-add_library(snx_agb_program STATIC runtime/host.c runtime/main.c)
-target_link_libraries(snx_agb_program PUBLIC scarletnx-agb SDL3::SDL3 snx_window_icon)
+include("${PROJECT_SOURCE_DIR}/cmake/keybind.cmake")
+add_library(snx_agb_program STATIC runtime/host.c runtime/main.c runtime/vk.c "${volk_SOURCE_DIR}/volk.c")
+target_link_libraries(snx_agb_program PUBLIC scarletnx-agb SDL3::SDL3 snx_window_icon snx_vk_common snx_settings_runtime snx_keybind Vulkan::Headers ${CMAKE_DL_LIBS})
+target_include_directories(snx_agb_program PUBLIC "${volk_SOURCE_DIR}")
 set_target_properties(snx_agb_program PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
 set(SNX_AGB_PROGRAM "${PROJECT_BINARY_DIR}/scarletnx-agb${CMAKE_EXECUTABLE_SUFFIX}") # what the tests run
 

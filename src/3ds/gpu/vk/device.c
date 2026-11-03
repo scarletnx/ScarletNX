@@ -10,6 +10,47 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#if defined(__linux__)
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
+
+
+#if defined(__linux__)
+/* a dma-buf over the board's memfd, for a driver whose host pointer import refuses a file-backed mapping (RADV at
+   present). The kernel's udmabuf driver pins the pages, and the dma-buf is imported as external memory instead. */
+struct snx_udmabuf_create {
+    uint32_t memfd;
+    uint32_t flags;
+    uint64_t offset;
+    uint64_t size;
+};
+#define SNX_UDMABUF_CREATE _IOW('u', 0x42, struct snx_udmabuf_create)
+static int udmabuf_create(int memfd, uint64_t size) {
+    int control = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
+    int fd;
+    if (control < 0) {
+        fprintf(stderr, "3ds gpu: udmabuf: open: %s\n", strerror(errno));
+        return -1;
+    }
+    {
+        struct snx_udmabuf_create create = {(uint32_t)memfd, 0, 0, size};
+        fd = ioctl(control, SNX_UDMABUF_CREATE, &create);
+    }
+    close(control);
+    if (fd < 0) fprintf(stderr, "3ds gpu: udmabuf: ioctl(%d, %llu): %s\n", memfd, (unsigned long long)size,
+                        strerror(errno));
+    return fd;
+}
+#else
+static int udmabuf_create(int memfd, uint64_t size) {
+    (void)memfd;
+    (void)size;
+    return -1;
+}
+#endif
 
 static struct {
     SnxCtrVk vk;
@@ -29,7 +70,7 @@ bool snx_ctr_vk_window(uint32_t pa, uint64_t size, SnxCtrVkWindow* w, uint32_t* 
     if (!ram) return false;
     VkDeviceSize alignment = v->properties.limits.minStorageBufferOffsetAlignment;
     VkDeviceSize start = offset / alignment * alignment;
-    VkDeviceSize range = ram->size - start;
+    VkDeviceSize range = ram->size - (offset - ram->buffer_offset);
     if (range > v->properties.limits.maxStorageBufferRange) range = v->properties.limits.maxStorageBufferRange;
     if (offset - start + size > range) return false;
     *w = (SnxCtrVkWindow){ram->buffer, start, range};
@@ -59,6 +100,14 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     if (v->host.surface || v->second_surface) {
         ok = ok && snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+        if (snx_vk_extensions_has(&list, VK_EXT_HDR_METADATA_EXTENSION_NAME))
+            extensions[n++] = VK_EXT_HDR_METADATA_EXTENSION_NAME;
+    }
+    bool dma_buf = snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME) &&
+                   snx_vk_extensions_has(&list, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+    if (dma_buf) {
+        extensions[n++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
+        extensions[n++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
     }
     bool index8 = snx_vk_extensions_has(&list, VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME);
     if (index8) extensions[n++] = VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME;
@@ -104,6 +153,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     v->phys = phys;
     v->family = family;
     v->index8 = index8 && index_features.indexTypeUint8;
+    v->dma_buf = dma_buf;
     v->logic_op = features.features.logicOp;
     v->clip_distance = features.features.shaderClipDistance;
     v->import_host = host;
@@ -513,7 +563,7 @@ const SnxCtrVkRam* snx_ctr_vk_ram(uint32_t pa, uint32_t size, VkDeviceSize* offs
     for (unsigned i = 0; i < v->ram_count; ++i) {
         const SnxCtrVkRam* r = &v->ram[i];
         if (pa >= r->base && (uint64_t)pa - r->base + size <= r->size) {
-            *offset = pa - r->base;
+            *offset = r->buffer_offset + (pa - r->base);
             return r;
         }
     }

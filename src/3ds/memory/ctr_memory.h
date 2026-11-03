@@ -25,6 +25,8 @@ typedef bool (*SnxCtrMmioRead)(void* context, uint32_t physical, void* bytes, si
 typedef bool (*SnxCtrMmioWrite)(void* context, uint32_t physical, const void* bytes, size_t size);
 SnxCtrMemory* snx_ctr_memory_new(SnxCtrModel model);
 const SnxCtrProfile* snx_ctr_memory_profile(const SnxCtrMemory* memory);
+/* the host object's file descriptor, for a driver that imports it as a dma-buf; -1 when it has none */
+int snx_ctr_memory_fd(const SnxCtrMemory* memory);
 /* Address spaces must be destroyed first. No internal locking: caller serializes
    mappings/accesses/devices. Physical RAM is shared by all spaces on this board. */
 void snx_ctr_memory_free(SnxCtrMemory* memory);

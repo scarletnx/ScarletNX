@@ -12,12 +12,14 @@
    from its render target while the GPU keeps that newer than memory. */
 #include "3ds/gpu/present.h"
 #include "3ds/input/input.h"
+#include "common/gpu/vk/present_fx.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/shaders/present_spv.h"
 #include "3ds/gpu/vk/vk_transfer.h"
 #include "3ds/gpu/vk/vk_y2r.h"
 #include "3ds/gpu/vk/vk_render.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/keybind.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
@@ -36,6 +38,7 @@ typedef struct {
     VkImageLayout layout;   /* where the last command recorded on it left it */
     unsigned width, height; /* landscape */
     unsigned scale;         /* the render scale it shows: 1 is the console's */
+    SnxFxImage fx;          /* the upscaled and anti aliased image of this screen, when the effects run */
 } Frame;
 static struct {
     SnxCtrVkCompute decode;
@@ -45,6 +48,16 @@ static struct {
     VkDeviceMemory readback_memory;
     unsigned char* readback_view;
     SnxVkSwapchain swap[2]; /* the combined window's, or each screen's own */
+    VkImageView swap_views[2][SNX_VK_SWAP_IMAGES];
+    VkSwapchainKHR swap_views_for[2];
+    SnxFx* fx[2];            /* each screen's effects, a context of its own so their frame slots stay apart */
+    int display_kind[2];
+    int headroom_pct[2];
+    /* the SDR window image the pair is composed in before the HDR passes (source/upscale first, then the whole pair) */
+    VkImage mix[2];
+    VkDeviceMemory mix_memory[2];
+    VkImageView mix_view[2];
+    uint32_t mix_width[2], mix_height[2];
     /* each submission slot's: a slot is free again only once its submission is done, and so are they */
     VkSemaphore acquire[2][SNX_CTR_VK_SLOTS], presented[2][SNX_CTR_VK_SLOTS];
     const char* frame_dir;
@@ -65,27 +78,140 @@ static VkSurfaceKHR screen_surface(unsigned screen) {
     const SnxCtrVk* v = snx_ctr_vk();
     return g_present.separate ? (screen ? v->second_surface : v->host.surface) : v->host.surface;
 }
+/* the image the window takes: an HDR one where the settings and the surface allow it, else the SDR formats */
+static int choose_display(unsigned window, VkFormat* format, VkColorSpaceKHR* space) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    VkSurfaceKHR surface = screen_surface(window);
+    static const VkFormat hdr_formats[] = {VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_FORMAT_A2R10G10B10_UNORM_PACK32};
+    static const VkFormat scrgb_formats[] = {VK_FORMAT_R16G16B16A16_SFLOAT};
+    VkSurfaceFormatKHR f = {0};
+    int mode = g_present.fx[window] ? snx_fx_hdr_mode(g_present.fx[window]) : snx_fx_hdr_parse(g_settings.hdr);
+    int cs = snx_fx_colorspace_parse(g_settings.hdr_colours);
+    int kind = SNX_FX_DISPLAY_NONE;
+    if (!surface || mode == SNX_FX_HDR_OFF) return SNX_FX_DISPLAY_NONE;
+    if (cs == SNX_FX_CS_AUTO || cs == SNX_FX_CS_P3) {
+        if (snx_vk_surface_format_cs(v->phys, surface, scrgb_formats, 1, VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT, &f))
+            kind = SNX_FX_DISPLAY_P3;
+        else if (cs == SNX_FX_CS_P3)
+            return SNX_FX_DISPLAY_NONE;
+    }
+    if (kind == SNX_FX_DISPLAY_NONE && (cs == SNX_FX_CS_AUTO || cs == SNX_FX_CS_SCRGB)) {
+        if (snx_vk_surface_format_cs(v->phys, surface, scrgb_formats, 1, VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, &f))
+            kind = SNX_FX_DISPLAY_SCRGB;
+        else if (cs == SNX_FX_CS_SCRGB)
+            return SNX_FX_DISPLAY_NONE;
+    }
+    if (kind == SNX_FX_DISPLAY_NONE &&
+        snx_vk_surface_format_cs(v->phys, surface, hdr_formats, 2, VK_COLOR_SPACE_HDR10_ST2084_EXT, &f))
+        kind = SNX_FX_DISPLAY_PQ;
+    if (kind == SNX_FX_DISPLAY_NONE) return SNX_FX_DISPLAY_NONE;
+    if (mode == SNX_FX_HDR_AUTO && kind != SNX_FX_DISPLAY_PQ) return SNX_FX_DISPLAY_NONE;
+    *format = f.format;
+    *space = f.colorSpace;
+    return kind;
+}
+static void swap_views_free(unsigned window) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    for (uint32_t i = 0; i < SNX_VK_SWAP_IMAGES; ++i)
+        if (g_present.swap_views[window][i]) vkDestroyImageView(v->device, g_present.swap_views[window][i], NULL);
+    memset(g_present.swap_views[window], 0, sizeof g_present.swap_views[window]);
+    g_present.swap_views_for[window] = VK_NULL_HANDLE;
+}
 /* a window's swapchain, made anew for its size */
 static bool swap_create(unsigned screen) {
     const SnxCtrVk* v = snx_ctr_vk();
     SDL_Window* window = screen_window(screen);
     VkSurfaceKHR surface = screen_surface(screen);
+    VkFormat hdr_format = VK_FORMAT_UNDEFINED;
+    VkColorSpaceKHR hdr_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     if (!window || !surface) return false;
     static const VkFormat formats[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+    int kind = choose_display(screen, &hdr_format, &hdr_space);
     VkExtent2D fallback =
         g_present.separate ? (screen ? (VkExtent2D){640, 480} : (VkExtent2D){800, 480}) : (VkExtent2D){600, 720};
-    SnxVkSwapchainInfo info = {.surface = surface,
-                               .formats = formats,
-                               .format_count = sizeof formats / sizeof *formats,
-                               .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                               .window = snx_vk_window_extent(&v->host, fallback)};
+    SnxVkSwapchainInfo info = {
+        .surface = surface,
+        .formats = kind != SNX_FX_DISPLAY_NONE ? &hdr_format : formats,
+        .format_count = kind != SNX_FX_DISPLAY_NONE ? 1 : (uint32_t)(sizeof formats / sizeof *formats),
+        .color_space = kind != SNX_FX_DISPLAY_NONE ? hdr_space : VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .window = snx_vk_window_extent(&v->host, fallback)};
     if (window != v->host.window) { /* the second window's own size */
         int width = 0, height = 0;
         info.window = SDL_GetWindowSizeInPixels(window, &width, &height) && width > 0 && height > 0
                           ? (VkExtent2D){(uint32_t)width, (uint32_t)height}
                           : fallback;
     }
-    return snx_vk_swapchain_make(v->phys, v->device, &info, &g_present.swap[screen]);
+    g_present.display_kind[screen] = kind;
+    g_present.headroom_pct[screen] =
+        kind != SNX_FX_DISPLAY_NONE
+            ? snx_clamp_int(g_settings.hdr_peak * 100 / g_settings.hdr_paper_white, 100, 1000)
+            : 100;
+    if (g_present.fx[screen])
+        snx_fx_set_display(g_present.fx[screen], kind, g_present.headroom_pct[screen]);
+    if (g_present.swap_views_for[screen]) {
+        vkDeviceWaitIdle(v->device);
+        swap_views_free(screen);
+    }
+    if (!snx_vk_swapchain_make(v->phys, v->device, &info, &g_present.swap[screen])) return false;
+    /* the SDR image is only blitted into; the HDR encode draws into the window's image, which needs a view */
+    if (kind != SNX_FX_DISPLAY_NONE) {
+        for (uint32_t i = 0; i < g_present.swap[screen].count; ++i) {
+            VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                        .image = g_present.swap[screen].images[i],
+                                        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                        .format = g_present.swap[screen].format.format,
+                                        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+            if (vkCreateImageView(v->device, &vi, NULL, &g_present.swap_views[screen][i]) != VK_SUCCESS) {
+                swap_views_free(screen);
+                return false;
+            }
+        }
+        g_present.swap_views_for[screen] = g_present.swap[screen].swapchain;
+    }
+    return true;
+}
+/* the SDR image the pair is composed in before the HDR passes, at the window's image size */
+static bool mix_image(unsigned window, uint32_t width, uint32_t height) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    if (g_present.mix[window] && g_present.mix_width[window] == width && g_present.mix_height[window] == height)
+        return true;
+    vkDeviceWaitIdle(v->device);
+    if (g_present.mix_view[window]) vkDestroyImageView(v->device, g_present.mix_view[window], NULL);
+    if (g_present.mix[window]) vkDestroyImage(v->device, g_present.mix[window], NULL);
+    if (g_present.mix_memory[window]) vkFreeMemory(v->device, g_present.mix_memory[window], NULL);
+    g_present.mix[window] = VK_NULL_HANDLE, g_present.mix_memory[window] = VK_NULL_HANDLE,
+    g_present.mix_view[window] = VK_NULL_HANDLE;
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = VK_FORMAT_R8G8B8A8_UNORM,
+                            .extent = {width, height, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                     VK_IMAGE_USAGE_SAMPLED_BIT};
+    if (vkCreateImage(v->device, &ii, NULL, &g_present.mix[window]) != VK_SUCCESS) return false;
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(v->device, g_present.mix[window], &req);
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                               .allocationSize = req.size,
+                               .memoryTypeIndex = snx_ctr_vk_memory_type(req.memoryTypeBits,
+                                                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
+    if (ai.memoryTypeIndex == UINT32_MAX) ai.memoryTypeIndex = snx_ctr_vk_memory_type(req.memoryTypeBits, 0);
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                .image = g_present.mix[window],
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(v->device, &ai, NULL, &g_present.mix_memory[window]) !=
+                                                VK_SUCCESS ||
+        vkBindImageMemory(v->device, g_present.mix[window], g_present.mix_memory[window], 0) != VK_SUCCESS ||
+        vkCreateImageView(v->device, &vi, NULL, &g_present.mix_view[window]) != VK_SUCCESS)
+        return false;
+    g_present.mix_width[window] = width, g_present.mix_height[window] = height;
+    return true;
 }
 static bool frame_make(Frame* f, unsigned width, unsigned height, unsigned scale) {
     const SnxCtrVk* v = snx_ctr_vk();
@@ -97,7 +223,7 @@ static bool frame_make(Frame* f, unsigned width, unsigned height, unsigned scale
                             .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     if (vkCreateImage(v->device, &ii, NULL, &f->image) != VK_SUCCESS) return false;
@@ -149,6 +275,24 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     const SnxCtrVk* v = snx_ctr_vk();
     g_present.frame_dir = frame_dir;
     g_present.separate = g_settings.ctr_separate_screens && v->second && v->second_surface;
+    for (unsigned i = 0; i < 2; ++i) {
+        g_present.fx[i] = snx_fx_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, SNX_CTR_VK_SLOTS,
+                                        snx_ctr_vk_slot, NULL, NULL);
+        if (g_present.fx[i]) {
+            SnxFxConfig cfg = {snx_fx_upscale_parse(g_settings.upscaler),
+                               g_settings.sharpness,
+                               snx_fx_aa_parse(g_settings.anti_aliasing),
+                               snx_fx_hdr_parse(g_settings.hdr),
+                               snx_fx_colorspace_parse(g_settings.hdr_colours),
+                               snx_fx_source_parse(g_settings.hdr_source),
+                               g_settings.hdr_paper_white,
+                               g_settings.hdr_peak,
+                               g_settings.hdr_expansion,
+                               g_settings.hdr_test_pattern};
+            snx_fx_configure(g_present.fx[i], &cfg);
+            snx_fx_set_fp16(g_present.fx[i], 0);
+        }
+    }
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = (VkDeviceSize)MAX_SIDE * MAX_SIDE * 4,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -316,10 +460,41 @@ static void pointer_event(const SDL_Event* event) {
             break;
     }
 }
+/* the live keys the settings name: the upscaler, the anti aliasing and HDR. A press is taken, a repeat included, so
+   the game never sees it. */
+static int hotkey_event(const SDL_KeyboardEvent* e) {
+    SnxKeybind bind;
+    if (snx_keybind_parse(g_settings.upscaler_cycle_key, &bind) && snx_keybind_match(&bind, e)) {
+        if (!e->repeat && g_present.fx[0]) {
+            int f = snx_fx_upscale_cycle(g_present.fx[0]);
+            if (g_present.fx[1]) snx_fx_upscale_cycle(g_present.fx[1]);
+            printf("upscaler: %s (%s)\n", snx_fx_upscale_label(f), g_settings.upscaler_cycle_key);
+        }
+        return 1;
+    }
+    if (snx_keybind_parse(g_settings.anti_aliasing_key, &bind) && snx_keybind_match(&bind, e)) {
+        if (!e->repeat && g_present.fx[0]) {
+            int aa = snx_fx_aa_cycle(g_present.fx[0]);
+            if (g_present.fx[1]) snx_fx_aa_cycle(g_present.fx[1]);
+            printf("anti aliasing: %s (%s)\n", snx_fx_aa_label(aa), g_settings.anti_aliasing_key);
+        }
+        return 1;
+    }
+    if (snx_keybind_parse(g_settings.hdr_key, &bind) && snx_keybind_match(&bind, e)) {
+        if (!e->repeat && g_present.fx[0]) {
+            int hdr = snx_fx_hdr_toggle(g_present.fx[0]);
+            if (g_present.fx[1]) snx_fx_hdr_toggle(g_present.fx[1]);
+            printf("hdr: %s (%s)\n", snx_fx_hdr_label(hdr), g_settings.hdr_key);
+        }
+        return 1;
+    }
+    return 0;
+}
 static void pump(void) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) g_present.closed = 1;
+        if (event.type == SDL_EVENT_KEY_DOWN && hotkey_event(&event.key)) continue;
         pointer_event(&event);
         snx_ctr_input_event(&event); /* the gamepads connected and gone */
     }
@@ -346,27 +521,92 @@ static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, 
 /* The window's picture: in one window the top screen above the bottom one, which is centred under it (400 and 320
    pixels wide, 240 high), the pair scaled as one to fit the swapchain's image and centred in it, the rest black; in
    separate windows this screen alone, scaled to fit and centred. */
-static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen) {
-    image_barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+static void show_screens(VkCommandBuffer cb, VkImage target, VkImageView target_view, unsigned screen) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    unsigned window = g_present.separate ? screen : 0;
+    VkExtent2D extent = g_present.swap[window].extent;
+    int hdr = g_present.fx[window] && g_present.display_kind[window] != SNX_FX_DISPLAY_NONE &&
+              snx_fx_hdr_active(g_present.fx[window]);
+    VkImage dst = target;
+    if (hdr) {
+        if (!mix_image(window, extent.width, extent.height))
+            hdr = 0;
+        else
+            dst = g_present.mix[window];
+    }
+    image_barrier(cb, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkClearColorValue black = {.float32 = {0, 0, 0, 1}};
     VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+    vkCmdClearColorImage(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
     /* the blits below overwrite the clear's pixels: their writes must wait for it */
-    image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    image_barrier(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     for (unsigned i = 0; i < 2; ++i) {
         if (g_present.separate && i != screen) continue;
         Frame* f = &g_present.frames[i];
         VkOffset2D rect[2];
+        VkImage src_image;
+        VkImageView src_view;
+        uint32_t src_width, src_height;
         /* a screen not drawn yet stays black */
         if (!f->image || f->layout == VK_IMAGE_LAYOUT_UNDEFINED || !screen_rect(i, rect)) continue;
-        image_barrier(cb, f->image, f->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        f->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                            .srcOffsets = {{0, 0, 0}, {(int32_t)f->width, (int32_t)f->height, 1}},
+        uint32_t tw = (uint32_t)(rect[1].x - rect[0].x), th = (uint32_t)(rect[1].y - rect[0].y);
+        src_image = f->image, src_view = f->view, src_width = f->width, src_height = f->height;
+        if (g_present.fx[i] && tw && th && f->width && f->height) {
+            int filter, aa;
+            image_barrier(cb, f->image, f->layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            f->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            filter = snx_fx_pick_filter(g_present.fx[i], f->width, f->height, tw, th, 0);
+            aa = snx_fx_pick_aa(g_present.fx[i], snx_fx_aa_parse(g_settings.anti_aliasing), f->width, f->height, tw, th,
+                                v->properties.limits.maxImageDimension2D);
+            if (snx_fx_render(g_present.fx[i], cb, f->view, f->width, f->height, 0, 0, f->width, f->height, 0, tw, th,
+                              filter, aa, &f->fx)) {
+                src_image = f->fx.image;
+                src_view = f->fx.view;
+                src_width = f->fx.width;
+                src_height = f->fx.height;
+            } else {
+                image_barrier(cb, f->image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                f->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            }
+        } else {
+            image_barrier(cb, f->image, f->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            f->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        }
+        {
+            VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .srcOffsets = {{0, 0, 0}, {(int32_t)src_width, (int32_t)src_height, 1}},
+                                .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .dstOffsets = {{rect[0].x, rect[0].y, 0}, {rect[1].x, rect[1].y, 1}}};
+            vkCmdBlitImage(cb, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+        }
+    }
+    if (hdr) {
+        SnxFxImage comp = {0};
+        image_barrier(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (snx_fx_hdr_compose(g_present.fx[window], cb, g_present.mix_view[window], VK_FORMAT_R8G8B8A8_UNORM,
+                               extent.width, extent.height, 0, 0, extent.width, extent.height, 0, extent.width,
+                               extent.height, 0, 0, extent.width, extent.height, &comp)) {
+            if (g_settings.hdr_test_pattern) snx_fx_hdr_test(g_present.fx[window], cb, &comp);
+            if (snx_fx_hdr_encode(g_present.fx[window], cb, &comp, target, target_view,
+                                  g_present.swap[window].format.format, extent.width, extent.height,
+                                  snx_fx_encode_kind(g_present.fx[window]))) {
+                image_barrier(cb, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+                return;
+            }
+        }
+        /* the HDR passes could not run: the composited SDR pair is blitted instead */
+        image_barrier(cb, dst, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        image_barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        vkCmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+        image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageBlit full = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                            .srcOffsets = {{0, 0, 0}, {(int32_t)extent.width, (int32_t)extent.height, 1}},
                             .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                            .dstOffsets = {{rect[0].x, rect[0].y, 0}, {rect[1].x, rect[1].y, 1}}};
-        vkCmdBlitImage(cb, f->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       1, &blit, VK_FILTER_NEAREST);
+                            .dstOffsets = {{0, 0, 0}, {(int32_t)extent.width, (int32_t)extent.height, 1}}};
+        vkCmdBlitImage(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                       &full, VK_FILTER_NEAREST);
     }
     image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
@@ -381,6 +621,12 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
         return false;
     const SnxCtrVk* v = snx_ctr_vk();
     Frame* f = &g_present.frames[screen];
+    {
+        unsigned window = g_present.separate ? screen : 0;
+        if (g_present.swap_views_for[window] && g_present.fx[window] &&
+            snx_fx_hdr_active(g_present.fx[window]) != (g_present.display_kind[window] != SNX_FX_DISPLAY_NONE))
+            swap_create(window);
+    }
     /* A render target the GPU has not stored is the frame at its render scale: the shader reads it instead of the
        framebuffer, whose pixels it has not written yet */
     VkImageView source = g_present.source_dummy.view;
@@ -457,7 +703,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     }
     if (show) {
         g_present.bottom_alone = 0;
-        show_screens(cb, g_present.swap[window_index].images[index], screen);
+        show_screens(cb, g_present.swap[window_index].images[index], g_present.swap_views[window_index][index], screen);
     }
     /* submitted, waited for only when the host reads the frame (a dump, a test's hash) */
     bool ok = true;
@@ -493,8 +739,15 @@ void snx_ctr_present_free(void) {
     if (!g_present.up) return;
     const SnxCtrVk* v = snx_ctr_vk();
     vkDeviceWaitIdle(v->device);
-    for (unsigned screen = 0; screen < 2; ++screen)
+    for (unsigned screen = 0; screen < 2; ++screen) {
+        swap_views_free(screen);
         if (g_present.swap[screen].swapchain) swap_destroy(screen);
+        if (g_present.fx[screen]) snx_fx_destroy(g_present.fx[screen]);
+        g_present.fx[screen] = NULL;
+        if (g_present.mix_view[screen]) vkDestroyImageView(v->device, g_present.mix_view[screen], NULL);
+        if (g_present.mix[screen]) vkDestroyImage(v->device, g_present.mix[screen], NULL);
+        if (g_present.mix_memory[screen]) vkFreeMemory(v->device, g_present.mix_memory[screen], NULL);
+    }
     for (unsigned i = 0; i < 2; ++i) frame_free(&g_present.frames[i]);
     frame_free(&g_present.source_dummy);
     for (unsigned screen = 0; screen < 2; ++screen)
