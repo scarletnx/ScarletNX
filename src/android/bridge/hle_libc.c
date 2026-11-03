@@ -5,6 +5,7 @@
    differ between bionic on AArch64 and the host's C library have their own adapters here or in hle_posix.c */
 #define _GNU_SOURCE
 #include "android/bridge/args.h"
+#include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
 #include <ctype.h>
@@ -131,6 +132,31 @@ static void nothing(CPU* c, void* data) {
 static void zero(CPU* c, void* data) {
     (void)data;
     X(0) = 0;
+}
+
+/* ---- qsort and bsearch: the host's, with a comparator that calls the guest's ---- */
+
+/* the guest comparator of this thread's sort or search: saved and restored, so a comparator can sort too */
+static _Thread_local uint64_t guest_compare;
+
+static int compare_guest(const void* a, const void* b) {
+    const uint64_t args[2] = {(uint64_t)(uintptr_t)a, (uint64_t)(uintptr_t)b};
+    return (int32_t)bridge_call(guest_compare, args, 2);
+}
+static void g_qsort(CPU* c, void* data) {
+    (void)data;
+    uint64_t saved = guest_compare;
+    guest_compare = X(3);
+    qsort(PTR(0), (size_t)X(1), (size_t)X(2), compare_guest);
+    guest_compare = saved;
+}
+static void g_bsearch(CPU* c, void* data) {
+    (void)data;
+    uint64_t saved = guest_compare;
+    guest_compare = X(4);
+    void* found = bsearch(PTR(0), PTR(1), (size_t)X(2), (size_t)X(3), compare_guest);
+    guest_compare = saved;
+    X(0) = (uint64_t)(uintptr_t)found;
 }
 
 /* ---- the stack protector, assertions, aborts ---- */
@@ -532,6 +558,8 @@ const HleSymbol hle_libc[] = {
     {"__system_property_get", system_property_get, NULL},
     /* the C++ runtime's hooks */
     {"__cxa_atexit", cxa_atexit, NULL},
+    {"qsort", g_qsort, NULL},
+    {"bsearch", g_bsearch, NULL},
     {"__cxa_finalize", nothing, NULL},
     {"__cxa_thread_atexit_impl", zero, NULL},
     {"__register_atfork", zero, NULL},
@@ -582,7 +610,7 @@ const HleSymbol hle_libc[] = {
     P(memchr), P(memcmp), P(memcpy), P(memmove), P(memset), P(strcasecmp), P(strcat), P(strchr), P(strcmp),
     P(strcoll), P(strcpy), P(strcspn), P(strdup), P(strerror), P(strlen), P(strncasecmp), P(strncat), P(strncmp),
     P(strncpy), P(strpbrk), P(strrchr), P(strsep), P(strspn), P(strstr), P(strtok), P(strtok_r), P(strtol),
-    P(strtoll), P(strtoul), P(strtoull), P(atoi), P(atol), P(atoll), P(bsearch),
+    P(strtoll), P(strtoul), P(strtoull), P(atoi), P(atol), P(atoll),
     PH(strlcpy, hle_strlcpy), PH(strerror_r, hle_strerror_r), PH(basename, hle_basename),
     P(wcslen), P(wmemchr), P(wmemcmp), P(wmemcpy), P(mbrlen), P(mbrtowc), P(mbsnrtowcs), P(mbsrtowcs), P(mbtowc),
     P(wcrtomb), P(wcsnrtombs),
