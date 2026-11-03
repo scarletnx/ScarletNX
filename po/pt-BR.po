@@ -1681,6 +1681,10 @@ msgid "its dump is not known: the game was made before the recompile named it"
 msgstr ""
 
 #: src/gui/main.c
+msgid "not known"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "%s is not there yet"
 msgstr ""
@@ -3084,10 +3088,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "GPU: %s. Recommended: %s."
-msgstr ""
-
-#: src/gui/main.c
-msgid "not known"
 msgstr ""
 
 #: src/gui/main.c

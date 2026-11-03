@@ -9335,9 +9335,20 @@ int main(int argc, char** argv) {
                 free(game);
             }
             { /* its box's Open Folder: the game's folders a row each, on every system; one not known or not there
-                 greyed, and pressed it says why and opens nothing; Back goes back to the box's rows, at Open Folder */
-                char why[1024], *saves = snx_path_join(dirs[0], "save"), want[2048];
+                 greyed, and pressed it says why and opens nothing; Back goes back to the box's rows, at Open Folder.
+                 Saves is the user playing's where the game's run keeps them: with save_layout=global (the default) in
+                 save/user.<uid>/<title ID> of the data folder the game is in, else the user's (as here), the game's own
+                 save/ while only that is there (an older version's, played there until moved) */
+                char why[1024], want[2048], *saves, *root, *every, *url;
+                char *own_saves = snx_path_join(dirs[0], "save"), *home = snx_path_join(temporary, "saves home");
+                char* data_home = getenv("XDG_DATA_HOME") ? SDL_strdup(getenv("XDG_DATA_HOME")) : NULL;
                 UiRowInfo info;
+                set_env("XDG_DATA_HOME", home); /* a data folder it can make, Linux's; elsewhere the test's home's */
+                root = snx_user_data_dir();
+                every = snx_path_join(root, "save");
+                saves = snx_format("%s/user.0123456789abcdeffedcba9876543210/0100ABCD12340000", every);
+                snx_path_native(saves); /* user 1's uid with no users.ini, of the game's title ID */
+                assert(!snx_path_exists(every));
                 go_tab(&app, GUI_TAB_GAMES);
                 focus_game(&app, "0100ABCD12340000");
                 key(&app, SDLK_RETURN);
@@ -9349,9 +9360,7 @@ int main(int argc, char** argv) {
                 assert(app.addons_folders_shown && addons_rows(&app) == GUI_GAME_FOLDERS && !app.addons_focus);
                 assert(!app.addons_folders[GUI_FOLDER_DUMP]);                    /* made with no source= */
                 assert(snx_same_file(app.addons_folders[GUI_FOLDER_GAME], own)); /* in the system's separators */
-                free(saves);
-                saves = snx_strdup(app.addons_folders[GUI_FOLDER_SAVES]); /* as the code stored it */
-                assert(!snx_path_exists(saves) && snx_path_within(saves, own));
+                assert(!strcmp(app.addons_folders[GUI_FOLDER_SAVES], saves) && !snx_path_exists(saves));
                 for (i = 0; i < GUI_GAME_FOLDERS; ++i) { /* greyed exactly when it says why */
                     info = (UiRowInfo){0};
                     assert(ui_addons_rows_get_row_info(&app, (size_t)i, 0, &info));
@@ -9378,7 +9387,75 @@ int main(int argc, char** argv) {
                 key(&app, SDLK_ESCAPE);
                 assert(app.addons_shown && !app.addons_folders_shown && app.addons_focus == 13);
                 assert(!app.addons_folders[GUI_FOLDER_GAME]);
+                /* only the game's own save/ there: that one, opened */
+                assert(!snx_mkdirs(own_saves));
+                key(&app, SDLK_RETURN);
+                assert(app.addons_folders_shown && !strcmp(app.addons_folders[GUI_FOLDER_SAVES], own_saves));
+                app.addons_focus = GUI_FOLDER_SAVES;
+                g_opened[0] = 0;
+                key(&app, SDLK_RETURN);
+                url = file_url(own_saves);
+                assert(!strcmp(g_opened, url));
+                free(url);
+                key(&app, SDLK_ESCAPE);
+                /* both there: the data folder's, which the game plays */
+                assert(!snx_mkdirs(saves));
+                key(&app, SDLK_RETURN);
+                assert(app.addons_folders_shown && !strcmp(app.addons_folders[GUI_FOLDER_SAVES], saves));
+                app.addons_focus = GUI_FOLDER_SAVES;
+                g_opened[0] = 0;
+                key(&app, SDLK_RETURN);
+                url = file_url(saves);
+                assert(!strcmp(g_opened, url));
+                free(url);
+                key(&app, SDLK_ESCAPE);
+                /* save_layout=game, read from settings.ini before the Settings are listed (this driver lists no
+                   save_layout): the game's own, the data folder's there all the same */
+                {
+                    GuiSettings listed = app.settings;
+                    char *file = app.settings_file, *ini = snx_path_join(temporary, "saves settings.ini");
+                    app.settings = (GuiSettings){0};
+                    app.settings_file = ini;
+                    for (i = 0; i < 2; ++i) {
+                        assert(
+                            !snx_write_file(ini, i ? "save_layout = game\n" : "save_layout = global\n", i ? 19 : 21));
+                        url = addons_saves(&app, own, "0100ABCD12340000", dirs[0]);
+                        assert(!strcmp(url, i ? own_saves : saves));
+                        free(url);
+                    }
+                    assert(!app.settings.keys); /* nothing listed them meanwhile */
+                    app.settings = listed;
+                    app.settings_file = file;
+                    assert(!snx_remove_tree(ini));
+                    free(ini);
+                }
+                /* a game with no title ID of its own (a homebrew's) keeps its own, which would share one */
+                url = addons_saves(&app, own, "homebrew", dirs[0]);
+                assert(!strcmp(url, own_saves));
+                free(url);
+#ifdef SNX_XDG
+                /* no home to find a data folder by, where the game does not run: not known, and pressed it says so */
+                char* was_home = getenv("HOME") ? SDL_strdup(getenv("HOME")) : NULL;
+                set_env("XDG_DATA_HOME", NULL);
+                set_env("HOME", NULL);
+                key(&app, SDLK_RETURN);
+                assert(app.addons_folders_shown && !app.addons_folders[GUI_FOLDER_SAVES]);
+                app.addons_focus = GUI_FOLDER_SAVES;
+                key(&app, SDLK_RETURN);
+                assert(!strcmp(app.message, "Saves: not known"));
+                key(&app, SDLK_ESCAPE);
+                set_env("HOME", was_home);
+                SDL_free(was_home);
+#endif
+                set_env("XDG_DATA_HOME", data_home);
+                SDL_free(data_home);
+                assert(!snx_remove_tree(own_saves) && !snx_remove_tree(every));
+                if (snx_is_dir(home)) assert(!snx_remove_tree(home)); /* Linux's data folder */
+                free(own_saves);
+                free(home);
                 free(saves);
+                free(every);
+                free(root);
             }
             { /* Clean Cache: greyed with no cache, saying where it looked; with them, asked first with each one's
                  size, Back keeping them; Delete takes both, the saves and the game staying */
