@@ -11764,8 +11764,8 @@ int main(int argc, char** argv) {
                            !strcmp(app.user_name, "Aogo"));
                 }
                 /* each user's Mii under its nickname, Baguette without one, Left and Right round the Mii database's:
-                   users.ini's mii= written, the head's picture drawn from it (the user has no picture file) */
-                assert(app.users_form.mii[0] == 0 && app.user_mii == 0);
+                   users.ini's mii= written; the head's picture stays Wimsy (no picture=mii, no picture file) */
+                assert(app.users_form.mii[0] == 0 && app.user_mii == -1);
                 key(&app, SDLK_DOWN);
                 assert(app.editor.row == 2);
                 render(&app);
@@ -11773,7 +11773,7 @@ int main(int argc, char** argv) {
                 shows(&app, "Baguette", rgb(app.theme.page));
                 key(&app, SDLK_RIGHT);
                 assert(!strcmp(app.editor.note, "User 1's Mii is Leek Girl now") && g_users[0].mii == 1 &&
-                       app.user_mii == 1);
+                       app.user_mii == -1);
                 kept = (char*)snx_read_file(ini, &size);
                 assert(kept && strstr(kept, "[user1]\nnickname=Aogo\nmii=Leek Girl\n[user2]"));
                 free(kept);

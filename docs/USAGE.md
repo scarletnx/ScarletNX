@@ -548,8 +548,8 @@ nickname=Xuji
 or a line that is no key stops the game and says why. `mii` is the user's Mii, one of the Mii database's by its name:
 `Baguette` (the default), `Leek Girl`, `Phone Girl`, `Alex`, `Sam`, `Kai`, `Robin`, `Jamie`, `Taylor`, `Morgan` or
 `Riley`, as written. A game that takes the database's first Mii as the player's takes it. `picture` is `mii`, the
-user's picture drawn from that Mii, or `file`, `users/<uid>.jpg`; without the key it is `file` for a user with that
-file and `mii` for one without. Neither ever stops the game: no key, no users.ini, a name the database does not hold or
+user's picture drawn from that Mii, or `file`, `users/<uid>.jpg`; without the key it is `file`, so a user with no
+picture file is Wimsy. Neither ever stops the game: no key, no users.ini, a name the database does not hold or
 another word is the default, and the game's log and the launcher's say what was read and what is in effect. The
 launcher's Settings > User renames a user (Enter types its nickname, the rule above checked), picks each user's Mii
 (its `User N Mii` row, left and right) and the one the games play as; the file's other lines stay as they are. A

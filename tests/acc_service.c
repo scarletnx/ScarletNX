@@ -865,8 +865,8 @@ static void test_user_data(void) {
 }
 
 /* acc:su's registration (BeginUserRegistration 200, CompleteUserRegistration 201): a new uid, a version 4 UUID's, in
-   the users at once as the first user's nickname ("Player", rEden's own name for it), users.ini as it was until
-   Complete writes it after the others; a ninth refused, an unknown uid, and no users folder to write in */
+   the users at once as the first user's nickname ("Player", rEden's own name for it) and Wimsy's picture (no
+   picture=mii), users.ini as it was until Complete writes it after the others; a ninth refused, an unknown uid, and no users folder to write in */
 static void test_registration(void) {
     static u8 memory[0x400];
     char why[512], hex[33], *before, *now, *want;
@@ -886,7 +886,7 @@ static void test_registration(void) {
     memcpy(uid.v, r.c.out, 16);
     acc_uid_get(&uid, v);
     CHECK((v[0] || v[1]) && (v[0] >> 12 & 0xF) == 4 && (v[1] >> 62) == 2 && g_user_count == 2);
-    CHECK(!strcmp(g_users[1].nickname, "Player") && g_users[1].unsaved);
+    CHECK(!strcmp(g_users[1].nickname, "Player") && g_users[1].unsaved && !g_users[1].picture_mii);
     now = got("users.ini");
     CHECK(now && before && !strcmp(now, before));
     free(now);
@@ -1383,16 +1383,17 @@ static void test_refused(void) {
 void pm_init(PMutex* m) { (void)m; }
 
 /* a user's Mii and picture (users.ini's mii= and picture=): never a stop. With no users.ini, no key or a name the Mii
-   database does not hold, the database's first (Baguette); picture= mii or file, else file for a user with a picture
-   file and mii for one without. Every one not taken as read leaves a line with the value read and the one in effect */
+   database does not hold, the database's first (Baguette); picture= mii or file, else file (Wimsy for a user with no
+   picture file: the Mii's face only when picture=mii says so). Every one not taken as read leaves a line with the
+   value read and the one in effect */
 static void test_mii(void) {
     char why[512], *text;
     size_t size;
     gone("users.ini");
     gone(UID1 ".jpg");
     CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
-    CHECK(g_users[0].mii == 0 && g_users[0].picture_mii == 1);
-    CHECK(strstr(snx_users_notes(), "[user1] mii=(none): Baguette; picture=(none): mii") != NULL);
+    CHECK(g_users[0].mii == 0 && g_users[0].picture_mii == 0);
+    CHECK(strstr(snx_users_notes(), "[user1] mii=(none): Baguette; picture=(none): file") != NULL);
     /* a name from the database, as written; one it does not hold is the first, said with what was read */
     put_ini("[user1]\nmii=Leek Girl\npicture=mii\n[user2]\nuid=" UID2 "\nnickname=Second\nmii=Bogus Name\n"
             "picture=photo\n");
