@@ -145,6 +145,8 @@ typedef struct Renderer {
     /* what the renderer's memory holds, as text for the line of a low memory warning. Any thread, also one that never
        calls Vulkan, unlocked */
     void (*memory_text)(char* out, size_t size);
+    /* the bytes of the renderer's memory blocks in all heaps, 0 before they exist. Any thread, unlocked */
+    u64 (*memory_blocks)(void);
     /* a game pause (gpu_hold): everything recorded is submitted and done on the GPU, its results landed and every queued
        release performed, so nothing of the renderer's writes guest memory until the next job. The GPU thread, between
        jobs. NULL when the renderer has nothing in flight */
