@@ -320,6 +320,7 @@ typedef struct {
     u32 ev;              /* the renderers' system event, every frame */
     AudOut* outs;        /* every open audio out, for the clock */
     float device_volume; /* the output device's, as SetAudioDeviceOutputVolume set it */
+    u8 auto_tune;        /* an Ounce game's output volume auto-tune mode: kept for its getter, the volume is the same */
     u32 hwopus_live;     /* decoders open, across every hwopus session */
     AudOut outs_pool[AUDOUT_MAX];
     AudRen rens[SNX_AUDREN_MAX];

@@ -124,6 +124,10 @@ interface nn::audio::detail::IAudioDevice {
     [13] GetActiveAudioOutputDeviceName(buffer<nn::audio::AudioDeviceName, 6> name);
     # SDK 13 and later (nn::audio::ListAudioOutputDeviceName): a game may compare each name with the outputs it knows
     [14] ListAudioOutputDeviceName(array<nn::audio::AudioDeviceName, 6> names) -> i32 count;
+    # an Ounce SDK's nn::audio::SetDeviceOutputVolumeAutoTuneModeEnabled and IsDeviceOutputVolumeAutoTuneModeEnabled:
+    # a mode in which the console tunes the output volume. A failed result stops the SDK's wrapper (an abort)
+    [19] SetDeviceOutputVolumeAutoTuneModeEnabled(b8 enabled);
+    [20] IsDeviceOutputVolumeAutoTuneModeEnabled() -> b8 enabled;
 }
 
 interface nn::audio::detail::IAudioOutManager is audout:u {

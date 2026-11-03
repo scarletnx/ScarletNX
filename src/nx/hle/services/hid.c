@@ -772,6 +772,11 @@ static int nn_hid_IHidServer_SendVibrationValues(SvcObj* self, nn_applet_AppletR
     pm_unlock(&g_host.hid.lock);
     R_SUCCEED();
 }
+static int nn_hid_IHidServer_SendVibrationValuesWithMode(SvcObj* self, u16 mode, nn_applet_AppletResourceUserId aruid,
+                                                         IpcBuf handles, IpcBuf values) {
+    (void)mode;
+    return nn_hid_IHidServer_SendVibrationValues(self, aruid, handles, values);
+}
 static int nn_hid_IHidServer_IsVibrationDeviceMounted(SvcObj* self, nn_hid_VibrationDeviceHandle handle, u64 aruid,
                                                       u8* mounted) {
     int p, motor;

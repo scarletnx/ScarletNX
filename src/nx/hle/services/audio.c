@@ -668,6 +668,21 @@ static int nn_audio_detail_IAudioDevice_GetActiveAudioDeviceName(SvcObj* self, I
 static int nn_audio_detail_IAudioDevice_GetActiveAudioDeviceNameAuto(SvcObj* self, IpcBuf name) {
     return nn_audio_detail_IAudioDevice_GetActiveAudioDeviceName(self, name);
 }
+/* the auto-tune mode only changes what the getter answers: the runtime plays at the volume the game sets */
+static int nn_audio_detail_IAudioDevice_SetDeviceOutputVolumeAutoTuneModeEnabled(SvcObj* self, u8 enabled) {
+    (void)self;
+    pm_lock(&g_host.audio.lk);
+    g_hle.audio.auto_tune = enabled != 0;
+    pm_unlock(&g_host.audio.lk);
+    R_SUCCEED();
+}
+static int nn_audio_detail_IAudioDevice_IsDeviceOutputVolumeAutoTuneModeEnabled(SvcObj* self, u8* enabled) {
+    (void)self;
+    pm_lock(&g_host.audio.lk);
+    *enabled = g_hle.audio.auto_tune;
+    pm_unlock(&g_host.audio.lk);
+    R_SUCCEED();
+}
 static int nn_audio_detail_IAudioDevice_GetActiveAudioOutputDeviceName(SvcObj* self, IpcBuf name) {
     return nn_audio_detail_IAudioDevice_GetActiveAudioDeviceName(self, name);
 }
