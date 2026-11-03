@@ -4363,22 +4363,19 @@ static bool saves_global(const App* app);
    playing's saves. With save_layout=global, user.<uid>/<title ID> of the save/ of the data folder the game's run has
    (main.c's fs_saves_init); the game's own save/ while only that is there, where an older version left them. A game
    with no title ID of its own (a homebrew's) and save_layout=game keep their own. NULL with no data folder (no home to
-   find one by), where the game does not run */
+   find one by), where the game does not run, or a path too long (said) */
 static char* addons_saves(const App* app, const char* folder, const char* name, const char* data) {
-    char *own = snx_path_join(data, "save"), *root, *global, uid[33];
+    char *own = snx_path_join(data, "save"), *root, global[SNX_PATH_SIZE], uid[33];
     SnxU64 id;
+    int made;
     if (!snx_title_parse(name, &id) || !saves_global(app)) return own;
     root = snx_menu_dir(folder, SNX_USER_DATA);
     snx_users_uid_text(snx_users_selected()->uid, uid);
-    global = root ? snx_format("%s/save/user.%s/%s", root, uid, name) : NULL;
+    made = root && !snx_path_format(global, sizeof global, "%s/save/user.%s/%s", root, uid, name);
     free(root);
-    if (global) snx_path_native(global);
-    if (global && !snx_is_dir(global) && snx_is_dir(own)) {
-        free(global);
-        return own;
-    }
+    if (made && !snx_is_dir(global) && snx_is_dir(own)) return own;
     free(own);
-    return global;
+    return made ? snx_strdup(global) : NULL;
 }
 /* Open Folder: the game's folders as they are now, on its page, the box's focus kept to go back to */
 static void addons_folders_open(App* app) {
