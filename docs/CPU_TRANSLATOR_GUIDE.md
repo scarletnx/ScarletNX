@@ -93,6 +93,7 @@ The commands you will use most, from the table in `CLAUDE.md`:
 | Name addresses, disassemble one function | `tools/symbols.py work/Game ADDR...`, `tools/disasm.py work/Game FUNC` |
 | All tests | `ctest --test-dir build --output-on-failure` |
 | The QEMU differential test | `ctest --test-dir build -R llvm_qemu_differential` |
+| What each SIMD, FP and crypto op becomes, per emitter path | `ctest --test-dir build -R llvm_lowering` |
 | The module contract test | `ctest --test-dir build -R module_contract` |
 
 `tools/run_game.py` wraps an unattended run with scripted input and screenshots. The procedure is in
@@ -143,7 +144,7 @@ and at the plan.
 | Guest memory | `src/nx/memory/mem.c`, `src/nx/memory/own.c` |
 | Guest threads | `src/nx/hle/kernel/thread.c` |
 | The GNU ABI runtime | `src/gnuabi/` |
-| Translator tests | `tests/llvm_qemu_differential.c`, `tests/llvm_qemu_expected.txt`, `tests/a64_ported.c`, `tests/llvm_module.c`, `tests/llvm_bench.c`, `tests/module_contract.c`, `tests/qemu_ref/` |
+| Translator tests | `tests/llvm_qemu_differential.c`, `tests/llvm_qemu_expected.txt`, `tests/llvm_lowering.c`, `tests/llvm_lowering_expected.txt`, `tests/a64_ported.c`, `tests/llvm_module.c`, `tests/llvm_bench.c`, `tests/module_contract.c`, `tests/qemu_ref/` |
 
 ## Rules that apply to this work
 
@@ -182,7 +183,9 @@ full recompile of every game, so group bumps where the plan allows it, such as I
 
 **Emitters.** Check every emitter or decoder change against QEMU with `ctest -R llvm_qemu_differential`, and give the
 test binary `--sweep` for more words and states. A group that newly differs fails the test, and so does a group in
-`tests/llvm_qemu_expected.txt` that no longer differs. Update that file in the same change.
+`tests/llvm_qemu_expected.txt` that no longer differs. Update that file in the same change. A change that moves an op
+between inline, guarded and helper on an emitter path fails `llvm_lowering` until
+`build/tests/snx-test-llvm-lowering tests/llvm_lowering_expected.txt --update` rewrites its summary in the same change.
 
 **Settings.** A new setting goes in `src/nx/runtime/settings.txt`, from which `tools/settingsgen` generates the code
 that reads it. A setting that changes generated code must also join the JIT cache key in `jit_cache.c`, as
