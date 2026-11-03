@@ -6,8 +6,9 @@
    shader_setup.cpp and packed_attribute.h, with register positions from regs_internal.h and the regs_*.h it
    includes (GPL-2.0-or-later), at azahar-emu/azahar a4b335e. Copyright 2015-2026 Citra Emulator Project / Azahar
    Emulator Project.
-   A draw trigger goes to the host's renderer: the GPU's (vk/render.c) in the runtime, the software pipeline of draw.c
-   and raster.c, the CPU reference, in the tests. */
+   A draw trigger goes to the host's renderer: the GPU's (vk/render.c) in the runtime, which takes a draw with a
+   geometry shader through draw.c on the CPU, and the software pipeline of draw.c and raster.c, the CPU reference, in
+   the tests. */
 #ifndef SNX_CTR_PICA_H
 #define SNX_CTR_PICA_H
 #include "3ds/memory/ctr_memory.h"

@@ -6,7 +6,8 @@
    a4b335e); the targets and textures live in the guest's memory, as gpu/raster.c and gpu/texture.c (the CPU
    reference) read and write them. An image's row r is the rasterizer's y = r (and a texture's row t its coordinate
    t), so the viewport maps the PICA's window coordinates as they are, and the guest's rows (from the top, y =
-   height - 1, unless the framebuffer is flipped) are the compute shaders' business. */
+   height - 1, unless the framebuffer is flipped) are the compute shaders' business. The triangles the CPU makes for a
+   draw with a geometry shader turn their quaternions as video_core/rasterizer_accelerated.cpp's AddTriangle does. */
 #include "3ds/gpu/vk/vk_render.h"
 #include "3ds/gpu/vk/fsgen.h"
 #include "3ds/gpu/vk/shaders/color_spv.h"
@@ -25,6 +26,9 @@
 #define RING_SIZE (32u << 20) /* the uploads, a part for each submission slot: uniforms, LUTs, default and immediate
                                  vertices */
 #define RING_PART (RING_SIZE / SNX_CTR_VK_SLOTS)
+/* the triangles a draw with a geometry shader made that one recording takes: a quarter of its uploads, so that the
+   draw's uniforms, LUTs and default attributes fit beside them */
+#define TRIANGLES_AT_ONCE (RING_PART / 4 / sizeof(SnxCtrVertex[3]))
 #define TEXTURES  512 /* textures kept decoded */
 #define TARGETS   32  /* render targets kept */
 #define SPANS     4096 /* the memory spans a submission reads or writes, re-levelled when it is done */
@@ -64,6 +68,9 @@ enum { DEFAULTS = 12, ZERO_SLOT = 16 }; /* the binding of the default attributes
 enum { NO_DEPTH = 0xff };
 /* a draw that ran out of the recording's descriptors, uploads or textures: finished, it is recorded again */
 #define AGAIN ((SnxCtrPicaResult)-1)
+/* where a draw's vertices come from: the arrays the loaders name, the immediate vertices kept, or the triangles the CPU
+   made */
+typedef enum { ARRAYS, IMMEDIATE, TRIANGLES } Source;
 
 typedef struct {
     VkImage image;
@@ -206,6 +213,9 @@ static struct {
     /* immediate-mode vertices waiting for their draw */
     float (*immediate)[16][4];
     size_t immediate_count, immediate_capacity;
+    /* the triangles the CPU made for a draw with a geometry shader, waiting for their draw, from triangle_first on */
+    SnxCtrVertex (*triangles)[3];
+    size_t triangle_count, triangle_capacity, triangle_first;
 } g;
 
 static VkDevice device(void) { return snx_ctr_vk()->device; }
@@ -1279,6 +1289,24 @@ static void immediate_layout(const uint32_t* r, PipeKey* k, SnxCtrVsConfig* vs) 
     k->binding_mask = 1u | 1u << DEFAULTS;
     k->stride[0] = 256;
 }
+typedef char snx_ctr_vertex_is_six_vec4s[sizeof(SnxCtrVertex) == 6 * 16 ? 1 : -1];
+/* triangles the CPU made: binding 0 holds each vertex as pica.h's SnxCtrVertex, locations 0-5 its six vec4s, which
+   the vertex shader passes on */
+static void triangle_layout(PipeKey* k, SnxCtrVsConfig* vs) {
+    for (unsigned i = 0; i < 16; ++i) {
+        k->attribute[i].binding = i < 6 ? 0 : DEFAULTS;
+        k->attribute[i].format = 16;
+        k->attribute[i].offset = (uint16_t)(i < 6 ? i * 16 : ZERO_SLOT * 16);
+    }
+    k->binding_mask = 1u | 1u << DEFAULTS;
+    k->stride[0] = sizeof(SnxCtrVertex);
+    vs->passthrough = 1;
+}
+/* the triangles made that the next draw takes */
+static size_t triangles_next(void) {
+    size_t left = g.triangle_count - g.triangle_first;
+    return left < TRIANGLES_AT_ONCE ? left : TRIANGLES_AT_ONCE;
+}
 
 static SnxCtrPicaResult stop(SnxCtrPica* p, const char* why) {
     p->stop_reason = why;
@@ -1416,10 +1444,9 @@ static void draw_reads(const PipeKey* k, const uint32_t binding_pa[12], uint32_t
             gpu_uses(binding_pa[n], size < 64 ? 64 : size, false);
         }
 }
-/* one draw: array (indexed or not) or the immediate vertices kept */
-static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
+/* one draw: array (indexed or not), the immediate vertices kept or the triangles the CPU made */
+static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     const uint32_t* r = p->regs;
-    if (r[SNX_PICA_USE_GS] & 3) return stop(p, "geometry shaders are not ported yet");
     if (!made()) return stop(p, "the Vulkan renderer could not be set up");
     /* the target: a colour buffer outside RAM draws nothing */
     TargetKey key = {.color_pa = (r[FB_COLOR_ADDR] & 0x0fffffff) * 8,
@@ -1458,18 +1485,22 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     uint32_t binding_pa[12] = {0};
     memset(&k, 0, sizeof k);
     memset(&vs, 0, sizeof vs);
-    if (immediate)
+    if (source == TRIANGLES)
+        triangle_layout(&k, &vs);
+    else if (source == IMMEDIATE)
         immediate_layout(r, &k, &vs);
     else
         array_layout(r, &k, &vs, binding_pa);
-    if (!g.hashed || g.hashed_pica != p || g.hashed_version != p->vs_version) {
-        g.program_hash = snx_ctr_vs_hash(&p->vs);
-        g.hashed_pica = p;
-        g.hashed_version = p->vs_version;
-        g.hashed = true;
+    if (source != TRIANGLES) {
+        if (!g.hashed || g.hashed_pica != p || g.hashed_version != p->vs_version) {
+            g.program_hash = snx_ctr_vs_hash(&p->vs);
+            g.hashed_pica = p;
+            g.hashed_version = p->vs_version;
+            g.hashed = true;
+        }
+        snx_ctr_vs_config(p, &vs);
+        vs.program_hash = g.program_hash;
     }
-    snx_ctr_vs_config(p, &vs);
-    vs.program_hash = g.program_hash;
     vs.clip_planes = snx_ctr_vk()->clip_distance;
     if (!vs_shader(p, &vs, &k.vs, &why) || !fs_shader(&fs, &k.fs, &why)) return stop(p, why);
     /* the fixed state */
@@ -1485,18 +1516,20 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     k.stencil_on = (uint8_t)(depth && (r[OM_STENCIL] & 1) && key.depth_format == 3);
     k.stencil = k.stencil_on ? r[OM_STENCIL] & 0xffffff71u : 0;
     k.stencil_op = k.stencil_on ? r[OM_STENCIL_OP] & 0x777 : 0;
-    k.topology = (uint8_t)(r[SNX_PICA_TOPOLOGY] >> 8 & 3);
+    k.topology = (uint8_t)(source == TRIANGLES ? 0 : r[SNX_PICA_TOPOLOGY] >> 8 & 3); /* the triangles made: a list */
     k.cull = (uint8_t)(r[CULL_MODE] & 3);
     VkPipeline pipe = pipeline(&k);
     if (!pipe) return stop(p, "the device refuses a draw's pipeline");
-    /* the vertices: an index buffer, the loaders' bindings, or the immediate vertices */
-    uint32_t count = immediate ? (uint32_t)g.immediate_count : r[NUM_VERTICES];
+    /* the vertices: an index buffer, the loaders' bindings, the immediate vertices or the triangles made */
+    uint32_t count = source == ARRAYS      ? r[NUM_VERTICES]
+                     : source == IMMEDIATE ? (uint32_t)g.immediate_count
+                                           : (uint32_t)triangles_next() * 3;
     uint32_t index_pa = 0, index_bytes = 0, index_max = 0;
     bool wide = r[INDEX_ARRAY] >> 31;
     VkBuffer buffers[13];
     VkDeviceSize offsets[13];
     if (!count) return SNX_CTR_PICA_OK;
-    if (!immediate) {
+    if (source == ARRAYS) {
         uint32_t base = (r[ATTR_BASE] >> 1 & 0x0fffffff) * 16;
         index_pa = base + (r[INDEX_ARRAY] & 0x0fffffff);
         VkDeviceSize at;
@@ -1523,8 +1556,11 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     VkDeviceSize defaults;
     result = descriptors(p, &fs, key.scale, sets, &defaults);
     if (result != SNX_CTR_PICA_OK) return result;
-    if (immediate) {
+    if (source == IMMEDIATE) {
         if (!upload(g.immediate, g.immediate_count * sizeof *g.immediate, &offsets[0])) return AGAIN;
+        buffers[0] = g.ring;
+    } else if (source == TRIANGLES) {
+        if (!upload(g.triangles + g.triangle_first, triangles_next() * sizeof *g.triangles, &offsets[0])) return AGAIN;
         buffers[0] = g.ring;
     }
     buffers[DEFAULTS] = g.ring;
@@ -1564,14 +1600,14 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 2, sets, 0, NULL);
     for (uint32_t b = 0; b < 13; ++b)
         if (k.binding_mask >> b & 1) vkCmdBindVertexBuffers(cb, b, 1, &buffers[b], &offsets[b]);
-    if (!immediate) draw_reads(&k, binding_pa, index_pa, index_bytes, count, r[VERTEX_OFFSET], index_max);
-    if (indexed && !immediate) {
+    if (source == ARRAYS) draw_reads(&k, binding_pa, index_pa, index_bytes, count, r[VERTEX_OFFSET], index_max);
+    if (indexed && source == ARRAYS) {
         VkDeviceSize at;
         const SnxCtrVkRam* ram = snx_ctr_vk_ram(index_pa, 1, &at);
         vkCmdBindIndexBuffer(cb, ram->buffer, at, wide ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT8_EXT);
         vkCmdDrawIndexed(cb, count, 1, 0, 0, 0);
     } else
-        vkCmdDraw(cb, count, 1, immediate ? 0 : r[VERTEX_OFFSET], 0);
+        vkCmdDraw(cb, count, 1, source == ARRAYS ? r[VERTEX_OFFSET] : 0, 0);
     /* drawn into: newer than memory, which is the GPU's until the target is stored, and the textures made from that
        memory stale */
     t->used = snx_ctr_vk_serial();
@@ -1585,22 +1621,64 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     }
     return SNX_CTR_PICA_OK;
 }
-static SnxCtrPicaResult draw(SnxCtrPica* p, bool immediate, bool indexed) {
-    SnxCtrPicaResult r = record(p, immediate, indexed);
+static SnxCtrPicaResult draw(SnxCtrPica* p, Source source, bool indexed) {
+    SnxCtrPicaResult r = record(p, source, indexed);
     if (r != AGAIN) return r;
     /* out of descriptors or uploads: what is recorded is submitted (no wait), and the draw starts over in the next
        slot */
     snx_ctr_vk_submit();
-    r = record(p, immediate, indexed);
+    r = record(p, source, indexed);
     return r == AGAIN ? stop(p, "a draw needs more than one recording holds") : r;
 }
 
+/* a triangle a draw with a geometry shader made, kept for the draw, its quaternions turned to the first one's side as
+   Azahar's AddTriangle does, so they interpolate the short way. *context is set when the host runs out of memory */
+static void keep(void* context, const SnxCtrVertex* v0, const SnxCtrVertex* v1, const SnxCtrVertex* v2) {
+    if (!grow((void**)&g.triangles, &g.triangle_capacity, g.triangle_count, sizeof *g.triangles)) {
+        *(bool*)context = true;
+        return;
+    }
+    SnxCtrVertex* t = g.triangles[g.triangle_count++];
+    t[0] = *v0;
+    t[1] = *v1;
+    t[2] = *v2;
+    for (unsigned i = 1; i < 3; ++i) {
+        float dot = 0.0f;
+        for (unsigned c = 0; c < 4; ++c) dot += t[0].quat[c] * t[i].quat[c];
+        if (dot < 0.0f)
+            for (unsigned c = 0; c < 4; ++c) t[i].quat[c] = -t[i].quat[c];
+    }
+}
+/* A draw with a geometry shader runs its vertex and geometry shaders on the CPU (draw.c), as Azahar does: the geometry
+   shader keeps its registers from one primitive to the next, which the GPU's invocations cannot. The triangles they
+   make are drawn with a vertex shader that passes them on, TRIANGLES_AT_ONCE at a time */
+static SnxCtrPicaResult draw_triangles(SnxCtrPica* p) {
+    SnxCtrPicaResult r = SNX_CTR_PICA_OK;
+    for (g.triangle_first = 0; r == SNX_CTR_PICA_OK && g.triangle_first < g.triangle_count;
+         g.triangle_first += TRIANGLES_AT_ONCE)
+        r = draw(p, TRIANGLES, false);
+    g.triangle_count = 0;
+    return r;
+}
+
 SnxCtrPicaResult snx_ctr_vk_draw(SnxCtrPica* p, SnxCtrMemory* memory, bool indexed) {
-    (void)memory;
-    return draw(p, false, indexed);
+    if (!(p->regs[SNX_PICA_USE_GS] & 3)) return draw(p, ARRAYS, indexed);
+    bool out_of_memory = false;
+    SnxCtrPicaResult r = snx_ctr_pica_triangles(p, memory, indexed, keep, &out_of_memory);
+    if (r == SNX_CTR_PICA_OK && out_of_memory) r = stop(p, "the host is out of memory");
+    if (r == SNX_CTR_PICA_OK) return draw_triangles(p);
+    g.triangle_count = 0;
+    return r;
 }
 SnxCtrPicaResult snx_ctr_vk_vertex(SnxCtrPica* p, SnxCtrMemory* memory) {
     (void)memory;
+    if (p->regs[SNX_PICA_USE_GS] & 3) { /* its triangles are drawn with the others of the batch, at vertices_end */
+        bool out_of_memory = false;
+        SnxCtrPicaResult r = snx_ctr_pica_triangles_immediate(p, keep, &out_of_memory);
+        if (r == SNX_CTR_PICA_OK && out_of_memory) r = stop(p, "the host is out of memory");
+        if (r != SNX_CTR_PICA_OK) g.triangle_count = 0;
+        return r;
+    }
     if (g.immediate_count == g.immediate_capacity) {
         size_t n = g.immediate_capacity ? g.immediate_capacity * 2 : 64;
         float (*v)[16][4] = (float (*)[16][4])realloc(g.immediate, n * sizeof *v);
@@ -1613,8 +1691,9 @@ SnxCtrPicaResult snx_ctr_vk_vertex(SnxCtrPica* p, SnxCtrMemory* memory) {
 }
 SnxCtrPicaResult snx_ctr_vk_vertices_end(SnxCtrPica* p, SnxCtrMemory* memory) {
     (void)memory;
+    if (g.triangle_count) return draw_triangles(p);
     if (!g.immediate_count) return SNX_CTR_PICA_OK;
-    SnxCtrPicaResult r = draw(p, true, false);
+    SnxCtrPicaResult r = draw(p, IMMEDIATE, false);
     g.immediate_count = 0;
     return r;
 }
@@ -1676,5 +1755,6 @@ void snx_ctr_vk_render_free(void) {
     free(g.fs);
     free(g.pipes);
     free(g.immediate);
+    free(g.triangles);
     memset(&g, 0, sizeof g);
 }
