@@ -35,7 +35,7 @@ if (snx_glslc_workspace_init(&workspace, malloc(bytes), bytes, &result) != 0)
     fprintf(stderr, "%s\n", result.error);
 
 /* then for each shader; bind, a binding map, is optional */
-GlslcOptions options = {SNX_GLSLC_FRAGMENT, bind, bind_user};
+GlslcOptions options = {SNX_GLSLC_FRAGMENT, bind, bind_user, 0};
 if (snx_glslc_compile(&workspace, &options, source, size, words, SNX_GLSLC_MAX_WORDS, &result) != 0)
     fprintf(stderr, "%u:%u: %s\n", result.line, result.column, result.error);
 ```
@@ -136,8 +136,11 @@ The module is what a Vulkan pipeline takes; the OpenGL ES side of it is the back
   binding it gives, and one without a binding takes the first free binding of set 0, in declaration order.
 - **Loose uniforms** are the members of one block, `gl_DefaultUniformBlock`, laid out as std140. It takes the first
   free binding of set 0 once every other resource is placed, whether by the source, by glslc or by a binding map;
-  the map is not asked about it. Its entry in `result.reflect` has an empty name and that binding, and each
-  uniform's entry its offset in it.
+  the map is not asked about it, unless `GlslcOptions.map_default` is nonzero: then the map places it too, after
+  the other resources, as a uniform block with an empty name and its size. A program's vertex and fragment stages
+  each have a default block, and one Vulkan binding has one descriptor for both stages, so a backend puts the two
+  apart that way. Its entry in `result.reflect` has an empty name and that set and binding, and each uniform's
+  entry its offset in it.
 - **Samplers inside structs.** Vulkan keeps a struct to numbers, so each sampler member of a uniform struct is a
   variable of its own, named `uniform.member` in the module, placed with the shader's other samplers in declaration
   order (by the binding map too). Its `result.reflect` entry, and what the map sees, has the uniform's name and the

@@ -2427,8 +2427,14 @@ static void default_uniform_block(Glslc* g) {
     uint32_t v = id(g);
     EMIT(g, &g->e.globals, OP_VARIABLE, ptr_type(g, SC_UNIFORM, r), v, SC_UNIFORM);
     inst_string(g, &g->e.names, OP_NAME, &v, 1, "", 0, NULL, 0);
-    uint32_t binding = free_binding(g, none);
-    EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_DESCRIPTOR_SET, 0);
+    uint32_t set = 0, binding = 0;
+    if (g->bind && g->map_default) {
+        GlslcResource res = {none, none, SNX_GLSLC_REFLECT_UNIFORM_BLOCK, 0, 0, -1, -1, 0, round_up(offset, max)};
+        mapped_binding(g, &res, &set, &binding);
+    } else {
+        binding = free_binding(g, none);
+    }
+    EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_DESCRIPTOR_SET, set);
     EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_BINDING, binding);
     g->e.default_block = v;
     g->e.default_type = r;
@@ -2443,6 +2449,7 @@ static void default_uniform_block(Glslc* g) {
     e->base = SNX_GLSLC_BASE_STRUCT;
     e->rows = e->cols = 1;
     e->location = (uint16_t)binding;
+    e->set = (uint16_t)set;
     e->offset = g->e.default_size;
 }
 

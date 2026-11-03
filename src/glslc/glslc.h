@@ -116,9 +116,12 @@ typedef int (*GlslcBindFn)(void* user, const GlslcResource* resource, uint32_t* 
 typedef struct {
     GlslcStage stage;
     /* NULL: each resource at the set and binding it gives, else at the first free binding of set 0. The default
-       uniform block is not the map's: it takes the first free binding of set 0 after the others */
+       uniform block takes the first free binding of set 0 after the others, unless map_default gives it to the map */
     GlslcBindFn bind;
     void* bind_user; /* bind's first argument */
+    /* nonzero: bind places the default uniform block too, as a UNIFORM_BLOCK with an empty name and its size, after
+       the other resources. A program's stages each have a default block, and the backend puts them apart */
+    int map_default;
 } GlslcOptions;
 
 /* The scratch memory of compilations: every array of the bounds above, carved anew by each compilation, so nothing
