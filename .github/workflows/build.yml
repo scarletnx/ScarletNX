@@ -7,6 +7,8 @@ on:
     branches: [main]
     tags: ['v*'] # a version's release (publish.yml)
   pull_request:
+    # a draft builds less (the linux, appimage and apple jobs say what), so leaving draft starts the whole build
+    types: [opened, synchronize, reopened, ready_for_review]
     # skipped when the change is only in files that no build or test reads. tracked_material.py reads them all and runs
     # on its own (pr-checks.yml). docs/ARCHITECTURE.md, DEPRECATIONS.md and GUI.md are test inputs: they build
     paths:
@@ -44,20 +46,15 @@ concurrency:
 jobs:
   linux:
     name: Linux (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
     timeout-minutes: 60
-    container: ${{ matrix.container }}
+    # Arch's image is x86-64 only; pkgforge's (the AppImage's) is Arch Linux ARM on AArch64, with the same LLVM
+    container: ${{ matrix.arch == 'aarch64' && 'ghcr.io/pkgforge-dev/archlinux:latest' || 'archlinux:latest' }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-26.04
-            container: archlinux:latest
-          # Arch's image is x86-64 only; pkgforge's (the AppImage's) is Arch Linux ARM on AArch64, with the same LLVM
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
-            container: ghcr.io/pkgforge-dev/archlinux:latest
+        # a draft pull request builds x86-64 alone, whose install edenprobe runs; out of draft, both
+        arch: ${{ fromJSON(github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -304,17 +301,14 @@ jobs:
 
   appimage:
     name: Linux AppImage (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
     # LLVM's build (scripts/linux-llvm.sh) adds about half an hour where its cache misses
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-26.04
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
+        # x86-64's alone in a draft pull request, as the linux job
+        arch: ${{ fromJSON(github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
     # pkgforge's Arch image and tools (https://github.com/pkgforge-dev/Anylinux-AppImages), see scripts/make-appimage.sh
     container: ghcr.io/pkgforge-dev/archlinux:latest
     steps:
@@ -1146,9 +1140,11 @@ jobs:
   # fail the run (continue-on-error), which would hold back the nightly: they are new, and no Mac checked them before
   # CI. iOS builds even when macOS failed, and each one's app is made from its own build alone. Each app carries
   # Ryujinx's MoltenVK (V380-Ori/Ryujinx.MoltenVK): mainline's lacks patches emulators' pipelines need. The release's
-  # tars, their SHA-256 the ones GitHub lists for them
+  # tars, their SHA-256 the ones GitHub lists for them. A draft pull request skips it, as it skips the AArch64 builds:
+  # the organization runs 20 jobs at once
   apple:
     name: macOS and iOS (arm64)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: macos-26
     timeout-minutes: 240
     continue-on-error: true
@@ -1317,16 +1313,13 @@ jobs:
   appimage-check:
     name: Linux AppImage (${{ matrix.arch }}), as installed
     needs: appimage
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-26.04
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
+        # the AppImages the appimage job made
+        arch: ${{ fromJSON(github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit

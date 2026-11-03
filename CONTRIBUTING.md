@@ -59,6 +59,10 @@ Each run of the Build workflow (`.github/workflows/build.yml`) on a pull request
 any job that did not build (`scripts/pr-builds.sh`). A pull request from a fork gets no comment, since its token may
 not write.
 
+A draft pull request builds Linux x86-64 (with edenprobe, and ASan and UBSan), the x86-64 AppImage, Windows and
+Android. Out of draft it also builds Linux and the AppImage on AArch64 and macOS and iOS: marking it ready for review
+starts that build.
+
 GitHub asks the owners of the files a pull request changes for their review once it is out of draft:
 `.github/CODEOWNERS` names those of the CI, GUI, GPU and CPU code, and of the 3DS and the Vita.
 
