@@ -5,6 +5,7 @@
 #include "common/utilities/endian.h"
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 
 uint32_t ctr_word(SnxCtrProcess* p, uint32_t va) {
     unsigned char bytes[4];
@@ -40,6 +41,21 @@ uint32_t ctr_send_header(SnxCtrProcess* p, uint32_t session, uint32_t header) {
     ctr_send(p, session, SNX_CTR_SVC_RETURN, 0);
     assert(!ctr_command_word(p, 1));
     return ctr_command_word(p, 0);
+}
+uint32_t ctr_srv(SnxCtrProcess* p) {
+    assert(snx_ctr_write_ram(p->space, 0x300100, "srv:", 5) == SNX_CTR_MEM_OK);
+    p->cpu.state.cpu.r[1] = 0x300100;
+    assert(snx_ctr_svc(p, 0x2d /* ConnectToPort */) == SNX_CTR_SVC_RETURN && !p->cpu.state.cpu.r[0]);
+    return p->cpu.state.cpu.r[1];
+}
+uint32_t ctr_service_handle(SnxCtrProcess* p, uint32_t srv, const char* name) {
+    uint32_t length = (uint32_t)strlen(name), words[5] = {0x00050100, 0, 0, length, 1};
+    assert(length <= 8);
+    for (uint32_t i = 0; i < length; ++i) words[1 + i / 4] |= (uint32_t)(unsigned char)name[i] << (i % 4 * 8);
+    ctr_request(p, words, 5);
+    ctr_send(p, srv, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x00050042 && !ctr_command_word(p, 1) && ctr_command_word(p, 2) == 0x10);
+    return ctr_command_word(p, 3);
 }
 uint32_t ctr_hid_shared(SnxCtrProcess* p, uint32_t offset, unsigned size) {
     unsigned char bytes[4] = {0};
