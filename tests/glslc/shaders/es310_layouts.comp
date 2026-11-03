@@ -1,0 +1,75 @@
+#version 310 es
+// std140 and std430 offsets, array and matrix strides, row-major matrices, nested structs (checked against
+// glslangValidator's by tests/glslc)
+layout(local_size_x = 1) in;
+struct Inner {
+    float f;
+    vec3 v3;
+    mat2 m2;
+    vec2 v2[3];
+};
+struct Outer {
+    Inner inner;
+    float tail;
+    Inner inners[2];
+    bool flag;
+};
+layout(std140, binding = 0) uniform Std140 {
+    float a;
+    vec2 b;
+    vec3 c;
+    float d;
+    vec4 e;
+    mat2 f;
+    mat3 g;
+    mat4 h;
+    mat2x3 i;
+    mat3x2 j;
+    layout(row_major) mat3 k;
+    layout(row_major) mat2x3 l;
+    float m[3];
+    vec3 n[2];
+    mat3 o[2];
+    Inner p;
+    Outer q;
+    bool r;
+    ivec3 s;
+    uint t;
+} u140;
+layout(std430, binding = 1) buffer Std430 {
+    float a;
+    vec2 b;
+    vec3 c;
+    float d;
+    vec4 e;
+    mat2 f;
+    mat3 g;
+    mat4 h;
+    mat2x3 i;
+    mat3x2 j;
+    layout(row_major) mat3 k;
+    layout(row_major) mat2x3 l;
+    float m[3];
+    vec3 n[2];
+    mat3 o[2];
+    Inner p;
+    Outer q;
+    bool r;
+    ivec3 s;
+    uint t;
+    vec2 rest[];
+} b430;
+layout(std140, row_major, binding = 2) uniform RowMajor {
+    mat4 rm;
+    layout(column_major) mat4 cm;
+    mat3x4 rm34;
+} rows;
+void main() {
+    b430.a = u140.a + u140.b.y + u140.c.z + u140.d + u140.e.w + u140.f[1][1] + u140.g[2][2] + u140.h[3][3];
+    b430.b = u140.i[1].xy + u140.j[2] + u140.k[2].xy + u140.l[1].xy + vec2(u140.m[2], u140.n[1].z);
+    b430.c = u140.o[1][2] + u140.p.v3 + u140.q.inners[1].v3 + vec3(u140.q.inner.v2[2], u140.q.tail);
+    b430.d = u140.r && u140.q.flag ? float(u140.s.z) + float(u140.t) : 0.0;
+    b430.e = rows.rm[1] + rows.cm[2] + rows.rm34[2];
+    b430.q = u140.q;
+    b430.rest[3] = b430.b;
+}
