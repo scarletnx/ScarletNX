@@ -15,10 +15,12 @@
 
 /* the hosts that run NCE, and the only ones the recompile makes an NCE recompile for (recompile.c). Android from API 29
    only (nce_host_check, nce_refused): its stubs reach the thread's CPU through bionic's TLS_SLOT_APP (nce_host.c) */
+#ifndef SNX_NCE_HOST /* a test of nce.c's host-free part sets it to 0: the host part needs the whole runtime */
 #if defined(__aarch64__) && defined(__linux__)
 #define SNX_NCE_HOST 1
 #else
 #define SNX_NCE_HOST 0
+#endif
 #endif
 /* how far up the guest's addresses move under NCE at least (mem_reserve_identity): Android's app process holds the low
    4 GiB, and Eden takes its base above 36 bits there too */
