@@ -383,11 +383,28 @@ static void test_nro_npdm(void) {
 
 /* the name a game is shown by: an NRO's control.nacp in its assets, an ExeFS's beside it, American English's name,
    else the first language's that has one, trimmed and cut whole at a UTF-8 sequence; --name over it, the title
-   without it. The files keep the title ID */
+   without it. A title ID given as the name (the driver's, for a dump read in place) is the files' name: the name in
+   control.nacp is shown, the ID only when no language has one. The files keep the title ID */
 static void test_nacp(const char* root, const char* exefs) {
-    static unsigned char nacp[0x600];
+    static unsigned char nacp[0x600], all[0x4000]; /* all: the 16 languages and the rest, as a dump's is */
     char name[32], error[256], *path, *shown;
     SnxProgram program;
+    /* a name in one language only, Japanese's (the third), the last one's (Brazilian Portuguese's); a language whose
+       name is spaces or control characters passes to the next that has one */
+    memset(all, 0, sizeof all);
+    memcpy(all + 2 * 0x300, "\xe5\x90\x88\xe6\x88\x90\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0", 15);
+    CHECK(snx_nacp_name(all, sizeof all, name, sizeof name) &&
+          !strcmp(name, "\xe5\x90\x88\xe6\x88\x90\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0"));
+    memset(all, 0, sizeof all);
+    memcpy(all, "   ", 3);
+    memcpy(all + 0x300, "\x01\x02\x7f", 3);
+    memcpy(all + 14 * 0x300, "\xe5\x90\x88\xe6\x88\x90\xe6\xb8\xb8\xe6\x88\x8f", 12); /* Simplified Chinese's */
+    CHECK(snx_nacp_name(all, sizeof all, name, sizeof name) &&
+          !strcmp(name, "\xe5\x90\x88\xe6\x88\x90\xe6\xb8\xb8\xe6\x88\x8f"));
+    memset(all, 0, sizeof all);
+    memcpy(all + 15 * 0x300, "Last One", 8);
+    CHECK(snx_nacp_name(all, sizeof all, name, sizeof name) && !strcmp(name, "Last One"));
+    CHECK(!snx_nacp_name(all, 15 * 0x300, name, sizeof name) && !name[0]); /* cut before it */
     memset(nacp, 0, sizeof nacp);
     memcpy(nacp + 0x300, "  Synth\xc3\xa9tique ", 15); /* the second language's; American English's is empty */
     CHECK(snx_nacp_name(nacp, sizeof nacp, name, sizeof name) && !strcmp(name, "Synth\xc3\xa9tique"));
@@ -410,18 +427,27 @@ static void test_nacp(const char* root, const char* exefs) {
     shown = snx_game_shown("My Game", &program);
     CHECK(!strcmp(shown, "My Game"));
     free(shown);
+    shown = snx_game_shown("0123456789ABCDEF", &program); /* a title ID: a file name, not the player's word */
+    CHECK(!strcmp(shown, "First"));
+    free(shown);
     snx_free_program(&program);
     free(path);
-    /* beside an ExeFS, where the extraction puts it; none: the title */
+    /* beside an ExeFS, where the extraction puts it; none: the title, or the title ID given */
     CHECK(!snx_load_program(exefs, &program, error, sizeof error) && !program.nacp);
     shown = snx_game_shown(NULL, &program);
     CHECK(!strcmp(shown, "Synthetic Loader"));
+    free(shown);
+    shown = snx_game_shown("123456789ABCDEF0", &program);
+    CHECK(!strcmp(shown, "123456789ABCDEF0"));
     free(shown);
     snx_free_program(&program);
     path = snx_path_join(root, "control.nacp");
     CHECK(!snx_write_file(path, nacp, sizeof nacp));
     CHECK(!snx_load_program(exefs, &program, error, sizeof error) && program.nacp_size == sizeof nacp);
     shown = snx_game_shown(NULL, &program);
+    CHECK(!strcmp(shown, "First"));
+    free(shown);
+    shown = snx_game_shown("123456789ABCDEF0", &program); /* its own title ID, as the driver names it */
     CHECK(!strcmp(shown, "First"));
     free(shown);
     shown = snx_game_name(NULL, &program.npdm, program.entry_path);
