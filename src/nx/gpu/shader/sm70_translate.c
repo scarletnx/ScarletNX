@@ -31,7 +31,7 @@ typedef struct {
     /* the program's state: Function variables, made at the start */
     u32 reg[256], ureg[64], pred[8], upred[8];
     /* resources, made when first used */
-    u32 cbuf[18], cbuf_ptr;
+    u32 cbuf[18], cbuf_ptr, root;
     u32 gbuf[16], gbuf_ptr;
     u32 shared, shared_ptr, shared_words;
     u32 in_attr[32], out_attr[32], position, point_size, fragcoord, color[8], depth;
@@ -112,19 +112,33 @@ static u32 cbuf_var(Ctx* c, u32 bank, u32 end) {
     if (end > c->si->cbuf_max[bank]) c->si->cbuf_max[bank] = end > 0x10000 ? 0x10000 : end;
     return c->cbuf[bank];
 }
-/* the word at byte offset off of a bank, plus the register value index when it isn't 0 */
+/* the root tables, banks 24 to 31, as one uniform buffer of SH_ROOT_BYTES (SNX_VKB_ROOT), with end the bytes read */
+static u32 root_var(Ctx* c, u32 end) {
+    if (!c->root) {
+        c->root = spv_emit_uniform_vec4_array(&c->e, c->t_v4u, c->t_u32, c->t_u32, (u32)shader_vk_set(c->stage),
+                                              SNX_VKB_ROOT, SH_ROOT_BYTES / 16, &c->cbuf_ptr);
+        add_interface(c, c->root);
+    }
+    if (end > c->si->root_max) c->si->root_max = end > SH_ROOT_BYTES ? SH_ROOT_BYTES : end;
+    return c->root;
+}
+/* the word at byte offset off of a bank, plus the register value index when it isn't 0. A root table's bytes are
+   past those of the tables before it, and an index stays in the tables */
 static u32 cbuf_load(Ctx* c, u32 bank, u32 off, u32 index) {
-    u32 var = cbuf_var(c, bank, index ? 0x10000 : off + 4);
+    u32 root = bank >= SH_ROOT_BANK && bank < SH_ROOT_BANK + SH_ROOT_TABLES;
+    u32 elements = root ? SH_ROOT_BYTES / 16 : 4096;
+    if (root) off += (bank - SH_ROOT_BANK) * SH_ROOT_TABLE;
+    u32 var = root ? root_var(c, index ? SH_ROOT_BYTES : off + 4) : cbuf_var(c, bank, index ? 0x10000 : off + 4);
     if (!var) return c->zero;
     u32 element, component;
     if (index) {
         u32 at = spv_emit_iadd_u32(&c->e, c->t_u32, index, cu(c, off));
         element = spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, at, cu(c, 4)),
-                                           cu(c, 4095));
+                                           cu(c, elements - 1));
         component = spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, at, cu(c, 2)),
                                              cu(c, 3));
     } else {
-        element = cu(c, (off >> 4) & 4095);
+        element = cu(c, (off >> 4) & (elements - 1));
         component = cu(c, (off >> 2) & 3);
     }
     return spv_emit_uniform_component(&c->e, c->cbuf_ptr, var, c->zero, element, component, c->t_u32);
@@ -565,6 +579,10 @@ static u32 global_address(Ctx* c, const Sm70Insn* in, int uniform_form, int writ
     if (uniform_form) {
         u32 ur = sm70_field(in, in->op == SM70_LDG ? 32 : 64, 6);
         if (ur < SM70_URZ) at = spv_emit_iadd_u32(&c->e, c->t_u32, at, urd(c, ur));
+    }
+    if (SH_GBUF_BANK(key) >= 18) { /* the renderer reads the base from a bound bank (vk/render.c) */
+        fail(c, "global address whose base is in constant buffer %u", SH_GBUF_BANK(key));
+        return 0;
     }
     u32 base = cbuf_load(c, SH_GBUF_BANK(key), SH_GBUF_OFFSET(key), 0);
     *offset = spv_emit_isub_u32(&c->e, c->t_u32, at, base);

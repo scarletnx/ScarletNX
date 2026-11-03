@@ -1319,6 +1319,22 @@ static int cb_kept(const CbEntry* e, u64 a, u32 sz, int adds, u32 epoch) {
            (!adds || (e->cs_adds == vk_compute_adds() && e->gfx_adds == vk_buf_adds())) &&
            !gpu_mem_dirty_since(e->gw, a, sz);
 }
+/* the first sz bytes of the root tables an Ounce program reads (DsInline.root), staged once a frame while their
+   generation holds: every graphics stage reads the same tables */
+static int root_get(const DsState* ds, u32 sz, VkBuffer* buf, u64* off) {
+    static CbEntry e;
+    if (e.in == ds->inl.root && e.gen == ds->gen[DS_INLINE] && e.frame == vk_submit_number() && e.sz >= sz) {
+        *buf = e.buf;
+        *off = e.off;
+        return 1;
+    }
+    u8* p = vk_stage(sz, vk_stage_align(), buf, off);
+    if (!p) return 0;
+    memcpy(p, ds->inl.root, sz);
+    e = (CbEntry){.frame = vk_submit_number(), .sz = sz, .buf = *buf, .off = *off, .in = ds->inl.root,
+                  .gen = ds->gen[DS_INLINE]};
+    return 1;
+}
 static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u64* off) {
     static CbEntry c[5][18];
     static CbEntry by_addr[1024];
@@ -1808,6 +1824,14 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         u64 o;
         if (!cb_get(ds, stage, i, sz, &b, &o)) return VK_NULL_HANDLE;
         dw_buffer(&d, set, SNX_VKB_CB + i, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, sz);
+    }
+    /* a Switch 2 program's push constants: the words of its root tables, which its driver binds as banks 24 to 31 */
+    if (s->si.root_max) {
+        u32 sz = (s->si.root_max + 15u) & ~15u;
+        VkBuffer b;
+        u64 o;
+        if (!root_get(ds, sz, &b, &o)) return VK_NULL_HANDLE;
+        dw_buffer(&d, set, SNX_VKB_ROOT, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, sz);
     }
     int ordered = !(ds->owner & 0x80000000u) || !g_settings.nvn_storage_ordering;
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
