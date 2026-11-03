@@ -83,6 +83,7 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/options.h"
+#include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #if defined(__ANDROID__)
@@ -122,6 +123,14 @@ typedef struct {
 typedef struct {
     u64 gva, cpu, len, sub; /* the GPU writes guest memory [cpu, cpu + len) in place in submit sub */
 } Out;
+/* a window of the heap or physical memory that is GPU memory mapped where it is (placed maps, below) */
+typedef struct {
+    u64 cpu; /* guest memory [cpu, cpu + MEM_PLACED) */
+    VkDeviceMemory mem;
+    VkBuffer buf;
+    u64 sub;                     /* the submit its last binding was in (last_read's rule) */
+    u64 pages[MEM_PLACED >> 18]; /* its committed 4 KiB pages, a bit each */
+} Chunk;
 #define UMA_LINE 64 /* a cache line (x86-64, AArch64) */
 /* The file's state. Different threads write its groups, each apart from the next by a cache line: the GPU thread
    (under vk_lock), the threads that change guest mappings (mem.c's hook, under lk), any thread that writes guest memory
@@ -154,6 +163,16 @@ typedef struct {
     WritePages written, read; /* the pages written and read in place since the last barrier: barrier_no + 1 */
     Seen rmemo[256];          /* the ranges note_read stamped since that barrier */
     u64 barrier_no;
+    /* placed maps: the chunks, sorted by cpu, and those given back until their last binding's submit is done; each
+       table changed under lk too, as vk_uma_import_in reads them on any thread */
+    Chunk* chunk;
+    u32 nchunk, capchunk;
+    Chunk* cgone;
+    u32 ncgone, capcgone;
+    int can_place;  /* the device maps memory where it is told, and gives the address back reserved */
+    int placed;     /* on: the windows committed whole are chunks (vk_uma_placed) */
+    u32 place_type; /* the memory type of the chunks: host-visible and coherent, cached where it can be */
+    u64 chunks_made, chunks_gone;
     /* statistics */
     u64 hits, hit_bytes, misses, imports, import_bytes, import_ns, failed, dropped, quiesces, waits;
     u64 written_bytes, barriers, out_waits, published;
@@ -247,6 +266,19 @@ int vk_uma_choose(int has_import, int has_ahb, int has_placed) {
         WARN("vulkan: guest memory in place was asked for, but the device has " UMA_NO_IMPORT
              ": guest memory is copied\n");
     g_uma.migrate = with == VK_UMA_WITH_AHB;
+    /* placed maps: a whole chunk mapped at an address of a window's alignment, given back reserved */
+    if (has_placed && g_vk.mem_path == VK_MEM_PATH_UMA) {
+        VkPhysicalDeviceMapMemoryPlacedFeaturesEXT f = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f};
+        VkPhysicalDeviceMapMemoryPlacedPropertiesEXT p = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+        g_uma.can_place = f.memoryMapPlaced && f.memoryUnmapReserve && p.minPlacedMemoryMapAlignment &&
+                          p.minPlacedMemoryMapAlignment <= MEM_PLACED;
+    }
     LOG("vulkan: the device %s; guest buffers %s (vk_memory=%s%s); VK_EXT_external_memory_host %s, "
         "VK_EXT_map_memory_placed %s\n",
         model_name(g_vk.mem_model),
@@ -259,7 +291,10 @@ int vk_uma_choose(int has_import, int has_ahb, int has_placed) {
         want == 2 && g_vk.mem_model != VK_MEM_UMA ? ", forced: the GPU reads them across the bus"
         : ahb_held                                ? ": AHardwareBuffers only with vk_memory=2"
                                                   : "",
-        has_import ? "yes" : "no", has_placed ? "yes (not used yet)" : "no");
+        has_import ? "yes" : "no",
+        !has_placed       ? "no"
+        : g_uma.can_place ? "yes (the heap off it until vk_uma_placed)"
+                          : "yes, without a whole chunk's placing or its address kept reserved");
     return with;
 }
 
@@ -279,6 +314,7 @@ static void read_done(u64 sub) {
    being set up began, the one being recorded now. A setup that waits for a landing (buffer.c's wait_finish, surface.c's
    flush_wait) submits what it recorded so far, and records the lookup's use in the next submit */
 static u64 last_read(const Imp* m) { return m->sub >= g_uma.seg ? vk_submit_number() : m->sub; }
+static u64 last_bound(const Chunk* c) { return c->sub >= g_uma.seg ? vk_submit_number() : c->sub; }
 static void imp_destroy(const Imp* m) {
     vkDestroyBuffer(g_vk.dev, m->buf, NULL);
     vkFreeMemory(g_vk.dev, m->mem, NULL);
@@ -400,6 +436,205 @@ static u32 imp_find(u64 cpu) {
     }
     return lo;
 }
+/* what a buffer over guest memory is bound as: what the staging ring's buffers are (cmd.c), as callers bind either,
+   written in place and published into too */
+static VkBufferUsageFlags guest_usage(void) {
+    VkBufferUsageFlags u = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                           VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                           VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                           VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (g_vk.has_descriptor_buffers) u |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    if (g_vk.has_xfb) u |= VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT;
+    return u;
+}
+
+/* ------------------------------------------------------------ placed maps */
+/* The heap and physical memory as GPU memory where they are (VK_EXT_map_memory_placed, while vk_uma_placed is on): a
+   window of MEM_PLACED bytes they commit whole is a chunk of host-visible, coherent device memory that the driver maps
+   at its guest address, over the reservation, and the GPU binds with nothing imported. No user pointers for the driver
+   to take again at each submission (amdgpu's), so the rules of the imports above don't apply to it. mem.c commits and
+   decommits its pages through here (mem_set_placed): a page committed again is zeroed then, as the GPU may still read
+   it until its submits are done; a chunk with none committed goes, its address reserved again, and its memory once
+   the submit that last bound it is done. Write tracking leaves its pages alone (vk_uma_import_in): userfaultfd can't
+   register a mapping of the driver's */
+static u32 chunk_find(u64 cpu) { /* the first chunk that ends after cpu */
+    u32 lo = 0, hi = g_uma.nchunk;
+    while (lo < hi) {
+        u32 mid = (lo + hi) / 2;
+        if (g_uma.chunk[mid].cpu + MEM_PLACED <= cpu)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo;
+}
+/* the chunk that holds all of [cpu, cpu + len), or none */
+static Chunk* chunk_of(u64 cpu, u64 len) {
+    u32 i = chunk_find(cpu);
+    return i < g_uma.nchunk && g_uma.chunk[i].cpu <= cpu && cpu + len <= g_uma.chunk[i].cpu + MEM_PLACED
+               ? &g_uma.chunk[i]
+               : NULL;
+}
+static int chunk_meets(u64 lo, u64 hi) {
+    u32 i = chunk_find(lo);
+    return i < g_uma.nchunk && g_uma.chunk[i].cpu < hi;
+}
+static void chunk_destroy(const Chunk* c) {
+    vkDestroyBuffer(g_vk.dev, c->buf, NULL);
+    vkFreeMemory(g_vk.dev, c->mem, NULL);
+}
+/* the chunks given back whose last binding's submit is done go (vk_lock held) */
+static void chunk_reap(void) {
+    u64 submitted, done;
+    vk_submit_progress(&submitted, &done);
+    for (u32 i = g_uma.ncgone; i-- > 0;)
+        if (g_uma.cgone[i].sub <= done) {
+            chunk_destroy(&g_uma.cgone[i]);
+            pm_lock(&g_uma.lk);
+            g_uma.cgone[i] = g_uma.cgone[--g_uma.ncgone];
+            pm_unlock(&g_uma.lk);
+        }
+}
+/* GPU memory for the window at cpu, mapped there over the reservation: 0 when the driver refuses */
+static int chunk_make(Chunk* c, u64 cpu) {
+    VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                              .size = MEM_PLACED,
+                              .usage = guest_usage(),
+                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VkMemoryRequirements req;
+    *c = (Chunk){.cpu = cpu};
+    if (!VK_OK(vkCreateBuffer(g_vk.dev, &bci, NULL, &c->buf))) return 0;
+    vkGetBufferMemoryRequirements(g_vk.dev, c->buf, &req);
+    VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+                                       .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                               .pNext = g_vk.has_descriptor_buffers ? &flags : NULL,
+                               .allocationSize = MEM_PLACED,
+                               .memoryTypeIndex = g_uma.place_type};
+    if (req.size > MEM_PLACED || !((req.memoryTypeBits >> g_uma.place_type) & 1) ||
+        !VK_OK(vkAllocateMemory(g_vk.dev, &ai, NULL, &c->mem))) {
+        vkDestroyBuffer(g_vk.dev, c->buf, NULL);
+        return 0;
+    }
+    VkMemoryMapPlacedInfoEXT pi = {.sType = VK_STRUCTURE_TYPE_MEMORY_MAP_PLACED_INFO_EXT, .pPlacedAddress = GP(cpu)};
+    VkMemoryMapInfoKHR mi = {.sType = VK_STRUCTURE_TYPE_MEMORY_MAP_INFO_KHR,
+                             .pNext = &pi,
+                             .flags = VK_MEMORY_MAP_PLACED_BIT_EXT,
+                             .memory = c->mem,
+                             .size = VK_WHOLE_SIZE};
+    void* at = NULL;
+    if (!VK_OK(vkBindBufferMemory(g_vk.dev, c->buf, c->mem, 0)) || !VK_OK(vkMapMemory2KHR(g_vk.dev, &mi, &at)) ||
+        at != (void*)GP(cpu)) {
+        if (at) {
+            VkMemoryUnmapInfoKHR ui = {.sType = VK_STRUCTURE_TYPE_MEMORY_UNMAP_INFO_KHR,
+                                       .flags = VK_MEMORY_UNMAP_RESERVE_BIT_EXT,
+                                       .memory = c->mem};
+            vkUnmapMemory2KHR(g_vk.dev, &ui);
+        }
+        plat_alias_unmap(GP(cpu), MEM_PLACED); /* the reservation again, whatever a failed map left there */
+        chunk_destroy(c);
+        return 0;
+    }
+    return 1;
+}
+/* the chunk at i given back: its address reserved again, as plat_vm_reserve leaves it (watched for writes again), and
+   its memory the driver's until the submit that last bound it is done (vk_lock held) */
+static u64 last_bound(const Chunk* c);
+static void chunk_give_back(u32 i) {
+    Chunk c = g_uma.chunk[i];
+    VkMemoryUnmapInfoKHR ui = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_UNMAP_INFO_KHR, .flags = VK_MEMORY_UNMAP_RESERVE_BIT_EXT, .memory = c.mem};
+    vkUnmapMemory2KHR(g_vk.dev, &ui);
+    if (plat_alias_unmap(GP(c.cpu), MEM_PLACED))
+        fatal("memory: guest memory %llx+%llx could not be reserved again after its GPU memory went",
+              (unsigned long long)c.cpu, (unsigned long long)MEM_PLACED);
+    c.sub = last_bound(&c);
+    pm_lock(&g_uma.lk);
+    if (g_uma.ncgone == g_uma.capcgone) {
+        u32 cap = g_uma.capcgone ? 2 * g_uma.capcgone : 16;
+        Chunk* n = realloc(g_uma.cgone, sizeof *n * cap);
+        if (!n) fatal("vulkan: out of memory for %u chunks of guest memory to destroy", cap);
+        g_uma.cgone = n;
+        g_uma.capcgone = cap;
+    }
+    g_uma.cgone[g_uma.ncgone++] = c;
+    memmove(&g_uma.chunk[i], &g_uma.chunk[i + 1], sizeof *g_uma.chunk * (size_t)(g_uma.nchunk - i - 1));
+    g_uma.nchunk--;
+    pm_unlock(&g_uma.lk);
+    g_uma.chunks_gone++;
+}
+static void page_bits(Chunk* c, u64 a, u64 size, int on) {
+    for (u64 p = (a - c->cpu) >> 12, e = (a - c->cpu + size + 0xFFF) >> 12; p < e; p++)
+        if (on)
+            c->pages[p >> 6] |= 1ull << (p & 63);
+        else
+            c->pages[p >> 6] &= ~(1ull << (p & 63));
+}
+/* mem.c's hooks, under its lock and vk_lock (mapping_begin), [a, a + size) within one window */
+static int placed_commit(u64 a, u64 size) {
+    u64 w = a & ~(MEM_PLACED - 1);
+    Chunk* c = chunk_of(w, MEM_PLACED);
+    if (c) { /* pages of a chunk committed again: zero, as fresh pages read */
+        if (plat_vm_commit(GP(a), size)) return -1;
+        memset(GP(a), 0, (size_t)size);
+        page_bits(c, a, size, 1);
+        return 0;
+    }
+    if (!g_uma.placed || a != w || size != MEM_PLACED || mem_identity()) return -1;
+    chunk_reap();
+    if (g_uma.nchunk == g_uma.capchunk) {
+        u32 cap = g_uma.capchunk ? 2 * g_uma.capchunk : 64;
+        Chunk* n = realloc(g_uma.chunk, sizeof *n * cap);
+        if (!n) fatal("vulkan: out of memory for %u chunks of guest memory", cap);
+        pm_lock(&g_uma.lk);
+        g_uma.chunk = n;
+        g_uma.capchunk = cap;
+        pm_unlock(&g_uma.lk);
+    }
+    Chunk m;
+    if (!chunk_make(&m, w)) {
+        LOG_LIMIT(8, "vulkan: guest memory %llx+%llx could not be GPU memory where it is: host pages there\n",
+                  (unsigned long long)w, (unsigned long long)MEM_PLACED);
+        return -1;
+    }
+    memset(GP(w), 0, (size_t)MEM_PLACED); /* the driver's memory may hold anything */
+    memset(m.pages, 0xFF, sizeof m.pages);
+    u32 i = chunk_find(w);
+    pm_lock(&g_uma.lk);
+    memmove(&g_uma.chunk[i + 1], &g_uma.chunk[i], sizeof *g_uma.chunk * (size_t)(g_uma.nchunk - i));
+    g_uma.chunk[i] = m;
+    g_uma.nchunk++;
+    pm_unlock(&g_uma.lk);
+    g_uma.chunks_made++;
+    return 0;
+}
+static int placed_decommit(u64 a, u64 size) {
+    u64 w = a & ~(MEM_PLACED - 1);
+    Chunk* c = chunk_of(w, MEM_PLACED);
+    if (!c) return 0;
+    plat_vm_decommit(GP(a), size); /* inaccessible: what it held stays, for the GPU's reads still to run */
+    page_bits(c, a, size, 0);
+    for (u32 k = 0; k < sizeof c->pages / sizeof *c->pages; k++)
+        if (c->pages[k]) return 1;
+    chunk_give_back((u32)(c - g_uma.chunk));
+    return 1;
+}
+static int placed_held(u64 a, u64 size) {
+    pm_lock(&g_uma.lk);
+    int r = g_uma.nchunk && chunk_meets(a, a + size);
+    pm_unlock(&g_uma.lk);
+    return r;
+}
+static const MemPlaced g_placed_hooks = {placed_commit, placed_decommit, placed_held};
+int vk_uma_can_place(void) { return g_uma.can_place; }
+int vk_uma_placed(int on) {
+    int was = g_uma.placed;
+    g_uma.placed = on && g_uma.can_place;
+    return was;
+}
+int vk_uma_placed_at(u64 cpu, u64 len) { return g_uma.nchunk && chunk_of(cpu, len); }
+
 /* m's buffer over guest memory [cpu, cpu + size), in memory the driver imports: import, an import info of handle type
    type, in a memory type that bits allows, alloc bytes of it. 0 when the driver refused it */
 static int imp_bind(Imp* m, u64 cpu, u64 size, VkExternalMemoryHandleTypeFlagBits type, const void* import, u32 bits,
@@ -409,15 +644,8 @@ static int imp_bind(Imp* m, u64 cpu, u64 size, VkExternalMemoryHandleTypeFlagBit
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                               .pNext = &ext,
                               .size = size,
-                              /* what the staging ring's buffers are bound as (cmd.c), as callers bind either */
-                              .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_TRANSFER_DST_BIT, /* written in place, and published into */
+                              .usage = guest_usage(),
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    if (g_vk.has_descriptor_buffers) bci.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    if (g_vk.has_xfb) bci.usage |= VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT;
     VkMemoryRequirements req;
     const VkPhysicalDeviceMemoryProperties* mp;
     *m = (Imp){.cpu = cpu, .size = size, .used = g_vk_present, .fd = -1};
@@ -550,8 +778,10 @@ static int imp_can(u64 lo, u64 hi) {
 static u32 imp_get(u64 cpu, u64 len) {
     u32 i = imp_find(cpu);
     if (i < g_uma.nimp && g_uma.imp[i].cpu <= cpu && cpu + len <= g_uma.imp[i].cpu + g_uma.imp[i].size) return i;
-    /* the windows the range touches, and the imports they meet, as one import */
+    /* the windows the range touches, and the imports they meet, as one import. Not over a chunk of placed memory,
+       which the driver maps already: a range across its edge is copied */
     u64 lo = cpu & ~(UMA_WINDOW - 1), hi = (cpu + len + UMA_WINDOW - 1) & ~(UMA_WINDOW - 1);
+    if (g_uma.nchunk && chunk_meets(lo, hi)) return ~0u;
     u32 first = imp_find(lo), last = first;
     while (last < g_uma.nimp && g_uma.imp[last].cpu < hi) {
         if (g_uma.imp[last].cpu < lo) lo = g_uma.imp[last].cpu;
@@ -624,8 +854,24 @@ int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
 }
 /* guest memory [cpu, cpu + len) bound where it is (vk_lock held): the import's buffer and the offset in it, stamped
    with the submit being recorded */
+static Chunk* chunk_of(u64 cpu, u64 len);
 static int bind(u64 cpu, u64 len, u64 align, VkBuffer* buf, u64* off) {
     drop_dead();
+    Chunk* c = g_uma.nchunk ? chunk_of(cpu, len) : NULL;
+    if (c) { /* GPU memory where it is: nothing to import */
+        if ((cpu - c->cpu) % (align ? align : 1)) {
+            g_uma.misses++;
+            return 0;
+        }
+        c->sub = vk_submit_number();
+        *buf = c->buf;
+        *off = cpu - c->cpu;
+        g_uma.bound = vk_submit_number();
+        g_uma.hits++;
+        g_uma.hit_bytes += len;
+        hz_mark(cpu, len);
+        return 1;
+    }
     u32 i = imp_get(cpu, len);
     if (i == ~0u || ((cpu - g_uma.imp[i].cpu) % (align ? align : 1))) {
         g_uma.misses++;
@@ -776,6 +1022,7 @@ void vk_uma_mem_need_cpu(u64 cpu, u64 len) {
 void vk_uma_gpu_reads(int on) { t_uma.gpu_reads = on; }
 int vk_uma_held(u64 cpu, u64 len) {
     if (!vk_uma() || !len) return 0;
+    if (g_uma.nchunk && chunk_of(cpu, len)) return 1;
     drop_dead();
     u32 i = imp_find(cpu);
     return i < g_uma.nimp && g_uma.imp[i].cpu <= cpu && cpu + len <= g_uma.imp[i].cpu + g_uma.imp[i].size;
@@ -855,12 +1102,38 @@ void vk_uma_init(void) {
     }
     mem_set_pages_replaced(pages_replaced);
     gpu_set_write_watch(gpu_wrote);
+    if (g_uma.can_place) {
+        /* the chunks' memory: host-visible and coherent (the guest's CPU and the GPU see each other's writes with no
+           flush), cached where a type is */
+        const VkPhysicalDeviceMemoryProperties* mp;
+        u32 want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, type = ~0u;
+        vmaGetMemoryProperties(g_vk.vma, &mp);
+        /* not AMD's device-coherent or uncached types, which want a feature of their own, nor protected memory */
+        u32 skip = VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD | VK_MEMORY_PROPERTY_DEVICE_UNCACHED_BIT_AMD |
+                   VK_MEMORY_PROPERTY_PROTECTED_BIT | VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
+        for (u32 t = 0; t < mp->memoryTypeCount; t++) {
+            VkMemoryPropertyFlags f = mp->memoryTypes[t].propertyFlags;
+            if ((f & want) == want && !(f & skip) &&
+                (type == ~0u || ((f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) &&
+                                 !(mp->memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT))))
+                type = t;
+        }
+        g_uma.can_place = type != ~0u;
+        g_uma.place_type = type;
+        if (g_uma.can_place) mem_set_placed(&g_placed_hooks);
+        LOG("vulkan: placed maps: %s\n", g_uma.can_place
+                                             ? (mp->memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT
+                                                    ? "memory type cached and coherent"
+                                                    : "memory type coherent, not cached")
+                                             : "no memory type the CPU maps coherent: none");
+    }
 }
 /* each present (vk_lock held): imports unused for long go, and every 600 presents the statistics */
 void vk_uma_frame(void) {
     if (!vk_uma()) return;
     drop_dead();
     gone_reap();
+    chunk_reap();
     if (g_vk_present % 60 == 0)
         for (u32 i = g_uma.nimp; i-- > 0;)
             if ((u32)(g_vk_present - g_uma.imp[i].used) > UMA_IDLE) imp_let_go(i);
@@ -870,8 +1143,8 @@ void vk_uma_frame(void) {
     LOG("vulkan: in place over 600 presents: %llu ranges (%llu MB bound) read in guest memory, %llu copied; %llu "
         "imports made (%llu MB, %llu ms), %llu spans refused, %llu dropped; %u imports hold %llu MB; %llu hazards (a "
         "GPU-side write on a page that unfinished work reads in place); %llu waits for that work before a trap or a "
-        "remap, %llu before a write of the runtime's; %llu MB written in place (%llu MB of them engines' results), %llu "
-        "barriers for it, %llu waits for it\n",
+        "remap, %llu before a write of the runtime's; %llu MB written in place (%llu MB of them engines' results), "
+        "%llu barriers for it, %llu waits for it; %u chunks GPU memory where they are (%llu made, %llu given back)\n",
         (unsigned long long)g_uma.hits, (unsigned long long)(g_uma.hit_bytes >> 20), (unsigned long long)g_uma.misses,
         (unsigned long long)g_uma.imports, (unsigned long long)(g_uma.import_bytes >> 20),
         (unsigned long long)(g_uma.import_ns / 1000000), (unsigned long long)g_uma.failed,
@@ -879,10 +1152,11 @@ void vk_uma_frame(void) {
         (unsigned long long)__atomic_load_n(&g_uma.hazards, __ATOMIC_RELAXED), (unsigned long long)g_uma.quiesces,
         (unsigned long long)g_uma.waits, (unsigned long long)(g_uma.written_bytes >> 20),
         (unsigned long long)(g_uma.published >> 20), (unsigned long long)g_uma.barriers,
-        (unsigned long long)g_uma.out_waits);
+        (unsigned long long)g_uma.out_waits, g_uma.nchunk, (unsigned long long)g_uma.chunks_made,
+        (unsigned long long)g_uma.chunks_gone);
     g_uma.hits = g_uma.hit_bytes = g_uma.misses = g_uma.imports = g_uma.import_bytes = g_uma.import_ns = g_uma.failed =
         g_uma.dropped = g_uma.quiesces = g_uma.waits = g_uma.written_bytes = g_uma.barriers = g_uma.out_waits =
-            g_uma.published = 0;
+            g_uma.published = g_uma.chunks_made = g_uma.chunks_gone = 0;
     __atomic_store_n(&g_uma.hazards, 0, __ATOMIC_RELAXED);
 }
 /* Guest memory [cpu, cpu + size) (size ~0: all of it) is about to be trapped (a GPU result published over it,
@@ -945,6 +1219,11 @@ u64 vk_uma_import_in(u64 cpu, u64 end, u64* hi) {
     if (i < g_uma.nimp && g_uma.imp[i].cpu < end) {
         lo = g_uma.imp[i].cpu > cpu ? g_uma.imp[i].cpu : cpu;
         *hi = g_uma.imp[i].cpu + g_uma.imp[i].size;
+    }
+    i = chunk_find(cpu); /* GPU memory where it is: no scan watches it either */
+    if (i < g_uma.nchunk && g_uma.chunk[i].cpu < end && (g_uma.chunk[i].cpu > cpu ? g_uma.chunk[i].cpu : cpu) < lo) {
+        lo = g_uma.chunk[i].cpu > cpu ? g_uma.chunk[i].cpu : cpu;
+        *hi = g_uma.chunk[i].cpu + MEM_PLACED;
     }
     for (u32 k = 0; k < g_uma.ngone; k++) {
         const Imp* g = &g_uma.gone[k];

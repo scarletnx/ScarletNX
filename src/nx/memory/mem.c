@@ -224,6 +224,16 @@ static void pages_replaced_nl(u64 a, u64 size) {
     void (*fn)(u64, u64) = __atomic_load_n(&g_pages_replaced, __ATOMIC_ACQUIRE);
     if (fn) fn(a, size);
 }
+/* the renderer's GPU memory under the heap (mem_set_placed): set once, as the device is made, before the game's
+   threads */
+static const MemPlaced* g_placed;
+void mem_set_placed(const MemPlaced* p) { g_placed = p; }
+static int placed_nl(u64 a, u64 size) { return g_placed && size && g_placed->held(a, size); }
+/* the end of the window of MEM_PLACED bytes a is in, or end when sooner */
+static u64 window_end(u64 a, u64 end) {
+    u64 hi = (a | (MEM_PLACED - 1)) + 1;
+    return hi < end && hi > a ? hi : end;
+}
 static u64 blk_end(const MemBlock* b) { return b->addr + b->size; }
 /* b follows a: they join when alike, the pool's pages continuing from a's when they are the pool's */
 static int blk_same(const MemBlock* a, const MemBlock* b) {
@@ -334,11 +344,12 @@ static int data_state(u32 st) {
     return st != MS_FREE && st != MS_CODE && st != MS_ALIASCODE && st != MS_SHAREDCODE && st != MS_GENCODE &&
            st != MS_CODEOUT && st != MS_IO && st != MS_KERNEL && st != MS_INACCESSIBLE && st != MS_TLS;
 }
-/* [a, a + size) is all the guest's data on the reservation's own pages: not the pool's, which other mappings share */
+/* [a, a + size) is all the guest's data on the reservation's own pages: not the pool's, which other mappings share, nor
+   a placed window's, which are the renderer's memory already */
 static int movable_nl(u64 a, u64 size) {
     u64 end = a + size;
     u32 i;
-    if (!g_nblk) return 0;
+    if (!g_nblk || placed_nl(a, size)) return 0;
     for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++)
         if (g_blk[i].pool || !data_state(g_blk[i].state)) return 0;
     return 1;
@@ -361,6 +372,12 @@ static int ext_room_nl(u32 more) {
     if (!v) return -1;
     g_ext.run = v;
     g_ext.cap = cap;
+    return 0;
+}
+/* whether a page of [a, b) is a buffer's */
+static int ext_meets_nl(u64 a, u64 b) {
+    for (u32 i = 0; i < g_ext.n; i++)
+        if (g_ext.run[i].a < b && a < g_ext.run[i].b) return 1;
     return 0;
 }
 /* [a, b) isn't a buffer's any more: the runs over it cut around it */
@@ -407,14 +424,43 @@ static int commit_nl(u64 a, u64 size) {
     u64 mask = g_host_page - 1, lo = a & ~mask, hi = (a + size + mask) & ~mask;
     return plat_vm_commit(GP(lo), hi - lo);
 }
+static void decommit_nl(u64 a, u64 size);
+/* the heap's and physical memory's: the renderer's GPU memory where it takes the window (mem_set_placed), host pages
+   elsewhere. Nothing of it stays committed when it fails */
+static int commit_heap_nl(u64 a, u64 size) {
+    const MemPlaced* p = g_placed;
+    u64 end = a + size, at = a;
+    if (!p) return commit_nl(a, size);
+    while (at < end) {
+        u64 hi = window_end(at, end), wlo = at & ~(MEM_PLACED - 1);
+        if ((ext_meets_nl(wlo, wlo + MEM_PLACED) || p->commit(at, hi - at)) && commit_nl(at, hi - at)) {
+            if (at > a) decommit_nl(a, at - a);
+            return -1;
+        }
+        at = hi;
+    }
+    return 0;
+}
 /* [a, a + size), free in the block list now, given back: the host pages left with no mapped guest page decommitted,
    and in a host page a neighbour still maps, the range's part zeroed, as fresh pages read when mapped again */
+static void decommit_host_nl(u64 a, u64 size);
 static void decommit_nl(u64 a, u64 size) {
-    u64 mask = g_host_page - 1, end = a + size, first = a & ~mask, last = (end - 1) & ~mask, edge[2];
-    int i, n = 0;
     runs_stale_nl();
     pages_replaced_nl(a, size);
     own_drop(a, size);
+    if (placed_nl(a, size)) { /* the renderer's windows go back to it, the rest as host pages */
+        const MemPlaced* p = g_placed;
+        for (u64 at = a, end = a + size, hi; at < end; at = hi) {
+            hi = window_end(at, end);
+            if (!p->decommit(at, hi - at)) decommit_host_nl(at, hi - at);
+        }
+        return;
+    }
+    decommit_host_nl(a, size);
+}
+static void decommit_host_nl(u64 a, u64 size) {
+    u64 mask = g_host_page - 1, end = a + size, first = a & ~mask, last = (end - 1) & ~mask, edge[2];
+    int i, n = 0;
     if (!((a | end) & mask)) { /* whole host pages, all of them free */
         give_back_nl(a, size);
         return;
@@ -581,8 +627,16 @@ static void unmap_nl(u64 a, u64 size) {
             if (plat_alias_unmap(GP(lo), hi - lo))
                 fatal("Could not unmap %llu KiB of guest memory from the alias pool",
                       (unsigned long long)((hi - lo) >> 10));
-        } else if (g_host_page == PAGE)
-            give_back_nl(lo, hi - lo);
+        } else if (g_host_page == PAGE) {
+            const MemPlaced* p = g_placed;
+            if (!placed_nl(lo, hi - lo))
+                give_back_nl(lo, hi - lo);
+            else /* the renderer's windows go back to it */
+                for (u64 at = lo, w; at < hi; at = w) {
+                    w = window_end(at, hi);
+                    if (!p->decommit(at, w - at)) give_back_nl(at, w - at);
+                }
+        }
     }
     blk_set_nl(a, size, MS_FREE, PERM_NONE, 0);
     if (g_host_page != PAGE) decommit_nl(a, size); /* no pool with larger pages (mem_init) */
@@ -605,7 +659,8 @@ static int host_view_nl(u64 off, u64 size);
 static int promote_nl(u64 a, u64 size) {
     u64 end = a + size, off;
     u32 i;
-    if (!g_pool_on || pool_run_nl(a, size)) return 0;
+    /* the renderer's GPU memory stays where it is: views of it are copies, as without a pool */
+    if (!g_pool_on || pool_run_nl(a, size) || placed_nl(a, size)) return 0;
     for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
         const MemBlock* b = &g_blk[i];
         u64 lo, hi, boff;
@@ -1116,6 +1171,7 @@ int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
     *n = 0;
     if (!g_pool_on || (a | size) & (PAGE - 1) || !size || a < AS_BASE || end > AS_END) return -1;
     mem_lock();
+    if (placed_nl(a, size)) goto out; /* the renderer's GPU memory isn't trapped: what it gets lands at once */
     for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
         const MemBlock* b = &g_blk[i];
         if (!data_state(b->state)) goto out;
@@ -1334,7 +1390,7 @@ int mem_heap_set(u64 size, u64 budget) {
             r = MEM_LIMIT;
         else if (!range_is_nl(a, grow, MS_FREE, ANY, ANY))
             r = MEM_BADSTATE;
-        else if (commit_nl(a, grow))
+        else if (commit_heap_nl(a, grow))
             r = MEM_NOMEM;
         else {
             blk_set_nl(a, grow, MS_NORMAL, PERM_RW, 0);
@@ -1381,7 +1437,7 @@ int mem_map_physical(u64 addr, u64 size, u64 budget) {
         while (a < end && !r) {
             u32 k = blk_index_nl(a);
             u64 hi = blk_end(&g_blk[k]) < end ? blk_end(&g_blk[k]) : end;
-            if (g_blk[k].state == MS_FREE && commit_nl(a, hi - a)) r = MEM_NOMEM;
+            if (g_blk[k].state == MS_FREE && commit_heap_nl(a, hi - a)) r = MEM_NOMEM;
             if (!r) done = hi;
             a = hi;
         }
