@@ -699,17 +699,24 @@ static int nn_visrv_sf_IManagerDisplayService_AcquireLayerTexturePresentingEvent
 }
 static int nn_visrv_sf_IManagerDisplayService_GetDisplayHotplugEvent(SvcObj* self, u64 display_id, u32* event) {
     (void)self, (void)display_id;
-    return new_event(event, "vi:display hotplug", 0);
+    *event = ev_handle(g_hle.vi.hotplug);
+    R_SUCCEED();
 }
 static int nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(SvcObj* self, u64 display_id, u32* event) {
     (void)self, (void)display_id;
-    return new_event(event, "vi:display mode changed", 0);
+    *event = ev_handle(g_hle.vi.mode_changed);
+    R_SUCCEED();
 }
 
 /* ============================================================ the display */
-/* the main loop's 60 Hz: the display's vsync */
+/* the main loop's 60 Hz: the display's vsync, and the mode and hotplug events when docked's Auto changed the mode */
 void vi_vsync_tick(void) {
     if (g_hle.vi.vsync) ev_signal(g_hle.vi.vsync);
+    if (g_settings.tv_mode != g_hle.vi.tv_mode) {
+        g_hle.vi.tv_mode = g_settings.tv_mode;
+        ev_signal(g_hle.vi.mode_changed);
+        ev_signal(g_hle.vi.hotplug);
+    }
 }
 
 static SvcObj* new_vi_u(void) { return nn_visrv_sf_IApplicationRootService_new(); }
@@ -719,6 +726,9 @@ void svc_vi_init(void) {
     pm_init(&g_host.vi.lock);
     pc_init(&g_host.vi.freed);
     g_hle.vi.vsync = owned_event("vi:vsync");
+    g_hle.vi.mode_changed = owned_event("vi:display mode changed");
+    g_hle.vi.hotplug = owned_event("vi:display hotplug");
+    g_hle.vi.tv_mode = g_settings.tv_mode; /* the mode the game starts in is no change */
     nn_visrv_sf_IApplicationRootService_register(new_vi_u);
     nn_visrv_sf_ISystemRootService_register(new_vi_s);
     nn_visrv_sf_IManagerRootService_register(new_vi_m);
