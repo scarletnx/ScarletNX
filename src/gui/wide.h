@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The wide letters the menu draws, two columns each: GNU Unifont's 16x16 glyphs of what the menu's languages show past
-   CP437 and the Latin letters (src/gui/unifont-wide.hex, compiled in by scripts/build-glyphs.py;
-   src/gui/FONT-NOTICE.txt). And the columns text takes as the menu draws it, which every width, cut and slide of it
-   counts in */
+   CP437, the Latin letters and the titles' blocks (src/gui/unifont-wide.hex, compiled in by scripts/build-glyphs.py;
+   src/gui/FONT-NOTICE.txt), and the titles' own (titles.h). And the columns text takes as the menu draws it, which
+   every width, cut and slide of it counts in */
 #ifndef SNX_GUI_WIDE_H
 #define SNX_GUI_WIDE_H
 #include <stddef.h>
@@ -19,8 +19,8 @@ int gui_glyph_cols(int c);
 int gui_glyph_count(void);
 /* the 16 rows of glyph c, as gui_vga_font's: of a wide letter or an icon, the half c is */
 const uint8_t* gui_glyph_rows(int c);
-/* the wide letters, and glyph c's place among them (its left half's): -1 for a glyph that is none, CP437's, a Latin
-   letter's or an icon's */
+/* the wide letters, the languages' then the titles' 16x16 ones, and glyph c's place among them (its left half's): -1
+   for a glyph that is none, CP437's, a Latin letter's, an icon's or a title's 8x16 one */
 int gui_wide_letters(void);
 int gui_wide_letter(int c);
 /* the code point of the wide letter at place */

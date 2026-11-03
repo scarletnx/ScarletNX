@@ -282,9 +282,10 @@ enum {
 /* the wide letters the font's texture holds at once, two cells each: a screen full of them at 1x, 80 columns by 45 rows,
    fits. More on a screen than that and a frame puts some in again as it draws them */
 #define GUI_GLYPH_SLOTS 2048
-/* The font's texture: the glyphs every screen draws (CP437's, the Latin letters, the icons) at cells of their own, then
-   slots of two cells the wide letters take as they are drawn (font_cell), the one drawn longest ago giving way: the
-   texture stays the same small size whatever the number of wide letters the font has */
+/* The font's texture: the glyphs every screen draws (CP437's, the Latin letters, the icons, the titles' 8x16 ones) at
+   cells of their own, then slots of two cells the wide letters (the titles' 32649 among them) take as they are drawn
+   (font_cell), the one drawn longest ago giving way: the texture stays the same small size whatever the number of wide
+   letters the font has */
 typedef struct {
     int fixed;   /* the cells before the slots, whole rows of them */
     int slots;   /* GUI_GLYPH_SLOTS, fewer where the renderer's textures are smaller */

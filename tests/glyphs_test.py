@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""scripts/build-glyphs.py: the Latin letters and the wide ones it keeps from a Unifont .hex, the check of what it
-kept, and the C."""
+"""scripts/build-glyphs.py: the Latin letters, the titles' blocks and the wide letters it keeps from a Unifont .hex,
+the check of what it kept, and the C."""
 
 import gzip
 import importlib.util
@@ -29,6 +29,9 @@ def halves(cp):
     return f'{cp:04X}:' + ''.join(f'{r:02X}{r | 0x80:02X}' for r in range(16)) + '\n'
 
 
+TITLES = [glyph(cp, True) for cp in bg.titles_wanted()]  # a font's titles' blocks, every one 16x16
+
+
 class Glyphs(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory(prefix='snx-glyphs-')
@@ -38,14 +41,17 @@ class Glyphs(unittest.TestCase):
         (self.root / 'src/common/utilities').mkdir(parents=True)
         shutil.copy(ROOT / bg.FONT, self.root / bg.FONT)
         (self.root / bg.WIDE_KEPT).write_text('')  # no language shows a wide letter
+        (self.root / bg.TITLES_KEPT).write_text(''.join(TITLES))
         self.unifont = self.root / 'unifont.hex.gz'
 
     def run_script(self, *args):
         return subprocess.run([sys.executable, str(SCRIPT), '--root', str(self.root), *args], capture_output=True)
 
-    def write_unifont(self, lines):
+    def write_unifont(self, lines, titles=True):
+        """a Unifont .hex of lines, then (titles) the titles' blocks' unless lines has them already"""
+        points = {int(line.split(':')[0], 16) for line in lines if ':' in line}
         with gzip.open(self.unifont, 'wt', encoding='ascii') as f:
-            f.writelines(lines)
+            f.writelines(lines + [g for g in TITLES if titles and int(g[: g.index(':')], 16) not in points])
 
     def refused(self, says, *args):
         """the script run with args fails, saying says"""
@@ -113,35 +119,46 @@ class Glyphs(unittest.TestCase):
         points = bg.wide_wanted(ROOT)
         kept = bg.read_hex((ROOT / bg.WIDE_KEPT).read_text().splitlines(), bg.WIDE_KEPT)
         self.assertEqual(sorted(kept), points)
-        self.assertTrue({0x83DC, 0x5355} <= set(points))  # tests/po/xx.po's Menu
         self.assertTrue(all(len(rows) == 64 for rows in kept.values()))
-        self.assertFalse(set(points) & (bg.codepage(ROOT) | set(bg.wanted(ROOT))))
+        self.assertFalse(set(points) & (bg.codepage(ROOT) | set(bg.wanted(ROOT)) | set(bg.titles_wanted())))
+        self.assertTrue({0x83DC, 0x5355} <= set(bg.titles_wanted()))  # tests/po/xx.po's Menu: the titles' glyphs
+
+    def test_the_titles_kept(self):
+        kept = bg.read_hex((ROOT / bg.TITLES_KEPT).read_text().splitlines(), bg.TITLES_KEPT)
+        self.assertEqual(sorted(kept), bg.titles_wanted())
+        self.assertEqual(len(kept), 32772)  # Unifont 18.0.01's: 32649 16x16, 123 8x16
+        narrow = {cp for cp, rows in kept.items() if len(rows) == 32}
+        self.assertEqual(len(narrow), 123)
+        self.assertTrue({0x303F, 0xFF61, 0xFF9F, 0xFFE8} <= narrow)  # the halfwidth forms, and U+303F
+        self.assertFalse({0x3000, 0x3042, 0x30AB, 0x4E00, 0x9FFF, 0xAC00, 0xD7A3, 0xFF21} & narrow)
+        self.assertFalse(set(kept) & (bg.codepage(ROOT) | set(bg.wanted(ROOT))))
+        self.assertNotIn(0x3400, kept)  # no Extension A
 
     def test_wide_from_check_and_the_c(self):
         latin = bg.wanted(self.root)
         # what the languages show: a name and translations, the menu's and the tests', not a fuzzy one nor ASCII nor
-        # a letter CP437 or the Latin ones draw
-        self.write_po('po', 'zh-Hans-CN', [('Menu', '\u83dc\u5355', False), ('Exit', '\u9000', True)], '\u4e2d\u6587')
-        self.write_po('tests/po', 'xx', [('Back', 'Voltar\\n\u00e3 \u00e7 \u4e0a', False)])
-        points = [0x4E0A, 0x4E2D, 0x6587, 0x83DC, 0x5355]
+        # a letter CP437, the Latin ones or the titles' blocks draw (U+83DC); Yi syllables, as Unifont draws them wide
+        self.write_po('po', 'ii', [('Menu', '\ua000\ua001\u83dc', False), ('Exit', '\ua010', True)], '\ua002\ua003')
+        self.write_po('tests/po', 'xx', [('Back', 'Voltar\\n\u00e3 \u00e7 \ua004', False)])
+        points = [0xA004, 0xA002, 0xA003, 0xA000, 0xA001]
         self.assertEqual(bg.wide_wanted(self.root), sorted(points))
-        unifont = [glyph(cp) for cp in latin] + [glyph(cp, True) for cp in points + [0x9000, 0x4E00] if cp != 0x4E2D]
-        unifont.append(halves(0x4E2D))
+        unifont = [glyph(cp) for cp in latin] + [glyph(cp, True) for cp in points + [0xA010] if cp != 0xA002]
+        unifont.append(halves(0xA002))
         self.write_unifont(unifont)
         self.assertEqual(self.run_script('--from', str(self.unifont)).returncode, 0)
-        kept = [halves(cp) if cp == 0x4E2D else glyph(cp, True) for cp in sorted(points)]
+        kept = [halves(cp) if cp == 0xA002 else glyph(cp, True) for cp in sorted(points)]
         self.assertEqual((self.root / bg.WIDE_KEPT).read_text(), ''.join(kept))
         self.assertEqual(self.run_script('--check').returncode, 0)
         out = self.root / 'gui_glyphs.c'
         self.assertEqual(self.run_script('--out', str(out)).returncode, 0)
         text = out.read_text()
         self.assertIn('const int gui_wide_count = 5;', text)
-        self.assertIn('0x004e0a, 0x004e2d, 0x005355, 0x006587, 0x0083dc,', text)
-        self.assertIn(' '.join(f'0x{r:02x},' for r in range(16)) + ' /* U+4E2D, left */', text)
-        self.assertIn(' '.join(f'0x{r | 0x80:02x},' for r in range(16)) + ' /* U+4E2D, right */', text)
+        self.assertIn('0x00a000, 0x00a001, 0x00a002, 0x00a003, 0x00a004,', text)
+        self.assertIn(' '.join(f'0x{r:02x},' for r in range(16)) + ' /* U+A002, left */', text)
+        self.assertIn(' '.join(f'0x{r | 0x80:02x},' for r in range(16)) + ' /* U+A002, right */', text)
         self.assertTrue(text.isascii())
         # none shown: arrays of one, C having no empty ones
-        (self.root / 'po/zh-Hans-CN.po').unlink()
+        (self.root / 'po/ii.po').unlink()
         (self.root / 'tests/po/xx.po').unlink()
         self.assertEqual(self.run_script('--from', str(self.unifont)).returncode, 0)
         self.assertEqual((self.root / bg.WIDE_KEPT).read_text(), '')
@@ -152,35 +169,90 @@ class Glyphs(unittest.TestCase):
         latin = bg.wanted(self.root)
         self.write_unifont([glyph(cp) for cp in latin])
         self.assertEqual(self.run_script('--from', str(self.unifont)).returncode, 0)
-        self.write_po('po', 'zh-Hans-CN', [('Menu', '\u83dc\u5355', False)])
+        self.write_po('po', 'ii', [('Menu', '\ua000\ua001', False)])
         wide = self.root / bg.WIDE_KEPT
-        lines = [glyph(0x5355, True), glyph(0x83DC, True)]
+        lines = [glyph(0xA000, True), glyph(0xA001, True)]
         wide.write_text(''.join(lines))
         self.assertEqual(self.run_script('--check').returncode, 0)
         for broken, says in (
-            (lines[1:], 'no glyph for U+5355, which a language shows'),  # a letter the .po took up
-            (lines + [glyph(0x9000, True)], 'U+9000 is in it, which no language shows'),
-            (lines[::-1], ":1: '83DC:DC' where the line of U+5355 goes"),
+            (lines[1:], 'no glyph for U+A000, which a language shows'),  # a letter the .po took up
+            (lines + [glyph(0xA010, True)], 'U+A010 is in it, which no language shows'),
+            (lines + [glyph(0xAC00, True)], f'U+AC00 is in it, which {bg.TITLES_KEPT} holds'),
+            (lines[::-1], ":1: 'A001:01' where the line of U+A000 goes"),
             (lines + lines[1:], '3 lines, not the 2 of its glyphs'),  # one twice
-            (lines[:1] + [glyph(0x83DC)], 'U+83DC is 8x16 in it, not 16x16'),
+            (lines[:1] + [glyph(0xA001)], 'U+A001 is 8x16 in it, not 16x16'),
         ):
             wide.write_text(''.join(broken))
             self.refused(says, '--check')
 
     def test_wide_from_refuses(self):
         latin = [glyph(cp) for cp in bg.wanted(self.root)]
-        self.write_po('po', 'zh-Hans-CN', [('Menu', '\u83dc\u5355', False)])
-        self.write_unifont(latin + [glyph(0x83DC, True)])  # one the font lacks
-        self.refused('no glyph for U+5355, which a language shows', '--from', str(self.unifont))
-        self.write_po('po', 'zh-Hans-CN', [('Menu', '\u83dc \u2026', False)])  # one it draws 8 wide: a block for RANGES
-        self.write_unifont(latin + [glyph(0x83DC, True), glyph(0x2026)])
+        self.write_po('po', 'ii', [('Menu', '\ua000\ua001', False)])
+        self.write_unifont(latin + [glyph(0xA000, True)])  # one the font lacks
+        self.refused('no glyph for U+A001, which a language shows', '--from', str(self.unifont))
+        self.write_po('po', 'ii', [('Menu', '\ua000 \u2026', False)])  # one it draws 8 wide: a block for RANGES
+        self.write_unifont(latin + [glyph(0xA000, True), glyph(0x2026)])
         self.refused('U+2026 is 8x16 in it, not 16x16: its block goes in RANGES', '--from', str(self.unifont))
-        self.write_po('po', 'zh-Hans-CN', [('Menu', '\u83dc\u00ad', False)])  # Latin's left out: not a wide one
-        self.write_unifont(latin + [glyph(0x83DC, True), glyph(0xAD, True)])
+        self.write_po('po', 'ii', [('Menu', '\ua000\u00ad', False)])  # Latin's left out: not a wide one
+        self.write_unifont(latin + [glyph(0xA000, True), glyph(0xAD, True)])
         self.assertEqual(self.run_script('--from', str(self.unifont)).returncode, 0)
-        self.assertEqual((self.root / bg.WIDE_KEPT).read_text(), glyph(0x83DC, True))
-        (self.root / 'po/zh-Hans-CN.po').write_text('msgid "x"\nmsgctxt "y"\n')  # a .po the languages' script refuses
+        self.assertEqual((self.root / bg.WIDE_KEPT).read_text(), glyph(0xA000, True))
+        (self.root / 'po/ii.po').write_text('msgid "x"\nmsgctxt "y"\n')  # a .po the languages' script refuses
         self.refused('build-glyphs.py: ', '--from', str(self.unifont))
+
+    def test_titles_from_check_and_the_c(self):
+        latin = [glyph(cp) for cp in bg.wanted(self.root)]
+        # the titles' blocks whatever the languages show: a halfwidth form 8x16, an ideograph whose halves differ
+        self.write_unifont(latin + [halves(0x4E00), glyph(0xFF61)])
+        self.assertEqual(self.run_script('--from', str(self.unifont)).returncode, 0)
+        kept = [halves(cp) if cp == 0x4E00 else glyph(cp, cp != 0xFF61) for cp in bg.titles_wanted()]
+        self.assertEqual((self.root / bg.TITLES_KEPT).read_text(), ''.join(kept))
+        self.assertEqual((self.root / bg.WIDE_KEPT).read_text(), '')
+        self.assertEqual(self.run_script('--check').returncode, 0)
+        self.assertEqual(self.run_script('--check', '--from', str(self.unifont)).returncode, 0)
+        out = self.root / 'gui_titles.c'
+        self.assertEqual(self.run_script('--titles-out', str(out)).returncode, 0)
+        text = out.read_text()
+        self.assertIn('const int gui_title_run_count = 8;', text)  # the blocks apart, the halfwidth one in three
+        self.assertIn('    {0x003000, 0x0030ff, 1, 0},\n    {0x003130, 0x00318f, 1, 256},\n', text)
+        self.assertIn('{0x00ff00, 0x00ff60, 1, 32532},\n    {0x00ff61, 0x00ff61, 0, 0},\n', text)
+        self.assertIn('    {0x00ff62, 0x00ffef, 1, 32629},\n};', text)
+        self.assertIn('const int gui_title_narrow_count = 1;\nconst int gui_title_wide_count = 32771;', text)
+        self.assertIn(' '.join(['0x61,'] * 16) + ' /* U+FF61 */', text)
+        left, right = (' '.join(f'0x{r | top:02x},' for r in range(16)) for top in (0, 0x80))
+        self.assertIn(f'{left} {right} /* U+4E00 */', text)
+        self.assertTrue(text.isascii())
+
+    def test_titles_check_refuses(self):
+        self.write_unifont([glyph(cp) for cp in bg.wanted(self.root)])
+        self.assertEqual(self.run_script('--from', str(self.unifont)).returncode, 0)
+        titles = self.root / bg.TITLES_KEPT
+        self.assertEqual(titles.read_text(), ''.join(TITLES))
+        self.assertEqual(self.run_script('--check').returncode, 0)
+        at = bg.titles_wanted().index(0x4E01)
+        for broken, says in (
+            (TITLES[:at] + TITLES[at + 1 :], f'{bg.TITLES_KEPT}: no glyph for U+4E01, which TITLE_RANGES keep'),
+            (TITLES[:-1], 'no glyph for U+FFEF, which TITLE_RANGES keep'),
+            (TITLES + [glyph(0xA000, True)], f'{bg.TITLES_KEPT}: 32773 lines, not the 32772 of its glyphs'),
+            (
+                TITLES[:at] + TITLES[at + 1 : at + 2] + TITLES[at : at + 1] + TITLES[at + 2 :],
+                f"{bg.TITLES_KEPT}:{at + 1}: '4E02:02' where the line of U+4E01 goes",
+            ),
+        ):
+            titles.write_text(''.join(broken))
+            self.refused(says, '--check')
+
+    def test_check_from_compares_the_glyphs(self):
+        latin = [glyph(cp) for cp in bg.wanted(self.root)]
+        self.write_unifont(latin)
+        self.assertEqual(self.run_script('--from', str(self.unifont)).returncode, 0)
+        titles = self.root / bg.TITLES_KEPT
+        titles.write_text(titles.read_text().replace(glyph(0xAC00, True), halves(0xAC00)))  # its rows, not Unifont's
+        self.assertEqual(self.run_script('--check').returncode, 0)  # the code points, widths and order are right
+        self.refused(f'{bg.TITLES_KEPT} is not what unifont.hex.gz gives', '--check', '--from', str(self.unifont))
+        self.assertEqual(titles.read_text().count(halves(0xAC00)), 1)  # --check writes nothing
+        self.write_unifont(latin + [g for g in TITLES if not g.startswith('AC00:')], titles=False)
+        self.refused('no glyph for U+AC00, which TITLE_RANGES keep', '--from', str(self.unifont))
 
     def test_check_refuses(self):
         points = bg.wanted(self.root)
