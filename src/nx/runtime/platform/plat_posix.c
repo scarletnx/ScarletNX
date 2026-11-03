@@ -50,6 +50,8 @@
 #endif
 #endif
 #if defined(__ANDROID__)
+#include <android/hardware_buffer.h>
+#include <dlfcn.h>
 #include <jni.h>
 #include <sys/system_properties.h>
 #endif
@@ -1217,6 +1219,103 @@ int plat_vm_unshare(u8* p, u64 size) {
     (void)p, (void)size;
     errno = ENOSYS;
     return -1;
+#endif
+}
+#if defined(__ANDROID__)
+/* AHardwareBuffer's functions from libnativewindow, looked up when first used: the app runs from Android 5 (API 21),
+   and they came with Android 8 (API 26) */
+static struct {
+    int (*allocate)(const AHardwareBuffer_Desc*, AHardwareBuffer**);
+    int (*send)(const AHardwareBuffer*, int);
+    void (*release)(AHardwareBuffer*);
+} g_ahb;
+static int ahb_load(void) {
+    void* so;
+    if (__atomic_load_n(&g_ahb.release, __ATOMIC_ACQUIRE)) return 0;
+    if (!(so = dlopen("libnativewindow.so", RTLD_NOW | RTLD_LOCAL))) return -1;
+    g_ahb.allocate = (int (*)(const AHardwareBuffer_Desc*, AHardwareBuffer**))dlsym(so, "AHardwareBuffer_allocate");
+    g_ahb.send = (int (*)(const AHardwareBuffer*, int))dlsym(so, "AHardwareBuffer_sendHandleToUnixSocket");
+    void (*release)(AHardwareBuffer*) = (void (*)(AHardwareBuffer*))dlsym(so, "AHardwareBuffer_release");
+    if (!g_ahb.allocate || !g_ahb.send || !release) return -1;
+    __atomic_store_n(&g_ahb.release, release, __ATOMIC_RELEASE);
+    return 0;
+}
+#endif
+int plat_gpu_buffer(u64 size, int* fd, void** handle) {
+    *fd = -1;
+    *handle = NULL;
+#if defined(__ANDROID__)
+    /* CPU_*_OFTEN: cached pages, which the GPU sees coherently (the CPU's bandwidth there is malloc's) */
+    AHardwareBuffer_Desc d = {.width = (uint32_t)size,
+                              .height = 1,
+                              .layers = 1,
+                              .format = AHARDWAREBUFFER_FORMAT_BLOB,
+                              .usage = AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN |
+                                       AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER};
+    AHardwareBuffer* b = NULL;
+    int sv[2], fds[16], n = 0;
+    if (ahb_load()) {
+        errno = ENOSYS; /* Android before 8 */
+        return -1;
+    }
+    if (size > UINT32_MAX || g_ahb.allocate(&d, &b)) {
+        errno = size > UINT32_MAX ? EFBIG : ENOMEM;
+        return -1;
+    }
+    /* its dma-buf is the handle's first descriptor: the NDK hands the handle out only through a socket */
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) {
+        g_ahb.release(b);
+        return -1;
+    }
+    if (!g_ahb.send(b, sv[0])) {
+        char data[1024], ctl[CMSG_SPACE(sizeof(int) * 16)];
+        struct iovec io = {data, sizeof data};
+        struct msghdr mh = {.msg_iov = &io, .msg_iovlen = 1, .msg_control = ctl, .msg_controllen = sizeof ctl};
+        if (recvmsg(sv[1], &mh, MSG_CMSG_CLOEXEC) >= 0)
+            for (struct cmsghdr* cm = CMSG_FIRSTHDR(&mh); cm; cm = CMSG_NXTHDR(&mh, cm))
+                if (cm->cmsg_level == SOL_SOCKET && cm->cmsg_type == SCM_RIGHTS)
+                    for (size_t k = 0; k < (cm->cmsg_len - CMSG_LEN(0)) / sizeof(int) && n < 16; k++)
+                        memcpy(&fds[n++], CMSG_DATA(cm) + k * sizeof(int), sizeof(int));
+    }
+    close(sv[0]);
+    close(sv[1]);
+    for (int k = 1; k < n; k++) close(fds[k]);
+    if (!n || lseek(fds[0], 0, SEEK_END) < (off_t)size) {
+        if (n) close(fds[0]);
+        g_ahb.release(b);
+        errno = ENODEV; /* a handle without a dma-buf that large */
+        return -1;
+    }
+    *fd = fds[0];
+    *handle = b;
+    return 0;
+#elif defined(__linux__) && defined(SYS_memfd_create)
+    long f = syscall(SYS_memfd_create, "snx-gpu-buffer", 1u /* MFD_CLOEXEC */);
+    void* view;
+    if (f < 0) return -1;
+    if (ftruncate((int)f, (off_t)size) ||
+        (view = mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED, (int)f, 0)) == MAP_FAILED) {
+        int e = errno;
+        close((int)f);
+        errno = e;
+        return -1;
+    }
+    *fd = (int)f;
+    *handle = view;
+    return 0;
+#else
+    (void)size;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+void plat_gpu_buffer_free(int fd, void* handle, u64 size) {
+    if (fd >= 0) close(fd);
+#if defined(__ANDROID__)
+    (void)size;
+    if (handle) g_ahb.release((AHardwareBuffer*)handle);
+#else
+    if (handle) munmap(handle, (size_t)size);
 #endif
 }
 
