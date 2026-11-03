@@ -61,10 +61,14 @@ u8* plat_vm_reserve(u64 size) {
     reservation_size = size + host_page;
     return (u8*)(((uintptr_t)p + host_page - 1) & ~(uintptr_t)(host_page - 1));
 }
-/* no tracking here: the range mem_init asks it of, which test_moved holds to the reservation */
+/* no tracking here: the range mem_init asks it of, which test_moved holds to the reservation where it runs */
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
 static u8* tracked;
 static u64 tracked_size;
 void plat_vm_track(u8* p, u64 size) { tracked = p, tracked_size = size; }
+#else
+void plat_vm_track(u8* p, u64 size) { (void)p, (void)size; }
+#endif
 /* mem.c's reservation at the guest's own addresses (NCE), which test_moved asks for: at addr or nowhere */
 static int reserve_at_on;
 u8* plat_vm_reserve_at(u64 addr, u64 size) {
