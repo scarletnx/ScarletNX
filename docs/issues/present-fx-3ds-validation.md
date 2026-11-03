@@ -21,7 +21,9 @@ Reproduce with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` and a name on ev
 guest render target's layout after the effects, or keep the effects off a guest texture. Check that every `image_barrier`
 in `src/3ds/gpu/present.c` uses the layout the renderer's target tracking expects.
 
-## Status
+## Status: fixed
 
-The effects, the HDR encode and the two presenters work. This is a validation contract failure that needs the layout
-owner cleared, not a missing feature.
+`record_copy` and `record_fsr` leave their output in `TRANSFER_SRC_OPTIMAL`. The FXAA, SMAA and SSAA passes then
+sample it, and `record_copy` had not moved it to `SHADER_READ_ONLY_OPTIMAL`. `snx_fx_render` now does that before the
+anti aliasing pass. `3ds_vk_draw_present_validation` and `3ds_vk_draw_after_draw_validation` pass, and the Switch
+device loss that the same omission caused under FXAA/SSAA is gone.
