@@ -274,7 +274,7 @@ typedef struct {
     i32 interval;
 } NvnWindowBuilder; /* SDK 5's builder is 0x2c bytes: no device or native window (nvn_queue.c keeps the last one) */
 NVN_FITS(NvnWindowBuilder, 0x2c);
-/* The Switch 2's builder (API 231) also has the color space and the HDR metadata, at the offsets of its driver. Only
+/* The Ounce's builder (API 231) also has the color space and the HDR metadata, at the offsets of its driver. Only
    API 231's handlers touch them, past the bytes of the older builder: hdr[0-9] the display's primaries (x, y of red,
    green, blue, the white point) and its minimum and maximum luminance, hdr[10-11] the content's maximum and average
    light levels */
@@ -301,7 +301,7 @@ typedef struct {
     u64 native;           /* the native window the builder named */
 } NvnWindow;
 NVN_FITS(NvnWindow, 0x148);
-/* the Switch 2's window (API 231): the builder's color space and HDR metadata, past NvnWindow */
+/* the Ounce's window (API 231): the builder's color space and HDR metadata, past NvnWindow */
 #define NVN_WIN_HDR(w) NVN_OBJ(NvnWindowBuilderHdr, (w) + 0x148)
 typedef char nvn_fits_NvnWindowHdr[sizeof(NvnWindowBuilderHdr) <= 0x180 - 0x148 ? 1 : -1];
 
@@ -387,7 +387,7 @@ typedef struct {
 #define NVN_MS_COV_TO_COLOR 0x02u
 #define NVN_MS_LOCATIONS    0x04u /* SetSampleLocationsEnable */
 #define NVN_MS_GRID         0x08u /* SetSampleLocationsGridEnable */
-#define NVN_MS_COV_TRUNC    0x10u /* the Switch 2's SetCoverageTruncationEnable */
+#define NVN_MS_COV_TRUNC    0x10u /* the Ounce's SetCoverageTruncationEnable */
 NVN_FITS(NvnMultisample, 0x18);
 /* NVNvertexStreamState (8 bytes) */
 typedef struct {
@@ -465,7 +465,7 @@ typedef struct {
     NvnStage st[6];
     u64 serial; /* the program's SetShaders (nvn_program_xfb) */
     u16 block[3], sample_shading;
-    u8 c0[NVN_C0_RECORD]; /* a Switch 2 compute program's c[0] record (NVN_PROG_C0), zero for others */
+    u8 c0[NVN_C0_RECORD]; /* an Ounce compute program's c[0] record (NVN_PROG_C0), zero for others */
 } NvnPBindProgram;
 /* kind: 0 blend 1 color 2 channel mask 3 multisample 4 polygon 5 depth-stencil; the object's bytes */
 typedef struct {

@@ -270,7 +270,7 @@ static void ounce_programs(void) {
     CHECK(s.n == 2);
     CHECK(s.at[0] == 0x100 && s.stage[0] == (SHIPPED_OUNCE | ST_VS));
     CHECK(s.at[1] == 0x400 && s.stage[1] == (SHIPPED_OUNCE | ST_FS));
-    /* the Switch 1 search finds none of them */
+    /* the Switch search finds none of them */
     Seen m = {0};
     m.base = d;
     CHECK(shipped_programs(d, sizeof d, seen, &m) == 0);

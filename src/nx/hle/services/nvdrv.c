@@ -1438,7 +1438,7 @@ static void gpu_characteristics(u8* c) {
 #undef PUT32
 #undef PUT64
 }
-/* Switch 2's 0xC0E04705 request returns Ampere characteristics in Ioctl3's second output. Its first 0x70 bytes
+/* The Ounce's 0xC0E04705 request returns Ampere characteristics in Ioctl3's second output. Its first 0x70 bytes
    retain the older layout; the ioctl limits the inline output to 0xD0 bytes. */
 static void gpu_characteristics_s2(u8* c) {
     memset(c, 0, 0xD0);
@@ -1551,7 +1551,7 @@ static void ctrlgpu_engine_info(u8* d, u8* extra, u32 nextra) {
 static_assert(sizeof(NvgpuGpuZcullGetInfoArgs) == 40, "the guest's IoctlNvgpuGpuZcullGetInfoArgs");
 static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra, int s2) {
     static const u8 sms[NVGPU_NUM_SMS * 2] = {0, 0, 0, 1}; /* {gpc, tpc} of each SM */
-    /* Six TPCs with two SMs each; the Switch 2 query has a 24-byte inline output. */
+    /* Six TPCs with two SMs each; the Ounce query has a 24-byte inline output. */
     static const u8 s2_sms[24] = {0, 0, 0, 0, 0, 1, 0, 1, 0, 2, 0, 2,
                                   0, 3, 0, 3, 0, 4, 0, 4, 0, 5, 0, 5};
     (void)n;
@@ -1709,7 +1709,7 @@ static u32 ioctl_gpu(NvFile* f, u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
     }
 }
 
-/* Switch 2's native TSG groups GPU channel fds. The frontend schedules each fd in order already;
+/* The Ounce's native TSG groups GPU channel fds. The frontend schedules each fd in order already;
    retain the binding so duplicate and invalid binds do not silently succeed. */
 static u32 ioctl_tsg(u32 fd, u32 cmd, const u8* d, u32 n) {
     u32 channel_fd, subcontext = 0, result = NV_RESULT_SUCCESS;

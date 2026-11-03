@@ -203,7 +203,7 @@ static int nn_gsv_UserSession_CalculateNativeImageSize(SvcObj* self, const u8* p
     (void)self;
     memcpy(p, preference, sizeof p);
     /* Native color images use 64-byte GOB rows and a power-of-two pixel block height. The last word is the image
-       count. This is the firmware layout recovered in Eden's Switch 2 PR #4588, not a fixed display-sized guess. */
+       count. This is the firmware layout recovered in Eden's PR #4588 for the Ounce, not a fixed display-sized guess. */
     R_UNLESS(p[0] == 0 && (p[1] == 1 || p[1] == 2) && p[3] == 0 &&
                  p[4] >= 3 && p[4] <= 8 && (p[6] == 1 || p[6] == 4) && p[7] == 1 && p[16],
              R_BADSIZE);
@@ -359,7 +359,7 @@ static int nn_gsv_KUserWorkerSession_ExecuteSparseMapRequests(SvcObj* self, cons
     *processed = 0;
     R_SUCCEED();
 }
-/* ============================================================ the Switch 2 display session (Eden's IVi2Session) */
+/* ============================================================ the Ounce display session (Eden's IVi2Session) */
 /* The raw packet of each command is [type, word count, data...]; ScarletNX hands the data words as c->raw, so the token
    is the first two words, and later fields follow at their word offsets (Eden's packet[k] = raw word k - 2). */
 #define VI2_DEFAULT_DISPLAY 0x00746c7561666564ull /* "default" */

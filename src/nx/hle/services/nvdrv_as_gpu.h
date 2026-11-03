@@ -23,7 +23,7 @@ enum {
     NVHOST_AS_GPU_GET_VA_REGIONS = 0x08, /* GetVARegions (Ioctl3 also writes the regions to its second output) */
     NVHOST_AS_GPU_GET_SYNCPOINT_SHIM = 0x0B, /* Switch 2: the syncpoint shim's page (nvdrv.c) */
     NVHOST_AS_GPU_ALLOC_AS_EX = 0x09,    /* AllocAsEx */
-    NVHOST_AS_GPU_GET_SYNC_RO_MAP = 0x0B, /* Switch 2 syncpoint read-only mapping descriptor */
+    NVHOST_AS_GPU_GET_SYNC_RO_MAP = 0x0B, /* Ounce syncpoint read-only mapping descriptor */
     NVHOST_AS_GPU_REMAP = 0x14           /* Remap */
 };
 

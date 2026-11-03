@@ -9,7 +9,7 @@
      bit 1: run & 1        (x & 16) << 1 bytes
      bits 2, 3: row >> 1   ((y & 7) >> 1) << 6 bytes
      bit 4: run >> 1       (x & 32) << 3 bytes
-   A Switch 2 game's GOB (native) swaps bits 1 and 2 of k: row (k & 3) | ((k >> 1) & 4), run ((k >> 2) & 1) |
+   An Ounce game's GOB (native) swaps bits 1 and 2 of k: row (k & 3) | ((k >> 1) & 4), run ((k >> 2) & 1) |
    ((k >> 3) & 2).
    Lane x of a workgroup is that k, so a GOB's 32 lanes read or write its 512 bytes in order, and each row's four
    runs (64 bytes) on the linear side are four neighboring lanes' worth. The workgroup's y lanes are two GOBs side by

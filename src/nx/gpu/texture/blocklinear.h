@@ -29,7 +29,7 @@
 /* the largest block the hardware has: 2^5 = 32 GOBs high or deep (Eden's GOBsPerBlock up to THIRTYTWO_GOBS) */
 #define GOB_BLOCK_LOG2_MAX 5u
 
-/* A Switch 2 game's GOBs (the T239's) have bits 5 and 6 of that offset swapped: x bit 4 goes to bit 6 and y bit 1 to
+/* An Ounce game's GOBs (the T239's) have bits 5 and 6 of that offset swapped: x bit 4 goes to bit 6 and y bit 1 to
    bit 5, for every format (Eden's native_tiling, which swaps the two bits of SwizzleTable's offset). Set once, before
    the game's first surface, by the NVN loader from the game's API version: 1 for the swapped GOB */
 extern int g_gob_native;

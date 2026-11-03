@@ -31,8 +31,8 @@ enum {
     NVHOST_GPU_ALLOC_GPFIFO_EX2 = 0x1A,      /* AllocGPFIFOEx2 */
     NVHOST_GPU_SUBMIT_GPFIFO_EX = 0x1B,      /* SubmitGPFIFOBase1/2: Ioctl2's form, the entries in its second input */
     NVHOST_GPU_SET_TIMESLICE = 0x1D,         /* ChannelSetTimeslice */
-    NVHOST_GPU_GET_USER_SYNCPOINT = 0x1E,   /* Switch 2 user syncpoint information */
-    NVHOST_GPU_OPEN = 0x20                  /* Switch 2 channel runlist */
+    NVHOST_GPU_GET_USER_SYNCPOINT = 0x1E,   /* Ounce user syncpoint information */
+    NVHOST_GPU_OPEN = 0x20                  /* Ounce channel runlist */
 };
 
 /* IoctlSubmitGpfifo {u64 address, u32 num_entries, u32 flags; NvFence fence (in: the wait, out: the fence)}, then
