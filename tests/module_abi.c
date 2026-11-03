@@ -3,7 +3,9 @@
 /* The runtime's check of a game module's version (runtime/main.c), on modules that are a descriptor alone
    (module_abi_fixture.c): one of SNX_ABI is taken, and the run goes on to load the game, whose program the fixture's
    data folder doesn't hold; one of another ABI, or a 32-bit one of another SNX_ARM_MODULE_ABI, is refused before the
-   game's settings or log are written, the message saying its ABI and the one this runtime runs.
+   game's settings or log are written, the message saying its ABI and the one this runtime runs. And the title the
+   run shows for a module taken: a module titled by its title ID shows the name in its data folder's control.nacp,
+   the ID and the reason when that has none.
      runtime_module_abi SCARLETNX MODULE ARM_MODULE */
 #define _POSIX_C_SOURCE 200809L
 #include "common/utilities/common.h"
@@ -91,6 +93,24 @@ static int play(const char* runtime, const char* root, const char* name, const c
     free(folder);
     return rc;
 }
+/* the game name in its folder of root, with a control.nacp in its data folder whose American English name is title,
+   and none in any language for NULL */
+static void write_nacp(const char* root, const char* name, const char* title) {
+    unsigned char nacp[0x4000] = {0}; /* 16 languages of 0x300 bytes, each a name of 0x200 then a publisher */
+    char *data = game_file(root, name, "_data"), *path = snx_path_join(data, "control.nacp");
+    if (title) memcpy(nacp, title, strlen(title));
+    check(!snx_mkdirs(data) && !snx_write_file(path, nacp, sizeof nacp), "the game's control.nacp", NULL);
+    free(path);
+    free(data);
+}
+/* 1 when the run whose output is given showed the game as shown: its log's header, which the window's title starts
+   with too, and the line that says why (NULL for none) */
+static int titled(const char* output, const char* shown, const char* why) {
+    const char* header = strstr(output, "ScarletNX - ");
+    size_t n = header ? strcspn(header += 12, "\r\n") : 0;
+    return header && n == strlen(shown) && !strncmp(header, shown, n) &&
+           (why ? strstr(output, why) != NULL : !strstr(output, "game: shown as "));
+}
 /* 1 when the game name played in its folder of root wrote its file of that kind there: its settings ("config", ".ini")
    or its log ("state", ".log") */
 static int wrote(const char* root, const char* name, const char* kind, const char* extension) {
@@ -156,6 +176,37 @@ int main(int argc, char** argv) {
     check(rc != 0 && refused(output, expected, root, "arm"),
           "a 32-bit module of another version is refused, saying its ABI", output);
     free(expected);
+    free(output);
+
+    /* a module titled by its title ID, as one the driver named so: its control.nacp's name, which the log says
+       where it found */
+    write_nacp(root, "0100ABCD12345000", "Synthetic Title");
+    set_env("SNX_TEST_MODULE_TITLE", "0100ABCD12345000");
+    rc = play(argv[1], root, "0100ABCD12345000", argv[2], SNX_ABI, &output);
+    check(rc != 0 && strstr(output, "Could not load the game executables") &&
+              titled(output, "Synthetic Title", "game: shown as Synthetic Title, the name in ") &&
+              strstr(output, "0100ABCD12345000_data/control.nacp: its code's title is its title ID 0100ABCD12345000"),
+          "a module titled by its title ID shows its control.nacp's name", output);
+    free(output);
+    /* no control.nacp, or one with no name: the ID, and why */
+    set_env("SNX_TEST_MODULE_TITLE", "0100ABCD12346000");
+    rc = play(argv[1], root, "0100ABCD12346000", argv[2], SNX_ABI, &output);
+    check(rc != 0 && titled(output, "0100ABCD12346000", "game: shown as 0100ABCD12346000, its title ID: ") &&
+              strstr(output, "0100ABCD12346000_data/control.nacp cannot be read ("),
+          "a module titled by its title ID, with no control.nacp, shows the ID and says why", output);
+    free(output);
+    write_nacp(root, "0100ABCD12347000", NULL);
+    set_env("SNX_TEST_MODULE_TITLE", "0100ABCD12347000");
+    rc = play(argv[1], root, "0100ABCD12347000", argv[2], SNX_ABI, &output);
+    check(rc != 0 && titled(output, "0100ABCD12347000", "game: shown as 0100ABCD12347000, its title ID: ") &&
+              strstr(output, "0100ABCD12347000_data/control.nacp (16384 bytes) has a name in none of its 16 languages"),
+          "a module titled by its title ID, with a control.nacp that names nothing, shows the ID and says why", output);
+    free(output);
+    /* any other title is the game's name, a control.nacp beside it or not */
+    write_nacp(root, "named", "Synthetic Title");
+    set_env("SNX_TEST_MODULE_TITLE", "Given Name");
+    rc = play(argv[1], root, "named", argv[2], SNX_ABI, &output);
+    check(rc != 0 && titled(output, "Given Name", NULL), "a module's own title is shown as it is", output);
     free(output);
 
     check(!snx_remove_tree(root), "temporary folder removed", NULL);

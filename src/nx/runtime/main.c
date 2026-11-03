@@ -426,6 +426,34 @@ static void addons_line(char* out, size_t size) {
     if (count > 4) snprintf(out + n, size - n, " and %u more DLCs", (unsigned)(count - 4));
 }
 
+/* what the game is shown as (its log's header, its window, its loading screen), given its code's title. A title that
+   is the game's title ID names its files, not the game: the driver names a dump read in place by it, and a recompile
+   that found no name took it as the title. The name in the control.nacp of its data folder (g_datadir) is shown
+   then, as the recompile's snx_game_shown gives it; the ID only when that has none. name: room for that name. why:
+   the log's line on it, "" for a title shown as it is */
+static const char* game_shown(const char* title, char* name, size_t size, char* why, size_t why_size) {
+    char path[sizeof g_datadir + 16], error[256];
+    unsigned char* nacp;
+    size_t bytes = 0;
+    SnxU64 id;
+    why[0] = 0;
+    if (!snx_title_parse(title, &id)) return title;
+    snprintf(path, sizeof path, "%scontrol.nacp", g_datadir);
+    nacp = snx_read_file(path, &bytes);
+    if (!nacp)
+        snprintf(why, why_size, "shown as %s, its title ID: %s cannot be read (%s)", title, path,
+                 snx_os_error(error, sizeof error));
+    else if (!snx_nacp_name(nacp, bytes, name, size))
+        snprintf(why, why_size, "shown as %s, its title ID: %s (%zu bytes) has a name in none of its 16 languages",
+                 title, path, bytes);
+    else {
+        snprintf(why, why_size, "shown as %s, the name in %s: its code's title is its title ID %s", name, path, title);
+        title = name;
+    }
+    free(nacp);
+    return title;
+}
+
 /* nothing is moved: a game an older version laid out beside the others (its folder named otherwise) runs where it
    is, each start saying where its folder goes */
 static void say_old_layout(void) {
@@ -843,7 +871,7 @@ static int runtime_key_options(int* argc, char** argv, char** keys, char** title
 
 int snx_main(int argc, char** argv) {
     char module[sizeof g_exedir + sizeof g_exename + 16], ini[sizeof g_confdir + sizeof g_exename + 8];
-    char base[sizeof g_exename];
+    char base[sizeof g_exename], shown[0x200], why[sizeof g_datadir + 0x300];
     char *keys = NULL, *title_keys = NULL;
     const char *game, *title;
     const SnxModule* mod;
@@ -924,7 +952,7 @@ int snx_main(int argc, char** argv) {
     plat_install_crash_handler();
     clock_start();
     g_mod = nce_module(mod); /* from here the log is a file, in the state folder */
-    title = mod->title && mod->title[0] ? mod->title : g_exename;
+    title = game_shown(mod->title && mod->title[0] ? mod->title : g_exename, shown, sizeof shown, why, sizeof why);
 #if defined(SNX_TRACY)
     if (g_settings.tracy_profiler) g_opt_tracy_client = 1; /* the .ini's Debug section asks for the client */
 #endif
@@ -954,6 +982,7 @@ int snx_main(int argc, char** argv) {
             "attached\n");
     }
     if (g_addon) LOG("game: the update of the game in %s, with its settings and saves\n", base);
+    if (why[0]) LOG("game: %s\n", why);
     snx_ir_slp_vectorizer(g_settings.slp_vectorizer); /* before the JIT's first compile too */
     snx_ir_fpsr_flags(g_settings.fpsr_flags);
     snx_ir_volatile_memory(g_settings.volatile_load_stores);
