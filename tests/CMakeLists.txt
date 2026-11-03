@@ -322,7 +322,7 @@ if(TARGET snx_ctr_board)
     # the HLE DSP and dsp::DSP: pipes, regions, sources, mixing, decoding, the service as ndsp drives it
     add_executable(snx-test-3ds-dsp 3ds_dsp.c support/3ds_guest.c)
     snx_test_target(snx-test-3ds-dsp 11)
-    target_link_libraries(snx-test-3ds-dsp PRIVATE snx_ctr_process)
+    target_link_libraries(snx-test-3ds-dsp PRIVATE snx_ctr_process m)
     add_test(NAME 3ds_dsp COMMAND snx-test-3ds-dsp)
 
     if(NOT WIN32)

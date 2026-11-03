@@ -2,13 +2,17 @@
    Copyright 2026 the ScarletNX contributors
    The HLE DSP and dsp::DSP: the audio pipe's struct addresses, region selection, a PCM16 source played through the
    gain ramp, mixer and final samples, buffer end statuses, GC-ADPCM decoding and linear interpolation against hand
-   computed values, then the service as libctru's ndspInit drives it. */
+   computed values, the AAC decoder on the binary pipe, then the service as libctru's ndspInit drives it. */
 #include "3ds/audio/internal.h"
 #include "3ds/ipc/ctr_ipc.h"
 #include "3ds/runtime/internal.h"
 #include "3ds/services/dsp.h"
+#include "common/utilities/endian.h"
 #include "support/3ds_guest.h"
+#include "support/dsp_aac_fixture.h"
 #include <assert.h>
+#include <math.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -75,9 +79,6 @@ static void pipes_and_regions(SnxCtrMemory* m) {
                                  0x8710, 0x8410, 0xa912, 0xaa12, 0xaad2, 0xac52, 0xac5c};
     for (unsigned i = 0; i < 15; ++i) assert((pipe[i * 2] | pipe[i * 2 + 1] << 8) == expect[i]);
     assert(!snx_ctr_dsp_pipe_readable(dsp, SNX_CTR_DSP_PIPE_AUDIO));
-    /* the AAC decoder is not ported: the binary pipe stops, naming it */
-    uint8_t message[32] = {0};
-    assert(strstr(snx_ctr_dsp_pipe_write(dsp, SNX_CTR_DSP_PIPE_BINARY, message, 32), "AAC"));
     /* the region with the higher frame counter is read, the other written, unless the counter wrapped */
     int16_t frame[SNX_CTR_DSP_SAMPLES][2];
     const uint16_t pairs[4][2] = {{5, 4}, {4, 5}, {0xffff, 0}, {0, 0xffff}};
@@ -198,6 +199,143 @@ static void adpcm_and_linear(SnxCtrMemory* m) {
     snx_ctr_dsp_free(dsp);
 }
 
+/* ---- the binary pipe's AAC decoder ---- */
+
+#define AAC_INPUT (FCRAM + 0x200000u)
+#define AAC_LEFT  (FCRAM + 0x210000u)
+#define AAC_RIGHT (FCRAM + 0x220000u)
+#define POISON    0x7fu
+enum { AAC_SUCCESS, AAC_ERROR };
+
+/* One request on the binary pipe, the AAC codec with the command and its six words, and its one answer */
+static void aac_message(SnxCtrDsp* dsp, uint16_t codec, uint16_t command, const uint32_t argument[6],
+                        uint8_t answer[32]) {
+    uint8_t message[32] = {0};
+    snx_st_le16(message, codec);
+    snx_st_le16(message + 2, command);
+    for (unsigned i = 0; i < 6; ++i) snx_st_le32(message + 8 + 4 * i, argument[i]);
+    unsigned before = raised[SNX_CTR_DSP_PIPE_BINARY];
+    assert(!snx_ctr_dsp_pipe_write(dsp, SNX_CTR_DSP_PIPE_BINARY, message, sizeof message));
+    assert(raised[SNX_CTR_DSP_PIPE_BINARY] == before + 1);
+    assert(snx_ctr_dsp_pipe_read(dsp, SNX_CTR_DSP_PIPE_BINARY, answer, 32) == 32);
+    assert(!snx_ctr_dsp_pipe_readable(dsp, SNX_CTR_DSP_PIPE_BINARY));
+    assert(snx_ld_le16(answer) == codec && snx_ld_le16(answer + 2) == command);
+}
+static void poison(SnxCtrMemory* m, uint32_t pa, size_t size) {
+    uint8_t bytes[0x4000];
+    memset(bytes, POISON, sizeof bytes);
+    assert(size <= sizeof bytes);
+    put(m, pa, bytes, size);
+}
+static bool poisoned(SnxCtrMemory* m, uint32_t pa, size_t size) {
+    uint8_t bytes[0x4000];
+    assert(size <= sizeof bytes);
+    get(m, pa, bytes, size);
+    for (size_t i = 0; i < size; ++i)
+        if (bytes[i] != POISON) return false;
+    return true;
+}
+/* A decode of the bytes at AAC_INPUT. It returns the result, and the answer's words in out. */
+static uint32_t aac_decode(SnxCtrDsp* dsp, uint32_t size, uint32_t left, uint32_t right, uint32_t out[6]) {
+    const uint32_t argument[6] = {AAC_INPUT, size, left, right};
+    uint8_t answer[32];
+    aac_message(dsp, 1, 1, argument, answer);
+    for (unsigned i = 0; i < 6; ++i) out[i] = snx_ld_le32(answer + 8 + 4 * i);
+    return snx_ld_le32(answer + 4);
+}
+/* The zero crossings and the RMS of one frame of one channel, which a sine's frequency and amplitude give */
+static void tone(SnxCtrMemory* m, uint32_t pa, unsigned* crossings, double* rms) {
+    uint8_t bytes[2048];
+    get(m, pa, bytes, sizeof bytes);
+    double sum = 0;
+    int16_t previous = (int16_t)snx_ld_le16(bytes);
+    *crossings = 0;
+    for (unsigned i = 0; i < 1024; ++i) {
+        int16_t value = (int16_t)snx_ld_le16(bytes + 2 * i);
+        *crossings += (previous < 0) != (value < 0);
+        previous = value;
+        sum += (double)value * value;
+    }
+    *rms = sqrt(sum / 1024);
+}
+
+static void aac_pipe(SnxCtrMemory* m) {
+    SnxCtrDsp* dsp = initialized(m);
+    uint8_t answer[32];
+    const uint32_t none[6] = {0};
+    /* Initialize, LoadState and SaveState answer success with the request's words */
+    aac_message(dsp, 1, 0, none, answer);
+    assert(snx_ld_le32(answer + 4) == AAC_SUCCESS);
+    aac_message(dsp, 1, 3, none, answer);
+    assert(snx_ld_le32(answer + 4) == AAC_SUCCESS);
+    aac_message(dsp, 1, 4, none, answer);
+    assert(snx_ld_le32(answer + 4) == AAC_SUCCESS);
+    /* another codec is an error */
+    aac_message(dsp, 2, 0, none, answer);
+    assert(snx_ld_le32(answer + 4) == AAC_ERROR);
+
+    /* three stereo frames in one request: both channels, all 3072 samples, the rate's index and the size */
+    uint32_t out[6];
+    put(m, AAC_INPUT, dsp_aac_stereo_48k, sizeof dsp_aac_stereo_48k);
+    poison(m, AAC_LEFT, 3 * 2048);
+    poison(m, AAC_RIGHT, 3 * 2048);
+    assert(aac_decode(dsp, sizeof dsp_aac_stereo_48k, AAC_LEFT, AAC_RIGHT, out) == AAC_SUCCESS);
+    assert(out[0] == 0 && out[1] == 2 && out[2] == sizeof dsp_aac_stereo_48k && out[5] == 3072);
+    /* by the third frame the encoder's delay is over: the left channel is the 1000 Hz sine, the right the 1500 Hz one,
+       at the amplitude they were encoded with (0.5 of full scale) */
+    unsigned crossings;
+    double rms;
+    tone(m, AAC_LEFT + 2 * 2048, &crossings, &rms);
+    assert(crossings >= 41 && crossings <= 45 && rms > 9800 && rms < 13400);
+    tone(m, AAC_RIGHT + 2 * 2048, &crossings, &rms);
+    assert(crossings >= 62 && crossings <= 66 && rms > 9800 && rms < 13400);
+
+    /* a mono frame writes the left destination only, and each rate answers its index */
+    const struct {
+        const unsigned char* data;
+        uint32_t size, rate;
+    } mono[] = {{dsp_aac_mono_48k, sizeof dsp_aac_mono_48k, 0},
+                {dsp_aac_mono_44k1, sizeof dsp_aac_mono_44k1, 1},
+                {dsp_aac_mono_8k, sizeof dsp_aac_mono_8k, 8}};
+    for (unsigned i = 0; i < sizeof mono / sizeof *mono; ++i) {
+        put(m, AAC_INPUT, mono[i].data, mono[i].size);
+        poison(m, AAC_LEFT, 2048);
+        poison(m, AAC_RIGHT, 2048);
+        assert(aac_decode(dsp, mono[i].size, AAC_LEFT, AAC_RIGHT, out) == AAC_SUCCESS);
+        assert(out[0] == mono[i].rate && out[1] == 1 && out[2] == mono[i].size && out[5] == 1024);
+        assert(!poisoned(m, AAC_LEFT, 2048) && poisoned(m, AAC_RIGHT, 2048));
+    }
+    /* a mono frame needs no right destination */
+    put(m, AAC_INPUT, dsp_aac_mono_48k, sizeof dsp_aac_mono_48k);
+    assert(aac_decode(dsp, sizeof dsp_aac_mono_48k, AAC_LEFT, 0, out) == AAC_SUCCESS);
+
+    /* refused, and nothing written: a rate the DSP cannot name, a truncated frame, a byte after the last frame, a
+       stereo stream with its right destination outside RAM and a source in the DSP's own RAM */
+    poison(m, AAC_LEFT, 3 * 2048);
+    poison(m, AAC_RIGHT, 3 * 2048);
+    put(m, AAC_INPUT, dsp_aac_mono_96k, sizeof dsp_aac_mono_96k);
+    assert(aac_decode(dsp, sizeof dsp_aac_mono_96k, AAC_LEFT, AAC_RIGHT, out) == AAC_ERROR);
+    put(m, AAC_INPUT, dsp_aac_stereo_48k, sizeof dsp_aac_stereo_48k);
+    assert(aac_decode(dsp, sizeof dsp_aac_stereo_48k - 1, AAC_LEFT, AAC_RIGHT, out) == AAC_ERROR);
+    const uint8_t after = 0;
+    put(m, AAC_INPUT + sizeof dsp_aac_stereo_48k, &after, 1);
+    assert(aac_decode(dsp, sizeof dsp_aac_stereo_48k + 1, AAC_LEFT, AAC_RIGHT, out) == AAC_ERROR);
+    assert(aac_decode(dsp, sizeof dsp_aac_stereo_48k, AAC_LEFT, 0, out) == AAC_ERROR);
+    const uint32_t outside[6] = {SNX_CTR_DSP_RAM, sizeof dsp_aac_stereo_48k, AAC_LEFT, AAC_RIGHT};
+    aac_message(dsp, 1, 1, outside, answer);
+    assert(snx_ld_le32(answer + 4) == AAC_ERROR);
+    const uint32_t vram[6] = {0x18000000u, sizeof dsp_aac_stereo_48k, AAC_LEFT, AAC_RIGHT};
+    aac_message(dsp, 1, 1, vram, answer);
+    assert(snx_ld_le32(answer + 4) == AAC_ERROR);
+    assert(poisoned(m, AAC_LEFT, 3 * 2048) && poisoned(m, AAC_RIGHT, 3 * 2048));
+
+    /* after the refusals, and after Shutdown, a request decodes again */
+    aac_message(dsp, 1, 2, none, answer);
+    assert(snx_ld_le32(answer + 4) == AAC_SUCCESS);
+    assert(aac_decode(dsp, sizeof dsp_aac_stereo_48k, AAC_LEFT, AAC_RIGHT, out) == AAC_SUCCESS && out[5] == 3072);
+    snx_ctr_dsp_free(dsp);
+}
+
 /* ---- the service, as libctru's ndspInit drives it ---- */
 
 #define DATA 0x300000u
@@ -289,6 +427,7 @@ int main(void) {
     pipes_and_regions(m);
     pcm16_source(m);
     adpcm_and_linear(m);
+    aac_pipe(m);
     snx_ctr_memory_free(m);
     service();
     printf("HLE DSP and dsp::DSP passed\n");

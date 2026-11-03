@@ -232,9 +232,9 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
     endif()
 endif()
 
-# FFmpeg for the Switch runtime's NVDEC and hwopus and the Vita's movies. It builds with its own configure and make,
-# which cmake/ffmpeg.cmake runs
-if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR snx_vita_runtime)
+# FFmpeg for the Switch runtime's NVDEC and hwopus, the 3DS DSP's AAC decoder and the Vita's movies. It builds with its
+# own configure and make, which cmake/ffmpeg.cmake runs
+if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
     set(snx_ffmpeg_sha256 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e)
     CPMAddPackage(NAME FFmpeg VERSION 9.0.2
                   URL https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz

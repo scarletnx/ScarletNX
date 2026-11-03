@@ -183,8 +183,7 @@ blocks presented frames until it was ended. It is **not playable** yet:
   are at rest (`hid:USER`, below).
 - The music has a gap after every rendered frame, because rendering and presenting
   run inside the guest's GSP call.
-- Geometry shaders, procedural textures, shadows and the DSP's AAC pipe still stop
-  the run explicitly.
+- Geometry shaders, procedural textures and shadows still stop the run explicitly.
 
 The [parity roadmap](#parity-roadmap-azahar) lists the remaining work, and the
 [SuperTux integration target](3DS-SUPERTUX.md) holds the pinned input.
@@ -455,13 +454,13 @@ or linear, polyphase playing as linear as in Azahar), applies their simple and b
 filters and gain ramps, mixes the three intermediate mixes with the aux buses and delay
 effects, writes the statuses and final samples into the other region and raises the
 audio pipe's interrupt. Reverb, the limiter, the compressor and surround output are
-stubs in Azahar too. The binary pipe's AAC decoder is not ported: a request on it stops
-the run and names it. Frames play on the default device through SDL3 and their first two
-minutes are recorded to `<output>/audio.wav`. libctru's ndsp loads
-`sdmc:/3ds/dspfirm.cdc` and leaves audio off without it, so a stand-in header goes there
-when the title's SD has none: the HLE DSP never runs the component, and a dumped file is
-used as it is. cfg:u, cfg:s and cfg:i (`services/cfg.c`) answer GetConfig for the sound
-output mode (stereo, Azahar's default), which ndsp reads, and stop on any other block.
+stubs in Azahar too. The binary pipe decodes AAC requests with FFmpeg. Frames play on
+the default device through SDL3 and their first two minutes are recorded to
+`<output>/audio.wav`. libctru's ndsp loads `sdmc:/3ds/dspfirm.cdc` and leaves audio off
+without it, so a stand-in header goes there when the title's SD has none: the HLE DSP
+never runs the component, and a dumped file is used as it is. cfg:u, cfg:s and cfg:i
+(`services/cfg.c`) answer GetConfig for the sound output mode (stereo, Azahar's
+default), which ndsp reads, and stop on any other block.
 
 See [CTR IPC](CTR-IPC.md) for the strict generator subset, descriptor/permission
 checks, quotas, malformed-request policy, tests and unimplemented operations.
