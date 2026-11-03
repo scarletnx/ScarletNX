@@ -1629,10 +1629,12 @@ if(NOT SNX_TOOLS_ONLY)
     add_test(NAME tex_upload_rows COMMAND snx-test-tex-upload-rows)
     # the file of shaders and pipelines kept across runs (gpu/vk/pipeline_file.c): records back as written, pipelines
     # by their shaders' records (a shipped shader's reference among them), a cut or changed record ending the reading,
-    # another key starting over, a full file; and the shipped shaders' file read through its mapping
+    # another key starting over, a full file; its records packed into zstd units and unpacked in their place, a unit
+    # cut, changed or not as it says ending the reading, a file of version 2 rebuilt; and the shipped shaders' file
+    # read through its mapping
     add_executable(snx-test-pipeline-file pipeline_file.c tracy_stubs.c)
     snx_test_target(snx-test-pipeline-file 23)
-    target_link_libraries(snx-test-pipeline-file PRIVATE snx_nx_flags scarletnx-common)
+    target_link_libraries(snx-test-pipeline-file PRIVATE snx_nx_flags snx_zstd scarletnx-common)
     add_test(NAME pipeline_file COMMAND snx-test-pipeline-file)
     # graphics storage images' write-backs (gpu/vk/image_out.c) against a stand-in GPU: a draw over one whose copy is
     # recorded goes on from it with no read or wait, and they land in order, each over the bytes the last one left
