@@ -2734,12 +2734,15 @@ static int supported(u64 w, int op) {
                    ((addr == 0x60 || addr == 0x2f4 || addr == 0x2f8 || addr == 0x2fc) && count == 1) ||
                    (addr == 0x2f0 && count <= 2);
         }
+        /* AST also takes the viewport mask (0x3a0) from RZ: a zero mask, no broadcast. A mask from a register may
+           ask for one, which the translator has no form for */
         case O_AST: {
             u32 addr = B(w, 20, 10), count = B(w, 47, 2) + 1;
             if (B(w, 8, 8) != 255 || !(B(w, 0, 8) + count <= 255 || (B(w, 0, 8) == 255 && count == 1))) return 0;
             if (B(w, 31, 1)) return addr + count * 4 <= 0x200;
-            return ((addr == 0x64 || addr == 0x68 || addr == 0x6c) && count == 1) || (addr >= 0x70 && addr + count * 4 <= 0x80) ||
-                   (addr >= 0x80 && addr + count * 4 <= 0x280) || (addr >= 0x2c0 && addr + count * 4 <= 0x2e0);
+            return ((addr == 0x64 || addr == 0x68 || addr == 0x6c) && count == 1) ||
+                   (addr >= 0x70 && addr + count * 4 <= 0x80) || (addr >= 0x80 && addr + count * 4 <= 0x280) ||
+                   (addr >= 0x2c0 && addr + count * 4 <= 0x2e0) || (addr == 0x3a0 && count == 1 && B(w, 0, 8) == 255);
         }
         /* OUT emits and ends geometry primitives on the stream its third operand names */
         case O_OUT_R:
@@ -4078,7 +4081,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 else if (location >= 0x2c0 && location < 0x2e0) {
                     u32 bit = 1u << ((location - 0x2c0) / 4);
                     if (si->clip_enable & bit) clip_used |= bit;
-                } else if (location >= 0x80)
+                } else if (location == 0x3a0)
+                    continue; /* a zero viewport mask: no output (supported()) */
+                else if (location >= 0x80)
                     outputs_used[(location - 0x80) >> 4] = 1;
                 else
                     position_used = 1;
@@ -6053,6 +6058,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                                        reg_read_as(c, d + k, i32_type));
                     continue;
                 }
+                /* a zero viewport mask (supported() takes RZ alone) is no broadcast: the primitive keeps the viewport
+                   its index selects, as Eden and Ryujinx draw it on hosts without NV_viewport_array2 */
+                if (location == 0x3a0) continue;
                 if (location >= 0x2c0) {
                     u32 index = (location - 0x2c0) / 4;
                     if (clip_used & (1u << index)) {
