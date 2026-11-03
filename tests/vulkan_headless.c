@@ -2469,6 +2469,52 @@ static int check_rt_overlap(void) {
     return 0;
 }
 
+/* Guest memory read in place whose host pages change (gpu/vk/uma.c). amdgpu takes every import's pages again in each
+   submission and refuses all of it on pages gone since (EFAULT: the device is lost), so the import over pages the
+   guest unmaps leaves the driver with the unmap, once the commands that read it ran, and before anything else is
+   submitted, while an import elsewhere stays the same one. A driver that takes no pages again (lavapipe) shows it in
+   the imports held */
+#define UMA_R  (HEAP_BASE + 0x1000000) /* mapped and unmapped here */
+#define UMA_GR 0x4d0000000ull
+#define UMA_E  (HEAP_BASE + 0x1200000) /* another import, two windows away */
+#define UMA_GE 0x4d1000000ull
+static int check_uma_page_changes(void) {
+    VkBuffer r, e, again, rb;
+    u64 roff, eoff, again_off;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    CHECK(mem_map(UMA_R, 0x10000, MS_NORMAL, PERM_RW) == 0 && mem_map(UMA_E, 0x10000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GR, UMA_R, 0x10000);
+    gmmu_map(UMA_GE, UMA_E, 0x10000);
+    memset(GP(UMA_R), 0x44, 0x10000);
+    memset(GP(UMA_E), 0x55, 0x10000);
+    vk_lock();
+    u8* result = vk_readback_buffer(768, &rb);
+    CHECK(result);
+    CHECK(vk_buf_get_input(UMA_GR + 0x100, 256, 4, &r, &roff) && vk_buf_get_input(UMA_GE + 0x100, 256, 4, &e, &eoff));
+    CHECK(vk_uma_imports(UMA_R, 0x10000) == 1 && vk_uma_imports(UMA_E, 0x10000) == 1);
+    VkBufferCopy c[3] = {{roff, 0, 256}, {eoff, 256, 256}, {eoff, 512, 256}};
+    rec_CmdCopyBuffer(vk_cmd(), r, rb, 1, &c[0]);
+    rec_CmdCopyBuffer(vk_cmd(), e, rb, 1, &c[1]);
+    vk_unlock();
+    CHECK(mem_unmap(UMA_R, 0x10000) == 0); /* while the copy that reads it is only recorded: the copy runs first */
+    vk_lock();
+    rec_CmdCopyBuffer(vk_cmd(), e, rb, 1, &c[2]); /* work of its own for a submission after the unmap */
+    vk_finish();
+    vk_readback_ready();
+    CHECK(vk_uma_imports(UMA_R, 0x10000) == 0);
+    for (u32 i = 0; i < 768; i++) CHECK(result[i] == (i < 256 ? 0x44 : 0x55));
+    /* the import elsewhere: the one a lookup with nothing changed finds, not a slot the change emptied */
+    CHECK(vk_buf_get_input(UMA_GE + 0x100, 256, 4, &again, &again_off) && again == e && again_off == eoff);
+    CHECK(vk_uma_imports(UMA_E, 0x10000) == 1);
+    vk_unlock();
+    CHECK(mem_unmap(UMA_E, 0x10000) == 0);
+    puts("in place: an unmapped import leaves the driver with the unmap, one elsewhere stays");
+    return 0;
+}
+
 #include "vulkan_shader_invalidate.inc"
 #include "vulkan_shared_clamp.inc"
 #include "vulkan_index_draws.inc"
@@ -2655,6 +2701,7 @@ int main(int argc, char** argv) {
     CHECK(!check_resident_volume());
     CHECK(!check_dma_untracked_source());
     CHECK(!check_blit());
+    CHECK(!check_uma_page_changes());
     CHECK(!check_rt_overlap());
     CHECK(!check_uma());
     CHECK(!check_descriptor_room());

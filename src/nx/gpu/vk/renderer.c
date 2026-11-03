@@ -68,12 +68,14 @@ static void vkr_mapping_begin(u64 gva, u64 size, int full) {
     vk_lock();
     g_mapping_gva = full ? 0 : gva;
     g_mapping_size = full ? 0 : size;
-    if (full) vk_uma_quiesce(gva, size); /* mem.c's change of guest memory [gva, gva + size): its in-place readers run */
     vk_release_drain();
     if (full) {
         vk_buf_land_map();
         vk_gfx_image_land();
         vk_compute_land();
+        /* last, as the landings may submit: mem.c's change of guest memory [gva, gva + size), whose in-place readers
+           run and reach the driver first */
+        vk_uma_mapping_begin(gva, size);
     } else {
         vk_buf_mem_need_map(gva, size);
         vk_gfx_image_mem_need(gva, size);
@@ -85,6 +87,7 @@ static void vkr_mapping_begin(u64 gva, u64 size, int full) {
 /* the pages changed count what is pending at the guest pages they show now. A change of guest memory (full) leaves
    the GMMU as it was: pending pages are compared by address, and freed memory is landed first */
 static void vkr_mapping_end(void) {
+    vk_uma_mapping_end(); /* first: what follows may submit */
     vk_buf_mapping_changed();
     pend_remap(g_mapping_gva, g_mapping_size);
     g_mapping_size = 0;
