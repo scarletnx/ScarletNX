@@ -41,7 +41,7 @@ const Op* decode(u64 w);
 /* the word a relative branch (BRA, SSY, PBK, PCNT, CAL, PRET, PEXIT) at word idx goes to */
 u32 bra_target(u64 w, u32 idx);
 /* whether the instruction w (decoded as op) writes general register reg, its whole destination range included
-   (spirv_translate.c) */
+   (forms.c) */
 int shader_writes_reg(u64 w, int op, u32 reg);
 /* whether a flow instruction always takes effect: predicate PT and flow condition T */
 int flow_always(u64 w);
