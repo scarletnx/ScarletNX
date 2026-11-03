@@ -37,6 +37,9 @@ typedef struct {
 } ViLayer;
 typedef struct {
     u32 vsync;
+    u32 mode_changed; /* signaled when the display's mode changes: docked's Auto */
+    u32 hotplug;      /* signaled with it, as the display was put in its dock or taken out */
+    int tv_mode;      /* the mode the two events last told: g_settings.tv_mode */
     u64 next_stray, frees;
     ViLayer layer[VI_LAYERS];
 } HleVi;

@@ -176,6 +176,26 @@ int main(void) {
     g_mem = calloc(1, 0x10000);
     svc_vi_init();
 
+    /* the display's hotplug and mode changed events: one event of each, kept across the asks, and signaled when
+       docked's Auto changes the mode while the game runs */
+    {
+        u32 hotplug = 0, changed = 0;
+        CHECK(nn_visrv_sf_IManagerDisplayService_GetDisplayHotplugEvent(NULL, 0, &hotplug) == 0);
+        CHECK(nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(NULL, 0, &changed) == 0);
+        CHECK(hotplug && changed && g_hle.vi.hotplug && g_hle.vi.mode_changed);
+        CHECK(!kev(g_hle.vi.hotplug)->signaled && !kev(g_hle.vi.mode_changed)->signaled);
+        g_settings.tv_mode = 1;
+        vi_vsync_tick();
+        CHECK(kev(g_hle.vi.hotplug)->signaled && kev(g_hle.vi.mode_changed)->signaled);
+        kev(g_hle.vi.hotplug)->signaled = 0;
+        kev(g_hle.vi.mode_changed)->signaled = 0;
+        vi_vsync_tick(); /* the same mode again is no change */
+        CHECK(!kev(g_hle.vi.hotplug)->signaled && !kev(g_hle.vi.mode_changed)->signaled);
+        g_settings.tv_mode = 0;
+        vi_vsync_tick();
+        CHECK(kev(g_hle.vi.hotplug)->signaled && kev(g_hle.vi.mode_changed)->signaled);
+    }
+
     /* the native window: a parcel with one flattened binder, id 1 */
     memset(&name, 0, sizeof name);
     memcpy(name.v, "Default", 8);
