@@ -735,7 +735,8 @@ int nce_layout(NceSpan* mods, size_t count, SnxU64 end, NceSites* sites, NceRang
         snprintf(
             why, size,
             "the code at %#llx, in the module of %llu MiB at %#llx, reaches no pool of stubs: a B reaches 128 MiB, "
-            "and a pool before the module and one after it leave that word out",
+            "and a pool before the module and one after it leave that word out. Set NCE to Off for this game (nce=0) "
+            "and recompile it, which makes its code ahead of time",
             (unsigned long long)(miss - to[k].base + mods[k].base), (unsigned long long)(mods[k].size >> 20),
             (unsigned long long)mods[k].base);
         free(to);

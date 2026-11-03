@@ -380,11 +380,11 @@ static int copy_data(const SnxProgram* p, const char* dir, int quiet, int tmpfs)
    holds no code made ahead of time (as --jit-only). The analysis finds here the words that the runtime patches
    (nce_patch.h), with the FDEs and the symbols of the modules. Each module then moves up to leave pools for the stubs
    of its sites, which the branches of its sites reach (nce_layout). The pools and the sites go in <base>.nce, which the
-   runtime reads. A recompile without NCE removes that file, because its addresses are of another layout. 0, with
-   *refused 1 when a word of the code reaches no pool, said, the program left as it was for a recompile with nce=0;
-   else an error, said */
+   runtime reads. A recompile without NCE removes that file, because its addresses are of another layout. 0, or an
+   error, said: a word of the code that reaches no pool among them, which ends the recompile with nce=0 to set, as
+   running it any other way would make code the player did not ask for */
 #define NCE_CODE_END 0x2000000000ull
-static int nce_prepare(SnxProgram* p, const char* base, int quiet, int* refused) {
+static int nce_prepare(SnxProgram* p, const char* base, int quiet) {
     SnxCodegen cg;
     NceSites sites;
     NceSpan* mods;
@@ -393,7 +393,6 @@ static int nce_prepare(SnxProgram* p, const char* base, int quiet, int* refused)
     char* path = snx_format("%s.nce", base);
     char why[320];
     int r;
-    *refused = 0;
     if (!p->module_count) {
         free(path);
         return snx_error("NCE: the program has no modules");
@@ -410,17 +409,13 @@ static int nce_prepare(SnxProgram* p, const char* base, int quiet, int* refused)
         mods[i].size = p->modules[i].size;
     }
     r = nce_layout(mods, p->module_count, NCE_CODE_END, &sites, &pools, &pool_count, why, sizeof why);
-    if (r > 0) {
-        printf("NCE: nce=1, but %s: this recompile makes the code ahead of time (nce=0)\n", why);
-        *refused = 1;
-        r = 0;
-    } else if (r)
+    if (r)
         r = snx_error("NCE: %s", why);
     else {
         for (size_t i = 0; i < p->module_count; i++) p->modules[i].base = mods[i].base;
         if (nce_file_write(path, p->modules[0].base, pools, pool_count, &sites)) r = snx_error("cannot write %s", path);
     }
-    if (!r && !*refused && !quiet) {
+    if (!r && !quiet) {
         /* outside: by kind, as the runtime's net catches only an SVC there (nce_host_net), and the others would read
            the host's registers */
         char kinds[256] = "";
@@ -790,9 +785,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
             }
         }
 #endif
-        int refused = 0;
-        i = nce ? nce_prepare(&program, base, compile.quiet, &refused) : 0;
-        if (refused) nce = 0; /* a word of its code reaches no pool of stubs: said */
+        i = nce ? nce_prepare(&program, base, compile.quiet) : 0;
         if (nce)
             gen.interp_only = 1;
         else if (snx_is_file(stale) && remove(stale))

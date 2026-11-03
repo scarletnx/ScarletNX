@@ -578,15 +578,19 @@ static void layout_test(const char* dir) {
         nce_sites_free(&s);
     }
     {
-        /* 300 MiB: a word in the middle reaches neither, said with the module, its size and the word */
+        /* 300 MiB: a word in the middle reaches neither, said with the word, the module and its size, and NCE to
+           turn off: the recompile ends there */
         static const SnxU64 at[] = {0x100, 150 * MIB, 299 * MIB};
         NceSpan mod = {BASE, 300 * MIB};
         NceSites s;
-        char addr[32];
+        char addr[32], base[32];
         make_sites(&s, BASE, at, 3);
         check(nce_layout(&mod, 1, BASE + (1ull << 30), &s, &pools, &count, why, sizeof why) == 1, "300 MiB is refused");
-        snprintf(addr, sizeof addr, "%#llx", (unsigned long long)(BASE + 150 * MIB));
-        check(strstr(why, addr) && strstr(why, "300 MiB"), "the refusal names the word and the module's size");
+        snprintf(addr, sizeof addr, "the code at %#llx,", (unsigned long long)(BASE + 150 * MIB));
+        snprintf(base, sizeof base, "300 MiB at %#llx,", (unsigned long long)BASE);
+        check(strstr(why, addr) && strstr(why, base), "the refusal names the word, the module and its size");
+        check(strstr(why, "Set NCE to Off for this game (nce=0) and recompile it") != NULL,
+              "and says to turn NCE off for the game");
         check(!pools && mod.base == BASE && s.site[1].addr == BASE + 150 * MIB, "and leaves all as it was");
         nce_sites_free(&s);
     }

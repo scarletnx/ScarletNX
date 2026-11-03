@@ -138,8 +138,9 @@ int nce_file_read(const char* path, SnxU64 base, NceRange** pools, size_t* pool_
    (its image and pool past 128 MiB, as an update's main module may be) gets a second pool before it, which they take,
    as Eden splits its patch section. Then the stubs are placed as the runtime places them (the trap, then each site,
    nce.c): mods[i].base is where module i goes and the sites move with it, *pools (malloc'd) in the order the runtime
-   fills them, 0. 1, with why, when a site reaches no pool even so (a module past about 256 MiB), and -1, with why,
-   when the pools pass end: mods and the sites are then as they were, and *pools NULL */
+   fills them, 0. 1, with why, when a site reaches no pool even so (a module past about 256 MiB: why names the word,
+   the module and its size, and says to turn NCE off), and -1, with why, when the pools pass end: mods and the sites
+   are then as they were, and *pools NULL */
 typedef struct {
     SnxU64 base, size;
 } NceSpan;
