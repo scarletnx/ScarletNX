@@ -43,6 +43,9 @@ typedef struct {
 } SnxCtrVk;
 /* the device, once snx_ctr_vk_init made it; NULL before */
 SnxCtrVk* snx_ctr_vk(void);
+/* the 3D render scale of a screen of these framebuffer sizes: the CTR top or bottom resolution setting, as far as
+   the device's largest image takes (1 before a device, or with none) */
+uint8_t snx_ctr_vk_target_scale(unsigned width, unsigned height);
 /* The device and the window (unless headless or none can be made), with memory's RAM regions imported. False, with
    the reason in error, when the host has no Vulkan device that can: Vulkan 1.2, 8-bit storage buffers and
    VK_EXT_external_memory_host */

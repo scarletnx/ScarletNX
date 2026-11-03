@@ -205,6 +205,9 @@ void snx_ctr_present_title(const char* name, const char* addons) {
 }
 bool snx_ctr_present_ready(void) { return g_present.up; }
 bool snx_ctr_present_windowed(void) { return g_present.windowed[0] || g_present.windowed[1]; }
+bool snx_ctr_present_separate(void) {
+    return g_present.up && g_present.separate && g_present.windowed[0] && g_present.windowed[1];
+}
 
 /* whether this present is one the dumps keep: the first eight frames, then about one a second as
    frame-<screen>-latest.ppm */

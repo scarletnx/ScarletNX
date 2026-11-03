@@ -315,6 +315,15 @@ if(TARGET snx_ctr_board)
     add_test(NAME 3ds_gsp_gpu COMMAND snx-test-3ds-gsp "${CMAKE_CURRENT_BINARY_DIR}/gsp-frames")
     # No Vulkan loader/ICD: presentation cannot run here; the probe skips, never fakes a frame.
     set_tests_properties(3ds_gsp_gpu PROPERTIES SKIP_RETURN_CODE 77)
+    # the two windows and the per-screen render scales: one window always, Separate screens when the host has a
+    # window; the dumps stay the framebuffer's own size whatever the scale
+    add_executable(snx-test-3ds-windows 3ds_windows.c)
+    snx_test_target(snx-test-3ds-windows 11)
+    target_link_libraries(snx-test-3ds-windows PRIVATE snx_ctr_gpu)
+    add_test(NAME 3ds_windows COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames")
+    add_test(NAME 3ds_windows_separate
+             COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-separate" --separate)
+    set_tests_properties(3ds_windows 3ds_windows_separate PROPERTIES SKIP_RETURN_CODE 77)
     # the transfer engine alone: fills, display transfers, texture copies against hand-written goldens
     add_executable(snx-test-3ds-transfer 3ds_transfer.c)
     snx_test_target(snx-test-3ds-transfer 11)
