@@ -156,15 +156,64 @@ int snx_error(const char* fmt, ...) {
 }
 char* snx_os_error(char* out, size_t size) {
 #ifdef _WIN32
+    /* the wide text: FormatMessageA's is in the system's code page, which every reader of out takes for UTF-8 */
     DWORD code = GetLastError();
-    DWORD n = size ? FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, code, 0, out,
-                                    (DWORD)size, NULL)
-                   : 0;
-    while (n && (out[n - 1] == '\n' || out[n - 1] == '\r' || out[n - 1] == ' ' || out[n - 1] == '.')) out[--n] = 0;
-    if (!n && size) snprintf(out, size, "Windows error %lu", (unsigned long)code);
+    WCHAR text[512];
+    DWORD n = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, code, 0, text,
+                             (DWORD)(sizeof text / sizeof *text), NULL);
+    snx_windows_reason((const uint16_t*)text, n, (unsigned long)code, out, size);
 #else
     if (size) snprintf(out, size, "%s", strerror(errno));
 #endif
+    return out;
+}
+char* snx_windows_reason(const uint16_t* text, size_t n, unsigned long code, char* out, size_t size) {
+    char tail[40];
+    size_t at = 0, room, i;
+    if (!size) return out;
+    for (i = 0; i < n && text[i]; ++i) {}
+    n = i;
+    while (n && (text[n - 1] == '\n' || text[n - 1] == '\r' || text[n - 1] == ' ' || text[n - 1] == '.' ||
+                 text[n - 1] == 0x3002)) /* the ideographic full stop too */
+        --n;
+    if (!n) {
+        snprintf(out, size, "Windows error %lu", code);
+        return out;
+    }
+    snprintf(tail, sizeof tail, " (Windows error %lu)", code);
+    room = size - 1 > strlen(tail) ? size - 1 - strlen(tail) : size - 1; /* the code after it where both fit */
+    for (i = 0; i < n; ++i) {
+        uint32_t c = text[i];
+        unsigned char utf8[4];
+        size_t k;
+        if (c >= 0xD800 && c < 0xDC00 && i + 1 < n && text[i + 1] >= 0xDC00 && text[i + 1] < 0xE000)
+            c = 0x10000 + ((c - 0xD800) << 10) + (uint32_t)(text[++i] - 0xDC00);
+        else if (c >= 0xD800 && c < 0xE000)
+            c = 0xFFFD;
+        if (c < 0x80) {
+            utf8[0] = (unsigned char)c;
+            k = 1;
+        } else if (c < 0x800) {
+            utf8[0] = (unsigned char)(0xC0 | c >> 6);
+            utf8[1] = (unsigned char)(0x80 | (c & 0x3F));
+            k = 2;
+        } else if (c < 0x10000) {
+            utf8[0] = (unsigned char)(0xE0 | c >> 12);
+            utf8[1] = (unsigned char)(0x80 | (c >> 6 & 0x3F));
+            utf8[2] = (unsigned char)(0x80 | (c & 0x3F));
+            k = 3;
+        } else {
+            utf8[0] = (unsigned char)(0xF0 | c >> 18);
+            utf8[1] = (unsigned char)(0x80 | (c >> 12 & 0x3F));
+            utf8[2] = (unsigned char)(0x80 | (c >> 6 & 0x3F));
+            utf8[3] = (unsigned char)(0x80 | (c & 0x3F));
+            k = 4;
+        }
+        if (at + k > room) break;
+        memcpy(out + at, utf8, k);
+        at += k;
+    }
+    snprintf(out + at, size - at, "%s", strlen(tail) < size - at ? tail : "");
     return out;
 }
 char* snx_path_join(const char* a, const char* b) {
