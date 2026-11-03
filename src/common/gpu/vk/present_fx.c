@@ -8,6 +8,7 @@
 #include "common/gpu/vk/fx/AreaTex.h"
 #include "common/gpu/vk/fx/SearchTex.h"
 #include "common/gpu/vk/fx/fx_fsr.h"
+#include "common/gpu/vk/fx/nis_coef.h"
 #include "common/gpu/vk/fx_spv.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
@@ -19,6 +20,19 @@
 
 #define SNX_FX_SLOTS_MAX 8
 #define SNX_FX_PUSH      128
+#define NIS_BLOCK_W      32
+#define NIS_BLOCK_H      24
+
+typedef struct {
+    float kDetectRatio, kDetectThres, kMinContrastRatio, kRatioNorm;
+    float kContrastBoost, kEps, kSharpStartY, kSharpScaleY;
+    float kSharpStrengthMin, kSharpStrengthScale, kSharpLimitMin, kSharpLimitScale;
+    float kScaleX, kScaleY;
+    float kDstNormX, kDstNormY, kSrcNormX, kSrcNormY;
+    uint32_t kInputViewportOriginX, kInputViewportOriginY, kInputViewportWidth, kInputViewportHeight;
+    uint32_t kOutputViewportOriginX, kOutputViewportOriginY, kOutputViewportWidth, kOutputViewportHeight;
+    float reserved0, reserved1;
+} NisConfig;
 
 typedef struct {
     VkImage image;
@@ -46,8 +60,8 @@ struct SnxFx {
     VkFormat fmt;
     int comp_checked, comp_ok;
     VkSampler sampler;
-    VkDescriptorSetLayout dsl0, dsl1, dsl2, dsl3;
-    VkPipelineLayout pl0, pl1, pl2, pl3;
+    VkDescriptorSetLayout dsl0, dsl1, dsl2, dsl3, dsl_nis, dsl_sgsr;
+    VkPipelineLayout pl0, pl1, pl2, pl3, pl_nis, pl_sgsr;
     VkDescriptorPool pool;
     VkPipeline easu, rcas, easu16, rcas16;
     VkPipeline copy, copy_linear;
@@ -55,6 +69,13 @@ struct SnxFx {
     VkFormat blend_fmt;
     VkPipeline fxaa;
     VkPipeline smaa_edge, smaa_weights, smaa_blend;
+    VkPipeline nis, nis8, sgsr;
+    int nis_failed, sgsr_failed, coef_ready;
+    FxImage coef[2];
+    VkBuffer coef_buf, nis_ub;
+    VkDeviceMemory coef_mem, nis_ub_mem;
+    void* nis_ub_map;
+    VkDescriptorSet nis_set[SNX_FX_SLOTS_MAX], sgsr_set[SNX_FX_SLOTS_MAX];
     VkPipeline compose, encode[4], test;
     VkFormat encode_fmt[4];
     int pipes_ready, pipes_failed;
@@ -523,6 +544,20 @@ static VkPipeline make_gfx(SnxFx* fx, const uint32_t* vs, uint64_t vs_bytes, con
     return pipe;
 }
 
+static VkPipeline make_compute(SnxFx* fx, const uint32_t* words, uint64_t bytes, VkPipelineLayout layout) {
+    VkShaderModule m = module(fx, words, bytes);
+    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                                                .pName = "main",
+                                                .module = m},
+                                      .layout = layout};
+    VkPipeline pipe = VK_NULL_HANDLE;
+    if (!m || !fx_ok(vkCreateComputePipelines(fx->dev, fx->cache, 1, &ci, NULL, &pipe))) pipe = VK_NULL_HANDLE;
+    if (m) vkDestroyShaderModule(fx->dev, m, NULL);
+    return pipe;
+}
+
 static int make_layouts(SnxFx* fx) {
     VkPushConstantRange pc = {VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT, 0, SNX_FX_PUSH};
     VkDescriptorSetLayoutBinding b[3] = {{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -546,6 +581,40 @@ static int make_layouts(SnxFx* fx) {
         if (!fx_ok(vkCreateDescriptorSetLayout(fx->dev, &dl, NULL, layouts[i]))) return 0;
         pl.pSetLayouts = layouts[i];
         if (!fx_ok(vkCreatePipelineLayout(fx->dev, &pl, NULL, pipes[i]))) return 0;
+    }
+    {
+        VkDescriptorSetLayoutBinding nis_b[6] = {
+            {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+            {1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+            {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+            {3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+            {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+            {5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
+        VkDescriptorSetLayoutCreateInfo nd = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                              .bindingCount = 6,
+                                              .pBindings = nis_b};
+        VkPushConstantRange npc = {VK_SHADER_STAGE_COMPUTE_BIT, 0, SNX_FX_PUSH};
+        VkPipelineLayoutCreateInfo npl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                          .setLayoutCount = 1,
+                                          .pSetLayouts = &fx->dsl_nis,
+                                          .pushConstantRangeCount = 1,
+                                          .pPushConstantRanges = &npc};
+        VkDescriptorSetLayoutBinding sgsr_b = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                                               VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
+        VkDescriptorSetLayoutCreateInfo sd = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                              .bindingCount = 1,
+                                              .pBindings = &sgsr_b};
+        VkPushConstantRange spc = {VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT, 0, SNX_FX_PUSH};
+        VkPipelineLayoutCreateInfo spl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                          .setLayoutCount = 1,
+                                          .pSetLayouts = &fx->dsl_sgsr,
+                                          .pushConstantRangeCount = 1,
+                                          .pPushConstantRanges = &spc};
+        if (!fx_ok(vkCreateDescriptorSetLayout(fx->dev, &nd, NULL, &fx->dsl_nis)) ||
+            !fx_ok(vkCreatePipelineLayout(fx->dev, &npl, NULL, &fx->pl_nis)) ||
+            !fx_ok(vkCreateDescriptorSetLayout(fx->dev, &sd, NULL, &fx->dsl_sgsr)) ||
+            !fx_ok(vkCreatePipelineLayout(fx->dev, &spl, NULL, &fx->pl_sgsr)))
+            return 0;
     }
     return 1;
 }
@@ -580,6 +649,100 @@ static int make_pipelines(SnxFx* fx) {
         return 0;
     }
     fx->pipes_ready = 1;
+    return 1;
+}
+
+static int make_coef(SnxFx* fx, VkCommandBuffer cb) {
+    const uint32_t w = kFilterSize / 4, h = kPhaseCount;
+    const VkDeviceSize one = (VkDeviceSize)w * h * 4 * sizeof(uint16_t);
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                             .size = one * 2,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    VkMemoryRequirements req;
+    VkPhysicalDeviceMemoryProperties mp;
+    VkMemoryAllocateInfo ai;
+    void* mapped = NULL;
+    if (!fx_ok(vkCreateBuffer(fx->dev, &bi, NULL, &fx->coef_buf))) return 0;
+    vkGetBufferMemoryRequirements(fx->dev, fx->coef_buf, &req);
+    vkGetPhysicalDeviceMemoryProperties(fx->phys, &mp);
+    ai = (VkMemoryAllocateInfo){.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size};
+    ai.memoryTypeIndex =
+        snx_vk_memory_type(&mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (ai.memoryTypeIndex == UINT32_MAX || !fx_ok(vkAllocateMemory(fx->dev, &ai, NULL, &fx->coef_mem)) ||
+        !fx_ok(vkBindBufferMemory(fx->dev, fx->coef_buf, fx->coef_mem, 0)) ||
+        !fx_ok(vkMapMemory(fx->dev, fx->coef_mem, 0, VK_WHOLE_SIZE, 0, &mapped)) || !mapped)
+        return 0;
+    memcpy(mapped, coef_scale_fp16, (size_t)one);
+    memcpy((unsigned char*)mapped + one, coef_usm_fp16, (size_t)one);
+    vkUnmapMemory(fx->dev, fx->coef_mem);
+    for (int i = 0; i < 2; ++i) {
+        VkBufferImageCopy c = {.bufferOffset = (VkDeviceSize)i * one,
+                               .bufferRowLength = w,
+                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                               .imageExtent = {w, h, 1}};
+        if (!img_make(fx, &fx->coef[i], w, h, VK_FORMAT_R16G16B16A16_SFLOAT,
+                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+            return 0;
+        fx_barrier(fx, cb, fx->coef[i].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_COPY_BIT,
+                   VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        vkCmdCopyBufferToImage(cb, fx->coef_buf, fx->coef[i].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+        fx_barrier(fx, cb, fx->coef[i].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                   VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    }
+    fx->coef_ready = 1;
+    return 1;
+}
+
+static int ensure_nis(SnxFx* fx, VkCommandBuffer cb) {
+    if (fx->nis || fx->nis_failed) return fx->nis != VK_NULL_HANDLE;
+    if (choose_format(fx) == VK_FORMAT_R8G8B8A8_UNORM)
+        fx->nis = make_compute(fx, fx_nis8_spv, fx_nis8_spv_size, fx->pl_nis);
+    else
+        fx->nis = make_compute(fx, fx_nis_spv, fx_nis_spv_size, fx->pl_nis);
+    if (!fx->nis || (!fx->coef_ready && !make_coef(fx, cb))) {
+        fx->nis_failed = 1;
+        fx_echo(fx, "vulkan: the NIS upscaler could not be made");
+        return 0;
+    }
+    if (!fx->nis_ub) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                 .size = sizeof(NisConfig),
+                                 .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
+        VkMemoryRequirements req;
+        VkPhysicalDeviceMemoryProperties mp;
+        VkMemoryAllocateInfo ai;
+        if (!fx_ok(vkCreateBuffer(fx->dev, &bi, NULL, &fx->nis_ub))) {
+            fx->nis_failed = 1;
+            return 0;
+        }
+        vkGetBufferMemoryRequirements(fx->dev, fx->nis_ub, &req);
+        vkGetPhysicalDeviceMemoryProperties(fx->phys, &mp);
+        ai = (VkMemoryAllocateInfo){.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size};
+        ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (ai.memoryTypeIndex == UINT32_MAX || !fx_ok(vkAllocateMemory(fx->dev, &ai, NULL, &fx->nis_ub_mem)) ||
+            !fx_ok(vkBindBufferMemory(fx->dev, fx->nis_ub, fx->nis_ub_mem, 0)) ||
+            !fx_ok(vkMapMemory(fx->dev, fx->nis_ub_mem, 0, VK_WHOLE_SIZE, 0, &fx->nis_ub_map))) {
+            fx->nis_failed = 1;
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int ensure_sgsr(SnxFx* fx) {
+    if (fx->sgsr || fx->sgsr_failed) return fx->sgsr != VK_NULL_HANDLE;
+    fx->sgsr = make_gfx(fx, fx_sgsr_vert_spv, fx_sgsr_vert_spv_size, fx_sgsr_frag_spv, fx_sgsr_frag_spv_size,
+                        fx->pl_sgsr, choose_format(fx));
+    if (!fx->sgsr) {
+        fx->sgsr_failed = 1;
+        fx_echo(fx, "vulkan: the SGSR upscaler could not be made");
+        return 0;
+    }
     return 1;
 }
 
@@ -644,6 +807,10 @@ SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, uint32_
         if (!fx_ok(vkAllocateDescriptorSets(fx->dev, &ai, &fx->blend_set[i]))) goto failed;
         ai.pSetLayouts = &fx->dsl2;
         if (!fx_ok(vkAllocateDescriptorSets(fx->dev, &ai, &fx->mix_set[i]))) goto failed;
+        ai.pSetLayouts = &fx->dsl_nis;
+        if (!fx_ok(vkAllocateDescriptorSets(fx->dev, &ai, &fx->nis_set[i]))) goto failed;
+        ai.pSetLayouts = &fx->dsl_sgsr;
+        if (!fx_ok(vkAllocateDescriptorSets(fx->dev, &ai, &fx->sgsr_set[i]))) goto failed;
     }
     return fx;
 failed:
@@ -664,6 +831,13 @@ void snx_fx_destroy(SnxFx* fx) {
         img_free(fx, &fx->keep[i]);
         img_free(fx, &fx->blend_img[i]);
     }
+    img_free(fx, &fx->coef[0]);
+    img_free(fx, &fx->coef[1]);
+    if (fx->coef_buf) vkDestroyBuffer(fx->dev, fx->coef_buf, NULL);
+    if (fx->coef_mem) vkFreeMemory(fx->dev, fx->coef_mem, NULL);
+    if (fx->nis_ub_map) vkUnmapMemory(fx->dev, fx->nis_ub_mem);
+    if (fx->nis_ub) vkDestroyBuffer(fx->dev, fx->nis_ub, NULL);
+    if (fx->nis_ub_mem) vkFreeMemory(fx->dev, fx->nis_ub_mem, NULL);
     if (fx->area_view) vkDestroyImageView(fx->dev, fx->area_view, NULL);
     if (fx->search_view) vkDestroyImageView(fx->dev, fx->search_view, NULL);
     if (fx->area) vkDestroyImage(fx->dev, fx->area, NULL);
@@ -685,6 +859,9 @@ void snx_fx_destroy(SnxFx* fx) {
     DESTROY_PIPE(smaa_edge);
     DESTROY_PIPE(smaa_weights);
     DESTROY_PIPE(smaa_blend);
+    DESTROY_PIPE(nis);
+    DESTROY_PIPE(nis8);
+    DESTROY_PIPE(sgsr);
     DESTROY_PIPE(compose);
     DESTROY_PIPE(test);
 #undef DESTROY_PIPE
@@ -935,8 +1112,8 @@ int snx_fx_pick_aa(SnxFx* fx, int aa, uint32_t render_w, uint32_t render_h, uint
 
 int snx_fx_filter_available(SnxFx* fx, int filter) {
     if (filter == SNX_FX_UPSCALE_OFF || filter == SNX_FX_UPSCALE_BILINEAR) return 1;
-    if (filter == SNX_FX_UPSCALE_NIS || filter == SNX_FX_UPSCALE_SGSR) return 0;
-    return filter == SNX_FX_UPSCALE_FSR1 && format_ok(fx);
+    return (filter == SNX_FX_UPSCALE_FSR1 || filter == SNX_FX_UPSCALE_NIS || filter == SNX_FX_UPSCALE_SGSR) &&
+           format_ok(fx);
 }
 
 int snx_fx_pick_filter(SnxFx* fx, uint32_t src_w, uint32_t src_h, uint32_t dst_w, uint32_t dst_h, uint32_t transform) {
@@ -947,6 +1124,139 @@ int snx_fx_pick_filter(SnxFx* fx, uint32_t src_w, uint32_t src_h, uint32_t dst_w
     if (!snx_fx_filter_available(fx, f)) f = SNX_FX_UPSCALE_FSR1;
     if (!snx_fx_filter_available(fx, f)) return SNX_FX_UPSCALE_BILINEAR;
     return f;
+}
+
+static int nis_config(NisConfig* c, float sharpness, u32 image_w, u32 image_h, u32 x, u32 y, u32 w, u32 h, u32 dw,
+                      u32 dh) {
+    float slider, sharpen_slider, max_scale, min_scale, limit_scale;
+    float sharp_start_y, sharp_end_y, sharp_strength_min, sharp_strength_max, sharp_limit_min, sharp_limit_max;
+    sharpness = snx_clamp_float(sharpness, 0.0f, 1.0f);
+    sharpen_slider = sharpness - 0.5f;
+    max_scale = sharpen_slider >= 0.0f ? 1.25f : 1.75f;
+    min_scale = sharpen_slider >= 0.0f ? 1.25f : 1.0f;
+    limit_scale = sharpen_slider >= 0.0f ? 1.25f : 1.0f;
+    slider = sharpen_slider;
+    sharp_start_y = 0.45f;
+    sharp_end_y = 0.9f;
+    sharp_strength_min = fmaxf(0.0f, 0.4f + slider * min_scale * 1.2f);
+    sharp_strength_max = 1.6f + slider * max_scale * 1.8f;
+    sharp_limit_min = fmaxf(0.1f, 0.14f + slider * limit_scale * 0.32f);
+    sharp_limit_max = 0.5f + slider * limit_scale * 0.6f;
+    memset(c, 0, sizeof *c);
+    c->kInputViewportOriginX = x;
+    c->kInputViewportOriginY = y;
+    c->kInputViewportWidth = w;
+    c->kInputViewportHeight = h;
+    c->kOutputViewportWidth = dw;
+    c->kOutputViewportHeight = dh;
+    c->kSrcNormX = 1.0f / (float)image_w;
+    c->kSrcNormY = 1.0f / (float)image_h;
+    c->kDstNormX = 1.0f / (float)dw;
+    c->kDstNormY = 1.0f / (float)dh;
+    c->kScaleX = (float)w / (float)dw;
+    c->kScaleY = (float)h / (float)dh;
+    if (c->kScaleX < 0.5f || c->kScaleX > 1.0f || c->kScaleY < 0.5f || c->kScaleY > 1.0f) return 0;
+    c->kDetectRatio = 2.0f * 1127.0f / 1024.0f;
+    c->kDetectThres = 64.0f / 1024.0f;
+    c->kMinContrastRatio = 2.0f;
+    c->kRatioNorm = 1.0f / (10.0f - 2.0f);
+    c->kContrastBoost = 1.0f;
+    c->kEps = 1.0f / 255.0f;
+    c->kSharpStartY = sharp_start_y;
+    c->kSharpScaleY = 1.0f / (sharp_end_y - sharp_start_y);
+    c->kSharpStrengthMin = sharp_strength_min;
+    c->kSharpStrengthScale = sharp_strength_max - sharp_strength_min;
+    c->kSharpLimitMin = sharp_limit_min;
+    c->kSharpLimitScale = sharp_limit_max - sharp_limit_min;
+    return 1;
+}
+
+static int record_nis(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src, uint32_t image_w, uint32_t image_h,
+                      uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t dw, uint32_t dh) {
+    NisConfig cfg;
+    if (!nis_config(&cfg, 1.0f - (float)fx->cfg.sharpness / 200.0f, image_w, image_h, x, y, w, h, dw, dh)) return 0;
+    memcpy(fx->nis_ub_map, &cfg, sizeof cfg);
+    {
+        VkDescriptorBufferInfo bi = {fx->nis_ub, 0, sizeof cfg};
+        VkDescriptorImageInfo in = {VK_NULL_HANDLE, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo out = {VK_NULL_HANDLE, fx->main[slot].view, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo smp = {fx->sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+        VkDescriptorImageInfo cs = {VK_NULL_HANDLE, fx->coef[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo cu = {VK_NULL_HANDLE, fx->coef[1].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet wr[6] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = fx->nis_set[slot],
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                       .pBufferInfo = &bi},
+                                      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = fx->nis_set[slot],
+                                       .dstBinding = 1,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+                                       .pImageInfo = &smp},
+                                      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = fx->nis_set[slot],
+                                       .dstBinding = 2,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                       .pImageInfo = &in},
+                                      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = fx->nis_set[slot],
+                                       .dstBinding = 3,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                       .pImageInfo = &out},
+                                      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = fx->nis_set[slot],
+                                       .dstBinding = 4,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                       .pImageInfo = &cs},
+                                      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = fx->nis_set[slot],
+                                       .dstBinding = 5,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                       .pImageInfo = &cu}};
+        vkUpdateDescriptorSets(fx->dev, 6, wr, 0, NULL);
+    }
+    fx_barrier(fx, cb, fx->main[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+               VK_ACCESS_2_SHADER_WRITE_BIT);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, fx->nis);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, fx->pl_nis, 0, 1, &fx->nis_set[slot], 0, NULL);
+    vkCmdDispatch(cb, (dw + NIS_BLOCK_W - 1) / NIS_BLOCK_W, (dh + NIS_BLOCK_H - 1) / NIS_BLOCK_H, 1);
+    fx_barrier(fx, cb, fx->main[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL,
+               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+               VK_ACCESS_2_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    return 1;
+}
+
+static int record_sgsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src, uint32_t image_w, uint32_t image_h,
+                       uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t transform, uint32_t dw, uint32_t dh) {
+    float pc[16] = {0};
+    pc[0] = 1.0f / (float)image_w;
+    pc[1] = 1.0f / (float)image_h;
+    pc[2] = (float)image_w;
+    pc[3] = (float)image_h;
+    pc[4] = (float)w / (float)image_w;
+    pc[5] = (float)h / (float)image_h;
+    pc[6] = (float)x / (float)image_w;
+    pc[7] = (float)y / (float)image_h;
+    pc[8] = 2.0f - (float)fx->cfg.sharpness / 200.0f;
+    pc[12] = (transform & 1) ? 1.0f : 0.0f;
+    pc[13] = (transform & 2) ? 1.0f : 0.0f;
+    bind_combined(fx, fx->sgsr_set[slot], src, 0);
+    fx_barrier(fx, cb, fx->main[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    fx_draw(fx, cb, fx->main[slot].view, fx->sgsr, fx->pl_sgsr, dw, dh, fx->sgsr_set[slot], pc, sizeof pc,
+            VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+    fx_barrier(fx, cb, fx->main[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+               VK_ACCESS_2_TRANSFER_READ_BIT);
+    return 1;
 }
 
 /* ---- the public render ---- */
@@ -960,7 +1270,7 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, VkImageView src, uint32_t img_w
     if (!fx || !cb || !src || !img_w || !img_h || !w || !h || !out_w || !out_h || !out) return 0;
     slot = fx->slot ? fx->slot() % fx->slots : 0;
     aa = snx_fx_pick_aa(fx, aa, w, h, out_w, out_h, 16384);
-    if (filter != SNX_FX_UPSCALE_FSR1 && aa == SNX_FX_AA_OFF) return 0;
+    if ((filter == SNX_FX_UPSCALE_OFF || filter == SNX_FX_UPSCALE_BILINEAR) && aa == SNX_FX_AA_OFF) return 0;
     if (!make_pipelines(fx)) return 0;
     if (aa == SNX_FX_AA_SSAA2 || aa == SNX_FX_AA_SSAA4) {
         uint32_t mult = aa == SNX_FX_AA_SSAA4 ? 4 : 2;
@@ -969,10 +1279,18 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, VkImageView src, uint32_t img_w
         work_h = out_h * mult;
     }
     if (!img_make(fx, &fx->main[slot], work_w, work_h, choose_format(fx), fx_usage())) return 0;
+    if (filter == SNX_FX_UPSCALE_NIS && !ensure_nis(fx, cb)) filter = SNX_FX_UPSCALE_FSR1;
+    if (filter == SNX_FX_UPSCALE_SGSR && !ensure_sgsr(fx)) filter = SNX_FX_UPSCALE_FSR1;
+    if (filter == SNX_FX_UPSCALE_NIS) {
+        if (!record_nis(fx, cb, slot, src, img_w, img_h, x, y, w, h, work_w, work_h)) filter = SNX_FX_UPSCALE_FSR1;
+    } else if (filter == SNX_FX_UPSCALE_SGSR) {
+        if (!record_sgsr(fx, cb, slot, src, img_w, img_h, x, y, w, h, transform, work_w, work_h))
+            filter = SNX_FX_UPSCALE_FSR1;
+    }
     if (filter == SNX_FX_UPSCALE_FSR1) {
         if (!img_make(fx, &fx->mid[slot], work_w, work_h, choose_format(fx), fx_usage())) return 0;
         record_fsr(fx, cb, slot, src, img_w, img_h, x, y, w, h, transform, work_w, work_h);
-    } else {
+    } else if (filter != SNX_FX_UPSCALE_NIS && filter != SNX_FX_UPSCALE_SGSR) {
         record_copy(fx, cb, fx->copy_set[slot], src, img_w, img_h, x, y, w, h, transform, work_w, work_h, 1,
                     &fx->main[slot]);
     }

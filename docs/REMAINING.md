@@ -13,7 +13,7 @@ sentinel `docs/.work-complete` only when every box is checked. Do not push to an
       current pair. Use the shared blend pass. Check `3ds_windows` and a real run.
 - [x] **Vita frame interpolation.** Same two-image present on the single Vita window. Check with the synthetic
       presenter path.
-- [ ] **NIS and SGSR on 3DS, Vita and GBA.** The shared filter picker currently falls back to FSR 1. Port the NIS and
+- [x] **NIS and SGSR on 3DS, Vita and GBA.** The shared filter picker currently falls back to FSR 1. Port the NIS and
       SGSR pipelines into `present_fx` with the same staging and coefficient upload the Switch presenter uses.
 - [ ] **3DS PICA shadow rendering.** Implement register `0x22f` and the shadow path so a retail title reaches the
       presenter. See `docs/issues/3ds-pica-shadow-rendering.md`.
