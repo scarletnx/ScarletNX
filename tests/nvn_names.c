@@ -485,12 +485,17 @@ static void test_texture(void) {
     check(gr32(s + 0x10) == 1 && gr32(s + 0x14) == 0x400 && gr32(s + 0x20) == 0 && gr64(s + 8) == 0xf09200408ull &&
               gr64(s + 0x38) == 0x400ull * 20,
           "pitch linear: the texture's stride");
-    /* the color formats of the 55.12 driver and of the 55.15 one, which doubles bits 16 to 31 */
+    /* the color formats of the 53.312 driver, whose NvRm counts color spaces from 1, of the 55.12 one, which counts
+       from 2 as 53.314's NvRm does, and of the 55.15 one, which doubles bits 16 to 31 */
     static const struct {
         u32 format, api;
         u64 color;
         const char* what;
     } colors[] = {
+        {NVN_FORMAT_RGBA8_SRGB, 53u << 16 | 312, 0x100532120ull, "53.312 RGBA8_SRGB"},
+        {NVN_FORMAT_R8, 53u << 16 | 312, 0xe09200408ull, "53.312 R8"},
+        {NVN_FORMAT_BGRA8, 53u << 16 | 105, 0x100d12120ull, "53.105 BGRA8, an older driver"},
+        {NVN_FORMAT_RGBA8_SRGB, 53u << 16 | 314, 0x200532120ull, "53.314 RGBA8_SRGB, counted from 2"},
         {NVN_FORMAT_RGBA8_SRGB, 55u << 16 | 12, 0x200532120ull, "55.12 RGBA8_SRGB"},
         {NVN_FORMAT_RGBA8_SRGB, 55u << 16 | 15, 0x200a62120ull, "55.15 RGBA8_SRGB"},
         {NVN_FORMAT_RGBX8_SRGB, 55u << 16 | 12, 0x20a532120ull, "55.12 RGBX8_SRGB, no alpha"},
