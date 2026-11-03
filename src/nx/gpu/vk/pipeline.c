@@ -1713,6 +1713,11 @@ static void pf_ship_rec(void* ctx, u32 type, const u8* p, u32 len, u64 at) {
         scan_add(w[0], w[1]);
     } else if (type == PF_SHADER && ship_record(p, len, &r, &cbr) && ship_key_only_clip(r.mask))
         idx_add(r.hash, (int)r.stage, r.mask[6], r.clen, r.qh, r.clen_a, r.qh_a, at);
+    else if (type == PF_ZSHADER && len >= sizeof r) { /* its PfShader as it is: the rest is unpacked once a draw asks */
+        memcpy(&r, p, sizeof r);
+        if (r.stage <= ST_FS && ship_key_only_clip(r.mask))
+            idx_add(r.hash, (int)r.stage, r.mask[6], r.clen, r.qh, r.clen_a, r.qh_a, at);
+    }
 }
 /* on the reading thread: a record of the scan file, into the scans' set */
 static void pf_scan_rec(void* ctx, u32 type, const u8* p, u32 len, u64 at) {
@@ -1723,10 +1728,11 @@ static void pf_scan_rec(void* ctx, u32 type, const u8* p, u32 len, u64 at) {
     memcpy(w, p, sizeof w);
     if (w[0] == SHIP_NONE) scan_add(w[0], w[1]);
 }
-/* the shipped file's record that starts at at, into r, its check, its reads and its SPIR-V: NULL when it isn't one */
-static const u32* ship_payload(u64 at, PfShader* r, u64* check, const u32** cbr) {
+/* the shipped file's record that starts at at, into r, its check, its reads and its SPIR-V: NULL when it isn't one.
+   A packed one's are in *owned, for the caller to free once the module is made */
+static const u32* ship_payload(u64 at, PfShader* r, u64* check, const u32** cbr, u8** owned) {
     u32 n = 0;
-    const u8* p = pf_payload(&g_pf.ship, at, &n, check);
+    const u8* p = pf_payload(&g_pf.ship, at, &n, check, owned);
     return ship_record(p, n, r, cbr);
 }
 /* on the reading thread: a PF_SHIPREF of the main file, a shader of the shipped file that an earlier run's draw found,
@@ -1734,10 +1740,12 @@ static const u32* ship_payload(u64 at, PfShader* r, u64* check, const u32** cbr)
 static u64 pf_load_shipref(void* ctx, u64 at, u64 check) {
     PfShader r;
     u64 c = 0;
+    u8* owned;
     const u32* cbr;
-    const u32* spv = ship_payload(at, &r, &c, &cbr);
+    const u32* spv = ship_payload(at, &r, &c, &cbr, &owned);
     VkSh* s = spv && c == check ? sh_from_record(&r, cbr, spv) : NULL;
     (void)ctx;
+    free(owned); /* sh_from_record copied the reads */
     if (!s) return 0;
     pf_sh_append(s);
     return mod_bits(s->mod);
@@ -1752,16 +1760,18 @@ static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[20], u32 len, u64 qh,
     const u32 *spv, *cbr;
     PfShader r;
     u64 check = 0;
+    u8* owned;
     VkSh* s;
     if (!g_pf.on || !__atomic_load_n(&g_pf.ship_ready, __ATOMIC_ACQUIRE) || !ship_key_only_clip(mask) ||
         !(e = idx_slot(h, stage, mask[6], len, qh, len_a, qh_a)) || !e->at)
         return NULL;
-    spv = ship_payload(e->at, &r, &check, &cbr);
+    spv = ship_payload(e->at, &r, &check, &cbr, &owned);
     /* the record there is the one indexed, unless another process rewrote the file before it was mapped again */
-    if (!spv || r.hash != h || r.stage != (u32)stage || r.clen != len || r.qh != qh || r.clen_a != len_a ||
-        r.qh_a != qh_a || memcmp(r.mask, mask, sizeof r.mask))
-        return NULL;
-    s = sh_from_record(&r, cbr, spv);
+    s = !spv || r.hash != h || r.stage != (u32)stage || r.clen != len || r.qh != qh || r.clen_a != len_a ||
+                r.qh_a != qh_a || memcmp(r.mask, mask, sizeof r.mask)
+            ? NULL
+            : sh_from_record(&r, cbr, spv);
+    free(owned); /* sh_from_record copied the reads */
     if (!s) return NULL;
     if (!vk_cb_reads_hold(&s->cbr, sh_cb_read)) {
         vkDestroyShaderModule(g_vk.dev, s->mod, NULL);
@@ -1963,6 +1973,7 @@ static void pf_load(void* arg) {
     SNX_ZONE(z_load, "pipeline file load");
     pf_key(key, sizeof key, &guest);
     g_pf.ship.max = SHIP_MAX;
+    g_pf.ship.pack = g_settings.compress_prepared_shaders ? PF_PACK_SHADERS : 0;
     g_pf.file.pack = g_settings.compress_shader_cache ? PF_PACK_UNITS : 0;
     pf_open_mapped(&g_pf.ship, g_pf.ship_path, key, pf_ship_rec, NULL);
     pf_open(&g_pf.file, g_pf.path, key, guest, &load, loaded);
