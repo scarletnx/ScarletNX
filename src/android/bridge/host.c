@@ -487,3 +487,133 @@ int host_epoll_wait(int set, HostEpollEvent* out, int most, int timeout_ms) {
     return k;
 #endif
 }
+
+/* ---- the guest's private anonymous mappings (host.h) ---- */
+
+typedef struct {
+    uint64_t start, end;
+    int access;
+} AnonPart;
+static struct {
+    pthread_mutex_t lock;
+    AnonPart* parts; /* disjoint, by start */
+    size_t count, capacity;
+} anon = {.lock = PTHREAD_MUTEX_INITIALIZER};
+
+static bool anon_room(void);
+/* [start, end) out of the record, the parts that cross its ends cut there (anon.lock held). A part that holds the
+   whole range is the only one it meets: its two pieces take its place and one more */
+static void anon_cut(uint64_t start, uint64_t end) {
+    for (size_t i = 0; i < anon.count; ++i) {
+        AnonPart p = anon.parts[i];
+        if (p.start < start && p.end > end) {
+            if (!anon_room()) {
+                anon.parts[i].end = start; /* no memory: the piece after end goes unrecorded */
+                return;
+            }
+            memmove(anon.parts + i + 2, anon.parts + i + 1, (anon.count - i - 1) * sizeof *anon.parts);
+            anon.parts[i] = (AnonPart){p.start, start, p.access};
+            anon.parts[i + 1] = (AnonPart){end, p.end, p.access};
+            ++anon.count;
+            return;
+        }
+    }
+    size_t kept = 0;
+    for (size_t i = 0; i < anon.count; ++i) {
+        AnonPart p = anon.parts[i];
+        if (p.end <= start || p.start >= end) {
+            anon.parts[kept++] = p;
+            continue;
+        }
+        if (p.start < start) anon.parts[kept++] = (AnonPart){p.start, start, p.access};
+        if (p.end > end) anon.parts[kept++] = (AnonPart){end, p.end, p.access};
+    }
+    anon.count = kept;
+}
+/* room for one more part (anon.lock held): false when memory runs out */
+static bool anon_room(void) {
+    if (anon.count < anon.capacity) return true;
+    size_t capacity = anon.capacity ? anon.capacity * 2 : 64;
+    AnonPart* parts = realloc(anon.parts, capacity * sizeof *parts);
+    if (!parts) return false;
+    anon.parts = parts;
+    anon.capacity = capacity;
+    return true;
+}
+/* [start, end) recorded with access (anon.lock held, the range cut out before) */
+static void anon_insert(uint64_t start, uint64_t end, int access) {
+    if (!anon_room()) return; /* unrecorded: its MADV_DONTNEED stays the host's */
+    size_t at = 0;
+    while (at < anon.count && anon.parts[at].start < start) ++at;
+    memmove(anon.parts + at + 1, anon.parts + at, (anon.count - at) * sizeof *anon.parts);
+    anon.parts[at] = (AnonPart){start, end, access};
+    ++anon.count;
+}
+
+void host_anon_map(uint64_t address, uint64_t size, int access) {
+    if (!size || address + size < address) return;
+    pthread_mutex_lock(&anon.lock);
+    anon_cut(address, address + size);
+    anon_insert(address, address + size, access);
+    pthread_mutex_unlock(&anon.lock);
+}
+void host_anon_unmap(uint64_t address, uint64_t size) {
+    if (!size || address + size < address) return;
+    pthread_mutex_lock(&anon.lock);
+    anon_cut(address, address + size);
+    pthread_mutex_unlock(&anon.lock);
+}
+
+/* the recorded parts of [start, end), copied out: their count (at most most) */
+static size_t anon_parts_in(uint64_t start, uint64_t end, AnonPart* out, size_t most) {
+    size_t n = 0;
+    for (size_t i = 0; i < anon.count && n < most; ++i) {
+        AnonPart p = anon.parts[i];
+        if (p.end <= start || p.start >= end) continue;
+        out[n++] = (AnonPart){p.start > start ? p.start : start, p.end < end ? p.end : end, p.access};
+    }
+    return n;
+}
+
+void host_anon_protect(uint64_t address, uint64_t size, int access) {
+    if (!size || address + size < address) return;
+    pthread_mutex_lock(&anon.lock);
+    AnonPart parts[64];
+    size_t n = anon_parts_in(address, address + size, parts, 64);
+    for (size_t i = 0; i < n; ++i) {
+        anon_cut(parts[i].start, parts[i].end);
+        anon_insert(parts[i].start, parts[i].end, access);
+    }
+    pthread_mutex_unlock(&anon.lock);
+}
+
+/* fresh zero pages over [address, address + size) with access, the old ones freed */
+static bool zero_pages(uint64_t address, uint64_t size, int access) {
+#ifdef _WIN32
+    void* p = (void*)(uintptr_t)address;
+    MEMORY_BASIC_INFORMATION m;
+    if (!VirtualQuery(p, &m, sizeof m) || m.Type != MEM_PRIVATE) return false;
+    if (!VirtualFree(p, size, MEM_DECOMMIT)) return false;
+    if (access == HOST_NONE) return true;
+    return VirtualAlloc(p, size, MEM_COMMIT, access & HOST_WRITE ? PAGE_READWRITE : PAGE_READONLY) != NULL;
+#else
+    int prot = (access & HOST_READ ? PROT_READ : 0) | (access & HOST_WRITE ? PROT_WRITE : 0);
+    return mmap((void*)(uintptr_t)address, size, prot, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) != MAP_FAILED;
+#endif
+}
+
+int host_dontneed(uint64_t address, uint64_t size) {
+    if (!size || address + size < address) return 0;
+    pthread_mutex_lock(&anon.lock);
+    int result = 0;
+    for (uint64_t at = address, end = address + size; at < end;) {
+        AnonPart parts[64];
+        size_t n = anon_parts_in(at, end, parts, 64);
+        if (!n) break;
+        for (size_t i = 0; i < n; ++i)
+            if (!zero_pages(parts[i].start, parts[i].end - parts[i].start, parts[i].access)) result = -1;
+        at = parts[n - 1].end;
+    }
+    pthread_mutex_unlock(&anon.lock);
+    return result;
+}
