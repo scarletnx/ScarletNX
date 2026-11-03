@@ -170,9 +170,13 @@ The recompiler's `android` target (`a64.profile`) is a phone's Armv8.2 CPU witho
   `VK_KHR_android_surface` becomes SDL's surface extensions or `VK_EXT_headless_surface`, the surface is the SDL
   window's (ScarletNX's renderer gives the window up), the guest's allocation callbacks and debug messengers are left
   out, and the device reports itself a **Mali-G710** with ARM's vendor and driver IDs, its limits and features the
-  host's. A Unity game's engine reaches it, makes its instance and device and a swapchain on the window, and then
-  crashes in the host's driver (lavapipe here) after an image it could not make,
+  host's. A surface's current extent is the native window's size, as an Android surface's always is (a Wayland or
+  headless surface leaves it to the swapchain). A Unity game's engine reaches it, makes its swapchain on the window
+  and presents its first frames (lavapipe here),
 - EGL gives the GPU's identity alone: a display, contexts without a config or a surface, and `glGetString` with the
   device that Vulkan reports, which engines read before they choose an API. Nothing draws through GLES, on purpose.
 
-Next: the image that the Vulkan pass-through fails to make, OpenSL ES and the media codecs.
+`SNX_ANDROID_SAMPLE=1` also prints the count of the guest's Vulkan presents, and asks each thread in guest code
+for its pc at its next poll, so a loop's pc is its own and not that of its last call.
+
+Next: OpenSL ES and the media codecs.
