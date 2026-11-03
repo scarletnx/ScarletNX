@@ -173,6 +173,8 @@ endif()
 if(SNX_BUILD_VITA AND NOT SNX_TOOLS_ONLY)
     add_subdirectory(src/vita)
 endif()
+# GLSL ES into SPIR-V (src/glslc), for the backends that run OpenGL ES programs: before the tests, which link it
+add_subdirectory(src/glslc)
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
