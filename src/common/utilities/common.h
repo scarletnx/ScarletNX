@@ -279,6 +279,9 @@ FILE* snx_fopen(const char* path, const char* mode);
    in the other one too */
 #define SNX_CONSOLE_LOG "scarletnx-console.log"
 #define SNX_ERROR_LOG   "scarletnx-error.log"
+/* The line a game's runtime prints as it makes the game's log, on the console and in the log, before the log's
+   absolute path: the launcher's Share Log takes the last run's game log from it, whatever the program is named */
+#define SNX_LOG_WRITTEN "log: written to "
 /* text appended to the file at path, each of its lines after the local time and this process's id
    ("2026-10-25 11:30:02 [4242] "), in one write: two programs appending at once keep each line whole and named, and a
    text without an ending newline gets one. 0, or -1 with errno set */
