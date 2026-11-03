@@ -1127,6 +1127,73 @@ static void compressed_reads(size_t block) {
     for (unsigned i = 0; i < 3; i++) free(files[i].content.data);
 }
 
+/* What a failed read says (snx_hac_message), with the values a game's log needs to tell the causes apart: the entry,
+   its kind, the image bytes it gives, the stored bytes it takes, and what LZ4 or the table holds. A read says only its
+   own failure: nothing after one that worked, even right after one that failed. */
+static void compressed_flaws(void) {
+    romfs_file_t file = {"text.bin", {zalloc(0x50000), 0x50000}};
+    hactool_ctx_t tool = {0};
+    nca_header_t header = {0};
+    romfs_dump_t dump;
+    unsigned char *entries, got[0x100];
+    uint32_t count;
+    char said[256];
+    synthetic_keys(&tool);
+    for (size_t i = 0; i < file.content.size; i++) file.content.data[i] = (unsigned char)"flawed blocks "[i % 14];
+    blob_t image = romfs_build(&file, 1);
+    blob_t stored = compress_blocks(&image, 0x10000, 1, 3, &header.fs_headers[0].compression_info, &entries, &count);
+    CHECK(count == 6);
+    for (uint32_t i = 0; i < count; i++)
+        CHECK(get_le(entries + (size_t)i * COMPRESSED_ENTRY_SIZE, 8) == 0x10000ULL * i);
+    romfs_dump_open(&dump, &header, &stored);
+    CHECK(snx_hac_fs_romfs_size(dump.fs) == image.size);
+
+    /* entry 1's LZ4 block, listed a byte short: what LZ4 makes of those bytes */
+    const unsigned char* e = entries + COMPRESSED_ENTRY_SIZE;
+    uint64_t at = get_le(e + 8, 8), size = get_le(e + 0x14, 4);
+    unsigned char* block = zalloc(0x10000);
+    int lz4 = LZ4_decompress_safe((const char*)stored.data + at, (char*)block, (int)size, 0x10000);
+    CHECK(e[0x10] == COMPRESSION_LZ4 && lz4 < 0);
+    free(block);
+    CHECK(!snx_hac_fs_read_romfs(dump.fs, 0xFF00, got, 0x100));
+    CHECK(!memcmp(got, image.data + 0xFF00, 0x100) && !strcmp(snx_hac_message(), ""));
+    CHECK(snx_hac_fs_read_romfs(dump.fs, 0xFF80, got, 0x100) == -1);
+    snprintf(said, sizeof said,
+             "Compressed storage entry 1 (LZ4, image 0x10000+0x10000, stored at 0x%llx+0x%llx): "
+             "LZ4_decompress_safe returns %d!",
+             (unsigned long long)at, (unsigned long long)size, lz4);
+    if (strcmp(snx_hac_message(), said)) fprintf(stderr, "said:     %s\nexpected: %s\n", snx_hac_message(), said);
+    CHECK(!strcmp(snx_hac_message(), said));
+
+    /* entry 3 of type 2, which the console's tables do not hold either */
+    e = entries + 3 * COMPRESSED_ENTRY_SIZE;
+    CHECK(snx_hac_fs_read_romfs(dump.fs, 0x30010, got, 0x10) == -1);
+    snprintf(said, sizeof said,
+             "Compressed storage entry 3 (image 0x30000+0x10000, stored at 0x%llx+0x%llx) has compression "
+             "type 2, not NONE (0), ZEROED (1) or LZ4 (3)!",
+             (unsigned long long)get_le(e + 8, 8), (unsigned long long)get_le(e + 0x14, 4));
+    if (strcmp(snx_hac_message(), said)) fprintf(stderr, "said:     %s\nexpected: %s\n", snx_hac_message(), said);
+    CHECK(!strcmp(snx_hac_message(), said));
+
+    /* the blocks around them still read, and say nothing */
+    CHECK(!snx_hac_fs_read_romfs(dump.fs, 0x20000, got, 0x100));
+    CHECK(!memcmp(got, image.data + 0x20000, 0x100) && !strcmp(snx_hac_message(), ""));
+    CHECK(!snx_hac_fs_read_romfs(dump.fs, 0x40000, got, 0x100));
+    CHECK(!memcmp(got, image.data + 0x40000, 0x100) && !strcmp(snx_hac_message(), ""));
+
+    /* past the image: the read's range and the image's size */
+    CHECK(snx_hac_fs_read_romfs(dump.fs, image.size - 0x10, got, 0x11) == -1);
+    snprintf(said, sizeof said, "RomFS read 0x%llx+0x11 is past the image's 0x%llx bytes",
+             (unsigned long long)(image.size - 0x10), (unsigned long long)image.size);
+    if (strcmp(snx_hac_message(), said)) fprintf(stderr, "said:     %s\nexpected: %s\n", snx_hac_message(), said);
+    CHECK(!strcmp(snx_hac_message(), said));
+    romfs_dump_close(&dump);
+    free(entries);
+    free(image.data);
+    free(stored.data);
+    free(file.content.data);
+}
+
 int main(void) {
     CHECK(sizeof(nca_fs_header_t) == 0x200);
     CHECK(sizeof(nca_sparse_info_t) == 0x30 && sizeof(nca_compression_info_t) == 0x28);
@@ -1138,6 +1205,7 @@ int main(void) {
     compressed_romfs();
     compressed_reads(0x10000);
     compressed_reads(0x4000);
+    compressed_flaws();
     update_t update = update_build();
     sparse_update(&update);
     empty_aes_ctr_ex();

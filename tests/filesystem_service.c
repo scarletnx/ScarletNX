@@ -2198,13 +2198,16 @@ int main(int argc, char** argv) {
         return 0; /* the fatal left the tree locked: nothing more of it */
     }
     /* a dump whose RomFS can't be read to its end (its compression table lists 0x20 bytes past what it stores): said at
-       start with the image's size and the dump's, and still where the game reads there. One whose image is far bigger
-       than the dump, all of it there (zeros past its files), is said nothing of */
+       start with the image's size and the dump's, and still where the game reads there, each time with hactool's
+       reason, the entry and the stored bytes it reads past the stored data (hac_synth.h's compressed_build: one NONE
+       entry, its data cut to a multiple of 0x10). One whose image is far bigger than the dump, all of it there (zeros
+       past its files), is said nothing of */
     if (argc == 4 && (!strcmp(argv[3], "dump-romfs-cut") || !strcmp(argv[3], "dump-romfs-zeros"))) {
         int cut = !strcmp(argv[3], "dump-romfs-cut");
         Request r;
         SvcObj *proxy, *storage;
         char image[32], mapped[32], *said;
+        unsigned long long stored;
         dump_write_nsp(0, cut ? DUMP_ROMFS_CUT : DUMP_ROMFS_ZEROS);
         strcpy(g_datadir, "dump-data/Game_data/");
         fs_init(NULL, NULL);
@@ -2214,13 +2217,14 @@ int main(int argc, char** argv) {
         CHECK(g_hle.fs.dfs != NULL && g_hle.fs.rtotal > 0x50);
         snx_size_text(g_hle.fs.rtotal, image, sizeof image);
         snx_size_text(g_hle.fs.dmap.size, mapped, sizeof mapped);
+        stored = (unsigned long long)(g_hle.fs.rtotal - 0x20 + 0xF) & ~0xFULL;
         said = snx_format("RomFS: the dump's image is %s, and its last byte, at %llx, can't be read from the dump's %s "
-                          "(hactool: Storage read out of range (0x",
-                          image, (unsigned long long)(g_hle.fs.rtotal - 1), mapped);
-        if (cut && strncmp(test_romfs_text, said, strlen(said)))
-            fprintf(stderr, "said:     %sexpected: %s...\n", test_romfs_text, said);
-        CHECK(cut ? !strncmp(test_romfs_text, said, strlen(said)) &&
-                        strstr(test_romfs_text, "!): the dump is incomplete or damaged\n") != NULL
+                          "(hactool: Compressed storage entry 0 (NONE, image 0x0+0x%llx, stored at 0x0) reads stored "
+                          "bytes 0x%llx+0x1, past the stored data's 0x%llx!): the dump is incomplete or damaged\n",
+                          image, (unsigned long long)(g_hle.fs.rtotal - 1), mapped, (unsigned long long)g_hle.fs.rtotal,
+                          (unsigned long long)(g_hle.fs.rtotal - 1), stored);
+        if (cut && strcmp(test_romfs_text, said)) fprintf(stderr, "said:     %sexpected: %s", test_romfs_text, said);
+        CHECK(cut ? !strcmp(test_romfs_text, said)
                   : !test_romfs_text[0] && g_hle.fs.rtotal > snx_file_size("dump-data/Game.nsp"));
         /* the image's last 0x10 bytes as the game reads them: the read's own warning, or zeros */
         proxy = new_fsp();
@@ -2235,8 +2239,13 @@ int main(int argc, char** argv) {
         test_romfs_text[0] = 0;
         dispatch(storage, &r, cut ? FS_OUT_OF_RANGE : 0);
         free(said);
-        said = snx_format("RomFS: could not read the dump at %llx (10 bytes): the game gets zeros\n",
-                          (unsigned long long)(g_hle.fs.rtotal - 0x10));
+        said =
+            snx_format("RomFS: could not read the dump at %llx (10 bytes; hactool: Compressed storage entry 0 (NONE, "
+                       "image 0x0+0x%llx, stored at 0x0) reads stored bytes 0x%llx+0x10, past the stored data's "
+                       "0x%llx!): the read fails, its buffer zeroed\n",
+                       (unsigned long long)(g_hle.fs.rtotal - 0x10), (unsigned long long)g_hle.fs.rtotal,
+                       (unsigned long long)(g_hle.fs.rtotal - 0x10), stored);
+        if (cut && strcmp(test_romfs_text, said)) fprintf(stderr, "said:     %sexpected: %s", test_romfs_text, said);
         CHECK(cut ? !strcmp(test_romfs_text, said) : !test_romfs_text[0]);
         free(said);
         svcobj_unref(storage);

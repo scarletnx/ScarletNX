@@ -344,6 +344,7 @@ static u8* dump_exefs(const char* path, u64* size) {
     size_t count, i;
     u8* data;
     int failed;
+    char why[256] = {0};
     if (!g_hle.fs.dfs || strncmp(path, "exefs/", 6)) return NULL;
     count = snx_hac_fs_files(g_hle.fs.dfs, &files);
     for (i = 0; i < count && strcmp(files[i].name, path + 6); i++) continue;
@@ -352,9 +353,10 @@ static u8* dump_exefs(const char* path, u64* size) {
     if (!data) return NULL;
     pm_lock(&g_host.fs.dlock);
     failed = snx_hac_fs_read(g_hle.fs.dfs, i, 0, data, (size_t)files[i].size);
+    if (failed) snprintf(why, sizeof why, "%s", snx_hac_message());
     pm_unlock(&g_host.fs.dlock);
     if (failed) {
-        WARN("fs: could not read %s from the game's dump\n", path);
+        WARN("fs: could not read %s from the game's dump (hactool: %s)\n", path, why[0] ? why : "no reason given");
         free(data);
         return NULL;
     }
@@ -799,14 +801,17 @@ static int image_read(u64 off, void* dst, u64 size, int locked, int quiet) {
         return 0;
     }
     if (g_hle.fs.dfs) {
+        char why[256] = {0};
         pm_lock(&g_host.fs.dlock);
         rc = size > SIZE_MAX ? -1 : snx_hac_fs_read_romfs(g_hle.fs.dfs, off, out, (size_t)size);
+        if (rc) snprintf(why, sizeof why, "%s", snx_hac_message()); /* hactool's, which the next read clears */
         pm_unlock(&g_host.fs.dlock);
         if (rc) {
             memset(out, 0, (size_t)size);
             if (!quiet)
-                WARN("RomFS: could not read the dump at %llx (%llx bytes): the game gets zeros\n",
-                     (unsigned long long)off, (unsigned long long)size);
+                WARN("RomFS: could not read the dump at %llx (%llx bytes; hactool: %s): the read fails, its buffer "
+                     "zeroed\n",
+                     (unsigned long long)off, (unsigned long long)size, why[0] ? why : "no reason given");
         }
         return rc;
     }
@@ -1268,9 +1273,16 @@ static int istorage_read(SvcObj* self, u64 off, u64 sz, u64 a) {
         u64 total = snx_hac_fs_romfs_size(fs);
         R_UNLESS(sz <= (u64)INT64_MAX - off && off <= total && sz <= total - off, FS_OUT_OF_RANGE);
         R_UNLESS(buffer_valid(a, sz) && sz <= SIZE_MAX, FS_OUT_OF_RANGE);
+        char why[256] = {0};
         pm_lock(&g_host.fs.dlock);
         rc = snx_hac_fs_read_romfs(fs, off, GP(a), (size_t)sz);
+        if (rc) snprintf(why, sizeof why, "%s", snx_hac_message());
         pm_unlock(&g_host.fs.dlock);
+        if (rc)
+            WARN("fs: could not read the RomFS of the DLC %016llx in its dump at %llx (%llx bytes; hactool: %s): the "
+                 "read answers 2002-3005\n",
+                 (unsigned long long)g_hle.fs.aocs[self->u[1]].dump.aoc.title_id, (unsigned long long)off,
+                 (unsigned long long)sz, why[0] ? why : "no reason given");
         return rc ? FS_OUT_OF_RANGE : 0;
     }
     if (!data) { /* the RomFS */
