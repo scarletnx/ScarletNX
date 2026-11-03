@@ -254,3 +254,8 @@ flourishes. This rule does not apply to code comments. The Claude files follow A
   not the tag that you check out after it. The libraries are now CPM packages (`cmake/dependencies.cmake`), each a
   release URL with its SHA-256. A bump changes both, and the build checks the hash against the download. The
   `OPTIONS` of CPM become cache variables of the whole build.
+- A check of `tests/gui_sdl.c` can fail on Windows alone for the state that a `#ifdef SNX_XDG` block leaves: those
+  blocks run on Linux only, and one of them presses ESC on the Keys page, which clears `app->message` before the
+  next check reads the tips. CMake registers `gui_sdl_events` only when `NOT APPLE`, so the Mac builds
+  `snx-test-gui-sdl` and runs it in no test. Run it by hand (`snx-build`, "The screen tests") and look at the frame
+  that the check failed on.
