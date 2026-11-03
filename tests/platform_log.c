@@ -102,6 +102,19 @@ int main(int argc, char** argv) {
     CHECK(kept > 10 && kept < 100 && contiguous, "the early lines kept are not the first ones without a gap");
     CHECK(strstr(t, "] after the module\n") != NULL, "the line after the module is missing");
     CHECK(!strstr(t, "the run before"), "the log kept the run before's lines");
+    /* where the log is, by its absolute path, in it after the early lines and on the console: the launcher's Share Log
+       takes the run's game log from that line of the run's output */
+    {
+        char *full = snx_absolute(log), *in_log = snx_format("] " SNX_LOG_WRITTEN "%s\n", full ? full : log);
+        char* on_console = snx_format("\n" SNX_LOG_WRITTEN "%s\n", full ? full : log);
+        const char* at = in_log ? strstr(t, in_log) : NULL;
+        CHECK(full && at && at > strstr(t, "] early 00 ") && at < strstr(t, "] after the module\n"),
+              "the log does not say where it is, after the early lines");
+        CHECK(on_console && strstr(slurp(err), on_console), "the console was not told where the log is");
+        free(on_console);
+        free(in_log);
+        free(full);
+    }
     /* the run before's log in logs/, named by when it was last written (the local time), and the runs' logs there
        down to the 4 newest: with this run's, 5; the player's file stays */
     {
