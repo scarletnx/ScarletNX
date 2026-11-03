@@ -679,12 +679,49 @@ static void set_flag(Glslc* g, Qual* q, uint16_t flag, uint32_t tok) {
     q->qual |= flag;
 }
 
+/* GLSL ES's order of qualification: invariant, interpolation, centroid or sample, storage, then precision; 0 for
+   the layout and memory qualifiers and precise, which only go before the precision */
+static uint32_t qualifier_rank(uint32_t kind) {
+    switch (kind) {
+        case TK_INVARIANT: return 1;
+        case TK_FLAT:
+        case TK_SMOOTH: return 2;
+        case TK_CENTROID:
+        case TK_SAMPLE: return 3;
+        case TK_CONST:
+        case TK_IN:
+        case TK_OUT:
+        case TK_INOUT:
+        case TK_UNIFORM:
+        case TK_BUFFER:
+        case TK_SHARED:
+        case TK_ATTRIBUTE:
+        case TK_VARYING: return 4;
+        default: return 0;
+    }
+}
+
 static void parse_qualifiers(Glslc* g, Qual* q) {
     memset(q, 0, sizeof *q);
     q->location = q->binding = q->set = -1;
     q->tok = g->pos;
+    uint32_t last = 0, last_tok = 0, prec_tok = 0; /* the highest rank so far and its token; the precision's */
+    int prec_seen = 0;                             /* token 0 can be the precision */
     for (;;) {
-        uint32_t t = g->pos;
+        uint32_t t = g->pos, k = kind_at(g, 0), r = qualifier_rank(k);
+        int other = r || k == TK_LAYOUT || k == TK_PRECISE || (k >= TK_COHERENT && k <= TK_WRITEONLY);
+        if (other && prec_seen) /* a second precision has its own error below */
+            glslc_fail(g, site(g, t), "'%.*s' comes after the precision '%.*s', which GLSL ES writes last", TOKV(g, t),
+                       TOKV(g, prec_tok));
+        if (r && r < last)
+            glslc_fail(g, site(g, t),
+                       "'%.*s' comes after '%.*s': GLSL ES orders the qualifiers invariant, interpolation, centroid or "
+                       "sample, storage, then precision",
+                       TOKV(g, t), TOKV(g, last_tok));
+        if (r) {
+            last = r;
+            last_tok = t;
+        }
         switch (kind_at(g, 0)) {
             case TK_CONST: set_storage(g, q, GLSLC_ST_CONST, t); break;
             case TK_IN: set_storage(g, q, GLSLC_ST_IN, t); break;
@@ -716,6 +753,8 @@ static void parse_qualifiers(Glslc* g, Qual* q) {
             case TK_MEDIUMP:
             case TK_HIGHP:
                 if (q->prec) glslc_fail(g, site(g, t), "'%.*s' is a second precision qualifier", TOKV(g, t));
+                prec_tok = t;
+                prec_seen = 1;
                 q->prec = kind_at(g, 0) == TK_LOWP      ? GLSLC_PREC_LOW
                           : kind_at(g, 0) == TK_MEDIUMP ? GLSLC_PREC_MEDIUM
                                                         : GLSLC_PREC_HIGH;

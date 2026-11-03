@@ -182,7 +182,9 @@ size, as GLSL ES does, where glslang takes 1. It takes vertical tab and form fee
 takes an array of arrays of samplers or images, writing a module spirv-val refuses for Vulkan. It lays a struct's
 samplers out as a UniformConstant struct, which Vulkan does not take, and with `-R` gives each element of an array of
 such structs variables of its own, so that an index known only when the shader runs, or a struct's array of samplers
-passed to a function, makes a module spirv-val refuses.
+passed to a function, makes a module spirv-val refuses. glslang takes a precision before the storage qualifier after
+a layout (`layout(binding = 1) highp uniform sampler2D s;`), and glslc keeps GLSL ES's order of qualification there
+too: invariant, interpolation, `centroid` or `sample`, storage, precision.
 
 ## Tests
 
