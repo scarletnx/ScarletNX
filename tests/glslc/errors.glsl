@@ -645,3 +645,32 @@ uniform int i;
 layout(location = 0) out vec4 c;
 vec4 f(S m) { return texture(m.t, vec2(0.0)); }
 void main() { c = f(s[i]); }
+--- precision_before_storage.vert 2:7: 'in' comes after the precision 'highp', which GLSL ES writes last
+#version 300 es
+highp in vec4 p;
+void main() { gl_Position = p; }
+--- precision_before_attribute.vert 1:7: 'attribute' comes after the precision 'highp', which GLSL ES writes last
+highp attribute vec4 p;
+void main() { gl_Position = p; }
+--- precision_before_const_parameter.frag 3:15: 'const' comes after the precision 'highp', which GLSL ES writes last
+#version 300 es
+precision mediump float;
+float f(highp const float x) { return x; }
+out vec4 c;
+void main() { c = vec4(f(1.0)); }
+--- centroid_after_storage.frag 3:4: 'centroid' comes after 'in': GLSL ES orders the qualifiers invariant, interpolation, centroid or sample, storage, then precision
+#version 300 es
+precision mediump float;
+in centroid vec2 a;
+out vec4 c;
+void main() { c = vec4(a, 0.0, 1.0); }
+--- flat_after_centroid.frag 3:10: 'flat' comes after 'centroid': GLSL ES orders the qualifiers invariant, interpolation, centroid or sample, storage, then precision
+#version 300 es
+precision mediump float;
+centroid flat in vec2 a;
+out vec4 c;
+void main() { c = vec4(a, 0.0, 1.0); }
+--- invariant_after_storage.vert 2:5: 'invariant' comes after 'out': GLSL ES orders the qualifiers invariant, interpolation, centroid or sample, storage, then precision
+#version 300 es
+out invariant vec4 v;
+void main() { v = vec4(1.0); gl_Position = v; }
