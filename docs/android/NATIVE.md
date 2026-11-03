@@ -52,9 +52,14 @@ same loader.
 
 Code compiles when it first runs, as the GNU ABI runtime's JIT does it ([GNUABI](../GNUABI.md), "How code runs"): a
 miss in the dispatch table calls `snx_recompile_from` (the recompiler library, `snx_recompiler.h`) for the function and
-the functions it calls, and fills the table. Compiled code is kept in a cache by a hash of the code, so the next run
-loads it. `--translate` compiles every library ahead of time into the same cache. The A64 target is
-`SNX_RECOMPILER_A64_MAX`: phones are Armv8.2 or later.
+the functions it calls, breadth first inside the aligned 64 KiB block of the code window that holds it (a call out of
+the block goes through the table), and fills the table. Compiled code is kept in a cache by a hash of the code, its
+addresses and the entry, so the next run loads it. A unit depends on its entry alone, never on what the process
+compiled before, which depends on which thread reached what first: with that, the same entry missed the cache in
+every run. The A64 target is `SNX_RECOMPILER_A64_ANDROID` (Armv8.2 with LSE, RDM, FP16, DotProd and LRCPC, without
+pointer authentication). `SNX_ANDROID_JIT_VERBOSE=1` prints each unit and its time. A large engine reaches code its
+earlier runs did not for several runs, each spent mostly in LLVM: one run of a Unity game compiled about 1100 new units
+in 440 s while it loaded.
 
 ## Calls between the guest and the host
 

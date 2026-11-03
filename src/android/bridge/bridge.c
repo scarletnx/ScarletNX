@@ -20,7 +20,12 @@
 #define WINDOW_ADDRESS ((uint64_t)256 << 30)
 #define EXPORTS_SIZE  ((uint64_t)16 << 20)
 #define TABLE_BYTES   (WINDOW_SIZE / 4 * sizeof(GuestFn))
-/* instructions one JIT step compiles: the function reached and the functions it calls, breadth first */
+/* One JIT step: the function reached and the functions it calls, breadth first, inside the aligned block of the
+   code window that holds it; a call out of the block goes through the dispatch table. A step depends on its entry
+   alone, never on what the process compiled before (which depends on which thread reached what first), so the same
+   entry makes the same unit in every run and the cache finds it. A later miss in the same block compiles the block's
+   functions it reaches again, at most a block's worth */
+#define JIT_BLOCK     ((uint64_t)64 << 10)
 #define JIT_STEP      65536
 /* a guest thread's stack */
 #define STACK_SIZE    ((size_t)8 << 20)
@@ -84,6 +89,14 @@ static const CodeRange* range_of(uint64_t pc) {
 }
 
 /* the code at pc compiled, with the lock held: false when it can't be */
+typedef struct {
+    uint64_t lo, hi;
+} Block;
+static int outside_block(void* context, uint64_t address) {
+    const Block* block = context;
+    return address < block->lo || address >= block->hi;
+}
+
 static bool compile(uint64_t pc) {
     const CodeRange* r = range_of(pc);
     if (!r) return false;
@@ -97,7 +110,8 @@ static bool compile(uint64_t pc) {
         range.size = r->address + r->size - start < most ? (size_t)(r->address + r->size - start) : most;
     }
     double started = snx_seconds();
-    struct snx_recompiled* m = snx_recompile_from(b.recompiler, &range, 1, &pc, 1, JIT_STEP, compiled, NULL);
+    Block block = {pc & ~(JIT_BLOCK - 1), (pc & ~(JIT_BLOCK - 1)) + JIT_BLOCK};
+    struct snx_recompiled* m = snx_recompile_from(b.recompiler, &range, 1, &pc, 1, JIT_STEP, outside_block, &block);
     if (!m) {
         fprintf(stderr, "scarletnx-android: cannot compile the guest code at 0x%llx: %s\n", (unsigned long long)pc,
                 snx_recompiler_error(b.recompiler));
