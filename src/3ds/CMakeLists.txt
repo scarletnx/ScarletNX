@@ -79,13 +79,14 @@ target_link_libraries(snx_ctr_program PUBLIC snx_arm_llvm snx_llvm)
 # at startup: resolve them without a caller-provided environment. A static
 # LLVM (SNX_LLVM_SHARED off, cmake/llvm.cmake) has none to load.
 if(SNX_LLVM_SHARED)
-    set(ctr_llvm_rpath "${SNX_LLVM_LIBRARY_DIR}")
+    snx_target_path(ctr_llvm_rpath "${SNX_LLVM_LIBRARY_DIR}")
     find_library(SNX_Z3_LIBRARY NAMES z3 libz3.so.4
         HINTS "${SNX_LLVM_LIBRARY_DIR}" "${SNX_LLVM_LIBRARY_DIR}/../.."
         PATH_SUFFIXES lib x86_64-linux-gnu)
     if(SNX_Z3_LIBRARY)
         get_filename_component(ctr_z3_dir "${SNX_Z3_LIBRARY}" DIRECTORY)
-        string(APPEND ctr_llvm_rpath ":${ctr_z3_dir}")
+        snx_target_path(ctr_z3_rpath "${ctr_z3_dir}")
+        string(APPEND ctr_llvm_rpath ":${ctr_z3_rpath}")
         # Forced into the dependency table (--as-needed would drop unreferenced
         # libraries): libLLVM's own z3/xml2 dependencies then resolve through
         # the binary's search path instead of the caller's environment.
