@@ -317,16 +317,22 @@ int main(int argc, char** argv) {
         text = NULL;
     }
     { /* no name given: the name the NRO's control.nacp gives it, shown as it is recompiled and in its settings' head,
-         its control.nacp in its data for the launcher; its files by the file's name, as an NRO has no title ID */
-        static unsigned char named[0x200 + 0x40 + 0x300];
-        char *nro = snx_path_join(root, "named nro.nro"), *nacp, *ini;
+         its control.nacp and its icon in its data for the launcher; its files by the file's name, as an NRO has no
+         title ID */
+        static const unsigned char jpeg[16] = {0xff, 0xd8, 0xff, 0xe0, 'a', 'n', ' ', 'N',
+                                               'R',  'O',  '\'', 's',  ' ', 'i', 'c', 'o'};
+        static unsigned char named[0x200 + 0x40 + 0x300 + sizeof jpeg];
+        char *nro = snx_path_join(root, "named nro.nro"), *nacp, *ini, *icon, *asked = snx_path_join(root, "asked");
         size_t size;
         memcpy(named, image, sizeof image);
         put32(named, 0x18, sizeof image); /* the NRO itself; its assets after it */
         memcpy(named + 0x200, "ASET", 4);
-        put32(named, 0x200 + 0x18, 0x40); /* the NACP's offset in the assets, and its size */
+        put32(named, 0x200 + 0x08, 0x340); /* the icon's offset in the assets, and its size */
+        put32(named, 0x200 + 0x10, sizeof jpeg);
+        put32(named, 0x200 + 0x18, 0x40); /* the NACP's */
         put32(named, 0x200 + 0x20, 0x300);
         memcpy(named + 0x240, "Named by NACP", 13);
+        memcpy(named + 0x540, jpeg, sizeof jpeg);
         check(!snx_write_file(nro, named, sizeof named), "NRO with a NACP");
         k = 0;
         args[k++] = argv[1];
@@ -349,9 +355,32 @@ int main(int argc, char** argv) {
         cached = (char*)snx_read_file(ini, &size);
         check(cached && !strncmp(cached, "; ScarletNX settings for Named by NACP\n", 39), "its settings' head");
         free(cached);
+        icon = snx_path_join(out, "named nro/named nro_data/icon.jpg"); /* what Games shows on its row */
+        cached = (char*)snx_read_file(icon, &size);
+        check(cached && size == sizeof jpeg && !memcmp(cached, jpeg, sizeof jpeg), "its icon in its data");
+        free(cached);
+        free(icon);
+        { /* asked of the driver as a dump's is, for its row in a list of dumps: the same icon; one with none, why */
+            const char* ask[] = {argv[1], "--repo", argv[2], "-x", "--icon", "--out", asked, nro, NULL};
+            check(!snx_run(ask, root, NULL, &text), "-x --icon of an NRO");
+            free(text);
+            text = NULL;
+            icon = snx_path_join(asked, "icon.jpg");
+            cached = (char*)snx_read_file(icon, &size);
+            check(cached && size == sizeof jpeg && !memcmp(cached, jpeg, sizeof jpeg), "an NRO's icon asked");
+            free(cached);
+            free(icon);
+            ask[7] = input;
+            check(snx_run(ask, root, NULL, &text) != 0 && strstr(text, "Games shows no icon for ") &&
+                      strstr(text, ": its assets hold none"),
+                  "an NRO without an icon, said");
+            free(text);
+            text = NULL;
+        }
         free(ini);
         free(nacp);
         free(nro);
+        free(asked);
     }
     k = 0;
     args[k++] = argv[1];

@@ -907,6 +907,41 @@ int snx_load_nro(const char* path, SnxModuleImage* module, char* error, size_t e
     return 0;
 }
 
+int snx_nro_icon(const char* path, unsigned char** icon, size_t* size, char* error, size_t error_size) {
+    unsigned char header[NRO_HEADER_SIZE], asset[ASET_HEADER_SIZE];
+    SnxU64 file_size = snx_file_size(path), image = 0, off, length = 0;
+    FILE* file = snx_fopen(path, "rb");
+    int rc;
+    *icon = NULL;
+    *size = 0;
+    if (!file) return fail(error, error_size, snx_format("cannot read %s", path));
+    if (fread(header, 1, sizeof header, file) != sizeof header || memcmp(header + 0x10, "NRO0", 4))
+        rc = fail(error, error_size, snx_format("%s: not an NRO", path));
+    else if ((image = rd32(header + 0x18)) > file_size)
+        rc = fail(error, error_size, snx_format("%s: the NRO's image size doesn't fit the file", path));
+    else if (file_size - image < ASET_HEADER_SIZE) /* no assets */
+        rc = 1;
+    else if (snx_seek(file, image) || fread(asset, 1, sizeof asset, file) != sizeof asset)
+        rc = fail(error, error_size, snx_format("cannot read %s", path));
+    else if (memcmp(asset, "ASET", 4) || !(length = rd64(asset + 0x10)))
+        rc = 1;
+    else if (!inside(off = rd64(asset + 0x08), length, file_size - image))
+        rc = fail(error, error_size, snx_format("%s: an ASET section lies outside the file", path));
+    else {
+        *icon = (unsigned char*)snx_alloc((size_t)length);
+        rc = snx_seek(file, image + off) || fread(*icon, 1, (size_t)length, file) != length
+                 ? fail(error, error_size, snx_format("cannot read %s's icon", path))
+                 : 0;
+        if (rc) {
+            free(*icon);
+            *icon = NULL;
+        } else
+            *size = (size_t)length;
+    }
+    fclose(file);
+    return rc;
+}
+
 /* ------------------------------------------------------------------ NPDM */
 
 static void default_npdm(SnxNpdm* npdm) {

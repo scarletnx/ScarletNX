@@ -335,6 +335,24 @@ static void test_nro_npdm(void) {
     CHECK(program.npdm.stack == 0x100000 && program.npdm.prio == 44 && program.npdm.is64);
     CHECK(program.npdm.title_id == 0x0100000000001000ull);
     snx_free_program(&program);
+    { /* its icon, the JPEG Games shows (recompile.c writes it in its data): none in its ASET, one, one outside the
+         file, no ASET, no NRO */
+        unsigned char* icon = (unsigned char*)1;
+        size_t icon_size = 1;
+        CHECK(snx_nro_icon(path, &icon, &icon_size, error, sizeof error) == 1 && !icon && !icon_size);
+        put64(file_bytes + 0x408, 0x38);
+        put64(file_bytes + 0x410, 3);
+        CHECK(!snx_write_file(path, file_bytes, size));
+        CHECK(!snx_nro_icon(path, &icon, &icon_size, error, sizeof error) && icon_size == 3 && !memcmp(icon, "ROM", 3));
+        free(icon);
+        put64(file_bytes + 0x410, 6);
+        CHECK(!snx_write_file(path, file_bytes, size));
+        CHECK(snx_nro_icon(path, &icon, &icon_size, error, sizeof error) == -1 && !icon && strstr(error, "ASET"));
+        CHECK(!snx_write_file(path, file_bytes, 0x400));
+        CHECK(snx_nro_icon(path, &icon, &icon_size, error, sizeof error) == 1 && !icon);
+        CHECK(!snx_write_file(path, file_bytes, 0x10));
+        CHECK(snx_nro_icon(path, &icon, &icon_size, error, sizeof error) == -1 && strstr(error, "not an NRO"));
+    }
     /* ASET is optional and never part of the executable mapping. */
     CHECK(!snx_write_file(path, file_bytes, 0x400));
     CHECK(!snx_load_nro(path, &m, error, sizeof error));

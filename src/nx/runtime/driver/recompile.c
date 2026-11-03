@@ -721,6 +721,18 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
             goto done;
         }
     }
+    if (program.module_count == 1 && program.modules[0].is_nro) { /* its icon for Games, as an extraction keeps one */
+        unsigned char* jpeg;
+        size_t size;
+        char why[512], *icon = NULL;
+        int none = snx_nro_icon(program.entry_path, &jpeg, &size, why, sizeof why);
+        if (none < 0)
+            printf("Games shows no icon for the game: %s\n", why);
+        else if (!none && (!(icon = snx_path_join(data, "icon.jpg")) || snx_write_file(icon, jpeg, size)))
+            printf("Games shows no icon for the game: its icon.jpg could not be written in %s\n", data);
+        free(icon);
+        free(jpeg);
+    }
     ini = settings_path(folder, game);
     if (!ini) {
         snx_error("cannot create the settings folder for %s", title);

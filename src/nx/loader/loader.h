@@ -120,6 +120,9 @@ int snx_load_nso(const char* path, const char* name, SnxModuleImage* module, cha
    its functions and relptrs keep bit 0 when it marks Thumb code */
 int snx_load_nso32(const char* path, const char* name, SnxModuleImage* module, char* error, size_t error_size);
 int snx_load_nro(const char* path, SnxModuleImage* module, char* error, size_t error_size);
+/* An NRO's icon, the JPEG of its assets (ASET), the one Games shows: 0 with it in *icon (malloc'd) and *size, 1 when it
+   has none, -1 said in error when the file is no NRO or cannot be read */
+int snx_nro_icon(const char* path, unsigned char** icon, size_t* size, char* error, size_t error_size);
 void snx_free_module(SnxModuleImage* module);
 /* data NULL with size 0 gives the defaults of a program without an NPDM */
 int snx_parse_npdm(const unsigned char* data, size_t size, SnxNpdm* npdm, char* error, size_t error_size);
