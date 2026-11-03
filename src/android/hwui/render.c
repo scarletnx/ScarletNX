@@ -2296,6 +2296,12 @@ static jint JNICALL native_poll(JNIEnv* env, jclass unused, jfloatArray out) {
     return n;
 }
 
+/* Window.nativeResize: the SDL window at the display's new size (a turn of the display). Its size event follows */
+static void JNICALL native_resize(JNIEnv* env, jclass unused, jint width, jint height) {
+    (void)env, (void)unused;
+    if (r.host.window && width > 0 && height > 0) SDL_SetWindowSize(r.host.window, width, height);
+}
+
 static jboolean JNICALL native_has_window(JNIEnv* env, jclass unused) {
     (void)env;
     (void)unused;
@@ -2307,6 +2313,7 @@ bool android_render_register(JNIEnv* env) {
         {(char*)"nativeOpen", (char*)"(IILjava/lang/String;)Z", (void*)native_open},
         {(char*)"nativePresent", (char*)"(II[BI[I[[I[[B[I)V", (void*)native_present},
         {(char*)"nativePoll", (char*)"([F)I", (void*)native_poll},
+        {(char*)"nativeResize", (char*)"(II)V", (void*)native_resize},
         {(char*)"nativeHasWindow", (char*)"()Z", (void*)native_has_window},
     };
     return android_jvm_register(env, "snx/android/ui/Window", methods, (int)(sizeof methods / sizeof *methods));

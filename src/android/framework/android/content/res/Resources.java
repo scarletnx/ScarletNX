@@ -30,6 +30,34 @@ public class Resources {
     public Resources(AssetManager assets, DisplayMetrics metrics, Configuration config) {
         this.assets = assets;
         updateConfiguration(config, metrics);
+        synchronized (ALL) { ALL.put(this, Boolean.TRUE); }
+    }
+
+    /** Every Resources, which a change of the display updates, as Android's ResourcesManager updates its own */
+    private static final java.util.WeakHashMap<Resources, Boolean> ALL = new java.util.WeakHashMap<>();
+
+    /**
+     * The display changed (snx.android.Device): each Resources takes its metrics, and the fields of the device's
+     * configuration that follow the display's size. A configuration context keeps what it overrides otherwise.
+     */
+    public static void deviceChanged(Configuration device, DisplayMetrics m) {
+        Resources[] all;
+        synchronized (ALL) { all = ALL.keySet().toArray(new Resources[0]); }
+        for (Resources r : all) {
+            synchronized (r) {
+                Configuration c = new Configuration(r.configuration);
+                c.orientation = device.orientation;
+                c.screenWidthDp = device.screenWidthDp;
+                c.screenHeightDp = device.screenHeightDp;
+                c.smallestScreenWidthDp = device.smallestScreenWidthDp;
+                c.screenLayout = device.screenLayout;
+                DisplayMetrics dm = new DisplayMetrics();
+                dm.setTo(r.metrics);
+                dm.widthPixels = m.widthPixels;
+                dm.heightPixels = m.heightPixels;
+                r.updateConfiguration(c, dm);
+            }
+        }
     }
 
     public Resources(ClassLoader classLoader) {

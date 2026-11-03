@@ -34,6 +34,16 @@ public final class Host {
         }
         if (drew) present();
     }
+    /** Every window's root laid out at the display's new size, on the main thread */
+    public static void resize(int width, int height) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> resize(width, height));
+            return;
+        }
+        ViewRootImpl[] all;
+        synchronized (Host.class) { all = roots.toArray(new ViewRootImpl[0]); }
+        for (ViewRootImpl r : all) r.resize(width, height);
+    }
     public static synchronized ViewRootImpl top() { return roots.isEmpty() ? null : roots.get(roots.size() - 1); }
     public static long frames() { return frames; }
 

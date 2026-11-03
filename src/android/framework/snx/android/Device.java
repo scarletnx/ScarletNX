@@ -62,12 +62,37 @@ public final class Device {
     }
 
     /**
-     * The window's new size: the display's. Apps see it in the metrics and the configuration they read next; no
-     * configuration change goes to the activities yet.
+     * The window's new size: the display's. The resources take the new metrics and configuration at once, and the
+     * application and the activities get the configuration change on the main thread (snx.android.app.Activities).
      */
-    public static synchronized void resize(int width, int height) {
-        if (width <= 0 || height <= 0) return;
-        set(width, height, metrics.densityDpi, (configuration.uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES);
+    public static void resize(int width, int height) {
+        Configuration changed;
+        DisplayMetrics m;
+        synchronized (Device.class) {
+            if (width <= 0 || height <= 0 || (width == metrics.widthPixels && height == metrics.heightPixels)) return;
+            set(width, height, metrics.densityDpi, (configuration.uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES);
+            changed = new Configuration(configuration);
+            m = metrics();
+        }
+        android.content.res.Resources.deviceChanged(changed, m);
+        snx.android.app.Activities.configurationChanged(changed);
+    }
+
+    /**
+     * The display turned for an activity's requested orientation (ActivityInfo.SCREEN_ORIENTATION_*), as Android's
+     * window manager turns it for the top activity: a landscape one on a display that is taller than wide, or a
+     * portrait one on a display that is wider than tall, swaps the display's width and height. The window follows
+     * (snx.android.ui.Window.rotate). The other orientations (unspecified, sensor, user, behind, locked) keep it.
+     */
+    public static void rotate(int requested) {
+        boolean landscape = requested == 0 || requested == 6 || requested == 8 || requested == 11;
+        boolean portrait = requested == 1 || requested == 7 || requested == 9 || requested == 12;
+        int w, h;
+        synchronized (Device.class) {
+            w = metrics.widthPixels;
+            h = metrics.heightPixels;
+        }
+        if ((landscape && h > w) || (portrait && w > h)) snx.android.ui.Window.rotate(h, w);
     }
 
     /** A copy of the display's metrics. */
