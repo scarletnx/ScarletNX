@@ -531,6 +531,10 @@ void snx_fx_configure(SnxFx* fx, const SnxFxConfig* cfg) {
     fx->cfg.sharpness = snx_clamp_int(cfg->sharpness, 0, 100);
 }
 
+void snx_fx_set_aa(SnxFx* fx, int aa) {
+    if (fx) fx->cfg.aa = aa;
+}
+
 void snx_fx_set_fp16(SnxFx* fx, int on) {
     if (fx) fx->fp16 = on != 0;
 }
@@ -777,6 +781,11 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, VkImageView src, uint32_t img_w
         record_copy(fx, cb, fx->copy_set[slot], src, img_w, img_h, x, y, w, h, transform, work_w, work_h, 1,
                     &fx->main[slot]);
     }
+    if (aa != SNX_FX_AA_OFF)
+        fx_barrier(fx, cb, fx->main[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                   VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     if (ssaa) {
         if (!img_make(fx, &fx->aa[slot], out_w, out_h, choose_format(fx), fx_usage())) return 0;
         record_copy(fx, cb, fx->copy_set[slot], fx->main[slot].view, fx->main[slot].width, fx->main[slot].height, 0, 0,
