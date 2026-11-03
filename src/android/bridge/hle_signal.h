@@ -56,4 +56,6 @@ void signals_leave(void);
    function that does the same work), with the handlers of the signals that stop it: the result as the kernel's, a
    negative errno for an error. *known (when not NULL) is false for a number the kernel doesn't have, -ENOSYS */
 long hle_kernel_syscall(long number, const uint64_t arguments[6], CPU* c, bool* known);
+/* the calling thread's tid in the kernel (the owner that bionic's mutexes record) */
+uint32_t hle_kernel_tid(void);
 #endif

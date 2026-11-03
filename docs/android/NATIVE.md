@@ -83,6 +83,13 @@ thread that runs guest code has its own CPU state, guest stack and bionic TLS bl
 slots, where bionic's code reads the stack guard (slot 5) and the thread's own data. A thread of the JVM gets them the
 first time it calls a native method.
 
+bionic's mutexes, condition variables, rwlocks, spinlocks, barriers, semaphores and thread attributes are the
+bridge's own (`bionic_sync.c`, `hle_sync.c`), in bionic's LP64 layout inside the guest's storage, as bionic keeps them
+on Android: no host object is behind them, so a static initializer, a copy or a struct the guest never zeroed means
+what it means on a phone. Each waits on the kernel library's futex, so a guest signal runs its handler during the wait.
+The host's own pthread types fit bionic's storage on glibc only: FreeBSD's and winpthreads' are pointers to heap
+objects, and macOS's mutex and rwlock are larger than bionic's.
+
 Signals, threads' futexes and every number of `syscall()` are the GNU ABI runtime's kernel library
 (`src/gnuabi/kernel/`, [GNUABI.md](../GNUABI.md)) over the bridge's memory, whose guest addresses are the host's.
 bionic's functions (`sigaction` in bionic's LP64 layout, the masks, `pthread_kill`, the waits) only convert to it.
