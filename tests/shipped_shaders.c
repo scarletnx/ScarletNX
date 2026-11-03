@@ -240,7 +240,7 @@ static void yaz0(void) {
 }
 
 /* an Ounce program at d + at: its 128-byte header of version 4 (type, shader type), n instructions that look like
-   SM70+ code (their control bits set), then EXIT and the branch to itself that ends every program */
+   SM86 code (their control bits set), then EXIT and the branch to itself that ends every program */
 static size_t ounce_program(u8* d, size_t at, u32 type, u32 shader, u32 n) {
     put32(d + at, type | 4u << 5 | shader << 10);
     size_t i = at + 0x80;

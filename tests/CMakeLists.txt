@@ -854,7 +854,7 @@ snx_hookgen(snx-test-nvn-present-flip SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn
 add_test(NAME nvn_present_flip COMMAND snx-test-nvn-present-flip)
 # the NvRm sync conversions against the driver's sync layout: what they hand its code and take back
 add_executable(snx-test-nvn-nvrm-sync nvn_nvrm_sync.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_object.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sm70_decode.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sm86_decode.c")
 snx_test_target(snx-test-nvn-nvrm-sync 11)
 target_include_directories(snx-test-nvn-nvrm-sync PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-nvrm-sync PRIVATE m)
@@ -873,7 +873,7 @@ add_executable(snx-test-nvn-names nvn_names.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_draw.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_object.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_queue.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tex.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sm70_decode.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sm86_decode.c")
 snx_test_target(snx-test-nvn-names 11)
 target_include_directories(snx-test-nvn-names PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-names PRIVATE m)
@@ -2353,18 +2353,18 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         target_link_libraries(snx-test-shader-structure PRIVATE m)
     endif()
     add_test(NAME shader_structure COMMAND snx-test-shader-structure)
-    # the SM70+ frontend (gpu/shader/sm70.h): the decoder on words made by NAK's encoding rules, the search for
+    # the SM86 frontend (gpu/shader/sm86.h): the decoder on words made by NAK's encoding rules, the search for
     # programs, and small translations, which spirv-val checks when it is on PATH
-    add_executable(snx-test-shader-sm70 shader_sm70.c)
-    snx_test_target(snx-test-shader-sm70 23)
-    target_link_libraries(snx-test-shader-sm70 PRIVATE snx_shader)
+    add_executable(snx-test-shader-sm86 shader_sm86.c)
+    snx_test_target(snx-test-shader-sm86 23)
+    target_link_libraries(snx-test-shader-sm86 PRIVATE snx_shader)
     if(NOT WIN32)
-        target_link_libraries(snx-test-shader-sm70 PRIVATE m)
+        target_link_libraries(snx-test-shader-sm86 PRIVATE m)
     endif()
     if(SNX_SPIRV_VAL)
-        add_test(NAME shader_sm70 COMMAND snx-test-shader-sm70 "${CMAKE_CURRENT_BINARY_DIR}" "${SNX_SPIRV_VAL}")
+        add_test(NAME shader_sm86 COMMAND snx-test-shader-sm86 "${CMAKE_CURRENT_BINARY_DIR}" "${SNX_SPIRV_VAL}")
     else()
-        add_test(NAME shader_sm70 COMMAND snx-test-shader-sm70 "${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME shader_sm86 COMMAND snx-test-shader-sm86 "${CMAKE_CURRENT_BINARY_DIR}")
     endif()
     if(NOT CMAKE_CROSSCOMPILING)
         # the SVC registers tools/svcgen lays out from src/nx/hle/svc/hos.svc, in both ABIs

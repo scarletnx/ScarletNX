@@ -75,7 +75,7 @@ typedef struct {
        taken as read: a game's update runs as a program of its own, with shader files of its own */
     u64 all;
     int counting, stop;
-    int ounce;            /* an Ounce game's: SM70+ programs (shipped_ounce_programs), and its zstd files */
+    int ounce;            /* an Ounce game's: SM86 programs (shipped_ounce_programs), and its zstd files */
     int again;             /* translating the hits counting found: what counting counted is met a second time */
     u32 stages[ST_CS + 2]; /* the programs counted by stage, VertexA's last */
     u32 found, made, known, skipped, lone, failed, lacked, unread, big;

@@ -8,7 +8,7 @@
    arrays at any multiple of 8, so the programs are found by that wrapper at every 4-byte word of any uncompressed
    bytes, not by each container's tables. A bare NVN shader file (0x19866891, one game's) has its SPH at 0xB50.
    SARC archives are scanned as they are, Yaz0 (.szs) after decompressing them, when the SARC inside names a shader
-   container. An Ounce game's programs (SM70+, SPH version 4) have no wrapper: they are found by their last
+   container. An Ounce game's programs (SM86, SPH version 4) have no wrapper: they are found by their last
    instruction instead (shipped_ounce_programs), and its RomFS keeps its shader containers as zstd streams (.zs),
    which the walk decompresses for such a game alone. Nothing here reads files or keeps state */
 #ifndef SNX_SHADER_SHIPPED_H

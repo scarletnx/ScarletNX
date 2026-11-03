@@ -105,7 +105,7 @@ snx_component(platform ${platform})
 
 snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c gpu/shader/shipped.c
                      gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/structure.c
-                     gpu/shader/sm70_decode.c gpu/shader/sm70_translate.c)
+                     gpu/shader/sm86_decode.c gpu/shader/sm86_translate.c)
 # the opcode enum and decoder, generated from gpu/shader/maxwell_opcodes.def
 include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
@@ -225,19 +225,19 @@ endif()
 
 # Opt-in because normal unit-test runs need neither an ICD nor a GPU. All rendering uses the real runtime.
 if(BUILD_TESTING AND SNX_TEST_VULKAN)
-    # the SM70+ translator on the device against the CPU reference (tests/support/sm70_ref.c), whose rounding modes
+    # the SM86 translator on the device against the CPU reference (tests/support/sm86_ref.c), whose rounding modes
     # come from fesetround: -frounding-math keeps the compiler from folding them away
-    add_executable(snx-test-shader-sm70-gpu "${PROJECT_SOURCE_DIR}/tests/shader_sm70_gpu.c"
-        "${PROJECT_SOURCE_DIR}/tests/support/sm70_ref.c" "${volk_SOURCE_DIR}/volk.c")
-    target_include_directories(snx-test-shader-sm70-gpu PRIVATE "${PROJECT_SOURCE_DIR}/tests")
-    target_link_libraries(snx-test-shader-sm70-gpu PRIVATE snx_nx_flags snx_shader ${CMAKE_DL_LIBS})
-    set_source_files_properties("${PROJECT_SOURCE_DIR}/tests/support/sm70_ref.c" PROPERTIES COMPILE_OPTIONS
+    add_executable(snx-test-shader-sm86-gpu "${PROJECT_SOURCE_DIR}/tests/shader_sm86_gpu.c"
+        "${PROJECT_SOURCE_DIR}/tests/support/sm86_ref.c" "${volk_SOURCE_DIR}/volk.c")
+    target_include_directories(snx-test-shader-sm86-gpu PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+    target_link_libraries(snx-test-shader-sm86-gpu PRIVATE snx_nx_flags snx_shader ${CMAKE_DL_LIBS})
+    set_source_files_properties("${PROJECT_SOURCE_DIR}/tests/support/sm86_ref.c" PROPERTIES COMPILE_OPTIONS
                                 "-frounding-math")
     if(NOT WIN32)
-        target_link_libraries(snx-test-shader-sm70-gpu PRIVATE m)
+        target_link_libraries(snx-test-shader-sm86-gpu PRIVATE m)
     endif()
-    add_test(NAME shader_sm70_gpu COMMAND snx-test-shader-sm70-gpu)
-    set_tests_properties(shader_sm70_gpu PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+    add_test(NAME shader_sm86_gpu COMMAND snx-test-shader-sm86-gpu)
+    set_tests_properties(shader_sm86_gpu PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
     add_executable(snx-test-vulkan "${PROJECT_SOURCE_DIR}/tests/vulkan_headless.c"
         "${PROJECT_SOURCE_DIR}/tests/spirv_emitter_fixture.c" "${PROJECT_SOURCE_DIR}/tests/support/nvdec_ref.c"
         "${PROJECT_SOURCE_DIR}/tests/support/vic_ref.c" "${PROJECT_SOURCE_DIR}/tests/support/dma_ref.c"

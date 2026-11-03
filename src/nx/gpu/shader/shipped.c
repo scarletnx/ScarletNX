@@ -254,7 +254,7 @@ u32 shipped_programs(const u8* d, size_t n, ShippedEach each, void* ctx) {
     return handed;
 }
 
-/* an SM70+ instruction's two words as they look: its control bits (the high word's 41-60, stall counts, barriers and
+/* an SM86 instruction's two words as they look: its control bits (the high word's 41-60, stall counts, barriers and
    reuse, of which every instruction sets some) not all zero and its top bits clear. The SPH's last 48 bytes, zeros,
    are none, so the walk back stops at the end of the header */
 static int insn_like(const u8* p) {

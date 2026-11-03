@@ -27,8 +27,8 @@ Settings g_settings;
 static Renderer g_none; /* a renderer with no draw: a draw only builds the state */
 const Renderer* g_renderer = &g_none;
 void pm_init(PMutex* m) { (void)m; }
-int g_shader_sm70; /* shader.c's: Maxwell programs */
-const char* g_shader_sm70_dump; /* shader.c's: no dumps */
+int g_shader_sm86; /* shader.c's: Maxwell programs */
+const char* g_shader_sm86_dump; /* shader.c's: no dumps */
 u64 ds_generation_next(void) {
     static u64 g;
     return ++g;

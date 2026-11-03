@@ -462,15 +462,15 @@ static u32 rd32le(const u8* p) { return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] <
    36, and the 39-bit layout's stack and heap, above 64 GiB, came back as addresses with no memory behind them.
 
    It also tells an Ounce program (loader/ounce.h), which is g_ounce, and everything that follows from it: the CPU
-   features of the runtime JIT (guest_jit.c), SM70+ shaders, the T239's GOB, the 31.25 MHz tick, and the larger heap
+   features of the runtime JIT (guest_jit.c), SM86 shaders, the T239's GOB, the 31.25 MHz tick, and the larger heap
    and application pool, as memory_gb 12 gives (svc_mem.c) */
 static void npdm_layout(void) {
     u64 size = 0;
     unsigned char* d = fs_read_file("exefs/main.npdm", &size);
     int meta = d && size >= 0x80 && size <= 0x4000 && !memcmp(d, "META", 4);
     if (meta && snx_npdm_ounce(d, size)) {
-        g_ounce = g_shader_sm70 = g_gob_native = 1;
-        g_shader_sm70_dump = g_settings.sm70_dump[0] ? g_settings.sm70_dump : NULL;
+        g_ounce = g_shader_sm86 = g_gob_native = 1;
+        g_shader_sm86_dump = g_settings.sm86_dump[0] ? g_settings.sm86_dump : NULL;
         clock_ounce();
         LOG("npdm: an Ounce program\n");
     }

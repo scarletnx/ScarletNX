@@ -877,7 +877,7 @@ static void dispatch(NvnDraw* d, u64 payload) {
         snx_st_le32(d->dx.bank0 + 0x204, g[1]);
         snx_st_le32(d->dx.bank0 + 0x208, g[2]);
     }
-    if (g_shader_sm70 && d->c0rec[0] == 1) {
+    if (g_shader_sm86 && d->c0rec[0] == 1) {
         DispatchState x = d->dx;
         c0_packed(d, &x);
         g_renderer->dispatch(&x);

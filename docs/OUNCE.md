@@ -34,7 +34,7 @@ runtime read the same NPDM, and `g_ounce` is the one flag. It gives the game the
 
 - the CPU extensions of `cpu_extensions=1` (LSE, RCpc and PAuth), in the recompiler and the runtime JIT alike
 - the 10 GiB application pool and the 12 GiB heap region of `memory_gb=12`
-- SM70+ shaders and the T239's GOB
+- SM86 shaders and the T239's GOB
 - a 31.25 MHz system tick. The SDK's `nn::os::GetSystemTickFrequency` returns 31,250,000 as a constant, and the SDK
   never reads `CNTFRQ_EL0`. With the Switch's 19.2 MHz, the game's time ran at 0.61 of real time. The GPU's
   timestamps keep their 19.2 MHz counter (`guest_gpu_ticks`).
@@ -44,9 +44,9 @@ API version.
 
 ## Shaders
 
-The shader code is SM70+ SASS (the Volta to Ada encoding): 128-bit instructions, with the opcode in bits 0 to 11 of
-the low word. Each program ends with `EXIT` (`0x794d`, control word `0x000fea0003800000`), then a `BRA` to itself
-(`0xfffffff000007947`, `0x000fc0000383ffff`). The Maxwell decoder can't read it. An SM70+ frontend is in progress, with
+The shader code is Ampere SASS, which the runtime calls SM86 (`gpu/shader/sm86.h`). Its format is the one Volta
+(SM 7.0) brought and Ada (SM 8.9) still has: 128-bit instructions, with the opcode in bits 0 to 11 of the low word. Each program ends with `EXIT` (`0x794d`, control word `0x000fea0003800000`), then a `BRA` to itself
+(`0xfffffff000007947`, `0x000fc0000383ffff`). The Maxwell decoder can't read it. The SM86 frontend has
 Mesa's NAK (MIT, `src/nouveau/compiler/nak/sm70_encode.rs`) as the reference for the encoding.
 
 The program starts at the shader data's GPU address, with no wrapper (the older formats have one of 0x30 bytes). A

@@ -19,7 +19,7 @@
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/gpu.h"
-#include "nx/gpu/shader/sm70.h"
+#include "nx/gpu/shader/sm86.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/clock.h"
 #include "nx/hle/kernel/kernel.h"
@@ -1615,7 +1615,7 @@ static u32 stage11(u64 data) {
                                 NVN_SHADER_STAGE_GEOMETRY, NVN_SHADER_STAGE_FRAGMENT}; /* by ST_VS to ST_FS */
     u8 w[4];
     gmem_read_code(data, w, sizeof w);
-    int s = sm70_sph_stage(snx_ld_le32(w));
+    int s = sm86_sph_stage(snx_ld_le32(w));
     return s < 0 ? NVN_SHADER_STAGE_COMPUTE : nvn_of[s];
 }
 /* A stage's control section, as the game's driver reads it (its accessor for the newest format, which one game's
@@ -1628,7 +1628,7 @@ static int stage_of(NvnProgram* o, u64 data, u64 control) {
     u32 magic = gr32(control), one = gr32(control + 4), format = gr32(control + 8), cb = gr32(control + 0x700),
         size = gr32(control + 0x704), off = gr32(control + 0x708), stage = gr32(control + 0x714);
     NvnStage* st;
-    /* An Ounce control section (version 0xc9, formats 7 and 11): its program is SM70+ code at data, with no wrapper. A graphics program
+    /* An Ounce control section (version 0xc9, formats 7 and 11): its program is SM86 code at data, with no wrapper. A graphics program
        starts with its 128-byte header, whose word 0 gives the stage, and a compute program with its first
        instruction. 0x38 is the code's bytes and 0x3c the constants' (bank 1), which start at 0x40, the code's bytes
        rounded up to 256 (a jump table at c[1][0] shows it) */

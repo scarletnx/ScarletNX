@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* snx-sm70: reads a dump of SM70+ shader memory (raw bytes, as a game's GPU memory holds them), finds the programs in
+/* snx-sm86: reads a dump of SM86 shader memory (raw bytes, as a game's GPU memory holds them), finds the programs in
    it, and reports the opcodes the decoder knows and the ones it does not, with their counts. With --translate it
-   also translates each complete program (sm70_to_spirv), and with --validate it runs spirv-val on the modules.
+   also translates each complete program (sm86_to_spirv), and with --validate it runs spirv-val on the modules.
 
-   Usage: snx-sm70 DUMP [--sph HEADER] [--translate] [--validate] [--out DIR] [--verbose]
-   --sph: DUMP is one program that the sm70_dump setting wrote, HEADER its .sph file (a compute one has none)
+   Usage: snx-sm86 DUMP [--sph HEADER] [--translate] [--validate] [--out DIR] [--verbose]
+   --sph: DUMP is one program that the sm86_dump setting wrote, HEADER its .sph file (a compute one has none)
    The dump is game data: keep it, and what --out writes, out of the repository. */
-#include "nx/gpu/shader/sm70.h"
+#include "nx/gpu/shader/sm86.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,17 +101,17 @@ int main(int argc, char** argv) {
         fprintf(stderr, "cannot read %s\n", path);
         return 1;
     }
-    Sm70Program* progs = (Sm70Program*)calloc(MAX_PROGRAMS, sizeof *progs);
-    u32 known[SM70__COUNT] = {0};
+    Sm86Program* progs = (Sm86Program*)calloc(MAX_PROGRAMS, sizeof *progs);
+    u32 known[SM86__COUNT] = {0};
     u32* unknown = (u32*)calloc(4096, sizeof *unknown);
     if (!progs || !unknown) return 1;
     u32 dumped_sph[32] = {0};
     int count;
     if (sph_path) {
-        /* a program that the sm70_dump setting wrote: its code alone, and its header beside it */
+        /* a program that the sm86_dump setting wrote: its code alone, and its header beside it */
         u32 sph_size = 0;
         u8* sph_bytes = read_file(sph_path, &sph_size);
-        if (!sph_bytes || sph_size < SM70_SPH_BYTES) {
+        if (!sph_bytes || sph_size < SM86_SPH_BYTES) {
             fprintf(stderr, "cannot read the header %s\n", sph_path);
             return 1;
         }
@@ -119,31 +119,31 @@ int main(int argc, char** argv) {
         free(sph_bytes);
         progs[0].header = progs[0].code = 0;
         progs[0].size = size & ~15u;
-        progs[0].stage = sm70_sph_stage(dumped_sph[0]);
+        progs[0].stage = sm86_sph_stage(dumped_sph[0]);
         progs[0].complete = 1;
         count = progs[0].stage >= 0 ? 1 : 0;
     } else
-        count = sm70_find_programs(data, size, progs, MAX_PROGRAMS);
+        count = sm86_find_programs(data, size, progs, MAX_PROGRAMS);
     int complete = 0, translated = 0, valid = 0;
     for (int p = 0; p < count; p++) {
-        const Sm70Program* pr = &progs[p];
+        const Sm86Program* pr = &progs[p];
         u32 n = pr->size / 16, unknown_here = 0;
         for (u32 i = 0; i < n; i++) {
-            Sm70Insn in;
+            Sm86Insn in;
             const u8* at = data + pr->code + 16 * i;
-            int ok = sm70_decode(snx_ld_le64(at), snx_ld_le64(at + 8), &in);
+            int ok = sm86_decode(snx_ld_le64(at), snx_ld_le64(at + 8), &in);
             if (list) {
                 /* the instruction: its index, guard, name and form, destination and sources, and its words */
                 static const char kinds[] = "-RUIC";
                 printf("  %4u %s%c%u %-14s f%u d%-3u", i, in.pred_not ? "!" : " ", in.pred == 7 ? 'T' : 'P', in.pred,
-                       sm70_ops[in.op].name, in.form, in.dst);
-                const Sm70Src* s3[3] = {&in.a, &in.b, &in.c};
+                       sm86_ops[in.op].name, in.form, in.dst);
+                const Sm86Src* s3[3] = {&in.a, &in.b, &in.c};
                 for (int k = 0; k < 3; k++)
-                    if (s3[k]->kind == SM70_SRC_CBUF)
+                    if (s3[k]->kind == SM86_SRC_CBUF)
                         printf(" c[%u][0x%x]", s3[k]->bank, s3[k]->value);
                     else if (s3[k]->kind)
                         printf(" %c%s%x", kinds[s3[k]->kind], s3[k]->neg ? "-" : "",
-                               s3[k]->kind == SM70_SRC_IMM ? s3[k]->value : s3[k]->reg);
+                               s3[k]->kind == SM86_SRC_IMM ? s3[k]->value : s3[k]->reg);
                 printf("  %016llx %016llx\n", (unsigned long long)in.lo, (unsigned long long)in.hi);
             }
             if (ok)
@@ -165,7 +165,7 @@ int main(int argc, char** argv) {
         else if (pr->stage != ST_CS)
             for (int k = 0; k < 32; k++) sph[k] = snx_ld_le32(data + pr->header + 4 * k);
         size_t words = 0;
-        u32* spv = sm70_to_spirv(data + pr->code, pr->size, pr->stage, pr->stage != ST_CS ? sph : NULL, &si, &words);
+        u32* spv = sm86_to_spirv(data + pr->code, pr->size, pr->stage, pr->stage != ST_CS ? sph : NULL, &si, &words);
         if (!spv) {
             printf("  not translated: %s\n", si.first_unsupported);
             continue;
@@ -175,7 +175,7 @@ int main(int argc, char** argv) {
         if (out)
             snprintf(file, sizeof file, "%s/program%02d_%s.spv", out, p, stage_name(pr->stage));
         else
-            snprintf(file, sizeof file, "snx-sm70-%d-%d.spv", (int)SNX_PID, p);
+            snprintf(file, sizeof file, "snx-sm86-%d-%d.spv", (int)SNX_PID, p);
         int wrote = write_file(file, spv, words * 4);
         free(spv);
         if (verbose) {
@@ -202,8 +202,8 @@ int main(int argc, char** argv) {
     if (translate) printf(", %d translated", translated);
     if (check) printf(", %d pass spirv-val", valid);
     printf("\n\nknown opcodes:\n");
-    for (int k = 1; k < SM70__COUNT; k++)
-        if (known[k]) printf("  %-22s %6u\n", sm70_ops[k].name, known[k]);
+    for (int k = 1; k < SM86__COUNT; k++)
+        if (known[k]) printf("  %-22s %6u\n", sm86_ops[k].name, known[k]);
     u32 kinds = 0;
     for (u32 k = 0; k < 4096; k++) kinds += unknown[k] != 0;
     printf("unknown opcodes (bits 0-11): %u\n", kinds);
