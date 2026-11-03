@@ -186,8 +186,8 @@ target_link_libraries(snx_platform PRIVATE SDL3::SDL3 snx_window_icon snx_build_
 if(WIN32)
     target_link_libraries(snx_platform PUBLIC synchronization powrprof) # plat_wait_word's WaitOnAddress, the power notification
 endif()
-if(APPLE AND NOT IOS)
-    target_link_libraries(snx_platform PUBLIC "-framework IOKit") # plat_posix.c's power source run loop
+if(APPLE AND NOT IOS) # plat_posix.c's power source: IOKit's notifications on CoreFoundation's run loop
+    target_link_libraries(snx_platform PUBLIC "-framework IOKit" "-framework CoreFoundation")
 endif()
 # the build is part of the key of the shader files, .vkshaders and .vkshipped (gpu/vk/pipeline.c)
 target_link_libraries(snx_vk PRIVATE snx_build_info FFmpeg::avutil) # vk/nvdec.c: FFmpeg's Vulkan device and pictures
@@ -318,8 +318,8 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     if(WIN32)
         target_link_libraries(snx-test-astc-vulkan PRIVATE powrprof)
     endif()
-    if(APPLE AND NOT IOS)
-        target_link_libraries(snx-test-astc-vulkan PRIVATE "-framework IOKit")
+    if(APPLE AND NOT IOS) # plat_posix.c's power source: IOKit's notifications on CoreFoundation's run loop
+        target_link_libraries(snx-test-astc-vulkan PRIVATE "-framework IOKit" "-framework CoreFoundation")
     endif()
     set_target_properties(snx-test-astc-vulkan PROPERTIES LINKER_LANGUAGE CXX)
     add_test(NAME astc_vulkan COMMAND snx-test-astc-vulkan)
