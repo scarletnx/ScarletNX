@@ -219,7 +219,7 @@ more per MiB imported in one import, from 16 MiB to 512 MiB, and 7.2 us per MiB 
   `vulkan_headless` (`check_uma`) unmaps and maps a range again, and checks that the GPU reads the new bytes;
   `check_uma_page_changes` unmaps, traps and drops imports with a submission after each; `vulkan_uma_imports.inc`
   traps pages under a read still running, under two imports, under the import made after a page landed, after an
-  unmap, and under a lookup used after a submit (`SNX_TEST_UMA_ONLY=1` runs these alone).
+  unmap, and under a lookup used after a submit (`SNX_TEST_UMA_ONLY=1` runs these alone, `runtime_write` one by name).
 - Write tracking. amdgpu takes an import's pages again, writable, at each submission, which undoes the protection a
   scan put on them: the next scan reports every imported page written with no CPU write (16 pages of 16 after each
   submission, none without the import). Trusted, those reports made a render target's write-back keep memory's old
@@ -227,9 +227,11 @@ more per MiB imported in one import, from 16 MiB to 512 MiB, and 7.2 us per MiB 
   (16 ms for 32 MiB imported, against 0.3 ms with no scan). So the scans leave the pages an import holds alone, and
   `vk_written_since` can't tell there (-1): its users compare the bytes. An import's pages count as written once when
   it goes (`vk_mem_changed`), for what the CPU wrote there meanwhile.
-- Hazards. A GPU-side write to guest memory (a front-end write, a landed result) on a page that a command not finished
-  yet reads in place can change what that command reads. They are counted (`gpu_set_write_watch`), not prevented, and
-  the report every 600 presents gives the count:
+- Hazards. A write of the runtime's own (`gmem_write`: a front-end write, a constant buffer update, a target's
+  write-back) on a page that a submit not done yet reads in place waits for that submit (`vk_uma_before_write`, the
+  `live` pages), and the page is copied from then on (`front`), so the next write there waits for nothing. Any other
+  GPU-side write (a landed result) on such a page can change what that command reads: those are counted
+  (`gpu_set_write_watch`), not prevented, and the report every 600 presents gives the count:
 
   `vulkan: in place over 600 presents: N ranges (M MB) read in guest memory, N copied; N imports made (M MB, T ms),
   N failed, N dropped; N imports hold M MB; N hazards (...)`

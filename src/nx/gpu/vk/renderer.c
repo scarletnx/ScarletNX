@@ -40,6 +40,7 @@ static void vkr_before_write(u64 gva, u64 size) {
     vk_lock();
     if (size) vk_release_need(gva, size);
     vk_buf_before_write(gva, size);
+    if (size) vk_uma_before_write(gva, size); /* what reads it in place runs first */
     if (size)
         vk_gfx_image_mem_need(gva, size);
     else

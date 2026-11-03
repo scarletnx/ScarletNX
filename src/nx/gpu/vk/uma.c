@@ -35,8 +35,12 @@
      (vk_uma_mapping_begin, vk_uma_mapping_end); the imports over pages to be trapped leave it before the trap
      (vk_uma_owning): a driver keeps every import in every submission, and amdgpu takes all their pages again in each
      submission's ioctl, which fails whole (EFAULT, then the device is lost) on pages gone or trapped.
-   - A GPU-side write (a front end write, a landed result) on a page that a command not finished yet reads in place is
-     counted (the hazards line of the report). That command can read the new bytes.
+   - A write of the runtime's own (gmem_write: an inline write to memory, a constant buffer update, a target's
+     write-back) to a page that a submit not done yet reads in place waits for that submit (live, the submit that last
+     read each page in place), as the console's GPU read it before the write. The page is copied from then on (front):
+     a constant buffer updated draw after draw waits once, not at every draw. As #690 has it.
+   - Any other GPU-side write (a landed result) on a page that a command not finished yet reads in place is counted
+     (the hazards line of the report). That command can read the new bytes.
    - Write tracking leaves the pages an import holds alone (vk_uma_import_in): amdgpu takes them again, writable, at
      each submission, which undoes a scan's protection, and the next scan reports them written with no CPU write. What
      trusted that report kept a guest page's old bytes over the pixels a render target drew there. And a submission
@@ -46,6 +50,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/maxwell/write_pages.h"
 #include "nx/gpu/vk/vk.h"
 #include "common/gpu/vk/vk_common.h"
 #include "nx/hle/services/nvdrv.h"
@@ -96,8 +101,11 @@ typedef struct {
     u64 align;              /* minImportedHostPointerAlignment */
     u64 bound;              /* the submit that last read guest memory in place (vk_submit_number) */
     Seen seen[256];         /* the ranges hz_mark marked, with their submit */
+    WritePages live;        /* the submit that last read each page in place */
+    WritePages front;       /* the pages the runtime wrote (gmem_write): never read in place again */
+    u64 lag_lo, lag_hi;     /* live stamps from lag_lo on may have been read up to submit lag_hi (vk_uma_settle) */
     /* statistics */
-    u64 hits, hit_bytes, misses, imports, import_bytes, import_ns, failed, dropped, quiesces;
+    u64 hits, hit_bytes, misses, imports, import_bytes, import_ns, failed, dropped, quiesces, waits;
     char apart0[UMA_LINE];
     /* mem.c's hook writes these too */
     PMutex lk;         /* a leaf, under vk_lock or mem.c's lock: the dead flags, and the imports for write tracking */
@@ -437,6 +445,10 @@ int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
         g_uma.misses++;
         return 0;
     }
+    if (write_pages_since(&g_uma.front, 0, cpu, len)) { /* the runtime wrote it: copied, as when it was bound */
+        g_uma.misses++;
+        return 0;
+    }
     drop_dead();
     u32 i = imp_get(cpu, len);
     if (i == ~0u || ((cpu - g_uma.imp[i].cpu) % (align ? align : 1))) {
@@ -461,6 +473,7 @@ static void hz_mark(u64 cpu, u64 len) {
     g_uma.seen[h].cpu = cpu;
     g_uma.seen[h].len = len;
     g_uma.seen[h].sub = g_uma.bound;
+    write_pages_stamp(&g_uma.live, cpu, len, g_uma.bound);
     for (u64 p = cpu >> 12; p <= (cpu + len - 1) >> 12; p++) {
         u32 s = (u32)(p & ((1u << HZ_BITS) - 1));
         __atomic_store_n(&g_uma.hz_page[s], p, __ATOMIC_RELAXED);
@@ -514,14 +527,15 @@ void vk_uma_frame(void) {
     LOG("vulkan: in place over 600 presents: %llu ranges (%llu MB bound) read in guest memory, %llu copied; %llu "
         "imports made (%llu MB, %llu ms), %llu spans refused, %llu dropped; %u imports hold %llu MB; %llu hazards (a "
         "GPU-side write on a page that unfinished work reads in place); %llu waits for that work before a trap or a "
-        "remap\n",
+        "remap, %llu before a write of the runtime's\n",
         (unsigned long long)g_uma.hits, (unsigned long long)(g_uma.hit_bytes >> 20), (unsigned long long)g_uma.misses,
         (unsigned long long)g_uma.imports, (unsigned long long)(g_uma.import_bytes >> 20),
         (unsigned long long)(g_uma.import_ns / 1000000), (unsigned long long)g_uma.failed,
         (unsigned long long)g_uma.dropped, g_uma.nimp, (unsigned long long)(bytes >> 20),
-        (unsigned long long)__atomic_load_n(&g_uma.hazards, __ATOMIC_RELAXED), (unsigned long long)g_uma.quiesces);
+        (unsigned long long)__atomic_load_n(&g_uma.hazards, __ATOMIC_RELAXED), (unsigned long long)g_uma.quiesces,
+        (unsigned long long)g_uma.waits);
     g_uma.hits = g_uma.hit_bytes = g_uma.misses = g_uma.imports = g_uma.import_bytes = g_uma.import_ns = g_uma.failed =
-        g_uma.dropped = g_uma.quiesces = 0;
+        g_uma.dropped = g_uma.quiesces = g_uma.waits = 0;
     __atomic_store_n(&g_uma.hazards, 0, __ATOMIC_RELAXED);
 }
 /* Guest memory [cpu, cpu + size) (size ~0: all of it) is about to be trapped (a GPU result published over it,
@@ -607,6 +621,10 @@ u32 vk_uma_imports(u64 cpu, u64 size) {
 void vk_uma_settle(u64 ended) {
     if (!vk_uma()) return;
     if (ended > g_uma.seg) {
+        u64 submitted, done;
+        vk_submit_progress(&submitted, &done);
+        if (g_uma.lag_hi <= done) g_uma.lag_lo = g_uma.seg; /* the pages stamped since were read by ended at last */
+        g_uma.lag_hi = ended;
         for (u32 i = 0; i < g_uma.nimp; i++)
             if (g_uma.imp[i].sub >= g_uma.seg && g_uma.imp[i].sub < ended) g_uma.imp[i].sub = ended;
         pm_lock(&g_uma.lk);
@@ -615,6 +633,35 @@ void vk_uma_settle(u64 ended) {
         pm_unlock(&g_uma.lk);
     }
     g_uma.seg = vk_submit_number();
+}
+/* Guest memory [cpu, cpu + n) is written next by the runtime: the submits that read it in place are done first, a
+   lookup's use recorded in a later submit than its own included (last_read), and it is copied from then on */
+static void front_write(u64 cpu, u64 n) {
+    u64 submitted, done, wait = 0;
+    write_pages_stamp(&g_uma.front, cpu, n, 1);
+    vk_submit_progress(&submitted, &done);
+    if (write_pages_since(&g_uma.live, g_uma.seg ? g_uma.seg - 1 : 0, cpu, n))
+        wait = vk_submit_number(); /* looked up since the draw being set up began */
+    else if (g_uma.lag_hi > done && write_pages_since(&g_uma.live, g_uma.lag_lo ? g_uma.lag_lo - 1 : 0, cpu, n))
+        wait = g_uma.lag_hi;
+    else if (write_pages_since(&g_uma.live, done, cpu, n))
+        wait = vk_last_submit();
+    if (!wait) return;
+    g_uma.waits++;
+    read_done(wait);
+}
+void vk_uma_before_write(u64 gva, u64 len) {
+    if (!vk_uma()) return;
+    while (len) {
+        u64 cpu = 0, n = gmmu_run(gva, len, &cpu);
+        if (!n) { /* an unmapped page: the write doesn't reach memory there */
+            n = 0x1000 - (gva & 0xFFF);
+            if (n > len) n = len;
+        } else
+            front_write(cpu, n);
+        gva += n;
+        len -= n;
+    }
 }
 /* a save state's load: every import goes */
 void vk_uma_forget_all(void) {
