@@ -871,10 +871,14 @@ void snx_fx_destroy(SnxFx* fx) {
     if (fx->pl1) vkDestroyPipelineLayout(fx->dev, fx->pl1, NULL);
     if (fx->pl2) vkDestroyPipelineLayout(fx->dev, fx->pl2, NULL);
     if (fx->pl3) vkDestroyPipelineLayout(fx->dev, fx->pl3, NULL);
+    if (fx->pl_nis) vkDestroyPipelineLayout(fx->dev, fx->pl_nis, NULL);
+    if (fx->pl_sgsr) vkDestroyPipelineLayout(fx->dev, fx->pl_sgsr, NULL);
     if (fx->dsl0) vkDestroyDescriptorSetLayout(fx->dev, fx->dsl0, NULL);
     if (fx->dsl1) vkDestroyDescriptorSetLayout(fx->dev, fx->dsl1, NULL);
     if (fx->dsl2) vkDestroyDescriptorSetLayout(fx->dev, fx->dsl2, NULL);
     if (fx->dsl3) vkDestroyDescriptorSetLayout(fx->dev, fx->dsl3, NULL);
+    if (fx->dsl_nis) vkDestroyDescriptorSetLayout(fx->dev, fx->dsl_nis, NULL);
+    if (fx->dsl_sgsr) vkDestroyDescriptorSetLayout(fx->dev, fx->dsl_sgsr, NULL);
     if (fx->pool) vkDestroyDescriptorPool(fx->dev, fx->pool, NULL);
     if (fx->sampler) vkDestroySampler(fx->dev, fx->sampler, NULL);
     free(fx);
