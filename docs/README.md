@@ -70,6 +70,7 @@ ScarletNX yourself, see [Build](./BUILD.md).
 - [VIC composition on the GPU](./VIC.md)
 - [NVDEC H.264 packet submission audit](./NVDEC.md)
 - [Shader corrections, batch 001](./shader-audit/fixes-001.md)
+- [glslc](./GLSLC.md): GLSL ES into SPIR-V, for the backends that run OpenGL ES programs on Vulkan
 
 ## License
 
