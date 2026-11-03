@@ -21,13 +21,24 @@ cmake --build --preset netbsd-x86_64-cross
 
 The runtime library's bitcode is read by pkgsrc's LLVM (21), so a Clang newer than it writes bitcode that LLVM can't
 read. The build then assembles the library's IR with an llvm-as of that version, which has to run on the build
-machine: pkgsrc's is a NetBSD program. `SNX_LLVM_AS` names one (a Linux build of LLVM 21), or a Clang no newer than 21
-builds the library itself; the configure stops and says so when neither is given.
+machine: pkgsrc's is a NetBSD program. `SNX_LLVM_AS` names one, or a Clang no newer than 21 builds the library
+itself; the configure stops and says so when neither is given. LLVM's release source builds llvm-as alone in a few
+minutes:
 
-What was built, against NetBSD 11.1's sets and pkgsrc 2026Q3 (LLVM 21.1.8, SDL3 3.4.16), with Clang 22 and LLD: the
-whole tree, `scarletnx` and every test program, linked against the sysroot's libraries (`libLLVM.so.21.1`,
-`libSDL3.so.0`, `libstdc++.so.9`), with `/usr/pkg/lib` as their run path. Nothing ran: there is no emulator for
-NetBSD programs on Linux, and no NetBSD host.
+```bash
+tar -xJf llvm-project-21.1.8.src.tar.xz
+cmake -S llvm-project-21.1.8.src/llvm -B .cache/llvm-as-21 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DLLVM_TARGETS_TO_BUILD=X86 -DLLVM_INCLUDE_TESTS=OFF \
+    -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_UTILS=OFF -DLLVM_ENABLE_ZSTD=OFF \
+    -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_LIBXML2=OFF -DLLVM_ENABLE_TERMINFO=OFF
+ninja -C .cache/llvm-as-21 llvm-as   # then -DSNX_LLVM_AS=$PWD/.cache/llvm-as-21/bin/llvm-as
+```
+
+What was built, against NetBSD 11.1's sets and pkgsrc 2026Q3 (LLVM 21.1.8, SDL3 3.4.16), with Clang 22, LLD and
+LLVM 21.1.8's llvm-as built as above: the whole tree, `scarletnx` and every test program, linked against the
+sysroot's libraries (`libLLVM.so.21.1`, `libSDL3.so.0`, `libstdc++.so.9`), with `/usr/pkg/lib` as their run path.
+The runtime library's bitcode in `scarletnx` names LLVM 21.1.8 as its producer, and LLVM 21's llvm-dis reads it.
+Nothing ran: there is no emulator for NetBSD programs on Linux, and no NetBSD host.
 
 ## What differs from the other hosts
 
