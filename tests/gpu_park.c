@@ -27,7 +27,7 @@
 /* guest memory, aligned as the console's (the semaphores are written as u32s, the pushbuffers read as u32s) */
 static u64 guest[0x10000 / 8];
 u8* g_mem = (u8*)guest;
-_Atomic int g_cs_any, g_gfx_any, g_gfx_img_any;
+_Atomic int g_cs_any, g_gfx_any, g_gfx_img_any, g_uma_any;
 int g_renderer_up = 1;
 u64 g_draws;
 /* GPU addresses are guest ones, 0 unmapped, but for two GPU pages mapped apart (0xA000 at 0x3000, 0xB000 at 0x5000):

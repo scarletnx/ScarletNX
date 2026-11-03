@@ -321,6 +321,137 @@ static int check_uma_constants(void) {
     return 0;
 }
 
+/* Storage the GPU writes is written in place (vk_buf_copy_writable): the range bound for writing is the import of its
+   guest memory, with no result to land; a later reader on the GPU reads the write in place, after a barrier, and so
+   does one that copied the range before the write; and the runtime's CPU reader waits for the submit */
+#define UMA_V  (HEAP_BASE + 0x3400000)
+#define UMA_GV 0x4dd000000ull
+static int check_uma_writes(void) {
+    VkBuffer w, r, c, rb;
+    u64 wo, ro, co;
+    u8 bytes[256];
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    CHECK(mem_map(UMA_V, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GV, UMA_V, 0x200000);
+    memset(GP(UMA_V), 0x91, 0x1000);
+    vk_lock();
+    u8* result = vk_readback_buffer(512, &rb);
+    CHECK(result && vk_buf_get(UMA_GV + 0x100, 256, &c, &co)); /* a vertex fetch's copy, before the write */
+    CHECK(vk_buf_copy_writable(UMA_GV + 0x100, 256, &w, &wo, 1));
+    int inplace = vk_uma_imports(UMA_V, 0x200000) == 1 && !vk_buf_pending(UMA_GV + 0x100, 256);
+    CHECK(!owned_test_fill(w, wo, 256, 0x92)); /* the shader's write */
+    vk_buf_writable_commit();
+    CHECK(vk_buf_get_input(UMA_GV + 0x100, 256, 4, &r, &ro)); /* a later draw's read of it */
+    uma_read(r, ro, rb, 0);
+    CHECK(vk_buf_get(UMA_GV + 0x100, 256, &c, &co)); /* the same fetch after it: not the copy from before */
+    uma_read(c, co, rb, 256);
+    vk_unlock();
+    CHECK(!gmem_read(UMA_GV + 0x100, bytes, sizeof bytes)); /* the runtime's CPU read: after the write */
+    for (u32 i = 0; i < 256; i++) CHECK(bytes[i] == 0x92);
+    vk_lock();
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 512; i++) CHECK(result[i] == 0x92);
+    vk_unlock();
+    CHECK(GP(UMA_V)[0x100] == 0x92 && GP(UMA_V)[0x1ff] == 0x92 && GP(UMA_V)[0xff] == 0x91 && GP(UMA_V)[0x200] == 0x91);
+    CHECK(mem_unmap(UMA_V, 0x200000) == 0);
+    if (!inplace) fprintf(stderr, "storage write: copied out and landed, not written in place\n");
+    CHECK(inplace);
+    printf("in place: storage written where it is in guest memory, read after the write on the GPU and the CPU\n");
+    return 0;
+}
+
+/* Transform feedback is written in place too (vk_buf_copy_writable): a draw captures its three positions into guest
+   memory where it is, the window imported, and the runtime's CPU reads them */
+#define UMA_X  (HEAP_BASE + 0x3a00000)
+#define UMA_GX 0x4e2000000ull
+static int check_uma_feedback(void) {
+    const u64 address = 0x4e3000000ull, cpu = HEAP_BASE + 0x740000;
+    const u64 stream = address + 0x12000, target = address + 0x18000;
+    const u64 vertex[] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
+                          0xeff1ff800707ff00ull, /* position */
+                          0xefd9ff800907ff00ull, /* ALD R0..3, a[0x90] */
+                          0xeff1ff800807ff00ull, /* color varying */
+                          0xe30000000007000full};
+    /* z as w: the translator's depth range fix-up ((z + w) / 2, from the guest's -1 to 1) keeps it, which the capture
+       takes after it */
+    const float position[12] = {-1, -1, 1, 1, 3, -1, 1, 1, -1, 3, 1, 1}, green[4] = {0, 1, 0, 1};
+    const float transform[6] = {2, 2, 0.5f, 2, 2, 0.5f};
+    u64 fragment[5];
+    u8 bytes[96], captured[48];
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    if (!g_vk.has_xfb) {
+        printf("skip: the device has no transform feedback (VK_EXT_transform_feedback)\n");
+        return 0;
+    }
+    GpuChannel* channel = calloc(1, sizeof *channel);
+    CHECK(channel);
+    channel->id = 124;
+    CHECK(mem_map(UMA_X, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GX, UMA_X, 0x200000);
+    memset(GP(UMA_X), 0x77, 0x1000);
+    gmmu_map(address, cpu, 0x20000);
+    for (u32 i = 0; i < 4; i++) fragment[i] = 0xe000000000070000ull | (0x20ull + i) << 30 | i;
+    fragment[4] = 0xe30000000007000full;
+    CHECK(mesh_program(address, vertex, 5, 0));
+    CHECK(mesh_program(address + 0x10000, fragment, 5, 1));
+    for (u32 v = 0; v < 3; v++) {
+        memcpy(bytes + v * 32, position + 4 * v, 16);
+        memcpy(bytes + v * 32 + 16, green, 16);
+    }
+    CHECK(!gmem_write(stream, bytes, sizeof bytes));
+    u32* r = channel->r3d;
+    r[0x582] = (u32)(address >> 32);
+    r[0x583] = (u32)address;
+    r[0x850] = 1;
+    r[0x851] = 0x10000;
+    r[0x64b] = 1;
+    r[0x286] = 0x6420;
+    r[0x3fd] = r[0x3fe] = 4u << 16;
+    r[0x680] = 0x1111;
+    r[MAXWELL3D_RASTERIZE_ENABLE] = 1;
+    memcpy(r + 0x280, transform, sizeof transform);
+    r[0x458] = 0 | 0u << 7 | 1u << 21 | 7u << 27;  /* stream 0 at 0: RGBA32F */
+    r[0x459] = 0 | 16u << 7 | 1u << 21 | 7u << 27; /* stream 0 at 16: RGBA32F */
+    r[0x700] = 0x1000 | 32;
+    r[0x701] = (u32)(stream >> 32);
+    r[0x702] = (u32)stream;
+    r[0x7c0] = (u32)((stream + sizeof bytes - 1) >> 32);
+    r[0x7c1] = (u32)(stream + sizeof bytes - 1);
+    /* buffer 0 captures the position's four words (attribute 0x70, words 0x1c to 0x1f), 16 bytes a vertex */
+    r[0x1D1] = 1;
+    r[0xE0] = 1;
+    r[0xE1] = (u32)((UMA_GX + 0x100) >> 32);
+    r[0xE2] = (u32)(UMA_GX + 0x100);
+    r[0xE3] = sizeof captured;
+    r[0x1C1] = 4;
+    r[0x1C2] = 16;
+    r[0xA00] = 0x1f1e1d1c;
+    CHECK(!mesh_pixel(channel, target, 0, (const u8[4]){0, 255, 0, 255}));
+    int inplace = vk_uma_imports(UMA_X, 0x200000) == 1;
+    CHECK(!gmem_read(UMA_GX + 0x100, captured, sizeof captured));
+    free(channel);
+    CHECK(GP(UMA_X)[0xff] == 0x77 && GP(UMA_X)[0x130] == 0x77);
+    CHECK(mem_unmap(UMA_X, 0x200000) == 0);
+    if (memcmp(captured, position, sizeof captured)) {
+        float got[12];
+        memcpy(got, captured, sizeof got);
+        fprintf(stderr, "feedback: captured %g,%g,%g,%g %g,%g,%g,%g %g,%g,%g,%g\n", got[0], got[1], got[2], got[3],
+                got[4], got[5], got[6], got[7], got[8], got[9], got[10], got[11]);
+    }
+    CHECK(!memcmp(captured, position, sizeof captured));
+    if (!inplace) fprintf(stderr, "feedback: copied out and landed, not written in place\n");
+    CHECK(inplace);
+    printf("in place: transform feedback captured where it is in guest memory\n");
+    return 0;
+}
+
 /* vk_memory's auto (0) never moves guest memory into AHardwareBuffers: on a device that shares memory, takes them and
    has no VK_EXT_external_memory_host, it copies, and only vk_memory=2 moves. An import where it is stays auto's on such
    a device, and 1 copies everywhere */
@@ -471,5 +602,63 @@ static int check_uma_migrate(void) {
         "writes there; an unmap%s of a region waits for nothing, a copy recorded before reads its bytes, and the rest "
         "of it moves back\n",
         own_traps() ? " or a trap" : "");
+    return 0;
+}
+/* A region of the migrate way written in place (memfd regions here, AHardwareBuffers on Android): the write lands in
+   guest memory when the region's pages move on before its submit (a trap moves them into the pool) and when the region
+   moves back (idleness, room, the way changed): both wait for it, as the region's buffer is the guest's memory until
+   then and a write after the move would land in the buffer alone */
+#define UMA_RW  (HEAP_BASE + 0x4a00000)
+#define UMA_GRW 0x4e7000000ull
+static int check_uma_region_writes(void) {
+    const u64 window = 0x200000;
+    VkBuffer w;
+    u64 wo;
+#if defined(__ANDROID__)
+    printf("skip: the migrate way runs here as the device chose it (vk_memory), not from this check\n");
+    return 0;
+#endif
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    if (!uma_imports_shared()) {
+        printf("skip: the driver imports no buffer's pages as host memory, which the migrate way needs here\n");
+        return 0;
+    }
+    CHECK(mem_map(UMA_RW, window, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GRW, UMA_RW, window);
+    u8* g = GP(UMA_RW);
+    memset(g, 0x91, 0x6000);
+    vk_lock();
+    CHECK(vk_uma_migrate(1));
+    /* written in place in a region, then its page trapped before anything waited for the write */
+    CHECK(vk_buf_copy_writable(UMA_GRW + 0x100, 256, &w, &wo, 1));
+    int region = vk_uma_imports(UMA_RW, window) == 1 && uma_in_buffer(g) == 1;
+    CHECK(!owned_test_fill(w, wo, 256, 0x92));
+    vk_buf_writable_commit();
+    VkOwnRes* owner = uma_owner(256, 0x42);
+    CHECK(owner);
+    vk_own_publish(UMA_RW + 0x800, 256, owner, 0); /* the same host page */
+    vk_finish();
+    vk_unlock();
+    CHECK(!uma_landed(UMA_RW + 0x800, 256, 0x42));
+    vk_own_res_unref(owner);
+    CHECK(g[0x100] == 0x92 && g[0x1ff] == 0x92 && g[0xff] == 0x91 && g[0x200] == 0x91);
+    /* written in place in a region, which then moves back with the way */
+    vk_lock();
+    CHECK(vk_buf_copy_writable(UMA_GRW + 0x2100, 256, &w, &wo, 1));
+    int region2 = vk_uma_imports(UMA_RW + 0x2000, 0x1000) == 1 && uma_in_buffer(g + 0x2000) == 1;
+    CHECK(!owned_test_fill(w, wo, 256, 0x93));
+    vk_buf_writable_commit();
+    CHECK(vk_uma_migrate(0)); /* every region moves back first */
+    vk_finish();
+    vk_unlock();
+    CHECK(g[0x2100] == 0x93 && g[0x21ff] == 0x93 && g[0x20ff] == 0x91 && uma_in_buffer(g + 0x2000) == 0);
+    CHECK(mem_unmap(UMA_RW, window) == 0);
+    if (!region || !region2) fprintf(stderr, "region writes: no region made (%d, %d)\n", region, region2);
+    CHECK(region && region2);
+    printf("in place, the migrate way: a write in place in a region lands in guest memory when its pages move on or "
+           "the region moves back before the write's submit\n");
     return 0;
 }

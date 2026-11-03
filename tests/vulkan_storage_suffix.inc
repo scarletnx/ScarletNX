@@ -92,9 +92,10 @@ static int check_storage_suffix(void) {
     vk_buf_writable_commit();
     CHECK(!owned_test_fill(out_r, at_r + 0x10, 16, 0x55));
     vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
-    /* a suffix of the composed result again: written into a new result, which lands after both */
+    /* a suffix of the composed result again: written into a new result, which lands after both. With unified memory
+       each of them is guest memory itself (uma.c), written in order: nothing composed or landed */
     CHECK(vk_buf_copy_writable(a + 0x80, alen - 0x80, &out_n, &at_n, 1));
-    CHECK(!(out_n == out_m && at_n == at_m + 0x80));
+    CHECK(vk_uma() ? out_n == out_m && at_n == at_m + 0x80 : !(out_n == out_m && at_n == at_m + 0x80));
     vk_buf_writable_commit();
     CHECK(!owned_test_fill(out_n, at_n, 16, 0x66));
     CHECK(!suffix_open(gate));
