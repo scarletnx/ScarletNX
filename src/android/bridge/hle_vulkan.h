@@ -15,6 +15,6 @@ typedef struct {
 void hle_vulkan_set_host(const HleWindowHost* host);
 /* a vk* command's export for the guest (dlsym of libvulkan.so, vkGet*ProcAddr); 0 for a name that isn't one */
 uint64_t hle_vulkan_symbol(const char* name);
-/* the guest's vkQueuePresentKHR calls so far (SNX_ANDROID_SAMPLE) */
+/* the guest's vkQueuePresentKHR calls so far (--sample) */
 uint64_t hle_vulkan_presents(void);
 #endif

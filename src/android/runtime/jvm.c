@@ -17,8 +17,13 @@ static const char jvm_path[] = "lib/server/libjvm.dylib";
 static const char jvm_path[] = "lib/server/libjvm.so";
 #endif
 
+static const char* java_home;
+void android_jvm_set_home(const char* home) {
+    java_home = home;
+}
+
 static void* open_jvm(char* error, size_t error_size) {
-    const char* homes[2] = {getenv("JAVA_HOME"), NULL};
+    const char* homes[2] = {java_home, NULL};
 #ifdef SNX_JAVA_HOME
     homes[1] = SNX_JAVA_HOME;
 #endif
@@ -33,8 +38,8 @@ static void* open_jvm(char* error, size_t error_size) {
         free(path);
         if (library) return library;
     }
-    snprintf(error, error_size, "no JVM: set JAVA_HOME to a JDK 21 or later (tried: %s)",
-             tried[0] ? tried : "JAVA_HOME is not set");
+    snprintf(error, error_size, "no JVM: give --java-home=DIR, a JDK 21 or later (tried: %s)",
+             tried[0] ? tried : "no --java-home, and the build found none");
     return NULL;
 }
 

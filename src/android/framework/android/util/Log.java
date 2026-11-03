@@ -16,7 +16,7 @@ public final class Log {
     private static final String LETTERS = "??VDIWEA";
     private static final int LEVEL;
     static {
-        String l = System.getenv("SNX_LOG_LEVEL");
+        String l = System.getProperty("snx.android.log_level");
         int level = DEBUG;
         if (l != null && l.length() == 1 && LETTERS.indexOf(l.charAt(0)) >= VERBOSE) level = LETTERS.indexOf(l.charAt(0));
         LEVEL = level;

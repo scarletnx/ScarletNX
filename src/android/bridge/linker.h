@@ -15,6 +15,8 @@ typedef struct GuestLibrary GuestLibrary;
 
 /* the folder of the app's own libraries, which DT_NEEDED and dlopen of a bare name look in */
 void linker_set_library_dir(const char* dir);
+/* each library and its load address on stderr (--linker-verbose) */
+void linker_set_verbose(bool verbose);
 
 /* the library at path (or a bare name: the app's folder, then the HLE libraries) loaded, or found loaded. NULL with
    dlerror's text in error */

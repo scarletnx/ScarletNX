@@ -97,6 +97,18 @@ typedef struct {
     bool used;
 } Glyph;
 
+/* android_render_set_options': the program's options, before the renderer starts */
+static struct {
+    bool headless;
+    const char* shot;
+    const char* shot_frames;
+} option;
+void android_render_set_options(bool headless, const char* shot, const char* shot_frames) {
+    option.headless = headless;
+    option.shot = shot;
+    option.shot_frames = shot_frames;
+}
+
 static struct {
     /* the device */
     SnxVkWindow host;
@@ -159,7 +171,7 @@ static struct {
     Glyph* glyphs;
     size_t glyph_capacity, glyph_count;
 
-    /* screenshots: the frames in shot_frames (SNX_ANDROID_SHOT_FRAME, numbers with commas) at shot (SNX_ANDROID_SHOT,
+    /* screenshots: the frames in shot_frames (--shot-frame, numbers with commas) at shot (--shot,
        where %ld is the frame's number), and the frames presented */
     char shot[1024];
     long shot_frames[64];
@@ -1301,10 +1313,9 @@ static bool start(int width, int height, const char* title) {
     }
     r.states = malloc(16 * sizeof *r.states);
     r.state_capacity = r.states ? 16 : 0;
-    const char* shot = getenv("SNX_ANDROID_SHOT");
-    if (shot && shot[0]) {
-        snprintf(r.shot, sizeof r.shot, "%s", shot);
-        const char* frames = getenv("SNX_ANDROID_SHOT_FRAME");
+    if (option.shot && option.shot[0]) {
+        snprintf(r.shot, sizeof r.shot, "%s", option.shot);
+        const char* frames = option.shot_frames;
         if (!frames || !frames[0]) frames = "60";
         for (char* end; *frames && r.shot_count < 64; frames = *end ? end + 1 : end) {
             long f = strtol(frames, &end, 10);
@@ -1992,7 +2003,7 @@ bool android_render_register(JNIEnv* env) {
 /* the SDL window for the guest's Vulkan surface (hle_vulkan.c), opened at the native window's size if the app drew
    nothing yet: NULL without a display */
 static void* render_window(void) {
-    if (getenv("SNX_ANDROID_HEADLESS")) return NULL;
+    if (option.headless) return NULL;
     if (!r.up) {
         int w, h;
         hle_android_window(&w, &h);

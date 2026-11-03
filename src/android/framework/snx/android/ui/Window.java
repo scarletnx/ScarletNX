@@ -12,28 +12,28 @@ import android.view.ViewRootImpl;
 /**
  * The host window: an SDL window with the runtime's Vulkan renderer (src/android/hwui/render.c), the Abstract of
  * SurfaceFlinger and the input dispatcher in docs/android/INTERFACES.md. Without a display the renderer draws into an
- * image of its own (SNX_ANDROID_SHOT saves one). SNX_ANDROID_HEADLESS draws nothing at all.
+ * image of its own (--shot saves one). --headless draws nothing at all.
  *
  * The main looper waits in short steps and reads the window's events between them, since SDL's event queue belongs
  * to the thread that made the window, and that is the main thread.
  */
 public final class Window {
     private static boolean open, failed;
-    private static final boolean headless = System.getenv("SNX_ANDROID_HEADLESS") != null;
+    private static final boolean headless = Boolean.getBoolean("snx.android.headless");
     private static final float[] events = new float[8 * 64];
     private static long downTime;
     private static final int POLL_MS = 4;
-    /** Scripted taps for runs without a user (SNX_ANDROID_TAPS="FRAME:X,Y ..."): a finger down at the frame, up 3 later */
+    /** Scripted taps for runs without a user (--taps="FRAME:X,Y ..."): a finger down at the frame, up 3 later */
     private static final long[] tapFrames;
     private static final float[][] tapPoints;
     private static long frames;
-    /** Scripted text (SNX_ANDROID_KEYS="FRAME:TEXT|FRAME:TEXT"): its characters as key presses, from the frame on */
+    /** Scripted text (--keys="FRAME:TEXT|FRAME:TEXT"): its characters as key presses, from the frame on */
     private static final long[] keyFrames;
-    /** The frames between scripted keys (SNX_ANDROID_KEY_FRAMES, 4 when not given: about 66 ms, a fast typist's) */
-    private static final int keyPace = Math.max(1, Integer.parseInt(System.getenv().getOrDefault("SNX_ANDROID_KEY_FRAMES", "4")));
+    /** The frames between scripted keys (--key-frames, 4 when not given: about 66 ms, a fast typist's) */
+    private static final int keyPace = Math.max(1, Integer.parseInt(System.getProperty("snx.android.key_frames", "4")));
     private static final String[] keyTexts;
     static {
-        String keys = System.getenv("SNX_ANDROID_KEYS");
+        String keys = System.getProperty("snx.android.keys");
         String[] parts = keys != null && !keys.isEmpty() ? keys.split("\\|") : new String[0];
         keyFrames = new long[parts.length];
         keyTexts = new String[parts.length];
@@ -44,7 +44,7 @@ public final class Window {
         }
     }
     static {
-        String script = System.getenv("SNX_ANDROID_TAPS");
+        String script = System.getProperty("snx.android.taps");
         String[] items = script != null && !script.isBlank() ? script.trim().split("\\s+") : new String[0];
         tapFrames = new long[items.length];
         tapPoints = new float[items.length][];

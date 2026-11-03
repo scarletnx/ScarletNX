@@ -12,6 +12,11 @@
    host functions that guest code calls. Guest memory is the host's: every CPU has mem 0 */
 
 bool bridge_init(const char* cache, char* error, size_t error_size);
+/* the -O letter of the JIT's code ('0', '1', '2', '3', 's', 'z'), before bridge_init: '2' by default. -O0 compiles
+   several times faster, for a test of the JIT itself; the cache keeps each level's code apart */
+bool bridge_set_optimization(char level);
+/* each JIT unit and its time on stderr (--jit-verbose), before bridge_init */
+void bridge_set_verbose(bool verbose);
 
 /* size bytes of the code window for a library, aligned to align (a power of two): its guest address, 0 when the
    window is full */

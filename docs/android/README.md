@@ -44,16 +44,27 @@ an option, as these system properties:
 | `snx.android.night` | `true` for the dark theme |
 | `snx.android.data` | The app's data folder: `android/data/<package>` in ScarletNX's data folder when not given |
 
-These environment variables run an app without a user, as the Switch runtime's `--script` and `--shot` do:
+These options of `scarletnx-android` run an app without a user, as the Switch runtime's `--script` and `--shot` do:
 
-| Variable | Meaning |
+| Option | Meaning |
 | --- | --- |
-| `SNX_ANDROID_HEADLESS=1` | No renderer: the frames are recorded and counted only (`SNX_ANDROID_TRACE_FRAMES=1` logs them) |
-| `SNX_ANDROID_SHOT=FILE.ppm` | Save frames as binary PPM. `%ld` in the name is the frame's number |
-| `SNX_ANDROID_SHOT_FRAME=60,120` | The frames to save, 60 when not given |
-| `SNX_ANDROID_TAPS="60:300,672 90:..."` | A finger down at frame 60 at (300, 672) in pixels, and up 3 frames later |
-| `SNX_ANDROID_KEYS='120:2+3\n\|300:x'` | Text typed from frame 120 on, as key presses of a US keyboard (`\n` is Enter) |
-| `SNX_ANDROID_KEY_FRAMES=4` | The frames between scripted keys. An app gets a frame or more to take each key, as from a person |
+| `--headless` | No window: the renderer draws into an image of its own (`--trace-frames` logs each frame) |
+| `--shot=FILE.ppm` | Save frames as binary PPM. `%ld` in the name is the frame's number |
+| `--shot-frame=60,120` | The frames to save, 60 when not given |
+| `--taps="60:300,672 90:..."` | A finger down at frame 60 at (300, 672) in pixels, and up 3 frames later |
+| `--keys='120:2+3\n\|300:x'` | Text typed from frame 120 on, as key presses of a US keyboard (`\n` is Enter) |
+| `--key-frames=4` | The frames between scripted keys. An app gets a frame or more to take each key, as from a person |
+
+These find what an app does when it stops or runs slowly:
+
+| Option | Meaning |
+| --- | --- |
+| `--log-level=L` | The least `android.util.Log` level printed: `V`, `D` (the default), `I`, `W`, `E` or `A` |
+| `--sample` | Every 5 seconds, each guest thread's pc, x30 and HLE call, and the count of Vulkan presents |
+| `--log-signals` | Each guest signal action, send and delivery |
+| `--jit-verbose`, `--jit-opt=0` | Each unit the JIT compiles with its time, and its code at -O0, which compiles several times faster to test the JIT itself (2 is the default) |
+| `--linker-verbose` | Each native library and its load address |
+| `--framework=JAR`, `--java-home=DIR` | The framework's jar and the JDK, in place of the ones beside the program and that the build found |
 
 Without a display, the renderer draws into an image of its own, so the shots work on a machine with only a
 software Vulkan driver (lavapipe).

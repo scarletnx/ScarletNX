@@ -56,6 +56,11 @@ static char* copy(const char* s) {
     return c;
 }
 
+static bool linker_verbose;
+void linker_set_verbose(bool verbose) {
+    linker_verbose = verbose;
+}
+
 void linker_set_library_dir(const char* dir) {
     free(g.library_dir);
     g.library_dir = copy(dir);
@@ -465,7 +470,7 @@ static GuestLibrary* load_file(const char* path, char* error, size_t error_size)
         memcpy(&f, (const void*)(uintptr_t)(init_array + 8 * i), 8);
         if (f && f != UINT64_MAX) bridge_call(f, args, 3);
     }
-    if (getenv("SNX_ANDROID_LINKER_VERBOSE"))
+    if (linker_verbose)
         fprintf(stderr, "scarletnx-android: loaded %s at 0x%llx\n", l->name, (unsigned long long)l->base);
     return l;
 }

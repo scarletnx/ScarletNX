@@ -57,7 +57,7 @@ the block goes through the table), and fills the table. Compiled code is kept in
 addresses and the entry, so the next run loads it. A unit depends on its entry alone, never on what the process
 compiled before, which depends on which thread reached what first: with that, the same entry missed the cache in
 every run. The A64 target is `SNX_RECOMPILER_A64_ANDROID` (Armv8.2 with LSE, RDM, FP16, DotProd and LRCPC, without
-pointer authentication). `SNX_ANDROID_JIT_VERBOSE=1` prints each unit and its time. A large engine reaches code its
+pointer authentication). `--jit-verbose` prints each unit and its time, and `--jit-opt=0` compiles at -O0, several times faster, to test the JIT itself (2 is the default; the cache keeps each level apart). A large engine reaches code its
 earlier runs did not for several runs, each spent mostly in LLVM: one run of a Unity game compiled about 1100 new units
 in 440 s while it loaded.
 
@@ -90,7 +90,7 @@ mask. A handler runs in the frame Linux gives it (`common/runtime/linux_signal.c
 the thread's CPU structure: at `RtAPI.poll`, as an HLE call returns, or, for a thread that waits in a blocking HLE
 call (`pthread_cond_wait`, `sem_wait`, a read) or runs no guest code, from the handler of a host real-time signal
 that the sender gives it. A host fault in generated code still ends the app, as its registers are not exact there.
-`SNX_ANDROID_SIGNALS=1` logs each action, send and delivery, and `SNX_ANDROID_SAMPLE=1` prints each guest thread's
+`--log-signals` logs each action, send and delivery, and `--sample` prints each guest thread's
 pc, x30 and HLE call every 5 seconds, for a stall.
 
 ## JNI
@@ -181,7 +181,7 @@ The recompiler's `android` target (`a64.profile`) is a phone's Armv8.2 CPU witho
 - EGL gives the GPU's identity alone: a display, contexts without a config or a surface, and `glGetString` with the
   device that Vulkan reports, which engines read before they choose an API. Nothing draws through GLES, on purpose.
 
-`SNX_ANDROID_SAMPLE=1` also prints the count of the guest's Vulkan presents, and asks each thread in guest code
+`--sample` also prints the count of the guest's Vulkan presents, and asks each thread in guest code
 for its pc at its next poll, so a loop's pc is its own and not that of its last call.
 
 Next: OpenSL ES and the media codecs.
