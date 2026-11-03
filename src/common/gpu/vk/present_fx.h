@@ -60,6 +60,8 @@ void snx_fx_destroy(SnxFx* fx);
 void snx_fx_configure(SnxFx* fx, const SnxFxConfig* cfg);
 /* the device's shaderFloat16, for FSR 1's fp16 passes where it runs */
 void snx_fx_set_fp16(SnxFx* fx, int on);
+/* the anti aliasing now, for a live key that changes it */
+void snx_fx_set_aa(SnxFx* fx, int aa);
 /* the live cycles of the hotkeys: the upscaler (FSR 1, Bilinear, NIS, SGSR, None) and the anti aliasing (Auto, FXAA,
    SMAA, SSAA 2x, SSAA 4x, Off). The changed value is returned */
 int snx_fx_upscale_cycle(SnxFx* fx);
