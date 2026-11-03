@@ -830,6 +830,22 @@ static void flush_note_landed(u64 gva, u64 from, u64 to) {
     u8* mirror = plat_alias_mirror();
     if (to > from && mirror) span_runs(lo, hi - lo, run_landed, mirror);
 }
+static u32 rt_pending_over(u64 gva, u64 size, Surf** local, u32 nlocal, Surf*** out);
+/* The targets over s's bytes whose images are newer than s's and newer than memory, with nothing written under them
+   since they last matched it: s's landing goes under them, as rt_flush_older leaves them pending on top, so it is no
+   write of theirs: loading memory there would drop their pixels for bytes that never held them. In local while it
+   holds nlocal, else in a list the caller frees */
+static u32 rt_newer_over(const Surf* s, u64 size, Surf** local, u32 nlocal, Surf*** out) {
+    u32 n, k = 0;
+    *out = local;
+    if ((s->gva >> 63) || !size || !pend_hit_va(&g_rt_pages, s->gva, size)) return 0;
+    n = rt_pending_over(s->gva, size, local, nlocal, out);
+    for (u32 i = 0; i < n; i++) {
+        Surf* t = (*out)[i];
+        if (t != s && t->wseq > s->wseq && !gpu_mem_dirty_since(t->gw, t->gva, rt_bytes(t))) (*out)[k++] = t;
+    }
+    return k;
+}
 /* s's pixels, read back to p as of its write generation wgen, into guest memory in its layout (or over original, a
    storage image's merge), but for the pages the CPU wrote since s's draws (cpu_newer) */
 static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** keep, u64* keep_size) {
@@ -860,6 +876,8 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** 
                 for (u32 y = 0; y < gh; y++)
                     memcpy(layer_dst + (u64)y * s->pitch, p + (u64)layer * slice + y * row, row);
         }
+    Surf *above_local[16], **above;
+    u32 nabove = rt_newer_over(s, sz, above_local, 16, &above);
     int guest_changed = 0, flushing = g_rt_flushing;
     g_rt_flushing = 1; /* s's own write: the targets newer than s over its bytes stay pending (vk_rt_before_write) */
     if (original) {
@@ -905,6 +923,8 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** 
         s->gw = gpu_mem_generation();
     else
         flush_rebase(s, sz, kept != 0, gw0);
+    for (u32 i = 0; i < nabove; i++) above[i]->gw = gpu_mem_generation(); /* their images are still the newest */
+    if (above != above_local) free(above);
     vk_surf_relist(s);
     if (!s->is_rt) vk_tex_note_writeback(s);
     if (guest_changed) {
