@@ -691,7 +691,7 @@ static void test_moved(void) {
     p = GP(HEAP_BASE);
     CHECK((u64)(uintptr_t)p == HEAP_BASE);
     p[0] = 0x5A;
-    CHECK(*(volatile u8*)(uintptr_t)(by + (12ull << 30)) == 0x5A);
+    CHECK(*(volatile u8*)(uintptr_t)(by + (20ull << 30)) == 0x5A);
     CHECK(mem_unmap(HEAP_BASE, 0x1000) == 0);
     fflush(stdout);
     child = fork();
