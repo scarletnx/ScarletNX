@@ -52,7 +52,8 @@ typedef enum {
     SNX_GLSLC_REFLECT_UNIFORM = 2,       /* a uniform outside a block, a member of the default uniform block: offset */
     SNX_GLSLC_REFLECT_SAMPLER = 3,       /* binding, set */
     SNX_GLSLC_REFLECT_IMAGE = 4,         /* binding, set */
-    SNX_GLSLC_REFLECT_UNIFORM_BLOCK = 5, /* binding, set, size; the default uniform block has an empty name */
+    SNX_GLSLC_REFLECT_UNIFORM_BLOCK = 5, /* binding, set, size; the default uniform block has an empty name, and the
+                                            first free binding of set 0 once the other resources are placed */
     SNX_GLSLC_REFLECT_BUFFER_BLOCK = 6   /* binding, set, size (without a runtime-sized last member) */
 } GlslcReflectKind;
 
@@ -107,8 +108,10 @@ typedef int (*GlslcBindFn)(void* user, const GlslcResource* resource, uint32_t* 
 
 typedef struct {
     GlslcStage stage;
-    GlslcBindFn bind; /* NULL: each resource at the set and binding it gives, else at the first free binding of set 0 */
-    void* bind_user;  /* bind's first argument */
+    /* NULL: each resource at the set and binding it gives, else at the first free binding of set 0. The default
+       uniform block is not the map's: it takes the first free binding of set 0 after the others */
+    GlslcBindFn bind;
+    void* bind_user; /* bind's first argument */
 } GlslcOptions;
 
 /* The scratch memory of compilations: every array of the bounds above, carved anew by each compilation, so nothing
