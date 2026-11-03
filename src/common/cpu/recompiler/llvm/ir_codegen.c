@@ -448,6 +448,7 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
         LLVMDisposeMessage(text);
     }
     if (ir->promote) ir_promote_registers(ir, fn);
+    if (ir->promote && ir->check) ir_check_promoted(ir, fn);
     if (ir->dump_active) {
         char* text = LLVMPrintValueToString(fn);
         fprintf(stderr, "IR after promotion:\n%s\n", text);
