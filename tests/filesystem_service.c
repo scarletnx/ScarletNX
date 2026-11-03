@@ -848,8 +848,8 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
     }
 
     /* MiiModel (0100000000000802), with none in system/archives: the archive mii_model.c generates (its parts are
-       checked in mii_model), made at the first open and not before; its six files, a Linear and an SRGB copy and the
-       two shape qualities sharing their bytes */
+       checked in mii_model), made at the first open and not before; its six files, a Linear and an SRGB copy sharing
+       their bytes */
     {
         static u8 file[0x280000], want[0x280000];
         Request a;
