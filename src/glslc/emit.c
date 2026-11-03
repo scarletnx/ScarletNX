@@ -2168,9 +2168,7 @@ static void resource_variable(Glslc* g, uint32_t s) {
     uint32_t pointee, v;
     if (et->kind == GLSLC_T_IMAGE) {
         pointee = image_type(g, e, y->packing);
-        if (ty(g, y->type)->kind == GLSLC_T_ARRAY) {
-            if (ty(g, ty(g, y->type)->elem)->kind == GLSLC_T_ARRAY)
-                glslc_fail(g, y->name.pos, "glslc takes arrays of images of one dimension");
+        if (ty(g, y->type)->kind == GLSLC_T_ARRAY) { /* of one dimension (parser.c) */
             uint32_t a = id(g), len = constant(g, GT_UINT, ty(g, y->type)->len);
             EMIT(g, &g->e.globals, OP_TYPE_ARRAY, a, pointee, len);
             pointee = a;

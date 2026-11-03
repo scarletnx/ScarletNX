@@ -157,6 +157,7 @@ Each of these is refused with an error that names it, or is a name the shader ca
 - samplers and images inside structs; images as function parameters;
 - `interpolateAtCentroid`, `interpolateAtSample`, `interpolateAtOffset`; `textureGatherOffsets`;
   `gl_DepthRange`; `gl_MaxComputeWorkGroupCount` and `gl_MaxComputeWorkGroupSize`;
+- arrays of arrays of samplers, images or blocks: a Vulkan descriptor's array has one dimension;
 - the preprocessor's `#` and `##`, which GLSL ES does not have either, and a line continuation inside a name or
   number;
 - an array size from a constant expression glslc does not fold, such as a built-in function's result;
@@ -167,7 +168,8 @@ Each of these is refused with an error that names it, or is a name the shader ca
 `tests/glslc` runs both on the same shaders. glslc refuses at once what glslang only finds when it links (a function
 called and never defined, recursion, `gl_FragColor` with `gl_FragData`), and refuses a compute shader without a local
 size, as GLSL ES does, where glslang takes 1. It takes vertical tab and form feed as white space, as GLSL ES says, and
-`layout(set)` in 3.10, as glslang does only when it compiles for Vulkan. glslang has no `GL_EXT_draw_buffers`.
+`layout(set)` in 3.10, as glslang does only when it compiles for Vulkan. glslang has no `GL_EXT_draw_buffers`, and
+takes an array of arrays of samplers or images, writing a module spirv-val refuses for Vulkan.
 
 ## Tests
 

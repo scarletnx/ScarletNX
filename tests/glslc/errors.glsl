@@ -473,3 +473,22 @@ void main() { gl_Position = vec4(1.0); }
 #version 320 es
 layout(binding = 1) out V { vec4 a; };
 void main() { a = vec4(1.0); gl_Position = a; }
+--- sampler_array_of_arrays.frag 3:19: s is sampler2D[2][3]: a Vulkan descriptor's array has one dimension
+--- glslang accepts: with -V it warns that Vulkan takes one level, and spirv-val refuses the module
+#version 310 es
+precision mediump float;
+uniform sampler2D s[2][3];
+layout(location = 0) out vec4 c;
+void main() { c = texture(s[1][2], vec2(0.5)); }
+--- image_array_of_arrays.comp 3:49: img is image2D[2][2]: a Vulkan descriptor's array has one dimension
+--- glslang accepts: with -V it warns that Vulkan takes one level, and spirv-val refuses the module
+#version 310 es
+layout(local_size_x = 1) in;
+layout(binding = 0, r32f) uniform highp image2D img[2][2];
+void main() { imageStore(img[1][1], ivec2(0), vec4(1.0)); }
+--- block_array_of_arrays.frag 3:23: an array of blocks has one dimension in GLSL ES
+#version 310 es
+precision mediump float;
+uniform B { vec4 v; } b[2][3];
+layout(location = 0) out vec4 c;
+void main() { c = b[1][2].v; }
