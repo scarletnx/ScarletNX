@@ -49,8 +49,9 @@ enum { CTR_FILE_VIEW, CTR_FILE_HOST, CTR_FILE_DIR };
 typedef struct {
     uint64_t token;
     uint32_t kind; /* 0: SelfNCCH RomFS view (read-only), 1: SDMC host area, 2: SaveData host area (read-write),
-                      3: an ExtSaveData's user folder (read-write, its files' sizes fixed) */
-    FsNode* root;  /* kind 3: the user folder, retained while the archive is open */
+                      3: an ExtSaveData's user folder (read-write, its files' sizes fixed),
+                      4: another title's save data folder (read-write) */
+    FsNode* root;  /* kinds 3 and 4: the folder, retained while the archive is open */
 } CtrSelfArchive;
 typedef struct {
     SnxArmCPU context; /* inactive architectural prefix only; never the checked adapter */

@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/runtime/internal.h"
 #include "3ds/ipc/ctr_ipc.h"
+#include "common/filesystem/tree.h"
 #include "common/utilities/common.h"
 #include "snx_settings.h"
 #include "support/3ds_guest.h"
@@ -441,6 +442,170 @@ static void extdata(SnxCtrProcess* p, uint32_t fs, const char* directory) {
     ctr_call(p, fs, a, 6, SNX_CTR_SVC_RETURN, 0);
     assert(ctr_command_word(p, 1) == 0xc8a04554);
 }
+/* Another title's save data, as Azahar's OtherSaveData archives serve it from the SD card's title folder. The folder is
+   made through the tree, which indexed the card at mount: a host folder made since then is not in that index */
+static void other_save(SnxCtrProcess* p, uint32_t fs, const char* directory) {
+    unsigned before = ctr_object_count(p);
+    const char title[] = "sdmc/Nintendo 3DS/00000000000000000000000000000000/00000000000000000000000000000000/title";
+    char folder[sizeof title + 40], save[sizeof title + 64], made[sizeof title + 64];
+    snprintf(folder, sizeof folder, "%s/00040000/00123400/data/00000001", title);
+    snprintf(save, sizeof save, "%s/save.bin", folder);
+    snprintf(made, sizeof made, "%s/made.bin", folder);
+    uint32_t a[] = {0x80c00c2, 0x567890b4, 2, 12, (12u << 14) | 2, 0x300020};
+    ctr_put(p, 0x300020, 1); /* the path: media SDMC, unique ID 0x1234, 0 */
+    ctr_put(p, 0x300024, 0x1234);
+    ctr_put(p, 0x300028, 0);
+    ctr_call(p, fs, a, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 1) == 0xc8a04554); /* NotFormatted: its save is not on the card yet */
+    uint32_t wrong_type[] = {0x80c00c2, 0x567890b4, 1, 12, (12u << 14) | 2, 0x300020};
+    ctr_call(p, fs, wrong_type, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 1) == 0xe0e046be); /* InvalidPath: a binary path only */
+    uint32_t short_path[] = {0x80c00c2, 0x567890b4, 2, 8, (8u << 14) | 2, 0x300020};
+    ctr_call(p, fs, short_path, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 1) == 0xe0e046be); /* and 12 bytes long */
+    ctr_put(p, 0x300020, 2);
+    ctr_call(p, fs, a, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 1) == 0xc880448d); /* GamecardNotInserted: no card is in the slot */
+    ctr_put(p, 0x300020, 0);
+    ctr_call(p, fs, a, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 1) == 0xe0c046f8); /* UnsupportedOpenFlags: neither SDMC nor a card */
+    ctr_put(p, 0x300020, 1);
+    assert(ctr_object_count(p) == before);
+    char blocked_dir[sizeof title + 24], blocked[sizeof title + 40];
+    snprintf(blocked_dir, sizeof blocked_dir, "%s/00040000/00567800/data", title);
+    snprintf(blocked, sizeof blocked, "%s/00000001", blocked_dir);
+    pm_lock(&p->tree->lock);
+    assert(!fs_tree_mkdirs(p->tree, blocked_dir, NULL) && !fs_tree_create(p->tree, NULL, blocked, 0, 0, NULL));
+    pm_unlock(&p->tree->lock);
+    ctr_put(p, 0x300024, 0x5678); /* a title whose data/00000001 is a file, not a folder */
+    ctr_call(p, fs, a, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 1) == 0xc8a04554);
+    ctr_put(p, 0x300024, 0x1234);
+    pm_lock(&p->tree->lock);
+    assert(!fs_tree_remove(p->tree, NULL, blocked, 0, 0, 0));
+    FsNode* node = NULL;
+    FsTreeResult rc = fs_tree_mkdirs(p->tree, folder, NULL);
+    if (!rc) rc = fs_tree_create(p->tree, NULL, save, 0, 4, &node);
+    FILE* f = rc ? NULL : fs_tree_open(p->tree, node, "r+b");
+    assert(!rc && f && fwrite("save", 1, 4, f) == 4 && !fclose(f));
+    pm_unlock(&p->tree->lock);
+    ctr_call(p, fs, a, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x80c00c0 && !ctr_command_word(p, 1));
+    uint32_t lo = ctr_command_word(p, 2), hi = ctr_command_word(p, 3);
+    ctr_put(p, 0x300024, 0x01001234); /* the top byte of a unique ID is not in the program ID: the same folder */
+    ctr_call(p, fs, a, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x80c00c0 && !ctr_command_word(p, 1));
+    uint32_t same[] = {0x80e0080, ctr_command_word(p, 2), ctr_command_word(p, 3)};
+    ctr_call(p, fs, same, 3, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 1));
+    ctr_put(p, 0x300024, 0x1234);
+    uint32_t info[] = {0x84500c2, 0x567890b4, 2, 12, (12u << 14) | 2, 0x300020};
+    ctr_call(p, fs, info, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 1) == 0xc8a04554); /* NotFormatted: the save data has no metadata yet */
+    char meta[sizeof folder + 16];
+    snprintf(meta, sizeof meta, "%s.metadata", folder);
+    /* the ArchiveFormatInfo of 0x100000 bytes, 10 directories, 20 files and no duplicate data */
+    static const unsigned char metadata[16] = {0, 0, 0x10, 0, 10, 0, 0, 0, 20, 0, 0, 0};
+    pm_lock(&p->tree->lock);
+    FsNode* meta_node = NULL;
+    FsTreeResult made_meta = fs_tree_create(p->tree, NULL, meta, 0, sizeof metadata, &meta_node);
+    FILE* mf = made_meta ? NULL : fs_tree_open(p->tree, meta_node, "r+b");
+    assert(!made_meta && mf && fwrite(metadata, 1, sizeof metadata, mf) == sizeof metadata && !fclose(mf));
+    pm_unlock(&p->tree->lock);
+    ctr_call(p, fs, info, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x8450140 && !ctr_command_word(p, 1) && ctr_command_word(p, 2) == 0x100000 &&
+           ctr_command_word(p, 3) == 10 && ctr_command_word(p, 4) == 20 && !ctr_command_word(p, 5));
+    static const uint16_t save16[] = {'/', 's', 'a', 'v', 'e', '.', 'b', 'i', 'n', 0};
+    static const uint16_t made16[] = {'/', 'm', 'a', 'd', 'e', '.', 'b', 'i', 'n', 0};
+    utf16(p, 0x300400, save16, 20);
+    uint32_t open[] = {0x80201c2, 0, lo, hi, 4, 20, 1, 0, (20u << 14) | 2, 0x300400};
+    ctr_call(p, fs, open, 10, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x8020042 && !ctr_command_word(p, 1) && ctr_command_word(p, 2) == 0x10);
+    uint32_t file = ctr_command_word(p, 3);
+    uint32_t read[] = {0x80200c2, 0, 0, 4, (4u << 4) | 12, 0x300100};
+    ctr_call(p, file, read, 6, SNX_CTR_SVC_RETURN, 0);
+    unsigned char bytes[4];
+    assert(!ctr_command_word(p, 1) && ctr_command_word(p, 2) == 4 &&
+           snx_ctr_read_ram(p->space, 0x300100, bytes, sizeof bytes) == SNX_CTR_MEM_OK && !memcmp(bytes, "save", 4));
+    uint32_t finish[] = {0x8080000};
+    ctr_call(p, file, finish, 1, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 1) && !snx_ctr_handle_close(p, file));
+    utf16(p, 0x300400, made16, 20);
+    uint32_t mkfile[] = {0x8080202, 0, lo, hi, 4, 20, 0, 4, 0, (20u << 14) | 2, 0x300400};
+    ctr_call(p, fs, mkfile, 11, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 1));
+    open[6] = 3;
+    ctr_call(p, fs, open, 10, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x8020042 && !ctr_command_word(p, 1));
+    uint32_t made_file = ctr_command_word(p, 3);
+    ctr_put(p, 0x300600, 0x6564616d); /* "made" */
+    uint32_t write[] = {0x8030102, 0, 0, 4, 0, (4u << 4) | 10, 0x300600};
+    ctr_call(p, made_file, write, 7, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 1) && ctr_command_word(p, 2) == 4);
+    ctr_call(p, made_file, finish, 1, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 1) && !snx_ctr_handle_close(p, made_file));
+    char* host = snx_path_join(directory, made);
+    FILE* disk = fopen(host, "rb");
+    unsigned char content[4] = {0};
+    assert(disk && fread(content, 1, 4, disk) == 4 && !memcmp(content, "made", 4) && !fclose(disk));
+    free(host);
+    uint32_t close[] = {0x80e0080, lo, hi};
+    ctr_call(p, fs, close, 3, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 1));
+    /* this title's own ID: its save data is archive 4's, so it answers as archive 4 does; the folder and metadata made
+       here are where another title's would be, and a path that found them would answer otherwise */
+    char own_folder[sizeof title + 40], own_meta[sizeof title + 48];
+    snprintf(own_folder, sizeof own_folder, "%s/00000000/00000000/data/00000001", title);
+    snprintf(own_meta, sizeof own_meta, "%s.metadata", own_folder);
+    pm_lock(&p->tree->lock);
+    FsTreeResult own_rc = fs_tree_mkdirs(p->tree, own_folder, NULL);
+    FsNode* own_meta_node = NULL;
+    if (!own_rc) own_rc = fs_tree_create(p->tree, NULL, own_meta, 0, sizeof metadata, &own_meta_node);
+    FILE* own_mf = own_rc ? NULL : fs_tree_open(p->tree, own_meta_node, "r+b");
+    assert(!own_rc && own_mf && fwrite(metadata, 1, sizeof metadata, own_mf) == sizeof metadata && !fclose(own_mf));
+    pm_unlock(&p->tree->lock);
+    ctr_put(p, 0x300024, (uint32_t)p->title_id);
+    ctr_put(p, 0x300028, (uint32_t)(p->title_id >> 32));
+    a[1] = 0x567890b2;
+    ctr_call(p, fs, a, 6, SNX_CTR_SVC_RETURN, 0);
+    uint32_t own_result = ctr_command_word(p, 1);
+    uint32_t save_archive[] = {0x80c00c2, 4, 1, 1, 0x4002, 0x300020};
+    ctr_call(p, fs, save_archive, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(own_result == 0xc8a04554 && ctr_command_word(p, 1) == own_result); /* NotFormatted: no save data yet */
+    uint32_t own_info[] = {0x84500c2, 0x567890b2, 2, 12, (12u << 14) | 2, 0x300020};
+    ctr_call(p, fs, own_info, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 1) == 0xc8a04554); /* its format is the save data's, and there is none */
+    pm_lock(&p->tree->lock);
+    FsNode* folder_node = NULL;
+    assert(!fs_tree_lookup(p->tree, NULL, folder, &folder_node));
+    unsigned refs = folder_node->refs;
+    pm_unlock(&p->tree->lock);
+    ctr_put(p, 0x300024, 0x00123400);
+    ctr_put(p, 0x300028, 0x00040000);
+    ctr_call(p, fs, a, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x80c00c0 && !ctr_command_word(p, 1));
+    close[1] = ctr_command_word(p, 2);
+    close[2] = ctr_command_word(p, 3);
+    ctr_call(p, fs, a, 6, SNX_CTR_SVC_RETURN, 0); /* the same folder, opened a second time */
+    assert(ctr_command_word(p, 0) == 0x80c00c0 && !ctr_command_word(p, 1) && ctr_command_word(p, 2) != close[1]);
+    uint32_t again[] = {0x80e0080, ctr_command_word(p, 2), ctr_command_word(p, 3)};
+    ctr_call(p, fs, close, 3, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 1));
+    ctr_call(p, fs, again, 3, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 1));
+    pm_lock(&p->tree->lock);
+    assert(folder_node->refs == refs); /* the two closes gave back the two opens' references */
+    pm_unlock(&p->tree->lock);
+    ctr_call(p, fs, again, 3, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 1) == 0xc8804465); /* a closed token is stale */
+    pm_lock(&p->tree->lock);
+    FsTreeResult removed = fs_tree_remove(p->tree, NULL, title, 1, 1, 0);
+    pm_unlock(&p->tree->lock);
+    char* host_title = snx_path_join(directory, title);
+    assert(!removed && !snx_path_exists(host_title));
+    free(host_title);
+    assert(ctr_object_count(p) == before);
+}
 /* The NCCH archive through OpenFileDirectly: a system title Azahar has an open stand-in for (the Mii data, the bad
    word list) is that RomFS, another one NotFound, and the title's own RomFS a file */
 static void ncch(SnxCtrProcess* p, uint32_t fs, bool absent) {
@@ -556,6 +721,7 @@ int main(int argc, char** argv) {
         if (!absent) timestamps(p, fs, argv[1]);
         sd_area(p, fs, argv[1]);
         extdata(p, fs, argv[1]);
+        other_save(p, fs, argv[1]);
         ncch(p, fs, absent);
         if (!absent) self_exefs(p, fs);
         if (absent) {

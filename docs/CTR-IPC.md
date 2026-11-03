@@ -103,6 +103,15 @@ other translation units include the generated `.h`.
   live typed FS-private tokens, monotonically issued 64-bit IDs, never reused
   and never kernel handles. CloseArchive (`0x80e`) retires that binding;
   invalid/stale tokens return `0xc8804465`. Existing files outlive archive close.
+  OpenArchive also opens another title's save data, as Azahar's OtherSaveData
+  archives do: `0x567890b2` (General) and `0x567890b4` (Permitted), with a 12-byte
+  binary path. Its media: SDMC is served, a game card answers GamecardNotInserted,
+  others UnsupportedOpenFlags. Permitted's program ID is high `0x00040000` and low
+  the unique ID shifted left by 8 in 32 bits; General's are the path's words as
+  given. The save data is the SD card's `title/<high>/<low>/data/00000001` folder,
+  and NotFormatted when that is missing. This title's own ID opens its own save
+  data, as archive 4 does. GetFormatInfo reads `data/00000001.metadata` beside
+  the folder.
   OpenFileDirectly (`0x803`) supports only archive 3 (SelfNCCH), empty archive
   path and the 12-byte all-zero binary RomFS selector, mode read-only and no
   attributes. It returns a typed, reference-counted file object, not a fabricated
@@ -120,8 +129,10 @@ other translation units include the generated `.h`.
   whole requested writable RAM span and stage all host IO before guest writes.
   Malformed descriptors, MMIO and permissions cannot publish partial reads;
   host IO failure stops without a reply or guest writes. Duplicates share close
-  state. On SDMC files Write and SetSize reach the host file. Save data, extdata
-  and other archives stop explicitly (parity roadmap F3).
+  state. On host files (the SD card, save data, ExtSaveData and another title's
+  save data) Write and SetSize reach the host file, and an ExtSaveData's files
+  keep their size. Archives the runtime does not serve stop explicitly (parity
+  roadmap F3).
 - `APT:S`: GetLockHandle (`1`), Initialize (`2`), Enable (`3`), NotifyToWait
   (`0x43`), ReceiveParameter (`0xd`), GlanceParameter (`0xe`), AppletUtility
   (`0x4b`), IsNew3DS (`0x102`).
