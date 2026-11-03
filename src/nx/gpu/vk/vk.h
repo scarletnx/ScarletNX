@@ -997,6 +997,10 @@ Surf* vk_tex_from_tic_raw(const u32* tic); /* UINT view of raw RGBA8 texel bytes
    VK_NULL_HANDLE when the image can't be viewed that way */
 /* stencil: a depth/stencil surface's stencil aspect instead of its depth */
 VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map, int stencil);
+/* why s has no view of type, NULL when it can have one: what vk_tex_view checks before it asks the driver */
+const char* vk_tex_view_refusal(const Surf* s, VkImageViewType type);
+/* a view type's name in a message: "2D", "cube array"... */
+const char* vk_view_type_name(VkImageViewType type);
 /* the format of s's views, its sRGB form when srgb (a depth format stays) */
 VkFormat vk_tex_view_format(const Surf* s, int srgb);
 /* One selected mip for storage; the sampled view retains the complete chain. */

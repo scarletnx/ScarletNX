@@ -98,6 +98,55 @@ static int check_hash_copy(void) {
     return 0;
 }
 
+/* The views a surface of each type can have (vk_tex_view_refusal), and the reason the log gives when a shader reads a
+   texture through one it can't: a 3D texture bound to a 2D sampler, a render target or too few layers read as a cube.
+   A refused view is never asked of the driver: vk_tex_view gives none for the 3D surface, which has no image */
+static int check_tex_view_refusal(void) {
+    Surf flat = {0};
+    flat.type = VK_IMAGE_VIEW_TYPE_2D;
+    flat.w = flat.h = 16;
+    flat.layers = flat.levels = 1;
+    Surf vol = flat, cube = flat, target = flat, wide = flat, line = flat;
+    vol.type = VK_IMAGE_VIEW_TYPE_3D;
+    vol.depth3d = 16;
+    cube.type = VK_IMAGE_VIEW_TYPE_CUBE;
+    cube.layers = 6;
+    target = cube;
+    target.is_rt = 1;
+    wide = cube;
+    wide.w = 32;
+    line.type = VK_IMAGE_VIEW_TYPE_1D;
+    const VkImageViewType all[] = {VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_IMAGE_VIEW_TYPE_CUBE,
+                                   VK_IMAGE_VIEW_TYPE_CUBE_ARRAY, VK_IMAGE_VIEW_TYPE_3D};
+    const char* const why[][5] = {
+        {NULL, NULL, "a cube needs 6 layers", "a cube needs 6 layers", "a 2D image has no 3D view"},
+        {"a 3D image has no 2D view", "a 3D image has no 2D view", "a 3D image has no cube view",
+         "a 3D image has no cube view", NULL},
+        {NULL, NULL, NULL, g_vk.feat.imageCubeArray ? NULL : "the device has no cube arrays",
+         "a 2D image has no 3D view"},
+        {NULL, NULL, "a render target isn't made cube compatible", "a render target isn't made cube compatible",
+         "a 2D image has no 3D view"},
+        {NULL, NULL, "a cube's faces are square", "a cube's faces are square", "a 2D image has no 3D view"}};
+    const Surf* surf[] = {&flat, &vol, &cube, &target, &wide};
+    for (u32 s = 0; s < 5; s++)
+        for (u32 v = 0; v < 5; v++) {
+            const char* got = vk_tex_view_refusal(surf[s], all[v]);
+            if (!why[s][v] ? got != NULL : !got || strcmp(got, why[s][v])) {
+                fprintf(stderr, "vulkan_headless: surface %u read as %s: \"%s\", wanted \"%s\"\n", s,
+                        vk_view_type_name(all[v]), got ? got : "(a view)", why[s][v] ? why[s][v] : "(a view)");
+                return 1;
+            }
+        }
+    CHECK(!strcmp(vk_tex_view_refusal(&line, VK_IMAGE_VIEW_TYPE_1D), "textures take no view of that type"));
+    CHECK(!strcmp(vk_view_type_name(VK_IMAGE_VIEW_TYPE_CUBE_ARRAY), "cube array") &&
+          !strcmp(vk_view_type_name(VK_IMAGE_VIEW_TYPE_3D), "3D") &&
+          !strcmp(vk_view_type_name((VkImageViewType)99), "unknown"));
+    const VkComponentMapping identity = {0};
+    CHECK(vk_tex_view(&vol, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0) == VK_NULL_HANDLE);
+    printf("Texture views: 3D read as 2D, a target or one layer read as a cube are refused, and why\n");
+    return 0;
+}
+
 /* A long buffer texture keeps consecutive texels across an image-row boundary,
    including a final row that is only partly used. Read actual uploaded pixels. */
 static int check_buffer_texture_rows(void) {
@@ -2911,6 +2960,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     CHECK(!check_hash_copy());
+    CHECK(!check_tex_view_refusal());
     CHECK(!check_staging_overflow()); /* first: it counts the staging blocks of a fresh device */
     CHECK(!check_rings_without_present());
     CHECK(!check_fresh_frame_kept());
