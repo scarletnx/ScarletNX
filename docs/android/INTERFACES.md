@@ -114,7 +114,7 @@ NVN hooks are (`src/nx/gpu/nvn`):
 | liblog | HLE onto the runtime's log |
 | libandroid (`ANativeWindow`, `AAssetManager`, `ALooper`, `AConfiguration`, `AHardwareBuffer`, `ASurfaceTexture`) | HLE onto the same objects the Java side uses: a window is the SDL window's surface, an asset an APK member, a hardware buffer a Vulkan image |
 | libvulkan | The host's Vulkan, with `VK_KHR_android_surface` and `VK_ANDROID_external_memory_android_hardware_buffer` answered by the hooks above |
-| libEGL, libGLESv2, libGLESv3 | HLE onto Vulkan: all drawing in ScarletNX is Vulkan |
+| libEGL, libGLESv1_CM, libGLESv2, libGLESv3 | HLE onto Vulkan: all drawing in ScarletNX is Vulkan. GLES 1.1's fixed function is done, and Java's `EGL10` shares the native EGL's objects ([NATIVE](NATIVE.md), "EGL and GLES"). GLES 2 and 3 have no config yet, so engines take Vulkan |
 | libjnigraphics (`AndroidBitmap`) | HLE onto `android.graphics.Bitmap`'s pixels |
 | libOpenSLES, libaaudio | Abstract onto SDL's audio |
 | libmediandk | HLE onto FFmpeg |

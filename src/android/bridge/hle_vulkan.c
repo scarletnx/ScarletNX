@@ -17,6 +17,7 @@
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
 #include "android/bridge/hle_vulkan.h"
+#include "android/bridge/hle_vulkan_host.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include <pthread.h>
@@ -273,13 +274,9 @@ static const char* const* window_extensions(uint32_t* count) {
     return headless;
 }
 
-static void create_instance(CPU* c, void* data) {
-    (void)data;
-    if (!loader()) {
-        X(0) = (uint64_t)(int64_t)VK_ERROR_INITIALIZATION_FAILED;
-        return;
-    }
-    VkInstanceCreateInfo info = *(const VkInstanceCreateInfo*)PTR(0);
+VkResult hle_vulkan_create_instance(const VkInstanceCreateInfo* in, VkInstance* out) {
+    if (!loader()) return VK_ERROR_INITIALIZATION_FAILED;
+    VkInstanceCreateInfo info = *in;
     /* the extensions: the android surface becomes the host window's, the others stay when the host has them */
     const char** names = calloc(info.enabledExtensionCount + 8, sizeof *names);
     uint32_t n = 0;
@@ -324,9 +321,13 @@ static void create_instance(CPU* c, void* data) {
         /* the commands resolved for another instance resolve again for this one */
         for (size_t i = 0; i < v.count; ++i) __atomic_store_n(&v.commands[i]->host, NULL, __ATOMIC_RELEASE);
         pthread_mutex_unlock(&v.lock);
-        memcpy(PTR(2), &instance, sizeof instance);
+        memcpy(out, &instance, sizeof instance);
     }
-    X(0) = (uint64_t)(int64_t)r;
+    return r;
+}
+static void create_instance(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(int64_t)hle_vulkan_create_instance(PTR(0), PTR(2));
 }
 
 /* the host's instance extensions, with VK_KHR_android_surface, as a phone lists it */
@@ -360,9 +361,7 @@ static void enumerate_instance_extensions(CPU* c, void* data) {
 
 /* vkCreateAndroidSurfaceKHR(instance, info, allocator, surface): the host window's surface on the guest's instance,
    or a headless one without a display */
-static void create_android_surface(CPU* c, void* data) {
-    (void)data;
-    VkInstance instance = (VkInstance)(uintptr_t)X(0);
+VkResult hle_vulkan_create_surface(VkInstance instance, VkSurfaceKHR* out) {
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     void* window = window_host ? window_host->window() : NULL;
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
@@ -377,8 +376,12 @@ static void create_android_surface(CPU* c, void* data) {
         VkHeadlessSurfaceCreateInfoEXT info = {.sType = VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT};
         if (make) r = make(instance, &info, NULL, &surface);
     }
-    if (r == VK_SUCCESS) memcpy(PTR(3), &surface, sizeof surface);
-    X(0) = (uint64_t)(int64_t)r;
+    if (r == VK_SUCCESS) memcpy(out, &surface, sizeof surface);
+    return r;
+}
+static void create_android_surface(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(int64_t)hle_vulkan_create_surface((VkInstance)(uintptr_t)X(0), PTR(3));
 }
 
 /* An Android surface's current extent is its window's buffers, always: engines size the swapchain by it. A host
@@ -396,14 +399,18 @@ static void window_extent(VkSurfaceCapabilitiesKHR* caps) {
     if (h > caps->maxImageExtent.height) h = caps->maxImageExtent.height;
     caps->currentExtent = (VkExtent2D){w, h};
 }
-static void surface_capabilities(CPU* c, void* data) {
-    (void)data;
+VkResult hle_vulkan_surface_capabilities(VkPhysicalDevice physical, VkSurfaceKHR surface,
+                                         VkSurfaceCapabilitiesKHR* caps) {
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR get = (PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)
         vkGetInstanceProcAddr(v.instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
-    VkResult r = get ? get((VkPhysicalDevice)(uintptr_t)X(0), (VkSurfaceKHR)(uintptr_t)X(1), PTR(2))
-                     : VK_ERROR_EXTENSION_NOT_PRESENT;
-    if (r == VK_SUCCESS) window_extent(PTR(2));
-    X(0) = (uint64_t)(int64_t)r;
+    VkResult r = get ? get(physical, surface, caps) : VK_ERROR_EXTENSION_NOT_PRESENT;
+    if (r == VK_SUCCESS) window_extent(caps);
+    return r;
+}
+static void surface_capabilities(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(int64_t)hle_vulkan_surface_capabilities((VkPhysicalDevice)(uintptr_t)X(0),
+                                                              (VkSurfaceKHR)(uintptr_t)X(1), PTR(2));
 }
 static void surface_capabilities2(CPU* c, void* data) {
     (void)data;
@@ -487,11 +494,9 @@ static bool device_has(VkPhysicalDevice physical, const char* name) {
 
 /* vkCreateDevice: the guest's device, with the layer's import extension (HLE_LAYER_EXTENSION) added when the host's
    device has it, which changes nothing else of the device */
-static void create_device(CPU* c, void* data) {
-    (void)data;
+VkResult hle_vulkan_create_device(VkPhysicalDevice physical, const VkDeviceCreateInfo* in, VkDevice* out) {
     PFN_vkCreateDevice create = VKF(vkCreateDevice);
-    VkPhysicalDevice physical = (VkPhysicalDevice)(uintptr_t)X(0);
-    VkDeviceCreateInfo info = *(const VkDeviceCreateInfo*)PTR(1);
+    VkDeviceCreateInfo info = *in;
     const char** names = calloc(info.enabledExtensionCount + 1, sizeof *names);
     bool importable = false;
     if (names && HLE_LAYER_MEMORY) {
@@ -505,18 +510,22 @@ static void create_device(CPU* c, void* data) {
             importable = true;
         }
     }
-    VkResult r = create ? create(physical, &info, NULL, PTR(3)) : VK_ERROR_INITIALIZATION_FAILED;
+    VkResult r = create ? create(physical, &info, NULL, out) : VK_ERROR_INITIALIZATION_FAILED;
     free(names);
     if (r == VK_SUCCESS) {
         pthread_mutex_lock(&shot.lock);
         if (shot.device_count < 8) {
-            shot.devices[shot.device_count].device = *(VkDevice*)PTR(3);
+            shot.devices[shot.device_count].device = *out;
             shot.devices[shot.device_count].importable = importable;
             shot.devices[shot.device_count++].physical = physical;
         }
         pthread_mutex_unlock(&shot.lock);
     }
-    X(0) = (uint64_t)(int64_t)r;
+    return r;
+}
+static void create_device(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(int64_t)hle_vulkan_create_device((VkPhysicalDevice)(uintptr_t)X(0), PTR(1), PTR(3));
 }
 static void record_queue(VkDevice device, uint32_t family, VkQueue queue) {
     pthread_mutex_lock(&shot.lock);
@@ -529,12 +538,15 @@ static void record_queue(VkDevice device, uint32_t family, VkQueue queue) {
     }
     pthread_mutex_unlock(&shot.lock);
 }
-static void get_device_queue(CPU* c, void* data) {
-    (void)data;
+void hle_vulkan_get_queue(VkDevice device, uint32_t family, uint32_t index, VkQueue* out) {
     PFN_vkGetDeviceQueue get = VKF(vkGetDeviceQueue);
     if (!get) return;
-    get((VkDevice)(uintptr_t)X(0), (uint32_t)X(1), (uint32_t)X(2), PTR(3));
-    record_queue((VkDevice)(uintptr_t)X(0), (uint32_t)X(1), *(VkQueue*)PTR(3));
+    get(device, family, index, out);
+    record_queue(device, family, *out);
+}
+static void get_device_queue(CPU* c, void* data) {
+    (void)data;
+    hle_vulkan_get_queue((VkDevice)(uintptr_t)X(0), (uint32_t)X(1), (uint32_t)X(2), PTR(3));
 }
 static void get_device_queue2(CPU* c, void* data) {
     (void)data;
@@ -1060,17 +1072,13 @@ static bool compose_begin(VkQueue queue, const VkPresentInfoKHR* info, VkSemapho
     return ok;
 }
 
-static void create_swapchain(CPU* c, void* data) {
-    (void)data;
+VkResult hle_vulkan_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR* in, VkSwapchainKHR* out) {
     PFN_vkCreateSwapchainKHR create = VKF(vkCreateSwapchainKHR);
-    if (!create) {
-        X(0) = (uint64_t)(int64_t)VK_ERROR_INITIALIZATION_FAILED;
-        return;
-    }
-    VkSwapchainCreateInfoKHR info = *(const VkSwapchainCreateInfoKHR*)PTR(1);
+    if (!create) return VK_ERROR_INITIALIZATION_FAILED;
+    VkSwapchainCreateInfoKHR info = *in;
     if (shot.path[0]) info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     info.imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; /* the layer's blend; every surface supports it */
-    VkResult r = create((VkDevice)(uintptr_t)X(0), &info, NULL, PTR(3));
+    VkResult r = create(device, &info, NULL, out);
     if (r == VK_SUCCESS) {
         pthread_mutex_lock(&compose_lock);
         pthread_mutex_lock(&shot.lock);
@@ -1082,10 +1090,10 @@ static void create_swapchain(CPU* c, void* data) {
         if (i == shot.swapchain_count && shot.swapchain_count < 8) ++shot.swapchain_count;
         if (i < shot.swapchain_count) {
             compose_forget_swapchain(i);
-            if (shot.swapchains[i].device != (VkDevice)(uintptr_t)X(0))
+            if (shot.swapchains[i].device != device)
                 memset(shot.swapchains[i].composed, 0, sizeof shot.swapchains[i].composed);
-            shot.swapchains[i].swapchain = *(VkSwapchainKHR*)PTR(3);
-            shot.swapchains[i].device = (VkDevice)(uintptr_t)X(0);
+            shot.swapchains[i].swapchain = *out;
+            shot.swapchains[i].device = device;
             shot.swapchains[i].format = info.imageFormat;
             shot.swapchains[i].extent = info.imageExtent;
             shot.swapchains[i].image_count = 0;
@@ -1093,13 +1101,15 @@ static void create_swapchain(CPU* c, void* data) {
         pthread_mutex_unlock(&shot.lock);
         pthread_mutex_unlock(&compose_lock);
     }
-    X(0) = (uint64_t)(int64_t)r;
+    return r;
+}
+static void create_swapchain(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(int64_t)hle_vulkan_create_swapchain((VkDevice)(uintptr_t)X(0), PTR(1), PTR(3));
 }
 /* vkDestroySwapchainKHR(device, swapchain, allocator): its entry free again, its blend's objects gone first */
-static void destroy_swapchain(CPU* c, void* data) {
-    (void)data;
+void hle_vulkan_destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain) {
     PFN_vkDestroySwapchainKHR destroy = VKF(vkDestroySwapchainKHR);
-    VkSwapchainKHR swapchain = (VkSwapchainKHR)(uintptr_t)X(1);
     pthread_mutex_lock(&compose_lock);
     pthread_mutex_lock(&shot.lock);
     for (size_t i = 0; i < shot.swapchain_count && swapchain; ++i)
@@ -1110,13 +1120,15 @@ static void destroy_swapchain(CPU* c, void* data) {
         }
     pthread_mutex_unlock(&shot.lock);
     pthread_mutex_unlock(&compose_lock);
-    if (destroy) destroy((VkDevice)(uintptr_t)X(0), swapchain, NULL);
+    if (destroy) destroy(device, swapchain, NULL);
+}
+static void destroy_swapchain(CPU* c, void* data) {
+    (void)data;
+    hle_vulkan_destroy_swapchain((VkDevice)(uintptr_t)X(0), (VkSwapchainKHR)(uintptr_t)X(1));
 }
 /* vkDestroyDevice(device, allocator): the blend's objects on it gone first, and its entries */
-static void destroy_device(CPU* c, void* data) {
-    (void)data;
+void hle_vulkan_destroy_device(VkDevice device) {
     PFN_vkDestroyDevice destroy = VKF(vkDestroyDevice);
-    VkDevice device = (VkDevice)(uintptr_t)X(0);
     pthread_mutex_lock(&compose_lock);
     pthread_mutex_lock(&shot.lock);
     if (device && compose.device == device) {
@@ -1134,17 +1146,14 @@ static void destroy_device(CPU* c, void* data) {
     pthread_mutex_unlock(&compose_lock);
     if (destroy) destroy(device, NULL);
 }
-static void get_swapchain_images(CPU* c, void* data) {
+static void destroy_device(CPU* c, void* data) {
     (void)data;
+    hle_vulkan_destroy_device((VkDevice)(uintptr_t)X(0));
+}
+VkResult hle_vulkan_swapchain_images(VkDevice device, VkSwapchainKHR swapchain, uint32_t* count, VkImage* images) {
     PFN_vkGetSwapchainImagesKHR get = (PFN_vkGetSwapchainImagesKHR)vk("vkGetSwapchainImagesKHR");
-    if (!get) {
-        X(0) = (uint64_t)(int64_t)VK_ERROR_INITIALIZATION_FAILED;
-        return;
-    }
-    VkSwapchainKHR swapchain = (VkSwapchainKHR)(uintptr_t)X(1);
-    uint32_t* count = PTR(2);
-    VkImage* images = PTR(3);
-    VkResult r = get((VkDevice)(uintptr_t)X(0), swapchain, count, images);
+    if (!get) return VK_ERROR_INITIALIZATION_FAILED;
+    VkResult r = get(device, swapchain, count, images);
     if (images && (r == VK_SUCCESS || r == VK_INCOMPLETE)) {
         pthread_mutex_lock(&compose_lock);
         pthread_mutex_lock(&shot.lock);
@@ -1157,7 +1166,12 @@ static void get_swapchain_images(CPU* c, void* data) {
         pthread_mutex_unlock(&shot.lock);
         pthread_mutex_unlock(&compose_lock);
     }
-    X(0) = (uint64_t)(int64_t)r;
+    return r;
+}
+static void get_swapchain_images(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(int64_t)hle_vulkan_swapchain_images((VkDevice)(uintptr_t)X(0), (VkSwapchainKHR)(uintptr_t)X(1),
+                                                          PTR(2), PTR(3));
 }
 
 typedef struct {
@@ -1310,12 +1324,9 @@ uint64_t hle_vulkan_presents(void) {
 }
 /* At a present: the renderer's windows blended over the image first when one shows (compose_begin), then the shot's
    copy of what goes to the screen, each after the semaphores of what came before it */
-static void queue_present(CPU* c, void* data) {
-    (void)data;
+VkResult hle_vulkan_present(VkQueue queue, const VkPresentInfoKHR* info) {
     static bool blending; /* the last present's, to say when it changes */
     PFN_vkQueuePresentKHR present = VKF(vkQueuePresentKHR);
-    VkQueue queue = (VkQueue)(uintptr_t)X(0);
-    const VkPresentInfoKHR* info = PTR(1);
     long number = (long)__atomic_add_fetch(&presents, 1, __ATOMIC_RELAXED);
     VkPresentInfoKHR waited = *info;
     VkSemaphore composed = VK_NULL_HANDLE;
@@ -1336,7 +1347,11 @@ static void queue_present(CPU* c, void* data) {
     }
     VkResult r = present ? present(queue, &waited) : VK_ERROR_EXTENSION_NOT_PRESENT;
     if (took) shot_finish(&job);
-    X(0) = (uint64_t)(int64_t)r;
+    return r;
+}
+static void queue_present(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(int64_t)hle_vulkan_present((VkQueue)(uintptr_t)X(0), PTR(1));
 }
 
 /* ---- what a phone's driver accepts and the spec doesn't ----

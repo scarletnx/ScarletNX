@@ -1,0 +1,24 @@
+#version 450
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 the ScarletNX contributors
+// A GLES texture upload of GL_RGB and GL_UNSIGNED_BYTE (hle_gles.c), for a device that cannot sample a 3-byte
+// format: the rows of 3-byte texels, packed, made into the RGBA8 image with an alpha of 1. Each byte k becomes k / 255,
+// which the UNORM store gives back as k
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, std430) readonly buffer Source { uint words[]; } src;
+layout(set = 0, binding = 1, rgba8) writeonly uniform image2D dst;
+layout(push_constant) uniform Upload {
+    ivec2 origin; // the rectangle's corner in the image
+    ivec2 size;   // its width and height in texels
+    uint row;     // the bytes of a row in the source
+} upload;
+uint byte_at(uint i) {
+    return (src.words[i >> 2] >> ((i & 3u) * 8u)) & 0xffu;
+}
+void main() {
+    uvec2 at = gl_GlobalInvocationID.xy;
+    if (at.x >= uint(upload.size.x) || at.y >= uint(upload.size.y)) return;
+    uint i = at.y * upload.row + at.x * 3u;
+    vec3 c = vec3(byte_at(i), byte_at(i + 1u), byte_at(i + 2u)) / 255.0;
+    imageStore(dst, upload.origin + ivec2(at), vec4(c, 1.0));
+}
