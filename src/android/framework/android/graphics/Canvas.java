@@ -355,8 +355,8 @@ public class Canvas {
                              int[] colors, int colorOffset, short[] indices, int indexOffset, int indexCount, Paint paint) {
         unsupported("drawVertices");
     }
-    public void drawPatch(NinePatch patch, Rect dst, Paint paint) { drawBitmap(patch.getBitmap(), null, dst, paint); }
-    public void drawPatch(NinePatch patch, RectF dst, Paint paint) { drawBitmap(patch.getBitmap(), null, dst, paint); }
+    public void drawPatch(NinePatch patch, Rect dst, Paint paint) { patch.drawStretched(this, new RectF(dst), paint); }
+    public void drawPatch(NinePatch patch, RectF dst, Paint paint) { patch.drawStretched(this, dst, paint); }
 
     private static final java.util.Set<String> WARNED = java.util.concurrent.ConcurrentHashMap.newKeySet();
     static void unsupported(String what) {
