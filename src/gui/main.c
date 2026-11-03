@@ -13076,6 +13076,7 @@ static int move_old(App* app, GuiCleaned* done, bool apply) {
         if (!strcmp(last_part(old), "gui") && snx_is_dir(old))
             files = config && !strcmp(now, config) ? only[0] : state && !strcmp(now, state) ? only[1] : NULL;
         moves += gui_move_entries(done, old, now, files, apply);
+        moves += gui_move_save_note(done, old, now, apply); /* a save's folder (left_saves) brings its note */
         for (k = SNX_USER_CONFIG; games && !strcmp(old, games) && k <= SNX_USER_CACHE; ++k) {
             char *from = snx_user_path(old, k), *to = snx_user_path(now, k);
             if (from && to && strcmp(from, old) && strcmp(to, now))

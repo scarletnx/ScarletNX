@@ -331,6 +331,9 @@ int snx_addon_entry_id(SnxU64 game, const char* entry, SnxU64* id);
 void snx_addon_entry(SnxU64 game, SnxU64 id, SnxU64 version, char entry[32]);
 /* the version an update's entry names, SNX_NO_VERSION for none */
 SnxU64 snx_addon_version(const char* entry);
+/* a save's note, <its folder> and this beside the folder: which program and version committed the save last (fs.c's
+   save_note). What moves a save's folder moves its note with it */
+#define SNX_SAVE_NOTE ".version"
 enum { SNX_ADDON_NONE, SNX_ADDON_UPDATE, SNX_ADDON_DLC };
 /* what the title id is to the game: SNX_ADDON_UPDATE for its patch (its ID with 0x800, as the console makes every
    patch's), SNX_ADDON_DLC for any other, SNX_ADDON_NONE for the game's own (or 0) */

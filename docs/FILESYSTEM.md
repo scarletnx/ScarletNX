@@ -54,6 +54,12 @@ made later is made empty, so nothing is enumerated after startup (`fs_tree_graft
 holds is played where it is, the game's log and stderr saying once a run where it goes; both holding one stops the
 game, which leaves both.
 
+An Account, Device or BCAT save's Commit writes its note, `<its folder>.version` beside it on the host and out of every
+mount: `program=` (the title ID that ran, an update's own), `version=` (its content meta's, when known) and `display=`.
+Opening a save whose note names a newer version of the same game, by the content meta versions when both are known,
+else by the numbers of the display versions, warns once with both, and the crash, svcBreak and BRK reports repeat the
+line (`fs_save_report`).
+
 Init rejects scan/stat errors, symlinks/junctions, regular-file hardlinks, special files and invalid names.
 Tree limits: 4096-byte path buffers including NUL, 256 directory levels below the data root.
 IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.

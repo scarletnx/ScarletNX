@@ -156,6 +156,7 @@ void crash_report(void* host_pc, void* fault, int sig) {
        a field's offset lands there */
     if (fault && in_guest && guest < ((u64)16 << 20) && g_settings.memory_gb < 6)
         WARN("  a null pointer plus an offset: a game short of memory does this, memory_gb=6 in its .ini may help\n");
+    fs_save_report(); /* a save a newer version wrote, which a game often crashes on */
     if (t) {
         WARN("  thread %llu (%s)\n", (unsigned long long)t->id, t->name);
         kernel_dump_regs(&t->cpu);
