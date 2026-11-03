@@ -78,9 +78,17 @@ bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSw
     if (old) vkDeviceWaitIdle(device);
     VkSurfaceCapabilitiesKHR caps;
     VkSurfaceFormatKHR format = {0};
+    VkColorSpaceKHR color_space = info->color_space ? info->color_space : VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     bool ok = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys, info->surface, &caps) == VK_SUCCESS;
     if (ok) {
-        snx_vk_surface_format(phys, info->surface, info->formats, info->format_count, &format);
+        int found = color_space != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+                        ? snx_vk_surface_format_cs(phys, info->surface, info->formats, info->format_count, color_space,
+                                                   &format)
+                        : 0;
+        if (!found) {
+            color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+            snx_vk_surface_format(phys, info->surface, info->formats, info->format_count, &format);
+        }
         ok = format.format != VK_FORMAT_UNDEFINED;
     }
     VkExtent2D extent = ok ? snx_vk_swap_extent(&caps, info->window) : (VkExtent2D){0, 0};
@@ -115,6 +123,7 @@ bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSw
     }
     sc->swapchain = made;
     sc->format = format;
+    sc->color_space = color_space;
     sc->extent = extent;
     sc->count = count;
     return true;

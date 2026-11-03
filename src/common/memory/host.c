@@ -152,7 +152,7 @@ bool snx_host_memory_new(SnxHostMemory* m, uint64_t size) {
 #if defined(__linux__) || defined(__ANDROID__)
     /* the system call itself: Android's C library has memfd_create only from Android 11 (API 30), as code_loader.c
        says */
-    fd = (int)syscall(SYS_memfd_create, "snx-host", 1u /* MFD_CLOEXEC */);
+    fd = (int)syscall(SYS_memfd_create, "snx-host", 1u /* MFD_CLOEXEC */ | 2u /* MFD_ALLOW_SEALING */);
 #elif defined(__NetBSD__)
     fd = memfd_create("snx-host", MFD_CLOEXEC); /* NetBSD 11's, in libc: shm_open is librt's */
 #else
@@ -168,6 +168,10 @@ bool snx_host_memory_new(SnxHostMemory* m, uint64_t size) {
         close(fd);
         return false;
     }
+#if defined(__linux__) || defined(__ANDROID__)
+    /* a dma-buf made from this object (udmabuf) needs the file not to shrink or grow under it */
+    (void)fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW);
+#endif
     m->handle = fd;
     m->view = view;
     m->size = size;

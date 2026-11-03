@@ -94,11 +94,30 @@ endif()
 # the device's choice, the submission ring, the swapchain and the SDL window (gpu/vk/). Each frontend compiles volk.c,
 # whose functions these call
 if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
-    add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/ring.c gpu/vk/swapchain.c gpu/vk/window.c)
+    add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/ring.c gpu/vk/swapchain.c gpu/vk/window.c
+                                 gpu/vk/present_fx.c gpu/vk/fx/fx_fsr.c)
     set_target_properties(snx_vk_common PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_vk_common PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                                  -Werror=missing-variable-declarations)
     target_compile_definitions(snx_vk_common PRIVATE VK_NO_PROTOTYPES)
     target_include_directories(snx_vk_common PUBLIC "${volk_SOURCE_DIR}")
     target_link_libraries(snx_vk_common PUBLIC Vulkan::Headers SDL3::SDL3)
+    # the spatial upscalers, the anti aliasing and the HDR passes (gpu/vk/present_fx.c, gpu/vk/fx/)
+    include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
+    foreach(pair IN ITEMS "fsr.vert=fx_fsr_vert" "copy.frag=fx_copy" "copy_linear.frag=fx_copy_linear"
+                          "fsr_easu.frag=fx_fsr_easu" "fsr_rcas.frag=fx_fsr_rcas" "fxaa.frag=fx_fxaa"
+                          "smaa_edge.frag=fx_smaa_edge" "smaa_weights.frag=fx_smaa_weights"
+                          "smaa_blend.frag=fx_smaa_blend" "hdr.vert=fx_hdr_vert" "hdr_compose.frag=fx_hdr_compose"
+                          "hdr_encode.frag=fx_hdr_encode" "hdr_test.frag=fx_hdr_test")
+        string(REPLACE "=" ";" parts "${pair}")
+        list(GET parts 0 shader)
+        list(GET parts 1 symbol)
+        snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/${shader} NAME ${symbol}_spv
+                       HEADER common/gpu/vk/fx_spv.h)
+    endforeach()
+    # FSR 1's fp16 builds of the same two passes, where the device's shaderFloat16 runs them
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/fsr_easu.frag NAME fx_fsr_easu_fp16_spv
+                   HEADER common/gpu/vk/fx_spv.h DEFINES A_HALF=1)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/fsr_rcas.frag NAME fx_fsr_rcas_fp16_spv
+                   HEADER common/gpu/vk/fx_spv.h DEFINES A_HALF=1)
 endif()

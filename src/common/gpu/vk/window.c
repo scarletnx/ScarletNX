@@ -5,6 +5,7 @@
 #include <SDL3/SDL_vulkan.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 bool snx_vk_window_open(const char* app, const char* title, int width, int height, SnxVkWindow* out, char* error,
                         size_t error_size) {
@@ -52,15 +53,31 @@ bool snx_vk_window_open(const char* app, const char* title, int width, int heigh
 #endif
     Uint32 extension_count = 0;
     const char* const* extensions = out->window ? SDL_Vulkan_GetInstanceExtensions(&extension_count) : NULL;
+    /* VK_EXT_swapchain_colorspace is an instance extension, and the HDR image kinds are its color spaces: ask for it
+       when the loader has it. The instance keeps the names during the create only */
+    const char** asked = NULL;
+    uint32_t asked_count = 0;
+    if (extensions && extension_count) {
+        asked = malloc((extension_count + 2) * sizeof *asked);
+        if (asked) {
+            memcpy(asked, extensions, extension_count * sizeof *asked);
+            asked_count = extension_count;
+            if (snx_vk_has_instance_extension(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))
+                asked[asked_count++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
+            extensions = asked;
+        }
+    }
     SnxVkInstanceInfo info = {.app_name = app,
                               .extensions = extensions,
-                              .extension_count = extensions ? extension_count : 0,
+                              .extension_count = extensions ? (uint32_t)(asked_count ? asked_count : extension_count) : 0,
                               /* No window (a headless run, SDL's dummy video driver) means no extensions from SDL,
                                  which is also where MoltenVK's portability enumeration normally comes from: ask for
                                  it anyway, or the loader answers VK_ERROR_INCOMPATIBLE_DRIVER on macOS. It is
                                  enabled only when the loader has it. */
                               .portability = true};
-    if (snx_vk_instance_create(&info, &out->instance) != VK_SUCCESS) {
+    VkResult made = snx_vk_instance_create(&info, &out->instance);
+    free(asked);
+    if (made != VK_SUCCESS) {
         if (out->window) SDL_DestroyWindow(out->window);
         out->window = NULL;
         info.extensions = NULL;

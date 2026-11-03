@@ -29,16 +29,19 @@ uint32_t snx_vk_swap_image_count(const VkSurfaceCapabilitiesKHR* caps, uint32_t 
 typedef struct {
     VkSwapchainKHR swapchain;
     VkSurfaceFormatKHR format;
+    VkColorSpaceKHR color_space; /* the image's, SRGB_NONLINEAR for an SDR one, else what the surface offered */
     VkExtent2D extent;
     VkImage images[SNX_VK_SWAP_IMAGES];
     uint32_t count;
 } SnxVkSwapchain;
-/* what a swapchain is made of: the formats wanted, in order (the surface's first one when it has none of them), its
-   images' usage, the window's size in pixels and FIFO presentation, an image more than the least */
+/* what a swapchain is made of: the formats wanted, in order (the surface's first one when it has none of them), the
+   color space (SRGB_NONLINEAR for SDR, or one of the HDR ones), its images' usage, the window's size in pixels and FIFO
+   presentation, an image more than the least. A color space the surface has none of falls back to SRGB_NONLINEAR. */
 typedef struct {
     VkSurfaceKHR surface;
     const VkFormat* formats;
     uint32_t format_count;
+    VkColorSpaceKHR color_space;
     VkImageUsageFlags usage;
     VkExtent2D window;
 } SnxVkSwapchainInfo;
