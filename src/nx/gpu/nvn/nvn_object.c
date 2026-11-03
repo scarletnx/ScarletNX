@@ -1743,6 +1743,8 @@ int nvn_ProgramInitializeFromBuilder(CPU* c, u64 p, u64 b) {
     for (i = 0; i < 6; i++)
         if (o->st[i].control) n++;
     ok = nvn_ProgramInitialize(c, p, o->device) && set_shaders(p, o->st, n);
+    LOG_LIMIT(64, "nvn: program %llx from builder %llx: %d stages, %s\n", (unsigned long long)p,
+             (unsigned long long)b, n, ok ? "set" : "REFUSED");
     if (ok) NVN_OBJ(NvnProgram, p)->sample_shading = (u16)(o->sample_shading & 0xff);
     return ok;
 }
