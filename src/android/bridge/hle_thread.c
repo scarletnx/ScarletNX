@@ -8,6 +8,7 @@
 #include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
+#include "android/bridge/hle_signal.h"
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
@@ -20,6 +21,7 @@
 
 typedef struct {
     uint64_t start, arg;
+    uint64_t mask; /* the creator's guest signal mask, which the thread starts with */
 } Start;
 
 /* the keys with a guest destructor, which a guest thread runs as it ends, as bionic does */
@@ -47,6 +49,7 @@ static void run_destructors(void) {
 static void* thread_main(void* p) {
     Start s = *(Start*)p;
     free(p);
+    signals_inherit(s.mask);
     uint64_t args[1] = {s.arg};
     uint64_t result = bridge_call(s.start, args, 1);
     run_destructors();
@@ -63,6 +66,7 @@ static void g_pthread_create(CPU* c, void* data) {
     }
     s->start = X(2);
     s->arg = X(3);
+    s->mask = signals_mask();
     pthread_t t;
     /* the host thread's own stack runs host code only: the guest's is the bridge's, so the attribute's size is the
        host's least */
@@ -138,17 +142,6 @@ static void g_pthread_once(CPU* c, void* data) {
     X(0) = 0;
 }
 
-/* a signal to a thread: only 0 (the thread lives), as the bridge delivers no signal to the guest yet */
-static void g_pthread_kill(CPU* c, void* data) {
-    (void)data;
-    if (X(1) == 0) {
-        X(0) = (uint64_t)pthread_kill((pthread_t)X(0), 0);
-        return;
-    }
-    fprintf(stderr, "scarletnx-android: pthread_kill(signal %d): not delivered\n", (int)X(1));
-    X(0) = 0;
-}
-
 #define P(name) {#name, hle_pass, (void*)name}
 
 const HleSymbol hle_thread[] = {
@@ -158,7 +151,6 @@ const HleSymbol hle_thread[] = {
     {"pthread_key_create", g_pthread_key_create, NULL},
     {"pthread_key_delete", g_pthread_key_delete, NULL},
     {"pthread_once", g_pthread_once, NULL},
-    {"pthread_kill", g_pthread_kill, NULL},
     P(pthread_attr_destroy), P(pthread_attr_getguardsize), P(pthread_attr_getstack), P(pthread_attr_init),
     P(pthread_attr_setdetachstate), P(pthread_attr_setstacksize), P(pthread_cond_broadcast), P(pthread_cond_destroy),
     P(pthread_cond_init), P(pthread_cond_signal), P(pthread_cond_timedwait), P(pthread_cond_wait),

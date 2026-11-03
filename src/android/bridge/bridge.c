@@ -4,6 +4,7 @@
    guest threads are host threads here, and one compiles at a time while the others that miss wait for it */
 #define _GNU_SOURCE /* MAP_NORESERVE */
 #include "android/bridge/bridge.h"
+#include "android/bridge/hle_signal.h"
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/utilities/common.h"
 #include <pthread.h>
@@ -28,7 +29,10 @@ typedef struct {
     char* name;
     BridgeHandler handler;
     void* data;
+    bool blocks; /* a call that can wait: a signal runs its handler during the wait (hle_signal.h) */
 } Export;
+/* the most exports: one for each 4 bytes of their addresses */
+#define EXPORTS_MAX (EXPORTS_SIZE / 4)
 
 typedef struct {
     uint64_t address;
@@ -45,10 +49,12 @@ static struct {
     size_t module_count, module_capacity;
     CodeRange* ranges;
     size_t range_count, range_capacity;
-    Export* exports; /* by (address - exports' base) / 4 */
+    /* by (address - exports' base) / 4: reserved whole, so that a call reads it while another thread adds one */
+    Export* exports;
     size_t export_count;
     uint64_t exports_base;
-    uint64_t stop; /* the address that ends a host call into guest code */
+    uint64_t stop;      /* the address that ends a host call into guest code */
+    uint64_t sigreturn; /* the address a guest signal handler returns to */
     uint64_t guard;
     RtAPI rt;
     pthread_mutex_t lock; /* the JIT, the exports and the ranges */
@@ -58,6 +64,7 @@ static struct {
 typedef struct {
     CPU cpu;
     unsigned char* stack;
+    GuestSignals signals;
     /* bionic's TLS slots on arm64: TPIDR_EL0 points to slot 0, and slot -1 is bionic's own (tls_defines.h) */
     uint64_t tls[1 + 8];
 } Thread;
@@ -149,12 +156,28 @@ static void svc(CPU* c, u32 imm) {
 
 static void call_export(CPU* c, u64 entry) {
     Export* e = &b.exports[(entry - b.exports_base) >> 2];
-    e->handler(c, e->data);
+    signals_in_export(entry);
+    if (e->blocks) {
+        int parked = signals_park(c);
+        e->handler(c, e->data);
+        signals_unpark(parked);
+    } else
+        e->handler(c, e->data);
+    signals_in_export(0);
     c->pc = c->x[30];
+    /* a signal the call raised or unblocked, or one that came during it, before the caller goes on */
+    signals_check(c);
 }
 
+/* the end of a run of guest code: <stop> for a host call, <sigreturn> for a signal handler */
 static void stop(CPU* c, u64 entry) {
     c->pc = entry;
+}
+
+/* generated code reached a poll: a guest signal, the only reason the bridge sets CPU.poll */
+static void poll(CPU* c) {
+    __atomic_store_n(&c->poll, 0, __ATOMIC_RELAXED);
+    signals_check(c);
 }
 
 uint64_t bridge_export(const char* name, BridgeHandler handler, void* data) {
@@ -165,11 +188,10 @@ uint64_t bridge_export(const char* name, BridgeHandler handler, void* data) {
             return b.exports_base + 4 * i;
         }
     size_t i = b.export_count;
-    if ((i + 1) * 4 > EXPORTS_SIZE) {
+    if (i + 1 > EXPORTS_MAX) {
         pthread_mutex_unlock(&b.lock);
         return 0;
     }
-    b.exports = snx_realloc(b.exports, (i + 1) * sizeof *b.exports);
     size_t n = strlen(name) + 1;
     b.exports[i].name = snx_alloc(n);
     memcpy(b.exports[i].name, name, n);
@@ -180,6 +202,11 @@ uint64_t bridge_export(const char* name, BridgeHandler handler, void* data) {
     __atomic_store_n(&b.table[(address - b.lo) >> 2], call_export, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&b.lock);
     return address;
+}
+
+void bridge_export_blocks(uint64_t address) {
+    if (address >= b.exports_base && address < b.exports_base + 4 * b.export_count && !(address & 3))
+        b.exports[(address - b.exports_base) >> 2].blocks = true;
 }
 
 const char* bridge_export_name(uint64_t address) {
@@ -199,12 +226,15 @@ bool bridge_init(const char* cache, char* error, size_t error_size) {
         w = mmap(NULL, WINDOW_SIZE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     }
     void* t = mmap(NULL, TABLE_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (w == MAP_FAILED || t == MAP_FAILED) {
+    void* e = mmap(NULL, EXPORTS_MAX * sizeof(Export), PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (w == MAP_FAILED || t == MAP_FAILED || e == MAP_FAILED) {
         snprintf(error, error_size, "cannot reserve the native bridge's code window");
         return false;
     }
     b.window = w;
     b.table = t;
+    b.exports = e;
     b.lo = (uint64_t)(uintptr_t)w;
     b.hi = b.lo + WINDOW_SIZE;
     b.next = b.lo + 0x10000; /* address 0 of the window stays unmapped */
@@ -223,6 +253,7 @@ bool bridge_init(const char* cache, char* error, size_t error_size) {
     b.rt.undef = undef;
     b.rt.brk = guest_brk;
     b.rt.miss = miss;
+    b.rt.poll = poll;
     /* the guest's stack guard: random, as the kernel's AT_RANDOM gives bionic, with a zero low byte as glibc's */
     FILE* f = fopen("/dev/urandom", "rb");
     if (!f || fread(&b.guard, sizeof b.guard, 1, f) != 1) b.guard = 0x5ca7105ca7100ull;
@@ -230,6 +261,9 @@ bool bridge_init(const char* cache, char* error, size_t error_size) {
     b.guard &= ~(uint64_t)0xff;
     b.stop = bridge_export("<stop>", NULL, NULL);
     b.table[(b.stop - b.lo) >> 2] = stop;
+    b.sigreturn = bridge_export("<sigreturn>", NULL, NULL);
+    b.table[(b.sigreturn - b.lo) >> 2] = stop;
+    signals_init();
     return true;
 }
 
@@ -291,6 +325,7 @@ CPU* bridge_cpu(void) {
     c->tpidr = (uint64_t)(uintptr_t)&t->tls[1];
     c->x[31] = ((uint64_t)(uintptr_t)t->stack + STACK_SIZE) & ~(uint64_t)15;
     t_thread = t;
+    signals_thread_start(&t->signals, c);
     return c;
 }
 
@@ -303,6 +338,7 @@ void bridge_stack(uint64_t* base, size_t* size) {
 void bridge_thread_end(void) {
     Thread* t = t_thread;
     if (!t) return;
+    signals_thread_end(&t->signals);
     t_thread = NULL;
     munmap(t->stack, STACK_SIZE);
     free(t);
@@ -315,9 +351,30 @@ uint64_t bridge_call(uint64_t fn, const uint64_t* args, unsigned count) {
     uint64_t pc = c->pc, lr = c->x[30];
     for (unsigned i = 0; i < count && i < 8; ++i) c->x[i] = args[i];
     c->x[30] = b.stop;
+    signals_enter();
     for (uint64_t at = fn; at != b.stop; at = c->pc) snx_lookup(c, at)(c, at);
+    signals_leave();
     uint64_t result = c->x[0];
     c->pc = pc;
     c->x[30] = lr;
     return result;
+}
+
+uint64_t bridge_sigreturn(void) {
+    return b.sigreturn;
+}
+
+bool bridge_run_handler(CPU* c) {
+    for (uint64_t at = c->pc;; at = c->pc) {
+        if (at == b.sigreturn) return true;
+        if (at == b.stop) return false;
+        snx_lookup(c, at)(c, at);
+    }
+}
+
+void bridge_prepare(uint64_t address) {
+    if (address < b.lo || address >= b.exports_base) return;
+    pthread_mutex_lock(&b.lock);
+    if (!compiled(NULL, address)) compile(address);
+    pthread_mutex_unlock(&b.lock);
 }
