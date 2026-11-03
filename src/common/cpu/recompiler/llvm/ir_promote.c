@@ -567,6 +567,77 @@ done:
     return rc;
 }
 
+/* A block's first site stores the registers dirty on some way into the block; one not written in the block before
+   the site and clean on another way in has its store made on the ways it is dirty on instead: at the end of the
+   predecessor, or in a block of its own on the edge when the predecessor goes elsewhere too. A loop whose call
+   stores a register written before the loop then stores it once, on the way in, not on every turn: the value the
+   CPU structure has on the way back is the one it would store (regalloc2's redundant spill, ION.md). A block that
+   starts with PHIs (the FP fast paths' joins) keeps its stores: its edges are left as they are. 0, or -1 out of
+   memory */
+static int edge_stores(SnxIr* ir, LLVMValueRef fn, LLVMBuilderRef b, const Block* blocks, size_t nblocks,
+                       const Event* events, Site* sites, LLVMValueRef* local) {
+    Set* out = (Set*)malloc((nblocks ? nblocks : 1) * sizeof(*out));
+    size_t i, e, p;
+    if (!out) return -1;
+    for (i = 0; i < nblocks; ++i) out[i] = dirty_through(&blocks[i], events, sites, 0, blocks[i].dirty_in);
+    for (i = 1; i < nblocks; ++i) {
+        Set written = {{0, 0}}, moved = {{0, 0}};
+        size_t site = (size_t)-1;
+        LLVMValueRef first = LLVMGetFirstInstruction(blocks[i].block);
+        if (first && LLVMIsAPHINode(first)) continue;
+        for (e = blocks[i].first; e < blocks[i].first + blocks[i].count; ++e) {
+            if (events[e].kind == WRITE || events[e].kind == PART) set_add(&written, events[e].index);
+            if (events[e].kind == SITE) {
+                site = events[e].index;
+                break;
+            }
+        }
+        if (site == (size_t)-1) continue;
+        for (unsigned slot = 0; slot < SLOTS; ++slot) {
+            if (!local[slot] || !set_has(&sites[site].dirty, slot) || set_has(&written, slot)) continue;
+            for (p = 0; p < nblocks; ++p) {
+                LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[p].block);
+                unsigned n = term ? LLVMGetNumSuccessors(term) : 0, j;
+                for (j = 0; j < n; ++j)
+                    if (LLVMGetSuccessor(term, j) == blocks[i].block && !set_has(&out[p], slot)) break;
+                if (j < n) break;
+            }
+            if (p < nblocks) set_add(&moved, slot);
+        }
+        if (!moved.w[0] && !moved.w[1]) continue;
+        sites[site].dirty.w[0] &= ~moved.w[0];
+        sites[site].dirty.w[1] &= ~moved.w[1];
+        for (p = 0; p < nblocks; ++p) {
+            LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[p].block);
+            unsigned n = term ? LLVMGetNumSuccessors(term) : 0;
+            Set need = {{out[p].w[0] & moved.w[0], out[p].w[1] & moved.w[1]}};
+            if (!need.w[0] && !need.w[1]) continue;
+            for (unsigned j = 0; j < n; ++j) {
+                if (LLVMGetSuccessor(term, j) != blocks[i].block) continue;
+                if (n == 1) {
+                    LLVMPositionBuilderBefore(b, term);
+                } else {
+                    LLVMBasicBlockRef edge = LLVMAppendBasicBlockInContext(ir->ctx, fn, "edge");
+                    LLVMSetSuccessor(term, j, edge);
+                    LLVMPositionBuilderAtEnd(b, edge);
+                    LLVMPositionBuilderBefore(b, LLVMBuildBr(b, blocks[i].block));
+                }
+                for (unsigned slot = 0; slot < SLOTS; ++slot)
+                    if (set_has(&need, slot)) {
+                        copy(ir, b, slot, local[slot], cpu_pointer(ir, b, slot), 1);
+                        if (ir->stats.enabled) {
+                            ++ir->stats.sync_stores;
+                            ++ir->stats.edge_stores;
+                            ir->stats.store_bytes += slot_size(slot);
+                        }
+                    }
+            }
+        }
+    }
+    free(out);
+    return 0;
+}
+
 void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
     Scan s = {0};
     LLVMBasicBlockRef bb;
@@ -725,6 +796,10 @@ void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
         LLVMSetOperand(a->inst, LLVMIsAStoreInst(a->inst) ? 1 : 0, pointer);
         if (LLVMGetAlignment(a->inst) > (unsigned)(a->delta ? a->delta & -a->delta : 16))
             LLVMSetAlignment(a->inst, a->delta & -a->delta);
+    }
+    if (edge_stores(ir, fn, b, blocks, nblocks, events, sites, local)) {
+        LLVMDisposeBuilder(b);
+        goto done;
     }
     /* the dirty registers into the CPU structure before each site, the live ones back after a call */
     if (ir->stats.enabled) ++ir->stats.promoted_functions;
