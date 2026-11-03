@@ -196,6 +196,13 @@ static void carrier_deliver(void) {
         deliver(t->cpu, t);
 }
 
+CPU* signals_guest_code_cpu(void) {
+    GuestSignals* t = t_signal.self;
+    if (!t || !__atomic_load_n(&t->busy, __ATOMIC_RELAXED) || __atomic_load_n(&t->in_export, __ATOMIC_RELAXED))
+        return NULL;
+    return t->cpu;
+}
+
 void signals_in_export(uint64_t address) {
     if (t_signal.self) __atomic_store_n(&t_signal.self->in_export, address, __ATOMIC_RELAXED);
 }

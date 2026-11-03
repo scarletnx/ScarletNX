@@ -383,6 +383,24 @@ uint64_t bridge_call(uint64_t fn, const uint64_t* args, unsigned count) {
     return result;
 }
 
+uint64_t bridge_guest_of_host(uintptr_t host) {
+    uintptr_t best = 0;
+    uint64_t guest = 0;
+    size_t count = __atomic_load_n(&b.module_count, __ATOMIC_ACQUIRE);
+    for (size_t i = 0; i < count; ++i) {
+        uint64_t lo, hi;
+        snx_recompiled_range(b.modules[i], &lo, &hi);
+        for (uint64_t a = lo; a < hi; a += 4) {
+            uintptr_t f = (uintptr_t)snx_recompiled_function(b.modules[i], a);
+            if (f && f <= host && f > best) {
+                best = f;
+                guest = a;
+            }
+        }
+    }
+    return guest;
+}
+
 uint64_t bridge_sigreturn(void) {
     return b.sigreturn;
 }

@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The native bridge's entry points (native.h) */
 #include "android/bridge/native.h"
+#include "android/bridge/fault.h"
 #include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/linker.h"
@@ -33,6 +34,7 @@ int android_native_test(const char* library, const char* const* symbols, unsigne
         return 1;
     }
     free(dir);
+    fault_install();
     GuestLibrary* l = linker_load(library, error, sizeof error);
     if (!l) {
         fprintf(stderr, "scarletnx-android: dlopen failed: %s\n", error);
