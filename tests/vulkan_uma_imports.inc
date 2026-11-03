@@ -69,7 +69,7 @@ static int check_uma_in_flight(void) {
     int running = done < reading;
     VkOwnRes* owner = uma_owner(span, 0x42);
     CHECK(owner);
-    vk_own_publish(UMA_F, span, owner, 0); /* its trap: the import goes once the read is done */
+    vk_own_publish_owned(UMA_F, span, owner, 0); /* its trap: the import goes once the read is done */
     vk_submit_progress(&submitted, &done);
     CHECK(done >= reading && vk_uma_imports(UMA_F, span) == 0);
     vk_finish();
@@ -107,7 +107,7 @@ static int check_uma_trap_ranges(void) {
     uma_read(wb, ob, rb, 0);
     VkOwnRes* owner = uma_owner(2 * page, 0x63);
     CHECK(owner);
-    vk_own_publish(edge - page, 2 * page, owner, 0); /* a page of each window: both imports go */
+    vk_own_publish_owned(edge - page, 2 * page, owner, 0); /* a page of each window: both imports go */
     uma_read(d, od, rb, 256);                        /* work of its own for a submission after the trap */
     vk_finish();
     vk_readback_ready();
@@ -125,7 +125,7 @@ static int check_uma_trap_ranges(void) {
     uma_read(wa, oa, rb, 0);
     owner = uma_owner(page, 0x64);
     CHECK(owner);
-    vk_own_publish(edge - page, page, owner, 0);
+    vk_own_publish_owned(edge - page, page, owner, 0);
     uma_read(d, od, rb, 256);
     vk_finish();
     vk_readback_ready();
@@ -150,7 +150,7 @@ static int check_uma_trap_ranges(void) {
     uma_read(d, od, rb, 256);
     owner = uma_owner(256, 0x66);
     CHECK(owner);
-    vk_own_publish(UMA_D + 0x100, 256, owner, 0);
+    vk_own_publish_owned(UMA_D + 0x100, 256, owner, 0);
     vk_finish();
     vk_readback_ready();
     CHECK(vk_uma_imports(UMA_D, 0x10000) == 0);
@@ -185,7 +185,7 @@ static int check_uma_lookup_then_submit(void) {
         if (next_draw) vk_frame_check();
         VkOwnRes* owner = uma_owner(256, 0x73);
         CHECK(owner);
-        vk_own_publish(UMA_S + at, 256, owner, 0);
+        vk_own_publish_owned(UMA_S + at, 256, owner, 0);
         CHECK(vk_uma_imports(UMA_S, 0x10000) == 0);
         vk_finish();
         vk_readback_ready();
@@ -452,6 +452,71 @@ static int check_uma_feedback(void) {
     return 0;
 }
 
+/* An engine's result (the copy engine's here) over memory the GPU reads in place, which an import holds, is published
+   in place: copied there on the GPU in stream order, not GPU-owned or trapped, the import kept, and a CPU read after it
+   waits for the submit. Over memory no import holds it stays GPU-owned where the host traps, and no import is made
+   for it (one would take its pages from write tracking) */
+#define UMA_P  (HEAP_BASE + 0x3600000)
+#define UMA_GP 0x4de000000ull
+#define UMA_N  (HEAP_BASE + 0x3c00000) /* no import over it */
+#define UMA_GN 0x4e4000000ull
+static int uma_dma(u64 dst, u64 src) {
+    GpuDmaOp o = {.width = 256, .line_in = 256, .line_out = 256, .lines = 1};
+    o.src = pitch_side(src, 0);
+    o.dst = pitch_side(dst, 0);
+    return g_renderer->dma_copy(&o) ? 0 : 1;
+}
+static int check_uma_publish(void) {
+    const u64 src = 0x4df000000ull, src_cpu = HEAP_BASE + 0x700000; /* in the first heap mapping */
+    u8 bytes[256];
+    VkBuffer r;
+    u64 ro;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    CHECK(mem_map(UMA_P, 0x200000, MS_NORMAL, PERM_RW) == 0 && mem_map(UMA_N, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GP, UMA_P, 0x200000);
+    gmmu_map(UMA_GN, UMA_N, 0x200000);
+    gmmu_map(src, src_cpu, 0x10000);
+    memset(GP(UMA_P), 0xa0, 0x1000);
+    memset(GP(UMA_N), 0xa0, 0x1000);
+    memset(GP(src_cpu), 0xa1, 0x1000);
+    vk_lock();
+    CHECK(vk_buf_get_input(UMA_GP + 0x100, 256, 4, &r, &ro)); /* a draw reads it in place: an import holds it */
+    int held = vk_uma_held(UMA_P + 0x100, 256);
+    vk_unlock();
+    u64 lands = own_landings();
+    CHECK(!uma_dma(UMA_GP + 0x100, src + 0x100));
+    int owned = own_lookup(UMA_P + 0x100, 256, NULL, 0) != 0, imported = vk_uma_imports(UMA_P, 0x200000) != 0;
+    CHECK(!gmem_read(UMA_GP + 0x100, bytes, sizeof bytes));
+    for (u32 i = 0; i < 256; i++) CHECK(bytes[i] == 0xa1);
+    u64 landed = own_landings() - lands; /* in place: none */
+    /* over memory nothing imported */
+    CHECK(!uma_dma(UMA_GN + 0x100, src + 0x100));
+    int owned_n = own_lookup(UMA_N + 0x100, 256, NULL, 0) != 0, imported_n = vk_uma_imports(UMA_N, 0x200000) != 0;
+    CHECK(!gmem_read(UMA_GN + 0x100, bytes, sizeof bytes));
+    for (u32 i = 0; i < 256; i++) CHECK(bytes[i] == 0xa1);
+    vk_lock();
+    vk_finish();
+    vk_unlock();
+    CHECK(GP(UMA_P)[0x100] == 0xa1 && GP(UMA_P)[0x1ff] == 0xa1 && GP(UMA_P)[0x200] == 0xa0);
+    CHECK(GP(UMA_N)[0x100] == 0xa1 && GP(UMA_N)[0x1ff] == 0xa1 && GP(UMA_N)[0x200] == 0xa0);
+    CHECK(mem_unmap(UMA_P, 0x200000) == 0 && mem_unmap(UMA_N, 0x200000) == 0);
+    if (!held || owned || !imported || landed || owned_n != own_traps() || imported_n)
+        fprintf(
+            stderr,
+            "publish: over an import (held %d): owned %d, imported %d, %llu landings; elsewhere: owned %d, imported "
+            "%d\n",
+            held, owned, imported, (unsigned long long)landed, owned_n, imported_n);
+    CHECK(held && !owned && imported && !landed);
+    CHECK(owned_n == own_traps() && !imported_n);
+    printf("in place: an engine's result over an import copied there on the GPU, nothing GPU-owned; elsewhere owned "
+           "(traps %s), no import made for it\n",
+           own_traps() ? "on" : "off");
+    return 0;
+}
+
 /* A dispatch runs on the graphics queue and writes its storage in place: a compute program stores 0x5eed through an NVN
    descriptor in cbuf 0; no compute result is pending after it, the range is imported, and the CPU reads the store */
 #define UMA_Q  (HEAP_BASE + 0x3800000)
@@ -705,14 +770,35 @@ static int check_uma_region_writes(void) {
     int region2 = vk_uma_imports(UMA_RW + 0x2000, 0x1000) == 1 && uma_in_buffer(g + 0x2000) == 1;
     CHECK(!owned_test_fill(w, wo, 256, 0x93));
     vk_buf_writable_commit();
+    vk_unlock();
+    /* an engine's result over a region: a region is an import (vk_uma_held), so the result is copied there in place */
+    const u64 src = 0x4df000000ull, src_cpu = HEAP_BASE + 0x700000;
+    u8 bytes[256];
+    VkBuffer r;
+    u64 ro;
+    gmmu_map(src, src_cpu, 0x10000);
+    memset(GP(src_cpu), 0xa1, 0x1000);
+    vk_lock();
+    CHECK(vk_buf_get_input(UMA_GRW + 0x4100, 256, 4, &r, &ro));
+    int held = vk_uma_held(UMA_RW + 0x4100, 256) && uma_in_buffer(g + 0x4000) == 1;
+    vk_unlock();
+    CHECK(!uma_dma(UMA_GRW + 0x4100, src + 0x100));
+    int owned = own_lookup(UMA_RW + 0x4100, 256, NULL, 0) != 0;
+    CHECK(!gmem_read(UMA_GRW + 0x4100, bytes, sizeof bytes));
+    for (u32 i = 0; i < 256; i++) CHECK(bytes[i] == 0xa1);
+    vk_lock();
     CHECK(vk_uma_migrate(0)); /* every region moves back first */
     vk_finish();
     vk_unlock();
     CHECK(g[0x2100] == 0x93 && g[0x21ff] == 0x93 && g[0x20ff] == 0x91 && uma_in_buffer(g + 0x2000) == 0);
+    CHECK(g[0x4100] == 0xa1 && g[0x41ff] == 0xa1 && g[0x4200] == 0x91);
+    if (!held || owned) fprintf(stderr, "region publish: held %d, owned %d\n", held, owned);
+    CHECK(held && !owned);
     CHECK(mem_unmap(UMA_RW, window) == 0);
     if (!region || !region2) fprintf(stderr, "region writes: no region made (%d, %d)\n", region, region2);
     CHECK(region && region2);
     printf("in place, the migrate way: a write in place in a region lands in guest memory when its pages move on or "
-           "the region moves back before the write's submit\n");
+           "the region moves back before the write's submit, and an engine's result over a region is copied there, "
+           "nothing GPU-owned\n");
     return 0;
 }

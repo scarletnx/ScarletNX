@@ -38,7 +38,7 @@ static int check_owned_readback(void) {
                                         .semaphore = gate, .value = 1};
         CHECK(VK_OK(vkSignalSemaphore(g_vk.dev, &signal)));
         vk_wait_submit(vk_last_submit());
-        vk_own_publish(cpu + 256, 256, owner, 0);
+        vk_own_publish_owned(cpu + 256, 256, owner, 0);
         CHECK(own_lookup(cpu + 256, 256, NULL, 0) == 1);
         if (fresh) vk_frame_next();
         own_acquire(cpu + 256, 256);
@@ -87,7 +87,7 @@ static int check_owned_writable(void) {
         VkOwnRes* owner = vk_own_res_new(256);
         CHECK(owner);
         CHECK(!owned_test_fill(owner->buf, 0, 256, 0x22));
-        vk_own_publish(cpu + 64, 256, owner, 0);
+        vk_own_publish_owned(cpu + 64, 256, owner, 0);
         CHECK(own_lookup(cpu + 64, 256, NULL, 0) == 1);
         u64 lands = own_landings(), submits = vk_submit_number();
         VkBuffer output;
@@ -127,7 +127,7 @@ static int check_owned_writable(void) {
     memset(GP(cpu + 0x4000), 0x66, 0x1000);
     VkOwnRes* owner = vk_own_res_new(256);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 256, 0x22));
-    vk_own_publish(cpu + 0x4000, 256, owner, 0);
+    vk_own_publish_owned(cpu + 0x4000, 256, owner, 0);
     u64 lands = own_landings(), submits = vk_submit_number(), at;
     VkBuffer output;
     CHECK(vk_buf_copy_writable(gva, 0x3000, &output, &at, 1));
@@ -160,7 +160,7 @@ static int check_owned_whole_identity(void) {
     vk_finish();
     VkOwnRes* owner = vk_own_res_new(0x1000);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 0x1000, 0x22));
-    vk_own_publish(cpu, 0x1000, owner, 0);
+    vk_own_publish_owned(cpu, 0x1000, owner, 0);
     CHECK(vk_guest_owned_whole(gva, 0x1000, &a) && vk_guest_owned_whole(gva, 0x1000, &b) && a == b);
     CHECK(!vk_guest_owned_whole(gva, 0x1800, &c)); /* past it: the CPU's bytes */
     CHECK(vk_guest_owned_whole(gva + 0x100, 0x200, &c) && c != a);
@@ -169,7 +169,7 @@ static int check_owned_whole_identity(void) {
     CHECK(vk_guest_owned_whole(gva, 0x1000, &c) && c != a);
     VkOwnRes* next = vk_own_res_new(0x1000);
     CHECK(next && !owned_test_fill(next->buf, 0, 0x1000, 0x55));
-    vk_own_publish(cpu, 0x1000, next, 0);
+    vk_own_publish_owned(cpu, 0x1000, next, 0);
     CHECK(vk_guest_owned_whole(gva, 0x1000, &d) && d != c && d != a);
     own_acquire(cpu, 0x1000);
     CHECK(!vk_guest_owned_whole(gva, 0x1000, &d));
@@ -191,7 +191,7 @@ static int check_owned_peek_identity(void) {
     vk_finish();
     VkOwnRes* owner = vk_own_res_new(256);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 256, 0x22));
-    vk_own_publish(cpu, 256, owner, 0);
+    vk_own_publish_owned(cpu, 256, owner, 0);
     vk_guest_peek(gva, before, sizeof before);
     vk_guest_peek(gva, after, sizeof after);
     CHECK(!memcmp(before, after, sizeof before)); /* nothing written: the same */
@@ -202,7 +202,7 @@ static int check_owned_peek_identity(void) {
     memcpy(before, after, sizeof before);
     VkOwnRes* next = vk_own_res_new(256); /* a new owner over the same bytes, as each copy of a whole surface makes */
     CHECK(next && !owned_test_fill(next->buf, 0, 256, 0x55));
-    vk_own_publish(cpu, 256, next, 0);
+    vk_own_publish_owned(cpu, 256, next, 0);
     vk_guest_peek(gva, after, sizeof after);
     CHECK(memcmp(before, after, sizeof before));
     own_acquire(cpu, 256);
@@ -223,7 +223,7 @@ static int check_owned_in_place_write(void) {
     memset(GP(cpu), 0x11, 0x1000);
     VkOwnRes* owner = vk_own_res_new(256);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 256, 0x22));
-    vk_own_publish(cpu, 256, owner, 0);
+    vk_own_publish_owned(cpu, 256, owner, 0);
     vk_finish(); /* the owner's submission is done: a landing now waits for nothing */
     CHECK(own_lookup(cpu, 256, NULL, 0) == 1);
     CHECK(!owned_test_fill(owner->buf, 0, 256, 0x55)); /* recorded in the open command buffer */

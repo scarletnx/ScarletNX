@@ -260,9 +260,13 @@ static int owned_stream_case(GpuChannel* channel, u64 target, u64 colors, u64 co
     o.lines = 1;
     o.src = pitch_side(colors, 0);
     o.dst = pitch_side(copy, 0);
+    /* GPU-owned where the host traps; with unified memory, over an import, copied there on the GPU (vk_uma_publish) */
+    vk_lock();
+    int inplace = vk_uma_held(copy_cpu, bytes), owned = own_traps() && !inplace;
+    vk_unlock();
     CHECK(g_renderer->dma_copy(&o));
-    int owned = own_traps();
     if (owned) CHECK(own_lookup(copy_cpu, bytes, NULL, 0) == 1);
+    if (inplace) CHECK(own_lookup(copy_cpu, bytes, NULL, 0) == 0 && vk_uma_pending_cpu(copy_cpu, bytes));
     u64 landings = own_landings();
     vk_lock();
     rt_clear(channel, target, 4, 4, 0, 1);
@@ -289,13 +293,15 @@ static int owned_stream_case(GpuChannel* channel, u64 target, u64 colors, u64 co
     vk_unlock();
     if (!index_all_green(&px)) fprintf(stderr, "owned colors: %u green, %u red\n", px.green, px.red);
     CHECK(index_all_green(&px));
-    if (owned) {
+    if (owned || inplace) {
         if (begun != 1) fprintf(stderr, "owned colors: the two draws took %llu passes\n", (unsigned long long)begun);
         CHECK(begun == 1);
-        CHECK(own_landings() == landings && own_lookup(copy_cpu, bytes, NULL, 0) == 1);
+        CHECK(own_landings() == landings && own_lookup(copy_cpu, bytes, NULL, 0) == owned);
     }
     printf("owned colors: a draw read vertex colors the GPU holds %s\n",
-           owned ? "where their owner holds them, inside the pass" : "landed (no traps here)");
+           owned     ? "where their owner holds them, inside the pass"
+           : inplace ? "in guest memory, copied there on the GPU, inside the pass"
+                     : "landed (no traps here)");
     return 0;
 }
 
@@ -316,16 +322,21 @@ static int owned_index_case(GpuChannel* channel, u64 target, u64 indices, u64 in
     o.lines = 1;
     o.src = pitch_side(staged, 0);
     o.dst = pitch_side(indices, 0);
+    vk_lock();
+    int inplace = vk_uma_held(indices_cpu, sizeof bytes), owned = own_traps() && !inplace;
+    vk_unlock();
     CHECK(g_renderer->dma_copy(&o));
-    /* the index registers over the copy's bytes, which the CPU doesn't read: that would land them */
+    /* the index registers over the copy's bytes, which the CPU doesn't read: that would land them, or wait for them
+       with unified memory */
     r[0x5F2] = (u32)(indices >> 32);
     r[0x5F3] = (u32)indices;
     r[0x5F4] = (u32)((indices + sizeof bytes - 1) >> 32);
     r[0x5F5] = (u32)(indices + sizeof bytes - 1);
     r[0x5F6] = 1; /* 16-bit */
     r[0x591] = 0;
-    int owned = own_traps();
     if (owned) CHECK(own_lookup(indices_cpu, sizeof bytes, NULL, 0) == 1);
+    if (inplace)
+        CHECK(own_lookup(indices_cpu, sizeof bytes, NULL, 0) == 0 && vk_uma_pending_cpu(indices_cpu, sizeof bytes));
     u64 landings = own_landings();
     vk_lock();
     rt_clear(channel, target, 4, 4, 0, 1);
@@ -341,15 +352,17 @@ static int owned_index_case(GpuChannel* channel, u64 target, u64 indices, u64 in
     vk_unlock();
     if (!index_all_green(&px)) fprintf(stderr, "owned indices: %u green, %u red\n", px.green, px.red);
     CHECK(index_all_green(&px));
-    if (owned) {
+    if (owned || inplace) {
         if (begun != 1 || own_landings() != landings)
             fprintf(stderr, "owned indices: the two draws took %llu passes, %llu landings\n", (unsigned long long)begun,
                     (unsigned long long)(own_landings() - landings));
         CHECK(begun == 1 && own_landings() == landings);
-        CHECK(own_lookup(indices_cpu, sizeof bytes, NULL, 0) == 1);
+        CHECK(own_lookup(indices_cpu, sizeof bytes, NULL, 0) == owned);
     }
     printf("owned indices: a draw read the indices the GPU holds %s\n",
-           owned ? "where their owner holds them, inside the pass" : "landed (no traps here)");
+           owned     ? "where their owner holds them, inside the pass"
+           : inplace ? "in guest memory, copied there on the GPU, inside the pass"
+                     : "landed (no traps here)");
     return 0;
 }
 

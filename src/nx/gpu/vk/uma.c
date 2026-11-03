@@ -59,6 +59,11 @@
      (vk_uma_mem_need), and so do its writes (front_write). The submit's end makes them visible to the host
      (vk_uma_host_barrier) before a release tells the guest: a release waits for the submit that last bound guest
      memory in place, a write included (vk_uma_bound). As #690 has it.
+   - An engine's result (the copy engine's, 2D, VIC, NVDEC, a target's write-back) over memory an import holds already
+     (the GPU reads it in place) is copied there on the GPU, in stream order, a write in place like the shaders'
+     (vk_uma_publish): not GPU-owned or trapped, and the import stays. Elsewhere it is published GPU-owned as without
+     UMA: an import made for it would take its pages from write tracking, and a sparse texture a copy feeds would load
+     again whole instead of the pages written (Liz, #1079).
    - Write tracking leaves the pages an import holds alone (vk_uma_import_in): amdgpu takes them again, writable, at
      each submission, which undoes a scan's protection, and the next scan reports them written with no CPU write. What
      trusted that report kept a guest page's old bytes over the pixels a render target drew there. And a submission
@@ -151,7 +156,7 @@ typedef struct {
     u64 barrier_no;
     /* statistics */
     u64 hits, hit_bytes, misses, imports, import_bytes, import_ns, failed, dropped, quiesces, waits;
-    u64 written_bytes, barriers, out_waits;
+    u64 written_bytes, barriers, out_waits, published;
     char apart0[UMA_LINE];
     /* mem.c's hook writes these too */
     PMutex lk;         /* a leaf, under vk_lock or mem.c's lock: the dead flags, and the imports for write tracking */
@@ -605,7 +610,10 @@ int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
         g_uma.misses++;
         return 0;
     }
-    if (write_pages_since(&g_uma.front, 0, cpu, len)) { /* the runtime wrote it: copied, as when it was bound */
+    /* the runtime wrote it: copied, as when it was bound. Not while the GPU writes it in place (an engine's result
+       published there): its bytes are only in the import, a copy of them on the GPU would end the rendering pass, and
+       the runtime's next write there waits for that write anyway (front_write) */
+    if (write_pages_since(&g_uma.front, 0, cpu, len) && !vk_uma_pending_cpu(cpu, len)) {
         g_uma.misses++;
         return 0;
     }
@@ -766,6 +774,30 @@ void vk_uma_mem_need_cpu(u64 cpu, u64 len) {
     vk_unlock();
 }
 void vk_uma_gpu_reads(int on) { t_uma.gpu_reads = on; }
+int vk_uma_held(u64 cpu, u64 len) {
+    if (!vk_uma() || !len) return 0;
+    drop_dead();
+    u32 i = imp_find(cpu);
+    return i < g_uma.nimp && g_uma.imp[i].cpu <= cpu && cpu + len <= g_uma.imp[i].cpu + g_uma.imp[i].size;
+}
+int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off) {
+    VkBuffer ib;
+    u64 io;
+    if (!vk_uma_held(cpu, len) || !bind(cpu, len, 1, &ib, &io)) return 0; /* no import made for it */
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    vk_all_barrier(cb); /* the producer's writes, and what read or wrote the bytes in place before, first */
+    VkBufferCopy c = {off, io, len};
+    rec_CmdCopyBuffer(cb, src, ib, 1, &c);
+    /* and what comes after it, before it is set up: a draw that reads the result in the next pass reads it there,
+       with no barrier of its own to end that pass for (order) */
+    vk_all_barrier(cb);
+    out_add(0, cpu, len);
+    g_uma.barrier_no += 2;
+    g_uma.barriers += 2;
+    g_uma.published += len;
+    return 1;
+}
 int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off) {
     return vk_uma_pending_cpu(cpu, len) && bind(cpu, len, 1, buf, off);
 }
@@ -838,16 +870,19 @@ void vk_uma_frame(void) {
     LOG("vulkan: in place over 600 presents: %llu ranges (%llu MB bound) read in guest memory, %llu copied; %llu "
         "imports made (%llu MB, %llu ms), %llu spans refused, %llu dropped; %u imports hold %llu MB; %llu hazards (a "
         "GPU-side write on a page that unfinished work reads in place); %llu waits for that work before a trap or a "
-        "remap, %llu before a write of the runtime's; %llu MB written in place, %llu barriers for it, %llu waits for it\n",
+        "remap, %llu before a write of the runtime's; %llu MB written in place (%llu MB of them engines' results), %llu "
+        "barriers for it, %llu waits for it\n",
         (unsigned long long)g_uma.hits, (unsigned long long)(g_uma.hit_bytes >> 20), (unsigned long long)g_uma.misses,
         (unsigned long long)g_uma.imports, (unsigned long long)(g_uma.import_bytes >> 20),
         (unsigned long long)(g_uma.import_ns / 1000000), (unsigned long long)g_uma.failed,
         (unsigned long long)g_uma.dropped, g_uma.nimp, (unsigned long long)(bytes >> 20),
         (unsigned long long)__atomic_load_n(&g_uma.hazards, __ATOMIC_RELAXED), (unsigned long long)g_uma.quiesces,
         (unsigned long long)g_uma.waits, (unsigned long long)(g_uma.written_bytes >> 20),
-        (unsigned long long)g_uma.barriers, (unsigned long long)g_uma.out_waits);
+        (unsigned long long)(g_uma.published >> 20), (unsigned long long)g_uma.barriers,
+        (unsigned long long)g_uma.out_waits);
     g_uma.hits = g_uma.hit_bytes = g_uma.misses = g_uma.imports = g_uma.import_bytes = g_uma.import_ns = g_uma.failed =
-        g_uma.dropped = g_uma.quiesces = g_uma.waits = g_uma.written_bytes = g_uma.barriers = g_uma.out_waits = 0;
+        g_uma.dropped = g_uma.quiesces = g_uma.waits = g_uma.written_bytes = g_uma.barriers = g_uma.out_waits =
+            g_uma.published = 0;
     __atomic_store_n(&g_uma.hazards, 0, __ATOMIC_RELAXED);
 }
 /* Guest memory [cpu, cpu + size) (size ~0: all of it) is about to be trapped (a GPU result published over it,

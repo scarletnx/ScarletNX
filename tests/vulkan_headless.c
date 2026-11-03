@@ -45,6 +45,13 @@
         }                                                                                                              \
     } while (0)
 
+/* the GPU's results over guest memory [cpu, cpu + len) done before the test's CPU reads them, as the guest's fence
+   would have them: with unified memory an engine's result is copied there in place (vk_uma_publish) by a submit that
+   may not be done; without it the result is GPU-owned, and the read lands it by itself (as #690 has it) */
+static void guest_done(u64 cpu, u64 len) {
+    if (vk_uma()) vk_uma_mem_need_cpu(cpu, len);
+}
+
 /* Graphics descriptor tables fill the frame's descriptor memory. vk_frame_check, which runs before a draw's setup,
    moves on to the next frame while the tables of one more draw still fit: the setup itself never submits for room */
 static int check_descriptor_room(void) {
@@ -1126,6 +1133,7 @@ static int check_vic(void) {
     u32 validation = g_vk_validation_messages; /* the job's first words are a uniform buffer (vk/vic.c, owned.c) */
     u8 *y = GP(VIC_BASE), *uv = GP(VIC_BASE + 0x1000), *out = GP(VIC_BASE + 0x2000);
     u64 lands = own_landings();
+    u32 owned_cases = 0; /* published GPU-owned: no import held the output */
     for (u32 j = 0; j < H; ++j)
         for (u32 i = 0; i < W; ++i) y[j * W + i] = (u8)(16 + i + 4 * j);
     for (u32 j = 0; j < H / 2; ++j)
@@ -1180,8 +1188,15 @@ static int check_vic(void) {
         memcpy(sl->mat, m601, sizeof m601);
         sl->iy = (VicPlane){y, W * H, W, H, 0, 0};
         sl->ic = (VicPlane){uv, W * H / 2, W, H / 2, 0, 0};
+        vk_lock();
+        int inplace = vk_uma_held(VIC_BASE + 0x2000, (u64)pitch * H);
+        vk_unlock();
+        owned_cases += !inplace;
         CHECK(g_renderer->vic_compose(&job));
-        CHECK(!own_traps() || own_lookup(VIC_BASE + 0x2000, (u64)pitch * H, NULL, 0) > 0); /* on the GPU until read */
+        /* on the GPU until read; with unified memory, over an import, copied there before the syncpoint
+           (vk_uma_publish) */
+        CHECK(inplace ? own_lookup(VIC_BASE + 0x2000, (u64)pitch * H, NULL, 0) == 0
+                      : !own_traps() || own_lookup(VIC_BASE + 0x2000, (u64)pitch * H, NULL, 0) > 0);
         for (u32 j = 0; j < H; ++j)
             for (u32 i = 0; i < W; ++i) {
                 const u8* o = out + j * pitch + i * bpp;
@@ -1212,8 +1227,8 @@ static int check_vic(void) {
                     CHECK(o[rb] == v[0] >> 2 && o[1] == v[1] >> 2 && o[2 - rb] == v[2] >> 2 && o[3] == 255);
             }
     }
-    /* each picture was read here: landed once, by the trap, where the host has traps */
-    CHECK(!own_traps() || own_landings() >= lands + sizeof cases / sizeof cases[0]);
+    /* each picture GPU-owned was read here: landed once, by the trap, where the host has traps */
+    CHECK(!own_traps() || own_landings() >= lands + owned_cases);
     CHECK(g_vk_validation_messages == validation);
     return 0;
 }
@@ -1237,6 +1252,9 @@ static int check_vic_chain(const char* shot) {
     job.slots[0] = (VicSlot){.on = 1, .w = W, .h = H, .alpha = 0x3FF, .clamp_hi = 0x3FF};
     job.slots[0].iy = (VicPlane){y, W * H, W, H, 0, 0};
     job.slots[0].ic = (VicPlane){GP(VIC_BASE + 0x1000), W * H / 2, W, H / 2, 0, 0};
+    vk_lock();
+    int inplace = vk_uma_held(VIC_BASE + 0x2000, (u64)W * 4 * H); /* the first job's output over an import */
+    vk_unlock();
     CHECK(g_renderer->vic_compose(&job));
     memset(&job.slots[0], 0, sizeof job.slots[0]); /* the second: the background in a smaller rectangle */
     job.tx0 = 4, job.ty0 = 2, job.tw = 6, job.th = 9;
@@ -1265,7 +1283,7 @@ static int check_vic_chain(const char* shot) {
             else
                 CHECK(o[0] == y[j * W + i] && o[3] == 255); /* the first job's: the samples as they are */
         }
-    CHECK(!own_traps() || own_landings() == lands + 1);
+    CHECK(!own_traps() || own_landings() == lands + !inplace); /* in guest memory already, over an import */
     return 0;
 }
 /* NVDEC's picture laid out on the GPU (vk/nvdec.c), then composed by VIC from there, with no CPU access between: the
@@ -1347,6 +1365,7 @@ static int dma_case(GpuDmaOp o) {
     c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
     CHECK(g_renderer->dma_copy(&g));
     dma_copy_ref(&c);
+    guest_done(DMA_A, DMA_SPAN);
     CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN)); /* reading the GPU's lands it */
     return 0;
 }
@@ -1370,6 +1389,7 @@ static int dma_snap_case(GpuDmaOp o) {
     CHECK(g_renderer->dma_copy(&g));
     for (u64 i = 0; i < span; i++) GP(DMA_A)[o.src.addr + i] ^= 0x5A; /* the same again, for the comparison */
     dma_copy_ref(&c);
+    guest_done(DMA_A, DMA_SPAN);
     CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN));
     vk_lock();
     for (int i = 0; i <= VK_FRAMES; i++) { /* the copy's frame slot used again, its work done: its memory went */
@@ -2147,6 +2167,7 @@ static int blit_case(GpuDmaSide src, GpuDmaSide dst, u32 bpp, u32 x0, u32 y0, u3
     c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
     CHECK(g_renderer->blit_mem(&g));
     blit_mem_ref(&c);
+    guest_done(DMA_A, DMA_SPAN);
     CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN));
     return 0;
 }
@@ -2240,14 +2261,17 @@ static int check_dma_untracked_source(void) {
     o.lines = 1;
     o.src = pitch_side(gsrc, 0);
     o.dst = pitch_side(gdst, 0);
+    guest_done(src, size); /* the GPU's writes there first, as the guest's fence has them */
     memset(GP(src), 0x11, size);
     g_renderer->mem_may_have_changed();
     CHECK(g_renderer->dma_copy(&o));
+    guest_done(dst, (u32)size);
     CHECK(all_bytes(GP(dst), (u32)size, 0x11));
     /* the same copy again: the tracking reports the first fill and protects its pages, the baseline the third copy's
        check counts from */
     g_renderer->mem_may_have_changed();
     CHECK(g_renderer->dma_copy(&o));
+    guest_done(dst, (u32)size);
     CHECK(all_bytes(GP(dst), (u32)size, 0x11));
     mem_query(src, &b);
     CHECK(b.pool && (bytes = malloc(size)));
@@ -2258,6 +2282,7 @@ static int check_dma_untracked_source(void) {
     CHECK(g_renderer->dma_copy(&o));
     if (!all_bytes(GP(dst), (u32)size, 0x22))
         fprintf(stderr, "untracked copy source: the copy took %#x, the source holds 0x22\n", GP(dst)[0]);
+    guest_done(dst, (u32)size);
     CHECK(all_bytes(GP(dst), (u32)size, 0x22));
     mem_alias_end(src, size);
     puts("dma: a source written past the write tracking is copied as it is now");
@@ -2440,21 +2465,26 @@ static int check_rt_overlap(void) {
     rt_clear(ch, DMA_GA + 0x10000, 64, 64, 3, 0);
     rt_clear(ch, DMA_GA, 160, 128, 4, 1);
     CHECK(g_renderer->dma_copy(&o));
+    guest_done(DMA_A + 0x40000, 160 * 128 * 4);
     CHECK(all_blue(GP(DMA_A + 0x40000), 160 * 128 * 4)); /* reading it lands it */
     vk_rt_before_write(DMA_GA, 0x14000);
+    guest_done(DMA_A, 0x14000);
     CHECK(all_blue(GP(DMA_A), 0x14000));
     /* the newer one written back alone: the older one first, under it, and not again after */
     rt_clear(ch, DMA_GA + 0x10000, 64, 64, 3, 0);
     rt_clear(ch, DMA_GA, 160, 128, 4, 1);
     g_renderer->rt_flush(DMA_GA);
     vk_rt_before_write(DMA_GA, 0x14000);
+    guest_done(DMA_A, 0x14000);
     CHECK(all_blue(GP(DMA_A), 0x14000));
     /* a 160 by 256 target, the program's own bytes over its memory after it, and a copy of the 160 by 128 surface */
     rt_clear(ch, DMA_GA, 160, 256, 4, 1);
+    guest_done(DMA_A, 0x28000); /* the GPU's writes there first, as the guest's fence has them */
     memset(GP(DMA_A), 0x11, 0x28000);
     readbacks = g_vk_rt_readbacks;
     CHECK(g_renderer->dma_copy(&o));
     CHECK(g_vk_rt_readbacks == readbacks + 1);
+    guest_done(DMA_A + 0x40000, 160 * 128 * 4);
     CHECK(all_bytes(GP(DMA_A + 0x40000), 160 * 128 * 4, 0x11));
     /* A render target and a newer buffer can use different GPU aliases of the
        same memory. A later partial read of the image must not restore its old
@@ -2462,6 +2492,7 @@ static int check_rt_overlap(void) {
     const u64 alias = DMA_GA + 0x800000;
     gmmu_map(alias, DMA_A, DMA_SPAN);
     rt_clear(ch, alias, 160, 256, 4, 1);
+    guest_done(DMA_B, 512); /* the GPU's writes there first, as the guest's fence has them */
     memset(GP(DMA_B), 0x6d, 512);
     o.src = pitch_side(DMA_GB, 512);
     o.dst = pitch_side(DMA_GA + 0x10000, 512);
@@ -2471,23 +2502,31 @@ static int check_rt_overlap(void) {
     o.src = pitch_side(alias + 0x1000, 512);
     o.dst = pitch_side(DMA_GA + 0x40000, 512);
     CHECK(g_renderer->dma_copy(&o));
+    guest_done(DMA_A + 0x10000, 512);
     CHECK(all_bytes(GP(DMA_A + 0x10000), 512, 0x6d));
+    guest_done(DMA_A, 512);
     CHECK(all_blue(GP(DMA_A), 512));
     /* Replacing a GPU mapping must resolve the old target against its old
        backing, before an image read can reach the replacement buffer. */
     rt_clear(ch, alias, 160, 256, 4, 1);
+    guest_done(DMA_B, 0x28000); /* the GPU's writes there first, as the guest's fence has them */
     memset(GP(DMA_B), 0x37, 0x28000);
     gmmu_map(alias, DMA_B, DMA_SPAN);
+    guest_done(DMA_A, 0x28000);
     CHECK(all_blue(GP(DMA_A), 0x28000));
     o.src = pitch_side(alias + 0x1000, 512);
     o.dst = pitch_side(DMA_GA + 0x40000, 512);
     CHECK(g_renderer->dma_copy(&o));
+    guest_done(DMA_B, 0x28000);
     CHECK(all_bytes(GP(DMA_B), 0x28000, 0x37));
+    guest_done(DMA_A + 0x40000, 512);
     CHECK(all_bytes(GP(DMA_A + 0x40000), 512, 0x37));
-    /* Dirty metadata queries must leave GPU-owned pixels on the GPU. */
+    /* Dirty metadata queries must leave GPU-owned pixels on the GPU, or, with unified memory, the pixels written in
+       place (vk_uma_publish) not waited for. */
     const u64 tracked = DMA_GA + 0xe0000, tracked_cpu = DMA_A + 0xe0000;
     rt_clear(ch, tracked, 64, 64, 3, 1);
     vk_lock();
+    int inplace = vk_uma_held(tracked_cpu, 0x4000);
     Surf* target = vk_rt_find(tracked);
     CHECK(target && vk_surf_publish(target));
     int tracking = vk_written_since(gmem_host(tracked, 0x4000), 0x4000, 0) >= 0;
@@ -2495,8 +2534,12 @@ static int check_rt_overlap(void) {
     vk_rt_drawn_full(target);
     (void)vk_rt_drawn_fresh(target);
     CHECK(own_landings() == landings);
-    if (own_traps()) CHECK(own_lookup(tracked_cpu, 0x4000, NULL, 0) > 0);
+    if (inplace)
+        CHECK(own_lookup(tracked_cpu, 0x4000, NULL, 0) == 0 && vk_uma_pending_cpu(tracked_cpu, 0x4000));
+    else if (own_traps())
+        CHECK(own_lookup(tracked_cpu, 0x4000, NULL, 0) > 0);
     vk_unlock();
+    guest_done(tracked_cpu + 16, 16); /* the GPU's writes there first, as the guest's fence has them */
     memset(GP(tracked_cpu + 16), 0x39, 16);
     g_renderer->mem_may_have_changed();
     vk_lock();
@@ -2506,18 +2549,23 @@ static int check_rt_overlap(void) {
        a GPU write in its span writes it back, but for the pages the program wrote, which keep its bytes. The program
        wrote them after the GPU drew there. Without write tracking, the write-back can't tell them */
     rt_clear(ch, DMA_GA, 160, 256, 4, 1);
+    guest_done(DMA_A + 0x8000, 0x2000); /* the GPU's writes there first, as the guest's fence has them */
     memset(GP(DMA_A + 0x8000), 0x5a, 0x2000);
     g_renderer->mem_may_have_changed();
     vk_rt_before_write(DMA_GA + 0x20000, 16);
     if (tracking) CHECK(all_bytes(GP(DMA_A + 0x8000), 0x2000, 0x5a));
+    guest_done(DMA_A, 0x8000);
     CHECK(all_blue(GP(DMA_A), 0x8000));
+    guest_done(DMA_A + 0xa000, 0x28000 - 0xa000);
     CHECK(all_blue(GP(DMA_A + 0xa000), 0x28000 - 0xa000));
     /* drawn over whole again: its next write-back is every pixel, the program's bytes no longer newer */
     rt_clear(ch, DMA_GA, 160, 256, 4, 1);
     vk_rt_before_write(DMA_GA + 0x20000, 16);
+    guest_done(DMA_A, 0x28000);
     CHECK(all_blue(GP(DMA_A), 0x28000));
     /* A target loaded from memory and then changed by a copy, with no draw since, so no draw baseline: the pages the
        program wrote after the load keep its bytes too. The rest is the image, as it was loaded */
+    guest_done(DMA_A, 0x28000); /* the GPU's writes there first, as the guest's fence has them */
     memset(GP(DMA_A), 0x21, 0x28000);
     g_renderer->mem_may_have_changed();
     vk_lock();
@@ -2526,11 +2574,14 @@ static int check_rt_overlap(void) {
     CHECK(copied);
     vk_surf_wrote(copied);
     vk_unlock();
+    guest_done(DMA_A + 0x10000, 0x1000); /* the GPU's writes there first, as the guest's fence has them */
     memset(GP(DMA_A + 0x10000), 0x5b, 0x1000);
     g_renderer->mem_may_have_changed();
     vk_rt_before_write(DMA_GA + 0x20000, 16);
     if (tracking) CHECK(all_bytes(GP(DMA_A + 0x10000), 0x1000, 0x5b));
+    guest_done(DMA_A, 0x10000);
     CHECK(all_bytes(GP(DMA_A), 0x10000, 0x21));
+    guest_done(DMA_A + 0x11000, 0x17000);
     CHECK(all_bytes(GP(DMA_A + 0x11000), 0x17000, 0x21));
     /* A target whose pages lie in two runs of guest memory, as a virtual pool maps them: the page of the second run
        that the program wrote keeps its bytes too */
@@ -2538,12 +2589,16 @@ static int check_rt_overlap(void) {
     gmmu_map(split, DMA_B, 0x10000);
     gmmu_map(split + 0x10000, DMA_A + 0x40000, 0x10000);
     rt_clear(ch, split, 160, 128, 4, 1);
+    guest_done(DMA_A + 0x41000, 0x1000); /* the GPU's writes there first, as the guest's fence has them */
     memset(GP(DMA_A + 0x41000), 0x6c, 0x1000);
     g_renderer->mem_may_have_changed();
     vk_rt_before_write(split + 0x13000, 16);
     if (tracking) CHECK(all_bytes(GP(DMA_A + 0x41000), 0x1000, 0x6c));
+    guest_done(DMA_B, 0x10000);
     CHECK(all_blue(GP(DMA_B), 0x10000));
+    guest_done(DMA_A + 0x40000, 0x1000);
     CHECK(all_blue(GP(DMA_A + 0x40000), 0x1000));
+    guest_done(DMA_A + 0x42000, 0x2000);
     CHECK(all_blue(GP(DMA_A + 0x42000), 0x2000));
     free(ch);
     return 0;
@@ -2552,8 +2607,8 @@ static int check_rt_overlap(void) {
 /* Guest memory read in place whose host pages change (gpu/vk/uma.c). amdgpu takes every import's pages again in each
    submission and refuses all of it on pages gone or trapped since (EFAULT: the device is lost), so the import over
    pages the guest unmaps leaves the driver with the unmap, once the commands that read it ran, and before anything else
-   is submitted, while an import elsewhere stays the same one; the import over pages the GPU owns next leaves it before
-   they are trapped; and so does one dropped from the table that a recorded command still reads. A driver that takes
+   is submitted, while an import elsewhere stays the same one, and one a DMA copy writes in place too; and one dropped
+   from the table that a recorded command still reads leaves it with the unmap. A driver that takes
    no pages again (lavapipe) shows it in the imports held. Write tracking can't tell what was written on an imported
    page */
 #define UMA_R  (HEAP_BASE + 0x1000000) /* mapped and unmapped here */
@@ -2592,8 +2647,9 @@ static int check_uma_page_changes(void) {
     CHECK(vk_buf_get_input(UMA_GE + 0x100, 256, 4, &again, &again_off) && again == e && again_off == eoff);
     CHECK(vk_uma_imports(UMA_E, 0x10000) == 1);
     vk_unlock();
-    /* a range the GPU owns next (a DMA copy's destination) is trapped: the import over its page goes before the trap,
-       once the copy that reads it ran, as amdgpu can't take a trapped page either */
+    /* a DMA copy's destination is written in place (vk_uma_publish), after the copy recorded before it that reads it:
+       the import stays, with no trap (where no one import can hold a result, it is trapped, and the imports over it go
+       first: vulkan_uma_imports.inc) */
     CHECK(mem_map(UMA_R, 0x10000, MS_NORMAL, PERM_RW) == 0);
     memset(GP(UMA_R), 0x66, 0x10000);
     vk_lock();
@@ -2609,18 +2665,19 @@ static int check_uma_page_changes(void) {
     rec_CmdCopyBuffer(vk_cmd(), e, rb, 1, &c[2]); /* work of its own for a submission after the trap */
     vk_finish();
     vk_readback_ready();
-    CHECK(!own_traps() || vk_uma_imports(UMA_R + 0x1000, 0x1000) == 0);
+    CHECK(vk_uma_imports(UMA_R + 0x1000, 0x1000) == 1 && own_lookup(UMA_R + 0x1000, 256, NULL, 0) == 0);
     for (u32 i = 0; i < 256; i++) CHECK(result[i] == 0x66); /* read before the copy over it */
     vk_unlock();
-    CHECK(!memcmp(GP(UMA_R) + 0x1000, GP(UMA_E) + 0x2000, 256) && GP(UMA_R)[0x1100] == 0x66); /* reading lands it */
+    CHECK(!memcmp(GP(UMA_R) + 0x1000, GP(UMA_E) + 0x2000, 256) && GP(UMA_R)[0x1100] == 0x66);
     /* an import dropped from the table (a save state's load forgets them all) is the driver's until the copy recorded
-       with it is done: its pages unmapped before that, the copy runs first and the import goes with the unmap */
+       with it is done: its pages unmapped before that, the copy runs first and the import goes with the unmap. The
+       bytes after the DMA copy's, in the import it kept (a window mapped in part takes no second import) */
     vk_lock();
-    CHECK(vk_buf_get_input(UMA_GR + 0x3000, 256, 4, &r, &roff) && vk_uma_imports(UMA_R + 0x3000, 0x1000) == 1);
+    CHECK(vk_buf_get_input(UMA_GR + 0x1100, 256, 4, &r, &roff) && vk_uma_imports(UMA_R + 0x1100, 0x100) == 1);
     c[0] = (VkBufferCopy){roff, 0, 256};
     rec_CmdCopyBuffer(vk_cmd(), r, rb, 1, &c[0]);
     vk_uma_forget_all();
-    CHECK(vk_uma_imports(UMA_R + 0x3000, 0x1000) == 1); /* the copy still reads it */
+    CHECK(vk_uma_imports(UMA_R + 0x1100, 0x100) == 1); /* the copy still reads it */
     vk_unlock();
     CHECK(mem_unmap(UMA_R, 0x10000) == 0);
     vk_lock();
@@ -2652,10 +2709,8 @@ static int check_uma_page_changes(void) {
         fprintf(stderr, "write tracking since the baseline: %d on the imported page, %d beside it\n", imported, beside);
     CHECK(imported == -1 && beside != 1);
     CHECK(mem_unmap(UMA_E, 0x10000) == 0);
-    printf("in place: an unmapped import leaves the driver with the unmap, one elsewhere stays, one over pages the GPU "
-           "owns next goes before the trap (traps %s), one dropped goes with an unmap, and write tracking leaves an "
-           "imported page alone\n",
-           own_traps() ? "on" : "off: nothing to check there");
+    printf("in place: an unmapped import leaves the driver with the unmap, one elsewhere stays, one a DMA copy writes "
+           "stays, one dropped goes with an unmap, and write tracking leaves an imported page alone\n");
     return 0;
 }
 
@@ -2810,11 +2865,12 @@ int main(int argc, char** argv) {
         if (!strcmp(name, "region_writes") && ++ran) CHECK(!check_uma_region_writes());
         if (!strcmp(name, "writes") && ++ran) CHECK(!check_uma_writes());
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
+        if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
         if (!strcmp(name, "dispatch") && ++ran) CHECK(!check_uma_dispatch());
         if (!ran) {
             fprintf(stderr,
                     "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, migrate, way, region_writes, "
-                    "writes, feedback or dispatch\n",
+                    "writes, feedback, publish or dispatch\n",
                     name);
             return 2;
         }
@@ -2830,6 +2886,7 @@ int main(int argc, char** argv) {
         CHECK(!check_uma_constants());
         CHECK(!check_uma_writes());
         CHECK(!check_uma_feedback());
+        CHECK(!check_uma_publish());
         CHECK(!check_uma_dispatch());
         CHECK(!check_uma_page_changes());
         CHECK(!check_uma());
@@ -2912,6 +2969,7 @@ int main(int argc, char** argv) {
     CHECK(!check_uma_constants());
     CHECK(!check_uma_writes());
     CHECK(!check_uma_feedback());
+    CHECK(!check_uma_publish());
     CHECK(!check_uma_dispatch());
     CHECK(!check_uma_page_changes());
     CHECK(!check_rt_overlap());
