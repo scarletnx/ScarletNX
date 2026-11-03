@@ -304,3 +304,7 @@ endif()
 # No -fno-strict-aliasing or -fwrapv in ScarletNX's own code, once every target is defined (cmake/banned_flags.cmake)
 include(cmake/banned_flags.cmake)
 snx_check_project_flags()
+# plat_posix.c's power watcher needs both Apple frameworks named by every target that compiles it, once every
+# target is defined (cmake/power_frameworks.cmake)
+include(cmake/power_frameworks.cmake)
+snx_check_power_frameworks()
