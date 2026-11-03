@@ -42,6 +42,7 @@
 #include <sys/statvfs.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <pthread.h> /* a thread's CPU clock (snx_thread_clock) */
 #include <unistd.h>
 #endif
 
@@ -1619,6 +1620,54 @@ SnxU64 snx_process_cpu_ns(void) {
     struct timespec t;
     if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t)) return 0;
     return (SnxU64)t.tv_sec * 1000000000u + (SnxU64)t.tv_nsec;
+#endif
+}
+SnxU64 snx_thread_clock(void) {
+#if defined(_WIN32)
+    HANDLE h = NULL;
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &h, 0, FALSE,
+                         DUPLICATE_SAME_ACCESS))
+        return 0;
+    return (SnxU64)(uintptr_t)h;
+#elif defined(__APPLE__)
+    return (SnxU64)pthread_mach_thread_np(pthread_self()); /* the library's own right: nothing to let go of */
+#else
+    clockid_t id;
+    SnxU64 clock = 0;
+    if (pthread_getcpuclockid(pthread_self(), &id)) return 0;
+    memcpy(&clock, &id, sizeof id); /* a thread's clock is never CLOCK_REALTIME, 0 */
+    return clock;
+#endif
+}
+int snx_thread_cpu_ns(SnxU64 clock, SnxU64* ns) {
+#if defined(_WIN32)
+    FILETIME created, exited, kernel, user;
+    if (!GetThreadTimes((HANDLE)(uintptr_t)clock, &created, &exited, &kernel, &user)) return -1;
+    *ns = (((SnxU64)kernel.dwHighDateTime << 32 | kernel.dwLowDateTime) +
+           ((SnxU64)user.dwHighDateTime << 32 | user.dwLowDateTime)) *
+          100; /* 100 ns ticks */
+    return 0;
+#elif defined(__APPLE__)
+    thread_basic_info_data_t info;
+    mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+    if (thread_info((thread_act_t)clock, THREAD_BASIC_INFO, (thread_info_t)&info, &count) != KERN_SUCCESS) return -1;
+    *ns = ((SnxU64)info.user_time.seconds + (SnxU64)info.system_time.seconds) * 1000000000u +
+          ((SnxU64)info.user_time.microseconds + (SnxU64)info.system_time.microseconds) * 1000u;
+    return 0;
+#else
+    clockid_t id;
+    struct timespec t;
+    memcpy(&id, &clock, sizeof id);
+    if (clock_gettime(id, &t)) return -1;
+    *ns = (SnxU64)t.tv_sec * 1000000000u + (SnxU64)t.tv_nsec;
+    return 0;
+#endif
+}
+void snx_thread_clock_close(SnxU64 clock) {
+#if defined(_WIN32)
+    if (clock) CloseHandle((HANDLE)(uintptr_t)clock);
+#else
+    (void)clock;
 #endif
 }
 int snx_memory_available(SnxU64* bytes) {

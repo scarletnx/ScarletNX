@@ -20,6 +20,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/stats.h"
+#include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/memory/mem.h"
@@ -525,6 +526,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         last_present_ns = now_ns;
         g_vk_present++;
         stats_frame(now_ns);
+        if (g_vk_present == 1 || g_vk_present % 600 == 0) guest_stats_log(now_ns, g_vk_present);
         vk_mem_present();
         if (g_last) vk_surf_touch(g_last); /* what screenshots read stays */
         vk_tex_frame();
