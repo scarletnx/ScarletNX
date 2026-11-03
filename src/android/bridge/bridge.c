@@ -63,6 +63,7 @@ static struct {
     uint64_t guard;
     char optimization; /* bridge_set_optimization's, 0 for the default */
     bool verbose;      /* bridge_set_verbose's */
+    char* keep_ir;     /* bridge_set_keep_ir's folder, NULL for none */
     RtAPI rt;
     pthread_mutex_t lock; /* the JIT, the exports and the ranges */
 } b = {.lock = PTHREAD_MUTEX_INITIALIZER};
@@ -112,6 +113,8 @@ static bool compile(uint64_t pc) {
         range.size = r->address + r->size - start < most ? (size_t)(r->address + r->size - start) : most;
     }
     double started = snx_seconds();
+    /* before the compile too: a unit that crashes LLVM is the last one said */
+    if (b.verbose) fprintf(stderr, "scarletnx-android: JIT 0x%llx: compiling\n", (unsigned long long)pc);
     Block block = {pc & ~(JIT_BLOCK - 1), (pc & ~(JIT_BLOCK - 1)) + JIT_BLOCK};
     struct snx_recompiled* m = snx_recompile_from(b.recompiler, &range, 1, &pc, 1, JIT_STEP, outside_block, &block);
     if (!m) {
@@ -243,6 +246,10 @@ bool bridge_set_optimization(char level) {
 void bridge_set_verbose(bool verbose) {
     b.verbose = verbose;
 }
+void bridge_set_keep_ir(const char* folder) {
+    free(b.keep_ir);
+    b.keep_ir = folder && folder[0] ? snx_strdup(folder) : NULL;
+}
 
 bool bridge_init(const char* cache, char* error, size_t error_size) {
     if (b.window) return true;
@@ -273,6 +280,8 @@ bool bridge_init(const char* cache, char* error, size_t error_size) {
     /* a phone's CPU: Armv8.2, without pointer authentication (getauxval's HWCAP says the same) */
     snx_recompiler_set_a64_target(b.recompiler, SNX_RECOMPILER_A64_ANDROID);
     if (b.optimization) snx_recompiler_set_optimization(b.recompiler, b.optimization);
+    if (b.keep_ir && snx_recompiler_set_keep_ir(b.recompiler, b.keep_ir))
+        fprintf(stderr, "scarletnx-android: cannot keep the JIT's IR in %s\n", b.keep_ir);
     if (cache && snx_recompiler_set_cache(b.recompiler, cache))
         fprintf(stderr, "scarletnx-android: %s; compiling without a cache\n", snx_recompiler_error(b.recompiler));
     snx_runtime_defaults(&b.rt);

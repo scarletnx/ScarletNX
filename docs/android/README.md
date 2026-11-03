@@ -63,6 +63,7 @@ These find what an app does when it stops or runs slowly:
 | `--sample` | Every 5 seconds, each guest thread's pc, x30 and HLE call, and the count of Vulkan presents |
 | `--log-signals` | Each guest signal action, send and delivery |
 | `--jit-verbose`, `--jit-opt=0` | Each unit the JIT compiles with its time, and its code at -O0, which compiles several times faster to test the JIT itself (2 is the default) |
+| `--jit-keep-ir=DIR` | The LLVM IR of each unit the JIT compiles, saved in DIR, so a unit that LLVM fails on can be compiled again by itself. `--jit-verbose` also says each unit's entry before it compiles, so a crash in LLVM names it |
 | `--linker-verbose` | Each native library and its load address |
 | `--framework=JAR`, `--java-home=DIR` | The framework's jar and the JDK, in place of the ones beside the program and that the build found |
 
