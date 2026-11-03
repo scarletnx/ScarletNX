@@ -7,8 +7,8 @@ on:
     branches: [main]
     tags: ['v*'] # a version's release (publish.yml)
   pull_request:
-    # a draft builds less (each job that reads pull_request.draft says what), so leaving draft starts the whole build
-    types: [opened, synchronize, reopened, ready_for_review]
+    # a draft builds and tests as much as a pull request ready for review, so leaving draft starts nothing
+    types: [opened, synchronize, reopened]
     # skipped when the change is only in files that no build or test reads. tracked_material.py reads them all and runs
     # on its own (pr-checks.yml). docs/ARCHITECTURE.md, DEPRECATIONS.md and GUI.md are test inputs: they build
     paths:
@@ -54,8 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # a draft pull request builds x86-64 alone, whose install edenprobe runs; out of draft, both
-        arch: ${{ fromJSON(github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
+        arch: [x86_64, aarch64]
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -308,8 +307,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # x86-64's alone in a draft pull request, as the linux job
-        arch: ${{ fromJSON(github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
+        arch: [x86_64, aarch64]
     # pkgforge's Arch image and tools (https://github.com/pkgforge-dev/Anylinux-AppImages), see scripts/make-appimage.sh
     container: ghcr.io/pkgforge-dev/archlinux:latest
     steps:
@@ -468,11 +466,9 @@ jobs:
   # LoongArch). Big-endian ppc64's has every runtime (the 3DS one builds there but isn't ported to a big-endian host):
   # Arch POWER's glibc there is ELFv2, not Debian ports' ELFv1, which the linux-ppc64 job tests. No POWER, RISC-V or
   # LoongArch machine has run the AppImages yet, so like the macOS and iOS jobs they may fail without failing the run
-  # (scripts/publish-builds.py, OPTIONAL). A pull request builds them once it is ready for review, as they are 4 of
-  # every 10 runner minutes of a run; appimage-cross-check, which needs them, goes with them
+  # (scripts/publish-builds.py, OPTIONAL)
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-26.04
     # LLVM's cross build (scripts/linux-llvm.sh) adds about half an hour where its cache misses
     timeout-minutes: 180
@@ -1143,11 +1139,9 @@ jobs:
   # fail the run (continue-on-error), which would hold back the nightly: they are new, and no Mac checked them before
   # CI. iOS builds even when macOS failed, and each one's app is made from its own build alone. Each app carries
   # Ryujinx's MoltenVK (V380-Ori/Ryujinx.MoltenVK): mainline's lacks patches emulators' pipelines need. The release's
-  # tars, their SHA-256 the ones GitHub lists for them. A draft pull request skips it, as it skips the AArch64 builds:
-  # the organization runs 20 jobs at once
+  # tars, their SHA-256 the ones GitHub lists for them
   apple:
     name: macOS and iOS (arm64)
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: macos-26
     timeout-minutes: 240
     continue-on-error: true
@@ -1334,7 +1328,7 @@ jobs:
       fail-fast: false
       matrix:
         # the AppImages the appimage job made
-        arch: ${{ fromJSON(github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
+        arch: [x86_64, aarch64]
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
