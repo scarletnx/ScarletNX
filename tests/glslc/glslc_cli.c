@@ -54,7 +54,7 @@ static int compile_file(const char* path, const char* out) {
     fclose(f);
     GlslcResult* r = &g_cli.result;
     memset(g_cli.next, 0, sizeof g_cli.next); /* each file's bindings from 32 */
-    if (snx_glslc_compile(&g_cli.workspace, &(GlslcOptions){stage, g_cli.map ? map_by_kind : NULL, g_cli.next},
+    if (snx_glslc_compile(&g_cli.workspace, &(GlslcOptions){stage, g_cli.map ? map_by_kind : NULL, g_cli.next, 0},
                           g_cli.source, size, g_cli.words, SNX_GLSLC_MAX_WORDS, r)) {
         printf("%s:%u:%u: %s\n", path, r->line, r->column, r->error);
         return 1;

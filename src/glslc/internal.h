@@ -604,6 +604,7 @@ typedef struct {
     GlslcResult* result;
     GlslcBindFn bind; /* the backend's binding map, or NULL */
     void* bind_user;
+    int map_default; /* the map places the default uniform block too */
     jmp_buf fail;
     /* the raw scanner */
     uint32_t cur;
