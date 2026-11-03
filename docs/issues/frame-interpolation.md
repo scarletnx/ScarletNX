@@ -33,3 +33,17 @@ ghosting on fast motion.
 - `src/agb/runtime/host.c`: the GBA CPU blend and the `auto` gate.
 - `src/3ds/gpu/present.c`, `src/vita/gpu/vk.c`, `src/nx/gpu/vk/renderer.c`: the presenters that still need the two
   image path.
+
+## Defaults and practice
+
+- `frame_interp=off` is the default. Frame generation adds latency and can show ghosting, so it is opt-in.
+- `auto` is the recommended mode on a high refresh display: it runs only where the display is at least 1.9x the
+  game's present rate, and it uses the cheapest method that works, the temporal blend.
+- `blend` is the explicit choice for a display that is slower than 2x, with the ghosting it brings.
+- The Emulation General Wiki and the Dolphin, PPSSPP and Eden graphics guides all put MSAA in the game renderer and
+  post-process AA in the output stage. Dolphin and PPSSPP warn that MSAA and SSAA can break effects and cost GPU
+  memory. Eden offers FXAA and SMAA as output filters, with no AA as the default.
+- For the presented frame, `aa=auto` defaults to FXAA at 1.25x, the ratio where an upscale starts to show edges.
+  FXAA is the cheap, compatible choice. SMAA is the manual higher quality choice. SSAA 2x and 4x are manual too.
+- MSAA is not offered as a presented-frame mode, because a fullscreen pass has no geometry to sample. The Vita GXM
+  renderer and the Switch NVN guest set their own sample counts.
