@@ -55,7 +55,9 @@ page cache.
   and their page table entries dropped (`MADV_DONTNEED`). A guest access then blocks the faulting thread in the
   kernel. A handler thread, in ordinary thread context, lands the GPU data through the mirror and installs the page
   with `UFFDIO_CONTINUE`. No Vulkan call, lock or allocation runs in a signal handler.
-- Owned spans are not write-tracked: their consumers use the ownership map. `plat_ww_scan` skips them.
+- Owned spans are not write-tracked: their consumers use the ownership map. `plat_ww_scan` skips them. A span the
+  trap lets go is mapped with `UFFDIO_CONTINUE` and registered for write tracking again while no scan runs: it reads as
+  written once, with what the woken thread writes.
 - `UFFD_USER_MODE_ONLY` (needed without privileges) means a system call that reads or writes an owned page from the
   kernel gets EFAULT rather than a fault. Every system call that takes a guest pointer (files, sockets, TLS) and
   `pread`/`pwrite` on the pool first acquires the range (`own_acquire`).
