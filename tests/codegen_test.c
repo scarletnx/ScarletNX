@@ -833,6 +833,118 @@ static void clean_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* the loads and stores of a promoted register (X, SP, NZCV, V, FPCR, FPSR) of the CPU structure in the blocks of fn
+   that call callee: the copies ir_promote_registers puts around a site */
+static int copies_around(LLVMValueRef fn, const char* callee) {
+    LLVMValueRef c = LLVMGetParam(fn, 0);
+    size_t want = strlen(callee);
+    int count = 0;
+    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
+        int calls = 0, copies = 0;
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); inst; inst = LLVMGetNextInstruction(inst)) {
+            if (LLVMIsACallInst(inst)) {
+                LLVMValueRef f = LLVMGetCalledValue(inst);
+                size_t n = 0;
+                const char* name = f && LLVMIsAFunction(f) ? LLVMGetValueName2(f, &n) : "";
+                calls += n == want && !memcmp(name, callee, n);
+            } else if (LLVMIsALoadInst(inst) || LLVMIsAStoreInst(inst)) {
+                LLVMValueRef p = LLVMGetOperand(inst, LLVMIsAStoreInst(inst) ? 1 : 0);
+                size_t at;
+                if (p == c)
+                    at = 0;
+                else if (LLVMIsAGetElementPtrInst(p) && LLVMGetOperand(p, 0) == c && LLVMGetNumOperands(p) == 2 &&
+                         LLVMIsAConstantInt(LLVMGetOperand(p, 1)))
+                    at = (size_t)LLVMConstIntGetZExtValue(LLVMGetOperand(p, 1));
+                else
+                    continue;
+                copies += at < offsetof(CPU, tpidr) && (at < offsetof(CPU, pc) || at >= offsetof(CPU, n));
+            }
+        }
+        if (calls) count += copies;
+    }
+    return count;
+}
+
+/* DC ZVA's helper touches no register (it takes M and the address), so a memset loop of DC ZVA keeps its registers
+   in SSA values: no copy to or from the CPU structure around the helper's call. The loop then zeroes the blocks and
+   leaves the registers and flags as the instructions say */
+static void zva_test(void) {
+    static const SnxU32 words[] = {0xD2820001UL,  /* MOV X1,#0x1000 */
+                                   0xD2800065UL,  /* MOV X5,#3 */
+                                   0xD50B7421UL,  /* DC ZVA,X1: the loop's head */
+                                   0x91010021UL,  /* ADD X1,X1,#64 */
+                                   0x92403821UL,  /* AND X1,X1,#0x7FFF */
+                                   0xCA0100A5UL,  /* EOR X5,X5,X1 */
+                                   0x8B0500C6UL,  /* ADD X6,X6,X5 */
+                                   0xF1000400UL,  /* SUBS X0,X0,#1 */
+                                   0x54FFFF41UL,  /* B.NE back to the DC ZVA */
+                                   0xD65F03C0UL}; /* RET */
+    unsigned char memory[0x8000], expected[0x8000], image[sizeof(words)];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxFde range;
+    const SnxFunction* function;
+    LlvmSteps steps;
+    char error[1024];
+    size_t i, index;
+    int copies;
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    setup_program(&program, &module, image, sizeof(image));
+    range.start = 0;
+    range.size = sizeof(image);
+    module.fde = &range;
+    module.fde_count = 1;
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze the DC ZVA loop");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    check(function != NULL, "the DC ZVA loop is one function");
+    if (function && !llvm_steps_begin(&steps, 1, 0, error, sizeof(error))) {
+        index = llvm_steps_add_function(&steps, &codegen, function);
+        copies = copies_around(steps.fns[index], "dc_zva");
+        if (copies) fprintf(stderr, "dc zva: %d register copies in the blocks that call its helper\n", copies);
+        check(copies == 0, "a DC ZVA loop keeps its registers out of the CPU structure around the helper");
+        if (!llvm_steps_load(&steps, error, sizeof(error))) {
+            GuestFn f = (GuestFn)(void (*)(void))steps.steps[index];
+            CPU c = {0};
+            RtAPI rt = {0};
+            u64 x1 = 0x1000, x5 = 3, x6 = 7, n;
+            rt.poll = on_poll;
+            rt.undef = undefined;
+            memset(memory, 0xA5, sizeof(memory));
+            memset(expected, 0xA5, sizeof(expected));
+            c.rt = &rt;
+            c.mem = memory;
+            c.x[0] = 1000; /* more blocks than the 0x8000 bytes hold: the address wraps */
+            c.x[6] = x6;
+            c.x[30] = 0x2000;
+            for (n = 0; n < 1000; ++n) {
+                memset(expected + (x1 & ~(u64)63), 0, 64);
+                x1 = (x1 + 64) & 0x7FFF;
+                x5 ^= x1;
+                x6 += x5;
+            }
+            f(&c, SNX_CODE_BASE);
+            if (c.x[1] != x1 || c.x[5] != x5 || c.x[6] != x6 || c.x[0] != 0)
+                fprintf(stderr, "dc zva: x0 %llx x1 %llx x5 %llx x6 %llx, expected 0 %llx %llx %llx\n",
+                        (unsigned long long)c.x[0], (unsigned long long)c.x[1], (unsigned long long)c.x[5],
+                        (unsigned long long)c.x[6], (unsigned long long)x1, (unsigned long long)x5,
+                        (unsigned long long)x6);
+            check(c.x[0] == 0 && c.x[1] == x1 && c.x[5] == x5 && c.x[6] == x6 && c.pc == 0x2000,
+                  "the DC ZVA loop ends with the registers its instructions give");
+            check(c.n == 0 && c.z == 1 && c.cf == 1 && c.vf == 0, "the DC ZVA loop ends with SUBS 1-1's flags");
+            check(!memcmp(memory, expected, sizeof(memory)), "the DC ZVA loop zeroes its blocks and nothing else");
+        } else {
+            fprintf(stderr, "%s\n", error);
+            check(0, "compile and load the DC ZVA loop");
+        }
+        llvm_steps_end(&steps);
+    } else if (function) {
+        fprintf(stderr, "%s\n", error);
+        check(0, "start the DC ZVA loop's module");
+    }
+    snx_codegen_free(&codegen);
+}
+
 int main(void) {
     decoder_test();
     analysis_test();
@@ -842,6 +954,7 @@ int main(void) {
     semantics_test();
     poll_test();
     clean_test();
+    zva_test();
     printf("Native codegen: %s\n", failures ? "FAILED" : "passed");
     return failures != 0;
 }
