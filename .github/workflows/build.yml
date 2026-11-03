@@ -75,12 +75,12 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-linux-${{ matrix.arch }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-linux-${{ matrix.arch }}-
-      # llvm: llvm-config and LLVM-C for the recompiler (llvm-libs alone has no headers). gdb: the gdbserver gdbstub_native drives. jq: scripts/pr-builds.sh, which pr_builds tests. Mirrors drop a connection now
+      # llvm: llvm-config and LLVM-C for the recompiler (llvm-libs alone has no headers). gdb: the gdbserver gdbstub_native drives. Mirrors drop a connection now
       # and then (pkgforge's for aarch64 most), so each pacman install is tried 3 times, 5 s apart
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb glslang && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -242,7 +242,7 @@ jobs:
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb glslang && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -1543,30 +1543,3 @@ jobs:
             !edenprobe/work
             edenprobe-main
             !edenprobe-main/work
-
-  # A pull request's builds, linked from a comment on it that each run rewrites, as soon as they are built
-  # (scripts/pr-builds.sh). A pull request from a fork gets a token that may not write, so it gets none
-  links:
-    name: Links to the builds
-    if: >-
-      !cancelled() && github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    needs: [linux, appimage, appimage-cross, windows, android, apple, edenprobe]
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          sparse-checkout: scripts/pr-builds.sh
-          sparse-checkout-cone-mode: false
-      - name: Link the builds from the pull request
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEEDS: ${{ toJSON(needs) }}
-          PR: ${{ github.event.pull_request.number }}
-          SHA: ${{ github.event.pull_request.head.sha }}
-        run: scripts/pr-builds.sh "$GITHUB_REPOSITORY" "$PR" "$GITHUB_RUN_ID" "$SHA"
