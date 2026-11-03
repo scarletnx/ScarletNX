@@ -1,19 +1,55 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/gpu/vk/window.h"
+#include "common/utilities/common.h"
 #include <SDL3/SDL_vulkan.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 bool snx_vk_window_open(const char* app, const char* title, int width, int height, SnxVkWindow* out, char* error,
                         size_t error_size) {
     *out = (SnxVkWindow){0};
-    if (volkInitialize() != VK_SUCCESS) {
-        snprintf(error, error_size, "no Vulkan loader");
-        return false;
+#ifdef __APPLE__
+    /* One driver, never two. The program's folders may carry MoltenVK (an app bundle's Frameworks, or the copy deployed
+       beside a game's runtime), and SDL loads that one for the surface: its search reaches the bundle. volkInitialize()
+       would take the system loader's driver instead, so a Mac with Homebrew's MoltenVK in the loader's ICD folders
+       ends with both copies in one process, and the surface call hands one copy's MVKInstance to the other's
+       vkGetInstanceProcAddr, which segfaults. Name the carried driver to SDL, and take volk's entry points from the
+       library SDL will use, so the instance and the surface come from it */
+    {
+        char* self = snx_executable(NULL), *driver = self ? snx_vulkan_driver(self) : NULL;
+        if (driver && !SDL_GetHint(SDL_HINT_VULKAN_LIBRARY)) {
+            SDL_SetHint(SDL_HINT_VULKAN_LIBRARY, driver);
+            fprintf(stderr, "vulkan: the Vulkan driver at %s\n", driver);
+        }
+        free(self);
+        free(driver);
     }
+#endif
     /* a window first: a display server and a Vulkan surface make it the output */
     if (SDL_InitSubSystem(SDL_INIT_VIDEO))
         out->window = SDL_CreateWindow(title, width, height, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+    /* the loader's entry points, from the library SDL loads: the driver named above on Apple, so the instance and the
+       surface come from one copy of it, and the system's loader elsewhere. SDL answers only once its video started */
+#ifdef __APPLE__
+    {
+        PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
+        if (!gipa) {
+            if (out->window) SDL_DestroyWindow(out->window);
+            out->window = NULL;
+            snprintf(error, error_size, "no Vulkan loader");
+            return false;
+        }
+        volkInitializeCustom(gipa);
+    }
+#else
+    if (volkInitialize() != VK_SUCCESS) {
+        if (out->window) SDL_DestroyWindow(out->window);
+        out->window = NULL;
+        snprintf(error, error_size, "no Vulkan loader");
+        return false;
+    }
+#endif
     Uint32 extension_count = 0;
     const char* const* extensions = out->window ? SDL_Vulkan_GetInstanceExtensions(&extension_count) : NULL;
     SnxVkInstanceInfo info = {.app_name = app,

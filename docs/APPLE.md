@@ -46,6 +46,12 @@ game plays as `<data folder>/recompiled/<id>/<id>`, outside the bundle, where SD
 checkout has no library to deploy and no bundle around it, so it uses the system's Vulkan loader (Homebrew's
 `molten-vk` and `vulkan-loader`).
 
+The 3DS and the Vita's windows open through `common/gpu/vk/window.c`, which names the same library to SDL and takes
+its own entry points from it. One process must hold one copy of MoltenVK: a second copy's `MVKInstance` is a
+different type, so the surface call hands one copy's instance to the other's `vkGetInstanceProcAddr` and the process
+segfaults. That is what a Mac with Homebrew's `molten-vk` in the loader's ICD folders saw when volk took the system
+loader and SDL took the bundle's library.
+
 ### iOS
 
 An iOS app runs one process and may not start another, so the iOS app works like Android's game activity without its
