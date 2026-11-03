@@ -37,56 +37,61 @@ static uint64_t arm_syscall_number(uint32_t nr) {
         default: return (uint64_t)-1;
     }
 }
-static void arm_syscall(GnuProcess* p) {
-    uint64_t number = arm_syscall_number(p->arm.r[7]);
+static void arm_syscall(GnuThread* t) {
+    uint64_t number = arm_syscall_number(t->arm.r[7]);
     if (number == (uint64_t)-1) {
-        p->arm.r[0] = (uint32_t)-GNU_ENOSYS;
+        t->arm.r[0] = (uint32_t)-GNU_ENOSYS;
         return;
     }
     uint64_t arguments[6];
-    for (unsigned i = 0; i < 6; i++) arguments[i] = p->arm.r[i];
-    int64_t result = gnu_syscall(p, number, arguments);
-    p->arm.r[0] = (uint32_t)result;
+    for (unsigned i = 0; i < 6; i++) arguments[i] = t->arm.r[i];
+    int64_t result = gnu_syscall(t, number, arguments);
+    /* no handler runs for an AArch32 guest: a call that a signal stopped ends with EINTR */
+    if (result <= -GNU_ERESTARTSYS && result >= -GNU_ERESTART_RESTARTBLOCK) result = -GNU_EINTR;
+    t->arm.r[0] = (uint32_t)result;
 }
 
-int gnu_arm_run(GnuProcess* p) {
+int gnu_arm_run(GnuThread* t) {
+    GnuProcess* p = gnu_process_of(t);
     char error[512];
     SnxArmExec* exec = snx_arm_exec_new(error, sizeof error);
     if (!exec) {
         fprintf(stderr, "gnuabi: cannot compile ARM code: %s\n", error);
-        return 4;
+        gnu_process_fault(t, 4, "Cannot start the ARM block compiler");
+        return 1;
     }
-    if (!setjmp(p->exit_target)) {
-        p->running = 1;
+    int reason = setjmp(t->exit_target);
+    if (!reason) {
+        t->running = 1;
         while (!p->exited) {
-            uint32_t pc = p->arm.r[15];
-            int thumb = (p->arm.cpsr & SNX_ARM_T) != 0;
+            uint32_t pc = t->arm.r[15];
+            int thumb = (t->arm.cpsr & SNX_ARM_T) != 0;
             SnxArmBlock block = snx_arm_exec_block(exec, (const SnxArmExecRange*)p->elf.code, p->elf.code_count, pc,
                                                    thumb, p->memory.base);
             if (!block) {
-                gnu_process_fault(p, 4, "Cannot compile an ARM guest block");
+                gnu_process_fault(t, 4, "Cannot compile an ARM guest block");
                 break;
             }
-            p->arm.exit = SNX_ARM_OK;
-            block(&p->arm);
-            switch (p->arm.exit) {
+            t->arm.exit = SNX_ARM_OK;
+            block(&t->arm);
+            switch (t->arm.exit) {
                 case SNX_ARM_OK: break;
-                case SNX_ARM_SVC: arm_syscall(p); break;
-                case SNX_ARM_BREAKPOINT: gnu_process_fault(p, 5, "Guest executed BKPT"); break;
-                case SNX_ARM_UNDEFINED: gnu_process_fault(p, 4, "Guest executed an undefined instruction"); break;
+                case SNX_ARM_SVC: arm_syscall(t); break;
+                case SNX_ARM_BREAKPOINT: gnu_process_fault(t, 5, "Guest executed BKPT"); break;
+                case SNX_ARM_UNDEFINED: gnu_process_fault(t, 4, "Guest executed an undefined instruction"); break;
                 case SNX_ARM_DATA_ABORT:
-                    gnu_process_fault(p, 11, "Guest data access violated mapped permissions");
+                    gnu_process_fault(t, 11, "Guest data access violated mapped permissions");
                     break;
-                case SNX_ARM_ALIGNMENT: gnu_process_fault(p, 7, "Guest performed an unaligned access"); break;
+                case SNX_ARM_ALIGNMENT: gnu_process_fault(t, 7, "Guest performed an unaligned access"); break;
                 case SNX_ARM_ENDIAN_UNSUPPORTED:
-                    gnu_process_fault(p, 4, "Big-endian guest state is unsupported");
+                    gnu_process_fault(t, 4, "Big-endian guest state is unsupported");
                     break;
-                default: gnu_process_fault(p, 4, "Guest entered an unsupported instruction state"); break;
+                default: gnu_process_fault(t, 4, "Guest entered an unsupported instruction state"); break;
             }
         }
-        if (!p->exited) gnu_process_fault(p, 4, "Guest entry returned without exit/exit_group");
+        if (!p->exited) gnu_process_fault(t, 4, "Guest entry returned without exit/exit_group");
     }
-    p->running = 0;
+    t->running = 0;
     snx_arm_exec_free(exec);
-    return p->exit_code;
+    return reason ? reason : 1;
 }

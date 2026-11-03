@@ -20,10 +20,11 @@ static unsigned failures;
     } while (0)
 
 static GnuProcess process;
+static GnuThread* thread;
 enum { BUF = 0x10000, ADDR = 0x10000, ADDRLEN = 0x10100, DATA = 0x11000, POLLFDS = 0x12000, PATH = 0x13000 };
 static int64_t sys(uint64_t n, uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e, uint64_t f) {
     uint64_t args[6] = {a, b, c, d, e, f};
-    return gnu_syscall(&process, n, args);
+    return gnu_syscall(thread, n, args);
 }
 static void put(uint64_t at, const void* v, size_t n) { CHECK(!gnu_memory_write(&process.memory, at, v, n)); }
 static void get(uint64_t at, void* v, size_t n) { CHECK(!gnu_memory_read(&process.memory, at, v, n)); }
@@ -46,7 +47,11 @@ static void loopback(uint16_t port) {
 
 int main(void) {
     snx_net_set_log(quiet);
+    gnu_kernel_init(&process.kernel, &gnu_kernel_ops, &process, NULL, 1);
+    thread = gnu_thread_new(&process, 1);
+    CHECK(thread);
     CHECK(!gnu_memory_init(&process.memory));
+    process.kernel.base = process.memory.base;
     CHECK(!gnu_memory_map(&process.memory, BUF, 0x10000, GNU_PROT_READ | GNU_PROT_WRITE, 0));
     CHECK(!gnu_vfs_init(&process.vfs));
     CHECK(!gnu_net_process_init(&process));

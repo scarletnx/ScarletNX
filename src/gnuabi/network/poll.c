@@ -3,8 +3,10 @@
 /* ppoll, pselect6 and epoll over every kind of descriptor: sockets and eventfds through the stack's poll, stdio
    through its host descriptor, and the guest's own files, which are always ready, as Linux's regular files are.
    epoll is level-triggered poll over its interest list. Edge-triggered users read until EAGAIN anyway, so EPOLLET
-   only costs them a spare wakeup. EPOLLONESHOT disarms an entry once it was reported. Signal masks are ignored:
-   the runtime delivers no asynchronous signals. */
+   only costs them a spare wakeup. EPOLLONESHOT disarms an entry once it was reported. The calls' signal masks are
+   the thread's while they wait (signals.c's gnu_signal_call_mask). An epoll's lock guards its interest list; a wait
+   polls the list as it was when the wait started, so an epoll_ctl of another thread during it is seen at the next
+   wait */
 #include "gnuabi/network/network.h"
 #include "gnuabi/filesystem/internal.h"
 #include <stdlib.h>
@@ -172,9 +174,11 @@ typedef struct {
 typedef struct {
     EpollItem* items;
     size_t count, capacity;
+    GnuMutex lock;
 } Epoll;
 static void epoll_release(void* o) {
     Epoll* ep = o;
+    gnu_mutex_destroy(&ep->lock);
     free(ep->items);
     free(ep);
 }
@@ -184,6 +188,7 @@ int64_t gnu_net_epoll_create1(GnuProcess* p, uint64_t flags) {
     if (flags & ~(uint64_t)EPOLL_CLOEXEC) return -GNU_EINVAL;
     Epoll* ep = calloc(1, sizeof *ep);
     if (!ep) return -GNU_ENOMEM;
+    gnu_mutex_init(&ep->lock, 0);
     return gnu_vfs_install_object(&p->vfs, &g_epoll_ops, ep, 0, (flags & EPOLL_CLOEXEC) != 0);
 }
 /* the entry for fd that still names the file registered; entries for closed files go */
@@ -198,10 +203,18 @@ static EpollItem* epoll_find(GnuProcess* p, Epoll* ep, int fd) {
     }
     return NULL;
 }
+static int64_t epoll_ctl_locked(GnuProcess* p, Epoll* ep, const uint64_t a[6]);
 int64_t gnu_net_epoll_ctl(GnuProcess* p, const uint64_t a[6]) {
     Epoll* ep = gnu_vfs_object(&p->vfs, (int)a[0], &g_epoll_ops, NULL);
     GnuFdInfo info;
     if (!ep) return gnu_vfs_fd_info(&p->vfs, (int)a[0], &info) ? -GNU_EBADF : -GNU_EINVAL;
+    gnu_mutex_lock(&ep->lock);
+    int64_t r = epoll_ctl_locked(p, ep, a);
+    gnu_mutex_unlock(&ep->lock);
+    return r;
+}
+static int64_t epoll_ctl_locked(GnuProcess* p, Epoll* ep, const uint64_t a[6]) {
+    GnuFdInfo info;
     int fd = (int)a[2];
     if (gnu_vfs_fd_info(&p->vfs, fd, &info)) return -GNU_EBADF;
     if (fd == (int)a[0]) return -GNU_EINVAL;
@@ -251,10 +264,12 @@ int64_t gnu_net_epoll_pwait(GnuProcess* p, const uint64_t a[6], int timespec_tim
     }
     unsigned char* out = gnu_memory_access(&p->memory, a[1], (size_t)max * EPOLL_EVENT_SIZE, GNU_PROT_WRITE);
     if (!out) return -GNU_EFAULT;
+    gnu_mutex_lock(&ep->lock);
     epoll_find(p, ep, -1); /* drops the entries of closed files */
     Wait* w = calloc(ep->count ? ep->count : 1, sizeof *w);
     size_t* which = calloc(ep->count ? ep->count : 1, sizeof *which);
     if (!w || !which) {
+        gnu_mutex_unlock(&ep->lock);
         free(w);
         free(which);
         return -GNU_ENOMEM;
@@ -266,6 +281,7 @@ int64_t gnu_net_epoll_pwait(GnuProcess* p, const uint64_t a[6], int timespec_tim
         w[n].events = gnu_net_poll_in(ep->items[i].events);
         which[n++] = i;
     }
+    gnu_mutex_unlock(&ep->lock);
     int64_t r = n ? wait_fds(p, w, n, ms) : 0;
     if (!n && ms) {
         /* nothing to watch: wait out the timeout on no descriptor, which only a cancel ends */
@@ -273,9 +289,11 @@ int64_t gnu_net_epoll_pwait(GnuProcess* p, const uint64_t a[6], int timespec_tim
         r = snx_net_poll(&none, 1, ms);
     }
     int64_t count = 0;
+    gnu_mutex_lock(&ep->lock);
     for (size_t i = 0; r > 0 && i < n && count < max; i++) {
         uint16_t rev = w[i].revents & (w[i].events | SNX_POLLERR | SNX_POLLHUP);
-        if (!rev) continue;
+        /* an entry another thread took out during the wait is not reported */
+        if (!rev || which[i] >= ep->count || ep->items[which[i]].fd != w[i].fd) continue;
         EpollItem* it = &ep->items[which[i]];
         unsigned char* e = out + count++ * EPOLL_EVENT_SIZE;
         memset(e, 0, EPOLL_EVENT_SIZE);
@@ -283,6 +301,7 @@ int64_t gnu_net_epoll_pwait(GnuProcess* p, const uint64_t a[6], int timespec_tim
         gnu_vfs_put64(e + 8, it->data);
         if (it->events & EPOLLONESHOT) it->disarmed = 1;
     }
+    gnu_mutex_unlock(&ep->lock);
     free(w);
     free(which);
     if (r < 0) return r == -SNX_EINTR ? -GNU_EINTR : r;
