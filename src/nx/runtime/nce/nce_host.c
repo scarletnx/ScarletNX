@@ -84,6 +84,7 @@ static _Thread_local NceTls t_nce __attribute__((tls_model("initial-exec")));
 extern u64 g_nce_tls __attribute__((visibility("hidden")));
 u64 g_nce_tls;
 static NceHostConfig g_config;
+static int g_net_base; /* the seccomp filters of the thread that ran nce_host_init: a thread's without the net */
 static struct sigaction g_old_ill, g_old_trap, g_old_sys;
 typedef char nce_check_bpf[sizeof(NceBpf) == sizeof(struct sock_filter) && offsetof(NceBpf, jt) == 2 &&
                                    offsetof(struct sock_filter, jt) == 2 && offsetof(NceBpf, k) == 4 &&
@@ -488,6 +489,7 @@ int nce_host_init(const NceHostConfig* config, u64* tls, int* indirect, u64* out
     }
     g_nce_tls = off;
     g_config = *config;
+    g_net_base = nce_net_filters();
     g_sig_enter = SIGRTMIN + 4;
     g_sig_kick = SIGRTMIN + 5;
     if (g_sig_kick > SIGRTMAX || handle(g_sig_enter, enter_signal, NULL) || handle(g_sig_kick, kick_signal, NULL) ||
@@ -516,27 +518,7 @@ int nce_host_attach(CPU* c, u64* reads, char* why, size_t size) {
 }
 
 int nce_host_net(char* why, size_t size) {
-    NceBpf prog[NCE_NET_WORDS];
-    struct sock_fprog fp;
-    long r;
-    fp.len = (unsigned short)nce_net_filter(g_config.lo, g_config.hi, AUDIT_ARCH_AARCH64, prog);
-    fp.filter = (struct sock_filter*)(void*)prog;
-    /* a filter of an unprivileged process needs no_new_privs: a setuid program it runs gains nothing */
-    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
-        snprintf(why, size, "prctl(PR_SET_NO_NEW_PRIVS) failed: %s", strerror(errno));
-        return -1;
-    }
-    /* every thread of the process, those made before too: a guest thread may come from any */
-    r = syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, &fp);
-    if (r < 0) {
-        snprintf(why, size, "seccomp(SECCOMP_SET_MODE_FILTER) failed: %s", strerror(errno));
-        return -1;
-    }
-    if (r > 0) {
-        snprintf(why, size, "thread %ld of the process cannot take the seccomp filter (another filter of its own)", r);
-        return -1;
-    }
-    return 0;
+    return nce_net_install(g_config.lo, g_config.hi, AUDIT_ARCH_AARCH64, g_net_base, why, size) < 0 ? -1 : 0;
 }
 
 int nce_host_tid(void) { return (int)syscall(SYS_gettid); }

@@ -151,7 +151,7 @@ int nce_layout(NceSpan* mods, size_t count, SnxU64 end, NceSites* sites, NceRang
    the game made): a seccomp filter that traps each system call made from the guest's addresses [lo, hi) with SIGSYS,
    the call not made, and lets every other through. Classic BPF, laid out as linux/filter.h's struct sock_filter, for
    a little-endian host whose system calls are of AUDIT_ARCH_ arch: its NCE_NET_WORDS words into out. Host-independent,
-   so a test runs it on any Linux; nce_host.c installs it */
+   so a test runs it on any Linux; nce_net_install installs it */
 typedef struct {
     unsigned short code;
     unsigned char jt, jf;
@@ -159,6 +159,15 @@ typedef struct {
 } NceBpf;
 #define NCE_NET_WORDS 14
 size_t nce_net_filter(SnxU64 lo, SnxU64 hi, SnxU32 arch, NceBpf* out);
+/* nce_net.c, Linux: this thread's seccomp filters (Seccomp_filters of /proc/thread-self/status), -1 where the system
+   does not say (before Linux 5.9, or not Linux) */
+int nce_net_filters(void);
+/* The net over [lo, hi) under this thread alone: no_new_privs set on it, then the filter, which the threads it starts
+   from here inherit; the process's other threads run without it. base: nce_net_filters() of a thread without the net
+   (the runtime's, before any guest thread runs). 0 installed, 1 when this thread has more filters than base, the net
+   it inherited from the guest thread that started it (none is stacked on it), -1 with the reason in why: a kernel or
+   qemu-user without seccomp filters, or not Linux */
+int nce_net_install(SnxU64 lo, SnxU64 hi, SnxU32 arch, int base, char* why, size_t size);
 
 /* the stub layout that the runtime's outcall (nce.c) depends on: the stub lowers the guest's sp by NCE_FRAME and
    keeps x16 and x17 at sp + 0 and 8, x30 at sp + 16. The runtime keeps the stub's return address at sp + 24 */

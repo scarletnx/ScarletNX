@@ -104,16 +104,21 @@ Limits:
 The patcher changes the words that the recompiler's analysis finds as code, and the unproven ones inside its
 functions. A word of those encodings outside every function keeps its bytes, so a literal of the same value stays as
 it is (Eden patches every such word of `.text`). If one of them is code after all, a function only a table reaches,
-an SVC there would run as a system call of the host, `x8` its number. The runtime puts a seccomp filter under the
-game's code (`nce_host_net`, its words from `nce_net_filter`): a system call made from the guest's addresses traps
-with `SIGSYS`, is not made, and the game stops with the SVC's address and immediate. The recompile's line counts the
+an SVC there would run as a system call of the host, `x8` its number. Each guest thread takes a seccomp filter as it
+starts the game's code (`nce_host_net`, `nce_net_install`, its words from `nce_net_filter`): a system call it makes
+from the guest's addresses traps with `SIGSYS`, is not made, and the game stops with the SVC's address and immediate.
+The runtime's own threads make their system calls with no filter of ours. The recompile's line counts the
 words outside the functions by kind.
 
 Limits:
 
-- Every system call of the process, in each thread (`SECCOMP_FILTER_FLAG_TSYNC`), runs the filter's 14 words first.
-  What that costs was not measured.
-- The filter needs `PR_SET_NO_NEW_PRIVS`: a setuid program that the process starts gains nothing.
+- Every system call of a guest thread runs the filter's 14 words first, and so do those of a thread a guest thread
+  starts (a filter is inherited, and a runtime thread made during an outcall inherits it too). What that costs was not
+  measured. A thread that has the net from the one that started it takes no second one (its count of filters, read
+  from `/proc/thread-self/status`, is past the runtime's); before Linux 5.9, which does not give that count, it
+  stacks a second.
+- The filter needs `PR_SET_NO_NEW_PRIVS`, which is set on each guest thread alone: a setuid program it starts gains
+  nothing, and the runtime's threads keep theirs.
 - The other kinds outside the functions (the TLS and counter registers' MRS) read the host's registers, which no
   filter sees: only the recompile's count shows them.
 - A kernel without seccomp filters, and qemu-user, which has none, run without the net and say so in the log.
@@ -132,10 +137,11 @@ run or a kick is a signal. Each thread adds to counters of its own, with no lock
 
 ## Tests
 
-- `nce_patch`, any host: the sites, the stubs in both forms, the `.nce` file read back from a moved base, which
-  games each host takes (`nce_refused`), a module of 200 MiB laid out with a pool before it and one after (and 300
-  MiB refused: the recompile ends, naming the word, and says to set `nce=0`), and the net's filter at the edges of its range, by an interpreter and, on Linux, by the kernel in a
-  child.
+- `nce_patch`, any host: the sites, the stubs in both forms, the `.nce` file read back from a moved base, which games
+  each host takes (`nce_refused`), a module of 200 MiB laid out with a pool before it and one after (and 300 MiB
+  refused: the recompile ends, naming the word, and says to set `nce=0`), and the net's filter at the edges of its
+  range, by an interpreter and, on Linux, by the kernel in a child: under a guest thread and the thread it starts, not
+  under the runtime's thread or one it starts after.
 - `nce_host` and `nce_host_indirect`: guest code runs natively in the direct form and in Android's. They run on an
   AArch64 Linux host, or under qemu-aarch64 with `SNX_AARCH64_SYSROOT` (and `SNX_AARCH64_GCC_TOOLCHAIN`,
   `SNX_QEMU_AARCH64`). The indirect one also takes a word another library holds and checks the refusal. The counter's
