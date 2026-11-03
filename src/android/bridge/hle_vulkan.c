@@ -38,6 +38,7 @@ typedef struct {
     void* host;          /* the loader's command, resolved at the first call */
     int allocator;       /* the parameter that is a VkAllocationCallbacks*, -1 for none */
     char kind;           /* hle_call's result kind */
+    const char* params;  /* hle_call's parameters, NULL for integers and pointers alone */
 } Command;
 
 static struct {
@@ -57,6 +58,24 @@ static bool loader(void) {
 static void* host_command(const char* name) {
     if (!loader()) return NULL;
     return (void*)vkGetInstanceProcAddr(v.instance, name);
+}
+
+/* The parameters of the commands that take a float, in order, for hle_call (Windows passes by position): from the
+   registry's commands (vulkan_core.h, Vulkan-Headers 1.4) whose parameters include a float or a double by value. No
+   command takes a structure by value, and none returns a floating value */
+static const char* params_of(const char* name) {
+    static const struct {
+        const char *name, *params;
+    } floating[] = {
+        {"vkCmdSetLineWidth", "IF"},
+        {"vkCmdSetDepthBias", "IFFF"},
+        {"vkCmdSetDepthBounds", "IFF"},
+        {"vkSetDeviceMemoryPriorityEXT", "IIF"},
+        {"vkCmdSetExtraPrimitiveOverestimationSizeEXT", "IF"},
+    };
+    for (size_t i = 0; i < sizeof floating / sizeof *floating; ++i)
+        if (!strcmp(floating[i].name, name)) return floating[i].params;
+    return NULL;
 }
 
 /* The parameter of a command that is a VkAllocationCallbacks*, by the registry's shapes: create (parent, info,
@@ -106,7 +125,7 @@ static void command(CPU* c, void* data) {
         return;
     }
     drop_allocator(c, cmd->allocator);
-    hle_call_wide(c, fn, cmd->kind);
+    hle_call_wide(c, fn, cmd->kind, cmd->params);
 }
 
 /* ---- the commands that change ---- */
@@ -176,6 +195,7 @@ uint64_t hle_vulkan_symbol(const char* name) {
         cmd->host = NULL;
         cmd->allocator = allocator_of(name);
         cmd->kind = 'I'; /* no Vulkan command returns a floating value */
+        cmd->params = params_of(name);
         v.commands[v.count++] = cmd;
     }
     pthread_mutex_unlock(&v.lock);

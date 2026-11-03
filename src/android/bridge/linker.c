@@ -2,19 +2,24 @@
    Copyright 2026 the ScarletNX contributors */
 /* The guest's dynamic linker (linker.h). The formats are the ELF specification, its AArch64 supplement, and Android's
    packed relocations (DT_ANDROID_RELA, "APS2") as bionic's linker documents them */
-#define _GNU_SOURCE
 #include "android/bridge/linker.h"
 #include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
+#include "android/bridge/host.h"
+#include "common/cpu/recompiler/llvm/elf_defs.h" /* the ELF names on every host, whose own may have none */
 #include "common/utilities/common.h"
-#include <elf.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
+#ifdef _WIN32
+#include <io.h>
+#define LIBRARY_OPEN_FLAGS (O_RDONLY | O_BINARY | O_NOINHERIT)
+#else
 #include <unistd.h>
+#define LIBRARY_OPEN_FLAGS (O_RDONLY | O_CLOEXEC)
+#endif
 
 #ifndef DT_ANDROID_RELA
 #define DT_ANDROID_RELA   0x60000011
@@ -295,8 +300,9 @@ static GuestLibrary* find_loaded(const char* path) {
     return NULL;
 }
 
-static int prot_of(uint32_t flags) {
-    return (flags & PF_R ? PROT_READ : 0) | (flags & PF_W ? PROT_WRITE : 0) | (flags & PF_X ? PROT_READ : 0);
+/* a segment's access: its code is read, never run, by the host */
+static int access_of(uint32_t flags) {
+    return (flags & PF_R ? HOST_READ : 0) | (flags & PF_W ? HOST_READ | HOST_WRITE : 0) | (flags & PF_X ? HOST_READ : 0);
 }
 
 static GuestLibrary* load_file(const char* path, char* error, size_t error_size);
@@ -322,17 +328,17 @@ static GuestLibrary* load_needed(const char* name, bool* hle, char* error, size_
 }
 
 static GuestLibrary* load_file(const char* path, char* error, size_t error_size) {
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    int fd = open(path, LIBRARY_OPEN_FLAGS);
     if (fd < 0) {
         snprintf(error, error_size, "library \"%s\" not found", path);
         return NULL;
     }
     Elf64_Ehdr eh;
     Elf64_Phdr ph[64];
-    if (pread(fd, &eh, sizeof eh, 0) != (ssize_t)sizeof eh || memcmp(eh.e_ident, ELFMAG, SELFMAG) ||
+    if (host_pread(fd, &eh, sizeof eh, 0) != (int64_t)sizeof eh || memcmp(eh.e_ident, ELFMAG, SELFMAG) ||
         eh.e_ident[EI_CLASS] != ELFCLASS64 || eh.e_ident[EI_DATA] != ELFDATA2LSB || eh.e_machine != EM_AARCH64 ||
         eh.e_type != ET_DYN || eh.e_phnum > 64 || eh.e_phentsize != sizeof(Elf64_Phdr) ||
-        pread(fd, ph, eh.e_phnum * sizeof *ph, (off_t)eh.e_phoff) != (ssize_t)(eh.e_phnum * sizeof *ph)) {
+        host_pread(fd, ph, eh.e_phnum * sizeof *ph, eh.e_phoff) != (int64_t)(eh.e_phnum * sizeof *ph)) {
         snprintf(error, error_size, "\"%s\" is not a 64-bit ARM shared library", path);
         close(fd);
         return NULL;
@@ -349,9 +355,7 @@ static GuestLibrary* load_file(const char* path, char* error, size_t error_size)
     lo &= ~(uint64_t)0xfff;
     hi = (hi + 0xffff) & ~(uint64_t)0xffff;
     uint64_t span = hi - lo, at = bridge_window_reserve(span, align);
-    if (!dyn || !at ||
-        mmap((void*)(uintptr_t)at, span, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) ==
-            MAP_FAILED) {
+    if (!dyn || !at || !host_commit((void*)(uintptr_t)at, span)) {
         snprintf(error, error_size, "\"%s\": %s", path, dyn ? "no room in the code window" : "no PT_DYNAMIC");
         close(fd);
         return NULL;
@@ -371,8 +375,8 @@ static GuestLibrary* load_file(const char* path, char* error, size_t error_size)
     l->path = copy(path);
     for (unsigned i = 0; i < eh.e_phnum; ++i) {
         if (ph[i].p_type != PT_LOAD || !ph[i].p_filesz) continue;
-        if (pread(fd, (void*)(uintptr_t)(l->base + ph[i].p_vaddr), ph[i].p_filesz, (off_t)ph[i].p_offset) !=
-            (ssize_t)ph[i].p_filesz) {
+        if (host_pread(fd, (void*)(uintptr_t)(l->base + ph[i].p_vaddr), ph[i].p_filesz, ph[i].p_offset) !=
+            (int64_t)ph[i].p_filesz) {
             snprintf(error, error_size, "\"%s\": cannot read its segments", path);
             close(fd);
             return NULL;
@@ -446,14 +450,14 @@ static GuestLibrary* load_file(const char* path, char* error, size_t error_size)
         if (ph[i].p_type != PT_LOAD) continue;
         uint64_t s = (l->base + ph[i].p_vaddr) & ~(uint64_t)0xfff;
         uint64_t e = (l->base + ph[i].p_vaddr + ph[i].p_memsz + 0xfff) & ~(uint64_t)0xfff;
-        mprotect((void*)(uintptr_t)s, e - s, prot_of(ph[i].p_flags));
+        host_protect((void*)(uintptr_t)s, e - s, access_of(ph[i].p_flags));
         if (ph[i].p_flags & PF_X) bridge_add_code(l->base + ph[i].p_vaddr, (ph[i].p_memsz + 3) & ~(uint64_t)3);
     }
     for (unsigned i = 0; i < eh.e_phnum; ++i)
         if (ph[i].p_type == PT_GNU_RELRO) {
             uint64_t s = (l->base + ph[i].p_vaddr) & ~(uint64_t)0xfff;
             uint64_t e = (l->base + ph[i].p_vaddr + ph[i].p_memsz) & ~(uint64_t)0xfff;
-            if (e > s) mprotect((void*)(uintptr_t)s, e - s, PROT_READ);
+            if (e > s) host_protect((void*)(uintptr_t)s, e - s, HOST_READ);
         }
 
     /* its constructors, as bionic runs them: DT_PREINIT_ARRAY (an executable's), DT_INIT, then DT_INIT_ARRAY. Each

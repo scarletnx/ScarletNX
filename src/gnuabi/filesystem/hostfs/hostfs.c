@@ -49,7 +49,7 @@ static wchar_t* wide(const char* path) {
     }
     return w;
 }
-typedef struct _stat64 HostStat;
+typedef GnuHostStat HostStat;
 static int host_lstat(const char* path, HostStat* st) {
     wchar_t* w = wide(path);
     int r = w ? _wstat64(w, st) : -1;
@@ -58,64 +58,10 @@ static int host_lstat(const char* path, HostStat* st) {
 }
 #define host_fstat _fstat64
 #else
-typedef struct stat HostStat;
+typedef GnuHostStat HostStat;
 static int host_lstat(const char* path, HostStat* st) { return lstat(path, st); }
 #define host_fstat fstat
 #endif
-
-static unsigned host_type(unsigned mode) {
-#ifdef _WIN32
-    if ((mode & _S_IFMT) == _S_IFDIR) return 0040000;
-    if ((mode & _S_IFMT) == _S_IFCHR) return 0020000;
-    if ((mode & _S_IFMT) == _S_IFIFO) return 0010000;
-    return 0100000;
-#else
-    if (S_ISDIR(mode)) return 0040000;
-    if (S_ISLNK(mode)) return 0120000;
-    if (S_ISCHR(mode)) return 0020000;
-    if (S_ISBLK(mode)) return 0060000;
-    if (S_ISFIFO(mode)) return 0010000;
-    if (S_ISSOCK(mode)) return 0140000;
-    return 0100000;
-#endif
-}
-
-static void from_host(const HostStat* h, GnuStat* st) {
-    *st = (GnuStat){0};
-    st->dev = (uint64_t)h->st_dev;
-    st->inode = (uint64_t)h->st_ino;
-    st->mode = host_type((unsigned)h->st_mode) | ((unsigned)h->st_mode & 07777);
-    st->nlink = (uint32_t)h->st_nlink;
-    st->uid = (uint32_t)h->st_uid;
-    st->gid = (uint32_t)h->st_gid;
-    st->rdev = (uint64_t)h->st_rdev;
-    st->size = (uint64_t)h->st_size;
-#ifdef _WIN32
-    st->blksize = 4096;
-    st->blocks = (st->size + 511) / 512;
-    st->atime = h->st_atime;
-    st->mtime = h->st_mtime;
-    st->ctime = h->st_ctime;
-#else
-    st->blksize = (uint32_t)h->st_blksize;
-    st->blocks = (uint64_t)h->st_blocks;
-#if defined(__APPLE__)
-    st->atime = h->st_atimespec.tv_sec;
-    st->atime_ns = (uint32_t)h->st_atimespec.tv_nsec;
-    st->mtime = h->st_mtimespec.tv_sec;
-    st->mtime_ns = (uint32_t)h->st_mtimespec.tv_nsec;
-    st->ctime = h->st_ctimespec.tv_sec;
-    st->ctime_ns = (uint32_t)h->st_ctimespec.tv_nsec;
-#else
-    st->atime = h->st_atim.tv_sec;
-    st->atime_ns = (uint32_t)h->st_atim.tv_nsec;
-    st->mtime = h->st_mtim.tv_sec;
-    st->mtime_ns = (uint32_t)h->st_mtim.tv_nsec;
-    st->ctime = h->st_ctim.tv_sec;
-    st->ctime_ns = (uint32_t)h->st_ctim.tv_nsec;
-#endif
-#endif
-}
 
 /* readlink of a host path, NUL-terminated; the length or a guest errno */
 static int host_readlink(const char* path, char* target, size_t capacity) {
@@ -348,7 +294,7 @@ int gnu_hostfs_resolve(GnuVfsState* s, int dirfd, const char* path, unsigned fla
             }
             return 0;
         }
-        if (host_type((unsigned)st.st_mode) == 0120000 && (!final || (flags & GNU_HOST_FOLLOW))) {
+        if (gnu_host_file_type((unsigned)st.st_mode) == 0120000 && (!final || (flags & GNU_HOST_FOLLOW))) {
             int r = host_readlink(out->host, target, sizeof target);
             char* cut;
             if (r < 0) return r;
@@ -364,7 +310,7 @@ int gnu_hostfs_resolve(GnuVfsState* s, int dirfd, const char* path, unsigned fla
             }
             continue;
         }
-        if (!final && host_type((unsigned)st.st_mode) != 0040000) return -GNU_ENOTDIR;
+        if (!final && gnu_host_file_type((unsigned)st.st_mode) != 0040000) return -GNU_ENOTDIR;
     }
     /* the root, or the last component found (looked up again: a ".." may have come after it) */
     if (!g[0]) {
@@ -376,7 +322,7 @@ int gnu_hostfs_resolve(GnuVfsState* s, int dirfd, const char* path, unsigned fla
     } else if (!locate(s, g, out->host, sizeof out->host, &st))
         return -GNU_ENOENT;
     out->exists = 1;
-    out->type = host_type((unsigned)st.st_mode);
+    out->type = gnu_host_file_type((unsigned)st.st_mode);
     if (slash && out->type != 0040000 && out->type != 0120000) return -GNU_ENOTDIR;
     return 0;
 }
@@ -384,26 +330,14 @@ int gnu_hostfs_resolve(GnuVfsState* s, int dirfd, const char* path, unsigned fla
 /* ---- host files as guest descriptors ---- */
 
 static int host_open_flags(unsigned flags) {
-    int h;
-    switch (flags & GNU_O_ACCMODE) {
-        case GNU_O_WRONLY: h = O_WRONLY; break;
-        case GNU_O_RDWR: h = O_RDWR; break;
-        default: h = O_RDONLY; break;
-    }
-    if (flags & GNU_O_CREAT) h |= O_CREAT;
-    if (flags & GNU_O_EXCL) h |= O_EXCL;
-    if (flags & GNU_O_TRUNC) h |= O_TRUNC;
-    if (flags & GNU_O_APPEND) h |= O_APPEND;
+    /* the guest's close-on-exec is the descriptor table's: the host's descriptors never reach a host exec. O_SYNC is
+       O_DSYNC here, and O_DIRECTORY is checked before the open */
+    int h = gnu_open_flags_to_host(flags & (GNU_O_ACCMODE | GNU_O_CREAT | GNU_O_EXCL | GNU_O_TRUNC | GNU_O_APPEND |
+                                            GNU_O_NONBLOCK | GNU_O_NOFOLLOW | GNU_O_DSYNC));
 #ifdef _WIN32
     h |= O_BINARY | O_NOINHERIT;
 #else
-    /* the guest's close-on-exec is the descriptor table's: the host's descriptors never reach a host exec */
     h |= O_CLOEXEC | O_NOCTTY;
-    if (flags & GNU_O_NONBLOCK) h |= O_NONBLOCK;
-    if (flags & GNU_O_NOFOLLOW) h |= O_NOFOLLOW;
-#ifdef O_DSYNC
-    if (flags & GNU_O_DSYNC) h |= O_DSYNC;
-#endif
 #endif
     return h;
 }
@@ -430,7 +364,7 @@ GnuOpen* gnu_hostfs_wrap(GnuVfsState* s, int host, unsigned flags, const char* p
     file->host = host;
     file->flags = flags;
     file->fdlink = -1;
-    file->host_type = host >= 0 && !host_fstat(host, &st) ? host_type((unsigned)st.st_mode) : 0100000;
+    file->host_type = host >= 0 && !host_fstat(host, &st) ? gnu_host_file_type((unsigned)st.st_mode) : 0100000;
     return file;
 }
 
@@ -535,7 +469,7 @@ int gnu_hostfs_fstat(GnuOpen* f, GnuStat* st) {
     HostStat h;
     if (f->host >= 0 ? host_fstat(f->host, &h) : !f->host_path ? (errno = EBADF, -1) : host_lstat(f->host_path, &h))
         return fail();
-    from_host(&h, st);
+    gnu_stat_from_host(&h, st);
     return 0;
 }
 
@@ -770,7 +704,7 @@ static int read_path(GnuMemory* memory, uint64_t address, char* path) {
 static int path_stat(GnuHostPath* at, GnuStat* st) {
     HostStat h;
     if (host_lstat(at->host, &h)) return fail();
-    from_host(&h, st);
+    gnu_stat_from_host(&h, st);
     return 0;
 }
 

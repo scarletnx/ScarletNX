@@ -37,6 +37,7 @@ static int by_name(const void* a, const void* b) {
 }
 
 static void index_tables(void) {
+    hle_posix_init();
     for (size_t t = 0; t < sizeof tables / sizeof *tables; ++t)
         for (const HleSymbol* s = tables[t]; s->name[0]; ++s) ++h.count;
     h.sorted = snx_alloc((h.count ? h.count : 1) * sizeof *h.sorted);

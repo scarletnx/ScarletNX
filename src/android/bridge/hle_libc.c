@@ -8,12 +8,29 @@
 #include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
+#include "gnuabi/kernel/kernel.h"
 #include <ctype.h>
+#include <pthread.h>
 #include <fenv.h>
-#include <malloc.h>
-#include <unistd.h>
 #include <errno.h>
+#if defined(__linux__)
+#include <malloc.h> /* memalign, malloc_usable_size */
+#elif defined(__FreeBSD__)
+#include <malloc_np.h> /* malloc_usable_size */
+#elif defined(__APPLE__)
+#include <malloc/malloc.h> /* malloc_size */
+#elif defined(_WIN32)
+#include <malloc.h> /* _msize */
+#endif
+#ifdef _WIN32
+#include <io.h> /* read */
+#else
+#include <unistd.h>
+#endif
 #include <locale.h>
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#include <xlocale.h> /* newlocale, uselocale, strtoll_l */
+#endif
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,11 +52,86 @@ void hle_pass(CPU* c, void* fn) {
 #if !defined(__x86_64__) && !defined(__aarch64__)
 #error "hle_call passes the guest's registers as the host's: an x86-64 or AArch64 host"
 #endif
+#if defined(_WIN32) && defined(__x86_64__)
+/* Windows x64 passes each argument by its position: the first four in RCX, RDX, R8 and R9, or in XMM0 to XMM3 when
+   floating, the others on the stack, a slot each. The guest's arguments go to their positions by params (each one's
+   class in order: 'I', 'F' or 'D'); without params they are integers alone, count of them. A float is the low half
+   of its slot, as on the guest's stack and in an XMM register */
+enum { WIN_SLOTS = 14 };
+static unsigned win_slots(const CPU* c, const char* params, unsigned count, uint64_t slot[WIN_SLOTS]) {
+    const uint64_t* stack = (const uint64_t*)(uintptr_t)c->x[31];
+    unsigned xi = 0, vi = 0, si = 0, floating = 0;
+    for (unsigned n = 0; n < WIN_SLOTS && (params ? params[n] != 0 : n < count); ++n) {
+        char k = params ? params[n] : 'I';
+        if (k == 'I') {
+            slot[n] = xi < 8 ? c->x[xi++] : stack[si++];
+            continue;
+        }
+        uint64_t bits = 0;
+        if (vi < 8 && k == 'F') {
+            uint32_t f;
+            memcpy(&f, &c->v[vi++].f[0], sizeof f);
+            bits = f;
+        } else if (vi < 8)
+            memcpy(&bits, &c->v[vi++].df[0], sizeof bits);
+        else
+            bits = stack[si++];
+        slot[n] = bits;
+        if (n < 4) floating |= 1u << n;
+    }
+    return floating;
+}
+static double bits_double(uint64_t bits) {
+    double d;
+    memcpy(&d, &bits, sizeof d);
+    return d;
+}
+typedef uint64_t U;
+#define TY_I uint64_t
+#define TY_D double
+#define AR_I(i) s[i]
+#define AR_D(i) bits_double(s[i])
+#define WIN_TYPE(R, a, b, d, e) R (*)(TY_##a, TY_##b, TY_##d, TY_##e, U, U, U, U, U, U, U, U, U, U)
+#define WIN_ARGS(a, b, d, e)                                                                                           \
+    AR_##a(0), AR_##b(1), AR_##d(2), AR_##e(3), s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[12], s[13]
+#define WIN_CASE(m, a, b, d, e)                                                                                        \
+    case m:                                                                                                            \
+        if (fp) fr = ((WIN_TYPE(double, a, b, d, e))fn)(WIN_ARGS(a, b, d, e));                                         \
+        else ir = ((WIN_TYPE(U, a, b, d, e))fn)(WIN_ARGS(a, b, d, e));                                                 \
+        break;
+static void win_call(CPU* c, void* fn, char kind, const char* params, unsigned count) {
+    uint64_t s[WIN_SLOTS] = {0};
+    unsigned floating = win_slots(c, params, count, s);
+    bool fp = kind == 'F' || kind == 'D';
+    double fr = 0;
+    U ir = 0;
+    switch (floating) {
+        WIN_CASE(0, I, I, I, I) WIN_CASE(1, D, I, I, I) WIN_CASE(2, I, D, I, I) WIN_CASE(3, D, D, I, I)
+        WIN_CASE(4, I, I, D, I) WIN_CASE(5, D, I, D, I) WIN_CASE(6, I, D, D, I) WIN_CASE(7, D, D, D, I)
+        WIN_CASE(8, I, I, I, D) WIN_CASE(9, D, I, I, D) WIN_CASE(10, I, D, I, D) WIN_CASE(11, D, D, I, D)
+        WIN_CASE(12, I, I, D, D) WIN_CASE(13, D, I, D, D) WIN_CASE(14, I, D, D, D) WIN_CASE(15, D, D, D, D)
+    }
+    if (fp) {
+        memset(&c->v[0], 0, sizeof c->v[0]);
+        memcpy(&c->v[0].d[0], &fr, sizeof fr); /* a float result is the low half: the double's bits carry it */
+        if (kind == 'F') memset(&c->v[0].b[4], 0, 4);
+    } else
+        X(0) = ir;
+}
+#undef WIN_CASE
+#undef WIN_ARGS
+#undef WIN_TYPE
+#endif
+
 typedef uint64_t (*CallInt)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, double, double, double, double,
                             double, double, double, double);
 typedef double (*CallFloat)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, double, double, double, double,
                             double, double, double, double);
-void hle_call(CPU* c, void* fn, char kind) {
+void hle_call(CPU* c, void* fn, char kind, const char* params) {
+#if defined(_WIN32) && defined(__x86_64__)
+    win_call(c, fn, kind, params, 8);
+#else
+    (void)params; /* each class has its own registers, in order, on both sides */
     double v[8];
     for (int i = 0; i < 8; ++i) memcpy(&v[i], &c->v[i].d[0], sizeof v[i]);
     if (kind == 'F' || kind == 'D') {
@@ -51,13 +143,17 @@ void hle_call(CPU* c, void* fn, char kind) {
         return;
     }
     X(0) = ((CallInt)fn)(X(0), X(1), X(2), X(3), X(4), X(5), v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+#endif
 }
 
 typedef uint64_t (*CallWide)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
                              uint64_t, uint64_t, uint64_t, double, double, double, double, double, double, double, double);
-void hle_call_wide(CPU* c, void* fn, char kind) {
+void hle_call_wide(CPU* c, void* fn, char kind, const char* params) {
+#if defined(_WIN32) && defined(__x86_64__)
+    win_call(c, fn, kind, params, 12);
+#else
     if (kind == 'F' || kind == 'D') {
-        hle_call(c, fn, kind);
+        hle_call(c, fn, kind, params);
         return;
     }
     /* the integers past x7 are the guest's stack slots, in order; the host's past its sixth are its stack's, in
@@ -68,6 +164,7 @@ void hle_call_wide(CPU* c, void* fn, char kind) {
     for (int i = 0; i < 8; ++i) memcpy(&v[i], &c->v[i].d[0], sizeof v[i]);
     X(0) = ((CallWide)fn)(X(0), X(1), X(2), X(3), X(4), X(5), X(6), X(7), s[0], s[1], s[2], s[3], v[0], v[1], v[2],
                           v[3], v[4], v[5], v[6], v[7]);
+#endif
 }
 
 double hle_d(const CPU* c, unsigned n) {
@@ -136,26 +233,29 @@ static void zero(CPU* c, void* data) {
 
 /* ---- qsort and bsearch: the host's, with a comparator that calls the guest's ---- */
 
-/* the guest comparator of this thread's sort or search: saved and restored, so a comparator can sort too */
-static _Thread_local uint64_t guest_compare;
+static _Thread_local struct {
+    /* the guest comparator of this thread's sort or search: saved and restored, so a comparator can sort too */
+    uint64_t compare;
+    int error; /* the guest's errno, where it is not the host's (hle_impl.h) */
+} t_hle_libc;
 
 static int compare_guest(const void* a, const void* b) {
     const uint64_t args[2] = {(uint64_t)(uintptr_t)a, (uint64_t)(uintptr_t)b};
-    return (int32_t)bridge_call(guest_compare, args, 2);
+    return (int32_t)bridge_call(t_hle_libc.compare, args, 2);
 }
 static void g_qsort(CPU* c, void* data) {
     (void)data;
-    uint64_t saved = guest_compare;
-    guest_compare = X(3);
+    uint64_t saved = t_hle_libc.compare;
+    t_hle_libc.compare = X(3);
     qsort(PTR(0), (size_t)X(1), (size_t)X(2), compare_guest);
-    guest_compare = saved;
+    t_hle_libc.compare = saved;
 }
 static void g_bsearch(CPU* c, void* data) {
     (void)data;
-    uint64_t saved = guest_compare;
-    guest_compare = X(4);
+    uint64_t saved = t_hle_libc.compare;
+    t_hle_libc.compare = X(4);
     void* found = bsearch(PTR(0), PTR(1), (size_t)X(2), (size_t)X(3), compare_guest);
-    guest_compare = saved;
+    t_hle_libc.compare = saved;
     X(0) = (uint64_t)(uintptr_t)found;
 }
 
@@ -183,10 +283,42 @@ static void guest_exit(CPU* c, void* data) {
     exit((int)X(0));
 }
 
-/* ---- errno: the host's, whose numbers are Linux's on both ---- */
+/* ---- errno: bionic's numbers are Linux's (hle_impl.h) ---- */
+#if defined(__linux__)
+int* hle_errno_location(void) {
+    return &errno;
+}
+void hle_errno_begin(void) {}
+void hle_errno_end(void) {}
+void hle_set_errno(int linux_error) {
+    errno = linux_error;
+}
+#else
+int* hle_errno_location(void) {
+    return &t_hle_libc.error;
+}
+void hle_errno_begin(void) {
+    errno = 0;
+}
+/* what the call left in the host's errno, as the guest's number. A call that succeeds may leave one, as POSIX
+   allows: the guest's errno then changes, as a host call's may */
+void hle_errno_end(void) {
+    if (errno) t_hle_libc.error = -gnu_host_errno(errno);
+    errno = 0;
+}
+void hle_set_errno(int linux_error) {
+    t_hle_libc.error = linux_error;
+    errno = 0; /* not the host's, which hle_errno_end would take after it */
+}
+#endif
 static void errno_location(CPU* c, void* data) {
     (void)data;
-    X(0) = (uint64_t)(uintptr_t)&errno;
+    X(0) = (uint64_t)(uintptr_t)hle_errno_location();
+}
+/* the functions that take an errno: the guest's (Linux's) number as the host's */
+static void g_strerror(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(uintptr_t)strerror(gnu_errno_to_host((int)X(0)));
 }
 
 /* ---- the fortified functions (_FORTIFY_SOURCE): the plain function, with bionic's check of the size ---- */
@@ -516,7 +648,7 @@ size_t hle_strlcpy(char* dst, const char* src, size_t size) {
 }
 /* POSIX's strerror_r, which returns an error number: glibc's of that form is __xpg_strerror_r */
 int hle_strerror_r(int error, char* buffer, size_t size) {
-    const char* text = strerror(error);
+    const char* text = strerror(gnu_errno_to_host(error));
     size_t n = strlen(text);
     if (!size) return ERANGE;
     size_t copy = n < size - 1 ? n : size - 1;
@@ -538,6 +670,394 @@ char* hle_basename(const char* path) {
     out[n] = 0;
     return out;
 }
+
+/* strsep and strtok_r as bionic's, which every host's C library does not have (Windows) */
+static char* hle_strsep(char** string, const char* delimiters) {
+    char* start = *string;
+    if (!start) return NULL;
+    char* end = start + strcspn(start, delimiters);
+    *string = *end ? end + 1 : NULL;
+    *end = 0;
+    return start;
+}
+static char* hle_strtok_r(char* string, const char* delimiters, char** saved) {
+    char* s = string ? string : *saved;
+    if (!s) return NULL;
+    s += strspn(s, delimiters);
+    if (!*s) {
+        *saved = s;
+        return NULL;
+    }
+    char* end = s + strcspn(s, delimiters);
+    if (*end) *end++ = 0;
+    *saved = end;
+    return s;
+}
+
+#if !defined(__linux__)
+/* ---- bionic's wide characters: a wchar_t of 32 bits (Windows' is 16), and multibyte strings in UTF-8, bionic's only
+   encoding, in every locale (the hosts' C locales are ASCII). A conversion keeps no state between calls: a sequence
+   that a call cuts is incomplete to it ---- */
+
+/* one character of UTF-8 from s (n bytes at most): its length, 0 for NUL, -2 incomplete, -1 invalid */
+static int64_t utf8_decode(const unsigned char* s, size_t n, uint32_t* out) {
+    if (!n) return -2;
+    uint32_t c = s[0];
+    size_t length = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 : (c & 0xf8) == 0xf0 ? 4 : 0;
+    if (!length) return -1;
+    if (length > 1) c &= 0x3f >> (length - 1);
+    for (size_t i = 1; i < length; ++i) {
+        if (i >= n) return -2;
+        if ((s[i] & 0xc0) != 0x80) return -1;
+        c = c << 6 | (s[i] & 0x3fu);
+    }
+    static const uint32_t least[5] = {0, 0, 0x80, 0x800, 0x10000};
+    if (c < least[length] || c > 0x10ffff || (c >= 0xd800 && c < 0xe000)) return -1;
+    *out = c;
+    return c ? (int64_t)length : 0;
+}
+/* c as UTF-8 into out (4 bytes): its length, 0 for one that is no character */
+static size_t utf8_encode(uint32_t c, unsigned char* out) {
+    if (c < 0x80) {
+        out[0] = (unsigned char)c;
+        return 1;
+    }
+    if (c < 0x800) {
+        out[0] = (unsigned char)(0xc0 | c >> 6);
+        out[1] = (unsigned char)(0x80 | (c & 0x3f));
+        return 2;
+    }
+    if (c >= 0xd800 && c < 0xe000) return 0;
+    if (c < 0x10000) {
+        out[0] = (unsigned char)(0xe0 | c >> 12);
+        out[1] = (unsigned char)(0x80 | (c >> 6 & 0x3f));
+        out[2] = (unsigned char)(0x80 | (c & 0x3f));
+        return 3;
+    }
+    if (c > 0x10ffff) return 0;
+    out[0] = (unsigned char)(0xf0 | c >> 18);
+    out[1] = (unsigned char)(0x80 | (c >> 12 & 0x3f));
+    out[2] = (unsigned char)(0x80 | (c >> 6 & 0x3f));
+    out[3] = (unsigned char)(0x80 | (c & 0x3f));
+    return 4;
+}
+static uint32_t wide_at(uint64_t address, size_t i) {
+    uint32_t c;
+    memcpy(&c, (const char*)(uintptr_t)address + 4 * i, sizeof c);
+    return c;
+}
+static void wide_put(uint64_t address, size_t i, uint32_t c) {
+    memcpy((char*)(uintptr_t)address + 4 * i, &c, sizeof c);
+}
+
+static void g_wcslen(CPU* c, void* data) {
+    (void)data;
+    size_t n = 0;
+    while (wide_at(X(0), n)) ++n;
+    X(0) = n;
+}
+static void g_wmemchr(CPU* c, void* data) {
+    (void)data;
+    uint64_t found = 0;
+    for (size_t i = 0; i < X(2) && !found; ++i)
+        if (wide_at(X(0), i) == (uint32_t)X(1)) found = X(0) + 4 * i;
+    X(0) = found;
+}
+static void g_wmemcmp(CPU* c, void* data) {
+    (void)data;
+    int r = 0;
+    for (size_t i = 0; i < X(2) && !r; ++i) {
+        int32_t a = (int32_t)wide_at(X(0), i), b = (int32_t)wide_at(X(1), i); /* bionic's wchar_t is signed */
+        r = a < b ? -1 : a > b;
+    }
+    X(0) = (uint64_t)(int64_t)r;
+}
+static void g_wmemcpy(CPU* c, void* data) {
+    (void)data;
+    memcpy(PTR(0), PTR(1), X(2) * 4);
+}
+/* mbrtowc(pwc, s, n, ps), mbrlen(s, n, ps) and mbtowc(pwc, s, n) */
+static uint64_t decode_one(CPU* c, uint64_t to, const char* s, size_t n, bool restartable) {
+    if (!s) return 0;
+    uint32_t w = 0;
+    int64_t r = utf8_decode((const unsigned char*)s, n, &w);
+    if (r == -1 || (r == -2 && !restartable)) {
+        hle_set_errno(GNU_EILSEQ);
+        return (uint64_t)-1;
+    }
+    if (r == -2) return (uint64_t)-2;
+    if (to) wide_put(to, 0, w);
+    (void)c;
+    return (uint64_t)r;
+}
+static void g_mbrtowc(CPU* c, void* data) {
+    (void)data;
+    X(0) = decode_one(c, X(0), STR(1), X(2), true);
+}
+static void g_mbrlen(CPU* c, void* data) {
+    (void)data;
+    X(0) = decode_one(c, 0, STR(0), X(1), true);
+}
+static void g_mbtowc(CPU* c, void* data) {
+    (void)data;
+    X(0) = decode_one(c, X(0), STR(1), X(2), false);
+}
+/* mbsnrtowcs(dst, src, nms, len, ps): at most nms bytes of *src into at most len characters at dst (none: counted) */
+static uint64_t decode_string(uint64_t dst, uint64_t src_at, size_t bytes, size_t most) {
+    const char* s;
+    memcpy(&s, (const void*)(uintptr_t)src_at, sizeof s);
+    size_t count = 0, at = 0;
+    while (!dst || count < most) {
+        uint32_t w = 0;
+        int64_t r = utf8_decode((const unsigned char*)s + at, bytes - at, &w);
+        if (r == -1) {
+            hle_set_errno(GNU_EILSEQ);
+            if (dst) {
+                const char* left = s + at;
+                memcpy((void*)(uintptr_t)src_at, &left, sizeof left);
+            }
+            return (uint64_t)-1;
+        }
+        if (r == -2) break; /* the bytes end within a character, or at nms */
+        if (dst) wide_put(dst, count, w);
+        if (!r) {
+            if (dst) {
+                const char* none = NULL;
+                memcpy((void*)(uintptr_t)src_at, &none, sizeof none);
+            }
+            return count;
+        }
+        at += (size_t)r;
+        ++count;
+    }
+    if (dst) {
+        const char* left = s + at;
+        memcpy((void*)(uintptr_t)src_at, &left, sizeof left);
+    }
+    return count;
+}
+static void g_mbsnrtowcs(CPU* c, void* data) {
+    (void)data;
+    X(0) = decode_string(X(0), X(1), X(2), X(3));
+}
+static void g_mbsrtowcs(CPU* c, void* data) {
+    (void)data;
+    X(0) = decode_string(X(0), X(1), SIZE_MAX, X(2));
+}
+static void g_wcrtomb(CPU* c, void* data) {
+    (void)data;
+    unsigned char out[4];
+    if (!X(0)) {
+        X(0) = 1;
+        return;
+    }
+    size_t n = utf8_encode((uint32_t)X(1), out);
+    if (!n) {
+        hle_set_errno(GNU_EILSEQ);
+        X(0) = (uint64_t)-1;
+        return;
+    }
+    memcpy(PTR(0), out, n);
+    X(0) = n;
+}
+/* wcsnrtombs(dst, src, nwc, len, ps): at most nwc characters of *src into at most len bytes at dst */
+static void g_wcsnrtombs(CPU* c, void* data) {
+    (void)data;
+    uint64_t dst = X(0), src_at = X(1);
+    size_t most_chars = X(2), most_bytes = X(3), bytes = 0, i = 0;
+    uint64_t s;
+    memcpy(&s, (const void*)(uintptr_t)src_at, sizeof s);
+    for (; i < most_chars; ++i) {
+        uint32_t w = wide_at(s, i);
+        unsigned char out[4];
+        size_t n = utf8_encode(w, out);
+        if (!n) {
+            hle_set_errno(GNU_EILSEQ);
+            X(0) = (uint64_t)-1;
+            return;
+        }
+        if (dst && bytes + n > most_bytes) break;
+        if (dst) memcpy((char*)(uintptr_t)dst + bytes, out, n);
+        if (!w) {
+            if (dst) memset((void*)(uintptr_t)src_at, 0, sizeof s);
+            X(0) = bytes;
+            return;
+        }
+        bytes += n;
+    }
+    if (dst) {
+        uint64_t left = s + 4 * i;
+        memcpy((void*)(uintptr_t)src_at, &left, sizeof left);
+    }
+    X(0) = bytes;
+}
+/* the case of ASCII and Latin-1, as the C locale of bionic's has it */
+static void g_towlower(CPU* c, void* data) {
+    (void)data;
+    uint32_t w = (uint32_t)X(0);
+    X(0) = (w >= 'A' && w <= 'Z') || (w >= 0xc0 && w <= 0xde && w != 0xd7) ? w + 32 : w;
+}
+static void g_iswlower_l(CPU* c, void* data) {
+    (void)data;
+    uint32_t w = (uint32_t)X(0);
+    X(0) = (w >= 'a' && w <= 'z') || (w >= 0xdf && w <= 0xff && w != 0xf7);
+}
+#define WIDE_FUNCTIONS(F)                                                                                              \
+    F(wcslen) F(wmemchr) F(wmemcmp) F(wmemcpy) F(mbrlen) F(mbrtowc) F(mbsnrtowcs) F(mbsrtowcs) F(mbtowc) F(wcrtomb)   \
+    F(wcsnrtombs) F(towlower) F(iswlower_l)
+#define WIDE_ENTRY(name) {#name, g_##name, NULL},
+#endif
+
+#if !defined(__linux__) && !defined(_WIN32)
+/* ---- FreeBSD and macOS: memalign through posix_memalign, whose blocks free() takes, and malloc's size of a block
+   (macOS calls it malloc_size) ---- */
+static void g_memalign(CPU* c, void* data) {
+    (void)data;
+    void* p = NULL;
+    size_t align = X(0) < sizeof(void*) ? sizeof(void*) : (size_t)X(0);
+    X(0) = posix_memalign(&p, align, (size_t)X(1)) ? 0 : (uint64_t)(uintptr_t)p;
+}
+static void g_malloc_usable_size(CPU* c, void* data) {
+    (void)data;
+#if defined(__APPLE__)
+    X(0) = X(0) ? malloc_size(PTR(0)) : 0;
+#else
+    X(0) = malloc_usable_size(PTR(0));
+#endif
+}
+#endif
+
+#ifdef _WIN32
+/* ---- Windows: what its C runtime has in another form ---- */
+
+/* the C locale, the only one bionic has: newlocale and uselocale give a locale_t that names it */
+
+/* The CRT's free() takes malloc's blocks alone, and malloc aligns to 16. A block aligned past that is malloc'd
+   larger, and its address kept with the block's in a table that free(), realloc() and malloc_usable_size() look in
+   first */
+static struct {
+    pthread_mutex_t lock;
+    struct {
+        void *aligned, *block;
+        size_t size;
+    } * items;
+    size_t count, capacity;
+    uint64_t random;      /* rand()'s state */
+    unsigned char locale; /* the locale_t that newlocale and uselocale give: the C locale */
+} g_win = {PTHREAD_MUTEX_INITIALIZER, NULL, 0, 0, 1, 0};
+static void c_locale(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(uintptr_t)&g_win.locale;
+}
+
+/* the table's entry of p, removed: its block, or NULL for a block malloc gave */
+static void* aligned_take(void* p, size_t* size) {
+    void* block = NULL;
+    pthread_mutex_lock(&g_win.lock);
+    for (size_t i = 0; i < g_win.count && !block; ++i)
+        if (g_win.items[i].aligned == p) {
+            block = g_win.items[i].block;
+            if (size) *size = g_win.items[i].size;
+            g_win.items[i] = g_win.items[--g_win.count];
+        }
+    pthread_mutex_unlock(&g_win.lock);
+    return block;
+}
+static void* aligned_alloc_(size_t align, size_t size) {
+    if (align <= 16) return malloc(size ? size : 1);
+    if (align & (align - 1) || size > SIZE_MAX - align) return NULL;
+    void* block = malloc(size + align);
+    if (!block) return NULL;
+    void* p = (void*)(((uintptr_t)block + align - 1) & ~(uintptr_t)(align - 1));
+    pthread_mutex_lock(&g_win.lock);
+    bool kept = false;
+    if (g_win.count == g_win.capacity) {
+        size_t capacity = g_win.capacity ? g_win.capacity * 2 : 64;
+        void* grown = realloc(g_win.items, capacity * sizeof *g_win.items);
+        if (grown) {
+            g_win.items = grown;
+            g_win.capacity = capacity;
+        }
+    }
+    if (g_win.count < g_win.capacity) {
+        g_win.items[g_win.count].aligned = p;
+        g_win.items[g_win.count].block = block;
+        g_win.items[g_win.count++].size = size;
+        kept = true;
+    }
+    pthread_mutex_unlock(&g_win.lock);
+    if (!kept) {
+        free(block);
+        return NULL;
+    }
+    return p;
+}
+static void g_free(CPU* c, void* data) {
+    (void)data;
+    void* block = X(0) ? aligned_take(PTR(0), NULL) : NULL;
+    free(block ? block : PTR(0));
+}
+static void g_realloc(CPU* c, void* data) {
+    (void)data;
+    size_t size = 0;
+    void* block = X(0) ? aligned_take(PTR(0), &size) : NULL;
+    if (!block) {
+        X(0) = (uint64_t)(uintptr_t)realloc(PTR(0), X(1));
+        return;
+    }
+    /* an aligned block grows as malloc's: realloc keeps no alignment past malloc's */
+    void* p = malloc(X(1) ? X(1) : 1);
+    if (p) {
+        memcpy(p, PTR(0), size < X(1) ? size : X(1));
+        free(block);
+    }
+    X(0) = (uint64_t)(uintptr_t)p;
+}
+static void g_memalign(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(uintptr_t)aligned_alloc_((size_t)X(0), (size_t)X(1));
+}
+static void g_posix_memalign(CPU* c, void* data) {
+    (void)data;
+    if (X(1) < sizeof(void*) || (X(1) & (X(1) - 1))) {
+        X(0) = GNU_EINVAL;
+        return;
+    }
+    void* p = aligned_alloc_((size_t)X(1), (size_t)X(2));
+    if (p) memcpy(PTR(0), &p, sizeof p);
+    X(0) = p ? 0 : GNU_ENOMEM;
+}
+static void g_malloc_usable_size(CPU* c, void* data) {
+    (void)data;
+    size_t size = 0;
+    bool aligned = false;
+    pthread_mutex_lock(&g_win.lock);
+    for (size_t i = 0; i < g_win.count && !aligned; ++i)
+        if (g_win.items[i].aligned == PTR(0)) {
+            size = g_win.items[i].size;
+            aligned = true;
+        }
+    pthread_mutex_unlock(&g_win.lock);
+    X(0) = aligned ? size : X(0) ? _msize(PTR(0)) : 0;
+}
+/* bionic's rand() is random(): 31 bits, where Windows' RAND_MAX is 32767 */
+static void g_rand(CPU* c, void* data) {
+    (void)data;
+    pthread_mutex_lock(&g_win.lock);
+    g_win.random ^= g_win.random << 13;
+    g_win.random ^= g_win.random >> 7;
+    g_win.random ^= g_win.random << 17;
+    uint64_t r = g_win.random;
+    pthread_mutex_unlock(&g_win.lock);
+    X(0) = (r >> 33) & 0x7fffffff;
+}
+static void g_srand(CPU* c, void* data) {
+    (void)data;
+    pthread_mutex_lock(&g_win.lock);
+    g_win.random = X(0) ? (uint64_t)(uint32_t)X(0) * 0x9e3779b97f4a7c15ull : 1;
+    pthread_mutex_unlock(&g_win.lock);
+}
+#endif
 
 /* the host functions that PASS calls: GNU C takes a function's address as a data pointer */
 #define P(name)          {#name, hle_pass, (void*)name}
@@ -603,19 +1123,43 @@ const HleSymbol hle_libc[] = {
     /* ctype */
     {"_ctype_", NULL, &ctype_pointer},
     {"__ctype_get_mb_cur_max", ctype_get_mb_cur_max, NULL},
-    P(isspace), P(towlower), P(iswlower_l),
+    P(isspace),
     /* memory */
+#if defined(__linux__)
     P(malloc), P(calloc), P(realloc), P(free), P(memalign), P(posix_memalign), P(malloc_usable_size),
+#elif defined(_WIN32)
+    P(malloc), P(calloc), {"realloc", g_realloc, NULL}, {"free", g_free, NULL}, {"memalign", g_memalign, NULL},
+    {"posix_memalign", g_posix_memalign, NULL}, {"malloc_usable_size", g_malloc_usable_size, NULL},
+#else
+    P(malloc), P(calloc), P(realloc), P(free), P(posix_memalign), {"memalign", g_memalign, NULL},
+    {"malloc_usable_size", g_malloc_usable_size, NULL},
+#endif
     /* strings */
     P(memchr), P(memcmp), P(memcpy), P(memmove), P(memset), P(strcasecmp), P(strcat), P(strchr), P(strcmp),
-    P(strcoll), P(strcpy), P(strcspn), P(strdup), P(strerror), P(strlen), P(strncasecmp), P(strncat), P(strncmp),
-    P(strncpy), P(strpbrk), P(strrchr), P(strsep), P(strspn), P(strstr), P(strtok), P(strtok_r), P(strtol),
-    P(strtoll), P(strtoul), P(strtoull), P(atoi), P(atol), P(atoll),
-    PH(strlcpy, hle_strlcpy), PH(strerror_r, hle_strerror_r), PH(basename, hle_basename),
+    P(strcoll), P(strcpy), P(strcspn), P(strdup), P(strlen), {"strerror", g_strerror, NULL}, P(strncasecmp), P(strncat), P(strncmp),
+    P(strncpy), P(strpbrk), P(strrchr), P(strspn), P(strstr), P(strtok),
+    P(strtoll), P(strtoull), P(atoi), P(atoll),
+    PH(strlcpy, hle_strlcpy), PH(strerror_r, hle_strerror_r), PH(basename, hle_basename), PH(strsep, hle_strsep),
+    PH(strtok_r, hle_strtok_r),
+#ifdef _WIN32
+    /* long is 32 bits on Windows, 64 in bionic */
+    PH(strtol, strtoll), PH(strtoul, strtoull), PH(atol, atoll), PH(strtoll_l, strtoll), PH(strtoull_l, strtoull),
+#else
+    P(strtol), P(strtoul), P(atol), P(strtoll_l), P(strtoull_l),
+#endif
+#if defined(__linux__)
     P(wcslen), P(wmemchr), P(wmemcmp), P(wmemcpy), P(mbrlen), P(mbrtowc), P(mbsnrtowcs), P(mbsrtowcs), P(mbtowc),
-    P(wcrtomb), P(wcsnrtombs),
+    P(wcrtomb), P(wcsnrtombs), P(towlower), P(iswlower_l),
+#else
+    WIDE_FUNCTIONS(WIDE_ENTRY)
+#endif
     /* locales: the host's C locale, the only one bionic has */
-    P(setlocale), P(newlocale), P(freelocale), P(uselocale), P(localeconv), P(strtoll_l), P(strtoull_l),
+    P(setlocale), P(localeconv),
+#ifdef _WIN32
+    {"newlocale", c_locale, NULL}, {"uselocale", c_locale, NULL}, {"freelocale", nothing, NULL},
+#else
+    P(newlocale), P(freelocale), P(uselocale),
+#endif
     /* math */
     T(acos, d_d), T(asin, d_d), T(atan, d_d), T(cos, d_d), T(cosh, d_d), T(exp, d_d), T(exp2, d_d), T(log, d_d),
     T(log10, d_d), T(log2, d_d), T(sin, d_d), T(sinh, d_d), T(sqrt, d_d), T(tan, d_d), T(tanh, d_d),
@@ -626,7 +1170,12 @@ const HleSymbol hle_libc[] = {
     T(ldexp, d_di), T(frexp, d_dp), T(modf, d_dp), T(frexpf, f_fp), T(modff, f_fp),
     T(atof, d_p), T(strtod, d_pp), T(strtof, f_pp),
     {"sincos", sincos_d, NULL}, {"sincosf", sincos_f, NULL}, {"difftime", difftime_, NULL},
-    P(div), P(rand), P(srand), P(feclearexcept), P(fetestexcept),
+#ifdef _WIN32
+    {"rand", g_rand, NULL}, {"srand", g_srand, NULL},
+#else
+    P(rand), P(srand),
+#endif
+    P(div), P(feclearexcept), P(fetestexcept),
     {"", NULL, NULL},
 };
 

@@ -18,6 +18,7 @@ Unity game: a 362 MB engine library with 265 MB of code, 20 smaller ones, and 62
 * [JNI](#jni)
 * [Vulkan: a pass-through](#vulkan-a-pass-through)
 * [EGL and GLES: pending on purpose](#egl-and-gles-pending-on-purpose)
+* [Hosts](#hosts)
 * [Status](#status)
 
 ## Memory: a guest pointer is a host pointer
@@ -131,6 +132,43 @@ lists.
 The engine library needs `libEGL.so` and `libGLESv2.so` (`DT_NEEDED`), so both exist, but their functions report no
 display: `eglGetDisplay` gives `EGL_NO_DISPLAY`, `eglInitialize` fails with `EGL_NOT_INITIALIZED`, and a GLES call does
 nothing. An engine that tries GLES then takes Vulkan. GLES over Vulkan is a later step, and is not started.
+
+## Hosts
+
+bionic's numbers and layouts are Linux's, so on Linux most of libc passes to the host as it is. The bridge also
+builds for FreeBSD, macOS and Windows x64, where they differ:
+
+- **The host's own calls** are `bridge/host.c`'s, one branch for each host: the code window's reservation at its
+  fixed address (`MAP_FIXED_NOREPLACE` on Linux, `MAP_GUARD | MAP_FIXED | MAP_EXCL` on FreeBSD, a hint that must hold
+  on macOS, `VirtualAlloc(MEM_RESERVE)` on Windows), the table and the stacks as lazy memory, a thread's id, `pread`,
+  the kernel's checked copies of guest memory (`process_vm_readv` on Linux, `mach_vm_read_overwrite` on macOS, a pipe
+  on FreeBSD, `ReadProcessMemory` on Windows) and an epoll set (epoll, kqueue, or WSAPoll over sockets).
+- **errno**: on Linux the guest's errno is the host's. Elsewhere it is the guest's own, and each HLE call sets it
+  from the host's in Linux's numbers (`gnu_host_errno`, `gnuabi/kernel/errno.c`, which also gives them back for
+  `strerror`).
+- **Constants and layouts** convert by the GNU ABI's tables and the network stack's: `gnuabi/abi/linux_file.h`
+  (struct stat, the open flags), `gnuabi/abi/linux_net.h` (families, flags, options, `sockaddr_in` and `sockaddr_in6`)
+  and `common/network/net_host.h` (the stack's constants as the host's). The adapters in `hle_posix.c` also convert
+  the mmap and msync flags, fcntl's commands and `struct flock`, the requests of ioctl, `struct dirent`, `struct
+  statfs` and the poll events. `getaddrinfo`, `getnameinfo` and `gethostbyname` are the stack's on every host, whose
+  flags and errors are bionic's.
+- **Threads**: FreeBSD's, macOS's and winpthreads' objects differ in size or in their static initializer, so a
+  guest mutex, condition variable, rwlock and semaphore keep a host object's address at offset 8, made at the first
+  use, and the attributes are bionic's own layout (`hle_thread.c`).
+- **The carrier** that stops a parked wait for a guest signal is `SIGRTMIN + 4` on Linux and FreeBSD (`tgkill`,
+  `thr_kill`) and `SIGUSR1` on macOS (`pthread_kill`), which HotSpot leaves alone on each (it takes `SIGSEGV`,
+  `SIGBUS`, `SIGFPE`, `SIGILL`, `SIGPIPE`, `SIGQUIT` and `SIGUSR2`). Windows has no signals: an APC, which runs only
+  when the thread waits alertably. A thread in another wait takes its signal as its HLE call returns.
+- **Windows x64** passes arguments by position, so `hle_call` takes a function's parameter classes: the four JNI
+  functions that set a float or double field, and the five Vulkan commands with a float parameter (`vulkan_core.h`).
+  `long` is 32 bits there (`strtol` is `strtoll`, `ftell` is `_ftelli64`) and `wchar_t` 16 (the wide functions are
+  the bridge's, in UTF-8 as bionic's). The CRT's `free` takes only `malloc`'s blocks, so a block aligned past 16 bytes
+  is kept in a table. `mmap` is `VirtualAlloc` and file views. `select`, `socketpair`, `readlink`, `fchmod` and
+  `alarm` report ENOSYS or EOPNOTSUPP, and a socket is a Winsock `SOCKET`, which `read`, `write` and `close` tell
+  from a CRT descriptor.
+
+FreeBSD's and macOS's branches are written from those systems' manuals and have not been compiled. Windows' files
+compile with `clang --target=x86_64-w64-mingw32 -fsyntax-only` and the mingw-w64 headers.
 
 ## Status
 

@@ -5,6 +5,7 @@
 #include "gnuabi/filesystem/vfs.h"
 #include "gnuabi/abi/errno/errno.h"
 #include "gnuabi/kernel/kernel.h"
+#include "gnuabi/abi/linux_file.h" /* GnuStat and the open flags */
 #define GNU_VFS_PATH_MAX 4096
 #define GNU_VFS_FD_MAX   256
 #define GNU_VFS_FILE_MAX (64u * 1024u * 1024u)
@@ -22,21 +23,6 @@ enum GnuNodeKind {
 enum GnuDeviceKind { GNU_DEV_NULL, GNU_DEV_ZERO, GNU_DEV_RANDOM };
 enum GnuProcKind { GNU_PROC_MAPS, GNU_PROC_CMDLINE, GNU_PROC_STATUS, GNU_PROC_CPUINFO };
 enum {
-    GNU_O_ACCMODE = 3,
-    GNU_O_WRONLY = 1,
-    GNU_O_RDWR = 2,
-    GNU_O_CREAT = 64,
-    GNU_O_NOCTTY = 256,
-    GNU_O_EXCL = 128,
-    GNU_O_TRUNC = 512,
-    GNU_O_APPEND = 1024,
-    GNU_O_NONBLOCK = 2048,
-    GNU_O_DSYNC = 4096,
-    GNU_O_DIRECTORY = 16384,
-    GNU_O_NOFOLLOW = 32768,
-    GNU_O_SYNC = 1052672,
-    GNU_O_CLOEXEC = 524288,
-    GNU_O_PATH = 2097152,
     GNU_AT_FDCWD = -100,
     GNU_AT_SYMLINK_NOFOLLOW = 256,
     GNU_AT_REMOVEDIR = 512,
@@ -93,14 +79,7 @@ typedef struct GnuVfsState {
     GnuMutex lock;
 } GnuVfsState;
 
-/* What a stat call reports, for both the virtual nodes and the host files, written out as the asm-generic stat or
-   as statx */
-typedef struct GnuStat {
-    uint64_t dev, inode, rdev, size, blocks;
-    uint32_t mode, nlink, uid, gid, blksize;
-    int64_t atime, mtime, ctime;
-    uint32_t atime_ns, mtime_ns, ctime_ns;
-} GnuStat;
+/* a GnuStat (abi/linux_file.h) written out as the asm-generic stat or as statx */
 int gnu_stat_put(GnuMemory* memory, uint64_t address, const GnuStat* st);
 int gnu_statx_put(GnuMemory* memory, uint64_t address, const GnuStat* st);
 /* gnu_host_errno: the kernel's (gnuabi/kernel/kernel.h) */

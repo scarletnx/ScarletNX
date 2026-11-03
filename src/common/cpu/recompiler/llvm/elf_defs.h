@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The part of <elf.h> that elf_object.c and its users read relocatable objects with, for systems that have no <elf.h>:
-   Darwin, where the JIT loader (code_loader.c) loads ELF objects although the system's own are Mach-O. Written from
+   Darwin, where the JIT loader (code_loader.c) loads ELF objects although the system's own are Mach-O, and the
+   Android bridge's linker on every host (it loads AArch64 shared objects, whatever the host's own format). Written from
    the System V ABI's ELF chapters (generic ABI 4.1: the header, sections, symbols, relocations) and the processor
    supplements' relocation numbers (x86-64 psABI 4.4, ELF for the Arm 64-bit Architecture 5.7, 64-bit ELF V2 ABI for
    Power 3.5). Only the names those files use: elf_object.h defines the AArch64 relocations it writes itself */
@@ -132,10 +133,82 @@ typedef struct {
 #define R_PPC64_ADDR64    38
 #define R_PPC64_TOC       51
 
+/* the program headers and the dynamic section, for a loader of shared objects (the Android bridge's linker) */
+typedef struct {
+    Elf64_Word p_type;
+    Elf64_Word p_flags;
+    Elf64_Off p_offset;
+    Elf64_Addr p_vaddr;
+    Elf64_Addr p_paddr;
+    Elf64_Xword p_filesz;
+    Elf64_Xword p_memsz;
+    Elf64_Xword p_align;
+} Elf64_Phdr;
+#define PT_LOAD      1
+#define PT_DYNAMIC   2
+#define PT_PHDR      6
+#define PT_TLS       7
+#define PT_GNU_RELRO 0x6474e552
+#define PF_X         0x1
+#define PF_W         0x2
+#define PF_R         0x4
+
+typedef struct {
+    Elf64_Sxword d_tag;
+    union {
+        Elf64_Xword d_val;
+        Elf64_Addr d_ptr;
+    } d_un;
+} Elf64_Dyn;
+#define DT_NULL            0
+#define DT_NEEDED          1
+#define DT_PLTRELSZ        2
+#define DT_HASH            4
+#define DT_STRTAB          5
+#define DT_SYMTAB          6
+#define DT_RELA            7
+#define DT_RELASZ          8
+#define DT_STRSZ           10
+#define DT_INIT            12
+#define DT_FINI            13
+#define DT_SONAME          14
+#define DT_SYMBOLIC        16
+#define DT_JMPREL          23
+#define DT_INIT_ARRAY      25
+#define DT_FINI_ARRAY      26
+#define DT_INIT_ARRAYSZ    27
+#define DT_FINI_ARRAYSZ    28
+#define DT_FLAGS           30
+#define DT_PREINIT_ARRAY   32
+#define DT_PREINIT_ARRAYSZ 33
+#define DT_RELRSZ          35
+#define DT_RELR            36
+#define DT_GNU_HASH        0x6ffffef5
+#define DF_SYMBOLIC        0x2
+
+#define STB_LOCAL  0
+#define STT_NOTYPE 0
+#define STT_OBJECT 1
+#define STT_FUNC   2
+#define STT_TLS    6
+#define STT_GNU_IFUNC 10
+
+/* AArch64's dynamic relocations (ELF for the Arm 64-bit Architecture 5.7.10) */
+#define R_AARCH64_ABS64     257
+#define R_AARCH64_GLOB_DAT  1025
+#define R_AARCH64_JUMP_SLOT 1026
+#define R_AARCH64_TLS_DTPMOD64 1028
+#define R_AARCH64_TLS_DTPREL64 1029
+#define R_AARCH64_TLS_TPREL64  1030
+#define R_AARCH64_TLSDESC      1031
+#define R_AARCH64_IRELATIVE 1032
+
 /* the generic ABI's sizes, which the objects' bytes are read with */
 typedef char snx_elf64_ehdr_size[sizeof(Elf64_Ehdr) == 64 ? 1 : -1];
 typedef char snx_elf64_shdr_size[sizeof(Elf64_Shdr) == 64 ? 1 : -1];
 typedef char snx_elf64_sym_size[sizeof(Elf64_Sym) == 24 ? 1 : -1];
 typedef char snx_elf64_rela_size[sizeof(Elf64_Rela) == 24 ? 1 : -1];
+typedef char snx_elf64_phdr_size[sizeof(Elf64_Phdr) == 56 ? 1 : -1];
+typedef char snx_elf64_dyn_size[sizeof(Elf64_Dyn) == 16 ? 1 : -1];
 
 #endif
