@@ -565,6 +565,7 @@ typedef struct Surf {
     u32 drawn_at;  /* render targets: g_vk_present when last drawn to */
     u64 draw_wseq; /* render targets: wseq at its last draw or clear (vk_rt_drawn), 0 before one */
     int in_drawn;  /* in surface.c's list of drawn targets, entered at drawn_from */
+    int take_seen; /* render targets: vk_rt_drawn_in gave it to a texture's search since its last write */
     int in_linear; /* a pitch-linear color target in surface.c's list of those drawn since the last release */
     u64 drawn_from;
     u64 draw_gw;    /* guest-memory generation at the first draw this present or since a full replacement */
@@ -603,6 +604,10 @@ typedef struct Surf {
     struct Surf *lru_prev, *lru_next;
     u64 bytes;
     int took_drawn; /* textures: pixels copied from render targets since the last upload (memory may not have them) */
+    /* textures: vk_rt_take_gen() and wgen when the search for drawn targets over it (texture.c tex_take_drawn) last left
+       nothing it could take: it searches again only once either moved */
+    u64 take_gen;
+    u32 take_wgen;
     /* textures whose image has memory only where they are mapped (vk_image_create_resident): bricks of grain texels,
        each brick_bytes of the guest's layout in one range, x first, then y, then z. 0 bricks for every other image */
     u32 bricks, brick_bytes;
@@ -706,6 +711,8 @@ void vk_rt_drawn(Surf* s);               /* a render target was drawn to (gpu/vk
 void vk_rt_drawn_full(Surf* s);          /* a full clear or blit replaced every pixel */
 int vk_rt_drawn_fresh(Surf* s);          /* no guest-memory write has replaced the target since its last draw */
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max); /* count drawn in [lo, hi), write up to max */
+/* a count that moves whenever what vk_rt_drawn_in returns, or the pixels of a target it returned, can have changed */
+u64 vk_rt_take_gen(void);
 void vk_rt_reload(u64 gva);
 /* textures share the surface table. g_vk_surf_epoch changes whenever a surface enters it, leaves it or moves (a
    target parked or taken back), so what was found there can be kept until it changes */

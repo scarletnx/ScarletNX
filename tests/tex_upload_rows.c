@@ -266,13 +266,23 @@ u64 vk_hash(const void* p, u64 size) { /* FNV-1a over the bytes: mem_hash's chec
     for (u64 i = 0; i < size; i++) h = (h ^ b[i]) * 1099511628211ull;
     return h;
 }
+/* the drawn targets tex_take_drawn finds (check_take_skip): g_drawn_target over any range while set, its memory
+   older than its pixels while g_drawn_fresh is; each search counted, and surface.c's count of their changes */
+static Surf* g_drawn_target;
+static int g_drawn_fresh;
+static u32 g_drawn_searches;
+static u64 g_take_gen_now = 1;
+u64 vk_rt_take_gen(void) { return g_take_gen_now; }
 int vk_rt_drawn_fresh(Surf* s) {
     (void)s;
-    return 0;
+    return g_drawn_fresh;
 }
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
-    (void)lo, (void)hi, (void)out, (void)max;
-    return 0;
+    (void)lo, (void)hi;
+    g_drawn_searches++;
+    if (!g_drawn_target) return 0;
+    if (max > 0) out[0] = g_drawn_target;
+    return 1;
 }
 Surf* vk_rt_find(u64 gva) {
     (void)gva;
@@ -578,8 +588,54 @@ static u32 model_wrong(void) {
     return wrong;
 }
 
+static u32 g_image_copies;
+static void count_copy_image(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
+                             const VkImageCopy* r) {
+    (void)cb, (void)src, (void)sl, (void)dst, (void)dl, (void)n, (void)r;
+    g_image_copies++;
+}
+/* tex_take_drawn looks for the drawn targets over a texture again only once something it could take may have changed
+   (vk_rt_take_gen) or the texture was loaded again (its wgen): with nothing over it, with a target whose memory is
+   newer than its pixels, and with one it took, a second bind searches nothing. A search that copied a target leaves it
+   settled too: the target's next draw moves the count */
+static void check_take_skip(void) {
+    Surf t = tex(64, 64, 1, 1, 4, 2, 0, 1), s = tex(64, 64, 1, 1, 4, 2, 0, 1);
+    s.is_rt = 1;
+    s.sw = s.w;
+    s.sh = s.h;
+    s.img = (VkImage)(uintptr_t)0x2B7;
+    t.wgen = 7;
+    s.wgen = 3;
+    vkCmdCopyImage = count_copy_image;
+    g_drawn_searches = g_image_copies = 0;
+    tex_take_drawn(&t);
+    tex_take_drawn(&t);
+    CHECK(g_drawn_searches == 1); /* nothing over it, nothing moved */
+    g_take_gen_now++;
+    tex_take_drawn(&t);
+    CHECK(g_drawn_searches == 2); /* the count moved */
+    t.wgen++;
+    tex_take_drawn(&t);
+    CHECK(g_drawn_searches == 3); /* loaded again */
+    g_drawn_target = &s;
+    g_take_gen_now++;
+    tex_take_drawn(&t);
+    tex_take_drawn(&t);
+    CHECK(g_drawn_searches == 4 && g_image_copies == 0); /* memory newer than the target's pixels: nothing to take */
+    g_drawn_fresh = 1;
+    s.wgen++;
+    g_take_gen_now++; /* drawn again */
+    tex_take_drawn(&t);
+    tex_take_drawn(&t);
+    CHECK(g_drawn_searches == 5 && g_image_copies == 1); /* taken once */
+    g_drawn_target = NULL;
+    g_drawn_fresh = 0;
+    vkCmdCopyImage = NULL;
+}
+
 int main(void) {
     fill();
+    check_take_skip();
     g_vk.alloc_cap = 256ull << 20;
     /* the video's picture: 1920 wide in 4 byte pixels, rows of whole pieces, 16 GOBs a block */
     Surf a = tex(1920, 136, 1, 1, 4, 4, 0, 1);

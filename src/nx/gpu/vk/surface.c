@@ -489,7 +489,20 @@ static u64 g_wseq;
    guest memory still at it, so its next write looked written back already and never landed */
 static u32 g_surf_gen;
 u32 vk_surf_gen(void) { return ++g_surf_gen; }
+/* What a texture takes from the drawn targets over it (texture.c tex_take_drawn) changes only with the targets in its
+   range and their pixels, so a texture that had nothing left to take is passed over while this count hasn't moved. It
+   moves when a target enters the list of drawn targets or leaves it, is parked or taken out of parking, and when one
+   vk_rt_drawn_in returned since its last write is written or drawn again (take_seen). A texture searched each time
+   it was bound, and found the targets it had copied already: most of its searches in one game */
+static u64 g_take_gen = 1;
+u64 vk_rt_take_gen(void) { return g_take_gen; }
+static void take_changed(Surf* s) {
+    if (!s->take_seen) return;
+    s->take_seen = 0;
+    g_take_gen++;
+}
 void vk_surf_wrote(Surf* s) {
+    take_changed(s);
     s->wgen = vk_surf_gen();
     s->wseq = ++g_wseq;
 }
@@ -1288,11 +1301,13 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
             rt_pages(s, -1);
             rtx_del(gva);
             s->gva = gva | 1ull << 63;
+            g_take_gen++;
             g_parked++;
             surf_changed(gva);
         }
     if (parked) {
         parked->gva = gva;
+        g_take_gen++;
         rtx_add(parked);
         g_parked--;
         surf_changed(gva);
@@ -1506,6 +1521,7 @@ static int rt_superseded(const Surf* s) {
     return 0;
 }
 void vk_rt_drawn(Surf* s) {
+    take_changed(s);
     linear_note(s);
     s->draw_wseq = s->wseq;
     if (s->rt_size > g_drawn_max) g_drawn_max = s->rt_size;
@@ -1538,6 +1554,7 @@ void vk_rt_drawn(Surf* s) {
     g_drawn[at] = s;
     g_ndrawn++;
     s->in_drawn = 1;
+    g_take_gen++;
     pend_add_va(&g_drawn_pages, s->drawn_from, 1, 1);
 }
 void vk_rt_drawn_full(Surf* s) {
@@ -1571,6 +1588,7 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
         if (s->gva == s->drawn_from) {
             if (n < max) out[n] = s;
             n++;
+            s->take_seen = 1;
         }
     }
     return n;
@@ -1588,6 +1606,7 @@ static void surf_free(Surf* s) {
     if (s->gva >> 63) g_parked--;
     linear_drop(s);
     if (s->in_drawn) {
+        g_take_gen++;
         int i = drawn_lower(s->drawn_from);
         while (i < g_ndrawn && g_drawn[i] != s) i++;
         if (i < g_ndrawn) {
