@@ -717,6 +717,40 @@ static u32 lane_dead(DirectCtx* c) {
 }
 static u32 cc_or(DirectCtx* c, u32 x, u32 y) { return spv_emit_bool_binary(&c->emit, c->bool_type, 1, x, y); }
 static u32 cc_xor(DirectCtx* c, u32 x, u32 y) { return spv_emit_bool_binary(&c->emit, c->bool_type, 2, x, y); }
+/* what an atomic INC (decrement 0) or DEC (1) leaves in place of old, value its operand: INC wraps to 0 once old
+   reaches value, DEC to value from 0 or from above it (CUDA's atomicInc and atomicDec, which these are) */
+static u32 wrap_step(DirectCtx* c, u32 old, u32 value, int decrement) {
+    if (!decrement) {
+        u32 increment = spv_emit_iadd_u32(&c->emit, c->u32_type, old, spv_emit_constant_u32(&c->emit, c->u32_type, 1));
+        return spv_emit_select(&c->emit, c->u32_type, cc_not(c, spv_emit_u_less(&c->emit, c->bool_type, old, value)),
+                               c->zero, increment);
+    }
+    u32 decremented = spv_emit_isub_u32(&c->emit, c->u32_type, old, spv_emit_constant_u32(&c->emit, c->u32_type, 1));
+    u32 zero = spv_emit_i_equal(&c->emit, c->bool_type, old, c->zero);
+    u32 greater = spv_emit_u_less(&c->emit, c->bool_type, value, old);
+    return spv_emit_select(&c->emit, c->u32_type, cc_or(c, zero, greater), value, decremented);
+}
+/* an atomic INC or DEC (wrap_step) on pointer, an image texel's, which only atomics may read: a compare and exchange
+   loop through old_var. What the texel held before */
+static u32 atomic_wrap_loop(DirectCtx* c, u32 old_var, u32 pointer, u32 value, int decrement) {
+    u32 header = spv_emit_id(&c->emit), body = spv_emit_id(&c->emit);
+    u32 cont = spv_emit_id(&c->emit), merge = spv_emit_id(&c->emit);
+    spv_emit_store(&c->emit, old_var, spv_emit_atomic_load_u32(&c->emit, c->u32_type, pointer));
+    spv_emit_branch(&c->emit, header);
+    spv_emit_label(&c->emit, header);
+    spv_emit_loop_merge(&c->emit, merge, cont);
+    spv_emit_branch(&c->emit, body);
+    spv_emit_label(&c->emit, body);
+    u32 old = spv_emit_load(&c->emit, c->u32_type, old_var);
+    u32 observed =
+        spv_emit_atomic_compare_exchange_u32(&c->emit, c->u32_type, pointer, wrap_step(c, old, value, decrement), old);
+    spv_emit_store(&c->emit, old_var, observed);
+    spv_emit_branch_conditional(&c->emit, spv_emit_i_equal(&c->emit, c->bool_type, observed, old), merge, cont);
+    spv_emit_label(&c->emit, cont);
+    spv_emit_branch(&c->emit, header);
+    spv_emit_label(&c->emit, merge);
+    return spv_emit_load(&c->emit, c->u32_type, old_var);
+}
 static u32 cc_test(DirectCtx* c, u32 code) {
     if (code == 0 || code == 15) return code == 15 ? c->true_value : c->false_value;
     u32 s = flag_read(c, c->cc_s);
@@ -2895,17 +2929,17 @@ static int supported(u64 w, int op) {
            reach 3D surfaces (5) too, z in that register */
         case O_SUST:
             return !B(w, 52, 1) && (B(w, 33, 3) == 3 || B(w, 33, 3) == 4 || B(w, 33, 3) == 5 || B(w, 33, 3) == 1);
-        /* 32-bit atomics on buffers, 2D images, arrays and volumes, other than
-           INC and DEC, which wrap at the operand. Bindless is bit 54 here. */
+        /* 32-bit atomics on buffers, 2D images, arrays and volumes, every operation (bits 29-32): INC and DEC, which
+           wrap at the operand, as a compare and exchange loop. Bindless is bit 54 here. */
         case O_SUATOM:
             return (B(w, 33, 3) == 3 || B(w, 33, 3) == 4 || B(w, 33, 3) == 5 || B(w, 33, 3) == 1) &&
-                   (B(w, 51, 3) <= 1 || B(w, 51, 3) == 6) && B(w, 29, 4) <= 8 && B(w, 29, 4) != 3 && B(w, 29, 4) != 4 &&
-                   !B(w, 49, 2);
+                   (B(w, 51, 3) <= 1 || B(w, 51, 3) == 6) && B(w, 29, 4) <= 8 && !B(w, 49, 2);
         /* reductions of 32 bits, U32 or S32 (bits 20-22), on 2D, 2D array, 3D and buffer surfaces (a compute program's
-           histogram adds into a buffer): ADD is the same for both, MIN and MAX compare S32 signed */
+           histogram adds into a buffer, another ORs flags into one): every operation (bits 24-26). ADD and the
+           bitwise ones are the same for both, MIN and MAX compare S32 signed, INC and DEC wrap */
         case O_SURED:
             return (B(w, 33, 3) == 3 || B(w, 33, 3) == 4 || B(w, 33, 3) == 5 || B(w, 33, 3) == 1) && B(w, 20, 3) <= 1 &&
-                   B(w, 24, 3) <= 2 && !B(w, 23, 1) && !B(w, 49, 2);
+                   !B(w, 23, 1) && !B(w, 49, 2);
         case O_HADD2_R:
         case O_HADD2_C:
         case O_HADD2_I:
@@ -3797,6 +3831,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         if ((op->id == O_RED || op->id == O_ATOM) && global_atomic_opcode(insn[i], op->id == O_RED) == 0xffffffffu)
             needs_atomic_cas = 1;
         if (op->id == O_ATOMS && shared_atomic_opcode(insn[i]) == 0xffffffffu) needs_atomic_cas = 1;
+        if ((op->id == O_SURED && (B(insn[i], 24, 3) == 3 || B(insn[i], 24, 3) == 4)) ||
+            (op->id == O_SUATOM && (B(insn[i], 29, 4) == 3 || B(insn[i], 29, 4) == 4)))
+            needs_atomic_cas = 1;
         if (op->id == O_BRX) has_flow = 1;
         /* Thread and block ids require compute's invocation and workgroup builtins. */
         if (op->id == O_S2R && stage == ST_CS) {
@@ -6304,21 +6341,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 spv_emit_branch(&c->emit, body);
                 spv_emit_label(&c->emit, body);
                 u32 old = spv_emit_load(&c->emit, c->u32_type, atomic_old_var);
-                u32 value = reg_read(c, b);
-                u32 next;
-                if (B(w, 52, 4) == 3) {
-                    u32 increment =
-                        spv_emit_iadd_u32(&c->emit, c->u32_type, old, spv_emit_constant_u32(&c->emit, c->u32_type, 1));
-                    next = spv_emit_select(&c->emit, c->u32_type,
-                                           cc_not(c, spv_emit_u_less(&c->emit, c->bool_type, old, value)), c->zero,
-                                           increment);
-                } else {
-                    u32 decrement =
-                        spv_emit_isub_u32(&c->emit, c->u32_type, old, spv_emit_constant_u32(&c->emit, c->u32_type, 1));
-                    u32 zero = spv_emit_i_equal(&c->emit, c->bool_type, old, c->zero);
-                    u32 greater = spv_emit_u_less(&c->emit, c->bool_type, value, old);
-                    next = spv_emit_select(&c->emit, c->u32_type, cc_or(c, zero, greater), value, decrement);
-                }
+                u32 next = wrap_step(c, old, reg_read(c, b), B(w, 52, 4) != 3);
                 u32 observed = spv_emit_atomic_compare_exchange_shared_u32(&c->emit, c->u32_type, pointer, next, old);
                 spv_emit_store(&c->emit, atomic_old_var, observed);
                 spv_emit_branch_conditional(&c->emit, spv_emit_i_equal(&c->emit, c->bool_type, observed, old), merge,
@@ -6651,18 +6674,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                     u32 sum = spv_emit_fadd(&c->emit, c->f32_type, spv_emit_bitcast(&c->emit, c->f32_type, old),
                                             spv_emit_bitcast(&c->emit, c->f32_type, value));
                     desired = spv_emit_bitcast(&c->emit, c->u32_type, sum);
-                } else if (operation == 3) {
-                    u32 increment =
-                        spv_emit_iadd_u32(&c->emit, c->u32_type, old, spv_emit_constant_u32(&c->emit, c->u32_type, 1));
-                    u32 greater_equal = cc_not(c, spv_emit_u_less(&c->emit, c->bool_type, old, value));
-                    desired = spv_emit_select(&c->emit, c->u32_type, greater_equal, c->zero, increment);
-                } else {
-                    u32 decrement =
-                        spv_emit_isub_u32(&c->emit, c->u32_type, old, spv_emit_constant_u32(&c->emit, c->u32_type, 1));
-                    u32 zero = spv_emit_i_equal(&c->emit, c->bool_type, old, c->zero);
-                    u32 greater = spv_emit_u_less(&c->emit, c->bool_type, value, old);
-                    desired = spv_emit_select(&c->emit, c->u32_type, cc_or(c, zero, greater), value, decrement);
-                }
+                } else
+                    desired = wrap_step(c, old, value, operation != 3);
                 u32 observed = spv_emit_atomic_compare_exchange_u32(&c->emit, c->u32_type, pointer, desired, old);
                 spv_emit_store(&c->emit, atomic_old_var, observed);
                 u32 done = spv_emit_i_equal(&c->emit, c->bool_type, observed, old);
@@ -8014,22 +8027,17 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                             if (target < 255) target++;
                         }
                 } else if (kind == 1) {
-                    u32 opcode;
-                    if (op == O_SURED) {
-                        u32 operation = B(w, 24, 3);
-                        opcode = operation == 0   ? 234
-                                 : operation == 1 ? (B(w, 20, 3) ? 236 : 237)
-                                                  : (B(w, 20, 3) ? 238 : 239);
-                    } else {
-                        /* ADD, MIN, MAX, -, -, AND, OR, XOR, EXCH; only S32 compares signed */
-                        static const u32 opcodes[9] = {234, 237, 239, 0, 0, 240, 241, 242, 229};
-                        u32 operation = B(w, 29, 4);
-                        opcode = opcodes[operation];
-                        if (B(w, 51, 3) == 1 && (operation == 1 || operation == 2)) opcode--;
-                    }
+                    /* SURED's operations (bits 24-26) and SUATOM's (29-32) are numbered alike: ADD, MIN, MAX, INC,
+                       DEC, AND, OR, XOR, and SUATOM's EXCH. Only S32 (size 1 in both) compares signed */
+                    static const u32 opcodes[9] = {234, 237, 239, 0, 0, 240, 241, 242, 229};
+                    u32 operation = op == O_SURED ? B(w, 24, 3) : B(w, 29, 4);
+                    u32 opcode = opcodes[operation];
+                    if (B(w, op == O_SURED ? 20 : 51, 3) == 1 && (operation == 1 || operation == 2)) opcode--;
                     u32 pointer = spv_emit_image_texel_pointer(&c->emit, c->u32_type, c->image[slot], coord, c->zero);
-                    u32 prior = spv_emit_atomic_u32(&c->emit, c->u32_type, opcode, pointer,
-                                                    reg_read(c, op == O_SUATOM ? b : source));
+                    u32 value = reg_read(c, op == O_SUATOM ? b : source);
+                    u32 prior = operation == 3 || operation == 4
+                                    ? atomic_wrap_loop(c, atomic_old_var, pointer, value, operation == 4)
+                                    : spv_emit_atomic_u32(&c->emit, c->u32_type, opcode, pointer, value);
                     if (op == O_SUATOM) reg_write(c, d, prior);
                 } else {
                     u32 components[4];
