@@ -225,6 +225,45 @@ static int check_staging_overflow(void)
 	return 0;
 }
 
+/* A load that draws without a present: each draw uploads an allocation's worth, and vk_frame_check, before each draw,
+   ends the frame once it has written VK_FRAME_RING_CAPS allocations to its rings. The next use of a slot waits for its
+   GPU work and takes its rings again, so the rings the slots hold stay bounded, and every copy still reads its upload */
+static int check_rings_without_present(void) {
+    const u32 draws = 64;
+    u64 saved_cap = g_vk.alloc_cap, base, most, first;
+    VkBuffer rb;
+    u8* result;
+    vk_finish();
+    vk_frame_next();
+    g_vk.alloc_cap = 1u << 20;
+    base = most = vk_ring_bytes();
+    first = vk_frame_id();
+    result = vk_readback_buffer(draws * 16, &rb);
+    CHECK(result);
+    for (u32 i = 0; i < draws; i++) {
+        VkBuffer buffer;
+        u64 offset;
+        vk_frame_check(); /* a draw's start */
+        u8* data = vk_stage_upload(g_vk.alloc_cap, 16, &buffer, &offset);
+        CHECK(data);
+        memset(data, (int)(i + 1), 16);
+        VkBufferCopy copy = {offset, i * 16ull, 16};
+        rec_CmdCopyBuffer(vk_cmd(), buffer, rb, 1, &copy);
+        if (vk_ring_bytes() > most) most = vk_ring_bytes();
+    }
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < draws * 16; i++) CHECK(result[i] == i / 16 + 1);
+    u64 frames = vk_frame_id() - first, grown = most - base;
+    g_vk.alloc_cap = saved_cap;
+    vk_frame_next();
+    printf("%u draws without a present: %llu frames, the slots' rings grew by %llu KiB at most\n", draws,
+           (unsigned long long)frames, (unsigned long long)(grown >> 10));
+    CHECK(frames >= draws / (VK_FRAME_RING_CAPS + 1));
+    CHECK(grown <= (u64)VK_FRAMES * VK_FRAME_RING_CAPS * (1u << 20));
+    return 0;
+}
+
 /* the renderer's viewport index and its first viewport's facing for the registers r, through the draw state */
 static VkViewport viewport_of(const u32* r, u32 index) {
     DsDynamic d;
@@ -2504,6 +2543,7 @@ int main(int argc, char** argv) {
     }
     CHECK(!check_hash_copy());
     CHECK(!check_staging_overflow()); /* first: it counts the staging blocks of a fresh device */
+    CHECK(!check_rings_without_present());
     CHECK(!check_stream_epoch());
     CHECK(!check_owned_readback());
     CHECK(!check_owned_writable());

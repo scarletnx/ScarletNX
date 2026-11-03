@@ -42,6 +42,7 @@
 #include "nx/gpu/shader/shader.h"
 
 #define VK_FRAMES 2  /* frames in flight */
+#define VK_FRAME_RING_CAPS 4  /* a frame ends once it has written this many allocations to its rings (vk_frame_check) */
 #define VK_SC_MAX 16 /* swapchain images */
 
 typedef struct {
@@ -271,6 +272,7 @@ void vk_zt_forget(void);
 extern u64 g_vk_finishes, g_vk_finish_ns; /* statistics: vk_finish calls and their wait (the GPU thread idles) */
 void vk_frame_next(void);                 /* ends the frame (a present): the next records in the other slot */
 void vk_frame_check(void);                /* at the start of a draw or dispatch: ends a frame that has grown too big */
+u64 vk_ring_bytes(void);                  /* ring memory every frame slot holds, spares and outgrown ones too */
 /* a buffer for GPU -> host copies: record the copy into it, vk_finish(), vk_readback_ready(), then read */
 u8* vk_readback_buffer(u64 size, VkBuffer* buf);
 void vk_readback_ready(void);
