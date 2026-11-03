@@ -96,7 +96,8 @@ FS tests use production tree/HLE + synthetic temp data; `--only tree|service` se
 
 CI: Linux/Windows builds, ABI syntax, native tool/FS regressions, optional Python diagnostics, the Linux AppImages
 and the Windows zip (each then run as installed), the Android APK, and [edenprobe](EDENPROBE.md)'s probes on lavapipe
-against the cases that passed before (`scripts/edenprobe.py`). `.github/workflows/publish.yml` publishes what
+against the cases that passed before (`scripts/edenprobe.py`). A push to `main` cancels the build of the one before it
+still running, as a push to a pull request does that pull request's. `.github/workflows/publish.yml` publishes what
 builds everywhere, each said on Discord (`scripts/publish-builds.py`): a version tag pushed (`v1.0.0`; `v1.0.0-rc1` a
 prerelease) as this repository's release of it, the latest, its notes listing the changes since the version before;
 each push to `main` as a release of [scarletnx/nightly](https://github.com/scarletnx/nightly/releases), the newest 30
