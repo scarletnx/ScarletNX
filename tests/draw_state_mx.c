@@ -118,10 +118,12 @@ static void line_width(void) {
 }
 
 /* the bias enables per polygon mode: 0x370 points (bit 0), 0x371 lines (bit 1), 0x372 filled (bit 2); units 0x56F,
-   slope 0x55B, clamp 0x61F */
+   slope 0x55B, clamp 0x61F. As vkCmdSetDepthBias takes them, at the console's size and at 3x: the slope follows the
+   targets' scale (a 3x target has a third of the depth slope per pixel), the units and the clamp do not */
 static void bias(void) {
     u32 r[REGS] = {0};
     DsDynamic d;
+    float vk[3];
     r[0x370] = 1;
     r[0x371] = 0;
     r[0x372] = 2;
@@ -131,6 +133,10 @@ static void bias(void) {
     mx_draw_dynamic(r, &d);
     CHECK(d.bias_on == 5);
     CHECK(d.bias_units == 3.0f && d.bias_slope == -1.5f && d.bias_clamp == 0.25f);
+    ds_depth_bias(&d, 1.0f, vk);
+    CHECK(vk[0] == 3.0f && vk[1] == 0.25f && vk[2] == -1.5f);
+    ds_depth_bias(&d, 3.0f, vk);
+    CHECK(vk[0] == 3.0f && vk[1] == 0.25f && vk[2] == -4.5f);
     r[0x370] = 0;
     r[0x371] = 5;
     r[0x372] = 0;

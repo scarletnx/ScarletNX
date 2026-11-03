@@ -3419,8 +3419,7 @@ retry:
         lw = g_vk.feat.wideLines && lw > 0 && lw < 64 ? lw : 1.0f;
         DYNV(lw, lw, rec_CmdSetLineWidth(cb, lw));
     }
-    /* depth bias: enabled per polygon mode (the key's, as the device draws it). The units are passed as they are
-       (Ryujinx halves them: a run decides) */
+    /* depth bias: enabled per polygon mode (the key's, as the device draws it); its values are ds_depth_bias's */
     {
         u32 bias_on = ds->dyn.bias_on >> (k->polygon == VK_POLYGON_MODE_POINT  ? 0
                                           : k->polygon == VK_POLYGON_MODE_LINE ? 1
@@ -3429,7 +3428,9 @@ retry:
         DYN(bias_on, bias_on, rec_CmdSetDepthBiasEnable(cb, bias_on));
     }
     {
-        float bias[3] = {ds->dyn.bias_units, g_vk.feat.depthBiasClamp ? ds->dyn.bias_clamp : 0.0f, ds->dyn.bias_slope};
+        float bias[3];
+        ds_depth_bias(&ds->dyn, g_vk_scale, bias);
+        if (!g_vk.feat.depthBiasClamp) bias[1] = 0.0f;
         DYNV(bias, bias, rec_CmdSetDepthBias(cb, bias[0], bias[1], bias[2]));
     }
     DYNV(bc, ds->dyn.blend_const, rec_CmdSetBlendConstants(cb, ds->dyn.blend_const));
