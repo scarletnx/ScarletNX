@@ -25,7 +25,8 @@
 #endif
 
 /* dist/apple/Frontend.swift. window is the SDL window's UIWindow or NSWindow; done gets the path picked, NULL for none */
-extern bool snx_apple_pick(void* window, bool folder, void (*done)(void* data, const char* path), void* data);
+extern bool snx_apple_pick(void* window, bool folder, void (*done)(void* data, const char* path), void* data,
+                           void (*log)(const char* line));
 extern bool snx_apple_share(void* window, const char* path);
 /* plat_posix.c: the runtime's power watcher marks a change, which its main thread takes */
 extern void plat_power_mark_changed(void);
@@ -231,6 +232,34 @@ static void uncaught(NSException* e) {
     for (NSString* frame in e.callStackSymbols) fprintf(stderr, "  %s\n", frame.UTF8String);
     if (g_next_uncaught) g_next_uncaught(e);
 }
+/* logs/.running, there from a start until exit(): one there at a start is a start that did not end with exit() */
+static char g_running[1024];
+static void running_end(void) { unlink(g_running); }
+/* the last start's mark, said and then made again for this start, with exit() removing it */
+static void running_line(NSURL* logs) {
+    const char* path = [logs URLByAppendingPathComponent:@".running"].path.fileSystemRepresentation;
+    char last[128] = {0};
+    if (!path || snprintf(g_running, sizeof g_running, "%s", path) >= (int)sizeof g_running) return;
+    FILE* f = fopen(g_running, "r");
+    if (f) {
+        if (!fgets(last, sizeof last, f)) last[0] = 0;
+        last[strcspn(last, "\n")] = 0;
+        fclose(f);
+        fprintf(stderr,
+                "last start: %s did not end with exit(). The system ended it: a crash, its memory limit (jetsam), or a "
+                "close from the app switcher\n",
+                last[0] ? last : "(no mark)");
+    } else
+        fprintf(stderr, "last start: ended with exit(), or none before\n");
+    f = fopen(g_running, "w");
+    if (!f) return;
+    time_t now = time(NULL);
+    char when[32];
+    strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", localtime(&now));
+    fprintf(f, "pid %ld, started %s\n", (long)getpid(), when);
+    fclose(f);
+    atexit(running_end);
+}
 #endif
 
 void gui_apple_log_start(void) {
@@ -290,10 +319,55 @@ void gui_apple_log_start(void) {
                 (unsigned long long)(os_proc_available_memory() >> 20));
         entitlement_lines();
         fprintf(stderr, "app: %s\n", NSBundle.mainBundle.bundleIdentifier.UTF8String);
+        /* a host such as LiveContainer runs the app in its own process, with the app's bundle in another place: the
+           process's program then is not the bundle's */
+        fprintf(stderr, "  bundle %s\n  program %s\n", NSBundle.mainBundle.bundlePath.fileSystemRepresentation,
+                NSProcessInfo.processInfo.arguments.firstObject.fileSystemRepresentation ?: "(none)");
         fprintf(stderr, "documents: %s\n", documents.fileSystemRepresentation);
         if (logs) metrics_start(logs);
+        NSDictionary* room = [documents resourceValuesForKeys:@[
+            NSURLVolumeAvailableCapacityForImportantUsageKey, NSURLVolumeTotalCapacityKey
+        ]
+                                                        error:NULL];
+        fprintf(stderr, "disk: %lld MiB free for the app of %lld MiB\n",
+                [room[NSURLVolumeAvailableCapacityForImportantUsageKey] longLongValue] >> 20,
+                [room[NSURLVolumeTotalCapacityKey] longLongValue] >> 20);
+        running_line(logs);
     }
 #endif
+}
+
+/* the last thermal and power states said, so a notification with no change says nothing */
+static long g_thermal = -1;
+static int g_low_power = -1;
+static void state_line(void) {
+    long thermal = (long)NSProcessInfo.processInfo.thermalState;
+    int low = NSProcessInfo.processInfo.lowPowerModeEnabled;
+    static const char* const names[] = {"nominal", "fair", "serious", "critical"};
+    if (thermal == g_thermal && low == g_low_power) return;
+    g_thermal = thermal;
+    g_low_power = low;
+    gui_log("state: thermal %s, low power mode %s", thermal >= 0 && thermal < 4 ? names[thermal] : "?",
+            low ? "on" : "off");
+}
+/* the observers, kept while the process lives */
+static id g_thermal_observer, g_low_power_observer;
+void gui_apple_state_watch(void) {
+    if (g_thermal_observer) return;
+    state_line();
+    NSNotificationCenter* center = NSNotificationCenter.defaultCenter;
+    void (^changed)(NSNotification*) = ^(NSNotification* n) {
+      (void)n;
+      state_line();
+    };
+    g_thermal_observer = [center addObserverForName:NSProcessInfoThermalStateDidChangeNotification
+                                             object:nil
+                                              queue:NSOperationQueue.mainQueue
+                                         usingBlock:changed];
+    g_low_power_observer = [center addObserverForName:NSProcessInfoPowerStateDidChangeNotification
+                                               object:nil
+                                                queue:NSOperationQueue.mainQueue
+                                           usingBlock:changed];
 }
 
 void gui_apple_start(void) {
@@ -333,12 +407,15 @@ static void picked(void* data, const char* path) {
     pick_done = NULL;
     if (done) done(pick_data, list, -1);
 }
-int gui_apple_pick(SDL_Window* window, int folder, SDL_DialogFileCallback done, void* data, char* message,
+/* a step of the picker, which the Swift side says */
+static void pick_log(const char* line) { gui_log("%s", line); }
+int gui_apple_pick(SDL_Window* window, int folder, SDL_DialogFileCallback done, void* data, int log, char* message,
                    size_t size) {
     void* native = native_window(window);
     pick_done = done;
     pick_data = data;
-    if (native && snx_apple_pick(native, folder != 0, picked, NULL)) return 1;
+    if (native && snx_apple_pick(native, folder != 0, picked, NULL, log ? pick_log : NULL)) return 1;
+    if (log && !native) gui_log("picker: not opened: SDL gives no UIWindow");
     pick_done = NULL;
     snprintf(message, size, "%s",
              native ? snx_tr("The document picker did not open.") : snx_tr("No window to show the picker over."));

@@ -73,7 +73,17 @@ menu's driver:
   Documents (the 14 newest days kept), after a banner with the
   device, the system and the limits the app has, with the menu's own lines ([GUI](GUI.md)), and a fatal error, the
   menu's or a game's, is also written to `logs/scarletnx-error.log`. A phone shows no console, so these are what to read
-  when a run fails; Share Log sends both.
+  when a run fails; Share Log sends both. The banner also gives the disk space free for the app, and if the last start
+  ended without `exit()`: a crash, the memory limit, or a close from the app switcher. `logs/.running` is the mark.
+- **More logs.** Debug's *Log level* at 2 adds these lines to the launcher log, on iOS and on macOS where the system
+  has them. `picker:` is each step of the document picker: its open, its answer, the item and its security scope. An
+  open with no answer after it is a pick that iOS did not end. `lifecycle:` is the app going to the background and
+  back, and the low memory warnings, with what the menu had going. `run:` and `recompile:` are each start and end, with
+  the command, the status, the time and the disk space free, and on iOS the app's memory. `state:` is each change of
+  the thermal state and of the low power mode. `folders:` lists `dumps/`, `keys/` and `recompiled/` at the start, by
+  name and size, and the folders the player added. `dialog:` is the answer of each picker, or the error of SDL. The
+  banner always gives the app's bundle and the program of its process, which differ when a host such as LiveContainer
+  runs the app.
 - **MetricKit.** The app subscribes to MetricKit at its start. Each payload that the system gives (a diagnostic
   payload with crashes, hangs, CPU and disk write exceptions, or a metric payload with the counts of exits for memory)
   goes as JSON to `logs/metrickit-<date>_<time>.json`, named by the end of the time that it covers. The console log
