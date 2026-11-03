@@ -8744,7 +8744,7 @@ static void recent_as_games(App* app) {
     for (i = app->recent.count - 1; i >= 0; --i) { /* from the oldest: an entry dropped moves none still to look at */
         const GuiRecentGame* r = &app->recent.game[i];
         char* own = r->driver == GUI_SWITCH && r->prepared ? addon_game(r->path) : NULL;
-        const char* program = own ? own : r->driver != GUI_LINUX && !r->prepared ? made_program(&made, r->path) : NULL;
+        const char* program = own ? own : !runs_as_is(r->driver) && !r->prepared ? made_program(&made, r->path) : NULL;
         if (!program && r->driver == GUI_SWITCH && !r->prepared) { /* the games' add-ons read once, when one is asked */
             if (!addons_read) made_list(app, &addons, true);
             addons_read = true;
@@ -14207,7 +14207,7 @@ static void launch(App* app, char* absolute, bool prepared) {
        does: the Compile tab shows it, and it plays once it ended if the tab still shows it (job_play). So does a Switch
        game another build made, which its driver would recompile on the run's screen: its program opened (the one it
        plays, run_program), or its dump with Play answered */
-    bool compile = !app->recompile && !prepared && app->menu.selected != GUI_LINUX && !made_from(app, absolute);
+    bool compile = !app->recompile && !prepared && !runs_as_is(app->menu.selected) && !made_from(app, absolute);
 #ifndef SDL_PLATFORM_IOS /* the games there are packs the app loads, with no stamp */
     if (!compile && !app->recompile && !app->compiled && prepared && app->menu.selected == GUI_SWITCH &&
         gui_game_folder(absolute)) {
