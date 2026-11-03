@@ -64,20 +64,41 @@ if(PRELOAD)
                             "with \"${rc}\" (a timeout of 30 s is malloc's first call waiting on itself): ${err}")
     endif()
 endif()
-# With ZONE (macOS), a library inserted into the program that prints at exit the name of the zone a new allocation
-# comes from: jemalloc's once its zone is the default one, which the statistics above do not tell
-if(ZONE)
-    execute_process(COMMAND "${CMAKE_COMMAND}" -E env "DYLD_INSERT_LIBRARIES=${ZONE}" "${PROGRAM}" --help
+# With ZONE (macOS), a library inserted into a program that prints at exit the name of the zone a new allocation comes
+# from, then every registered zone: jemalloc's once its zone is the default one, which the statistics above do not tell.
+# Inserted first into ZONE_CONTROL, a program without jemalloc, it must name another zone, or its answer proves nothing
+function(snx_jemalloc_zone_of program)
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E env "DYLD_INSERT_LIBRARIES=${ZONE}" "${program}" ${ARGN}
                     OUTPUT_QUIET ERROR_VARIABLE err RESULT_VARIABLE rc)
     if(NOT rc EQUAL 0)
-        message(FATAL_ERROR "${PROGRAM} --help with ${ZONE} inserted exited with ${rc}: ${err}")
+        string(JOIN " " command "${program}" ${ARGN})
+        message(FATAL_ERROR "${command} with ${ZONE} inserted exited with ${rc}: ${err}")
     endif()
     if(NOT err MATCHES "snx-jemalloc-zone: ([^\n]*)")
-        message(FATAL_ERROR "${ZONE} inserted into ${PROGRAM} printed no zone (dyld did not insert it?): ${err}")
+        message(FATAL_ERROR "${ZONE} inserted into ${program} printed no zone (dyld did not insert it, or it printed "
+                            "why): ${err}")
     endif()
-    if(NOT CMAKE_MATCH_1 STREQUAL "jemalloc_zone")
-        message(FATAL_ERROR "${PROGRAM}'s new allocations come from the zone ${CMAKE_MATCH_1}, not jemalloc_zone: "
-                            "jemalloc's zone is not the default one")
+    set(owner "${CMAKE_MATCH_1}" PARENT_SCOPE)
+    set(zones "(not printed)")
+    if(err MATCHES "snx-jemalloc-zones: ([^\n]*)")
+        set(zones "${CMAKE_MATCH_1}")
+    endif()
+    set(zones "${zones}" PARENT_SCOPE)
+endfunction()
+if(ZONE)
+    if(NOT ZONE_CONTROL)
+        message(FATAL_ERROR "ZONE=${ZONE} needs ZONE_CONTROL, a program without jemalloc to insert it into first")
+    endif()
+    snx_jemalloc_zone_of("${ZONE_CONTROL}")
+    if(owner STREQUAL "jemalloc_zone" OR owner STREQUAL "(none)")
+        message(FATAL_ERROR "${ZONE} inserted into ${ZONE_CONTROL}, a program without jemalloc, names the zone "
+                            "${owner} for a new allocation, not the system's: it cannot tell jemalloc's zone. "
+                            "Registered zones, the default first: ${zones}")
+    endif()
+    snx_jemalloc_zone_of("${PROGRAM}" --help)
+    if(NOT owner STREQUAL "jemalloc_zone")
+        message(FATAL_ERROR "${PROGRAM}'s new allocations come from the zone ${owner}, not jemalloc_zone: jemalloc's "
+                            "zone is not the default one. Registered zones, the default first: ${zones}")
     endif()
 endif()
 if(VERSION)
