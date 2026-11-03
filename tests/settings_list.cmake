@@ -52,3 +52,18 @@ endif()
 if(list MATCHES "\nOn-screen controls/Buttons\t[^\n]*\nOn-screen controls\t") # a page after its section's others
     message(FATAL_ERROR "scarletnx --settings lists a page's settings before its section's last")
 endif()
+# the HDR setting, its source, the paper white, the peak and the boost, and its toggle key: a game's menu shows them,
+# with their words (gpu/vk/hdr_select.c, gpu/vk/hdr.c)
+foreach(row "Graphics\thdr\tauto\ttext\t0\t0\t" "\tHDR\toff=Off|auto=Auto|on=On\n"
+            "Graphics\thdr_colorspace\tauto\ttext\t0\t0\t" "\tHDR colours\tauto=Auto|p3=Display P3|scrgb=scRGB|hdr10=HDR10 (PQ)\n"
+            "Graphics\thdr_source\tauto\ttext\t0\t0\t" "\tHDR source\tauto=Auto|sdr=SDR|linear=Linear|pq=PQ (HDR10)\n"
+            "Graphics\thdr_test\t0\tint\t0\t1\t" "\tHDR test pattern\t0=Off|1=On\n"
+            "Graphics\thdr_paperwhite\t203\tint\t80\t480\t" "\tPaper white (nits)\t\n"
+            "Graphics\thdr_peak\t1000\tint\t400\t4000\t" "\tPeak light (nits)\t\n"
+            "Graphics\thdr_expand\t50\tint\t0\t100\t" "\tHDR expansion\t\n"
+            "Hotkeys\thdr_key\tctrl+h\ttext\t0\t0\t" "\tHDR key\t\n")
+    string(FIND "${list}" "${row}" at)
+    if(at LESS 0)
+        message(FATAL_ERROR "scarletnx --settings has no \"${row}\"")
+    endif()
+endforeach()
