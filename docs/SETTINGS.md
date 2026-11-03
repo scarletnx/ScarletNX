@@ -25,9 +25,10 @@ Settings show a group for each section ([GUI launcher](GUI.md)).
 
 `Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
 Restart for `docked` (`Auto` follows the host's power while the game runs), `fullscreen`, `language`, `resolution`,
-`anisotropy`, `upscaler`, `upscaler_sharpness`, `upscaler_mult`, `memory_gb`, `memory_fit`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
-`airplane_mode`, `ldn`, `room`, `pipeline_threads`, `prepare_shaders`, `compress_shader_cache`, `jit_threads`,
-`vertex_input_dynamic_state`, and
+`anisotropy`, `upscaler`, `upscaler_sharpness`, `upscaler_mult`, `hdr`, `hdr_colorspace`, `hdr_expand`,
+`hdr_test`, `hdr_source`, `hdr_paperwhite`, `hdr_peak`, `memory_gb`, `memory_fit`, `heap_max_mb`,
+`thread_stack_mb`, `map_limit_mb`, `map_limit_files`, `airplane_mode`, `ldn`, `room`, `pipeline_threads`,
+`prepare_shaders`, `compress_shader_cache`, `jit_threads`, `vertex_input_dynamic_state`, and
 the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
 `scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
 type, range and help, tab-separated. Every setting, the recompiler's too, is described once in
@@ -71,6 +72,13 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `upscaler` | `fsr1` | The spatial filter that grows the presented frame to the window. `fsr1` is AMD FSR 1 and the default on every device. `off` (`None`) blits the frame as it is, `bilinear` blits it softly, and `nis` and `sgsr` name NVIDIA NIS and Qualcomm SGSR as explicit choices. A filter's output keeps the frame's aspect and letterbox, and the on-screen controls keep their own resolution |
 | `upscaler_mult` | `1` | The multiple of the screen rectangle the upscaler writes, `1` to `4`: `1` is its size, so the frame is upscaled to the display, and `2` is twice it, which the presenter downsamples. Each step costs four times the filter's memory |
 | `upscaler_sharpness` | `25` | The upscaler's sharpening, `0` the sharpest and `100` the softest. `None` and `Bilinear` leave it out |
+| `hdr` | `auto` | `on` shows the frame at the paper white with the display's own gamut and headroom: **Display P3** linear where the surface offers it (macOS), then **scRGB**, else **HDR10** (PQ, SMPTE ST 2084, BT.2020), as a TV takes. An SDR frame is left exactly as SDR except for the top of its range, which `hdr_expand` lifts into the headroom the display reports; its hue and saturation never move. A display with no HDR keeps the SDR range. A frame that already holds HDR data, a float render target or the `hdr_source` setting, is never lifted again, and is tone mapped down where the display has no HDR. The menu and the on-screen controls are composited in the same light, so they are not coded twice |
+| `hdr_colorspace` | `auto` | The image an HDR display is given. `auto` takes **Display P3**'s wide gamut where the surface offers it (macOS): its `1.0` is the display's own white, so SDR content keeps its brightness and the expanded colours fit. Then **scRGB** (sRGB's primaries), else **HDR10** (PQ), the absolute signal a TV takes. `p3`, `scrgb` and `hdr10` force one where the display has it |
+| `hdr_expand` | `50` | The share of the display's own headroom the top of an SDR frame is lifted into, `0` to `100`: `0` shows the frame exactly as SDR, `50` uses half of the light the display has over white, and the lift starts at 80 % of the code range, so the darks and midtones stay as SDR. The colours' hue and saturation never move (the practice BT.2446, Dolby's inverse tone mapping and Horizon's HDR follow), and where the display reports no headroom (macOS at full brightness) nothing is lifted. A frame that already holds HDR data is never lifted |
+| `hdr_test` | `0` | `1` draws a band at the bottom of the window with six patches of known light: black, the paper white, and 1.25, 1.5, 1.75 and 2 times it. The steps above white are the display's headroom; where the last ones look the same the display clips there. It proves the lift reaches the screen |
+| `hdr_source` | `auto` | What the presented frame's pixels are. `auto` reads it from the frame's format: a float target is linear light, `1.0` at the paper white and its own headroom above. `sdr` is the console's display, `linear` names a linear frame in another format, and `pq` names one that is already an HDR10 signal |
+| `hdr_paperwhite` | `203` | The light an SDR frame's white maps to, in nits, `80` to `480`: `203` is BT.2408's reference white (Horizon's Auto is the same), `100` the darkest, `480` a bright one |
+| `hdr_peak` | `1000` | The brightest light the tone mapping and the HDR10 metadata name, in nits, `400` to `4000`: the display's own peak, `1000` for most TVs and `1600` for a bright one |
 | `vulkan_video` | `0` | `1` decodes H.264 movies on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver have an H.264 decode queue. Experimental and untested. `0` decodes them on the CPU, as VP9 movies always are |
 | `vertex_input_dynamic_state` | `auto` | How a draw gives the GPU its vertex layout. `auto` sets it as dynamic state (`VK_EXT_vertex_input_dynamic_state`) where the GPU's driver has the extension and its `vertexInputDynamicState` feature, but not on the drivers known to draw it wrong: NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0 (of whose four numbers the driver gives the last two: below 100.0). `on` sets it as dynamic state wherever the driver has it, those too. `off` puts it in the pipeline: each layout a program is drawn with takes a pipeline of its own, where dynamic state has one serve them all. The log says which, with the device, its driver and version. `on` on a device without the extension says so and puts the layout in the pipeline; any value but `auto`, `on` and `off` stops the game, saying so. Pipelines kept for the next run (`.vkshaders`) are made again when the choice changes |
 
@@ -125,6 +133,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | Key | Default | Effect |
 | --- | --- | --- |
 | `upscaler_key` | `ctrl+u` | The key that cycles the spatial upscaler while a game runs. The launcher's row under Settings > Hotkeys takes the next key you press, with Ctrl, Shift, Alt or the system key held. The cycle goes AMD FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR and None, and does not change the `.ini` |
+| `hdr_key` | `ctrl+h` | The key that turns HDR on and off while a game runs. The launcher's row under Settings > Hotkeys takes the next key you press, with Ctrl, Shift, Alt or the system key held. It does not change the `.ini` |
 
 ## Network
 
@@ -202,6 +211,7 @@ The unattended runs' settings ([Run / diagnose](DEVELOPMENT.md#run--diagnose)): 
 | `shot_every` | `0` | A screenshot every this many presents; `0`, at the end only |
 | `press_len` | `300` | How long a scripted press is held, in ms |
 | `script` | empty | The scripted input: `when:buttons`, a comma between two, when in ms or a present's number and `f` (`300f`) |
+| `hdr_toggle` | empty | An unattended run's live HDR toggles, the milliseconds they happen at with a comma between two: `3000,6000` turns HDR off and on again. A run that tests HDR's swapchain uses it |
 | `swkbd_text` | empty | The text the software keyboard answers instead of asking (shorter than the game's minimum: cancelled) |
 | `pause` | empty | Pauses of the whole game, a comma between two: `at:length` pauses it at that many ms of the scripted input's clock for `length` ms, and logs whether guest memory changed while it was paused |
 | `state_save` | empty | Save states the run writes, a comma between two: `at:slot` saves to that slot at that many ms of the scripted input's clock |
