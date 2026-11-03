@@ -136,6 +136,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     ShTex textures[SH_MAXTEX] = {0};
     int texture_count = 0;
     u64 tex_read = 0, tex_elsewhere = 0; /* slots read, and of them read elsewhere than the fragment's own pixel */
+    u64 tex_query = 0;                   /* slots a TXQ alone names: their type is the key's hint, or 2D */
     ShaderInfo image_info = {0};
     int needs_fragcoord = 0;
     int needs_frontface = 0;
@@ -302,7 +303,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (op->id != O_BRA) has_calls = 1;
         }
         if (op->id == O_RET) has_flow = has_calls = 1; /* a RET with no CAL pops an empty stack: it ends the program */
-        if ((op->id == O_RED || op->id == O_ATOM) && shader_global_atomic_opcode(insn[i], op->id == O_RED) == 0xffffffffu)
+        if ((op->id == O_RED || op->id == O_ATOM) &&
+            shader_global_atomic_opcode(insn[i], op->id == O_RED) == 0xffffffffu)
             needs_atomic_cas = 1;
         if (op->id == O_ATOMS && shader_shared_atomic_opcode(insn[i]) == 0xffffffffu) needs_atomic_cas = 1;
         if ((op->id == O_SURED && (B(insn[i], 24, 3) == 3 || B(insn[i], 24, 3) == 4)) ||
@@ -713,7 +715,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         if (op->id == O_TEXS) {
             u32 off = B(insn[i], 36, 13);
             u32 encoding = B(insn[i], 53, 4);
-            int shadow = shader_texs_shadow(encoding), type = shader_texs_type(encoding), array = shader_texs_array(encoding);
+            int shadow = shader_texs_shadow(encoding), type = shader_texs_type(encoding),
+                array = shader_texs_array(encoding);
             int slot = 0;
             for (; slot < texture_count; slot++)
                 if (textures[slot].cbuf_off == off && textures[slot].shadow == shadow && textures[slot].type == type &&
@@ -752,8 +755,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, b, stage, &ldc);
             if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, b);
             int type = ty >> 1, array = ty & 1, multisample = (int)B(insn[i], 50, 1);
-            int read_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, multisample ? 2 : 0,
-                                                  bindless, bank, handle_count, bank2, off2, indexed, ldc);
+            int read_slot =
+                shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, multisample ? 2 : 0,
+                                             bindless, bank, handle_count, bank2, off2, indexed, ldc);
             if (read_slot < 0) return direct_reject(si, "texture descriptor count");
             tex_read |= 1ull << read_slot;
             if (op->id == O_TLD ? !shader_direct_own_pixel_fetch(insn, n, i) : 1) tex_elsewhere |= 1ull << read_slot;
@@ -833,9 +837,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 int sample_type = dim == 5 ? 2 : 1, arrayed = dim == 4;
                 while (slot < texture_count &&
                        (textures[slot].cbuf_off != off || textures[slot].type != sample_type ||
-                        textures[slot].array != arrayed ||
-                        textures[slot].shadow || textures[slot].bindless != bindless ||
-                        (textures[slot].flags & 3) != (raw ? 1 : 0) || (bindless && textures[slot].bl_cbuf != bank)))
+                        textures[slot].array != arrayed || textures[slot].shadow ||
+                        textures[slot].bindless != bindless || (textures[slot].flags & 3) != (raw ? 1 : 0) ||
+                        (bindless && textures[slot].bl_cbuf != bank)))
                     slot++;
                 if (slot == texture_count) {
                     if (slot >= SH_MAXTEX) return direct_reject(si, "texture descriptor count");
@@ -977,13 +981,14 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             bank = 0;
             bank2 = 0;
             off2 = 0;
-            handle_count = bindless ? shader_direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
+            handle_count =
+                bindless ? shader_direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
             if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, b, stage, &ldc);
             if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, b);
             int type = B(insn[i], 28, 3) >> 1;
             int array = B(insn[i], 28, 1), shadow = B(insn[i], 50, 1);
-            int read_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0, bindless, bank,
-                                                  handle_count, bank2, off2, indexed, ldc);
+            int read_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0,
+                                                         bindless, bank, handle_count, bank2, off2, indexed, ldc);
             if (read_slot < 0) return direct_reject(si, "texture descriptor count");
             tex_read |= 1ull << read_slot;
             tex_elsewhere |= 1ull << read_slot;
@@ -1011,8 +1016,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 bindless ? shader_direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
             if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, b);
             if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, b, stage, &ldc);
-            if (shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless, bank, handle_count,
-                                      bank2, off2, indexed, ldc) < 0)
+            if (shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless, bank,
+                                             handle_count, bank2, off2, indexed, ldc) < 0)
                 return direct_reject(si, "texture descriptor count");
             for (u32 k = 0; k < array + (type == 0 ? 1 : type == 1 ? 2 : 3); k++)
                 if (a + k < 255) used[a + k] = 1;
@@ -1033,8 +1038,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 bindless ? shader_direct_track_image_handle_pair(insn, n, i, a, &bank, &off, &bank2, &off2, 0) : 0;
             if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, a);
             if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, a, stage, &ldc);
-            int read_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless, bank,
-                                                  handle_count, bank2, off2, indexed, ldc);
+            int read_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless,
+                                                         bank, handle_count, bank2, off2, indexed, ldc);
             if (read_slot < 0) return direct_reject(si, "texture descriptor count");
             tex_read |= 1ull << read_slot;
             tex_elsewhere |= 1ull << read_slot;
@@ -1062,10 +1067,22 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, a);
             if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, a, stage, &ldc);
             u32 qtype = 1, qarray = 0;
-            if (!indexed) shader_direct_query_type(insn, n, bindless, bank, off, &qtype, &qarray);
-            if (shader_direct_add_typed_slot(textures, &texture_count, off, qtype, qarray, 0, 0, bindless, bank, handle_count,
-                                      bank2, off2, indexed, ldc) < 0)
-                return direct_reject(si, "texture descriptor count");
+            int guessed = 0, qslot;
+            if (!indexed && !shader_direct_query_type(insn, n, bindless, bank, off, &qtype, &qarray)) {
+                /* nothing else in the program reads that texture (one game queries a volume through a bound handle
+                   and fetches it through a bindless one, which no tracking joins): the header's dimension, from the
+                   key, once the renderer has bound it; 2D before that */
+                u8 hint = texture_count < SH_MAXTEX ? si->tex_query_hint[texture_count] : 0;
+                if (hint) {
+                    qtype = (hint - 1) & 3;
+                    qarray = (hint - 1) >> 2 & 1;
+                }
+                guessed = 1;
+            }
+            qslot = shader_direct_add_typed_slot(textures, &texture_count, off, qtype, qarray, 0, 0, bindless, bank,
+                                                 handle_count, bank2, off2, indexed, ldc);
+            if (qslot < 0) return direct_reject(si, "texture descriptor count");
+            if (guessed) tex_query |= 1ull << qslot;
             needs_image_query = 1;
             if (a < 255) used[a] = 1;
             if (bindless && a + 1 < 255) used[a + 1] = 1;
@@ -1087,8 +1104,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             u32 ty = op->id == O_TLD4S ? 2 : B(insn[i], 28, 3);
             u32 type = ty >> 1, array = ty & 1;
             u32 shadow = B(insn[i], 50, 1);
-            int read_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0, bindless, bank,
-                                                  handle_count, bank2, off2, indexed, ldc);
+            int read_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0,
+                                                         bindless, bank, handle_count, bank2, off2, indexed, ldc);
             if (read_slot < 0) return direct_reject(si, "texture descriptor count");
             tex_read |= 1ull << read_slot;
             tex_elsewhere |= 1ull << read_slot;
@@ -1161,8 +1178,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         if (op->id == O_EXIT && flow_always(insn[i])) has_exit = 1;
         if (op->id == O_KIL) needs_demote = 1;
         if (stage == ST_FS &&
-            (op->id == O_TMML || op->id == O_TMML_B ||
-             (op->id == O_TEXS && !shader_texs_explicit(B(insn[i], 53, 4))) ||
+            (op->id == O_TMML || op->id == O_TMML_B || (op->id == O_TEXS && !shader_texs_explicit(B(insn[i], 53, 4))) ||
              ((op->id == O_TEX || op->id == O_TEX_B) &&
               (B(insn[i], op->id == O_TEX_B ? 37 : 55, 3) == 0 || B(insn[i], op->id == O_TEX_B ? 37 : 55, 3) == 2 ||
                B(insn[i], op->id == O_TEX_B ? 37 : 55, 3) == 6))))
@@ -1539,7 +1555,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             for (u32 b = 0; b < 4; b++)
                 for (u32 w = 0; w < si->xfb.count[b] && w < 128; w++) {
                     u32 word = si->xfb.layout[b][w];
-                    if (shader_legacy_group(word * 4) >= 0) word = shader_legacy_address(word * 4) / 4; /* where it moved */
+                    if (shader_legacy_group(word * 4) >= 0)
+                        word = shader_legacy_address(word * 4) / 4; /* where it moved */
                     if (word >= 160 || xfb_buf[word] != 0xFF) continue;
                     xfb_buf[word] = (u8)b;
                     xfb_off[word] = (u16)(w * 4);
@@ -1792,12 +1809,16 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
        require R32ui; declaring stores R32ui loses the other components. */
     for (int i = 0; i < image_info.nimg; i++) {
         int integer = image_info.img[i].kind != 0, buffer = image_info.img[i].type == 1;
-        c->image[i] = spv_emit_storage_image(
-            &c->emit, image_info.img[i].kind == 3 ? i32_type : integer ? c->u32_type : c->f32_type,
-            shader_vk_set(stage),
-            (buffer ? SNX_VKB_IMGBUF : SNX_VKB_IMG) + (u32)i, buffer ? 5 : image_info.img[i].type == 5 ? 2 : 1,
-            image_info.img[i].type == 4,
-            image_info.img[i].kind == 1 ? 33 : 0, &c->image_type[i]);
+        c->image[i] = spv_emit_storage_image(&c->emit,
+                                             image_info.img[i].kind == 3 ? i32_type
+                                             : integer                   ? c->u32_type
+                                                                         : c->f32_type,
+                                             shader_vk_set(stage), (buffer ? SNX_VKB_IMGBUF : SNX_VKB_IMG) + (u32)i,
+                                             buffer                        ? 5
+                                             : image_info.img[i].type == 5 ? 2
+                                                                           : 1,
+                                             image_info.img[i].type == 4, image_info.img[i].kind == 1 ? 33 : 0,
+                                             &c->image_type[i]);
         interfaces[count++] = c->image[i];
     }
     if (ngbuf) {
@@ -1841,7 +1862,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         spv_emit_capability(&c->emit, 53);               /* TransformFeedback */
         spv_emit_execution_mode(&c->emit, fn, 11, 0, 0); /* Xfb */
     }
-    if (stage == ST_TCS) spv_emit_execution_mode(&c->emit, fn, 26, 1, out_vertices);    /* OutputVertices */
+    if (stage == ST_TCS) spv_emit_execution_mode(&c->emit, fn, 26, 1, out_vertices); /* OutputVertices */
     if (stage == ST_TES) {
         /* 0xC8: the domain (isolines, triangles, quads), the spacing (equal, fractional odd and even) and the output
            (points, lines, triangles clockwise and counterclockwise) */
@@ -1876,7 +1897,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     }
     if (stage == ST_CS) spv_emit_local_size(&c->emit, fn, si->cs_local[0], si->cs_local[1], si->cs_local[2]);
     if (stage == ST_FS) spv_emit_fragment_origin_upper_left(&c->emit, fn);
-    if (stage == ST_FS && si->early_fragment_tests) spv_emit_execution_mode(&c->emit, fn, 9, 0, 0); /* EarlyFragmentTests */
+    if (stage == ST_FS && si->early_fragment_tests)
+        spv_emit_execution_mode(&c->emit, fn, 9, 0, 0); /* EarlyFragmentTests */
     if (depth_output) spv_emit_fragment_depth_replacing(&c->emit, fn);
     spv_emit_float_controls(&c->emit, fn, fp32_flush && !fp32_preserve && can_flush == SH_FTZ_MODE, can_preserve,
                             needs_f64 && can_preserve_f64);
@@ -1986,8 +2008,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         if (structure) {
             se.st = structure;
             se.open = 1; /* the function's first block */
-            se.label = calloc(4 * (size_t)structure->nscopes + 2 * (size_t)structure->ntokens,
-                              sizeof *se.label + 1);
+            se.label = calloc(4 * (size_t)structure->nscopes + 2 * (size_t)structure->ntokens, sizeof *se.label + 1);
             if (!se.label) abort();
             se.used = (u8*)(se.label + 4 * (size_t)structure->nscopes + 2 * (size_t)structure->ntokens);
         }
@@ -2182,9 +2203,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 spv_emit_label(&c->emit, kept);
             }
             if (passthrough)
-                shader_geometry_passthrough(c, si, in_vertices, vec4, position, position_in, output_attrs, inputs, point_size,
-                                     layer_output, i32_type, clip_output, clip_count, primitive_id, primitive_id_out,
-                                     depth_fix, push, push_pointer);
+                shader_geometry_passthrough(c, si, in_vertices, vec4, position, position_in, output_attrs, inputs,
+                                            point_size, layer_output, i32_type, clip_output, clip_count, primitive_id,
+                                            primitive_id_out, depth_fix, push, push_pointer);
             if (xfb_on && stage != ST_GS) shader_xfb_store(c, vec4, output_attrs, attr_private, xfb_components);
             if (depth_fix && stage != ST_GS) shader_vertex_depth_fix(c, position, push, push_pointer, vec4);
             spv_emit_return(&c->emit);
@@ -2197,7 +2218,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             c->swapped = 0;
         }
         if (has_flow && !structure && block_start[i]) { spv_emit_label(&c->emit, case_labels[case_index++]); }
-        if (has_flow && !structure && (shader_next_instruction(i, n) >= n || block_start[shader_next_instruction(i, n)])) {
+        if (has_flow && !structure &&
+            (shader_next_instruction(i, n) >= n || block_start[shader_next_instruction(i, n)])) {
             u32 following = spv_emit_constant_u32(&c->emit, c->u32_type, shader_next_instruction(i, n));
             spv_emit_store(&c->emit, pc, following);
         }
@@ -2219,7 +2241,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         if (op != O_SSY && op != O_PBK && op != O_PCNT && op != O_PEXIT && op != O_CAL &&
             (B(w, 16, 3) != 7 || B(w, 19, 1) || (shader_flow_has_cc(op) && B(w, 0, 5) != 15) || skip_helper)) {
             u32 condition = pred_read(c, B(w, 16, 3), B(w, 19, 1));
-            if (shader_flow_has_cc(op) && B(w, 0, 5) != 15) condition = cc_and(c, condition, shader_cc_test(c, B(w, 0, 5)));
+            if (shader_flow_has_cc(op) && B(w, 0, 5) != 15)
+                condition = cc_and(c, condition, shader_cc_test(c, B(w, 0, 5)));
             if (skip_helper) condition = cc_and(c, condition, cc_not(c, shader_lane_dead(c)));
             if (shader_pure_op(op) && !skip_helper && !(shader_flow_has_cc(op) && B(w, 0, 5) != 15))
                 c->guard = condition;
@@ -2283,9 +2306,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             spv_emit_label(&c->emit, kept);
         }
         if (passthrough)
-            shader_geometry_passthrough(c, si, in_vertices, vec4, position, position_in, output_attrs, inputs, point_size,
-                                 layer_output, i32_type, clip_output, clip_count, primitive_id, primitive_id_out,
-                                 depth_fix, push, push_pointer);
+            shader_geometry_passthrough(c, si, in_vertices, vec4, position, position_in, output_attrs, inputs,
+                                        point_size, layer_output, i32_type, clip_output, clip_count, primitive_id,
+                                        primitive_id_out, depth_fix, push, push_pointer);
         if (xfb_on && stage != ST_GS) shader_xfb_store(c, vec4, output_attrs, attr_private, xfb_components);
         if (depth_fix && stage != ST_GS) shader_vertex_depth_fix(c, position, push, push_pointer, vec4);
         spv_emit_return(&c->emit);
@@ -2321,6 +2344,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     next.in_unfed_mask = si->in_unfed_mask;
     next.ntex = texture_count;
     next.tex_own_pixel_mask = stage == ST_FS ? tex_read & ~tex_elsewhere : 0;
+    next.tex_query_mask = tex_query;
+    memcpy(next.tex_query_hint, si->tex_query_hint, sizeof next.tex_query_hint);
     next.nimg = image_info.nimg;
     memcpy(next.img, image_info.img, (size_t)image_info.nimg * sizeof image_info.img[0]);
     next.ngbuf = ngbuf;

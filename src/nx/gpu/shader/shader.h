@@ -10,8 +10,8 @@ extern "C" {
 #endif
 /* program stages; the values index tables and are stored in the corpus */
 enum { ST_VS = 0, ST_TCS = 1, ST_TES = 2, ST_GS = 3, ST_FS = 4, ST_CS = 5 };
-#define SH_MAXTEX         64 /* texture slots per program */
-#define SH_INDEXED_TABLES 10 /* indexed texture tables per program */
+#define SH_MAXTEX          64 /* texture slots per program */
+#define SH_INDEXED_TABLES  10 /* indexed texture tables per program */
 /* A 1D texture is bound as a 2D image, and a buffer texture longer than a row of one as rows of 2^SH_TEXEL_ROW_SHIFT
    texels (texture.c): a 1D texel fetch at x reads (x mod row, x / row) of it, which is (x, 0) for every texture that
    fits one row */
@@ -81,7 +81,7 @@ typedef struct {
     int fp32_flush, fp32_preserve;
     u32 gbuf_cbuf_off[16]; /* the global buffers found, by where a constant buffer holds their address (SH_GBUF_*) */
     int ngbuf;
-    int unsupported; /* instructions or forms translation refused */
+    int unsupported;            /* instructions or forms translation refused */
     char first_unsupported[96]; /* the longest: an untracked handle with its writer's constant (93 bytes) */
     u32 cs_local[3];
     int shared_size;
@@ -96,7 +96,7 @@ typedef struct {
        primitive's vertex count */
     u64 tex_int_mask, tex_sint_mask;
     u32 rt_int_mask, rt_sint_mask; /* FS/CS bits 8-15 also key storage image stores' integer and signed types */
-    u32 gp_skip_mask[8]; /* GS key: POST_VTG_SHADER_ATTRIB_SKIP_MASK, a bit per scalar attribute */
+    u32 gp_skip_mask[8];           /* GS key: POST_VTG_SHADER_ATTRIB_SKIP_MASK, a bit per scalar attribute */
     /* FS key: color textures sampled with a depth compare (TEX.DC compares their first component, which a Vulkan
        compare sampler can't do on a color format): the slots, and their compare functions, 3 bits each in slot
        order */
@@ -115,12 +115,18 @@ typedef struct {
        force_early_z has them: a program that stores to images or buffers then leaves no trace for fragments they
        reject */
     u32 early_fragment_tests;
-    ShXfb xfb; /* key: transform feedback's capture of this program's outputs */
+    ShXfb xfb;           /* key: transform feedback's capture of this program's outputs */
     int writes_viewport; /* the last vertex stage selects one of the 16 viewport/scissor pairs */
     /* key (fragment, vertex and compute programs): texture slots whose header takes unnormalized coordinates (TIC
        word 5 bit 31 clear, NVN's rectangle textures, 2D): their sample coordinates are texels, divided here by the
        size, as Ryujinx's TexturePass and Eden's texture_pass do */
     u64 tex_rect_mask;
+    /* key (compute programs): the dimension of the texture slots only a TXQ names (tex_query_mask, set by the
+       translation: no TEX or TLD of the program reads the same handle, so TXQ, which doesn't say, is translated as a
+       2D query; a bound query's texture may be read bindlessly in the same program). Each the header's: 1 + its
+       ShTex type (0 1D, 1 2D, 2 3D, 3 cube), + 4 for an array; 0 when nothing is known yet */
+    u8 tex_query_hint[SH_MAXTEX];
+    u64 tex_query_mask;
 } ShaderInfo;
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs has room for */
 /* Each stage has a descriptor set (shader_vk_set), its bindings grouped by kind. */
@@ -163,9 +169,9 @@ extern int g_shader_draw_parameters;
    draw's are in its record, on the GPU: with draw parameters, a vertex program's reads of these words take
    BaseVertex and BaseInstance where the push constant's z has SH_PUSH_GPU_BASE_VERTEX and SH_PUSH_GPU_BASE_INSTANCE
    set (render.c) */
-#define SH_CB0_BASE_VERTEX 0x640u
-#define SH_CB0_BASE_INSTANCE 0x644u
-#define SH_PUSH_GPU_BASE_VERTEX 1u
+#define SH_CB0_BASE_VERTEX        0x640u
+#define SH_CB0_BASE_INSTANCE      0x644u
+#define SH_PUSH_GPU_BASE_VERTEX   1u
 #define SH_PUSH_GPU_BASE_INSTANCE 2u
 /* quad operations in fragment programs (the subgroup's QUAD bit): SHFL within a quad reads its helper lanes. 1 offline */
 extern int g_shader_quad;
