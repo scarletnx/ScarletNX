@@ -61,7 +61,7 @@ static int64_t affinity(GnuKernel* k, const uint64_t a[6]) {
 
 bool gnu_kernel_syscall(GnuKernelThread* t, uint64_t number, const uint64_t a[6], int64_t* result) {
     GnuKernel* k = t->kernel;
-    if (gnu_signal_syscall(t, number, a, result)) return true;
+    if (gnu_signal_syscall(t, number, a, result) || gnu_kernel_system_call(t, number, a, result)) return true;
     switch (number) {
         case 93: /* exit */
             gnu_kernel_thread_exit(t, (int)a[0]);

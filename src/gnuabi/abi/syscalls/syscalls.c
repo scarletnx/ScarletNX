@@ -63,49 +63,8 @@ static int64_t dispatch(GnuThread* t, uint64_t number, const uint64_t a[6]) {
     }
     if (gnu_net_syscall(p, number, a, &result)) return result;
     switch (number) {
-        case GNU_NR_getpid: return p->kernel.pid;
-#ifdef _WIN32
-        case 174:
-        case 175:
-        case 176:
-        case 177: return 1000; /* uid/euid/gid/egid */
-#else
-        /* the host user's: the files the guest makes and stats are the host's */
-        case 174: return getuid();
-        case 175: return geteuid();
-        case 176: return getgid();
-        case 177: return getegid();
-#endif
-        case 158: /* getgroups: none beyond the group */
-            return 0;
-        case 233: return 0;             /* madvise: advice */
-        case 293: return -GNU_ENOSYS;   /* rseq */
-        case 283: return -GNU_ENOSYS;   /* membarrier */
-        case 165: { /* getrusage: nothing measured */
-            unsigned char usage[144] = {0};
-            return gnu_memory_write(&p->memory, a[1], usage, sizeof usage) ? -GNU_EFAULT : 0;
-        }
-        case 153: { /* times */
-            int64_t sec, ns;
-            uint64_t ticks[4] = {0};
-            if (!gnu_clock_gettime(2, &sec, &ns)) ticks[0] = snx_le64((uint64_t)(sec * 100 + ns / 10000000));
-            if (a[0] && gnu_memory_write(&p->memory, a[0], ticks, sizeof ticks)) return -GNU_EFAULT;
-            if (gnu_clock_gettime(1, &sec, &ns)) return 0;
-            return sec * 100 + ns / 10000000;
-        }
-        case 179: { /* sysinfo */
-            unsigned char info[112] = {0};
-            int64_t sec, ns;
-            if (!gnu_clock_gettime(1, &sec, &ns)) snx_st_le64(info, (uint64_t)sec);
-            info[32] = 0; /* totalram etc.: an 8 GiB machine with 4 GiB free, in units of one byte */
-            {
-                snx_st_le64(info + 32, 8ull << 30);
-                snx_st_le64(info + 40, 4ull << 30);
-                snx_st_le16(info + 80, 1);  /* procs */
-                snx_st_le32(info + 104, 1); /* mem_unit */
-            }
-            return gnu_memory_write(&p->memory, a[0], info, sizeof info) ? -GNU_EFAULT : 0;
-        }
+        /* the ids, clocks, random bytes, prctl and the rest of the calls that need no runtime are the kernel's
+           (gnu_kernel_syscall, src/gnuabi/kernel/system.c): here the memory map's */
         case GNU_NR_brk: return (int64_t)gnu_memory_brk(&p->memory, a[0]);
         case GNU_NR_munmap: return gnu_memory_unmap(&p->memory, a[0], a[1]);
         case GNU_NR_mprotect:
@@ -116,55 +75,6 @@ static int64_t dispatch(GnuThread* t, uint64_t number, const uint64_t a[6]) {
             if (!(a[3] & 0x20)) return file_mmap(p, a);
             if (a[5] & 4095) return -GNU_EINVAL;
             return gnu_memory_mmap(&p->memory, a[0], a[1], (unsigned)a[2], a[3]);
-        case GNU_NR_uname: {
-            char uts[6][65] = {0};
-            strcpy(uts[0], "Linux");
-            strcpy(uts[1], "scarletnx");
-            strcpy(uts[2], "6.6.0");
-            strcpy(uts[3], "ScarletNX GNU ABI");
-            strcpy(uts[4], "aarch64");
-            strcpy(uts[5], "(none)");
-            return gnu_memory_write(&p->memory, a[0], uts, sizeof uts);
-        }
-        case GNU_NR_clock_gettime: {
-            int64_t ts[2];
-            result = gnu_clock_gettime((int)a[0], &ts[0], &ts[1]);
-            if (result) return result;
-            ts[0] = (int64_t)snx_le64((uint64_t)ts[0]);
-            ts[1] = (int64_t)snx_le64((uint64_t)ts[1]);
-            return gnu_memory_write(&p->memory, a[1], ts, sizeof ts);
-        }
-        case 114: { /* clock_getres */
-            int64_t sec, ns;
-            result = gnu_clock_gettime((int)a[0], &sec, &ns);
-            if (result || !a[1]) return result;
-            int64_t resolution[2] = {0, (int64_t)SNX_LE64(100)};
-            return gnu_memory_write(&p->memory, a[1], resolution, sizeof resolution);
-        }
-        case GNU_NR_getrandom: {
-            if ((a[2] & ~7ull) || ((a[2] & 6) == 6)) return -GNU_EINVAL;
-            size_t count = a[1] > 0x2000000ull ? 0x2000000 : (size_t)a[1];
-            void* destination = gnu_memory_access(&p->memory, a[0], count, GNU_PROT_WRITE);
-            if (!destination) return -GNU_EFAULT;
-            result = gnu_random_bytes(destination, count);
-            return result ? result : (int64_t)count;
-        }
-        case 261: { /* prlimit64: query guest resource limits */
-            if (a[0] && a[0] != p->kernel.pid && a[0] != t->k.tid) return -GNU_ESRCH;
-            if (a[1] >= 16) return -GNU_EINVAL;
-            if (a[2]) return 0; /* setting a limit: nothing here enforces one */
-            uint64_t limits[2] = {UINT64_MAX, UINT64_MAX};
-            if (a[1] == 3) limits[0] = 0x800000ull;
-            if (a[1] == 7) limits[0] = limits[1] = 256;
-            limits[0] = snx_le64(limits[0]);
-            limits[1] = snx_le64(limits[1]);
-            return a[3] ? gnu_memory_write(&p->memory, a[3], limits, sizeof limits) : 0;
-        }
-        case 167: {                   /* prctl */
-            if (a[0] == 3) return 1;  /* PR_GET_DUMPABLE */
-            if (a[0] == 21) return 0; /* PR_GET_SECCOMP */
-            return -GNU_EINVAL;
-        }
         default: return -GNU_ENOSYS;
     }
 }

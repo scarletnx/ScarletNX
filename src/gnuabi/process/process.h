@@ -62,9 +62,6 @@ static inline struct GnuProcess* gnu_process_of(const GnuThread* thread) {
    the vDSO's __kernel_rt_sigreturn: the handlers return there without SA_RESTORER */
 #define GNU_SIGRETURN_PAGE 0xfffff000ull
 
-int gnu_random_bytes(void* destination, size_t size);
-int gnu_clock_gettime(int clock_id, int64_t* seconds, int64_t* nanoseconds);
-void gnu_sleep(int64_t seconds, int64_t nanoseconds);
 /* runtime.c: --sample-pc's watchdog for this process, once per host process (POSIX: Windows has none) */
 void gnu_start_sampler(GnuProcess* process);
 #ifndef _WIN32
