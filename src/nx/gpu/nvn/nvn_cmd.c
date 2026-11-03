@@ -619,7 +619,9 @@ static u64 spill_compact(u64 cb) {
    of its pieces. One game builds a recording again in the same range while a recording
    it made before still calls the last one, which then runs the new one, as on the console. The pieces keep the JUMP's
    target (mark): once the game writes over the JUMP, the recording is gone on the console as well, and spill_sweep
-   gives them back. Its handle */
+   gives them back. The new JUMP is such a write: the pieces of the last recording whose JUMP it replaces come back at
+   once, as the game builds a recording again in its range, rather than at the next sweep, which waits for as many
+   pieces again as are in use. Its handle */
 static u64 spill_link(u64 cb, u64 h) {
     NvnCmdState* st = &g_nvn.cmd;
     const NvnCmdBuf* o = CB(cb);
@@ -631,6 +633,11 @@ static u64 spill_link(u64 cb, u64 h) {
     if (small) {
         put_jump(a, h);
         st->p[slot].mark = h;
+        for (u32 i = st->bucket[(u32)(o->anchor >> 12) % NVN_SPILL_BUCKETS], next; i; i = next) {
+            next = st->p[i].next;
+            if (i != slot && st->p[i].mark && st->p[i].mark != h && ((st->p[i].anchor + 7) & ~7ull) == a)
+                piece_drop(st, i); /* the sweep's test, for the JUMP just written */
+        }
     }
     pm_unlock(&st->lock);
     return small ? a : h;
