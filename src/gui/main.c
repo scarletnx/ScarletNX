@@ -8397,8 +8397,30 @@ static bool made_elsewhere(const App* app, const char* file) {
     made_free(&made);
     return elsewhere;
 }
+/* the game's own program for path, the program of one of its updates (or of a DLC, as an older version made one) in
+   the game's folder; NULL for the game's own or any other file. Owned */
+static char* addon_game(const char* path) {
+    char *folder, *name, *own = NULL;
+    const char* file = path + strlen(path);
+    if (!gui_game_folder(path)) return NULL;
+    while (file > path && file[-1] != '/' && file[-1] != '\\') --file;
+    game_where(path, &folder, &name);
+    if (!strncmp(file, name, strlen(name)) && file[strlen(name)] == '_') {
+        char* parent = snx_dirname(folder);
+        own = gui_folder_game(parent, name);
+        free(parent);
+    }
+    if (own && !strcmp(own, path)) { /* a pack's name, <name>_code.snxobj on iOS, is the game's own */
+        free(own);
+        own = NULL;
+    }
+    free(name);
+    free(folder);
+    return own;
+}
 /* the recent rows as Games has their games: a dump or a package made into a game of recompiled/ since runs that game's
-   program from then on, whichever console's, and a game of a folder of its own goes by the name Games shows it by, its
+   program from then on, whichever console's, a run of a game's update's program (Play with the update checked) is the
+   game's own row, which plays it again, and a game of a folder of its own goes by the name Games shows it by, its
    control.nacp's */
 static void recent_as_games(App* app) {
     MadeGames made;
@@ -8407,8 +8429,10 @@ static void recent_as_games(App* app) {
     made_read(app, &made);
     for (i = app->recent.count - 1; i >= 0; --i) { /* from the oldest: an entry dropped moves none still to look at */
         const GuiRecentGame* r = &app->recent.game[i];
-        const char* program = r->driver != GUI_LINUX && !r->prepared ? made_program(&made, r->path) : NULL;
+        char* own = r->driver == GUI_SWITCH && r->prepared ? addon_game(r->path) : NULL;
+        const char* program = own ? own : r->driver != GUI_LINUX && !r->prepared ? made_program(&made, r->path) : NULL;
         if (program && gui_recent_made(&app->recent, i, program)) changed = true;
+        free(own);
     }
     made_free(&made);
     for (i = 0; i < app->recent.count; ++i) /* one file under two spellings (/var and /private/var) is one game */

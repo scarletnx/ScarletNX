@@ -9161,6 +9161,72 @@ int main(int argc, char** argv) {
                 free(text);
                 free(stamp);
             }
+            { /* Recent Games has a game once (#924): L on its row plays its checked update's program, which the run
+                 leaves in the list; once it ends that entry is the game's own row again, not a second one beside it */
+                char *row = snx_absolute(base), *played = snx_absolute(older),
+                     *got = snx_path_join(temporary, "recent-once.argv"),
+                     *list = snx_path_join(temporary, "recent-once.txt"), *argv;
+                GuiRecent recent = app.recent;
+                assert(row && played && !snx_ini_record(ini, "addons", "0100ABCD12340800v0,0100ABCD12341001"));
+                recent_open(&app, snx_strdup(list)); /* a list kept, which runs are written into */
+                app.recent = (GuiRecent){0};
+                assert(!gui_recent_add(&app.recent, row, GUI_SWITCH, true));
+                recent_changed(&app);
+                go_tab(&app, GUI_TAB_GAMES);
+                app.browser.page = 0;
+                app.browser.selected = 0;
+                driver_will(got, 0, NULL);
+                key(&app, SDLK_L);
+                assert(app.menu.running);
+                argv = ran(&app, 0);
+                assert(has_arg(argv, played, NULL));
+                free(argv);
+                driver_will(NULL, 0, NULL);
+                assert(recent_games(&app) == 1 && !strcmp(app.recent.game[0].path, row));
+                /* a list an older version kept with both, the update's the newer: one row, the game's, in its place */
+                app.recent = (GuiRecent){0};
+                assert(!gui_recent_add(&app.recent, row, GUI_SWITCH, true));
+                assert(!gui_recent_add(&app.recent, played, GUI_SWITCH, true));
+                recent_as_games(&app);
+                assert(recent_games(&app) == 1 && !strcmp(app.recent.game[0].path, row));
+                assert(!snx_ini_record(ini, "addons", "0100ABCD12341001"));
+                free(app.recent_file); /* the rest runs with no list again */
+                app.recent_file = NULL;
+                assert(!remove(list));
+                app.recent = recent;
+                recent_changed(&app);
+                free(list);
+                free(got);
+                free(played);
+                free(row);
+            }
+            { /* a game made again from a copy of its dump elsewhere, the first dump gone: the made list has a game
+                 once, by its folder, its source= the copy's; its recent rows, the first dump's and the copy's, are
+                 one, its program's (#924) */
+                char *first = snx_path_join(temporary, "moved first.nsp"),
+                     *second = snx_path_join(temporary, "moved second.nsp"), *folder, *program;
+                GuiRecent recent = app.recent;
+                assert(!snx_write_file(first, "x", 1) && !snx_write_file(second, "x", 1));
+                folder = made_game(&app, first, "moved game");
+                program = gui_folder_game(app.games_dir, "moved game");
+                assert(program);
+                app.recent = (GuiRecent){0};
+                assert(!gui_recent_add(&app.recent, first, GUI_SWITCH, false));
+                recent_as_games(&app);
+                assert(recent_games(&app) == 1 && snx_same_file(app.recent.game[0].path, program));
+                assert(!remove(first) && !snx_record_source(folder, "moved game", second)); /* as its recompile does */
+                assert(!gui_recent_add(&app.recent, second, GUI_SWITCH, false));
+                recent_as_games(&app);
+                assert(app.recent.count == 1 && recent_games(&app) == 1 &&
+                       snx_same_file(app.recent.game[0].path, program));
+                app.recent = recent;
+                recent_changed(&app);
+                assert(!remove(second));
+                free(program);
+                free(second);
+                free(first);
+                made_gone(&app, folder);
+            }
             { /* an update checked: Play runs the update's program (addons_play), so the side panel says how that one was
                  made and whether Play compiles it first, whatever the game's own stamp. The box's Recompile with an
                  update checked remakes the update's program alone: the game's own may still be an older build's */
