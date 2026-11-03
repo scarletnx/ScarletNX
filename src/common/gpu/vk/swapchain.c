@@ -24,6 +24,31 @@ bool snx_vk_surface_format(VkPhysicalDevice phys, VkSurfaceKHR surface, const Vk
     return found;
 }
 
+int snx_vk_pick_format(const VkSurfaceFormatKHR* formats, uint32_t n, const VkFormat* wanted, uint32_t count,
+                       VkColorSpaceKHR cs, VkSurfaceFormatKHR* out) {
+    for (uint32_t i = 0; i < n; ++i)
+        for (uint32_t w = 0; w < count; ++w)
+            if (formats[i].format == wanted[w] && formats[i].colorSpace == cs) {
+                *out = formats[i];
+                return 1;
+            }
+    return 0;
+}
+
+bool snx_vk_surface_format_cs(VkPhysicalDevice phys, VkSurfaceKHR surface, const VkFormat* wanted, uint32_t count,
+                              VkColorSpaceKHR cs, VkSurfaceFormatKHR* out) {
+    uint32_t n = 0;
+    int found = 0;
+    VkSurfaceFormatKHR* formats;
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(phys, surface, &n, NULL) != VK_SUCCESS || !n) return false;
+    formats = calloc(n, sizeof *formats);
+    if (!formats) return false;
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(phys, surface, &n, formats) >= 0)
+        found = snx_vk_pick_format(formats, n, wanted, count, cs, out);
+    free(formats);
+    return found != 0;
+}
+
 VkExtent2D snx_vk_swap_extent(const VkSurfaceCapabilitiesKHR* caps, VkExtent2D window) {
     VkExtent2D e = caps->currentExtent.width == UINT32_MAX ? window : caps->currentExtent;
     if (e.width < caps->minImageExtent.width) e.width = caps->minImageExtent.width;

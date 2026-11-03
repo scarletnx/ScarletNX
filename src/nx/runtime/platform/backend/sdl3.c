@@ -400,6 +400,10 @@ void video_init(const char* title, const char* addons) {
                  g_settings.upscaler_cycle_key);
         else
             LOG("video: upscaler cycle key %s\n", g_settings.upscaler_cycle_key);
+        if (!snx_keybind_parse(g_settings.hdr_key, &key))
+            WARN("video: hdr_key '%s' is not a key: use ctrl+h, alt+h, shift+f14 or f14\n", g_settings.hdr_key);
+        else
+            LOG("video: hdr key %s\n", g_settings.hdr_key);
     }
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
     gamepad_scan();
@@ -565,6 +569,7 @@ static void set_fullscreen(int on) {
         g_fullscreen = on;
     else
         LOG("video: fullscreen %s failed: %s\n", on ? "on" : "off", SDL_GetError());
+
 }
 /* ---- a fatal error's box (plat.c's fatal): the game's menu panel (overlay.c) with the error, what it means and what
    to do, until the player closes it. The game's renderer lets go of the window first (its device may be what was
@@ -898,14 +903,15 @@ static void title_paused(int paused) {
     snprintf(title, sizeof title, "%.*s%s", (int)n, t, paused ? mark : "");
     SDL_SetWindowTitle(g_win, title);
 }
-/* the help's runtime keys, with the upscaler's cycle key as the .ini has it */
+/* the help's runtime keys, with the upscaler's cycle key and the HDR toggle key as the .ini has them */
 static const char* help_text(char* out, size_t size) {
     const char* esc = strstr(HELP, "  Esc  quit");
     if (esc)
-        snprintf(out, size, "%.*s  %s  cycle the spatial upscaler (upscaler_key)\n%s", (int)(esc - HELP), HELP,
-                 g_settings.upscaler_cycle_key, esc);
+        snprintf(out, size, "%.*s  %s  cycle the spatial upscaler (upscaler_key)\n  %s  HDR on and off (hdr_key)\n%s",
+                 (int)(esc - HELP), HELP, g_settings.upscaler_cycle_key, g_settings.hdr_key, esc);
     else
-        snprintf(out, size, "%s\n  %s  cycle the spatial upscaler (upscaler_key)", HELP, g_settings.upscaler_cycle_key);
+        snprintf(out, size, "%s\n  %s  cycle the spatial upscaler (upscaler_key)\n  %s  HDR on and off (hdr_key)", HELP,
+                 g_settings.upscaler_cycle_key, g_settings.hdr_key);
     return out;
 }
 /* the live upscaler cycle, at the key the .ini names: 1 when the event was that key (a repeat included, so the game
@@ -924,6 +930,25 @@ static int upscale_key_event(const SDL_KeyboardEvent* e) {
             LOG("upscaler: %s (%s)\n", label, g_settings.upscaler_cycle_key);
         }
     }
+    return 1;
+}
+/* HDR turned over (the hdr_key hotkey or an unattended run's hdr_toggle): the toast and the log name the state */
+static void hdr_toggled(const char* why) {
+    const char* label = g_renderer && g_renderer->toggle_hdr ? g_renderer->toggle_hdr() : NULL;
+    char text[96];
+    if (!label) return;
+    snprintf(text, sizeof text, "HDR: %s", label);
+    ui_lock();
+    overlay_toast(text, plat_ns());
+    ui_unlock();
+    LOG("hdr: %s (%s)\n", label, why);
+}
+/* the live HDR toggle, at the key the .ini names: 1 when the event was that key (a repeat included, so the game
+   never sees it) */
+static int hdr_key_event(const SDL_KeyboardEvent* e) {
+    SnxKeybind bind;
+    if (!snx_keybind_parse(g_settings.hdr_key, &bind) || !snx_keybind_match(&bind, e)) return 0;
+    if (!e->repeat) hdr_toggled(g_settings.hdr_key);
     return 1;
 }
 static void hotkey(SDL_Keycode k) {
@@ -1368,6 +1393,12 @@ static void keyboard_sync(void) {
 }
 void video_poll(void) {
     SDL_Event e;
+    /* the display's EDR headroom, which the HDR lift uses: it changes with the display's brightness */
+    static u64 headroom_ns;
+    if (!g_opt_headless && plat_ns() - headroom_ns > 1000000000ull) {
+        headroom_ns = plat_ns();
+        plat_display_headroom_poll();
+    }
     char* left = __atomic_load_n(&g_fatal_left, __ATOMIC_ACQUIRE);
     if (left) { /* another thread's fatal error, left for this thread to show */
         __atomic_store_n(&g_fatal_taken, 1, __ATOMIC_RELEASE);
@@ -1423,6 +1454,7 @@ void video_poll(void) {
                     break;
                 }
                 if (upscale_key_event(&e.key)) break;
+                if (hdr_key_event(&e.key)) break;
                 /* not with Ctrl, Alt or the system key: Alt+F4 also arrives as F4 on Windows */
                 if (!e.key.repeat && !(e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) hotkey(e.key.key);
                 /* a repeat doesn't press again: a key held as the menu closed (which cleared keys_held) stays from
@@ -1454,7 +1486,9 @@ void video_poll(void) {
     /* the scripted presses act like keys, stick keys included. Bits 16..23 (the stick directions as buttons) can be
        scripted too, but the stick keys (40..47) are no npad buttons */
     static u64 script_was; /* the scripted buttons of the last poll: a Home press opens or closes the menu */
-    u64 s = unattended_buttons(), k = keys_held | s;
+    u64 s = unattended_buttons(), k;
+    while (unattended_hdr_toggle_due(unattended_ms())) hdr_toggled("hdr_toggle");
+    k = keys_held | s;
     if (s & ~script_was & SNX_SCRIPT_HOME) {
         ui_lock();
         menu_open(!overlay_shown());

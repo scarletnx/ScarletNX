@@ -118,12 +118,43 @@ int unattended_active(void) { return g_settings.seconds > 0 || g_settings.frames
 
 static int frames_now(void) { return __atomic_load_n(&g_frames, __ATOMIC_RELAXED); }
 
+/* an unattended run's live HDR toggles (hdr_toggle), parsed once: the host that holds the window toggles it, as the
+   hdr_key does */
+#define HDR_TOGGLES 8
+static struct {
+    u64 at[HDR_TOGGLES];
+    int done[HDR_TOGGLES];
+    int n, parsed;
+} g_toggles;
+static void toggle_parse(void) {
+    const char* c = g_settings.hdr_toggles;
+    if (g_toggles.parsed) return;
+    g_toggles.parsed = 1;
+    while (*c && g_toggles.n < HDR_TOGGLES) {
+        char* end;
+        u64 at = strtoull(c, &end, 10);
+        if (end == c) break;
+        g_toggles.at[g_toggles.n++] = at;
+        c = *end == ',' ? end + 1 : end;
+        while (*c == ' ') c++;
+    }
+}
+int unattended_hdr_toggle_due(u64 ms) {
+    for (int i = 0; i < g_toggles.n; i++) {
+        if (g_toggles.done[i] || ms < g_toggles.at[i]) continue;
+        g_toggles.done[i] = 1;
+        return 1;
+    }
+    return 0;
+}
+
 u64 unattended_buttons(void) {
     u64 now = plat_ns(), held = 0, len_ns = (u64)g_settings.press_length * 1000000u, ms;
     int frames = frames_now();
     size_t i;
     if (!g_t0) g_t0 = now;
     ms = (now - g_t0) / 1000000u;
+    toggle_parse();
     for (i = 0; i < g_script.n; i++) {
         ScriptPress* p = &g_script.press[i];
         if (!p->at_present) {

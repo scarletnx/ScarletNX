@@ -21,6 +21,8 @@ int unattended_active(void);
 /* The buttons the options press now, as HidNpadButton bits, plus bits 40 to 47 for stick directions (see
    input_key_sticks) */
 u64 unattended_buttons(void);
+/* 1 when a hdr_toggle of this millisecond is due, and consumes it: the host that holds the window turns HDR over */
+int unattended_hdr_toggle_due(u64 ms);
 /* a scripted press of this bit is Home: it opens the game's menu and closes it, and while it is open the scripted
    buttons move it as a pad's do (so a run can test the menu) */
 #define SNX_SCRIPT_HOME (1ull << 48)

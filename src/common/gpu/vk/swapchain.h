@@ -12,6 +12,14 @@
    and *out the surface's first format (all zero when the surface has none) */
 bool snx_vk_surface_format(VkPhysicalDevice phys, VkSurfaceKHR surface, const VkFormat* wanted, uint32_t count,
                            VkSurfaceFormatKHR* out);
+/* The first of the formats that is one of wanted in the color space cs: 1 when one is, and *out it; 0, *out untouched
+   (the list had none of them). Pure, so the tests hold it to the choices */
+int snx_vk_pick_format(const VkSurfaceFormatKHR* formats, uint32_t n, const VkFormat* wanted, uint32_t count,
+                       VkColorSpaceKHR cs, VkSurfaceFormatKHR* out);
+/* The first of the surface's formats that is one of wanted in the color space cs: true when one is. Otherwise false,
+   and *out is left alone (the surface had none of them) */
+bool snx_vk_surface_format_cs(VkPhysicalDevice phys, VkSurfaceKHR surface, const VkFormat* wanted, uint32_t count,
+                              VkColorSpaceKHR cs, VkSurfaceFormatKHR* out);
 /* The images' extent: the surface's, or the window's (its size in pixels) where the surface leaves it to the
    swapchain (Wayland), kept within what the surface takes. Zero wide or high for a window that shows nothing */
 VkExtent2D snx_vk_swap_extent(const VkSurfaceCapabilitiesKHR* caps, VkExtent2D window);
