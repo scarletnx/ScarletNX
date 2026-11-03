@@ -218,6 +218,9 @@ u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
 void vk_uma_frame(void);
 void vk_uma_forget_all(void);
 void vk_uma_quiesce(u64 cpu, u64 size); /* before a trap or a remap there (size ~0: all): its in-place readers run */
+void vk_uma_mapping_begin(u64 cpu, u64 size); /* mem.c changes that guest memory next (size ~0: all) */
+void vk_uma_mapping_end(void);                /* they changed: before anything else is submitted */
+u32 vk_uma_imports(u64 cpu, u64 size); /* the imports the driver holds over guest memory [cpu, cpu + size) (vk_lock) */
 
 /* The caches of textures, render targets and buffers are kept within the driver's budget for the heap images go to
    (VK_EXT_memory_budget through VMA; vk_budget_mb lowers it, for testing): past it the driver pages memory out,

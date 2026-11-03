@@ -31,6 +31,9 @@
      move into the alias pool), the commands that read an import over them run (vk_uma_quiesce). mem.c then tells which
      pages changed, and the imports on them go (pages_replaced): a driver that pins pages (NVIDIA) holds the old ones,
      and amdgpu looks them up again at each submit and refuses pages in the alias pool, a file's pages.
+   - Those imports leave the driver before anything else is submitted, and what was submitted before reaches it first
+     (vk_uma_mapping_begin, vk_uma_mapping_end): a driver keeps every import in every submission, and amdgpu takes all
+     their pages again in each submission's ioctl, which fails whole (EFAULT, then the device is lost) on pages gone.
    - A GPU-side write (a front end write, a landed result) on a page that a command not finished yet reads in place is
      counted (the hazards line of the report). That command can read the new bytes. */
 #include <stddef.h>
@@ -56,7 +59,7 @@ typedef struct {
     VkBuffer buf;
     u32 used; /* g_vk_present when last bound */
     u64 sub;  /* the submit that last read it (vk_submit_number), which vk_uma_quiesce waits for */
-    int dead; /* its pages are other pages now (mem.c): it goes at the next lookup */
+    int dead; /* its pages are other pages now (mem.c): it goes before the next submission */
 } Imp;
 /* Spans the driver refused to import (pages it can't pin, or amdgpu's refusal of the alias pool's), whose ranges are copied
    until UMA_IDLE presents pass or their pages change. Without them every range in such a window asked the driver
@@ -202,7 +205,25 @@ static void pages_replaced(u64 a, u64 size) {
         }
     pm_unlock(&g_uma.lk);
 }
-/* the dead ones go (vk_lock held) */
+/* the import at i goes from the table and is destroyed now, once the submits that read it are done (vk_lock held),
+   not when the frame's work is: the driver keeps it in every submission until then */
+static void imp_kill(u32 i) {
+    Imp d = g_uma.imp[i];
+    u64 submitted, done;
+    vk_submit_progress(&submitted, &done);
+    if (d.sub > done) {
+        if (d.sub > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE); /* still the one being recorded */
+        vk_wait_submit(d.sub);
+    }
+    pm_lock(&g_uma.lk);
+    memmove(&g_uma.imp[i], &g_uma.imp[i + 1], sizeof *g_uma.imp * (size_t)(g_uma.nimp - i - 1));
+    g_uma.nimp--;
+    pm_unlock(&g_uma.lk);
+    vkDestroyBuffer(g_vk.dev, d.buf, NULL);
+    vkFreeMemory(g_vk.dev, d.mem, NULL);
+    g_uma.dropped++;
+}
+/* the dead ones go from the driver (vk_lock held) */
 static void drop_dead(void) {
     pm_lock(&g_uma.lk);
     int any = g_uma.any_dead;
@@ -213,7 +234,7 @@ static void drop_dead(void) {
         pm_lock(&g_uma.lk);
         int dead = g_uma.imp[i].dead;
         pm_unlock(&g_uma.lk);
-        if (dead) imp_drop(i);
+        if (dead) imp_kill(i);
     }
 }
 /* the first import that ends after cpu */
@@ -460,19 +481,42 @@ void vk_uma_frame(void) {
    for a readback queued behind that command, and edenprobe's dispatch and draw pairs over one buffer hung there.
    amdgpu looks up an import's pages again at every submit and refuses them once they are in the alias pool, whose
    pages are a file's (the trap moves them there): a command recorded before the publish and submitted after it would
-   be refused. The pages the command reads are the ones they were when it was recorded, as the console's GPU reads them */
-void vk_uma_quiesce(u64 cpu, u64 size) {
+   be refused. The pages the command reads are the ones they were when it was recorded, as the console's GPU reads them.
+   1 when an import is over it */
+static int quiesce(u64 cpu, u64 size) {
     u64 end = size == ~0ull || cpu + size < cpu ? ~0ull : cpu + size, sub = 0, submitted, done;
-    if (!vk_uma()) return;
+    int any = 0;
     for (u32 i = 0; i < g_uma.nimp; i++)
-        if (g_uma.imp[i].cpu < end && cpu < g_uma.imp[i].cpu + g_uma.imp[i].size && g_uma.imp[i].sub > sub)
-            sub = g_uma.imp[i].sub;
-    if (!sub) return;
+        if (g_uma.imp[i].cpu < end && cpu < g_uma.imp[i].cpu + g_uma.imp[i].size) {
+            any = 1;
+            if (g_uma.imp[i].sub > sub) sub = g_uma.imp[i].sub;
+        }
+    if (!sub) return any;
     vk_submit_progress(&submitted, &done);
-    if (done >= sub) return;
+    if (done >= sub) return any;
     if (sub > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE); /* still the one being recorded */
     vk_wait_submit(sub);
     g_uma.quiesces++;
+    return any;
+}
+void vk_uma_quiesce(u64 cpu, u64 size) {
+    if (vk_uma()) quiesce(cpu, size);
+}
+/* mem.c changes guest memory [cpu, cpu + size) (size ~0: all of it) next, maybe its host pages (vk_lock held until
+   vk_uma_mapping_end): with an import over it, its readers run, and every submission made so far is in the driver,
+   not only in the recording thread's queue (vk_rec_sync), as a submission's ioctl takes the import's pages */
+void vk_uma_mapping_begin(u64 cpu, u64 size) {
+    if (vk_uma() && quiesce(cpu, size)) vk_rec_sync();
+}
+/* they changed: the imports over pages that are other pages now go before anything else is submitted */
+void vk_uma_mapping_end(void) {
+    if (vk_uma()) drop_dead();
+}
+u32 vk_uma_imports(u64 cpu, u64 size) {
+    u32 n = 0;
+    for (u32 i = 0; i < g_uma.nimp; i++)
+        n += g_uma.imp[i].cpu < cpu + size && cpu < g_uma.imp[i].cpu + g_uma.imp[i].size;
+    return n;
 }
 /* a save state's load: every import goes */
 void vk_uma_forget_all(void) {
