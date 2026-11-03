@@ -46,4 +46,22 @@ public final class Runtime {
             else throw new IllegalArgumentException("fill-array-data on a " + array.getClass().getName());
         }
     }
+
+    /**
+     * Class.forName(String) that native code calls through JNI: the class by the app's loader. The one-argument form
+     * loads with its caller's loader, which for a JNI call is the loader of the native method that runs. On Android
+     * that is the app's own class; here every native method is NativeBridge's, the framework's (jni.c).
+     */
+    public static Class<?> forName(String name) throws ClassNotFoundException {
+        return Class.forName(name, true, snx.android.app.App.classLoader());
+    }
+
+    /** The JNI signature of a method or a constructor, "(II)Ljava/lang/String;", for FromReflectedMethod (jni.c) */
+    public static String signature(java.lang.reflect.Executable e) {
+        StringBuilder b = new StringBuilder("(");
+        for (Class<?> p : e.getParameterTypes()) b.append(p.descriptorString());
+        b.append(')');
+        b.append(e instanceof java.lang.reflect.Method m ? m.getReturnType().descriptorString() : "V");
+        return b.toString();
+    }
 }
