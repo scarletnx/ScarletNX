@@ -321,6 +321,19 @@ static int check_uma_constants(void) {
     return 0;
 }
 
+/* vk_memory's auto (0) never moves guest memory into AHardwareBuffers: on a device that shares memory, takes them and
+   has no VK_EXT_external_memory_host, it copies, and only vk_memory=2 moves. An import where it is stays auto's on such
+   a device, and 1 copies everywhere */
+static int check_uma_way(void) {
+    CHECK(vk_uma_way(0, VK_MEM_UMA, 0, 1) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(2, VK_MEM_UMA, 0, 1) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(0, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_HOST && vk_uma_way(2, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(0, VK_MEM_REBAR, 1, 1) == VK_UMA_WITH_NONE &&
+          vk_uma_way(2, VK_MEM_REBAR, 1, 0) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(1, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_NONE && vk_uma_way(2, VK_MEM_UMA, 0, 0) == VK_UMA_WITH_NONE);
+    printf("in place: auto copies where only AHardwareBuffers would take guest memory; vk_memory=2 moves it there\n");
+    return 0;
+}
 /* The migrate way (Android's: guest memory moves into AHardwareBuffers; elsewhere into memfd regions the driver imports
    as host memory). A range moves into a region of the whole 2 MiB windows it touches, with its bytes, where a range
    beside it is found too and what the guest writes is what the GPU reads; a range over the edge makes one region of
