@@ -153,10 +153,11 @@ thread to hash and copy, and memory bandwidth.
 - Discrete with a small BAR: anything else. An RTX 2080 without resizable BAR has a 246 MiB window.
 
 The `[Debug]` setting `vk_memory` (also `--vk_memory=N`) chooses the path for guest buffers: 0 auto (in place on
-UMA, copied otherwise), 1 copy, 2 in place. In place needs `VK_EXT_external_memory_host`, or on Android
+UMA, copied otherwise), 1 copy, 2 in place. In place needs `VK_EXT_external_memory_host`, or on Android with 2
 `VK_ANDROID_external_memory_android_hardware_buffer` ([below](#android-guest-memory-moved-into-ahardwarebuffers)).
-Without either the log warns and the path is the copy. On a discrete GPU, 2 works but the GPU reads guest memory across the bus: it is for testing
-correctness there, not for speed.
+Without either the log warns and the path is the copy. Auto with the second alone copies, and the log says
+`(vk_memory=auto: AHardwareBuffers only with vk_memory=2)`. On a discrete GPU, 2 works but the GPU reads guest memory
+across the bus: it is for testing correctness there, not for speed.
 
 With resizable BAR, the staging ring of streamed uploads goes in device-local memory that the CPU maps
 (`vk_stage_upload`, within the heap's budget): the CPU's sequential writes cross the bus once, and every draw that
@@ -242,15 +243,16 @@ more per MiB imported in one import, from 16 MiB to 512 MiB, and 7.2 us per MiB 
 
 ### Android: guest memory moved into AHardwareBuffers
 
-Every Android driver takes AHardwareBuffers (`VK_ANDROID_external_memory_android_hardware_buffer`), and Qualcomm's
-has no `VK_EXT_external_memory_host`. Where a device has the first and not the second, in place moves guest memory
-into AHardwareBuffers instead of importing it where it is (`vk_uma_choose`; the migrate way in `uma.c`): the windows a
-range touches become a region, a buffer of its own that Vulkan imports once, and their pages then move into it with
-their bytes, mapped where they were (`mem_migrate`: a copy, then the buffer's dma-buf mapped over the range, writers
-held off by `plat_freeze`). A region that a range reaches moves on into one region of their union. A region is 256 MiB
-at most: on an Adreno 830 (Snapdragon 8 Elite) Android's allocator gave 256 MiB, and 512 MiB aborted its service. The
-memory of an AHardwareBuffer is taken whole when it is made and never swapped, so only what the GPU reads moves, and a
-region that goes for idleness or room first moves its pages back into the reservation's own (`mem_unmigrate`).
+Every Android driver takes AHardwareBuffers (`VK_ANDROID_external_memory_android_hardware_buffer`), and Qualcomm's has
+no `VK_EXT_external_memory_host`. Where a device has the first and not the second, `vk_memory=2` moves guest memory
+into AHardwareBuffers instead of importing it where it is (`vk_uma_way`; the migrate way in `uma.c`), and auto copies,
+as no phone has measured the moves yet (`check_uma_way`). The windows a range touches become a region, a buffer of its
+own that Vulkan imports once, and their pages then move into it with their bytes, mapped where they were
+(`mem_migrate`: a copy, then the buffer's dma-buf mapped over the range, writers held off by `plat_freeze`). A region
+that a range reaches moves on into one region of their union. A region is 256 MiB at most: on an Adreno 830
+(Snapdragon 8 Elite) Android's allocator gave 256 MiB, and 512 MiB aborted its service. The memory of an
+AHardwareBuffer is taken whole when it is made and never swapped, so only what the GPU reads moves, and a region that
+goes for idleness or room first moves its pages back into the reservation's own (`mem_unmigrate`).
 
 A probe on that phone (Android 16) found the buffer's mapping to be the memory `AHardwareBuffer_lock` gives, the GPU
 reading what the CPU wrote and the CPU what the GPU wrote with no sync, the CPU's bandwidth there that of `malloc`'s

@@ -2768,8 +2768,9 @@ int main(int argc, char** argv) {
         if (!strcmp(name, "runtime_write") && ++ran) CHECK(!check_uma_runtime_write());
         if (!strcmp(name, "constants") && ++ran) CHECK(!check_uma_constants());
         if (!strcmp(name, "migrate") && ++ran) CHECK(!check_uma_migrate());
+        if (!strcmp(name, "way") && ++ran) CHECK(!check_uma_way());
         if (!ran) {
-            fprintf(stderr, "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants or migrate\n", name);
+            fprintf(stderr, "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, migrate or way\n", name);
             return 2;
         }
         vk_pipeline_quiesce();
@@ -2784,6 +2785,7 @@ int main(int argc, char** argv) {
         CHECK(!check_uma_constants());
         CHECK(!check_uma_page_changes());
         CHECK(!check_uma());
+        CHECK(!check_uma_way());
         CHECK(!check_uma_migrate());
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan in place only: %u validation messages\n", g_vk_validation_messages);
@@ -2861,6 +2863,7 @@ int main(int argc, char** argv) {
     CHECK(!check_uma_page_changes());
     CHECK(!check_rt_overlap());
     CHECK(!check_uma());
+    CHECK(!check_uma_way());
     CHECK(!check_uma_migrate());
     CHECK(!check_descriptor_room());
     /* the pipeline workers: pipeline_threads when given, else a quarter of the CPUs, two to six */

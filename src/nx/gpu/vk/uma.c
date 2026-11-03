@@ -14,10 +14,11 @@
    heap cost 45 ms a frame there. Imports do not overlap. A range across two imports makes one import of their union.
 
    Where the driver can't import host memory but takes buffers of a kind of its own in place, guest memory moves into
-   them instead (the migrate way: Android, whose drivers all take an AHardwareBuffer, and Qualcomm's has no
-   VK_EXT_external_memory_host). The windows a range touches become a region: a buffer imported once, which the pages
-   then move into with their bytes, mapped where they were (mem.c's mem_migrate); the regions it meets move on into it,
-   so one region of their union holds them. A region is 256 MiB at most, the biggest AHardwareBuffer Android's
+   them instead with vk_memory=2 (the migrate way: Android, whose drivers all take an AHardwareBuffer, and Qualcomm's
+   has no VK_EXT_external_memory_host); auto copies there, as no phone has measured the moves yet (vk_uma_way). The
+   windows a range touches become a region: a buffer imported once, which the pages then move into with their bytes,
+   mapped where they were (mem.c's mem_migrate); the regions it meets move on into it, so one region of their union
+   holds them. A region is 256 MiB at most, the biggest AHardwareBuffer Android's
    allocator gave on a Snapdragon 8 Elite (512 MiB aborted its service), and its memory is taken whole when it is made
    and never swapped: one that goes for idleness or room moves its pages back into the reservation's own (mem_unmigrate)
    first. A region's buffer is memory of its own, which no change of the guest's pages touches: one whose pages are
@@ -198,18 +199,22 @@ static int mem_model(void) {
 #else
 #define UMA_NO_IMPORT "no VK_EXT_external_memory_host"
 #endif
+/* The moves into AHardwareBuffers are taken only when asked for (want 2): auto keeps copying where the device has no
+   VK_EXT_external_memory_host, as no phone has measured them yet */
+int vk_uma_way(int want, int model, int has_import, int has_ahb) {
+    if (want != 2 && (want != 0 || model != VK_MEM_UMA)) return VK_UMA_WITH_NONE;
+    if (has_import) return VK_UMA_WITH_HOST;
+    return want == 2 && has_ahb ? VK_UMA_WITH_AHB : VK_UMA_WITH_NONE;
+}
 int vk_uma_choose(int has_import, int has_ahb, int has_placed) {
-    int want = g_settings.guest_memory, with = VK_UMA_WITH_NONE;
+    int want = g_settings.guest_memory, with;
     g_vk.mem_model = mem_model();
-    g_vk.mem_path = VK_MEM_PATH_COPY;
-    if (want == 2 || (want == 0 && g_vk.mem_model == VK_MEM_UMA)) {
-        with = has_import ? VK_UMA_WITH_HOST : has_ahb ? VK_UMA_WITH_AHB : VK_UMA_WITH_NONE;
-        if (with == VK_UMA_WITH_NONE)
-            WARN("vulkan: guest memory in place was asked for, but the device has " UMA_NO_IMPORT
-                 ": guest memory is copied\n");
-        else
-            g_vk.mem_path = VK_MEM_PATH_UMA;
-    }
+    with = vk_uma_way(want, g_vk.mem_model, has_import, has_ahb);
+    int ahb_held = with == VK_UMA_WITH_NONE && want == 0 && g_vk.mem_model == VK_MEM_UMA && has_ahb;
+    g_vk.mem_path = with == VK_UMA_WITH_NONE ? VK_MEM_PATH_COPY : VK_MEM_PATH_UMA;
+    if (with == VK_UMA_WITH_NONE && !ahb_held && (want == 2 || (want == 0 && g_vk.mem_model == VK_MEM_UMA)))
+        WARN("vulkan: guest memory in place was asked for, but the device has " UMA_NO_IMPORT
+             ": guest memory is copied\n");
     g_uma.migrate = with == VK_UMA_WITH_AHB;
     LOG("vulkan: the device %s; guest buffers %s (vk_memory=%s%s); VK_EXT_external_memory_host %s, "
         "VK_EXT_map_memory_placed %s\n",
@@ -220,7 +225,9 @@ int vk_uma_choose(int has_import, int has_ahb, int has_placed) {
         want == 1   ? "copy"
         : want == 2 ? "uma"
                     : "auto",
-        want == 2 && g_vk.mem_model != VK_MEM_UMA ? ", forced: the GPU reads them across the bus" : "",
+        want == 2 && g_vk.mem_model != VK_MEM_UMA ? ", forced: the GPU reads them across the bus"
+        : ahb_held                                ? ": AHardwareBuffers only with vk_memory=2"
+                                                  : "",
         has_import ? "yes" : "no", has_placed ? "yes (not used yet)" : "no");
     return with;
 }
