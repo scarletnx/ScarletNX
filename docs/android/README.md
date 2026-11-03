@@ -33,6 +33,10 @@ The layer is thin. An app's code runs on a JVM, and the Android system under it 
 
 ## Running an app
 
+Build it with LLVM 22 (`-DSNX_LLVM_CONFIG=` its `llvm-config`, [Build](../BUILD.md)). The JIT compiles an app's
+native code with the LLVM the build links, and LLVM 19, FreeBSD's `llvm` package, crashes on some of an engine's code.
+The configure step warns when the Android driver is built with an older one.
+
 `build/scarletnx-android APP.apk` runs an app in a window, with the left mouse button as a finger and the keyboard
 as a hardware keyboard. `APP` can also be a bundle of a base APK and its splits (an XAPK or an APKS), which is
 installed first, as Android's package manager installs one: its APKs into `android/app/<package>/` of the data

@@ -126,6 +126,11 @@ sudo pkg install git cmake ninja gmake nasm perl5 pkgconf python3 sdl3 llvm libu
 The build uses that `sdl3` package by default (`SNX_SYSTEM_SDL3`, see [SDL3 troubleshooting](#sdl3-troubleshooting));
 pass `-DSNX_SYSTEM_SDL3=OFF` for CPM's pinned SDL3 source build instead.
 
+The `llvm` package is LLVM 19, which the Switch, 3DS and Vita drivers build with. The Android driver
+([Android apps](android/README.md)) compiles an app's native code at run time with the same LLVM, and LLVM 19's
+code generator crashes on some of it (a trap in its DAG combiner at an engine's login). Build it with LLVM 22: install
+`llvm22` and pass `-DSNX_LLVM_CONFIG=/usr/local/llvm22/bin/llvm-config` to the configure step.
+
 ### Configure and build
 
 ```sh
