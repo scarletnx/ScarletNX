@@ -926,6 +926,207 @@ static void small_files(void) {
     CHECK(!rmdir(dir));
 }
 
+/* image in blocks of block bytes, stored as LibHac's CompressedStorage reads one: a block of zeros as a ZEROED entry,
+   one LZ4 shrinks as an LZ4 block at a 0x10-aligned stored offset, any other as is, a run of those one NONE entry
+   stored where the block before ends. For the failure tests, the LZ4 block of entry short_entry is listed one byte
+   short, and entry odd_entry has compression type 2. The entries are left in *entries (freed by the caller), *count of
+   them */
+static blob_t compress_blocks(const blob_t* image, size_t block, uint32_t short_entry, uint32_t odd_entry,
+                              nca_compression_info_t* info, unsigned char** entries, uint32_t* count) {
+    uint32_t blocks = (uint32_t)((image->size + block - 1) / block), n = 0;
+    size_t capacity = image->size + (size_t)blocks * 0x110 + 0x10, used = 0;
+    unsigned char* physical = zalloc(capacity);
+    unsigned char* zeros = zalloc(block);
+    unsigned char* entry = NULL;
+    *entries = zalloc((size_t)blocks * COMPRESSED_ENTRY_SIZE);
+    for (uint32_t i = 0; i < blocks; i++) {
+        size_t offset = (size_t)i * block;
+        size_t size = image->size - offset < block ? image->size - offset : block;
+        size_t at = align_up(used, 0x10);
+        int stored = 0;
+        if (memcmp(image->data + offset, zeros, size)) {
+            stored = LZ4_compress_default((const char*)image->data + offset, (char*)physical + at, (int)size,
+                                          (int)(capacity - at));
+            CHECK(stored > 0);
+        }
+        if (stored == 0 || (size_t)stored < size) { /* ZEROED or LZ4: an entry of its own */
+            entry = *entries + (size_t)n * COMPRESSED_ENTRY_SIZE;
+            put64(entry, offset);
+            put64(entry + 8, stored ? at : used);
+            entry[0x10] = stored ? COMPRESSION_LZ4 : COMPRESSION_ZEROED;
+            put32(entry + 0x14, stored ? (uint32_t)stored - (n == short_entry) : 0);
+            if (n == odd_entry) entry[0x10] = 2;
+            n++;
+            if (stored) used = at + (size_t)stored;
+            continue;
+        }
+        memcpy(physical + used, image->data + offset, size);
+        if (entry && entry[0x10] == COMPRESSION_NONE) {
+            put32(entry + 0x14, (uint32_t)(get_le(entry + 0x14, 4) + size));
+        } else {
+            entry = *entries + (size_t)n++ * COMPRESSED_ENTRY_SIZE;
+            put64(entry, offset);
+            put64(entry + 8, used);
+            entry[0x10] = COMPRESSION_NONE;
+            put32(entry + 0x14, (uint32_t)size);
+        }
+        used += size;
+    }
+    blob_t table = tree_build(*entries, COMPRESSED_ENTRY_SIZE, n, image->size);
+    size_t table_offset = align_up(used, 0x10);
+    blob_t out = {zalloc(table_offset + table.size), table_offset + table.size};
+    memcpy(out.data, physical, used);
+    memcpy(out.data + table_offset, table.data, table.size);
+    info->table_offset = table_offset;
+    info->table_size = table.size;
+    tree_header(&info->table_header, n);
+    *count = n;
+    free(physical);
+    free(zeros);
+    free(table.data);
+    return out;
+}
+
+/* A dump of one program NCA whose RomFS section holds stored, in AES-CTR, in an NSP at an odd offset, opened as the
+   runtime reads a game it did not extract: mapped, through snx_hac.h. */
+typedef struct {
+    blob_t nsp;
+    SnxHac* hac;
+    SnxHacFs* fs;
+} romfs_dump_t;
+
+#define ROMFS_DUMP_DIR "hactool_compressed.tmp"
+
+static void romfs_dump_open(romfs_dump_t* dump, nca_header_t* header, const blob_t* stored) {
+    nca_fs_header_t* fs = &header->fs_headers[0];
+    char a[80], b[80];
+    blob_t section = ivfc_build(stored, &fs->romfs_superblock.ivfc_header);
+    fs->_0x0 = 2;
+    fs->partition_type = PARTITION_ROMFS;
+    fs->fs_type = FS_TYPE_ROMFS;
+    fs->crypt_type = CRYPT_CTR;
+    put64(fs->section_ctr, 0x0000005500000001ULL);
+    section_entry(header, 0, 0xC00, section.size);
+    unsigned char iv[8];
+    upper_iv(iv, fs, 0, 0);
+    ctr_crypt(iv, 0xC00, section.data, section.size);
+    romfs_file_t ncas[2] = {{"padding.bin", {(unsigned char*)"x", 1}}, {"program.nca", nca_build(header, &section)}};
+    free(section.data);
+    dump->nsp = partition_build(MAGIC_PFS0, ncas, 2, 0x203);
+    free(ncas[1].content.data);
+#if defined(_WIN32)
+    _mkdir(ROMFS_DUMP_DIR);
+#else
+    mkdir(ROMFS_DUMP_DIR, 0700);
+#endif
+    write_file(ROMFS_DUMP_DIR "/game.nsp", dump->nsp.data, dump->nsp.size);
+    dump->hac = snx_hac_new();
+    CHECK(dump->hac != NULL);
+    hex(a, header_key, sizeof(header_key));
+    hex(b, key_area_key, sizeof(key_area_key));
+    CHECK(snx_hac_set_key(dump->hac, "header_key", a) && snx_hac_set_key(dump->hac, "key_area_key_application_00", b));
+    CHECK(snx_hac_open(dump->hac, ROMFS_DUMP_DIR "/game.nsp", 0) == 0);
+    CHECK(!snx_hac_map(dump->hac, 0, dump->nsp.data, dump->nsp.size));
+    dump->fs = snx_hac_fs_open(dump->hac, 0, 1, -1, 0);
+    CHECK(dump->fs != NULL);
+}
+
+static void romfs_dump_close(romfs_dump_t* dump) {
+    snx_hac_fs_free(dump->fs);
+    snx_hac_free(dump->hac);
+    free(dump->nsp.data);
+    CHECK(!remove(ROMFS_DUMP_DIR "/game.nsp"));
+    CHECK(!rmdir(ROMFS_DUMP_DIR));
+}
+
+/* Runs of noise (stored as is), zeros and text (LZ4), of 0x100 to 0x30100 bytes each. */
+static void fill_runs(unsigned char* p, size_t size, uint32_t seed) {
+    for (size_t at = 0, run; at < size; at += run) {
+        seed = seed * 1103515245U + 12345U;
+        run = 0x100 + (seed >> 8) % 0x30000;
+        if (run > size - at) run = size - at;
+        if ((seed >> 4) % 3 == 0)
+            noise(p + at, run, seed);
+        else if ((seed >> 4) % 3 == 1)
+            memset(p + at, 0, run);
+        else
+            for (size_t i = 0; i < run; i++) p[at + i] = (unsigned char)"compressed run "[(at + i) % 15];
+    }
+}
+
+static void romfs_reads_as(SnxHacFs* fs, const blob_t* image, uint64_t offset, uint64_t size, unsigned char* got) {
+    if (size > image->size - offset) size = image->size - offset;
+    memset(got, 0xA5, (size_t)size);
+    if (snx_hac_fs_read_romfs(fs, offset, got, (size_t)size) || memcmp(got, image->data + offset, (size_t)size)) {
+        fprintf(stderr, "hactool_layers.c: the RomFS read 0x%llx+0x%llx differs from the image\n",
+                (unsigned long long)offset, (unsigned long long)size);
+        CHECK(0);
+    }
+}
+
+/* A RomFS of 16 MB in LZ4 blocks of block bytes, read in place as a game reads it: a file of 0x804000 bytes whole, the
+   same size ending on an entry's edge, starting where a NONE entry ends, inside and across a ZEROED one, and reads of
+   any size at any offset; 0x4000-byte blocks put the table in two entry sets. */
+static void compressed_reads(size_t block) {
+    romfs_file_t files[3] = {{"head.bin", {zalloc(0x14000), 0x14000}},
+                             {"big.bin", {zalloc(0x804000), 0x804000}},
+                             {"tail.bin", {zalloc(0x7F3123), 0x7F3123}}};
+    hactool_ctx_t tool = {0};
+    nca_header_t header = {0};
+    romfs_dump_t dump;
+    unsigned char* entries;
+    uint32_t count, seen[4] = {0}, none = UINT32_MAX, zeroed = UINT32_MAX, edge = UINT32_MAX;
+    synthetic_keys(&tool);
+    for (unsigned i = 0; i < 3; i++) fill_runs(files[i].content.data, files[i].content.size, 3 + 8 * i);
+    blob_t image = romfs_build(files, 3);
+    blob_t stored = compress_blocks(&image, block, UINT32_MAX, UINT32_MAX, &header.fs_headers[0].compression_info,
+                                    &entries, &count);
+    for (uint32_t i = 0; i < count; i++) seen[entries[(size_t)i * COMPRESSED_ENTRY_SIZE + 0x10]]++;
+    for (uint32_t i = 0; i + 1 < count; i++) {
+        const unsigned char* e = entries + (size_t)i * COMPRESSED_ENTRY_SIZE;
+        uint64_t end = get_le(e + COMPRESSED_ENTRY_SIZE, 8);
+        if (e[0x10] == COMPRESSION_NONE && none == UINT32_MAX && end > 0x14000 && end + 0x804000 <= image.size)
+            none = i;
+        if (e[0x10] == COMPRESSION_ZEROED && zeroed == UINT32_MAX && end - get_le(e, 8) >= 0x40) zeroed = i;
+        if (edge == UINT32_MAX && end >= 0x900000) edge = i;
+    }
+    CHECK(seen[COMPRESSION_NONE] && seen[COMPRESSION_ZEROED] && seen[COMPRESSION_LZ4]);
+    CHECK(none != UINT32_MAX && zeroed != UINT32_MAX && edge != UINT32_MAX);
+    CHECK(block != 0x4000 || count > (BUCKET_TREE_NODE_SIZE - 0x10) / COMPRESSED_ENTRY_SIZE);
+    romfs_dump_open(&dump, &header, &stored);
+    CHECK(snx_hac_fs_romfs_size(dump.fs) == image.size);
+
+    unsigned char* got = zalloc(image.size);
+    romfs_reads_as(dump.fs, &image, 0, image.size, got);
+    uint64_t data = get_le(image.data + 0x48, 8);
+    romfs_reads_as(dump.fs, &image, data + 0x14000, 0x804000, got); /* big.bin, whole */
+    uint64_t end = get_le(entries + (size_t)(edge + 1) * COMPRESSED_ENTRY_SIZE, 8);
+    romfs_reads_as(dump.fs, &image, end - 0x804000, 0x804000, got);
+    romfs_reads_as(dump.fs, &image, end - 0x804000 + 1, 0x804000 - 1, got);
+    romfs_reads_as(dump.fs, &image, get_le(entries + (size_t)(none + 1) * COMPRESSED_ENTRY_SIZE, 8), 0x804000, got);
+    uint64_t zero = get_le(entries + (size_t)zeroed * COMPRESSED_ENTRY_SIZE, 8);
+    uint64_t zero_end = get_le(entries + (size_t)(zeroed + 1) * COMPRESSED_ENTRY_SIZE, 8);
+    romfs_reads_as(dump.fs, &image, zero + 0x10, zero_end - zero - 0x20, got);
+    romfs_reads_as(dump.fs, &image, zero + 0x10, 0x804000, got);
+    uint32_t seed = (uint32_t)block;
+    for (unsigned k = 0; k < 100; k++) {
+        seed = seed * 1103515245U + 12345U;
+        uint64_t size = k % 4 == 0 ? 0x804000 : (seed >> 3) % 0x900000 + 1;
+        seed = seed * 1103515245U + 12345U;
+        uint64_t offset = ((uint64_t)seed * 7919) % (image.size - size + 1);
+        romfs_reads_as(dump.fs, &image, k % 3 == 0 ? offset & ~(uint64_t)0x3FFF : offset, size, got);
+    }
+    printf("hactool layers: a compressed RomFS of 0x%zx bytes, %u entries (%u NONE, %u ZEROED, %u LZ4 of 0x%zx bytes), "
+           "read whole and 107 ways\n",
+           image.size, count, seen[COMPRESSION_NONE], seen[COMPRESSION_ZEROED], seen[COMPRESSION_LZ4], block);
+    romfs_dump_close(&dump);
+    free(got);
+    free(entries);
+    free(image.data);
+    free(stored.data);
+    for (unsigned i = 0; i < 3; i++) free(files[i].content.data);
+}
+
 int main(void) {
     CHECK(sizeof(nca_fs_header_t) == 0x200);
     CHECK(sizeof(nca_sparse_info_t) == 0x30 && sizeof(nca_compression_info_t) == 0x28);
@@ -935,6 +1136,8 @@ int main(void) {
     small_files();
     make_files();
     compressed_romfs();
+    compressed_reads(0x10000);
+    compressed_reads(0x4000);
     update_t update = update_build();
     sparse_update(&update);
     empty_aes_ctr_ex();
