@@ -249,6 +249,11 @@ log names each module's SDK version and each hooked function at startup (`hook: 
 case back to the function's own code calls `hook_original(addr)` with the CPU as the call left it. A hook is on by
 default only once it passes verify mode (or, for one that isn't pure, its recorded-input test).
 
+The `diag` family's hook only logs: each of the SDK's NN_ABORT overloads ends in `nn::diag::detail::VAbortImpl`, and its
+handler (`diag.c`) writes the condition, the SDK function, its file and line, the Result (and the error code it makes)
+and the message's format as the SDK passed them, then runs the function's own code through `hook_original`, which stops
+the game as it would (`tests/diag_abort.c`).
+
 ## What the guest profile showed
 
 An accelerator is added only when its function shows up in a guest profile of CPU time by SDK function. The first
