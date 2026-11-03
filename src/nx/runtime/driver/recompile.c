@@ -401,7 +401,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     char *ini = NULL, *ini_text = NULL, *run = NULL, *exe = NULL, *mods = NULL, *mods_off = NULL, *mods_stamp = NULL;
     char **mod_names = NULL, **mod_files = NULL;
     size_t mod_count = 0, found = 0;
-    char error[1024], option[64], why[256];
+    char error[1024], option[64], why[256], reason[256];
     const char* equal;
     size_t option_size;
     int i, rc = 1, ios = 0, no_build = 0, keep_c = 0, host_win = 0, positional = 0, tmpfs = 0, dump = 0;
@@ -567,7 +567,9 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         snx_free_program(&program);
         return 1;
     }
-    title = snx_game_shown(name, &program);
+    title = snx_game_shown(name, &program, reason, sizeof reason);
+    if (reason[0] && !compile.quiet)
+        printf("The game's control.nacp gives it no name, %s: it shows as %s\n", reason, title);
     if (addon) { /* <game>_<add-on>, in the game's folder */
         char own[32], of[17];
         snx_addon_entry(owner, addon, version, own); /* an update's with its version: each version its own */

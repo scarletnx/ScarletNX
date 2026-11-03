@@ -1979,29 +1979,88 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
     return waited < 0 ? 1 : WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 #endif
 }
-int snx_nacp_name(const unsigned char* nacp, size_t size, char* name, size_t name_size) {
-    /* 16 languages of 0x300 bytes, each a name of 0x200 then a publisher; American English first */
-    size_t language, i, n = 0;
-    const unsigned char* title;
-    if (name_size) name[0] = 0;
-    for (language = 0; nacp && name_size && language < 16 && (language + 1) * 0x300 <= size && !name[0]; ++language) {
-        title = nacp + language * 0x300;
-        for (i = 0, n = 0; i < 0x200 && title[i] && n + 1 < name_size; ++i)
-            if (title[i] >= 0x20 && title[i] != 0x7f) name[n++] = (char)title[i];
-        while (n && name[n - 1] == ' ') --n;
-        /* a name cut in a UTF-8 sequence loses the sequence */
-        i = n;
-        while (i && ((unsigned char)name[i - 1] & 0xc0) == 0x80) --i;
-        if (i && ((unsigned char)name[i - 1] & 0x80)) {
-            unsigned char lead = (unsigned char)name[i - 1];
-            size_t want = (lead & 0xe0) == 0xc0 ? 2 : (lead & 0xf0) == 0xe0 ? 3 : (lead & 0xf8) == 0xf0 ? 4 : 1;
-            if (n - (i - 1) < want) n = i - 1;
+/* a control.nacp's titles, 16 at its start, one a language: its name (0x200 bytes), then its publisher */
+#define SNX_NACP_TITLE  0x300
+#define SNX_NACP_TITLES 16
+int snx_utf8_valid(const char* text, size_t n, char* hex, size_t hex_size) {
+    const unsigned char* s = (const unsigned char*)text;
+    size_t i = 0, want, k, at;
+    unsigned long c;
+    if (hex_size) hex[0] = 0;
+    while (i < n) {
+        if (s[i] < 0x80) {
+            ++i;
+            continue;
         }
-        name[n] = 0;
-        for (i = 0; name[i] == ' '; ++i) {}
-        if (i) memmove(name, name + i, n - i + 1);
+        want = (s[i] & 0xe0) == 0xc0 ? 2 : (s[i] & 0xf0) == 0xe0 ? 3 : (s[i] & 0xf8) == 0xf0 ? 4 : 0;
+        if (!want || want > n - i) break;
+        c = s[i] & (0x7fu >> want);
+        for (k = 1; k < want && (s[i + k] & 0xc0) == 0x80; ++k) c = c << 6 | (s[i + k] & 0x3fu);
+        if (k < want ||
+            c < (want == 2   ? 0x80ul
+                 : want == 3 ? 0x800ul
+                             : 0x10000ul) ||
+            c > 0x10fffful || (c >= 0xd800ul && c <= 0xdffful))
+            break;
+        i += want;
     }
-    return name_size && name[0];
+    if (i == n) return 1;
+    for (i = 0, at = 0; i < n && i < 16 && at + 4 < hex_size; ++i, at = strlen(hex))
+        snprintf(hex + at, hex_size - at, "%s%02x", i ? " " : "", (unsigned)s[i]);
+    if (n > 16 && hex_size && strlen(hex) + 4 < hex_size) strcat(hex, "...");
+    return 0;
+}
+/* one language's name (title, 0x200 bytes at most) into name: control characters left out, spaces trimmed, a sequence
+   that name_size cuts dropped. 1 with a name, else 0 and "": its bytes in hex into bad (when given) when they are not
+   UTF-8, which a name never shows as */
+static int title_name(const unsigned char* title, char* name, size_t name_size, char* bad, size_t bad_size) {
+    size_t i, n = 0;
+    for (i = 0; i < 0x200 && title[i] && n + 1 < name_size; ++i)
+        if (title[i] >= 0x20 && title[i] != 0x7f) name[n++] = (char)title[i];
+    while (n && name[n - 1] == ' ') --n;
+    /* a name cut in a UTF-8 sequence loses the sequence */
+    i = n;
+    while (i && ((unsigned char)name[i - 1] & 0xc0) == 0x80) --i;
+    if (i && ((unsigned char)name[i - 1] & 0x80)) {
+        unsigned char lead = (unsigned char)name[i - 1];
+        size_t want = (lead & 0xe0) == 0xc0 ? 2 : (lead & 0xf0) == 0xe0 ? 3 : (lead & 0xf8) == 0xf0 ? 4 : 1;
+        if (n - (i - 1) < want) n = i - 1;
+    }
+    name[n] = 0;
+    if (!snx_utf8_valid(name, n, bad, bad ? bad_size : 0)) {
+        name[0] = 0;
+        return 0;
+    }
+    for (i = 0; name[i] == ' '; ++i) {}
+    if (i) memmove(name, name + i, n - i + 1);
+    return name[0] != 0;
+}
+int snx_nacp_name_why(const unsigned char* nacp, size_t size, char* name, size_t name_size, char* why,
+                      size_t why_size) {
+    size_t language, bad_language = 0;
+    char bad[64] = {0};
+    if (why_size) why[0] = 0;
+    if (!name_size) return 0;
+    name[0] = 0;
+    if (!nacp || size < SNX_NACP_TITLE) {
+        if (why_size) snprintf(why, why_size, "it is %zu bytes, short of one language's title (768)", nacp ? size : 0);
+        return 0;
+    }
+    for (language = 0; language < SNX_NACP_TITLES && (language + 1) * SNX_NACP_TITLE <= size && !name[0]; ++language)
+        if (!title_name(nacp + language * SNX_NACP_TITLE, name, name_size, bad_language ? NULL : bad, sizeof bad) &&
+            bad[0] && !bad_language)
+            bad_language = language + 1;
+    if (!name[0] && why_size) {
+        if (bad_language)
+            snprintf(why, why_size, "the name of its language %zu is not UTF-8 (%s), and no other language has one",
+                     bad_language - 1, bad);
+        else
+            snprintf(why, why_size, "it names the game in none of its %zu languages", language);
+    }
+    return name[0] != 0;
+}
+int snx_nacp_name(const unsigned char* nacp, size_t size, char* name, size_t name_size) {
+    return snx_nacp_name_why(nacp, size, name, name_size, NULL, 0);
 }
 SnxU64 snx_npdm_title(const unsigned char* npdm, size_t size) {
     if (!npdm || size < 0x80 || memcmp(npdm, "META", 4)) return SNX_NPDM_DEFAULT_TITLE;
