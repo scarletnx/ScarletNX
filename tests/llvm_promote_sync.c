@@ -12,13 +12,14 @@
    boundaries: a return, an SVC, a direct BL, a BLR through dispatch, a backward branch's poll, an entry at another
    leader (the dispatch block), a join of two ways, a callee made stale (the AOT build's stale byte, a miss) and a
    caller made stale during a call, the helpers of each site class (ALL: MSR FPCR's hook; ENV: the exclusive
-   monitor's; NONE: DC ZVA's and the FP helpers), and a register whose PHIs outnumber its accesses by more than 8,
-   which stays in the CPU structure.
+   monitor's; NONE: DC ZVA's and the FP helpers), and a register whose PHIs outnumber its accesses by more than 8, or
+   whose copies as a local outweigh them, which stays in the CPU structure.
      snx-test-llvm-promote-sync [--portable]   (--portable: without the host's extensions, so the FP helpers run) */
 #include "llvm_steps.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "nx/loader/codegen_view.h"
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,9 +30,10 @@
 #define MEMORY  0x10000
 #define DATA    0x8000 /* guest address of the programs' data: DC ZVA's blocks, the exclusive pair's word */
 #define LR      30
-#define KEEP_LR 0x80u /* an SVC whose handler leaves X30 alone: one in a callee, which returns through it */
-#define STALE   0x40u /* an SVC whose handler makes the caller's code stale (RtAPI.code_changed's effect) */
-#define POLLS   64    /* the polls a run may make: CPU.poll stays set, so a loop that never ends polls past them */
+#define KEEP_LR 0x80u  /* an SVC whose handler leaves X30 alone: one in a callee, which returns through it */
+#define STALE   0x40u  /* an SVC whose handler makes the caller's code stale (RtAPI.code_changed's effect) */
+#define KEEP_X9 0x100u /* an SVC whose handler leaves X9 alone too: one in a loop's callee, X9 the loop's counter */
+#define POLLS   64     /* the polls a run may make: CPU.poll stays set, so a loop that never ends polls past them */
 
 enum { EV_SVC, EV_POLL, EV_MISS, EV_FPCR, EV_END };
 static const char* const kinds[] = {"svc", "poll", "miss", "fpcr hook", "end"};
@@ -62,7 +64,8 @@ typedef struct {
     unsigned char* stale;     /* this module's stale bytes */
     unsigned char* ref_stale; /* the reference module's */
     GuestFn reference[FUNCS]; /* what a miss runs: the code at the pc compiled again (the O0 module's) */
-    u64 starts[FUNCS];
+    u64 starts[FUNCS], ends[FUNCS];
+    GuestFn* disp;                  /* CPU.disp: a function made stale leaves it, as the runtime's fn_stale has it */
     size_t functions, stale_caller; /* an SVC with STALE makes this function stale */
     u64 poll_keep;                  /* the X registers the poll handler leaves alone */
     unsigned polls;                 /* so far: a loop that goes on past POLLS ends the test */
@@ -84,11 +87,14 @@ typedef struct {
     size_t stale_callee;   /* the function made stale before the run, plus 1 (0: none) */
     size_t stale_caller;   /* the function an SVC with STALE makes stale */
     u64 poll_keep, skip_v; /* skip_v: the V registers the model leaves out (an FP estimate's result) */
-    int demoted_x;         /* an X register the case expects to stay in the CPU structure, or -1 */
+    u64 memory_x, local_x; /* the X registers the case expects left in the CPU structure, and made locals */
+    int call_stores;       /* at most these register stores before each call of call_target (-1: not checked) */
+    size_t call_target;    /* the word a checked call goes to */
+    int loop_x;            /* an X register no call of call_target's block may store (-1: none) */
 } Program;
 
 static struct {
-    Program p, saved;
+    Program p;
     unsigned char mem2[MEMORY], mem0[MEMORY]; /* the O2 and O0 runs' guest memory */
     unsigned char image[WORDS * 4];           /* the program's words, as the module image holds them */
     int failures, cases;
@@ -138,6 +144,9 @@ static void mutate(CPU* c, unsigned salt, u64 keep) {
     c->vf ^= (salt >> 3 & 1) ^ 1;
     c->fpsr ^= (u32)(mix(salt) & 0x0800009Fu) | 2;
 }
+
+/* the X registers an SVC's handler leaves alone, by its immediate */
+static u64 keep_of(unsigned imm) { return (imm & KEEP_LR ? (u64)1 << LR : 0) | (imm & KEEP_X9 ? (u64)1 << 9 : 0); }
 
 /* the architectural part of the CPU structure, the rest cleared (the runtime's pointers, the poll flag) */
 static CPU state_of(const CPU* c) {
@@ -218,17 +227,6 @@ static void expect(Program* p, int kind, u64 arg) {
     }
     ++p->count;
 }
-/* words written past an exit the case takes: the model is put back as it was before them */
-static void freeze(Program* p) { g_promote_sync.saved = *p; }
-static void thaw(Program* p) {
-    Program* s = &g_promote_sync.saved;
-    memcpy(s->w, p->w, sizeof(p->w));
-    s->n = p->n;
-    memcpy(s->starts, p->starts, sizeof(p->starts));
-    s->nstarts = p->nstarts;
-    *p = *s;
-}
-
 static void mov64(Program* p, unsigned rd, u64 v) { /* MOVZ, then MOVK of each other half-word */
     for (unsigned hw = 0; hw < 4; ++hw)
         put(p, (hw ? 0xF2800000u : 0xD2800000u) | hw << 21 | (u32)(v >> 16 * hw & 0xFFFF) << 5 | rd);
@@ -314,7 +312,7 @@ static void fmov_dx(Program* p, unsigned vd, unsigned rn) { /* FMOV Dd, Xn: the 
 static void svc_model(Program* p, size_t word, unsigned imm) {
     p->m.pc = at(word) + 4;
     expect(p, EV_SVC, imm);
-    mutate(&p->m, imm, imm & KEEP_LR ? (u64)1 << LR : 0);
+    mutate(&p->m, imm, keep_of(imm));
 }
 static void svc(Program* p, unsigned imm) {
     size_t word = p->n;
@@ -401,8 +399,12 @@ static void record(CPU* c, int kind, u64 arg) {
 static void on_svc(CPU* c, u32 imm) {
     Run* r = run_of(c);
     record(c, EV_SVC, imm);
-    mutate(c, imm, imm & KEEP_LR ? (u64)1 << LR : 0);
-    if (imm & STALE) r->stale[r->stale_caller] = 1;
+    mutate(c, imm, keep_of(imm));
+    if (imm & STALE) { /* the runtime's order: its dispatch slots first, then its byte */
+        for (u64 pc = r->starts[r->stale_caller]; pc < r->ends[r->stale_caller]; pc += 4)
+            r->disp[(pc - SNX_CODE_BASE) / 4] = NULL;
+        r->stale[r->stale_caller] = 1;
+    }
 }
 /* CPU.poll stays set: every backward branch polls, and so does the dispatch block the poll's call of the function
    enters through. Each poll changes the registers by its own salt */
@@ -419,20 +421,21 @@ static void on_fpcr(CPU* c) {
     record(c, EV_FPCR, 0);
     mutate(c, 0x21, 0);
 }
-/* the runtime's answer for a pc whose code is out of dispatch: the code there compiled again, the reference module's,
-   with its own stale byte clear while it runs */
+/* the runtime's answer for a pc whose code is out of dispatch: the code there compiled again, the reference module's
+   function holding pc entered at pc (its dispatch block takes it to the leader), with its own stale byte clear while
+   it runs */
 static void on_miss(CPU* c, u64 pc) {
     Run* r = run_of(c);
     record(c, EV_MISS, pc);
     for (size_t i = 0; i < r->functions; ++i)
-        if (r->starts[i] == pc) {
+        if (r->starts[i] <= pc && pc < r->ends[i]) {
             unsigned char was = r->ref_stale[i];
             r->ref_stale[i] = 0;
             r->reference[i](c, pc);
             r->ref_stale[i] = was;
             return;
         }
-    fprintf(stderr, "a miss at %llx, where no function starts\n", (unsigned long long)pc);
+    fprintf(stderr, "a miss at %llx, where no function is\n", (unsigned long long)pc);
     exit(3);
 }
 static void on_undef(CPU* c, u64 pc, u32 w) {
@@ -446,7 +449,7 @@ typedef struct {
     LlvmSteps steps;
     GuestFn fns[FUNCS];
     unsigned char* stale;
-    int begun, ok, demoted; /* demoted: the case's demoted_x is read from the CPU structure where it is used */
+    int begun, ok;
 } Module;
 
 /* a load of the CPU structure at offset in a block with no call: the register is read where it is used, not copied
@@ -470,6 +473,64 @@ static int loaded_apart_from_calls(LLVMValueRef fn, size_t offset) {
     return 0;
 }
 
+/* the register stores before a call of target in its block, the most of any such call; with offset < 0x388 only
+   those of that field */
+static int stores_before(LLVMValueRef fn, LLVMValueRef target, size_t offset) {
+    LLVMValueRef c = LLVMGetParam(fn, 0);
+    int most = -1;
+    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
+        int n = 0;
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); inst; inst = LLVMGetNextInstruction(inst)) {
+            if (LLVMIsACallInst(inst)) {
+                if (LLVMGetCalledValue(inst) == target && n > most) most = n;
+                n = 0;
+            } else if (LLVMIsAStoreInst(inst)) {
+                LLVMValueRef ptr = LLVMGetOperand(inst, 1);
+                size_t at = SIZE_MAX;
+                if (ptr == c)
+                    at = 0;
+                else if (LLVMIsAGetElementPtrInst(ptr) && LLVMGetOperand(ptr, 0) == c && LLVMGetNumOperands(ptr) == 2 &&
+                         LLVMIsAConstantInt(LLVMGetOperand(ptr, 1)))
+                    at = (size_t)LLVMConstIntGetZExtValue(LLVMGetOperand(ptr, 1));
+                if (at < offsetof(CPU, tpidr) && (at < offsetof(CPU, pc) || at >= offsetof(CPU, n)) &&
+                    (offset >= sizeof(CPU) || at == offset))
+                    ++n;
+            }
+        }
+    }
+    return most;
+}
+
+/* the promoted function's shape the case expects: registers left in the CPU structure or made locals, the stores at
+   a call of call_target */
+static void structure(const Program* p, SnxIr* ir, LLVMValueRef fn) {
+    char what[160];
+    for (unsigned r = 0; r < 31; ++r) {
+        int memory = loaded_apart_from_calls(fn, offsetof(CPU, x) + 8 * (size_t)r);
+        if (p->memory_x >> r & 1 && !memory) {
+            snprintf(what, sizeof(what), "X%u is made a local, though the case leaves it in the CPU structure", r);
+            fail(p->name, what);
+        }
+        if (p->local_x >> r & 1 && memory) {
+            snprintf(what, sizeof(what), "X%u is left in the CPU structure, though the case makes it a local", r);
+            fail(p->name, what);
+        }
+    }
+    if (p->call_stores >= 0 || p->loop_x >= 0) {
+        LLVMValueRef target = snx_ir_guest_function(ir, at(p->call_target));
+        int n = stores_before(fn, target, p->loop_x >= 0 ? offsetof(CPU, x) + 8 * (size_t)p->loop_x : SIZE_MAX);
+        if (p->call_stores >= 0 && n > p->call_stores) {
+            snprintf(what, sizeof(what), "%d register stores before a call of F_%llX, at most %d expected", n,
+                     (unsigned long long)at(p->call_target), p->call_stores);
+            fail(p->name, what);
+        }
+        if (p->loop_x >= 0 && n > 0) {
+            snprintf(what, sizeof(what), "X%d is stored before the loop's call on every turn", p->loop_x);
+            fail(p->name, what);
+        }
+    }
+}
+
 /* the program's functions compiled at opt with the AOT build's stale bytes, a module global the table's last entry
    points at */
 static void compile(Module* mod, const Program* p, SnxCodegen* codegen, char opt, int portable) {
@@ -490,9 +551,7 @@ static void compile(Module* mod, const Program* p, SnxCodegen* codegen, char opt
     LLVMSetVisibility(stale, LLVMHiddenVisibility);
     snx_ir_stale_checks(mod->steps.ir);
     for (i = 0; i < count; ++i) llvm_steps_add_function(&mod->steps, codegen, &codegen->functions[i]);
-    if (p->demoted_x >= 0)
-        mod->demoted =
-            loaded_apart_from_calls(mod->steps.fns[p->entry_function], offsetof(CPU, x) + 8 * (size_t)p->demoted_x);
+    if (opt != '0') structure(p, mod->steps.ir, mod->steps.fns[p->entry_function]);
     if (mod->steps.count == mod->steps.cap) {
         mod->steps.cap = mod->steps.cap ? mod->steps.cap * 2 : 8;
         mod->steps.fns = (LLVMValueRef*)realloc(mod->steps.fns, mod->steps.cap * sizeof(*mod->steps.fns));
@@ -519,10 +578,16 @@ static void run(const Program* p, Module* mod, Module* ref, SnxCodegen* codegen,
     memset(r, 0, sizeof(*r));
     r->functions = codegen->function_count;
     for (i = 0; i < r->functions; ++i) {
-        r->starts[i] = codegen->functions[i].start;
+        const SnxFunction* f = &codegen->functions[i];
+        r->starts[i] = f->start;
+        r->ends[i] = SNX_CODE_BASE +
+                     4 * (u64)(i + 1 < r->functions ? (codegen->functions[i + 1].start - SNX_CODE_BASE) / 4 : p->n);
         r->reference[i] = ref->fns[i];
-        if (p->stale_callee != i + 1) disp[(r->starts[i] - SNX_CODE_BASE) / 4] = mod->fns[i];
+        for (size_t k = 0; k < f->count; ++k) /* every leader, as the module's entries are */
+            if (f->leaders[k] && p->stale_callee != i + 1)
+                disp[(snx_function_address(f, k) - SNX_CODE_BASE) / 4] = mod->fns[i];
     }
+    r->disp = disp;
     memset(mod->stale, 0, FUNCS);
     memset(ref->stale, 0, FUNCS);
     if (p->stale_callee) mod->stale[p->stale_callee - 1] = ref->stale[p->stale_callee - 1] = 1;
@@ -540,6 +605,15 @@ static void run(const Program* p, Module* mod, Module* ref, SnxCodegen* codegen,
     c.thread = r;
     c.poll = (u32)p->poll;
     mod->fns[p->entry_function](&c, p->entry);
+    /* the runtime's thread loop: what the code left in CPU.pc runs through dispatch, or a miss */
+    for (i = 0; c.pc >= c.code_lo && c.pc < c.code_hi; ++i) {
+        GuestFn f = disp[(c.pc - SNX_CODE_BASE) / 4];
+        if (i == 64) {
+            fail(p->name, "the dispatch loop goes on past 64 returns to it");
+            break;
+        }
+        (f ? f : on_miss)(&c, c.pc);
+    }
     *end = state_of(&c);
 }
 
@@ -643,8 +717,6 @@ static void check(Program* p, int portable) {
     compile(&o2, p, &codegen, '2', portable);
     compile(&o0, p, &codegen, '0', portable);
     if (o2.ok && o0.ok) {
-        if (p->demoted_x >= 0 && !o2.demoted)
-            fail(p->name, "the register meant to stay in the CPU structure is promoted");
         run(p, &o0, &o0, &codegen, &r0, &e0, g_promote_sync.mem0);
         run(p, &o2, &o0, &codegen, &r2, &e2, g_promote_sync.mem2);
         compare(p, &r0, NULL, "O0");
@@ -667,15 +739,16 @@ static Program* begin(const char* name) {
     initial_memory(p->mem);
     p->fields = F_MODEL;
     p->entry = SNX_CODE_BASE;
-    p->demoted_x = -1;
+    p->call_stores = -1;
+    p->loop_x = -1;
     function(p);
     return p;
 }
 /* the callee the calling cases share, written first (function 0): SVC (its handler keeping X30, and with stale also
    making the caller stale), X3 += 5, V7.D[1] = X3, RET. Its word of SVC */
-static size_t callee(Program* p, unsigned stale) {
+static size_t callee(Program* p, unsigned extra) {
     size_t word = p->n;
-    put(p, 0xD4000001u | (5u | KEEP_LR | stale) << 5);
+    put(p, 0xD4000001u | (5u | KEEP_LR | extra) << 5);
     put(p, 0x91001463u); /* ADD X3, X3, #5 */
     put(p, 0x4E181C67u); /* MOV V7.D[1], X3 */
     put(p, 0xD65F03C0u); /* RET */
@@ -685,9 +758,9 @@ static size_t callee(Program* p, unsigned stale) {
     return word;
 }
 /* what the callee does, on the model, called at word (a BL or BLR) */
-static void callee_model(Program* p, size_t call, size_t svc_word, unsigned stale) {
+static void callee_model(Program* p, size_t call, size_t svc_word, unsigned extra) {
     p->m.x[LR] = at(call) + 4;
-    svc_model(p, svc_word, 5u | KEEP_LR | stale);
+    svc_model(p, svc_word, 5u | KEEP_LR | extra);
     p->m.x[3] += 5;
     p->m.v[7].d[1] = p->m.x[3];
     p->m.pc = p->m.x[LR];
@@ -696,6 +769,11 @@ static void bl(Program* p, size_t target) {
     size_t word = p->n;
     put(p, 0x94000000u);
     patch(p, word, target);
+}
+static size_t branch_if(Program* p, unsigned cond) { /* B.cond, its target patched later */
+    size_t word = p->n;
+    put(p, 0x54000000u | cond);
+    return word;
 }
 
 static void cases(int portable) {
@@ -829,7 +907,8 @@ static void cases(int portable) {
     ret(p, LR);
     check(p, portable);
     /* a caller made stale while its callee ran: its return check leaves at once, with the registers as the call left
-       them in the CPU structure and CPU.pc after the BL */
+       them in the CPU structure and CPU.pc after the BL, and the dispatch loop misses there, into the code compiled
+       again */
     p = begin("stale caller");
     s = callee(p, STALE);
     p->stale_caller = 1;
@@ -837,17 +916,16 @@ static void cases(int portable) {
     w = p->n;
     bl(p, s);
     callee_model(p, w, s, STALE);
-    freeze(p);
+    expect(p, EV_MISS, at(w) + 4);
     use_all(p, 0);
     svc(p, 17);
     ret(p, LR);
-    thaw(p);
     check(p, portable);
     /* X20 live across twelve calls, each on one side of a branch, and read once at the end: more PHIs than accesses
        by over 8, so it stays in the CPU structure (ir_promote.c), where every call's change must reach its read */
     p = begin("phis");
     s = callee(p, 0);
-    p->demoted_x = 20;
+    p->memory_x = (u64)1 << 20;
     mov(p, 19, LR);
     for (unsigned i = 0; i < 12; ++i) {
         size_t skip = p->n;
@@ -901,6 +979,85 @@ static void cases(int portable) {
     add_imm(p, 31, 31, 16);
     svc(p, 21);
     ret(p, LR);
+    check(p, portable);
+    /* loops 1, 2 and 3 deep after six joins around calls: X20, X23 and X24 have PHIs at every join and few
+       accesses, but those in the loops weigh by their depth, so they are made locals; X21, read once outside them,
+       stays in the CPU structure. X25, read once in the outer loop, outweighs its reloads after the calls before it
+       at 16 times a level, not at 4 */
+    p = begin("loop weight");
+    s = callee(p, 0);
+    p->memory_x = (u64)1 << 21;
+    p->local_x = (u64)1 << 20 | (u64)1 << 23 | (u64)1 << 24 | (u64)1 << 25;
+    mov(p, 19, LR);
+    for (unsigned i = 0; i < 6; ++i) {
+        size_t skip = p->n;
+        put(p, 0xB4000016u); /* CBZ X22 past the call */
+        if (!p->m.x[22]) fail(p->name, "X22 is 0: the model takes no call");
+        w = p->n;
+        bl(p, s);
+        callee_model(p, w, s, 0);
+        patch(p, skip, p->n);
+    }
+    {
+        CPU before = p->m; /* the loops' words, then what their eight turns do */
+        size_t l1, l2, l3;
+        mov64(p, 9, 2);
+        l1 = p->n;
+        add_imm(p, 20, 20, 1);
+        add_imm(p, 26, 25, 1);
+        mov64(p, 10, 2);
+        l2 = p->n;
+        add_imm(p, 23, 23, 1);
+        mov64(p, 11, 2);
+        l3 = p->n;
+        add_imm(p, 24, 24, 1);
+        subs1(p, 11);
+        patch(p, branch_if(p, 1), l3); /* B.NE */
+        add_imm(p, 23, 23, 2);
+        subs1(p, 10);
+        patch(p, branch_if(p, 1), l2);
+        add_imm(p, 20, 20, 2);
+        subs1(p, 9);
+        patch(p, branch_if(p, 1), l1);
+        p->m = before;
+        p->m.x[20] += 2 * 3;
+        p->m.x[26] = p->m.x[25] + 1;
+        p->m.x[23] += 2 * 2 * 3;
+        p->m.x[24] += 2 * 2 * 2;
+        p->m.x[9] = p->m.x[10] = p->m.x[11] = 0;
+        p->m.n = 0, p->m.z = 1, p->m.cf = 1, p->m.vf = 0; /* SUBS 1-1 */
+    }
+    add_imm(p, 0, 21, 1);
+    ret(p, 19);
+    check(p, portable);
+    /* X21 written before a loop whose call sees every register, and read after the loop: as a local it would be
+       reloaded after the call on every turn, in memory it is loaded once, so it stays in the CPU structure. X22,
+       written before the call and added to after it on every turn, is a local */
+    p = begin("copies");
+    s = callee(p, KEEP_X9);
+    p->memory_x = (u64)1 << 21;
+    p->local_x = (u64)1 << 22;
+    mov(p, 20, LR);
+    add_imm(p, 21, 21, 5);
+    mov64(p, 9, 3);
+    {
+        size_t head = p->n;
+        mov(p, 22, 1);
+        w = p->n;
+        bl(p, s);
+        callee_model(p, w, s, KEEP_X9);
+        add_imm(p, 22, 22, 1);
+        subs1(p, 9);
+        patch(p, branch_if(p, 1), head);
+        for (unsigned turn = 1; turn < 3; ++turn) {
+            p->m.x[22] = p->m.x[1];
+            callee_model(p, w, s, KEEP_X9);
+            p->m.x[22] += 1;
+            subs1_model(p, 9);
+        }
+    }
+    add_imm(p, 0, 21, 1);
+    ret(p, 20);
     check(p, portable);
     /* last: a loop whose counter goes wrong polls past POLLS, which ends the test */
     /* a backward branch's poll with CPU.poll set: stored before rt->poll, which changes them, and the loop goes on
