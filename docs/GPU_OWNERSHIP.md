@@ -176,6 +176,8 @@ What the GPU writes goes there too:
 - Writable storage buffers and transform feedback buffers (`vk_buf_copy_writable`, `vk_uma_write`): the range bound for
   writing is the import of its guest memory, so a draw's or dispatch's writes need no `GfxOut`, no readback and no
   landing. They are pending (`out`) until their submit is done.
+- Dispatches run on the graphics queue (`compute.c`), so their storage is written in place like a draw's and in order
+  with the draws, with nothing kept GPU-owned on a queue of its own.
 
 Guest memory is imported with `VK_EXT_external_memory_host` in pieces. An import covers the 2 MiB windows that a range
 touches, clipped to mapped guest memory. Imports never overlap: a range across two imports makes one import of their
@@ -199,7 +201,7 @@ more per MiB imported in one import, from 16 MiB to 512 MiB, and 7.2 us per MiB 
 - Ranges under pending results, and GPU-owned ranges: their bytes are not in guest memory.
 - Textures and render targets: their layout differs from guest memory (block linear, formats the host lacks), so they
   are always made on the GPU from a staging copy.
-- Compute dispatches read their storage through `vk_buf_get_strict`: copied.
+- The read-only storage of a dispatch, through `vk_buf_get_strict`: copied.
 
 ### What keeps it correct
 
@@ -409,5 +411,6 @@ Nothing of the game leaves the machine: the steps below compare numbers and scre
    take that path, to measure and test it there.
 6. Started: memory the CPU and the GPU share (above). Guest vertex, index and read-only storage ranges are read in
    place on a GPU that shares memory (`vk_memory`), and so are constant buffers but the pages the runtime wrote;
-   writable storage and transform feedback are written there in place. Next: dispatches on the graphics queue, the
-   engines' results published in place, and placed maps first, with write tracking by protection on those pages.
+   writable storage and transform feedback are written there in place, and dispatches run on the graphics queue.
+   Next: the engines' results published in place, and placed maps first, with write tracking by protection on those
+   pages.
