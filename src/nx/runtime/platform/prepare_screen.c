@@ -103,13 +103,24 @@ static void screen_progress(const Row* r, u64 now_ms, char* out, size_t size) {
     else
         snprintf(out, size, "%u / %u", (unsigned)done, (unsigned)r->total);
 }
-/* the letters' scale: the launcher's 30 rows on the height, or twice the display's scale (its UI scale Auto) when
-   that is more, as the menu's (overlay_place); smaller while it would leave under 24 rows or 64 columns */
-static int screen_scale(int w, int h, int display_percent) {
-    int s = h / (16 * 30), dense = 2 * display_percent / 100;
-    if (dense > s) s = dense;
-    while (s > 1 && (h / (16 * s) < 24 || w / (8 * s) < 64)) --s;
+/* the rows the launcher's UI scale keeps at the least (src/gui/main.c GUI_LEAST_ROWS), and those its Auto keeps
+   (GUI_AUTO_ROWS: a phone's menu needs room for a finger's row each) */
+#define SCREEN_LEAST_ROWS 16
+#if defined(__ANDROID__)
+#define SCREEN_AUTO_ROWS 30
+#else
+#define SCREEN_AUTO_ROWS 16
+#endif
+/* the largest scale from s down, 1 at the least, whose rows rows of letters fit h pixels (main.c scale_fits) */
+static int screen_fits(int s, int h, int rows) {
+    while (s > 1 && h < rows * 16 * s) --s;
     return s < 1 ? 1 : s;
+}
+/* the letters' scale, as the launcher's on a window h pixels high: its UI scale (text_size), or with none its Auto,
+   twice the display's scale (main.c pick_auto_scale); smaller while SCREEN_LEAST_ROWS would not fit */
+static int screen_scale(int h, int text_size, int display_percent) {
+    int s = text_size > 0 ? text_size : screen_fits(2 * display_percent / 100, h, SCREEN_AUTO_ROWS);
+    return screen_fits(s, h, SCREEN_LEAST_ROWS);
 }
 
 void prepare_screen_draw(SnxUiList* l, int sw, int sh, const int safe[4], int display_percent) {
@@ -118,7 +129,7 @@ void prepare_screen_draw(SnxUiList* l, int sw, int sh, const int safe[4], int di
     u64 now = g_prepare_screen.now_ms;
     int x0 = safe && safe[2] > 0 ? safe[0] : 0, y0 = safe && safe[3] > 0 ? safe[1] : 0;
     int w = safe && safe[2] > 0 ? safe[2] : sw, h = safe && safe[3] > 0 ? safe[3] : sh;
-    int s = screen_scale(w, h, display_percent), i, k, all_done = 1, at_work = -1, percent = 100;
+    int s = screen_scale(h, t->text_size, display_percent), i, k, all_done = 1, at_work = -1, percent = 100;
     float cw = 8.0f * (float)s, ch = 16.0f * (float)s, x, y, left = (float)x0 + cw;
     int rows = h / (int)ch, cols = w / (int)cw;
     char line[SNX_PREPARE_NOTE_SIZE], progress[32];

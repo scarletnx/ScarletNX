@@ -26,8 +26,9 @@ void prepare_screen_set(const SnxRunTheme* theme, const char* name, const SnxPre
 #define PREPARE_SCREEN_MENU_QUADS 1536 /* the quads its scrolling lines leave for the menu: its widest page's */
 /* whether it is up (under ui_lock): the on-screen controls aren't drawn under it, nor take fingers */
 int prepare_screen_shown(void);
-/* it, on a picture sw x sh whose part clear of the system's bars and cutouts is safe (x, y, w, h), at the letters'
-   size for display_percent (the display's scale, overlay.h's); the menu goes over it. Under ui_lock. Its quads come
+/* it, on a picture sw x sh whose part clear of the system's bars and cutouts is safe (x, y, w, h), its letters the
+   launcher's size: the theme's text_size, or with none twice display_percent (the display's scale, overlay.h's), as
+   many rows as the launcher keeps fitting the height; the menu goes over it. Under ui_lock. Its quads come
    first and its scrolling lines last, which take only what the list has left but room for the menu */
 void prepare_screen_draw(SnxUiList* l, int sw, int sh, const int safe[4], int display_percent);
 #endif
