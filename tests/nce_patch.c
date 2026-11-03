@@ -684,6 +684,9 @@ static const unsigned char net_code[] = {0x88, 0x15, 0x80, 0xD2,  /* MOV X8, #17
                                          0x01, 0x00, 0x00, 0xD4,  /* SVC #0 */
                                          0xC0, 0x03, 0x5F, 0xD6}; /* RET */
 #endif
+/* where the code sits in its page: UBSan's function check (-fsanitize=function) reads the 8 bytes before an indirect
+   call's target, which are then the page's own and not the page before it, mapped or not */
+#define NET_CODE_AT 64
 static uintptr_t g_net_page;
 static long (*g_net_fn)(void);
 static long g_trapped; /* the thread whose call from the watched page trapped there, by its id */
@@ -744,10 +747,13 @@ static void net_child(int inside, NetRun* out) {
     struct sigaction sa;
     pthread_t th;
     if (page == MAP_FAILED || prctl(PR_GET_SECCOMP, 0, 0, 0, 0) < 0) _exit(77);
-    memcpy(page, net_code, sizeof net_code);
-    __builtin___clear_cache((char*)page, (char*)page + sizeof net_code);
-    /* ISO C has no conversion from an object pointer to a function pointer */
-    memcpy(&g_net_fn, &page, sizeof g_net_fn);
+    {
+        char* code = (char*)page + NET_CODE_AT;
+        memcpy(code, net_code, sizeof net_code);
+        __builtin___clear_cache(code, code + sizeof net_code);
+        /* ISO C has no conversion from an object pointer to a function pointer */
+        memcpy(&g_net_fn, &code, sizeof g_net_fn);
+    }
     g_net_page = (uintptr_t)page;
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = net_sigsys;
