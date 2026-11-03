@@ -3008,9 +3008,10 @@ static void rect_textures(void) {
     }
 }
 
-/* One game's geometry program stores RZ to the viewport mask (AST a[0x3a0], RZ): a zero mask asks for no broadcast,
-   so the program is the one without the store, word for word. A mask from a register (R0) could ask for one, and is
-   refused naming it. A vertex program's zero mask is taken too */
+/* One game's culling geometry program stores RZ or a MOV32I's 1 to the viewport mask (AST a[0x3a0]): no viewport or
+   viewport 0 alone, no broadcast, so the program is the one without the store, word for word. A mask the translation
+   can't know (R0, an attribute's), one of more viewports (3) and a mask of 1 beside a written viewport index are
+   refused, each naming what it holds. A vertex program's zero mask is taken too */
 static void viewport_mask(void) {
     const u64 mask_rz = 0xeff07f800007ff00ull | 0x3a0ull << 20 | 0xffull, mask_r0 = mask_rz & ~0xffull;
     const u64 with[] = {0xefd9ff800707ff00ull, 0xeff1ff800707ff00ull, mask_rz, 0xfbe000800ff70404ull,
@@ -3030,8 +3031,34 @@ static void viewport_mask(void) {
     const u64 dynamic[] = {0xefd9ff800707ff00ull, 0xeff1ff800707ff00ull, mask_r0, 0xfbe000800ff70404ull,
                            0xfbe001000ff70404ull};
     code = translate_stage(dynamic, 5, ST_GS, geometry_sph, 3, &info, &words);
-    check_refused(code, &info, "AST addr 928 count 1 idxreg 255 reg 0", "a viewport mask from a register is refused");
+    check_refused(code, &info, "viewport mask R0 at 68: no constant", "a viewport mask no constant holds is refused");
     free(code);
+    const u64 mask_r5 = (mask_rz & ~0xffull) | 5;
+    for (u32 k = 0; k < 3; k++) {
+        static const u32 values[3] = {1, 3, 1};
+        const u64 constant[] = {mov32i(5, values[k]),
+                                0xefd9ff800707ff00ull,
+                                0xeff1ff800707ff00ull,
+                                k == 2 ? 0xeff07f800007ff00ull | 0x68ull << 20 | 0xffull : 0x50b0000000070f00ull,
+                                mask_r5,
+                                0xfbe000800ff70404ull,
+                                0xfbe001000ff70404ull};
+        const u64 plain[] = {mov32i(5, values[k]),  0xefd9ff800707ff00ull, 0xeff1ff800707ff00ull, 0x50b0000000070f00ull,
+                             0x50b0000000070f00ull, 0xfbe000800ff70404ull, 0xfbe001000ff70404ull};
+        code = translate_stage(constant, 7, ST_GS, geometry_sph, 3, &info, &words);
+        if (k == 0) {
+            check_translated(code, &info, "a viewport mask of viewport 0 from a MOV32I translates");
+            plain_words = 0;
+            u32* expected = translate_stage(plain, 7, ST_GS, geometry_sph, 3, &info, &plain_words);
+            check(code && expected && words == plain_words && !memcmp(code, expected, words * sizeof *code),
+                  "a viewport mask of viewport 0 emits nothing");
+            free(expected);
+        } else
+            check_refused(code, &info,
+                          k == 1 ? "viewport mask 0x3 at 80: a broadcast" : "viewport mask 1 beside a viewport index",
+                          "a broadcast, or a mask beside a viewport index, is refused");
+        free(code);
+    }
     const u64 vertex[] = {mask_rz};
     code = translate(vertex, 1, ST_VS, &info, &words, 1);
     check_translated(code, &info, "a vertex program storing a zero viewport mask translates");
