@@ -338,9 +338,10 @@ set(SNX_SDL3_FROM_SOURCE OFF)
 # The system's SDL3 from find_package, or CPM's pinned source build. FreeBSD's ports package lags the pin (3.4.16
 # against 3.4.18), so CPM's version check refuses it and builds SDL3 itself: SNX_SYSTEM_SDL3 takes the native package
 # instead, which needs only 3.4.16, the version every SDL call in the tree is in. It is the default on FreeBSD, whose
-# build installs the sdl3 package (docs/BUILD.md); the pinned source build is had with -DSNX_SYSTEM_SDL3=OFF
+# build installs the sdl3 package (docs/BUILD.md), and on NetBSD, whose pkgsrc SDL3 is 3.4.16 too (docs/NETBSD.md); the
+# pinned source build is had with -DSNX_SYSTEM_SDL3=OFF
 set(snx_sdl3_system_default OFF)
-if(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+if(CMAKE_SYSTEM_NAME MATCHES "^(FreeBSD|NetBSD)$")
     set(snx_sdl3_system_default ON)
 endif()
 option(SNX_SYSTEM_SDL3 "Use the system's SDL3 from find_package, not CPM's pinned source build"
@@ -349,7 +350,8 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR sn
     if(SNX_SYSTEM_SDL3)
         find_package(SDL3 3.4.16 CONFIG QUIET)
         if(NOT SDL3_FOUND)
-            message(FATAL_ERROR "SNX_SYSTEM_SDL3: no SDL3 3.4.16 or newer package found (FreeBSD: pkg install sdl3). "
+            message(FATAL_ERROR "SNX_SYSTEM_SDL3: no SDL3 3.4.16 or newer package found (FreeBSD: pkg install sdl3; "
+                                "NetBSD: pkgin install SDL3). "
                                 "Use -DSNX_SYSTEM_SDL3=OFF for CPM's pinned source build.")
         endif()
         if(NOT TARGET SDL3::SDL3)
