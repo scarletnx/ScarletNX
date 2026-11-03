@@ -320,3 +320,143 @@ static int check_uma_constants(void) {
     printf("in place: a constant buffer read where the guest's CPU wrote it, and copied once the runtime wrote it\n");
     return 0;
 }
+
+/* The migrate way (Android's: guest memory moves into AHardwareBuffers; elsewhere into memfd regions the driver imports
+   as host memory). A range moves into a region of the whole 2 MiB windows it touches, with its bytes, where a range
+   beside it is found too and what the guest writes is what the GPU reads; a range over the edge makes one region of
+   both windows. A region's buffer is memory of its own: unmapping or trapping its pages waits for nothing, a copy
+   recorded before reads the bytes it had, and the rest of the region goes back to the reservation's own pages with
+   its bytes */
+#define UMA_M  (HEAP_BASE + 0x4000000)
+#define UMA_GM 0x4e0000000ull
+/* whether the driver imports a buffer's pages as host memory, as the regions are off Android: lavapipe does, amdgpu
+   doesn't (its user pointers take anonymous memory only) */
+static int uma_imports_shared(void) {
+    const u64 size = 0x200000;
+    VkMemoryHostPointerPropertiesEXT hp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+    VkDeviceMemory mem;
+    void* view;
+    int fd, ok = 0;
+    if (plat_gpu_buffer(size, &fd, &view)) return 0;
+    if (vkGetMemoryHostPointerPropertiesEXT(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, view,
+                                            &hp) == VK_SUCCESS &&
+        hp.memoryTypeBits) {
+        VkImportMemoryHostPointerInfoEXT imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
+                                                .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                                .pHostPointer = view};
+        VkMemoryAllocateInfo ai = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp, .allocationSize = size};
+        while (!((hp.memoryTypeBits >> ai.memoryTypeIndex) & 1)) ai.memoryTypeIndex++;
+        ok = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem) == VK_SUCCESS;
+        if (ok) vkFreeMemory(g_vk.dev, mem, NULL);
+    }
+    plat_gpu_buffer_free(fd, view, size);
+    return ok;
+}
+/* whether the host page at p is a buffer's (plat_gpu_buffer's memfd), as /proc/self/maps names it: -1 when it can't
+   tell */
+static int uma_in_buffer(const u8* p) {
+#if defined(__linux__)
+    FILE* f = fopen("/proc/self/maps", "r");
+    char line[512];
+    int r = 0;
+    if (!f) return -1;
+    while (fgets(line, sizeof line, f)) {
+        unsigned long long lo, hi;
+        if (sscanf(line, "%llx-%llx", &lo, &hi) == 2 && (u64)(uintptr_t)p >= lo && (u64)(uintptr_t)p < hi) {
+            r = strstr(line, "snx-gpu-buffer") != NULL;
+            break;
+        }
+    }
+    fclose(f);
+    return r;
+#else
+    (void)p;
+    return -1;
+#endif
+}
+static u8 uma_fill(u64 i) { return (u8)(i * 7 + 3); }
+static int check_uma_migrate(void) {
+    const u64 window = 0x200000;
+    VkBuffer b, b2, rb;
+    u64 off, off2;
+#if defined(__ANDROID__)
+    printf("skip: the migrate way runs here as the device chose it (vk_memory), not from this check\n");
+    return 0;
+#endif
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    if (!uma_imports_shared()) {
+        printf("skip: the driver imports no buffer's pages as host memory, which the migrate way needs here\n");
+        return 0;
+    }
+    CHECK(mem_map(UMA_M, 4 * window, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GM, UMA_M, 4 * window);
+    u8* g = GP(UMA_M);
+    for (u64 i = 0; i < 4 * window; i++) g[i] = uma_fill(i);
+    vk_lock();
+    CHECK(vk_uma_migrate(1));
+    u8* result = vk_readback_buffer(768, &rb);
+    CHECK(result);
+    /* the first window moves, with its bytes; a range beside it is in the same region */
+    CHECK(vk_uma_get(UMA_GM + 0x1000, 256, 1, &b, &off) && off == 0x1000);
+    CHECK(vk_uma_imports(UMA_M, 4 * window) == 1 && vk_uma_imports(UMA_M + window, 3 * window) == 0);
+    CHECK(uma_in_buffer(g) == 1 && uma_in_buffer(g + window) == 0);
+    CHECK(vk_uma_get(UMA_GM + 0x100000, 256, 1, &b2, &off2) && b2 == b && off2 == 0x100000);
+    g[0x1000] = 0x5a; /* after the lookup, before the GPU reads it */
+    uma_read(b, off, rb, 0);
+    /* over the edge: one region of both windows, the first one's going with its last reader */
+    CHECK(vk_uma_get(UMA_GM + window - 0x80, 256, 1, &b2, &off2) && b2 != b && off2 == window - 0x80);
+    CHECK(uma_in_buffer(g + window) == 1 && uma_in_buffer(g + 2 * window) == 0);
+    uma_read(b2, off2, rb, 256);
+    uma_read(b2, 0x1000, rb, 512);
+    vk_frame_check(); /* a draw begins: the copies are all recorded */
+    u64 recorded = vk_submit_number();
+    vk_unlock();
+    /* the second window unmapped while the copies are only recorded: nothing waits, nothing is submitted */
+    CHECK(mem_unmap(UMA_M + window, window) == 0);
+    vk_lock();
+    CHECK(vk_submit_number() == recorded);
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 256; i++) CHECK(result[i] == (i ? uma_fill(0x1000 + i) : 0x5a));
+    for (u32 i = 0; i < 256; i++) CHECK(result[256 + i] == uma_fill(window - 0x80 + i)); /* as they were */
+    for (u32 i = 0; i < 256; i++) CHECK(result[512 + i] == (i ? uma_fill(0x1000 + i) : 0x5a));
+    /* the region went with the unmap, its first window back in the reservation's own pages, and once their readers are
+       done (a present) neither region is the driver's */
+    CHECK(uma_in_buffer(g) == 0 && g[0x1000] == 0x5a && g[0x40] == uma_fill(0x40));
+    vk_uma_frame();
+    CHECK(vk_uma_imports(UMA_M, 4 * window) == 0);
+    /* a range of a region the GPU owns next (a result published over it): nothing waits for the copy recorded before,
+       which reads the bytes from before, and the region goes, its other pages back with their bytes */
+    if (own_traps()) {
+        const u64 at = 2 * window + 0x100;
+        CHECK(vk_uma_get(UMA_GM + at, 256, 1, &b, &off) && uma_in_buffer(g + 2 * window) == 1);
+        uma_read(b, off, rb, 0);
+        vk_frame_check();
+        VkOwnRes* owner = uma_owner(256, 0x42);
+        CHECK(owner);
+        vk_own_publish(UMA_M + at, 256, owner, 0);
+        vk_finish();
+        vk_readback_ready();
+        for (u32 i = 0; i < 256; i++) CHECK(result[i] == uma_fill(at + i));
+        vk_uma_frame();
+        CHECK(vk_uma_imports(UMA_M + 2 * window, 2 * window) == 0 && uma_in_buffer(g + 2 * window + 0x2000) == 0);
+        CHECK(g[2 * window + 0x2007] == uma_fill(2 * window + 0x2007));
+        vk_unlock();
+        CHECK(!uma_landed(UMA_M + at, 256, 0x42));
+        vk_own_res_unref(owner);
+        vk_lock();
+    }
+    CHECK(vk_uma_migrate(0));
+    vk_unlock();
+    CHECK(mem_unmap(UMA_M, 4 * window) == 0);
+    printf(
+        "in place, the migrate way: a range moves into a region of its windows and the GPU reads what the guest "
+        "writes there; an unmap%s of a region waits for nothing, a copy recorded before reads its bytes, and the rest "
+        "of it moves back\n",
+        own_traps() ? " or a trap" : "");
+    return 0;
+}

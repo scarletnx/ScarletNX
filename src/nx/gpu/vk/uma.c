@@ -13,6 +13,16 @@
    import's pages at each submit (amdgpu's user pointers) pays for the bytes imported, and one import of a whole guest
    heap cost 45 ms a frame there. Imports do not overlap. A range across two imports makes one import of their union.
 
+   Where the driver can't import host memory but takes buffers of a kind of its own in place, guest memory moves into
+   them instead (the migrate way: Android, whose drivers all take an AHardwareBuffer, and Qualcomm's has no
+   VK_EXT_external_memory_host). The windows a range touches become a region: a buffer imported once, which the pages
+   then move into with their bytes, mapped where they were (mem.c's mem_migrate); the regions it meets move on into it,
+   so one region of their union holds them. A region is 256 MiB at most, the biggest AHardwareBuffer Android's
+   allocator gave on a Snapdragon 8 Elite (512 MiB aborted its service), and its memory is taken whole when it is made
+   and never swapped: one that goes for idleness or room moves its pages back into the reservation's own (mem_unmigrate)
+   first. A region's buffer is memory of its own, which no change of the guest's pages touches: one whose pages are
+   unmapped, decommitted or trapped needs no wait, and goes with its last reader.
+
    What stays a copy, and why:
    - The pages the runtime wrote (front): constant buffers the GPU front end writes between draws (CONST_BUFFER_DATA,
      r3d_const_upload), on the CPU, when the GPU thread meets the method, and the rest of gmem_write's. A draw recorded
@@ -47,7 +57,9 @@
      trusted that report kept a guest page's old bytes over the pixels a render target drew there. And a submission
      after a scan faulted every protected page in again: 16 ms for 32 MiB imported, against 0.3 ms. Write tracking
      can't tell there (vk_written_since), and its users compare the bytes. */
+#include <errno.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
@@ -59,11 +71,15 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#if defined(__ANDROID__)
+#include <vulkan/vulkan_android.h>
+#endif
 
 #define UMA_WINDOW (2ull << 20) /* imports cover whole windows of this size where guest memory is mapped */
 #define UMA_MAX    512          /* imports at most: the least recently used goes past it */
 #define UMA_IDLE   600          /* presents unused before an import goes */
 #define HZ_BITS    16           /* the table of pages read in place, by guest page */
+#define UMA_REGION_MAX (256ull << 20) /* the migrate way's biggest region */
 
 typedef struct {
     u64 cpu, size; /* guest memory [cpu, cpu + size) */
@@ -72,6 +88,10 @@ typedef struct {
     u32 used; /* g_vk_present when last bound */
     u64 sub;  /* the submit its last lookup was in (vk_submit_number): last_read gives the one to wait for */
     int dead; /* its pages are other pages now (mem.c): it goes before the next submission */
+    /* a region of the migrate way: the buffer its pages were moved into (plat_gpu_buffer), and what the driver imported
+       of it; fd -1 for an import of guest memory where it is */
+    int fd;
+    void* handle;
 } Imp;
 /* Spans the driver refused to import (pages it can't pin, or amdgpu's refusal of the alias pool's), whose ranges are copied
    until UMA_IDLE presents pass or their pages change. Without them every range in such a window asked the driver
@@ -99,7 +119,9 @@ typedef struct {
                 was recorded is done (read_done): a lookup since may be used in any submit up to the one being
                 recorded */
     VkResult import_result; /* the last import's, for the log */
-    u64 align;              /* minImportedHostPointerAlignment */
+    u64 align;              /* minImportedHostPointerAlignment, and the host's page in the migrate way */
+    int migrate;            /* the migrate way: guest memory moves into regions (vk_uma_choose, vk_uma_migrate) */
+    char why[96];           /* why the last region couldn't be made, for the log */
     u64 bound;              /* the submit that last read guest memory in place (vk_submit_number) */
     Seen seen[256];         /* the ranges hz_mark marked, with their submit */
     WritePages live;        /* the submit that last read each page in place */
@@ -169,27 +191,38 @@ static int mem_model(void) {
     return VK_MEM_SMALL_BAR;
 }
 /* before the device is made: the model, and the path that vk_memory (0 auto, 1 copy, 2 UMA) and the device's
-   extensions give. 1: VK_EXT_external_memory_host is to be enabled */
-int vk_uma_choose(int has_import, int has_placed) {
-    int want = g_settings.guest_memory;
+   extensions give: guest memory imported where it is, else (Android) moved into AHardwareBuffers. The extension to
+   enable, VK_UMA_WITH_* */
+#if defined(__ANDROID__)
+#define UMA_NO_IMPORT "neither VK_EXT_external_memory_host nor VK_ANDROID_external_memory_android_hardware_buffer"
+#else
+#define UMA_NO_IMPORT "no VK_EXT_external_memory_host"
+#endif
+int vk_uma_choose(int has_import, int has_ahb, int has_placed) {
+    int want = g_settings.guest_memory, with = VK_UMA_WITH_NONE;
     g_vk.mem_model = mem_model();
     g_vk.mem_path = VK_MEM_PATH_COPY;
     if (want == 2 || (want == 0 && g_vk.mem_model == VK_MEM_UMA)) {
-        if (has_import)
-            g_vk.mem_path = VK_MEM_PATH_UMA;
+        with = has_import ? VK_UMA_WITH_HOST : has_ahb ? VK_UMA_WITH_AHB : VK_UMA_WITH_NONE;
+        if (with == VK_UMA_WITH_NONE)
+            WARN("vulkan: guest memory in place was asked for, but the device has " UMA_NO_IMPORT
+                 ": guest memory is copied\n");
         else
-            WARN("vulkan: guest memory in place was asked for, but the device has no VK_EXT_external_memory_host: "
-                 "guest memory is copied\n");
+            g_vk.mem_path = VK_MEM_PATH_UMA;
     }
+    g_uma.migrate = with == VK_UMA_WITH_AHB;
     LOG("vulkan: the device %s; guest buffers %s (vk_memory=%s%s); VK_EXT_external_memory_host %s, "
         "VK_EXT_map_memory_placed %s\n",
-        model_name(g_vk.mem_model), g_vk.mem_path == VK_MEM_PATH_UMA ? "read in place where they can be" : "copied",
+        model_name(g_vk.mem_model),
+        g_vk.mem_path != VK_MEM_PATH_UMA ? "copied"
+        : g_uma.migrate                  ? "moved into AHardwareBuffers the GPU reads in place, where they can be"
+                                         : "read in place where they can be",
         want == 1   ? "copy"
         : want == 2 ? "uma"
                     : "auto",
         want == 2 && g_vk.mem_model != VK_MEM_UMA ? ", forced: the GPU reads them across the bus" : "",
         has_import ? "yes" : "no", has_placed ? "yes (not used yet)" : "no");
-    return g_vk.mem_path == VK_MEM_PATH_UMA;
+    return with;
 }
 
 /* ------------------------------------------------------------ imports */
@@ -211,6 +244,7 @@ static u64 last_read(const Imp* m) { return m->sub >= g_uma.seg ? vk_submit_numb
 static void imp_destroy(const Imp* m) {
     vkDestroyBuffer(g_vk.dev, m->buf, NULL);
     vkFreeMemory(g_vk.dev, m->mem, NULL);
+    if (m->fd >= 0) plat_gpu_buffer_free(m->fd, m->handle, m->size); /* a region's, whose pages moved off it */
     vk_mem_changed(m->cpu, m->size); /* no scan watched its pages: what the CPU wrote there meanwhile counts */
 }
 /* dropped import i destroyed, then out of the list, which write tracking reads (vk_lock held) */
@@ -228,10 +262,10 @@ static void gone_reap(void) {
         if (last_read(&g_uma.gone[i]) <= done) gone_out(i);
 }
 /* the dropped imports over guest memory [lo, hi) are destroyed now, once their last reader is done: their pages change
-   or are trapped next (vk_lock held) */
+   or are trapped next (vk_lock held). Not a dropped region, whose buffer holds none of the guest's pages any more */
 static void gone_kill(u64 lo, u64 hi) {
     for (u32 i = g_uma.ngone; i-- > 0;)
-        if (g_uma.gone[i].cpu < hi && lo < g_uma.gone[i].cpu + g_uma.gone[i].size) {
+        if (g_uma.gone[i].fd < 0 && g_uma.gone[i].cpu < hi && lo < g_uma.gone[i].cpu + g_uma.gone[i].size) {
             read_done(last_read(&g_uma.gone[i]));
             gone_out(i);
         }
@@ -253,6 +287,17 @@ static void imp_drop(u32 i) {
     memmove(&g_uma.imp[i], &g_uma.imp[i + 1], sizeof *g_uma.imp * (size_t)(g_uma.nimp - i - 1));
     g_uma.nimp--;
     pm_unlock(&g_uma.lk);
+}
+/* the import at i goes from the table (imp_drop), and a region's pages still in its buffer first move back into the
+   reservation's own with their bytes, so that its memory, which the system never swaps, goes with the buffer. Pending
+   commands read the buffer as it was (vk_lock held) */
+static void imp_let_go(u32 i) {
+    const Imp* m = &g_uma.imp[i];
+    int r;
+    if (m->fd >= 0 && (r = mem_unmigrate(m->cpu, m->size)) != 0)
+        WARN("vulkan: guest memory %llx+%llx stays in the buffer it moved into (error %d) until it is unmapped\n",
+             (unsigned long long)m->cpu, (unsigned long long)m->size, r);
+    imp_drop(i);
 }
 /* mem.c: host pages under guest memory [a, a + size) are other pages now (under its lock). The imports on them hold the
    old ones */
@@ -292,7 +337,10 @@ static void drop_dead(void) {
         pm_lock(&g_uma.lk);
         int dead = g_uma.imp[i].dead;
         pm_unlock(&g_uma.lk);
-        if (dead) imp_kill(i, 1);
+        if (dead && g_uma.imp[i].fd >= 0)
+            imp_let_go(i); /* its buffer keeps the bytes recorded commands read: no hurry */
+        else if (dead)
+            imp_kill(i, 1);
     }
 }
 /* the first import that ends after cpu */
@@ -307,12 +355,12 @@ static u32 imp_find(u64 cpu) {
     }
     return lo;
 }
-/* guest memory [cpu, cpu + size) imported as a buffer: 0 when the driver refused it */
-static int imp_make(Imp* m, u64 cpu, u64 size) {
-    u8* host = GP(cpu);
-    VkMemoryHostPointerPropertiesEXT hp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+/* m's buffer over guest memory [cpu, cpu + size), in memory the driver imports: import, an import info of handle type
+   type, in a memory type that bits allows, alloc bytes of it. 0 when the driver refused it */
+static int imp_bind(Imp* m, u64 cpu, u64 size, VkExternalMemoryHandleTypeFlagBits type, const void* import, u32 bits,
+                    u64 alloc) {
     VkExternalMemoryBufferCreateInfo ext = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
-                                            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
+                                            .handleTypes = (VkExternalMemoryHandleTypeFlags)type};
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                               .pNext = &ext,
                               .size = size,
@@ -325,34 +373,28 @@ static int imp_make(Imp* m, u64 cpu, u64 size) {
     if (g_vk.has_descriptor_buffers) bci.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     VkMemoryRequirements req;
     const VkPhysicalDeviceMemoryProperties* mp;
-    u64 t0 = plat_ns();
-    *m = (Imp){.cpu = cpu, .size = size, .used = g_vk_present};
-    /* a refusal is expected (pages the driver can't pin) and said once for the span (fail), not as a failed call */
-    g_uma.import_result = vkGetMemoryHostPointerPropertiesEXT(
-        g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, host, &hp);
-    if (g_uma.import_result != VK_SUCCESS) return 0;
+    *m = (Imp){.cpu = cpu, .size = size, .used = g_vk_present, .fd = -1};
     if (!VK_OK(vkCreateBuffer(g_vk.dev, &bci, NULL, &m->buf))) {
         m->buf = VK_NULL_HANDLE;
         return 0;
     }
     vkGetBufferMemoryRequirements(g_vk.dev, m->buf, &req);
     vmaGetMemoryProperties(g_vk.vma, &mp);
-    u32 bits = hp.memoryTypeBits & req.memoryTypeBits, type = ~0u;
+    bits &= req.memoryTypeBits;
+    u32 t = ~0u;
     /* the GPU reads it: device-local where the import can be (a GPU that shares memory), else any it takes */
-    for (u32 t = 0; t < mp->memoryTypeCount; t++)
-        if ((bits >> t) & 1) {
-            if (type == ~0u || (mp->memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) type = t;
+    for (u32 k = 0; k < mp->memoryTypeCount; k++)
+        if ((bits >> k) & 1) {
+            if (t == ~0u || (mp->memoryTypes[k].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) t = k;
         }
-    VkImportMemoryHostPointerInfoEXT imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
-                                            .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
-                                            .pHostPointer = host};
     VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
-                                        .pNext = &imp, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
+                                       .pNext = import,
+                                       .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
     VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                               .pNext = g_vk.has_descriptor_buffers ? (const void*)&flags : (const void*)&imp,
-                               .allocationSize = size,
-                               .memoryTypeIndex = type};
-    if (type == ~0u || req.size > size ||
+                               .pNext = g_vk.has_descriptor_buffers ? (const void*)&flags : import,
+                               .allocationSize = alloc,
+                               .memoryTypeIndex = t};
+    if (t == ~0u || req.size > alloc ||
         (g_uma.import_result = vkAllocateMemory(g_vk.dev, &ai, NULL, &m->mem)) != VK_SUCCESS) {
         vkDestroyBuffer(g_vk.dev, m->buf, NULL);
         m->buf = VK_NULL_HANDLE;
@@ -366,10 +408,68 @@ static int imp_make(Imp* m, u64 cpu, u64 size) {
         m->mem = VK_NULL_HANDLE;
         return 0;
     }
-    g_uma.imports++;
-    g_uma.import_bytes += size;
-    g_uma.import_ns += plat_ns() - t0;
     return 1;
+}
+/* guest memory [cpu, cpu + size), at host, imported as a buffer: 0 when the driver refused it. host is the guest's own
+   memory (GP(cpu)), or in the migrate way off Android the buffer it moves into (the tests' memfd) */
+static int imp_make(Imp* m, u64 cpu, u64 size, void* host) {
+    VkMemoryHostPointerPropertiesEXT hp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+    VkImportMemoryHostPointerInfoEXT imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
+                                            .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                            .pHostPointer = host};
+    /* a refusal is expected (pages the driver can't pin) and said once for the span (fail), not as a failed call */
+    g_uma.import_result = vkGetMemoryHostPointerPropertiesEXT(
+        g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, host, &hp);
+    if (g_uma.import_result != VK_SUCCESS) return 0;
+    return imp_bind(m, cpu, size, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, &imp, hp.memoryTypeBits,
+                    size);
+}
+#if defined(__ANDROID__)
+/* a region's AHardwareBuffer imported as its buffer: 0 when the driver refused it. Through the device's function, as
+   volk loads only the extensions of the platforms it was built for */
+static int imp_make_ahb(Imp* m, u64 cpu, u64 size, void* ahb) {
+    PFN_vkGetAndroidHardwareBufferPropertiesANDROID props =
+        (PFN_vkGetAndroidHardwareBufferPropertiesANDROID)vkGetDeviceProcAddr(
+            g_vk.dev, "vkGetAndroidHardwareBufferPropertiesANDROID");
+    VkAndroidHardwareBufferPropertiesANDROID ap = {.sType =
+                                                       VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID};
+    VkImportAndroidHardwareBufferInfoANDROID imp = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID, .buffer = (struct AHardwareBuffer*)ahb};
+    g_uma.import_result =
+        props ? props(g_vk.dev, (const struct AHardwareBuffer*)ahb, &ap) : VK_ERROR_EXTENSION_NOT_PRESENT;
+    if (g_uma.import_result != VK_SUCCESS) return 0;
+    return imp_bind(m, cpu, size, VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID, &imp,
+                    ap.memoryTypeBits, ap.allocationSize);
+}
+#endif
+/* guest memory [cpu, cpu + size) as a region (the migrate way): a buffer of its own, imported, that its pages then move
+   into with their bytes, those of the regions it meets included. NULL, or why it can't be */
+static const char* region_make(Imp* m, u64 cpu, u64 size) {
+    int fd, r;
+    void* handle;
+    if (plat_gpu_buffer(size, &fd, &handle)) {
+        snprintf(g_uma.why, sizeof g_uma.why, "no buffer of that size: %s", strerror(errno));
+        return g_uma.why;
+    }
+#if defined(__ANDROID__)
+    r = imp_make_ahb(m, cpu, size, handle);
+#else
+    r = imp_make(m, cpu, size, handle);
+#endif
+    if (!r) {
+        plat_gpu_buffer_free(fd, handle, size);
+        return snx_vk_result_str(g_uma.import_result);
+    }
+    if ((r = mem_migrate(cpu, size, fd)) != 0) {
+        vkDestroyBuffer(g_vk.dev, m->buf, NULL);
+        vkFreeMemory(g_vk.dev, m->mem, NULL);
+        plat_gpu_buffer_free(fd, handle, size);
+        snprintf(g_uma.why, sizeof g_uma.why, "its pages could not move into the buffer (error %d)", r);
+        return g_uma.why;
+    }
+    m->fd = fd;
+    m->handle = handle;
+    return NULL;
 }
 /* whether [lo, hi) meets a span the driver refused lately (vk_lock held) */
 static int failed(u64 lo, u64 hi) {
@@ -381,17 +481,22 @@ static int failed(u64 lo, u64 hi) {
     pm_unlock(&g_uma.lk);
     return r;
 }
-/* [lo, hi) refused: in place of the oldest span kept */
-static void fail(u64 lo, u64 hi) {
+/* [lo, hi) refused, for why: in place of the oldest span kept */
+static void fail(u64 lo, u64 hi, const char* why) {
     u32 old = 0;
     g_uma.failed++;
     LOG_LIMIT(8, "vulkan: guest memory %llx+%llx could not be imported (%s): its ranges are copied for a while\n",
-              (unsigned long long)lo, (unsigned long long)(hi - lo), snx_vk_result_str(g_uma.import_result));
+              (unsigned long long)lo, (unsigned long long)(hi - lo), why);
     pm_lock(&g_uma.lk);
     for (u32 i = 1; i < FAIL_N && g_uma.fail[old].hi; i++)
         if (!g_uma.fail[i].hi || (i32)(g_uma.fail[i].at - g_uma.fail[old].at) < 0) old = i;
     g_uma.fail[old] = (Fail){lo, hi, g_vk_present};
     pm_unlock(&g_uma.lk);
+}
+/* whether guest memory [lo, hi) can be imported: mapped, and in the migrate way the guest's data on the reservation's
+   own pages, which can move */
+static int imp_can(u64 lo, u64 hi) {
+    return g_uma.migrate ? mem_movable(lo, hi - lo) : mem_mapped_run(lo, hi - lo) == hi - lo;
 }
 /* the import that holds guest memory [cpu, cpu + len), made if there is none: its index, or ~0 for none (the range is
    copied) */
@@ -406,27 +511,36 @@ static u32 imp_get(u64 cpu, u64 len) {
         if (g_uma.imp[last].cpu + g_uma.imp[last].size > hi) hi = g_uma.imp[last].cpu + g_uma.imp[last].size;
         last++;
     }
-    /* only mapped guest memory: the range's own pages where the windows are not all mapped */
-    if (mem_mapped_run(lo, hi - lo) != hi - lo) {
+    /* only mapped guest memory (the migrate way: the guest's data on the reservation's own pages, which can move): the
+       range's own pages where the windows are not all of it */
+    if (!imp_can(lo, hi)) {
         if (last > first) return ~0u;
         lo = cpu & ~(g_uma.align - 1);
         hi = (cpu + len + g_uma.align - 1) & ~(g_uma.align - 1);
-        if (mem_mapped_run(lo, hi - lo) != hi - lo) return ~0u;
+        if (!imp_can(lo, hi)) return ~0u;
     }
-    if (hi - lo > g_vk.alloc_cap || failed(lo, hi)) return ~0u;
+    u64 cap = g_uma.migrate && g_vk.alloc_cap > UMA_REGION_MAX ? UMA_REGION_MAX : g_vk.alloc_cap;
+    if (hi - lo > cap || failed(lo, hi)) return ~0u;
     if (g_uma.nimp - (last - first) >= UMA_MAX) { /* full: the least recently used goes */
         u32 old = 0;
         for (u32 k = 1; k < g_uma.nimp; k++)
             if ((i32)(g_uma.imp[k].used - g_uma.imp[old].used) < 0) old = k;
-        imp_drop(old);
+        imp_let_go(old);
         return ~0u; /* the indexes moved: the next lookup makes it */
     }
     Imp m;
-    if (!imp_make(&m, lo, hi - lo)) {
-        fail(lo, hi);
+    u64 t0 = plat_ns();
+    const char* why = g_uma.migrate                       ? region_make(&m, lo, hi - lo)
+                      : imp_make(&m, lo, hi - lo, GP(lo)) ? NULL
+                                                          : snx_vk_result_str(g_uma.import_result);
+    if (why) {
+        fail(lo, hi, why);
         return ~0u; /* the imports there stay */
     }
-    for (u32 k = last; k-- > first;) imp_drop(k);
+    g_uma.imports++;
+    g_uma.import_bytes += hi - lo;
+    g_uma.import_ns += plat_ns() - t0;
+    for (u32 k = last; k-- > first;) imp_drop(k); /* a region's pages are the new one's now */
     pm_lock(&g_uma.lk);
     memmove(&g_uma.imp[first + 1], &g_uma.imp[first], sizeof *g_uma.imp * (size_t)(g_uma.nimp - first));
     g_uma.imp[first] = m;
@@ -503,8 +617,15 @@ void vk_uma_init(void) {
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &hp};
-    vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
-    if (hp.minImportedHostPointerAlignment > g_uma.align) g_uma.align = hp.minImportedHostPointerAlignment;
+    if (g_uma.migrate) { /* regions move whole host pages (mem_migrate) */
+        if (plat_vm_page() > g_uma.align) g_uma.align = plat_vm_page();
+        LOG("vulkan: guest memory moves into AHardwareBuffers as the GPU reads it, in regions of whole %llu MiB "
+            "windows, %llu MiB at most\n",
+            (unsigned long long)(UMA_WINDOW >> 20), (unsigned long long)(UMA_REGION_MAX >> 20));
+    } else {
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+        if (hp.minImportedHostPointerAlignment > g_uma.align) g_uma.align = hp.minImportedHostPointerAlignment;
+    }
     if (g_uma.align > UMA_WINDOW) {
         WARN("vulkan: imports must be aligned to %llu KiB: guest memory is copied\n",
              (unsigned long long)(g_uma.align >> 10));
@@ -521,7 +642,7 @@ void vk_uma_frame(void) {
     gone_reap();
     if (g_vk_present % 60 == 0)
         for (u32 i = g_uma.nimp; i-- > 0;)
-            if ((u32)(g_vk_present - g_uma.imp[i].used) > UMA_IDLE) imp_drop(i);
+            if ((u32)(g_vk_present - g_uma.imp[i].used) > UMA_IDLE) imp_let_go(i);
     if (g_vk_present % 600) return;
     u64 bytes = 0;
     for (u32 i = 0; i < g_uma.nimp; i++) bytes += g_uma.imp[i].size;
@@ -547,12 +668,12 @@ void vk_uma_frame(void) {
    amdgpu looks up an import's pages again at every submit and refuses them once they are in the alias pool, whose
    pages are a file's (the trap moves them there): a command recorded before the publish and submitted after it would
    be refused. The pages the command reads are the ones they were when it was recorded, as the console's GPU reads them.
-   1 when an import is over it */
+   1 when an import is over it. Not for a region, whose buffer the change doesn't touch */
 static int quiesce(u64 cpu, u64 size) {
     u64 end = size == ~0ull || cpu + size < cpu ? ~0ull : cpu + size, sub = 0, submitted, done;
     int any = 0;
     for (u32 i = 0; i < g_uma.nimp; i++)
-        if (g_uma.imp[i].cpu < end && cpu < g_uma.imp[i].cpu + g_uma.imp[i].size) {
+        if (g_uma.imp[i].fd < 0 && g_uma.imp[i].cpu < end && cpu < g_uma.imp[i].cpu + g_uma.imp[i].size) {
             any = 1;
             if (last_read(&g_uma.imp[i]) > sub) sub = last_read(&g_uma.imp[i]);
         }
@@ -565,14 +686,15 @@ static int quiesce(u64 cpu, u64 size) {
 }
 /* Guest memory [cpu, cpu + size) becomes GPU-owned next (vk_own_publish), its pages trapped: the imports over them
    go from the driver first, after their readers ran, as amdgpu fails a later submission (EFAULT) on trapped pages.
-   Whole host pages, as own_begin traps them */
+   Whole host pages, as own_begin traps them. A region stays: the trap moves its pages into the pool, and it goes
+   then (pages_replaced) */
 void vk_uma_owning(u64 cpu, u64 size) {
     u64 page = plat_vm_page(), lo = cpu & ~(page - 1), hi = (cpu + size + page - 1) & ~(page - 1);
     if (!vk_uma()) return;
     gone_kill(lo, hi);
     if (!quiesce(lo, hi - lo)) return;
     for (u32 i = g_uma.nimp; i-- > 0;)
-        if (g_uma.imp[i].cpu < hi && lo < g_uma.imp[i].cpu + g_uma.imp[i].size) imp_kill(i, 0);
+        if (g_uma.imp[i].fd < 0 && g_uma.imp[i].cpu < hi && lo < g_uma.imp[i].cpu + g_uma.imp[i].size) imp_kill(i, 0);
 }
 /* mem.c changes guest memory [cpu, cpu + size) (size ~0: all of it) next, maybe its host pages (vk_lock held until
    vk_uma_mapping_end): with an import over it, its readers run, and every submission made so far is in the driver,
@@ -666,5 +788,12 @@ void vk_uma_before_write(u64 gva, u64 len) {
 }
 /* a save state's load: every import goes */
 void vk_uma_forget_all(void) {
-    for (u32 i = g_uma.nimp; i-- > 0;) imp_drop(i);
+    for (u32 i = g_uma.nimp; i-- > 0;) imp_let_go(i);
+}
+int vk_uma_migrate(int on) {
+    if (!vk_uma()) return 0;
+    for (u32 i = g_uma.nimp; i-- > 0;) imp_let_go(i); /* the other way's go first */
+    g_uma.migrate = on;
+    if (on && plat_vm_page() > g_uma.align) g_uma.align = plat_vm_page();
+    return 1;
 }
