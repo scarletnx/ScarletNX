@@ -83,6 +83,16 @@ static int g_vma_ready;
 /* Each heap and the descriptor pools in one part of a line, for a low memory warning from a thread that never calls
    Vulkan. VMA's functions are safe on any thread (its own locks), and the budget it fetches again now and then comes
    from vkGetPhysicalDeviceMemoryProperties2, which needs no external synchronization */
+u64 vk_memory_blocks(void) {
+    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    const VkPhysicalDeviceMemoryProperties* mp;
+    u64 sum = 0;
+    if (!__atomic_load_n(&g_vma_ready, __ATOMIC_ACQUIRE)) return 0;
+    vmaGetHeapBudgets(g_vk.vma, b);
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    for (u32 h = 0; h < mp->memoryHeapCount; h++) sum += b[h].statistics.blockBytes;
+    return sum;
+}
 void vk_memory_text(char* out, size_t size) {
     VmaBudget b[VK_MAX_MEMORY_HEAPS];
     const VkPhysicalDeviceMemoryProperties* mp;

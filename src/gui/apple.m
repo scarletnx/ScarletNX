@@ -205,6 +205,18 @@ void gui_apple_stats(char* out, size_t size) {
 #endif
 }
 
+#if TARGET_OS_IPHONE
+/* An Objective-C exception that nothing catches: its name, reason and stack go to the console before the abort, and
+   then the handler that was there before runs. A crash report of MetricKit went through libobjc and libc++abi to
+   abort() with no reason. libc++abi writes the type and what() of a C++ exception to stderr itself */
+static NSUncaughtExceptionHandler* g_next_uncaught;
+static void uncaught(NSException* e) {
+    fprintf(stderr, "uncaught exception: %s: %s\n", e.name.UTF8String ?: "?", e.reason.UTF8String ?: "(no reason)");
+    for (NSString* frame in e.callStackSymbols) fprintf(stderr, "  %s\n", frame.UTF8String);
+    if (g_next_uncaught) g_next_uncaught(e);
+}
+#endif
+
 void gui_apple_log_start(void) {
 #if TARGET_OS_IPHONE
     @autoreleasepool {
@@ -224,6 +236,8 @@ void gui_apple_log_start(void) {
         setvbuf(stdout, NULL, _IONBF, 0);
         setvbuf(stderr, NULL, _IONBF, 0);
         fprintf(stderr, "\n===== ScarletNX starts, pid %ld, %s", (long)getpid(), ctime(&now));
+        g_next_uncaught = NSGetUncaughtExceptionHandler();
+        NSSetUncaughtExceptionHandler(uncaught);
         fprintf(stderr, "device:\n");
         sysctl_line("hw.machine");
         sysctl_line("hw.model");

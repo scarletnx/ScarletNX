@@ -942,6 +942,7 @@ const Renderer vk_renderer = {
     .release_retire = vk_release_retire,
     .report_stall = vk_report_stall,
     .memory_text = vk_memory_text,
+    .memory_blocks = vk_memory_blocks,
     .idle = vkr_idle,
     .reset = vkr_reset,
     .flush_targets = vkr_flush_targets,
