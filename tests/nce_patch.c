@@ -144,8 +144,62 @@ static void scan_test(NceSites* sites) {
     check(sites->data == 4 && sites->outside == 1, "four words of data and one outside");
 }
 
+/* the counter's stub of site at stub, its scratch registers a and b, its block's word reached by the three words of
+   tls (direct or indirect, nce_patch.c's load_tls) */
+static void ticks_words(const Pool* pool, const NceEnv* env, const NceSite* s, SnxU64 stub, const SnxU32 tls[3]) {
+    SnxU32 t = s->reg, a = t < 2 ? 2 : 0, b = a + 1;
+    SnxU64 lit = stub + 144;
+    check(word(pool, stub) == (0xA9BF0000u | b << 10 | 31u << 5 | a), "two scratch registers below the guest's sp");
+    check(word(pool, stub + 4) == tls[0] && word(pool, stub + 8) == tls[1] && word(pool, stub + 12) == tls[2],
+          "the thread's count of reads, from its block");
+    check(word(pool, stub + 16) == (0xF9400000u | a << 5 | b) && word(pool, stub + 20) == (0x91000400u | b << 5 | b) &&
+              word(pool, stub + 24) == (0xF9000000u | a << 5 | b),
+          "the count goes up by one");
+    check(word(pool, stub + 28) == (0x58000000u | (SnxU32)((lit - (stub + 28)) >> 2) << 5 | a) &&
+              word(pool, stub + 32) == (0xC8DFFC00u | a << 5 | b),
+          "frozen, loaded with acquire from the clock's first word");
+    check(word(pool, stub + 36) == (0xB5000000u | (SnxU32)((stub + 132 - (stub + 36)) >> 2) << 5 | b),
+          "a pause's value goes to the frozen path");
+    check(word(pool, stub + 40) == 0xD5033FDFu && word(pool, stub + 44) == (0xD53BE040u | t),
+          "the host's counter, after an ISB");
+    check(word(pool, stub + 52) == (0x9BC07C00u | b << 16 | t << 5 | b) &&
+              word(pool, stub + 60) == (0x9B000000u | a << 16 | b << 10 | t << 5 | t),
+          "nanoseconds: UMULH by the fraction, MADD by the whole part");
+    check(word(pool, stub + 68) == (0xCB000000u | a << 16 | t << 5 | t) &&
+              word(pool, stub + 76) == (0x91002000u | a << 5 | a) &&
+              word(pool, stub + 80) == (0xC8DFFC00u | a << 5 | b) &&
+              word(pool, stub + 84) == (0xCB000000u | b << 16 | t << 5 | t),
+          "less origin, then start, loaded with acquire after frozen");
+    check(word(pool, stub + 88) == (0xD2800000u | 10000u << 5 | a) &&
+              word(pool, stub + 92) == (0x9AC00800u | a << 16 | t << 5 | b) &&
+              word(pool, stub + 96) == (0x9B008000u | a << 16 | t << 10 | b << 5 | t),
+          "ns / 10000 and ns % 10000");
+    check(word(pool, stub + 100) == (0xD2800000u | 192u << 5 | a) &&
+              word(pool, stub + 104) == (0x9B007C00u | a << 16 | t << 5 | t) &&
+              word(pool, stub + 108) == (0x9B007C00u | a << 16 | b << 5 | b) &&
+              word(pool, stub + 116) == (0x9AC00800u | a << 16 | t << 5 | t) &&
+              word(pool, stub + 120) == (0x8B000000u | b << 16 | t << 5 | t),
+          "192 ticks every 10 us, as guest_ticks counts them");
+    check(word(pool, stub + 124) == (0xA8C10000u | b << 10 | 31u << 5 | a), "the scratch registers back");
+    check(b_target(word(pool, stub + 128), stub + 128) == s->addr + 4, "back at the next word");
+    check(word(pool, stub + 132) == (0xD1000400u | b << 5 | t) &&
+              b_target(word(pool, stub + 136), stub + 136) == stub + 88,
+          "frozen less 1, then the ticks");
+    check(snx_ld_le64(pool->buf + (size_t)(lit - pool->pool.addr)) == env->clock &&
+              snx_ld_le64(pool->buf + (size_t)(lit + 8 - pool->pool.addr)) == env->ns_lo &&
+              snx_ld_le64(pool->buf + (size_t)(lit + 16 - pool->pool.addr)) == env->ns_hi &&
+              snx_ld_le64(pool->buf + (size_t)(lit + 24 - pool->pool.addr)) == env->ns_origin,
+          "the clock's address and its reading in the counter, 8-aligned after the code");
+    check(word(pool, stub + 48) == (0x58000000u | (SnxU32)((lit + 8 - (stub + 48)) >> 2) << 5 | b) &&
+              word(pool, stub + 56) == (0x58000000u | (SnxU32)((lit + 16 - (stub + 56)) >> 2) << 5 | a) &&
+              word(pool, stub + 64) == (0x58000000u | (SnxU32)((lit + 24 - (stub + 64)) >> 2) << 5 | a) &&
+              word(pool, stub + 72) == (0x58000000u | (SnxU32)((lit - (stub + 72)) >> 2) << 5 | a),
+          "each literal loaded where it is used");
+}
+
 static void stub_test(const NceSites* sites) {
-    static const NceEnv env = {0x1010, 0x7F0012345678ull, 0}; /* tls past a page, to take the ADD */
+    /* tls past a page, to take the ADD */
+    static const NceEnv env = {0x1010, 0x7F0012345678ull, 0, 0x7F00AABB0000ull, 0x1555555555555555ull, 52, 0x123456789};
     Pool pool, far;
     SnxU32 patch;
     pool_init(&pool, BASE + 0x100000); /* after the module, as the runtime puts it */
@@ -167,9 +221,16 @@ static void stub_test(const NceSites* sites) {
         }
         check(is_b(patch) && b_target(patch, s->addr) == stub, "the site branches to its stub");
         switch ((NceKind)s->kind) {
-        case NCE_SVC:
         case NCE_TICKS: {
-            SnxU64 code = s->kind == NCE_SVC ? NCE_OUTCALL(NCE_SVC, s->imm) : NCE_OUTCALL(NCE_TICKS, s->reg);
+            SnxU32 a = s->reg < 2 ? 2 : 0;
+            const SnxU32 tls[3] = {0xD53BD040u | a, 0x91400000u | 1u << 10 | a << 5 | a,
+                                   0xF9400000u | ((0x10u + NCE_TLS_READS) / 8) << 10 | a << 5 | a};
+            ticks_words(&pool, &env, s, stub, tls);
+            check(pool.pool.used % 8 == 0, "the next stub on 8");
+            break;
+        }
+        case NCE_SVC: {
+            SnxU64 code = NCE_OUTCALL(NCE_SVC, s->imm);
             check(word(&pool, stub) == 0xD10083FFu && word(&pool, stub + 4) == 0xA90047F0u &&
                       word(&pool, stub + 8) == 0xF9000BFEu,
                   "the outcall keeps x16, x17 and x30 below the guest's sp");
@@ -215,14 +276,20 @@ static void stub_test(const NceSites* sites) {
     {
         NceSite s = sites->site[0];
         NcePool only = far.pool;
+        NceEnv no_clock = env;
+        Pool spare;
         check(nce_emit(&only, 1, &env, &s, &patch) == -1, "no stub where no pool is in reach");
+        pool_init(&spare, BASE + 0x100000);
+        no_clock.clock = 0;
+        check(nce_emit(&spare.pool, 1, &no_clock, site_at(sites, AT(4)), &patch) == -1 && !spare.pool.used,
+              "no counter's stub without the clock's address");
     }
 }
 
 /* the indirect form (Android's TLS_SLOT_APP): the word at tls holds a pointer to the thread's block, whose first word
    is the CPU pointer. The same three words, so the stubs keep their sizes; tls within an LDR's 32 KiB */
 static void indirect_test(const NceSites* sites) {
-    static const NceEnv env = {0x10, 0x7F0012345678ull, 1};
+    static const NceEnv env = {0x10, 0x7F0012345678ull, 1, 0x7F00AABB0000ull, 0x1555555555555555ull, 52, 0x123456789};
     NceEnv far = env;
     Pool pool;
     SnxU32 patch;
@@ -232,6 +299,15 @@ static void indirect_test(const NceSites* sites) {
         const NceSite* s = &sites->site[i];
         SnxU64 stub = pool.pool.addr + pool.pool.used, used = pool.pool.used;
         SnxU32 t = s->reg, cpu;
+        if (s->kind == NCE_TICKS) {
+            SnxU32 a = t < 2 ? 2 : 0;
+            const SnxU32 tls[3] = {0xD53BD040u | a, 0xF9400000u | (0x10u / 8) << 10 | a << 5 | a,
+                                   0xF9400000u | (NCE_TLS_READS / 8) << 10 | a << 5 | a};
+            check(!nce_emit(&pool.pool, 1, &env, s, &patch), "an indirect counter's stub");
+            check(pool.pool.used - used == nce_stub_size(NCE_TICKS), "of the direct one's size");
+            ticks_words(&pool, &env, s, stub, tls);
+            continue;
+        }
         if (s->kind != NCE_TPIDR && s->kind != NCE_TPIDRRO && s->kind != NCE_TPIDR_SET) continue;
         check(!nce_emit(&pool.pool, 1, &env, s, &patch), "an indirect stub for each TLS site");
         check(pool.pool.used - used == nce_stub_size((NceKind)s->kind), "an indirect stub of the direct one's size");
@@ -276,7 +352,7 @@ static void refused_test(void) {
 }
 
 static void divert_test(void) {
-    static const NceEnv env = {0x10, 0x7F0012345678ull, 0};
+    static const NceEnv env = {0x10, 0x7F0012345678ull, 0, 0, 0, 0, 0};
     static const struct {
         SnxU32 first;
         int ok;
@@ -328,7 +404,7 @@ static void divert_test(void) {
 
 /* the trap, the stub's way back, and the sites file of an NCE recompile with the moves of its modules */
 static void trap_file_test(const NceSites* found, const char* dir) {
-    static const NceEnv env = {0x10, 0x7F0012345678ull, 0};
+    static const NceEnv env = {0x10, 0x7F0012345678ull, 0, 0, 0, 0, 0};
     static const NceRange ranges[2] = {{BASE + 0x100000, 0x41000}, {BASE + 0x200000, 0x1000}};
     char path[1024];
     Pool pool;
@@ -355,9 +431,18 @@ static void trap_file_test(const NceSites* found, const char* dir) {
     {
         size_t size = 0;
         unsigned char* raw = snx_read_file(path, &size);
-        check(raw && size > 40 && raw[7] == 2 && snx_ld_le64(raw + 24) == ranges[0].addr - BASE &&
+        check(raw && size > 40 && raw[7] == 3 && snx_ld_le64(raw + 24) == ranges[0].addr - BASE &&
                   snx_ld_le64(raw + 24 + 2 * 16) == sites.site[0].addr - BASE,
-              "version 2, each address from the first module's base");
+              "version 3, each address from the first module's base");
+        if (raw) { /* a file of version 2, whose pools are sized for the counter's outcall stub, is refused */
+            NceRange* old_ranges = NULL;
+            size_t old_count = 0;
+            raw[7] = 2;
+            check(!snx_write_file(path, raw, size), "a version 2 file is written");
+            check(nce_file_read(path, BASE, &old_ranges, &old_count, &back) == -1 && !old_ranges,
+                  "a version 2 file is refused");
+            check(!nce_file_write(path, BASE, ranges, 2, &sites), "the file is written again");
+        }
         free(raw);
     }
     /* read back as Android loads it: the first module moved up to the base its runtime picked (mem.c) */

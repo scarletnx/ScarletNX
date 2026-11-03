@@ -4,15 +4,18 @@
    a page of its own, patched with the patcher's stubs (nce_patch.c), runs natively. Its outcalls keep each register,
    the flags and FPCR while the host's code changes them. A hook runs its handler, or the function's own code from
    its moved first word. A handler runs guest code again (a nested run). A kick stops a loop of guest code that makes
-   no outcall, and the loop goes on with its registers. A BRK stops in the runtime, which steps past it */
+   no outcall, and the loop goes on with its registers. A BRK stops in the runtime, which steps past it. The counter's
+   stubs read the guest clock as guest_ticks does (runtime/clock.c), across a pause and a resume */
 /* the native build defines it (tests/CMakeLists.txt), the qemu one does not */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
 #endif
 #include "common/cpu/aarch64/cpu.h"
 #include "common/utilities/endian.h"
+#include "nx/runtime/clock.h"
 #include "nx/runtime/nce/nce_host.h"
 #include "nx/runtime/nce/nce_patch.h"
+#include "nx/runtime/platform/plat.h"
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -82,13 +85,33 @@ static const u32 l_code[] = {
 /* e, at 0x500: SVC #0x29, which ends its host thread */
 static const u32 e_code[] = {0xD4000521u, 0xD65F03C0u};
 #define E_AT 0x500u
+/* k, at 0x600: three reads of the system counter, into x5, x6 and x1 (whose stub keeps x2 and x3, not x0 and x1) */
+static const u32 k_code[] = {
+    0xD53BE045u, /* MRS X5, CNTVCT_EL0 */
+    0xD53BE026u, /* MRS X6, CNTPCT_EL0 */
+    0xD53BE041u, /* MRS X1, CNTVCT_EL0 */
+    0xD65F03C0u, /* RET */
+};
+#define K_AT   0x600u
+/* the same at 0x700, whose stubs read a clock of a 19.2 MHz counter (a phone's), whose factor has a fraction */
+#define K19_AT 0x700u
+
+/* the clock that plat_ns is (plat_sdl.c's SDL_GetTicksNS), which the guest clock follows until the counter's stubs
+   take it to the host's counter. Twice as fast as CLOCK_MONOTONIC: qemu-user's counter keeps the host clock's pace, so
+   only a guest clock that left plat_ns for the counter reads as the stubs do */
+u64 plat_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return 2u * ((u64)ts.tv_sec * 1000000000u + (u64)ts.tv_nsec);
+}
 
 static _Alignas(16) u8 g_exit_stack[0x2000];
 static int g_exit_after;
+static u64 g_exit_reads;
 static void* exit_thread(void* p) {
     CPU* c = (CPU*)p;
     char why[240];
-    if (nce_host_attach(c, why, sizeof why)) return NULL;
+    if (nce_host_attach(c, &g_exit_reads, why, sizeof why)) return NULL;
     c->x[31] = (u64)(uintptr_t)(g_exit_stack + sizeof g_exit_stack);
     c->x[30] = 0;
     c->pc = (u64)(uintptr_t)g_guest + E_AT;
@@ -101,8 +124,8 @@ static void put(u32 offset, const u32* words, size_t count) {
     for (size_t i = 0; i < count; i++) snx_st_le32(g_guest + offset + i * 4, words[i]);
 }
 
-/* each word of the encodings that the patcher changes, from offset to offset + 4 * count */
-static void patch(u32 offset, size_t count) {
+/* each word of the encodings that the patcher changes, from offset to offset + 4 * count, with env's stubs */
+static void patch_with(u32 offset, size_t count, const NceEnv* env) {
     for (size_t i = 0; i < count; i++) {
         u64 a = at(offset + (u32)i * 4);
         u32 w = snx_ld_le32(g_guest + offset + i * 4), word;
@@ -116,14 +139,16 @@ static void patch(u32 offset, size_t count) {
         s.reg = (unsigned char)reg;
         s.proven = 1;
         s.imm = imm;
-        check(!nce_emit(&g_pool, 1, &g_env, &s, &word), "a stub for each site");
+        check(!nce_emit(&g_pool, 1, env, &s, &word), "a stub for each site");
         snx_st_le32(g_guest + offset + i * 4, word);
     }
 }
+static void patch(u32 offset, size_t count) { patch_with(offset, count, &g_env); }
 
 /* ---- the runtime's side ---- */
 
 static int g_hook_handles = 1; /* 1: the hook's handler answers, 0: the function's own code runs */
+static u64 g_reads;            /* the main thread's count of counter reads, which the stubs add to */
 static u64 g_original;
 static unsigned g_preempts, g_traps;
 static volatile u32 g_flag;
@@ -185,7 +210,7 @@ static void* held_thread(void* p) {
     memset(&c, 0, sizeof c);
     *word = (void*)(uintptr_t)0x5A5A5A5A0ull;
     h->held = nce_host_check(h->why, sizeof h->why);
-    h->attach = nce_host_attach(&c, why, sizeof why);
+    h->attach = nce_host_attach(&c, NULL, why, sizeof why);
     *word = NULL;
     h->freed = nce_host_check(why, sizeof why);
     return NULL;
@@ -205,8 +230,63 @@ static void* kicker(void* p) {
     return NULL;
 }
 
+/* the host's counter, read as clock.c reads it */
+static u64 counter_now(void) {
+    u64 v;
+    __asm__ volatile("isb\n mrs %0, cntvct_el0" : "=r"(v)::"memory");
+    return v;
+}
+/* the clock of a 19.2 MHz counter that k19's stubs read: frozen, then start */
+static u64 g_clock19[2];
+#define F19 19200000u
+static u64 ticks19(u64 cnt) {
+    __extension__ typedef unsigned __int128 u128;
+    u64 hi = 1000000000u / F19, lo = (u64)(((u128)(1000000000u % F19) << 64) / F19);
+    u64 ns = cnt * hi + (u64)(((u128)cnt * lo) >> 64) - g_clock19[1];
+    return ns / 10000u * 192u + ns % 10000u * 192u / 10000u;
+}
+
+/* the three reads of k against guest_ticks before and after them */
+static void counter_test(CPU* c, u64 reads) {
+    u64 before, after, frozen;
+    c->x[0] = 0x1111;
+    c->x[2] = 0x2222;
+    c->x[3] = 0x3333;
+    before = guest_ticks();
+    run_from(c, at(K_AT));
+    after = guest_ticks();
+    check(before <= c->x[5] && c->x[5] <= c->x[6] && c->x[6] <= c->x[1] && c->x[1] <= after,
+          "the stubs' reads lie between guest_ticks before and after, in order");
+    check(c->x[0] == 0x1111 && c->x[2] == 0x2222 && c->x[3] == 0x3333, "the stubs keep their scratch registers");
+    check(c->x[31] == at(GUEST_SIZE), "the stubs leave sp as it was");
+    check(g_reads == reads + 3, "each read counted in the thread's count");
+
+    clock_pause();
+    frozen = guest_ticks();
+    {
+        struct timespec ts = {0, 200 * 1000 * 1000};
+        nanosleep(&ts, NULL);
+    }
+    run_from(c, at(K_AT));
+    check(c->x[5] == frozen && c->x[6] == frozen && c->x[1] == frozen,
+          "a paused clock reads where the pause stopped it");
+    clock_resume();
+    run_from(c, at(K_AT));
+    after = guest_ticks();
+    check(c->x[5] >= frozen && c->x[1] <= after, "after the resume, on from the pause, behind guest_ticks");
+    check(c->x[5] - frozen < 100u * 19200u, "the 200 ms paused are not counted");
+
+    /* a counter of 19.2 MHz: its nanoseconds take the factor's fraction (UMULH), which this host's may not have */
+    before = counter_now();
+    run_from(c, at(K19_AT));
+    after = counter_now();
+    check(ticks19(before) <= c->x[5] && c->x[5] <= c->x[6] && c->x[6] <= c->x[1] && c->x[1] <= ticks19(after),
+          "a 19.2 MHz counter's reads lie between its ticks before and after");
+}
+
 int main(void) {
     NceHostConfig config = {dispatch, preempted, trapped, 0, 0};
+    ClockCounter counter;
     char why[160];
     CPU c;
     u32 bl;
@@ -222,6 +302,15 @@ int main(void) {
         fprintf(stderr, "FAIL: nce_host_init: %s\n", why);
         return 1;
     }
+    clock_start();
+    if (clock_from_counter(&counter)) {
+        fprintf(stderr, "FAIL: the host's counter runs at %llu Hz\n", (unsigned long long)counter.freq);
+        return 1;
+    }
+    g_env.clock = counter.words;
+    g_env.ns_lo = counter.mul_lo;
+    g_env.ns_hi = counter.mul_hi;
+    g_env.ns_origin = counter.origin;
     g_pool.buf = g_guest + POOL_AT;
     g_pool.addr = at(POOL_AT);
     g_pool.size = 0x4000;
@@ -236,6 +325,19 @@ int main(void) {
     patch(H_AT, 2);
     put(E_AT, e_code, 2);
     patch(E_AT, 2);
+    put(K_AT, k_code, sizeof k_code / 4);
+    patch(K_AT, sizeof k_code / 4);
+    {
+        __extension__ typedef unsigned __int128 u128;
+        NceEnv env = g_env;
+        env.clock = (u64)(uintptr_t)g_clock19;
+        env.ns_hi = 1000000000u / F19;
+        env.ns_lo = (u64)(((u128)(1000000000u % F19) << 64) / F19);
+        env.ns_origin = 0;
+        g_clock19[1] = counter_now() * env.ns_hi - 1000000000u; /* about a second of guest time */
+        put(K19_AT, k_code, sizeof k_code / 4);
+        patch_with(K19_AT, sizeof k_code / 4, &env);
+    }
     {
         u32 word;
         check(!nce_divert(&g_pool, 1, &g_env, at(G_AT), g_code[0], 7, &word, &g_original), "g's hook");
@@ -244,7 +346,7 @@ int main(void) {
     check(!nce_trap(&g_pool, 1, &g_env, NCE_TRAP, &g_trap), "the trap");
     __builtin___clear_cache((char*)g_guest, (char*)g_guest + GUEST_SIZE);
 
-    check(!nce_host_attach(&c, why, sizeof why), "the main thread attaches");
+    check(!nce_host_attach(&c, &g_reads, why, sizeof why), "the main thread attaches");
     c.tpidrro = 0x1000;
     c.x[31] = at(GUEST_SIZE);
     c.fpcr = 1u << 24; /* FZ: the guest's, which the host's code doesn't run with */
@@ -266,6 +368,7 @@ int main(void) {
     c.x[0] = 1;
     run_from(&c, at(H_AT));
     check(c.x[0] == 77, "a nested run from an outcall");
+    counter_test(&c, g_reads);
 
     {
         pthread_t th;
@@ -298,7 +401,8 @@ int main(void) {
         check(h.freed == 0, "a word of 0 is free");
     }
     if (failures) return 1;
-    printf("nce_host: ok (%s form, the CPU pointer %s TPIDR_EL0 + %llu)\n", g_env.indirect ? "indirect" : "direct",
-           g_env.indirect ? "through" : "at", (unsigned long long)g_env.tls);
+    printf("nce_host: ok (%s form, the CPU pointer %s TPIDR_EL0 + %llu; the counter at %llu Hz)\n",
+           g_env.indirect ? "indirect" : "direct", g_env.indirect ? "through" : "at", (unsigned long long)g_env.tls,
+           (unsigned long long)counter.freq);
     return 0;
 }

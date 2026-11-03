@@ -47,11 +47,13 @@ typedef char nce_check_host[offsetof(NceHost, sp) == 96 && offsetof(NceHost, d) 
                                 : -1];
 
 /* the thread's CPU, which the stubs read through the host's TPIDR_EL0 (NceEnv.tls), and its innermost run. The asm
-   reads cpu at 0 and host at 8 */
+   reads cpu at 0 and host at 8. reads: the thread's count of counter reads, which the counter's stubs add to */
 typedef struct {
     CPU* cpu;
     NceHost* host;
+    u64* reads;
 } NceTls;
+typedef char nce_check_tls[offsetof(NceTls, reads) == NCE_TLS_READS ? 1 : -1];
 /* Where the stubs and the outcall find the thread's NceTls: the word g_nce_tls bytes from TPIDR_EL0, the same in each
    thread. Direct (glibc): t_nce itself, in the executable's static TLS. Indirect: a pointer to t_nce. Android's
    runtime is a library that the app loads, whose TLS is emulated below API 29 and whose initial-exec TLS bionic
@@ -472,7 +474,7 @@ int nce_host_init(const NceHostConfig* config, u64* tls, int* indirect, u64* out
     return 0;
 }
 
-int nce_host_attach(CPU* c, char* why, size_t size) {
+int nce_host_attach(CPU* c, u64* reads, char* why, size_t size) {
 #if NCE_INDIRECT
     NceTls** word = word_at(g_nce_tls);
     if (nce_host_check(why, size)) return -1; /* another library took the word in this thread */
@@ -481,6 +483,7 @@ int nce_host_attach(CPU* c, char* why, size_t size) {
     (void)why;
     (void)size;
     t_nce.cpu = c;
+    t_nce.reads = reads;
     return 0;
 }
 

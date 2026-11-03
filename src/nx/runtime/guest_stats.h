@@ -20,7 +20,7 @@
 enum {
     GSTAT_MISS,      /* RtAPI.miss: a call that the dispatch table had no code for, which the JIT then looks up */
     GSTAT_NCE_SVC,   /* NCE's outcalls: an SVC */
-    GSTAT_NCE_TICKS, /* a read of the system counter */
+    GSTAT_NCE_TICKS, /* a read of the system counter, which its stub makes with no outcall (nce_patch.c) */
     GSTAT_NCE_TRAP,  /* the return of a native run that the runtime started */
     GSTAT_NCE_RUN,   /* a native run that the runtime started (a hook's handler calls the game's code): a signal */
     GSTAT_NCE_KICK,  /* a kick that stopped the game's code for CPU.poll: a signal */
@@ -31,6 +31,9 @@ enum {
 void guest_stats_svc(u32 ix, u32 imm);
 /* thread ix did one of GSTAT_* once */
 void guest_stats_add(u32 ix, unsigned what);
+/* the counter of GSTAT_* what of guest thread ix, for its own code to add to with a load and a store: NCE's counter
+   stubs, which count with no outcall */
+u64* guest_stats_counter(u32 ix, unsigned what);
 /* the index of the family name (a copy is kept), the same for each call with it: a hooked function's under NCE, whose
    outcalls guest_stats_hook counts by it */
 unsigned guest_stats_family(const char* name);

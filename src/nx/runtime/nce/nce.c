@@ -10,6 +10,7 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"
+#include "nx/runtime/clock.h"
 #include "nx/runtime/guest_stats.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
@@ -176,10 +177,6 @@ static void dispatch(CPU* c, u64 code) {
         else
             c->rt->svc(c, imm);
         break;
-    case NCE_TICKS:
-        guest_stats_add(ix, GSTAT_NCE_TICKS);
-        c->x[imm & 31u] = c->rt->ticks();
-        break;
     case NCE_HOOK: hook(c, ix, imm); break;
     default: fatal("NCE: an outcall of kind %u, which no stub makes", kind);
     }
@@ -235,7 +232,8 @@ void nce_thread_run(struct KThread* t, u64 pc) {
     u32 ix = kt_ix(t);
     char why[240];
     __atomic_store_n(&g_nce.tid[ix], nce_host_tid(), __ATOMIC_RELEASE);
-    if (nce_host_attach(c, why, sizeof why)) fatal("NCE: thread %u cannot run the game's code natively: %s", ix, why);
+    if (nce_host_attach(c, guest_stats_counter(ix, GSTAT_NCE_TICKS), why, sizeof why))
+        fatal("NCE: thread %u cannot run the game's code natively: %s", ix, why);
     if (!c->x[30]) c->x[30] = g_nce.trap; /* the entry function returns to 0: the end of the thread */
     c->pc = pc;
     set_guest(c, 1);
@@ -286,6 +284,7 @@ void nce_init(void) {
     NceHostConfig config = {dispatch, preempted, trapped, AS_BASE, AS_END};
     NceRange* ranges;
     NceSites sites;
+    ClockCounter counter;
     size_t count;
     if (g_arm_mod) return;
     if (!nce_wanted()) {
@@ -309,6 +308,19 @@ void nce_init(void) {
         nce_sites_free(&sites);
         return;
     }
+    /* the counter's stubs read the guest clock in the host's counter, which the runtime's reads then follow too */
+    if (clock_from_counter(&counter)) {
+        WARN("nce: the host's counter runs at %llu Hz (CNTFRQ_EL0), and the counter's stubs need 1 Hz to 1 GHz, so the "
+             "JIT compiles all of the game's code\n",
+             (unsigned long long)counter.freq);
+        free(ranges);
+        nce_sites_free(&sites);
+        return;
+    }
+    g_nce.env.clock = counter.words;
+    g_nce.env.ns_lo = counter.mul_lo;
+    g_nce.env.ns_hi = counter.mul_hi;
+    g_nce.env.ns_origin = counter.origin;
     for (size_t i = 0; i < count; i++)
         if (pool_add(ranges[i].addr, ranges[i].size))
             fatal("NCE: the pool of stubs at %llx (%llu KiB) cannot be mapped", (unsigned long long)ranges[i].addr,
@@ -316,8 +328,9 @@ void nce_init(void) {
     free(ranges);
     if (nce_trap(g_nce.pool, g_nce.pools, &g_nce.env, NCE_TRAP, &g_nce.trap)) fatal("NCE: no room for the trap");
     patch_sites(&sites);
-    LOG("nce: the game's code runs natively: %zu words patched (%zu that the flow reaches), in %zu pools\n",
-        sites.count, sites.proven, g_nce.pools);
+    LOG("nce: the game's code runs natively: %zu words patched (%zu that the flow reaches), in %zu pools; guest time "
+        "follows the host's counter, at %llu Hz\n",
+        sites.count, sites.proven, g_nce.pools, (unsigned long long)counter.freq);
     nce_sites_free(&sites);
     g_nce.on = 1;
     if (plat_thread(kicker, NULL, 64 << 10)) fatal("NCE: the thread of the kicks cannot start");
