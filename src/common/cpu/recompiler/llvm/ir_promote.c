@@ -11,7 +11,8 @@
    last site on some path to it (dirty), and the function loads a register on entry and after a call only where it is
    read before it is written or stored by a site (live). A store of part of a register (a lane) reads the rest. The
    CPU structure holds the architectural registers wherever anything else can look at them: in the runtime, a callee,
-   a helper. In between (a fault's crash report) it holds them as they were at the last call. FPCR and FPSR are
+   a helper. In between (a fault's crash report) it holds them as they were at the last site that could see them: a
+   call of a summarized function (below) sees only the registers that function reads. FPCR and FPSR are
    locals too, for the FP fast paths' tests: the helpers that use only them (ir_noregs) are sites for those two
    alone, which read FPCR and change FPSR */
 #include "common/cpu/recompiler/llvm/ir.h"
@@ -287,11 +288,72 @@ static Set live_through(const Block* block, const Event* events, Site* sites, in
     return live;
 }
 
-/* what a site sees and changes: an ENV helper FPCR and FPSR (changing FPSR), any other call or return every
+/* ---- the summaries of guest functions ----
+   What a direct call of a guest function of this module can see and change of the registers in the CPU structure, once
+   the callee is promoted (it is emitted first: module_llvm.c orders a unit's functions callees first): the registers it
+   or anything it calls reads before writing them, and the ones it can write. The call stores both kinds and reloads the
+   second: a way through the callee that does not write a register, or a stale callee that runs nothing, leaves the CPU
+   structure's value for the reload to take. A callee where some site can see every register (an SVC, a call through a
+   register, a poll, a helper that takes c, a tail call) has none, and its calls stay sites for every register. A direct
+   call passes the callee its own start, so the dispatch of a call that came in at another address (entry_mismatch, and
+   the dispatch block only it reaches) is no part of what a direct call runs. Nor is new code for the callee: a stale
+   callee returns with CPU.pc at its entry (ir_codegen.c's stale_check), its caller's return check leaves for the
+   dispatch loop, and each function on the way stores its registers at its own return; the JIT's code for the entry then
+   starts from the CPU structure, as it does at any other return to dispatch */
+typedef struct {
+    LLVMValueRef fn;
+    Set reads, writes;
+} Summary;
+static const Summary* summary_of(const SnxIr* ir, LLVMValueRef fn) {
+    const Summary* table = (const Summary*)ir->summaries;
+    size_t mask = ir->summary_cap - 1, at;
+    if (!table) return NULL;
+    for (at = ((size_t)(uintptr_t)fn >> 4) & mask; table[at].fn; at = (at + 1) & mask)
+        if (table[at].fn == fn) return &table[at];
+    return NULL;
+}
+static void summary_add(SnxIr* ir, LLVMValueRef fn, Set reads, Set writes) {
+    Summary* table = (Summary*)ir->summaries;
+    size_t mask, at;
+    if (2 * (ir->summary_count + 1) > ir->summary_cap) { /* grown to keep it at most half full */
+        size_t cap = ir->summary_cap ? 2 * ir->summary_cap : 64;
+        Summary* grown = (Summary*)calloc(cap, sizeof(*grown));
+        if (!grown) return; /* no summary: its calls stay sites for every register */
+        for (size_t i = 0; i < ir->summary_cap; ++i)
+            if (table && table[i].fn) {
+                for (at = ((size_t)(uintptr_t)table[i].fn >> 4) & (cap - 1); grown[at].fn; at = (at + 1) & (cap - 1)) {}
+                grown[at] = table[i];
+            }
+        free(table);
+        ir->summaries = table = grown;
+        ir->summary_cap = cap;
+    }
+    mask = ir->summary_cap - 1;
+    for (at = ((size_t)(uintptr_t)fn >> 4) & mask; table[at].fn && table[at].fn != fn; at = (at + 1) & mask) {}
+    if (!table[at].fn) ++ir->summary_count;
+    table[at].fn = fn;
+    table[at].reads = reads;
+    table[at].writes = writes;
+}
+void ir_summaries_free(SnxIr* ir) {
+    free(ir->summaries);
+    ir->summaries = NULL;
+    ir->summary_cap = ir->summary_count = 0;
+}
+
+/* what a site sees and changes: a direct call of a summarized guest function the registers its summary reads or
+   writes (changing those it writes), an ENV helper FPCR and FPSR (changing FPSR), any other call or return every
    register */
 static void site_sets(const SnxIr* ir, LLVMValueRef inst, Set* see, Set* change) {
-    (void)ir;
     if (LLVMIsACallInst(inst) && LLVMGetTailCallKind(inst) != LLVMTailCallKindMustTail) {
+        LLVMValueRef callee = LLVMGetCalledValue(inst);
+        const Summary* summary = callee && LLVMIsAFunction(callee) ? summary_of(ir, callee) : NULL;
+        if (summary) {
+            see->w[0] = summary->reads.w[0] | summary->writes.w[0];
+            see->w[1] = summary->reads.w[1] | summary->writes.w[1];
+            *change = summary->writes;
+            return;
+        }
         if (call_site(inst) == ENV) {
             *see = seen(1);
             *change = changed(1);
@@ -653,6 +715,80 @@ static int edge_stores(SnxIr* ir, LLVMValueRef fn, LLVMBuilderRef b, const Block
     return 0;
 }
 
+/* fn's summary (above), from its blocks and sites before any change: the blocks a direct call can run (all but
+   entry_mismatch and what only it reaches), none of whose sites but a return sees every register; the registers read
+   before written, a call reading what it sees and redefining what it changes, a return reading nothing of the
+   caller's; and every register written, by fn or by what it calls */
+static void summarize(SnxIr* ir, const Block* blocks, size_t nblocks, const BlockKey* keys, const Event* events,
+                      const Site* sites) {
+    unsigned char* reach = (unsigned char*)calloc(nblocks ? nblocks : 1, 1);
+    size_t* stack = (size_t*)malloc((nblocks ? nblocks : 1) * sizeof(size_t));
+    Set* in = (Set*)calloc(nblocks ? nblocks : 1, sizeof(Set));
+    Set writes = {{0, 0}};
+    size_t top = 0, i, e;
+    int changed;
+    if (!reach || !stack || !in || !nblocks) goto done;
+    reach[0] = 1;
+    stack[top++] = 0;
+    while (top) {
+        size_t at = stack[--top];
+        LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[at].block);
+        unsigned n = term ? LLVMGetNumSuccessors(term) : 0;
+        for (unsigned j = 0; j < n; ++j) {
+            LLVMBasicBlockRef to = LLVMGetSuccessor(term, j);
+            size_t k = block_index(keys, nblocks, to);
+            if (k >= nblocks || reach[k] || to == ir->entry_mismatch) continue;
+            reach[k] = 1;
+            stack[top++] = k;
+        }
+    }
+    for (i = 0; i < nblocks; ++i) {
+        if (!reach[i]) continue;
+        for (e = blocks[i].first; e < blocks[i].first + blocks[i].count; ++e) {
+            const Event* ev = &events[e];
+            const Site* site;
+            if (ev->kind == WRITE || ev->kind == PART) set_add(&writes, ev->index);
+            if (ev->kind != SITE) continue;
+            site = &sites[ev->index];
+            if (LLVMIsAReturnInst(site->inst)) continue;
+            if (!returns(site->inst) || (site->seen.w[0] == ~0ull && site->seen.w[1] == ~0ull)) goto done;
+            (void)set_join(&writes, &site->changed);
+        }
+    }
+    do { /* backward, from nothing after a return */
+        changed = 0;
+        for (i = nblocks; i-- > 0;) {
+            Set live = {{0, 0}};
+            LLVMValueRef term;
+            unsigned n;
+            if (!reach[i]) continue;
+            term = LLVMGetBasicBlockTerminator(blocks[i].block);
+            n = term ? LLVMGetNumSuccessors(term) : 0;
+            for (unsigned j = 0; j < n; ++j) {
+                size_t k = block_index(keys, nblocks, LLVMGetSuccessor(term, j));
+                if (k < nblocks && reach[k]) (void)set_join(&live, &in[k]);
+            }
+            for (e = blocks[i].first + blocks[i].count; e-- > blocks[i].first;) {
+                const Event* ev = &events[e];
+                if (ev->kind == READ || ev->kind == PART)
+                    set_add(&live, ev->index);
+                else if (ev->kind == WRITE)
+                    set_remove(&live, ev->index);
+                else if (!LLVMIsAReturnInst(sites[ev->index].inst)) {
+                    live.w[0] = (live.w[0] & ~sites[ev->index].changed.w[0]) | sites[ev->index].seen.w[0];
+                    live.w[1] = (live.w[1] & ~sites[ev->index].changed.w[1]) | sites[ev->index].seen.w[1];
+                }
+            }
+            if (set_join(&in[i], &live)) changed = 1;
+        }
+    } while (changed);
+    summary_add(ir, ir->fn, in[0], writes);
+done:
+    free(reach);
+    free(stack);
+    free(in);
+}
+
 void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
     Scan s = {0};
     LLVMBasicBlockRef bb;
@@ -713,6 +849,7 @@ void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
         blocks[i].count = nevents - blocks[i].first;
     }
     qsort(keys, nblocks, sizeof(*keys), key_by_block);
+    summarize(ir, blocks, nblocks, keys, events, sites);
     /* dirty: forward, from nothing on entry */
     do {
         changed = 0;

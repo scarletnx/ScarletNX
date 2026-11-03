@@ -338,6 +338,7 @@ void snx_ir_free(SnxIr* ir) {
     LLVMDisposeModule(ir->mod);
     LLVMContextDispose(ir->ctx);
     LLVMDisposeTargetMachine(ir->tm);
+    ir_summaries_free(ir);
     free(ir);
 }
 
