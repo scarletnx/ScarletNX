@@ -41,6 +41,9 @@ void signals_thread_end(GuestSignals* t);
 /* the mask that the threads the calling one creates start with: set in the new thread before its first guest call */
 void signals_inherit(uint64_t mask);
 uint64_t signals_mask(void);
+/* the calling thread's CPU when it runs generated code now (inside a guest call, in no HLE call), else NULL: for the
+   guest crash report (fault.c) */
+CPU* signals_guest_code_cpu(void);
 /* the export the calling thread enters (0 as it leaves), for --sample */
 void signals_in_export(uint64_t address);
 /* the signals ready for the calling thread run their handlers: c's registers must all be in place */
