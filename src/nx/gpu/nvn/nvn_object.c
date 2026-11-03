@@ -15,6 +15,7 @@
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "gpu/nvn/nvn.hook.h"
+#include "gpu/nvn/nvn2.hook.h"
 #include "nx/gpu/nvn/nvn_driver.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
@@ -32,6 +33,11 @@ u64 nvn_serial(void) { return __atomic_add_fetch(&g_nvn.object.serial, 1, __ATOM
 u64 nvn_pool_memory(u64 pool) { return pool ? NVN_OBJ(NvnPool, pool)->memory : 0; }
 u64 nvn_pool_gpu(u64 pool) { return pool ? NVN_OBJ(NvnPool, pool)->gpu : 0; }
 u32 nvn_device_flags(void) { return __atomic_load_n(&g_nvn.object.device_flags, __ATOMIC_RELAXED); }
+u32 nvn_DeviceGetFlags(CPU* c, u64 d) {
+    (void)c;
+    (void)d;
+    return nvn_device_flags();
+}
 u64 nvn_device(void) { return __atomic_load_n(&g_nvn.object.device, __ATOMIC_RELAXED); }
 
 /* the small state objects are copied by value and may sit anywhere in the game's structures: read and written whole */
@@ -1758,6 +1764,18 @@ u64 nvn_ProgramGetDeviceComputeMemorySize(CPU* c, u64 p) {
 u32 nvn_ProgramGetScratchBytesPerWarp(CPU* c, u64 p) {
     (void)c;
     (void)p;
+    return 0;
+}
+/* NVN2's ray-tracing modules: the renderer has no ray tracing, and a builder that set none has no modules */
+i32 nvn_ProgramBuilderGetRayTracingModuleCount(CPU* c, u64 b) {
+    (void)c;
+    (void)b;
+    return 0;
+}
+u64 nvn_ProgramBuilderGetRayTracingModuleData(CPU* c, u64 b, u64 data) {
+    (void)c;
+    (void)b;
+    (void)data;
     return 0;
 }
 u64 nvn_ProgramGetShaderGroupHandle(CPU* c, u64 p) {

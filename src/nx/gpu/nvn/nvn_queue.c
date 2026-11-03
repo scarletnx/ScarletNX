@@ -166,6 +166,27 @@ void nvn_QueueBuilderSetPrimaryQueue(CPU* c, u64 b, u64 q) {
     (void)c;
     QB(b)->primary = q;
 }
+u64 nvn_QueueBuilderGetPrimaryQueue(CPU* c, u64 b) {
+    (void)c;
+    return QB(b)->primary;
+}
+/* the ray-tracing memory a queue takes: the runtime's renderer has no ray tracing, and the device answers 0 for the
+   memory its queue uses (nvnQueueGetTotalRayTracingMemoryUsed) */
+void nvn_QueueBuilderSetRayTracingMemorySize(CPU* c, u64 b, u64 size) {
+    (void)c;
+    (void)b;
+    (void)size;
+}
+u64 nvn_QueueBuilderGetRayTracingMemorySize(CPU* c, u64 b) {
+    (void)c;
+    (void)b;
+    return 0;
+}
+u64 nvn_QueueGetTotalRayTracingMemoryUsed(CPU* c, u64 q) {
+    (void)c;
+    (void)q;
+    return 0;
+}
 int nvn_QueueInitialize(CPU* c, u64 q, u64 b) {
     NvnQueue o = {0};
     (void)c;

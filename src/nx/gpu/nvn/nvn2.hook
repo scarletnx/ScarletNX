@@ -14,3 +14,20 @@ include "nx/gpu/nvn/nvn.h"
 
 family queue
 hook nvnQueueBuilderSetPrimaryQueue(NVNqueueBuilder* b, NVNqueue* q)
+
+family command_buffer
+hook nvnCommandBufferSetRecordingMode(NVNcommandBuffer* cb, i32 mode)
+hook nvnCommandBufferSetGeometryProcessingMode(NVNcommandBuffer* cb, i32 mode)
+hook nvnCommandBufferSetComputeOverlapMode(NVNcommandBuffer* cb, i32 mode)
+
+family device
+hook nvnDeviceGetFlags(const NVNdevice* d) -> u32
+
+hook nvnQueueBuilderGetPrimaryQueue(const NVNqueueBuilder* b) -> NVNqueue*
+hook nvnQueueBuilderSetRayTracingMemorySize(NVNqueueBuilder* b, usize size)
+hook nvnQueueBuilderGetRayTracingMemorySize(const NVNqueueBuilder* b) -> usize
+hook nvnQueueGetTotalRayTracingMemoryUsed(const NVNqueue* q) -> usize
+
+family program_builder
+hook nvnProgramBuilderGetRayTracingModuleCount(const NVNprogramBuilder* b) -> i32
+hook nvnProgramBuilderGetRayTracingModuleData(const NVNprogramBuilder* b, void* data) -> usize

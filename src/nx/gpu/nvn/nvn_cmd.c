@@ -35,6 +35,7 @@
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "gpu/nvn/nvn.hook.h"
+#include "gpu/nvn/nvn2.hook.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -1401,6 +1402,24 @@ void nvn_CommandBufferSetColorReductionEnable(CPU* c, u64 cb, int on) {
     (void)c;
     (void)cb;
     (void)on;
+}
+/* NVN2's recording and processing modes. The runtime records every command buffer alike, so how the game asked for
+   it to be recorded and whether its compute overlaps its graphics changes nothing: the replay runs a recording's
+   commands in submission order */
+void nvn_CommandBufferSetRecordingMode(CPU* c, u64 cb, i32 mode) {
+    (void)c;
+    (void)cb;
+    LOG_LIMIT(4, "nvn: a command buffer is set to recording mode %d: the runtime records every one alike\n", mode);
+}
+void nvn_CommandBufferSetGeometryProcessingMode(CPU* c, u64 cb, i32 mode) {
+    (void)c;
+    (void)cb;
+    LOG_LIMIT(4, "nvn: a command buffer is set to geometry processing mode %d, which has no effect here\n", mode);
+}
+void nvn_CommandBufferSetComputeOverlapMode(CPU* c, u64 cb, i32 mode) {
+    (void)c;
+    (void)cb;
+    LOG_LIMIT(4, "nvn: a command buffer is set to compute overlap mode %d: the replay runs compute in order\n", mode);
 }
 void nvn_CommandBufferSetColorReductionThresholds(CPU* c, u64 cb, i32 format_class, i32 conservative,
                                                   i32 aggressive) {
