@@ -155,6 +155,11 @@ builds for FreeBSD, macOS and Windows x64, where they differ:
   on macOS, `VirtualAlloc(MEM_RESERVE)` on Windows), the table and the stacks as lazy memory, a thread's id, `pread`,
   the kernel's checked copies of guest memory (`process_vm_readv` on Linux, `mach_vm_read_overwrite` on macOS, a pipe
   on FreeBSD, `ReadProcessMemory` on Windows) and an epoll set (epoll, kqueue, or WSAPoll over sockets).
+- The app's own `/proc` files everywhere, as an Android device shows them (`hle_proc.c`): `cmdline` (the package),
+  `comm`, `status` (no tracer), `stat`, `maps` (the guest's libraries) and the `exe` link (`app_process64`), of
+  `/proc/self` and the app's pid. A Unity game's protection reads `cmdline`, `status` and `exe`, and when they fail
+  (FreeBSD mounts no `/proc`) it goes on with a wrong key: its asset headers decrypted into garbage and it crashed.
+  On Linux it read the JVM's own. Other `/proc` paths are the host's.
 - bionic's `rand` and `random` everywhere: the BSD additive feedback generator that bionic's and glibc's `rand` are,
   in the bridge, as FreeBSD's and macOS's `rand` are other generators. A game that seeds it with a constant and makes a
   decryption's key from its numbers needs this sequence: with FreeBSD's, a Unity game decrypted its asset headers
