@@ -105,7 +105,16 @@ void snx_tracy_lock_try(SnxTracyLock* l, int acquired);
 #define SNX_FRAME_MARK()        ((void)0)
 #define SNX_FRAME_SCOPED(ctx, name)        [[maybe_unused]] int ctx = 0
 #define SNX_PLOT(name, value)   ((void)0)
+#if defined(__APPLE__)
+#include <pthread.h>
+/* The thread's name for the system: the "threads:" line of the log (main.c) and a crash report name the busy threads
+   by it. Apple takes the calling thread's name alone.
+   shortcut: Linux and Windows keep no name here, as pthread_setname_np needs _GNU_SOURCE before every include there.
+   Upgrade when a log of theirs needs the names */
+#define SNX_THREAD_NAME(name)   ((void)pthread_setname_np(name))
+#else
 #define SNX_THREAD_NAME(name)   ((void)0)
+#endif
 static inline int snx_tracy_gpu_context(int ctx, int64_t gpu_time, float period, int calibrated,
                                         const char* name) {
     (void)ctx, (void)gpu_time, (void)period, (void)calibrated, (void)name;
