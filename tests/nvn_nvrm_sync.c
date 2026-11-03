@@ -94,6 +94,12 @@ int arm_code_range(u64* lo, u64* hi) {
     *lo = *hi = 0;
     return 0;
 }
+/* the code area of a program's stage, which nvn2_stage_of reads the program header from: the test's memory is
+   addressable as it stands, as gmmu_run's stubs elsewhere answer */
+u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
+    *cpu = gva;
+    return max;
+}
 u64 gmmu_space_alloc(u64 size, u64 align) {
     (void)size;
     (void)align;

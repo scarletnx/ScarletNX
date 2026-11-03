@@ -149,7 +149,9 @@ const char* shipped_stage_name(int stage) {
 }
 int shipped_sph_stage(const u8* sph) {
     u32 w = le32(sph), type = w & 0x1Fu, version = w >> 5 & 0x1Fu, shader = w >> 10 & 0xFu;
-    if (version != 3) return -1;
+    /* version 4 is NVN2's: the Switch 2 SDK's, whose first 0x50 bytes keep version 3's layout (nxnative), so the
+       type and shader fields are read the same. Its program header is 0x80 bytes where version 3's is 0x50 */
+    if (version != 3 && version != 4) return -1;
     if (type == 2) return shader == 5 ? ST_FS : -1;
     if (type != 1) return -1;
     /* type 0 a VertexA, as one game's runs showed: each of its programs of that type has a VertexB in a 256-byte slot

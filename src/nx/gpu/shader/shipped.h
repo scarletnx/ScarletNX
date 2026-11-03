@@ -40,8 +40,9 @@ int shipped_sarc_entry(const u8* d, size_t n, int i, size_t* off, size_t* size, 
 int shipped_sarc_wants(const u8* d, size_t n);
 
 /* the runtime's stage (ST_VS to ST_FS) of the program whose SPH is at sph (type 1 vertex, tessellation and geometry,
-   2 pixel, version 3): SHIPPED_VERTEX_A for a VertexA, which runs merged with the VertexB a draw binds beside it,
-   and -1 for bytes that are no SPH */
+   2 pixel, version 3, and NVN2's version 4 whose first 0x50 bytes keep version 3's layout):
+   SHIPPED_VERTEX_A for a VertexA, which runs merged with the VertexB a draw binds beside it, and -1 for bytes that
+   are no SPH */
 #define SHIPPED_VERTEX_A (-2)
 int shipped_sph_stage(const u8* sph);
 /* a stage's name as the log says it (shipped_sph_stage's, SHIPPED_VERTEX_A included) */

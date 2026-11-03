@@ -1403,6 +1403,75 @@ void nvn_CommandBufferSetColorReductionEnable(CPU* c, u64 cb, int on) {
     (void)cb;
     (void)on;
 }
+/* NVN2's variable-rate shading, its exclusive scissors, its workload priorities and its debug groups: hints and
+   state the renderer has no counterpart of. The shading rate image and its palette decide how many pixels a draw
+   shades per fragment, which Vulkan's fragment shading rate takes from the pipeline's own state; the exclusive
+   scissors clip to a rectangle of a viewport, which the renderer's scissors already do; the priorities order the
+   hardware's queues, which the replay runs in submission order; the debug groups and markers only NVIDIA's tools
+   read. The float blend clamp caps a blended colour's components, which the renderer's blending does not, as with
+   the representative fragment test and the conservative raster mode, which the hardware's rasterizer applies and
+   the renderer's exact rasterization does not */
+void nvn_CommandBufferBindShadingRateImage(CPU* c, u64 cb, u64 t, u32 level) {
+    (void)c; (void)cb; (void)t; (void)level;
+}
+void nvn_CommandBufferSetShadingRatePaletteMode(CPU* c, u64 cb, i32 mode) {
+    (void)c; (void)cb; (void)mode;
+}
+void nvn_CommandBufferShadingRateImagePalette(CPU* c, u64 cb, i32 first, i32 n, u64 palette) {
+    (void)c; (void)cb; (void)first; (void)n; (void)palette;
+}
+void nvn_CommandBufferEnableExclusiveScissor(CPU* c, u64 cb, i32 index) {
+    (void)c; (void)cb; (void)index;
+}
+void nvn_CommandBufferSetExclusiveScissor(CPU* c, u64 cb, i32 index, i32 x, i32 y, i32 w, i32 h) {
+    (void)c; (void)cb; (void)index; (void)x; (void)y; (void)w; (void)h;
+}
+void nvn_CommandBufferSetExclusiveScissors(CPU* c, u64 cb, i32 first, i32 n, u64 rects) {
+    (void)c; (void)cb; (void)first; (void)n; (void)rects;
+}
+void nvn_CommandBufferSetRepresentativeFragmentTest(CPU* c, u64 cb, i32 mode) {
+    (void)c; (void)cb; (void)mode;
+}
+void nvn_CommandBufferSetFloatBlendClamp(CPU* c, u64 cb, f32 clamp) {
+    (void)c; (void)cb; (void)clamp;
+}
+void nvn_CommandBufferSetConservativeRasterMode(CPU* c, u64 cb, i32 mode) {
+    (void)c; (void)cb; (void)mode;
+}
+void nvn_CommandBufferSetResourceOccupancy(CPU* c, u64 cb, i32 mode) {
+    (void)c; (void)cb; (void)mode;
+}
+void nvn_CommandBufferSetGraphicsWorkloadPriority(CPU* c, u64 cb, i32 priority) {
+    (void)c; (void)cb; (void)priority;
+}
+void nvn_CommandBufferSetComputeWorkloadPriority(CPU* c, u64 cb, i32 priority) {
+    (void)c; (void)cb; (void)priority;
+}
+void nvn_CommandBufferSetComputeEnable(CPU* c, u64 cb, i32 enable) {
+    (void)c; (void)cb; (void)enable;
+}
+void nvn_CommandBufferSetCopyEnable(CPU* c, u64 cb, i32 enable) {
+    (void)c; (void)cb; (void)enable;
+}
+void nvn_CommandBufferPushDebugGroupGraphics(CPU* c, u64 cb, u64 label) {
+    (void)c; (void)cb; (void)label;
+}
+void nvn_CommandBufferPushDebugGroupCompute(CPU* c, u64 cb, u64 label) {
+    (void)c; (void)cb; (void)label;
+}
+void nvn_CommandBufferPopDebugGroupGraphics(CPU* c, u64 cb) {
+    (void)c; (void)cb;
+}
+void nvn_CommandBufferPopDebugGroupCompute(CPU* c, u64 cb) {
+    (void)c; (void)cb;
+}
+void nvn_CommandBufferInsertDebugMarkerGraphics(CPU* c, u64 cb, u64 label) {
+    (void)c; (void)cb; (void)label;
+}
+void nvn_CommandBufferInsertDebugMarkerCompute(CPU* c, u64 cb, u64 label) {
+    (void)c; (void)cb; (void)label;
+}
+
 /* NVN2's recording and processing modes. The runtime records every command buffer alike, so how the game asked for
    it to be recorded and whether its compute overlaps its graphics changes nothing: the replay runs a recording's
    commands in submission order */

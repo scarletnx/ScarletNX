@@ -9,6 +9,7 @@
    Where nxnative and the game's own driver disagree, the driver wins: nvnDeviceGetInteger answers from the driver's
    table (its API version is the SDK's, 55.8 in one game) rather than nxnative's 55.15 */
 #include "nx/gpu/nvn/nvn_object.h"
+#include "nx/gpu/shader/shipped.h"
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/gpu/nvn/nvn_state.h"
@@ -1492,10 +1493,62 @@ void nvn_ProgramFinalize(CPU* c, u64 p) {
    0x714 the stage, for a vertex program 0x748/0x74c and 0x754/0x758 VertexA's and VertexB's offsets and sizes,
    both nonzero when it is dual, and for a compute program 0x6fc its constants' bytes, 0x748-0x750 its workgroup size
    and 0x754 its shared memory. data: the code area's GPU address. 0 when the section isn't one */
+/* NVN2's control section, the Switch 2 SDK's, which nxnative documents and Mario Kart World and Pokémon Pokopia's
+   dumps show: 0x04 is the GPU code version (0xc9, not 1), 0x38 the instructions' length, 0x40 that rounded to 0x100,
+   0x44 the code area's with the c1 segment of constants between the last two, 0x4c the register count and 0x58 a
+   compute program's thread group. The code area starts with the shader program header (version 4, 0x80 bytes) and
+   the stage is the header's own, so no field of the section carries it: it is read through the code area, which is
+   mapped while the game holds the program it just uploaded */
+static int nvn2_stage_of(NvnProgram* o, u64 data, u64 control) {
+    u64 code = 0;
+    u32 rounded = gr32(control + 0x40), area = gr32(control + 0x44), regs = gr32(control + 0x4c);
+    int stage;
+    /* the guest address of the code area, and that its first bytes are readable: one walk of the GPU page table,
+       as the renderer's own access to a program's code is */
+    if (!data || !gmmu_run(data, 4, &code)) {
+        LOG_LIMIT(8, "nvn: an NVN2 control section at %llx names no code area (%llx)\n", (unsigned long long)control,
+                  (unsigned long long)data);
+        return 0;
+    }
+    if (gr32(control + 0x58)) { /* a compute stage: its thread group is 0x58-0x60, and its code area holds code
+                                    alone, where a graphics stage's starts with the program header */
+        stage = NVN_SHADER_STAGE_COMPUTE;
+        memset(&o->st[stage], 0, sizeof o->st[stage]);
+        o->st[stage].data = data;
+        o->st[stage].off = 0;
+        o->st[stage].cb = (u16)(rounded >> 8);
+        o->st[stage].cb_size = (u16)((area - rounded) >> 8);
+        o->block[0] = (u16)gr32(control + 0x58);
+        o->block[1] = (u16)gr32(control + 0x5c);
+        o->block[2] = (u16)gr32(control + 0x60);
+        if (!o->block[0] || !o->block[1] || !o->block[2]) {
+            LOG_LIMIT(8, "nvn: an NVN2 compute stage at %llx has no thread group\n",
+                      (unsigned long long)control);
+            return 0;
+        }
+        return 1;
+    }
+    stage = shipped_sph_stage((const u8*)GP(code));
+    if (stage < 0 || area < rounded || (rounded & 0xff) || regs >> 8) {
+        LOG_LIMIT(8, "nvn: an NVN2 control section at %llx has no stage the runtime reads (code %llx, area %#x of "
+                     "%#x, %u registers)\n",
+                  (unsigned long long)control, (unsigned long long)data, rounded, area, regs);
+        return 0;
+    }
+    if (stage == SHIPPED_VERTEX_A) stage = ST_VS; /* a VertexA: its VertexB is in the code area after it (ship_dual) */
+    memset(&o->st[stage], 0, sizeof o->st[stage]);
+    o->st[stage].data = data;
+    o->st[stage].off = 0; /* the code area starts with the program header, and the code follows it */
+    o->st[stage].cb = (u16)(rounded >> 8);
+    o->st[stage].cb_size = (u16)((area - rounded) >> 8);
+    return 1;
+}
 static int stage_of(NvnProgram* o, u64 data, u64 control) {
     u32 magic = gr32(control), one = gr32(control + 4), format = gr32(control + 8), cb = gr32(control + 0x700),
         size = gr32(control + 0x704), off = gr32(control + 0x708), stage = gr32(control + 0x714);
     NvnStage* st;
+    /* NVN2's section reads its own fields, and its stage through its code area */
+    if (magic == 0x98761234u && one == 0xc9u) return nvn2_stage_of(o, data, control);
     /* a graphics stage's program follows the driver's 0x30-byte wrapper; an older SDK's compute program (format 14)
        starts its code area at 0, with no wrapper (its first words are a scheduling word, 0x001fc000e22007f0): its
        SetShaders failing, one game's effects system went on to read the program's interface table, which the
