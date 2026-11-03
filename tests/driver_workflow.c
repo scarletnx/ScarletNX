@@ -747,20 +747,37 @@ int main(int argc, char** argv) {
     }
 
     /* Missing/mismatched/malformed ABI stamps are never trusted, nor one another build wrote with the same ABI: an
-       older version's ABI alone, another commit's, or this one's cut short or with more after it */
+       older version's ABI alone, another commit's, or this one's cut short or with more after it. The run says the
+       stamp it found, on one line, and the one this build makes */
     {
         const char* const stale[] = {
             "3\nabc1234\n",      "broken", "4", "4garbage\n", "4\n", "4\ndef5678\n", "4\nabc1234", "4\nabc1234\n\n",
             "4\nabc1234-dirty\n"};
+        const char* const shown[] = {"3\\nabc1234\\n",
+                                     "broken",
+                                     "4",
+                                     "4garbage\\n",
+                                     "4\\n",
+                                     "4\\ndef5678\\n",
+                                     "4\\nabc1234",
+                                     "4\\nabc1234\\n\\n",
+                                     "4\\nabc1234-dirty\\n"};
         char* stamp = snx_path_join(repo, "recompiled/Test game/Test game.abi");
+        char* said;
         size_t j;
         for (j = 0; j < sizeof stale / sizeof *stale; ++j) {
             CHECK(!snx_write_file(stamp, stale[j], strlen(stale[j])));
-            run(exe, repo, dump, log, 0, "RG", NULL);
+            said = snx_format("%s holds \"%s\", and this build with the mods played now makes \"4\\nabc1234\\n\": "
+                              "the game is recompiled before it plays",
+                              stamp, shown[j]);
+            run(exe, repo, dump, log, 0, "RG", said);
+            free(said);
             run(exe, repo, dump, log, 0, "G", NULL); /* the recompile stamped it as this build */
         }
         CHECK(!snx_remove_tree(stamp));
-        run(exe, repo, dump, log, 0, "RG", NULL);
+        said = snx_format("%s is not there, and this build with the mods played now makes \"4\\nabc1234\\n\"", stamp);
+        run(exe, repo, dump, log, 0, "RG", said);
+        free(said);
         free(stamp);
     }
     {
