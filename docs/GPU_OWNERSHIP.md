@@ -12,7 +12,7 @@
   * [What still copies, and why](#what-still-copies-and-why)
   * [What keeps it correct](#what-keeps-it-correct)
   * [Android: guest memory moved into AHardwareBuffers](#android-guest-memory-moved-into-ahardwarebuffers)
-  * [Why imports and not placed maps (yet)](#why-imports-and-not-placed-maps-yet)
+  * [Placed maps](#placed-maps)
   * [Measurements on a discrete GPU (RTX 2080, 246 MiB BAR)](#measurements-on-a-discrete-gpu-rtx-2080-246-mib-bar)
   * [Testing on a Steam Deck (or any integrated GPU)](#testing-on-a-steam-deck-or-any-integrated-gpu)
 * [Phases](#phases)
@@ -290,22 +290,31 @@ Off Android `plat_gpu_buffer` makes a memfd, which the driver imports as host me
 `check_uma_migrate` runs the migrate way where the driver takes a memfd's pages (lavapipe) and skips where it doesn't
 (amdgpu's user pointers take anonymous memory only), and `memory_alias` moves guest memory into memfds and back.
 
-### Why imports and not placed maps (yet)
+### Placed maps
 
-`VK_EXT_map_memory_placed` maps device memory at an address the caller gives. With it, the guest heap would be driver
-memory, with nothing to import or pin. This host's driver has it (`memoryMapPlaced`, not `memoryMapRangePlaced`). It
-is not used yet, for these reasons:
+`VK_EXT_map_memory_placed` maps device memory at an address the caller gives: the guest heap as driver memory, with
+nothing to import or pin, and none of the per-submit cost of user pointers on amdgpu. `vk/uma.c` has it, off by default
+(`vk_uma_placed`, which `check_uma_placed` and `check_uma_placed_view` turn on), on a device with `memoryMapPlaced` and
+`memoryUnmapReserve`:
 
-- Write tracking and the traps use userfaultfd on guest memory (above). The kernel registers userfaultfd only on
-  anonymous, shmem and hugetlb mappings, and a mapping of driver memory is none of those. The texture cache and the
-  shader cache would lose write tracking on those pages and hash them again.
-- The alias pool maps one page at two guest addresses (`svcMapMemory` views, code). A placed map maps one memory object
-  once, at one address.
-- Without `memoryMapRangePlaced`, only a whole memory object maps placed, so the heap would be one object or one per
-  mapping.
+- A window of 2 MiB that the heap or physical memory commits whole (`mem_heap_set`, `mem_map_physical`) is a chunk:
+  host-visible, coherent memory, cached where a type is, mapped at its guest address over the reservation, one object a
+  window (RADV has no `memoryMapRangePlaced`). The GPU binds the chunk's buffer at the range's offset. mem.c commits and
+  decommits through it (`mem_set_placed`): a page committed again is zeroed then, as the GPU may still read it; a chunk
+  with no page committed goes, its address reserved again, and its memory once the submit that last bound it is done.
+- A view of it (`svcMapMemory`, code memory) maps the chunk's pages again from its dma-buf
+  (`VK_EXT_external_memory_dma_buf`). The alias pool never takes a chunk's pages, nor do the traps: a result over a
+  chunk is copied there (`vk_uma_publish`).
+- Write tracking leaves its pages alone (`vk_uma_import_in`): userfaultfd refuses to register a mapping of the
+  driver's (EINVAL on RADV and on Turnip), and caches compare their contents there.
+- A chunk and the migrate way's regions never share a window: a window with pages moved into a region is committed as
+  host pages, and a chunk's pages never move (`mem_movable`).
 
-Placed maps need write tracking by protection for those ranges (the signal trap path has it) and aliases by `mremap`.
-That is the step after imports, and it is the one that removes the per-submit cost of user pointers on amdgpu.
+On an RX 6700 XT (RADV) a chunk reads and writes as fast as malloc'd memory, the GPU and the CPU see each other's
+writes with no flush, `mprotect` traps on it, and a submission costs the same with 256 MiB placed as with none. Before
+it is on by default: write tracking by protection on its pages (or every texture over the heap is hashed again at each
+check); one sparse buffer over the heap with each chunk bound into it (a range across two chunks is copied now); and a
+view and its source counted as one address by the in-place bookkeeping (`live`, `out`).
 
 ### Measurements on a discrete GPU (RTX 2080, 246 MiB BAR)
 
@@ -420,4 +429,5 @@ Nothing of the game leaves the machine: the steps below compare numbers and scre
 6. Started: memory the CPU and the GPU share (above). Guest vertex, index and read-only storage ranges are read in
    place on a GPU that shares memory (`vk_memory`), and so are constant buffers but the pages the runtime wrote;
    writable storage, transform feedback and the engines' results are written there in place, and dispatches run on the
-   graphics queue. Next: placed maps first, with write tracking by protection on those pages.
+   graphics queue. Placed maps are there, off by default (above). Next: write tracking by protection on their pages,
+   and then placed maps on by default.

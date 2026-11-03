@@ -455,8 +455,14 @@ static int fake_decommit(u64 a, u64 size) {
     return 0;
 }
 static int fake_held(u64 a, u64 size) { return g_fake_held && a < g_fake_held + MEM_PLACED && g_fake_held < a + size; }
+static int fake_view(u64 dst, u64 src, u64 size) {
+    (void)dst;
+    (void)src;
+    (void)size;
+    return -1;
+}
 static void test_migrate_placed(void) {
-    static const MemPlaced fake = {fake_commit, fake_decommit, fake_held};
+    static const MemPlaced fake = {fake_commit, fake_decommit, fake_held, fake_view};
     const u64 a = HEAP_BASE + 40 * MIB, p = (ALIAS_BASE + 0x4000000 + MEM_PLACED - 1) & ~(MEM_PLACED - 1);
     u8* v;
     int f = buffer(MIB, &v);

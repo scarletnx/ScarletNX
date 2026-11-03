@@ -729,7 +729,9 @@ static int alias_map_nl(u64 dst, u64 src, u64 size, u32 state, u32 perm) {
         unpool_nl(dst, size, NULL);
         return MEM_NOMEM;
     }
-    if (!p) {
+    if (!p && placed_nl(src, size) && !g_placed->view(dst, src, size))
+        ; /* the renderer's GPU memory, mapped at dst too */
+    else if (!p) {
         if (commit_nl(dst, size)) return MEM_NOMEM;
         memcpy(GP(dst), GP(src), size);
     }
@@ -1115,7 +1117,7 @@ int mem_alias_unmap(u64 dst, u64 size, u64 back) {
        so an engine may own it), with the producer's lock held but not mem.c's */
     if (back) own_acquire(back, size);
     mem_lock();
-    if (back && !any_pool_nl(dst, size)) memcpy(GP(back), GP(dst), size);
+    if (back && !any_pool_nl(dst, size) && !placed_nl(dst, size)) memcpy(GP(back), GP(dst), size); /* a copy's */
     unmap_nl(dst, size);
     mem_unlock();
     mapping_end();

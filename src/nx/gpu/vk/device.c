@@ -330,7 +330,7 @@ static int create_device(void) {
     int has_portability = 0, has_reconvergence = 0;
     int has_calibrated = 0, has_present_id = 0, has_present_wait = 0, has_present_v2 = 0, has_calibrated_khr = 0;
     int has_google_timing = 0;
-    int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0;
+    int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0, has_dmabuf = 0;
     int has_descriptor_buffer = 0;
     int has_vertex_input = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
@@ -379,6 +379,8 @@ static int create_device(void) {
         has_host_import = snx_vk_extensions_has(&e, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
         has_placed = snx_vk_extensions_has(&e, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME);
         has_map2 = snx_vk_extensions_has(&e, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
+        has_dmabuf = snx_vk_extensions_has(&e, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
+                     snx_vk_extensions_has(&e, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
 #if defined(__ANDROID__) /* every driver there takes AHardwareBuffers, which guest memory can move into (uma.c) */
         has_ahb = snx_vk_extensions_has(&e, "VK_ANDROID_external_memory_android_hardware_buffer");
 #endif
@@ -629,6 +631,11 @@ static int create_device(void) {
         chain = &fplaced;
         ext[next++] = VK_KHR_MAP_MEMORY_2_EXTENSION_NAME;
         ext[next++] = VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME;
+        vk_uma_dmabuf(has_dmabuf); /* a view of it maps the same memory again, through a dma-buf */
+        if (vk_uma_can_view()) {
+            ext[next++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+            ext[next++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
+        }
     }
     VkPhysicalDeviceShaderClockFeaturesKHR fclock = {.sType =
                                                          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR,

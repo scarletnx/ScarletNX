@@ -631,6 +631,61 @@ static int check_uma_placed(void) {
     return 0;
 }
 
+/* A view of GPU memory where it is (MapMemory's, at a free address): the chunk's own pages mapped there again through
+   its dma-buf, so a write through either address is the other's at once, and the GPU reads the view in place with no
+   import. Unmapped, the view goes and the chunk stays */
+#define UMA_VIEW  (HEAP_BASE + 0x4800000)
+#define UMA_GVIEW 0x4e6000000ull
+static int check_uma_placed_view(void) {
+    VkBuffer r, rb;
+    u64 ro;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    if (!vk_uma_can_view()) {
+        printf("skip: the device can't map memory where it is told or export it as a dma-buf\n");
+        return 0;
+    }
+    int was = vk_uma_placed(1);
+    const u64 src = UMA_L + 0x10000, size = 0x4000;
+    CHECK(mem_map_physical(UMA_L, 0x200000, ~0ull) == 0);
+    memset(GP(src), 0x3a, size);
+    CHECK(mem_alias_begin(src, size) == 0);
+    CHECK(mem_alias_map(UMA_VIEW, src, size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GVIEW, UMA_VIEW, size);
+    int shared_in = GP(UMA_VIEW)[0] == 0x3a && GP(UMA_VIEW)[size - 1] == 0x3a;
+    GP(UMA_VIEW)[0x100] = 0x3b; /* through the view: the source's at once */
+    GP(src)[0x200] = 0x3c;      /* and the other way */
+    int shared = GP(src)[0x100] == 0x3b && GP(UMA_VIEW)[0x200] == 0x3c;
+    vk_lock();
+    u8* result = vk_readback_buffer(256, &rb);
+    CHECK(result && vk_buf_get_input(UMA_GVIEW + 0x100, 256, 4, &r, &ro)); /* the GPU reads the view in place */
+    int placed = vk_uma_placed_at(UMA_VIEW + 0x100, 256), imports = (int)vk_uma_imports(UMA_VIEW, size);
+    uma_read(r, ro, rb, 0);
+    vk_finish();
+    vk_readback_ready();
+    int gpu = result[0] == 0x3b && result[1] == 0x3a && result[0xff] == 0x3a;
+    vk_unlock();
+    CHECK(mem_alias_unmap(UMA_VIEW, size, src) == 0);
+    mem_alias_end(src, size);
+    vk_lock();
+    int gone = !vk_uma_placed_at(UMA_VIEW, 0x1000), kept = vk_uma_placed_at(src, size);
+    vk_unlock();
+    CHECK(GP(src)[0x100] == 0x3b && GP(src)[0x200] == 0x3c && GP(src)[0] == 0x3a);
+    CHECK(mem_unmap_physical(UMA_L, 0x200000) == 0);
+    vk_uma_placed(was);
+    if (!shared_in || !shared || !placed || imports || !gpu || !gone || !kept)
+        fprintf(stderr,
+                "placed view: the source's bytes at the view %d, writes shared %d, read in a chunk %d with %d imports, "
+                "the GPU's read %d, the view gone %d, the chunk kept %d\n",
+                shared_in, shared, placed, imports, gpu, gone, kept);
+    CHECK(shared_in && shared && placed && !imports && gpu && gone && kept);
+    printf(
+        "in place: a view of GPU memory where it is maps the same pages, which the GPU reads there with no import\n");
+    return 0;
+}
+
 /* vk_memory's auto (0) never moves guest memory into AHardwareBuffers: on a device that shares memory, takes them and
    has no VK_EXT_external_memory_host, it copies, and only vk_memory=2 moves. An import where it is stays auto's on such
    a device, and 1 copies everywhere */
