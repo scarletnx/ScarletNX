@@ -309,11 +309,11 @@ Remaining examples: POSIX.
   code changed in a few units, or one cut short, which goes on from the units it had compiled), and the last line says
   how many were (`unit cache: 241 of 259 units reused (310.2 MB) from ...`). The module
   descriptor and the link are made each time. A kept object that is not whole is compiled again, and said. The cache
-  always leaves a tenth of its disk free: when a new unit would take that, the units reused longest ago are removed
-  for it, and a unit there is still no room for is not cached (said once, with the disk's free bytes, and how many
-  units at the end; the units removed for room are summed there too). `--unit_cache_gb=N`
-  (0, no limit, by default) also holds the folder to N GB after each recompile, the units reused longest ago removed
-  first. A cache folder that cannot be made stops the recompile, saying why.
+  always leaves a tenth of its disk free, at most 10 GB: when a new unit would take that, the units reused longest ago
+  are removed for it, and a unit there is still no room for is not cached (said once, with the disk's free bytes, the
+  unit's size and that rule, and how many units at the end; the units removed for room are summed there too).
+  `--unit_cache_gb=N` (0, no limit, by default) also holds the folder to N GB after each recompile, the units reused
+  longest ago removed first. A cache folder that cannot be made stops the recompile, saying why.
   `--keep-ir` saves the generated code (LLVM IR) in `<outdir>/<NAME>/<NAME>_build/`.
   `--hook-direct-calls` sends calls and branches between guest functions through the dispatch table too, so the
   runtime's NVN handlers also take calls made by direct branch.

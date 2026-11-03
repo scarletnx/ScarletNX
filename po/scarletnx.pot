@@ -5400,7 +5400,7 @@ msgid "Unit cache limit"
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, removing its oldest units for a new one"
+msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
 msgstr ""
 
 #: src/nx/runtime/settings.txt

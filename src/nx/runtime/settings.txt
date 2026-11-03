@@ -1228,7 +1228,7 @@ setting Unit cache limit
     words No limit|# GB
     help The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile
     help finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either
-    help way the cache always leaves a tenth of its disk free, removing its oldest units for a new one
+    help way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one
 
 # LLVM's own: every pass of its pipelines for -O0 to -Oz, on unless turned off, and each option LLVM's C API sets on the
 # pass builder and the target machine, LLVM's own value until it is set

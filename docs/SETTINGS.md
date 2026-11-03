@@ -236,7 +236,7 @@ The launcher's own settings, and the recompiler's, which the launcher and the dr
 | `llvm_batch` | `full` | What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: `full`, the passes of the optimization level; `ipo`, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than `full`'s. Not at `-O0` |
 | `aot_threads` | `0` | The threads compiling the game's code when it is recompiled (`--jobs`): `0` is one for each of the computer's cores |
 | `unit_instructions` | `90000` (Android `20000`, iOS `20000`) | The instructions a code unit takes, whole functions at a time, when the game is recompiled (`--chunk`). Each is compiled on its own, and a smaller one takes less memory at once, which a phone needs |
-| `unit_cache_gb` | `0` | The most the cache of compiled code units may hold, in GB (`units/` of the cache folder): past it the units reused longest ago are removed. `0` is no limit. The cache always leaves a tenth of its disk free |
+| `unit_cache_gb` | `0` | The most the cache of compiled code units may hold, in GB (`units/` of the cache folder): past it the units reused longest ago are removed. `0` is no limit. The cache always leaves a tenth of its disk free, at most 10 GB |
 
 ### LLVM Internals
 

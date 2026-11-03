@@ -8,7 +8,9 @@
    the size limit removes the oldest files, never another file of the folder. Each field of the key changes it, and
    the key of fixed fields is pinned. A pack for another machine (here this host's triple) is written a record at a
    time, the bytes of snx_objects_pack, with the units the cache holds read back from it, and each failure says what
-   failed and why; a unit the cache holds for the pack stays there while the disk's room is made */
+   failed and why; a unit the cache holds for the pack stays there while the disk's room is made. The cache leaves a
+   tenth of its disk free, at most 10 GB: a large disk under its tenth still keeps units, a small one keeps its tenth,
+   and a unit there is no room for is said with the free space, its size and that rule */
 #include "common/cpu/aarch64/cpu.h"
 #include "common/utilities/common.h"
 #include "nx/loader/loader.h"
@@ -34,6 +36,8 @@
 #define TEXT_OFF  0x1000
 #define TEXT_SIZE 0x1000
 #define F1        0x10 /* the second function's offset in the text */
+/* the most free space the cache leaves on its disk, pinned here so that a change of it is seen */
+#define MOST_FREE 10000000000ull
 
 /* the failures, the program's memory, and what snx_error said since the last forget() */
 static struct {
@@ -577,11 +581,13 @@ static void pack_units(void) {
     CHECK(size1 > 0 && !snx_remove_tree(cache));
     g_unit_cache.disk = fake_disk;
     g_unit_cache.disk_plenty = 1; /* f0's unit, kept */
-    g_unit_cache.disk_free = g_unit_cache.disk_total / 10 + size1 - 1;
+    /* the most it leaves, as a disk of 1000 GB does */
+    g_unit_cache.disk_free = MOST_FREE + size1 - 1;
     forget();
     CHECK(!build(cache, out, 0) && same_file(reference, out));
     CHECK(snx_is_file(path0) && objects(cache, NULL) == 1);
-    CHECK(said("it leaves free: units without room are not cached", NULL));
+    CHECK(said("it leaves free (a tenth of the disk's 1000.0 GB, at most 10.0 GB) and a unit of ",
+               ": units without room are not cached"));
 done:
     g_unit_cache.disk = NULL;
     g_unit_cache.disk_plenty = 0;
@@ -592,6 +598,86 @@ done:
     free(tmp);
     free(out);
     free(reference);
+    snx_remove_tree(folder);
+}
+
+/* the bytes of the cache's two objects in folder, into size, or 0 when it does not hold two */
+static void two_sizes(const char* folder, SnxU64 size[2]) {
+    char** names = NULL;
+    size_t count = 0, i, n = 0;
+    size[0] = size[1] = 0;
+    if (snx_list_dir(folder, &names, &count)) return;
+    for (i = 0; i < count; ++i) {
+        char* path;
+        if (strlen(names[i]) != 66 || strcmp(names[i] + 64, ".o") || n == 2) continue;
+        path = snx_path_join(folder, names[i]);
+        size[n++] = snx_file_size(path);
+        free(path);
+    }
+    snx_free_strings(names, count);
+    if (n != 2) size[0] = size[1] = 0;
+}
+/* the line start, then "and a unit of <its bytes> bytes: units without room are not cached", said of one of the two
+   units */
+static int said_unit(const char* start, const SnxU64 size[2]) {
+    char line[2][512];
+    int i;
+    for (i = 0; i < 2; ++i)
+        snprintf(line[i], sizeof line[i], "%sand a unit of %llu bytes: units without room are not cached", start,
+                 (unsigned long long)size[i]);
+    return said(line[0], NULL) || said(line[1], NULL);
+}
+
+/* The free space the cache leaves on its disk: a tenth of it, at most 10 GB. A disk of 994.7 GB with 69 GB free, under
+   its tenth, keeps both units (#799), and so it does down to 10 GB and the unit; under that it keeps none, said with
+   the free space, the unit's size and the rule. A disk of 32 GB keeps its tenth: 3.2 GB and the unit free keeps both,
+   3 GB keeps none, said */
+static void free_room(void) {
+    const char* folder = "snx-test-unit-cache.room";
+    const char* cache = "snx-test-unit-cache.room/units";
+#ifdef _WIN32
+    char* out = snx_path_join(folder, "module.dll");
+#else
+    char* out = snx_path_join(folder, "module.so");
+#endif
+    SnxU64 size[2] = {0, 0}, most;
+    snx_remove_tree(folder);
+    CHECK(!snx_mkdirs(folder));
+    program(1);
+    g_unit_cache.disk = fake_disk;
+    g_unit_cache.disk_total = 994700000000ull;
+    g_unit_cache.disk_free = 69000000000ull;
+    forget();
+    CHECK(!build(cache, out, 0) && objects(cache, NULL) == 2 && !g_unit_cache.said_count);
+    two_sizes(cache, size);
+    CHECK(size[0] > SNX_UNIT_TRAILER && size[1] > SNX_UNIT_TRAILER);
+    most = size[0] > size[1] ? size[0] : size[1];
+    /* the 10 GB it leaves and the bigger unit: both kept */
+    g_unit_cache.disk_free = MOST_FREE + most;
+    forget();
+    CHECK(!snx_remove_tree(cache) && !build(cache, out, 0) && objects(cache, NULL) == 2 && !g_unit_cache.said_count);
+    /* a byte short of the smaller unit: none kept, said, both counted at the close */
+    g_unit_cache.disk_free = MOST_FREE + (size[0] < size[1] ? size[0] : size[1]) - 1;
+    forget();
+    CHECK(!snx_remove_tree(cache) && !build(cache, out, 0) && objects(cache, NULL) == 0);
+    CHECK(
+        said_unit("unit cache: 10.0 GB free on snx-test-unit-cache.room/units, short of the 10.0 GB it leaves free (a "
+                  "tenth of the disk's 994.7 GB, at most 10.0 GB) ",
+                  size));
+    CHECK(said("unit cache: 2 unit(s) (", "MB) not cached in snx-test-unit-cache.room/units"));
+    /* a small disk keeps its tenth */
+    g_unit_cache.disk_total = 32000000000ull;
+    g_unit_cache.disk_free = 3200000000ull + most;
+    forget();
+    CHECK(!build(cache, out, 0) && objects(cache, NULL) == 2 && !g_unit_cache.said_count);
+    g_unit_cache.disk_free = 3000000000ull;
+    forget();
+    CHECK(!snx_remove_tree(cache) && !build(cache, out, 0) && objects(cache, NULL) == 0);
+    CHECK(said_unit("unit cache: 3.0 GB free on snx-test-unit-cache.room/units, short of the 3.2 GB it leaves free (a "
+                    "tenth of the disk's 32.0 GB, at most 10.0 GB) ",
+                    size));
+    g_unit_cache.disk = NULL;
+    free(out);
     snx_remove_tree(folder);
 }
 
@@ -628,6 +714,7 @@ int main(void) {
     trim();
     pack_records();
     pack_units();
+    free_room();
     snx_remove_tree(folder);
     for (i = 0; i < sizeof dirs / sizeof *dirs; ++i) {
         snx_remove_tree(dirs[i]);
@@ -761,15 +848,15 @@ int main(void) {
     CHECK(snx_is_file(path_a) && !snx_is_file(path_b));
     CHECK(!build(folder, out[4], 1) && objects(folder, NULL) == 0 && run(out[4]) == 42);
 
-    /* the disk keeps a tenth of itself free (a disk of 1000 GB here): short of it, a new object takes the place of the
-       cache's oldest; with no room even so it is not kept, said with the disk's numbers; a disk whose room cannot be
-       read keeps nothing, said with why. The module is built all the same */
+    /* the disk keeps a tenth of itself free, at most 10 GB (a disk of 1000 GB here): short of it, a new object takes
+       the place of the cache's oldest; with no room even so it is not kept, said with the disk's numbers; a disk whose
+       room cannot be read keeps nothing, said with why. The module is built all the same */
     program(1);
     CHECK(!build(folder, out[4], 0) && objects(folder, NULL) == 2 && snx_is_file(path_a));
     CHECK(!snx_set_file_time(path_a, 1000)); /* f1+1's, the oldest once f0's is reused */
     g_unit_cache.disk = fake_disk;
     g_unit_cache.disk_total = 1000000000000ull;
-    g_unit_cache.disk_free = 100000000000ull; /* the tenth: a new object needs its own size made */
+    g_unit_cache.disk_free = MOST_FREE; /* the most it leaves: a new object needs its own size made */
     program(5);
     forget();
     CHECK(!build(folder, out[5], 0) && run(out[5]) == 46 && !g_unit_cache.said_count);
@@ -782,8 +869,8 @@ int main(void) {
     { /* both units without room: the disk's numbers said once, both counted at the close */
         int lines = 0, i;
         for (i = 0; i < g_unit_cache.said_count; ++i) lines += strstr(g_unit_cache.said[i], "it leaves free") != NULL;
-        CHECK(lines == 1 && said("unit cache: 0.0 GB free on ", "under the 100.0 GB (a tenth of 1000.0 GB) it leaves "
-                                                                "free: units without room are not cached"));
+        CHECK(lines == 1 && said("unit cache: 0.0 GB free on ", ", short of the 10.0 GB it leaves free (a tenth of the "
+                                                                "disk's 1000.0 GB, at most 10.0 GB) and a unit of "));
         CHECK(said("unit cache: 2 unit(s) (", "MB) not cached in "));
     }
     g_unit_cache.disk_fails = 2;
@@ -796,7 +883,7 @@ int main(void) {
     forget();
     CHECK(!build(folder, out[1], 0) && run(out[1]) == 42 && !snx_is_file(path_a));
     CHECK(said("unit cache: cannot read the free space of ", "units are not cached") &&
-          said("unit cache: 0.0 GB free on ", "it leaves free: units without room are not cached") &&
+          said("unit cache: 0.0 GB free on ", "it leaves free (a tenth of the disk's 1000.0 GB, at most 10.0 GB)") &&
           said("unit cache: 2 unit(s) (", "MB) not cached in "));
     g_unit_cache.disk = NULL;
     g_unit_cache.disk_fails = 0;
