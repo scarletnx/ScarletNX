@@ -11,6 +11,7 @@
   * [What the GPU reads in place](#what-the-gpu-reads-in-place)
   * [What still copies, and why](#what-still-copies-and-why)
   * [What keeps it correct](#what-keeps-it-correct)
+  * [Android: guest memory moved into AHardwareBuffers](#android-guest-memory-moved-into-ahardwarebuffers)
   * [Why imports and not placed maps (yet)](#why-imports-and-not-placed-maps-yet)
   * [Measurements on a discrete GPU (RTX 2080, 246 MiB BAR)](#measurements-on-a-discrete-gpu-rtx-2080-246-mib-bar)
   * [Testing on a Steam Deck (or any integrated GPU)](#testing-on-a-steam-deck-or-any-integrated-gpu)
@@ -152,8 +153,9 @@ thread to hash and copy, and memory bandwidth.
 - Discrete with a small BAR: anything else. An RTX 2080 without resizable BAR has a 246 MiB window.
 
 The `[Debug]` setting `vk_memory` (also `--vk_memory=N`) chooses the path for guest buffers: 0 auto (in place on
-UMA, copied otherwise), 1 copy, 2 in place. In place needs `VK_EXT_external_memory_host`. Without it the log warns
-and the path is the copy. On a discrete GPU, 2 works but the GPU reads guest memory across the bus: it is for testing
+UMA, copied otherwise), 1 copy, 2 in place. In place needs `VK_EXT_external_memory_host`, or on Android
+`VK_ANDROID_external_memory_android_hardware_buffer` ([below](#android-guest-memory-moved-into-ahardwarebuffers)).
+Without either the log warns and the path is the copy. On a discrete GPU, 2 works but the GPU reads guest memory across the bus: it is for testing
 correctness there, not for speed.
 
 With resizable BAR, the staging ring of streamed uploads goes in device-local memory that the CPU maps
@@ -237,6 +239,32 @@ more per MiB imported in one import, from 16 MiB to 512 MiB, and 7.2 us per MiB 
   N failed, N dropped; N imports hold M MB; N hazards (...)`
 
   The count is by 4 KiB page, so a constant buffer next to vertices on one page counts too.
+
+### Android: guest memory moved into AHardwareBuffers
+
+Every Android driver takes AHardwareBuffers (`VK_ANDROID_external_memory_android_hardware_buffer`), and Qualcomm's
+has no `VK_EXT_external_memory_host`. Where a device has the first and not the second, in place moves guest memory
+into AHardwareBuffers instead of importing it where it is (`vk_uma_choose`; the migrate way in `uma.c`): the windows a
+range touches become a region, a buffer of its own that Vulkan imports once, and their pages then move into it with
+their bytes, mapped where they were (`mem_migrate`: a copy, then the buffer's dma-buf mapped over the range, writers
+held off by `plat_freeze`). A region that a range reaches moves on into one region of their union. A region is 256 MiB
+at most: on an Adreno 830 (Snapdragon 8 Elite) Android's allocator gave 256 MiB, and 512 MiB aborted its service. The
+memory of an AHardwareBuffer is taken whole when it is made and never swapped, so only what the GPU reads moves, and a
+region that goes for idleness or room first moves its pages back into the reservation's own (`mem_unmigrate`).
+
+A probe on that phone (Android 16) found the buffer's mapping to be the memory `AHardwareBuffer_lock` gives, the GPU
+reading what the CPU wrote and the CPU what the GPU wrote with no sync, the CPU's bandwidth there that of `malloc`'s
+memory (31.5 against 31.2 GB/s), `mprotect` trapping there, and a submission costing the same with 16 or 256 MiB
+imported (7 to 30 us), where amdgpu's user pointers cost 6.4 us more per MiB.
+
+A region's buffer is memory of its own, which no change of the guest's pages touches. Pages of a region unmapped,
+decommitted or moved into the alias pool (a view, a trap) get other pages there (`give_back_nl` maps fresh ones, as
+decommitting shared pages keeps their bytes); the region goes then with no wait, the commands recorded before read the
+bytes it had, and it is destroyed once the last of them is done. Write tracking leaves a region's pages alone as it
+leaves an import's: that phone's kernel (6.6) has no `PAGEMAP_SCAN`, and userfaultfd can't protect a dma-buf mapping.
+Off Android `plat_gpu_buffer` makes a memfd, which the driver imports as host memory: `vulkan_headless`'s
+`check_uma_migrate` runs the migrate way where the driver takes a memfd's pages (lavapipe) and skips where it doesn't
+(amdgpu's user pointers take anonymous memory only), and `memory_alias` moves guest memory into memfds and back.
 
 ### Why imports and not placed maps (yet)
 
