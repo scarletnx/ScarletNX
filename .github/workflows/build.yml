@@ -1273,6 +1273,18 @@ jobs:
       - name: Test native tooling and indexed filesystems
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
         run: ctest --test-dir build/macos --output-on-failure --parallel 4
+      # A shared SDL3 brings no framework of its own to the link, where CI's pinned static build brings Cocoa and the
+      # rest: a Mac user's SDL3 is Homebrew's, and the platform's power watcher must name CoreFoundation itself
+      # (cmake/power_frameworks.cmake). The tests that compile plat_posix.c are built against that SDL3 here.
+      - name: Build the platform tests against a shared SDL3
+        if: ${{ !cancelled() && steps.macos-llvm-build.outcome != 'failure' }}
+        run: |
+          brew install sdl3
+          cmake --preset macos -B build/sdl3-shared -DSNX_SYSTEM_SDL3=ON -DSNX_DEPLOY=OFF \
+            -DLLVM_DIR="$PWD/apple-llvm/lib/cmake/llvm" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build/sdl3-shared --parallel "$(getconf _NPROCESSORS_ONLN)" \
+            --target snx-test-memory-own snx-test-platform-posix snx-test-memory-alias
       # the app, signed ad hoc, and its zip, by CPack (cmake/apple_package.cmake)
       - name: Make the macOS app
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
