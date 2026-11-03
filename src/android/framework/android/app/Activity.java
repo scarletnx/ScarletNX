@@ -46,6 +46,8 @@ public class Activity extends ContextThemeWrapper
     private Application application;
     private Intent intent;
     private ActivityInfo info;
+    /** The device configuration the activity last took (snx.android.app.Activities.configurationChanged) */
+    private final Configuration applied = snx.android.Device.configuration();
     private ComponentName component;
     private Window window;
     private WindowManager windowManager;
@@ -82,6 +84,9 @@ public class Activity extends ContextThemeWrapper
     }
 
     public Intent getIntent() { return intent; }
+    /** The runtime's: the manifest's entry, and the configuration the activity runs with */
+    public Configuration appliedConfiguration() { return new Configuration(applied); }
+    public void applyConfiguration(Configuration config) { applied.setTo(config); }
     public void setIntent(Intent newIntent) { intent = newIntent; }
     public final Application getApplication() { return application; }
     public final boolean isChild() { return parent != null; }
@@ -123,7 +128,11 @@ public class Activity extends ContextThemeWrapper
     public final void runOnUiThread(Runnable action) {
         if (Looper.myLooper() == Looper.getMainLooper()) action.run(); else handler.post(action);
     }
-    public void setRequestedOrientation(int requestedOrientation) { this.requestedOrientation = requestedOrientation; }
+    /** The display turns to the orientation, as Android's window manager turns it for the top activity. */
+    public void setRequestedOrientation(int requestedOrientation) {
+        this.requestedOrientation = requestedOrientation;
+        snx.android.Device.rotate(requestedOrientation);
+    }
     public int getRequestedOrientation() { return requestedOrientation; }
     public void setVisible(boolean visible) { this.visible = visible; }
     public void setShowWhenLocked(boolean showWhenLocked) {}

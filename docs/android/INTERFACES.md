@@ -83,7 +83,11 @@ Each package's plan, by how apps use it.
   `ViewConfiguration` are implemented: apps (and Compose's `AndroidComposeView`) subclass them and depend on
   measure, layout, draw, attach and dispatch order. `ViewRootImpl`, `Window`, `WindowManager` and `Display` are
   abstracted: an activity's window is one SDL window, its decor a `FrameLayout` with the content view, its insets
-  zero (no status or navigation bar), its display the window's size and the host's scale.
+  zero (no status or navigation bar), its display the window's size and the host's scale. An activity's requested
+  orientation (`setRequestedOrientation`, the manifest's `screenOrientation`) turns the display as Android's window
+  manager does: a landscape one on a display taller than wide swaps its width and height, and the window follows. A
+  change of the display's size updates every `Resources`, then goes to the application and each activity: an
+  activity whose `configChanges` names every changed field gets `onConfigurationChanged`, another one is made again.
 - **`android.graphics`.** Thin Java. `Canvas`, `RenderNode`, `Paint`, `Path`, `Shader` and `Typeface` hold
   native handles of the libhwui HLE; `Rect`, `RectF`, `Point`, `Color`, `Matrix` and `Insets` are plain Java.
   `Bitmap` pixels live in host memory for the CPU of the app and are uploaded to Vulkan when drawn.

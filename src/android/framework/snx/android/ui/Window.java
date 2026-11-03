@@ -89,6 +89,19 @@ public final class Window {
         }
     }
 
+    /**
+     * The display turned to width by height (snx.android.Device.rotate): the host window takes the size (an SDL
+     * window's size event follows, with the same size), and the display, its configuration and the windows' roots
+     * take it now, so an app that waits for the new orientation sees it at once.
+     */
+    public static void rotate(int width, int height) {
+        synchronized (Window.class) {
+            if (open) nativeResize(width, height);
+        }
+        snx.android.Device.resize(width, height);
+        Host.resize(width, height);
+    }
+
     /** The main queue's wait: in steps, with the window's events read between them. */
     private static final class Pump implements MessageQueue.Waiter {
         @Override public void await(MessageQueue queue, long timeout) throws InterruptedException {
@@ -173,7 +186,7 @@ public final class Window {
                 case 3 -> {
                     int w = (int) events[o + 2], h = (int) events[o + 3];
                     snx.android.Device.resize(w, h);
-                    if (root != null) root.resize(w, h);
+                    Host.resize(w, h);
                 }
                 case 4 -> snx.android.app.Activities.finishAll();
                 default -> {}
@@ -229,6 +242,7 @@ public final class Window {
 
     private static native boolean nativeOpen(int width, int height, String title);
     private static native boolean nativeHasWindow();
+    private static native void nativeResize(int width, int height);
     /**
      * A frame: its list, and its bitmaps (ID, width and height in info, three ints each) with the pixels to upload and
      * the operations to draw into each first (null for none), and the bitmaps the app let go.
