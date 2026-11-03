@@ -64,10 +64,11 @@ int nce_host_check(char* why, size_t size);
    reads, which the stubs of NCE_TICKS add to. 0, or -1 with the reason in why when another library of the process
    holds the thread's word that the stubs read */
 int nce_host_attach(CPU* c, u64* reads, char* why, size_t size);
-/* the net under the guest's code: from here a system call made from the guest's addresses (an SVC that no stub
-   holds) is not made, and trapped gets SIGSYS at the SVC. Every system call of the process then runs a seccomp
-   filter of NCE_NET_WORDS words. After nce_host_init. 0, or -1 with the reason in why: a kernel or qemu-user without
-   seccomp filters */
+/* the net under this guest thread: from here a system call it makes from the guest's addresses (an SVC that no stub
+   holds) is not made, and trapped gets SIGSYS at the SVC. Its system calls then run a seccomp filter of NCE_NET_WORDS
+   words, and those of the threads it starts; the runtime's own threads run none (nce_net_install). After
+   nce_host_init. 0 (taken here or inherited), or -1 with the reason in why: a kernel or qemu-user without seccomp
+   filters */
 int nce_host_net(char* why, size_t size);
 /* this host thread's id, which nce_host_kick takes */
 int nce_host_tid(void);

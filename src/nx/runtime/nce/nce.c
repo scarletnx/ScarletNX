@@ -30,6 +30,7 @@
 
 static struct {
     int checked, file, wanted, on;
+    int net;       /* the net under the guest threads (thread_net): 0 not tried yet, 1 on, -1 none on this system */
     char why[240]; /* why a game of an NCE recompile does not get it on this host (nce_host_check) */
     NceEnv env;
     PMutex lock; /* the pools and the diverts, which a guest thread changes (ldr:ro, NVN's resolver) */
@@ -233,6 +234,28 @@ static void kicker(void* arg) {
     }
 }
 
+/* The net under this guest thread (nce_host_net), as it starts the game's code: each one takes it, so the runtime's
+   own threads make their system calls with no filter. The first that cannot says the system has no seccomp filters,
+   once, and the game runs without the net; one that cannot where another took it ends the game */
+static void thread_net(u32 ix) {
+    char why[240];
+    int none = 0;
+    if (__atomic_load_n(&g_nce.net, __ATOMIC_ACQUIRE) < 0) return;
+    if (!nce_host_net(why, sizeof why)) {
+        __atomic_store_n(&g_nce.net, 1, __ATOMIC_RELEASE);
+        return;
+    }
+    if (__atomic_compare_exchange_n(&g_nce.net, &none, -1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        WARN("nce: %s, so an SVC that the recompile did not find as code would run as a system call of the host\n",
+             why);
+        return;
+    }
+    if (none > 0)
+        fatal("NCE: thread %u cannot take the net under the game's code, which its other threads have (%s): an SVC "
+              "that the recompile did not find as code would run as a system call of the host",
+              ix, why);
+}
+
 void nce_thread_run(struct KThread* t, u64 pc) {
     CPU* c = &t->cpu;
     u32 ix = kt_ix(t);
@@ -240,6 +263,7 @@ void nce_thread_run(struct KThread* t, u64 pc) {
     __atomic_store_n(&g_nce.tid[ix], nce_host_tid(), __ATOMIC_RELEASE);
     if (nce_host_attach(c, guest_stats_counter(ix, GSTAT_NCE_TICKS), why, sizeof why))
         fatal("NCE: thread %u cannot run the game's code natively: %s", ix, why);
+    thread_net(ix);
     if (!c->x[30]) c->x[30] = g_nce.trap; /* the entry function returns to 0: the end of the thread */
     c->pc = pc;
     set_guest(c, 1);
@@ -323,9 +347,6 @@ void nce_init(void) {
         nce_sites_free(&sites);
         return;
     }
-    if (nce_host_net(why, sizeof why))
-        WARN("nce: %s, so an SVC that the recompile did not find as code would run as a system call of the host\n",
-             why);
     g_nce.env.clock = counter.words;
     g_nce.env.ns_lo = counter.mul_lo;
     g_nce.env.ns_hi = counter.mul_hi;
