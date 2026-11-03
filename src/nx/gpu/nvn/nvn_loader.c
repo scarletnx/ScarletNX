@@ -77,14 +77,51 @@ static const NvnMissing* missing_find(u64 addr) {
     for (u32 n = 0, i = missing_hash(addr); n < NVN_MISSING_SLOTS; n++, i = (i + 1) & (NVN_MISSING_SLOTS - 1)) {
         u64 a = __atomic_load_n(&g_nvn.loader.missing[i].addr, __ATOMIC_ACQUIRE);
         if (a == addr) return &g_nvn.loader.missing[i];
-        if (!a) return NULL;
+        if (!a) break;
+    }
+    /* the probe stops at the first empty slot, so a name noted while another held its slot and a third then took
+       that one's place is not found by it. The table holds a hundred or so, and only a log line and a fatal read
+       it: a scan finds the name either way */
+    for (u32 i = 0; i < NVN_MISSING_SLOTS; i++) {
+        u64 a = __atomic_load_n(&g_nvn.loader.missing[i].addr, __ATOMIC_ACQUIRE);
+        if (a == addr) return &g_nvn.loader.missing[i];
     }
     return NULL;
 }
 
 static void unimplemented(CPU* c, u64 entry) {
     const NvnMissing* m = missing_find(entry);
-    (void)c;
+    if (!m) {
+        /* a call whose name nothing recorded: its registers and the game's own symbols say what it was, which is
+           what the next function to implement is */
+        LOG("nvn: the call at %llx takes x0 %llx x1 %llx x2 %llx x3 %llx x4 %llx x5 %llx (lr %llx)\n",
+            (unsigned long long)entry, (unsigned long long)c->x[0], (unsigned long long)c->x[1],
+            (unsigned long long)c->x[2], (unsigned long long)c->x[3], (unsigned long long)c->x[4],
+            (unsigned long long)c->x[5], (unsigned long long)c->x[30]);
+        for (u32 i = 0; i < 6; i++) {
+            u64 a = c->x[i];
+            if (i == 2 || i == 5 || !readable(a)) continue;
+            u32 w[8];
+            for (u32 k = 0; k < 8; k++) w[k] = gr32(a + 4 * k);
+            LOG("  x%u %llx: %08x %08x %08x %08x %08x %08x %08x %08x\n", i, (unsigned long long)a, w[0], w[1],
+                w[2], w[3], w[4], w[5], w[6], w[7]);
+        }
+        u64 addr;
+        const char* sym, *best = NULL;
+        u64 best_at = 0;
+        u32 k;
+        for (k = 0; kernel_symbol(k, &addr, &sym); k++)
+            if (sym && addr <= entry && (!best || addr > best_at)) best = sym, best_at = addr;
+        if (best)
+            LOG("nvn: %llx is inside the game's %s at %llx (+%llx)\n", (unsigned long long)entry, best,
+                (unsigned long long)best_at, (unsigned long long)(entry - best_at));
+        best = NULL, best_at = 0;
+        for (k = 0; kernel_symbol(k, &addr, &sym); k++)
+            if (sym && addr <= c->x[30] && (!best || addr > best_at)) best = sym, best_at = addr;
+        if (best)
+            LOG("nvn: its caller %llx is inside the game's %s at %llx (+%llx)\n", (unsigned long long)c->x[30], best,
+                (unsigned long long)best_at, (unsigned long long)(c->x[30] - best_at));
+    }
     fatal("nvn: the game called %s, which nvn doesn't implement yet", m ? m->name : "an NVN function");
 }
 
