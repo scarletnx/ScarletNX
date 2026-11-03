@@ -13,10 +13,14 @@ but where the case says glslang accepts it (an error glslang only finds when it 
 shaders: every shader of shaders/ compiles to SPIR-V that spirv-val takes for Vulkan 1.1, also through the CLI's
 binding map; glslangValidator takes the
 shader too (or refuses it where its first lines say so), and for GLSL ES 3.10 and later lays out every block, member
-by member, as glslc does. keywords: every word glslc's table knows is a name, a keyword or a reserved word in the
+by member, as glslc does, with the same interface decorations, but where a line "// glslang -V: WHY" says its
+module is no reference. keywords: every word glslc's table knows is a name, a keyword or a reserved word in the
 same GLSL ES versions for glslc and for glslangValidator. semantics: each shader of semantics/ stores expressions on
 constants in slots of a buffer; spirv-opt folds glslc's module and glslangValidator's into the constants they store,
 which must be the same in every slot both fold (and both must fold enough of them for the test to mean something).
+A shader whose second line is "// compare: samples" is compared another way: spirv-opt inlines glslc's module and
+glslangValidator -R's (which gives a struct's samplers variables of their own too), and each texture call must read
+the same sampler at the same coordinate, and the same uniform members be read, named by their paths.
 sources: src/glslc calls no allocator: a compilation uses the caller's workspace only. Without glslangValidator the
 comparisons are left out, and the test says so.
 """
@@ -187,7 +191,8 @@ def check_shaders(args, failures):
             if not args.glslang:
                 continue
             note = re.search(r'^// glslang: rejects \((.*)\)$', source, re.MULTILINE)
-            vulkan = version_of(source) >= 310
+            # a line "// glslang -V: WHY" keeps glslang to the language: its Vulkan module is no reference there
+            vulkan = version_of(source) >= 310 and not re.search(r'^// glslang -V: ', source, re.MULTILINE)
             ref_spv = Path(directory) / (shader.name + '.ref.spv')
             reference = run(glslang_command(args.glslang, shader, ref_spv if vulkan else None))
             if note and reference.returncode == 0:
@@ -286,10 +291,114 @@ def folded_stores(dis):
     return {slot: value(v) for slot, v in stored.items()}
 
 
+SAMPLES = '// compare: samples'
+NUMERIC = ('OpTypeFloat', 'OpTypeInt', 'OpTypeBool', 'OpTypeVector', 'OpTypeMatrix')
+
+
+def reads(dis):
+    """what each image instruction samples, at which coordinate, and which members of the default uniform block are
+    read: each a path from its variable by the names of the module (glslang's mats[1].a written as glslc's mats.a[1])"""
+    names, members, defs = {}, {}, {}
+    for line in dis.splitlines():
+        t = line.split()
+        if len(t) > 2 and t[0] == 'OpName':
+            names[t[1]] = line.split('"')[1]
+        elif len(t) > 3 and t[0] == 'OpMemberName':
+            members[(t[1], int(t[2]))] = line.split('"')[1]
+        elif len(t) > 2 and t[1] == '=':
+            defs[t[0]] = t[2:]
+
+    def walk(path, type_id, steps):
+        for step in steps:
+            d = defs.get(type_id, [])
+            if d[:1] == ['OpTypeStruct'] and step is not None:
+                name = members.get((type_id, int(step)), step)
+                path, type_id = (f'{path}.{name}' if path else name), d[1 + int(step)]
+            elif d[:1] in (['OpTypeArray'], ['OpTypeRuntimeArray'], ['OpTypeVector'], ['OpTypeMatrix']):
+                path, type_id = f'{path}[{"?" if step is None else step}]', d[1]
+            else:
+                return None, None
+        return path, type_id
+
+    def value(i, depth=0):
+        """(path, type, root variable) of i, or (None, None, None) when it is no read"""
+        d = defs.get(i, [])
+        if depth > 32 or not d:
+            return None, None, None
+        if d[0] == 'OpVariable':
+            pointee = defs.get(d[1], [None, None, None])[2]
+            return re.sub(r'^(\w+)\[(\d+)\]\.(\w+)$', r'\1.\3[\2]', names.get(i, '?')), pointee, i
+        if d[0] in ('OpAccessChain', 'OpInBoundsAccessChain', 'OpCompositeExtract'):
+            path, type_id, root = value(d[2], depth + 1)
+            if path is None:
+                return None, None, None
+            if d[0] == 'OpCompositeExtract':
+                steps = d[3:]
+            else:
+                steps = [defs[s][2] if defs.get(s, [''])[0] == 'OpConstant' else None for s in d[3:]]
+            path, type_id = walk(path, type_id, steps)
+            return path, type_id, root
+        if d[0] == 'OpLoad':
+            return value(d[2], depth + 1)
+        if d[0] == 'OpConstant':
+            return d[2], d[1], None
+        if d[0] == 'OpConstantComposite':
+            return '(' + ', '.join(str(value(c, depth + 1)[0]) for c in d[2:]) + ')', d[1], None
+        return None, None, None
+
+    samples, uniforms = [], set()
+    for i, d in defs.items():
+        if d[0].startswith('OpImageSample'):
+            samples.append(f'{value(d[2])[0]} at {value(d[3])[0]}')
+        elif d[0] in ('OpLoad', 'OpCompositeExtract') and defs.get(d[1], [''])[0] in NUMERIC:
+            path, _, root = value(i)
+            if root and names.get(root) == '' and defs[root][2] == 'Uniform':
+                uniforms.add(path or '?')
+    return sorted(samples), uniforms
+
+
+def check_samples(args, shader, directory, failures):
+    found = {}
+    for who in ('glslc', 'glslang'):
+        spv, opt = Path(directory) / f'{shader.name}.{who}.spv', Path(directory) / f'{shader.name}.{who}.opt'
+        if who == 'glslc':
+            made = run([args.cli, '-o', str(spv), str(shader)])
+        else:
+            made = run(
+                [args.glslang, '-V', '-R', '--target-env', 'vulkan1.1', '--amb', '--aml', '-o', str(spv), str(shader)]
+            )
+        if made.returncode:
+            failures.append(f'{shader.name}: {who} refuses it: {made.stdout.strip()[:300]}')
+            return
+        inlined = run([args.spirv_opt, '-O', str(spv), '-o', str(opt)])
+        if inlined.returncode:
+            failures.append(f'{shader.name}: spirv-opt refuses the {who} module: {inlined.stderr.strip()}')
+            return
+        found[who] = reads(run([args.spirv_dis, '--raw-id', str(opt)]).stdout)
+    (ours, ours_uniforms), (theirs, theirs_uniforms) = found['glslc'], found['glslang']
+    for sample in sorted(set(ours) | set(theirs)):
+        if ours.count(sample) != theirs.count(sample):
+            failures.append(
+                f'{shader.name}: {sample}: {ours.count(sample)} times in glslc, {theirs.count(sample)} in glslang'
+            )
+    if '?' in ours_uniforms | theirs_uniforms:
+        failures.append(f'{shader.name}: a uniform read glslc_test.py cannot name by its path')
+    for path in sorted(ours_uniforms ^ theirs_uniforms):
+        failures.append(f'{shader.name}: {path} is read by {"glslc" if path in ours_uniforms else "glslang"} only')
+    if len(theirs) < 12 or len(theirs_uniforms) < 4:
+        failures.append(
+            f'{shader.name}: {len(theirs)} samples and {len(theirs_uniforms)} uniforms read, too few to mean'
+        )
+    print(f'semantics: {shader.name}: {len(ours)} samples and {len(ours_uniforms)} uniforms read, compared')
+
+
 def check_semantics(args, failures):
     shaders = sorted(p for p in (HERE / 'semantics').iterdir() if p.suffix in EXTENSIONS)
     with tempfile.TemporaryDirectory(prefix='snx-glslc-semantics-') as directory:
         for shader in shaders:
+            if SAMPLES in shader.read_text(encoding='utf-8').splitlines()[1:2]:
+                check_samples(args, shader, directory, failures)
+                continue
             spv = {who: Path(directory) / f'{shader.name}.{who}.spv' for who in ('glslc', 'glslang')}
             made = run([args.cli, '-o', str(spv['glslc']), str(shader)])
             reference = run(glslang_command(args.glslang, shader, spv['glslang']))
