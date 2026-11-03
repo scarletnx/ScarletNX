@@ -98,7 +98,8 @@ shader needed (`the shader has 32769 tokens after preprocessing, more than the 3
 - Declarations: scalars, vectors, matrices, structs, arrays (of arrays from 3.10), the qualifiers and their layouts
   (`location`, `binding`, `set`, `std140`, `std430`, `row_major`, `local_size_*`, `early_fragment_tests`, the image
   formats), precision and the default precision rules, uniform blocks, buffer blocks with a runtime-sized last
-  member, `shared`, functions with `in`, `out`, `inout` and `const` parameters.
+  member, in and out blocks between stages (3.20, or 3.10 with `GL_EXT_shader_io_blocks`; arrays of them, flat,
+  centroid and sample members), `shared`, functions with `in`, `out`, `inout` and `const` parameters.
 - Every statement and operator, the constructors with their conversions, swizzles, `length()`.
 - The built-in functions: angles and trigonometry, exponentials, the common ones, geometry, matrices, vector
   relations, integers (3.10), packing, derivatives, the texture functions of every sampler (shadow, cube, arrays,
@@ -109,8 +110,9 @@ shader needed (`the shader has 32769 tokens after preprocessing, more than the 3
 - Extensions: `GL_OES_standard_derivatives`, `GL_EXT_shader_texture_lod`, `GL_EXT_frag_depth`,
   `GL_EXT_draw_buffers`, `GL_OES_texture_3D` and `GL_EXT_shadow_samplers` for 1.00; `GL_OES_shader_image_atomic`,
   `GL_EXT_texture_buffer`, `GL_OES_texture_buffer`, `GL_EXT_texture_cube_map_array`,
-  `GL_OES_texture_cube_map_array` and `GL_OES_texture_storage_multisample_2d_array` for 3.10; and
-  `GL_OES_sample_variables`. Another one is refused with `require` and gives a warning with `enable` or `warn`.
+  `GL_OES_texture_cube_map_array`, `GL_OES_texture_storage_multisample_2d_array`, `GL_EXT_shader_io_blocks` and
+  `GL_OES_shader_io_blocks` for 3.10; and `GL_OES_sample_variables`. Another one is refused with `require` and gives
+  a warning with `enable` or `warn`.
 
 ## OpenGL ES on Vulkan
 
@@ -118,6 +120,8 @@ The module is what a Vulkan pipeline takes; the OpenGL ES side of it is the back
 
 - **Locations follow declaration order.** An `in` or `out` without a location takes the first free one after the
   given ones, in the order the shader declares them; a matrix takes one per column, an array one per element.
+  An in or out block takes its location, or each member its own, and the members follow each other from there; a
+  block with none takes the first free run of its size, and an array of blocks one element after the other.
   `gl_FragColor` and `gl_FragData` are output location 0. OpenGL ES links a vertex output to a fragment input by name
   and Vulkan by location, so a backend matches the two stages' `result.reflect` lists by name, or keeps their
   declarations in the same order: a vertex shader that declares `out vec2 uv; out vec4 color;` and a fragment shader
@@ -148,7 +152,7 @@ The module is what a Vulkan pipeline takes; the OpenGL ES side of it is the back
 
 Each of these is refused with an error that names it, or is a name the shader cannot use:
 
-- the geometry and tessellation stages, core in 3.20, and in and out blocks;
+- the geometry and tessellation stages, core in 3.20;
 - atomic counters (`atomic_uint`), which have no Vulkan form;
 - samplers and images inside structs; images as function parameters;
 - `interpolateAtCentroid`, `interpolateAtSample`, `interpolateAtOffset`; `textureGatherOffsets`;

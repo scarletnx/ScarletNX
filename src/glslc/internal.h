@@ -227,13 +227,14 @@ enum {
 #define GLSLC_MEM_CENTROID  8u
 #define GLSLC_MEM_READONLY  16u
 #define GLSLC_MEM_WRITEONLY 32u
+#define GLSLC_MEM_SAMPLE    64u
 
 typedef struct {
     GlslcView name;
     uint16_t type;
     uint8_t prec;
     uint8_t mflags;   /* GLSLC_MEM_* */
-    int16_t location; /* in and out blocks' members: -1 without one */
+    int16_t location; /* in and out blocks' members: the one given, -1 without one */
     uint16_t pad;
 } GlslcMember;
 
@@ -423,6 +424,7 @@ enum {
     GLSLC_EXT_CUBE_MAP_ARRAY,    /* GL_EXT_texture_cube_map_array, GL_OES_texture_cube_map_array */
     GLSLC_EXT_SAMPLE_VARIABLES,  /* GL_OES_sample_variables */
     GLSLC_EXT_MULTISAMPLE_ARRAY, /* GL_OES_texture_storage_multisample_2d_array */
+    GLSLC_EXT_IO_BLOCKS,         /* GL_EXT_shader_io_blocks, GL_OES_shader_io_blocks */
     GLSLC_EXT_COUNT
 };
 typedef struct {

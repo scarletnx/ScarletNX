@@ -325,6 +325,8 @@ const GlslcExtension glslc_extensions[] = {
     {"GL_OES_texture_cube_map_array", GLSLC_EXT_CUBE_MAP_ARRAY, GLSLC_M31X},
     {"GL_OES_sample_variables", GLSLC_EXT_SAMPLE_VARIABLES, GLSLC_M3XX},
     {"GL_OES_texture_storage_multisample_2d_array", GLSLC_EXT_MULTISAMPLE_ARRAY, GLSLC_M31X},
+    {"GL_EXT_shader_io_blocks", GLSLC_EXT_IO_BLOCKS, GLSLC_M31X},
+    {"GL_OES_shader_io_blocks", GLSLC_EXT_IO_BLOCKS, GLSLC_M31X},
 };
 const uint32_t glslc_extension_count = sizeof glslc_extensions / sizeof glslc_extensions[0];
 

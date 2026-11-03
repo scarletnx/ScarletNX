@@ -299,8 +299,11 @@ static int needs_layout(const Glslc* g, uint32_t t) {
     return (y->kind == GLSLC_T_SCALAR || y->kind == GLSLC_T_VECTOR) && y->base == SNX_GLSLC_BASE_BOOL;
 }
 
+/* an in or out block (GLSLC_PACK_NONE) is laid out by location: its struct has no offsets */
 static uint32_t block_layout(uint8_t packing) {
-    return packing == GLSLC_PACK_STD430 ? GLSLC_LAYOUT_STD430 : GLSLC_LAYOUT_STD140;
+    return packing == GLSLC_PACK_NONE     ? GLSLC_LAYOUT_NONE
+           : packing == GLSLC_PACK_STD430 ? GLSLC_LAYOUT_STD430
+                                          : GLSLC_LAYOUT_STD140;
 }
 
 static void lay(const Glslc* g, uint32_t t, uint32_t layout, int row_major, uint32_t* align, uint32_t* size);
@@ -2092,6 +2095,52 @@ static void mapped_binding(Glslc* g, const GlslcResource* r, uint32_t* set, uint
     take_binding(g, *set, *binding, r->name);
 }
 
+/* an in or out block: the block's location, or the members' own, and each member after the one before it */
+static void io_block_variable(Glslc* g, uint32_t s) {
+    GlslcSymbol* y = &g->syms[s];
+    int array = ty(g, y->type)->kind == GLSLC_T_ARRAY;
+    uint32_t elements = array ? ty(g, y->type)->len : 1;
+    const GlslcType* bt = ty(g, array ? ty(g, y->type)->elem : y->type);
+    int in = y->storage == GLSLC_ST_IN;
+    uint32_t st = type_id(g, array ? ty(g, y->type)->elem : y->type, 0);
+    uint32_t v = variable(g, s, in ? SC_INPUT : SC_OUTPUT, type_id(g, y->type, 0), 0);
+    EMIT(g, &g->e.annotations, OP_DECORATE, st, DEC_BLOCK);
+    uint8_t* used = in ? g->e.in_locations : g->e.out_locations;
+    uint32_t total = 0, given = 0;
+    for (uint32_t m = 0; m < bt->len; m++) {
+        total += location_count(g, g->members[bt->first + m].type);
+        given += g->members[bt->first + m].location >= 0;
+    }
+    int32_t at = y->location;
+    int whole = at < 0 && !given; /* the first free run of the block's size; given ones are taken already */
+    if (whole) at = free_location(g, used, total * elements, bt->name);
+    if (at >= 0) EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_LOCATION, (uint32_t)at);
+    for (uint32_t i = 0; i < bt->len * elements; i++) { /* an array's elements one after the other */
+        uint32_t m = i % bt->len;
+        const GlslcMember* mb = &g->members[bt->first + m];
+        uint32_t count = location_count(g, mb->type);
+        if (mb->location >= 0 && i < bt->len) { /* no array of blocks has member locations (parser.c) */
+            at = mb->location;
+            EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, st, m, DEC_LOCATION, (uint32_t)at);
+        }
+        if (i >= bt->len) { /* the decorations are the struct's, for every element */
+            reflect(g, in ? SNX_GLSLC_REFLECT_INPUT : SNX_GLSLC_REFLECT_OUTPUT, mb->name, mb->type, (uint32_t)at, 0, 0);
+            at += (int32_t)count;
+            continue;
+        }
+        int integer = ty(g, element_of(g, mb->type))->base != SNX_GLSLC_BASE_FLOAT;
+        if ((mb->mflags & GLSLC_MEM_FLAT) || (integer && in && g->stage == SNX_GLSLC_FRAGMENT))
+            EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, st, m, DEC_FLAT);
+        if (mb->mflags & GLSLC_MEM_CENTROID) EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, st, m, DEC_CENTROID);
+        if (mb->mflags & GLSLC_MEM_SAMPLE) {
+            cap(g, CAP_SAMPLE_RATE_SHADING);
+            EMIT(g, &g->e.annotations, OP_MEMBER_DECORATE, st, m, DEC_SAMPLE);
+        }
+        reflect(g, in ? SNX_GLSLC_REFLECT_INPUT : SNX_GLSLC_REFLECT_OUTPUT, mb->name, mb->type, (uint32_t)at, 0, 0);
+        at += (int32_t)count;
+    }
+}
+
 static void resource_variable(Glslc* g, uint32_t s) {
     GlslcSymbol* y = &g->syms[s];
     uint32_t e = element_of(g, y->type), set, binding;
@@ -2231,9 +2280,23 @@ static void global_variables(Glslc* g) {
     for (uint32_t d = g->first_decl; d; d = nd(g, d)->next) {
         if (nd(g, d)->kind != GLSLC_N_GLOBAL) continue;
         const GlslcSymbol* y = &g->syms[nd(g, d)->a];
-        if ((y->storage == GLSLC_ST_IN || y->storage == GLSLC_ST_OUT) && y->location >= 0)
-            mark_location(g, y->storage == GLSLC_ST_IN ? g->e.in_locations : g->e.out_locations, y->location,
-                          location_count(g, y->type), y->name);
+        int io = y->storage == GLSLC_ST_IN || y->storage == GLSLC_ST_OUT;
+        uint8_t* used = y->storage == GLSLC_ST_IN ? g->e.in_locations : g->e.out_locations;
+        uint32_t block = io && ty(g, y->type)->kind == GLSLC_T_ARRAY ? ty(g, y->type)->elem : y->type;
+        if (io && ty(g, block)->kind == GLSLC_T_BLOCK) { /* each member after the one before, from the given */
+            const GlslcType* bt = ty(g, block);
+            uint32_t elements = block != y->type ? ty(g, y->type)->len : 1;
+            int32_t at = y->location;
+            for (uint32_t i = 0; i < bt->len * elements; i++) {
+                const GlslcMember* mb = &g->members[bt->first + i % bt->len];
+                if (mb->location >= 0) at = mb->location;
+                if (at < 0) break; /* none given: the block takes a free run later */
+                mark_location(g, used, at, location_count(g, mb->type), mb->name);
+                at += (int32_t)location_count(g, mb->type);
+            }
+        } else if (io && y->location >= 0) {
+            mark_location(g, used, y->location, location_count(g, y->type), y->name);
+        }
         if (is_resource(g, nd(g, d)->a) && y->binding >= 0 && !g->bind) { /* a map places every one itself */
             uint32_t set = y->set >= 0 ? (uint32_t)y->set : 0;
             if (binding_taken(g, set, (uint32_t)y->binding))
@@ -2250,7 +2313,13 @@ static void global_variables(Glslc* g) {
         g->e.site = y->name.pos;
         switch (y->storage) {
             case GLSLC_ST_IN:
-            case GLSLC_ST_OUT: interface_variable(g, s); break;
+            case GLSLC_ST_OUT:
+                if (ty(g, element_of(g, y->type))->kind == GLSLC_T_BLOCK) {
+                    io_block_variable(g, s);
+                } else {
+                    interface_variable(g, s);
+                }
+                break;
             case GLSLC_ST_UNIFORM:
             case GLSLC_ST_BUFFER:
                 if (is_resource(g, s)) {
