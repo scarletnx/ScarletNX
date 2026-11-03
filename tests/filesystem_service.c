@@ -843,7 +843,7 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
        checked in mii_model), made at the first open and not before; its six files, a Linear and an SRGB copy and the
        two shape qualities sharing their bytes */
     {
-        static u8 file[0x280000];
+        static u8 file[0x280000], want[0x280000];
         Request a;
         unsigned i;
         u64 at[6];
@@ -878,8 +878,9 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
             offset = snx_ld_le64(tables + header[7] + entry + 8);
             size = snx_ld_le64(tables + header[7] + entry + 16);
             at[i] = offset;
-            CHECK(size == snx_mii_model_write(i, NULL) && size <= sizeof file &&
-                  header[9] + offset + size <= model_size);
+            memset(want, 0, sizeof want);
+            CHECK(snx_mii_model_write(i, NULL) <= sizeof want && snx_mii_model_write(i, want) == size &&
+                  size <= sizeof file && header[9] + offset + size <= model_size);
             CHECK(snx_mii_model_same(i) == i || at[snx_mii_model_same(i)] == offset);
             for (done = 0; done < size && size <= sizeof file; done += 0x8000) {
                 u64 len = size - done < 0x8000 ? size - done : 0x8000;
@@ -890,7 +891,8 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
                 dispatch(model, &a, 0);
                 memcpy(file + done, GP(0x5000), (size_t)len);
             }
-            CHECK(!memcmp(file, i < 4 ? "NFTR\1\0\0\0" : "NFSR\1\0\0\0", 8) && snx_ld_le32(file + 8) == size);
+            CHECK(!memcmp(file, i < 4 ? "NFTR\1\0\0\0" : "NFSR\1\0\0\0", 8) && snx_ld_le32(file + 8) == size &&
+                  size <= sizeof want && !memcmp(file, want, (size_t)size));
         }
         svcobj_unref(model);
     }
