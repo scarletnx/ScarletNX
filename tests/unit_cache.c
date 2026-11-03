@@ -42,8 +42,8 @@ static struct {
     char said[16][1024];
     int said_count;
     size_t wrappers; /* the last build's snx_aot_ wrappers */
-    /* a disk of disk_total bytes with disk_free free, when disk is set; its room cannot be read the next disk_fails
-       times */
+    /* a disk of disk_total bytes with disk_free free, when disk is set (roomy_disk's when it is not); its room cannot
+       be read the next disk_fails times */
     SnxUnitDisk disk;
     SnxU64 disk_free, disk_total;
     int disk_fails;
@@ -90,6 +90,14 @@ static int fake_disk(const char* folder, SnxU64* free_bytes, SnxU64* total) {
     }
     *free_bytes = g_unit_cache.disk_free;
     *total = g_unit_cache.disk_total;
+    return 0;
+}
+/* the disk a build sees when no check sets one: 1000 GB free of 2000 GB, so that no check leans on the free space of
+   the disk the test runs on */
+static int roomy_disk(const char* folder, SnxU64* free_bytes, SnxU64* total) {
+    (void)folder;
+    *free_bytes = 1000000000000ull;
+    *total = 2000000000000ull;
     return 0;
 }
 static int said(const char* a, const char* b) {
@@ -145,7 +153,7 @@ static int build_arm(const char* folder, const char* output) {
     llvm.jobs = 1;
     llvm.quiet = 1;
     llvm.unit_cache = folder;
-    llvm.unit_cache_disk = g_unit_cache.disk;
+    llvm.unit_cache_disk = g_unit_cache.disk ? g_unit_cache.disk : roomy_disk;
     return snx_build_module_arm(&loaded, &options, &llvm);
 }
 
@@ -180,7 +188,7 @@ static int build(const char* folder, const char* output, SnxU64 limit) {
     llvm.unit_cache = folder;
     llvm.unit_cache_limit = limit;
     llvm.wrappers = &g_unit_cache.wrappers;
-    llvm.unit_cache_disk = g_unit_cache.disk;
+    llvm.unit_cache_disk = g_unit_cache.disk ? g_unit_cache.disk : roomy_disk;
     return snx_build_module_llvm(&loaded, &options, &llvm);
 }
 
@@ -610,6 +618,10 @@ int main(void) {
     SnxU64 now, total;
 
     snx_error_sink(sink);
+    { /* the system's reading of the disk the test runs on, what a build reads when its caller sets no disk */
+        SnxU64 free_bytes = 0, disk = 0;
+        CHECK(!snx_disk_room(".", &free_bytes, &disk) && disk > 0 && free_bytes <= disk);
+    }
     snx_unit_cache_llvm(llvm, sizeof llvm);
     CHECK(strstr(llvm, LLVM_VERSION_STRING) != NULL);
     keys();
