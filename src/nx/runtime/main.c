@@ -651,9 +651,9 @@ static void threads_line(void) {
     } top[3] = {{0}};
     thread_act_array_t list;
     mach_msg_type_number_t n = 0;
-    u32 nnow = 0;
-    u64 at = plat_ns();
     if (task_threads(mach_task_self(), &list, &n) != KERN_SUCCESS) return;
+    u64 at = plat_ns();
+    u32 nnow = 0;
     for (mach_msg_type_number_t i = 0; i < n; i++) {
         thread_basic_info_data_t b;
         thread_identifier_info_data_t id;
@@ -664,12 +664,15 @@ static void threads_line(void) {
         u64 us = (u64)b.user_time.seconds * 1000000u + (u64)b.user_time.microseconds +
                  (u64)b.system_time.seconds * 1000000u + (u64)b.system_time.microseconds;
         u64 before = 0;
+        int seen = 0;
         for (u32 k = 0; k < nwas; k++)
             if (was[k].id == id.thread_id) {
                 before = was[k].us;
+                seen = 1;
                 break;
             }
-        u64 d = us > before ? us - before : 0;
+        /* a thread past a full table has no time from the last line: its whole CPU time is not of the last 5 s */
+        u64 d = !seen && nwas == THREADS_SEEN ? 0 : us > before ? us - before : 0;
         if (nnow < THREADS_SEEN) {
             now[nnow].id = id.thread_id;
             now[nnow].us = us;
@@ -710,10 +713,10 @@ static void memory_floors(void) {
     static const unsigned floors[] = {1024, 512, 256, 128}; /* MiB */
     static size_t next;
     SnxU64 left = 0;
-    char stats[320], gpu[1024] = "";
     if (next >= sizeof floors / sizeof *floors || !snx_memory_available(&left) || left >= (SnxU64)floors[next] << 20)
         return;
     while (next < sizeof floors / sizeof *floors && left < (SnxU64)floors[next] << 20) next++;
+    char stats[320], gpu[1024] = "";
     resources_text(stats, sizeof stats);
     if (g_renderer && g_renderer->memory_text) g_renderer->memory_text(gpu, sizeof gpu);
     LOG("memory: under %u MiB free: %s, %s\n", floors[next - 1], stats, gpu);
