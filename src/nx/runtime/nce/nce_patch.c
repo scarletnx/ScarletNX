@@ -42,6 +42,13 @@ NceKind nce_kind(SnxU32 w, unsigned* reg, unsigned* imm) {
     return NCE_NONE;
 }
 
+const char* nce_kind_name(NceKind kind) {
+    static const char* const names[NCE_KINDS] = {"none",           "SVC",           "MRS TPIDRRO_EL0",
+                                                 "MRS TPIDR_EL0",  "MSR TPIDR_EL0", "MRS CNTPCT_EL0 or CNTVCT_EL0",
+                                                 "MRS CNTFRQ_EL0", "an exclusive",  "a hooked entry"};
+    return (unsigned)kind < NCE_KINDS ? names[kind] : "?";
+}
+
 /* ---- the scan ---- */
 
 /* a word's state: not known, code that the flow reaches, a literal that a load reads (which stops the flow: a pool
@@ -272,8 +279,10 @@ void nce_find_sites(const SnxCodegen* cg, NceSites* out) {
                 out->data++;
             else if (function_at(cg, a) && snx_a64_flow(w, cg->features) != SNX_A64_FLOW_UNDEF)
                 add_site(out, a, w, kind, reg, imm, 0);
-            else
+            else {
                 out->outside++;
+                out->outside_kind[kind]++;
+            }
         }
     for (size_t i = 0; i < n; i++) {
         free(texts[i].state);
@@ -311,6 +320,27 @@ static SnxU32 mrs_tpidr(unsigned t) { return 0xD53BD040u | t; } /* the host's TP
 #define LDP_X16_X17  0xA94047F0u /* LDP X16, X17, [SP] */
 #define BLR_X17      0xD63F0220u
 #define BR_X16       0xD61F0200u
+#define ISB          0xD5033FDFu
+#define NOP          0xD503201Fu
+static SnxU32 ldr_lit(unsigned t, SnxU64 from, SnxU64 to) {
+    return 0x58000000u | (SnxU32)(((to - from) >> 2) & 0x7FFFFu) << 5 | t;
+}
+static SnxU32 ldar_x(unsigned t, unsigned n) { return 0xC8DFFC00u | n << 5 | t; }
+static SnxU32 add_imm(unsigned d, unsigned n, unsigned imm) { return 0x91000000u | (imm & 0xFFFu) << 10 | n << 5 | d; }
+static SnxU32 sub_imm(unsigned d, unsigned n, unsigned imm) { return 0xD1000000u | (imm & 0xFFFu) << 10 | n << 5 | d; }
+static SnxU32 add_reg(unsigned d, unsigned n, unsigned m) { return 0x8B000000u | m << 16 | n << 5 | d; }
+static SnxU32 sub_reg(unsigned d, unsigned n, unsigned m) { return 0xCB000000u | m << 16 | n << 5 | d; }
+static SnxU32 madd(unsigned d, unsigned n, unsigned m, unsigned a) {
+    return 0x9B000000u | m << 16 | a << 10 | n << 5 | d;
+}
+static SnxU32 msub(unsigned d, unsigned n, unsigned m, unsigned a) {
+    return 0x9B008000u | m << 16 | a << 10 | n << 5 | d;
+}
+static SnxU32 umulh(unsigned d, unsigned n, unsigned m) { return 0x9BC07C00u | m << 16 | n << 5 | d; }
+static SnxU32 udiv(unsigned d, unsigned n, unsigned m) { return 0x9AC00800u | m << 16 | n << 5 | d; }
+static SnxU32 cbnz_x(unsigned t, SnxU64 from, SnxU64 to) {
+    return 0xB5000000u | (SnxU32)(((to - from) >> 2) & 0x7FFFFu) << 5 | t;
+}
 
 typedef struct {
     unsigned char* p;
@@ -323,18 +353,20 @@ static void put(Out* o, SnxU32 w) {
     o->at += 4;
 }
 
-/* the thread's CPU pointer into xt from the host's thread pointer: at tls, or through the pointer there (indirect).
-   Three words either way */
-static void load_cpu(Out* o, const NceEnv* env, unsigned t) {
+/* the word at off in the thread's block into xt, from the host's thread pointer: the block at tls, or through the
+   pointer there (indirect). Three words either way */
+static void load_tls(Out* o, const NceEnv* env, unsigned t, unsigned off) {
     put(o, mrs_tpidr(t));
     if (env->indirect) {
         put(o, ldr_x(t, t, (unsigned)env->tls));
-        put(o, ldr_x(t, t, 0));
+        put(o, ldr_x(t, t, off));
         return;
     }
     put(o, add_hi(t, t, (unsigned)(env->tls >> 12)));
-    put(o, ldr_x(t, t, (unsigned)(env->tls & 0xFFFu)));
+    put(o, ldr_x(t, t, (unsigned)(env->tls & 0xFFFu) + off));
 }
+/* the thread's CPU pointer, the block's first word */
+static void load_cpu(Out* o, const NceEnv* env, unsigned t) { load_tls(o, env, t, 0); }
 
 /* whether load_cpu reaches tls: a multiple of 8, below 16 MiB (ADD #imm12, LSL #12 and LDR), or 32 KiB (LDR alone) */
 static int tls_reached(const NceEnv* env) {
@@ -355,24 +387,76 @@ static void outcall(Out* o, const NceEnv* env, SnxU64 code, int dynamic_return, 
     put(o, ldr_x(30, 31, 16));
     put(o, ADD_SP_FRAME);
     put(o, dynamic_return ? BR_X16 : b_to(o->at, back)); /* a hook's return: the pc that the runtime put in x16 */
-    put(o, 0xD503201Fu); /* NOP: the literal 8-aligned */
+    put(o, NOP);                                         /* the literal 8-aligned */
     snx_st_le64(o->p, env->outcall);
     o->p += 8;
     o->at += 8;
 }
 
 #define OUTCALL_BYTES 56
+#define TICKS_BYTES   176 /* 36 words, the last a NOP that puts the four literals on 8 */
+
+/* MRS Xt, CNTPCT_EL0 or CNTVCT_EL0 as guest_ticks (runtime/clock.c) reads the clock, in t, with two scratch registers
+   kept below the guest's sp. The thread's count of reads goes up by one. Then frozen (load-acquire): while a pause
+   holds the clock its value less 1 is the time; else the counter, made nanoseconds, less origin and start
+   (load-acquire, after frozen, as guest_ns reads them). Then ns / 10000 * 192 + ns % 10000 * 192 / 10000, the ticks */
+static void ticks_stub(Out* o, const NceEnv* env, unsigned t, SnxU64 back) {
+    unsigned a = t < 2 ? 2 : 0, b = a + 1;
+    SnxU64 start = o->at, lit = start + 36 * 4, ticks = start + 22 * 4, frozen = start + 33 * 4;
+    put(o, 0xA9BF0000u | b << 10 | 31u << 5 | a); /* STP Xa, Xb, [SP, #-16]! */
+    load_tls(o, env, a, NCE_TLS_READS);
+    put(o, ldr_x(b, a, 0));
+    put(o, add_imm(b, b, 1));
+    put(o, str_x(b, a, 0));
+    put(o, ldr_lit(a, o->at, lit)); /* the clock's words */
+    put(o, ldar_x(b, a));           /* frozen */
+    put(o, cbnz_x(b, o->at, frozen));
+    put(o, ISB);
+    put(o, 0xD53BE040u | t); /* MRS Xt, CNTVCT_EL0 */
+    put(o, ldr_lit(b, o->at, lit + 8));
+    put(o, umulh(b, t, b));
+    put(o, ldr_lit(a, o->at, lit + 16));
+    put(o, madd(t, t, a, b)); /* the counter's nanoseconds */
+    put(o, ldr_lit(a, o->at, lit + 24));
+    put(o, sub_reg(t, t, a)); /* less origin: the clock's */
+    put(o, ldr_lit(a, o->at, lit));
+    put(o, add_imm(a, a, 8));
+    put(o, ldar_x(b, a)); /* start */
+    put(o, sub_reg(t, t, b));
+    /* ticks: */
+    put(o, movz(a, 10000, 0));
+    put(o, udiv(b, t, a));
+    put(o, msub(t, b, a, t));
+    put(o, movz(a, 192, 0));
+    put(o, madd(t, t, a, 31)); /* MUL */
+    put(o, madd(b, b, a, 31));
+    put(o, movz(a, 10000, 0));
+    put(o, udiv(t, t, a));
+    put(o, add_reg(t, t, b));
+    put(o, 0xA8C10000u | b << 10 | 31u << 5 | a); /* LDP Xa, Xb, [SP], #16 */
+    put(o, b_to(o->at, back));
+    /* frozen: */
+    put(o, sub_imm(t, b, 1));
+    put(o, b_to(o->at, ticks));
+    put(o, NOP);
+    snx_st_le64(o->p, env->clock);
+    snx_st_le64(o->p + 8, env->ns_lo);
+    snx_st_le64(o->p + 16, env->ns_hi);
+    snx_st_le64(o->p + 24, env->ns_origin);
+    o->p += 32;
+    o->at += 32;
+}
 
 SnxU64 nce_stub_size(NceKind kind) {
     switch (kind) {
-    case NCE_SVC:
-    case NCE_TICKS: return OUTCALL_BYTES;
-    case NCE_TPIDRRO:
-    case NCE_TPIDR: return 24; /* five words, rounded to 8 */
-    case NCE_TPIDR_SET: return 32;
-    case NCE_FREQ: return 16;
-    case NCE_HOOK: return OUTCALL_BYTES + 32;
-    default: return 0;
+        case NCE_SVC: return OUTCALL_BYTES;
+        case NCE_TICKS: return TICKS_BYTES;
+        case NCE_TPIDRRO:
+        case NCE_TPIDR: return 24; /* five words, rounded to 8 */
+        case NCE_TPIDR_SET: return 32;
+        case NCE_FREQ: return 16;
+        case NCE_HOOK: return OUTCALL_BYTES + 32;
+        default: return 0;
     }
 }
 
@@ -397,13 +481,15 @@ int nce_emit(NcePool* pools, size_t count, const NceEnv* env, const NceSite* sit
         *patch = site->word | 1u << 15; /* o0: LDXR to LDAXR, STXR to STLXR, the pairs alike */
         return 0;
     }
-    if (!size || !tls_reached(env) || !(p = pool_for(pools, count, size, site->addr))) return -1;
+    if (!size || !tls_reached(env) || (site->kind == NCE_TICKS && !env->clock) ||
+        !(p = pool_for(pools, count, size, site->addr)))
+        return -1;
     o.p = p->buf + p->used;
     o.at = p->addr + p->used;
     *patch = b_to(site->addr, o.at);
     switch ((NceKind)site->kind) {
     case NCE_SVC: outcall(&o, env, NCE_OUTCALL(NCE_SVC, site->imm), 0, back); break;
-    case NCE_TICKS: outcall(&o, env, NCE_OUTCALL(NCE_TICKS, t), 0, back); break;
+    case NCE_TICKS: ticks_stub(&o, env, t, back); break;
     case NCE_TPIDRRO:
     case NCE_TPIDR:
         load_cpu(&o, env, t);
@@ -487,6 +573,49 @@ int nce_trap(NcePool* pools, size_t count, const NceEnv* env, unsigned index, Sn
     return -1;
 }
 
+/* ---- the net ---- */
+
+/* classic BPF's words, as linux/filter.h names them */
+#define BPF_LD_W_ABS 0x20u
+#define BPF_JEQ_K    0x15u
+#define BPF_JGT_K    0x25u
+#define BPF_JGE_K    0x35u
+#define BPF_RET_K    0x06u
+#define NET_TRAP     0x00030000u /* SECCOMP_RET_TRAP: SIGSYS, the call not made */
+#define NET_ALLOW    0x7FFF0000u /* SECCOMP_RET_ALLOW */
+/* seccomp_data: nr at 0, arch at 4, instruction_pointer at 8, its low word first on a little-endian host */
+#define NET_ARCH     4u
+#define NET_IP_LO    8u
+#define NET_IP_HI    12u
+
+static NceBpf bpf(unsigned code, unsigned jt, unsigned jf, SnxU32 k) {
+    NceBpf b;
+    b.code = (unsigned short)code;
+    b.jt = (unsigned char)jt;
+    b.jf = (unsigned char)jf;
+    b.k = k;
+    return b;
+}
+
+size_t nce_net_filter(SnxU64 lo, SnxU64 hi, SnxU32 arch, NceBpf* out) {
+    /* the jumps count the words after the next one: 12 is TRAP, 13 ALLOW, 7 the test against hi */
+    out[0] = bpf(BPF_LD_W_ABS, 0, 0, NET_ARCH);
+    out[1] = bpf(BPF_JEQ_K, 0, 11, arch); /* another architecture's call: not the guest's */
+    out[2] = bpf(BPF_LD_W_ABS, 0, 0, NET_IP_HI);
+    out[3] = bpf(BPF_JGT_K, 3, 0, (SnxU32)(lo >> 32)); /* above lo's high word: past lo */
+    out[4] = bpf(BPF_JEQ_K, 0, 8, (SnxU32)(lo >> 32)); /* below it: under lo */
+    out[5] = bpf(BPF_LD_W_ABS, 0, 0, NET_IP_LO);
+    out[6] = bpf(BPF_JGE_K, 0, 6, (SnxU32)lo); /* lo's high word: the low one says */
+    out[7] = bpf(BPF_LD_W_ABS, 0, 0, NET_IP_HI);
+    out[8] = bpf(BPF_JGT_K, 4, 0, (SnxU32)(hi >> 32)); /* above hi's high word: past hi */
+    out[9] = bpf(BPF_JEQ_K, 0, 2, (SnxU32)(hi >> 32)); /* below it: under hi, the guest's */
+    out[10] = bpf(BPF_LD_W_ABS, 0, 0, NET_IP_LO);
+    out[11] = bpf(BPF_JGE_K, 1, 0, (SnxU32)hi);
+    out[12] = bpf(BPF_RET_K, 0, 0, NET_TRAP);
+    out[13] = bpf(BPF_RET_K, 0, 0, NET_ALLOW);
+    return NCE_NET_WORDS;
+}
+
 /* ---- the pools and the file ---- */
 
 int nce_refused(char* why, size_t size, unsigned aspace, int android, int api) {
@@ -518,9 +647,113 @@ void nce_sites_move(NceSites* s, SnxU64 lo, SnxU64 hi, SnxU64 delta) {
         if (s->site[i].addr >= lo && s->site[i].addr < hi) s->site[i].addr += delta;
 }
 
+/* ---- the layout of an NCE recompile ---- */
+
+#define LAYOUT_GUARD 0x1000ull
+
+static SnxU64 page_up(SnxU64 v) { return (v + 0xFFFu) & ~(SnxU64)0xFFFu; }
+
+/* the first site in [lo, hi), or hi */
+static SnxU64 first_site(const NceSites* s, SnxU64 lo, SnxU64 hi) {
+    SnxU64 first = hi;
+    for (size_t i = 0; i < s->count; i++)
+        if (s->site[i].addr >= lo && s->site[i].addr < first) first = s->site[i].addr;
+    return first;
+}
+
+/* the stubs placed as the runtime places them (nce.c's nce_init: the trap, then each site in order), into pools of
+   scratch memory: 0, or -1 with the first site that no pool reaches in *miss */
+static int place(const NceRange* ranges, size_t n, const NceSites* s, SnxU64* miss) {
+    static const NceEnv env = {0x10, 1, 0, 1, 0, 1, 0}; /* any: the stubs' sizes and reach do not depend on it */
+    NcePool* pools = (NcePool*)snx_alloc((n ? n : 1) * sizeof *pools);
+    SnxU64 trap;
+    int r = 0;
+    for (size_t i = 0; i < n; i++) {
+        pools[i].buf = (unsigned char*)snx_alloc((size_t)ranges[i].size);
+        pools[i].addr = ranges[i].addr;
+        pools[i].size = ranges[i].size;
+        pools[i].used = 0;
+    }
+    if (nce_trap(pools, n, &env, NCE_TRAP, &trap)) {
+        *miss = 0;
+        r = -1;
+    }
+    for (size_t i = 0; i < s->count && !r; i++) {
+        SnxU32 word;
+        if (nce_emit(pools, n, &env, &s->site[i], &word)) {
+            *miss = s->site[i].addr;
+            r = -1;
+        }
+    }
+    for (size_t i = 0; i < n; i++) free(pools[i].buf);
+    free(pools);
+    return r;
+}
+
+int nce_layout(NceSpan* mods, size_t count, SnxU64 end, NceSites* sites, NceRange** pools, size_t* pool_count,
+               char* why, size_t size) {
+    NceSpan* to = (NceSpan*)snx_alloc((count ? count : 1) * sizeof *to);
+    NceRange* out = (NceRange*)snx_alloc((count ? 2 * count : 1) * sizeof *out);
+    SnxU64 cursor = count ? mods[0].base : 0, miss = 0;
+    size_t n = 0;
+    *pools = NULL;
+    *pool_count = 0;
+    for (size_t i = 0; i < count; i++) {
+        SnxU64 b = mods[i].base, m = mods[i].size, image = page_up(m), all = nce_pool_size(sites, b, b + m);
+        SnxU64 first = first_site(sites, b, b + m) - b, cut = 0, pre = 0, post;
+        /* a site at off reaches the pool after the module while image + its size - off is under a B's reach: the
+           sites below cut take a pool before the module instead, as Eden splits its patch section */
+        if (first < m && image + all - first >= BRANCH_REACH) cut = (image + all - BRANCH_REACH + 4) & ~(SnxU64)3;
+        if (cut) pre = nce_pool_size(sites, b, b + cut);
+        post = nce_pool_size(sites, b + cut, b + m);
+        to[i].base = cursor + (pre ? pre + LAYOUT_GUARD : 0);
+        to[i].size = m;
+        out[n].addr = to[i].base + image; /* first: the module's later sites take it while it reaches them */
+        out[n++].size = post;
+        if (pre) {
+            out[n].addr = cursor;
+            out[n++].size = pre;
+        }
+        cursor = to[i].base + image + post + LAYOUT_GUARD;
+        if (cursor > end) {
+            snprintf(why, size,
+                     "its %zu modules and their pools of stubs end at %#llx, past the code region's end at %#llx",
+                     count, (unsigned long long)cursor, (unsigned long long)end);
+            free(to);
+            free(out);
+            return -1;
+        }
+    }
+    /* the last module first: a module moves up past the old place of the next, never past its new place */
+    for (size_t i = count; i-- > 0;)
+        nce_sites_move(sites, mods[i].base, mods[i].base + mods[i].size, to[i].base - mods[i].base);
+    if (place(out, n, sites, &miss)) {
+        size_t k = 0;
+        while (k + 1 < count && miss >= to[k + 1].base) k++;
+        for (size_t i = 0; i < count; i++) /* back where they were, the first module first */
+            nce_sites_move(sites, to[i].base, to[i].base + mods[i].size, mods[i].base - to[i].base);
+        snprintf(
+            why, size,
+            "the code at %#llx, in the module of %llu MiB at %#llx, reaches no pool of stubs: a B reaches 128 MiB, "
+            "and a pool before the module and one after it leave that word out. Set NCE to Off for this game (nce=0) "
+            "and recompile it, which makes its code ahead of time",
+            (unsigned long long)(miss - to[k].base + mods[k].base), (unsigned long long)(mods[k].size >> 20),
+            (unsigned long long)mods[k].base);
+        free(to);
+        free(out);
+        return 1;
+    }
+    for (size_t i = 0; i < count; i++) mods[i] = to[i];
+    free(to);
+    *pools = out;
+    *pool_count = n;
+    return 0;
+}
+
 /* "SNXNCE", the version, then the counts of pools and sites, the pools (address, size) and the sites (address,
-   word, imm, kind, reg, proven, 5 bytes of zero), all little-endian, each address from the first module's base */
-static const unsigned char nce_magic[8] = {'S', 'N', 'X', 'N', 'C', 'E', 0, 2};
+   word, imm, kind, reg, proven, 5 bytes of zero), all little-endian, each address from the first module's base. The
+   pools are sized for the stubs (nce_stub_size), so a version holds their sizes too: 3, the counter read in its stub */
+static const unsigned char nce_magic[8] = {'S', 'N', 'X', 'N', 'C', 'E', 0, 3};
 #define NCE_HEADER 24u
 #define NCE_POOL   16u
 #define NCE_SITE   24u

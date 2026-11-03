@@ -245,7 +245,11 @@ int main(void) {
     for (int i = 0; i < 4; i++) guest_stats_hook(1, 0);
     for (int i = 0; i < 2; i++) guest_stats_hook(2, 1);
     for (int i = 0; i < 3; i++) guest_stats_add(1, GSTAT_NCE_SVC);
-    for (int i = 0; i < 7; i++) guest_stats_add(2, GSTAT_NCE_TICKS);
+    for (int i = 0; i < 5; i++) guest_stats_add(2, GSTAT_NCE_TICKS);
+    {
+        u64* reads = guest_stats_counter(2, GSTAT_NCE_TICKS); /* as the counter's stubs add, through a pointer */
+        *reads += 2;
+    }
     guest_stats_add(1, GSTAT_NCE_TRAP);
     guest_stats_add(1, GSTAT_NCE_RUN);
     for (int i = 0; i < 2; i++) guest_stats_add(2, GSTAT_NCE_KICK);
@@ -253,12 +257,12 @@ int main(void) {
     g_test.lines = 0;
     guest_stats_log(1000 + 12000000000u, 601);
     check(g_test.lines == 3, "three lines a window under NCE");
-    said(2, "nce: in those 1.00 s, 17 outcalls (17 a second): 3 SVCs, 7 counter reads, 6 calls of hooked functions (by "
-            "family: libc 4, nvn queue 2), 1 returns of native runs; 1 native runs started, 2 kicks\n");
+    said(2, "nce: in those 1.00 s, 10 outcalls (10 a second): 3 SVCs, 6 calls of hooked functions (by family: libc 4, "
+            "nvn queue 2), 1 returns of native runs; 7 counter reads in their stubs, 1 native runs started, 2 kicks\n");
     g_test.lines = 0;
     guest_stats_log(1000 + 13000000000u, 661);
-    said(2, "nce: in those 1.00 s, 0 outcalls (0 a second): 0 SVCs, 0 counter reads, 0 calls of hooked functions (by "
-            "family: none), 0 returns of native runs; 0 native runs started, 0 kicks\n");
+    said(2, "nce: in those 1.00 s, 0 outcalls (0 a second): 0 SVCs, 0 calls of hooked functions (by family: none), 0 "
+            "returns of native runs; 0 counter reads in their stubs, 0 native runs started, 0 kicks\n");
 
     /* the families past the table: the last index, named so */
     for (unsigned i = 2; i < GSTAT_FAMILIES - 1; i++) {

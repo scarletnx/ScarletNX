@@ -47,13 +47,12 @@ static unsigned checks;
         }                                                                                                              \
     } while (0)
 
-/* the last warning */
-static char warned[1024];
+/* the last warning, and the last log line of any level */
+static char warned[1024], logged[1024];
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
-    if (lvl) return;
     va_start(ap, fmt);
-    vsnprintf(warned, sizeof warned, fmt, ap);
+    vsnprintf(lvl ? logged : warned, sizeof warned, fmt, ap);
     va_end(ap);
 }
 
@@ -195,6 +194,7 @@ static void mapped(void) {
     u32 cbr[8], spv[16], len = 0;
     u64 at[2], check = 0;
     const u8* p;
+    u8* owned;
     remove(PATH);
     pm_init(&pf.lock);
     memset(&each_got, 0, sizeof each_got);
@@ -208,25 +208,26 @@ static void mapped(void) {
     make_shader(2, &s, cbr, spv);
     at[1] = pf_shader(&pf, 0, &s, cbr, spv, NULL, NULL, NULL);
     CHECK(at[0] && at[1] > at[0] && pf.nmap == 0); /* no module: nothing for pipelines to name */
-    CHECK(!pf_payload(&pf, at[1], &len, &check));  /* unmapped while appended to */
+    CHECK(!pf_payload(&pf, at[1], &len, &check, &owned)); /* unmapped while appended to */
     pf_seal(&pf);
     CHECK(!pf.f);
-    p = pf_payload(&pf, at[1], &len, &check);
-    CHECK(p && len >= sizeof s && !memcmp(p, &s, sizeof s) && check == pf_get64(p - 8));
-    CHECK(!pf_payload(&pf, at[1] + 8, &len, &check)); /* not a record's start */
+    p = pf_payload(&pf, at[1], &len, &check, &owned);
+    CHECK(p && !owned && len >= sizeof s && !memcmp(p, &s, sizeof s) && check == pf_get64(p - 8)); /* in place */
+    CHECK(!pf_payload(&pf, at[1] + 8, &len, &check, &owned)); /* not a record's start */
     plat_file_unmap(&pf.view);
     /* read again: each record with where it starts, in order */
     memset(&each_got, 0, sizeof each_got);
     pf_open_mapped(&pf, PATH, "mapped key", each_rec, NULL);
     CHECK(!pf.f && each_got.n == 3 && each_got.type[0] == PF_SHADER && each_got.at[0] == at[0] &&
           each_got.type[1] == PF_SCAN && each_got.type[2] == PF_SHADER && each_got.at[2] == at[1]);
-    CHECK(pf_payload(&pf, at[0], &len, &check) != NULL);
+    CHECK(pf_payload(&pf, at[0], &len, &check, &owned) != NULL);
     plat_file_unmap(&pf.view);
     /* a payload changed on disk: handed over unchecked, but it doesn't check out when read */
     rewrite((long)at[0] + PF_REC + 4, 0);
     memset(&each_got, 0, sizeof each_got);
     pf_open_mapped(&pf, PATH, "mapped key", each_rec, NULL);
-    CHECK(each_got.n == 3 && !pf_payload(&pf, at[0], &len, &check) && pf_payload(&pf, at[1], &len, &check));
+    CHECK(each_got.n == 3 && !pf_payload(&pf, at[0], &len, &check, &owned) &&
+          pf_payload(&pf, at[1], &len, &check, &owned));
     plat_file_unmap(&pf.view);
     rewrite((long)at[0] + PF_REC + 4, 0);
     /* the last record cut short: the file goes on without it, mapped as rewritten */
@@ -741,6 +742,111 @@ static void units_off(void) {
     remove(PATH);
 }
 
+/* ---- a shipped file's shaders packed alone (PF_ZSHADER, compress_prepared_shaders) */
+/* the packed record at at of the file's bytes d, its PfZip's raw and packed bytes moved by draw and dpacked and its
+   frame's first byte flipped when flip, given a check made again, so that only the unpacking can tell */
+static void zip_damage(u8* d, u64 at, int draw, int dpacked, int flip) {
+    u8* z = d + at + PF_REC + sizeof(PfShader);
+    u32 raw = pf_get32(z) + (u32)draw, packed = pf_get32(z + 4) + (u32)dpacked;
+    memcpy(z, &raw, 4);
+    memcpy(z + 4, &packed, 4);
+    if (flip) z[sizeof(PfZip)] ^= 0x5A; /* the frame's magic number */
+    recheck(d, (size_t)at);
+}
+/* a shader packed alone and one too small to pack written as it is, read back as they were written, the packed one
+   through a buffer of pf_payload's; a reading hands the packed one over by its type, with its PfShader as it is;
+   a packed one whose sizes or frame are wrong under a check made again doesn't unpack, and one whose bytes changed
+   doesn't check out; with packing off, what is appended is written as it is and the packed one still reads */
+static void zipped(void) {
+    PFile pf = {0};
+    PfShader s, small;
+    u32 cbr[8], spv[16], len = 0, raw;
+    u64 at[3], check = 0;
+    const u8* p;
+    u8 *owned, *d;
+    size_t n;
+    remove(PATH);
+    pm_init(&pf.lock);
+    pf.pack = PF_PACK_SHADERS;
+    pf_open_mapped(&pf, PATH, "zipped key", each_rec, NULL);
+    pf_unseal(&pf);
+    big_shader(3, &s, ug.cbr, ug.spv);
+    raw = s.ncbr * 16 + s.nspv * 4;
+    at[0] = pf_shader(&pf, 0, &s, ug.cbr, ug.spv, NULL, NULL, NULL);
+    make_shader(2, &small, cbr, spv);
+    at[1] = pf_shader(&pf, 0, &small, cbr, spv, NULL, NULL, NULL);
+    pf_seal(&pf);
+    CHECK(at[0] && at[1] > at[0] && pf.view.data);
+    CHECK(pf_get32(pf.view.data + at[0]) == PF_ZSHADER && at[1] - at[0] - PF_REC < (sizeof s + raw) / 4);
+    CHECK(pf_get32(pf.view.data + at[1]) == PF_SHADER); /* the frame would outweigh its few words */
+    p = pf_payload(&pf, at[0], &len, &check, &owned);
+    CHECK(p && owned == p && len == sizeof s + raw && !memcmp(p, &s, sizeof s) &&
+          !memcmp(p + sizeof s, ug.cbr, (size_t)s.ncbr * 16) &&
+          !memcmp(p + sizeof s + (size_t)s.ncbr * 16, ug.spv, (size_t)s.nspv * 4) &&
+          check == pf_get64(pf.view.data + at[0] + 8));
+    free(owned);
+    p = pf_payload(&pf, at[1], &len, &check, &owned);
+    CHECK(p && !owned && !memcmp(p, &small, sizeof small));
+    plat_file_unmap(&pf.view);
+    /* read again: the packed one by its type, its PfShader as it is for the index */
+    memset(&each_got, 0, sizeof each_got);
+    pf_open_mapped(&pf, PATH, "zipped key", each_rec, NULL);
+    CHECK(each_got.n == 2 && each_got.type[0] == PF_ZSHADER && each_got.at[0] == at[0] &&
+          each_got.type[1] == PF_SHADER && pf.size == (u64)file_size() &&
+          !memcmp(pf.view.data + at[0] + PF_REC, &s, sizeof s));
+    /* packing off: appended as it is, and the packed one still reads */
+    pf.pack = 0;
+    pf_unseal(&pf);
+    big_shader(4, &s, ug.cbr, ug.spv);
+    at[2] = pf_shader(&pf, 0, &s, ug.cbr, ug.spv, NULL, NULL, NULL);
+    pf_seal(&pf);
+    CHECK(at[2] > at[1] && pf_get32(pf.view.data + at[2]) == PF_SHADER);
+    p = pf_payload(&pf, at[0], &len, &check, &owned);
+    CHECK(p && owned && len == sizeof s + raw);
+    free(owned);
+    p = pf_payload(&pf, at[2], &len, &check, &owned);
+    CHECK(p && !owned && !memcmp(p, &s, sizeof s));
+    plat_file_unmap(&pf.view);
+    /* sizes or a frame that don't hold, under a check made again: not unpacked, and the log says the sizes it
+       found; bytes changed: no check */
+    u32 packed;
+    for (int way = 0; way < 4; way++) {
+        char want[160];
+        d = file_bytes(&n);
+        packed = pf_get32(d + at[0] + PF_REC + sizeof s + 4);
+        if (way == 0) zip_damage(d, at[0], 8, 0, 0);  /* more bytes than its reads and SPIR-V */
+        if (way == 1) zip_damage(d, at[0], 0, -8, 0); /* the frame cut short */
+        if (way == 2) zip_damage(d, at[0], 0, 0, 1);  /* not a zstd frame */
+        if (way == 3) d[at[0] + PF_REC + sizeof s + sizeof(PfZip) + 16] ^= 0x5A;
+        file_write(d, n);
+        free(d);
+        memset(&each_got, 0, sizeof each_got);
+        pf_open_mapped(&pf, PATH, "zipped key", each_rec, NULL);
+        logged[0] = 0;
+        CHECK(each_got.n == 3 && !pf_payload(&pf, at[0], &len, &check, &owned) && !owned);
+        if (way == 0) snprintf(want, sizeof want, "says %u bytes packed to %u,", raw + 8, packed);
+        if (way == 1) snprintf(want, sizeof want, "says %u bytes packed to %u,", raw, packed - 8);
+        if (way == 2) snprintf(want, sizeof want, "unpacks to 0 bytes, not %u (", raw);
+        CHECK(way == 3 ? !logged[0] : strstr(logged, want) != NULL);
+        CHECK(pf_payload(&pf, at[2], &len, &check, &owned));
+        plat_file_unmap(&pf.view);
+        d = file_bytes(&n); /* put back */
+        if (way == 0) zip_damage(d, at[0], -8, 0, 0);
+        if (way == 1) zip_damage(d, at[0], 0, 8, 0);
+        if (way == 2) zip_damage(d, at[0], 0, 0, 1);
+        if (way == 3) d[at[0] + PF_REC + sizeof s + sizeof(PfZip) + 16] ^= 0x5A;
+        file_write(d, n);
+        free(d);
+    }
+    pf_open_mapped(&pf, PATH, "zipped key", each_rec, NULL);
+    p = pf_payload(&pf, at[0], &len, &check, &owned);
+    CHECK(p && owned); /* put back whole */
+    free(owned);
+    plat_file_unmap(&pf.view);
+    pm_destroy(&pf.lock);
+    remove(PATH);
+}
+
 /* a file cut inside a unit, as by a crash while the unit was written over its records: the reading stops before
    it, the file goes on from the units before, and what is appended then is read back after them */
 static void units_cut(void) {
@@ -1095,6 +1201,7 @@ int main(void) {
     }
 #endif
     mapped();
+    zipped();
     shiprefs();
     rebuilds();
     large_checks();

@@ -140,6 +140,14 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) { /* nothing is the G
     (void)addr, (void)size, (void)out, (void)max;
     return 0;
 }
+int plat_vm_share(u8* p, int fd, u64 size) {
+    (void)p, (void)fd, (void)size;
+    return -1;
+}
+int plat_vm_unshare(u8* p, u64 size) {
+    (void)p, (void)size;
+    return -1;
+}
 void plat_freeze(u8* p, u64 size) { (void)p, (void)size; }
 void plat_thaw(void) {}
 void gpu_mem_changed(u64 a, u64 size) {

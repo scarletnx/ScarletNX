@@ -2,11 +2,21 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # NCE (native code execution)
 
+## Index
+
+* [The thread's CPU: TLS_SLOT_APP](#the-threads-cpu-tls_slot_app)
+  * [Before Android 10](#before-android-10)
+* [The guest's addresses: moved above 64 GiB](#the-guests-addresses-moved-above-64-gib)
+* [The system counter: read in its stub](#the-system-counter-read-in-its-stub)
+* [An SVC outside the analysed code: the net](#an-svc-outside-the-analysed-code-the-net)
+* [Against the recompiled code](#against-the-recompiled-code)
+* [Tests](#tests)
+
 On an AArch64 host the game's 64-bit code can run on the host's CPU (`src/nx/runtime/nce/`, the setting `nce`). The
 recompile makes no code ahead of time: it writes `<game>.nce`, the words to patch (SVC, the TLS and counter
 registers, the exclusives) and the pools for their stubs. The runtime maps the guest at the host's own addresses and
 patches the code after the load. [Architecture](./ARCHITECTURE.md) has the flow; this page has the two design calls
-the Android port rests on, their limits, and how a run measures it.
+the Android port rests on, the counter's stub, their limits, and how a run measures it.
 
 | Host | NCE |
 |---|---|
@@ -72,6 +82,48 @@ The path for the 36-bit games is to run the runtime outside ART: an executable c
 already is (`libscarletnx-run.so`), whose low addresses are free. The window would come from the app over a socket
 (`AHardwareBuffer`). Built for API 29, such an executable could also take static TLS.
 
+## The system counter: read in its stub
+
+The SDK's system tick is the game reading the counter register itself (`MRS CNTPCT_EL0` or `CNTVCT_EL0`), which a game
+that times its work closely does often. Its stub makes no outcall: it reads the host's virtual counter after an `ISB`,
+as Linux's vDSO reads it, makes it nanoseconds with a 64.64 factor of the host's frequency (Eden's `WriteCntpctHandler`
+scales it the same way), takes away the guest clock's start (or reads where a pause stopped the clock), and makes
+19.2 MHz ticks as `guest_ticks` does (`runtime/clock.c`). So that these reads and `svcGetSystemTick`, which still goes
+through an outcall, never go back against each other, guest time under NCE follows the host's counter too
+(`clock_from_counter`), from where it was when NCE started, in the stub's arithmetic.
+
+Limits:
+
+- Guest time then follows the counter, not `plat_ns` (SDL's clock). They drift apart by the kernel's rounding of the
+  counter's frequency, which was not measured; what puts guest time beside `plat_ns` (`g_t0_ns`) sees that drift.
+- The stub is 176 bytes, an outcall's 56. A `.nce` of version 2 has pools sized for the outcall, so it is refused
+  and the game has to be recompiled.
+
+## An SVC outside the analysed code: the net
+
+The patcher changes the words that the recompiler's analysis finds as code, and the unproven ones inside its
+functions. A word of those encodings outside every function keeps its bytes, so a literal of the same value stays as
+it is (Eden patches every such word of `.text`). If one of them is code after all, a function only a table reaches,
+an SVC there would run as a system call of the host, `x8` its number. Each guest thread takes a seccomp filter as it
+starts the game's code (`nce_host_net`, `nce_net_install`, its words from `nce_net_filter`): a system call it makes
+from the guest's addresses traps with `SIGSYS`, is not made, and the game stops with the SVC's address and immediate.
+The runtime's own threads make their system calls with no filter of ours. The recompile's line counts the
+words outside the functions by kind.
+
+Limits:
+
+- Every system call of a guest thread runs the filter's 14 words first, and so do those of a thread a guest thread
+  starts (a filter is inherited, and a runtime thread made during an outcall inherits it too). What that costs was not
+  measured. A thread that has the net from the one that started it takes no second one (its count of filters, read
+  from `/proc/thread-self/status`, is past the runtime's); before Linux 5.9, which does not give that count, it
+  stacks a second.
+- The filter needs `PR_SET_NO_NEW_PRIVS`, which is set on each guest thread alone: a setuid program it starts gains
+  nothing, and the runtime's threads keep theirs.
+- The other kinds outside the functions (the TLS and counter registers' MRS) read the host's registers, which no
+  filter sees: only the recompile's count shows them.
+- A kernel without seccomp filters, and qemu-user, which has none, run without the net and say so in the log.
+- An app's process on Android has the system's filter already, and ours stacks on it: only a phone shows it does.
+
 ## Against the recompiled code
 
 The renderer's first present and every 600 after log what the game's threads cost the host (`runtime/guest_stats.c`),
@@ -79,17 +131,23 @@ the same whichever way the code runs, so runs with `nce=1` and `nce=0` (each rec
 compare window by window. `cpu:` gives the game's threads' time on the host's processors, in all, per present and for
 the busiest, beside the whole process's (native code changes the first; the frame rate only when the processors set
 it), then the SVCs by number and the calls the dispatch table had no code for (RtAPI.miss). Under NCE, `nce:` gives
-the outcalls by kind (SVC, counter, a hooked function's by family, a native run's return), the native runs started
-and the kicks: an outcall saves and loads the guest's registers, and a run or a kick is a signal. Each thread adds to
-counters of its own, with no lock.
+the outcalls by kind (SVC, a hooked function's by family, a native run's return), the counter reads that their stubs
+made with no outcall, the native runs started and the kicks: an outcall saves and loads the guest's registers, and a
+run or a kick is a signal. Each thread adds to counters of its own, with no lock.
 
 ## Tests
 
-- `nce_patch`, any host: the sites, the stubs in both forms, the `.nce` file read back from a moved base, and which
-  games each host takes (`nce_refused`).
+- `nce_patch`, any host: the sites, the stubs in both forms, the `.nce` file read back from a moved base, which games
+  each host takes (`nce_refused`), a module of 200 MiB laid out with a pool before it and one after (and 300 MiB
+  refused: the recompile ends, naming the word, and says to set `nce=0`), and the net's filter at the edges of its
+  range, by an interpreter and, on Linux, by the kernel in a child: under a guest thread and the thread it starts, not
+  under the runtime's thread or one it starts after.
 - `nce_host` and `nce_host_indirect`: guest code runs natively in the direct form and in Android's. They run on an
   AArch64 Linux host, or under qemu-aarch64 with `SNX_AARCH64_SYSROOT` (and `SNX_AARCH64_GCC_TOOLCHAIN`,
-  `SNX_QEMU_AARCH64`). The indirect one also takes a word another library holds and checks the refusal.
+  `SNX_QEMU_AARCH64`). The indirect one also takes a word another library holds and checks the refusal. The counter's
+  stubs read between `guest_ticks` before and after them, keep their scratch registers, count each read, and read
+  where a pause stopped the clock. Under the net, an SVC that no stub holds stops in the runtime with no system
+  call made (a host with seccomp filters: qemu-user skips it).
 - `guest_stats`, any host: a window's SVCs, misses, outcalls and families, a thread's time read from another thread,
   and the lines that say them.
 - `memory_accounting`: the 48 GiB tier moved past a page held at 65 GiB, its regions, a mapping there, and a 36-bit

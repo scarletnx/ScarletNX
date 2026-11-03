@@ -304,6 +304,24 @@ int plat_vm_commit(u8* p, u64 size) {
     return -1;
 }
 void plat_vm_decommit(u8* p, u64 size) { VirtualFree(p, (SIZE_T)size, MEM_DECOMMIT); }
+int plat_vm_share(u8* p, int fd, u64 size) {
+    (void)p, (void)fd, (void)size;
+    errno = ENOSYS;
+    return -1;
+}
+int plat_vm_unshare(u8* p, u64 size) {
+    (void)p, (void)size;
+    errno = ENOSYS;
+    return -1;
+}
+int plat_gpu_buffer(u64 size, int* fd, void** handle) {
+    (void)size;
+    *fd = -1;
+    *handle = NULL;
+    errno = ENOSYS;
+    return -1;
+}
+void plat_gpu_buffer_free(int fd, void* handle, u64 size) { (void)fd, (void)handle, (void)size; }
 
 /* No alias pool yet: views of the same pages need the reservation made of placeholders (VirtualAlloc2 and
    MapViewOfFile3, Windows 10 1803), and whether the write watch survives that is untested. mem.c copies instead */

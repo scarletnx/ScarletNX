@@ -165,6 +165,22 @@ static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 	if (format.vk == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
 		snx_st_le32(expected + offset, 0x380u << 11); /* (0, 0.5, 0), unsigned mini-floats */
 	if (mip_case == 4 || mip_case == 5) snx_st_le32(expected + offset, 0x87654321);
+	/* 6: a sampled header of two levels over the target, the target's pixels its first: the store moves the count
+	 * tex_take_drawn passes over textures by, and the texture takes the stored pixel from the target */
+	u32 sampled_tic[8];
+	u64 take_gen = 0;
+
+	if (mip_case == 6) {
+		memcpy(sampled_tic, tic, sizeof(sampled_tic));
+		sampled_tic[3] |= 1u << 28;
+		sampled_tic[7] = (sampled_tic[7] & ~0xF0u) | 1u << 4;
+		vk_lock();
+		Surf *sampled_texture = vk_tex_from_tic(sampled_tic);
+
+		CHECK(sampled_texture && sampled_texture != vk_rt_find(target));
+		take_gen = vk_rt_take_gen();
+		vk_unlock();
+	}
 	vk_lock();
 	Surf *surface = vk_tex_from_tic_storage(tic);
 	ShaderInfo info = {0};
@@ -228,6 +244,14 @@ static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 	if (mip_case == 3 || mip_case == 6) { /* the store is in the target's image, not only in memory */
 		vk_lock();
 		CHECK(!storage_pixel(vk_rt_find(target), 0, 0, 0, expected + offset));
+		vk_unlock();
+	}
+	if (mip_case == 6) {
+		vk_lock();
+		CHECK(vk_rt_take_gen() != take_gen);
+		Surf *sampled_texture = vk_tex_from_tic(sampled_tic);
+
+		CHECK(sampled_texture && !storage_pixel(sampled_texture, 0, 0, 0, expected + offset));
 		vk_unlock();
 	}
 	/* Read through the complete sampled texture after a selected-mip write.

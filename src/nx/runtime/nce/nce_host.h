@@ -43,7 +43,7 @@
    dispatch: an outcall. code is the stub's x16 (NCE_OUTCALL), and c->pc is where the stub goes on (0 for a hook's or
    a trap's stub, whose pc dispatch sets). When dispatch returns, the guest goes on at c->pc with the state of c.
    preempted: a kick (nce_host_kick) stopped the guest's code at c->pc. trapped: the guest's code raised sig (SIGILL,
-   SIGTRAP) at c->pc. When they return, the guest goes on with the state of c. lo and hi: the guest's addresses. A pc
+   SIGTRAP, or SIGSYS for an SVC that the net caught, nce_host_net) at c->pc. When they return, the guest goes on with the state of c. lo and hi: the guest's addresses. A pc
    in them is the guest's code (its text and the pools of stubs), and any other pc is the host's */
 typedef struct {
     void (*dispatch)(CPU* c, u64 code);
@@ -60,9 +60,16 @@ int nce_host_init(const NceHostConfig* config, u64* tls, int* indirect, u64* out
 /* whether this thread can run NCE, before anything is reserved for it: on Android the API level (29 or later) and the
    thread's word that the stubs read (TLS_SLOT_APP: 0, or this layer's). 0, or -1 with what was found in why */
 int nce_host_check(char* why, size_t size);
-/* this host thread runs c's guest code from here: before its first nce_host_run. 0, or -1 with the reason in why when
-   another library of the process holds the thread's word that the stubs read */
-int nce_host_attach(CPU* c, char* why, size_t size);
+/* this host thread runs c's guest code from here: before its first nce_host_run. reads: the thread's count of counter
+   reads, which the stubs of NCE_TICKS add to. 0, or -1 with the reason in why when another library of the process
+   holds the thread's word that the stubs read */
+int nce_host_attach(CPU* c, u64* reads, char* why, size_t size);
+/* the net under this guest thread: from here a system call it makes from the guest's addresses (an SVC that no stub
+   holds) is not made, and trapped gets SIGSYS at the SVC. Its system calls then run a seccomp filter of NCE_NET_WORDS
+   words, and those of the threads it starts; the runtime's own threads run none (nce_net_install). After
+   nce_host_init. 0 (taken here or inherited), or -1 with the reason in why: a kernel or qemu-user without seccomp
+   filters */
+int nce_host_net(char* why, size_t size);
 /* this host thread's id, which nce_host_kick takes */
 int nce_host_tid(void);
 /* the guest code that thread tid runs, if it runs any, stops and calls preempted. Any thread */

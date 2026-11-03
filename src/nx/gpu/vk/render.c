@@ -132,9 +132,33 @@ static VkAttachmentLoadOp load_op(Surf* s, int undefined) {
     return undefined || discarded ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_LOAD;
 }
 
-/* the surfaces of the targets tg names, without opening anything: a multisampled one's pixels are its samples
+/* The targets read_targets found last, kept while their group's generation (DsState.gen[DS_TARGETS], a new one
+   whenever DsTargets' bytes change, from one count for every owner) and the surface table (g_vk_surf_epoch) stay the
+   same: most draws draw where the one before did, and each found its targets again through the surface table. Each
+   kept target still gets the read check its lookup makes (vk_rt_note_read). A set where a lookup found nothing isn't
+   kept, so it is tried again */
+static struct {
+    u64 gen; /* 0: nothing kept */
+    u32 epoch, n;
+    Surf *rt[8], *zt;
+} g_targets;
+u64 g_vk_targets_kept;
+/* the surfaces of the targets ds names, without opening anything: a multisampled one's pixels are its samples
    (DsSurf's sizes) by its sample layout's block */
-static void read_targets(const DsTargets* tg, Surf** rt, Surf** zt, u32* n) {
+static void read_targets(const DsState* ds, Surf** rt, Surf** zt, u32* n) {
+    const DsTargets* tg = &ds->tgt;
+    u64 gen = ds->gen[DS_TARGETS];
+    if (gen && g_targets.gen == gen && g_targets.epoch == g_vk_surf_epoch) {
+        memcpy(rt, g_targets.rt, sizeof g_targets.rt);
+        *zt = g_targets.zt;
+        *n = g_targets.n;
+        for (u32 i = 0; i < 8; i++)
+            if (rt[i]) vk_rt_note_read(rt[i]);
+        if (*zt) vk_rt_note_read(*zt);
+        g_vk_targets_kept++;
+        return;
+    }
+    int found = 1; /* every lookup made found its target */
     u32 lx = ds_msaa_log2_x(tg->msaa), ly = ds_msaa_log2_y(tg->msaa);
     *n = 0;
     for (u32 i = 0; i < 8; i++) {
@@ -152,9 +176,11 @@ static void read_targets(const DsTargets* tg, Surf** rt, Surf** zt, u32* n) {
                their layer output (the color LUT passes render all slices in one draw). */
             u32 layers = t->layers;
             if (!layers || layers > g_vk.props.limits.maxImageArrayLayers) layers = 1;
-            if (w >> lx && t->height >> ly)
+            if (w >> lx && t->height >> ly) {
                 rt[i] = vk_rt_array(a, w >> lx, t->height >> ly, t->format, t->mem, linear ? t->width : w * bpp, layers,
                                     t->layer_stride, (t->mem >> 16) & 1, tg->msaa);
+                if (!rt[i]) found = 0;
+            }
             if (rt[i]) *n = i + 1;
         }
     }
@@ -165,7 +191,14 @@ static void read_targets(const DsTargets* tg, Surf** rt, Surf** zt, u32* n) {
         if (!layers || layers > g_vk.props.limits.maxImageArrayLayers) layers = 1;
         *zt = vk_zt_array(z->gva, z->width >> lx, z->height >> ly, z->format, z->mem, layers, z->layer_stride,
                           tg->msaa);
+        if (!*zt) found = 0;
     }
+    /* the table as the lookups left it: one that made a target changed it */
+    g_targets.gen = found ? gen : 0;
+    g_targets.epoch = g_vk_surf_epoch;
+    g_targets.n = *n;
+    memcpy(g_targets.rt, rt, sizeof g_targets.rt);
+    g_targets.zt = *zt;
 }
 
 /* the size the targets rt (n of them) and zt have in common */
@@ -515,7 +548,7 @@ void vk_render_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) 
     Surf* rt[8];
     Surf* zt;
     u32 n;
-    read_targets(&ds->tgt, rt, &zt, &n); /* may record uploads: before anything is opened */
+    read_targets(ds, rt, &zt, &n);      /* may record uploads: before anything is opened */
     for (u32 i = 0; mask && i < n; i++) /* the slot the clear takes is resolved below: every bound one is listed */
         if (trace_target(rt[i]))
             LOG_LIMIT(64,
@@ -638,7 +671,7 @@ void vk_render_discard(const DsState* ds, u32 targets) {
     Surf* rt[8];
     Surf* zt;
     u32 n;
-    read_targets(&ds->tgt, rt, &zt, &n);
+    read_targets(ds, rt, &zt, &n);
     for (u32 i = 0; i < 9; i++) {
         Surf* s = i < 8 ? (i < n && targets >> i & 1 ? rt[i] : NULL) : (targets >> 8 & 1 ? zt : NULL);
         if (!s) continue;
@@ -1799,7 +1832,9 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             plain.shadow = 0;
             st = &plain;
         }
-        u32 handle = tex_handle(ds, stage, tcb, st);
+        /* the fragment stage's handle as fs_key read it from the same constant buffer in this draw, which the key it
+           made was built from */
+        u32 handle = res && res[i].have ? res[i].handle : tex_handle(ds, stage, tcb, st);
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
         TexRes own, *x = res ? &res[i] : NULL;
@@ -2887,7 +2922,7 @@ retry:
     Surf* rt[8];
     Surf* zt;
     u32 n;
-    read_targets(&ds->tgt, rt, &zt, &n);
+    read_targets(ds, rt, &zt, &n);
     for (u32 i = 0; i < n; i++)
         if (trace_target(rt[i]))
             LOG_LIMIT(64,
@@ -3557,7 +3592,7 @@ void vk_render_draw_texture(const DsState* ds, const DrawTexture* dt) {
     tex_resolve(ds, dt->handle, &x);
     Surf *rt[8], *zt, *t = x.t;
     u32 n;
-    read_targets(&ds->tgt, rt, &zt, &n);
+    read_targets(ds, rt, &zt, &n);
     if (!t || !n || !rt[0]) {
         LOG_LIMIT(1, "vulkan: a draw texture without its texture or a color target (not drawn)\n");
         return;

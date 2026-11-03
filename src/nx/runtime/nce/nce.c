@@ -10,6 +10,7 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"
+#include "nx/runtime/clock.h"
 #include "nx/runtime/guest_stats.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
@@ -29,6 +30,7 @@
 
 static struct {
     int checked, file, wanted, on;
+    int net;       /* the net under the guest threads (thread_net): 0 not tried yet, 1 on, -1 none on this system */
     char why[240]; /* why a game of an NCE recompile does not get it on this host (nce_host_check) */
     NceEnv env;
     PMutex lock; /* the pools and the diverts, which a guest thread changes (ldr:ro, NVN's resolver) */
@@ -176,10 +178,6 @@ static void dispatch(CPU* c, u64 code) {
         else
             c->rt->svc(c, imm);
         break;
-    case NCE_TICKS:
-        guest_stats_add(ix, GSTAT_NCE_TICKS);
-        c->x[imm & 31u] = c->rt->ticks();
-        break;
     case NCE_HOOK: hook(c, ix, imm); break;
     default: fatal("NCE: an outcall of kind %u, which no stub makes", kind);
     }
@@ -195,9 +193,15 @@ static void preempted(CPU* c) {
 }
 
 /* an instruction that the guest's code cannot run (UDF, or one the host refuses at EL0), or a BRK: RtAPI's undef and
-   brk end the game with its state in the log */
+   brk end the game with its state in the log. SIGSYS: an SVC that no stub holds, which the net caught before the
+   host's kernel made it a system call of its own (x8 its number, the immediate left aside) */
 static void trapped(CPU* c, int sig) {
     u32 w = gr32(c->pc);
+    if (sig == SIGSYS)
+        fatal("NCE: the game's code at %llx ran SVC #%u (%08x), a word that its recompile did not find as code, so no "
+              "stub serves it, and it was not let through as a system call of the host. Recompile the game with nce=0, "
+              "which makes all of its code ahead of time",
+              (unsigned long long)c->pc, (unsigned)((w >> 5) & 0xFFFFu), (unsigned)w);
     set_guest(c, 0);
     if (sig == SIGTRAP && (w & 0xFFE0001Fu) == 0xD4200000u)
         c->rt->brk(c, c->pc, (w >> 5) & 0xFFFFu);
@@ -230,12 +234,36 @@ static void kicker(void* arg) {
     }
 }
 
+/* The net under this guest thread (nce_host_net), as it starts the game's code: each one takes it, so the runtime's
+   own threads make their system calls with no filter. The first that cannot says the system has no seccomp filters,
+   once, and the game runs without the net; one that cannot where another took it ends the game */
+static void thread_net(u32 ix) {
+    char why[240];
+    int none = 0;
+    if (__atomic_load_n(&g_nce.net, __ATOMIC_ACQUIRE) < 0) return;
+    if (!nce_host_net(why, sizeof why)) {
+        __atomic_store_n(&g_nce.net, 1, __ATOMIC_RELEASE);
+        return;
+    }
+    if (__atomic_compare_exchange_n(&g_nce.net, &none, -1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        WARN("nce: %s, so an SVC that the recompile did not find as code would run as a system call of the host\n",
+             why);
+        return;
+    }
+    if (none > 0)
+        fatal("NCE: thread %u cannot take the net under the game's code, which its other threads have (%s): an SVC "
+              "that the recompile did not find as code would run as a system call of the host",
+              ix, why);
+}
+
 void nce_thread_run(struct KThread* t, u64 pc) {
     CPU* c = &t->cpu;
     u32 ix = kt_ix(t);
     char why[240];
     __atomic_store_n(&g_nce.tid[ix], nce_host_tid(), __ATOMIC_RELEASE);
-    if (nce_host_attach(c, why, sizeof why)) fatal("NCE: thread %u cannot run the game's code natively: %s", ix, why);
+    if (nce_host_attach(c, guest_stats_counter(ix, GSTAT_NCE_TICKS), why, sizeof why))
+        fatal("NCE: thread %u cannot run the game's code natively: %s", ix, why);
+    thread_net(ix);
     if (!c->x[30]) c->x[30] = g_nce.trap; /* the entry function returns to 0: the end of the thread */
     c->pc = pc;
     set_guest(c, 1);
@@ -286,6 +314,7 @@ void nce_init(void) {
     NceHostConfig config = {dispatch, preempted, trapped, AS_BASE, AS_END};
     NceRange* ranges;
     NceSites sites;
+    ClockCounter counter;
     size_t count;
     if (g_arm_mod) return;
     if (!nce_wanted()) {
@@ -309,6 +338,19 @@ void nce_init(void) {
         nce_sites_free(&sites);
         return;
     }
+    /* the counter's stubs read the guest clock in the host's counter, which the runtime's reads then follow too */
+    if (clock_from_counter(&counter)) {
+        WARN("nce: the host's counter runs at %llu Hz (CNTFRQ_EL0), and the counter's stubs need 1 Hz to 1 GHz, so the "
+             "JIT compiles all of the game's code\n",
+             (unsigned long long)counter.freq);
+        free(ranges);
+        nce_sites_free(&sites);
+        return;
+    }
+    g_nce.env.clock = counter.words;
+    g_nce.env.ns_lo = counter.mul_lo;
+    g_nce.env.ns_hi = counter.mul_hi;
+    g_nce.env.ns_origin = counter.origin;
     for (size_t i = 0; i < count; i++)
         if (pool_add(ranges[i].addr, ranges[i].size))
             fatal("NCE: the pool of stubs at %llx (%llu KiB) cannot be mapped", (unsigned long long)ranges[i].addr,
@@ -316,8 +358,9 @@ void nce_init(void) {
     free(ranges);
     if (nce_trap(g_nce.pool, g_nce.pools, &g_nce.env, NCE_TRAP, &g_nce.trap)) fatal("NCE: no room for the trap");
     patch_sites(&sites);
-    LOG("nce: the game's code runs natively: %zu words patched (%zu that the flow reaches), in %zu pools\n",
-        sites.count, sites.proven, g_nce.pools);
+    LOG("nce: the game's code runs natively: %zu words patched (%zu that the flow reaches), in %zu pools; guest time "
+        "follows the host's counter, at %llu Hz\n",
+        sites.count, sites.proven, g_nce.pools, (unsigned long long)counter.freq);
     nce_sites_free(&sites);
     g_nce.on = 1;
     if (plat_thread(kicker, NULL, 64 << 10)) fatal("NCE: the thread of the kicks cannot start");
