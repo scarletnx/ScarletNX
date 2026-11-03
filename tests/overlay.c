@@ -1041,8 +1041,8 @@ int main(void) {
         assert(!fatal_log_url("/tmp/a.log", NULL, 0));
     }
     /* the user playing on the head's band: Player, without users.ini, as the YoRHa theme has it (square), in the
-       atlas under the sprites: its picture its Mii's (Baguette's: users.ini's picture= is mii for a user with no
-       picture file), and Wimsy with picture=file and no file; on the right of the band, its frame in the page colour
+       atlas under the sprites: Wimsy (no picture= and no picture file), and its Mii's (Baguette's) with
+       picture=mii; on the right of the band, its frame in the page colour
        and the nickname before it; none on a stopped game's panel */
     {
         char why[256];
@@ -1055,7 +1055,8 @@ int main(void) {
         assert(sprites && !snx_users_load("/nonexistent/users", 1, why, sizeof why));
         assert(g_user_count == 1 && !strcmp(snx_users_selected()->nickname, "Player"));
         assert(SNX_GUI_THEME_YORHA_PICTURE == 1); /* square: the frame is the fills' */
-        assert(snx_users_selected()->picture_mii && snx_users_selected()->mii == 0);
+        assert(!snx_users_selected()->picture_mii && snx_users_selected()->mii == 0);
+        g_users[0].picture_mii = 1; /* picture=mii: Baguette's face */
         ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
         a = ui_atlas(&w, &h, &version);
         assert(a && h == SNX_CONTROLS_ATLAS_HEIGHT + SNX_UI_PICTURE);
@@ -1074,7 +1075,7 @@ int main(void) {
                 }
         }
         ui_atlas_done();
-        g_users[0].picture_mii = 0; /* picture=file, and no users/<uid>.jpg: Wimsy */
+        g_users[0].picture_mii = 0; /* the default again: no users/<uid>.jpg, Wimsy */
         ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
         a = ui_atlas(&w, &h, &version);
         assert(a && h == SNX_CONTROLS_ATLAS_HEIGHT + SNX_UI_PICTURE);

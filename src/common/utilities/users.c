@@ -537,7 +537,6 @@ int snx_users_begin(const uint64_t uid[2], char* why, size_t why_size) {
     u->uid[0] = uid[0];
     u->uid[1] = uid[1];
     strcpy(u->nickname, USERS_FIRST_NAME);
-    u->picture_mii = 1; /* no users/<uid>.jpg yet: its picture is its Mii's, the database's first */
     u->unsaved = 1;
     return 0;
 }
@@ -664,7 +663,7 @@ static void users_mii(int i, const char* mii, const char* picture) {
     int found = mii ? snx_mii_db_find(mii) : -1,
         word = picture && (!strcmp(picture, "mii") || !strcmp(picture, "file"));
     u->mii = (uint8_t)(found < 0 ? 0 : found);
-    u->picture_mii = word ? !strcmp(picture, "mii") : !u->picture_size;
+    u->picture_mii = word && !strcmp(picture, "mii"); /* the Mii's face only asked for: the file else, or Wimsy */
     if (found >= 0 && word) return;
     snprintf(g_user_notes + at, sizeof g_user_notes - at, "users: [user%d] mii=%s%s: %s; picture=%s%s: %s\n", i + 1,
              mii ? mii : "(none)", mii && found < 0 ? ", no Mii of the database" : "", snx_mii_db_name(u->mii),
