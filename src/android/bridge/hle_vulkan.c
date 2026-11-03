@@ -10,7 +10,7 @@
    - vkCreateAndroidSurfaceKHR makes a surface of the host window, which ScarletNX's own renderer then gives up,
    - the guest's allocation callbacks are left out: the driver allocates for itself, at create and at destroy alike,
    - the debug messengers the guest asks for are made without their callback,
-   - the device the guest sees is a Mali-G52 (ARM's vendor and driver IDs), with the host's limits and features */
+   - the device the guest sees is a Mali-G710 (ARM's vendor and driver IDs), with the host's limits and features */
 #define _GNU_SOURCE
 #include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
@@ -24,7 +24,7 @@
 #include <SDL3/SDL_vulkan.h>
 
 /* the device's name and IDs as the guest sees them */
-static const char DEVICE_NAME[] = "Mali-G52";
+const char hle_gpu_name[] = "Mali-G710";
 enum { ARM_VENDOR_ID = 0x13b5, ARM_DRIVER_ID = 9 /* VK_DRIVER_ID_ARM_PROPRIETARY */ };
 
 static const HleWindowHost* window_host;
@@ -324,7 +324,7 @@ static void create_android_surface(CPU* c, void* data) {
 /* ---- the device the guest sees ---- */
 
 static void masquerade(VkPhysicalDeviceProperties* p) {
-    snprintf(p->deviceName, sizeof p->deviceName, "%s", DEVICE_NAME);
+    snprintf(p->deviceName, sizeof p->deviceName, "%s", hle_gpu_name);
     p->vendorID = ARM_VENDOR_ID;
 }
 static void physical_device_properties(CPU* c, void* data) {
