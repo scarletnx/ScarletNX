@@ -461,7 +461,8 @@ if(TARGET hactool_internals)
     target_compile_options(snx-test-fs-service PRIVATE -Wno-unused-parameter)
     snx_swipc(snx-test-fs-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc hle/filesystem/fs.swipc)
     # fs.c reads a game's dump in place through the driver's container.c and hactool
-    target_sources(snx-test-fs-service PRIVATE "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c")
+    target_sources(snx-test-fs-service PRIVATE "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c"
+                                               "${PROJECT_SOURCE_DIR}/src/nx/hle/filesystem/mii_model.c")
     target_link_libraries(snx-test-fs-service PRIVATE scarletnx-common hactool_internals)
     add_test(NAME filesystem_raw COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> raw)
     add_test(NAME filesystem_addon_overlay COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> addon-overlay)
@@ -2080,6 +2081,16 @@ endif()
 add_executable(snx-test-astc astc_decode.c support/astc.c)
 snx_test_target(snx-test-astc 23)
 add_test(NAME astc_decode COMMAND snx-test-astc)
+# the generated MiiModel archive (hle/filesystem/mii_model.c, which the test includes): its tables against the
+# console's part list and layout, every part's zlib stream, its textures decoded by the CPU references against what
+# they were drawn from, its shapes' attributes and triangles
+add_executable(snx-test-mii-model mii_model.c support/astc.c support/bcn.c)
+snx_test_target(snx-test-mii-model 99)
+target_include_directories(snx-test-mii-model PRIVATE "${PROJECT_SOURCE_DIR}/src")
+if(NOT WIN32)
+    target_link_libraries(snx-test-mii-model PRIVATE m)
+endif()
+add_test(NAME mii_model COMMAND snx-test-mii-model)
 # the ASTC shader's GLSL run on the CPU (tests/glsl/glsl.hpp) against the same decoder: no GPU needed
 add_executable(snx-test-astc-glsl glsl/astc_glsl.cpp support/astc.c)
 snx_test_target(snx-test-astc-glsl 23)
