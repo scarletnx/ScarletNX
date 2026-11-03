@@ -576,12 +576,12 @@ msgstr "返回."
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Pick the prod.keys file."
-msgstr "选取 prod.keys 文件."
+msgid "Pick a keys file."
+msgstr "选取密钥文件."
 
 #: src/gui/main.c
-msgid "Pick prod.keys"
-msgstr "选取 prod.keys"
+msgid "Pick a keys file"
+msgstr "选取密钥文件"
 
 #: src/gui/main.c
 msgid "tap the box to open the file picker"
@@ -832,8 +832,8 @@ msgid "Ctrl+V: paste. ESC: back."
 msgstr "Ctrl+V: 粘贴. ESC: 返回."
 
 #: src/gui/main.c
-msgid "Pick or drop prod.keys"
-msgstr "选取或拖入 prod.keys"
+msgid "Pick or drop a keys file"
+msgstr "选取或拖入密钥文件"
 
 #: src/gui/main.c
 msgid "Pick or drop a file"
@@ -4211,13 +4211,13 @@ msgstr "请拖入一个名为 prod.keys 的可读文件。"
 
 #: src/gui/main.c
 #, c-format
-msgid "This file could not be read. Pick prod.keys again, from the device's storage (%s)."
-msgstr "无法读取此文件。请从设备存储中重新选取 prod.keys（%s）。"
+msgid "This file could not be read. Pick prod.keys or aes_keys.txt again, from the device's storage (%s)."
+msgstr "无法读取此文件。请从设备存储中重新选取 prod.keys 或 aes_keys.txt（%s）。"
 
 #: src/gui/main.c
 #, c-format
-msgid "This file is not a prod.keys. Pick the prod.keys file (%s)."
-msgstr "此文件不是 prod.keys。请选取 prod.keys 文件（%s）。"
+msgid "This file is not prod.keys or aes_keys.txt. Pick the keys file (%s)."
+msgstr "此文件不是 prod.keys 或 aes_keys.txt。请选取密钥文件（%s）。"
 
 #: src/gui/main.c
 #, c-format
@@ -4226,13 +4226,13 @@ msgstr "无法通过路径读取此文件。请在 Android 设置中确认 Scarl
 
 #: src/gui/main.c
 #, c-format
-msgid "The picked file could not be read as prod.keys (%s)."
-msgstr "所选文件无法作为 prod.keys 读取（%s）。"
+msgid "The picked file could not be read as prod.keys or aes_keys.txt (%s)."
+msgstr "无法将所选文件读取为 prod.keys 或 aes_keys.txt（%s）。"
 
 #: src/gui/main.c
 #, c-format
-msgid "The picked file is not a prod.keys (%s)."
-msgstr "所选文件不是 prod.keys（%s）。"
+msgid "The picked file is not prod.keys or aes_keys.txt (%s)."
+msgstr "所选文件不是 prod.keys 或 aes_keys.txt（%s）。"
 
 #: src/gui/main.c
 #, c-format

@@ -3983,7 +3983,7 @@ int main(int argc, char** argv) {
     /* the drop line waits on the user: framed, in the middle of its box, blinking at blink_ms; steady, at the left
        or the right of the box as the theme says, or plain */
     {
-        const char* waiting = "[ Pick or drop prod.keys ]";
+        const char* waiting = "[ Pick or drop a keys file ]";
         int width = (int)strlen(waiting) * 8 * app.scale;
         GuiPickBoxes k;
         GuiRect r;
@@ -3994,7 +3994,7 @@ int main(int argc, char** argv) {
         text_px_is(&app, r.x + (r.w - width) / 2, k.prompt, waiting, yellow, black);
         app.clock += app.theme.blink_ms;
         render(&app);
-        hides(&app, "Pick or drop prod.keys", yellow);
+        hides(&app, "Pick or drop a keys file", yellow);
         app.theme.prompt.blink = false; /* steady */
         render(&app);
         text_px_is(&app, r.x + (r.w - width) / 2, k.prompt, waiting, yellow, black);
@@ -4006,7 +4006,7 @@ int main(int argc, char** argv) {
         text_px_is(&app, r.x, k.prompt, waiting, yellow, black);
         app.theme.prompt.lines[GUI_PROMPT_KEYS] = false; /* plain */
         render(&app);
-        text_px_is(&app, r.x, k.prompt, "Pick or drop prod.keys    ", yellow, black);
+        text_px_is(&app, r.x, k.prompt, "Pick or drop a keys file   ", yellow, black);
         app.theme.prompt = gui_theme_builtin(app.theme.id)->prompt;
         app.clock = 0;
     }
@@ -4098,7 +4098,7 @@ int main(int argc, char** argv) {
         assert(!snx_write_file(document, "a game, not keys", 16));
         app.menu.view = GUI_LOAD_KEYS;
         install_keys_document(&app, document);
-        assert(app.menu.view == GUI_LOAD_KEYS && strstr(app.message, "is not a prod.keys"));
+        assert(app.menu.view == GUI_LOAD_KEYS && strstr(app.message, "is not prod.keys"));
         memset(big, 'a', SNX_GUI_KEYS_MAX + 1);
         memcpy(big, "header_key = 00\n", 16);
         assert(!snx_write_file(document, big, SNX_GUI_KEYS_MAX + 1));
@@ -4118,6 +4118,44 @@ int main(int argc, char** argv) {
         app.message[0] = 0;
         free(big);
         free(document);
+    }
+    /* the 3DS keys: the same Install Keys screen takes an aes_keys.txt, installed to ~/.3ds where the 3DS driver
+       reads it; the file's name says which console's, and a file of another name installs nothing */
+    {
+        char *ctr_dir = snx_path_join(temporary, ".3ds"), *ctr_keys = snx_path_join(ctr_dir, "aes_keys.txt");
+        char *source_3ds = snx_path_join(temporary, "aes_keys.txt");
+        char *wrong = snx_path_join(temporary, "game.cia");
+        free(app.keys3_path);
+        app.keys3_path = ctr_keys;
+        assert(!snx_write_file(source_3ds, "3ds keys", 8) && !snx_write_file(wrong, "game", 4));
+        SDL_Event ctr_event = {0};
+        ctr_event.type = SDL_EVENT_DROP_FILE;
+        ctr_event.drop.data = source_3ds;
+        app.menu.view = GUI_LOAD_KEYS;
+        event(&app, &ctr_event);
+        keys_data = snx_read_file(app.keys3_path, &keys_size);
+        assert(keys_data && keys_size == 8 && !memcmp(keys_data, "3ds keys", 8));
+        free(keys_data);
+        keys_outcome(&app, true);
+        /* a dropped prod.keys goes to the Switch's place, never the 3DS's */
+        assert(!snx_remove_tree(app.keys3_path));
+        ctr_event.type = SDL_EVENT_DROP_FILE;
+        ctr_event.drop.data = source_keys;
+        app.menu.view = GUI_LOAD_KEYS;
+        event(&app, &ctr_event);
+        assert(!snx_is_file(app.keys3_path) && strstr(app.message, "prod.keys installed"));
+        keys_outcome(&app, true);
+        /* a file that is not a keys file: nothing installed */
+        ctr_event.type = SDL_EVENT_DROP_FILE;
+        ctr_event.drop.data = wrong;
+        app.menu.view = GUI_LOAD_KEYS;
+        event(&app, &ctr_event);
+        assert(!snx_is_file(app.keys3_path) && strstr(app.message, "prod.keys or aes_keys.txt"));
+        keys_outcome(&app, false);
+        app.menu.view = GUI_LOAD_NONE;
+        free(wrong);
+        free(source_3ds);
+        free(ctr_dir);
     }
     free(switch_dir);
     free(source_keys);
@@ -10963,7 +11001,7 @@ int main(int argc, char** argv) {
             GuiPickBoxes k;
             SDL_Event answer;
             Uint64 until;
-            const char* waiting = "[ Pick or drop prod.keys ]";
+            const char* waiting = "[ Pick or drop a keys file ]";
             app.menu.selected = GUI_KEYS;
             key(&app, SDLK_RETURN);
             assert(app.menu.view == GUI_LOAD_KEYS);

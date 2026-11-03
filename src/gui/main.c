@@ -356,7 +356,7 @@ typedef struct App {
     unsigned loads_off;
     uint64_t loads_key;
     Uint64 loads_at;
-    char *cwd, *file, *games_dir, *keys_path;
+    char *cwd, *file, *games_dir, *keys_path, *keys3_path;
     char*
         data_dir; /* recompiled/, dumps/, work/ and themes/: the driver's too, which gets it as --repo (snx_data_dir) */
     char* checkout;       /* a build tree's menu's checkout (snx_checkout), where an older version kept games/ */
@@ -790,9 +790,9 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #ifdef SDL_PLATFORM_ANDROID
 #define SAY_KEYS_HOW SNX_TR_KEYS("Back.")
 #else
-#define SAY_KEYS_HOW SNX_TR_KEYS("Pick the prod.keys file.")
+#define SAY_KEYS_HOW SNX_TR_KEYS("Pick a keys file.")
 #endif
-#define SAY_KEYS_WAIT SNX_TR_NOOP("Pick prod.keys")
+#define SAY_KEYS_WAIT SNX_TR_NOOP("Pick a keys file")
 #define SAY_PICK_BOX  SNX_TR_NOOP("tap the box to open the file picker")
 #define SAY_FILE_WAIT SNX_TR_NOOP("Pick a file")
 #define SAY_DONE      SNX_TR_NOOP("Tap to return to menu")
@@ -873,7 +873,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_GAMES_STATES SNX_TR_KEYS("S: save states.")
 #define SAY_PICK_BOX     SNX_TR_NOOP("click the box (or Enter) to open the file picker")
 #define SAY_KEYS_HOW     SNX_TR_KEYS("Ctrl+V: paste. ESC: back.")
-#define SAY_KEYS_WAIT    SNX_TR_NOOP("Pick or drop prod.keys")
+#define SAY_KEYS_WAIT    SNX_TR_NOOP("Pick or drop a keys file")
 #define SAY_FILE_WAIT    SNX_TR_NOOP("Pick or drop a file")
 #define SAY_DONE         SNX_TR_NOOP("Press [ESC] to return to menu")
 #define SAY_ABORT        SNX_TR_NOOP("Press [ESC] to abort and return to menu")
@@ -1242,7 +1242,8 @@ static char* device_keys_path(const App* app) {
     free(dir);
     return path;
 }
-/* the prod.keys the driver reads: those installed here, else with the user's data folder the ones in ~/.switch */
+/* the keys a driver reads: the Switch's installed here, else with the user's data folder the ones in ~/.switch, else
+   the 3DS's in ~/.3ds; NULL when none */
 static char* keys_in_use(const App* app) {
     if (app->keys_path && snx_is_file(app->keys_path)) return snx_strdup(app->keys_path);
 #ifdef SNX_XDG
@@ -1250,7 +1251,7 @@ static char* keys_in_use(const App* app) {
     if (home && snx_is_file(home)) return home;
     free(home);
 #endif
-    return NULL;
+    return snx_ctr_keys_found();
 }
 /* the footer from row: the usage, then the working folder, which recompiled/ and themes/ are found in. The theme's bar
    style puts them on a band of ink over rows rows, its plain one in soft and ink; a rule above when it says so */
@@ -6836,6 +6837,9 @@ static void draw_pick(App* app) {
         snprintf(line, sizeof line, snx_tr("Installs to: %s"),
                  app->keys_path ? app->keys_path : snx_tr("No home folder"));
         y += wrap_in(app, r, r.x, y, line, 1, rgb(app->theme.ink)) * cell_h(app);
+        snprintf(line, sizeof line, snx_tr("3DS keys to: %s"),
+                 app->keys3_path ? app->keys3_path : snx_tr("No home folder"));
+        y += wrap_in(app, r, r.x, y, line, 1, rgb(app->theme.ink)) * cell_h(app);
     }
     if (keys && keys_left(app)) { /* what the last try did, and when the menu comes back */
         GuiRgb said = app->keys_ok ? app->theme.focus : app->theme.failure;
@@ -7965,6 +7969,7 @@ static void places_apply(App* app) {
         app->place[GUI_PLACE_CACHE] ? snx_strdup(app->place[GUI_PLACE_CACHE]) : place_default(app, GUI_PLACE_CACHE);
     free(app->keys_path);
     app->keys_path = device_keys_path(app);
+    if (!app->keys3_path) app->keys3_path = snx_ctr_keys_path(); /* the 3DS driver's, ~/.3ds/aes_keys.txt */
 }
 static const char* place_path(const App* app, int place) {
     return place == GUI_PLACE_DATA    ? app->data_dir
@@ -11810,6 +11815,14 @@ static void setup_keys_from(App* app, const char* folder, const char* error) {
         snprintf(note, sizeof note,
                  titles ? snx_tr("Installed prod.keys and title.keys in %s") : snx_tr("Installed prod.keys in %s"),
                  shown);
+        if (!snx_ctr_keys_install(folder, why, sizeof why)) { /* the folder's 3DS keys, when it has them */
+            char* ctr = snx_ctr_keys_path();
+            if (ctr) {
+                snx_home_short(ctr, shown, sizeof shown);
+                snprintf(note + strlen(note), sizeof note - strlen(note), snx_tr("; aes_keys.txt to %s"), shown);
+            }
+            free(ctr);
+        }
         ok = 1;
     }
     setup_enter(app); /* found now: Use these; else Choose folder again */
@@ -12326,7 +12339,7 @@ static void setup_panes(App* app, GuiRect r) {
     const char* lines[GUI_FOLDERS_MAX + 4];
     GuiRect a, b;
     int i, n = 0;
-    char *path, *other;
+    char *path, *other, *ctr;
     bool there;
     const char* m = app->theme.marker;
     if (!r.h) return;
@@ -12379,6 +12392,7 @@ static void setup_panes(App* app, GuiRect r) {
         case SNX_SETUP_KEYS:
             path = snx_keys_found(app->data_dir, "prod.keys");
             other = snx_keys_found(app->data_dir, "title.keys");
+            ctr = snx_ctr_keys_found();
             snx_home_short(path ? path : "", shown, sizeof shown);
             SETUP_LINE("%s%-12s%s%s", m, "prod.keys", setup_pad(pad, sizeof pad, found[!path], setup_cols(found, 2, 2)),
                        path ? shown : snx_tr("games are extracted with it"));
@@ -12386,9 +12400,14 @@ static void setup_panes(App* app, GuiRect r) {
             SETUP_LINE("%s%-12s%s%s", m, "title.keys",
                        setup_pad(pad, sizeof pad, found[!other], setup_cols(found, 2, 2)),
                        other ? shown : snx_tr("only some .nsp need it"));
+            snx_home_short(ctr ? ctr : "", shown, sizeof shown);
+            SETUP_LINE("%s%-12s%s%s", m, "aes_keys.txt",
+                       setup_pad(pad, sizeof pad, found[!ctr], setup_cols(found, 2, 2)),
+                       ctr ? shown : snx_tr("only encrypted 3DS games need it"));
             setup_box(app, r, snx_tr("Keys"), lines, n);
             free(path);
             free(other);
+            free(ctr);
             break;
         default:
             if (app->setup_typing) {
@@ -14747,52 +14766,65 @@ static void keys_result(App* app, bool ok) {
     app->keys_ok = ok;
     app->keys_done = now_ms(app) ? now_ms(app) : 1;
 }
-static void keys_write(App* app, const char* data, size_t size) {
+static void keys_write(App* app, const char* data, size_t size, bool ctr) {
     char why[256];
-    if (!app->keys_path) { /* snx_keys_dir's: the variables it reads are unset */
+    const char* path = ctr ? app->keys3_path : app->keys_path;
+    if (!path) { /* snx_keys_dir's: the variables it reads are unset */
 #ifdef _WIN32
         snprintf(app->message, sizeof(app->message), "%s",
-                 snx_tr("Cannot install prod.keys: neither USERPROFILE nor HOME is set"));
+                 ctr ? snx_tr("Cannot install aes_keys.txt: neither USERPROFILE nor HOME is set")
+                     : snx_tr("Cannot install prod.keys: neither USERPROFILE nor HOME is set"));
 #else
-        snprintf(app->message, sizeof(app->message), "%s", snx_tr("Cannot install prod.keys: HOME is not set"));
+        snprintf(app->message, sizeof(app->message), "%s",
+                 ctr ? snx_tr("Cannot install aes_keys.txt: HOME is not set")
+                     : snx_tr("Cannot install prod.keys: HOME is not set"));
 #endif
         keys_result(app, false); /* the keys' screen says it whole in its box, Not installed over it */
         return;
     }
     /* staged beside them first: a failed copy (or dropping the installed file itself) must not destroy existing keys */
-    bool ok = !snx_keys_put(app->keys_path, data, size, why, sizeof why);
+    bool ok = !snx_keys_put(path, data, size, why, sizeof why);
     if (ok)
-        snprintf(app->message, sizeof(app->message), "%s", snx_tr("prod.keys installed: games can be extracted now."));
+        snprintf(app->message, sizeof(app->message), "%s",
+                 ctr ? snx_tr("aes_keys.txt installed: encrypted 3DS games can be decrypted now.")
+                     : snx_tr("prod.keys installed: games can be extracted now."));
     else
-        snprintf(app->message, sizeof(app->message), snx_tr("Cannot install %s: %s"), app->keys_path, why);
+        snprintf(app->message, sizeof(app->message), snx_tr("Cannot install %s: %s"), path, why);
     keys_result(app, ok); /* the keys' screen says it whole in its box */
 }
 static void install_keys(App* app, const char* source) {
     const char* name = source;
     char* data = NULL;
     size_t size = 0;
+    bool ctr = false;
     if (source)
         for (const char* p = source; *p; ++p)
             if (*p == '/' || *p == '\\') name = p + 1;
-    if (source && !strcmp(name, "prod.keys") && snx_is_file(source)) data = keys_read(source, &size);
+    /* the name says which console's keys: the same file can only be the Switch's (prod.keys) or the 3DS's (aes_keys.txt),
+       each installed where its driver reads them */
+    if (source && snx_is_file(source)) {
+        ctr = !strcmp(name, "aes_keys.txt");
+        if (!strcmp(name, "prod.keys") || ctr) data = keys_read(source, &size);
+    }
     if (!data) {
-        snprintf(app->message, sizeof(app->message), "%s", snx_tr("Please drop a readable file named prod.keys."));
+        snprintf(app->message, sizeof(app->message), "%s",
+                 snx_tr("Please drop a readable file named prod.keys or aes_keys.txt."));
         keys_result(app, false);
     } else
-        keys_write(app, data, size);
+        keys_write(app, data, size, ctr);
     free(data);
 }
 /* what a picked file that cannot be used says, for the platform's picker: Android's documents, a desktop's files */
 #ifdef SDL_PLATFORM_ANDROID
 #define SAY_KEYS_UNREAD                                                                                                \
-    SNX_TR_NOOP("This file could not be read. Pick prod.keys again, from the device's storage (%s).")
-#define SAY_KEYS_NOT SNX_TR_NOOP("This file is not a prod.keys. Pick the prod.keys file (%s).")
+    SNX_TR_NOOP("This file could not be read. Pick prod.keys or aes_keys.txt again, from the device's storage (%s).")
+#define SAY_KEYS_NOT SNX_TR_NOOP("This file is not prod.keys or aes_keys.txt. Pick the keys file (%s).")
 #define SAY_PICK_UNREAD                                                                                                \
     SNX_TR_NOOP("Cannot read this file by its path. Check that ScarletNX may access the device's files in Android's "  \
                 "settings, then pick it from the device's storage (%s).")
 #else
-#define SAY_KEYS_UNREAD SNX_TR_NOOP("The picked file could not be read as prod.keys (%s).")
-#define SAY_KEYS_NOT    SNX_TR_NOOP("The picked file is not a prod.keys (%s).")
+#define SAY_KEYS_UNREAD SNX_TR_NOOP("The picked file could not be read as prod.keys or aes_keys.txt (%s).")
+#define SAY_KEYS_NOT    SNX_TR_NOOP("The picked file is not prod.keys or aes_keys.txt (%s).")
 #define SAY_PICK_UNREAD SNX_TR_NOOP("Pick the file from this computer's storage (%s).")
 #endif
 /* keys the picker gave as a document of an app's (Android's), read through it: a path to it may be one this app cannot
@@ -14805,7 +14837,7 @@ static void install_keys_document(App* app, const char* uri) {
     else if (!gui_keys_text(data, size))
         snprintf(app->message, sizeof(app->message), snx_tr(SAY_KEYS_NOT), uri);
     else
-        keys_write(app, data, size);
+        keys_write(app, data, size, false); /* a document has no name: its text has to be a prod.keys' */
     if (!data || !gui_keys_text(data, size)) keys_result(app, false);
     free(data);
 }
@@ -17095,6 +17127,7 @@ static void forget(App* app) {
     free(app->themes_dirs[1]);
     gui_themes_free(&app->themes);
     free(app->keys_path);
+    free(app->keys3_path);
     free(app->recent_file);
     if (app->run_out) fclose(app->run_out);
     free(app->run_log);
