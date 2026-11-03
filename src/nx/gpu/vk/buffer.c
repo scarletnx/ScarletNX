@@ -1265,6 +1265,9 @@ static u8 g_wleaf_busy[AS_TOP >> WW_LEAF_SHIFT];  /* atomic: 1 while a scan has 
 static u32 g_ww_used[WW_USED_EPOCHS];             /* the last epochs + 1 checks needed leaves in, under vk_lock */
 static u32 g_ww_used_i;
 static u32 g_ww_used_from; /* atomic: the oldest of them */
+/* one past the highest leaf a check has needed, where the scanner's pass ends: a leaf above it was never needed, and a
+   pass to AS_SIZE's last leaf read 131072 of them at 512 GiB (atomic, stored by the checks under vk_lock) */
+static u64 g_wleaf_top;
 /* a scan's written pages before they go to g_wres: the scanner's, and the checks' (under vk_lock) */
 struct WwStage {
     WwRange r[WW_RES_N];
@@ -1446,7 +1449,7 @@ static void ww_scanner(void* arg) {
         last = e;
         seen = e + 1;
         from = __atomic_load_n(&g_ww_used_from, __ATOMIC_RELAXED);
-        for (u64 l = 0, n = AS_SIZE >> WW_LEAF_SHIFT; l < n;) {
+        for (u64 l = 0, n = __atomic_load_n(&g_wleaf_top, __ATOMIC_RELAXED); l < n;) {
             if (!ww_wanted(l, seen, from)) {
                 l++;
                 continue;
@@ -1521,6 +1524,8 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
         /* the leaves not taken in for this epoch: scanned in it by the scanner already, or here */
         u64 first = hi + 1, last = 0, a;
         ww_used_epoch(seen);
+        if (__atomic_load_n(&g_wleaf_top, __ATOMIC_RELAXED) <= hi)
+            __atomic_store_n(&g_wleaf_top, hi + 1, __ATOMIC_RELAXED);
         for (a = l; a <= hi; a++) {
             if ((i32)(g_wleaf_seen[a] - seen) >= 0) continue;
             __atomic_store_n(&g_wleaf_used[a], seen, __ATOMIC_RELAXED);
