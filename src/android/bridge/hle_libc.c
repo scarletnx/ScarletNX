@@ -52,6 +52,23 @@ void hle_call(CPU* c, void* fn, char kind) {
     X(0) = ((CallInt)fn)(X(0), X(1), X(2), X(3), X(4), X(5), v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
 }
 
+typedef uint64_t (*CallWide)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                             uint64_t, uint64_t, uint64_t, double, double, double, double, double, double, double, double);
+void hle_call_wide(CPU* c, void* fn, char kind) {
+    if (kind == 'F' || kind == 'D') {
+        hle_call(c, fn, kind);
+        return;
+    }
+    /* the integers past x7 are the guest's stack slots, in order; the host's past its sixth are its stack's, in
+       order: the floating ones stay in registers on both */
+    uint64_t s[4];
+    memcpy(s, (const void*)(uintptr_t)c->x[31], sizeof s);
+    double v[8];
+    for (int i = 0; i < 8; ++i) memcpy(&v[i], &c->v[i].d[0], sizeof v[i]);
+    X(0) = ((CallWide)fn)(X(0), X(1), X(2), X(3), X(4), X(5), X(6), X(7), s[0], s[1], s[2], s[3], v[0], v[1], v[2],
+                          v[3], v[4], v[5], v[6], v[7]);
+}
+
 double hle_d(const CPU* c, unsigned n) {
     double v;
     memcpy(&v, &c->v[n].df[0], sizeof v);
