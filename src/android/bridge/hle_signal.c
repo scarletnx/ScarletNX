@@ -390,6 +390,11 @@ static int64_t kernel_call(CPU* c, uint64_t number, const uint64_t a[6], bool* k
     }
 }
 
+uint32_t hle_kernel_tid(void) {
+    if (!t_signal.self) bridge_cpu(); /* a thread's first guest state: its kernel thread too */
+    return t_signal.self->k.tid;
+}
+
 long hle_kernel_syscall(long number, const uint64_t a[6], CPU* c, bool* known) {
     if (s.verbose && ((number >= 129 && number <= 138) || number == 240))
         fprintf(stderr, "scarletnx-android: syscall(%ld, 0x%llx, 0x%llx, 0x%llx, 0x%llx) from 0x%llx\n", number,

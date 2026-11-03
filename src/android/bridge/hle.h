@@ -26,6 +26,7 @@ uint64_t hle_missing(const char* name);
 extern const HleSymbol hle_libc[];
 extern const HleSymbol hle_posix[];
 extern const HleSymbol hle_thread[];
+extern const HleSymbol hle_sync[]; /* hle_sync.c: bionic's mutexes, conds, rwlocks, barriers, semaphores */
 extern const HleSymbol hle_dl[];
 extern const HleSymbol hle_sles[];
 extern const HleSymbol hle_media[];

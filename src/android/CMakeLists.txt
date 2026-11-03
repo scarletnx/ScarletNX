@@ -69,7 +69,7 @@ if(NOT TARGET scarletnx-recompiler)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler" android-recompiler-library)
 endif()
 add_library(snx_android_bridge STATIC bridge/bridge.c bridge/host.c bridge/linker.c bridge/hle.c bridge/hle_libc.c bridge/args.c
-                                      bridge/native.c bridge/hle_posix.c bridge/hle_thread.c bridge/hle_signal.c bridge/hle_dl.c bridge/hle_code.c
+                                      bridge/native.c bridge/hle_posix.c bridge/hle_thread.c bridge/hle_sync.c bridge/bionic_sync.c bridge/hle_signal.c bridge/hle_dl.c bridge/hle_code.c
                                       bridge/hle_sles.c bridge/hle_media.c bridge/jni.c
                                       bridge/hle_android.c bridge/hle_vulkan.c
                                       bridge/hle_egl.c)
@@ -112,3 +112,13 @@ add_custom_command(OUTPUT "${PROJECT_BINARY_DIR}/android-fonts/NotoSansJP-Subset
                    DEPENDS "${NotoSansJPSubset_SOURCE_DIR}/NotoSansJP-Subset.ttf")
 add_custom_target(snx_android_fonts DEPENDS "${PROJECT_BINARY_DIR}/android-fonts/NotoSansJP-Subset.ttf")
 add_dependencies(snx_android_program snx_android_fonts)
+
+# bionic's mutexes, conditions, rwlocks, barriers and semaphores (bridge/bionic_sync.c) on the GNU ABI kernel's futex
+if(BUILD_TESTING AND NOT WIN32)
+    add_executable(snx-test-bionic-sync "${PROJECT_SOURCE_DIR}/tests/bionic_sync.c" bridge/bionic_sync.c)
+    target_link_libraries(snx-test-bionic-sync PRIVATE scarletnx-gnuabi-kernel)
+    set_target_properties(snx-test-bionic-sync PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(snx-test-bionic-sync PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    add_test(NAME android_bionic_sync COMMAND snx-test-bionic-sync)
+    set_tests_properties(android_bionic_sync PROPERTIES TIMEOUT 120)
+endif()
