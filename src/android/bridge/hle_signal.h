@@ -46,6 +46,11 @@ uint64_t signals_mask(void);
 CPU* signals_guest_code_cpu(void);
 /* the export the calling thread enters (0 as it leaves), for --sample */
 void signals_in_export(uint64_t address);
+/* a fault of guest code at c's pc (SIGILL for an undefined instruction, with code and si_addr address), as Linux
+   raises it: when the guest has a handler for it that the thread does not block, the handler runs now (a longjmp out
+   of it ends the host's call into guest code, as bridge_run_handler's does), and true. False when Linux would take
+   the default action and end the process */
+bool signals_fault(CPU* c, int sig, int code, uint64_t address);
 /* the signals ready for the calling thread run their handlers: c's registers must all be in place */
 void signals_check(CPU* c);
 /* around an HLE call that can wait: the previous state, which signals_unpark takes back */

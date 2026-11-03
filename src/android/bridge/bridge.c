@@ -152,10 +152,13 @@ static void miss(CPU* c, u64 pc) {
     b.table[(pc - b.lo) >> 2](c, pc);
 }
 
+/* an undefined instruction is the guest's SIGILL, as on Linux: OpenSSL's CPU probes (armcap.c) run an instruction
+   of each extension under a SIGILL handler that longjmps out, and take the extensions that did not fault */
 static void undef(CPU* c, u64 pc, u32 word) {
+    c->pc = pc;
+    if (signals_fault(c, SNX_SIGILL, SNX_ILL_ILLOPC, pc)) return;
     fprintf(stderr, "scarletnx-android: undefined instruction 0x%08x at 0x%llx\n", (unsigned)word,
             (unsigned long long)pc);
-    (void)c;
     abort();
 }
 static void guest_brk(CPU* c, u64 pc, u32 imm) {
