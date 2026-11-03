@@ -399,6 +399,10 @@ void nce_init(void) {
     g_nce.env.ns_lo = counter.mul_lo;
     g_nce.env.ns_hi = counter.mul_hi;
     g_nce.env.ns_origin = counter.origin;
+    ClockRate rate = clock_rate(); /* an Ounce game's 31.25 MHz: npdm_layout ran before */
+    g_nce.env.freq = rate.freq;
+    g_nce.env.step_ns = rate.step_ns;
+    g_nce.env.step_ticks = rate.step_ticks;
     for (size_t i = 0; i < count; i++)
         if (pool_add(ranges[i].addr, ranges[i].size))
             fatal("NCE: the pool of stubs at %llx (%llu KiB) cannot be mapped", (unsigned long long)ranges[i].addr,

@@ -544,22 +544,23 @@ static void say_old_layout(void) {
    layout has to guarantee for it: what its SDK marshals into an IPC buffer descriptor drops every address bit above
    36, and the 39-bit layout's stack and heap, above 64 GiB, came back as addresses with no memory behind them.
 
-   It also tells an Ounce program (loader/ounce.h), which is g_ounce: the runtime JIT then takes the extended CPU
-   features (guest_jit.c), as the recompiler does from the same NPDM */
+   It also tells an Ounce program (loader/ounce.h), which is g_ounce, and everything that follows from it: the CPU
+   features of the runtime JIT (guest_jit.c), SM86 shaders, the T239's GOB, the 31.25 MHz tick, and the larger heap
+   and application pool, as memory_gb 12 gives (svc_mem.c) */
 static void npdm_layout(void) {
     u64 size = 0;
     unsigned char* d = fs_read_file("exefs/main.npdm", &size);
-    if (!d) return;
-    if (size >= 0x80 && size <= 0x4000 && !memcmp(d, "META", 4)) {
-        unsigned flags = d[0x0c];
-        if (snx_npdm_ounce(d, size)) {
-            g_ounce = 1;
-            LOG("npdm: an Ounce program\n");
-        }
-        if ((flags & 1) && ((flags >> 1) & 7) == 1) {
-            mem_layout36();
-            LOG("npdm: a 36-bit address space: 64 GiB, the code region at a fixed 128 MiB\n");
-        }
+    int meta = d && size >= 0x80 && size <= 0x4000 && !memcmp(d, "META", 4);
+    if (meta && snx_npdm_ounce(d, size)) {
+        g_ounce = g_shader_sm86 = g_gob_native = 1;
+        g_shader_sm86_dump = g_settings.sm86_dump[0] ? g_settings.sm86_dump : NULL;
+        clock_ounce();
+        LOG("npdm: an Ounce program\n");
+    }
+    if (!g_arm_mod && (g_settings.memory_gb >= 12 || g_ounce)) mem_layout_large_heap();
+    if (meta && (d[0x0c] & 1) && ((d[0x0c] >> 1) & 7) == 1) {
+        mem_layout36();
+        LOG("npdm: a 36-bit address space: 64 GiB, the code region at a fixed 128 MiB\n");
     }
     free(d);
 }
@@ -1219,9 +1220,7 @@ int snx_main(int argc, char** argv) {
     snx_ir_branch_profile(g_settings.ir_branch_profile);
 
     fs_init(keys, title_keys); /* the npdm is read through it, and mem_init's layout comes before */
-    if (!g_arm_mod && g_settings.memory_gb >= 12) mem_layout_large_heap();
-    npdm_layout(); /* the address space type's layout, before mem_init sizes its blocks in it */
-    if (g_ounce) g_shader_sm86 = g_gob_native = 1; /* an Ounce game's programs are SM86, its GOBs the T239's */
+    npdm_layout(); /* the address space type's layout and the larger heap, before mem_init sizes its blocks in it */
     free(keys);
     free(title_keys);
     keys = title_keys = NULL;
