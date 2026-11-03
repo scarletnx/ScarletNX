@@ -17,6 +17,9 @@ bool bridge_init(const char* cache, char* error, size_t error_size);
 bool bridge_set_optimization(char level);
 /* each JIT unit and its time on stderr (--jit-verbose), before bridge_init */
 void bridge_set_verbose(bool verbose);
+/* the LLVM IR of each unit the JIT compiles saved in folder (--jit-keep-ir), before bridge_init: a unit that LLVM
+   fails on can then be compiled again by itself */
+void bridge_set_keep_ir(const char* folder);
 
 /* size bytes of the code window for a library, aligned to align (a power of two): its guest address, 0 when the
    window is full */
