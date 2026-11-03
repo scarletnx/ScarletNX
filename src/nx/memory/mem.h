@@ -11,8 +11,9 @@
 /* The console's 64-bit layout lies below this (128 GiB): the code, alias, heap and stack regions and the kernel's
    pages. NCE's reservation at the guest's own addresses goes no further (mem_reserve_identity) */
 #define AS_MAX 0x2000000000ull
-/* The console's 64-bit address space (512 GiB), the most host address space the guest gets: its addresses end below
-   it, within the 39 bits an IPC buffer descriptor carries, and tables indexed by guest address are sized for it */
+/* The guest's addresses end below this: 2^39 (512 GiB), the console's whole address space and the 39 bits an IPC buffer
+   descriptor carries. NCE takes up to all of it at the guest's own addresses (mem_reserve_identity); tables indexed by
+   guest address are sized for it */
 #define AS_TOP 0x8000000000ull
 /* A 64-bit application of the pre-2.0 address space type: the console gives these 64 GiB, and everything the game
    holds (an IPC buffer descriptor's address among them) has to fit in 36 bits */

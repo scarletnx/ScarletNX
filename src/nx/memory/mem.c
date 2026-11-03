@@ -833,8 +833,8 @@ static u64 largest_hole(void) { return UINT64_MAX; }
 #endif
 /* The largest of these the system gives is the guest's address space: the console's 512 GiB where it can, else a
    smaller layout (a kernel of 39 bits of address space, as a Raspberry Pi 4's, has less than that free; a process
-   RLIMIT_AS holds to less; an iOS app without the extended virtual addressing entitlement). NCE's reservation takes
-   them up to AS_MAX */
+   RLIMIT_AS holds to less; an iOS app without the extended virtual addressing entitlement). NCE's reservation at the
+   guest's own addresses takes them too (mem_reserve_identity) */
 static const u64 tiers[] = {512 * GIB, 256 * GIB, 128 * GIB, 64 * GIB, 48 * GIB, 32 * GIB, 24 * GIB,
                             16 * GIB,  12 * GIB,  8 * GIB,   7 * GIB,  6 * GIB,  5 * GIB};
 /* Windows makes the written-page tracking with the reservation (plat_vm_reserve), and a reservation without it leaves
@@ -876,23 +876,33 @@ static u8* reserve_tiers(void) {
    and the libraries, lie far above them on a host with 39 bits of address space or more. Android: the app's process
    holds the low 4 GiB (ART's heap and boot image), so the whole layout moves to the first base from 64 GiB, in 2 MiB
    steps, where a tier is free, as Eden's host_memory.cpp takes its base above 36 bits. The guest's addresses stay
-   below AS_TOP, which leaves the moved layout the console's 128 GiB from any base up to 128 GiB */
+   below AS_TOP (2^39), so the console's 512 GiB fit only where the layout stays at its own addresses (Linux); moved,
+   the largest tier is Eden's under NCE, 256 GiB (device_memory.cpp: an arm64 build reserves 1 << 38), from any base up
+   to 256 GiB. A smaller one, where those are taken, says the one that fit and was not free */
 #define IDENTITY_LO   0x8000000ull
 #define IDENTITY_STEP (2ull << 20)
 static int g_mem_identity;
 #if !defined(_WIN32)
 int mem_reserve_identity(u64 from) {
+    u64 want = 0; /* the largest tier that fits below AS_TOP from there */
     for (size_t i = 0; i < sizeof tiers / sizeof *tiers; ++i) {
-        if (tiers[i] > AS_TOP - from) continue;
-        for (u64 by = from; by <= AS_TOP - tiers[i]; by += IDENTITY_STEP) {
-            if (plat_vm_reserve_at(by + IDENTITY_LO, tiers[i] - IDENTITY_LO)) {
-                g_as_size = tiers[i];
-                if (tiers[i] < AS_MAX) layout_for(tiers[i]);
+        u64 tier = tiers[i];
+        if (tier > AS_TOP - from) continue;
+        if (!want) want = tier;
+        for (u64 by = from; by <= AS_TOP - tier; by += IDENTITY_STEP) {
+            if (plat_vm_reserve_at(by + IDENTITY_LO, tier - IDENTITY_LO)) {
+                char not_free[96] = "";
+                g_as_size = tier;
+                if (tier != AS_MAX) layout_for(tier);
                 if (by) mem_layout_move(by);
                 g_mem_identity = 1;
+                if (tier < want)
+                    snprintf(not_free, sizeof not_free, "; %llu GiB, the most that fits from %#llx, was not free",
+                             (unsigned long long)(want >> 30), (unsigned long long)(from + IDENTITY_LO));
                 LOG("memory: %llu GiB of address space reserved at the guest's own addresses, for NCE: the code region "
-                    "from %#llx, the address space to %#llx\n",
-                    (unsigned long long)(tiers[i] >> 30), (unsigned long long)AS_BASE, (unsigned long long)AS_END);
+                    "from %#llx, the address space to %#llx%s\n",
+                    (unsigned long long)(tier >> 30), (unsigned long long)AS_BASE, (unsigned long long)AS_END,
+                    not_free);
                 return 1;
             }
             if (!from) break; /* the guest's own addresses, or none */

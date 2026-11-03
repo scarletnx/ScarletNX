@@ -69,10 +69,13 @@ base: `the code region from ...`.
 
 Limits:
 
-- The guest's addresses stay below `AS_TOP` (512 GiB), which the tables indexed by them are sized for, so they fit in
-  39 bits. The moved layout keeps the console's 128 GiB, its 64 GiB alias region among them, from any base up to
-  128 GiB; past that a smaller tier takes it, with a smaller alias region (32 GiB in 64, 8 GiB in 48). Without NCE
-  the game gets 512.
+- The guest's addresses stay below `AS_TOP` (2^39, 512 GiB), the 39 bits an IPC buffer descriptor carries, which the
+  tables indexed by them are sized for. Moved up past 64 GiB, the console's 512 GiB cannot fit below that: the largest
+  tier is Eden's under NCE, 256 GiB (an arm64 build of Eden reserves `1 << 38`, `device_memory.cpp`), with the
+  console's regions in it, its 64 GiB alias region among them, from any base up to 256 GiB. Then 128 GiB, and smaller
+  tiers with smaller alias regions (32 GiB in 64, 8 GiB in 48). The log names the tier taken and, when it is not the
+  largest, the one that was not free. Unmoved (Linux), the layout takes the console's 512 GiB where the host gives
+  them.
 - The 36-bit address space (NPDM type 1, games of SDKs before 2.0) has to lie below 64 GiB with its code at 128 MiB,
   where ART is. Android recompiles those games ahead of time and says so; a `.nce` brought from Linux ends the game
   with the base it found. The NPDM has no ASLR bit to ask for fixed code otherwise (Eden reads bits 0 to 3 of its
