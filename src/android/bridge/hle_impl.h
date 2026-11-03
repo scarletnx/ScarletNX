@@ -20,6 +20,10 @@ void hle_pass(CPU* c, void* fn);
    its register on both, and each floating register passes whole, so a float passes as it is. An x86-64 or AArch64
    host only */
 void hle_call(CPU* c, void* fn, char kind);
+/* hle_call for up to 12 integer arguments: x0 to x7, then the guest's first 4 stack slots (Vulkan's commands take up
+   to 11). The host's System V ABI passes the integers past its sixth on its stack in order, as the floating ones stay
+   in registers */
+void hle_call_wide(CPU* c, void* fn, char kind);
 /* the n'th floating argument, and the floating result */
 double hle_d(const CPU* c, unsigned n);
 float hle_f(const CPU* c, unsigned n);

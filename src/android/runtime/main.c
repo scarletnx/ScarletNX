@@ -233,6 +233,7 @@ static int run_apk(const char* argv0, const char* apk, char** options, size_t op
         return 1;
     }
     hle_android_set_assets(android_app_assets());
+    hle_vulkan_set_host(android_render_host());
     if (!android_app_open(&install, error, sizeof error)) {
         fprintf(stderr, "scarletnx-android: %s\n", error);
         android_app_close();

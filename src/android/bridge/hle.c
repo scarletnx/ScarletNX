@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The HLE libraries' symbols (hle.h), found by name through one sorted index of every table */
 #include "android/bridge/hle.h"
+#include "android/bridge/hle_vulkan.h"
 #include "common/utilities/common.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -22,7 +23,7 @@ bool hle_is_system_library(const char* name) {
     return false;
 }
 
-static const HleSymbol* const tables[] = {hle_libc, hle_posix, hle_thread, hle_dl, hle_sles, hle_media, hle_android};
+static const HleSymbol* const tables[] = {hle_libc, hle_posix, hle_thread, hle_dl, hle_sles, hle_media, hle_android, hle_egl};
 
 static struct {
     const HleSymbol** sorted;
@@ -51,7 +52,7 @@ uint64_t hle_symbol(const char* name) {
     HleSymbol key = {name, NULL, NULL};
     const HleSymbol* k = &key;
     const HleSymbol** found = bsearch(&k, h.sorted, h.count, sizeof *h.sorted, by_name);
-    if (!found) return 0;
+    if (!found) return hle_vulkan_symbol(name);
     const HleSymbol* s = *found;
     if (!s->handler) return (uint64_t)(uintptr_t)s->data;
     return bridge_export(s->name, s->handler, s->data);

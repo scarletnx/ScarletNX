@@ -109,9 +109,9 @@ the layouts agree. The adapters change only:
 The game's window is the SDL window: while the guest owns a swapchain on it, ScarletNX's own renderer
 ([HWUI](HWUI.md)) stops presenting.
 
-The game chooses Vulkan only on GPUs of its list (`assets/vulkan_gpu_list_config.txt`, mobile GPU names). The host's
-GPU name is not one, so the device name that the guest reads may need to be one of the list. The choice of how is
-left until the engine runs.
+The device that the guest sees is a Mali-G52 (ARM's vendor and driver IDs), with the host's limits and features. The
+game chooses Vulkan by GPU names of its own list (`assets/vulkan_gpu_list_config.txt`), and with GLES reporting no
+display, its fallback decides the API.
 
 ## EGL and GLES: pending on purpose
 
@@ -156,6 +156,14 @@ The recompiler's `android` target (`a64.profile`) is a phone's Armv8.2 CPU witho
 - libandroid: `ANativeWindow` is the `SurfaceView`'s surface, which is the host window at the view's size. The looper
   is an epoll set, the sensor manager has no sensors, and `AAssetManager` reads the assets of the APK and its splits.
   A stored asset opens as its APK's file descriptor with the asset's place in it.
+
+- the Vulkan pass-through (`hle_vulkan.c`): each `vk*` command the guest names is the host loader's, called with the
+  guest's arguments by `hle_call_wide` (up to 12 integers, the guest's stack slots past `x7`). The instance's
+  `VK_KHR_android_surface` becomes SDL's surface extensions or `VK_EXT_headless_surface`, the surface is the SDL
+  window's (ScarletNX's renderer gives the window up), the guest's allocation callbacks and debug messengers are left
+  out, and the device reports itself a **Mali-G52** with ARM's vendor and driver IDs, its limits and features the
+  host's. Built, and not run yet: the game's Java side doesn't reach its engine's graphics,
+- EGL reports no display and GLES does nothing, on purpose.
 
 Next: signals,
 OpenSL ES and the media codecs, the EGL and GLES libraries that report no display, and the Vulkan pass-through.

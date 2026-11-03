@@ -1,0 +1,18 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+#ifndef SNX_ANDROID_HLE_VULKAN_H
+#define SNX_ANDROID_HLE_VULKAN_H
+#include <stdint.h>
+
+/* libvulkan as a pass-through to the host's Vulkan (hle_vulkan.c) */
+
+/* the host window for the guest's surface, from ScarletNX's renderer (hwui/render.c): the SDL window (NULL without a
+   display), and the renderer giving it up for the guest's swapchain */
+typedef struct {
+    void* (*window)(void);
+    void (*yield)(void);
+} HleWindowHost;
+void hle_vulkan_set_host(const HleWindowHost* host);
+/* a vk* command's export for the guest (dlsym of libvulkan.so, vkGet*ProcAddr); 0 for a name that isn't one */
+uint64_t hle_vulkan_symbol(const char* name);
+#endif
