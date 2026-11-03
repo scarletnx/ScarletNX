@@ -8,7 +8,8 @@
 #define SNX_GNU_ARM_EXEC_H
 #include "gnuabi/process/process.h"
 #include "common/cpu/arm/arm.h"
-/* Compiles blocks on demand and runs the guest until it exits or faults.
-   Returns the process exit code. */
-int gnu_arm_run(GnuProcess* process);
+/* Compiles blocks on demand and runs the thread's guest code until it exits, faults or execs: why it stopped, as
+   execution.c's run_a64 says it (1 the process ends, 2 an execve, 4 the thread ends). The AArch32 guest gets no
+   signal handlers: a system call that a signal stopped fails with EINTR */
+int gnu_arm_run(GnuThread* thread);
 #endif

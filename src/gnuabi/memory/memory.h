@@ -4,6 +4,7 @@
 #define SNX_GNU_MEMORY_H
 #include <stdint.h>
 #include <stddef.h>
+#include "gnuabi/kernel/sync.h"
 #define GNU_PAGE_SIZE     4096u
 #define GNU_PROT_READ     1u
 #define GNU_PROT_WRITE    2u
@@ -22,6 +23,9 @@ typedef struct GnuMemory {
        for them must not run again (gnu_jit_invalidate). Set after gnu_memory_init */
     void (*code_changed)(void* context, uint64_t address, uint64_t length);
     void* code_context;
+    /* the map's changes, one at a time (recursive): pages, the host's protection, mmap_next and brk. A guest access
+       reads pages without it (relaxed atomic loads) */
+    GnuMutex lock;
 } GnuMemory;
 /* --host-page=N: the page gnu_memory_init's memories work in, a power of two from the host's page to 1 MiB that main
    checked (0: the host's), as a host with those pages does (tests). Before any memory is made; POSIX only */
@@ -43,4 +47,7 @@ void gnu_memory_watch_code(GnuMemory* memory, uint64_t address, uint64_t length)
 /* a host write fault at guest address: 1 when it was a watched page, which is writable again and whose code went
    (code_changed), so the write can be retried */
 int gnu_memory_code_written(GnuMemory* memory, uint64_t address);
+/* the map's lock, held across a host fork (thread.c) */
+void gnu_memory_lock(GnuMemory* memory);
+void gnu_memory_unlock(GnuMemory* memory);
 #endif
