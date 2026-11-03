@@ -10,6 +10,7 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"
+#include "nx/runtime/guest_stats.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/log.h"
@@ -35,6 +36,7 @@ static struct {
     size_t pools;
     u64 trap; /* where a run that the runtime starts returns: nce_native */
     u64 entry[NCE_DIVERTS], original[NCE_DIVERTS];
+    u8 family[NCE_DIVERTS]; /* each one's family, which the log counts its outcalls by (guest_stats_family) */
     u32 diverts;
     /* each thread's host id while it runs native code, and 1 while that code is the guest's, not the runtime's: a
        kick then stops it. By the thread's index (kt_ix) */
@@ -88,7 +90,10 @@ void nce_thread_run(struct KThread* t, u64 pc) {
 }
 void nce_kick(struct KThread* t) { (void)t; }
 GuestFn nce_slot(GuestFn f) { return f; }
-void nce_slot_taken(u64 addr) { (void)addr; }
+void nce_slot_taken(u64 addr, const char* family) {
+    (void)addr;
+    (void)family;
+}
 void nce_code_added(u64 base, u64 text_size) {
     (void)base;
     (void)text_size;
@@ -127,6 +132,7 @@ static void nce_native(CPU* c, u64 entry) {
         if (g_nce.entry[i] == entry) pc = g_nce.original[i];
     c->x[30] = g_nce.trap;
     c->pc = pc;
+    guest_stats_add(kt_ix((KThread*)c->thread), GSTAT_NCE_RUN);
     set_guest(c, 1);
     nce_host_run(c);
     set_guest(c, 0);
@@ -137,12 +143,16 @@ static void nce_native(CPU* c, u64 entry) {
 GuestFn nce_slot(GuestFn f) { return f || !g_nce.on ? f : nce_native; }
 
 /* a hook's outcall: the slot's handler, or the function's own code. The trap ends the innermost run */
-static void hook(CPU* c, unsigned index) {
+static void hook(CPU* c, u32 ix, unsigned index) {
     GuestFn f;
     u64 entry;
-    if (index == NCE_TRAP) nce_host_leave();
+    if (index == NCE_TRAP) {
+        guest_stats_add(ix, GSTAT_NCE_TRAP);
+        nce_host_leave();
+    }
     if (index >= __atomic_load_n(&g_nce.diverts, __ATOMIC_ACQUIRE))
         fatal("NCE: an outcall of hook %u, which no function has", index);
+    guest_stats_hook(ix, g_nce.family[index]);
     entry = g_nce.entry[index];
     f = __atomic_load_n(&g_disp[(entry - g_code_lo) >> 2], __ATOMIC_ACQUIRE);
     if (!f || f == nce_native) {
@@ -155,16 +165,21 @@ static void hook(CPU* c, unsigned index) {
 
 static void dispatch(CPU* c, u64 code) {
     unsigned kind = (unsigned)(code >> 16), imm = (unsigned)(code & 0xFFFFu);
+    u32 ix = kt_ix((KThread*)c->thread);
     set_guest(c, 0);
     switch (kind) {
     case NCE_SVC:
+        guest_stats_add(ix, GSTAT_NCE_SVC);
         if (imm < SNX_SVC_COUNT && c->rt->svcs)
             c->rt->svcs[imm](c, imm);
         else
             c->rt->svc(c, imm);
         break;
-    case NCE_TICKS: c->x[imm & 31u] = c->rt->ticks(); break;
-    case NCE_HOOK: hook(c, imm); break;
+    case NCE_TICKS:
+        guest_stats_add(ix, GSTAT_NCE_TICKS);
+        c->x[imm & 31u] = c->rt->ticks();
+        break;
+    case NCE_HOOK: hook(c, ix, imm); break;
     default: fatal("NCE: an outcall of kind %u, which no stub makes", kind);
     }
     if (__atomic_load_n(&c->poll, __ATOMIC_RELAXED)) c->rt->poll(c);
@@ -172,6 +187,7 @@ static void dispatch(CPU* c, u64 code) {
 }
 
 static void preempted(CPU* c) {
+    guest_stats_add(kt_ix((KThread*)c->thread), GSTAT_NCE_KICK);
     set_guest(c, 0);
     c->rt->poll(c);
     set_guest(c, 1);
@@ -306,7 +322,7 @@ void nce_init(void) {
     if (plat_thread(kicker, NULL, 64 << 10)) fatal("NCE: the thread of the kicks cannot start");
 }
 
-void nce_slot_taken(u64 addr) {
+void nce_slot_taken(u64 addr, const char* family) {
     u64 original;
     u32 word, i;
     if (!g_nce.on) return;
@@ -326,6 +342,7 @@ void nce_slot_taken(u64 addr) {
     }
     g_nce.entry[i] = addr;
     g_nce.original[i] = original;
+    g_nce.family[i] = (u8)guest_stats_family(family);
     for (size_t k = 0; k < g_nce.pools; k++)
         __builtin___clear_cache((char*)g_nce.pool[k].buf, (char*)g_nce.pool[k].buf + g_nce.pool[k].used);
     __atomic_store_n(&g_nce.diverts, i + 1, __ATOMIC_RELEASE); /* before the entry branches to it */

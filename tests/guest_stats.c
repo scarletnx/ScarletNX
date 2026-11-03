@@ -2,9 +2,11 @@
    Copyright 2026 the ScarletNX contributors */
 /* The windows of runtime/guest_stats.c and their lines: the first call only starts a window; each SVC counted by its
    number, those past the table together, a host thread's in slot 0; the misses; a window holding only what came in it;
-   a guest thread's time on the processors read from another thread, at least what it spun, the time of one that ended
-   in the window, which the next window no longer counts, and one that ended without saying so, said when another
-   takes its slot or its clock goes; and the lines saying those values */
+   no add lost when threads count at once, in their own slots and in the one they share; a guest thread's time on the
+   processors read from another thread, at least what it spun, the time of one that ended in the window, which the next
+   window no longer counts, and one that ended without saying so, said when another takes its slot or its clock goes;
+   NCE's outcalls by kind, the hooked functions' by family, a family's index the same at each call with its name and
+   the names past the table together; and the lines saying those values, the NCE line only while NCE runs */
 #if defined(__linux__)
 #define _POSIX_C_SOURCE 200809L /* nanosleep, which C99 has not */
 #endif
@@ -34,8 +36,12 @@ static struct {
     pthread_cond_t moved;
     int step;
     GstatWindow w; /* 4 KiB, off the stack */
+    int nce;       /* nce_on's */
     u64 unsaid;    /* the clock of a thread that ends unsaid */
 } g_test = {.lock = PTHREAD_MUTEX_INITIALIZER, .moved = PTHREAD_COND_INITIALIZER};
+
+/* nce.c's: whether the game's code runs natively, which the test sets */
+int nce_on(void) { return g_test.nce; }
 
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
@@ -96,6 +102,17 @@ static void* guest(void* arg) {
     return NULL;
 }
 
+/* four threads at once: each 100000 SVCs in a slot of its own and as many in slot 0, which they share */
+#define RACE 100000
+static void* race(void* arg) {
+    u32 ix = (u32)(size_t)arg;
+    for (int i = 0; i < RACE; i++) {
+        guest_stats_svc(ix, 0x30);
+        guest_stats_svc(0, 0x31);
+    }
+    return NULL;
+}
+
 /* guest thread 4, which ends without guest_stats_thread_end; its clock, for the test to see it go */
 static void* unsaid(void* arg) {
     (void)arg;
@@ -144,6 +161,16 @@ int main(void) {
     said(0, "; the busiest: none\n");
     said(1, "cpu: in those 2.00 s, 10 SVCs (5 a second): 0x18 WaitSynchronization 6, past 0xff 2, 0x1d "
             "SignalProcessWideKey 1, 0x7f 1; 5 calls the dispatch table had no code for (RtAPI.miss)\n");
+
+    /* no add lost, in a thread's own slot or in the one they share */
+    {
+        pthread_t racer[4];
+        guest_stats_window(1000 + 5500000000u, 301, w);
+        for (size_t i = 0; i < 4; i++) pthread_create(&racer[i], NULL, race, (void*)(i + 10));
+        for (int i = 0; i < 4; i++) pthread_join(racer[i], NULL);
+        guest_stats_window(1000 + 5600000000u, 301, w);
+        check(w->svc[0x30] == 4 * RACE && w->svc[0x31] == 4 * RACE, "every add of four threads at once");
+    }
 
     /* a guest thread's time, read by this thread */
     guest_stats_window(1000 + 6000000000u, 301, w);
@@ -209,6 +236,40 @@ int main(void) {
     check(g_test.lines == 2, "an ended clock said only once");
     said(0, "cpu: 60 presents in 1.00 s (60.0 fps): 1 of the game's threads ran 0.0");
     said(0, "; the busiest: thread 7 'worker' 0.0");
+
+    /* NCE's outcalls, a window of their own */
+    check(guest_stats_family("libc") == 0 && guest_stats_family("nvn queue") == 1, "two families");
+    check(guest_stats_family("libc") == 0, "a family again: its index");
+    check(!strcmp(guest_stats_family_name(1), "nvn queue"), "a family's name");
+    guest_stats_window(1000 + 11000000000u, 541, w);
+    for (int i = 0; i < 4; i++) guest_stats_hook(1, 0);
+    for (int i = 0; i < 2; i++) guest_stats_hook(2, 1);
+    for (int i = 0; i < 3; i++) guest_stats_add(1, GSTAT_NCE_SVC);
+    for (int i = 0; i < 7; i++) guest_stats_add(2, GSTAT_NCE_TICKS);
+    guest_stats_add(1, GSTAT_NCE_TRAP);
+    guest_stats_add(1, GSTAT_NCE_RUN);
+    for (int i = 0; i < 2; i++) guest_stats_add(2, GSTAT_NCE_KICK);
+    g_test.nce = 1;
+    g_test.lines = 0;
+    guest_stats_log(1000 + 12000000000u, 601);
+    check(g_test.lines == 3, "three lines a window under NCE");
+    said(2, "nce: in those 1.00 s, 17 outcalls (17 a second): 3 SVCs, 7 counter reads, 6 calls of hooked functions (by "
+            "family: libc 4, nvn queue 2), 1 returns of native runs; 1 native runs started, 2 kicks\n");
+    g_test.lines = 0;
+    guest_stats_log(1000 + 13000000000u, 661);
+    said(2, "nce: in those 1.00 s, 0 outcalls (0 a second): 0 SVCs, 0 counter reads, 0 calls of hooked functions (by "
+            "family: none), 0 returns of native runs; 0 native runs started, 0 kicks\n");
+
+    /* the families past the table: the last index, named so */
+    for (unsigned i = 2; i < GSTAT_FAMILIES - 1; i++) {
+        char name[16];
+        snprintf(name, sizeof name, "family %u", i);
+        check(guest_stats_family(name) == i, "a family of its own");
+    }
+    check(guest_stats_family("one more") == GSTAT_FAMILIES - 1, "the first past the table");
+    check(guest_stats_family("and another") == GSTAT_FAMILIES - 1, "the second past it");
+    check(!strcmp(guest_stats_family_name(GSTAT_FAMILIES - 1), "others"), "their name");
+    check(guest_stats_family("family 30") == 30, "one in the table still");
 
     if (g_test.failures) return 1;
     printf("guest_stats: all checks passed\n");

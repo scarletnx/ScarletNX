@@ -219,7 +219,7 @@ void hook_install(void) {
         h->orig[h->count] = nce_slot(*slot);
         h->fn[h->count] = verify[hook_family[k]] && hook_verify[k].pure ? verify_fn : hook_fn[k];
         __atomic_store_n(slot, h->fn[h->count], __ATOMIC_RELEASE);
-        nce_slot_taken(addr);
+        nce_slot_taken(addr, hook_family_name[hook_family[k]]);
         h->count++;
         if (!hook_routed(name))
             WARN("hooks: %s at %llx runs %s only for the calls through the PLT and function pointers: the module's "

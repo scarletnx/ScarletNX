@@ -30,8 +30,9 @@ void nce_thread_run(struct KThread* t, u64 pc);
 void nce_kick(struct KThread* t);
 /* the code of a dispatch slot: f, or under NCE the function's own native code for an empty slot */
 GuestFn nce_slot(GuestFn f);
-/* a handler took the dispatch slot of the function at addr: under NCE, its first word now branches to the runtime */
-void nce_slot_taken(u64 addr);
+/* a handler took the dispatch slot of the function at addr: under NCE, its first word now branches to the runtime, and
+   the log counts those calls by family (a hook's family, or NVN's object's) */
+void nce_slot_taken(u64 addr, const char* family);
 /* code that the game mapped (an NRO of ldr:ro), with text_size bytes of text at base: under NCE, its words are
    patched as Eden patches them, each word of the encodings that the flow does not prove to be data */
 void nce_code_added(u64 base, u64 text_size);

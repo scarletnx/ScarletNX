@@ -4,17 +4,21 @@
 #include "nx/runtime/guest_stats.h"
 #include "common/utilities/common.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/runtime/nce/nce.h"
 #include "nx/runtime/platform/log.h"
 #include <stdio.h>
 #include <string.h>
 
-#define GSTAT_TOP_THREADS 5 /* the busiest threads a line names */
-#define GSTAT_TOP_SVCS    6 /* the SVCs a line names, the most made first */
+#define GSTAT_TOP_THREADS 5  /* the busiest threads a line names */
+#define GSTAT_TOP_SVCS    6  /* the SVCs a line names, the most made first */
+#define GSTAT_NAME        32 /* a family's name, with its 0 */
+typedef char snx_check_gstat_top[GSTAT_TOP_THREADS <= GSTAT_FAMILIES && GSTAT_TOP_SVCS <= GSTAT_FAMILIES ? 1 : -1];
 
-/* a slot's counters, which only its thread adds to (slot 0: any host thread's, so the adds are atomic) */
+/* a slot's counters, which only its thread adds to (slot 0: any host thread's) */
 typedef struct {
     u64 svc[GSTAT_SVCS];
     u64 count[GSTAT_COUNTS];
+    u64 hook[GSTAT_FAMILIES];
     char pad[64]; /* the next slot's counters on another cache line, wherever the array starts */
 } GstatCounters;
 
@@ -28,19 +32,41 @@ typedef struct {
 
 static struct {
     GstatCounters slot[GSTAT_SLOTS];
-    PMutex lock; /* the clocks, and the window */
+    PMutex lock; /* the clocks, the families, and the window */
     GstatClock clock[GSTAT_SLOTS];
+    char family[GSTAT_FAMILIES][GSTAT_NAME];
+    unsigned families;
     /* where the window began: when, the presents then, the process's time then, and the counters' sums then */
     u64 since_ns, since_presents, since_process_ns;
-    u64 svc[GSTAT_SVCS], count[GSTAT_COUNTS];
+    u64 svc[GSTAT_SVCS], count[GSTAT_COUNTS], hook[GSTAT_FAMILIES];
 } g_guest_stats = {.lock = PMUTEX_INIT};
 
+/* one more in a counter of slot ix. Only its own thread writes a guest thread's slot, so a load and a store do, with no
+   locked add on the paths that count; slot 0's are any host thread's */
+static void bump(u32 ix, u64* n) {
+    if (ix)
+        __atomic_store_n(n, __atomic_load_n(n, __ATOMIC_RELAXED) + 1, __ATOMIC_RELAXED);
+    else
+        __atomic_add_fetch(n, 1, __ATOMIC_RELAXED);
+}
 void guest_stats_svc(u32 ix, u32 imm) {
-    __atomic_add_fetch(&g_guest_stats.slot[ix].svc[imm < SNX_SVC_COUNT ? imm : SNX_SVC_COUNT], 1, __ATOMIC_RELAXED);
+    bump(ix, &g_guest_stats.slot[ix].svc[imm < SNX_SVC_COUNT ? imm : SNX_SVC_COUNT]);
 }
-void guest_stats_add(u32 ix, unsigned what) {
-    __atomic_add_fetch(&g_guest_stats.slot[ix].count[what], 1, __ATOMIC_RELAXED);
+void guest_stats_add(u32 ix, unsigned what) { bump(ix, &g_guest_stats.slot[ix].count[what]); }
+void guest_stats_hook(u32 ix, unsigned family) { bump(ix, &g_guest_stats.slot[ix].hook[family]); }
+unsigned guest_stats_family(const char* name) {
+    unsigned i;
+    pm_lock(&g_guest_stats.lock);
+    for (i = 0; i < g_guest_stats.families && strcmp(g_guest_stats.family[i], name); i++) {}
+    if (i == g_guest_stats.families && i < GSTAT_FAMILIES) {
+        snprintf(g_guest_stats.family[i], GSTAT_NAME, "%s", i < GSTAT_FAMILIES - 1 ? name : "others");
+        g_guest_stats.families++;
+    }
+    if (i == GSTAT_FAMILIES) i = GSTAT_FAMILIES - 1;
+    pm_unlock(&g_guest_stats.lock);
+    return i;
 }
+const char* guest_stats_family_name(unsigned family) { return g_guest_stats.family[family]; }
 
 /* the time slot ix's thread has run since the slot's base, which moves to now; 0 for a thread whose clock no longer
    reads (it ended without guest_stats_thread_end), whose clock then goes, said */
@@ -89,21 +115,23 @@ void guest_stats_thread_end(u32 ix) {
 }
 
 /* the counters' sums now: each slot's, read as their threads go on adding */
-static void sums(u64 svc[GSTAT_SVCS], u64 count[GSTAT_COUNTS]) {
+static void sums(u64 svc[GSTAT_SVCS], u64 count[GSTAT_COUNTS], u64 hook[GSTAT_FAMILIES]) {
     memset(svc, 0, GSTAT_SVCS * sizeof *svc);
     memset(count, 0, GSTAT_COUNTS * sizeof *count);
+    memset(hook, 0, GSTAT_FAMILIES * sizeof *hook);
     for (u32 ix = 0; ix < GSTAT_SLOTS; ix++) {
         const GstatCounters* s = &g_guest_stats.slot[ix];
         for (u32 i = 0; i < GSTAT_SVCS; i++) svc[i] += __atomic_load_n(&s->svc[i], __ATOMIC_RELAXED);
         for (u32 i = 0; i < GSTAT_COUNTS; i++) count[i] += __atomic_load_n(&s->count[i], __ATOMIC_RELAXED);
+        for (u32 i = 0; i < GSTAT_FAMILIES; i++) hook[i] += __atomic_load_n(&s->hook[i], __ATOMIC_RELAXED);
     }
 }
 
 int guest_stats_window(u64 now_ns, u64 presents, GstatWindow* w) {
-    u64 svc[GSTAT_SVCS], count[GSTAT_COUNTS], process_ns = snx_process_cpu_ns();
+    u64 svc[GSTAT_SVCS], count[GSTAT_COUNTS], hook[GSTAT_FAMILIES], process_ns = snx_process_cpu_ns();
     int first;
     memset(w, 0, sizeof *w);
-    sums(svc, count);
+    sums(svc, count, hook);
     pm_lock(&g_guest_stats.lock);
     first = !g_guest_stats.since_ns || now_ns <= g_guest_stats.since_ns;
     for (u32 ix = 0; ix < GSTAT_SLOTS; ix++) {
@@ -123,12 +151,15 @@ int guest_stats_window(u64 now_ns, u64 presents, GstatWindow* w) {
         w->process_ns = process_ns - g_guest_stats.since_process_ns;
         for (u32 i = 0; i < GSTAT_SVCS; i++) w->svcs += w->svc[i] = svc[i] - g_guest_stats.svc[i];
         for (u32 i = 0; i < GSTAT_COUNTS; i++) w->count[i] = count[i] - g_guest_stats.count[i];
+        for (u32 i = 0; i < GSTAT_FAMILIES; i++) w->hooks += w->hook[i] = hook[i] - g_guest_stats.hook[i];
+        w->families = g_guest_stats.families;
     }
     g_guest_stats.since_ns = now_ns;
     g_guest_stats.since_presents = presents;
     g_guest_stats.since_process_ns = process_ns;
     memcpy(g_guest_stats.svc, svc, sizeof svc);
     memcpy(g_guest_stats.count, count, sizeof count);
+    memcpy(g_guest_stats.hook, hook, sizeof hook);
     pm_unlock(&g_guest_stats.lock);
     return first ? -1 : 0;
 }
@@ -152,7 +183,7 @@ static double seconds(u64 ns) { return (double)ns / 1e9; }
 
 void guest_stats_log(u64 now_ns, u64 presents) {
     GstatWindow w;
-    u32 top[GSTAT_TOP_SVCS > GSTAT_TOP_THREADS ? GSTAT_TOP_SVCS : GSTAT_TOP_THREADS];
+    u32 top[GSTAT_FAMILIES]; /* the longest list a line gives */
     char list[640], per[32], clockless[96] = "";
     size_t at = 0;
     unsigned n;
@@ -193,4 +224,19 @@ void guest_stats_log(u64 now_ns, u64 presents) {
         "(RtAPI.miss)\n",
         seconds(w.ns), (unsigned long long)w.svcs, (double)w.svcs * 1e9 / (double)w.ns, list,
         (unsigned long long)w.count[GSTAT_MISS]);
+    if (!nce_on()) return;
+    at = 0;
+    for (unsigned i = 0, k = largest(w.hook, w.families, top, GSTAT_FAMILIES); i < k && at < sizeof list; i++)
+        at += (size_t)snprintf(list + at, sizeof list - at, "%s %s %llu", i ? "," : "", guest_stats_family_name(top[i]),
+                               (unsigned long long)w.hook[top[i]]);
+    if (!at) snprintf(list, sizeof list, " none");
+    {
+        u64 outcalls = w.count[GSTAT_NCE_SVC] + w.count[GSTAT_NCE_TICKS] + w.hooks + w.count[GSTAT_NCE_TRAP];
+        LOG("nce: in those %.2f s, %llu outcalls (%.0f a second): %llu SVCs, %llu counter reads, %llu calls of hooked "
+            "functions (by family:%s), %llu returns of native runs; %llu native runs started, %llu kicks\n",
+            seconds(w.ns), (unsigned long long)outcalls, (double)outcalls * 1e9 / (double)w.ns,
+            (unsigned long long)w.count[GSTAT_NCE_SVC], (unsigned long long)w.count[GSTAT_NCE_TICKS],
+            (unsigned long long)w.hooks, list, (unsigned long long)w.count[GSTAT_NCE_TRAP],
+            (unsigned long long)w.count[GSTAT_NCE_RUN], (unsigned long long)w.count[GSTAT_NCE_KICK]);
+    }
 }
