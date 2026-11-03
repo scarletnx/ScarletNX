@@ -83,7 +83,7 @@ add_library(snx_android_bridge STATIC bridge/bridge.c bridge/host.c bridge/linke
                                       bridge/native.c bridge/hle_posix.c bridge/hle_thread.c bridge/hle_sync.c bridge/bionic_sync.c bridge/hle_signal.c bridge/fault.c bridge/hle_proc.c bridge/hle_dl.c bridge/hle_code.c
                                       bridge/hle_sles.c bridge/hle_media.c bridge/jni.c
                                       bridge/hle_android.c bridge/hle_vulkan.c
-                                      bridge/hle_egl.c)
+                                      bridge/hle_egl.c bridge/hle_gles.c)
 # the guest's signals, threads and futexes: the GNU ABI runtime's kernel (src/gnuabi/kernel), here too without that
 # runtime
 if(NOT TARGET scarletnx-gnuabi-kernel)
@@ -105,6 +105,11 @@ snx_glsl_spirv(snx_android_bridge SOURCE bridge/compose.vert NAME android_compos
                HEADER android/bridge/compose_vert_spv.h)
 snx_glsl_spirv(snx_android_bridge SOURCE bridge/compose.frag NAME android_compose_frag_spv
                HEADER android/bridge/compose_frag_spv.h)
+# GLES 1.1's fixed function over Vulkan (bridge/hle_gles.c)
+snx_glsl_spirv(snx_android_bridge SOURCE bridge/gles.vert NAME android_gles_vert_spv HEADER android/bridge/gles_vert_spv.h)
+snx_glsl_spirv(snx_android_bridge SOURCE bridge/gles.frag NAME android_gles_frag_spv HEADER android/bridge/gles_frag_spv.h)
+snx_glsl_spirv(snx_android_bridge SOURCE bridge/gles_rgb.comp NAME android_gles_rgb_comp_spv
+               HEADER android/bridge/gles_rgb_comp_spv.h)
 target_include_directories(snx_android_bridge SYSTEM PUBLIC "${SNX_JAVA_HOME}/include"
                            "${SNX_JAVA_HOME}/include/${snx_jni_system}")
 set_target_properties(snx_android_bridge PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)

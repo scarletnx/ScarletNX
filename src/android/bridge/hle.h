@@ -32,6 +32,7 @@ extern const HleSymbol hle_sles[];
 extern const HleSymbol hle_media[];
 extern const HleSymbol hle_android[];
 extern const HleSymbol hle_egl[];
+extern const HleSymbol hle_gles[]; /* hle_gles.c: GLES 1.1 over Vulkan */
 extern const HleSymbol hle_signal[];
 /* the GPU the guest sees, in Vulkan's device properties and GLES's GL_RENDERER alike (hle_vulkan.c): a Mali that the
    engines' lists of Vulkan GPUs hold */
