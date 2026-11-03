@@ -5413,8 +5413,8 @@ msgid "Unit cache limit"
 msgstr "Limite do cache de unidades"
 
 #: src/nx/runtime/settings.txt
-msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, removing its oldest units for a new one"
-msgstr "O máximo que o cache de unidades de código compiladas pode ocupar, em GB: units/ da pasta de cache, onde cada recompilação acha as unidades que já compilou. Passando dele, saem as unidades reusadas há mais tempo. 0 = sem limite. De todo jeito o cache sempre deixa um décimo do disco livre, tirando as unidades mais antigas para caber uma nova"
+msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
+msgstr "O máximo que o cache de unidades de código compiladas pode ocupar, em GB: units/ da pasta de cache, onde cada recompilação acha as unidades que já compilou. Passando dele, saem as unidades reusadas há mais tempo. 0 = sem limite. De todo jeito o cache sempre deixa um décimo do disco livre, no máximo 10 GB, tirando as unidades mais antigas para caber uma nova"
 
 #: src/nx/runtime/settings.txt
 msgid "Instruction combining"
