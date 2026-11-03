@@ -163,6 +163,7 @@ static void take32(u64 addr, const char* name, int i, int versioned) {
 static void take(u64 addr, const char* name, u32 len) {
     int versioned, i = implemented(name, &versioned);
     GuestFn fn = i >= 0 ? nvn_fn[i] : unimplemented, *slot, cur;
+    char family[48];
     if (g_nvn.loader.a32) {
         if (!strcmp(name, "nvnDeviceGetInteger")) nvn_device_driver(addr); /* its answers, from its code */
         take32(addr, name, i, versioned);
@@ -195,7 +196,11 @@ static void take(u64 addr, const char* name, u32 len) {
         g_nvn.loader.nvrm_init = cur, g_nvn.loader.nvrm_init_at = addr;
     if (fn == unimplemented && !missing_find(addr)) note_missing(addr, name, versioned);
     __atomic_store_n(slot, fn, __ATOMIC_RELEASE);
-    nce_slot_taken(addr);
+    if (i >= 0)
+        snprintf(family, sizeof family, "nvn %s", nvn_family_name[nvn_family[i]]);
+    else
+        snprintf(family, sizeof family, "nvn unimplemented");
+    nce_slot_taken(addr, family);
     pm_unlock(&g_nvn.loader.lock);
 }
 
@@ -299,7 +304,7 @@ static void bootstrap(CPU* c, u64 entry) {
         if (!own) fatal("nvn: the driver's nvnDeviceGetProcAddress has no recompiled code");
         g_nvn.loader.getproc_original = own;
         __atomic_store_n(slot, getproc, __ATOMIC_RELEASE);
-        nce_slot_taken(c->x[0]);
+        nce_slot_taken(c->x[0], "nvn loader");
     }
     pm_unlock(&g_nvn.loader.lock);
 }
@@ -413,7 +418,7 @@ void nvn_loader_init(void) {
         WARN("nvn: the module's route list doesn't name nvnBootstrapLoader, so nvn sees only its calls through "
              "the PLT and function pointers. Recompile the game for its direct calls\n");
     *slot = bootstrap; /* before any guest thread runs */
-    nce_slot_taken(entry);
+    nce_slot_taken(entry, "nvn loader");
     g_nvn.loader.active = 1;
     LOG("nvn: the runtime implements %d NVN functions, and the game's NVN driver doesn't run\n", NVN_COUNT);
 }
