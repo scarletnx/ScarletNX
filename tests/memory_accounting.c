@@ -49,8 +49,13 @@ u64 plat_vm_page(void) { return host_page; }
 static u8* reservation;
 static u64 reservation_size;
 static u64 refuse_above; /* a system that gives no more than this much address space (0: any) */
+/* the sizes of the reservations mem.c asked for, in order */
+static u64 asked[32];
+static unsigned asked_n;
 u8* plat_vm_reserve(u64 size) {
     void* p;
+    if (asked_n < sizeof asked / sizeof *asked) asked[asked_n] = size;
+    asked_n++;
     if (refuse_above && size > refuse_above) {
         errno = ENOMEM;
         return NULL;
@@ -173,9 +178,14 @@ static void mapping_end(void) {
 }
 void (*g_gpu_mapping_begin)(u64, u64, int);
 void (*g_gpu_mapping_end)(void);
+static char said[4096]; /* what the runtime logged since said[0] was last cleared */
 void logf_(int level, const char* fmt, ...) {
+    size_t n = strlen(said);
+    va_list ap;
     (void)level;
-    (void)fmt;
+    va_start(ap, fmt);
+    vsnprintf(said + n, sizeof said - n, fmt, ap);
+    va_end(ap);
 }
 void fatal(const char* fmt, ...) {
     va_list ap;
@@ -525,6 +535,50 @@ static void test_shared_memory(void) {
     kshmem_destroy(&s->o);
 }
 
+/* mem_reserve's tiers: the console's 512 GiB first, then 256, 128 and the smaller ones, each refusal and the size taken
+   said with its value */
+static void reserve_again(void) {
+    asked_n = 0;
+    said[0] = 0;
+    mem_reserve();
+}
+static void let_go(void) {
+    CHECK(munmap(reservation, reservation_size) == 0);
+    g_mem = NULL;
+}
+static int console_layout(u64 end) {
+    return g_layout.base == 0x8000000ull && g_layout.end == end && g_layout.alias == 4ull << 30 &&
+           g_layout.alias_size == 64ull << 30 && g_layout.heap == 0x1100000000ull && g_layout.heap_size == 8ull << 30 &&
+           g_layout.stack == 0x1300000000ull && g_layout.stack_size == 2ull << 30 && g_layout.kern == 0x1380000000ull &&
+           g_layout.kern_end == 0x13C0000000ull;
+}
+static void test_ladder(void) {
+    /* a host that gives it: the console's whole address space, asked first, and the game told so */
+    reserve_again();
+    CHECK(g_mem && g_as_size == 512ull << 30 && console_layout(512ull << 30));
+    CHECK(asked_n == 1 && asked[0] == 512ull << 30);
+    CHECK(strstr(said, "memory: 512 GiB of address space reserved, the console's\n"));
+    CHECK(info(12) == 0x8000000ull && info(13) == (512ull << 30) - 0x8000000ull);
+    let_go();
+    /* a 39-bit kernel, or an RLIMIT_AS, with room for 256 GiB */
+    refuse_above = 256ull << 30;
+    reserve_again();
+    CHECK(g_mem && g_as_size == 256ull << 30 && console_layout(256ull << 30));
+    CHECK(asked_n == 2 && asked[0] == 512ull << 30 && asked[1] == 256ull << 30);
+    CHECK(strstr(said, "memory: 512 GiB of address space refused: "));
+    CHECK(strstr(said, "memory: 256 GiB of address space reserved, of the console's 512: the game's address space ends "
+                       "there\n"));
+    let_go();
+    /* down to 128 GiB, the console's regions still */
+    refuse_above = 128ull << 30;
+    reserve_again();
+    CHECK(g_mem && g_as_size == 128ull << 30 && console_layout(128ull << 30));
+    CHECK(asked_n == 3 && asked[2] == 128ull << 30);
+    let_go();
+    refuse_above = 0;
+    printf("address space ladder: 512, 256 and 128 GiB, %u checks passed\n", checks);
+}
+
 /* NCE on Android (mem_reserve_identity from 64 GiB): the guest's addresses are the host's, above what the app's process
    holds, so the whole layout moves up to the first base from 64 GiB, in 2 MiB steps, where a tier is free. A page held
    at 65 GiB takes the 64 GiB tier's one base and the 48 GiB tier's first 449; the 48 GiB layout then lies from 64 GiB
@@ -614,7 +668,8 @@ int main(void) {
         printf("memory accounting with %llu KiB host pages: %u checks passed\n",
                (unsigned long long)(host_page >> 10), checks);
     }
-    /* a system that gives less than the console's 128 GiB: the largest tier it gives, in a layout of that size */
+    test_ladder();
+    /* a system that gives less than 128 GiB: the largest tier it gives, in a smaller layout of that size */
     host_page = (u64)sysconf(_SC_PAGESIZE);
     refuse_above = 24ull << 30;
     mem_reserve();

@@ -1168,13 +1168,13 @@ static int gfx_composed(u64 gva, u64 len, VkBuffer* buf, u64* off) {
    from another entry over the same memory. The table has a leaf of 1024 pages per 4 MB that has been written, with
    the newest generation in the leaf beside it so whole leaves are skipped */
 #define WW_LEAF_SHIFT 22
-static u32* g_wleaf[AS_MAX >> WW_LEAF_SHIFT];
-static u32 g_wleaf_max[AS_MAX >> WW_LEAF_SHIFT];
+static u32* g_wleaf[AS_TOP >> WW_LEAF_SHIFT];
+static u32 g_wleaf_max[AS_TOP >> WW_LEAF_SHIFT];
 /* The CPU writes a GPU stream may see come before its submission or the end of one of its waits: each of those starts
    a write epoch (vk_ww_new_epoch). A leaf scanned whole in an epoch isn't scanned again in it, and a scan covers whole
    leaves, so the textures and buffers checked in one epoch share a few scans: one game made 5,600 of them a frame.
    g_wleaf_seen holds the epoch + 1 whose scans of the leaf its table has taken in (checks only, under vk_lock) */
-static u32 g_wleaf_seen[AS_MAX >> WW_LEAF_SHIFT];
+static u32 g_wleaf_seen[AS_TOP >> WW_LEAF_SHIFT];
 static u32 g_ww_epoch; /* atomic */
 static u32 g_wclock = 1;
 static int g_ww = -1; /* -1 not tried yet, 0 not available, 1 on */
@@ -1259,9 +1259,9 @@ static void ww_take_changed(void) {
 #define WW_RES_N       4096
 #define WW_RUN_MAX     8 /* leaves the scanner scans in one call at most */
 #define WW_USED_EPOCHS 4 /* the scanner scans the leaves the checks of the last epochs needed */
-static u32 g_wleaf_done[AS_MAX >> WW_LEAF_SHIFT]; /* atomic, stored by the leaf's claimer */
-static u32 g_wleaf_used[AS_MAX >> WW_LEAF_SHIFT]; /* atomic: only a hint for the scanner */
-static u8 g_wleaf_busy[AS_MAX >> WW_LEAF_SHIFT];  /* atomic: 1 while a scan has claimed the leaf */
+static u32 g_wleaf_done[AS_TOP >> WW_LEAF_SHIFT]; /* atomic, stored by the leaf's claimer */
+static u32 g_wleaf_used[AS_TOP >> WW_LEAF_SHIFT]; /* atomic: only a hint for the scanner */
+static u8 g_wleaf_busy[AS_TOP >> WW_LEAF_SHIFT];  /* atomic: 1 while a scan has claimed the leaf */
 static u32 g_ww_used[WW_USED_EPOCHS];             /* the last epochs + 1 checks needed leaves in, under vk_lock */
 static u32 g_ww_used_i;
 static u32 g_ww_used_from; /* atomic: the oldest of them */
