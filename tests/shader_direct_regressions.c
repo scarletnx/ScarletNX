@@ -43,7 +43,8 @@ static const char* xfb_path;
 static const char* passthrough_paths[6];
 static const char* structured_paths[2];
 static const char* fswzadd_path;
-static char* fixture_paths[95];
+static const char* surface_op_paths[7];
+static char* fixture_paths[102];
 static size_t fixture_count;
 
 static const char* fixture_path(const char* directory, const char* name) {
@@ -1277,15 +1278,60 @@ static void volume_surface_atomics(void) {
         }
         free(code);
     }
-    const u64 refused[] = {operations[0] | 1ull << 49, operations[0] | 3ull << 29,
-                           operations[0] | 2ull << 51, operations[2] | 1ull << 23};
+    const u64 refused[] = {operations[0] | 1ull << 49, operations[0] | 9ull << 29, operations[0] | 2ull << 51,
+                           operations[2] | 1ull << 23};
     for (u32 i = 0; i < 4; i++) {
         const u64 instructions[] = {0x4c98078804a70004ull, refused[i]};
         ShaderInfo info;
         size_t words = 0;
         u32* code = translate(instructions, 2, ST_CS, &info, &words, 1);
         check_refused(code, &info, i == 3 ? "SURED" : "SUATOM",
-                      "unimplemented 3D atomic widths, clamp and wrap modes remain rejected");
+                      "unimplemented 3D atomic widths, clamp modes and operation 9 remain rejected");
+        free(code);
+    }
+}
+
+/* One game's compute program ORs flags into a buffer surface: SURED.OR with the value in R5 at the texel R4, the
+   handle in R6 (MOV R6, c[0x2][0x128]), the word its log names. Every operation of SURED (bits 24-26) and SUATOM
+   (bits 29-32) translates: AND, OR and XOR as SPIR-V atomics; INC and DEC, which wrap at the operand, as a loop of
+   compare and exchange that reads the texel atomically, and SUATOM returns what it held */
+static void surface_atomic_operations(void) {
+    static const u32 bitwise[3] = {240, 241, 242}; /* OpAtomicAnd, OpAtomicOr, OpAtomicXor */
+    const u64 sured = 0xeb50030206070405ull & ~(7ull << 24);
+    for (u32 operation = 3; operation <= 7; operation++) {
+        const u64 instructions[] = {0x4c98078804a70006ull, sured | (u64)operation << 24};
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(instructions, 2, ST_CS, &info, &words, 1);
+        check_translated(code, &info, "a buffer surface reduction of every operation translates");
+        if (code) {
+            int wraps = operation <= 4;
+            check(info.nimg == 1 && info.img[0].type == 1 && info.img[0].kind == 1,
+                  "a buffer surface reduction reaches one R32UI texel buffer");
+            check(wraps ? count_opcode(code, words, 230, 0xffffffffu) == 1 &&
+                              count_opcode(code, words, 227, 0xffffffffu) == 1 &&
+                              count_opcode(code, words, 246, 0xffffffffu) == 1
+                        : count_opcode(code, words, bitwise[operation - 5], 0xffffffffu) == 1 &&
+                              count_opcode(code, words, 230, 0xffffffffu) == 0,
+                  wraps ? "SURED.INC and .DEC loop on a compare and exchange from an atomic load"
+                        : "SURED.AND, .OR and .XOR are one SPIR-V atomic each");
+            save_fixture(surface_op_paths[operation - 3], code, words);
+        }
+        free(code);
+    }
+    for (u32 k = 0; k < 2; k++) {
+        const u64 instructions[] = {0x4c98078804a70004ull, (0xea40020a00870009ull & ~(0xfull << 29)) | (u64)(3 + k)
+                                                                                                           << 29};
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(instructions, 2, ST_CS, &info, &words, 1);
+        check_translated(code, &info, "SUATOM.INC and .DEC on a 3D surface translate");
+        if (code) {
+            check(info.nimg == 1 && info.img[0].type == 5 && count_opcode(code, words, 230, 0xffffffffu) == 1 &&
+                      count_opcode(code, words, 227, 0xffffffffu) == 1,
+                  "SUATOM.INC and .DEC loop on a compare and exchange of one voxel");
+            save_fixture(surface_op_paths[5 + k], code, words);
+        }
         free(code);
     }
 }
@@ -3552,6 +3598,10 @@ int main(int argc, char** argv) {
         }
         fswzadd_path = fixture_path(argv[1], "fswzadd");
         saturate_path = fixture_path(argv[1], "saturate");
+        for (int i = 0; i < 7; i++) {
+            snprintf(name, sizeof name, "surface_op_%d", i);
+            surface_op_paths[i] = fixture_path(argv[1], name);
+        }
         if (fixture_count != sizeof fixture_paths / sizeof *fixture_paths) {
             fprintf(stderr, "failed to allocate fixture paths\n");
             return 2;
@@ -3580,6 +3630,7 @@ int main(int argc, char** argv) {
     immediate_sampler_handle();
     guarded_handle_merges();
     volume_surface_atomics();
+    surface_atomic_operations();
     draw_buffer_surfaces();
     layered_surface_loads();
     transform_feedback();
