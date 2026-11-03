@@ -5276,6 +5276,18 @@ msgstr "os de cada jogo, no <id>_data/save/ dele"
 msgid "the data folder's save/, by user and title: Move Old Files moves them"
 msgstr "o save/ da pasta de dados, por usuário e título: Move Old Files os move"
 
+#: src/common/utilities/setup.c
+msgid "Environment variables"
+msgstr "Variáveis de ambiente"
+
+#: src/common/utilities/setup.c
+msgid "SNX_WW, SNX_HOST_PAGE, VITA_LOCKSTEP and others set for a run"
+msgstr "SNX_WW, SNX_HOST_PAGE, VITA_LOCKSTEP e outras definidas para uma execução"
+
+#: src/common/utilities/setup.c
+msgid "settings and the drivers' options; a variable still set works, and the run says so"
+msgstr "configurações e as opções dos drivers; uma variável ainda definida funciona, e a execução avisa"
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr "gdbstub"
