@@ -654,7 +654,9 @@ static void all_scenes(SnxCtrMemory* m) {
         run(m, s);
         free(s);
     }
-    {
+    if (!snx_ctr_vk()->logic_op)
+        printf("logic op xor: the driver has no logic ops, not compared\n");
+    else {
         Scene* s = scene("logic op xor", 0, 0xff);
         put(&s->list, 0x102, 11);
         triangles(s, 4);
