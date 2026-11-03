@@ -179,6 +179,10 @@ matrix stacks, the client arrays, `glDrawArrays`, `glDrawElements`, `glDrawTexOE
 `glClear`. What it does not do yet: GLES 2 and 3, depth and stencil tests, lighting, fog, the alpha test, mipmaps, the
 second texture unit, pbuffers, and `glReadPixels`, which reads zeros (a readback of the window is the last resort).
 
+`libz.so` is the build's own zlib (`hle_zlib.c`): z_stream has the guest's layout on an LP64 host, and a stream's
+allocator, when the guest gives one, is called through the bridge. Windows' `uLong` is 32 bits, so Windows has no
+zlib for the guest yet.
+
 ## Hosts
 
 bionic's numbers and layouts are Linux's, so on Linux most of libc passes to the host as it is. The bridge also
