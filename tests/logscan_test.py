@@ -128,6 +128,23 @@ UNDEFINED = (
 """
 )
 
+# a call through a pointer that holds 0 (runtime/rtapi.c's rt_miss): pinned on its caller, the code at lr kept out
+MISSED_CALL = (
+    HEADER
+    + """[   4.00]
+*** The game's thread 80 stopped at 0: code the recompiler missed (0) ***
+[   4.00]   the AOT pack has no code for it, and the JIT could not compile it
+[   4.00]   thread 80 (MainThread)
+[   4.00]   x8 = 0000000000000000  x9 = 0000000008000180  x10= 0000000000000000  x11= 0000000000000000
+[   4.00]   pc=0 lr=8012344 sp=1300101000 fp=1300100ff0 tls=1380000000
+[   4.00]   pc   lr <_ZN4Game4Boot4StepEv+44>
+[   4.00]    #0 8012344 <_ZN4Game4Boot4StepEv+44>
+[   4.00]   code at lr 8012324: 10000809  f9400128  d63f0100 [f9400be0] d4200000
+[   4.01] FATAL: The game reached code at 0 that the recompiler missed, and the AOT pack has no code for it, and the JIT \
+could not compile it. See the .log for details.
+"""
+)
+
 # the launcher's Share Log file: its build, its message, the run's output (the game's warnings again, on stderr), then
 # the newest game log, one without a build: line
 LAUNCHER = (
@@ -308,6 +325,16 @@ def main():
     u = scan(UNDEFINED)
     check(u['outcome'] == 'unsupported instruction' and u['failure']['set'] == 'A64', 'A64 undefined instruction')
     check(u['signature'] == 'unsupported A64 instruction ce62c820', u['signature'])
+
+    m = scan(MISSED_CALL)
+    check(
+        m['outcome'] == 'thread stopped'
+        and m['failure']['what'] == 'code the recompiler missed'
+        and m['failure']['address'] == '0',
+        f'a call to 0: {m["failure"]}',
+    )
+    check(m['signature'] == 'code the recompiler missed in _ZN4Game4Boot4StepEv', m['signature'])
+    check('d63f0100' not in json.dumps(m), 'the code at lr is never copied out')
 
     f = scan(FATAL_ONLY)
     check(

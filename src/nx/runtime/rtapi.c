@@ -80,12 +80,16 @@ static void rt_miss(CPU* c, u64 pc) {
         f = jit_wait(pc);
         kthread_unblock(t);
         if (t) core_enter(t);
-        if (!f) {
-            WARN("\n*** The game reached code at %llx that it cannot run ***\n", (unsigned long long)pc);
+        if (!f) { /* a call through an empty pointer comes here at 0: its caller is what to look into */
+            WARN("\n*** The game's thread %llu stopped at %llx: code the recompiler missed (%llx) ***\n",
+                 (unsigned long long)(t ? t->id : 0), (unsigned long long)pc, (unsigned long long)pc);
+            WARN("  %s\n", jit_failure());
+            if (t) WARN("  thread %llu (%s)\n", (unsigned long long)t->id, t->name);
+            fs_save_report(); /* a save a newer version wrote, whose pointers a game may call through */
             kernel_dump_regs(c);
             save_hints();
-            fatal("The game reached code at %llx that the recompiler missed, and %s", (unsigned long long)pc,
-                  jit_failure());
+            fatal("The game reached code at %llx that the recompiler missed, and %s. See the .log for details.",
+                  (unsigned long long)pc, jit_failure());
         }
     }
     if (pc - g_code_lo < g_code_hi - g_code_lo) hints_add(pc);
