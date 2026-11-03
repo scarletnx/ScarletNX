@@ -3349,12 +3349,34 @@ static u32* direct_reject_with_buffers(ShaderInfo* si, const char* reason, u32* 
     return direct_reject(si, reason);
 }
 
-/* a bindless instruction whose handle register no tracking reached: which register, of which instruction, where */
+/* the last instruction before i that writes reg, in program order (not its reaching definition: a refusal names it
+   so a log shows where a value came from without the program), and its index in *at */
+static const Op* last_writer(const u64* insn, u32 i, u32 reg, u32* at) {
+    for (*at = i; *at > 11;) {
+        const Op* o;
+        --*at;
+        o = IDX_OK(*at) ? decode(insn[*at]) : NULL;
+        if (o && shader_writes_reg(insn[*at], o->id, reg)) return o;
+    }
+    return NULL;
+}
+
+/* a bindless instruction whose handle register no tracking reached: which register, of which instruction, where,
+   and the last write of the register, with its value when that write is a constant (a MOV32I's, or a MOV of RZ) */
 static u32* untracked_handle(ShaderInfo* si, const char* kind, const u64* insn, u32 i, u32 reg) {
-    const Op* op = decode(insn[i]);
+    const Op *op = decode(insn[i]), *writer;
+    char from[48] = ": no write before";
+    u32 at;
+    if ((writer = last_writer(insn, i, reg, &at))) {
+        u64 w = insn[at];
+        int n = snprintf(from, sizeof from, ": %s at %x", writer->name, at * 8);
+        if (writer->id == O_MOV32I || (writer->id == O_MOV_R && B(w, 20, 8) == 255))
+            snprintf(from + n, sizeof from - (size_t)n, " (the constant %#x)",
+                     writer->id == O_MOV32I ? (u32)B(w, 20, 32) : 0u);
+    }
     si->unsupported = 1;
-    snprintf(si->first_unsupported, sizeof si->first_unsupported, "untracked %s handle R%u of %s at %x", kind, reg,
-             op ? op->name : "?", i * 8);
+    snprintf(si->first_unsupported, sizeof si->first_unsupported, "untracked %s handle R%u of %s at %x%s", kind, reg,
+             op ? op->name : "?", i * 8, from);
     return NULL;
 }
 
@@ -3365,14 +3387,8 @@ static u32* untracked_handle(ShaderInfo* si, const char* kind, const u64* insn, 
    program's buffers when it runs (an atomic, a sub-word access, or no tracked buffer at all). The reason names the
    last instruction before it that wrote the base, so a log shows what to add without the program */
 static u32* untracked_reject(ShaderInfo* si, const u64* insn, u32 i, u32 reg, u8* gb_at, u32* pop_targets) {
-    const Op* writer = NULL;
-    u32 at = i;
-    while (!writer && at > 11) {
-        const Op* o;
-        at--;
-        o = IDX_OK(at) ? decode(insn[at]) : NULL;
-        if (o && shader_writes_reg(insn[at], o->id, reg)) writer = o;
-    }
+    u32 at;
+    const Op* writer = last_writer(insn, i, reg, &at);
     free(gb_at);
     free(pop_targets);
     if (writer)
