@@ -15,13 +15,19 @@
    driver's own lookup finds nvnDeviceGetInteger by name (it touches nothing else), and that function's switch answers
    it (gpu/nvn/nvn_driver.c). A function declared for some API versions (gpu/nvn/nvn.hook's @version(nvn ...)) takes the
    declaration that holds for it (hle/hook/version.c hook_select). The log says whether the version is one the runtime
-   has measured layouts for: the runtime takes the game's NVN calls either way, as the driver has no GPU to run on */
+   has measured layouts for: the runtime takes the game's NVN calls either way, as the driver has no GPU to run on.
+
+    Two specs hold the functions: nvn.hook's, measured against the Switch 1 SDKs, and nvn2.hook's, the NVN2
+    generation's own, which a 53.x game's driver has no name for. A game's name is looked up in both, nvn2's
+    first, so a generation's functions stay their own: nothing of nvn.hook can be selected by a 231.x game's
+    version, and nothing of nvn2.hook's by a 53.x game's */
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_driver.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "gpu/nvn/nvn.hook.h"
+#include "gpu/nvn/nvn2.hook.h"
 #include "nx/hle/hook/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
@@ -33,6 +39,7 @@
 #include <string.h>
 
 #include "gpu/nvn/nvn.hook.inc"
+#include "gpu/nvn/nvn2.hook.inc"
 
 /* a NUL-terminated name of at most 127 characters in guest memory, read a page at a time (memory permissions are per
    page): its length, or 0 when it is empty, unreadable or longer */
@@ -91,6 +98,8 @@ static int ours32(SnxArmBlock fn) {
     if (fn == unimplemented32) return 1;
     for (i = 0; i < NVN_COUNT; i++)
         if (nvn_a32[i] == fn) return 1;
+    for (i = 0; i < NVN2_COUNT; i++)
+        if (nvn2_a32[i] == fn) return 1;
     return 0;
 }
 
@@ -100,23 +109,41 @@ static int ours(GuestFn fn) {
     if (fn == unimplemented) return 1;
     for (i = 0; i < NVN_COUNT; i++)
         if (nvn_fn[i] == fn) return 1;
+    for (i = 0; i < NVN2_COUNT; i++)
+        if (nvn2_fn[i] == fn) return 1;
     return 0;
 }
 
-/* name's entry in the generated table for the game's API version: its index, or -1 when none (*versioned: 1 when the
+/* Which spec a function's declaration came from, and its entry there. NVN2's first: a Switch 2 title's driver has
+   its own name for what nvn2.hook declares, and a Switch 1 title's driver has no name for it, so the order only ever
+   matters for a name both specs declare, which neither does today */
+enum { SPEC_NVN, SPEC_NVN2 };
+/* name's entry in one spec's table for the game's API version: its index, or -1 when none (*versioned: 1 when the
    name has entries, but none for this version) */
-static int implemented(const char* name, int* versioned) {
+static int implemented_in(const HookTable* t, const char* const* symbol, const u8* key, const u32* lo, const u32* hi,
+                          const char* const* handler, u32 count, const char* name, int* versioned) {
     u32 versions[HOOK_KEYS] = {0};
     int first, k;
     versions[HOOK_NVN] = g_nvn.loader.api;
-    k = hook_select(&nvn_table, name, versions, &first);
+    k = hook_select(t, name, versions, &first);
     *versioned = k == -2;
-    if (k >= 0 && nvn_key[k] != HOOK_ANY) {
+    if (k >= 0 && key[k] != HOOK_ANY) {
         char range[96];
-        hook_range_text(range, sizeof range, nvn_key[k], nvn_lo[k], nvn_hi[k]);
-        LOG_LIMIT(64, "nvn: %s runs %s, the one for %s\n", name, nvn_handler[k], range);
+        hook_range_text(range, sizeof range, key[k], lo[k], hi[k]);
+        LOG_LIMIT(64, "nvn: %s runs %s, the one for %s\n", name, handler[k], range);
     }
     return k >= 0 ? k : -1;
+}
+/* name's entry in the spec that declares it for this game's API version: its index, the spec it came from in *spec
+   and in *versioned 1 when the name has entries in one of the specs but none holds for this version */
+static int implemented(const char* name, int* spec, int* versioned) {
+    int k = implemented_in(&nvn2_table, nvn2_symbol, nvn2_key, nvn2_lo, nvn2_hi, nvn2_handler, NVN2_COUNT, name,
+                           versioned);
+    *spec = SPEC_NVN2;
+    if (k >= 0 || *versioned) return k;
+    k = implemented_in(&nvn_table, nvn_symbol, nvn_key, nvn_lo, nvn_hi, nvn_handler, NVN_COUNT, name, versioned);
+    *spec = SPEC_NVN;
+    return k;
 }
 
 /* addr's name for unimplemented's message, under lock (versioned: it has declarations for other API versions) */
@@ -129,14 +156,14 @@ static void note_missing(u64 addr, const char* name, int versioned) {
         snprintf(g_nvn.loader.missing[j].name, sizeof g_nvn.loader.missing[j].name, "%s for NVN API %s", name, version);
     else
         snprintf(g_nvn.loader.missing[j].name, sizeof g_nvn.loader.missing[j].name, "%s", name);
-    LOG("nvn: the game resolved %s, which nvn doesn't implement: it stops if it calls it\n",
-        g_nvn.loader.missing[j].name);
+    LOG("nvn: the game resolved %s at %llx, which nvn doesn't implement: it stops if it calls it\n",
+        g_nvn.loader.missing[j].name, (unsigned long long)addr);
     __atomic_store_n(&g_nvn.loader.missing[j].addr, addr, __ATOMIC_RELEASE);
 }
 
 /* take for a 32-bit game: addr is its A32 address, or its Thumb one with bit 0 set */
-static void take32(u64 addr, const char* name, int i, int versioned) {
-    SnxArmBlock fn = i >= 0 ? nvn_a32[i] : unimplemented32,
+static void take32(u64 addr, const char* name, int i, int versioned, int spec) {
+    SnxArmBlock fn = i >= 0 ? (spec == SPEC_NVN2 ? nvn2_a32[i] : nvn_a32[i]) : unimplemented32,
                 *slot = addr >> 32 ? NULL : arm_slot((u32)addr & ~1u, addr & 1);
     if (!slot)
         fatal("nvn: the driver resolved %s to %llx, outside the game's code, where nvn can't take its calls",
@@ -161,12 +188,12 @@ static void take32(u64 addr, const char* name, int i, int versioned) {
 /* the game resolved name (len characters) to addr: its slot takes the runtime's implementation, or the handler that
    names it */
 static void take(u64 addr, const char* name, u32 len) {
-    int versioned, i = implemented(name, &versioned);
-    GuestFn fn = i >= 0 ? nvn_fn[i] : unimplemented, *slot, cur;
+    int spec, versioned = 0, i = implemented(name, &spec, &versioned);
+    GuestFn fn = i >= 0 ? (spec == SPEC_NVN2 ? nvn2_fn[i] : nvn_fn[i]) : unimplemented, *slot, cur;
     char family[48];
     if (g_nvn.loader.a32) {
         if (!strcmp(name, "nvnDeviceGetInteger")) nvn_device_driver(addr); /* its answers, from its code */
-        take32(addr, name, i, versioned);
+        take32(addr, name, i, versioned, spec);
         return;
     }
     if (addr < g_code_lo || addr >= g_code_hi || (addr & 3))
@@ -196,9 +223,13 @@ static void take(u64 addr, const char* name, u32 len) {
         g_nvn.loader.nvrm_init = cur, g_nvn.loader.nvrm_init_at = addr;
     if (fn == unimplemented && !missing_find(addr)) note_missing(addr, name, versioned);
     __atomic_store_n(slot, fn, __ATOMIC_RELEASE);
-    if (i >= 0)
-        snprintf(family, sizeof family, "nvn %s", nvn_family_name[nvn_family[i]]);
-    else
+    if (i >= 0) {
+        /* the spec it came from names its own families: an NVN2 function is NVN2's, and the other spec's array has no
+           entry for it */
+        const unsigned char* fam = spec == SPEC_NVN2 ? nvn2_family : nvn_family;
+        const char* const* fam_name = spec == SPEC_NVN2 ? nvn2_family_name : nvn_family_name;
+        snprintf(family, sizeof family, "%s %s", spec == SPEC_NVN2 ? "nvn2" : "nvn", fam_name[fam[i]]);
+    } else
         snprintf(family, sizeof family, "nvn unimplemented");
     nce_slot_taken(addr, family);
     pm_unlock(&g_nvn.loader.lock);

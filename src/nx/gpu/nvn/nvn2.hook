@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The NVN functions of NVN2, the Switch 2 SDK's NVN (gpu/nvn/nvn_loader.c), for tools/hookgen with --prefix nvn2.
+# A second spec beside gpu/nvn/nvn.hook's, and separate from it for a reason: nvn.hook's declarations were measured
+# against seven games' NVN drivers of SDK 5.4 to 20.5, whose API versions the nvn version key holds (53.5, 53.13,
+# 53.105, 53.209, 53.311 to 53.314, 55.8 to 55.15). A Switch 2 title resolves NVN API 231.16, a generation the
+# runtime has measured nothing for, and the functions it resolves that Switch 1's driver has no name for are NVN2's
+# own: they belong here, where a declaration can't be selected by a 53.x game's version at all (a game's driver
+# never resolves a name it doesn't have). A function whose layout NVN2 shares with Switch 1's stays in nvn.hook,
+# whose @version(nvn ...) ranges the runtime extends as it measures it. The handlers are the same C files as
+# nvn.hook's (gpu/nvn/nvn_object.c, nvn_cmd.c, nvn_queue.c): only the declarations are separate.
+include "nx/gpu/nvn/nvn.h"
+
+family queue
+hook nvnQueueBuilderSetPrimaryQueue(NVNqueueBuilder* b, NVNqueue* q)

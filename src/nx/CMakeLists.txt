@@ -79,6 +79,8 @@ snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/
               gpu/shipped_pass.c)
 # the NVN functions nvn implements: their adapters and table, generated from gpu/nvn/nvn.hook
 snx_hookgen(snx_gpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
+# NVN2's own functions: a second spec, so a Switch 2 title's declarations stay out of nvn.hook's 53.x ranges
+snx_hookgen(snx_gpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/nvn/nvn2.hook" PREFIX nvn2 NAME gpu/nvn/nvn2.hook A32)
 include("${PROJECT_SOURCE_DIR}/cmake/ship_walk.cmake")
 snx_ship_walk(gpu/shipped_pass.c)
 

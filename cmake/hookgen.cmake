@@ -75,7 +75,8 @@ endfunction()
 # hle/hook/hooks.hook and gpu/nvn/nvn.hook unless a test names its own
 function(snx_hook_routes target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "SPECS")
-    set(specs "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook")
+    set(specs "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook"
+              "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn2.hook")
     if(arg_SPECS)
         set(specs ${arg_SPECS})
     endif()
