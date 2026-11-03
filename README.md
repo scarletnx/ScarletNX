@@ -34,7 +34,8 @@ and **Load Switch NSP/XCI/NRO** picks a dump, recompiles it and starts the game.
 - [Development](docs/DEVELOPMENT.md): checks, diagnostics and profiling; [Contributing](CONTRIBUTING.md)
 - [Architecture](docs/ARCHITECTURE.md) and [the recompiler as a library](docs/LIBRARY.md)
 - Platforms: [Android](docs/ANDROID.md), [macOS and iOS](docs/APPLE.md), [PowerPC64](docs/PPC64.md),
-  [RISC-V and LoongArch](docs/RISCV-LOONGARCH.md), [MIPS64](docs/MIPS64.md), [s390x](docs/S390X.md)
+  [RISC-V and LoongArch](docs/RISCV-LOONGARCH.md), [MIPS64](docs/MIPS64.md), [s390x](docs/S390X.md),
+  [NetBSD](docs/NETBSD.md)
 - Other systems: [3DS](docs/3DS.md), [PS Vita](docs/VITA.md), [Game Boy Advance](docs/AGB.md),
   [Linux AArch64 programs](docs/GNUABI.md)
 - [Every document](docs/README.md), by subject
