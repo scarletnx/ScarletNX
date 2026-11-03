@@ -816,7 +816,7 @@ static int check_uma_migrate(void) {
         vk_frame_check();
         VkOwnRes* owner = uma_owner(256, 0x42);
         CHECK(owner);
-        vk_own_publish(UMA_M + at, 256, owner, 0);
+        vk_own_publish_owned(UMA_M + at, 256, owner, 0);
         vk_finish();
         vk_readback_ready();
         for (u32 i = 0; i < 256; i++) CHECK(result[i] == uma_fill(at + i));
