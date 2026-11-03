@@ -189,6 +189,17 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                      int can_preserve, int can_preserve_f64, int can_subgroup);
 u32* shader_compute_to_spirv(const u8* code, u32 max_bytes, ShaderInfo* si, size_t* word_count, int can_flush,
                              int can_preserve);
+/* shared_reach.c: one past the highest byte of shared memory a compute program (code, readable up to max_bytes, of
+   blocks local[0] x local[1] x local[2]) can touch with LDS, STS, ATOMS and ATOMS.CAS as its translation runs it, 0
+   for none, and SH_SHARED_ANY when an address has no bound the walk proves: a value from memory or a constant buffer,
+   a loop's counter, a 32-bit product of registers, a call, a jump table or more than 4096 blocks */
+#define SH_SHARED_ANY 0xFFFFFFFFu
+u32 shader_shared_reach(const u8* code, u32 max_bytes, const u32 local[3]);
+/* the shared memory a compute program declares on a device that gives a block device_max bytes, for a launch asking
+   for shm: 1 with shm in *size when it fits, or device_max when shader_shared_reach (in *reach) proves no access goes
+   past that; 0 when one may, the dispatch then left out */
+int shader_shared_fit(const u8* code, u32 max_bytes, const u32 local[3], u32 shm, u32 device_max, u32* size,
+                      u32* reach);
 /* reads word off (bytes) of constant buffer idx for jump tables, into *out as a host number: 1 when it could. Set by
    whoever translates, NULL offline */
 extern int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
