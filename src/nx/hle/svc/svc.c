@@ -12,6 +12,7 @@
 #include "nx/hle/hle.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/guest_stats.h"
 #include "nx/runtime/platform/tracy.h"
 
 #define R_BADPERM      0xD801 /* InvalidNewMemoryPermission */
@@ -534,6 +535,7 @@ static u32 svc_begin(KThread* t, SvcRec* in, u32 imm, int flags) {
         n = __atomic_fetch_add(&g_hle.kernel.svc_ring_n, 1, __ATOMIC_RELAXED);
         g_hle.kernel.svc_ring[n & 63] = *in;
     }
+    guest_stats_svc(kt_ix(t), imm);
     svc_enter(t);
     return n;
 }
@@ -590,6 +592,7 @@ static void svc32_unknown(SnxArmCPU* a, u32 imm) {
     svc_end(t, &in, n, 0, a->r[0], a->r[1]);
 }
 
+const char* svc_name(u32 imm) { return imm < SNX_SVC_COUNT ? g_svc_name[imm] : NULL; }
 void snx_svc(CPU* c, u32 imm) { (imm < SNX_SVC_COUNT ? g_svc64[imm] : svc64_unknown)(c, imm); }
 void snx_svc32(SnxArmCPU* a, u32 imm) { (imm < SNX_SVC_COUNT ? g_svc32[imm] : svc32_unknown)(a, imm); }
 

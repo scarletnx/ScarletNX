@@ -1211,6 +1211,14 @@ target_link_libraries(snx-test-stats PRIVATE scarletnx-common snx_splash m)
 target_include_directories(snx-test-stats PRIVATE "${PROJECT_BINARY_DIR}/generated") # the theme's colours
 add_test(NAME stats COMMAND snx-test-stats)
 
+# the game threads' costs in the log (runtime/guest_stats.c): the SVCs and misses of a window, a thread's time on the
+# processors read from another thread, and the lines that say them
+add_executable(snx-test-guest-stats guest_stats.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/guest_stats.c")
+snx_test_target(snx-test-guest-stats 11)
+target_include_directories(snx-test-guest-stats PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx-test-guest-stats PRIVATE scarletnx-common scarletnx-filesystem)
+add_test(NAME guest_stats COMMAND snx-test-guest-stats)
+
 add_executable(snx-test-ini-deprecated ini_deprecated.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-ini-deprecated 11)
 add_test(NAME ini_deprecated COMMAND snx-test-ini-deprecated)

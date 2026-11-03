@@ -393,6 +393,13 @@ void kernel_core_report(void) {
     }
     pm_unlock(&g_host.thread.core_lk);
 }
+u64 kernel_thread_name(u32 ix, char* out, int n) {
+    const KThread* t = kt_at(ix);
+    out[0] = 0;
+    if (!t || t->o.type != KO_THREAD) return 0;
+    if (!sdk_name(t, out, n)) snprintf(out, (size_t)n, "%s", t->name);
+    return t->id;
+}
 /* Read without g_klock or the pool's lock: the dump is how a hang is diagnosed, and a hang may be a thread that keeps
    the lock. The values can be a moment stale or mid-change (a slot freed or taken meanwhile), which is all a dump
    needs. Mutex owners are named from the thread a waiter recorded, which needs no handle lookup: the waiter holds a

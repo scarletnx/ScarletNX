@@ -231,6 +231,13 @@ int snx_abort_requested(void);
 SnxU64 snx_footprint(void);
 /* the processor time this process has used, every thread's together, in ns; 0 where the system does not tell */
 SnxU64 snx_process_cpu_ns(void);
+/* a thread's time on the processors, which any thread of the process reads: snx_thread_clock gives the calling
+   thread's clock, never 0, or 0 where the system gives none; snx_thread_cpu_ns the time its thread has run so far, in
+   ns, into *ns, and -1 once the thread has ended; snx_thread_clock_close lets go of the clock (a handle on Windows),
+   after which no thread reads it */
+SnxU64 snx_thread_clock(void);
+int snx_thread_cpu_ns(SnxU64 clock, SnxU64* ns);
+void snx_thread_clock_close(SnxU64 clock);
 /* the memory the system can still give this process, in bytes, into *bytes: what iOS lets the app take before it ends
    it, the memory available on Linux and Android (MemAvailable), on macOS (free, inactive and purgeable pages) and on
    Windows (available physical memory); whether the system told it */
