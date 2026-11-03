@@ -91,7 +91,8 @@ typedef struct {
             uint32_t physical, size, permissions;
             /* a block the application made with CreateMemoryBlock: its own range at address (heap-backed, Locked
                while the block lives, physical 0) or a new zeroed one (address 0); permissions are then its own and
-               other_permissions everyone else's (0x10000000: don't care) */
+               other_permissions everyone else's (0x10000000: don't care). A block APT made for a library applet has
+               other_permissions too, and MapMemoryBlock checks its rights as it does an application's block */
             uint32_t address, other_permissions, by_application;
         } shared;
         struct {
