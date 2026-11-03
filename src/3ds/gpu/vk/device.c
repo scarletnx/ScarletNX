@@ -37,7 +37,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     SnxCtrVk* v = user;
     SnxVkExtensions list;
     if (!snx_vk_device_extensions(phys, &list)) return false;
-    const char* extensions[4];
+    const char* extensions[5];
     uint32_t n = 0;
     bool ok = snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     extensions[n++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
@@ -47,6 +47,9 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     }
     bool index8 = snx_vk_extensions_has(&list, VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME);
     if (index8) extensions[n++] = VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME;
+    /* a portability driver's subset must be enabled when it lists one (MoltenVK), as the Switch frontend does */
+    bool portability = snx_vk_extensions_has(&list, "VK_KHR_portability_subset");
+    if (portability) extensions[n++] = "VK_KHR_portability_subset";
     snx_vk_extensions_free(&list);
     if (!ok) return false;
     if (v->second_surface) { /* the same queue presents to both windows */
