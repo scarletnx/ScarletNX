@@ -73,7 +73,11 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         public int getMarginStart() { return leftMargin; }
         public int getMarginEnd() { return rightMargin; }
         public boolean isMarginRelative() { return false; }
-        public int getLayoutDirection() { return LAYOUT_DIRECTION_LTR; }
+        public int getLayoutDirection() { return layoutDirection; }
+        public void setLayoutDirection(int layoutDirection) {
+            if (layoutDirection == LAYOUT_DIRECTION_LTR || layoutDirection == LAYOUT_DIRECTION_RTL) this.layoutDirection = layoutDirection;
+        }
+        private int layoutDirection = LAYOUT_DIRECTION_LTR;
     }
 
     // ---- children ----
@@ -244,7 +248,10 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     public int getLayoutMode() { return layoutMode; }
     public void setLayoutMode(int layoutMode) { this.layoutMode = layoutMode; }
     public void setAddStatesFromChildren(boolean addsStates) {}
-    public void setLayoutTransition(android.animation.LayoutTransition transition) {}
+    public void setLayoutTransition(android.animation.LayoutTransition transition) { layoutTransition = transition; }
+    public android.animation.LayoutTransition getLayoutTransition() { return layoutTransition; }
+    private android.animation.LayoutTransition layoutTransition;
+    protected int getChildDrawingOrder(int childCount, int drawingPosition) { return drawingPosition; }
     public void setTransitionGroup(boolean isTransitionGroup) { super.setTransitionGroup(isTransitionGroup); }
     public void setPersistentDrawingCache(int drawingCacheToKeep) {}
     public void setChildrenDrawingOrderEnabled(boolean enabled) {}
@@ -423,7 +430,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     @Override public boolean requestFocus(int direction, Rect previouslyFocusedRect) {
         if (descendantFocusability == FOCUS_BLOCK_DESCENDANTS) return super.requestFocus(direction, previouslyFocusedRect);
         if (descendantFocusability == FOCUS_BEFORE_DESCENDANTS && super.requestFocus(direction, previouslyFocusedRect)) return true;
-        for (View c : children) if (c.getVisibility() == VISIBLE && c.requestFocus(direction, previouslyFocusedRect)) return true;
+        if (onRequestFocusInDescendants(direction, previouslyFocusedRect)) return true;
         return descendantFocusability == FOCUS_AFTER_DESCENDANTS && super.requestFocus(direction, previouslyFocusedRect);
     }
     public int getDescendantFocusability() { return descendantFocusability; }
@@ -436,6 +443,19 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     @Override public ActionMode startActionModeForChild(View originalView, ActionMode.Callback callback, int type) { return null; }
     @Override public boolean requestChildRectangleOnScreen(View child, Rect rectangle, boolean immediate) { return false; }
     @Override public boolean requestSendAccessibilityEvent(View child, android.view.accessibility.AccessibilityEvent event) { return false; }
+    public boolean onRequestSendAccessibilityEvent(View child, android.view.accessibility.AccessibilityEvent event) {
+        AccessibilityDelegate d = getAccessibilityDelegate();
+        return d == null || d.onRequestSendAccessibilityEvent(this, child, event);
+    }
+    /** Gives focus to the first visible child that takes it, in the order of the direction. */
+    protected boolean onRequestFocusInDescendants(int direction, Rect previouslyFocusedRect) {
+        boolean backward = direction == FOCUS_BACKWARD || direction == FOCUS_UP || direction == FOCUS_LEFT;
+        for (int n = children.size(), i = 0; i < n; ++i) {
+            View c = children.get(backward ? n - 1 - i : i);
+            if (c.getVisibility() == VISIBLE && c.requestFocus(direction, previouslyFocusedRect)) return true;
+        }
+        return false;
+    }
     @Override public void requestTransparentRegion(View child) {}
     @Override public void recomputeViewAttributes(View child) {}
     @Override public boolean getChildVisibleRect(View child, Rect r, android.graphics.Point offset) { return true; }

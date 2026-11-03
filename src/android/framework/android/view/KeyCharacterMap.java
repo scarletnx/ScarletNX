@@ -17,6 +17,28 @@ public class KeyCharacterMap {
     public KeyEvent[] getEvents(char[] chars) { return null; }
     public boolean isPrintingKey(int keyCode) { return KeyEvent.charOf(keyCode, 0) != 0; }
 
+    @Deprecated public boolean getKeyData(int keyCode, KeyData results) {
+        if (results.meta.length < KeyData.META_LENGTH) throw new IndexOutOfBoundsException("results.meta.length must be >= " + KeyData.META_LENGTH);
+        char label = getDisplayLabel(keyCode);
+        if (label == 0) return false;
+        results.displayLabel = label;
+        results.number = getNumber(keyCode);
+        results.meta[0] = (char) get(keyCode, 0);
+        results.meta[1] = (char) get(keyCode, KeyEvent.META_SHIFT_ON);
+        results.meta[2] = (char) get(keyCode, KeyEvent.META_ALT_ON);
+        results.meta[3] = (char) get(keyCode, KeyEvent.META_ALT_ON | KeyEvent.META_SHIFT_ON);
+        return true;
+    }
+
+    @Deprecated
+    public static class KeyData {
+        public static final int META_LENGTH = 4;
+        public char displayLabel, number;
+        public char[] meta = new char[META_LENGTH];
+
+        public KeyData() {}
+    }
+
     public static class FallbackAction {
         public int keyCode, metaState;
     }

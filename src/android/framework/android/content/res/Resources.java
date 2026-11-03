@@ -250,6 +250,57 @@ public class Resources {
         return android.graphics.drawable.Drawable.load(this, id, theme);
     }
 
+    public android.graphics.drawable.Drawable getDrawableForDensity(int id, int density) throws NotFoundException {
+        return getDrawableForDensity(id, density, null);
+    }
+
+    public android.graphics.Movie getMovie(int id) throws NotFoundException {
+        InputStream is = openRawResource(id);
+        android.graphics.Movie movie = android.graphics.Movie.decodeStream(is);
+        try { is.close(); } catch (java.io.IOException e) {}
+        return movie;
+    }
+
+    private static final int ATTR_NAME = 0x01010003, ATTR_VALUE = 0x01010024;
+
+    /** One <extra android:name android:value> element into the bundle, by the type of its value. */
+    public void parseBundleExtra(String tagName, AttributeSet attrs, android.os.Bundle outBundle) throws org.xmlpull.v1.XmlPullParserException {
+        TypedArray sa = obtainAttributes(attrs, new int[] { ATTR_NAME, ATTR_VALUE });
+        String name = sa.getString(0);
+        if (name == null) {
+            sa.recycle();
+            throw new org.xmlpull.v1.XmlPullParserException("<" + tagName + "> requires an android:name attribute at " + attrs.getPositionDescription());
+        }
+        TypedValue v = sa.peekValue(1);
+        if (v == null) {
+            sa.recycle();
+            throw new org.xmlpull.v1.XmlPullParserException("<" + tagName + "> requires an android:value or android:resource attribute at " + attrs.getPositionDescription());
+        }
+        if (v.type == TypedValue.TYPE_STRING) outBundle.putCharSequence(name, v.coerceToString());
+        else if (v.type == TypedValue.TYPE_INT_BOOLEAN) outBundle.putBoolean(name, v.data != 0);
+        else if (v.type >= TypedValue.TYPE_FIRST_INT && v.type <= TypedValue.TYPE_LAST_INT) outBundle.putInt(name, v.data);
+        else if (v.type == TypedValue.TYPE_FLOAT) outBundle.putFloat(name, v.getFloat());
+        else {
+            sa.recycle();
+            throw new org.xmlpull.v1.XmlPullParserException("<" + tagName + "> only supports string, integer, float, color, and boolean at " + attrs.getPositionDescription());
+        }
+        sa.recycle();
+    }
+
+    /** Each <extra> child of the current element into the bundle; other children are skipped. */
+    public void parseBundleExtras(XmlResourceParser parser, android.os.Bundle outBundle) throws org.xmlpull.v1.XmlPullParserException, java.io.IOException {
+        int outerDepth = parser.getDepth();
+        int type;
+        while ((type = parser.next()) != XmlResourceParser.END_DOCUMENT
+                && (type != XmlResourceParser.END_TAG || parser.getDepth() > outerDepth)) {
+            if (type != XmlResourceParser.START_TAG) continue;
+            if (parser.getName().equals("extra")) parseBundleExtra("extra", parser, outBundle);
+            int depth = parser.getDepth();
+            while ((type = parser.next()) != XmlResourceParser.END_DOCUMENT
+                    && (type != XmlResourceParser.END_TAG || parser.getDepth() > depth)) {}
+        }
+    }
+
     public android.graphics.drawable.Drawable getDrawableForDensity(int id, int density, Theme theme) {
         return getDrawable(id, theme);
     }

@@ -126,9 +126,18 @@ public final class AssetManager implements AutoCloseable {
 
     /** An asset as a file: copied out of the APK to the app's cache once. */
     public AssetFileDescriptor openFd(String fileName) throws IOException {
-        byte[] data = Apk.read("assets/" + fileName);
-        if (data == null) throw new FileNotFoundException(fileName);
-        File file = new File(snx.android.Main.dataRoot(), "apk-assets/" + fileName);
+        return fdOf("assets/" + fileName, "apk-assets/" + fileName);
+    }
+
+    /** A file of the APK outside assets/, copied out the same way. */
+    public AssetFileDescriptor openNonAssetFd(String fileName) throws IOException {
+        return fdOf(fileName, "apk-files/" + fileName);
+    }
+
+    private static AssetFileDescriptor fdOf(String member, String copy) throws IOException {
+        byte[] data = Apk.read(member);
+        if (data == null) throw new FileNotFoundException(member);
+        File file = new File(snx.android.Main.dataRoot(), copy);
         if (!file.isFile() || file.length() != data.length) {
             file.getParentFile().mkdirs();
             java.nio.file.Files.write(file.toPath(), data);

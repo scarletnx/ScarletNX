@@ -28,6 +28,7 @@ public class Dialog implements DialogInterface, Window.Callback, KeyEvent.Callba
     private OnShowListener onShow;
     private OnKeyListener onKey;
     private Activity owner;
+    private android.os.Message dismissMessage;
 
     public Dialog(Context context) { this(context, 0); }
     public Dialog(Context context, int themeResId) {
@@ -70,6 +71,9 @@ public class Dialog implements DialogInterface, Window.Callback, KeyEvent.Callba
     public void setOnDismissListener(OnDismissListener listener) { onDismiss = listener; }
     public void setOnShowListener(OnShowListener listener) { onShow = listener; }
     public void setOnKeyListener(OnKeyListener listener) { onKey = listener; }
+    /** A message that dismiss() sends, once for each dismiss, as Android sends a copy of it. */
+    public void setDismissMessage(android.os.Message msg) { dismissMessage = msg; }
+    public final boolean requestWindowFeature(int featureId) { return window.requestFeature(featureId); }
     public void create() { if (!created) { created = true; onCreate(null); } }
     protected void onCreate(Bundle savedInstanceState) {}
     protected void onStart() {}
@@ -77,7 +81,7 @@ public class Dialog implements DialogInterface, Window.Callback, KeyEvent.Callba
     public Bundle onSaveInstanceState() { return new Bundle(); }
     public void onRestoreInstanceState(Bundle savedInstanceState) {}
     public void show() {
-        if (showing) return;
+        if (showing) { window.getDecorView().setVisibility(View.VISIBLE); return; }
         create();
         onStart();
         windowManager.addView(window.getDecorView(), window.getAttributes());
@@ -91,6 +95,7 @@ public class Dialog implements DialogInterface, Window.Callback, KeyEvent.Callba
         showing = false;
         onStop();
         if (onDismiss != null) onDismiss.onDismiss(this);
+        if (dismissMessage != null) android.os.Message.obtain(dismissMessage).sendToTarget();
     }
     @Override public void cancel() {
         if (onCancel != null) onCancel.onCancel(this);

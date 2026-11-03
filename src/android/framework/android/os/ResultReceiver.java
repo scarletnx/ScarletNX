@@ -13,4 +13,8 @@ public class ResultReceiver implements Parcelable {
     protected void onReceiveResult(int resultCode, Bundle resultData) {}
     @Override public int describeContents() { return 0; }
     @Override public void writeToParcel(Parcel out, int flags) { out.writeValue(this); }
+    public static final Parcelable.Creator<ResultReceiver> CREATOR = new Parcelable.Creator<>() {
+        @Override public ResultReceiver createFromParcel(Parcel in) { return (ResultReceiver) in.readValue(null); }
+        @Override public ResultReceiver[] newArray(int size) { return new ResultReceiver[size]; }
+    };
 }

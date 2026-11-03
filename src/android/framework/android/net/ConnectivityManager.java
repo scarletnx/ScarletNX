@@ -18,7 +18,7 @@ public class ConnectivityManager {
         public void onLost(Network network) {}
         public void onUnavailable() {}
         public void onCapabilitiesChanged(Network network, NetworkCapabilities networkCapabilities) {}
-        public void onLinkPropertiesChanged(Network network, Object linkProperties) {}
+        public void onLinkPropertiesChanged(Network network, LinkProperties linkProperties) {}
         public void onBlockedStatusChanged(Network network, boolean blocked) {}
     }
 
@@ -33,6 +33,8 @@ public class ConnectivityManager {
     @Deprecated public NetworkInfo[] getAllNetworkInfo() { return online() ? new NetworkInfo[] {new NetworkInfo()} : new NetworkInfo[0]; }
     public Network[] getAllNetworks() { return online() ? new Network[] {Network.HOST} : new Network[0]; }
     public NetworkCapabilities getNetworkCapabilities(Network network) { return online() && network != null ? new NetworkCapabilities() : null; }
+    public LinkProperties getLinkProperties(Network network) { return online() && network != null ? new LinkProperties() : null; }
+    public void reportNetworkConnectivity(Network network, boolean hasConnectivity) {}
     public boolean isActiveNetworkMetered() { return false; }
     public int getRestrictBackgroundStatus() { return RESTRICT_BACKGROUND_STATUS_DISABLED; }
     public boolean bindProcessToNetwork(Network network) { return true; }

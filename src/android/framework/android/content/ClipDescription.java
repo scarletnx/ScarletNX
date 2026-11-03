@@ -26,6 +26,12 @@ public class ClipDescription implements android.os.Parcelable {
     public void setExtras(android.os.PersistableBundle extras) {}
     public long getTimestamp() { return 0; }
     public boolean isStyledText() { return false; }
+    public static final int CLASSIFICATION_NOT_COMPLETE = 1, CLASSIFICATION_NOT_PERFORMED = 2, CLASSIFICATION_COMPLETE = 3;
+    /** No text classifier runs here, so no clip is classified. */
+    public int getClassificationStatus() { return CLASSIFICATION_NOT_PERFORMED; }
+    public float getConfidenceScore(String entity) {
+        throw new IllegalStateException("Classification not complete");
+    }
     @Override public int describeContents() { return 0; }
     @Override public void writeToParcel(android.os.Parcel dest, int flags) { dest.writeValue(this); }
 }

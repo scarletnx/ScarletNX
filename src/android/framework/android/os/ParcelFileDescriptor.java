@@ -19,6 +19,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
     public static final int MODE_APPEND = 0x02000000;
 
     private final RandomAccessFile file;
+    private boolean detached;
 
     ParcelFileDescriptor(RandomAccessFile file) { this.file = file; }
 
@@ -60,7 +61,25 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
 
     public RandomAccessFile file() { return file; }
 
-    @Override public void close() throws IOException { file.close(); }
+    @Override public void close() throws IOException { if (!detached) file.close(); }
+    /** The caller owns the descriptor from now on: close() leaves it open. */
+    public int detachFd() {
+        if (detached) throw new IllegalStateException("Already detached");
+        detached = true;
+        return getFd();
+    }
+    /** A descriptor of the host, opened again through /proc/self/fd where the host has it. */
+    public static ParcelFileDescriptor fromFd(int fd) throws IOException {
+        File f = new File("/proc/self/fd/" + fd);
+        if (!f.exists()) throw new IOException("snx: no host descriptor " + fd);
+        try {
+            return new ParcelFileDescriptor(new RandomAccessFile(f, "rw"));
+        } catch (FileNotFoundException e) {
+            return new ParcelFileDescriptor(new RandomAccessFile(f, "r"));
+        }
+    }
+    /** A Java socket gives no descriptor to duplicate, as a socket without one. */
+    public static ParcelFileDescriptor fromDatagramSocket(java.net.DatagramSocket datagramSocket) { return null; }
     @Override public int describeContents() { return CONTENTS_FILE_DESCRIPTOR; }
     @Override public void writeToParcel(Parcel out, int flags) { out.writeValue(this); }
 

@@ -101,5 +101,14 @@ public class FrameLayout extends ViewGroup {
         }
     }
 
+    // View declares these in Android; until the View here has them, FrameLayout and its subclasses give View's values.
+    protected int computeHorizontalScrollRange() { return getWidth(); }
+    protected int computeHorizontalScrollOffset() { return getScrollX(); }
+    protected int computeHorizontalScrollExtent() { return getWidth(); }
+    protected int computeVerticalScrollRange() { return getHeight(); }
+    protected int computeVerticalScrollOffset() { return getScrollY(); }
+    protected int computeVerticalScrollExtent() { return getHeight(); }
+    protected void onFinishInflate() {}
+
     @Override public CharSequence getAccessibilityClassName() { return FrameLayout.class.getName(); }
 }

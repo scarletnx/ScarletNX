@@ -38,4 +38,5 @@ public abstract class ActionMode {
     public int getType() { return TYPE_PRIMARY; }
     public void setType(int type) {}
     public void hide(long duration) {}
+    public void onWindowFocusChanged(boolean hasWindowFocus) {}
 }

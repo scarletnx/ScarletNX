@@ -83,6 +83,13 @@ public class ContextWrapper extends Context {
     @Override public void sendBroadcast(Intent intent) { mBase.sendBroadcast(intent); }
     @Override public void sendBroadcast(Intent intent, String receiverPermission) { mBase.sendBroadcast(intent, receiverPermission); }
     @Override public void sendOrderedBroadcast(Intent intent, String receiverPermission) { mBase.sendOrderedBroadcast(intent, receiverPermission); }
+    @Override public void sendOrderedBroadcast(Intent intent, String receiverPermission, BroadcastReceiver resultReceiver,
+            Handler scheduler, int initialCode, String initialData, Bundle initialExtras) {
+        mBase.sendOrderedBroadcast(intent, receiverPermission, resultReceiver, scheduler, initialCode, initialData, initialExtras);
+    }
+    @Override public int checkCallingOrSelfUriPermission(Uri uri, int modeFlags) { return mBase.checkCallingOrSelfUriPermission(uri, modeFlags); }
+    @Override public Context createContextForSplit(String splitName) throws PackageManager.NameNotFoundException { return mBase.createContextForSplit(splitName); }
+    @Override public Context createWindowContext(Display display, int type, Bundle options) { return mBase.createWindowContext(display, type, options); }
     @Override public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter) { return mBase.registerReceiver(receiver, filter); }
     @Override public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter, int flags) { return mBase.registerReceiver(receiver, filter, flags); }
     @Override public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter, String broadcastPermission, Handler scheduler) { return mBase.registerReceiver(receiver, filter, broadcastPermission, scheduler); }

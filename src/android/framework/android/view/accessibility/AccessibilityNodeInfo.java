@@ -332,6 +332,41 @@ public class AccessibilityNodeInfo implements android.os.Parcelable {
     public RangeInfo getRangeInfo() { return rangeInfo; }
     public void setRangeInfo(RangeInfo v) { rangeInfo = v; }
     public ExtraRenderingInfo getExtraRenderingInfo() { return null; }
+    // No accessibility service reads the tree, so a node is never connected: searches and links find nothing.
+    public List<AccessibilityNodeInfo> findAccessibilityNodeInfosByText(String text) { return java.util.Collections.emptyList(); }
+    public List<AccessibilityNodeInfo> findAccessibilityNodeInfosByViewId(String viewId) { return java.util.Collections.emptyList(); }
+    public AccessibilityNodeInfo findFocus(int focus) { return null; }
+    public AccessibilityNodeInfo focusSearch(int direction) { return null; }
+    public AccessibilityNodeInfo getLabelFor() { return null; }
+    public AccessibilityNodeInfo getLabeledBy() { return null; }
+    public AccessibilityNodeInfo getTraversalBefore() { return null; }
+    public AccessibilityNodeInfo getTraversalAfter() { return null; }
+    public AccessibilityWindowInfo getWindow() { return null; }
+    public boolean refresh() { return false; }
+    public boolean canOpenPopup() { return canOpenPopup; }
+    public void setCanOpenPopup(boolean opensPopup) { canOpenPopup = opensPopup; }
+    public TouchDelegateInfo getTouchDelegateInfo() { return touchDelegateInfo; }
+    public void setTouchDelegateInfo(TouchDelegateInfo delegatedInfo) { touchDelegateInfo = delegatedInfo; }
+    private boolean canOpenPopup;
+    private TouchDelegateInfo touchDelegateInfo;
+
+    /** The regions of a view that a touch delegate gives to other views. */
+    public static final class TouchDelegateInfo implements android.os.Parcelable {
+        private final ArrayList<android.graphics.Region> regions = new ArrayList<>();
+        private final ArrayList<View> targets = new ArrayList<>();
+
+        public TouchDelegateInfo(java.util.Map<android.graphics.Region, View> targetMap) {
+            if (targetMap.isEmpty()) throw new IllegalArgumentException("targetMap must not be empty");
+            for (var e : targetMap.entrySet()) { regions.add(e.getKey()); targets.add(e.getValue()); }
+        }
+        public int getRegionCount() { return regions.size(); }
+        public android.graphics.Region getRegionAt(int index) { return regions.get(index); }
+        /** The node of a region's target: none, as no node is connected to a service. */
+        public AccessibilityNodeInfo getTargetForRegion(android.graphics.Region region) { return null; }
+        @Override public int describeContents() { return 0; }
+        @Override public void writeToParcel(android.os.Parcel dest, int flags) {}
+    }
+
     @Override public int describeContents() { return 0; }
     @Override public void writeToParcel(android.os.Parcel parcel, int flags) {}
 }

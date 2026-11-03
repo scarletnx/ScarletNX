@@ -57,11 +57,38 @@ public class Intent implements Parcelable, Cloneable {
     private Bundle extras;
     private ClipData clipData;
     private Intent selector;
+    private android.graphics.Rect sourceBounds;
+
+    public static class ShortcutIconResource implements Parcelable {
+        public String packageName;
+        public String resourceName;
+
+        public ShortcutIconResource() {}
+        public static ShortcutIconResource fromContext(Context context, int resourceId) {
+            ShortcutIconResource r = new ShortcutIconResource();
+            r.packageName = context.getPackageName();
+            r.resourceName = context.getResources().getResourceName(resourceId);
+            return r;
+        }
+        @Override public String toString() { return resourceName; }
+        @Override public int describeContents() { return 0; }
+        @Override public void writeToParcel(android.os.Parcel dest, int flags) { dest.writeString(packageName); dest.writeString(resourceName); }
+        public static final Parcelable.Creator<ShortcutIconResource> CREATOR = new Parcelable.Creator<>() {
+            @Override public ShortcutIconResource createFromParcel(android.os.Parcel in) {
+                ShortcutIconResource r = new ShortcutIconResource();
+                r.packageName = in.readString();
+                r.resourceName = in.readString();
+                return r;
+            }
+            @Override public ShortcutIconResource[] newArray(int size) { return new ShortcutIconResource[size]; }
+        };
+    }
 
     public Intent() {}
     public Intent(Intent o) {
         action = o.action; type = o.type; pkg = o.pkg; data = o.data; component = o.component; flags = o.flags;
         identifier = o.identifier; clipData = o.clipData;
+        if (o.sourceBounds != null) sourceBounds = new android.graphics.Rect(o.sourceBounds);
         if (o.categories != null) categories = new TreeSet<>(o.categories);
         if (o.extras != null) extras = new Bundle(o.extras);
     }
@@ -72,6 +99,15 @@ public class Intent implements Parcelable, Cloneable {
 
     public static Intent createChooser(Intent target, CharSequence title) { Intent i = new Intent(ACTION_CHOOSER); i.putExtra(EXTRA_INTENT, target); return i; }
     public static Intent makeMainActivity(ComponentName mainActivity) { Intent i = new Intent(ACTION_MAIN); i.setComponent(mainActivity); i.addCategory(CATEGORY_LAUNCHER); return i; }
+    public static Intent makeMainSelectorActivity(String selectorAction, String selectorCategory) {
+        Intent i = new Intent(ACTION_MAIN);
+        i.addCategory(CATEGORY_LAUNCHER);
+        Intent selector = new Intent();
+        selector.setAction(selectorAction);
+        selector.addCategory(selectorCategory);
+        i.setSelector(selector);
+        return i;
+    }
     public static Intent parseUri(String uri, int flags) { return new Intent(ACTION_VIEW, Uri.parse(uri)); }
 
     @Override public Object clone() { return new Intent(this); }
@@ -89,6 +125,9 @@ public class Intent implements Parcelable, Cloneable {
     public Intent setDataAndType(Uri data, String type) { this.data = data; this.type = type; return this; }
     public String resolveType(Context context) { return type; }
     public String resolveType(ContentResolver resolver) { return type; }
+    public String resolveTypeIfNeeded(ContentResolver resolver) { return component != null ? type : resolveType(resolver); }
+    public android.graphics.Rect getSourceBounds() { return sourceBounds; }
+    public void setSourceBounds(android.graphics.Rect r) { sourceBounds = r != null ? new android.graphics.Rect(r) : null; }
     public String getPackage() { return pkg; }
     public Intent setPackage(String packageName) { pkg = packageName; return this; }
     public ComponentName getComponent() { return component; }

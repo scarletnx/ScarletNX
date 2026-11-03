@@ -22,6 +22,7 @@ public final class PendingIntent implements android.os.Parcelable {
     public static PendingIntent getActivity(Context context, int requestCode, Intent intent, int flags) { return new PendingIntent(context, intent, 1); }
     public static PendingIntent getActivity(Context context, int requestCode, Intent intent, int flags, android.os.Bundle options) { return new PendingIntent(context, intent, 1); }
     public static PendingIntent getActivities(Context context, int requestCode, Intent[] intents, int flags) { return new PendingIntent(context, intents[intents.length - 1], 1); }
+    public static PendingIntent getActivities(Context context, int requestCode, Intent[] intents, int flags, android.os.Bundle options) { return getActivities(context, requestCode, intents, flags); }
     public static PendingIntent getBroadcast(Context context, int requestCode, Intent intent, int flags) { return new PendingIntent(context, intent, 2); }
     public static PendingIntent getService(Context context, int requestCode, Intent intent, int flags) { return new PendingIntent(context, intent, 3); }
     public static PendingIntent getForegroundService(Context context, int requestCode, Intent intent, int flags) { return new PendingIntent(context, intent, 3); }
@@ -45,4 +46,10 @@ public final class PendingIntent implements android.os.Parcelable {
     @Override public int hashCode() { return intent.filterHashCode() * 4 + kind; }
     @Override public int describeContents() { return 0; }
     @Override public void writeToParcel(android.os.Parcel out, int flags) { out.writeValue(this); }
+    public static void writePendingIntentOrNullToParcel(PendingIntent sender, android.os.Parcel out) { out.writeValue(sender); }
+    public static PendingIntent readPendingIntentOrNullFromParcel(android.os.Parcel in) { return (PendingIntent) in.readValue(null); }
+    public static final Creator<PendingIntent> CREATOR = new Creator<>() {
+        @Override public PendingIntent createFromParcel(android.os.Parcel in) { return (PendingIntent) in.readValue(null); }
+        @Override public PendingIntent[] newArray(int size) { return new PendingIntent[size]; }
+    };
 }

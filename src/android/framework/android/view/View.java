@@ -130,6 +130,12 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     private final CopyOnWriteArrayList<OnLayoutChangeListener> mLayoutListeners = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<OnUnhandledKeyEventListener> mUnhandledKeyListeners = new CopyOnWriteArrayList<>();
     private AccessibilityDelegate mAccessibilityDelegate;
+    private int mLabelForId = NO_ID, mNextClusterForwardId = NO_ID;
+    private boolean mKeyboardNavigationCluster;
+    private String[] mReceiveContentMimeTypes;
+    private OnReceiveContentListener mOnReceiveContentListener;
+    private android.view.animation.Animation mCurrentAnimation;
+    private android.view.animation.Transformation mAnimationTransformation;
     private final ArrayList<Runnable> mPendingRunnables = new ArrayList<>();
     private ArrayList<long[]> mPendingDelays;
 
@@ -191,6 +197,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
         public boolean hasWindowFocus;
         public int windowVisibility = VISIBLE;
         public long drawingTime;
+        boolean inLayout;
 
         public AttachInfo(ViewRootImpl root, Handler handler, IBinder token) {
             this.root = root;
@@ -370,6 +377,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public void postInvalidate() { post(this::invalidate); }
     public void postInvalidateDelayed(long delayMilliseconds) { postDelayed(this::invalidate, delayMilliseconds); }
     public void postInvalidateOnAnimation() { postOnAnimation(this::invalidate); }
+    public void postInvalidateOnAnimation(int left, int top, int right, int bottom) { postOnAnimation(this::invalidate); }
     public void cancelPendingInputEvents() {}
 
     // ---- visibility and state ----
@@ -716,7 +724,56 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public boolean isTransitionGroup() { return mTransitionGroup; }
     public void setTransitionVisibility(int visibility) { mVisibility = visibility; }
     public ViewPropertyAnimator animate() { return new ViewPropertyAnimator(this); }
-    public void clearAnimation() {}
+    public void clearAnimation() {
+        if (mCurrentAnimation != null) mCurrentAnimation.cancel();
+        stopViewAnimation();
+    }
+
+    // ---- view animations (android.view.animation) ----
+    public android.view.animation.Animation getAnimation() { return mCurrentAnimation; }
+    public void setAnimation(android.view.animation.Animation animation) {
+        mCurrentAnimation = animation;
+        if (animation != null) postOnAnimation(this::stepAnimation);
+    }
+    public void startAnimation(android.view.animation.Animation animation) {
+        animation.setStartTime(android.view.animation.Animation.START_ON_FIRST_FRAME);
+        setAnimation(animation);
+        invalidate();
+    }
+    /** One frame of the view animation: its matrix and alpha go to the render node until it ends. */
+    private void stepAnimation() {
+        android.view.animation.Animation a = mCurrentAnimation;
+        if (a == null) return;
+        if (!a.isInitialized()) {
+            View parent = mParent instanceof View p ? p : this;
+            a.initialize(getWidth(), getHeight(), parent.getWidth(), parent.getHeight());
+        }
+        if (mAnimationTransformation == null) mAnimationTransformation = new android.view.animation.Transformation();
+        android.view.animation.Transformation t = mAnimationTransformation;
+        t.clear();
+        boolean more = a.getTransformation(android.view.animation.AnimationUtils.currentAnimationTimeMillis(), t);
+        if (mCurrentAnimation != a) return;
+        if (more || a.getFillAfter()) {
+            mRenderNode.setAnimationMatrix(t.getMatrix());
+            mRenderNode.setAlpha(getAlphaWithoutAnimation() * t.getAlpha());
+            invalidateViewProperty();
+        }
+        if (more) postOnAnimation(this::stepAnimation);
+        else if (!a.getFillAfter()) stopViewAnimation();
+        else mCurrentAnimation = null;
+    }
+    private float mAlphaBeforeAnimation = -1;
+    private float getAlphaWithoutAnimation() {
+        if (mAlphaBeforeAnimation < 0) mAlphaBeforeAnimation = mRenderNode.getAlpha();
+        return mAlphaBeforeAnimation;
+    }
+    private void stopViewAnimation() {
+        mCurrentAnimation = null;
+        mRenderNode.setAnimationMatrix(null);
+        if (mAlphaBeforeAnimation >= 0) mRenderNode.setAlpha(mAlphaBeforeAnimation);
+        mAlphaBeforeAnimation = -1;
+        invalidateViewProperty();
+    }
     public long getDrawingTime() { return mAttachInfo != null ? mAttachInfo.drawingTime : 0; }
 
     // ---- measure and layout ----
@@ -769,16 +826,24 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public void setMinimumHeight(int minHeight) { mMinHeight = minHeight; requestLayout(); }
 
     public void layout(int l, int t, int r, int b) {
-        int ol = mLeft, ot = mTop, or = mRight, ob = mBottom;
-        boolean changed = setFrame(l, t, r, b);
-        if (changed || mLayoutRequested) {
-            onLayout(changed, l, t, r, b);
-            mLayoutRequested = false;
-            for (OnLayoutChangeListener li : mLayoutListeners) li.onLayoutChange(this, l, t, r, b, ol, ot, or, ob);
+        AttachInfo info = mAttachInfo;
+        boolean outermost = info != null && !info.inLayout;
+        if (outermost) info.inLayout = true;
+        try {
+            int ol = mLeft, ot = mTop, or = mRight, ob = mBottom;
+            boolean changed = setFrame(l, t, r, b);
+            if (changed || mLayoutRequested) {
+                onLayout(changed, l, t, r, b);
+                mLayoutRequested = false;
+                for (OnLayoutChangeListener li : mLayoutListeners) li.onLayoutChange(this, l, t, r, b, ol, ot, or, ob);
+            }
+            mForceLayout = false;
+            mLaidOut = true;
+        } finally {
+            if (outermost) info.inLayout = false;
         }
-        mForceLayout = false;
-        mLaidOut = true;
     }
+    public boolean isInLayout() { return mAttachInfo != null && mAttachInfo.inLayout; }
     protected boolean setFrame(int left, int top, int right, int bottom) {
         if (mLeft == left && mRight == right && mTop == top && mBottom == bottom) return false;
         int oldWidth = mRight - mLeft, oldHeight = mBottom - mTop;
@@ -950,6 +1015,10 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public java.util.List<Rect> getSystemGestureExclusionRects() { return java.util.Collections.emptyList(); }
     public boolean startDragAndDrop(android.content.ClipData data, DragShadowBuilder shadowBuilder, Object myLocalState, int flags) { return false; }
     public void cancelDragAndDrop() {}
+    @Deprecated public final boolean startDrag(android.content.ClipData data, DragShadowBuilder shadowBuilder, Object myLocalState, int flags) {
+        return startDragAndDrop(data, shadowBuilder, myLocalState, flags);
+    }
+    public final void updateDragShadow(DragShadowBuilder shadowBuilder) {}
 
     public static class DragShadowBuilder {
         public DragShadowBuilder() {}
@@ -1136,7 +1205,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public int getAccessibilityLiveRegion() { return ACCESSIBILITY_LIVE_REGION_NONE; }
     public void setAccessibilityTraversalBefore(int id) {}
     public void setAccessibilityTraversalAfter(int id) {}
-    public void setLabelFor(int id) {}
+    public void setLabelFor(int id) { mLabelForId = id; }
+    public int getLabelFor() { return mLabelForId; }
     public boolean isAccessibilityFocused() { return false; }
     public void announceForAccessibility(CharSequence text) {}
     public void setTooltipText(CharSequence tooltipText) { mTooltipText = tooltipText; }
@@ -1177,6 +1247,55 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public void createContextMenu(ContextMenu menu) {}
     public boolean showContextMenu() { return false; }
     public boolean showContextMenu(float x, float y) { return false; }
+
+    // ---- touch, focus clusters, temporary detach, received content ----
+    public void cancelLongPress() {}
+    public void addTouchables(ArrayList<View> views) {
+        if ((mClickable || mLongClickable) && mEnabled && mVisibility == VISIBLE) views.add(this);
+    }
+    public void setKeyboardNavigationCluster(boolean isCluster) { mKeyboardNavigationCluster = isCluster; }
+    public boolean isKeyboardNavigationCluster() { return mKeyboardNavigationCluster; }
+    public void addKeyboardNavigationClusters(java.util.Collection<View> views, int direction) {
+        if (mKeyboardNavigationCluster && mVisibility == VISIBLE) views.add(this);
+    }
+    public View keyboardNavigationClusterSearch(View currentCluster, int direction) {
+        if (mKeyboardNavigationCluster) currentCluster = this;
+        return mParent != null ? mParent.keyboardNavigationClusterSearch(currentCluster, direction) : null;
+    }
+    public void setNextClusterForwardId(int nextClusterForwardId) { mNextClusterForwardId = nextClusterForwardId; }
+    public int getNextClusterForwardId() { return mNextClusterForwardId; }
+    public void dispatchStartTemporaryDetach() { onStartTemporaryDetach(); }
+    public void onStartTemporaryDetach() { setPressed(false); }
+    public void dispatchFinishTemporaryDetach() { onFinishTemporaryDetach(); }
+    public void onFinishTemporaryDetach() {}
+    public boolean isTemporarilyDetached() { return false; }
+    public void onScreenStateChanged(int screenState) {}
+    public void onRtlPropertiesChanged(int layoutDirection) {}
+    public void onWindowSystemUiVisibilityChanged(int visible) {}
+    @Deprecated protected boolean fitSystemWindows(Rect insets) { return false; }
+    public boolean isDirty() { return mDisplayListDirty; }
+    public boolean isOpaque() {
+        return mBackground != null && mBackground.getOpacity() == android.graphics.PixelFormat.OPAQUE && getAlpha() >= 1;
+    }
+    public final void saveAttributeDataForStyleable(Context context, int[] styleable, AttributeSet attrs,
+            android.content.res.TypedArray t, int defStyleAttr, int defStyleRes) {}
+    public void setOnReceiveContentListener(String[] mimeTypes, OnReceiveContentListener listener) {
+        if (listener != null && (mimeTypes == null || mimeTypes.length == 0))
+            throw new IllegalArgumentException("When the listener is set, MIME types must also be set");
+        for (int i = 0; mimeTypes != null && i < mimeTypes.length; ++i)
+            if (mimeTypes[i].startsWith("*")) throw new IllegalArgumentException("A MIME type set here must not start with *: " + mimeTypes[i]);
+        mReceiveContentMimeTypes = mimeTypes == null || mimeTypes.length == 0 ? null : mimeTypes.clone();
+        mOnReceiveContentListener = listener;
+    }
+    public String[] getReceiveContentMimeTypes() { return mReceiveContentMimeTypes; }
+    public ContentInfo performReceiveContent(ContentInfo payload) {
+        if (mOnReceiveContentListener != null) {
+            payload = mOnReceiveContentListener.onReceiveContent(this, payload);
+            if (payload == null) return null;
+        }
+        return onReceiveContent(payload);
+    }
+    public ContentInfo onReceiveContent(ContentInfo payload) { return payload; }
 
     @Override
     public String toString() {

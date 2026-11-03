@@ -39,6 +39,7 @@ public class LongSparseArray<E> implements Cloneable {
     @SuppressWarnings("unchecked")
     public E valueAt(int index) { return (E) values[index]; }
     public void setValueAt(int index, E value) { values[index] = value; }
+    public int indexOfValue(E value) { for (int i = 0; i < size; ++i) if (values[i] == value) return i; return -1; }
     public int indexOfKey(long key) { int i = Arrays.binarySearch(keys, 0, size, key); return i >= 0 ? i : -1; }
     public void clear() { Arrays.fill(values, 0, size, null); size = 0; }
     public void append(long key, E value) { put(key, value); }

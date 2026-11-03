@@ -198,6 +198,111 @@ public final class Parcel {
     public ParcelFileDescriptor readFileDescriptor() { return (ParcelFileDescriptor) readObject(); }
     public java.io.FileDescriptor readRawFileDescriptor() { return (java.io.FileDescriptor) readObject(); }
 
+    public void writeBooleanArray(boolean[] a) { if (a == null) { writeInt(-1); return; } writeInt(a.length); for (boolean v : a) writeInt(v ? 1 : 0); }
+    public void writeCharArray(char[] a) { if (a == null) { writeInt(-1); return; } writeInt(a.length); for (char v : a) writeInt(v); }
+    public void writeDoubleArray(double[] a) { if (a == null) { writeInt(-1); return; } writeInt(a.length); for (double v : a) writeDouble(v); }
+    public void writeBinderArray(IBinder[] a) { if (a == null) { writeInt(-1); return; } writeInt(a.length); for (IBinder v : a) writeStrongBinder(v); }
+    public void writeBinderList(List<IBinder> l) { if (l == null) { writeInt(-1); return; } writeInt(l.size()); for (IBinder v : l) writeStrongBinder(v); }
+    public void writeSparseBooleanArray(android.util.SparseBooleanArray a) {
+        if (a == null) { writeInt(-1); return; }
+        writeInt(a.size());
+        for (int i = 0; i < a.size(); ++i) { writeInt(a.keyAt(i)); writeByte((byte) (a.valueAt(i) ? 1 : 0)); }
+    }
+
+    public boolean[] createBooleanArray() { int n = readInt(); if (n < 0 || n > dataAvail() / 4) return null; boolean[] a = new boolean[n]; for (int i = 0; i < n; ++i) a[i] = readInt() != 0; return a; }
+    public char[] createCharArray() { int n = readInt(); if (n < 0 || n > dataAvail() / 4) return null; char[] a = new char[n]; for (int i = 0; i < n; ++i) a[i] = (char) readInt(); return a; }
+    public double[] createDoubleArray() { int n = readInt(); if (n < 0 || n > dataAvail() / 8) return null; double[] a = new double[n]; for (int i = 0; i < n; ++i) a[i] = readDouble(); return a; }
+    public IBinder[] createBinderArray() { int n = readInt(); if (n < 0 || n > dataAvail() / 4) return null; IBinder[] a = new IBinder[n]; for (int i = 0; i < n; ++i) a[i] = readStrongBinder(); return a; }
+    public ArrayList<IBinder> createBinderArrayList() {
+        int n = readInt();
+        if (n < 0 || n > dataAvail() / 4) return null;
+        ArrayList<IBinder> l = new ArrayList<>(n);
+        for (int i = 0; i < n; ++i) l.add(readStrongBinder());
+        return l;
+    }
+    public android.util.SparseBooleanArray readSparseBooleanArray() {
+        int n = readInt();
+        if (n < 0 || n > dataAvail() / 8) return null;
+        android.util.SparseBooleanArray a = new android.util.SparseBooleanArray(n);
+        for (int i = 0; i < n; ++i) { int key = readInt(); a.append(key, readByte() == 1); }
+        return a;
+    }
+    public void readIntArray(int[] dest) {
+        int[] a = createIntArray();
+        if (a == null || a.length != dest.length) throw new RuntimeException("bad array lengths");
+        System.arraycopy(a, 0, dest, 0, a.length);
+    }
+
+    /** The objects that the table holds for an array, a list or a map value, copied out. */
+    public Object[] readArray(ClassLoader loader) { Object o = readObject(); return o instanceof Object[] a ? a.clone() : o instanceof List<?> l ? l.toArray() : null; }
+    @SuppressWarnings("unchecked")
+    public <T> T[] readArray(ClassLoader loader, Class<T> clazz) {
+        Object[] a = readArray(loader);
+        if (a == null) return null;
+        T[] out = (T[]) java.lang.reflect.Array.newInstance(clazz, a.length);
+        for (int i = 0; i < a.length; ++i) out[i] = clazz.cast(a[i]);
+        return out;
+    }
+    @SuppressWarnings("unchecked")
+    public <T> ArrayList<T> readArrayList(ClassLoader loader, Class<? extends T> clazz) { List<?> l = (List<?>) readObject(); return l != null ? new ArrayList<>((List<T>) l) : null; }
+    @SuppressWarnings("unchecked")
+    public HashMap readHashMap(ClassLoader loader) { Map<?, ?> m = (Map<?, ?>) readObject(); return m != null ? new HashMap<>(m) : null; }
+    @SuppressWarnings("unchecked")
+    public <K, V> HashMap<K, V> readHashMap(ClassLoader loader, Class<? extends K> clazzKey, Class<? extends V> clazzValue) {
+        Map<K, V> m = (Map<K, V>) readObject();
+        return m != null ? new HashMap<>(m) : null;
+    }
+    @SuppressWarnings("unchecked")
+    public <T> void readList(List<? super T> outVal, ClassLoader loader, Class<T> clazz) { List<T> l = (List<T>) readObject(); if (l != null) outVal.addAll(l); }
+    @SuppressWarnings("unchecked")
+    public <K, V> void readMap(Map<? super K, ? super V> outVal, ClassLoader loader, Class<K> clazzKey, Class<V> clazzValue) {
+        Map<K, V> m = (Map<K, V>) readObject();
+        if (m != null) outVal.putAll(m);
+    }
+    @SuppressWarnings("unchecked")
+    public <T> T[] readParcelableArray(ClassLoader loader, Class<T> clazz) {
+        Object[] a = (Object[]) readObject();
+        if (a == null) return null;
+        T[] out = (T[]) java.lang.reflect.Array.newInstance(clazz, a.length);
+        for (int i = 0; i < a.length; ++i) out[i] = clazz.cast(a[i]);
+        return out;
+    }
+    @SuppressWarnings("unchecked")
+    public <T> T[] createTypedArray(Parcelable.Creator<T> c) {
+        Object[] a = (Object[]) readObject();
+        if (a == null) return null;
+        T[] out = c.newArray(a.length);
+        for (int i = 0; i < a.length; ++i) out[i] = (T) a[i];
+        return out;
+    }
+    @SuppressWarnings("unchecked")
+    public <T> void readTypedList(List<T> list, Parcelable.Creator<T> c) {
+        List<T> l = (List<T>) readObject();
+        list.clear();
+        if (l != null) list.addAll(l);
+    }
+    public <T extends Parcelable> List<T> readParcelableList(List<T> list, ClassLoader cl) { readTypedList(list, null); return list; }
+    public <T> List<T> readParcelableList(List<T> list, ClassLoader cl, Class<? extends T> clazz) { readTypedList(list, null); return list; }
+    public <T> T readSerializable(ClassLoader loader, Class<T> clazz) { return clazz.cast(readObject()); }
+    @SuppressWarnings("unchecked")
+    public <T> android.util.SparseArray<T> readSparseArray(ClassLoader loader) { return (android.util.SparseArray<T>) readObject(); }
+    @SuppressWarnings("unchecked")
+    public <T> android.util.SparseArray<T> readSparseArray(ClassLoader loader, Class<? extends T> clazz) { return (android.util.SparseArray<T>) readObject(); }
+
+    /** The next Parcelable's CREATOR. The value is the object in the table, so the CREATOR gives that object back. */
+    public Parcelable.Creator<?> readParcelableCreator(ClassLoader loader) { return readParcelableCreator(loader, Object.class); }
+    public <T> Parcelable.Creator<T> readParcelableCreator(ClassLoader loader, Class<T> clazz) {
+        Object o = readObject();
+        if (o == null) return null;
+        T value = clazz.cast(o);
+        Parcelable.Creator<T> real = creator(o.getClass());
+        return new Parcelable.Creator<T>() {
+            @Override public T createFromParcel(Parcel in) { return value; }
+            @SuppressWarnings("unchecked")
+            @Override public T[] newArray(int size) { return real != null ? real.newArray(size) : (T[]) java.lang.reflect.Array.newInstance(o.getClass(), size); }
+        };
+    }
+
     /** A Parcelable's CREATOR, as Android finds it. */
     @SuppressWarnings("unchecked")
     public static <T> Parcelable.Creator<T> creator(Class<?> c) {
