@@ -236,13 +236,15 @@ static void control_nacp(ExtractState* state) {
     const char* why = NULL;
     size_t size = 0;
     unsigned char* nacp = to ? snx_dump_nacp(&state->dump, &size, &why) : NULL;
-    char name[0x200], version[0x20], title[17];
+    char name[0x200], version[0x20], title[17], reason[256];
     if (!to)
         why = "out of memory";
     else if (nacp && snx_write_file(to, nacp, size))
         why = "its control.nacp could not be written beside exefs/";
     if (why) printf("The game keeps the name of its file: %s\n", why);
-    if (nacp && snx_nacp_name(nacp, size, name, sizeof name)) { /* what it is, from its own control data */
+    if (nacp && !snx_nacp_name_why(nacp, size, name, sizeof name, reason, sizeof reason))
+        printf("The game keeps the name of its file: its control.nacp gives it none, %s\n", reason);
+    else if (nacp) { /* what it is, from its own control data */
         snx_title_text(state->dump.program.title_id, title);
         printf("  The game: %s", name);
         if (snx_nacp_version(nacp, size, version, sizeof version)) printf(", version %s", version);
