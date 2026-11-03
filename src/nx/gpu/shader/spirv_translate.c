@@ -3638,8 +3638,106 @@ static int structure_step(DirectCtx* c, StructEmit* se) {
     return SE_DONE;
 }
 
+/* The fixed function's varyings: the front and back colors (0x280-0x2bf), the fog coordinate (0x2e8) and the 10
+   texture coordinates (0x300-0x39f). SPIR-V has none of them, so each group (a color, the fog, a coordinate: 15 of
+   them) takes generic 17 + its index in every stage. Eden and Ryujinx give each one of the generics a program leaves
+   unused, matched to the previous stage's choice; a program here is translated without the other stages, so the
+   choice is fixed, the last 15 generics, and a program that uses one of those itself as well is refused. A group's
+   index, or -1 for an address of none */
+#define LEGACY_GENERIC 17u
+static int legacy_group(u32 addr) {
+    if (addr >= 0x280 && addr < 0x2c0) return (int)((addr - 0x280) >> 4);
+    if (addr == 0x2e8) return 4;
+    if (addr >= 0x300 && addr < 0x3a0) return 5 + (int)((addr - 0x300) >> 4);
+    return -1;
+}
+/* the generic address a legacy varying's moves to */
+static u32 legacy_address(u32 addr) {
+    int g = legacy_group(addr);
+    return 0x80 + (LEGACY_GENERIC + (u32)g) * 16 + (g == 4 ? 0 : (addr & 0xf));
+}
+/* group g's first address, for messages */
+static u32 legacy_base(u32 g) { return g < 4 ? 0x280 + g * 16 : g == 4 ? 0x2e8 : 0x300 + (g - 5) * 16; }
+/* The words of a program (n of them, sph its header, words in all) with every attribute load, store and
+   interpolation of legacy varyings moved to their generics (legacy_address): in *moved, a malloc'd copy of all the
+   words, when there is one to move, and in
+   *fs_groups the groups a fragment program reads (their interpolation is the header's color and texture coordinate
+   maps', to_spirv). 0, or -1 with si's reason when a group and its generic are both read or both written, or memory
+   ran out. An access some of whose words are legacy and others not is left, for supported() to refuse */
+static int legacy_varyings(const u64* insn, u32 n, u32 words, const u32* sph, int stage, ShaderInfo* si, u64** moved,
+                           u32* fs_groups) {
+    u32 legacy[2] = {0}, generic[2] = {0}, i, d; /* [0] read, [1] written */
+    *moved = NULL;
+    *fs_groups = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (i = 11; i < n; i++) {
+            const Op* op = IDX_OK(i) ? decode(insn[i]) : NULL;
+            u64 w;
+            u32 addr, count, out, k;
+            if (!op || (op->id != O_ALD && op->id != O_AST && op->id != O_IPA)) continue;
+            w = insn[i];
+            if (op->id == O_IPA) {
+                if (stage != ST_FS) continue;
+                if (B(w, 38, 1)) { /* indexed: any generic the header gives a mode */
+                    for (u32 v = 0; v < 32; v++)
+                        if ((sph[6 + v / 4] >> (v % 4 * 8)) & 0xff) generic[0] |= 1u << v;
+                    continue;
+                }
+                addr = B(w, 30, 8) * 4;
+                count = 1;
+                out = 0;
+            } else {
+                if (B(w, 31, 1)) continue; /* a patch's attributes */
+                out = op->id == O_AST || (stage == ST_TCS && B(w, 32, 1));
+                if (B(w, 8, 8) != 255) { /* indexed: any generic input the header's map lists */
+                    if (op->id == O_ALD)
+                        for (u32 v = 0; v < 32; v++)
+                            if ((sph[6 + v / 8] >> (v % 8 * 4)) & 15) generic[0] |= 1u << v;
+                    continue;
+                }
+                if (stage == ST_VS && !out) continue; /* a vertex program's inputs are the vertex's attributes */
+                addr = B(w, 20, 10);
+                count = B(w, 47, 2) + 1;
+            }
+            if (!pass) {
+                for (k = 0; k < count; k++) {
+                    u32 a = addr + 4 * k;
+                    int g = legacy_group(a);
+                    if (g >= 0)
+                        legacy[out] |= 1u << g;
+                    else if (a >= 0x80 && a < 0x280)
+                        generic[out] |= 1u << ((a - 0x80) >> 4);
+                }
+                continue;
+            }
+            for (k = 0; k < count; k++)
+                if (legacy_group(addr + 4 * k) < 0 || legacy_address(addr + 4 * k) != legacy_address(addr) + 4 * k)
+                    break;
+            if (k < count) continue;
+            (*moved)[i] = op->id == O_IPA ? (w & ~(0xffull << 30)) | (u64)(legacy_address(addr) / 4) << 30
+                                          : (w & ~(0x3ffull << 20)) | (u64)legacy_address(addr) << 20;
+        }
+        if (pass) break;
+        if (!legacy[0] && !legacy[1]) return 0;
+        for (d = 0; d < 2; d++)
+            for (u32 g = 0; g < 15; g++)
+                if ((legacy[d] >> g & 1) && (generic[d] >> (LEGACY_GENERIC + g) & 1)) {
+                    si->unsupported = 1;
+                    snprintf(si->first_unsupported, sizeof si->first_unsupported,
+                             "legacy varying 0x%x %s generic %u, which the program also %s", legacy_base(g),
+                             d ? "written as" : "read as", LEGACY_GENERIC + g, d ? "writes" : "reads");
+                    return -1;
+                }
+        *moved = malloc(words * sizeof **moved);
+        if (!*moved) return -1;
+        memcpy(*moved, insn, words * sizeof **moved);
+    }
+    if (stage == ST_FS) *fs_groups = legacy[0];
+    return 0;
+}
+
 static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, ShaderInfo* si, size_t* word_count,
-                     int can_flush, int can_preserve, int can_preserve_f64, int can_subgroup) {
+                     int can_flush, int can_preserve, int can_preserve_f64, int can_subgroup, u32 legacy_fs) {
     u32 clip;
     if (!code || !si || !word_count || max_bytes < 96 || stage < ST_VS || stage > ST_CS) return NULL;
     if (stage == ST_CS) {
@@ -3654,6 +3752,17 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     u32 n = len / 8;
     u32 sph[20];
     for (u32 i = 0; i < 20; i++) sph[i] = snx_ld_le32(code + i * 4);
+    /* a fragment program's legacy varyings read through generics 17-31 (legacy_varyings) interpolate as the header's
+       color map (word 14: the diffuse and specular colors' components, 2 bits each as a generic's) and texture
+       coordinate map (bytes 0x3c-0x45, one a coordinate) give them; the back colors and the fog have no map, and
+       take the default an unmarked input has */
+    for (u32 g = 0; g < 15; g++) {
+        u32 generic = LEGACY_GENERIC + g, mode = 0, shift = generic % 4 * 8;
+        if (!(legacy_fs >> g & 1)) continue;
+        if (g < 2) mode = sph[14] >> (8 * g) & 0xff;
+        if (g >= 5) mode = sph[15 + (g - 5) / 4] >> ((g - 5) % 4 * 8) & 0xff;
+        sph[6 + generic / 4] = (sph[6 + generic / 4] & ~(0xffu << shift)) | mode << shift;
+    }
     u32 target = stage == ST_CS ? 0 : sph[18];
     if (stage == ST_FS && (sph[19] & ~3u)) return direct_reject(si, "fragment output beyond depth and mask");
     /* the sample mask (SPH word 19 bit 0) and depth (bit 1) follow the colours, in that order */
@@ -5041,6 +5150,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             for (u32 b = 0; b < 4; b++)
                 for (u32 w = 0; w < si->xfb.count[b] && w < 128; w++) {
                     u32 word = si->xfb.layout[b][w];
+                    if (legacy_group(word * 4) >= 0) word = legacy_address(word * 4) / 4; /* where it moved */
                     if (word >= 160 || xfb_buf[word] != 0xFF) continue;
                     xfb_buf[word] = (u8)b;
                     xfb_off[word] = (u16)(w * 4);
@@ -8759,8 +8869,20 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
     if (!code) return NULL;
     insn = shader_words(code, max_bytes, &copy);
     if (!insn) return NULL;
-    r = to_spirv(code, insn, max_bytes, stage, si, word_count, can_flush, can_preserve, can_preserve_f64,
-                 can_subgroup);
+    u64* moved = NULL;
+    u32 legacy_fs = 0, len = 0, sph[20];
+    if (stage >= ST_VS && stage <= ST_FS && max_bytes >= 96) {
+        shader_hash(code, max_bytes, &len);
+        for (u32 i = 0; i < 20; i++) sph[i] = snx_ld_le32(code + i * 4);
+        if (legacy_varyings(insn, len / 8, max_bytes / 8, sph, stage, si, &moved, &legacy_fs)) {
+            free(copy);
+            if (!si->unsupported) return direct_reject(si, "legacy varyings: out of memory");
+            return NULL;
+        }
+    }
+    r = to_spirv(code, moved ? moved : insn, max_bytes, stage, si, word_count, can_flush, can_preserve,
+                 can_preserve_f64, can_subgroup, legacy_fs);
+    free(moved);
     free(copy);
     return r;
 }

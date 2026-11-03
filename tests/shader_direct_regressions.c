@@ -44,7 +44,8 @@ static const char* passthrough_paths[6];
 static const char* structured_paths[2];
 static const char* fswzadd_path;
 static const char* surface_op_paths[7];
-static char* fixture_paths[102];
+static const char* legacy_paths[4];
+static char* fixture_paths[106];
 static size_t fixture_count;
 
 static const char* fixture_path(const char* directory, const char* name) {
@@ -2867,6 +2868,99 @@ static void transform_feedback(void) {
     free(spv);
 }
 
+/* how many OpDecorate give decoration (30 Location, 14 Flat) with this literal, or with none when literal is ~0 */
+static int decorations(const u32* code, size_t words, u32 decoration, u32 literal) {
+    int found = 0;
+    for (size_t i = 5; i < words && code[i] >> 16;) {
+        u32 width = code[i] >> 16;
+        if ((code[i] & 0xffff) == 71 && width >= 3 && code[i + 2] == decoration &&
+            (literal == 0xffffffffu || (width >= 4 && code[i + 3] == literal)))
+            found++;
+        i += width;
+    }
+    return found;
+}
+
+/* The fixed function's varyings take the generics 17-31, the same in every stage (legacy_varyings): a vertex
+   program's front diffuse green from R43 (AST a[0x284], one game's), another's whole first texture coordinate
+   (AST a[0x300] x4, another game's), a fragment program reading them and the fog with the header's color and texture
+   coordinate interpolation, and an evaluation program passing a coordinate on. A program writing a legacy varying
+   and the generic it moves to is refused, naming both; a store running from a color into the clip distances is
+   refused as before; a captured texture coordinate is captured where it moved */
+static void legacy_varyings_forms(void) {
+    const u64 ast = 0xeff07f800007ff00ull, ald = 0xefd87f800007ff00ull, ipa = 0xe003ff800ff7ff00ull;
+#define LEGACY_AST(addr, count, reg) (ast | (u64)(addr) << 20 | (u64)((count) - 1) << 47 | (reg))
+#define LEGACY_IPA(addr, reg)        (ipa | (u64)((addr) / 4) << 30 | (reg))
+    ShaderInfo info;
+    size_t words = 0, slots;
+    const u64 diffuse[] = {mov32i(43, 0x3f000000), LEGACY_AST(0x284, 1, 43)};
+    u32* code = translate(diffuse, 2, ST_VS, &info, &words, 1);
+    check_translated(code, &info, "a vertex program writing a legacy color translates");
+    if (code) {
+        check(info.out_mask == 1u << 17 && decorations(code, words, 30, 17) == 1,
+              "the front diffuse color is written as generic 17");
+        save_fixture(legacy_paths[0], code, words);
+    }
+    free(code);
+    const u64 coordinate[] = {LEGACY_AST(0x300, 4, 4)};
+    code = translate(coordinate, 1, ST_VS, &info, &words, 1);
+    check_translated(code, &info, "a vertex program writing a texture coordinate translates");
+    check(code && info.out_mask == 1u << 22 && decorations(code, words, 30, 22) == 1,
+          "the first texture coordinate is written as generic 22");
+    if (code) save_fixture(legacy_paths[1], code, words);
+    free(code);
+    /* the header's color map flat (1) for the diffuse color's four components, its first coordinate perspective (2) */
+    const u64 reads[] = {LEGACY_IPA(0x284, 0), LEGACY_IPA(0x2e8, 1), LEGACY_IPA(0x308, 2)};
+    u64* program = guest_program(reads, 3, NULL, &slots);
+    if (program) {
+        set_sph(program, 14, 0x55);
+        set_sph(program, 15, 0xaa);
+        memset(&info, 0, sizeof info);
+        code = spirv_of(program, slots * sizeof *program, ST_FS, &info, &words, 1, 1, 1, 1);
+        check_translated(code, &info, "a fragment program reading legacy varyings translates");
+        if (code) {
+            check(info.in_mask == (1u << 17 | 1u << 21 | 1u << 22) && decorations(code, words, 30, 17) == 1 &&
+                      decorations(code, words, 30, 21) == 1 && decorations(code, words, 30, 22) == 1,
+                  "the diffuse color, the fog and the first texture coordinate are read as generics 17, 21 and 22");
+            check(decorations(code, words, 14, 0xffffffffu) == 1,
+                  "only the color the header's map makes constant is a flat input");
+            save_fixture(legacy_paths[2], code, words);
+        }
+        free(code);
+        free(program);
+    }
+    const u64 passed[] = {ald | 0x300ull << 20, LEGACY_AST(0x300, 1, 0)};
+    code = translate_stage(passed, 2, ST_TES, NULL, 0, &info, &words);
+    check_translated(code, &info, "an evaluation program passing a texture coordinate on translates");
+    check(code && info.in_mask == 1u << 22 && info.out_mask == 1u << 22,
+          "an evaluation program reads and writes the coordinate as generic 22");
+    if (code) save_fixture(legacy_paths[3], code, words);
+    free(code);
+    const u64 both[] = {LEGACY_AST(0x190, 1, 0), LEGACY_AST(0x280, 1, 1)};
+    code = translate(both, 2, ST_VS, &info, &words, 1);
+    check_refused(code, &info, "legacy varying 0x280 written as generic 17, which the program also writes",
+                  "a program writing a legacy color and its generic is refused, naming both");
+    free(code);
+    const u64 across[] = {LEGACY_AST(0x2bc, 2, 0)};
+    code = translate(across, 1, ST_VS, &info, &words, 1);
+    check_refused(code, &info, "AST addr 700 count 2", "a store from a color into the clip distances stays refused");
+    free(code);
+    program = guest_program(coordinate, 1, NULL, &slots);
+    if (program) {
+        memset(&info, 0, sizeof info);
+        info.xfb.layout[0][0] = 0x300 / 4 + 1; /* the first coordinate's y */
+        info.xfb.count[0] = 1;
+        info.xfb.stride[0] = 4;
+        code = spirv_of(program, slots * sizeof *program, ST_VS, &info, &words, 0, 1, 1, 1);
+        check_translated(code, &info, "a captured texture coordinate translates");
+        check(code && count_opcode(code, words, 71, 36) == 1, "a captured texture coordinate is captured");
+        free(code);
+        free(program);
+    }
+#undef LEGACY_AST
+#undef LEGACY_IPA
+}
+
 static void attribute_pointer(void) {
     const u64 base = 0xefa070010607ff01ull; /* a game's: AL2P R1, RZ + 0x60, PT */
     const u64 instructions[] = {mov32i(4, 0x1234),
@@ -3605,6 +3699,10 @@ int main(int argc, char** argv) {
             snprintf(name, sizeof name, "surface_op_%d", i);
             surface_op_paths[i] = fixture_path(argv[1], name);
         }
+        for (int i = 0; i < 4; i++) {
+            snprintf(name, sizeof name, "legacy_%d", i);
+            legacy_paths[i] = fixture_path(argv[1], name);
+        }
         if (fixture_count != sizeof fixture_paths / sizeof *fixture_paths) {
             fprintf(stderr, "failed to allocate fixture paths\n");
             return 2;
@@ -3651,6 +3749,7 @@ int main(int argc, char** argv) {
     beyond_eden();
     system_values();
     attribute_pointer();
+    legacy_varyings_forms();
     indexed_attribute_load();
     structured_flow();
     fswzadd_forms();
