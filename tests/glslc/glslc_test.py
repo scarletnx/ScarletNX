@@ -9,7 +9,7 @@
 
 errors: every case of errors.glsl is refused with its line, column and message, and glslangValidator refuses it too,
 but where the case says glslang accepts it (an error glslang only finds when it links), which is checked as well.
-shaders: every shader of shaders/ compiles to SPIR-V that spirv-val takes for Vulkan 1.0; glslangValidator takes the
+shaders: every shader of shaders/ compiles to SPIR-V that spirv-val takes for Vulkan 1.1; glslangValidator takes the
 shader too (or refuses it where its first lines say so), and for GLSL ES 3.10 and later lays out every block, member
 by member, as glslc does. keywords: every word glslc's table knows is a name, a keyword or a reserved word in the
 same GLSL ES versions for glslc and for glslangValidator. semantics: each shader of semantics/ stores expressions on
@@ -67,7 +67,7 @@ def glslang_failures(glslang, paths):
 def glslang_command(glslang, path, output=None):
     """glslangValidator checking the language only, or with an output, compiling it for Vulkan (3.10 and later)"""
     if output:
-        return [glslang, '-V', '--target-env', 'vulkan1.0', '-o', str(output), str(path)]
+        return [glslang, '-V', '--target-env', 'vulkan1.1', '-o', str(output), str(path)]
     return [glslang, str(path)]
 
 
@@ -121,7 +121,7 @@ def layouts(dis):
             member.setdefault(t[1], {})[(int(t[2]), t[3])] = t[4] if len(t) > 4 else ''
         if t[0] == 'OpDecorate' and t[2] == 'ArrayStride':
             stride[t[1]] = t[3]
-        if t[0] == 'OpDecorate' and t[2] in ('Block', 'BufferBlock'):
+        if t[0] == 'OpDecorate' and t[2] == 'Block':
             blocks.append(t[1])
     out = {}
 
@@ -168,7 +168,7 @@ def check_shaders(args, failures):
             if result.returncode != 0:
                 failures.append(f'{shader.name}: glslc refuses it: {result.stdout.strip()}')
                 continue
-            valid = run([args.spirv_val, '--target-env', 'vulkan1.0', str(spv)])
+            valid = run([args.spirv_val, '--target-env', 'vulkan1.1', str(spv)])
             if valid.returncode != 0:
                 failures.append(f'{shader.name}: spirv-val refuses the module: {(valid.stdout + valid.stderr).strip()}')
             if not args.glslang:
@@ -204,7 +204,7 @@ def check_shaders(args, failures):
                         )
                 compared += len(ours)
     print(
-        f'shaders: {len(shaders)} compiled and valid for Vulkan 1.0; {compared} block layout entries, the capabilities '
+        f'shaders: {len(shaders)} compiled and valid for Vulkan 1.1; {compared} block layout entries, the capabilities '
         'and the interface compared'
     )
 

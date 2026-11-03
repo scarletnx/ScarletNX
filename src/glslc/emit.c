@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Typed syntax nodes into a SPIR-V 1.0 module for Vulkan 1.0. Each section of the module (capabilities, names,
+/* Typed syntax nodes into a SPIR-V 1.3 module for Vulkan 1.1. Each section of the module (capabilities, names,
    decorations, types and globals, functions) is a bounded word array, put together at the end, when the id bound is
    known; a function's local variables go to a section of their own while its code is written, since SPIR-V wants
    them in its first block. A value has one SPIR-V type per GLSL type. Memory laid out as std140 or std430 has types
@@ -149,12 +149,12 @@ enum {
     SC_WORKGROUP = 4,
     SC_PRIVATE = 6,
     SC_FUNCTION = 7,
-    SC_IMAGE = 11
+    SC_IMAGE = 11,
+    SC_STORAGE_BUFFER = 12
 };
 enum {
     DEC_RELAXED_PRECISION = 0,
     DEC_BLOCK = 2,
-    DEC_BUFFER_BLOCK = 3,
     DEC_ROW_MAJOR = 4,
     DEC_COL_MAJOR = 5,
     DEC_ARRAY_STRIDE = 6,
@@ -681,7 +681,7 @@ static uint32_t storage_of(const Glslc* g, uint32_t s) {
             uint8_t k = ty(g, e)->kind;
             return k == GLSLC_T_SAMPLER || k == GLSLC_T_IMAGE ? SC_UNIFORM_CONSTANT : SC_UNIFORM;
         }
-        case GLSLC_ST_BUFFER: return SC_UNIFORM;
+        case GLSLC_ST_BUFFER: return SC_STORAGE_BUFFER;
         case GLSLC_ST_SHARED: return SC_WORKGROUP;
         case GLSLC_ST_PARAM_IN: {
             uint32_t e = y->type;
@@ -845,7 +845,7 @@ static int access(Glslc* g, uint32_t n, Access* a) {
             if (y->kind == GLSLC_SK_BLOCK_MEMBER) {
                 const GlslcSymbol* holder = &g->syms[y->aux];
                 a->base = g->e.sym_ids[y->aux];
-                a->storage = SC_UNIFORM;
+                a->storage = storage_of(g, y->aux);
                 a->layout = block_layout(holder->packing);
                 a->idx[a->nidx++] = const_int(g, y->aux2);
                 return 1;
@@ -2093,10 +2093,8 @@ static void resource_variable(Glslc* g, uint32_t s) {
     } else {
         pointee = val_type(g, y->type);
     }
-    v = variable(g, s, et->kind == GLSLC_T_BLOCK ? SC_UNIFORM : SC_UNIFORM_CONSTANT, pointee, 0);
-    if (et->kind == GLSLC_T_BLOCK)
-        EMIT(g, &g->e.annotations, OP_DECORATE, type_id(g, e, 0),
-             y->storage == GLSLC_ST_BUFFER ? DEC_BUFFER_BLOCK : DEC_BLOCK);
+    v = variable(g, s, storage_of(g, s), pointee, 0);
+    if (et->kind == GLSLC_T_BLOCK) EMIT(g, &g->e.annotations, OP_DECORATE, type_id(g, e, 0), DEC_BLOCK);
     EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_DESCRIPTOR_SET, set);
     EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_BINDING, binding);
     if (y->qual & GLSLC_Q_READONLY) EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_NON_WRITABLE);
@@ -2303,7 +2301,7 @@ void glslc_emit(Glslc* g, uint32_t* words, size_t capacity) {
     }
     uint32_t w = 0;
     words[w++] = 0x07230203u; /* magic */
-    words[w++] = 0x00010000u; /* SPIR-V 1.0 */
+    words[w++] = 0x00010300u; /* SPIR-V 1.3: Vulkan 1.1's, with the StorageBuffer storage class */
     words[w++] = 0;           /* no registered generator */
     words[w++] = e->next_id;
     words[w++] = 0;

@@ -43,16 +43,19 @@ static const GlslcReflect* find(const char* source, const char* name, uint8_t ki
     exit(1);
 }
 
-/* the operands of the first instruction op in the module, or NULL */
-static const uint32_t* instruction(uint32_t op) {
+/* the operands of the first instruction op in the module whose operand at is value (any operand when at is -1), or
+   NULL */
+static const uint32_t* instruction_with(uint32_t op, int at, uint32_t value) {
     const uint32_t* w = g_emit_test.words;
     for (uint32_t i = 5; i < g_emit_test.result.words;) {
         uint32_t len = w[i] >> 16;
-        if ((w[i] & 0xffffu) == op) return &w[i + 1];
+        if ((w[i] & 0xffffu) == op && (at < 0 || (len > (uint32_t)at + 1 && w[i + 1 + at] == value))) return &w[i + 1];
         i += len ? len : 1;
     }
     return NULL;
 }
+
+static const uint32_t* instruction(uint32_t op) { return instruction_with(op, -1, 0); }
 
 static void module(void) {
     static const char source[] = "#version 310 es\nlayout(local_size_x = 8, local_size_y = 4) in;\n"
@@ -61,7 +64,10 @@ static void module(void) {
     GlslcResult* r = &g_emit_test.result;
     must_compile(SNX_GLSLC_COMPUTE, source);
     const uint32_t* w = g_emit_test.words;
-    assert(w[0] == 0x07230203u && w[1] == 0x00010000u && w[3] > 1 && w[4] == 0);
+    assert(w[0] == 0x07230203u && w[1] == 0x00010300u && w[3] > 1 && w[4] == 0);
+    /* the buffer block: an OpVariable (59) of the StorageBuffer storage class (12), its struct decorated (71) Block (2),
+       and no BufferBlock (3) left from SPIR-V 1.0 */
+    assert(instruction_with(59, 2, 12) && instruction_with(71, 1, 2) && !instruction_with(71, 1, 3));
     assert(r->version == 310 && r->error[0] == 0 && r->line == 0 && r->warnings == 0);
     const uint32_t* mode = instruction(16); /* OpExecutionMode main LocalSize 8 4 1 */
     assert(mode && mode[1] == 17 && mode[2] == 8 && mode[3] == 4 && mode[4] == 1);

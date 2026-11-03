@@ -14,7 +14,7 @@
 
 `src/glslc` compiles the OpenGL ES shading language into SPIR-V, for the backends that run OpenGL ES programs on
 Vulkan. It takes GLSL ES 1.00, 3.00, 3.10 and 3.20, what an OpenGL ES 3.2 GPU of the Mali-G52's class takes, for the
-vertex, fragment and compute stages, and writes a SPIR-V 1.0 module for Vulkan 1.0. It is C99 and the C library only,
+vertex, fragment and compute stages, and writes a SPIR-V 1.3 module for Vulkan 1.1. It is C99 and the C library only,
 and it uses no other compiler: no glslang, no SPIRV-Cross.
 
 No target of the build compiles a shader with it. ScarletNX's own shaders are Vulkan GLSL and go through the host's
@@ -114,8 +114,9 @@ The module is what a Vulkan pipeline takes; the OpenGL ES side of it is the back
   binding of set 0 after every other resource. Its entry in `result.reflect` has an empty name, and each uniform's
   entry its offset.
 - **Blocks** are std140 for uniform blocks and std430 for buffer blocks unless they say otherwise; `shared` and
-  `packed` are laid out as std140. Their offsets and strides are glslangValidator's, which the tests check. A bool
-  in a block is a uint there, as Vulkan has no bool in a block.
+  `packed` are laid out as std140. A buffer block is a StorageBuffer variable, as SPIR-V 1.3 has them. Their offsets
+  and strides are glslangValidator's, which the tests check. A bool in a block is a uint there, as Vulkan has no bool
+  in a block.
 - **Built-ins.** `gl_VertexID` and `gl_InstanceID` are Vulkan's VertexIndex and InstanceIndex: the backend draws with
   a first instance of 0, and a vertex index counts from the first vertex as OpenGL ES's does. Fragment shaders have
   Vulkan's upper-left origin, so `gl_FragCoord` is Vulkan's: a backend that draws with a negative viewport height sees
@@ -151,7 +152,7 @@ size, as GLSL ES does, where glslang takes 1. It takes vertical tab and form fee
 - `glslc_lex`, `glslc_parse`, `glslc_emit`: each pass on its own and the API, with every bound;
 - `glslc_errors`: the cases of `errors.glsl`, each with its message and place, refused by glslangValidator too;
 - `glslc_keywords`: every word of the keyword table in each version, against glslangValidator;
-- `glslc_shaders`: every shader of `shaders/` valid for Vulkan 1.0 by spirv-val, taken by glslangValidator, with
+- `glslc_shaders`: every shader of `shaders/` valid for Vulkan 1.1 by spirv-val, taken by glslangValidator, with
   the same block layouts, capabilities and interface decorations;
 - `glslc_semantics`: `semantics/values.comp` folded by spirv-opt from both compilers' modules into the same constants;
 - `glslc_fuzz`: 3000 mutants of the shaders, compiled or refused with a message, never a crash (with
