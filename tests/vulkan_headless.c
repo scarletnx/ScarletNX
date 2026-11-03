@@ -130,15 +130,17 @@ static int check_buffer_texture_rows(void) {
 /* Guest memory read in place (gpu/vk/uma.c, --vk_memory=2 where the device has VK_EXT_external_memory_host): a vertex
    range is guest memory itself, so the GPU reads the bytes that are there when it runs, a CPU write after the binding
    included. A range off the binding's alignment is copied. Guest pages given back and mapped again are other pages,
-   and the import of the old ones goes (mem.c's hook): the GPU reads the new ones */
+   and the import of the old ones goes (mem.c's hook): the GPU reads the new ones. In memory of its own: a page another
+   check traps in the window it shares has the driver refuse that window, which is then copied for a while */
 static int check_uma(void) {
-    const u64 gva = 0x7000000, cpu = HEAP_BASE + 0x780000, span = 0x10000;
+    const u64 gva = 0x7000000, cpu = HEAP_BASE + 0x3000000, span = 0x10000;
     VkBuffer b, b2, rb;
     u64 off, off2;
     if (!vk_uma()) {
         printf("skip: guest memory is copied on this device (vk_memory)\n");
         return 0;
     }
+    CHECK(mem_map(cpu, span, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(gva, cpu, span);
     memset(GP(cpu), 0x11, (size_t)span);
     vk_lock();
@@ -166,6 +168,7 @@ static int check_uma(void) {
     vk_readback_ready();
     for (u32 i = 256; i < 512; i++) CHECK(result[i] == 0x33);
     vk_unlock();
+    CHECK(mem_unmap(cpu, span) == 0);
     return 0;
 }
 
