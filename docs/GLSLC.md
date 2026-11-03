@@ -27,10 +27,21 @@ glslangValidator (`cmake/glsl.cmake`); they need not compile with glslc.
 
 static uint32_t words[SNX_GLSLC_MAX_WORDS];
 static GlslcResult result;
-if (snx_glslc_compile(SNX_GLSLC_FRAGMENT, source, size, words, SNX_GLSLC_MAX_WORDS, &result) != 0)
+
+/* once for each thread that compiles: glslc allocates nothing, the workspace is all the memory it uses */
+GlslcWorkspace workspace;
+size_t bytes = snx_glslc_workspace_size();
+if (snx_glslc_workspace_init(&workspace, malloc(bytes), bytes, &result) != 0)
+    fprintf(stderr, "%s\n", result.error);
+
+/* then for each shader */
+if (snx_glslc_compile(&workspace, SNX_GLSLC_FRAGMENT, source, size, words, SNX_GLSLC_MAX_WORDS, &result) != 0)
     fprintf(stderr, "%u:%u: %s\n", result.line, result.column, result.error);
 ```
 
+- The workspace is the caller's memory, 16-byte aligned and `snx_glslc_workspace_size()` bytes (3.6 MiB): one per
+  thread, reused by every compilation on it, one at a time. Each compilation carves its arrays from it anew, so
+  nothing of one reaches the next. A workspace too small or misaligned is refused with its size and the size needed.
 - `result.words` is the module's size. With a buffer too small (or `NULL`) the call returns -1 and still says how
   many words the module needs.
 - An error has its line and column, with `#line` applied. A warning (an extension glslc does not have, a name with
@@ -45,7 +56,7 @@ The library links as `snx_glslc`. `tests/glslc/glslc_cli.c` is a small command l
 
 The source stays where the caller keeps it. A token, an identifier or a member name is a view of it, a 16-bit position
 and length, so a source is 65535 bytes at most. Three passes write arrays of fixed records that refer to each other
-by 16-bit index, never by pointer, all carved from one allocation per compilation:
+by 16-bit index, never by pointer, all carved from the caller's workspace by each compilation:
 
 1. `lexer.c`: the preprocessor and the tokens. Macros expand on a stack of tokens: a use's arguments are expanded,
    put into the body, and the result scanned again with the macro turned off, each step on top of the last.
@@ -155,7 +166,9 @@ size, as GLSL ES does, where glslang takes 1. It takes vertical tab and form fee
 - `glslc_shaders`: every shader of `shaders/` valid for Vulkan 1.1 by spirv-val, taken by glslangValidator, with
   the same block layouts, capabilities and interface decorations;
 - `glslc_semantics`: `semantics/values.comp` folded by spirv-opt from both compilers' modules into the same constants;
-- `glslc_fuzz`: 3000 mutants of the shaders, compiled or refused with a message, never a crash (with
-  `SNX_TEST_SANITIZERS`, under ASan and UBSan).
+- `glslc_fuzz`: 3000 mutants of the shaders in one workspace, compiled or refused with a message, never a crash
+  (with `SNX_TEST_SANITIZERS`, under ASan and UBSan), and every 16th again over the workspace filled with another
+  pattern, with the same result;
+- `glslc_sources`: no allocation in `src/glslc`.
 
 Every shader in `tests/glslc` is synthetic.

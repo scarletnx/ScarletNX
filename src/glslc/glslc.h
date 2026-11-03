@@ -9,7 +9,7 @@
 
    The source stays where the caller keeps it: every token and name is a view of it, a 16-bit position and length.
    Tokens, syntax nodes, types and symbols are arrays of fixed-size records that refer to each other by 16-bit index,
-   carved from one allocation per compilation. Each array has the upper bound below; a shader that needs more is
+   carved from the caller's workspace by each compilation. Each array has the upper bound below; a shader that needs more is
    refused with an error that names the bound and how much it needed. */
 #ifndef SNX_GLSLC_H
 #define SNX_GLSLC_H
@@ -90,10 +90,25 @@ typedef struct {
     GlslcReflect reflect[SNX_GLSLC_MAX_REFLECT];
 } GlslcResult;
 
-/* Compiles size bytes of GLSL ES at source for stage into a SPIR-V module at words, which holds capacity words.
-   Returns 0 when the module is written, -1 when the source has an error (result->error, line, column) or the module
-   needs more than capacity words (result->words says how many). The source needs no terminating NUL, and must stay
-   while result's views are read. One allocation, freed before returning; -1 with "out of memory" when it fails */
-int snx_glslc_compile(GlslcStage stage, const char* source, size_t size, uint32_t* words, size_t capacity,
-                      GlslcResult* result);
+/* The scratch memory of compilations: every array of the bounds above, carved anew by each compilation, so nothing
+   lives in it from one to the next. A caller keeps one for each thread that compiles and gives it to every
+   compilation there; glslc allocates nothing. */
+typedef struct {
+    void* memory; /* 16-byte aligned, as malloc's memory is */
+    size_t size;
+} GlslcWorkspace;
+
+/* the bytes a workspace takes */
+size_t snx_glslc_workspace_size(void);
+
+/* size bytes at memory as workspace: 0, or -1 (and result->error) when memory is NULL, smaller than
+   snx_glslc_workspace_size() or not 16-byte aligned. The memory stays the caller's */
+int snx_glslc_workspace_init(GlslcWorkspace* workspace, void* memory, size_t size, GlslcResult* result);
+
+/* Compiles size bytes of GLSL ES at source for stage into a SPIR-V module at words, which holds capacity words, in
+   workspace, which one compilation uses at a time. Returns 0 when the module is written, -1 when the source has an
+   error (result->error, line, column) or the module needs more than capacity words (result->words says how many).
+   The source needs no terminating NUL, and must stay while result's views are read */
+int snx_glslc_compile(GlslcWorkspace* workspace, GlslcStage stage, const char* source, size_t size, uint32_t* words,
+                      size_t capacity, GlslcResult* result);
 #endif

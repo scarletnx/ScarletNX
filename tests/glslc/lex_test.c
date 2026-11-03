@@ -12,6 +12,8 @@ typedef struct {
     GlslcResult result;
     char text[4096]; /* the tokens, each followed by a space */
     char big[70000]; /* a source past a bound */
+    void* workspace; /* one for every compilation of the test, as a caller keeps one per thread */
+    size_t workspace_size;
 } LexTest;
 
 static LexTest g_lex_test;
@@ -20,7 +22,7 @@ static LexTest g_lex_test;
 static const char* lex(GlslcStage stage, const char* source, size_t size) {
     GlslcResult* r = &g_lex_test.result;
     memset(r, 0, sizeof *r);
-    Glslc* g = glslc_open(stage, source, size, r);
+    Glslc* g = glslc_open(g_lex_test.workspace, g_lex_test.workspace_size, stage, source, size, r);
     assert(g);
     size_t w = 0;
     if (glslc_run(g, GLSLC_PASS_LEX, NULL, 0)) {
@@ -35,7 +37,6 @@ static const char* lex(GlslcStage stage, const char* source, size_t size) {
             w += (size_t)k;
         }
     }
-    glslc_close(g);
     return g_lex_test.text;
 }
 
@@ -132,13 +133,13 @@ static void keywords(void) {
     };
     for (uint32_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         memset(r, 0, sizeof *r);
-        Glslc* g = glslc_open(SNX_GLSLC_FRAGMENT, cases[i].source, strlen(cases[i].source), r);
+        Glslc* g = glslc_open(g_lex_test.workspace, g_lex_test.workspace_size, SNX_GLSLC_FRAGMENT, cases[i].source,
+                              strlen(cases[i].source), r);
         assert(g && glslc_run(g, GLSLC_PASS_LEX, NULL, 0) == 0);
         if (g->toks[0].kind != cases[i].kind) {
             fprintf(stderr, "%s: kind %u, want %u\n", cases[i].source, g->toks[0].kind, cases[i].kind);
             exit(1);
         }
-        glslc_close(g);
     }
 }
 
@@ -190,16 +191,17 @@ static void errors(void) {
 static void bounds(void) {
     char* big = g_lex_test.big;
     GlslcResult* r = &g_lex_test.result;
-    /* the source itself, refused before anything is allocated */
+    /* the source itself, refused before the workspace is touched */
     memset(big, ' ', SNX_GLSLC_MAX_SOURCE + 1);
     memset(r, 0, sizeof *r);
-    assert(!glslc_open(SNX_GLSLC_FRAGMENT, big, SNX_GLSLC_MAX_SOURCE + 1, r));
+    assert(!glslc_open(g_lex_test.workspace, g_lex_test.workspace_size, SNX_GLSLC_FRAGMENT, big,
+                       SNX_GLSLC_MAX_SOURCE + 1, r));
     assert(
         !strcmp(r->error, "the source is 65536 bytes, more than the 65535 glslc takes (a token's place is 16 bits)"));
     memset(r, 0, sizeof *r);
-    Glslc* g = glslc_open(SNX_GLSLC_FRAGMENT, big, SNX_GLSLC_MAX_SOURCE, r);
+    Glslc* g =
+        glslc_open(g_lex_test.workspace, g_lex_test.workspace_size, SNX_GLSLC_FRAGMENT, big, SNX_GLSLC_MAX_SOURCE, r);
     assert(g && glslc_run(g, GLSLC_PASS_LEX, NULL, 0) == 0 && g->ntoks == 1);
-    glslc_close(g);
     /* tokens: 32768 is the bound, the end of the source included */
     size_t n = (size_t)snprintf(big, sizeof g_lex_test.big, "#version 300 es\n");
     for (uint32_t i = 0; i < 32767; i++) big[n++] = ';'; /* one token per byte */
@@ -239,12 +241,16 @@ static void bounds(void) {
 }
 
 int main(void) {
+    g_lex_test.workspace_size = snx_glslc_workspace_size();
+    g_lex_test.workspace = malloc(g_lex_test.workspace_size);
+    assert(g_lex_test.workspace);
     tokens();
     macros();
     conditionals();
     keywords();
     errors();
     bounds();
+    free(g_lex_test.workspace);
     printf("glslc_lex: tokens, macros, conditionals, keywords, errors and bounds checked\n");
     return 0;
 }

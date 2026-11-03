@@ -32,6 +32,7 @@ if(Python3_Interpreter_FOUND) # tests/CMakeLists.txt looked it up
         message(STATUS "glslc's tests: no glslangValidator, so they do not compare glslc with it")
     endif()
     set(snx_glslc_test "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/glslc_test.py")
+    add_test(NAME glslc_sources COMMAND ${snx_glslc_test} sources)
     add_test(NAME glslc_errors COMMAND ${snx_glslc_test} errors --cli $<TARGET_FILE:snx-glslc-cli> ${snx_glslc_compare})
     if(snx_glslc_glslang)
         add_test(NAME glslc_keywords COMMAND ${snx_glslc_test} keywords --cli $<TARGET_FILE:snx-glslc-cli>
@@ -53,3 +54,7 @@ if(Python3_Interpreter_FOUND) # tests/CMakeLists.txt looked it up
         message(STATUS "Skipping glslc_semantics: glslangValidator, spirv-opt and spirv-dis are required")
     endif()
 endif()
+# a compilation that runs on forever (a workspace left with a previous compilation's state can loop a chain) fails
+# in a minute instead of at ctest's default
+get_property(snx_glslc_tests DIRECTORY PROPERTY TESTS)
+set_tests_properties(${snx_glslc_tests} PROPERTIES TIMEOUT 60)

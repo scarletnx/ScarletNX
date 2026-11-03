@@ -668,13 +668,12 @@ typedef struct {
 } Glslc;
 #define GLSLC_SYM_BUCKETS 1024u
 
-/* glslc.c: a compilation's block, and its passes up to last (the tests stop after a pass to read its arrays).
-   glslc_open refuses a stage, size or source glslc cannot take (result->error),
-   and NULL is also its answer when the block cannot be allocated */
+/* glslc.c: a compilation in a workspace's memory, and its passes up to last (the tests stop after a pass to read its
+   arrays). glslc_open refuses a workspace, stage, size or source glslc cannot take (NULL, and result->error) */
 enum { GLSLC_PASS_LEX = 0, GLSLC_PASS_PARSE, GLSLC_PASS_EMIT };
-Glslc* glslc_open(GlslcStage stage, const char* source, size_t size, GlslcResult* result);
+Glslc* glslc_open(void* memory, size_t memory_size, GlslcStage stage, const char* source, size_t size,
+                  GlslcResult* result);
 int glslc_run(Glslc* g, int last, uint32_t* words, size_t capacity);
-void glslc_close(Glslc* g);
 void glslc_fail(Glslc* g, uint32_t site, const char* fmt, ...);
 void glslc_warn(Glslc* g, uint32_t site, const char* fmt, ...);
 void glslc_locate(const Glslc* g, uint32_t site, uint32_t* line, uint32_t* column);

@@ -12,6 +12,8 @@
 typedef struct {
     GlslcResult result;
     char big[70000];
+    void* workspace; /* one for every compilation of the test, as a caller keeps one per thread */
+    size_t workspace_size;
 } ParseTest;
 
 static ParseTest g_parse_test;
@@ -21,10 +23,9 @@ static void expect_error(GlslcStage stage, const char* source, size_t size, uint
                          const char* want) {
     GlslcResult* r = &g_parse_test.result;
     memset(r, 0, sizeof *r);
-    Glslc* g = glslc_open(stage, source, size, r);
+    Glslc* g = glslc_open(g_parse_test.workspace, g_parse_test.workspace_size, stage, source, size, r);
     assert(g);
     int failed = glslc_run(g, GLSLC_PASS_PARSE, NULL, 0) != 0;
-    glslc_close(g);
     if (!failed || !strstr(r->error, want) || r->line != line || r->column != column) {
         fprintf(stderr, "source: %.160s...\nwant: %u:%u: ...%s...\ngot:  %s%u:%u: %s\n", source, line, column, want,
                 failed ? "" : "(no error) ", r->line, r->column, r->error);
@@ -39,14 +40,14 @@ static uint32_t literal_bits(const char* text) {
                      "#version 300 es\nprecision highp float;\nconst float x = %s;\nvoid main() {}\n", text);
     GlslcResult* r = &g_parse_test.result;
     memset(r, 0, sizeof *r);
-    Glslc* g = glslc_open(SNX_GLSLC_FRAGMENT, source, (size_t)n, r);
+    Glslc* g =
+        glslc_open(g_parse_test.workspace, g_parse_test.workspace_size, SNX_GLSLC_FRAGMENT, source, (size_t)n, r);
     assert(g && glslc_run(g, GLSLC_PASS_PARSE, NULL, 0) == 0);
     const GlslcNode* decl = &g->nodes[g->first_decl];
     assert(decl->kind == GLSLC_N_GLOBAL && decl->b);
     const GlslcNode* init = &g->nodes[decl->b];
     assert(init->kind == GLSLC_N_CONST);
     uint32_t bits = init->a | ((uint32_t)init->b << 16);
-    glslc_close(g);
     return bits;
 }
 
@@ -84,7 +85,8 @@ static void folding(void) {
                                  "float a[N + S.y + int(U % 7u) + int(-2.5) + int(true)];\nvoid main() {}\n";
     GlslcResult* r = &g_parse_test.result;
     memset(r, 0, sizeof *r);
-    Glslc* g = glslc_open(SNX_GLSLC_FRAGMENT, source, sizeof source - 1, r);
+    Glslc* g = glslc_open(g_parse_test.workspace, g_parse_test.workspace_size, SNX_GLSLC_FRAGMENT, source,
+                          sizeof source - 1, r);
     assert(g);
     if (glslc_run(g, GLSLC_PASS_PARSE, NULL, 0)) {
         fprintf(stderr, "folding: %u:%u: %s\n", r->line, r->column, r->error);
@@ -100,7 +102,6 @@ static void folding(void) {
         fprintf(stderr, "folding: a has %u elements, want 18\n", g->types[g->syms[a].type].len);
         exit(1);
     }
-    glslc_close(g);
 }
 
 static size_t start(char* big, const char* head) { return (size_t)snprintf(big, sizeof g_parse_test.big, "%s", head); }
@@ -119,10 +120,9 @@ static void bounds(void) {
     {
         GlslcResult* r = &g_parse_test.result;
         memset(r, 0, sizeof *r);
-        Glslc* g = glslc_open(f, big, n, r);
+        Glslc* g = glslc_open(g_parse_test.workspace, g_parse_test.workspace_size, f, big, n, r);
         assert(g && glslc_run(g, GLSLC_PASS_PARSE, NULL, 0) == 0);
         assert(g->ntoks > 32600 && g->nnodes <= g->ntoks);
-        glslc_close(g);
     }
     /* nesting: parentheses */
     n = start(big, "#version 300 es\nvoid main() { int b = ");
@@ -166,9 +166,13 @@ static void bounds(void) {
 }
 
 int main(void) {
+    g_parse_test.workspace_size = snx_glslc_workspace_size();
+    g_parse_test.workspace = malloc(g_parse_test.workspace_size);
+    assert(g_parse_test.workspace);
     literals();
     folding();
     bounds();
+    free(g_parse_test.workspace);
     printf("glslc_parse: literals, folding and bounds checked\n");
     return 0;
 }
