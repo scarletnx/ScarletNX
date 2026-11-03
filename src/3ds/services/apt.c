@@ -2,11 +2,14 @@
    Copyright 2026 the ScarletNX contributors
    APT GetLockHandle facts: Azahar service/apt/{apt,applet_manager}.cpp,
    GPL-2.0-or-later, revision recorded in docs/3DS.md. The parameter queue and the library applet's start, as an
-   application drives them for the software keyboard: the same files at ac4a97e. */
+   application drives them for the software keyboard and the Mii selector, and the capture block each answers the
+   application's Request with (each HLE applet's ReceiveParameterImpl): the same files at ac4a97e. */
 #include "3ds/runtime/internal.h"
 #include "common/utilities/endian.h"
+#include "3ds/memory/ctr_memory.h"
 #include "3ds/services/apt.h"
 #include "3ds/services/font.h"
+#include "3ds/services/mii_selector.h"
 #include "3ds/services/swkbd.h"
 #include "services/apt.swipc.inc"
 #include <stdio.h>
@@ -17,6 +20,8 @@
 #define APT_NO_DATA            0xc8a0cfefu /* NoData, Applet, InvalidState, Status */
 #define APT_ANY_LIBRARY        0x400u      /* AnyLibraryApplet, and AnySysLibraryApplet (0x200) */
 #define APT_PARAMETER_CAPACITY 0x1000u     /* the most a parameter's buffer holds, as Azahar's receive takes it */
+#define APT_CAPTURE_LIMIT      0x200000u   /* the most a Request's capture block may take: both screens, both eyes */
+#define APT_CAPTURE_INFO_SIZE  0x20u       /* CaptureBufferInfo, a Request's buffer */
 static uint32_t snx_ctr_apt_wire_GetLockHandle(SnxCtrIpc* c, uint32_t attributes, uint32_t* corrected, uint32_t* state,
                                                uint32_t* lock) {
     SnxCtrProcess* p = c->process;
@@ -111,14 +116,15 @@ static uint32_t snx_ctr_apt_wire_CancelParameter(SnxCtrIpc* c, uint32_t check_se
     if (*cancelled) parameter_drop(p);
     return 0;
 }
-/* PrepareToStartLibraryApplet: the software keyboard, which the runtime plays, registered for the application. Any
-   other library applet is one the runtime does not have: the command answers as an unknown one does */
+/* PrepareToStartLibraryApplet: the software keyboard or the Mii selector, which the runtime plays, registered for the
+   application. Any other library applet is one the runtime does not have: the command answers as an unknown one
+   does */
 static uint32_t snx_ctr_apt_wire_PrepareToStartLibraryApplet(SnxCtrIpc* c, uint32_t app_id) {
     SnxCtrProcess* p = c->process;
-    if (!snx_ctr_swkbd_is(app_id)) {
+    if (!snx_ctr_swkbd_is(app_id) && !snx_ctr_mii_selector_is(app_id)) {
         fprintf(stderr,
                 "3ds apt: the game prepares library applet 0x%03x, which the runtime does not have (only the "
-                "software keyboard, 0x401)\n",
+                "software keyboard, 0x401, and the Mii selector, 0x402)\n",
                 (unsigned)app_id);
         c->state = SNX_CTR_IPC_UNKNOWN;
         return 0;
@@ -225,8 +231,31 @@ static uint32_t copied_object(SnxCtrIpc* c, unsigned i) {
     uint32_t id = snx_ctr_handle_object(c->process, c->in[i + 1]);
     return id ? id : CTR_OBJECTS;
 }
+/* the capture block the application copies its screens into for the library applet to show: one, made at the first
+   Request and again when a later one asks for more. 0 when there is no memory left for it */
+static uint32_t capture_block(SnxCtrProcess* p, uint32_t size) {
+    uint32_t pages = (size + 4095) & ~4095u, handle, physical;
+    if (p->apt_capture && p->objects[p->apt_capture].data.shared.size >= pages) return p->apt_capture;
+    if (snx_ctr_object_create(p, CTR_OBJ_SHARED, &handle)) return 0;
+    if (!(physical = snx_ctr_shared_pages(p, pages))) {
+        (void)snx_ctr_handle_close(p, handle);
+        return 0;
+    }
+    uint32_t id = snx_ctr_handle_object(p, handle);
+    CtrObject* o = &p->objects[id];
+    o->data.shared.physical = physical;
+    o->data.shared.size = pages;
+    o->data.shared.permissions = SNX_CTR_READ | SNX_CTR_WRITE;
+    ++o->refs; /* APT keeps it for the applets */
+    (void)snx_ctr_handle_close(p, handle);
+    if (p->apt_capture) snx_ctr_object_release(p, p->apt_capture);
+    p->apt_capture = id;
+    return id;
+}
 /* SendParameter: source, destination, signal, size, a copied handle and the buffer. To the library applet APT
-   registered (the software keyboard): it takes it. Any other destination is one the runtime does not deliver to */
+   registered: a Request for the capture block is answered with it (the Response), as each applet of the runtime
+   answers it; any other parameter is the applet's to take. Any other destination is one the runtime does not
+   deliver to */
 static void send_parameter(SnxCtrIpc* c) {
     if (!snx_ctr_ipc_expect(c, 4, 4)) return;
     SnxCtrProcess* p = c->process;
@@ -247,10 +276,31 @@ static void send_parameter(SnxCtrIpc* c) {
     }
     c->out[0] = (c->in[0] & 0xffff0000u) | 0x40;
     c->out[1] = p->apt_next.pending ? APT_PARAMETER_PRESENT : 0;
-    if (!c->out[1]) snx_ctr_swkbd_parameter(c, signal, buffer, size, object);
+    if (c->out[1]) return;
+    if (signal == SNX_CTR_APT_REQUEST && size == APT_CAPTURE_INFO_SIZE && snx_ld_le32(buffer) &&
+        snx_ld_le32(buffer) <= APT_CAPTURE_LIMIT) {
+        uint32_t block = capture_block(p, snx_ld_le32(buffer));
+        if (!block) {
+            fprintf(stderr, "3ds apt: no memory left for library applet 0x%03x's %u-byte capture block\n",
+                    (unsigned)p->apt_library, (unsigned)snx_ld_le32(buffer));
+            c->state = SNX_CTR_IPC_UNSUPPORTED;
+            return;
+        }
+        snx_ctr_apt_send(p, p->apt_library, SNX_CTR_APT_RESPONSE, block, NULL, 0);
+    } else if (snx_ctr_swkbd_is(p->apt_library))
+        snx_ctr_swkbd_parameter(c, signal, buffer, size, object);
+    else {
+        /* the Mii selector answers as soon as it starts: a Request is all it takes (Azahar's ReceiveParameterImpl) */
+        fprintf(stderr,
+                "3ds apt: the game sends the Mii selector signal %u with %u bytes, which it does not take (a "
+                "Request with a 32-byte capture info)\n",
+                (unsigned)signal, (unsigned)size);
+        c->state = SNX_CTR_IPC_UNSUPPORTED;
+    }
 }
-/* StartLibraryApplet: the applet APT registered, its parameter (the software keyboard's configuration) and a copied
-   handle (the block its text goes in) */
+/* StartLibraryApplet: the applet APT registered, its parameter and a copied handle: the software keyboard's
+   configuration and the block its text goes in, or the Mii selector's configuration (it uses no object, as Azahar's
+   takes none) */
 static void start_library_applet(SnxCtrIpc* c) {
     if (!snx_ctr_ipc_expect(c, 2, 4)) return;
     SnxCtrProcess* p = c->process;
@@ -271,7 +321,11 @@ static void start_library_applet(SnxCtrIpc* c) {
     }
     c->out[0] = (c->in[0] & 0xffff0000u) | 0x40;
     c->out[1] = p->apt_next.pending ? APT_PARAMETER_PRESENT : 0;
-    if (!c->out[1]) snx_ctr_swkbd_start(c, buffer, size, object);
+    if (c->out[1]) return;
+    if (snx_ctr_swkbd_is(app_id))
+        snx_ctr_swkbd_start(c, buffer, size, object);
+    else
+        snx_ctr_mii_selector_start(c, buffer, size);
 }
 /* AppletUtility: a utility command, its input in static buffer 1, its output (output_size bytes) in the caller's
    receive buffer 0. As Azahar answers them: success, and an output of zeros, but for TryLockTransition (6), which

@@ -300,10 +300,11 @@ int main(void) {
     woken(p, apt);
     answered(p, 0, "Player");
 
-    /* a library applet the runtime does not have answers as an unknown command does: it stops this run */
-    uint32_t other[] = {0x180040, 0x402};
+    /* a library applet the runtime does not have (the error display) answers as an unknown command does: it stops
+       this run */
+    uint32_t other[] = {0x180040, 0x406};
     ctr_call(p, apt, other, 2, SNX_CTR_SVC_UNSUPPORTED, 0);
-    assert(!registered(p, apt, 0x402) && !registered(p, apt, SWKBD_KEYBOARD));
+    assert(!registered(p, apt, 0x406) && !registered(p, apt, SWKBD_KEYBOARD));
     assert(!snx_ctr_handle_close(p, block));
     snx_ctr_process_free(p);
     puts("3DS software keyboard: start, capture block, answers, checks, the game's own check and the wakeup passed");

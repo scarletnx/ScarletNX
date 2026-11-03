@@ -512,9 +512,10 @@ extracted tree. Once the module is ready the driver copies itself into the folde
 game's runtime, unless the copy there is the same program. The GUI uses this same
 driver path, not a separate engine.
 
-The software keyboard (`src/3ds/services/swkbd.c`) is the one library applet the
-runtime plays, in the applet's place as Azahar's HLE one does. A game that asks for a
-text through it (a name, a password) is answered at once, with no box over the game to
+The software keyboard (`src/3ds/services/swkbd.c`) and the Mii selector
+(`src/3ds/services/mii_selector.c`) are the library applets the runtime plays, in the
+applets' place as Azahar's HLE ones do. A game that asks for a
+text through the keyboard (a name, a password) is answered at once, with no box over the game to
 ask the player in: `swkbd_text` when it is set, else the game's own initial text, else the
 console's user name (the user's nickname, `Player` without one), cut to the game's most
 characters and checked against its input rule and filters. A text that breaks one is
@@ -524,9 +525,16 @@ through. The log says what was answered and why (`3ds swkbd: ...`), with the use
 name's length in place of the name. APT answers each step a game takes:
 PrepareToStartLibraryApplet, IsRegistered, the Request for the capture block and its
 Response, StartLibraryApplet, the NotifyToWait before the wakeup, and the WakeupByExit
-the game wakes with, which carries the answer. Any other library applet (the Mii
-selector, the error display) is one the runtime does not have: preparing it answers as
-an unknown command does.
+the game wakes with, which carries the answer. Any other library applet (the error
+display, say) is one the runtime does not have: preparing it answers as an unknown
+command does.
+
+A game that has the player pick a Mii through the Mii selector (its StreetPass Mii,
+say) gets ScarletNX's own Mii at once, as a Mii of the console's database, as Azahar's
+default selector answers with its standard Mii: Baguette, a girl with red curled twin
+tails, made of her own fields in the 3DS's Mii format, no console's Mii; her author is
+the console's user name. The game's configuration (its title, Cancel, the Guest Miis)
+is in the log (`3ds mii selector: ...`); the answer is the same whatever it asks.
 
 A launch runs until the game exits or its window is closed, as a Switch game does.
 `--max-blocks N` stops it after N native blocks instead. A larger-image block may
@@ -710,12 +718,14 @@ and Unicorn 2.1.4's ARM11 MPCore model are test references, not runtime engines.
 Stage 2b2 process mappings/BSS policy refer to Azahar `src/core/loader/ncch.cpp`
 and kernel process layout at the same revision; the new image/module/compiler/
 dispatch implementation is project C code, not an adapted Azahar CPU engine.
-The software keyboard and APT's parameter and library applet commands port
-`hle/applets/swkbd.{cpp,h}`, `frontend/applets/swkbd.cpp` and
+The software keyboard, the Mii selector and APT's parameter and library applet commands
+port `hle/applets/{swkbd,mii_selector}.{cpp,h}`, `hle/mii.{cpp,h}`,
+`frontend/applets/{swkbd,mii_selector}.cpp` and
 `hle/service/apt/{apt,applet_manager}.cpp` at Azahar `ac4a97e27723a501fbd79db75e94a5a8b3cbb8b1`
-(GPL-2.0-or-later): the configuration's layout, the result codes, the Request,
-Message and Finalize steps, the default keyboard's answer with the user name and its
-checks; the C implementation is new.
+(GPL-2.0-or-later): the configurations' and the Mii selector's result's layouts, the
+result codes, the Request, Message and Finalize steps, the default keyboard's answer
+with the user name and its checks, the Mii's checksum; the C implementation is new. The
+Mii's fields are laid out as 3dbrew's Mii page gives them.
 Stage 2b4 references GPL-2.0-or-later kernel `svc.cpp`, `errors.h`,
 `handle_table.cpp`, `address_arbiter.cpp`, `config_mem.*`, `memory.cpp` and
 `process.cpp` at the same revision for SVC register/result semantics, object
