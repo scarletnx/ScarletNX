@@ -46,7 +46,7 @@ static struct {
 
 int nce_on(void) { return g_nce.on; }
 
-const SnxModule* nce_module(const SnxModule* m) {
+const SnxModule* nce_module(const SnxModule* m, u64* entry) {
     u64 by = mem_moved();
     size_t mods = m->nmods * sizeof *m->mods, entries = m->nentries * sizeof *m->entry_addr,
            fns = m->nfns * sizeof *m->fn_lo;
@@ -54,6 +54,7 @@ const SnxModule* nce_module(const SnxModule* m) {
     SnxModule* moved;
     SnxModInfo* mi;
     u64 *entry_addr, *fn_lo;
+    *entry = m->nmods ? m->mods[0].base + m->mods[0].text_off + by : 0;
     if (!by) return m;
     /* one block: the descriptor, its modules, its entries' and its functions' addresses, each a multiple of 8 */
     block = (u8*)snx_alloc(sizeof *moved + mods + entries + fns);
