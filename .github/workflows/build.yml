@@ -7,7 +7,7 @@ on:
     branches: [main]
     tags: ['v*'] # a version's release (publish.yml)
   pull_request:
-    # a draft builds less (the linux, appimage and apple jobs say what), so leaving draft starts the whole build
+    # a draft builds less (each job that reads pull_request.draft says what), so leaving draft starts the whole build
     types: [opened, synchronize, reopened, ready_for_review]
     # skipped when the change is only in files that no build or test reads. tracked_material.py reads them all and runs
     # on its own (pr-checks.yml). docs/ARCHITECTURE.md, DEPRECATIONS.md and GUI.md are test inputs: they build
@@ -467,9 +467,11 @@ jobs:
   # LoongArch). Big-endian ppc64's has every runtime (the 3DS one builds there but isn't ported to a big-endian host):
   # Arch POWER's glibc there is ELFv2, not Debian ports' ELFv1, which the linux-ppc64 job tests. No POWER, RISC-V or
   # LoongArch machine has run the AppImages yet, so like the macOS and iOS jobs they may fail without failing the run
-  # (scripts/publish-builds.py, OPTIONAL)
+  # (scripts/publish-builds.py, OPTIONAL). A pull request builds them once it is ready for review, as they are 4 of
+  # every 10 runner minutes of a run; appimage-cross-check, which needs them, goes with them
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-26.04
     # LLVM's cross build (scripts/linux-llvm.sh) adds about half an hour where its cache misses
     timeout-minutes: 180
