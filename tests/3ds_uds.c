@@ -16,12 +16,20 @@
 #include <stdlib.h>
 #include <string.h>
 #ifndef _WIN32
+#include <signal.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
 #define BUFFER  0x300000u
 #define NET     0x300900u
 #define DATA    0x300b00u
+/* a request's answer: no transport error, and a result code of 0 */
+static void replied(SnxCtrProcess* p, const uint32_t* words, uint32_t result) {
+    assert(!result);
+    if (ctr_word(p, CTR_COMMAND + 4)) fprintf(stderr, "command %08x -> %08x\n", words[0], ctr_word(p, CTR_COMMAND + 4));
+    assert(!ctr_word(p, CTR_COMMAND + 4));
+}
 static void request(SnxCtrProcess* p, uint32_t handle, const uint32_t* words, unsigned count) {
     ctr_request(p, words, count);
     uint32_t result = 0;
@@ -53,9 +61,7 @@ static void request(SnxCtrProcess* p, uint32_t handle, const uint32_t* words, un
         assert(ctr_word(p, CTR_COMMAND) == 0x1e0040);
     } else
         assert(state == SNX_CTR_SVC_RETURN);
-    assert(!result);
-    if (ctr_word(p, CTR_COMMAND + 4)) fprintf(stderr, "command %08x -> %08x\n", words[0], ctr_word(p, CTR_COMMAND + 4));
-    assert(!ctr_word(p, CTR_COMMAND + 4));
+    replied(p, words, result);
 }
 /* NULL: not set */
 static void env(const char* key, const char* value) {
@@ -74,15 +80,32 @@ static FILE* capture_begin(int* saved) {
     assert(f && (*saved = dup(2)) >= 0 && dup2(fileno(f), 2) == 2);
     return f;
 }
-/* what reached stderr since capture_begin, cut to size - 1 bytes; stderr back where it was */
-static void capture_end(FILE* f, int saved, char* said, size_t size) {
+/* what reached stderr since capture_begin, cut to size - 1 bytes, and their count; stderr back where it was. fd 2 must
+   be the capture's file to its end: what closed or replaced it inside took the lines written after */
+static size_t capture_end(FILE* f, int saved, char* said, size_t size) {
+    struct stat now, mine;
     fflush(stderr);
+    int open2 = !fstat(2, &now),
+        same = open2 && !fstat(fileno(f), &mine) && now.st_dev == mine.st_dev && now.st_ino == mine.st_ino;
     assert(dup2(saved, 2) == 2);
     close(saved);
+    if (!open2)
+        fputs("3ds_uds.c: fd 2 is closed at the capture's end: something inside it closed the capture's file\n",
+              stderr);
+    else if (!same)
+        fprintf(stderr,
+                "3ds_uds.c: fd 2 is %s of mode %o (inode %llu) at the capture's end, not the capture's file (inode "
+                "%llu): something inside it closed or replaced fd 2\n",
+                S_ISFIFO(now.st_mode)  ? "a pipe"
+                : S_ISREG(now.st_mode) ? "another file"
+                                       : "neither file nor pipe",
+                (unsigned)now.st_mode, (unsigned long long)now.st_ino, (unsigned long long)mine.st_ino);
+    assert(same);
     rewind(f);
     size_t n = fread(said, 1, size - 1, f);
     fclose(f);
     said[n] = 0;
+    return n;
 }
 /* a capture beside another process's, as the two modes make them: each reads its own lines, all of them */
 static void captures_apart(void) {
@@ -109,6 +132,29 @@ static void captures_apart(void) {
     assert(!strcmp(said, "first\nfirst again\n") && WIFEXITED(status) && !WEXITSTATUS(status));
     puts("UDS: a capture of stderr beside another process's keeps its own lines");
 }
+static void exit_on_abort(int sig) { _exit(sig); } /* no core, no crash report */
+/* a capture whose fd 2 something inside replaced, here with a pipe: its end says so, and stops */
+static void capture_lost_fd(void) {
+    char said[512];
+    int saved;
+    FILE* f = capture_begin(&saved);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (!child) {
+        int its, ends[2];
+        signal(SIGABRT, exit_on_abort);
+        FILE* g = capture_begin(&its);
+        if (pipe(ends) || dup2(ends[0], 2) != 2) _exit(1);
+        capture_end(g, its, said, sizeof said);
+        _exit(0);
+    }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    capture_end(f, saved, said, sizeof said);
+    if (!strstr(said, "3ds_uds.c: fd 2 is a pipe of mode ")) fputs(said, stderr); /* what it said instead */
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == SIGABRT && strstr(said, "3ds_uds.c: fd 2 is a pipe of mode "));
+    puts("UDS: a capture whose fd 2 was replaced says so");
+}
 #endif
 /* the init request, which joins the relay: the 3DS runtime says so on stderr, its log, which players attach to public
    reports, so the nickname is never in it, nor in what the members already in say of the join. Read where fd 2 can be
@@ -117,10 +163,16 @@ static void init_unnamed(SnxCtrProcess* p, uint32_t handle, const uint32_t* init
 #ifndef _WIN32
     char said[4096];
     int saved;
+    uint32_t result = 0;
     FILE* f = capture_begin(&saved);
-    request(p, handle, init, 15);
-    capture_end(f, saved, said, sizeof said);
+    ctr_request(p, init, 15);
+    SnxCtrSvcResult state = snx_ctr_ipc_send(p, handle, &result); /* checked once stderr can say why */
+    size_t n = capture_end(f, saved, said, sizeof said);
     fputs(said, stderr); /* where it would have gone */
+    if (strlen(said) < n)
+        fprintf(stderr, "3ds_uds.c: a NUL at byte %zu of the capture's %zu hides the rest\n", strlen(said), n);
+    assert(state == SNX_CTR_SVC_RETURN);
+    replied(p, init, result);
     assert(strstr(said, "3ds uds: joined the relay as ") && !strstr(said, nickname));
 #else
     (void)nickname;
@@ -395,7 +447,8 @@ int main(int argc, char** argv) {
         return 2;
     }
 #ifndef _WIN32
-    captures_apart(); /* before any thread: it forks */
+    captures_apart(); /* before any thread: these fork */
+    capture_lost_fd();
 #endif
     snprintf(g_settings.local_wireless, sizeof g_settings.local_wireless, "room");
     int delayed = argc == 2 && !strcmp(argv[1], "--delay");
