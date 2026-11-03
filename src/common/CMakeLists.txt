@@ -120,4 +120,9 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
                    HEADER common/gpu/vk/fx_spv.h DEFINES A_HALF=1)
     snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/fsr_rcas.frag NAME fx_fsr_rcas_fp16_spv
                    HEADER common/gpu/vk/fx_spv.h DEFINES A_HALF=1)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/nis.comp NAME fx_nis_spv HEADER common/gpu/vk/fx_spv.h)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/nis.comp NAME fx_nis8_spv HEADER common/gpu/vk/fx_spv.h
+                   DEFINES NIS_OUTPUT_RGBA8)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/sgsr1.vert NAME fx_sgsr_vert_spv HEADER common/gpu/vk/fx_spv.h)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/sgsr1.frag NAME fx_sgsr_frag_spv HEADER common/gpu/vk/fx_spv.h)
 endif()
