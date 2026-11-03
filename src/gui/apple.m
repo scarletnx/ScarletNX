@@ -321,8 +321,14 @@ void gui_apple_log_start(void) {
         fprintf(stderr, "app: %s\n", NSBundle.mainBundle.bundleIdentifier.UTF8String);
         /* a host such as LiveContainer runs the app in its own process, with the app's bundle in another place: the
            process's program then is not the bundle's */
-        fprintf(stderr, "  bundle %s\n  program %s\n", NSBundle.mainBundle.bundlePath.fileSystemRepresentation,
-                NSProcessInfo.processInfo.arguments.firstObject.fileSystemRepresentation ?: "(none)");
+        NSString* bundle = NSBundle.mainBundle.bundlePath.stringByResolvingSymlinksInPath;
+        NSString* program = NSProcessInfo.processInfo.arguments.firstObject.stringByResolvingSymlinksInPath;
+        fprintf(stderr, "  bundle %s\n  program %s\n", bundle.fileSystemRepresentation,
+                program.length ? program.fileSystemRepresentation : "(none)");
+        if (bundle.length && program.length && ![program hasPrefix:[bundle stringByAppendingString:@"/"]])
+            fprintf(stderr, "host: the app runs inside another app (LiveContainer or similar), as its program is not in "
+                            "its bundle. The document picker can need a fix of that app (LiveContainer: Fix File "
+                            "Picker)\n");
         fprintf(stderr, "documents: %s\n", documents.fileSystemRepresentation);
         if (logs) metrics_start(logs);
         NSDictionary* room = [documents resourceValuesForKeys:@[

@@ -62,7 +62,9 @@ menu's driver:
   It holds `dumps/` (a game's `.nsp` or `.xci`), `keys/` (`prod.keys`), `recompiled/` (what the app makes, each game as
   `recompiled/<id>/<id>_code.snxobj` with `_data/`) and `logs/`. The menu's settings, state and caches are in the app's
   `Library/scarletnx/`, which the Files app does not show ([Running a game on iOS](#running-a-game-on-ios)).
-- **The menu** lists those games. *Load* and the folder settings open the system's document picker. Preparing a dump
+- **The menu** lists those games. *Load* and the folder settings open the system's document picker. Under
+  LiveContainer, enable its Fix File Picker for ScarletNX: without it, the picker shows the files, but Open gives none
+  back. The banner says `host:` when another app runs ScarletNX. Preparing a dump
   runs the driver on a thread of the app, since an app may not start a process. A dump picked outside `dumps/` is
   copied into it first. The thread has a 64 MiB stack, which LLVM's passes need.
 - **A game** runs in the app's process once the menu closes (`src/nx/runtime/entry.c`): the runtime starts once per
@@ -82,8 +84,8 @@ menu's driver:
   the command, the status, the time and the disk space free, and on iOS the app's memory. `state:` is each change of
   the thermal state and of the low power mode. `folders:` lists `dumps/`, `keys/` and `recompiled/` at the start, by
   name and size, and the folders the player added. `dialog:` is the answer of each picker, or the error of SDL. The
-  banner always gives the app's bundle and the program of its process, which differ when a host such as LiveContainer
-  runs the app.
+  banner always gives the app's bundle and the program of its process. When the program is not in the bundle, a host
+  such as LiveContainer runs the app, and the banner says so in a `host:` line.
 - **MetricKit.** The app subscribes to MetricKit at its start. Each payload that the system gives (a diagnostic
   payload with crashes, hangs, CPU and disk write exceptions, or a metric payload with the counts of exits for memory)
   goes as JSON to `logs/metrickit-<date>_<time>.json`, named by the end of the time that it covers. The console log
