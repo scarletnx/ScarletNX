@@ -26,6 +26,8 @@ void bridge_add_code(uint64_t address, size_t size);
    the call returns to x30. data is the handler's own. The same name gives the same address */
 typedef void (*BridgeHandler)(CPU* c, void* data);
 uint64_t bridge_export(const char* name, BridgeHandler handler, void* data);
+/* the export at address can wait (a lock, a sleep, a read): a guest signal runs its handler while it waits */
+void bridge_export_blocks(uint64_t address);
 /* the name of an export's address, NULL for another address */
 const char* bridge_export_name(uint64_t address);
 
@@ -33,6 +35,13 @@ const char* bridge_export_name(uint64_t address);
 CPU* bridge_cpu(void);
 /* the guest function at fn called with up to 8 integer arguments on this thread: its x0 */
 uint64_t bridge_call(uint64_t fn, const uint64_t* args, unsigned count);
+
+/* for the guest's signals (hle_signal.c): the address a handler returns to, which ends its run; the run of a handler
+   from c's state, true at that return and false when it left through the end of a host call (c is at its end); and
+   the code at address compiled ahead of its first call */
+uint64_t bridge_sigreturn(void);
+bool bridge_run_handler(CPU* c);
+void bridge_prepare(uint64_t address);
 
 /* the calling thread's guest stack: its lowest address and its size */
 void bridge_stack(uint64_t* base, size_t* size);

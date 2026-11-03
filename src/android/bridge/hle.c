@@ -23,7 +23,8 @@ bool hle_is_system_library(const char* name) {
     return false;
 }
 
-static const HleSymbol* const tables[] = {hle_libc, hle_posix, hle_thread, hle_dl, hle_sles, hle_media, hle_android, hle_egl};
+static const HleSymbol* const tables[] = {hle_libc, hle_posix, hle_thread, hle_dl, hle_sles, hle_media, hle_android, hle_egl,
+                                              hle_signal};
 
 static struct {
     const HleSymbol** sorted;
@@ -45,6 +46,23 @@ static void index_tables(void) {
     qsort(h.sorted, h.count, sizeof *h.sorted, by_name);
 }
 
+/* the functions that can wait as long as another thread or the system makes them: a guest signal runs its handler
+   during the wait, as Linux interrupts it (a garbage collector stops each thread with one) */
+static const char* const blocking[] = {
+    "pthread_cond_wait", "pthread_cond_timedwait", "pthread_cond_clockwait", "pthread_cond_timedwait_monotonic_np",
+    "pthread_mutex_lock", "pthread_mutex_timedlock", "pthread_mutex_lock_timeout_np", "pthread_rwlock_rdlock",
+    "pthread_rwlock_wrlock", "pthread_rwlock_timedrdlock", "pthread_rwlock_timedwrlock", "pthread_join",
+    "pthread_barrier_wait", "sem_wait", "sem_timedwait", "sem_clockwait", "nanosleep", "clock_nanosleep", "usleep",
+    "sleep", "poll", "ppoll", "select", "pselect", "epoll_wait", "epoll_pwait", "read", "readv", "pread", "pread64",
+    "write", "writev", "recv", "recvfrom", "recvmsg", "send", "sendto", "sendmsg", "accept", "accept4", "connect",
+    "waitpid", "wait", "wait4", "flock", "syscall", "ALooper_pollOnce", "ALooper_pollAll",
+};
+static bool blocks(const char* name) {
+    for (size_t i = 0; i < sizeof blocking / sizeof *blocking; ++i)
+        if (!strcmp(blocking[i], name)) return true;
+    return false;
+}
+
 uint64_t hle_symbol(const char* name) {
     uint64_t code = hle_code_symbol(name);
     if (code) return code;
@@ -55,7 +73,9 @@ uint64_t hle_symbol(const char* name) {
     if (!found) return hle_vulkan_symbol(name);
     const HleSymbol* s = *found;
     if (!s->handler) return (uint64_t)(uintptr_t)s->data;
-    return bridge_export(s->name, s->handler, s->data);
+    uint64_t address = bridge_export(s->name, s->handler, s->data);
+    if (blocks(s->name)) bridge_export_blocks(address);
+    return address;
 }
 
 /* an import without an HLE: said once, then 0 (or NULL) for every call, as a stub of the NDK that is not there */
