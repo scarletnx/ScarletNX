@@ -138,7 +138,7 @@ with tempfile.TemporaryDirectory() as temporary:
     text = comment(built | {'edenprobe': {'result': 'skipped', 'outputs': {}}})
     check('a skipped edenprobe', text.endswith(f'\n\n[edenprobe]({RUN}): skipped\n') and 'Not built' not in text)
 
-    # the run's jobs, as pr-checks.yml finds them once the Build ends
+    # the run's jobs, as pr-builds.yml finds them once the Build ends
     notice = [{'title': 'something else', 'message': 'no'}, {'title': 'edenprobe', 'message': TITLE}]
     text = comment(run_jobs=jobs(*WHOLE), notice=notice)
     check(

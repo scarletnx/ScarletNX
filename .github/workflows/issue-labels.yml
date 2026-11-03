@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+name: Issue labels
+
+# An issue opened, or whose title changed, gets the labels its [area] prefix and words ask for
+# (scripts/area-labels.py); labels are only added, so one a maintainer took off stays off until the title changes. A
+# pull request's labels are the title-and-assignees job's (pr-checks.yml), which runs on pull_request_target.
+on:
+  issues:
+    types: [opened, edited]
+
+permissions: {}
+
+jobs:
+  label-the-area:
+    name: Label the area
+    if: github.event.action == 'opened' || github.event.changes.title
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    # one at a time per issue: of a burst of edits the newest waits and those before it are dropped
+    concurrency:
+      group: issue-labels-${{ github.event.issue.number }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/area-labels.py
+          sparse-checkout-cone-mode: false
+      - name: Add the area labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+        run: |
+          wanted=$(python3 scripts/area-labels.py "$TITLE")
+          [ -n "$wanted" ] || exit 0
+          have=$(gh api --paginate "repos/$GITHUB_REPOSITORY/labels" --jq '.[].name')
+          add=()
+          while IFS= read -r label; do
+            # a label the repository lacks is made in the areas' colour; one it has keeps its own
+            grep -qxF "$label" <<<"$have" ||
+              gh api "repos/$GITHUB_REPOSITORY/labels" -f name="$label" -f color=1d76db >/dev/null
+            add+=(-f "labels[]=$label")
+          done <<<"$wanted"
+          gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/labels" "${add[@]}" >/dev/null

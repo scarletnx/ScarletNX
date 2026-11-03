@@ -10,7 +10,8 @@ on:
     # a draft builds less (each job that reads pull_request.draft says what), so leaving draft starts the whole build
     types: [opened, synchronize, reopened, ready_for_review]
     # skipped when the change is only in files that no build or test reads. tracked_material.py reads them all and runs
-    # on its own (pr-checks.yml). docs/ARCHITECTURE.md, DEPRECATIONS.md and GUI.md are test inputs: they build
+    # on its own (tracked-material-and-docs.yml). docs/ARCHITECTURE.md, DEPRECATIONS.md and GUI.md are test inputs:
+    # they build
     paths:
       - '**'
       - '!**/*.md'

@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+name: Tracked material and docs
+
+# What the tracked files may not hold (tests/tracked_material.py): keys, dumps, the console maker's name as a word and
+# the names of piracy sites; and the documentation held to the checkout (scripts/check-docs.py): links and anchors that
+# resolve, the ## Index of each long doc, docs/README.md linking every doc, and docs/SETTINGS.md saying each key and
+# default settings.txt has. Both read files build.yml skips a pull request for (those no build or test reads), so they
+# run on every pull request. They run the pull request's own scripts on its own files, so they run on pull_request,
+# whose token can't write for a fork, and never on pull_request_target. A workflow_dispatch checks the branch it is
+# started on.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  tracked-material-and-docs:
+    name: Tracked material and docs
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    # a push cancels the run of the commit before it
+    concurrency:
+      group: >-
+        tracked-material-and-docs-${{ github.event_name == 'pull_request' && github.event.pull_request.number
+        || github.run_id }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tracked material, its self-test then the checkout
+        run: |
+          python3 tests/tracked_material.py --self-test
+          python3 tests/tracked_material.py .
+      # also after tracked material failed, so the run says both
+      - name: Docs, the checks on checkouts made to fail them then the checkout
+        if: ${{ !cancelled() }}
+        run: |
+          python3 tests/docs_test.py
+          python3 scripts/check-docs.py

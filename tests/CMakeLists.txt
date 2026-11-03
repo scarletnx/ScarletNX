@@ -1326,7 +1326,8 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME trim_caches COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/trim_caches_test.py")
     # the check that keeps a pull request red while its title says donotmerge (scripts/pr-title.py, pr-checks.yml)
     add_test(NAME pr_title COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/pr_title_test.py")
-    # the labels a title's [area] prefix asks for, which the same job adds (scripts/area-labels.py, pr-checks.yml)
+    # the labels a title's [area] prefix asks for, which the same job adds (scripts/area-labels.py, pr-checks.yml),
+    # and which issue-labels.yml adds to an issue
     add_test(NAME area_labels COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/area_labels_test.py")
     # the check that holds a pull request until its assignees, its author aside, approve it (scripts/pr-assignees.py,
     # pr-checks.yml)
