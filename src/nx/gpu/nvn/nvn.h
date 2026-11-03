@@ -151,6 +151,10 @@ typedef struct {
 } NVNprogram;
 
 typedef struct {
+    char reserved[0xC0];
+} NVNprogramBuilder;
+
+typedef struct {
     NVNbufferAddress data;
     const void* control;
 } NVNshaderData;

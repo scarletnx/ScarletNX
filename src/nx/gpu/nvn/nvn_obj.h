@@ -52,13 +52,13 @@ typedef struct {
     u64 memory;
     u32 memory_size;
     u8 set, pad[3];
-    u64 device;
+    u64 device, primary;
 } NvnQueueBuilder;
 #define NVN_QB_SET_COMMAND 0x01u
 #define NVN_QB_SET_COMPUTE 0x02u
 #define NVN_QB_SET_CONTROL 0x04u
 #define NVN_QB_SET_FLUSH   0x08u
-NVN_FITS(NvnQueueBuilder, 0x38);
+NVN_FITS(NvnQueueBuilder, 0x40);
 /* replay: the queue's replay state (gpu/nvn/nvn_replay.c), by index. ready: when its work so far is done on the
    pacer's clock (plat_ns), and shown: the present on the display it waited for (nvn_replay_shown_syncpt's value, 0
    none): only the syncs the queue waits for (a window texture's) hold it back there */
@@ -207,6 +207,25 @@ typedef struct {
     u16 block[3], sample_shading;
 } NvnProgram;
 NVN_FITS(NvnProgram, 0x78);
+/* The stages a program builder holds, as SetShaders recorded them: each stage's code area and control section,
+   which nvnProgramInitializeFromBuilder hands to the same path nvnProgramSetShaders takes. A stage the game never
+   set has both 0 */
+typedef struct {
+    u64 data, control;
+} NvnShaderSet;
+/* What nvnProgramBuilderSet* recorded, in the game's own builder object: the device, the stages, the sample shading
+   mode, the subroutine linkage maps (their count and their guest array, valid until the program is initialized) and
+   what NVN2's ray-tracing setters asked for, which nothing of the renderer reads */
+typedef struct {
+    u64 device;
+    NvnShaderSet st[6];
+    u32 sample_shading;
+    u32 subroutine_count;
+    u64 subroutine_maps;
+    u32 rt_flags, rt_trace, rt_callable;
+    u32 hashes;
+} NvnProgramBuilder;
+NVN_FITS(NvnProgramBuilder, 0xB0);
 /* A fenced sync signals when the syncpoint reaches value (0: no syncpoint), the presents' syncpoint reaches shown (0:
    none; nvn_replay_shown_syncpt, a present on the display) and the pacer's clock (plat_ns) reaches ready: its queue's
    work before it replayed and done, and what the queue waited for before it (a window's texture comes free at the

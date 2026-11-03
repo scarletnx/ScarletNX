@@ -913,6 +913,7 @@ snx_test_target(snx-test-nvn-present-flip 11)
 target_include_directories(snx-test-nvn-present-flip PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-present-flip PRIVATE m)
 snx_hookgen(snx-test-nvn-present-flip SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
+snx_hookgen(snx-test-nvn-present-flip SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn2.hook" PREFIX nvn2 NAME gpu/nvn/nvn2.hook A32)
 add_test(NAME nvn_present_flip COMMAND snx-test-nvn-present-flip)
 # the NvRm sync conversions against the driver's sync layout: what they hand its code and take back
 add_executable(snx-test-nvn-nvrm-sync nvn_nvrm_sync.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_object.c"
@@ -921,6 +922,7 @@ snx_test_target(snx-test-nvn-nvrm-sync 11)
 target_include_directories(snx-test-nvn-nvrm-sync PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-nvrm-sync PRIVATE m)
 snx_hookgen(snx-test-nvn-nvrm-sync SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
+snx_hookgen(snx-test-nvn-nvrm-sync SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn2.hook" PREFIX nvn2 NAME gpu/nvn/nvn2.hook A32)
 add_test(NAME nvn_nvrm_sync COMMAND snx-test-nvn-nvrm-sync)
 add_executable(snx-test-nvn-queue-lifetime nvn_queue_lifetime.c
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_replay.c"
@@ -939,6 +941,7 @@ snx_test_target(snx-test-nvn-names 11)
 target_include_directories(snx-test-nvn-names PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-names PRIVATE m)
 snx_hookgen(snx-test-nvn-names SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
+snx_hookgen(snx-test-nvn-names SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn2.hook" PREFIX nvn2 NAME gpu/nvn/nvn2.hook A32)
 add_test(NAME nvn_names COMMAND snx-test-nvn-names)
 foreach(bad IN ITEMS
         unknown_type 2 "unknown type 'u128'"

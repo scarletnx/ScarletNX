@@ -252,6 +252,32 @@ hook nvnProgramFinalize(NVNprogram* p)
 hook nvnProgramInitialize(NVNprogram* p, NVNdevice* d) -> bool
 hook nvnProgramSetShaders(NVNprogram* p, i32 n, const NVNshaderData* sd) -> bool
 hook nvnProgramSetShadersExt(NVNprogram* p, i32 n, const void* sd) -> bool
+hook nvnProgramInitializeFromBuilder(NVNprogram* p, const NVNprogramBuilder* b) -> bool
+hook nvnProgramGetDeviceComputeMemorySize(const NVNprogram* p) -> usize
+hook nvnProgramGetScratchBytesPerWarp(const NVNprogram* p) -> u32
+hook nvnProgramGetShaderGroupHandle(const NVNprogram* p) -> u64
+
+family program_builder
+hook nvnProgramBuilderSetDefaults(NVNprogramBuilder* b)
+hook nvnProgramBuilderSetDevice(NVNprogramBuilder* b, NVNdevice* d)
+hook nvnProgramBuilderGetDevice(const NVNprogramBuilder* b) -> NVNdevice*
+hook nvnProgramBuilderSetShaders(NVNprogramBuilder* b, i32 n, const NVNshaderData* sd)
+hook nvnProgramBuilderGetShaderCount(const NVNprogramBuilder* b) -> i32
+hook nvnProgramBuilderGetShaders(const NVNprogramBuilder* b, NVNshaderData* sd) -> i32
+hook nvnProgramBuilderSetSampleShading(NVNprogramBuilder* b, i32 mode)
+hook nvnProgramBuilderGetSampleShading(const NVNprogramBuilder* b) -> i32
+hook nvnProgramBuilderSetSubroutineLinkage(NVNprogramBuilder* b, i32 n, const NVNsubroutineLinkageMapPtr* maps)
+hook nvnProgramBuilderGetSubroutineLinkageCount(const NVNprogramBuilder* b) -> i32
+hook nvnProgramBuilderGetSubroutineLinkage(const NVNprogramBuilder* b) -> const NVNsubroutineLinkageMapPtr*
+hook nvnProgramBuilderSetMaxTraceRecursionDepth(NVNprogramBuilder* b, i32 depth)
+hook nvnProgramBuilderGetMaxTraceRecursionDepth(const NVNprogramBuilder* b) -> i32
+hook nvnProgramBuilderSetMaxCallableRecursionDepth(NVNprogramBuilder* b, i32 depth)
+hook nvnProgramBuilderGetMaxCallableRecursionDepth(const NVNprogramBuilder* b) -> i32
+hook nvnProgramBuilderSetProgramRayTracingFlags(NVNprogramBuilder* b, u32 flags)
+hook nvnProgramBuilderGetProgramRayTracingFlags(const NVNprogramBuilder* b) -> u32
+hook nvnProgramBuilderSetDebugDataHashes(NVNprogramBuilder* b, u64 hashes)
+hook nvnProgramBuilderGetDebugDataHashes(const NVNprogramBuilder* b) -> u64
+hook nvnProgramBuilderSetRayTracingModules(NVNprogramBuilder* b, i32 n, const void* modules)
 
 family sync
 hook nvnSyncCreateGLSync(const NVNsync* s, u64* gl_sync) -> i32

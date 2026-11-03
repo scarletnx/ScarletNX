@@ -15,6 +15,7 @@
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "gpu/nvn/nvn.hook.h"
+#include "gpu/nvn/nvn2.hook.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/hle/services/nvdrv_ctrl_gpu.h"
@@ -157,6 +158,13 @@ void nvn_QueueBuilderSetQueueMemory(CPU* c, u64 b, u64 memory, u64 size) {
     (void)c;
     o->memory = memory;
     o->memory_size = (u32)size;
+}
+/* NVN2 names the queue this builder makes the primary one, the queue a window presents on. The replay runs every
+   queue's submissions in order on one GPU thread, so which of them is primary changes nothing there: it is kept for
+   the record and for the log, as the driver keeps it in its own builder */
+void nvn_QueueBuilderSetPrimaryQueue(CPU* c, u64 b, u64 q) {
+    (void)c;
+    QB(b)->primary = q;
 }
 int nvn_QueueInitialize(CPU* c, u64 q, u64 b) {
     NvnQueue o = {0};

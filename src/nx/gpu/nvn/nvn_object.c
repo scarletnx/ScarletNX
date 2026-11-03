@@ -1570,13 +1570,14 @@ static void xfb_of(u64 control, u64 serial) {
     pm_unlock(&g_nvn.object.xfb_lock);
 }
 
-/* the stages' {code, control} pairs, read from the control sections while they are the caller's */
-static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
+/* the stages' {code, control} pairs, read from the control sections while they are the caller's (a program builder's
+   recorded ones, or the array the game passed) */
+static int set_shaders(u64 p, const NvnShaderSet* st, i32 n) {
     NvnProgram* o = NVN_OBJ(NvnProgram, p);
     u64 last = 0; /* the control section of the last stage before rasterization */
     i32 i, last_rank = -1;
     if (n < 0 || n > 6) {
-        LOG_LIMIT(8, "nvn: nvnProgramSetShaders with %d stages\n", n);
+        LOG_LIMIT(8, "nvn: a program is given %d stages\n", n);
         return 0;
     }
     /* guest memory: every byte the game sees */
@@ -1584,37 +1585,196 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     memset(o->block, 0, sizeof o->block);
     o->off_a = 0;
     for (i = 0; i < n; i++) {
-        u64 control = nvn_gptr(sd + stride * (u64)i + 8); /* a pointer: its word in a 32-bit game */
         u32 stage;
         i32 rank;
-        if (!stage_of(o, gr64(sd + stride * (u64)i), control)) return 0;
+        if (!stage_of(o, st[i].data, st[i].control)) return 0;
         /* geometry, else tessellation evaluation, else control, else vertex: the driver's order */
-        stage = gr32(control + 0x714);
+        stage = gr32(st[i].control + 0x714);
         rank = stage == NVN_SHADER_STAGE_GEOMETRY          ? 3
                : stage == NVN_SHADER_STAGE_TESS_EVALUATION ? 2
                : stage == NVN_SHADER_STAGE_TESS_CONTROL    ? 1
                : stage == NVN_SHADER_STAGE_VERTEX          ? 0
-                                                           : -1;
+                                                            : -1;
         if (rank > last_rank) {
             last_rank = rank;
-            last = control;
+            last = st[i].control;
         }
     }
     o->serial = nvn_serial();
-    /* the sample shading SetSampleShading asked for takes effect here, as the game's driver applies it in SetShaders */
+    /* the sample shading the game asked for takes effect here, as its driver applies it in SetShaders */
     o->sample_shading = (u16)((o->sample_shading & 0xff) | (o->sample_shading & 0xff) << 8);
     if (last) xfb_of(last, o->serial);
     return 1;
 }
 int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {
+    NvnShaderSet st[6];
+    i32 i;
     (void)c;
-    return set_shaders(p, n, sd, sizeof(NVNshaderData));
+    if (n < 0 || n > 6) return 0;
+    for (i = 0; i < n; i++) { /* each stage's {code area, control section}, a pointer in a 32-bit game */
+        st[i].data = gr64(sd + sizeof(NVNshaderData) * (u64)i);
+        st[i].control = nvn_gptr(sd + sizeof(NVNshaderData) * (u64)i + 8);
+    }
+    return set_shaders(p, st, n);
+}
+
+/* ============================================================ the program builder */
+#define PB(b) NVN_OBJ(NvnProgramBuilder, b)
+void nvn_ProgramBuilderSetDefaults(CPU* c, u64 b) {
+    NvnProgramBuilder* o = PB(b);
+    u64 device = o->device; /* SetDefaults keeps the device, as the game's driver does */
+    (void)c;
+    memset(o, 0, sizeof *o); /* guest memory: every byte the game sees */
+    o->device = device;
+    o->sample_shading = 0; /* NVN_SAMPLE_SHADING_DEFAULT: as the program says, no per-sample shading */
+}
+void nvn_ProgramBuilderSetDevice(CPU* c, u64 b, u64 d) {
+    (void)c;
+    PB(b)->device = d;
+}
+u64 nvn_ProgramBuilderGetDevice(CPU* c, u64 b) {
+    (void)c;
+    return PB(b)->device;
+}
+/* The stages the program is built from: each stage's code area and control section, which the game's memory holds
+   until the program is initialized. Both 0 for a stage the game never set, which nvnProgramSetShaders refuses */
+void nvn_ProgramBuilderSetShaders(CPU* c, u64 b, i32 n, u64 sd) {
+    NvnProgramBuilder* o = PB(b);
+    i32 i;
+    (void)c;
+    if (n < 0 || n > 6) {
+        LOG_LIMIT(8, "nvn: nvnProgramBuilderSetShaders with %d stages\n", n);
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        o->st[i].data = gr64(sd + sizeof(NVNshaderData) * (u64)i);
+        o->st[i].control = nvn_gptr(sd + sizeof(NVNshaderData) * (u64)i + 8);
+    }
+    for (; i < 6; i++) o->st[i] = (NvnShaderSet){0, 0};
+}
+int nvn_ProgramBuilderGetShaderCount(CPU* c, u64 b) {
+    NvnShaderSet* st = PB(b)->st;
+    i32 i, n = 0;
+    (void)c;
+    for (i = 0; i < 6; i++)
+        if (st[i].control) n++;
+    return n;
+}
+int nvn_ProgramBuilderGetShaders(CPU* c, u64 b, u64 sd) {
+    NvnProgramBuilder* o = PB(b);
+    i32 i, n = 0;
+    (void)c;
+    for (i = 0; i < 6; i++)
+        if (o->st[i].control) {
+            st64(sd + sizeof(NVNshaderData) * (u64)n, o->st[i].data);
+            st64(sd + sizeof(NVNshaderData) * (u64)n + 8, o->st[i].control);
+            n++;
+        }
+    return n;
+}
+void nvn_ProgramBuilderSetSampleShading(CPU* c, u64 b, i32 mode) {
+    (void)c;
+    PB(b)->sample_shading = (u32)mode;
+}
+i32 nvn_ProgramBuilderGetSampleShading(CPU* c, u64 b) {
+    (void)c;
+    return (i32)PB(b)->sample_shading;
+}
+void nvn_ProgramBuilderSetSubroutineLinkage(CPU* c, u64 b, i32 n, u64 maps) {
+    NvnProgramBuilder* o = PB(b);
+    (void)c;
+    o->subroutine_count = (u32)n;
+    o->subroutine_maps = maps;
+}
+i32 nvn_ProgramBuilderGetSubroutineLinkageCount(CPU* c, u64 b) {
+    (void)c;
+    return (i32)PB(b)->subroutine_count;
+}
+u64 nvn_ProgramBuilderGetSubroutineLinkage(CPU* c, u64 b) {
+    (void)c;
+    return PB(b)->subroutine_maps;
+}
+/* NVN2's ray-tracing and debug settings: nothing of the renderer reads them, and the game's own driver only
+   records them in its builder */
+void nvn_ProgramBuilderSetMaxTraceRecursionDepth(CPU* c, u64 b, i32 depth) {
+    (void)c;
+    PB(b)->rt_trace = (u32)depth;
+}
+i32 nvn_ProgramBuilderGetMaxTraceRecursionDepth(CPU* c, u64 b) {
+    (void)c;
+    return (i32)PB(b)->rt_trace;
+}
+void nvn_ProgramBuilderSetMaxCallableRecursionDepth(CPU* c, u64 b, i32 depth) {
+    (void)c;
+    PB(b)->rt_callable = (u32)depth;
+}
+i32 nvn_ProgramBuilderGetMaxCallableRecursionDepth(CPU* c, u64 b) {
+    (void)c;
+    return (i32)PB(b)->rt_callable;
+}
+void nvn_ProgramBuilderSetProgramRayTracingFlags(CPU* c, u64 b, u32 flags) {
+    (void)c;
+    PB(b)->rt_flags = flags;
+}
+u32 nvn_ProgramBuilderGetProgramRayTracingFlags(CPU* c, u64 b) {
+    (void)c;
+    return PB(b)->rt_flags;
+}
+void nvn_ProgramBuilderSetDebugDataHashes(CPU* c, u64 b, u64 hashes) {
+    (void)c;
+    PB(b)->hashes = (u32)hashes;
+}
+u64 nvn_ProgramBuilderGetDebugDataHashes(CPU* c, u64 b) {
+    (void)c;
+    return PB(b)->hashes;
+}
+void nvn_ProgramBuilderSetRayTracingModules(CPU* c, u64 b, i32 n, u64 modules) {
+    (void)c;
+    (void)b;
+    (void)n;
+    (void)modules;
+}
+/* the program the builder describes: its stages and its sample shading, as nvnProgramSetShaders takes them */
+int nvn_ProgramInitializeFromBuilder(CPU* c, u64 p, u64 b) {
+    NvnProgramBuilder* o = PB(b);
+    int ok;
+    (void)c;
+    i32 i, n = 0;
+    for (i = 0; i < 6; i++)
+        if (o->st[i].control) n++;
+    ok = nvn_ProgramInitialize(c, p, o->device) && set_shaders(p, o->st, n);
+    if (ok) NVN_OBJ(NvnProgram, p)->sample_shading = (u16)(o->sample_shading & 0xff);
+    return ok;
+}
+/* the compute memory a program's dispatches take, its scratch bytes per warp and its shader group: the device
+   answers its own, and nothing of the runtime's renderer reads them */
+u64 nvn_ProgramGetDeviceComputeMemorySize(CPU* c, u64 p) {
+    (void)c;
+    (void)p;
+    return 0;
+}
+u32 nvn_ProgramGetScratchBytesPerWarp(CPU* c, u64 p) {
+    (void)c;
+    (void)p;
+    return 0;
+}
+u64 nvn_ProgramGetShaderGroupHandle(CPU* c, u64 p) {
+    (void)c;
+    (void)p;
+    return 0;
 }
 
 /* NVN 55's SetShaders: 0x18 bytes a stage, NVNshaderData and an 8-byte extension, which nxnative doesn't use either */
 int nvn_ProgramSetShadersExt(CPU* c, u64 p, i32 n, u64 sd) {
+    NvnShaderSet st[6];
+    i32 i;
     (void)c;
-    return set_shaders(p, n, sd, 0x18);
+    if (n < 0 || n > 6) return 0;
+    for (i = 0; i < n; i++) {
+        st[i].data = gr64(sd + 0x18 * (u64)i);
+        st[i].control = nvn_gptr(sd + 0x18 * (u64)i + 8);
+    }
+    return set_shaders(p, st, n);
 }
 
 /* the sample shading of the program's next SetShaders: NVN_SAMPLE_SHADING_* (0 as the program says, 1 every sample, 2
