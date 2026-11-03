@@ -619,6 +619,24 @@ int snx_ctr_main(int argc, char** argv) {
             free(folder);
             return 2;
         } else if (!extract_container && !extract_only) {
+            /* the game it names may be an encrypted one: decrypt it as the run that made the folder did, or reuse that
+               run's copy, so the folder plays without the keys being asked for again */
+            char *work = work_folder(repo, argv[0]), *leaf = snx_dump_name(named), *where = NULL, *readable = NULL;
+            if (work && leaf) where = snx_path_join(work, leaf);
+            free(leaf);
+            free(work);
+            int decrypted = where ? readable_game(named, where, keys, &readable) : 1;
+            free(where);
+            if (decrypted != 1) {
+                free(named);
+                if (decrypted) {
+                    free(readable);
+                    free(runtime);
+                    free(folder);
+                    return decrypted;
+                }
+                named = readable;
+            }
             SnxCtrExtractResult opened = snx_ctr_source_open(named, &source, error, sizeof error);
             if (opened != SNX_CTR_EXTRACT_OK) {
                 fprintf(stderr, "scarletnx-3ds: %s\n", error);
@@ -698,7 +716,9 @@ int snx_ctr_main(int argc, char** argv) {
         free(recorded);
     }
     bool made = folder && !extract_only && !snx_is_link(folder) && !snx_mkdirs(folder);
-    if (!folder || (made && !write_game_ini(folder, readable, model))) {
+    /* the folder names the game the player picked, not the decrypted copy an encrypted one leaves in the cache: a
+       launcher asks whether it already made a game from that dump, and the cache's path matches none */
+    if (!folder || (made && !write_game_ini(folder, input, model))) {
         snx_ctr_source_close(source);
         free(folder);
         free(readable);
