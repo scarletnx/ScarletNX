@@ -244,6 +244,21 @@ def main():
             capture_output=True, text=True, cwd=root, timeout=60, env=env,
         )
         assert p.returncode == 0 and 'Decrypted' not in p.stdout and not (root / 'plain-card.decrypted.cci').exists(), p.stdout + p.stderr
+        # A tool that decrypted an image but left its flag saying encrypted: the ExHeader's hash in the header matches
+        # the plain text, so the image is read as it is, with no keys and no copy, and the driver says so
+        mislabeled = bytearray(plain_cci)
+        for i in range(8):
+            at = int.from_bytes(mislabeled[0x120 + i * 8:0x124 + i * 8], 'little')
+            if at:
+                mislabeled[at * 0x200 + 0x18F] &= ~0x04
+        run('mislabeled', bytes(mislabeled), None, 0, 'says it is encrypted', extension='cci')
+        got, want = files(root / 'mislabeled'), files(root / 'plain-card')
+        assert set(got) == set(want), set(got) ^ set(want)
+        for entry in got:  # the NCCH header keeps its own flag, and the manifest the input's hash
+            if entry in ('ncch.bin', 'manifest.ini'):
+                continue
+            assert got[entry] == want[entry], entry
+        assert not (root / 'mislabeled.decrypted.cci').exists()
         # without keys, and with seed crypto, and with the wrong ones, an encrypted image is refused and nothing published
         seed = bytearray(ncsd(game=encrypted_game))
         seed[0x200 + 0x18F] |= 0x20  # the seed bit, which no keys of this loader's take off

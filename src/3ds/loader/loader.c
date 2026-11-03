@@ -59,6 +59,16 @@ bool ctr_hash(CtrReader* r, CtrSpan span, unsigned char hash[32]) {
     EVP_MD_CTX_free(context);
     return ok || ctr_fail(r, SNX_CTR_EXTRACT_LIMIT, "SHA-256 failed (out of memory)");
 }
+/* An NCCH header stores, at 0x160, the SHA-256 of its ExHeader's first 0x400 bytes, which only matches once they
+   are plain. An image a tool decrypted but left saying it is encrypted has them plain already. The flag clear and
+   the hash equal is the whole test: no guess at the content's kind */
+bool ctr_ncch_plain(CtrReader* r, CtrSpan span, const unsigned char* header) {
+    unsigned char exheader[0x400], hash[32];
+    if (header[0x18f] & 4) return false;                      /* it does not claim encryption */
+    if (snx_ld_le32(header + 0x180) != 0x400) return false;   /* no ExHeader to compare against */
+    if (!ctr_read(r, span, 0x200, exheader, sizeof exheader)) return false;
+    return ctr_sha256(r, exheader, sizeof exheader, hash) && !memcmp(hash, header + 0x160, sizeof hash);
+}
 bool ctr_hash_matches(CtrReader* r, CtrSpan span, const unsigned char expected[32]) {
     unsigned char hash[32];
     return ctr_hash(r, span, hash) &&
