@@ -452,6 +452,60 @@ static int check_uma_feedback(void) {
     return 0;
 }
 
+/* A dispatch runs on the graphics queue and writes its storage in place: a compute program stores 0x5eed through an NVN
+   descriptor in cbuf 0; no compute result is pending after it, the range is imported, and the CPU reads the store */
+#define UMA_Q  (HEAP_BASE + 0x3800000)
+#define UMA_GQ 0x4e3000000ull
+static int check_uma_dispatch(void) {
+    const u64 code = 0x4e1000000ull, code_cpu = HEAP_BASE + 0x780000;
+    const u64 cbuf = UMA_GQ + 0x1000, stored = UMA_GQ + 0x2000;
+    const u64 program[] = {
+        0x001f8000fc0007e0ull,  0x4c98078004470000ull, /* MOV R0, c[0][0x110]: the buffer's address, NVN's descriptor */
+        0x4c98078004570001ull,                         /* MOV R1, c[0][0x114] */
+        storage_mov(2, 0x5eed),                        /* MOV32I R2, 0x5eed */
+        0x001f8000fc0007e0ull,  0xeedc200000070002ull, /* STG.E [R0], R2 */
+        0xe30000000007000full};
+    const u32 descriptor[3] = {(u32)stored, (u32)(stored >> 32), 16};
+    u32 qmd[64] = {0};
+    DispatchState d;
+    u8 word[4];
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    GpuChannel* channel = calloc(1, sizeof *channel);
+    CHECK(channel);
+    CHECK(mem_map(UMA_Q, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GQ, UMA_Q, 0x200000);
+    gmmu_map(code, code_cpu, 0x10000);
+    memset(GP(UMA_Q), 0, 0x3000);
+    memcpy(GP(UMA_Q) + 0x1110, descriptor, sizeof descriptor);
+    CHECK(invalidate_write_code(code, program, sizeof program / sizeof *program));
+    qmd[QMD_GRID_DIM_X] = 1;
+    qmd[QMD_GRID_DIM_YZ] = 1 | 1u << 16;
+    qmd[QMD_BLOCK_DIM_X] = 1u << 16;
+    qmd[QMD_BLOCK_DIM_YZ] = 1 | 1u << 16;
+    qmd[QMD_CONST_BUFFER_ENABLE] = 1u;
+    qmd[QMD_CONST_BUFFER_CONFIG] = (u32)cbuf;
+    qmd[QMD_CONST_BUFFER_CONFIG + 1] = (u32)(cbuf >> 32) | 0x200u << 15;
+    u64 dispatches = g_vk_dispatches;
+    vk_lock();
+    mx_dispatch_state(qmd, channel->rcomp, code, &d);
+    vk_dispatch(&d);
+    int ran = g_vk_dispatches == dispatches + 1, queued = vk_compute_pending(stored, 4) != 0,
+        imported = vk_uma_imports(UMA_Q + 0x2000, 4) != 0;
+    vk_unlock();
+    CHECK(!gmem_read(stored, word, sizeof word));
+    free(channel);
+    CHECK(mem_unmap(UMA_Q, 0x200000) == 0);
+    if (!ran || queued || !imported || snx_ld_le32(word) != 0x5eed)
+        fprintf(stderr, "dispatch: ran %d, a compute result pending %d, imported %d, the buffer holds %08x\n", ran,
+                queued, imported, snx_ld_le32(word));
+    CHECK(ran && !queued && imported && snx_ld_le32(word) == 0x5eed);
+    printf("in place: a dispatch on the graphics queue stores into guest memory where it is\n");
+    return 0;
+}
+
 /* vk_memory's auto (0) never moves guest memory into AHardwareBuffers: on a device that shares memory, takes them and
    has no VK_EXT_external_memory_host, it copies, and only vk_memory=2 moves. An import where it is stays auto's on such
    a device, and 1 copies everywhere */

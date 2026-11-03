@@ -1092,8 +1092,10 @@ void vk_dispatch(const DispatchState* d) {
     }
     need += sizeof(i32) * 320 + vk_stage_align(); /* optional format data */
     /* dispatches that read textures run on the graphics queue, after what was recorded before them. Inputs that
-       pending compute results overlap land those first, before anything is put in the arena */
-    int gfx = p->si.ntex > 0 || p->si.nimg > 0, overlap = 0, retries = 0;
+       pending compute results overlap land those first, before anything is put in the arena. With unified memory every
+       dispatch does: its storage buffers are read and written in place (uma.c), in order with the draws on one queue,
+       with nothing to land, as #690 has it */
+    int gfx = vk_uma() || p->si.ntex > 0 || p->si.nimg > 0, overlap = 0, retries = 0;
     /* so does an indirect one: its grid is read where the graphics queue's buffers hold guest memory (vk_buf_get) */
     gfx = gfx || d->indirect != 0;
     VkBuffer grid_buf = VK_NULL_HANDLE, cb0_buf = VK_NULL_HANDLE;

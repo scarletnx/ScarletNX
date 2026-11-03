@@ -2810,10 +2810,11 @@ int main(int argc, char** argv) {
         if (!strcmp(name, "region_writes") && ++ran) CHECK(!check_uma_region_writes());
         if (!strcmp(name, "writes") && ++ran) CHECK(!check_uma_writes());
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
+        if (!strcmp(name, "dispatch") && ++ran) CHECK(!check_uma_dispatch());
         if (!ran) {
             fprintf(stderr,
                     "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, migrate, way, region_writes, "
-                    "writes or feedback\n",
+                    "writes, feedback or dispatch\n",
                     name);
             return 2;
         }
@@ -2829,6 +2830,7 @@ int main(int argc, char** argv) {
         CHECK(!check_uma_constants());
         CHECK(!check_uma_writes());
         CHECK(!check_uma_feedback());
+        CHECK(!check_uma_dispatch());
         CHECK(!check_uma_page_changes());
         CHECK(!check_uma());
         CHECK(!check_uma_way());
@@ -2910,6 +2912,7 @@ int main(int argc, char** argv) {
     CHECK(!check_uma_constants());
     CHECK(!check_uma_writes());
     CHECK(!check_uma_feedback());
+    CHECK(!check_uma_dispatch());
     CHECK(!check_uma_page_changes());
     CHECK(!check_rt_overlap());
     CHECK(!check_uma());
