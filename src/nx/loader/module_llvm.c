@@ -108,6 +108,61 @@ static SnxIr* new_ir(const SnxLlvmBuild* build, const char* name, char* error, s
                          : snx_ir_new(name, build->opt, error, error_size);
 }
 
+/* The unit's functions [first, last) in an order that emits each one after the functions of the unit it calls
+   directly (BL) or jumps to (B): a post-order of those calls, so ir_promote.c has a callee's summary when it promotes
+   the calls of it. In a cycle of calls the first one reached goes before the callers it summarizes, which then call
+   it as they call any other function. NULL out of memory (the address order then) */
+static size_t* callees_first(SnxCodegen* codegen, size_t first, size_t last) {
+    size_t n = last - first, top = 0, done = 0;
+    size_t *order = (size_t*)malloc((n ? n : 1) * sizeof(size_t)),
+           *stack = (size_t*)malloc((n ? n : 1) * sizeof(size_t));
+    size_t* next = (size_t*)calloc(n ? n : 1, sizeof(size_t));   /* the instruction each function's walk goes on from */
+    unsigned char* state = (unsigned char*)calloc(n ? n : 1, 1); /* 1 on the walk, 2 placed */
+    if (!order || !stack || !next || !state) {
+        free(order);
+        order = NULL;
+        goto end;
+    }
+    for (size_t root = 0; root < n; ++root) {
+        if (state[root]) continue;
+        state[root] = 1;
+        stack[top++] = root;
+        while (top) {
+            size_t f = stack[top - 1];
+            const SnxFunction* fn = &codegen->functions[first + f];
+            size_t callee = n;
+            while (next[f] < fn->count && callee == n) {
+                SnxU64 address = snx_function_address(fn, next[f]++), target;
+                SnxU32 word = 0;
+                SnxA64Insn insn;
+                const SnxFunction* to;
+                if (snx_codegen_word(codegen, address, &word)) continue;
+                snx_a64_decode_word(word, codegen->features, &insn);
+                if (insn.flow != SNX_A64_FLOW_BL && insn.flow != SNX_A64_FLOW_B) continue;
+                target = snx_a64_branch_target(&insn, address);
+                to = snx_codegen_function(codegen, target);
+                if (!to || to->start != target) continue;
+                if ((size_t)(to - codegen->functions) < first || (size_t)(to - codegen->functions) >= last) continue;
+                if (!state[(size_t)(to - codegen->functions) - first])
+                    callee = (size_t)(to - codegen->functions) - first;
+            }
+            if (callee < n) {
+                state[callee] = 1;
+                stack[top++] = callee;
+            } else {
+                state[f] = 2;
+                order[done++] = first + f;
+                --top;
+            }
+        }
+    }
+end:
+    free(stack);
+    free(next);
+    free(state);
+    return order;
+}
+
 /* one chunk of functions, as module.c's code_NNN.c. A function of the --layout order gets its own code section, which
    the linker places by its rank: the function's code is the same, only where it goes changes */
 static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) {
@@ -116,12 +171,15 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     size_t i;
     SnxIr* ir;
     int rc;
+    size_t* order;
     sprintf(name, "code_%03lu", (unsigned long)index);
     ir = new_ir(q->build, name, error, error_size);
     if (!ir) return -1;
     snx_ir_tune(ir, q->build->tuning);
     snx_ir_stale_checks(ir);
-    for (i = u->first; i < u->last; ++i) {
+    order = callees_first(q->codegen, u->first, u->last);
+    for (size_t k = u->first; k < u->last; ++k) {
+        i = order ? order[k - u->first] : k;
         snx_ir_emit(ir, q->codegen, &q->codegen->functions[i]);
         if (q->rank && q->rank[i] != NO_RANK) {
             char section[sizeof(SNX_LINK_HOT_TEXT) + 24];
@@ -129,6 +187,7 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
             LLVMSetSection(snx_ir_guest_function(ir, q->codegen->functions[i].start), section);
         }
     }
+    free(order);
     u->stats = ir->stats;
     rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name);
     if (rc) snprintf(error, error_size, "cannot save the IR of %s", name);

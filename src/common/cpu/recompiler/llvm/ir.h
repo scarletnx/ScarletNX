@@ -156,6 +156,12 @@ typedef struct SnxIr {
     unsigned check : 1;
     unsigned long check_failures;
     char check_why[256];
+    /* ir_promote.c's summaries of the guest functions this SnxIr promoted (an open-addressed table of summary_cap,
+       keyed by the function: one deleted from mod would have to leave it first, or a new function could take its
+       address), and the block of the function being emitted a direct call never runs (its entry at another address) */
+    void* summaries;
+    size_t summary_count, summary_cap;
+    LLVMBasicBlockRef entry_mismatch;
     LLVMTypeRef t_void, t_i1, t_i8, t_i16, t_i32, t_i64, t_i128, t_ptr, t_guest;
     /* the function being emitted: its CPU* and the guest memory base (u8* const M=c->mem) */
     LLVMValueRef fn, c, M;
@@ -268,6 +274,8 @@ void ir_promote_registers(SnxIr* ir, LLVMValueRef fn);
    every site finds each register it can see held in the CPU structure, and every read of a register finds its value
    (ir_promote.c). Counts the problems in ir->check_failures, the first described in ir->check_why */
 void ir_check_promoted(SnxIr* ir, LLVMValueRef fn);
+/* the summaries ir_promote_registers made, freed (snx_ir_free does it) */
+void ir_summaries_free(SnxIr* ir);
 /* the promoted function's slots made SSA values and what that leaves trivial removed, as it is emitted (ir.c) */
 void ir_clean_function(SnxIr* ir, LLVMValueRef fn);
 /* Accumulates one emitted function's call counts when stats.enabled is set. */

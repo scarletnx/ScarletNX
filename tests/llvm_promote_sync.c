@@ -66,7 +66,9 @@ typedef struct {
     unsigned char* ref_stale; /* the reference module's */
     GuestFn reference[FUNCS]; /* what a miss runs: the code at the pc compiled again (the O0 module's) */
     u64 starts[FUNCS], ends[FUNCS];
-    GuestFn* disp;                  /* CPU.disp: a function made stale leaves it, as the runtime's fn_stale has it */
+    GuestFn* disp; /* CPU.disp: a function made stale leaves it, as the runtime's fn_stale has it */
+    u64 patched;   /* a miss here runs patch: the guest's new code for a stale leaf (0: none) */
+    void (*patch)(CPU* c);
     size_t functions, stale_caller; /* an SVC with STALE makes this function stale */
     u64 poll_keep;                  /* the X registers the poll handler leaves alone */
     unsigned polls;                 /* so far: a loop that goes on past POLLS ends the test */
@@ -87,6 +89,8 @@ typedef struct {
     int poll;              /* CPU.poll set at the start */
     size_t stale_callee;   /* the function made stale before the run, plus 1 (0: none) */
     size_t stale_caller;   /* the function an SVC with STALE makes stale */
+    u64 patched;           /* the stale leaf whose miss runs patch (0: none) */
+    void (*patch)(CPU* c); /* the leaf's new code */
     u64 poll_keep, skip_v; /* skip_v: the V registers the model leaves out (an FP estimate's result) */
     u64 memory_x, local_x; /* the X registers the case expects left in the CPU structure, and made locals */
     int call_stores;       /* at most these register stores before each call of call_target (-1: not checked) */
@@ -425,9 +429,25 @@ static void on_fpcr(CPU* c) {
 /* the runtime's answer for a pc whose code is out of dispatch: the code there compiled again, the reference module's
    function holding pc entered at pc (its dispatch block takes it to the leader), with its own stale byte clear while
    it runs */
+/* the leaf as the guest patched it: X0 += X1 + X5. It reads X5, which the leaf's summary does not: a caller that
+   stored only what the summary reads before calling the stale leaf would hand it a stale X5 */
+static void patched_leaf(CPU* c) {
+    c->x[0] += c->x[1] + c->x[5];
+    c->pc = c->x[LR];
+}
+/* a leaf that wrote X5 and X0 as the guest patched it: X0 += X1, X5 left alone. A caller that did not store its X5
+   before calling the stale leaf, which wrote X5 without reading it, would see the CPU structure's old X5 */
+static void patched_add(CPU* c) {
+    c->x[0] += c->x[1];
+    c->pc = c->x[LR];
+}
 static void on_miss(CPU* c, u64 pc) {
     Run* r = run_of(c);
     record(c, EV_MISS, pc);
+    if (r->patched && pc == r->patched) {
+        r->patch(c);
+        return;
+    }
     for (size_t i = 0; i < r->functions; ++i)
         if (r->starts[i] <= pc && pc < r->ends[i]) {
             unsigned char was = r->ref_stale[i];
@@ -602,6 +622,8 @@ static void run(const Program* p, Module* mod, Module* ref, SnxCodegen* codegen,
     r->stale = mod->stale;
     r->ref_stale = ref->stale;
     r->stale_caller = p->stale_caller;
+    r->patched = p->patched;
+    r->patch = p->patch;
     r->poll_keep = p->poll_keep;
     initial_memory(memory);
     initial(&c);
@@ -778,6 +800,34 @@ static void bl(Program* p, size_t target) {
     put(p, 0x94000000u);
     patch(p, word, target);
 }
+/* the leaf the summary cases call, written first (function 0): X0 += X1, RET. It reads X0, X1 and X30 and writes X0,
+   no site in it: a summary of it says so */
+static size_t leaf(Program* p) {
+    size_t word = p->n;
+    put(p, 0x8B010000u); /* ADD X0, X0, X1 */
+    put(p, 0xD65F03C0u); /* RET */
+    function(p);
+    p->entry = at(p->n);
+    p->entry_function = 1;
+    return word;
+}
+static void leaf_model(Program* p, size_t call) {
+    p->m.x[LR] = at(call) + 4;
+    p->m.x[0] += p->m.x[1];
+    p->m.pc = p->m.x[LR];
+}
+static void sub_imm(Program* p, unsigned rd, unsigned rn, unsigned imm) { /* SUB Xd|SP, Xn|SP, #imm */
+    put(p, 0xD1000000u | imm << 10 | rn << 5 | rd);
+    p->m.x[rd] = p->m.x[rn] - imm;
+}
+static void str_x(Program* p, unsigned rt, unsigned rn) { /* STR Xt, [Xn|SP] */
+    put(p, 0xF9000000u | rn << 5 | rt);
+    wr64(p->mem, p->m.x[rn], xzr(p, rt));
+}
+static void ldr_x(Program* p, unsigned rt, unsigned rn) { /* LDR Xt, [Xn|SP] */
+    put(p, 0xF9400000u | rn << 5 | rt);
+    p->m.x[rt] = rd64(p->mem, p->m.x[rn]);
+}
 static size_t branch_if(Program* p, unsigned cond) { /* B.cond, its target patched later */
     size_t word = p->n;
     put(p, 0x54000000u | cond);
@@ -907,7 +957,10 @@ static void cases(int portable) {
     dirty_all(p, 0, 9);
     w = p->n;
     bl(p, s);
+    /* the callee returns at once with CPU.pc at its entry, the caller's return check returns too, and the dispatch
+       loop misses there; the code compiled again returns to the BL's next word, a leader of the caller */
     p->m.x[LR] = at(w) + 4;
+    p->m.pc = at(s);
     expect(p, EV_MISS, at(s));
     callee_model(p, w, s, 0);
     use_all(p, 0);
@@ -1067,6 +1120,192 @@ static void cases(int portable) {
     add_imm(p, 0, 21, 1);
     ret(p, 20);
     check(p, portable);
+    /* a direct BL of a leaf whose summary is known (emitted first): the call stores only what it reads or writes (X0,
+       X1, X30), and the caller's other dirty registers wait for its next site. X20 takes the leaf's X0, which
+       use_all's MRS overwrites, so the reload after the call is seen */
+    p = begin("summary");
+    s = leaf(p);
+    p->call_target = s;
+    p->call_stores = 3;
+    dirty_all(p, 0, 12);
+    w = p->n;
+    bl(p, s);
+    leaf_model(p, w);
+    mov(p, 20, 0);
+    use_all(p, 0);
+    svc(p, 24);
+    ret(p, LR);
+    check(p, portable);
+    /* the same leaf stale, the guest's new code for it reading X5 too (patched_leaf): it returns with CPU.pc at its
+       entry, the caller returns too, storing every register it has dirty, and the dispatch loop misses there and runs
+       the new code, which returns into the caller. Had the stale leaf gone to the new code itself, X5 would be the
+       one before dirty_all's */
+    p = begin("summary, stale callee");
+    s = leaf(p);
+    p->stale_callee = 1;
+    p->patched = at(s);
+    p->patch = patched_leaf;
+    p->call_target = s;
+    p->call_stores = 3;
+    dirty_all(p, 0, 13);
+    w = p->n;
+    bl(p, s);
+    p->m.x[LR] = at(w) + 4;
+    p->m.pc = at(s);
+    expect(p, EV_MISS, at(s));
+    p->m.x[0] += p->m.x[1] + p->m.x[5];
+    p->m.pc = p->m.x[LR];
+    mov(p, 20, 0);
+    use_all(p, 0);
+    svc(p, 25);
+    ret(p, LR);
+    check(p, portable);
+    /* a leaf that writes X5 on one way only (CBZ X2 over MOVZ X5, #7), called with X5 dirty on the way without the
+       write and then on the one with it. The call stores X5 too, though the leaf never reads it: the reload after
+       the call takes the CPU structure's X5 on both ways */
+    p = begin("summary, a write on one way");
+    s = p->n;
+    put(p, 0xB4000042u); /* CBZ X2, the RET */
+    put(p, 0xD28000E5u); /* MOVZ X5, #7 */
+    put(p, 0xD65F03C0u); /* RET */
+    function(p);
+    p->entry = at(p->n);
+    p->entry_function = 1;
+    p->call_target = s;
+    p->call_stores = 3;
+    dirty_all(p, 0, 15);
+    mov64(p, 2, 0);
+    w = p->n;
+    bl(p, s);
+    p->m.x[LR] = at(w) + 4;
+    p->m.pc = p->m.x[LR];
+    mov(p, 20, 5);
+    mov64(p, 2, 1);
+    w = p->n;
+    bl(p, s);
+    p->m.x[LR] = at(w) + 4;
+    p->m.x[5] = 7;
+    p->m.pc = p->m.x[LR];
+    use_all(p, 0);
+    svc(p, 31);
+    ret(p, LR);
+    check(p, portable);
+    /* a leaf that writes X5 without reading it (MOVZ X5, #7; ADD X0, X0, X1; RET), stale, its new code X0 += X1 alone
+       (patched_add): the stale leaf returns at once, the reload after the call takes the CPU structure's X5, and the
+       caller's return stores that for the new code. The call must have stored X5 */
+    p = begin("summary, stale callee, less written");
+    s = p->n;
+    put(p, 0xD28000E5u); /* MOVZ X5, #7 */
+    put(p, 0x8B010000u); /* ADD X0, X0, X1 */
+    put(p, 0xD65F03C0u); /* RET */
+    function(p);
+    p->entry = at(p->n);
+    p->entry_function = 1;
+    p->stale_callee = 1;
+    p->patched = at(s);
+    p->patch = patched_add;
+    p->call_target = s;
+    p->call_stores = 4;
+    dirty_all(p, 0, 16);
+    w = p->n;
+    bl(p, s);
+    p->m.x[LR] = at(w) + 4;
+    p->m.pc = at(s);
+    expect(p, EV_MISS, at(s));
+    p->m.x[0] += p->m.x[1];
+    p->m.pc = p->m.x[LR];
+    mov(p, 20, 5);
+    use_all(p, 0);
+    svc(p, 32);
+    ret(p, LR);
+    check(p, portable);
+    /* two levels: a leaf (ADD X0, X0, X7; RET), a function calling it (MOV X9, X30; BL; RET X9), and their caller with
+       X7 dirty. The middle function never touches X7, but its summary reads it for the leaf's sake */
+    p = begin("summary, two levels");
+    s = p->n;
+    put(p, 0x8B070000u); /* ADD X0, X0, X7 */
+    put(p, 0xD65F03C0u); /* RET */
+    function(p);
+    k = p->n;
+    put(p, 0xAA1E03E9u); /* MOV X9, X30 */
+    bl(p, s);
+    put(p, 0xD65F0120u); /* RET X9 */
+    function(p);
+    p->entry = at(p->n);
+    p->entry_function = 2;
+    p->call_target = k;
+    p->call_stores = 4;
+    dirty_all(p, 0, 17);
+    w = p->n;
+    bl(p, k);
+    p->m.x[9] = at(w) + 4;
+    p->m.x[LR] = at(k + 1) + 4;
+    p->m.x[0] += p->m.x[7];
+    p->m.pc = p->m.x[9];
+    mov(p, 20, 0);
+    use_all(p, 0);
+    svc(p, 33);
+    ret(p, LR);
+    check(p, portable);
+    /* the leaf through a register (BLR, dispatch): no summary, every register synced */
+    p = begin("summary, through a register");
+    s = leaf(p);
+    dirty_all(p, 1u << 16, 14);
+    mov64(p, 16, at(s));
+    w = p->n;
+    put(p, 0xD63F0200u); /* BLR X16 */
+    leaf_model(p, w);
+    use_all(p, 1u << 16);
+    svc(p, 26);
+    ret(p, LR);
+    check(p, portable);
+    /* recursion: a function that calls itself (its frame on the guest stack) has no summary of its own when its call
+       of itself is promoted, and every register stays synced there */
+    p = begin("recursion");
+    {
+        size_t skip, again, back;
+        u64 sp;
+        CPU before = p->m;
+        p->m.x[31] = DATA + 0x4000; /* the words only: the model runs them below */
+        sub_imm(p, 31, 31, 16);
+        str_x(p, 30, 31);
+        subs1(p, 9);
+        skip = branch_if(p, 0); /* B.EQ */
+        again = p->n;
+        bl(p, 0);
+        back = p->n;
+        patch(p, skip, back);
+        add_imm(p, 3, 3, 1);
+        ldr_x(p, 30, 31);
+        add_imm(p, 31, 31, 16);
+        ret(p, 30);
+        function(p);
+        p->entry = at(p->n);
+        p->entry_function = 1;
+        p->m = before;
+        initial_memory(p->mem);
+        mov(p, 19, LR);
+        mov64(p, 16, DATA + 0x4000);
+        add_imm(p, 31, 16, 0);
+        mov64(p, 9, 3);
+        w = p->n;
+        bl(p, 0);
+        /* three calls deep: each pushes its X30 and counts X9 down; the last skips its call; each adds 1 to X3 */
+        sp = p->m.x[31];
+        for (unsigned d = 0; d < 3; ++d) {
+            sp -= 16;
+            wr64(p->mem, sp, d ? at(back) : at(w) + 4);
+        }
+        p->m.x[9] = 0;
+        p->m.n = 0, p->m.z = 1, p->m.cf = 1, p->m.vf = 0;
+        p->m.x[3] += 3;
+        p->m.x[LR] = at(w) + 4;
+        p->m.pc = p->m.x[LR];
+        (void)again;
+    }
+    svc(p, 27);
+    ret(p, 19);
+    check(p, portable);
     /* a loop calling a function that sees every register, X19 written before the loop and read in a loop inside it (a
        local: its reads there outweigh its copies around the call): the loop's call finds it clean on the way back (the
        call before it stored it, and the callee's change was reloaded), so it is stored once, on the way into the loop,
@@ -1148,11 +1387,13 @@ static u64 next_random(u64* state) {
 /* A seeded program of three functions, words of the kinds the cases use at random (register writes and reads, lane
    writes, flag writes, branches either way, direct and register calls, SVC, DC ZVA, the exclusive pair, MSR FPCR, FP),
    compiled at O2 with ir_check_promoted on each function: never run, so any register and branch will do. The
-   promotion of every one must pass the checker */
+   promotion of every one must pass the checker. Function 0, and function 1 in even seeds, has no site that sees every
+   register (no SVC, BLR, MSR FPCR or backward branch; function 1 may call function 0): summarized, so the direct calls
+   of them are checked as their summaries have them */
 static void corpus(int portable, unsigned programs) {
     char error[1024], what[400];
     unsigned failed = 0;
-    unsigned long functions = 0;
+    unsigned long functions = 0, summarized = 0;
     for (unsigned seed = 1; seed <= programs; ++seed) {
         Program* p = begin("checker corpus");
         u64 rng = 0x9E3779B97F4A7C15ull * seed;
@@ -1165,11 +1406,14 @@ static void corpus(int portable, unsigned programs) {
         p->n = 0;
         p->nstarts = 0;
         for (unsigned f = 0; f < 3; ++f) {
+            int leaf_like = f == 0 || (f == 1 && seed % 2 == 0);
             function(p);
             while (p->n < starts[f] + 58) {
                 unsigned r = (unsigned)(next_random(&rng) % 29), q = (unsigned)(next_random(&rng) % 29);
                 unsigned v = (unsigned)(next_random(&rng) % 32), kind = (unsigned)(next_random(&rng) % 20);
                 size_t here = p->n, lo = starts[f], target = lo + (size_t)(next_random(&rng) % 58);
+                if (leaf_like && (kind == 8 || kind == 9 || kind == 19 || (kind == 7 && f == 0))) kind = 0;
+                if (leaf_like && target <= here) target = here + 1 + (target - lo) % (lo + 58 - here);
                 switch (kind) {
                     case 0:
                     case 1:
@@ -1181,8 +1425,10 @@ static void corpus(int portable, unsigned programs) {
                             0x54000000u | (u32)((target - here) & 0x7FFFF) << 5 | (unsigned)(next_random(&rng) % 14));
                         break;
                     case 6: put(p, 0xB4000000u | (u32)((target - here) & 0x7FFFF) << 5 | r); break; /* CBZ */
-                    case 7:
-                        put(p, 0x94000000u | (u32)((starts[(f + 1 + next_random(&rng) % 2) % 3] - here) & 0x3FFFFFF));
+                    case 7: /* BL, of function 0 alone from a summarized function 1 */
+                        put(p,
+                            0x94000000u | (u32)((starts[leaf_like ? 0 : (f + 1 + next_random(&rng) % 2) % 3] - here) &
+                                                0x3FFFFFF));
                         break;
                     case 8: put(p, 0xD63F0000u | q << 5); break;                                 /* BLR */
                     case 9: put(p, 0xD4000001u | (u32)(next_random(&rng) % 64) << 5); break;     /* SVC */
@@ -1233,7 +1479,8 @@ static void corpus(int portable, unsigned programs) {
         steps.ir->check = 1;
         for (size_t i = 0; i < codegen.function_count; ++i)
             llvm_steps_add_function(&steps, &codegen, &codegen.functions[i]);
-        functions += steps.ir->stats.enabled ? 0 : codegen.function_count;
+        functions += codegen.function_count;
+        summarized += steps.ir->summary_count;
         if (steps.ir->check_failures && !failed++) {
             snprintf(what, sizeof(what), "seed %u: %lu problems, the first: %s", seed, steps.ir->check_failures,
                      steps.ir->check_why);
@@ -1246,14 +1493,20 @@ static void corpus(int portable, unsigned programs) {
         snprintf(what, sizeof(what), "%u of %u programs fail the checker", failed, programs);
         fail("checker corpus", what);
     }
-    printf("promotion checker: %u random programs, %lu functions, %u failing\n", programs, functions, failed);
+    printf("promotion checker: %u random programs, %lu functions (%lu summarized), %u failing\n", programs, functions,
+           summarized, failed);
+    if (summarized < programs) {
+        snprintf(what, sizeof(what), "%lu functions summarized in %u programs, under one a program", summarized,
+                 programs);
+        fail("checker corpus", what);
+    }
 }
 
 /* --check UNIT.ll...: code units kept unpromoted (scarletnx -r ... -O 0 --keep-ir), every guest function promoted as at
    O2 in the unit's order and checked; the problems, by unit */
 static int check_units(int count, char** paths) {
     char error[1024];
-    unsigned long problems = 0, functions = 0;
+    unsigned long problems = 0, functions = 0, summarized = 0;
     if (snx_ir_init(error, sizeof(error))) {
         fprintf(stderr, "%s\n", error);
         return 2;
@@ -1281,17 +1534,22 @@ static int check_units(int count, char** paths) {
             if (length < 3 || name[0] != 'F' || name[1] != '_' || LLVMIsDeclaration(fn)) continue;
             ir->fn = fn;
             ir->c = LLVMGetParam(fn, 0);
+            ir->entry_mismatch = NULL;
+            for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb))
+                if (!strcmp(LLVMGetBasicBlockName(bb), "entry_mismatch")) ir->entry_mismatch = bb;
             ir_promote_registers(ir, fn);
             ir_check_promoted(ir, fn);
             ++n;
         }
-        printf("%s: %lu functions promoted, %lu problems%s%s\n", paths[a], n, ir->check_failures - before,
-               ir->check_failures ? ", the first: " : "", ir->check_failures ? ir->check_why : "");
+        printf("%s: %lu functions promoted (%zu summarized), %lu problems%s%s\n", paths[a], n, ir->summary_count,
+               ir->check_failures - before, ir->check_failures ? ", the first: " : "",
+               ir->check_failures ? ir->check_why : "");
         problems += ir->check_failures;
         functions += n;
+        summarized += ir->summary_count;
         snx_ir_free(ir);
     }
-    printf("promotion checker: %lu functions, %lu problems\n", functions, problems);
+    printf("promotion checker: %lu functions (%lu summarized), %lu problems\n", functions, summarized, problems);
     return problems != 0;
 }
 
