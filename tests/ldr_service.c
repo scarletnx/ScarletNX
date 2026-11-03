@@ -53,6 +53,11 @@ u8* plat_vm_reserve_unwatched(u64 size) {
     errno = ENOSYS;
     return NULL;
 }
+int plat_vm_foreign(u64 lo, u64 hi, char* out, size_t size) { /* plat_posix.c's, which platform_posix tests */
+    (void)lo, (void)hi;
+    if (size) out[0] = 0;
+    return -1;
+}
 /* mem.c's reservation at the guest's own addresses, which nce_wanted's 0 never takes: an AArch64 Linux host links it */
 u8* plat_vm_reserve_at(u64 addr, u64 size) {
     (void)addr, (void)size;

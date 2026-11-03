@@ -9,6 +9,9 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <sys/wait.h>
+#if defined(__linux__)
+#include <sys/prctl.h> /* PR_SET_VMA_ANON_NAME, for test_foreign */
+#endif
 
 static char g_log[1024]; /* the log's lines while g_log_on, as far as they fit */
 static int g_log_on;
@@ -320,6 +323,66 @@ static void test_guest_memory(const char* dir) {
 
 /* host_page: the host's page, or a larger power of two up to SNX_PLAT_PAGE_MAX; another value is said once, with the
    page the runtime works in instead */
+/* plat_vm_foreign over a reservation of its own: its own pages and the alias pool's are the guest's; another owner's
+   memfd mapped over it (as a JIT's code cache would be), a run given back, and a named anonymous mapping (as ART and
+   the allocator name theirs) are not, each named with its addresses. Linux, where /proc/self/maps says */
+static void test_foreign(void) {
+#if defined(__linux__)
+    const u64 pg = (u64)sysconf(_SC_PAGESIZE);
+    u8* r = (u8*)mmap(NULL, 64 * pg, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    u64 lo = (u64)(uintptr_t)r, hi = lo + 64 * pg;
+    char out[512], want[96], small[24];
+    int alias, jit, n;
+    printf("what is not the guest's in its range\n");
+    if (r == (u8*)MAP_FAILED) {
+        CHECK(0, "a reservation for the foreign mappings");
+        return;
+    }
+    CHECK(plat_vm_foreign(lo, hi, out, sizeof out) == 0 && !out[0], "a reservation holds nothing foreign");
+    CHECK(!mprotect(r, 4 * pg, PROT_READ | PROT_WRITE), "four pages committed");
+    r[0] = 1;
+    CHECK(plat_vm_foreign(lo, hi, out, sizeof out) == 0, "its committed pages are its own");
+    alias = (int)syscall(SYS_memfd_create, "snx-alias", 1u);
+    jit = (int)syscall(SYS_memfd_create, "jit-cache", 1u);
+    CHECK(alias >= 0 && jit >= 0 && !ftruncate(alias, (off_t)(2 * pg)) && !ftruncate(jit, (off_t)(2 * pg)),
+          "two memfds");
+    CHECK(mmap(r + 8 * pg, 2 * pg, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, alias, 0) == r + 8 * pg &&
+              plat_vm_foreign(lo, hi, out, sizeof out) == 0,
+          "the alias pool's pages are the guest's");
+    CHECK(mmap(r + 16 * pg, 2 * pg, PROT_READ | PROT_EXEC, MAP_SHARED | MAP_FIXED, jit, 0) == r + 16 * pg,
+          "another owner's memfd over it");
+    n = plat_vm_foreign(lo, hi, out, sizeof out);
+    snprintf(want, sizeof want, "mapped at %#llx-%#llx r-xs /memfd:jit-cache (deleted)",
+             (unsigned long long)(lo + 16 * pg), (unsigned long long)(lo + 18 * pg));
+    CHECK(n == 1 && !strcmp(out, want), "another owner's mapping named, with its range, permissions and name");
+    CHECK(!munmap(r + 32 * pg, 2 * pg), "a run given back");
+    n = plat_vm_foreign(lo, hi, out, sizeof out);
+    snprintf(want, sizeof want, "; nothing mapped at %#llx-%#llx", (unsigned long long)(lo + 32 * pg),
+             (unsigned long long)(lo + 34 * pg));
+    CHECK(n == 2 && strstr(out, want), "and the run, with its range");
+    CHECK(plat_vm_foreign(lo + 18 * pg, lo + 32 * pg, out, sizeof out) == 0, "only the range asked is read");
+    snprintf(want, sizeof want, "nothing mapped at %#llx-%#llx", (unsigned long long)(lo + 33 * pg),
+             (unsigned long long)(lo + 34 * pg));
+    CHECK(plat_vm_foreign(lo + 18 * pg, lo + 34 * pg + pg / 2, out, sizeof out) == 1 && strstr(out, "nothing mapped") &&
+              plat_vm_foreign(lo + 33 * pg, lo + 34 * pg, out, sizeof out) == 1 && !strcmp(out, want),
+          "a run that the range ends in, cut to the range");
+    CHECK(plat_vm_foreign(lo, hi, small, sizeof small) == 2 && strlen(small) == sizeof small - 1,
+          "a small buffer: the count whole, the names cut where it is full");
+#if defined(PR_SET_VMA) && defined(PR_SET_VMA_ANON_NAME)
+    if (!prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, (unsigned long)(uintptr_t)(r + 40 * pg), (unsigned long)(2 * pg),
+               (unsigned long)(uintptr_t)"dalvik-jit-code-cache")) {
+        n = plat_vm_foreign(lo, hi, out, sizeof out);
+        CHECK(n == 3 && strstr(out, "[anon:dalvik-jit-code-cache]"), "a named anonymous mapping, by its name");
+    } else
+        printf("  a named anonymous mapping skipped: this kernel names none (%s)\n", strerror(errno));
+#endif
+    CHECK(plat_vm_foreign(hi, hi + pg, out, sizeof out) >= 0, "a range past it reads");
+    munmap(r, 64 * pg);
+    close(alias);
+    close(jit);
+#endif
+}
+
 static void test_host_page(void) {
     u64 host = (u64)sysconf(_SC_PAGESIZE);
     int given = g_settings.host_page_size;
@@ -375,6 +438,7 @@ int main(int argc, char** argv) {
         ini_read(ini_find(g_debug_ini, key), eq + 1);
     }
     test_host_page();
+    test_foreign();
     if (sysconf(_SC_PAGESIZE) == 4096)
         test_guest_memory(dir);
     else /* plat_vm_reserve refuses the host: guest memory needs 4 KiB pages, and Apple silicon's are 16 KiB */

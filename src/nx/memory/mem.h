@@ -106,6 +106,11 @@ void mem_reserve(void);
 int mem_reserved(void);
 /* 1 when the guest's addresses are the host's, for NCE: g_mem is 0 */
 int mem_identity(void);
+/* What of the host's process lies in the guest's reservation and is not the guest's (plat_vm_foreign): their count,
+   each one named in out; 0 when the reservation is the guest's alone, or none is made yet; -1 where the system does
+   not say. Nothing of the runtime gives back a page of the reservation, so anything there is another owner's: a
+   mapping made over guest memory, or one given a run that was handed back */
+int mem_foreign(char* out, size_t size);
 /* NCE's reservation at the guest's own addresses (mem.c says why), the layout moved up by from or more: 1, or 0 with
    the reason logged. POSIX only */
 int mem_reserve_identity(u64 from);

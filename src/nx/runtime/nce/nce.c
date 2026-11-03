@@ -27,6 +27,8 @@
 #define NCE_DIVERTS 4096
 /* how often a kick goes again to a thread whose CPU.poll is still set: one may land in the outcall's own code */
 #define NCE_KICK_AGAIN_NS 2000000
+/* how often the kicks' thread looks for what is not the game's in the guest's addresses (guest_foreign): 10 s */
+#define NCE_FOREIGN_EVERY (10000000000ull / NCE_KICK_AGAIN_NS)
 
 static struct {
     int checked, file, wanted, on;
@@ -220,13 +222,31 @@ void nce_kick(struct KThread* t) {
     if (g_nce.on && t) kick_tid(kt_ix(t));
 }
 
+/* The guest's addresses are the host's, in the host's process with its other owners (ART's heap and JIT, the
+   allocator, the GPU's driver). Nothing of the runtime gives a page of them back, so a mapping there that is not the
+   game's (mem_foreign) is another owner's, made over the game's memory: the game's code would read and write it as
+   its own, so the game ends with what it is. 0 when there is none, -1 when the system does not say */
+static int guest_foreign(const char* when) {
+    char found[1024];
+    int n = mem_foreign(found, sizeof found);
+    if (n > 0) {
+        WARN("nce: in the guest's addresses: %s\n", found); /* names and paths, which the fatal's text keeps out */
+        fatal("NCE: %s, the guest's addresses %#llx to %#llx hold %d thing%s of the host's process that %s not the "
+              "game's, named in the log",
+              when, (unsigned long long)AS_BASE, (unsigned long long)AS_END, n, n == 1 ? "" : "s",
+              n == 1 ? "is" : "are");
+    }
+    return n;
+}
+
 /* a kick that lands in the outcall's code, after its last look at CPU.poll and before the guest's code, stops nothing:
    this goes again to each thread that runs guest code with its poll still set */
 static void kicker(void* arg) {
     (void)arg;
     SNX_THREAD_NAME("nce kicks");
-    for (;;) {
+    for (u64 round = 1;; round++) {
         plat_sleep_ns(NCE_KICK_AGAIN_NS);
+        if (round % NCE_FOREIGN_EVERY == 0) guest_foreign("while the game runs");
         for (u32 ix = 1; ix <= KTHREAD_MAX; ix++)
             if (__atomic_load_n(&g_nce.guest[ix], __ATOMIC_ACQUIRE) &&
                 __atomic_load_n(&kt_at(ix)->cpu.poll, __ATOMIC_RELAXED))
@@ -362,6 +382,10 @@ void nce_init(void) {
         "follows the host's counter, at %llu Hz\n",
         sites.count, sites.proven, g_nce.pools, (unsigned long long)counter.freq);
     nce_sites_free(&sites);
+    if (guest_foreign("as the game's code starts") == 0)
+        LOG("nce: the guest's addresses %#llx to %#llx hold nothing of the host's process but the game's, looked at "
+            "again every 10 s\n",
+            (unsigned long long)AS_BASE, (unsigned long long)AS_END);
     g_nce.on = 1;
     if (plat_thread(kicker, NULL, 64 << 10)) fatal("NCE: the thread of the kicks cannot start");
 }

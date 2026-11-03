@@ -299,6 +299,11 @@ void plat_ww_close(u8* p, u64 size) {
     (void)size;
 }
 
+int plat_vm_foreign(u64 lo, u64 hi, char* out, size_t size) {
+    (void)lo, (void)hi;
+    if (size) out[0] = 0;
+    return -1;
+}
 int plat_vm_commit(u8* p, u64 size) {
     /* MEM_COMMIT charges the whole range to the commit limit at once */
     if (VirtualAlloc(p, (SIZE_T)size, MEM_COMMIT, PAGE_READWRITE)) return 0;

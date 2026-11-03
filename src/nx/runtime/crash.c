@@ -163,8 +163,12 @@ void crash_report(void* host_pc, void* fault, int sig) {
     } else
         WARN("  on one of the runtime's threads, not the game's\n");
     if (mem_reserved()) {
+        char foreign[512];
         mem_report(memory, sizeof memory);
         WARN("  memory: %s\n", memory);
+        /* another owner's mapping over guest memory makes a crash of its own: name what it is */
+        if (mem_foreign(foreign, sizeof foreign) > 0)
+            WARN("  the guest's address range holds what is not the game's: %s\n", foreign);
     }
     fatal("The game crashed (%s). See the .log for details.", kind);
 }

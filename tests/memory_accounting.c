@@ -95,6 +95,11 @@ u8* plat_vm_reserve_unwatched(u64 size) {
     return reserve(size);
 }
 /* no tracking here: the range mem_init asks it of, which test_moved holds to the reservation where it runs */
+int plat_vm_foreign(u64 lo, u64 hi, char* out, size_t size) { /* plat_posix.c's, which platform_posix tests */
+    (void)lo, (void)hi;
+    if (size) out[0] = 0;
+    return -1;
+}
 #if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
 static u8* tracked;
 static u64 tracked_size;

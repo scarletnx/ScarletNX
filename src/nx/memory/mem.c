@@ -905,6 +905,18 @@ int mem_reserve_identity(u64 from) {
 }
 #endif
 int mem_identity(void) { return g_mem_identity; }
+int mem_foreign(char* out, size_t size) {
+    u64 lo, hi;
+    if (g_mem_identity)
+        lo = IDENTITY_LO + g_mem_moved, hi = g_as_size;
+    else if (g_mem)
+        lo = (u64)(uintptr_t)g_mem, hi = lo + g_as_size;
+    else {
+        if (size) out[0] = 0;
+        return 0;
+    }
+    return plat_vm_foreign(lo, hi, out, size);
+}
 int mem_reserved(void) { return g_mem || g_mem_identity; }
 
 void mem_reserve(void) {
