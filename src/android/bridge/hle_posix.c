@@ -8,6 +8,8 @@
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_assets.h"
 #include "android/bridge/hle_impl.h"
+#include "android/bridge/hle_signal.h"
+#include "common/utilities/endian.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -446,29 +448,6 @@ static void g_getauxval(CPU* c, void* data) {
 }
 
 /* uname: the host's, as an AArch64 machine */
-static void g_uname(CPU* c, void* data) {
-    (void)data;
-    struct utsname* u = PTR(0);
-    int r = uname(u);
-    if (!r) snprintf(u->machine, sizeof u->machine, "aarch64");
-    X(0) = (uint64_t)(int64_t)r;
-}
-
-static void g_arc4random(CPU* c, void* data) {
-    (void)data;
-    uint32_t v = 0;
-    if (getrandom(&v, sizeof v, 0) != sizeof v) v = (uint32_t)random();
-    X(0) = v;
-}
-static void g_arc4random_buf(CPU* c, void* data) {
-    (void)data;
-    for (size_t done = 0; done < X(1);) {
-        ssize_t n = getrandom((unsigned char*)PTR(0) + done, X(1) - done, 0);
-        if (n <= 0) break;
-        done += (size_t)n;
-    }
-}
-
 /* ---- what an app may not do in its sandbox: fork, exec, ptrace ---- */
 static void refused(CPU* c, void* data) {
     (void)data;
@@ -518,19 +497,6 @@ static void host_set(uint64_t guest, sigset_t* out) {
     for (int s = 1; s <= 64; ++s)
         if ((set >> (s - 1)) & 1) sigaddset(out, s);
 }
-static void g_pthread_sigmask(CPU* c, void* data) {
-    (void)data;
-    sigset_t set, old;
-    if (X(1)) host_set(X(1), &set);
-    int r = pthread_sigmask((int)X(0), X(1) ? &set : NULL, &old);
-    if (!r && X(2)) {
-        uint64_t g = 0;
-        for (int s = 1; s <= 64; ++s)
-            if (sigismember(&old, s) == 1) g |= 1ull << (s - 1);
-        memcpy(PTR(2), &g, 8);
-    }
-    X(0) = (uint64_t)(int64_t)r;
-}
 static void g_signalfd(CPU* c, void* data) {
     (void)data;
     sigset_t set;
@@ -538,57 +504,60 @@ static void g_signalfd(CPU* c, void* data) {
     X(0) = (uint64_t)(int64_t)signalfd((int)X(0), &set, (int)X(3));
 }
 
-/* The guest's signal handlers, recorded: the bridge does not deliver signals to the guest yet. bionic's struct
-   sigaction on AArch64: the handler, sa_mask (8 bytes), sa_flags (int), sa_restorer */
-static uint64_t handlers[65][4];
-static void g_sigaction(CPU* c, void* data) {
-    (void)data;
-    int sig = (int)X(0);
-    if (sig < 1 || sig > 64) {
-        fail_errno(c, EINVAL);
-        return;
-    }
-    if (X(2)) memcpy(PTR(2), handlers[sig], 32);
-    if (X(1)) memcpy(handlers[sig], PTR(1), 32);
-    X(0) = 0;
-}
-static void g_signal(CPU* c, void* data) {
-    (void)data;
-    int sig = (int)X(0);
-    if (sig < 1 || sig > 64) {
-        X(0) = (uint64_t)-1; /* SIG_ERR */
-        errno = EINVAL;
-        return;
-    }
-    uint64_t old = handlers[sig][0];
-    handlers[sig][0] = X(1);
-    X(0) = old;
-}
+/* ---- syscall() and the bionic functions that are one system call: the GNU ABI runtime's kernel ---- */
 
-/* ---- syscall(): AArch64's numbers ---- */
-
-static void g_syscall(CPU* c, void* data) {
-    (void)data;
-    long r;
-    switch (X(0)) {
-    case 98: r = syscall(SYS_futex, X(1), X(2), X(3), X(4), X(5), X(6)); break;
-    case 113: r = syscall(SYS_clock_gettime, X(1), X(2)); break;
-    case 123: r = syscall(SYS_sched_getaffinity, X(1), X(2), X(3)); break;
-    case 131: r = syscall(SYS_tgkill, X(1), X(2), X(3)); break;
-    case 167: r = syscall(SYS_prctl, X(1), X(2), X(3), X(4), X(5)); break;
-    case 168: r = syscall(SYS_getcpu, X(1), X(2), X(3)); break;
-    case 172: r = getpid(); break;
-    case 178: r = gettid(); break;
-    case 233: r = syscall(SYS_madvise, X(1), X(2), X(3)); break;
-    case 278: r = syscall(SYS_getrandom, X(1), X(2), X(3)); break;
-    case 283: r = syscall(SYS_membarrier, X(1), X(2), X(3)); break;
-    default:
-        fprintf(stderr, "scarletnx-android: syscall(%llu): not answered, ENOSYS\n", (unsigned long long)X(0));
-        errno = ENOSYS;
+/* number with x0 to x5 (from x1 for syscall()), its result as bionic's: -1 and errno for an error */
+static void kernel_result(CPU* c, long number, unsigned first) {
+    const uint64_t arguments[6] = {X(first), X(first + 1), X(first + 2), X(first + 3), X(first + 4), X(first + 5)};
+    bool known = true;
+    long r = hle_kernel_syscall(number, arguments, c, &known);
+    if (!known)
+        fprintf(stderr, "scarletnx-android: syscall(%ld): not answered, ENOSYS\n", number);
+    if (r < 0) {
+        errno = (int)-r;
         r = -1;
-        break;
     }
     X(0) = (uint64_t)(int64_t)r;
+}
+static void g_syscall(CPU* c, void* data) {
+    (void)data;
+    kernel_result(c, (long)X(0), 1);
+}
+/* a bionic function that is the system call in data, with its arguments */
+static void kernel_function(CPU* c, void* data) {
+    kernel_result(c, (long)(uintptr_t)data, 0);
+}
+#define K(name, number) {#name, kernel_function, (void*)(uintptr_t)(number)}
+/* clock_nanosleep(): the error number itself */
+static void g_clock_nanosleep(CPU* c, void* data) {
+    (void)data;
+    const uint64_t arguments[6] = {X(0), X(1), X(2), X(3), 0, 0};
+    X(0) = (uint64_t)-hle_kernel_syscall(115, arguments, c, NULL);
+}
+/* getentropy(buf, length): at most 256 bytes, all of them, 0 or -1 */
+static void g_getentropy(CPU* c, void* data) {
+    (void)data;
+    if (X(1) > 256) {
+        errno = EIO;
+        X(0) = (uint64_t)-1;
+        return;
+    }
+    const uint64_t arguments[6] = {X(0), X(1), 0, 0, 0, 0};
+    long r = hle_kernel_syscall(278, arguments, c, NULL);
+    if (r < 0) errno = (int)-r;
+    X(0) = r == (long)X(1) ? 0 : (uint64_t)-1;
+}
+static void g_arc4random(CPU* c, void* data) {
+    (void)data;
+    uint8_t v[4] = {0};
+    const uint64_t arguments[6] = {(uint64_t)(uintptr_t)v, sizeof v, 0, 0, 0, 0};
+    (void)hle_kernel_syscall(278, arguments, c, NULL);
+    X(0) = snx_ld_le32(v);
+}
+static void g_arc4random_buf(CPU* c, void* data) {
+    (void)data;
+    const uint64_t arguments[6] = {X(0), X(1), 0, 0, 0, 0};
+    (void)hle_kernel_syscall(278, arguments, c, NULL); /* the kernel's call gives the whole of it */
 }
 
 #define P(name) {#name, hle_pass, (void*)name}
@@ -620,7 +589,7 @@ const HleSymbol hle_posix[] = {
     P(inotify_init1), P(inotify_add_watch),
     {"mmap", g_mmap, NULL},
     {"mprotect", g_mprotect, NULL},
-    P(munmap), P(madvise), P(msync), P(mincore),
+    P(munmap), K(madvise, 233), P(msync), P(mincore),
     {"mallinfo", g_mallinfo, NULL},
     P(epoll_create),
     {"epoll_ctl", g_epoll_ctl, NULL},
@@ -636,16 +605,20 @@ const HleSymbol hle_posix[] = {
     {"freeaddrinfo", g_freeaddrinfo, NULL},
     P(getnameinfo), P(gethostname), P(inet_addr), P(inet_aton), P(inet_ntoa), P(inet_ntop),
     P(inet_pton), P(if_nametoindex),
-    P(clock), P(clock_getres), P(clock_gettime), P(gettimeofday), P(time), P(nanosleep), P(usleep), P(sleep),
+    P(clock), K(clock_getres, 114), K(clock_gettime, 113), K(gettimeofday, 169), P(time), K(nanosleep, 101),
+    {"clock_nanosleep", g_clock_nanosleep, NULL}, P(usleep), P(sleep),
     P(gmtime), P(gmtime_r), P(localtime), P(localtime_r), P(mktime), P(strftime), P(strftime_l), P(tzset), P(alarm),
-    P(getpid), P(getppid), P(gettid), P(getuid), P(geteuid), P(getrlimit), P(getrusage), P(sysinfo), P(getenv),
-    P(setenv), P(getpwuid), P(getpwuid_r), P(prctl), P(setpriority), P(sched_yield), P(sched_get_priority_max),
-    P(sched_get_priority_min), P(getentropy), P(openlog), P(closelog),
+    K(getpid, 172), K(getppid, 173), K(gettid, 178), K(getuid, 174), K(geteuid, 175), K(getgid, 176),
+    K(getegid, 177), K(getrlimit, 163), K(setrlimit, 164), K(prlimit, 261), K(getrusage, 165), K(sysinfo, 179),
+    K(times, 153), K(uname, 160), K(prctl, 167), K(setpriority, 140), K(sched_yield, 124),
+    K(sched_get_priority_max, 125), K(sched_get_priority_min, 126), K(sched_getscheduler, 120),
+    K(sched_getparam, 121), K(sched_setscheduler, 119), K(sched_setparam, 118), K(getrandom, 278), P(getenv),
+    P(setenv), P(getpwuid),
+    P(getpwuid_r), {"getentropy", g_getentropy, NULL}, P(openlog), P(closelog),
     P(sem_init), P(sem_destroy), P(sem_post), P(sem_wait), P(sem_timedwait),
     {"sysconf", g_sysconf, NULL},
     {"getpagesize", g_getpagesize, NULL},
     {"getauxval", g_getauxval, NULL},
-    {"uname", g_uname, NULL},
     {"arc4random", g_arc4random, NULL},
     {"arc4random_buf", g_arc4random_buf, NULL},
     {"fork", refused, NULL},
@@ -657,11 +630,7 @@ const HleSymbol hle_posix[] = {
     {"sigfillset", g_sigfillset, NULL},
     {"sigaddset", g_sigaddset, NULL},
     {"sigdelset", g_sigdelset, NULL},
-    {"pthread_sigmask", g_pthread_sigmask, NULL},
-    {"sigprocmask", g_pthread_sigmask, NULL},
     {"signalfd", g_signalfd, NULL},
-    {"sigaction", g_sigaction, NULL},
-    {"signal", g_signal, NULL},
     {"syscall", g_syscall, NULL},
     {"tzname", NULL, &tzname},
     {"timezone", NULL, &timezone},
