@@ -221,6 +221,9 @@ void vk_uma_owning(u64 cpu, u64 size);        /* that guest memory becomes GPU-o
 void vk_uma_mapping_begin(u64 cpu, u64 size); /* mem.c changes that guest memory next (size ~0: all) */
 void vk_uma_mapping_end(void);                /* they changed: before anything else is submitted */
 u32 vk_uma_imports(u64 cpu, u64 size); /* the imports the driver holds over guest memory [cpu, cpu + size) (vk_lock) */
+/* the first import the driver holds over guest memory [cpu, end), on any thread: where it starts there, with where it
+   ends in *hi (end at most); end for none. Write tracking leaves those pages alone */
+u64 vk_uma_import_in(u64 cpu, u64 end, u64* hi);
 
 /* The caches of textures, render targets and buffers are kept within the driver's budget for the heap images go to
    (VK_EXT_memory_budget through VMA; vk_budget_mb lowers it, for testing): past it the driver pages memory out,
