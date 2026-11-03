@@ -252,6 +252,10 @@ int snx_ir_object(SnxIr* ir, char opt, unsigned char** data, size_t* size, char*
    caller's */
 int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned char** data, size_t* size, char* error,
                          size_t error_size);
+/* snx_ir_module_object's passes alone: the module verified and optimized as its object would be, and no code made
+   (tests/llvm_lowering.c reads what the emitters' IR becomes on targets this LLVM can't make code for with their
+   features). 0, or -1 with the reason in error */
+int snx_ir_module_optimize(SnxIr* ir, LLVMModuleRef module, char opt, char* error, size_t error_size);
 /* The runtime library (rtlib.c) as a host object file (malloc'd): its bitcode, embedded when the recompiler was
    built, compiled for this machine like the generated code */
 int snx_ir_rtlib_object(char opt, unsigned char** data, size_t* size, char* error, size_t error_size);

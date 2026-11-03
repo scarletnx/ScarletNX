@@ -518,13 +518,10 @@ void ir_clean_function(SnxIr* ir, LLVMValueRef fn) {
     }
 }
 
-/* a change here, or to new_ir's target machine, that changes the object of the same IR bumps SNX_IR_OBJECT_VERSION */
-int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned char** data, size_t* size, char* error,
-                         size_t error_size) {
+/* a change here or in snx_ir_module_object, or to new_ir's target machine, that changes the object of the same IR bumps
+   SNX_IR_OBJECT_VERSION */
+int snx_ir_module_optimize(SnxIr* ir, LLVMModuleRef module, char opt, char* error, size_t error_size) {
     char pipeline[16], *message = NULL;
-    LLVMMemoryBufferRef buffer;
-    *data = NULL;
-    *size = 0;
     if (LLVMVerifyModule(module, LLVMReturnStatusAction, &message)) {
         snprintf(error, error_size, "invalid IR: %.900s", message ? message : "");
         LLVMDisposeMessage(message);
@@ -558,6 +555,18 @@ int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned cha
             return -1;
         }
     }
+    return 0;
+}
+
+int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned char** data, size_t* size, char* error,
+                         size_t error_size) {
+    char* message;
+    LLVMMemoryBufferRef buffer;
+    LLVMPassBuilderOptionsRef options;
+    LLVMErrorRef failure;
+    *data = NULL;
+    *size = 0;
+    if (snx_ir_module_optimize(ir, module, opt, error, error_size)) return -1;
     if (ppc_target(ir)) {
         ppc_tail_calls(ir);
         /* the pointer's load the stub repeats is dead now */
