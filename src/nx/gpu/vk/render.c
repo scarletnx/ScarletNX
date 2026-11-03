@@ -1712,7 +1712,7 @@ static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites*
 }
 static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
                                   u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images);
-/* scaled: a bit for each texture slot bound to a scaled render target (scaled_coords in spirv_translate.c) */
+/* scaled: a bit for each texture slot bound to a scaled render target (shader_scaled_coords in shader/emit_texture.c) */
 static VkDescriptorSet stage_set(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro, u32* fb,
                                  u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images) {
     SNX_ZONE(z, "stage set");
@@ -3443,7 +3443,7 @@ retry:
        the point sprite's T flip for the fragment stage. PointCoord's T is 0 at row 0, which is a lower-left window's
        bottom: it flips when the sprite's origin (1 the top) is the other side. Then the fragment stage's scaled
        textures (stage_set), and whether the window is lower left and its surface clip's height, which the fragment's
-       y counts up from there (spirv_translate.c's frag_y_origin) */
+       y counts up from there (shader/emit_io.c's shader_frag_y_origin) */
     float pc[12] = {0, ds->dyn.depth_mode ? 0.0f : 1.0f, 0, 0};
     /* the instance ID: InstanceIndex less the base instance pushed (depth_word, the 3D engine's base instance), or
        with draw parameters less BaseInstance plus what the draw's first instance adds to the base instance: the
