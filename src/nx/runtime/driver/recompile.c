@@ -419,9 +419,18 @@ static int nce_prepare(SnxProgram* p, const char* base, int quiet) {
         nce_sites_move(&sites, old[i], old[i] + p->modules[i].size, p->modules[i].base - old[i]);
     if (!r && nce_file_write(path, p->modules[0].base, pools, p->module_count, &sites))
         r = snx_error("cannot write %s", path);
-    if (!r && !quiet)
-        printf("NCE: %zu words to patch (%zu that the flow reaches), %zu kept as data, %zu outside the functions\n",
-               sites.count, sites.proven, sites.data, sites.outside);
+    if (!r && !quiet) {
+        /* outside: by kind, as the runtime's net catches only an SVC there (nce_host_net), and the others would read
+           the host's registers */
+        char kinds[256] = "";
+        size_t at = 0;
+        for (int k = NCE_NONE + 1; k < NCE_KINDS && at < sizeof kinds; k++)
+            if (sites.outside_kind[k])
+                at += (size_t)snprintf(kinds + at, sizeof kinds - at, "%s%s %zu", at ? ", " : ": ",
+                                       nce_kind_name((NceKind)k), sites.outside_kind[k]);
+        printf("NCE: %zu words to patch (%zu that the flow reaches), %zu kept as data, %zu outside the functions%s\n",
+               sites.count, sites.proven, sites.data, sites.outside, kinds);
+    }
     nce_sites_free(&sites);
     free(pools);
     free(old);

@@ -21,8 +21,11 @@ typedef enum {
     NCE_TICKS,     /* MRS Xt, CNTPCT_EL0 or CNTVCT_EL0: guest_ticks, from the host's counter in the stub (NceEnv) */
     NCE_FREQ,      /* MRS Xt, CNTFRQ_EL0: the console's 19.2 MHz */
     NCE_EXCLUSIVE, /* LDXR, STXR, LDXP, STXP: made ordered in place, with no stub */
-    NCE_HOOK       /* the entry of a function that the runtime hooks: an outcall (nce_divert), never in a scan */
+    NCE_HOOK,      /* the entry of a function that the runtime hooks: an outcall (nce_divert), never in a scan */
+    NCE_KINDS
 } NceKind;
+/* the kind's instruction, for a log line: "SVC", "MRS TPIDRRO_EL0" */
+const char* nce_kind_name(NceKind kind);
 
 /* the frequency of the console's system counter */
 #define NCE_CNTFRQ 19200000u
@@ -45,8 +48,9 @@ typedef struct {
     size_t count, cap;
     /* proven: sites that the analysis reaches; unproven: sites inside a function that no flow reaches and no code
        reads; data: words of a kind that code reads as data (literals, tables); outside: words of a kind outside every
-       function. The last two are not in site */
+       function, and outside_kind those by kind. The last two are not in site */
     size_t proven, unproven, data, outside;
+    size_t outside_kind[NCE_KINDS];
 } NceSites;
 
 /* the sites in the text of each of codegen's modules, in address order */
@@ -128,6 +132,19 @@ typedef struct {
 int nce_file_write(const char* path, SnxU64 base, const NceRange* pools, size_t pool_count, const NceSites* sites);
 /* 0, or -1 for a file that is missing or not of this version. *pools is malloc'd */
 int nce_file_read(const char* path, SnxU64 base, NceRange** pools, size_t* pool_count, NceSites* sites);
+
+/* The net under an SVC that no site holds (a word outside the analysed functions that is code after all, or code that
+   the game made): a seccomp filter that traps each system call made from the guest's addresses [lo, hi) with SIGSYS,
+   the call not made, and lets every other through. Classic BPF, laid out as linux/filter.h's struct sock_filter, for
+   a little-endian host whose system calls are of AUDIT_ARCH_ arch: its NCE_NET_WORDS words into out. Host-independent,
+   so a test runs it on any Linux; nce_host.c installs it */
+typedef struct {
+    unsigned short code;
+    unsigned char jt, jf;
+    SnxU32 k;
+} NceBpf;
+#define NCE_NET_WORDS 14
+size_t nce_net_filter(SnxU64 lo, SnxU64 hi, SnxU32 arch, NceBpf* out);
 
 /* the stub layout that the runtime's outcall (nce.c) depends on: the stub lowers the guest's sp by NCE_FRAME and
    keeps x16 and x17 at sp + 0 and 8, x30 at sp + 16. The runtime keeps the stub's return address at sp + 24 */

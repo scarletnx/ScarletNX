@@ -192,9 +192,15 @@ static void preempted(CPU* c) {
 }
 
 /* an instruction that the guest's code cannot run (UDF, or one the host refuses at EL0), or a BRK: RtAPI's undef and
-   brk end the game with its state in the log */
+   brk end the game with its state in the log. SIGSYS: an SVC that no stub holds, which the net caught before the
+   host's kernel made it a system call of its own (x8 its number, the immediate left aside) */
 static void trapped(CPU* c, int sig) {
     u32 w = gr32(c->pc);
+    if (sig == SIGSYS)
+        fatal("NCE: the game's code at %llx ran SVC #%u (%08x), a word that its recompile did not find as code, so no "
+              "stub serves it, and it was not let through as a system call of the host. Recompile the game with nce=0, "
+              "which makes all of its code ahead of time",
+              (unsigned long long)c->pc, (unsigned)((w >> 5) & 0xFFFFu), (unsigned)w);
     set_guest(c, 0);
     if (sig == SIGTRAP && (w & 0xFFE0001Fu) == 0xD4200000u)
         c->rt->brk(c, c->pc, (w >> 5) & 0xFFFFu);
@@ -317,6 +323,9 @@ void nce_init(void) {
         nce_sites_free(&sites);
         return;
     }
+    if (nce_host_net(why, sizeof why))
+        WARN("nce: %s, so an SVC that the recompile did not find as code would run as a system call of the host\n",
+             why);
     g_nce.env.clock = counter.words;
     g_nce.env.ns_lo = counter.mul_lo;
     g_nce.env.ns_hi = counter.mul_hi;

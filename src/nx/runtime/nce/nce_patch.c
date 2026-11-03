@@ -42,6 +42,13 @@ NceKind nce_kind(SnxU32 w, unsigned* reg, unsigned* imm) {
     return NCE_NONE;
 }
 
+const char* nce_kind_name(NceKind kind) {
+    static const char* const names[NCE_KINDS] = {"none",           "SVC",           "MRS TPIDRRO_EL0",
+                                                 "MRS TPIDR_EL0",  "MSR TPIDR_EL0", "MRS CNTPCT_EL0 or CNTVCT_EL0",
+                                                 "MRS CNTFRQ_EL0", "an exclusive",  "a hooked entry"};
+    return (unsigned)kind < NCE_KINDS ? names[kind] : "?";
+}
+
 /* ---- the scan ---- */
 
 /* a word's state: not known, code that the flow reaches, a literal that a load reads (which stops the flow: a pool
@@ -272,8 +279,10 @@ void nce_find_sites(const SnxCodegen* cg, NceSites* out) {
                 out->data++;
             else if (function_at(cg, a) && snx_a64_flow(w, cg->features) != SNX_A64_FLOW_UNDEF)
                 add_site(out, a, w, kind, reg, imm, 0);
-            else
+            else {
                 out->outside++;
+                out->outside_kind[kind]++;
+            }
         }
     for (size_t i = 0; i < n; i++) {
         free(texts[i].state);
@@ -562,6 +571,49 @@ int nce_trap(NcePool* pools, size_t count, const NceEnv* env, unsigned index, Sn
         return 0;
     }
     return -1;
+}
+
+/* ---- the net ---- */
+
+/* classic BPF's words, as linux/filter.h names them */
+#define BPF_LD_W_ABS 0x20u
+#define BPF_JEQ_K    0x15u
+#define BPF_JGT_K    0x25u
+#define BPF_JGE_K    0x35u
+#define BPF_RET_K    0x06u
+#define NET_TRAP     0x00030000u /* SECCOMP_RET_TRAP: SIGSYS, the call not made */
+#define NET_ALLOW    0x7FFF0000u /* SECCOMP_RET_ALLOW */
+/* seccomp_data: nr at 0, arch at 4, instruction_pointer at 8, its low word first on a little-endian host */
+#define NET_ARCH     4u
+#define NET_IP_LO    8u
+#define NET_IP_HI    12u
+
+static NceBpf bpf(unsigned code, unsigned jt, unsigned jf, SnxU32 k) {
+    NceBpf b;
+    b.code = (unsigned short)code;
+    b.jt = (unsigned char)jt;
+    b.jf = (unsigned char)jf;
+    b.k = k;
+    return b;
+}
+
+size_t nce_net_filter(SnxU64 lo, SnxU64 hi, SnxU32 arch, NceBpf* out) {
+    /* the jumps count the words after the next one: 12 is TRAP, 13 ALLOW, 7 the test against hi */
+    out[0] = bpf(BPF_LD_W_ABS, 0, 0, NET_ARCH);
+    out[1] = bpf(BPF_JEQ_K, 0, 11, arch); /* another architecture's call: not the guest's */
+    out[2] = bpf(BPF_LD_W_ABS, 0, 0, NET_IP_HI);
+    out[3] = bpf(BPF_JGT_K, 3, 0, (SnxU32)(lo >> 32)); /* above lo's high word: past lo */
+    out[4] = bpf(BPF_JEQ_K, 0, 8, (SnxU32)(lo >> 32)); /* below it: under lo */
+    out[5] = bpf(BPF_LD_W_ABS, 0, 0, NET_IP_LO);
+    out[6] = bpf(BPF_JGE_K, 0, 6, (SnxU32)lo); /* lo's high word: the low one says */
+    out[7] = bpf(BPF_LD_W_ABS, 0, 0, NET_IP_HI);
+    out[8] = bpf(BPF_JGT_K, 4, 0, (SnxU32)(hi >> 32)); /* above hi's high word: past hi */
+    out[9] = bpf(BPF_JEQ_K, 0, 2, (SnxU32)(hi >> 32)); /* below it: under hi, the guest's */
+    out[10] = bpf(BPF_LD_W_ABS, 0, 0, NET_IP_LO);
+    out[11] = bpf(BPF_JGE_K, 1, 0, (SnxU32)hi);
+    out[12] = bpf(BPF_RET_K, 0, 0, NET_TRAP);
+    out[13] = bpf(BPF_RET_K, 0, 0, NET_ALLOW);
+    return NCE_NET_WORDS;
 }
 
 /* ---- the pools and the file ---- */
