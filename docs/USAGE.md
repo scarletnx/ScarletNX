@@ -5,6 +5,7 @@
 ## Index
 
 * [Extract → AOT → run](#extract--aot--run)
+  * [Experimental CPU extensions](#experimental-cpu-extensions)
   * [Updates and DLC](#updates-and-dlc)
   * [Mods](#mods)
   * [NRO applications](#nro-applications)

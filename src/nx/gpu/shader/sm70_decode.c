@@ -258,7 +258,7 @@ int sm70_find_programs(const u8* data, u32 size, Sm70Program* out, int max) {
 }
 
 void sm70_debug_dump(const char* kind, const u8* bytes, u32 size, const u32* sph, const char* why) {
-    const char* dir = getenv("SNX_SM70_DUMP");
+    const char* dir = g_shader_sm70_dump;
     if (!dir || !*dir || !bytes || !size) return;
     unsigned long long hash = snx_fnv1a(SNX_FNV_BASIS, bytes, size);
     char path[1024];

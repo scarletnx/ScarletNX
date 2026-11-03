@@ -472,6 +472,7 @@ static void npdm_layout(void) {
         u32 acid = rd32le(d + 0x78), acid_size = rd32le(d + 0x7c);
         if (acid < size && acid_size >= 0x304 && acid_size <= size - acid && !memcmp(d + acid + 0x300, "ACID", 4)) {
             g_ounce = g_shader_sm70 = g_gob_native = 1;
+            g_shader_sm70_dump = g_settings.sm70_dump[0] ? g_settings.sm70_dump : NULL;
             clock_ounce();
             LOG("npdm: an Ounce program\n");
         }

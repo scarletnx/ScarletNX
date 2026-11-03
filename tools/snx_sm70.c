@@ -5,7 +5,7 @@
    also translates each complete program (sm70_to_spirv), and with --validate it runs spirv-val on the modules.
 
    Usage: snx-sm70 DUMP [--sph HEADER] [--translate] [--validate] [--out DIR] [--verbose]
-   --sph: DUMP is one program that SNX_SM70_DUMP wrote, HEADER its .sph file (a compute one has none)
+   --sph: DUMP is one program that the sm70_dump setting wrote, HEADER its .sph file (a compute one has none)
    The dump is game data: keep it, and what --out writes, out of the repository. */
 #include "nx/gpu/shader/sm70.h"
 #include "common/utilities/endian.h"
@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
     u32 dumped_sph[32] = {0};
     int count;
     if (sph_path) {
-        /* a program that SNX_SM70_DUMP wrote: its code alone, and its header beside it */
+        /* a program that the sm70_dump setting wrote: its code alone, and its header beside it */
         u32 sph_size = 0;
         u8* sph_bytes = read_file(sph_path, &sph_size);
         if (!sph_bytes || sph_size < SM70_SPH_BYTES) {

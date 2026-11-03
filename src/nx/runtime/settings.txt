@@ -837,6 +837,14 @@ setting Shader corpus
     startup
     help A folder that keeps each translated shader for snx-shaderc (gpu/shader/corpus.c). With it every shader is
     help translated, and none is kept for the next run. Empty: none, or captures/shaders with Shader captures
+setting SM70 dump
+    key sm70_dump
+    text 1024
+    default ""
+    startup
+    help A folder that keeps the bytes of each Ounce program (SM70+) the translator refuses, and of each block of
+    help shader memory with no whole program in it, for tools/snx_sm70.c (the game's own code: keep it local). Empty:
+    help none
 setting GPU trace target
     key gpu_trace_target
     text 64
