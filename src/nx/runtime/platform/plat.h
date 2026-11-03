@@ -68,6 +68,14 @@ SNX_NORETURN void plat_exit_now(int code);
 
 /* ---- time */
 u64 plat_ns(void);        /* a monotonic clock in nanoseconds */
+/* The display's own headroom over its SDR white, as the system reports it, in percent: 100 when it has none (macOS at
+   full brightness, a display that can't go brighter). macOS asks AppKit for its EDR headroom; elsewhere it stays 100,
+   and an HDR10 target's headroom is the hdr_peak setting's instead. */
+extern u32 g_display_headroom_pct;
+/* the most headroom the display can give, in percent of its SDR white, as the system reports it: 100 for a display that
+   can go no brighter (Auto takes that as "no HDR") */
+extern u32 g_display_edr_potential_pct;
+void plat_display_headroom_poll(void); /* the window's own thread, about once a second */
 /* the system's CLOCK_MONOTONIC in nanoseconds (Vulkan's VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR), which plat_ns isn't:
    0 where there is none (Windows) */
 u64 plat_monotonic_ns(void);

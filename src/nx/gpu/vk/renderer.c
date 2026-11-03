@@ -23,6 +23,7 @@
 #include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/hdr.h"
 #include "nx/gpu/vk/upscale.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
@@ -102,6 +103,8 @@ static int vkr_start(void) {
     g_vk_scale = g_settings.resolution_scale;       /* the .ini keeps resolution within 0.25 to 16 (options.c) */
     g_vk_anisotropy = g_settings.anisotropic_filtering; /* the sampler table keeps what it makes: anisotropy applies at start */
     vk_upscale_configure(snx_upscale_parse(g_settings.upscaler), g_settings.sharpness);
+    vk_hdr_configure(snx_hdr_parse(g_settings.hdr), snx_hdr_source_parse(g_settings.hdr_source),
+                     g_settings.hdr_paper_white, g_settings.hdr_peak, g_settings.hdr_expansion, g_settings.hdr_test_pattern);
     if (g_vk_anisotropy > 1 && !g_vk.feat.samplerAnisotropy)
         LOG("vulkan: this GPU has no anisotropic filtering, so anisotropy=%d does nothing\n", g_vk_anisotropy);
     if (g_vk_scale != 1.0f) LOG("vulkan: render targets at %.2fx\n", g_vk_scale);
@@ -357,7 +360,7 @@ static int is_srgb(VkFormat f) {
     return f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
 }
 
-static int g_sc_srgb; /* what the swapchain was asked for (the surface may not have it) */
+static int g_sc_mode = VK_SC_UNORM; /* the swapchain's kind the last create asked for (a surface may refuse HDR10) */
 /* the window's surface: lost while the app is in the background (Android), made anew when it comes back */
 static u32 g_generation;
 static int g_lost;
@@ -406,7 +409,12 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                  u32 shown_syncpt) {
     SNX_ZONE(z_show, "vk show");
     /* the size the swapchain was made for, not the extent the surface clamped it to: that can stay different */
-    int ww, wh, srgb = src ? is_srgb(src->f.vk) : g_sc_srgb, shown = backend_window_shown();
+    int ww, wh, shown = backend_window_shown();
+    /* the image the window is given: HDR10's for the hdr setting, else the encoding of the frame presented */
+    int want_mode = vk_hdr_active() ? VK_SC_HDR
+                    : !src                     ? g_sc_mode
+                    : is_srgb(src->f.vk)        ? VK_SC_SRGB
+                                                : VK_SC_UNORM;
     backend_window_size(&ww, &wh);
     if (shown && (g_lost || backend_window_generation() != g_generation)) {
         vk_finish();
@@ -417,17 +425,17 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
     int tried = 0; /* a create already ran this frame: one that failed waits for the next frame */
     /* a new vsync in the .ini takes a new swapchain, as a new size does */
     if (shown && ww > 0 && wh > 0 &&
-        (ww != g_vk.sc_win_w || wh != g_vk.sc_win_h || srgb != g_sc_srgb ||
+        (ww != g_vk.sc_win_w || wh != g_vk.sc_win_h || want_mode != g_sc_mode ||
          __atomic_load_n(&g_settings.vsync, __ATOMIC_RELAXED) != g_vk.sc_vsync)) {
         vk_finish();
-        g_sc_srgb = srgb;
-        vk_swapchain_create(srgb);
+        g_sc_mode = want_mode;
+        vk_swapchain_create(want_mode);
         tried = 1;
     }
     VkSemaphore wait = VK_NULL_HANDLE, signal = VK_NULL_HANDLE;
     u32 idx = 0;
     int recreate = 0;
-    if (shown && (src || !game) && (g_vk.swapchain || (!tried && vk_swapchain_create(srgb)))) {
+    if (shown && (src || !game) && (g_vk.swapchain || (!tried && vk_swapchain_create(want_mode)))) {
         VkCommandBuffer cb = vk_cmd(); /* waits for this frame slot, so its acquire semaphore is free */
         VkSemaphore acq = g_acquired[vk_frame_id() % VK_FRAMES];
         /* no wait: vk_lock is held (guest threads mapping memory take it too), and the game's pace is present_pace's.
@@ -472,6 +480,17 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 cw = (u32)((u64)sw * (u32)sww / (u32)g_vk.sc_win_w);
                 ch = (u32)((u64)sh * (u32)swh / (u32)g_vk.sc_win_h);
             }
+            /* what an HDR image here holds: scRGB where the window's surface took it, else PQ */
+            int enc = g_vk.sc_p3      ? VK_HDR_ENC_P3
+                      : g_vk.sc_scrgb ? VK_HDR_ENC_SCRGB
+                      : g_vk.sc_hdr   ? VK_HDR_ENC_PQ
+                                      : VK_HDR_ENC_SDR;
+            int safe[4] = {(int)cx, (int)cy, (int)cw, (int)ch};
+            /* the state of the window's image after the frame's drawing, for the present */
+            VkPipelineStageFlags2 end_stage = VK_PIPELINE_STAGE_2_BLIT_BIT;
+            VkAccessFlags2 end_access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            VkImageLayout end_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            int use_hdr = 0;
             if (src && fw && fh) {
                 dw = cw;
                 dh = (u32)((u64)cw * fh / fw);
@@ -485,6 +504,18 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 u32 mult = vk_upscale_target(dw, dh, (u32)g_settings.upscaling_target_mult,
                                              g_vk.props.limits.maxImageDimension2D, &uw, &uh);
                 int filter = vk_upscale_pick(g_last_w, g_last_h, uw, uh, transform);
+                int source = vk_hdr_source_for(src->f.vk);
+                /* HDR of the display, or of a frame that already holds HDR data: the frame's crop into the
+                   composition (linear light in nits), the menu over it, and the encode into the window's image.
+                   The upscaler, when it runs, offers its output as that crop */
+                VkImageView frame_view = VK_NULL_HANDLE;
+                u32 fw2 = src->sw, fh2 = src->sh, fx = g_last_x, fy = g_last_y, fwid = g_last_w, fhei = g_last_h,
+                    ftransform = transform;
+                VkImage up_img = VK_NULL_HANDLE;
+                VkImageView up_view = VK_NULL_HANDLE;
+                int upscaled = 0, drawn = 0;
+                use_hdr = vk_hdr_available() && g_vk.sc_hdr && vk_hdr_active();
+                if (!use_hdr && source != SNX_HDR_SRC_SDR) use_hdr = vk_hdr_available();
                 if (filter > SNX_UPSCALE_BILINEAR) {
                     VkComponentMapping identity = {0};
                     /* the filter works in the space the final blit leaves: sRGB frames are sampled through their
@@ -492,38 +523,128 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                        non-sRGB swapchain keeps its encoded bytes, and so does a CPU frame */
                     VkImageView src_view =
                         vk_tex_view(src, VK_IMAGE_VIEW_TYPE_2D, is_srgb(src->f.vk) && g_vk.sc_srgb, &identity, 0);
-                    VkImage up_img = VK_NULL_HANDLE;
-                    VkImageView up_view = VK_NULL_HANDLE;
-                    int done = 0;
                     vk_surf_use(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
                                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
                     if (src_view)
-                        done = vk_upscale_process(cb, src_view, src->sw, src->sh, g_last_x, g_last_y, g_last_w,
-                                                  g_last_h, transform, uw, uh, filter, g_settings.sharpness,
-                                                  &up_img, &up_view);
-                    if (done)
-                        present_blit(cb, up_img, 0, 0, uw, uh, sc, dx, dy, dw, dh, 0,
-                                     mult > 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
-                    else { /* the filter could not run: the plain blit still shows the frame */
+                        upscaled = vk_upscale_process(cb, src_view, src->sw, src->sh, g_last_x, g_last_y, g_last_w,
+                                                      g_last_h, transform, uw, uh, filter, g_settings.sharpness,
+                                                      &up_img, &up_view);
+                    if (upscaled) {
+                        frame_view = up_view;
+                        fw2 = uw;
+                        fh2 = uh;
+                        fx = fy = 0;
+                        fwid = uw;
+                        fhei = uh;
+                        ftransform = 0;
+                    } else if (!use_hdr) { /* the filter could not run: the plain blit still shows the frame */
+                        vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                                    VK_ACCESS_2_TRANSFER_READ_BIT);
+                        present_blit(cb, src->img, g_last_x, g_last_y, g_last_w, g_last_h, sc, dx, dy, dw, dh,
+                                     transform, VK_FILTER_LINEAR);
+                        drawn = 1;
+                    }
+                }
+                if (use_hdr && !drawn) {
+                    if (!frame_view) {
+                        VkComponentMapping identity = {0};
+                        frame_view = vk_tex_view(src, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
+                        vk_surf_use(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
+                                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                    }
+                    if (upscaled)
+                        vk_barrier(cb, up_img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                   VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    {
+                        VkImage comp_img = VK_NULL_HANDLE;
+                        VkImageView comp_view = VK_NULL_HANDLE;
+                        if (frame_view &&
+                            vk_hdr_compose(cb, frame_view, source, fw2, fh2, fx, fy, fwid, fhei, ftransform, sw, sh, dx,
+                                           dy, dw, dh, &comp_img, &comp_view)) {
+                            VkUiTarget t = {.img = comp_img,
+                                            .view = comp_view,
+                                            .fmt = vk_hdr_compose_format(),
+                                            .extent = {sw, sh},
+                                            .mode = VK_UI_HDR_NITS,
+                                            .gain = (float)vk_hdr_paper_nits(),
+                                            .from_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                            .from_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                            .from_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+                            vk_ui_draw(cb, &t, safe);
+                            if (vk_hdr_encode(cb, comp_img, comp_view, sw, sh, sc,
+                                              vk_ui_image_view(sc, g_vk.sc_format), g_vk.sc_format, enc)) {
+                                end_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                                end_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                                end_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                                drawn = 1;
+                            }
+                        }
+                    }
+                    if (!drawn) { /* the passes could not run: the plain blit still shows the frame */
+                        use_hdr = 0;
                         vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                                     VK_ACCESS_2_TRANSFER_READ_BIT);
                         present_blit(cb, src->img, g_last_x, g_last_y, g_last_w, g_last_h, sc, dx, dy, dw, dh,
                                      transform, VK_FILTER_LINEAR);
                     }
-                } else {
-                    vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
-                                VK_ACCESS_2_TRANSFER_READ_BIT);
-                    present_blit(cb, src->img, g_last_x, g_last_y, g_last_w, g_last_h, sc, dx, dy, dw, dh, transform,
-                                 VK_FILTER_LINEAR);
+                } else if (!drawn) {
+                    if (upscaled)
+                        present_blit(cb, up_img, 0, 0, uw, uh, sc, dx, dy, dw, dh, 0,
+                                     mult > 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+                    else {
+                        vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                                    VK_ACCESS_2_TRANSFER_READ_BIT);
+                        present_blit(cb, src->img, g_last_x, g_last_y, g_last_w, g_last_h, sc, dx, dy, dw, dh,
+                                     transform, VK_FILTER_LINEAR);
+                    }
                 }
             }
-            {
-                int safe[4] = {(int)cx, (int)cy, (int)cw, (int)ch};
-                vk_ui_draw(cb, sc, safe);
+            if (!use_hdr && vk_hdr_active() && g_vk.sc_hdr && vk_hdr_available()) {
+                /* the menu's screen or the shader loading one, with no frame under it: its colours still go through
+                   the composition, so the PQ image holds them in its encoding, not as the codes of another one */
+                VkImage comp = VK_NULL_HANDLE;
+                VkImageView comp_view = VK_NULL_HANDLE;
+                if (vk_hdr_compose(cb, VK_NULL_HANDLE, SNX_HDR_SRC_SDR, 0, 0, 0, 0, 0, 0, 0, sw, sh, 0, 0, sw, sh,
+                                   &comp, &comp_view)) {
+                    VkUiTarget t = {.img = comp,
+                                    .view = comp_view,
+                                    .fmt = vk_hdr_compose_format(),
+                                    .extent = {sw, sh},
+                                    .mode = VK_UI_HDR_NITS,
+                                    .gain = (float)vk_hdr_paper_nits(),
+                                    .from_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                    .from_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                    .from_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+                    vk_ui_draw(cb, &t, safe);
+                    if (vk_hdr_encode(cb, comp, comp_view, sw, sh, sc, vk_ui_image_view(sc, g_vk.sc_format),
+                                      g_vk.sc_format, enc)) {
+                        end_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                        end_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                        end_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                        use_hdr = 1;
+                    }
+                }
             }
-            vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
-                       VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+            if (!use_hdr) { /* the menu and the controls over the window's image, as the blit leaves it */
+                VkUiTarget t = {.img = sc,
+                                .view = VK_NULL_HANDLE,
+                                .fmt = g_vk.sc_format,
+                                .extent = g_vk.sc_extent,
+                                .mode = g_vk.sc_srgb ? VK_UI_SRGB : VK_UI_ENCODED,
+                                .gain = 1.0f,
+                                .from_stage = VK_PIPELINE_STAGE_2_BLIT_BIT,
+                                .from_access = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                .from_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL};
+                if (vk_ui_draw(cb, &t, safe)) {
+                    end_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                    end_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                    end_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                }
+            }
+            vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, end_stage, end_access, end_layout,
+                       VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
         } else
             VK_OK(r);
     }
@@ -701,7 +822,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         vk_display_presented(VK_NULL_HANDLE, 0, game, released_ns, shown_syncpt);
     if (recreate && !g_lost && !g_vk.sc_lost) { /* not when this frame's create found the surface lost */
         vk_finish();
-        vk_swapchain_create(srgb);
+        vk_swapchain_create(g_sc_mode);
     }
     if (g_vk.sc_lost) { /* a create found the surface lost: the next frame makes it anew */
         g_vk.sc_lost = 0;
@@ -771,24 +892,52 @@ static void vkr_refresh(void) {
 /* the upscaler_key hotkey: the live cycle through the filters */
 static const char* vkr_cycle_upscale(void) { return snx_upscale_label(vk_upscale_cycle()); }
 
-/* a part of a surface (x, y, w x h), blitted to RGBA8 at dw x dh, scaled on the GPU, and read back: the pixels, good
-   until the next readback, or NULL */
+/* the hdr_key hotkey: HDR off and on. The window's image follows at the next present (show's want_mode) */
+static const char* vkr_toggle_hdr(void) {
+    static char text[192], note[96];
+    int mode = vk_hdr_toggle();
+    int display = vk_hdr_display_kind();
+    vk_hdr_describe(display, text, sizeof text);
+    if (mode == SNX_HDR_ON) {
+        if (!vk_hdr_available())
+            snprintf(note, sizeof note, " (this device cannot run the passes)");
+        else if (display == SNX_HDR_DISPLAY_NONE)
+            snprintf(note, sizeof note, " (this display takes no HDR image: tone mapped)");
+        else
+            note[0] = 0;
+    } else
+        note[0] = 0;
+    if (note[0]) {
+        size_t at = strlen(text);
+        snprintf(text + at, sizeof text - at, "%s", note);
+    }
+    return text;
+}
+
+/* a part of a surface (x, y, w x h), at dw x dh, scaled on the GPU, and read back RGBA8: the pixels, good until the
+   next readback, or NULL. A frame that holds HDR data goes through the HDR passes into the SDR range: a screenshot is
+   the tone mapped picture, not the bytes above white cut off */
 static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u32 dw, u32 dh) {
     /* blit to an RGBA8 image, whatever the target's format, then read that back. sRGB to sRGB, so the bytes stay
        encoded as the display shows them */
+    int tonemap = vk_hdr_available() && vk_hdr_frame_hdr(s->f.vk);
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
-                            .format = is_srgb(s->f.vk) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM,
+                            .format = tonemap ? VK_FORMAT_R8G8B8A8_UNORM
+                                    : is_srgb(s->f.vk) ? VK_FORMAT_R8G8B8A8_SRGB
+                                                       : VK_FORMAT_R8G8B8A8_UNORM,
                             .extent = {dw, dh, 1},
                             .mipLevels = 1,
                             .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                     (tonemap ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0),
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkImage tmp;
     VmaAllocation tmem;
+    VkImageView tmp_view = VK_NULL_HANDLE;
     if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &tmp, &tmem, NULL))) return NULL;
     vk_mem_track(tmem);
     VkBuffer buf;
@@ -800,20 +949,47 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
     }
     vk_render_end(); /* the blit, the copy and their barriers can't be recorded inside a rendering pass */
     VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
-                VK_ACCESS_2_TRANSFER_READ_BIT);
-    vk_barrier(cb, tmp, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
-               VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                        .srcOffsets = {{(i32)x, (i32)y, 0}, {(i32)(x + w), (i32)(y + h), 1}},
-                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                        .dstOffsets = {{0, 0, 0}, {(i32)dw, (i32)dh, 1}}};
-    flip_src(&blit, transform); /* screenshots show the window's transform, offscreen and headless presents too */
-    rec_CmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tmp, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                   &blit, dw == w && dh == h ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
-    vk_barrier(cb, tmp, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    if (tonemap) {
+        VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                     .image = tmp,
+                                     .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                     .format = ii.format,
+                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        VkComponentMapping identity = {0};
+        VkImage comp;
+        VkImageView comp_view, src_view;
+        if (!VK_OK(vkCreateImageView(g_vk.dev, &vci, NULL, &tmp_view))) {
+            vk_mem_untrack(tmem);
+            vmaDestroyImage(g_vk.vma, tmp, tmem);
+            return NULL;
+        }
+        src_view = vk_tex_view(s, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
+        vk_surf_use(cb, s, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        if (src_view && vk_hdr_compose(cb, src_view, vk_hdr_source_for(s->f.vk), s->sw, s->sh, x, y, w, h, transform,
+                                       dw, dh, 0, 0, dw, dh, &comp, &comp_view))
+            vk_hdr_encode(cb, comp, comp_view, dw, dh, tmp, tmp_view, ii.format, VK_HDR_ENC_SDR);
+        vk_barrier(cb, tmp, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    } else {
+        vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+        vk_barrier(cb, tmp, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
+                   VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                            .srcOffsets = {{(i32)x, (i32)y, 0}, {(i32)(x + w), (i32)(y + h), 1}},
+                            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                            .dstOffsets = {{0, 0, 0}, {(i32)dw, (i32)dh, 1}}};
+        flip_src(&blit, transform); /* screenshots show the window's transform, offscreen and headless presents too */
+        rec_CmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tmp, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                         &blit, dw == w && dh == h ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+        vk_barrier(cb, tmp, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    }
     VkBufferImageCopy c = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {dw, dh, 1}};
     rec_CmdCopyImageToBuffer(cb, tmp, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -825,6 +1001,7 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
     rec_CmdPipelineBarrier2(cb, &di);
     vk_finish();
     vk_readback_ready();
+    if (tmp_view) vkDestroyImageView(g_vk.dev, tmp_view, NULL);
     vk_mem_untrack(tmem);
     vmaDestroyImage(g_vk.vma, tmp, tmem);
     return p;
@@ -986,5 +1163,6 @@ const Renderer vk_renderer = {
     .release_window = vk_window_release,
     .prepare = vk_pipeline_prepare,
     .cycle_upscale = vkr_cycle_upscale,
+    .toggle_hdr = vkr_toggle_hdr,
 };
 const Renderer* g_renderer = &vk_renderer;

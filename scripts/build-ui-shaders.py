@@ -3,12 +3,14 @@
 # Copyright 2026 the ScarletNX contributors
 """Compile the shaders of the on-screen controls and the game's menu (src/nx/gpu/vk/shaders/ui.*) into ui_spv.h.
 
-Needs glslc and spirv-val; --check needs neither: it only compares the sources' hash with the one the header holds.
+Needs a GLSL compiler (glslc, or glslangValidator as the build's shaders use) and spirv-val; --check needs neither: it
+only compares the sources' hash with the one the header holds.
 """
 
 import argparse
 import hashlib
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -45,8 +47,8 @@ def main():
     with tempfile.TemporaryDirectory() as temporary:
         for array, name, stage in SHADERS:
             spv = Path(temporary) / f'{name}.spv'
-            subprocess.run(
-                [
+            if shutil.which('glslc'):
+                command = [
                     'glslc',
                     f'-fshader-stage={stage}',
                     '--target-env=vulkan1.3',
@@ -54,9 +56,19 @@ def main():
                     str(folder / name),
                     '-o',
                     str(spv),
-                ],
-                check=True,
-            )
+                ]
+            else:  # the build's own compiler: glslangValidator (-Os is spirv-opt's size pass, as -O is glslc's)
+                command = [
+                    'glslangValidator',
+                    '-V',
+                    '--target-env',
+                    'vulkan1.3',
+                    '-Os',
+                    '-o',
+                    str(spv),
+                    str(folder / name),
+                ]
+            subprocess.run(command, check=True)
             subprocess.run(['spirv-val', '--target-env', 'vulkan1.3', str(spv)], check=True)
             data = spv.read_bytes()
             words = struct.unpack(f'<{len(data) // 4}I', data)

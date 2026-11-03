@@ -249,6 +249,78 @@ setting Upscaling target mult
     words 1x|2x|3x|4x
     help The multiple of the screen rectangle the upscaler writes: 1 = its size, so the frame is upscaled to the
     help display, and 2 = twice it, which the presenter downsamples. Each step costs four times the filter's memory
+setting HDR
+    key hdr
+    text 8
+    default auto
+    startup
+    words off=Off|auto=Auto|on=On
+    help Auto = HDR where the display takes an HDR image and reports headroom over its white, and the plain blit where
+    help it does not, so an SDR display pays nothing. On = the passes run even without, and the SDR range stands in.
+    help Display P3's wide gamut (linear light, white at the paper white) comes first where offered, then scRGB, else
+    help HDR10 (PQ, BT.2020). A frame that already holds HDR data is never lifted again. The hdr_key toggles it live
+setting HDR colours
+    key hdr_colorspace
+    label HDR colours
+    text 8
+    default auto
+    startup
+    words auto=Auto|p3=Display P3|scrgb=scRGB|hdr10=HDR10 (PQ)
+    help The image an HDR display is given: Auto takes Display P3's wide gamut where the surface offers it (macOS),
+    help whose 1.0 is the display's own white, so SDR content keeps its brightness and the expanded colours fit; then
+    help scRGB (sRGB's primaries); HDR10 (PQ) is the absolute signal a TV takes. P3, scRGB and HDR10 force one where
+    help the display has it
+setting HDR expansion
+    key hdr_expand
+    label HDR expansion
+    int 0 100
+    default 50
+    startup
+    help The share of the display's own headroom that the top of an SDR frame is lifted into, 0 to 100: 0 shows the
+    help frame exactly as SDR, 50 uses half of the light the display has over its white, and the lift starts at 80 %
+    help of the code range, so only the brightest part of the frame moves and the midtones and darks stay as SDR.
+    help The colours' hue and saturation never move, as BT.2446, Dolby's inverse tone mapping and Horizon's HDR keep
+    help them. Where the display reports no headroom (macOS at full brightness) nothing is lifted, and a frame that
+    help already holds HDR data is never lifted
+setting HDR test pattern
+    key hdr_test
+    label HDR test pattern
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help On = a band at the bottom of the window shows six patches of known light: black, the paper white, and 1.25, 1.5,
+    help 1.75 and 2 times it. The steps above the paper white are the display's headroom; where the last ones look the
+    help same, the display or its layer clips there. It proves the lift reaches the screen, and is drawn in the frame
+setting HDR source
+    key hdr_source
+    text 8
+    default auto
+    startup
+    words auto=Auto|sdr=SDR|linear=Linear|pq=PQ (HDR10)
+    help What the presented frame's pixels are: Auto reads it from the frame's format (a float target is linear light
+    help at the paper white, with its own headroom above); SDR, Linear and PQ (SMPTE ST 2084 in BT.2020) name it for
+    help a game whose format doesn't say
+setting HDR paper white
+    key hdr_paperwhite
+    label Paper white (nits)
+    int 80 480
+    default 203
+    startup
+    step 10
+    help The light an SDR frame's white maps to, in nits: 203 is BT.2408's reference white and Horizon's own, 100 the
+    help darkest and 480 a bright room. With the extended kinds it is the white the lift and the peak are measured
+    help from, not a fixed brightness
+setting HDR peak
+    key hdr_peak
+    label Peak light (nits)
+    int 400 4000
+    default 1000
+    startup
+    step 100
+    help The brightest light the tone mapping and the HDR10 metadata name, in nits: the display's own peak, 1000 for
+    help most TVs and 1600 for a bright one
+
 setting Vulkan Video decode
     key vulkan_video
     label Vulkan Video decode (experimental)
@@ -602,6 +674,13 @@ setting Upscaler cycle key
     help The key that cycles the spatial upscaler while a game runs. The launcher's row takes the next key you press,
     help with Ctrl, Shift, Alt or the system key held. The cycle goes AMD FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR
     help and None, and does not change the .ini
+setting HDR key
+    key hdr_key
+    label HDR key
+    text 64
+    default ctrl+h
+    help The key that turns HDR on and off while a game runs. The launcher's row takes the next key you press, with
+    help Ctrl, Shift, Alt or the system key held. It does not change the .ini
 table g_network_ini
 setting Network
     key network
@@ -1064,6 +1143,13 @@ setting Script
     once
     set unattended_script_set
     help The scripted input: when:buttons, comma between, when in ms or a present's number and f (300f)
+setting HDR toggles
+    key hdr_toggle
+    text 128
+    default ""
+    once
+    help An unattended run's live HDR toggles, the milliseconds they happen at with a comma between (3000,6000 turns
+    help HDR off and on again). A run that tests HDR's swapchain uses it
 setting Keyboard text
     key swkbd_text
     text 2004

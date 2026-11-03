@@ -78,6 +78,10 @@ typedef struct {
     VkExtent2D sc_extent;
     int sc_win_w, sc_win_h; /* the window size it was made for (sc_extent: that as the surface takes it) */
     int sc_srgb;            /* its format is sRGB: what presented frames in sRGB formats are blitted to */
+    int sc_hdr;             /* its images are an HDR kind */
+    int sc_scrgb;           /* that kind is scRGB: linear light in sRGB's primaries, 1.0 at the paper white, so an SDR
+                               frame looks as it does in SDR and only the headroom above white is HDR */
+    int sc_p3;              /* that kind is Display P3's wide gamut, the same extended linear light in P3's primaries */
     VkFormat sc_format;     /* its images' format, which the on-screen controls draw to (gpu/vk/ui.c) */
     int sc_vsync;  /* the vsync setting it was made for (1: FIFO; 0 is FIFO too on a surface with nothing else) */
     int sc_turned; /* upright on a display held another way: Android calls each present suboptimal for it */
@@ -142,6 +146,10 @@ typedef struct {
     int has_present_timing;
     int has_calibrated_mono; /* CLOCK_MONOTONIC among the calibrateable time domains */
     int has_surface_caps2;   /* the instance's VK_KHR_get_surface_capabilities2, which present timing is asked by */
+    /* VK_EXT_swapchain_colorspace (the instance's) and VK_EXT_hdr_metadata (the device's): an HDR10 swapchain, and
+       the light level its metadata names */
+    int has_swapchain_colorspace;
+    int has_hdr_metadata;
     /* VK_GOOGLE_display_timing, enabled without present waits (Android): presents carry ids and times to be shown at,
        and the swapchain tells when each was */
     int has_display_timing;
@@ -165,7 +173,10 @@ const char* vk_start_failure(void);
    the present mode the vsync setting asks for, recorded in sc_vsync (show() makes a new one when the setting moves).
    0 while the window has no area (minimized) or its surface can't be queried, the old swapchain staying, or when the
    create failed: then there is none. A lost surface sets sc_lost; the next present tries again */
-int vk_swapchain_create(int srgb);
+int vk_swapchain_create(int mode);
+/* vk_swapchain_create's mode: an 8-bit UNORM image, an 8-bit sRGB one, or an HDR one (scRGB where the surface takes
+   it, else HDR10's PQ) */
+enum { VK_SC_UNORM, VK_SC_SRGB, VK_SC_HDR };
 int vk_surface_recreate(void);
 int vk_window_release(void); /* Renderer.release_window */
 /* logs a failed call with where it happened; evaluates to 1 on success */
@@ -1326,10 +1337,25 @@ u64 vk_cs_skipped(char* why, size_t size);
 void vk_render_end_at(const char* file, int line);
 #define vk_render_end() vk_render_end_at(__FILE__, __LINE__)
 void vk_pass_ends_log(void);
-/* the on-screen controls and the game's menu over a swapchain image in TRANSFER_DST_OPTIMAL, which it stays in;
-   safe is the picture's part clear of the system's bars (gpu/vk/ui.c) */
-void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);
+/* the on-screen controls and the game's menu over an image: the swapchain's, or the HDR composition's (gpu/vk/ui.c).
+   1 when it drew, and the image is left in COLOR_ATTACHMENT_OPTIMAL; 0 when nothing showed, and it is as it was */
+enum { VK_UI_ENCODED, VK_UI_SRGB, VK_UI_HDR_NITS };
+typedef struct {
+    VkImage img;
+    VkImageView view; /* NULL: the swapchain's own image, whose view it keeps */
+    VkFormat fmt;
+    VkExtent2D extent;
+    int mode;    /* VK_UI_ENCODED: the target takes the encoded bytes; VK_UI_SRGB: it is sRGB; VK_UI_HDR_NITS: linear
+                    light in nits and BT.2020's primaries, as the HDR composition is */
+    float gain;  /* the paper white in nits, for VK_UI_HDR_NITS */
+    VkPipelineStageFlags2 from_stage; /* what the image comes from */
+    VkAccessFlags2 from_access;
+    VkImageLayout from_layout;
+} VkUiTarget;
+int vk_ui_draw(VkCommandBuffer cb, const VkUiTarget* t, const int safe[4]);
 void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain does */
+/* a swapchain image's view in fmt, made once per image: for a pass that writes the image itself (the HDR encode) */
+VkImageView vk_ui_image_view(VkImage img, VkFormat fmt);
 void vk_render_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o);
 /* viewport index of a draw's state with the resolution scale, and the draw's facing */
 VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index);

@@ -3331,17 +3331,22 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Upscaler cycle key: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "HDR key: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Press the key, with Ctrl, Shift or Alt held if you want them. ESC keeps %s"
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
 msgid "Keeps %s"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Upscaler cycle key: %s"
 msgstr ""
 
 #: src/gui/main.c

@@ -10512,9 +10512,22 @@ static void device_take(App* app, SDL_JoystickID id) {
     app->editor.dirty = true;
     keep_settings(app);
 }
-/* a hotkey row: Enter waits for the next key, which is kept as ctrl+u or f13. ESC keeps the one it has */
+/* a hotkey row (upscaler_key, hdr_key): Enter waits for the next key, which is kept as ctrl+u or f13 */
+static bool key_row(const GuiSetting* v) {
+    return v->key && (!strcmp(v->key, "upscaler_key") || !strcmp(v->key, "hdr_key"));
+}
 static const char* key_shown(const GuiSetting* v) {
     return v->text[0] ? v->text : v->fallback ? v->fallback : "";
+}
+/* the note after a key row takes a key: the row names itself, and the hotkeys' own phrases stay translatable */
+static void key_taken_note(App* app, const GuiSetting* v, const char* text) {
+    if (v->key && !strcmp(v->key, "upscaler_key"))
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Upscaler cycle key: %s"), text);
+    else if (v->key && !strcmp(v->key, "hdr_key"))
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("HDR key: %s"), text);
+    else
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s: %s"),
+                 app->settings.keys[app->key_listen - 1].key, text);
 }
 static void key_listen_start(App* app, int row) {
     const GuiSetting* v = &app->settings.values[row];
@@ -10542,7 +10555,7 @@ static bool key_event(App* app, const SDL_Event* e) {
         if (gui_settings_set(&app->settings, v->key, text)) {
             app->editor.dirty = true;
             keep_settings(app);
-            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Upscaler cycle key: %s"), text);
+            key_taken_note(app, v, text);
             key_stop(app);
         } else
             snprintf(app->editor.note, sizeof app->editor.note,
@@ -10713,8 +10726,7 @@ static void editor_key(App* app, GuiKey key) {
     }
     if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing) {
         int row = setting_of(app, app->editor.row);
-        if (row >= 0 && row < app->settings.count && app->settings.values[row].key &&
-            !strcmp(app->settings.values[row].key, "upscaler_key")) {
+        if (row >= 0 && row < app->settings.count && key_row(&app->settings.values[row])) {
             key_listen_start(app, row);
             return;
         }
