@@ -75,12 +75,12 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-linux-${{ matrix.arch }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-linux-${{ matrix.arch }}-
-      # llvm: llvm-config and LLVM-C for the recompiler (llvm-libs alone has no headers). gdb: the gdbserver gdbstub_native drives. Mirrors drop a connection now
+      # llvm: llvm-config and LLVM-C for the recompiler (llvm-libs alone has no headers). gdb: the gdbserver gdbstub_native drives. jq: scripts/pr-builds.sh, which pr_builds tests. Mirrors drop a connection now
       # and then (pkgforge's for aarch64 most), so each pacman install is tried 3 times, 5 s apart
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb glslang && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -242,7 +242,7 @@ jobs:
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb glslang && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -1467,8 +1467,6 @@ jobs:
       # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
       # its suites write their own GPU command buffers, which draw nothing now that NVN is the GPU path (docs/EDENPROBE.md)
       EDENPROBE_MODE: quick notime fatal cpu fs video display kernel audio
-    outputs:
-      result: ${{ steps.probe.outputs.result }}
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -1499,16 +1497,17 @@ jobs:
           curl -fsSL --retry 3 -o edenprobe.nro \
             "https://github.com/scarletnx/edenprobe/releases/download/$EDENPROBE_VERSION/edenprobe.nro"
           echo "$EDENPROBE_SHA256  edenprobe.nro" | sha256sum -c -
-      # Artifacts drop the executable bit. The summary's title is the line of the pull request's comment (links)
+      # Artifacts drop the executable bit. The summary's title is the line of the pull request's comment, as a notice
+      # of this job that scripts/pr-builds.sh reads back once the run ends; on one line, % is all a notice escapes
       - name: Run edenprobe
-        id: probe
         run: |
           chmod +x stage/bin/*
           status=0
           python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx --nro edenprobe.nro --mode "$EDENPROBE_MODE" \
             --out edenprobe --baseline tests/edenprobe/linux-x86_64.txt --summary "$GITHUB_STEP_SUMMARY" || status=$?
           if [ -f edenprobe/summary.md ]; then
-            echo "result=$(head -n 1 edenprobe/summary.md | cut -c5-)" >> "$GITHUB_OUTPUT"
+            result=$(head -n 1 edenprobe/summary.md | cut -c5-)
+            echo "::notice title=edenprobe::${result//%/%25}"
           fi
           exit "$status"
       # edenprobe's main, cases the release has not got yet: beside the release's report it only warns, and a nightly
