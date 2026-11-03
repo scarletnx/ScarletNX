@@ -80,9 +80,13 @@ static void rt_miss(CPU* c, u64 pc) {
         f = jit_wait(pc);
         kthread_unblock(t);
         if (t) core_enter(t);
-        if (!f)
+        if (!f) {
+            WARN("\n*** The game reached code at %llx that it cannot run ***\n", (unsigned long long)pc);
+            kernel_dump_regs(c);
+            save_hints();
             fatal("The game reached code at %llx that the recompiler missed, and %s", (unsigned long long)pc,
                   jit_failure());
+        }
     }
     if (pc - g_code_lo < g_code_hi - g_code_lo) hints_add(pc);
     f(c, pc);
