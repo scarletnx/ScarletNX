@@ -1489,7 +1489,7 @@ unsigned snx_cpu_count(void) {
     SYSTEM_INFO info;
     GetSystemInfo(&info);
     return info.dwNumberOfProcessors ? info.dwNumberOfProcessors : 1;
-#elif defined(__linux__) || defined(__APPLE__)
+#elif defined(__linux__) || defined(__APPLE__) || defined(__NetBSD__)
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (unsigned)n : 1;
 #elif defined(__FreeBSD__)
