@@ -5,7 +5,7 @@
    data folder doesn't hold; one of another ABI, or a 32-bit one of another SNX_ARM_MODULE_ABI, is refused before the
    game's settings or log are written, the message saying its ABI and the one this runtime runs. And the title the
    run shows for a module taken: a module titled by its title ID shows the name in its data folder's control.nacp,
-   the ID and the reason when that has none.
+   the ID and the reason when that has none; one titled by bytes that are not UTF-8 the same name, else its program's.
      runtime_module_abi SCARLETNX MODULE ARM_MODULE */
 #define _POSIX_C_SOURCE 200809L
 #include "common/utilities/common.h"
@@ -191,15 +191,20 @@ int main(int argc, char** argv) {
     /* no control.nacp, or one with no name: the ID, and why */
     set_env("SNX_TEST_MODULE_TITLE", "0100ABCD12346000");
     rc = play(argv[1], root, "0100ABCD12346000", argv[2], SNX_ABI, &output);
-    check(rc != 0 && titled(output, "0100ABCD12346000", "game: shown as 0100ABCD12346000, its title ID: ") &&
+    check(rc != 0 &&
+              titled(output, "0100ABCD12346000",
+                     "game: shown as 0100ABCD12346000, its code's title being its title ID 0100ABCD12346000: ") &&
               strstr(output, "0100ABCD12346000_data/control.nacp cannot be read ("),
           "a module titled by its title ID, with no control.nacp, shows the ID and says why", output);
     free(output);
     write_nacp(root, "0100ABCD12347000", NULL);
     set_env("SNX_TEST_MODULE_TITLE", "0100ABCD12347000");
     rc = play(argv[1], root, "0100ABCD12347000", argv[2], SNX_ABI, &output);
-    check(rc != 0 && titled(output, "0100ABCD12347000", "game: shown as 0100ABCD12347000, its title ID: ") &&
-              strstr(output, "0100ABCD12347000_data/control.nacp (16384 bytes) has a name in none of its 16 languages"),
+    check(rc != 0 &&
+              titled(output, "0100ABCD12347000",
+                     "game: shown as 0100ABCD12347000, its code's title being its title ID 0100ABCD12347000: ") &&
+              strstr(output, "0100ABCD12347000_data/control.nacp gives no name, it names the game in none of its 16 "
+                             "languages"),
           "a module titled by its title ID, with a control.nacp that names nothing, shows the ID and says why", output);
     free(output);
     /* any other title is the game's name, a control.nacp beside it or not */
@@ -207,6 +212,22 @@ int main(int argc, char** argv) {
     set_env("SNX_TEST_MODULE_TITLE", "Given Name");
     rc = play(argv[1], root, "named", argv[2], SNX_ABI, &output);
     check(rc != 0 && titled(output, "Given Name", NULL), "a module's own title is shown as it is", output);
+    free(output);
+    /* a title that is not UTF-8 (a recompile that read a control.nacp wrong) is never shown: its control.nacp's name,
+       else its program's, the log saying its bytes */
+    write_nacp(root, "garbled", "Synthetic Title");
+    set_env("SNX_TEST_MODULE_TITLE", "not UTF-8");
+    rc = play(argv[1], root, "garbled", argv[2], SNX_ABI, &output);
+    check(rc != 0 && titled(output, "Synthetic Title", "game: shown as Synthetic Title, the name in ") &&
+              strstr(output, "garbled_data/control.nacp: its code's title is not UTF-8 (2a 9c e3 41 4a)"),
+          "a module titled by bytes that are not UTF-8 shows its control.nacp's name", output);
+    free(output);
+    rc = play(argv[1], root, "garbled-alone", argv[2], SNX_ABI, &output);
+    check(rc != 0 &&
+              titled(output, "garbled-alone",
+                     "game: shown as garbled-alone, its code's title being not UTF-8 (2a 9c e3 41 4a): ") &&
+              strstr(output, "garbled-alone_data/control.nacp cannot be read ("),
+          "a module titled by bytes that are not UTF-8, with no control.nacp, shows its program's name", output);
     free(output);
 
     check(!snx_remove_tree(root), "temporary folder removed", NULL);

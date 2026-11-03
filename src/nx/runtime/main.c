@@ -428,30 +428,38 @@ static void addons_line(char* out, size_t size) {
 
 /* what the game is shown as (its log's header, its window, its loading screen), given its code's title. A title that
    is the game's title ID names its files, not the game: the driver names a dump read in place by it, and a recompile
-   that found no name took it as the title. The name in the control.nacp of its data folder (g_datadir) is shown
-   then, as the recompile's snx_game_shown gives it; the ID only when that has none. name: room for that name. why:
-   the log's line on it, "" for a title shown as it is */
+   that found no name took it as the title. One that is not UTF-8 is never shown: a recompile that read a control.nacp
+   wrong made it. The name in the control.nacp of its data folder (g_datadir) is shown then, as the recompile's
+   snx_game_shown gives it; when that has none, the ID, or for a title that is not UTF-8 its program's name. name: room
+   for that name. why: the log's line on it, "" for a title shown as it is */
 static const char* game_shown(const char* title, char* name, size_t size, char* why, size_t why_size) {
-    char path[sizeof g_datadir + 16], error[256];
+    char path[sizeof g_datadir + 16], error[256], bad[64], given[128], none[256];
+    const char* kept = title;
     unsigned char* nacp;
     size_t bytes = 0;
     SnxU64 id;
     why[0] = 0;
-    if (!snx_title_parse(title, &id)) return title;
+    if (!snx_utf8_valid(title, strlen(title), bad, sizeof bad)) {
+        kept = g_exename;
+        snprintf(given, sizeof given, "not UTF-8 (%s)", bad);
+    } else if (snx_title_parse(title, &id))
+        snprintf(given, sizeof given, "its title ID %s", title);
+    else
+        return title;
     snprintf(path, sizeof path, "%scontrol.nacp", g_datadir);
     nacp = snx_read_file(path, &bytes);
     if (!nacp)
-        snprintf(why, why_size, "shown as %s, its title ID: %s cannot be read (%s)", title, path,
+        snprintf(why, why_size, "shown as %s, its code's title being %s: %s cannot be read (%s)", kept, given, path,
                  snx_os_error(error, sizeof error));
-    else if (!snx_nacp_name(nacp, bytes, name, size))
-        snprintf(why, why_size, "shown as %s, its title ID: %s (%zu bytes) has a name in none of its 16 languages",
-                 title, path, bytes);
+    else if (!snx_nacp_name_why(nacp, bytes, name, size, none, sizeof none))
+        snprintf(why, why_size, "shown as %s, its code's title being %s: %s gives no name, %s", kept, given, path,
+                 none);
     else {
-        snprintf(why, why_size, "shown as %s, the name in %s: its code's title is its title ID %s", name, path, title);
-        title = name;
+        snprintf(why, why_size, "shown as %s, the name in %s: its code's title is %s", name, path, given);
+        kept = name;
     }
     free(nacp);
-    return title;
+    return kept;
 }
 
 /* nothing is moved: a game an older version laid out beside the others (its folder named otherwise) runs where it
