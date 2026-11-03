@@ -226,6 +226,25 @@ void vk_uma_owning(u64 cpu, u64 size);        /* that guest memory becomes GPU-o
 void vk_uma_mapping_begin(u64 cpu, u64 size); /* mem.c changes that guest memory next (size ~0: all) */
 void vk_uma_mapping_end(void);                /* they changed: before anything else is submitted */
 void vk_uma_before_write(u64 gva, u64 len);   /* the runtime writes GPU range [gva, gva + len) next (vk_lock held) */
+/* Storage and transform feedback written in place: [gva, gva + len) bound where it is for a draw or dispatch to write,
+   the write pending once the draw is recorded (vk_uma_writes_commit) until its submit is done. 0 when it is copied out
+   as a pending result instead (buffer.c). vk_lock held */
+int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
+void vk_uma_writes_commit(void);                         /* the draw or dispatch was recorded */
+void vk_uma_writes_abort(void);                          /* it wasn't */
+void vk_uma_frame_done(u64 frame);                       /* that submit is done: its in-place writes are in memory */
+void vk_uma_host_barrier(VkCommandBuffer cb, u64 frame); /* at that submit's end: its writes visible to the host */
+int vk_uma_pending(u64 gva, u64 len);                    /* an in-place write is pending over GPU range [gva, +len) */
+int vk_uma_pending_cpu(u64 cpu, u64 len);                /* the same by guest address */
+u64 vk_uma_out_adds(void);                               /* in-place writes added so far, as vk_buf_adds counts */
+/* the runtime's CPU is about to read [gva, gva + len): the in-place writes pending there are done first (gmem_need's
+   hook), unless the calling thread copies them on the GPU (vk_uma_gpu_reads) */
+void vk_uma_mem_need(u64 gva, u64 len);
+void vk_uma_mem_need_cpu(u64 cpu, u64 len); /* the same by guest address, whichever thread */
+void vk_uma_gpu_reads(int on);
+/* the import that guest memory [cpu, cpu + len) is written in place in, while a write there is pending: a GPU copy from
+   it reads the write, after it (vk_lock held) */
+int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off);
 void vk_uma_settle(u64 ended);         /* a draw or dispatch begins: the ones before it recorded up to submit ended */
 u32 vk_uma_imports(u64 cpu, u64 size); /* the imports the driver holds over guest memory [cpu, cpu + size) (vk_lock) */
 /* the first import the driver holds over guest memory [cpu, end), on any thread: where it starts there, with where it
@@ -1041,6 +1060,7 @@ void vk_release_queued(u64* n, u64* gate, u64* cgate); /* the queue's length and
 void vk_release_submit(void); /* the GPFIFO submission ended or waits: a release gated on the recording submits */
 void vk_release_need(u64 gva, u64 len);
 int vk_release_read(u64 gva, void* dst, u64 len);
+int vk_release_pending(u64 gva, u64 len); /* a queued release's payload covers GPU range [gva, gva + len) (vk_lock) */
 /* a samples-passed report a draw reads before it is performed: its count, len bytes (4 or 8) at byte at of what was
    read, is counter's segments [first, end), written there on the GPU (vk_query_counts) */
 typedef struct {

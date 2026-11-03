@@ -1332,7 +1332,7 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
     /* Pending compute results there land first. A pending graphics result is newer than the guest memory the checks
        below see: the buffer then comes from vk_buf_get_strict, which reads it on the GPU, and isn't cached */
     if (g_cs_any && a) vk_compute_mem_need(a, sz);
-    int pending = g_gfx_any && a && vk_buf_pending(a, sz);
+    int pending = a && ((g_gfx_any && vk_buf_pending(a, sz)) || vk_uma_pending(a, sz)); /* written in place too */
     if (!pending && (cb_kept(e, a, sz, 0, epoch) || (cb_kept(x, a, sz, 0, epoch) && (*e = *x, 1)))) {
         *buf = e->buf;
         *off = e->off;
@@ -2603,7 +2603,8 @@ static u64 draw_last_vertex(const u32* inline_indices, const DsIndex* ix, int in
         if (n > count) n = count;
         /* indices the GPU wrote and holds aren't read here either: landing them takes a submit and a wait for the GPU,
            and the draw reads them where their owner holds them (buffer.c buf_get_owned) */
-        if (vk_buf_pending(a, n * isz) || vk_compute_gpu_src(a, n * isz, &tb, &to) || vk_buf_owned(a, n * isz))
+        if (vk_buf_pending(a, n * isz) || vk_uma_pending(a, n * isz) || vk_compute_gpu_src(a, n * isz, &tb, &to) ||
+            vk_buf_owned(a, n * isz))
             return ~0ull;
         vk_compute_mem_need(a, n * isz);
         /* the restart index, and all ones where Vulkan restarts instead, mark no vertex: with the restart off its
@@ -2747,8 +2748,8 @@ static int quad_indices_cpu(const DrawCall* dc, int inline_indices, u64 ia, u32 
     if (inline_indices)
         for (u32 j = 0; j < 4 * nq; j++) snx_st_le32(in + 4 * (size_t)j, dc->inline_indices[first + j]);
     else {
-        if (vk_buf_pending(gva, len) || vk_compute_pending(gva, len) || gmmu_run(gva, len, &cpu) < len ||
-            own_lookup(cpu, len, &held, 1))
+        if (vk_buf_pending(gva, len) || vk_uma_pending(gva, len) || vk_compute_pending(gva, len) ||
+            gmmu_run(gva, len, &cpu) < len || own_lookup(cpu, len, &held, 1))
             return 0;
         gmem_read_raw(gva, in, len);
     }

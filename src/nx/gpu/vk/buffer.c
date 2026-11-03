@@ -377,6 +377,7 @@ static _Thread_local struct {
 } t_buffer;
 
 void vk_buf_writable_abort(void) {
+    vk_uma_writes_abort();
     g_buffer.order.reused_write = 0;
     while (g_prep) {
         GfxOut* o = g_prep;
@@ -386,6 +387,7 @@ void vk_buf_writable_abort(void) {
     g_prep_tail = NULL;
 }
 void vk_buf_writable_commit(void) {
+    vk_uma_writes_commit();
     /* Reusing an output writes its existing buffer without adding another pending result. Count that write
        too, but only after the draw or dispatch was recorded. An abandoned setup must not invent writes. */
     if (g_prep || g_buffer.order.reused_write) g_buffer.order.writes++;
@@ -555,10 +557,12 @@ void vk_buf_frame_done(u64 frame) {
     }
     t_buffer.out_landing--;
     g_gfx_any = g_out != NULL;
+    vk_uma_frame_done(frame);
 }
 /* At the frame's submit: its storage results are copied into host-cached memory (vk_stage_back), where landing them
    compares bytes quickly. A result whose copy can't be allocated is read where the shader wrote it. */
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
+    vk_uma_host_barrier(cb, frame);
     GfxOut* first = g_out;
     while (first && first->frame != frame) first = first->next;
     if (!first) return;
@@ -726,7 +730,7 @@ static void mem_need_reason(u64 gva, u64 len, int reason) {
 }
 void vk_buf_mem_need(u64 gva, u64 len) { mem_need_reason(gva, len, WB_READ); }
 int vk_buf_pending_any(void) { return g_gfx_any; }
-u64 vk_buf_adds(void) { return g_out_pages.adds; }
+u64 vk_buf_adds(void) { return g_out_pages.adds + vk_uma_out_adds(); } /* a write in place is one too */
 int vk_buf_pending_unsubmitted(void) {
     for (GfxOut* o = g_out; o; o = o->next)
         if (o->frame == vk_submit_number()) return 1;
@@ -1615,6 +1619,14 @@ int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     int src = gva ? gfx_gpu_src(gva, len, buf, off, 0, vk_stage_align(), 1) : 0;
     if (src == 1) return 1;
     if (src == 2) return gfx_composed(gva, len, buf, off);
+    if (gva && vk_uma_pending(gva, len)) { /* written in place, the write pending: copied after it, on the GPU */
+        u8* q = vk_stage(len, vk_stage_align(), buf, off);
+        if (!q) return 0;
+        vk_render_end();
+        vk_guest_read(gva, len, q, *buf, *off);
+        copy_note(gva, len);
+        return 1;
+    }
     u8* p = vk_stage(len ? len : 16, vk_stage_align(), buf, off);
     if (!p) return 0;
     if (!gva)
@@ -1676,6 +1688,14 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
     if (bind_align < 4) bind_align = 4;
     int pending = gfx_gpu_src(gva, len, buf, off, 1, bind_align, ordered);
     if (pending == 1) return 1;
+    /* with unified memory the shader writes guest memory where it is, with nothing to land: not over bytes the GPU
+       holds elsewhere (owned, a compute or storage image result, a queued release), which land first as before. Its
+       barriers go by page (uma.c's order) whether or not the front end gives its own (ordered 0): more than NVN asks
+       for, never fewer */
+    if (!pending && vk_uma() && !range_owned(gva, len) && !(g_cs_any && vk_compute_pending(gva, len)) &&
+        !(g_gfx_img_any && vk_gfx_image_pending(gva, len)) && !vk_release_pending(gva, len) &&
+        vk_uma_write(gva, len, bind_align, buf, off))
+        return 1;
     if (!pending) gmem_need(gva, len);
     int owned = !pending && range_owned(gva, len);
     if (owned) (void)written_since_gva(gva, len, 0); /* establish the CPU-write baseline before the GPU copy */
@@ -2284,7 +2304,8 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     if (inplace && vk_uma() && !range_owned(gva, len) && vk_uma_get(gva, len, align, buf, off)) return 1;
     if (inplace == IN_ONLY) return 0;
     /* valid: the data is where draws can read it this frame */
-    int valid = e && e->buf && (e->own || e->frame == vk_submit_number());
+    /* not while an in-place write is pending over it: a copy from before the write would be read */
+    int valid = e && e->buf && (e->own || e->frame == vk_submit_number()) && !vk_uma_pending(gva, len);
     if (valid && !gpu_mem_dirty_since(e->gw, gva, len)) {
         if (e->epoch == epoch && (!strict || e->strict_epoch == epoch)) {
             use(i, buf, off);
@@ -2357,7 +2378,9 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             : gpu_mem_dirty_since(e->gw, gva, len) ? ST_DIRTY
             : e->own ? ST_WRITTEN
                      : ST_EPOCH;
-    if (range_owned(gva, len)) return buf_get_owned(i, e, gva, len, strict, epoch, align, buf, off);
+    /* GPU-owned bytes, or bytes written in place by a submit not done yet: copied on the GPU (vk_guest_read) */
+    if (range_owned(gva, len) || vk_uma_pending(gva, len))
+        return buf_get_owned(i, e, gva, len, strict, epoch, align, buf, off);
     u32 wnow = vk_ww_now();
     SamplesCount counts[4];
     u32 ncounts;

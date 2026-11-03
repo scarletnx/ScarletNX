@@ -61,6 +61,7 @@ static int vkr_mem_pending(u64 gva, u64 size) {
 }
 static void vkr_gfx_mem_need(u64 gva, u64 size) {
     vk_buf_mem_need(gva, size);
+    vk_uma_mem_need(gva, size); /* the in-place writes there done */
     vk_gfx_image_mem_need(gva, size);
 }
 /* the GPU range a mapping change is changing, from its begin to its end (size 0 for a change of guest memory) */

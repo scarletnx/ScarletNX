@@ -311,6 +311,18 @@ static void read_barrier(VkCommandBuffer cb, int before) {
 static void cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at, int* any) {
     OwnRange o[16];
     u32 n, i;
+    VkBuffer ib;
+    u64 io;
+    /* written in place (uma.c) by a submit not done yet: copied from the import on the GPU, after the write. Never
+       GPU-owned as well: those are written over whole */
+    if (vk_uma_copy_pending(cpu, size, &ib, &io)) {
+        VkBufferCopy c = {io, at, size};
+        if (!*any) read_barrier(vk_cmd(), 1);
+        *any = 1;
+        rec_CmdCopyBuffer(vk_cmd(), ib, buf, 1, &c);
+        return;
+    }
+    vk_uma_mem_need_cpu(cpu, size); /* across imports: waited for */
     if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) {
         memcpy(host, GP(cpu), (size_t)size);
         return;
@@ -337,7 +349,9 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     u64 o = 0;
     int any = 0;
     if (!size) return;
+    vk_uma_gpu_reads(1);  /* the in-place writes there are copied below (cpu_read), not waited for */
     gmem_need(gva, size); /* results the renderer has pending there land first, as gmem_read has them */
+    vk_uma_gpu_reads(0);
     while (o < size) {
         u64 cpu = 0, n = gmmu_run(gva + o, size - o, &cpu);
         if (!n) { /* an unmapped page reads as zero */
@@ -383,12 +397,24 @@ int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) {
     if (!size) return 1;
     if (!(p = vk_stage_upload(size, 16, &d.sb, &d.so))) return 0;
     vk_render_end(); /* the copies happen outside rendering passes */
+    vk_uma_gpu_reads(1);  /* the in-place writes there are copied below, not waited for */
     gmem_need(gva, size); /* results the renderer has pending there land first, as gmem_read has them */
+    vk_uma_gpu_reads(0);
     while (o < size) {
-        u64 cpu = 0, n = gmmu_run(gva + o, size - o, &cpu);
+        u64 cpu = 0, n = gmmu_run(gva + o, size - o, &cpu), io;
         OwnRange r[16];
         u32 k, i;
-        if (!n) { /* an unmapped page reads as zero */
+        VkBuffer ib;
+        /* written in place (uma.c) by a submit not done yet: copied from the import on the GPU, after the write, or
+           waited for where it spans imports */
+        int inplace = n && vk_uma_copy_pending(cpu, n, &ib, &io);
+        if (n && !inplace) vk_uma_mem_need_cpu(cpu, n);
+        if (inplace) {
+            VkBufferCopy c = {io, at + o, n};
+            if (!any) read_barrier(vk_cmd(), 1);
+            any = 1;
+            rec_CmdCopyBuffer(vk_cmd(), ib, buf, 1, &c);
+        } else if (!n) { /* an unmapped page reads as zero */
             n = 0x1000 - ((gva + o) & 0xFFF);
             if (n > size - o) n = size - o;
             memset(p + o, 0, (size_t)n);
