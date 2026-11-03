@@ -595,6 +595,8 @@ static void test_dump(const char* root) {
     path = snx_path_join(out, "modules.txt");
     text = snx_read_file(path, &size);
     CHECK(text && size > strlen(expected) && !strncmp((const char*)text, expected, strlen(expected)));
+    /* the matcher's count last: the sdk's one function (entry, 4 instructions) too short to sign, skipped */
+    CHECK(size > 18 && !memcmp(text + size - 18, "matched 0 0 0 0 1\n", 18));
     free(text);
     free(path);
     path = snx_path_join(out, "subsdk2.bin");

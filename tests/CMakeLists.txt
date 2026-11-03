@@ -1350,7 +1350,8 @@ add_test(NAME script COMMAND snx-test-script)
 add_executable(snx-test-driver driver_workflow.c
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/driver.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/setup.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
-    "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c"
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
 snx_test_target(snx-test-driver 99)
 target_link_libraries(snx-test-driver PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle snx_nx_module)
 set_target_properties(snx-test-driver PROPERTIES LINKER_LANGUAGE CXX)
@@ -1425,10 +1426,15 @@ target_link_libraries(snx-test-extract PRIVATE snx_test_common hactool_internals
 add_test(NAME extraction_native COMMAND snx-test-extract)
 
 add_executable(snx-test-loader loader_test.c "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c")
 snx_test_target(snx-test-loader 99)
 target_link_libraries(snx-test-loader PRIVATE snx_test_common snx_lz4 OpenSSL::Crypto snx_nx_module) # the route list
 add_test(NAME loader_native COMMAND snx-test-loader)
+# the read-only function matcher: names for a stripped module's functions from the sdk module's exports
+add_executable(snx-test-function-match function_match.c "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c")
+snx_test_target(snx-test-function-match 99)
+target_link_libraries(snx-test-function-match PRIVATE scarletnx-common)
+add_test(NAME function_match COMMAND snx-test-function-match)
 
 add_executable(snx-test-runtime-nro runtime_nro.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/loader.c")
 snx_test_target(snx-test-runtime-nro 11)
