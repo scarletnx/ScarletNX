@@ -223,10 +223,61 @@ static void jni_generic(CPU* c, void* data) {
 }
 
 /* GetMethodID and GetStaticMethodID: the ID's signature recorded for the calls with variable arguments */
+/* Class.forName(String) loads with its caller's loader, which for a JNI call is the loader of the native method that
+   runs: on Android the app's own class, here NativeBridge's (the framework's). The guest gets
+   snx.dalvik.Runtime.forName(String) in its place, which loads with the app's loader, by GetStaticMethodID or by
+   FromReflectedMethod of the Method (as Unity's ReflectionHelper finds it) */
+static jmethodID remap_method(JNIEnv* env, jmethodID id) {
+    static jmethodID for_name, replacement;
+    if (!id) return id;
+    if (!__atomic_load_n(&replacement, __ATOMIC_ACQUIRE)) {
+        jclass class_class = (*env)->FindClass(env, "java/lang/Class");
+        jclass runtime = (*env)->FindClass(env, "snx/dalvik/Runtime");
+        const char* sig = "(Ljava/lang/String;)Ljava/lang/Class;";
+        jmethodID a = class_class ? (*env)->GetStaticMethodID(env, class_class, "forName", sig) : NULL;
+        jmethodID b = runtime ? (*env)->GetStaticMethodID(env, runtime, "forName", sig) : NULL;
+        if (!a || !b) {
+            (*env)->ExceptionClear(env);
+            return id;
+        }
+        __atomic_store_n(&for_name, a, __ATOMIC_RELAXED);
+        __atomic_store_n(&replacement, b, __ATOMIC_RELEASE);
+    }
+    return id == __atomic_load_n(&for_name, __ATOMIC_RELAXED) ? replacement : id;
+}
+
+/* GetMethodID and GetStaticMethodID: the ID's signature recorded for the calls with variable arguments */
 static void jni_get_method(CPU* c, void* data) {
     const char* sig = STR(3);
+    uint64_t env_arg = X(0);
     jni_generic(c, data);
+    X(0) = (uint64_t)(uintptr_t)remap_method(host_env(env_arg), (jmethodID)(uintptr_t)X(0));
     record_method((jmethodID)(uintptr_t)X(0), sig);
+}
+
+/* FromReflectedMethod: the ID of a Method or Constructor, remapped as GetStaticMethodID's. Its signature is recorded
+   from the object, for the calls with variable arguments */
+static void jni_from_reflected(CPU* c, void* data) {
+    uint64_t env_arg = X(0);
+    JNIEnv* env = host_env(env_arg);
+    jobject method = (jobject)(uintptr_t)X(1);
+    jni_generic(c, data);
+    jmethodID id = remap_method(env, (jmethodID)(uintptr_t)X(0));
+    X(0) = (uint64_t)(uintptr_t)id;
+    if (id && !method_params(id)) {
+        /* the JNI signature of the reflected method, from snx.dalvik.Runtime.signature(Executable) */
+        jclass runtime = (*env)->FindClass(env, "snx/dalvik/Runtime");
+        jmethodID sig_of = runtime ? (*env)->GetStaticMethodID(env, runtime, "signature",
+                                                                "(Ljava/lang/reflect/Executable;)Ljava/lang/String;")
+                                   : NULL;
+        jstring sig = sig_of ? (*env)->CallStaticObjectMethod(env, runtime, sig_of, method) : NULL;
+        const char* chars = sig ? (*env)->GetStringUTFChars(env, sig, NULL) : NULL;
+        if (chars) {
+            record_method(id, chars);
+            (*env)->ReleaseStringUTFChars(env, sig, chars);
+        }
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    }
 }
 
 /* Call<Type>Method, CallNonvirtual..., CallStatic... and NewObject with ... or a va_list: the arguments read by the
@@ -391,6 +442,7 @@ static void make_tables(void) {
         const char* name = functions[i].name;
         BridgeHandler h = functions[i].variadic ? jni_variadic : jni_generic;
         if (!strcmp(name, "GetMethodID") || !strcmp(name, "GetStaticMethodID")) h = jni_get_method;
+        else if (!strcmp(name, "FromReflectedMethod")) h = jni_from_reflected;
         else if (!strcmp(name, "FindClass")) h = jni_find_class;
         else if (!strcmp(name, "RegisterNatives")) h = jni_register_natives;
         else if (!strcmp(name, "UnregisterNatives")) h = jni_unregister_natives;
