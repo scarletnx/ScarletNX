@@ -4,7 +4,7 @@
    program's control flow keeps, at each block's start, the range of values each register can hold as the translation
    runs it: every register starts at 0, a write sets the range its operands give, a predicated write joins it with the
    old one, and paths that meet join theirs. A range a loop keeps growing becomes any value. The ranges are those of
-   spirv_translate.c's arithmetic for the forms followed here (moves, thread and lane indices, adds, scaled adds,
+   the emit_ files' arithmetic for the forms followed here (moves, thread and lane indices, adds, scaled adds,
    shifts, masks, selects, 16-bit products, unsigned bit field extracts); any other write leaves its registers holding
    any value, so the bound is never lower than what the program can touch. */
 #include "nx/gpu/shader/translator.h"
@@ -163,7 +163,7 @@ static int transfer(const Regs* s, u64 w, int id, const u32 local[3], Span* out)
         case O_SEL_I: *out = join(ra, id == O_SEL_R ? reg(s, b) : konst(imm19(w))); return 1;
         case O_XMAD_R:
         case O_XMAD_I: {
-            /* spirv_translate.c's XMAD: halves of A and B (signed by bits 48 and 49), their product shifted by PSL
+            /* emit_int.c's XMAD: halves of A and B (signed by bits 48 and 49), their product shifted by PSL
                (36), C picked by the select (50-52), MRG (37) putting B's low half on top; X (38) adds the carry */
             Span rb = id == O_XMAD_R ? reg(s, b) : konst(B(w, 20, 16));
             Span rc = reg(s, B(w, 39, 8)), third;
