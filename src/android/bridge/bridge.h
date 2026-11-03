@@ -45,6 +45,10 @@ uint64_t bridge_call(uint64_t fn, const uint64_t* args, unsigned count);
    from c's state, true at that return and false when it left through the end of a host call (c is at its end); and
    the code at address compiled ahead of its first call */
 uint64_t bridge_sigreturn(void);
+/* the guest address whose compiled code starts nearest below host address host (a function's or a block leader's,
+   in any unit the JIT made): the guest code that a host fault at host is in. 0 when none is below it. For a crash
+   report: it reads the units without the lock */
+uint64_t bridge_guest_of_host(uintptr_t host);
 bool bridge_run_handler(CPU* c);
 void bridge_prepare(uint64_t address);
 

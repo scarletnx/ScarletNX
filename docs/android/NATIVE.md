@@ -98,6 +98,11 @@ mask. A handler runs in the frame Linux gives it (`common/runtime/linux_signal.c
 the thread's CPU structure: at `RtAPI.poll`, as an HLE call returns, or, for a thread that waits in a blocking HLE
 call (`pthread_cond_wait`, `sem_wait`, a read) or runs no guest code, from the handler of a host real-time signal
 that the sender gives it. A host fault in generated code still ends the app, as its registers are not exact there.
+A host fault in generated code (SIGSEGV, SIGBUS, SIGILL, SIGFPE, or an exception on Windows) prints the guest's
+report before the JVM writes its own, which knows nothing of the guest (`fault.c`): the guest function or block whose
+compiled code holds the faulting host instruction, with its library and offset, then the pc and registers the code
+stored last and a backtrace by the guest's frame records. FreeBSD reports a general protection fault, such as a load
+through a non-canonical address, as SIGBUS with BUS_OBJERR at the pc. Every other fault goes to the JVM's handler.
 `--log-signals` logs each action, send and delivery, and `--sample` prints each guest thread's
 pc, x30 and HLE call every 5 seconds, for a stall.
 

@@ -11,6 +11,7 @@
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
 #include "android/bridge/jni.h"
+#include "android/bridge/fault.h"
 #include "android/bridge/linker.h"
 #include "android/bridge/native.h"
 #include "android/runtime/jvm.h"
@@ -535,6 +536,8 @@ static jstring JNICALL native_load(JNIEnv* env, jclass unused, jstring path, jst
     const char* p = (*env)->GetStringUTFChars(env, path, NULL);
     char error[1024];
     guest_env(env);
+    /* the JVM's handlers are in place by now: the guest's crash report goes before them */
+    fault_install();
     GuestLibrary* l = linker_load(p, error, sizeof error);
     (*env)->ReleaseStringUTFChars(env, path, p);
     if (!l) {
