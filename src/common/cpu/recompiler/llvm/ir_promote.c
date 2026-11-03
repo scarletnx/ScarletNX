@@ -287,6 +287,170 @@ static Set live_through(const Block* block, const Event* events, Site* sites, in
     return live;
 }
 
+/* Each block's loop depth, at most LOOP_DEPTH: the natural loops holding it. A loop is a header a depth-first walk
+   from the entry comes back to (a retreating edge), its body the blocks that reach one of its latches without passing
+   the header. The dispatch block's switch to every label is no loop: it is the entry at any leader. 0, or -1 out of
+   memory */
+#define LOOP_DEPTH  4
+#define LOOP_WEIGHT 4 /* the bits a weight grows by a level: 16 times, a loop's turns against its way in */
+typedef struct {
+    size_t latch, header;
+} Retreat;
+static int by_header(const void* a, const void* b) {
+    size_t x = ((const Retreat*)a)->header, y = ((const Retreat*)b)->header;
+    return x < y ? -1 : x > y;
+}
+static int loop_depths(const Block* blocks, size_t nblocks, const BlockKey* keys, unsigned char* depth) {
+    size_t *succ_first = (size_t*)calloc(nblocks + 1, sizeof(size_t)),
+           *pred_first = (size_t*)calloc(nblocks + 1, sizeof(size_t));
+    size_t *succs = NULL, *preds = NULL, *fill = NULL, *stamp = NULL, *stack = NULL, *next = NULL, nedges = 0;
+    size_t nretreats = 0, i, k, top;
+    unsigned char* color = (unsigned char*)calloc(nblocks + 1, 1);
+    Retreat* retreats = NULL;
+    int rc = -1;
+    memset(depth, 0, nblocks);
+    if (!succ_first || !pred_first || !color) goto done;
+    for (size_t pass = 0; pass < 2; ++pass) {
+        if (pass) {
+            for (i = 0; i < nblocks; ++i) {
+                succ_first[i + 1] += succ_first[i];
+                pred_first[i + 1] += pred_first[i];
+            }
+            succs = (size_t*)malloc((nedges ? nedges : 1) * sizeof(size_t));
+            preds = (size_t*)malloc((nedges ? nedges : 1) * sizeof(size_t));
+            fill = (size_t*)malloc((nblocks ? nblocks : 1) * sizeof(size_t));
+            if (!succs || !preds || !fill) goto done;
+            memcpy(fill, pred_first, nblocks * sizeof(size_t));
+            nedges = 0;
+        }
+        for (i = 0; i < nblocks; ++i) {
+            LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[i].block);
+            unsigned n = term && !LLVMIsASwitchInst(term) ? LLVMGetNumSuccessors(term) : 0;
+            for (unsigned j = 0; j < n; ++j) {
+                k = block_index(keys, nblocks, LLVMGetSuccessor(term, j));
+                if (k >= nblocks) continue;
+                if (pass) {
+                    succs[nedges++] = k;
+                    preds[fill[k]++] = i;
+                } else {
+                    ++succ_first[i + 1];
+                    ++pred_first[k + 1];
+                    ++nedges;
+                }
+            }
+        }
+    }
+    /* the retreating edges: to a block still on the walk's stack */
+    stack = (size_t*)malloc((nblocks + 1) * sizeof(size_t));
+    next = (size_t*)calloc(nblocks + 1, sizeof(size_t));
+    retreats = (Retreat*)malloc((nedges ? nedges : 1) * sizeof(Retreat));
+    stamp = (size_t*)calloc(nblocks + 1, sizeof(size_t));
+    if (!stack || !next || !retreats || !stamp) goto done;
+    top = 0;
+    if (nblocks) {
+        stack[top++] = 0;
+        color[0] = 1;
+        next[0] = succ_first[0];
+    }
+    while (top) {
+        size_t u = stack[top - 1];
+        if (next[u] == succ_first[u + 1]) {
+            color[u] = 2;
+            --top;
+            continue;
+        }
+        k = succs[next[u]++];
+        if (color[k] == 1) {
+            retreats[nretreats].latch = u;
+            retreats[nretreats++].header = k;
+        } else if (!color[k]) {
+            color[k] = 1;
+            next[k] = succ_first[k];
+            stack[top++] = k;
+        }
+    }
+    /* each header's body, once: from its latches backwards, the header the wall */
+    qsort(retreats, nretreats, sizeof(*retreats), by_header);
+    for (size_t r = 0; r < nretreats; ++r) {
+        size_t header = retreats[r].header, mark = header + 1;
+        if (stamp[header] != mark) {
+            stamp[header] = mark;
+            if (depth[header] < LOOP_DEPTH) ++depth[header];
+        }
+        top = 0;
+        if (stamp[retreats[r].latch] != mark) { /* each block counted and pushed once a header */
+            stamp[retreats[r].latch] = mark;
+            if (depth[retreats[r].latch] < LOOP_DEPTH) ++depth[retreats[r].latch];
+            stack[top++] = retreats[r].latch;
+        }
+        while (top) {
+            size_t b = stack[--top];
+            for (size_t p = pred_first[b]; p < pred_first[b + 1]; ++p)
+                if (stamp[preds[p]] != mark) {
+                    stamp[preds[p]] = mark;
+                    if (depth[preds[p]] < LOOP_DEPTH) ++depth[preds[p]];
+                    stack[top++] = preds[p];
+                }
+        }
+    }
+    rc = 0;
+done:
+    free(succ_first);
+    free(pred_first);
+    free(succs);
+    free(preds);
+    free(fill);
+    free(stamp);
+    free(stack);
+    free(next);
+    free(color);
+    free(retreats);
+    return rc;
+}
+
+/* the successor of a two-way branch its weights make at least 1000 times less likely than the other (ir_unlikely's
+   1 to 2000, or a profile's), 2 for none */
+static unsigned unlikely_successor(LLVMValueRef branch, unsigned prof) {
+    LLVMValueRef md = LLVMGetMetadata(branch, prof), ops[3];
+    unsigned length = 0;
+    const char* name;
+    SnxU64 a, b;
+    if (!md || LLVMGetMDNodeNumOperands(md) != 3) return 2;
+    LLVMGetMDNodeOperands(md, ops);
+    name = LLVMGetMDString(ops[0], &length);
+    if (!name || length != 14 || memcmp(name, "branch_weights", 14) || !LLVMIsAConstantInt(ops[1]) ||
+        !LLVMIsAConstantInt(ops[2]))
+        return 2;
+    a = LLVMConstIntGetZExtValue(ops[1]);
+    b = LLVMConstIntGetZExtValue(ops[2]);
+    return a * 1000 <= b ? 0 : b * 1000 <= a ? 1 : 2;
+}
+/* the blocks the entry reaches without taking an unlikely edge (the poll, a return to another address, a stale
+   function, an entry at another leader): what only such an edge reaches runs seldom. 0, or -1 out of memory */
+static int likely_blocks(SnxIr* ir, const Block* blocks, size_t nblocks, const BlockKey* keys, unsigned char* likely) {
+    size_t* stack = (size_t*)malloc((nblocks ? nblocks : 1) * sizeof(size_t));
+    unsigned prof = LLVMGetMDKindIDInContext(ir->ctx, "prof", 4);
+    size_t top = 0;
+    if (!stack) return -1;
+    memset(likely, 0, nblocks);
+    if (nblocks) {
+        likely[0] = 1;
+        stack[top++] = 0;
+    }
+    while (top) {
+        LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[stack[--top]].block);
+        unsigned n = term ? LLVMGetNumSuccessors(term) : 0, cold = n == 2 ? unlikely_successor(term, prof) : 2;
+        for (unsigned j = 0; j < n; ++j) {
+            size_t k = j == cold ? nblocks : block_index(keys, nblocks, LLVMGetSuccessor(term, j));
+            if (k >= nblocks || likely[k]) continue;
+            likely[k] = 1;
+            stack[top++] = k;
+        }
+    }
+    free(stack);
+    return 0;
+}
+
 /* the definition of each register reaching each block: UNSEEN before any path reaches it, ENTRY the entry's load,
    else the index of the block that defines it (a write or a site's reload), or of the block a PHI joins it in, where
    its predecessors bring different ones. A block takes its predecessors' meet again whenever one of them changed,
@@ -496,13 +660,43 @@ void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
        a block's write, a site's reload) into a block it is live into. One with more of those than the accesses it
        saves (and a few) stays in the CPU structure. A dispatch block's switch to every label makes one of each
        register live across the function: 5820 PHIs and five times the compile in one game function, which the
-       register allocator then spends its time on */
+       register allocator then spends its time on. An access weighs 1 << LOOP_WEIGHT for each loop it is in, as
+       regalloc2 weighs a use in a spill decision (liveranges.rs): it runs once a turn, and a register a loop uses
+       left in memory costs a load or store there every turn, whatever the joins around calls elsewhere count. Its
+       copies as a local (a store before a site, a reload after a call, the load on entry) weigh the same, and one
+       whose copies outweigh its accesses stays in the CPU structure too: written once and live across a run of
+       calls, it costs a reload after each as a local, a load where it is read in memory. What only an unlikely edge
+       reaches (a return check's way out, the poll) weighs nothing: its stores would count every dirty register
+       twice for each call */
     if (count_phis(blocks, nblocks, keys, events, sites, phis)) goto done;
     {
-        size_t uses[SLOTS] = {0};
-        for (i = 0; i < s.count; ++i) ++uses[s.access[i].slot];
+        size_t uses[SLOTS] = {0}, copies[SLOTS] = {0};
+        unsigned char* depth = (unsigned char*)malloc(2 * nblocks + 1);
+        unsigned char* likely = depth + nblocks;
+        if (!depth || loop_depths(blocks, nblocks, keys, depth) || likely_blocks(ir, blocks, nblocks, keys, likely)) {
+            free(depth);
+            goto done;
+        }
+        for (i = 0; i < s.count; ++i) {
+            size_t at = block_index(keys, nblocks, LLVMGetInstructionParent(s.access[i].inst));
+            if (at < nblocks && likely[at]) uses[s.access[i].slot] += (size_t)1 << (LOOP_WEIGHT * depth[at]);
+        }
+        for (k = 0; k < nblocks; ++k)
+            for (size_t e = blocks[k].first; e < blocks[k].first + blocks[k].count && likely[k]; ++e)
+                if (events[e].kind == SITE) {
+                    const Site* site = &sites[events[e].index];
+                    size_t weight = (size_t)1 << (LOOP_WEIGHT * depth[k]);
+                    for (unsigned slot = 0; slot < SLOTS; ++slot)
+                        copies[slot] += weight * (size_t)(set_has(&site->dirty, slot) + set_has(&site->reload, slot));
+                }
         for (unsigned slot = 0; slot < SLOTS; ++slot)
-            if (phis[slot] > uses[slot] + 8) s.used[slot] = 0;
+            if (set_has(&blocks[0].live_in, slot)) ++copies[slot];
+        free(depth);
+        for (unsigned slot = 0; slot < SLOTS; ++slot) {
+            if (!s.used[slot]) continue;
+            if (phis[slot] > uses[slot] + 8 || copies[slot] > uses[slot]) s.used[slot] = 0;
+            if (ir->stats.enabled) ++*(s.used[slot] ? &ir->stats.promoted_slots : &ir->stats.memory_slots);
+        }
     }
     LLVMBuilderRef b = LLVMCreateBuilderInContext(ir->ctx);
     /* the locals, loaded on entry where live */

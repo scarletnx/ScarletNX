@@ -182,18 +182,20 @@ static void worker(Queue* q) {
             snx_report_unit(q->done, q->count + 1, name, label, q->units[i].reused, seconds); /* + the descriptor */
             const SnxIrStats* s = &q->units[i].stats;
             if (s->enabled)
-                printf("  IR stats %s: %llu functions (%llu promoted), %llu calls (%llu FP, %llu vector, "
-                       "%llu guest, %llu indirect), %llu sync stores (%llu at calls, %llu bytes), "
-                       "%llu reloads (%llu bytes), %llu lookups, %llu polls, %llu stale checks, "
-                       "%llu return checks\n", name, (unsigned long long)s->functions,
-                       (unsigned long long)s->promoted_functions, (unsigned long long)s->call_sites,
-                       (unsigned long long)s->fp_calls, (unsigned long long)s->vector_calls,
-                       (unsigned long long)s->guest_calls, (unsigned long long)s->indirect_calls,
-                       (unsigned long long)s->sync_stores, (unsigned long long)s->call_stores,
-                       (unsigned long long)s->store_bytes, (unsigned long long)s->sync_reloads,
-                       (unsigned long long)s->reload_bytes, (unsigned long long)s->lookups,
-                       (unsigned long long)s->polls, (unsigned long long)s->stale_checks,
-                       (unsigned long long)s->return_checks);
+                printf(
+                    "  IR stats %s: %llu functions (%llu promoted), %llu registers made locals (%llu left in the CPU "
+                    "structure), %llu calls (%llu FP, %llu vector, %llu guest, %llu indirect), %llu sync stores "
+                    "(%llu at calls, %llu bytes), %llu reloads (%llu bytes), %llu lookups, "
+                    "%llu polls, %llu stale checks, %llu return checks\n",
+                    name, (unsigned long long)s->functions, (unsigned long long)s->promoted_functions,
+                    (unsigned long long)s->promoted_slots, (unsigned long long)s->memory_slots,
+                    (unsigned long long)s->call_sites, (unsigned long long)s->fp_calls,
+                    (unsigned long long)s->vector_calls, (unsigned long long)s->guest_calls,
+                    (unsigned long long)s->indirect_calls, (unsigned long long)s->sync_stores,
+                    (unsigned long long)s->call_stores, (unsigned long long)s->store_bytes,
+                    (unsigned long long)s->sync_reloads, (unsigned long long)s->reload_bytes,
+                    (unsigned long long)s->lookups, (unsigned long long)s->polls, (unsigned long long)s->stale_checks,
+                    (unsigned long long)s->return_checks);
         }
         unlock(q);
         free(label);
