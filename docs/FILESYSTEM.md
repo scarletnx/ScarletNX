@@ -73,11 +73,12 @@ IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
   the caps, ties, bands, bow and clip of the hat parts, the noseline's and the glasses' quads) and every texture
   drawn from distance functions (eyes, brows, mouths, glasses, mustaches, beards, lines, make-up, the mole, the
   noselines, the hats), none of the console's own. Its six files
-  (`NXTexture{Low,Mid}{Linear,SRGB}.dat`, `Shape{Mid,High}.dat`, the copies sharing their bytes) keep the console's
+  (`NXTexture{Low,Mid}{Linear,SRGB}.dat`, `Shape{Mid,High}.dat`, the SRGB copies sharing their Linear ones' bytes, each
+  shape with as many quads as fit the console's largest part of its kind in that file) keep the console's
   layout: the part tables with each kind's largest part and alignment, the console's list of parts (which are
   absent), each texture in its format (BC4, BC5 or ASTC 4x4), size and levels, block linear, and each part a zlib
   stream, deflated as the console's are. The SDK reads a file whole into a heap the game sizes for the console's, so
-  none is bigger than the console's of its name. It is about 0.9 MiB, made at the game's first open of it. The
+  none is bigger than the console's of its name. It is about 1.2 MiB, made at the game's first open of it. The
   player's own firmware's (its RomFS as `system/archives/0100000000000802.romfs`) is still served first and looks like
   the console.
 - `0100000000000823` (NgWord2) is the exception: when absent, it is synthesized with firmware 11.0.1's 52-file

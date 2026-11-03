@@ -706,6 +706,36 @@ static u32 shape_raw_size(const Shape* sh, u32 off[5], u32 size[5], u32* idx_off
     *idx_size = quads * 6 * 2;
     return *idx_off + *idx_size;
 }
+/* a shape file's quality, in the archive's order */
+enum { Q_MID, Q_HIGH, Q_SHAPES };
+/* the console's largest decompressed part of each shape kind in its Mid and High files. A shape file's header gives
+   its own to the SDK, which sizes a Mii model's memory with them, and a game sizes its Mii heaps for the console's */
+static const u32 shape_budget[Q_SHAPES][S_KINDS] = {
+    {0x6fa, 0xbf0, 0x9f8, 0x10f0, 0x390, 0x6d0, 0x420, 0x23b8, 0x1f70, 0x4c, 0x33c, 0xe4},
+    {0xa4a, 0x18c4, 0x12dc, 0x6088, 0x684, 0x1b78, 0xd0c, 0x10872, 0xb23c, 0x4c, 0xb82, 0xe4},
+};
+/* n less an eighth, not under least (n itself when it is not over least) */
+static u32 fewer(u32 n, u32 least) {
+    u32 m = n - (n + 7) / 8;
+    return n <= least ? n : m < least ? least : m;
+}
+/* a part of a shape file of quality q: shape_of's, with an eighth fewer quads each way at a time (down to 3 by 1 a
+   grid) until its bytes are no more than the console's largest of its kind there */
+static Shape shape_in(u32 kind, u32 variant, u32 q) {
+    Shape sh = shape_of(kind, variant);
+    u32 off[5], size[5], idx_off, idx_size;
+    while (shape_raw_size(&sh, off, size, &idx_off, &idx_size) > shape_budget[q][kind]) {
+        u32 g, changed = 0;
+        for (g = 0; g < sh.grids; g++) {
+            u32 ns = fewer(sh.ns[g], 3), nt = fewer(sh.nt[g], 1);
+            changed |= ns != sh.ns[g] || nt != sh.nt[g];
+            sh.ns[g] = ns;
+            sh.nt[g] = nt;
+        }
+        if (!changed) break;
+    }
+    return sh;
+}
 static u32 snorm10(float v) { return (u32)(i32)lroundf(clampf(v, -1, 1) * 511.0f) & 0x3ffu; }
 static u8 snorm8(float v) { return (u8)(i8)lroundf(clampf(v, -1, 1) * 127.0f); }
 /* the shape's bytes into raw, and its bounding box */
@@ -1242,7 +1272,7 @@ static u32 texture_file(u32 mid, u8* b) {
     return o.at;
 }
 
-static u32 shape_file(u8* b) {
+static u32 shape_file(u32 q, u8* b) {
     Out o;
     Placed placed[S_KINDS][VARIANTS_MAX];
     u32 largest[S_KINDS] = {0}, kind, i, e = 0;
@@ -1252,7 +1282,7 @@ static u32 shape_file(u8* b) {
     if (out_open(&o)) return 0;
     for (kind = 0; kind < S_KINDS; kind++)
         for (i = 0; i < shape_counts[kind]; i++, e++) {
-            Shape sh = shape_of(kind, shape_variant(kind, i));
+            Shape sh = shape_in(kind, shape_variant(kind, i), q);
             u32 off[5], size[5], idx_off, idx_size, raw = shape_raw_size(&sh, off, size, &idx_off, &idx_size), k;
             Placed* p = &placed[kind][sh.variant];
             if (!shape_present(kind, i)) continue;
@@ -1330,8 +1360,8 @@ void snx_mii_model_name(u32 i, char name[32]) {
                                                            "ShapeMid.dat",           "ShapeHigh.dat"};
     snprintf(name, 32, "%s", names[i]);
 }
-u32 snx_mii_model_same(u32 i) { return i == 1 || i == 3 || i == 5 ? i - 1 : i; }
-u32 snx_mii_model_write(u32 i, u8* out) { return i < 4 ? texture_file(i >= 2, out) : shape_file(out); }
+u32 snx_mii_model_same(u32 i) { return i == 1 || i == 3 ? i - 1 : i; }
+u32 snx_mii_model_write(u32 i, u8* out) { return i < 4 ? texture_file(i >= 2, out) : shape_file(i - 4, out); }
 
 /* ============================================================ a Mii's picture */
 
