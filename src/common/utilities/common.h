@@ -46,8 +46,13 @@ void snx_option_renamed(const char* old, const char* now);
    no other way to keep them in), NULL for stderr again. Set before the threads that say errors start */
 void snx_error_sink(void (*sink)(const char* line));
 /* the system's reason for the file or folder call that just failed, into out: strerror(errno), or on Windows the
-   text of GetLastError, which its calls set instead of errno */
+   text of GetLastError, which its calls set instead of errno (snx_windows_reason) */
 char* snx_os_error(char* out, size_t size);
+/* the reason Windows gives for an error code, the n UTF-16 units of text (FormatMessageW's, in the system's language),
+   into out as UTF-8 without the line break and full stop it ends in, the code after it: "<text> (Windows error
+   <code>)", or "Windows error <code>" for no text. A unit that is no character is U+FFFD; a short out keeps whole
+   characters of the text, and the code after them only whole */
+char* snx_windows_reason(const uint16_t* text, size_t n, unsigned long code, char* out, size_t size);
 /* a, then b, a separator between: one path in the system's separators (snx_path_native) */
 char* snx_path_join(const char* a, const char* b);
 char* snx_dirname(const char* path);
