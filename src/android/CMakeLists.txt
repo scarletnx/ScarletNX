@@ -45,10 +45,11 @@ endif()
 
 add_library(snx_android_program STATIC runtime/main.c runtime/jvm.c runtime/app.c runtime/install.c res/axml.c
                                        res/xml_jni.c res/arsc.c
-                                       res/asset_jni.c db/sqlite_jni.c hwui/text.c hwui/path.c
+                                       res/asset_jni.c db/sqlite_jni.c hwui/text.c hwui/image.c hwui/path.c
                                        hwui/render.c "${volk_SOURCE_DIR}/volk.c")
+# FFmpeg decodes and encodes the images of BitmapFactory and Bitmap.compress (hwui/image.c)
 target_link_libraries(snx_android_program PUBLIC snx_android_dex snx_zip snx_sqlite snx_harfbuzz snx_vk_common
-                      SDL3::SDL3 Vulkan::Headers ${CMAKE_DL_LIBS})
+                      FFmpeg::avcodec FFmpeg::swscale SDL3::SDL3 Vulkan::Headers ${CMAKE_DL_LIBS})
 if(NOT WIN32)
     target_link_libraries(snx_android_program PUBLIC m)
 endif()
@@ -149,6 +150,15 @@ if(BUILD_TESTING AND NOT WIN32)
     set_tests_properties(android_bionic_sync PROPERTIES TIMEOUT 120)
 endif()
 if(BUILD_TESTING)
+    # the image codec of BitmapFactory and Bitmap.compress over FFmpeg (hwui/image.c)
+    add_executable(snx-test-android-image "${PROJECT_SOURCE_DIR}/tests/android_image.c" hwui/image.c)
+    target_include_directories(snx-test-android-image PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_include_directories(snx-test-android-image SYSTEM PRIVATE "${SNX_JAVA_HOME}/include"
+                               "${SNX_JAVA_HOME}/include/${snx_jni_system}")
+    target_link_libraries(snx-test-android-image PRIVATE FFmpeg::avcodec FFmpeg::swscale)
+    set_target_properties(snx-test-android-image PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_compile_options(snx-test-android-image PRIVATE ${snx_android_c_options} -UNDEBUG)
+    add_test(NAME android_image COMMAND snx-test-android-image)
     # the record of the guest's anonymous mappings and its MADV_DONTNEED, which FreeBSD, macOS and Windows take
     add_executable(snx-test-android-host-anon "${PROJECT_SOURCE_DIR}/tests/android_host_anon.c" bridge/host.c)
     target_include_directories(snx-test-android-host-anon PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -193,6 +203,7 @@ if(BUILD_TESTING)
 endif()
 
 if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
-    snx_test_sanitize(snx-test-bionic-sync snx-test-android-host-anon snx-test-android-gles2 snx-test-android-inputs)
+    snx_test_sanitize(snx-test-bionic-sync snx-test-android-image snx-test-android-host-anon snx-test-android-gles2
+                      snx-test-android-inputs)
     snx_sanitizer_path()
 endif()
