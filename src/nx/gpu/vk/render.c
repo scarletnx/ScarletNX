@@ -1913,7 +1913,15 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         else if (view)
             vk_surf_use(vk_cmd(), t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         else {
-            if (t)
+            const char* why = t ? vk_tex_view_refusal(t, want) : NULL;
+            if (why)
+                LOG_LIMIT(4,
+                          "vulkan: texture %d of stage %d shader %016llx (handle %08x, header format %02x, type %u) "
+                          "is read as %s, of a %ux%u %s %s of %u layers, and %s: it reads zeros\n",
+                          i, stage, (unsigned long long)s->hash, handle, x->tic[0] & 0x7F, (x->tic[4] >> 23) & 0xF,
+                          vk_view_type_name(want), t->w, t->h, vk_view_type_name(t->type),
+                          t->is_rt ? "render target" : "texture", t->layers, why);
+            else if (t)
                 LOG_LIMIT(4,
                           "vulkan: texture %d of stage %d (header format %02x) has no %s view of its %s surface: it "
                           "reads zeros\n",
