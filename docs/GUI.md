@@ -834,7 +834,8 @@ ErET needs `[theme] layout`, so the built-in files carry one: `debug` and `menu`
 The menu's phrases are English in its code, each through `snx_tr` (`src/gui/i18n.h`), and so are the setup's notices,
 marked in `src/common/utilities/setup.c`, which the terminal shows as they are. `po/scarletnx.pot` lists
 them, made from the code by `scripts/build-languages.py --pot`; the `gui_languages_pot` test fails when it is not what
-the code says. A language is a `po/<tag>.po`, named by its BCP 47 tag as language-Script-REGION, each part only
+the code says, and only warns where a `.po` lags it (a phrase missing or one the code dropped): the menu shows such a
+phrase in English, and `--pot` adds each one untranslated. A language is a `po/<tag>.po`, named by its BCP 47 tag as language-Script-REGION, each part only
 when it tells the language apart (`de.po`, `pt-BR.po`, `zh-Hans-CN.po`), in gettext's format: the build makes each one a
 catalog of gettext's `.mo` format compiled into the menu, which reads it with musl's `__mo_lookup`
 (`src/gui/i18n.c`). A new one starts as a copy of the `.pot` whose header names it, in UTF-8:

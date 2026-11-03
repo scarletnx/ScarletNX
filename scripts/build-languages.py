@@ -379,6 +379,22 @@ def po_drift(path, pot):
     return out
 
 
+def lagging(folder, pot, drawn):
+    """compiles each .po of folder against the .pot (what one refuses raises), and gives the warnings for where one
+    lags the .pot: a language may, since the menu shows the English for a phrase it lacks, so a phrase the code added or
+    changed never fails the check of the languages nobody has translated it into yet"""
+    phrases, drift = pot_phrases(pot), []
+    for po in sorted(folder.glob('*.po')):
+        compile_po(po, phrases, drawn)
+        drift += po_drift(po, pot)
+    if drift:
+        drift.append(
+            f'{len(drift)} entries lag {POT}, which the menu shows in English: scripts/build-languages.py --pot adds '
+            'each phrase untranslated and keeps the translation of one the code no longer has as obsolete (#~)'
+        )
+    return drift
+
+
 def header_of(msgstr):
     fields = {}
     for line in msgstr.split('\n'):
@@ -585,7 +601,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--root', type=Path, default=ROOT, help="the checkout (default: this script's)")
     parser.add_argument('--pot', action='store_true', help=f'write {POT} from the code')
-    parser.add_argument('--check', action='store_true', help=f'fail when {POT} or a po/*.po is not what it should be')
+    parser.add_argument(
+        '--check',
+        action='store_true',
+        help=f'fail when {POT} is not what the code says or a po/*.po does not compile; warn where a .po lags {POT}',
+    )
     parser.add_argument('--out', type=Path, help='the C source of the catalogs of the .po files given')
     parser.add_argument('--phrases', type=Path, help="the .pot the .po files translate (default: the checkout's)")
     parser.add_argument('po', nargs='*', type=Path)
@@ -606,16 +626,8 @@ def main():
                 return 0
             if not pot.exists() or pot.read_bytes().decode().replace('\r\n', '\n') != text:
                 raise Refused(f'{POT} is not what the code says: run scripts/build-languages.py --pot')
-            phrases, drawn = pot_phrases(pot), drawable(args.root)
-            drift = []
-            for po in sorted((args.root / 'po').glob('*.po')):
-                compile_po(po, phrases, drawn)
-                drift += po_drift(po, pot)
-            if drift:
-                raise Refused(
-                    '\n'.join(drift) + '\nrun scripts/build-languages.py --pot, which adds each phrase untranslated '
-                    'and keeps the translation of one the code no longer has as obsolete (#~)'
-                )
+            for line in lagging(args.root / 'po', pot, drawable(args.root)):
+                print(f'build-languages.py: {line}', file=sys.stderr)
             return 0
         if not args.out:
             parser.error('--pot, --check or --out')

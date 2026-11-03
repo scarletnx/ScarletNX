@@ -294,8 +294,13 @@ class Files(unittest.TestCase):
         self.assertIn('#: src/gui/b.c\n#, c-format\nmsgid "Load %s"\nmsgstr ""\n', merged)
         self.assertTrue(merged.endswith('#~ msgid "Share log"\n#~ msgstr "Partilhar"\n'))
         self.assertTrue(merged.startswith(HEADER.format(code='pt-BR', name='Português (Brasil)')))
+        # --check only warns of it: the drift and how many entries lag, never a refusal
+        warned = bl.lagging(folder, pot, DRAWN)
+        self.assertEqual(warned[:2], bl.po_drift(po, pot))
+        self.assertIn('2 entries lag po/scarletnx.pot, which the menu shows in English', warned[2])
         po.write_text(merged)
         self.assertEqual(bl.po_drift(po, pot), [])
+        self.assertEqual(bl.lagging(folder, pot, DRAWN), [])
         self.assertEqual(bl.merged_po(po, phrases), merged)
         # the phrase back in the code takes its obsolete translation back
         phrases['Share log'] = (set(), ['src/gui/c.c'])
