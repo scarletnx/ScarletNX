@@ -207,11 +207,14 @@ driver time a frame on AMD with the whole heap as one import.
   in the BO list of every submission, used by its commands or not: the kernel looks each one up at each submit. When
   mem.c gives guest pages back (unmap, decommit), moves them into the alias pool (`promote_nl`), or a publish traps a
   page (userfaultfd), the host pages or their state under the import are not ones the kernel can pin. A trapped page
-  or an alias pool page (a memfd's) fails the lookup with `-EFAULT`, and RADV reports the submission rejected and the
-  device lost. So mem.c tells the renderer which pages changed (`mem_set_pages_replaced`), and the renderer destroys
-  those imports at once, after the quiesce of their readers, not at the next lookup or at the frame's end
-  (`vk_uma_forget_range`, `vk_uma_drop_dead`). A range over pool pages is copied, never imported. `vulkan_headless`
-  (`check_uma`) unmaps and maps a range again, and checks that the GPU reads the new bytes.
+  fails the lookup with `-EFAULT`, and RADV reports the submission rejected and the device lost. So mem.c tells the
+  renderer which pages changed (`mem_set_pages_replaced`), and the renderer destroys those imports at once, after the
+  quiesce of their readers, not at the next lookup or at the frame's end (`vk_uma_before_trap`, `vk_uma_drop_dead`).
+  The quiesce waits for the submissions that read an import and also submits the submissions the recorder still
+  holds (`vk_rec_sync`), so the kernel checks their BO lists against the old pages before the import goes. A range
+  over pool pages is copied, never imported, because a driver may refuse a memfd's pages. `vulkan_headless` unmaps
+  and maps a range again in `check_uma`, and its import tests publish over an imported range, one with a submitted
+  read still in flight, repeat a trap, keep one of two imports, and remap a range between traps.
 - Hazards. A GPU-side write to guest memory (a front-end write, a landed result) on a page that a command not finished
   yet reads in place can change what that command reads. They are counted (`gpu_set_write_watch`), not prevented, and
   the report every 600 presents gives the count:

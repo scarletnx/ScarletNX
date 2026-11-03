@@ -1040,6 +1040,7 @@ int mem_pool_offset(u64 a, u64* off) {
     mem_unlock();
     return r;
 }
+/* whether any host page of [a, a + size) is a pool page, a memfd's: a driver that imports host pointers may refuse it */
 int mem_any_pool(u64 a, u64 size) {
     int r;
     if (!size || a >= AS_END) return 0;

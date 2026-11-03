@@ -1711,7 +1711,7 @@ static int check_rt_overlap(void) {
 static int check_uma_import_trap(void) {
     const u64 gva = 0x7100000, cpu = HEAP_BASE + 0x7a0000, span = 0x10000;
     VkBuffer buf;
-    u64 off;
+    u64 off, pool;
     if (!own_traps()) return 0;
     if (!vk_uma()) return 0;
     gmmu_map(gva, cpu, span);
@@ -1725,11 +1725,110 @@ static int check_uma_import_trap(void) {
     own_acquire(cpu + 0x100, 256);
     for (u32 i = 0; i < 256; i++) CHECK(GP(cpu + 0x100)[i] == 0x42);
     vk_own_res_unref(owner);
-    CHECK(mem_any_pool(cpu + 0x100, 256));           /* the page is the pool's now */
-    CHECK(!vk_uma_get(gva + 0x100, 256, 4, &buf, &off)); /* and the range copies, never imports it */
+    CHECK(mem_pool_offset(cpu + 0x100, &pool) == 0);      /* the trap left the page in the pool */
+    CHECK(!vk_uma_get(gva + 0x100, 256, 4, &buf, &off)); /* a window over pool pages is copied, not imported */
     vk_finish();
     vk_unlock();
     puts("guest memory read in place: an import under a trap goes before the submission that checks it");
+    return 0;
+}
+
+/* A published page must not take its import while a submitted read of it still runs: vk_uma_quiesce waits for that
+   submission before the import goes. The read is a 1 MiB copy out of the import, followed by 64 MiB of host copies in
+   the same submission, so the submission is still in flight when the publish traps the page. The read must see the
+   bytes from before the trap */
+static int check_uma_import_inflight(void) {
+    const u64 gva = 0x7200000, cpu = HEAP_BASE + 0x2000000, span = 0x100000;
+    VkBuffer imp, rb, fa, fb;
+    u64 io, ao, bo, sub, done;
+    if (!own_traps()) return 0;
+    if (!vk_uma()) return 0;
+    CHECK(mem_map(cpu, span, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, span);
+    memset(GP(cpu), 0x5a, (size_t)span);
+    vk_lock();
+    CHECK(vk_uma_get(gva, span, 4, &imp, &io));
+    u8* result = vk_readback_buffer(span, &rb);
+    u8* a = vk_stage_upload(span, 16, &fa, &ao);
+    u8* b = vk_stage_upload(span, 16, &fb, &bo);
+    CHECK(result && a && b);
+    memset(a, 0x11, (size_t)span);
+    memset(b, 0x22, (size_t)span);
+    VkBufferCopy read = {io, 0, span};
+    rec_CmdCopyBuffer(vk_cmd(), imp, rb, 1, &read);
+    for (u32 k = 0; k < 64; k++) { /* reads and writes host memory: the submission stays in flight meanwhile */
+        VkBufferCopy c = {k & 1 ? bo : ao, k & 1 ? ao : bo, span};
+        rec_CmdCopyBuffer(vk_cmd(), k & 1 ? fb : fa, k & 1 ? fa : fb, 1, &c);
+    }
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE); /* the read goes, without a wait */
+    vk_submit_progress(&sub, &done);
+    if (g_vk.props.deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU) /* lavapipe can finish at the submit */
+        CHECK(done < sub); /* it is in flight when the publish below takes its page */
+    VkOwnRes* owner = vk_own_res_new(span);
+    CHECK(owner && !owned_test_fill(owner->buf, 0, span, 0x42));
+    vk_own_publish(cpu, span, owner, 0); /* the quiesce waits for the read before the import goes */
+    vk_submit_progress(&sub, &done);
+    CHECK(done >= sub); /* the read is done, so its import could go */
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < span; i++) CHECK(result[i] == 0x5a); /* the read saw the bytes from before the trap */
+    own_acquire(cpu, span);
+    for (u32 i = 0; i < span; i++) CHECK(GP(cpu)[i] == 0x42);
+    vk_own_res_unref(owner);
+    vk_unlock();
+    puts("guest memory read in place: a publish waits for a submitted read of the import before the import goes");
+    return 0;
+}
+
+/* Repeated traps of one page, an overlapping publish, a second import in another window, and a remap between traps */
+static int check_uma_import_ranges(void) {
+    const u64 gva1 = 0x7300000, cpu1 = HEAP_BASE + 0x2400000;
+    const u64 gva2 = 0x7400000, cpu2 = HEAP_BASE + 0x2800000;
+    const u64 span = 0x10000;
+    VkBuffer b1, b2, rb;
+    u64 o1, o2;
+    if (!own_traps()) return 0;
+    if (!vk_uma()) return 0;
+    CHECK(mem_map(cpu1, span, MS_NORMAL, PERM_RW) == 0 && mem_map(cpu2, span, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva1, cpu1, span);
+    gmmu_map(gva2, cpu2, span);
+    memset(GP(cpu1), 0x11, (size_t)span);
+    memset(GP(cpu2), 0x22, (size_t)span);
+    vk_lock();
+    CHECK(vk_uma_get(gva1 + 0x100, 256, 4, &b1, &o1));
+    CHECK(vk_uma_get(gva2, 256, 4, &b2, &o2));
+    for (u32 k = 0; k < 2; k++) { /* two traps of the same page, the second over a new import of it */
+        VkOwnRes* owner = vk_own_res_new(256);
+        CHECK(owner && !owned_test_fill(owner->buf, 0, 256, (u8)(0x30 + k)));
+        vk_own_publish(cpu1 + 0x100, 256, owner, 0);
+        vk_finish();
+        own_acquire(cpu1 + 0x100, 256);
+        for (u32 i = 0; i < 256; i++) CHECK(GP(cpu1 + 0x100)[i] == 0x30 + k);
+        vk_own_res_unref(owner);
+    }
+    u8* result = vk_readback_buffer(256, &rb); /* the other window's import was not the one destroyed */
+    CHECK(result);
+    VkBufferCopy c = {o2, 0, 256};
+    rec_CmdCopyBuffer(vk_cmd(), b2, rb, 1, &c);
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 256; i++) CHECK(result[i] == 0x22);
+    vk_unlock();
+    /* the pages given back and mapped again: the import of them goes, and the next trap is fine */
+    CHECK(mem_unmap(cpu1, span) == 0 && mem_map(cpu1, span, MS_NORMAL, PERM_RW) == 0);
+    g_renderer->mem_may_have_changed();
+    memset(GP(cpu1), 0x33, (size_t)span);
+    vk_lock();
+    CHECK(vk_uma_get(gva1 + 0x100, 256, 4, &b1, &o1));
+    VkOwnRes* owner = vk_own_res_new(256);
+    CHECK(owner && !owned_test_fill(owner->buf, 0, 256, 0x44));
+    vk_own_publish(cpu1 + 0x100, 256, owner, 0);
+    vk_finish();
+    own_acquire(cpu1 + 0x100, 256);
+    for (u32 i = 0; i < 256; i++) CHECK(GP(cpu1 + 0x100)[i] == 0x44);
+    vk_own_res_unref(owner);
+    vk_unlock();
+    puts("guest memory read in place: repeated traps, overlapping publishes, one of two imports, and a remap");
     return 0;
 }
 
@@ -1832,6 +1931,8 @@ int main(int argc, char** argv) {
     CHECK(!check_rt_overlap());
     CHECK(!check_uma());
     CHECK(!check_uma_import_trap());
+    CHECK(!check_uma_import_inflight());
+    CHECK(!check_uma_import_ranges());
     CHECK(!check_descriptor_room());
     /* the pipeline workers: pipeline_threads when given, else a quarter of the CPUs, two to six */
     CHECK(vk_pipeline_worker_count(0, 8) == 6 && vk_pipeline_worker_count(0, 12) == 10 &&

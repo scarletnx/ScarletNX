@@ -349,7 +349,7 @@ static u32 imp_get(u64 cpu, u64 len) {
         last++;
     }
     /* Only mapped guest memory, and no alias pool pages: the pool's pages are a memfd's, which a driver that pins host
-       pointers refuses, and the kernel then fails every submission that has the import in its BO list (imp_destroy).
+       pointers may refuse, and the kernel then fails every submission that has the import in its BO list (imp_destroy).
        The range's own pages where the windows are not all mapped or hold pool pages. A window with a gap and imports
        in it stays as it is: those imports cover ranges that copying again would cost */
     int pool = mem_any_pool(lo, hi - lo);
@@ -395,11 +395,7 @@ int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
         g_uma.misses++;
         return 0;
     }
-    if (mem_any_pool(cpu, len)) { /* the pool's pages: a memfd's, which the driver refuses (imp_get) */
-        g_uma.misses++;
-        return 0;
-    }
-    drop_dead();
+    drop_dead(); /* the imports whose pages a mapping change replaced go */
     u32 i = imp_get(cpu, len);
     if (i == ~0u || ((cpu - g_uma.imp[i].cpu) % (align ? align : 1))) {
         g_uma.misses++;
@@ -491,9 +487,10 @@ void vk_uma_frame(void) {
    if they are still recorded (vk_lock held, mem.c's lock not). A device whose GPU is the CPU (lavapipe) reads an import
    through the CPU's own mapping, and faulted on the trapped page in a command that ran later: landing the page waited
    for a readback queued behind that command, and edenprobe's dispatch and draw pairs over one buffer hung there.
-   amdgpu looks up an import's pages again at every submit and refuses them once they are in the alias pool, whose
-   pages are a file's (the trap moves them there): a command recorded before the publish and submitted after it would
-   be refused. The pages the command reads are the ones they were when it was recorded, as the console's GPU reads them */
+   RADV gives every submission the BO list of every import and the kernel looks their pages up there: a submission
+   after the trap is refused, whether its own commands read the import or not. The pages a command reads are the ones
+   they were when it was recorded, as the console's GPU reads them. So a queued submission is submitted before the
+   pages change (vk_rec_sync), not left to the recorder */
 void vk_uma_quiesce(u64 cpu, u64 size) {
     u64 end = size == ~0ull || cpu + size < cpu ? ~0ull : cpu + size, sub = 0, submitted, done;
     if (!vk_uma()) return;
@@ -502,10 +499,16 @@ void vk_uma_quiesce(u64 cpu, u64 size) {
             sub = g_uma.imp[i].sub;
     if (!sub) return;
     vk_submit_progress(&submitted, &done);
-    if (done >= sub) return;
-    if (sub > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE); /* still the one being recorded */
-    vk_wait_submit(sub);
-    g_uma.quiesces++;
+    if (done < sub) {
+        if (sub > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE); /* still the one being recorded */
+        vk_wait_submit(sub);
+        g_uma.quiesces++;
+    }
+    /* Every submission the recorder still holds is submitted now, so the kernel checks its BO list against the pages
+       as they are. RADV puts every import in the list of every submission, used or not: one submitted after the pages
+       change is rejected even if its own commands never read the import. The GPU may go on with those submissions,
+       and only the ones that read the import are waited for above */
+    vk_rec_sync();
 }
 /* The imports on [cpu, cpu + size) go now (size ~0: all), their readers already run: the caller quiesced them with
    vk_uma_quiesce, or vk_uma_before_trap does both (vk_lock held) */
