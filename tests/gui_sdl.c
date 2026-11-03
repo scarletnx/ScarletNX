@@ -10359,6 +10359,20 @@ int main(int argc, char** argv) {
             text_px_is(&app, b.x + cw / 2, b.y + (40 * s - 16 * s + s) / 2, line, normal, black);
             assert(gui_text_cols(line) == 9);
         }
+        { /* a game's title in the CJK and Hangul blocks: Unifont's glyphs, two columns each but the halfwidth form, and
+             none a ? (titles.h) */
+            static const char title[] =
+                "\xe3\x81\x82\xe6\x97\xa5\xea\xb0\x80\xef\xbd\xb1 2"; /* U+3042 U+65E5 U+AC00 U+FF71 */
+            char line[32];
+            const char* at = title;
+            uint32_t point;
+            while ((point = gui_utf8_step(&at)) != 0) assert(gui_menu_glyph(point) != '?');
+            assert(gui_text_cols(title) == 2 + 2 + 2 + 1 + 2);
+            fill_rect(&app, b, app.theme.page);
+            ui_draw_row(&app, b, title, 0, NULL, UI_COLOR_NONE, 0, false);
+            snprintf(line, sizeof line, "- %s", title);
+            text_px_is(&app, b.x + cw / 2, b.y + (40 * s - 16 * s + s) / 2, line, normal, black);
+        }
         { /* a row with an image: the marker, the image as big as the head's user picture, then the text */
             SDL_Texture* red =
                 SDL_CreateTexture(app.renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, 4, 4);

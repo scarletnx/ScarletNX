@@ -6,22 +6,40 @@
 #include "common/utilities/font.h"
 #include "gui/icons.h"
 #include "gui/latin.h"
+#include "gui/titles.h"
 
-int gui_glyph_cols(int c) { return c >= 256 + gui_latin_count ? 2 : 1; }
-int gui_glyph_count(void) { return 256 + gui_latin_count + 2 * gui_wide_count + 2 * GUI_ICON_COUNT; }
+/* where the titles' glyphs start (gui_menu_glyph): their 8x16 ones after the icons, then their 16x16 ones' halves */
+static int titles(void) { return 256 + gui_latin_count + 2 * gui_wide_count + 2 * GUI_ICON_COUNT; }
+int gui_glyph_cols(int c) {
+    return c < 256 + gui_latin_count || (c >= titles() && c < titles() + gui_title_narrow_count) ? 1 : 2;
+}
+int gui_glyph_count(void) { return titles() + gui_title_narrow_count + 2 * gui_title_wide_count; }
 const uint8_t* gui_glyph_rows(int c) {
-    int wide = 256 + gui_latin_count, icons = wide + 2 * gui_wide_count;
-    return c < 256     ? gui_vga_font + c * 16
-           : c < wide  ? gui_latin_font + (c - 256) * 16
-           : c < icons ? gui_wide_font + (c - wide) * 16
-                       : gui_icon_font + (c - icons) * 16;
+    int wide = 256 + gui_latin_count, icons = wide + 2 * gui_wide_count, narrow = titles();
+    int title = narrow + gui_title_narrow_count;
+    return c < 256      ? gui_vga_font + c * 16
+           : c < wide   ? gui_latin_font + (c - 256) * 16
+           : c < icons  ? gui_wide_font + (c - wide) * 16
+           : c < narrow ? gui_icon_font + (c - icons) * 16
+           : c < title  ? gui_title_narrow_font + (c - narrow) * 16
+                        : gui_title_wide_font + (c - title) * 16;
 }
-int gui_wide_letters(void) { return gui_wide_count; }
+int gui_wide_letters(void) { return gui_wide_count + gui_title_wide_count; }
 int gui_wide_letter(int c) {
-    int wide = 256 + gui_latin_count;
-    return c >= wide && c < wide + 2 * gui_wide_count ? (c - wide) / 2 : -1;
+    int wide = 256 + gui_latin_count, title = titles() + gui_title_narrow_count;
+    if (c >= wide && c < wide + 2 * gui_wide_count) return (c - wide) / 2;
+    return c >= title && c < title + 2 * gui_title_wide_count ? gui_wide_count + (c - title) / 2 : -1;
 }
-uint32_t gui_wide_letter_point(int place) { return gui_wide_points[place]; }
+uint32_t gui_wide_letter_point(int place) {
+    if (place < gui_wide_count) return gui_wide_points[place];
+    place -= gui_wide_count;
+    for (int i = 0; i < gui_title_run_count; ++i) {
+        const GuiTitleRun* run = &gui_title_runs[i];
+        if (run->wide && place >= run->at && place - run->at <= (int)(run->last - run->first))
+            return run->first + (uint32_t)(place - run->at);
+    }
+    return 0xFFFD;
+}
 uint32_t gui_utf8_step(const char** s) {
     const unsigned char* p = (const unsigned char*)*s;
     uint32_t cp;
