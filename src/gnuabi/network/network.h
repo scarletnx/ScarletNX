@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The guest's networking on the emulated network stack (src/common/network): sockets and eventfd (socket.c), poll,
    select and epoll (poll.c), and the resolver's files under /etc (etc.c). Descriptors are the VFS's, backed by the
-   stack's objects (vfs.h's GnuObjectOps). The guest's errno numbering is the stack's, Linux's. The guest runs one
-   thread, so calls block it as a host thread would block. */
+   stack's objects (vfs.h's GnuObjectOps). The guest's errno numbering is the stack's, Linux's. A call blocks the
+   guest thread that makes it, as a host thread would block, and a signal stops it with EINTR (signals.c). */
 #ifndef SNX_GNU_NETWORK_H
 #define SNX_GNU_NETWORK_H
 #include "gnuabi/process/process.h"

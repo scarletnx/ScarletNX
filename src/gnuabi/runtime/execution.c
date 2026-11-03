@@ -13,71 +13,89 @@
 #include <signal.h>
 #endif
 #include "gnuabi/runtime/arm_exec.h"
-static GnuProcess* active_process;
-static int guest_address(uintptr_t address) {
-    GnuProcess* p = active_process;
-    uintptr_t base = p ? (uintptr_t)p->memory.base : 0;
-    return p && p->running && address >= base && address - base < p->memory.size;
+/* the process whose memory a fault on another host thread (an LLVM worker) is tested against, and the host's
+   handlers before the runtime's */
+static struct {
+    GnuProcess* process;
+    int installed;
+#ifdef _WIN32
+    PVOID guard;
+#else
+    struct sigaction previous_segv, previous_bus;
+#endif
+} g_execution;
+/* a fault of the guest's code on its own thread: the thread runs guest code there */
+static GnuThread* faulting_thread(uintptr_t address) {
+    GnuThread* t = gnu_thread_self();
+    uintptr_t base = t ? (uintptr_t)gnu_process_of(t)->memory.base : 0;
+    return t && t->running && address >= base && address - base < gnu_process_of(t)->memory.size ? t : NULL;
 }
-static void guest_fault(int signal) {
-    GnuProcess* p = active_process;
-    p->faulted = signal;
-    p->exited = 1;
-    p->exit_code = 128 + signal;
-    static const char reason[] = "Guest memory access violated mapped permissions";
-    /* Avoid allocation or stdio inside the host fault handler. */
-    for (size_t i = 0; i < sizeof reason; i++) p->diagnostic[i] = reason[i];
-    longjmp(p->exit_target, 1);
-}
+/* the host's fault handler leaves the guest code for its run loop, which ends the process (gnu_process_fault, with
+   its locks, outside the handler) */
+static void guest_fault(GnuThread* t, int signal) { longjmp(t->exit_target, 16 + signal); }
 #ifdef _WIN32
 static LONG CALLBACK access_fault(EXCEPTION_POINTERS* exception) {
     if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
         exception->ExceptionRecord->NumberParameters >= 2) {
         uintptr_t address = (uintptr_t)exception->ExceptionRecord->ExceptionInformation[1];
+        GnuProcess* p = g_execution.process;
+        GnuThread* t = faulting_thread(address);
         /* the JIT's dispatch table is committed as lookups reach it */
-        if (active_process && gnu_jit_commit(&active_process->jit, address)) return EXCEPTION_CONTINUE_EXECUTION;
-        if (guest_address(address) &&
-            gnu_memory_code_written(&active_process->memory, address - (uintptr_t)active_process->memory.base))
+        if (p && gnu_jit_commit(&p->jit, address)) return EXCEPTION_CONTINUE_EXECUTION;
+        if (t && gnu_memory_code_written(&gnu_process_of(t)->memory, address - (uintptr_t)gnu_process_of(t)->memory.base))
             return EXCEPTION_CONTINUE_EXECUTION; /* a write over compiled code: the store again, on a writable page */
-        if (guest_address(address)) guest_fault(11);
+        if (t) guest_fault(t, 11);
     }
     return EXCEPTION_CONTINUE_SEARCH;
 }
 #else
-static struct sigaction previous_segv, previous_bus;
 static void access_fault(int signal, siginfo_t* information, void* context) {
     (void)context;
-    if (guest_address((uintptr_t)information->si_addr) &&
-        gnu_memory_code_written(&active_process->memory,
-                                (uintptr_t)information->si_addr - (uintptr_t)active_process->memory.base))
+    uintptr_t address = (uintptr_t)information->si_addr;
+    /* a guest address on any thread: a write of the runtime (a read() into the buffer) or of guest code */
+    GnuProcess* p = g_execution.process;
+    if (p && address >= (uintptr_t)p->memory.base && address - (uintptr_t)p->memory.base < p->memory.size &&
+        gnu_memory_code_written(&p->memory, address - (uintptr_t)p->memory.base))
         return; /* a write over compiled code: the store again, on a writable page */
-    if (guest_address((uintptr_t)information->si_addr)) {
+    GnuThread* t = faulting_thread(address);
+    if (t) {
         sigset_t unblocked;
         sigemptyset(&unblocked);
         sigaddset(&unblocked, signal);
-        (void)sigprocmask(SIG_UNBLOCK, &unblocked, NULL);
-        guest_fault(signal);
+        (void)pthread_sigmask(SIG_UNBLOCK, &unblocked, NULL);
+        guest_fault(t, signal);
     }
-    (void)sigaction(signal, signal == SIGSEGV ? &previous_segv : &previous_bus, NULL);
+    (void)sigaction(signal, signal == SIGSEGV ? &g_execution.previous_segv : &g_execution.previous_bus, NULL);
     (void)raise(signal);
 }
 #endif
-/* runs the A64 program until it exits or execs: a guest RET that matches no host frame returns all the way here,
-   and the run goes on from cpu->pc, as after a longjmp, a vfork or an exec */
-static void run_a64(GnuProcess* p) {
-    int reason = setjmp(p->exit_target);
-    /* 3: a syscall took the code it would return into (gnu_jit_invalidate), which is compiled again from cpu->pc */
+/* runs the A64 program until it exits or execs, or the thread ends: a guest RET that matches no host frame returns all
+   the way here, and the run goes on from cpu->pc, as after a longjmp, a vfork or an exec. The reason it stopped:
+   1 the process ends, 2 an execve, 4 the thread ends */
+static int run_a64(GnuThread* t) {
+    int reason = setjmp(t->exit_target);
+    /* 3: a syscall took the code it would return into (gnu_jit_invalidate), or a signal's handler starts or returns:
+       the guest goes on at cpu->pc */
     if (!reason || reason == 3) {
-        p->running = 1;
-        for (;;) gnu_jit_call(&p->jit, &p->cpu, p->cpu.pc);
+        t->running = 1;
+        gnu_kernel_check_stop(&t->k);
+        for (;;) gnu_jit_call(&gnu_process_of(t)->jit, &t->cpu, t->cpu.pc);
     }
-    p->running = 0;
+    t->running = 0;
+    if (reason >= 16) { /* a fault in guest code, from the host's handler */
+        gnu_process_fault(t, reason - 16, "Guest memory access violated mapped permissions");
+        reason = gnu_process_of(t)->exited && gnu_process_of(t)->kernel.stopper == &t->k ? 1 : 4;
+    }
+    return reason;
 }
 
-int gnu_runtime_run(GnuProcess* p) {
-    active_process = p;
+static void install(GnuProcess* p) {
+    g_execution.process = p;
+    if (g_execution.installed) return;
+    g_execution.installed = 1;
+    gnu_thread_install_kick();
 #ifdef _WIN32
-    PVOID guard = AddVectoredExceptionHandler(1, access_fault);
+    g_execution.guard = AddVectoredExceptionHandler(1, access_fault);
 #else
     struct sigaction guard;
     memset(&guard, 0, sizeof guard);
@@ -89,22 +107,18 @@ int gnu_runtime_run(GnuProcess* p) {
 #endif
     guard.sa_flags = SA_SIGINFO;
     sigemptyset(&guard.sa_mask);
-    int have_segv = !sigaction(SIGSEGV, &guard, &previous_segv);
-    int have_bus = !sigaction(SIGBUS, &guard, &previous_bus);
+    (void)sigaction(SIGSEGV, &guard, &g_execution.previous_segv);
+    (void)sigaction(SIGBUS, &guard, &g_execution.previous_bus);
 #endif
+}
+
+int gnu_runtime_run(GnuThread* t) {
+    GnuProcess* p = gnu_process_of(t);
+    install(p);
+    gnu_thread_set_self(t);
     for (;;) {
-        if (p->elf.bits == 32)
-            (void)gnu_arm_run(p);
-        else
-            run_a64(p);
-        if (!p->exec || gnu_spawn_finish_exec(p)) break;
+        int reason = p->elf.bits == 32 ? gnu_arm_run(t) : run_a64(t);
+        if (reason != 2 || !p->exec || gnu_spawn_finish_exec(t)) break;
     }
-#ifdef _WIN32
-    if (guard) RemoveVectoredExceptionHandler(guard);
-#else
-    if (have_segv) (void)sigaction(SIGSEGV, &previous_segv, NULL);
-    if (have_bus) (void)sigaction(SIGBUS, &previous_bus, NULL);
-#endif
-    active_process = NULL;
     return p->exit_code;
 }

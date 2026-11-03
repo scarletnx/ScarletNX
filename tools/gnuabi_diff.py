@@ -179,7 +179,7 @@ def main():
     parser.add_argument('--cc', default='aarch64-linux-gnu-gcc', help='Cross-compiler executable or command')
     parser.add_argument('--cc-arg', action='append', default=[], help='Extra compiler flag; use --cc-arg=--target=...')
     parser.add_argument(
-        '--suite', choices=('cpu', 'syscalls', 'pie', 'all'), help='Compile and run repository fixtures'
+        '--suite', choices=('cpu', 'syscalls', 'pie', 'threads', 'all'), help='Compile and run repository fixtures'
     )
     parser.add_argument('--fuzz', type=int, default=0, metavar='COUNT')
     parser.add_argument('--seed', type=int, default=1)
@@ -204,9 +204,14 @@ def main():
         with tempfile.TemporaryDirectory(prefix='scarletnx-diff-') as temporary:
             scratch = Path(temporary)
             cases = [(path.stem, path.resolve(), [], None, None, None) for path in args.elf]
-            suites = ('cpu', 'syscalls', 'pie') if args.suite == 'all' else ((args.suite,) if args.suite else ())
+            suites = ('cpu', 'syscalls', 'pie', 'threads') if args.suite == 'all' else ((args.suite,) if args.suite else ())
+            # threads: the thread and signal fixtures, each a case of its own (gnuabi_threads.py runs them in CTest)
+            if 'threads' in suites:
+                suites = tuple(x for x in suites if x != 'threads') + ('threads', 'signals', 'restart', 'sigsuspend')
             for suite in suites:
                 sources = [fixtures / 'start.S', fixtures / f'{suite}.c']
+                if suite in ('threads', 'signals', 'restart', 'sigsuspend'):
+                    sources.insert(1, fixtures / 'thread_start.S')
                 if suite == 'cpu':
                     sources.append(fixtures / 'boundary.S')
                 elf = scratch / f'{suite}.elf'

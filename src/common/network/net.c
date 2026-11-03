@@ -280,6 +280,35 @@ int snx_net_init(void) {
     return g_init_result;
 }
 #endif
+struct SnxNetWake {
+    SnxHostFd fd[2];
+};
+static _Thread_local struct {
+    SnxNetWake* wake; /* snx_net_wake_bind's */
+} t_net;
+SnxNetWake* snx_net_wake_new(void) {
+    SnxNetWake* w = calloc(1, sizeof *w);
+    if (w && (snx_net_init() || snx_notifier_open(w->fd))) {
+        free(w);
+        return NULL;
+    }
+    return w;
+}
+void snx_net_wake_free(SnxNetWake* w) {
+    if (!w) return;
+    if (t_net.wake == w) t_net.wake = NULL;
+    snx_net_close_fd(w->fd[0]);
+    snx_net_close_fd(w->fd[1]);
+    free(w);
+}
+void snx_net_wake_signal(SnxNetWake* w) {
+    if (w) snx_notifier_signal(w->fd[1]);
+}
+void snx_net_wake_drain(SnxNetWake* w) {
+    if (w) snx_notifier_drain(w->fd[0]);
+}
+void snx_net_wake_bind(SnxNetWake* w) { t_net.wake = w; }
+
 void snx_net_cancel(void) {
     if (!snx_net_init() && g_cancel[1] != SNX_BADFD) snx_notifier_signal(g_cancel[1]);
 }
@@ -487,20 +516,24 @@ static int ms_left(int64_t deadline) {
 }
 int snx_net_wait_until(SnxHostFd fd, short events, int64_t deadline) {
     for (;;) {
-        HostPollFd f[2] = {0};
+        HostPollFd f[3] = {0};
         f[0].fd = fd;
         f[0].events = events;
         size_t n = 1;
         if (g_cancel[0] != SNX_BADFD) {
-            f[1].fd = g_cancel[0];
-            f[1].events = POLLIN;
-            n = 2;
+            f[n].fd = g_cancel[0];
+            f[n++].events = POLLIN;
+        }
+        if (t_net.wake) {
+            f[n].fd = t_net.wake->fd[0];
+            f[n++].events = POLLIN;
         }
         int ms = ms_left(deadline);
         int r = host_poll(f, n, ms);
         if (interrupted(r)) continue;
         if (r < 0) return snx_net_host_error();
-        if (n == 2 && f[1].revents) return -SNX_EINTR;
+        for (size_t i = 1; i < n; i++)
+            if (f[i].revents) return -SNX_EINTR;
         if (f[0].revents) return 1;
         if (!ms) return -SNX_EAGAIN;
     }
@@ -1053,7 +1086,7 @@ int snx_net_poll(SnxPollEntry* e, size_t count, int timeout_ms) {
     int r = snx_net_init();
     if (r) return r;
     HostPollFd stack[64];
-    HostPollFd* f = count + 1 <= 64 ? stack : malloc((count + 1) * sizeof *f);
+    HostPollFd* f = count + 2 <= 64 ? stack : malloc((count + 2) * sizeof *f);
     size_t* idx = malloc((count + 1) * sizeof *idx);
     if (!f || !idx) {
         if (f != stack) free(f);
@@ -1088,6 +1121,11 @@ int snx_net_poll(SnxPollEntry* e, size_t count, int timeout_ms) {
         f[n].fd = g_cancel[0];
         f[n++].events = POLLIN;
     }
+    if (t_net.wake) {
+        f[n] = (HostPollFd){0};
+        f[n].fd = t_net.wake->fd[0];
+        f[n++].events = POLLIN;
+    }
     int64_t deadline = timeout_ms > 0 ? snx_net_now_us() + (int64_t)timeout_ms * 1000 : 0;
     for (;;) {
         int ms = ready || !timeout_ms ? 0 : timeout_ms < 0 ? -1 : ms_left(deadline);
@@ -1106,7 +1144,9 @@ int snx_net_poll(SnxPollEntry* e, size_t count, int timeout_ms) {
             r = hits;
             break;
         }
-        if (cancel < n && f[cancel].revents) {
+        int stopped = 0;
+        for (size_t j = cancel; j < n; j++) stopped |= f[j].revents != 0;
+        if (stopped) {
             r = -SNX_EINTR;
             break;
         }

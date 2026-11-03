@@ -4,6 +4,7 @@
 #define SNX_GNU_VFS_INTERNAL_H
 #include "gnuabi/filesystem/vfs.h"
 #include "gnuabi/abi/errno/errno.h"
+#include "gnuabi/kernel/kernel.h"
 #define GNU_VFS_PATH_MAX 4096
 #define GNU_VFS_FD_MAX   256
 #define GNU_VFS_FILE_MAX (64u * 1024u * 1024u)
@@ -87,6 +88,9 @@ typedef struct GnuVfsState {
     char* sysroot;
     char* cwd_path;
     GnuNode* host;
+    /* the guest's threads share the table: each call holds this (recursive) lock, and lets it go around a host call
+       that can block (a pipe, a terminal, a socket), with a reference that keeps the open file */
+    GnuMutex lock;
 } GnuVfsState;
 
 /* What a stat call reports, for both the virtual nodes and the host files, written out as the asm-generic stat or
@@ -99,8 +103,7 @@ typedef struct GnuStat {
 } GnuStat;
 int gnu_stat_put(GnuMemory* memory, uint64_t address, const GnuStat* st);
 int gnu_statx_put(GnuMemory* memory, uint64_t address, const GnuStat* st);
-/* a host errno as the guest's, never the host's numbering (Windows' differs) */
-int gnu_host_errno(int error);
+/* gnu_host_errno: the kernel's (gnuabi/kernel/kernel.h) */
 
 GnuNode* gnu_vfs_node(GnuVfsState* state, GnuNode* parent, const char* name, enum GnuNodeKind kind, unsigned mode,
                       int readonly);

@@ -30,6 +30,12 @@
 #define TABLE_SLOTS           (GNU_ADDRESS_LIMIT / 4)
 #define TABLE_BYTES           (TABLE_SLOTS * sizeof(GuestFn))
 
+/* what gnu_jit_invalidate took since the last gnu_jit_changed on this host thread: the code its own system call
+   returns into */
+static _Thread_local struct {
+    uint64_t changed_lo, changed_hi;
+} t_jit;
+
 static void table_clear(GnuJit* jit, uint64_t first, uint64_t count) {
     unsigned char* begin = (unsigned char*)(jit->table + first);
     unsigned char* end = (unsigned char*)(jit->table + first + count);
@@ -70,7 +76,7 @@ static void table_set(GnuJit* jit, uint64_t pc, GuestFn function) {
 #ifdef _WIN32
     if (!VirtualAlloc(jit->table + (pc >> 2), sizeof(GuestFn), MEM_COMMIT, PAGE_READWRITE)) return;
 #endif
-    jit->table[pc >> 2] = function;
+    __atomic_store_n(&jit->table[pc >> 2], function, __ATOMIC_RELEASE); /* the module's code is loaded before */
 }
 
 int gnu_jit_commit(GnuJit* jit, uintptr_t address) {
@@ -95,11 +101,11 @@ static void add_module(GnuJit* jit, struct snx_recompiled* m) {
 
 static int compiled(void* context, uint64_t address) {
     GnuJit* jit = context;
-    return address < GNU_ADDRESS_LIMIT && jit->table[address >> 2] != NULL;
+    return address < GNU_ADDRESS_LIMIT && __atomic_load_n(&jit->table[address >> 2], __ATOMIC_RELAXED) != NULL;
 }
 
 /* compiles the code at pc, from the executable mapping around it; 0 when pc has a function then */
-static int compile(GnuProcess* p, uint64_t pc) {
+static int compile(GnuProcess* p, uint64_t pc, char* diagnostic, size_t capacity) {
     GnuJit* jit = &p->jit;
     GnuMemory* memory = &p->memory;
     const unsigned want = GNU_PAGE_MAPPED | GNU_PROT_EXEC;
@@ -120,7 +126,7 @@ static int compile(GnuProcess* p, uint64_t pc) {
     writable = (memory->pages[pc / GNU_PAGE_SIZE] & GNU_PROT_WRITE) != 0;
     m = snx_recompile_from(jit->recompiler, &range, 1, &pc, 1, writable ? 1 : jit->step, compiled, jit);
     if (!m) {
-        snprintf(p->diagnostic, sizeof p->diagnostic, "Cannot compile guest code at 0x%llx: %s", (unsigned long long)pc,
+        snprintf(diagnostic, capacity, "Cannot compile guest code at 0x%llx: %s", (unsigned long long)pc,
                  snx_recompiler_error(jit->recompiler));
         return -1;
     }
@@ -135,35 +141,46 @@ static int compile(GnuProcess* p, uint64_t pc) {
         fprintf(stderr, "scarletnx-gnuabi: JIT 0x%llx: %lu functions, 0x%llx-0x%llx, %.2f s\n", (unsigned long long)pc,
                 (unsigned long)snx_recompiled_functions(m), (unsigned long long)lo, (unsigned long long)hi,
                 snx_seconds() - started);
-    return jit->table[pc >> 2] ? 0 : -1;
+    return __atomic_load_n(&jit->table[pc >> 2], __ATOMIC_RELAXED) ? 0 : -1;
 }
 
-/* gnu_rtapi's RtAPI.miss: a pc the table has no function for */
+/* gnu_rtapi's RtAPI.miss: a pc the table has no function for. Threads that miss the same code wait for one compile */
 void gnu_jit_miss(CPU* c, u64 pc) {
-    GnuProcess* p = c->thread;
-    GuestFn f;
+    GnuThread* t = c->thread;
+    GnuProcess* p = gnu_process_of(t);
     if ((pc & 3) || !gnu_memory_access(&p->memory, pc, 4, GNU_PROT_EXEC)) {
         c->pc = pc;
-        gnu_process_fault(p, 11, "Guest instruction fetch violated mapped execution permissions");
+        gnu_process_fault(t, 11, "Guest instruction fetch violated mapped execution permissions");
         return;
     }
-    f = p->jit.table[pc >> 2];
+    GuestFn f = __atomic_load_n(&p->jit.table[pc >> 2], __ATOMIC_ACQUIRE);
     if (!f) {
-        if (compile(p, pc)) {
-            char reason[sizeof p->diagnostic];
-            memcpy(reason, p->diagnostic, sizeof reason);
+        char reason[sizeof p->diagnostic];
+        gnu_mutex_lock(&p->jit.lock);
+        int failed = !__atomic_load_n(&p->jit.table[pc >> 2], __ATOMIC_RELAXED) &&
+                     compile(p, pc, reason, sizeof reason);
+        gnu_mutex_unlock(&p->jit.lock);
+        if (failed) {
             c->pc = pc;
-            gnu_process_fault(p, 4, reason);
+            gnu_process_fault(t, 4, reason);
             return;
         }
-        f = p->jit.table[pc >> 2];
+        f = __atomic_load_n(&p->jit.table[pc >> 2], __ATOMIC_ACQUIRE);
+        if (!f) { /* another thread's system call took the code again: a fetch from it now faults or compiles */
+            gnu_jit_miss(c, pc);
+            return;
+        }
     }
     f(c, pc);
 }
 
+void gnu_jit_lock(GnuJit* jit) { gnu_mutex_lock(&jit->lock); }
+void gnu_jit_unlock(GnuJit* jit) { gnu_mutex_unlock(&jit->lock); }
+
 int gnu_jit_init(GnuJit* jit, const char* cache, char* error, size_t error_size) {
     memset(jit, 0, sizeof *jit);
     jit->step = JIT_STEP_INSTRUCTIONS;
+    gnu_mutex_init(&jit->lock, 0);
 #ifdef _WIN32
     jit->table = VirtualAlloc(NULL, (SIZE_T)TABLE_BYTES, MEM_RESERVE, PAGE_NOACCESS);
 #else
@@ -206,6 +223,7 @@ void gnu_jit_destroy(GnuJit* jit) {
         munmap(jit->table, (size_t)TABLE_BYTES);
 #endif
     }
+    gnu_mutex_destroy(&jit->lock);
     memset(jit, 0, sizeof *jit);
 }
 
@@ -216,15 +234,16 @@ void gnu_jit_bind(GnuJit* jit, CPU* cpu) {
 }
 
 void gnu_jit_call(GnuJit* jit, CPU* cpu, uint64_t pc) {
-    GuestFn f = pc < GNU_ADDRESS_LIMIT && !(pc & 3) ? jit->table[pc >> 2] : NULL;
+    GuestFn f = pc < GNU_ADDRESS_LIMIT && !(pc & 3) ? __atomic_load_n(&jit->table[pc >> 2], __ATOMIC_ACQUIRE) : NULL;
     (f ? f : gnu_jit_miss)(cpu, pc);
 }
 
 void gnu_jit_install(GnuJit* jit, uint64_t pc, GuestFn function) { table_set(jit, pc, function); }
 
 int gnu_jit_changed(GnuJit* jit, uint64_t pc) {
-    int changed = pc >= jit->changed_lo && pc < jit->changed_hi;
-    jit->changed_lo = jit->changed_hi = 0;
+    (void)jit;
+    int changed = pc >= t_jit.changed_lo && pc < t_jit.changed_hi;
+    t_jit.changed_lo = t_jit.changed_hi = 0;
     return changed;
 }
 
@@ -232,8 +251,8 @@ void gnu_jit_invalidate(GnuJit* jit, uint64_t address, uint64_t length) {
     uint64_t first, last;
     if (!jit->table || !length || address >= GNU_ADDRESS_LIMIT) return;
     if (length > GNU_ADDRESS_LIMIT - address) length = GNU_ADDRESS_LIMIT - address;
-    if (jit->changed_hi == jit->changed_lo || address < jit->changed_lo) jit->changed_lo = address;
-    if (address + length > jit->changed_hi) jit->changed_hi = address + length;
+    if (t_jit.changed_hi == t_jit.changed_lo || address < t_jit.changed_lo) t_jit.changed_lo = address;
+    if (address + length > t_jit.changed_hi) t_jit.changed_hi = address + length;
     first = address >> 2;
     last = (address + length + 3) >> 2;
     table_clear(jit, first, last - first);

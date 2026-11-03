@@ -3,8 +3,8 @@
 #include "gnuabi/abi/syscalls/syscalls.h"
 #include "gnuabi/abi/errno/errno.h"
 #include "gnuabi/process/process.h"
-#include "gnuabi/signals/signals.h"
-#include "gnuabi/threading/futex.h"
+#include "gnuabi/kernel/signals.h"
+#include "gnuabi/kernel/futex.h"
 #include "gnuabi/network/network.h"
 #include "common/utilities/endian.h"
 #include <string.h>
@@ -31,34 +31,39 @@ static int64_t file_mmap(GnuProcess* p, const uint64_t a[6]) {
     }
     return mapped;
 }
-static int64_t dispatch(GnuProcess* p, uint64_t number, const uint64_t a[6]);
+static int64_t dispatch(GnuThread* t, uint64_t number, const uint64_t a[6]);
 static struct {
     int trace; /* gnu_syscall_trace's */
 } g_syscalls;
 void gnu_syscall_trace(int on) { g_syscalls.trace = on; }
-/* --strace: every syscall on stderr, with its arguments and result, a line each */
-int64_t gnu_syscall(GnuProcess* p, uint64_t number, const uint64_t a[6]) {
+/* --strace: every syscall on stderr, with its arguments and result, a line each, with the pid and tid */
+int64_t gnu_syscall(GnuThread* t, uint64_t number, const uint64_t a[6]) {
     int trace = g_syscalls.trace;
     /* arm64 el0_svc_common takes an int syscall number from x8. */
     number = (uint32_t)number;
     if (trace)
-        fprintf(stderr, "[%u] %llu(0x%llx, 0x%llx, 0x%llx, 0x%llx) ...\n", p->pid, (unsigned long long)number,
-                (unsigned long long)a[0], (unsigned long long)a[1], (unsigned long long)a[2],
-                (unsigned long long)a[3]);
-    int64_t result = dispatch(p, number, a);
-    if (trace) fprintf(stderr, "[%u] %llu = %lld\n", p->pid, (unsigned long long)number, (long long)result);
+        fprintf(stderr, "[%u:%u] %llu(0x%llx, 0x%llx, 0x%llx, 0x%llx) ...\n", gnu_process_of(t)->kernel.pid, t->k.tid,
+                (unsigned long long)number, (unsigned long long)a[0], (unsigned long long)a[1],
+                (unsigned long long)a[2], (unsigned long long)a[3]);
+    int64_t result = dispatch(t, number, a);
+    if (trace)
+        fprintf(stderr, "[%u:%u] %llu = %lld\n", gnu_process_of(t)->kernel.pid, t->k.tid, (unsigned long long)number,
+                (long long)result);
     return result;
 }
-static int64_t dispatch(GnuProcess* p, uint64_t number, const uint64_t a[6]) {
+static int64_t dispatch(GnuThread* t, uint64_t number, const uint64_t a[6]) {
+    GnuProcess* p = gnu_process_of(t);
     int64_t result;
-    if (gnu_spawn_syscall(p, number, a, &result)) return result;
+    if (gnu_spawn_syscall(t, number, a, &result)) return result;
+    if (gnu_kernel_syscall(&t->k, number, a, &result)) return result; /* threads, futexes, sleeps, signals */
     if (gnu_vfs_syscall(&p->vfs, &p->memory, number, a, &result)) return result;
+    if (number == 22 || number == 72 || number == 73 || number == 441) {
+        result = gnu_signal_call_mask(&t->k, number, a); /* the mask the wait has */
+        if (result) return result;
+    }
     if (gnu_net_syscall(p, number, a, &result)) return result;
     switch (number) {
-        case GNU_NR_exit:
-        case GNU_NR_exit_group: gnu_process_exit(p, (int)a[0]); return 0;
-        case GNU_NR_getpid: return p->pid;
-        case GNU_NR_gettid: return p->tid;
+        case GNU_NR_getpid: return p->kernel.pid;
 #ifdef _WIN32
         case 174:
         case 175:
@@ -73,37 +78,9 @@ static int64_t dispatch(GnuProcess* p, uint64_t number, const uint64_t a[6]) {
 #endif
         case 158: /* getgroups: none beyond the group */
             return 0;
-        case 99: return 0;              /* set_robust_list: one thread, which never dies with a robust lock */
         case 233: return 0;             /* madvise: advice */
         case 293: return -GNU_ENOSYS;   /* rseq */
         case 283: return -GNU_ENOSYS;   /* membarrier */
-        case 101:                       /* nanosleep(req, rem) */
-        case 115: {                     /* clock_nanosleep(clock, flags, req, rem) */
-            int64_t t[2];
-            uint64_t req = number == 101 ? a[0] : a[2];
-            if (gnu_memory_read(&p->memory, req, t, sizeof t)) return -GNU_EFAULT;
-            t[0] = (int64_t)snx_le64((uint64_t)t[0]);
-            t[1] = (int64_t)snx_le64((uint64_t)t[1]);
-            if (t[0] < 0 || t[1] < 0 || t[1] >= 1000000000) return -GNU_EINVAL;
-            if (number == 115 && (a[1] & 1)) { /* TIMER_ABSTIME: until the clock reads t */
-                int64_t now_s, now_ns;
-                if (gnu_clock_gettime((int)a[0], &now_s, &now_ns)) return -GNU_EINVAL;
-                t[0] -= now_s;
-                t[1] -= now_ns;
-                if (t[1] < 0) {
-                    t[1] += 1000000000;
-                    t[0]--;
-                }
-                if (t[0] < 0) return 0;
-            }
-            gnu_sleep(t[0], t[1]);
-            return 0;
-        }
-        case 123: { /* sched_getaffinity(pid, size, mask): one CPU */
-            unsigned char mask[8] = {1};
-            if (a[1] < 8) return -GNU_EINVAL;
-            return gnu_memory_write(&p->memory, a[2], mask, sizeof mask) ? -GNU_EFAULT : 8;
-        }
         case 165: { /* getrusage: nothing measured */
             unsigned char usage[144] = {0};
             return gnu_memory_write(&p->memory, a[1], usage, sizeof usage) ? -GNU_EFAULT : 0;
@@ -129,10 +106,6 @@ static int64_t dispatch(GnuProcess* p, uint64_t number, const uint64_t a[6]) {
             }
             return gnu_memory_write(&p->memory, a[0], info, sizeof info) ? -GNU_EFAULT : 0;
         }
-        case GNU_NR_set_tid_address: p->clear_tid = a[0]; return p->tid;
-        case GNU_NR_futex: return gnu_futex(p, a);
-        case GNU_NR_rt_sigaction: return gnu_sigaction(p, a);
-        case GNU_NR_rt_sigprocmask: return gnu_sigprocmask(p, a);
         case GNU_NR_brk: return (int64_t)gnu_memory_brk(&p->memory, a[0]);
         case GNU_NR_munmap: return gnu_memory_unmap(&p->memory, a[0], a[1]);
         case GNU_NR_mprotect:
@@ -177,7 +150,7 @@ static int64_t dispatch(GnuProcess* p, uint64_t number, const uint64_t a[6]) {
             return result ? result : (int64_t)count;
         }
         case 261: { /* prlimit64: query guest resource limits */
-            if (a[0] && a[0] != p->pid) return -GNU_ESRCH;
+            if (a[0] && a[0] != p->kernel.pid && a[0] != t->k.tid) return -GNU_ESRCH;
             if (a[1] >= 16) return -GNU_EINVAL;
             if (a[2]) return 0; /* setting a limit: nothing here enforces one */
             uint64_t limits[2] = {UINT64_MAX, UINT64_MAX};
@@ -192,7 +165,6 @@ static int64_t dispatch(GnuProcess* p, uint64_t number, const uint64_t a[6]) {
             if (a[0] == 21) return 0; /* PR_GET_SECCOMP */
             return -GNU_EINVAL;
         }
-        case 124: return 0; /* sched_yield; one guest thread */
         default: return -GNU_ENOSYS;
     }
 }
