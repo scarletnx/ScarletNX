@@ -2087,9 +2087,9 @@ add_test(NAME native_codegen COMMAND snx_codegen_test)
 
 # NCE's patcher (src/nx/runtime/nce/nce_patch.c) on a synthetic module: the words that Eden's patcher changes, found
 # in the code and kept where the code reads them as data, and the words of their stubs. Words only, on any host
-add_executable(snx-test-nce-patch nce_patch.c)
+add_executable(snx-test-nce-patch nce_patch.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_net.c")
 snx_test_target(snx-test-nce-patch 99)
-target_link_libraries(snx-test-nce-patch PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+target_link_libraries(snx-test-nce-patch PRIVATE snx_llvm snx_driver Threads::Threads ${CMAKE_DL_LIBS})
 add_test(NAME nce_patch COMMAND snx-test-nce-patch "${CMAKE_CURRENT_BINARY_DIR}")
 
 # NCE's machine layer (src/nx/runtime/nce/nce_host.c): guest code, patched with the patcher's stubs, runs natively.
@@ -2099,7 +2099,8 @@ add_test(NAME nce_patch COMMAND snx-test-nce-patch "${CMAKE_CURRENT_BINARY_DIR}"
 # it runs under qemu-aarch64. Without them there is no such test
 set(SNX_AARCH64_SYSROOT "" CACHE PATH "A glibc sysroot of aarch64-linux-gnu, for the NCE test under qemu-aarch64")
 set(SNX_AARCH64_GCC_TOOLCHAIN "" CACHE PATH "The GCC toolchain of SNX_AARCH64_SYSROOT (Clang's --gcc-toolchain)")
-set(nce_host_sources "${CMAKE_CURRENT_SOURCE_DIR}/nce_host.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_host.c")
+set(nce_host_sources "${CMAKE_CURRENT_SOURCE_DIR}/nce_host.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_host.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_net.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/clock.c")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
     # twice: as Linux runs it, and in Android's indirect form (TLS_SLOT_APP), with an initial-exec pointer as the word
     foreach(form "" "-indirect")

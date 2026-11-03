@@ -21,14 +21,22 @@ int nce_host_init(const NceHostConfig* config, u64* tls, int* indirect, u64* out
     return -1;
 }
 #else
+#include <errno.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <ucontext.h>
 #include <unistd.h>
 #if defined(__ANDROID__)
 #include <android/api-level.h>
+#endif
+#ifndef SYS_SECCOMP
+#define SYS_SECCOMP 1 /* a seccomp trap's si_code (asm-generic/siginfo.h), which glibc's headers leave out */
 #endif
 
 /* where a run of native code came from on the host: the registers that the C code of nce_host_run keeps (x19 to x30,
@@ -47,11 +55,13 @@ typedef char nce_check_host[offsetof(NceHost, sp) == 96 && offsetof(NceHost, d) 
                                 : -1];
 
 /* the thread's CPU, which the stubs read through the host's TPIDR_EL0 (NceEnv.tls), and its innermost run. The asm
-   reads cpu at 0 and host at 8 */
+   reads cpu at 0 and host at 8. reads: the thread's count of counter reads, which the counter's stubs add to */
 typedef struct {
     CPU* cpu;
     NceHost* host;
+    u64* reads;
 } NceTls;
+typedef char nce_check_tls[offsetof(NceTls, reads) == NCE_TLS_READS ? 1 : -1];
 /* Where the stubs and the outcall find the thread's NceTls: the word g_nce_tls bytes from TPIDR_EL0, the same in each
    thread. Direct (glibc): t_nce itself, in the executable's static TLS. Indirect: a pointer to t_nce. Android's
    runtime is a library that the app loads, whose TLS is emulated below API 29 and whose initial-exec TLS bionic
@@ -74,7 +84,13 @@ static _Thread_local NceTls t_nce __attribute__((tls_model("initial-exec")));
 extern u64 g_nce_tls __attribute__((visibility("hidden")));
 u64 g_nce_tls;
 static NceHostConfig g_config;
-static struct sigaction g_old_ill, g_old_trap;
+static int g_net_base; /* the seccomp filters of the thread that ran nce_host_init: a thread's without the net */
+static struct sigaction g_old_ill, g_old_trap, g_old_sys;
+typedef char nce_check_bpf[sizeof(NceBpf) == sizeof(struct sock_filter) && offsetof(NceBpf, jt) == 2 &&
+                                   offsetof(struct sock_filter, jt) == 2 && offsetof(NceBpf, k) == 4 &&
+                                   offsetof(struct sock_filter, k) == 4
+                               ? 1
+                               : -1];
 static int g_sig_enter, g_sig_kick;
 
 #if NCE_INDIRECT
@@ -391,14 +407,8 @@ static void kick_signal(int sig, siginfo_t* si, void* ctx) {
     (void)si;
     if (stopped_guest((ucontext_t*)ctx)) redirect((ucontext_t*)ctx, preempted, sig);
 }
-/* SIGILL and SIGTRAP: the guest's (an instruction it has no use for, a BRK) go to the runtime, the host's to the
-   handler before this one */
-static void trap_signal(int sig, siginfo_t* si, void* ctx) {
-    const struct sigaction* old = sig == SIGILL ? &g_old_ill : &g_old_trap;
-    if (stopped_guest((ucontext_t*)ctx)) {
-        redirect((ucontext_t*)ctx, trapped, sig);
-        return;
-    }
+/* a signal that is not the guest's, to the handler before ours */
+static void chain(int sig, siginfo_t* si, void* ctx, const struct sigaction* old) {
     if (old->sa_flags & SA_SIGINFO) {
         if (old->sa_sigaction) old->sa_sigaction(sig, si, ctx);
     } else if (old->sa_handler == SIG_DFL) {
@@ -406,6 +416,26 @@ static void trap_signal(int sig, siginfo_t* si, void* ctx) {
     } else if (old->sa_handler != SIG_IGN) {
         old->sa_handler(sig);
     }
+}
+/* SIGILL and SIGTRAP: the guest's (an instruction it has no use for, a BRK) go to the runtime, the host's to the
+   handler before this one */
+static void trap_signal(int sig, siginfo_t* si, void* ctx) {
+    if (stopped_guest((ucontext_t*)ctx)) {
+        redirect((ucontext_t*)ctx, trapped, sig);
+        return;
+    }
+    chain(sig, si, ctx, sig == SIGILL ? &g_old_ill : &g_old_trap);
+}
+/* SIGSYS from the net (nce_host_net): an SVC of the guest's that no stub holds, its system call not made. The
+   context's pc is past it, and the runtime gets the SVC's own */
+static void sys_signal(int sig, siginfo_t* si, void* ctx) {
+    ucontext_t* uc = (ucontext_t*)ctx;
+    if (si->si_code == SYS_SECCOMP && stopped_guest(uc)) {
+        uc->uc_mcontext.pc -= 4;
+        redirect(uc, trapped, sig);
+        return;
+    }
+    chain(sig, si, ctx, &g_old_sys);
 }
 
 static int handle(int sig, void (*fn)(int, siginfo_t*, void*), struct sigaction* old) {
@@ -459,10 +489,12 @@ int nce_host_init(const NceHostConfig* config, u64* tls, int* indirect, u64* out
     }
     g_nce_tls = off;
     g_config = *config;
+    g_net_base = nce_net_filters();
     g_sig_enter = SIGRTMIN + 4;
     g_sig_kick = SIGRTMIN + 5;
     if (g_sig_kick > SIGRTMAX || handle(g_sig_enter, enter_signal, NULL) || handle(g_sig_kick, kick_signal, NULL) ||
-        handle(SIGILL, trap_signal, &g_old_ill) || handle(SIGTRAP, trap_signal, &g_old_trap)) {
+        handle(SIGILL, trap_signal, &g_old_ill) || handle(SIGTRAP, trap_signal, &g_old_trap) ||
+        handle(SIGSYS, sys_signal, &g_old_sys)) {
         snprintf(why, size, "the signal handlers could not be installed");
         return -1;
     }
@@ -472,7 +504,7 @@ int nce_host_init(const NceHostConfig* config, u64* tls, int* indirect, u64* out
     return 0;
 }
 
-int nce_host_attach(CPU* c, char* why, size_t size) {
+int nce_host_attach(CPU* c, u64* reads, char* why, size_t size) {
 #if NCE_INDIRECT
     NceTls** word = word_at(g_nce_tls);
     if (nce_host_check(why, size)) return -1; /* another library took the word in this thread */
@@ -481,7 +513,12 @@ int nce_host_attach(CPU* c, char* why, size_t size) {
     (void)why;
     (void)size;
     t_nce.cpu = c;
+    t_nce.reads = reads;
     return 0;
+}
+
+int nce_host_net(char* why, size_t size) {
+    return nce_net_install(g_config.lo, g_config.hi, AUDIT_ARCH_AARCH64, g_net_base, why, size) < 0 ? -1 : 0;
 }
 
 int nce_host_tid(void) { return (int)syscall(SYS_gettid); }

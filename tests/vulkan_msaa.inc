@@ -284,6 +284,19 @@ static int ms_case(GpuChannel* ch, u64 base, u64 target, u64 resolved, u64 loade
     CHECK(!ms_read_pixels(t, 8, 8, big));
     vk_unlock();
     for (u32 i = 0; i < 256; i += 4) CHECK(big[i] == 255 && !big[i + 1] && !big[i + 2] && big[i + 3] == 255);
+    /* cleared blue again: the count tex_take_drawn passes over textures by moves, and the texture takes the samples
+       anew; bound with nothing changed, it was passed over */
+    vk_lock();
+    u64 gen = vk_rt_take_gen();
+    CHECK(vk_tex_from_tic(tic) == t && vk_rt_take_gen() == gen);
+    memcpy(&r[0x360], blue, sizeof blue);
+    engine_clear(ch, 15 << 2);
+    vk_render_end();
+    CHECK(vk_rt_take_gen() != gen);
+    t = vk_tex_from_tic(tic);
+    CHECK(t && !ms_read_pixels(t, 8, 8, big));
+    vk_unlock();
+    for (u32 i = 0; i < 256; i += 4) CHECK(!big[i] && !big[i + 1] && big[i + 2] == 255 && big[i + 3] == 255);
     return 0;
 }
 

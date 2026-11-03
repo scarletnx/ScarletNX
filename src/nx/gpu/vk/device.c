@@ -339,7 +339,7 @@ static int create_device(void) {
     int has_portability = 0, has_reconvergence = 0;
     int has_calibrated = 0, has_present_id = 0, has_present_wait = 0, has_present_v2 = 0, has_calibrated_khr = 0;
     int has_google_timing = 0;
-    int has_host_import = 0, has_placed = 0;
+    int has_host_import = 0, has_ahb = 0, has_placed = 0;
     int has_descriptor_buffer = 0;
     int has_vertex_input = 0;
     int has_hdr_metadata = 0;
@@ -390,10 +390,15 @@ static int create_device(void) {
         has_placed = snx_vk_extensions_has(&e, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME);
         /* an HDR10 swapchain's light levels, which display.c's frames are tone mapped for */
         has_hdr_metadata = !g_opt_headless && snx_vk_extensions_has(&e, VK_EXT_HDR_METADATA_EXTENSION_NAME);
+#if defined(__ANDROID__) /* every driver there takes AHardwareBuffers, which guest memory can move into (uma.c) */
+        has_ahb = snx_vk_extensions_has(&e, "VK_ANDROID_external_memory_android_hardware_buffer");
+#endif
         snx_vk_extensions_free(&e);
     }
     /* guest memory the GPU reads in place (uma.c) */
-    if (vk_uma_choose(has_host_import, has_placed)) ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    int uma_with = vk_uma_choose(has_host_import, has_ahb, has_placed);
+    if (uma_with == VK_UMA_WITH_HOST) ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    if (uma_with == VK_UMA_WITH_AHB) ext[next++] = "VK_ANDROID_external_memory_android_hardware_buffer";
     if (has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
     if (has_hdr_metadata) {
         ext[next++] = VK_EXT_HDR_METADATA_EXTENSION_NAME;

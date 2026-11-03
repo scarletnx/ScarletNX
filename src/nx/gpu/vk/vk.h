@@ -221,7 +221,12 @@ static inline void vk_mem_track(VmaAllocation a) { (void)a; }
 static inline void vk_mem_untrack(VmaAllocation a) { (void)a; }
 #endif
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
-int vk_uma_choose(int has_import, int has_placed); /* before the device is made: 1 to enable external_memory_host */
+/* before the device is made: the extension to enable, VK_UMA_WITH_* (VK_EXT_external_memory_host, or Android's
+   VK_ANDROID_external_memory_android_hardware_buffer) */
+enum { VK_UMA_WITH_NONE, VK_UMA_WITH_HOST, VK_UMA_WITH_AHB };
+int vk_uma_choose(int has_import, int has_ahb, int has_placed);
+/* what vk_uma_choose takes for vk_memory want (0 auto, 1 copy, 2 UMA) on a device of model VK_MEM_*: VK_UMA_WITH_* */
+int vk_uma_way(int want, int model, int has_import, int has_ahb);
 void vk_uma_init(void);                            /* after it */
 int vk_uma(void);                                  /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
@@ -237,6 +242,10 @@ u32 vk_uma_imports(u64 cpu, u64 size); /* the imports the driver holds over gues
 /* the first import the driver holds over guest memory [cpu, end), on any thread: where it starts there, with where it
    ends in *hi (end at most); end for none. Write tracking leaves those pages alone */
 u64 vk_uma_import_in(u64 cpu, u64 end, u64* hi);
+/* guest memory moves into regions of buffers of their own (the migrate way, Android's) from now on, or with on 0 is
+   imported where it is, the other way's imports let go first: 0 without guest memory in place. Tests run the migrate
+   way off Android with memfd regions the driver imports as host memory (vk_lock) */
+int vk_uma_migrate(int on);
 
 /* The caches of textures, render targets and buffers are kept within the driver's budget for the heap images go to
    (VK_EXT_memory_budget through VMA; vk_budget_mb lowers it, for testing): past it the driver pages memory out,
@@ -576,6 +585,7 @@ typedef struct Surf {
     u32 drawn_at;  /* render targets: g_vk_present when last drawn to */
     u64 draw_wseq; /* render targets: wseq at its last draw or clear (vk_rt_drawn), 0 before one */
     int in_drawn;  /* in surface.c's list of drawn targets, entered at drawn_from */
+    int take_seen; /* render targets: vk_rt_drawn_in gave it to a texture's search since its last write */
     int in_linear; /* a pitch-linear color target in surface.c's list of those drawn since the last release */
     u64 drawn_from;
     u64 draw_gw;    /* guest-memory generation at the first draw this present or since a full replacement */
@@ -614,6 +624,10 @@ typedef struct Surf {
     struct Surf *lru_prev, *lru_next;
     u64 bytes;
     int took_drawn; /* textures: pixels copied from render targets since the last upload (memory may not have them) */
+    /* textures: vk_rt_take_gen() and wgen when the search for drawn targets over it (texture.c tex_take_drawn) last left
+       nothing it could take: it searches again only once either moved */
+    u64 take_gen;
+    u32 take_wgen;
     /* textures whose image has memory only where they are mapped (vk_image_create_resident): bricks of grain texels,
        each brick_bytes of the guest's layout in one range, x first, then y, then z. 0 bricks for every other image */
     u32 bricks, brick_bytes;
@@ -717,6 +731,8 @@ void vk_rt_drawn(Surf* s);               /* a render target was drawn to (gpu/vk
 void vk_rt_drawn_full(Surf* s);          /* a full clear or blit replaced every pixel */
 int vk_rt_drawn_fresh(Surf* s);          /* no guest-memory write has replaced the target since its last draw */
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max); /* count drawn in [lo, hi), write up to max */
+/* a count that moves whenever what vk_rt_drawn_in returns, or the pixels of a target it returned, can have changed */
+u64 vk_rt_take_gen(void);
 void vk_rt_reload(u64 gva);
 /* textures share the surface table. g_vk_surf_epoch changes whenever a surface enters it, leaves it or moves (a
    target parked or taken back), so what was found there can be kept until it changes */
@@ -1318,7 +1334,7 @@ extern u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns; /* statistics */
 #if defined(SNX_TRACY)
 extern u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because the CPU reads what they write */
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
-int vk_uma_choose(int has_import, int has_placed); /* before the device is made: 1 to enable external_memory_host */
+int vk_uma_choose(int has_import, int has_ahb, int has_placed);
 void vk_uma_init(void);                            /* after it */
 int vk_uma(void);                                  /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
@@ -1446,7 +1462,7 @@ extern u64 g_rec_xfers, g_rec_barriers;         /* record.c: copies and blits, a
 extern u64 g_rec_xfer_kind[3], g_rec_buf_bytes; /* buffer, buffer-image, image copies; buffer copies' bytes */
 
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
-int vk_uma_choose(int has_import, int has_placed); /* before the device is made: 1 to enable external_memory_host */
+int vk_uma_choose(int has_import, int has_ahb, int has_placed);
 void vk_uma_init(void);                            /* after it */
 int vk_uma(void);                                  /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);

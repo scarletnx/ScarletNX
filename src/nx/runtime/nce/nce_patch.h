@@ -18,17 +18,19 @@ typedef enum {
     NCE_TPIDRRO,   /* MRS Xt, TPIDRRO_EL0: CPU.tpidrro */
     NCE_TPIDR,     /* MRS Xt, TPIDR_EL0: CPU.tpidr */
     NCE_TPIDR_SET, /* MSR TPIDR_EL0, Xt: CPU.tpidr */
-    NCE_TICKS,     /* MRS Xt, CNTPCT_EL0 or CNTVCT_EL0: guest_ticks, through an outcall */
+    NCE_TICKS,     /* MRS Xt, CNTPCT_EL0 or CNTVCT_EL0: guest_ticks, from the host's counter in the stub (NceEnv) */
     NCE_FREQ,      /* MRS Xt, CNTFRQ_EL0: the console's 19.2 MHz */
     NCE_EXCLUSIVE, /* LDXR, STXR, LDXP, STXP: made ordered in place, with no stub */
-    NCE_HOOK       /* the entry of a function that the runtime hooks: an outcall (nce_divert), never in a scan */
+    NCE_HOOK,      /* the entry of a function that the runtime hooks: an outcall (nce_divert), never in a scan */
+    NCE_KINDS
 } NceKind;
+/* the kind's instruction, for a log line: "SVC", "MRS TPIDRRO_EL0" */
+const char* nce_kind_name(NceKind kind);
 
 /* the frequency of the console's system counter */
 #define NCE_CNTFRQ 19200000u
 
-/* the outcall's x16: the kind in bits 16 and up, the SVC number, the register of NCE_TICKS or the divert's index in
-   the low 16 */
+/* the outcall's x16: the kind in bits 16 and up, the SVC number or the divert's index in the low 16 */
 #define NCE_OUTCALL(kind, imm) (((SnxU64)(kind) << 16) | ((SnxU64)(imm) & 0xFFFFu))
 
 /* the kind of word, NCE_NONE for one that runs as it is. reg: Rt; imm: the SVC's number */
@@ -46,22 +48,27 @@ typedef struct {
     size_t count, cap;
     /* proven: sites that the analysis reaches; unproven: sites inside a function that no flow reaches and no code
        reads; data: words of a kind that code reads as data (literals, tables); outside: words of a kind outside every
-       function. The last two are not in site */
+       function, and outside_kind those by kind. The last two are not in site */
     size_t proven, unproven, data, outside;
+    size_t outside_kind[NCE_KINDS];
 } NceSites;
 
 /* the sites in the text of each of codegen's modules, in address order */
 void nce_find_sites(const SnxCodegen* codegen, NceSites* out);
 void nce_sites_free(NceSites* sites);
 
-/* what the stubs need of the runtime. tls: the distance from the host's TPIDR_EL0 to the thread-local CPU pointer
-   (nce_host.c), below 16 MiB and a multiple of 8. With indirect, the word there holds a pointer to the thread's block,
-   whose first word is the CPU pointer: tls is then below 32 KiB, an LDR's reach (Android's TLS_SLOT_APP, nce_host.c).
-   outcall: the host address of nce_outcall */
+/* what the stubs need of the runtime. tls: the distance from the host's TPIDR_EL0 to the thread's block (nce_host.c),
+   whose first word is the thread's CPU pointer and whose word at NCE_TLS_READS points to its count of counter reads;
+   below 16 MiB and a multiple of 8. With indirect, the word there holds a pointer to the block: tls is then below 32
+   KiB, an LDR's reach (Android's TLS_SLOT_APP, nce_host.c). outcall: the host address of nce_outcall. clock: the
+   address of the guest clock's two words, frozen and then start, and ns_lo, ns_hi and ns_origin its reading in the
+   host's counter: cnt * ns_hi + (cnt * ns_lo >> 64) - ns_origin nanoseconds (runtime/clock.h's ClockCounter) */
 typedef struct {
     SnxU64 tls, outcall;
     int indirect;
+    SnxU64 clock, ns_lo, ns_hi, ns_origin;
 } NceEnv;
+#define NCE_TLS_READS 16
 
 /* where stubs go: size bytes at buf, which the guest sees at addr. used grows, a multiple of 8 */
 typedef struct {
@@ -69,7 +76,10 @@ typedef struct {
     SnxU64 addr, size, used;
 } NcePool;
 
-/* the bytes of the stub of kind, 0 for NCE_EXCLUSIVE */
+/* the bytes of the stub of kind, 0 for NCE_EXCLUSIVE. NCE_TICKS's reads the guest clock as guest_ticks does
+   (runtime/clock.c), with no outcall: the host's counter, after an ISB as Linux's vDSO reads it so that no read goes
+   back against another, made nanoseconds and then 19.2 MHz ticks, or the time a pause stopped the clock at, and adds
+   one to the thread's count. It needs NceEnv.clock */
 SnxU64 nce_stub_size(NceKind kind);
 /* the stub of site, in the first pool that has room for it and that it and its return branch reach. *patch: the
    word that goes at site->addr (NCE_EXCLUSIVE: the ordered form, with no stub). 0, or -1 with no pool in reach */
@@ -122,6 +132,42 @@ typedef struct {
 int nce_file_write(const char* path, SnxU64 base, const NceRange* pools, size_t pool_count, const NceSites* sites);
 /* 0, or -1 for a file that is missing or not of this version. *pools is malloc'd */
 int nce_file_read(const char* path, SnxU64 base, NceRange** pools, size_t* pool_count, NceSites* sites);
+
+/* The layout of an NCE recompile. Each module moves up, from mods[0].base on in their order, to leave room after it
+   for a pool of its sites' stubs, which a B reaches (128 MiB). A module whose first sites that pool would not reach
+   (its image and pool past 128 MiB, as an update's main module may be) gets a second pool before it, which they take,
+   as Eden splits its patch section. Then the stubs are placed as the runtime places them (the trap, then each site,
+   nce.c): mods[i].base is where module i goes and the sites move with it, *pools (malloc'd) in the order the runtime
+   fills them, 0. 1, with why, when a site reaches no pool even so (a module past about 256 MiB: why names the word,
+   the module and its size, and says to turn NCE off), and -1, with why, when the pools pass end: mods and the sites
+   are then as they were, and *pools NULL */
+typedef struct {
+    SnxU64 base, size;
+} NceSpan;
+int nce_layout(NceSpan* mods, size_t count, SnxU64 end, NceSites* sites, NceRange** pools, size_t* pool_count,
+               char* why, size_t size);
+
+/* The net under an SVC that no site holds (a word outside the analysed functions that is code after all, or code that
+   the game made): a seccomp filter that traps each system call made from the guest's addresses [lo, hi) with SIGSYS,
+   the call not made, and lets every other through. Classic BPF, laid out as linux/filter.h's struct sock_filter, for
+   a little-endian host whose system calls are of AUDIT_ARCH_ arch: its NCE_NET_WORDS words into out. Host-independent,
+   so a test runs it on any Linux; nce_net_install installs it */
+typedef struct {
+    unsigned short code;
+    unsigned char jt, jf;
+    SnxU32 k;
+} NceBpf;
+#define NCE_NET_WORDS 14
+size_t nce_net_filter(SnxU64 lo, SnxU64 hi, SnxU32 arch, NceBpf* out);
+/* nce_net.c, Linux: this thread's seccomp filters (Seccomp_filters of /proc/thread-self/status), -1 where the system
+   does not say (before Linux 5.9, or not Linux) */
+int nce_net_filters(void);
+/* The net over [lo, hi) under this thread alone: no_new_privs set on it, then the filter, which the threads it starts
+   from here inherit; the process's other threads run without it. base: nce_net_filters() of a thread without the net
+   (the runtime's, before any guest thread runs). 0 installed, 1 when this thread has more filters than base, the net
+   it inherited from the guest thread that started it (none is stacked on it), -1 with the reason in why: a kernel or
+   qemu-user without seccomp filters, or not Linux */
+int nce_net_install(SnxU64 lo, SnxU64 hi, SnxU32 arch, int base, char* why, size_t size);
 
 /* the stub layout that the runtime's outcall (nce.c) depends on: the stub lowers the guest's sp by NCE_FRAME and
    keeps x16 and x17 at sp + 0 and 8, x30 at sp + 16. The runtime keeps the stub's return address at sp + 24 */
