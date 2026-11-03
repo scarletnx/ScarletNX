@@ -260,6 +260,9 @@ install(FILES LICENSE DESTINATION ${licenses})
 # FFmpeg's with the change made to it (cmake/ffmpeg-vp9-nvdec.patch), which its LGPL wants carried with the binaries
 install(FILES "${FFmpeg_SOURCE_DIR}/COPYING.LGPLv2.1" "${FFmpeg_SOURCE_DIR}/LICENSE.md" cmake/ffmpeg-vp9-nvdec.patch
         DESTINATION ${licenses}/FFmpeg)
+if(TARGET snx_zlib) # in FFmpeg's PNG decoder and encoder
+    install(FILES "${zlib_SOURCE_DIR}/LICENSE" DESTINATION ${licenses}/zlib)
+endif()
 install(FILES dist/licenses/Noto/OFL.txt DESTINATION ${licenses}/Noto) # the shared fonts' stand-ins (pl.c)
 install(FILES dist/licenses/Montserrat/OFL.txt DESTINATION ${licenses}/Montserrat) # the 3DS shared font's stand-in
 install(FILES dist/licenses/Ryujinx/LICENSE.txt DESTINATION ${licenses}/Ryujinx) # the default Miis (misc.c)

@@ -1,17 +1,20 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 #
-# FFmpeg's libavcodec, libavformat, libswresample and libavutil as static libraries (targets FFmpeg::avcodec,
-# FFmpeg::avformat, FFmpeg::swresample and FFmpeg::avutil), built from the release source in cmake/dependencies.cmake
-# with FFmpeg's own configure and make, which it has instead of a CMake build. NVDEC's VP9 jobs need a change to its VP9
-# decoder (cmake/ffmpeg-vp9-nvdec.patch), so it builds from a patched copy of the release in the build tree. Only the
-# decoders NVDEC handles are in (H.264, VP8, VP9), Opus for hwopus (FFmpeg's Opus decoder resamples its SILK layer with
-# libswresample, which is why that library is in), for the 3DS DSP's AAC, and for the Vita AAC, ATRAC9, the MP4 demuxer
-# and H.264's Annex B filter: no programs, other formats, filters, devices, network or autodetected system libraries, so
-# the result needs nothing but libc and builds the same everywhere. All of it is LGPL (no --enable-gpl). It needs a
-# POSIX shell and make (gmake on the BSDs), and NASM for the x86-64 assembly. macOS and iOS build it with Xcode's Clang
-# and SDK (cmake/apple.cmake), iOS as a cross build. This file is included into the top-level scope: its variables carry
-# the snx_ffmpeg_ prefix.
+# FFmpeg's libavcodec, libavformat, libswresample, libswscale and libavutil as static libraries (targets
+# FFmpeg::avcodec, FFmpeg::avformat, FFmpeg::swresample, FFmpeg::swscale and FFmpeg::avutil), built from the release
+# source in cmake/dependencies.cmake with FFmpeg's own configure and make, which it has instead of a CMake build. NVDEC's
+# VP9 jobs need a change to its VP9 decoder (cmake/ffmpeg-vp9-nvdec.patch), so it builds from a patched copy of the
+# release in the build tree. Only the decoders NVDEC handles are in (H.264, VP8, VP9), Opus for hwopus (FFmpeg's Opus
+# decoder resamples its SILK layer with libswresample, which is why that library is in), for the 3DS DSP's AAC, and for
+# the Vita AAC, ATRAC9, the MP4 demuxer and H.264's Annex B filter. The Android driver's images
+# (src/android/hwui/image.c) add the PNG, JPEG (mjpeg), WebP, GIF and BMP decoders, the PNG and JPEG encoders, and
+# libswscale for their pixel formats. PNG needs zlib, the build's own static one (snx_zlib in
+# cmake/dependencies.cmake). No programs, other formats, filters, devices, network or autodetected system libraries, so
+# the result needs nothing but libc and zlib and builds the same everywhere. All of it is LGPL (no --enable-gpl). It
+# needs a POSIX shell and make (gmake on the BSDs), and NASM for the x86-64 assembly. macOS and iOS build it with
+# Xcode's Clang and SDK (cmake/apple.cmake), iOS as a cross build. This file is included into the top-level scope: its
+# variables carry the snx_ffmpeg_ prefix.
 set(snx_ffmpeg_src "${PROJECT_BINARY_DIR}/_deps/ffmpeg-patched")
 set(snx_ffmpeg_prefix "${PROJECT_BINARY_DIR}/ffmpeg")
 # FFmpeg's configure stops on a source path with a space in it, which would only show at build time
@@ -59,9 +62,14 @@ set(snx_ffmpeg_args
     --disable-network
     --disable-avdevice
     --disable-avfilter
-    --disable-swscale
     --disable-iconv
     --enable-decoder=h264,vp8,vp9,opus,aac,atrac9
+    # the Android driver's BitmapFactory and Bitmap.compress (src/android/hwui/image.c)
+    --enable-decoder=png,mjpeg,webp,gif,bmp
+    --enable-encoder=png,mjpeg
+    --enable-zlib
+    "--extra-cflags=-I${zlib_SOURCE_DIR}"
+    "--extra-ldflags=-L${snx_zlib_lib_dir}"
     # the Vita's SceMp4 (src/vita/hle/mp4.c): MP4 files demuxed from memory (no protocol), their H.264 made Annex B
     --enable-demuxer=mov
     --enable-bsf=h264_mp4toannexb
@@ -148,7 +156,7 @@ endif()
 # Built once for every tree that builds it the same way, when SNX_DEPS_CACHE names a folder (cmake/deps_cache.cmake).
 # The install prefix stays out of the key: FFmpeg only quotes it in its configuration string
 snx_deps_cached(ffmpeg snx_ffmpeg_cache "source: ${snx_ffmpeg_sha256}" "patch: ${snx_ffmpeg_patch_sha256}"
-                "configure: ${snx_ffmpeg_args}" "nasm: ${snx_ffmpeg_nasm}")
+                "configure: ${snx_ffmpeg_args}" "nasm: ${snx_ffmpeg_nasm}" "zlib: ${snx_zlib_sha256}")
 if(snx_ffmpeg_cache_FOUND)
     set(snx_ffmpeg_prefix "${snx_ffmpeg_cache_DIR}")
 else()
@@ -173,8 +181,10 @@ else()
         COMMAND "${SNX_FFMPEG_MAKE}" install
         INSTALL_COMMAND ""
         BUILD_BYPRODUCTS "${snx_ffmpeg_prefix}/lib/libavcodec.a" "${snx_ffmpeg_prefix}/lib/libswresample.a"
-                         "${snx_ffmpeg_prefix}/lib/libavformat.a"
+                         "${snx_ffmpeg_prefix}/lib/libavformat.a" "${snx_ffmpeg_prefix}/lib/libswscale.a"
                          "${snx_ffmpeg_prefix}/lib/libavutil.a"
+        # configure checks for zlib with a link of -lz: the library has to be there before it runs
+        DEPENDS snx_zlib
         # configure and make print a lot: keep it in log files, shown when a step fails
         LOG_CONFIGURE ON
         LOG_BUILD ON
@@ -226,10 +236,16 @@ target_link_libraries(FFmpeg::swresample INTERFACE FFmpeg::avutil)
 if(TARGET ffmpeg_build)
     add_dependencies(FFmpeg::swresample ffmpeg_build)
 endif()
+add_library(FFmpeg::swscale STATIC IMPORTED GLOBAL)
+set_target_properties(FFmpeg::swscale PROPERTIES IMPORTED_LOCATION "${snx_ffmpeg_prefix}/lib/libswscale.a" SYSTEM OFF)
+target_link_libraries(FFmpeg::swscale INTERFACE FFmpeg::avutil)
+if(TARGET ffmpeg_build)
+    add_dependencies(FFmpeg::swscale ffmpeg_build)
+endif()
 add_library(FFmpeg::avcodec STATIC IMPORTED GLOBAL)
 set_target_properties(FFmpeg::avcodec PROPERTIES IMPORTED_LOCATION "${snx_ffmpeg_prefix}/lib/libavcodec.a" SYSTEM OFF)
-# the Opus decoder in libavcodec calls libswresample
-target_link_libraries(FFmpeg::avcodec INTERFACE FFmpeg::swresample FFmpeg::avutil)
+# the Opus decoder in libavcodec calls libswresample, and the PNG decoder and encoder zlib
+target_link_libraries(FFmpeg::avcodec INTERFACE FFmpeg::swresample FFmpeg::avutil snx_zlib)
 if(TARGET ffmpeg_build)
     add_dependencies(FFmpeg::avcodec ffmpeg_build)
 endif()
