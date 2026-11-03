@@ -135,6 +135,19 @@ static int save_read(AgbBoard* board, const char* path) {
     return 1;
 }
 
+/* one setting by its .ini key, as --key=value or the .ini gives it */
+static int set_setting(const char* key, const char* value) {
+    for (int i = 0; i < g_ini_sections_count; ++i)
+        for (int j = 0; j < 3 && g_ini_sections[i].table[j]; ++j) {
+            const IniOpt* o = ini_find(g_ini_sections[i].table[j], key);
+            if (o) {
+                ini_read(o, value);
+                return 1;
+            }
+        }
+    return 0;
+}
+
 /* the game's settings from its .ini into g_settings, as the other drivers do: every key of the tables the build made */
 static void read_settings(const char* ini) {
     for (int i = 0; i < g_ini_sections_count; ++i)
@@ -197,6 +210,17 @@ int snx_agb_main(int argc, char** argv) {
                 return 2;
             }
             *(!strcmp(argv[i - 1], "--data") ? &data : &outdir) = argv[i];
+        } else if (argv[i][0] == '-' && argv[i][1] == '-' && strchr(argv[i], '=')) {
+            const char* eq = strchr(argv[i] + 2, '=');
+            char key[64];
+            size_t n = (size_t)(eq - (argv[i] + 2));
+            if (n >= sizeof key) n = sizeof key - 1;
+            memcpy(key, argv[i] + 2, n);
+            key[n] = 0;
+            if (!set_setting(key, eq + 1)) {
+                fprintf(stderr, "scarletnx-agb: %s is not a setting\n", key);
+                return 2;
+            }
         } else if (!strcmp(argv[i], "--"))
             continue;
         else if (!path && argv[i][0] != '-')

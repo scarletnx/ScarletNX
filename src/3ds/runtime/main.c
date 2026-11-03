@@ -9,7 +9,9 @@
 #include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/game_ini.h"
 #include "snx_settings.h"
+#include "nx/runtime/ini.h"
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -199,6 +201,36 @@ done:
     free(suffix);
     return status;
 }
+/* one setting by its .ini key, from the shared tables: --key=value or the game's .ini */
+static int set_setting(const char* key, const char* value) {
+    for (int i = 0; i < g_ini_sections_count; ++i)
+        for (int j = 0; j < 3 && g_ini_sections[i].table[j]; ++j) {
+            const IniOpt* o = ini_find(g_ini_sections[i].table[j], key);
+            if (o) {
+                ini_read(o, value);
+                return 1;
+            }
+        }
+    return 0;
+}
+
+/* the game's shared settings: graphics, hotkeys, display and the rest of the tables */
+static void read_game_settings(const char* folder) {
+    char* path = snx_ctr_game_file(folder, ".ini");
+    if (path) {
+        for (int i = 0; i < g_ini_sections_count; ++i)
+            for (int j = 0; j < 3 && g_ini_sections[i].table[j]; ++j)
+                for (const IniOpt* o = g_ini_sections[i].table[j]; o->key; ++o) {
+                    char* value = snx_ini_value(path, o->key);
+                    if (value) {
+                        ini_read(o, value);
+                        free(value);
+                    }
+                }
+        free(path);
+    }
+}
+
 /* what an extraction writes into its folder, beside which the title's state (native/, sdmc/, frames/, audio.wav) is
    kept */
 static const char* const extraction_parts[] = {
@@ -280,6 +312,7 @@ static int play_game(const SnxCtrSource* game, const char* folder, SnxCtrModel m
             if (failed) goto done;
         }
     }
+    read_game_settings(folder);
     status = snx_ctr_aot_run(state, game, model, max_blocks, seconds, flags, ipc_stubs, runtime, error, error_size);
     if (status) fprintf(stderr, "scarletnx-3ds: %s\n", error);
 done:
@@ -546,10 +579,12 @@ int snx_ctr_main(int argc, char** argv) {
                 if (!o) o = ini_find(g_ctr_debug_ini, !strcmp(key, "script") ? "ctr_script" : key);
             }
             if (!o) {
-                fprintf(stderr, "scarletnx-3ds: unknown setting: %s\n", arg);
-                return 2;
-            }
-            ini_read(o, strchr(arg, '=') + 1);
+                if (!set_setting(key, strchr(arg, '=') + 1)) {
+                    fprintf(stderr, "scarletnx-3ds: unknown setting: %s\n", arg);
+                    return 2;
+                }
+            } else
+                ini_read(o, strchr(arg, '=') + 1);
         } else if ((!positional && arg[0] == '-') || input) {
             fprintf(stderr, "scarletnx-3ds: unexpected argument: %s\n", arg);
             usage(stderr);
