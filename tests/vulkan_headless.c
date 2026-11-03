@@ -2388,6 +2388,44 @@ static int check_take_after_writes(void) {
     free(ch);
     return 0;
 }
+/* A clear whose targets' group (DsState.gen[DS_TARGETS]) and the surface table are as the last draw's or clear's keeps
+   its targets (read_targets, g_vk_targets_kept) and clears them; another target, or the table changed under the same
+   registers (a texture made elsewhere), looks them up again */
+static int check_targets_kept(void) {
+    const u64 gva = 0x4C0020000ull, other = gva + 0x4000, cpu = HEAP_BASE + 0x520000;
+    const u32 rgba8 = 0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16;
+    const u32 tic[8] = {rgba8, (u32)(gva + 0x8000), (u32)((gva + 0x8000) >> 32) | 3u << 21, 0, 15 | 1u << 23, 15, 0, 0};
+    static const u8 red[4] = {255, 0, 0, 255}, blue[4] = {0, 0, 255, 255};
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    u8 px[4];
+    CHECK(ch);
+    gmmu_map(gva, cpu, 0x10000);
+    rt_clear(ch, gva, 16, 16, 0, 0);
+    u64 kept = g_vk_targets_kept;
+    rt_clear(ch, gva, 16, 16, 0, 1); /* the same registers: kept */
+    CHECK(g_vk_targets_kept == kept + 1);
+    vk_lock();
+    CHECK(!read_pixel0(vk_rt_find(gva), px) && !memcmp(px, blue, 4));
+    vk_unlock();
+    rt_clear(ch, other, 16, 16, 0, 0); /* another target: looked up */
+    CHECK(g_vk_targets_kept == kept + 1);
+    rt_clear(ch, gva, 16, 16, 0, 0); /* back: its group's bytes changed again, looked up */
+    CHECK(g_vk_targets_kept == kept + 1);
+    vk_lock();
+    CHECK(vk_tex_from_tic(tic)); /* a surface entering the table */
+    vk_unlock();
+    rt_clear(ch, gva, 16, 16, 0, 1); /* the same registers over a changed table: looked up */
+    CHECK(g_vk_targets_kept == kept + 1);
+    rt_clear(ch, gva, 16, 16, 0, 0);
+    CHECK(g_vk_targets_kept == kept + 2);
+    vk_lock();
+    CHECK(!read_pixel0(vk_rt_find(gva), px) && !memcmp(px, red, 4));
+    CHECK(!read_pixel0(vk_rt_find(other), px) && !memcmp(px, red, 4));
+    vk_unlock();
+    puts("render targets kept: the last clear's set over the same table, looked up again after either changed");
+    free(ch);
+    return 0;
+}
 static int check_rt_overlap(void) {
     GpuChannel* ch = calloc(1, sizeof *ch);
     GpuDmaOp o;
@@ -2855,6 +2893,7 @@ int main(int argc, char** argv) {
     CHECK(!check_dma_untracked_source());
     CHECK(!check_blit());
     CHECK(!check_take_after_writes());
+    CHECK(!check_targets_kept());
     CHECK(!check_uma_in_flight());
     CHECK(!check_uma_trap_ranges());
     CHECK(!check_uma_lookup_then_submit());
