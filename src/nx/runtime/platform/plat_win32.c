@@ -314,6 +314,14 @@ int plat_vm_unshare(u8* p, u64 size) {
     errno = ENOSYS;
     return -1;
 }
+int plat_gpu_buffer(u64 size, int* fd, void** handle) {
+    (void)size;
+    *fd = -1;
+    *handle = NULL;
+    errno = ENOSYS;
+    return -1;
+}
+void plat_gpu_buffer_free(int fd, void* handle, u64 size) { (void)fd, (void)handle, (void)size; }
 
 /* No alias pool yet: views of the same pages need the reservation made of placeholders (VirtualAlloc2 and
    MapViewOfFile3, Windows 10 1803), and whether the write watch survives that is untested. mem.c copies instead */

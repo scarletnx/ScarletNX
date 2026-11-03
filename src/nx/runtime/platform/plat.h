@@ -114,6 +114,12 @@ void plat_vm_decommit(u8* p, u64 size);    /* inaccessible again, and zero when 
    Linux and Android); -2 when p couldn't be put back either. The caller keeps writers out meanwhile (plat_freeze) */
 int plat_vm_share(u8* p, int fd, u64 size);
 int plat_vm_unshare(u8* p, u64 size);
+/* A buffer of size bytes a GPU takes in place, which guest memory moves into where the driver can't import host
+   memory (gpu/vk/uma.c): the descriptor its pages are mapped from, and what the driver imports. On Android an
+   AHardwareBuffer blob (*handle); on Linux a memfd, *handle a mapping of its pages, which a driver imports as host
+   memory (the tests' way). 0, or -1 with errno (ENOSYS elsewhere, and on Android before 8) */
+int plat_gpu_buffer(u64 size, int* fd, void** handle);
+void plat_gpu_buffer_free(int fd, void* handle, u64 size);
 /* Calls cb for each run of pages in [p, p + size) written since they were last scanned, and watches them again.
    -1 when the host can't tell (the caller then compares contents). Linux 6.7 and later use userfaultfd's asynchronous
    write protection with PAGEMAP_SCAN, Windows the write watch of the reservation. The other POSIX hosts (macOS,

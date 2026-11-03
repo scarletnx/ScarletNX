@@ -291,6 +291,31 @@ static void test_guest_memory(const char* dir) {
     g_base[9 * 4096] = 9;
     plat_vm_decommit(g_base, 64 * 4096);
     CHECK(!plat_vm_commit(g_base, 64 * 4096) && g_base[9 * 4096] == 0, "memory not zero after decommit");
+
+    printf("a GPU's buffer\n");
+    {
+        void* handle;
+#if defined(__linux__) && !defined(__ANDROID__) /* a memfd, and its pages mapped: what a driver imports here */
+        u8* g = g_base + (1u << 20);
+        CHECK(!plat_gpu_buffer(2u << 20, &fd, &handle) && fd >= 0 && handle, "no memfd buffer");
+        u8* v = (u8*)handle;
+        CHECK(lseek(fd, 0, SEEK_END) == 2 << 20, "the buffer isn't 2 MiB");
+        CHECK(!plat_vm_commit(g, 2u << 20), "commit failed");
+        g[12345] = 0x5A;
+        CHECK(!plat_vm_share(g, fd, 2u << 20) && v[12345] == 0x5A, "guest memory did not move into it with its bytes");
+        g[777] = 0x11;
+        v[778] = 0x22;
+        CHECK(v[777] == 0x11 && g[778] == 0x22, "guest memory moved into it and its mapping aren't one memory");
+        CHECK(!plat_vm_unshare(g, 2u << 20) && g[12345] == 0x5A && g[778] == 0x22, "guest memory did not move back");
+        g[999] = 0x33;
+        CHECK(v[999] != 0x33, "guest memory moved back is still the buffer's");
+        plat_vm_decommit(g, 2u << 20);
+        plat_gpu_buffer_free(fd, handle, 2u << 20);
+#elif !defined(__ANDROID__)
+        CHECK(plat_gpu_buffer(2u << 20, &fd, &handle) == -1 && errno == ENOSYS && fd == -1 && !handle,
+              "a buffer this host can't make");
+#endif
+    }
 }
 
 /* host_page: the host's page, or a larger power of two up to SNX_PLAT_PAGE_MAX; another value is said once, with the
