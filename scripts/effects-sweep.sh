@@ -18,8 +18,8 @@ seconds="${SNX_SWEEP_SECONDS:-5}"
 display="${DISPLAY:-:2}"
 mkdir -p "$out"
 
-settings="--aa=fxaa --upscaler=fsr1 --hdr=auto"
-if [ "$mode" = --full ]; then
+settings="${SNX_SWEEP_SETTINGS:---aa=fxaa --upscaler=fsr1 --hdr=auto}"
+if [ "$mode" = --full ] && [ -z "${SNX_SWEEP_SETTINGS:-}" ]; then
     settings="--aa=auto --upscaler=fsr1 --hdr=auto"
 fi
 

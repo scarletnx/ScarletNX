@@ -48,3 +48,15 @@ per issue, easiest first. `docs/SIDE_ISSUES.md` is the ledger.
 - [ ] Re-read the open issues after the last fix. If a new easy issue appeared, add it and continue.
 - [ ] Only when every open issue is either fixed on a branch or documented as blocked, create `docs/.work-complete`
       with the feature branch commit and the list of side branches.
+
+## Proof across the games
+
+- [ ] Run every recompiled game with the effects off and with `--aa=fxaa --upscaler=fsr1 --hdr=auto`, and record the
+      exit code, frames, validation count and screenshot in `docs/GAME-EFFECTS-PROOF.md`.
+- [ ] Run one representative game per platform through the modes: FSR 1, NIS, SGSR; AA off, Auto, FXAA, SMAA,
+      SSAA 2x; HDR off, Auto, On. Record the command, log and screenshot.
+- [ ] Run the GBA game with `frame_interp=off|blend|auto` and record the log and frame counts.
+- [ ] Run the 3DS presenter test (`3ds_windows`) with the effects on, one window and separate, and the Vulkan draw
+      validation.
+- [ ] Run the Vita synthetic effects test (`present_fx`) and a Vita homebrew if one is ever on the machine.
+- [ ] Put the logs, screenshots and a README with the exact commands in the demo folder.
