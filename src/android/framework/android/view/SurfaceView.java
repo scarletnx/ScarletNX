@@ -12,7 +12,7 @@ import java.util.ArrayList;
 /**
  * A view whose surface an app draws into itself, with its own GPU API (the Abstract of SurfaceFlinger's layers in
  * docs/android/INTERFACES.md): its surface is the host window, at the view's size. The surface exists while the view is
- * attached and laid out, as Android's callbacks give it. The view itself draws nothing, the hole Android punches.
+ * attached and laid out, as Android's callbacks give it. The view draws the hole Android punches: transparent.
  */
 public class SurfaceView extends View {
     private final Surface surface = new Surface();
@@ -108,6 +108,11 @@ public class SurfaceView extends View {
         super.onWindowVisibilityChanged(visibility);
         post(this::update);
     }
-    @Override public void draw(Canvas canvas) {}
+    /**
+     * The hole in the window that the surface shows through, as Android's SurfaceView punches it: the view's area
+     * cleared to transparent, over the window's background. The renderer's frames are blended over the app's own
+     * presents (docs/android/HWUI.md), so the app's frame shows there, and the window's other views and dialogs over it.
+     */
+    @Override public void draw(Canvas canvas) { canvas.drawColor(0, android.graphics.PorterDuff.Mode.CLEAR); }
     @Override protected void onDraw(Canvas canvas) {}
 }

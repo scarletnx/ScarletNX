@@ -30,6 +30,12 @@ public final class Frame {
         f.node(root);
         return f;
     }
+    /** Windows' roots one over the other, the first at the bottom */
+    public static Frame flatten(java.util.List<RenderNode> roots, int width, int height) {
+        Frame f = new Frame(width, height);
+        for (RenderNode root : roots) f.node(root);
+        return f;
+    }
 
     public int size() { return w.size(); }
     public int nodes() { return nodes; }
