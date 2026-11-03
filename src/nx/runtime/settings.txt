@@ -438,6 +438,15 @@ setting Compress shader cache
     help 1 = the shaders and pipelines saved from earlier sessions are packed with zstd, about 70 shaders at a time:
     help about a quarter of the space, a few milliseconds more to read when the game starts, and up to 7 ms on the
     help thread that made the last of each 70 new shaders. 0 = saved as they are made. What is packed is read either way
+setting Compress prepared shaders
+    key compress_prepared_shaders
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = each shader Prepare shaders makes is packed with zstd on its own: about a quarter of the space, about
+    help 50 microseconds more for each as it is prepared and 15 the first time a draw uses it. 0 = saved as they are
+    help made. What is packed is read either way
 setting NCE
     key nce
     int 0 1

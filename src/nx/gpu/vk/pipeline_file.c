@@ -32,6 +32,15 @@
 typedef struct {
     u32 raw, packed, records, shaders;
 } PfUnit;
+/* zstd's level for a shipped file's shader packed alone: level 1, which packed the shipped files measured to 25.6% in
+   46 us a shader, where level 3 gave 25.7% in 57 us */
+#define PF_ZSHADER_LEVEL 1
+/* a PF_ZSHADER's payload after its PfShader: the bytes of its reads and SPIR-V, and of the frame that packs them */
+typedef struct {
+    u32 raw, packed;
+} PfZip;
+/* a PF_ZSHADER's frame starts at a multiple of 8, as the PfShader's fields are read in place */
+typedef char pf_check_shader_size[sizeof(PfShader) % 8 == 0 && sizeof(PfZip) == 8 ? 1 : -1];
 
 /* the check of a payload: words of it after its type and size (FNV-1a over 32-bit words, with a last mix) */
 static u64 pf_mix(u64 h, const void* p, size_t n) {
@@ -295,12 +304,46 @@ static int pf_append(PFile* pf, u32 type, const void* const* piece, const size_t
     return 0;
 }
 
+/* a shader record's reads and SPIR-V packed into one zstd frame (*z its sizes), malloc'd with its padding to 8 zeroed:
+   NULL when it can't be, or wouldn't make the record smaller, and the record is written as it is. On the caller's
+   thread, before the file's lock */
+static u8* pf_zip(const PfShader* s, const u32* cbr, const u32* spv, PfZip* z) {
+    size_t ncbr = (size_t)s->ncbr * 16, raw = ncbr + (size_t)s->nspv * 4, bound = ZSTD_compressBound(raw), packed;
+    u8 *in = (u8*)malloc(raw), *out = in ? (u8*)malloc(bound + 8) : NULL;
+    if (!out) {
+        LOG("vulkan: no memory to pack a shader of %zu bytes: it is written unpacked\n", raw);
+        free(in);
+        return NULL;
+    }
+    memcpy(in, cbr, ncbr);
+    memcpy(in + ncbr, spv, raw - ncbr);
+    packed = ZSTD_compress(out, bound, in, raw, PF_ZSHADER_LEVEL);
+    free(in);
+    if (ZSTD_isError(packed)) {
+        LOG("vulkan: zstd can't pack a shader of %zu bytes (%s): it is written unpacked\n", raw,
+            ZSTD_getErrorName(packed));
+        free(out);
+        return NULL;
+    }
+    if (sizeof *z + ((packed + 7) & ~(size_t)7) >= raw) { /* a small one: the frame's own bytes outweigh it */
+        free(out);
+        return NULL;
+    }
+    memset(out + packed, 0, ((packed + 7) & ~(size_t)7) - packed);
+    z->raw = (u32)raw;
+    z->packed = (u32)packed;
+    return out;
+}
+
 u64 pf_shader(PFile* pf, u64 module, const PfShader* s, const u32* cbr, const u32* spv, const PfSource* src,
               const u8* code, const ShXfb* xfb) {
     const void* piece[4];
     size_t len[4];
     u64 check, at = 0;
     int bad = 0;
+    PfZip z = {0, 0};
+    /* pack is set before the file is opened, and a shipped file's shaders carry no source */
+    u8* frame = pf->pack == PF_PACK_SHADERS && !src ? pf_zip(s, cbr, spv, &z) : NULL;
     pm_lock(&pf->lock);
     if (src) { /* the source first, in the same hold of the lock: the shader record that follows is what it made */
         piece[0] = src;
@@ -315,17 +358,18 @@ u64 pf_shader(PFile* pf, u64 module, const PfShader* s, const u32* cbr, const u3
     }
     piece[0] = s;
     len[0] = sizeof *s;
-    piece[1] = cbr;
-    len[1] = (size_t)s->ncbr * 16;
-    piece[2] = spv;
-    len[2] = (size_t)s->nspv * 4;
+    piece[1] = frame ? (const void*)&z : (const void*)cbr;
+    len[1] = frame ? sizeof z : (size_t)s->ncbr * 16;
+    piece[2] = frame ? (const void*)frame : (const void*)spv;
+    len[2] = frame ? ((size_t)z.packed + 7) & ~(size_t)7 : (size_t)s->nspv * 4; /* pf_append's pieces: words */
     at = pf->size;
-    if (!bad && !pf_append(pf, PF_SHADER, piece, len, 3, &check)) {
+    if (!bad && !pf_append(pf, frame ? PF_ZSHADER : PF_SHADER, piece, len, 3, &check)) {
         pf->nsh++;
         pf_map_add(pf, module, pf->nsh, check);
     } else
         at = 0;
     pm_unlock(&pf->lock);
+    free(frame);
     return at;
 }
 
@@ -776,7 +820,8 @@ void pf_open_mapped(PFile* pf, const char* path, const char* key, PfEach each, v
         for (at = hsize; size - at >= PF_REC;) {
             u32 type = pf_get32(d + at), len = pf_get32(d + at + 4);
             /* a tail of no known type (zeros a lost write left) ends the records as one cut short does */
-            if (len % 8 || len > size - at - PF_REC || type < PF_SHADER || type > PF_SHIPREF) break;
+            if (len % 8 || len > size - at - PF_REC || ((type < PF_SHADER || type > PF_SHIPREF) && type != PF_ZSHADER))
+                break;
             each(ctx, type, d + at + PF_REC, len, at);
             at += PF_REC + len;
         }
@@ -813,17 +858,51 @@ void pf_open_mapped(PFile* pf, const char* path, const char* key, PfEach each, v
     free(head);
     pm_unlock(&pf->lock);
 }
-const u8* pf_payload(const PFile* pf, u64 at, u32* len, u64* check) {
+/* a PF_ZSHADER's payload (n bytes at p, of the file at path) unpacked into the PF_SHADER payload it was made from,
+   malloc'd: NULL when it doesn't unpack to the bytes it says, which its check holding leaves to a writer's bug or to
+   memory running out, said in the log */
+static u8* pf_unzip(const char* path, u64 at, const u8* p, u32 n, u32* len) {
+    PfZip z;
+    PfShader s;
+    size_t got;
+    u8* out;
+    if (n < sizeof s + sizeof z) return NULL;
+    memcpy(&s, p, sizeof s);
+    memcpy(&z, p + sizeof s, sizeof z);
+    if (z.packed > n - sizeof s - sizeof z || n - sizeof s - sizeof z - z.packed >= 8 || z.raw > PF_MAX ||
+        z.raw != (u64)s.ncbr * 16 + (u64)s.nspv * 4) {
+        LOG("vulkan: %s: the packed shader at %llu says %u bytes packed to %u, which its record of %u doesn't hold\n",
+            path, (unsigned long long)at, z.raw, z.packed, n);
+        return NULL;
+    }
+    if (!(out = (u8*)malloc(sizeof s + z.raw))) {
+        LOG("vulkan: %s: no memory to unpack the shader at %llu, of %u bytes\n", path, (unsigned long long)at, z.raw);
+        return NULL;
+    }
+    memcpy(out, &s, sizeof s);
+    got = ZSTD_decompress(out + sizeof s, z.raw, p + sizeof s + sizeof z, z.packed);
+    if (ZSTD_isError(got) || got != z.raw) {
+        LOG("vulkan: %s: the packed shader at %llu unpacks to %zu bytes, not %u (%s)\n", path, (unsigned long long)at,
+            ZSTD_isError(got) ? (size_t)0 : got, z.raw, ZSTD_isError(got) ? ZSTD_getErrorName(got) : "short");
+        free(out);
+        return NULL;
+    }
+    *len = (u32)(sizeof s + z.raw);
+    return out;
+}
+const u8* pf_payload(const PFile* pf, u64 at, u32* len, u64* check, u8** owned) {
     const u8* d = pf->view.data;
     u32 type, n;
+    *owned = NULL;
     if (!d || at > pf->view.size || pf->view.size - at < PF_REC) return NULL;
     type = pf_get32(d + at);
     n = pf_get32(d + at + 4);
     if (n > pf->view.size - at - PF_REC ||
         pf_end(pf_mix(pf_start(type, n), d + at + PF_REC, n)) != pf_get64(d + at + 8))
         return NULL;
-    *len = n;
     *check = pf_get64(d + at + 8);
+    if (type == PF_ZSHADER) return *owned = pf_unzip(pf->path, at, d + at + PF_REC, n, len);
+    *len = n;
     return d + at + PF_REC;
 }
 void pf_unseal(PFile* pf) {
