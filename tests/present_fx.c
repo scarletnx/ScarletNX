@@ -356,6 +356,20 @@ int main(int argc, char** argv) {
         write_ppm(showcase, "fx-fsr1", got, 640, 480);
         free(got);
     }
+    /* NIS and SGSR: the shared filters run at 1:1 as well */
+    {
+        int filters[2] = {SNX_FX_UPSCALE_NIS, SNX_FX_UPSCALE_SGSR};
+        for (int i = 0; i < 2; ++i) {
+            SnxFxImage out = {0};
+            VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
+            uint64_t serial;
+            CHECK(snx_fx_render(fx, cb, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, filters[i], SNX_FX_AA_OFF,
+                                &out));
+            serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+            CHECK(out.width == 320 && out.height == 240);
+        }
+    }
     /* FXAA and SMAA at 1:1: the source's hard step is smoothed */
     {
         double plain_avg, fxaa_avg, smaa_avg;
