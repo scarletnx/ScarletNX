@@ -969,7 +969,7 @@ int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off
 void vk_buf_prefetch(u64 gva, u64 len, int step);
 void vk_buf_mapping_changed(void); /* the GPU mappings or the guest memory under them changed: translations go */
 int vk_buf_get_uniform(u64 gva, u64 len, VkBuffer* buf, u64* off); /* a constant buffer: in place where it can be */
-int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off); /* no delayed content checks */
+int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off);  /* no delayed content checks */
 /* a copy engine's source (DMA, 2D): as strict, and compared by contents rather than trusted to the write tracking,
    since what a copy lands in keeps a stale byte for good */
 int vk_buf_get_copy_src(u64 gva, u64 len, VkBuffer* buf, u64* off);
@@ -1185,7 +1185,8 @@ void vk_pipeline_init(void);
    translator reads to resolve indirect branches. NULL for none. rect: the textures a fragment or vertex program
    samples whose headers take unnormalized coordinates (ShaderInfo.tex_rect_mask) */
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
-                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb);
+                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
+                    const u8* query_hint);
 /* whether the constant buffer words s's translation read still hold in ds's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s);

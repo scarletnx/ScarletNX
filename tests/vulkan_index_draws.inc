@@ -50,6 +50,28 @@ static int index_pixels(u64 target, IndexPixels* px) {
     return 0;
 }
 
+/* the 4x4 target's first pixel, for a failure's message */
+static int index_first_pixel(u64 target, u8 out[4]) {
+    Surf* surface = vk_rt_find(target);
+    VkBuffer buffer;
+    u8* data;
+    vk_lock();
+    vk_render_end();
+    data = vk_readback_buffer(64, &buffer);
+    if (!surface || !data) {
+        vk_unlock();
+        return -1;
+    }
+    vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    memcpy(out, data, 4);
+    vk_unlock();
+    return 0;
+}
 /* the render predicate index_draw's draw runs on (its clear doesn't), 0 for none */
 static u32 g_index_pred;
 static int index_draw(GpuChannel* channel, u64 target, const DrawCall* call, IndexPixels* px) {
@@ -370,6 +392,112 @@ static int draw_params_case(GpuChannel* channel, u64 target, u64 indices, u64 ad
     return 0;
 }
 
+/* A texture only a TXQ names has no type of its own: the program's variant takes it from the header (a racing
+   game's lightmap programs query a volume through a bound handle and fetch it through a bindless one). Without
+   that, the query is a 2D one, whose third component is the constant 1: a 4x2x2 volume's depth less one is then 0
+   instead of 1, and the quad drawn with it as its green is black. Vertex programs and fragment programs alike */
+static const u32 g_query_volume_tic_words = 1 | 1u << 16 | 1u << 31; /* height 2, depth 2, normalized */
+static int query_volume_header(u64 pool, u64 samplers, u64 cbuf, u64 texels) {
+    const u32 tic[8] = {0x08 /* A8B8G8R8 */ | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 |
+                            4u << 25 | 5u << 28,
+                        (u32)texels,
+                        (u32)(texels >> 32) | 3u << 21, /* block linear */
+                        2u << 28,
+                        3 | 2u << 23, /* width 4, 3D */
+                        g_query_volume_tic_words,
+                        0,
+                        2u << 4};
+    u8 bytes[256] = {0};
+    for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+    CHECK(!gmem_write(pool, bytes, 32));
+    memset(bytes, 0, 256);
+    CHECK(!gmem_write(samplers, bytes, 32)); /* a sampler of zeros */
+    CHECK(!gmem_write(cbuf, bytes, 256));    /* the handle at 0x70: 0, the header above; an offset no other program
+                                                of this test queries or samples, which would type the query */
+    CHECK(!gmem_write(texels, bytes, 256));  /* 4x2x2 texels of nothing: only the size is asked */
+    return 0;
+}
+static int vertex_query_volume_case(GpuChannel* channel, u64 target, u64 address) {
+    const u64 program = address + 0x3800, pool = address + 0x1F000, samplers = pool + 0x100, cbuf = pool + 0x200,
+              texels = pool + 0x400;
+    const u64 vertex[] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
+                          0xeff1ff800707ff00ull, /* position */
+                          0xefd9ff800907ff08ull, /* ALD R8..11, a[0x90]: the green quad's 0, 1, 0, 1 */
+                          0x0100000000071005ull, /* MOV32I R5, 0: the level */
+                          0x010ffffffff7f006ull, /* MOV32I R6, -1 */
+                          0xdf48010200470500ull | 0xcull << 36, /* TXQ.DIMENSION R0, R5, 0x1c, depth only */
+                          0x5c10000000670009ull, /* IADD R9, R0, R6 */
+                          0x5cb8000000970a09ull, /* I2F.F32.U32 R9, R9: the green */
+                          0xeff1ff800807ff08ull, /* color varying from R8..11 */
+                          0xe30000000007000full};
+    IndexPixels px;
+    CHECK(!query_volume_header(pool, samplers, cbuf, texels));
+    CHECK(index_program(program, vertex, 10, 0));
+    u32* r = channel->r3d;
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 0;
+    r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 0;
+    r[0x48D] = 0;
+    r[0x982] = 2;
+    r[0x811] = (u32)(program - address); /* VertexB's offset */
+    channel->ds.bind.cb_addr[0][2] = cbuf;
+    channel->ds.bind.cb_size[0][2] = 256;
+    DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    int ok = !index_draw(channel, target, &call, &px) && index_all_green(&px);
+    if (!ok) {
+        u8 first[4] = {0};
+        index_first_pixel(target, first);
+        fprintf(stderr, "vertex volume query: %u green, %u blue, %u red; first pixel %u %u %u %u\n", px.green, px.blue,
+                px.red, first[0], first[1], first[2], first[3]);
+    }
+    r[0x811] = 0;
+    channel->ds.bind.cb_addr[0][2] = 0;
+    channel->ds.bind.cb_size[0][2] = 0;
+    CHECK(ok);
+    puts("vertex textures: a vertex program's size query of a volume it reads nowhere else answers its depth");
+    return 0;
+}
+static int fragment_query_volume_case(GpuChannel* channel, u64 target, u64 address) {
+    const u64 program = address + 0x3C00, pool = address + 0x1F000, samplers = pool + 0x100, cbuf = pool + 0x200,
+              texels = pool + 0x400;
+    u64 fragment[11];
+    IndexPixels px;
+    /* the varyings, then red = depth - 1 and no green: a quad the harness's own program (green) or a 2D query
+       (black) can't draw */
+    for (u32 i = 0; i < 4; i++) fragment[i] = 0xe000000000070000ull | (0x20ull + i) << 30 | i;
+    fragment[4] = 0x0100000000071005ull; /* MOV32I R5, 0: the level */
+    fragment[5] = 0x010ffffffff7f006ull; /* MOV32I R6, -1 */
+    fragment[6] = 0x0100000000071001ull; /* MOV32I R1, 0: no green */
+    fragment[7] = 0xdf48010200470504ull | 0xcull << 36; /* TXQ.DIMENSION R4, R5, 0x1c, depth only */
+    fragment[8] = 0x5c10000000670400ull; /* IADD R0, R4, R6 */
+    fragment[9] = 0x5cb8000000070a00ull; /* I2F.F32.U32 R0, R0: the red */
+    fragment[10] = 0xe30000000007000full;
+    CHECK(!query_volume_header(pool, samplers, cbuf, texels));
+    u32* r = channel->r3d;
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 0;
+    r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 0;
+    r[0x48D] = 0;
+    r[0x982] = 2;
+    channel->ds.bind.cb_addr[4][2] = cbuf;
+    channel->ds.bind.cb_size[4][2] = 256;
+    DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    CHECK(index_program(program, fragment, 11, 1));
+    r[0x851] = (u32)(program - address); /* the fragment program's offset */
+    int ok = !index_draw(channel, target, &call, &px) && px.red == 16 && !px.green;
+    if (!ok) {
+        u8 first[4] = {0};
+        index_first_pixel(target, first);
+        fprintf(stderr, "fragment volume query: %u green, %u blue, %u red; first pixel %u %u %u %u (%llu draws, %llu skipped)\n",
+                px.green, px.blue, px.red, first[0], first[1], first[2], first[3], (unsigned long long)g_vk_drawn,
+                (unsigned long long)g_vk_skipped);
+    }
+    r[0x851] = 0x10000; /* the harness's fragment program again */
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    CHECK(ok);
+    puts("fragment textures: a fragment program's size query of a volume it reads nowhere else answers its depth");
+    return 0;
+}
+
 /* A vertex program's texture of an integer format keys the program's variant, as a fragment program's does: its texels
    come back as their bits, where a program keyed float got no view of the image and read zeros (one game's virtual
    texture page table, drawn by a vertex program from an unsigned buffer texture, pointed past its cache). Here a
@@ -539,6 +667,8 @@ static int check_index_draws(void) {
     CHECK(!owned_index_case(channel, target, indices, cpu + 0x14000, address + 0x11000));
     if (g_vk.has_shader_draw_parameters) CHECK(!draw_params_case(channel, target, indices, address));
     CHECK(!vertex_int_texture_case(channel, target, address));
+    CHECK(!vertex_query_volume_case(channel, target, address));
+    CHECK(!fragment_query_volume_case(channel, target, address));
     CHECK(!index_bound_cases(channel, target, indices, address + 0x1A000, address + 0x1C000));
     printf("index draws: quads, widened and native 8-bit indices, restart indices and rewritten indices' bounds checked "
            "(8-bit indices %s)\n",

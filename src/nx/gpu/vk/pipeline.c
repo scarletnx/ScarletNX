@@ -432,6 +432,7 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
         si->in_unfed_mask = mask[10];
         si->early_fragment_tests = mask[11];
         si->tex_rect_mask = mask[12] | (u64)mask[13] << 32;
+        shader_query_hint_unpack(mask + 14, si->tex_query_hint);
     } else {
         si->attr_int_mask = ints;
         si->attr_sint_mask = sints;
@@ -440,10 +441,12 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
         si->tex_sint_mask = mask[10];
         si->rt_int_mask = mask[4]; /* the tessellation or geometry primitive */
         si->clip_enable = mask[6];
-        if (stage == ST_GS)
+        if (stage == ST_GS) {
             memcpy(si->gp_skip_mask, mask + 12, sizeof si->gp_skip_mask);
-        else
+        } else {
             si->tex_rect_mask = mask[12] | (u64)mask[13] << 32;
+            shader_query_hint_unpack(mask + 14, si->tex_query_hint);
+        }
         if (xfb) si->xfb = *xfb;
     }
 }
@@ -520,7 +523,8 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
     return s;
 }
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
-                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb) {
+                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
+                    const u8* query_hint) {
     const DsPrograms* p = ds ? &ds->prog : NULL;
     pf_merge();
     g_sh_ds = ds;
@@ -538,10 +542,14 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
                     unfed};
     if (stage == ST_FS && p) mask[11] = p->early_z;
     if (stage == ST_GS && p) memcpy(mask + 12, p->gs_skip, 8 * sizeof(u32));
-    /* the rectangle textures, in words only the geometry stage's key uses otherwise */
+    /* the rectangle textures, and the dimensions of the textures only a TXQ names (ShaderInfo.tex_query_hint,
+       3 bits a slot), in words only the geometry stage's key uses otherwise */
+    int queried = 0;
     if (stage != ST_GS) {
         mask[12] = (u32)rect;
         mask[13] = (u32)(rect >> 32);
+        if (query_hint) shader_query_hint_pack(query_hint, mask + 14);
+        for (int i = 14; i < 14 + SH_QUERY_WORDS; i++) queried |= mask[i] != 0;
     }
     /* a capture's layout, in the words only the fragment stage's key uses otherwise */
     if (stage != ST_FS && xfb) {
@@ -552,6 +560,7 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
     u32 mix = (u32)vk_hash(mask, 12 * sizeof(u32));
     if (stage == ST_GS) mix ^= (u32)vk_hash(mask + 12, 8 * sizeof(u32));
     if (stage != ST_GS && rect) mix ^= (u32)vk_hash(mask + 12, 2 * sizeof(u32));
+    if (queried) mix ^= (u32)vk_hash(mask + 14, SH_QUERY_WORDS * sizeof(u32));
     /* the set from every bit of the key, mixed by multiplying: programs are 256-byte aligned, and a shift and xor of
        their addresses left most sets unused */
     u64 hk = (gva * 0x9E3779B97F4A7C15ull) ^ (gva_a * 0xC2B2AE3D27D4EB4Full) ^ ((u64)mix << 24) ^ (u64)stage;
