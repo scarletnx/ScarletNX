@@ -40,7 +40,8 @@ implementation in ScarletNX, not a port of Atmosphere's GPL-2.0-only code.
   layouts. The latter two are 417 MiB smaller than the previous extended settings.
 - The experimental `memory_gb=12` setting gives a 10 GiB application budget and extends a 39-bit process's heap
   region to 12 GiB when the host has at least 32 GiB of virtual address space for the guest. This setting is for
-  diagnosis of newer applications. It does not implement their remote-memory or graphics services.
+  diagnosis of newer applications. It does not implement their remote-memory or graphics services. An Ounce game
+  (its NPDM, `docs/OUNCE.md`) gets the same budget and heap region without the setting.
 - With `memory_fit=1` (iOS's default), the pool the game is told is at most what
   the host can still give the process as the game starts, plus what the process
   holds, less what the rest takes (the runtime then and 256 MiB for the graphics,

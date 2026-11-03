@@ -29,6 +29,7 @@
 #include "nx/runtime/clock.h"
 #include "nx/runtime/gdbstub.h"
 #include "nx/runtime/loader.h"
+#include "nx/loader/ounce.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/pause.h"
 #include "nx/runtime/state.h"
@@ -509,9 +510,9 @@ static int npdm_is_switch2(u8* d, u64 size) {
    36, and the 39-bit layout's stack and heap, above 64 GiB, came back as addresses with no memory behind them. A
    Switch 2 program gets the 39-bit layout with the 12 GiB heap region its titles size their heap from.
 
-   It also tells an Ounce program: its ACID's signature and key are 0x180 bytes each, where a Switch's are 0x100, so
-   its magic is at 0x300 in the ACID, not at 0x200 (Switchbrew's NPDM page). An Ounce program gets SM70+ shaders, the
-   T239's GOB and the 31.25 MHz tick */
+   It also tells an Ounce program (loader/ounce.h), which is g_ounce, and everything that follows from it: the CPU
+   features of the runtime JIT (guest_jit.c), SM70+ shaders, the T239's GOB, the 31.25 MHz tick, and the larger heap
+   and application pool, as memory_gb 12 gives (svc_mem.c) */
 static void npdm_layout(void) {
     u64 size = 0;
     unsigned char* d = fs_read_file("exefs/main.npdm", &size);
@@ -1055,8 +1056,7 @@ int snx_main(int argc, char** argv) {
     snx_ir_branch_profile(g_settings.ir_branch_profile);
 
     fs_init(keys, title_keys); /* the npdm is read through it, and mem_init's layout comes before */
-    if (!g_arm_mod && g_settings.memory_gb >= 12) mem_layout_large_heap();
-    npdm_layout(); /* the address space type's layout, before mem_init sizes its blocks in it */
+    npdm_layout(); /* the address space type's layout and the larger heap, before mem_init sizes its blocks in it */
     free(keys);
     free(title_keys);
     keys = title_keys = NULL;
