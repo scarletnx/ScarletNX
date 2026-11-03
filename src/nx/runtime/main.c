@@ -613,9 +613,40 @@ static void report_lock_waits(void) {
              w[i].cond ? "waits on a condition with" : "waits for", (long long)((intptr_t)w[i].m - (intptr_t)pm_wait_base()),
              (long long)((intptr_t)w[i].at - (intptr_t)pm_lock));
 }
+/* the "resources: " line of the log: iOS's from the frontend (with Metal and the thermal state), else the footprint
+   and what the system still gives the process */
+static void resources_text(char* out, size_t size) {
+#ifdef MODULE_PACK
+    gui_apple_stats(out, size);
+#else
+    SnxU64 left = 0;
+    if (snx_memory_available(&left))
+        snprintf(out, size, "resources: footprint %llu MiB, the system has %llu MiB free",
+                 (unsigned long long)(snx_footprint() >> 20), (unsigned long long)(left >> 20));
+    else
+        snprintf(out, size, "resources: footprint %llu MiB", (unsigned long long)(snx_footprint() >> 20));
+#endif
+}
+/* iOS: a "memory: " line, with the GPU heaps, the first time that what the system still gives the app falls under
+   each floor. Its warnings can come too late or not at all before it ends the app (one came 0.1 s before) */
+static void memory_floors(void) {
+#ifdef MODULE_PACK
+    static const unsigned floors[] = {1024, 512, 256, 128}; /* MiB */
+    static size_t next;
+    SnxU64 left = 0;
+    char stats[320], gpu[1024] = "";
+    if (next >= sizeof floors / sizeof *floors || !snx_memory_available(&left) || left >= (SnxU64)floors[next] << 20)
+        return;
+    while (next < sizeof floors / sizeof *floors && left < (SnxU64)floors[next] << 20) next++;
+    resources_text(stats, sizeof stats);
+    if (g_renderer && g_renderer->memory_text) g_renderer->memory_text(gpu, sizeof gpu);
+    LOG("memory: under %u MiB free: %s, %s\n", floors[next - 1], stats, gpu);
+    log_sync();
+#endif
+}
 static void frontend_loop(void) {
     const u64 period = 1000000000u / VI_REFRESH_HZ;
-    u64 tick = 0, next = plat_ns(), now, changed = next, rate_at = next;
+    u64 tick = 0, next = plat_ns(), now, changed = next, rate_at = next, resources_at = next;
     int frames = 0, stalls = 0, rate_frames = 0;
     while (!g_quit) {
         int shown, paused;
@@ -668,13 +699,17 @@ static void frontend_loop(void) {
                 (double)(shown - rate_frames) * 1e9 / (double)(now - rate_at), (double)(now - rate_at) / 1e9, shown);
             rate_at = now;
             rate_frames = shown;
-#ifdef MODULE_PACK
-            {
+        }
+        /* log level 2: the memory each second, as a game can take 1 GiB in less than that, and the line at each floor
+           of free memory */
+        if (g_settings.log_level >= 2) {
+            if (now - resources_at >= 1000000000u) {
                 char line[320];
-                gui_apple_stats(line, sizeof line);
+                resources_text(line, sizeof line);
                 LOG("%s\n", line);
+                resources_at = now;
             }
-#endif
+            memory_floors();
         }
         /* a paused game shows nothing new, and isn't stalled; nor is one that waits for the keyboard's box */
         if (shown != frames || paused || overlay_keyboard_shown()) {
