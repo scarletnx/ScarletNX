@@ -199,11 +199,12 @@ struct SnxCtrProcess {
         unsigned char buffer[0x1000];
     } apt_next;
     uint32_t apt_library; /* the library applet APT registered for the application: its AppletId, 0 for none */
-    /* the software keyboard the application started (services/swkbd.c): its SoftwareKeyboardConfig, the block its
-       text goes in (retained while it runs), and the capture block it made at the first Request (retained) */
+    uint32_t apt_capture; /* the capture block made at a library applet's first Request (retained), 0 before one */
+    /* the software keyboard the application started (services/swkbd.c): its SoftwareKeyboardConfig and the block its
+       text goes in (retained while it runs) */
     struct {
         unsigned char config[0x400];
-        uint32_t text, capture;
+        uint32_t text;
     } swkbd;
     uint32_t hid_objects[6]; /* the shared memory, then the events: pad 1, pad 2, accelerometer, gyroscope, debug pad */
     SnxCtrHid hid;

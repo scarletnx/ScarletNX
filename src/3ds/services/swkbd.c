@@ -5,7 +5,7 @@
    the console's user name, held to what the configuration asks (its length, its input rule, its filters), with OK,
    or with Cancel when the text breaks one of them. Ported from Azahar core/hle/applets/swkbd.{cpp,h} and
    core/frontend/applets/swkbd.cpp (GPL-2.0-or-later, Copyright 2015-2018 Citra Emulator Project / Azahar Emulator
-   Project) at ac4a97e: the configuration's layout, its result codes, the Request, Message and Finalize steps, and
+   Project) at ac4a97e: the configuration's layout, its result codes, the Message and Finalize steps, and
    DefaultKeyboard's answer of the user name and its checks. */
 #include "3ds/services/swkbd.h"
 #include "3ds/memory/ctr_memory.h"
@@ -41,8 +41,6 @@ enum { CALLBACK_OK, CALLBACK_CLOSE, CALLBACK_CONTINUE };
 #define RESULT_NONE             0xffffffffu /* no button: NoButton's answer */
 #define RESULT_BANNED           30u         /* BannedInput: the game's own check closed the keyboard */
 #define TEXT_UNITS              2048u       /* the most of a text the keyboard answers, in UTF-16 units */
-#define CAPTURE_LIMIT           0x200000u   /* the most a Request's capture block may take: both screens, both eyes */
-#define CAPTURE_INFO_SIZE       0x20u       /* CaptureBufferInfo */
 #define DEFAULT_MAX_LENGTH      0xfde8u     /* a max_text_length of 0, as libctru's swkbdInit makes it */
 
 bool snx_ctr_swkbd_is(uint32_t applet_id) { return applet_id == 0x201 || applet_id == 0x401; }
@@ -279,43 +277,10 @@ void snx_ctr_swkbd_start(SnxCtrIpc* c, const unsigned char* config, uint32_t siz
     }
     finish(p);
 }
-/* the capture block the application copies its screens into for the keyboard to show: one, made at the first
-   Request and again when a later one asks for more. 0 when there is no memory left for it */
-static uint32_t capture_block(SnxCtrProcess* p, uint32_t size) {
-    uint32_t pages = (size + 4095) & ~4095u, handle, physical;
-    if (p->swkbd.capture && p->objects[p->swkbd.capture].data.shared.size >= pages) return p->swkbd.capture;
-    if (snx_ctr_object_create(p, CTR_OBJ_SHARED, &handle)) return 0;
-    if (!(physical = snx_ctr_shared_pages(p, pages))) {
-        (void)snx_ctr_handle_close(p, handle);
-        return 0;
-    }
-    uint32_t id = snx_ctr_handle_object(p, handle);
-    CtrObject* o = &p->objects[id];
-    o->data.shared.physical = physical;
-    o->data.shared.size = pages;
-    o->data.shared.permissions = SNX_CTR_READ | SNX_CTR_WRITE;
-    ++o->refs; /* the keyboard keeps it */
-    (void)snx_ctr_handle_close(p, handle);
-    if (p->swkbd.capture) snx_ctr_object_release(p, p->swkbd.capture);
-    p->swkbd.capture = id;
-    return id;
-}
 void snx_ctr_swkbd_parameter(SnxCtrIpc* c, uint32_t signal, const unsigned char* buffer, uint32_t size,
                              uint32_t object) {
     SnxCtrProcess* p = c->process;
-    (void)object; /* neither a Request nor a Message carries one */
-    if (signal == SNX_CTR_APT_REQUEST && size == CAPTURE_INFO_SIZE && snx_ld_le32(buffer) &&
-        snx_ld_le32(buffer) <= CAPTURE_LIMIT) {
-        uint32_t block = capture_block(p, snx_ld_le32(buffer));
-        if (!block) {
-            fprintf(stderr, "3ds swkbd: no memory left for the keyboard's %u-byte capture block\n",
-                    (unsigned)snx_ld_le32(buffer));
-            c->state = SNX_CTR_IPC_UNSUPPORTED;
-            return;
-        }
-        snx_ctr_apt_send(p, p->apt_library, SNX_CTR_APT_RESPONSE, block, NULL, 0);
-        return;
-    }
+    (void)object; /* neither a Message nor a cancel carries one */
     if (signal == SNX_CTR_APT_MESSAGE && size == CONFIG_SIZE && p->swkbd.text) {
         uint16_t why[257];
         char shown[257 * 3 + 1];
@@ -352,7 +317,7 @@ void snx_ctr_swkbd_parameter(SnxCtrIpc* c, uint32_t signal, const unsigned char*
     }
     fprintf(stderr,
             "3ds swkbd: the game sends the software keyboard signal %u with %u bytes, which it does not take (a "
-            "Request with a 32-byte capture info, a Message with its 0x400-byte configuration)\n",
+            "Message with its 0x400-byte configuration, or a cancel while it runs)\n",
             (unsigned)signal, (unsigned)size);
     c->state = SNX_CTR_IPC_UNSUPPORTED;
 }
