@@ -4190,9 +4190,11 @@ int main(int argc, char** argv) {
 #endif
     key(&app, SDLK_RIGHT);
     assert(app.menu.selected == GUI_SETTINGS);
+    app.clock = 1; /* the note from the start of its slide: a window too narrow for it slides the phrase away */
     render(&app);
     shows_half(&app, "The game's .ini settings,",
-               normal);         /* what it is about, in the tips, a half step under the text's */
+               normal); /* what it is about, in the tips, a half step under the text's */
+    app.clock = 0;
     mouse_px(&app, 2, 2, true); /* Blank space must not activate the current selection. */
     assert(!app.editing);
     /* Settings: the launcher's own, then each setting the runtime lists, a row each with its help above; what the
