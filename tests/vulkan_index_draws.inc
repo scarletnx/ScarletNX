@@ -27,18 +27,8 @@ typedef struct {
     u32 green, blue, red;
 } IndexPixels;
 
-/* the render predicate index_draw's draw runs on (its clear doesn't), 0 for none */
-static u32 g_index_pred;
-static int index_draw(GpuChannel* channel, u64 target, const DrawCall* call, IndexPixels* px) {
-    u64 drawn = g_vk_drawn;
-    vk_lock();
-    rt_clear(channel, target, 4, 4, 0, 1);
-    channel->r3d_dirty = ~0u; /* the registers were set directly */
-    mx_draw_state_sync(channel);
-    channel->owner.pred = g_index_pred;
-    vk_render_draw(&channel->ds, call, &channel->owner);
-    channel->owner.pred = 0;
-    CHECK(g_vk_drawn == drawn + 1);
+/* the 4x4 target's pixels once the work recorded so far is done (the rendering pass ended), under vk_lock */
+static int index_pixels(u64 target, IndexPixels* px) {
     vk_render_end();
     Surf* surface = vk_rt_find(target);
     VkBuffer buffer;
@@ -57,6 +47,22 @@ static int index_draw(GpuChannel* channel, u64 target, const DrawCall* call, Ind
         px->blue += !p[0] && !p[1] && p[2] == 255;
         px->red += p[0] != 0;
     }
+    return 0;
+}
+
+/* the render predicate index_draw's draw runs on (its clear doesn't), 0 for none */
+static u32 g_index_pred;
+static int index_draw(GpuChannel* channel, u64 target, const DrawCall* call, IndexPixels* px) {
+    u64 drawn = g_vk_drawn;
+    vk_lock();
+    rt_clear(channel, target, 4, 4, 0, 1);
+    channel->r3d_dirty = ~0u; /* the registers were set directly */
+    mx_draw_state_sync(channel);
+    channel->owner.pred = g_index_pred;
+    vk_render_draw(&channel->ds, call, &channel->owner);
+    channel->owner.pred = 0;
+    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(!index_pixels(target, px));
     vk_unlock();
     return 0;
 }
@@ -215,6 +221,60 @@ static int indirect_cases(GpuChannel* channel, u64 target, u64 indices, u64 args
     }
     printf("indirect draws: a fan, indexed through a base vertex%s checked on the GPU\n",
            g_vk.has_draw_indirect_count ? ", and a count of one and two records" : "");
+    return 0;
+}
+
+/* Vertex colors a copy engine wrote, which the GPU holds (docs/GPU_OWNERSHIP.md), read by a draw after another in
+   the same pass: the red quad from the colors the CPU wrote, then the green one from the copy's. The second draw reads
+   them where their owner holds them, inside the pass the first one opened, and nothing lands. Copied into staging,
+   they ended the pass and a second one began over the same target. (Indices aren't kept this way: a draw reads its
+   indices on the CPU for the vertices they reach, render.c draw_last_vertex, which lands them) */
+static int owned_stream_case(GpuChannel* channel, u64 target, u64 colors, u64 copy, u64 copy_cpu) {
+    const u32 bytes = 8 * 16;
+    GpuDmaOp o;
+    IndexPixels px;
+    u32* r = channel->r3d;
+    memset(&o, 0, sizeof o);
+    o.width = o.line_in = o.line_out = bytes;
+    o.lines = 1;
+    o.src = pitch_side(colors, 0);
+    o.dst = pitch_side(copy, 0);
+    CHECK(g_renderer->dma_copy(&o));
+    int owned = own_traps();
+    if (owned) CHECK(own_lookup(copy_cpu, bytes, NULL, 0) == 1);
+    u64 landings = own_landings();
+    vk_lock();
+    rt_clear(channel, target, 4, 4, 0, 1);
+    channel->r3d_dirty = ~0u; /* the registers were set directly */
+    mx_draw_state_sync(channel);
+    u64 passes = g_vk_passes;
+    DrawCall red = {.topology = 6, .count = 4, .instances = 1},
+             green = {.topology = 6, .first = 4, .count = 4, .instances = 1};
+    vk_render_draw(&channel->ds, &red, &channel->owner);
+    /* the color stream from the copy, which the CPU doesn't read: that would land it */
+    r[0x705] = (u32)(copy >> 32);
+    r[0x706] = (u32)copy;
+    r[0x7c2] = (u32)((copy + bytes - 1) >> 32);
+    r[0x7c3] = (u32)(copy + bytes - 1);
+    channel->r3d_dirty = ~0u;
+    mx_draw_state_sync(channel);
+    vk_render_draw(&channel->ds, &green, &channel->owner);
+    u64 begun = g_vk_passes - passes;
+    CHECK(!index_pixels(target, &px));
+    r[0x705] = (u32)(colors >> 32);
+    r[0x706] = (u32)colors;
+    r[0x7c2] = (u32)((colors + bytes - 1) >> 32);
+    r[0x7c3] = (u32)(colors + bytes - 1);
+    vk_unlock();
+    if (!index_all_green(&px)) fprintf(stderr, "owned colors: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    if (owned) {
+        if (begun != 1) fprintf(stderr, "owned colors: the two draws took %llu passes\n", (unsigned long long)begun);
+        CHECK(begun == 1);
+        CHECK(own_landings() == landings && own_lookup(copy_cpu, bytes, NULL, 0) == 1);
+    }
+    printf("owned colors: a draw read vertex colors the GPU holds %s\n",
+           owned ? "where their owner holds them, inside the pass" : "landed (no traps here)");
     return 0;
 }
 
@@ -422,6 +482,7 @@ static int check_index_draws(void) {
     CHECK(!index_cases(channel, target, indices));
     g_vk.has_index8 = had8;
     CHECK(!indirect_cases(channel, target, indices, address + 0x16000));
+    CHECK(!owned_stream_case(channel, target, colors, address + 0x15000, cpu + 0x15000));
     if (g_vk.has_shader_draw_parameters) CHECK(!draw_params_case(channel, target, indices, address));
     CHECK(!vertex_int_texture_case(channel, target, address));
     CHECK(!index_bound_cases(channel, target, indices, address + 0x1A000, address + 0x1C000));

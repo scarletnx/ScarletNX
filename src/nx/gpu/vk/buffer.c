@@ -165,6 +165,7 @@ static void own_unlink(u32 i) {
 }
 /* Optional copy telemetry. Counters are updated under vk_lock. */
 static u64 g_copy_stage, g_copy_owned, g_copy_uncached, g_copy_zero, g_copy_calls, g_copy_peak, g_read_bound;
+static u64 g_owned_bound; /* bytes draws read where their owners hold them (buf_get_owned) */
 static u64 g_wb_outputs, g_wb_bytes, g_wb_waits, g_wb_wait_ns, g_wb_reuses;
 static u64 g_alias_draws, g_alias_pages;
 enum { WB_DRAW, WB_READ, WB_WRITE, WB_SIGNAL, WB_SYNCWAIT, WB_MAP, WB_REASON_N };
@@ -2186,14 +2187,19 @@ static int range_owned(u64 gva, u64 len) {
     }
     return 0;
 }
-/* A range over bytes the GPU holds: copied into this frame's device ring, the CPU's bytes staged by the CPU and the
-   owned ones from their owners by the GPU (vk_guest_read_device), with nothing landed. It isn't hashed (the CPU's copy of the
-   owned bytes is stale) or given a buffer of its own: it is copied again when the GPU writes those bytes again
-   (gpu_mem_dirty_since) or a later submit reads it. Draws over the results of the GPU's engines landed them, a wait
-   for the GPU each */
-static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, VkBuffer* buf, u64* off) {
+/* A range over bytes the GPU holds, with nothing landed. One owner holding it whole is bound where it is, as a dispatch
+   binds it (compute.c res_bind): every write to an owner's buffer is recorded outside rendering passes and followed by
+   a barrier before the next one begins (vk_own_res_wrote), so a draw reads it inside the pass it is in. Copied, each
+   such draw ended the pass, about 22 of a frame's 380 in one game, and on a tiling GPU every target of the pass is
+   stored and loaded again. Any other range is copied into this frame's device ring, the CPU's bytes staged by the CPU
+   and the owned ones from their owners by the GPU (vk_guest_read_device). Neither is hashed (the CPU's copy of the
+   owned bytes is stale) or given a buffer of its own: it is bound or copied again when the GPU writes those bytes
+   again (gpu_mem_dirty_since) or a later submit reads it. Draws over the results of the GPU's engines landed them, a
+   wait for the GPU each */
+static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, u64 align, VkBuffer* buf, u64* off) {
     VkBuffer sb;
-    u64 so;
+    u64 so, cpu = 0;
+    OwnRange o[2];
     if (!e) {
         if (!(i = vb_new(gva, (u32)len))) return 0;
         e = &g_vb[i];
@@ -2203,11 +2209,18 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, 
     drop_own(i);
     e->hash = 0;
     e->stable = 0;
-    vk_render_end(); /* the GPU's copies happen outside rendering passes */
-    /* in device memory, where the GPU's bytes stay on the GPU and the draws read all of it: in staging, the GPU copied
-       its own bytes out over PCIe and every draw read them back over it */
-    if (!vk_stage_device(len, vk_stage_align(), &sb, &so) || !vk_guest_read_device(gva, len, sb, so)) return 0;
-    if (copy_stats_on()) g_copy_stage += len;
+    if (gmmu_run(gva, len, &cpu) == len && own_lookup(cpu, len, o, 2) == 1 && o[0].addr == cpu && o[0].size == len &&
+        !(o[0].res_off & ((align ? align : 1) - 1))) {
+        sb = ((const VkOwnRes*)o[0].res)->buf;
+        so = o[0].res_off;
+        if (copy_stats_on()) g_owned_bound += len;
+    } else {
+        vk_render_end(); /* the GPU's copies happen outside rendering passes */
+        /* in device memory, where the GPU's bytes stay on the GPU and the draws read all of it: in staging, the GPU
+           copied its own bytes out over PCIe and every draw read them back over it */
+        if (!vk_stage_device(len, vk_stage_align(), &sb, &so) || !vk_guest_read_device(gva, len, sb, so)) return 0;
+        if (copy_stats_on()) g_copy_stage += len;
+    }
     e->buf = sb;
     e->off = so;
     e->frame = vk_submit_number();
@@ -2323,7 +2336,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             : gpu_mem_dirty_since(e->gw, gva, len) ? ST_DIRTY
             : e->own ? ST_WRITTEN
                      : ST_EPOCH;
-    if (range_owned(gva, len)) return buf_get_owned(i, e, gva, len, strict, epoch, buf, off);
+    if (range_owned(gva, len)) return buf_get_owned(i, e, gva, len, strict, epoch, align, buf, off);
     u32 wnow = vk_ww_now();
     SamplesCount counts[4];
     u32 ncounts;
@@ -2514,12 +2527,12 @@ void vk_buf_frame(void) {
     vk_uma_frame();
     if (g_vk_present % 4) return;
     if (copy_stats_on() && g_vk_present % 600 == 0) {
-        LOG("vulkan: buffer bytes over 600 presents: uncached=%llu zero=%llu calls=%llu peak=%llu staged=%llu owned=%llu bound=%llu writeback=%llu/%llu waits=%llu/%llums reused=%llu\n",
+        LOG("vulkan: buffer bytes over 600 presents: uncached=%llu zero=%llu calls=%llu peak=%llu staged=%llu owned=%llu bound=%llu owner_bound=%llu writeback=%llu/%llu waits=%llu/%llums reused=%llu\n",
             (unsigned long long)g_copy_uncached, (unsigned long long)g_copy_zero, (unsigned long long)g_copy_calls,
             (unsigned long long)g_copy_peak, (unsigned long long)g_copy_stage, (unsigned long long)g_copy_owned,
-            (unsigned long long)g_read_bound, (unsigned long long)g_wb_outputs, (unsigned long long)g_wb_bytes,
-            (unsigned long long)g_wb_waits, (unsigned long long)(g_wb_wait_ns / 1000000),
-            (unsigned long long)g_wb_reuses);
+            (unsigned long long)g_read_bound, (unsigned long long)g_owned_bound, (unsigned long long)g_wb_outputs,
+            (unsigned long long)g_wb_bytes, (unsigned long long)g_wb_waits,
+            (unsigned long long)(g_wb_wait_ns / 1000000), (unsigned long long)g_wb_reuses);
         LOG("vulkan: buffer dependencies: %llu barriers, %llu consumer barriers avoided\n",
             (unsigned long long)g_buffer.order.barriers, (unsigned long long)g_buffer.order.read_reuses);
         g_buffer.order.barriers = g_buffer.order.read_reuses = 0;
@@ -2539,7 +2552,8 @@ void vk_buf_frame(void) {
             (unsigned long long)g_alias_draws, (unsigned long long)g_alias_pages, g_vblive,
             (unsigned long long)g_vb_lookups, (unsigned long long)g_vb_probes);
         g_vb_lookups = g_vb_probes = 0;
-        g_copy_uncached = g_copy_stage = g_copy_owned = g_copy_zero = g_copy_calls = g_copy_peak = g_read_bound = 0;
+        g_copy_uncached = g_copy_stage = g_copy_owned = g_copy_zero = g_copy_calls = g_copy_peak = g_read_bound =
+            g_owned_bound = 0;
         g_wb_outputs = g_wb_bytes = g_wb_waits = g_wb_wait_ns = g_wb_reuses = 0;
         g_alias_draws = g_alias_pages = 0;
         memset(g_wb_reason, 0, sizeof g_wb_reason);

@@ -785,7 +785,10 @@ VkOwnRes* vk_own_res_new(u64 size); /* with the caller's reference; NULL when ou
 void vk_own_res_unref(VkOwnRes* r);
 /* r's bytes are written by work recorded in the submission being recorded: a landing of them waits for that
    submission (owned.c own_land). vk_own_publish does it. A writer that keeps an owned range in place, with no new
-   publish, calls it itself. Under vk_lock */
+   publish, calls it itself. Every writer of r records its writes outside rendering passes, after a barrier from what
+   read r before (a new r has no readers), and a barrier to all later work before it calls this: what reads r later,
+   inside a pass too, reads it where it is with no barrier of its own (buffer.c buf_get_owned, compute.c res_bind).
+   Under vk_lock */
 void vk_own_res_wrote(VkOwnRes* r);
 /* the guest CPU bytes [cpu, cpu + size) hold r's bytes from off on once the work recorded so far is done: owned, or,
    where the host can't trap them, landed at once (the GPU waited for). Under vk_lock */
