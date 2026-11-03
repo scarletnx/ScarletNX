@@ -34,8 +34,9 @@ size_t bytes = snx_glslc_workspace_size();
 if (snx_glslc_workspace_init(&workspace, malloc(bytes), bytes, &result) != 0)
     fprintf(stderr, "%s\n", result.error);
 
-/* then for each shader */
-if (snx_glslc_compile(&workspace, SNX_GLSLC_FRAGMENT, source, size, words, SNX_GLSLC_MAX_WORDS, &result) != 0)
+/* then for each shader; bind, a binding map, is optional */
+GlslcOptions options = {SNX_GLSLC_FRAGMENT, bind, bind_user};
+if (snx_glslc_compile(&workspace, &options, source, size, words, SNX_GLSLC_MAX_WORDS, &result) != 0)
     fprintf(stderr, "%u:%u: %s\n", result.line, result.column, result.error);
 ```
 
@@ -118,9 +119,13 @@ The module is what a Vulkan pipeline takes; the OpenGL ES side of it is the back
 - **Locations.** An `in` or `out` without a location takes the first free one, in declaration order, after the
   given ones; a matrix takes one per column, an array one per element. `gl_FragColor` and `gl_FragData` are output
   location 0. OpenGL ES matches a vertex output to a fragment input by name: the backend matches the two lists.
-- **Bindings.** A sampler, image or block without a binding takes the first free one of set 0, in declaration order.
-  OpenGL ES numbers texture units, uniform blocks and buffer blocks apart, and Vulkan has one binding space per set:
-  bindings given in the source keep their numbers in set 0.
+- **Bindings.** OpenGL ES numbers texture units, image units, uniform blocks and buffer blocks apart, and Vulkan has
+  one binding space per set, so the backend places them: `GlslcOptions.bind`, a function, with `bind_user` its first
+  argument. glslc calls it for each sampler, image and block in declaration order, with its kind, name, array size,
+  whether it is a texel buffer (`samplerBuffer`, `imageBuffer`), a block's size, and the set and binding the source
+  gave (-1 for none), and takes the set and binding it writes. A nonzero answer refuses the shader, and two resources
+  at one place, or a set or binding past 65535, are errors. Without a map (`bind` NULL), a resource keeps the set and
+  binding it gives, and one without a binding takes the first free binding of set 0, in declaration order.
 - **Loose uniforms** are the members of one block, `gl_DefaultUniformBlock`, laid out as std140, at the first free
   binding of set 0 after every other resource. Its entry in `result.reflect` has an empty name, and each uniform's
   entry its offset.

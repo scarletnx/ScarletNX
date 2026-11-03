@@ -10,7 +10,8 @@
 
 errors: every case of errors.glsl is refused with its line, column and message, and glslangValidator refuses it too,
 but where the case says glslang accepts it (an error glslang only finds when it links), which is checked as well.
-shaders: every shader of shaders/ compiles to SPIR-V that spirv-val takes for Vulkan 1.1; glslangValidator takes the
+shaders: every shader of shaders/ compiles to SPIR-V that spirv-val takes for Vulkan 1.1, also through the CLI's
+binding map; glslangValidator takes the
 shader too (or refuses it where its first lines say so), and for GLSL ES 3.10 and later lays out every block, member
 by member, as glslc does. keywords: every word glslc's table knows is a name, a keyword or a reserved word in the
 same GLSL ES versions for glslc and for glslangValidator. semantics: each shader of semantics/ stores expressions on
@@ -173,6 +174,11 @@ def check_shaders(args, failures):
             valid = run([args.spirv_val, '--target-env', 'vulkan1.1', str(spv)])
             if valid.returncode != 0:
                 failures.append(f'{shader.name}: spirv-val refuses the module: {(valid.stdout + valid.stderr).strip()}')
+            mapped = Path(directory) / (shader.name + '.mapped.spv')  # through a binding map: each kind its own set
+            result = run([args.cli, '-m', '-o', str(mapped), str(shader)])
+            valid = run([args.spirv_val, '--target-env', 'vulkan1.1', str(mapped)])
+            if result.returncode != 0 or valid.returncode != 0:
+                failures.append(f'{shader.name}: with a binding map: {result.stdout.strip()} {valid.stdout.strip()}')
             if not args.glslang:
                 continue
             note = re.search(r'^// glslang: rejects \((.*)\)$', source, re.MULTILINE)

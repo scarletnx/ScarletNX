@@ -598,6 +598,8 @@ typedef struct {
     uint8_t vi;     /* the version, GLSLC_V* */
     uint16_t version;
     GlslcResult* result;
+    GlslcBindFn bind; /* the backend's binding map, or NULL */
+    void* bind_user;
     jmp_buf fail;
     /* the raw scanner */
     uint32_t cur;

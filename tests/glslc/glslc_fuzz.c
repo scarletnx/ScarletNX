@@ -254,12 +254,12 @@ int main(int argc, char** argv) {
         memcpy(g_fuzz.work, g_fuzz.seeds[k], size);
         /* mostly one change, so that many mutants still compile and reach the emitter */
         for (size_t m = below(4) ? 1 : 2 + below(7); m > 0; m--) mutate(g_fuzz.work, &size);
-        int r = snx_glslc_compile(&g_fuzz.workspace, g_fuzz.stages[k], g_fuzz.work, size, g_fuzz.words,
-                                  SNX_GLSLC_MAX_WORDS, &g_fuzz.result);
+        int r = snx_glslc_compile(&g_fuzz.workspace, &(GlslcOptions){g_fuzz.stages[k], NULL, NULL}, g_fuzz.work, size,
+                                  g_fuzz.words, SNX_GLSLC_MAX_WORDS, &g_fuzz.result);
         if (it % 16 == 0) {
             memset(g_fuzz.workspace.memory, (int)(0x5a ^ (it & 0xff)), g_fuzz.workspace.size);
-            int r2 = snx_glslc_compile(&g_fuzz.workspace, g_fuzz.stages[k], g_fuzz.work, size, g_fuzz.again,
-                                       SNX_GLSLC_MAX_WORDS, &g_fuzz.second);
+            int r2 = snx_glslc_compile(&g_fuzz.workspace, &(GlslcOptions){g_fuzz.stages[k], NULL, NULL}, g_fuzz.work,
+                                       size, g_fuzz.again, SNX_GLSLC_MAX_WORDS, &g_fuzz.second);
             if (r2 != r || strcmp(g_fuzz.second.error, g_fuzz.result.error) ||
                 g_fuzz.second.line != g_fuzz.result.line || g_fuzz.second.words != g_fuzz.result.words ||
                 (r == 0 && memcmp(g_fuzz.again, g_fuzz.words, g_fuzz.result.words * sizeof(uint32_t)))) {
