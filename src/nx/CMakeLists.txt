@@ -97,9 +97,12 @@ else()
     list(APPEND platform runtime/platform/plat_posix.c)
 endif()
 if(APPLE AND (NOT DEFINED SNX_BUILD_GUI OR SNX_BUILD_GUI))
-    # the display's EDR headroom, which only AppKit reports (plat_apple.m): the menu's build enables OBJC
+    # the display's EDR headroom (plat_apple.m): AppKit reports it on macOS, and the file answers the poll with nothing
+    # on the other Apple systems, which have no AppKit. The menu's build enables OBJC
     list(APPEND platform runtime/platform/plat_apple.m)
-    set(snx_apple_edr 1)
+    if(NOT IOS)
+        set(snx_apple_edr 1)
+    endif()
 endif()
 if(SNX_TRACY)
     # the C++ client's connection id, which the C layer's GPU track keys its epochs on
@@ -108,7 +111,7 @@ endif()
 snx_component(platform ${platform})
 if(snx_apple_edr)
     target_compile_definitions(snx_platform PRIVATE SNX_APPLE_EDR=1)
-    # AppKit's NSScreen reports the display's EDR headroom, and the ObjC runtime comes with it
+    # AppKit's NSScreen reports the display's EDR headroom, and the ObjC runtime comes with it (iOS has no AppKit)
     target_link_libraries(snx_platform PUBLIC "-framework AppKit")
 endif()
 
