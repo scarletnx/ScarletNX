@@ -99,6 +99,11 @@ if(WIN32)
 endif()
 target_include_directories(snx_android_bridge PUBLIC "${volk_SOURCE_DIR}")
 target_compile_definitions(snx_android_bridge PRIVATE VK_NO_PROTOTYPES)
+# the blend of the renderer's layer over the guest's presents (bridge/hle_vulkan.c)
+snx_glsl_spirv(snx_android_bridge SOURCE bridge/compose.vert NAME android_compose_vert_spv
+               HEADER android/bridge/compose_vert_spv.h)
+snx_glsl_spirv(snx_android_bridge SOURCE bridge/compose.frag NAME android_compose_frag_spv
+               HEADER android/bridge/compose_frag_spv.h)
 target_include_directories(snx_android_bridge SYSTEM PUBLIC "${SNX_JAVA_HOME}/include"
                            "${SNX_JAVA_HOME}/include/${snx_jni_system}")
 set_target_properties(snx_android_bridge PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)

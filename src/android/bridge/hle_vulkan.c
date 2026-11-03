@@ -10,7 +10,8 @@
    - vkCreateAndroidSurfaceKHR makes a surface of the host window, which ScarletNX's own renderer then gives up,
    - the guest's allocation callbacks are left out: the driver allocates for itself, at create and at destroy alike,
    - the debug messengers the guest asks for are made without their callback,
-   - the device the guest sees is a Mali-G710 (ARM's vendor and driver IDs), with the host's limits and features */
+   - the device the guest sees is a Mali-G710 (ARM's vendor and driver IDs), with the host's limits and features,
+   - each present blends the renderer's windows over the guest's image first, when one shows (the layer) */
 #define _GNU_SOURCE
 #include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
@@ -23,6 +24,14 @@
 #include <string.h>
 #include <volk.h>
 #include <SDL3/SDL_vulkan.h>
+#if defined(_WIN32)
+#include <windows.h>
+#include <vulkan/vulkan_win32.h>
+#else
+#include <unistd.h>
+#endif
+#include "android/bridge/compose_frag_spv.h"
+#include "android/bridge/compose_vert_spv.h"
 
 /* the device's name and IDs as the guest sees them */
 const char hle_gpu_name[] = "Mali-G710";
@@ -150,6 +159,8 @@ static void create_shader_module(CPU* c, void* data);
 static void cmd_clear_attachments(CPU* c, void* data);
 static void create_render_pass(CPU* c, void* data);
 static void create_render_pass2(CPU* c, void* data);
+static void destroy_swapchain(CPU* c, void* data);
+static void destroy_device(CPU* c, void* data);
 
 static const struct {
     const char* name;
@@ -174,6 +185,8 @@ static const struct {
     {"vkGetDeviceQueue", get_device_queue},
     {"vkGetDeviceQueue2", get_device_queue2},
     {"vkCreateSwapchainKHR", create_swapchain},
+    {"vkDestroySwapchainKHR", destroy_swapchain},
+    {"vkDestroyDevice", destroy_device},
     {"vkGetSwapchainImagesKHR", get_swapchain_images},
     {"vkCreateShaderModule", create_shader_module},
     {"vkCmdClearAttachments", cmd_clear_attachments},
@@ -353,9 +366,10 @@ static void create_android_surface(CPU* c, void* data) {
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     void* window = window_host ? window_host->window() : NULL;
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
+    /* ScarletNX's renderer gives the window up (a window has one swapchain at a time), and its frames from then on
+       go into the layer that the presents blend, with a window or without */
+    if (window_host) window_host->yield();
     if (window) {
-        /* ScarletNX's renderer gives the window up: a window has one swapchain at a time */
-        window_host->yield();
         r = SDL_Vulkan_CreateSurface(window, instance, NULL, &surface) ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
     } else {
         PFN_vkCreateHeadlessSurfaceEXT make =
@@ -400,12 +414,14 @@ static void surface_capabilities2(CPU* c, void* data) {
     X(0) = (uint64_t)(int64_t)r;
 }
 
-/* ---- --shot: the guest's presented images, saved as binary PPM (hle_vulkan.h) ----
-   The pass-through records what a copy of a presented image needs: each device's physical device, each queue's
-   device and family, each swapchain's device, format, extent and images (made with TRANSFER_SRC as well, when shots
-   are asked for). At a listed present, a submission on the presenting queue waits for the present's semaphores,
-   copies the image into a host-visible buffer and signals a semaphore of its own, which the present then waits for */
+/* ---- the devices, queues and swapchains the guest made, for --shot and the layer ----
+   The pass-through records what a copy of a presented image or a blend over it needs: each device's physical device,
+   each queue's device and family, each swapchain's device, format, extent and images (made with TRANSFER_SRC as
+   well, when shots are asked for, and COLOR_ATTACHMENT always). At a listed present, a submission on the presenting
+   queue waits for the present's semaphores, copies the image into a host-visible buffer and signals a semaphore of
+   its own, which the present then waits for */
 
+enum { SWAP_IMAGES = 16 };
 static struct {
     pthread_mutex_t lock;
     char path[1024];
@@ -414,6 +430,7 @@ static struct {
     struct {
         VkDevice device;
         VkPhysicalDevice physical;
+        bool importable; /* HLE_LAYER_EXTENSION enabled on it: the layer can be imported */
     } devices[8];
     size_t device_count;
     struct {
@@ -423,12 +440,17 @@ static struct {
     } queues[32];
     size_t queue_count;
     struct {
-        VkSwapchainKHR swapchain;
+        VkSwapchainKHR swapchain; /* VK_NULL_HANDLE: a free entry */
         VkDevice device;
         VkFormat format;
         VkExtent2D extent;
-        VkImage images[16];
+        VkImage images[SWAP_IMAGES];
         uint32_t image_count;
+        /* the layer's blend into each image (compose_begin): its view and framebuffer, and the semaphore the
+           present waits for, which stays with the entry until the device goes */
+        VkImageView views[SWAP_IMAGES];
+        VkFramebuffer framebuffers[SWAP_IMAGES];
+        VkSemaphore composed[SWAP_IMAGES];
     } swapchains[8];
     size_t swapchain_count;
 } shot = {.lock = PTHREAD_MUTEX_INITIALIZER};
@@ -447,16 +469,49 @@ void hle_vulkan_set_shot(const char* path, const char* frames) {
 static void* vk(const char* name) {
     return (void*)vkGetInstanceProcAddr(v.instance, name);
 }
+/* a command of the guest's instance, as its PFN type */
+#define VKF(name) ((PFN_##name)vk(#name))
 
+/* whether the physical device lists a device extension */
+static bool device_has(VkPhysicalDevice physical, const char* name) {
+    PFN_vkEnumerateDeviceExtensionProperties list = VKF(vkEnumerateDeviceExtensionProperties);
+    uint32_t n = 0;
+    if (!list || list(physical, NULL, &n, NULL) != VK_SUCCESS) return false;
+    VkExtensionProperties* all = calloc(n ? n : 1, sizeof *all);
+    bool found = false;
+    if (all && list(physical, NULL, &n, all) == VK_SUCCESS)
+        for (uint32_t i = 0; i < n && !found; ++i) found = !strcmp(all[i].extensionName, name);
+    free(all);
+    return found;
+}
+
+/* vkCreateDevice: the guest's device, with the layer's import extension (HLE_LAYER_EXTENSION) added when the host's
+   device has it, which changes nothing else of the device */
 static void create_device(CPU* c, void* data) {
     (void)data;
-    PFN_vkCreateDevice create = (PFN_vkCreateDevice)vk("vkCreateDevice");
+    PFN_vkCreateDevice create = VKF(vkCreateDevice);
     VkPhysicalDevice physical = (VkPhysicalDevice)(uintptr_t)X(0);
-    VkResult r = create ? create(physical, PTR(1), NULL, PTR(3)) : VK_ERROR_INITIALIZATION_FAILED;
+    VkDeviceCreateInfo info = *(const VkDeviceCreateInfo*)PTR(1);
+    const char** names = calloc(info.enabledExtensionCount + 1, sizeof *names);
+    bool importable = false;
+    if (names && HLE_LAYER_MEMORY) {
+        for (uint32_t i = 0; i < info.enabledExtensionCount; ++i) {
+            names[i] = info.ppEnabledExtensionNames[i];
+            importable |= !strcmp(names[i], HLE_LAYER_EXTENSION);
+        }
+        if (!importable && device_has(physical, HLE_LAYER_EXTENSION)) {
+            names[info.enabledExtensionCount++] = HLE_LAYER_EXTENSION;
+            info.ppEnabledExtensionNames = names;
+            importable = true;
+        }
+    }
+    VkResult r = create ? create(physical, &info, NULL, PTR(3)) : VK_ERROR_INITIALIZATION_FAILED;
+    free(names);
     if (r == VK_SUCCESS) {
         pthread_mutex_lock(&shot.lock);
         if (shot.device_count < 8) {
             shot.devices[shot.device_count].device = *(VkDevice*)PTR(3);
+            shot.devices[shot.device_count].importable = importable;
             shot.devices[shot.device_count++].physical = physical;
         }
         pthread_mutex_unlock(&shot.lock);
@@ -476,35 +531,559 @@ static void record_queue(VkDevice device, uint32_t family, VkQueue queue) {
 }
 static void get_device_queue(CPU* c, void* data) {
     (void)data;
-    PFN_vkGetDeviceQueue get = (PFN_vkGetDeviceQueue)vk("vkGetDeviceQueue");
+    PFN_vkGetDeviceQueue get = VKF(vkGetDeviceQueue);
     if (!get) return;
     get((VkDevice)(uintptr_t)X(0), (uint32_t)X(1), (uint32_t)X(2), PTR(3));
     record_queue((VkDevice)(uintptr_t)X(0), (uint32_t)X(1), *(VkQueue*)PTR(3));
 }
 static void get_device_queue2(CPU* c, void* data) {
     (void)data;
-    PFN_vkGetDeviceQueue2 get = (PFN_vkGetDeviceQueue2)vk("vkGetDeviceQueue2");
+    PFN_vkGetDeviceQueue2 get = VKF(vkGetDeviceQueue2);
     if (!get) return;
     const VkDeviceQueueInfo2* info = PTR(1);
     get((VkDevice)(uintptr_t)X(0), info, PTR(2));
     record_queue((VkDevice)(uintptr_t)X(0), info->queueFamilyIndex, *(VkQueue*)PTR(2));
 }
+
+/* ---- the layer: the renderer's windows blended over each present (hle_vulkan.h's HleLayer) ----
+   The objects are the guest's device's, made at the first blend: the layer's images imported from the renderer's
+   memory, a sampler, a pipeline for each swapchain format, and a few slots of a command buffer and a fence. A slot
+   reads one layer image until its fence is signaled (hle_vulkan_layer_reading). compose_lock orders the objects,
+   the slots and their fences against the renderer's thread, and is taken before shot.lock and the renderer's layer
+   lock. The entries of shot.swapchains are written with both held */
+
+enum { COMPOSE_SLOTS = 4, COMPOSE_TARGETS = 4 };
+typedef struct {
+    uint64_t generation; /* the renderer's image it imports, 0 for none */
+    VkImage image;
+    VkDeviceMemory memory;
+    VkImageView views[2];    /* as the renderer's format, and as its sRGB form (for an sRGB swapchain) */
+    VkDescriptorSet sets[2]; /* the views' */
+} ComposeLayer;
+static pthread_mutex_t compose_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+    VkDevice device; /* the device the objects are on, VK_NULL_HANDLE before the first blend */
+    bool failed;     /* that device can't blend the layer: not tried again */
+    uint32_t family;
+    VkSampler sampler;
+    VkDescriptorSetLayout set_layout;
+    VkPipelineLayout layout;
+    VkDescriptorPool pool;
+    VkCommandPool commands;
+    VkShaderModule vert, frag;
+    ComposeLayer layers[HLE_LAYER_IMAGES];
+    struct {
+        VkFormat format;
+        VkRenderPass pass;
+        VkPipeline pipeline;
+    } targets[COMPOSE_TARGETS];
+    unsigned target_count;
+    struct {
+        VkCommandBuffer cb;
+        VkFence fence;
+        int layer; /* the layer image it reads, -1 for none */
+    } slots[COMPOSE_SLOTS];
+    unsigned next;
+} compose;
+
+static bool srgb_format(VkFormat f) {
+    return f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
+}
+
+/* the slots' reads done so far: their fences signaled. All of them, waiting, when all is set */
+static void compose_retire(bool all) {
+    for (unsigned i = 0; i < COMPOSE_SLOTS; ++i) {
+        if (compose.slots[i].layer < 0 || !compose.slots[i].fence) continue;
+        VkFence f = compose.slots[i].fence;
+        if (all) VKF(vkWaitForFences)(compose.device, 1, &f, VK_TRUE, UINT64_MAX);
+        if (VKF(vkGetFenceStatus)(compose.device, f) == VK_SUCCESS) compose.slots[i].layer = -1;
+    }
+}
+
+bool hle_vulkan_layer_reading(unsigned index) {
+    pthread_mutex_lock(&compose_lock);
+    bool reading = false;
+    if (compose.device) {
+        compose_retire(false);
+        for (unsigned i = 0; i < COMPOSE_SLOTS; ++i) reading |= compose.slots[i].layer == (int)index;
+    }
+    pthread_mutex_unlock(&compose_lock);
+    return reading;
+}
+
+static void compose_free_layer(unsigned i) {
+    VkDevice d = compose.device;
+    for (unsigned k = 0; k < 2; ++k)
+        if (compose.layers[i].views[k]) VKF(vkDestroyImageView)(d, compose.layers[i].views[k], NULL);
+    if (compose.layers[i].image) VKF(vkDestroyImage)(d, compose.layers[i].image, NULL);
+    if (compose.layers[i].memory) VKF(vkFreeMemory)(d, compose.layers[i].memory, NULL);
+    ComposeLayer cleared = {.sets = {compose.layers[i].sets[0], compose.layers[i].sets[1]}};
+    compose.layers[i] = cleared;
+}
+
+/* a swapchain entry's views and framebuffers gone (its swapchain replaced or destroyed), once no blend uses them */
+static void compose_forget_swapchain(size_t entry) {
+    if (!compose.device || shot.swapchains[entry].device != compose.device) return;
+    compose_retire(true);
+    for (uint32_t i = 0; i < SWAP_IMAGES; ++i) {
+        if (shot.swapchains[entry].framebuffers[i])
+            VKF(vkDestroyFramebuffer)(compose.device, shot.swapchains[entry].framebuffers[i], NULL);
+        if (shot.swapchains[entry].views[i])
+            VKF(vkDestroyImageView)(compose.device, shot.swapchains[entry].views[i], NULL);
+        shot.swapchains[entry].framebuffers[i] = VK_NULL_HANDLE;
+        shot.swapchains[entry].views[i] = VK_NULL_HANDLE;
+    }
+}
+
+/* everything of the blend on its device gone: the device is about to be destroyed, and idle */
+static void compose_free(void) {
+    VkDevice d = compose.device;
+    if (!d) return;
+    for (size_t e = 0; e < shot.swapchain_count; ++e) {
+        if (shot.swapchains[e].device != d) continue;
+        compose_forget_swapchain(e);
+        for (uint32_t i = 0; i < SWAP_IMAGES; ++i)
+            if (shot.swapchains[e].composed[i]) VKF(vkDestroySemaphore)(d, shot.swapchains[e].composed[i], NULL);
+        memset(shot.swapchains[e].composed, 0, sizeof shot.swapchains[e].composed);
+    }
+    for (unsigned i = 0; i < HLE_LAYER_IMAGES; ++i) compose_free_layer(i);
+    for (unsigned i = 0; i < compose.target_count; ++i) {
+        if (compose.targets[i].pipeline) VKF(vkDestroyPipeline)(d, compose.targets[i].pipeline, NULL);
+        if (compose.targets[i].pass) VKF(vkDestroyRenderPass)(d, compose.targets[i].pass, NULL);
+    }
+    for (unsigned i = 0; i < COMPOSE_SLOTS; ++i)
+        if (compose.slots[i].fence) VKF(vkDestroyFence)(d, compose.slots[i].fence, NULL);
+    if (compose.commands) VKF(vkDestroyCommandPool)(d, compose.commands, NULL);
+    if (compose.pool) VKF(vkDestroyDescriptorPool)(d, compose.pool, NULL);
+    if (compose.layout) VKF(vkDestroyPipelineLayout)(d, compose.layout, NULL);
+    if (compose.set_layout) VKF(vkDestroyDescriptorSetLayout)(d, compose.set_layout, NULL);
+    if (compose.sampler) VKF(vkDestroySampler)(d, compose.sampler, NULL);
+    if (compose.vert) VKF(vkDestroyShaderModule)(d, compose.vert, NULL);
+    if (compose.frag) VKF(vkDestroyShaderModule)(d, compose.frag, NULL);
+    memset(&compose, 0, sizeof compose);
+    for (unsigned i = 0; i < COMPOSE_SLOTS; ++i) compose.slots[i].layer = -1;
+}
+
+static VkShaderModule compose_shader(const u32* words, u64 size) {
+    VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)size, words};
+    VkShaderModule m = VK_NULL_HANDLE;
+    VKF(vkCreateShaderModule)(compose.device, &ci, NULL, &m);
+    return m;
+}
+
+/* The objects of the blend on device, whose physical device must be the renderer's (an opaque handle imports only
+   there): false when the device can't blend the layer */
+static bool compose_setup(VkDevice device, VkPhysicalDevice physical, uint32_t family, const HleLayer* layer) {
+    VkPhysicalDeviceIDProperties id = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+    VkPhysicalDeviceProperties2 p = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &id};
+    PFN_vkGetPhysicalDeviceProperties2 props = VKF(vkGetPhysicalDeviceProperties2);
+    if (!props) return false;
+    props(physical, &p);
+    if (p.properties.apiVersion < VK_API_VERSION_1_1 || memcmp(id.deviceUUID, layer->device_uuid, 16) ||
+        memcmp(id.driverUUID, layer->driver_uuid, 16)) {
+        fprintf(stderr, "scarletnx-android: Vulkan: the app's device is not the renderer's: no windows over it\n");
+        return false;
+    }
+    compose.device = device;
+    compose.family = family;
+    VkSamplerCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                               .magFilter = VK_FILTER_LINEAR,
+                               .minFilter = VK_FILTER_LINEAR,
+                               .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                               .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                               .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                               .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+    VkDescriptorSetLayoutBinding binding = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                                            VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
+    VkDescriptorSetLayoutCreateInfo sli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                           .bindingCount = 1,
+                                           .pBindings = &binding};
+    VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * HLE_LAYER_IMAGES};
+    VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                      .maxSets = 2 * HLE_LAYER_IMAGES,
+                                      .poolSizeCount = 1,
+                                      .pPoolSizes = &size};
+    VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                   .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                                   .queueFamilyIndex = family};
+    bool ok = VKF(vkCreateSampler)(device, &sci, NULL, &compose.sampler) == VK_SUCCESS &&
+              VKF(vkCreateDescriptorSetLayout)(device, &sli, NULL, &compose.set_layout) == VK_SUCCESS &&
+              VKF(vkCreateDescriptorPool)(device, &dpi, NULL, &compose.pool) == VK_SUCCESS &&
+              VKF(vkCreateCommandPool)(device, &cpi, NULL, &compose.commands) == VK_SUCCESS;
+    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                     .setLayoutCount = 1,
+                                     .pSetLayouts = &compose.set_layout};
+    ok = ok && VKF(vkCreatePipelineLayout)(device, &li, NULL, &compose.layout) == VK_SUCCESS;
+    for (unsigned i = 0; i < HLE_LAYER_IMAGES && ok; ++i) {
+        VkDescriptorSetLayout layouts[2] = {compose.set_layout, compose.set_layout};
+        VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                          .descriptorPool = compose.pool,
+                                          .descriptorSetCount = 2,
+                                          .pSetLayouts = layouts};
+        ok = VKF(vkAllocateDescriptorSets)(device, &ai, compose.layers[i].sets) == VK_SUCCESS;
+    }
+    VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = VK_FENCE_CREATE_SIGNALED_BIT};
+    for (unsigned i = 0; i < COMPOSE_SLOTS && ok; ++i) {
+        VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                          .commandPool = compose.commands,
+                                          .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                          .commandBufferCount = 1};
+        compose.slots[i].layer = -1;
+        ok = VKF(vkAllocateCommandBuffers)(device, &ai, &compose.slots[i].cb) == VK_SUCCESS &&
+             VKF(vkCreateFence)(device, &fci, NULL, &compose.slots[i].fence) == VK_SUCCESS;
+    }
+    if (ok) {
+        compose.vert = compose_shader(android_compose_vert_spv, android_compose_vert_spv_size);
+        compose.frag = compose_shader(android_compose_frag_spv, android_compose_frag_spv_size);
+        ok = compose.vert && compose.frag;
+    }
+    if (!ok) fprintf(stderr, "scarletnx-android: Vulkan: the blend of the windows can't be made on the app's device\n");
+    return ok;
+}
+
+/* the renderer's layer image imported on the guest's device, when it is not that generation's yet */
+static bool compose_import(VkPhysicalDevice physical, const HleLayer* layer) {
+    unsigned i = layer->index;
+    if (compose.layers[i].generation == layer->generation) return true;
+    /* the older image's blends done first */
+    compose_retire(true);
+    compose_free_layer(i);
+    VkDevice d = compose.device;
+    VkExternalMemoryImageCreateInfo external = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+                                                .handleTypes = HLE_LAYER_MEMORY};
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .pNext = &external,
+                            .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = (VkFormat)layer->format,
+                            .extent = {layer->width, layer->height, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    if (VKF(vkCreateImage)(d, &ii, NULL, &compose.layers[i].image) != VK_SUCCESS) return false;
+    VkMemoryRequirements need;
+    VKF(vkGetImageMemoryRequirements)(d, compose.layers[i].image, &need);
+    VkPhysicalDeviceMemoryProperties props;
+    VKF(vkGetPhysicalDeviceMemoryProperties)(physical, &props);
+    uint32_t type = UINT32_MAX;
+    for (uint32_t t = 0; t < props.memoryTypeCount && type == UINT32_MAX; ++t)
+        if ((need.memoryTypeBits >> t & 1) &&
+            (props.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+            type = t;
+    intptr_t handle = type == UINT32_MAX ? -1 : window_host->layer_handle(i, layer->generation);
+    if (handle == -1) return false;
+    VkMemoryDedicatedAllocateInfo dedicated = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+                                               .image = compose.layers[i].image};
+#if defined(_WIN32)
+    VkImportMemoryWin32HandleInfoKHR import = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR,
+                                               .pNext = &dedicated,
+                                               .handleType = HLE_LAYER_MEMORY,
+                                               .handle = (HANDLE)handle};
+#else
+    VkImportMemoryFdInfoKHR import = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+                                      .pNext = &dedicated,
+                                      .handleType = HLE_LAYER_MEMORY,
+                                      .fd = (int)handle};
+#endif
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                               .pNext = &import,
+                               .allocationSize = layer->size,
+                               .memoryTypeIndex = type};
+    VkResult r = VKF(vkAllocateMemory)(d, &ai, NULL, &compose.layers[i].memory);
+#if defined(_WIN32)
+    CloseHandle((HANDLE)handle); /* an import of a Win32 handle doesn't own it */
+#else
+    if (r != VK_SUCCESS) close((int)handle); /* an import of an fd owns it once it succeeds */
+#endif
+    if (r != VK_SUCCESS || VKF(vkBindImageMemory)(d, compose.layers[i].image, compose.layers[i].memory, 0)) {
+        compose_free_layer(i);
+        return false;
+    }
+    VkFormat formats[2] = {(VkFormat)layer->format, (VkFormat)layer->format == VK_FORMAT_B8G8R8A8_UNORM
+                                                         ? VK_FORMAT_B8G8R8A8_SRGB
+                                                         : VK_FORMAT_R8G8B8A8_SRGB};
+    for (unsigned k = 0; k < 2; ++k) {
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                    .image = compose.layers[i].image,
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                    .format = formats[k],
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        if (VKF(vkCreateImageView)(d, &vi, NULL, &compose.layers[i].views[k]) != VK_SUCCESS) {
+            compose_free_layer(i);
+            return false;
+        }
+        VkDescriptorImageInfo image = {compose.sampler, compose.layers[i].views[k], VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                  .dstSet = compose.layers[i].sets[k],
+                                  .descriptorCount = 1,
+                                  .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                  .pImageInfo = &image};
+        VKF(vkUpdateDescriptorSets)(d, 1, &w, 0, NULL);
+    }
+    compose.layers[i].generation = layer->generation;
+    return true;
+}
+
+/* the render pass and pipeline that blend into a swapchain image of format: it keeps what the image holds
+   (LOAD_OP_LOAD), and leaves it in PRESENT_SRC. NULL when they can't be made */
+static unsigned compose_target(VkFormat format) {
+    for (unsigned i = 0; i < compose.target_count; ++i)
+        if (compose.targets[i].format == format) return i;
+    if (compose.target_count == COMPOSE_TARGETS) return UINT32_MAX;
+    VkDevice d = compose.device;
+    VkAttachmentDescription attachment = {0,
+                                          format,
+                                          VK_SAMPLE_COUNT_1_BIT,
+                                          VK_ATTACHMENT_LOAD_OP_LOAD,
+                                          VK_ATTACHMENT_STORE_OP_STORE,
+                                          VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                          VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                          VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                          VK_IMAGE_LAYOUT_PRESENT_SRC_KHR};
+    VkAttachmentReference color = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    .colorAttachmentCount = 1,
+                                    .pColorAttachments = &color};
+    /* after the present's semaphores (waited at COLOR_ATTACHMENT_OUTPUT), and before the present */
+    VkSubpassDependency deps[2] = {
+        {VK_SUBPASS_EXTERNAL, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+         VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0},
+        {0, VK_SUBPASS_EXTERNAL, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0, 0}};
+    VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+                                  .attachmentCount = 1,
+                                  .pAttachments = &attachment,
+                                  .subpassCount = 1,
+                                  .pSubpasses = &subpass,
+                                  .dependencyCount = 2,
+                                  .pDependencies = deps};
+    VkRenderPass pass = VK_NULL_HANDLE;
+    if (VKF(vkCreateRenderPass)(d, &rpi, NULL, &pass) != VK_SUCCESS) return UINT32_MAX;
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+         .stage = VK_SHADER_STAGE_VERTEX_BIT,
+         .module = compose.vert,
+         .pName = "main"},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+         .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+         .module = compose.frag,
+         .pName = "main"}};
+    VkPipelineVertexInputStateCreateInfo input = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo assembly = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+    VkPipelineViewportStateCreateInfo viewport = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+                                                  .viewportCount = 1,
+                                                  .scissorCount = 1};
+    VkPipelineRasterizationStateCreateInfo raster = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_NONE,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .lineWidth = 1};
+    VkPipelineMultisampleStateCreateInfo multisample = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+    /* premultiplied: the layer's color, and the present's where the layer lets it through */
+    VkPipelineColorBlendAttachmentState blend = {
+        .blendEnable = VK_TRUE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .colorBlendOp = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .alphaBlendOp = VK_BLEND_OP_ADD,
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                          VK_COLOR_COMPONENT_A_BIT};
+    VkPipelineColorBlendStateCreateInfo blending = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                                    .attachmentCount = 1,
+                                                    .pAttachments = &blend};
+    VkDynamicState dynamic[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamics = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                                                 .dynamicStateCount = 2,
+                                                 .pDynamicStates = dynamic};
+    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+                                       .stageCount = 2,
+                                       .pStages = stages,
+                                       .pVertexInputState = &input,
+                                       .pInputAssemblyState = &assembly,
+                                       .pViewportState = &viewport,
+                                       .pRasterizationState = &raster,
+                                       .pMultisampleState = &multisample,
+                                       .pColorBlendState = &blending,
+                                       .pDynamicState = &dynamics,
+                                       .layout = compose.layout,
+                                       .renderPass = pass};
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (VKF(vkCreateGraphicsPipelines)(d, VK_NULL_HANDLE, 1, &pi, NULL, &pipeline) != VK_SUCCESS) {
+        VKF(vkDestroyRenderPass)(d, pass, NULL);
+        return UINT32_MAX;
+    }
+    unsigned t = compose.target_count++;
+    compose.targets[t].format = format;
+    compose.targets[t].pass = pass;
+    compose.targets[t].pipeline = pipeline;
+    return t;
+}
+
+/* The layer blended over the image info presents, when a window of the renderer shows over the guest's surface: a
+   submission on the presenting queue that waits for the present's semaphores and signals *done, which the present
+   waits for instead. False when nothing is blended, and the present goes as the guest made it */
+static bool compose_begin(VkQueue queue, const VkPresentInfoKHR* info, VkSemaphore* done) {
+    if (!window_host || !window_host->layer || info->swapchainCount != 1 || !HLE_LAYER_MEMORY) return false;
+    pthread_mutex_lock(&compose_lock);
+    HleLayer layer;
+    bool ok = window_host->layer(&layer);
+    VkDevice device = VK_NULL_HANDLE;
+    VkPhysicalDevice physical = VK_NULL_HANDLE;
+    uint32_t family = 0;
+    bool importable = false;
+    size_t entry = SIZE_MAX;
+    uint32_t index = info->pImageIndices[0];
+    if (ok) {
+        pthread_mutex_lock(&shot.lock);
+        for (size_t i = 0; i < shot.queue_count; ++i)
+            if (shot.queues[i].queue == queue) device = shot.queues[i].device, family = shot.queues[i].family;
+        for (size_t i = 0; i < shot.device_count; ++i)
+            if (shot.devices[i].device == device)
+                physical = shot.devices[i].physical, importable = shot.devices[i].importable;
+        for (size_t i = 0; i < shot.swapchain_count; ++i)
+            if (shot.swapchains[i].swapchain == info->pSwapchains[0] && index < shot.swapchains[i].image_count)
+                entry = i;
+        pthread_mutex_unlock(&shot.lock);
+        ok = device && physical && importable && entry != SIZE_MAX &&
+             !(compose.failed && compose.device == device) && (!compose.device || compose.device == device);
+    }
+    if (ok && !compose.device && !compose_setup(device, physical, family, &layer)) {
+        compose_free();
+        compose.device = device;
+        compose.failed = true;
+        ok = false;
+    }
+    ok = ok && family == compose.family && compose_import(physical, &layer);
+    unsigned target = ok ? compose_target(shot.swapchains[entry].format) : UINT32_MAX;
+    ok = target != UINT32_MAX;
+    /* the image's view, framebuffer and semaphore */
+    VkExtent2D extent = ok ? shot.swapchains[entry].extent : (VkExtent2D){0, 0};
+    if (ok && !shot.swapchains[entry].framebuffers[index]) {
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                    .image = shot.swapchains[entry].images[index],
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                    .format = shot.swapchains[entry].format,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        ok = VKF(vkCreateImageView)(device, &vi, NULL, &shot.swapchains[entry].views[index]) == VK_SUCCESS;
+        VkFramebufferCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                                      .renderPass = compose.targets[target].pass,
+                                      .attachmentCount = 1,
+                                      .pAttachments = &shot.swapchains[entry].views[index],
+                                      .width = extent.width,
+                                      .height = extent.height,
+                                      .layers = 1};
+        ok = ok && VKF(vkCreateFramebuffer)(device, &fi, NULL, &shot.swapchains[entry].framebuffers[index]) ==
+                       VK_SUCCESS;
+    }
+    if (ok && !shot.swapchains[entry].composed[index]) {
+        VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        ok = VKF(vkCreateSemaphore)(device, &si, NULL, &shot.swapchains[entry].composed[index]) == VK_SUCCESS;
+    }
+    if (!ok) {
+        pthread_mutex_unlock(&compose_lock);
+        return false;
+    }
+    /* a slot: its last blend done (some presents ago) */
+    unsigned s = compose.next;
+    compose.next = (s + 1) % COMPOSE_SLOTS;
+    VKF(vkWaitForFences)(device, 1, &compose.slots[s].fence, VK_TRUE, UINT64_MAX);
+    VKF(vkResetFences)(device, 1, &compose.slots[s].fence);
+    compose.slots[s].layer = -1;
+    VkCommandBuffer cb = compose.slots[s].cb;
+    VKF(vkResetCommandBuffer)(cb, 0);
+    VkCommandBufferBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    VKF(vkBeginCommandBuffer)(cb, &begin);
+    /* the layer image from the renderer's device (its release: hwui/render.c's layer_publish), and back after */
+    VkImageMemoryBarrier acquire = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                    .srcAccessMask = 0,
+                                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                    .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL,
+                                    .dstQueueFamilyIndex = family,
+                                    .image = compose.layers[layer.index].image,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    PFN_vkCmdPipelineBarrier barrier = VKF(vkCmdPipelineBarrier);
+    barrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
+            &acquire);
+    VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                                .renderPass = compose.targets[target].pass,
+                                .framebuffer = shot.swapchains[entry].framebuffers[index],
+                                .renderArea = {{0, 0}, extent}};
+    VKF(vkCmdBeginRenderPass)(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+    VKF(vkCmdBindPipeline)(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, compose.targets[target].pipeline);
+    VkViewport vp = {0, 0, (float)extent.width, (float)extent.height, 0, 1};
+    VkRect2D sc = {{0, 0}, extent};
+    VKF(vkCmdSetViewport)(cb, 0, 1, &vp);
+    VKF(vkCmdSetScissor)(cb, 0, 1, &sc);
+    VkDescriptorSet set = compose.layers[layer.index].sets[srgb_format(shot.swapchains[entry].format)];
+    VKF(vkCmdBindDescriptorSets)(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, compose.layout, 0, 1, &set, 0, NULL);
+    VKF(vkCmdDraw)(cb, 3, 1, 0, 0);
+    VKF(vkCmdEndRenderPass)(cb);
+    VkImageMemoryBarrier release = acquire;
+    release.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    release.dstAccessMask = 0;
+    release.srcQueueFamilyIndex = family;
+    release.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+    barrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1,
+            &release);
+    VKF(vkEndCommandBuffer)(cb);
+    VkPipelineStageFlags stages[16];
+    uint32_t waits = info->waitSemaphoreCount < 16 ? info->waitSemaphoreCount : 16;
+    for (uint32_t i = 0; i < waits; ++i) stages[i] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, waits, info->pWaitSemaphores, stages, 1, &cb, 1,
+                           &shot.swapchains[entry].composed[index]};
+    ok = VKF(vkQueueSubmit)(queue, 1, &submit, compose.slots[s].fence) == VK_SUCCESS;
+    if (ok) {
+        compose.slots[s].layer = (int)layer.index;
+        *done = shot.swapchains[entry].composed[index];
+    } else {
+        /* the fence unsignaled with nothing to signal it: made again, signaled */
+        VKF(vkDestroyFence)(device, compose.slots[s].fence, NULL);
+        VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = VK_FENCE_CREATE_SIGNALED_BIT};
+        if (VKF(vkCreateFence)(device, &fci, NULL, &compose.slots[s].fence) != VK_SUCCESS) compose.failed = true;
+    }
+    pthread_mutex_unlock(&compose_lock);
+    return ok;
+}
+
 static void create_swapchain(CPU* c, void* data) {
     (void)data;
-    PFN_vkCreateSwapchainKHR create = (PFN_vkCreateSwapchainKHR)vk("vkCreateSwapchainKHR");
+    PFN_vkCreateSwapchainKHR create = VKF(vkCreateSwapchainKHR);
     if (!create) {
         X(0) = (uint64_t)(int64_t)VK_ERROR_INITIALIZATION_FAILED;
         return;
     }
     VkSwapchainCreateInfoKHR info = *(const VkSwapchainCreateInfoKHR*)PTR(1);
     if (shot.path[0]) info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    info.imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; /* the layer's blend; every surface supports it */
     VkResult r = create((VkDevice)(uintptr_t)X(0), &info, NULL, PTR(3));
     if (r == VK_SUCCESS) {
+        pthread_mutex_lock(&compose_lock);
         pthread_mutex_lock(&shot.lock);
+        /* the entry of the swapchain it replaces, or a free one */
         size_t i = 0;
         while (i < shot.swapchain_count && shot.swapchains[i].swapchain != info.oldSwapchain) ++i;
+        if (i == shot.swapchain_count || !info.oldSwapchain)
+            for (i = 0; i < shot.swapchain_count && shot.swapchains[i].swapchain; ++i) {}
         if (i == shot.swapchain_count && shot.swapchain_count < 8) ++shot.swapchain_count;
         if (i < shot.swapchain_count) {
+            compose_forget_swapchain(i);
+            if (shot.swapchains[i].device != (VkDevice)(uintptr_t)X(0))
+                memset(shot.swapchains[i].composed, 0, sizeof shot.swapchains[i].composed);
             shot.swapchains[i].swapchain = *(VkSwapchainKHR*)PTR(3);
             shot.swapchains[i].device = (VkDevice)(uintptr_t)X(0);
             shot.swapchains[i].format = info.imageFormat;
@@ -512,8 +1091,48 @@ static void create_swapchain(CPU* c, void* data) {
             shot.swapchains[i].image_count = 0;
         }
         pthread_mutex_unlock(&shot.lock);
+        pthread_mutex_unlock(&compose_lock);
     }
     X(0) = (uint64_t)(int64_t)r;
+}
+/* vkDestroySwapchainKHR(device, swapchain, allocator): its entry free again, its blend's objects gone first */
+static void destroy_swapchain(CPU* c, void* data) {
+    (void)data;
+    PFN_vkDestroySwapchainKHR destroy = VKF(vkDestroySwapchainKHR);
+    VkSwapchainKHR swapchain = (VkSwapchainKHR)(uintptr_t)X(1);
+    pthread_mutex_lock(&compose_lock);
+    pthread_mutex_lock(&shot.lock);
+    for (size_t i = 0; i < shot.swapchain_count && swapchain; ++i)
+        if (shot.swapchains[i].swapchain == swapchain) {
+            compose_forget_swapchain(i);
+            shot.swapchains[i].swapchain = VK_NULL_HANDLE;
+            shot.swapchains[i].image_count = 0;
+        }
+    pthread_mutex_unlock(&shot.lock);
+    pthread_mutex_unlock(&compose_lock);
+    if (destroy) destroy((VkDevice)(uintptr_t)X(0), swapchain, NULL);
+}
+/* vkDestroyDevice(device, allocator): the blend's objects on it gone first, and its entries */
+static void destroy_device(CPU* c, void* data) {
+    (void)data;
+    PFN_vkDestroyDevice destroy = VKF(vkDestroyDevice);
+    VkDevice device = (VkDevice)(uintptr_t)X(0);
+    pthread_mutex_lock(&compose_lock);
+    pthread_mutex_lock(&shot.lock);
+    if (device && compose.device == device) {
+        VKF(vkDeviceWaitIdle)(device);
+        compose_free();
+    }
+    for (size_t i = 0; i < shot.swapchain_count; ++i)
+        if (shot.swapchains[i].device == device) memset(&shot.swapchains[i], 0, sizeof shot.swapchains[i]);
+    for (size_t i = 0; i < shot.device_count; ++i)
+        if (shot.devices[i].device == device) shot.devices[i] = shot.devices[--shot.device_count];
+    for (size_t i = 0; i < shot.queue_count;)
+        if (shot.queues[i].device == device) shot.queues[i] = shot.queues[--shot.queue_count];
+        else ++i;
+    pthread_mutex_unlock(&shot.lock);
+    pthread_mutex_unlock(&compose_lock);
+    if (destroy) destroy(device, NULL);
 }
 static void get_swapchain_images(CPU* c, void* data) {
     (void)data;
@@ -527,14 +1146,16 @@ static void get_swapchain_images(CPU* c, void* data) {
     VkImage* images = PTR(3);
     VkResult r = get((VkDevice)(uintptr_t)X(0), swapchain, count, images);
     if (images && (r == VK_SUCCESS || r == VK_INCOMPLETE)) {
+        pthread_mutex_lock(&compose_lock);
         pthread_mutex_lock(&shot.lock);
         for (size_t i = 0; i < shot.swapchain_count; ++i)
             if (shot.swapchains[i].swapchain == swapchain) {
-                uint32_t n = *count < 16 ? *count : 16;
+                uint32_t n = *count < SWAP_IMAGES ? *count : SWAP_IMAGES;
                 memcpy(shot.swapchains[i].images, images, n * sizeof *images);
                 shot.swapchains[i].image_count = n;
             }
         pthread_mutex_unlock(&shot.lock);
+        pthread_mutex_unlock(&compose_lock);
     }
     X(0) = (uint64_t)(int64_t)r;
 }
@@ -566,9 +1187,10 @@ static void shot_free(ShotJob* j) {
     if (j->memory) ((PFN_vkFreeMemory)vk("vkFreeMemory"))(j->device, j->memory, NULL);
 }
 
-/* the copy of the image info presents, submitted to wait for its semaphores: false when it can't be made, and the
-   present goes as the guest made it */
-static bool shot_begin(VkQueue queue, const VkPresentInfoKHR* info, long number, ShotJob* j) {
+/* the copy of the image info presents, submitted to wait for the semaphores waits (the present's, or the layer's
+   blend's): false when it can't be made, and the present waits for those as it would */
+static bool shot_begin(VkQueue queue, const VkPresentInfoKHR* info, uint32_t wait_count, const VkSemaphore* waits,
+                       long number, ShotJob* j) {
     *j = (ShotJob){0};
     j->queue = queue;
     j->number = number;
@@ -644,10 +1266,9 @@ static bool shot_begin(VkQueue queue, const VkPresentInfoKHR* info, long number,
     barrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &back);
     ((PFN_vkEndCommandBuffer)vk("vkEndCommandBuffer"))(cmd);
     VkPipelineStageFlags stages[16];
-    uint32_t waits = info->waitSemaphoreCount < 16 ? info->waitSemaphoreCount : 16;
-    for (uint32_t i = 0; i < waits; ++i) stages[i] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-    VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, waits, info->pWaitSemaphores, stages, 1, &cmd, 1,
-                           &j->done};
+    if (wait_count > 16) wait_count = 16;
+    for (uint32_t i = 0; i < wait_count; ++i) stages[i] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, wait_count, waits, stages, 1, &cmd, 1, &j->done};
     if (((PFN_vkQueueSubmit)vk("vkQueueSubmit"))(queue, 1, &submit, j->fence)) {
         shot_free(j);
         return false;
@@ -687,21 +1308,33 @@ static uint64_t presents;
 uint64_t hle_vulkan_presents(void) {
     return __atomic_load_n(&presents, __ATOMIC_RELAXED);
 }
+/* At a present: the renderer's windows blended over the image first when one shows (compose_begin), then the shot's
+   copy of what goes to the screen, each after the semaphores of what came before it */
 static void queue_present(CPU* c, void* data) {
     (void)data;
-    PFN_vkQueuePresentKHR present = (PFN_vkQueuePresentKHR)vk("vkQueuePresentKHR");
+    static bool blending; /* the last present's, to say when it changes */
+    PFN_vkQueuePresentKHR present = VKF(vkQueuePresentKHR);
     VkQueue queue = (VkQueue)(uintptr_t)X(0);
     const VkPresentInfoKHR* info = PTR(1);
     long number = (long)__atomic_add_fetch(&presents, 1, __ATOMIC_RELAXED);
+    VkPresentInfoKHR waited = *info;
+    VkSemaphore composed = VK_NULL_HANDLE;
+    bool blend = present && compose_begin(queue, info, &composed);
+    if (blend) {
+        waited.waitSemaphoreCount = 1;
+        waited.pWaitSemaphores = &composed;
+    }
+    if (blend != __atomic_exchange_n(&blending, blend, __ATOMIC_RELAXED))
+        fprintf(stderr, "scarletnx-android: Vulkan present %ld: %s\n", number,
+                blend ? "the app's windows blended over it" : "the app's own, no window over it");
     ShotJob job;
     bool took = shot.path[0] && present && info->swapchainCount && shot_due(number) &&
-                shot_begin(queue, info, number, &job);
-    VkPresentInfoKHR waited = *info;
+                shot_begin(queue, info, waited.waitSemaphoreCount, waited.pWaitSemaphores, number, &job);
     if (took) {
         waited.waitSemaphoreCount = 1;
         waited.pWaitSemaphores = &job.done;
     }
-    VkResult r = present ? present(queue, took ? &waited : info) : VK_ERROR_EXTENSION_NOT_PRESENT;
+    VkResult r = present ? present(queue, &waited) : VK_ERROR_EXTENSION_NOT_PRESENT;
     if (took) shot_finish(&job);
     X(0) = (uint64_t)(int64_t)r;
 }
