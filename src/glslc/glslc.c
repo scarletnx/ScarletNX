@@ -154,17 +154,27 @@ Glslc* glslc_open(GlslcStage stage, const char* source, size_t size, GlslcResult
 }
 
 int glslc_run(Glslc* g, int last, uint32_t* words, size_t capacity) {
-    (void)words;
-    (void)capacity;
     if (setjmp(g->fail)) return -1;
     glslc_lex(g);
     g->result->version = g->version;
     if (last == GLSLC_PASS_LEX) return 0;
     glslc_parse(g);
+    if (last == GLSLC_PASS_PARSE) return 0;
+    glslc_emit(g, words, capacity);
     return 0;
 }
 
 void glslc_close(Glslc* g) { free(g); }
+
+int snx_glslc_compile(GlslcStage stage, const char* source, size_t size, uint32_t* words, size_t capacity,
+                      GlslcResult* result) {
+    memset(result, 0, sizeof *result);
+    Glslc* g = glslc_open(stage, source, size, result);
+    if (!g) return -1;
+    int r = glslc_run(g, GLSLC_PASS_EMIT, words, capacity);
+    glslc_close(g);
+    return r;
+}
 
 /* a line ends at a line feed, or at a carriage return with no line feed after it */
 static int line_end(const Glslc* g, uint32_t i) {
