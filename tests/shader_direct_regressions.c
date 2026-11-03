@@ -3008,6 +3008,36 @@ static void rect_textures(void) {
     }
 }
 
+/* One game's geometry program stores RZ to the viewport mask (AST a[0x3a0], RZ): a zero mask asks for no broadcast,
+   so the program is the one without the store, word for word. A mask from a register (R0) could ask for one, and is
+   refused naming it. A vertex program's zero mask is taken too */
+static void viewport_mask(void) {
+    const u64 mask_rz = 0xeff07f800007ff00ull | 0x3a0ull << 20 | 0xffull, mask_r0 = mask_rz & ~0xffull;
+    const u64 with[] = {0xefd9ff800707ff00ull, 0xeff1ff800707ff00ull, mask_rz, 0xfbe000800ff70404ull,
+                        0xfbe001000ff70404ull};
+    const u64 without[] = {0xefd9ff800707ff00ull, 0xeff1ff800707ff00ull, 0x50b0000000070f00ull /* NOP */,
+                           0xfbe000800ff70404ull, 0xfbe001000ff70404ull};
+    const u32 geometry_sph[3] = {1u << 24, 7u << 24, 3};
+    ShaderInfo info;
+    size_t words = 0, plain_words = 0;
+    u32* code = translate_stage(with, 5, ST_GS, geometry_sph, 3, &info, &words);
+    check_translated(code, &info, "a geometry program storing a zero viewport mask translates");
+    u32* plain = translate_stage(without, 5, ST_GS, geometry_sph, 3, &info, &plain_words);
+    check(code && plain && words == plain_words && !memcmp(code, plain, words * sizeof *code),
+          "a zero viewport mask's store emits nothing");
+    free(code);
+    free(plain);
+    const u64 dynamic[] = {0xefd9ff800707ff00ull, 0xeff1ff800707ff00ull, mask_r0, 0xfbe000800ff70404ull,
+                           0xfbe001000ff70404ull};
+    code = translate_stage(dynamic, 5, ST_GS, geometry_sph, 3, &info, &words);
+    check_refused(code, &info, "AST addr 928 count 1 idxreg 255 reg 0", "a viewport mask from a register is refused");
+    free(code);
+    const u64 vertex[] = {mask_rz};
+    code = translate(vertex, 1, ST_VS, &info, &words, 1);
+    check_translated(code, &info, "a vertex program storing a zero viewport mask translates");
+    free(code);
+}
+
 static void attribute_pointer(void) {
     const u64 base = 0xefa070010607ff01ull; /* a game's: AL2P R1, RZ + 0x60, PT */
     const u64 instructions[] = {mov32i(4, 0x1234),
@@ -3802,6 +3832,7 @@ int main(int argc, char** argv) {
     attribute_pointer();
     legacy_varyings_forms();
     rect_textures();
+    viewport_mask();
     indexed_attribute_load();
     structured_flow();
     fswzadd_forms();
