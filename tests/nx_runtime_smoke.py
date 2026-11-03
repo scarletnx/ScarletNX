@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 
-def make_nro(code):
+def make_nro(code=None):
     image = bytearray(0x200)
 
     def word(offset, value):
@@ -26,7 +26,7 @@ def make_nro(code):
         word(offset, value)
     marker = b'NX runtime smoke\n'
     image[0x100 : 0x100 + len(marker)] = marker
-    for i, value in enumerate(code(len(marker))):
+    for i, value in enumerate((code or smoke_code)(len(marker))):
         word(0x80 + 4 * i, value)
     return image
 
