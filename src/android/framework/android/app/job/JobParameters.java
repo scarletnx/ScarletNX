@@ -15,6 +15,9 @@ public class JobParameters implements android.os.Parcelable {
     public String[] getTriggeredContentAuthorities() { return null; }
     public int getStopReason() { return STOP_REASON_UNDEFINED; }
     public boolean isOverrideDeadlineExpired() { return false; }
+    /** The work that the scheduler enqueued for the job: none, as enqueue() schedules the job alone. */
+    public JobWorkItem dequeueWork() { return null; }
+    public void completeWork(JobWorkItem work) {}
     @Override public int describeContents() { return 0; }
     @Override public void writeToParcel(android.os.Parcel out, int flags) { out.writeValue(this); }
 }

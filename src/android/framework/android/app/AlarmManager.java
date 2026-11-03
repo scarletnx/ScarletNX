@@ -8,6 +8,8 @@ public class AlarmManager {
     public static final long INTERVAL_FIFTEEN_MINUTES = 900000, INTERVAL_HALF_HOUR = 1800000, INTERVAL_HOUR = 3600000,
         INTERVAL_DAY = 86400000;
     private final java.util.HashMap<PendingIntent, Runnable> alarms = new java.util.HashMap<>();
+    private AlarmClockInfo nextClock;
+    private PendingIntent nextClockOperation;
     private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
 
     private long delay(int type, long triggerAtMillis) {
@@ -32,9 +34,20 @@ public class AlarmManager {
         if (r != null) handler.removeCallbacks(r);
     }
     public boolean canScheduleExactAlarms() { return true; }
-    public AlarmClockInfo getNextAlarmClock() { return null; }
+    /** An alarm clock: an RTC_WAKEUP alarm, which getNextAlarmClock() reports until it goes off or is canceled. */
+    public void setAlarmClock(AlarmClockInfo info, PendingIntent operation) {
+        set(RTC_WAKEUP, info.getTriggerTime(), operation);
+        synchronized (alarms) { nextClock = info; nextClockOperation = operation; }
+    }
+    public AlarmClockInfo getNextAlarmClock() { synchronized (alarms) { return alarms.containsKey(nextClockOperation) ? nextClock : null; } }
 
-    public static final class AlarmClockInfo {
-        public long getTriggerTime() { return 0; }
+    public static final class AlarmClockInfo implements android.os.Parcelable {
+        private final long triggerTime;
+        private final PendingIntent showIntent;
+        public AlarmClockInfo(long triggerTime, PendingIntent showIntent) { this.triggerTime = triggerTime; this.showIntent = showIntent; }
+        public long getTriggerTime() { return triggerTime; }
+        public PendingIntent getShowIntent() { return showIntent; }
+        @Override public int describeContents() { return 0; }
+        @Override public void writeToParcel(android.os.Parcel out, int flags) { out.writeValue(this); }
     }
 }

@@ -9,15 +9,18 @@ import java.util.List;
 public final class WindowInsetsAnimation {
     private final int typeMask;
     private final long duration;
+    private final android.view.animation.Interpolator interpolator;
     private float fraction, alpha = 1;
 
     public WindowInsetsAnimation(int typeMask, android.view.animation.Interpolator interpolator, long durationMillis) {
         this.typeMask = typeMask;
+        this.interpolator = interpolator;
         duration = durationMillis;
     }
+    public android.view.animation.Interpolator getInterpolator() { return interpolator; }
     public int getTypeMask() { return typeMask; }
     public float getFraction() { return fraction; }
-    public float getInterpolatedFraction() { return fraction; }
+    public float getInterpolatedFraction() { return interpolator != null ? interpolator.getInterpolation(fraction) : fraction; }
     public void setFraction(float fraction) { this.fraction = fraction; }
     public long getDurationMillis() { return duration; }
     public float getAlpha() { return alpha; }

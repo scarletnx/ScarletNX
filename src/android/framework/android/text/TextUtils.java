@@ -67,9 +67,54 @@ public class TextUtils {
         for (int i = start; i < s.length(); ++i) if (s.charAt(i) == ch) return i;
         return -1;
     }
-    public static int lastIndexOf(CharSequence s, char ch) {
-        for (int i = s.length() - 1; i >= 0; --i) if (s.charAt(i) == ch) return i;
+    public static int indexOf(CharSequence s, char ch, int start, int end) {
+        for (int i = Math.max(start, 0), n = Math.min(end, s.length()); i < n; ++i) if (s.charAt(i) == ch) return i;
         return -1;
+    }
+    public static int lastIndexOf(CharSequence s, char ch) { return lastIndexOf(s, ch, 0, s.length() - 1); }
+    public static int lastIndexOf(CharSequence s, char ch, int last) { return lastIndexOf(s, ch, 0, last); }
+    public static int lastIndexOf(CharSequence s, char ch, int start, int last) {
+        if (last < 0) return -1;
+        for (int i = Math.min(last, s.length() - 1); i >= Math.max(start, 0); --i) if (s.charAt(i) == ch) return i;
+        return -1;
+    }
+    public static int indexOf(CharSequence s, CharSequence needle) { return indexOf(s, needle, 0, s.length()); }
+    public static int indexOf(CharSequence s, CharSequence needle, int start) { return indexOf(s, needle, start, s.length()); }
+    public static int indexOf(CharSequence s, CharSequence needle, int start, int end) {
+        int n = needle.length();
+        if (n == 0) return start;
+        end = Math.min(end, s.length());
+        outer:
+        for (int i = Math.max(start, 0); i + n <= end; ++i) {
+            for (int k = 0; k < n; ++k) if (s.charAt(i + k) != needle.charAt(k)) continue outer;
+            return i;
+        }
+        return -1;
+    }
+    /** The offset after the character at offset: past a surrogate pair, and past a replacement span that covers it. */
+    public static int getOffsetAfter(CharSequence text, int offset) {
+        int len = text.length();
+        if (offset >= len) return len;
+        offset += Character.isHighSurrogate(text.charAt(offset)) && offset + 1 < len && Character.isLowSurrogate(text.charAt(offset + 1)) ? 2 : 1;
+        if (text instanceof Spanned sp) {
+            for (android.text.style.ReplacementSpan r : sp.getSpans(offset, offset, android.text.style.ReplacementSpan.class)) {
+                int a = sp.getSpanStart(r), b = sp.getSpanEnd(r);
+                if (a < offset && b > offset) offset = b;
+            }
+        }
+        return offset;
+    }
+    public static int getOffsetBefore(CharSequence text, int offset) {
+        if (offset <= 0) return 0;
+        if (offset == 1) return 0;
+        offset -= Character.isLowSurrogate(text.charAt(offset - 1)) && Character.isHighSurrogate(text.charAt(offset - 2)) ? 2 : 1;
+        if (text instanceof Spanned sp) {
+            for (android.text.style.ReplacementSpan r : sp.getSpans(offset, offset, android.text.style.ReplacementSpan.class)) {
+                int a = sp.getSpanStart(r), b = sp.getSpanEnd(r);
+                if (a < offset && b > offset) offset = a;
+            }
+        }
+        return offset;
     }
     public static CharSequence stringOrSpannedString(CharSequence source) {
         if (source == null) return null;

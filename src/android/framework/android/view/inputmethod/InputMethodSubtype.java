@@ -5,5 +5,6 @@ package android.view.inputmethod;
 /** An input method's language and mode. */
 public final class InputMethodSubtype {
     public String getLanguageTag() { return ""; }
+    @Deprecated public String getLocale() { return ""; }
     public String getMode() { return "keyboard"; }
 }

@@ -19,6 +19,8 @@ public final class NetworkCapabilities implements android.os.Parcelable {
     }
     public boolean hasTransport(int transportType) { return transportType == TRANSPORT_ETHERNET; }
     public int[] getCapabilities() { return new int[] {NET_CAPABILITY_INTERNET, NET_CAPABILITY_VALIDATED, NET_CAPABILITY_NOT_METERED}; }
+    /** An Ethernet link has no transport details. */
+    public TransportInfo getTransportInfo() { return null; }
     public int getLinkDownstreamBandwidthKbps() { return 1000000; }
     public int getLinkUpstreamBandwidthKbps() { return 1000000; }
     @Override public int describeContents() { return 0; }

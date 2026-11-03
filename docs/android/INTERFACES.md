@@ -35,7 +35,7 @@ wrapper over it through JNI, not a copy of the library in Java.
 | Layer | On Android | Here | Strategy | Status |
 | --- | --- | --- | --- | --- |
 | DEX bytecode | ART's interpreter, JIT and dex2oat | `src/android/dex/` to JVM classes, HotSpot's JIT | Translate | Done |
-| ART internals apps touch (`dalvik.system.*`, hidden `VMRuntime` calls) | libart | Small Java shims | HLE | Planned, as apps reach them |
+| ART internals apps touch (`dalvik.system.*`, hidden `VMRuntime` calls) | libart | Small Java shims. The app's loader is a `PathClassLoader`, whose `findLibrary` gives the app's native library folder. A loader of another DEX path finds no classes of its own, as the runtime translates only the APK | HLE | As apps reach them |
 | libcore (`java.*`, `javax.*`) | ART's OpenJDK fork | OpenJDK's `java.base` | Map | Works; Android-only members go to a remap table in the translator when an app reaches one |
 | Framework (`android.*`) | framework.jar | Our own subset, `src/android/framework/` | Implement where subclassed, else HLE or Off | In progress |
 | Process start (zygote, `ActivityThread`, `LoadedApk`) | zygote and `ActivityThread.main` | `snx.android.Main` reads the manifest and starts the components in `handleBindApplication`'s order | Abstract | Done: the factory, the Application, the providers, the launcher activity |
@@ -56,8 +56,9 @@ wrapper over it through JNI, not a copy of the library in Java.
 | Accessibility, autofill, content capture, input methods | Services in `system_server` | Managers that report the service is off; text input from the keyboard as key events | Off | Planned |
 | Network (`java.net`, the guest's sockets) | The kernel's sockets | ScarletNX's Network setting (`network` in `settings.txt`, 0 by default), from the launcher's `settings.ini`. Offline: Java's name resolver (`snx.android.net.OfflineResolver`) answers localhost only, its proxy selector refuses other hosts, `ConnectivityManager` has no network, and the guest's `connect`, `sendto` and name lookups reach loopback only | Abstract | Done |
 | Connectivity, power, alarms, jobs (`JobScheduler`, `AlarmManager`) | `system_server` | Report a connected network and no power saving; jobs run on the main looper, a full battery on power is the sticky broadcast | HLE | Enough for WorkManager |
-| Telephony, location, sensors, camera, Bluetooth | HALs | Report none present | Off | Not needed yet |
-| Media codecs (`MediaCodec`, `ImageDecoder`) | codec2, libstagefright | FFmpeg and the image decoders the runtime has | HLE | Not needed yet |
+| Telephony, location, sensors, camera, Bluetooth, NFC, biometrics, Wi-Fi, USB, vibrator, microphone | HALs | Report none present: no camera, location turned off, no Bluetooth or NFC adapter (their managers are null, as on a device without the feature), no fingerprint hardware, Wi-Fi off with the wired host network | Off | Done for the members apps reference |
+| Accounts, credentials, ad services, printing, downloads, wallpaper, device policy, app widgets | `system_server` | No accounts or credentials, ad services unavailable (each call reports an error), a download fails at once, no wallpaper, an unmanaged device | Off | Done for the members apps reference |
+| Media codecs (`MediaCodec`, `ImageDecoder`) | codec2, libstagefright | `BitmapFactory` and `ImageDecoder` read PNG, JPEG, GIF and BMP through the JDK. `MediaCodec` creates no codec, `MediaPlayer` plays a clip of length 0, and `AudioTrack` plays silence in real time | HLE | Planned: FFmpeg and the host's audio |
 
 ## The framework, by package
 
@@ -99,8 +100,16 @@ Each package's plan, by how apps use it.
   app reaches it.
 - **`android.webkit`.** Off: no web engine. A `WebView` keeps its settings and clients, and a page that it loads
   starts and finishes blank, so an app's flow goes on. The cookie manager keeps cookies in memory.
+- **`android.widget`.** Implemented: `LinearLayout`, `RelativeLayout`, `FrameLayout`, `ListView` with recycled
+  item views, `ScrollView`, `TextView` and `EditText`. Popups (`PopupWindow`, `Spinner`'s list, drop-downs) keep
+  their state but draw nothing, as the runtime has no window for them. `VideoView` reports an error at once.
+- **`android.animation`, `android.view.animation`.** Implemented: animators set their target's property on each
+  frame, and a view animation puts its matrix and alpha on the view's render node. Transitions show the end
+  state at once.
 - **Off.** `android.view.accessibility`, `android.view.autofill`, `android.view.contentcapture`,
-  `android.view.translation`, `android.telephony`, `android.location`, `android.hardware`.
+  `android.view.translation`, `android.view.textclassifier`, `android.telephony`, `android.telecom`,
+  `android.location`, `android.hardware`, `android.bluetooth`, `android.nfc`, `android.accounts`,
+  `android.credentials`, `android.adservices`, `android.print`.
 
 ## Native code
 

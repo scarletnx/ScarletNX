@@ -26,6 +26,7 @@ public class ClipData implements android.os.Parcelable {
         public String getHtmlText() { return html; }
         public Intent getIntent() { return intent; }
         public Uri getUri() { return uri; }
+        public android.view.textclassifier.TextLinks getTextLinks() { return null; }
         public CharSequence coerceToText(Context context) { return text != null ? text : uri != null ? uri.toString() : intent != null ? intent.toUri(0) : ""; }
         public CharSequence coerceToStyledText(Context context) { return coerceToText(context); }
         public String coerceToHtmlText(Context context) { return html != null ? html : String.valueOf(coerceToText(context)); }

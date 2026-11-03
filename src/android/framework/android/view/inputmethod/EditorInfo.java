@@ -18,8 +18,37 @@ public class EditorInfo implements android.text.InputType, android.os.Parcelable
     public android.os.LocaleList hintLocales;
     public String[] contentMimeTypes;
 
-    public void setInitialSurroundingText(CharSequence sourceText) {}
-    public void setInitialSurroundingSubText(CharSequence subText, int subTextStart) {}
+    private CharSequence surroundingText;
+    private int surroundingOffset;
+
+    public void setInitialSurroundingText(CharSequence sourceText) { setInitialSurroundingSubText(sourceText, 0); }
+    public void setInitialSurroundingSubText(CharSequence subText, int subTextStart) {
+        if (subText == null) throw new NullPointerException("subText");
+        surroundingText = subText;
+        surroundingOffset = subTextStart;
+    }
+    /** The selection in the surrounding text, or null when the text or the selection is not known. */
+    private int[] selection() {
+        if (surroundingText == null || initialSelStart < 0 || initialSelEnd < 0) return null;
+        int a = Math.min(initialSelStart, initialSelEnd) - surroundingOffset, b = Math.max(initialSelStart, initialSelEnd) - surroundingOffset;
+        return a < 0 || b > surroundingText.length() ? null : new int[] {a, b};
+    }
+    private static CharSequence part(CharSequence text, int start, int end, int flags) {
+        CharSequence c = text.subSequence(start, end);
+        return (flags & InputConnection.GET_TEXT_WITH_STYLES) != 0 ? c : c.toString();
+    }
+    public CharSequence getInitialTextBeforeCursor(int length, int flags) {
+        int[] sel = selection();
+        return sel == null ? null : part(surroundingText, Math.max(0, sel[0] - Math.max(0, length)), sel[0], flags);
+    }
+    public CharSequence getInitialSelectedText(int flags) {
+        int[] sel = selection();
+        return sel == null ? null : part(surroundingText, sel[0], sel[1], flags);
+    }
+    public CharSequence getInitialTextAfterCursor(int length, int flags) {
+        int[] sel = selection();
+        return sel == null ? null : part(surroundingText, sel[1], Math.min(surroundingText.length(), sel[1] + Math.max(0, length)), flags);
+    }
     public void setSupportedHandwritingGestures(java.util.List<Class<? extends HandwritingGesture>> gestures) {}
     public void setSupportedHandwritingGesturePreviews(java.util.Set<Class<? extends PreviewableHandwritingGesture>> gestures) {}
     public void setStylusHandwritingEnabled(boolean enabled) {}

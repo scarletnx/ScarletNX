@@ -26,6 +26,13 @@ public class ViewConfiguration {
     public static int getHoverTooltipShowTimeout() { return 500; }
     public static int getHoverTooltipHideTimeout() { return 15000; }
     public static int getEdgeSlop() { return 12; }
+    @Deprecated public static int getScrollBarSize() { return 4; }
+    @Deprecated public static int getFadingEdgeLength() { return 12; }
+    @Deprecated public static int getWindowTouchSlop() { return 16; }
+    @Deprecated public static int getMinimumFlingVelocity() { return 50; }
+    @Deprecated public static int getMaximumFlingVelocity() { return 8000; }
+    @Deprecated public static int getMaximumDrawingCacheSize() { return 480 * 800 * 4; }
+    public static long getDefaultActionModeHideDuration() { return 2000; }
     @Deprecated public static int getTouchSlop() { return 8; }
     public int getScaledTouchSlop() { return (int) (8 * density + 0.5f); }
     public int getScaledHoverSlop() { return (int) (4 * density + 0.5f); }

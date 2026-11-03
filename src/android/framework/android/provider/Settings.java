@@ -92,6 +92,10 @@ public final class Settings {
         public static final String FONT_SCALE = "font_scale", HAPTIC_FEEDBACK_ENABLED = "haptic_feedback_enabled", TIME_12_24 = "time_12_24",
             SCREEN_BRIGHTNESS = "screen_brightness", ACCELEROMETER_ROTATION = "accelerometer_rotation";
         public static final Uri CONTENT_URI = Uri.parse("content://settings/system");
+        public static final String RINGTONE = "ringtone", NOTIFICATION_SOUND = "notification_sound", ALARM_ALERT = "alarm_alert";
+        public static final Uri DEFAULT_RINGTONE_URI = Uri.parse("content://settings/system/ringtone"),
+            DEFAULT_NOTIFICATION_URI = Uri.parse("content://settings/system/notification_sound"),
+            DEFAULT_ALARM_ALERT_URI = Uri.parse("content://settings/system/alarm_alert");
         public static Uri getUriFor(String name) { return SYSTEM.uri(name); }
         public static String getString(ContentResolver resolver, String name) { return string(SYSTEM, name); }
         public static boolean putString(ContentResolver resolver, String name, String value) { SYSTEM.put(name, value); return true; }

@@ -129,6 +129,46 @@ public class KeyEvent extends InputEvent {
     public static int getMaxKeyCode() { return 316; }
     public static int getDeadChar(int accent, int c) { return 0; }
     public static String keyCodeToString(int keyCode) { return "KEYCODE_" + keyCode; }
+    /** A key code from its name ("KEYCODE_A" or "A") or its number; KEYCODE_UNKNOWN for no key. */
+    public static int keyCodeFromString(String symbolicName) {
+        String name = symbolicName.startsWith("KEYCODE_") ? symbolicName.substring(8) : symbolicName;
+        try {
+            int code = Integer.parseInt(name);
+            return code >= 0 && code <= getMaxKeyCode() ? code : KEYCODE_UNKNOWN;
+        } catch (NumberFormatException e) {
+            try {
+                java.lang.reflect.Field f = KeyEvent.class.getField("KEYCODE_" + name);
+                return f.getType() == int.class ? f.getInt(null) : KEYCODE_UNKNOWN;
+            } catch (ReflectiveOperationException e2) {
+                return KEYCODE_UNKNOWN;
+            }
+        }
+    }
+    public static int getModifierMetaStateMask() {
+        return META_SHIFT_MASK | META_ALT_MASK | META_CTRL_MASK | META_META_MASK | META_SYM_ON | META_FUNCTION_ON;
+    }
+    @Deprecated public final boolean getKeyData(KeyCharacterMap.KeyData results) { return getKeyCharacterMap().getKeyData(keyCode, results); }
+    public static final android.os.Parcelable.Creator<KeyEvent> CREATOR = new android.os.Parcelable.Creator<>() {
+        @Override public KeyEvent createFromParcel(android.os.Parcel in) {
+            KeyEvent k = new KeyEvent(in.readLong(), in.readLong(), in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt());
+            k.characters = in.readString();
+            return k;
+        }
+        @Override public KeyEvent[] newArray(int size) { return new KeyEvent[size]; }
+    };
+    @Override public void writeToParcel(android.os.Parcel out, int flags) {
+        out.writeLong(downTime);
+        out.writeLong(eventTime);
+        out.writeInt(action);
+        out.writeInt(keyCode);
+        out.writeInt(repeatCount);
+        out.writeInt(metaState);
+        out.writeInt(deviceId);
+        out.writeInt(scanCode);
+        out.writeInt(this.flags);
+        out.writeInt(source);
+        out.writeString(characters);
+    }
     public final KeyCharacterMap getKeyCharacterMap() { return KeyCharacterMap.load(deviceId); }
     public char getDisplayLabel() { return (char) Character.toUpperCase(charOf(keyCode, 0)); }
     public int getUnicodeChar() { return getUnicodeChar(metaState); }

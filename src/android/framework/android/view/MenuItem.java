@@ -9,6 +9,11 @@ public interface MenuItem {
 
     interface OnMenuItemClickListener { boolean onMenuItemClick(MenuItem item); }
 
+    interface OnActionExpandListener {
+        boolean onMenuItemActionExpand(MenuItem item);
+        boolean onMenuItemActionCollapse(MenuItem item);
+    }
+
     int getItemId();
     int getGroupId();
     int getOrder();
@@ -29,4 +34,46 @@ public interface MenuItem {
     boolean isCheckable();
     MenuItem setChecked(boolean checked);
     boolean isChecked();
+    MenuItem setTitleCondensed(CharSequence title);
+    CharSequence getTitleCondensed();
+    MenuItem setIntent(android.content.Intent intent);
+    android.content.Intent getIntent();
+    MenuItem setShortcut(char numericChar, char alphaChar);
+    MenuItem setNumericShortcut(char numericChar);
+    char getNumericShortcut();
+    MenuItem setAlphabeticShortcut(char alphaChar);
+    char getAlphabeticShortcut();
+    boolean hasSubMenu();
+    SubMenu getSubMenu();
+    ContextMenu.ContextMenuInfo getMenuInfo();
+    MenuItem setActionView(View view);
+    MenuItem setActionView(int resId);
+    View getActionView();
+    MenuItem setActionProvider(ActionProvider actionProvider);
+    ActionProvider getActionProvider();
+    boolean expandActionView();
+    boolean collapseActionView();
+    boolean isActionViewExpanded();
+    MenuItem setOnActionExpandListener(OnActionExpandListener listener);
+    default MenuItem setShortcut(char numericChar, char alphaChar, int numericModifiers, int alphaModifiers) {
+        if ((alphaModifiers & Menu.SUPPORTED_MODIFIERS_MASK) == KeyEvent.META_CTRL_ON
+                && (numericModifiers & Menu.SUPPORTED_MODIFIERS_MASK) == KeyEvent.META_CTRL_ON) return setShortcut(numericChar, alphaChar);
+        return this;
+    }
+    default MenuItem setNumericShortcut(char numericChar, int numericModifiers) {
+        return (numericModifiers & Menu.SUPPORTED_MODIFIERS_MASK) == KeyEvent.META_CTRL_ON ? setNumericShortcut(numericChar) : this;
+    }
+    default int getNumericModifiers() { return KeyEvent.META_CTRL_ON; }
+    default MenuItem setAlphabeticShortcut(char alphaChar, int alphaModifiers) {
+        return (alphaModifiers & Menu.SUPPORTED_MODIFIERS_MASK) == KeyEvent.META_CTRL_ON ? setAlphabeticShortcut(alphaChar) : this;
+    }
+    default int getAlphabeticModifiers() { return KeyEvent.META_CTRL_ON; }
+    default MenuItem setContentDescription(CharSequence contentDescription) { return this; }
+    default CharSequence getContentDescription() { return null; }
+    default MenuItem setTooltipText(CharSequence tooltipText) { return this; }
+    default CharSequence getTooltipText() { return null; }
+    default MenuItem setIconTintList(android.content.res.ColorStateList tint) { return this; }
+    default android.content.res.ColorStateList getIconTintList() { return null; }
+    default MenuItem setIconTintMode(android.graphics.PorterDuff.Mode tintMode) { return this; }
+    default android.graphics.PorterDuff.Mode getIconTintMode() { return null; }
 }

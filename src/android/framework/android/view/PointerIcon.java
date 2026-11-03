@@ -11,6 +11,12 @@ public final class PointerIcon implements android.os.Parcelable {
     private PointerIcon(int type) { this.type = type; }
     public static PointerIcon getSystemIcon(android.content.Context context, int type) { return new PointerIcon(type); }
     public static PointerIcon create(android.graphics.Bitmap bitmap, float hotSpotX, float hotSpotY) { return new PointerIcon(TYPE_ARROW); }
+    /** An icon from a pointer-icon resource. Its bitmap is not read: the host shows its arrow. */
+    public static PointerIcon load(android.content.res.Resources resources, int resourceId) {
+        if (resources == null) throw new IllegalArgumentException("resources must not be null");
+        resources.getXml(resourceId).close();
+        return new PointerIcon(TYPE_ARROW);
+    }
     public int getType() { return type; }
     @Override public boolean equals(Object o) { return o instanceof PointerIcon p && p.type == type; }
     @Override public int hashCode() { return type; }

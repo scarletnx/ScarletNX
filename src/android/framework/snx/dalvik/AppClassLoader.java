@@ -4,15 +4,32 @@ package snx.dalvik;
 
 /**
  * The app's classes: each translated from the APK's DEX code by the runtime (src/android/dex/translate.c) when it
- * is first loaded. The framework and the JDK come first, through the parent.
+ * is first loaded. The framework and the JDK come first, through the parent. It is a PathClassLoader, as an Android
+ * app's loader is: apps cast it to BaseDexClassLoader for findLibrary.
  */
-public final class AppClassLoader extends ClassLoader {
+public final class AppClassLoader extends dalvik.system.PathClassLoader {
     static {
         registerAsParallelCapable();
     }
 
     public AppClassLoader(ClassLoader parent) {
-        super("app", parent);
+        super(parent, "app", null, null);
+    }
+
+    /** lib{name}.so of the app's native library folder, or null */
+    @Override
+    public String findLibrary(String name) {
+        java.io.File file = new java.io.File(snx.android.Apk.libraryDir(), System.mapLibraryName(name));
+        return file.isFile() ? file.getPath() : null;
+    }
+
+    @Override
+    public String getLdLibraryPath() { return snx.android.Apk.libraryDir(); }
+
+    @Override
+    public String toString() {
+        return "dalvik.system.PathClassLoader[DexPathList[[zip file \"" + snx.android.Apk.path()
+            + "\"],nativeLibraryDirectories=[" + snx.android.Apk.libraryDir() + "]]]";
     }
 
     @Override

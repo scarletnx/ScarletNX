@@ -121,5 +121,51 @@ public abstract class PackageManager {
     public android.content.pm.ModuleInfo getModuleInfo(String packageName, int flags) throws NameNotFoundException { throw new NameNotFoundException(packageName); }
     public Drawable getDefaultActivityIcon() { return null; }
     public Drawable getActivityIcon(ComponentName activityName) throws NameNotFoundException { return null; }
+    public static final int CERT_INPUT_RAW_X509 = 0, CERT_INPUT_SHA256 = 1;
+    public ProviderInfo resolveContentProvider(String authority, ComponentInfoFlags flags) { return resolveContentProvider(authority, (int) flags.getValue()); }
+    public Drawable getDrawable(String packageName, int resid, ApplicationInfo appInfo) {
+        if (resid == 0) return null;
+        try {
+            android.content.res.Resources r = appInfo != null ? getResourcesForApplication(appInfo) : getResourcesForApplication(packageName);
+            return r.getDrawable(resid);
+        } catch (NameNotFoundException | RuntimeException e) {
+            return null;
+        }
+    }
+    public boolean hasSigningCertificate(String packageName, byte[] certificate, int type) {
+        try {
+            PackageInfo info = getPackageInfo(packageName, GET_SIGNING_CERTIFICATES);
+            Signature[] signers = info.signingInfo != null ? info.signingInfo.getApkContentsSigners() : info.signatures;
+            if (signers == null) return false;
+            for (Signature s : signers) {
+                byte[] b = s.toByteArray();
+                if (type == CERT_INPUT_SHA256) b = java.security.MessageDigest.getInstance("SHA-256").digest(b);
+                if (java.util.Arrays.equals(b, certificate)) return true;
+            }
+        } catch (NameNotFoundException | java.security.NoSuchAlgorithmException e) {
+            return false;
+        }
+        return false;
+    }
+    /** No permission is auto-revoked here, so each app is exempt. */
+    public boolean isAutoRevokeWhitelisted() { return true; }
+    public boolean isPermissionRevokedByPolicy(String permName, String packageName) { return false; }
+    public List<ResolveInfo> queryIntentActivityOptions(ComponentName caller, Intent[] specifics, Intent intent, int flags) {
+        java.util.ArrayList<ResolveInfo> out = new java.util.ArrayList<>();
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        if (specifics != null) {
+            for (int i = 0; i < specifics.length; ++i) {
+                if (specifics[i] == null) continue;
+                ResolveInfo r = resolveActivity(specifics[i], flags);
+                if (r == null || r.activityInfo == null || !seen.add(r.activityInfo.packageName + "/" + r.activityInfo.name)) continue;
+                r.specificIndex = i;
+                out.add(r);
+            }
+        }
+        for (ResolveInfo r : queryIntentActivities(intent, flags)) {
+            if (r.activityInfo == null || seen.add(r.activityInfo.packageName + "/" + r.activityInfo.name)) out.add(r);
+        }
+        return out;
+    }
     public CharSequence getUserBadgedLabel(CharSequence label, android.os.UserHandle user) { return label; }
 }

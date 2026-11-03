@@ -77,6 +77,17 @@ public abstract class Context {
     public static final String NETWORK_STATS_SERVICE = "netstats";
     public static final String PERFORMANCE_HINT_SERVICE = "performance_hint";
     public static final String GAME_SERVICE = "game";
+    public static final String NSD_SERVICE = "servicediscovery";
+    public static final String BIOMETRIC_SERVICE = "biometric";
+    public static final String FINGERPRINT_SERVICE = "fingerprint";
+    public static final String USB_SERVICE = "usb";
+    public static final String CONSUMER_IR_SERVICE = "consumer_ir";
+    public static final String MEDIA_PROJECTION_SERVICE = "media_projection";
+    public static final String TV_INPUT_SERVICE = "tv_input";
+    public static final String RESTRICTIONS_SERVICE = "restrictions";
+    public static final String LAUNCHER_APPS_SERVICE = "launcherapps";
+    public static final String DROPBOX_SERVICE = "dropbox";
+    public static final String CAPTIONING_SERVICE = "captioning";
 
     public Context() {}
 
@@ -160,6 +171,25 @@ public abstract class Context {
     public Context createAttributionContext(String attributionTag) { return this; }
     public Context createContext(Object contextParams) { return this; }
     public Context createWindowContext(int type, Bundle options) { return this; }
+    public Context createWindowContext(Display display, int type, Bundle options) { return this; }
+    /** Each split's code and resources are in the one context of the app. */
+    public Context createContextForSplit(String splitName) throws PackageManager.NameNotFoundException { return this; }
+    public int checkCallingOrSelfUriPermission(Uri uri, int modeFlags) {
+        return checkUriPermission(uri, android.os.Process.myPid(), android.os.Process.myUid(), modeFlags);
+    }
+    /** The receivers of the process take the broadcast, then resultReceiver takes the result last. */
+    public void sendOrderedBroadcast(Intent intent, String receiverPermission, BroadcastReceiver resultReceiver,
+            Handler scheduler, int initialCode, String initialData, Bundle initialExtras) {
+        sendOrderedBroadcast(intent, receiverPermission);
+        if (resultReceiver == null) return;
+        BroadcastReceiver.PendingResult result = new BroadcastReceiver.PendingResult();
+        result.setResult(initialCode, initialData, initialExtras);
+        Handler h = scheduler != null ? scheduler : new Handler(getMainLooper());
+        h.post(() -> {
+            resultReceiver.setPendingResult(result);
+            resultReceiver.onReceive(this, intent);
+        });
+    }
     public boolean isRestricted() { return false; }
     public boolean isUiContext() { return false; }
     public Display getDisplay() { return Display.DEFAULT; }

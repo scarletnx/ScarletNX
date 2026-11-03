@@ -59,6 +59,7 @@ public class Activity extends ContextThemeWrapper
     private int resultCode = RESULT_CANCELED, requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
     private Intent resultData;
     private Activity parent;
+    private android.media.session.MediaController mediaController;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     public Activity() { super(null, 0); }
@@ -142,7 +143,15 @@ public class Activity extends ContextThemeWrapper
     public void setVolumeControlStream(int streamType) {}
     public void setDefaultKeyMode(int mode) {}
     public void setFinishOnTouchOutside(boolean finish) {}
-    public void setLocusContext(Object locusId, Bundle bundle) {}
+    public void setLocusContext(android.content.LocusId locusId, Bundle bundle) {}
+    public void setVrModeEnabled(boolean enabled, ComponentName requestedComponent) throws PackageManager.NameNotFoundException {}
+    public final void setMediaController(android.media.session.MediaController controller) { mediaController = controller; }
+    public final android.media.session.MediaController getMediaController() { return mediaController; }
+    public android.view.DragAndDropPermissions requestDragAndDropPermissions(android.view.DragEvent event) { return null; }
+    public String getLocalClassName() {
+        String pkg = getPackageName(), cls = component.getClassName();
+        return cls.startsWith(pkg) && cls.length() > pkg.length() && cls.charAt(pkg.length()) == '.' ? cls.substring(pkg.length() + 1) : cls;
+    }
     public void setRecentsScreenshotEnabled(boolean enabled) {}
     public void setTranslucent(boolean translucent) {}
     public void reportFullyDrawn() {}
@@ -416,6 +425,15 @@ public class Activity extends ContextThemeWrapper
         finishAfterTransition();
     }
     public boolean onNavigateUp() { finish(); return true; }
+    /** The manifest's parent activity, or null when the activity names none. */
+    public Intent getParentActivityIntent() {
+        String name = info.parentActivityName;
+        return name != null ? new Intent().setClassName(this, name) : null;
+    }
+    /** One task holds every activity of the app, so the parent is always in it. */
+    public boolean shouldUpRecreateTask(Intent targetIntent) { return false; }
+    /** Finishes this activity alone, as when the parent is not found: the activity below it comes back. */
+    public boolean navigateUpTo(Intent upIntent) { finish(); return false; }
     @Override public boolean onSearchRequested() { return false; }
     @Override public boolean onSearchRequested(SearchEvent searchEvent) { return false; }
     public void onPointerCaptureChanged(boolean hasCapture) {}
