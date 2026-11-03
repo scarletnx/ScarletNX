@@ -1028,18 +1028,24 @@ static u32 image_variant(const DsState* ds, int stage, const VkSh* s, u32* signe
    images: its variant's unsigned and signed masks, which the key holds for its first 32 textures. Depth compares,
    indexed tables and raw loads take their number type elsewhere. *rect: the 2D textures whose headers take
    unnormalized coordinates */
-static u32 vs_tex_variant(const DsState* ds, const VkSh* s, u32* signed_textures, u64* rect) {
+static u32 vs_tex_variant(const DsState* ds, const VkSh* s, u32* signed_textures, u64* rect, u8* query, int* queried) {
     u64 tic_base = ds->bind.tex_pool;
     int nt = s->si.ntex > SH_MAXTEX ? SH_MAXTEX : s->si.ntex;
     u32 bits = 0;
     *signed_textures = 0;
     *rect = 0;
+    *queried = 0;
+    memset(query, 0, SH_MAXTEX);
     for (int i = 0; i < nt; i++) {
         const ShTex* st = &s->si.tex[i];
         if (st->flags & (SNX_TEX_INDEXED | 1)) continue;
         u32 handle = tex_handle(ds, 0, ds->bind.tex_bank, st), tic[8];
         vk_gmem_words(tic_base + (handle & 0xFFFFF) * 32ull, tic, 8);
         if (vk_tic_unnormalized(tic) == 1) *rect |= 1ull << i;
+        if (s->si.tex_query_mask >> i & 1) { /* only a TXQ names it: the header's dimension (fs_key) */
+            query[i] = vk_tic_query_hint(tic);
+            *queried |= query[i] != 0;
+        }
         if (st->shadow) continue;
         int num = vk_tex_num(tic, NULL);
         if (!num) continue;
@@ -1062,6 +1068,8 @@ static u32 vs_tex_variant(const DsState* ds, const VkSh* s, u32* signed_textures
 typedef struct {
     u64 tm, ts, dm, rect;
     u32 rm, rs, df, unfed;
+    u8 query[SH_MAXTEX]; /* the dimensions of the textures only a TXQ names (ShaderInfo.tex_query_hint) */
+    int queried;         /* any of them */
 } FsKey;
 /* the integer color targets (rm, signed rs) tg names, which key the fragment shader's outputs */
 static void rt_int_targets(const DsTargets* tg, u32* rm, u32* rs) {
@@ -1086,6 +1094,12 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
         const ShTex* st = &s0->si.tex[i];
         tex_resolve(ds, tex_handle(ds, 4, ds->bind.tex_bank, st), &res[i]);
         if (!(st->flags & (SNX_TEX_INDEXED | 1)) && vk_tic_unnormalized(res[i].tic) == 1) fk->rect |= 1ull << i;
+        /* a texture only a TXQ names: a 2D query until the header says what it is (a 3D query answers its depth,
+           which a 2D slot can't bind) */
+        if (!(st->flags & (SNX_TEX_INDEXED | 1)) && (s0->si.tex_query_mask >> i & 1)) {
+            fk->query[i] = vk_tic_query_hint(res[i].tic);
+            fk->queried |= fk->query[i] != 0;
+        }
         if (st->shadow) {
             if (st->flags & SNX_TEX_INDEXED) continue; /* the selected entry's function comes from the table */
             /* a depth compare of a color texture compares its first component, which Vulkan's compare samplers
@@ -1112,9 +1126,9 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
 }
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
 static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) {
-    if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed && !fk->rect) return s0;
+    if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed && !fk->rect && !fk->queried) return s0;
     return vk_shader_get(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, fk->rect,
-                         NULL);
+                         NULL, fk->queried ? fk->query : NULL);
 }
 
 VkImageViewType vk_tex_view_type(const ShTex* st) {
@@ -2244,29 +2258,34 @@ static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
     o->xfb_on = xfb_on;
     o->attr_int = attr_int;
     o->attr_sint = attr_sint;
-    o->vs =
-        vk_shader_get(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint, 0, 0,
-                      tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, 0, xfb_on && !tes_on && !gs_on ? xfb : NULL);
+    o->vs = vk_shader_get(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint, 0, 0,
+                          tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, 0,
+                          xfb_on && !tes_on && !gs_on ? xfb : NULL, NULL);
     /* a vertex program's images and integer textures pick its variant as a fragment program's do (fs_key) */
     u32 vs_signed_images = 0, vs_signed_tex = 0;
     u32 vs_images = o->vs && !o->vs->failed && o->vs->si.nimg ? image_variant(ds, 0, o->vs, &vs_signed_images) : 0;
     u64 vs_rect = 0;
-    u32 vs_tex = o->vs && !o->vs->failed && o->vs->si.ntex ? vs_tex_variant(ds, o->vs, &vs_signed_tex, &vs_rect) : 0;
-    if (vs_images || vs_signed_images || vs_tex || vs_rect)
+    u8 vs_query[SH_MAXTEX] = {0};
+    int vs_queried = 0;
+    u32 vs_tex = o->vs && !o->vs->failed && o->vs->si.ntex
+                     ? vs_tex_variant(ds, o->vs, &vs_signed_tex, &vs_rect, vs_query, &vs_queried)
+                     : 0;
+    if (vs_images || vs_signed_images || vs_tex || vs_rect || vs_queried)
         o->vs = vk_shader_get(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint, vs_images << 8,
                               vs_signed_images << 8, tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, vs_tex, vs_signed_tex,
-                              vs_rect, xfb_on && !tes_on && !gs_on ? xfb : NULL);
-    o->tcs = tcs_on ? vk_shader_get(ds, p->code[2], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0, 0, NULL) : NULL;
+                              vs_rect, xfb_on && !tes_on && !gs_on ? xfb : NULL, vs_queried ? vs_query : NULL);
+    o->tcs =
+        tcs_on ? vk_shader_get(ds, p->code[2], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0, 0, NULL, NULL) : NULL;
     o->tes = tes_on ? vk_shader_get(ds, p->code[3], 0, ST_TES, 0, 0, p->tess_params & 0x333, 0,
-                                    gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, 0, xfb_on && !gs_on ? xfb : NULL)
+                                    gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, 0, xfb_on && !gs_on ? xfb : NULL, NULL)
                     : NULL;
     o->gs = gs_on ? vk_shader_get(ds, p->code[4], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, p->tess_params),
-                                  0, clip, 0, 0, 0, 0, xfb_on ? xfb : NULL)
+                                  0, clip, 0, 0, 0, 0, xfb_on ? xfb : NULL, NULL)
                   : NULL;
     if ((tcs_on && (!o->tcs || o->tcs->failed)) || (tes_on && (!o->tes || o->tes->failed)) ||
         (gs_on && (!o->gs || o->gs->failed)) || !o->vs || o->vs->failed)
         return 0;
-    o->fs0 = (p->on >> 5 & 1) ? vk_shader_get(ds, p->code[5], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL) : NULL;
+    o->fs0 = (p->on >> 5 & 1) ? vk_shader_get(ds, p->code[5], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL) : NULL;
     rt_int_targets(&ds->tgt, &o->rt_int, &o->rt_sint);
     return 1;
 }
@@ -2855,6 +2874,8 @@ retry:
             fs = made;
         }
         if (fs && fs->failed) {
+            LOG_LIMIT(4, "vulkan: the fragment program at %llx isn't translated (%s): draw skipped\n",
+                      (unsigned long long)ds->prog.code[5], fs->si.first_unsupported);
             g_vk_skipped++;
             return;
         }

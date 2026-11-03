@@ -3486,6 +3486,68 @@ static void query_only_volume(void) {
     free(guest);
 }
 
+/* the query hints of a graphics program's key (words 14 to 17 of vk_shader_get's mask) hold every slot's hint and
+   come back as they went */
+static void query_hint_words(void) {
+    u8 hint[SH_MAXTEX], back[SH_MAXTEX], want[SH_MAXTEX];
+    u32 words[SH_QUERY_WORDS];
+    int zero = 1;
+    for (int i = 0; i < SH_MAXTEX; i++) {
+        hint[i] = (u8)(i % 9);                /* 0 to 8, the hints there are */
+        want[i] = hint[i] == 1 ? 0 : hint[i]; /* a 1D header's query is the 2D slot's */
+    }
+    shader_query_hint_pack(hint, words);
+    shader_query_hint_unpack(words, back);
+    check(!memcmp(want, back, sizeof want), "a graphics key's query hint words carry every slot's hint back");
+    memset(hint, 0, sizeof hint);
+    shader_query_hint_pack(hint, words);
+    for (int i = 0; i < SH_QUERY_WORDS; i++) zero &= words[i] == 0;
+    check(zero, "no hint packs as zero words");
+}
+
+/* the same for a vertex and a fragment program: the slot a TXQ alone names is marked, 2D without a hint and the
+   header's dimension with one (the graphics key carries it, pipeline.c sh_key_info) */
+static void query_only_volume_stages(void) {
+    static const u64 insns[] = {
+        0x0100000000071005ull /* MOV32I R5, 0 */, 0xdf48010200470500ull /* TXQ.DIMENSION R0, R5, 0x10, depth only */,
+        0x1c0ffffffff00009ull /* IADD32I R9, R0, -1 */, 0x5cb8000000970a09ull /* I2F.F32.U32 R9, R9 */};
+    const int stages[] = {ST_VS, ST_FS};
+    for (int k = 0; k < 2; k++) {
+        size_t slots, words = 0;
+        u64* guest = guest_program(insns, 4, NULL, &slots);
+        ShaderInfo info = {0};
+        if (!guest) {
+            check(0, "query_only_volume_stages: out of memory");
+            return;
+        }
+        u32* code = spirv_of(guest, slots * sizeof *guest, stages[k], &info, &words, 1, 1, 1, 1);
+        check_translated(code, &info, "a TXQ alone translates in a vertex or fragment program");
+        if (code) {
+            fprintf(stderr, "stage %d no hint: ntex %d type %d query_mask %llx 2D %d 3D %d\n", stages[k], info.ntex,
+                    info.ntex ? info.tex[0].type : -1, (unsigned long long)info.tex_query_mask,
+                    count_image_dim(code, words, 1), count_image_dim(code, words, 2));
+            check(info.tex_query_mask == 1 && info.ntex == 1 && info.tex[0].type == 1 &&
+                      count_image_dim(code, words, 1) == 1 && count_image_dim(code, words, 2) == 0,
+                  "without a hint a vertex or fragment program's lone query is 2D");
+        }
+        free(code);
+        memset(&info, 0, sizeof info);
+        info.tex_query_hint[0] = 1 + 2;
+        code = spirv_of(guest, slots * sizeof *guest, stages[k], &info, &words, 1, 1, 1, 1);
+        check_translated(code, &info, "a TXQ alone keyed as a volume translates in a vertex or fragment program");
+        if (code) {
+            fprintf(stderr, "stage %d hint 3D: ntex %d type %d query_mask %llx 2D %d 3D %d\n", stages[k], info.ntex,
+                    info.ntex ? info.tex[0].type : -1, (unsigned long long)info.tex_query_mask,
+                    count_image_dim(code, words, 1), count_image_dim(code, words, 2));
+            check(info.tex_query_mask == 1 && info.ntex == 1 && info.tex[0].type == 2 &&
+                      count_image_dim(code, words, 1) == 0 && count_image_dim(code, words, 2) == 1,
+                  "keyed on a 3D header a vertex or fragment program's lone query is 3D");
+        }
+        free(code);
+        free(guest);
+    }
+}
+
 /* fragment TLD and TXQ of a scaled target take the scale its texture's bit selects (issue #730) */
 static void scaled_texel_fetch(void) {
     static const u64 tld_2d[] = {0xdc00000000000000ull | 7ull << 51 | 0xfull << 31 | 2ull << 28 | 0x10ull << 36 |
@@ -3911,6 +3973,8 @@ int main(int argc, char** argv) {
     tlds_fp16();
     scaled_texel_fetch();
     query_only_volume();
+    query_hint_words();
+    query_only_volume_stages();
     txd_grad();
     fragment_storage_images();
     buffer_formatted_loads();

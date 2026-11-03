@@ -121,13 +121,35 @@ typedef struct {
        word 5 bit 31 clear, NVN's rectangle textures, 2D): their sample coordinates are texels, divided here by the
        size, as Ryujinx's TexturePass and Eden's texture_pass do */
     u64 tex_rect_mask;
-    /* key (compute programs): the dimension of the texture slots only a TXQ names (tex_query_mask, set by the
+    /* key (fragment, vertex and compute programs): the dimension of the texture slots only a TXQ names (tex_query_mask, set by the
        translation: no TEX or TLD of the program reads the same handle, so TXQ, which doesn't say, is translated as a
        2D query; a bound query's texture may be read bindlessly in the same program). Each the header's: 1 + its
        ShTex type (0 1D, 1 2D, 2 3D, 3 cube), + 4 for an array; 0 when nothing is known yet */
     u8 tex_query_hint[SH_MAXTEX];
     u64 tex_query_mask;
 } ShaderInfo;
+/* ShaderInfo.tex_query_hint in a graphics key's words (vk_shader_get's mask words 14 to 19: 3 bits a slot, the 64
+   slots in 6 words), and back. A 1D header's hint (1) goes as none: its query is the 2D slot's, a texel high, as the
+   translation binds 1D textures */
+#define SH_QUERY_WORDS 6
+static inline void shader_query_hint_pack(const u8 hint[SH_MAXTEX], u32 words[SH_QUERY_WORDS]) {
+    for (int i = 0; i < SH_QUERY_WORDS; i++) words[i] = 0;
+    for (int k = 0; k < SH_MAXTEX; k++) {                       /* a slot's 3 bits may straddle two words */
+        u64 v = hint[k] > 1 && hint[k] <= 8 ? hint[k] - 1u : 0; /* 1 to 7: hints 2 to 8 */
+        int at = 3 * k;
+        v <<= at % 32;
+        words[at / 32] |= (u32)v;
+        if (at / 32 + 1 < SH_QUERY_WORDS) words[at / 32 + 1] |= (u32)(v >> 32);
+    }
+}
+static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 hint[SH_MAXTEX]) {
+    for (int k = 0; k < SH_MAXTEX; k++) {
+        int at = 3 * k;
+        u64 w = words[at / 32] | (at / 32 + 1 < SH_QUERY_WORDS ? (u64)words[at / 32 + 1] << 32 : 0);
+        u32 v = (u32)(w >> (at % 32)) & 7;
+        hint[k] = v ? (u8)(v + 1) : 0;
+    }
+}
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs has room for */
 /* Each stage has a descriptor set (shader_vk_set), its bindings grouped by kind. */
 #define SNX_VKB_CB       0                         /* 18 constant buffers */
