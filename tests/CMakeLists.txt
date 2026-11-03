@@ -888,6 +888,7 @@ add_executable(snx-test-nvn-commands nvn_commands.c "${PROJECT_SOURCE_DIR}/src/n
 snx_test_target(snx-test-nvn-commands 11)
 target_include_directories(snx-test-nvn-commands PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-nvn-commands SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
+snx_hookgen(snx-test-nvn-commands SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn2.hook" PREFIX nvn2 NAME gpu/nvn/nvn2.hook A32)
 add_test(NAME nvn_commands COMMAND snx-test-nvn-commands)
 # nvn's constant banks and sprite origin against the game's driver: nvn_draw_init, a program's bind
 # and a draw's dynamic state, through the public records
@@ -897,6 +898,7 @@ snx_test_target(snx-test-nvn-draw-banks 11)
 target_include_directories(snx-test-nvn-draw-banks PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-draw-banks PRIVATE m)
 snx_hookgen(snx-test-nvn-draw-banks SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
+snx_hookgen(snx-test-nvn-draw-banks SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn2.hook" PREFIX nvn2 NAME gpu/nvn/nvn2.hook A32)
 add_test(NAME nvn_draw_banks COMMAND snx-test-nvn-draw-banks)
 # nvn's copies between textures of two formats: the 2D engine's converting blit, as the game's driver copies
 add_executable(snx-test-nvn-copy-formats nvn_copy_formats.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_copy.c"
@@ -905,6 +907,7 @@ snx_test_target(snx-test-nvn-copy-formats 11)
 target_include_directories(snx-test-nvn-copy-formats PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-copy-formats PRIVATE m)
 snx_hookgen(snx-test-nvn-copy-formats SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
+snx_hookgen(snx-test-nvn-copy-formats SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn2.hook" PREFIX nvn2 NAME gpu/nvn/nvn2.hook A32)
 add_test(NAME nvn_copy_formats COMMAND snx-test-nvn-copy-formats)
 # a window's present transform against the game's driver: lower left is queued to vi flipped
 add_executable(snx-test-nvn-present-flip nvn_present_flip.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_queue.c"
