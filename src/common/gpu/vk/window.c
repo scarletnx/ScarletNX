@@ -18,7 +18,12 @@ bool snx_vk_window_open(const char* app, const char* title, int width, int heigh
     const char* const* extensions = out->window ? SDL_Vulkan_GetInstanceExtensions(&extension_count) : NULL;
     SnxVkInstanceInfo info = {.app_name = app,
                               .extensions = extensions,
-                              .extension_count = extensions ? extension_count : 0};
+                              .extension_count = extensions ? extension_count : 0,
+                              /* No window (a headless run, SDL's dummy video driver) means no extensions from SDL,
+                                 which is also where MoltenVK's portability enumeration normally comes from: ask for
+                                 it anyway, or the loader answers VK_ERROR_INCOMPATIBLE_DRIVER on macOS. It is
+                                 enabled only when the loader has it. */
+                              .portability = true};
     if (snx_vk_instance_create(&info, &out->instance) != VK_SUCCESS) {
         if (out->window) SDL_DestroyWindow(out->window);
         out->window = NULL;
