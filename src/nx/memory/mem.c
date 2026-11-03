@@ -837,23 +837,35 @@ static u64 largest_hole(void) { return UINT64_MAX; }
    them up to AS_MAX */
 static const u64 tiers[] = {512 * GIB, 256 * GIB, 128 * GIB, 64 * GIB, 48 * GIB, 32 * GIB, 24 * GIB,
                             16 * GIB,  12 * GIB,  8 * GIB,   7 * GIB,  6 * GIB,  5 * GIB};
+/* Windows makes the written-page tracking with the reservation (plat_vm_reserve), and a reservation without it leaves
+   the caches comparing guest memory's contents: so every tier with it comes before any without. Elsewhere the tracking
+   comes after the reservation (plat_vm_track), plat_vm_reserve_unwatched answers ENOSYS, and the first pass is all */
 static u8* reserve_tiers(void) {
     u64 hole = largest_hole();
-    size_t i;
-    for (i = 0; i < sizeof tiers / sizeof *tiers; ++i) {
-        u8* p = tiers[i] > hole ? NULL : plat_vm_reserve(tiers[i]);
-        if (!p) {
-            if (tiers[i] > hole)
-                LOG("memory: %llu GiB of address space skipped: no free run that large\n",
-                    (unsigned long long)(tiers[i] >> 30));
-            else
-                LOG("memory: %llu GiB of address space refused: %s\n", (unsigned long long)(tiers[i] >> 30),
-                    strerror(errno));
-            continue;
+    for (int watched = 1; watched >= 0; watched--) {
+        for (size_t i = 0; i < sizeof tiers / sizeof *tiers; ++i) {
+            u8* p;
+            if (tiers[i] > hole) {
+                if (watched)
+                    LOG("memory: %llu GiB of address space skipped: no free run that large\n",
+                        (unsigned long long)(tiers[i] >> 30));
+                continue;
+            }
+            p = watched ? plat_vm_reserve(tiers[i]) : plat_vm_reserve_unwatched(tiers[i]);
+            if (!p) {
+                if (!watched && errno == ENOSYS) return NULL;
+                LOG("memory: %llu GiB of address space%s refused: %s\n", (unsigned long long)(tiers[i] >> 30),
+                    watched ? "" : " without the write watch", strerror(errno));
+                continue;
+            }
+            g_as_size = tiers[i];
+            layout_for(tiers[i]);
+            if (!watched)
+                WARN("memory: %llu GiB of address space reserved without the write watch, as no tier from %llu GiB "
+                     "down was given with it: the caches compare guest memory's contents to find what changed\n",
+                     (unsigned long long)(tiers[i] >> 30), (unsigned long long)(tiers[0] >> 30));
+            return p;
         }
-        g_as_size = tiers[i];
-        layout_for(tiers[i]);
-        return p;
     }
     return NULL;
 }
