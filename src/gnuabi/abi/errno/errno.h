@@ -42,6 +42,7 @@ enum {
     GNU_ENOTEMPTY = 39,
     GNU_ELOOP = 40,
     GNU_EOVERFLOW = 75,
+    GNU_EILSEQ = 84,
     GNU_ENOTSUP = 95,
     GNU_ETIMEDOUT = 110,
     /* the kernel's own results of a call that a signal stopped (include/linux/errno.h), which never reach the

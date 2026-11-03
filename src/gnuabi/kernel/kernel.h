@@ -195,4 +195,6 @@ int gnu_clock_gettime(int clock_id, int64_t* seconds, int64_t* nanoseconds);
 void gnu_sleep(int64_t seconds, int64_t nanoseconds);
 /* a host errno as the guest's, never the host's numbering (Windows' differs) (errno.c) */
 int gnu_host_errno(int error);
+/* a guest errno (Linux's number) as the host's, EIO for one the host has not */
+int gnu_errno_to_host(int guest);
 #endif

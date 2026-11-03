@@ -8,6 +8,7 @@
 #include "common/utilities/endian.h"
 #include "gnuabi/network/network.h"
 #include "gnuabi/filesystem/internal.h"
+#include "gnuabi/abi/linux_net.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -21,125 +22,32 @@ enum {
     LINUX_EFD_SEMAPHORE = 1,
     LINUX_MSG_DONTWAIT = 0x40,
     LINUX_MSG_WAITFORONE = 0x10000,
-    LINUX_SOCKADDR_UN_UNNAMED = 2,
     MSGHDR_SIZE = 56,
     MMSGHDR_SIZE = 64,
     BOUNCE_MAX = 64 * 1024 * 1024,
 };
 
-/* ============================================================ translations (abi/) */
-static int domain_in(uint32_t d) {
-#define LINUX_DOMAIN(guest, name)                                                                                      \
-    if (d == guest) return SNX_AF_##name;
-#include "gnuabi/abi/linux_domain.inc"
-    return -1;
-}
-static uint16_t domain_out(int d) {
-#define LINUX_DOMAIN(guest, name)                                                                                      \
-    if (d == SNX_AF_##name) return guest;
-#include "gnuabi/abi/linux_domain.inc"
-    return 0;
-}
-static int msg_in(uint64_t f) {
-    int r = 0;
-#define LINUX_MSG(guest, name)                                                                                         \
-    if (f & guest) r |= SNX_MSG_##name;
-#include "gnuabi/abi/linux_msgflag.inc"
-    return r;
-}
-static uint32_t msg_out(int f) {
-    uint32_t r = 0;
-#define LINUX_MSG(guest, name)                                                                                         \
-    if (f & SNX_MSG_##name) r |= guest;
-#include "gnuabi/abi/linux_msgflag.inc"
-    return r;
-}
-uint16_t gnu_net_poll_in(uint32_t e) {
-    uint16_t r = 0;
-#define LINUX_POLL(guest, name)                                                                                        \
-    if (e & guest) r |= SNX_POLL##name;
-#include "gnuabi/abi/linux_poll.inc"
-    return r;
-}
-uint32_t gnu_net_poll_out(uint16_t e) {
-    uint32_t r = 0;
-#define LINUX_POLL(guest, name)                                                                                        \
-    if (e & SNX_POLL##name) r |= guest;
-#include "gnuabi/abi/linux_poll.inc"
-    return r;
-}
-enum { LAYOUT_SAME, LAYOUT_MREQN, LAYOUT_IFADDR };
-static int sockopt_in(uint64_t level, uint64_t name, int* l, int* n, int* layout) {
-    int sl = -1;
-#define LINUX_LEVEL(guest, nm)                                                                                         \
-    if (level == guest) sl = SNX_SOL_##nm;
-#include "gnuabi/abi/linux_sockopt.inc"
-    if (sl < 0) return -SNX_ENOPROTOOPT;
-    *l = sl;
-#define LINUX_SOCKOPT(lv, guest, nm, lay)                                                                              \
-    if (sl == SNX_SOL_##lv && name == guest) {                                                                         \
-        *n = SNX_##nm;                                                                                                 \
-        *layout = LAYOUT_##lay;                                                                                        \
-        return 0;                                                                                                      \
-    }
-#include "gnuabi/abi/linux_sockopt.inc"
-    return -SNX_ENOPROTOOPT;
-}
-
+/* ============================================================ translations (abi/linux_net.h) */
+uint16_t gnu_net_poll_in(uint32_t e) { return gnu_linux_poll_in(e); }
+uint32_t gnu_net_poll_out(uint16_t e) { return gnu_linux_poll_out(e); }
 /* ============================================================ addresses */
 /* 0 and the address, 1 for an AF_UNIX one, or -errno */
 static int addr_in(GnuMemory* m, uint64_t a, uint64_t len, SnxSockAddr* out) {
-    unsigned char b[28] = {0};
-    memset(out, 0, sizeof *out);
+    unsigned char b[GNU_LINUX_SOCKADDR_MAX] = {0};
+    *out = (SnxSockAddr){0};
     if (!a || len < 2 || len > 128) return -GNU_EINVAL;
     int e = gnu_memory_read(m, a, b, len < sizeof b ? (size_t)len : sizeof b);
-    if (e) return e;
-    int fam = domain_in((uint32_t)(b[0] | b[1] << 8));
-    switch (fam) {
-        case SNX_AF_UNSPEC: return 0;
-        case SNX_AF_UNIX: return 1;
-        case SNX_AF_INET:
-            if (len < 16) return -GNU_EINVAL;
-            out->family = SNX_AF_INET;
-            memcpy(&out->port, b + 2, 2);
-            memcpy(out->addr, b + 4, 4);
-            return 0;
-        case SNX_AF_INET6:
-            if (len < 24) return -GNU_EINVAL;
-            out->family = SNX_AF_INET6;
-            memcpy(&out->port, b + 2, 2);
-            memcpy(&out->flowinfo, b + 4, 4);
-            memcpy(out->addr, b + 8, 16);
-            if (len >= 28) out->scope_id = snx_ld_le32(b + 24);
-            return 0;
-    }
-    return -SNX_EAFNOSUPPORT;
+    return e ? e : gnu_linux_addr_decode(b, len, out);
 }
 /* the address into (addr, *lenp): what fits of it, and its whole size in *lenp */
 static int addr_out(GnuMemory* m, const SnxSockAddr* sa, uint64_t addr, uint64_t lenp) {
     if (!addr || !lenp) return 0;
-    unsigned char b[28] = {0}, l[4];
+    unsigned char b[GNU_LINUX_SOCKADDR_MAX], l[4];
     int e = gnu_memory_read(m, lenp, l, 4);
     if (e) return e;
-    uint32_t cap = (uint32_t)(l[0] | l[1] << 8 | l[2] << 16 | (uint32_t)l[3] << 24), n;
+    uint32_t cap = snx_ld_le32(l);
     if ((int32_t)cap < 0) return -GNU_EINVAL;
-    uint16_t fam = domain_out(sa->family);
-    b[0] = (unsigned char)fam;
-    b[1] = (unsigned char)(fam >> 8);
-    if (sa->family == SNX_AF_INET6) {
-        memcpy(b + 2, &sa->port, 2);
-        memcpy(b + 4, &sa->flowinfo, 4);
-        memcpy(b + 8, sa->addr, 16);
-        snx_st_le32(b + 24, sa->scope_id);
-        n = 28;
-    } else if (sa->family == SNX_AF_INET) {
-        memcpy(b + 2, &sa->port, 2);
-        memcpy(b + 4, sa->addr, 4);
-        n = 16;
-    } else if (sa->family == SNX_AF_UNIX)
-        n = LINUX_SOCKADDR_UN_UNNAMED; /* socketpair()'s ends: just the family */
-    else
-        n = 0; /* a connected stream socket names no sender */
+    uint32_t n = gnu_linux_addr_encode(sa, b);
     if ((e = gnu_memory_write(m, addr, b, cap < n ? cap : n))) return e;
     gnu_vfs_put32(l, n);
     return gnu_memory_write(m, lenp, l, 4);
@@ -184,7 +92,7 @@ static int64_t install(GnuProcess* p, SnxSocket* s, uint64_t typeflags) {
                                   (typeflags & LINUX_SOCK_CLOEXEC) != 0);
 }
 static int64_t sys_socket(GnuProcess* p, const uint64_t a[6]) {
-    int dom = domain_in((uint32_t)a[0]), type = (int)(a[1] & LINUX_SOCK_TYPE_MASK);
+    int dom = gnu_linux_domain_in((uint32_t)a[0]), type = (int)(a[1] & LINUX_SOCK_TYPE_MASK);
     if (a[1] & ~(uint64_t)(LINUX_SOCK_TYPE_MASK | LINUX_SOCK_NONBLOCK | LINUX_SOCK_CLOEXEC)) return -GNU_EINVAL;
     if (dom < 0 || dom == SNX_AF_UNSPEC) return -SNX_EAFNOSUPPORT;
     SnxSocket* s;
@@ -192,7 +100,7 @@ static int64_t sys_socket(GnuProcess* p, const uint64_t a[6]) {
     return r ? r : install(p, s, a[1]);
 }
 static int64_t sys_socketpair(GnuProcess* p, const uint64_t a[6]) {
-    int dom = domain_in((uint32_t)a[0]), type = (int)(a[1] & LINUX_SOCK_TYPE_MASK);
+    int dom = gnu_linux_domain_in((uint32_t)a[0]), type = (int)(a[1] & LINUX_SOCK_TYPE_MASK);
     if (a[1] & ~(uint64_t)(LINUX_SOCK_TYPE_MASK | LINUX_SOCK_NONBLOCK | LINUX_SOCK_CLOEXEC)) return -GNU_EINVAL;
     if (dom != SNX_AF_UNIX) return dom < 0 ? -SNX_EAFNOSUPPORT : -SNX_EOPNOTSUPP;
     if (!gnu_memory_access(&p->memory, a[3], 8, GNU_PROT_WRITE)) return -GNU_EFAULT;
@@ -251,14 +159,14 @@ static int64_t sys_sendto(GnuProcess* p, const uint64_t a[6]) {
     }
     void* data = gnu_memory_access(&p->memory, a[1], (size_t)a[2], GNU_PROT_READ);
     if (!data) return -GNU_EFAULT;
-    return snx_socket_send(s, data, (size_t)a[2], msg_in(a[3]), a[4] ? &to : NULL);
+    return snx_socket_send(s, data, (size_t)a[2], gnu_linux_msg_in(a[3]), a[4] ? &to : NULL);
 }
 static int64_t sys_recvfrom(GnuProcess* p, const uint64_t a[6]) {
     SOCK_OR_FAIL(a[0]);
     void* data = gnu_memory_access(&p->memory, a[1], (size_t)a[2], GNU_PROT_WRITE);
     if (!data) return -GNU_EFAULT;
     SnxSockAddr from;
-    int64_t r = snx_socket_recv(s, data, (size_t)a[2], msg_in(a[3]), a[4] ? &from : NULL, NULL);
+    int64_t r = snx_socket_recv(s, data, (size_t)a[2], gnu_linux_msg_in(a[3]), a[4] ? &from : NULL, NULL);
     if (r >= 0 && a[4]) {
         int e = addr_out(&p->memory, &from, a[4], a[5]);
         if (e) return e;
@@ -267,14 +175,14 @@ static int64_t sys_recvfrom(GnuProcess* p, const uint64_t a[6]) {
 }
 static int64_t sys_setsockopt(GnuProcess* p, const uint64_t a[6]) {
     SOCK_OR_FAIL(a[0]);
-    int level, name, layout, r = sockopt_in(a[1], a[2], &level, &name, &layout);
+    int level, name, layout, r = gnu_linux_sockopt_in(a[1], a[2], &level, &name, &layout);
     if (r) return r;
     unsigned char v[64] = {0};
     size_t len = a[4] < sizeof v ? (size_t)a[4] : sizeof v;
     if ((int32_t)a[4] < 0) return -GNU_EINVAL;
     if (len && (r = gnu_memory_read(&p->memory, a[3], v, len))) return r;
-    if (layout == LAYOUT_MREQN && len > sizeof(SnxIpMreq)) len = sizeof(SnxIpMreq); /* ip_mreqn: its ifindex goes */
-    if (layout == LAYOUT_IFADDR && len >= 8) {                                      /* ip_mreq(n): the address */
+    if (layout == GNU_LAYOUT_MREQN && len > sizeof(SnxIpMreq)) len = sizeof(SnxIpMreq); /* ip_mreqn: its ifindex goes */
+    if (layout == GNU_LAYOUT_IFADDR && len >= 8) {                                      /* ip_mreq(n): the address */
         memmove(v, v + 4, 4);
         len = 4;
     }
@@ -282,7 +190,7 @@ static int64_t sys_setsockopt(GnuProcess* p, const uint64_t a[6]) {
 }
 static int64_t sys_getsockopt(GnuProcess* p, const uint64_t a[6]) {
     SOCK_OR_FAIL(a[0]);
-    int level, name, layout, r = sockopt_in(a[1], a[2], &level, &name, &layout);
+    int level, name, layout, r = gnu_linux_sockopt_in(a[1], a[2], &level, &name, &layout);
     if (r) return r;
     unsigned char l[4], v[64] = {0};
     if ((r = gnu_memory_read(&p->memory, a[4], l, 4))) return r;
@@ -356,7 +264,7 @@ static int64_t do_sendmsg(GnuProcess* p, SnxSocket* s, uint64_t msg, uint64_t fl
     unsigned char* buf = malloc(total ? (size_t)total : 1);
     if (!buf) return -GNU_ENOMEM;
     r = copy_vectors(&p->memory, &h, vec, buf, (size_t)total, 1);
-    if (!r) r = snx_socket_send(s, buf, (size_t)total, msg_in(flags), h.name ? &to : NULL);
+    if (!r) r = snx_socket_send(s, buf, (size_t)total, gnu_linux_msg_in(flags), h.name ? &to : NULL);
     free(buf);
     return r;
 }
@@ -370,7 +278,7 @@ static int64_t do_recvmsg(GnuProcess* p, SnxSocket* s, uint64_t msg, uint64_t fl
     if (!buf) return -GNU_ENOMEM;
     SnxSockAddr from;
     int out_flags = 0;
-    r = snx_socket_recv(s, buf, (size_t)total, msg_in(flags), h.name ? &from : NULL, &out_flags);
+    r = snx_socket_recv(s, buf, (size_t)total, gnu_linux_msg_in(flags), h.name ? &from : NULL, &out_flags);
     if (r >= 0) {
         int e = copy_vectors(&p->memory, &h, vec, buf, (size_t)r, 0);
         unsigned char b[8] = {0};
@@ -379,7 +287,7 @@ static int64_t do_recvmsg(GnuProcess* p, SnxSocket* s, uint64_t msg, uint64_t fl
             e = addr_out(&p->memory, &from, h.name, msg + 8);
         }
         if (!e) e = gnu_memory_write(&p->memory, msg + 40, b, 8); /* msg_controllen: no control messages */
-        gnu_vfs_put32(b, msg_out(out_flags));
+        gnu_vfs_put32(b, gnu_linux_msg_out(out_flags));
         if (!e) e = gnu_memory_write(&p->memory, msg + 48, b, 4);
         if (e) r = e;
     }

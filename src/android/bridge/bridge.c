@@ -2,17 +2,17 @@
    Copyright 2026 the ScarletNX contributors */
 /* The native bridge's core (bridge.h). The JIT follows the GNU ABI runtime's (src/gnuabi/runtime/jit.c), with a lock:
    guest threads are host threads here, and one compiles at a time while the others that miss wait for it */
-#define _GNU_SOURCE /* MAP_NORESERVE */
 #include "android/bridge/bridge.h"
+#include "android/bridge/hle_impl.h"
 #include "android/bridge/hle_signal.h"
+#include "android/bridge/host.h"
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/utilities/common.h"
+#include "gnuabi/kernel/kernel.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <unistd.h>
 
 /* The window: 2 GiB of address space for the guest's code and its exports, its last 16 MiB the exports' addresses.
    The dispatch table has a slot for each 4 bytes of it */
@@ -173,12 +173,14 @@ static void svc(CPU* c, u32 imm) {
 static void call_export(CPU* c, u64 entry) {
     Export* e = &b.exports[(entry - b.exports_base) >> 2];
     signals_in_export(entry);
+    hle_errno_begin();
     if (e->blocks) {
         int parked = signals_park(c);
         e->handler(c, e->data);
         signals_unpark(parked);
     } else
         e->handler(c, e->data);
+    hle_errno_end();
     signals_in_export(0);
     c->pc = c->x[30];
     /* a signal the call raised or unblocked, or one that came during it, before the caller goes on */
@@ -245,16 +247,14 @@ void bridge_set_verbose(bool verbose) {
 bool bridge_init(const char* cache, char* error, size_t error_size) {
     if (b.window) return true;
     /* the window at the same address on every run: the compiled code's cache is keyed by the code's addresses */
-    void* w = mmap((void*)(uintptr_t)WINDOW_ADDRESS, WINDOW_SIZE, PROT_NONE,
-                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
-    if (w == MAP_FAILED) {
+    void* w = host_reserve(WINDOW_ADDRESS, WINDOW_SIZE, true);
+    if (!w) {
         fprintf(stderr, "scarletnx-android: the code window's address is taken: no compiled code is kept\n");
-        w = mmap(NULL, WINDOW_SIZE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        w = host_reserve(0, WINDOW_SIZE, false);
     }
-    void* t = mmap(NULL, TABLE_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    void* e = mmap(NULL, EXPORTS_MAX * sizeof(Export), PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (w == MAP_FAILED || t == MAP_FAILED || e == MAP_FAILED) {
+    void* t = host_lazy(TABLE_BYTES);
+    void* e = host_lazy(EXPORTS_MAX * sizeof(Export));
+    if (!w || !t || !e) {
         snprintf(error, error_size, "cannot reserve the native bridge's code window");
         return false;
     }
@@ -282,9 +282,7 @@ bool bridge_init(const char* cache, char* error, size_t error_size) {
     b.rt.miss = miss;
     b.rt.poll = poll;
     /* the guest's stack guard: random, as the kernel's AT_RANDOM gives bionic, with a zero low byte as glibc's */
-    FILE* f = fopen("/dev/urandom", "rb");
-    if (!f || fread(&b.guard, sizeof b.guard, 1, f) != 1) b.guard = 0x5ca7105ca7100ull;
-    if (f) fclose(f);
+    if (gnu_random_bytes(&b.guard, sizeof b.guard)) b.guard = 0x5ca7105ca7100ull;
     b.guard &= ~(uint64_t)0xff;
     b.stop = bridge_export("<stop>", NULL, NULL);
     b.table[(b.stop - b.lo) >> 2] = stop;
@@ -315,11 +313,9 @@ void bridge_add_code(uint64_t address, size_t size) {
 
 void bridge_map_code(uint64_t address, const void* code, size_t size) {
     size_t span = (size + 0xfff) & ~(size_t)0xfff;
-    if (mmap((void*)(uintptr_t)address, span, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) ==
-        MAP_FAILED)
-        return;
+    if (!host_commit((void*)(uintptr_t)address, span)) return;
     memcpy((void*)(uintptr_t)address, code, size);
-    mprotect((void*)(uintptr_t)address, span, PROT_READ);
+    host_protect((void*)(uintptr_t)address, span, HOST_READ);
     bridge_add_code(address, (size + 3) & ~(size_t)3);
 }
 
@@ -333,15 +329,15 @@ CPU* bridge_cpu(void) {
     if (t_thread) return &t_thread->cpu;
     Thread* t = snx_alloc(sizeof *t);
     memset(t, 0, sizeof *t);
-    t->stack = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (t->stack == MAP_FAILED) {
+    t->stack = host_lazy(STACK_SIZE);
+    if (!t->stack) {
         fprintf(stderr, "scarletnx-android: no memory for a guest stack\n");
         abort();
     }
     /* the lowest page a guard, as a thread's stack has */
-    mprotect(t->stack, 4096, PROT_NONE);
+    host_protect(t->stack, 4096, HOST_NONE);
     t->tls[1 + 5] = b.guard;          /* TLS_SLOT_STACK_GUARD */
-    t->tls[1 + 1] = (uint64_t)gettid(); /* TLS_SLOT_THREAD_ID: bionic keeps its pthread there, read through its API */
+    t->tls[1 + 1] = host_tid(); /* TLS_SLOT_THREAD_ID: bionic keeps its pthread there, read through its API */
     CPU* c = &t->cpu;
     c->mem = NULL;
     c->rt = &b.rt;
@@ -367,7 +363,7 @@ void bridge_thread_end(void) {
     if (!t) return;
     signals_thread_end(&t->signals);
     t_thread = NULL;
-    munmap(t->stack, STACK_SIZE);
+    host_unmap(t->stack, STACK_SIZE);
     free(t);
 }
 

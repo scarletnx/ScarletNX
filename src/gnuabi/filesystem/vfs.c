@@ -649,24 +649,8 @@ static unsigned node_type(const GnuNode* n) {
     }
 }
 int gnu_stat_put(GnuMemory* memory, uint64_t address, const GnuStat* st) {
-    unsigned char bytes[128] = {0};
-    gnu_vfs_put64(bytes, st->dev);
-    gnu_vfs_put64(bytes + 8, st->inode);
-    gnu_vfs_put32(bytes + 16, st->mode);
-    gnu_vfs_put32(bytes + 20, st->nlink);
-    gnu_vfs_put32(bytes + 24, st->uid);
-    gnu_vfs_put32(bytes + 28, st->gid);
-    gnu_vfs_put64(bytes + 32, st->rdev);
-    gnu_vfs_put64(bytes + 48, st->size);
-    gnu_vfs_put32(bytes + 56, st->blksize);
-    gnu_vfs_put64(bytes + 64, st->blocks);
-    gnu_vfs_put64(bytes + 72, (uint64_t)st->atime);
-    gnu_vfs_put64(bytes + 80, st->atime_ns);
-    gnu_vfs_put64(bytes + 88, (uint64_t)st->mtime);
-    gnu_vfs_put64(bytes + 96, st->mtime_ns);
-    gnu_vfs_put64(bytes + 104, (uint64_t)st->ctime);
-    gnu_vfs_put64(bytes + 112, st->ctime_ns);
-    /* exact 128-byte asm-generic stat layout */
+    unsigned char bytes[128];
+    gnu_stat_encode(bytes, st);
     return gnu_memory_write(memory, address, bytes, sizeof bytes);
 }
 /* struct statx: every basic field is there (STATX_BASIC_STATS), the birth time is not */

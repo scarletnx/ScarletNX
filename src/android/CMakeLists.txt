@@ -68,7 +68,7 @@ if(NOT TARGET scarletnx-recompiler)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/llvm" android-llvm-backend)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler" android-recompiler-library)
 endif()
-add_library(snx_android_bridge STATIC bridge/bridge.c bridge/linker.c bridge/hle.c bridge/hle_libc.c bridge/args.c
+add_library(snx_android_bridge STATIC bridge/bridge.c bridge/host.c bridge/linker.c bridge/hle.c bridge/hle_libc.c bridge/args.c
                                       bridge/native.c bridge/hle_posix.c bridge/hle_thread.c bridge/hle_signal.c bridge/hle_dl.c bridge/hle_code.c
                                       bridge/hle_sles.c bridge/hle_media.c bridge/jni.c
                                       bridge/hle_android.c bridge/hle_vulkan.c
@@ -78,8 +78,15 @@ add_library(snx_android_bridge STATIC bridge/bridge.c bridge/linker.c bridge/hle
 if(NOT TARGET scarletnx-gnuabi-kernel)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/gnuabi/kernel" android-gnuabi-kernel)
 endif()
-target_link_libraries(snx_android_bridge PUBLIC scarletnx-common scarletnx-recompiler scarletnx-gnuabi-kernel SDL3::SDL3
-                      Vulkan::Headers)
+# scarletnx-net: the network stack's constants as the host's (common/network/net_host.h), for the guest's sockets,
+# which are the host's own. Windows: winpthreads for bionic's threads, Winsock for its sockets
+target_link_libraries(snx_android_bridge PUBLIC scarletnx-common scarletnx-recompiler scarletnx-gnuabi-kernel
+                      scarletnx-net SDL3::SDL3 Vulkan::Headers)
+find_package(Threads REQUIRED)
+target_link_libraries(snx_android_bridge PUBLIC Threads::Threads)
+if(WIN32)
+    target_link_libraries(snx_android_bridge PUBLIC ws2_32)
+endif()
 target_include_directories(snx_android_bridge PUBLIC "${volk_SOURCE_DIR}")
 target_compile_definitions(snx_android_bridge PRIVATE VK_NO_PROTOTYPES)
 target_include_directories(snx_android_bridge SYSTEM PUBLIC "${SNX_JAVA_HOME}/include"
