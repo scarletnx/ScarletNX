@@ -609,6 +609,14 @@ static void trigger_queue(SnxCtrIpc* c) {
             default: error = GX_ERR_UNKNOWN_COMMAND; break;
         }
         if (step == GX_STOP) {
+            if (id >= 2 && id <= 4 && !snx_ctr_vk()) {
+                /* a fill, display transfer or texture copy needs the device: the IPC line that follows
+                   names the request, not the missing device */
+                fprintf(stderr,
+                        "3ds gpu: GX command 0x%02x stopped, and the Vulkan device did not start "
+                        "(its error is above), so the game cannot draw\n",
+                        (unsigned)id);
+            }
             stopped = true;
             break;
         }
