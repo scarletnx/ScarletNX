@@ -215,11 +215,21 @@ static const char* method_params(jmethodID id) {
 
 /* ---- the JNIEnv functions ---- */
 
+/* the parameters of a JNIEnv function with a floating one, for hle_call (Windows passes by position): the four
+   Set<Type>Field functions whose value is a jfloat or a jdouble. The others take integers and pointers alone */
+static const char* jni_params(const char* name) {
+    size_t n = strlen(name);
+    bool set = !strncmp(name, "Set", 3);
+    if (set && n > 10 && !strcmp(name + n - 10, "FloatField")) return "IIIF";
+    if (set && n > 11 && !strcmp(name + n - 11, "DoubleField")) return "IIID";
+    return NULL;
+}
+
 static void jni_generic(CPU* c, void* data) {
     unsigned i = (unsigned)(uintptr_t)data;
     JNIEnv* env = host_env(X(0));
     X(0) = (uint64_t)(uintptr_t)env;
-    hle_call(c, ((void**)*env)[i], functions[i].kind);
+    hle_call(c, ((void**)*env)[i], functions[i].kind, jni_params(functions[i].name));
 }
 
 /* GetMethodID and GetStaticMethodID: the ID's signature recorded for the calls with variable arguments */
@@ -316,7 +326,7 @@ static void jni_variadic(CPU* c, void* data) {
     X(0) = (uint64_t)(uintptr_t)env;
     X(id_at + 1) = (uint64_t)(uintptr_t)values;
     unsigned a_form = i + (va ? 1 : 2);
-    hle_call(c, ((void**)*env)[a_form], functions[a_form].kind);
+    hle_call(c, ((void**)*env)[a_form], functions[a_form].kind, NULL);
 }
 
 /* FindClass: the host's, which looks in the loader of the native method that runs (the framework's here), then the

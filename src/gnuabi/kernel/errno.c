@@ -1,61 +1,63 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A host errno as the guest's (kernel.h): never the host's numbering, which Windows' differs from */
+/* A host errno as the guest's and back (kernel.h): never the host's numbering, which Windows', FreeBSD's and macOS's
+   differ from. The names are the network stack's table (Linux's values) and the few it leaves out */
 #include "gnuabi/kernel/kernel.h"
 #include <errno.h>
 
-int gnu_host_errno(int error) {
-    switch (error) {
-        case EPERM: return -GNU_EPERM;
-        case ENOENT: return -GNU_ENOENT;
-        case ESRCH: return -GNU_ESRCH;
-        case EINTR: return -GNU_EINTR;
-        case EIO: return -GNU_EIO;
-        case ENXIO: return -GNU_ENXIO;
-        case E2BIG: return -GNU_E2BIG;
-        case ENOEXEC: return -GNU_ENOEXEC;
-        case EBADF: return -GNU_EBADF;
-        case ECHILD: return -GNU_ECHILD;
-        case EAGAIN: return -GNU_EAGAIN;
-        case ENOMEM: return -GNU_ENOMEM;
-        case EACCES: return -GNU_EACCES;
-        case EFAULT: return -GNU_EFAULT;
-        case EBUSY: return -GNU_EBUSY;
-        case EEXIST: return -GNU_EEXIST;
-        case EXDEV: return -GNU_EXDEV;
-        case ENODEV: return -GNU_ENODEV;
-        case ENOTDIR: return -GNU_ENOTDIR;
-        case EISDIR: return -GNU_EISDIR;
-        case EINVAL: return -GNU_EINVAL;
-        case ENFILE: return -GNU_ENFILE;
-        case EMFILE: return -GNU_EMFILE;
-        case ENOTTY: return -GNU_ENOTTY;
-        case EFBIG: return -GNU_EFBIG;
-        case ENOSPC: return -GNU_ENOSPC;
-        case ESPIPE: return -GNU_ESPIPE;
-        case EROFS: return -GNU_EROFS;
-        case EMLINK: return -GNU_EMLINK;
-        case EPIPE: return -GNU_EPIPE;
-        case ERANGE: return -GNU_ERANGE;
-        case EDEADLK: return -GNU_EDEADLK;
-        case ENAMETOOLONG: return -GNU_ENAMETOOLONG;
-        case ENOSYS: return -GNU_ENOSYS;
-        case ENOTEMPTY: return -GNU_ENOTEMPTY;
+/* the names a host's errno.h lacks (Windows' CRT has no ESHUTDOWN...): numbers no host errno is, so that no host
+   error becomes them and the guest's become an unknown error */
+#ifndef ESOCKTNOSUPPORT
+#define ESOCKTNOSUPPORT (-1)
+#endif
+#ifndef EPFNOSUPPORT
+#define EPFNOSUPPORT (-2)
+#endif
+#ifndef ESHUTDOWN
+#define ESHUTDOWN (-3)
+#endif
+#ifndef ETOOMANYREFS
+#define ETOOMANYREFS (-4)
+#endif
+#ifndef EHOSTDOWN
+#define EHOSTDOWN (-5)
+#endif
+#ifndef ESTALE
+#define ESTALE (-6)
+#endif
+#ifndef EDQUOT
+#define EDQUOT (-7)
+#endif
+
+static const struct {
+    int host, guest;
+} table[] = {
+#define SNX_NET_ERRNO(name, value) {E##name, value},
+#include "common/network/abi/errno.inc"
+    {ENOEXEC, GNU_ENOEXEC},
+    {EXDEV, GNU_EXDEV},
+    {EMLINK, GNU_EMLINK},
+    {EDEADLK, GNU_EDEADLK},
+    {ENOTEMPTY, GNU_ENOTEMPTY},
 #ifdef ETXTBSY
-        case ETXTBSY: return -GNU_ETXTBSY;
-#endif
-#ifdef ELOOP
-        case ELOOP: return -GNU_ELOOP;
-#endif
-#ifdef EOVERFLOW
-        case EOVERFLOW: return -GNU_EOVERFLOW;
+    {ETXTBSY, GNU_ETXTBSY},
 #endif
 #ifdef ENOTSUP
-        case ENOTSUP: return -GNU_ENOTSUP;
+    {ENOTSUP, GNU_ENOTSUP},
 #endif
-#ifdef ETIMEDOUT
-        case ETIMEDOUT: return -GNU_ETIMEDOUT;
+#ifdef EWOULDBLOCK
+    {EWOULDBLOCK, GNU_EAGAIN},
 #endif
-        default: return -GNU_EIO;
-    }
+};
+
+int gnu_host_errno(int error) {
+    for (size_t i = 0; i < sizeof table / sizeof *table; ++i)
+        if (table[i].host == error) return -table[i].guest;
+    return -GNU_EIO;
+}
+
+int gnu_errno_to_host(int guest) {
+    for (size_t i = 0; i < sizeof table / sizeof *table; ++i)
+        if (table[i].guest == guest) return table[i].host;
+    return EIO;
 }

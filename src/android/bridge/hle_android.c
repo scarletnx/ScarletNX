@@ -3,19 +3,20 @@
 /* libandroid as HLE: the native window (the Abstract of a SurfaceView's surface: the host window), the looper, the
    sensors (none) and the assets of the app's APKs. Each object the guest gets is a host structure, opaque to it, as
    the NDK's are */
-#define _GNU_SOURCE
 #include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
 #include "android/bridge/jni.h"
 #include "android/bridge/hle_assets.h"
+#include "android/bridge/host.h"
 #include <errno.h>
 #include <fcntl.h>
+#ifdef _WIN32
+#include <io.h>
+#endif
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
-#include <unistd.h>
 
 static const AndroidAssets* assets;
 
@@ -105,7 +106,7 @@ static void window_set_geometry(CPU* c, void* data) {
     X(0) = 0;
 }
 
-/* ---- ALooper: an epoll set for each thread that prepares one. No guest function polls it here, so a callback the
+/* ---- ALooper: an epoll set (host.h's) for each thread that prepares one. No guest function polls it here, so a callback the
    guest adds never runs: the sensor queues it carries have no events ---- */
 
 typedef struct {
@@ -119,7 +120,7 @@ static void looper_prepare(CPU* c, void* data) {
     if (!t_looper) {
         t_looper = calloc(1, sizeof *t_looper);
         if (t_looper) {
-            t_looper->epoll = epoll_create1(EPOLL_CLOEXEC);
+            t_looper->epoll = host_epoll_create(true);
             t_looper->refs = 1;
         }
     }
@@ -132,13 +133,14 @@ static void looper_for_thread(CPU* c, void* data) {
 static void looper_add_fd(CPU* c, void* data) {
     (void)data;
     Looper* l = PTR(0);
-    struct epoll_event e = {.events = (uint32_t)X(3), .data.u64 = X(2)};
-    X(0) = l && epoll_ctl(l->epoll, EPOLL_CTL_ADD, (int)X(1), &e) == 0 ? 1 : (uint64_t)-1;
+    /* ALOOPER_EVENT_INPUT 1 and OUTPUT 2 as EPOLLIN and EPOLLOUT */
+    uint32_t events = (X(3) & 1 ? 0x1u : 0) | (X(3) & 2 ? 0x4u : 0);
+    X(0) = l && host_epoll_ctl(l->epoll, 1 /* EPOLL_CTL_ADD */, (int)X(1), events, X(2)) == 0 ? 1 : (uint64_t)-1;
 }
 static void looper_remove_fd(CPU* c, void* data) {
     (void)data;
     Looper* l = PTR(0);
-    X(0) = l && epoll_ctl(l->epoll, EPOLL_CTL_DEL, (int)X(1), NULL) == 0 ? 1 : 0;
+    X(0) = l && host_epoll_ctl(l->epoll, 2 /* EPOLL_CTL_DEL */, (int)X(1), 0, 0) == 0 ? 1 : 0;
 }
 
 /* ---- ASensorManager: a device without sensors (Off in docs/android/INTERFACES.md) ---- */
@@ -250,7 +252,11 @@ static void asset_open_fd(CPU* c, void* data) {
         X(0) = (uint64_t)-1;
         return;
     }
+#ifdef _WIN32
+    int fd = _open(apk, _O_RDONLY | _O_BINARY | _O_NOINHERIT);
+#else
     int fd = open(apk, O_RDONLY | O_CLOEXEC);
+#endif
     if (fd >= 0) {
         memcpy(PTR(1), &offset, sizeof offset);
         memcpy(PTR(2), &size, sizeof size);
