@@ -404,6 +404,11 @@ void video_init(const char* title, const char* addons) {
             WARN("video: hdr_key '%s' is not a key: use ctrl+h, alt+h, shift+f14 or f14\n", g_settings.hdr_key);
         else
             LOG("video: hdr key %s\n", g_settings.hdr_key);
+        if (!snx_keybind_parse(g_settings.anti_aliasing_key, &key))
+            WARN("video: aa_key '%s' is not a key: use ctrl+shift+a, alt+a, shift+f13 or f13\n",
+                 g_settings.anti_aliasing_key);
+        else
+            LOG("video: anti aliasing key %s\n", g_settings.anti_aliasing_key);
         if (!snx_keybind_parse(g_settings.tv_mode_key, &key))
             WARN("video: docked_key '%s' is not a key: use ctrl+d, alt+d, shift+f15 or f15\n", g_settings.tv_mode_key);
         else
@@ -913,13 +918,15 @@ static const char* help_text(char* out, size_t size) {
     if (esc)
         snprintf(out, size,
                  "%.*s  %s  cycle the spatial upscaler (upscaler_key)\n  %s  HDR on and off (hdr_key)\n"
-                 "  %s  TV mode On, Off and Auto (docked_key)\n%s",
-                 (int)(esc - HELP), HELP, g_settings.upscaler_cycle_key, g_settings.hdr_key, g_settings.tv_mode_key, esc);
+                 "  %s  cycle the anti aliasing (aa_key)\n  %s  TV mode On, Off and Auto (docked_key)\n%s",
+                 (int)(esc - HELP), HELP, g_settings.upscaler_cycle_key, g_settings.hdr_key,
+                 g_settings.anti_aliasing_key, g_settings.tv_mode_key, esc);
     else
         snprintf(out, size,
                  "%s\n  %s  cycle the spatial upscaler (upscaler_key)\n  %s  HDR on and off (hdr_key)\n"
-                 "  %s  TV mode On, Off and Auto (docked_key)",
-                 HELP, g_settings.upscaler_cycle_key, g_settings.hdr_key, g_settings.tv_mode_key);
+                 "  %s  cycle the anti aliasing (aa_key)\n  %s  TV mode On, Off and Auto (docked_key)",
+                 HELP, g_settings.upscaler_cycle_key, g_settings.hdr_key, g_settings.anti_aliasing_key,
+                 g_settings.tv_mode_key);
     return out;
 }
 /* the live upscaler cycle, at the key the .ini names: 1 when the event was that key (a repeat included, so the game
@@ -936,6 +943,22 @@ static int upscale_key_event(const SDL_KeyboardEvent* e) {
             overlay_toast(text, plat_ns());
             ui_unlock();
             LOG("upscaler: %s (%s)\n", label, g_settings.upscaler_cycle_key);
+        }
+    }
+    return 1;
+}
+static int aa_key_event(const SDL_KeyboardEvent* e) {
+    SnxKeybind bind;
+    if (!snx_keybind_parse(g_settings.anti_aliasing_key, &bind) || !snx_keybind_match(&bind, e)) return 0;
+    if (!e->repeat) {
+        const char* label = g_renderer && g_renderer->cycle_aa ? g_renderer->cycle_aa() : NULL;
+        char text[64];
+        if (label) {
+            snprintf(text, sizeof text, "Anti aliasing: %s", label);
+            ui_lock();
+            overlay_toast(text, plat_ns());
+            ui_unlock();
+            LOG("anti aliasing: %s (%s)\n", label, g_settings.anti_aliasing_key);
         }
     }
     return 1;
@@ -1484,6 +1507,7 @@ void video_poll(void) {
                     break;
                 }
                 if (upscale_key_event(&e.key)) break;
+                if (aa_key_event(&e.key)) break;
                 if (hdr_key_event(&e.key)) break;
                 if (docked_key_event(&e.key)) break;
                 /* not with Ctrl, Alt or the system key: Alt+F4 also arrives as F4 on Windows */

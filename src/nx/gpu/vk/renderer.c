@@ -23,14 +23,18 @@
 #include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "common/gpu/vk/present_fx.h"
 #include "nx/gpu/vk/hdr.h"
 #include "nx/gpu/vk/upscale.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/pending_pages.h"
+#include "nx/gpu/shader/shader.h"
 #include "nx/gpu/renderer.h"
 
 static VkSemaphore g_acquired[VK_FRAMES];
+static SnxFx* g_present_fx;
+static void present_fx_log(const char* text) { LOG("%s\n", text); }
 /* the CPU fallback's image, and the last presented frame for screenshots */
 static Surf* g_cpu_img;
 static Surf* g_last;
@@ -106,6 +110,15 @@ static int vkr_start(void) {
     vk_upscale_configure(snx_upscale_parse(g_settings.upscaler), g_settings.sharpness);
     vk_hdr_configure(snx_hdr_parse(g_settings.hdr), snx_hdr_source_parse(g_settings.hdr_source),
                      g_settings.hdr_paper_white, g_settings.hdr_peak, g_settings.hdr_expansion, g_settings.hdr_test_pattern);
+    g_present_fx = snx_fx_create(g_vk.phys, g_vk.dev, g_vk.gfx, g_vk.gfx_family, vk_pipeline_cache(), VK_FRAMES,
+                                 vk_frame_slot, vk_render_forget_state, present_fx_log);
+    if (g_present_fx) {
+        SnxFxConfig cfg = {SNX_FX_UPSCALE_OFF, 0, snx_fx_aa_parse(g_settings.anti_aliasing), SNX_FX_HDR_OFF,
+                           SNX_FX_CS_AUTO, SNX_FX_SRC_AUTO, g_settings.hdr_paper_white, g_settings.hdr_peak,
+                           g_settings.hdr_expansion, 0};
+        snx_fx_configure(g_present_fx, &cfg);
+        snx_fx_set_fp16(g_present_fx, g_shader_float16);
+    }
     if (g_vk_anisotropy > 1 && !g_vk.feat.samplerAnisotropy)
         LOG("vulkan: this GPU has no anisotropic filtering, so anisotropy=%d does nothing\n", g_vk_anisotropy);
     if (g_vk_scale != 1.0f) LOG("vulkan: render targets at %.2fx\n", g_vk_scale);
@@ -546,6 +559,56 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                         drawn = 1;
                     }
                 }
+                VkImage aa_img = VK_NULL_HANDLE;
+                VkImageView aa_view = VK_NULL_HANDLE;
+                u32 aa_w = 0, aa_h = 0;
+                if (g_present_fx && !drawn) {
+                    int aa = snx_fx_pick_aa(g_present_fx, snx_fx_aa_parse(g_settings.anti_aliasing), g_last_w, g_last_h,
+                                            dw, dh, g_vk.props.limits.maxImageDimension2D);
+                    snx_fx_set_aa(g_present_fx, aa);
+                    if (aa != SNX_FX_AA_OFF) {
+                        VkImageView aa_src = frame_view;
+                        u32 aw = fw2, ah = fh2, ax = fx, ay = fy, awid = fwid, ahei = fhei, atransform = ftransform;
+                        /* the recording thread has begun this frame's command buffer once its ring drained */
+                        vk_rec_sync();
+                        if (!aa_src) {
+                            VkComponentMapping identity = {0};
+                            aa_src = vk_tex_view(src, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
+                            vk_surf_use(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
+                                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                            aw = src->sw;
+                            ah = src->sh;
+                            ax = g_last_x;
+                            ay = g_last_y;
+                            awid = g_last_w;
+                            ahei = g_last_h;
+                            atransform = transform;
+                        } else if (upscaled) {
+                            vk_barrier(cb, up_img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                       VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                        }
+                        {
+                            SnxFxImage fxout = {0};
+                            if (aa_src &&
+                                snx_fx_render(g_present_fx, cb, aa_src, aw, ah, ax, ay, awid, ahei, atransform, awid,
+                                              ahei, SNX_FX_UPSCALE_OFF, aa, &fxout)) {
+                                aa_img = fxout.image;
+                                aa_view = fxout.view;
+                                aa_w = fxout.width;
+                                aa_h = fxout.height;
+                                frame_view = aa_view;
+                                fw2 = aa_w;
+                                fh2 = aa_h;
+                                fx = fy = 0;
+                                fwid = aa_w;
+                                fhei = aa_h;
+                                ftransform = 0;
+                            }
+                        }
+                    }
+                }
                 if (use_hdr && !drawn) {
                     if (!frame_view) {
                         VkComponentMapping identity = {0};
@@ -555,6 +618,11 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                     }
                     if (upscaled)
                         vk_barrier(cb, up_img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                   VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    else if (aa_img)
+                        vk_barrier(cb, aa_img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                                    VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -591,7 +659,10 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                                      transform, VK_FILTER_LINEAR);
                     }
                 } else if (!drawn) {
-                    if (upscaled)
+                    if (aa_img)
+                        present_blit(cb, aa_img, 0, 0, aa_w, aa_h, sc, dx, dy, dw, dh, 0,
+                                     mult > 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+                    else if (upscaled)
                         present_blit(cb, up_img, 0, 0, uw, uh, sc, dx, dy, dw, dh, 0,
                                      mult > 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
                     else {
@@ -894,6 +965,15 @@ static void vkr_refresh(void) {
 /* the upscaler_key hotkey: the live cycle through the filters */
 static const char* vkr_cycle_upscale(void) { return snx_upscale_label(vk_upscale_cycle()); }
 
+static const char* vkr_cycle_aa(void) {
+    static int aa = -1;
+    if (aa < 0) aa = snx_fx_aa_parse(g_settings.anti_aliasing);
+    aa = (aa + 1) % SNX_FX_AA_COUNT;
+    snprintf(g_settings.anti_aliasing, sizeof g_settings.anti_aliasing, "%s", snx_fx_aa_key(aa));
+    if (g_present_fx) snx_fx_set_aa(g_present_fx, aa);
+    return snx_fx_aa_label(aa);
+}
+
 /* the hdr_key hotkey: HDR off and on. The window's image follows at the next present (show's want_mode) */
 static const char* vkr_toggle_hdr(void) {
     static char text[192], note[96];
@@ -1166,5 +1246,6 @@ const Renderer vk_renderer = {
     .prepare = vk_pipeline_prepare,
     .cycle_upscale = vkr_cycle_upscale,
     .toggle_hdr = vkr_toggle_hdr,
+    .cycle_aa = vkr_cycle_aa,
 };
 const Renderer* g_renderer = &vk_renderer;

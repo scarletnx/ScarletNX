@@ -191,6 +191,8 @@ typedef struct Renderer {
     /* the live HDR toggle (the hdr_key hotkey): its state now, or NULL when there is none. The window's image is
        made anew at the next present when the display's side changes */
     const char* (*toggle_hdr)(void);
+    /* the live anti aliasing cycle (the aa_key hotkey): its label now, or NULL when there is none */
+    const char* (*cycle_aa)(void);
 } Renderer;
 
 extern const Renderer vk_renderer;
