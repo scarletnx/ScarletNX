@@ -74,6 +74,8 @@ static void test_fn2(CPU* c, u64 entry) {
 
 static int g_jit_started, g_jit_added, g_jit_removed, g_jit_invalidated, g_jit_called;
 static u64 g_jit_fallback_pc;
+static char g_jit_opt;      /* the level jit_init gave the JIT */
+static char g_warned[1024]; /* every WARN line, for the jit_opt checks */
 
 static void test_jit_fn(CPU* c, u64 entry) {
     (void)c;
@@ -92,7 +94,7 @@ static int jit_can_code(u64 pc) {
 
 SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size_t error_size) {
     static int sentinel;
-    (void)config;
+    g_jit_opt = config->opt;
     if (error && error_size) error[0] = 0;
     g_jit_started = 1;
     return (SnxJitService*)(void*)&sentinel;
@@ -174,14 +176,42 @@ static void (*g_invalidate)(u64, u64);
 void mem_set_code_invalidate(void (*fn)(u64, u64)) { g_invalidate = fn; }
 
 void logf_(int lvl, const char* fmt, ...) {
-    (void)lvl;
-    (void)fmt;
+    size_t at = strlen(g_warned);
+    va_list ap;
+    if (lvl != 0) return; /* WARN's level */
+    va_start(ap, fmt);
+    vsnprintf(g_warned + at, sizeof g_warned - at, fmt, ap);
+    va_end(ap);
+}
+
+/* the level the JIT got for jit_opt: a level LLVM takes as it is and nothing said, anything else said with the value
+   given and the level it compiles at instead, settings.txt's default */
+static void check_jit_opt(const char* given, char default_level) {
+    char said[256];
+    int before = failures;
+    if (given[0] && !given[1] && strchr("0123sz", given[0])) {
+        CHECK(g_jit_opt == given[0]);
+        CHECK(!strstr(g_warned, "jit_opt"));
+    } else {
+        snprintf(said, sizeof said, "jit: jit_opt=%s is not 0, 1, 2, 3, s or z: it compiles at O%c\n", given,
+                 default_level);
+        CHECK(g_jit_opt == default_level);
+        CHECK(strstr(g_warned, said) != NULL);
+    }
+    if (failures != before)
+        fprintf(stderr, "jit_opt=%s gave the JIT O%c; the WARN lines: \"%s\"\n", given, g_jit_opt ? g_jit_opt : '?',
+                g_warned);
 }
 
 int main(int argc, char** argv) {
     static const SnxU32 words[] = {0x91000400u, 0xD65F03C0u};  /* add x0, x0, #1; ret */
     static const SnxU32 words2[] = {0x91000800u, 0xD65F03C0u}; /* add x0, x0, #2; ret */
+    /* --jit-opt=V: jit_opt as the .ini gives it. 3 by default, neither settings.txt's default nor a phone's O0 */
+    const char* jit_opt = "3";
+    const char default_level = g_settings.jit_optimization[0]; /* settings.txt's, before any .ini */
     GuestFn fn;
+    for (int i = 1; i < argc; i++)
+        if (!strncmp(argv[i], "--jit-opt=", 10)) jit_opt = argv[i] + 10;
     memcpy(g_memory + START, words, sizeof(words));
     memcpy(g_memory + OUT, words2, sizeof(words2));
     memset(&g_block, 0, sizeof(g_block));
@@ -228,12 +258,12 @@ int main(int argc, char** argv) {
     g_variants_table.version = SNX_VARIANTS_VERSION;
     g_variants_table.count = 2;
     g_variants_table.functions = g_functions;
-    g_settings.jit_optimization[0] = '0';
-    g_settings.jit_optimization[1] = 0;
+    snprintf(g_settings.jit_optimization, sizeof g_settings.jit_optimization, "%s", jit_opt);
     g_settings.jit_threads = 1;
 
     jit_init();
     CHECK(g_jit_started == 1);
+    check_jit_opt(jit_opt, default_level);
     if (argc == 2 && !strcmp(argv[1], "--bench-no-pack")) {
         g_variants = NULL;
         for (u64 i = 0; i < 20000000; i++)

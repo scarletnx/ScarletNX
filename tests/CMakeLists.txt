@@ -1704,6 +1704,9 @@ add_executable(snx-test-runtime-variants runtime_variants.c "${PROJECT_SOURCE_DI
 snx_test_target(snx-test-runtime-variants 11)
 target_link_libraries(snx-test-runtime-variants PRIVATE scarletnx-common scarletnx-filesystem snx_settings)
 add_test(NAME runtime_variants COMMAND snx-test-runtime-variants)
+# a hand-edited jit_opt the JIT does not take, a letter and an empty value
+add_test(NAME runtime_variants_jit_opt_letter COMMAND snx-test-runtime-variants --jit-opt=x)
+add_test(NAME runtime_variants_jit_opt_empty COMMAND snx-test-runtime-variants --jit-opt=)
 add_executable(snx-test-runtime-hints runtime_hints.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/hints.c")
 snx_test_target(snx-test-runtime-hints 11)
 target_link_libraries(snx-test-runtime-hints PRIVATE scarletnx-common scarletnx-filesystem snx_settings Threads::Threads)

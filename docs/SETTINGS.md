@@ -83,7 +83,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `jit_threads` | `0` | Threads compiling the game code the recompiler missed, which a thread waits for when it reaches it. `0` uses every CPU the game may run on but two, at most 4. They run below the game's threads |
 | `jit_region_instructions` | `0` | The most instructions one branch graph of missed code may hold when the JIT compiles it, so a huge function cannot stall the game for seconds; branches out of it resume through the dispatch table. `0` is up to 4096, a larger graph cut into regions of 64 |
 | `jit_live_budget` | `0` | The instructions beyond the missed code itself (its callees) that a miss the game waits on discovers. The background queue keeps its larger budget. `0` is 64 |
-| `jit_opt` | `2` | LLVM's optimization of the code the JIT compiles: `0` none, `3` the most, `s` or `z` the smallest, as `opt` takes them. An [AOT pack](AOT_PACKS.md) built from the JIT cache needs it to match the recompile's. The next run compiles its JIT code again with it |
+| `jit_opt` | `2` | LLVM's optimization of the code the JIT compiles: `0` none, `3` the most, `s` or `z` the smallest, as `opt` takes them; another value, or none, is said in the log and compiles at `2`. An [AOT pack](AOT_PACKS.md) built from the JIT cache needs it to match the recompile's. The next run compiles its JIT code again with it |
 
 ## On-screen controls
 
