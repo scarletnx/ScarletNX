@@ -3329,6 +3329,15 @@ static u32* direct_reject_with_buffers(ShaderInfo* si, const char* reason, u32* 
     return direct_reject(si, reason);
 }
 
+/* a bindless instruction whose handle register no tracking reached: which register, of which instruction, where */
+static u32* untracked_handle(ShaderInfo* si, const char* kind, const u64* insn, u32 i, u32 reg) {
+    const Op* op = decode(insn[i]);
+    si->unsupported = 1;
+    snprintf(si->first_unsupported, sizeof si->first_unsupported, "untracked %s handle R%u of %s at %x", kind, reg,
+             op ? op->name : "?", i * 8);
+    return NULL;
+}
+
 /* gb_at's mark for an access whose buffer is found when it runs (global_dynamic) */
 #define GB_DYNAMIC 254
 
@@ -4257,7 +4266,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             int handle_count =
                 bindless ? direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
             if (handle_count == 1) indexed = direct_indexed_handle(insn, n, i, b, stage, &ldc);
-            if (bindless && !handle_count) return direct_reject(si, "untracked texture handle");
+            if (bindless && !handle_count) return untracked_handle(si, "texture", insn, i, b);
             int type = ty >> 1, array = ty & 1, multisample = (int)B(insn[i], 50, 1);
             int read_slot = direct_add_typed_slot(textures, &texture_count, off, type, array, 0, multisample ? 2 : 0,
                                                   bindless, bank, handle_count, bank2, off2, indexed, ldc);
@@ -4294,7 +4303,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             handle = B(insn[i], 39, 8);
             bindless = op->id == O_SUATOM ? (int)B(insn[i], 54, 1) : !B(insn[i], 51, 1);
             if (bindless && !direct_track_image_handle(insn, n, i, handle, &bank, &off, 0))
-                return direct_reject(si, "untracked surface handle");
+                return untracked_handle(si, "surface", insn, i, handle);
             if (a < 255) used[a] = 1;
             if (!buffer && a + 1 < 255) used[a + 1] = 1;
             if ((dim == 4 || dim == 5) && a + 2 < 255) used[a + 2] = 1;
@@ -4486,7 +4495,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             off2 = 0;
             handle_count = bindless ? direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
             if (handle_count == 1) indexed = direct_indexed_handle(insn, n, i, b, stage, &ldc);
-            if (bindless && !handle_count) return direct_reject(si, "untracked texture handle");
+            if (bindless && !handle_count) return untracked_handle(si, "texture", insn, i, b);
             int type = B(insn[i], 28, 3) >> 1;
             int array = B(insn[i], 28, 1), shadow = B(insn[i], 50, 1);
             int read_slot = direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0, bindless, bank,
@@ -4516,7 +4525,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             u32 off = B(insn[i], 36, 13), bank = 0, bank2 = 0, off2 = 0, indexed = 0, ldc = 0;
             int handle_count =
                 bindless ? direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
-            if (bindless && !handle_count) return direct_reject(si, "untracked texture handle");
+            if (bindless && !handle_count) return untracked_handle(si, "texture", insn, i, b);
             if (handle_count == 1) indexed = direct_indexed_handle(insn, n, i, b, stage, &ldc);
             if (direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless, bank, handle_count,
                                       bank2, off2, indexed, ldc) < 0)
@@ -4538,7 +4547,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             u32 off = B(insn[i], 36, 13), bank = 0, bank2 = 0, off2 = 0, indexed = 0, ldc = 0;
             int handle_count =
                 bindless ? direct_track_image_handle_pair(insn, n, i, a, &bank, &off, &bank2, &off2, 0) : 0;
-            if (bindless && !handle_count) return direct_reject(si, "untracked texture handle");
+            if (bindless && !handle_count) return untracked_handle(si, "texture", insn, i, a);
             if (handle_count == 1) indexed = direct_indexed_handle(insn, n, i, a, stage, &ldc);
             int read_slot = direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless, bank,
                                                   handle_count, bank2, off2, indexed, ldc);
@@ -4566,7 +4575,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             u32 off = B(insn[i], 36, 13), bank = 0, bank2 = 0, off2 = 0, indexed = 0, ldc = 0;
             int handle_count =
                 bindless ? direct_track_image_handle_pair(insn, n, i, a, &bank, &off, &bank2, &off2, 0) : 0;
-            if (bindless && !handle_count) return direct_reject(si, "untracked texture handle");
+            if (bindless && !handle_count) return untracked_handle(si, "texture", insn, i, a);
             if (handle_count == 1) indexed = direct_indexed_handle(insn, n, i, a, stage, &ldc);
             u32 qtype = 1, qarray = 0;
             if (!indexed) direct_query_type(insn, n, bindless, bank, off, &qtype, &qarray);
@@ -4590,7 +4599,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             int handle_count =
                 bindless ? direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
             if (handle_count == 1) indexed = direct_indexed_handle(insn, n, i, b, stage, &ldc);
-            if (bindless && !handle_count) return direct_reject(si, "untracked texture handle");
+            if (bindless && !handle_count) return untracked_handle(si, "texture", insn, i, b);
             u32 ty = op->id == O_TLD4S ? 2 : B(insn[i], 28, 3);
             u32 type = ty >> 1, array = ty & 1;
             u32 shadow = B(insn[i], 50, 1);
