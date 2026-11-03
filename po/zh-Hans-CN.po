@@ -5328,15 +5328,15 @@ msgstr "[默认] 标在该值上，任何运行都不会收到它：由游戏的
 
 #: src/common/utilities/setup.c
 msgid "ASTC as BC7 and Memory fit"
-msgstr ""
+msgstr "ASTC as BC7 和 Memory fit"
 
 #: src/common/utilities/setup.c
 msgid "0 was Off"
-msgstr ""
+msgstr "0 原为 关"
 
 #: src/common/utilities/setup.c
 msgid "0 is Auto, the default; Off is 2"
-msgstr ""
+msgstr "0 为 自动，即默认；关 为 2"
 
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"

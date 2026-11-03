@@ -5328,15 +5328,15 @@ msgstr "[padrão] nesse valor, que nenhuma execução recebe: o .ini do jogo o m
 
 #: src/common/utilities/setup.c
 msgid "ASTC as BC7 and Memory fit"
-msgstr ""
+msgstr "ASTC as BC7 e Memory fit"
 
 #: src/common/utilities/setup.c
 msgid "0 was Off"
-msgstr ""
+msgstr "0 era Desligado"
 
 #: src/common/utilities/setup.c
 msgid "0 is Auto, the default; Off is 2"
-msgstr ""
+msgstr "0 é Auto, o padrão; Desligado é 2"
 
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
