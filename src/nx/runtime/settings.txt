@@ -333,6 +333,15 @@ setting Prepare shaders
     help background, used once all are ready. Before starting = a loading screen waits for them and for the shader cache
     help of earlier sessions. Any key, button or tap starts the game at once and the rest is prepared while you play.
     help Esc quits (on Android, back opens the menu)
+setting Compress shader cache
+    key compress_shader_cache
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = the shaders and pipelines saved from earlier sessions are packed with zstd, about 70 shaders at a time:
+    help about a quarter of the space, a few milliseconds more to read when the game starts, and up to 7 ms on the
+    help thread that made the last of each 70 new shaders. 0 = saved as they are made. What is packed is read either way
 setting NCE
     key nce
     int 0 1

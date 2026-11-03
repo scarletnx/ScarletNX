@@ -30,13 +30,17 @@
    read back, packed into one zstd frame and written over themselves as a PF_UNIT record. So the file is its units,
    then the records of the open unit as they were appended, and reading unpacks each unit in its place. A crash while a unit is written
    over its records loses them, as the unit's check then fails, the way a record cut short ends the reading. The
-   shipped file isn't packed: its records are read in place, by where each starts (pf_payload) */
+   shipped file isn't packed: its records are read in place, by where each starts (pf_payload). Whether the main file
+   packs is its pack (compress_shader_cache); what is packed already is read either way */
 #define PF_SHADER  1
 #define PF_PIPE    2
 #define PF_SCAN    3 /* the shipped programs' walk (gpu/shipped_pass.c) read a file, or all of them: two u64s */
 #define PF_SHIPREF 4 /* a shader of the shipped file, by where its record starts there and the record's check */
 #define PF_SOURCE  5 /* what the PF_SHADER record right after it was translated from (PfSource) */
 #define PF_UNIT    6 /* records packed together: a PfUnit, then one zstd frame of them, padded to 8 */
+
+/* PFile.pack: pf_open's file packs its records into units; 0 for none */
+#define PF_PACK_UNITS 1
 #define PF_MAX     (256u << 20) /* past this size nothing more is appended */
 #define PF_REC     16           /* a record's header: type, payload bytes, check */
 /* a shader record: this, then ncbr constant buffer reads ({idx, off, ok, v}, VkCbRead's words) and nspv SPIR-V
@@ -76,8 +80,10 @@ typedef struct {
     u64 size; /* the file's bytes */
     u64 max;  /* past this size nothing more is appended: PF_MAX for 0 */
     int kept; /* pf_open_mapped's file that is there but couldn't be mapped or rewritten: never appended to */
-    u64 open; /* pf_open's file: where the open unit's records start, packed once they reach PF_UNIT_BYTES. 0 in
-                 pf_open_mapped's, which isn't packed */
+    int pack; /* how what is appended is packed, set before the file is opened: PF_PACK_UNITS for pf_open's file,
+                 0 for none */
+    u64 open; /* pf_open's file with PF_PACK_UNITS: where the open unit's records start, packed once they reach
+                 PF_UNIT_BYTES. 0 when nothing is packed into units */
     PFileMap view; /* pf_open_mapped's: the file as it was mapped, its records read from there */
     /* pf_open's files only: the shader records in it, and each module with a record, its number and check, by open
        addressing on the handle (cap a power of two), for pf_pipe */
