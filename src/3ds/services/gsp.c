@@ -566,10 +566,12 @@ static GxStep gx_submit(SnxCtrIpc* c, const uint32_t* a, GxInterrupts* irq) {
         gx_raise(irq, GX_P3D);
     g->pica->regs[SNX_PICA_CMDBUF_TRIGGER] = 0;
     if (r == SNX_CTR_PICA_OK) return GX_DONE;
-    fprintf(stderr, "3ds gpu: the command list at 0x%08x stopped at register 0x%03x: %s\n", pa, g->pica->stop_register,
-            r == SNX_CTR_PICA_FAULT ? "it jumps outside memory"
-            : g->pica->stop_reason  ? g->pica->stop_reason
-                                    : "it is larger than the staging bound");
+    if (snx_ctr_vk()) /* with no device, the queue's stop says why (trigger_queue) */
+        fprintf(stderr, "3ds gpu: the command list at 0x%08x stopped at register 0x%03x: %s\n", pa,
+                g->pica->stop_register,
+                r == SNX_CTR_PICA_FAULT ? "it jumps outside memory"
+                : g->pica->stop_reason  ? g->pica->stop_reason
+                                        : "it is larger than the staging bound");
     c->state = SNX_CTR_IPC_UNSUPPORTED;
     return GX_STOP;
 }
@@ -641,13 +643,13 @@ static void trigger_queue(SnxCtrIpc* c) {
             default: error = GX_ERR_UNKNOWN_COMMAND; break;
         }
         if (step == GX_STOP) {
-            if (id >= 2 && id <= 4 && !snx_ctr_vk()) {
-                /* a fill, display transfer or texture copy needs the device: the IPC line that follows
-                   names the request, not the missing device */
-                fprintf(stderr,
-                        "3ds gpu: GX command 0x%02x stopped, and the Vulkan device did not start "
-                        "(its error is above), so the game cannot draw\n",
-                        (unsigned)id);
+            if (id >= 1 && id <= 4 && !snx_ctr_vk()) {
+                /* a command list, fill, display transfer or texture copy runs on the device: the run ends here, with
+                   why the device did not start as its last line, not with the request's form */
+                const char* why = snx_ctr_vk_error();
+                snprintf(p->stopped, sizeof p->stopped, "GX command 0x%02x needs the 3DS GPU, which did not start%s%s",
+                         (unsigned)id, why[0] ? ": " : "", why);
+                c->state = SNX_CTR_IPC_FAULT;
             }
             stopped = true;
             break;

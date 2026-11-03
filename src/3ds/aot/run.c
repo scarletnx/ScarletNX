@@ -234,6 +234,9 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         printf("%s: blocks=%" PRIu64 "\n", closed ? "Closed" : "Ran its time", executed);
         report_threads(process);
         result = 0;
+    } else if (process->stopped[0]) { /* a service ended it, and says why */
+        snprintf(error, error_size, "%s", process->stopped);
+        result = 3;
     } else {
         snprintf(error, error_size,
                  "%s: pc=0x%08" PRIx32 " exit=%u syndrome=0x%08" PRIx32 " blocks=%" PRIu64 " svcs=%" PRIu64
