@@ -2523,7 +2523,10 @@ static u64 draw_last_vertex(const u32* inline_indices, const DsIndex* ix, int in
         VkBuffer tb;
         u64 to;
         if (n > count) n = count;
-        if (vk_buf_pending(a, n * isz) || vk_compute_gpu_src(a, n * isz, &tb, &to)) return ~0ull;
+        /* indices the GPU wrote and holds aren't read here either: landing them takes a submit and a wait for the GPU,
+           and the draw reads them where their owner holds them (buffer.c buf_get_owned) */
+        if (vk_buf_pending(a, n * isz) || vk_compute_gpu_src(a, n * isz, &tb, &to) || vk_buf_owned(a, n * isz))
+            return ~0ull;
         vk_compute_mem_need(a, n * isz);
         /* the restart index, and all ones where Vulkan restarts instead, mark no vertex: with the restart off its
            index is all ones too */
