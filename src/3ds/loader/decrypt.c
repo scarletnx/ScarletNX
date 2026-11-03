@@ -11,7 +11,8 @@
      0x1B). Both keys' KeyY is the first 16 bytes of the NCCH's signature; each section's counter starts from the
      partition ID and the section's type (1 ExHeader, 2 ExeFS, 3 RomFS), or for NCCH version 1 its byte offset.
    A normal key is the console's key scrambler of KeyX and KeyY: ((KeyX <<< 2) ^ KeyY) + C <<< 87, C the generator
-   constant. Every key and the constant come from the user's aes_keys.txt (Azahar's format), none is in this code.
+   constant. Every key and the constant come from the user's aes_keys.txt (Azahar's format, or the plain key dumps
+   that name the constant generator= rather than generatorConstant=), none is in this code.
    The decrypted CIA's NCCHs say NoCrypto, and its TMD the contents' new hashes, so the loader checks it as any other
    decrypted CIA. A cartridge image (a CCI or a .3ds) and a bare NCCH (.cxi, an .app, homebrew's .hbb) have no CIA
    layer: their NCCHs' own is the same layer a CIA's contents carry, and it is taken off where each NCCH lies, the
@@ -40,7 +41,7 @@ static void key_line(Keys* k, const char* line) {
     if (digits != 32) return;
     unsigned slot;
     char kind[5];
-    if (name == 17 && !strncmp(line, "generatorConstant", 17)) {
+    if ((name == 17 && !strncmp(line, "generatorConstant", 17)) || (name == 9 && !strncmp(line, "generator", 9))) {
         memcpy(k->generator, key, 16);
         k->have_generator = 1;
     } else if (name == 7 && !strncmp(line, "common", 6) && line[6] >= '0' && line[6] <= '5') {
@@ -63,7 +64,8 @@ static bool keys_load(CtrReader* r, const char* path, Keys* k) {
     char line[1024];
     while (fgets(line, sizeof line, f)) key_line(k, line);
     fclose(f);
-    if (!k->have_generator) return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "%s has no generatorConstant", path);
+    if (!k->have_generator) return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "%s has no generator (generator= or "
+                                                                             "generatorConstant=)", path);
     return true;
 }
 /* 128-bit big-endian rotate left by n (0 < n < 128) */

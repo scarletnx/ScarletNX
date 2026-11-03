@@ -59,6 +59,19 @@ def keys_file(path, common0=KEYS['common0']):
     )
 
 
+NAMES = (('generator', 'gen'), ('slot0x2CKeyX', 'x2c'), ('slot0x25KeyX', 'x25'), ('slot0x3DKeyX', 'x3d'),
+         ('common0', 'common0'))
+
+
+def keys_block(keys):
+    return ''.join(f'{name}={keys[key].hex().upper()}\n' for name, key in NAMES)
+
+
+def dump_keys_file(path):
+    """a plain key dump names the constant generator= rather than generatorConstant=: the same keys, a generator= line"""
+    path.write_text('Retail 3DS\n' + keys_block(KEYS))
+
+
 def encrypt_ncch(plain):
     """the NCCH's layer, crypto method 1 (secondary key slot 0x25), version 2 counters"""
     n = bytearray(plain)
@@ -157,6 +170,11 @@ def main():
         keys_file(keys)
         decrypted = run('encrypted', encrypted, keys, 0, 'Decrypted')
         same_content(tree(plain), tree(decrypted))
+        # a plain key dump names the constant generator= rather than generatorConstant=: the same keys decrypt with it
+        dump = root / 'dump_keys.txt'
+        dump_keys_file(dump)
+        dump_decrypted = run('encrypted-dump', encrypted, dump, 0, 'Decrypted')
+        same_content(tree(plain), tree(dump_decrypted))
         # A content region ending 16 bytes into a 64-byte block: the decryption pads before the metadata, and the
         # extraction still matches the plain one.
         odd_application = ncch()
