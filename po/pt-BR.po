@@ -576,7 +576,7 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Pick the prod.keys file."
+msgid "Pick a keys file."
 msgstr ""
 
 #: src/gui/main.c
@@ -2290,6 +2290,11 @@ msgid "No home folder"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "3DS keys to: %s"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Installed"
 msgstr "Instalado"
 
@@ -3566,6 +3571,11 @@ msgstr "prod.keys instalado em %s"
 
 #: src/gui/main.c
 #, c-format
+msgid "; aes_keys.txt to %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "This copy is portable: to install it, first move away %s"
 msgstr "Esta cópia é portátil: para instalá-la, primeiro tire do lugar %s"
 
@@ -3775,6 +3785,10 @@ msgstr "os jogos são extraídos com ele"
 #: src/gui/main.c
 msgid "only some .nsp need it"
 msgstr "só alguns .nsp precisam dele"
+
+#: src/gui/main.c
+msgid "only encrypted 3DS games need it"
+msgstr ""
 
 #: src/gui/main.c
 msgid "nickname"
@@ -4197,6 +4211,18 @@ msgid "M opens the mods and cheats of a recompiled Switch game in focus."
 msgstr ""
 
 #: src/gui/main.c
+msgid "Cannot install aes_keys.txt: neither USERPROFILE nor HOME is set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Cannot install aes_keys.txt: HOME is not set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "aes_keys.txt installed: encrypted 3DS games can be decrypted now."
+msgstr ""
+
+#: src/gui/main.c
 msgid "prod.keys installed: games can be extracted now."
 msgstr "prod.keys instalado: os jogos já podem ser extraídos."
 
@@ -4206,8 +4232,8 @@ msgid "Cannot install %s: %s"
 msgstr "Não foi possível instalar %s: %s"
 
 #: src/gui/main.c
-msgid "Please drop a readable file named prod.keys."
-msgstr "Solte um arquivo legível chamado prod.keys."
+msgid "Please drop a readable file named prod.keys or aes_keys.txt."
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -5571,6 +5597,9 @@ msgstr "Internos do LLVM"
 
 #~ msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
 #~ msgstr "Dica: apelido de 4 a 20 de A-Z a-z 0-9 espaço . _ -"
+
+#~ msgid "Please drop a readable file named prod.keys."
+#~ msgstr "Solte um arquivo legível chamado prod.keys."
 
 #~ msgid "The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores"
 #~ msgstr "As threads que compilam o código do jogo ao recompilar: 0 = uma para cada núcleo do computador"
