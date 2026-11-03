@@ -125,7 +125,7 @@ typedef struct {
     u8 emptyrom[0x200];       /* the empty RomFS of the system archives (emptyrom_init) */
     u8 ngword2rom[0x2000];    /* the synthesized NgWord2 archive 0100000000000823 (filesrom_init) */
     u64 ngword2rom_size;      /* the bytes used in ngword2rom */
-    u8 miimodelrom[0x480000]; /* the generated MiiModel archive 0100000000000802 (filesrom_init, mii_model.c), made
+    u8 miimodelrom[0x500000]; /* the generated MiiModel archive 0100000000000802 (filesrom_init, mii_model.c), made
                                  at its first open: untouched memory until then */
     u64 miimodelrom_size;     /* the bytes used in miimodelrom, 0 before it is made */
     /* the service objects' data */

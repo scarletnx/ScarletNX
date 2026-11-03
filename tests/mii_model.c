@@ -337,11 +337,33 @@ static void check_shapes(const u8* f, u32 size) {
                     CHECK(fabsf(d) < 0.08f && tg[3] == 127);
                 }
             }
-            CHECK(inward * 20 <= nv);
+            /* hair with tails (7, 8) is part tubes, whose sides toward the head face it; a hat part (3, 4) that is no
+               cap (34 and 57 are) is a tie, band, bow or clip, its facing checked by its triangles alone */
+            if (k == 7 || k == 8)
+                CHECK(inward * 10 <= nv * 3);
+            else if ((k != 3 && k != 4) || i == 34 || i == 57)
+                CHECK(inward * 20 <= nv);
             for (a = 0; a < 3; a++) /* the box holds the vertices, to the halves' precision */
                 CHECK(fabsf(box[a] - lo[a]) < 0.05f && fabsf(box[3 + a] - hi[a]) < 0.05f);
             if (k == 1) /* a faceline in the console's frame: chin at 0, its front near +25 */
                 CHECK(lo[1] > -2 && lo[1] < 2 && hi[2] > 20 && hi[2] < 28 && hi[0] < 30 && lo[2] > -25);
+            if (k ==
+                7) { /* the tail styles' tails: long twin tails (126) below the chin on both sides, a side tail (84)
+                             on one side only, the head's other hair styles no lower than the nape */
+                u32 left = 0, right = 0;
+                for (n = 0; n < nv; n++) {
+                    float x = want_half(snx_ld_le16(g_mii_model.raw + 8 * n)),
+                          y = want_half(snx_ld_le16(g_mii_model.raw + 8 * n + 2));
+                    left += x < -26 && y < 30, right += x > 26 && y < 30;
+                }
+                if (i == 126) CHECK(lo[1] < 0 && left > 20 && right > 20);
+                if (i == 84) CHECK((left > 20) != (right > 20));
+                if (i == 0 || i == 33) CHECK(left == 0 && right == 0);
+            }
+            if (k == 3) { /* a tie style's hat part is two ties at the sides, no cap; a cap style's covers the crown */
+                if (i == 126) CHECK(lo[0] < -24 && hi[0] > 24 && hi[1] < 62);
+                if (i == 34 || i == 57) CHECK(hi[1] > 65);
+            }
             /* every index a vertex; every triangle counterclockwise from where its normals face, or flat */
             for (n = 0; n < isz / 2; n += 3) {
                 u16 ix[3];
@@ -403,7 +425,7 @@ int main(void) {
     check_textures(g_mii_model.files[2], sizes[2], 1);
     check_shapes(g_mii_model.files[4], sizes[4]);
     /* the six files with the RomFS's tables fit the room fs.h keeps for them */
-    CHECK(sizes[0] + sizes[2] + sizes[4] + 0x1000 <= 0x480000);
+    CHECK(sizes[0] + sizes[2] + sizes[4] + 0x1000 <= 0x500000);
     if (g_mii_model.fails) return 1;
     printf("PASS generated MiiModel: Low %u, Mid %u, shapes %u bytes\n", sizes[0], sizes[2], sizes[4]);
     return 0;

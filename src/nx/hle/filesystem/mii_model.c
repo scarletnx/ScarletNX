@@ -161,11 +161,46 @@ static u32 tex_variant(u32 kind, u32 i) {
 }
 #define HAIR_VARIANTS 24u
 #define NOSE_VARIANTS 6u
-static u32 hair_variant(u32 style) { return (style * 11u) % HAIR_VARIANTS; }
+/* the hair styles with tails, the console's part list's: twin tails high on the sides, low behind the ears, curled,
+   one ponytail on the side or at the back; each its own hair shape (variants past HAIR_VARIANTS), over the shell
+   variant shell, with the ties its hat part is (for those of them the part list gives a hat) */
+enum { TAIL_TWIN_HIGH = 1, TAIL_TWIN_LOW, TAIL_TWIN_CURL, TAIL_SIDE, TAIL_BACK };
+#define TAIL_STYLES 10u
+static const struct {
+    u8 style, tail, shell;
+} tail_styles[TAIL_STYLES] = {{9, TAIL_BACK, 3},       {19, TAIL_TWIN_LOW, 6},   {29, TAIL_TWIN_CURL, 6},
+                              {78, TAIL_TWIN_HIGH, 9}, {84, TAIL_SIDE, 9},       {97, TAIL_BACK, 4},
+                              {104, TAIL_TWIN_LOW, 7}, {112, TAIL_TWIN_CURL, 6}, {126, TAIL_TWIN_HIGH, 7},
+                              {130, TAIL_BACK, 5}};
+static int tail_of(u32 style) {
+    u32 k;
+    for (k = 0; k < TAIL_STYLES; k++)
+        if (tail_styles[k].style == style) return (int)k;
+    return -1;
+}
+static u32 hair_variant(u32 style) {
+    int t = tail_of(style);
+    return t >= 0 ? HAIR_VARIANTS + (u32)t : (style * 11u) % HAIR_VARIANTS;
+}
+/* the hat part of a hat style, by what it is: a cap (0, the two styles with a patterned texture), the ties of a tail
+   style (1 + its tail_styles index), a headband (HAT_BAND) or a bow at the back of the head or a clip on its side */
+#define HAT_BAND (1u + TAIL_STYLES)
+#define HAT_BOW  (2u + TAIL_STYLES)
+#define HAT_CLIP (3u + TAIL_STYLES)
+static u32 hat_variant(u32 style) {
+    int t = tail_of(style);
+    if (t >= 0) return 1u + (u32)t;
+    if (style == 46 || style == 114) return HAT_BAND;
+    if (style == 26 || style == 109) return HAT_BOW;
+    if (style == 61) return HAT_CLIP;
+    return 0;
+}
 static u32 shape_variant(u32 kind, u32 i) {
     switch (kind) {
         case S_HAIR_NORMAL:
         case S_HAIR_CAP: return hair_variant(i);
+        case S_HAT_NORMAL:
+        case S_HAT_CAP: return hat_variant(i);
         case S_NOSE: return i % NOSE_VARIANTS;
         case S_FACELINE:
         case S_MASK:
@@ -306,10 +341,13 @@ static Vec head_center(const Head* h) { return vec(0, h->cy, h->cz); }
 
 /* ============================================================ shapes */
 
-/* a shape: a grid of ns by nt quads over a parametric surface (shape_at), its vertices' attributes */
+/* a shape: up to three grids (g) of ns by nt quads, each over a parametric surface (shape_at), one after the other
+   in its vertices and triangles; its vertices' attributes */
 enum { A_POS, A_NRM, A_UV, A_TAN, A_COL };
+#define GRIDS_MAX 3u
 typedef struct {
-    u32 kind, variant, ns, nt;
+    u32 kind, variant, grids, g; /* g: the grid shape_at draws */
+    u32 ns[GRIDS_MAX], nt[GRIDS_MAX];
     u32 attrs; /* the attributes present, a bit per A_ */
 } Shape;
 
@@ -318,19 +356,72 @@ typedef struct {
     float thick, front, side, back, part, spikes, hang;
 } Hair;
 static Hair hair_of(u32 v) {
-    static const float fronts[4] = {0.66f, 0.54f, 0.38f, 0.58f};
-    static const float sides[3] = {0.12f, -0.18f, -0.60f};
-    static const float backs[3] = {-0.25f, -0.55f, -1.05f};
-    Hair r;
-    u32 len = v % 3, fringe = (v / 3) % 4, big = v / 12;
-    r.thick = big ? 6.0f : 3.2f + 0.6f * (float)(v % 2);
-    r.front = fronts[fringe];
-    r.side = sides[len];
-    r.back = backs[len];
-    r.part = fringe == 3 ? 0.35f : 0.0f;
-    r.spikes = (v % 7 == 5) ? 1.6f : 0.0f;
-    r.hang = len == 2 ? 6.0f : 0.0f;
-    return r;
+    if (v >= HAIR_VARIANTS) v = tail_styles[v - HAIR_VARIANTS].shell;
+    {
+        static const float fronts[4] = {0.66f, 0.54f, 0.38f, 0.58f};
+        static const float sides[3] = {0.12f, -0.18f, -0.60f};
+        static const float backs[3] = {-0.25f, -0.55f, -1.05f};
+        Hair r;
+        u32 len = v % 3, fringe = (v / 3) % 4, big = v / 12;
+        r.thick = big ? 6.0f : 3.2f + 0.6f * (float)(v % 2);
+        r.front = fronts[fringe];
+        r.side = sides[len];
+        r.back = backs[len];
+        r.part = fringe == 3 ? 0.35f : 0.0f;
+        r.spikes = (v % 7 == 5) ? 1.6f : 0.0f;
+        r.hang = len == 2 ? 6.0f : 0.0f;
+        return r;
+    }
+}
+/* a tail of a tail style (k 0 or 1 of a pair): where it leaves the hair, the way out, how long it falls, its
+   thickness at the root and the tip, and whether it curls */
+typedef struct {
+    Vec root, out;
+    float fall, r0, r1, curl;
+} Tail;
+static Tail tail_of_style(u32 tail, u32 k) {
+    float side = k ? -1.0f : 1.0f;
+    Tail t;
+    t.curl = 0;
+    switch (tail) {
+        case TAIL_TWIN_HIGH: /* long, from high on the sides */
+            t.root = vec(side * 28.0f, 52.0f, -8.0f), t.out = vec(side * 9.0f, 2.0f, -4.0f);
+            t.fall = 64.0f, t.r0 = 4.4f, t.r1 = 1.8f;
+            break;
+        case TAIL_TWIN_LOW:
+        case TAIL_TWIN_CURL: /* from behind the ears, the curled ones in rings down their length */
+            t.root = vec(side * 21.0f, 34.0f, -16.0f), t.out = vec(side * 5.0f, 0, -3.0f);
+            t.fall = tail == TAIL_TWIN_CURL ? 40.0f : 34.0f, t.r0 = 3.8f, t.r1 = tail == TAIL_TWIN_CURL ? 2.4f : 1.4f;
+            t.curl = tail == TAIL_TWIN_CURL ? 0.35f : 0;
+            break;
+        case TAIL_SIDE: /* one, high on one side */
+            t.root = vec(25.0f, 54.0f, -12.0f), t.out = vec(8.0f, 3.0f, -4.0f);
+            t.fall = 52.0f, t.r0 = 4.8f, t.r1 = 1.8f;
+            break;
+        default: /* TAIL_BACK: one, at the back of the head */
+            t.root = vec(0, 46.0f, -28.0f), t.out = vec(0, 1.0f, -6.0f);
+            t.fall = 34.0f, t.r0 = 4.2f, t.r1 = 1.5f;
+            break;
+    }
+    return t;
+}
+static u32 tail_count(u32 tail) { return tail == TAIL_SIDE || tail == TAIL_BACK ? 1 : 2; }
+/* the tail's middle at t (0 its root, 1 its tip): out, then falling, a little back */
+static Vec tail_axis(const Tail* tl, float t) {
+    float o = sinf(clampf(t * 2.5f, 0, 1) * PI_F * 0.5f);
+    return vec(tl->root.x + tl->out.x * o, tl->root.y + tl->out.y * o - tl->fall * t * t * 0.4f - tl->fall * t * 0.6f,
+               tl->root.z + tl->out.z * o - 3.0f * t);
+}
+/* a ring of radius r around the tail's axis at t, at angle a: s around it counterclockwise as the axis runs, so the
+   grid faces out */
+static Vec tail_ring(const Tail* tl, float t, float a, float r) {
+    Vec c = tail_axis(tl, t), d = vsub(tail_axis(tl, t + 0.01f), tail_axis(tl, t - 0.01f)), n1, n2;
+    d = vnorm(d);
+    n1 = vcross(d, vec(0, 0, 1));
+    if (vlen(n1) < 0.2f) n1 = vcross(d, vec(1, 0, 0));
+    n1 = vnorm(n1);
+    n2 = vcross(d, n1);
+    return vadd(c, vadd(vmul(n1, r * cosf(a)), vmul(n2, r * sinf(a))));
 }
 /* the hair's lower edge's elevation at azimuth th: the fringe at the front, the sides at the ears, the back */
 static float hair_edge(const Hair* r, float th) {
@@ -347,9 +438,39 @@ static const Head* base_head(Head* h) {
 /* the cap line a cap form keeps its hair under */
 #define CAP_EDGE 0.30f
 
-/* the shape's point at grid (s, t), both in [0, 1] */
+/* a hat part that is no cap: the ties of a tail style (one ring a tail around its root), a headband over the crown
+   from ear to ear, a bow at the back of the head, a clip on its side */
+static Vec hat_part_at(const Shape* sh, float s, float t) {
+    Head h;
+    if (sh->variant <= TAIL_STYLES) { /* a tie: grid g around tail g's root */
+        Tail tl = tail_of_style(tail_styles[sh->variant - 1].tail, sh->g);
+        float a = s * 2 * PI_F, b = t * 2 * PI_F, big = tl.r0 + 0.5f;
+        Vec c = tail_axis(&tl, 0.06f), ring = vsub(tail_ring(&tl, 0.06f, a, 1.0f), c);
+        Vec d = vnorm(vsub(tail_axis(&tl, 0.07f), tail_axis(&tl, 0.05f)));
+        return vadd(c, vadd(vmul(ring, big + 1.1f * cosf(b)), vmul(d, 1.1f * sinf(b))));
+    }
+    base_head(&h);
+    if (sh->variant == HAT_BAND) {
+        float u = (s - 0.5f) * 2, ph = (1.0f - fabsf(u)) * (PI_F * 0.5f - 0.1f) + 0.1f;
+        Vec p = head_at(&h, u >= 0 ? PI_F * 0.5f : -PI_F * 0.5f, ph);
+        p = vadd(head_center(&h), vmul(vsub(p, head_center(&h)), 1.0f + 6.0f / vlen(vsub(p, head_center(&h)))));
+        return vadd(p, vec(0, 0, (0.5f - t) * 4.0f));
+    }
+    {
+        Vec c = sh->variant == HAT_BOW ? vec(0, 63.0f, -17.0f) : vec(26.0f, 50.0f, 4.0f);
+        float r = sh->variant == HAT_BOW ? 4.0f : 3.0f, th = s * 2 * PI_F, ph = (t - 0.5f) * PI_F;
+        return vadd(c, vec(r * cosf(ph) * sinf(th), r * sinf(ph), r * cosf(ph) * cosf(th)));
+    }
+}
+/* the shape's point at grid (s, t), both in [0, 1], of its grid g */
 static Vec shape_at(const Shape* sh, float s, float t) {
     Head h;
+    if ((sh->kind == S_HAIR_NORMAL || sh->kind == S_HAIR_CAP) && sh->g) { /* a tail */
+        Tail tl = tail_of_style(tail_styles[sh->variant - HAIR_VARIANTS].tail, sh->g - 1);
+        float r = mixf(tl.r0, tl.r1, t) * (1.0f + tl.curl * sinf(t * 10.0f * PI_F));
+        return tail_ring(&tl, t, s * 2 * PI_F, r);
+    }
+    if ((sh->kind == S_HAT_NORMAL || sh->kind == S_HAT_CAP) && sh->variant) return hat_part_at(sh, s, t);
     switch (sh->kind) {
         case S_FACELINE: h = head_of(sh->variant); return head_at(&h, (s - 0.5f) * 2 * PI_F, (t - 0.5f) * PI_F);
         case S_MASK: { /* the face's front, a hair above it */
@@ -423,9 +544,22 @@ static Vec shape_at(const Shape* sh, float s, float t) {
             return vec(mixf(-30.0f, 30.0f, s), mixf(-15.0f, 15.0f, t), 0);
     }
 }
-/* the point the shape's normals point away from */
-static Vec shape_center(const Shape* sh) {
+/* the point the shape's normals point away from at (s, t): a tail's or a tie's middle there, a ball's center, else
+   the head's or the part's own */
+static Vec shape_center(const Shape* sh, float s, float t) {
     Head h;
+    if ((sh->kind == S_HAIR_NORMAL || sh->kind == S_HAIR_CAP) && sh->g) {
+        Tail tl = tail_of_style(tail_styles[sh->variant - HAIR_VARIANTS].tail, sh->g - 1);
+        return tail_axis(&tl, t);
+    }
+    if ((sh->kind == S_HAT_NORMAL || sh->kind == S_HAT_CAP) && sh->variant && sh->variant != HAT_BAND) {
+        if (sh->variant <= TAIL_STYLES) {
+            Tail tl = tail_of_style(tail_styles[sh->variant - 1].tail, sh->g);
+            Vec c = tail_axis(&tl, 0.06f);
+            return vadd(c, vmul(vsub(tail_ring(&tl, 0.06f, s * 2 * PI_F, 1.0f), c), tl.r0 + 0.5f));
+        }
+        return sh->variant == HAT_BOW ? vec(0, 63.0f, -17.0f) : vec(26.0f, 50.0f, 4.0f);
+    }
     switch (sh->kind) {
         case S_NOSE: return vec(0, 1.5f, -12.0f);
         case S_NOSELINE:
@@ -439,7 +573,7 @@ static Vec shape_normal(const Shape* sh, float s, float t, Vec p) {
     const float e = 1.0f / 256;
     Vec ds = vsub(shape_at(sh, s + e, t), shape_at(sh, s - e, t));
     Vec dt = vsub(shape_at(sh, s, t + e), shape_at(sh, s, t - e));
-    Vec n = vcross(ds, dt), out = vsub(p, shape_center(sh));
+    Vec n = vcross(ds, dt), out = vsub(p, shape_center(sh, s, t));
     if (vlen(n) < 1e-6f) return vnorm(out); /* a pole */
     n = vnorm(n);
     return vdot(n, out) < 0 ? vmul(n, -1) : n;
@@ -481,47 +615,39 @@ static void shape_uv(const Shape* sh, Vec p, float s, float t, float uv[2]) {
     }
 }
 static Shape shape_of(u32 kind, u32 variant) {
-    Shape sh;
+    Shape sh = {0};
+    u32 g, ns = 1, nt = 1, grids = 1;
     sh.kind = kind;
     sh.variant = variant;
     sh.attrs = 1u << A_POS | 1u << A_NRM | 1u << A_UV;
     switch (kind) {
-        case S_FACELINE:
-            sh.ns = 32;
-            sh.nt = 18;
-            break;
-        case S_MASK:
-            sh.ns = 22;
-            sh.nt = 16;
-            break;
+        case S_FACELINE: ns = 32, nt = 18; break;
+        case S_MASK: ns = 22, nt = 16; break;
         case S_HAIR_NORMAL:
         case S_HAIR_CAP:
-            sh.ns = 32;
-            sh.nt = 10;
+            ns = 32, nt = 10;
             sh.attrs = 1u << A_POS | 1u << A_NRM | 1u << A_TAN | 1u << A_COL;
+            if (variant >= HAIR_VARIANTS) grids = 1 + tail_count(tail_styles[variant - HAIR_VARIANTS].tail);
             break;
         case S_HAT_NORMAL:
         case S_HAT_CAP:
-            sh.ns = 24;
-            sh.nt = 6;
+            if (!variant)
+                ns = 24, nt = 6;
+            else if (variant <= TAIL_STYLES)
+                ns = 10, nt = 6, grids = tail_count(tail_styles[variant - 1].tail);
+            else
+                ns = variant == HAT_BAND ? 16 : 8, nt = variant == HAT_BAND ? 1 : 6;
             break;
-        case S_BEARD:
-            sh.ns = 16;
-            sh.nt = 6;
-            break;
-        case S_NOSE:
-            sh.ns = 8;
-            sh.nt = 8;
-            break;
+        case S_BEARD: ns = 16, nt = 6; break;
+        case S_NOSE: ns = 8, nt = 8; break;
         case S_FOREHEAD_NORMAL:
-        case S_FOREHEAD_CAP:
-            sh.ns = 8;
-            sh.nt = 1;
-            break;
-        default:
-            sh.ns = 1;
-            sh.nt = 1;
-            break; /* the quads */
+        case S_FOREHEAD_CAP: ns = 8, nt = 1; break;
+        default: break; /* the quads */
+    }
+    sh.grids = grids;
+    for (g = 0; g < grids; g++) {
+        sh.ns[g] = g && (kind == S_HAIR_NORMAL || kind == S_HAIR_CAP) ? 10 : ns;
+        sh.nt[g] = g && (kind == S_HAIR_NORMAL || kind == S_HAIR_CAP) ? 12 : nt;
     }
     return sh;
 }
@@ -529,7 +655,11 @@ static Shape shape_of(u32 kind, u32 variant) {
 /* a shape's decompressed bytes: its attributes, a vertex each, then its 16-bit triangle list on 4 bytes */
 static u32 shape_raw_size(const Shape* sh, u32 off[5], u32 size[5], u32* idx_off, u32* idx_size) {
     static const u8 bytes[5] = {8, 4, 4, 4, 4}; /* four halves, 10:10:10:2, two halves, four snorm8, four unorm8 */
-    u32 nv = (sh->ns + 1) * (sh->nt + 1), at = 0, a;
+    u32 nv = 0, quads = 0, at = 0, a, g;
+    for (g = 0; g < sh->grids; g++) {
+        nv += (sh->ns[g] + 1) * (sh->nt[g] + 1);
+        quads += sh->ns[g] * sh->nt[g];
+    }
     for (a = 0; a < 5; a++) {
         off[a] = size[a] = 0;
         if (!(sh->attrs & (1u << a))) continue;
@@ -538,61 +668,66 @@ static u32 shape_raw_size(const Shape* sh, u32 off[5], u32 size[5], u32* idx_off
         at += size[a];
     }
     *idx_off = (at + 3) & ~3u;
-    *idx_size = sh->ns * sh->nt * 6 * 2;
+    *idx_size = quads * 6 * 2;
     return *idx_off + *idx_size;
 }
 static u32 snorm10(float v) { return (u32)(i32)lroundf(clampf(v, -1, 1) * 511.0f) & 0x3ffu; }
 static u8 snorm8(float v) { return (u8)(i8)lroundf(clampf(v, -1, 1) * 127.0f); }
 /* the shape's bytes into raw, and its bounding box */
-static void shape_write(const Shape* sh, u8* raw, float box[6]) {
-    u32 off[5], size[5], idx_off, idx_size, i, j, n = 0, w = sh->ns + 1;
+static void shape_write(const Shape* shape, u8* raw, float box[6]) {
+    u32 off[5], size[5], idx_off, idx_size, i, j, n = 0, g, base, w;
+    Shape grid = *shape;
+    const Shape* sh = &grid;
     shape_raw_size(sh, off, size, &idx_off, &idx_size);
     box[0] = box[1] = box[2] = 1e30f;
     box[3] = box[4] = box[5] = -1e30f;
-    for (j = 0; j <= sh->nt; j++)
-        for (i = 0; i <= sh->ns; i++, n++) {
-            float s = (float)i / (float)sh->ns, t = (float)j / (float)sh->nt, uv[2];
-            Vec p = shape_at(sh, s, t), nr = shape_normal(sh, s, t, p);
-            u8* q = raw + off[A_POS] + 8 * n;
-            snx_st_le16(q, half_of(p.x));
-            snx_st_le16(q + 2, half_of(p.y));
-            snx_st_le16(q + 4, half_of(p.z));
-            snx_st_le16(q + 6, half_of(1.0f));
-            snx_st_le32(raw + off[A_NRM] + 4 * n, snorm10(nr.x) | snorm10(nr.y) << 10 | snorm10(nr.z) << 20 | 1u << 30);
-            if (size[A_UV]) {
-                shape_uv(sh, p, s, t, uv);
-                snx_st_le16(raw + off[A_UV] + 4 * n, half_of(uv[0]));
-                snx_st_le16(raw + off[A_UV] + 4 * n + 2, half_of(uv[1]));
+    for (grid.g = 0; grid.g < grid.grids; grid.g++)
+        for (j = 0; j <= sh->nt[sh->g]; j++)
+            for (i = 0; i <= sh->ns[sh->g]; i++, n++) {
+                float s = (float)i / (float)sh->ns[sh->g], t = (float)j / (float)sh->nt[sh->g], uv[2];
+                Vec p = shape_at(sh, s, t), nr = shape_normal(sh, s, t, p);
+                u8* q = raw + off[A_POS] + 8 * n;
+                snx_st_le16(q, half_of(p.x));
+                snx_st_le16(q + 2, half_of(p.y));
+                snx_st_le16(q + 4, half_of(p.z));
+                snx_st_le16(q + 6, half_of(1.0f));
+                snx_st_le32(raw + off[A_NRM] + 4 * n,
+                            snorm10(nr.x) | snorm10(nr.y) << 10 | snorm10(nr.z) << 20 | 1u << 30);
+                if (size[A_UV]) {
+                    shape_uv(sh, p, s, t, uv);
+                    snx_st_le16(raw + off[A_UV] + 4 * n, half_of(uv[0]));
+                    snx_st_le16(raw + off[A_UV] + 4 * n + 2, half_of(uv[1]));
+                }
+                if (size[A_TAN]) { /* the hair's strands run down its surface, the direction its shading streaks */
+                    Vec down = vsub(vec(0, -1, 0), vmul(nr, -nr.y)), tg;
+                    if (vlen(down) < 0.05f) down = vsub(vec(0, 0, -1), vmul(nr, -nr.z)); /* at the crown */
+                    tg = vnorm(down);
+                    raw[off[A_TAN] + 4 * n] = snorm8(tg.x);
+                    raw[off[A_TAN] + 4 * n + 1] = snorm8(tg.y);
+                    raw[off[A_TAN] + 4 * n + 2] = snorm8(tg.z);
+                    raw[off[A_TAN] + 4 * n + 3] = 127;
+                }
+                if (size[A_COL]) { /* the hair's shading parameters: none of its strands set apart */
+                    raw[off[A_COL] + 4 * n + 1] = 255;
+                    raw[off[A_COL] + 4 * n + 3] = 255;
+                }
+                if (p.x < box[0]) box[0] = p.x;
+                if (p.y < box[1]) box[1] = p.y;
+                if (p.z < box[2]) box[2] = p.z;
+                if (p.x > box[3]) box[3] = p.x;
+                if (p.y > box[4]) box[4] = p.y;
+                if (p.z > box[5]) box[5] = p.z;
             }
-            if (size[A_TAN]) { /* the hair's strands run down its surface, the direction its shading streaks */
-                Vec down = vsub(vec(0, -1, 0), vmul(nr, -nr.y)), tg;
-                if (vlen(down) < 0.05f) down = vsub(vec(0, 0, -1), vmul(nr, -nr.z)); /* at the crown */
-                tg = vnorm(down);
-                raw[off[A_TAN] + 4 * n] = snorm8(tg.x);
-                raw[off[A_TAN] + 4 * n + 1] = snorm8(tg.y);
-                raw[off[A_TAN] + 4 * n + 2] = snorm8(tg.z);
-                raw[off[A_TAN] + 4 * n + 3] = 127;
-            }
-            if (size[A_COL]) { /* the hair's shading parameters: none of its strands set apart */
-                raw[off[A_COL] + 4 * n + 1] = 255;
-                raw[off[A_COL] + 4 * n + 3] = 255;
-            }
-            if (p.x < box[0]) box[0] = p.x;
-            if (p.y < box[1]) box[1] = p.y;
-            if (p.z < box[2]) box[2] = p.z;
-            if (p.x > box[3]) box[3] = p.x;
-            if (p.y > box[4]) box[4] = p.y;
-            if (p.z > box[5]) box[5] = p.z;
-        }
     /* two triangles a quad: s runs to the right and t up as the surface faces out, so (a, b, c) and (a, c, d) are
-       counterclockwise from the side its normals face, as the console's parts are */
-    for (j = 0, n = 0; j < sh->nt; j++)
-        for (i = 0; i < sh->ns; i++) {
-            u16 a = (u16)(j * w + i), b = (u16)(a + 1), c = (u16)(a + w + 1), d = (u16)(a + w);
-            const u16 tri[6] = {a, b, c, a, c, d};
-            u32 k;
-            for (k = 0; k < 6; k++) snx_st_le16(raw + idx_off + 2 * n++, tri[k]);
-        }
+       counterclockwise from the side its normals face, as the console's parts are; each grid's after the last's */
+    for (g = 0, n = 0, base = 0; g < sh->grids; base += (sh->ns[g] + 1) * (sh->nt[g] + 1), g++)
+        for (j = 0, w = sh->ns[g] + 1; j < sh->nt[g]; j++)
+            for (i = 0; i < sh->ns[g]; i++) {
+                u16 a = (u16)(base + j * w + i), b = (u16)(a + 1), c = (u16)(a + w + 1), d = (u16)(a + w);
+                const u16 tri[6] = {a, b, c, a, c, d};
+                u32 k;
+                for (k = 0; k < 6; k++) snx_st_le16(raw + idx_off + 2 * n++, tri[k]);
+            }
 }
 
 /* the hair transforms a style: where a game puts a hat's front, side and top on the hair, each a place and a
@@ -1006,7 +1141,7 @@ typedef struct {
     u32 off, raw, stored;
     float box[6]; /* a shape's bounding box */
 } Placed;
-#define VARIANTS_MAX 24u
+#define VARIANTS_MAX (HAIR_VARIANTS + TAIL_STYLES)
 
 static u32 texture_file(u32 mid, u8* b) {
     Out o;
