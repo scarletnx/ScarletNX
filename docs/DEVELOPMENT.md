@@ -10,6 +10,7 @@
 * [Run / diagnose](#run--diagnose)
 * [Profiling](#profiling)
 * [Shaders](#shaders)
+* [Vertex input](#vertex-input)
 * [SVCs](#svcs)
 * [Provenance](#provenance)
 
@@ -323,6 +324,33 @@ that one is tried first. A new opcode is a row there (its `O_` name then exists 
 `ctest -R 'shaderdec|shader_decode'` checks the spec and decodes every row back to itself.
 `[Debug] shader_corpus=` in the game's INI does the same for every run. Where the game gets no command line
 (Android), its INI's `[Debug] diag=1` keeps each shader's entry in `captures/shaders` beside the game, for the same `snx-shaderc`.
+
+## Vertex input
+
+A pipeline is made per key (`src/nx/gpu/vk/pipeline.c`, `PipeKey`), and the vertex layout a program is drawn with,
+its attributes' formats and offsets and its bindings' strides and divisors, is part of the key unless it is dynamic
+state. Where the GPU's driver has `VK_EXT_vertex_input_dynamic_state` and its `vertexInputDynamicState` feature,
+each draw sets its layout in the command buffer instead (`vkCmdSetVertexInputEXT`), and one pipeline serves every layout
+of a program: the pipelines kept across runs of one game, 1984 with the layout in the key, come to 1218. The setting
+is `vertex_input_dynamic_state` ([Settings](SETTINGS.md#graphics)): `auto`, `on` or `off`, with the drivers known to
+draw it wrong (`src/nx/gpu/vk/vertex_input.c`) taking the layout in the key under `auto`. The log's
+`vulkan: vertex_input_dynamic_state=` line says which a run takes, with the device, its driver and version.
+
+A draw sets the layout when it differs from the one its command buffer has. A new command buffer, a pipeline that
+holds its own layout (the multisample resolves, the on-screen controls) and the renderer's own draws (a clear of some
+color components, which reads no vertices) leave the next draw to set it again. The pipelines kept for the next run
+(`<id>.vkshaders`) are made again when the choice changes: the file's key holds it.
+
+```sh
+"$games/Game/Game" --vertex_input_dynamic_state=off   # a pipeline per layout, to compare
+ctest --test-dir build -R 'vk_vertex_input|vulkan_headless'
+```
+
+`vk_vertex_input` checks the setting's values, its row read from a game's `.ini` written before it, the bans against
+stand-in devices and the log line of each case. `vulkan_headless` (`-DSNX_TEST_VULKAN=ON`) watches what every draw
+of its checks finds in its command buffer: a draw with a dynamic layout and none set fails it. Its vertex input check
+draws one program with three layouts in one command buffer, and `vulkan_headless_vertex_input_off` runs every check
+again with the layout in the key.
 
 ## SVCs
 
