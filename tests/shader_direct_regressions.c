@@ -1775,12 +1775,35 @@ static void issue126_shader_modes(void) {
     ShaderInfo info;
     size_t words = 0;
     u32* code = translate(clobbered_handle, 3, ST_FS, &info, &words, 1);
-    if (code || strcmp(info.first_unsupported, "untracked texture handle R6 of TEX.B at 68"))
+    if (code || strcmp(info.first_unsupported, "untracked texture handle R6 of TEX.B at 68: TEX.B at 60"))
         fprintf(stderr, "overwritten handle: '%s'\n", info.first_unsupported);
-    check(!code && info.unsupported && !strcmp(info.first_unsupported, "untracked texture handle R6 of TEX.B at 68"),
+    check(!code && info.unsupported &&
+              !strcmp(info.first_unsupported, "untracked texture handle R6 of TEX.B at 68: TEX.B at 60"),
           "a handle overwritten by a texture result is not tracked, and the refusal names the register, the "
-          "instruction and its offset");
+          "instruction, its offset and the last write of the register");
     free(code);
+    /* a handle no constant buffer holds: the refusal says where it came from, and its value when that is a constant
+       (a MOV of RZ, a MOV32I's handle, a flat varying, no write at all) */
+    const u64 tex_r6 = 0xdeb8000000070004ull | (0xfull << 31) | (2ull << 28) | (1ull << 37) | (6ull << 20);
+    const u64 zero_handle[] = {0x5c9807800ff70006ull, tex_r6};
+    const u64 imm_handle[] = {mov32i(6, 0x00100105u), tex_r6};
+    const u64 varying_handle[] = {0xe083ff8a0ff7ff06ull, tex_r6};
+    const struct {
+        const u64* program;
+        u32 count;
+        const char* reason;
+    } from[] = {{zero_handle, 2, "untracked texture handle R6 of TEX.B at 60: MOV (reg) at 58 (the constant 0)"},
+                {imm_handle, 2, "untracked texture handle R6 of TEX.B at 60: MOV32I at 58 (the constant 0x100105)"},
+                {varying_handle, 2, "untracked texture handle R6 of TEX.B at 60: IPA at 58"},
+                {&tex_r6, 1, "untracked texture handle R6 of TEX.B at 58: no write before"}};
+    for (int k = 0; k < 4; k++) {
+        code = translate(from[k].program, from[k].count, ST_FS, &info, &words, 1);
+        if (code || strcmp(info.first_unsupported, from[k].reason))
+            fprintf(stderr, "handle %d: '%s'\n", k, info.first_unsupported);
+        check(!code && info.unsupported && !strcmp(info.first_unsupported, from[k].reason),
+              "an untracked handle's refusal names its last write, and the value a constant write gives");
+        free(code);
+    }
     const u64 zero_mask_handle[] = {
         0x4c98078800070006ull,
         0xdeb8000000070004ull | (2ull << 28) | (1ull << 37) | (6ull << 20),

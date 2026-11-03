@@ -82,7 +82,7 @@ typedef struct {
     u32 gbuf_cbuf_off[16]; /* the global buffers found, by where a constant buffer holds their address (SH_GBUF_*) */
     int ngbuf;
     int unsupported; /* instructions or forms translation refused */
-    char first_unsupported[96]; /* the longest: an untracked global memory base with its writer */
+    char first_unsupported[96]; /* the longest: an untracked handle with its writer's constant (93 bytes) */
     u32 cs_local[3];
     int shared_size;
     u32 gbuf_wmask; /* global buffers the program writes */
