@@ -86,7 +86,11 @@ u32 g_vk_present;
    replaced (a change in a word's high bits shows, and two don't cancel), at about three times its speed. On x86-64
    xxHash's dispatcher runs the AVX-512, AVX2 or SSE2 loop the CPU has (60 GB/s on a Zen 4 core, against XXH64's 19),
    from a build for any x86-64. Buffers' checks hashed hundreds of megabytes a frame in one game */
-#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86) /* as xxh3.c builds it */
+#if defined(SNX_XXHASH_SYSTEM) /* the distribution's library, which has no dispatcher */
+#include "xxhash.h"
+#define SNX_XXH3(p, n) XXH3_64bits(p, n)
+#define SNX_XXH128(p, n) XXH3_128bits(p, n)
+#elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86) /* as xxh3.c builds it */
 #include "xxh_x86dispatch.h"
 #define SNX_XXH3(p, n) XXH3_64bits_dispatch(p, n)
 #define SNX_XXH128(p, n) XXH3_128bits_dispatch(p, n)
