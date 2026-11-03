@@ -18,6 +18,7 @@
 #include "llvm_steps.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "nx/loader/codegen_view.h"
+#include <llvm-c/IRReader.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -550,7 +551,14 @@ static void compile(Module* mod, const Program* p, SnxCodegen* codegen, char opt
     LLVMSetInitializer(stale, LLVMConstNull(bytes));
     LLVMSetVisibility(stale, LLVMHiddenVisibility);
     snx_ir_stale_checks(mod->steps.ir);
+    mod->steps.ir->check = 1; /* ir_check_promoted on every function it promotes (O1 and above) */
     for (i = 0; i < count; ++i) llvm_steps_add_function(&mod->steps, codegen, &codegen->functions[i]);
+    if (mod->steps.ir->check_failures) {
+        char what[400];
+        snprintf(what, sizeof(what), "the promotion checker: %lu problems, the first: %s",
+                 mod->steps.ir->check_failures, mod->steps.ir->check_why);
+        fail(p->name, what);
+    }
     if (opt != '0') structure(p, mod->steps.ir, mod->steps.fns[p->entry_function]);
     if (mod->steps.count == mod->steps.cap) {
         mod->steps.cap = mod->steps.cap ? mod->steps.cap * 2 : 8;
@@ -1129,13 +1137,173 @@ static void cases(int portable) {
     check(p, portable);
 }
 
+/* ---- the checker over many programs ---- */
+
+static u64 next_random(u64* state) {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    return *state;
+}
+/* A seeded program of three functions, words of the kinds the cases use at random (register writes and reads, lane
+   writes, flag writes, branches either way, direct and register calls, SVC, DC ZVA, the exclusive pair, MSR FPCR, FP),
+   compiled at O2 with ir_check_promoted on each function: never run, so any register and branch will do. The
+   promotion of every one must pass the checker */
+static void corpus(int portable, unsigned programs) {
+    char error[1024], what[400];
+    unsigned failed = 0;
+    unsigned long functions = 0;
+    for (unsigned seed = 1; seed <= programs; ++seed) {
+        Program* p = begin("checker corpus");
+        u64 rng = 0x9E3779B97F4A7C15ull * seed;
+        SnxProgram program = {0};
+        SnxModuleImage module = {0};
+        SnxCodegen codegen;
+        SnxFde ranges[FUNCS];
+        LlvmSteps steps;
+        size_t starts[3] = {0, 60, 120};
+        p->n = 0;
+        p->nstarts = 0;
+        for (unsigned f = 0; f < 3; ++f) {
+            function(p);
+            while (p->n < starts[f] + 58) {
+                unsigned r = (unsigned)(next_random(&rng) % 29), q = (unsigned)(next_random(&rng) % 29);
+                unsigned v = (unsigned)(next_random(&rng) % 32), kind = (unsigned)(next_random(&rng) % 20);
+                size_t here = p->n, lo = starts[f], target = lo + (size_t)(next_random(&rng) % 58);
+                switch (kind) {
+                    case 0:
+                    case 1:
+                    case 2: put(p, 0x91000000u | (kind + 1) << 10 | q << 5 | r); break; /* ADD imm */
+                    case 3: put(p, 0xCA000000u | v << 16 | q << 5 | r); break;          /* EOR */
+                    case 4: put(p, 0xF1000400u | r << 5 | r); break;                    /* SUBS #1 */
+                    case 5:
+                        put(p,
+                            0x54000000u | (u32)((target - here) & 0x7FFFF) << 5 | (unsigned)(next_random(&rng) % 14));
+                        break;
+                    case 6: put(p, 0xB4000000u | (u32)((target - here) & 0x7FFFF) << 5 | r); break; /* CBZ */
+                    case 7:
+                        put(p, 0x94000000u | (u32)((starts[(f + 1 + next_random(&rng) % 2) % 3] - here) & 0x3FFFFFF));
+                        break;
+                    case 8: put(p, 0xD63F0000u | q << 5); break;                                 /* BLR */
+                    case 9: put(p, 0xD4000001u | (u32)(next_random(&rng) % 64) << 5); break;     /* SVC */
+                    case 10: put(p, 0xD50B7420u | r); break;                                     /* DC ZVA */
+                    case 11: put(p, 0xC85F7C00u | q << 5 | r); break;                            /* LDXR */
+                    case 12: put(p, 0xC8007C00u | v << 16 | q << 5 | r); break;                  /* STXR */
+                    case 13: put(p, 0x4E001C00u | ((v & 3) << 3 | 4) << 16 | q << 5 | v); break; /* INS S */
+                    case 14: put(p, 0x6E205800u | (q & 31) << 5 | v); break;                     /* MVN V */
+                    case 15: put(p, 0xD51B4200u | r); break;                                     /* MSR NZCV */
+                    case 16: put(p, 0xD53B4200u | r); break;                                     /* MRS NZCV */
+                    case 17: put(p, 0x1E601800u | (v & 31) << 16 | (q & 31) << 5 | r); break;    /* FDIV D */
+                    case 18: put(p, 0x4EA1D800u | (q & 31) << 5 | v); break;                     /* FRECPE V.4S */
+                    default: put(p, 0xD51B4400u | r); break;                                     /* MSR FPCR */
+                }
+            }
+            put(p, 0xD65F03C0u); /* RET */
+            put(p, 0xD65F03C0u);
+        }
+        for (size_t i = 0; i < p->n; ++i)
+            for (unsigned b = 0; b < 4; ++b) g_promote_sync.image[4 * i + b] = (unsigned char)(p->w[i] >> 8 * b);
+        module.name = (char*)"promote_sync"; /* the loader's field, never written through here */
+        module.image = g_promote_sync.image;
+        module.image_size = 4 * p->n;
+        module.base = SNX_CODE_BASE;
+        module.size = 0x1000;
+        module.text_size = (SnxU32)(4 * p->n);
+        for (size_t i = 0; i < 3; ++i) {
+            ranges[i].start = 4 * (SnxU64)starts[i];
+            ranges[i].size = 4 * (SnxU64)((i + 1 < 3 ? starts[i + 1] : p->n) - starts[i]);
+        }
+        module.fde = ranges;
+        module.fde_count = 3;
+        program.modules = &module;
+        program.module_count = 1;
+        program.npdm.title_id = 0x123456789ABCDEF0ull;
+        program.npdm.stack = 0x100000;
+        program.npdm.prio = 44;
+        program.npdm.core = 2;
+        if (snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1)) {
+            fail("checker corpus", "analyze a program");
+            continue;
+        }
+        if (llvm_steps_begin_opt(&steps, 1, portable, '2', error, sizeof(error))) {
+            fail("checker corpus", error);
+            snx_codegen_free(&codegen);
+            continue;
+        }
+        steps.ir->check = 1;
+        for (size_t i = 0; i < codegen.function_count; ++i)
+            llvm_steps_add_function(&steps, &codegen, &codegen.functions[i]);
+        functions += steps.ir->stats.enabled ? 0 : codegen.function_count;
+        if (steps.ir->check_failures && !failed++) {
+            snprintf(what, sizeof(what), "seed %u: %lu problems, the first: %s", seed, steps.ir->check_failures,
+                     steps.ir->check_why);
+            fail("checker corpus", what);
+        }
+        llvm_steps_end(&steps);
+        snx_codegen_free(&codegen);
+    }
+    if (failed) {
+        snprintf(what, sizeof(what), "%u of %u programs fail the checker", failed, programs);
+        fail("checker corpus", what);
+    }
+    printf("promotion checker: %u random programs, %lu functions, %u failing\n", programs, functions, failed);
+}
+
+/* --check UNIT.ll...: code units kept unpromoted (scarletnx -r ... -O 0 --keep-ir), every guest function promoted as at
+   O2 in the unit's order and checked; the problems, by unit */
+static int check_units(int count, char** paths) {
+    char error[1024];
+    unsigned long problems = 0, functions = 0;
+    if (snx_ir_init(error, sizeof(error))) {
+        fprintf(stderr, "%s\n", error);
+        return 2;
+    }
+    for (int a = 0; a < count; ++a) {
+        SnxIr* ir = snx_ir_new("check", '2', error, sizeof(error));
+        LLVMMemoryBufferRef buffer;
+        LLVMModuleRef unit;
+        char* message = NULL;
+        unsigned long before = 0, n = 0;
+        if (!ir) {
+            fprintf(stderr, "%s\n", error);
+            return 2;
+        }
+        if (LLVMCreateMemoryBufferWithContentsOfFile(paths[a], &buffer, &message) ||
+            LLVMParseIRInContext(ir->ctx, buffer, &unit, &message)) {
+            fprintf(stderr, "%s: %s\n", paths[a], message ? message : "not LLVM IR");
+            return 2;
+        }
+        LLVMDisposeModule(ir->mod);
+        ir->mod = unit;
+        for (LLVMValueRef fn = LLVMGetFirstFunction(unit); fn; fn = LLVMGetNextFunction(fn)) {
+            size_t length = 0;
+            const char* name = LLVMGetValueName2(fn, &length);
+            if (length < 3 || name[0] != 'F' || name[1] != '_' || LLVMIsDeclaration(fn)) continue;
+            ir->fn = fn;
+            ir->c = LLVMGetParam(fn, 0);
+            ir_promote_registers(ir, fn);
+            ir_check_promoted(ir, fn);
+            ++n;
+        }
+        printf("%s: %lu functions promoted, %lu problems%s%s\n", paths[a], n, ir->check_failures - before,
+               ir->check_failures ? ", the first: " : "", ir->check_failures ? ir->check_why : "");
+        problems += ir->check_failures;
+        functions += n;
+        snx_ir_free(ir);
+    }
+    printf("promotion checker: %lu functions, %lu problems\n", functions, problems);
+    return problems != 0;
+}
+
 int main(int argc, char** argv) {
     int portable = argc > 1 && !strcmp(argv[1], "--portable");
+    if (argc > 2 && !strcmp(argv[1], "--check")) return check_units(argc - 2, argv + 2);
     if (argc > 2 || (argc == 2 && !portable)) {
-        fprintf(stderr, "usage: snx-test-llvm-promote-sync [--portable]\n");
+        fprintf(stderr, "usage: snx-test-llvm-promote-sync [--portable] | --check UNIT.ll...\n");
         return 2;
     }
     cases(portable);
+    corpus(portable, 200);
     printf("register promotion at every boundary%s: %d cases, %s\n", portable ? " (portable)" : "",
            g_promote_sync.cases, g_promote_sync.failures ? "FAILED" : "passed");
     return g_promote_sync.failures != 0;

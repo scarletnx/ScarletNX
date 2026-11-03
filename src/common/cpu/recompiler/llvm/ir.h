@@ -151,6 +151,11 @@ typedef struct SnxIr {
     SnxIrStats stats;
     SnxU64 dump_pc, dump_instruction_pc;
     unsigned dump_function : 1, dump_active : 1; /* the setting ir_dump_pc's host diagnostics, never generated code */
+    /* tests and tools: snx_ir_emit runs ir_check_promoted on each function it promotes, which counts the problems it
+       finds in check_failures and describes the first in check_why */
+    unsigned check : 1;
+    unsigned long check_failures;
+    char check_why[256];
     LLVMTypeRef t_void, t_i1, t_i8, t_i16, t_i32, t_i64, t_i128, t_ptr, t_guest;
     /* the function being emitted: its CPU* and the guest memory base (u8* const M=c->mem) */
     LLVMValueRef fn, c, M;
@@ -259,6 +264,10 @@ LLVMValueRef snx_ir_static_step(SnxIr* ir, SnxU32 word, SnxU64 pc, SnxU64 featur
 /* the emitted function's accesses to the registers in the CPU structure onto locals, which the CPU structure gets
    back around every call and return (ir_promote.c). snx_ir_emit runs it at O1 and above */
 void ir_promote_registers(SnxIr* ir, LLVMValueRef fn);
+/* Checks a function ir_promote_registers promoted, before its cleanup (the locals still allocas), along every path:
+   every site finds each register it can see held in the CPU structure, and every read of a register finds its value
+   (ir_promote.c). Counts the problems in ir->check_failures, the first described in ir->check_why */
+void ir_check_promoted(SnxIr* ir, LLVMValueRef fn);
 /* the promoted function's slots made SSA values and what that leaves trivial removed, as it is emitted (ir.c) */
 void ir_clean_function(SnxIr* ir, LLVMValueRef fn);
 /* Accumulates one emitted function's call counts when stats.enabled is set. */
