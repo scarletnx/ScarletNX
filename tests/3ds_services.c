@@ -288,9 +288,10 @@ int main(void) {
         ctr_request(p, utility, 6);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 0) == 0x4b0082);
+        /* the NotifyToWait before each later wakeup (a library applet's) succeeds and leaves the startup done */
         ctr_request(p, ready, 2);
-        ctr_send(p, apt, SNX_CTR_SVC_UNSUPPORTED, 0);
-        assert(p->apt_phase == 4);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x430040 && !ctr_command_word(p, 1) && p->apt_phase == 4);
         ctr_request(p, receive, 3);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 1) == 0xc8a0cfef && p->apt_phase == 4);

@@ -512,6 +512,22 @@ extracted tree. Once the module is ready the driver copies itself into the folde
 game's runtime, unless the copy there is the same program. The GUI uses this same
 driver path, not a separate engine.
 
+The software keyboard (`src/3ds/services/swkbd.c`) is the one library applet the
+runtime plays, in the applet's place as Azahar's HLE one does. A game that asks for a
+text through it (a name, a password) is answered at once, with no box over the game to
+ask the player in: `swkbd_text` when it is set, else the game's own initial text, else the
+console's user name (the user's nickname, `Player` without one), cut to the game's most
+characters and checked against its input rule and filters. A text that breaks one is
+answered with Cancel where the keyboard has one. A game that checks the text itself
+(the callback filter) gets it first, and its answer closes the keyboard or lets the text
+through. The log says what was answered and why (`3ds swkbd: ...`), with the user
+name's length in place of the name. APT answers each step a game takes:
+PrepareToStartLibraryApplet, IsRegistered, the Request for the capture block and its
+Response, StartLibraryApplet, the NotifyToWait before the wakeup, and the WakeupByExit
+the game wakes with, which carries the answer. Any other library applet (the Mii
+selector, the error display) is one the runtime does not have: preparing it answers as
+an unknown command does.
+
 A launch runs until the game exits or its window is closed, as a Switch game does.
 `--max-blocks N` stops it after N native blocks instead. A larger-image block may
 execute up to 32 instructions, so this is not a cycle or exact instruction budget.
@@ -694,6 +710,12 @@ and Unicorn 2.1.4's ARM11 MPCore model are test references, not runtime engines.
 Stage 2b2 process mappings/BSS policy refer to Azahar `src/core/loader/ncch.cpp`
 and kernel process layout at the same revision; the new image/module/compiler/
 dispatch implementation is project C code, not an adapted Azahar CPU engine.
+The software keyboard and APT's parameter and library applet commands port
+`hle/applets/swkbd.{cpp,h}`, `frontend/applets/swkbd.cpp` and
+`hle/service/apt/{apt,applet_manager}.cpp` at Azahar `ac4a97e27723a501fbd79db75e94a5a8b3cbb8b1`
+(GPL-2.0-or-later): the configuration's layout, the result codes, the Request,
+Message and Finalize steps, the default keyboard's answer with the user name and its
+checks; the C implementation is new.
 Stage 2b4 references GPL-2.0-or-later kernel `svc.cpp`, `errors.h`,
 `handle_table.cpp`, `address_arbiter.cpp`, `config_mem.*`, `memory.cpp` and
 `process.cpp` at the same revision for SVC register/result semantics, object
