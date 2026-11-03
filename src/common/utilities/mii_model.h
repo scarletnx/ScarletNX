@@ -15,6 +15,7 @@
 #ifndef SNX_MII_MODEL_H
 #define SNX_MII_MODEL_H
 #include "common/cpu/aarch64/cpu.h"
+#include "common/utilities/mii_db.h"
 
 #define SNX_MII_MODEL_DATA_ID 0x0100000000000802ull
 #define SNX_MII_MODEL_FILES   6
@@ -26,5 +27,12 @@ void snx_mii_model_name(u32 i, char name[32]);
 u32 snx_mii_model_same(u32 i);
 /* file i, into out (zeroed, at least its size), or only measured with out NULL: its size in bytes */
 u32 snx_mii_model_write(u32 i, u8* out);
+
+/* A Mii's picture (a nn::mii::CharInfo) as the launcher and acc show a user's: a bust from the front, side x side
+   pixels of RGBA8 (row after row, alpha 255) in look's colors, drawn on the CPU from this model's own parts: the head,
+   hair (and its tails and ties) and nose rasterized, the eyes, brows and mouth drawn on the face in 2D where the
+   mask's texture puts them, over the favorite color's light background and a shirt of it. side 16 to 1024: 0, else
+   -1 with nothing drawn */
+int snx_mii_picture(const u8 charinfo[SNX_MII_CHARINFO], const SnxMiiLook* look, int side, u8* rgba);
 
 #endif

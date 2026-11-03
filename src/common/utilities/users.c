@@ -3,6 +3,7 @@
 #include "common/utilities/users.h"
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/mii_db.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,7 @@ SnxUser g_users[SNX_USERS_MAX];
 int g_user_count;
 static int g_user_selected;            /* g_users' index of the user the game runs as */
 static unsigned char* g_user_pictures; /* every user's picture, one after another */
+static char g_user_notes[1024];        /* snx_users_notes */
 
 void snx_users_uid_text(const uint64_t uid[2], char text[33]) {
     snprintf(text, 33, "%016llx%016llx", (unsigned long long)uid[0], (unsigned long long)uid[1]);
@@ -535,6 +537,7 @@ int snx_users_begin(const uint64_t uid[2], char* why, size_t why_size) {
     u->uid[0] = uid[0];
     u->uid[1] = uid[1];
     strcpy(u->nickname, USERS_FIRST_NAME);
+    u->picture_mii = 1; /* no users/<uid>.jpg yet: its picture is its Mii's, the database's first */
     u->unsaved = 1;
     return 0;
 }
@@ -628,6 +631,46 @@ int snx_users_set_data(const char* dir, int number, const unsigned char data[SNX
     memcpy(g_users[number - 1].user_data, data, SNX_USERS_DATA);
     return 0;
 }
+int snx_users_set(const char* dir, int number, const char* key, const char* value, char* why, size_t why_size) {
+    int mii = -1;
+    if (!strcmp(key, "nickname")) return snx_users_rename(dir, number, value, why, why_size);
+    if (!strcmp(key, "mii")) {
+        if ((mii = snx_mii_db_find(value)) < 0) {
+            snprintf(why, why_size, "mii=%s is no Mii of the database", value);
+            return -1;
+        }
+    } else if (!strcmp(key, "picture")) {
+        if (strcmp(value, "mii") && strcmp(value, "file")) {
+            snprintf(why, why_size, "picture=%s is neither mii nor file", value);
+            return -1;
+        }
+    } else {
+        snprintf(why, why_size, "%s is not a setting: nickname, mii, picture", key);
+        return -1;
+    }
+    if (users_set_key(dir, number, key, value, why, why_size)) return -1;
+    if (mii >= 0)
+        g_users[number - 1].mii = (uint8_t)mii;
+    else
+        g_users[number - 1].picture_mii = !strcmp(value, "mii");
+    return 0;
+}
+const char* snx_users_notes(void) { return g_user_notes; }
+/* user i's Mii and picture from what users.ini said (NULL: nothing), a line in g_user_notes for each not taken as
+   read: the value read and the one in effect. Neither ever stops anything */
+static void users_mii(int i, const char* mii, const char* picture) {
+    SnxUser* u = &g_users[i];
+    size_t at = strlen(g_user_notes);
+    int found = mii ? snx_mii_db_find(mii) : -1,
+        word = picture && (!strcmp(picture, "mii") || !strcmp(picture, "file"));
+    u->mii = (uint8_t)(found < 0 ? 0 : found);
+    u->picture_mii = word ? !strcmp(picture, "mii") : !u->picture_size;
+    if (found >= 0 && word) return;
+    snprintf(g_user_notes + at, sizeof g_user_notes - at, "users: [user%d] mii=%s%s: %s; picture=%s%s: %s\n", i + 1,
+             mii ? mii : "(none)", mii && found < 0 ? ", no Mii of the database" : "", snx_mii_db_name(u->mii),
+             picture ? picture : "(none)", picture && !word ? ", neither mii nor file" : "",
+             u->picture_mii ? "mii" : "file");
+}
 /* user 1 alone, as without users.ini: what a users.ini that is refused leaves */
 static void users_reset(void) {
     free(g_user_pictures);
@@ -645,6 +688,9 @@ int snx_users_load(const char* dir, int selected, char* why, size_t why_size) {
     size_t size;
     SnxIni ini;
     int count = 1, i, j, n, rc = -1;
+    /* each user's mii= and picture= as read: NULL for none (pointers into text) */
+    const char *mii_read[SNX_USERS_MAX] = {0}, *picture_read[SNX_USERS_MAX] = {0};
+    g_user_notes[0] = 0;
     free(g_user_pictures);
     g_user_pictures = NULL;
     memset(g_users, 0, sizeof g_users);
@@ -685,8 +731,13 @@ int snx_users_load(const char* dir, int selected, char* why, size_t why_size) {
                              value, 2 * SNX_USERS_DATA);
                     goto done;
                 }
+            } else if (!strcmp(key, "mii")) {
+                mii_read[n - 1] = value;
+            } else if (!strcmp(key, "picture")) {
+                picture_read[n - 1] = value;
             } else {
-                snprintf(why, why_size, "%s: [user%d] %s is not a setting: uid, nickname, user_data", path, n, key);
+                snprintf(why, why_size, "%s: [user%d] %s is not a setting: uid, nickname, user_data, mii, picture", path,
+                         n, key);
                 goto done;
             }
         }
@@ -720,6 +771,7 @@ int snx_users_load(const char* dir, int selected, char* why, size_t why_size) {
     }
     g_user_selected = selected - 1;
     rc = users_read_pictures(dir, why, why_size);
+    for (i = 0; !rc && i < g_user_count; i++) users_mii(i, mii_read[i], picture_read[i]);
 done:
     if (rc) users_reset(); /* nothing half read stays: the caller stops the game */
     free(text);

@@ -2,8 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* MiiModel generated in code (mii_model.h): every shape a parametric surface, every texture drawn from distance
    functions, each in the console's layout so that the SDK's resource loader and shaders take it. */
-#include "nx/hle/filesystem/mii_model.h"
-#include "nx/gpu/texture/blocklinear.h"
+#include "common/utilities/mii_model.h"
 #include "common/utilities/endian.h"
 #include <math.h>
 #include <stdio.h>
@@ -1075,20 +1074,28 @@ static void astc_block(const u8 t[16][4], u8 out[16]) {
 }
 
 /* ---- the block linear layout of a texture's levels */
+/* a GOB is 64 bytes by 8 rows (docs/BLOCKLINEAR.md); inside it byte x of row y is at mii_gob_x(x) + mii_gob_y(y) */
+#define MII_GOB_X     64u
+#define MII_GOB_Y     8u
+#define MII_GOB_SHIFT 9
+static u32 mii_gob_x(u32 x) { return ((x & 32) << 3) | ((x & 16) << 1) | (x & 15); }
+static u32 mii_gob_y(u32 y) { return (((y & 7) >> 1) << 6) | ((y & 1) << 4); }
+static u64 mii_gobs_x(u32 width_bytes) { return ((u64)width_bytes + MII_GOB_X - 1) / MII_GOB_X; }
+static u64 mii_block_rows(u32 rows, u32 bh) { return (((u64)rows + MII_GOB_Y - 1) / MII_GOB_Y + (1u << bh) - 1) >> bh; }
 
 /* a level's block height (log2 GOBs): level 0's the least that holds its rows, at most 16 GOBs; a smaller level's
    halves while half of it still holds the level's rows */
 static u32 level_bh(u32 rows0, u32 rows) {
     u32 bh = 0;
-    while (bh < 4 && (GOB_SIZE_Y << bh) < rows0) bh++;
-    while (bh > 0 && rows <= (GOB_SIZE_Y << bh) / 2) bh--;
+    while (bh < 4 && (MII_GOB_Y << bh) < rows0) bh++;
+    while (bh > 0 && rows <= (MII_GOB_Y << bh) / 2) bh--;
     return bh;
 }
 static u32 tex_bpb(u32 fmt) { return fmt == FMT_BC4 ? 8 : 16; }
 static u32 level_size(const TexGeom* g, u32 l) {
     u32 w = g->w >> l ? g->w >> l : 1, h = g->h >> l ? g->h >> l : 1;
     u32 bx = (w + 3) / 4, by = (h + 3) / 4, rows0 = (g->h + 3) / 4, bh = level_bh(rows0, by);
-    return (u32)(bl_gobs_x(bx * tex_bpb(g->fmt)) * GOB_SIZE_X * bl_block_rows(by, bh) * (GOB_SIZE_Y << bh));
+    return (u32)(mii_gobs_x(bx * tex_bpb(g->fmt)) * MII_GOB_X * mii_block_rows(by, bh) * (MII_GOB_Y << bh));
 }
 static u32 tex_raw_size(const TexGeom* g) {
     u32 l, n = 0;
@@ -1102,7 +1109,7 @@ static void tex_write(u32 kind, u32 v, const TexGeom* g, u8* raw) {
     for (l = 0; l < g->mips; l++) {
         u32 w = g->w >> l ? g->w >> l : 1, h = g->h >> l ? g->h >> l : 1;
         u32 bx = (w + 3) / 4, by = (h + 3) / 4, bh = level_bh((g->h + 3) / 4, by);
-        u64 gobs_x = bl_gobs_x(bx * bpb);
+        u64 gobs_x = mii_gobs_x(bx * bpb);
         float aa = 1.4f / (float)h;
         u32 i, j;
         for (j = 0; j < by; j++)
@@ -1125,9 +1132,8 @@ static void tex_write(u32 kind, u32 v, const TexGeom* g, u8* raw) {
                     if (g->fmt == FMT_BC5) bc4_block(ch[1], block + 8);
                 }
                 /* the block's bytes: whole in one 16-byte run of a GOB row */
-                at = (((u64)(j >> (3 + bh)) * gobs_x + (xb >> 6)) << (GOB_SIZE_SHIFT + bh)) +
-                     ((u64)((j >> 3) & ((1u << bh) - 1)) << GOB_SIZE_SHIFT) + gob_x_offset(xb & 63) +
-                     gob_y_offset(j & 7);
+                at = (((u64)(j >> (3 + bh)) * gobs_x + (xb >> 6)) << (MII_GOB_SHIFT + bh)) +
+                     ((u64)((j >> 3) & ((1u << bh) - 1)) << MII_GOB_SHIFT) + mii_gob_x(xb & 63) + mii_gob_y(j & 7);
                 memcpy(raw + at, block, bpb);
             }
         raw += level_size(g, l);
@@ -1276,3 +1282,164 @@ void snx_mii_model_name(u32 i, char name[32]) {
 }
 u32 snx_mii_model_same(u32 i) { return i == 1 || i == 3 || i == 5 ? i - 1 : i; }
 u32 snx_mii_model_write(u32 i, u8* out) { return i < 4 ? texture_file(i >= 2, out) : shape_file(out); }
+
+/* ============================================================ a Mii's picture */
+
+/* the picture's window: x from -42 to 42, y from -8 to 76 (the chin at 0, the hair's top near 70), seen from +z */
+#define PIC_X0   (-42.0f)
+#define PIC_Y1   76.0f
+#define PIC_SPAN 84.0f
+enum { PIC_NONE, PIC_SKIN, PIC_FACE, PIC_HAIR, PIC_TIE }; /* what a pixel shows: the face takes the features */
+typedef struct {
+    int side;
+    float scale;
+    float* z;   /* side * side depths, nearest kept */
+    u8* what;   /* PIC_ each */
+    float* lit; /* its shading */
+} Pic;
+/* the triangle a, b, c (normals na, nb, nc) into the depth buffer as what, its back left out */
+static void pic_triangle(Pic* p, Vec a, Vec b, Vec c, Vec na, Vec nb, Vec nc, u8 what) {
+    float ax = (a.x - PIC_X0) * p->scale, ay = (PIC_Y1 - a.y) * p->scale, bx = (b.x - PIC_X0) * p->scale,
+          by = (PIC_Y1 - b.y) * p->scale, cx = (c.x - PIC_X0) * p->scale, cy = (PIC_Y1 - c.y) * p->scale;
+    float area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+    int x0, x1, y0, y1, x, y;
+    Vec light = vnorm(vec(0.3f, 0.5f, 0.8f));
+    if (fabsf(area) < 1e-6f) return;
+    x0 = (int)floorf(fminf(ax, fminf(bx, cx))), x1 = (int)ceilf(fmaxf(ax, fmaxf(bx, cx)));
+    y0 = (int)floorf(fminf(ay, fminf(by, cy))), y1 = (int)ceilf(fmaxf(ay, fmaxf(by, cy)));
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > p->side - 1) x1 = p->side - 1;
+    if (y1 > p->side - 1) y1 = p->side - 1;
+    for (y = y0; y <= y1; y++)
+        for (x = x0; x <= x1; x++) {
+            float px = (float)x + 0.5f, py = (float)y + 0.5f;
+            float w0 = ((bx - px) * (cy - py) - (cx - px) * (by - py)) / area;
+            float w1 = ((cx - px) * (ay - py) - (ax - px) * (cy - py)) / area;
+            float w2 = 1.0f - w0 - w1, z;
+            size_t i = (size_t)y * (size_t)p->side + (size_t)x;
+            Vec n;
+            if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+            z = w0 * a.z + w1 * b.z + w2 * c.z;
+            if (z <= p->z[i]) continue;
+            n = vnorm(vadd(vadd(vmul(na, w0), vmul(nb, w1)), vmul(nc, w2)));
+            if (n.z < 0) continue; /* its back */
+            p->z[i] = z;
+            p->what[i] = what;
+            p->lit[i] = 0.55f + 0.45f * fmaxf(0, vdot(n, light));
+        }
+}
+/* a shape's every grid into the picture, moved by at and mirrored in x with flip */
+static void pic_shape(Pic* p, Shape sh, Vec at, int flip, u8 what) {
+    for (sh.g = 0; sh.g < sh.grids; sh.g++) {
+        u32 i, j, ns = sh.ns[sh.g], nt = sh.nt[sh.g];
+        for (j = 0; j < nt; j++)
+            for (i = 0; i < ns; i++) {
+                float s0 = (float)i / (float)ns, s1 = (float)(i + 1) / (float)ns, t0 = (float)j / (float)nt,
+                      t1 = (float)(j + 1) / (float)nt;
+                Vec q[4], n[4];
+                const float st[4][2] = {{s0, t0}, {s1, t0}, {s1, t1}, {s0, t1}};
+                u32 k;
+                for (k = 0; k < 4; k++) {
+                    q[k] = shape_at(&sh, st[k][0], st[k][1]);
+                    n[k] = shape_normal(&sh, st[k][0], st[k][1], q[k]);
+                    q[k] = vadd(q[k], at);
+                    if (flip) q[k].x = -q[k].x, n[k].x = -n[k].x;
+                }
+                pic_triangle(p, q[0], q[1], q[2], n[0], n[1], n[2], what);
+                pic_triangle(p, q[0], q[2], q[3], n[0], n[2], n[3], what);
+            }
+    }
+}
+/* the color a face pixel at (x, y) takes from the features drawn on it: eyes, brows and mouth where the CharInfo puts
+   them (our own reading of its fields), over skin; ty the faceline's rise */
+static void pic_features(const u8* c, const SnxMiiLook* look, float x, float y, float ty, float aa, float rgb[3]) {
+    float eye_y = 34.0f + ty - ((float)c[0x3a] - 12.0f);
+    int side, k;
+    for (side = -1; side <= 1; side += 2) {
+        /* the eye: its texture's middle where the eye goes, mirrored for the Mii's left; G its white, B its iris */
+        float w = 12.0f * (1.0f + 0.1f * ((float)c[0x36] - 4.0f)), h = w * 128.0f / 152.0f;
+        float ex = (float)side * (8.0f + 0.9f * (float)c[0x39]), u = (x - ex) / w * (float)side * -1.0f + 0.5f;
+        float v = (eye_y - y) / h + 0.5f, col[4];
+        if (u >= 0 && u <= 1 && v >= 0 && v <= 1) {
+            tex_eye(tex_variant(T_EYE, c[0x34]), u * 152.0f / 128.0f, v, aa / h, col);
+            for (k = 0; k < 3; k++) {
+                float want = (look->eye[k] / 255.0f) * col[2] + col[1] + 0.08f * fmaxf(0, col[3] - col[1] - col[2]);
+                rgb[k] = rgb[k] * (1 - col[3]) + fminf(1, want) * col[3];
+            }
+        }
+        /* the brow above it, its thick end toward the nose */
+        w = 12.0f * (1.0f + 0.1f * ((float)c[0x3d] - 4.0f)), h = w * 128.0f / 144.0f;
+        ex = (float)side * (8.0f + 0.9f * (float)c[0x40]);
+        u = (x - ex) / w * (float)side * -1.0f + 0.5f;
+        v = (eye_y + 8.0f - 0.8f * ((float)c[0x41] - 10.0f) - y) / h + 0.5f;
+        if (u >= 0 && u <= 1 && v >= 0 && v <= 1) {
+            float a =
+                tex_value(T_EYEBROW, tex_variant(T_EYEBROW, c[0x3b]), u * 144.0f / 128.0f, v, aa / h, 144.0f / 128.0f);
+            for (k = 0; k < 3; k++) rgb[k] = rgb[k] * (1 - a) + (look->hair[k] / 255.0f) * a;
+        }
+    }
+    { /* the mouth: R its lips, G its teeth, the rest of it dark */
+        float w = 16.0f * (1.0f + 0.1f * ((float)c[0x47] - 4.0f)), h = w * 128.0f / 176.0f, col[4];
+        float u = x / w + 0.5f, v = (16.0f + ty - ((float)c[0x49] - 13.0f) - y) / h + 0.5f;
+        if (u >= 0 && u <= 1 && v >= 0 && v <= 1) {
+            tex_mouth(tex_variant(T_MOUTH, c[0x45]), u * 176.0f / 128.0f, v, aa / h, col);
+            for (k = 0; k < 3; k++) {
+                float want = (look->mouth[k] / 255.0f) * col[0] + col[1] + 0.1f * fmaxf(0, col[3] - col[0] - col[1]);
+                rgb[k] = rgb[k] * (1 - col[3]) + fminf(1, want) * col[3];
+            }
+        }
+    }
+}
+int snx_mii_picture(const u8 charinfo[SNX_MII_CHARINFO], const SnxMiiLook* look, int side, u8* rgba) {
+    const u8* c = charinfo;
+    u32 face = c[0x2d] % FACELINES, style = c[0x31] % HAIR_STYLES, nose = c[0x42] % 18u, n, i;
+    float tf[9], ty, aa;
+    Pic p;
+    u8* block;
+    if (side < 16 || side > 1024) return -1;
+    n = (u32)side * (u32)side;
+    block = (u8*)malloc((size_t)n * (sizeof(float) * 2 + 1)); /* the depths, the shading, then what each shows */
+    if (!block) return -1;
+    p.side = side;
+    p.scale = (float)side / PIC_SPAN;
+    p.z = (float*)(void*)block;
+    p.lit = p.z + n;
+    p.what = block + (size_t)n * sizeof(float) * 2;
+    for (i = 0; i < n; i++) p.z[i] = -1e30f, p.what[i] = PIC_NONE, p.lit[i] = 1;
+    faceline_transform(face, tf);
+    ty = tf[1];
+    aa = PIC_SPAN / (float)side;
+    pic_shape(&p, shape_of(S_FACELINE, face), vec(0, 0, 0), 0, PIC_FACE);
+    if (shape_present(S_NOSE, nose))
+        pic_shape(&p, shape_of(S_NOSE, shape_variant(S_NOSE, nose)), vec(0, tf[4], tf[5]), 0, PIC_SKIN);
+    if (shape_present(S_HAIR_NORMAL, style))
+        pic_shape(&p, shape_of(S_HAIR_NORMAL, hair_variant(style)), vec(0, ty, 0), c[0x33] & 1, PIC_HAIR);
+    if (shape_present(S_HAT_NORMAL, style))
+        pic_shape(&p, shape_of(S_HAT_NORMAL, hat_variant(style)), vec(0, ty, 0), c[0x33] & 1, PIC_TIE);
+    for (i = 0; i < n; i++) {
+        float x = PIC_X0 + ((float)(i % (u32)side) + 0.5f) / p.scale,
+              y = PIC_Y1 - ((float)(i / (u32)side) + 0.5f) / p.scale;
+        float rgb[3], light = 1.0f - 0.25f * (float)(i / (u32)side) / (float)side;
+        u32 k;
+        const uint8_t* col = p.what[i] == PIC_HAIR ? look->hair : p.what[i] == PIC_TIE ? look->favorite : look->skin;
+        for (k = 0; k < 3; k++) /* the background: the favorite color lightened, darker toward the bottom */
+            rgb[k] = (0.7f + 0.3f * (look->favorite[k] / 255.0f)) * light;
+        if (p.what[i] == PIC_NONE) {
+            /* the shirt over the shoulders, the neck above it */
+            float sx = x / 34.0f, sy = (y + 34.0f) / 30.0f;
+            if (sx * sx + sy * sy < 1.0f && y < 4.0f)
+                for (k = 0; k < 3; k++) rgb[k] = look->favorite[k] / 255.0f * (0.85f + 0.15f * (1 - sx * sx));
+            else if (fabsf(x) < 7.0f && y < 6.0f && y > -6.0f)
+                for (k = 0; k < 3; k++) rgb[k] = look->skin[k] / 255.0f * 0.8f;
+        } else {
+            for (k = 0; k < 3; k++) rgb[k] = col[k] / 255.0f;
+            if (p.what[i] == PIC_FACE) pic_features(c, look, x, y, ty, aa, rgb);
+            for (k = 0; k < 3; k++) rgb[k] *= p.lit[i];
+        }
+        for (k = 0; k < 3; k++) rgba[4 * i + k] = (u8)lroundf(clampf(rgb[k], 0, 1) * 255.0f);
+        rgba[4 * i + 3] = 255;
+    }
+    free(block);
+    return 0;
+}

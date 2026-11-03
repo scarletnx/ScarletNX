@@ -462,7 +462,7 @@ if(TARGET hactool_internals)
     snx_swipc(snx-test-fs-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc hle/filesystem/fs.swipc)
     # fs.c reads a game's dump in place through the driver's container.c and hactool
     target_sources(snx-test-fs-service PRIVATE "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c"
-                                               "${PROJECT_SOURCE_DIR}/src/nx/hle/filesystem/mii_model.c")
+)
     target_link_libraries(snx-test-fs-service PRIVATE scarletnx-common hactool_internals)
     add_test(NAME filesystem_raw COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> raw)
     add_test(NAME filesystem_addon_overlay COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> addon-overlay)
@@ -2084,7 +2084,8 @@ add_test(NAME astc_decode COMMAND snx-test-astc)
 # the generated MiiModel archive (hle/filesystem/mii_model.c, which the test includes): its tables against the
 # console's part list and layout, every part's zlib stream, its textures decoded by the CPU references against what
 # they were drawn from, its shapes' attributes and triangles
-add_executable(snx-test-mii-model mii_model.c support/astc.c support/bcn.c)
+add_executable(snx-test-mii-model mii_model.c support/astc.c support/bcn.c
+               "${PROJECT_SOURCE_DIR}/src/common/utilities/mii_db.c")
 snx_test_target(snx-test-mii-model 99)
 target_include_directories(snx-test-mii-model PRIVATE "${PROJECT_SOURCE_DIR}/src")
 if(NOT WIN32)

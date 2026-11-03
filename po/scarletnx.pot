@@ -2862,6 +2862,15 @@ msgid "Its nickname, as the games show it: 1 to 32 bytes, no control character, 
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "User %d Mii"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Its Mii, which the games get as the user's and its picture shows unless it has a picture file"
+msgstr ""
+
+#: src/gui/main.c
 msgid "System driver"
 msgstr ""
 
@@ -3235,11 +3244,21 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "User %d's new nickname is not written: %s"
+msgid "User %d's Mii is not written: %s"
 msgstr ""
 
 #: src/gui/main.c
 msgid "no users/ folder"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's Mii is %s now"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's new nickname is not written: %s"
 msgstr ""
 
 #: src/gui/main.c

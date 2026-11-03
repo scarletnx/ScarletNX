@@ -11544,7 +11544,7 @@ int main(int argc, char** argv) {
                 render(&app);
                 shows(&app, "User 2", rgb(app.theme.ink)); /* the focused group's rows beside it */
                 key(&app, SDLK_RETURN);
-                assert(app.form == GUI_FORM_USERS && gui_editor_rows(&app.editor) == 3 &&
+                assert(app.form == GUI_FORM_USERS && gui_editor_rows(&app.editor) == 5 &&
                        !strcmp(app.users_form.plays, "User 1: Aogo"));
                 render(&app);
                 shows(&app, "Current user User 1: Aogo", rgb(app.theme.page)); /* focused: on YoRHa's bar */
@@ -11595,6 +11595,25 @@ int main(int argc, char** argv) {
                     assert(!app.confirm.shown && !strcmp(app.users_form.nick[0], "Aogo") &&
                            !strcmp(app.user_name, "Aogo"));
                 }
+                /* each user's Mii under its nickname, Baguette without one, Left and Right round the Mii database's:
+                   users.ini's mii= written, the head's picture drawn from it (the user has no picture file) */
+                assert(app.users_form.mii[0] == 0 && app.user_mii == 0);
+                key(&app, SDLK_DOWN);
+                assert(app.editor.row == 2);
+                render(&app);
+                shows(&app, "User 1 Mii", rgb(app.theme.page));
+                shows(&app, "Baguette", rgb(app.theme.page));
+                key(&app, SDLK_RIGHT);
+                assert(!strcmp(app.editor.note, "User 1's Mii is Leek Girl now") && g_users[0].mii == 1 &&
+                       app.user_mii == 1);
+                kept = (char*)snx_read_file(ini, &size);
+                assert(kept && strstr(kept, "[user1]\nnickname=Aogo\nmii=Leek Girl\n[user2]"));
+                free(kept);
+                render(&app);
+                shows(&app, "Leek Girl", rgb(app.theme.page));
+                key(&app, SDLK_LEFT);
+                assert(!strcmp(app.editor.note, "User 1's Mii is Baguette now") && g_users[0].mii == 0);
+                key(&app, SDLK_UP);
                 key(&app, SDLK_ESCAPE);
                 assert(app.form == GUI_FORM_SETTINGS && app.editor.row == g);
                 key(&app, SDLK_ESCAPE);

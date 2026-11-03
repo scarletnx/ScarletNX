@@ -22,7 +22,7 @@
 
 /* Including the production file exposes its service constructors without test hooks in the runtime. */
 #include "nx/hle/filesystem/fs.c"
-#include "nx/hle/filesystem/mii_model.h"
+#include "common/utilities/mii_model.h"
 #include "nx/hle/hle.c"
 #include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 

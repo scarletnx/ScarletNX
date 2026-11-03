@@ -2865,6 +2865,15 @@ msgid "Its nickname, as the games show it: 1 to 32 bytes, no control character, 
 msgstr "昵称，按游戏中的显示：1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
+#, c-format
+msgid "User %d Mii"
+msgstr "用户 %d 的 Mii"
+
+#: src/gui/main.c
+msgid "Its Mii, which the games get as the user's and its picture shows unless it has a picture file"
+msgstr "它的 Mii：游戏把它当作该用户的 Mii，没有头像文件时头像也显示它"
+
+#: src/gui/main.c
 msgid "System driver"
 msgstr ""
 
@@ -3238,12 +3247,22 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "User %d's new nickname is not written: %s"
-msgstr "用户 %d 的新昵称未写入：%s"
+msgid "User %d's Mii is not written: %s"
+msgstr "用户 %d 的 Mii 未写入：%s"
 
 #: src/gui/main.c
 msgid "no users/ folder"
 msgstr "没有 users/ 文件夹"
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's Mii is %s now"
+msgstr "用户 %d 的 Mii 现在是 %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's new nickname is not written: %s"
+msgstr "用户 %d 的新昵称未写入：%s"
 
 #: src/gui/main.c
 #, c-format

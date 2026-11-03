@@ -541,16 +541,23 @@ uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e
 nickname=Xuji
 ```
 
-`uid`, `nickname` and `user_data` are the keys: `user_data` is the profile's UserData a program stored (its icon, colour
-and Mii), 256 hex digits, empty or left out for zeros; any other key, a section out of order or twice, or a line that is
-no key stops the game and says why. The launcher's Settings > User renames a user (Enter types its nickname, the rule
-above checked) and picks the one the games play as; the file's other lines stay as they are. A user's picture is
-`users/<uid>.jpg`, the bytes the account service keeps (a JPEG, 256x256 as the console's, from its editor), at most 128
-KiB, read when the game starts; without one, or with an empty file, it is Wimsy, and a launcher that cannot draw it says
-so and shows Wimsy. The game plays as the user its `.ini`'s `user_uid` names by its uid, empty for `[user1]`
-(`--user_uid=<uid>` for one run): with one user, the game picks it on its own; with more, the game's user selector gets
-that user. Each user's Account saves are in the data folder's `save/user.<uid>/<title ID>/`, every save of a game in the
-data folder's `save/` as the console keeps them (`save_layout=global`, the default, [FILESYSTEM](FILESYSTEM.md)); with
+`uid`, `nickname`, `user_data`, `mii` and `picture` are the keys: `user_data` is the profile's UserData a program stored
+(its icon, colour and Mii), 256 hex digits, empty or left out for zeros; any other key, a section out of order or twice,
+or a line that is no key stops the game and says why. `mii` is the user's Mii, one of the Mii database's by its name:
+`Baguette` (the default), `Leek Girl`, `Phone Girl`, `Alex`, `Sam`, `Kai`, `Robin`, `Jamie`, `Taylor`, `Morgan` or
+`Riley`, as written. A game that takes the database's first Mii as the player's takes it. `picture` is `mii`, the
+user's picture drawn from that Mii, or `file`, `users/<uid>.jpg`; without the key it is `file` for a user with that
+file and `mii` for one without. Neither ever stops the game: no key, no users.ini, a name the database does not hold or
+another word is the default, and the game's log and the launcher's say what was read and what is in effect. The
+launcher's Settings > User renames a user (Enter types its nickname, the rule above checked), picks each user's Mii
+(its `User N Mii` row, left and right) and the one the games play as; the file's other lines stay as they are. A
+user's picture file is `users/<uid>.jpg`, the bytes the account service keeps (a JPEG, 256x256 as the console's, from
+its editor), at most 128 KiB, read when the game starts; with `picture=file` and none, or an empty file, it is Wimsy,
+and a launcher that cannot draw it says so and shows Wimsy. The game plays as the user its `.ini`'s `user_uid` names by
+its uid, empty for `[user1]` (`--user_uid=<uid>` for one run): with one user, the game picks it on its own; with more,
+the game's user selector gets that user. Each user's Account saves are in the data folder's
+`save/user.<uid>/<title ID>/`, every save of a game in the data folder's `save/` as the console keeps them
+(`save_layout=global`, the default, [FILESYSTEM](FILESYSTEM.md)); with
 `save_layout=game` they are `save/user.<uid>` in the game's `<id>_data/`. A save in the other layout's folder is played
 there until Settings > App > Move Old Files moves it. Those an older version left in a game's `save/user`, of the uid
 `0123456789abcdeffedcba9876543210`, are played there until you move them ([DEPRECATIONS](DEPRECATIONS.md)). The game's
