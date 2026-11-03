@@ -916,14 +916,17 @@ static u32 half_fmz(DirectCtx* c, u32 vec2, u32 pair, u32 lhs, u32 rhs, u32 zero
     return spv_emit_vec2_construct(&c->emit, vec2, lanes[0], lanes[1]);
 }
 
+/* .SAT (spv_emit_saturate): clamped to [0, 1], and +0 for a NaN */
+static u32 float_saturate(DirectCtx* c, u32 value, int saturate) {
+    if (!saturate) return value;
+    return spv_emit_saturate(&c->emit, c->f32_type, c->u32_type, c->bool_type, c->glsl, value);
+}
+
 static u32 half_pair_result(DirectCtx* c, u32 vec2, u32 pair, u32 old, u32 merge, int saturate) {
-    if (saturate) {
-        u32 zero = spv_emit_constant_f32(&c->emit, c->f32_type, 0.0f);
-        u32 one = spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f);
-        pair = spv_emit_glsl_ternary(&c->emit, vec2, c->glsl, SPV_GLSL_F_CLAMP, pair,
-                                     spv_emit_vec2_construct(&c->emit, vec2, zero, zero),
-                                     spv_emit_vec2_construct(&c->emit, vec2, one, one));
-    }
+    if (saturate)
+        pair = spv_emit_vec2_construct(&c->emit, vec2,
+                                       float_saturate(c, spv_emit_vec4_extract(&c->emit, c->f32_type, pair, 0), 1),
+                                       float_saturate(c, spv_emit_vec4_extract(&c->emit, c->f32_type, pair, 1), 1));
     if (merge == 1)
         return spv_emit_bitcast(&c->emit, c->u32_type, spv_emit_vec4_extract(&c->emit, c->f32_type, pair, 0));
     u32 packed = spv_emit_glsl_unary(&c->emit, c->u32_type, c->glsl, SPV_GLSL_PACK_HALF2X16, pair);
@@ -942,13 +945,6 @@ static u32 float_imm20(DirectCtx* c, u64 w) {
 }
 
 static u32 float_imm32(DirectCtx* c, u64 w) { return spv_emit_constant_u32(&c->emit, c->f32_type, B(w, 20, 32)); }
-
-static u32 float_saturate(DirectCtx* c, u32 value, int saturate) {
-    if (!saturate) return value;
-    u32 zero = spv_emit_constant_f32(&c->emit, c->f32_type, 0.0f);
-    u32 one = spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f);
-    return spv_emit_glsl_ternary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_F_CLAMP, value, zero, one);
-}
 
 static void alpha_test(DirectCtx* c, u32 push, u32 push_pointer, u32 alpha) {
     u32 index[3];
@@ -7707,11 +7703,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                     default: break;
                 }
                 if (fn) value = spv_emit_glsl_unary(&c->emit, c->f32_type, c->glsl, fn, value);
-                if (B(w, 50, 1)) {
-                    u32 fzero = spv_emit_constant_f32(&c->emit, c->f32_type, 0.0f);
-                    u32 fone = spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f);
-                    value = spv_emit_glsl_ternary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_F_CLAMP, value, fzero, fone);
-                }
+                value = float_saturate(c, value, (int)B(w, 50, 1));
             }
             reg_write_as(c, d, value, c->f32_type);
         } else if (op == O_FSWZADD) {
