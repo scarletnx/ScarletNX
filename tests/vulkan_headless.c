@@ -260,6 +260,30 @@ static int check_rings_without_present(void) {
     return 0;
 }
 
+/* A frame that ended at its limit of submissions leaves its slot's counts as they were until the slot is used again:
+   vk_frame_check on that slot, fresh after a present, keeps it rather than ending a frame that recorded nothing and
+   moving on to the slot whose work was just submitted */
+static int check_fresh_frame_kept(void) {
+    u64 id;
+    vk_finish();
+    vk_frame_next();
+    id = vk_frame_id();
+    for (int i = 0; i < 128; i++) {
+        vk_cmd();
+        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    }
+    vk_frame_check(); /* 128 submissions: the frame ends */
+    CHECK(vk_frame_id() == id + 1);
+    vk_cmd();        /* the other slot records */
+    vk_frame_next(); /* and presents: the first slot is current again, fresh */
+    id = vk_frame_id();
+    vk_frame_check();
+    CHECK(vk_frame_id() == id);
+    vk_finish();
+    vk_frame_next();
+    return 0;
+}
+
 /* the renderer's viewport index and its first viewport's facing for the registers r, through the draw state */
 static VkViewport viewport_of(const u32* r, u32 index) {
     DsDynamic d;
@@ -1804,6 +1828,7 @@ int main(int argc, char** argv) {
     CHECK(!check_hash_copy());
     CHECK(!check_staging_overflow()); /* first: it counts the staging blocks of a fresh device */
     CHECK(!check_rings_without_present());
+    CHECK(!check_fresh_frame_kept());
     CHECK(!check_stream_epoch());
     CHECK(!check_owned_readback());
     CHECK(!check_owned_writable());

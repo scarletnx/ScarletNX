@@ -636,15 +636,17 @@ void vk_frame_next(void) {
    made, GPU memory went from 270 to 1062 MiB, and a phone's system ended the app at its 4 GiB limit. What a frame
    wrote counts, not its rings' size: a slot keeps its rings between uses, four of them, each up to an allocation */
 /* the bytes this use of the frame has written to rings: in the current ones, the spares it filled and the rings it
-   outgrew. A fresh frame's counts are still its last use's */
+   outgrew */
 static u64 frame_rings(const Frame* f) {
-    if (f->fresh) return 0;
     u64 n = f->stage.used + f->output.used + f->back.used + f->dev.used + f->outgrown;
     for (u32 i = 0; i < f->istage; i++) n += f->stage_spare[i].cap;
     return n;
 }
 void vk_frame_check(void) {
     const Frame* f = &g_fr[g_cur];
+    /* a fresh frame has recorded nothing, and its counts are still its last use's until frame_recycle: ending it
+       would only move on to the slot whose work was just submitted, and wait for it */
+    if (f->fresh) return;
     u64 rings = frame_rings(f);
     if (rings >= VK_FRAME_RING_CAPS * g_vk.alloc_cap) {
         LOG_LIMIT(4,
