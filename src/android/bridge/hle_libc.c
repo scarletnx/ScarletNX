@@ -8,6 +8,7 @@
 #include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
+#include "common/utilities/ascii.h"
 #include "gnuabi/kernel/kernel.h"
 #include <ctype.h>
 #include <pthread.h>
@@ -370,6 +371,12 @@ static void strrchr_chk(CPU* c, void* data) {
     (void)data;
     X(0) = (uint64_t)(uintptr_t)strrchr(STR(0), (int)X(1));
 }
+/* __strlcpy_chk(dst, src, size, dst_length) */
+static void strlcpy_chk(CPU* c, void* data) {
+    (void)data;
+    if (X(2) > X(3)) fortify_fail("strlcpy");
+    X(0) = hle_strlcpy(PTR(0), STR(1), X(2));
+}
 static void read_chk(CPU* c, void* data) {
     (void)data;
     if (X(2) > X(3)) fortify_fail("read");
@@ -555,6 +562,21 @@ static void init_ctype(void) {
     }
 }
 static const unsigned char* ctype_pointer = ctype_table;
+
+/* ctype's functions of a locale: bionic's C locale (the only one it has) for each, ASCII's classes, whatever the
+   locale_t */
+#define CTYPE_L(F) F(isalnum, snx_is_alnum) F(isalpha, snx_is_alpha) F(isblank, snx_is_blank) F(isdigit, snx_is_digit) \
+    F(islower, snx_is_lower) F(isspace, snx_is_space) F(isupper, snx_is_upper) F(isxdigit, snx_is_hex)              \
+    F(tolower, snx_to_lower) F(toupper, snx_to_upper)
+#define CTYPE_L_ADAPTER(name, ascii)                                                                                   \
+    static void g_##name##_l(CPU* c, void* data) {                                                                     \
+        (void)data;                                                                                                    \
+        int ch = (int)X(0);                                                                                            \
+        X(0) = (uint64_t)(int64_t)(ch >= 0 && ch < 128 ? ascii(ch) : (#name[0] == 't' ? ch : 0));                      \
+    }
+CTYPE_L(CTYPE_L_ADAPTER)
+#define CTYPE_L_ENTRY(name, ascii) {#name "_l", g_##name##_l, NULL},
+
 static void ctype_get_mb_cur_max(CPU* c, void* data) {
     (void)data;
     X(0) = 4; /* UTF-8, bionic's only multibyte encoding */
@@ -1128,6 +1150,7 @@ const HleSymbol hle_libc[] = {
     {"__memset_chk", memset_chk, NULL},
     {"__strlen_chk", strlen_chk, NULL},
     {"__strcpy_chk", strcpy_chk, NULL},
+    {"__strlcpy_chk", strlcpy_chk, NULL},
     {"__strcat_chk", strcat_chk, NULL},
     {"__strncpy_chk2", strncpy_chk2, NULL},
     {"__strchr_chk", strchr_chk, NULL},
@@ -1154,7 +1177,7 @@ const HleSymbol hle_libc[] = {
     /* ctype */
     {"_ctype_", NULL, &ctype_pointer},
     {"__ctype_get_mb_cur_max", ctype_get_mb_cur_max, NULL},
-    P(isspace),
+    P(isspace), CTYPE_L(CTYPE_L_ENTRY)
     /* memory */
 #if defined(__linux__)
     P(malloc), P(calloc), P(realloc), P(free), P(memalign), P(posix_memalign), P(malloc_usable_size),

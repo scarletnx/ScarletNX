@@ -228,6 +228,28 @@ static int64_t file_tell(FILE* f) {
 FILE_CALLS(FILE_CALL_OBJECT)
 #define FILE_CALL_ENTRY(name, k) {#name, file_pass, (void*)&fc_##name},
 
+/* __fread_chk(buffer, size, count, file, buffer_size) and __fwrite_chk: fread and fwrite, with bionic's check that
+   size * count bytes fit the buffer */
+static bool fits(uint64_t size, uint64_t count, uint64_t room) {
+    return !size || count <= room / size;
+}
+static void g_fread_chk(CPU* c, void* data) {
+    (void)data;
+    if (!fits(X(1), X(2), X(4))) {
+        fprintf(stderr, "scarletnx-android: FORTIFY: fread: buffer overflow\n");
+        abort();
+    }
+    X(0) = fread(PTR(0), X(1), X(2), hle_file(X(3)));
+}
+static void g_fwrite_chk(CPU* c, void* data) {
+    (void)data;
+    if (!fits(X(1), X(2), X(4))) {
+        fprintf(stderr, "scarletnx-android: FORTIFY: fwrite: buffer overflow\n");
+        abort();
+    }
+    X(0) = fwrite(PTR(0), X(1), X(2), hle_file(X(3)));
+}
+
 /* setvbuf(f, buffer, mode, size): bionic's modes (_IOFBF 0, _IOLBF 1, _IONBF 2) as the host's */
 static void g_setvbuf(CPU* c, void* data) {
     (void)data;
@@ -1539,6 +1561,40 @@ static void g_getnameinfo(CPU* c, void* data) {
 }
 /* gethostbyname: bionic's hostent {name, aliases, addrtype (int), length (int), addr_list}, of this thread, for a
    name's IPv4 addresses. h_errno is left as it is */
+/* getifaddrs(list): the loopback interface, lo, alone, in bionic's struct ifaddrs (next, name, flags, addr, netmask,
+   the broadcast or destination address, data) and Linux's sockaddr_in. An app that looks for its network's broadcast
+   addresses (a game's LAN search) finds none, as on a device without Wi-Fi; one block, which freeifaddrs frees */
+static void g_getifaddrs(CPU* c, void* data) {
+    (void)data;
+    enum { ENTRY = 56, NAME = ENTRY, ADDR = NAME + 8, MASK = ADDR + 16, SIZE = MASK + 16 };
+    unsigned char* block = calloc(1, SIZE);
+    if (!block || !X(0)) {
+        free(block);
+        hle_set_errno(GNU_ENOMEM);
+        X(0) = (uint64_t)-1;
+        return;
+    }
+    memcpy(block + NAME, "lo", 3);
+    static const unsigned char loopback[8] = {2, 0, 0, 0, 127, 0, 0, 1};  /* AF_INET, port 0, 127.0.0.1 */
+    static const unsigned char netmask[8] = {2, 0, 0, 0, 255, 0, 0, 0};   /* 255.0.0.0 */
+    memcpy(block + ADDR, loopback, sizeof loopback);
+    memcpy(block + MASK, netmask, sizeof netmask);
+    uint64_t name = (uint64_t)(uintptr_t)(block + NAME), addr = (uint64_t)(uintptr_t)(block + ADDR);
+    uint64_t mask = (uint64_t)(uintptr_t)(block + MASK);
+    uint32_t flags = 0x1 | 0x8 | 0x40; /* IFF_UP, IFF_LOOPBACK, IFF_RUNNING */
+    memcpy(block + 8, &name, 8);
+    memcpy(block + 16, &flags, 4);
+    memcpy(block + 24, &addr, 8);
+    memcpy(block + 32, &mask, 8);
+    uint64_t list = (uint64_t)(uintptr_t)block;
+    memcpy(PTR(0), &list, 8);
+    X(0) = 0;
+}
+static void g_freeifaddrs(CPU* c, void* data) {
+    (void)data;
+    free(PTR(0));
+}
+
 static void g_gethostbyname(CPU* c, void* data) {
     (void)data;
     SnxAddrInfo hints = {0}, *result = NULL;
@@ -1913,11 +1969,14 @@ const HleSymbol hle_posix[] = {
     {"stderr", NULL, &g_posix.guest_stderr},
     {"environ", NULL, &g_posix.environment},
     FILE_CALLS(FILE_CALL_ENTRY)
+    A(__fread_chk, g_fread_chk), A(__fwrite_chk, g_fwrite_chk),
     A(fopen, g_fopen), A(fdopen, g_fdopen), A(rename, g_rename), A(setvbuf, g_setvbuf), P(tmpfile), P(remove),
     A(tmpnam, refused), A(putchar, g_putchar), A(puts, g_puts), A(perror, g_perror), A(popen, g_popen),
     A(open, g_open), A(__open_2, g_open_2), A(fcntl, g_fcntl), A(ioctl, g_ioctl),
     A(stat, g_stat), A(lstat, g_lstat), A(fstat, g_fstat), A(fstat64, g_fstat), A(close, g_close),
     P(chmod), P(dup), P(dup2), P(isatty), P(rmdir), P(unlink), P(opendir), P(closedir),
+    /* the process's working folder, which the JVM's relative paths share, as Android's do */
+    P(chdir),
 #if defined(_WIN32)
     A(statfs, g_statfs), A(access, g_access_proc), A(fchmod, refused), A(flock, g_flock), A(fsync, g_fsync),
     A(ftruncate, g_ftruncate), A(lseek, g_lseek), A(lseek64, g_lseek), A(mkdir, g_mkdir), A(pipe, g_pipe),
@@ -1962,7 +2021,8 @@ const HleSymbol hle_posix[] = {
 #endif
 #endif
     A(connect, g_connect), A(sendto, g_sendto), A(sendmsg, g_sendmsg), A(gethostbyname, g_gethostbyname),
-    A(getaddrinfo, g_getaddrinfo), A(freeaddrinfo, g_freeaddrinfo), A(gai_strerror, g_gai_strerror),
+    A(getaddrinfo, g_getaddrinfo), A(freeaddrinfo, g_freeaddrinfo), A(getifaddrs, g_getifaddrs),
+    A(freeifaddrs, g_freeifaddrs), A(gai_strerror, g_gai_strerror),
     A(getnameinfo, g_getnameinfo), P(gethostname), P(inet_addr), P(inet_ntoa), P(if_nametoindex),
     A(clock, g_clock), K(clock_getres, 114), K(clock_gettime, 113), K(gettimeofday, 169), P(time), K(nanosleep, 101),
     A(clock_nanosleep, g_clock_nanosleep), A(usleep, g_usleep), A(sleep, g_sleep), A(tzset, g_tzset),
