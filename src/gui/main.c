@@ -277,10 +277,30 @@ enum {
     GUI_FOLDER_CACHES,
     GUI_GAME_FOLDERS
 };
+/* the glyphs a row of the font's texture: 512 pixels wide */
+#define GUI_FONT_ROW    64
+/* the wide letters the font's texture holds at once, two cells each: a screen full of them at 1x, 80 columns by 45 rows,
+   fits. More on a screen than that and a frame puts some in again as it draws them */
+#define GUI_GLYPH_SLOTS 2048
+/* The font's texture: the glyphs every screen draws (CP437's, the Latin letters, the icons) at cells of their own, then
+   slots of two cells the wide letters take as they are drawn (font_cell), the one drawn longest ago giving way: the
+   texture stays the same small size whatever the number of wide letters the font has */
+typedef struct {
+    int fixed;   /* the cells before the slots, whole rows of them */
+    int slots;   /* GUI_GLYPH_SLOTS, fewer where the renderer's textures are smaller */
+    Uint64 tick; /* the wide letters drawn so far */
+    int refused; /* the wide letter the texture refused last, said once, -1 since one was taken */
+    struct {
+        int glyph;   /* gui_menu_glyph's, -1 for none */
+        Uint64 used; /* the tick it was last drawn at */
+    } slot[GUI_GLYPH_SLOTS];
+    uint16_t slot_of[]; /* each wide letter's slot plus one, 0 while it has none (gui_wide_letter) */
+} GuiFontSlots;
 typedef struct App {
     SDL_Window* window;
     SDL_Renderer* renderer;
     SDL_Texture* font;
+    GuiFontSlots* glyphs; /* where the wide letters are in font */
     GuiProcess* process;
     GuiMenu menu;
     GuiBrowser browser;
@@ -959,40 +979,99 @@ static int keys_left(App* app) {
     return (int)((shown - (now - app->keys_done) + 999) / 1000);
 }
 static void glyph(App* app, float x, float y, int c);
-/* the glyphs a row of the font's texture: 512 pixels wide, so 8192 of them (CP437's, the Latin letters, the icons and
-   3780 wide letters) fit 2048 high, where 16 a row would take 8192 */
-#define GUI_FONT_ROW 64
-/* the font's glyphs: CP437's 256, then the Latin letters past it, then each wide letter's two halves, then each
-   icon's (gui_menu_glyph) */
-static SDL_Texture* create_font(SDL_Renderer* renderer) {
-    int wide = 256 + gui_latin_count + 2 * gui_wide_count, glyphs = wide + 2 * GUI_ICON_COUNT;
-    SDL_Surface* surface =
-        SDL_CreateSurface(GUI_FONT_ROW * 8, (glyphs + GUI_FONT_ROW - 1) / GUI_FONT_ROW * 16, SDL_PIXELFORMAT_RGBA32);
-    if (!surface) return NULL;
-    for (int glyph = 0; glyph < glyphs; ++glyph) {
-        const uint8_t* rows = glyph < 256                     ? gui_vga_font + glyph * 16
-                              : glyph < 256 + gui_latin_count ? gui_latin_font + (glyph - 256) * 16
-                              : glyph < wide                  ? gui_wide_font + (glyph - 256 - gui_latin_count) * 16
-                                                              : gui_icon_font + (glyph - wide) * 16;
-        for (int y = 0; y < 16; ++y) {
-            Uint32* line = (Uint32*)((char*)surface->pixels + ((glyph / GUI_FONT_ROW) * 16 + y) * surface->pitch);
-            for (int x = 0; x < 8; ++x)
-                line[(glyph % GUI_FONT_ROW) * 8 + x] = (rows[y] & (0x80 >> x)) ? 0xffffffffu : 0;
+/* the cell of the font's texture a glyph every screen draws is at: the glyphs in order, the wide letters' left out */
+static int fixed_cell(int c) { return c < 256 + gui_latin_count ? c : c - 2 * gui_wide_count; }
+/* glyph c's 8 by 16 pixels from pixels on, an image pitch pixels wide */
+static void glyph_put(Uint32* pixels, int pitch, int c) {
+    const uint8_t* rows = gui_glyph_rows(c);
+    for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 8; ++x) pixels[y * pitch + x] = rows[y] & (0x80 >> x) ? 0xffffffffu : 0;
+}
+/* the font's texture and its slots (GuiFontSlots): as many slots as the renderer's textures are high enough for, up to
+   GUI_GLYPH_SLOTS; false, said by SDL_GetError, where it cannot be made */
+static bool create_font(App* app) {
+    int letters = gui_wide_letters(), fixed = gui_glyph_count() - 2 * letters;
+    int rows = (fixed + GUI_FONT_ROW - 1) / GUI_FONT_ROW, slots = GUI_GLYPH_SLOTS, high;
+    int most = (int)SDL_GetNumberProperty(SDL_GetRendererProperties(app->renderer),
+                                          SDL_PROP_RENDERER_MAX_TEXTURE_SIZE_NUMBER, 0);
+    Uint32* pixels;
+    if (most > 0) slots = SDL_min(slots, (most / 16 - rows) * (GUI_FONT_ROW / 2));
+    if (slots < 1)
+        return SDL_SetError("the renderer's textures are %d pixels high at most, the font's glyphs take %d", most,
+                            (rows + 1) * 16);
+    high = (rows + (2 * slots + GUI_FONT_ROW - 1) / GUI_FONT_ROW) * 16;
+    app->glyphs = SDL_calloc(1, sizeof *app->glyphs + (size_t)letters * sizeof app->glyphs->slot_of[0]);
+    pixels = SDL_calloc((size_t)high * GUI_FONT_ROW * 8, sizeof *pixels);
+    if (!app->glyphs || !pixels) {
+        SDL_free(pixels);
+        return SDL_OutOfMemory();
+    }
+    app->glyphs->fixed = rows * GUI_FONT_ROW;
+    app->glyphs->slots = slots;
+    app->glyphs->refused = -1;
+    for (int i = 0; i < GUI_GLYPH_SLOTS; ++i) app->glyphs->slot[i].glyph = -1;
+    for (int c = 0; c < gui_glyph_count(); ++c)
+        if (gui_wide_letter(c) < 0) {
+            int cell = fixed_cell(c);
+            glyph_put(pixels + cell / GUI_FONT_ROW * 16 * GUI_FONT_ROW * 8 + cell % GUI_FONT_ROW * 8, GUI_FONT_ROW * 8,
+                      c);
         }
+    app->font =
+        SDL_CreateTexture(app->renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, GUI_FONT_ROW * 8, high);
+    if (app->font && !SDL_UpdateTexture(app->font, NULL, pixels, GUI_FONT_ROW * 8 * 4)) {
+        SDL_DestroyTexture(app->font);
+        app->font = NULL;
     }
-    SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
-    SDL_DestroySurface(surface);
-    if (texture) {
-        SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
-        SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST);
+    SDL_free(pixels);
+    if (!app->font) return false;
+    SDL_SetTextureBlendMode(app->font, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(app->font, SDL_SCALEMODE_NEAREST);
+    return true;
+}
+/* wide letter c into slot of the font's texture; false where the texture refuses it, said once a letter */
+static bool slot_put(App* app, int slot, int c) {
+    GuiFontSlots* f = app->glyphs;
+    int cell = f->fixed + 2 * slot;
+    Uint32 pixels[16 * 16];
+    SDL_Rect at = {cell % GUI_FONT_ROW * 8, cell / GUI_FONT_ROW * 16, 16, 16};
+    glyph_put(pixels, 16, c);
+    glyph_put(pixels + 8, 16, c + 1);
+    if (SDL_UpdateTexture(app->font, &at, pixels, 16 * 4)) {
+        f->refused = -1;
+        return true;
     }
-    return texture;
+    if (f->refused != c)
+        gui_log("U+%04X could not be put in the font's texture, in its slot %d of %d (%s): it shows as ?",
+                (unsigned)gui_wide_letter_point(gui_wide_letter(c)), slot, f->slots, SDL_GetError());
+    f->refused = c;
+    return false;
+}
+/* where glyph c is in the font's texture, its first cell: its own for a glyph every screen draws; for a wide letter its
+   slot, put there now if it has none, in the slot drawn longest ago; -1 where the texture refused it */
+static int font_cell(App* app, int c) {
+    GuiFontSlots* f = app->glyphs;
+    int place = gui_wide_letter(c), slot, i;
+    if (place < 0) return fixed_cell(c);
+    slot = f->slot_of[place] - 1;
+    if (slot < 0) {
+        for (slot = 0, i = 1; i < f->slots; ++i)
+            if (f->slot[i].used < f->slot[slot].used) slot = i;
+        if (!slot_put(app, slot, c)) return -1;
+        if (f->slot[slot].glyph >= 0) f->slot_of[gui_wide_letter(f->slot[slot].glyph)] = 0;
+        f->slot[slot].glyph = c;
+        f->slot_of[place] = (uint16_t)(slot + 1);
+    }
+    f->slot[slot].used = ++f->tick;
+    return f->fixed + 2 * slot;
 }
 /* the font's glyph c (gui_menu_glyph's, or a CP437 byte), its corner at x, y in pixels, w by h a column: a wide one's
-   halves side by side */
+   halves side by side; a ? for one the texture refused (font_cell) */
 static void glyph_sized(App* app, float x, float y, int c, float w, float h) {
-    for (int half = 0; half < gui_glyph_cols(c); ++half) {
-        SDL_FRect source = {(float)((c + half) % GUI_FONT_ROW * 8), (float)((c + half) / GUI_FONT_ROW * 16), 8, 16};
+    int cell = font_cell(app, c), halves = cell < 0 ? 1 : gui_glyph_cols(c);
+    if (cell < 0) cell = '?';
+    for (int half = 0; half < halves; ++half) {
+        SDL_FRect source = {(float)((cell + half) % GUI_FONT_ROW * 8), (float)((cell + half) / GUI_FONT_ROW * 16), 8,
+                            16};
         SDL_FRect destination = {x + (float)half * w, y, w, h};
         SDL_RenderTexture(app->renderer, app->font, &source, &destination);
     }
@@ -16609,8 +16688,7 @@ static bool initialize(App* app, const char* self) {
     SDL_SetRenderVSync(app->renderer, 1);
     SDL_SetEventEnabled(SDL_EVENT_DROP_FILE, true);
     SDL_SetEventEnabled(SDL_EVENT_DROP_TEXT, true);
-    app->font = create_font(app->renderer);
-    if (!app->font) {
+    if (!create_font(app)) {
         char why[256];
         SDL_strlcpy(why, SDL_GetError(), sizeof why); /* SDL_SetError writes over the text it formats */
         return SDL_SetError(snx_tr("Cannot make the menu's font: %s"), why);
@@ -16725,6 +16803,7 @@ static void forget(App* app) {
     free(app->user_jpeg);
     free(app->users_dir);
     SDL_DestroyTexture(app->font);
+    SDL_free(app->glyphs);
     SDL_DestroyRenderer(app->renderer);
     SDL_DestroyWindow(app->window);
 }

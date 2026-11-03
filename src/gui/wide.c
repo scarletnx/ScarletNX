@@ -3,9 +3,25 @@
 #include "gui/wide.h"
 #include <stdio.h>
 #include <string.h>
+#include "common/utilities/font.h"
+#include "gui/icons.h"
 #include "gui/latin.h"
 
 int gui_glyph_cols(int c) { return c >= 256 + gui_latin_count ? 2 : 1; }
+int gui_glyph_count(void) { return 256 + gui_latin_count + 2 * gui_wide_count + 2 * GUI_ICON_COUNT; }
+const uint8_t* gui_glyph_rows(int c) {
+    int wide = 256 + gui_latin_count, icons = wide + 2 * gui_wide_count;
+    return c < 256     ? gui_vga_font + c * 16
+           : c < wide  ? gui_latin_font + (c - 256) * 16
+           : c < icons ? gui_wide_font + (c - wide) * 16
+                       : gui_icon_font + (c - icons) * 16;
+}
+int gui_wide_letters(void) { return gui_wide_count; }
+int gui_wide_letter(int c) {
+    int wide = 256 + gui_latin_count;
+    return c >= wide && c < wide + 2 * gui_wide_count ? (c - wide) / 2 : -1;
+}
+uint32_t gui_wide_letter_point(int place) { return gui_wide_points[place]; }
 uint32_t gui_utf8_step(const char** s) {
     const unsigned char* p = (const unsigned char*)*s;
     uint32_t cp;

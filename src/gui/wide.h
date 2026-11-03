@@ -15,6 +15,16 @@ extern const uint8_t gui_wide_font[];    /* each one's halves, left then right, 
 /* the columns the menu font's glyph c takes (gui_menu_glyph's): 2 for a wide letter, whose halves are c and c + 1,
    else 1 */
 int gui_glyph_cols(int c);
+/* the menu font's glyphs, gui_menu_glyph's numbers from 0 to one under this, a wide letter's or an icon's halves two */
+int gui_glyph_count(void);
+/* the 16 rows of glyph c, as gui_vga_font's: of a wide letter or an icon, the half c is */
+const uint8_t* gui_glyph_rows(int c);
+/* the wide letters, and glyph c's place among them (its left half's): -1 for a glyph that is none, CP437's, a Latin
+   letter's or an icon's */
+int gui_wide_letters(void);
+int gui_wide_letter(int c);
+/* the code point of the wide letter at place */
+uint32_t gui_wide_letter_point(int place);
 /* the code point of the UTF-8 character at *s, *s moved past it; U+FFFD and a byte for one that is not UTF-8, and 0
    at the end, *s left there */
 uint32_t gui_utf8_step(const char** s);

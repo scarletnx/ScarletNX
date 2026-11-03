@@ -221,6 +221,14 @@ static const GuiBar* bar_of(const App* app, int list) {
         if (app->bars[i].list == list) return &app->bars[i];
     return NULL;
 }
+/* the font's slots cut to n and emptied (GuiFontSlots), as a renderer of small textures leaves fewer */
+static void font_slots(App* app, int n) {
+    GuiFontSlots* f = app->glyphs;
+    f->slots = n;
+    f->tick = 0;
+    for (int i = 0; i < GUI_GLYPH_SLOTS; ++i) f->slot[i].glyph = -1, f->slot[i].used = 0;
+    memset(f->slot_of, 0, (size_t)gui_wide_letters() * sizeof *f->slot_of);
+}
 /* the menu's item i's box, as drawn (its row past the cursor); none while it is scrolled out */
 static GuiRect menu_entry_box(const App* app, const GuiMenuBoxes* m, int item) {
     size_t first = m->lists[UI_MENU_ENTRIES].first;
@@ -5104,6 +5112,34 @@ int main(int argc, char** argv) {
         assert(text_px(&app, (float)w, (float)h, menu, 3, white, 1) == (float)(3 * w));
         assert(find_letters(&app, cai, white, 1, &x, &y) && x == w && !find_letters(&app, dan, white, 1, &x, &y));
         assert(text_px(&app, (float)w, (float)h, menu, 5, white, 1) == (float)(6 * w));
+        /* the wide letters through the font's slots: six on a row over three slots, each drawn as itself though its
+           slot takes another later in the frame; six others in their place, then the first six again, drawn anew */
+        {
+            GuiFontSlots* f = app.glyphs;
+            SDL_Color black = {0, 0, 0, 255};
+            char first[32], next[32], *at = first;
+            int slots = f->slots, base = gui_wide_letters() / 2; /* letters in the middle: ideographs, all ink */
+            assert(gui_wide_letters() >= 24 && slots == GUI_GLYPH_SLOTS);
+            for (int i = 0; i < 6; ++i) at = SDL_UCS4ToUTF8(gui_wide_letter_point(base + i), at);
+            *at = 0;
+            at = next;
+            for (int i = 6; i < 12; ++i) at = SDL_UCS4ToUTF8(gui_wide_letter_point(base + i), at);
+            *at = 0;
+            font_slots(&app, 3);
+            SDL_RenderClear(app.renderer);
+            text_in(&app, gui_rect(0, 0, 20 * w, 4 * h), w, h, first, white);
+            text_px_is(&app, w, h, first, white, black);
+            assert(f->tick == 6 && !f->slot_of[base] && !f->slot_of[base + 2] && f->slot_of[base + 3] &&
+                   f->slot_of[base + 5]);
+            SDL_RenderClear(app.renderer);
+            text_in(&app, gui_rect(0, 0, 20 * w, 4 * h), w, h, next, white);
+            text_px_is(&app, w, h, next, white, black);
+            SDL_RenderClear(app.renderer);
+            text_in(&app, gui_rect(0, 0, 20 * w, 4 * h), w, 2 * h, first, white);
+            text_px_is(&app, w, 2 * h, first, white, black);
+            assert(f->tick == 18 && f->slots == 3);
+            font_slots(&app, slots);
+        }
         /* widths in columns: the cursor's margin, the user's box, a question's box */
         {
             char cursor[sizeof app.theme.cursor], name[sizeof app.user_name], room[sizeof app.room_line];
