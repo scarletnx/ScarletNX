@@ -18,8 +18,8 @@
 #include <mach/mach.h>
 #include <time.h>
 #import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
 #if TARGET_OS_IPHONE
+#import <Metal/Metal.h>
 #import <UIKit/UIKit.h>
 #import <MetricKit/MetricKit.h>
 #endif
@@ -105,7 +105,7 @@ static void entitlement_lines(void) {
 static NSURL* metrics_folder;
 /* the file of json for the payload that ends at end, written when it is not there yet: its name, nil when it cannot be
    written */
-static NSString* metrics_write(NSData* json, NSDate* end) {
+static NSString* metrics_write_one(NSData* json, NSDate* end) {
     NSDateFormatter* format = [[NSDateFormatter alloc] init];
     format.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
     format.dateFormat = @"yyyy-MM-dd_HHmmss";
@@ -119,6 +119,11 @@ static NSString* metrics_write(NSData* json, NSDate* end) {
         if (!there) return [json writeToURL:file atomically:YES] ? name : nil;
     }
     return nil;
+}
+static NSString* metrics_write(NSData* json, NSDate* end) {
+    @synchronized(NSFileManager.class) { /* the subscriber's queue and the past payloads of the main thread */
+        return metrics_write_one(json, end);
+    }
 }
 /* ", N type" for N diagnostics of type, nothing for none */
 static void metrics_count(NSMutableString* line, NSArray* diagnostics, const char* type) {
@@ -176,6 +181,7 @@ static void metrics_start(NSURL* logs) {
 
 void gui_apple_stats(char* out, size_t size) {
 #if TARGET_OS_IPHONE
+    @autoreleasepool { /* the main loop calls this each second, and the memory pressure queue too */
     task_vm_info_data_t info;
     mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
     struct rusage usage;
@@ -200,6 +206,7 @@ void gui_apple_stats(char* out, size_t size) {
              (unsigned long long)(metal.recommendedMaxWorkingSetSize >> 20),
              usage.ru_utime.tv_sec + usage.ru_utime.tv_usec / 1e6, usage.ru_stime.tv_sec + usage.ru_stime.tv_usec / 1e6,
              (long)NSProcessInfo.processInfo.thermalState, (int)NSProcessInfo.processInfo.lowPowerModeEnabled);
+    }
 #else
     snprintf(out, size, "resources: (not iOS)");
 #endif

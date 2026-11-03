@@ -46,8 +46,7 @@
 #endif
 #ifdef SDL_PLATFORM_IOS
 #include <dispatch/dispatch.h>
-/* src/gui/apple.m's: the footprint and what the app may still take, in a "resources: " line */
-void gui_apple_stats(char* out, size_t size);
+#include "gui/apple.h" /* gui_apple_stats */
 #endif
 
 static SDL_Window* g_win;

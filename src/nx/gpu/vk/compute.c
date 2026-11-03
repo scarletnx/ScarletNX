@@ -152,8 +152,6 @@ static int cs_cb_read(u32 idx, u32 off, u32* out) {
 }
 
 static void cs_init(void) {
-    VkDescriptorPoolSize sz[VK_POOL_TYPES];
-    VkDescriptorPoolCreateInfo dci = {0};
     if (g_cpool) return;
     VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                    .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -169,12 +167,7 @@ static void cs_init(void) {
     VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &st};
     VK_OK(vkCreateSemaphore(g_vk.dev, &sci, NULL, &g_vk_csem));
     /* the dispatches of a batch: a batch that runs out lands, which resets the pool */
-    vk_pool_sizes(sz, 1024);
-    dci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dci.maxSets = 1024;
-    dci.poolSizeCount = VK_POOL_TYPES;
-    dci.pPoolSizes = sz;
-    VK_OK(vkCreateDescriptorPool(g_vk.dev, &dci, NULL, &g_dpool));
+    g_dpool = vk_desc_pool_new();
 }
 
 /* a bigger arena; only between batches, nothing points into it then */
@@ -414,20 +407,13 @@ static void cs_put_aside(void) {
                                           .commandPool = g_cpool,
                                           .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
                                           .commandBufferCount = 1};
-        VkDescriptorPoolSize sz[VK_POOL_TYPES];
-        VkDescriptorPoolCreateInfo dci = {0};
         VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &b->cb));
 #if defined(SNX_TRACY)
         VkQueryPoolCreateInfo qi = {
             .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 2};
         VK_OK(vkCreateQueryPool(g_vk.dev, &qi, NULL, &b->qpool));
 #endif
-        vk_pool_sizes(sz, 1024);
-        dci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        dci.maxSets = 1024;
-        dci.poolSizeCount = VK_POOL_TYPES;
-        dci.pPoolSizes = sz;
-        VK_OK(vkCreateDescriptorPool(g_vk.dev, &dci, NULL, &b->dpool));
+        b->dpool = vk_desc_pool_new();
     }
     cb = b->cb;
     dp = b->dpool;

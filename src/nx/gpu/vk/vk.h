@@ -372,7 +372,7 @@ u32 vk_desc_pools(void);                 /* the pools that exist, made on any th
 /* each heap's use and budget and the descriptor pools, as text for a line: any thread, also one that never calls
    Vulkan */
 void vk_memory_text(char* out, size_t size);
-u64 vk_memory_blocks(void); /* the bytes of VMA's blocks in all heaps, any thread */
+u64 vk_memory_blocks(void);              /* the bytes of VMA's blocks in all heaps, any thread */
 u32 vk_frame_slot(void);                 /* the frame slot being recorded */
 /* a descriptor pool's sizes (VK_POOL_TYPES entries) for `sets` sets of the stage layouts (gpu/vk/pipeline.c) */
 #define VK_POOL_TYPES 5 /* descriptor types in a set: uniform, storage buffers, textures, images, texel buffers */

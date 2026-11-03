@@ -115,8 +115,9 @@ if(APPLE)
     target_sources(scarletnx-gui PRIVATE apple.m)
     set_source_files_properties(apple.m PROPERTIES COMPILE_OPTIONS -fobjc-arc)
     # PUBLIC: the link folders above go with it to the program that links the menu
-    target_link_libraries(scarletnx-gui PUBLIC snx_apple_frontend "-framework Foundation" "-framework Metal")
+    target_link_libraries(scarletnx-gui PUBLIC snx_apple_frontend "-framework Foundation")
     if(IOS)
+        target_link_libraries(scarletnx-gui PUBLIC "-framework Metal") # the resources line (gui_apple_stats)
         target_link_libraries(scarletnx-gui PUBLIC "-framework UIKit") # the battery state notification
         # the reports of the system on the app's runs (apple.m's metrics_start)
         target_link_libraries(scarletnx-gui PUBLIC "-framework MetricKit")

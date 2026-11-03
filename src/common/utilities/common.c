@@ -1680,9 +1680,11 @@ int snx_memory_available(SnxU64* bytes) {
     vm_statistics64_data_t vm;
     mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
     vm_size_t page = 0;
-    if (host_page_size(mach_host_self(), &page) != KERN_SUCCESS ||
-        host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&vm, &count) != KERN_SUCCESS)
-        return 0;
+    mach_port_t host = mach_host_self(); /* each call adds a reference to the port: given back below */
+    kern_return_t ok = host_page_size(host, &page);
+    if (ok == KERN_SUCCESS) ok = host_statistics64(host, HOST_VM_INFO64, (host_info64_t)&vm, &count);
+    mach_port_deallocate(mach_task_self(), host);
+    if (ok != KERN_SUCCESS) return 0;
     *bytes = ((SnxU64)vm.free_count + vm.inactive_count + vm.purgeable_count) * page;
     return 1;
 #elif defined(__linux__)
