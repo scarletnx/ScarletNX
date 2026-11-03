@@ -17,6 +17,8 @@ bool snx_ctr_present_ready(void);
 /* Live window output is active (SDL3 Vulkan window + swapchain). When false, frames still render but only the dumps
    record them. */
 bool snx_ctr_present_windowed(void);
+/* Separate screens is on and both windows present: each screen has its own window and swapchain */
+bool snx_ctr_present_separate(void);
 /* The framebuffer at physical address pa, as the guest has it: width pixels a row (240), height rows, pitch bytes a
    row, in GSP's framebuffer formats: 0 = RGBA8 (A,B,G,R bytes, libctru RGBA8_OES), 1 = RGB8 (B,G,R bytes,
    BGR8_OES), 2 = RGB565 (little-endian 16-bit, R in bits 11..15, G 5..10, B 0..4), 3 = RGB5A1, 4 = RGBA4, decoded

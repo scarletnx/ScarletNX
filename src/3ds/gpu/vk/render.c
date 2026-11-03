@@ -471,19 +471,21 @@ static uint64_t depth_span(const TargetKey* k) {
 }
 /* The 3DS draws a screen's framebuffer into one 240x400 or 240x320 target: the top screen is 400 rows, the bottom
    320. Its 3D rendering is scaled by the setting of that screen, as far as the device's largest image takes. */
-static uint8_t target_scale(const TargetKey* k) {
+uint8_t snx_ctr_vk_target_scale(unsigned width, unsigned height) {
     unsigned scale = 1;
-    if (k->height == 400)
+    if (height == 400)
         scale = (unsigned)g_settings.ctr_top_resolution;
-    else if (k->height == 320)
+    else if (height == 320)
         scale = (unsigned)g_settings.ctr_bottom_resolution;
     if (scale < 1) scale = 1;
     if (scale > 16) scale = 16;
-    const uint32_t largest = snx_ctr_vk()->properties.limits.maxImageDimension2D;
-    if (k->width && scale > largest / k->width) scale = largest / k->width;
-    if (k->height && scale > largest / k->height) scale = largest / k->height;
+    const SnxCtrVk* v = snx_ctr_vk();
+    const uint32_t largest = v ? v->properties.limits.maxImageDimension2D : 0;
+    if (largest && width && scale > largest / width) scale = largest / width;
+    if (largest && height && scale > largest / height) scale = largest / height;
     return (uint8_t)(scale ? scale : 1);
 }
+static uint8_t target_scale(const TargetKey* k) { return snx_ctr_vk_target_scale(k->width, k->height); }
 /* the state of the RAM page holding pa, NULL outside RAM (the pages made at the first use) */
 static PageState* page_state(uint32_t pa) {
     SnxCtrVk* v = snx_ctr_vk();
