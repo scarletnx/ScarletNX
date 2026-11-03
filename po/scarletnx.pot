@@ -1574,6 +1574,16 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "user=%d is deprecated, and the Settings have no user_uid to write %s in"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "No user shown: %s"
 msgstr ""
 
@@ -1665,6 +1675,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "its dump is not known: the game was made before the recompile named it"
+msgstr ""
+
+#: src/gui/main.c
+msgid "not known"
 msgstr ""
 
 #: src/gui/main.c
@@ -2822,7 +2836,7 @@ msgid "The settings of All, or of player 1 to 8"
 msgstr ""
 
 #: src/gui/main.c
-msgid "nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
+msgid "nickname of 1 to 32 bytes, no control character, no space at either end"
 msgstr ""
 
 #: src/gui/main.c
@@ -2848,7 +2862,16 @@ msgid "User %d"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"
+msgid "Its nickname, as the games show it: 1 to 32 bytes, no control character, no space at either end"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d Mii"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Its Mii, which the games get as the user's and its picture shows unless it has a picture file"
 msgstr ""
 
 #: src/gui/main.c
@@ -3074,10 +3097,6 @@ msgid "GPU: %s. Recommended: %s."
 msgstr ""
 
 #: src/gui/main.c
-msgid "not known"
-msgstr ""
-
-#: src/gui/main.c
 msgid "This build of the launcher has no HTTPS client: Add Driver takes a zip downloaded by hand"
 msgstr ""
 
@@ -3225,11 +3244,21 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "User %d's new nickname is not written: %s"
+msgid "User %d's Mii is not written: %s"
 msgstr ""
 
 #: src/gui/main.c
 msgid "no users/ folder"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's Mii is %s now"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's new nickname is not written: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -3370,7 +3399,7 @@ msgid "Ctrl+S saves too"
 msgstr ""
 
 #: src/gui/main.c
-msgid "A nickname, 4 to 20 of A-Z a-z 0-9 space . _ -"
+msgid "A nickname, 1 to 32 bytes, no control character, no space at either end"
 msgstr ""
 
 #: src/gui/main.c
@@ -3629,7 +3658,7 @@ msgid "Tip: Menu > Install Keys changes them"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
+msgid "Tip: nickname of 1 to 32 bytes, no control character, no space at either end"
 msgstr ""
 
 #: src/gui/main.c
@@ -5400,7 +5429,7 @@ msgid "Unit cache limit"
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, removing its oldest units for a new one"
+msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
 msgstr ""
 
 #: src/nx/runtime/settings.txt

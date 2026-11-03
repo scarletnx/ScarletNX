@@ -11,6 +11,8 @@
 #include <SDL3/SDL_thread.h>
 #include <errno.h>
 #include <io.h>
+#include <powersetting.h>
+#include <powrprof.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -113,6 +115,41 @@ int plat_thread(PThreadFn fn, void* arg, size_t stack) {
 void plat_thread_exit(void) {
     SDL_CleanupTLS();
     ExitThread(0);
+}
+
+/* ================================================================ the host's power source */
+/* the notification marks this; the main thread takes it, so only there does the runtime ask SDL for the new state */
+static int g_power_changed;
+void plat_power_mark_changed(void) { __atomic_store_n(&g_power_changed, 1, __ATOMIC_RELEASE); }
+int plat_power_take_change(void) { return __atomic_exchange_n(&g_power_changed, 0, __ATOMIC_ACQ_REL); }
+/* The system's power setting notification for the AC/DC source: the charger in or out calls this on a system thread.
+   The SDK's DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS is not in every _WIN32_WINNT's powrprof.h, so this is the same two
+   pointers, and DEVICE_NOTIFY_CALLBACK is 2 (winuser.h) */
+#ifndef DEVICE_NOTIFY_CALLBACK
+#define DEVICE_NOTIFY_CALLBACK 2
+#endif
+typedef ULONG(CALLBACK* SnxPowerCallback)(PVOID, ULONG, PVOID);
+typedef struct {
+    SnxPowerCallback Callback;
+    PVOID Context;
+} SnxPowerSubscribe;
+static ULONG CALLBACK power_changed(PVOID context, ULONG type, PVOID setting) {
+    (void)context;
+    (void)type;
+    (void)setting;
+    plat_power_mark_changed();
+    return ERROR_SUCCESS;
+}
+static SnxPowerSubscribe g_power_sub = {power_changed, NULL};
+static HPOWERNOTIFY g_power_notify;
+int plat_power_watch(void) {
+    /* GUID_ACDC_POWER_SOURCE: 5D3E9A59-E9D5-4B00-A6BD-FF34FF516548 */
+    static const GUID acdc = {0x5D3E9A59, 0xE9D5, 0x4B00, {0xA6, 0xBD, 0xFF, 0x34, 0xFF, 0x51, 0x65, 0x48}};
+    if (g_power_notify) return 0;
+    if (PowerSettingRegisterNotification(&acdc, DEVICE_NOTIFY_CALLBACK, &g_power_sub, &g_power_notify) !=
+        ERROR_SUCCESS)
+        return -1;
+    return 0;
 }
 int plat_cpus(int* ids, int max) {
     (void)ids;

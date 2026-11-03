@@ -119,7 +119,7 @@ int main(int argc, char** argv) {
     assert(!strcmp(s.keys[opt + 4].section, "Launch") && !strcmp(s.keys[opt + 4].key, "Unit cache limit") &&
            !strcmp(s.values[opt + 4].key, "unit_cache_gb") && strstr(s.keys[opt + 4].about, "0 = no limit"));
     assert(!strcmp(s.values[opt + 4].def, "0") &&
-           strstr(s.keys[opt + 4].about, "a tenth of its disk free")); /* no limit */
+           strstr(s.keys[opt + 4].about, "a tenth of its disk free, at most 10 GB")); /* no limit */
     assert(gui_settings_set(&s, "unit_cache_gb", "50") && gui_settings_recompile(&s, options) == 3 &&
            !strcmp(options[2], "--unit_cache_gb=50") && gui_settings_set(&s, "unit_cache_gb", ""));
     assert(!strcmp(s.keys[opt + 5].section, "Launch") && s.values[opt + 5].kind == GUI_SETTING_PAGE &&

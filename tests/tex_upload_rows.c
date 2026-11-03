@@ -4,9 +4,10 @@
    (a CPU model of them below, run as they are recorded, which checks the barriers around them) to the copies into
    the image, each copy's bytes checked against a walk of the block-linear layout byte by byte (bl_offset below): a
    level whose rows are whole 16-byte pieces, one whose rows end inside a piece, a 3D level with blocks of slices, mip
-   levels, a level read through gmem_read, a pitch-linear level, and a converted format. No level takes a buffer of
-   its size on the CPU. Levels past the allocation cap go in strips, each region checked where it lands, and an ASTC
-   level's block rows reach vk_astc_upload strip by strip, deswizzled */
+   levels, a level read through gmem_read, a pitch-linear level, a converted format, and a sparse texture's levels
+   whose rows are whole tiles. No level takes a buffer of its size on the CPU. Levels past the allocation cap go in
+   strips, each region checked where it lands, and an ASTC level's block rows reach vk_astc_upload strip by strip,
+   deswizzled */
 #include <stdlib.h>
 #include <string.h>
 static size_t g_watch, g_big; /* allocations of g_watch bytes or more, while watched */
@@ -18,6 +19,8 @@ static void* counted_malloc(size_t n) {
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers" /* texture.c builds without -Wextra */
 #include "nx/gpu/vk/texture.c"
 #undef malloc
+#include "nx/hle/services/nvdrv.h" /* gmmu_pieces, and g_mem, which the stubs below stand in for */
+#include "nx/memory/mem.h"
 
 static unsigned checks;
 #define CHECK(x)                                                                                                       \
@@ -48,8 +51,31 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     (void)buf, (void)at;
     gmem_read(gva, host, size);
 }
-void vk_guest_peek(u64 gva, void* dst, u64 size) { gmem_read(gva, dst, size); }
-u8* gmem_host(u64 gva, u64 size) { return gmem_ptr(gva, size); }
+static u32 g_peeks;
+void vk_guest_peek(u64 gva, void* dst, u64 size) {
+    g_peeks++;
+    gmem_read(gva, dst, size);
+}
+/* one GPU-owned range over every range asked, with this identity, while g_whole_tag isn't 0 */
+static u64 g_whole_tag;
+int vk_guest_owned_whole(u64 gva, u64 size, u64* tag) {
+    (void)gva, (void)size;
+    *tag = g_whole_tag;
+    return g_whole_tag != 0;
+}
+/* a texture with holes in its mapping (a virtual pool's, mapped a tile at a time): the runs g_map lists are what the
+   GPU's page table maps, guest's bytes at the same offset (GP(cpu) is guest + cpu), and no texture is one host run */
+u8* g_mem = guest;
+static struct {
+    u64 gva[8], n[8];
+    u32 count;
+} g_map;
+void gmmu_pieces(u64 gva, u64 size, void (*fn)(void* ctx, u64 gva, u64 cpu, u64 n), void* ctx) {
+    for (u32 i = 0; i < g_map.count; i++)
+        if (g_map.gva[i] < gva + size && g_map.gva[i] + g_map.n[i] > gva)
+            fn(ctx, g_map.gva[i], g_map.gva[i] - GVA, g_map.n[i]);
+}
+u8* gmem_host(u64 gva, u64 size) { return g_map.count ? NULL : gmem_ptr(gva, size); }
 #define STAGE (8u << 20)
 #define STAGE_BUF ((VkBuffer)(uintptr_t)0x5157)
 #define SCRATCH_BUF ((VkBuffer)(uintptr_t)0x5C2A)
@@ -76,7 +102,7 @@ static u8* mem_of(VkBuffer b) { return b == STAGE_BUF ? stage : b == SCRATCH_BUF
 /* the copies into the image, with the bytes each copies taken when it is recorded (the scratch buffer is reused):
    a region's bufferOffset is where its bytes start in copied */
 static VkBufferImageCopy regs[1024];
-static u32 nregs;
+static u32 nregs, regs_bars[1024], all_bars; /* each region's count of vk_all_barrier before it */
 static u8 copied[16u << 20];
 static u64 copied_used;
 static void VKAPI_CALL copy_to_image(VkCommandBuffer cb, VkBuffer b, VkImage img, VkImageLayout l, uint32_t n,
@@ -92,6 +118,7 @@ static void VKAPI_CALL copy_to_image(VkCommandBuffer cb, VkBuffer b, VkImage img
         memcpy(copied + copied_used, mem_of(b) + c.bufferOffset, size);
         c.bufferOffset = copied_used;
         copied_used += size;
+        regs_bars[nregs] = all_bars;
         regs[nregs++] = c;
     }
 }
@@ -147,7 +174,7 @@ VkImageAspectFlags vk_aspect(const VkFmt* f) {
     return f->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
 }
 /* the ASTC upload asks for its block rows in strips of 3: they land in astc_out, slice after slice */
-static u8 astc_out[64 << 10];
+static u8 astc_out[128 << 10];
 int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, VkAstcRows rows,
                    void* ctx) {
     (void)level, (void)layer;
@@ -175,8 +202,11 @@ VkBuffer vk_bl_scratch(u64 size, u64* cap) {
     *cap = SCRATCH < g_vk.alloc_cap ? SCRATCH : g_vk.alloc_cap;
     return size <= *cap ? SCRATCH_BUF : VK_NULL_HANDLE;
 }
+/* the GOBs across a move's rows of blocks: its own, or its row's */
+static u32 move_gobs(const VkBlMove* m) { return m->gobs_x ? m->gobs_x : (m->row_bytes + 63) >> 6; }
+static u64 bl_offset_g(u32 x, u32 y, u32 z, u32 gob_w, u32 h, u32 bh_log2, u32 bd_log2);
 void vk_bl_range(const VkBlMove* m, u64* lo, u64* hi) {
-    u64 block_row = (u64)((m->row_bytes + 63) >> 6) << (9 + m->bh + m->bd);
+    u64 block_row = (u64)move_gobs(m) << (9 + m->bh + m->bd);
     u64 slab = (((((u64)m->height + 7) >> 3) + (1u << m->bh) - 1) >> m->bh) * block_row;
     u32 last = m->y0 + m->rows - 1, zl = m->z0 + m->slices - 1;
     *lo = (u64)(m->z0 >> m->bd) * slab + (u64)((m->y0 >> 3) >> m->bh) * block_row;
@@ -191,7 +221,7 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
     for (u32 z = 0; z < m->slices; z++)
         for (u32 y = 0; y < m->rows; y++)
             for (u32 x = 0; x < m->row_bytes; x++) {
-                u64 o = bl_offset(x, m->y0 + y, m->z0 + z, m->row_bytes, m->height, m->bh, m->bd);
+                u64 o = bl_offset_g(x, m->y0 + y, m->z0 + z, move_gobs(m), m->height, m->bh, m->bd);
                 CHECK(o >= lo && o < hi);
                 mem_of(lin)[lin_at + ((u64)z * m->rows + y) * m->lin_pitch + x] = mem_of(bl)[bl_at + o - lo];
             }
@@ -313,21 +343,50 @@ VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer) {
     (void)cb, (void)s, (void)layer;
     return VK_NULL_HANDLE;
 }
+/* write tracking: the stamp is on guest's bytes [at, at + len), all of them when len is 0. As buffer.c's, it answers
+   only for a host range */
 static struct {
     int on;
     u32 clock, stamp, epoch;
+    u64 at, len;
 } g_tracking;
+static int stamped(u64 o, u64 n, u32 since) {
+    return g_tracking.stamp > since &&
+           (!g_tracking.len || (o < g_tracking.at + g_tracking.len && g_tracking.at < o + n));
+}
 int vk_written_since(const u8* host, u64 len, u32 since) {
-    (void)host, (void)len;
-    return g_tracking.on ? g_tracking.stamp > since : -1;
+    if (!g_tracking.on || !host || !len) return -1;
+    return stamped((u64)(host - guest), len, since);
 }
 u32 vk_ww_now(void) { return g_tracking.clock; }
 u32 vk_ww_epoch(void) { return g_tracking.epoch; }
-int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) {
-    (void)since, (void)a, (void)sz;
-    return 0;
+/* the pages of the CPU's write that fall in [host, host + len), at their offsets in it */
+void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) {
+    u64 o = (u64)(host - guest), lo = g_tracking.at & ~4095ull, hi = (g_tracking.at + g_tracking.len + 4095) & ~4095ull;
+    if (!stamped(o, len, since)) return;
+    if (!g_tracking.len || lo < o) lo = o;
+    if (!g_tracking.len || hi > o + len) hi = o + len;
+    fn(user, lo - o, hi - lo);
 }
-u64 gpu_mem_generation(void) { return 0; }
+/* GPU-side writes (a mapping, an engine's): the last one, its generation on GPU bytes [at, at + len) */
+static struct {
+    u64 gen, at, len;
+} g_gpu_writes;
+int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) {
+    return g_gpu_writes.gen > since && g_gpu_writes.at < a + sz && a < g_gpu_writes.at + g_gpu_writes.len;
+}
+void gpu_mem_dirty_runs(u64 since, u64 a, u64 sz, void (*fn)(void* ctx, u64 at, u64 n), void* ctx) {
+    u64 lo = g_gpu_writes.at & ~4095ull, hi = (g_gpu_writes.at + g_gpu_writes.len + 4095) & ~4095ull;
+    if (!gpu_mem_dirty_since(since, a, sz)) return;
+    if (lo < a) lo = a;
+    if (hi > a + sz) hi = a + sz;
+    fn(ctx, lo, hi - lo);
+}
+u64 gpu_mem_generation(void) { return g_gpu_writes.gen; }
+void vk_all_barrier(VkCommandBuffer cb) {
+    (void)cb;
+    all_bars++;
+}
 VkResult vmaCreateImage(VmaAllocator a, const VkImageCreateInfo* ii, const VmaAllocationCreateInfo* ai, VkImage* img,
                         VmaAllocation* mem, VmaAllocationInfo* info) {
     (void)a, (void)ii, (void)ai, (void)img, (void)mem, (void)info;
@@ -337,15 +396,42 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
     (void)ii, (void)img, (void)mem, (void)bytes;
     return 0;
 }
-/* the block linear layout: GOBs of 64 bytes by 8 rows in blocks of 1 << bh by 1 << bd GOBs, the GOB's 16 byte groups
-   in their order */
-u64 bl_offset(u32 x, u32 y, u32 z, u32 wb, u32 h, u32 bh_log2, u32 bd_log2) {
-    u32 gob_w = (wb + 63) / 64, bh = 1u << bh_log2, bd = 1u << bd_log2;
+/* images with memory only where it is bound: none here */
+int vk_resident_block(VkFormat f, VkImageUsageFlags usage, VkExtent3D* block) {
+    (void)f, (void)usage, (void)block;
+    return 0;
+}
+int vk_image_create_resident(const VkImageCreateInfo* ii, const VkExtent3D* block, VkImage* img) {
+    (void)ii, (void)block, (void)img;
+    return 0;
+}
+int vk_image_resident(VkImage img, const u8* want, u32 n, u64* bytes) {
+    (void)img, (void)want, (void)n, (void)bytes;
+    return 0;
+}
+void vk_surf_bytes(Surf* s, u64 bytes) { s->bytes = bytes; }
+void vk_mem_trim(u64 extra, int force) { (void)extra, (void)force; }
+/* the block linear layout: GOBs of 64 bytes by 8 rows in blocks of 1 << bh by 1 << bd GOBs, gob_w of them across a
+   row of blocks, the GOB's 16 byte groups in their order */
+static u64 bl_offset_g(u32 x, u32 y, u32 z, u32 gob_w, u32 h, u32 bh_log2, u32 bd_log2) {
+    u32 bh = 1u << bh_log2, bd = 1u << bd_log2;
     u32 blocks_h = ((h + 7) / 8 + bh - 1) / bh, gy = y / 8, xb = x % 64, yb = y % 8;
     u64 block = 512ull * bh * bd;
     u64 o = ((u64)(z / bd) * blocks_h * gob_w + (u64)(gy / bh) * gob_w + x / 64) * block +
             ((u64)(z % bd) * bh + gy % bh) * 512;
     return o + (xb / 32) * 256 + (yb / 2) * 64 + ((xb % 32) / 16) * 32 + (yb % 2) * 16 + xb % 16;
+}
+/* a row wb bytes wide: as many GOBs as it takes */
+u64 bl_offset(u32 x, u32 y, u32 z, u32 wb, u32 h, u32 bh_log2, u32 bd_log2) {
+    return bl_offset_g(x, y, z, (wb + 63) / 64, h, bh_log2, bd_log2);
+}
+/* the GOBs across a level's rows, rowb bytes wide, rows high (of texels or blocks) and ld slices deep: a sparse
+   texture's (tile_w) whole tiles when the level is at least a tile wide, high and deep, the tile 2^bh GOBs high and
+   2^bd deep, the texture's block (the hardware's TILE_WIDTH_IN_GOBS) */
+static u32 level_gobs(const Surf* t, u32 rowb, u32 rows, u32 ld) {
+    u32 g = (rowb + 63) / 64, n = 1u << t->tile_w;
+    if (t->tile_w && rowb >= 64u << t->tile_w && rows >= 8u << t->bh && ld >= 1u << t->bd) g = (g + n - 1) / n * n;
+    return g;
 }
 
 /* ------------------------------------------------ the cases */
@@ -388,8 +474,12 @@ static void upload_and_check(Surf* t, u64 limit, u32 bands) {
     u32 first = 0;
     for (u32 l = 0; l < t->levels; l++) {
         u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, ld = d3 >> l ? d3 >> l : 1;
-        u32 rowb = lw * t->f.bpp, lbh = 0, lbd = 0, covered = 0, n = 0;
-        u64 lsz = t->bl ? bl_level_size(t->w, t->h, d3, &t->f, t->bh, t->bd, l, &lbh, &lbd) : (u64)t->pitch * lh * ld;
+        u32 rowb = lw * t->f.bpp, lbh = 0, lbd = 0, covered = 0, n = 0, gw = level_gobs(t, rowb, lh, ld);
+        u64 lsz = t->bl ? bl_level_size(t->w, t->h, d3, &t->f, t->bh, t->bd, t->tile_w, l, &lbh, &lbd)
+                        : (u64)t->pitch * lh * ld;
+        /* the level's size: its rows of blocks, gw GOBs across each, in slabs of 2^lbd slices */
+        CHECK(!t->bl || lsz == (u64)gw * ((((lh + 7) / 8) + (1u << lbh) - 1) >> lbh) * ((ld + (1u << lbd) - 1) >> lbd) *
+                                   (512ull << (lbh + lbd)));
         for (; first + n < nregs && regs[first + n].imageSubresource.mipLevel == l; n++) {
             const VkBufferImageCopy* r = &regs[first + n];
             u32 y0 = (u32)r->imageOffset.y, z0 = (u32)r->imageOffset.z, rows = r->imageExtent.height;
@@ -403,7 +493,7 @@ static void upload_and_check(Surf* t, u64 limit, u32 bands) {
             for (u32 z = z0; z < z0 + r->imageExtent.depth; z++)
                 for (u32 y = y0; y < y0 + rows; y++)
                     for (u32 x = 0; x < rowb; x++) {
-                        u64 o = t->bl ? bl_offset(x, y, z, rowb, lh, lbh, lbd) : (u64)(z * lh + y) * t->pitch + x;
+                        u64 o = t->bl ? bl_offset_g(x, y, z, gw, lh, lbh, lbd) : (u64)(z * lh + y) * t->pitch + x;
                         u8 want = at + o < limit ? guest[at + o] : 0;
                         CHECK(s[((u64)(z - z0) * height + (y - y0)) * pitch + x] == want);
                     }
@@ -413,6 +503,79 @@ static void upload_and_check(Surf* t, u64 limit, u32 bands) {
         at += lsz;
     }
     CHECK(first == nregs);
+}
+
+/* the 4 bytes a texel of level l at (x, y, z) was copied as, by the last region recorded over it; NULL when none was */
+static const u8* copied_texel(u32 l, u32 x, u32 y, u32 z) {
+    const u8* got = NULL;
+    for (u32 i = 0; i < nregs; i++) {
+        const VkBufferImageCopy* r = &regs[i];
+        u32 x0 = (u32)r->imageOffset.x, y0 = (u32)r->imageOffset.y, z0 = (u32)r->imageOffset.z;
+        if (r->imageSubresource.mipLevel == l && x - x0 < r->imageExtent.width && y - y0 < r->imageExtent.height &&
+            z - z0 < r->imageExtent.depth)
+            got = copied + r->bufferOffset +
+                  (((u64)(z - z0) * r->bufferImageHeight + (y - y0)) * r->bufferRowLength + (x - x0)) * 4;
+    }
+    return got;
+}
+/* the RGBA8 texel a texture of 4 byte texels has at (x, y, z) of a level at at in guest, its rows rowb bytes */
+static u32 guest_texel(u64 at, u32 x, u32 y, u32 z, u32 rowb, u32 lh, u32 lbh, u32 lbd) {
+    u32 v = 0;
+    for (u32 k = 0; k < 4; k++) v |= (u32)guest[at + bl_offset(x * 4 + k, y, z, rowb, lh, lbh, lbd)] << (8 * k);
+    return v;
+}
+/* a volume in a virtual pool's 64 KiB pages: RGBA8, 208x64x32 (13 GOBs a row) in blocks 1 GOB high and 16 deep, levels
+   levels; pages 0 and 2 mapped, and its checks settled. Its size */
+static Surf sparse_volume(u32 levels) {
+    Surf t = tex(208, 64, 32, levels, 4, 0, 4, 1);
+    for (u32 l = 0; l < levels; l++) t.size += bl_level_size(t.w, t.h, 32, &t.f, 0, 4, 0, l, NULL, NULL);
+    g_map.count = 2;
+    g_map.gva[0] = GVA, g_map.n[0] = 0x10000;
+    g_map.gva[1] = GVA + 0x20000, g_map.n[1] = 0x10000;
+    copy_bpp = 4, copy_bw = copy_bh = 1;
+    t.upload_valid = 1;
+    t.hash = mem_hash(t.gva, t.size);
+    t.stable = 100;
+    t.shash = vk_sample_hash(t.gva, t.size);
+    t.tfull = t.checked = g_vk_present;
+    t.next_check = g_vk_present + 1000;
+    g_tracking.on = 1;
+    g_tracking.clock = t.wseen = 20;
+    t.ww_epoch = g_tracking.epoch;
+    return t;
+}
+
+/* a piecewise texture's image, level 0 of 208x64x32 RGBA8 texels: what the regions recorded so far put in it */
+static u8 model[208 * 64 * 32 * 4];
+static void model_apply(void) {
+    for (u32 i = 0; i < nregs; i++) {
+        const VkBufferImageCopy* r = &regs[i];
+        u32 rl = r->bufferRowLength ? r->bufferRowLength : r->imageExtent.width;
+        u32 ih = r->bufferImageHeight ? r->bufferImageHeight : r->imageExtent.height;
+        for (u32 z = 0; z < r->imageExtent.depth; z++)
+            for (u32 y = 0; y < r->imageExtent.height; y++)
+                for (u32 x = 0; x < r->imageExtent.width; x++)
+                    memcpy(model + ((((u64)z + r->imageOffset.z) * 64 + y + r->imageOffset.y) * 208 + x +
+                                    r->imageOffset.x) *
+                                       4,
+                           copied + r->bufferOffset + (((u64)z * ih + y) * rl + x) * 4, 4);
+    }
+}
+/* texels of the model that aren't memory's where the volume is mapped (g_map) and zeros in its holes: how many */
+static u32 model_wrong(void) {
+    u32 wrong = 0;
+    for (u32 z = 0; z < 32; z++)
+        for (u32 y = 0; y < 64; y++)
+            for (u32 x = 0; x < 208; x++) {
+                u64 o = bl_offset(x * 4, y, z, 832, 64, 0, 4);
+                u32 want = 0, have;
+                for (u32 i = 0; i < g_map.count; i++)
+                    if (GVA + o >= g_map.gva[i] && GVA + o < g_map.gva[i] + g_map.n[i])
+                        want = guest_texel(0, x, y, z, 832, 64, 0, 4);
+                memcpy(&have, model + (((u64)z * 64 + y) * 208 + x) * 4, 4);
+                wrong += have != want;
+            }
+    return wrong;
 }
 
 int main(void) {
@@ -499,6 +662,45 @@ int main(void) {
         for (u32 y = 0; y < 10; y++)
             for (u32 x = 0; x < 15 * 16; x++)
                 CHECK(astc_out[((z * 10 + y) * 15) * 16 + x] == guest[bl_offset(x, y, z, 15 * 16, 10, 1, 1)]);
+    /* a sparse texture's levels at least a tile in size have rows of whole tiles (tile_w). RGBA8 tiles of 128x128
+       texels (8 GOBs across, blocks 16 high): 200 texels across (13 GOBs) take 16 at level 0, and levels 1 and 2 are
+       narrower than a tile. Whole, in rows of blocks under 160 KiB (2 of them), and 8 GOB rows at a time under 64 KiB,
+       each gathered from its blocks (4) */
+    Surf sp = tex(200, 256, 1, 3, 4, 4, 0, 1);
+    sp.tile_w = 3;
+    upload_and_check(&sp, GUEST, 1);
+    g_vk.alloc_cap = 160 << 10;
+    upload_and_check(&sp, GUEST, 2);
+    g_vk.alloc_cap = 64 << 10;
+    upload_and_check(&sp, GUEST, 4);
+    /* a volume's: RGBA8 tiles of 32x32x16 (2 GOBs across, blocks 4 high and 16 deep). 80x64x32 (5 GOBs) takes 6, and
+       level 1, 40x32x16, a tile high and deep, 4. Whole, in a row of blocks of a slab under 512 KiB (2), and 4 GOB rows
+       of a slice under 64 KiB (64) */
+    Surf sv = tex(80, 64, 32, 2, 4, 2, 4, 1);
+    sv.tile_w = 1;
+    g_vk.alloc_cap = 256ull << 20;
+    upload_and_check(&sv, GUEST, 1);
+    g_vk.alloc_cap = 512 << 10;
+    upload_and_check(&sv, GUEST, 2);
+    g_vk.alloc_cap = 64 << 10;
+    upload_and_check(&sv, GUEST, 64);
+    g_vk.alloc_cap = 256ull << 20;
+    /* its layers are whole tiles apart: 320x256 of 3 levels (24, 16 and 5 GOBs across), 544768 bytes of levels in 9
+       tiles of 64 KiB, where the shrunk block alone would put the next layer at 548864 */
+    CHECK(bl_layer_size(320, 256, 1, &sp.f, 4, 0, 3, 3) == 9 * 0x10000ull);
+    /* and an ASTC level's block rows, deswizzled from rows of whole tiles: 4x4 blocks of 16 bytes in tiles 16 GOBs
+       across and blocks 8 high, 75 blocks across (19 GOBs) taking 32, its 64 block rows a tile high */
+    {
+        Surf sa = tex(300, 256, 1, 1, 16, 3, 0, 1);
+        sa.f.bw = sa.f.bh = 4;
+        sa.f.conv = VKC_ASTC;
+        sa.tile_w = 4;
+        stage_used = nregs = 0;
+        CHECK(tex_upload(&sa) && nregs == 0);
+        for (u32 y = 0; y < 64; y++)
+            for (u32 x = 0; x < 75 * 16; x++)
+                CHECK(astc_out[(y * 75) * 16 + x] == guest[bl_offset_g(x, y, 0, 32, 64, 3, 0)]);
+    }
     /* the change check, mem_hash: the same hash whether the GPU holds bytes somewhere (g_own_any: the texture read
        through vk_guest_peek) or not, and a byte past a page's first 64 changes it, as a row the CPU rewrites does */
     {
@@ -510,6 +712,14 @@ int main(void) {
         guest[0x20000 + 4096 + 100] ^= 0x5A;
         CHECK(mem_hash(at, size) != owned);
         guest[0x20000 + 4096 + 100] ^= 0x5A;
+        /* held whole by one GPU-owned range: its owner's identity, with no piece peeked; the same identity the same
+           hash, another one another */
+        g_whole_tag = 0x1234, g_peeks = 0;
+        u64 whole = mem_hash(at, size);
+        CHECK(g_peeks == 0 && whole != owned && mem_hash(at, size) == whole);
+        g_whole_tag = 0x1235;
+        CHECK(mem_hash(at, size) != whole && g_peeks == 0);
+        g_whole_tag = 0;
         g_own_any = 0;
     }
     /* A clean scan does not advance the write clock. Its cached texture must
@@ -539,6 +749,84 @@ int main(void) {
             CHECK(nregs == 1 && copied[regs[0].bufferOffset] == guest[0]);
         }
         g_tracking.on = 0;
+    }
+    /* a texture with holes in its mapping is no one host run: write tracking over each mapped run sees the CPU write
+       a tile, where its settled checks would sample the texture (vk_sample_hash, which sees none of it here) */
+    {
+        Surf t = sparse_volume(1);
+        const u32 x = 3 * 16 + 1, y = 9, z = 6; /* in block 3 of the second row of blocks: tile 2 */
+        const u64 o = bl_offset(x * 4, y, z, 832, 64, 0, 4);
+        CHECK(o / 0x10000 == 2);
+        guest[o] ^= 0x5A;
+        g_tracking.stamp = ++g_tracking.clock;
+        g_tracking.at = o, g_tracking.len = 1;
+        g_vk_present++;
+        g_tracking.epoch++;
+        stage_used = copied_used = nregs = 0;
+        CHECK(tex_check(&t, t.gva) == &t);
+        const u8* got = copied_texel(0, x, y, z);
+        u32 want = guest_texel(0, x, y, z, 832, 64, 0, 4), have = 0;
+        if (got) memcpy(&have, got, 4);
+        CHECK(got && have == want);
+        guest[o] ^= 0x5A;
+        g_map.count = 0;
+        memset(&g_tracking, 0, sizeof g_tracking);
+    }
+    /* loaded a piece at a time: made with tiles 0 and 2 mapped, its image is zeros, then after a barrier those tiles'
+       blocks (8 KiB each: a GOB across, 8 rows, 16 slices), 128 KiB read of its 1.6 MB. Then the CPU writing a page of
+       tile 2 loads that page's block, and tile 1 mapped (a GPU-side write of its pages) loads its 8 blocks: 5 at the
+       end of the first row of blocks and 3 at the start of the next. A check that finds nothing loads nothing */
+    {
+        Surf t = sparse_volume(1);
+        u64 uploads, bytes, uploads2, bytes2;
+        t.piecewise = 1;
+        t.hash = 0;
+        stage_used = copied_used = nregs = all_bars = 0;
+        memset(model, 0xEE, sizeof model);
+        vk_tex_stats(&uploads, &bytes);
+        CHECK(tex_load_pieces(&t) && t.upload_valid);
+        vk_tex_stats(&uploads2, &bytes2);
+        CHECK(bytes2 - bytes == 2 * 0x10000 && uploads2 - uploads == 1);
+        u32 zeros = 0;
+        while (zeros < nregs && regs_bars[zeros] == 0) zeros++;
+        CHECK(zeros && zeros < nregs);
+        CHECK(nregs - zeros == 2); /* each tile a run of 8 blocks of one row of blocks: 8 GOBs, 128 texels across */
+        for (u32 i = zeros; i < nregs; i++) CHECK(regs_bars[i] == 1 && regs[i].imageExtent.width == 128);
+        model_apply();
+        CHECK(model_wrong() == 0);
+        const u32 x = 3 * 16 + 1, y = 9, z = 6; /* tile 2 */
+        const u64 o = bl_offset(x * 4, y, z, 832, 64, 0, 4);
+        guest[o] ^= 0x5A;
+        g_tracking.stamp = ++g_tracking.clock;
+        g_tracking.at = o, g_tracking.len = 1;
+        g_vk_present++;
+        g_tracking.epoch++;
+        stage_used = copied_used = nregs = 0;
+        vk_tex_stats(&uploads, &bytes);
+        CHECK(tex_check(&t, t.gva) == &t);
+        vk_tex_stats(&uploads2, &bytes2);
+        CHECK(bytes2 - bytes == 8192 && nregs == 1);
+        model_apply();
+        CHECK(model_wrong() == 0);
+        g_map.count = 3;
+        g_map.gva[2] = GVA + 0x10000, g_map.n[2] = 0x10000;
+        g_gpu_writes.gen = 1, g_gpu_writes.at = GVA + 0x10000, g_gpu_writes.len = 0x10000;
+        g_vk_present++;
+        stage_used = copied_used = nregs = 0;
+        vk_tex_stats(&uploads, &bytes);
+        CHECK(tex_check(&t, t.gva) == &t);
+        vk_tex_stats(&uploads2, &bytes2);
+        CHECK(bytes2 - bytes == 0x10000 && nregs == 2);
+        model_apply();
+        CHECK(model_wrong() == 0);
+        g_vk_present++;
+        g_tracking.epoch++;
+        stage_used = copied_used = nregs = 0;
+        CHECK(tex_check(&t, t.gva) == &t && nregs == 0);
+        guest[o] ^= 0x5A;
+        g_map.count = 0;
+        memset(&g_tracking, 0, sizeof g_tracking);
+        memset(&g_gpu_writes, 0, sizeof g_gpu_writes);
     }
     printf("tex_upload_rows: %u checks passed\n", checks);
     return 0;

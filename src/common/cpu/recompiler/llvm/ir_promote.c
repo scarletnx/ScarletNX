@@ -11,7 +11,8 @@
    last site on some path to it (dirty), and the function loads a register on entry and after a call only where it is
    read before it is written or stored by a site (live). A store of part of a register (a lane) reads the rest. The
    CPU structure holds the architectural registers wherever anything else can look at them: in the runtime, a callee,
-   a helper. In between (a fault's crash report) it holds them as they were at the last call. FPCR and FPSR are
+   a helper. In between (a fault's crash report) it holds them as they were at the last site that could see them: a
+   call of a summarized function (below) sees only the registers that function reads. FPCR and FPSR are
    locals too, for the FP fast paths' tests: the helpers that use only them (ir_noregs) are sites for those two
    alone, which read FPCR and change FPSR */
 #include "common/cpu/recompiler/llvm/ir.h"
@@ -48,9 +49,9 @@ typedef struct {
 
 typedef struct {
     LLVMValueRef inst;
-    int env;    /* a helper's call that uses only FPCR and FPSR, not a call or return that can see every register */
-    Set dirty;  /* stored before it */
-    Set reload; /* loaded after it (a call that returns) */
+    Set seen, changed; /* what it can read of the registers in the CPU structure, and what it can change */
+    Set dirty;         /* stored before it */
+    Set reload;        /* loaded after it (a call that returns) */
 } Site;
 
 typedef struct {
@@ -253,7 +254,7 @@ static Set dirty_through(const Block* block, const Event* events, Site* sites, i
         if (ev->kind == WRITE || ev->kind == PART)
             set_add(&dirty, ev->index);
         else if (ev->kind == SITE) {
-            Set mask = seen(sites[ev->index].env);
+            Set mask = sites[ev->index].seen;
             if (record) {
                 sites[ev->index].dirty.w[0] = dirty.w[0] & mask.w[0];
                 sites[ev->index].dirty.w[1] = dirty.w[1] & mask.w[1];
@@ -275,7 +276,7 @@ static Set live_through(const Block* block, const Event* events, Site* sites, in
             set_remove(&live, ev->index);
         else {
             const Site* site = &sites[ev->index];
-            Set mask = changed(site->env);
+            Set mask = site->changed;
             if (reload) {
                 sites[ev->index].reload.w[0] = live.w[0] & mask.w[0];
                 sites[ev->index].reload.w[1] = live.w[1] & mask.w[1];
@@ -285,6 +286,246 @@ static Set live_through(const Block* block, const Event* events, Site* sites, in
         }
     }
     return live;
+}
+
+/* ---- the summaries of guest functions ----
+   What a direct call of a guest function of this module can see and change of the registers in the CPU structure, once
+   the callee is promoted (it is emitted first: module_llvm.c orders a unit's functions callees first): the registers it
+   or anything it calls reads before writing them, and the ones it can write. The call stores both kinds and reloads the
+   second: a way through the callee that does not write a register, or a stale callee that runs nothing, leaves the CPU
+   structure's value for the reload to take. A callee where some site can see every register (an SVC, a call through a
+   register, a poll, a helper that takes c, a tail call) has none, and its calls stay sites for every register. A direct
+   call passes the callee its own start, so the dispatch of a call that came in at another address (entry_mismatch, and
+   the dispatch block only it reaches) is no part of what a direct call runs. Nor is new code for the callee: a stale
+   callee returns with CPU.pc at its entry (ir_codegen.c's stale_check), its caller's return check leaves for the
+   dispatch loop, and each function on the way stores its registers at its own return; the JIT's code for the entry then
+   starts from the CPU structure, as it does at any other return to dispatch */
+typedef struct {
+    LLVMValueRef fn;
+    Set reads, writes;
+} Summary;
+static const Summary* summary_of(const SnxIr* ir, LLVMValueRef fn) {
+    const Summary* table = (const Summary*)ir->summaries;
+    size_t mask = ir->summary_cap - 1, at;
+    if (!table) return NULL;
+    for (at = ((size_t)(uintptr_t)fn >> 4) & mask; table[at].fn; at = (at + 1) & mask)
+        if (table[at].fn == fn) return &table[at];
+    return NULL;
+}
+static void summary_add(SnxIr* ir, LLVMValueRef fn, Set reads, Set writes) {
+    Summary* table = (Summary*)ir->summaries;
+    size_t mask, at;
+    if (2 * (ir->summary_count + 1) > ir->summary_cap) { /* grown to keep it at most half full */
+        size_t cap = ir->summary_cap ? 2 * ir->summary_cap : 64;
+        Summary* grown = (Summary*)calloc(cap, sizeof(*grown));
+        if (!grown) return; /* no summary: its calls stay sites for every register */
+        for (size_t i = 0; i < ir->summary_cap; ++i)
+            if (table && table[i].fn) {
+                for (at = ((size_t)(uintptr_t)table[i].fn >> 4) & (cap - 1); grown[at].fn; at = (at + 1) & (cap - 1)) {}
+                grown[at] = table[i];
+            }
+        free(table);
+        ir->summaries = table = grown;
+        ir->summary_cap = cap;
+    }
+    mask = ir->summary_cap - 1;
+    for (at = ((size_t)(uintptr_t)fn >> 4) & mask; table[at].fn && table[at].fn != fn; at = (at + 1) & mask) {}
+    if (!table[at].fn) ++ir->summary_count;
+    table[at].fn = fn;
+    table[at].reads = reads;
+    table[at].writes = writes;
+}
+void ir_summaries_free(SnxIr* ir) {
+    free(ir->summaries);
+    ir->summaries = NULL;
+    ir->summary_cap = ir->summary_count = 0;
+}
+
+/* what a site sees and changes: a direct call of a summarized guest function the registers its summary reads or
+   writes (changing those it writes), an ENV helper FPCR and FPSR (changing FPSR), any other call or return every
+   register */
+static void site_sets(const SnxIr* ir, LLVMValueRef inst, Set* see, Set* change) {
+    if (LLVMIsACallInst(inst) && LLVMGetTailCallKind(inst) != LLVMTailCallKindMustTail) {
+        LLVMValueRef callee = LLVMGetCalledValue(inst);
+        const Summary* summary = callee && LLVMIsAFunction(callee) ? summary_of(ir, callee) : NULL;
+        if (summary) {
+            see->w[0] = summary->reads.w[0] | summary->writes.w[0];
+            see->w[1] = summary->reads.w[1] | summary->writes.w[1];
+            *change = summary->writes;
+            return;
+        }
+        if (call_site(inst) == ENV) {
+            *see = seen(1);
+            *change = changed(1);
+            return;
+        }
+    }
+    *see = seen(0);
+    *change = changed(0);
+}
+
+/* Each block's loop depth, at most LOOP_DEPTH: the natural loops holding it. A loop is a header a depth-first walk
+   from the entry comes back to (a retreating edge), its body the blocks that reach one of its latches without passing
+   the header. The dispatch block's switch to every label is no loop: it is the entry at any leader. 0, or -1 out of
+   memory */
+#define LOOP_DEPTH  4
+#define LOOP_WEIGHT 4 /* the bits a weight grows by a level: 16 times, a loop's turns against its way in */
+typedef struct {
+    size_t latch, header;
+} Retreat;
+static int by_header(const void* a, const void* b) {
+    size_t x = ((const Retreat*)a)->header, y = ((const Retreat*)b)->header;
+    return x < y ? -1 : x > y;
+}
+static int loop_depths(const Block* blocks, size_t nblocks, const BlockKey* keys, unsigned char* depth) {
+    size_t *succ_first = (size_t*)calloc(nblocks + 1, sizeof(size_t)),
+           *pred_first = (size_t*)calloc(nblocks + 1, sizeof(size_t));
+    size_t *succs = NULL, *preds = NULL, *fill = NULL, *stamp = NULL, *stack = NULL, *next = NULL, nedges = 0;
+    size_t nretreats = 0, i, k, top;
+    unsigned char* color = (unsigned char*)calloc(nblocks + 1, 1);
+    Retreat* retreats = NULL;
+    int rc = -1;
+    memset(depth, 0, nblocks);
+    if (!succ_first || !pred_first || !color) goto done;
+    for (size_t pass = 0; pass < 2; ++pass) {
+        if (pass) {
+            for (i = 0; i < nblocks; ++i) {
+                succ_first[i + 1] += succ_first[i];
+                pred_first[i + 1] += pred_first[i];
+            }
+            succs = (size_t*)malloc((nedges ? nedges : 1) * sizeof(size_t));
+            preds = (size_t*)malloc((nedges ? nedges : 1) * sizeof(size_t));
+            fill = (size_t*)malloc((nblocks ? nblocks : 1) * sizeof(size_t));
+            if (!succs || !preds || !fill) goto done;
+            memcpy(fill, pred_first, nblocks * sizeof(size_t));
+            nedges = 0;
+        }
+        for (i = 0; i < nblocks; ++i) {
+            LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[i].block);
+            unsigned n = term && !LLVMIsASwitchInst(term) ? LLVMGetNumSuccessors(term) : 0;
+            for (unsigned j = 0; j < n; ++j) {
+                k = block_index(keys, nblocks, LLVMGetSuccessor(term, j));
+                if (k >= nblocks) continue;
+                if (pass) {
+                    succs[nedges++] = k;
+                    preds[fill[k]++] = i;
+                } else {
+                    ++succ_first[i + 1];
+                    ++pred_first[k + 1];
+                    ++nedges;
+                }
+            }
+        }
+    }
+    /* the retreating edges: to a block still on the walk's stack */
+    stack = (size_t*)malloc((nblocks + 1) * sizeof(size_t));
+    next = (size_t*)calloc(nblocks + 1, sizeof(size_t));
+    retreats = (Retreat*)malloc((nedges ? nedges : 1) * sizeof(Retreat));
+    stamp = (size_t*)calloc(nblocks + 1, sizeof(size_t));
+    if (!stack || !next || !retreats || !stamp) goto done;
+    top = 0;
+    if (nblocks) {
+        stack[top++] = 0;
+        color[0] = 1;
+        next[0] = succ_first[0];
+    }
+    while (top) {
+        size_t u = stack[top - 1];
+        if (next[u] == succ_first[u + 1]) {
+            color[u] = 2;
+            --top;
+            continue;
+        }
+        k = succs[next[u]++];
+        if (color[k] == 1) {
+            retreats[nretreats].latch = u;
+            retreats[nretreats++].header = k;
+        } else if (!color[k]) {
+            color[k] = 1;
+            next[k] = succ_first[k];
+            stack[top++] = k;
+        }
+    }
+    /* each header's body, once: from its latches backwards, the header the wall */
+    qsort(retreats, nretreats, sizeof(*retreats), by_header);
+    for (size_t r = 0; r < nretreats; ++r) {
+        size_t header = retreats[r].header, mark = header + 1;
+        if (stamp[header] != mark) {
+            stamp[header] = mark;
+            if (depth[header] < LOOP_DEPTH) ++depth[header];
+        }
+        top = 0;
+        if (stamp[retreats[r].latch] != mark) { /* each block counted and pushed once a header */
+            stamp[retreats[r].latch] = mark;
+            if (depth[retreats[r].latch] < LOOP_DEPTH) ++depth[retreats[r].latch];
+            stack[top++] = retreats[r].latch;
+        }
+        while (top) {
+            size_t b = stack[--top];
+            for (size_t p = pred_first[b]; p < pred_first[b + 1]; ++p)
+                if (stamp[preds[p]] != mark) {
+                    stamp[preds[p]] = mark;
+                    if (depth[preds[p]] < LOOP_DEPTH) ++depth[preds[p]];
+                    stack[top++] = preds[p];
+                }
+        }
+    }
+    rc = 0;
+done:
+    free(succ_first);
+    free(pred_first);
+    free(succs);
+    free(preds);
+    free(fill);
+    free(stamp);
+    free(stack);
+    free(next);
+    free(color);
+    free(retreats);
+    return rc;
+}
+
+/* the successor of a two-way branch its weights make at least 1000 times less likely than the other (ir_unlikely's
+   1 to 2000, or a profile's), 2 for none */
+static unsigned unlikely_successor(LLVMValueRef branch, unsigned prof) {
+    LLVMValueRef md = LLVMGetMetadata(branch, prof), ops[3];
+    unsigned length = 0;
+    const char* name;
+    SnxU64 a, b;
+    if (!md || LLVMGetMDNodeNumOperands(md) != 3) return 2;
+    LLVMGetMDNodeOperands(md, ops);
+    name = LLVMGetMDString(ops[0], &length);
+    if (!name || length != 14 || memcmp(name, "branch_weights", 14) || !LLVMIsAConstantInt(ops[1]) ||
+        !LLVMIsAConstantInt(ops[2]))
+        return 2;
+    a = LLVMConstIntGetZExtValue(ops[1]);
+    b = LLVMConstIntGetZExtValue(ops[2]);
+    return a * 1000 <= b ? 0 : b * 1000 <= a ? 1 : 2;
+}
+/* the blocks the entry reaches without taking an unlikely edge (the poll, a return to another address, a stale
+   function, an entry at another leader): what only such an edge reaches runs seldom. 0, or -1 out of memory */
+static int likely_blocks(SnxIr* ir, const Block* blocks, size_t nblocks, const BlockKey* keys, unsigned char* likely) {
+    size_t* stack = (size_t*)malloc((nblocks ? nblocks : 1) * sizeof(size_t));
+    unsigned prof = LLVMGetMDKindIDInContext(ir->ctx, "prof", 4);
+    size_t top = 0;
+    if (!stack) return -1;
+    memset(likely, 0, nblocks);
+    if (nblocks) {
+        likely[0] = 1;
+        stack[top++] = 0;
+    }
+    while (top) {
+        LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[stack[--top]].block);
+        unsigned n = term ? LLVMGetNumSuccessors(term) : 0, cold = n == 2 ? unlikely_successor(term, prof) : 2;
+        for (unsigned j = 0; j < n; ++j) {
+            size_t k = j == cold ? nblocks : block_index(keys, nblocks, LLVMGetSuccessor(term, j));
+            if (k >= nblocks || likely[k]) continue;
+            likely[k] = 1;
+            stack[top++] = k;
+        }
+    }
+    free(stack);
+    return 0;
 }
 
 /* the definition of each register reaching each block: UNSEEN before any path reaches it, ENTRY the entry's load,
@@ -403,6 +644,151 @@ done:
     return rc;
 }
 
+/* A block's first site stores the registers dirty on some way into the block; one not written in the block before
+   the site and clean on another way in has its store made on the ways it is dirty on instead: at the end of the
+   predecessor, or in a block of its own on the edge when the predecessor goes elsewhere too. A loop whose call
+   stores a register written before the loop then stores it once, on the way in, not on every turn: the value the
+   CPU structure has on the way back is the one it would store (regalloc2's redundant spill, ION.md). A block that
+   starts with PHIs (the FP fast paths' joins) keeps its stores: its edges are left as they are. 0, or -1 out of
+   memory */
+static int edge_stores(SnxIr* ir, LLVMValueRef fn, LLVMBuilderRef b, const Block* blocks, size_t nblocks,
+                       const Event* events, Site* sites, LLVMValueRef* local) {
+    Set* out = (Set*)malloc((nblocks ? nblocks : 1) * sizeof(*out));
+    size_t i, e, p;
+    if (!out) return -1;
+    for (i = 0; i < nblocks; ++i) out[i] = dirty_through(&blocks[i], events, sites, 0, blocks[i].dirty_in);
+    for (i = 1; i < nblocks; ++i) {
+        Set written = {{0, 0}}, moved = {{0, 0}};
+        size_t site = (size_t)-1;
+        LLVMValueRef first = LLVMGetFirstInstruction(blocks[i].block);
+        if (first && LLVMIsAPHINode(first)) continue;
+        for (e = blocks[i].first; e < blocks[i].first + blocks[i].count; ++e) {
+            if (events[e].kind == WRITE || events[e].kind == PART) set_add(&written, events[e].index);
+            if (events[e].kind == SITE) {
+                site = events[e].index;
+                break;
+            }
+        }
+        if (site == (size_t)-1) continue;
+        for (unsigned slot = 0; slot < SLOTS; ++slot) {
+            if (!local[slot] || !set_has(&sites[site].dirty, slot) || set_has(&written, slot)) continue;
+            for (p = 0; p < nblocks; ++p) {
+                LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[p].block);
+                unsigned n = term ? LLVMGetNumSuccessors(term) : 0, j;
+                for (j = 0; j < n; ++j)
+                    if (LLVMGetSuccessor(term, j) == blocks[i].block && !set_has(&out[p], slot)) break;
+                if (j < n) break;
+            }
+            if (p < nblocks) set_add(&moved, slot);
+        }
+        if (!moved.w[0] && !moved.w[1]) continue;
+        sites[site].dirty.w[0] &= ~moved.w[0];
+        sites[site].dirty.w[1] &= ~moved.w[1];
+        for (p = 0; p < nblocks; ++p) {
+            LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[p].block);
+            unsigned n = term ? LLVMGetNumSuccessors(term) : 0;
+            Set need = {{out[p].w[0] & moved.w[0], out[p].w[1] & moved.w[1]}};
+            if (!need.w[0] && !need.w[1]) continue;
+            for (unsigned j = 0; j < n; ++j) {
+                if (LLVMGetSuccessor(term, j) != blocks[i].block) continue;
+                if (n == 1) {
+                    LLVMPositionBuilderBefore(b, term);
+                } else {
+                    LLVMBasicBlockRef edge = LLVMAppendBasicBlockInContext(ir->ctx, fn, "edge");
+                    LLVMSetSuccessor(term, j, edge);
+                    LLVMPositionBuilderAtEnd(b, edge);
+                    LLVMPositionBuilderBefore(b, LLVMBuildBr(b, blocks[i].block));
+                }
+                for (unsigned slot = 0; slot < SLOTS; ++slot)
+                    if (set_has(&need, slot)) {
+                        copy(ir, b, slot, local[slot], cpu_pointer(ir, b, slot), 1);
+                        if (ir->stats.enabled) {
+                            ++ir->stats.sync_stores;
+                            ++ir->stats.edge_stores;
+                            ir->stats.store_bytes += slot_size(slot);
+                        }
+                    }
+            }
+        }
+    }
+    free(out);
+    return 0;
+}
+
+/* fn's summary (above), from its blocks and sites before any change: the blocks a direct call can run (all but
+   entry_mismatch and what only it reaches), none of whose sites but a return sees every register; the registers read
+   before written, a call reading what it sees and redefining what it changes, a return reading nothing of the
+   caller's; and every register written, by fn or by what it calls */
+static void summarize(SnxIr* ir, const Block* blocks, size_t nblocks, const BlockKey* keys, const Event* events,
+                      const Site* sites) {
+    unsigned char* reach = (unsigned char*)calloc(nblocks ? nblocks : 1, 1);
+    size_t* stack = (size_t*)malloc((nblocks ? nblocks : 1) * sizeof(size_t));
+    Set* in = (Set*)calloc(nblocks ? nblocks : 1, sizeof(Set));
+    Set writes = {{0, 0}};
+    size_t top = 0, i, e;
+    int changed;
+    if (!reach || !stack || !in || !nblocks) goto done;
+    reach[0] = 1;
+    stack[top++] = 0;
+    while (top) {
+        size_t at = stack[--top];
+        LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[at].block);
+        unsigned n = term ? LLVMGetNumSuccessors(term) : 0;
+        for (unsigned j = 0; j < n; ++j) {
+            LLVMBasicBlockRef to = LLVMGetSuccessor(term, j);
+            size_t k = block_index(keys, nblocks, to);
+            if (k >= nblocks || reach[k] || to == ir->entry_mismatch) continue;
+            reach[k] = 1;
+            stack[top++] = k;
+        }
+    }
+    for (i = 0; i < nblocks; ++i) {
+        if (!reach[i]) continue;
+        for (e = blocks[i].first; e < blocks[i].first + blocks[i].count; ++e) {
+            const Event* ev = &events[e];
+            const Site* site;
+            if (ev->kind == WRITE || ev->kind == PART) set_add(&writes, ev->index);
+            if (ev->kind != SITE) continue;
+            site = &sites[ev->index];
+            if (LLVMIsAReturnInst(site->inst)) continue;
+            if (!returns(site->inst) || (site->seen.w[0] == ~0ull && site->seen.w[1] == ~0ull)) goto done;
+            (void)set_join(&writes, &site->changed);
+        }
+    }
+    do { /* backward, from nothing after a return */
+        changed = 0;
+        for (i = nblocks; i-- > 0;) {
+            Set live = {{0, 0}};
+            LLVMValueRef term;
+            unsigned n;
+            if (!reach[i]) continue;
+            term = LLVMGetBasicBlockTerminator(blocks[i].block);
+            n = term ? LLVMGetNumSuccessors(term) : 0;
+            for (unsigned j = 0; j < n; ++j) {
+                size_t k = block_index(keys, nblocks, LLVMGetSuccessor(term, j));
+                if (k < nblocks && reach[k]) (void)set_join(&live, &in[k]);
+            }
+            for (e = blocks[i].first + blocks[i].count; e-- > blocks[i].first;) {
+                const Event* ev = &events[e];
+                if (ev->kind == READ || ev->kind == PART)
+                    set_add(&live, ev->index);
+                else if (ev->kind == WRITE)
+                    set_remove(&live, ev->index);
+                else if (!LLVMIsAReturnInst(sites[ev->index].inst)) {
+                    live.w[0] = (live.w[0] & ~sites[ev->index].changed.w[0]) | sites[ev->index].seen.w[0];
+                    live.w[1] = (live.w[1] & ~sites[ev->index].changed.w[1]) | sites[ev->index].seen.w[1];
+                }
+            }
+            if (set_join(&in[i], &live)) changed = 1;
+        }
+    } while (changed);
+    summary_add(ir, ir->fn, in[0], writes);
+done:
+    free(reach);
+    free(stack);
+    free(in);
+}
+
 void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
     Scan s = {0};
     LLVMBasicBlockRef bb;
@@ -446,7 +832,7 @@ void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
                 }
                 sites[nsites] = (Site){0};
                 sites[nsites].inst = inst;
-                sites[nsites].env = LLVMIsACallInst(inst) && call_site(inst) == ENV;
+                site_sets(ir, inst, &sites[nsites].seen, &sites[nsites].changed);
                 ev.kind = SITE;
                 ev.index = (unsigned)nsites++;
             } else
@@ -463,6 +849,7 @@ void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
         blocks[i].count = nevents - blocks[i].first;
     }
     qsort(keys, nblocks, sizeof(*keys), key_by_block);
+    summarize(ir, blocks, nblocks, keys, events, sites);
     /* dirty: forward, from nothing on entry */
     do {
         changed = 0;
@@ -496,13 +883,43 @@ void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
        a block's write, a site's reload) into a block it is live into. One with more of those than the accesses it
        saves (and a few) stays in the CPU structure. A dispatch block's switch to every label makes one of each
        register live across the function: 5820 PHIs and five times the compile in one game function, which the
-       register allocator then spends its time on */
+       register allocator then spends its time on. An access weighs 1 << LOOP_WEIGHT for each loop it is in, as
+       regalloc2 weighs a use in a spill decision (liveranges.rs): it runs once a turn, and a register a loop uses
+       left in memory costs a load or store there every turn, whatever the joins around calls elsewhere count. Its
+       copies as a local (a store before a site, a reload after a call, the load on entry) weigh the same, and one
+       whose copies outweigh its accesses stays in the CPU structure too: written once and live across a run of
+       calls, it costs a reload after each as a local, a load where it is read in memory. What only an unlikely edge
+       reaches (a return check's way out, the poll) weighs nothing: its stores would count every dirty register
+       twice for each call */
     if (count_phis(blocks, nblocks, keys, events, sites, phis)) goto done;
     {
-        size_t uses[SLOTS] = {0};
-        for (i = 0; i < s.count; ++i) ++uses[s.access[i].slot];
+        size_t uses[SLOTS] = {0}, copies[SLOTS] = {0};
+        unsigned char* depth = (unsigned char*)malloc(2 * nblocks + 1);
+        unsigned char* likely = depth + nblocks;
+        if (!depth || loop_depths(blocks, nblocks, keys, depth) || likely_blocks(ir, blocks, nblocks, keys, likely)) {
+            free(depth);
+            goto done;
+        }
+        for (i = 0; i < s.count; ++i) {
+            size_t at = block_index(keys, nblocks, LLVMGetInstructionParent(s.access[i].inst));
+            if (at < nblocks && likely[at]) uses[s.access[i].slot] += (size_t)1 << (LOOP_WEIGHT * depth[at]);
+        }
+        for (k = 0; k < nblocks; ++k)
+            for (size_t e = blocks[k].first; e < blocks[k].first + blocks[k].count && likely[k]; ++e)
+                if (events[e].kind == SITE) {
+                    const Site* site = &sites[events[e].index];
+                    size_t weight = (size_t)1 << (LOOP_WEIGHT * depth[k]);
+                    for (unsigned slot = 0; slot < SLOTS; ++slot)
+                        copies[slot] += weight * (size_t)(set_has(&site->dirty, slot) + set_has(&site->reload, slot));
+                }
         for (unsigned slot = 0; slot < SLOTS; ++slot)
-            if (phis[slot] > uses[slot] + 8) s.used[slot] = 0;
+            if (set_has(&blocks[0].live_in, slot)) ++copies[slot];
+        free(depth);
+        for (unsigned slot = 0; slot < SLOTS; ++slot) {
+            if (!s.used[slot]) continue;
+            if (phis[slot] > uses[slot] + 8 || copies[slot] > uses[slot]) s.used[slot] = 0;
+            if (ir->stats.enabled) ++*(s.used[slot] ? &ir->stats.promoted_slots : &ir->stats.memory_slots);
+        }
     }
     LLVMBuilderRef b = LLVMCreateBuilderInContext(ir->ctx);
     /* the locals, loaded on entry where live */
@@ -531,6 +948,10 @@ void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
         LLVMSetOperand(a->inst, LLVMIsAStoreInst(a->inst) ? 1 : 0, pointer);
         if (LLVMGetAlignment(a->inst) > (unsigned)(a->delta ? a->delta & -a->delta : 16))
             LLVMSetAlignment(a->inst, a->delta & -a->delta);
+    }
+    if (edge_stores(ir, fn, b, blocks, nblocks, events, sites, local)) {
+        LLVMDisposeBuilder(b);
+        goto done;
     }
     /* the dirty registers into the CPU structure before each site, the live ones back after a call */
     if (ir->stats.enabled) ++ir->stats.promoted_functions;
@@ -564,4 +985,252 @@ done:
     free(keys);
     free(events);
     free(sites);
+}
+
+/* ---- the checker (ir_check_promoted), after regalloc2's (checker.rs) ---- */
+
+/* the slot a pointer of the CPU structure reaches (c itself, or c plus a constant), SLOTS for none; *part when the
+   access is narrower than the slot */
+static unsigned cpu_slot(SnxIr* ir, LLVMValueRef c, LLVMValueRef pointer, LLVMTypeRef type, int* part) {
+    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(ir->mod);
+    size_t offset, size = (size_t)LLVMStoreSizeOfType(layout, type);
+    unsigned slot;
+    if (pointer == c)
+        offset = 0;
+    else if (LLVMIsAGetElementPtrInst(pointer) && LLVMGetOperand(pointer, 0) == c && LLVMGetNumOperands(pointer) == 2 &&
+             LLVMIsAConstantInt(LLVMGetOperand(pointer, 1)))
+        offset = (size_t)LLVMConstIntGetZExtValue(LLVMGetOperand(pointer, 1));
+    else
+        return SLOTS;
+    slot = slot_of(offset, size);
+    if (slot >= SLOTS) return SLOTS;
+    *part = size < slot_size(slot);
+    return slot;
+}
+
+/* the alloca under a pointer (itself, or a GEP of it by a constant), NULL for none */
+static LLVMValueRef alloca_of(LLVMValueRef pointer) {
+    if (LLVMIsAAllocaInst(pointer)) return pointer;
+    if (LLVMIsAGetElementPtrInst(pointer) && LLVMIsAAllocaInst(LLVMGetOperand(pointer, 0)))
+        return LLVMGetOperand(pointer, 0);
+    return NULL;
+}
+
+typedef struct {
+    LLVMValueRef alloca;
+    unsigned slot;
+} Local;
+
+/* A promoted function's state, a pair of sets: the registers whose local holds their architectural value, and those
+   whose field of the CPU structure does. Every path is followed (the meet of a block's predecessors is their
+   intersection: a register holds its value at a join only if it does on every way in). On entry the CPU structure holds
+   every register and no local does. An emitter's write makes the local hold it and the CPU field stale; a copy moves
+   "holds" from one to the other; a site (a call or a return) must find every register it sees held in the CPU
+   structure, and after a call that can change a register its local is stale and its CPU field holds it only if it did
+   before: the callee may leave it as it was (a way through it without the write, or a stale callee that runs nothing);
+   an emitter's read, of a local or of a register left in the CPU structure, must find it held. A copy is a load right
+   before a store of the loaded value, between a local and its register's field: what ir_promote_registers' copy writes.
+   The problems found are counted in ir->check_failures, the first one written to ir->check_why */
+void ir_check_promoted(SnxIr* ir, LLVMValueRef fn) {
+    LLVMValueRef c = LLVMGetParam(fn, 0);
+    size_t nblocks = LLVMCountBasicBlocks(fn), nlocals = 0, i, k;
+    LLVMBasicBlockRef* order = (LLVMBasicBlockRef*)malloc((nblocks ? nblocks : 1) * sizeof(*order));
+    BlockKey* keys = (BlockKey*)malloc((nblocks ? nblocks : 1) * sizeof(*keys));
+    Set *local_in = (Set*)malloc((nblocks ? nblocks : 1) * sizeof(Set)),
+        *cpu_in = (Set*)malloc((nblocks ? nblocks : 1) * sizeof(Set));
+    unsigned char *seen_block = (unsigned char*)calloc(nblocks ? nblocks : 1, 1),
+                  *queued = (unsigned char*)calloc(nblocks ? nblocks : 1, 1);
+    size_t* work = (size_t*)malloc((nblocks ? nblocks : 1) * sizeof(size_t));
+    Local* locals = NULL;
+    size_t head = 0, count = 0, cap = 0;
+    int reporting = 0;
+    if (!order || !keys || !local_in || !cpu_in || !seen_block || !queued || !work) {
+        ++ir->check_failures;
+        goto done;
+    }
+    i = 0;
+    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb), ++i) {
+        order[i] = bb;
+        keys[i].block = bb;
+        keys[i].index = i;
+    }
+    qsort(keys, nblocks, sizeof(*keys), key_by_block);
+    /* the locals: an alloca a copy joins to a register's field */
+    for (i = 0; i < nblocks; ++i)
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(order[i]); inst; inst = LLVMGetNextInstruction(inst)) {
+            LLVMValueRef next = LLVMGetNextInstruction(inst), from, to, a;
+            unsigned slot;
+            int part = 0;
+            if (!LLVMIsALoadInst(inst) || !next || !LLVMIsAStoreInst(next) || LLVMGetOperand(next, 0) != inst) continue;
+            from = LLVMGetOperand(inst, 0);
+            to = LLVMGetOperand(next, 1);
+            a = LLVMIsAAllocaInst(from) ? from : LLVMIsAAllocaInst(to) ? to : NULL;
+            slot = cpu_slot(ir, c, a == from ? to : from, LLVMTypeOf(inst), &part);
+            if (!a || slot >= SLOTS || part) continue;
+            for (k = 0; k < nlocals && locals[k].alloca != a; ++k) {}
+            if (k < nlocals) continue;
+            if (nlocals == cap) {
+                Local* grown;
+                cap = cap ? 2 * cap : 16;
+                grown = (Local*)realloc(locals, cap * sizeof(*grown));
+                if (!grown) {
+                    ++ir->check_failures;
+                    goto done;
+                }
+                locals = grown;
+            }
+            locals[nlocals].alloca = a;
+            locals[nlocals++].slot = slot;
+        }
+    for (i = 0; i < nblocks; ++i) {
+        local_in[i] = (Set){{~0ull, ~0ull}};
+        cpu_in[i] = (Set){{~0ull, ~0ull}};
+    }
+    local_in[0] = (Set){{0, 0}};
+    seen_block[0] = 1;
+    work[count++] = 0;
+    queued[0] = 1;
+    /* to a fixed point, then once more with the problems reported */
+    for (int pass = 0; pass < 2; ++pass) {
+        if (pass) {
+            reporting = 1;
+            count = 0;
+            head = 0;
+            for (i = 0; i < nblocks; ++i)
+                if (seen_block[i]) work[count++] = i;
+        }
+        while (count) {
+            size_t at = work[head];
+            Set local = local_in[at], cpu = cpu_in[at];
+            head = head + 1 == nblocks ? 0 : head + 1;
+            --count;
+            queued[at] = 0;
+            for (LLVMValueRef inst = LLVMGetFirstInstruction(order[at]); inst; inst = LLVMGetNextInstruction(inst)) {
+                LLVMValueRef next = LLVMGetNextInstruction(inst), pointer, a;
+                unsigned slot = SLOTS;
+                int part = 0, problem = 0;
+                const char* what = "";
+                if (LLVMIsALoadInst(inst) || LLVMIsAStoreInst(inst)) {
+                    int store = LLVMIsAStoreInst(inst) != NULL;
+                    LLVMTypeRef type = store ? LLVMTypeOf(LLVMGetOperand(inst, 0)) : LLVMTypeOf(inst);
+                    pointer = LLVMGetOperand(inst, store ? 1 : 0);
+                    a = alloca_of(pointer);
+                    if (a) {
+                        for (k = 0; k < nlocals && locals[k].alloca != a; ++k) {}
+                        if (k == nlocals) continue; /* a local of an emitter's own (a helper's argument) */
+                        slot = locals[k].slot;
+                        part = pointer != a ||
+                               LLVMStoreSizeOfType(LLVMGetModuleDataLayout(ir->mod), type) < slot_size(slot);
+                        if (!store && next && LLVMIsAStoreInst(next) && LLVMGetOperand(next, 0) == inst) {
+                            int field_part = 0;
+                            if (cpu_slot(ir, c, LLVMGetOperand(next, 1), type, &field_part) == slot && !field_part) {
+                                /* a copy into the CPU structure: its field holds what the local holds */
+                                if (set_has(&local, slot))
+                                    set_add(&cpu, slot);
+                                else
+                                    set_remove(&cpu, slot);
+                                inst = next;
+                                continue;
+                            }
+                        }
+                        if (store) {
+                            LLVMValueRef value = LLVMGetOperand(inst, 0);
+                            int field_part = 0;
+                            if (LLVMIsALoadInst(value) && LLVMGetNextInstruction(value) == inst &&
+                                cpu_slot(ir, c, LLVMGetOperand(value, 0), type, &field_part) == slot && !field_part) {
+                                /* a copy from the CPU structure: the local holds what the field holds */
+                                if (set_has(&cpu, slot))
+                                    set_add(&local, slot);
+                                else
+                                    set_remove(&local, slot);
+                                continue;
+                            }
+                            if (part && !set_has(&local, slot)) {
+                                problem = 1;
+                                what = "a part of its local written while the rest is not its value";
+                            }
+                            set_add(&local, slot);
+                            set_remove(&cpu, slot);
+                        } else if (!set_has(&local, slot)) {
+                            problem = 1;
+                            what = "its local read while it does not hold its value";
+                        }
+                    } else {
+                        slot = cpu_slot(ir, c, pointer, type, &part);
+                        if (slot >= SLOTS) continue;
+                        if (!store && next && LLVMIsAStoreInst(next) && LLVMGetOperand(next, 0) == inst &&
+                            alloca_of(LLVMGetOperand(next, 1)) == LLVMGetOperand(next, 1) && !part)
+                            continue; /* a copy into a local: the store says what it holds */
+                        if (store) {  /* an emitter's write of a register left in the CPU structure */
+                            if (part && !set_has(&cpu, slot)) {
+                                problem = 1;
+                                what = "a part of its field written while the rest is not its value";
+                            }
+                            set_add(&cpu, slot);
+                            set_remove(&local, slot);
+                        } else if (!set_has(&cpu, slot)) {
+                            problem = 1;
+                            what = "its field read while it does not hold its value";
+                        }
+                    }
+                } else if ((LLVMIsACallInst(inst) && call_site(inst) != NONE) ||
+                           (LLVMIsAReturnInst(inst) && !after_tail_call(inst))) {
+                    Set see, change;
+                    site_sets(ir, inst, &see, &change);
+                    for (unsigned r = 0; r < SLOTS; ++r)
+                        if (set_has(&see, r) && !set_has(&cpu, r)) {
+                            slot = r;
+                            problem = 1;
+                            what = LLVMIsAReturnInst(inst) ? "not in the CPU structure at a return"
+                                                           : "not in the CPU structure at a call that can see it";
+                            break;
+                        }
+                    if (LLVMIsACallInst(inst) && returns(inst)) {
+                        local.w[0] &= ~change.w[0];
+                        local.w[1] &= ~change.w[1];
+                    }
+                }
+                if (problem && reporting) {
+                    if (!ir->check_failures++) {
+                        size_t n = 0;
+                        const char* name = LLVMGetValueName2(fn, &n);
+                        snprintf(ir->check_why, sizeof(ir->check_why), "%.*s, block %zu: register slot %u: %s", (int)n,
+                                 name, at, slot, what);
+                    }
+                }
+            }
+            {
+                LLVMValueRef term = LLVMGetBasicBlockTerminator(order[at]);
+                unsigned n = term ? LLVMGetNumSuccessors(term) : 0;
+                for (unsigned j = 0; j < n; ++j) {
+                    size_t to = block_index(keys, nblocks, LLVMGetSuccessor(term, j));
+                    Set l, m;
+                    if (to >= nblocks) continue;
+                    l.w[0] = local_in[to].w[0] & local.w[0];
+                    l.w[1] = local_in[to].w[1] & local.w[1];
+                    m.w[0] = cpu_in[to].w[0] & cpu.w[0];
+                    m.w[1] = cpu_in[to].w[1] & cpu.w[1];
+                    if (!seen_block[to] || l.w[0] != local_in[to].w[0] || l.w[1] != local_in[to].w[1] ||
+                        m.w[0] != cpu_in[to].w[0] || m.w[1] != cpu_in[to].w[1]) {
+                        local_in[to] = l;
+                        cpu_in[to] = m;
+                        seen_block[to] = 1;
+                        if (!reporting && !queued[to]) {
+                            work[(head + count++) % nblocks] = to;
+                            queued[to] = 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+done:
+    free(order);
+    free(keys);
+    free(local_in);
+    free(cpu_in);
+    free(seen_block);
+    free(queued);
+    free(work);
+    free(locals);
 }

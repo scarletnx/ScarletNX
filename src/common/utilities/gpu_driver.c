@@ -196,6 +196,8 @@ void snx_gpu_driver_host(SnxGpuDriverHost* host) {
     host->arch = "riscv64";
 #elif defined(__mips64)
     host->arch = "mips64";
+#elif defined(__s390x__)
+    host->arch = "s390x";
 #else
     host->arch = "this CPU";
 #endif

@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/loader/loader.h"
 #include "nx/runtime/driver/game_name.h"
+#include <libdeflate.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -334,6 +335,24 @@ static void test_nro_npdm(void) {
     CHECK(program.npdm.stack == 0x100000 && program.npdm.prio == 44 && program.npdm.is64);
     CHECK(program.npdm.title_id == 0x0100000000001000ull);
     snx_free_program(&program);
+    { /* its icon, the JPEG Games shows (recompile.c writes it in its data): none in its ASET, one, one outside the
+         file, no ASET, no NRO */
+        unsigned char* icon = (unsigned char*)1;
+        size_t icon_size = 1;
+        CHECK(snx_nro_icon(path, &icon, &icon_size, error, sizeof error) == 1 && !icon && !icon_size);
+        put64(file_bytes + 0x408, 0x38);
+        put64(file_bytes + 0x410, 3);
+        CHECK(!snx_write_file(path, file_bytes, size));
+        CHECK(!snx_nro_icon(path, &icon, &icon_size, error, sizeof error) && icon_size == 3 && !memcmp(icon, "ROM", 3));
+        free(icon);
+        put64(file_bytes + 0x410, 6);
+        CHECK(!snx_write_file(path, file_bytes, size));
+        CHECK(snx_nro_icon(path, &icon, &icon_size, error, sizeof error) == -1 && !icon && strstr(error, "ASET"));
+        CHECK(!snx_write_file(path, file_bytes, 0x400));
+        CHECK(snx_nro_icon(path, &icon, &icon_size, error, sizeof error) == 1 && !icon);
+        CHECK(!snx_write_file(path, file_bytes, 0x10));
+        CHECK(snx_nro_icon(path, &icon, &icon_size, error, sizeof error) == -1 && strstr(error, "not an NRO"));
+    }
     /* ASET is optional and never part of the executable mapping. */
     CHECK(!snx_write_file(path, file_bytes, 0x400));
     CHECK(!snx_load_nro(path, &m, error, sizeof error));
@@ -381,13 +400,28 @@ static void test_nro_npdm(void) {
     puts("PASS NRO assets/program loading and bounded NPDM metadata");
 }
 
+/* nacp (0x4000 bytes) with its titles in deflate, as a NACP made for firmware 20.0.0 or later can keep them: count
+   languages of 0x300 bytes from titles, a u16 size and the raw deflate at its start, TitleCompression (0x3215) 1. The
+   deflate's size */
+static size_t pack_titles(unsigned char* nacp, const unsigned char* titles, size_t count) {
+    struct libdeflate_compressor* packer = libdeflate_alloc_compressor(9);
+    size_t packed = packer ? libdeflate_deflate_compress(packer, titles, count * 0x300, nacp + 2, 0x3000 - 2) : 0;
+    libdeflate_free_compressor(packer);
+    CHECK(packed > 0);
+    nacp[0] = (unsigned char)packed;
+    nacp[1] = (unsigned char)(packed >> 8);
+    nacp[0x3215] = 1;
+    return packed;
+}
+
 /* the name a game is shown by: an NRO's control.nacp in its assets, an ExeFS's beside it, American English's name,
    else the first language's that has one, trimmed and cut whole at a UTF-8 sequence; --name over it, the title
    without it. A title ID given as the name (the driver's, for a dump read in place) is the files' name: the name in
-   control.nacp is shown, the ID only when no language has one. The files keep the title ID */
+   control.nacp is shown, the ID only when no language has one. The files keep the title ID. A name that is not UTF-8
+   is never shown, its bytes said; titles kept in deflate are inflated */
 static void test_nacp(const char* root, const char* exefs) {
-    static unsigned char nacp[0x600], all[0x4000]; /* all: the 16 languages and the rest, as a dump's is */
-    char name[32], error[256], *path, *shown;
+    static unsigned char nacp[0x600], all[0x4000], titles[32 * 0x300]; /* all: the 16 languages and the rest */
+    char name[32], error[256], why[256], *path, *shown;
     SnxProgram program;
     /* a name in one language only, Japanese's (the third), the last one's (Brazilian Portuguese's); a language whose
        name is spaces or control characters passes to the next that has one */
@@ -413,6 +447,50 @@ static void test_nacp(const char* root, const char* exefs) {
     CHECK(!snx_nacp_name(NULL, 0, name, sizeof name) && !name[0]);
     memcpy(nacp, "First\x01", 6); /* American English's, a control character left out */
     CHECK(snx_nacp_name(nacp, sizeof nacp, name, sizeof name) && !strcmp(name, "First"));
+    /* titles in deflate: inflated, up to 32 languages, the 18th's name found past the 16 a NACP keeps as they are;
+       titles that do not inflate, and a TitleCompression of no format known, give none and say so */
+    memset(titles, 0, sizeof titles);
+    memcpy(titles + 0x300, "Packed Title", 12);
+    memset(all, 0, sizeof all);
+    pack_titles(all, titles, 32);
+    CHECK(snx_nacp_name_why(all, sizeof all, name, sizeof name, why, sizeof why) && !strcmp(name, "Packed Title") &&
+          !why[0]);
+    memset(titles, 0, sizeof titles);
+    memcpy(titles + 17 * 0x300, "Packed Last", 11);
+    memset(all, 0, sizeof all);
+    pack_titles(all, titles, 32);
+    CHECK(snx_nacp_name(all, sizeof all, name, sizeof name) && !strcmp(name, "Packed Last"));
+    all[2] |= 0x06; /* the first block's type 3, which deflate reserves */
+    CHECK(!snx_nacp_name_why(all, sizeof all, name, sizeof name, why, sizeof why) && !name[0] &&
+          strstr(why, "do not inflate"));
+    memset(all, 0, sizeof all);
+    memcpy(all, "Plain Title", 11);
+    all[0x3215] = 2;
+    CHECK(!snx_nacp_name_why(all, sizeof all, name, sizeof name, why, sizeof why) &&
+          strstr(why, "TitleCompression is 2"));
+    all[0x3215] = 0;
+    CHECK(snx_nacp_name(all, sizeof all, name, sizeof name) && !strcmp(name, "Plain Title"));
+    /* a name that is not UTF-8 is never shown: the next language's, else none and its bytes said; an overlong form, a
+       surrogate and a lone continuation byte are not UTF-8, a 4-byte sequence is */
+    memset(all, 0, sizeof all);
+    memcpy(all, "\xff\xfe\x41\x42", 4);
+    memcpy(all + 0x300, "Second", 6);
+    CHECK(snx_nacp_name(all, sizeof all, name, sizeof name) && !strcmp(name, "Second"));
+    memset(all + 0x300, 0, 6);
+    CHECK(!snx_nacp_name_why(all, sizeof all, name, sizeof name, why, sizeof why) && !name[0] &&
+          strstr(why, "language 0 is not UTF-8 (ff fe 41 42)"));
+    memcpy(all, "\xc0\xaf", 3);
+    CHECK(!snx_nacp_name(all, sizeof all, name, sizeof name));
+    memcpy(all, "\xed\xa0\x80", 4);
+    CHECK(!snx_nacp_name(all, sizeof all, name, sizeof name));
+    memcpy(all, "A\x80", 3);
+    CHECK(!snx_nacp_name(all, sizeof all, name, sizeof name));
+    memcpy(all, "\xf0\x9f\x8e\xae", 5);
+    CHECK(snx_nacp_name(all, sizeof all, name, sizeof name) && !strcmp(name, "\xf0\x9f\x8e\xae"));
+    memset(all, 0, sizeof all);
+    CHECK(!snx_nacp_name_why(all, sizeof all, name, sizeof name, why, sizeof why) &&
+          strstr(why, "none of its 16 languages"));
+    CHECK(!snx_nacp_name_why(all, 0x2ff, name, sizeof name, why, sizeof why) && strstr(why, "767 bytes"));
     /* in an NRO's assets, after its RomFS */
     build_nro();
     put64(file_bytes + 0x418, 0x40);
@@ -421,37 +499,52 @@ static void test_nacp(const char* root, const char* exefs) {
     path = fixture("named.nro", file_bytes, 0x440 + sizeof nacp);
     CHECK(!snx_load_program(path, &program, error, sizeof error));
     CHECK(program.nacp_size == sizeof nacp && !memcmp(program.nacp, nacp, sizeof nacp) && program.romfs_size == 5);
-    shown = snx_game_shown(NULL, &program);
+    shown = snx_game_shown(NULL, &program, NULL, 0);
     CHECK(!strcmp(shown, "First"));
     free(shown);
-    shown = snx_game_shown("My Game", &program);
+    shown = snx_game_shown("My Game", &program, NULL, 0);
     CHECK(!strcmp(shown, "My Game"));
     free(shown);
-    shown = snx_game_shown("0123456789ABCDEF", &program); /* a title ID: a file name, not the player's word */
+    shown = snx_game_shown("0123456789ABCDEF", &program, NULL, 0); /* a title ID: a file name, not the player's word */
     CHECK(!strcmp(shown, "First"));
     free(shown);
     snx_free_program(&program);
     free(path);
     /* beside an ExeFS, where the extraction puts it; none: the title, or the title ID given */
     CHECK(!snx_load_program(exefs, &program, error, sizeof error) && !program.nacp);
-    shown = snx_game_shown(NULL, &program);
+    shown = snx_game_shown(NULL, &program, NULL, 0);
     CHECK(!strcmp(shown, "Synthetic Loader"));
     free(shown);
-    shown = snx_game_shown("123456789ABCDEF0", &program);
+    shown = snx_game_shown("123456789ABCDEF0", &program, NULL, 0);
     CHECK(!strcmp(shown, "123456789ABCDEF0"));
     free(shown);
     snx_free_program(&program);
     path = snx_path_join(root, "control.nacp");
     CHECK(!snx_write_file(path, nacp, sizeof nacp));
     CHECK(!snx_load_program(exefs, &program, error, sizeof error) && program.nacp_size == sizeof nacp);
-    shown = snx_game_shown(NULL, &program);
+    shown = snx_game_shown(NULL, &program, NULL, 0);
     CHECK(!strcmp(shown, "First"));
     free(shown);
-    shown = snx_game_shown("123456789ABCDEF0", &program); /* its own title ID, as the driver names it */
+    shown = snx_game_shown("123456789ABCDEF0", &program, NULL, 0); /* its own title ID, as the driver names it */
     CHECK(!strcmp(shown, "First"));
     free(shown);
     shown = snx_game_name(NULL, &program.npdm, program.entry_path);
     CHECK(!strcmp(shown, "123456789ABCDEF0")); /* the files: the title ID still */
+    free(shown);
+    snx_free_program(&program);
+    /* one whose only name is not UTF-8: the title, and why with the name's bytes */
+    memset(all, 0, sizeof all);
+    memcpy(all, "*\x9c\xe3\x41\x4a", 5);
+    CHECK(!snx_write_file(path, all, sizeof all));
+    CHECK(!snx_load_program(exefs, &program, error, sizeof error) && program.nacp_size == sizeof all);
+    shown = snx_game_shown(NULL, &program, why, sizeof why);
+    CHECK(!strcmp(shown, "Synthetic Loader") && strstr(why, "is not UTF-8 (2a 9c e3 41 4a)"));
+    free(shown);
+    shown = snx_game_shown("123456789ABCDEF0", &program, why, sizeof why);
+    CHECK(!strcmp(shown, "123456789ABCDEF0") && strstr(why, "is not UTF-8"));
+    free(shown);
+    shown = snx_game_shown("My Game", &program, why, sizeof why); /* the player's name: no control.nacp read */
+    CHECK(!strcmp(shown, "My Game") && !why[0]);
     free(shown);
     snx_free_program(&program);
     CHECK(!snx_remove_tree(path));
@@ -595,6 +688,8 @@ static void test_dump(const char* root) {
     path = snx_path_join(out, "modules.txt");
     text = snx_read_file(path, &size);
     CHECK(text && size > strlen(expected) && !strncmp((const char*)text, expected, strlen(expected)));
+    /* the matcher's count last: the sdk's one function (entry, 4 instructions) too short to sign, skipped */
+    CHECK(size > 18 && !memcmp(text + size - 18, "matched 0 0 0 0 1\n", 18));
     free(text);
     free(path);
     path = snx_path_join(out, "subsdk2.bin");

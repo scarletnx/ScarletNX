@@ -24,6 +24,7 @@ ScarletNX yourself, see [Build](./BUILD.md).
 - [PowerPC64](./PPC64.md): building, running a game under qemu, and big-endian hosts
 - [RISC-V and LoongArch](./RISCV-LOONGARCH.md): building, and what differs from the other hosts
 - [MIPS64](./MIPS64.md): mips64 and mips64el, built from their presets, and what differs from the other hosts
+- [s390x](./S390X.md): IBM Z, built from its preset, and what differs from the other hosts
 
 ## Other systems
 
@@ -46,6 +47,7 @@ ScarletNX yourself, see [Build](./BUILD.md).
 - [Architecture](./ARCHITECTURE.md): AArch64 to a native module, the runtimes' boundaries and what each owns
 - [The recompiler as a library](./LIBRARY.md): building, using and the limits of `libscarletnx-recompiler`
 - [Cortex-A57 divergences](./DIVERGENCES.md): where the recompiled code differs from the CPU
+- [NCE](./NCE.md): the game's code on an AArch64 host's own CPU, Android's design calls and their limits
 - [Hooks](./HOOKS.md): native handlers for functions a game exports, declaring and checking one
 - [CPU implementation plan](./CPU_TRANSLATOR_PLAN.md): Rosetta 2's design, part by part, applied to ScarletNX
   - [Working on the plan](./CPU_TRANSLATOR_GUIDE.md): setup, rules, and how work is handed back
@@ -70,6 +72,7 @@ ScarletNX yourself, see [Build](./BUILD.md).
 - [VIC composition on the GPU](./VIC.md)
 - [NVDEC H.264 packet submission audit](./NVDEC.md)
 - [Shader corrections, batch 001](./shader-audit/fixes-001.md)
+- [glslc](./GLSLC.md): GLSL ES into SPIR-V, for the backends that run OpenGL ES programs on Vulkan
 
 ## License
 

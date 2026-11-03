@@ -15,6 +15,8 @@
 #include "gui/icons.h"
 #include "gui_theme_colors.h"
 #include "common/utilities/users.h"
+#include "common/utilities/mii_db.h"
+#include "common/utilities/mii_model.h"
 #include "common/utilities/common.h"
 #include "gui/splash.h"
 #include "common/utilities/endian.h"
@@ -47,6 +49,10 @@ void fatal(const char* fmt, ...) {
 }
 /* settings.txt's Display table, which holds the menu's Stats, names options.c's setter of the game's language */
 void options_language_set(const IniOpt* o, const char* v) {
+    (void)o;
+    (void)v;
+}
+void options_tv_mode_set(const IniOpt* o, const char* v) {
     (void)o;
     (void)v;
 }
@@ -999,9 +1005,10 @@ int main(void) {
         assert(!fatal_log_url("", url, sizeof url) && !*url);
         assert(!fatal_log_url("/tmp/a.log", NULL, 0));
     }
-    /* the user playing on the head's band: Player, without users.ini, and Wimsy, as the YoRHa theme has it (square),
-       in the atlas under the sprites; on the right of the band, its frame in the page colour and the nickname before
-       it; none on a stopped game's panel */
+    /* the user playing on the head's band: Player, without users.ini, as the YoRHa theme has it (square), in the
+       atlas under the sprites: its picture its Mii's (Baguette's: users.ini's picture= is mii for a user with no
+       picture file), and Wimsy with picture=file and no file; on the right of the band, its frame in the page colour
+       and the nickname before it; none on a stopped game's panel */
     {
         char why[256];
         u32* sprites = calloc((size_t)SNX_CONTROLS_ATLAS_WIDTH * SNX_CONTROLS_ATLAS_HEIGHT, 4);
@@ -1013,6 +1020,26 @@ int main(void) {
         assert(sprites && !snx_users_load("/nonexistent/users", 1, why, sizeof why));
         assert(g_user_count == 1 && !strcmp(snx_users_selected()->nickname, "Player"));
         assert(SNX_GUI_THEME_YORHA_PICTURE == 1); /* square: the frame is the fills' */
+        assert(snx_users_selected()->picture_mii && snx_users_selected()->mii == 0);
+        ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
+        a = ui_atlas(&w, &h, &version);
+        assert(a && h == SNX_CONTROLS_ATLAS_HEIGHT + SNX_UI_PICTURE);
+        { /* texel for texel the Mii's picture (mii_model.h), R G B A from the low byte, opaque */
+            static uint8_t rgba[SNX_UI_PICTURE * SNX_UI_PICTURE * 4];
+            uint8_t charinfo[SNX_MII_CHARINFO];
+            SnxMiiLook look;
+            snx_mii_db_charinfo(0, charinfo);
+            snx_mii_db_look(0, &look);
+            assert(!snx_mii_picture(charinfo, &look, SNX_UI_PICTURE, rgba));
+            for (y = 0; y < SNX_UI_PICTURE; ++y)
+                for (x = 0; x < SNX_UI_PICTURE; ++x) {
+                    const uint8_t* p = rgba + 4 * (y * SNX_UI_PICTURE + x);
+                    assert(snx_le32(a[(SNX_CONTROLS_ATLAS_HEIGHT + y) * w + x]) ==
+                           ((u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | 0xFF000000u));
+                }
+        }
+        ui_atlas_done();
+        g_users[0].picture_mii = 0; /* picture=file, and no users/<uid>.jpg: Wimsy */
         ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
         a = ui_atlas(&w, &h, &version);
         assert(a && h == SNX_CONTROLS_ATLAS_HEIGHT + SNX_UI_PICTURE);

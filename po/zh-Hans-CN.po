@@ -1577,6 +1577,16 @@ msgstr "F2: 侧栏."
 
 #: src/gui/main.c
 #, c-format
+msgid "user=%d is deprecated, and the Settings have no user_uid to write %s in"
+msgstr "user=%d 是旧的设置，而设置中没有可写入 %s 的 user_uid"
+
+#: src/gui/main.c
+#, c-format
+msgid "user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"
+msgstr "user=%d 是旧的设置：由 user_uid=%s（[user%d] 的）取代"
+
+#: src/gui/main.c
+#, c-format
 msgid "No user shown: %s"
 msgstr "未显示用户：%s"
 
@@ -1668,6 +1678,10 @@ msgstr "设置"
 
 #: src/gui/main.c
 msgid "its dump is not known: the game was made before the recompile named it"
+msgstr ""
+
+#: src/gui/main.c
+msgid "not known"
 msgstr ""
 
 #: src/gui/main.c
@@ -2825,8 +2839,8 @@ msgid "The settings of All, or of player 1 to 8"
 msgstr "「全部」或玩家 1 到 8 的设置"
 
 #: src/gui/main.c
-msgid "nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr "昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+msgid "nickname of 1 to 32 bytes, no control character, no space at either end"
+msgstr "昵称为 1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
 #, c-format
@@ -2851,8 +2865,17 @@ msgid "User %d"
 msgstr "用户 %d"
 
 #: src/gui/main.c
-msgid "Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr "其昵称，游戏和 Eden 房间中显示为：4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+msgid "Its nickname, as the games show it: 1 to 32 bytes, no control character, no space at either end"
+msgstr "昵称，按游戏中的显示：1 到 32 字节，不含控制字符，不以空格开始或结束"
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d Mii"
+msgstr "用户 %d 的 Mii"
+
+#: src/gui/main.c
+msgid "Its Mii, which the games get as the user's and its picture shows unless it has a picture file"
+msgstr "它的 Mii：游戏把它当作该用户的 Mii，没有头像文件时头像也显示它"
 
 #: src/gui/main.c
 msgid "System driver"
@@ -3077,10 +3100,6 @@ msgid "GPU: %s. Recommended: %s."
 msgstr ""
 
 #: src/gui/main.c
-msgid "not known"
-msgstr ""
-
-#: src/gui/main.c
 msgid "This build of the launcher has no HTTPS client: Add Driver takes a zip downloaded by hand"
 msgstr ""
 
@@ -3228,12 +3247,22 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "User %d's new nickname is not written: %s"
-msgstr "用户 %d 的新昵称未写入：%s"
+msgid "User %d's Mii is not written: %s"
+msgstr "用户 %d 的 Mii 未写入：%s"
 
 #: src/gui/main.c
 msgid "no users/ folder"
 msgstr "没有 users/ 文件夹"
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's Mii is %s now"
+msgstr "用户 %d 的 Mii 现在是 %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's new nickname is not written: %s"
+msgstr "用户 %d 的新昵称未写入：%s"
 
 #: src/gui/main.c
 #, c-format
@@ -3373,8 +3402,8 @@ msgid "Ctrl+S saves too"
 msgstr "Ctrl+S 也可保存"
 
 #: src/gui/main.c
-msgid "A nickname, 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr ""
+msgid "A nickname, 1 to 32 bytes, no control character, no space at either end"
+msgstr "昵称，1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
 msgid "Preview"
@@ -3632,8 +3661,8 @@ msgid "Tip: Menu > Install Keys changes them"
 msgstr "提示：「菜单 > 安装密钥」可更改它们"
 
 #: src/gui/main.c
-msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr "提示：昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+msgid "Tip: nickname of 1 to 32 bytes, no control character, no space at either end"
+msgstr "提示：昵称为 1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
 msgid "before"
@@ -5403,8 +5432,8 @@ msgid "Unit cache limit"
 msgstr "单元缓存上限"
 
 #: src/nx/runtime/settings.txt
-msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, removing its oldest units for a new one"
-msgstr "已编译代码单元缓存的最大容量，单位为 GB：缓存文件夹中的 units/，每次重新编译都会在其中找到之前编译的单元。超过上限时，最久未使用的单元会被删除。0 = 无限制。无论是否设限，缓存始终保留磁盘的十分之一空闲，为新单元删除最旧的单元"
+msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
+msgstr "已编译代码单元缓存的最大容量，单位为 GB：缓存文件夹中的 units/，每次重新编译都会在其中找到之前编译的单元。超过上限时，最久未使用的单元会被删除。0 = 无限制。无论是否设限，缓存始终保留磁盘的十分之一空闲（最多 10 GB），为新单元删除最旧的单元"
 
 #: src/nx/runtime/settings.txt
 msgid "Instruction combining"
@@ -5533,6 +5562,18 @@ msgstr "启动"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "LLVM 内部选项"
+
+#~ msgid "user=%d is deprecated: user_uid=%s (%s) replaces it"
+#~ msgstr "user=%d 是旧的设置：由 user_uid=%s（%s）取代"
+
+#~ msgid "nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
+#~ msgstr "昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+
+#~ msgid "Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"
+#~ msgstr "其昵称，游戏和 Eden 房间中显示为：4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+
+#~ msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
+#~ msgstr "提示：昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
 
 #~ msgid "The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores"
 #~ msgstr "重新编译时编译游戏代码的线程数：0 = 电脑每个核心一个"

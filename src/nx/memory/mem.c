@@ -12,6 +12,8 @@
 #include "nx/gpu/gpu.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/nce/nce.h"
+#include "nx/runtime/nce/nce_host.h"
 #include "nx/runtime/platform/tracy.h"
 #include "snx_settings.h"
 #include <errno.h>
@@ -102,6 +104,28 @@ static void ev_remove(u64 addr, u64 size) {
 #define ev_remove(addr, size) ((void)0)
 #endif
 
+/* NCE on Android moves the whole layout up (mem_reserve_identity): mem_moved is how far, 0 elsewhere */
+static u64 g_mem_moved;
+u64 mem_moved(void) { return g_mem_moved; }
+void mem_layout_move(u64 by) {
+    g_layout.base += by;
+    g_layout.end += by;
+    g_layout.heap += by;
+    g_layout.alias += by;
+    g_layout.stack += by;
+    g_layout.kern += by;
+    g_layout.kern_end += by;
+    g_as_size = g_layout.end;
+    g_mem_moved += by;
+}
+/* a layout of fixed addresses, which a moved address space cannot take: the game was recompiled for NCE elsewhere */
+static void layout_fixed(const char* which) {
+    if (g_mem_moved)
+        fatal("NCE: the game's address space is %s, and the guest's addresses start at %#llx here, where NCE "
+              "moved them. Recompile the game on this device, which makes its code ahead of time",
+              which, (unsigned long long)g_layout.base);
+}
+
 /* The 36-bit layout of a 64-bit application built before 2.0, the NPDM's address space type 1 (Eden's
    "AddressSpace64BitDeprecated", Ryujinx's of the same name, the bit_width 36 entries of their
    k_address_space_info): the console's 64 GiB, the code region at a fixed 128 MiB (no ASLR moves it), the stack
@@ -111,6 +135,7 @@ static void ev_remove(u64 addr, u64 size) {
    layout comes back to the runtime as that address's low 36 bits, which nothing was ever mapped at. Zelda: Breath
    of the Wild's main stack, at 78 GiB above, came back as 12 GiB and its first RomFS read wrote the header there */
 void mem_layout36(void) {
+    layout_fixed("the 36-bit one, which lies below 64 GiB with its code at 128 MiB");
     g_layout.base = 0x8000000ull;
     g_layout.end = AS36;
     g_layout.alias = 2 * GIB;
@@ -127,6 +152,7 @@ void mem_layout36(void) {
    is the stack region too, then from 1 GiB the 1 GiB alias region and the 1 GiB heap region, or a 2 GiB heap region
    without an alias region. The kernel's pages go in the last GiB, above both */
 void mem_layout32(unsigned aspace) {
+    layout_fixed("a 32-bit one, which lies below 4 GiB");
     g_layout.base = AS32_CODE_BASE;
     g_layout.end = 4 * GIB;
     g_layout.stack = AS32_CODE_BASE;
@@ -666,9 +692,9 @@ static u64 largest_hole(void) { return UINT64_MAX; }
 #endif
 /* The largest of these the system gives is the guest's address space: the console's 128 GiB where it can, else a
    smaller layout (an iOS app without the extended virtual addressing entitlement, a process RLIMIT_AS holds to less) */
+static const u64 tiers[] = {128 * GIB, 64 * GIB, 48 * GIB, 32 * GIB, 24 * GIB, 16 * GIB,
+                            12 * GIB,  8 * GIB,  7 * GIB,  6 * GIB,  5 * GIB};
 static u8* reserve_tiers(void) {
-    static const u64 tiers[] = {128 * GIB, 64 * GIB, 48 * GIB, 32 * GIB, 24 * GIB, 16 * GIB,
-                                12 * GIB,  8 * GIB,  7 * GIB,  6 * GIB,  5 * GIB};
     u64 hole = largest_hole();
     size_t i;
     for (i = 0; i < sizeof tiers / sizeof *tiers; ++i) {
@@ -689,8 +715,48 @@ static u8* reserve_tiers(void) {
     return NULL;
 }
 
+/* NCE (runtime/nce/nce.h): the guest's code runs on the host's CPU, so the guest's addresses are the host's, and g_mem
+   stays 0. The address space is reserved from the code region's base (each layout of a 64-bit game has it there),
+   moved up by from or more. Linux: from is 0, the guest's own addresses: an executable that is position independent,
+   and the libraries, lie far above them on a host with 39 bits of address space or more. Android: the app's process
+   holds the low 4 GiB (ART's heap and boot image), so the whole layout moves to the first base from 64 GiB, in 2 MiB
+   steps, where a tier is free, as Eden's host_memory.cpp takes its base above 36 bits. The guest's addresses stay
+   below AS_MAX, which the tables indexed by them are sized for, and so within 39 bits */
+#define IDENTITY_LO   0x8000000ull
+#define IDENTITY_STEP (2ull << 20)
+static int g_mem_identity;
+#if !defined(_WIN32)
+int mem_reserve_identity(u64 from) {
+    for (size_t i = 0; i < sizeof tiers / sizeof *tiers; ++i) {
+        if (tiers[i] > AS_MAX - from) continue;
+        for (u64 by = from; by <= AS_MAX - tiers[i]; by += IDENTITY_STEP) {
+            if (plat_vm_reserve_at(by + IDENTITY_LO, tiers[i] - IDENTITY_LO)) {
+                g_as_size = tiers[i];
+                if (tiers[i] < AS_MAX) layout_for(tiers[i]);
+                if (by) mem_layout_move(by);
+                g_mem_identity = 1;
+                LOG("memory: %llu GiB of address space reserved at the guest's own addresses, for NCE: the code region "
+                    "from %#llx, the address space to %#llx\n",
+                    (unsigned long long)(tiers[i] >> 30), (unsigned long long)AS_BASE, (unsigned long long)AS_END);
+                return 1;
+            }
+            if (!from) break; /* the guest's own addresses, or none */
+        }
+    }
+    WARN("memory: the guest's addresses from %#llx up are taken in the host's process (%s), so its code cannot run "
+         "natively\n",
+         (unsigned long long)(from + IDENTITY_LO), strerror(errno));
+    return 0;
+}
+#endif
+int mem_identity(void) { return g_mem_identity; }
+int mem_reserved(void) { return g_mem || g_mem_identity; }
+
 void mem_reserve(void) {
-    if (g_mem) return;
+    if (mem_reserved()) return;
+#if SNX_NCE_HOST
+    if (nce_wanted() && mem_reserve_identity(SNX_NCE_MOVE_FROM)) return;
+#endif
     g_mem = reserve_tiers();
     if (!g_mem) fatal("Could not reserve even 5 GiB of address space for the game's memory");
     if (g_as_size < AS_MAX)
@@ -702,7 +768,12 @@ void mem_init(void) {
     pm_lock_announce(&g_mem_lk, "guest memory"); /* every thread's reads and writes of the game's memory */
     g_host_page = plat_vm_page();
     mem_reserve();
-    plat_vm_track(g_mem, g_as_size); /* the settings are read by now, which mem_reserve may have run before */
+    /* the settings are read by now, which mem_reserve may have run before. NCE's reservation is the guest's own
+       addresses, from the code region's base, which mem_layout_move moved up by g_mem_moved */
+    if (g_mem_identity)
+        plat_vm_track((u8*)(uintptr_t)(IDENTITY_LO + g_mem_moved), g_as_size - IDENTITY_LO - g_mem_moved);
+    else
+        plat_vm_track(g_mem, g_as_size);
     mem_lock();
     blk_reserve_nl(1);
     memset(&g_blk[0], 0, sizeof *g_blk);

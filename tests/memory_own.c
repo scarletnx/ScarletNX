@@ -10,6 +10,7 @@
    them, --key=value (--write_tracking=1, --memory_traps=1: the protection's paths); with memory_traps=2, or 1 and no
    pool, it checks only that the log says why there are no traps */
 #include "nx/memory/mem.h"
+#include "nx/runtime/nce/nce.h"
 #include "nx/memory/own.h"
 #include "nx/runtime/ini.h"
 #include "nx/runtime/platform/plat.h"
@@ -71,6 +72,10 @@ void fatal(const char* fmt, ...) {
     abort();
 }
 void log_crash_mode(void) {}
+/* nce.c, whose NCE no game here is of: mem.c's reservation asks it first, and the crash handler gives it the
+   signal's context */
+int nce_wanted(void) { return 0; }
+void nce_crash_context(const void* context) { (void)context; }
 void crash_report(void* host_pc, void* fault, int sig) {
     (void)host_pc;
     (void)fault;

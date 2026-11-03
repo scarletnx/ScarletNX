@@ -9,6 +9,7 @@
    relocations, DT_RELR, DWARF pointer encodings) and what the callers expect */
 #include "nx/loader/loader.h"
 #include "nx/loader/hook_routes.h"
+#include "nx/loader/match.h"
 #include <stdlib.h>
 #include <string.h>
 #include <lz4.h>
@@ -906,6 +907,41 @@ int snx_load_nro(const char* path, SnxModuleImage* module, char* error, size_t e
     return 0;
 }
 
+int snx_nro_icon(const char* path, unsigned char** icon, size_t* size, char* error, size_t error_size) {
+    unsigned char header[NRO_HEADER_SIZE], asset[ASET_HEADER_SIZE];
+    SnxU64 file_size = snx_file_size(path), image = 0, off, length = 0;
+    FILE* file = snx_fopen(path, "rb");
+    int rc;
+    *icon = NULL;
+    *size = 0;
+    if (!file) return fail(error, error_size, snx_format("cannot read %s", path));
+    if (fread(header, 1, sizeof header, file) != sizeof header || memcmp(header + 0x10, "NRO0", 4))
+        rc = fail(error, error_size, snx_format("%s: not an NRO", path));
+    else if ((image = rd32(header + 0x18)) > file_size)
+        rc = fail(error, error_size, snx_format("%s: the NRO's image size doesn't fit the file", path));
+    else if (file_size - image < ASET_HEADER_SIZE) /* no assets */
+        rc = 1;
+    else if (snx_seek(file, image) || fread(asset, 1, sizeof asset, file) != sizeof asset)
+        rc = fail(error, error_size, snx_format("cannot read %s", path));
+    else if (memcmp(asset, "ASET", 4) || !(length = rd64(asset + 0x10)))
+        rc = 1;
+    else if (!inside(off = rd64(asset + 0x08), length, file_size - image))
+        rc = fail(error, error_size, snx_format("%s: an ASET section lies outside the file", path));
+    else {
+        *icon = (unsigned char*)snx_alloc((size_t)length);
+        rc = snx_seek(file, image + off) || fread(*icon, 1, (size_t)length, file) != length
+                 ? fail(error, error_size, snx_format("cannot read %s's icon", path))
+                 : 0;
+        if (rc) {
+            free(*icon);
+            *icon = NULL;
+        } else
+            *size = (size_t)length;
+    }
+    fclose(file);
+    return rc;
+}
+
 /* ------------------------------------------------------------------ NPDM */
 
 static void default_npdm(SnxNpdm* npdm) {
@@ -1227,7 +1263,9 @@ int snx_dump_program(const char* entry, const char* outdir, char* error, size_t 
     SnxProgram program;
     char *path = NULL, *index = NULL, *partial = NULL, *file_name;
     FILE* f = NULL;
-    size_t i, j;
+    SnxMatch* match = NULL;
+    SnxMatchStats st;
+    size_t i, j, k, nmatch;
     int rc = -1;
     if (snx_load_program(entry, &program, error, error_size)) return -1;
     if (snx_mkdirs(outdir)) {
@@ -1255,7 +1293,8 @@ int snx_dump_program(const char* entry, const char* outdir, char* error, size_t 
         goto done;
     }
     fprintf(f, "program 1 %d\n", program.npdm.is64 ? 1 : 0);
-    for (i = 0; i < program.module_count; ++i) {
+    nmatch = snx_match_program(&program, &match, &st);
+    for (i = 0, k = 0; i < program.module_count; ++i) {
         const SnxModuleImage* m = &program.modules[i];
         fprintf(f, "module %s %llx %llx %llx\n", m->name, (unsigned long long)m->base, (unsigned long long)m->size,
                 (unsigned long long)m->image_size);
@@ -1263,7 +1302,11 @@ int snx_dump_program(const char* entry, const char* outdir, char* error, size_t 
             fprintf(f, "symbol %llx %llx %llx %s\n", (unsigned long long)m->symbols[j].value,
                     (unsigned long long)m->symbols[j].size, (unsigned long long)m->symbols[j].type,
                     m->symbols[j].name);
+        for (; k < nmatch && match[k].addr < m->base + m->size; ++k)
+            fprintf(f, "match %llx %u %s\n", (unsigned long long)(match[k].addr - m->base), (unsigned)match[k].words,
+                    program.modules[st.sdk].symbols[match[k].symbol].name);
     }
+    fprintf(f, "matched %zu %zu %zu %zu %zu\n", nmatch, st.signatures, st.ambiguous, st.repeated, st.skipped);
     if (fclose(f) || snx_replace(partial, index)) {
         f = NULL;
         fail(error, error_size, snx_format("cannot write %s", index));
@@ -1276,6 +1319,7 @@ done:
     free(path);
     free(index);
     free(partial);
+    free(match);
     snx_free_program(&program);
     return rc;
 }

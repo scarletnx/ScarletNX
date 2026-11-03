@@ -1,0 +1,126 @@
+#version 310 es
+// Expressions on constants, each stored in its own slot: spirv-opt folds both glslc's and glslangValidator's modules
+// into the constants they store, and tests/glslc compares them slot by slot (tests/glslc/glslc_test.py semantics)
+layout(local_size_x = 1) in;
+layout(std430, binding = 0) buffer Out {
+    vec4 v[48];
+    ivec4 i[48];
+    uvec4 u[16];
+} o;
+struct Pair { vec2 a; ivec2 b; };
+
+int twice(int x) { return x * 2; }
+void swap(inout vec2 p, out float sum) { p = p.yx; sum = p.x + p.y; }
+Pair make(float f, int k) { return Pair(vec2(f, -f), ivec2(k, k + 1)); }
+float pick(bool b, float x, float y) { return b ? x : y; }
+
+void main() {
+    vec4 a = vec4(1.5, -2.0, 0.25, 3.0);
+    vec4 z = vec4(-0.75, 4.0, 2.5, -1.25);
+    ivec4 b = ivec4(7, -3, 12, 5);
+    ivec4 n = ivec4(-8, 9, -13, 4);
+    uvec4 c = uvec4(7u, 300u, 0xfffffff0u, 5u);
+    mat2 m2 = mat2(a);
+    mat3 m3 = mat3(a.xyz, z.xyz, a.wzy);
+    mat2x3 m23 = mat2x3(a.xyz, z.wzy);
+    mat3x2 m32 = mat3x2(z.xy, a.zw, z.zw);
+    /* arithmetic, scalars beside vectors */
+    o.v[0] = a * 2.0 + z - 1.0;
+    o.v[1] = a / z * 0.5 - z / 4.0;
+    o.v[2] = -a + +z;
+    o.v[3] = 3.0 - a * z / 2.0;
+    o.i[0] = b + n * 2 - 3;
+    o.i[1] = b / n + n / 2;
+    o.i[2] = b % ivec4(4) + ivec4(17) % b;
+    o.i[3] = -b + ~n;
+    o.u[0] = c + c * 3u - 1u;
+    o.u[1] = c / uvec4(3u) + c % 7u;
+    /* bits and shifts */
+    o.i[4] = (b << 2) | (n >> 1);
+    o.i[5] = (b & n) ^ (b | ivec4(0x30));
+    o.i[6] = b << uvec4(1u, 2u, 3u, 4u);
+    o.u[2] = (c >> 3u) ^ (c << ivec4(1, 2, 3, 4));
+    o.u[3] = ~c & 0xffffu;
+    /* matrices */
+    o.v[4] = vec4(m2 * a.xy, a.zw * m2);
+    o.v[5] = vec4(m3 * z.xyz, 0.0);
+    o.v[6] = vec4(z.xyz * m3, 1.0);
+    o.v[7] = vec4((m3 * m3)[1], 2.0);
+    o.v[8] = vec4((m23 * m32)[0], (m32 * m23)[1].x);
+    o.v[9] = vec4((m2 + m2 * 0.5 - m2 / 4.0)[0], (2.0 - m2)[1]);
+    o.v[10] = vec4((-m3)[2], 3.0);
+    o.v[11] = vec4(m23 * a.xy, 4.0);
+    o.v[12] = vec4(a.xyz * m23, 5.0, 6.0);
+    o.v[13] = vec4(matrixCompMult(m2, m2)[1], transpose(m32)[1].xy);
+    o.v[14] = vec4(outerProduct(a.xy, z.xyz)[2], outerProduct(z.xyz, a.xy)[1].yz);
+    /* constructors and conversions */
+    o.v[15] = vec4(mat2(m3)[1], mat3(m2)[2].xz);
+    o.v[16] = vec4(mat4(m2)[3]);
+    o.v[17] = vec4(m3);
+    o.v[18] = vec4(vec2(b.xy), float(c.y), float(-5));
+    o.v[19] = vec4(bvec4(a.x, b.y, c.z, false));
+    o.v[20] = vec4(mat2(1.5));
+    o.i[7] = ivec4(a * 2.0);
+    o.i[8] = ivec4(bvec4(true, false, b.x > 0, a.y > 0.0));
+    o.i[9] = ivec4(c) + ivec4(z);
+    o.u[4] = uvec4(b.x, 3u, a.w, true);
+    o.i[10] = ivec4(float(c.x) / 2.0, int(uint(b.y)), int(-1.75), int(1.75));
+    /* swizzles, read and written */
+    vec4 s = a;
+    s.yx = s.xy;
+    s.wz += vec2(1.0, 2.0);
+    s.x *= 3.0;
+    o.v[21] = s;
+    o.v[22] = a.wzyx + a.xxyy - a.rgba.bgra;
+    o.v[23] = vec4(a.st, z.pq).yxwz;
+    /* comparisons, logic, the conditional */
+    o.i[11] = ivec4(a.x < a.y, a.z >= 0.25, b.x == 7, c.w != 5u);
+    o.i[12] = ivec4(a == a, a != z, b == n, m2 == m2);
+    o.i[13] = ivec4(a.x > 0.0 && b.y > 0, a.x > 0.0 || b.y > 0, a.x > 0.0 ^^ b.y < 0, !(a.w > 2.0));
+    o.v[24] = vec4(a.x > 1.0 ? z.x : z.y, b.x < 0 ? 1.0 : (c.y > 100u ? 2.0 : 3.0), pick(true, 4.0, 5.0),
+                   pick(false, 6.0, 7.0));
+    o.i[14] = ivec4(lessThan(a, z)) + ivec4(greaterThanEqual(b, n)) * 2 + ivec4(notEqual(c, uvec4(7u))) * 4;
+    o.i[15] = ivec4(all(lessThan(a, a + 1.0)), any(equal(b, n)), all(not(bvec2(false))), any(bvec3(false, true, false)));
+    /* functions, out and inout, structs */
+    vec2 p = vec2(1.0, 2.0);
+    float sum;
+    swap(p, sum);
+    o.v[25] = vec4(p, sum, float(twice(b.z)));
+    Pair q = make(2.5, 4);
+    Pair r = q;
+    r.b.y++;
+    o.v[26] = vec4(q.a, vec2(r.b));
+    o.i[16] = ivec4(q == r, q.a == r.a, q != make(2.5, 4), 1);
+    /* arrays */
+    float table[4] = float[4](1.0, 2.0, 4.0, 8.0);
+    vec3 cols[2] = vec3[](a.xyz, z.xyz);
+    table[2] += table[3];
+    o.v[27] = vec4(table[0], table[2], cols[1].y, float(cols.length()));
+    /* increments */
+    int k = 5;
+    int pre = ++k;
+    int post = k++;
+    vec2 w = vec2(1.0);
+    w--;
+    o.i[17] = ivec4(pre, post, k, int(w.x));
+    /* the switch, with a fall-through and a default in the middle */
+    int sw = 0;
+    switch (b.w) {
+        case 4: sw = 1; break;
+        case 5: sw = 10;
+        default: sw += 100; break;
+        case 6: sw = 1000;
+    }
+    o.i[18] = ivec4(sw, b.w, 0, -1);
+    /* built-in functions spirv-opt folds */
+    o.v[28] = min(a, z) + max(a, 0.5) + clamp(z, -1.0, 1.0);
+    o.v[29] = mix(a, z, 0.25) + mix(a, z, vec4(0.0, 1.0, 0.5, 2.0)) + mix(a, z, bvec4(true, false, true, false));
+    o.v[30] = abs(z) + floor(z) + ceil(z) + fract(a) + trunc(z) + round(z) + sign(z);
+    o.v[31] = step(0.5, a) + step(a, z);
+    o.v[32] = vec4(dot(a, z), dot(a.xy, z.xy), length(a.xy * 0.0), distance(a.xy, a.xy));
+    o.i[19] = abs(n) + sign(n) + min(b, n) + max(b, 3) + clamp(n, -5, 5);
+    o.u[5] = min(c, 100u) + max(c, uvec4(8u)) + clamp(c, 6u, 400u);
+    o.v[33] = vec4(intBitsToFloat(floatBitsToInt(a.x)), uintBitsToFloat(floatBitsToUint(a.y)), sqrt(4.0), 2.0);
+    o.i[20] = ivec4(bitCount(c.y), findLSB(b.z), findMSB(b.x), bitfieldExtract(b.z, 1, 3));
+    o.u[6] = uvec4(bitfieldInsert(c.x, 3u, 4, 2), bitfieldReverse(c.w), bitfieldExtract(c.z, 4, 8), uint(bitCount(n.x)));
+}

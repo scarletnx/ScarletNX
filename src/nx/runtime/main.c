@@ -19,6 +19,7 @@
 #include "nx/hle/hook/hook.h"
 #include "nx/hle/services/hid.h"
 #include "nx/runtime/guest_jit.h"
+#include "nx/runtime/nce/nce.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/hle/services/services.h"
 #include "nx/hle/services/vi.h"
@@ -425,6 +426,42 @@ static void addons_line(char* out, size_t size) {
     if (count > 4) snprintf(out + n, size - n, " and %u more DLCs", (unsigned)(count - 4));
 }
 
+/* what the game is shown as (its log's header, its window, its loading screen), given its code's title. A title that
+   is the game's title ID names its files, not the game: the driver names a dump read in place by it, and a recompile
+   that found no name took it as the title. One that is not UTF-8 is never shown: a recompile that read a control.nacp
+   wrong made it. The name in the control.nacp of its data folder (g_datadir) is shown then, as the recompile's
+   snx_game_shown gives it; when that has none, the ID, or for a title that is not UTF-8 its program's name. name: room
+   for that name. why: the log's line on it, "" for a title shown as it is */
+static const char* game_shown(const char* title, char* name, size_t size, char* why, size_t why_size) {
+    char path[sizeof g_datadir + 16], error[256], bad[64], given[128], none[256];
+    const char* kept = title;
+    unsigned char* nacp;
+    size_t bytes = 0;
+    SnxU64 id;
+    why[0] = 0;
+    if (!snx_utf8_valid(title, strlen(title), bad, sizeof bad)) {
+        kept = g_exename;
+        snprintf(given, sizeof given, "not UTF-8 (%s)", bad);
+    } else if (snx_title_parse(title, &id))
+        snprintf(given, sizeof given, "its title ID %s", title);
+    else
+        return title;
+    snprintf(path, sizeof path, "%scontrol.nacp", g_datadir);
+    nacp = snx_read_file(path, &bytes);
+    if (!nacp)
+        snprintf(why, why_size, "shown as %s, its code's title being %s: %s cannot be read (%s)", kept, given, path,
+                 snx_os_error(error, sizeof error));
+    else if (!snx_nacp_name_why(nacp, bytes, name, size, none, sizeof none))
+        snprintf(why, why_size, "shown as %s, its code's title being %s: %s gives no name, %s", kept, given, path,
+                 none);
+    else {
+        snprintf(why, why_size, "shown as %s, the name in %s: its code's title is %s", name, path, given);
+        kept = name;
+    }
+    free(nacp);
+    return kept;
+}
+
 /* nothing is moved: a game an older version laid out beside the others (its folder named otherwise) runs where it
    is, each start saying where its folder goes */
 static void say_old_layout(void) {
@@ -565,6 +602,7 @@ static void frontend_loop(void) {
         int shown, paused;
         SNX_ZONE(z_frontend, "frontend tick");
         video_poll();
+        options_tv_mode_update();
         /* the game's input and its display's vsync are guest work, which a pause holds back with the rest */
         paused = game_paused();
         if (!paused) {
@@ -842,7 +880,7 @@ static int runtime_key_options(int* argc, char** argv, char** keys, char** title
 
 int snx_main(int argc, char** argv) {
     char module[sizeof g_exedir + sizeof g_exename + 16], ini[sizeof g_confdir + sizeof g_exename + 8];
-    char base[sizeof g_exename];
+    char base[sizeof g_exename], shown[0x200], why[sizeof g_datadir + 0x300];
     char *keys = NULL, *title_keys = NULL;
     const char *game, *title;
     const SnxModule* mod;
@@ -922,8 +960,8 @@ int snx_main(int argc, char** argv) {
     hints_init();
     plat_install_crash_handler();
     clock_start();
-    g_mod = mod; /* from here the log is a file, in the state folder */
-    title = mod->title && mod->title[0] ? mod->title : g_exename;
+    g_mod = nce_module(mod); /* from here the log is a file, in the state folder */
+    title = game_shown(mod->title && mod->title[0] ? mod->title : g_exename, shown, sizeof shown, why, sizeof why);
 #if defined(SNX_TRACY)
     if (g_settings.tracy_profiler) g_opt_tracy_client = 1; /* the .ini's Debug section asks for the client */
 #endif
@@ -953,6 +991,7 @@ int snx_main(int argc, char** argv) {
             "attached\n");
     }
     if (g_addon) LOG("game: the update of the game in %s, with its settings and saves\n", base);
+    if (why[0]) LOG("game: %s\n", why);
     snx_ir_slp_vectorizer(g_settings.slp_vectorizer); /* before the JIT's first compile too */
     snx_ir_fpsr_flags(g_settings.fpsr_flags);
     snx_ir_volatile_memory(g_settings.volatile_load_stores);
@@ -977,12 +1016,13 @@ int snx_main(int argc, char** argv) {
     if (g_arm_mod) arm_dispatch_init();
     load_hints();
     if (loader_load()) fatal("Could not load the game executables. See the .log for details.");
+    nce_init(); /* the patches of native code, before the hooks take their functions */
     kernel_load_symbols();
     hook_install(); /* before NVN, which takes what a slot holds, and the JIT, which reads the slots */
     nvn_loader_init();
     /* after NVN, which says whether calls must go through the slots it takes. The JIT compiles A64: a 32-bit
        game's blocks are arm.c's, and its hints are A32 block keys the JIT must not warm-compile */
-    if (!g_arm_mod) jit_init();
+    if (!g_arm_mod && !nce_on()) jit_init();
     read_npdm();
     svc_core_init();
     {
@@ -1011,6 +1051,8 @@ int snx_main(int argc, char** argv) {
         if (addons[0]) LOG("game: played with %s\n", addons);
         video_init(title, addons);
     }
+    /* the log's line on the host's power state, and the mode docked's Auto picks, before the game's first thread */
+    options_tv_mode_start();
     if (g_settings.profiler) {
 #if defined(_WIN32)
         plat_prof_start();

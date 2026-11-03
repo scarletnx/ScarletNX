@@ -77,6 +77,11 @@ u64 nvn_tex_slice_offset(const NvnTexDesc* d, unsigned level, u32 z) {
     (void)z;
     return 0;
 }
+u32 nvn_tex_level_gobs(const NvnTexDesc* d, unsigned level) {
+    (void)d;
+    (void)level;
+    return 0;
+}
 u32 nvn_tex_msaa(int samples) {
     (void)samples;
     return 0;

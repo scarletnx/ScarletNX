@@ -70,6 +70,9 @@ SvcObj* new_time_user(void); /* time:u, an application's: no write */
 SvcObj* new_acc(void);
 SvcObj* new_acc_system(void); /* acc:u1 */
 SvcObj* new_acc_admin(void);  /* acc:su */
+/* the uid (NULL: not asked) and the nickname (size 0: not asked) of the user playing, read under acc's lock: acc:su
+   moves, deletes and renames users while other services ask */
+void acc_playing(u64 uid[2], char* nickname, size_t size);
 
 /* ---- ldr.c: ldr:ro and ro:1 */
 SvcObj* new_ldr(void);
@@ -148,6 +151,10 @@ typedef struct {
 /* acc's host side: the picture's lock (hle.h's g_host) */
 typedef struct {
     PMutex pic_lk;
+    /* acc's commands read and change the users (g_users) under it: acc:su's registration and editor change them while
+       the game's threads read them */
+    PMutex users_lk;
+    char users_dir[4096]; /* the users/ folder users.ini is in (snx_users_init); empty: nothing is written */
 } HostAcc;
 
 /* ---- am.c */
@@ -213,7 +220,7 @@ typedef struct {
     u32 msg_event;
     u32 sleep_lock_event; /* the sleep lock is granted at once, so this is signaled from the first request on */
     u32 launchable_event; /* library applets can be launched from the start */
-    u32 resolution_event; /* the default display resolution and HDCP state never change while running */
+    u32 resolution_event; /* signaled when docked's Auto changes the display resolution while the game runs */
     SvcObj* user_channel[AM_USER_CHANNEL]; /* copies of the storages unpopped, the last one on top */
     u32 user_count;
     u8 vr_mode; /* as the game turned it: the screen is not split for it */

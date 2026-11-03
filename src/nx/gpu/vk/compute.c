@@ -32,6 +32,7 @@ typedef struct CsPipe {
     ShaderInfo si;
     VkCbReads cbr; /* the constant buffer words translation read */
     int failed;
+    int shared_past; /* failed: its shared memory accesses may reach past what the device gives a block */
     struct CsPipe* next;
     struct CsPipe* keyed; /* the program translated for the numeric types of the images last bound to it */
 } CsPipe;
@@ -109,15 +110,16 @@ enum {
     CS_SKIP_STORAGE_BUFFER,
     CS_SKIP_RESOURCES,
     CS_SKIP_INPUTS_MOVED,
+    CS_SKIP_SHARED,
     CS_SKIP_COUNT
 };
 static u64 g_cs_skips[CS_SKIP_COUNT];
 static const char* const g_cs_skip_names[CS_SKIP_COUNT] = {
-    "past the GPU's limits",       "not translated",
-    "missing a device feature",    "a texture not bound",
-    "a storage image not bound",   "a buffer image not bound",
-    "a storage buffer not read",   "out of descriptors or staging",
-    "inputs changed while binding"};
+    "past the GPU's limits",        "not translated",
+    "missing a device feature",     "a texture not bound",
+    "a storage image not bound",    "a buffer image not bound",
+    "a storage buffer not read",    "out of descriptors or staging",
+    "inputs changed while binding", "shared memory past the GPU's"};
 u64 vk_cs_skipped(char* why, size_t size) {
     u64 total = 0;
     size_t at = 0;
@@ -637,7 +639,7 @@ void vk_compute_mem_need_map(u64 a, u64 n) {
    rt_int_mask bits 8 and up to switch the bound/bindless default between float and integer, and rt_sint_mask's
    corresponding bits to select signed stores. Atomics retain their R32ui declaration. */
 typedef struct {
-    u64 tex_int, tex_sint;
+    u64 tex_int, tex_sint, tex_rect;
     u32 image, image_sint;
 } CsKey;
 static CsPipe g_cs_alloc_failed = {.failed = 1}; /* out of memory: not cached, retried */
@@ -645,7 +647,8 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k)
     u32 blen;
     u64 key = vk_shader_hash(code, 0x10000 + 80, &blen, cs_cb_read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^
               ((u64)lz << 56) ^ ((u64)shm << 20) ^ ((u64)k.image << 32) ^ (u64)k.tex_int * 0x9E3779B97F4A7C15ull ^
-              (u64)k.tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k.image_sint * 0xA24BAED4963EE407ull;
+              (u64)k.tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k.image_sint * 0xA24BAED4963EE407ull ^
+              (u64)k.tex_rect * 0x165667B19E3779F9ull;
     CsPipe* p = g_csp[key & 255];
     while (p && (p->key != key || !vk_cb_reads_hold(&p->cbr, cs_cb_read))) p = p->next;
     if (p) return p;
@@ -658,10 +661,34 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k)
     p->si.cs_local[1] = ly;
     p->si.cs_local[2] = lz;
     p->si.shared_size = (int)shm;
+    /* A block may ask for more shared memory than the device gives (48 KiB on the console, 32 KiB on Adreno 6xx to
+       8xx). The program then gets the device's size when no access of it can reach past that, and is skipped
+       otherwise: an access past the array would read and write another word */
+    u32 shared_max = g_vk.props.limits.maxComputeSharedMemorySize, shared, reach;
+    if (shm > shared_max) {
+        if (!shader_shared_fit(code, 0x10000 + 80, p->si.cs_local, shm, shared_max, &shared, &reach)) {
+            char upto[48];
+            if (reach == SH_SHARED_ANY)
+                snprintf(upto, sizeof upto, "an address it can't bound");
+            else
+                snprintf(upto, sizeof upto, "%u bytes", reach);
+            LOG("vulkan: compute %016llx asks for %u bytes of shared memory, past this GPU's %u, and its accesses may "
+                "reach %s: its dispatches are skipped\n",
+                (unsigned long long)key, shm, shared_max, upto);
+            p->failed = 1;
+            p->shared_past = 1;
+            return p;
+        }
+        LOG("vulkan: compute %016llx asks for %u bytes of shared memory, past this GPU's %u; its accesses reach %u "
+            "bytes at most, so it gets %u\n",
+            (unsigned long long)key, shm, shared_max, reach, shared);
+        p->si.shared_size = (int)shared;
+    }
     p->si.rt_int_mask = k.image << 8;
     p->si.rt_sint_mask = k.image_sint << 8;
     p->si.tex_int_mask = k.tex_int;
     p->si.tex_sint_mask = k.tex_sint;
+    p->si.tex_rect_mask = k.tex_rect;
     const char* corpus = vk_corpus_dir();
     if (corpus) shader_corpus_save(corpus, code, blen, 0x10000 + 80, ST_CS, &p->si, key);
     size_t nw = 0;
@@ -882,11 +909,9 @@ void vk_dispatch(const DispatchState* d) {
     if (gx > lim->maxComputeWorkGroupCount[0] || gy > lim->maxComputeWorkGroupCount[1] ||
         gz > lim->maxComputeWorkGroupCount[2] || lx > lim->maxComputeWorkGroupSize[0] ||
         ly > lim->maxComputeWorkGroupSize[1] || lz > lim->maxComputeWorkGroupSize[2] ||
-        (u64)lx * ly * lz > lim->maxComputeWorkGroupInvocations || shm > lim->maxComputeSharedMemorySize) {
-        LOG_LIMIT(1,
-                  "vulkan: a dispatch of %ux%ux%u blocks of %ux%ux%u with %u bytes shared is past this GPU's limits "
-                  "(skipped)\n",
-                  gx, gy, gz, lx, ly, lz, shm);
+        (u64)lx * ly * lz > lim->maxComputeWorkGroupInvocations) {
+        LOG_LIMIT(1, "vulkan: a dispatch of %ux%ux%u blocks of %ux%ux%u is past this GPU's limits (skipped)\n", gx, gy,
+                  gz, lx, ly, lz);
         g_cs_skips[CS_SKIP_LIMITS]++;
         return;
     }
@@ -970,13 +995,15 @@ void vk_dispatch(const DispatchState* d) {
             ShTex* st = &p->si.tex[i];
             u32 h = 0, h2 = 0, tic[8];
             int num;
-            if (st->shadow || st->flags) continue; /* raw and multisample textures are declared on their own */
+            if (st->flags) continue; /* raw, multisample and indexed textures are declared on their own */
             if (!cs_cb_read(st->bindless ? (st->bl_cbuf & 7) : tcb_key, st->cbuf_off * 4, &h)) continue;
             if (st->bindless && st->bl2 && st->bl2_cbuf == SH_HANDLE_IMM)
                 h |= st->bl2_off;
             else if (st->bindless && st->bl2 && cs_cb_read(st->bl2_cbuf & 7, st->bl2_off * 4, &h2))
                 h |= h2;
             vk_gmem_words(tic_key_base + (h & 0xFFFFF) * 32ull, tic, 8);
+            if (vk_tic_unnormalized(tic) == 1) ck.tex_rect |= 1ull << i;
+            if (st->shadow) continue;
             /* by the header alone: textures are resolved only when bound, a color texture's surface has its header's
                number type, and depth isn't sampled here */
             num = vk_tex_num(tic, NULL);
@@ -994,9 +1021,10 @@ void vk_dispatch(const DispatchState* d) {
             if (vk_image_key(&p->si, i, tic)) ck.image |= 1u << i;
             if (vk_tex_num(tic, NULL) == 2) ck.image_sint |= 1u << i;
         }
-    if (ck.tex_int || ck.image || ck.image_sint) {
+    if (ck.tex_int || ck.image || ck.image_sint || ck.tex_rect) {
         if (!p->keyed || (p->keyed->si.rt_int_mask >> 8) != ck.image || p->keyed->si.tex_int_mask != ck.tex_int ||
-            p->keyed->si.tex_sint_mask != ck.tex_sint || (p->keyed->si.rt_sint_mask >> 8) != ck.image_sint) {
+            p->keyed->si.tex_sint_mask != ck.tex_sint || (p->keyed->si.rt_sint_mask >> 8) != ck.image_sint ||
+            p->keyed->si.tex_rect_mask != ck.tex_rect) {
             static u8 keyed_code[0x10000 + 80];
             cs_read_code(pa, keyed_code);
             p->keyed = cs_pipe(keyed_code, lx, ly, lz, shm, ck);
@@ -1004,7 +1032,7 @@ void vk_dispatch(const DispatchState* d) {
         p = p->keyed;
     }
     if (p->failed) {
-        g_cs_skips[CS_SKIP_UNTRANSLATED]++;
+        g_cs_skips[p->shared_past ? CS_SKIP_SHARED : CS_SKIP_UNTRANSLATED]++;
         return;
     }
     int needs_unformatted_image = 0;

@@ -8,6 +8,7 @@
 #endif
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/main.h"
+#include "nx/runtime/nce/nce.h"
 #include "nx/runtime/platform/log.h"
 #include "snx_settings.h"
 #include <SDL3/SDL_thread.h>
@@ -27,6 +28,9 @@
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #include <sys/ucontext.h>
+#if !TARGET_OS_IPHONE
+#include <IOKit/ps/IOPowerSources.h>
+#endif
 #else
 #include <ucontext.h>
 #endif
@@ -34,9 +38,11 @@
 #include <linux/falloc.h>
 #include <linux/fs.h>
 #include <linux/futex.h>
+#include <linux/netlink.h>
 #include <linux/userfaultfd.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #if defined(__aarch64__)
@@ -44,6 +50,7 @@
 #endif
 #endif
 #if defined(__ANDROID__)
+#include <jni.h>
 #include <sys/system_properties.h>
 #endif
 #if defined(__APPLE__)
@@ -249,6 +256,82 @@ void plat_thread_exit(void) {
     SDL_CleanupTLS();
     pthread_exit(NULL);
 }
+
+/* ================================================================ the host's power source */
+/* the watcher's thread marks this; the main thread takes it, so only there does the runtime ask SDL for the new state */
+static int g_power_changed;
+void plat_power_mark_changed(void) { __atomic_store_n(&g_power_changed, 1, __ATOMIC_RELEASE); }
+int plat_power_take_change(void) { return __atomic_exchange_n(&g_power_changed, 0, __ATOMIC_ACQ_REL); }
+#if defined(__linux__) && !defined(__ANDROID__)
+/* The kernel's uevents on NETLINK_KOBJECT_UEVENT: a power_supply change (the charger in or out) marks the change. The
+   thread blocks in recv, so nothing polls the state */
+static void power_watch_thread(void* arg) {
+    int fd = (int)(intptr_t)arg;
+    char buf[4096];
+    for (;;) {
+        ssize_t n = recv(fd, buf, sizeof buf, 0);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) continue;
+            break;
+        }
+        if (memmem(buf, (size_t)n, "SUBSYSTEM=power_supply", 23)) plat_power_mark_changed();
+    }
+    close(fd);
+}
+int plat_power_watch(void) {
+    static int started;
+    struct sockaddr_nl sa;
+    int fd;
+    if (started) return 0;
+    fd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_KOBJECT_UEVENT);
+    if (fd < 0) return -1;
+    memset(&sa, 0, sizeof sa);
+    sa.nl_family = AF_NETLINK;
+    sa.nl_groups = 1;
+    if (bind(fd, (struct sockaddr*)&sa, sizeof sa)) {
+        close(fd);
+        return -1;
+    }
+    if (plat_thread(power_watch_thread, (void*)(intptr_t)fd, 0)) {
+        close(fd);
+        return -1;
+    }
+    started = 1;
+    return 0;
+}
+#elif defined(__ANDROID__)
+/* GameActivity's receiver calls this when the charger comes or goes */
+JNIEXPORT void JNICALL Java_org_scarletnx_GameActivity_nativePowerChanged(JNIEnv* env, jobject thiz);
+JNIEXPORT void JNICALL Java_org_scarletnx_GameActivity_nativePowerChanged(JNIEnv* env, jobject thiz) {
+    (void)env;
+    (void)thiz;
+    plat_power_mark_changed();
+}
+int plat_power_watch(void) { return 0; } /* the receiver is registered with the activity */
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+/* iOS's battery state notification is in apple.m, which the app links */
+extern int snx_apple_power_watch(void) __attribute__((weak));
+int plat_power_watch(void) { return snx_apple_power_watch ? snx_apple_power_watch() : -1; }
+#elif defined(__APPLE__)
+/* macOS's IOKit power source run loop: the thread blocks in the run loop, so nothing polls the state */
+static void apple_power_changed(void* context) {
+    (void)context;
+    plat_power_mark_changed();
+}
+static void apple_power_thread(void* arg) {
+    CFRunLoopSourceRef source = IOPSNotificationCreateRunLoopSource(apple_power_changed, NULL);
+    (void)arg;
+    if (!source) return;
+    CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopDefaultMode);
+    CFRunLoopRun();
+}
+int plat_power_watch(void) {
+    if (plat_thread(apple_power_thread, NULL, 0)) return -1;
+    return 0;
+}
+#else
+int plat_power_watch(void) { return -1; } /* no watcher here: the caller polls */
+#endif
 /* Linux only: Android's CPUs differ in speed, so a fixed share of them would make a core slow */
 #if defined(__linux__) && !defined(__ANDROID__)
 int plat_cpus(int* ids, int max) {
@@ -374,6 +457,8 @@ void plat_exit_now(int code) {
    belongs to a mapping: a range mapped again with MAP_FIXED (the alias pool's, below) is registered again, or a scan
    over it fails. g_pagemap goes back to -1 when that fails, so every scan says -1 and the caches compare contents */
 static int g_pagemap = -1;
+/* PROT_EXEC on all of the guest's memory, when its code runs natively (NCE, plat_vm_reserve_at), else 0 */
+static int g_vm_exec;
 #if defined(__linux__) && defined(PAGEMAP_SCAN) && defined(UFFD_FEATURE_WP_ASYNC) && defined(UFFD_USER_MODE_ONLY)
 #define SNX_UFFD 1
 static int g_uffd = -1;
@@ -619,7 +704,7 @@ static void wp_shed(void) {
                 wp_unlock(i, (u8)(__atomic_load_n(&g_wp[i], __ATOMIC_RELAXED) & ~WP_LOCK));
             }
             if (!n) continue;
-            if (!mprotect(g_wp_base + (run << g_wp_shift), (size_t)(n << g_wp_shift), PROT_READ | PROT_WRITE)) {
+            if (!mprotect(g_wp_base + (run << g_wp_shift), (size_t)(n << g_wp_shift), PROT_READ | PROT_WRITE | g_vm_exec)) {
                 __atomic_fetch_sub(&g_wp_held, n, __ATOMIC_RELAXED);
                 __atomic_fetch_add(&g_wp_opened, 1, __ATOMIC_SEQ_CST);
                 for (k = run; k < run + n; k++)
@@ -755,7 +840,7 @@ static int wp_fault(void* a, int write) {
         t_plat_posix.wp_retried_at = opened;
         return 1;
     }
-    if (mprotect(g_wp_base + (i << g_wp_shift), (size_t)page, PROT_READ | PROT_WRITE)) {
+    if (mprotect(g_wp_base + (i << g_wp_shift), (size_t)page, PROT_READ | PROT_WRITE | g_vm_exec)) {
         int why = errno;
         wp_unlock(i, s);
         if (why != ENOMEM) return 0;
@@ -777,7 +862,7 @@ static void wp_protect(u64 i, u64 n, void (*cb)(u8* p, u64 size)) {
         if (!(__atomic_load_n(&g_wp[k], __ATOMIC_RELAXED) & WP_PROT)) add++;
     if (!wp_reserve(add))
         to = 0; /* left writable, and written: reported again by the next scan */
-    else if (mprotect(a, (size_t)len, PROT_READ)) {
+    else if (mprotect(a, (size_t)len, PROT_READ | g_vm_exec)) {
         /* it may have changed part of the run: held, but written, so a fault opens it and the next scan tries again */
         to = WP_MAPPED | WP_PROT;
         shed = errno == ENOMEM;
@@ -895,7 +980,7 @@ void plat_ww_open(u8* p, u64 size) {
             wp_unlock(i, s);
         }
         if (!n) continue;
-        if (!mprotect(g_wp_base + (run << g_wp_shift), (size_t)(n << g_wp_shift), PROT_READ | PROT_WRITE)) {
+        if (!mprotect(g_wp_base + (run << g_wp_shift), (size_t)(n << g_wp_shift), PROT_READ | PROT_WRITE | g_vm_exec)) {
             __atomic_fetch_sub(&g_wp_held, n, __ATOMIC_RELAXED);
             __atomic_fetch_add(&g_wp_opened, 1, __ATOMIC_SEQ_CST);
             for (k = run; k < run + n; k++)
@@ -1046,10 +1131,32 @@ u8* plat_vm_reserve(u64 size) {
     if (extra > head) munmap(p + head + size, (size_t)(extra - head));
     return p + head;
 }
+u8* plat_vm_reserve_at(u64 addr, u64 size) {
+#if defined(MAP_FIXED_NOREPLACE)
+    u8* want = (u8*)(uintptr_t)addr;
+    u8* p;
+    if (addr % plat_vm_page()) return NULL;
+    p = (u8*)mmap(want, (size_t)size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE,
+                  -1, 0);
+    if (p == (u8*)MAP_FAILED) return NULL;
+    if (p != want) { /* a kernel before 4.17 takes the flag as a hint */
+        munmap(p, (size_t)size);
+        errno = EEXIST;
+        return NULL;
+    }
+    g_vm_exec = PROT_EXEC;
+    return p;
+#else
+    (void)addr;
+    (void)size;
+    errno = ENOSYS;
+    return NULL;
+#endif
+}
 int plat_vm_commit(u8* p, u64 size) {
     int r;
     wp_hold(p, size, WP_MAPPED);
-    r = mprotect(p, (size_t)size, PROT_READ | PROT_WRITE) ? -1 : 0;
+    r = mprotect(p, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec) ? -1 : 0;
     wp_let(p, size, WP_MAPPED, !r);
     return r;
 }
@@ -1094,7 +1201,7 @@ int plat_alias_map(u8* p, u64 off, u64 size) {
     int r;
     if (g_alias < 0) return -1;
     wp_hold(p, size, WP_MAPPED);
-    r = mmap(p, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, g_alias, (off_t)off) == MAP_FAILED;
+    r = mmap(p, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec, MAP_SHARED | MAP_FIXED, g_alias, (off_t)off) == MAP_FAILED;
     wp_let(p, size, WP_MAPPED, !r);
     if (r) return -1;
     ww_remapped(p, size);
@@ -1383,10 +1490,10 @@ static void trap_open(u8* p, u64 size) {
             wp_unlock(i, (u8)(__atomic_load_n(&g_wp[i], __ATOMIC_RELAXED) & ~WP_LOCK));
         }
         if (!n) continue;
-        if (mprotect(g_wp_base + (run << g_wp_shift), (size_t)(n << g_wp_shift), PROT_READ | PROT_WRITE)) {
+        if (mprotect(g_wp_base + (run << g_wp_shift), (size_t)(n << g_wp_shift), PROT_READ | PROT_WRITE | g_vm_exec)) {
             if (errno != ENOMEM) fatal("Could not let trapped guest memory go (error %d)", errno);
             wp_shed(); /* mappings to spare, from the write tracking's */
-            if (mprotect(g_wp_base + (run << g_wp_shift), (size_t)(n << g_wp_shift), PROT_READ | PROT_WRITE))
+            if (mprotect(g_wp_base + (run << g_wp_shift), (size_t)(n << g_wp_shift), PROT_READ | PROT_WRITE | g_vm_exec))
                 fatal("Could not let trapped guest memory go (error %d)", errno);
         }
         __atomic_fetch_sub(&g_wp_held, n, __ATOMIC_RELAXED);
@@ -1671,7 +1778,7 @@ void plat_freeze(u8* p, u64 size) {
     __atomic_store_n(&g_frozen, 1, __ATOMIC_SEQ_CST);
     /* under the write tracking's locks: a fault it is opening a page for finishes before the freeze protects it */
     wp_hold(p, size, 0);
-    mprotect(p, (size_t)size, PROT_READ);
+    mprotect(p, (size_t)size, PROT_READ | g_vm_exec);
     wp_let(p, size, 0, 0);
 }
 void plat_thaw(void) {
@@ -1680,7 +1787,7 @@ void plat_thaw(void) {
     /* readable and writable whatever is mapped there now (the copy's pages, or the old ones when it failed), and
        written for the write tracking */
     wp_hold(lo, size, WP_MAPPED);
-    mprotect(lo, (size_t)size, PROT_READ | PROT_WRITE);
+    mprotect(lo, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec);
     __atomic_store_n(&g_frozen, 0, __ATOMIC_SEQ_CST);
     wp_let(lo, size, WP_MAPPED, 1);
 #if defined(__linux__)
@@ -1796,6 +1903,8 @@ static void* context_pc(void* ctx) {
     return (void*)(uintptr_t)uc->uc_mcontext.gp_regs[32]; /* PT_NIP (asm/ptrace.h), glibc's and musl's alike */
 #elif defined(__linux__) && defined(__mips64)
     return (void*)(uintptr_t)uc->uc_mcontext.pc; /* glibc's n64 mcontext_t, the kernel's sigcontext.sc_pc */
+#elif defined(__linux__) && defined(__s390x__)
+    return (void*)(uintptr_t)uc->uc_mcontext.psw.addr; /* the PSW's instruction address (glibc's __psw_t) */
 #elif defined(__FreeBSD__) && defined(__x86_64__)
     return (void*)(uintptr_t)uc->uc_mcontext.mc_rip;
 #elif defined(__FreeBSD__) && defined(__aarch64__)
@@ -1836,6 +1945,7 @@ static void crash_signal(int sig, siginfo_t* si, void* ctx) {
     log_crash_mode();
     /* for SIGILL and SIGFPE si_addr is the instruction, not an address it touched */
     fault = sig == SIGSEGV || sig == SIGBUS ? si->si_addr : NULL;
+    nce_crash_context(ctx); /* the guest's registers, when the native code of the game crashed */
     crash_report(context_pc(ctx), fault, sig);
     _exit(1);
 }

@@ -84,6 +84,10 @@ void nvn_tex_level_tiles(const NvnTexDesc* d, unsigned level, unsigned* tile_h, 
     (void)d, (void)level;
     *tile_h = *tile_d = 0;
 }
+u32 nvn_tex_level_gobs(const NvnTexDesc* d, unsigned level) {
+    (void)d, (void)level;
+    return 0;
+}
 u32 nvn_tex_msaa(int samples) {
     (void)samples;
     return 0;

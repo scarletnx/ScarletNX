@@ -192,6 +192,20 @@ struct SnxCtrProcess {
     uint32_t srv_notification; /* srv:'s notification semaphore (retained), made at the first EnableNotification */
     uint32_t apt_phase, apt_notification, apt_parameter;
     uint32_t apt_font;       /* the shared font's block (services/font.c), made at the first GetSharedFont */
+    /* APT's one parameter for the application after its startup (Azahar AppletManager's next_parameter): who sent it,
+       its signal, its object (retained, 0 for none) and its buffer (services/apt.c) */
+    struct {
+        uint32_t pending, sender, signal, object, size;
+        unsigned char buffer[0x1000];
+    } apt_next;
+    uint32_t apt_library; /* the library applet APT registered for the application: its AppletId, 0 for none */
+    uint32_t apt_capture; /* the capture block made at a library applet's first Request (retained), 0 before one */
+    /* the software keyboard the application started (services/swkbd.c): its SoftwareKeyboardConfig and the block its
+       text goes in (retained while it runs) */
+    struct {
+        unsigned char config[0x400];
+        uint32_t text;
+    } swkbd;
     uint32_t hid_objects[6]; /* the shared memory, then the events: pad 1, pad 2, accelerometer, gyroscope, debug pad */
     SnxCtrHid hid;
     uint32_t shell_closed; /* virtual console starts with its shell open */

@@ -4,6 +4,7 @@
    version of the module that exports each, each match's dispatch slot given the adapter of the entry for that
    version */
 #include "nx/hle/hook/hook.h"
+#include "nx/runtime/nce/nce.h"
 #include "common/utilities/bits.h"
 #include "nx/hle/hle.h"
 #include "nx/loader/hook_routes.h"
@@ -215,9 +216,10 @@ void hook_install(void) {
         slot = &g_disp[(addr - g_code_lo) >> 2];
         h->hook[h->count] = (u16)k;
         h->addr[h->count] = addr;
-        h->orig[h->count] = *slot;
+        h->orig[h->count] = nce_slot(*slot);
         h->fn[h->count] = verify[hook_family[k]] && hook_verify[k].pure ? verify_fn : hook_fn[k];
         __atomic_store_n(slot, h->fn[h->count], __ATOMIC_RELEASE);
+        nce_slot_taken(addr, hook_family_name[hook_family[k]]);
         h->count++;
         if (!hook_routed(name))
             WARN("hooks: %s at %llx runs %s only for the calls through the PLT and function pointers: the module's "

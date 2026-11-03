@@ -6,6 +6,8 @@
 #include "nx/hle/services/services_int.h"
 #include "nx/gpu/gpu.h"
 #include "nx/hle/hle.c"
+#include "nx/runtime/nce/nce.h"
+#include <errno.h>
 #include <openssl/evp.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -45,6 +47,15 @@ u8* plat_vm_reserve(u64 size) {
     return p == MAP_FAILED ? NULL : (u8*)(((uintptr_t)p + page - 1) & ~(uintptr_t)(page - 1));
 }
 void plat_vm_track(u8* p, u64 size) { (void)p, (void)size; } /* no tracking here */
+/* mem.c's reservation at the guest's own addresses, which nce_wanted's 0 never takes: an AArch64 Linux host links it */
+u8* plat_vm_reserve_at(u64 addr, u64 size) {
+    (void)addr, (void)size;
+    errno = ENOSYS;
+    return NULL;
+}
+/* nce.c, whose NCE no game here is of: mem.c's reservation asks it first, and ldr:ro gives it each NRO it maps */
+int nce_wanted(void) { return 0; }
+void nce_code_added(u64 base, u64 text_size) { (void)base, (void)text_size; }
 int plat_vm_commit(u8* p, u64 size) {
     if (fail_commit) {
         fail_commit = 0;

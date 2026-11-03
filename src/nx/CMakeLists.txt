@@ -34,8 +34,8 @@ function(snx_component name)
 endfunction()
 
 snx_component(core runtime/main.c runtime/arm.c runtime/loader.c runtime/rtapi.c runtime/hints.c runtime/clock.c runtime/pause.c runtime/state.c runtime/state_fns.c runtime/state_file.c runtime/crash.c runtime/options.c runtime/deprecated_env.c
-              runtime/startup.c runtime/gdbstub.c runtime/present.c runtime/guest_jit.c
-              runtime/cheats.c)
+              runtime/startup.c runtime/gdbstub.c runtime/present.c runtime/guest_jit.c runtime/guest_stats.c
+              runtime/cheats.c runtime/nce/nce.c runtime/nce/nce_host.c)
 target_link_libraries(snx_core PRIVATE snx_driver snx_lz4 snx_zstd snx_build_info)
 target_link_libraries(snx_core PUBLIC snx_settings_runtime) # the game's .ini's tables (cmake/settings.cmake)
 if(APPLE)
@@ -51,7 +51,7 @@ snx_svcgen(snx_kernel)
 snx_component(hle hle/services/services.c hle/services/audren.c hle/services/audren_dsp.c hle/services/pl.c hle/services/pl_font.c hle/services/sm.c hle/services/am.c hle/services/set.c hle/services/time.c hle/services/acc.c hle/services/users.c hle/services/audio.c
               hle/services/misc.c hle/services/ldr.c hle/services/network/bsd.c hle/services/network/dns.c
               hle/services/network/nifm.c hle/services/network/ssl.c hle/services/network/ldn.c hle/services/network/room.c hle/filesystem/fs.c hle/services/hid.c hle/services/hid_motion.c hle/services/hid_touch.c hle/services/vi.c hle/services/nvdrv.c
-              hle/hook/hook.c hle/hook/libc.c hle/hook/verify.c hle/hook/version.c)
+              hle/hook/hook.c hle/hook/libc.c hle/hook/diag.c hle/hook/verify.c hle/hook/version.c)
 # the shared fonts' stand-ins (cmake/shared_fonts.cmake), which hle/services/pl.c hands out
 target_sources(snx_hle PRIVATE "${PROJECT_BINARY_DIR}/generated/shared_fonts.c")
 # the hooks' adapters and table, generated from hle/hook/hooks.hook
@@ -103,14 +103,17 @@ endif()
 snx_component(platform ${platform})
 
 snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c gpu/shader/shipped.c
-                     gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/structure.c)
+                     gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/structure.c
+                     gpu/shader/shared_reach.c gpu/shader/registers.c gpu/shader/forms.c gpu/shader/dataflow.c
+                     gpu/shader/emit_int.c gpu/shader/emit_float.c gpu/shader/emit_memory.c gpu/shader/emit_texture.c
+                     gpu/shader/emit_io.c gpu/shader/emit_flow.c gpu/shader/emit_thread.c)
 # the opcode enum and decoder, generated from gpu/shader/maxwell_opcodes.def
 include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/display.c gpu/vk/compute.c
                  gpu/vk/pending_pages.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
-                 gpu/vk/ftz_probe.c
+                 gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/draw_texture.c
                  "${volk_SOURCE_DIR}/volk.c")
 # the ASTC decoder's, the block linear deswizzle and swizzle's, the texture conversions', the VIC composition's and
 # the render enable predicates' SPIR-V, compiled from their GLSL at build time (cmake/glsl.cmake). The VIC shader is
@@ -171,7 +174,10 @@ include("${PROJECT_SOURCE_DIR}/cmake/build_info.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/pad_sdl.cmake")
 target_link_libraries(snx_platform PRIVATE SDL3::SDL3 snx_window_icon snx_build_info snx_pad_sdl snx_splash)
 if(WIN32)
-    target_link_libraries(snx_platform PUBLIC synchronization) # plat_wait_word's WaitOnAddress
+    target_link_libraries(snx_platform PUBLIC synchronization powrprof) # plat_wait_word's WaitOnAddress, the power notification
+endif()
+if(APPLE AND NOT IOS)
+    target_link_libraries(snx_platform PUBLIC "-framework IOKit") # plat_posix.c's power source run loop
 endif()
 # the build is part of the key of the shader files, .vkshaders and .vkshipped (gpu/vk/pipeline.c)
 target_link_libraries(snx_vk PRIVATE snx_build_info FFmpeg::avutil) # vk/nvdec.c: FFmpeg's Vulkan device and pictures
@@ -194,6 +200,13 @@ if(BUILD_TESTING)
         target_link_libraries(snx-test-shader-direct-regressions PRIVATE Threads::Threads m)
     endif()
     add_test(NAME shader_direct_regressions COMMAND $<TARGET_FILE:snx-test-shader-direct-regressions>)
+    add_executable(snx-test-shader-shared-reach "${PROJECT_SOURCE_DIR}/tests/shader_shared_reach.c")
+    snx_test_target(snx-test-shader-shared-reach 11)
+    target_link_libraries(snx-test-shader-shared-reach PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-shared-reach PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_shared_reach COMMAND $<TARGET_FILE:snx-test-shader-shared-reach>)
     add_test(NAME runtime_settings_list COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
              -P "${PROJECT_SOURCE_DIR}/tests/settings_list.cmake")
     add_test(NAME runtime_unknown_option COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
@@ -249,10 +262,20 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_tests_properties(vulkan_headless_descriptor_buffers vulkan_headless_descriptor_buffers_uma PROPERTIES
         TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again with each vertex layout in its pipeline: the default run sets it as dynamic state where the
+    # device has VK_EXT_vertex_input_dynamic_state (gpu/vk/vertex_input.c), and both find each draw's own layout
+    add_test(NAME vulkan_headless_vertex_input_off COMMAND snx-test-vulkan -H --vertex_input_dynamic_state=off)
+    set_tests_properties(vulkan_headless_vertex_input_off PROPERTIES TIMEOUT 60
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with guest memory read in place where the device can import it (gpu/vk/uma.c)
     add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk_memory=2)
     set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # an argument the test doesn't take stops it, named, before any device is made; the setting before it, as
+    # the runtime takes it, goes through
+    add_test(NAME vulkan_headless_options COMMAND snx-test-vulkan -H --memory_traps=2 --memory_trap=2)
+    set_tests_properties(vulkan_headless_options PROPERTIES TIMEOUT 10
+        PASS_REGULAR_EXPRESSION "--memory_trap=2 is not an option it takes")
     # VIC only, under the validation layer when it is installed: its job binds the same buffer as a uniform and a
     # storage buffer, which the layer checks against the buffer's usage flags (VUID-VkWriteDescriptorSet-
     # descriptorType-00330). Without the layer this is VIC's own checks again.
@@ -282,6 +305,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
     target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash Threads::Threads
                                                       SDL3::SDL3 ${CMAKE_DL_LIBS})
+    if(WIN32)
+        target_link_libraries(snx-test-astc-vulkan PRIVATE powrprof)
+    endif()
+    if(APPLE AND NOT IOS)
+        target_link_libraries(snx-test-astc-vulkan PRIVATE "-framework IOKit")
+    endif()
     set_target_properties(snx-test-astc-vulkan PROPERTIES LINKER_LANGUAGE CXX)
     add_test(NAME astc_vulkan COMMAND snx-test-astc-vulkan)
     add_test(NAME astc_vulkan_pieces COMMAND snx-test-astc-vulkan --vk_max_allocation_mb=4)

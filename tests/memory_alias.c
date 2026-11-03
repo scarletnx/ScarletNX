@@ -6,6 +6,7 @@
    where the host has no pool. --copies runs the same calls with alias_pool=0, as Windows has them: views are
    copies, and a flush of a line written through one copies it back into the code */
 #include "nx/hle/kernel/kernel_int.h"
+#include "nx/runtime/nce/nce.h"
 #include "nx/hle/hle.h"
 #include "nx/gpu/gpu.h"
 #include "nx/runtime/clock.h"
@@ -43,6 +44,10 @@ void fatal(const char* fmt, ...) {
     abort();
 }
 void log_crash_mode(void) {}
+/* nce.c, whose NCE no game here is of: mem.c's reservation asks it first, and the crash handler gives it the
+   signal's context */
+int nce_wanted(void) { return 0; }
+void nce_crash_context(const void* context) { (void)context; }
 void crash_report(void* host_pc, void* fault, int sig) {
     (void)host_pc;
     (void)fault;

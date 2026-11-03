@@ -55,10 +55,13 @@ VkOwnRes* vk_own_res_new(u64 size) {
     u32 fam[2];
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = size ? size : 16,
-                             /* VIC binds the job's first words as a uniform buffer (vk/vic.c) */
-                             .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                      VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                             /* bound where it is for whatever reads the bytes it holds: a draw's vertices, indices and
+                                buffers (buffer.c buf_get_owned), a dispatch's (compute.c res_bind), VIC's job words */
+                             .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (!r) return NULL;
@@ -276,7 +279,7 @@ void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
     vk_own_res_wrote(r); /* every producer records its writes before it publishes them */
     vk_rt_before_write_cpu(cpu, size);
     gpu_mem_written_cpu(cpu, size); /* what is built from the bytes (textures, buffers) takes the new ones */
-    if (g_owned.traps) vk_uma_quiesce(cpu, size); /* commands reading the pages in place run before the trap */
+    if (g_owned.traps) vk_uma_owning(cpu, size); /* what reads the pages in place runs and goes before the trap */
     if (g_owned.traps && !own_begin(cpu, size, r, off)) return;
     /* not trapped here: older owners of the bytes let go of them, and the result lands now */
     own_drop(cpu, size);
@@ -466,6 +469,18 @@ void vk_guest_peek(u64 gva, void* dst, u64 size) {
         }
         o += n;
     }
+}
+
+int vk_guest_owned_whole(u64 gva, u64 size, u64* tag) {
+    OwnRange r[2];
+    u64 cpu = 0;
+    if (!size || !__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) return 0;
+    gmem_need(gva, size);
+    if (gmmu_run(gva, size, &cpu) != size || own_lookup(cpu, size, r, 2) != 1 || r[0].addr != cpu || r[0].size != size)
+        return 0;
+    *tag =
+        __atomic_load_n(&((const VkOwnRes*)r[0].res)->serial, __ATOMIC_ACQUIRE) * 0x9E3779B97F4A7C15ull ^ r[0].res_off;
+    return 1;
 }
 
 void vk_all_barrier(VkCommandBuffer cb) {

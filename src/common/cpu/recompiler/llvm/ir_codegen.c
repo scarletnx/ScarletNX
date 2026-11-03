@@ -50,6 +50,7 @@ static void fp_env(SnxIr* ir) {
 
 void snx_ir_begin(SnxIr* ir, LLVMValueRef function) {
     ir_state_invalidate(ir);
+    ir->entry_mismatch = NULL;
     ir->dump_active = 0;
     ir->fn = function;
     LLVMPositionBuilderAtEnd(B, LLVMAppendBasicBlockInContext(ir->ctx, function, "entry"));
@@ -267,15 +268,19 @@ void snx_ir_stale_checks(SnxIr* ir) {
     ir->stale = g;
 }
 
-/* if(UNLIKELY(__atomic_load_n(&snx_stale[index],__ATOMIC_RELAXED))){ CALLDYN(e); return; }: the guest changed code
-   this function was compiled from (RtAPI.code_changed), and the runtime has taken its entries out of dispatch, where
-   a lookup of e compiles the code there now */
+/* if(UNLIKELY(__atomic_load_n(&snx_stale[index],__ATOMIC_RELAXED))){ c->pc=e; return; }: the guest changed code
+   this function was compiled from (RtAPI.code_changed), and the runtime has taken its entries out of dispatch. A
+   caller's return check finds CPU.pc not its own return address and returns too, each function on the way storing
+   its registers at its return, up to the runtime's dispatch loop, which looks e up and compiles the code there now
+   from the CPU structure. A direct caller relies on it: it stores only what this function's summary reads
+   (ir_promote.c), which new code for e may not keep to */
 static void stale_check(SnxIr* ir, LLVMValueRef e) {
     if (ir->stats.enabled) ++ir->stats.stale_checks;
     LLVMBasicBlockRef stale = ir_block(ir, "stale"), live = ir_block(ir, "live");
     ir_unlikely(ir, LLVMBuildCondBr(B, stale_flag(ir), stale, live));
     LLVMPositionBuilderAtEnd(B, stale);
-    must_tail(ir, call_dynamic(ir, e));
+    ir_set_pc(ir, e);
+    ret(ir);
     LLVMPositionBuilderAtEnd(B, live);
 }
 
@@ -330,6 +335,7 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
     if (dispatch) dispatch_block = ir_block(ir, "D");
     /* if(UNLIKELY(e!=start)){ c->pc=e; goto D_; } or { CALLDYN(e); return; } */
     LLVMBasicBlockRef mismatch = ir_block(ir, "entry_mismatch");
+    ir->entry_mismatch = mismatch; /* a direct call never runs it: ir_promote.c's summaries leave it out */
     LLVMBasicBlockRef body = ir_block(ir, "body");
     ir_unlikely(ir,
                 LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntNE, e, ir_i64(ir, function->start), ""), mismatch, body));
@@ -448,6 +454,7 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
         LLVMDisposeMessage(text);
     }
     if (ir->promote) ir_promote_registers(ir, fn);
+    if (ir->promote && ir->check) ir_check_promoted(ir, fn);
     if (ir->dump_active) {
         char* text = LLVMPrintValueToString(fn);
         fprintf(stderr, "IR after promotion:\n%s\n", text);

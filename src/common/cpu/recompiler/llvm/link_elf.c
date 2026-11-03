@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* ELF: x86-64, AArch64, PowerPC64, RISC-V, LoongArch or MIPS64 ET_REL objects into an ET_DYN shared object for Linux,
-   FreeBSD and Android.
+/* ELF: x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 or s390x ET_REL objects into an ET_DYN shared object for
+   Linux, FreeBSD and Android.
    Layout: [R: headers, .hash .dynsym .dynstr .rela.dyn, read-only data] [RX: .text] [RW: .data .got .dynamic, .bss].
    Every symbol must be defined by one of the objects; the only dynamic relocations are R_*_RELATIVE, for absolute
    addresses in writable data and for GOT slots. The objects are read and relocated by elf_object.c, as the JIT loader
@@ -65,8 +65,8 @@ typedef struct {
     SnxLinkNames veneer;        /* "caller:object:symbol" -> the caller's veneer to that definition */
     /* MIPS64's GOT_PAGE slots: "object:symbol:addend" of each S + A one takes, and each page's slot, once laid out */
     SnxLinkNames page_keys, pages;
-    unsigned machine, relative; /* EM_X86_64, EM_AARCH64, EM_PPC64, EM_RISCV, EM_LOONGARCH or EM_MIPS, and its
-                                   R_*_RELATIVE */
+    unsigned machine, relative; /* EM_X86_64, EM_AARCH64, EM_PPC64, EM_RISCV, EM_LOONGARCH, EM_MIPS or EM_S390, and
+                                   its R_*_RELATIVE */
     unsigned abi;               /* PowerPC64's (snx_elf_ppc_abi), RISC-V's, LoongArch's and MIPS64's e_flags, 0
                                    elsewhere */
     uint64_t page;              /* segment alignment: AArch64 kernels may use 16 or 64 KiB pages, PowerPC64's 64 */
@@ -203,6 +203,16 @@ static int scan_relocations(Link* l) {
     return 0;
 }
 
+/* a .hash word, of size bytes in the host's order: 8 on s390x, whose loaders read its words as 64-bit (glibc's
+   Elf_Symndx), 4 elsewhere */
+static void hash_word(unsigned char* p, size_t size, uint64_t value) {
+    uint32_t word = (uint32_t)value;
+    if (size == 8)
+        memcpy(p, &value, 8);
+    else
+        memcpy(p, &word, 4);
+}
+
 static unsigned long elf_hash(const char* name) {
     unsigned long h = 0, g;
     while (*name) {
@@ -328,8 +338,9 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
     for (size_t i = 0; i < export_count; ++i) snx_link_append(&dynstr, exports[i], strlen(exports[i]) + 1);
     uint64_t nbucket = export_count ? export_count : 1;
     /* addresses */
+    size_t hw = l.machine == EM_S390 ? 8 : 4; /* hash_word's */
     uint64_t hash_off = snx_align_up(sizeof(Elf64_Ehdr) + sizeof(ph), 8);
-    uint64_t dynsym_off = snx_align_up(hash_off + 4 * (2 + nbucket + nsyms), 8);
+    uint64_t dynsym_off = snx_align_up(hash_off + hw * (2 + nbucket + nsyms), 8);
     uint64_t dynstr_off = dynsym_off + nsyms * sizeof(Elf64_Sym);
     uint64_t rela_off = snx_align_up(dynstr_off + dynstr.size, 8);
     uint64_t rodata_off = snx_align_up(rela_off + l.relative_count * sizeof(Elf64_Rela), l.kind_align[SNX_ELF_RODATA]);
@@ -494,17 +505,15 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
         export_address[i] = symbol_address(&l, found >> 32, found & 0xFFFFFFFFu, &absolute);
     }
     /* .hash: nbucket, nchain, buckets, chains, words in the host's order as the dynamic loader reads them (a
-       big-endian PowerPC64 host's too) */
+       big-endian host's too) */
     unsigned char* p = out.data + hash_off;
-    uint32_t word = (uint32_t)nbucket;
-    memcpy(p, &word, 4);
-    word = (uint32_t)nsyms;
-    memcpy(p + 4, &word, 4);
+    hash_word(p, hw, nbucket);
+    hash_word(p + hw, hw, nsyms);
     for (size_t i = 0; i < export_count; ++i) {
-        unsigned char* bucket = p + 8 + 4 * (elf_hash(exports[i]) % nbucket);
-        memcpy(p + 8 + 4 * nbucket + 4 * (i + 1), bucket, 4); /* the chain goes on to the bucket's previous head */
-        word = (uint32_t)(i + 1);
-        memcpy(bucket, &word, 4);
+        unsigned char* bucket = p + hw * (2 + elf_hash(exports[i]) % nbucket);
+        /* the chain goes on to the bucket's previous head */
+        memcpy(p + hw * (2 + nbucket + i + 1), bucket, hw);
+        hash_word(bucket, hw, i + 1);
     }
     /* .dynsym */
     for (size_t i = 0, k = 1; i < export_count; ++i) {
@@ -644,7 +653,7 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
         shdr[i].sh_addralign = (align);                                                                                \
         shdr[i].sh_entsize = (entsize);                                                                                \
     } while (0)
-    SECTION(S_HASH, SHT_HASH, SHF_ALLOC, hash_off, 4 * (2 + nbucket + nsyms), S_DYNSYM, 0, 8, 4);
+    SECTION(S_HASH, SHT_HASH, SHF_ALLOC, hash_off, hw * (2 + nbucket + nsyms), S_DYNSYM, 0, 8, hw);
     SECTION(S_DYNSYM, SHT_DYNSYM, SHF_ALLOC, dynsym_off, nsyms * sizeof(Elf64_Sym), S_DYNSTR, 1, 8, sizeof(Elf64_Sym));
     SECTION(S_DYNSTR, SHT_STRTAB, SHF_ALLOC, dynstr_off, dynstr.size, 0, 0, 1, 0);
     shdr[S_DYNSTR].sh_offset = dynstr_off;

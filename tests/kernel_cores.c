@@ -22,6 +22,13 @@ const RtAPI g_rtapi;
 const SnxArmModule* g_arm_mod; /* a 64-bit game */
 const SnxArmRt g_arm_rt;
 void arm_thread_run(KThread* t) { (void)t; }
+/* nce.c, whose NCE no game here is of: thread_run asks it, and a flagged core kicks its thread */
+int nce_on(void) { return 0; }
+void nce_thread_run(KThread* t, u64 pc) { (void)t, (void)pc; }
+void nce_kick(KThread* t) { (void)t; }
+/* guest_stats.c, which no core here counts for: a thread's start and end */
+void guest_stats_thread_start(u32 ix) { (void)ix; }
+void guest_stats_thread_end(u32 ix) { (void)ix; }
 /* fatal ends the test, but where the test catches it (fatal_jump set): its message kept, back to the test; the last
    line logged kept too */
 static jmp_buf* fatal_jump;

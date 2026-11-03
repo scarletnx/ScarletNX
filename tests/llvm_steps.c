@@ -28,19 +28,22 @@ int llvm_steps_begin(LlvmSteps* s, int jit, int portable, char* error, size_t er
 }
 
 int llvm_steps_begin_opt(LlvmSteps* s, int jit, int portable, char opt, char* error, size_t error_size) {
-    static SnxIrFeatures plain; /* the architecture alone */
     memset(s, 0, sizeof(*s));
+    if (portable < LLVM_STEPS_HOST || portable > LLVM_STEPS_GENERIC) {
+        snprintf(error, error_size, "portable is %d, not an LLVM_STEPS_ value (%d to %d)", portable, LLVM_STEPS_HOST,
+                 LLVM_STEPS_GENERIC);
+        return -1;
+    }
     s->jit = jit;
     s->opt = opt;
     s->portable = portable;
     if (snx_ir_init(error, error_size)) return -1;
     s->ir = jit ? snx_ir_new_jit("steps", opt, error, error_size) : snx_ir_new("steps", opt, error, error_size);
     if (!s->ir) return -1;
-    if (portable) {
-        memset(&plain, 0, sizeof(plain));
-        plain.x86 = s->ir->features->x86;
-        plain.aarch64 = s->ir->features->aarch64;
-        s->ir->features = &plain;
+    if (portable != LLVM_STEPS_HOST) {
+        s->features.x86 = portable == LLVM_STEPS_PORTABLE && s->ir->features->x86;
+        s->features.aarch64 = portable == LLVM_STEPS_PORTABLE && s->ir->features->aarch64;
+        s->ir->features = &s->features;
     }
     return 0;
 }

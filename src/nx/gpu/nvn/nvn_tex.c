@@ -4,7 +4,8 @@
    (zlib, source/dk_image.cpp), Copyright (C) 2018-2020 fincs */
 /* NVN texture storage: one GOB is 64 bytes by 8 rows (512 bytes), the block height (in GOBs) is picked from the
    height in blocks times 1.5, and the levels follow each other at block alignment. A packaged texture's 8 layout
-   bytes (SetPackagedTextureLayout) give the block height in byte 0 (log2), which then wins */
+   bytes (SetPackagedTextureLayout) give the block height in byte 0 (log2), which then wins; a sparse texture's blocks
+   are as high and deep as its 64 KiB tile */
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/draw_state.h"
 
@@ -140,21 +141,49 @@ static int sparse_of(const NvnTexDesc* d) {
     return (d->flags & NVN_TEXTURE_FLAGS_SPARSE) && !(d->flags & NVN_TEX_LINEAR) &&
            d->target != NVN_TEXTURE_TARGET_BUFFER;
 }
+int nvn_tex_sparse_tile(const NvnTexDesc* d, u32 tile[3]) {
+    static const u16 tile2d[5][2] = {{256, 256}, {256, 128}, {128, 128}, {128, 64}, {64, 64}};
+    static const u16 tile3d[5][3] = {{64, 32, 32}, {32, 32, 32}, {32, 32, 16}, {32, 16, 16}, {16, 16, 16}};
+    Fmt t = fmt_of(d->format);
+    int is3d = d->target == NVN_TEXTURE_TARGET_3D;
+    unsigned k = 0;
+    while (k < 5 && (1u << k) != t.bpb) k++;
+    if (!(d->flags & NVN_TEXTURE_FLAGS_SPARSE) || (d->flags & NVN_TEX_LINEAR) || k == 5 ||
+        !(is3d || d->target == NVN_TEXTURE_TARGET_2D || d->target == NVN_TEXTURE_TARGET_2D_ARRAY ||
+          d->target == NVN_TEXTURE_TARGET_CUBEMAP || d->target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY))
+        return 0;
+    tile[0] = is3d ? tile3d[k][0] : tile2d[k][0];
+    tile[1] = is3d ? tile3d[k][1] : tile2d[k][1];
+    tile[2] = is3d ? tile3d[k][2] : 1;
+    return 1;
+}
+static unsigned log2u(u32 v) {
+    unsigned s = 0;
+    while (v > 1) v >>= 1, s++;
+    return s;
+}
+/* the GOBs across a 64 KiB tile of blocks 2^tile_h GOBs high and 2^tile_d deep (log2), one at least */
+static unsigned tile_gobs_across(unsigned tile_h, unsigned tile_d) {
+    return tile_h + tile_d >= 7 ? 0 : 7 - tile_h - tile_d;
+}
+/* the GOBs across a level lwb bytes wide, lh rows high and ld slices deep: whole tiles of 2^tile_w GOBs when it is at
+   least a tile in every direction (tile_h and tile_d the texture's, not the level's) */
+static u32 row_gobs(u32 lwb, u32 lh, u32 ld, unsigned tile_w, unsigned tile_h, unsigned tile_d) {
+    u32 g = (lwb + 63) / 64, tw = 1u << tile_w;
+    if (tile_w && lwb >= 64u << tile_w && lh >= 8u << tile_h && ld >= 1u << tile_d) g = (g + tw - 1) / tw * tw;
+    return g;
+}
 /* the offset of a level from its layer's start */
-static u64 level_offset(const NvnTexDesc* d, unsigned level, unsigned dpl, u32 w, u32 h, u32 z, unsigned tile_h,
-                        unsigned tile_d, Fmt t) {
-    u32 sx, sy, tw = 128u >> (tile_h + tile_d);
-    int tiled = sparse_of(d);
+static u64 level_offset(const NvnTexDesc* d, unsigned level, unsigned dpl, u32 w, u32 h, u32 z, unsigned tile_w,
+                        unsigned tile_h, unsigned tile_d, Fmt t) {
+    u32 sx, sy;
     u64 off = 0;
     unsigned i;
     samples_xy(d->samples, &sx, &sy);
-    if (!tw) tw = 1; /* GOB columns of a 64 KB tile */
     for (i = 0;; i++) {
         u32 lw = blk(mip(w * sx, i), t.bw), lh = dpl >= 2 ? blk(mip(h * sy, i), t.bh) : 1, ld = dpl >= 3 ? mip(z, i) : 1;
-        u32 lwb = lw * t.bpb, wg = (lwb + 63) / 64, hg = (lh + 7) / 8, ht, dt;
+        u32 wg = row_gobs(lw * t.bpb, lh, ld, tile_w, tile_h, tile_d), hg = (lh + 7) / 8, ht, dt;
         unsigned th = adj_tile(tile_h, 8, lh), td = adj_tile(tile_d, 1, ld);
-        tiled = tiled && lwb >= tw * 64 && lh >= 8u << tile_h && ld >= 1u << tile_d;
-        if (tiled) wg = (wg + tw - 1) / tw * tw;
         if (i == level) return off;
         ht = (hg + (1u << th) - 1) >> th;
         dt = (ld + (1u << td) - 1) >> td;
@@ -166,12 +195,12 @@ void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
     Fmt t = fmt_of(d->format);
     unsigned dpl, tile_h = 0, tile_d = 0, levels;
     int layered, pkg_h = d->bits & NVN_TEX_BLOCK_H;
-    u32 w, h, z, sx, sy;
+    u32 w, h, z, sx, sy, tile[3];
     u64 ls;
     shape(d, &dpl, &layered, &w, &h, &z);
     samples_xy(d->samples, &sx, &sy);
     o->bpb = t.bpb;
-    o->tile_h = o->tile_d = 0;
+    o->tile_h = o->tile_d = o->tile_w = 0;
     o->layers = layered ? z : 1;
     if (!t.bpb) {
         o->size = o->layer_size = 0;
@@ -190,8 +219,13 @@ void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
         o->layer_size = o->size = (u64)stride * blk(h, t.bh);
         return;
     }
-    /* MINIMAL_LAYOUT: blocks of one GOB, as the game's driver describes such a texture */
-    if (dpl == 2)
+    /* a sparse texture (but a packaged 2D one, whose bytes are in its own layout) has blocks as high and deep as its
+       tile: then a 64 KiB page of the layout is one tile, which the game maps at the offset the tile's place gives.
+       MINIMAL_LAYOUT: blocks of one GOB, as the game's driver describes such a texture */
+    if (!(dpl == 2 && pkg_h) && nvn_tex_sparse_tile(d, tile)) {
+        tile_h = log2u(tile[1] / 8);
+        tile_d = log2u(tile[2]);
+    } else if (dpl == 2)
         tile_h = pkg_h                                         ? (unsigned)pkg_h - 1
                  : d->flags & NVN_TEXTURE_FLAGS_MINIMAL_LAYOUT ? 0
                                                                : pick_tile(blk(h * sy, t.bh) * 3 / 16);
@@ -199,12 +233,13 @@ void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
         tile_d = pick_tile(z + z / 2);
     o->tile_h = tile_h;
     o->tile_d = tile_d;
+    o->tile_w = sparse_of(d) ? tile_gobs_across(tile_h, tile_d) : 0;
     /* multisampled and rectangle textures have one level, whatever the builder says (the driver's layout) */
     levels = d->target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE || d->target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY ||
                      d->target == NVN_TEXTURE_TARGET_RECTANGLE || !d->levels
                  ? 1
                  : d->levels;
-    ls = level_offset(d, levels, dpl, w, h, z, tile_h, tile_d, t);
+    ls = level_offset(d, levels, dpl, w, h, z, o->tile_w, tile_h, tile_d, t);
     if (sparse_of(d)) ls = (ls + SPARSE_TILE - 1) & ~(u64)(SPARSE_TILE - 1);
     if (layered) { /* a layer is block aligned */
         u32 hh = blk(h, t.bh);
@@ -230,7 +265,7 @@ u64 nvn_tex_level_offset(const NvnTexDesc* d, unsigned level) {
     shape(d, &dpl, &layered, &w, &h, &z);
     if (!t.bpb || (d->flags & NVN_TEX_LINEAR) || d->target == NVN_TEXTURE_TARGET_BUFFER) return 0;
     nvn_tex_layout(d, &l);
-    return level_offset(d, level, dpl, w, h, z, l.tile_h, l.tile_d, t);
+    return level_offset(d, level, dpl, w, h, z, l.tile_w, l.tile_h, l.tile_d, t);
 }
 
 void nvn_tex_level_tiles(const NvnTexDesc* d, unsigned level, unsigned* tile_h, unsigned* tile_d) {
@@ -248,16 +283,29 @@ void nvn_tex_level_tiles(const NvnTexDesc* d, unsigned level, unsigned* tile_h, 
     *tile_d = adj_tile(l.tile_d, 1, ld);
 }
 
+u32 nvn_tex_level_gobs(const NvnTexDesc* d, unsigned level) {
+    Fmt t = fmt_of(d->format);
+    unsigned dpl;
+    int layered;
+    u32 w, h, z, sx, sy;
+    NvnTexLayout l;
+    shape(d, &dpl, &layered, &w, &h, &z);
+    samples_xy(d->samples, &sx, &sy);
+    nvn_tex_layout(d, &l);
+    return row_gobs(blk(mip(w * sx, level), t.bw) * t.bpb, dpl >= 2 ? blk(mip(h * sy, level), t.bh) : 1,
+                    dpl >= 3 ? mip(z, level) : 1, l.tile_w, l.tile_h, l.tile_d);
+}
+
 /* A block-linear volume level keeps 2^tile_d slices in each block, one GOB (512 bytes, 64 by 8) per block row and
    slice: slice z of the first block is z * 2^tile_h GOBs on, and the blocks of later slices follow a whole slab of
-   the level's blocks, its GOBs across times its block rows times the block's GOBs */
+   the level's blocks, its GOBs across (nvn_tex_level_gobs) times its block rows times the block's GOBs */
 u64 nvn_tex_slice_offset(const NvnTexDesc* d, unsigned level, u32 z) {
     Fmt t = fmt_of(d->format);
     unsigned th, td;
     u64 gobs_x, rows, slab;
     if (!t.bpb) return 0;
     nvn_tex_level_tiles(d, level, &th, &td);
-    gobs_x = blk(blk(mip(d->width, level), t.bw) * t.bpb, 64);
+    gobs_x = nvn_tex_level_gobs(d, level);
     rows = blk(blk(mip(d->height, level), t.bh), 8u << th);
     slab = gobs_x * rows * (512ull << th << td);
     return (u64)(z >> td) * slab + (u64)(z & ((1u << td) - 1)) * (512ull << th);

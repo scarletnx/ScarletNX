@@ -23,8 +23,10 @@ A game keeps its settings in its `.ini` (`recompiled/<id>/<id>.ini`), a section 
 Settings show a group for each section ([GUI launcher](GUI.md)).
 
 `Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
-Restart for `docked`, `fullscreen`, `language`, `resolution`, `anisotropy`, `memory_gb`, `memory_fit`, `heap_max_mb`,
-`thread_stack_mb`, `map_limit_mb`, `map_limit_files`, `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `prepare_shaders`, `jit_threads`, and the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
+Restart for `docked` (`Auto` follows the host's power while the game runs), `fullscreen`, `language`, `resolution`,
+`anisotropy`, `memory_gb`, `memory_fit`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
+`airplane_mode`, `ldn`, `room`, `pipeline_threads`, `prepare_shaders`, `jit_threads`, `vertex_input_dynamic_state`, and
+the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
 `scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
 type, range and help, tab-separated. Every setting, the recompiler's too, is described once in
 `src/nx/runtime/settings.txt`, which the build generates the tables and `g_settings` from.
@@ -47,7 +49,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `docked` | `1` | `1` is TV mode, `0` handheld mode (1280x720) |
+| `docked` | `1` | `1` is TV mode, `0` handheld mode (1280x720), `2` Auto: TV mode while the host is on its charger, handheld mode on its battery. Auto switches while the game runs |
 | `fullscreen` | `0` | `1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets it for one run. F11 or Alt+Enter switches without changing it |
 | `language` | `1` | The game's language, English (US). The `.ini` lists the others, `0` to `17`. One the runtime doesn't know is English (US) |
 | `showcase` | `0` | `1` draws player 1's buttons and sticks, as the game gets them, and the frames a second in a corner of the window, for a video. F6 turns it on and off |
@@ -65,6 +67,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `frame_pacing` | `1` | With VSync and `fps_limit=game`: `0` paces the game's frames by a timer; `1` also has the next frame wait until the one before is on the display (`VK_KHR_present_wait` or `VK_GOOGLE_display_timing`), so frames don't queue for it; `2` also holds each frame of a game that asks for two refreshes or more a frame until its refresh, where the display can say when (`VK_EXT_present_timing` or `VK_GOOGLE_display_timing`). Where the display can't do one, the one before it |
 | `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle |
 | `vulkan_video` | `0` | `1` decodes H.264 movies on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver have an H.264 decode queue. Experimental and untested. `0` decodes them on the CPU, as VP9 movies always are |
+| `vertex_input_dynamic_state` | `auto` | How a draw gives the GPU its vertex layout. `auto` sets it as dynamic state (`VK_EXT_vertex_input_dynamic_state`) where the GPU's driver has the extension and its `vertexInputDynamicState` feature, but not on the drivers known to draw it wrong: NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0 (of whose four numbers the driver gives the last two: below 100.0). `on` sets it as dynamic state wherever the driver has it, those too. `off` puts it in the pipeline: each layout a program is drawn with takes a pipeline of its own, where dynamic state has one serve them all. The log says which, with the device, its driver and version. `on` on a device without the extension says so and puts the layout in the pipeline; any value but `auto`, `on` and `off` stops the game, saying so. Pipelines kept for the next run (`.vkshaders`) are made again when the choice changes |
 
 ## Performance
 
@@ -80,6 +83,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `pipeline_threads` | `0` | Threads that make the GPU's new pipelines while the game goes on, and those of earlier runs before it starts with `prepare_shaders=2`. `0` uses all the computer's threads but two, two to twelve. `1` to `32` is that many. More make a first run's new pipelines sooner, with less CPU left for the game |
 | `async_pipelines` | `0` | `1` skips what a new shader draws while its pipeline is made, where the game would otherwise pause until it is ready. The game no longer stops where a new shader first appears, and the things that shader draws show up a few frames later. `0` waits for every pipeline |
 | `prepare_shaders` | `2` | Prepares the shaders the game ships in its files and executables ahead of time, so the game's draws needn't make them and it stutters less. They are prepared again after ScarletNX, the GPU or its driver is updated. `0` (Off) makes each shader only when the game first draws with it. `1` (While playing) prepares them in the background, and the game uses them once all are ready. `2` (Before starting) prepares them behind a loading screen in the launcher theme's look, which also waits for the shader cache of earlier sessions, so an opening movie doesn't stutter. A key that types, an arrow or the keypad, a gamepad button other than Home, or a tap starts the game at once, and the rest is prepared while it runs. Esc quits (on Android, back opens the menu, whose Exit quits). F2 or a gamepad's Home opens the menu, and F11 or Alt+Enter switches fullscreen, without starting the game. The screen shows only when the wait passes a quarter second, its words are in English, and a timed run (`--seconds`) starts its clock after it |
+| `nce` | `1` | On an AArch64 Linux host or Android 10 and later on arm64, `1` runs the game's 64-bit code natively on the host's CPU (native code execution), with the words that cannot run as they are patched: SVCs, the TLS registers, the counter registers, and the exclusives made ordered, as Eden patches them. The recompile then makes no code ahead of time. `0` recompiles the code. Other hosts, 32-bit games and, on Android, games of the 36-bit address space always recompile. The next recompile takes it ([NCE](NCE.md)) |
 | `jit_threads` | `0` | Threads compiling the game code the recompiler missed, which a thread waits for when it reaches it. `0` uses every CPU the game may run on but two, at most 4. They run below the game's threads |
 | `jit_region_instructions` | `0` | The most instructions one branch graph of missed code may hold when the JIT compiles it, so a huge function cannot stall the game for seconds; branches out of it resume through the dispatch table. `0` is up to 4096, a larger graph cut into regions of 64 |
 | `jit_live_budget` | `0` | The instructions beyond the missed code itself (its callees) that a miss the game waits on discovers. The background queue keeps its larger budget. `0` is 64 |
@@ -123,7 +127,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `user` | `1` | The console's user the game plays as, `1` to `8`, as [Users](USAGE.md#users) lists them. A number with no user stops the game |
+| `user_uid` | empty | The console's user the game plays as, by its uid: 32 hex digits, as [Users](USAGE.md#users) lists them; empty is its `[user1]` (`Player` without one). A uid no user has stops the game. `user`, the user's number before it, is read while `user_uid` names none ([DEPRECATIONS](DEPRECATIONS.md)) |
 
 ## Debug
 
@@ -236,7 +240,7 @@ The launcher's own settings, and the recompiler's, which the launcher and the dr
 | `llvm_batch` | `full` | What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: `full`, the passes of the optimization level; `ipo`, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than `full`'s. Not at `-O0` |
 | `aot_threads` | `0` | The threads compiling the game's code when it is recompiled (`--jobs`): `0` is one for each of the computer's cores |
 | `unit_instructions` | `90000` (Android `20000`, iOS `20000`) | The instructions a code unit takes, whole functions at a time, when the game is recompiled (`--chunk`). Each is compiled on its own, and a smaller one takes less memory at once, which a phone needs |
-| `unit_cache_gb` | `0` | The most the cache of compiled code units may hold, in GB (`units/` of the cache folder): past it the units reused longest ago are removed. `0` is no limit. The cache always leaves a tenth of its disk free |
+| `unit_cache_gb` | `0` | The most the cache of compiled code units may hold, in GB (`units/` of the cache folder): past it the units reused longest ago are removed. `0` is no limit. The cache always leaves a tenth of its disk free, at most 10 GB |
 
 ### LLVM Internals
 

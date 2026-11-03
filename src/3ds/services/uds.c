@@ -36,15 +36,18 @@ void snx_ctr_uds_settings(const char* data) {
     char* settings = config ? snx_path_join(config, "settings.ini") : NULL;
     size_t size = 0;
     char* text = settings ? (char*)snx_read_file(settings, &size) : NULL;
+    char uid[64] = "", old[16] = ""; /* [User]'s user_uid, and the deprecated user's number it replaces */
+    int was;
     if (text) {
         SnxIni ini;
         char *key, *value;
         snx_ini_start(&ini, text);
         while (snx_ini_next(&ini, &key, &value)) {
-            if (!strcmp(ini.section, "User") && !strcmp(key, "user")) {
-                char* end = NULL;
-                long user = strtol(value, &end, 10);
-                if (*value && !*end && user >= 1 && user <= SNX_USERS_MAX) g_settings.user = (int)user;
+            if (!strcmp(ini.section, "User") && (!strcmp(key, "user_uid") || !strcmp(key, "user"))) {
+                if (key[4])
+                    snprintf(uid, sizeof uid, "%s", value);
+                else
+                    snprintf(old, sizeof old, "%s", value);
                 continue;
             }
             if (strcmp(ini.section, "Network")) continue;
@@ -62,7 +65,7 @@ void snx_ctr_uds_settings(const char* data) {
     free(config);
     char* users = snx_users_dir(data);
     char why[256];
-    if (users && !snx_users_load(users, g_settings.user, why, sizeof why)) {
+    if (users && !snx_users_choose(users, uid, uid[0] ? NULL : old, &was, why, sizeof why)) {
         const SnxUser* user = snx_users_selected();
         if (user) snprintf(g_uds.nickname, sizeof g_uds.nickname, "%.20s", user->nickname);
     }

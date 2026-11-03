@@ -48,6 +48,8 @@
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/pad_screen.h"
 #include "common/utilities/users.h"
+#include "common/utilities/mii_db.h"
+#include "common/utilities/mii_model.h"
 #include "common/utilities/setup.h"
 #ifdef SDL_PLATFORM_ANDROID
 #include "gui/android.h"
@@ -102,10 +104,12 @@ enum {
     GUI_FORM_FREEDRENO, /* Settings > App > Freedreno Settings, or a game's own */
     GUI_FORM_FETCH      /* GPU Drivers > Download Driver */
 };
-/* Settings > User's values: who the games play as, then each user's nickname as it is typed */
+/* Settings > User's values: who the games play as, then each user's nickname as it is typed and Mii (its place in
+   the Mii database, common/utilities/mii_db.h) */
 typedef struct {
     char plays[64];
     char nick[SNX_USERS_MAX][SNX_USERS_NICKNAME_MAX + 1];
+    int mii[SNX_USERS_MAX];
 } GuiUsersForm;
 /* Settings > App > Folders' rows, in the order of their keys in app.ini's [folders] */
 enum { GUI_PLACE_DATA, GUI_PLACE_GAMES, GUI_PLACE_WORK, GUI_PLACE_STATE, GUI_PLACE_CACHE, GUI_PLACES };
@@ -458,6 +462,7 @@ typedef struct App {
     int user;
     char user_name[SNX_USERS_NICKNAME + 1];
     unsigned char* user_jpeg; /* users/<uid>.jpg, user_jpeg_size bytes; NULL for Wimsy */
+    int user_mii;             /* the Mii its picture is drawn from (users.ini's picture=mii), or -1 for the JPEG */
     size_t user_jpeg_size;
     SDL_Texture* user_picture; /* drawn user_side pixels square, in the shape it was drawn for */
     GuiIcon icons[GUI_ICONS];  /* the games' icons drawn so far (game_icon), the oldest replaced first */
@@ -564,7 +569,7 @@ typedef struct App {
     GuiAppForm app_form;
     GuiFrame frame; /* what place_screen measured of the screen it lays out */
     GuiUsersForm users_form;
-    GuiThemeKey users_keys[SNX_USERS_MAX + 1]; /* Current user, then a row a user */
+    GuiThemeKey users_keys[2 * SNX_USERS_MAX + 1]; /* Current user, then a user's nickname and Mii each */
     /* Settings > App > GPU Drivers (gui/gpu_driver.h): the packages of drivers_dir, the launcher's pick for every game
        (app.ini's gpu_driver, "" the system's) and its Freedreno variables (freedreno_env); its page's rows and
        Freedreno Settings', for the launcher's picks or, with drivers_game (a game's program, drivers_title its name),
@@ -613,6 +618,7 @@ typedef struct App {
     char* run_driver; /* the run's --gpu_driver= and --freedreno_env= (gui_run_option), until the next run */
     char* run_freedreno;
     char users_label[SNX_USERS_MAX][32];
+    char users_mii_label[SNX_USERS_MAX][32];
     int language;        /* Settings > App's Language: 0 Auto (the system's), else snx_gui_languages' index + 1 */
     char* games_key;     /* [folders] games = as app.ini had it, recompiled = before it was named so: written again */
     char* text_size_key; /* [app] text_size = as app.ini had it, ui_scale = before it was named so: written again */
@@ -3369,42 +3375,93 @@ static void screen_foot(App* app, const GuiPlace* p, const char* about, const ch
          rgb(app->message[0] ? (app->abnormal_exit ? t->failure : t->focus) : t->ink), keys);
 }
 /* ---- the user at the head's right: the one Settings' user names, its nickname and its picture in a box ---- */
-/* Settings' user: the pick, or its default, 1; read from settings.ini until the Settings are */
-static int settings_user(const App* app) {
-    const char* value = NULL;
-    char *text = NULL, *key, *at;
+/* settings.ini's key as the file has it, "" for none: the Settings' own read before they are, and a deprecated key no
+   row takes */
+static void settings_file_text(const App* app, const char* key, char* out, size_t out_size) {
+    char *text = NULL, *k, *at;
     size_t size;
-    int user = 1;
-    if (app->settings.keys)
-        value = gui_settings_value(&app->settings, "user");
-    else if (app->settings_file && snx_is_file(app->settings_file)) {
+    out[0] = 0;
+    if (app->settings_file && snx_is_file(app->settings_file)) {
         SnxIni ini;
         text = (char*)snx_read_file(app->settings_file, &size);
         if (text) snx_ini_start(&ini, text);
-        while (text && snx_ini_next(&ini, &key, &at))
-            if (!strcmp(key, "user")) value = at;
+        while (text && snx_ini_next(&ini, &k, &at))
+            if (!strcmp(k, key)) snprintf(out, out_size, "%s", at);
     }
-    if (value) user = SDL_atoi(value);
     free(text);
-    return user;
 }
-/* the users of users_dir, for the head: the one games play as, or none with why in the message */
+/* Settings' key: the pick, read from settings.ini until the Settings are; "" for none */
+static void settings_text(const App* app, const char* key, char* out, size_t out_size) {
+    const char* value;
+    if (!app->settings.keys) {
+        settings_file_text(app, key, out, out_size);
+        return;
+    }
+    value = gui_settings_value(&app->settings, key);
+    snprintf(out, out_size, "%s", value ? value : "");
+}
+/* Settings' user, by its uid (user_uid), as users.ini lists them: its number, 0 for a uid no user has; without one
+   the deprecated user's number, else 1 */
+static int settings_user(const App* app) {
+    char uid[64], text[33];
+    int i;
+    settings_text(app, "user_uid", uid, sizeof uid);
+    if (uid[0]) {
+        for (i = 0; i < g_user_count; i++) {
+            snx_users_uid_text(g_users[i].uid, text);
+            if (!SDL_strcasecmp(text, uid)) return i + 1;
+        }
+        return 0;
+    }
+    settings_file_text(app, "user", text, sizeof text);
+    return text[0] ? SDL_atoi(text) : 1;
+}
+/* settings.ini's deprecated user=N named the user playing: user_uid written in its place, once, and said */
+static GuiSettings* settings_of(App* app);
+static void users_migrate(App* app, int old) {
+    char uid[33];
+    GuiSettings* settings = settings_of(app);
+    snx_users_uid_text(snx_users_selected()->uid, uid);
+    if (!gui_settings_set(settings, "user_uid", uid)) {
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("user=%d is deprecated, and the Settings have no user_uid to write %s in"), old, uid);
+        return;
+    }
+    gui_settings_sync(settings);
+    if (app->settings_file && gui_settings_save(settings, app->settings_file)) {
+        snprintf(app->message, sizeof app->message, snx_tr("Not saved: %s could not be written"), app->settings_file);
+        say_failure(app, app->message);
+        return;
+    }
+    /* the uid and the number, not the nickname: the launcher's log takes this, and players attach it to public
+       reports */
+    snprintf(app->message, sizeof app->message, snx_tr("user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"),
+             old, uid, old);
+}
+/* the users of users_dir, for the head: the one games play as (Settings' user_uid, the deprecated user's number while
+   it names none, written as user_uid then), or none with why in the message */
 static void users_read(App* app) {
-    char why[512];
+    char why[512], uid[64], old[16];
     const SnxUser* u;
     const unsigned char* jpeg;
     uint32_t size;
+    int was;
     app->user = 0;
+    app->user_mii = -1;
     free(app->user_jpeg);
     app->user_jpeg = NULL;
     app->user_jpeg_size = 0;
     SDL_DestroyTexture(app->user_picture);
     app->user_picture = NULL;
     if (!app->users_dir) return;
-    if (snx_users_load(app->users_dir, settings_user(app), why, sizeof why)) {
+    settings_text(app, "user_uid", uid, sizeof uid);
+    old[0] = 0;
+    if (!uid[0]) settings_file_text(app, "user", old, sizeof old);
+    if (snx_users_choose(app->users_dir, uid, old, &was, why, sizeof why)) {
         snprintf(app->message, sizeof app->message, snx_tr("No user shown: %s"), why);
         return;
     }
+    if (snx_users_notes()[0]) gui_log("%s", snx_users_notes()); /* a Mii or picture not as users.ini says */
     u = snx_users_selected();
     jpeg = snx_users_picture(u, &size);
     if (jpeg && (app->user_jpeg = malloc(size)) != NULL) {
@@ -3412,7 +3469,9 @@ static void users_read(App* app) {
         app->user_jpeg_size = size;
     }
     snprintf(app->user_name, sizeof app->user_name, "%s", u->nickname);
+    app->user_mii = u->picture_mii ? u->mii : -1;
     app->user = snx_users_selected_number();
+    if (was) users_migrate(app, was);
 }
 /* jpeg (size bytes; NULL for Wimsy) side pixels square in the theme's shape, a texture of its own; a JPEG that does
    not draw is Wimsy, and *failed says so */
@@ -3433,6 +3492,38 @@ static SDL_Texture* picture_texture(App* app, const unsigned char* jpeg, size_t 
         texture = NULL;
     }
     free(pixels);
+    return texture;
+}
+/* database Mii mii's picture (mii_model.h) side pixels square in the theme's shape, as picture_texture makes a
+   JPEG's; *failed when it could not be drawn (no memory) */
+static SDL_Texture* mii_texture(App* app, int mii, int side, bool* failed) {
+    int round = app->theme.picture == GUI_PICTURE_ROUND, x, y;
+    uint8_t charinfo[SNX_MII_CHARINFO], *rgba = side > 0 ? malloc((size_t)side * (size_t)side * 4) : NULL;
+    SnxMiiLook look;
+    SDL_Texture* texture = NULL;
+    *failed = true;
+    if (!rgba) return NULL;
+    snx_mii_db_charinfo((uint32_t)mii, charinfo);
+    snx_mii_db_look((uint32_t)mii, &look);
+    if (!snx_mii_picture(charinfo, &look, side, rgba)) {
+        /* ARGB8888 (B, G, R, A in memory) with the alpha premultiplied, cut to the circle when the theme's is round */
+        for (y = 0; y < side; ++y)
+            for (x = 0; x < side; ++x) {
+                uint8_t* p = rgba + 4 * ((size_t)y * (size_t)side + (size_t)x);
+                float dx = (float)x + 0.5f - (float)side / 2, dy = (float)y + 0.5f - (float)side / 2;
+                float a = round ? SDL_clamp((float)side / 2 - SDL_sqrtf(dx * dx + dy * dy) + 0.5f, 0.0f, 1.0f) : 1.0f;
+                uint8_t r = p[0], g = p[1], b = p[2];
+                p[0] = (uint8_t)(b * a), p[1] = (uint8_t)(g * a), p[2] = (uint8_t)(r * a), p[3] = (uint8_t)(255 * a);
+            }
+        texture = SDL_CreateTexture(app->renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, side, side);
+        if (texture && (!SDL_UpdateTexture(texture, NULL, rgba, side * 4) ||
+                        !SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND_PREMULTIPLIED))) {
+            SDL_DestroyTexture(texture);
+            texture = NULL;
+        }
+        *failed = !texture;
+    }
+    free(rgba);
     return texture;
 }
 /* the icon of the game whose program is at path, as its row shows it: its icon.jpg drawn once, then kept; NULL for
@@ -3897,7 +3988,8 @@ static SDL_Texture* user_texture(App* app, int side) {
     bool failed;
     if (!app->previewing && app->user_picture && app->user_side == side && app->user_shape == (int)app->theme.picture)
         return app->user_picture;
-    texture = picture_texture(app, app->user_jpeg, app->user_jpeg_size, side, &failed);
+    texture = app->user_mii >= 0 ? mii_texture(app, app->user_mii, side, &failed)
+                                 : picture_texture(app, app->user_jpeg, app->user_jpeg_size, side, &failed);
     if (app->previewing) return texture;
     if (failed) {
         snprintf(app->message, sizeof app->message, snx_tr("%s's picture could not be drawn: Wimsy shows"),
@@ -4014,7 +4106,8 @@ static void render_users(App* app) {
             const unsigned char* jpeg = snx_users_picture(&g_users[user], &size);
             bool failed;
             SDL_DestroyTexture(app->users_pictures[user]);
-            app->users_pictures[user] = picture_texture(app, jpeg, size, side, &failed);
+            app->users_pictures[user] = g_users[user].picture_mii ? mii_texture(app, g_users[user].mii, side, &failed)
+                                                                  : picture_texture(app, jpeg, size, side, &failed);
         }
         if (app->users_pictures[user]) {
             SDL_FRect at = {(float)(b.x + b.w - 2 * s - side), (float)(b.y + 2 * s), (float)side, (float)side};
@@ -4024,13 +4117,12 @@ static void render_users(App* app) {
     if (l->shift) ui_clip(app, NULL);
     app->users_side = side;
 }
-/* user n (1-based) picked: Settings' user, kept in settings.ini at once, and the head shows them */
-static GuiSettings* settings_of(App* app);
+/* user n (1-based) picked: Settings' user_uid its uid, kept in settings.ini at once, and the head shows them */
 static void users_pick(App* app, int n) {
-    char value[8];
+    char value[33];
     GuiSettings* settings = settings_of(app);
-    snprintf(value, sizeof value, "%d", n);
-    if (!gui_settings_set(settings, "user", value))
+    snx_users_uid_text(g_users[n - 1].uid, value);
+    if (!gui_settings_set(settings, "user_uid", value))
         snprintf(app->message, sizeof app->message, "%s", snx_tr("No user picked: the Settings have no user"));
     else {
         gui_settings_sync(settings);
@@ -4299,13 +4391,34 @@ static void addons_folder_off(const App* app, int i, char* out, size_t size) {
     const char* path = app->addons_folders[i];
     out[0] = 0;
     if (!path)
-        snprintf(out, size, "%s", snx_tr("its dump is not known: the game was made before the recompile named it"));
+        snprintf(out, size, "%s",
+                 i == GUI_FOLDER_DUMP ? snx_tr("its dump is not known: the game was made before the recompile named it")
+                                      : snx_tr("not known"));
     else if (!snx_is_dir(path))
         snprintf(out, size, snx_tr("%s is not there yet"), path);
 #ifdef SDL_PLATFORM_IOS /* the app's Library, where its settings, state and caches are, is not in it */
     else if (!app->data_dir || !snx_path_within(path, app->data_dir))
         snprintf(out, size, snx_tr("%s is out of the Files app's reach, which shows the app's Documents alone"), path);
 #endif
+}
+static bool saves_global(const App* app);
+/* Open Folder's Saves of the game name in folder, its own data folder data: where fs.c's save_folder plays the user
+   playing's saves. With save_layout=global, user.<uid>/<title ID> of the save/ of the data folder the game's run has
+   (main.c's fs_saves_init); the game's own save/ while only that is there, where an older version left them. A game
+   with no title ID of its own (a homebrew's) and save_layout=game keep their own. NULL with no data folder (no home to
+   find one by), where the game does not run, or a path too long (said) */
+static char* addons_saves(const App* app, const char* folder, const char* name, const char* data) {
+    char *own = snx_path_join(data, "save"), *root, global[SNX_PATH_SIZE], uid[33];
+    SnxU64 id;
+    int made;
+    if (!snx_title_parse(name, &id) || !saves_global(app)) return own;
+    root = snx_menu_dir(folder, SNX_USER_DATA);
+    snx_users_uid_text(snx_users_selected()->uid, uid);
+    made = root && !snx_path_format(global, sizeof global, "%s/save/user.%s/%s", root, uid, name);
+    free(root);
+    if (made && !snx_is_dir(global) && snx_is_dir(own)) return own;
+    free(own);
+    return made ? snx_strdup(global) : NULL;
 }
 /* Open Folder: the game's folders as they are now, on its page, the box's focus kept to go back to */
 static void addons_folders_open(App* app) {
@@ -4318,7 +4431,7 @@ static void addons_folders_open(App* app) {
     dump = snx_game_source(folder, name, &recorded);
     app->addons_folders[GUI_FOLDER_DUMP] = recorded && dump ? snx_dirname(dump) : NULL;
     app->addons_folders[GUI_FOLDER_GAME] = snx_strdup(folder);
-    app->addons_folders[GUI_FOLDER_SAVES] = snx_path_join(data, "save");
+    app->addons_folders[GUI_FOLDER_SAVES] = addons_saves(app, folder, name, data);
     app->addons_folders[GUI_FOLDER_SETTINGS] = gui_game_kind_dir(folder, name, SNX_USER_CONFIG);
     app->addons_folders[GUI_FOLDER_LOGS] = gui_game_kind_dir(folder, name, SNX_USER_STATE);
     app->addons_folders[GUI_FOLDER_CACHES] = gui_game_kind_dir(folder, name, SNX_USER_CACHE);
@@ -8385,6 +8498,19 @@ static bool made_here(const char* program) {
     free(base);
     return here;
 }
+/* the program a run of a made Switch game plays and R remakes: its checked update's in place of its own, as Play runs
+   it (played_program) and its driver would play it; NULL for any other file, or a B pack's build, which go as they
+   are. Owned */
+static char* run_program(const App* app, const char* file, bool prepared) {
+    char* run = prepared && app->menu.selected == GUI_SWITCH && !app->aot_pack && gui_game_folder(file)
+                    ? played_program(file)
+                    : NULL;
+    if (run && !strcmp(run, file)) {
+        free(run);
+        run = NULL;
+    }
+    return run;
+}
 /* the game of the library made from file (a dump, package or ROM) when another build made it, or this one with other
    mods: Play on its dump compiles it again first, as its driver would on the run's screen */
 static bool made_elsewhere(const App* app, const char* file) {
@@ -8397,8 +8523,30 @@ static bool made_elsewhere(const App* app, const char* file) {
     made_free(&made);
     return elsewhere;
 }
+/* the game's own program for path, the program of one of its updates (or of a DLC, as an older version made one) in
+   the game's folder; NULL for the game's own or any other file. Owned */
+static char* addon_game(const char* path) {
+    char *folder, *name, *own = NULL;
+    const char* file = path + strlen(path);
+    if (!gui_game_folder(path)) return NULL;
+    while (file > path && file[-1] != '/' && file[-1] != '\\') --file;
+    game_where(path, &folder, &name);
+    if (!strncmp(file, name, strlen(name)) && file[strlen(name)] == '_') {
+        char* parent = snx_dirname(folder);
+        own = gui_folder_game(parent, name);
+        free(parent);
+    }
+    if (own && !strcmp(own, path)) { /* a pack's name, <name>_code.snxobj on iOS, is the game's own */
+        free(own);
+        own = NULL;
+    }
+    free(name);
+    free(folder);
+    return own;
+}
 /* the recent rows as Games has their games: a dump or a package made into a game of recompiled/ since runs that game's
-   program from then on, whichever console's, and a game of a folder of its own goes by the name Games shows it by, its
+   program from then on, whichever console's, a run of a game's update's program (Play with the update checked) is the
+   game's own row, which plays it again, and a game of a folder of its own goes by the name Games shows it by, its
    control.nacp's */
 static void recent_as_games(App* app) {
     MadeGames made;
@@ -8407,8 +8555,10 @@ static void recent_as_games(App* app) {
     made_read(app, &made);
     for (i = app->recent.count - 1; i >= 0; --i) { /* from the oldest: an entry dropped moves none still to look at */
         const GuiRecentGame* r = &app->recent.game[i];
-        const char* program = r->driver != GUI_LINUX && !r->prepared ? made_program(&made, r->path) : NULL;
+        char* own = r->driver == GUI_SWITCH && r->prepared ? addon_game(r->path) : NULL;
+        const char* program = own ? own : r->driver != GUI_LINUX && !r->prepared ? made_program(&made, r->path) : NULL;
         if (program && gui_recent_made(&app->recent, i, program)) changed = true;
+        free(own);
     }
     made_free(&made);
     for (i = 0; i < app->recent.count; ++i) /* one file under two spellings (/var and /private/var) is one game */
@@ -8602,12 +8752,12 @@ static void group_view(App* app, int g) {
     gui_editor_form(&app->editor, app->view_keys, app->view_count, app->settings.values, NULL);
     app->editor.flat = true;
 }
-#define SAY_SETUP_NICKNAME SNX_TR_NOOP("nickname 4 to 20 of A-Z a-z 0-9 space . _ -")
+#define SAY_SETUP_NICKNAME SNX_TR_NOOP("nickname of 1 to 32 bytes, no control character, no space at either end")
 /* the User group: its one setting, who the games play as, shown with every user of users.ini to rename */
 static bool users_group(const App* app, int g) {
     return g > 0 && g < app->groups && !strcmp(app->group_keys[g].key, "User");
 }
-/* its rows, Current user then a user each with its nickname: how many */
+/* its rows, Current user then a user each with its nickname and its Mii: how many */
 static int users_fill(App* app) {
     int i, plays = settings_user(app);
     snprintf(app->users_form.plays, sizeof app->users_form.plays, snx_tr("User %d: %s"), plays,
@@ -8631,11 +8781,39 @@ static int users_fill(App* app) {
             sizeof app->users_form.nick[0],
             NULL,
             0,
-            SNX_TR_NOOP("Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"), 0,
-            0, 0, 0, NULL};
+            SNX_TR_NOOP(
+                "Its nickname, as the games show it: 1 to 32 bytes, no control character, no space at either end"),
+            0,
+            0,
+            0,
+            0,
+            NULL};
     }
-    return i + 1;
+    /* each user's rows: its nickname, then its Mii, one of the Mii database's */
+    for (i = g_user_count < SNX_USERS_MAX ? g_user_count : SNX_USERS_MAX; i-- > 0;) {
+        snprintf(app->users_mii_label[i], sizeof app->users_mii_label[i], snx_tr("User %d Mii"), i + 1);
+        app->users_form.mii[i] = g_users[i].mii;
+        app->users_keys[2 * i + 1] = app->users_keys[i + 1];
+        app->users_keys[2 * i + 2] = (GuiThemeKey){"",
+                                                   app->users_mii_label[i],
+                                                   GUI_KEY_WORD,
+                                                   offsetof(GuiUsersForm, mii) + (size_t)i * sizeof(int),
+                                                   sizeof(int),
+                                                   snx_mii_db_names(),
+                                                   0,
+                                                   SNX_TR_NOOP("Its Mii, which the games get as the user's and its "
+                                                               "picture shows unless it has a picture file"),
+                                                   0,
+                                                   0,
+                                                   0,
+                                                   0,
+                                                   NULL};
+    }
+    return 2 * (g_user_count < SNX_USERS_MAX ? g_user_count : SNX_USERS_MAX) + 1;
 }
+/* a row of Settings > User past Current user: its user's number, and whether it is the Mii's row */
+static int users_row_user(int row) { return (row + 1) / 2; }
+static bool users_row_mii(int row) { return row > 0 && !(row % 2); }
 static void open_users(App* app, int g, int row) {
     int n = users_fill(app);
     gui_editor_form(&app->editor, app->users_keys, n, &app->users_form, NULL);
@@ -9534,22 +9712,37 @@ static void freedreno_action(App* app, int r, bool save) {
         app->editor.dirty = true;
     }
 }
-/* Current user a step either way, round the users, kept as Settings' user */
+/* Current user a step either way, round the users, kept as Settings' user_uid */
 static void plays_as_step(App* app, int step) {
-    char value[16];
-    int n = SDL_max(g_user_count, 1), user = (settings_user(app) - 1 + n + (step < 0 ? -1 : 1)) % n + 1;
-    snprintf(value, sizeof value, "%d", user);
-    gui_settings_set(&app->settings, "user", value);
+    char value[33];
+    int n = SDL_max(g_user_count, 1), user = (SDL_max(settings_user(app), 1) - 1 + n + (step < 0 ? -1 : 1)) % n + 1;
+    snx_users_uid_text(g_users[user - 1].uid, value);
+    gui_settings_set(&app->settings, "user_uid", value);
     app->editor.dirty = true;
 }
 /* a nickname typed: users.ini written with it, the head's too; one the rule refuses or that cannot be written said by
    the user's number, the row showing the nickname users.ini has: the note reaches the launcher's log, which players
    attach to public reports */
 static void users_commit(App* app) {
-    int number = app->editor.row;
+    int number = users_row_user(app->editor.row);
     char why[512], *nick;
     app->editor.dirty = false;
     if (number < 1 || number > g_user_count) return;
+    if (users_row_mii(app->editor.row)) { /* a Mii picked: users.ini's mii=, and the pictures drawn again */
+        const char* name = snx_mii_db_name((uint32_t)app->users_form.mii[number - 1]);
+        if (!name || app->users_form.mii[number - 1] == g_users[number - 1].mii) return;
+        if (!app->users_dir || snx_users_set(app->users_dir, number, "mii", name, why, sizeof why)) {
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("User %d's Mii is not written: %s"), number,
+                     app->users_dir ? why : snx_tr("no users/ folder"));
+            say_failure(app, app->editor.note);
+        } else {
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("User %d's Mii is %s now"), number, name);
+            users_read(app);  /* the head's picture */
+            users_close(app); /* the box's pictures, drawn again when it opens */
+        }
+        users_fill(app);
+        return;
+    }
     nick = app->users_form.nick[number - 1];
     if (!strcmp(nick, g_users[number - 1].nickname)) return;
     if (!app->users_dir || snx_users_rename(app->users_dir, number, nick, why, sizeof why)) {
@@ -10450,6 +10643,7 @@ static void editor_key(App* app, GuiKey key) {
     app->warn_until = 0;
     app->warn_key[0] = 0;
     if (app->form == GUI_FORM_USERS && app->editor.typing && key == GUI_SELECT && app->editor.row > 0 &&
+        !users_row_mii(app->editor.row) &&
         !snx_users_nickname_valid(app->editor.text)) { /* a nickname refused in its dialog, which goes on */
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s is not a nickname: %s"), app->editor.text,
                  snx_tr(SAY_SETUP_NICKNAME));
@@ -11016,10 +11210,10 @@ static void draw_picker(App* app);
    cursor in a field, what the row takes, and what the editor says of what was typed; OK and Cancel under them ---- */
 #define GUI_TYPED_FIELD 24 /* the field's columns at the least */
 static const char* const typed_choices[2] = {SNX_TR_NOOP("OK"), SNX_TR_NOOP("Cancel")};
-#define SAY_NICKNAME_TAKES SNX_TR_NOOP("A nickname, 4 to 20 of A-Z a-z 0-9 space . _ -")
+#define SAY_NICKNAME_TAKES SNX_TR_NOOP("A nickname, 1 to 32 bytes, no control character, no space at either end")
 /* what the row typed takes, in out: its key's, a nickname's on Settings > User */
 static void typed_takes(const App* app, char* out, size_t size) {
-    if (app->form == GUI_FORM_USERS && app->editor.row > 0)
+    if (app->form == GUI_FORM_USERS && app->editor.row > 0 && !users_row_mii(app->editor.row))
         snprintf(out, size, "%s", snx_tr(SAY_NICKNAME_TAKES));
     else
         gui_editor_takes(&app->editor, out, size);
@@ -11885,7 +12079,7 @@ static const char* setup_tip(const App* app) {
         case SNX_SETUP_INSTALL: return snx_tr("Tip: a portable copy is a folder you can copy");
         case SNX_SETUP_FOLDERS: return snx_tr("Tip: Settings > App > Folders changes them");
         case SNX_SETUP_KEYS: return snx_tr("Tip: Menu > Install Keys changes them");
-        default: return snx_tr("Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -");
+        default: return snx_tr("Tip: nickname of 1 to 32 bytes, no control character, no space at either end");
     }
 }
 static const char* setup_keys_said(const App* app) {
@@ -13476,6 +13670,16 @@ static void launch(App* app, char* absolute, bool prepared) {
         free(absolute);
         return;
     }
+    if (!app->recompile) { /* and its checked update's, which it plays (run_program) */
+        char* run = run_program(app, absolute, prepared);
+        queued = run ? gui_queue_find(&app->queue, run) : -1;
+        free(run);
+        if (queued >= 0) {
+            queue_show(app, queued);
+            free(absolute);
+            return;
+        }
+    }
 #ifdef SDL_PLATFORM_IOS
     /* the driver runs on a thread of the app, the game in it once the menu closes: one at a time */
     if (!app->recompile && jobs_live(app)) {
@@ -13496,12 +13700,16 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     /* a game opened that no game of the library was made from yet compiles first through the queue, as R's recompile
        does: the Compile tab shows it, and it plays once it ended if the tab still shows it (job_play). So does a Switch
-       game another build made, which its driver would recompile on the run's screen: its program opened, or its dump
-       with Play answered */
+       game another build made, which its driver would recompile on the run's screen: its program opened (the one it
+       plays, run_program), or its dump with Play answered */
     bool compile = !app->recompile && !prepared && app->menu.selected != GUI_LINUX && !made_from(app, absolute);
 #ifndef SDL_PLATFORM_IOS /* the games there are packs the app loads, with no stamp */
-    compile = compile || (!app->recompile && !app->compiled && prepared && app->menu.selected == GUI_SWITCH &&
-                          gui_game_folder(absolute) && !made_here(absolute));
+    if (!compile && !app->recompile && !app->compiled && prepared && app->menu.selected == GUI_SWITCH &&
+        gui_game_folder(absolute)) {
+        char* run = run_program(app, absolute, prepared);
+        compile = !made_here(run ? run : absolute);
+        free(run);
+    }
     compile = compile || (app->made_ok && app->menu.selected == GUI_SWITCH && made_elsewhere(app, absolute));
 #endif
     bool make = app->recompile || compile; /* the driver's -r: a run that makes the game and plays nothing */
@@ -13531,8 +13739,11 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
 #if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
     if (direct) {
-        if (play(app, absolute) && app->recent_file && !gui_recent_add(&app->recent, absolute, GUI_SWITCH, true))
+        char* run = run_program(app, absolute, prepared);
+        if (play(app, run ? run : absolute) && app->recent_file &&
+            !gui_recent_add(&app->recent, absolute, GUI_SWITCH, true))
             recent_changed(app);
+        free(run);
         free(absolute);
         free(game_option);
         return;
@@ -13598,11 +13809,13 @@ static void launch(App* app, char* absolute, bool prepared) {
     GuiSettings* s = settings_of(app);
     const char** argv = (const char**)snx_alloc((size_t)(s->count + 19) * sizeof(*argv));
     char* out = NULL; /* a dump's extraction in the picked extractions folder */
+    /* what runs, and what R makes: the program Play runs; the queue and Recent go by the file opened */
+    char* run = run_program(app, absolute, prepared);
     size_t n = 1;
-    argv[0] = direct ? absolute : driver;
+    argv[0] = direct ? (run ? run : absolute) : driver;
     if (!direct && driver_in_self(app, app->menu.selected)) argv[n++] = driver_name(app->menu.selected);
     if (make) argv[n++] = "-r";
-    if (!direct) argv[n++] = game_option ? game_option : absolute;
+    if (!direct) argv[n++] = game_option ? game_option : run ? run : absolute;
     /* Switch options only, never guest argv for the CPU-only Linux driver or the 3DS one; R's recompile takes no
        option of a run. The drivers work in the menu's data folder, so they list the same games */
     if (make && app->menu.selected == GUI_SWITCH && gui_settings_tmpfs(s)) argv[n++] = gui_settings_tmpfs(s);
@@ -13663,6 +13876,7 @@ static void launch(App* app, char* absolute, bool prepared) {
                 : app->aot_pack ? GUI_JOB_AOT
                                 : GUI_JOB_RECOMPILE);
         free(argv);
+        free(run);
         free(out);
         free(app->dest_out); /* the run's, which argv held until here: a next one asks again */
         app->dest_out = NULL;
@@ -13686,6 +13900,7 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     free(argv);
     free(game_option); /* argv held it until the process started */
+    free(run);
     free(out);
     free(app->dest_out); /* the run's, which argv held until here: a next one asks again */
     app->dest_out = NULL;

@@ -176,7 +176,8 @@ its ranges are copied. On an RTX 2080 a span with one page the driver cannot pin
 with `VK_ERROR_OUT_OF_DEVICE_MEMORY`, while anonymous and shared (memfd, the alias pool's) pages import. Before the
 list, every range in such a window asked the driver again, and one scene fell from 28 to 5 frames a second. The whole guest heap is never one import. A driver that checks each import's
 pages at each submit (amdgpu's user pointers) pays for the bytes imported, and LASRecomp measured 45 ms of driver
-time a frame on AMD with the whole heap as one import.
+time a frame on AMD with the whole heap as one import. On an RX 6700 XT (RADV, Mesa 26.1.8) a submission takes 6.4 us
+more per MiB imported in one import, from 16 MiB to 512 MiB, and 7.2 us per MiB with 160 MiB in 160 imports.
 
 ### What still copies, and why
 
@@ -205,8 +206,27 @@ time a frame on AMD with the whole heap as one import.
 - Pages that change under an import. The driver pins the pages it imported. When mem.c gives guest pages back
   (unmap, decommit), or moves them into the alias pool (`promote_nl`), the host pages at that guest address are other
   pages, and the import still has the old ones. mem.c tells the renderer (`mem_set_pages_replaced`), and the imports on
-  those pages go at the next lookup. `vulkan_headless` (`check_uma`) unmaps and maps a range again, and checks that the
-  GPU reads the new bytes.
+  those pages are destroyed before anything else is submitted (`vk_uma_mapping_end`). A driver keeps every import in
+  every submission, and amdgpu takes all their pages again in each one's ioctl: one page gone fails the submission
+  (`The CS has been rejected (-14)`, `EFAULT`), and the device is lost. So before the pages change, the commands that
+  read an import over them run, and every submission the recording thread holds reaches the driver
+  (`vk_uma_mapping_begin`). Pages becoming GPU-owned are trapped, which amdgpu can't take either: the imports over
+  them go before the trap (`vk_uma_owning`). An import dropped from the table (the least recently used, one a union
+  replaced, a save state's load) is destroyed once the submit that last read it is done, or before its pages change
+  if that comes first. The submit that last read an import is the one its last lookup was in, unless the draw's setup
+  submitted after the lookup (a wait for a landing) and recorded its use in the next: so until the next draw or
+  dispatch begins, an import looked up since counts the submit being recorded as its reader (`vk_uma_settle`).
+  `vulkan_headless` (`check_uma`) unmaps and maps a range again, and checks that the GPU reads the new bytes;
+  `check_uma_page_changes` unmaps, traps and drops imports with a submission after each; `vulkan_uma_imports.inc`
+  traps pages under a read still running, under two imports, under the import made after a page landed, after an
+  unmap, and under a lookup used after a submit (`SNX_TEST_UMA_ONLY=1` runs these alone).
+- Write tracking. amdgpu takes an import's pages again, writable, at each submission, which undoes the protection a
+  scan put on them: the next scan reports every imported page written with no CPU write (16 pages of 16 after each
+  submission, none without the import). Trusted, those reports made a render target's write-back keep memory's old
+  bytes over its pixels (`check_rt_overlap`), and a submission after a scan faults every protected page in again
+  (16 ms for 32 MiB imported, against 0.3 ms with no scan). So the scans leave the pages an import holds alone, and
+  `vk_written_since` can't tell there (-1): its users compare the bytes. An import's pages count as written once when
+  it goes (`vk_mem_changed`), for what the CPU wrote there meanwhile.
 - Hazards. A GPU-side write to guest memory (a front-end write, a landed result) on a page that a command not finished
   yet reads in place can change what that command reads. They are counted (`gpu_set_write_watch`), not prevented, and
   the report every 600 presents gives the count:
@@ -285,7 +305,7 @@ and a write-after-write of two image-to-buffer copies, all in the copy run too).
 
 The hazard counter found 2,500 GPU-side writes every 600 presents in scene A on pages that unfinished work read in
 place, 300 in scene B. They are counted by page, so constant buffers beside vertices count too, and the screenshots
-show nothing. Which of them are real is not traced yet: that comes before in place is the default anywhere.
+show nothing. Which of them are real is not traced yet.
 
 ### Testing on a Steam Deck (or any integrated GPU)
 

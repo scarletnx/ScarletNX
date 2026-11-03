@@ -79,6 +79,49 @@ uint32_t* snx_test_spirv_flush(uint32_t n, int signed_zeros, size_t* words) {
     return code;
 }
 
+uint32_t* snx_test_spirv_saturate(uint32_t n, int signed_zeros, size_t* words) {
+    SpvEmitter e;
+    spv_emit_init(&e, 64);
+    spv_emit_shader_capability(&e);
+    uint32_t glsl = spv_emit_glsl450_import(&e);
+    uint32_t function = spv_emit_id(&e);
+    uint32_t label = spv_emit_id(&e);
+    uint32_t void_type = spv_emit_type_void(&e);
+    uint32_t u32_type = spv_emit_type_u32(&e);
+    uint32_t f32_type = spv_emit_type_f32(&e);
+    uint32_t bool_type = spv_emit_type_bool(&e);
+    uint32_t function_type = spv_emit_type_function_void(&e, void_type);
+    uint32_t array_type = spv_emit_type_runtime_array(&e, u32_type, 4);
+    uint32_t struct_type = spv_emit_type_struct_one(&e, array_type);
+    uint32_t buffer = spv_emit_storage_buffer(&e, struct_type, 0, 0);
+    uint32_t pointer_type = spv_emit_type_storage_pointer(&e, u32_type);
+    spv_emit_compute_entry_str(&e, function, "main", &buffer, 1);
+    spv_emit_local_size(&e, function, 1, 1, 1);
+    spv_emit_float_controls(&e, function, 0, signed_zeros, 0);
+    uint32_t member = spv_emit_constant_u32(&e, u32_type, 0);
+    uint32_t zero = spv_emit_constant_u32(&e, f32_type, 0), one = spv_emit_constant_u32(&e, f32_type, 0x3f800000u);
+    spv_emit_function_void(&e, void_type, function, function_type);
+    spv_emit_label(&e, label);
+    for (uint32_t k = 0; k < n; k++) {
+        uint32_t in =
+            spv_emit_storage_access_u32(&e, pointer_type, buffer, member, spv_emit_constant_u32(&e, u32_type, k));
+        uint32_t value = spv_emit_bitcast(&e, f32_type, spv_emit_load(&e, u32_type, in));
+        uint32_t saturated = spv_emit_saturate(&e, f32_type, u32_type, bool_type, glsl, value);
+        uint32_t clamped = spv_emit_glsl_ternary(&e, f32_type, glsl, SPV_GLSL_F_CLAMP, value, zero, one);
+        uint32_t out =
+            spv_emit_storage_access_u32(&e, pointer_type, buffer, member, spv_emit_constant_u32(&e, u32_type, n + k));
+        spv_emit_store_u32(&e, out, spv_emit_bitcast(&e, u32_type, saturated));
+        out = spv_emit_storage_access_u32(&e, pointer_type, buffer, member,
+                                          spv_emit_constant_u32(&e, u32_type, 2 * n + k));
+        spv_emit_store_u32(&e, out, spv_emit_bitcast(&e, u32_type, clamped));
+    }
+    spv_emit_return(&e);
+    spv_emit_function_end(&e);
+    uint32_t* code = spv_emit_finish(&e, words);
+    spv_emit_destroy(&e);
+    return code;
+}
+
 uint32_t* snx_test_spirv_graphics(int fragment, size_t* words) {
     SpvEmitter e;
     spv_emit_init(&e, 64);

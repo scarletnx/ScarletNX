@@ -25,6 +25,7 @@ case $machine:$data in
     258:1) qemu=qemu-loongarch64 ;;
     8:1) qemu=qemu-mips64el ;;
     8:2) qemu=qemu-mips64 ;;
+    22:2) qemu=qemu-s390x ;;
     *) echo "$config is a program of machine $machine, which this script runs no qemu for" >&2; exit 1 ;;
 esac
 # MIPS's e_machine is the 32-bit machines' too, which the runtime doesn't build for

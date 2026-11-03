@@ -20,6 +20,7 @@ void hle_init(void) {
     pm_init(&g_host.thread.core_lk);
     pm_init(&g_host.ipc.lk);
     pm_init(&g_host.acc.pic_lk);
+    pm_init(&g_host.acc.users_lk);
     pm_init(&g_host.audio.lk);
     pm_init(&g_host.audren.lk);
     pm_init(&g_host.ldr.lock);

@@ -15,6 +15,10 @@ void fs_init(const char* keys, const char* title_keys);
 /* save_layout=global's saves under root (the data folder's save/), this title's folders there now grafted: after the
    users are known, before the game runs (fs.c's save_global) */
 void fs_saves_init(const char* root);
+/* the folders of uid's saves this run reaches, out of the index for acc's DeleteUser to move to the Trash: the data
+   folder's save/user.<uid>/ (save_layout=global's, every title's) and this game's own save/user.<uid> (game's). Their
+   host paths into paths, max of them; how many */
+int fs_user_saves_take(const u64 uid[2], char (*paths)[FS_TREE_PATH_MAX], int max);
 extern u64 g_fs_bytes_read, g_fs_bytes_written; /* the game's file I/O, for the rate plot */
 /* Lookups by a path in the index. *size is 0 when the file isn't there */
 FILE* fs_open_read(const char* path, u64* size);
@@ -118,11 +122,12 @@ typedef struct {
     FsNode* rimage; /* plain romfs.bin, mapped */
     ROpen openf[NOPEN]; /* rf_open's files, under tree.lock */
     u64 openclk;
-    u8 emptyrom[0x200]; /* the empty RomFS of the system archives (emptyrom_init) */
-    u8 ngword2rom[0x2000];  /* the synthesized NgWord2 archive 0100000000000823 (filesrom_init) */
-    u64 ngword2rom_size;    /* the bytes used in ngword2rom */
-    u8 miimodelrom[0x34000]; /* the placeholder MiiModel archive 0100000000000802 (filesrom_init) */
-    u64 miimodelrom_size;   /* the bytes used in miimodelrom */
+    u8 emptyrom[0x200];       /* the empty RomFS of the system archives (emptyrom_init) */
+    u8 ngword2rom[0x2000];    /* the synthesized NgWord2 archive 0100000000000823 (filesrom_init) */
+    u64 ngword2rom_size;      /* the bytes used in ngword2rom */
+    u8 miimodelrom[0x500000]; /* the generated MiiModel archive 0100000000000802 (filesrom_init, mii_model.c), made
+                                 at its first open: untouched memory until then */
+    u64 miimodelrom_size;     /* the bytes used in miimodelrom, 0 before it is made */
     /* the service objects' data */
     FsData fss[FS_FS_MAX];
     FileData files[FS_FILE_MAX];

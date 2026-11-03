@@ -3562,7 +3562,7 @@ int main(int argc, char** argv) {
               "On-screen controls\tcontrols\t0\tint\t0\t1\tThe on-screen controls\tShow controls\t0=Off|1=On\n"
               "On-screen controls/Buttons\tcontrols_a_shown\t\tint\t0\t1\tA control drawn\tA\t0=Hidden|1=Shown\n"
               "On-screen controls/Buttons\tcontrols_b_shown\t\tint\t0\t1\tA control drawn\tB\t0=Hidden|1=Shown\n"
-              "User\tuser\t1\tint\t1\t8\tThe console's user the game plays as\t\t\n",
+              "User\tuser_uid\t\ttext\t\t\tThe console's user the game plays as, by its uid\tUser uid\t\n",
               stdout);
         return 0;
     }
@@ -6601,7 +6601,7 @@ int main(int argc, char** argv) {
             settings_forget(&app);
             free(app.drivers);
             app.drivers = drivers;
-            assert(settings_of(&app) && setting_row(&app, "built_in") < 0 && setting_row(&app, "user") >= 0);
+            assert(settings_of(&app) && setting_row(&app, "built_in") < 0 && setting_row(&app, "user_uid") >= 0);
             app.groups = 0;
         }
         /* an older version's fullscreen=.ini and controls=.ini, which passed nothing: each the launcher's choice, said
@@ -9161,6 +9161,72 @@ int main(int argc, char** argv) {
                 free(text);
                 free(stamp);
             }
+            { /* Recent Games has a game once (#924): L on its row plays its checked update's program, which the run
+                 leaves in the list; once it ends that entry is the game's own row again, not a second one beside it */
+                char *row = snx_absolute(base), *played = snx_absolute(older),
+                     *got = snx_path_join(temporary, "recent-once.argv"),
+                     *list = snx_path_join(temporary, "recent-once.txt"), *argv;
+                GuiRecent recent = app.recent;
+                assert(row && played && !snx_ini_record(ini, "addons", "0100ABCD12340800v0,0100ABCD12341001"));
+                recent_open(&app, snx_strdup(list)); /* a list kept, which runs are written into */
+                app.recent = (GuiRecent){0};
+                assert(!gui_recent_add(&app.recent, row, GUI_SWITCH, true));
+                recent_changed(&app);
+                go_tab(&app, GUI_TAB_GAMES);
+                app.browser.page = 0;
+                app.browser.selected = 0;
+                driver_will(got, 0, NULL);
+                key(&app, SDLK_L);
+                assert(app.menu.running);
+                argv = ran(&app, 0);
+                assert(has_arg(argv, played, NULL));
+                free(argv);
+                driver_will(NULL, 0, NULL);
+                assert(recent_games(&app) == 1 && !strcmp(app.recent.game[0].path, row));
+                /* a list an older version kept with both, the update's the newer: one row, the game's, in its place */
+                app.recent = (GuiRecent){0};
+                assert(!gui_recent_add(&app.recent, row, GUI_SWITCH, true));
+                assert(!gui_recent_add(&app.recent, played, GUI_SWITCH, true));
+                recent_as_games(&app);
+                assert(recent_games(&app) == 1 && !strcmp(app.recent.game[0].path, row));
+                assert(!snx_ini_record(ini, "addons", "0100ABCD12341001"));
+                free(app.recent_file); /* the rest runs with no list again */
+                app.recent_file = NULL;
+                assert(!remove(list));
+                app.recent = recent;
+                recent_changed(&app);
+                free(list);
+                free(got);
+                free(played);
+                free(row);
+            }
+            { /* a game made again from a copy of its dump elsewhere, the first dump gone: the made list has a game
+                 once, by its folder, its source= the copy's; its recent rows, the first dump's and the copy's, are
+                 one, its program's (#924) */
+                char *first = snx_path_join(temporary, "moved first.nsp"),
+                     *second = snx_path_join(temporary, "moved second.nsp"), *folder, *program;
+                GuiRecent recent = app.recent;
+                assert(!snx_write_file(first, "x", 1) && !snx_write_file(second, "x", 1));
+                folder = made_game(&app, first, "moved game");
+                program = gui_folder_game(app.games_dir, "moved game");
+                assert(program);
+                app.recent = (GuiRecent){0};
+                assert(!gui_recent_add(&app.recent, first, GUI_SWITCH, false));
+                recent_as_games(&app);
+                assert(recent_games(&app) == 1 && snx_same_file(app.recent.game[0].path, program));
+                assert(!remove(first) && !snx_record_source(folder, "moved game", second)); /* as its recompile does */
+                assert(!gui_recent_add(&app.recent, second, GUI_SWITCH, false));
+                recent_as_games(&app);
+                assert(app.recent.count == 1 && recent_games(&app) == 1 &&
+                       snx_same_file(app.recent.game[0].path, program));
+                app.recent = recent;
+                recent_changed(&app);
+                assert(!remove(second));
+                free(program);
+                free(second);
+                free(first);
+                made_gone(&app, folder);
+            }
             { /* an update checked: Play runs the update's program (addons_play), so the side panel says how that one was
                  made and whether Play compiles it first, whatever the game's own stamp. The box's Recompile with an
                  update checked remakes the update's program alone: the game's own may still be an older build's */
@@ -9207,10 +9273,94 @@ int main(int argc, char** argv) {
                 free(update);
                 free(game);
             }
+            { /* what R makes is what Play runs: on the recent row of the game's own program, an update checked and
+                 both programs another build's, R recompiles the update's program, as the box's Recompile does; once
+                 it is made, L and Enter on that row play it as it is, with no compile first (#923) */
+                char *game = snx_path_join(own, "0100ABCD12340000.abi"),
+                     *update = snx_path_join(own, "0100ABCD12340000_0100ABCD12340800v0.abi"),
+                     *other = snx_format("%u", (unsigned)SNX_ABI + 1), *row = snx_absolute(base),
+                     *played = snx_absolute(older), *got = snx_path_join(temporary, "recent-r.argv"), *argv;
+                GuiRecent recent = app.recent;
+                int k, shown;
+                assert(row && played && !snx_ini_record(ini, "addons", "0100ABCD12340800v0,0100ABCD12341001"));
+                assert(!snx_write_file(game, other, strlen(other)) && !snx_write_file(update, other, strlen(other)));
+                go_tab(&app, GUI_TAB_GAMES);
+                assert(!gui_recent_add(&app.recent, row, GUI_SWITCH, true));
+                recent_changed(&app);
+                app.browser.page = 0;
+                app.browser.selected = 0;
+                driver_will(got, 0, NULL);
+                key(&app, SDLK_R);
+                assert(gui_queue_running(&app.queue) == 0);
+                argv = ran(&app, 0);
+                { /* the program its -r names made by this build, as the driver leaves it; the other stays */
+                    const char* made = strstr(argv, "-r\n");
+                    char *program, *leaf;
+                    assert(made);
+                    program = snx_strdup(made + 3);
+                    *strchr(program, '\n') = 0;
+                    leaf = program + strlen(program);
+                    while (leaf > program && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
+#ifdef _WIN32
+                    leaf[strlen(leaf) - 4] = 0;
+#endif
+                    stamp_here(own, leaf);
+                    free(program);
+                }
+                free(argv);
+                for (k = 0; k < 2; k++) {
+                    go_tab(&app, GUI_TAB_GAMES);
+                    for (shown = 0;
+                         shown < recent_shown(&app) && strcmp(app.recent.game[recent_index(&app, shown)].path, row);
+                         ++shown) {}
+                    assert(shown < recent_shown(&app));
+                    app.browser.page = 0;
+                    app.browser.selected = shown;
+                    key(&app, k ? SDLK_RETURN : SDLK_L);
+                    assert(app.menu.running && !app.queue.count);
+                    argv = ran(&app, 0);
+                    assert(!has_arg(argv, "-r", NULL) && has_arg(argv, played, NULL));
+                    free(argv);
+                }
+                driver_will(NULL, 0, NULL);
+                stamp_here(own, "0100ABCD12340000");
+                assert(!snx_ini_record(ini, "addons", "0100ABCD12341001"));
+                app.recent = recent;
+                recent_changed(&app);
+                free(got);
+                free(played);
+                free(row);
+                free(other);
+                free(update);
+                free(game);
+            }
             { /* its box's Open Folder: the game's folders a row each, on every system; one not known or not there
-                 greyed, and pressed it says why and opens nothing; Back goes back to the box's rows, at Open Folder */
-                char why[1024], *saves = snx_path_join(dirs[0], "save"), want[2048];
+                 greyed, and pressed it says why and opens nothing; Back goes back to the box's rows, at Open Folder.
+                 Saves is the user playing's where the game's run keeps them: with save_layout=global (the default) in
+                 save/user.<uid>/<title ID> of the data folder the game is in, else the user's (as here), the game's own
+                 save/ while only that is there (an older version's, played there until moved) */
+                char why[1024], want[2048], *saves, *root, *every, *url, uid[33], *user, *mine;
+                char *own_saves = snx_path_join(dirs[0], "save"), *home = snx_path_join(temporary, "saves home");
+                char* data_home = getenv("XDG_DATA_HOME") ? SDL_strdup(getenv("XDG_DATA_HOME")) : NULL;
                 UiRowInfo info;
+                set_env("XDG_DATA_HOME", home); /* a data folder it can make, Linux's; elsewhere the test's home's */
+                /* the data folder of the game's run (the runtime's fs_saves_init), here the user's: the game's folder
+                   is in none; and the user playing */
+                root = snx_menu_dir(own, SNX_USER_DATA);
+                assert(root);
+                snx_users_uid_text(snx_users_selected()->uid, uid);
+                every = snx_path_join(root, "save");
+                user = snx_format("user.%s", uid);
+                mine = snx_path_join(every, user);
+                saves = snx_path_join(mine, "0100ABCD12340000");
+#if defined(SNX_XDG)
+                { /* where this test keeps the user's data folder, and user 1's fixed uid, with no users.ini */
+                    char* xdg = snx_path_join(home, "scarletnx");
+                    assert(!strcmp(root, xdg) && !strcmp(uid, "0123456789abcdeffedcba9876543210"));
+                    free(xdg);
+                }
+#endif
+                assert(!snx_path_exists(every));
                 go_tab(&app, GUI_TAB_GAMES);
                 focus_game(&app, "0100ABCD12340000");
                 key(&app, SDLK_RETURN);
@@ -9222,9 +9372,11 @@ int main(int argc, char** argv) {
                 assert(app.addons_folders_shown && addons_rows(&app) == GUI_GAME_FOLDERS && !app.addons_focus);
                 assert(!app.addons_folders[GUI_FOLDER_DUMP]);                    /* made with no source= */
                 assert(snx_same_file(app.addons_folders[GUI_FOLDER_GAME], own)); /* in the system's separators */
-                free(saves);
-                saves = snx_strdup(app.addons_folders[GUI_FOLDER_SAVES]); /* as the code stored it */
-                assert(!snx_path_exists(saves) && snx_path_within(saves, own));
+                /* the two said when they differ: a system's CI log shows which side it was */
+                if (strcmp(app.addons_folders[GUI_FOLDER_SAVES], saves))
+                    fprintf(stderr, "Saves is %s, not %s (%s %s)\n", app.addons_folders[GUI_FOLDER_SAVES], saves,
+                            own_saves, snx_path_exists(own_saves) ? "there" : "not there");
+                assert(!strcmp(app.addons_folders[GUI_FOLDER_SAVES], saves) && !snx_path_exists(saves));
                 for (i = 0; i < GUI_GAME_FOLDERS; ++i) { /* greyed exactly when it says why */
                     info = (UiRowInfo){0};
                     assert(ui_addons_rows_get_row_info(&app, (size_t)i, 0, &info));
@@ -9251,7 +9403,77 @@ int main(int argc, char** argv) {
                 key(&app, SDLK_ESCAPE);
                 assert(app.addons_shown && !app.addons_folders_shown && app.addons_focus == 13);
                 assert(!app.addons_folders[GUI_FOLDER_GAME]);
+                /* only the game's own save/ there: that one, opened */
+                assert(!snx_mkdirs(own_saves));
+                key(&app, SDLK_RETURN);
+                assert(app.addons_folders_shown && !strcmp(app.addons_folders[GUI_FOLDER_SAVES], own_saves));
+                app.addons_focus = GUI_FOLDER_SAVES;
+                g_opened[0] = 0;
+                key(&app, SDLK_RETURN);
+                url = file_url(own_saves);
+                assert(!strcmp(g_opened, url));
+                free(url);
+                key(&app, SDLK_ESCAPE);
+                /* both there: the data folder's, which the game plays */
+                assert(!snx_mkdirs(saves));
+                key(&app, SDLK_RETURN);
+                assert(app.addons_folders_shown && !strcmp(app.addons_folders[GUI_FOLDER_SAVES], saves));
+                app.addons_focus = GUI_FOLDER_SAVES;
+                g_opened[0] = 0;
+                key(&app, SDLK_RETURN);
+                url = file_url(saves);
+                assert(!strcmp(g_opened, url));
+                free(url);
+                key(&app, SDLK_ESCAPE);
+                /* save_layout=game, read from settings.ini before the Settings are listed (this driver lists no
+                   save_layout): the game's own, the data folder's there all the same */
+                {
+                    GuiSettings listed = app.settings;
+                    char *file = app.settings_file, *ini = snx_path_join(temporary, "saves settings.ini");
+                    app.settings = (GuiSettings){0};
+                    app.settings_file = ini;
+                    for (i = 0; i < 2; ++i) {
+                        assert(
+                            !snx_write_file(ini, i ? "save_layout = game\n" : "save_layout = global\n", i ? 19 : 21));
+                        url = addons_saves(&app, own, "0100ABCD12340000", dirs[0]);
+                        assert(!strcmp(url, i ? own_saves : saves));
+                        free(url);
+                    }
+                    assert(!app.settings.keys); /* nothing listed them meanwhile */
+                    app.settings = listed;
+                    app.settings_file = file;
+                    assert(!snx_remove_tree(ini));
+                    free(ini);
+                }
+                /* a game with no title ID of its own (a homebrew's) keeps its own, which would share one */
+                url = addons_saves(&app, own, "homebrew", dirs[0]);
+                assert(!strcmp(url, own_saves));
+                free(url);
+#ifdef SNX_XDG
+                /* no home to find a data folder by, where the game does not run: not known, and pressed it says so */
+                char* was_home = getenv("HOME") ? SDL_strdup(getenv("HOME")) : NULL;
+                set_env("XDG_DATA_HOME", NULL);
+                set_env("HOME", NULL);
+                key(&app, SDLK_RETURN);
+                assert(app.addons_folders_shown && !app.addons_folders[GUI_FOLDER_SAVES]);
+                app.addons_focus = GUI_FOLDER_SAVES;
+                key(&app, SDLK_RETURN);
+                assert(!strcmp(app.message, "Saves: not known"));
+                key(&app, SDLK_ESCAPE);
+                set_env("HOME", was_home);
+                SDL_free(was_home);
+#endif
+                set_env("XDG_DATA_HOME", data_home);
+                SDL_free(data_home);
+                assert(!snx_remove_tree(own_saves) && !snx_remove_tree(every));
+                if (snx_is_dir(home)) assert(!snx_remove_tree(home)); /* Linux's data folder */
+                free(own_saves);
+                free(home);
                 free(saves);
+                free(mine);
+                free(user);
+                free(every);
+                free(root);
             }
             { /* Clean Cache: greyed with no cache, saying where it looked; with them, asked first with each one's
                  size, Back keeping them; Delete takes both, the saves and the game staying */
@@ -11417,15 +11639,16 @@ int main(int argc, char** argv) {
                 render(&app);
                 shows(&app, "User 2", rgb(app.theme.ink)); /* the focused group's rows beside it */
                 key(&app, SDLK_RETURN);
-                assert(app.form == GUI_FORM_USERS && gui_editor_rows(&app.editor) == 3 &&
+                assert(app.form == GUI_FORM_USERS && gui_editor_rows(&app.editor) == 5 &&
                        !strcmp(app.users_form.plays, "User 1: Aogo"));
                 render(&app);
                 shows(&app, "Current user User 1: Aogo", rgb(app.theme.page)); /* focused: on YoRHa's bar */
                 shows(&app, "Xuji", rgb(app.theme.ink));
                 key(&app, SDLK_RIGHT);
-                assert(setting_is(&app, "user", "2") && !strcmp(app.users_form.plays, "User 2: Xuji") && app.user == 2);
+                assert(setting_is(&app, "user_uid", "5f3c0d9e8a7b41c2963e0f1a2b3c4d5e") &&
+                       !strcmp(app.users_form.plays, "User 2: Xuji") && app.user == 2);
                 key(&app, SDLK_LEFT);
-                assert(setting_is(&app, "user", "1") && app.user == 1);
+                assert(setting_is(&app, "user_uid", "0123456789abcdeffedcba9876543210") && app.user == 1);
                 key(&app, SDLK_DOWN);
                 key(&app, SDLK_RETURN);
                 assert(app.editor.typing);
@@ -11441,9 +11664,11 @@ int main(int argc, char** argv) {
                 free(kept);
                 key(&app, SDLK_RETURN);
                 for (int i = 0; i < 8; ++i) key(&app, SDLK_BACKSPACE);
-                typed(&app, "Ab");
+                typed(&app, "Ab ");
                 key(&app, SDLK_RETURN); /* refused in its dialog, which goes on */
-                assert(!strcmp(app.editor.note, "Ab is not a nickname: nickname 4 to 20 of A-Z a-z 0-9 space . _ -") &&
+                assert(!strcmp(app.editor.note,
+                               "Ab  is not a nickname: nickname of 1 to 32 bytes, no control character, "
+                               "no space at either end") &&
                        !strcmp(app.users_form.nick[0], "Aogo 55") && app.editor.typing);
                 for (int i = 0; i < 8; ++i) key(&app, SDLK_BACKSPACE); /* back as the tests below know it */
                 typed(&app, "Aogo");
@@ -11465,6 +11690,25 @@ int main(int argc, char** argv) {
                     assert(!app.confirm.shown && !strcmp(app.users_form.nick[0], "Aogo") &&
                            !strcmp(app.user_name, "Aogo"));
                 }
+                /* each user's Mii under its nickname, Baguette without one, Left and Right round the Mii database's:
+                   users.ini's mii= written, the head's picture drawn from it (the user has no picture file) */
+                assert(app.users_form.mii[0] == 0 && app.user_mii == 0);
+                key(&app, SDLK_DOWN);
+                assert(app.editor.row == 2);
+                render(&app);
+                shows(&app, "User 1 Mii", rgb(app.theme.page));
+                shows(&app, "Baguette", rgb(app.theme.page));
+                key(&app, SDLK_RIGHT);
+                assert(!strcmp(app.editor.note, "User 1's Mii is Leek Girl now") && g_users[0].mii == 1 &&
+                       app.user_mii == 1);
+                kept = (char*)snx_read_file(ini, &size);
+                assert(kept && strstr(kept, "[user1]\nnickname=Aogo\nmii=Leek Girl\n[user2]"));
+                free(kept);
+                render(&app);
+                shows(&app, "Leek Girl", rgb(app.theme.page));
+                key(&app, SDLK_LEFT);
+                assert(!strcmp(app.editor.note, "User 1's Mii is Baguette now") && g_users[0].mii == 0);
+                key(&app, SDLK_UP);
                 key(&app, SDLK_ESCAPE);
                 assert(app.form == GUI_FORM_SETTINGS && app.editor.row == g);
                 key(&app, SDLK_ESCAPE);
@@ -11581,7 +11825,7 @@ int main(int argc, char** argv) {
             {
                 size_t size;
                 char* kept = (char*)snx_read_file(app.settings_file, &size);
-                assert(kept && strstr(kept, "[User]\nuser=2\n"));
+                assert(kept && strstr(kept, "[User]\nuser_uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e\n"));
                 free(kept);
             }
             /* ESC closes it, as does a click off it, the user kept; Up and Return pick Aogo again, kept as picked */
@@ -11650,15 +11894,58 @@ int main(int argc, char** argv) {
             {
                 size_t size;
                 char* kept = (char*)snx_read_file(app.settings_file, &size);
-                assert(kept && strstr(kept, "[User]\nuser=1\n"));
+                assert(kept && strstr(kept, "[User]\nuser_uid=0123456789abcdeffedcba9876543210\n"));
                 free(kept);
-                /* back to no pick, as the runs below were written for: theirs has no --user */
-                gui_settings_reset(&app.settings, setting_row(&app, "user"));
+                /* back to no pick, as the runs below were written for: theirs has no --user_uid */
+                gui_settings_reset(&app.settings, setting_row(&app, "user_uid"));
                 gui_settings_sync(&app.settings);
                 assert(!gui_settings_save(&app.settings, app.settings_file));
                 kept = (char*)snx_read_file(app.settings_file, &size);
-                assert(!kept || !strstr(kept, "user="));
+                assert(!kept || !strstr(kept, "user_uid="));
                 free(kept);
+                /* settings.ini of an older version, user=2 (the deprecated number) and no user_uid: Xuji plays, and
+                   user_uid is written in its place once, said by the uid and the number, never the nickname, for the
+                   launcher's log takes it and players attach that to public reports; read again, user_uid names them */
+                {
+                    FILE* f = fopen(app.settings_file, "ab");
+                    assert(f && fputs("\n[User]\nuser=2\n", f) >= 0 && !fclose(f));
+                    settings_forget(&app);
+                    app.message[0] = 0;
+                    users_read(&app);
+                    assert(app.user == 2 && !strcmp(app.user_name, "Xuji"));
+                    assert(!strstr(app.message, "Xuji"));
+                    assert(!strcmp(
+                        app.message,
+                        "user=2 is deprecated: user_uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e, [user2]'s, replaces it"));
+                    kept = (char*)snx_read_file(app.settings_file, &size);
+                    assert(kept && strstr(kept, "user_uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e"));
+                    free(kept);
+                    app.message[0] = 0;
+                    users_read(&app);
+                    assert(app.user == 2 && !app.message[0]);
+                    gui_settings_reset(&app.settings, setting_row(&app, "user_uid"));
+                    gui_settings_sync(&app.settings);
+                    assert(!gui_settings_save(&app.settings, app.settings_file));
+                    kept = (char*)snx_read_file(app.settings_file, &size);
+                    if (kept) { /* the unread user=2 out too, as Clean Old Settings takes it */
+                        char *line = kept, *out = kept;
+                        while (*line) {
+                            char* end = strchr(line, '\n');
+                            size_t n = end ? (size_t)(end - line) + 1 : strlen(line);
+                            if (strncmp(line, "user=", 5)) {
+                                memmove(out, line, n);
+                                out += n;
+                            }
+                            line += n;
+                        }
+                        *out = 0;
+                        assert(!snx_write_file(app.settings_file, kept, strlen(kept)));
+                        free(kept);
+                    }
+                    settings_forget(&app);
+                    users_read(&app);
+                    assert(app.user == 1 && settings_of(&app));
+                }
             }
             /* the theme editor's preview is the menu in the theme, drawn on a copy of the app put back after it: the
                box of users opened from the editor's head is not on it, as the pictures the copy made for it would go

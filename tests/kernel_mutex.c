@@ -321,6 +321,38 @@ int main(void) {
               "another value: InvalidState, nobody woken");
     }
 
+    /* WaitIfEqual64 (type 3): the 8-byte-aligned doubleword against all 64 bits of the value, then the wait and the wakes
+       of WaitIfEqual. The console checks the address, its alignment (8 for type 3), then the type */
+    {
+        enum { SNX_KMT_ARB64 = 0x600 };
+        u64 word64 = 0x100000005ull;
+        t = reset(start_prio);
+        memset(g_hle.sync.arbwait, 0, sizeof g_hle.sync.arbwait);
+        snx_st_le64(g_mem + SNX_KMT_ARB64, word64);
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 3, 5, -1) == R_BADSTATE && !g_hle.sync.arbwait[bucket(SNX_KMT_ARB64)],
+              "the low half equal, the high half not: InvalidState");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 3, 0x100000005ll, 0) == R_TIMEOUT, "equal, no timeout: TimedOut");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64 + 4, 3, 0x100000005ll, -1) == R_BADADDR,
+              "4-byte aligned: InvalidAddress");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64 + 4, 2, 1, -1) == 0, "4-byte aligned is enough for WaitIfEqual");
+        memset(g_hle.sync.arbwait, 0, sizeof g_hle.sync.arbwait);
+        CHECK(svc_wait_addr(&t[0], AS_SIZE - 4, 3, 0, -1) == R_BADMEMSTATE,
+              "past the address space: InvalidCurrentMemory");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 4, 0, -1) == R_BADENUM, "type 4: InvalidEnumValue");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64 + 2, 4, 0, -1) == R_BADADDR, "the alignment before the type");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 3, 0x100000005ll, -1) == 0 && t[0].wait_kind == 4 &&
+                  t[0].wait_addr == SNX_KMT_ARB64,
+              "equal: it waits on the address (kind %d)", t[0].wait_kind);
+        CHECK(svc_wait_addr(&t[1], SNX_KMT_ARB64, 3, 0x100000005ll, -1) == 0, "a second waiter");
+        t[0].woken = t[1].woken = 0;
+        CHECK(svc_signal_addr(SNX_KMT_ARB64, 0, 0, 1) == 0 && t[1].woken && !t[0].woken,
+              "a Signal wakes the best waiter (44) of the two");
+        CHECK(svc_signal_addr(SNX_KMT_ARB64, 1, 5, 1) == 0 && t[0].woken && word(SNX_KMT_ARB64) == 6 &&
+                  snx_ld_le64(g_mem + SNX_KMT_ARB64) == 0x100000006ull,
+              "SignalAndIncrementIfEqual on its low word wakes the other: %llx",
+              (unsigned long long)snx_ld_le64(g_mem + SNX_KMT_ARB64));
+    }
+
     printf("%u checks, %u failed\n", checks, failures);
     free(g_mem);
     return failures != 0;

@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The operating system under the runtime. plat_sdl.c implements what SDL does the same way everywhere (the clocks,
-   sleeping, libraries, path queries), and one of plat_posix.c and plat_win32.c the rest (threads, condition variables,
-   the guest's address space, file maps, the crash handler); profiler_win32.c samples threads on Windows, and the host
-   audio output lives in the window backend. Paths are UTF-8 everywhere. */
+   sleeping, libraries, path queries and the host's power state), and one of plat_posix.c and plat_win32.c the rest
+   (threads, condition variables, the guest's address space, file maps, the crash handler); profiler_win32.c samples
+   threads on Windows, and the host audio output lives in the window backend. Paths are UTF-8 everywhere. */
 #ifndef SNX_PLAT_H
 #define SNX_PLAT_H
 #include "common/cpu/aarch64/cpu.h"
@@ -74,6 +74,18 @@ u64 plat_monotonic_ns(void);
 i64 plat_unix_time(void); /* seconds since 1970 UTC */
 i64 plat_tz_offset(void); /* local time minus UTC, in seconds */
 
+/* ---- power */
+/* Whether the host runs from its charger: 1 plugged in, 0 on its battery, -1 when that cannot be read. Call it on the
+   main thread: SDL's power query is not thread safe */
+int plat_power_on_charger(void);
+/* Starts the watcher of the host's power source, where the platform has one: a change marks the flag that
+   plat_power_take_change reports. 0 when watching, -1 when this host has no watcher (the caller polls) */
+int plat_power_watch(void);
+/* 1 when the watcher saw the host's power source change since the last call, and clears it */
+int plat_power_take_change(void);
+/* marks a change from a platform watcher's callback (Android's receiver, Apple's notification) */
+void plat_power_mark_changed(void);
+
 /* ---- the guest's address space */
 /* The host's page, which the reservation is committed, decommitted and aliased in: 4 KiB, the Switch's own, on x86-64
    and most AArch64 systems, 16 KiB on Apple silicon and some Android kernels, 64 KiB on most PowerPC64 and some
@@ -92,6 +104,9 @@ void plat_vm_track(u8* p, u64 size);
    run that fails for want of it (a thread's stack, a mapping). Whether the system told it (Linux, macOS, iOS and
    Windows do) */
 int plat_address_space(u64* mapped, u64* largest_free);
+/* plat_vm_reserve at the host address addr, where the guest's addresses are the host's (NCE): all of the guest's
+   memory is then executable too. POSIX only. NULL when the range is taken, the reason in errno */
+u8* plat_vm_reserve_at(u64 addr, u64 size);
 int plat_vm_commit(u8* p, u64 size);       /* readable and writable; 0, or -1 */
 void plat_vm_decommit(u8* p, u64 size);    /* inaccessible again, and zero when committed next */
 /* Calls cb for each run of pages in [p, p + size) written since they were last scanned, and watches them again.

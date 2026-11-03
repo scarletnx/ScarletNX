@@ -27,7 +27,7 @@ static VkSh *invalidate_fragment(GpuChannel *channel, u64 address)
 	channel->r3d_dirty = ~0u; /* the registers were set directly */
 	mx_draw_state_sync(channel); /* the state as the draw reads it */
 	shader = vk_shader_get(&channel->ds, address, 0, ST_FS, 0, 0, 0, 0,
-			       0, 0, 0, 0, NULL);
+			       0, 0, 0, 0, 0, NULL);
 	vk_unlock();
 	return shader;
 }

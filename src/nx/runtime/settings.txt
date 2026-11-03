@@ -133,11 +133,13 @@ setting Save layout
 table g_display_ini
 setting TV mode
     key docked
-    int 0 1
+    int 0 2
     default 1
     startup
-    words Off|On
-    help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720)
+    set options_tv_mode_set
+    words Off|On|Auto
+    help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720), 2 = Auto: TV mode while the
+    help host is on its charger, handheld mode on its battery. Auto switches while the game runs
 setting Fullscreen
     key fullscreen
     int 0 1
@@ -233,6 +235,17 @@ setting Vulkan Video decode
     help 1 = H.264 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver
     help have an H.264 decode queue. Experimental and untested. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
+setting Vertex input dynamic state
+    key vertex_input_dynamic_state
+    text 16
+    default auto
+    startup
+    words auto=Auto|on=On|off=Off
+    help How a draw gives the GPU its vertex layout. auto = as dynamic state (VK_EXT_vertex_input_dynamic_state) where
+    help the GPU's driver has it, but NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0, which
+    help draw it wrong; on = as dynamic state wherever the driver has it, those too; off = in the pipeline. Dynamic,
+    help one pipeline serves every layout a program is drawn with, so fewer pipelines are made; in the pipeline, each
+    help layout takes one of its own. Any other value stops the game, saying so
 
 table g_performance_ini
 setting FPS limit
@@ -320,6 +333,18 @@ setting Prepare shaders
     help background, used once all are ready. Before starting = a loading screen waits for them and for the shader cache
     help of earlier sessions. Any key, button or tap starts the game at once and the rest is prepared while you play.
     help Esc quits (on Android, back opens the menu)
+setting NCE
+    key nce
+    int 0 1
+    default 1
+    startup
+    recompile
+    words Off|On
+    help On an AArch64 Linux host or Android 10 and later on arm64, 1 = the game's 64-bit code runs natively on the
+    help host's CPU (native code execution), with the words patched that cannot run as they are: SVCs, the TLS
+    help registers, the counter registers, and the exclusives made ordered, as Eden patches them. The recompile then
+    help makes no code ahead of time. 0 = the code is recompiled. Other hosts, 32-bit games and, on Android, games of
+    help the 36-bit address space always recompile, whatever this says
 setting JIT threads
     key jit_threads
     int 0 4
@@ -571,13 +596,13 @@ setting Eden room
     help and a room's password is room_password in users/online.ini
 
 table g_user_ini
-setting User
-    key user
-    int 1 SNX_USERS_MAX
-    default 1
+setting User uid
+    key user_uid
+    text 33
+    default ""
     startup
-    help The console's user the game plays as: 1 to 8, as users/users.ini of the data folder lists them (1, "Player",
-    help without one). A number with no user stops the game
+    help The console's user the game plays as, by its uid: 32 hex digits, as users/users.ini of the data folder lists
+    help them; empty is its [user1] ("Player" without one). A uid no user has stops the game
 
 table g_debug_ini
 setting Log level
@@ -1228,7 +1253,7 @@ setting Unit cache limit
     words No limit|# GB
     help The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile
     help finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either
-    help way the cache always leaves a tenth of its disk free, removing its oldest units for a new one
+    help way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one
 
 # LLVM's own: every pass of its pipelines for -O0 to -Oz, on unless turned off, and each option LLVM's C API sets on the
 # pass builder and the target machine, LLVM's own value until it is set

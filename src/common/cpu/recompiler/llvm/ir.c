@@ -62,19 +62,20 @@ int snx_ir_init(char* error, size_t error_size) {
         snprintf(error, error_size, "LLVM has no code generator for this host");
         return -1;
     }
-    /* x86-64, AArch64, PowerPC64, RISC-V, LoongArch and MIPS64 hosts: the guest's barriers, acquires, releases and
-       exclusives are fences and seq_cst atomics (cpu.h), so its plain accesses need no ordering of their own from the
-       host. POWER is not multi-copy atomic as ARMv8 is, which only a program ordering plain accesses on three threads
-       without barriers could see; its seq_cst fence (hwsync) is cumulative, as DMB is */
+    /* x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 and s390x hosts: the guest's barriers, acquires, releases
+       and exclusives are fences and seq_cst atomics (cpu.h), so its plain accesses need no ordering of their own from
+       the host. POWER is not multi-copy atomic as ARMv8 is, which only a program ordering plain accesses on three
+       threads without barriers could see; its seq_cst fence (hwsync) is cumulative, as DMB is */
     char* triple = LLVMGetDefaultTargetTriple();
     int x86 = !strncmp(triple, "x86_64", 6);
     int arm = !strncmp(triple, "aarch64", 7) || !strncmp(triple, "arm64", 5); /* Apple names AArch64 arm64 */
     int ppc = !strncmp(triple, "powerpc64", 9) || !strncmp(triple, "ppc64", 5);
-    int other = riscv_triple(triple) || loongarch_triple(triple) || !strncmp(triple, "mips64", 6);
+    int other = riscv_triple(triple) || loongarch_triple(triple) || !strncmp(triple, "mips64", 6) ||
+                !strncmp(triple, "s390x", 5);
     if (!x86 && !arm && !ppc && !other)
         snprintf(error, error_size,
-                 "the LLVM backend targets x86-64, AArch64, PowerPC64, RISC-V, LoongArch and MIPS64 hosts, this one "
-                 "is %s",
+                 "the LLVM backend targets x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 and s390x hosts, this "
+                 "one is %s",
                  triple);
     LLVMDisposeMessage(triple);
     if (x86 && !g_ir.domain_off) {
@@ -247,6 +248,14 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
         }
     }
 #endif
+#if defined(__s390x__)
+    /* s390x: z13 at least, as cmake/cross.cmake builds the runtime, where LLVM names no CPU (/proc/cpuinfo has no
+       machine number it knows): its generic CPU calls libgcc for 128-bit shifts */
+    if (!target_triple && (!*cpu || !strcmp(cpu, "generic"))) {
+        LLVMDisposeMessage(cpu);
+        cpu = LLVMCreateMessage("z13");
+    }
+#endif
     /* PowerPC64's ABI. The host's code is the runtime's own, which a triple doesn't settle: big-endian glibc is ELFv1
        on Debian's ports and ELFv2 on Arch POWER, and their LLVMs pick each for powerpc64-*-linux-gnu. Another
        triple's is what Clang picks for it: ELFv2 for little-endian and musl, ELFv1 for big-endian glibc */
@@ -329,6 +338,7 @@ void snx_ir_free(SnxIr* ir) {
     LLVMDisposeModule(ir->mod);
     LLVMContextDispose(ir->ctx);
     LLVMDisposeTargetMachine(ir->tm);
+    ir_summaries_free(ir);
     free(ir);
 }
 
