@@ -36,7 +36,12 @@
      (vk_uma_owning): a driver keeps every import in every submission, and amdgpu takes all their pages again in each
      submission's ioctl, which fails whole (EFAULT, then the device is lost) on pages gone or trapped.
    - A GPU-side write (a front end write, a landed result) on a page that a command not finished yet reads in place is
-     counted (the hazards line of the report). That command can read the new bytes. */
+     counted (the hazards line of the report). That command can read the new bytes.
+   - Write tracking leaves the pages an import holds alone (vk_uma_import_in): amdgpu takes them again, writable, at
+     each submission, which undoes a scan's protection, and the next scan reports them written with no CPU write. What
+     trusted that report kept a guest page's old bytes over the pixels a render target drew there. And a submission
+     after a scan faulted every protected page in again: 16 ms for 32 MiB imported, against 0.3 ms. Write tracking
+     can't tell there (vk_written_since), and its users compare the bytes. */
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,7 +86,8 @@ typedef struct {
     /* the GPU thread's, under vk_lock */
     Imp imp[UMA_MAX]; /* sorted by cpu, none overlapping, nimp of them; their dead flags under lk */
     u32 nimp;
-    Imp* gone; /* dropped from the table, the driver's until the submit that last read them is done: ngone of cap */
+    Imp* gone; /* dropped from the table, the driver's until the submit that last read them is done: ngone of cap; their
+                  entries and count under lk too */
     u32 ngone, capgone;
     VkResult import_result; /* the last import's, for the log */
     u64 align;              /* minImportedHostPointerAlignment */
@@ -91,7 +97,7 @@ typedef struct {
     u64 hits, hit_bytes, misses, imports, import_bytes, import_ns, failed, dropped, quiesces;
     char apart0[UMA_LINE];
     /* mem.c's hook writes these too */
-    PMutex lk;         /* a leaf, under vk_lock or mem.c's lock: the dead flags and the table */
+    PMutex lk;         /* a leaf, under vk_lock or mem.c's lock: the dead flags, and the imports for write tracking */
     int any_dead;      /* under lk */
     Fail fail[FAIL_N]; /* under lk */
     char apart1[UMA_LINE];
@@ -186,16 +192,21 @@ static void read_done(u64 sub) {
 static void imp_destroy(const Imp* m) {
     vkDestroyBuffer(g_vk.dev, m->buf, NULL);
     vkFreeMemory(g_vk.dev, m->mem, NULL);
+    vk_mem_changed(m->cpu, m->size); /* no scan watched its pages: what the CPU wrote there meanwhile counts */
+}
+/* dropped import i destroyed, then out of the list, which write tracking reads (vk_lock held) */
+static void gone_out(u32 i) {
+    imp_destroy(&g_uma.gone[i]);
+    pm_lock(&g_uma.lk);
+    g_uma.gone[i] = g_uma.gone[--g_uma.ngone];
+    pm_unlock(&g_uma.lk);
 }
 /* the dropped imports whose last reader is done are destroyed (vk_lock held) */
 static void gone_reap(void) {
     u64 submitted, done;
     vk_submit_progress(&submitted, &done);
     for (u32 i = g_uma.ngone; i-- > 0;)
-        if (g_uma.gone[i].sub <= done) {
-            imp_destroy(&g_uma.gone[i]);
-            g_uma.gone[i] = g_uma.gone[--g_uma.ngone];
-        }
+        if (g_uma.gone[i].sub <= done) gone_out(i);
 }
 /* the dropped imports over guest memory [lo, hi) are destroyed now, once their last reader is done: their pages change
    or are trapped next (vk_lock held) */
@@ -203,14 +214,14 @@ static void gone_kill(u64 lo, u64 hi) {
     for (u32 i = g_uma.ngone; i-- > 0;)
         if (g_uma.gone[i].cpu < hi && lo < g_uma.gone[i].cpu + g_uma.gone[i].size) {
             read_done(g_uma.gone[i].sub);
-            imp_destroy(&g_uma.gone[i]);
-            g_uma.gone[i] = g_uma.gone[--g_uma.ngone];
+            gone_out(i);
         }
 }
 /* the import at i goes from the table, with its pages as they are: destroyed once the submit that last read it is done
    (gone_reap), or as soon as its pages change or are trapped (gone_kill), as the driver keeps it in every submission
    until then (vk_lock held). Never a wait here: the submit may be the one being recorded, a draw half set up */
 static void imp_drop(u32 i) {
+    pm_lock(&g_uma.lk);
     if (g_uma.ngone == g_uma.capgone) {
         u32 cap = g_uma.capgone ? 2 * g_uma.capgone : 64;
         Imp* g = realloc(g_uma.gone, sizeof *g * cap);
@@ -220,7 +231,6 @@ static void imp_drop(u32 i) {
     }
     g_uma.gone[g_uma.ngone++] = g_uma.imp[i];
     g_uma.dropped++;
-    pm_lock(&g_uma.lk);
     memmove(&g_uma.imp[i], &g_uma.imp[i + 1], sizeof *g_uma.imp * (size_t)(g_uma.nimp - i - 1));
     g_uma.nimp--;
     pm_unlock(&g_uma.lk);
@@ -243,13 +253,12 @@ static void pages_replaced(u64 a, u64 size) {
 /* the import at i goes from the table and is destroyed now, once the submits that read it are done (vk_lock held),
    not when the frame's work is: the driver keeps it in every submission until then */
 static void imp_kill(u32 i) {
-    Imp d = g_uma.imp[i];
-    read_done(d.sub);
+    read_done(g_uma.imp[i].sub);
+    imp_destroy(&g_uma.imp[i]); /* before it leaves the table: write tracking leaves its pages alone until then */
     pm_lock(&g_uma.lk);
     memmove(&g_uma.imp[i], &g_uma.imp[i + 1], sizeof *g_uma.imp * (size_t)(g_uma.nimp - i - 1));
     g_uma.nimp--;
     pm_unlock(&g_uma.lk);
-    imp_destroy(&d);
     g_uma.dropped++;
 }
 /* the dead ones go from the driver (vk_lock held) */
@@ -551,6 +560,28 @@ void vk_uma_mapping_begin(u64 cpu, u64 size) {
 /* they changed: the imports over pages that are other pages now go before anything else is submitted */
 void vk_uma_mapping_end(void) {
     if (vk_uma()) drop_dead();
+}
+u64 vk_uma_import_in(u64 cpu, u64 end, u64* hi) {
+    u64 lo = end;
+    *hi = end;
+    if (!vk_uma() || cpu >= end) return end;
+    pm_lock(&g_uma.lk);
+    u32 i = imp_find(cpu);
+    if (i < g_uma.nimp && g_uma.imp[i].cpu < end) {
+        lo = g_uma.imp[i].cpu > cpu ? g_uma.imp[i].cpu : cpu;
+        *hi = g_uma.imp[i].cpu + g_uma.imp[i].size;
+    }
+    for (u32 k = 0; k < g_uma.ngone; k++) {
+        const Imp* g = &g_uma.gone[k];
+        u64 at = g->cpu > cpu ? g->cpu : cpu;
+        if (g->cpu < end && cpu < g->cpu + g->size && at < lo) {
+            lo = at;
+            *hi = g->cpu + g->size;
+        }
+    }
+    pm_unlock(&g_uma.lk);
+    if (*hi > end) *hi = end;
+    return lo;
 }
 u32 vk_uma_imports(u64 cpu, u64 size) {
     u32 n = 0;

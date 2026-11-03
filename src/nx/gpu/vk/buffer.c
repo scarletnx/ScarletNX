@@ -1284,11 +1284,23 @@ static int ww_claim(u64 l) {
     u8 free = 0;
     return __atomic_compare_exchange_n(&g_wleaf_busy[l], &free, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
 }
+/* guest memory [a, e) scanned, but for the pages an import of unified memory holds: the driver takes them again at
+   each submission, writable, which a scan would report as the CPU's writes, and after a scan protected them it faults
+   every one of them in again (uma.c). vk_written_since can't tell there */
+static int ww_scan_free(u64 a, u64 e) {
+    int r = 0;
+    while (a < e && !r) {
+        u64 hi, lo = vk_uma_import_in(a, e, &hi);
+        if (lo > a) r = plat_ww_scan(g_mem + a, lo - a, ww_note);
+        a = hi;
+    }
+    return r;
+}
 /* scans leaves [lo, hi], claimed by the caller, in the epoch seen - 1, and ends the claims: 0, or -1 when tracking
    failed */
 static int ww_scan_leaves(u64 lo, u64 hi, u32 seen, WwStage* st) {
     t_buffer.wstage = st;
-    int r = plat_ww_scan(g_mem + (lo << WW_LEAF_SHIFT), (hi - lo + 1) << WW_LEAF_SHIFT, ww_note);
+    int r = ww_scan_free(lo << WW_LEAF_SHIFT, (hi + 1) << WW_LEAF_SHIFT);
     pm_lock(&g_wres_lk);
     int n = g_wres_n;
     for (int i = 0; i < st->n; i++)
@@ -1486,7 +1498,8 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
         g_ww = 0;
         return -1;
     }
-    u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, l;
+    u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, l, end;
+    if (vk_uma_import_in(o, o + len, &end) < o + len) return -1; /* pages no scan watches (ww_scan_free) */
     u32 seen = vk_ww_epoch() + 1;
     for (l = lo; l <= hi && (i32)(g_wleaf_seen[l] - seen) >= 0; l++) {}
     /* the clock moves only when this call marks pages, in ww_take_changed and ww_take_scanned when they take ranges,

@@ -2474,7 +2474,8 @@ static int check_rt_overlap(void) {
    pages the guest unmaps leaves the driver with the unmap, once the commands that read it ran, and before anything else
    is submitted, while an import elsewhere stays the same one; the import over pages the GPU owns next leaves it before
    they are trapped; and so does one dropped from the table that a recorded command still reads. A driver that takes
-   no pages again (lavapipe) shows it in the imports held */
+   no pages again (lavapipe) shows it in the imports held. Write tracking can't tell what was written on an imported
+   page */
 #define UMA_R  (HEAP_BASE + 0x1000000) /* mapped and unmapped here */
 #define UMA_GR 0x4d0000000ull
 #define UMA_E  (HEAP_BASE + 0x1200000) /* another import, two windows away */
@@ -2550,10 +2551,30 @@ static int check_uma_page_changes(void) {
     vk_readback_ready();
     CHECK(vk_uma_imports(UMA_R, 0x10000) == 0);
     for (u32 i = 0; i < 256; i++) CHECK(result[i] == 0x66);
+    /* write tracking leaves an imported page alone: amdgpu takes it again, writable, at each submission, which a scan
+       reports as a CPU write. It can't tell there, and still tells the pages beside it, whose memset above is taken in
+       before the baseline: a write counts from the scan that finds it */
     vk_unlock();
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    (void)vk_written_since(GP(UMA_E) + 0x8000, 0x1000, 0);
+    u32 before = vk_ww_now();
+    CHECK(vk_uma_imports(UMA_E, 0x1000) >= 1); /* the import made since, and the dropped one until a present reaps it */
+    rec_CmdCopyBuffer(vk_cmd(), e, rb, 1, &c[2]);
+    vk_finish();
+    vk_unlock();
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    int imported = vk_written_since(GP(UMA_E), 0x1000, before),
+        beside = vk_written_since(GP(UMA_E) + 0x8000, 0x1000, before);
+    vk_unlock();
+    if (imported != -1 || beside == 1)
+        fprintf(stderr, "write tracking since the baseline: %d on the imported page, %d beside it\n", imported, beside);
+    CHECK(imported == -1 && beside != 1);
     CHECK(mem_unmap(UMA_E, 0x10000) == 0);
     printf("in place: an unmapped import leaves the driver with the unmap, one elsewhere stays, one over pages the GPU "
-           "owns next goes before the trap (traps %s), and one dropped goes with an unmap\n",
+           "owns next goes before the trap (traps %s), one dropped goes with an unmap, and write tracking leaves an "
+           "imported page alone\n",
            own_traps() ? "on" : "off: nothing to check there");
     return 0;
 }
