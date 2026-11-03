@@ -30,6 +30,7 @@ extern const HleSymbol hle_dl[];
 extern const HleSymbol hle_sles[];
 extern const HleSymbol hle_media[];
 extern const HleSymbol hle_android[];
+extern const HleSymbol hle_egl[];
 /* the native window's guest address and its size in pixels (the buffers' when the guest set them) */
 uint64_t hle_android_window(int* width, int* height);
 /* bionic's functions that are guest code (hle_code.c): written into the code window once, after bridge_init */

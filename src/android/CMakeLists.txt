@@ -71,8 +71,11 @@ endif()
 add_library(snx_android_bridge STATIC bridge/bridge.c bridge/linker.c bridge/hle.c bridge/hle_libc.c bridge/args.c
                                       bridge/native.c bridge/hle_posix.c bridge/hle_thread.c bridge/hle_dl.c bridge/hle_code.c
                                       bridge/hle_sles.c bridge/hle_media.c bridge/jni.c
-                                      bridge/hle_android.c)
-target_link_libraries(snx_android_bridge PUBLIC scarletnx-common scarletnx-recompiler)
+                                      bridge/hle_android.c bridge/hle_vulkan.c
+                                      bridge/hle_egl.c)
+target_link_libraries(snx_android_bridge PUBLIC scarletnx-common scarletnx-recompiler SDL3::SDL3 Vulkan::Headers)
+target_include_directories(snx_android_bridge PUBLIC "${volk_SOURCE_DIR}")
+target_compile_definitions(snx_android_bridge PRIVATE VK_NO_PROTOTYPES)
 target_include_directories(snx_android_bridge SYSTEM PUBLIC "${SNX_JAVA_HOME}/include"
                            "${SNX_JAVA_HOME}/include/${snx_jni_system}")
 set_target_properties(snx_android_bridge PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)

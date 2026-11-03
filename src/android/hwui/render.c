@@ -6,6 +6,8 @@
    drawn directly. A path, a stroke and glyphs are drawn by stencil then cover: their triangles count the winding
    in the stencil, then a rectangle over their bounds draws where it is not zero and clears it again */
 #include "android/hwui/render.h"
+#include "android/bridge/hle.h"
+#include "android/bridge/hle_vulkan.h"
 #include "android/hwui/draw_frag_spv.h"
 #include "android/hwui/draw_vert_spv.h"
 #include "android/hwui/path.h"
@@ -110,6 +112,7 @@ static struct {
     VkFormat color_format, stencil_format;
     VkSampleCountFlagBits samples;
     bool up;
+    bool yielded; /* the guest's Vulkan owns the window: this renderer draws nothing more */
 
     /* the targets: the multisampled color and stencil, and the image a frame goes to without a window */
     VkExtent2D extent;
@@ -1619,6 +1622,7 @@ static void draw_bitmap_pass(VkCommandBuffer cb, const Pass* p) {
 
 /* the frame's passes and draws recorded and submitted, and presented to the window */
 static void render(void) {
+    if (r.yielded) return;
     VkExtent2D want = snx_vk_window_extent(&r.host, (VkExtent2D){(uint32_t)r.width, (uint32_t)r.height});
     if (want.width != r.extent.width || want.height != r.extent.height || (r.host.surface && !r.swap.swapchain))
         if (!make_targets(want)) return;
@@ -1983,6 +1987,30 @@ bool android_render_register(JNIEnv* env) {
         {(char*)"nativeHasWindow", (char*)"()Z", (void*)native_has_window},
     };
     return android_jvm_register(env, "snx/android/ui/Window", methods, (int)(sizeof methods / sizeof *methods));
+}
+
+/* the SDL window for the guest's Vulkan surface (hle_vulkan.c), opened at the native window's size if the app drew
+   nothing yet: NULL without a display */
+static void* render_window(void) {
+    if (getenv("SNX_ANDROID_HEADLESS")) return NULL;
+    if (!r.up) {
+        int w, h;
+        hle_android_window(&w, &h);
+        start(w > 0 ? w : 600, h > 0 ? h : 1066, "ScarletNX Android");
+    }
+    return r.host.window;
+}
+/* the window given up: a window has one swapchain at a time, and the guest's takes it */
+static void render_yield(void) {
+    if (!r.up || r.yielded) return;
+    vkDeviceWaitIdle(r.device);
+    free_targets();
+    snx_vk_swapchain_free(r.device, &r.swap);
+    r.yielded = true;
+}
+const HleWindowHost* android_render_host(void) {
+    static const HleWindowHost host = {render_window, render_yield};
+    return &host;
 }
 
 void android_render_close(void) {
