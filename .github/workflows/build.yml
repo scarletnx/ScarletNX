@@ -27,13 +27,14 @@ on:
 permissions:
   contents: read
 
-# a push to a pull request cancels that pull request's build still running: only its newest commit is built. main and
-# the tags build every commit
+# a push to a pull request cancels that pull request's build still running, and a push to main main's: only the newest
+# commit is built, and publish.yml publishes the newest that built everywhere. A tag and a run by hand build every time
 concurrency:
   group: >-
     build-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number)
-    || format('run-{0}', github.run_id) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    || github.event_name == 'push' && github.ref == 'refs/heads/main' && 'main' || format('run-{0}', github.run_id) }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 # Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
 # recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
