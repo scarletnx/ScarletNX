@@ -1342,7 +1342,7 @@ static int mii_name_clean(const u8* c) {
         n[i] = ch >= 'A' && ch <= 'Z' ? (char)(ch - 'A' + 'a') : ch;
     }
     for (i = 0; n[i]; i++)
-        for (len = 4; len <= 7 && n[i + len - 1]; len++) {
+        for (len = 4; len <= 7 && i + len <= 10 && n[i + len - 1]; len++) { /* within its ten letters */
             u32 h = 0x811c9dc5u;
             for (j = 0; j < len; j++) h = (h ^ (u8)n[i + j]) * 0x01000193u;
             for (k = 0; k < 6; k++)
