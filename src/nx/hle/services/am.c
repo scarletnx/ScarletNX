@@ -230,6 +230,11 @@ static int nn_am_service_IApplicationProxy_GetApplicationFunctions(SvcObj* self,
     *functions = nn_am_service_IApplicationFunctions_new();
     R_SUCCEED();
 }
+static int nn_am_service_IApplicationProxy_GetPerformanceFunctions(SvcObj* self, SvcObj** functions) {
+    (void)self;
+    *functions = nn_am_service_IPerformanceFunctions_new();
+    R_SUCCEED();
+}
 static int nn_am_service_IApplicationProxy_GetDebugFunctions(SvcObj* self, SvcObj** functions) {
     (void)self;
     *functions = nn_am_service_IDebugFunctions_new();
