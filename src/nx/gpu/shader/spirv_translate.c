@@ -2734,15 +2734,14 @@ static int supported(u64 w, int op) {
                    ((addr == 0x60 || addr == 0x2f4 || addr == 0x2f8 || addr == 0x2fc) && count == 1) ||
                    (addr == 0x2f0 && count <= 2);
         }
-        /* AST also takes the viewport mask (0x3a0) from RZ: a zero mask, no broadcast. A mask from a register may
-           ask for one, which the translator has no form for */
+        /* AST also takes the viewport mask (0x3a0): what it holds is checked over the program (to_spirv) */
         case O_AST: {
             u32 addr = B(w, 20, 10), count = B(w, 47, 2) + 1;
             if (B(w, 8, 8) != 255 || !(B(w, 0, 8) + count <= 255 || (B(w, 0, 8) == 255 && count == 1))) return 0;
             if (B(w, 31, 1)) return addr + count * 4 <= 0x200;
             return ((addr == 0x64 || addr == 0x68 || addr == 0x6c) && count == 1) ||
                    (addr >= 0x70 && addr + count * 4 <= 0x80) || (addr >= 0x80 && addr + count * 4 <= 0x280) ||
-                   (addr >= 0x2c0 && addr + count * 4 <= 0x2e0) || (addr == 0x3a0 && count == 1 && B(w, 0, 8) == 255);
+                   (addr >= 0x2c0 && addr + count * 4 <= 0x2e0) || (addr == 0x3a0 && count == 1);
         }
         /* OUT emits and ends geometry primitives on the stream its third operand names */
         case O_OUT_R:
@@ -3794,7 +3793,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     u8 outputs_used[32] = {0};
     int indexed_store = 0;
     int position_used = 0, layer_output_used = 0, layer_input_used = 0, point_size_used = 0;
-    int viewport_used = 0;
+    int viewport_used = 0, viewport_mask_one = 0; /* and a viewport mask of viewport 0 written */
     /* the stages between the vertex and fragment ones: their input arrays' length (32 for tessellation, the input
        primitive's vertices for geometry), the control program's output vertices, and what they read and write */
     int between = stage == ST_TCS || stage == ST_TES || stage == ST_GS;
@@ -4081,9 +4080,26 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 else if (location >= 0x2c0 && location < 0x2e0) {
                     u32 bit = 1u << ((location - 0x2c0) / 4);
                     if (si->clip_enable & bit) clip_used |= bit;
-                } else if (location == 0x3a0)
-                    continue; /* a zero viewport mask: no output (supported()) */
-                else if (location >= 0x80)
+                } else if (location == 0x3a0) {
+                    /* the viewport mask, RZ or a register holding a constant (one game's culling program writes 0 or a
+                       MOV32I's 1 and emits no vertex): viewport 0 alone or none, no broadcast, which the primitive's
+                       own viewport (0 where the program writes no index) already is */
+                    u32 mask = 0;
+                    if (d != 255 && !direct_track_const(insn, n, i, d, &mask, 0)) {
+                        si->unsupported = 1;
+                        snprintf(si->first_unsupported, sizeof si->first_unsupported,
+                                 "viewport mask R%u at %x: no constant", d, i * 8);
+                        return NULL;
+                    }
+                    if (mask > 1) {
+                        si->unsupported = 1;
+                        snprintf(si->first_unsupported, sizeof si->first_unsupported,
+                                 "viewport mask %#x at %x: a broadcast", mask, i * 8);
+                        return NULL;
+                    }
+                    viewport_mask_one |= mask;
+                    continue;
+                } else if (location >= 0x80)
                     outputs_used[(location - 0x80) >> 4] = 1;
                 else
                     position_used = 1;
@@ -5005,6 +5021,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
        program's input and output primitives */
     if (stage == ST_TCS && (!out_vertices || out_vertices > 32))
         return direct_reject_with_buffers(si, "patch output vertices", pop_targets, gb_at);
+    /* a mask of viewport 0 takes the place of an index the program writes, which the translation, keeping the
+       index, wouldn't */
+    if (viewport_mask_one && viewport_used)
+        return direct_reject_with_buffers(si, "viewport mask 1 beside a viewport index: viewport 0 or the index's",
+                                          pop_targets, gb_at);
     if (viewport_used && (stage == ST_TCS || !(g_shader_viewport_index & (stage == ST_GS ? 2 : 1))))
         return direct_reject_with_buffers(si, "viewport index output unavailable", pop_targets, gb_at);
     if (stage == ST_TCS && (clip_used || layer_output_used || point_size_used))
@@ -6058,8 +6079,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                                        reg_read_as(c, d + k, i32_type));
                     continue;
                 }
-                /* a zero viewport mask (supported() takes RZ alone) is no broadcast: the primitive keeps the viewport
-                   its index selects, as Eden and Ryujinx draw it on hosts without NV_viewport_array2 */
+                /* the viewport mask, 0 or viewport 0 alone (the prescan's check): no broadcast, the primitive keeps the
+                   viewport its index selects, as Eden and Ryujinx draw it on hosts without NV_viewport_array2 */
                 if (location == 0x3a0) continue;
                 if (location >= 0x2c0) {
                     u32 index = (location - 0x2c0) / 4;
