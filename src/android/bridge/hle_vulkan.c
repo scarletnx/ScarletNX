@@ -118,6 +118,9 @@ static void physical_device_properties2(CPU* c, void* data);
 static void get_proc_addr(CPU* c, void* data);
 static void debug_messenger(CPU* c, void* data);
 static void debug_messenger_destroy(CPU* c, void* data);
+static void surface_capabilities(CPU* c, void* data);
+static void surface_capabilities2(CPU* c, void* data);
+static void queue_present(CPU* c, void* data);
 
 static const struct {
     const char* name;
@@ -135,6 +138,9 @@ static const struct {
     {"vkCreateDebugReportCallbackEXT", debug_messenger},
     {"vkDestroyDebugUtilsMessengerEXT", debug_messenger_destroy},
     {"vkDestroyDebugReportCallbackEXT", debug_messenger_destroy},
+    {"vkGetPhysicalDeviceSurfaceCapabilitiesKHR", surface_capabilities},
+    {"vkGetPhysicalDeviceSurfaceCapabilities2KHR", surface_capabilities2},
+    {"vkQueuePresentKHR", queue_present},
 };
 
 uint64_t hle_vulkan_symbol(const char* name) {
@@ -318,6 +324,52 @@ static void create_android_surface(CPU* c, void* data) {
         if (make) r = make(instance, &info, NULL, &surface);
     }
     if (r == VK_SUCCESS) memcpy(PTR(3), &surface, sizeof surface);
+    X(0) = (uint64_t)(int64_t)r;
+}
+
+/* An Android surface's current extent is its window's buffers, always: engines size the swapchain by it. A host
+   surface that leaves the size to the swapchain (Wayland's, a headless one: 0xFFFFFFFF) gets the native window's, in
+   the surface's bounds */
+static void window_extent(VkSurfaceCapabilitiesKHR* caps) {
+    if (caps->currentExtent.width != UINT32_MAX) return;
+    int width = 0, height = 0;
+    hle_android_window(&width, &height);
+    if (width <= 0 || height <= 0) return;
+    uint32_t w = (uint32_t)width, h = (uint32_t)height;
+    if (w < caps->minImageExtent.width) w = caps->minImageExtent.width;
+    if (w > caps->maxImageExtent.width) w = caps->maxImageExtent.width;
+    if (h < caps->minImageExtent.height) h = caps->minImageExtent.height;
+    if (h > caps->maxImageExtent.height) h = caps->maxImageExtent.height;
+    caps->currentExtent = (VkExtent2D){w, h};
+}
+static void surface_capabilities(CPU* c, void* data) {
+    (void)data;
+    PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR get = (PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)
+        vkGetInstanceProcAddr(v.instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+    VkResult r = get ? get((VkPhysicalDevice)(uintptr_t)X(0), (VkSurfaceKHR)(uintptr_t)X(1), PTR(2))
+                     : VK_ERROR_EXTENSION_NOT_PRESENT;
+    if (r == VK_SUCCESS) window_extent(PTR(2));
+    X(0) = (uint64_t)(int64_t)r;
+}
+static void surface_capabilities2(CPU* c, void* data) {
+    (void)data;
+    PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR get = (PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR)
+        vkGetInstanceProcAddr(v.instance, "vkGetPhysicalDeviceSurfaceCapabilities2KHR");
+    VkResult r = get ? get((VkPhysicalDevice)(uintptr_t)X(0), PTR(1), PTR(2)) : VK_ERROR_EXTENSION_NOT_PRESENT;
+    if (r == VK_SUCCESS) window_extent(&((VkSurfaceCapabilities2KHR*)PTR(2))->surfaceCapabilities);
+    X(0) = (uint64_t)(int64_t)r;
+}
+
+/* vkQueuePresentKHR, counted for SNX_ANDROID_SAMPLE's lines (hle_vulkan_presents) */
+static uint64_t presents;
+uint64_t hle_vulkan_presents(void) {
+    return __atomic_load_n(&presents, __ATOMIC_RELAXED);
+}
+static void queue_present(CPU* c, void* data) {
+    (void)data;
+    PFN_vkQueuePresentKHR present = (PFN_vkQueuePresentKHR)vkGetInstanceProcAddr(v.instance, "vkQueuePresentKHR");
+    VkResult r = present ? present((VkQueue)(uintptr_t)X(0), PTR(1)) : VK_ERROR_EXTENSION_NOT_PRESENT;
+    __atomic_add_fetch(&presents, 1, __ATOMIC_RELAXED);
     X(0) = (uint64_t)(int64_t)r;
 }
 

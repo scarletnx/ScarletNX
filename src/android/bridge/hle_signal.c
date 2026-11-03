@@ -4,6 +4,7 @@
    signals into the bridge's handler loop, and bionic's functions over the kernel's system calls */
 #define _GNU_SOURCE
 #include "android/bridge/hle_signal.h"
+#include "android/bridge/hle_vulkan.h"
 #include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
@@ -162,6 +163,16 @@ static void* sampler(void* unused) {
     (void)unused;
     for (;;) {
         sleep(5);
+        fprintf(stderr, "sample: %llu Vulkan presents\n", (unsigned long long)hle_vulkan_presents());
+        /* each thread in guest code writes its pc at its next poll (a backward branch): the pc of a loop, not of its
+           last call. The poll delivers no signal, as none is pending */
+        gnu_mutex_lock(&s.kernel.lock);
+        for (size_t i = 0; i < s.kernel.thread_count; i++) {
+            GuestSignals* t = s.kernel.threads[i]->runtime;
+            __atomic_store_n(&t->cpu->poll, 1, __ATOMIC_RELAXED);
+        }
+        gnu_mutex_unlock(&s.kernel.lock);
+        usleep(20000);
         gnu_mutex_lock(&s.kernel.lock);
         for (size_t i = 0; i < s.kernel.thread_count; i++) {
             GuestSignals* t = s.kernel.threads[i]->runtime;
