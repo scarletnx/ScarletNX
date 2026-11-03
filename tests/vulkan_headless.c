@@ -2349,6 +2349,45 @@ static int check_stream_epoch(void) {
    128 to 159 of every row). The newer one's pixels are on top in a DMA copy of it, and in guest memory once both are
    written back, together or the newer one alone. A target reaching past a copy's range is one whose memory a smaller
    surface took over: the copy takes what the program wrote there since */
+/* A texture whose first level a render target holds, with a level of its own after it, takes the target's pixels in
+   again after a clear and after a 2D blit onto the target: each moves the count tex_take_drawn passes over a texture
+   by (vk_rt_take_gen), which a bind with nothing changed leaves alone */
+static int check_take_after_writes(void) {
+    const u64 gva = 0x4C0000000ull, cpu = HEAP_BASE + 0x500000, src = gva + 0x4000;
+    const u32 rgba8 = 0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16;
+    /* 16x16, blocks one GOB high, levels 0 and 1: level 0 is the target's 1 KiB */
+    const u32 tic[8] = {rgba8, (u32)gva, (u32)(gva >> 32) | 3u << 21, 1u << 28, 15 | 1u << 23, 15, 0, 1u << 4};
+    static const u8 red[4] = {255, 0, 0, 255}, blue[4] = {0, 0, 255, 255};
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    u8 px[4];
+    CHECK(ch);
+    gmmu_map(gva, cpu, 0x10000);
+    rt_clear(ch, gva, 16, 16, 0, 0);
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    CHECK(t && !t->is_rt && t->levels == 2);
+    CHECK(!read_pixel0(t, px) && !memcmp(px, red, 4));
+    u64 gen = vk_rt_take_gen();
+    CHECK(vk_tex_from_tic(tic) == t && vk_rt_take_gen() == gen); /* nothing changed: passed over */
+    vk_unlock();
+    rt_clear(ch, gva, 16, 16, 0, 1); /* a clear */
+    CHECK(vk_rt_take_gen() != gen);
+    vk_lock();
+    CHECK(vk_tex_from_tic(tic) == t && !read_pixel0(t, px) && !memcmp(px, blue, 4));
+    vk_unlock();
+    rt_clear(ch, src, 16, 16, 0, 0); /* a 2D blit onto the target from a red one */
+    Surf2D from = {.format = 0xD5, .depth = 1, .width = 16, .height = 16, .addr = src}, onto = from;
+    onto.addr = gva;
+    gen = vk_rt_take_gen();
+    CHECK(g_renderer->blit(&from, &onto, 0, 0, 16, 16, 0, 0, 1, 1));
+    CHECK(vk_rt_take_gen() != gen);
+    vk_lock();
+    CHECK(vk_tex_from_tic(tic) == t && !read_pixel0(t, px) && !memcmp(px, red, 4));
+    vk_unlock();
+    puts("drawn targets into textures: taken again after a clear and a blit onto the target, passed over between");
+    free(ch);
+    return 0;
+}
 static int check_rt_overlap(void) {
     GpuChannel* ch = calloc(1, sizeof *ch);
     GpuDmaOp o;
@@ -2811,6 +2850,7 @@ int main(int argc, char** argv) {
     CHECK(!check_resident_volume());
     CHECK(!check_dma_untracked_source());
     CHECK(!check_blit());
+    CHECK(!check_take_after_writes());
     CHECK(!check_uma_in_flight());
     CHECK(!check_uma_trap_ranges());
     CHECK(!check_uma_lookup_then_submit());
