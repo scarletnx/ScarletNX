@@ -24,7 +24,7 @@
 
 /* dist/apple/Frontend.swift. window is the SDL window's UIWindow or NSWindow; done gets the path picked, NULL for none */
 extern bool snx_apple_pick(void* window, bool folder, void (*done)(void* data, const char* path), void* data);
-/* plat_sdl.c: the runtime's power watcher marks a change, which its main thread takes */
+/* plat_posix.c: the runtime's power watcher marks a change, which its main thread takes */
 extern void plat_power_mark_changed(void);
 /* plat_posix.c's weak watcher entry, which this file fills on iOS */
 int snx_apple_power_watch(void);
