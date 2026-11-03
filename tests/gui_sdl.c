@@ -9207,6 +9207,67 @@ int main(int argc, char** argv) {
                 free(update);
                 free(game);
             }
+            { /* what R makes is what Play runs: on the recent row of the game's own program, an update checked and
+                 both programs another build's, R recompiles the update's program, as the box's Recompile does; once
+                 it is made, L and Enter on that row play it as it is, with no compile first (#923) */
+                char *game = snx_path_join(own, "0100ABCD12340000.abi"),
+                     *update = snx_path_join(own, "0100ABCD12340000_0100ABCD12340800v0.abi"),
+                     *other = snx_format("%u", (unsigned)SNX_ABI + 1), *row = snx_absolute(base),
+                     *played = snx_absolute(older), *got = snx_path_join(temporary, "recent-r.argv"), *argv;
+                GuiRecent recent = app.recent;
+                int k, shown;
+                assert(row && played && !snx_ini_record(ini, "addons", "0100ABCD12340800v0,0100ABCD12341001"));
+                assert(!snx_write_file(game, other, strlen(other)) && !snx_write_file(update, other, strlen(other)));
+                go_tab(&app, GUI_TAB_GAMES);
+                assert(!gui_recent_add(&app.recent, row, GUI_SWITCH, true));
+                recent_changed(&app);
+                app.browser.page = 0;
+                app.browser.selected = 0;
+                driver_will(got, 0, NULL);
+                key(&app, SDLK_R);
+                assert(gui_queue_running(&app.queue) == 0);
+                argv = ran(&app, 0);
+                { /* the program its -r names made by this build, as the driver leaves it; the other stays */
+                    const char* made = strstr(argv, "-r\n");
+                    char *program, *leaf;
+                    assert(made);
+                    program = snx_strdup(made + 3);
+                    *strchr(program, '\n') = 0;
+                    leaf = program + strlen(program);
+                    while (leaf > program && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
+#ifdef _WIN32
+                    leaf[strlen(leaf) - 4] = 0;
+#endif
+                    stamp_here(own, leaf);
+                    free(program);
+                }
+                free(argv);
+                for (k = 0; k < 2; k++) {
+                    go_tab(&app, GUI_TAB_GAMES);
+                    for (shown = 0;
+                         shown < recent_shown(&app) && strcmp(app.recent.game[recent_index(&app, shown)].path, row);
+                         ++shown) {}
+                    assert(shown < recent_shown(&app));
+                    app.browser.page = 0;
+                    app.browser.selected = shown;
+                    key(&app, k ? SDLK_RETURN : SDLK_L);
+                    assert(app.menu.running && !app.queue.count);
+                    argv = ran(&app, 0);
+                    assert(!has_arg(argv, "-r", NULL) && has_arg(argv, played, NULL));
+                    free(argv);
+                }
+                driver_will(NULL, 0, NULL);
+                stamp_here(own, "0100ABCD12340000");
+                assert(!snx_ini_record(ini, "addons", "0100ABCD12341001"));
+                app.recent = recent;
+                recent_changed(&app);
+                free(got);
+                free(played);
+                free(row);
+                free(other);
+                free(update);
+                free(game);
+            }
             { /* its box's Open Folder: the game's folders a row each, on every system; one not known or not there
                  greyed, and pressed it says why and opens nothing; Back goes back to the box's rows, at Open Folder */
                 char why[1024], *saves = snx_path_join(dirs[0], "save"), want[2048];

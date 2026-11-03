@@ -8385,6 +8385,19 @@ static bool made_here(const char* program) {
     free(base);
     return here;
 }
+/* the program a run of a made Switch game plays and R remakes: its checked update's in place of its own, as Play runs
+   it (played_program) and its driver would play it; NULL for any other file, or a B pack's build, which go as they
+   are. Owned */
+static char* run_program(const App* app, const char* file, bool prepared) {
+    char* run = prepared && app->menu.selected == GUI_SWITCH && !app->aot_pack && gui_game_folder(file)
+                    ? played_program(file)
+                    : NULL;
+    if (run && !strcmp(run, file)) {
+        free(run);
+        run = NULL;
+    }
+    return run;
+}
 /* the game of the library made from file (a dump, package or ROM) when another build made it, or this one with other
    mods: Play on its dump compiles it again first, as its driver would on the run's screen */
 static bool made_elsewhere(const App* app, const char* file) {
@@ -13476,6 +13489,16 @@ static void launch(App* app, char* absolute, bool prepared) {
         free(absolute);
         return;
     }
+    if (!app->recompile) { /* and its checked update's, which it plays (run_program) */
+        char* run = run_program(app, absolute, prepared);
+        queued = run ? gui_queue_find(&app->queue, run) : -1;
+        free(run);
+        if (queued >= 0) {
+            queue_show(app, queued);
+            free(absolute);
+            return;
+        }
+    }
 #ifdef SDL_PLATFORM_IOS
     /* the driver runs on a thread of the app, the game in it once the menu closes: one at a time */
     if (!app->recompile && jobs_live(app)) {
@@ -13496,12 +13519,16 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     /* a game opened that no game of the library was made from yet compiles first through the queue, as R's recompile
        does: the Compile tab shows it, and it plays once it ended if the tab still shows it (job_play). So does a Switch
-       game another build made, which its driver would recompile on the run's screen: its program opened, or its dump
-       with Play answered */
+       game another build made, which its driver would recompile on the run's screen: its program opened (the one it
+       plays, run_program), or its dump with Play answered */
     bool compile = !app->recompile && !prepared && app->menu.selected != GUI_LINUX && !made_from(app, absolute);
 #ifndef SDL_PLATFORM_IOS /* the games there are packs the app loads, with no stamp */
-    compile = compile || (!app->recompile && !app->compiled && prepared && app->menu.selected == GUI_SWITCH &&
-                          gui_game_folder(absolute) && !made_here(absolute));
+    if (!compile && !app->recompile && !app->compiled && prepared && app->menu.selected == GUI_SWITCH &&
+        gui_game_folder(absolute)) {
+        char* run = run_program(app, absolute, prepared);
+        compile = !made_here(run ? run : absolute);
+        free(run);
+    }
     compile = compile || (app->made_ok && app->menu.selected == GUI_SWITCH && made_elsewhere(app, absolute));
 #endif
     bool make = app->recompile || compile; /* the driver's -r: a run that makes the game and plays nothing */
@@ -13531,8 +13558,11 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
 #if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
     if (direct) {
-        if (play(app, absolute) && app->recent_file && !gui_recent_add(&app->recent, absolute, GUI_SWITCH, true))
+        char* run = run_program(app, absolute, prepared);
+        if (play(app, run ? run : absolute) && app->recent_file &&
+            !gui_recent_add(&app->recent, absolute, GUI_SWITCH, true))
             recent_changed(app);
+        free(run);
         free(absolute);
         free(game_option);
         return;
@@ -13598,11 +13628,13 @@ static void launch(App* app, char* absolute, bool prepared) {
     GuiSettings* s = settings_of(app);
     const char** argv = (const char**)snx_alloc((size_t)(s->count + 19) * sizeof(*argv));
     char* out = NULL; /* a dump's extraction in the picked extractions folder */
+    /* what runs, and what R makes: the program Play runs; the queue and Recent go by the file opened */
+    char* run = run_program(app, absolute, prepared);
     size_t n = 1;
-    argv[0] = direct ? absolute : driver;
+    argv[0] = direct ? (run ? run : absolute) : driver;
     if (!direct && driver_in_self(app, app->menu.selected)) argv[n++] = driver_name(app->menu.selected);
     if (make) argv[n++] = "-r";
-    if (!direct) argv[n++] = game_option ? game_option : absolute;
+    if (!direct) argv[n++] = game_option ? game_option : run ? run : absolute;
     /* Switch options only, never guest argv for the CPU-only Linux driver or the 3DS one; R's recompile takes no
        option of a run. The drivers work in the menu's data folder, so they list the same games */
     if (make && app->menu.selected == GUI_SWITCH && gui_settings_tmpfs(s)) argv[n++] = gui_settings_tmpfs(s);
@@ -13663,6 +13695,7 @@ static void launch(App* app, char* absolute, bool prepared) {
                 : app->aot_pack ? GUI_JOB_AOT
                                 : GUI_JOB_RECOMPILE);
         free(argv);
+        free(run);
         free(out);
         free(app->dest_out); /* the run's, which argv held until here: a next one asks again */
         app->dest_out = NULL;
@@ -13686,6 +13719,7 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     free(argv);
     free(game_option); /* argv held it until the process started */
+    free(run);
     free(out);
     free(app->dest_out); /* the run's, which argv held until here: a next one asks again */
     app->dest_out = NULL;
