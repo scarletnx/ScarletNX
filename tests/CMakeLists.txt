@@ -1229,6 +1229,12 @@ add_executable(snx-test-ini-deprecated ini_deprecated.c "${PROJECT_SOURCE_DIR}/s
 snx_test_target(snx-test-ini-deprecated 11)
 add_test(NAME ini_deprecated COMMAND snx-test-ini-deprecated)
 
+# options.c's TV mode Auto over a faked host power source, the rest of the runtime stubbed
+add_executable(snx-test-options-tv-mode options_tv_mode.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/options.c")
+snx_test_target(snx-test-options-tv-mode 23)
+target_link_libraries(snx-test-options-tv-mode PRIVATE scarletnx-common)
+add_test(NAME options_tv_mode COMMAND snx-test-options-tv-mode)
+
 add_executable(snx-test-pad-map pad_map.c)
 snx_test_target(snx-test-pad-map 11)
 target_link_libraries(snx-test-pad-map PRIVATE scarletnx-common)
