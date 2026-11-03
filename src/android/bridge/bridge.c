@@ -61,6 +61,8 @@ static struct {
     uint64_t stop;      /* the address that ends a host call into guest code */
     uint64_t sigreturn; /* the address a guest signal handler returns to */
     uint64_t guard;
+    char optimization; /* bridge_set_optimization's, 0 for the default */
+    bool verbose;      /* bridge_set_verbose's */
     RtAPI rt;
     pthread_mutex_t lock; /* the JIT, the exports and the ranges */
 } b = {.lock = PTHREAD_MUTEX_INITIALIZER};
@@ -128,7 +130,7 @@ static bool compile(uint64_t pc) {
         b.modules = snx_realloc(b.modules, b.module_capacity * sizeof *b.modules);
     }
     b.modules[b.module_count++] = m;
-    if (getenv("SNX_ANDROID_JIT_VERBOSE"))
+    if (b.verbose)
         fprintf(stderr, "scarletnx-android: JIT 0x%llx: 0x%llx-0x%llx, %.2f s\n", (unsigned long long)pc,
                 (unsigned long long)lo, (unsigned long long)hi, snx_seconds() - started);
     return compiled(NULL, pc);
@@ -230,6 +232,16 @@ const char* bridge_export_name(uint64_t address) {
 
 /* ---- the window ---- */
 
+bool bridge_set_optimization(char level) {
+    if (!strchr("0123sz", level) || !level) return false;
+    b.optimization = level;
+    return true;
+}
+
+void bridge_set_verbose(bool verbose) {
+    b.verbose = verbose;
+}
+
 bool bridge_init(const char* cache, char* error, size_t error_size) {
     if (b.window) return true;
     /* the window at the same address on every run: the compiled code's cache is keyed by the code's addresses */
@@ -260,6 +272,7 @@ bool bridge_init(const char* cache, char* error, size_t error_size) {
     }
     /* a phone's CPU: Armv8.2, without pointer authentication (getauxval's HWCAP says the same) */
     snx_recompiler_set_a64_target(b.recompiler, SNX_RECOMPILER_A64_ANDROID);
+    if (b.optimization) snx_recompiler_set_optimization(b.recompiler, b.optimization);
     if (cache && snx_recompiler_set_cache(b.recompiler, cache))
         fprintf(stderr, "scarletnx-android: %s; compiling without a cache\n", snx_recompiler_error(b.recompiler));
     snx_runtime_defaults(&b.rt);

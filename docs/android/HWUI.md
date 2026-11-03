@@ -82,8 +82,8 @@ shape into triangles in device pixels (`path.c`):
   (`hb_font_draw_glyph`) once for each glyph, and are kept in font units.
 
 The GPU draws with 4x MSAA where the device has it, and resolves to the window's swapchain image. Without a display
-(`DISPLAY` and `WAYLAND_DISPLAY` unset), it draws into an image of its own. `SNX_ANDROID_SHOT=FILE.ppm` saves frame
-`SNX_ANDROID_SHOT_FRAME` (60 when not given). This is the one readback, for tests.
+(`DISPLAY` and `WAYLAND_DISPLAY` unset), it draws into an image of its own. `--shot=FILE.ppm` saves frame
+`--shot-frame` (60 when not given). This is the one readback, for tests.
 
 ## Bitmaps
 

@@ -140,7 +140,7 @@ resolves a member only when code first runs it, so the framework grows from what
 
 A run now reaches the main loop: the Application, WorkManager and its database, the app's own worker, and
 Compose's first frames, which the runtime records and counts when it runs without a window
-(`SNX_ANDROID_HEADLESS=1`, `SNX_ANDROID_TRACE_FRAMES=1`).
+(`--headless`, `--trace-frames`).
 
 The app subclasses 34 framework classes (among them `Activity`, `View`, `ViewGroup`, `ContentProvider`,
 `BroadcastReceiver`, `Service`, `SQLiteOpenHelper`, `Canvas`, `RippleDrawable` and text spans) and implements 37
