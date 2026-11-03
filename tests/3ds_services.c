@@ -9,14 +9,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-static uint32_t endpoint(SnxCtrProcess* p, uint32_t srv, const char* name) {
-    uint32_t words[5] = {0x50100, 0, 0, (uint32_t)strlen(name), 1};
-    for (unsigned i = 0; name[i]; ++i) words[1 + i / 4] |= (uint32_t)(unsigned char)name[i] << ((i & 3) * 8);
-    ctr_request(p, words, 5);
-    ctr_send(p, srv, SNX_CTR_SVC_RETURN, 0);
-    assert(ctr_command_word(p, 0) == 0x50042 && !ctr_command_word(p, 1) && ctr_command_word(p, 2) == 0x10);
-    return ctr_command_word(p, 3);
-}
 static void static_output(SnxCtrProcess* p, unsigned size, uint32_t address) {
     ctr_put(p, CTR_COMMAND + 256, (size << 14) | 2);
     ctr_put(p, CTR_COMMAND + 260, address);
@@ -198,7 +190,7 @@ int main(void) {
         uint32_t reg[] = {0x10002, 0x20, 0xffffffff};
         ctr_request(p, reg, 3);
         ctr_send(p, srv, SNX_CTR_SVC_RETURN, 0);
-        uint32_t apt = endpoint(p, srv, "APT:S"), args[6] = {0x10040, 0};
+        uint32_t apt = ctr_service_handle(p, srv, "APT:S"), args[6] = {0x10040, 0};
         ctr_request(p, args, 2);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 0) == 0x100c2 && !ctr_command_word(p, 1) && !ctr_command_word(p, 2) &&
@@ -206,7 +198,7 @@ int main(void) {
         uint32_t lock = ctr_command_word(p, 5), lock_id = snx_ctr_handle_object(p, lock);
         assert(lock_id == p->apt_lock && p->objects[lock_id].type == CTR_OBJ_MUTEX);
         assert(!snx_ctr_handle_close(p, apt));
-        apt = endpoint(p, srv, "APT:S");
+        apt = ctr_service_handle(p, srv, "APT:S");
         ctr_request(p, args, 2);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         uint32_t other_lock = ctr_command_word(p, 5);
@@ -300,7 +292,7 @@ int main(void) {
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 2) == model);
         check_shared_font(p, srv, apt);
-        uint32_t ptm = endpoint(p, srv, "ptm:sysm");
+        uint32_t ptm = ctr_service_handle(p, srv, "ptm:sysm");
         query[0] = 0x40a0000;
         ctr_request(p, query, 1);
         ctr_send(p, ptm, SNX_CTR_SVC_RETURN, 0);
@@ -314,7 +306,7 @@ int main(void) {
         assert(!ctr_command_word(p, 1));
         /* cfg: GetConfig of the sound output mode (libctru's ndsp reads it), stereo, into a writable mapped buffer.
            All three names are served, as Azahar does; another block stops */
-        uint32_t cfg = endpoint(p, srv, "cfg:i");
+        uint32_t cfg = ctr_service_handle(p, srv, "cfg:i");
         ctr_put(p, 0x300000, 0xffffffffu);
         uint32_t sound[] = {0x10082, 1, 0x70001, 1 << 4 | 0xc, 0x300000};
         ctr_request(p, sound, 5);
@@ -366,10 +358,11 @@ int main(void) {
         ctr_request(p, sound, 5);
         ctr_send(p, cfg, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 1) == 0xd90103fa); /* NotFound */
-        assert(!snx_ctr_handle_close(p, cfg) && endpoint(p, srv, "cfg:u") && endpoint(p, srv, "cfg:s"));
+        assert(!snx_ctr_handle_close(p, cfg) && ctr_service_handle(p, srv, "cfg:u") &&
+               ctr_service_handle(p, srv, "cfg:s"));
         /* am:app on a console with no add-on content: one content info for a DLC title, none listed, a title ID that
            is no DLC's refused (Azahar am.cpp) */
-        uint32_t am = endpoint(p, srv, "am:app");
+        uint32_t am = ctr_service_handle(p, srv, "am:app");
         uint32_t dlc_count[] = {0x100100c0, 1, 0x00095000, 0x0004008c};
         ctr_request(p, dlc_count, 4);
         ctr_send(p, am, SNX_CTR_SVC_RETURN, 0);
@@ -383,7 +376,7 @@ int main(void) {
         ctr_send(p, am, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 0) == 0x10030080 && !ctr_command_word(p, 1) && !ctr_command_word(p, 2));
         assert(!snx_ctr_handle_close(p, am));
-        uint32_t hid = endpoint(p, srv, "hid:USER"), hid_args[] = {0xa0000};
+        uint32_t hid = ctr_service_handle(p, srv, "hid:USER"), hid_args[] = {0xa0000};
         n = 0;
         while (n < CTR_HANDLES && !snx_ctr_handle_add(p, snx_ctr_handle_object(p, srv), &duplicates[n])) ++n;
         assert(n > 5);
@@ -421,7 +414,7 @@ int main(void) {
             assert(snx_ctr_handle_object(p, ctr_command_word(p, 3 + i)) == p->hid_objects[i]);
             assert(!snx_ctr_handle_close(p, ctr_command_word(p, 3 + i)));
         }
-        uint32_t fs = endpoint(p, srv, "fs:USER");
+        uint32_t fs = ctr_service_handle(p, srv, "fs:USER");
         reg[0] = 0x8010002;
         ctr_request(p, reg, 3);
         ctr_send(p, fs, SNX_CTR_SVC_RETURN, 0);
@@ -435,7 +428,7 @@ int main(void) {
         ctr_send(p, fs, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 0) == 0x80c0040 &&
                ctr_command_word(p, 1) == 0xc8804464); /* no configured RomFS backing */
-        uint32_t gsp = endpoint(p, srv, "gsp::Gpu"), gsp_event = 0;
+        uint32_t gsp = ctr_service_handle(p, srv, "gsp::Gpu"), gsp_event = 0;
         assert(!snx_ctr_object_create(p, CTR_OBJ_EVENT, &gsp_event));
         uint32_t relay[] = {0x00130042, 1, 0, gsp_event};
         ctr_request(p, relay, 4);
