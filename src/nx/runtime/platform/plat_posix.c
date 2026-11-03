@@ -65,6 +65,10 @@
 #include <sys/types.h>
 #include <sys/umtx.h>
 #endif
+#if defined(__NetBSD__)
+#include <sys/futex.h>
+#include <sys/syscall.h>
+#endif
 
 #ifndef MAP_NORESERVE
 #define MAP_NORESERVE 0 /* FreeBSD never reserves swap for a mapping */
@@ -157,6 +161,14 @@ void plat_wait_word(u32* w, u32 v, i64 timeout_ns) {
     ut._timeout.tv_nsec = (long)(timeout_ns % 1000000000);
     ut._clockid = CLOCK_MONOTONIC;
     _umtx_op(w, UMTX_OP_WAIT_UINT_PRIVATE, v, (void*)(uintptr_t)sizeof ut, &ut);
+#elif defined(__NetBSD__)
+    /* NetBSD's __futex takes Linux's operations, a relative timeout for FUTEX_WAIT included */
+    struct timespec ts;
+    if (timeout_ns >= 0) {
+        ts.tv_sec = (time_t)(timeout_ns / 1000000000);
+        ts.tv_nsec = (long)(timeout_ns % 1000000000);
+    }
+    syscall(SYS___futex, w, FUTEX_WAIT | FUTEX_PRIVATE_FLAG, v, timeout_ns >= 0 ? &ts : NULL, NULL, 0, 0);
 #else
     /* 0 waits without limit: a timeout is at least a microsecond, and at most what the 32 bits hold */
     u64 us = timeout_ns < 0 ? 0 : (u64)timeout_ns / 1000u + 1u;
@@ -168,6 +180,8 @@ void plat_wake_word(u32* w) {
     syscall(SYS_futex, w, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
 #elif defined(__FreeBSD__)
     _umtx_op(w, UMTX_OP_WAKE_PRIVATE, INT_MAX, NULL, NULL);
+#elif defined(__NetBSD__)
+    syscall(SYS___futex, w, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, INT_MAX, NULL, NULL, 0, 0);
 #else
     __ulock_wake(SNX_UL_COMPARE_AND_WAIT | SNX_ULF_WAKE_ALL | SNX_ULF_NO_ERRNO, w, 0);
 #endif
