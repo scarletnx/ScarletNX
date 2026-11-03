@@ -213,8 +213,13 @@ more per MiB imported in one import, from 16 MiB to 512 MiB, and 7.2 us per MiB 
   (`vk_uma_mapping_begin`). Pages becoming GPU-owned are trapped, which amdgpu can't take either: the imports over
   them go before the trap (`vk_uma_owning`). An import dropped from the table (the least recently used, one a union
   replaced, a save state's load) is destroyed once the submit that last read it is done, or before its pages change
-  if that comes first. `vulkan_headless` (`check_uma`) unmaps and maps a range again, and checks that the GPU reads
-  the new bytes; `check_uma_page_changes` unmaps, traps and drops imports with a submission after each.
+  if that comes first. The submit that last read an import is the one its last lookup was in, unless the draw's setup
+  submitted after the lookup (a wait for a landing) and recorded its use in the next: so until the next draw or
+  dispatch begins, an import looked up since counts the submit being recorded as its reader (`vk_uma_settle`).
+  `vulkan_headless` (`check_uma`) unmaps and maps a range again, and checks that the GPU reads the new bytes;
+  `check_uma_page_changes` unmaps, traps and drops imports with a submission after each; `vulkan_uma_imports.inc`
+  traps pages under a read still running, under two imports, under the import made after a page landed, after an
+  unmap, and under a lookup used after a submit (`SNX_TEST_UMA_ONLY=1` runs these alone).
 - Write tracking. amdgpu takes an import's pages again, writable, at each submission, which undoes the protection a
   scan put on them: the next scan reports every imported page written with no CPU write (16 pages of 16 after each
   submission, none without the import). Trusted, those reports made a render target's write-back keep memory's old

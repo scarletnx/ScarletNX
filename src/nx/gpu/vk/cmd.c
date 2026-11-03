@@ -642,7 +642,7 @@ static u64 frame_rings(const Frame* f) {
     for (u32 i = 0; i < f->istage; i++) n += f->stage_spare[i].cap;
     return n;
 }
-void vk_frame_check(void) {
+static void frame_check(void) {
     const Frame* f = &g_fr[g_cur];
     /* a fresh frame has recorded nothing, and its counts are still its last use's until frame_recycle: ending it
        would only move on to the slot whose work was just submitted, and wait for it */
@@ -659,6 +659,11 @@ void vk_frame_check(void) {
         vk_frame_next();
     else if (f->recording && plat_ns() - g_sub_ns >= SUBMIT_EVERY_NS)
         submit(NULL, NULL, 1, VK_SUB_PERIODIC);
+}
+void vk_frame_check(void) {
+    u64 ended = vk_submit_number(); /* the earlier draws' and dispatches' last, before any submit here */
+    frame_check();
+    vk_uma_settle(ended); /* on every way out: what they looked up is read by submits up to ended */
 }
 /* the bytes of ring memory every frame slot holds, spares and outgrown rings included */
 u64 vk_ring_bytes(void) {

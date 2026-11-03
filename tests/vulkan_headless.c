@@ -2709,6 +2709,7 @@ int main(int argc, char** argv) {
     if (getenv("SNX_TEST_UMA_ONLY")) { /* the checks of guest memory read in place alone, for a quick run on a GPU */
         CHECK(!check_uma_in_flight());
         CHECK(!check_uma_trap_ranges());
+        CHECK(!check_uma_lookup_then_submit());
         CHECK(!check_uma_page_changes());
         CHECK(!check_uma());
         vk_pipeline_quiesce();
@@ -2777,6 +2778,7 @@ int main(int argc, char** argv) {
     CHECK(!check_blit());
     CHECK(!check_uma_in_flight());
     CHECK(!check_uma_trap_ranges());
+    CHECK(!check_uma_lookup_then_submit());
     CHECK(!check_uma_page_changes());
     CHECK(!check_rt_overlap());
     CHECK(!check_uma());
