@@ -573,11 +573,11 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Pick the prod.keys file."
+msgid "Pick a keys file."
 msgstr ""
 
 #: src/gui/main.c
-msgid "Pick prod.keys"
+msgid "Pick a keys file"
 msgstr ""
 
 #: src/gui/main.c
@@ -829,7 +829,7 @@ msgid "Ctrl+V: paste. ESC: back."
 msgstr ""
 
 #: src/gui/main.c
-msgid "Pick or drop prod.keys"
+msgid "Pick or drop a keys file"
 msgstr ""
 
 #: src/gui/main.c
@@ -2287,6 +2287,11 @@ msgid "No home folder"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "3DS keys to: %s"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Installed"
 msgstr ""
 
@@ -3563,6 +3568,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "; aes_keys.txt to %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "This copy is portable: to install it, first move away %s"
 msgstr ""
 
@@ -3771,6 +3781,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "only some .nsp need it"
+msgstr ""
+
+#: src/gui/main.c
+msgid "only encrypted 3DS games need it"
 msgstr ""
 
 #: src/gui/main.c
@@ -4194,6 +4208,18 @@ msgid "M opens the mods and cheats of a recompiled Switch game in focus."
 msgstr ""
 
 #: src/gui/main.c
+msgid "Cannot install aes_keys.txt: neither USERPROFILE nor HOME is set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Cannot install aes_keys.txt: HOME is not set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "aes_keys.txt installed: encrypted 3DS games can be decrypted now."
+msgstr ""
+
+#: src/gui/main.c
 msgid "prod.keys installed: games can be extracted now."
 msgstr ""
 
@@ -4203,17 +4229,17 @@ msgid "Cannot install %s: %s"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Please drop a readable file named prod.keys."
+msgid "Please drop a readable file named prod.keys or aes_keys.txt."
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "This file could not be read. Pick prod.keys again, from the device's storage (%s)."
+msgid "This file could not be read. Pick prod.keys or aes_keys.txt again, from the device's storage (%s)."
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "This file is not a prod.keys. Pick the prod.keys file (%s)."
+msgid "This file is not prod.keys or aes_keys.txt. Pick the keys file (%s)."
 msgstr ""
 
 #: src/gui/main.c
@@ -4223,12 +4249,12 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "The picked file could not be read as prod.keys (%s)."
+msgid "The picked file could not be read as prod.keys or aes_keys.txt (%s)."
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "The picked file is not a prod.keys (%s)."
+msgid "The picked file is not prod.keys or aes_keys.txt (%s)."
 msgstr ""
 
 #: src/gui/main.c

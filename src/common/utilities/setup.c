@@ -379,6 +379,41 @@ int snx_keys_install(const char* folder, const char* dir, int* titles, char* why
     *titles = !rc;
     return rc < 0 ? -1 : 0;
 }
+/* ~/.3ds (%USERPROFILE%\.3ds on Windows), where the 3DS keys are kept as the Switch's are in ~/.switch; NULL with no
+   home */
+static char* ctr_keys_home(void) {
+#ifdef _WIN32
+    const char* home = getenv("USERPROFILE");
+    if (!home || !home[0]) home = getenv("HOME");
+#else
+    const char* home = getenv("HOME");
+#endif
+    return home && home[0] ? snx_path_join(home, ".3ds") : NULL;
+}
+char* snx_ctr_keys_path(void) {
+    char *home = ctr_keys_home(), *path = home ? snx_path_join(home, "aes_keys.txt") : NULL;
+    free(home);
+    return path;
+}
+char* snx_ctr_keys_found(void) {
+    char *path = snx_ctr_keys_path(), *found = NULL;
+    if (path && snx_is_file(path))
+        found = path;
+    else
+        free(path);
+    return found;
+}
+int snx_ctr_keys_install(const char* folder, char* why, size_t why_size) {
+    char* home = ctr_keys_home();
+    int rc;
+    if (!home) {
+        snprintf(why, why_size, "%s", "HOME is not set");
+        return -1;
+    }
+    rc = keys_copy(folder, home, "aes_keys.txt", why, why_size);
+    free(home);
+    return rc;
+}
 
 void snx_home_short(const char* path, char* out, size_t size) {
 #ifndef _WIN32

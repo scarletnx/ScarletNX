@@ -580,8 +580,8 @@ msgid "Pick the prod.keys file."
 msgstr ""
 
 #: src/gui/main.c
-msgid "Pick prod.keys"
-msgstr "Escolha o prod.keys"
+msgid "Pick a keys file"
+msgstr "Escolha um arquivo de chaves"
 
 #: src/gui/main.c
 msgid "tap the box to open the file picker"
@@ -832,8 +832,8 @@ msgid "Ctrl+V: paste. ESC: back."
 msgstr ""
 
 #: src/gui/main.c
-msgid "Pick or drop prod.keys"
-msgstr "Escolha ou solte o prod.keys"
+msgid "Pick or drop a keys file"
+msgstr "Escolha ou solte um arquivo de chaves"
 
 #: src/gui/main.c
 msgid "Pick or drop a file"
@@ -4211,13 +4211,13 @@ msgstr "Solte um arquivo legível chamado prod.keys."
 
 #: src/gui/main.c
 #, c-format
-msgid "This file could not be read. Pick prod.keys again, from the device's storage (%s)."
-msgstr "Não foi possível ler este arquivo. Escolha o prod.keys de novo, no armazenamento do aparelho (%s)."
+msgid "This file could not be read. Pick prod.keys or aes_keys.txt again, from the device's storage (%s)."
+msgstr "Não foi possível ler este arquivo. Escolha prod.keys ou aes_keys.txt de novo, no armazenamento do aparelho (%s)."
 
 #: src/gui/main.c
 #, c-format
-msgid "This file is not a prod.keys. Pick the prod.keys file (%s)."
-msgstr "Este arquivo não é um prod.keys. Escolha o arquivo prod.keys (%s)."
+msgid "This file is not prod.keys or aes_keys.txt. Pick the keys file (%s)."
+msgstr "Este arquivo não é prod.keys nem aes_keys.txt. Escolha o arquivo de chaves (%s)."
 
 #: src/gui/main.c
 #, c-format
@@ -4226,13 +4226,13 @@ msgstr "Não foi possível ler este arquivo pelo caminho. Confira nas configura�
 
 #: src/gui/main.c
 #, c-format
-msgid "The picked file could not be read as prod.keys (%s)."
-msgstr "Não foi possível ler o arquivo escolhido como prod.keys (%s)."
+msgid "The picked file could not be read as prod.keys or aes_keys.txt (%s)."
+msgstr "Não foi possível ler o arquivo escolhido como prod.keys ou aes_keys.txt (%s)."
 
 #: src/gui/main.c
 #, c-format
-msgid "The picked file is not a prod.keys (%s)."
-msgstr "O arquivo escolhido não é um prod.keys (%s)."
+msgid "The picked file is not prod.keys or aes_keys.txt (%s)."
+msgstr "O arquivo escolhido não é prod.keys nem aes_keys.txt (%s)."
 
 #: src/gui/main.c
 #, c-format

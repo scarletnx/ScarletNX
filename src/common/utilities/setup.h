@@ -80,6 +80,12 @@ char* snx_keys_dir(const char* data);
 int snx_keys_put(const char* path, const void* data, size_t size, char* why, size_t why_size);
 /* folder's prod.keys installed in dir, and its title.keys when it has one (*titles says so): 0, else -1 with why */
 int snx_keys_install(const char* folder, const char* dir, int* titles, char* why, size_t why_size);
+/* the 3DS keys' file, ~/.3ds/aes_keys.txt (%USERPROFILE%\.3ds on Windows) where the 3DS driver reads them, as the
+   Switch's are in ~/.switch; NULL with no home. found: it, if it is there */
+char* snx_ctr_keys_path(void);
+char* snx_ctr_keys_found(void);
+/* the folder's aes_keys.txt installed at that path: 0, 1 when the folder has none, else -1 with why */
+int snx_ctr_keys_install(const char* folder, char* why, size_t why_size);
 
 /* path as the setup shows it: ~/ for the home folder at its start (not on Windows) */
 void snx_home_short(const char* path, char* out, size_t size);
