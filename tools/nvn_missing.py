@@ -19,8 +19,8 @@ The `route` lines name the two resolvers, which gpu/nvn/nvn_direct.c wraps with 
 
 The names left are what a run stops on: "nvn: the game called nvnX, which nvn_direct doesn't implement yet"
 (gpu/nvn/nvn_direct.c), one fatal for the first one the game calls. The runtime also logs each name it resolved but
-doesn't implement, as it resolves it, and nvn_trace=1 lists what a game does resolve and call: this tool says the same
-from the driver alone, before a run, and for the functions the game never gets to.
+doesn't implement, as it resolves it: this tool says the same from the driver alone, before a run, and for the
+functions the game never gets to.
 
 Pure Python, seconds a game. Its output names the game's functions and addresses: it stays on this machine, like the
 rest of a game.
@@ -264,7 +264,7 @@ def family_count(path=HOOK):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('games', nargs='*')
+    ap.add_argument('games', nargs='+')
     ap.add_argument('--all', action='store_true', help='also list what the hook answers that the driver has not')
     ap.add_argument('--names', action='store_true', help='name them too (with --all)')
     ap.add_argument('--markdown', action='store_true', help='one table row per game before the details')
