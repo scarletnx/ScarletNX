@@ -494,14 +494,12 @@ bool gnu_spawn_syscall(GnuThread* t, uint64_t number, const uint64_t a[6], int64
         case 156: *result = getsid((pid_t)a[0]) < 0 ? gnu_host_errno(errno) : getsid((pid_t)a[0]); return true;
         case 157: *result = setsid() < 0 ? gnu_host_errno(errno) : p->kernel.pid; return true;
         case 166: *result = (int64_t)umask((mode_t)(a[0] & 0777)); return true;
-        case 173: *result = getppid(); return true;
 #else
         case 154: *result = 0; return true;
         case 155:
         case 156: *result = p->kernel.pid; return true;
         case 157: *result = p->kernel.pid; return true;
         case 166: *result = 022; return true;
-        case 173: *result = 1; return true;
 #endif
     }
     return false;

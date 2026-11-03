@@ -158,6 +158,17 @@ or descriptor table. The runtime that uses it gives it the guest's memory (a che
 and write, and the host address of guest address 0), and a way to stop a thread's host
 call, end the process and leave a thread. This runtime and the Android bridge both use it.
 
+The library also answers the system calls that need no loader, file system or descriptor
+table, with Linux's AArch64 behavior and the checked memory access: `clock_gettime`,
+`clock_getres`, `gettimeofday`, `times`, `getrusage`, `sysinfo` (the host's memory on
+Linux), `uname`, `getrlimit`, `setrlimit`, `prlimit64`, `prctl` (`PR_SET_NAME`,
+`PR_GET_NAME`, `PR_SET_VMA`, `PR_SET_DUMPABLE` and the other options of bionic and the C
+libraries; `EINVAL` for the rest, and for SVE, pointer authentication and tagged
+addresses), `getcpu`, `getpid`, `getppid`, the user and group ids, `getgroups`,
+`setpriority`, `getpriority`, the `sched_*` parameter calls, `madvise` (checked, then the
+runtime's), `getrandom`, `membarrier` (the host's barrier) and `rseq` (`ENOSYS`). The
+Android bridge sends `syscall()` and the bionic functions that are one system call to it.
+
 **Threads.** `clone` with `CLONE_THREAD` (it needs `CLONE_SIGHAND` and `CLONE_VM`) starts
 a host thread with the caller's registers, the new stack, `CLONE_SETTLS`,
 `CLONE_PARENT_SETTID`, `CLONE_CHILD_SETTID` and `CLONE_CHILD_CLEARTID`. Both tid words are

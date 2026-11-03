@@ -21,6 +21,7 @@ void gnu_kernel_init(GnuKernel* k, const GnuKernelOps* ops, void* context, unsig
     k->context = context;
     k->base = base;
     k->pid = pid;
+    k->dumpable = 1;
     gnu_mutex_init(&k->lock, 1); /* a sender of a signal holds it around gnu_signal_send */
     gnu_cond_init(&k->changed);
     gnu_futex_init(&k->futex);
@@ -48,6 +49,8 @@ int gnu_kernel_thread_add(GnuKernel* k, GnuKernelThread* t, uint32_t tid, CPU* r
     t->regs = regs;
     t->runtime = runtime;
     t->altstack.flags = SNX_SS_DISABLE;
+    t->timer_slack = 50000; /* Linux's default */
+    gnu_kernel_host_thread_name(t->name);
     gnu_mutex_init(&t->wait_lock, 0);
     gnu_cond_init(&t->wake);
     gnu_mutex_lock(&k->lock);

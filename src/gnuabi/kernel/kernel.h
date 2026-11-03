@@ -79,6 +79,8 @@ typedef struct GnuKernelThread {
     /* a wait in the kernel (futex, sleeps, rt_sigsuspend) sleeps on wake, under wait_lock */
     GnuMutex wait_lock;
     GnuCond wake;
+    char name[16]; /* prctl's PR_SET_NAME, NUL-terminated: the host thread's at first */
+    uint64_t timer_slack; /* prctl's PR_SET_TIMERSLACK, in nanoseconds */
 } GnuKernelThread;
 
 /* What the runtime gives the kernel */
@@ -106,6 +108,9 @@ typedef struct GnuKernelOps {
     void (*disposition)(void* context, int sig, uint64_t handler);
     /* kill(2), tgkill(2) and sigqueue of another process: NULL: the host's, by the host's numbers */
     int64_t (*kill)(void* context, int32_t pid, int32_t tid, int sig, int code, uint64_t value);
+    /* madvise(2) of a range the kernel checked (page-aligned, a Linux advice): 0 or -errno. NULL: advice only, which
+       a runtime whose memory is not the host's at the same addresses leaves alone */
+    int64_t (*madvise)(void* context, uint64_t address, uint64_t length, int advice);
 } GnuKernelOps;
 
 typedef struct GnuKernel {
@@ -126,6 +131,9 @@ typedef struct GnuKernel {
     uint32_t stopping;
     GnuKernelThread* stopper;
     GnuFutexTable futex;
+    /* prctl's: PR_SET_DUMPABLE, PR_SET_NO_NEW_PRIVS, PR_SET_THP_DISABLE, PR_SET_CHILD_SUBREAPER (atomic) */
+    uint32_t dumpable, no_new_privs, thp_disable, subreaper;
+    uint32_t membarrier_registered; /* atomic: membarrier's REGISTER commands this process made */
 } GnuKernel;
 
 /* ---- the process and its threads (thread.c) ---- */
@@ -162,15 +170,29 @@ void gnu_kernel_fork_prepare(GnuKernel* kernel);
 void gnu_kernel_fork_parent(GnuKernel* kernel);
 void gnu_kernel_fork_child(GnuKernelThread* thread, uint32_t pid);
 
+/* system.c: the host thread's name (16 bytes with the NUL), "" where the host has none */
+void gnu_kernel_host_thread_name(char name[16]);
+
 /* ---- system calls (syscall.c) ---- */
 /* the calls the kernel has: exit, exit_group, gettid, set_tid_address, set_robust_list, get_robust_list, futex,
-   sched_yield, sched_getaffinity, sched_setaffinity, nanosleep, clock_nanosleep, restart_syscall, and the signal
-   calls (signals.h). false for another call. A call that a signal stops returns a GNU_ERESTART* code, which
-   gnu_signal_deliver turns into EINTR or a restart */
+   sched_yield, sched_getaffinity, sched_setaffinity, nanosleep, clock_nanosleep, restart_syscall, the signal calls
+   (signals.h) and gnu_kernel_system_call's. false for another call. A call that a signal stops returns a
+   GNU_ERESTART* code, which gnu_signal_deliver turns into EINTR or a restart */
 bool gnu_kernel_syscall(GnuKernelThread* thread, uint64_t number, const uint64_t arguments[6], int64_t* result);
+/* system.c, for gnu_kernel_syscall: the calls that need no runtime but the memory: clock_gettime, clock_getres,
+   gettimeofday, times, getrusage, sysinfo, uname, getrlimit, setrlimit, prlimit64, prctl, getcpu, getpid, getppid,
+   getuid, geteuid, getgid, getegid, getgroups, setpriority, getpriority, sched_setparam, sched_setscheduler,
+   sched_getscheduler, sched_getparam, sched_get_priority_max, sched_get_priority_min, sched_rr_get_interval,
+   madvise, getrandom, membarrier, rseq (ENOSYS) */
+bool gnu_kernel_system_call(GnuKernelThread* thread, uint64_t number, const uint64_t arguments[6], int64_t* result);
 /* the guest's memory through GnuKernelOps */
 int gnu_kernel_read(GnuKernel* kernel, uint64_t address, void* out, size_t size);
 int gnu_kernel_write(GnuKernel* kernel, uint64_t address, const void* in, size_t size);
+/* host.c: the host's random bytes (0 or -GNU_EIO), a Linux clock's time (0 or -GNU_EINVAL for an id Linux doesn't
+   have), and a sleep that no signal ends */
+int gnu_random_bytes(void* destination, size_t size);
+int gnu_clock_gettime(int clock_id, int64_t* seconds, int64_t* nanoseconds);
+void gnu_sleep(int64_t seconds, int64_t nanoseconds);
 /* a host errno as the guest's, never the host's numbering (Windows' differs) (errno.c) */
 int gnu_host_errno(int error);
 #endif
