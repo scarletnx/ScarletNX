@@ -134,7 +134,7 @@ run or a kick is a signal. Each thread adds to counters of its own, with no lock
 
 - `nce_patch`, any host: the sites, the stubs in both forms, the `.nce` file read back from a moved base, which
   games each host takes (`nce_refused`), a module of 200 MiB laid out with a pool before it and one after (and 300
-  MiB refused), and the net's filter at the edges of its range, by an interpreter and, on Linux, by the kernel in a
+  MiB refused: the recompile ends, naming the word, and says to set `nce=0`), and the net's filter at the edges of its range, by an interpreter and, on Linux, by the kernel in a
   child.
 - `nce_host` and `nce_host_indirect`: guest code runs natively in the direct form and in Android's. They run on an
   AArch64 Linux host, or under qemu-aarch64 with `SNX_AARCH64_SYSROOT` (and `SNX_AARCH64_GCC_TOOLCHAIN`,
