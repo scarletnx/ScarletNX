@@ -56,6 +56,8 @@ public final class Activities {
 
     private static void launch(ActivityInfo info, Intent intent, Activity caller, int requestCode, Bundle saved, Object lastNonConfig) {
         String className = info.targetActivity != null ? info.targetActivity : info.name;
+        /* the manifest's orientation: Android turns the display before the activity starts */
+        snx.android.Device.rotate(info.screenOrientation);
         Activity activity;
         try {
             activity = App.factory().instantiateActivity(App.classLoader(), className, intent);
@@ -106,6 +108,34 @@ public final class Activities {
             next.activity().performStart();
             next.activity().performResume();
         }
+    }
+
+    /**
+     * A change of the device's configuration (the display turned or resized), on the main thread as Android's
+     * ActivityThread gives it: the application's callbacks first, then each activity. An activity whose manifest
+     * names every changed field in android:configChanges gets onConfigurationChanged, with its views; another one is
+     * made again (recreate), as Android relaunches it.
+     */
+    public static void configurationChanged(android.content.res.Configuration config) {
+        main.post(() -> {
+            android.app.Application app = App.application();
+            if (app != null) app.onConfigurationChanged(new android.content.res.Configuration(config));
+            for (Record r : new ArrayList<>(stack)) {
+                Activity a = r.activity();
+                if (a.isFinishing()) continue;
+                android.content.res.Configuration old = a.appliedConfiguration();
+                int diff = old.diff(config);
+                if (diff == 0) continue;
+                a.applyConfiguration(config);
+                if ((diff & ~a.activityInfo().configChanges) == 0) {
+                    a.onConfigurationChanged(new android.content.res.Configuration(config));
+                    android.view.View decor = a.getWindow().peekDecorView();
+                    if (decor != null) decor.dispatchConfigurationChanged(new android.content.res.Configuration(config));
+                } else {
+                    recreate(a);
+                }
+            }
+        });
     }
 
     /** The activity made again, as for a configuration change: its state saved, destroyed and launched anew. */
