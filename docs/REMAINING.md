@@ -3,7 +3,7 @@
 This file is the checklist that the continuation watcher reads. A checked item is done and verified. Remove the
 sentinel `docs/.work-complete` only when every box is checked. Do not push to any remote.
 
-- [ ] **Switch anti aliasing.** Give `SnxFx` a recording bridge so the Switch presenter can begin the frame's command
+- [x] **Switch anti aliasing.** Give `SnxFx` a recording bridge so the Switch presenter can begin the frame's command
       buffer through `src/nx/gpu/vk/record.c`. Run the AA pass after `vk_upscale_process` and before `vk_hdr_compose`.
       Test a game at resolution 0.5 with FSR 1 and FXAA, SMAA and SSAA 2x under `--vk_validation=1`. See
       `docs/issues/switch-aa-frame-interpolation.md`.
@@ -11,7 +11,7 @@ sentinel `docs/.work-complete` only when every box is checked. Do not push to an
       path, with two swapchain images per game frame. Use `auto` at 1.9x the measured game rate.
 - [ ] **3DS frame interpolation.** Per window, keep the previous composited pair and present the blend before the
       current pair. Use the shared blend pass. Check `3ds_windows` and a real run.
-- [ ] **Vita frame interpolation.** Same two-image present on the single Vita window. Check with the synthetic
+- [x] **Vita frame interpolation.** Same two-image present on the single Vita window. Check with the synthetic
       presenter path.
 - [ ] **NIS and SGSR on 3DS, Vita and GBA.** The shared filter picker currently falls back to FSR 1. Port the NIS and
       SGSR pipelines into `present_fx` with the same staging and coefficient upload the Switch presenter uses.
