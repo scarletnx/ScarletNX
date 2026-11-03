@@ -403,6 +403,8 @@ void rec_CmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPip
 void rec_CmdBindVertexBuffers2(VkCommandBuffer cb, u32 first, u32 n, const VkBuffer* bufs, const VkDeviceSize* offs,
                                const VkDeviceSize* sizes, const VkDeviceSize* strides);
 void rec_CmdBindVertexBuffers(VkCommandBuffer cb, u32 first, u32 n, const VkBuffer* bufs, const VkDeviceSize* offs);
+void rec_CmdSetVertexInputEXT(VkCommandBuffer cb, u32 nb, const VkVertexInputBindingDescription2EXT* b, u32 na,
+                              const VkVertexInputAttributeDescription2EXT* a);
 void rec_CmdBindTransformFeedbackBuffersEXT(VkCommandBuffer cb, u32 first, u32 n, const VkBuffer* bufs,
                                             const VkDeviceSize* offs, const VkDeviceSize* sizes);
 void rec_CmdBeginTransformFeedbackEXT(VkCommandBuffer cb, u32 first, u32 n, const VkBuffer* counters,
@@ -1140,6 +1142,18 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
 /* whether the constant buffer words s's translation read still hold in ds's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s);
+/* a draw's vertex layout: attributes by location and the bindings they read, as a pipeline's vertex input state
+   holds them or vkCmdSetVertexInputEXT sets them */
+typedef struct {
+    u32 nattr, nbind;
+    struct {
+        u32 loc, binding, format, offset;
+    } attr[32];
+    struct {
+        u32 divisor; /* 0: per vertex */
+        u32 stride;  /* only without has_dynamic_stride, else 0 */
+    } bind[33];      /* bindings 0..nbind-1: a binding per attribute at most, and one for constant attributes */
+} VertexLayout;
 typedef struct {
     VkShaderModule vs, fs;
     VkShaderModule tcs, tes, gs; /* tessellation control and evaluation, geometry: VK_NULL_HANDLE when off */
@@ -1149,14 +1163,9 @@ typedef struct {
     u32 topo_class;
     u32 polygon;
     u32 depth_clamp;
-    u32 nattr, nbind;
-    struct {
-        u32 loc, binding, format, offset;
-    } attr[32];
-    struct {
-        u32 divisor; /* 0: per vertex */
-        u32 stride;  /* only without has_dynamic_stride, else 0 */
-    } bind[33];      /* bindings 0..nbind-1: a binding per attribute at most, and one for constant attributes */
+    /* all zero with dynamic vertex input (g_vk.vertex_input_dynamic): each draw sets its own (render.c), and one
+       pipeline serves every layout its programs are drawn with */
+    VertexLayout vi;
     u32 ncolor;
     u32 color[8];
     u32 depth, stencil;
@@ -1178,6 +1187,10 @@ VkPipeline vk_pipeline_get(const PipeKey* k);
 /* the threads making new pipelines: setting (pipeline_threads) when it is one or more, else a quarter of cpus, two
    to six */
 int vk_pipeline_worker_count(int setting, int cpus);
+/* the key a file of earlier runs' shaders and pipelines must have to be read: the device, the build, and what changes
+   what a pipeline key means (dynamic vertex input among them), into out; the length of its guest part, which the
+   pipelines depend on, in *guest */
+void vk_pipeline_file_key(char* out, size_t n, size_t* guest);
 /* a draw's pipeline: the pipeline, or a stand-in the recording thread waits for at its bind (vk_pipeline_resolve, the
    pipeline a stand-in names, or h itself) */
 VkPipeline vk_pipeline_get_deferred(const PipeKey* k);

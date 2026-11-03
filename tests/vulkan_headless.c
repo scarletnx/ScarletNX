@@ -21,6 +21,8 @@
 #include "nx/memory/own.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/backend.h"
+#include "nx/runtime/ini.h"
+#include "snx_settings.h"
 #include "spirv_emitter_fixture.h"
 #include "support/dma_ref.h"
 #include "support/fermi2d_ref.h"
@@ -1697,6 +1699,7 @@ static int check_rt_overlap(void) {
 #include "vulkan_owned_readback.inc"
 #include "vulkan_storage_suffix.inc"
 #include "vulkan_mesh_inputs.inc"
+#include "vulkan_vertex_input.inc"
 #include "vulkan_frag_coord.inc"
 #include "vulkan_vertex_restride.inc"
 #include "vulkan_msaa.inc"
@@ -1722,6 +1725,8 @@ int main(int argc, char** argv) {
         if (!strncmp(argv[i], "--descriptor-images=", 20)) benchmark_images = (u32)strtoul(argv[i] + 20, NULL, 10);
         if (!strncmp(argv[i], "--descriptor-count=", 19)) benchmark_count = (u32)strtoul(argv[i] + 19, NULL, 10);
         if (!strcmp(argv[i], "--vk_memory=2")) g_settings.guest_memory = 2; /* guest memory read in place */
+        if (!strncmp(argv[i], "--vertex_input_dynamic_state=", 29))         /* as the game's .ini reads it */
+            ini_read(ini_find(g_graphics_ini, "vertex_input_dynamic_state"), argv[i] + 29);
     }
     snprintf(g_exedir, 1024, "%s/", root);
     shot = snx_path_join(root, "frame");
@@ -1732,6 +1737,7 @@ int main(int argc, char** argv) {
     g_settings.vulkan_video_decode = 1; /* a Vulkan Video decode queue where the device has one (lavapipe has none) */
     video_init("Headless Vulkan fixture", "");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
+    viw_install();
     if (g_settings.descriptor_buffers && !g_vk.has_descriptor_buffers) {
         puts("SKIP descriptor-buffer checks: the device does not support this path");
         vk_pipeline_quiesce(); /* the earlier runs' pipelines, which workers still make, before the driver's exit */
@@ -1752,6 +1758,15 @@ int main(int argc, char** argv) {
         CHECK(!check_msaa_nvn());
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan multisampling only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (getenv("SNX_TEST_VERTEX_INPUT_ONLY")) { /* the vertex input checks alone, for their mutants */
+        CHECK(!check_vertex_input_layouts());
+        CHECK(!check_vertex_input_file_key());
+        vk_finish();
+        vk_pipeline_quiesce();
+        CHECK(!viw_report());
+        printf("PASS headless Vulkan vertex input only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
     if (getenv("SNX_TEST_VIC_ONLY")) { /* the validation test: VIC's bindings, none of the other checks' traffic */
@@ -1779,6 +1794,8 @@ int main(int argc, char** argv) {
     CHECK(!check_mesh_inputs());
     CHECK(!check_frag_coord_origin());
     CHECK(!check_vertex_restride());
+    CHECK(!check_vertex_input_layouts());
+    CHECK(!check_vertex_input_file_key());
     CHECK(!check_targetless_stores());
     CHECK(!check_packed_depth());
     CHECK(!check_depth_array());
@@ -1866,6 +1883,7 @@ int main(int argc, char** argv) {
     CHECK(vk_frame_id() == before + 1);
     vk_finish();
     vk_pipeline_quiesce();
+    CHECK(!viw_report());
     CHECK(!snx_remove_tree(root));
     free(root);
     free(shot);
