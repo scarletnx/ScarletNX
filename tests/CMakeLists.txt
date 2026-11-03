@@ -65,7 +65,7 @@ if(SNX_TEST_SANITIZERS)
         scarletnx-gui snx_gui_support snx_gui_ui snx_i18n snx_gui_languages snx_gui_languages_test snx_splash snx-test-splash
         snx_window_icon snx-test-window-icon snx_pad_sdl snx_gui_pad
         # GLSL ES into SPIR-V
-        snx_glslc snx-glslc-cli snx-test-glslc-lex snx-test-glslc-parse snx-test-glslc-emit
+        snx_glslc snx-glslc-cli snx-test-glslc-lex snx-test-glslc-parse snx-test-glslc-emit snx-test-glslc-fuzz
         # the code generators, which tests run on files they refuse
         snx-swipc snx-svcgen snx-hookgen snx-shaderdec snx-settingsgen snx-uigen snx-a64dec)
 endif()
@@ -533,7 +533,7 @@ add_test(NAME bits_portable COMMAND snx-test-bits-portable)
 add_executable(snx-test-endian endian.c)
 snx_test_target(snx-test-endian 99)
 add_test(NAME endian COMMAND snx-test-endian)
-# glslc (src/glslc): its passes, SPIRV-Tools' validator and glslangValidator on its output
+# glslc (src/glslc): its passes, SPIRV-Tools' validator and glslangValidator on its output, a fuzz
 add_subdirectory(glslc)
 if(SNX_BUILD_3DS)
     add_executable(snx-test-3ds-uds 3ds_uds.c fake_room.c support/3ds_guest.c)
