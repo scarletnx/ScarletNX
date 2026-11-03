@@ -2187,6 +2187,7 @@ static int range_owned(u64 gva, u64 len) {
     }
     return 0;
 }
+int vk_buf_owned(u64 gva, u64 len) { return range_owned(gva, len); }
 /* A range over bytes the GPU holds, with nothing landed. One owner holding it whole is bound where it is, as a dispatch
    binds it (compute.c res_bind): every write to an owner's buffer is recorded outside rendering passes and followed by
    a barrier before the next one begins (vk_own_res_wrote), so a draw reads it inside the pass it is in. Copied, each
