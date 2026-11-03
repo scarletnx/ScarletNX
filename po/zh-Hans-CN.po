@@ -5276,6 +5276,18 @@ msgstr "每个游戏自己的，在其 <id>_data/save/ 中"
 msgid "the data folder's save/, by user and title: Move Old Files moves them"
 msgstr "数据文件夹中的 save/，按用户和游戏分开：移动旧文件会移动它们"
 
+#: src/common/utilities/setup.c
+msgid "Environment variables"
+msgstr "环境变量"
+
+#: src/common/utilities/setup.c
+msgid "SNX_WW, SNX_HOST_PAGE, VITA_LOCKSTEP and others set for a run"
+msgstr "为一次运行设置的 SNX_WW、SNX_HOST_PAGE、VITA_LOCKSTEP 等"
+
+#: src/common/utilities/setup.c
+msgid "settings and the drivers' options; a variable still set works, and the run says so"
+msgstr "设置和驱动程序的选项；仍设置的变量依然有效，运行时会提示"
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr "gdbstub"
