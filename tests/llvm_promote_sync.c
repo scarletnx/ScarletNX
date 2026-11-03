@@ -394,6 +394,10 @@ static void use_all(Program* p, u64 keep) {
 static Run* run_of(CPU* c) { return (Run*)c->thread; }
 static void record(CPU* c, int kind, u64 arg) {
     Run* r = run_of(c);
+    if (r->count == 4 * EVENTS) { /* a loop calling back on every turn, with no poll to end it */
+        fprintf(stderr, "FAIL: %d callbacks, and the run goes on: a loop's counter is not the model's\n", 4 * EVENTS);
+        exit(1);
+    }
     if (r->count < EVENTS) {
         r->events[r->count].kind = kind;
         r->events[r->count].arg = arg;
