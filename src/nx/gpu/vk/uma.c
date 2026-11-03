@@ -28,12 +28,13 @@
      the commands were recorded. In place, the GPU reads them when it runs them, and after a release the guest writes
      the next frame's data.
    - Before guest pages are trapped (a GPU result published over them) or get other host pages (an unmap, a decommit, a
-     move into the alias pool), the commands that read an import over them run (vk_uma_quiesce). mem.c then tells which
+     move into the alias pool), the commands that read an import over them run (quiesce). mem.c then tells which
      pages changed, and the imports on them go (pages_replaced): a driver that pins pages (NVIDIA) holds the old ones,
      and amdgpu looks them up again at each submit and refuses pages in the alias pool, a file's pages.
    - Those imports leave the driver before anything else is submitted, and what was submitted before reaches it first
-     (vk_uma_mapping_begin, vk_uma_mapping_end): a driver keeps every import in every submission, and amdgpu takes all
-     their pages again in each submission's ioctl, which fails whole (EFAULT, then the device is lost) on pages gone.
+     (vk_uma_mapping_begin, vk_uma_mapping_end); the imports over pages to be trapped leave it before the trap
+     (vk_uma_owning): a driver keeps every import in every submission, and amdgpu takes all their pages again in each
+     submission's ioctl, which fails whole (EFAULT, then the device is lost) on pages gone or trapped.
    - A GPU-side write (a front end write, a landed result) on a page that a command not finished yet reads in place is
      counted (the hazards line of the report). That command can read the new bytes. */
 #include <stddef.h>
@@ -58,7 +59,7 @@ typedef struct {
     VkDeviceMemory mem;
     VkBuffer buf;
     u32 used; /* g_vk_present when last bound */
-    u64 sub;  /* the submit that last read it (vk_submit_number), which vk_uma_quiesce waits for */
+    u64 sub;  /* the submit that last read it (vk_submit_number), which quiesce waits for */
     int dead; /* its pages are other pages now (mem.c): it goes before the next submission */
 } Imp;
 /* Spans the driver refused to import (pages it can't pin, or amdgpu's refusal of the alias pool's), whose ranges are copied
@@ -499,8 +500,14 @@ static int quiesce(u64 cpu, u64 size) {
     g_uma.quiesces++;
     return any;
 }
-void vk_uma_quiesce(u64 cpu, u64 size) {
-    if (vk_uma()) quiesce(cpu, size);
+/* Guest memory [cpu, cpu + size) becomes GPU-owned next (vk_own_publish), its pages trapped: the imports over them
+   go from the driver first, after their readers ran, as amdgpu fails a later submission (EFAULT) on trapped pages.
+   Whole host pages, as own_begin traps them */
+void vk_uma_owning(u64 cpu, u64 size) {
+    u64 page = plat_vm_page(), lo = cpu & ~(page - 1), hi = (cpu + size + page - 1) & ~(page - 1);
+    if (!vk_uma() || !quiesce(lo, hi - lo)) return;
+    for (u32 i = g_uma.nimp; i-- > 0;)
+        if (g_uma.imp[i].cpu < hi && lo < g_uma.imp[i].cpu + g_uma.imp[i].size) imp_kill(i);
 }
 /* mem.c changes guest memory [cpu, cpu + size) (size ~0: all of it) next, maybe its host pages (vk_lock held until
    vk_uma_mapping_end): with an import over it, its readers run, and every submission made so far is in the driver,
