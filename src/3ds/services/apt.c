@@ -246,6 +246,10 @@ static uint32_t capture_block(SnxCtrProcess* p, uint32_t size) {
     o->data.shared.physical = physical;
     o->data.shared.size = pages;
     o->data.shared.permissions = SNX_CTR_READ | SNX_CTR_WRITE;
+    /* Azahar's CreateSharedMemoryForApplet makes the block read-write for its owner and for the others, at a base
+       address of its own: the application maps it where it chooses, with other permissions that cover the block's
+       (SharedMemory::Map) */
+    o->data.shared.other_permissions = SNX_CTR_READ | SNX_CTR_WRITE;
     ++o->refs; /* APT keeps it for the applets */
     (void)snx_ctr_handle_close(p, handle);
     if (p->apt_capture) snx_ctr_object_release(p, p->apt_capture);

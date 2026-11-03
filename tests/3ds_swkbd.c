@@ -25,6 +25,7 @@
 #define SWKBD_CHECKED     0x301000u /* the configuration the game's own check sends back */
 #define SWKBD_TEXT        0x302000u /* the text block */
 #define SWKBD_TEXT_SIZE   0x1000u
+#define SWKBD_MAPPED      0x10000000u /* where the library maps its capture block */
 #define SWKBD_APPLICATION 0x300u
 #define SWKBD_KEYBOARD    0x401u
 enum { CONFIG_BUTTONS = 4, CONFIG_RULE = 8, CONFIG_FILTERS = 0x18, CONFIG_MAX = 0x20, CONFIG_INITIAL = 0x120 };
@@ -160,10 +161,25 @@ static uint32_t launch(SnxCtrProcess* p, uint32_t apt, uint32_t block) {
     uint32_t capture = snx_ctr_handle_object(p, out[6]);
     assert(capture && p->objects[capture].type == CTR_OBJ_SHARED && p->objects[capture].data.shared.size == 0x8a000);
     uint32_t* r = p->cpu.state.cpu.r;
-    r[0] = out[6], r[1] = 0, r[2] = 3, r[3] = 0x10000000; /* mapped where its pages are, as the library copies to it */
+    /* InvalidCombination: don't-care as the others' permission */
+    r[0] = out[6], r[1] = SWKBD_MAPPED, r[2] = 3, r[3] = 0x10000000;
+    assert(snx_ctr_svc(p, 0x1f) == SNX_CTR_SVC_RETURN && r[0] == 0xe0e01beeu);
+    /* InvalidAddress: 0 is outside the range the runtime maps an application's blocks in, not an Azahar rule */
+    r[0] = out[6], r[1] = 0, r[2] = 3, r[3] = 3;
+    assert(snx_ctr_svc(p, 0x1f) == SNX_CTR_SVC_RETURN && r[0] == 0xe0e01bf5u);
+    r[0] = out[6], r[1] = SWKBD_MAPPED, r[2] = 3, r[3] = 1;
+    assert(snx_ctr_svc(p, 0x1f) == SNX_CTR_SVC_RETURN && r[0] == 0xd900182eu);
+    /* as libctru's aptScreenTransfer maps it: read-write for the others too, at an address the library picks */
+    r[0] = out[6], r[1] = SWKBD_MAPPED, r[2] = 3, r[3] = 3;
     assert(snx_ctr_svc(p, 0x1f) == SNX_CTR_SVC_RETURN && !r[0]);
-    r[0] = out[6], r[1] = snx_ctr_linear_address(p->objects[capture].data.shared.physical);
+    uint32_t mapped_pa = 0;
+    unsigned mapped_permissions = 0;
+    assert(snx_ctr_query(p->space, SWKBD_MAPPED, &mapped_pa, &mapped_permissions) == SNX_CTR_MEM_OK &&
+           mapped_pa == p->objects[capture].data.shared.physical &&
+           mapped_permissions == (SNX_CTR_READ | SNX_CTR_WRITE));
+    r[0] = out[6], r[1] = SWKBD_MAPPED;
     assert(snx_ctr_svc(p, 0x20) == SNX_CTR_SVC_RETURN && !r[0]);
+    assert(snx_ctr_query(p->space, SWKBD_MAPPED, NULL, NULL) != SNX_CTR_MEM_OK);
     assert(!snx_ctr_handle_close(p, out[6]));
     uint32_t start[] = {0x1e0084, SWKBD_KEYBOARD, 0x400, 0, block, (0x400u << 14) | 2, SWKBD_CONFIG};
     return call(p, apt, start, 7);

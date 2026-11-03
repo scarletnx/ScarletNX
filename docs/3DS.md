@@ -428,13 +428,18 @@ the presenter converts (RGBA8, RGB8, RGB565, RGB5A1, RGBA4). A swap through
 SetBufferSwap in another format stops rather than being shown with invented
 colors. The LCD shows the left eye of the pair `shown_fb` (one bit) selects. A
 swap whose shown pair has no address, a stride too short for a row or memory the
-guest cannot read is dropped and the screen keeps its last frame. Display timing
-is host-paced 60 Hz: latched frames present at vblank waits and overdue swaps, and
-waits on the relay event complete only at real vblank deliveries. MapMemoryBlock
-maps a block another process owns (an HLE service's) into the application's
-range, or an application's own block as a mirror within the permissions it was
-created with. Each mapping holds a reference to the block. HLE shared pages are
-reserved from board FCRAM past the application pool.
+guest cannot read is dropped and the screen keeps its last frame.
+ImportDisplayCaptureInfo reports the framebuffer each screen shows (its left address
+for both eyes), and SaveVramSysArea and RestoreVramSysArea succeed only on a session
+registered with the flag that allows them (`0xD8202A06` otherwise), copying no VRAM
+because the HLE applets draw nothing. Display timing is host-paced 60 Hz: latched
+frames present at vblank waits and overdue swaps, and waits on the relay event
+complete only at real vblank deliveries. MapMemoryBlock maps a block another process
+owns (an HLE service's) into the application's range, or an application's own block
+as a mirror within the permissions it was created with. A library applet's capture
+block maps as an application's block does, at the address asked, onto its own pages.
+Each mapping holds a reference to the block. HLE shared pages are reserved from
+board FCRAM past the application pool.
 
 Presentation is **Vulkan only** (volk, with no linked Vulkan library):
 the device converts the guest framebuffers to RGBA8 and shows the landscape-
