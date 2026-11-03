@@ -4,6 +4,7 @@
 
 ## Index
 
+* [Measure NVN storage ordering](#measure-nvn-storage-ordering)
 * [Measure descriptor submission](#measure-descriptor-submission)
 * [Search for faster GPU settings](#search-for-faster-gpu-settings)
 * [Rebuild / checks](#rebuild--checks)
