@@ -122,6 +122,11 @@ interface nn::hid::IHidServer is hid {
     @stub [210] EndPermitVibrationSession();
     [211] IsVibrationDeviceMounted(nn::hid::VibrationDeviceHandle handle, aruid aruid) -> b8 mounted;
     @stub [212] SendVibrationValueInBool(b8 value, nn::hid::VibrationDeviceHandle handle, aruid aruid);
+    # an Ounce SDK's nn::hid::detail::SendVibrationValues sends this (mode 2) in place of 206, which a flag of its
+    # own selects. No SDK symbol names it, and the mode's meaning is not known: the values go as 206's do
+    [214] SendVibrationValuesWithMode(u16 mode, nn::applet::AppletResourceUserId aruid,
+                                      array<nn::hid::VibrationDeviceHandle, 9> handles,
+                                      array<nn::hid::VibrationValue, 9> values);
     @stub [300] ActivateConsoleSixAxisSensor(aruid aruid);
     @stub [301] StartConsoleSixAxisSensor(nn::hid::ConsoleSixAxisSensorHandle handle, aruid aruid);
     @stub [302] StopConsoleSixAxisSensor(nn::hid::ConsoleSixAxisSensorHandle handle, aruid aruid);

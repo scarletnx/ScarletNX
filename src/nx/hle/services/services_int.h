@@ -341,6 +341,7 @@ typedef struct {
     AudOut* outs;        /* every open audio out, for the clock */
     float device_volume; /* the output device's, as SetAudioDeviceOutputVolume set it */
     u8 auto_tune;        /* the output volume's auto-tune mode, for its getter: what plays keeps its volume */
+    u32 hwopus_live;     /* decoders open, across every hwopus session */
     AudOut outs_pool[AUDOUT_MAX];
     AudRen rens[SNX_AUDREN_MAX];
     AudDevice devices[AUDDEV_MAX];
