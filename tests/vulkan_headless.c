@@ -2410,6 +2410,7 @@ static int check_rt_overlap(void) {
 #include "vulkan_storage_formats.inc"
 #include "vulkan_storage_atomics.inc"
 #include "vulkan_surface_loads.inc"
+#include "vulkan_rect_textures.inc"
 #include "vulkan_owned_readback.inc"
 #include "vulkan_storage_suffix.inc"
 #include "vulkan_mesh_inputs.inc"
@@ -2515,6 +2516,7 @@ int main(int argc, char** argv) {
     CHECK(!check_storage_image_formats());
     CHECK(!check_volume_surface_atomics());
     CHECK(!check_layered_surface_loads());
+    CHECK(!check_rect_textures());
     CHECK(!check_viewport_orientation());
     CHECK(!check_index_draws());
     CHECK(!check_mesh_inputs());

@@ -45,7 +45,8 @@ static const char* structured_paths[2];
 static const char* fswzadd_path;
 static const char* surface_op_paths[7];
 static const char* legacy_paths[4];
-static char* fixture_paths[106];
+static const char* rect_paths[3];
+static char* fixture_paths[109];
 static size_t fixture_count;
 
 static const char* fixture_path(const char* directory, const char* name) {
@@ -2961,6 +2962,52 @@ static void legacy_varyings_forms(void) {
 #undef LEGACY_IPA
 }
 
+/* A rectangle texture's (ShaderInfo.tex_rect_mask, the key) sample takes texel coordinates, divided by the size at
+   level 0 (one OpImageQuerySizeLod, an OpFDiv each for x and y, and for TXD each gradient's two too); a fragment
+   program keeps a scaled target's size unscaled first (the push constant's scaled-slot bits). Without the key the
+   program is the same as it was. TEX R8, R0, 2D, a texel of a bound slot; TXD R0, R4, R8, 2D; TLD4 R0, R4, 2D */
+static void rect_textures(void) {
+    const u64 tex =
+        0xc000000000000000ull | 0x10ull << 36 | 7ull << 51 | 1ull << 31 | 2ull << 28 | 0xffull << 20 | 7ull << 16 | 8;
+    const u64 txd = 0xde00000000000000ull | 7ull << 51 | 0x10ull << 36 | 0xfull << 31 | 2ull << 28 | 8ull << 20 |
+                    7ull << 16 | 4ull << 8;
+    const u64 tld4 = 0xc800000000000000ull | 7ull << 51 | 0x10ull << 36 | 0xfull << 31 | 2ull << 28 | 0xffull << 20 |
+                     7ull << 16 | 4ull << 8;
+    const u64* programs[3] = {&tex, &txd, &tld4};
+    static const int divisions[3] = {2, 6, 2};
+    static const char* names[3] = {"TEX", "TXD", "TLD4"};
+    for (int k = 0; k < 3; k++) {
+        ShaderInfo info;
+        size_t words = 0, plain_words = 0;
+        u32* plain = translate(programs[k], 1, ST_FS, &info, &plain_words, 1);
+        check_translated(plain, &info, "a sample of a normalized texture translates");
+        int plain_query = plain ? count_opcode(plain, plain_words, 103, 0xffffffffu) : -1;
+        int plain_div = plain ? count_opcode(plain, plain_words, 136, 0xffffffffu) : -1;
+        size_t slots;
+        u64* code = guest_program(programs[k], 1, NULL, &slots);
+        if (!code) continue;
+        memset(&info, 0, sizeof info);
+        info.tex_rect_mask = 1;
+        u32* rect = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 1, 1, 1, 1);
+        free(code);
+        check_translated(rect, &info, "a sample of a rectangle texture translates");
+        if (rect && plain) {
+            if (count_opcode(rect, words, 103, 0xffffffffu) != plain_query + 1 ||
+                count_opcode(rect, words, 136, 0xffffffffu) != plain_div + divisions[k])
+                fprintf(stderr, "%s of a rectangle texture: %d size queries, %d divisions; without the key %d and %d\n",
+                        names[k], count_opcode(rect, words, 103, 0xffffffffu),
+                        count_opcode(rect, words, 136, 0xffffffffu), plain_query, plain_div);
+            check(count_opcode(rect, words, 103, 0xffffffffu) == plain_query + 1 &&
+                      count_opcode(rect, words, 136, 0xffffffffu) == plain_div + divisions[k],
+                  "a rectangle texture's coordinates (and gradients) are divided by its size");
+            check(plain_query == 0, "a normalized texture's sample queries no size");
+            save_fixture(rect_paths[k], rect, words);
+        }
+        free(plain);
+        free(rect);
+    }
+}
+
 static void attribute_pointer(void) {
     const u64 base = 0xefa070010607ff01ull; /* a game's: AL2P R1, RZ + 0x60, PT */
     const u64 instructions[] = {mov32i(4, 0x1234),
@@ -3703,6 +3750,10 @@ int main(int argc, char** argv) {
             snprintf(name, sizeof name, "legacy_%d", i);
             legacy_paths[i] = fixture_path(argv[1], name);
         }
+        for (int i = 0; i < 3; i++) {
+            snprintf(name, sizeof name, "rect_%d", i);
+            rect_paths[i] = fixture_path(argv[1], name);
+        }
         if (fixture_count != sizeof fixture_paths / sizeof *fixture_paths) {
             fprintf(stderr, "failed to allocate fixture paths\n");
             return 2;
@@ -3750,6 +3801,7 @@ int main(int argc, char** argv) {
     system_values();
     attribute_pointer();
     legacy_varyings_forms();
+    rect_textures();
     indexed_attribute_load();
     structured_flow();
     fswzadd_forms();
