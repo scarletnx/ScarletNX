@@ -117,6 +117,10 @@ typedef struct {
     u32 early_fragment_tests;
     ShXfb xfb; /* key: transform feedback's capture of this program's outputs */
     int writes_viewport; /* the last vertex stage selects one of the 16 viewport/scissor pairs */
+    /* key (fragment, vertex and compute programs): texture slots whose header takes unnormalized coordinates (TIC
+       word 5 bit 31 clear, NVN's rectangle textures, 2D): their sample coordinates are texels, divided here by the
+       size, as Ryujinx's TexturePass and Eden's texture_pass do */
+    u64 tex_rect_mask;
 } ShaderInfo;
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs has room for */
 /* Each stage has a descriptor set (shader_vk_set), its bindings grouped by kind. */

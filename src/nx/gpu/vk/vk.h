@@ -1170,9 +1170,10 @@ void vk_pipeline_init(void);
    enables, and SNX_SH_NOT_LAST (the stages before rasterization). xfb: what transform feedback captures of the last stage before
    rasterization's outputs (ShaderInfo.xfb), NULL for none. ds: the draw state whose programs key a fragment program
    (its early fragment tests) and a geometry program (its passthrough mask), and whose bound constant buffers the
-   translator reads to resolve indirect branches. NULL for none */
+   translator reads to resolve indirect branches. NULL for none. rect: the textures a fragment or vertex program
+   samples whose headers take unnormalized coordinates (ShaderInfo.tex_rect_mask) */
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
-                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb);
+                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb);
 /* whether the constant buffer words s's translation read still hold in ds's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s);
@@ -1357,6 +1358,10 @@ VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, i
    bare 64-bit pointer with no size after it, 16 bytes (gbuf_tag tags it for the vertex stage alone). A bare address
    in a program's own constant buffer (gbuf_tag_any, v[2] unread) takes what is mapped from it on, to the cap. */
 int vk_tex_num(const u32* tic, const Surf* t);
+/* whether a texture header takes unnormalized coordinates (word 5 bit 31 clear: NVN's rectangle textures): 1 for a 2D
+   one, which the translator normalizes (ShaderInfo.tex_rect_mask), 2 for another type, which it can't (texture type
+   in word 4 bits 23-26; buffers' word 5 holds no such bit), 0 for none */
+int vk_tic_unnormalized(const u32* tic);
 int vk_image_keyable(const ShaderInfo* si, int i);
 int vk_image_key(const ShaderInfo* si, int i, const u32* tic);
 VkImageView vk_storage_image_view(Surf* t, const ShaderInfo* si, int i, u64* bytes);

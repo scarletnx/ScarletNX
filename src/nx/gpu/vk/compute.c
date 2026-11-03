@@ -639,7 +639,7 @@ void vk_compute_mem_need_map(u64 a, u64 n) {
    rt_int_mask bits 8 and up to switch the bound/bindless default between float and integer, and rt_sint_mask's
    corresponding bits to select signed stores. Atomics retain their R32ui declaration. */
 typedef struct {
-    u64 tex_int, tex_sint;
+    u64 tex_int, tex_sint, tex_rect;
     u32 image, image_sint;
 } CsKey;
 static CsPipe g_cs_alloc_failed = {.failed = 1}; /* out of memory: not cached, retried */
@@ -647,7 +647,8 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k)
     u32 blen;
     u64 key = vk_shader_hash(code, 0x10000 + 80, &blen, cs_cb_read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^
               ((u64)lz << 56) ^ ((u64)shm << 20) ^ ((u64)k.image << 32) ^ (u64)k.tex_int * 0x9E3779B97F4A7C15ull ^
-              (u64)k.tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k.image_sint * 0xA24BAED4963EE407ull;
+              (u64)k.tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k.image_sint * 0xA24BAED4963EE407ull ^
+              (u64)k.tex_rect * 0x165667B19E3779F9ull;
     CsPipe* p = g_csp[key & 255];
     while (p && (p->key != key || !vk_cb_reads_hold(&p->cbr, cs_cb_read))) p = p->next;
     if (p) return p;
@@ -687,6 +688,7 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k)
     p->si.rt_sint_mask = k.image_sint << 8;
     p->si.tex_int_mask = k.tex_int;
     p->si.tex_sint_mask = k.tex_sint;
+    p->si.tex_rect_mask = k.tex_rect;
     const char* corpus = vk_corpus_dir();
     if (corpus) shader_corpus_save(corpus, code, blen, 0x10000 + 80, ST_CS, &p->si, key);
     size_t nw = 0;
@@ -993,13 +995,15 @@ void vk_dispatch(const DispatchState* d) {
             ShTex* st = &p->si.tex[i];
             u32 h = 0, h2 = 0, tic[8];
             int num;
-            if (st->shadow || st->flags) continue; /* raw and multisample textures are declared on their own */
+            if (st->flags) continue; /* raw, multisample and indexed textures are declared on their own */
             if (!cs_cb_read(st->bindless ? (st->bl_cbuf & 7) : tcb_key, st->cbuf_off * 4, &h)) continue;
             if (st->bindless && st->bl2 && st->bl2_cbuf == SH_HANDLE_IMM)
                 h |= st->bl2_off;
             else if (st->bindless && st->bl2 && cs_cb_read(st->bl2_cbuf & 7, st->bl2_off * 4, &h2))
                 h |= h2;
             vk_gmem_words(tic_key_base + (h & 0xFFFFF) * 32ull, tic, 8);
+            if (vk_tic_unnormalized(tic) == 1) ck.tex_rect |= 1ull << i;
+            if (st->shadow) continue;
             /* by the header alone: textures are resolved only when bound, a color texture's surface has its header's
                number type, and depth isn't sampled here */
             num = vk_tex_num(tic, NULL);
@@ -1017,9 +1021,10 @@ void vk_dispatch(const DispatchState* d) {
             if (vk_image_key(&p->si, i, tic)) ck.image |= 1u << i;
             if (vk_tex_num(tic, NULL) == 2) ck.image_sint |= 1u << i;
         }
-    if (ck.tex_int || ck.image || ck.image_sint) {
+    if (ck.tex_int || ck.image || ck.image_sint || ck.tex_rect) {
         if (!p->keyed || (p->keyed->si.rt_int_mask >> 8) != ck.image || p->keyed->si.tex_int_mask != ck.tex_int ||
-            p->keyed->si.tex_sint_mask != ck.tex_sint || (p->keyed->si.rt_sint_mask >> 8) != ck.image_sint) {
+            p->keyed->si.tex_sint_mask != ck.tex_sint || (p->keyed->si.rt_sint_mask >> 8) != ck.image_sint ||
+            p->keyed->si.tex_rect_mask != ck.tex_rect) {
             static u8 keyed_code[0x10000 + 80];
             cs_read_code(pa, keyed_code);
             p->keyed = cs_pipe(keyed_code, lx, ly, lz, shm, ck);

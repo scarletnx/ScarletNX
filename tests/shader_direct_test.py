@@ -85,6 +85,7 @@ def main():
             Path(directory) / 'saturate.spv',
             *(Path(directory) / f'surface_op_{i}.spv' for i in range(7)),
             *(Path(directory) / f'legacy_{i}.spv' for i in range(4)),
+            *(Path(directory) / f'rect_{i}.spv' for i in range(3)),
         )
         subprocess.run([args.regressions, directory], check=True)
         for fixture in (path, vertex, abs_fragment, stack_fragment, subgroup, *fixtures):

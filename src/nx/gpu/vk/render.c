@@ -951,6 +951,12 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     }
 }
 
+int vk_tic_unnormalized(const u32* tic) {
+    u32 type = (tic[4] >> 23) & 0xF;
+    if (!tic[0] || (tic[5] >> 31) || type == 6) return 0;
+    return type == 1 || type == 7 ? 1 : 2;
+}
+
 int vk_tex_num(const u32* tic, const Surf* t) {
     VkFmt f;
     if (vk_tic_reads_stencil(tic)) return 1; /* a depth target's stencil is unsigned, whatever the surface holds */
@@ -1019,17 +1025,21 @@ static u32 image_variant(const DsState* ds, int stage, const VkSh* s, u32* signe
 
 /* the textures of s, a vertex program, whose headers are integer, by the header alone as image_variant reads its
    images: its variant's unsigned and signed masks, which the key holds for its first 32 textures. Depth compares,
-   indexed tables and raw loads take their number type elsewhere */
-static u32 vs_tex_variant(const DsState* ds, const VkSh* s, u32* signed_textures) {
+   indexed tables and raw loads take their number type elsewhere. *rect: the 2D textures whose headers take
+   unnormalized coordinates */
+static u32 vs_tex_variant(const DsState* ds, const VkSh* s, u32* signed_textures, u64* rect) {
     u64 tic_base = ds->bind.tex_pool;
     int nt = s->si.ntex > SH_MAXTEX ? SH_MAXTEX : s->si.ntex;
     u32 bits = 0;
     *signed_textures = 0;
+    *rect = 0;
     for (int i = 0; i < nt; i++) {
         const ShTex* st = &s->si.tex[i];
-        if (st->shadow || (st->flags & (SNX_TEX_INDEXED | 1))) continue;
+        if (st->flags & (SNX_TEX_INDEXED | 1)) continue;
         u32 handle = tex_handle(ds, 0, ds->bind.tex_bank, st), tic[8];
         vk_gmem_words(tic_base + (handle & 0xFFFFF) * 32ull, tic, 8);
+        if (vk_tic_unnormalized(tic) == 1) *rect |= 1ull << i;
+        if (st->shadow) continue;
         int num = vk_tex_num(tic, NULL);
         if (!num) continue;
         if (i >= 32) {
@@ -1049,7 +1059,7 @@ static u32 vs_tex_variant(const DsState* ds, const VkSh* s, u32* signed_textures
    compared as depth and their functions, and its inputs the stage before doesn't write. 0s when the program itself
    is drawn */
 typedef struct {
-    u64 tm, ts, dm;
+    u64 tm, ts, dm, rect;
     u32 rm, rs, df, unfed;
 } FsKey;
 /* the integer color targets (rm, signed rs) tg names, which key the fragment shader's outputs */
@@ -1074,6 +1084,7 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
     for (int i = 0; i < nt; i++) {
         const ShTex* st = &s0->si.tex[i];
         tex_resolve(ds, tex_handle(ds, 4, ds->bind.tex_bank, st), &res[i]);
+        if (!(st->flags & (SNX_TEX_INDEXED | 1)) && vk_tic_unnormalized(res[i].tic) == 1) fk->rect |= 1ull << i;
         if (st->shadow) {
             if (st->flags & SNX_TEX_INDEXED) continue; /* the selected entry's function comes from the table */
             /* a depth compare of a color texture compares its first component, which Vulkan's compare samplers
@@ -1100,8 +1111,9 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
 }
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
 static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) {
-    if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed) return s0;
-    return vk_shader_get(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, NULL);
+    if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed && !fk->rect) return s0;
+    return vk_shader_get(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, fk->rect,
+                         NULL);
 }
 
 VkImageViewType vk_tex_view_type(const ShTex* st) {
@@ -1779,6 +1791,14 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             x = &own;
             tex_resolve(ds, handle, x);
         }
+        /* a header with unnormalized coordinates that the program's key doesn't divide (vk_tic_unnormalized: another
+           type than 2D, or a stage without the key) is sampled as normalized: said, not hidden */
+        int unnormalized = vk_tic_unnormalized(x->tic);
+        if (unnormalized && !(st->flags & 3) && !(s->si.tex_rect_mask >> i & 1))
+            LOG_LIMIT(4,
+                      "vulkan: texture %d of a stage %d program (handle %08x, type %u) takes unnormalized coordinates, "
+                      "which its samples don't divide by the size: sampled as normalized\n",
+                      i, stage, handle, (x->tic[4] >> 23) & 0xF);
         Surf* t = x->t;
         /* a multisampled texture's program fetches its samples (flags bit 1), and an image of other samples than
            the program's reads zeros, as a missing texture does */
@@ -2223,27 +2243,29 @@ static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
     o->xfb_on = xfb_on;
     o->attr_int = attr_int;
     o->attr_sint = attr_sint;
-    o->vs = vk_shader_get(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint, 0, 0,
-                          tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, xfb_on && !tes_on && !gs_on ? xfb : NULL);
+    o->vs =
+        vk_shader_get(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint, 0, 0,
+                      tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, 0, xfb_on && !tes_on && !gs_on ? xfb : NULL);
     /* a vertex program's images and integer textures pick its variant as a fragment program's do (fs_key) */
     u32 vs_signed_images = 0, vs_signed_tex = 0;
     u32 vs_images = o->vs && !o->vs->failed && o->vs->si.nimg ? image_variant(ds, 0, o->vs, &vs_signed_images) : 0;
-    u32 vs_tex = o->vs && !o->vs->failed && o->vs->si.ntex ? vs_tex_variant(ds, o->vs, &vs_signed_tex) : 0;
-    if (vs_images || vs_signed_images || vs_tex)
+    u64 vs_rect = 0;
+    u32 vs_tex = o->vs && !o->vs->failed && o->vs->si.ntex ? vs_tex_variant(ds, o->vs, &vs_signed_tex, &vs_rect) : 0;
+    if (vs_images || vs_signed_images || vs_tex || vs_rect)
         o->vs = vk_shader_get(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint, vs_images << 8,
                               vs_signed_images << 8, tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, vs_tex, vs_signed_tex,
-                              xfb_on && !tes_on && !gs_on ? xfb : NULL);
-    o->tcs = tcs_on ? vk_shader_get(ds, p->code[2], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0, NULL) : NULL;
+                              vs_rect, xfb_on && !tes_on && !gs_on ? xfb : NULL);
+    o->tcs = tcs_on ? vk_shader_get(ds, p->code[2], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0, 0, NULL) : NULL;
     o->tes = tes_on ? vk_shader_get(ds, p->code[3], 0, ST_TES, 0, 0, p->tess_params & 0x333, 0,
-                                    gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, xfb_on && !gs_on ? xfb : NULL)
+                                    gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, 0, xfb_on && !gs_on ? xfb : NULL)
                     : NULL;
     o->gs = gs_on ? vk_shader_get(ds, p->code[4], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, p->tess_params),
-                                  0, clip, 0, 0, 0, xfb_on ? xfb : NULL)
+                                  0, clip, 0, 0, 0, 0, xfb_on ? xfb : NULL)
                   : NULL;
     if ((tcs_on && (!o->tcs || o->tcs->failed)) || (tes_on && (!o->tes || o->tes->failed)) ||
         (gs_on && (!o->gs || o->gs->failed)) || !o->vs || o->vs->failed)
         return 0;
-    o->fs0 = (p->on >> 5 & 1) ? vk_shader_get(ds, p->code[5], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, NULL) : NULL;
+    o->fs0 = (p->on >> 5 & 1) ? vk_shader_get(ds, p->code[5], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL) : NULL;
     rt_int_targets(&ds->tgt, &o->rt_int, &o->rt_sint);
     return 1;
 }

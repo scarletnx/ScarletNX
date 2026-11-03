@@ -1051,6 +1051,24 @@ static void scaled_coords(DirectCtx* c, u32 push, int slot, int size, u32 i32_ty
 /* The fragment's y (a[0x74]) in a lower-left window (WINDOW_ORIGIN bit 0, pushed as the uvec4's z) counts up from the
    bottom of the surface clip, its height the w, as the viewport and the scissor measure it there: the guest's GL driver
    leaves its own gl_FragCoord transform the identity for the window it draws lower left */
+/* A rectangle texture's coordinates (ShaderInfo.tex_rect_mask) are texels: x and y over its size at level 0, the
+   size a fragment program's TXQ answers on a scaled target (scaled_coords' unscaled size), which the guest's texels
+   count. *gx and *gy, when not NULL, are gradients in texels, divided the same */
+static void rect_coords(DirectCtx* c, u32 push, int scaled, int slot, u32 vec2_u32, u32 i32_type, u32* x, u32* y,
+                        u32* gx, u32* gy) {
+    u32 size = spv_emit_image_query_size_lod(&c->emit, vec2_u32, c->sampled_type[slot], c->sampler[slot], c->zero);
+    u32 w = spv_emit_vec4_extract(&c->emit, c->u32_type, size, 0),
+        h = spv_emit_vec4_extract(&c->emit, c->u32_type, size, 1);
+    if (scaled) scaled_coords(c, push, slot, 1, i32_type, &w, &h);
+    u32 fw = spv_emit_convert_u_to_f(&c->emit, c->f32_type, w), fh = spv_emit_convert_u_to_f(&c->emit, c->f32_type, h);
+    *x = spv_emit_fdiv(&c->emit, c->f32_type, *x, fw);
+    *y = spv_emit_fdiv(&c->emit, c->f32_type, *y, fh);
+    for (int k = 0; k < 2 && gx; k++) {
+        gx[k] = spv_emit_fdiv(&c->emit, c->f32_type, gx[k], k ? fh : fw);
+        gy[k] = spv_emit_fdiv(&c->emit, c->f32_type, gy[k], k ? fh : fw);
+    }
+}
+
 static u32 frag_y_origin(DirectCtx* c, u32 push, u32 y) {
     u32 one = spv_emit_constant_u32(&c->emit, c->u32_type, 1);
     u32 pointer = spv_emit_type_pointer(&c->emit, 9, c->u32_type); /* PushConstant */
@@ -5012,6 +5030,15 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         }
         indexed_table[k_indexed] = table;
     }
+    /* the 2D slots the key marks rectangle textures, whose samples normalize their coordinates (rect_coords) */
+    u64 rect_slots = 0;
+    for (int k = 0; k < texture_count; k++)
+        if ((si->tex_rect_mask >> k & 1) && textures[k].type == 1 && !(textures[k].flags & SNX_TEX_INDEXED))
+            rect_slots |= 1ull << k;
+    if (rect_slots) {
+        needs_image_query = 1;
+        if (stage == ST_FS) needs_texel_scale = 1; /* a scaled target's size is unscaled first */
+    }
     DirectCtx* c = calloc(1, sizeof *c);
     if (!c) {
         free(gb_at);
@@ -8265,6 +8292,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             u32 x = reg_read_as(c, array ? a + 1 : a, c->f32_type);
             u32 y = encoding == 0 ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f)
                                   : spv_emit_bitcast(&c->emit, c->f32_type, reg_read(c, texs_y(encoding, a, b)));
+            if (rect_slots >> slot & 1)
+                rect_coords(c, push, stage == ST_FS, slot, vec2_u32, i32_type, &x, &y, NULL, NULL);
             u32 uv = array       ? spv_emit_vec3_construct(&c->emit, vec3, x, y, array_layer(c, a))
                      : type >= 2 ? spv_emit_vec3_construct(&c->emit, vec3, x, y,
                                                            reg_read_as(c, b, c->f32_type))
@@ -8300,6 +8329,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             u32 x = reg_read_as(c, a + array, c->f32_type);
             u32 y = type == 0 ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f)
                               : reg_read_as(c, a + array + 1, c->f32_type);
+            if (rect_slots >> slot & 1)
+                rect_coords(c, push, stage == ST_FS, slot, vec2_u32, i32_type, &x, &y, NULL, NULL);
             u32 coords =
                 type == 3 && array ? spv_emit_vec4_construct(
                                          &c->emit, vec4,
@@ -8416,6 +8447,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 values[1] = spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f);
                 dx[1] = dy[1] = zero_f;
             }
+            if (rect_slots >> slot & 1)
+                rect_coords(c, push, stage == ST_FS, slot, vec2_u32, i32_type, &values[0], &values[1], dx, dy);
             if (array) values[dims] = array_layer(c, packed_reg);
             u32 coords = dims + array == 4   ? spv_emit_vec4_construct(&c->emit, vec4, values)
                          : dims + array == 3 ? spv_emit_vec3_construct(&c->emit, vec3, values[0], values[1], values[2])
@@ -8506,6 +8539,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             u32 x = reg_read_as(c, a + array, c->f32_type);
             u32 y = type == 0 ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f)
                               : reg_read_as(c, a + array + 1, c->f32_type);
+            if (rect_slots >> slot & 1)
+                rect_coords(c, push, stage == ST_FS, slot, vec2_u32, i32_type, &x, &y, NULL, NULL);
             u32 coords =
                 type < 2 ? spv_emit_vec2_construct(&c->emit, vec2, x, y)
                          : spv_emit_vec3_construct(&c->emit, vec3, x, y,
@@ -8546,6 +8581,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                         ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f)
                         : spv_emit_bitcast(&c->emit, c->f32_type,
                                            reg_read(c, op == O_TLD4S && !shadow && !B(w, 51, 1) ? b : a + array + 1));
+            if (rect_slots >> slot & 1)
+                rect_coords(c, push, stage == ST_FS, slot, vec2_u32, i32_type, &x, &y, NULL, NULL);
             u32 coords;
             if (!array && type != 3)
                 coords = spv_emit_vec2_construct(&c->emit, vec2, x, y);
