@@ -102,6 +102,7 @@ void kthread_unblock(KThread* t) { (void)t; }
 void core_enter(KThread* t) { (void)t; }
 void core_leave(KThread* t) { (void)t; }
 u64 guest_ticks(void) { return 0; }
+u64 guest_gpu_ticks(void) { return 0; }
 u64 plat_ns(void) { return 1; }
 static i64 g_slept; /* what the runtime asked to sleep, in all */
 void plat_sleep_ns(i64 ns) { g_slept += ns; }

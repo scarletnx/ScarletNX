@@ -19,7 +19,7 @@ typedef enum {
     NCE_TPIDR,     /* MRS Xt, TPIDR_EL0: CPU.tpidr */
     NCE_TPIDR_SET, /* MSR TPIDR_EL0, Xt: CPU.tpidr */
     NCE_TICKS,     /* MRS Xt, CNTPCT_EL0 or CNTVCT_EL0: guest_ticks, from the host's counter in the stub (NceEnv) */
-    NCE_FREQ,      /* MRS Xt, CNTFRQ_EL0: the console's 19.2 MHz */
+    NCE_FREQ,      /* MRS Xt, CNTFRQ_EL0: the tick's rate (NceEnv), the console's 19.2 MHz */
     NCE_EXCLUSIVE, /* LDXR, STXR, LDXP, STXP: made ordered in place, with no stub */
     NCE_HOOK,      /* the entry of a function that the runtime hooks: an outcall (nce_divert), never in a scan */
     NCE_KINDS
@@ -62,11 +62,14 @@ void nce_sites_free(NceSites* sites);
    below 16 MiB and a multiple of 8. With indirect, the word there holds a pointer to the block: tls is then below 32
    KiB, an LDR's reach (Android's TLS_SLOT_APP, nce_host.c). outcall: the host address of nce_outcall. clock: the
    address of the guest clock's two words, frozen and then start, and ns_lo, ns_hi and ns_origin its reading in the
-   host's counter: cnt * ns_hi + (cnt * ns_lo >> 64) - ns_origin nanoseconds (runtime/clock.h's ClockCounter) */
+   host's counter: cnt * ns_hi + (cnt * ns_lo >> 64) - ns_origin nanoseconds (runtime/clock.h's ClockCounter). freq,
+   step_ns and step_ticks: the system tick's rate, as runtime/clock.h's ClockRate counts it (an Ounce's 31.25 MHz); 0
+   for the console's NCE_CNTFRQ */
 typedef struct {
     SnxU64 tls, outcall;
     int indirect;
     SnxU64 clock, ns_lo, ns_hi, ns_origin;
+    SnxU32 freq, step_ns, step_ticks;
 } NceEnv;
 #define NCE_TLS_READS 16
 
@@ -78,7 +81,7 @@ typedef struct {
 
 /* the bytes of the stub of kind, 0 for NCE_EXCLUSIVE. NCE_TICKS's reads the guest clock as guest_ticks does
    (runtime/clock.c), with no outcall: the host's counter, after an ISB as Linux's vDSO reads it so that no read goes
-   back against another, made nanoseconds and then 19.2 MHz ticks, or the time a pause stopped the clock at, and adds
+   back against another, made nanoseconds and then ticks at NceEnv's rate, or the time a pause stopped the clock at, and adds
    one to the thread's count. It needs NceEnv.clock */
 SnxU64 nce_stub_size(NceKind kind);
 /* the stub of site, in the first pool that has room for it and that it and its return branch reach. *patch: the

@@ -399,9 +399,11 @@ static void outcall(Out* o, const NceEnv* env, SnxU64 code, int dynamic_return, 
 /* MRS Xt, CNTPCT_EL0 or CNTVCT_EL0 as guest_ticks (runtime/clock.c) reads the clock, in t, with two scratch registers
    kept below the guest's sp. The thread's count of reads goes up by one. Then frozen (load-acquire): while a pause
    holds the clock its value less 1 is the time; else the counter, made nanoseconds, less origin and start
-   (load-acquire, after frozen, as guest_ns reads them). Then ns / 10000 * 192 + ns % 10000 * 192 / 10000, the ticks */
+   (load-acquire, after frozen, as guest_ns reads them). Then ns / step_ns * step_ticks + ns % step_ns * step_ticks /
+   step_ns, the ticks (10000 and 192 for the console's 19.2 MHz) */
 static void ticks_stub(Out* o, const NceEnv* env, unsigned t, SnxU64 back) {
     unsigned a = t < 2 ? 2 : 0, b = a + 1;
+    SnxU32 step_ns = env->step_ns ? env->step_ns : 10000u, step_ticks = env->step_ns ? env->step_ticks : 192u;
     SnxU64 start = o->at, lit = start + 36 * 4, ticks = start + 22 * 4, frozen = start + 33 * 4;
     put(o, 0xA9BF0000u | b << 10 | 31u << 5 | a); /* STP Xa, Xb, [SP, #-16]! */
     load_tls(o, env, a, NCE_TLS_READS);
@@ -424,13 +426,13 @@ static void ticks_stub(Out* o, const NceEnv* env, unsigned t, SnxU64 back) {
     put(o, ldar_x(b, a)); /* start */
     put(o, sub_reg(t, t, b));
     /* ticks: */
-    put(o, movz(a, 10000, 0));
+    put(o, movz(a, step_ns, 0));
     put(o, udiv(b, t, a));
     put(o, msub(t, b, a, t));
-    put(o, movz(a, 192, 0));
+    put(o, movz(a, step_ticks, 0));
     put(o, madd(t, t, a, 31)); /* MUL */
     put(o, madd(b, b, a, 31));
-    put(o, movz(a, 10000, 0));
+    put(o, movz(a, step_ns, 0));
     put(o, udiv(t, t, a));
     put(o, add_reg(t, t, b));
     put(o, 0xA8C10000u | b << 10 | 31u << 5 | a); /* LDP Xa, Xb, [SP], #16 */
@@ -445,6 +447,11 @@ static void ticks_stub(Out* o, const NceEnv* env, unsigned t, SnxU64 back) {
     snx_st_le64(o->p + 24, env->ns_origin);
     o->p += 32;
     o->at += 32;
+}
+
+/* the counter's stub has the clock, and a step each MOVZ holds */
+static int ticks_fit(const NceEnv* env) {
+    return env->clock && env->step_ns <= 0xFFFFu && env->step_ticks <= 0xFFFFu;
 }
 
 SnxU64 nce_stub_size(NceKind kind) {
@@ -481,7 +488,7 @@ int nce_emit(NcePool* pools, size_t count, const NceEnv* env, const NceSite* sit
         *patch = site->word | 1u << 15; /* o0: LDXR to LDAXR, STXR to STLXR, the pairs alike */
         return 0;
     }
-    if (!size || !tls_reached(env) || (site->kind == NCE_TICKS && !env->clock) ||
+    if (!size || !tls_reached(env) || (site->kind == NCE_TICKS && !ticks_fit(env)) ||
         !(p = pool_for(pools, count, size, site->addr)))
         return -1;
     o.p = p->buf + p->used;
@@ -505,11 +512,13 @@ int nce_emit(NcePool* pools, size_t count, const NceEnv* env, const NceSite* sit
         put(&o, b_to(o.at, back));
         break;
     }
-    case NCE_FREQ:
-        put(&o, movz(t, NCE_CNTFRQ & 0xFFFFu, 0));
-        put(&o, movk(t, NCE_CNTFRQ >> 16, 1));
+    case NCE_FREQ: {
+        SnxU32 freq = env->freq ? env->freq : NCE_CNTFRQ;
+        put(&o, movz(t, freq & 0xFFFFu, 0));
+        put(&o, movk(t, freq >> 16, 1));
         put(&o, b_to(o.at, back));
         break;
+    }
     default: return -1;
     }
     p->used += size;

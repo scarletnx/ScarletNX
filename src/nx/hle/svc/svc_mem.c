@@ -11,6 +11,7 @@
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/hle/hle.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/main.h"
 
 #define MIB          (1ull << 20)
 
@@ -84,10 +85,11 @@ static int user_writable(u64 a, u64 size) {
 
 /* ============================================================ accounting */
 /* The application pool for each memory_gb (Mesosphere's KSystemControl application pool sizes for the 4, 6 and 8 GiB
-   boards; 12, an experimental 10 GiB budget for guests that need more than the older console's pool), see
+   boards; 12, and an Ounce game, an experimental 10 GiB budget, more than the older console's pool), see
    docs/platforms/nx/memory-accounting.md */
+static int large(void) { return g_settings.memory_gb >= 12 || g_ounce; }
 static u64 pool(void) {
-    if (g_settings.memory_gb >= 12) return 10ull << 30;
+    if (large()) return 10ull << 30;
     if (g_settings.memory_gb >= 8) return 6964 * MIB;
     if (g_settings.memory_gb >= 6) return 4916 * MIB;
     return 3285 * MIB;
@@ -160,7 +162,7 @@ void mem_report(char* out, int n) {
 u32 svc_set_heap_size(u64 size) {
     u64 proc = g_code_memory + g_main_stack_size;
     u32 r;
-    if ((size & 0x1FFFFF) || size >= ((g_settings.memory_gb >= 12 ? 12ull : 8ull) << 30))
+    if ((size & 0x1FFFFF) || size >= ((large() ? 12ull : 8ull) << 30))
         r = SNX_RC_SVC_INVALID_SIZE;
     else if (proc > HEAP_SIZE || size > HEAP_SIZE - proc || (g_heap_max && size > g_heap_max))
         r = SNX_RC_SVC_OUT_OF_MEMORY;
