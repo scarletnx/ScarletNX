@@ -811,6 +811,12 @@ snx_test_target(snx-test-hook-verify 99)
 target_include_directories(snx-test-hook-verify PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-hook-verify SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/verify.hook")
 add_test(NAME hook_verify COMMAND snx-test-hook-verify)
+# nn::diag's abort hook (src/nx/hle/hook/diag.c) on a fake abort: the values it logs, then its own code run
+add_executable(snx-test-diag-abort diag_abort.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/diag.c")
+snx_test_target(snx-test-diag-abort 11) # log.h has _Thread_local
+target_include_directories(snx-test-diag-abort PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_hookgen(snx-test-diag-abort)
+add_test(NAME diag_abort COMMAND snx-test-diag-abort)
 # the hooks' NVN key (tests/hook/nvn_versions.hook): the API version read from a driver's nvnDeviceGetInteger
 # (src/nx/gpu/nvn/nvn_driver.c), the entry hook_select picks for it, and the versions the log calls described
 add_executable(snx-test-nvn-versions nvn_versions.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
