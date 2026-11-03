@@ -480,6 +480,128 @@ static void trap_file_test(const NceSites* found, const char* dir) {
     remove(path);
 }
 
+/* ---- the layout of an NCE recompile ---- */
+
+#define MIB (1ull << 20)
+
+/* SVC sites at base + each offset, as the scan finds them in address order */
+static void make_sites(NceSites* s, SnxU64 base, const SnxU64* offsets, size_t n) {
+    memset(s, 0, sizeof *s);
+    s->site = (NceSite*)snx_alloc(n * sizeof *s->site);
+    s->count = s->cap = s->proven = n;
+    for (size_t i = 0; i < n; i++) {
+        memset(&s->site[i], 0, sizeof s->site[i]);
+        s->site[i].addr = base + offsets[i];
+        s->site[i].word = 0xD4000001u;
+        s->site[i].kind = NCE_SVC;
+        s->site[i].proven = 1;
+    }
+}
+
+/* the pool that site i's stub goes to, as the runtime fills them: its index, or -1 */
+static int pool_of(const NceRange* ranges, size_t n, const NceSites* s, size_t i) {
+    static const NceEnv env = {0x10, 1, 0, 1, 0, 1, 0};
+    NcePool* pools = (NcePool*)snx_alloc(n * sizeof *pools);
+    SnxU64 trap;
+    SnxU32 word;
+    int at = -1;
+    for (size_t k = 0; k < n; k++) {
+        pools[k].buf = (unsigned char*)snx_alloc((size_t)ranges[k].size);
+        pools[k].addr = ranges[k].addr;
+        pools[k].size = ranges[k].size;
+        pools[k].used = 0;
+    }
+    nce_trap(pools, n, &env, NCE_TRAP, &trap);
+    for (size_t k = 0; k <= i; k++)
+        if (nce_emit(pools, n, &env, &s->site[k], &word))
+            break;
+        else if (k == i)
+            for (size_t p = 0; p < n; p++)
+                if (b_target(word, s->site[k].addr) - pools[p].addr < pools[p].size) at = (int)p;
+    for (size_t k = 0; k < n; k++) free(pools[k].buf);
+    free(pools);
+    return at;
+}
+
+static void layout_test(const char* dir) {
+    char why[320] = "";
+    NceRange* pools = NULL;
+    size_t count = 0;
+    {
+        /* a module of 1 MiB: one pool after it, the module where it was */
+        static const SnxU64 at[] = {0x100, 0x80000};
+        NceSpan mod = {BASE, MIB};
+        NceSites s;
+        make_sites(&s, BASE, at, 2);
+        check(nce_layout(&mod, 1, BASE + (1ull << 30), &s, &pools, &count, why, sizeof why) == 0, why);
+        check(count == 1 && mod.base == BASE && pools[0].addr == BASE + MIB &&
+                  pools[0].size == nce_pool_size(&s, BASE, BASE + MIB),
+              "a small module keeps its place, its pool after it");
+        check(s.site[0].addr == BASE + 0x100 && s.site[1].addr == BASE + 0x80000, "its sites where they were");
+        free(pools);
+        nce_sites_free(&s);
+    }
+    {
+        /* 200 MiB: its first sites reach no pool after it, so one goes before it */
+        static const SnxU64 at[] = {0x100, 64 * MIB, 120 * MIB, 199 * MIB};
+        NceSpan mod = {BASE, 200 * MIB};
+        NceSites s;
+        SnxU64 by;
+        make_sites(&s, BASE, at, 4);
+        check(nce_layout(&mod, 1, BASE + (1ull << 30), &s, &pools, &count, why, sizeof why) == 0, why);
+        check(count == 2 && pools[1].addr == BASE && mod.base == BASE + pools[1].size + 0x1000 &&
+                  pools[0].addr == mod.base + 200 * MIB,
+              "a module past 128 MiB: a pool before it, which it moves up past, and one after it");
+        by = mod.base - BASE;
+        check(s.site[0].addr == BASE + 0x100 + by && s.site[3].addr == BASE + 199 * MIB + by,
+              "its sites moved with it");
+        check(pool_of(pools, count, &s, 0) == 1 && pool_of(pools, count, &s, 1) == 1,
+              "its first sites take the one before");
+        check(pool_of(pools, count, &s, 2) == 0 && pool_of(pools, count, &s, 3) == 0, "its last ones the one after");
+        {
+            /* the file keeps the pool below the first module's base, read back from a moved one */
+            char path[1024];
+            NceRange* back = NULL;
+            size_t n = 0;
+            NceSites read;
+            snprintf(path, sizeof path, "%s/nce_patch_layout.nce", dir);
+            check(!nce_file_write(path, mod.base, pools, count, &s) &&
+                      !nce_file_read(path, mod.base + MOVED, &back, &n, &read),
+                  "the split layout's file, written and read");
+            check(n == 2 && back[1].addr == BASE + MOVED && back[0].addr == pools[0].addr + MOVED,
+                  "the pool before the module, below its base, moved with it");
+            free(back);
+            nce_sites_free(&read);
+            remove(path);
+        }
+        free(pools);
+        nce_sites_free(&s);
+    }
+    {
+        /* 300 MiB: a word in the middle reaches neither, said with the module, its size and the word */
+        static const SnxU64 at[] = {0x100, 150 * MIB, 299 * MIB};
+        NceSpan mod = {BASE, 300 * MIB};
+        NceSites s;
+        char addr[32];
+        make_sites(&s, BASE, at, 3);
+        check(nce_layout(&mod, 1, BASE + (1ull << 30), &s, &pools, &count, why, sizeof why) == 1, "300 MiB is refused");
+        snprintf(addr, sizeof addr, "%#llx", (unsigned long long)(BASE + 150 * MIB));
+        check(strstr(why, addr) && strstr(why, "300 MiB"), "the refusal names the word and the module's size");
+        check(!pools && mod.base == BASE && s.site[1].addr == BASE + 150 * MIB, "and leaves all as it was");
+        nce_sites_free(&s);
+    }
+    {
+        /* a code region too small for the pools: an error that says where they end */
+        static const SnxU64 at[] = {0x100};
+        NceSpan mod = {BASE, MIB};
+        NceSites s;
+        make_sites(&s, BASE, at, 1);
+        check(nce_layout(&mod, 1, BASE + MIB, &s, &pools, &count, why, sizeof why) == -1 && strstr(why, "code region"),
+              "pools past the code region");
+        nce_sites_free(&s);
+    }
+}
+
 /* ---- the net ---- */
 
 #define ACT_TRAP  0x00030000u /* SECCOMP_RET_TRAP */
@@ -618,6 +740,7 @@ int main(int argc, char** argv) {
     nce_sites_free(&sites);
     divert_test();
     refused_test();
+    layout_test(argc > 1 ? argv[1] : ".");
     net_words_test();
 #if NET_LIVE
     net_live_test();

@@ -378,19 +378,22 @@ static int copy_data(const SnxProgram* p, const char* dir, int quiet, int tmpfs)
    every one said: 0, else nonzero with the patch that could not be applied said */
 /* NCE (the setting nce, on an AArch64 Linux host): the game's code runs natively on the host's CPU, so the module
    holds no code made ahead of time (as --jit-only). The analysis finds here the words that the runtime patches
-   (nce_patch.h), with the FDEs and the symbols of the modules. Each module then moves up to leave a pool for the stubs
-   of its sites after it, which the branches of its sites reach. The pools and the sites go in <base>.nce, which the
-   runtime reads. A recompile without NCE removes that file, because its addresses are of another layout */
-#define NCE_GUARD 0x1000ull
+   (nce_patch.h), with the FDEs and the symbols of the modules. Each module then moves up to leave pools for the stubs
+   of its sites, which the branches of its sites reach (nce_layout). The pools and the sites go in <base>.nce, which the
+   runtime reads. A recompile without NCE removes that file, because its addresses are of another layout. 0, with
+   *refused 1 when a word of the code reaches no pool, said, the program left as it was for a recompile with nce=0;
+   else an error, said */
 #define NCE_CODE_END 0x2000000000ull
-static int nce_prepare(SnxProgram* p, const char* base, int quiet) {
+static int nce_prepare(SnxProgram* p, const char* base, int quiet, int* refused) {
     SnxCodegen cg;
     NceSites sites;
-    NceRange* pools;
-    SnxU64* old;
-    SnxU64 cursor;
+    NceSpan* mods;
+    NceRange* pools = NULL;
+    size_t pool_count = 0;
     char* path = snx_format("%s.nce", base);
-    int r = 0;
+    char why[320];
+    int r;
+    *refused = 0;
     if (!p->module_count) {
         free(path);
         return snx_error("NCE: the program has no modules");
@@ -401,25 +404,23 @@ static int nce_prepare(SnxProgram* p, const char* base, int quiet) {
     }
     nce_find_sites(&cg, &sites);
     snx_codegen_free(&cg);
-    pools = (NceRange*)snx_alloc(p->module_count * sizeof *pools);
-    old = (SnxU64*)snx_alloc(p->module_count * sizeof *old);
-    cursor = p->modules[0].base;
-    for (size_t i = 0; i < p->module_count && !r; i++) {
-        SnxModuleImage* m = &p->modules[i];
-        SnxU64 end = (m->base + m->size + 0xFFFu) & ~0xFFFull;
-        old[i] = m->base;
-        pools[i].size = nce_pool_size(&sites, m->base, m->base + m->size);
-        pools[i].addr = cursor + (end - m->base);
-        m->base = cursor;
-        cursor = pools[i].addr + pools[i].size + NCE_GUARD;
-        if (cursor > NCE_CODE_END) r = snx_error("NCE: the modules and their pools exceed the code region");
+    mods = (NceSpan*)snx_alloc(p->module_count * sizeof *mods);
+    for (size_t i = 0; i < p->module_count; i++) {
+        mods[i].base = p->modules[i].base;
+        mods[i].size = p->modules[i].size;
     }
-    /* the last module first: a module moves up past the old place of the next, never past its new place */
-    for (size_t i = p->module_count; i-- > 0 && !r;)
-        nce_sites_move(&sites, old[i], old[i] + p->modules[i].size, p->modules[i].base - old[i]);
-    if (!r && nce_file_write(path, p->modules[0].base, pools, p->module_count, &sites))
-        r = snx_error("cannot write %s", path);
-    if (!r && !quiet) {
+    r = nce_layout(mods, p->module_count, NCE_CODE_END, &sites, &pools, &pool_count, why, sizeof why);
+    if (r > 0) {
+        printf("NCE: nce=1, but %s: this recompile makes the code ahead of time (nce=0)\n", why);
+        *refused = 1;
+        r = 0;
+    } else if (r)
+        r = snx_error("NCE: %s", why);
+    else {
+        for (size_t i = 0; i < p->module_count; i++) p->modules[i].base = mods[i].base;
+        if (nce_file_write(path, p->modules[0].base, pools, pool_count, &sites)) r = snx_error("cannot write %s", path);
+    }
+    if (!r && !*refused && !quiet) {
         /* outside: by kind, as the runtime's net catches only an SVC there (nce_host_net), and the others would read
            the host's registers */
         char kinds[256] = "";
@@ -428,12 +429,13 @@ static int nce_prepare(SnxProgram* p, const char* base, int quiet) {
             if (sites.outside_kind[k])
                 at += (size_t)snprintf(kinds + at, sizeof kinds - at, "%s%s %zu", at ? ", " : ": ",
                                        nce_kind_name((NceKind)k), sites.outside_kind[k]);
-        printf("NCE: %zu words to patch (%zu that the flow reaches), %zu kept as data, %zu outside the functions%s\n",
-               sites.count, sites.proven, sites.data, sites.outside, kinds);
+        printf("NCE: %zu words to patch (%zu that the flow reaches), %zu kept as data, %zu outside the functions%s; "
+               "%zu pools of stubs\n",
+               sites.count, sites.proven, sites.data, sites.outside, kinds, pool_count);
     }
     nce_sites_free(&sites);
     free(pools);
-    free(old);
+    free(mods);
     free(path);
     return r;
 }
@@ -788,9 +790,13 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
             }
         }
 #endif
-        if (nce) gen.interp_only = 1;
-        i = nce ? nce_prepare(&program, base, compile.quiet) : snx_is_file(stale) && remove(stale) ? -1 : 0;
-        if (i && !nce) snx_error("cannot remove %s, which is of an NCE recompile", stale);
+        int refused = 0;
+        i = nce ? nce_prepare(&program, base, compile.quiet, &refused) : 0;
+        if (refused) nce = 0; /* a word of its code reaches no pool of stubs: said */
+        if (nce)
+            gen.interp_only = 1;
+        else if (snx_is_file(stale) && remove(stale))
+            i = snx_error("cannot remove %s, which is of an NCE recompile", stale);
         free(stale);
         if (i) goto done;
     }

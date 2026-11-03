@@ -133,6 +133,19 @@ int nce_file_write(const char* path, SnxU64 base, const NceRange* pools, size_t 
 /* 0, or -1 for a file that is missing or not of this version. *pools is malloc'd */
 int nce_file_read(const char* path, SnxU64 base, NceRange** pools, size_t* pool_count, NceSites* sites);
 
+/* The layout of an NCE recompile. Each module moves up, from mods[0].base on in their order, to leave room after it
+   for a pool of its sites' stubs, which a B reaches (128 MiB). A module whose first sites that pool would not reach
+   (its image and pool past 128 MiB, as an update's main module may be) gets a second pool before it, which they take,
+   as Eden splits its patch section. Then the stubs are placed as the runtime places them (the trap, then each site,
+   nce.c): mods[i].base is where module i goes and the sites move with it, *pools (malloc'd) in the order the runtime
+   fills them, 0. 1, with why, when a site reaches no pool even so (a module past about 256 MiB), and -1, with why,
+   when the pools pass end: mods and the sites are then as they were, and *pools NULL */
+typedef struct {
+    SnxU64 base, size;
+} NceSpan;
+int nce_layout(NceSpan* mods, size_t count, SnxU64 end, NceSites* sites, NceRange** pools, size_t* pool_count,
+               char* why, size_t size);
+
 /* The net under an SVC that no site holds (a word outside the analysed functions that is code after all, or code that
    the game made): a seccomp filter that traps each system call made from the guest's addresses [lo, hi) with SIGSYS,
    the call not made, and lets every other through. Classic BPF, laid out as linux/filter.h's struct sock_filter, for
