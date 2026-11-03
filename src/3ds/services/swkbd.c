@@ -47,9 +47,9 @@ enum { CALLBACK_OK, CALLBACK_CLOSE, CALLBACK_CONTINUE };
 
 bool snx_ctr_swkbd_is(uint32_t applet_id) { return applet_id == 0x201 || applet_id == 0x401; }
 
-/* UTF-8 to UTF-16, at most max units (a pair is never split); a byte that starts no character, a sequence cut
+/* UTF-8 to UTF-16, up to most units (a pair is never split); a byte that starts no character, a sequence cut
    short, an overlong form or a surrogate each become one U+FFFD. Returns the units */
-static uint32_t utf8_to_16(const char* in, uint16_t* out, uint32_t max) {
+static uint32_t utf8_to_16(const char* in, uint16_t* out, uint32_t most) {
     const unsigned char* s = (const unsigned char*)in;
     uint32_t n = 0;
     while (*s) {
@@ -68,7 +68,7 @@ static uint32_t utf8_to_16(const char* in, uint16_t* out, uint32_t max) {
                     c = 0xfffd;
             }
         }
-        if (n + (c >= 0x10000 ? 2 : 1) > max) break;
+        if (n + (c >= 0x10000 ? 2 : 1) > most) break;
         if (c >= 0x10000) {
             out[n++] = (uint16_t)(0xd800 + ((c - 0x10000) >> 10));
             out[n++] = (uint16_t)(0xdc00 + ((c - 0x10000) & 0x3ff));
@@ -126,14 +126,14 @@ static uint32_t most_units(SnxCtrProcess* p) {
     if (most > room) most = room;
     return most < TEXT_UNITS - 1 ? most : TEXT_UNITS - 1;
 }
-/* the game's initial text, up to max units and its terminator: 0 units for none */
-static uint32_t initial_text(SnxCtrProcess* p, uint32_t max, uint16_t* out) {
+/* the game's initial text, up to most units and its terminator: 0 units for none */
+static uint32_t initial_text(SnxCtrProcess* p, uint32_t most, uint16_t* out) {
     uint32_t offset = snx_ld_le32(p->swkbd.config + CONFIG_INITIAL), size = p->objects[p->swkbd.text].data.shared.size;
     unsigned char bytes[TEXT_UNITS * 2];
     if (offset == 0xffffffffu || offset >= size) return 0;
-    uint32_t take = (max + 1) * 2 < size - offset ? (max + 1) * 2 : (size - offset) & ~1u, n = 0;
+    uint32_t take = (most + 1) * 2 < size - offset ? (most + 1) * 2 : (size - offset) & ~1u, n = 0;
     if (!take || !text_block(p, offset, bytes, take, false)) return 0;
-    while (n < take / 2 && n < max && snx_ld_le16(bytes + n * 2)) {
+    while (n < take / 2 && n < most && snx_ld_le16(bytes + n * 2)) {
         out[n] = snx_ld_le16(bytes + n * 2);
         ++n;
     }
@@ -146,7 +146,7 @@ static bool blank(const uint16_t* t, uint32_t n) {
 }
 /* why the text breaks the configuration's input rule or one of its filters, written to why; false when it breaks
    none (Azahar's ValidateInput and ValidateFilters, but for the profanity filter, which no list here checks) */
-static bool broken(const unsigned char* config, const uint16_t* t, uint32_t n, uint32_t max, char* why, size_t size) {
+static bool broken(const unsigned char* config, const uint16_t* t, uint32_t n, uint32_t most, char* why, size_t size) {
     uint32_t rule = snx_ld_le32(config + CONFIG_RULE), filters = snx_ld_le32(config + CONFIG_FILTERS);
     uint32_t digits = 0, most_digits = snx_ld_le16(config + CONFIG_MAX_DIGITS), at = 0, percent = 0, backslash = 0;
     for (uint32_t i = 0; i < n; ++i) {
@@ -163,8 +163,8 @@ static bool broken(const unsigned char* config, const uint16_t* t, uint32_t n, u
         snprintf(why, size, "has a %%, which the game refuses");
     else if ((filters & FILTER_BACKSLASH) && backslash)
         snprintf(why, size, "has a \\, which the game refuses");
-    else if (rule == RULE_FIXED_LENGTH && n != max)
-        snprintf(why, size, "is %u characters, the game asks for exactly %u", (unsigned)n, (unsigned)max);
+    else if (rule == RULE_FIXED_LENGTH && n != most)
+        snprintf(why, size, "is %u characters, the game asks for exactly %u", (unsigned)n, (unsigned)most);
     else if ((rule == RULE_NOT_EMPTY || rule == RULE_NOT_EMPTY_NOT_BLANK) && !n)
         snprintf(why, size, "is empty, which the game refuses");
     else if ((rule == RULE_NOT_BLANK || rule == RULE_NOT_EMPTY_NOT_BLANK) && n && blank(t, n))
@@ -203,7 +203,7 @@ static void finish(SnxCtrProcess* p) {
 /* the answer in the player's place, written to the block and the configuration; false when the block refuses it */
 static bool answer(SnxCtrProcess* p) {
     uint16_t text[TEXT_UNITS];
-    uint32_t max = most_units(p), all, n, buttons = snx_ld_le32(p->swkbd.config + CONFIG_BUTTONS), result;
+    uint32_t most = most_units(p), all, n, buttons = snx_ld_le32(p->swkbd.config + CONFIG_BUTTONS), result;
     char shown[TEXT_UNITS * 3 + 1], what[TEXT_UNITS * 3 + 64], why[96];
     const char* where;
     if (g_settings.keyboard_text[0]) {
@@ -215,7 +215,7 @@ static bool answer(SnxCtrProcess* p) {
         all = snx_ctr_cfg_username(text);
         where = NULL;
     }
-    n = all < max ? all : max;
+    n = all < most ? all : most;
     /* the user name stays out of the log, which players attach to public reports: its length stands for it */
     if (!where)
         snprintf(what, sizeof what, "the console's user name (%u characters)", (unsigned)n);
@@ -225,8 +225,8 @@ static bool answer(SnxCtrProcess* p) {
     }
     if (n < all)
         fprintf(stderr, "3ds swkbd: %s is cut from %u characters to the game's %u\n", where ? where : "the user name",
-                (unsigned)all, (unsigned)max);
-    if (broken(p->swkbd.config, text, n, max, why, sizeof why)) {
+                (unsigned)all, (unsigned)most);
+    if (broken(p->swkbd.config, text, n, most, why, sizeof why)) {
         if (cancel_result(buttons, &result)) {
             fprintf(stderr, "3ds swkbd: the software keyboard is cancelled: %s %s\n", what, why);
             return put_answer(p, NULL, 0, result);
