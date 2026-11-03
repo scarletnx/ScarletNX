@@ -2472,8 +2472,9 @@ static int check_rt_overlap(void) {
 /* Guest memory read in place whose host pages change (gpu/vk/uma.c). amdgpu takes every import's pages again in each
    submission and refuses all of it on pages gone or trapped since (EFAULT: the device is lost), so the import over
    pages the guest unmaps leaves the driver with the unmap, once the commands that read it ran, and before anything else
-   is submitted, while an import elsewhere stays the same one; and the import over pages the GPU owns next leaves it
-   before they are trapped. A driver that takes no pages again (lavapipe) shows it in the imports held */
+   is submitted, while an import elsewhere stays the same one; the import over pages the GPU owns next leaves it before
+   they are trapped; and so does one dropped from the table that a recorded command still reads. A driver that takes
+   no pages again (lavapipe) shows it in the imports held */
 #define UMA_R  (HEAP_BASE + 0x1000000) /* mapped and unmapped here */
 #define UMA_GR 0x4d0000000ull
 #define UMA_E  (HEAP_BASE + 0x1200000) /* another import, two windows away */
@@ -2531,10 +2532,29 @@ static int check_uma_page_changes(void) {
     for (u32 i = 0; i < 256; i++) CHECK(result[i] == 0x66); /* read before the copy over it */
     vk_unlock();
     CHECK(!memcmp(GP(UMA_R) + 0x1000, GP(UMA_E) + 0x2000, 256) && GP(UMA_R)[0x1100] == 0x66); /* reading lands it */
-    CHECK(mem_unmap(UMA_R, 0x10000) == 0 && mem_unmap(UMA_E, 0x10000) == 0);
-    printf("in place: an unmapped import leaves the driver with the unmap, one elsewhere stays, and one over pages the "
-           "GPU owns next goes before the trap (traps %s)\n",
-           own_traps() ? "on" : "off: nothing to check");
+    /* an import dropped from the table (a save state's load forgets them all) is the driver's until the copy recorded
+       with it is done: its pages unmapped before that, the copy runs first and the import goes with the unmap */
+    vk_lock();
+    CHECK(vk_buf_get_input(UMA_GR + 0x3000, 256, 4, &r, &roff) && vk_uma_imports(UMA_R + 0x3000, 0x1000) == 1);
+    c[0] = (VkBufferCopy){roff, 0, 256};
+    rec_CmdCopyBuffer(vk_cmd(), r, rb, 1, &c[0]);
+    vk_uma_forget_all();
+    CHECK(vk_uma_imports(UMA_R + 0x3000, 0x1000) == 1); /* the copy still reads it */
+    vk_unlock();
+    CHECK(mem_unmap(UMA_R, 0x10000) == 0);
+    vk_lock();
+    CHECK(vk_buf_get_input(UMA_GE + 0x100, 256, 4, &e, &eoff));
+    c[2].srcOffset = eoff;
+    rec_CmdCopyBuffer(vk_cmd(), e, rb, 1, &c[2]); /* work of its own for a submission after the unmap */
+    vk_finish();
+    vk_readback_ready();
+    CHECK(vk_uma_imports(UMA_R, 0x10000) == 0);
+    for (u32 i = 0; i < 256; i++) CHECK(result[i] == 0x66);
+    vk_unlock();
+    CHECK(mem_unmap(UMA_E, 0x10000) == 0);
+    printf("in place: an unmapped import leaves the driver with the unmap, one elsewhere stays, one over pages the GPU "
+           "owns next goes before the trap (traps %s), and one dropped goes with an unmap\n",
+           own_traps() ? "on" : "off: nothing to check there");
     return 0;
 }
 

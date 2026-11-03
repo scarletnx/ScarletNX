@@ -81,6 +81,8 @@ typedef struct {
     /* the GPU thread's, under vk_lock */
     Imp imp[UMA_MAX]; /* sorted by cpu, none overlapping, nimp of them; their dead flags under lk */
     u32 nimp;
+    Imp* gone; /* dropped from the table, the driver's until the submit that last read them is done: ngone of cap */
+    u32 ngone, capgone;
     VkResult import_result; /* the last import's, for the log */
     u64 align;              /* minImportedHostPointerAlignment */
     u64 bound;              /* the submit that last read guest memory in place (vk_submit_number) */
@@ -173,18 +175,50 @@ int vk_uma_choose(int has_import, int has_placed) {
 }
 
 /* ------------------------------------------------------------ imports */
-static void imp_free(void* p) {
-    Imp* d = p;
-    if (d->buf) vkDestroyBuffer(g_vk.dev, d->buf, NULL);
-    if (d->mem) vkFreeMemory(g_vk.dev, d->mem, NULL);
-    free(d);
+/* until the GPU has done submit sub, which is submitted first if it is still the one being recorded (vk_lock held) */
+static void read_done(u64 sub) {
+    u64 submitted, done;
+    vk_submit_progress(&submitted, &done);
+    if (sub <= done) return;
+    if (sub > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    vk_wait_submit(sub);
 }
-/* the import at i goes from the table: its memory once the frame's work is done (vk_lock held) */
+static void imp_destroy(const Imp* m) {
+    vkDestroyBuffer(g_vk.dev, m->buf, NULL);
+    vkFreeMemory(g_vk.dev, m->mem, NULL);
+}
+/* the dropped imports whose last reader is done are destroyed (vk_lock held) */
+static void gone_reap(void) {
+    u64 submitted, done;
+    vk_submit_progress(&submitted, &done);
+    for (u32 i = g_uma.ngone; i-- > 0;)
+        if (g_uma.gone[i].sub <= done) {
+            imp_destroy(&g_uma.gone[i]);
+            g_uma.gone[i] = g_uma.gone[--g_uma.ngone];
+        }
+}
+/* the dropped imports over guest memory [lo, hi) are destroyed now, once their last reader is done: their pages change
+   or are trapped next (vk_lock held) */
+static void gone_kill(u64 lo, u64 hi) {
+    for (u32 i = g_uma.ngone; i-- > 0;)
+        if (g_uma.gone[i].cpu < hi && lo < g_uma.gone[i].cpu + g_uma.gone[i].size) {
+            read_done(g_uma.gone[i].sub);
+            imp_destroy(&g_uma.gone[i]);
+            g_uma.gone[i] = g_uma.gone[--g_uma.ngone];
+        }
+}
+/* the import at i goes from the table, with its pages as they are: destroyed once the submit that last read it is done
+   (gone_reap), or as soon as its pages change or are trapped (gone_kill), as the driver keeps it in every submission
+   until then (vk_lock held). Never a wait here: the submit may be the one being recorded, a draw half set up */
 static void imp_drop(u32 i) {
-    Imp* d = malloc(sizeof *d);
-    if (!d) fatal("vulkan: out of memory for an import of guest memory");
-    *d = g_uma.imp[i];
-    vk_defer_call(imp_free, d);
+    if (g_uma.ngone == g_uma.capgone) {
+        u32 cap = g_uma.capgone ? 2 * g_uma.capgone : 64;
+        Imp* g = realloc(g_uma.gone, sizeof *g * cap);
+        if (!g) fatal("vulkan: out of memory for %u imports of guest memory to destroy", cap);
+        g_uma.gone = g;
+        g_uma.capgone = cap;
+    }
+    g_uma.gone[g_uma.ngone++] = g_uma.imp[i];
     g_uma.dropped++;
     pm_lock(&g_uma.lk);
     memmove(&g_uma.imp[i], &g_uma.imp[i + 1], sizeof *g_uma.imp * (size_t)(g_uma.nimp - i - 1));
@@ -210,18 +244,12 @@ static void pages_replaced(u64 a, u64 size) {
    not when the frame's work is: the driver keeps it in every submission until then */
 static void imp_kill(u32 i) {
     Imp d = g_uma.imp[i];
-    u64 submitted, done;
-    vk_submit_progress(&submitted, &done);
-    if (d.sub > done) {
-        if (d.sub > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE); /* still the one being recorded */
-        vk_wait_submit(d.sub);
-    }
+    read_done(d.sub);
     pm_lock(&g_uma.lk);
     memmove(&g_uma.imp[i], &g_uma.imp[i + 1], sizeof *g_uma.imp * (size_t)(g_uma.nimp - i - 1));
     g_uma.nimp--;
     pm_unlock(&g_uma.lk);
-    vkDestroyBuffer(g_vk.dev, d.buf, NULL);
-    vkFreeMemory(g_vk.dev, d.mem, NULL);
+    imp_destroy(&d);
     g_uma.dropped++;
 }
 /* the dead ones go from the driver (vk_lock held) */
@@ -456,6 +484,7 @@ void vk_uma_init(void) {
 void vk_uma_frame(void) {
     if (!vk_uma()) return;
     drop_dead();
+    gone_reap();
     if (g_vk_present % 60 == 0)
         for (u32 i = g_uma.nimp; i-- > 0;)
             if ((u32)(g_vk_present - g_uma.imp[i].used) > UMA_IDLE) imp_drop(i);
@@ -505,7 +534,9 @@ static int quiesce(u64 cpu, u64 size) {
    Whole host pages, as own_begin traps them */
 void vk_uma_owning(u64 cpu, u64 size) {
     u64 page = plat_vm_page(), lo = cpu & ~(page - 1), hi = (cpu + size + page - 1) & ~(page - 1);
-    if (!vk_uma() || !quiesce(lo, hi - lo)) return;
+    if (!vk_uma()) return;
+    gone_kill(lo, hi);
+    if (!quiesce(lo, hi - lo)) return;
     for (u32 i = g_uma.nimp; i-- > 0;)
         if (g_uma.imp[i].cpu < hi && lo < g_uma.imp[i].cpu + g_uma.imp[i].size) imp_kill(i);
 }
@@ -513,7 +544,9 @@ void vk_uma_owning(u64 cpu, u64 size) {
    vk_uma_mapping_end): with an import over it, its readers run, and every submission made so far is in the driver,
    not only in the recording thread's queue (vk_rec_sync), as a submission's ioctl takes the import's pages */
 void vk_uma_mapping_begin(u64 cpu, u64 size) {
-    if (vk_uma() && quiesce(cpu, size)) vk_rec_sync();
+    if (!vk_uma()) return;
+    gone_kill(cpu, size == ~0ull || cpu + size < cpu ? ~0ull : cpu + size);
+    if (quiesce(cpu, size)) vk_rec_sync();
 }
 /* they changed: the imports over pages that are other pages now go before anything else is submitted */
 void vk_uma_mapping_end(void) {
@@ -523,6 +556,8 @@ u32 vk_uma_imports(u64 cpu, u64 size) {
     u32 n = 0;
     for (u32 i = 0; i < g_uma.nimp; i++)
         n += g_uma.imp[i].cpu < cpu + size && cpu < g_uma.imp[i].cpu + g_uma.imp[i].size;
+    for (u32 i = 0; i < g_uma.ngone; i++)
+        n += g_uma.gone[i].cpu < cpu + size && cpu < g_uma.gone[i].cpu + g_uma.gone[i].size;
     return n;
 }
 /* a save state's load: every import goes */
