@@ -24,7 +24,7 @@ bool hle_is_system_library(const char* name) {
 }
 
 static const HleSymbol* const tables[] = {hle_libc, hle_posix, hle_thread, hle_sync, hle_dl, hle_sles, hle_media,
-                                          hle_android, hle_egl, hle_signal};
+                                          hle_android, hle_egl, hle_gles, hle_signal};
 
 static struct {
     const HleSymbol** sorted;

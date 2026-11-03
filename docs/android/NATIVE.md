@@ -17,7 +17,7 @@ Unity game: a 362 MB engine library with 265 MB of code, 20 smaller ones, and 62
 * [Threads](#threads)
 * [JNI](#jni)
 * [Vulkan: a pass-through](#vulkan-a-pass-through)
-* [EGL and GLES: pending on purpose](#egl-and-gles-pending-on-purpose)
+* [EGL and GLES](#egl-and-gles)
 * [Hosts](#hosts)
 * [Status](#status)
 
@@ -147,11 +147,37 @@ engine can allow Vulkan only on the GPUs of its own list: one game's list holds 
 (Mali-G610 and newer), and on any other GPU the game takes GLES, which has no display here. A Mali-G710 is on such
 lists.
 
-## EGL and GLES: pending on purpose
+## EGL and GLES
 
-The engine library needs `libEGL.so` and `libGLESv2.so` (`DT_NEEDED`), so both exist, but their functions report no
-display: `eglGetDisplay` gives `EGL_NO_DISPLAY`, `eglInitialize` fails with `EGL_NOT_INITIALIZED`, and a GLES call does
-nothing. An engine that tries GLES then takes Vulkan. GLES over Vulkan is a later step, and is not started.
+`libEGL.so` serves the guest's native code and Java's `EGL10` alike (`snx.android.opengl.Egl10`, the JSR 239 EGL
+that `GLSurfaceView` uses): both reach the same objects in `hle_egl.c`, so a context and a surface that Java makes
+current are current for the native GLES calls of the same thread, as on Android.
+
+- **The configs** are GLES 1.1's alone (`EGL_OPENGL_ES_BIT`): RGBA 8888, RGB 888 and RGB 565, each with no depth
+  buffer, a 16-bit one and a 24-bit one with 8 bits of stencil, matched and sorted as `eglChooseConfig` does. An
+  engine that asks for GLES 2 or 3 finds no config and takes Vulkan.
+- **A context without a config** (`EGL_KHR_no_config_context`) of any version can be made current without a surface,
+  and `glGetString` answers with the GPU that Vulkan reports. Engines name the GPU from such a throwaway context
+  before they choose an API, and choose Vulkan only on the GPUs of their own lists.
+- **A window surface** is a swapchain on the host window (or on a headless surface), which `libGLESv1_CM.so` draws
+  into: GLES 1.1's fixed function over Vulkan (`hle_gles.c`).
+
+`hle_gles.c` is a Vulkan app of its own. It makes its instance, surface, device, queue and swapchain, and presents,
+through the pass-through's commands (`hle_vulkan_host.h`), so its presents get the renderer's layer and `--shot`'s
+copies as a guest's own Vulkan presents do. A frame is one command buffer, recorded as the calls come. A draw goes
+into a render pass on the swapchain image. A texture upload ends the pass, copies from a staging buffer and starts
+the pass again (loading what it drew), so each draw reads the texture as it was at its call. The client arrays of a
+draw are converted into one vertex format (position, texture coordinate and color as floats) in a buffer of the
+frame, as triangle, line or point lists. GL's window origin is the bottom left: the viewport has a negative height,
+so GL's viewport, scissor and `glDrawTexOES` coordinates are used as they are. A texture of 3-byte texels (`GL_RGB`,
+`GL_UNSIGNED_BYTE`) on a device that cannot sample that format is an RGBA8 image, which a compute shader
+(`gles_rgb.comp`) writes from the packed rows. Two frames are in flight, and what a frame used (a replaced texture's
+image, a staging buffer that grew) is destroyed when its fence is signaled.
+
+What it does: 2D textures (the base level) in the formats GLES 1.1 has, the texture environment of unit 0, the
+matrix stacks, the client arrays, `glDrawArrays`, `glDrawElements`, `glDrawTexOES`, blending, the scissor and
+`glClear`. What it does not do yet: GLES 2 and 3, depth and stencil tests, lighting, fog, the alpha test, mipmaps, the
+second texture unit, pbuffers, and `glReadPixels`, which reads zeros (a readback of the window is the last resort).
 
 ## Hosts
 
