@@ -26,12 +26,14 @@
 
 /* The 39-bit layout of a 64-bit application without ASLR, as Eden's KPageTableBase::InitializeForProcess lays it out
    from k_address_space_info.cpp's sizes: code at 0x8000000, then the 64 GiB alias region, the 8 GiB heap region and
-   the 2 GiB stack region. The console's address space is 512 GiB; the host reservation is AS_SIZE (128 GiB), so the
-   address space (the ASLR region of GetInfo 12 and 13) ends there, and the kernel map region, 64 GiB on the console,
-   is the 1 GiB the kernel's own pages (TLS) need. The alias region starts at 4 GiB, which leaves the code below it
-   up to 3.9 GiB, as the end of the code isn't known yet when the layout is made */
-MemLayout g_layout = {0x8000000ull,  AS_MAX,      0x1100000000ull, 8 * GIB, 0x100000000ull, 64 * GIB,
-                      0x1300000000ull, 2 * GIB, 0x1380000000ull, 0x13C0000000ull};
+   the 2 GiB stack region. The address space (the ASLR region of GetInfo 12 and 13) ends where the host reservation
+   does, AS_SIZE: the console's 512 GiB where the host gives that much. The kernel map region, 64 GiB on the console,
+   is the 1 GiB the kernel's own pages (TLS) need. The alias region starts at 4 GiB, which leaves the code below it up
+   to 3.9 GiB, as the end of the code isn't known yet when the layout is made */
+#define LAYOUT39                                                                                                       \
+    {0x8000000ull, AS_MAX,          0x1100000000ull, 8 * GIB,         0x100000000ull,                                  \
+     64 * GIB,     0x1300000000ull, 2 * GIB,         0x1380000000ull, 0x13C0000000ull}
+MemLayout g_layout = LAYOUT39;
 u64 g_as_size = AS_MAX;
 u8* g_mem;
 u64 g_heap_size, g_phys_mapped, g_heap_max, g_code_memory, g_main_stack_size;
@@ -745,10 +747,17 @@ static int alias_map_nl(u64 dst, u64 src, u64 size, u32 state, u32 perm) {
     return 0;
 }
 
-/* The layout in size bytes of address space, smaller than the console's: the alias and heap regions shrink, in the
-   same order and below the stack, with the kernel's pages in the last GiB. The game finds the sizes it asks of
-   GetInfo (the alias region 4 GiB to 32 GiB, the heap region 4 GiB to 8 GiB) */
+/* The layout in size bytes of address space. From AS_MAX up, the console's regions, with the address space ending
+   where the reservation does. Smaller: the alias and heap regions shrink, in the same order and below the stack, with
+   the kernel's pages in the last GiB. The game finds the sizes it asks of GetInfo (the alias region 4 GiB to 32 GiB,
+   the heap region 4 GiB to 8 GiB) */
 static void layout_for(u64 size) {
+    if (size >= AS_MAX) {
+        static const MemLayout console = LAYOUT39;
+        g_layout = console;
+        g_layout.end = size;
+        return;
+    }
     g_layout.end = size;
     if (size >= 16 * GIB) {
         u64 alias = size >= 64 * GIB ? 32 * GIB : size >= 32 * GIB ? 8 * GIB : 4 * GIB;
@@ -822,10 +831,12 @@ static u64 largest_hole(void) {
 /* elsewhere the reservation's own answer says whether a run that large is free */
 static u64 largest_hole(void) { return UINT64_MAX; }
 #endif
-/* The largest of these the system gives is the guest's address space: the console's 128 GiB where it can, else a
-   smaller layout (an iOS app without the extended virtual addressing entitlement, a process RLIMIT_AS holds to less) */
-static const u64 tiers[] = {128 * GIB, 64 * GIB, 48 * GIB, 32 * GIB, 24 * GIB, 16 * GIB,
-                            12 * GIB,  8 * GIB,  7 * GIB,  6 * GIB,  5 * GIB};
+/* The largest of these the system gives is the guest's address space: the console's 512 GiB where it can, else a
+   smaller layout (a kernel of 39 bits of address space, as a Raspberry Pi 4's, has less than that free; a process
+   RLIMIT_AS holds to less; an iOS app without the extended virtual addressing entitlement). NCE's reservation takes
+   them up to AS_MAX */
+static const u64 tiers[] = {512 * GIB, 256 * GIB, 128 * GIB, 64 * GIB, 48 * GIB, 32 * GIB, 24 * GIB,
+                            16 * GIB,  12 * GIB,  8 * GIB,   7 * GIB,  6 * GIB,  5 * GIB};
 static u8* reserve_tiers(void) {
     u64 hole = largest_hole();
     size_t i;
@@ -841,7 +852,7 @@ static u8* reserve_tiers(void) {
             continue;
         }
         g_as_size = tiers[i];
-        if (tiers[i] < AS_MAX) layout_for(tiers[i]);
+        layout_for(tiers[i]);
         return p;
     }
     return NULL;
@@ -891,9 +902,13 @@ void mem_reserve(void) {
 #endif
     g_mem = reserve_tiers();
     if (!g_mem) fatal("Could not reserve even 5 GiB of address space for the game's memory");
-    if (g_as_size < AS_MAX)
-        LOG("memory: %llu GiB of address space reserved, a smaller layout than the console's %llu\n",
-            (unsigned long long)(g_as_size >> 30), (unsigned long long)(AS_MAX >> 30));
+    if (g_as_size == AS_TOP)
+        LOG("memory: %llu GiB of address space reserved, the console's\n", (unsigned long long)(g_as_size >> 30));
+    else
+        LOG("memory: %llu GiB of address space reserved, of the console's %llu: the game's address space ends "
+            "there%s\n",
+            (unsigned long long)(g_as_size >> 30), (unsigned long long)(AS_TOP >> 30),
+            g_as_size < AS_MAX ? ", in a smaller layout" : "");
 }
 
 void mem_init(void) {

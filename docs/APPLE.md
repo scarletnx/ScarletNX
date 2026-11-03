@@ -111,7 +111,7 @@ A Mac still prepares a game the same way (`scarletnx -x "Game.nsp" --name Game`,
 `scarletnx -r work/Game --target ios --outdir recompiled`), and its `recompiled/<id>/` can be copied into the app.
 
 Limits found on an iPhone 14 Pro (iOS 26.6.1): without the paid extended-virtual-addressing entitlement the app has
-about 13 GiB of address space and about 3 GB of memory, so the runtime takes the largest free run it can (128 GiB
+about 13 GiB of address space and about 3 GB of memory, so the runtime takes the largest free run it can (512 GiB
 down to 5 GiB) and lays the guest out to fit, with no alias region below 12 GiB.
 
 ### Installing from a Mac

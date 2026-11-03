@@ -862,11 +862,12 @@ can show what plain accesses do there.
 
 #### M2 The whole guest address space, reserved
 
-- **Now.** The host reserves at most 128 GiB, and the address space the guest is told about ends there. Generated code
-  adds `c->mem` with no mask (`src/nx/memory/mem.c`, `ir_state.c`), so a wild guest pointer past the reservation reaches
-  host memory instead of faulting as it would on the console.
-- **Change.** Where the host has the address space, reserve the full 39-bit guest range plus a guard as inaccessible
-  memory. Add a recompile setting that masks addresses to 39 bits for debugging, off by default.
+- **Now.** The host reserves the whole 39-bit range (512 GiB) where it has the address space, and less where it hasn't,
+  and the address space the guest is told about ends there. Generated code adds `c->mem` with no mask
+  (`src/nx/memory/mem.c`, `ir_state.c`), so a wild guest pointer past the reservation reaches host memory instead of
+  faulting as it would on the console.
+- **Change.** Reserve a guard past the 39-bit range as inaccessible memory. Add a recompile setting that masks
+  addresses to 39 bits for debugging, off by default.
 - **Where.** `mem.c`, `ir_state.c`, `settings.txt`.
 - **ABI.** None.
 - **Proof.** A synthetic wild pointer faults cleanly. `llvm_bench` shows the mask's cost.
