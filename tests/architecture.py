@@ -17,6 +17,8 @@ BOUNDARIES = {
     '3ds': {'3ds', 'common'},
     'vita': {'vita', 'common'},
     'agb': {'agb', 'common'},
+    # GLSL ES into SPIR-V: the C library only, for any backend to link
+    'glslc': {'glslc'},
     # scarletnx's main, every driver the build has: their entries, by the name it runs under
     'multicall': {'multicall', 'nx', 'gnuabi', '3ds', 'vita', 'agb', 'gui', 'common'},
 }
