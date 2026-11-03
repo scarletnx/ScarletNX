@@ -1059,6 +1059,45 @@ static void cases(int portable) {
     add_imm(p, 0, 21, 1);
     ret(p, 20);
     check(p, portable);
+    /* a loop calling a function that sees every register, X19 written before the loop and read in a loop inside it (a
+       local: its reads there outweigh its copies around the call): the loop's call finds it clean on the way back (the
+       call before it stored it, and the callee's change was reloaded), so it is stored once, on the way into the loop,
+       and not at the call on every turn */
+    p = begin("edge store");
+    s = callee(p, KEEP_X9);
+    p->call_target = s;
+    p->loop_x = 19;
+    mov(p, 20, LR);
+    add_imm(p, 19, 19, 5);
+    mov64(p, 9, 3);
+    {
+        size_t head = p->n;
+        w = p->n;
+        bl(p, s);
+        callee_model(p, w, s, KEEP_X9);
+        mov64(p, 10, 2);
+        {
+            size_t inner = p->n;
+            add_imm(p, 21, 19, 1);
+            subs1(p, 10);
+            patch(p, branch_if(p, 1), inner);
+            subs1_model(p, 10); /* its second turn */
+        }
+        subs1(p, 9);
+        patch(p, branch_if(p, 1), head);
+        for (unsigned turn = 1; turn < 3; ++turn) {
+            callee_model(p, w, s, KEEP_X9);
+            p->m.x[10] = 2;
+            p->m.x[21] = p->m.x[19] + 1;
+            subs1_model(p, 10);
+            subs1_model(p, 10);
+            subs1_model(p, 9);
+        }
+    }
+    use_all(p, (u64)1 << 20);
+    svc(p, 28);
+    ret(p, 20);
+    check(p, portable);
     /* last: a loop whose counter goes wrong polls past POLLS, which ends the test */
     /* a backward branch's poll with CPU.poll set: stored before rt->poll, which changes them, and the loop goes on
        through the function's entry and dispatch block (which polls again) from the CPU structure. Each of the two
