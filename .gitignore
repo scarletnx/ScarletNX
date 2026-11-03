@@ -85,3 +85,9 @@ __pycache__/
 .claude/worktrees/
 
 edenprobe-run/
+
+# the continuation watcher
+docs/.continue.lock
+docs/continue-work.log
+docs/.work-stop
+docs/.work-complete
