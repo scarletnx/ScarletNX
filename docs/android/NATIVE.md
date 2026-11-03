@@ -77,9 +77,16 @@ thread that runs guest code has its own CPU state, guest stack and bionic TLS bl
 slots, where bionic's code reads the stack guard (slot 5) and the thread's own data. A thread of the JVM gets them the
 first time it calls a native method.
 
-Signals are bionic's and the kernel's on Android. Here `sigaction` of the guest records the handler. A host fault in
-guest code (the GC's write barriers, a null check that the engine leaves to the hardware) enters the guest handler
-with a frame the guest can return from.
+Signals, threads' futexes and every number of `syscall()` are the GNU ABI runtime's kernel library
+(`src/gnuabi/kernel/`, [GNUABI.md](../GNUABI.md)) over the bridge's memory, whose guest addresses are the host's.
+bionic's functions (`sigaction` in bionic's LP64 layout, the masks, `pthread_kill`, the waits) only convert to it.
+The guest's signals are its own: the process is the JVM's too, and the guest never changes a host disposition or
+mask. A handler runs in the frame Linux gives it (`common/runtime/linux_signal.c`) where every guest register is in
+the thread's CPU structure: at `RtAPI.poll`, as an HLE call returns, or, for a thread that waits in a blocking HLE
+call (`pthread_cond_wait`, `sem_wait`, a read) or runs no guest code, from the handler of a host real-time signal
+that the sender gives it. A host fault in generated code still ends the app, as its registers are not exact there.
+`SNX_ANDROID_SIGNALS=1` logs each action, send and delivery, and `SNX_ANDROID_SAMPLE=1` prints each guest thread's
+pc, x30 and HLE call every 5 seconds, for a stall.
 
 ## JNI
 
@@ -109,9 +116,10 @@ the layouts agree. The adapters change only:
 The game's window is the SDL window: while the guest owns a swapchain on it, ScarletNX's own renderer
 ([HWUI](HWUI.md)) stops presenting.
 
-The device that the guest sees is a Mali-G52 (ARM's vendor and driver IDs), with the host's limits and features. The
-game chooses Vulkan by GPU names of its own list (`assets/vulkan_gpu_list_config.txt`), and with GLES reporting no
-display, its fallback decides the API.
+The device that the guest sees is a Mali-G710 (ARM's vendor and driver IDs), with the host's limits and features. An
+engine can allow Vulkan only on the GPUs of its own list: one game's list holds recent Adreno, Xclipse and Mali GPUs
+(Mali-G610 and newer), and on any other GPU the game takes GLES, which has no display here. A Mali-G710 is on such
+lists.
 
 ## EGL and GLES: pending on purpose
 
@@ -161,9 +169,10 @@ The recompiler's `android` target (`a64.profile`) is a phone's Armv8.2 CPU witho
   guest's arguments by `hle_call_wide` (up to 12 integers, the guest's stack slots past `x7`). The instance's
   `VK_KHR_android_surface` becomes SDL's surface extensions or `VK_EXT_headless_surface`, the surface is the SDL
   window's (ScarletNX's renderer gives the window up), the guest's allocation callbacks and debug messengers are left
-  out, and the device reports itself a **Mali-G52** with ARM's vendor and driver IDs, its limits and features the
-  host's. Built, and not run yet: the game's Java side doesn't reach its engine's graphics,
-- EGL reports no display and GLES does nothing, on purpose.
+  out, and the device reports itself a **Mali-G710** with ARM's vendor and driver IDs, its limits and features the
+  host's. A Unity game's engine reaches it, makes its instance and device and a swapchain on the window, and then
+  crashes in the host's driver (lavapipe here) after an image it could not make,
+- EGL gives the GPU's identity alone: a display, contexts without a config or a surface, and `glGetString` with the
+  device that Vulkan reports, which engines read before they choose an API. Nothing draws through GLES, on purpose.
 
-Next: signals,
-OpenSL ES and the media codecs, the EGL and GLES libraries that report no display, and the Vulkan pass-through.
+Next: the image that the Vulkan pass-through fails to make, OpenSL ES and the media codecs.
