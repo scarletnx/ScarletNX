@@ -1606,6 +1606,13 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-image-out 23)
     target_link_libraries(snx-test-vk-image-out PRIVATE snx_nx_flags)
     add_test(NAME vk_image_out COMMAND snx-test-vk-image-out)
+    # vertex_input_dynamic_state (gpu/vk/vertex_input.c): its values, read from a .ini without it and with it, the
+    # drivers' bans against stand-in devices and the log line of each case
+    add_executable(snx-test-vk-vertex-input vk_vertex_input.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/vertex_input.c"
+                   "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+    snx_test_target(snx-test-vk-vertex-input 99)
+    target_link_libraries(snx-test-vk-vertex-input PRIVATE snx_nx_flags)
+    add_test(NAME vk_vertex_input COMMAND snx-test-vk-vertex-input)
     # the GPU driver a run asks for (nx/runtime/platform/gpu_driver_load.c) where none loads: Freedreno's variables set,
     # a wrong one, a package asked for here and a folder name that is none stopping the run with why, a run a case
     add_executable(snx-test-gpu-driver-load gpu_driver_load.c
