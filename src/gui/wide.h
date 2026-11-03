@@ -24,6 +24,10 @@ int gui_text_cols(const char* text);
 size_t gui_cols_fit(const char* text, int cols);
 /* text past its first characters that take cols columns or more, or its end */
 const char* gui_cols_skip(const char* text, int cols);
+/* text in cols columns at most, into out (size bytes): whole when it fits, else its first characters and "..." after
+   them, a wide one that would cross into the dots and the spaces before them left out; with under 4 columns, its
+   first characters alone */
+void gui_text_fit(const char* text, int cols, char* out, size_t size);
 /* path in cols columns at most, into out (size bytes): whole when it fits, else its start and its end around "...",
    cut at its separators where they allow: the end first, as many of the last folders as leave room for the root and
    its first folder ("/home/.../scarletnx/recompiled"); with under 5 columns, its start */

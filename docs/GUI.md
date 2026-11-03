@@ -630,7 +630,8 @@ a box of files. Their rows are 2 pixels apart times the text's size (on Android 
 2x by default, so 96, about 37 dp at a density of 2.6, Android's 48 dp touch target at 3x; the desktop's are 17), the focused one kept in the middle (on a
 group's screen, the group open in the groups' list; Games' grid by its lines) as the keys, a pad or the wheel move
 it, and a list still when the mouse, a pen or a tap moves it, the cursor inside each row, which a click takes
-whole as a tap does. Every list whose rows do not all show, Games' grid too, has a scroll bar a letter wide at its
+whole as a tap does. A row's text too long for it shows its start and ends in `...`, but for the focused row's, which
+slides where the theme slides (`scroll_ms`): one name moves at a time. Every list whose rows do not all show, Games' grid too, has a scroll bar a letter wide at its
 right, the rows beside it: its thumb as tall as the share of the rows shown and where they are, which a click takes
 there and drags, and a finger too from two letters of the bar's right edge; the rows stay where the thumb or a finger
 put them, the focus where it was, until a key, a pad or the wheel moves the focus. Under a box over the screen, only the box's

@@ -329,6 +329,31 @@ int main(void) {
         assert(gui_cols_skip(menu, 3) == menu + 6 && gui_cols_skip(menu, 5) == menu + 7 &&
                gui_cols_skip(menu, 9) == menu + 7);
     }
+    /* a text in a row's columns: whole when it fits, else its start and "..." in them, a wide letter whole or left out,
+       no space before the dots; under 4 columns its start alone, as "..." would take them all */
+    {
+        const char* menu = "\xe8\x8f\x9c\xe5\x8d\x95"
+                           "AB"; /* xx's Menu then AB: 6 columns */
+        char out[64];
+        gui_text_fit("A name that is too long", 23, out, sizeof out);
+        assert(!strcmp(out, "A name that is too long"));
+        gui_text_fit("A name that is too long", 22, out, sizeof out); /* its first 19, less the space they end in */
+        assert(!strcmp(out, "A name that is too..."));
+        gui_text_fit("A name that is too long", 20, out, sizeof out);
+        assert(!strcmp(out, "A name that is to..."));
+        gui_text_fit("A name that is too long", 4, out, sizeof out);
+        assert(!strcmp(out, "A..."));
+        gui_text_fit("A name that is too long", 3, out, sizeof out);
+        assert(!strcmp(out, "A n"));
+        gui_text_fit("A name that is too long", 0, out, sizeof out);
+        assert(!out[0]);
+        gui_text_fit(menu, 6, out, sizeof out);
+        assert(!strcmp(out, menu));
+        gui_text_fit(menu, 5, out, sizeof out); /* the first letter and the dots: the second would cross into them */
+        assert(!strcmp(out, "\xe8\x8f\x9c...") && gui_text_cols(out) == 5);
+        gui_text_fit(menu, 4, out, sizeof out); /* none fits beside the dots */
+        assert(!strcmp(out, "..."));
+    }
     /* a path in a row's columns: whole when it fits, else the root and its first folder, "...", and as many of the last
        folders as fit; a last name too long alone keeps its last letters; never wider than asked, a wide letter whole */
     {
