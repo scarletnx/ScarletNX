@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* glslc: the OpenGL ES shading language compiled into SPIR-V, for the backends that run OpenGL ES programs on Vulkan.
    It takes GLSL ES 1.00, 3.00, 3.10 and 3.20 (what an OpenGL ES 3.2 GPU of the Mali-G52's class takes) for the
-   vertex, fragment and compute stages, and writes a SPIR-V 1.0 module for Vulkan 1.0. docs/GLSLC.md lists what it
+   vertex, fragment and compute stages, and writes a SPIR-V 1.3 module for Vulkan 1.1. docs/GLSLC.md lists what it
    compiles, what it does not yet, and how the OpenGL ES interface (locations, bindings, loose uniforms) maps onto
    Vulkan's. Nothing in the build compiles a shader with it: ScarletNX's own shaders are Vulkan GLSL, compiled by the
    host's glslangValidator (cmake/glsl.cmake).
