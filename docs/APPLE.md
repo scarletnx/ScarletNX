@@ -7,6 +7,7 @@
 * [The frontend](#the-frontend)
   * [macOS](#macos)
   * [iOS](#ios)
+  * [HDR](#hdr)
   * [Running a game on iOS](#running-a-game-on-ios)
   * [Installing from a Mac](#installing-from-a-mac)
 * [What is missing](#what-is-missing)
@@ -83,6 +84,22 @@ Code compiled while a game runs on macOS, 32-bit games' blocks and the runtime J
 runtime's own loader (`src/common/cpu/recompiler/llvm/code_loader.c`). LLVM writes it as ELF objects with Darwin's
 calling convention, and the loader places them in `MAP_JIT` memory, which each thread sees either writable or
 executable. The app is signed without the hardened runtime, so `MAP_JIT` needs no entitlement.
+
+### HDR
+
+The presenter's HDR mode (`hdr=on`, Ctrl+H, docs/USAGE.md) prefers a **Display P3** swapchain image
+(`R16G16B16A16_SFLOAT` with `VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT`), which MoltenVK maps to the window's
+`CAMetalLayer` with extended dynamic range on: 1.0 is the display's own SDR white, so an SDR frame keeps the brightness
+it has in SDR, and P3's wider primaries hold the colours the expansion adds. Then **scRGB**
+(`VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT`) and **HDR10** (`A2B10G10R10_UNORM_PACK32` with
+`VK_COLOR_SPACE_HDR10_ST2084_EXT`, whose 203-nit reference can look dimmer than SDR on a display whose SDR white is
+brighter) are the fallbacks. A display that takes none keeps the SDR range and the log says so. The extended linear kinds come first on purpose:
+macOS misrepresents an HDR10 (PQ) layer's luminance (it shows at about half the exposure on an HDR display, mpv
+#16899), where 1.0 of an extended linear layer is the display's own SDR white on every display. Horizon prefers PQ, and
+on macOS its HDR passes through that detour too; `hdr_colorspace=hdr10` forces it for a comparison. The frames are
+composed in linear light (16 bits a channel) and encoded once. The display's own EDR headroom, which macOS reports and changes with
+the display's brightness, bounds the SDR frame's highlight lift (`hdr_expand`), so nothing is lifted where the display has
+no headroom. Screenshots stay in the SDR range.
 
 ### Running a game on iOS
 
