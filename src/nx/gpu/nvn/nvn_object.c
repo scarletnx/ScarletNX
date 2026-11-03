@@ -21,7 +21,7 @@
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/gpu.h"
-#include "nx/gpu/shader/sm70.h"
+#include "nx/gpu/shader/sm86.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/clock.h"
 #include "nx/hle/kernel/kernel.h"
@@ -1649,7 +1649,7 @@ static u32 stage11(u64 data) {
                                 NVN_SHADER_STAGE_GEOMETRY, NVN_SHADER_STAGE_FRAGMENT}; /* by ST_VS to ST_FS */
     u8 w[4];
     gmem_read_code(data, w, sizeof w);
-    int s = sm70_sph_stage(snx_ld_le32(w));
+    int s = sm86_sph_stage(snx_ld_le32(w));
     return s < 0 ? NVN_SHADER_STAGE_COMPUTE : nvn_of[s];
 }
 /* A stage's control section, as the game's driver reads it (its accessor for the newest format, which one game's

@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The SM70+ frontend (src/nx/gpu/shader/sm70.h): the decoder against instruction words that a small encoder here
+/* The SM86 frontend (src/nx/gpu/shader/sm86.h): the decoder against instruction words that a small encoder here
    makes by the rules of Mesa's NAK encoder (sm70_encode.rs: set_opcode, encode_alu_base, set_pred, set_instr_deps,
    set_rel_offset) and its SPH (sph.rs), the search for programs in shader memory, and the translation of small
    programs, which spirv-val checks when the test gets its path. No word here comes from a game. */
-#include "nx/gpu/shader/sm70.h"
+#include "nx/gpu/shader/sm86.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -78,9 +78,9 @@ static void cbuf(Word* x, u32 bank, u32 off) {
     set(x, 54, 5, bank);
 }
 
-static Sm70Insn dec(Word x) {
-    Sm70Insn in;
-    sm70_decode(x.w[0], x.w[1], &in);
+static Sm86Insn dec(Word x) {
+    Sm86Insn in;
+    sm86_decode(x.w[0], x.w[1], &in);
     return in;
 }
 
@@ -94,49 +94,49 @@ static void test_alu_forms(void) {
     set(&x, 72, 1, 1); /* a neg */
     set(&x, 62, 1, 1); /* b abs */
     set(&x, 75, 1, 1); /* c neg */
-    Sm70Insn in = dec(x);
-    CHECK(in.op == SM70_FFMA && in.form == 1 && in.dst == 1);
-    CHECK(in.a.kind == SM70_SRC_REG && in.a.reg == 2 && in.a.neg && !in.a.abs);
-    CHECK(in.b.kind == SM70_SRC_REG && in.b.reg == 3 && in.b.abs && !in.b.neg);
-    CHECK(in.c.kind == SM70_SRC_REG && in.c.reg == 4 && in.c.neg);
+    Sm86Insn in = dec(x);
+    CHECK(in.op == SM86_FFMA && in.form == 1 && in.dst == 1);
+    CHECK(in.a.kind == SM86_SRC_REG && in.a.reg == 2 && in.a.neg && !in.a.abs);
+    CHECK(in.b.kind == SM86_SRC_REG && in.b.reg == 3 && in.b.abs && !in.b.neg);
+    CHECK(in.c.kind == SM86_SRC_REG && in.c.reg == 4 && in.c.neg);
     x = alu(0x023, 2, 1, 2); /* c an immediate, b in 64-71 */
     set(&x, 32, 32, 0x3f800000u);
     set(&x, 64, 8, 5);
     in = dec(x);
-    CHECK(in.op == SM70_FFMA && in.b.kind == SM70_SRC_REG && in.b.reg == 5);
-    CHECK(in.c.kind == SM70_SRC_IMM && in.c.value == 0x3f800000u);
+    CHECK(in.op == SM86_FFMA && in.b.kind == SM86_SRC_REG && in.b.reg == 5);
+    CHECK(in.c.kind == SM86_SRC_IMM && in.c.value == 0x3f800000u);
     x = alu(0x023, 3, 1, 2); /* c a constant buffer */
     cbuf(&x, 3, 0x28c);
     set(&x, 64, 8, 6);
     in = dec(x);
-    CHECK(in.c.kind == SM70_SRC_CBUF && in.c.bank == 3 && in.c.value == 0x28c && !in.c.bindless && in.b.reg == 6);
+    CHECK(in.c.kind == SM86_SRC_CBUF && in.c.bank == 3 && in.c.value == 0x28c && !in.c.bindless && in.b.reg == 6);
     x = alu(0x023, 5, 1, 2); /* b a constant buffer */
     cbuf(&x, 17, 0xfffc);
     set(&x, 64, 8, 7);
     in = dec(x);
-    CHECK(in.b.kind == SM70_SRC_CBUF && in.b.bank == 17 && in.b.value == 0xfffc && in.c.reg == 7);
+    CHECK(in.b.kind == SM86_SRC_CBUF && in.b.bank == 17 && in.b.value == 0xfffc && in.c.reg == 7);
     x = alu(0x024, 6, 1, 2); /* IMAD, b a uniform register: encode_alu_ureg sets bit 91 */
     set(&x, 32, 6, 4);
     set(&x, 91, 1, 1);
     set(&x, 64, 8, 255);
     in = dec(x);
-    CHECK(in.op == SM70_IMAD && in.b.kind == SM70_SRC_UREG && in.b.reg == 4 && in.c.reg == 255);
+    CHECK(in.op == SM86_IMAD && in.b.kind == SM86_SRC_UREG && in.b.reg == 4 && in.c.reg == 255);
     x = alu(0x024, 7, 1, 2); /* c a uniform register */
     set(&x, 32, 6, 5);
     set(&x, 63, 1, 1);
     set(&x, 91, 1, 1);
     in = dec(x);
-    CHECK(in.c.kind == SM70_SRC_UREG && in.c.reg == 5 && in.c.neg);
+    CHECK(in.c.kind == SM86_SRC_UREG && in.c.reg == 5 && in.c.neg);
     x = alu(0x020, 4, 1, 2); /* FMUL with an immediate */
     set(&x, 32, 32, 0x40000000u);
     in = dec(x);
-    CHECK(in.op == SM70_FMUL && in.b.kind == SM70_SRC_IMM && in.b.value == 0x40000000u);
+    CHECK(in.op == SM86_FMUL && in.b.kind == SM86_SRC_IMM && in.b.value == 0x40000000u);
     x = alu(0x020, 2, 1, 2); /* FMUL takes no immediate in c: not an encoding */
-    CHECK(!sm70_decode(x.w[0], x.w[1], &in) && in.op == SM70_NONE);
+    CHECK(!sm86_decode(x.w[0], x.w[1], &in) && in.op == SM86_NONE);
     x = alu(0x002, 5, 9, 255); /* MOV R9, c[0x8][0x1e4] */
     cbuf(&x, 8, 0x1e4);
     in = dec(x);
-    CHECK(in.op == SM70_MOV && in.b.kind == SM70_SRC_CBUF && in.b.bank == 8 && in.b.value == 0x1e4);
+    CHECK(in.op == SM86_MOV && in.b.kind == SM86_SRC_CBUF && in.b.bank == 8 && in.b.value == 0x1e4);
 }
 
 static void test_common_fields(void) {
@@ -149,81 +149,81 @@ static void test_common_fields(void) {
     set(&x, 113, 3, 5);
     set(&x, 116, 6, 0x29);
     set(&x, 122, 4, 0xa);
-    Sm70Insn in = dec(x);
-    CHECK(in.op == SM70_FADD && in.pred == 3 && in.pred_not && in.dst == 200 && in.a.reg == 100);
+    Sm86Insn in = dec(x);
+    CHECK(in.op == SM86_FADD && in.pred == 3 && in.pred_not && in.dst == 200 && in.a.reg == 100);
     CHECK(in.ctrl.stall == 13 && in.ctrl.yield == 1 && in.ctrl.wr_bar == 2 && in.ctrl.rd_bar == 5);
     CHECK(in.ctrl.wait_mask == 0x29 && in.ctrl.reuse == 0xa);
-    CHECK(sm70_field(&in, 0, 12) == 0x221 && sm70_field(&in, 60, 8) == 0 && sm70_field(&in, 116, 6) == 0x29);
+    CHECK(sm86_field(&in, 0, 12) == 0x221 && sm86_field(&in, 60, 8) == 0 && sm86_field(&in, 116, 6) == 0x29);
     /* the uniform ALU: UIADD3 UR4, UR4, 0x28, URZ (form 4), and its uniform destination */
     x = alu(0x090, 4, 4, 4);
     set(&x, 91, 1, 1);
     set(&x, 32, 32, 0x28);
-    set(&x, 64, 6, SM70_URZ);
+    set(&x, 64, 6, SM86_URZ);
     in = dec(x);
-    CHECK(in.op == SM70_UIADD3 && in.dst == 4 && in.a.kind == SM70_SRC_UREG && in.a.reg == 4);
-    CHECK(in.b.kind == SM70_SRC_IMM && in.b.value == 0x28 && in.c.kind == SM70_SRC_UREG && in.c.reg == SM70_URZ);
+    CHECK(in.op == SM86_UIADD3 && in.dst == 4 && in.a.kind == SM86_SRC_UREG && in.a.reg == 4);
+    CHECK(in.b.kind == SM86_SRC_IMM && in.b.value == 0x28 && in.c.kind == SM86_SRC_UREG && in.c.reg == SM86_URZ);
 }
 
 static void test_flow(void) {
-    Sm70Insn in = dec(bra(10, 10, 7, 0)); /* the BRA to itself after a program's EXIT */
-    CHECK(in.op == SM70_BRA && sm70_branch_target(&in, 10) == 10);
+    Sm86Insn in = dec(bra(10, 10, 7, 0)); /* the BRA to itself after a program's EXIT */
+    CHECK(in.op == SM86_BRA && sm86_branch_target(&in, 10) == 10);
     in = dec(bra(10, 3, 0, 1));
-    CHECK(in.pred == 0 && in.pred_not && sm70_branch_target(&in, 10) == 3);
+    CHECK(in.pred == 0 && in.pred_not && sm86_branch_target(&in, 10) == 3);
     in = dec(bra(10, 40, 7, 0));
-    CHECK(sm70_branch_target(&in, 10) == 40);
+    CHECK(sm86_branch_target(&in, 10) == 40);
     in = dec(bra(10, 0, 7, 0));
-    CHECK(sm70_branch_target(&in, 10) == 0);
+    CHECK(sm86_branch_target(&in, 10) == 0);
     Word x = fix(0x945); /* BSSY B0 to 7 instructions on: set_rel_offset(34..64) */
     set(&x, 34, 30, 7 * 4);
     in = dec(x);
-    CHECK(in.op == SM70_BSSY && sm70_branch_target(&in, 2) == 10);
+    CHECK(in.op == SM86_BSSY && sm86_branch_target(&in, 2) == 10);
     in = dec(exit_insn());
-    CHECK(in.op == SM70_EXIT && in.pred == SM70_PT);
+    CHECK(in.op == SM86_EXIT && in.pred == SM86_PT);
     in = dec(fix(0x941));
-    CHECK(in.op == SM70_BSYNC);
+    CHECK(in.op == SM86_BSYNC);
 }
 
 static void test_table(void) {
     /* each row decodes to itself, in every form it takes, and no 12-bit code is also an ALU form */
-    for (int op = 1; op < SM70__COUNT; op++) {
-        const Sm70OpInfo* info = &sm70_ops[op];
+    for (int op = 1; op < SM86__COUNT; op++) {
+        const Sm86OpInfo* info = &sm86_ops[op];
         for (u32 form = 0; form < 8; form++) {
-            if (info->kind == SM70_K_FIX && form) break;
-            if (info->kind != SM70_K_FIX && !(info->forms & (1u << form))) continue;
-            Word x = info->kind == SM70_K_FIX ? fix(info->code) : alu(info->code, form, 1, 2);
-            if (info->kind == SM70_K_UALU) set(&x, 91, 1, 1);
-            Sm70Insn in = dec(x);
-            if (in.op != op) fprintf(stderr, "%s form %u decodes as %s\n", info->name, form, sm70_ops[in.op].name);
+            if (info->kind == SM86_K_FIX && form) break;
+            if (info->kind != SM86_K_FIX && !(info->forms & (1u << form))) continue;
+            Word x = info->kind == SM86_K_FIX ? fix(info->code) : alu(info->code, form, 1, 2);
+            if (info->kind == SM86_K_UALU) set(&x, 91, 1, 1);
+            Sm86Insn in = dec(x);
+            if (in.op != op) fprintf(stderr, "%s form %u decodes as %s\n", info->name, form, sm86_ops[in.op].name);
             CHECK(in.op == op);
         }
     }
     for (u32 code = 0; code < 4096; code++) {
         int fixed = 0, as_alu = 0;
-        for (int op = 1; op < SM70__COUNT; op++) {
-            const Sm70OpInfo* info = &sm70_ops[op];
-            if (info->kind == SM70_K_FIX && info->code == code) fixed++;
-            if (info->kind != SM70_K_FIX && info->code == (code & 0x1ff) && (info->forms & (1u << (code >> 9))))
+        for (int op = 1; op < SM86__COUNT; op++) {
+            const Sm86OpInfo* info = &sm86_ops[op];
+            if (info->kind == SM86_K_FIX && info->code == code) fixed++;
+            if (info->kind != SM86_K_FIX && info->code == (code & 0x1ff) && (info->forms & (1u << (code >> 9))))
                 as_alu++;
         }
         if (fixed + as_alu > 1) fprintf(stderr, "code 0x%03x matches %d rows\n", code, fixed + as_alu);
         CHECK(fixed + as_alu <= 1);
     }
-    Sm70Insn in;
-    CHECK(!sm70_decode(0x7fff, 0, &in) && in.op == SM70_NONE); /* 0xfff is no opcode */
+    Sm86Insn in;
+    CHECK(!sm86_decode(0x7fff, 0, &in) && in.op == SM86_NONE); /* 0xfff is no opcode */
 }
 
 /* SPH word 0 as sph.rs sets it: sph type (bits 0-4), version 4 from SM 7.3 (bits 5-9), shader type (bits 10-13) */
 static u32 sph0(u32 sph_type, u32 shader_type) { return sph_type | 4u << 5 | shader_type << 10; }
 
 static void test_sph(void) {
-    CHECK(sm70_sph_stage(sph0(1, 1)) == ST_VS);
-    CHECK(sm70_sph_stage(sph0(1, 2)) == ST_TCS);
-    CHECK(sm70_sph_stage(sph0(1, 3)) == ST_TES);
-    CHECK(sm70_sph_stage(sph0(1, 4)) == ST_GS);
-    CHECK(sm70_sph_stage(sph0(2, 5)) == ST_FS);
-    CHECK(sm70_sph_stage(sph0(2, 1)) == -1);
-    CHECK(sm70_sph_stage(sph0(1, 1) & ~(31u << 5)) == -1);
-    CHECK(sm70_sph_stage(3u << 5 | 1u | 1u << 10) == ST_VS); /* version 3, before SM 7.3 */
+    CHECK(sm86_sph_stage(sph0(1, 1)) == ST_VS);
+    CHECK(sm86_sph_stage(sph0(1, 2)) == ST_TCS);
+    CHECK(sm86_sph_stage(sph0(1, 3)) == ST_TES);
+    CHECK(sm86_sph_stage(sph0(1, 4)) == ST_GS);
+    CHECK(sm86_sph_stage(sph0(2, 5)) == ST_FS);
+    CHECK(sm86_sph_stage(sph0(2, 1)) == -1);
+    CHECK(sm86_sph_stage(sph0(1, 1) & ~(31u << 5)) == -1);
+    CHECK(sm86_sph_stage(3u << 5 | 1u | 1u << 10) == ST_VS); /* version 3, before SM 7.3 */
 }
 
 /* ---- programs ---- */
@@ -327,7 +327,7 @@ static u32 fragment_program(u8* code) {
 static int validate(const char* spirv_val, const char* dir, const char* name, const u32* words, size_t count) {
     if (!spirv_val) return 1;
     char path[1024], command[2600];
-    snprintf(path, sizeof path, "%s/sm70_%s.spv", dir, name);
+    snprintf(path, sizeof path, "%s/sm86_%s.spv", dir, name);
     FILE* f = fopen(path, "wb");
     if (!f) return 0;
     int ok = fwrite(words, 4, count, f) == count;
@@ -349,26 +349,26 @@ static void test_programs(const char* spirv_val, const char* dir) {
     u32 sph[32] = {0};
     sph[0] = sph0(1, 1);
     for (u32 k = 0; k < 32; k++) snx_st_le32(mem + at + 4 * k, sph[k]);
-    u32 vs = vertex_program(mem + at + SM70_SPH_BYTES);
-    Sm70Program progs[4];
-    int found = sm70_find_programs(mem, 0x1000, progs, 4);
+    u32 vs = vertex_program(mem + at + SM86_SPH_BYTES);
+    Sm86Program progs[4];
+    int found = sm86_find_programs(mem, 0x1000, progs, 4);
     CHECK(found == 2);
     if (found == 2) {
         CHECK(progs[0].stage == ST_CS && progs[0].code == 0 && progs[0].size == cs * 16 && progs[0].complete);
-        CHECK(progs[1].stage == ST_VS && progs[1].header == at && progs[1].code == at + SM70_SPH_BYTES);
+        CHECK(progs[1].stage == ST_VS && progs[1].header == at && progs[1].code == at + SM86_SPH_BYTES);
         CHECK(progs[1].size == vs * 16 && progs[1].complete);
     }
     /* the translations */
     ShaderInfo si = {0};
     size_t count = 0;
-    u32* spv = sm70_to_spirv(mem, cs * 16, ST_CS, NULL, &si, &count);
+    u32* spv = sm86_to_spirv(mem, cs * 16, ST_CS, NULL, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "compute: %s\n", si.first_unsupported);
     CHECK(si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x20 && si.gbuf_wmask == 1 && (si.cbuf_mask & 1));
     if (spv) CHECK(validate(spirv_val, dir, "cs", spv, count));
     free(spv);
     si = (ShaderInfo){0};
-    spv = sm70_to_spirv(mem + at + SM70_SPH_BYTES, vs * 16, ST_VS, sph, &si, &count);
+    spv = sm86_to_spirv(mem + at + SM86_SPH_BYTES, vs * 16, ST_VS, sph, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "vertex: %s\n", si.first_unsupported);
     CHECK(si.in_mask == 1);
@@ -383,7 +383,7 @@ static void test_programs(const char* spirv_val, const char* dir) {
     fsph[6] = 2;
     fsph[18] = 0xf;
     si = (ShaderInfo){0};
-    spv = sm70_to_spirv(fs, n * 16, ST_FS, fsph, &si, &count);
+    spv = sm86_to_spirv(fs, n * 16, ST_FS, fsph, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "fragment: %s\n", si.first_unsupported);
     if (spv) CHECK(validate(spirv_val, dir, "fs", spv, count));
@@ -391,7 +391,7 @@ static void test_programs(const char* spirv_val, const char* dir) {
     /* an unknown opcode refuses with its code */
     put(fs, 0, fix(0xfff));
     si = (ShaderInfo){0};
-    spv = sm70_to_spirv(fs, n * 16, ST_FS, fsph, &si, &count);
+    spv = sm86_to_spirv(fs, n * 16, ST_FS, fsph, &si, &count);
     CHECK(!spv && si.unsupported && strstr(si.first_unsupported, "0xfff"));
     free(spv);
     free(fs);
@@ -469,7 +469,7 @@ static void test_game_forms(const char* spirv_val, const char* dir) {
     fsph[18] = 0xf;
     ShaderInfo si = {0};
     size_t count = 0;
-    u32* spv = sm70_to_spirv(fs, n * 16, ST_FS, fsph, &si, &count);
+    u32* spv = sm86_to_spirv(fs, n * 16, ST_FS, fsph, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "game forms: %s\n", si.first_unsupported);
     CHECK(si.ntex == 1 && si.tex[0].bl_cbuf == 2 && si.tex[0].cbuf_off == 0x10 && (si.cbuf_mask & 2));
@@ -493,7 +493,7 @@ static void test_game_forms(const char* spirv_val, const char* dir) {
     u32 vsph[32] = {0};
     vsph[0] = sph0(1, 1);
     si = (ShaderInfo){0};
-    spv = sm70_to_spirv(fs, n * 16, ST_VS, vsph, &si, &count);
+    spv = sm86_to_spirv(fs, n * 16, ST_VS, vsph, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "shading rate: %s\n", si.first_unsupported);
     if (spv) CHECK(validate(spirv_val, dir, "vs_rate", spv, count));
@@ -508,8 +508,8 @@ static void test_game_forms(const char* spirv_val, const char* dir) {
     n++;
     put(fs, n, bra(n, n, 7, 0));
     n++;
-    Sm70Program progs[2];
-    int found = sm70_find_programs(fs, 0x400, progs, 2);
+    Sm86Program progs[2];
+    int found = sm86_find_programs(fs, 0x400, progs, 2);
     CHECK(found == 1 && progs[0].complete && progs[0].size == n * 16);
     /* CALL.REL.NOINC to a function after the main program's end, which RET.REL.NODEC R2 ends (CuAssembler's sm_86
        layout: the offset as BRA's, NOINC and NODEC at bit 86). The search takes the function in, and the
@@ -544,10 +544,10 @@ static void test_game_forms(const char* spirv_val, const char* dir) {
     set(&x, 34, 48, (u64)(entry - 0 - 1) * 4);
     set(&x, 86, 4, 0xf);
     put(fs, 0, x);
-    found = sm70_find_programs(fs, 0x400, progs, 2);
+    found = sm86_find_programs(fs, 0x400, progs, 2);
     CHECK(found == 1 && progs[0].complete && progs[0].size == n * 16);
     si = (ShaderInfo){0};
-    spv = sm70_to_spirv(fs, n * 16, ST_FS, fsph, &si, &count);
+    spv = sm86_to_spirv(fs, n * 16, ST_FS, fsph, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "call: %s\n", si.first_unsupported);
     if (spv) CHECK(validate(spirv_val, dir, "fs_call", spv, count));
@@ -588,10 +588,10 @@ static void test_brx(const char* spirv_val, const char* dir) {
     fsph[18] = 0xf;
     ShaderInfo si = {0};
     size_t count = 0;
-    CHECK(!sm70_to_spirv(code, 7 * 16, ST_FS, fsph, &si, &count)); /* no reader: refused */
+    CHECK(!sm86_to_spirv(code, 7 * 16, ST_FS, fsph, &si, &count)); /* no reader: refused */
     g_shader_cb_read = table_read;
     si = (ShaderInfo){0};
-    u32* spv = sm70_to_spirv(code, 7 * 16, ST_FS, fsph, &si, &count);
+    u32* spv = sm86_to_spirv(code, 7 * 16, ST_FS, fsph, &si, &count);
     g_shader_cb_read = NULL;
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "brx: %s\n", si.first_unsupported);
@@ -669,7 +669,7 @@ static void test_alu_group(const char* spirv_val, const char* dir) {
     fsph[18] = 0xf;
     ShaderInfo si = {0};
     size_t count = 0;
-    u32* spv = sm70_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+    u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "alu group: %s\n", si.first_unsupported);
     if (spv) CHECK(validate(spirv_val, dir, "fs_alu", spv, count));
@@ -726,7 +726,7 @@ static void test_compute_forms(const char* spirv_val, const char* dir) {
     ShaderInfo si = {0};
     si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
     size_t count = 0;
-    u32* spv = sm70_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "compute forms: %s\n", si.first_unsupported);
     if (spv) CHECK(validate(spirv_val, dir, "cs_forms", spv, count));
@@ -763,7 +763,7 @@ static void test_image_kinds(const char* spirv_val, const char* dir) {
         if (k == 1) si.rt_sint_mask = 1u << 8;
         if (k == 2) si.rt_int_mask = 1u << 8;
         size_t count = 0;
-        u32* spv = sm70_to_spirv(code, 4 * 16, ST_CS, NULL, &si, &count);
+        u32* spv = sm86_to_spirv(code, 4 * 16, ST_CS, NULL, &si, &count);
         CHECK(spv != NULL);
         if (!spv) fprintf(stderr, "image kind: %s\n", si.first_unsupported);
         CHECK(si.nimg == 1 && si.img[0].kind == kinds[k] && si.img[0].type == 3 && si.img[0].cbuf_off == 0x30 / 4);
@@ -803,7 +803,7 @@ static void test_root_tables(const char* spirv_val, const char* dir) {
     n++;
     ShaderInfo si = {0};
     size_t count = 0;
-    u32* spv = sm70_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "root tables: %s\n", si.first_unsupported);
     CHECK(si.root_max == SH_ROOT_TABLE + 0x14 && !(si.cbuf_mask & ~1u));
@@ -830,6 +830,6 @@ int main(int argc, char** argv) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
     }
-    printf("sm70: all checks pass\n");
+    printf("sm86: all checks pass\n");
     return 0;
 }

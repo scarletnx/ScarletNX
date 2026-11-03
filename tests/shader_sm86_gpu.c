@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The SM70+ translator (src/nx/gpu/shader/sm70_translate.c) on a Vulkan device against the CPU reference
-   (tests/support/sm70_ref.c): three synthetic compute programs, the integer, float and control flow instructions of
+/* The SM86 translator (src/nx/gpu/shader/sm86_translate.c) on a Vulkan device against the CPU reference
+   (tests/support/sm86_ref.c): three synthetic compute programs, the integer, float and control flow instructions of
    the captured compute programs, run on 64 invocations of chosen inputs, every output word compared. It takes a CPU
    device (lavapipe) when the loader has one, else the first device. Opt-in with SNX_TEST_VULKAN, as vulkan_headless.
    No word here comes from a game. */
-#include "nx/gpu/shader/sm70.h"
-#include "support/sm70_ref.h"
+#include "nx/gpu/shader/sm86.h"
+#include "support/sm86_ref.h"
 #include <volk.h>
 #include <math.h>
 #include <stdio.h>
@@ -31,22 +31,22 @@ typedef struct {
     u32 denorm_mask; /* the outputs of float instructions without FTZ, which a subnormal input makes the device's
                         own (the module declares no DenormPreserve, as spirv_translate.c's do not) */
 } Prog;
-static u32 emit(Prog* p, Sm70Word w) {
-    sm70_put(p->code, p->n, w);
+static u32 emit(Prog* p, Sm86Word w) {
+    sm86_put(p->code, p->n, w);
     return p->n++;
 }
-static Sm70Word alu(u32 op9, u32 form, u32 dst, u32 a) { return sm70_alu(op9, form, dst, a); }
-static void f(Sm70Word* w, unsigned lo, unsigned n, u64 v) { sm70_set(w, lo, n, v); }
+static Sm86Word alu(u32 op9, u32 form, u32 dst, u32 a) { return sm86_alu(op9, form, dst, a); }
+static void f(Sm86Word* w, unsigned lo, unsigned n, u64 v) { sm86_set(w, lo, n, v); }
 /* the second source: a register at 32 (form 1) */
-static Sm70Word rr(u32 op9, u32 dst, u32 a, u32 b) {
-    Sm70Word w = alu(op9, 1, dst, a);
+static Sm86Word rr(u32 op9, u32 dst, u32 a, u32 b) {
+    Sm86Word w = alu(op9, 1, dst, a);
     f(&w, 32, 8, b);
     f(&w, 64, 8, 255);
     return w;
 }
 /* an immediate second source (form 4), c a register at 64 */
-static Sm70Word ri(u32 op9, u32 dst, u32 a, u32 imm, u32 c) {
-    Sm70Word w = alu(op9, 4, dst, a);
+static Sm86Word ri(u32 op9, u32 dst, u32 a, u32 imm, u32 c) {
+    Sm86Word w = alu(op9, 4, dst, a);
     f(&w, 32, 32, imm);
     f(&w, 64, 8, c);
     return w;
@@ -54,18 +54,18 @@ static Sm70Word ri(u32 op9, u32 dst, u32 a, u32 imm, u32 c) {
 /* R0 = TID.X, R1 = CTAID.X, R2 = the invocation, UR4:UR5 and UR6:UR7 the buffers' addresses from c[0][0x20] and
    c[0][0x28], R4:R5 = the invocation's two input words, R6 = the byte offset of its outputs */
 static void prologue(Prog* p) {
-    Sm70Word w = sm70_fix(0x919);
+    Sm86Word w = sm86_fix(0x919);
     f(&w, 72, 8, 0x21);
     emit(p, w);
-    w = sm70_fix(0x919);
+    w = sm86_fix(0x919);
     f(&w, 16, 8, 1);
     f(&w, 72, 8, 0x25);
     emit(p, w);
     emit(p, ri(0x024, 2, 1, LOCAL, 0)); /* IMAD R2, R1, 32, R0 */
     for (u32 k = 0; k < 2; k++) {
-        w = sm70_fix(0xab9); /* ULDC.64 */
+        w = sm86_fix(0xab9); /* ULDC.64 */
         f(&w, 16, 6, 4 + 2 * k);
-        sm70_cbuf(&w, 0, 0x20 + 8 * k);
+        sm86_cbuf(&w, 0, 0x20 + 8 * k);
         f(&w, 73, 3, 5);
         emit(p, w);
     }
@@ -73,7 +73,7 @@ static void prologue(Prog* p) {
     f(&w, 75, 5, 3);
     f(&w, 81, 3, 7);
     emit(p, w);
-    w = sm70_fix(0x981); /* LDG.E.64 R4, [R3.U32 + UR4] */
+    w = sm86_fix(0x981); /* LDG.E.64 R4, [R3.U32 + UR4] */
     f(&w, 16, 8, 4);
     f(&w, 24, 8, 3);
     f(&w, 32, 6, 4);
@@ -86,7 +86,7 @@ static void prologue(Prog* p) {
     emit(p, ri(0x024, 6, 2, p->outputs * 4, 255)); /* IMAD R6, R2, outputs * 4, RZ */
 }
 static void store(Prog* p, u32 k, u32 reg) {
-    Sm70Word w = sm70_fix(0x986); /* STG.E [R6.U32 + UR6 + 4k], reg */
+    Sm86Word w = sm86_fix(0x986); /* STG.E [R6.U32 + UR6 + 4k], reg */
     f(&w, 24, 8, 6);
     f(&w, 32, 8, reg);
     f(&w, 40, 24, 4 * k);
@@ -98,8 +98,8 @@ static void store(Prog* p, u32 k, u32 reg) {
     emit(p, w);
 }
 static void epilogue(Prog* p) {
-    emit(p, sm70_exit());
-    emit(p, sm70_bra(p->n, p->n, 7, 0));
+    emit(p, sm86_exit());
+    emit(p, sm86_bra(p->n, p->n, 7, 0));
 }
 /* the integer instructions: IADD3 (negated, carries, .X), IMAD, LOP3, SHF, LEA.HI, IMNMX, ISETP, SEL, IABS, R2P,
    PLOP3 */
@@ -107,7 +107,7 @@ static void integer_program(Prog* p) {
     p->outputs = 15;
     p->approx_from = 15;
     prologue(p);
-    Sm70Word w = alu(0x010, 2, 8, 4); /* IADD3 R8, R4, -R5, 0x1234 */
+    Sm86Word w = alu(0x010, 2, 8, 4); /* IADD3 R8, R4, -R5, 0x1234 */
     f(&w, 64, 8, 5);
     f(&w, 75, 1, 1);
     f(&w, 32, 32, 0x1234);
@@ -180,7 +180,7 @@ static void integer_program(Prog* p) {
     w = ri(0x007, 21, 4, 0x44, 255); /* SEL R21, R4, 0x44, P3 */
     f(&w, 87, 4, 3);
     emit(p, w);
-    w = sm70_fix(0x81c); /* PLOP3.LUT P5, PT, P0, P1, P6, 0xe8, 0 */
+    w = sm86_fix(0x81c); /* PLOP3.LUT P5, PT, P0, P1, P6, 0xe8, 0 */
     f(&w, 87, 4, 0);
     f(&w, 77, 4, 1);
     f(&w, 68, 4, 6);
@@ -203,7 +203,7 @@ static void float_program(Prog* p) {
     p->approx_from = 20;
     p->denorm_mask = 0x3ffffffu & ~(7u << 15) & ~(3u << 8); /* not I2FP, FADD.FTZ or FMUL.FTZ */
     prologue(p);
-    Sm70Word w = rr(0x021, 8, 4, 5); /* FADD R8, R4, -|R5| */
+    Sm86Word w = rr(0x021, 8, 4, 5); /* FADD R8, R4, -|R5| */
     f(&w, 62, 2, 3);
     emit(p, w);
     static const u8 modes[3] = {3, 1, 2}; /* FADD.RZ, .RM, .RP */
@@ -302,12 +302,12 @@ static void flow_program(Prog* p) {
     p->outputs = 3;
     p->approx_from = 3;
     prologue(p);
-    Sm70Word w = ri(0x012, 7, 4, 15, 255); /* LOP3 R7 = R4 & 15 (0xc0) */
+    Sm86Word w = ri(0x012, 7, 4, 15, 255); /* LOP3 R7 = R4 & 15 (0xc0) */
     f(&w, 72, 8, 0xc0);
     f(&w, 81, 3, 7);
     f(&w, 87, 4, 0xf);
     emit(p, w);
-    w = sm70_fix(0x805); /* CS2R R8, SRZ */
+    w = sm86_fix(0x805); /* CS2R R8, SRZ */
     f(&w, 16, 8, 8);
     f(&w, 72, 8, 0xff);
     emit(p, w);
@@ -322,7 +322,7 @@ static void flow_program(Prog* p) {
     f(&w, 87, 4, 7);
     f(&w, 68, 4, 7);
     emit(p, w);
-    u32 exit_branch = emit(p, sm70_fix(0x918)); /* @P0 BRA past the loop, patched below */
+    u32 exit_branch = emit(p, sm86_fix(0x918)); /* @P0 BRA past the loop, patched below */
     w = rr(0x024, 8, 9, 5);                     /* IMAD R8, R9, R5, R8 */
     f(&w, 64, 8, 8);
     emit(p, w);
@@ -331,35 +331,35 @@ static void flow_program(Prog* p) {
     f(&w, 87, 4, 0xf);
     f(&w, 77, 4, 0xf);
     emit(p, w);
-    emit(p, sm70_bra(p->n, head, 7, 0));
-    sm70_put(p->code, exit_branch, sm70_bra(exit_branch, p->n, 0, 0));
+    emit(p, sm86_bra(p->n, head, 7, 0));
+    sm86_put(p->code, exit_branch, sm86_bra(exit_branch, p->n, 0, 0));
     store(p, 0, 8);
-    u32 bssy = emit(p, sm70_fix(0x918)); /* BSSY B0 to the BSYNC, patched below */
+    u32 bssy = emit(p, sm86_fix(0x918)); /* BSSY B0 to the BSYNC, patched below */
     w = ri(0x012, 10, 5, 1, 255);        /* LOP3 P1, R10 = R5 & 1 */
     f(&w, 72, 8, 0xc0);
     f(&w, 81, 3, 1);
     f(&w, 87, 4, 0xf);
     emit(p, w);
-    u32 skip = emit(p, sm70_fix(0x918)); /* @!P1 BRA to the BSYNC, patched below */
+    u32 skip = emit(p, sm86_fix(0x918)); /* @!P1 BRA to the BSYNC, patched below */
     w = ri(0x010, 8, 8, 0x100, 255);     /* IADD3 R8, R8, 0x100, RZ */
     f(&w, 81, 6, 0x3f);
     f(&w, 87, 4, 0xf);
     f(&w, 77, 4, 0xf);
     emit(p, w);
-    w = sm70_fix(0x941); /* BSYNC B0 */
+    w = sm86_fix(0x941); /* BSYNC B0 */
     f(&w, 87, 3, 7);
     u32 bsync = emit(p, w);
-    sm70_put(p->code, skip, sm70_bra(skip, bsync, 1, 1));
-    w = sm70_fix(0x945);
+    sm86_put(p->code, skip, sm86_bra(skip, bsync, 1, 1));
+    w = sm86_fix(0x945);
     f(&w, 34, 30, (u64)(bsync - bssy - 1) * 4);
     f(&w, 87, 3, 7);
-    sm70_put(p->code, bssy, w);
-    w = sm70_fix(0x388); /* STS [R0.X4], R8 */
+    sm86_put(p->code, bssy, w);
+    w = sm86_fix(0x388); /* STS [R0.X4], R8 */
     f(&w, 32, 8, 8);
     f(&w, 73, 3, 4);
     f(&w, 78, 2, 1);
     emit(p, w);
-    w = sm70_fix(0x984); /* LDS R11, [R0.X4 + URZ] */
+    w = sm86_fix(0x984); /* LDS R11, [R0.X4 + URZ] */
     f(&w, 16, 8, 11);
     f(&w, 32, 6, 63);
     f(&w, 73, 3, 4);
@@ -372,7 +372,7 @@ static void flow_program(Prog* p) {
     f(&w, 81, 3, 2);
     f(&w, 87, 4, 0xf);
     emit(p, w);
-    w = sm70_exit(); /* @P2 EXIT */
+    w = sm86_exit(); /* @P2 EXIT */
     f(&w, 12, 3, 2);
     emit(p, w);
     store(p, 2, 4);
@@ -385,22 +385,22 @@ static void flow_program(Prog* p) {
 static void wide_program(Prog* p) {
     p->outputs = 3;
     p->approx_from = 3;
-    Sm70Word w = sm70_fix(0x919);
+    Sm86Word w = sm86_fix(0x919);
     f(&w, 72, 8, 0x21);
     emit(p, w);
-    w = sm70_fix(0x919);
+    w = sm86_fix(0x919);
     f(&w, 16, 8, 1);
     f(&w, 72, 8, 0x25);
     emit(p, w);
     emit(p, ri(0x024, 2, 1, LOCAL, 0)); /* IMAD R2, R1, 32, R0 */
     for (u32 k = 0; k < 4; k++) {       /* MOV R8, R9, R18, R19 = c[0][0x20], [0x24], [0x28], [0x2c] */
         w = alu(0x002, 5, k < 2 ? 8 + k : 16 + k, 255);
-        sm70_cbuf(&w, 0, 0x20 + 4 * k);
+        sm86_cbuf(&w, 0, 0x20 + 4 * k);
         f(&w, 72, 4, 0xf);
         emit(p, w);
     }
     emit(p, ri(0x025, 10, 2, 8, 8)); /* IMAD.WIDE.U32 R10, R2, 8, R8 */
-    w = sm70_fix(0x381);             /* LDG.E.64 R12, [R10.64] */
+    w = sm86_fix(0x381);             /* LDG.E.64 R12, [R10.64] */
     f(&w, 16, 8, 12);
     f(&w, 24, 8, 10);
     f(&w, 72, 1, 1);
@@ -415,7 +415,7 @@ static void wide_program(Prog* p) {
     emit(p, ri(0x016, 16, 12, 0x7051, 13));        /* PRMT R16, R12, 0x7051, R13 */
     emit(p, ri(0x025, 20, 2, p->outputs * 4, 18)); /* IMAD.WIDE.U32 R20, R2, 12, R18 */
     for (u32 k = 0; k < 3; k++) {
-        w = sm70_fix(0x386); /* STG.E [R20.64 + 4k], R14 + k */
+        w = sm86_fix(0x386); /* STG.E [R20.64 + 4k], R14 + k */
         f(&w, 24, 8, 20);
         f(&w, 32, 8, 14 + k);
         f(&w, 40, 24, 4 * k);
@@ -477,7 +477,7 @@ typedef struct {
 static int gpu_open(Gpu* g) {
     if (volkInitialize() != VK_SUCCESS) return 0;
     VkApplicationInfo app = {
-        VK_STRUCTURE_TYPE_APPLICATION_INFO, NULL, "snx-test-shader-sm70-gpu", 1, NULL, 0, VK_API_VERSION_1_3};
+        VK_STRUCTURE_TYPE_APPLICATION_INFO, NULL, "snx-test-shader-sm86-gpu", 1, NULL, 0, VK_API_VERSION_1_3};
     VkInstanceCreateInfo ici = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, NULL, 0, &app, 0, NULL, 0, NULL};
     if (vkCreateInstance(&ici, NULL, &g->instance) != VK_SUCCESS) return 0;
     volkLoadInstance(g->instance);
@@ -668,7 +668,7 @@ static int run_program(Gpu* g, const char* name, void (*build)(Prog*)) {
     cb0[0x28 / 4] = (u32)VA_OUT;
     cb0[0x2c / 4] = (u32)(VA_OUT >> 32);
     /* the reference */
-    Sm70RefEnv env = {0};
+    Sm86RefEnv env = {0};
     env.cbuf[0] = cb0;
     env.cbuf_words[0] = 64;
     env.global[0] = (u8*)(void*)in;
@@ -680,7 +680,7 @@ static int run_program(Gpu* g, const char* name, void (*build)(Prog*)) {
     env.local[0] = LOCAL, env.local[1] = env.local[2] = 1;
     env.groups[0] = GROUPS, env.groups[1] = env.groups[2] = 1;
     env.shared_bytes = LOCAL * 4;
-    const char* why = sm70_ref_run(p.code, p.n * 16, &env);
+    const char* why = sm86_ref_run(p.code, p.n * 16, &env);
     if (why) {
         fprintf(stderr, "%s: the reference stops: %s\n", name, why);
         return 0;
@@ -690,7 +690,7 @@ static int run_program(Gpu* g, const char* name, void (*build)(Prog*)) {
     si.cs_local[0] = LOCAL, si.cs_local[1] = si.cs_local[2] = 1;
     si.shared_size = (int)(LOCAL * 4);
     size_t words = 0;
-    u32* spv = sm70_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
+    u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
     if (!spv) {
         fprintf(stderr, "%s: not translated: %s\n", name, si.first_unsupported);
         return 0;

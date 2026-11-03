@@ -92,7 +92,7 @@ ShStructure* shader_structure(const u64* insn, u32 n, const u8* leader, const u3
    on a condition (its target first, then the next block), a jump table (only shader_structure's), the program ends
    there (an EXIT that always runs), or control runs off the program's last instruction */
 enum { SHT_FALL, SHT_GOTO, SHT_COND, SHT_SWITCH, SHT_EXIT, SHT_END };
-/* The structure of a graph that another frontend made (sm70_translate.c): n instructions in nb blocks, block b from
+/* The structure of a graph that another frontend made (sm86_translate.c): n instructions in nb blocks, block b from
    instruction start[b] (start[0] is 0, then increasing) up to the next block's start, ending as term[b] says, with its
    successor blocks in succ[2 * b] and succ[2 * b + 1]. A SHT_SWITCH block's targets are the blocks sw_targets[sw_first[b]]
    up to sw_targets[sw_first[b + 1]] (64 at most), and SHS_CASE's b their first instruction. sw_first has nb + 1 entries,

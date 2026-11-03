@@ -511,7 +511,7 @@ static int npdm_is_switch2(u8* d, u64 size) {
    Switch 2 program gets the 39-bit layout with the 12 GiB heap region its titles size their heap from.
 
    It also tells an Ounce program (loader/ounce.h), which is g_ounce, and everything that follows from it: the CPU
-   features of the runtime JIT (guest_jit.c), SM70+ shaders, the T239's GOB, the 31.25 MHz tick, and the larger heap
+   features of the runtime JIT (guest_jit.c), SM86 shaders, the T239's GOB, the 31.25 MHz tick, and the larger heap
    and application pool, as memory_gb 12 gives (svc_mem.c) */
 static void npdm_layout(void) {
     u64 size = 0;
@@ -521,8 +521,8 @@ static void npdm_layout(void) {
         unsigned flags = d[0x0c];
         u32 acid = rd32le(d + 0x78), acid_size = rd32le(d + 0x7c);
         if (acid < size && acid_size >= 0x304 && acid_size <= size - acid && !memcmp(d + acid + 0x300, "ACID", 4)) {
-            g_ounce = g_shader_sm70 = g_gob_native = 1;
-            g_shader_sm70_dump = g_settings.sm70_dump[0] ? g_settings.sm70_dump : NULL;
+            g_ounce = g_shader_sm86 = g_gob_native = 1;
+            g_shader_sm86_dump = g_settings.sm86_dump[0] ? g_settings.sm86_dump : NULL;
             clock_ounce();
             LOG("npdm: an Ounce program\n");
         }
