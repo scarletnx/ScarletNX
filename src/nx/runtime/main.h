@@ -40,8 +40,8 @@ extern char g_addondir[1024], g_gamename[256];
 extern char g_confdir[1024], g_statedir[1024], g_cachedir[1024];
 extern volatile int g_quit; /* set to leave the main loop, which saves and exits */
 extern int g_frames;        /* the frames shown so far, atomic: the presenting thread counts them */
-/* an Ounce game (the second Switch): its title ID's top byte is 0x04. Set once at start, before anything runs, with
-   what follows from it: SM70+ programs (g_shader_sm70) and the T239's GOB (g_gob_native) */
+/* an Ounce game (the second Switch), as its NPDM's ACID tells. Set once at start, before anything runs, with what
+   follows from it: SM70+ programs (g_shader_sm70), the T239's GOB (g_gob_native) and the 31.25 MHz tick */
 extern int g_ounce;
 /* the crash handler's report (plat_posix.c, plat_win32.c): the faulting host pc, the address it touched (NULL when not
    a memory fault) and the signal, or the Windows exception code. Ends the process */

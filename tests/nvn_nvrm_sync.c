@@ -73,6 +73,7 @@ void kthread_unblock(KThread* t) { (void)t; }
 void core_enter(KThread* t) { (void)t; }
 void core_leave(KThread* t) { (void)t; }
 u64 guest_ticks(void) { return 0; }
+u64 guest_gpu_ticks(void) { return 0; }
 void loader_segments(LoaderSegEach each, void* ctx) {
     (void)each;
     (void)ctx;

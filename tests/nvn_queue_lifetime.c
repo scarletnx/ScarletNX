@@ -122,6 +122,7 @@ void nvn_cmd_describe(u64 p, char* out, size_t n) {
     if (n) out[0] = 0;
 }
 u64 guest_ticks(void) { return 0; }
+u64 guest_gpu_ticks(void) { return 0; }
 u64 gmmu_translate(u64 gva) { return gva; }
 u32 gmem_r32(u64 gva) { return gr32(gva); }
 void gpu_release_write(u64 gva, const void* data, u32 n) { memcpy(GP(gva), data, n); }
