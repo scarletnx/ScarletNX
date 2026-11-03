@@ -48,17 +48,18 @@ description: "Build the ScarletNX runtime and recompile games correctly. Avoid t
 
 ## The screen tests
 
-A build makes `snx-test-gui-sdl` and `snx-test-gui-setup` on the Mac too, but `src/gui/CMakeLists.txt` registers
-`gui_sdl_events` and `gui_setup` in its `NOT APPLE` branch, so `ctest` on the Mac runs neither. Run one by hand to
-see what a Linux or Windows check does, with the drivers and the language that CI gives it:
+A build makes `snx-test-gui-sdl` and `snx-test-gui-setup` on the Mac too. But `src/gui/CMakeLists.txt` registers
+`gui_sdl_events` and `gui_setup` in its `NOT APPLE` branch only. Thus `ctest` on the Mac runs neither. Run one by
+hand to see what a Linux or Windows check does. Give it the drivers and the language that CI gives it:
 
     SDL_VIDEO_DRIVER=dummy SDL_RENDER_DRIVER=software SDL_FILE_DIALOG_DRIVER=none SDL_PREFERRED_LOCALES=en_US \
       build/macos/src/gui/snx-test-gui-sdl
 
 A check that fails keeps its frame when `SNX_GUI_FAILED_SHOT` names a file: `SNX_GUI_FAILED_SHOT=shot.bmp`, then
-`sips -s format png shot.bmp --out shot.png` to look at it. Read the checks in the order they run, with the platform's
-`#ifdef` blocks: a check can pass on Linux alone because an `SNX_XDG` block cleared state that the others keep. Some
-checks also fail on the Mac from the folders of your own home and from longer temporary paths, which wrap.
+`sips -s format png shot.bmp --out shot.png` to look at it. Read the checks in the order they run. Read them with the
+`#ifdef` blocks of the platform. A check can pass on Linux alone because an `SNX_XDG` block cleared state that the
+other platforms keep. Some checks also fail on the Mac from the folders of your own home and from longer temporary
+paths, which wrap.
 
 ## The Vulkan renderer
 
