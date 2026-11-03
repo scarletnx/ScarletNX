@@ -2750,6 +2750,7 @@ int main(int argc, char** argv) {
     const u64 address = HEAP_BASE;
     const i32 full[4] = {0, 0, 0, 0}, crop[4] = {4, 2, 20, 10};
     char *root, *shot, *ppm;
+    setvbuf(stdout, NULL, _IOLBF, 0); /* a CHECK's stderr line lands between whole lines in a log both go to */
     CHECK(!snx_startup_options(argc, argv));
     int nvn_benchmark = -1;
     u32 benchmark_sets = 0, benchmark_count = 16, benchmark_images = 0, benchmark_sparse = 0;
