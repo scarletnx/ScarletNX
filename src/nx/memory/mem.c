@@ -1040,6 +1040,15 @@ int mem_pool_offset(u64 a, u64* off) {
     mem_unlock();
     return r;
 }
+int mem_any_pool(u64 a, u64 size) {
+    int r;
+    if (!size || a >= AS_END) return 0;
+    if (size > AS_END - a) size = AS_END - a;
+    mem_lock();
+    r = any_pool_nl(a, size);
+    mem_unlock();
+    return r;
+}
 u8* mem_pool_host(u64 size, u64* off) {
     u8* p;
     int r;

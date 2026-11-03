@@ -173,10 +173,11 @@ touches, clipped to mapped guest memory. Imports never overlap: a range across t
 union. At most 512 imports, the least recently used goes past that, and an import unused for 600 presents goes. A
 window that the driver refuses is kept in a list of refused spans for 600 presents, or until its pages change, and
 its ranges are copied. On an RTX 2080 a span with one page the driver cannot pin (a `PROT_NONE` page) fails as a whole
-with `VK_ERROR_OUT_OF_DEVICE_MEMORY`, while anonymous and shared (memfd, the alias pool's) pages import. Before the
-list, every range in such a window asked the driver again, and one scene fell from 28 to 5 frames a second. The whole guest heap is never one import. A driver that checks each import's
-pages at each submit (amdgpu's user pointers) pays for the bytes imported, and LASRecomp measured 45 ms of driver
-time a frame on AMD with the whole heap as one import.
+with `VK_ERROR_OUT_OF_DEVICE_MEMORY`, while anonymous and shared (memfd) pages import; amdgpu refuses a memfd page, so
+a window with an alias pool page is never imported. Before the list, every range in such a window asked the driver
+again, and one scene fell from 28 to 5 frames a second. The whole guest heap is never one import. A driver that checks
+each import's pages at each submit (amdgpu's user pointers) pays for the bytes imported, and LASRecomp measured 45 ms of
+driver time a frame on AMD with the whole heap as one import.
 
 ### What still copies, and why
 
@@ -202,11 +203,15 @@ time a frame on AMD with the whole heap as one import.
   stops holding also waits for every command recorded up to then that read guest memory in place
   (`hold_inplace`, `vk_uma_bound`), the commands after it too, which the console's GPU runs at once.
   `tests/vulkan_release.c` checks it.
-- Pages that change under an import. The driver pins the pages it imported. When mem.c gives guest pages back
-  (unmap, decommit), or moves them into the alias pool (`promote_nl`), the host pages at that guest address are other
-  pages, and the import still has the old ones. mem.c tells the renderer (`mem_set_pages_replaced`), and the imports on
-  those pages go at the next lookup. `vulkan_headless` (`check_uma`) unmaps and maps a range again, and checks that the
-  GPU reads the new bytes.
+- Pages that change under an import. The driver pins the pages it imported, and RADV puts every imported host pointer
+  in the BO list of every submission, used by its commands or not: the kernel looks each one up at each submit. When
+  mem.c gives guest pages back (unmap, decommit), moves them into the alias pool (`promote_nl`), or a publish traps a
+  page (userfaultfd), the host pages or their state under the import are not ones the kernel can pin. A trapped page
+  or an alias pool page (a memfd's) fails the lookup with `-EFAULT`, and RADV reports the submission rejected and the
+  device lost. So mem.c tells the renderer which pages changed (`mem_set_pages_replaced`), and the renderer destroys
+  those imports at once, after the quiesce of their readers, not at the next lookup or at the frame's end
+  (`vk_uma_forget_range`, `vk_uma_drop_dead`). A range over pool pages is copied, never imported. `vulkan_headless`
+  (`check_uma`) unmaps and maps a range again, and checks that the GPU reads the new bytes.
 - Hazards. A GPU-side write to guest memory (a front-end write, a landed result) on a page that a command not finished
   yet reads in place can change what that command reads. They are counted (`gpu_set_write_watch`), not prevented, and
   the report every 600 presents gives the count:

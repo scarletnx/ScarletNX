@@ -87,6 +87,9 @@ static void vkr_mapping_end(void) {
     vk_buf_mapping_changed();
     pend_remap(g_mapping_gva, g_mapping_size);
     g_mapping_size = 0;
+    /* the imports on the pages that changed go now, not at the frame's end: every submission checks all imports
+       (uma.c imp_destroy), and the next one may come before the frame ends */
+    vk_uma_drop_dead();
     vk_unlock();
 }
 

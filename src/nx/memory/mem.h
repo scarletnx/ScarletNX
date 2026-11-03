@@ -152,6 +152,8 @@ typedef struct {
 int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n);
 /* the pool offset of guest address a: 0, or -1 when a isn't pool memory */
 int mem_pool_offset(u64 a, u64* off);
+/* whether any host page of [a, a + size) is a pool page, a memfd's: a driver that imports host pointers cannot pin it */
+int mem_any_pool(u64 a, u64 size);
 
 /* ---- save states (runtime/state.c), with the game paused and nothing of the GPU's left in guest memory */
 /* The pool's pages in use, in offset order: a run a service maps outside the reservation (a shared memory's pages,

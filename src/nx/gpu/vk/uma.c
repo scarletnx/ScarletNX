@@ -28,9 +28,12 @@
      the commands were recorded. In place, the GPU reads them when it runs them, and after a release the guest writes
      the next frame's data.
    - Before guest pages are trapped (a GPU result published over them) or get other host pages (an unmap, a decommit, a
-     move into the alias pool), the commands that read an import over them run (vk_uma_quiesce). mem.c then tells which
-     pages changed, and the imports on them go (pages_replaced): a driver that pins pages (NVIDIA) holds the old ones,
-     and amdgpu looks them up again at each submit and refuses pages in the alias pool, a file's pages.
+     move into the alias pool), the commands that read an import over them run (vk_uma_quiesce), and the imports on
+     them go then, not at the frame's end (vk_uma_before_trap, vk_uma_drop_dead). A driver that pins pages (NVIDIA)
+     holds the old ones, and RADV keeps every imported host pointer in the BO list of every submission: the kernel
+     looks the pages of each one up at each submit, and a trapped page (userfaultfd) or an alias pool page (a memfd's)
+     fails that lookup with -EFAULT, losing the device. mem.c tells which pages changed (pages_replaced), and a range
+     over pool pages is copied, never imported.
    - A GPU-side write (a front end write, a landed result) on a page that a command not finished yet reads in place is
      counted (the hazards line of the report). That command can read the new bytes. */
 #include <stddef.h>
@@ -79,6 +82,7 @@ typedef struct {
     u32 nimp;
     VkResult import_result; /* the last import's, for the log */
     u64 align;              /* minImportedHostPointerAlignment */
+    u64 page;               /* the host's page: the range a trap arms (plat_vm_page) */
     u64 bound;              /* the submit that last read guest memory in place (vk_submit_number) */
     Seen seen[256];         /* the ranges hz_mark marked, with their submit */
     /* statistics */
@@ -186,6 +190,23 @@ static void imp_drop(u32 i) {
     memmove(&g_uma.imp[i], &g_uma.imp[i + 1], sizeof *g_uma.imp * (size_t)(g_uma.nimp - i - 1));
     g_uma.nimp--;
     pm_unlock(&g_uma.lk);
+}
+/* The import at i goes now, not at the frame's end: the caller has quiesced the submits that read it, and its pages
+   are about to be trapped or are other pages already (vk_lock held). RADV keeps every imported host pointer in the
+   BO list of every submission, whether the commands use it or not, and the kernel looks the pages of each one up:
+   a trapped page (userfaultfd) or an alias pool page (a memfd's) fails that lookup with -EFAULT, and every later
+   submission gets VK_ERROR_DEVICE_LOST. A deferred free left the import in that list until the frame ended, which was
+   after the next submission. `vk_uma_forget_all` before a publish did not help for the same reason */
+static void imp_destroy(u32 i) {
+    Imp* d = malloc(sizeof *d);
+    if (!d) fatal("vulkan: out of memory for an import of guest memory");
+    *d = g_uma.imp[i];
+    g_uma.dropped++;
+    pm_lock(&g_uma.lk);
+    memmove(&g_uma.imp[i], &g_uma.imp[i + 1], sizeof *g_uma.imp * (size_t)(g_uma.nimp - i - 1));
+    g_uma.nimp--;
+    pm_unlock(&g_uma.lk);
+    imp_free(d);
 }
 /* mem.c: host pages under guest memory [a, a + size) are other pages now (under its lock). The imports on them hold the
    old ones */
@@ -327,12 +348,19 @@ static u32 imp_get(u64 cpu, u64 len) {
         if (g_uma.imp[last].cpu + g_uma.imp[last].size > hi) hi = g_uma.imp[last].cpu + g_uma.imp[last].size;
         last++;
     }
-    /* only mapped guest memory: the range's own pages where the windows are not all mapped */
-    if (mem_mapped_run(lo, hi - lo) != hi - lo) {
-        if (last > first) return ~0u;
+    /* Only mapped guest memory, and no alias pool pages: the pool's pages are a memfd's, which a driver that pins host
+       pointers refuses, and the kernel then fails every submission that has the import in its BO list (imp_destroy).
+       The range's own pages where the windows are not all mapped or hold pool pages. A window with a gap and imports
+       in it stays as it is: those imports cover ranges that copying again would cost */
+    int pool = mem_any_pool(lo, hi - lo);
+    if (pool || mem_mapped_run(lo, hi - lo) != hi - lo) {
+        if (!pool && last > first) return ~0u;
         lo = cpu & ~(g_uma.align - 1);
         hi = (cpu + len + g_uma.align - 1) & ~(g_uma.align - 1);
-        if (mem_mapped_run(lo, hi - lo) != hi - lo) return ~0u;
+        if (mem_any_pool(lo, hi - lo) || mem_mapped_run(lo, hi - lo) != hi - lo) return ~0u;
+        first = imp_find(lo);
+        last = first;
+        while (last < g_uma.nimp && g_uma.imp[last].cpu < hi) last++;
     }
     if (hi - lo > g_vk.alloc_cap || failed(lo, hi)) return ~0u;
     if (g_uma.nimp - (last - first) >= UMA_MAX) { /* full: the least recently used goes */
@@ -364,6 +392,10 @@ static void hz_mark(u64 cpu, u64 len);
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     u64 cpu = 0;
     if (!len || gmmu_run(gva, len, &cpu) < len) { /* not one run of guest memory */
+        g_uma.misses++;
+        return 0;
+    }
+    if (mem_any_pool(cpu, len)) { /* the pool's pages: a memfd's, which the driver refuses (imp_get) */
         g_uma.misses++;
         return 0;
     }
@@ -416,6 +448,7 @@ static void gpu_wrote(u64 cpu, u64 n) {
 
 void vk_uma_init(void) {
     if (!vk_uma()) return;
+    g_uma.page = plat_vm_page();
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &hp};
@@ -474,7 +507,43 @@ void vk_uma_quiesce(u64 cpu, u64 size) {
     vk_wait_submit(sub);
     g_uma.quiesces++;
 }
-/* a save state's load: every import goes */
+/* The imports on [cpu, cpu + size) go now (size ~0: all), their readers already run: the caller quiesced them with
+   vk_uma_quiesce, or vk_uma_before_trap does both (vk_lock held) */
+static void forget_range(u64 cpu, u64 size) {
+    u64 end = size == ~0ull || cpu + size < cpu ? ~0ull : cpu + size;
+    for (u32 i = g_uma.nimp; i-- > 0;)
+        if (g_uma.imp[i].cpu < end && cpu < g_uma.imp[i].cpu + g_uma.imp[i].size) imp_destroy(i);
+}
+/* The trap that vk_own_publish is about to arm over [cpu, cpu + size), the host pages around it: the commands that read
+   those pages in place run, and the imports on them go now, before the trap takes them (vk_lock held) */
+void vk_uma_before_trap(u64 cpu, u64 size) {
+    u64 page, lo, hi;
+    if (!vk_uma()) return;
+    page = g_uma.page;
+    lo = cpu & ~(page - 1);
+    hi = (cpu + size + page - 1) & ~(page - 1);
+    vk_uma_quiesce(lo, hi - lo);
+    forget_range(lo, hi - lo);
+}
+/* the imports that mem.c's pages_replaced marked, their readers already run: vk_lock held */
+void vk_uma_drop_dead(void) {
+    int any;
+    if (!vk_uma()) return;
+    pm_lock(&g_uma.lk);
+    any = g_uma.any_dead;
+    g_uma.any_dead = 0;
+    pm_unlock(&g_uma.lk);
+    if (!any) return;
+    for (u32 i = g_uma.nimp; i-- > 0;) {
+        pm_lock(&g_uma.lk);
+        int dead = g_uma.imp[i].dead;
+        pm_unlock(&g_uma.lk);
+        if (dead) imp_destroy(i);
+    }
+}
+/* a save state's load: every import goes, the readers of all of them done first */
 void vk_uma_forget_all(void) {
-    for (u32 i = g_uma.nimp; i-- > 0;) imp_drop(i);
+    if (!vk_uma()) return;
+    vk_uma_quiesce(0, ~0ull);
+    forget_range(0, ~0ull);
 }

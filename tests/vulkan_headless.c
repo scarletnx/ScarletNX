@@ -1704,6 +1704,35 @@ static int check_rt_overlap(void) {
 
 #include "vulkan_descriptor_bench.inc"
 
+/* A publish traps the host page of its range. The import on that page has to go before the trap: RADV keeps every
+   imported host pointer in the BO list of every submission, used or not, and the kernel refuses the trapped page,
+   so the next vk_finish never returns (or the device is lost). With the import dropped at the frame's end instead, a
+   submission between the publish and that end lost the device */
+static int check_uma_import_trap(void) {
+    const u64 gva = 0x7100000, cpu = HEAP_BASE + 0x7a0000, span = 0x10000;
+    VkBuffer buf;
+    u64 off;
+    if (!own_traps()) return 0;
+    if (!vk_uma()) return 0;
+    gmmu_map(gva, cpu, span);
+    memset(GP(cpu), 0x21, (size_t)span);
+    vk_lock();
+    CHECK(vk_uma_get(gva + 0x100, 256, 4, &buf, &off)); /* in place: the import covers the range */
+    VkOwnRes* owner = vk_own_res_new(256);
+    CHECK(owner && !owned_test_fill(owner->buf, 0, 256, 0x42));
+    vk_own_publish(cpu + 0x100, 256, owner, 0); /* its trap takes the page: the import on it goes before it */
+    vk_finish();                                /* every submission checks every import: the device stays */
+    own_acquire(cpu + 0x100, 256);
+    for (u32 i = 0; i < 256; i++) CHECK(GP(cpu + 0x100)[i] == 0x42);
+    vk_own_res_unref(owner);
+    CHECK(mem_any_pool(cpu + 0x100, 256));           /* the page is the pool's now */
+    CHECK(!vk_uma_get(gva + 0x100, 256, 4, &buf, &off)); /* and the range copies, never imports it */
+    vk_finish();
+    vk_unlock();
+    puts("guest memory read in place: an import under a trap goes before the submission that checks it");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const u32 w = 32, h = 16;
     const u64 address = HEAP_BASE;
@@ -1802,6 +1831,7 @@ int main(int argc, char** argv) {
     CHECK(!check_blit());
     CHECK(!check_rt_overlap());
     CHECK(!check_uma());
+    CHECK(!check_uma_import_trap());
     CHECK(!check_descriptor_room());
     /* the pipeline workers: pipeline_threads when given, else a quarter of the CPUs, two to six */
     CHECK(vk_pipeline_worker_count(0, 8) == 6 && vk_pipeline_worker_count(0, 12) == 10 &&
