@@ -155,6 +155,10 @@ builds for FreeBSD, macOS and Windows x64, where they differ:
   on macOS, `VirtualAlloc(MEM_RESERVE)` on Windows), the table and the stacks as lazy memory, a thread's id, `pread`,
   the kernel's checked copies of guest memory (`process_vm_readv` on Linux, `mach_vm_read_overwrite` on macOS, a pipe
   on FreeBSD, `ReadProcessMemory` on Windows) and an epoll set (epoll, kqueue, or WSAPoll over sockets).
+- bionic's `rand` and `random` everywhere: the BSD additive feedback generator that bionic's and glibc's `rand` are,
+  in the bridge, as FreeBSD's and macOS's `rand` are other generators. A game that seeds it with a constant and makes a
+  decryption's key from its numbers needs this sequence: with FreeBSD's, a Unity game decrypted its asset headers
+  into garbage and crashed on a self-relative offset in one.
 - Linux's `MADV_DONTNEED` everywhere: a private anonymous range reads as zero pages again after it. Garbage collectors
   hand such pages out again as zero memory: a Unity game's il2cpp collector did, and on FreeBSD, whose advice keeps
   the contents, a string builder's first chunk got a stale field for its null link and the game crashed in managed
