@@ -141,7 +141,7 @@ static bool semaphores(const SnxCtrVk* v, const VkSemaphoreCreateInfo* si) {
 }
 bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     if (g_present.up) return true;
-    char why[256];
+    char why[512];
     if (!snx_ctr_vk_init(memory, why, sizeof why)) {
         fprintf(stderr, "3ds gpu: %s\n", why);
         return false;

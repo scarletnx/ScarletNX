@@ -51,6 +51,31 @@ uint8_t snx_ctr_vk_target_scale(unsigned width, unsigned height);
    VK_EXT_external_memory_host */
 bool snx_ctr_vk_init(SnxCtrMemory* memory, char* error, size_t error_size);
 void snx_ctr_vk_free(void);
+/* why the last snx_ctr_vk_init failed, without the device's name, which its error adds ("; device <name>, driver
+   <name> <info>") once one was chosen; "" when it made the device. A run that ends for want of the device ends with
+   it, and a report's signature takes that line: one cause on any GPU is one signature */
+const char* snx_ctr_vk_error(void);
+/* A RAM region's import that failed (snx_ctr_vk_init): the step it stopped at, the driver's answer and what the
+   driver was asked */
+typedef enum {
+    SNX_CTR_VK_IMPORT_ALIGNMENT, /* the host address or the size is not a multiple of the alignment */
+    SNX_CTR_VK_IMPORT_POINTER,   /* vkGetMemoryHostPointerPropertiesEXT */
+    SNX_CTR_VK_IMPORT_BUFFER,    /* vkCreateBuffer */
+    SNX_CTR_VK_IMPORT_TYPE,      /* no host-coherent memory type is both the pointer's and the buffer's */
+    SNX_CTR_VK_IMPORT_ALLOCATE,  /* vkAllocateMemory with the host pointer */
+    SNX_CTR_VK_IMPORT_BIND       /* vkBindBufferMemory */
+} SnxCtrVkImportStep;
+typedef struct {
+    SnxCtrVkImportStep step;
+    VkResult result;                      /* the call's (ALIGNMENT and TYPE make none) */
+    uint32_t base, size;                  /* the region's physical range */
+    uint64_t host;                        /* where its bytes are in the host's memory */
+    uint64_t alignment;                   /* the driver's minImportedHostPointerAlignment, 4096 when it gives none */
+    uint32_t pointer_types, buffer_types; /* the memory types the host pointer and the buffer can be in */
+    uint32_t type;                        /* the one allocated (ALLOCATE and BIND) */
+} SnxCtrVkImport;
+/* the error a failed import gives, with the region's name */
+void snx_ctr_vk_import_error(const SnxCtrVkImport* import, const char* region, char* error, size_t error_size);
 /* the open command buffer, begun if none was (in a slot free again, which may wait for its submission) */
 VkCommandBuffer snx_ctr_vk_commands(void);
 /* The recording submitted, without waiting: its serial (the last one's when nothing was recorded and there is no
