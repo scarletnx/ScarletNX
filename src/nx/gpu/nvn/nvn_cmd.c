@@ -1080,10 +1080,10 @@ void nvn_CommandBufferUpdateUniformBuffer(CPU* c, u64 cb, u64 buffer, u64 buffer
     r->size = size;
     memcpy(GP(payload + sizeof *r), GP(data), (size_t)size);
 }
-/* The Switch 2's push constants: bytes (at most 256, in words) of a root table from word offset on, copied into the
-   record. The game's driver writes the table and the offset to method 0x141 of the 3D or compute engine, then the
-   words to 0x142, and nothing for fewer than 4 bytes. The offset's unit is taken as a word, as the methods load words
-   (not yet checked against a shader that reads one) */
+/* An Ounce game's push constants: bytes (at most 256, in words) of a root table from byte offset on, copied into the
+   record. The game's driver writes table | offset << 8 to method 0x141 of the 3D or compute engine
+   (SET_ROOT_TABLE_SELECTOR), then the words to 0x142 (LOAD_ROOT_TABLE), and nothing for fewer than 4 bytes. It passes
+   the API's offset, in bytes as NVN's offsets are, and it cuts a push at 256 bytes, a table's size */
 static void push_constants(CPU* c, u64 cb, int compute, i32 table, i32 offset, i32 bytes, u64 data) {
     u32 words = (u32)(bytes < 0 ? 0 : bytes > 0x100 ? 0x100 : bytes) / 4;
     if (!words) return;

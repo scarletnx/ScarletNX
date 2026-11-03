@@ -23,6 +23,7 @@
    0x120, separate textures from 0x168 and separate samplers from 0x568 + 8 r, up to 0x968 */
 #define DS_INLINE_BANK0  0x650
 #define DS_INLINE_BANK2  0xA00
+#define DS_ROOT_BYTES    SH_ROOT_BYTES /* an Ounce engine's root tables, as its programs read them */
 
 /* VkPolygonMode, VkCullModeFlags, VkCompareOp, VkStencilOp, VkBlendOp, VkBlendFactor */
 enum { DS_POLYGON_FILL, DS_POLYGON_LINE, DS_POLYGON_POINT };
@@ -293,9 +294,11 @@ typedef struct {
     } xfb[4];
 } DsBindings;
 
-/* Constant buffer blocks a front end gives inline (DsBindings.cb_inline): each graphics stage's two */
+/* Constant buffer blocks a front end gives inline (DsBindings.cb_inline): each graphics stage's two, and the 3D
+   engine's root tables, which every graphics stage reads */
 typedef struct {
     u8 bank0[DS_GFX_STAGES][DS_INLINE_BANK0], bank2[DS_GFX_STAGES][DS_INLINE_BANK2];
+    u8 root[DS_ROOT_BYTES];
 } DsInline;
 
 /* Everything a draw reads but its arguments, written by its owner's front end (a GPU channel's 3D engine registers,
@@ -359,6 +362,7 @@ typedef struct {
     u32 smp_mode;           /* the sampler index mode (0: the handle's sampler index) */
     u32 tex_bank;           /* the constant buffer bound textures' and images' handles are read from */
     u8 bank0[DS_INLINE_BANK0], bank2[DS_INLINE_BANK2]; /* the inline blocks, as DsInline's for a stage */
+    u8 root[DS_ROOT_BYTES];                            /* the compute engine's root tables */
     /* an indirect dispatch: the GPU reads the grid, three 32-bit counts, at this GPU address (grid is ignored), and
        puts them in the inline bank 0 at 0x200 too, where NVN's programs read the dispatch size. 0: grid */
     u64 indirect;

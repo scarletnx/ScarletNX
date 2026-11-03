@@ -772,6 +772,45 @@ static void test_image_kinds(const char* spirv_val, const char* dir) {
     }
 }
 
+/* the root tables, banks 24 to 31, as one uniform buffer: R0 = TID.X; UR4:UR5 = c[0][0x20];
+   R2 = c[25][0x10]; [R0 + UR4] = R2. Table 1's word 4 is byte 0x110 of the buffer */
+static void test_root_tables(const char* spirv_val, const char* dir) {
+    u8 code[16 * 8] = {0};
+    u32 n = 0;
+    Word x = fix(0x919); /* S2R R0, TID.X */
+    set(&x, 16, 8, 0);
+    set(&x, 72, 8, 0x21);
+    put(code, n++, x);
+    x = fix(0xab9); /* ULDC.64 UR4, c[0][0x20] */
+    set(&x, 16, 6, 4);
+    cbuf(&x, 0, 0x20);
+    set(&x, 73, 3, 5);
+    put(code, n++, x);
+    x = alu(0x002, 5, 2, 255); /* MOV R2, c[25][0x10] */
+    cbuf(&x, 25, 0x10);
+    put(code, n++, x);
+    x = fix(0x986); /* STG.E [R0.U32 + UR4], R2 */
+    set(&x, 24, 8, 0);
+    set(&x, 32, 8, 2);
+    set(&x, 64, 6, 4);
+    set(&x, 72, 1, 1);
+    set(&x, 73, 3, 4);
+    set(&x, 91, 1, 1);
+    put(code, n++, x);
+    put(code, n, exit_insn());
+    n++;
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm70_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) fprintf(stderr, "root tables: %s\n", si.first_unsupported);
+    CHECK(si.root_max == SH_ROOT_TABLE + 0x14 && !(si.cbuf_mask & ~1u));
+    if (spv) CHECK(validate(spirv_val, dir, "root", spv, count));
+    free(spv);
+}
+
 int main(int argc, char** argv) {
     const char* spirv_val = argc > 2 ? argv[2] : NULL;
     const char* dir = argc > 1 ? argv[1] : ".";
@@ -786,6 +825,7 @@ int main(int argc, char** argv) {
     test_alu_group(spirv_val, dir);
     test_compute_forms(spirv_val, dir);
     test_image_kinds(spirv_val, dir);
+    test_root_tables(spirv_val, dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

@@ -1031,6 +1031,7 @@ void vk_dispatch(const DispatchState* d) {
     }
     for (int i = 0; i < 8; i++)
         if (p->si.cbuf_mask & (1u << i)) need += g_cbn[i] + vk_stage_align();
+    if (p->si.root_max) need += SH_ROOT_BYTES + vk_stage_align();
     /* buffer images: their headers from the compute engine's texture pool, handles from its texture bank */
     for (i = 0; i < p->si.nimg && i < 8; i++) {
         u64 tic_base;
@@ -1196,6 +1197,31 @@ rebind:
                                            .pBufferInfo = &bi[nw]};
             nw++;
         }
+    if (p->si.root_max) { /* an Ounce program's root tables, the bytes it reads (SNX_VKB_ROOT) */
+        u32 range = (p->si.root_max + 15u) & ~15u;
+        VkBuffer rbuf = g_ar;
+        u64 o;
+        u8* dst;
+        if (deferred) {
+            dst = vk_stage(range, vk_stage_align(), &rbuf, &o);
+            if (!dst) {
+                g_cs_skips[CS_SKIP_RESOURCES]++;
+                return;
+            }
+        } else {
+            o = arena_alloc(range);
+            dst = g_ar_ptr + o;
+        }
+        memcpy(dst, d->root, range);
+        bi[nw] = (VkDescriptorBufferInfo){rbuf, o, range};
+        w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = SNX_VKB_ROOT,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                       .pBufferInfo = &bi[nw]};
+        nw++;
+    }
     u64 so[16];
     VkBuffer bi_buf[16];
     int chained = 0;

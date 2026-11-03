@@ -627,10 +627,10 @@ typedef struct {
 typedef struct {
     u64 dst, size;
 } NvnPUpdateUB;
-/* OP_PUSH_CONSTANTS: the Switch 2's push constants, words of a root table (NVN_ROOT_TABLES of NVN_ROOT_WORDS each,
-   for graphics and for compute), then the words, copied at record time */
+/* OP_PUSH_CONSTANTS: an Ounce game's push constants, words of a root table (NVN_ROOT_TABLES of NVN_ROOT_WORDS each,
+   for graphics and for compute) from byte offset on, then the words (one less than words), copied at record time */
 #define NVN_ROOT_TABLES 8
-#define NVN_ROOT_WORDS  256
+#define NVN_ROOT_WORDS  64
 typedef struct {
     u8 compute, table, offset, words;
 } NvnPPush;

@@ -68,6 +68,7 @@ typedef struct {
     u32 sph[20];      /* the shader program header, 80 bytes */
     u32 cbuf_mask;    /* constant buffers read */
     u32 cbuf_max[18]; /* bytes read of each, so only those are bound */
+    u32 root_max;     /* bytes read of the root tables (SNX_VKB_ROOT), 0 for none */
     ShTex tex[SH_MAXTEX];
     int ntex;
     u32 in_mask;       /* generic attributes 0-31 read */
@@ -127,7 +128,8 @@ typedef struct {
 #define SNX_VKB_RS       (SNX_VKB_IMG + 8)         /* fragment: 1 / the resolution scale (SNX_RS) */
 #define SNX_VKB_FMT      (SNX_VKB_RS + 1)          /* compute: the images' format classes (SNX_FMT) */
 #define SNX_VKB_SMAP     (SNX_VKB_FMT + 1)         /* graphics: storage buffer page indices for aliased bindings */
-#define SNX_VKB_IMGBUF   (SNX_VKB_SMAP + 1)        /* 8 buffer images (compute, vertex, fragment) */
+#define SNX_VKB_ROOT     (SNX_VKB_SMAP + 1)        /* an Ounce program's root tables, banks 24 to 31 (SH_ROOT_BYTES) */
+#define SNX_VKB_IMGBUF   (SNX_VKB_ROOT + 1)        /* 8 buffer images (compute, vertex, fragment) */
 #define SNX_VKB_TEXARRAY (SNX_VKB_IMGBUF + 8)      /* up to SNX_TEX_ARRAY distinct indexed handles */
 #define SNX_VKB_TEXFUNCS (SNX_VKB_TEXARRAY + 1)    /* their depth compare functions */
 #define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1)    /* their depth views */
@@ -136,6 +138,12 @@ typedef struct {
 /* An indexed texture loads its handle with an LDC whose address has a register in it: one of SNX_TEX_ARRAY handles
    from cbuf_off on, each (1 << shift) bytes after the last, with the shift in bits 4-7 of ShTex.flags. */
 #define SNX_TEX_ARRAY    256
+/* An Ounce program reads its root tables (push constants) as banks 24 to 31: 8 tables of 256 bytes, which the
+   renderer binds as one uniform buffer, table t at 256 t */
+#define SH_ROOT_BANK     24
+#define SH_ROOT_TABLES   8
+#define SH_ROOT_TABLE    256
+#define SH_ROOT_BYTES    (SH_ROOT_TABLES * SH_ROOT_TABLE)
 #define SNX_TEX_INDEXED  4
 /* Device capabilities the renderer sets before translating: */
 /* sampled image arrays indexed per invocation (non-uniform indexing) */

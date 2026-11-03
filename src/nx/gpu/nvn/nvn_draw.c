@@ -847,8 +847,9 @@ static void c0_packed(const NvnDraw* d, DispatchState* x) {
     snx_st_le32(c0, (size + 15) & ~15u);
     for (u32 k = 0; k < 3; k++) snx_st_le32(c0 + 4 + 4 * k, x->grid[k]);
     for (u32 k = 0; k < NVN_ROOT_TABLES; k++) {
-        u32 n = rec[1 + k]; /* a byte: within NVN_ROOT_WORDS */
-        for (u32 w = 0; w < n && at + 4 * w + 4 <= sizeof c0; w++) snx_st_le32(c0 + at + 4 * w, d->root[1][k][w]);
+        u32 n = rec[1 + k]; /* a byte: words of the table, within NVN_ROOT_WORDS */
+        for (u32 w = 0; w < n && w < NVN_ROOT_WORDS && at + 4 * w + 4 <= sizeof c0; w++)
+            memcpy(c0 + at + 4 * w, d->dx.root + 4 * NVN_ROOT_WORDS * k + 4 * w, 4);
         at += (4 * n + 15) & ~15u;
     }
     for (u32 kind = 0; kind < 2; kind++) /* uniform, then storage buffers: {low, high, size, 0} */
@@ -1059,10 +1060,11 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
         }
         case OP_PUSH_CONSTANTS: { /* into the root table, cut at its end */
             const NvnPPush* r = NVN_OBJ(const NvnPPush, payload);
-            u32 words = r->words + 1u, room = NVN_ROOT_WORDS - r->offset;
-            if (sizeof *r + 4 * (u64)words > (u64)size) return 1;
-            memcpy(&d->root[r->compute][r->table][r->offset], GP(payload + sizeof *r),
-                   4 * (size_t)(words < room ? words : room));
+            u32 bytes = 4 * (r->words + 1u), at = r->offset & ~3u, room = 4 * NVN_ROOT_WORDS - at;
+            if (sizeof *r + (u64)bytes > (u64)size) return 1;
+            u8* to = (r->compute ? d->dx.root : d->inl.root) + 4 * NVN_ROOT_WORDS * r->table + at;
+            memcpy(to, GP(payload + sizeof *r), bytes < room ? bytes : room);
+            if (!r->compute) inl_wrote(d, to, bytes < room ? bytes : room);
             return 1;
         }
         case OP_BARRIER: {
