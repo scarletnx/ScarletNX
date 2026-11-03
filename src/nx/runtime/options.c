@@ -70,7 +70,6 @@ void options_tv_mode_start(void) {
 void options_tv_mode_update(void) {
     int mode, on, was;
     if (g_tv_mode_choice != 2) return;
-    if (g_settings.tv_mode == 2) g_tv_mode_choice = 2; /* a direct write asks for Auto */
     if (!g_tv_first) {
         if (g_tv_watch) {
             if (!plat_power_take_change()) return;
