@@ -1773,8 +1773,11 @@ static void issue126_shader_modes(void) {
     ShaderInfo info;
     size_t words = 0;
     u32* code = translate(clobbered_handle, 3, ST_FS, &info, &words, 1);
-    check(!code && info.unsupported && !strcmp(info.first_unsupported, "untracked texture handle"),
-          "a handle overwritten by a texture result is not tracked");
+    if (code || strcmp(info.first_unsupported, "untracked texture handle R6 of TEX.B at 68"))
+        fprintf(stderr, "overwritten handle: '%s'\n", info.first_unsupported);
+    check(!code && info.unsupported && !strcmp(info.first_unsupported, "untracked texture handle R6 of TEX.B at 68"),
+          "a handle overwritten by a texture result is not tracked, and the refusal names the register, the "
+          "instruction and its offset");
     free(code);
     const u64 zero_mask_handle[] = {
         0x4c98078800070006ull,
