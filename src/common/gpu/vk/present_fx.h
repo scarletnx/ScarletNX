@@ -99,6 +99,8 @@ void snx_fx_configure(SnxFx* fx, const SnxFxConfig* cfg);
 void snx_fx_set_fp16(SnxFx* fx, int on);
 /* what the window's surface took, and the display's headroom over its SDR white in percent (100 = none) */
 void snx_fx_set_display(SnxFx* fx, int kind, int headroom_pct);
+/* the anti aliasing now, for a live key that changes it */
+void snx_fx_set_aa(SnxFx* fx, int aa);
 /* the live cycles of the hotkeys: the upscaler (FSR 1, Bilinear, NIS, SGSR, None), the anti aliasing (Auto, FXAA,
    SMAA, SSAA 2x, SSAA 4x, Off), and HDR Off and On. The changed value is returned */
 int snx_fx_upscale_cycle(SnxFx* fx);
