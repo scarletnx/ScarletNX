@@ -215,6 +215,7 @@ int snx_glslc_compile(GlslcWorkspace* workspace, const GlslcOptions* options, co
     if (!g) return -1;
     g->bind = options->bind;
     g->bind_user = options->bind_user;
+    g->map_default = options->map_default;
     return glslc_run(g, GLSLC_PASS_EMIT, words, capacity);
 }
 
