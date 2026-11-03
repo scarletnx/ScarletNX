@@ -16,6 +16,8 @@ out="${SNX_SWEEP_OUT:-$HOME/Downloads/compiled_scarlet/Hotkey_stuff_forALL/games
 mode="${1:---quick}"
 seconds="${SNX_SWEEP_SECONDS:-5}"
 display="${DISPLAY:-:2}"
+export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-x11}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/opencode/rt}"
 mkdir -p "$out"
 
 settings="${SNX_SWEEP_SETTINGS:---aa=fxaa --upscaler=fsr1 --hdr=auto}"
