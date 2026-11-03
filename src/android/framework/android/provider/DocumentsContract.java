@@ -25,6 +25,14 @@ public final class DocumentsContract {
     public static Uri buildChildDocumentsUriUsingTree(Uri treeUri, String parentDocumentId) {
         return new Uri.Builder().scheme("content").authority(treeUri.getAuthority()).appendPath("tree").appendPath(getTreeDocumentId(treeUri)).appendPath("document").appendPath(parentDocumentId).appendPath("children").build();
     }
+    public static Uri buildChildDocumentsUri(String authority, String parentDocumentId) {
+        return new Uri.Builder().scheme("content").authority(authority).appendPath("document").appendPath(parentDocumentId).appendPath("children").build();
+    }
+    public static Uri buildTreeDocumentUri(String authority, String documentId) {
+        return new Uri.Builder().scheme("content").authority(authority).appendPath("tree").appendPath(documentId).build();
+    }
+    /** No documents provider is here to remove the document. */
+    public static boolean removeDocument(android.content.ContentResolver content, Uri documentUri, Uri parentDocumentUri) throws java.io.FileNotFoundException { return false; }
     public static Uri createDocument(android.content.ContentResolver content, Uri parentDocumentUri, String mimeType, String displayName) { return null; }
     public static boolean deleteDocument(android.content.ContentResolver content, Uri documentUri) { return false; }
     public static Uri renameDocument(android.content.ContentResolver content, Uri documentUri, String displayName) { return null; }

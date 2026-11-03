@@ -159,4 +159,12 @@ public abstract class ContentResolver {
     public void notifyChange(java.util.Collection<Uri> uris, ContentObserver observer, int flags) { for (Uri u : uris) notifyChange(u, observer, flags); }
     public static void requestSync(android.accounts.Account account, String authority, Bundle extras) {}
     public static boolean getMasterSyncAutomatically() { return true; }
+    public static void validateSyncExtrasBundle(Bundle extras) {
+        for (String key : extras.keySet()) {
+            Object v = extras.get(key);
+            if (v == null || v instanceof Long || v instanceof Integer || v instanceof Boolean || v instanceof Float
+                || v instanceof Double || v instanceof String || v instanceof android.accounts.Account) continue;
+            throw new IllegalArgumentException("unexpected value type: " + v.getClass().getName());
+        }
+    }
 }

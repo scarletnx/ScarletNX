@@ -67,4 +67,32 @@ public class Gravity {
     public static void apply(int gravity, int w, int h, android.graphics.Rect container, android.graphics.Rect outRect, int layoutDirection) {
         apply(getAbsoluteGravity(gravity, layoutDirection), w, h, container, outRect);
     }
+
+    public static void apply(int gravity, int w, int h, android.graphics.Rect container, int xAdj, int yAdj, android.graphics.Rect outRect, int layoutDirection) {
+        apply(getAbsoluteGravity(gravity, layoutDirection), w, h, container, xAdj, yAdj, outRect);
+    }
+
+    /** Moves an object into the display, or clips it to the display with the DISPLAY_CLIP flags. */
+    public static void applyDisplay(int gravity, android.graphics.Rect display, android.graphics.Rect inoutObj) {
+        if ((gravity & DISPLAY_CLIP_VERTICAL) != 0) {
+            inoutObj.top = Math.max(inoutObj.top, display.top);
+            inoutObj.bottom = Math.min(inoutObj.bottom, display.bottom);
+        } else {
+            int dy = inoutObj.top < display.top ? display.top - inoutObj.top
+                : inoutObj.bottom > display.bottom ? -Math.min(inoutObj.bottom - display.bottom, inoutObj.top - display.top) : 0;
+            inoutObj.offset(0, dy);
+        }
+        if ((gravity & DISPLAY_CLIP_HORIZONTAL) != 0) {
+            inoutObj.left = Math.max(inoutObj.left, display.left);
+            inoutObj.right = Math.min(inoutObj.right, display.right);
+        } else {
+            int dx = inoutObj.left < display.left ? display.left - inoutObj.left
+                : inoutObj.right > display.right ? -Math.min(inoutObj.right - display.right, inoutObj.left - display.left) : 0;
+            inoutObj.offset(dx, 0);
+        }
+    }
+
+    public static void applyDisplay(int gravity, android.graphics.Rect display, android.graphics.Rect inoutObj, int layoutDirection) {
+        applyDisplay(getAbsoluteGravity(gravity, layoutDirection), display, inoutObj);
+    }
 }

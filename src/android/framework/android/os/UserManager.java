@@ -16,6 +16,8 @@ public class UserManager {
     public long getSerialNumberForUser(UserHandle user) { return 0; }
     public java.util.List<UserHandle> getUserProfiles() { return java.util.List.of(UserHandle.OWNER); }
     public Bundle getUserRestrictions() { return new Bundle(); }
+    /** No device policy sets restrictions here. */
+    public Bundle getApplicationRestrictions(String packageName) { return new Bundle(); }
     public boolean hasUserRestriction(String key) { return false; }
     public static boolean supportsMultipleUsers() { return false; }
 }

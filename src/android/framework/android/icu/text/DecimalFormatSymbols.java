@@ -12,6 +12,11 @@ public class DecimalFormatSymbols {
     public char getGroupingSeparator() { return symbols.getGroupingSeparator(); }
     public char getMinusSign() { return symbols.getMinusSign(); }
     public char getZeroDigit() { return symbols.getZeroDigit(); }
+    public String[] getDigitStrings() {
+        String[] digits = new String[10];
+        for (int i = 0; i < 10; i++) digits[i] = String.valueOf((char) (symbols.getZeroDigit() + i));
+        return digits;
+    }
     public String getExponentSeparator() { return symbols.getExponentSeparator(); }
     public void setDecimalSeparator(char c) { symbols.setDecimalSeparator(c); }
     public void setGroupingSeparator(char c) { symbols.setGroupingSeparator(c); }

@@ -9,6 +9,7 @@ public class Toast {
     public static final int LENGTH_SHORT = 0, LENGTH_LONG = 1;
     private CharSequence text;
     private int duration;
+    private android.view.View view;
 
     public Toast(Context context) {}
     public static Toast makeText(Context context, CharSequence text, int duration) { Toast t = new Toast(context); t.text = text; t.duration = duration; return t; }
@@ -20,4 +21,6 @@ public class Toast {
     public void setDuration(int duration) { this.duration = duration; }
     public int getDuration() { return duration; }
     public void setGravity(int gravity, int xOffset, int yOffset) {}
+    @Deprecated public void setView(android.view.View view) { this.view = view; }
+    @Deprecated public android.view.View getView() { return view; }
 }

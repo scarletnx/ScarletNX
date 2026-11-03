@@ -16,6 +16,14 @@ public class ResolveInfo implements android.os.Parcelable {
         ComponentInfo ci = activityInfo != null ? activityInfo : serviceInfo != null ? serviceInfo : providerInfo;
         return ci != null ? ci.loadLabel(pm) : nonLocalizedLabel;
     }
+    public android.graphics.drawable.Drawable loadIcon(PackageManager pm) {
+        ComponentInfo ci = activityInfo != null ? activityInfo : serviceInfo != null ? serviceInfo : providerInfo;
+        if (icon != 0 && ci != null) {
+            android.graphics.drawable.Drawable d = pm.getDrawable(ci.packageName, icon, ci.applicationInfo);
+            if (d != null) return d;
+        }
+        return ci != null ? ci.loadIcon(pm) : null;
+    }
     @Override public int describeContents() { return 0; }
     @Override public void writeToParcel(android.os.Parcel dest, int f) { dest.writeValue(this); }
 }

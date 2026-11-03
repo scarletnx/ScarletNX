@@ -29,6 +29,7 @@ public class Environment {
     public static File getExternalStoragePublicDirectory(String type) { return new File(getExternalStorageDirectory(), type); }
     public static String getExternalStorageState() { return MEDIA_MOUNTED; }
     public static String getExternalStorageState(File path) { return MEDIA_MOUNTED; }
+    @Deprecated public static String getStorageState(File path) { return getExternalStorageState(path); }
     public static boolean isExternalStorageRemovable() { return false; }
     public static boolean isExternalStorageEmulated() { return true; }
     public static boolean isExternalStorageManager() { return false; }

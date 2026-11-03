@@ -28,6 +28,28 @@ public final class LocaleList implements Parcelable {
     public boolean isEmpty() { return list.length == 0; }
     public int size() { return list.length; }
     public int indexOf(Locale locale) { return Arrays.asList(list).indexOf(locale); }
+    /** True when the two locales have the same language and the same script, explicit or inferred. */
+    public static boolean matchesLanguageAndScript(Locale supported, Locale desired) {
+        if (supported.equals(desired)) return true;
+        if (!supported.getLanguage().equals(desired.getLanguage())) return false;
+        if (isPseudo(supported) || isPseudo(desired)) return false;
+        return script(supported).equals(script(desired));
+    }
+    private static boolean isPseudo(Locale l) {
+        String c = l.getCountry();
+        return c.equals("XA") || c.equals("XB");
+    }
+    private static String script(Locale l) {
+        if (!l.getScript().isEmpty()) return l.getScript();
+        String c = l.getCountry();
+        return switch (l.getLanguage()) {
+            case "zh" -> c.equals("TW") || c.equals("HK") || c.equals("MO") ? "Hant" : "Hans";
+            case "sr" -> "Cyrl";
+            case "pa" -> c.equals("PK") ? "Arab" : "Guru";
+            case "uz" -> c.equals("AF") ? "Arab" : "Latn";
+            default -> "";
+        };
+    }
     public Locale getFirstMatch(String[] supported) { return list.length > 0 ? list[0] : null; }
     public String toLanguageTags() {
         StringBuilder b = new StringBuilder();

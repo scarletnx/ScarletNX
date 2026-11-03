@@ -33,6 +33,8 @@ public final class Bitmap implements android.os.Parcelable {
     private static final java.util.concurrent.ConcurrentLinkedQueue<Integer> FREED = new java.util.concurrent.ConcurrentLinkedQueue<>();
     private static final java.lang.ref.Cleaner CLEANER = java.lang.ref.Cleaner.create();
     private ColorSpace colorSpace = ColorSpace.get(ColorSpace.Named.SRGB);
+    /** The nine-patch chunk of a decoded image, or null */
+    byte[] ninePatchChunk;
 
     private Bitmap(int width, int height, Config config) {
         if (width <= 0 || height <= 0) throw new IllegalArgumentException("width and height must be > 0");
@@ -146,6 +148,12 @@ public final class Bitmap implements android.os.Parcelable {
     public final boolean isMutable() { return mutable; }
     public final boolean isPremultiplied() { return premultiplied; }
     public final void setPremultiplied(boolean premultiplied) { this.premultiplied = premultiplied; }
+    public byte[] getNinePatchChunk() { return ninePatchChunk; }
+    /** No bitmap here has a hardware buffer behind it: the pixels stay in host memory. */
+    public android.hardware.HardwareBuffer getHardwareBuffer() {
+        if (config != Config.HARDWARE || recycled) throw new IllegalStateException("Bitmap is not a HARDWARE bitmap");
+        return null;
+    }
     public final ColorSpace getColorSpace() { return colorSpace; }
     public void setColorSpace(ColorSpace colorSpace) { this.colorSpace = colorSpace; }
     public void recycle() { recycled = true; }

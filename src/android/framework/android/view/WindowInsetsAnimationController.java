@@ -9,4 +9,10 @@ public interface WindowInsetsAnimationController {
     android.graphics.Insets getCurrentInsets();
     void setInsetsAndAlpha(android.graphics.Insets insets, float alpha, float fraction);
     void finish(boolean shown);
+    float getCurrentFraction();
+    float getCurrentAlpha();
+    int getTypes();
+    boolean isFinished();
+    boolean isCancelled();
+    default boolean isReady() { return !isFinished() && !isCancelled(); }
 }

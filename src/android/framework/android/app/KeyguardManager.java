@@ -8,4 +8,5 @@ public class KeyguardManager {
     public boolean isKeyguardSecure() { return false; }
     public boolean isDeviceLocked() { return false; }
     public boolean isDeviceSecure() { return false; }
+    @Deprecated public boolean inKeyguardRestrictedInputMode() { return false; }
 }

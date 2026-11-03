@@ -219,6 +219,21 @@ public final class MotionEvent extends InputEvent {
     }
     public static String actionToString(int action) { return "ACTION_" + action; }
     public static String axisToString(int axis) { return "AXIS_" + axis; }
+    /** An axis from its name ("AXIS_X" or "X") or its number; -1 for no axis. */
+    public static int axisFromString(String symbolicName) {
+        String name = symbolicName.startsWith("AXIS_") ? symbolicName.substring(5) : symbolicName;
+        try {
+            int axis = Integer.parseInt(name);
+            return axis >= 0 && axis <= 63 ? axis : -1;
+        } catch (NumberFormatException e) {
+            try {
+                java.lang.reflect.Field f = MotionEvent.class.getField("AXIS_" + name);
+                return f.getType() == int.class ? f.getInt(null) : -1;
+            } catch (ReflectiveOperationException e2) {
+                return -1;
+            }
+        }
+    }
     @Override public String toString() {
         return "MotionEvent { action=" + action + ", x=" + getX() + ", y=" + getY() + ", pointers=" + props.length + ", time=" + eventTime + " }";
     }

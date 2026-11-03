@@ -7,4 +7,8 @@ public abstract class ActionBar {
     public abstract void show();
     public abstract void hide();
     public abstract boolean isShowing();
+    public abstract int getDisplayOptions();
+    public android.content.Context getThemedContext() { return null; }
+    public void setHomeActionContentDescription(int resId) {}
+    public void setHomeAsUpIndicator(android.graphics.drawable.Drawable indicator) {}
 }

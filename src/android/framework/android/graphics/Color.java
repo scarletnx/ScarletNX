@@ -8,10 +8,13 @@ public class Color {
         WHITE = 0xffffffff, RED = 0xffff0000, GREEN = 0xff00ff00, BLUE = 0xff0000ff, YELLOW = 0xffffff00,
         CYAN = 0xff00ffff, MAGENTA = 0xffff00ff, TRANSPARENT = 0;
 
-    private final float r, g, b, a;
+    /** The components of the color space, then alpha */
+    private final float[] c;
+    private final ColorSpace cs;
 
     public Color() { this(0, 0, 0, 1); }
-    private Color(float r, float g, float b, float a) { this.r = r; this.g = g; this.b = b; this.a = a; }
+    private Color(float r, float g, float b, float a) { this(new float[] {r, g, b, a}, ColorSpace.get(ColorSpace.Named.SRGB)); }
+    private Color(float[] c, ColorSpace cs) { this.c = c; this.cs = cs; }
 
     public static int alpha(int color) { return color >>> 24; }
     public static int red(int color) { return (color >> 16) & 0xff; }
@@ -27,6 +30,12 @@ public class Color {
         double r = lin(red(color) / 255.0), g = lin(green(color) / 255.0), b = lin(blue(color) / 255.0);
         return (float) (0.2126 * r + 0.7152 * g + 0.0722 * b);
     }
+    public static float luminance(long color) {
+        if (colorSpace(color).getModel() != ColorSpace.Model.RGB) throw new IllegalArgumentException("The specified color must be encoded in an RGB color space");
+        double l = 0.2126 * lin(red(color)) + 0.7152 * lin(green(color)) + 0.0722 * lin(blue(color));
+        return (float) Math.max(0, Math.min(1, l));
+    }
+    public static boolean isWideGamut(long color) { return colorSpace(color).isWideGamut(); }
     private static double lin(double c) { return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
 
     /** A color long in sRGB: the int's components as Android's half-float-free encoding of sRGB colors. */
@@ -57,13 +66,29 @@ public class Color {
     public static Color valueOf(long color) { return new Color(red(color), green(color), blue(color), alpha(color)); }
     public static Color valueOf(float r, float g, float b) { return new Color(r, g, b, 1); }
     public static Color valueOf(float r, float g, float b, float a) { return new Color(r, g, b, a); }
-    public int toArgb() { return argb(a, r, g, b); }
+    public static Color valueOf(float[] components, ColorSpace colorSpace) {
+        int n = colorSpace.getComponentCount() + 1;
+        if (components.length < n) throw new IllegalArgumentException("Received a component array of length " + components.length + " but the color model requires " + n + " (including alpha)");
+        return new Color(java.util.Arrays.copyOf(components, n), colorSpace);
+    }
+    public int toArgb() { return argb(alpha(), red(), green(), blue()); }
     public long pack() { return pack(toArgb()); }
-    public float red() { return r; }
-    public float green() { return g; }
-    public float blue() { return b; }
-    public float alpha() { return a; }
-    public ColorSpace getColorSpace() { return ColorSpace.get(ColorSpace.Named.SRGB); }
+    public float red() { return c[0]; }
+    public float green() { return c[1]; }
+    public float blue() { return c[2]; }
+    public float alpha() { return c[c.length - 1]; }
+    public ColorSpace getColorSpace() { return cs; }
+    public ColorSpace.Model getModel() { return cs.getModel(); }
+    public int getComponentCount() { return c.length; }
+    public float getComponent(int component) { return c[component]; }
+    public float[] getComponents() { return c.clone(); }
+    /** The color in another color space, through XYZ (the color spaces here keep sRGB's values). */
+    public Color convert(ColorSpace colorSpace) {
+        float[] v = colorSpace.fromXyz(cs.toXyz(java.util.Arrays.copyOf(c, c.length - 1)));
+        float[] out = java.util.Arrays.copyOf(v, colorSpace.getComponentCount() + 1);
+        out[out.length - 1] = alpha();
+        return new Color(out, colorSpace);
+    }
 
     public static void RGBToHSV(int red, int green, int blue, float[] hsv) {
         float r = red / 255f, g = green / 255f, b = blue / 255f, max = Math.max(r, Math.max(g, b)), min = Math.min(r, Math.min(g, b)), d = max - min;

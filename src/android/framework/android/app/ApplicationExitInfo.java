@@ -10,4 +10,9 @@ public final class ApplicationExitInfo {
     public long getTimestamp() { return 0; }
     public int getPid() { return 0; }
     public String getDescription() { return null; }
+    public String getProcessName() { return null; }
+    public int getImportance() { return ActivityManager.RunningAppProcessInfo.IMPORTANCE_GONE; }
+    public long getPss() { return 0; }
+    public long getRss() { return 0; }
+    public java.io.InputStream getTraceInputStream() throws java.io.IOException { return null; }
 }

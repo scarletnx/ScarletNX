@@ -110,5 +110,8 @@ public class WebView extends FrameLayout {
     public static void startSafeBrowsing(Context context, ValueCallback<Boolean> callback) {
         if (callback != null) callback.onReceiveValue(false);
     }
+    public void buildLayer() {}
+    public void setScrollContainer(boolean isScrollContainer) {}
+    protected void onOverScrolled(int scrollX, int scrollY, boolean clampedX, boolean clampedY) { scrollTo(scrollX, scrollY); }
     @Override protected void onDraw(Canvas canvas) {}
 }

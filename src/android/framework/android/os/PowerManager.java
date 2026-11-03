@@ -29,7 +29,7 @@ public final class PowerManager {
         public void release() { release(0); }
         public void release(int flags) { synchronized (this) { if (count > 0) count = refCounted ? count - 1 : 0; } }
         public boolean isHeld() { synchronized (this) { return count > 0; } }
-        public void setWorkSource(Object ws) {}
+        public void setWorkSource(WorkSource ws) {}
         @Override public String toString() { return "WakeLock{" + tag + " held=" + isHeld() + "}"; }
     }
 
@@ -43,4 +43,13 @@ public final class PowerManager {
     public boolean isSustainedPerformanceModeSupported() { return false; }
     public int getCurrentThermalStatus() { return THERMAL_STATUS_NONE; }
     public float getThermalHeadroom(int forecastSeconds) { return Float.NaN; }
+    public interface OnThermalStatusChangedListener { void onThermalStatusChanged(int status); }
+    /** The status never changes from none, so the listener hears it once, as Android calls a new listener. */
+    public void addThermalStatusListener(OnThermalStatusChangedListener listener) {
+        addThermalStatusListener(new Handler(Looper.getMainLooper())::post, listener);
+    }
+    public void addThermalStatusListener(java.util.concurrent.Executor executor, OnThermalStatusChangedListener listener) {
+        executor.execute(() -> listener.onThermalStatusChanged(THERMAL_STATUS_NONE));
+    }
+    public void removeThermalStatusListener(OnThermalStatusChangedListener listener) {}
 }

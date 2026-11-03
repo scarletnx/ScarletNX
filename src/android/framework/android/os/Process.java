@@ -35,6 +35,7 @@ public class Process {
     public static UserHandle myUserHandle() { return UserHandle.of(0); }
     public static boolean isApplicationUid(int uid) { return uid % 100000 >= FIRST_APPLICATION_UID; }
     public static boolean isIsolated() { return false; }
+    public static boolean isSdkSandbox() { return false; }
     public static boolean is64Bit() { return true; }
     public static long getStartElapsedRealtime() { return 0; }
     public static long getStartUptimeMillis() { return 0; }

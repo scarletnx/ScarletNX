@@ -5,6 +5,7 @@ package android.app;
 /** App operations: each allowed. */
 public class AppOpsManager {
     public static final int MODE_ALLOWED = 0, MODE_IGNORED = 1, MODE_ERRORED = 2, MODE_DEFAULT = 3;
+    @Deprecated public int noteOp(String op, int uid, String packageName) { return MODE_ALLOWED; }
     public static String permissionToOp(String permission) { return null; }
     public int noteOpNoThrow(String op, int uid, String packageName) { return MODE_ALLOWED; }
     public int noteProxyOp(String op, String proxiedPackageName) { return MODE_ALLOWED; }

@@ -47,6 +47,7 @@ public class Window {
         void onActionModeStarted(ActionMode mode);
         void onActionModeFinished(ActionMode mode);
         default void onPointerCaptureChanged(boolean hasCapture) {}
+        default void onProvideKeyboardShortcuts(java.util.List<?> data, Menu menu, int deviceId) {}
     }
 
     public interface OnFrameMetricsAvailableListener {
@@ -66,6 +67,7 @@ public class Window {
     private int features;
 
     public Window(Context context) { this.context = context; }
+    public boolean isWideColorGamut() { return false; }
 
     /** The decor: the window's root, which sends input to the window's callback first. */
     final class DecorView extends FrameLayout {

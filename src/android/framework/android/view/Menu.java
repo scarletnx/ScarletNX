@@ -25,4 +25,10 @@ public interface Menu {
     boolean isShortcutKey(int keyCode, KeyEvent event);
     boolean performIdentifierAction(int id, int flags);
     void setQwertyMode(boolean isQwerty);
+    SubMenu addSubMenu(CharSequence title);
+    SubMenu addSubMenu(int titleRes);
+    SubMenu addSubMenu(int groupId, int itemId, int order, CharSequence title);
+    SubMenu addSubMenu(int groupId, int itemId, int order, int titleRes);
+    void setGroupCheckable(int group, boolean checkable, boolean exclusive);
+    default void setGroupDividerEnabled(boolean groupDividerEnabled) {}
 }
