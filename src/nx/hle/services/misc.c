@@ -946,14 +946,34 @@ static const u8 mii_defaults[6][MII_FIELDS] = {
      0, 4, 3, 13, 0, 0, 0, 4, 10, 0, 0, 4, 10, 0, 4, 2, 20, 64, 64, 1, 7, 0, 0, 0},
 };
 /* The database the console keeps in its system save, here pre-baked and never changed: what a game asks of source
-   Database is these eight, before the defaults. Their fields are the defaults' with other parts, each in the range
-   CharInfo::Verify takes, and their create ids are fixed, so a Mii a game saved is found again on the next run */
-#define MII_DATABASE_COUNT 8
+   Database is these eleven, before the defaults. Their fields are each in the range CharInfo::Verify takes, and their
+   create ids are fixed, so a Mii a game saved is found again on the next run. The first three are ScarletNX's own, as
+   a player would make them: baguette girl (red-magenta curled twin tails, red eyes), leek girl (long teal twin tails,
+   teal eyes) and phone girl (a yellow ponytail on one side, amber eyes). Their colors are the Switch's common colors
+   (0 to 99, past the 3DS's eight), the eight after them the defaults' with other parts in the 3DS numbering.
+   Baguette girl, the first, is the Mii a game takes when it takes the database's first */
+#define MII_DATABASE_COUNT 11
+#define MII_OWN            3 /* the first three: ScarletNX's own, in the Switch's colors */
 static const struct {
     u8 create_id[16];
     char name[11];
     u8 f[MII_FIELDS];
 } mii_database[MII_DATABASE_COUNT] = {
+    /* curled twin tails (hair 112) in crimson (32), red eyes (15), a lashed round eye (28), an open grin (22) */
+    {{0xa9, 0x36, 0x9a, 0x34, 0xd9, 0xc5, 0x4e, 0x24, 0xa0, 0xe6, 0xe7, 0x4a, 0x77, 0xf6, 0xcd, 0x59},
+     "Baguette",
+     {0, 0, 0, 0, 112, 32, 0, 28, 15, 4, 3, 4, 2, 12, 1, 32, 4, 3, 6, 2, 10, 1, 4, 9, 22,
+      21, 4, 3, 13, 0, 0, 32, 4, 10, 0, 8, 4, 10, 0, 4, 2, 20, 50, 64, 1, 0, 0, 0, 0}},
+    /* long twin tails (126) in teal (61), teal eyes (60), wide lashed eyes (35), an open smile (19) */
+    {{0x2e, 0x1c, 0x52, 0xad, 0x0a, 0xd9, 0x4a, 0x32, 0x95, 0x2f, 0xc8, 0xf5, 0xb4, 0x62, 0xbf, 0x0a},
+     "Leek Girl",
+     {0, 0, 0, 0, 126, 61, 0, 35, 60, 4, 3, 4, 2, 12, 0, 61, 4, 3, 6, 2, 10, 1, 4, 9, 19,
+      21, 4, 3, 13, 0, 0, 61, 4, 10, 0, 8, 4, 10, 0, 4, 2, 20, 70, 50, 1, 6, 0, 0, 0}},
+    /* a side ponytail (84) in yellow (85), amber eyes (90), half-lidded lashed eyes (59), a flat mouth (20) */
+    {{0x04, 0x43, 0xe1, 0x70, 0x77, 0x08, 0x45, 0x23, 0x92, 0xcb, 0x69, 0xe2, 0xf2, 0xdd, 0x9e, 0x58},
+     "Phone Girl",
+     {0, 0, 0, 0, 84, 85, 0, 59, 90, 4, 3, 4, 2, 12, 19, 85, 4, 3, 6, 2, 10, 1, 4, 9, 20,
+      21, 4, 3, 13, 0, 0, 85, 4, 10, 0, 8, 4, 10, 0, 4, 2, 20, 62, 56, 1, 2, 0, 0, 0}},
     {{0x5d, 0xb8, 0xe6, 0x89, 0xf3, 0xad, 0x4a, 0xb8, 0xa6, 0x4b, 0xa4, 0x92, 0xce, 0xb8, 0xf7, 0xed},
      "Alex",
      {1, 1, 0, 0, 33, 1, 0, 2, 4, 4, 3, 4, 2, 12, 6, 1, 4, 3, 6, 2, 10, 1, 4, 9, 23,
@@ -1012,9 +1032,10 @@ static u8 mii_color(int kind, u8 v) {
     return v;
 }
 /* a CharInfo of those fields and that name (ASCII, as UTF-16), under a new random create id (a version 4 UUID) when
-   none is given; never zero in its first byte, so no check of it reads it as the invalid all-zero id. What is not
-   built is nought: Get builds over the last one, not a zeroed reply */
-static void mii_build(nn_mii_CharInfo* info, const u8* create_id, const char* name, const u8* f) {
+   none is given; never zero in its first byte, so no check of it reads it as the invalid all-zero id. Its colors are
+   the 3DS's, or with common set the Switch's as they are. What is not built is nought: Get builds over the last one,
+   not a zeroed reply */
+static void mii_build(nn_mii_CharInfo* info, const u8* create_id, const char* name, const u8* f, int common) {
     u8* c = info->v;
     int i;
     memset(c, 0, sizeof info->v);
@@ -1028,10 +1049,10 @@ static void mii_build(nn_mii_CharInfo* info, const u8* create_id, const char* na
         c[8] = (u8)(0x80 | (c[8] & 0x3f));
     }
     for (i = 0; name[i]; i++) c[MII_NAME + 2 * i] = (u8)name[i];
-    for (i = 0; i < MII_FIELDS; i++) c[mii_char_offset[i]] = mii_color(mii_color_kind[i], f[i]);
+    for (i = 0; i < MII_FIELDS; i++) c[mii_char_offset[i]] = common ? f[i] : mii_color(mii_color_kind[i], f[i]);
 }
 static void mii_build_database(nn_mii_CharInfo* info, u32 index) {
-    mii_build(info, mii_database[index].create_id, mii_database[index].name, mii_database[index].f);
+    mii_build(info, mii_database[index].create_id, mii_database[index].name, mii_database[index].f, index < MII_OWN);
 }
 /* the database Mii with that CharInfo's create id, or -1 */
 static int mii_find(const nn_mii_CharInfo* info) {
@@ -1104,7 +1125,7 @@ static int nn_mii_detail_IStaticService_GetDatabaseService(SvcObj* self, i32 key
 static int nn_mii_detail_IDatabaseService_BuildDefault(SvcObj* self, u32 index, nn_mii_CharInfo* info) {
     (void)self;
     R_UNLESS(index < 6, MII_INVALID_ARGUMENT);
-    mii_build(info, NULL, "no name", mii_defaults[index]);
+    mii_build(info, NULL, "no name", mii_defaults[index], 0);
     R_SUCCEED();
 }
 static int nn_mii_detail_IDatabaseService_GetCount(SvcObj* self, i32 source_flag, i32* count) {
@@ -1193,8 +1214,13 @@ static u32 mii_random(u32 max) {
 /* one of a table row's values. Eden draws the index from 0 to the count, both included, so one draw in count + 1
    reads the zero past the row's values; here it is one of them */
 static u8 mii_pick(const u8* row) { return row[1 + mii_random(row[0] - 1u)]; }
+/* Of the random Miis a game asks for that our own three fit (a woman, not old, of the faces White and Asian take),
+   one in ten is one of them, each as likely: a game that builds a crowd of a dozen shows about one, rarely two, and
+   the rest are as varied as the console's. draw is in [0, MII_OWN_ODDS): the own Mii it picks, or -1 */
+#define MII_OWN_ODDS 30
+static int mii_own_pick(u32 draw) { return draw < MII_OWN ? (int)draw : -1; }
 /* a random Mii of that age, gender and race (any where it says All), as Eden's CoreData::BuildRandom makes one and
-   CharInfo::SetFromStoreData lays it out */
+   CharInfo::SetFromStoreData lays it out; sometimes one of our own (mii_own_pick), under a create id of its own */
 static int nn_mii_detail_IDatabaseService_BuildRandom(SvcObj* self, u32 age, u32 gender, u32 race,
                                                       nn_mii_CharInfo* info) {
     static const char name[] = "no name";
@@ -1203,6 +1229,13 @@ static int nn_mii_detail_IDatabaseService_BuildRandom(SvcObj* self, u32 age, u32
     int i;
     (void)self;
     if (age > MII_AGE_ALL || gender > MII_GENDER_ALL || race > MII_RACE_ALL) R_THROW(MII_INVALID_ARGUMENT);
+    if (gender != 0 /* Male */ && age != 2 /* Old */ && race != 0 /* Black */) {
+        int own = mii_own_pick(mii_random(MII_OWN_ODDS - 1));
+        if (own >= 0) {
+            mii_build(info, NULL, mii_database[own].name, mii_database[own].f, 1);
+            R_SUCCEED();
+        }
+    }
     if (gender == MII_GENDER_ALL) gender = mii_random(1);
     if (age == MII_AGE_ALL) {
         r = mii_random(10);
