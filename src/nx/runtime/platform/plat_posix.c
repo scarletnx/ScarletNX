@@ -1172,6 +1172,53 @@ void plat_vm_decommit(u8* p, u64 size) {
 #endif
     wp_let(p, size, 0, 1);
 }
+int plat_vm_share(u8* p, int fd, u64 size) {
+#if defined(__linux__)
+    u8* view = (u8*)mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    int r = 0;
+    if (view == (u8*)MAP_FAILED) return -1;
+    memcpy(view, p, (size_t)size);
+    wp_hold(p, size, WP_MAPPED);
+    if (mmap(p, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED) {
+        /* a failed MAP_FIXED may have taken p's pages with it: fresh ones with the copy */
+        r = mmap(p, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) ==
+                    MAP_FAILED
+                ? -2
+                : -1;
+        if (r == -1) memcpy(p, view, (size_t)size);
+    }
+    wp_let(p, size, WP_MAPPED, 1);
+    munmap(view, (size_t)size);
+    if (r != -2) ww_remapped(p, size); /* a new mapping either way */
+    return r;
+#else
+    (void)p, (void)fd, (void)size;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+int plat_vm_unshare(u8* p, u64 size) {
+#if defined(__linux__)
+    /* a copy in fresh pages moved over p in one step, so nothing reads p half replaced */
+    u8* copy = (u8*)mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    int r;
+    if (copy == (u8*)MAP_FAILED) return -1;
+    memcpy(copy, p, (size_t)size);
+    wp_hold(p, size, WP_MAPPED);
+    r = mremap(copy, (size_t)size, (size_t)size, MREMAP_MAYMOVE | MREMAP_FIXED, p) == MAP_FAILED;
+    wp_let(p, size, WP_MAPPED, !r);
+    if (r) {
+        munmap(copy, (size_t)size);
+        return -2; /* MREMAP_FIXED may have unmapped p first */
+    }
+    ww_remapped(p, size);
+    return 0;
+#else
+    (void)p, (void)size;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
 
 /* The alias pool (Linux and Android): one memfd, as large as asked and sparse, whose pages mem.c maps at guest
    addresses with MAP_SHARED, so two addresses of the reservation (and a service's mapping outside it) are the same
