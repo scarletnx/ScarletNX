@@ -178,6 +178,11 @@ What the GPU writes goes there too:
   landing. They are pending (`out`) until their submit is done.
 - Dispatches run on the graphics queue (`compute.c`), so their storage is written in place like a draw's and in order
   with the draws, with nothing kept GPU-owned on a queue of its own.
+- An engine's result (the copy engine, the 2D engine, VIC, NVDEC, a render target's write-back) over memory an import
+  holds already is copied there on the GPU in stream order (`vk_uma_publish`, from `vk_own_publish`), a write in place
+  like the shaders': not GPU-owned, no page trapped, and the import stays. Elsewhere it is published GPU-owned, as
+  without UMA: an import made for the result would take its pages from write tracking, and a sparse texture a copy
+  feeds would then load again whole instead of the pages written.
 
 Guest memory is imported with `VK_EXT_external_memory_host` in pieces. An import covers the 2 MiB windows that a range
 touches, clipped to mapped guest memory. Imports never overlap: a range across two imports makes one import of their
@@ -248,12 +253,15 @@ more per MiB imported in one import, from 16 MiB to 512 MiB, and 7.2 us per MiB 
   The count is by 4 KiB page, so a constant buffer next to vertices on one page counts too.
 - Writes in place. The console's GPU runs its work in order: what reads a range in place after it was written in place
   comes after a barrier, and so does what writes a range read or written before (`order`, by page since the last
-  barrier). A GPU copy of bytes a submit not done yet writes in place copies them from the import, after a barrier
-  (owned.c's `cpu_read`, VIC's `plane_stage`), not from the CPU's view. The runtime's own CPU readers (`gmem_need`,
-  `gmem_read`) wait for that submit, and so does a write of the runtime's there (`vk_uma_before_write`). The end of a
-  submit with writes in place makes them visible to the host (`vk_uma_host_barrier`), and a release waits for the
-  submit that last bound guest memory in place, a write included (`vk_uma_bound`). The report every 600 presents adds
-  `N MB written in place, N barriers for it, N waits for it`.
+  barrier). A publish records its own barriers before and after its copy, so a draw that reads the result in the next
+  rendering pass reads it there without ending that pass. A GPU copy of bytes a submit not done yet writes in place
+  copies them from the import, after a barrier (owned.c's `cpu_read`, VIC's `plane_stage`), not from the CPU's view.
+  The runtime's own CPU readers (`gmem_need`, `gmem_read`) wait for that submit, and so does a write of the runtime's
+  there (`vk_uma_before_write`). The end of a submit with writes in place makes them visible to the host
+  (`vk_uma_host_barrier`), and a release waits for the submit that last bound guest memory in place, a write included
+  (`vk_uma_bound`). VIC and NVDEC wait for their pictures before host1x increments the job's syncpoint, which the guest
+  waits for before it reads them. The report every 600 presents adds `N MB written in place (M MB of them engines'
+  results), N barriers for it, N waits for it`.
 
 ### Android: guest memory moved into AHardwareBuffers
 
@@ -411,6 +419,5 @@ Nothing of the game leaves the machine: the steps below compare numbers and scre
    take that path, to measure and test it there.
 6. Started: memory the CPU and the GPU share (above). Guest vertex, index and read-only storage ranges are read in
    place on a GPU that shares memory (`vk_memory`), and so are constant buffers but the pages the runtime wrote;
-   writable storage and transform feedback are written there in place, and dispatches run on the graphics queue.
-   Next: the engines' results published in place, and placed maps first, with write tracking by protection on those
-   pages.
+   writable storage, transform feedback and the engines' results are written there in place, and dispatches run on the
+   graphics queue. Next: placed maps first, with write tracking by protection on those pages.

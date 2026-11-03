@@ -245,6 +245,11 @@ void vk_uma_gpu_reads(int on);
 /* the import that guest memory [cpu, cpu + len) is written in place in, while a write there is pending: a GPU copy from
    it reads the write, after it (vk_lock held) */
 int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off);
+/* An engine's result (src at off) over guest memory [cpu, cpu + len) that an import holds already: copied there on the
+   GPU in stream order, a write in place pending until its submit is done, with no trap and the import kept
+   (vk_own_publish). 0 elsewhere: then it is published GPU-owned, as without UMA. vk_lock held */
+int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off);
+int vk_uma_held(u64 cpu, u64 len);     /* one import holds guest memory [cpu, cpu + len) now (vk_lock held) */
 void vk_uma_settle(u64 ended);         /* a draw or dispatch begins: the ones before it recorded up to submit ended */
 u32 vk_uma_imports(u64 cpu, u64 size); /* the imports the driver holds over guest memory [cpu, cpu + size) (vk_lock) */
 /* the first import the driver holds over guest memory [cpu, end), on any thread: where it starts there, with where it
@@ -834,8 +839,12 @@ void vk_own_res_unref(VkOwnRes* r);
    Under vk_lock */
 void vk_own_res_wrote(VkOwnRes* r);
 /* the guest CPU bytes [cpu, cpu + size) hold r's bytes from off on once the work recorded so far is done: owned, or,
-   where the host can't trap them, landed at once (the GPU waited for). Under vk_lock */
+   where the host can't trap them, landed at once (the GPU waited for). With unified memory, copied there on the GPU
+   (vk_uma_publish) where one import holds them. Under vk_lock */
 void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off);
+/* the same, owned whatever the memory path: what vk_own_publish does where unified memory can't publish in place, which
+   the owned path's own checks take with unified memory too */
+void vk_own_publish_owned(u64 cpu, u64 size, VkOwnRes* r, u64 off);
 /* guest bytes [gva, gva + size) (by GPU address) for the GPU to read, without landing what it holds: the CPU's
    copied into host (staging memory at `at` in buf), the GPU's copied into buf there by the GPU, recorded in the
    frame's command buffer with the barriers that order them. vk_cpu_read is the same by guest CPU address. Under

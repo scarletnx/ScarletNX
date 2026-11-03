@@ -272,13 +272,20 @@ void vk_own_res_wrote(VkOwnRes* r) {
     __atomic_store_n(&r->serial, __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
 }
 
-void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
+static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     OwnRange o;
     u8* d;
     if (!size) return;
     vk_own_res_wrote(r); /* every producer records its writes before it publishes them */
     vk_rt_before_write_cpu(cpu, size);
     gpu_mem_written_cpu(cpu, size); /* what is built from the bytes (textures, buffers) takes the new ones */
+    /* Unified memory, over memory an import holds: the result is copied there on the GPU, in stream order, with no
+       owner and no trap (each trap let go of the imports over its pages, and the next use made them again). Older
+       owners of the bytes go: they are written over whole */
+    if (in_place && vk_uma_held(cpu, size)) {
+        own_drop(cpu, size);
+        if (vk_uma_publish(cpu, size, r->buf, off)) return;
+    }
     if (g_owned.traps) vk_uma_owning(cpu, size); /* what reads the pages in place runs and goes before the trap */
     if (g_owned.traps && !own_begin(cpu, size, r, off)) return;
     /* not trapped here: older owners of the bytes let go of them, and the result lands now */
@@ -293,6 +300,8 @@ void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
     d = GP(cpu);
     own_land(&o, &d, 1);
 }
+void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) { own_publish(cpu, size, r, off, 1); }
+void vk_own_publish_owned(u64 cpu, u64 size, VkOwnRes* r, u64 off) { own_publish(cpu, size, r, off, 0); }
 
 /* ---------------------------------------------------------------- reading guest memory without landing it */
 /* GPU writes before reading what they wrote (before), the reads' copies before what consumes them (after) */
