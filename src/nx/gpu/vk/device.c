@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/vertex_input.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
@@ -331,12 +332,14 @@ static int create_device(void) {
     int has_google_timing = 0;
     int has_host_import = 0, has_placed = 0;
     int has_descriptor_buffer = 0;
+    int has_vertex_input = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     {
         SnxVkExtensions e;
         snx_vk_device_extensions(g_vk.phys, &e);
         g_vk.has_divisor = snx_vk_extensions_has(&e, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
+        has_vertex_input = snx_vk_extensions_has(&e, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
         has_shader_clock = snx_vk_extensions_has(&e, VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
@@ -436,6 +439,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR qindex8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR};
+    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT qvertex_input = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT};
     /* with the subset enabled, each of its features is off until the device asks for it: a view's swizzle, for one */
     PortabilityFeatures qport = {.sType = PORTABILITY_FEATURES_STYPE};
     VkPhysicalDevicePresentIdFeaturesKHR qpid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
@@ -463,6 +468,7 @@ static int create_device(void) {
                            has_cond ? &qcond : NULL,
                            has_provoking ? &qprov : NULL,
                            index8_ext ? &qindex8 : NULL,
+                           has_vertex_input ? &qvertex_input : NULL,
                            has_portability ? &qport : NULL,
                            has_reconvergence ? &qreconv : NULL,
                            robustness ? &qpipeline : NULL,
@@ -483,6 +489,25 @@ static int create_device(void) {
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
     g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
+    {
+        /* each draw's vertex layout as dynamic state, or a pipeline per layout: the setting, then the device and the
+           drivers known to draw it wrong (vertex_input.h). A value the setting doesn't take stops the game here, as
+           a player who wrote vertex_input_dynamic_state=of would otherwise play with what they meant to turn off */
+        int mode = vk_vi_mode(g_settings.vertex_input_dynamic_state), warn;
+        char line[1024];
+        if (mode < 0)
+            fatal("settings: vertex_input_dynamic_state=%s is not auto, on or off",
+                  g_settings.vertex_input_dynamic_state);
+        VkViDevice vd = {
+            g_vk.props.deviceName,    p12.driverName,
+            p12.driverInfo,           (u32)p12.driverID,
+            g_vk.props.driverVersion, has_vertex_input ? (qvertex_input.vertexInputDynamicState ? 2 : 1) : 0};
+        g_vk.vertex_input_dynamic = vk_vi_choose(mode, &vd, line, sizeof line, &warn);
+        if (warn)
+            WARN("%s\n", line);
+        else
+            LOG("%s\n", line);
+    }
     /* the dynamic state and the barriers within a pass only serve feedback loops */
     g_vk.has_feedback = g_vk.has_feedback && qloop.attachmentFeedbackLoopLayout;
     g_vk.has_feedback_dynamic =
@@ -661,6 +686,14 @@ static int create_device(void) {
         ext[next++] = VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME;
     }
     /* the 3D engine's 8-bit indices, read as they are (render.c); without it they are widened on the GPU */
+    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT fvertex_input = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT,
+        .pNext = chain,
+        .vertexInputDynamicState = VK_TRUE};
+    if (g_vk.vertex_input_dynamic) {
+        chain = &fvertex_input;
+        ext[next++] = VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME;
+    }
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR findex8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR, .pNext = chain, .indexTypeUint8 = VK_TRUE};
     if (g_vk.has_index8) {

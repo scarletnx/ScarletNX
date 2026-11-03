@@ -233,6 +233,17 @@ setting Vulkan Video decode
     help 1 = H.264 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver
     help have an H.264 decode queue. Experimental and untested. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
+setting Vertex input dynamic state
+    key vertex_input_dynamic_state
+    text 16
+    default auto
+    startup
+    words auto=Auto|on=On|off=Off
+    help How a draw gives the GPU its vertex layout. auto = as dynamic state (VK_EXT_vertex_input_dynamic_state) where
+    help the GPU's driver has it, but NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0, which
+    help draw it wrong; on = as dynamic state wherever the driver has it, those too; off = in the pipeline. Dynamic,
+    help one pipeline serves every layout a program is drawn with, so fewer pipelines are made; in the pipeline, each
+    help layout takes one of its own. Any other value stops the game, saying so
 
 table g_performance_ini
 setting FPS limit
