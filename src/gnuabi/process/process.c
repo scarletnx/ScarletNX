@@ -9,7 +9,6 @@
 #include "gnuabi/abi/errno/errno.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
-#include <openssl/rand.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -22,65 +21,6 @@
 #include <unistd.h>
 #endif
 
-/* 0, or -GNU_EIO: RAND_bytes says 1 when it filled the buffer, and takes an int's worth at a time */
-int gnu_random_bytes(void* destination, size_t size) {
-    unsigned char* out = destination;
-    while (size) {
-        int n = size > INT_MAX ? INT_MAX : (int)size;
-        if (RAND_bytes(out, n) != 1) return -GNU_EIO;
-        out += n;
-        size -= (size_t)n;
-    }
-    return 0;
-}
-int gnu_clock_gettime(int id, int64_t* seconds, int64_t* nanos) {
-    if (id != 0 && id != 1 && id != 4 && id != 5 && id != 6 && id != 7 && id != 2 && id != 3) return -GNU_EINVAL;
-#ifdef _WIN32
-    if (id == 0 || id == 5) {
-        FILETIME ft;
-        GetSystemTimeAsFileTime(&ft);
-        uint64_t ticks = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
-        ticks -= 116444736000000000ull;
-        *seconds = (int64_t)(ticks / 10000000);
-        *nanos = (int64_t)(ticks % 10000000) * 100;
-    } else if (id == 2 || id == 3) {
-        FILETIME created, exit_time, kernel, user;
-        BOOL ok = id == 2 ? GetProcessTimes(GetCurrentProcess(), &created, &exit_time, &kernel, &user)
-                          : GetThreadTimes(GetCurrentThread(), &created, &exit_time, &kernel, &user);
-        if (!ok) return -GNU_EIO;
-        uint64_t ticks = (((uint64_t)kernel.dwHighDateTime << 32) | kernel.dwLowDateTime) +
-                         (((uint64_t)user.dwHighDateTime << 32) | user.dwLowDateTime);
-        *seconds = (int64_t)(ticks / 10000000);
-        *nanos = (int64_t)(ticks % 10000000) * 100;
-    } else {
-        LARGE_INTEGER counter, frequency;
-        QueryPerformanceFrequency(&frequency);
-        QueryPerformanceCounter(&counter);
-        *seconds = counter.QuadPart / frequency.QuadPart;
-        *nanos = (int64_t)((counter.QuadPart % frequency.QuadPart) * 1000000000 / frequency.QuadPart);
-    }
-#else
-    clockid_t host = id == 0 || id == 5 ? CLOCK_REALTIME
-                     : id == 2          ? CLOCK_PROCESS_CPUTIME_ID
-                     : id == 3          ? CLOCK_THREAD_CPUTIME_ID
-                                        : CLOCK_MONOTONIC;
-    struct timespec time;
-    if (clock_gettime(host, &time)) return -GNU_EIO;
-    *seconds = time.tv_sec;
-    *nanos = time.tv_nsec;
-#endif
-    return 0;
-}
-void gnu_sleep(int64_t seconds, int64_t nanoseconds) {
-#ifdef _WIN32
-    Sleep((DWORD)(seconds * 1000 + nanoseconds / 1000000));
-#else
-    struct timespec t;
-    t.tv_sec = (time_t)seconds;
-    t.tv_nsec = (long)nanoseconds;
-    while (nanosleep(&t, &t));
-#endif
-}
 static int push(GnuProcess* p, uint64_t* sp, const void* data, size_t n) {
     if (n > *sp || *sp - n < 0xef800000ull) return -GNU_E2BIG;
     *sp -= n;

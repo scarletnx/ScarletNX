@@ -294,11 +294,12 @@ void gnu_signal_exec(GnuKernelThread* t) {
 }
 
 /* ---- the system calls ---- */
+/* in Linux's order (kernel/signal.c's rt_sigaction): the size, the new action's read, the signal, then the old
+   action's write */
 static int64_t sigaction_call(GnuKernelThread* t, const uint64_t a[6]) {
     GnuKernel* p = t->kernel;
     int sig = (int)a[0];
-    if (a[0] < 1 || a[0] > 64 || (a[1] && (sig == SNX_SIGKILL || sig == SNX_SIGSTOP)) || a[3] != 8)
-        return -GNU_EINVAL;
+    if (a[3] != 8) return -GNU_EINVAL;
     uint8_t raw[32];
     SnxLinuxSigaction action = {0};
     if (a[1]) {
@@ -306,43 +307,40 @@ static int64_t sigaction_call(GnuKernelThread* t, const uint64_t a[6]) {
         action = snx_linux_sigaction_decode(raw);
         action.mask &= ~SNX_SIG_UNBLOCKABLE;
     }
+    if (a[0] < 1 || a[0] > 64 || (a[1] && (sig == SNX_SIGKILL || sig == SNX_SIGSTOP))) return -GNU_EINVAL;
     gnu_mutex_lock(&p->lock);
     SnxLinuxSigaction old = p->actions[sig];
-    gnu_mutex_unlock(&p->lock);
-    snx_linux_sigaction_encode(raw, &old);
-    if (a[2] && gnu_kernel_write(p, a[2], raw, sizeof raw)) return -GNU_EFAULT;
     if (a[1]) {
-        gnu_mutex_lock(&p->lock);
         p->actions[sig] = action;
         /* a pending signal whose action is now to ignore it goes (POSIX's sigaction) */
         if (snx_linux_signal_ignored(sig, &action)) discard_everywhere(p, SNX_SIGBIT(sig));
         if (p->ops->disposition) p->ops->disposition(p->context, sig, action.handler);
-        gnu_mutex_unlock(&p->lock);
     }
-    return 0;
+    gnu_mutex_unlock(&p->lock);
+    snx_linux_sigaction_encode(raw, &old);
+    return a[2] && gnu_kernel_write(p, a[2], raw, sizeof raw) ? -GNU_EFAULT : 0;
 }
 
+/* in Linux's order (kernel/signal.c's rt_sigprocmask): the size, the new set's read, how, then the old set's write */
 static int64_t sigprocmask_call(GnuKernelThread* t, const uint64_t a[6]) {
     GnuKernel* p = t->kernel;
     if (a[3] != 8) return -GNU_EINVAL;
-    uint64_t mask = 0;
-    if (a[1]) {
-        if (a[0] > 2) return -GNU_EINVAL;
-        uint8_t raw[8];
-        if (gnu_kernel_read(p, a[1], raw, 8)) return -GNU_EFAULT;
-        mask = snx_ld_le64(raw) & ~SNX_SIG_UNBLOCKABLE;
-    }
     gnu_mutex_lock(&p->lock);
     uint64_t old = t->signal_mask;
     gnu_mutex_unlock(&p->lock);
+    if (a[1]) {
+        uint8_t raw[8];
+        if (gnu_kernel_read(p, a[1], raw, 8)) return -GNU_EFAULT;
+        uint64_t mask = snx_ld_le64(raw) & ~SNX_SIG_UNBLOCKABLE;
+        int32_t how = (int32_t)a[0];
+        if (how < 0 || how > 2) return -GNU_EINVAL;
+        gnu_mutex_lock(&p->lock);
+        t->signal_mask = how == 0 ? t->signal_mask | mask : how == 1 ? t->signal_mask & ~mask : mask;
+        gnu_mutex_unlock(&p->lock);
+    }
     uint8_t out[8];
     snx_st_le64(out, old);
     if (a[2] && gnu_kernel_write(p, a[2], out, 8)) return -GNU_EFAULT;
-    if (a[1]) {
-        gnu_mutex_lock(&p->lock);
-        t->signal_mask = a[0] == 0 ? t->signal_mask | mask : a[0] == 1 ? t->signal_mask & ~mask : mask;
-        gnu_mutex_unlock(&p->lock);
-    }
     return 0; /* a signal it unblocked comes at the end of this call */
 }
 

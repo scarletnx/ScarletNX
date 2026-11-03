@@ -247,6 +247,7 @@ const GnuKernelOps gnu_kernel_ops = {
 #else
     NULL,
 #endif
+    NULL, /* madvise: advice only (a range's MADV_DONTNEED keeps its bytes) */
 };
 
 /* the fork's locks, in the order every other path takes them: the descriptors, the memory map, the JIT, then the
