@@ -396,7 +396,7 @@ static int nn_audio_detail_IAudioOutManager_OpenAudioOutAuto(SvcObj* self, const
 SvcObj* new_audout(void) { return nn_audio_detail_IAudioOutManager_new(); }
 
 /* ============================================================ the native audio manager (aud:u) */
-/* The Switch 2 service that hands back the managers the older services serve: a native-ABI game's
+/* The Ounce service that hands back the managers the older services serve: a native-ABI game's
    GetAudioRendererWorkBufferSize reaches GetAudioRendererManager here, then calls GetWorkBufferSize on the returned
    object. GetWorkBufferSize is stateless, so a fresh manager answers it exactly as audren:u would. */
 static int nn_audio_detail_INativeAudioManager_GetAudioInManager(SvcObj* self, SvcObj** manager) {

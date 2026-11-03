@@ -500,7 +500,7 @@ static void test_ioctl3(u32 ctrlgpu) {
     ctx.c[1] = buf(OUT1, 0x10);
     CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 0);
     CHECK(gr32(OUT1) == 0x120 && GP(OUT1)[0x10] == 0xCC);
-    /* The Switch 2 variant uses a larger request and returns Ampere data only in Ioctl3's inline output. */
+    /* The Ounce variant uses a larger request and returns Ampere data only in Ioctl3's inline output. */
     memset(GP(OUT1), 0xCC, 0xE0);
     gw64(IN0, 0xD0);
     request(12, ctrlgpu, 0xC0E04705u);

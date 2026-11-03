@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's DLSS of the Switch 2 (API 231): the network builder and the parameters of an evaluation. Both are the
+/* nvn_direct's DLSS of the Ounce (API 231): the network builder and the parameters of an evaluation. Both are the
    game's objects, which the runtime keeps at the offsets of the game's driver, as its setters and getters do */
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_state.h"

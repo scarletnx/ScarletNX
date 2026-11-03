@@ -33,7 +33,7 @@ static uint32_t random_word() {
     return rng;
 }
 
-static int g_native; // a Switch 2 game's GOB, bits 5 and 6 of the offset swapped (blocklinear.h)
+static int g_native; // an Ounce game's GOB, bits 5 and 6 of the offset swapped (blocklinear.h)
 
 // gpu.c's bl_offset
 static uint64_t bl_offset(uint32_t x, uint32_t y, uint32_t z, uint32_t wb, uint32_t h, uint32_t bh, uint32_t bd) {
@@ -109,7 +109,7 @@ static void one(uint32_t row_bytes, uint32_t h, uint32_t d, uint32_t bh, uint32_
 }
 
 int main() {
-    for (g_native = 0; g_native < 2; g_native++) { // the Maxwell GOB, then a Switch 2 game's
+    for (g_native = 0; g_native < 2; g_native++) { // the Maxwell GOB, then an Ounce game's
     for (uint32_t width = 1; width <= 33; width++) one(width, 3, 2, 0, 0, 0, 3, 0, 2);
     for (int i = 0; i < 400; i++) {
         uint32_t row_bytes = 1 + random_word() % 400, h = 1 + random_word() % 90, bh = random_word() % 6;

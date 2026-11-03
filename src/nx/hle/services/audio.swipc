@@ -67,7 +67,7 @@ type nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternalEx = stru
     u8[0x100] channel_mappings;
 };
 
-# The Switch 2 native audio service (aud:u): a TIPC session that hands back the managers audren:u/audout:u/audin:u
+# The Ounce native audio service (aud:u): a TIPC session that hands back the managers audren:u/audout:u/audin:u
 # serve, one per command. Native-ABI games reach the renderer manager this way, then its GetWorkBufferSize (cmd 1).
 interface nn::audio::detail::INativeAudioManager is aud:u {
     [0] GetAudioInManager() -> object<nn::audio::detail::IAudioInManager> manager;

@@ -72,12 +72,12 @@ u64 nvn_QueueBuilderGetDevice(CPU* c, u64 b) {
     (void)c;
     return QB(b)->device;
 }
-/* the Switch 2's primary queue (API 231+): a secondary queue's primary graphics queue */
+/* the Ounce's primary queue (API 231+): a secondary queue's primary graphics queue */
 void nvn_QueueBuilderSetPrimaryQueue(CPU* c, u64 b, u64 primary) {
     (void)c;
     QB(b)->primary = primary;
 }
-/* the Switch 2's ray-tracing memory (API 231+): no ray tracing in the games the runtime runs yet */
+/* the Ounce's ray-tracing memory (API 231+): no ray tracing in the games the runtime runs yet */
 void nvn_QueueBuilderSetRayTracingMemorySize(CPU* c, u64 b, u64 size) {
     (void)c, (void)b, (void)size;
 }
@@ -316,7 +316,7 @@ void nvn_WindowBuilderSetDefaults(CPU* c, u64 b) {
     (void)c;
     memset(GP(b), 0, sizeof(NvnWindowBuilder)); /* guest memory: every byte the game sees */
     WB(b)->interval = 1;
-    /* the Switch 2's builder: the driver's defaults, the color space 0 and the metadata of Rec. 709 primaries with
+    /* the Ounce's builder: the driver's defaults, the color space 0 and the metadata of Rec. 709 primaries with
        a D65 white point, 0.03 to 1000 nits, and content light levels of 200 and 60 (its rodata) */
     if (g_nvn.loader.api >= 231u << 16) {
         static const NvnWindowBuilderHdr hdr = {
@@ -427,7 +427,7 @@ void nvn_WindowSetCrop(CPU* c, u64 w, i32 x, i32 y, i32 width, i32 height) {
     o->crop[2] = width;
     o->crop[3] = height;
 }
-/* The Switch 2's color space and HDR metadata (API 231), which the window keeps for its getters. The runtime presents
+/* The Ounce's color space and HDR metadata (API 231), which the window keeps for its getters. The runtime presents
    in SDR: a game that asks for another color space is logged */
 void nvn_WindowBuilderSetColorSpace(CPU* c, u64 b, i32 space) {
     (void)c;

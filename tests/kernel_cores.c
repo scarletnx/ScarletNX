@@ -695,7 +695,7 @@ int main(void) {
         CHECK(snx_kct_woken[1] == was[1] + 1 && snx_kct_woken[16] == was[16] + 1 && snx_kct_woken[17] == was[17] + 1,
               "the rest at the unlock");
     }
-    /* Switch 2's NPDM can permit six cores. Its last guest core gets its own share of host CPUs. */
+    /* The Ounce's NPDM can permit six cores. Its last guest core gets its own share of host CPUs. */
     host(twelve, 12);
     g_hle.svcmem.core_mask = 0x3f;
     reset();

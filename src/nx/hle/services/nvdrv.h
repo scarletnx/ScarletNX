@@ -183,7 +183,7 @@ typedef struct {
        the entry and its channel stay while an ioctl uses them, and Open doesn't hand the fd out again meanwhile */
     u32 users;
     int closed;
-    int s2; /* DEV_CTRLGPU: Switch 2 characteristics; DEV_GPU: native channel completion semantics */
+    int s2; /* DEV_CTRLGPU: Ounce characteristics; DEV_GPU: native channel completion semantics */
     u32 tsg_fd; /* DEV_GPU: 1 + the native timeslice-group fd, zero when unbound */
     u32 tsg_subcontext; /* DEV_GPU: native subcontext within that group */
 } NvFile;

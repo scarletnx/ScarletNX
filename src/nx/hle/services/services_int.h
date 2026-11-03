@@ -82,7 +82,7 @@ void audio_clock(void* arg);
 SvcObj* new_audren(void);
 SvcObj* new_audout(void);
 SvcObj* new_audin(void); /* audin:u: no microphone to open */
-SvcObj* new_aud(void);   /* aud:u, the Switch 2 native audio manager */
+SvcObj* new_aud(void);   /* aud:u, the Ounce native audio manager */
 SvcObj* new_hwopus(void);
 
 /* ---- misc.c: the small services */

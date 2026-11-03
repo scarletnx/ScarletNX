@@ -841,20 +841,20 @@ void nvn_CommandBufferSetControlMemoryCallbackEnabled(CPU* c, u64 cb, int on) {
     (void)c;
     if (t) t->grow = on != 0;
 }
-/* the Switch 2's recording mode (graphics/compute/copy/device): the runtime's records carry their own kind, so the
+/* the Ounce's recording mode (graphics/compute/copy/device): the runtime's records carry their own kind, so the
    mode is not stored (the game's inlined NVN code, which would read it, stays off) */
 void nvn_CommandBufferSetRecordingMode(CPU* c, u64 cb, i32 mode) {
     (void)c;
     (void)cb;
     (void)mode;
 }
-/* the Switch 2's compute/copy overlap mode: same as SetRecordingMode, the runtime's records carry their own kind */
+/* the Ounce's compute/copy overlap mode: same as SetRecordingMode, the runtime's records carry their own kind */
 void nvn_CommandBufferSetComputeOverlapMode(CPU* c, u64 cb, i32 mode) {
     (void)c;
     (void)cb;
     (void)mode;
 }
-/* the Switch 2's shading rate image, which lowers the fragment rate where it says. The runtime shades each pixel,
+/* the Ounce's shading rate image, which lowers the fragment rate where it says. The runtime shades each pixel,
    which gives the image of the full rate. A null texture unbinds it (the game's driver skips its methods) */
 void nvn_CommandBufferBindShadingRateImage(CPU* c, u64 cb, u64 t, u64 v) {
     (void)c;
@@ -875,7 +875,7 @@ void nvn_CommandBufferSetShadingRatePaletteMode(CPU* c, u64 cb, i32 mode) {
     (void)cb;
     (void)mode;
 }
-/* the Switch 2's geometry processing mode, which the game's driver writes to method 0xe26 of the 3D engine (and 0 to
+/* the Ounce's geometry processing mode, which the game's driver writes to method 0xe26 of the 3D engine (and 0 to
    0xe3e). Mode 0 is the vertex pipeline, which the runtime draws with: the mesh pipeline has its own draws
    (DrawMeshTasks*), which the runtime doesn't take yet */
 void nvn_CommandBufferSetGeometryProcessingMode(CPU* c, u64 cb, i32 mode) {
@@ -883,8 +883,8 @@ void nvn_CommandBufferSetGeometryProcessingMode(CPU* c, u64 cb, i32 mode) {
     (void)cb;
     if (mode) LOG_LIMIT(1, "nvn: geometry processing mode %d, and the runtime has the vertex pipeline only\n", mode);
 }
-/* The Switch 2's mesh draws: the runtime has no mesh pipeline yet (VK_EXT_mesh_shader, and a translator for the
-   Switch 2's shaders), so it skips them, as it skips a draw whose shaders it can't translate */
+/* The Ounce's mesh draws: the runtime has no mesh pipeline yet (VK_EXT_mesh_shader, and a translator for the
+   the Ounce's shaders), so it skips them, as it skips a draw whose shaders it can't translate */
 static void mesh_skipped(const char* name) { LOG_LIMIT(1, "nvn: the game draws with mesh shaders (%s): skipped\n", name); }
 void nvn_CommandBufferDrawMeshTasks(CPU* c, u64 cb, i32 first, i32 count) {
     (void)c, (void)cb, (void)first, (void)count;

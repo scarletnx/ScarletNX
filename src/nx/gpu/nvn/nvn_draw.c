@@ -836,7 +836,7 @@ static void clear_texture(NvnDraw* d, u64 payload) {
 }
 
 /* a compute dispatch: its grid (or the GPU's words at ind) in bank 0 at 0x200, and the compute stage's state */
-/* A Switch 2 compute program's packed c[0] (NVN_PROG_C0), as the driver's macro 0xeac writes it into x's bank 0 from
+/* An Ounce compute program's packed c[0] (NVN_PROG_C0), as the driver's macro 0xeac writes it into x's bank 0 from
    the tables the binds keep: the buffers in bank 0 from 0x210 and 0x310, the handles in bank 2. A grid the GPU reads
    (indirect) is not in it yet */
 static void c0_packed(const NvnDraw* d, DispatchState* x) {

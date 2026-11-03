@@ -365,7 +365,7 @@ u32 svc_set_mem_attr(u64 addr, u64 size, u32 mask, u32 attr) {
     pm_unlock(&g_host.svcmem.map_lk);
     return r;
 }
-/* Switch 2's GPU attribute SVC makes already mapped memory available to GSV. Keep its bits separate from
+/* The Ounce's GPU attribute SVC makes already mapped memory available to GSV. Keep its bits separate from
    SetMemoryAttribute, which only accepts Uncached and PermissionLocked. */
 u32 svc_set_gpu_mem_attr(u64 addr, u64 size, u32 mask, u32 attr) {
     u32 r = 0;

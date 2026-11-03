@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The Switch 2 graphics supervisor's TIPC bootstrap. The returned nvdrv2 session is separate from the older nvdrv.
+# The Ounce graphics supervisor's TIPC bootstrap. The returned nvdrv2 session is separate from the older nvdrv.
 type nn::gsv::DisplayName = bytes<0xc>;
 
 @fallback(gsv_user_unknown)
@@ -67,7 +67,7 @@ interface nn::gsv::KUserWorkerSession {
     [216] ExecuteSparseMapRequests(bytes<0x1c> request, buffer<u8, 5> in, buffer<u8, 6> out) -> u64 processed;
 }
 
-# The Switch 2 display session (Eden's IVi2Session, reached through gsv InitializeDisplayContext). A TIPC session:
+# The Ounce display session (Eden's IVi2Session, reached through gsv InitializeDisplayContext). A TIPC session:
 # the raw packet is [type, word count, data...], so each command reads its token and fields from its raw bytes.
 @fallback(ipc_unknown)
 interface nn::vi2::IVi2Session {

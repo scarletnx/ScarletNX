@@ -154,7 +154,7 @@ typedef struct {
     char reserved[0x80];
 } NVNprogramBuilder;
 
-/* the Switch 2's objects (API 231): the bytes its driver uses */
+/* the Ounce's objects (API 231): the bytes its driver uses */
 typedef struct {
     char reserved[0xC0];
 } NVNdlssNetworkBuilder;

@@ -66,7 +66,7 @@ ScarletNX yourself, see [Build](./BUILD.md).
 - [Guest buffers on unified memory](./UMA_MEMORY.md)
 - [ASTC compute uploads](./ASTC.md)
 - [Block linear surfaces and texture conversions on the GPU](./BLOCKLINEAR.md)
-- [Ounce bring-up](./SWITCH2.md): what the captures of the first Ounce game proved, its shaders and surfaces
+- [Ounce bring-up](./OUNCE.md): what the captures of the first Ounce game proved, its shaders and surfaces
 - [VIC composition on the GPU](./VIC.md)
 - [NVDEC H.264 packet submission audit](./NVDEC.md)
 - [Shader corrections, batch 001](./shader-audit/fixes-001.md)

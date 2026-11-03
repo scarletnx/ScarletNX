@@ -441,7 +441,7 @@ int nvn_MemoryPoolMapVirtual(CPU* c, u64 p, i32 n, u64 requests) {
               (unsigned long long)o->size, (unsigned long long)o->gpu, n);
     return 1;
 }
-/* ---- the Switch 2's device command buffers and device messages (API 231), at the offsets of the game's driver */
+/* ---- the Ounce's device command buffers and device messages (API 231), at the offsets of the game's driver */
 #define DCB(b) NVN_OBJ(NvnDeviceCommandBuffer, b)
 #define DMB(b) NVN_OBJ(NvnDeviceMessageBuffer, b)
 /* A uniform buffer's handle, as the game's driver makes it: the address in 16-byte units in the low bits, and the
@@ -778,7 +778,7 @@ void nvn_TextureBuilderSetPackagedTextureLayout(CPU* c, u64 b, u64 layout) {
     if (!layout) return;
     memcpy(o->layout, GP(layout), sizeof o->layout);
     /* the block height's log2 is bits 0-3 of the first halfword, as the game's driver reads it (bits 4-7 and 8-11
-       are fields of their own, nonzero for some of a Switch 2 game's textures) */
+       are fields of their own, nonzero for some of an Ounce game's textures) */
     o->d.bits |= (u8)(NVN_TEX_HAS_LAYOUT | (((o->layout[0] & 0xfu) + 1u) & NVN_TEX_BLOCK_H));
 }
 /* the storage class: 0x100 with the GMMU page kind, as the game's driver answers (gpu/nvn/nvn_tex.c nvn_tex_storage) */
@@ -1516,7 +1516,7 @@ void nvn_ProgramFinalize(CPU* c, u64 p) {
     (void)c;
     NVN_OBJ(NvnProgram, p)->magic = 0;
 }
-/* ---- the Switch 2's program builder (API 231+) ---- */
+/* ---- the Ounce's program builder (API 231+) ---- */
 #define PB(b) NVN_OBJ(NvnProgramBuilder, b)
 void nvn_ProgramBuilderSetDefaults(CPU* c, u64 b) {
     (void)c;
@@ -1600,15 +1600,15 @@ i32 nvn_ProgramBuilderGetProgramRayTracingFlags(CPU* c, u64 b) {
     (void)c;
     return (i32)PB(b)->rt_flags;
 }
-/* A Switch 2 control section: version 0xc9 at 0x04 (where the older ones have 1), in formats 7 and 11 so far, which
+/* An Ounce control section: version 0xc9 at 0x04 (where the older ones have 1), in formats 7 and 11 so far, which
    share their layout */
-static int switch2_section(u64 control) {
+static int ounce_section(u64 control) {
     u32 format = gr32(control + 8);
     if (gr32(control + 4) != 0xc9) return 0;
-    if (format != 7 && format != 11) LOG_LIMIT(1, "nvn: a Switch 2 control section of format %u\n", format);
+    if (format != 7 && format != 11) LOG_LIMIT(1, "nvn: an Ounce control section of format %u\n", format);
     return 1;
 }
-/* a Switch 2 program's NVN stage (format 11), from word 0 of the header that starts a graphics program at its GPU
+/* an Ounce program's NVN stage (format 11), from word 0 of the header that starts a graphics program at its GPU
    address data: compute when there is none */
 static u32 stage11(u64 data) {
     static const u8 nvn_of[] = {NVN_SHADER_STAGE_VERTEX, NVN_SHADER_STAGE_TESS_CONTROL, NVN_SHADER_STAGE_TESS_EVALUATION,
@@ -1628,11 +1628,11 @@ static int stage_of(NvnProgram* o, u64 data, u64 control) {
     u32 magic = gr32(control), one = gr32(control + 4), format = gr32(control + 8), cb = gr32(control + 0x700),
         size = gr32(control + 0x704), off = gr32(control + 0x708), stage = gr32(control + 0x714);
     NvnStage* st;
-    /* A Switch 2 control section (version 0xc9, formats 7 and 11): its program is SM70+ code at data, with no wrapper. A graphics program
+    /* An Ounce control section (version 0xc9, formats 7 and 11): its program is SM70+ code at data, with no wrapper. A graphics program
        starts with its 128-byte header, whose word 0 gives the stage, and a compute program with its first
        instruction. 0x38 is the code's bytes and 0x3c the constants' (bank 1), which start at 0x40, the code's bytes
        rounded up to 256 (a jump table at c[1][0] shows it) */
-    if (magic == 0x98761234u && switch2_section(control)) {
+    if (magic == 0x98761234u && ounce_section(control)) {
         if (!data) return 0;
         st = &o->st[stage11(data)];
         st->data = data;
@@ -1703,9 +1703,9 @@ static void xfb_of(u64 control, u64 serial) {
                                    0xd0, 0xd4, 0xd8, 0xdc, 0xe0, 0xe4, 0xb0, 0xb1, 0xb2, 0xb3, 0xb4,
                                    0xb5, 0xb6, 0xb7, 0xbf, 0x1a, 0x19, 0xe8, 0xff, 0x18, 0xff};
     const u8* c = GP(control);
-    /* a Switch 2 control section (version 0xc9) stores transform feedback differently: its 0x6ec byte is not the
+    /* an Ounce control section (version 0xc9) stores transform feedback differently: its 0x6ec byte is not the
        capture flag, so treat it as not capturing (the old layout's reads would misread garbage) */
-    if (switch2_section(control)) return;
+    if (ounce_section(control)) return;
     if (!c[0x6ec]) return;
     NvnXfbEntry e = {0};
     e.serial = serial;
@@ -1750,12 +1750,12 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
         u32 stage;
         i32 rank;
         if (!stage_of(o, data, control)) return 0;
-        /* a Switch 2 compute program's c[0] record (NVN_PROG_C0) */
-        if (g_nvn.loader.api >= 231u << 16 && switch2_section(control) &&
+        /* an Ounce compute program's c[0] record (NVN_PROG_C0) */
+        if (g_nvn.loader.api >= 231u << 16 && ounce_section(control) &&
             stage11(data) == NVN_SHADER_STAGE_COMPUTE)
             memcpy(NVN_PROG_C0(p), GP(control + 0xa8), NVN_C0_RECORD);
         /* geometry, else tessellation evaluation, else control, else vertex: the driver's order */
-        stage = switch2_section(control) ? stage11(data) : gr32(control + 0x714);
+        stage = ounce_section(control) ? stage11(data) : gr32(control + 0x714);
         rank = stage == NVN_SHADER_STAGE_GEOMETRY          ? 3
                : stage == NVN_SHADER_STAGE_TESS_EVALUATION ? 2
                : stage == NVN_SHADER_STAGE_TESS_CONTROL    ? 1
@@ -1782,7 +1782,7 @@ int nvn_ProgramSetShadersExt(CPU* c, u64 p, i32 n, u64 sd) {
     (void)c;
     return set_shaders(p, n, sd, 0x18);
 }
-/* The Switch 2's program from a builder: its stages from the builder's shader data (NVNshaderData entries, which the
+/* The Ounce's program from a builder: its stages from the builder's shader data (NVNshaderData entries, which the
    builder points to), with the builder's sample shading, as SetShaders takes them */
 int nvn_ProgramInitializeFromBuilder(CPU* c, u64 p, u64 b) {
     NvnProgram* o = NVN_OBJ(NvnProgram, p);
@@ -2387,7 +2387,7 @@ int nvn_MultisampleStateGetSampleLocationsGridEnable(CPU* c, u64 s) {
     (void)c;
     return (MS(s)->flags & NVN_MS_GRID) != 0;
 }
-/* the Switch 2's coverage truncation (API 231), bit 5 of the driver's first word: kept for the getter. The renderer
+/* the Ounce's coverage truncation (API 231), bit 5 of the driver's first word: kept for the getter. The renderer
    rasterizes without it */
 void nvn_MultisampleStateSetCoverageTruncationEnable(CPU* c, u64 s, int on) {
     (void)c;

@@ -53,7 +53,7 @@ typedef struct {
     u32 memory_size;
     u8 set, pad[3];
     u64 device;
-    u64 primary; /* the Switch 2's primary queue (nvnQueueBuilderSetPrimaryQueue), 0 for none */
+    u64 primary; /* the Ounce's primary queue (nvnQueueBuilderSetPrimaryQueue), 0 for none */
 } NvnQueueBuilder;
 #define NVN_QB_SET_COMMAND 0x01u
 #define NVN_QB_SET_COMPUTE 0x02u
@@ -208,7 +208,7 @@ typedef struct {
     u16 block[3], sample_shading;
 } NvnProgram;
 NVN_FITS(NvnProgram, 0x78);
-/* The Switch 2's compute program (API 231) and the driver's record of its c[0], bytes 0xa8-0xbb of its format 11
+/* The Ounce's compute program (API 231) and the driver's record of its c[0], bytes 0xa8-0xbb of its format 11
    control section, which its macro 0xeac reads: [0] the kind, 1 for the packed c[0] below; [1-8] the words of root
    table 0-7 (push constants); [9] uniform buffers; [10] storage buffers; [11] textures; [12] separate textures;
    [13] separate samplers; [14] images; [15] addresses; [17] bit 0: 16 bytes more at the end; [18-19] c[0]'s bytes.
@@ -218,8 +218,8 @@ NVN_FITS(NvnProgram, 0x78);
 #define NVN_C0_RECORD 0x14
 #define NVN_PROG_C0(p) GP((p) + 0x78)
 typedef char nvn_fits_NvnProgramC0[0x78 + NVN_C0_RECORD <= 0xc0 ? 1 : -1];
-/* the Switch 2's program builder (API 231+): a program is built with this, then nvnProgramInitializeFromBuilder
-   turns it into a program. The shader list is the Switch 2 shader-data array (0x18-byte entries); its parsing is
+/* the Ounce's program builder (API 231+): a program is built with this, then nvnProgramInitializeFromBuilder
+   turns it into a program. The shader list is the Ounce shader-data array (0x18-byte entries); its parsing is
    deferred to the mesh-shader work */
 typedef struct {
     u64 device;
@@ -233,7 +233,7 @@ typedef struct {
 } NvnProgramBuilder;
 NVN_FITS(NvnProgramBuilder, 0x64);
 
-/* ---- the Switch 2's DLSS, device command buffers and device messages (API 231). The runtime keeps their state at
+/* ---- the Ounce's DLSS, device command buffers and device messages (API 231). The runtime keeps their state at
    the offsets of the game's driver, as its setters and getters do */
 /* a {texture, view} pair */
 typedef struct {
@@ -310,7 +310,7 @@ typedef struct {
     i32 interval;
 } NvnWindowBuilder; /* SDK 5's builder is 0x2c bytes: no device or native window (nvn_queue.c keeps the last one) */
 NVN_FITS(NvnWindowBuilder, 0x2c);
-/* The Switch 2's builder (API 231) also has the color space and the HDR metadata, at the offsets of its driver. Only
+/* The Ounce's builder (API 231) also has the color space and the HDR metadata, at the offsets of its driver. Only
    API 231's handlers touch them, past the bytes of the older builder: hdr[0-9] the display's primaries (x, y of red,
    green, blue, the white point) and its minimum and maximum luminance, hdr[10-11] the content's maximum and average
    light levels */
@@ -337,7 +337,7 @@ typedef struct {
     u64 native;           /* the native window the builder named */
 } NvnWindow;
 NVN_FITS(NvnWindow, 0x148);
-/* the Switch 2's window (API 231): the builder's color space and HDR metadata, past NvnWindow */
+/* the Ounce's window (API 231): the builder's color space and HDR metadata, past NvnWindow */
 #define NVN_WIN_HDR(w) NVN_OBJ(NvnWindowBuilderHdr, (w) + 0x148)
 typedef char nvn_fits_NvnWindowHdr[sizeof(NvnWindowBuilderHdr) <= 0x180 - 0x148 ? 1 : -1];
 
@@ -423,7 +423,7 @@ typedef struct {
 #define NVN_MS_COV_TO_COLOR 0x02u
 #define NVN_MS_LOCATIONS    0x04u /* SetSampleLocationsEnable */
 #define NVN_MS_GRID         0x08u /* SetSampleLocationsGridEnable */
-#define NVN_MS_COV_TRUNC    0x10u /* the Switch 2's SetCoverageTruncationEnable */
+#define NVN_MS_COV_TRUNC    0x10u /* the Ounce's SetCoverageTruncationEnable */
 NVN_FITS(NvnMultisample, 0x18);
 /* NVNvertexStreamState (8 bytes) */
 typedef struct {
@@ -501,7 +501,7 @@ typedef struct {
     NvnStage st[6];
     u64 serial; /* the program's SetShaders (nvn_program_xfb) */
     u16 block[3], sample_shading;
-    u8 c0[NVN_C0_RECORD]; /* a Switch 2 compute program's c[0] record (NVN_PROG_C0), zero for others */
+    u8 c0[NVN_C0_RECORD]; /* an Ounce compute program's c[0] record (NVN_PROG_C0), zero for others */
 } NvnPBindProgram;
 /* kind: 0 blend 1 color 2 channel mask 3 multisample 4 polygon 5 depth-stencil; the object's bytes */
 typedef struct {

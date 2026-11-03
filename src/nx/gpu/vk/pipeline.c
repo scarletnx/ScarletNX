@@ -30,7 +30,7 @@
 
 /* the bytes of a program vk_shader_get reads, from its SPH. The SPH has no size, so shader_hash ends the program at
    its EXIT or the zero padding after it, and NVN packs programs into one pool: the window has to reach past the
-   largest program's end (FINAL FANTASY RESONANCE has one of 70,728 bytes, a Switch 2 game one of 149,120), without going on into the next
+   largest program's end (FINAL FANTASY RESONANCE has one of 70,728 bytes, an Ounce game one of 149,120), without going on into the next
    program */
 #define SH_CODE 0x80000u
 

@@ -9,7 +9,7 @@
      its sources (sm70.h). forms has a bit for each form the opcode takes.
    kind SM70_K_UALU: the same for the uniform datapath (bit 91 set, uniform registers).
    kind SM70_K_FIX: an instruction whose 12 bits 0-11 are the opcode, code. forms is 0.
-   NAK's encoder gives every row but these, which the captured programs of a Switch 2 game use and NAK does not emit:
+   NAK's encoder gives every row but these, which the captured programs of an Ounce game use and NAK does not emit:
    FSEL (0x008), R2P (0x004), I2FP (0x045, SM86+), DEPBAR (0x91a) and the surface loads and stores that take their
    handle from a constant buffer (SULD.P 0xb97, SULD.D 0xb99, SUST.P 0xb9b, SUST.D 0xb9d: the bindless codes less one,
    as TEX's 0xb60 is to 0x361). CuAssembler's sm_86 encodings, which nvdisasm named, show all of them but SULD.P

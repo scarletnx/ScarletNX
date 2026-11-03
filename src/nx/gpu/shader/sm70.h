@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The SM70+ shader frontend: the 128-bit instructions of Volta to Ada (SM 7.0 to 8.9), which the GPU of the Switch 2
+/* The SM70+ shader frontend: the 128-bit instructions of Volta to Ada (SM 7.0 to 8.9), which the GPU of the Ounce
    runs, decoded (sm70_decode.c) and translated to SPIR-V (sm70_translate.c). It shares ShaderInfo, the descriptor
    layout (shader.h) and the structured control flow (structure.c) with the Maxwell translator, and nothing of the
    Maxwell decoder.
