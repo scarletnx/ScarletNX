@@ -87,7 +87,7 @@ typedef struct {
        and features enabled */
     u32 video_family;
     VkVideoCodecOperationFlagsKHR video_codecs;
-    const char* dev_ext[66]; /* create_device enables 66 at most, were every one it can enable there */
+    const char* dev_ext[67]; /* create_device enables 67 at most, were every one it can enable there */
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained (to 1.2 on a 1.2 device) */
     VkPhysicalDeviceVulkan11Features feat11;
@@ -214,6 +214,10 @@ typedef struct {
        GPU profile's idle times are put on there (gpuprof.c) */
     int has_calibrated_qpc;
     int has_surface_caps2;   /* the instance's VK_KHR_get_surface_capabilities2, which present timing is asked by */
+    /* VK_EXT_swapchain_colorspace (the instance's) and VK_EXT_hdr_metadata (the device's): an HDR10 swapchain, and
+       the light level its metadata names */
+    int has_swapchain_colorspace;
+    int has_hdr_metadata;
     u32 gfx_timestamp_bits;  /* the graphics queue family's timestampValidBits: 0 where it writes no timestamps */
     /* VK_EXT_memory_budget: the driver tells each heap's use and budget (VMA reads them, and guesses without it) */
     int has_budget;

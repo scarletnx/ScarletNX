@@ -192,13 +192,18 @@ static int create_instance(void) {
     const char* const* be = g_opt_headless ? NULL : backend_vk_extensions(&nbe);
     /* the window's, and the surface's present timing capabilities (VK_EXT_present_timing) are asked through
        VK_KHR_get_surface_capabilities2 */
-    const char* ext[17];
+    const char* ext[18];
     u32 next = 0;
     for (u32 i = 0; i < nbe && next < 16; i++) ext[next++] = be[i];
     if (nbe > 16) WARN("vulkan: the window backend wants %u instance extensions, only 16 are taken\n", nbe);
     if (!g_opt_headless && snx_vk_has_instance_extension(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) {
         ext[next++] = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
         g_vk.has_surface_caps2 = 1;
+    }
+    /* an HDR10 swapchain's color space is one of this instance extension's */
+    if (!g_opt_headless && next < 17 && snx_vk_has_instance_extension(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) {
+        ext[next++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
+        g_vk.has_swapchain_colorspace = 1;
     }
     SnxVkInstanceInfo info = {.app_name = "ScarletNX",
                               .extensions = ext,
@@ -743,6 +748,7 @@ static int create_device(void) {
     int has_descriptor_buffer = 0, has_descriptor_heap = 0, has_extended_flags = 0, has_maintenance5 = 0;
     int has_maintenance8 = 0;
     int has_vertex_input = 0;
+    int has_hdr_metadata = 0;
     int has_gpl = 0, has_eds2 = 0, has_eds3 = 0; /* the extensions of pipeline libraries and their dynamic state */
     int has_depth_clip_control = 0;              /* and of the depth range as one of those states */
     int has_mesh = 0;
@@ -857,6 +863,8 @@ static int create_device(void) {
 #if defined(__ANDROID__) /* every driver there takes AHardwareBuffers, which guest memory can move into (uma.c) */
         has_ahb = snx_vk_extensions_has(&e, "VK_ANDROID_external_memory_android_hardware_buffer");
 #endif
+        /* an HDR10 swapchain's light levels, which display.c's frames are tone mapped for */
+        has_hdr_metadata = !g_opt_headless && snx_vk_extensions_has(&e, VK_EXT_HDR_METADATA_EXTENSION_NAME);
         snx_vk_extensions_free(&e);
     }
     /* guest memory the GPU reads in place (uma.c) */
@@ -864,6 +872,10 @@ static int create_device(void) {
     if (uma_with == VK_UMA_WITH_HOST) ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     if (uma_with == VK_UMA_WITH_AHB) ext[next++] = "VK_ANDROID_external_memory_android_hardware_buffer";
     if (g_vk.has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+    if (has_hdr_metadata) {
+        ext[next++] = VK_EXT_HDR_METADATA_EXTENSION_NAME;
+        g_vk.has_hdr_metadata = 1;
+    }
     if (g_vk.has_depth_range_unrestricted) ext[next++] = VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME;
     if (g_vk.has_mixed_samples) ext[next++] = VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME;
     /* vk_checkpoints=1: the hanging draw's or dispatch's marker (record.c's vk_checkpoint_dump), and checkpoints.c's */
