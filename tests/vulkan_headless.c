@@ -2594,6 +2594,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_vertex_restride.inc"
 #include "vulkan_msaa.inc"
 #include "vulkan_targetless_stores.inc"
+#include "vulkan_uma_imports.inc"
 
 #include "vulkan_descriptor_bench.inc"
 #include "vulkan_sparse_bench.inc"
@@ -2705,6 +2706,15 @@ int main(int argc, char** argv) {
         printf("PASS headless Vulkan vertex input only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_UMA_ONLY")) { /* the checks of guest memory read in place alone, for a quick run on a GPU */
+        CHECK(!check_uma_in_flight());
+        CHECK(!check_uma_trap_ranges());
+        CHECK(!check_uma_page_changes());
+        CHECK(!check_uma());
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan in place only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_VIC_ONLY")) { /* the validation test: VIC's bindings, none of the other checks' traffic */
         CHECK(!check_vic());
         CHECK(!check_vic_chain(shot));
@@ -2765,6 +2775,8 @@ int main(int argc, char** argv) {
     CHECK(!check_resident_volume());
     CHECK(!check_dma_untracked_source());
     CHECK(!check_blit());
+    CHECK(!check_uma_in_flight());
+    CHECK(!check_uma_trap_ranges());
     CHECK(!check_uma_page_changes());
     CHECK(!check_rt_overlap());
     CHECK(!check_uma());
