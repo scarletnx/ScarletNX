@@ -1257,6 +1257,8 @@ add_test(NAME guest_stats COMMAND snx-test-guest-stats)
 # them, the moved one
 add_executable(snx-test-nce-module nce_module.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce.c")
 snx_test_target(snx-test-nce-module 23)
+# nce.c's module move alone: the rest of NCE reads the runtime, which this test does not link (nce_host.h)
+target_compile_definitions(snx-test-nce-module PRIVATE SNX_NCE_HOST_OFF)
 target_link_libraries(snx-test-nce-module PRIVATE snx_nx_flags snx_settings_runtime)
 add_test(NAME nce_module COMMAND snx-test-nce-module)
 

@@ -8,10 +8,49 @@
 #include "nx/loader/module_abi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/nce/nce.h"
+#include "nx/runtime/nce/nce_host.h"
 #include "nx/runtime/platform/log.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#if SNX_NCE_HOST
+/* nce.c compiles the host's NCE code on this host too (AArch64 Linux), and the rest of the runtime is not linked here:
+   what it reads of it, as nothing on these paths runs in this test */
+#include "nx/hle/hle.h"
+#include "nx/hle/kernel/kernel.h"
+#include "nx/runtime/arm.h"
+#include "nx/runtime/guest_stats.h"
+#include "nx/runtime/main.h"
+char g_datadir[1024], g_exename[256], g_exedir[1024];
+MemLayout g_layout;
+Hle g_hle;
+const SnxArmModule* g_arm_mod;
+int mem_identity(void) { return 0; }
+void guest_stats_add(u32 ix, unsigned what) {
+    (void)ix;
+    (void)what;
+}
+KThread* kthread_cur(void) { return NULL; }
+int nce_host_check(char* why, size_t size) {
+    (void)why;
+    (void)size;
+    return -1;
+}
+int nce_host_attach(CPU* c, char* why, size_t size) {
+    (void)c;
+    (void)why;
+    (void)size;
+    return -1;
+}
+int nce_host_tid(void) { return -1; }
+void nce_host_kick(int tid) { (void)tid; }
+void nce_host_run(CPU* c) { (void)c; }
+int nce_host_context(const void* context, CPU* c) {
+    (void)context;
+    (void)c;
+    return 0;
+}
+#endif
 
 static int failures;
 static void check(int condition, const char* what) {

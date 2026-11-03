@@ -15,7 +15,11 @@
 
 /* the hosts that run NCE, and the only ones the recompile makes an NCE recompile for (recompile.c). Android from API 29
    only (nce_host_check, nce_refused): its stubs reach the thread's CPU through bionic's TLS_SLOT_APP (nce_host.c) */
-#if defined(__aarch64__) && defined(__linux__)
+#if defined(SNX_NCE_HOST_OFF)
+/* a build that asks for the module-move part of nce.c alone (tests/nce_module.c): that part is host-independent, and the
+   rest reads the whole runtime, which such a test does not link */
+#define SNX_NCE_HOST 0
+#elif defined(__aarch64__) && defined(__linux__)
 #define SNX_NCE_HOST 1
 #else
 #define SNX_NCE_HOST 0
