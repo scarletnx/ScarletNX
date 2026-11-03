@@ -114,13 +114,13 @@ static int64_t op_madvise(void* context, uint64_t address, uint64_t length, int 
 #if defined(__linux__)
     return madvise((void*)(uintptr_t)address, (size_t)length, advice) ? gnu_host_errno(errno) : 0;
 #elif defined(_WIN32)
-    (void)address;
-    (void)length;
-    (void)advice;
-    return 0; /* advice only: Windows keeps the pages and their contents */
+    /* Linux's MADV_DONTNEED 4 gives zero pages again (host.h); the others are advice only on Windows */
+    if (advice == 4) return host_dontneed(address, length) ? -GNU_ENOMEM : 0;
+    return 0;
 #else
+    if (advice == 4) return host_dontneed(address, length) ? -GNU_ENOMEM : 0;
     /* Linux's numbers (MADV_NORMAL 0 to MADV_DONTNEED 4 are the BSDs' too, MADV_FREE 8 is their 5). The BSDs'
-       MADV_DONTNEED keeps the contents, where Linux's gives zero pages again */
+       MADV_DONTNEED keeps the contents, where Linux's gives zero pages again: host_dontneed above gives Linux's */
     int host = advice <= 4 ? advice : advice == 8 ? MADV_FREE : -1;
     if (host < 0) return 0;
     return madvise((void*)(uintptr_t)address, (size_t)length, host) ? gnu_host_errno(errno) : 0;
