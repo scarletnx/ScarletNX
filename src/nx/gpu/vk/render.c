@@ -419,6 +419,7 @@ static void plain_state(VkCommandBuffer cb, VkRect2D sc) {
     rec_CmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
     rec_CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
     if (g_vk.has_feedback_dynamic) rec_CmdSetAttachmentFeedbackLoopEnableEXT(cb, VK_IMAGE_ASPECT_NONE);
+    if (g_vk.vertex_input_dynamic) rec_CmdSetVertexInputEXT(cb, 0, NULL, 0, NULL); /* our draws read no vertices */
 }
 
 /* a channel's render enable predicate (gpu.h render_pred, 0 none) around one of its draws or clears, inside the
@@ -1952,6 +1953,10 @@ static struct {
     u32 viewports;
     float lw, bias[3], bc[4];
     u32 sfront[7], sback[7];
+    /* the vertex layout set as dynamic state, with its bindings' strides (vertex_input_set): vi_set once one is */
+    int vi_set;
+    VertexLayout vi;
+    VkDeviceSize vi_stride[33];
 } g_dyn;
 #define DYN(field, value, call)                                                                                        \
     do {                                                                                                               \
@@ -2057,17 +2062,46 @@ typedef struct {
     u32 topology;              /* the draw's, every primitive a patch with tessellation */
     int xfb_on;                /* transform feedback captures */
 } DrawShaders;
-/* the vertex bindings a pipeline key describes, for finding their buffers each draw: binding b reads guest stream
-   key[b] & 31 from its base offset key[b] >> 5 on, with pad bytes past its last stride when still inside the stream's
-   limit, or the constants of the attributes without data when key[b] is ~0u. When the guest's stride isn't a multiple
-   of its attributes' components (guest_stride[b], else 0), the binding reads a copy with the vertices stride[b] apart,
-   rounded up to a multiple of 4 (restride) */
+/* a draw's vertex layout (vi, which the pipeline key holds too without dynamic vertex input) and its bindings, for
+   finding their buffers each draw: binding b reads guest stream key[b] & 31 from its base offset key[b] >> 5 on, with
+   pad bytes past its last stride when still inside the stream's limit, or the constants of the attributes without
+   data when key[b] is ~0u. When the guest's stride isn't a multiple of its attributes' components (guest_stride[b],
+   else 0), the binding reads a copy with the vertices stride[b] apart, rounded up to a multiple of 4 (restride) */
 typedef struct {
+    VertexLayout vi;
     u32 key[33], pad[33], guest_stride[33];
     VkDeviceSize stride[33];
     u32 used;  /* the streams whose limits the bindings were planned with */
     u32 empty; /* attributes whose relative offsets are outside their guest bindings */
 } VertexPlan;
+/* pl's vertex layout as dynamic state, when the one the command buffer has (g_dyn) is another or none. Every draw
+   pipeline takes it dynamic then, so binding another keeps it; a draw before it is set reads a layout of the driver's */
+static void vertex_input_set(VkCommandBuffer cb, const VertexPlan* pl, int fresh) {
+    const VertexLayout* vi = &pl->vi;
+    if (!fresh && g_dyn.vi_set && !memcmp(&g_dyn.vi, vi, sizeof *vi) &&
+        !memcmp(g_dyn.vi_stride, pl->stride, vi->nbind * sizeof *pl->stride))
+        return;
+    VkVertexInputBindingDescription2EXT b[33];
+    VkVertexInputAttributeDescription2EXT a[32];
+    for (u32 i = 0; i < vi->nbind; i++)
+        b[i] = (VkVertexInputBindingDescription2EXT){
+            .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT,
+            .binding = i,
+            .stride = (u32)pl->stride[i],
+            .inputRate = vi->bind[i].divisor ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX,
+            .divisor = vi->bind[i].divisor ? vi->bind[i].divisor : 1}; /* 1 per vertex, as Vulkan requires */
+    for (u32 i = 0; i < vi->nattr; i++)
+        a[i] =
+            (VkVertexInputAttributeDescription2EXT){.sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT,
+                                                    .location = vi->attr[i].loc,
+                                                    .binding = vi->attr[i].binding,
+                                                    .format = (VkFormat)vi->attr[i].format,
+                                                    .offset = vi->attr[i].offset};
+    g_dyn.vi_set = 1;
+    g_dyn.vi = *vi;
+    memcpy(g_dyn.vi_stride, pl->stride, vi->nbind * sizeof *pl->stride);
+    rec_CmdSetVertexInputEXT(cb, vi->nbind, b, vi->nattr, a);
+}
 /* what a pipeline key takes from the surfaces drawn to: the color slots up to the last bound one, those drawn to,
    which of them are integer, their formats, and the depth target's */
 typedef struct {
@@ -2305,6 +2339,7 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
     }
     int cbind = -1, zbind = -1, over = 0;
     u32 align[33] = {0}; /* each binding's largest attribute component */
+    VertexLayout* vi = &pl->vi;
     pl->empty = attributes_empty(vb, vf, vs->si.in_mask);
     for (u32 i = 0; i < nloc && !over; i++) {
         if (!(vs->si.in_mask & (1u << i))) continue;
@@ -2317,35 +2352,35 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
         }
         if (data && (pl->empty & (1u << i))) {
             if (zbind < 0) {
-                if (k->nbind == maxbind) {
+                if (vi->nbind == maxbind) {
                     over = 1;
                     continue;
                 }
-                pl->key[k->nbind] = ~1u;
-                zbind = (int)k->nbind++;
+                pl->key[vi->nbind] = ~1u;
+                zbind = (int)vi->nbind++;
             }
-            k->attr[k->nattr].loc = i;
-            k->attr[k->nattr].binding = (u32)zbind;
-            k->attr[k->nattr].format = fmt;
-            k->attr[k->nattr++].offset = 0;
+            vi->attr[vi->nattr].loc = i;
+            vi->attr[vi->nattr].binding = (u32)zbind;
+            vi->attr[vi->nattr].format = fmt;
+            vi->attr[vi->nattr++].offset = 0;
             continue;
         }
         if (!data) {
             if (cbind < 0) {
-                if (k->nbind == maxbind) {
+                if (vi->nbind == maxbind) {
                     over = 1;
                     continue;
                 }
-                pl->key[k->nbind] = ~0u;
-                cbind = (int)k->nbind;
-                k->nbind++;
+                pl->key[vi->nbind] = ~0u;
+                cbind = (int)vi->nbind;
+                vi->nbind++;
             }
-            k->attr[k->nattr].loc = i;
-            k->attr[k->nattr].binding = (u32)cbind;
-            k->attr[k->nattr].format = is_int ? (ty == 3 ? VK_FORMAT_R32G32B32A32_SINT : VK_FORMAT_R32G32B32A32_UINT)
-                                              : VK_FORMAT_R32G32B32A32_SFLOAT;
-            k->attr[k->nattr].offset = is_int ? 16 : 0;
-            k->nattr++;
+            vi->attr[vi->nattr].loc = i;
+            vi->attr[vi->nattr].binding = (u32)cbind;
+            vi->attr[vi->nattr].format = is_int ? (ty == 3 ? VK_FORMAT_R32G32B32A32_SINT : VK_FORMAT_R32G32B32A32_UINT)
+                                                : VK_FORMAT_R32G32B32A32_SFLOAT;
+            vi->attr[vi->nattr].offset = is_int ? 16 : 0;
+            vi->nattr++;
             continue;
         }
         u32 stride = vf->stride[sbuf], asz = attr_bytes(size);
@@ -2359,8 +2394,8 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
         /* an attribute past the stride, or past the offsets the GPU allows, gets a binding of its own starting at it */
         u32 base = off > maxoff || (stride && off + asz > stride) ? off : 0;
         u32 key = sbuf | base << 5, b = 0;
-        while (b < k->nbind && pl->key[b] != key) b++;
-        if (b == k->nbind) {
+        while (b < vi->nbind && pl->key[b] != key) b++;
+        if (b == vi->nbind) {
             if (b == maxbind) {
                 over = 1;
                 continue;
@@ -2371,15 +2406,15 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
             pl->key[b] = key;
             u32 div = (vf->instanced >> sbuf) & 1 ? (vf->divisor[sbuf] ? vf->divisor[sbuf] : 1) : 0;
             if (div > 1 && !g_vk.has_divisor) div = 1;
-            k->bind[b].divisor = div;
-            k->bind[b].stride = g_vk.has_dynamic_stride ? 0 : stride;
-            k->nbind++;
+            vi->bind[b].divisor = div;
+            vi->bind[b].stride = g_vk.has_dynamic_stride ? 0 : stride;
+            vi->nbind++;
         }
-        k->attr[k->nattr].loc = i;
-        k->attr[k->nattr].binding = b;
-        k->attr[k->nattr].format = fmt;
-        k->attr[k->nattr].offset = off - base;
-        k->nattr++;
+        vi->attr[vi->nattr].loc = i;
+        vi->attr[vi->nattr].binding = b;
+        vi->attr[vi->nattr].format = fmt;
+        vi->attr[vi->nattr].offset = off - base;
+        vi->nattr++;
         if (attr_component_bytes(size) > align[b]) align[b] = attr_component_bytes(size);
     }
     if (over) {
@@ -2388,13 +2423,14 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
     }
     /* Maxwell reads an attribute at any byte, Vulkan only at a multiple of its components' size, which a stride like
        one game's 69 for 4-byte floats breaks every other vertex: RADV's fetches hung the GPU on them */
-    for (u32 b = 0; b < k->nbind; b++) {
+    for (u32 b = 0; b < vi->nbind; b++) {
         u32 st = (u32)pl->stride[b], a = align[b];
         if (!st || a < 2 || !(st % a)) continue;
         pl->guest_stride[b] = st;
         pl->stride[b] = (st + 3) & ~3u; /* a multiple of 2 or 4, and of the words restride writes */
-        if (!g_vk.has_dynamic_stride) k->bind[b].stride = (u32)pl->stride[b];
+        if (!g_vk.has_dynamic_stride) vi->bind[b].stride = (u32)pl->stride[b];
     }
+    if (!g_vk.vertex_input_dynamic) k->vi = *vi;
 
     /* attachments and blending */
     k->ncolor = n;
@@ -2898,11 +2934,11 @@ retry:
     } vq[33];
     u32 nvq = 0;
     /* each stream up to the last vertex or instance the draw reads, rather than to its limit */
-    u64 last_vertex = k->nbind && !dc->indirect
+    u64 last_vertex = pl->vi.nbind && !dc->indirect
                           ? draw_last_vertex(dc->inline_indices, &ds->index, indexed, first, count, base_vertex)
                           : ~0ull;
     u64 last_instance = dc->indirect ? ~0ull : (u64)base_instance + instances - 1;
-    for (u32 v = 0; v < k->nbind; v++) {
+    for (u32 v = 0; v < pl->vi.nbind; v++) {
         if (pl->key[v] == ~0u || pl->key[v] == ~1u) {
             /* the constants: staging that fails skips the draw (it once drew without the attributes) */
             if (!frame_consts(&vbuf[v], &voff[v])) {
@@ -2918,7 +2954,7 @@ retry:
         /* up to a power of two of the bytes it reads: the cache keeps a range by its length, and draws of a mesh's parts
            that end at different vertices then share a few ranges, not one each */
         u64 limit = stream_len(&ds->vbuf, sbuf), len = limit;
-        u64 last = k->bind[v].divisor ? last_instance : last_vertex;
+        u64 last = pl->vi.bind[v].divisor ? last_instance : last_vertex;
         u64 gstride = pl->guest_stride[v] ? pl->guest_stride[v] : pl->stride[v];
         if (gstride && last < len / gstride) {
             u64 need = (last + 1) * gstride, up = 4096;
@@ -3248,8 +3284,11 @@ retry:
             g_dyn.sets[2 + b] = bset[b];
             vk_descriptors_bind(cb, layout, (u32)b + 2, 1, &bset[b]);
         }
-    if (k->nbind)
-        rec_CmdBindVertexBuffers2(cb, 0, k->nbind, vbuf, voff, vsize, g_vk.has_dynamic_stride ? pl->stride : NULL);
+    if (g_vk.vertex_input_dynamic) vertex_input_set(cb, pl, fresh);
+    /* the strides: the layout's with dynamic vertex input, else dynamic state of their own where the device has it */
+    if (pl->vi.nbind)
+        rec_CmdBindVertexBuffers2(cb, 0, pl->vi.nbind, vbuf, voff, vsize,
+                                  !g_vk.vertex_input_dynamic && g_vk.has_dynamic_stride ? pl->stride : NULL);
 
     u32 viewports = last->si.writes_viewport ? GUEST_VIEWPORTS : 1;
     VkViewport vp = vk_viewport_from(&ds->dyn, &ds->vp, 0);
