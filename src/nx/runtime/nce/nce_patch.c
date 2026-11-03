@@ -647,6 +647,108 @@ void nce_sites_move(NceSites* s, SnxU64 lo, SnxU64 hi, SnxU64 delta) {
         if (s->site[i].addr >= lo && s->site[i].addr < hi) s->site[i].addr += delta;
 }
 
+/* ---- the layout of an NCE recompile ---- */
+
+#define LAYOUT_GUARD 0x1000ull
+
+static SnxU64 page_up(SnxU64 v) { return (v + 0xFFFu) & ~(SnxU64)0xFFFu; }
+
+/* the first site in [lo, hi), or hi */
+static SnxU64 first_site(const NceSites* s, SnxU64 lo, SnxU64 hi) {
+    SnxU64 first = hi;
+    for (size_t i = 0; i < s->count; i++)
+        if (s->site[i].addr >= lo && s->site[i].addr < first) first = s->site[i].addr;
+    return first;
+}
+
+/* the stubs placed as the runtime places them (nce.c's nce_init: the trap, then each site in order), into pools of
+   scratch memory: 0, or -1 with the first site that no pool reaches in *miss */
+static int place(const NceRange* ranges, size_t n, const NceSites* s, SnxU64* miss) {
+    static const NceEnv env = {0x10, 1, 0, 1, 0, 1, 0}; /* any: the stubs' sizes and reach do not depend on it */
+    NcePool* pools = (NcePool*)snx_alloc((n ? n : 1) * sizeof *pools);
+    SnxU64 trap;
+    int r = 0;
+    for (size_t i = 0; i < n; i++) {
+        pools[i].buf = (unsigned char*)snx_alloc((size_t)ranges[i].size);
+        pools[i].addr = ranges[i].addr;
+        pools[i].size = ranges[i].size;
+        pools[i].used = 0;
+    }
+    if (nce_trap(pools, n, &env, NCE_TRAP, &trap)) {
+        *miss = 0;
+        r = -1;
+    }
+    for (size_t i = 0; i < s->count && !r; i++) {
+        SnxU32 word;
+        if (nce_emit(pools, n, &env, &s->site[i], &word)) {
+            *miss = s->site[i].addr;
+            r = -1;
+        }
+    }
+    for (size_t i = 0; i < n; i++) free(pools[i].buf);
+    free(pools);
+    return r;
+}
+
+int nce_layout(NceSpan* mods, size_t count, SnxU64 end, NceSites* sites, NceRange** pools, size_t* pool_count,
+               char* why, size_t size) {
+    NceSpan* to = (NceSpan*)snx_alloc((count ? count : 1) * sizeof *to);
+    NceRange* out = (NceRange*)snx_alloc((count ? 2 * count : 1) * sizeof *out);
+    SnxU64 cursor = count ? mods[0].base : 0, miss = 0;
+    size_t n = 0;
+    *pools = NULL;
+    *pool_count = 0;
+    for (size_t i = 0; i < count; i++) {
+        SnxU64 b = mods[i].base, m = mods[i].size, image = page_up(m), all = nce_pool_size(sites, b, b + m);
+        SnxU64 first = first_site(sites, b, b + m) - b, cut = 0, pre = 0, post;
+        /* a site at off reaches the pool after the module while image + its size - off is under a B's reach: the
+           sites below cut take a pool before the module instead, as Eden splits its patch section */
+        if (first < m && image + all - first >= BRANCH_REACH) cut = (image + all - BRANCH_REACH + 4) & ~(SnxU64)3;
+        if (cut) pre = nce_pool_size(sites, b, b + cut);
+        post = nce_pool_size(sites, b + cut, b + m);
+        to[i].base = cursor + (pre ? pre + LAYOUT_GUARD : 0);
+        to[i].size = m;
+        out[n].addr = to[i].base + image; /* first: the module's later sites take it while it reaches them */
+        out[n++].size = post;
+        if (pre) {
+            out[n].addr = cursor;
+            out[n++].size = pre;
+        }
+        cursor = to[i].base + image + post + LAYOUT_GUARD;
+        if (cursor > end) {
+            snprintf(why, size,
+                     "its %zu modules and their pools of stubs end at %#llx, past the code region's end at %#llx",
+                     count, (unsigned long long)cursor, (unsigned long long)end);
+            free(to);
+            free(out);
+            return -1;
+        }
+    }
+    /* the last module first: a module moves up past the old place of the next, never past its new place */
+    for (size_t i = count; i-- > 0;)
+        nce_sites_move(sites, mods[i].base, mods[i].base + mods[i].size, to[i].base - mods[i].base);
+    if (place(out, n, sites, &miss)) {
+        size_t k = 0;
+        while (k + 1 < count && miss >= to[k + 1].base) k++;
+        for (size_t i = 0; i < count; i++) /* back where they were, the first module first */
+            nce_sites_move(sites, to[i].base, to[i].base + mods[i].size, mods[i].base - to[i].base);
+        snprintf(
+            why, size,
+            "the code at %#llx, in the module of %llu MiB at %#llx, reaches no pool of stubs: a B reaches 128 MiB, "
+            "and a pool before the module and one after it leave that word out",
+            (unsigned long long)(miss - to[k].base + mods[k].base), (unsigned long long)(mods[k].size >> 20),
+            (unsigned long long)mods[k].base);
+        free(to);
+        free(out);
+        return 1;
+    }
+    for (size_t i = 0; i < count; i++) mods[i] = to[i];
+    free(to);
+    *pools = out;
+    *pool_count = n;
+    return 0;
+}
+
 /* "SNXNCE", the version, then the counts of pools and sites, the pools (address, size) and the sites (address,
    word, imm, kind, reg, proven, 5 bytes of zero), all little-endian, each address from the first module's base. The
    pools are sized for the stubs (nce_stub_size), so a version holds their sizes too: 3, the counter read in its stub */
