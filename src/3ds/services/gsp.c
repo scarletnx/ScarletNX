@@ -6,7 +6,8 @@
    register file and host-paced 60 Hz display timing. The GX queue's DMA, memory
    fills, display transfers and texture copies run on physical memory through the
    transfer engine (gpu/transfer.c), PICA command lists (SubmitCmdList) through the
-   command processor (gpu/pica.c), which draws on the GPU (gpu/vk/render.c); the save-VRAM paths stop. */
+   command processor (gpu/pica.c), which draws on the GPU (gpu/vk/render.c).
+   The VRAM system area has nothing to save, since no applet here draws. */
 #include "3ds/runtime/internal.h"
 #include "common/utilities/endian.h"
 #include "snx_settings.h"
@@ -29,6 +30,7 @@
 #define GSP_ERR_REGS_SIZE      0xe0e02becu
 #define GSP_ERR_REGS_ALIGN     0xe0e02bf2u
 #define GSP_FIRST_INIT         0x2a07u
+#define GSP_SAVE_VRAM_ALLOWED  1u /* Azahar RelayEventQueueFlags::AllowSaveVramSysArea (RegisterInterruptRelayQueue) */
 #define GSP_VBLANK_NS          UINT64_C(16666667)
 
 static CtrSharedMap* shared_map(SnxCtrProcess* p, uint32_t object) {
@@ -353,6 +355,36 @@ static void release_right(SnxCtrIpc* c) {
     p->gsp.rights_thread = UINT32_MAX;
     c->out[0] = (c->in[0] & 0xffff0000u) | 0x40;
 }
+/* ImportDisplayCaptureInfo: the framebuffer each screen shows (address, format and stride, from the last swap).
+   The right eye's address is not kept (see buffer_swap), so both addresses are the left eye's, which is what a
+   screen with 3D off shows. */
+static void import_capture_info(SnxCtrIpc* c) {
+    if (!snx_ctr_ipc_expect(c, 0, 0)) return;
+    SnxCtrProcess* p = c->process;
+    c->out[0] = (c->in[0] & 0xffff0000u) | 0x240;
+    for (uint32_t screen = 0; screen < 2; ++screen) {
+        uint32_t at = 2 + screen * 4;
+        uint32_t address = p->gsp.fb_screen[screen].left[p->gsp.fb_screen[screen].active];
+        c->out[at] = address;
+        c->out[at + 1] = address;
+        c->out[at + 2] = p->gsp.fb_screen[screen].format;
+        c->out[at + 3] = p->gsp.fb_screen[screen].stride;
+    }
+}
+/* SaveVramSysArea and RestoreVramSysArea answer only a session that registered with the flag allowing them, as Azahar
+   checks. The HLE applets draw nothing, so VRAM stays as the application left it: nothing to copy aside or back.
+   The refusal uses GSP_ERR_NO_RIGHT, the result code of a missing GPU right: Azahar's ResultNoSaveVRAMSysAreaPerm
+   and ResultNoGpuRight have the same fields. */
+static void vram_sys_area(SnxCtrIpc* c) {
+    if (!snx_ctr_ipc_expect(c, 0, 0)) return;
+    SnxCtrProcess* p = c->process;
+    uint32_t thread = p->objects[c->object].data.session.gsp_thread;
+    if (thread == UINT32_MAX || !(p->gsp.relay_flags[thread] & GSP_SAVE_VRAM_ALLOWED)) {
+        snx_ctr_ipc_error_reply(c, GSP_ERR_NO_RIGHT);
+        return;
+    }
+    c->out[0] = (c->in[0] & 0xffff0000u) | 0x40;
+}
 /* ---- the GX command queue (Azahar GSP_GPU::TriggerCmdReqQueue and VideoCore::GPU::Execute, GPL-3.0-or-later,
    Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project, azahar-emu/azahar a4b335e) ---- */
 
@@ -656,6 +688,9 @@ void snx_ctr_gsp_dispatch(SnxCtrIpc* c) {
         case 0x015:
         case 0x016: acquire(c); break;
         case 0x017: release_right(c); break;
+        case 0x018: import_capture_info(c); break;
+        case 0x019:
+        case 0x01a: vram_sys_area(c); break;
         default: c->state = SNX_CTR_IPC_UNKNOWN; break;
     }
 }
