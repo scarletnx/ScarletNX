@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #ifndef _WIN32
-#include <fcntl.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 #define BUFFER  0x300000u
@@ -65,27 +65,61 @@ static void env(const char* key, const char* value) {
     assert(value ? !setenv(key, value, 1) : !unsetenv(key));
 #endif
 }
+#ifndef _WIN32
+/* stderr into a file of this process alone until capture_end; *saved keeps stderr's own. ctest runs this program's two
+   modes at once in one folder, where a file found by its name is the other's to truncate and remove: tmpfile's has none */
+static FILE* capture_begin(int* saved) {
+    FILE* f = tmpfile();
+    fflush(stderr);
+    assert(f && (*saved = dup(2)) >= 0 && dup2(fileno(f), 2) == 2);
+    return f;
+}
+/* what reached stderr since capture_begin, cut to size - 1 bytes; stderr back where it was */
+static void capture_end(FILE* f, int saved, char* said, size_t size) {
+    fflush(stderr);
+    assert(dup2(saved, 2) == 2);
+    close(saved);
+    rewind(f);
+    size_t n = fread(said, 1, size - 1, f);
+    fclose(f);
+    said[n] = 0;
+}
+/* a capture beside another process's, as the two modes make them: each reads its own lines, all of them */
+static void captures_apart(void) {
+    char said[64];
+    int saved;
+    FILE* f = capture_begin(&saved);
+    fputs("first\n", stderr);
+    pid_t other = fork();
+    assert(other >= 0);
+    if (!other) {
+        int its;
+        FILE* g = capture_begin(&its);
+        fputs("other\n", stderr);
+        capture_end(g, its, said, sizeof said);
+        if (!strcmp(said, "other\n")) _exit(0);
+        fputs(said, stderr); /* into the first capture, which says it */
+        _exit(1);
+    }
+    int status = 0;
+    assert(waitpid(other, &status, 0) == other);
+    fputs("first again\n", stderr);
+    capture_end(f, saved, said, sizeof said);
+    if (strcmp(said, "first\nfirst again\n")) fputs(said, stderr); /* what it read instead */
+    assert(!strcmp(said, "first\nfirst again\n") && WIFEXITED(status) && !WEXITSTATUS(status));
+    puts("UDS: a capture of stderr beside another process's keeps its own lines");
+}
+#endif
 /* the init request, which joins the relay: the 3DS runtime says so on stderr, its log, which players attach to public
    reports, so the nickname is never in it, nor in what the members already in say of the join. Read where fd 2 can be
    swapped for a file */
 static void init_unnamed(SnxCtrProcess* p, uint32_t handle, const uint32_t* init, const char* nickname) {
 #ifndef _WIN32
-    static const char path[] = "3ds_uds_join.log";
     char said[4096];
-    fflush(stderr);
-    int saved = dup(2), fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0600);
-    assert(saved >= 0 && fd >= 0 && dup2(fd, 2) == 2);
-    close(fd);
+    int saved;
+    FILE* f = capture_begin(&saved);
     request(p, handle, init, 15);
-    fflush(stderr);
-    assert(dup2(saved, 2) == 2);
-    close(saved);
-    FILE* f = fopen(path, "rb");
-    assert(f);
-    size_t n = fread(said, 1, sizeof said - 1, f);
-    fclose(f);
-    remove(path);
-    said[n] = 0;
+    capture_end(f, saved, said, sizeof said);
     fputs(said, stderr); /* where it would have gone */
     assert(strstr(said, "3ds uds: joined the relay as ") && !strstr(said, nickname));
 #else
@@ -360,6 +394,9 @@ int main(int argc, char** argv) {
         fprintf(stderr, "--public needs SNX_TEST_UDS_ROOM=host:port\n");
         return 2;
     }
+#ifndef _WIN32
+    captures_apart(); /* before any thread: it forks */
+#endif
     snprintf(g_settings.local_wireless, sizeof g_settings.local_wireless, "room");
     int delayed = argc == 2 && !strcmp(argv[1], "--delay");
     FakeRoom* room = public_room ? NULL : fake_room_start();
