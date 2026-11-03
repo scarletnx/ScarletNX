@@ -51,6 +51,8 @@ struct SnxFx {
     VkDescriptorPool pool;
     VkPipeline easu, rcas, easu16, rcas16;
     VkPipeline copy, copy_linear;
+    VkPipeline blend;
+    VkFormat blend_fmt;
     VkPipeline fxaa;
     VkPipeline smaa_edge, smaa_weights, smaa_blend;
     VkPipeline compose, encode[4], test;
@@ -62,9 +64,12 @@ struct SnxFx {
     FxImage edge[SNX_FX_SLOTS_MAX];
     FxImage weight[SNX_FX_SLOTS_MAX];
     FxImage comp[SNX_FX_SLOTS_MAX];
+    FxImage keep[SNX_FX_SLOTS_MAX];
+    FxImage blend_img[SNX_FX_SLOTS_MAX];
     VkDescriptorSet fsr_easu[SNX_FX_SLOTS_MAX], fsr_rcas[SNX_FX_SLOTS_MAX];
     VkDescriptorSet copy_set[SNX_FX_SLOTS_MAX], fxaa_set[SNX_FX_SLOTS_MAX];
     VkDescriptorSet edge_set[SNX_FX_SLOTS_MAX], weight_set[SNX_FX_SLOTS_MAX], blend_set[SNX_FX_SLOTS_MAX];
+    VkDescriptorSet mix_set[SNX_FX_SLOTS_MAX];
     VkDescriptorSet compose_set[SNX_FX_SLOTS_MAX], encode_set[SNX_FX_SLOTS_MAX];
     VkImage area, search;
     VkDeviceMemory area_mem, search_mem;
@@ -637,6 +642,8 @@ SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, uint32_
         if (!fx_ok(vkAllocateDescriptorSets(fx->dev, &ai, &fx->weight_set[i]))) goto failed;
         ai.pSetLayouts = &fx->dsl2;
         if (!fx_ok(vkAllocateDescriptorSets(fx->dev, &ai, &fx->blend_set[i]))) goto failed;
+        ai.pSetLayouts = &fx->dsl2;
+        if (!fx_ok(vkAllocateDescriptorSets(fx->dev, &ai, &fx->mix_set[i]))) goto failed;
     }
     return fx;
 failed:
@@ -654,6 +661,8 @@ void snx_fx_destroy(SnxFx* fx) {
         img_free(fx, &fx->edge[i]);
         img_free(fx, &fx->weight[i]);
         img_free(fx, &fx->comp[i]);
+        img_free(fx, &fx->keep[i]);
+        img_free(fx, &fx->blend_img[i]);
     }
     if (fx->area_view) vkDestroyImageView(fx->dev, fx->area_view, NULL);
     if (fx->search_view) vkDestroyImageView(fx->dev, fx->search_view, NULL);
@@ -671,6 +680,7 @@ void snx_fx_destroy(SnxFx* fx) {
     DESTROY_PIPE(rcas16);
     DESTROY_PIPE(copy);
     DESTROY_PIPE(copy_linear);
+    DESTROY_PIPE(blend);
     DESTROY_PIPE(fxaa);
     DESTROY_PIPE(smaa_edge);
     DESTROY_PIPE(smaa_weights);
@@ -1045,6 +1055,60 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, VkImageView src, uint32_t img_w
         fx->aa_logged = 1;
         fx_echo(fx, "vulkan: presentation effects ready");
     }
+    return 1;
+}
+
+/* ---- the frame between two frames ---- */
+
+int snx_fx_blend(SnxFx* fx, VkCommandBuffer cb, VkImageView previous, VkImageView current, uint32_t width,
+                 uint32_t height, float step, SnxFxImage* out) {
+    uint32_t slot;
+    float mixv[4] = {step, 0, 0, 0};
+    if (!fx || !cb || !previous || !current || !width || !height || !out) return 0;
+    if (!make_pipelines(fx)) return 0;
+    slot = fx->slot ? fx->slot() % fx->slots : 0;
+    if (!fx->blend || fx->blend_fmt != choose_format(fx)) {
+        VkPipeline p = make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_blend_spv, fx_blend_spv_size, fx->pl2,
+                                choose_format(fx));
+        if (!p) return 0;
+        if (fx->blend) {
+            vkDeviceWaitIdle(fx->dev);
+            vkDestroyPipeline(fx->dev, fx->blend, NULL);
+        }
+        fx->blend = p;
+        fx->blend_fmt = choose_format(fx);
+    }
+    if (!img_make(fx, &fx->blend_img[slot], width, height, choose_format(fx), fx_usage())) return 0;
+    bind_combined(fx, fx->mix_set[slot], previous, 0);
+    bind_combined(fx, fx->mix_set[slot], current, 1);
+    fx_barrier(fx, cb, fx->blend_img[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    fx_draw(fx, cb, fx->blend_img[slot].view, fx->blend, fx->pl2, width, height, fx->mix_set[slot], mixv, sizeof mixv,
+            VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+    fx_barrier(fx, cb, fx->blend_img[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+               VK_ACCESS_2_TRANSFER_READ_BIT);
+    out->image = fx->blend_img[slot].image;
+    out->view = fx->blend_img[slot].view;
+    out->width = width;
+    out->height = height;
+    return 1;
+}
+
+int snx_fx_keep(SnxFx* fx, VkCommandBuffer cb, VkImageView source, uint32_t width, uint32_t height, SnxFxImage* out) {
+    uint32_t slot;
+    if (!fx || !cb || !source || !width || !height || !out) return 0;
+    if (!make_pipelines(fx)) return 0;
+    slot = fx->slot ? fx->slot() % fx->slots : 0;
+    if (!img_make(fx, &fx->keep[slot], width, height, choose_format(fx), fx_usage())) return 0;
+    record_copy(fx, cb, fx->copy_set[slot], source, width, height, 0, 0, width, height, 0, width, height, 1,
+                &fx->keep[slot]);
+    out->image = fx->keep[slot].image;
+    out->view = fx->keep[slot].view;
+    out->width = width;
+    out->height = height;
     return 1;
 }
 

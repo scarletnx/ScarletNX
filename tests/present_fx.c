@@ -403,6 +403,20 @@ int main(int argc, char** argv) {
     }
     free(pixels);
     free(step_pixels);
+    /* the frame between two frames: the keep image and the 0.5 blend */
+    {
+        SnxFxImage keep = {0}, blend = {0};
+        VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
+        uint64_t serial;
+        CHECK(snx_fx_keep(fx, cb, step.view, 320, 240, &keep));
+        barrier(cb, keep.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        CHECK(snx_fx_blend(fx, cb, keep.view, step.view, 320, 240, 0.5f, &blend));
+        serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+        CHECK(blend.width == 320 && blend.height == 240);
+    }
     /* SSAA 2x: the pass is larger and the frame comes back at the display's size */
     {
         SnxFxImage out = {0};

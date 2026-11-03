@@ -105,7 +105,7 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     # the spatial upscalers, the anti aliasing and the HDR passes (gpu/vk/present_fx.c, gpu/vk/fx/)
     include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
     foreach(pair IN ITEMS "fsr.vert=fx_fsr_vert" "copy.frag=fx_copy" "copy_linear.frag=fx_copy_linear"
-                          "fsr_easu.frag=fx_fsr_easu" "fsr_rcas.frag=fx_fsr_rcas" "fxaa.frag=fx_fxaa"
+                          "fsr_easu.frag=fx_fsr_easu" "fsr_rcas.frag=fx_fsr_rcas" "fxaa.frag=fx_fxaa" "blend.frag=fx_blend"
                           "smaa_edge.frag=fx_smaa_edge" "smaa_weights.frag=fx_smaa_weights"
                           "smaa_blend.frag=fx_smaa_blend" "hdr.vert=fx_hdr_vert" "hdr_compose.frag=fx_hdr_compose"
                           "hdr_encode.frag=fx_hdr_encode" "hdr_test.frag=fx_hdr_test")

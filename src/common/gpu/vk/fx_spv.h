@@ -20,6 +20,8 @@ extern const u32 fx_fsr_easu_fp16_spv[];
 extern const u64 fx_fsr_easu_fp16_spv_size;
 extern const u32 fx_fsr_rcas_fp16_spv[];
 extern const u64 fx_fsr_rcas_fp16_spv_size;
+extern const u32 fx_blend_spv[];
+extern const u64 fx_blend_spv_size;
 extern const u32 fx_fxaa_spv[];
 extern const u64 fx_fxaa_spv_size;
 extern const u32 fx_smaa_edge_spv[];

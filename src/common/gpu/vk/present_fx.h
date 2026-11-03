@@ -148,6 +148,14 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, VkImageView src, uint32_t img_w
                   uint32_t y, uint32_t w, uint32_t h, uint32_t transform, uint32_t out_w, uint32_t out_h, int filter,
                   int aa, SnxFxImage* out);
 
+/* The frame between two frames, at the same size: a linear mix of previous and current (0 to 1), for frame
+   interpolation. Both sources are in SHADER_READ_ONLY_OPTIMAL; the output is in TRANSFER_SRC_OPTIMAL. */
+int snx_fx_blend(SnxFx* fx, VkCommandBuffer cb, VkImageView previous, VkImageView current, uint32_t width,
+                 uint32_t height, float step, SnxFxImage* out);
+/* a copy of a frame in the module's keep image for its slot, which the next frame can blend with. It is the same format
+   as the effects' output. The source is in SHADER_READ_ONLY_OPTIMAL. */
+int snx_fx_keep(SnxFx* fx, VkCommandBuffer cb, VkImageView source, uint32_t width, uint32_t height, SnxFxImage* out);
+
 /* the composition's format (RGBA16F, linear light in nits) */
 VkFormat snx_fx_compose_format(void);
 /* The shown crop of src into an RGBA16F composition of dst_w by dst_h, on black, in the rectangle (dx, dy) of dw by

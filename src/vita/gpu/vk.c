@@ -20,6 +20,7 @@ static struct {
     SnxFx* fx;
     int display_kind;
     int headroom_pct;
+    int have_frame;
     VkImageView swap_views[SNX_VK_SWAP_IMAGES];
     VkSwapchainKHR swap_views_for;
 } g;
@@ -338,66 +339,48 @@ static bool frame_image(VitaVk* v, uint32_t width, uint32_t height) {
     g.frame_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     return true;
 }
-bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint32_t width, uint32_t height) {
-    VitaVk* v = &g.vk;
-    if (!g.up || !v->host.surface) return false;
-    if (!v->swap.swapchain && !swapchain_make(v)) return false;
-    if (!frame_image(v, width, height)) return false;
+/* one presented image: an acquired swapchain image, the effects on the source, HDR or the blit, and the present. The
+   source is in SHADER_READ_ONLY_OPTIMAL. Each call takes the next ring slot, so two calls can present the blend and
+   then the current frame. */
+static bool present_image(VitaVk* v, VkImage src_image, VkImageView src_view, uint32_t width, uint32_t height,
+                          uint32_t frame_w, uint32_t frame_h) {
     unsigned slot = v->ring.slot;
     uint32_t index = 0;
-    /* an image the window can take now, or none this vblank: the game's threads run on this one, which a wait for
-       the display's refresh (FIFO) would stall each vblank. The framebuffer stays in guest memory for the next */
     VkResult r = vkAcquireNextImageKHR(v->device, v->swap.swapchain, 0, v->acquired[slot], VK_NULL_HANDLE, &index);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         swapchain_make(v);
         return false;
     }
-    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return false; /* VK_NOT_READY, VK_TIMEOUT: none free yet */
+    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return false;
     VkCommandBuffer cb = vita_vk_commands();
-    image_barrier(cb, g.frame, g.frame_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                  VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkBufferImageCopy copy = {.bufferOffset = offset,
-                              .bufferRowLength = pitch,
-                              .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                              .imageExtent = {width, height, 1}};
-    vkCmdCopyBufferToImage(cb, buffer, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
     VkImage target = v->swap.images[index];
     VkImageView target_view = g.swap_views[index];
-    /* the frame scaled to the window, its aspect kept */
     uint32_t w = v->swap.extent.width, h = v->swap.extent.height;
     uint32_t sw = w, sh = (uint32_t)((uint64_t)w * height / width);
     if (sh > h) sh = h, sw = (uint32_t)((uint64_t)h * width / height);
     int32_t x = (int32_t)(w - sw) / 2, y = (int32_t)(h - sh) / 2;
-    image_barrier(cb, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    g.frame_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     int have_fx = 0;
     SnxFxImage fxout = {0};
-    VkImage src_image = g.frame;
-    VkImageView src_view = g.frame_view;
-    uint32_t src_w = width, src_h = height;
+    uint32_t out_w = width, out_h = height;
     if (g.fx) {
-        int filter = snx_fx_pick_filter(g.fx, width, height, sw, sh, 0);
-        int aa = snx_fx_pick_aa(g.fx, snx_fx_aa_parse(g_settings.anti_aliasing), width, height, sw, sh,
+        int filter = snx_fx_pick_filter(g.fx, frame_w, frame_h, sw, sh, 0);
+        int aa = snx_fx_pick_aa(g.fx, snx_fx_aa_parse(g_settings.anti_aliasing), frame_w, frame_h, sw, sh,
                                 v->properties.limits.maxImageDimension2D);
-        have_fx = snx_fx_render(g.fx, cb, g.frame_view, width, height, 0, 0, width, height, 0, sw, sh, filter, aa,
-                                &fxout);
+        have_fx = snx_fx_render(g.fx, cb, src_view, width, height, 0, 0, width, height, 0, sw, sh, filter, aa, &fxout);
         if (have_fx) {
             src_image = fxout.image;
             src_view = fxout.view;
-            src_w = fxout.width;
-            src_h = fxout.height;
-            image_barrier(cb, fxout.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                          VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            out_w = fxout.width;
+            out_h = fxout.height;
+            image_barrier(cb, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         }
     }
     if (g.fx && g.display_kind != SNX_FX_DISPLAY_NONE && snx_fx_hdr_active(g.fx)) {
         SnxFxImage comp = {0};
-        if (snx_fx_hdr_compose(g.fx, cb, src_view, VK_FORMAT_R8G8B8A8_UNORM, src_w, src_h, 0, 0, src_w, src_h, 0, w, h, x,
-                               y, sw, sh, &comp)) {
+        if (snx_fx_hdr_compose(g.fx, cb, src_view, VK_FORMAT_R8G8B8A8_UNORM, out_w, out_h, 0, 0, out_w, out_h, 0, w, h,
+                               x, y, sw, sh, &comp)) {
             if (g_settings.hdr_test_pattern) snx_fx_hdr_test(g.fx, cb, &comp);
             if (snx_fx_hdr_encode(g.fx, cb, &comp, target, target_view, v->swap.format.format, w, h,
                                   snx_fx_encode_kind(g.fx))) {
@@ -410,28 +393,23 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
         }
     }
     if (!have_fx) {
-        image_barrier(cb, g.frame, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        image_barrier(cb, src_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                       VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-        g.frame_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     }
     image_barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkClearColorValue black = {{0, 0, 0, 1}};
-    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
-    image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                  VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    if (have_fx)
-        image_barrier(cb, fxout.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     {
+        VkClearColorValue black = {{0, 0, 0, 1}};
+        VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                            .srcOffsets = {{0, 0, 0}, {(int32_t)src_w, (int32_t)src_h, 1}},
+                            .srcOffsets = {{0, 0, 0}, {(int32_t)out_w, (int32_t)out_h, 1}},
                             .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                             .dstOffsets = {{x, y, 0}, {x + (int32_t)sw, y + (int32_t)sh, 1}}};
+        vkCmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+        image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
         vkCmdBlitImage(cb, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
     }
@@ -439,13 +417,60 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
     submit_with(v->acquired[slot], v->rendered[index]);
 present:;
-    VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                           .waitSemaphoreCount = 1,
-                           .pWaitSemaphores = &v->rendered[index],
-                           .swapchainCount = 1,
-                           .pSwapchains = &v->swap.swapchain,
-                           .pImageIndices = &index};
-    r = vkQueuePresentKHR(v->queue, &pi);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) swapchain_make(v);
+    {
+        VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                               .waitSemaphoreCount = 1,
+                               .pWaitSemaphores = &v->rendered[index],
+                               .swapchainCount = 1,
+                               .pSwapchains = &v->swap.swapchain,
+                               .pImageIndices = &index};
+        r = vkQueuePresentKHR(v->queue, &pi);
+        if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) swapchain_make(v);
+    }
     return r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;
+}
+
+bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint32_t width, uint32_t height) {
+    VitaVk* v = &g.vk;
+    if (!g.up || !v->host.surface) return false;
+    if (!v->swap.swapchain && !swapchain_make(v)) return false;
+    if (!frame_image(v, width, height)) return false;
+    VkCommandBuffer cb = vita_vk_commands();
+    int interp = snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_BLEND ||
+                 (snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_AUTO &&
+                  snx_fx_interp_auto(60, 60));
+    SnxFxImage keep = {0};
+    int have_keep = g.fx && interp && g.have_frame &&
+                    snx_fx_keep(g.fx, cb, g.frame_view, width, height, &keep);
+    if (have_keep)
+        image_barrier(cb, keep.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                      VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    image_barrier(cb, g.frame, g.frame_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                  VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    {
+        VkBufferImageCopy copy = {.bufferOffset = offset,
+                                  .bufferRowLength = pitch,
+                                  .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                  .imageExtent = {width, height, 1}};
+        vkCmdCopyBufferToImage(cb, buffer, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    }
+    image_barrier(cb, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    g.frame_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    if (have_keep) {
+        SnxFxImage blend = {0};
+        if (snx_fx_blend(g.fx, cb, keep.view, g.frame_view, width, height, 0.5f, &blend)) {
+            image_barrier(cb, blend.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                          VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            (void)present_image(v, blend.image, blend.view, width, height, width, height);
+        }
+    }
+    bool ok = present_image(v, g.frame, g.frame_view, width, height, width, height);
+    g.have_frame = 1;
+    return ok;
 }
