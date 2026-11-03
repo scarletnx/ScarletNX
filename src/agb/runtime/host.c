@@ -154,6 +154,7 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
     if (host->vk) {
         host->window = agb_vk_window(host->vk);
     } else {
+        fprintf(stderr, "scarletnx-agb: no Vulkan window (%s), using SDL's renderer\n", error);
         if (!SDL_CreateWindowAndRenderer(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE,
                                          SDL_WINDOW_RESIZABLE | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0), &host->window,
                                          &host->renderer) ||
@@ -175,6 +176,8 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
     snx_window_icon(host->window);
     host->interp = snx_fx_interp_parse(g_settings.frame_interpolation);
     host->display_hz = display_hz(host->window);
+    fprintf(stderr, "frame interpolation: %s (display %d Hz)\n", snx_fx_interp_label(host->interp),
+            host->display_hz);
     host->prev = malloc((size_t)AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT * 4);
     host->blend = malloc((size_t)AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT * 4);
     snx_pad_map_position(&host->pad); /* A where the console has it, east */

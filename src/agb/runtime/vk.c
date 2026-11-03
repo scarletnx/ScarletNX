@@ -49,6 +49,7 @@ struct AgbVk {
 
 static uint32_t g_agb_slot;
 static uint32_t agb_slot(void) { return g_agb_slot; }
+static void agb_fx_log(const char* text) { fprintf(stderr, "%s\n", text); }
 
 static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     AgbVk* v = user;
@@ -271,7 +272,8 @@ AgbVk* agb_vk_open(const char* title, bool fullscreen, char* error, size_t error
     }
     for (unsigned i = 0; i < AGB_VK_SLOTS; ++i)
         if (!frame_make(v, &v->frame[i])) goto failed;
-    v->fx = snx_fx_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, AGB_VK_SLOTS, agb_slot, NULL, NULL);
+    v->fx = snx_fx_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, AGB_VK_SLOTS, agb_slot, NULL,
+                               agb_fx_log);
     if (v->fx) {
         SnxFxConfig cfg = {snx_fx_upscale_parse(g_settings.upscaler),
                            g_settings.sharpness,
@@ -334,7 +336,11 @@ bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer) {
         if (swapchain_make(v)) return false;
         return false;
     }
-    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return false;
+    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
+        static unsigned failures;
+        if (failures++ == 0) fprintf(stderr, "agb vk: acquire %d\n", (int)r);
+        return false;
+    }
     cb = snx_vk_ring_commands(&v->ring);
     barrier(cb, f->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
             VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
