@@ -9339,15 +9339,27 @@ int main(int argc, char** argv) {
                  Saves is the user playing's where the game's run keeps them: with save_layout=global (the default) in
                  save/user.<uid>/<title ID> of the data folder the game is in, else the user's (as here), the game's own
                  save/ while only that is there (an older version's, played there until moved) */
-                char why[1024], want[2048], *saves, *root, *every, *url;
+                char why[1024], want[2048], *saves, *root, *every, *url, uid[33], *user, *mine;
                 char *own_saves = snx_path_join(dirs[0], "save"), *home = snx_path_join(temporary, "saves home");
                 char* data_home = getenv("XDG_DATA_HOME") ? SDL_strdup(getenv("XDG_DATA_HOME")) : NULL;
                 UiRowInfo info;
                 set_env("XDG_DATA_HOME", home); /* a data folder it can make, Linux's; elsewhere the test's home's */
-                root = snx_user_data_dir();
+                /* the data folder of the game's run (the runtime's fs_saves_init), here the user's: the game's folder
+                   is in none; and the user playing */
+                root = snx_menu_dir(own, SNX_USER_DATA);
+                assert(root);
+                snx_users_uid_text(snx_users_selected()->uid, uid);
                 every = snx_path_join(root, "save");
-                saves = snx_format("%s/user.0123456789abcdeffedcba9876543210/0100ABCD12340000", every);
-                snx_path_native(saves); /* user 1's uid with no users.ini, of the game's title ID */
+                user = snx_format("user.%s", uid);
+                mine = snx_path_join(every, user);
+                saves = snx_path_join(mine, "0100ABCD12340000");
+#if defined(SNX_XDG)
+                { /* where this test keeps the user's data folder, and user 1's fixed uid, with no users.ini */
+                    char* xdg = snx_path_join(home, "scarletnx");
+                    assert(!strcmp(root, xdg) && !strcmp(uid, "0123456789abcdeffedcba9876543210"));
+                    free(xdg);
+                }
+#endif
                 assert(!snx_path_exists(every));
                 go_tab(&app, GUI_TAB_GAMES);
                 focus_game(&app, "0100ABCD12340000");
@@ -9360,6 +9372,10 @@ int main(int argc, char** argv) {
                 assert(app.addons_folders_shown && addons_rows(&app) == GUI_GAME_FOLDERS && !app.addons_focus);
                 assert(!app.addons_folders[GUI_FOLDER_DUMP]);                    /* made with no source= */
                 assert(snx_same_file(app.addons_folders[GUI_FOLDER_GAME], own)); /* in the system's separators */
+                /* the two said when they differ: a system's CI log shows which side it was */
+                if (strcmp(app.addons_folders[GUI_FOLDER_SAVES], saves))
+                    fprintf(stderr, "Saves is %s, not %s (%s %s)\n", app.addons_folders[GUI_FOLDER_SAVES], saves,
+                            own_saves, snx_path_exists(own_saves) ? "there" : "not there");
                 assert(!strcmp(app.addons_folders[GUI_FOLDER_SAVES], saves) && !snx_path_exists(saves));
                 for (i = 0; i < GUI_GAME_FOLDERS; ++i) { /* greyed exactly when it says why */
                     info = (UiRowInfo){0};
@@ -9454,6 +9470,8 @@ int main(int argc, char** argv) {
                 free(own_saves);
                 free(home);
                 free(saves);
+                free(mine);
+                free(user);
                 free(every);
                 free(root);
             }
