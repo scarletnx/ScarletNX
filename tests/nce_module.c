@@ -73,6 +73,7 @@ int main(void) {
     check(entry == by + 0x8004000ull && entry == run->mods[0].base + run->mods[0].text_off,
           "the main thread starts at the first module's text where it moved, not where it was");
     check(m.mods[0].base == 0x8000000ull && m.entry_addr[0] == 0x8004000ull, "the module it was given unchanged");
+    free((SnxModule*)run); /* the moved copy is one block, the runtime's for the whole run */
     if (failures) {
         fprintf(stderr, "%d failures\n", failures);
         return 1;
