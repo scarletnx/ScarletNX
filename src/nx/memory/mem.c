@@ -1006,16 +1006,17 @@ static u8* reserve_tiers(void) {
    moved up by from or more. Linux: from is 0, the guest's own addresses: an executable that is position independent,
    and the libraries, lie far above them on a host with 39 bits of address space or more. Android: the app's process
    holds the low 4 GiB (ART's heap and boot image), so the whole layout moves to the first base from 64 GiB, in 2 MiB
-   steps, where a tier is free, as Eden's host_memory.cpp takes its base above 36 bits. The guest's addresses stay
-   below AS_MAX, which the tables indexed by them are sized for, and so within 39 bits */
+   steps, where a tier is free, as Eden's host_memory.cpp takes its base above 36 bits. The tiers go up to the
+   console's layout (AS_MAX), with its 64 GiB alias region, and the guest's addresses stay below AS_TOP, which the
+   tables indexed by them are sized for: the console's layout fits from any base up to 384 GiB */
 #define IDENTITY_LO   0x8000000ull
 #define IDENTITY_STEP (2ull << 20)
 static int g_mem_identity;
 #if !defined(_WIN32)
 int mem_reserve_identity(u64 from) {
     for (size_t i = 0; i < sizeof tiers / sizeof *tiers; ++i) {
-        if (tiers[i] > AS_MAX - from) continue;
-        for (u64 by = from; by <= AS_MAX - tiers[i]; by += IDENTITY_STEP) {
+        if (tiers[i] > AS_MAX || tiers[i] > AS_TOP - from) continue;
+        for (u64 by = from; by <= AS_TOP - tiers[i]; by += IDENTITY_STEP) {
             if (plat_vm_reserve_at(by + IDENTITY_LO, tiers[i] - IDENTITY_LO)) {
                 g_as_size = tiers[i];
                 if (tiers[i] < AS_MAX) layout_for(tiers[i]);

@@ -767,12 +767,16 @@ static __attribute__((noinline)) int gp_holds(u64 a, u32 want) {
 #endif
 /* NCE on Android (mem_reserve_identity from 64 GiB): the guest's addresses are the host's, above what the app's process
    holds, so the whole layout moves up to the first base from 64 GiB, in 2 MiB steps, where a tier is free. A page held
-   at 65 GiB takes the 64 GiB tier's one base and the 48 GiB tier's first 449; the 48 GiB layout then lies from 64 GiB
-   + 898 MiB, each region moved alike, and guest memory there is the host's. A layout of fixed addresses (36-bit) then
-   ends the game. Linux only, and not under ASan, whose shadow holds those addresses */
+   at 65 GiB takes the 128 GiB tier's first 449 bases; the console's layout then lies from 64 GiB + 898 MiB, each
+   region moved alike with its size kept (the 64 GiB alias region that an engine's 62 GB address region needs), and
+   guest memory there is the host's. A layout of fixed addresses (36-bit) then ends the game. Linux only, and not under
+   ASan, whose shadow holds those addresses */
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
+static MemLayout g_console; /* the layout a process starts with, which the scenarios before test_moved change */
+#endif
 static void test_moved(void) {
 #if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
-    const u64 from = 64ull << 30, held_at = 65ull << 30, by = from + 898 * MIB, size = 48ull << 30;
+    const u64 from = 64ull << 30, held_at = 65ull << 30, by = from + 898 * MIB, size = 128ull << 30;
     void* held = mmap((void*)(uintptr_t)held_at, 2 * MIB, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     pid_t child;
     int status = 0;
@@ -784,13 +788,16 @@ static void test_moved(void) {
     }
     mapping_begins = mapping_ends = 0; /* test_mapping_boundary's */
     reserve_at_on = 1;
+    g_layout = g_console; /* as at a process's start, where NCE reserves before anything else */
+    g_as_size = AS_MAX;
     CHECK(mem_reserve_identity(from) == 1);
     CHECK(mem_identity() && mem_moved() == by && g_mem == NULL);
     CHECK(g_layout.base == by + 0x8000000ull && g_layout.end == by + size && g_as_size == by + size);
-    CHECK(g_layout.alias == by + (4ull << 30) && g_layout.alias_size == 16ull << 30 &&
-          g_layout.heap == by + (20ull << 30) && g_layout.heap_size == 8ull << 30 &&
-          g_layout.stack == by + (28ull << 30) && g_layout.stack_size == 2ull << 30 &&
-          g_layout.kern == by + (47ull << 30) && g_layout.kern_end == by + size);
+    CHECK(g_layout.alias == by + (4ull << 30) && g_layout.alias_size == 64ull << 30 &&
+          g_layout.heap == by + (68ull << 30) && g_layout.heap_size == 8ull << 30 &&
+          g_layout.stack == by + (76ull << 30) && g_layout.stack_size == 2ull << 30 &&
+          g_layout.kern == by + (78ull << 30) && g_layout.kern_end == by + (79ull << 30));
+    CHECK(g_as_size <= AS_TOP); /* the tables indexed by guest address hold every one of them */
     CHECK((u64)(uintptr_t)reservation == g_layout.base && reservation_size == size - 0x8000000ull);
     mem_init();
     CHECK(tracked == reservation && tracked_size == reservation_size);
@@ -804,14 +811,15 @@ static void test_moved(void) {
     memcpy(p, "PROG", 4);
     CHECK(gp_holds(HEAP_BASE, 0x474f5250));
     p[0] = 0x5A;
-    CHECK(*(volatile u8*)(uintptr_t)(by + (20ull << 30)) == 0x5A);
-    /* the 12 GiB the game reserves in the alias region, there in the moved layout too */
-    CHECK(mem_find_free(ALIAS_BASE, ALIAS_BASE + ALIAS_SIZE, 12ull << 30, 0x1000) == ALIAS_BASE);
+    CHECK(*(volatile u8*)(uintptr_t)(by + (68ull << 30)) == 0x5A);
+    /* the 62 GiB an engine reserves in the alias region at startup (AllocateAddressRegion), which ends the game when it
+       doesn't fit, there in the moved layout too */
+    CHECK(mem_find_free(ALIAS_BASE, ALIAS_BASE + ALIAS_SIZE, 62ull << 30, 0x1000) == ALIAS_BASE);
     CHECK(mem_unmap(HEAP_BASE, 0x1000) == 0);
     fflush(stdout);
     child = fork();
     if (!child) {
-        /* no core of the abort it waits for: the child holds the 48 GiB reservation, which a core_pattern pipe
+        /* no core of the abort it waits for: the child holds the 128 GiB reservation, which a core_pattern pipe
            (systemd-coredump, apport) reads for minutes, as it cannot skip the holes a file seeks over; the limit for a
            file, not dumpable for a pipe. The alarm ends a child that hangs anyway, which the WTERMSIG check names */
         struct rlimit none = {0, 0};
@@ -825,13 +833,16 @@ static void test_moved(void) {
     CHECK(munmap(reservation, reservation_size) == 0);
     CHECK(munmap(held, 2 * MIB) == 0);
     reserve_at_on = 0;
-    printf("moved layout: the 48 GiB tier from %#llx, %u checks passed\n", (unsigned long long)by, checks);
+    printf("moved layout: the 128 GiB tier from %#llx, %u checks passed\n", (unsigned long long)by, checks);
 #else
     printf("moved layout: skipped, as it takes the host's addresses from 64 GiB (Linux, without ASan)\n");
 #endif
 }
 
 int main(void) {
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
+    g_console = g_layout;
+#endif
     hle_init();
     /* this host's pages, then those of hosts with larger ones (16 KiB: Apple silicon, some Android kernels; 64 KiB:
        PowerPC64 and some AArch64 distributions), which mem.c commits in whole */
