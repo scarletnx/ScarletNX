@@ -141,6 +141,7 @@ void fatal(const char* fmt, ...) {
 }
 u64 plat_ns(void) { return 1; }
 u64 guest_ticks(void) { return 1; }
+int g_ounce; /* main.c's: a Switch program */
 int kthread_live_count(void) { return 1; }
 static KObj* test_handle; /* what handle 0x1234 names, for the shared memory test */
 KObj* h_get_ref(u32 h, int type) {
@@ -228,6 +229,14 @@ static void test_large_heap(void) {
     CHECK(g_heap_size == 8500 * MIB && state(HEAP_BASE + 8499 * MIB) == MS_NORMAL);
     CHECK(svc_set_heap_size(0) == 0);
     CHECK(svc_set_heap_size(12ull << 30) == R_BADSIZE);
+    /* an Ounce game gets the same budget with memory_gb at its default */
+    g_settings.memory_gb = 0;
+    g_ounce = 1;
+    CHECK(mem_total() == 10ull << 30 && info(5) == 12ull << 30);
+    CHECK(svc_set_heap_size(8500 * MIB) == 0);
+    CHECK(svc_set_heap_size(0) == 0);
+    g_ounce = 0;
+    CHECK(mem_total() == 3285 * MIB);
     g_layout = saved;
 }
 /* a 32-bit process's GetInfo total is its heap region's size (2 GiB without an alias region), not the application

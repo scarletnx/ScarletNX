@@ -11,6 +11,7 @@
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/hle/hle.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/main.h"
 
 #define R_BADPERM    0xD801 /* InvalidNewMemoryPermission */
 #define R_BADPOINTER 0xE601 /* InvalidPointer: a user copy that faults */
@@ -85,10 +86,11 @@ static int user_writable(u64 a, u64 size) {
 }
 
 /* ============================================================ accounting */
-/* The 4, 6 and 8 GiB application pools follow Mesosphere's KSystemControl. The 12 GiB setting is an experimental
-   10 GiB application budget for guests that need more than the older console's pool. See docs/MEMORY_ACCOUNTING.md. */
+/* The 4, 6 and 8 GiB application pools follow Mesosphere's KSystemControl. The 12 GiB setting, and an Ounce game,
+   get an experimental 10 GiB application budget, more than the older console's pool. See docs/MEMORY_ACCOUNTING.md. */
+static int large(void) { return g_settings.memory_gb >= 12 || g_ounce; }
 static u64 pool(void) {
-    if (g_settings.memory_gb >= 12) return 10ull << 30;
+    if (large()) return 10ull << 30;
     if (g_settings.memory_gb >= 8) return 6964 * MIB;
     if (g_settings.memory_gb >= 6) return 4916 * MIB;
     return 3285 * MIB;
@@ -158,7 +160,7 @@ void mem_report(char* out, int n) {
 u32 svc_set_heap_size(u64 size) {
     u64 proc = g_code_memory + g_main_stack_size;
     u32 r;
-    if ((size & 0x1FFFFF) || size >= ((g_settings.memory_gb >= 12 ? 12ull : 8ull) << 30))
+    if ((size & 0x1FFFFF) || size >= ((large() ? 12ull : 8ull) << 30))
         r = R_BADSIZE;
     else if (proc > HEAP_SIZE || size > HEAP_SIZE - proc || (g_heap_max && size > g_heap_max))
         r = R_OUTOFMEM;

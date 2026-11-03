@@ -49,6 +49,7 @@ void crash_report(void* host_pc, void* fault, int sig) {
     (void)sig;
 }
 u64 guest_ticks(void) { return 1; }
+int g_ounce; /* main.c's: a Switch program */
 int kthread_live_count(void) { return 1; }
 
 /* the GPU's side: the bracket must hold around every host change, and the changed ranges are noted */

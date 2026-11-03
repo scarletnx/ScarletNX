@@ -27,6 +27,7 @@
 #include "nx/runtime/clock.h"
 #include "nx/runtime/gdbstub.h"
 #include "nx/runtime/loader.h"
+#include "nx/loader/ounce.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/pause.h"
 #include "nx/runtime/state.h"
@@ -460,26 +461,23 @@ static u32 rd32le(const u8* p) { return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] <
    layout has to guarantee for it: what its SDK marshals into an IPC buffer descriptor drops every address bit above
    36, and the 39-bit layout's stack and heap, above 64 GiB, came back as addresses with no memory behind them.
 
-   It also tells an Ounce program: its ACID's signature and key are 0x180 bytes each, where a Switch's are 0x100, so
-   its magic is at 0x300 in the ACID, not at 0x200 (Switchbrew's NPDM page). An Ounce program gets SM70+ shaders, the
-   T239's GOB and the 31.25 MHz tick */
+   It also tells an Ounce program (loader/ounce.h), which is g_ounce, and everything that follows from it: the CPU
+   features of the runtime JIT (guest_jit.c), SM70+ shaders, the T239's GOB, the 31.25 MHz tick, and the larger heap
+   and application pool, as memory_gb 12 gives (svc_mem.c) */
 static void npdm_layout(void) {
     u64 size = 0;
     unsigned char* d = fs_read_file("exefs/main.npdm", &size);
-    if (!d) return;
-    if (size >= 0x80 && size <= 0x4000 && !memcmp(d, "META", 4)) {
-        unsigned flags = d[0x0c];
-        u32 acid = rd32le(d + 0x78), acid_size = rd32le(d + 0x7c);
-        if (acid < size && acid_size >= 0x304 && acid_size <= size - acid && !memcmp(d + acid + 0x300, "ACID", 4)) {
-            g_ounce = g_shader_sm70 = g_gob_native = 1;
-            g_shader_sm70_dump = g_settings.sm70_dump[0] ? g_settings.sm70_dump : NULL;
-            clock_ounce();
-            LOG("npdm: an Ounce program\n");
-        }
-        if ((flags & 1) && ((flags >> 1) & 7) == 1) {
-            mem_layout36();
-            LOG("npdm: a 36-bit address space: 64 GiB, the code region at a fixed 128 MiB\n");
-        }
+    int meta = d && size >= 0x80 && size <= 0x4000 && !memcmp(d, "META", 4);
+    if (meta && snx_npdm_ounce(d, size)) {
+        g_ounce = g_shader_sm70 = g_gob_native = 1;
+        g_shader_sm70_dump = g_settings.sm70_dump[0] ? g_settings.sm70_dump : NULL;
+        clock_ounce();
+        LOG("npdm: an Ounce program\n");
+    }
+    if (!g_arm_mod && (g_settings.memory_gb >= 12 || g_ounce)) mem_layout_large_heap();
+    if (meta && (d[0x0c] & 1) && ((d[0x0c] >> 1) & 7) == 1) {
+        mem_layout36();
+        LOG("npdm: a 36-bit address space: 64 GiB, the code region at a fixed 128 MiB\n");
     }
     free(d);
 }
@@ -974,8 +972,7 @@ int snx_main(int argc, char** argv) {
     snx_ir_branch_profile(g_settings.ir_branch_profile);
 
     fs_init(keys, title_keys); /* the npdm is read through it, and mem_init's layout comes before */
-    if (!g_arm_mod && g_settings.memory_gb >= 12) mem_layout_large_heap();
-    npdm_layout(); /* the address space type's layout, before mem_init sizes its blocks in it */
+    npdm_layout(); /* the address space type's layout and the larger heap, before mem_init sizes its blocks in it */
     free(keys);
     free(title_keys);
     keys = title_keys = NULL;

@@ -378,6 +378,22 @@ static void test_nro_npdm(void) {
     put32(meta + 0x70, 0xfffffff0UL);
     CHECK(snx_parse_npdm(meta, sizeof meta, &npdm, error, sizeof error) == -1);
     CHECK(!snx_parse_npdm(NULL, 0, &npdm, error, sizeof error) && !strcmp(npdm.name, "Application"));
+    /* an Ounce NPDM: its ACID's magic past a 0x180-byte signature and key, at 0x300; a Switch one's at 0x200 */
+    static unsigned char ounce[0x500];
+    memcpy(ounce, "META", 4);
+    put32(ounce + 0x70, 0x80);
+    put32(ounce + 0x74, 0x20);
+    memcpy(ounce + 0x80, "ACI0", 4);
+    put32(ounce + 0x78, 0x100);
+    put32(ounce + 0x7c, 0x400);
+    memcpy(ounce + 0x100 + 0x300, "ACID", 4);
+    CHECK(!snx_parse_npdm(ounce, sizeof ounce, &npdm, error, sizeof error) && npdm.ounce);
+    put32(ounce + 0x7c, 0x300); /* the magic past the ACID's end */
+    CHECK(!snx_parse_npdm(ounce, sizeof ounce, &npdm, error, sizeof error) && !npdm.ounce);
+    put32(ounce + 0x7c, 0x400);
+    memset(ounce + 0x400, 0, 4);
+    memcpy(ounce + 0x100 + 0x200, "ACID", 4);
+    CHECK(!snx_parse_npdm(ounce, sizeof ounce, &npdm, error, sizeof error) && !npdm.ounce);
     puts("PASS NRO assets/program loading and bounded NPDM metadata");
 }
 

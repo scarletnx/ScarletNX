@@ -45,6 +45,7 @@ const SnxModule* g_mod = &g_module;
 static GuestFn g_dispatch[(CODE_HI - CODE_LO) / 4];
 GuestFn* g_disp = g_dispatch;
 u64 g_code_lo = CODE_LO, g_code_hi = CODE_HI;
+int g_ounce; /* main.c's: a Switch program */
 
 static SnxVariantRun g_run, g_run2;
 static SnxU64 g_leader, g_leader2;

@@ -3,6 +3,7 @@
 ## Index
 
 * [The GPU path](#the-gpu-path)
+* [The platform](#the-platform)
 * [Shaders](#shaders)
 * [Surfaces](#surfaces)
 * [Driver offsets](#driver-offsets)
@@ -22,8 +23,24 @@ The game draws through NVN2, API version 231.16 (GPU code 201.5 to 201.11). The 
 buffers, device messages, variable rate shading and HDR window metadata. ScarletNX takes these calls with
 `nvn_direct=1`.
 
-The game must be compiled ahead of time (`build/scarletnx -r ... --cpu_extensions=1`). With the JIT alone, the
-dispatch slot of `nvnBootstrapLoader` is still empty when `nvn_direct_init` runs, because that runs before `jit_init`.
+The game must be compiled ahead of time (`build/scarletnx -r ...`). With the JIT alone, the dispatch slot of
+`nvnBootstrapLoader` is still empty when `nvn_direct_init` runs, because that runs before `jit_init`.
+
+## The platform
+
+The NPDM tells an Ounce program (`snx_npdm_ounce` in `loader/ounce.h`). An Ounce ACID's signature and key are 0x180
+bytes each, where a Switch's are 0x100, so its magic is at 0x300 of the ACID, not at 0x200. The recompiler and the
+runtime read the same NPDM, and `g_ounce` is the one flag. It gives the game these, with no setting:
+
+- the CPU extensions of `cpu_extensions=1` (LSE, RCpc and PAuth), in the recompiler and the runtime JIT alike
+- the 10 GiB application pool and the 12 GiB heap region of `memory_gb=12`
+- SM70+ shaders and the T239's GOB
+- a 31.25 MHz system tick. The SDK's `nn::os::GetSystemTickFrequency` returns 31,250,000 as a constant, and the SDK
+  never reads `CNTFRQ_EL0`. With the Switch's 19.2 MHz, the game's time ran at 0.61 of real time. The GPU's
+  timestamps keep their 19.2 MHz counter (`guest_gpu_ticks`).
+
+`tools/nvn_missing.py work/Game` lists the NVN functions of a game's driver that `nvn.hook` doesn't implement for its
+API version.
 
 ## Shaders
 
