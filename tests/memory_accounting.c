@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -49,13 +50,24 @@ u64 plat_vm_page(void) { return host_page; }
 static u8* reservation;
 static u64 reservation_size;
 static u64 refuse_above; /* a system that gives no more than this much address space (0: any) */
-/* the sizes of the reservations mem.c asked for, in order */
-static u64 asked[32];
+/* the reservations mem.c asked for, in order: their size and whether with the write watch; also to asked_fd, for a
+   child's */
+static struct {
+    u64 size;
+    int watched;
+} asked[32];
 static unsigned asked_n;
-u8* plat_vm_reserve(u64 size) {
-    void* p;
-    if (asked_n < sizeof asked / sizeof *asked) asked[asked_n] = size;
+static int asked_fd = -1;
+static int watch_refused;   /* a Windows that gives no reservation with the write watch */
+static int unwatched_given; /* 0: ENOSYS, as POSIX, whose tracking comes after the reservation */
+static void ask(u64 size, int watched) {
+    u64 w[2] = {size, (u64)watched};
+    if (asked_n < sizeof asked / sizeof *asked) asked[asked_n].size = size, asked[asked_n].watched = watched;
     asked_n++;
+    if (asked_fd >= 0 && write(asked_fd, w, sizeof w) != (ssize_t)sizeof w) abort();
+}
+static u8* reserve(u64 size) {
+    void* p;
     if (refuse_above && size > refuse_above) {
         errno = ENOMEM;
         return NULL;
@@ -65,6 +77,22 @@ u8* plat_vm_reserve(u64 size) {
     reservation = (u8*)p;
     reservation_size = size + host_page;
     return (u8*)(((uintptr_t)p + host_page - 1) & ~(uintptr_t)(host_page - 1));
+}
+u8* plat_vm_reserve(u64 size) {
+    ask(size, 1);
+    if (watch_refused) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    return reserve(size);
+}
+u8* plat_vm_reserve_unwatched(u64 size) {
+    ask(size, 0);
+    if (!unwatched_given) {
+        errno = ENOSYS;
+        return NULL;
+    }
+    return reserve(size);
 }
 /* no tracking here: the range mem_init asks it of, which test_moved holds to the reservation where it runs */
 #if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
@@ -536,7 +564,10 @@ static void test_shared_memory(void) {
 }
 
 /* mem_reserve's tiers: the console's 512 GiB first, then 256, 128 and the smaller ones, each refusal and the size taken
-   said with its value */
+   said with its value. Windows makes its write watch with the reservation: every tier with it before any without, and
+   the size taken without it is said. Elsewhere that second kind is ENOSYS, and a refused first pass ends the game */
+static const u64 ladder[] = {512, 256, 128, 64, 48, 32, 24, 16, 12, 8, 7, 6, 5}; /* GiB */
+#define LADDER_N (sizeof ladder / sizeof *ladder)
 static void reserve_again(void) {
     asked_n = 0;
     said[0] = 0;
@@ -546,6 +577,12 @@ static void let_go(void) {
     CHECK(munmap(reservation, reservation_size) == 0);
     g_mem = NULL;
 }
+/* the first n tiers, with the watch, were the asks from asked[from] */
+static int asked_watched(unsigned from, unsigned n) {
+    for (unsigned i = 0; i < n; i++)
+        if (asked[from + i].size != ladder[i] << 30 || !asked[from + i].watched) return 0;
+    return 1;
+}
 static int console_layout(u64 end) {
     return g_layout.base == 0x8000000ull && g_layout.end == end && g_layout.alias == 4ull << 30 &&
            g_layout.alias_size == 64ull << 30 && g_layout.heap == 0x1100000000ull && g_layout.heap_size == 8ull << 30 &&
@@ -553,10 +590,15 @@ static int console_layout(u64 end) {
            g_layout.kern_end == 0x13C0000000ull;
 }
 static void test_ladder(void) {
+    int fds[2], status = 0;
+    u64 got[2 * (LADDER_N + 2)];
+    size_t n = 0;
+    ssize_t r;
+    pid_t child;
     /* a host that gives it: the console's whole address space, asked first, and the game told so */
     reserve_again();
     CHECK(g_mem && g_as_size == 512ull << 30 && console_layout(512ull << 30));
-    CHECK(asked_n == 1 && asked[0] == 512ull << 30);
+    CHECK(asked_n == 1 && asked_watched(0, 1));
     CHECK(strstr(said, "memory: 512 GiB of address space reserved, the console's\n"));
     CHECK(info(12) == 0x8000000ull && info(13) == (512ull << 30) - 0x8000000ull);
     let_go();
@@ -564,7 +606,7 @@ static void test_ladder(void) {
     refuse_above = 256ull << 30;
     reserve_again();
     CHECK(g_mem && g_as_size == 256ull << 30 && console_layout(256ull << 30));
-    CHECK(asked_n == 2 && asked[0] == 512ull << 30 && asked[1] == 256ull << 30);
+    CHECK(asked_n == 2 && asked_watched(0, 2));
     CHECK(strstr(said, "memory: 512 GiB of address space refused: "));
     CHECK(strstr(said, "memory: 256 GiB of address space reserved, of the console's 512: the game's address space ends "
                        "there\n"));
@@ -573,10 +615,47 @@ static void test_ladder(void) {
     refuse_above = 128ull << 30;
     reserve_again();
     CHECK(g_mem && g_as_size == 128ull << 30 && console_layout(128ull << 30));
-    CHECK(asked_n == 3 && asked[2] == 128ull << 30);
+    CHECK(asked_n == 3 && asked_watched(0, 3));
     let_go();
+    /* a Windows that gives no reservation with the write watch: every tier with it, then 512 and 256 GiB without */
+    refuse_above = 256ull << 30;
+    watch_refused = 1;
+    unwatched_given = 1;
+    reserve_again();
+    CHECK(g_mem && g_as_size == 256ull << 30 && console_layout(256ull << 30));
+    CHECK(asked_n == LADDER_N + 2 && asked_watched(0, LADDER_N));
+    CHECK(asked[LADDER_N].size == 512ull << 30 && !asked[LADDER_N].watched);
+    CHECK(asked[LADDER_N + 1].size == 256ull << 30 && !asked[LADDER_N + 1].watched);
+    CHECK(strstr(said, "memory: 5 GiB of address space refused: ") &&
+          strstr(said, "memory: 512 GiB of address space without the write watch refused: "));
+    CHECK(strstr(said, "memory: 256 GiB of address space reserved without the write watch, as no tier from 512 GiB "
+                       "down was given with it"));
+    let_go();
+    /* elsewhere: a refused first pass asks the second kind once, ENOSYS, and fatal ends the game */
+    unwatched_given = 0;
+    CHECK(pipe(fds) == 0);
+    fflush(stdout);
+    child = fork();
+    if (!child) {
+        struct rlimit none = {0, 0};
+        close(fds[0]);
+        asked_fd = fds[1];
+        if (setrlimit(RLIMIT_CORE, &none) != 0) _exit(2);
+        alarm(10);
+        fclose(stderr); /* fatal's message: the abort is what the parent checks */
+        reserve_again();
+        _exit(0);
+    }
+    close(fds[1]);
+    while (n < sizeof got && (r = read(fds[0], (u8*)got + n, sizeof got - n)) > 0) n += (size_t)r;
+    close(fds[0]);
+    CHECK(child > 0 && waitpid(child, &status, 0) == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+    CHECK(n == sizeof *got * 2 * (LADDER_N + 1));
+    for (unsigned i = 0; i < LADDER_N; i++) CHECK(got[2 * i] == ladder[i] << 30 && got[2 * i + 1] == 1);
+    CHECK(got[2 * LADDER_N] == 512ull << 30 && got[2 * LADDER_N + 1] == 0);
+    watch_refused = 0;
     refuse_above = 0;
-    printf("address space ladder: 512, 256 and 128 GiB, %u checks passed\n", checks);
+    printf("address space ladder: 512, 256 and 128 GiB, the write watch's second pass, %u checks passed\n", checks);
 }
 
 /* NCE on Android (mem_reserve_identity from 64 GiB): the guest's addresses are the host's, above what the app's process

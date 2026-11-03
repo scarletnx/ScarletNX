@@ -243,18 +243,21 @@ int plat_address_space(u64* mapped, u64* largest_free) {
     *largest_free = hole;
     return 1;
 }
-u8* plat_vm_reserve(u64 size) {
-    void* p = VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS);
-    if (p) {
-        g_ww_watched = (u8*)p;
-        return (u8*)p;
-    }
-    p = VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE, PAGE_NOACCESS);
-    if (!p) { /* the reason in errno, as mmap's */
+/* the reason in errno, as mmap's */
+static u8* vm_reserved(void* p) {
+    if (!p) {
         DWORD why = GetLastError();
         errno = why == ERROR_NOT_ENOUGH_MEMORY || why == ERROR_COMMITMENT_LIMIT ? ENOMEM : EINVAL;
     }
     return (u8*)p;
+}
+u8* plat_vm_reserve(u64 size) {
+    u8* p = vm_reserved(VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS));
+    if (p) g_ww_watched = p;
+    return p;
+}
+u8* plat_vm_reserve_unwatched(u64 size) {
+    return vm_reserved(VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE, PAGE_NOACCESS));
 }
 void plat_vm_track(u8* p, u64 size) {
     if (g_settings.write_tracking == 1)

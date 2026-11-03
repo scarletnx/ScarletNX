@@ -1133,6 +1133,11 @@ u8* plat_vm_reserve(u64 size) {
     if (extra > head) munmap(p + head + size, (size_t)(extra - head));
     return p + head;
 }
+u8* plat_vm_reserve_unwatched(u64 size) {
+    (void)size;
+    errno = ENOSYS;
+    return NULL;
+}
 u8* plat_vm_reserve_at(u64 addr, u64 size) {
 #if defined(MAP_FIXED_NOREPLACE)
     u8* want = (u8*)(uintptr_t)addr;
