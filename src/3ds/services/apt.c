@@ -156,8 +156,8 @@ static uint32_t snx_ctr_apt_wire_IsNew3DS(SnxCtrIpc* c, uint32_t* is_new) {
     *is_new = snx_ctr_memory_profile(c->process->memory)->model == SNX_CTR_NEW;
     return 0;
 }
-/* ReceiveParameter and GlanceParameter (glance: the parameter stays): during the startup, the initial Wakeup APT
-   queued; after it, the parameter waiting for the application, its object moved to it */
+/* ReceiveParameter and GlanceParameter (glance: the parameter stays): from Initialize on, the initial Wakeup that
+   Initialize queued; after it, the parameter waiting for the application, its object moved to it */
 static void receive_parameter(SnxCtrIpc* c, int glance) {
     if (!snx_ctr_ipc_expect(c, 2, 0)) return;
     SnxCtrProcess* p = c->process;
@@ -165,7 +165,7 @@ static void receive_parameter(SnxCtrIpc* c, int glance) {
         c->state = SNX_CTR_IPC_UNSUPPORTED;
         return;
     }
-    int startup = p->apt_phase == 2;
+    int startup = p->apt_phase == 1 || p->apt_phase == 2;
     if (!startup && (p->apt_phase < 3 || !p->apt_next.pending)) {
         snx_ctr_ipc_error_reply(c, p->apt_phase >= 3 ? APT_NO_DATA : SNX_CTR_IPC_INVALID_STATE);
         return;

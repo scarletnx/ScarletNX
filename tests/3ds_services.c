@@ -249,27 +249,49 @@ int main(void) {
         ctr_request(p, init, 3);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 1) == 0xc8a0cffc);
-        uint32_t ready[] = {0x430040, 0x300};
-        ctr_request(p, ready, 2);
+        uint32_t glance[] = {0xe0080, 0x300, 256};
+        static_output(p, 256, 0x300800);
+        ctr_request(p, glance, 3);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
-        assert(p->apt_phase == 2);
+        assert(ctr_command_word(p, 0) == 0xe0104 && !ctr_command_word(p, 1) && !ctr_command_word(p, 2) &&
+               ctr_command_word(p, 3) == 1 && !ctr_command_word(p, 4) && p->apt_phase == 1);
+        uint32_t ready[] = {0x430040, 0x300};
         uint32_t receive[] = {0xd0080, 0x300, 256};
-        static_output(p, 256, 0x301f80);
         unsigned char fill[128], unchanged[128];
         memset(fill, 0x55, sizeof fill);
-        assert(snx_ctr_write_ram(p->space, 0x301f80, fill, sizeof fill) == SNX_CTR_MEM_OK);
-        ctr_request(p, receive, 3);
-        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0xe0e01bf5);
-        assert(p->apt_phase == 2 && ctr_command_word(p, 0) == receive[0]);
-        assert(snx_ctr_read_ram(p->space, 0x301f80, unchanged, 128) == SNX_CTR_MEM_OK && !memcmp(fill, unchanged, 128));
-        static_output(p, 256, 0x300800);
-        ctr_request(p, receive, 3);
-        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
-        assert(ctr_command_word(p, 0) == 0xd0104 && !ctr_command_word(p, 1) && !ctr_command_word(p, 2) &&
-               ctr_command_word(p, 3) == 1 && !ctr_command_word(p, 4));
-        assert(ctr_command_word(p, 5) == 0x10 && !ctr_command_word(p, 6) && ctr_command_word(p, 7) == 0x400002 &&
-               ctr_command_word(p, 8) == 0x300800);
-        assert(p->apt_phase == 3);
+        if (model) {
+            /* model 1: the startup Wakeup is received in phase 1, and the NotifyToWait after it keeps phase 3 */
+            static_output(p, 256, 0x300800);
+            ctr_request(p, receive, 3);
+            ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+            assert(ctr_command_word(p, 0) == 0xd0104 && !ctr_command_word(p, 1) && !ctr_command_word(p, 2) &&
+                   ctr_command_word(p, 3) == 1 && !ctr_command_word(p, 4));
+            assert(ctr_command_word(p, 5) == 0x10 && !ctr_command_word(p, 6) && ctr_command_word(p, 7) == 0x400002 &&
+                   ctr_command_word(p, 8) == 0x300800);
+            assert(p->apt_phase == 3);
+            ctr_request(p, ready, 2);
+            ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+            assert(ctr_command_word(p, 0) == 0x430040 && !ctr_command_word(p, 1) && p->apt_phase == 3);
+        } else {
+            ctr_request(p, ready, 2);
+            ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+            assert(p->apt_phase == 2);
+            static_output(p, 256, 0x301f80);
+            assert(snx_ctr_write_ram(p->space, 0x301f80, fill, sizeof fill) == SNX_CTR_MEM_OK);
+            ctr_request(p, receive, 3);
+            ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0xe0e01bf5);
+            assert(p->apt_phase == 2 && ctr_command_word(p, 0) == receive[0]);
+            assert(snx_ctr_read_ram(p->space, 0x301f80, unchanged, 128) == SNX_CTR_MEM_OK &&
+                   !memcmp(fill, unchanged, 128));
+            static_output(p, 256, 0x300800);
+            ctr_request(p, receive, 3);
+            ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+            assert(ctr_command_word(p, 0) == 0xd0104 && !ctr_command_word(p, 1) && !ctr_command_word(p, 2) &&
+                   ctr_command_word(p, 3) == 1 && !ctr_command_word(p, 4));
+            assert(ctr_command_word(p, 5) == 0x10 && !ctr_command_word(p, 6) && ctr_command_word(p, 7) == 0x400002 &&
+                   ctr_command_word(p, 8) == 0x300800);
+            assert(p->apt_phase == 3);
+        }
         uint32_t utility[] = {0x4b00c2, 7, 4, 1, 0x10402, 0x300700};
         ctr_put(p, 0x300700, 0x10);
         static_output(p, 1, 0x300710);
