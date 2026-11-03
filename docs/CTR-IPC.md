@@ -123,18 +123,20 @@ other translation units include the generated `.h`.
   state. On SDMC files Write and SetSize reach the host file. Save data, extdata
   and other archives stop explicitly (parity roadmap F3).
 - `APT:S`: GetLockHandle (`1`), Initialize (`2`), Enable (`3`), NotifyToWait
-  (`0x43`), ReceiveParameter (`0xd`), AppletUtility (`0x4b`), IsNew3DS (`0x102`).
+  (`0x43`), ReceiveParameter (`0xd`), GlanceParameter (`0xe`), AppletUtility
+  (`0x4b`), IsNew3DS (`0x102`).
   One application slot (`0x300`, attributes 0), persistent recursive mutex,
   one-shot notification/parameter events and a real initial pending Wakeup.
   Unsupported applet attributes/identities/transitions stop explicitly. Duplicate
   initialization returns AlreadyExists and does not replace the slot.
 - APT utility supports only operation 7 (release the initial startup transition,
   input `0x10`) and operation 4 (sleep-if-shell-closed, input 0, open shell only).
-  A closed-shell sleep request is unsupported. Readiness/Wakeup consumption is
-  phase-checked. ReceiveParameter returns an empty Wakeup with a **null object**,
-  not a fabricated handle or payload. It consumes the parameter only after full
-  command, descriptor and destination preflight. The checked TLS static table
-  at +`0x180` must declare the expected buffer ID/capacity; MMIO is refused.
+  A closed-shell sleep request is unsupported. The startup Wakeup is answered from
+  Initialize on, by GlanceParameter and ReceiveParameter. ReceiveParameter returns
+  an empty Wakeup with a **null object**, not a fabricated handle or payload. It
+  consumes the parameter only after full command, descriptor and destination
+  preflight. The checked TLS static table at +`0x180` must declare the expected
+  buffer ID/capacity; MMIO is refused.
 - `ptm:sysm`: model query (`0x40a`) and ConfigureNew3DSCPU (`0x818`) for the
   existing base configuration **0 only**. Boost/L2/other configurations stop.
 - `hid:USER`: GetIPCHandles (`0xa`) returns actual system-pool shared memory
