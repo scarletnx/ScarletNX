@@ -6,7 +6,7 @@
    the memory it changed and how it ended (the next pc, UNDEF, BRK or SVC) must match. A store-exclusive also runs
    after a load-exclusive of its address, so that it can succeed.
      snx-test-llvm-qemu-differential QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] [--quiet] [--update]
-                                     [--jit] [--portable]
+                                     [--jit] [--portable | --generic]
      snx-test-llvm-qemu-differential --skip REASON
    The words: samples of every row of the generated decoder's table with every value of each field of 3 bits or
    fewer, directed() words, and the words the other instruction tests hand-check (kept[]). The default run takes 2
@@ -14,6 +14,8 @@
    states. The steps are linked into a module for dlopen, as the AOT path loads a game's; --jit loads them with the
    JIT's loader (code_loader.c) instead, and --portable builds them without the host's extensions (x86's PSHUFB,
    PCLMULQDQ, AES-NI, SSE4.2's CRC32C, AArch64's CRC32 and crypto...), so the emitters' portable forms are compared.
+   --generic builds them without the host's architecture too: the path of the hosts SnxIrFeatures has no bit for
+   (PowerPC64, RISC-V, LoongArch, MIPS64), a byte loop for TBL and helpers for FMA, square roots and rounding.
    A word the backend leaves UNDEF (the generated decoder for the Switch target), or decodes without an emitter,
    while QEMU runs it, has no emitter yet: it is listed in DIR/llvm_qemu_coverage.txt, not failed. So is a word that
    differs where the Switch target decodes it as another name (a hint's NOP) or, as the backend does, as UNDEF: what
@@ -698,7 +700,8 @@ int main(int argc, char** argv) {
     const char* expected_path;
     size_t states, samples, rounds, nwords, nitems = 0, i, k, nsteps = 0, compared = 0, mismatched = 0,
                                                     no_emitter = 0, nexpected;
-    int sweep = 0, update = 0, jit = 0, portable = 0, a, failed = 0;
+    int sweep = 0, update = 0, jit = 0, portable = LLVM_STEPS_HOST, a, failed = 0;
+    static const char* const forms[] = {"host", "portable", "generic"}; /* the emitters', by LLVM_STEPS_ value */
     u32* words = NULL;
     Item* items;
     Groups groups = {0}, missing = {0};
@@ -718,7 +721,7 @@ int main(int argc, char** argv) {
     }
     if (argc < 5) {
         fputs("usage: snx-test-llvm-qemu-differential QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] "
-              "[--quiet] [--update] [--jit] [--portable] | --skip REASON\n",
+              "[--quiet] [--update] [--jit] [--portable | --generic] | --skip REASON\n",
               stderr);
         return 2;
     }
@@ -737,9 +740,12 @@ int main(int argc, char** argv) {
             update = 1;
         else if (!strcmp(argv[a], "--jit"))
             jit = 1;
-        else if (!strcmp(argv[a], "--portable"))
-            portable = 1;
-        else if (a + 1 < argc && !strcmp(argv[a], "--states"))
+        else if (!strcmp(argv[a], "--portable") || !strcmp(argv[a], "--generic")) {
+            int form = !strcmp(argv[a], "--portable") ? LLVM_STEPS_PORTABLE : LLVM_STEPS_GENERIC;
+            if (portable && portable != form)
+                return snx_error("%s after --%s: the emitters take one form a run", argv[a], forms[portable]);
+            portable = form;
+        } else if (a + 1 < argc && !strcmp(argv[a], "--states"))
             states = strtoul(argv[++a], NULL, 10);
         else if (a + 1 < argc && !strcmp(argv[a], "--seed"))
             g_test.rng = strtoull(argv[++a], NULL, 0) | 1;
@@ -964,10 +970,11 @@ int main(int argc, char** argv) {
             g->listed = 1;
         }
     }
-    printf("LLVM against QEMU%s: %lu cases of %lu rows' and directed words, %lu runs compared, %lu without an emitter "
-           "yet, %lu differing in %lu groups\n",
-           sweep ? " (sweep)" : "", (unsigned long)nitems, (unsigned long)lqd_rows(), (unsigned long)compared,
-           (unsigned long)no_emitter, (unsigned long)mismatched, (unsigned long)groups.ngroups);
+    printf("LLVM against QEMU%s, %s emitters: %lu cases of %lu rows' and directed words, %lu runs compared, %lu "
+           "without an emitter yet, %lu differing in %lu groups\n",
+           sweep ? " (sweep)" : "", forms[portable], (unsigned long)nitems, (unsigned long)lqd_rows(),
+           (unsigned long)compared, (unsigned long)no_emitter, (unsigned long)mismatched,
+           (unsigned long)groups.ngroups);
     for (i = 0; i < groups.ngroups; ++i) {
         const Group* g = &groups.groups[i];
         if (!g->listed) failed = 1;
