@@ -155,6 +155,12 @@ builds for FreeBSD, macOS and Windows x64, where they differ:
   on macOS, `VirtualAlloc(MEM_RESERVE)` on Windows), the table and the stacks as lazy memory, a thread's id, `pread`,
   the kernel's checked copies of guest memory (`process_vm_readv` on Linux, `mach_vm_read_overwrite` on macOS, a pipe
   on FreeBSD, `ReadProcessMemory` on Windows) and an epoll set (epoll, kqueue, or WSAPoll over sockets).
+- Linux's `MADV_DONTNEED` everywhere: a private anonymous range reads as zero pages again after it. Garbage collectors
+  hand such pages out again as zero memory: a Unity game's il2cpp collector did, and on FreeBSD, whose advice keeps
+  the contents, a string builder's first chunk got a stale field for its null link and the game crashed in managed
+  code. The HLE of `mmap`, `mprotect` and `munmap` records the guest's private anonymous mappings with their access,
+  and `host_dontneed` maps fresh zero pages over the recorded parts (a new anonymous `MAP_FIXED` mapping, or a decommit
+  and commit on Windows). Linux keeps its own advice.
 - **errno**: on Linux the guest's errno is the host's. Elsewhere it is the guest's own, and each HLE call sets it
   from the host's in Linux's numbers (`gnu_host_errno`, `gnuabi/kernel/errno.c`, which also gives them back for
   `strerror`).

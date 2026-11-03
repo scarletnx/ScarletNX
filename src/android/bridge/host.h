@@ -27,6 +27,17 @@ void host_unmap(void* address, size_t size);
 enum { HOST_NONE = 0, HOST_READ = 1, HOST_WRITE = 2 };
 bool host_protect(void* address, size_t size, int access);
 
+/* The guest's private anonymous mappings, with the access of each part (HOST_NONE, HOST_READ, with HOST_WRITE or
+   not), which the HLE of mmap, mprotect and munmap keeps: host_anon_map records a range (over what it replaces), and
+   host_anon_unmap forgets one (munmap, a file mapping over it). host_anon_protect changes the access of the parts that
+   are recorded.
+   host_dontneed gives Linux's MADV_DONTNEED to the recorded parts of a range: fresh zero pages with their access, the
+   old ones freed. An allocator that hands such pages out again as zero memory (a garbage collector's) depends on it.
+   The BSDs' and macOS's MADV_DONTNEED keep the contents, and Windows has no such advice. 0, or -1 */
+void host_anon_map(uint64_t address, uint64_t size, int access);
+void host_anon_unmap(uint64_t address, uint64_t size);
+void host_anon_protect(uint64_t address, uint64_t size, int access);
+int host_dontneed(uint64_t address, uint64_t size);
 /* size bytes copied from one address to another, either of which may be unmapped or not allow the access: false, and
    nothing done, for such an address. The guest's memory as the kernel checks it (EFAULT, never a fault) */
 bool host_copy_checked(void* to, const void* from, size_t size);

@@ -759,6 +759,10 @@ static void* host_mmap(void* hint, size_t size, int prot, int flags, int fd, uin
     return mmap(hint, size, prot, map_flags(flags), fd, (off_t)offset);
 #endif
 }
+/* Linux's PROT_READ 1 and PROT_WRITE 2 as host.h's access */
+static int host_access(int prot) {
+    return (prot & 1 ? HOST_READ : 0) | (prot & 2 ? HOST_READ | HOST_WRITE : 0);
+}
 static void g_mmap(CPU* c, void* data) {
     (void)data;
     int prot = (int)X(2), flags = (int)X(3);
@@ -777,6 +781,13 @@ static void g_mmap(CPU* c, void* data) {
     int host_prot = (prot & ~L_PROT_EXEC) | (prot & L_PROT_EXEC ? 1 : 0);
     void* r = host_mmap(hint, X(1), host_prot, flags, (int)X(4), X(5));
     if (r != map_failed() && (prot & L_PROT_EXEC)) bridge_add_code((uint64_t)(uintptr_t)r, X(1) & ~(uint64_t)3);
+    /* a private anonymous mapping is recorded for MADV_DONTNEED (host.h), any other forgotten over its range */
+    if (r != map_failed()) {
+        if ((flags & L_MAP_ANONYMOUS) && !(flags & L_MAP_SHARED))
+            host_anon_map((uint64_t)(uintptr_t)r, X(1), host_access(host_prot));
+        else
+            host_anon_unmap((uint64_t)(uintptr_t)r, X(1));
+    }
     X(0) = (uint64_t)(uintptr_t)r;
 }
 static void g_mprotect(CPU* c, void* data) {
@@ -784,11 +795,16 @@ static void g_mprotect(CPU* c, void* data) {
     int prot = (int)X(2);
     if (prot & L_PROT_EXEC) bridge_add_code(X(0), X(1) & ~(uint64_t)3);
     int access = (prot & 1 || prot & L_PROT_EXEC ? HOST_READ : 0) | (prot & 2 ? HOST_READ | HOST_WRITE : 0);
-    if (host_protect(PTR(0), X(1), access)) X(0) = 0;
-    else fail_errno(c, GNU_ENOMEM);
+    if (host_protect(PTR(0), X(1), access)) {
+        host_anon_protect(X(0), X(1), access);
+        X(0) = 0;
+    } else {
+        fail_errno(c, GNU_ENOMEM);
+    }
 }
 static void g_munmap(CPU* c, void* data) {
     (void)data;
+    host_anon_unmap(X(0), X(1));
 #ifdef _WIN32
     if (win_munmap(PTR(0), X(1))) fail_errno(c, GNU_EINVAL);
     else X(0) = 0;
