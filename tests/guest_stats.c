@@ -135,7 +135,6 @@ static void count(void) {
 int main(void) {
     GstatWindow* w = &g_test.w;
     pthread_t thread;
-    u64 ns;
 
     count(); /* before the first window: never in one */
     check(guest_stats_window(1000, 1, w) == -1, "the first call only starts a window");
@@ -209,6 +208,7 @@ int main(void) {
        once (the thread ran in the window, its time there uncounted). Linux only: the other systems may keep a handle
        or a port name that reads on, or names another thread */
 #if defined(__linux__)
+    u64 ns;
     if (pthread_create(&thread, NULL, unsaid, NULL)) {
         fprintf(stderr, "FAIL: no thread\n");
         return 1;
