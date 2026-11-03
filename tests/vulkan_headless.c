@@ -1690,6 +1690,7 @@ static int check_rt_overlap(void) {
 }
 
 #include "vulkan_shader_invalidate.inc"
+#include "vulkan_shared_clamp.inc"
 #include "vulkan_index_draws.inc"
 #include "vulkan_storage_formats.inc"
 #include "vulkan_storage_atomics.inc"
@@ -1793,6 +1794,7 @@ int main(int argc, char** argv) {
     CHECK(!check_flush_subnormal());
     CHECK(!check_sampler_reduction());
     CHECK(!check_shader_invalidation());
+    CHECK(!check_shared_clamp());
     CHECK(!check_vic());
     CHECK(!check_vic_chain(shot));
     CHECK(!check_nvdec_vic());
