@@ -3,6 +3,8 @@
 /* Opt-in integration test: real renderer, no game data. Works with Mesa lavapipe and no display server. */
 #include "common/utilities/common.h"
 #include "nx/runtime/main.h"
+#include "nx/runtime/cli.h"
+#include "nx/runtime/ini.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/maxwell/draw_state.h"
 #include "nx/gpu/renderer.h"
@@ -2422,28 +2424,63 @@ static int check_rt_overlap(void) {
 #include "vulkan_descriptor_bench.inc"
 #include "vulkan_sparse_bench.inc"
 
+/* key's row among the settings the runtime applies itself (options.c's), or NULL */
+static const IniOpt* setting_row(const char* key) {
+    for (int s = 0; s < g_ini_sections_count; s++)
+        for (int t = 0; t < 3 && g_ini_sections[s].own && g_ini_sections[s].table[t]; t++) {
+            const IniOpt* o = ini_find(g_ini_sections[s].table[t], key);
+            if (o) return o;
+        }
+    return NULL;
+}
+
 int main(int argc, char** argv) {
     const u32 w = 32, h = 16;
     const u64 address = HEAP_BASE;
     const i32 full[4] = {0, 0, 0, 0}, crop[4] = {4, 2, 20, 10};
-    char *root = snx_temp_dir(NULL), *shot, *ppm;
-    CHECK(root);
+    char *root, *shot, *ppm;
     CHECK(!snx_startup_options(argc, argv));
     u32 benchmark_sets = 0, benchmark_count = 16, benchmark_images = 0, benchmark_sparse = 0;
-    for (int i = 1; i < argc; i++) { /* --vk_validation=1 as the runtime takes it: the Khronos validation layer */
-        if (!strcmp(argv[i], "--vk_validation=1")) g_settings.vulkan_validation_layer = 1;
-        if (!strcmp(argv[i], "--vk_descriptors=0")) g_settings.descriptor_buffers = 0;
-        if (!strcmp(argv[i], "--vk_descriptors=1")) g_settings.descriptor_buffers = 1;
-        if (!strcmp(argv[i], "--vk_record=0")) g_settings.vulkan_recording_thread = 0;
-        if (!strcmp(argv[i], "--vk_record=1")) g_settings.vulkan_recording_thread = 1;
-        if (!strncmp(argv[i], "--bench-descriptors=", 20)) benchmark_sets = (u32)strtoul(argv[i] + 20, NULL, 10);
-        if (!strncmp(argv[i], "--descriptor-images=", 20)) benchmark_images = (u32)strtoul(argv[i] + 20, NULL, 10);
-        if (!strncmp(argv[i], "--descriptor-count=", 19)) benchmark_count = (u32)strtoul(argv[i] + 19, NULL, 10);
-        if (!strcmp(argv[i], "--bench-sparse-volume")) benchmark_sparse = 1;
-        if (!strcmp(argv[i], "--vk_memory=2")) g_settings.guest_memory = 2; /* guest memory read in place */
-        if (!strncmp(argv[i], "--vertex_input_dynamic_state=", 29))         /* as the game's .ini reads it */
-            ini_read(ini_find(g_graphics_ini, "vertex_input_dynamic_state"), argv[i] + 29);
+    /* the runtime's startup flags (-H), its settings as it takes them (--vk_memory=2, --memory_traps=2,
+       --vertex_input_dynamic_state=off), and the benchmarks'. Any other argument stops the run: one dropped unsaid ran
+       the checks without it */
+    for (int i = 1; i < argc; i++) {
+        const char* eq = strchr(argv[i], '=');
+        const IniOpt* o = NULL;
+        unsigned flags = 0;
+        char key[64];
+        if (snx_cli_flag(argv[i], &flags) == 1) continue;
+        if (!strncmp(argv[i], "--bench-descriptors=", 20)) {
+            benchmark_sets = (u32)strtoul(argv[i] + 20, NULL, 10);
+            continue;
+        }
+        if (!strncmp(argv[i], "--descriptor-images=", 20)) {
+            benchmark_images = (u32)strtoul(argv[i] + 20, NULL, 10);
+            continue;
+        }
+        if (!strncmp(argv[i], "--descriptor-count=", 19)) {
+            benchmark_count = (u32)strtoul(argv[i] + 19, NULL, 10);
+            continue;
+        }
+        if (!strcmp(argv[i], "--bench-sparse-volume")) {
+            benchmark_sparse = 1;
+            continue;
+        }
+        if (!strncmp(argv[i], "--", 2) && eq && (size_t)(eq - argv[i] - 2) < sizeof key) {
+            snprintf(key, sizeof key, "%.*s", (int)(eq - argv[i] - 2), argv[i] + 2);
+            o = setting_row(key);
+        }
+        if (!o) {
+            fprintf(stderr,
+                    "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
+                    "--bench-descriptors=N, --descriptor-images=N, --descriptor-count=N, --bench-sparse-volume\n",
+                    argv[i]);
+            return 2;
+        }
+        ini_read(o, eq + 1);
     }
+    root = snx_temp_dir(NULL);
+    CHECK(root);
     snprintf(g_exedir, 1024, "%s/", root);
     shot = snx_path_join(root, "frame");
     ppm = snx_format("%s.ppm", shot);
