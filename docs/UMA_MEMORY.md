@@ -1,7 +1,7 @@
 # Guest buffers on unified memory
 
 On a GPU that shares system memory, guest vertex, index and read-only storage ranges are imported into Vulkan
-(`VK_EXT_external_memory_host`) and read in place: [GPU-owned guest memory](./GPU_OWNERSHIP.md#memory-that-the-cpu-and-the-gpu-share-uma)
+(`VK_EXT_external_memory_host`, or on Android moved into AHardwareBuffers) and read in place: [GPU-owned guest memory](./GPU_OWNERSHIP.md#memory-that-the-cpu-and-the-gpu-share-uma)
 says how, what still copies, and what keeps it correct. Every other range takes the copy path this page is about:
 `vk_buf_copy` copies bytes out of guest RAM into a buffer that `vk_stage` maps and the GPU reads. Exporting the final
 image as a dma-buf, as desktop compositors do, would not remove this copy: ScarletNX already presents its Vulkan image
