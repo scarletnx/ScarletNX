@@ -13,5 +13,8 @@ uint32_t snx_ctr_system_open(SnxCtrProcess* p, const uint8_t* name, uint32_t len
    would wait for the service to register) or the stand-ins are all taken */
 uint32_t snx_ctr_system_stand_in(SnxCtrProcess* p, const uint8_t* name, uint32_t length, uint32_t* session);
 const char* snx_ctr_system_name(const SnxCtrProcess* p, uint32_t index);
+/* A command the runtime has no model of: success and zeros, as Azahar's ReportUnimplementedFunction answers, reported
+   the first time each key (the service and the command) is seen */
+void snx_ctr_system_unmodeled(SnxCtrIpc* c, const char* service, uint32_t key);
 void snx_ctr_system_dispatch(SnxCtrIpc* c);
 #endif

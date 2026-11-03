@@ -159,6 +159,11 @@ typedef struct {
     uint64_t done_ns; /* host monotonic end of the conversion running, 0 when none is */
     uint64_t serial;  /* the GPU submission it runs in: it ends no sooner than that is done */
 } SnxCtrY2rService;
+/* ir:USER: the block whose header it wrote, which it keeps until FinalizeIrNop, and the events it handed out, which
+   live as long as the process (services/ir.c) */
+typedef struct {
+    uint32_t shared, status_event, receive_event, send_event;
+} SnxCtrIrService;
 /* hid:USER's sampling (services/hid.c): each update's next deadline, host monotonic ns (0: not running), the index
    each writes next, how many times the game enabled each sensor, and the circle pad's last two raw positions, which
    each sample averages with */
@@ -229,6 +234,7 @@ struct SnxCtrProcess {
     SnxCtrDspService dsp;
     struct SnxCtrUds* uds;
     SnxCtrY2rService y2r;
+    SnxCtrIrService ir;
     uint64_t svc_count, svc_counts[256]; /* all, and each SVC's */
     uint64_t idle_ns, idle_waits;        /* the host time the scheduler slept with no thread to run, and how often */
     /* the codeset GetProcessInfo describes: segments as loaded, BSS, title and name (ExHeader) */

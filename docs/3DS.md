@@ -385,6 +385,14 @@ scripted presses of `--script=ms:hex,...` (`ctr_script`), in the pad's bits (1 A
 on the bottom screen, and the sensors give a console lying still. ZL, ZR and the
 C-stick are the New 3DS's `ir:rst`, which the runtime does not have yet.
 
+`ir:USER` (`services/ir.c`) answers as Azahar does with no IR accessory in range.
+InitializeIrNopShared writes the shared block's header and empty receive queue, the
+receive, send and connection-status events are real kernel events, and RequireConnection
+only marks the header as trying to connect, so the status event never fires and a game
+that waits on it goes on without the accessory. SendIrNop answers that nothing is
+connected. The commands with no model answer success with zeros, as the other system
+services do.
+
 `gsp::Gpu` is modeled with real bounded resources: RegisterInterruptRelayQueue
 returns the genuine `0x2a07` first-initialization result, one writable 0x1000
 GX/interrupt shared block and up to four relay threads with real interrupt-queue
@@ -834,7 +842,7 @@ recorded under [Source provenance and licensing](#source-provenance-and-licensin
 | F4 Software GPU | Geometry shaders, procedural textures, shadow textures and rendering, VRAM save and restore, the stereo right eye | `pica/geometry_pipeline.cpp`, `pica/shader_unit.cpp`, `renderer_software/{sw_proctex,sw_framebuffer,sw_rasterizer}.cpp` |
 | F5 Dynamic code | ldr:ro CROs compiled ahead of time, with a design for their run-time base and relocations; a log of missed targets for a second discovery pass; an explicit result for self-modifying code | `service/ldr_ro/` |
 | F6 Audio | The DSP's AAC pipe on FFmpeg; CSND; time stretching if gaps remain | `audio_core/hle/aac_decoder.cpp`, `audio_core/csnd.cpp`, `service/csnd/`, `audio_core/time_stretch.cpp` |
-| F7 Peripherals and network | y2r, mic, cam (no camera), ir:USER, soc:U, then ssl and http | `service/{cam,mic,ir,soc,ssl,http}/`, `hw/y2r.cpp` |
+| F7 Peripherals and network | y2r, mic, cam (no camera), ir:USER (its startup, events and the no-accessory answers are in place; a Circle Pad Pro is not emulated), soc:U, then ssl and http | `service/{cam,mic,ir,soc,ssl,http}/`, `hw/y2r.cpp` |
 | F8 Loader | Encrypted content with the user's keys; CCI, CXI, 3DSX and ELF; updates and DLC; a complete module cache key | `file_sys/`, `loader/` |
 | F9 Vulkan renderer | A Vulkan device shared with NX; the PICA fragment shader generator on `spirv_emit.c`; the surface cache with page-level coherence in the memory controller; host vertex and geometry shaders. The software renderer stays as the reference and fallback | `renderer_vulkan/`, `rasterizer_cache/`, `shader/generator/` |
 | F10 Performance | Shader JIT if profiles call for it; the syscore CPU limiter; GUI settings for layouts and controls | `shader/shader_jit_*`, `core.cpp` |
