@@ -389,14 +389,16 @@ int main(int argc, char** argv) {
         assert(!ctr_command_word(p, 1));
         assert((ctr_word(p, QUEUE + 0x800) & 0xffff) == 2);
         assert((ctr_word(p, QUEUE) & 0xffff) == 0x0200 && (ctr_word(p, QUEUE + 12) & 0xffff) == 0x0505);
-        /* a draw needing a part not ported yet (a geometry shader) stops the run */
-        ctr_put(p, target + 0x800, 2);
-        ctr_put(p, target + 0x804, 0x000f0229u); /* use_gs */
-        ctr_put(p, target + 0x808, 1);
-        ctr_put(p, target + 0x80c, 0x000f022eu); /* trigger_draw */
+        /* a draw the runtime does not run (a geometry shader on a unit set up for vertices) stops the run */
+        ctr_put(p, target + 0x800, 0x20000000u >> 3);
+        ctr_put(p, target + 0x804, 0x000f0200u); /* vertex arrays in FCRAM */
+        ctr_put(p, target + 0x808, 2);
+        ctr_put(p, target + 0x80c, 0x000f0229u); /* use_gs */
+        ctr_put(p, target + 0x810, 1);
+        ctr_put(p, target + 0x814, 0x000f022eu); /* trigger_draw */
         ctr_put(p, QUEUE + 0x800, 0x100);
         ctr_put(p, QUEUE + 0x820, 1);
-        ctr_put(p, QUEUE + 0x828, 16);
+        ctr_put(p, QUEUE + 0x828, 24);
         ctr_call(p, gsp, trigger, 1, SNX_CTR_SVC_UNSUPPORTED, 0);
         ctr_put(p, QUEUE + 0x800, 0);
         /* vblanks reach the relay queue's slots at 0xc (libctru's popInterrupt), are dropped with ignore_pdc set,

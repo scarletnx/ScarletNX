@@ -6,7 +6,8 @@
    2017-2026 Citra Emulator Project / Azahar Emulator Project) at azahar-emu/azahar 49a1e8c, in C. The instruction
    fields are nihstro's shader_bytecode.h as gpu/shader.c reads them (BSD-3-Clause, Copyright 2014 Tony Wasserka; its
    notice is in shader.c). Multiplication is the host's (Azahar's sanitize_mul off), and RCP and RSQ skip a zero or
-   negative operand as Azahar's do then. */
+   negative operand as Azahar's do then. The pass-through shader for a vertex the CPU made is glsl_shader_gen.cpp's
+   GenerateTrivialVertexShader. */
 #include "3ds/gpu/vk/vsgen.h"
 #include "3ds/gpu/pica_internal.h"
 #include "common/utilities/bits.h"
@@ -788,13 +789,17 @@ static uint32_t generate_main(Gen* g, uint32_t main_sub) {
     for (unsigned i = 0; i < c->num_outputs; ++i) store(g, g->out[i], initial);
     for (unsigned i = 0; i < 3; ++i) store(g, g->addr[i], sconst(g, 0));
     for (unsigned i = 0; i < 2; ++i) store(g, g->cc[i], spv_emit_const_bool(s, false));
-    SPV(s, SPV_OP_FUNCTION_CALL, g->t_bool, main_sub);
+    if (!c->passthrough) SPV(s, SPV_OP_FUNCTION_CALL, g->t_bool, main_sub);
 
     uint32_t outputs[16], v[24];
     for (unsigned i = 0; i < c->num_outputs; ++i) outputs[i] = load(g, v4, g->out[i]);
     /* RasterizerRegs::VSOutputAttributes: position 0-3, quaternion 4-7, color 8-11, texcoord0 12-13, texcoord1
        14-15, texcoord0_w 16, view 18-20, texcoord2 22-23 */
-    for (unsigned slot = 0; slot < 24; ++slot) v[slot] = semantic(g, outputs, slot);
+    uint32_t made[6] = {0};
+    if (c->passthrough)
+        for (unsigned i = 0; i < 6; ++i) made[i] = load(g, v4, spv_emit_location(s, SPV_STORAGE_INPUT, v4, i));
+    for (unsigned slot = 0; slot < 24; ++slot)
+        v[slot] = c->passthrough ? extract(g, f, made[slot / 4], slot % 4) : semantic(g, outputs, slot);
     /* SanitizeVertex: z flushed to 0 when z / w is in (0, 1e-6), to -w when it is in (-1.00001, -1) */
     uint32_t x = v[0], y = v[1], z = v[2], w = v[3], t_bool = g->t_bool;
     uint32_t ndc_z = SPV(s, SPV_OP_F_DIV, f, z, w);
@@ -874,8 +879,9 @@ static void declare(Gen* g) {
 bool snx_ctr_vs_spirv(const SnxCtrShaderSetup* setup, const SnxCtrVsConfig* c, bool preserve_infnan, uint32_t** words,
                       size_t* count, const char** why) {
     Flow flow = {.code = setup->code};
-    if (!add_sub(&flow, c->main_offset, PROGRAM_END) && !flow.fail) flow.fail = "a program the analysis lost";
-    if (!flow.fail && find_sub(&flow, c->main_offset, PROGRAM_END)->exit != EXIT_END)
+    if (!c->passthrough && !add_sub(&flow, c->main_offset, PROGRAM_END) && !flow.fail)
+        flow.fail = "a program the analysis lost";
+    if (!c->passthrough && !flow.fail && find_sub(&flow, c->main_offset, PROGRAM_END)->exit != EXIT_END)
         flow.fail = "a program that does not always end";
     if (flow.fail) {
         *why = flow.fail;
@@ -888,15 +894,16 @@ bool snx_ctr_vs_spirv(const SnxCtrShaderSetup* setup, const SnxCtrVsConfig* c, b
     spv_emit_glsl450_import(&s);
     spv_emit_shader_capability(&s);
     Gen g = {.setup = setup, .config = c, .flow = &flow, .s = &s};
-    g.sub_ids = malloc(flow.sub_count * sizeof *g.sub_ids);
-    if (!g.sub_ids) g.fail = "out of memory";
+    g.sub_ids = flow.sub_count ? malloc(flow.sub_count * sizeof *g.sub_ids) : NULL;
+    if (!g.sub_ids && flow.sub_count) g.fail = "out of memory";
     for (unsigned i = 0; i < flow.sub_count && g.sub_ids; ++i) g.sub_ids[i] = spv_emit_id(&s);
     if (!g.fail) {
         declare(&g);
-        generate(&g);
+        if (!c->passthrough) generate(&g);
     }
     if (!g.fail) {
-        uint32_t entry = generate_main(&g, g.sub_ids[find_sub(&flow, c->main_offset, PROGRAM_END) - flow.subs]);
+        uint32_t entry =
+            generate_main(&g, c->passthrough ? 0 : g.sub_ids[find_sub(&flow, c->main_offset, PROGRAM_END) - flow.subs]);
         if (preserve_infnan) {
             /* PICA programs rely on infinities and NaNs, which SPIR-V otherwise lets the driver assume away */
             spv_emit_extension(&s, "SPV_KHR_float_controls");

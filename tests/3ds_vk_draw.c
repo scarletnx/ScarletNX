@@ -134,6 +134,30 @@ static void base(List* l, unsigned color_format) {
     put(l, 0x205, 3u << 28 | (uint32_t)sizeof(Vertex) << 16);
     put(l, SNX_PICA_TOPOLOGY, 0);
 }
+/* geometry shader instructions: SETEMIT's vertex (bits 24..25), primitive (23) and winding (22) flags, and EMIT */
+static uint32_t setemit(unsigned vertex, bool primitive, bool winding) {
+    return 0x2bu << 26 | vertex << 24 | (primitive ? 1u << 23 : 0) | (winding ? 1u << 22 : 0);
+}
+#define EMIT (0x2au << 26)
+/* a geometry shader on the base's three outputs a vertex: use (0x229), config (0x252) and the unit's input buffer
+   configuration (attributes - 1, input_to_uniform), its inputs mapped in order, its three outputs enabled */
+static void geometry_shader(List* l, uint32_t use, uint32_t config, uint32_t input, const uint32_t* program,
+                            unsigned words) {
+    put(l, SNX_PICA_USE_GS, use);
+    put(l, 0x24a, 2); /* vs_outmap_total_minus_1_a and _b */
+    put(l, 0x251, 2);
+    put(l, 0x252, config);
+    put(l, SNX_PICA_TOPOLOGY, 3u << 8);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_INPUT_CONFIG, input | 0x08u << 24);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_ATTR_MAP_LOW, 0x76543210u);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_ATTR_MAP_HIGH, 0xfedcba98u);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_OUTPUT_MASK, 7);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_MAIN_OFFSET, 0);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_OFFSET, 0);
+    for (unsigned i = 0; i < words; ++i) put(l, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_WORD, program[i]);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_SWIZZLE_OFFSET, 0);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_SWIZZLE_WORD, XYZW);
+}
 static void depth_target(List* l, unsigned format) {
     put(l, 0x11c, DEPTH / 8);
     put(l, 0x116, format);
@@ -290,6 +314,23 @@ static Scene* scene(const char* name, unsigned color_format, unsigned depth_form
 static void array_draw(Scene* s) {
     put(&s->list, 0x228, s->vertex_count);
     put(&s->list, SNX_PICA_TRIGGER_DRAW, 1);
+}
+/* count immediate-mode vertices of a random position and colour, each attribute float24 w, z, y, x packed big-end
+   first */
+static void immediate_vertices(List* l, unsigned count) {
+    put(l, SNX_PICA_DEFAULT_ATTR_INDEX, 15);
+    for (unsigned t = 0; t < count; ++t) {
+        float v[3][4] = {
+            {(float)(next() % 2001) / 1000.0f - 1.0f, (float)(next() % 2001) / 1000.0f - 1.0f, -0.5f, 1.0f},
+            {(float)(next() % 256) / 255.0f, (float)(next() % 256) / 255.0f, (float)(next() % 256) / 255.0f, 1.0f},
+            {0, 0, 0, 1}};
+        for (unsigned a = 0; a < 3; ++a) {
+            uint32_t x = f24(v[a][0]), y = f24(v[a][1]), z = f24(v[a][2]), w = f24(v[a][3]);
+            put(l, SNX_PICA_DEFAULT_ATTR_VALUE, w << 8 | z >> 16);
+            put(l, SNX_PICA_DEFAULT_ATTR_VALUE, (z & 0xffff) << 16 | y >> 8);
+            put(l, SNX_PICA_DEFAULT_ATTR_VALUE, (y & 0xff) << 24 | x);
+        }
+    }
 }
 
 /* one check: the bytes that the GPU left against the CPU reference's, after every step before them worked */
@@ -733,20 +774,111 @@ static void all_scenes(SnxCtrMemory* m) {
     }
     {
         Scene* s = scene("immediate mode", 0, 0xff);
-        put(&s->list, SNX_PICA_DEFAULT_ATTR_INDEX, 15);
-        for (unsigned t = 0; t < 9; ++t) {
-            float v[3][4] = {{(float)(next() % 2001) / 1000.0f - 1.0f, (float)(next() % 2001) / 1000.0f - 1.0f,
-                              -0.5f, 1.0f},
-                             {(float)(next() % 256) / 255.0f, (float)(next() % 256) / 255.0f,
-                              (float)(next() % 256) / 255.0f, 1.0f},
-                             {0, 0, 0, 1}};
-            for (unsigned a = 0; a < 3; ++a) { /* float24 w, z, y, x packed big-end first */
-                uint32_t x = f24(v[a][0]), y = f24(v[a][1]), z = f24(v[a][2]), w = f24(v[a][3]);
-                put(&s->list, SNX_PICA_DEFAULT_ATTR_VALUE, w << 8 | z >> 16);
-                put(&s->list, SNX_PICA_DEFAULT_ATTR_VALUE, (z & 0xffff) << 16 | y >> 8);
-                put(&s->list, SNX_PICA_DEFAULT_ATTR_VALUE, (y & 0xff) << 24 | x);
-            }
-        }
+        immediate_vertices(&s->list, 9);
+        run(m, s);
+        free(s);
+    }
+    {
+        /* point mode, three vertices a run: their triangle, then the same one (vertex 1 kept) with the winding flag */
+        const uint32_t point[26] = {setemit(0, false, false),
+                                    op1(0x13, 0, 0, 0, 0),
+                                    op1(0x13, 1, 1, 0, 0),
+                                    op1(0x13, 2, 2, 0, 0),
+                                    EMIT,
+                                    setemit(1, false, false),
+                                    op1(0x13, 0, 3, 0, 0),
+                                    op1(0x13, 1, 4, 0, 0),
+                                    op1(0x13, 2, 5, 0, 0),
+                                    EMIT,
+                                    setemit(2, true, false),
+                                    op1(0x13, 0, 6, 0, 0),
+                                    op1(0x13, 1, 7, 0, 0),
+                                    op1(0x13, 2, 8, 0, 0),
+                                    EMIT,
+                                    setemit(0, false, false),
+                                    op1(0x13, 0, 6, 0, 0),
+                                    op1(0x13, 1, 7, 0, 0),
+                                    op1(0x13, 2, 8, 0, 0),
+                                    EMIT,
+                                    setemit(2, true, true),
+                                    op1(0x13, 0, 0, 0, 0),
+                                    op1(0x13, 1, 1, 0, 0),
+                                    op1(0x13, 2, 2, 0, 0),
+                                    EMIT,
+                                    END};
+        /* fixed primitive mode: three vertices of three outputs into c16 to c24 */
+        const uint32_t fixed[16] = {setemit(0, false, false),
+                                    op1(0x13, 0, 0x30, 0, 0),
+                                    op1(0x13, 1, 0x31, 0, 0),
+                                    op1(0x13, 2, 0x32, 0, 0),
+                                    EMIT,
+                                    setemit(1, false, false),
+                                    op1(0x13, 0, 0x33, 0, 0),
+                                    op1(0x13, 1, 0x34, 0, 0),
+                                    op1(0x13, 2, 0x35, 0, 0),
+                                    EMIT,
+                                    setemit(2, true, false),
+                                    op1(0x13, 0, 0x36, 0, 0),
+                                    op1(0x13, 1, 0x37, 0, 0),
+                                    op1(0x13, 2, 0x38, 0, 0),
+                                    EMIT,
+                                    END};
+        Scene* s = scene("geometry shader, points", 0, 0xff);
+        geometry_shader(&s->list, 2, 0, 8, point, 26);
+        triangles(s, 4);
+        array_draw(s);
+        run(m, s);
+        free(s);
+        s = scene("geometry shader, culled", 0, 0xff);
+        put(&s->list, 0x040, 1);
+        geometry_shader(&s->list, 2, 0, 8, point, 26);
+        triangles(s, 10);
+        array_draw(s);
+        run(m, s);
+        free(s);
+        s = scene("geometry shader, fixed", 0, 0xff);
+        geometry_shader(&s->list, 2, 2u | 2u << 8 | 2u << 12 | 16u << 16, 1u << 8, fixed, 16);
+        triangles(s, 8);
+        for (unsigned i = 0; i < 30; ++i) snx_st_le16(s->indices + i * 2, (uint16_t)(next() % s->vertex_count));
+        put(&s->list, 0x227, (INDICES - VERTICES) | 1u << 31);
+        put(&s->list, 0x228, 30);
+        put(&s->list, SNX_PICA_TRIGGER_DRAW_INDEXED, 1);
+        run(m, s);
+        free(s);
+        s = scene("geometry shader, immediate", 0, 0xff);
+        geometry_shader(&s->list, 2, 0, 8, point, 26);
+        immediate_vertices(&s->list, 9);
+        run(m, s);
+        free(s);
+        /* one run that emits a small triangle 180 * 180 times, more than one recording's uploads hold */
+        const uint32_t many[19] = {0x29u << 26 | 17u << 10,            /* loop i0, to 17 */
+                                   0x29u << 26 | 1u << 22 | 16u << 10, /* loop i1, to 16 */
+                                   setemit(0, false, false),
+                                   op1(0x13, 0, 0, 0, 0),
+                                   op1(0x13, 1, 1, 0, 0),
+                                   op1(0x13, 2, 2, 0, 0),
+                                   EMIT,
+                                   setemit(1, false, false),
+                                   op1(0x13, 0, 3, 0, 0),
+                                   op1(0x13, 1, 4, 0, 0),
+                                   op1(0x13, 2, 5, 0, 0),
+                                   EMIT,
+                                   setemit(2, true, false),
+                                   op1(0x13, 0, 6, 0, 0),
+                                   op1(0x13, 1, 7, 0, 0),
+                                   op1(0x13, 2, 8, 0, 0),
+                                   EMIT,
+                                   0x21u << 26, /* nop: the two loops end apart */
+                                   END};
+        s = scene("geometry shader, many triangles", 0, 0xff);
+        geometry_shader(&s->list, 2, 0, 8, many, 19);
+        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_INT, 179u | 1u << 16); /* 180 passes, step 1 */
+        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_INT + 1, 179u | 1u << 16);
+        s->vertices[0] = vertex(-0.1f, -0.1f, -0.5f, 0xff8040ffu, 0, 0);
+        s->vertices[1] = vertex(0.1f, -0.1f, -0.5f, 0x40ff80ffu, 1, 0);
+        s->vertices[2] = vertex(0.0f, 0.1f, -0.5f, 0x8040ffffu, 0, 1);
+        s->vertex_count = 3;
+        array_draw(s);
         run(m, s);
         free(s);
     }

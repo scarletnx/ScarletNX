@@ -116,8 +116,9 @@ on the GPU too (`gpu/vk/render.c`). The vertex program is decompiled (`gpu/vk/vs
 and the fragment pipeline generated (`gpu/vk/fsgen.c`), both ported from Azahar's
 shader generators and both written as SPIR-V words directly (`src/common/utilities/spirv_emit.c`, shared with NX), with no
 shader compiler at run time. The output merger is the pipeline's fixed state. Vertex and
-index data are read in place. `tests/3ds_vk_draw.c` holds the draws to the software
-renderer they replaced, which stays only as that reference. The shown
+index data are read in place, except in a draw with a geometry shader, whose vertex and
+geometry shaders run on the CPU (see below). `tests/3ds_vk_draw.c` holds the draws to the
+software renderer they replaced, which stays as their reference. The shown
 framebuffers are decoded and turned to the landscape screen by a compute shader
 straight from guest memory into the window's swapchain; the frame dumps are the
 one readback.
@@ -187,7 +188,7 @@ blocks presented frames until it was ended. It is **not playable** yet:
   are at rest (`hid:USER`, below).
 - The music has a gap after every rendered frame, because rendering and presenting
   run inside the guest's GSP call.
-- Geometry shaders, procedural textures and shadows still stop the run explicitly.
+- Procedural textures and shadows still stop the run explicitly.
 
 The [parity roadmap](#parity-roadmap-azahar) lists the remaining work, and the
 [SuperTux integration target](3DS-SUPERTUX.md) holds the pinned input.
@@ -429,9 +430,12 @@ the lighting, fog and procedural-texture LUTs, default attributes and immediate 
 command buffer jumps and the P3D interrupt request with autostop. A list outside memory
 raises P3D without running. Draws go to the GPU (see above). The software renderer
 ported from Azahar's (`gpu/shader.c`, `gpu/draw.c`, `gpu/raster.c`, `gpu/lighting.c`,
-`gpu/texture.c`) is only built into the tests, as the reference the GPU's draws are
-compared with. It samples the nearest texel only, as Azahar's does, so texture
-filtering has no reference. Shadow textures and rendering are not drawn yet: a draw that needs one stops the run and names it. The ExHeader's address-mapping capabilities
+`gpu/texture.c`) is the reference the GPU's draws are compared with. Only its shader
+units and vertex processing (`gpu/shader.c`, `gpu/draw.c`) are built into the runtime:
+a draw with a geometry shader runs its vertex and geometry shaders there on the CPU, as
+Azahar does, and the GPU draws the triangles they make. The reference samples the
+nearest texel only, as Azahar's does, so texture filtering has no reference. Shadow
+textures and rendering are not drawn yet: a draw that needs one stops the run and names it. The ExHeader's address-mapping capabilities
 are applied at process creation (VRAM, DSP RAM, New 3DS extra RAM), as Azahar's
 `HandleSpecialMapping` does; MMIO areas stay unmapped. SetBufferSwap and the shared
 FrameBufferUpdate blocks latch real framebuffer descriptors in the five formats
