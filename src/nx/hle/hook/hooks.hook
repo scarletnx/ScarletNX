@@ -30,3 +30,8 @@ family libc
 hook memcpy(void* dst out[size], const void* src in[size], u64 size) -> void* = hook_memmove pure
 hook memmove(void* dst out[size], const void* src in[size], u64 size) -> void* = hook_memmove pure
 hook memset(void* dst out[size], i32 value, u64 size) -> void* = hook_memset pure
+
+# nn::diag (diag.c): the SDK's abort, which every one of its NN_ABORT overloads ends in, logged with what the SDK passed
+# it, then its own code, which stops the game as it would
+family diag
+hook _ZN2nn4diag6detail10VAbortImplEPKcS3_S3_iPKNS_6ResultEPKNS_2os17UserExceptionInfoES3_RSt9__va_list(const char* condition, const char* function, const char* file, i32 line, const u32* result, addr exception, const char* format, addr args) = diag_abort
