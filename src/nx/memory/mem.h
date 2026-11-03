@@ -9,7 +9,7 @@
 #include <string.h>
 
 /* The console's 64-bit layout lies below this (128 GiB): the code, alias, heap and stack regions and the kernel's
-   pages. NCE's reservation at the guest's own addresses goes no further (mem_reserve_identity) */
+   pages. NCE's reservation at the guest's own addresses is no larger (mem_reserve_identity) */
 #define AS_MAX 0x2000000000ull
 /* The console's 64-bit address space (512 GiB), the most host address space the guest gets: its addresses end below
    it, within the 39 bits an IPC buffer descriptor carries, and tables indexed by guest address are sized for it */

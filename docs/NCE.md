@@ -69,8 +69,10 @@ base: `the code region from ...`.
 
 Limits:
 
-- The guest's addresses stay below `AS_MAX` (128 GiB), so they fit in 39 bits. That leaves Android 64 GiB of address
-  space at most (Linux has 128; without NCE the game gets 512).
+- The guest's addresses stay below `AS_TOP` (512 GiB), which the tables indexed by them are sized for, so they fit in
+  39 bits. NCE's address space is at most the console's 128 GiB layout (`AS_MAX`), its 64 GiB alias region among
+  them, which Android's moved layout keeps from any base up to 384 GiB; where none of those is free a smaller tier
+  takes it, with a smaller alias region (32 GiB in 64, 16 GiB in 48). Without NCE the game gets 512.
 - The 36-bit address space (NPDM type 1, games of SDKs before 2.0) has to lie below 64 GiB with its code at 128 MiB,
   where ART is. Android recompiles those games ahead of time and says so; a `.nce` brought from Linux ends the game
   with the base it found. The NPDM has no ASLR bit to ask for fixed code otherwise (Eden reads bits 0 to 3 of its
