@@ -34,6 +34,8 @@ interface nn::am::service::IApplicationProxy {
     [10] GetProcessWindingController() -> object<nn::am::service::IProcessWindingController> controller;
     [11] GetLibraryAppletCreator() -> object<nn::am::service::ILibraryAppletCreator> creator;
     [20] GetApplicationFunctions() -> object<nn::am::service::IApplicationFunctions> functions;
+    # an Ounce application's proxy: an object whose commands no game seen yet calls
+    [40] GetPerformanceFunctions() -> object<nn::am::service::IPerformanceFunctions> functions;
     [60] GetGraphicsScalingParametersFunctions()
         -> object<nn::am::service::IGraphicsScalingParametersFunctions> functions;
     [1000] GetDebugFunctions() -> object<nn::am::service::IDebugFunctions> functions;
@@ -135,6 +137,8 @@ interface nn::am::service::IAudioController {
 }
 
 interface nn::am::service::IDisplayController {
+}
+interface nn::am::service::IPerformanceFunctions {
 }
 @fallback(quiet_ok)
 interface nn::am::service::IProcessWindingController {
