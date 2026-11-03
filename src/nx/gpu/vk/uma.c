@@ -64,7 +64,7 @@ typedef struct {
     VkDeviceMemory mem;
     VkBuffer buf;
     u32 used; /* g_vk_present when last bound */
-    u64 sub;  /* the submit that last read it (vk_submit_number), which quiesce waits for */
+    u64 sub;  /* the submit its last lookup was in (vk_submit_number): last_read gives the one to wait for */
     int dead; /* its pages are other pages now (mem.c): it goes before the next submission */
 } Imp;
 /* Spans the driver refused to import (pages it can't pin, or amdgpu's refusal of the alias pool's), whose ranges are copied
@@ -89,6 +89,9 @@ typedef struct {
     Imp* gone; /* dropped from the table, the driver's until the submit that last read them is done: ngone of cap; their
                   entries and count under lk too */
     u32 ngone, capgone;
+    u64 seg; /* the submit being recorded when the draw or dispatch being set up began (vk_uma_settle), or once all that
+                was recorded is done (read_done): a lookup since may be used in any submit up to the one being
+                recorded */
     VkResult import_result; /* the last import's, for the log */
     u64 align;              /* minImportedHostPointerAlignment */
     u64 bound;              /* the submit that last read guest memory in place (vk_submit_number) */
@@ -186,9 +189,16 @@ static void read_done(u64 sub) {
     u64 submitted, done;
     vk_submit_progress(&submitted, &done);
     if (sub <= done) return;
-    if (sub > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    if (sub > vk_last_submit()) { /* all that is recorded: every lookup so far has been read once it is done */
+        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+        g_uma.seg = vk_submit_number();
+    }
     vk_wait_submit(sub);
 }
+/* The last submit that may read import m: the one its last lookup was in, or for a lookup since the draw or dispatch
+   being set up began, the one being recorded now. A setup that waits for a landing (buffer.c's wait_finish, surface.c's
+   flush_wait) submits what it recorded so far, and records the lookup's use in the next submit */
+static u64 last_read(const Imp* m) { return m->sub >= g_uma.seg ? vk_submit_number() : m->sub; }
 static void imp_destroy(const Imp* m) {
     vkDestroyBuffer(g_vk.dev, m->buf, NULL);
     vkFreeMemory(g_vk.dev, m->mem, NULL);
@@ -206,14 +216,14 @@ static void gone_reap(void) {
     u64 submitted, done;
     vk_submit_progress(&submitted, &done);
     for (u32 i = g_uma.ngone; i-- > 0;)
-        if (g_uma.gone[i].sub <= done) gone_out(i);
+        if (last_read(&g_uma.gone[i]) <= done) gone_out(i);
 }
 /* the dropped imports over guest memory [lo, hi) are destroyed now, once their last reader is done: their pages change
    or are trapped next (vk_lock held) */
 static void gone_kill(u64 lo, u64 hi) {
     for (u32 i = g_uma.ngone; i-- > 0;)
         if (g_uma.gone[i].cpu < hi && lo < g_uma.gone[i].cpu + g_uma.gone[i].size) {
-            read_done(g_uma.gone[i].sub);
+            read_done(last_read(&g_uma.gone[i]));
             gone_out(i);
         }
 }
@@ -251,9 +261,10 @@ static void pages_replaced(u64 a, u64 size) {
     pm_unlock(&g_uma.lk);
 }
 /* the import at i goes from the table and is destroyed now, once the submits that read it are done (vk_lock held),
-   not when the frame's work is: the driver keeps it in every submission until then */
-static void imp_kill(u32 i) {
-    read_done(g_uma.imp[i].sub);
+   not when the frame's work is: the driver keeps it in every submission until then. A dead one's were waited for before
+   its pages changed (vk_uma_mapping_begin), and a submit now would take it to the driver with the new ones */
+static void imp_kill(u32 i, int dead) {
+    if (!dead) read_done(last_read(&g_uma.imp[i]));
     imp_destroy(&g_uma.imp[i]); /* before it leaves the table: write tracking leaves its pages alone until then */
     pm_lock(&g_uma.lk);
     memmove(&g_uma.imp[i], &g_uma.imp[i + 1], sizeof *g_uma.imp * (size_t)(g_uma.nimp - i - 1));
@@ -272,7 +283,7 @@ static void drop_dead(void) {
         pm_lock(&g_uma.lk);
         int dead = g_uma.imp[i].dead;
         pm_unlock(&g_uma.lk);
-        if (dead) imp_kill(i);
+        if (dead) imp_kill(i, 1);
     }
 }
 /* the first import that ends after cpu */
@@ -528,13 +539,12 @@ static int quiesce(u64 cpu, u64 size) {
     for (u32 i = 0; i < g_uma.nimp; i++)
         if (g_uma.imp[i].cpu < end && cpu < g_uma.imp[i].cpu + g_uma.imp[i].size) {
             any = 1;
-            if (g_uma.imp[i].sub > sub) sub = g_uma.imp[i].sub;
+            if (last_read(&g_uma.imp[i]) > sub) sub = last_read(&g_uma.imp[i]);
         }
     if (!sub) return any;
     vk_submit_progress(&submitted, &done);
     if (done >= sub) return any;
-    if (sub > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE); /* still the one being recorded */
-    vk_wait_submit(sub);
+    read_done(sub);
     g_uma.quiesces++;
     return any;
 }
@@ -547,7 +557,7 @@ void vk_uma_owning(u64 cpu, u64 size) {
     gone_kill(lo, hi);
     if (!quiesce(lo, hi - lo)) return;
     for (u32 i = g_uma.nimp; i-- > 0;)
-        if (g_uma.imp[i].cpu < hi && lo < g_uma.imp[i].cpu + g_uma.imp[i].size) imp_kill(i);
+        if (g_uma.imp[i].cpu < hi && lo < g_uma.imp[i].cpu + g_uma.imp[i].size) imp_kill(i, 0);
 }
 /* mem.c changes guest memory [cpu, cpu + size) (size ~0: all of it) next, maybe its host pages (vk_lock held until
    vk_uma_mapping_end): with an import over it, its readers run, and every submission made so far is in the driver,
@@ -590,6 +600,21 @@ u32 vk_uma_imports(u64 cpu, u64 size) {
     for (u32 i = 0; i < g_uma.ngone; i++)
         n += g_uma.gone[i].cpu < cpu + size && cpu < g_uma.gone[i].cpu + g_uma.gone[i].size;
     return n;
+}
+/* A draw or dispatch begins, before its setup (vk_frame_check): the uses of what the ones before it looked up are all
+   recorded, in submits up to ended, the one being recorded when they were done (vk_lock held). Only when they
+   submitted is a lookup's own submit not its last reader */
+void vk_uma_settle(u64 ended) {
+    if (!vk_uma()) return;
+    if (ended > g_uma.seg) {
+        for (u32 i = 0; i < g_uma.nimp; i++)
+            if (g_uma.imp[i].sub >= g_uma.seg && g_uma.imp[i].sub < ended) g_uma.imp[i].sub = ended;
+        pm_lock(&g_uma.lk);
+        for (u32 i = 0; i < g_uma.ngone; i++)
+            if (g_uma.gone[i].sub >= g_uma.seg && g_uma.gone[i].sub < ended) g_uma.gone[i].sub = ended;
+        pm_unlock(&g_uma.lk);
+    }
+    g_uma.seg = vk_submit_number();
 }
 /* a save state's load: every import goes */
 void vk_uma_forget_all(void) {

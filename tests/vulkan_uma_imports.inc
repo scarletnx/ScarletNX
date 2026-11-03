@@ -11,6 +11,8 @@
 #define UMA_GW 0x4d4000000ull
 #define UMA_D  (HEAP_BASE + 0x2a00000) /* an import elsewhere */
 #define UMA_GD 0x4d8000000ull
+#define UMA_S  (HEAP_BASE + 0x2c00000) /* looked up before a submission, read after it */
+#define UMA_GS 0x4d9000000ull
 
 static int uma_skip(void) {
     if (vk_uma() && own_traps()) return 0;
@@ -160,5 +162,40 @@ static int check_uma_trap_ranges(void) {
     printf("in place: a publish over two imports takes both and one elsewhere stays, a page trapped again takes the "
            "import made since (%s), and a range unmapped under its import, mapped again and trapped takes each\n",
            inplace ? "in place" : "copied: the driver refused the pool's page");
+    return 0;
+}
+
+/* A lookup whose use is recorded after a submission since the lookup (a draw's setup that waits for a landing, as
+   buffer.c's wait_finish and surface.c's flush_wait do) is read by that later submission: a trap of its pages waits
+   for that one too, and the import goes after it. Also when the next draw has begun by the trap (vk_frame_check) */
+static int check_uma_lookup_then_submit(void) {
+    VkBuffer b, rb;
+    u64 o;
+    if (uma_skip()) return 0;
+    CHECK(mem_map(UMA_S, 0x10000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GS, UMA_S, 0x10000);
+    for (int next_draw = 0; next_draw < 2; next_draw++) {
+        const u64 at = 0x100 + (u64)next_draw * 0x2000; /* a page the first round's trap left alone */
+        memset(GP(UMA_S + at), 0x71 + next_draw, 256);
+        vk_lock();
+        u8* result = vk_readback_buffer(256, &rb);
+        CHECK(result && vk_buf_get_input(UMA_GS + at, 256, 4, &b, &o) && vk_uma_imports(UMA_S, 0x10000) == 1);
+        vk_finish();           /* the landing's wait, between the lookup and its use */
+        uma_read(b, o, rb, 0); /* the use, in the next submission */
+        if (next_draw) vk_frame_check();
+        VkOwnRes* owner = uma_owner(256, 0x73);
+        CHECK(owner);
+        vk_own_publish(UMA_S + at, 256, owner, 0);
+        CHECK(vk_uma_imports(UMA_S, 0x10000) == 0);
+        vk_finish();
+        vk_readback_ready();
+        for (u32 i = 0; i < 256; i++) CHECK(result[i] == 0x71 + next_draw);
+        vk_unlock();
+        CHECK(!uma_landed(UMA_S + at, 256, 0x73));
+        vk_own_res_unref(owner);
+    }
+    CHECK(mem_unmap(UMA_S, 0x10000) == 0);
+    printf("in place: a lookup used after a submission since it keeps its import until that use ran, also once the "
+           "next draw began\n");
     return 0;
 }
