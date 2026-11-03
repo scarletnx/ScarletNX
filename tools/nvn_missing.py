@@ -6,7 +6,6 @@
     tools/nvn_missing.py work/Game [work/Other ...]       # per game: the driver's table against gpu/nvn/nvn.hook
     tools/nvn_missing.py --all work/Game [...]            # also what the hook answers that this driver has not
     tools/nvn_missing.py --markdown work/Game [...]       # one table row per game before the details
-    tools/nvn_missing.py                                  # no game: nvn.h's prototypes against the hook, all versions
 
 The game folder is the extracted dump (exefs/ + romfs/), read through `scarletnx --dump-modules`
 (tools/moduledump.py) as tools/nvn_census.py reads it: the NVN module, its procedure table (the names of its lookup
@@ -18,8 +17,8 @@ The `route` lines name the two resolvers, which gpu/nvn/nvn_direct.c wraps with 
 
 The names left are what a run stops on: "nvn: the game called nvnX, which nvn_direct doesn't implement yet"
 (gpu/nvn/nvn_direct.c), one fatal for the first one the game calls. The runtime also logs each name it resolved but
-doesn't implement, as it resolves it, and nvn_trace=1 lists what a game does resolve and call: this tool says the same
-from the driver alone, before a run, and for the functions the game never gets to.
+doesn't implement, as it resolves it: this tool says the same from the driver alone, before a run, and for the
+functions the game never gets to.
 
 Pure Python, seconds a game. Its output names the game's functions and addresses: it stays on this machine, like the
 rest of a game.
@@ -34,7 +33,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE]
 import moduledump  # noqa: E402
 import nvn_census as nc  # noqa: E402
-import nvn_verify_kinds as nvk  # noqa: E402
 
 HOOK = os.path.join(HERE, '..', 'src', 'nx', 'gpu', 'nvn', 'nvn.hook')
 UNBOUNDED = 0xFFFFFFFF
@@ -211,32 +209,9 @@ def markdown_row(game, d, entries, routed):
         len(missing), ', '.join(missing[:6]) + (' ...' if len(missing) > 6 else ''))
 
 
-def header_report(out):
-    """nvn.h's prototypes against the hook, with no game and so no API version: what no hook names yet"""
-    w = out.write
-    entries, routed = hook_entries()
-    hooked = sorted(set(entries) | set(routed))
-    by_upper = {n.upper(): n for n in hooked}
-    missing = sorted(p for p in nvk.prototypes() if 'NVN' + p not in by_upper)
-    w('== gpu/nvn/nvn.hook against src/nx/gpu/nvn/nvn.h, every API version\n')
-    w('  %d prototypes, %d hooked, %d routed, %d with no hook\n'
-      % (len(nvk.prototypes()), len(entries), len(set(routed)), len(missing)))
-    w('  nvn.h spells each function PFNNVN<Name>PROC, so a name with no hook prints as the header spells it\n')
-    for key in missing:
-        w('    %s\n' % by_upper.get('NVN' + key, 'nvn' + key))
-    undeclared = sorted(n for n in hooked if n.upper()[3:] not in nvk.prototypes())
-    if undeclared:
-        w('  hooked, no prototype in nvn.h: %d\n' % len(undeclared))
-        for n in undeclared:
-            w('    %s\n' % n)
-    versioned = sorted(n for n, v in entries.items() if any(k for k, _, _ in v if k))
-    if versioned:
-        w('  hooked for some API versions only: %d\n' % len(versioned))
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('games', nargs='*')
+    ap.add_argument('games', nargs='+')
     ap.add_argument('--all', action='store_true', help='also list what the hook answers that the driver has not')
     ap.add_argument('--names', action='store_true', help='name them too (with --all)')
     ap.add_argument('--markdown', action='store_true', help='one table row per game before the details')
@@ -245,9 +220,6 @@ def main():
         entries, routed = hook_entries()
     except (Fail, OSError) as e:
         raise SystemExit(str(e))
-    if not args.games:
-        header_report(sys.stdout)
-        return 0
     facts = []
     for game in args.games:
         try:
