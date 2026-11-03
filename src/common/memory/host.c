@@ -142,6 +142,8 @@ bool snx_host_memory_new(SnxHostMemory* m, uint64_t size) {
     /* the system call itself: Android's C library has memfd_create only from Android 11 (API 30), as code_loader.c
        says */
     fd = (int)syscall(SYS_memfd_create, "snx-host", 1u /* MFD_CLOEXEC */);
+#elif defined(__NetBSD__)
+    fd = memfd_create("snx-host", MFD_CLOEXEC); /* NetBSD 11's, in libc: shm_open is librt's */
 #else
     char name[64]; /* macOS takes 31 characters at most */
     snprintf(name, sizeof name, "/snx-%ld-%p", (long)getpid(), (void*)m);
