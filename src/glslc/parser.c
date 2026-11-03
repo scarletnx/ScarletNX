@@ -1984,6 +1984,10 @@ static uint32_t declare_variable(Glslc* g, const Qual* q, uint32_t type, uint32_
     } else if (storage == GLSLC_ST_CONST) {
         glslc_fail(g, site(g, name_tok), "the constant %.*s needs an initializer", TOKV(g, name_tok));
     }
+    if (storage == GLSLC_ST_UNIFORM && ty(g, type)->kind == GLSLC_T_ARRAY &&
+        ty(g, ty(g, type)->elem)->kind == GLSLC_T_ARRAY && has_opaque(g, type))
+        glslc_fail(g, site(g, name_tok), "%.*s is %s: a Vulkan descriptor's array has one dimension", TOKV(g, name_tok),
+                   name);
     if (global) {
         switch (storage) {
             case GLSLC_ST_IN:
@@ -2611,6 +2615,8 @@ static void parse_block(Glslc* g, const Qual* q) {
                        "an array of in or out blocks has one dimension, and its members take no location of their own");
         if (ty(g, full)->kind == GLSLC_T_ARRAY && ty(g, full)->len == 0)
             glslc_fail(g, site(g, inst), "an array of blocks needs a size");
+        if (ty(g, full)->kind == GLSLC_T_ARRAY && ty(g, ty(g, full)->elem)->kind == GLSLC_T_ARRAY)
+            glslc_fail(g, site(g, inst), "an array of blocks has one dimension in GLSL ES");
         s = declare(g, tk(g, inst)->text, site(g, inst), GLSLC_SK_VAR);
         g->syms[s].type = (uint16_t)full;
     } else {
