@@ -13,8 +13,12 @@
 #include <sched.h>
 #include <stdarg.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
 
 #ifndef MAP_NORESERVE
 #define MAP_NORESERVE 0 /* FreeBSD never reserves swap for a mapping */
@@ -547,6 +551,12 @@ static void test_moved(void) {
     fflush(stdout);
     child = fork();
     if (!child) {
+        /* no core of the abort it waits for: the child holds the 48 GiB reservation, which a core_pattern pipe
+           (systemd-coredump, apport) reads for minutes, as it cannot skip the holes a file seeks over; the limit for a
+           file, not dumpable for a pipe. The alarm ends a child that hangs anyway, which the WTERMSIG check names */
+        struct rlimit none = {0, 0};
+        if (setrlimit(RLIMIT_CORE, &none) != 0 || prctl(PR_SET_DUMPABLE, 0) != 0) _exit(2);
+        alarm(10);
         fclose(stderr); /* fatal's message is the parent's to check, not the log's */
         mem_layout36();
         _exit(0);
