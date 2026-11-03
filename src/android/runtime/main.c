@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "android/bridge/bridge.h"
+#include "android/bridge/hle_proc.h"
 #include "android/bridge/hle_vulkan.h"
 #include "android/bridge/linker.h"
 #include "android/bridge/hle_signal.h"
@@ -254,6 +255,7 @@ static int run_apk(const char* argv0, const char* apk, const char* framework, ch
         fprintf(stderr, "scarletnx-android: %s\n", error);
         return 1;
     }
+    hle_proc_set_app(install.package);
     hle_android_set_assets(android_app_assets());
     hle_vulkan_set_host(android_render_host());
     if (!android_app_open(&install, error, sizeof error)) {
