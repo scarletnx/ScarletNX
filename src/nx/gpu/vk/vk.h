@@ -968,6 +968,7 @@ int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off
    range) its entry. For a caller with several ranges to look up, so their misses overlap */
 void vk_buf_prefetch(u64 gva, u64 len, int step);
 void vk_buf_mapping_changed(void); /* the GPU mappings or the guest memory under them changed: translations go */
+int vk_buf_get_uniform(u64 gva, u64 len, VkBuffer* buf, u64* off); /* a constant buffer: in place where it can be */
 int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off); /* no delayed content checks */
 /* a copy engine's source (DMA, 2D): as strict, and compared by contents rather than trusted to the write tracking,
    since what a copy lands in keeps a stale byte for good */

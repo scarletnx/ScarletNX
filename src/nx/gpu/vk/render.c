@@ -1291,7 +1291,7 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
         *off = e->off;
         return 1;
     }
-    if (!(a ? vk_buf_get_strict(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off))) return 0;
+    if (!(a ? vk_buf_get_uniform(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off))) return 0;
     if (pending) {
         e->a = 0;
         return 1;

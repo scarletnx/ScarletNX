@@ -14,9 +14,10 @@
    heap cost 45 ms a frame there. Imports do not overlap. A range across two imports makes one import of their union.
 
    What stays a copy, and why:
-   - Constant buffers. The GPU front end writes them between draws (CONST_BUFFER_DATA, r3d_const_upload), on the CPU,
-     when the GPU thread meets the method. A draw recorded before that write, but that the GPU runs after it, would read
-     the new bytes in place.
+   - The pages the runtime wrote (front): constant buffers the GPU front end writes between draws (CONST_BUFFER_DATA,
+     r3d_const_upload), on the CPU, when the GPU thread meets the method, and the rest of gmem_write's. A draw recorded
+     before such a write, but that the GPU runs after it, would read the new bytes in place. The other constant buffers
+     are read in place (vk_buf_get_uniform).
    - Ranges that GPU results not landed yet cover (buffer.c's pending results, compute results) and GPU-owned ranges
      (memory/own.c): their bytes are not in guest memory.
    - Writable storage: its results land through the pending results.

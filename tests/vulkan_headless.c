@@ -2713,8 +2713,9 @@ int main(int argc, char** argv) {
         const char* name = getenv("SNX_TEST_UMA_ONLY");
         int ran = 0;
         if (!strcmp(name, "runtime_write") && ++ran) CHECK(!check_uma_runtime_write());
+        if (!strcmp(name, "constants") && ++ran) CHECK(!check_uma_constants());
         if (!ran) {
-            fprintf(stderr, "SNX_TEST_UMA_ONLY=%s names no check: 1 or runtime_write\n", name);
+            fprintf(stderr, "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write or constants\n", name);
             return 2;
         }
         vk_pipeline_quiesce();
@@ -2726,6 +2727,7 @@ int main(int argc, char** argv) {
         CHECK(!check_uma_trap_ranges());
         CHECK(!check_uma_lookup_then_submit());
         CHECK(!check_uma_runtime_write());
+        CHECK(!check_uma_constants());
         CHECK(!check_uma_page_changes());
         CHECK(!check_uma());
         vk_pipeline_quiesce();
@@ -2796,6 +2798,7 @@ int main(int argc, char** argv) {
     CHECK(!check_uma_trap_ranges());
     CHECK(!check_uma_lookup_then_submit());
     CHECK(!check_uma_runtime_write());
+    CHECK(!check_uma_constants());
     CHECK(!check_uma_page_changes());
     CHECK(!check_rt_overlap());
     CHECK(!check_uma());
