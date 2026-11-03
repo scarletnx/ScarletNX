@@ -132,7 +132,11 @@ the layouts agree. The adapters change only:
 - on a big-endian host, every structure, swapped field by field (the registry gives each member's type).
 
 The game's window is the SDL window: while the guest owns a swapchain on it, ScarletNX's own renderer
-([HWUI](HWUI.md)) stops presenting.
+([HWUI](HWUI.md)) stops presenting. It draws its frames into a layer instead, which each of the guest's presents
+blends over its image, as Android's compositor puts an app's windows over its `SurfaceView`
+([HWUI](HWUI.md#over-an-apps-own-vulkan)). The guest's device gets the layer's import extension
+(`VK_KHR_external_memory_fd`, or `VK_KHR_external_memory_win32` on Windows) and its swapchain images
+`COLOR_ATTACHMENT` usage for that.
 
 The device that the guest sees is a Mali-G710 (ARM's vendor and driver IDs), with the host's limits and features. An
 engine can allow Vulkan only on the GPUs of its own list: one game's list holds recent Adreno, Xclipse and Mali GPUs
@@ -240,7 +244,7 @@ The recompiler's `android` target (`a64.profile`) is a phone's Armv8.2 CPU witho
   `VK_KHR_android_surface` becomes SDL's surface extensions or `VK_EXT_headless_surface`, the surface is the SDL
   window's (ScarletNX's renderer gives the window up), the guest's allocation callbacks and debug messengers are left
   out, and the device reports itself a **Mali-G710** with ARM's vendor and driver IDs, its limits and features the
-  host's. A surface's current extent is the native window's size, as an Android surface's always is (a Wayland or
+  host's. A present blends the windows of the app's Java side over the image when one shows (HWUI's layer). A surface's current extent is the native window's size, as an Android surface's always is (a Wayland or
   headless surface leaves it to the swapchain). A Unity game's engine reaches it, makes its swapchain on the window
   and presents its first frames (lavapipe here),
 - EGL gives the GPU's identity alone: a display, contexts without a config or a surface, and `glGetString` with the

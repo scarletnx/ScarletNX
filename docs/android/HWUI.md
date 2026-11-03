@@ -12,6 +12,7 @@ a byte format (`snx.android.hwui.DisplayList`), and `src/android/hwui/render.c` 
 * [The format](#the-format)
 * [The renderer](#the-renderer)
 * [Bitmaps](#bitmaps)
+* [Over an app's own Vulkan](#over-an-apps-own-vulkan)
 * [What is missing](#what-is-missing)
 
 ## Recording
@@ -81,8 +82,9 @@ shape into triangles in device pixels (`path.c`):
 - Curves are flattened with Wang's formula to a quarter of a device pixel. Glyph outlines come from HarfBuzz
   (`hb_font_draw_glyph`) once for each glyph, and are kept in font units.
 
-The GPU draws with 4x MSAA where the device has it, and resolves to the window's swapchain image. Without a display
-(`DISPLAY` and `WAYLAND_DISPLAY` unset), it draws into an image of its own. `--shot=FILE.ppm` saves frame
+The GPU draws with 4x MSAA where the device has it, and resolves to the window's swapchain image, or to the layer
+over an app's own Vulkan frames ([below](#over-an-apps-own-vulkan)). Without a display (`DISPLAY` and
+`WAYLAND_DISPLAY` unset), it draws into an image of its own. `--shot=FILE.ppm` saves frame
 `--shot-frame` (60 when not given). This is the one readback, for tests.
 
 ## Bitmaps
@@ -105,6 +107,39 @@ A `Bitmap` is a GPU image, as a hardware bitmap is on Android. The CPU never dra
 
 `getPixel` and the other reads see only the pixels the app set, not what a canvas drew: a readback is the last
 resort, for an app that reads them.
+
+## Over an app's own Vulkan
+
+A game draws into its `SurfaceView`'s surface with its own device and swapchain on the window (the Vulkan
+pass-through, [NATIVE](NATIVE.md)). On Android, the surface is below the app's window: the `SurfaceView` clears its
+area of the window to transparent, and the compositor shows the window's views and dialogs over the game. The
+same happens here:
+
+- `SurfaceView` draws its area with `drawColor(0, CLEAR)`. Each frame is every window's last recording, the first
+  one attached at the bottom (`snx.android.ui.Host`), so that a dialog shows over the activity.
+- When the game makes its surface, the renderer gives the window up (`render_yield`). It then draws its frames into
+  a ring of three layer images, cleared to transparent, with the same pipelines.
+- The layer images are exportable (`VK_KHR_external_memory_fd` with an opaque fd on Linux and FreeBSD, an opaque
+  Win32 handle on Windows), with a dedicated allocation. The game's device imports each one (`hle_vulkan.c`) when its
+  physical device's `deviceUUID` and `driverUUID` are the renderer's. macOS has no such handle here (MoltenVK), so
+  there is no layer.
+- At each present of the game, when the layer has visible content, a submission on the presenting queue waits for
+  the present's semaphores. It blends the layer over the swapchain image (a triangle that covers it, premultiplied
+  alpha, `LOAD_OP_LOAD`), and signals a semaphore of its own, which the present waits for. `--shot` copies the image
+  after the blend: from then on the shots are of the game's presents, and the renderer saves none of its own.
+- Nothing is added to a present when no window shows over the game. The renderer finds that on the CPU: each draw
+  that colors the layer adds its bounds, and a transparent rectangle that replaces the layer (the `SurfaceView`'s
+  hole) takes away the bounds inside it. What it cannot follow counts as visible.
+
+The two devices share no semaphore. The renderer's thread draws into an image that is not the one shown and that no
+blend still reads (the game's side tells it, from the fences of its blends). It releases the image to
+`VK_QUEUE_FAMILY_EXTERNAL` in layout `GENERAL`, then submits a fence on its queue after the frame. A present
+blends the newest image whose fence is signaled, and the older one until then. So a present never waits for the
+renderer, and the renderer waits for the game only when the game's blends still read every other image.
+
+The blend is in the encoding of the swapchain: a UNORM swapchain blends the layer's bytes as they are. An sRGB
+swapchain reads the layer through an sRGB view, so that its edges of partial alpha are a little different from
+Android's.
 
 ## What is missing
 

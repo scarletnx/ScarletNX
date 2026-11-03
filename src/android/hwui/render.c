@@ -4,7 +4,11 @@
    or into an image of its own without one. The CPU reads the list, keeps the transform and clip stack, and makes
    each shape into triangles in device pixels (path.c). The GPU rasterizes them with 4x MSAA. A convex shape is a fan
    drawn directly. A path, a stroke and glyphs are drawn by stencil then cover: their triangles count the winding
-   in the stencil, then a rectangle over their bounds draws where it is not zero and clears it again */
+   in the stencil, then a rectangle over their bounds draws where it is not zero and clears it again.
+
+   Once an app's own Vulkan takes the window (render_yield), the frames go into the layer instead: a ring of images,
+   cleared to transparent, that the app's device imports and blends over each of its presents (hle_vulkan.c,
+   docs/android/HWUI.md "Over an app's own Vulkan") */
 #include "android/hwui/render.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_vulkan.h"
@@ -20,6 +24,11 @@
 #include "common/utilities/endian.h"
 #include <SDL3/SDL.h>
 #include <math.h>
+#include <pthread.h>
+#if defined(_WIN32)
+#include <windows.h>
+#include <vulkan/vulkan_win32.h>
+#endif
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -124,13 +133,28 @@ static struct {
     VkFormat color_format, stencil_format;
     VkSampleCountFlagBits samples;
     bool up;
-    bool yielded; /* the guest's Vulkan owns the window: this renderer draws nothing more */
+    bool yielded; /* the guest's Vulkan owns the window: the frames go into the layer */
 
     /* the targets: the multisampled color and stencil, and the image a frame goes to without a window */
     VkExtent2D extent;
     VkImage msaa, stencil, offscreen;
     VkDeviceMemory msaa_memory, stencil_memory, offscreen_memory;
     VkImageView msaa_view, stencil_view, offscreen_view;
+
+    /* the layer, after the window is given up (hle_vulkan.h's HleLayer): images the guest's device imports. The
+       shown and pending ones are 1 more than their index, 0 for none. layer_lock orders them, the generations, the
+       memory and the fences against the presenting thread (render_layer, render_layer_handle) */
+    bool exportable; /* the device exports HLE_LAYER_MEMORY images */
+    uint8_t device_uuid[16], driver_uuid[16];
+    VkImage layers[HLE_LAYER_IMAGES];
+    VkDeviceMemory layer_memory[HLE_LAYER_IMAGES];
+    VkImageView layer_views[HLE_LAYER_IMAGES];
+    VkDeviceSize layer_size[HLE_LAYER_IMAGES];
+    VkExtent2D layer_extent;
+    uint64_t layer_generation[HLE_LAYER_IMAGES];
+    VkFence layer_fences[HLE_LAYER_IMAGES]; /* signaled when the image's drawing is done */
+    bool layer_fenced[HLE_LAYER_IMAGES];    /* its fence submitted, and not reset since */
+    int layer_shown, layer_pending;         /* the image the presents blend, and the one drawn after it */
 
     VkPipelineLayout layout;
     VkDescriptorSetLayout set_layout;
@@ -179,6 +203,12 @@ static struct {
     long frames;
     bool warned_shader;
 } r;
+
+/* the locks the presenting thread shares with this renderer's: the layer's state (r.layer_*), and a frame against the
+   window given up (render, render_yield). The frame's is taken first */
+static struct {
+    pthread_mutex_t layer, frame;
+} locks = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER};
 
 /* ---- the frame's vertices and draws ---- */
 
@@ -997,16 +1027,19 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &v13};
     vkGetPhysicalDeviceFeatures2(phys, &features);
     if (!v13.dynamicRendering || !v13.synchronization2) return false;
-    const char* extensions[1];
+    SnxVkExtensions list;
+    if (!snx_vk_device_extensions(phys, &list)) return false;
+    bool swapchain = snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    /* the layer's images, for an app's own Vulkan (hle_vulkan.h) */
+    bool exportable = HLE_LAYER_MEMORY && snx_vk_extensions_has(&list, HLE_LAYER_EXTENSION);
+    snx_vk_extensions_free(&list);
+    const char* extensions[2];
     uint32_t n = 0;
     if (r.host.surface) {
-        SnxVkExtensions list;
-        if (!snx_vk_device_extensions(phys, &list)) return false;
-        bool ok = snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-        snx_vk_extensions_free(&list);
-        if (!ok) return false;
+        if (!swapchain) return false;
         extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     }
+    if (exportable) extensions[n++] = HLE_LAYER_EXTENSION;
     VkPhysicalDeviceVulkan13Features want13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
                                                .dynamicRendering = VK_TRUE,
                                                .synchronization2 = VK_TRUE};
@@ -1014,6 +1047,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     if (snx_vk_device_create(phys, family, &want, extensions, n, &r.device) != VK_SUCCESS) return false;
     r.phys = phys;
     r.family = family;
+    r.exportable = exportable;
     return true;
 }
 
@@ -1054,7 +1088,74 @@ static void free_image(VkImage* image, VkDeviceMemory* memory, VkImageView* view
     *memory = VK_NULL_HANDLE;
 }
 
+/* The layer's images at the extent, exportable as HLE_LAYER_MEMORY with the parameters hle_vulkan.h gives, each of a
+   new generation. False when one can't be made: the frames then have no layer */
+static bool make_layers(VkExtent2D extent) {
+    static uint64_t generations;
+    bool ok = r.exportable;
+    pthread_mutex_lock(&locks.layer);
+    r.layer_shown = r.layer_pending = 0;
+    r.layer_extent = extent;
+    for (unsigned i = 0; i < HLE_LAYER_IMAGES && ok; ++i) {
+        VkExternalMemoryImageCreateInfo external = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+                                                    .handleTypes = HLE_LAYER_MEMORY};
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .pNext = &external,
+                                .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
+                                .imageType = VK_IMAGE_TYPE_2D,
+                                .format = r.color_format,
+                                .extent = {extent.width, extent.height, 1},
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+        ok = vkCreateImage(r.device, &ii, NULL, &r.layers[i]) == VK_SUCCESS;
+        if (!ok) break;
+        VkMemoryRequirements req;
+        vkGetImageMemoryRequirements(r.device, r.layers[i], &req);
+        uint32_t type = snx_vk_memory_type(&r.memory, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VkMemoryDedicatedAllocateInfo dedicated = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+                                                   .image = r.layers[i]};
+        VkExportMemoryAllocateInfo export = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                             .pNext = &dedicated,
+                                             .handleTypes = HLE_LAYER_MEMORY};
+        VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                   .pNext = &export,
+                                   .allocationSize = req.size,
+                                   .memoryTypeIndex = type};
+        ok = type != UINT32_MAX && vkAllocateMemory(r.device, &ai, NULL, &r.layer_memory[i]) == VK_SUCCESS &&
+             vkBindImageMemory(r.device, r.layers[i], r.layer_memory[i], 0) == VK_SUCCESS;
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                    .image = r.layers[i],
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                    .format = r.color_format,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        ok = ok && vkCreateImageView(r.device, &vi, NULL, &r.layer_views[i]) == VK_SUCCESS;
+        r.layer_size[i] = req.size;
+        r.layer_generation[i] = ++generations;
+    }
+    for (unsigned i = 0; i < HLE_LAYER_IMAGES && !ok; ++i) {
+        free_image(&r.layers[i], &r.layer_memory[i], &r.layer_views[i]);
+        r.layer_generation[i] = 0;
+    }
+    pthread_mutex_unlock(&locks.layer);
+    return ok;
+}
+static void free_layers(void) {
+    pthread_mutex_lock(&locks.layer);
+    r.layer_shown = r.layer_pending = 0;
+    for (unsigned i = 0; i < HLE_LAYER_IMAGES; ++i) {
+        free_image(&r.layers[i], &r.layer_memory[i], &r.layer_views[i]);
+        r.layer_generation[i] = 0;
+    }
+    pthread_mutex_unlock(&locks.layer);
+}
+
 static void free_targets(void) {
+    free_layers();
     free_image(&r.msaa, &r.msaa_memory, &r.msaa_view);
     free_image(&r.stencil, &r.stencil_memory, &r.stencil_view);
     free_image(&r.offscreen, &r.offscreen_memory, &r.offscreen_view);
@@ -1067,7 +1168,9 @@ static bool make_targets(VkExtent2D extent) {
     vkDeviceWaitIdle(r.device);
     free_targets();
     r.extent = extent;
-    if (r.host.surface) {
+    if (r.yielded) {
+        if (!make_layers(extent)) fprintf(stderr, "scarletnx-android: no layer over the app's Vulkan frames\n");
+    } else if (r.host.surface) {
         static const VkFormat formats[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
         SnxVkSwapchainInfo info = {.surface = r.host.surface,
                                    .formats = formats,
@@ -1256,8 +1359,12 @@ static bool start(int width, int height, const char* title) {
     volkLoadDevice(r.device);
     vkGetDeviceQueue(r.device, r.family, 0, &r.queue);
     vkGetPhysicalDeviceMemoryProperties(r.phys, &r.memory);
-    VkPhysicalDeviceProperties properties;
-    vkGetPhysicalDeviceProperties(r.phys, &properties);
+    VkPhysicalDeviceIDProperties id = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+    VkPhysicalDeviceProperties2 properties2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &id};
+    vkGetPhysicalDeviceProperties2(r.phys, &properties2);
+    VkPhysicalDeviceProperties properties = properties2.properties;
+    memcpy(r.device_uuid, id.deviceUUID, sizeof r.device_uuid);
+    memcpy(r.driver_uuid, id.driverUUID, sizeof r.driver_uuid);
     /* 4x MSAA where the color and stencil targets take it */
     VkSampleCountFlags counts = properties.limits.framebufferColorSampleCounts &
                                 properties.limits.framebufferStencilSampleCounts;
@@ -1274,6 +1381,24 @@ static bool start(int width, int height, const char* title) {
         VkSurfaceFormatKHR f;
         snx_vk_surface_format(r.phys, r.host.surface, formats, 2, &f);
         r.color_format = f.format;
+    }
+    /* the layer's images: exportable, with the parameters make_layers gives them */
+    if (r.exportable) {
+        VkPhysicalDeviceExternalImageFormatInfo external = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO, .handleType = HLE_LAYER_MEMORY};
+        VkPhysicalDeviceImageFormatInfo2 fi = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+                                               .pNext = &external,
+                                               .format = r.color_format,
+                                               .type = VK_IMAGE_TYPE_2D,
+                                               .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                               .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                               .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT};
+        VkExternalImageFormatProperties ep = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
+        VkImageFormatProperties2 fp = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, .pNext = &ep};
+        r.exportable = vkGetPhysicalDeviceImageFormatProperties2(r.phys, &fi, &fp) == VK_SUCCESS &&
+                       (ep.externalMemoryProperties.externalMemoryFeatures &
+                        VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT);
     }
     VkSamplerCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                                .magFilter = VK_FILTER_LINEAR,
@@ -1306,6 +1431,9 @@ static bool start(int width, int height, const char* title) {
         ok = vkCreateSemaphore(r.device, &si, NULL, &r.acquired[i]) == VK_SUCCESS;
     for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES && ok; ++i)
         ok = vkCreateSemaphore(r.device, &si, NULL, &r.rendered[i]) == VK_SUCCESS;
+    VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    for (unsigned i = 0; i < HLE_LAYER_IMAGES && ok; ++i)
+        ok = vkCreateFence(r.device, &fci, NULL, &r.layer_fences[i]) == VK_SUCCESS;
     ok = ok && make_pipelines() && make_targets((VkExtent2D){(uint32_t)width, (uint32_t)height});
     if (!ok) {
         fprintf(stderr, "scarletnx-android: the renderer's Vulkan objects can't be made\n");
@@ -1632,12 +1760,167 @@ static void draw_bitmap_pass(VkCommandBuffer cb, const Pass* p) {
 }
 
 /* the frame's passes and draws recorded and submitted, and presented to the window */
-static void render(void) {
-    if (r.yielded) return;
+/* ---- the layer over an app's own Vulkan ---- */
+
+/* Whether the frame's draws leave anything visible in the layer, without reading it back: each draw that colors the
+   target adds its bounds (in its scissor), and a transparent rectangle that replaces the target (a SurfaceView's
+   hole, PIPE_COPY) takes away the bounds inside it. Conservative: what it can't follow counts as visible */
+static bool frame_visible(void) {
+    enum { MAX = 64 };
+    float boxes[MAX][4];
+    unsigned n = 0;
+    for (size_t d = r.frame_first; d < r.draw_count; ++d) {
+        const Draw* dr = &r.draws[d];
+        if (dr->pipe == PIPE_WINDING || dr->pipe == PIPE_EVEN_ODD || dr->pipe == PIPE_SET || !dr->count) continue;
+        const Vertex* v = r.verts + dr->first;
+        float box[4] = {v[0].x, v[0].y, v[0].x, v[0].y};
+        bool clear = dr->pipe == PIPE_COPY || dr->pipe == PIPE_COVER_COPY;
+        for (uint32_t i = 0; i < dr->count; ++i) {
+            box[0] = fminf(box[0], v[i].x), box[1] = fminf(box[1], v[i].y);
+            box[2] = fmaxf(box[2], v[i].x), box[3] = fmaxf(box[3], v[i].y);
+            clear = clear && !(v[i].rgba[0] | v[i].rgba[1] | v[i].rgba[2] | v[i].rgba[3]);
+        }
+        /* a rectangle: each vertex at a corner of the bounds (a fan of 4 corners, 6 vertices) */
+        bool rect = dr->count == 6;
+        for (uint32_t i = 0; i < dr->count && rect; ++i)
+            rect = (v[i].x == box[0] || v[i].x == box[2]) && (v[i].y == box[1] || v[i].y == box[3]);
+        const VkRect2D* sc = &dr->scissor;
+        box[0] = fmaxf(box[0], (float)sc->offset.x), box[1] = fmaxf(box[1], (float)sc->offset.y);
+        box[2] = fminf(box[2], (float)sc->offset.x + (float)sc->extent.width);
+        box[3] = fminf(box[3], (float)sc->offset.y + (float)sc->extent.height);
+        if (box[0] >= box[2] || box[1] >= box[3]) continue;
+        if (clear) {
+            /* a transparent copy under the stencil (PIPE_COVER_COPY) or of another shape takes pixels away, and
+               adds none */
+            if (dr->pipe != PIPE_COPY || !rect) continue;
+            unsigned kept = 0;
+            for (unsigned k = 0; k < n; ++k)
+                if (!(boxes[k][0] >= box[0] && boxes[k][1] >= box[1] && boxes[k][2] <= box[2] &&
+                      boxes[k][3] <= box[3]))
+                    memcpy(boxes[kept++], boxes[k], sizeof boxes[k]);
+            n = kept;
+            continue;
+        }
+        if (n == MAX) return true;
+        memcpy(boxes[n++], box, sizeof box);
+    }
+    return n > 0;
+}
+
+/* The layer image for a frame, which no blend of the app's presents reads: not the shown one, and none that a blend
+   still reads (hle_vulkan_layer_reading). The pending one is dropped first, as this frame replaces it, so that no
+   blend begins to read an image this frame can take. Waits for the app's blends a short time at most: -1 when all
+   are still read */
+static int layer_target(void) {
+    pthread_mutex_lock(&locks.layer);
+    r.layer_pending = 0;
+    int shown = r.layer_shown;
+    pthread_mutex_unlock(&locks.layer);
+    for (unsigned tries = 0; tries < 200; ++tries) {
+        for (int i = 0; i < HLE_LAYER_IMAGES; ++i) {
+            if (i + 1 == shown || hle_vulkan_layer_reading((unsigned)i)) continue;
+            /* this renderer's own last drawing into it done, so that its fence can be reset */
+            if (r.layer_fenced[i]) {
+                vkWaitForFences(r.device, 1, &r.layer_fences[i], VK_TRUE, UINT64_MAX);
+                pthread_mutex_lock(&locks.layer);
+                vkResetFences(r.device, 1, &r.layer_fences[i]);
+                r.layer_fenced[i] = false;
+                pthread_mutex_unlock(&locks.layer);
+            }
+            return i;
+        }
+        SDL_Delay(1);
+    }
+    static bool said;
+    if (!said) fprintf(stderr, "scarletnx-android: the app's presents still read each layer image: a frame left out\n");
+    said = true;
+    return -1;
+}
+
+/* The frame drawn into layer image i given to the app's device: released to the external queue family in layout
+   GENERAL, submitted, then a fence after it. The presents blend the image once that fence is signaled */
+static void layer_publish(VkCommandBuffer cb, int i) {
+    VkImageMemoryBarrier2 release = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                     .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                     .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                     .dstStageMask = VK_PIPELINE_STAGE_2_NONE,
+                                     .dstAccessMask = 0,
+                                     .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                     .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                     .srcQueueFamilyIndex = r.family,
+                                     .dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL,
+                                     .image = r.layers[i],
+                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                          .imageMemoryBarrierCount = 1,
+                          .pImageMemoryBarriers = &release};
+    vkCmdPipelineBarrier2(cb, &d);
+    snx_vk_ring_submit(&r.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    pthread_mutex_lock(&locks.layer);
+    /* a submission of no batches: its fence is signaled when all the queue's work before it is done */
+    if (vkQueueSubmit(r.queue, 0, NULL, r.layer_fences[i]) == VK_SUCCESS) {
+        r.layer_fenced[i] = true;
+        r.layer_pending = i + 1;
+    }
+    pthread_mutex_unlock(&locks.layer);
+}
+
+/* hle_vulkan.h's layer, on the presenting thread: the pending image shown once its drawing is done, and the shown one */
+static bool render_layer(HleLayer* out) {
+    pthread_mutex_lock(&locks.layer);
+    if (r.layer_pending && vkGetFenceStatus(r.device, r.layer_fences[r.layer_pending - 1]) == VK_SUCCESS) {
+        r.layer_shown = r.layer_pending;
+        r.layer_pending = 0;
+    }
+    int shown = r.layer_shown;
+    if (shown) {
+        unsigned i = (unsigned)shown - 1;
+        *out = (HleLayer){.index = i,
+                          .generation = r.layer_generation[i],
+                          .width = r.layer_extent.width,
+                          .height = r.layer_extent.height,
+                          .format = (int32_t)r.color_format,
+                          .size = r.layer_size[i]};
+        memcpy(out->device_uuid, r.device_uuid, sizeof out->device_uuid);
+        memcpy(out->driver_uuid, r.driver_uuid, sizeof out->driver_uuid);
+    }
+    pthread_mutex_unlock(&locks.layer);
+    return shown != 0;
+}
+
+/* hle_vulkan.h's layer_handle: a new handle of image index's memory, while it is of that generation */
+static intptr_t render_layer_handle(unsigned index, uint64_t generation) {
+    intptr_t handle = -1;
+    pthread_mutex_lock(&locks.layer);
+    if (index < HLE_LAYER_IMAGES && r.layer_memory[index] && r.layer_generation[index] == generation) {
+#if defined(_WIN32)
+        PFN_vkGetMemoryWin32HandleKHR get =
+            (PFN_vkGetMemoryWin32HandleKHR)vkGetDeviceProcAddr(r.device, "vkGetMemoryWin32HandleKHR");
+        VkMemoryGetWin32HandleInfoKHR info = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR,
+                                              .memory = r.layer_memory[index],
+                                              .handleType = HLE_LAYER_MEMORY};
+        HANDLE h = NULL;
+        if (get && get(r.device, &info, &h) == VK_SUCCESS) handle = (intptr_t)h;
+#elif !defined(__APPLE__)
+        PFN_vkGetMemoryFdKHR get = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(r.device, "vkGetMemoryFdKHR");
+        VkMemoryGetFdInfoKHR info = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+                                     .memory = r.layer_memory[index],
+                                     .handleType = HLE_LAYER_MEMORY};
+        int fd = -1;
+        if (get && get(r.device, &info, &fd) == VK_SUCCESS) handle = fd;
+#endif
+    }
+    pthread_mutex_unlock(&locks.layer);
+    return handle;
+}
+
+static void render_frame(void) {
     VkExtent2D want = snx_vk_window_extent(&r.host, (VkExtent2D){(uint32_t)r.width, (uint32_t)r.height});
-    if (want.width != r.extent.width || want.height != r.extent.height || (r.host.surface && !r.swap.swapchain))
+    if (want.width != r.extent.width || want.height != r.extent.height ||
+        (r.host.surface && !r.yielded && !r.swap.swapchain))
         if (!make_targets(want)) return;
     if (!r.extent.width || !r.extent.height) return;
+    if (r.yielded && !r.layers[0]) return; /* no layer: nothing of this renderer shows */
     VkCommandBuffer cb = snx_vk_ring_commands(&r.ring);
     unsigned slot = r.ring.slot;
     size_t bytes = r.vert_count * sizeof *r.verts;
@@ -1689,7 +1972,25 @@ static void render(void) {
     VkImage target = r.offscreen;
     VkImageView target_view = r.offscreen_view;
     VkSemaphore acquired = VK_NULL_HANDLE, rendered = VK_NULL_HANDLE;
-    if (r.host.surface) {
+    int layer = -1;
+    if (r.yielded) {
+        /* the layer: nothing to blend when no window shows over the app's surface (the presents are the app's own
+           from now on), else an image no blend reads */
+        bool visible = frame_visible();
+        if (!visible) {
+            pthread_mutex_lock(&locks.layer);
+            r.layer_shown = r.layer_pending = 0;
+            pthread_mutex_unlock(&locks.layer);
+        }
+        layer = visible ? layer_target() : -1;
+        if (layer < 0) {
+            snx_vk_ring_submit(&r.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            ++r.frames;
+            return;
+        }
+        target = r.layers[layer];
+        target_view = r.layer_views[layer];
+    } else if (r.host.surface) {
         acquired = r.acquired[slot];
         VkResult res = vkAcquireNextImageKHR(r.device, r.swap.swapchain, UINT64_MAX, acquired, VK_NULL_HANDLE,
                                              &image_index);
@@ -1721,7 +2022,7 @@ static void render(void) {
                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                                        .storeOp = r.msaa ? VK_ATTACHMENT_STORE_OP_DONT_CARE
                                                          : VK_ATTACHMENT_STORE_OP_STORE,
-                                       .clearValue = {.color = {{0, 0, 0, 1}}}};
+                                       .clearValue = {.color = {{0, 0, 0, r.yielded ? 0.0f : 1.0f}}}};
     VkRenderingAttachmentInfo stencil = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                          .imageView = r.stencil_view,
                                          .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
@@ -1739,6 +2040,10 @@ static void render(void) {
     draw_range(cb, r.frame_first, r.draw_count - r.frame_first, r.extent);
     vkCmdEndRendering(cb);
     ++r.frames;
+    if (layer >= 0) {
+        layer_publish(cb, layer);
+        return;
+    }
     bool shot = false;
     for (unsigned i = 0; i < r.shot_count; ++i) shot |= r.frames == r.shot_frames[i];
     if (shot || !r.host.surface) {
@@ -1769,6 +2074,13 @@ static void render(void) {
     } else if (!shot) {
         snx_vk_ring_submit(&r.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
     }
+}
+
+/* a frame, against the window given up meanwhile (render_yield, on the presenting thread) */
+static void render(void) {
+    pthread_mutex_lock(&locks.frame);
+    render_frame();
+    pthread_mutex_unlock(&locks.frame);
 }
 
 /* ---- the natives of snx.android.ui.Window ---- */
@@ -2011,16 +2323,23 @@ static void* render_window(void) {
     }
     return r.host.window;
 }
-/* the window given up: a window has one swapchain at a time, and the guest's takes it */
+/* The window given up, on the guest's thread: a window has one swapchain at a time, and the guest's takes it. The
+   frames from then on go into the layer, which the guest's presents blend (make_targets makes it at the next frame) */
 static void render_yield(void) {
-    if (!r.up || r.yielded) return;
-    vkDeviceWaitIdle(r.device);
-    free_targets();
-    snx_vk_swapchain_free(r.device, &r.swap);
-    r.yielded = true;
+    pthread_mutex_lock(&locks.frame);
+    if (!r.yielded) {
+        r.yielded = true;
+        if (r.up) {
+            vkDeviceWaitIdle(r.device);
+            free_targets();
+            snx_vk_swapchain_free(r.device, &r.swap);
+            r.extent = (VkExtent2D){0, 0};
+        }
+    }
+    pthread_mutex_unlock(&locks.frame);
 }
 const HleWindowHost* android_render_host(void) {
-    static const HleWindowHost host = {render_window, render_yield};
+    static const HleWindowHost host = {render_window, render_yield, render_layer, render_layer_handle};
     return &host;
 }
 
@@ -2052,6 +2371,8 @@ void android_render_close(void) {
     }
     for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES; ++i)
         if (r.rendered[i]) vkDestroySemaphore(r.device, r.rendered[i], NULL);
+    for (unsigned i = 0; i < HLE_LAYER_IMAGES; ++i)
+        if (r.layer_fences[i]) vkDestroyFence(r.device, r.layer_fences[i], NULL);
     snx_vk_ring_free(&r.ring);
     vkDestroyDevice(r.device, NULL);
     snx_vk_window_close(&r.host);
@@ -2065,5 +2386,7 @@ void android_render_close(void) {
     free(r.states);
     poly_free(&r.poly);
     tri_free(&r.tris);
+    pthread_mutex_lock(&locks.layer); /* the presenting thread sees no layer from now on */
     memset(&r, 0, sizeof r);
+    pthread_mutex_unlock(&locks.layer);
 }
