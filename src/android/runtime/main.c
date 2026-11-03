@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "android/bridge/bridge.h"
+#include "android/bridge/hle_vulkan.h"
 #include "android/bridge/linker.h"
 #include "android/bridge/hle_signal.h"
 #include "android/runtime/main.h"
@@ -433,6 +434,7 @@ int snx_android_main(int argc, char** argv) {
         status = 2;
     } else {
         android_render_set_options(headless, shot, shot_frames);
+        hle_vulkan_set_shot(shot, shot_frames);
         status = translate ? translate_apk(apk, translate) : run_apk(argv[0], apk, framework, options, option_count);
     }
     free_options(options, owned, owned_count);

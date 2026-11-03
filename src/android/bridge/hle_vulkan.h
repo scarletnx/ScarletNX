@@ -17,4 +17,8 @@ void hle_vulkan_set_host(const HleWindowHost* host);
 uint64_t hle_vulkan_symbol(const char* name);
 /* the guest's vkQueuePresentKHR calls so far (--sample) */
 uint64_t hle_vulkan_presents(void);
+/* --shot and --shot-frame for the guest's own Vulkan swapchain: the image of each listed present (1 the first),
+   saved as binary PPM at path (%ld the present's number). A test's readback: it waits for the GPU at those presents.
+   Before the guest makes its device */
+void hle_vulkan_set_shot(const char* path, const char* frames);
 #endif

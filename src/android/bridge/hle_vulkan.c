@@ -141,6 +141,11 @@ static void debug_messenger_destroy(CPU* c, void* data);
 static void surface_capabilities(CPU* c, void* data);
 static void surface_capabilities2(CPU* c, void* data);
 static void queue_present(CPU* c, void* data);
+static void create_device(CPU* c, void* data);
+static void get_device_queue(CPU* c, void* data);
+static void get_device_queue2(CPU* c, void* data);
+static void create_swapchain(CPU* c, void* data);
+static void get_swapchain_images(CPU* c, void* data);
 static void create_shader_module(CPU* c, void* data);
 static void cmd_clear_attachments(CPU* c, void* data);
 static void create_render_pass(CPU* c, void* data);
@@ -165,6 +170,11 @@ static const struct {
     {"vkGetPhysicalDeviceSurfaceCapabilitiesKHR", surface_capabilities},
     {"vkGetPhysicalDeviceSurfaceCapabilities2KHR", surface_capabilities2},
     {"vkQueuePresentKHR", queue_present},
+    {"vkCreateDevice", create_device},
+    {"vkGetDeviceQueue", get_device_queue},
+    {"vkGetDeviceQueue2", get_device_queue2},
+    {"vkCreateSwapchainKHR", create_swapchain},
+    {"vkGetSwapchainImagesKHR", get_swapchain_images},
     {"vkCreateShaderModule", create_shader_module},
     {"vkCmdClearAttachments", cmd_clear_attachments},
     {"vkCreateRenderPass", create_render_pass},
@@ -390,16 +400,309 @@ static void surface_capabilities2(CPU* c, void* data) {
     X(0) = (uint64_t)(int64_t)r;
 }
 
-/* vkQueuePresentKHR, counted for --sample's lines (hle_vulkan_presents) */
+/* ---- --shot: the guest's presented images, saved as binary PPM (hle_vulkan.h) ----
+   The pass-through records what a copy of a presented image needs: each device's physical device, each queue's
+   device and family, each swapchain's device, format, extent and images (made with TRANSFER_SRC as well, when shots
+   are asked for). At a listed present, a submission on the presenting queue waits for the present's semaphores,
+   copies the image into a host-visible buffer and signals a semaphore of its own, which the present then waits for */
+
+static struct {
+    pthread_mutex_t lock;
+    char path[1024];
+    long frames[64];
+    size_t frame_count;
+    struct {
+        VkDevice device;
+        VkPhysicalDevice physical;
+    } devices[8];
+    size_t device_count;
+    struct {
+        VkQueue queue;
+        VkDevice device;
+        uint32_t family;
+    } queues[32];
+    size_t queue_count;
+    struct {
+        VkSwapchainKHR swapchain;
+        VkDevice device;
+        VkFormat format;
+        VkExtent2D extent;
+        VkImage images[16];
+        uint32_t image_count;
+    } swapchains[8];
+    size_t swapchain_count;
+} shot = {.lock = PTHREAD_MUTEX_INITIALIZER};
+
+void hle_vulkan_set_shot(const char* path, const char* frames) {
+    if (!path || !path[0]) return;
+    snprintf(shot.path, sizeof shot.path, "%s", path);
+    if (!frames || !frames[0]) frames = "60";
+    for (char* end; *frames && shot.frame_count < 64; frames = *end ? end + 1 : end) {
+        long f = strtol(frames, &end, 10);
+        if (end == frames) break;
+        shot.frames[shot.frame_count++] = f;
+    }
+}
+
+static void* vk(const char* name) {
+    return (void*)vkGetInstanceProcAddr(v.instance, name);
+}
+
+static void create_device(CPU* c, void* data) {
+    (void)data;
+    PFN_vkCreateDevice create = (PFN_vkCreateDevice)vk("vkCreateDevice");
+    VkPhysicalDevice physical = (VkPhysicalDevice)(uintptr_t)X(0);
+    VkResult r = create ? create(physical, PTR(1), NULL, PTR(3)) : VK_ERROR_INITIALIZATION_FAILED;
+    if (r == VK_SUCCESS) {
+        pthread_mutex_lock(&shot.lock);
+        if (shot.device_count < 8) {
+            shot.devices[shot.device_count].device = *(VkDevice*)PTR(3);
+            shot.devices[shot.device_count++].physical = physical;
+        }
+        pthread_mutex_unlock(&shot.lock);
+    }
+    X(0) = (uint64_t)(int64_t)r;
+}
+static void record_queue(VkDevice device, uint32_t family, VkQueue queue) {
+    pthread_mutex_lock(&shot.lock);
+    bool known = false;
+    for (size_t i = 0; i < shot.queue_count && !known; ++i) known = shot.queues[i].queue == queue;
+    if (!known && shot.queue_count < 32) {
+        shot.queues[shot.queue_count].queue = queue;
+        shot.queues[shot.queue_count].device = device;
+        shot.queues[shot.queue_count++].family = family;
+    }
+    pthread_mutex_unlock(&shot.lock);
+}
+static void get_device_queue(CPU* c, void* data) {
+    (void)data;
+    PFN_vkGetDeviceQueue get = (PFN_vkGetDeviceQueue)vk("vkGetDeviceQueue");
+    if (!get) return;
+    get((VkDevice)(uintptr_t)X(0), (uint32_t)X(1), (uint32_t)X(2), PTR(3));
+    record_queue((VkDevice)(uintptr_t)X(0), (uint32_t)X(1), *(VkQueue*)PTR(3));
+}
+static void get_device_queue2(CPU* c, void* data) {
+    (void)data;
+    PFN_vkGetDeviceQueue2 get = (PFN_vkGetDeviceQueue2)vk("vkGetDeviceQueue2");
+    if (!get) return;
+    const VkDeviceQueueInfo2* info = PTR(1);
+    get((VkDevice)(uintptr_t)X(0), info, PTR(2));
+    record_queue((VkDevice)(uintptr_t)X(0), info->queueFamilyIndex, *(VkQueue*)PTR(2));
+}
+static void create_swapchain(CPU* c, void* data) {
+    (void)data;
+    PFN_vkCreateSwapchainKHR create = (PFN_vkCreateSwapchainKHR)vk("vkCreateSwapchainKHR");
+    if (!create) {
+        X(0) = (uint64_t)(int64_t)VK_ERROR_INITIALIZATION_FAILED;
+        return;
+    }
+    VkSwapchainCreateInfoKHR info = *(const VkSwapchainCreateInfoKHR*)PTR(1);
+    if (shot.path[0]) info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    VkResult r = create((VkDevice)(uintptr_t)X(0), &info, NULL, PTR(3));
+    if (r == VK_SUCCESS) {
+        pthread_mutex_lock(&shot.lock);
+        size_t i = 0;
+        while (i < shot.swapchain_count && shot.swapchains[i].swapchain != info.oldSwapchain) ++i;
+        if (i == shot.swapchain_count && shot.swapchain_count < 8) ++shot.swapchain_count;
+        if (i < shot.swapchain_count) {
+            shot.swapchains[i].swapchain = *(VkSwapchainKHR*)PTR(3);
+            shot.swapchains[i].device = (VkDevice)(uintptr_t)X(0);
+            shot.swapchains[i].format = info.imageFormat;
+            shot.swapchains[i].extent = info.imageExtent;
+            shot.swapchains[i].image_count = 0;
+        }
+        pthread_mutex_unlock(&shot.lock);
+    }
+    X(0) = (uint64_t)(int64_t)r;
+}
+static void get_swapchain_images(CPU* c, void* data) {
+    (void)data;
+    PFN_vkGetSwapchainImagesKHR get = (PFN_vkGetSwapchainImagesKHR)vk("vkGetSwapchainImagesKHR");
+    if (!get) {
+        X(0) = (uint64_t)(int64_t)VK_ERROR_INITIALIZATION_FAILED;
+        return;
+    }
+    VkSwapchainKHR swapchain = (VkSwapchainKHR)(uintptr_t)X(1);
+    uint32_t* count = PTR(2);
+    VkImage* images = PTR(3);
+    VkResult r = get((VkDevice)(uintptr_t)X(0), swapchain, count, images);
+    if (images && (r == VK_SUCCESS || r == VK_INCOMPLETE)) {
+        pthread_mutex_lock(&shot.lock);
+        for (size_t i = 0; i < shot.swapchain_count; ++i)
+            if (shot.swapchains[i].swapchain == swapchain) {
+                uint32_t n = *count < 16 ? *count : 16;
+                memcpy(shot.swapchains[i].images, images, n * sizeof *images);
+                shot.swapchains[i].image_count = n;
+            }
+        pthread_mutex_unlock(&shot.lock);
+    }
+    X(0) = (uint64_t)(int64_t)r;
+}
+
+typedef struct {
+    VkDevice device;
+    VkQueue queue;
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    VkCommandPool pool;
+    VkSemaphore done;
+    VkFence fence;
+    VkExtent2D extent;
+    VkFormat format;
+    long number;
+} ShotJob;
+
+static bool shot_due(long number) {
+    for (size_t i = 0; i < shot.frame_count; ++i)
+        if (shot.frames[i] == number) return true;
+    return false;
+}
+
+static void shot_free(ShotJob* j) {
+    if (j->fence) ((PFN_vkDestroyFence)vk("vkDestroyFence"))(j->device, j->fence, NULL);
+    if (j->done) ((PFN_vkDestroySemaphore)vk("vkDestroySemaphore"))(j->device, j->done, NULL);
+    if (j->pool) ((PFN_vkDestroyCommandPool)vk("vkDestroyCommandPool"))(j->device, j->pool, NULL);
+    if (j->buffer) ((PFN_vkDestroyBuffer)vk("vkDestroyBuffer"))(j->device, j->buffer, NULL);
+    if (j->memory) ((PFN_vkFreeMemory)vk("vkFreeMemory"))(j->device, j->memory, NULL);
+}
+
+/* the copy of the image info presents, submitted to wait for its semaphores: false when it can't be made, and the
+   present goes as the guest made it */
+static bool shot_begin(VkQueue queue, const VkPresentInfoKHR* info, long number, ShotJob* j) {
+    *j = (ShotJob){0};
+    j->queue = queue;
+    j->number = number;
+    VkImage image = VK_NULL_HANDLE;
+    VkPhysicalDevice physical = VK_NULL_HANDLE;
+    uint32_t family = 0;
+    pthread_mutex_lock(&shot.lock);
+    for (size_t i = 0; i < shot.queue_count; ++i)
+        if (shot.queues[i].queue == queue) {
+            j->device = shot.queues[i].device;
+            family = shot.queues[i].family;
+        }
+    for (size_t i = 0; i < shot.device_count; ++i)
+        if (shot.devices[i].device == j->device) physical = shot.devices[i].physical;
+    for (size_t i = 0; i < shot.swapchain_count; ++i)
+        if (shot.swapchains[i].swapchain == info->pSwapchains[0] &&
+            info->pImageIndices[0] < shot.swapchains[i].image_count) {
+            image = shot.swapchains[i].images[info->pImageIndices[0]];
+            j->extent = shot.swapchains[i].extent;
+            j->format = shot.swapchains[i].format;
+        }
+    pthread_mutex_unlock(&shot.lock);
+    if (!j->device || !physical || !image) return false;
+    VkDeviceSize size = (VkDeviceSize)j->extent.width * j->extent.height * 4;
+    VkBufferCreateInfo b = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                            VK_SHARING_MODE_EXCLUSIVE, 0, NULL};
+    if (((PFN_vkCreateBuffer)vk("vkCreateBuffer"))(j->device, &b, NULL, &j->buffer)) return false;
+    VkMemoryRequirements need;
+    ((PFN_vkGetBufferMemoryRequirements)vk("vkGetBufferMemoryRequirements"))(j->device, j->buffer, &need);
+    VkPhysicalDeviceMemoryProperties props;
+    ((PFN_vkGetPhysicalDeviceMemoryProperties)vk("vkGetPhysicalDeviceMemoryProperties"))(physical, &props);
+    uint32_t type = UINT32_MAX;
+    const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    for (uint32_t t = 0; t < props.memoryTypeCount && type == UINT32_MAX; ++t)
+        if ((need.memoryTypeBits >> t & 1) && (props.memoryTypes[t].propertyFlags & want) == want) type = t;
+    VkMemoryAllocateInfo m = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, need.size, type};
+    if (type == UINT32_MAX || ((PFN_vkAllocateMemory)vk("vkAllocateMemory"))(j->device, &m, NULL, &j->memory) ||
+        ((PFN_vkBindBufferMemory)vk("vkBindBufferMemory"))(j->device, j->buffer, j->memory, 0)) {
+        shot_free(j);
+        return false;
+    }
+    VkCommandPoolCreateInfo p = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL, 0, family};
+    VkCommandBuffer cmd;
+    VkCommandBufferAllocateInfo a = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, VK_NULL_HANDLE,
+                                     VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
+    VkSemaphoreCreateInfo si = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, NULL, 0};
+    VkFenceCreateInfo fi = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, 0};
+    if (((PFN_vkCreateCommandPool)vk("vkCreateCommandPool"))(j->device, &p, NULL, &j->pool) ||
+        (a.commandPool = j->pool, ((PFN_vkAllocateCommandBuffers)vk("vkAllocateCommandBuffers"))(j->device, &a, &cmd)) ||
+        ((PFN_vkCreateSemaphore)vk("vkCreateSemaphore"))(j->device, &si, NULL, &j->done) ||
+        ((PFN_vkCreateFence)vk("vkCreateFence"))(j->device, &fi, NULL, &j->fence)) {
+        shot_free(j);
+        return false;
+    }
+    VkCommandBufferBeginInfo begin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                      VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL};
+    ((PFN_vkBeginCommandBuffer)vk("vkBeginCommandBuffer"))(cmd, &begin);
+    VkImageMemoryBarrier to = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT,
+                               VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                               image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    PFN_vkCmdPipelineBarrier barrier = (PFN_vkCmdPipelineBarrier)vk("vkCmdPipelineBarrier");
+    barrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &to);
+    VkBufferImageCopy region = {0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+                                {j->extent.width, j->extent.height, 1}};
+    ((PFN_vkCmdCopyImageToBuffer)vk("vkCmdCopyImageToBuffer"))(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                                                 j->buffer, 1, &region);
+    VkImageMemoryBarrier back = to;
+    back.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    back.dstAccessMask = 0;
+    back.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    back.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    barrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &back);
+    ((PFN_vkEndCommandBuffer)vk("vkEndCommandBuffer"))(cmd);
+    VkPipelineStageFlags stages[16];
+    uint32_t waits = info->waitSemaphoreCount < 16 ? info->waitSemaphoreCount : 16;
+    for (uint32_t i = 0; i < waits; ++i) stages[i] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, waits, info->pWaitSemaphores, stages, 1, &cmd, 1,
+                           &j->done};
+    if (((PFN_vkQueueSubmit)vk("vkQueueSubmit"))(queue, 1, &submit, j->fence)) {
+        shot_free(j);
+        return false;
+    }
+    return true;
+}
+
+/* after the present: the copy's bytes into the file, and the job's objects freed */
+static void shot_finish(ShotJob* j) {
+    ((PFN_vkWaitForFences)vk("vkWaitForFences"))(j->device, 1, &j->fence, VK_TRUE, UINT64_MAX);
+    ((PFN_vkQueueWaitIdle)vk("vkQueueWaitIdle"))(j->queue); /* the present's wait for the semaphore, before it goes */
+    bool bgra = j->format == VK_FORMAT_B8G8R8A8_UNORM || j->format == VK_FORMAT_B8G8R8A8_SRGB;
+    bool rgba = j->format == VK_FORMAT_R8G8B8A8_UNORM || j->format == VK_FORMAT_R8G8B8A8_SRGB;
+    void* mapped = NULL;
+    char name[1100];
+    snprintf(name, sizeof name, shot.path, j->number);
+    FILE* f = (bgra || rgba) ? fopen(name, "wb") : NULL;
+    if (f && !((PFN_vkMapMemory)vk("vkMapMemory"))(j->device, j->memory, 0, VK_WHOLE_SIZE, 0, &mapped)) {
+        fprintf(f, "P6\n%u %u\n255\n", j->extent.width, j->extent.height);
+        const unsigned char* p = mapped;
+        size_t pixels = (size_t)j->extent.width * j->extent.height;
+        for (size_t i = 0; i < pixels; ++i, p += 4) {
+            unsigned char rgb[3] = {p[bgra ? 2 : 0], p[1], p[bgra ? 0 : 2]};
+            fwrite(rgb, 1, 3, f);
+        }
+        ((PFN_vkUnmapMemory)vk("vkUnmapMemory"))(j->device, j->memory);
+        fprintf(stderr, "scarletnx-android: Vulkan present %ld saved in %s\n", j->number, name);
+    } else {
+        fprintf(stderr, "scarletnx-android: Vulkan present %ld not saved (format %d)\n", j->number, (int)j->format);
+    }
+    if (f) fclose(f);
+    shot_free(j);
+}
+
+/* vkQueuePresentKHR, counted for --sample's lines (hle_vulkan_presents), and saved at the --shot presents */
 static uint64_t presents;
 uint64_t hle_vulkan_presents(void) {
     return __atomic_load_n(&presents, __ATOMIC_RELAXED);
 }
 static void queue_present(CPU* c, void* data) {
     (void)data;
-    PFN_vkQueuePresentKHR present = (PFN_vkQueuePresentKHR)vkGetInstanceProcAddr(v.instance, "vkQueuePresentKHR");
-    VkResult r = present ? present((VkQueue)(uintptr_t)X(0), PTR(1)) : VK_ERROR_EXTENSION_NOT_PRESENT;
-    __atomic_add_fetch(&presents, 1, __ATOMIC_RELAXED);
+    PFN_vkQueuePresentKHR present = (PFN_vkQueuePresentKHR)vk("vkQueuePresentKHR");
+    VkQueue queue = (VkQueue)(uintptr_t)X(0);
+    const VkPresentInfoKHR* info = PTR(1);
+    long number = (long)__atomic_add_fetch(&presents, 1, __ATOMIC_RELAXED);
+    ShotJob job;
+    bool took = shot.path[0] && present && info->swapchainCount && shot_due(number) &&
+                shot_begin(queue, info, number, &job);
+    VkPresentInfoKHR waited = *info;
+    if (took) {
+        waited.waitSemaphoreCount = 1;
+        waited.pWaitSemaphores = &job.done;
+    }
+    VkResult r = present ? present(queue, took ? &waited : info) : VK_ERROR_EXTENSION_NOT_PRESENT;
+    if (took) shot_finish(&job);
     X(0) = (uint64_t)(int64_t)r;
 }
 
