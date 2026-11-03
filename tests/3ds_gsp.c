@@ -173,6 +173,52 @@ int main(int argc, char** argv) {
         assert(ctr_command_word(p, 1) == 0xd8202a06);
         ctr_call(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, 0);
         assert(!ctr_command_word(p, 1));
+        /* screen capture info, and the VRAM system area for a registered session and for one that never registered */
+        uint32_t top_swap[] = {0x00050200, 0, 1, 0x300200, 0x300400, 960, 0x42, 1, 0};
+        ctr_call(p, gsp, top_swap, 9, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
+        uint32_t bottom_swap[] = {0x00050200, 1, 0, 0x300600, 0x300800, 480, 0x43, 0, 0};
+        ctr_call(p, gsp, bottom_swap, 9, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
+        uint32_t capture[] = {0x00180000};
+        ctr_call(p, gsp, capture, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x00180240 && !ctr_command_word(p, 1));
+        assert(ctr_command_word(p, 2) == 0x300200 && ctr_command_word(p, 3) == 0x300200 &&
+               ctr_command_word(p, 4) == 0x42 && ctr_command_word(p, 5) == 960);
+        assert(ctr_command_word(p, 6) == 0x300600 && ctr_command_word(p, 7) == 0x300600);
+        assert(ctr_command_word(p, 8) == 0x43 && ctr_command_word(p, 9) == 480);
+        /* active_fb 0 writes at another address while shown_fb 1 keeps the pair top_swap wrote on screen */
+        uint32_t split_swap[] = {0x00050200, 0, 0, 0x300a00, 0x300a00, 960, 0x42, 1, 0};
+        ctr_call(p, gsp, split_swap, 9, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
+        ctr_call(p, gsp, capture, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x00180240 && !ctr_command_word(p, 1));
+        assert(ctr_command_word(p, 2) == 0x300200 && ctr_command_word(p, 3) == 0x300200);
+        uint32_t save_vram[] = {0x00190000};
+        ctr_call(p, gsp, save_vram, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
+        uint32_t restore_vram[] = {0x001a0000};
+        ctr_call(p, gsp, restore_vram, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
+        uint32_t other = 0;
+        assert(!snx_ctr_session_create(p, SNX_CTR_SERVICE_GSP, &other));
+        ctr_call(p, other, save_vram, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xd8202a06);
+        ctr_call(p, other, restore_vram, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xd8202a06);
+        assert(!snx_ctr_handle_close(p, other));
+        /* a session registered with flags 0 (thread 1) is refused the same way */
+        uint32_t unflagged = 0, unflagged_event = 0;
+        assert(!snx_ctr_session_create(p, SNX_CTR_SERVICE_GSP, &unflagged));
+        assert(!snx_ctr_object_create(p, CTR_OBJ_EVENT, &unflagged_event));
+        uint32_t unflagged_relay[] = {0x00130042, 0, 0, unflagged_event};
+        ctr_call(p, unflagged, unflagged_relay, 4, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x00130082 && !ctr_command_word(p, 1) && ctr_command_word(p, 2) == 1);
+        ctr_call(p, unflagged, save_vram, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xd8202a06);
+        ctr_call(p, unflagged, restore_vram, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xd8202a06);
+        assert(!snx_ctr_handle_close(p, unflagged));
         /* the process handle must come in a handle descriptor */
         acquire[2] = 0x20;
         ctr_call(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, SNX_CTR_IPC_BAD_DESCRIPTOR);
