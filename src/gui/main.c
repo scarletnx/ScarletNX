@@ -3427,8 +3427,10 @@ static void users_migrate(App* app, int old) {
         say_failure(app, app->message);
         return;
     }
-    snprintf(app->message, sizeof app->message, snx_tr("user=%d is deprecated: user_uid=%s (%s) replaces it"), old, uid,
-             app->user_name);
+    /* the uid and the number, not the nickname: the launcher's log takes this, and players attach it to public
+       reports */
+    snprintf(app->message, sizeof app->message, snx_tr("user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"),
+             old, uid, old);
 }
 /* the users of users_dir, for the head: the one games play as (Settings' user_uid, the deprecated user's number while
    it names none, written as user_uid then), or none with why in the message */

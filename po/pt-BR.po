@@ -1582,8 +1582,8 @@ msgstr "user=%d está obsoleto, e as Configurações não têm user_uid para gra
 
 #: src/gui/main.c
 #, c-format
-msgid "user=%d is deprecated: user_uid=%s (%s) replaces it"
-msgstr "user=%d está obsoleto: user_uid=%s (%s) o substitui"
+msgid "user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"
+msgstr "user=%d está obsoleto: user_uid=%s, o de [user%d], o substitui"
 
 #: src/gui/main.c
 #, c-format
@@ -5543,6 +5543,9 @@ msgstr "Inicialização"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "Internos do LLVM"
+
+#~ msgid "user=%d is deprecated: user_uid=%s (%s) replaces it"
+#~ msgstr "user=%d está obsoleto: user_uid=%s (%s) o substitui"
 
 #~ msgid "nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
 #~ msgstr "apelido de 4 a 20 de A-Z a-z 0-9 espaço . _ -"
