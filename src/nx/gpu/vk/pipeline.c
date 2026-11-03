@@ -1963,6 +1963,7 @@ static void pf_load(void* arg) {
     SNX_ZONE(z_load, "pipeline file load");
     pf_key(key, sizeof key, &guest);
     g_pf.ship.max = SHIP_MAX;
+    g_pf.file.pack = g_settings.compress_shader_cache ? PF_PACK_UNITS : 0;
     pf_open_mapped(&g_pf.ship, g_pf.ship_path, key, pf_ship_rec, NULL);
     pf_open(&g_pf.file, g_pf.path, key, guest, &load, loaded);
     LOG("vulkan: %u shaders and %u pipelines of earlier runs loaded from %s in %llu ms, the pipelines to be made in "

@@ -726,7 +726,8 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
         }
     }
     pf->size = used;
-    pf->open = r.open ? r.open : used; /* the records after its last unit, or none */
+    /* the records after its last unit, or none; 0 when nothing more is packed (what is, is read either way) */
+    pf->open = pf->pack != PF_PACK_UNITS ? 0 : r.open ? r.open : used;
     if (!pf->f)
         WARN("vulkan: cannot write %s (%s): shaders and pipelines made are not kept for the next run\n", path, why);
     free(head);

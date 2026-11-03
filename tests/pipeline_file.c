@@ -306,6 +306,7 @@ static void open_file(PFile* pf, const char* key, u64 first_module, int fail_fir
     got.fail_first = fail_first;
     memset(pf, 0, sizeof *pf);
     pm_init(&pf->lock);
+    pf->pack = PF_PACK_UNITS; /* compress_shader_cache's default */
     pf_open(pf, PATH, key, guest_bytes, &load, loaded);
 }
 static void close_file(PFile* pf) {
@@ -552,14 +553,17 @@ static void unit_load_pipe(void* ctx, const u64 modules[5], const void* key, u32
     ug.key[ug.npipe] = n;
     ug.npipe++;
 }
-static void unit_open(PFile* pf, u64 first, u32 loaded[2]) {
+/* the units tests' file opened, packing as pack says (compress_shader_cache) */
+static void unit_open_as(PFile* pf, u64 first, u32 loaded[2], int pack) {
     PfLoad load = {unit_load_shader, unit_load_pipe, load_shipref, load_source, NULL, 0};
     memset(&ug, 0, sizeof ug);
     ug.first = first;
     memset(pf, 0, sizeof *pf);
     pm_init(&pf->lock);
+    pf->pack = pack;
     pf_open(pf, PATH, "units key", 0, &load, loaded);
 }
+static void unit_open(PFile* pf, u64 first, u32 loaded[2]) { unit_open_as(pf, first, loaded, PF_PACK_UNITS); }
 /* shaders from..to-1, made into modules 0x100000 + n, each with a pipeline of it and the shader before it (key n),
    the one before from made into module before (0 for none) */
 static void unit_add(PFile* pf, int from, int to, u64 before) {
@@ -650,10 +654,9 @@ static void units_round_trip(void) {
     int nunit, tail;
     size_t n, header, unpacked;
     u32 shaders[16], pipes[16], sum = 0;
-    /* unpacked first (pf.open 0), for its size */
+    /* unpacked first (compress_shader_cache 0), for its size */
     remove(PATH);
-    unit_open(&pf, 0x10, loaded);
-    pf.open = 0;
+    unit_open_as(&pf, 0x10, loaded, 0);
     unit_add(&pf, 0, UNIT_N, 0);
     close_file(&pf);
     unpacked = (size_t)file_size();
@@ -688,6 +691,52 @@ static void units_round_trip(void) {
     unit_open(&pf, 0x900, loaded);
     CHECK(loaded[0] == UNIT_N + 40 && loaded[1] == UNIT_N + 39);
     unit_check(UNIT_N + 40, UNIT_N + 39);
+    close_file(&pf);
+    remove(PATH);
+}
+
+/* compress_shader_cache 0: nothing is packed as records add up; a file with units is read whole and what is appended
+   after its units is written as it is; with packing on again, the records after the last unit are packed as more
+   come */
+static void units_off(void) {
+    PFile pf;
+    u32 loaded[2], shaders[16], pipes[16];
+    u64 unit[16];
+    int nunit, tail, tail0;
+    size_t n, header;
+    remove(PATH);
+    unit_open_as(&pf, 0x10, loaded, 0);
+    header = (size_t)pf.size;
+    unit_add(&pf, 0, UNIT_N, 0);
+    CHECK(pf.open == 0);
+    close_file(&pf);
+    u8* d = file_bytes(&n);
+    CHECK(unit_list(d, n, header, unit, &tail) == 0 && tail == UNIT_N);
+    free(d);
+    /* a packed file, read and appended to with packing off */
+    d = units_file(&n, &header, unit, &nunit, shaders, pipes);
+    unit_list(d, n, header, unit, &tail0);
+    free(d);
+    unit_open_as(&pf, 0x500, loaded, 0);
+    CHECK(loaded[0] == UNIT_N && loaded[1] == UNIT_N - 1 && pf.open == 0);
+    unit_check(UNIT_N, UNIT_N - 1);
+    unit_add(&pf, UNIT_N, UNIT_N + 40, ug.first + UNIT_N - 1);
+    close_file(&pf);
+    d = file_bytes(&n);
+    CHECK(unit_list(d, n, header, unit, &tail) == nunit && tail == tail0 + 40);
+    free(d);
+    /* packing on again: everything read, and the records after the last unit packed by the next append */
+    unit_open(&pf, 0x900, loaded);
+    CHECK(loaded[0] == UNIT_N + 40 && loaded[1] == UNIT_N + 39 && pf.open > header);
+    unit_check(UNIT_N + 40, UNIT_N + 39);
+    unit_add(&pf, UNIT_N + 40, UNIT_N + 41, ug.first + UNIT_N + 39);
+    close_file(&pf);
+    d = file_bytes(&n);
+    CHECK(unit_list(d, n, header, unit, &tail) == nunit + 1 && tail == 0);
+    free(d);
+    unit_open(&pf, 0xD00, loaded);
+    CHECK(loaded[0] == UNIT_N + 41 && loaded[1] == UNIT_N + 40);
+    unit_check(UNIT_N + 41, UNIT_N + 40);
     close_file(&pf);
     remove(PATH);
 }
@@ -1050,6 +1099,7 @@ int main(void) {
     rebuilds();
     large_checks();
     units_round_trip();
+    units_off();
     units_cut();
     units_bad();
     units_split_source();
