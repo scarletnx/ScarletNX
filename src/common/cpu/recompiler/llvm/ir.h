@@ -134,6 +134,7 @@ typedef struct {
     unsigned enabled : 1; /* the setting ir_stats (snx_ir_diagnostics) */
     SnxU64 functions, promoted_functions, call_sites, fp_calls, vector_calls, guest_calls, indirect_calls;
     SnxU64 sync_stores, sync_reloads, call_stores, store_bytes, reload_bytes;
+    SnxU64 edge_stores; /* stores of a block's first site made on the ways in the register is dirty on */
     SnxU64 promoted_slots, memory_slots; /* registers a function accesses: made locals, left in the CPU structure */
     SnxU64 lookups, polls, stale_checks, return_checks;
 } SnxIrStats;
