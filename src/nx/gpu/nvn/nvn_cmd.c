@@ -420,17 +420,24 @@ static void written(u64 cb) {
     o->seen_serial = spill_back(o->origin + o->seen, o->origin + o->used, o->seen_serial, 0) + 1;
     o->seen = o->used;
 }
-/* Control entries of bytes as the driver writes them. When they don't fit in need bytes (the driver checks room for
-   0x100 at a recording's start and end), the game's callback is asked for more first, event 1 with 0x100 at least, as
-   the driver asks it. With no room after it the entries count nothing (the driver stops the game there) */
-static void ctl_count(CPU* c, u64 cb, u64 bytes, u64 need) {
+/* Control entries of bytes as the driver writes them. When they don't fit, the game's callback is asked for more
+   first, event 1 with 0x100 at least, as the driver asks it: the driver checks room for the entry it writes, and a game
+   that gives exactly what its recordings take, with no callback for control memory, never sees one. With no room after
+   it the entries count nothing (the driver stops the game there) */
+static void ctl_count(CPU* c, u64 cb, u64 bytes) {
     NvnCtl* t = ctl_of(cb);
     const NvnCmdBuf* o = CB(cb);
     if (!t || !t->start) return;
-    if (need < bytes) need = bytes;
-    if (t->grow && t->cursor + need > t->limit && o->callback)
+    if (t->grow && t->cursor + bytes > t->limit && o->callback) {
+        LOG_LIMIT(4,
+                  "nvn: command buffer %llx is out of control memory (%llx of %llx bytes used, %llx more): the game's "
+                  "callback %llx adds more\n",
+                  (unsigned long long)cb, (unsigned long long)(t->cursor - t->start),
+                  (unsigned long long)(t->limit + 0x10 - t->start), (unsigned long long)bytes,
+                  (unsigned long long)o->callback);
         guest_call(c, o->callback, cb, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_CONTROL_MEMORY,
-                   need < 0x100 ? 0x100 : need, o->callback_data);
+                   bytes < 0x100 ? 0x100 : bytes, o->callback_data);
+    }
     if (t->grow && t->cursor + bytes > t->limit) {
         LOG_LIMIT(4, "nvn: command buffer %llx is out of control memory: its entries count nothing\n",
                   (unsigned long long)cb);
@@ -443,7 +450,7 @@ static void ctl_count(CPU* c, u64 cb, u64 bytes, u64 need) {
 static void ctl_flush(CPU* c, u64 cb) {
     NvnCtl* t = ctl_of(cb);
     if (!t || !t->pending) return;
-    ctl_count(c, cb, t->block ? 0x18 : 0x20, 0);
+    ctl_count(c, cb, t->block ? 0x18 : 0x20);
     t->block = 1;
     t->pending = 0;
 }
@@ -454,7 +461,7 @@ static void ctl_entry(CPU* c, u64 cb, u64 bytes) {
     if (!t) return;
     ctl_flush(c, cb);
     t->block = 0;
-    ctl_count(c, cb, bytes, 0);
+    ctl_count(c, cb, bytes);
 }
 /* the control bytes cb counted since its last look: the pieces anchored there come back */
 static void ctl_look(u64 cb) {
@@ -857,7 +864,7 @@ void nvn_CommandBufferBeginRecording(CPU* c, u64 cb) {
     if (t) { /* the driver's start entry, 0x10 bytes */
         t->block = t->pending = 0;
         t->rec = t->cursor;
-        ctl_count(c, cb, 0x10, 0x100);
+        ctl_count(c, cb, 0x10);
     }
     o->recording = 2;
     o->last = 0;
@@ -871,7 +878,7 @@ u64 nvn_CommandBufferEndRecording(CPU* c, u64 cb) {
     u64 h;
     int no_command = 0;
     ctl_flush(c, cb);           /* the range of the last commands */
-    ctl_count(c, cb, 8, 0x100); /* the driver's end mark */
+    ctl_count(c, cb, 8);        /* the driver's end mark */
     if (o->recording == 1 && o->last) {
         NvnRecHdr r;
         memcpy(&r, GP(o->last), sizeof r);
@@ -951,7 +958,7 @@ void nvn_CommandBufferCallCommands(CPU* c, u64 cb, i32 n, u64 handles) {
     for (i = 0; i < n; i++) {
         u64 h = gr64(handles + 8 * (u64)i), at;
         if (t) {
-            ctl_count(c, cb, t->block ? 0x18 : 0x20, 0);
+            ctl_count(c, cb, t->block ? 0x18 : 0x20);
             t->block = 1;
         }
         at = alloc_rec(c, cb, OP_CALL, 16, 0);

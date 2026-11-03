@@ -67,17 +67,18 @@ void fatal(const char* fmt, ...) {
 }
 
 /* the game's memory callback (a guest function, run through the dispatch table): it adds 0x100 bytes at 0x7000. Its
-   calls and the size each asked for */
+   calls, and the event and size each asked for */
 #define CALLBACK_PC 0x2000000ull
 static void callback(CPU* c, u64 entry);
 static struct {
     int calls;
-    u64 size;
+    u64 event, size;
     GuestFn disp[1];
-} g_cb = {0, 0, {callback}};
+} g_cb = {0, 0, 0, {callback}};
 static void callback(CPU* c, u64 entry) {
     (void)entry;
     g_cb.calls++;
+    g_cb.event = c->x[1];
     g_cb.size = c->x[2];
     nvn_CommandBufferAddCommandMemory(c, c->x[0], 1, 0x7000, 0x100);
     c->pc = c->x[30];
@@ -610,6 +611,27 @@ int main(void) {
         walk(h2, &b);
         check(b.n == a.n && !memcmp(a.op, b.op, (size_t)a.n * sizeof a.op[0]),
               "copying commands preserves the barrier stream");
+    }
+    /* control memory that holds exactly what a recording writes (0x10 at its start, a draw's range 0x20, 8 at its end,
+       and the 0x10 the driver keeps for a link): the driver checks room for each entry it writes, so the game's
+       callback, which one game leaves without a handler for control memory, isn't called. One more recording's start
+       doesn't fit, and asks it for 0x100 bytes of control memory (event 1) */
+    {
+        const u64 cbf = 0x4b000, ctl = 0x4c000;
+        int calls = g_cb.calls;
+        nvn_CommandBufferInitialize(&cpu, cbf, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbf, 1, 0x2a000, 0x100);
+        nvn_CommandBufferSetMemoryCallback(&cpu, cbf, CALLBACK_PC);
+        nvn_CommandBufferAddControlMemory(&cpu, cbf, ctl, 0x48);
+        nvn_CommandBufferBeginRecording(&cpu, cbf);
+        nvn_CommandBufferDrawArrays(&cpu, cbf, 4, 0, 3);
+        nvn_CommandBufferEndRecording(&cpu, cbf);
+        check(g_cb.calls == calls, "control memory that holds the recording calls no callback");
+        check(nvn_CommandBufferGetControlMemoryUsed(&cpu, cbf) == 0x38, "the recording takes its 0x38 control bytes");
+        nvn_CommandBufferBeginRecording(&cpu, cbf);
+        check(g_cb.calls == calls + 1 && g_cb.event == 1 && g_cb.size == 0x100,
+              "a start entry that doesn't fit asks the callback for 0x100 bytes of control memory");
+        nvn_CommandBufferEndRecording(&cpu, cbf);
     }
     if (failures) return 1;
     puts("nvn_commands: ok");
