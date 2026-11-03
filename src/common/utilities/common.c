@@ -16,6 +16,7 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/ini_lines.h"
+#include <libdeflate.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -1979,9 +1980,13 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
     return waited < 0 ? 1 : WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 #endif
 }
-/* a control.nacp's titles, 16 at its start, one a language: its name (0x200 bytes), then its publisher */
-#define SNX_NACP_TITLE  0x300
-#define SNX_NACP_TITLES 16
+/* a control.nacp's titles, one a language: its name (0x200 bytes), then its publisher. A NACP keeps 16 of them at its
+   start as they are, or, when its TitleCompression byte is 1, a u16 size there and the titles in raw deflate, up to 32
+   languages (firmware 20.0.0's) */
+#define SNX_NACP_TITLE             0x300
+#define SNX_NACP_TITLES            16
+#define SNX_NACP_TITLES_PACKED     32
+#define SNX_NACP_TITLE_COMPRESSION 0x3215
 int snx_utf8_valid(const char* text, size_t n, char* hex, size_t hex_size) {
     const unsigned char* s = (const unsigned char*)text;
     size_t i = 0, want, k, at;
@@ -2037,8 +2042,12 @@ static int title_name(const unsigned char* title, char* name, size_t name_size, 
 }
 int snx_nacp_name_why(const unsigned char* nacp, size_t size, char* name, size_t name_size, char* why,
                       size_t why_size) {
-    size_t language, bad_language = 0;
+    unsigned char* unpacked = NULL;
+    const unsigned char* titles = nacp;
+    struct libdeflate_decompressor* inflater;
+    size_t count = SNX_NACP_TITLES, language, packed, got = 0, bad_language = 0;
     char bad[64] = {0};
+    int format = nacp && size > SNX_NACP_TITLE_COMPRESSION ? nacp[SNX_NACP_TITLE_COMPRESSION] : 0;
     if (why_size) why[0] = 0;
     if (!name_size) return 0;
     name[0] = 0;
@@ -2046,8 +2055,37 @@ int snx_nacp_name_why(const unsigned char* nacp, size_t size, char* name, size_t
         if (why_size) snprintf(why, why_size, "it is %zu bytes, short of one language's title (768)", nacp ? size : 0);
         return 0;
     }
-    for (language = 0; language < SNX_NACP_TITLES && (language + 1) * SNX_NACP_TITLE <= size && !name[0]; ++language)
-        if (!title_name(nacp + language * SNX_NACP_TITLE, name, name_size, bad_language ? NULL : bad, sizeof bad) &&
+    if (format > 1) {
+        if (why_size)
+            snprintf(why, why_size,
+                     "its TitleCompression is %d, where 0 (its titles as they are) and 1 (in deflate) are "
+                     "the formats known",
+                     format);
+        return 0;
+    }
+    if (format == 1) { /* the titles region's u16 size, then the deflate */
+        packed = snx_ld_le16(nacp);
+        unpacked = (unsigned char*)malloc(SNX_NACP_TITLES_PACKED * SNX_NACP_TITLE);
+        inflater = unpacked && packed <= SNX_NACP_TITLES * SNX_NACP_TITLE - 2 ? libdeflate_alloc_decompressor() : NULL;
+        if (!inflater ||
+            libdeflate_deflate_decompress(inflater, nacp + 2, packed, unpacked, SNX_NACP_TITLES_PACKED * SNX_NACP_TITLE,
+                                          &got) != LIBDEFLATE_SUCCESS) {
+            if (why_size)
+                snprintf(why, why_size,
+                         "its titles are in deflate (TitleCompression 1), %zu bytes that do not inflate to "
+                         "%d languages' titles or fewer",
+                         packed, SNX_NACP_TITLES_PACKED);
+            libdeflate_free_decompressor(inflater);
+            free(unpacked);
+            return 0;
+        }
+        libdeflate_free_decompressor(inflater);
+        titles = unpacked;
+        size = got;
+        count = SNX_NACP_TITLES_PACKED;
+    }
+    for (language = 0; language < count && (language + 1) * SNX_NACP_TITLE <= size && !name[0]; ++language)
+        if (!title_name(titles + language * SNX_NACP_TITLE, name, name_size, bad_language ? NULL : bad, sizeof bad) &&
             bad[0] && !bad_language)
             bad_language = language + 1;
     if (!name[0] && why_size) {
@@ -2057,6 +2095,7 @@ int snx_nacp_name_why(const unsigned char* nacp, size_t size, char* name, size_t
         else
             snprintf(why, why_size, "it names the game in none of its %zu languages", language);
     }
+    free(unpacked);
     return name[0] != 0;
 }
 int snx_nacp_name(const unsigned char* nacp, size_t size, char* name, size_t name_size) {

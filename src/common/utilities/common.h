@@ -286,7 +286,8 @@ int64_t snx_tell(FILE* f);
    and the first 16 of them in hex into hex ("2a 9c e3", "..." after when there are more), when hex_size is not 0 */
 int snx_utf8_valid(const char* text, size_t n, char* hex, size_t hex_size);
 /* The game's name in a control.nacp: American English's, else the first language's that has one, in UTF-8 without
-   control characters. A name whose bytes are not UTF-8 counts as none. 1 when it has one, else 0 and "" */
+   control characters, its titles inflated when the NACP keeps them in deflate (TitleCompression). A name whose bytes
+   are not UTF-8 counts as none. 1 when it has one, else 0 and "" */
 int snx_nacp_name(const unsigned char* nacp, size_t size, char* name, size_t name_size);
 /* snx_nacp_name, and when it has no name, why into why (its bytes in hex for a name that is not UTF-8); "" else */
 int snx_nacp_name_why(const unsigned char* nacp, size_t size, char* name, size_t name_size, char* why, size_t why_size);

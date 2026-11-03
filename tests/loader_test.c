@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/loader/loader.h"
 #include "nx/runtime/driver/game_name.h"
+#include <libdeflate.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -381,13 +382,27 @@ static void test_nro_npdm(void) {
     puts("PASS NRO assets/program loading and bounded NPDM metadata");
 }
 
+/* nacp (0x4000 bytes) with its titles in deflate, as a NACP made for firmware 20.0.0 or later can keep them: count
+   languages of 0x300 bytes from titles, a u16 size and the raw deflate at its start, TitleCompression (0x3215) 1. The
+   deflate's size */
+static size_t pack_titles(unsigned char* nacp, const unsigned char* titles, size_t count) {
+    struct libdeflate_compressor* packer = libdeflate_alloc_compressor(9);
+    size_t packed = packer ? libdeflate_deflate_compress(packer, titles, count * 0x300, nacp + 2, 0x3000 - 2) : 0;
+    libdeflate_free_compressor(packer);
+    CHECK(packed > 0);
+    nacp[0] = (unsigned char)packed;
+    nacp[1] = (unsigned char)(packed >> 8);
+    nacp[0x3215] = 1;
+    return packed;
+}
+
 /* the name a game is shown by: an NRO's control.nacp in its assets, an ExeFS's beside it, American English's name,
    else the first language's that has one, trimmed and cut whole at a UTF-8 sequence; --name over it, the title
    without it. A title ID given as the name (the driver's, for a dump read in place) is the files' name: the name in
    control.nacp is shown, the ID only when no language has one. The files keep the title ID. A name that is not UTF-8
-   is never shown, its bytes said */
+   is never shown, its bytes said; titles kept in deflate are inflated */
 static void test_nacp(const char* root, const char* exefs) {
-    static unsigned char nacp[0x600], all[0x4000]; /* all: the 16 languages and the rest, as a dump's is */
+    static unsigned char nacp[0x600], all[0x4000], titles[32 * 0x300]; /* all: the 16 languages and the rest */
     char name[32], error[256], why[256], *path, *shown;
     SnxProgram program;
     /* a name in one language only, Japanese's (the third), the last one's (Brazilian Portuguese's); a language whose
@@ -414,6 +429,29 @@ static void test_nacp(const char* root, const char* exefs) {
     CHECK(!snx_nacp_name(NULL, 0, name, sizeof name) && !name[0]);
     memcpy(nacp, "First\x01", 6); /* American English's, a control character left out */
     CHECK(snx_nacp_name(nacp, sizeof nacp, name, sizeof name) && !strcmp(name, "First"));
+    /* titles in deflate: inflated, up to 32 languages, the 18th's name found past the 16 a NACP keeps as they are;
+       titles that do not inflate, and a TitleCompression of no format known, give none and say so */
+    memset(titles, 0, sizeof titles);
+    memcpy(titles + 0x300, "Packed Title", 12);
+    memset(all, 0, sizeof all);
+    pack_titles(all, titles, 32);
+    CHECK(snx_nacp_name_why(all, sizeof all, name, sizeof name, why, sizeof why) && !strcmp(name, "Packed Title") &&
+          !why[0]);
+    memset(titles, 0, sizeof titles);
+    memcpy(titles + 17 * 0x300, "Packed Last", 11);
+    memset(all, 0, sizeof all);
+    pack_titles(all, titles, 32);
+    CHECK(snx_nacp_name(all, sizeof all, name, sizeof name) && !strcmp(name, "Packed Last"));
+    all[2] |= 0x06; /* the first block's type 3, which deflate reserves */
+    CHECK(!snx_nacp_name_why(all, sizeof all, name, sizeof name, why, sizeof why) && !name[0] &&
+          strstr(why, "do not inflate"));
+    memset(all, 0, sizeof all);
+    memcpy(all, "Plain Title", 11);
+    all[0x3215] = 2;
+    CHECK(!snx_nacp_name_why(all, sizeof all, name, sizeof name, why, sizeof why) &&
+          strstr(why, "TitleCompression is 2"));
+    all[0x3215] = 0;
+    CHECK(snx_nacp_name(all, sizeof all, name, sizeof name) && !strcmp(name, "Plain Title"));
     /* a name that is not UTF-8 is never shown: the next language's, else none and its bytes said; an overlong form, a
        surrogate and a lone continuation byte are not UTF-8, a 4-byte sequence is */
     memset(all, 0, sizeof all);
