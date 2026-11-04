@@ -176,10 +176,9 @@ static bool swap_create(unsigned screen) {
            else the configured peak: the SDR frame is mapped into it when HDR is on */
         int reported = snx_vk_window_headroom_pct(window);
         g_present.headroom_pct[screen] =
-            kind != SNX_FX_DISPLAY_NONE
-                ? (reported > 100 ? snx_clamp_int(reported, 100, 1000)
-                                  : snx_clamp_int(g_settings.hdr_peak * 100 / g_settings.hdr_paper_white, 100, 1000))
-                : 100;
+            kind == SNX_FX_DISPLAY_PQ
+                ? snx_clamp_int(g_settings.hdr_peak * 100 / g_settings.hdr_paper_white, 100, 1000)
+                : (reported > 100 ? snx_clamp_int(reported, 100, 1000) : 100);
     }
     if (kind != g_present.said_kind[screen]) {
         g_present.said_kind[screen] = kind;

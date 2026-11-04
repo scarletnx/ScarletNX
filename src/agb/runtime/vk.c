@@ -158,10 +158,9 @@ static bool swapchain_make(AgbVk* v) {
     {
         int reported = snx_vk_window_headroom_pct(v->host.window);
         v->headroom_pct =
-            kind != SNX_FX_DISPLAY_NONE
-                ? (reported > 100 ? snx_clamp_int(reported, 100, 1000)
-                                  : snx_clamp_int(g_settings.hdr_peak * 100 / g_settings.hdr_paper_white, 100, 1000))
-                : 100;
+            kind == SNX_FX_DISPLAY_PQ
+                ? snx_clamp_int(g_settings.hdr_peak * 100 / g_settings.hdr_paper_white, 100, 1000)
+                : (reported > 100 ? snx_clamp_int(reported, 100, 1000) : 100);
     }
     if (kind != v->said_kind) {
         v->said_kind = kind;
