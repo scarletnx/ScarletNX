@@ -796,6 +796,17 @@ setting Write tracking
     help page protection on the other hosts. 1 = page protection and the fault handler, as macOS, FreeBSD, Android
     help and older Linux track (not on Windows, which says so at start). 2 = none: the caches compare guest memory's
     help contents, to measure and test that path
+setting Write tracking hot pages
+    key write_tracking_hot
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = with page protection (write_tracking=1, or the host's own on macOS, iOS, FreeBSD, Android and Linux
+    help before 6.7), a page the scans find written twice in a row stays writable, without its fault, and reads as
+    help written at each scan, for 32 scans; then it is protected again. A render target protects its pages again
+    help before each baseline, so its write-back keeps the GPU's pixels. 0 = every written page is protected again at
+    help each scan. Nothing where userfaultfd or Windows' write watch tracks the writes, which say so at start
 setting Memory traps
     key memory_traps
     int 0 2

@@ -245,6 +245,138 @@ static void test_protection_tracking(void) {
            (unsigned long long)iter, (unsigned long long)missed);
 }
 
+/* page n's hot count, and whether the tracking holds it read only */
+static u8 hot_count(u64 n) { return __atomic_load_n(&g_wp_hot[n], __ATOMIC_RELAXED); }
+static int held(u64 n) { return (__atomic_load_n(&g_wp[n], __ATOMIC_RELAXED) & WP_PROT) != 0; }
+/* page n written, then scanned, k times: 1 when every scan reported it */
+static int written_scans(u64 n, int k) {
+    int all = 1;
+    while (k--) {
+        g_base[n * 4096 + 1]++;
+        all &= (scan() >> n & 1) != 0;
+    }
+    return all;
+}
+/* ---- hot pages (write_tracking_hot=1): a page written in WP_HOT_AFTER scans in a row stays writable and is reported
+   at each scan, until its WP_HOT_AFTER + WP_HOT_FOR-th report; plat_ww_cool makes its reports exact again. Run on a
+   table of counts of its own when the setting left none */
+static void test_hot_pages(void) {
+    static u8 before[32 * 4096];
+    u8* own = NULL;
+    pthread_t t[WRITERS];
+    u64 missed = 0, inexact = 0, scans = 0, cools = 0, most_hot = 0, iter, k;
+    int i;
+    printf("hot pages%s\n", g_wp_hot ? "" : " (on a table of counts of the test's own)");
+    if (!g_wp_hot) {
+        own = (u8*)mmap(NULL, (size_t)g_wp_pages, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                        -1, 0);
+        CHECK(own != MAP_FAILED, "no table of counts");
+        if (own == MAP_FAILED) return;
+        g_wp_hot = own;
+    }
+    scan();
+    CHECK(scan() == 0, "pages reported written before the hot pages' checks");
+    /* reported once: protected; twice in a row: left writable, and reported with no write */
+    CHECK(written_scans(6, 1) && hot_count(6) == 1 && held(6), "a page written once was not protected");
+    CHECK(written_scans(6, 1) && hot_count(6) == WP_HOT_AFTER && !held(6), "a page written twice did not go hot");
+    CHECK(scan() == 1ull << 6, "a hot page was not reported by a scan with no write");
+    CHECK(plat_ww_hot_in(g_base + 6 * 4096, 4096) && !plat_ww_hot_in(g_base + 7 * 4096, 4096) &&
+              plat_ww_hot_in(g_base, 64 * 4096),
+          "plat_ww_hot_in did not find the one hot page");
+    /* cooled: reported, protected, and exact from then on */
+    g_written = 0;
+    plat_ww_cool(g_base, 64 * 4096, on_written);
+    CHECK(g_written == 1ull << 6, "the cool did not report the hot page alone");
+    CHECK(hot_count(6) == 0 && held(6) && !plat_ww_hot_in(g_base, 64 * 4096), "the cool left the page hot");
+    CHECK(scan() == 0, "a cooled page was reported with no write");
+    CHECK(written_scans(6, 1) && held(6), "a write after the cool was not reported, or the page went hot at once");
+    /* a scan that finds it unwritten starts its count over */
+    CHECK(written_scans(8, 1) && scan() == 0 && written_scans(8, 1) && hot_count(8) == 1 && held(8),
+          "a page written in two scans not in a row went hot");
+    /* written at each scan: hot until its WP_HOT_AFTER + WP_HOT_FOR-th report, then protected and counted over */
+    CHECK(written_scans(9, WP_HOT_AFTER + WP_HOT_FOR - 1) && hot_count(9) == WP_HOT_AFTER + WP_HOT_FOR - 1 && !held(9),
+          "a page written at each scan did not stay hot");
+    CHECK(written_scans(9, 1) && hot_count(9) == 0 && held(9), "a hot page was not protected again after its run");
+    CHECK(scan() == 0, "a page protected again after its run was reported with no write");
+    /* hot, then left alone: reported until its run ends, then quiet */
+    CHECK(written_scans(11, WP_HOT_AFTER), "page 11 not reported");
+    for (k = 0; k < WP_HOT_FOR + 1 && scan() >> 11 & 1; k++) {}
+    CHECK(k == WP_HOT_FOR && held(11) && scan() == 0, "a hot page left alone did not go quiet after its run");
+    /* a mapping change starts its count over; so does a trap's arming (wp_armed), which scans skip */
+    CHECK(written_scans(13, WP_HOT_AFTER) && hot_count(13) == WP_HOT_AFTER, "page 13 did not go hot");
+    plat_vm_decommit(g_base + 13 * 4096, 4096);
+    CHECK(!plat_vm_commit(g_base + 13 * 4096, 4096) && hot_count(13) == 0, "a decommit left the page's count");
+    CHECK(scan() == 1ull << 13 && scan() == 0, "a page committed again was not reported once");
+    CHECK(written_scans(14, WP_HOT_AFTER), "page 14 not reported");
+    wp_armed(g_base + 14 * 4096, 4096, 1);
+    CHECK(scan() == 0 && hot_count(14) == 0, "a page armed for a trap kept its count, or was reported");
+    wp_armed(g_base + 14 * 4096, 4096, 0);
+    CHECK(scan() == 1ull << 14 && held(14), "a page let go by its trap was not reported once and protected");
+    /* the kernel writing a hot page: the scans and the cool leave it writable until plat_ww_close, then a scan
+       reports it */
+    CHECK(written_scans(15, WP_HOT_AFTER) && !held(15), "page 15 did not go hot");
+    scan();
+    plat_ww_open(g_base + 15 * 4096, 100);
+    CHECK(!(scan() >> 15 & 1), "a page the kernel is writing was reported");
+    g_written = 0;
+    plat_ww_cool(g_base + 15 * 4096, 4096, on_written);
+    CHECK(!g_written && !held(15), "the cool protected a page the kernel is writing");
+    memset(g_base + 15 * 4096, 0x5a, 100); /* as the system call would */
+    plat_ww_close(g_base + 15 * 4096, 100);
+    CHECK(scan() >> 15 & 1, "a page the kernel wrote was not reported after it was done");
+    scan();
+    /* writers race scans and cools: no write is lost, and right after a cool with the writers held a scan reports
+       nothing (what a target's baseline needs) */
+    memcpy(before, g_base + 32 * 4096, sizeof before);
+    g_seen = 0;
+    __atomic_store_n(&g_writers_stop, 0, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&g_writers_run, 1, __ATOMIC_SEQ_CST);
+    for (i = 0; i < WRITERS; i++) { /* the last writers ended idle */
+        __atomic_store_n(&g_writer_idle[i], 0, __ATOMIC_SEQ_CST);
+        CHECK(!pthread_create(&t[i], NULL, writer, (void*)(intptr_t)i), "no writer");
+    }
+    for (iter = 0; iter < 200; iter++) {
+        u64 from = __atomic_load_n(&g_writes, __ATOMIC_RELAXED), hot;
+        while (__atomic_load_n(&g_writes, __ATOMIC_RELAXED) - from < 4000) {
+            plat_ww_scan(g_base + 32 * 4096, 32 * 4096, on_seen);
+            if (++scans % 8 == 0) { /* a target's baseline over them, with the writers going */
+                plat_ww_cool(g_base + 32 * 4096, 32 * 4096, on_seen);
+                cools++;
+            }
+            hot = __atomic_load_n(&g_wp_hot_n, __ATOMIC_RELAXED);
+            if (hot > most_hot) most_hot = hot;
+        }
+        writers_pause();
+        plat_ww_scan(g_base + 32 * 4096, 32 * 4096, on_seen);
+        for (k = 0; k < 32; k++)
+            if (memcmp(before + k * 4096, g_base + (32 + k) * 4096, 4096) && !(g_seen >> (32 + k) & 1)) missed++;
+        plat_ww_cool(g_base + 32 * 4096, 32 * 4096, on_seen);
+        g_written = 0;
+        plat_ww_scan(g_base + 32 * 4096, 32 * 4096, on_written);
+        if (g_written) inexact++;
+        memcpy(before, g_base + 32 * 4096, sizeof before);
+        g_seen = 0;
+        __atomic_store_n(&g_writers_run, 1, __ATOMIC_SEQ_CST);
+        for (i = 0; i < WRITERS; i++)
+            while (__atomic_load_n(&g_writer_idle[i], __ATOMIC_SEQ_CST)) sched_yield();
+    }
+    __atomic_store_n(&g_writers_stop, 1, __ATOMIC_SEQ_CST);
+    for (i = 0; i < WRITERS; i++) pthread_join(t[i], NULL);
+    CHECK(missed == 0, "a scan or a cool missed a page another thread wrote, with hot pages");
+    CHECK(inexact == 0, "a scan right after a cool, with the writers held, reported pages");
+    CHECK(most_hot > 0, "the writers' pages never went hot");
+    printf("  %llu scans and %llu cools while the writers wrote, up to %llu pages hot at once, %llu checks: %llu pages "
+           "missed, %llu scans after a cool not exact\n",
+           (unsigned long long)scans, (unsigned long long)cools, (unsigned long long)most_hot, (unsigned long long)iter,
+           (unsigned long long)missed, (unsigned long long)inexact);
+    plat_ww_cool(g_base, 64 * 4096, on_written); /* exact again for what follows */
+    if (own) {
+        g_wp_hot = NULL;
+        __atomic_store_n(&g_wp_hot_n, 0, __ATOMIC_RELAXED);
+        munmap(own, (size_t)g_wp_pages);
+    }
+}
+
 static int g_ran; /* the sum of what the threads read: both must finish before main returns, since they read its arg */
 static void thread_fn(void* arg) { __atomic_fetch_add(&g_ran, *(int*)arg, __ATOMIC_RELEASE); }
 
@@ -258,12 +390,27 @@ static void test_guest_memory(const char* dir) {
     g_base = plat_vm_reserve((u64)1 << 30);
     CHECK(g_base != NULL, "no reservation");
     CHECK(!((uintptr_t)g_base & (SNX_PLAT_PAGE_MAX - 1)), "the reservation is not aligned to SNX_PLAT_PAGE_MAX");
+    g_log[0] = 0;
+    g_log_on = 1;
     plat_vm_track(g_base, (u64)1 << 30);
+    g_log_on = 0;
+    /* write_tracking_hot=1 reaches the tracking by protection, and is said to do nothing elsewhere */
+    if (g_settings.write_tracking_hot_pages == 1 && g_wp_track)
+        CHECK(g_wp_hot != NULL, "write_tracking_hot=1 left the tracking by protection without hot pages");
+    else if (g_settings.write_tracking_hot_pages == 1)
+        CHECK(strstr(g_log, "memory: write_tracking_hot=1 leaves pages hot only where page protection tracks the "
+                            "writes, and ") &&
+                  strstr(g_log, ": no page is hot this run\n"),
+              "write_tracking_hot=1 where nothing protects pages for the tracking was not said");
+    else
+        CHECK(g_wp_hot == NULL, "hot pages without write_tracking_hot=1");
     CHECK(!plat_vm_commit(g_base, 64 * 4096), "commit failed");
     if (g_settings.write_tracking == 2 || plat_ww_scan(g_base, 4096, on_written) < 0) {
         printf("written-page tracking unavailable here: only checking that it says so\n");
         CHECK(scan() == ~0ull, "a scan without tracking did not fail");
     } else {
+        u8* hot = g_wp_hot; /* the checks below are of exact reports: hot pages have theirs (test_hot_pages) */
+        g_wp_hot = NULL;
         scan();
         CHECK(scan() == 0, "pages reported written twice");
         g_base[3 * 4096] = 1;
@@ -292,6 +439,12 @@ static void test_guest_memory(const char* dir) {
             test_open_frozen();
             test_shed();
         }
+        if (hot) { /* back, counted from zero: the scans without it left its counts behind */
+            memset(hot, 0, (size_t)g_wp_pages);
+            __atomic_store_n(&g_wp_hot_n, 0, __ATOMIC_RELAXED);
+            g_wp_hot = hot;
+        }
+        if (g_wp && g_wp_track) test_hot_pages();
     }
     printf("decommit\n");
     g_base[9 * 4096] = 9;

@@ -1174,6 +1174,12 @@ int vk_written_since(const u8* host, u64 len, u32 since);
    a range vk_written_since(host, len, since) has just found written, so its pages are marked */
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user);
 u32 vk_ww_now(void);
+/* [host, host + len)'s hot pages (write_tracking_hot, plat_ww_cool), and those at its pages' other addresses, protected
+   again and taken in as written, so the next vk_ww_now is a baseline after which "written" stands for a write: for a
+   render target, whose write-back keeps memory's bytes on the pages written since its baseline. A hot page reads as
+   written at every scan. Called after the range's writes were taken in (vk_written_since), whose scan may leave a page
+   hot itself. Under vk_lock */
+void vk_ww_cool(const u8* host, u64 len);
 void vk_ww_new_epoch(void); /* the CPU may have written what a GPU stream reads next: write tracking scans again */
 /* The epoch of the CPU's writes the calling thread's checks see: a cache that trusts a check for the rest of its epoch
    stamps this one, read before the check (or the read of memory) it stands for. A job's checks see the epoch it began

@@ -331,7 +331,11 @@ as written at the next cache check. Write tracking (`plat_ww_scan`) is userfault
 with `PAGEMAP_SCAN` on Linux 6.7 and later, and the reservation's write watch on Windows. Every other POSIX host
 (macOS, FreeBSD, Android, older Linux; `write_tracking=1` on any Linux) protects the pages a scan reported and takes the
 first write to each in the fault handler, which opens the page again. A system call can't fault into the handler, so
-the runtime opens what the kernel will write before the call (`plat_ww_open`, next to `own_acquire`).
+the runtime opens what the kernel will write before the call (`plat_ww_open`, next to `own_acquire`). With
+`write_tracking_hot=1` a page the scans find written twice in a row stays writable and reads as written at each scan,
+for 32 scans, without its fault. A cache takes a page reported so as one more check of its bytes, but a render
+target's write-back keeps memory's bytes on the pages written since its baseline: each baseline protects the
+target's hot pages again first, at every address of them (`vk_ww_cool`, after the writes so far were taken in).
 
 `Renderer.save`: optional pipeline-cache persistence every 300 frontend ticks (~5s) + exit, concurrent with execution.
 Exit skips renderer teardown and guest-thread joins.

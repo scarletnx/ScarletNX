@@ -570,6 +570,13 @@ static void run_take(void* user, u64 at, u8* host, u64 n) {
     (void)at;
     if (vk_written_since(host, n, 0) >= 0) *(int*)user = 1;
 }
+/* a run's hot pages protected again, once its writes were taken in (vk_ww_cool): from the baseline after, a page
+   reported written was written */
+static void run_cool(void* user, u64 at, u8* host, u64 n) {
+    (void)user;
+    (void)at;
+    vk_ww_cool(host, n);
+}
 /* s's image and guest memory agree as of now, or the image replaced all of memory: the CPU's writes from now on are
    newer than its pixels (mem_wseen). 0 without write tracking. The writes before now are taken in first, so they
    don't count as later ones */
@@ -577,6 +584,7 @@ static void mem_baseline(Surf* s) {
     u64 size = rt_bytes(s);
     int tracked = 0;
     if (!(s->gva >> 63) && size) span_runs(s->gva, size, run_take, &tracked);
+    if (tracked) span_runs(s->gva, size, run_cool, NULL);
     s->mem_wseen = tracked ? vk_ww_now() : 0;
 }
 static void rt_loaded(Surf* s) {
@@ -813,6 +821,7 @@ static void flush_rebase(Surf* s, u64 size, int kept, u64 gw0) {
     }
     s->gw = gpu_mem_generation();
     span_runs(s->gva, size, run_take, &tracked);
+    if (tracked) span_runs(s->gva, size, run_cool, NULL);
     if (s->draw_wseen && tracked) s->draw_wseen = vk_ww_now();
     s->mem_wseen = tracked ? vk_ww_now() : 0;
 }
@@ -1558,6 +1567,7 @@ void vk_rt_drawn(Surf* s) {
            that can still be GPU-owned. The hash fallback acquires its own data. */
         s->draw_has_hash = vk_written_since(gmem_host(s->gva, size), size, 0) < 0 && s->feeds_tex;
         if (s->draw_has_hash) s->draw_hash = rt_mem_hash(s);
+        if (!(s->gva >> 63) && size) span_runs(s->gva, size, run_cool, NULL);
         s->draw_wseen = vk_ww_now();
         s->draw_gw = gpu_mem_generation();
     }

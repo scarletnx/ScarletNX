@@ -551,6 +551,9 @@ void plat_vm_track(u8* p, u64 size) {
             pm = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
             if (pm >= 0) {
                 g_pagemap = pm;
+                if (g_settings.write_tracking_hot_pages == 1)
+                    WARN("memory: write_tracking_hot=1 leaves pages hot only where page protection tracks the writes, "
+                         "and userfaultfd tracks them here (write_tracking=0): no page is hot this run\n");
                 if (traps_by_signal()) wp_init(p, size, 0); /* the states for the traps alone */
                 return;
             }
@@ -562,6 +565,9 @@ void plat_vm_track(u8* p, u64 size) {
     }
 #endif
     (void)by_signal;
+    if (no_ww && g_settings.write_tracking_hot_pages == 1)
+        WARN("memory: write_tracking_hot=1 leaves pages hot only where page protection tracks the writes, and "
+             "write_tracking=2 tracks none: no page is hot this run\n");
     /* the states also serve traps by protection, where userfaultfd's minor faults don't (plat_trap_init) */
     if (!no_ww || !g_uffd_minor_on() || traps_by_signal()) wp_init(p, size, !no_ww);
 }
@@ -604,6 +610,17 @@ static unsigned g_wp_shift; /* the host's page, log2 */
 static u64 g_wp_budget;     /* atomic: pages the tracking and the traps may hold at once */
 static u64 g_wp_held;       /* atomic: pages they hold now (WP_PROT or WP_TRAP) */
 static u32 g_wp_opened;     /* atomic: moves whenever pages become writable (a fault's, a mapping change's) */
+/* Hot pages (write_tracking_hot=1): a page the scans of its leaf report written WP_HOT_AFTER times in a row is left
+   writable, and reported written by every scan after without its fault, as a page written in every epoch would be;
+   at its WP_HOT_AFTER + WP_HOT_FOR-th report in a row it is protected again and counted from zero, so a page no longer
+   written goes quiet. A scan that finds it unwritten, a trap or a mapping change starts its count over. Reporting a
+   page written when it wasn't costs a cache a hash, but a render target's write-back a pixel: it keeps memory's bytes
+   on the pages written since its baseline, so it protects its hot pages again first (plat_ww_cool). The count, a byte
+   per host page, changes under the page's lock */
+#define WP_HOT_AFTER 2
+#define WP_HOT_FOR   32
+static u8* g_wp_hot;   /* the counts; NULL with write_tracking_hot=0 */
+static u64 g_wp_hot_n; /* atomic: pages hot now (counted WP_HOT_AFTER or more) */
 /* this thread's state. The fault handlers read it, so wp_thread_start touches it before the thread can fault: on
    Darwin a thread's first access to a _Thread_local variable may allocate, which a signal handler mustn't */
 static _Thread_local struct {
@@ -649,6 +666,26 @@ static u8 wp_lock(u64 i) {
     }
 }
 static void wp_unlock(u64 i, u8 s) { __atomic_store_n(&g_wp[i], s, __ATOMIC_RELEASE); }
+/* page i's count starts over (its lock held) */
+static void wp_hot_over(u64 i) {
+    u8 n = g_wp_hot ? __atomic_load_n(&g_wp_hot[i], __ATOMIC_RELAXED) : 0;
+    if (!n) return;
+    if (n >= WP_HOT_AFTER) __atomic_fetch_sub(&g_wp_hot_n, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_wp_hot[i], 0, __ATOMIC_RELAXED);
+}
+/* page i, locked, written and about to be reported by a scan: 1 when it stays writable, hot; 0 when it is protected */
+static int wp_hot_report(u64 i) {
+    unsigned n;
+    if (!g_wp_hot) return 0;
+    n = __atomic_load_n(&g_wp_hot[i], __ATOMIC_RELAXED) + 1u;
+    if (n == WP_HOT_AFTER + WP_HOT_FOR) { /* protected again, and hot again only after WP_HOT_AFTER reports */
+        wp_hot_over(i);
+        return 0;
+    }
+    if (n == WP_HOT_AFTER) __atomic_fetch_add(&g_wp_hot_n, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_wp_hot[i], (u8)n, __ATOMIC_RELAXED);
+    return n >= WP_HOT_AFTER;
+}
 /* the host pages [*lo, *hi) of [p, p + size), within the reservation: 0, or -1 when there are none */
 static int wp_pages(const u8* p, u64 size, u64* lo, u64* hi) {
     u64 mask = ((u64)1 << g_wp_shift) - 1, a, e, end = g_wp_pages << g_wp_shift;
@@ -682,6 +719,7 @@ static void wp_let(const u8* p, u64 size, u8 to, int changed) {
         if (!to && !s) continue;
         if (changed && (s & (WP_PROT | WP_TRAP))) freed++;
         if (changed && (s & WP_TRAP)) woken = 1;
+        if (changed) wp_hot_over(i);
         wp_unlock(i, changed ? to : (u8)(s & ~(WP_LOCK | WP_CLEAN)));
     }
     if (freed) __atomic_fetch_sub(&g_wp_held, freed, __ATOMIC_RELAXED);
@@ -890,7 +928,7 @@ static void wp_protect(u64 i, u64 n, void (*cb)(u8* p, u64 size)) {
     if (shed) wp_shed();
 }
 static int wp_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
-    u64 i, lo, hi, run = 0, n = 0;
+    u64 i, lo, hi, run = 0, n = 0, page = (u64)1 << g_wp_shift;
     if (wp_pages(p, size, &lo, &hi)) return size ? -1 : 0;
     for (i = lo; i < hi; i++) {
         u8 s = __atomic_load_n(&g_wp[i], __ATOMIC_RELAXED);
@@ -898,10 +936,21 @@ static int wp_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
             s = wp_lock(i);
             /* written, and no system call writing it: locked until its run is protected */
             if ((s & (WP_MAPPED | WP_CLEAN | WP_ARMED | WP_TRAP)) == WP_MAPPED && !wp_kernel_writing(i)) {
-                if (!n) run = i;
-                n++;
+                if (!wp_hot_report(i)) {
+                    if (!n) run = i;
+                    n++;
+                    continue;
+                }
+                if (n) wp_protect(run, n, cb);
+                n = 0;
+                wp_unlock(i, s); /* hot: written, and left writable */
+                cb(g_wp_base + (i << g_wp_shift), page);
                 continue;
             }
+            wp_unlock(i, s);
+        } else if (g_wp_hot && __atomic_load_n(&g_wp_hot[i], __ATOMIC_RELAXED)) {
+            s = wp_lock(i); /* not written since the last scan, or a trap's: its count starts over */
+            if ((s & (WP_MAPPED | WP_CLEAN | WP_ARMED | WP_TRAP)) != WP_MAPPED) wp_hot_over(i);
             wp_unlock(i, s);
         }
         if (n) wp_protect(run, n, cb);
@@ -946,6 +995,19 @@ static void wp_init(u8* p, u64 size, int track) {
     g_wp_shift = shift;
     __atomic_store_n(&g_wp_budget, budget, __ATOMIC_RELAXED);
     g_wp_track = track;
+    if (track && g_settings.write_tracking_hot_pages == 1) {
+        void* h = mmap(NULL, (size_t)(size >> shift), PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (h == MAP_FAILED)
+            WARN("memory: write_tracking_hot=1 needs %llu bytes for its counts, which mmap refused (error %d): no page "
+                 "is hot this run\n",
+                 (unsigned long long)(size >> shift), errno);
+        else {
+            g_wp_hot = (u8*)h;
+            LOG("memory: hot pages (write_tracking_hot=1): a page written in %d scans in a row stays writable for %d\n",
+                WP_HOT_AFTER, WP_HOT_FOR);
+        }
+    }
     wp_thread_start();
     __atomic_store_n(&g_wp, (u8*)s, __ATOMIC_RELEASE);
 }
@@ -1018,6 +1080,33 @@ void plat_ww_close(u8* p, u64 size) {
             return;
         }
     }
+}
+int plat_ww_hot_in(const u8* p, u64 size) {
+    u64 i, lo, hi;
+    if (!g_wp_hot || !__atomic_load_n(&g_wp_hot_n, __ATOMIC_RELAXED) || wp_pages(p, size, &lo, &hi)) return 0;
+    for (i = lo; i < hi; i++)
+        if (__atomic_load_n(&g_wp_hot[i], __ATOMIC_RELAXED) >= WP_HOT_AFTER) return 1;
+    return 0;
+}
+void plat_ww_cool(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
+    u64 i, lo, hi, run = 0, n = 0;
+    if (!g_wp_hot || !__atomic_load_n(&g_wp_hot_n, __ATOMIC_RELAXED) || wp_pages(p, size, &lo, &hi)) return;
+    /* each hot page locked, its count over, and protected in runs and reported (wp_protect), as a scan does */
+    for (i = lo; i < hi; i++) {
+        if (__atomic_load_n(&g_wp_hot[i], __ATOMIC_RELAXED) >= WP_HOT_AFTER) {
+            u8 s = wp_lock(i);
+            wp_hot_over(i);
+            if ((s & (WP_MAPPED | WP_CLEAN | WP_ARMED | WP_TRAP)) == WP_MAPPED && !wp_kernel_writing(i)) {
+                if (!n) run = i;
+                n++;
+                continue;
+            }
+            wp_unlock(i, s);
+        }
+        if (n) wp_protect(run, n, cb);
+        n = 0;
+    }
+    if (n) wp_protect(run, n, cb);
 }
 
 #if defined(__linux__) && defined(PAGEMAP_SCAN)
