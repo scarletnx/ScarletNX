@@ -40,6 +40,18 @@ typedef struct {
 
 static int succeed(VkResult r) { return r == VK_SUCCESS; }
 
+/* sRGB's encoded byte to linear light, and SMPTE ST 2084's EOTF: the compose and the PQ encode, read back */
+static double srgb_to_linear1(double c) {
+    return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+static double pq_decode1(double e) {
+    const double m1 = 2610.0 / 16384.0, m2 = 2523.0 / 32.0, c1 = 3424.0 / 4096.0, c2 = 2413.0 / 128.0,
+                 c3 = 2392.0 / 128.0;
+    double p = pow(e < 0.0 ? 0.0 : e, 1.0 / m2), x = p - c1;
+    if (x < 0.0) x = 0.0;
+    return 10000.0 * pow(x / (c2 - c3 * p), 1.0 / m1);
+}
+
 static void log_line(const char* text) { puts(text); }
 
 static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
@@ -576,6 +588,51 @@ int main(int argc, char** argv) {
         CHECK(!snx_stats_draw(text, &stats, cb, target.view, VK_FORMAT_R8G8B8A8_UNORM, 640, 480, 1.0f, 0, 0, "A"));
         snx_text_destroy(text);
         image_free(&t, &target);
+    }
+
+    /* the paper white, headless: the SDR range lands at the paper white, so a paper that is not the display's white
+       puts the same colour at a different light, which is the faded picture */
+    {
+        const unsigned px = 320, py = 60 + 180; /* the source's centre in the 640x480 composition */
+        /* the pattern's centre circle: (236, 232, 220), a warm near-white (pattern() above) */
+        double lr = srgb_to_linear1(236.0 / 255.0), lg = srgb_to_linear1(232.0 / 255.0),
+               lb = srgb_to_linear1(220.0 / 255.0);
+        double want = 0.6274 * lr + 0.3293 * lg + 0.0433 * lb; /* the red channel in BT.2020 */
+        double nits[2];
+        int k;
+        for (k = 0; k < 2; ++k) {
+            SnxFxConfig c = {SNX_FX_UPSCALE_FSR1, 25, SNX_FX_AA_OFF, SNX_FX_HDR_ON, SNX_FX_CS_HDR10, SNX_FX_SRC_SDR,
+                             k ? 400 : 203, 1000, 0, 0};
+            SnxFxImage comp = {0};
+            Image target = {0};
+            VkCommandBuffer cb;
+            uint64_t serial;
+            unsigned char* got;
+            unsigned word;
+            snx_fx_configure(fx, &c);
+            snx_fx_set_display(fx, SNX_FX_DISPLAY_PQ, 100);
+            CHECK(image_make(&t, &target, 640, 480, VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT));
+            cb = snx_vk_ring_commands(&t.ring);
+            CHECK(snx_fx_hdr_compose(fx, cb, src.view, VK_FORMAT_R8G8B8A8_UNORM, 320, 240, 0, 0, 320, 240, 0, 640, 480,
+                                     0, 60, 640, 360, &comp));
+            CHECK(snx_fx_hdr_encode(fx, cb, &comp, target.image, target.view, VK_FORMAT_A2B10G10R10_UNORM_PACK32, 640,
+                                    480, SNX_FX_ENC_PQ));
+            serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+            got = read_image(&t, target.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 640, 480);
+            CHECK(got);
+            word = (unsigned)got[((size_t)py * 640 + px) * 4] | (unsigned)got[((size_t)py * 640 + px) * 4 + 1] << 8 |
+                   (unsigned)got[((size_t)py * 640 + px) * 4 + 2] << 16 |
+                   (unsigned)got[((size_t)py * 640 + px) * 4 + 3] << 24;
+            nits[k] = pq_decode1((word & 0x3FF) / 1023.0);
+            free(got);
+            image_free(&t, &target);
+        }
+        fprintf(stderr, "present_fx: paper 203 -> %.1f nits, 400 -> %.1f nits (%.1f at 400), ratio %.3f\n", nits[0],
+                nits[1], 400.0 * want, nits[1] / nits[0]);
+        CHECK(nits[0] > 203.0 * want * 0.85 && nits[0] < 203.0 * want * 1.15);
+        CHECK(nits[1] > 400.0 * want * 0.85 && nits[1] < 400.0 * want * 1.15);
     }
 
     snx_fx_destroy(fx);
