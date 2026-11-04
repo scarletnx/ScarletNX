@@ -41,8 +41,10 @@ def smoke_code(length):
     )
 
 
-# a call through a pointer that holds 0, which no code answers: the run stops with the caller in its report
-NULL_CALL_LR = 0xD40000E1
+# a call through a pointer that holds 0, which no code answers: the run stops with the caller in its report. Where it
+# would return is a NOP, a word NCE runs as it is (it patches an SVC there), so the report's code at lr holds it on
+# every host
+NULL_CALL_LR = 0xD503201F
 
 
 def null_call_code(length):
@@ -50,7 +52,8 @@ def null_call_code(length):
         0x10000809,  # ADR X9, +0x100 (.data, all zeros).
         0xF9400128,  # LDR X8, [X9].
         0xD63F0100,  # BLR X8: to 0.
-        NULL_CALL_LR,  # SVC #7: ExitProcess, where it would return.
+        NULL_CALL_LR,  # NOP, where it would return.
+        0xD40000E1,  # SVC #7: ExitProcess.
         0xD4200000,  # BRK.
     )
 
