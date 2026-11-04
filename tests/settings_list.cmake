@@ -57,7 +57,7 @@ endif()
 foreach(row "Graphics\thdr\toff\ttext\t0\t0\t" "\tHDR\toff=Off|auto=Auto|on=On\n"
             "Graphics\thdr_colorspace\tauto\ttext\t0\t0\t" "\tHDR colours\tauto=Auto|p3=Display P3|scrgb=scRGB|hdr10=HDR10 (PQ)\n"
             "Graphics\thdr_source\tauto\ttext\t0\t0\t" "\tHDR source\tauto=Auto|sdr=SDR|linear=Linear|pq=PQ (HDR10)\n"
-            "Graphics\thdr_test\t0\tint\t0\t1\t" "\tHDR test pattern\t0=Off|1=On\n"
+            "Debug\thdr_test\t0\tint\t0\t1\t" "\tHDR test pattern\t0=Off|1=On\n"
             "Graphics\thdr_paperwhite\t0\tint\t0\t480\t" "\tPaper white (nits)\t\n"
             "Graphics\thdr_peak\t1000\tint\t400\t4000\t" "\tPeak light (nits)\t\n"
             "Graphics\thdr_expand\t50\tint\t0\t100\t" "\tHDR expansion\t\n"

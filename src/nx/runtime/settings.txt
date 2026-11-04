@@ -307,16 +307,6 @@ setting HDR expansion
     help The colours' hue and saturation never move, as BT.2446, Dolby's inverse tone mapping and Horizon's HDR keep
     help them. Where the display reports no headroom (macOS at full brightness) nothing is lifted, and a frame that
     help already holds HDR data is never lifted
-setting HDR test pattern
-    key hdr_test
-    label HDR test pattern
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    help On = a band at the bottom of the window shows six patches of known light: black, the paper white, and 1.25, 1.5,
-    help 1.75 and 2 times it. The steps above the paper white are the display's headroom; where the last ones look the
-    help same, the display or its layer clips there. It proves the lift reaches the screen, and is drawn in the frame
 setting HDR source
     key hdr_source
     text 8
@@ -782,6 +772,16 @@ setting User uid
     help them; empty is its [user1] ("Player" without one). A uid no user has stops the game
 
 table g_debug_ini
+setting HDR test pattern
+    key hdr_test
+    label HDR test pattern
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help On = a band at the bottom of the window shows six patches of known light: black, the paper white, and 1.25, 1.5,
+    help 1.75 and 2 times it. The steps above the paper white are the display's headroom; where the last ones look the
+    help same, the display or its layer clips there. It proves the lift reaches the screen, and is drawn in the frame
 setting Log level
     key log
     int 0 2
