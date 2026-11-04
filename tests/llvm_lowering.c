@@ -1,13 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The lowering census of the A64 SIMD, FP and crypto emitters: what each op becomes on eight emitter paths, against a
+/* The lowering census of the A64 SIMD, FP and crypto emitters: what each op becomes on nine emitter paths, against a
    checked-in summary, and what the target's object makes of it.
      snx-test-llvm-lowering EXPECTED [--update] [--report FILE] [--ir DIR] [--objects DIR] [--objdump PATH]
                                     [--counts FILE] [--path NAME [--triple TRIPLE]]
    Every decoder-row word the Switch target decodes (llvm_qemu_words.c) that ir_fpu.c, ir_vec.c, ir_vec_fp.c,
    ir_vec_crypto.c or ir_ldst.c's SIMD loads and stores emit becomes one step (snx_ir_static_step), optimized as a
    game's module is (snx_ir_module_optimize, the SLP vectorizer off as the setting's default), on each path:
-     x86       x86-64 with every extension SnxIrFeatures has
+     x86       x86-64 with every extension SnxIrFeatures has, AVX-512's included (a Zen 4's)
+     x86-avx2  the same without AVX-512 (a Zen 3's)
      x86-base  x86-64 with none of them
      aarch64   AArch64 with AES, SHA2 and CRC32, the Cortex-A57's
      generic   no feature bit, as PowerPC64, RISC-V, LoongArch and MIPS64 hosts without their vectors emit (riscv64's
@@ -17,7 +18,8 @@
    An op's class on a path is the worst of its words': inline (no runtime helper is called), guarded (a helper on some
    paths and one path calling none: an inline fast path with a helper when its guard fails) or helper (every path
    calls one), with the helpers it calls. The step's entry call to snx_fp_env, which every generated function makes,
-   is not a helper. EXPECTED holds one line per op and path; a line that differs fails the test either way, so a
+   is not a helper. The choices table below checks the instruction an emitter picks where the class does not show it
+   (VPERMI2B or PSHUFB for TBL). EXPECTED holds one line per op and path; a line that differs fails the test either way, so a
    change that moves an op updates EXPECTED in the same commit (--update rewrites it). A path whose target this LLVM
    lacks is not compared, and the run says so. --report FILE writes each word's class, its shape when inline (vector,
    scalar, or lanes: extract and insert one lane at a time) and the counts of its optimized IR behind them; --ir DIR
@@ -42,7 +44,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PATHS   8
+#define PATHS   9
 #define HELPERS 256 /* the helpers a word or an op calls, space-separated (add_helper stops the test past it) */
 #define LINE    256
 
@@ -73,6 +75,25 @@ static const Path paths[PATHS] = {
       .gfni = 1,
       .fma = 1,
       .f16c = 1,
+      .avx2 = 1,
+      .avx512f = 1,
+      .avx512dq = 1,
+      .avx512vl = 1,
+      .avx512vbmi = 1},
+     "+ssse3,+sse4.2,+crc32,+pclmul,+aes,+sha,+gfni,+fma,+f16c,+avx2,+avx512f,+avx512dq,+avx512vl,+avx512bw,"
+     "+avx512vbmi"},
+    {"x86-avx2",
+     "x86_64-unknown-linux-gnu",
+     {.x86 = 1,
+      .ssse3 = 1,
+      .sse42 = 1,
+      .crc32 = 1,
+      .pclmul = 1,
+      .aes = 1,
+      .sha_ni = 1,
+      .gfni = 1,
+      .fma = 1,
+      .f16c = 1,
       .avx2 = 1},
      "+ssse3,+sse4.2,+crc32,+pclmul,+aes,+sha,+gfni,+fma,+f16c,+avx2"},
     {"x86-base", "x86_64-unknown-linux-gnu", {.x86 = 1}, ""},
@@ -86,7 +107,7 @@ static const Path paths[PATHS] = {
     {"la64-lsx", "loongarch64-unknown-linux-gnu", {.loongarch = 1, .la_lsx = 1}, "+lsx"},
     {"mips-msa", "mips64el-unknown-linux-gnuabi64", {.mips64 = 1, .mips_msa = 1}, "+mips64r5,+msa,+fp64"},
 };
-#define GENERIC 3 /* paths[]'s generic one, which any triple may run */
+#define GENERIC 4 /* paths[]'s generic one, which any triple may run */
 
 /* ir_ldst.c's ops that load or store V registers */
 static const char* const simd_ldst[] = {"LD_mult", "ST_mult", "LD_single", "ST_single", "LD_single_repl", "LDR_v",
@@ -101,8 +122,10 @@ typedef struct {
 typedef struct {
     unsigned char cls, shape;
     unsigned insns, vector, extract, insert, shuffle, calls, target;
+    unsigned sitofp;    /* signed integer to float conversions */
     ObjectCount object; /* when --objects made one */
     char helpers[HELPERS];
+    char intrinsics[HELPERS]; /* the target's intrinsics it calls, as helpers */
 } Result;
 
 typedef struct {
@@ -240,6 +263,7 @@ static int classify(LLVMValueRef fn, Result* r) {
             if (op == LLVMInsertElement) ++r->insert;
             if (op == LLVMShuffleVector) ++r->shuffle;
             if (vector_opcode(op) && LLVMGetTypeKind(LLVMTypeOf(i)) == LLVMVectorTypeKind) ++r->vector;
+            if (op == LLVMSIToFP) ++r->sitofp;
             if (op != LLVMCall) continue;
             LLVMValueRef callee = LLVMGetCalledValue(i);
             size_t length = 0;
@@ -247,7 +271,10 @@ static int classify(LLVMValueRef fn, Result* r) {
             if (!LLVMIsAFunction(callee)) length = strlen(name);
             if (length > 5 && !strncmp(name, "llvm.", 5)) {
                 for (size_t t = 0; t < sizeof(targets) / sizeof(targets[0]); ++t)
-                    if (!strncmp(name, targets[t], strlen(targets[t]))) ++r->target;
+                    if (!strncmp(name, targets[t], strlen(targets[t]))) {
+                        ++r->target;
+                        add_helper(r->intrinsics, name, length);
+                    }
                 continue;
             }
             if (length == 10 && !strncmp(name, "snx_fp_env", 10)) continue;
@@ -575,6 +602,82 @@ static size_t key_length(const char* line) {
     return space ? (size_t)(space - line) : strlen(line);
 }
 
+/* The instruction an emitter picks for an op on a path where its class does not show it: every word of the op calls
+   the intrinsic (CHOICE_ALL), or no word has a signed conversion (CHOICE_NO_SITOFP), or one word has one at least
+   (CHOICE_SITOFP) */
+enum { CHOICE_ALL, CHOICE_NO_SITOFP, CHOICE_SITOFP };
+typedef struct {
+    const char *op, *path, *intrinsic;
+    unsigned char rule;
+} Choice;
+static const Choice choices[] = {
+    /* VPERMI2B two tables at a time on AVX-512 VBMI, PSHUFB one at a time before it */
+    {"TBL_TBX", "x86", "llvm.x86.avx512.vpermi2var.qi.128", CHOICE_ALL},
+    {"TBL_TBX", "x86-avx2", "llvm.x86.ssse3.pshuf.b.128", CHOICE_ALL},
+    /* AVX-512's unsigned conversions, where x86 before it converts a value that fits as a signed one */
+    {"UCVTF_f", "x86", NULL, CHOICE_NO_SITOFP},
+    {"UCVTF_g", "x86", NULL, CHOICE_NO_SITOFP},
+    {"UCVTF_vf", "x86", NULL, CHOICE_NO_SITOFP},
+    {"UCVTF_vi", "x86", NULL, CHOICE_NO_SITOFP},
+    {"UCVTF_f", "x86-avx2", NULL, CHOICE_SITOFP},
+    {"UCVTF_g", "x86-avx2", NULL, CHOICE_SITOFP},
+    {"UCVTF_vf", "x86-avx2", NULL, CHOICE_SITOFP},
+    {"UCVTF_vi", "x86-avx2", NULL, CHOICE_SITOFP},
+};
+
+static int has_word(const char* set, const char* word) {
+    size_t n = strlen(word);
+    for (const char* t = set; *t;) {
+        size_t length = strcspn(t, " ");
+        if (length == n && !strncmp(t, word, n)) return 1;
+        t += length + (t[length] == ' ');
+    }
+    return 0;
+}
+
+/* the choices whose path ran that do not hold, each said on stderr */
+static size_t check_choices(const Word* words, size_t count, const int* ran) {
+    size_t failed = 0;
+    for (size_t c = 0; c < sizeof(choices) / sizeof(choices[0]); ++c) {
+        const Choice* choice = &choices[c];
+        unsigned p = 0, seen = 0, holding = 0;
+        while (p < PATHS && strcmp(paths[p].name, choice->path)) ++p;
+        if (p == PATHS) {
+            fprintf(stderr, "choice %s on %s: no such path, llvm_lowering.c's choices are out of date\n", choice->op,
+                    choice->path);
+            ++failed;
+            continue;
+        }
+        if (ran[p] != 1) continue;
+        for (size_t i = 0; i < count; ++i) {
+            const Result* r = &words[i].at[p];
+            if (strcmp(lqd_switch_op_name(words[i].word), choice->op)) continue;
+            ++seen;
+            holding += choice->rule == CHOICE_ALL         ? has_word(r->intrinsics, choice->intrinsic)
+                       : choice->rule == CHOICE_NO_SITOFP ? r->sitofp == 0
+                                                          : r->sitofp > 0;
+        }
+        if (!seen) {
+            fprintf(stderr, "choice %s on %s: no word of the op, llvm_lowering.c's choices are out of date\n",
+                    choice->op, choice->path);
+            ++failed;
+        } else if (choice->rule == CHOICE_ALL && holding != seen) {
+            fprintf(stderr, "choice %s on %s: %u of its %u words call %s, all should\n", choice->op, choice->path,
+                    holding, seen, choice->intrinsic);
+            ++failed;
+        } else if (choice->rule == CHOICE_NO_SITOFP && holding != seen) {
+            fprintf(stderr, "choice %s on %s: %u of its %u words convert as signed, none should\n", choice->op,
+                    choice->path, seen - holding, seen);
+            ++failed;
+        } else if (choice->rule == CHOICE_SITOFP && !holding) {
+            fprintf(stderr, "choice %s on %s: none of its %u words converts as signed, one at least should\n",
+                    choice->op, choice->path, seen);
+            ++failed;
+        }
+    }
+    return failed;
+}
+
 /* one line per op and path that ran, as EXPECTED has them (single spaces): malloc'd, *lines set; tally[p][class]
    counts the ops of each class on path p */
 static char** summary(const Word* words, size_t count, const int* ran, size_t* lines, unsigned tally[PATHS][3]) {
@@ -810,8 +913,8 @@ int main(int argc, char** argv) {
             if (!strcmp(path_name, paths[only].name)) break;
         if (only == PATHS) {
             fprintf(stderr,
-                    "snx-test-llvm-lowering: no path %s (x86, x86-base, aarch64, generic, ppc64le, riscv64-v, "
-                    "la64-lsx, mips-msa)\n",
+                    "snx-test-llvm-lowering: no path %s (x86, x86-avx2, x86-base, aarch64, generic, ppc64le, "
+                    "riscv64-v, la64-lsx, mips-msa)\n",
                     path_name);
             return 2;
         }
@@ -909,21 +1012,24 @@ int main(int argc, char** argv) {
             fprintf(stderr, "cannot write %s\n", expected);
             return 1;
         }
-        printf("%zu words, %zu lines written to %s\n", count, ngot, expected);
-        return 0;
+        size_t wrong = check_choices(words, count, ran);
+        printf("%zu words, %zu lines written to %s; %zu of the %zu choices do not hold\n", count, ngot, expected, wrong,
+               sizeof(choices) / sizeof(choices[0]));
+        return wrong ? 1 : 0;
     }
     char** want = read_expected(expected, &nwant);
     if (!want) {
         fprintf(stderr, "cannot read %s\n", expected);
         return 1;
     }
-    size_t differ = compare(got, ngot, want, nwant, ran, expected);
+    size_t differ = compare(got, ngot, want, nwant, ran, expected), wrong = check_choices(words, count, ran);
     printf("%zu words, %zu op lines: %zu differ from %s%s\n", count, ngot, differ, expected,
            differ ? "; a change that moves an op updates it in the same commit (--update)" : "");
+    printf("%zu of the %zu choices do not hold\n", wrong, sizeof(choices) / sizeof(choices[0]));
     for (size_t i = 0; i < ngot; ++i) free(got[i]);
     for (size_t i = 0; i < nwant; ++i) free(want[i]);
     free(got);
     free(want);
     free(words);
-    return differ ? 1 : 0;
+    return differ || wrong ? 1 : 0;
 }
