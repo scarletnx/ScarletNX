@@ -2634,6 +2634,14 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         add_test(NAME settingsgen COMMAND "${CMAKE_COMMAND}" "-DSETTINGSGEN=$<TARGET_FILE:snx-settingsgen>"
                  "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/settingsgen-test"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/settingsgen.cmake")
+        # its output where iOS compiles it: a default-if SNX_IOS value, which needs common.h. Not on Apple hosts, whose
+        # own headers read the TargetConditionals.h the test puts in their place
+        if(NOT APPLE)
+            add_test(NAME settingsgen_ios COMMAND "${CMAKE_COMMAND}" "-DSETTINGSGEN=$<TARGET_FILE:snx-settingsgen>"
+                     "-DCC=${CMAKE_C_COMPILER}" "-DSRC=${PROJECT_SOURCE_DIR}/src"
+                     "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/settingsgen-ios-test"
+                     -P "${CMAKE_CURRENT_SOURCE_DIR}/settingsgen_ios.cmake")
+        endif()
         if(UNIX) # the opts the test runs are shell scripts
             # cmake/llvm_opt.cmake: the pipelines of an opt of the LLVM's exact version, and what another opt gets
             add_test(NAME llvm_opt COMMAND "${CMAKE_COMMAND}"
