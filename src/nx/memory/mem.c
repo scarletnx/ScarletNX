@@ -304,11 +304,14 @@ typedef struct {
     u32 state, perm, attr_mask, attr;
     u64 pool;
 } Change;
+static void aliases_stale_nl(void);
 static void blk_change_nl(u64 a, u64 size, const Change* c) {
     u32 i = blk_split_nl(a), j = blk_split_nl(a + size), k;
+    int pooled = c->set_pool && c->pool; /* pool pages behind an address change: views may come or go */
     if (c->set_state && (c->state == MS_FREE || c->state == MS_INACCESSIBLE)) runs_stale_nl();
     for (k = i; k < j; k++) {
         MemBlock* b = &g_blk[k];
+        if (b->pool && (c->set_pool || (c->set_state && c->state == MS_FREE))) pooled = 1;
         if (c->set_pool) b->pool = c->pool ? c->pool + (b->addr - a) : 0;
         if (c->set_state) {
             b->state = c->state;
@@ -317,6 +320,7 @@ static void blk_change_nl(u64 a, u64 size, const Change* c) {
         if (c->set_perm) b->perm = c->perm;
         b->attr = (b->attr & ~c->attr_mask) | (c->attr & c->attr_mask);
     }
+    if (pooled) aliases_stale_nl();
     blk_merge_nl(i, j);
 }
 static void blk_set_nl(u64 a, u64 size, u32 state, u32 perm, u32 attr) {
@@ -512,6 +516,129 @@ static u64 find_free_nl(u64 lo, u64 hi, u64 size, u64 align, u64 guard) {
         if (a < end && size + guard <= end - a && size <= hi - a) return a;
     }
     return 0;
+}
+
+/* ============================================================ pages with two addresses */
+/* Guest ranges whose pool pages another guest range maps too (a view and its source, shared memory mapped twice),
+   by address, each with its pool offset: a write through one of them is a write at every other (mem_alias_peers),
+   which the renderer's write tracking, reading each address's own pages, doesn't see by itself. Built from the
+   blocks under g_mem_lk when their pool pages moved since (g_alias_gen moves with each such change, g_alias_built is
+   it at the last build). The grains of address space they are on (g_alias_at) answer without the lock for the rest:
+   a game's views are its thread stacks, a few pages each */
+typedef struct {
+    u64 addr, size, off;
+} AliasRange;
+static AliasRange* g_alias;
+static u32 g_alias_cap;
+static u32 g_alias_n;       /* atomic: the last build's ranges */
+static u64 g_alias_gen = 1; /* atomic: moves with every change of the pool pages behind an address */
+static u64 g_alias_built;   /* atomic: g_alias_gen at the last build */
+#define ALIAS_GRAIN  22     /* 4 MiB */
+#define ALIAS_GRAINS (AS_TOP >> ALIAS_GRAIN)
+static u64 g_alias_at[ALIAS_GRAINS / 64]; /* atomic: a bit a grain, set where a range of the last build is */
+static void aliases_stale_nl(void) { __atomic_add_fetch(&g_alias_gen, 1, __ATOMIC_RELEASE); }
+static int alias_by_off(const void* x, const void* y) {
+    const AliasRange *a = (const AliasRange*)x, *b = (const AliasRange*)y;
+    return a->off < b->off ? -1 : a->off > b->off;
+}
+static int alias_by_addr(const void* x, const void* y) {
+    const AliasRange *a = (const AliasRange*)x, *b = (const AliasRange*)y;
+    return a->addr < b->addr ? -1 : a->addr > b->addr;
+}
+/* the grains of [a, end) */
+static void alias_grains(u64 a, u64 end, u64* g, u64* last) {
+    *g = a >> ALIAS_GRAIN;
+    *last = (end - 1) >> ALIAS_GRAIN;
+    if (*last >= ALIAS_GRAINS) *last = ALIAS_GRAINS - 1;
+}
+/* g_alias from the blocks: every mapped run of pool pages, by offset, keeping those whose pages another run maps too
+   (marked by the overlap's sweep), then by address, and their grains. A block is kept whole when any of its pages
+   has two addresses. The release fence first: a reader that sees a grain this build changed sees g_alias_gen past
+   g_alias_built too (alias_clear) */
+static void aliases_build_nl(void) {
+    u64 gen = __atomic_load_n(&g_alias_gen, __ATOMIC_ACQUIRE), g, last;
+    u32 n = 0, i, j, k = 0;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    for (i = 0; i < g_nblk; i++) n += g_blk[i].pool && g_blk[i].state != MS_FREE;
+    if (n > g_alias_cap) {
+        AliasRange* r = (AliasRange*)realloc(g_alias, sizeof *r * (size_t)n);
+        if (!r) fatal("Out of memory for the alias pool's map of views (%u runs)", n);
+        g_alias = r;
+        g_alias_cap = n;
+    }
+    for (i = 0; i < g_alias_n; i++) /* the last build's grains */
+        for (alias_grains(g_alias[i].addr, g_alias[i].addr + g_alias[i].size, &g, &last); g <= last; g++)
+            __atomic_store_n(&g_alias_at[g >> 6], 0, __ATOMIC_RELAXED);
+    n = 0;
+    for (i = 0; i < g_nblk; i++)
+        if (g_blk[i].pool && g_blk[i].state != MS_FREE)
+            g_alias[n++] = (AliasRange){g_blk[i].addr, g_blk[i].size, g_blk[i].pool - 1};
+    qsort(g_alias, n, sizeof *g_alias, alias_by_off);
+    /* the size's top bit marks a run another one overlaps in the pool */
+    for (i = 0; i < n; i++)
+        for (j = i + 1; j < n && g_alias[j].off < g_alias[i].off + (g_alias[i].size & ~(1ull << 63)); j++) {
+            g_alias[i].size |= 1ull << 63;
+            g_alias[j].size |= 1ull << 63;
+        }
+    for (i = 0; i < n; i++)
+        if (g_alias[i].size >> 63) {
+            g_alias[k] = (AliasRange){g_alias[i].addr, g_alias[i].size & ~(1ull << 63), g_alias[i].off};
+            for (alias_grains(g_alias[k].addr, g_alias[k].addr + g_alias[k].size, &g, &last); g <= last; g++)
+                __atomic_store_n(&g_alias_at[g >> 6],
+                                 __atomic_load_n(&g_alias_at[g >> 6], __ATOMIC_RELAXED) | 1ull << (g & 63),
+                                 __ATOMIC_RELAXED);
+            k++;
+        }
+    qsort(g_alias, k, sizeof *g_alias, alias_by_addr);
+    __atomic_store_n(&g_alias_n, k, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_alias_built, gen, __ATOMIC_RELEASE);
+}
+/* whether no other address maps a page of [a, end), known without the lock: the last build is current, and none of
+   its ranges is on the grains of [a, end). Read as a sequence lock: the build is checked current again after */
+static int alias_clear(u64 a, u64 end) {
+    u64 built = __atomic_load_n(&g_alias_built, __ATOMIC_ACQUIRE), g, last;
+    if (built != __atomic_load_n(&g_alias_gen, __ATOMIC_ACQUIRE)) return 0;
+    if (__atomic_load_n(&g_alias_n, __ATOMIC_RELAXED))
+        for (alias_grains(a, end, &g, &last); g <= last; g++) {
+            u64 w = __atomic_load_n(&g_alias_at[g >> 6], __ATOMIC_RELAXED);
+            if (w >> (g & 63) & 1) return 0;
+            if (!w) g |= 63; /* the word's other grains */
+        }
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    return __atomic_load_n(&g_alias_gen, __ATOMIC_RELAXED) == built;
+}
+int mem_alias_any(void) {
+    return __atomic_load_n(&g_alias_built, __ATOMIC_ACQUIRE) != __atomic_load_n(&g_alias_gen, __ATOMIC_ACQUIRE) ||
+           __atomic_load_n(&g_alias_n, __ATOMIC_RELAXED);
+}
+void mem_alias_peers(u64 a, u64 size, void (*fn)(void* user, u64 at, u64 n), void* user) {
+    u64 end = a + size;
+    u32 lo = 0, hi, i, j;
+    int held = t_mem.held;
+    if (!size || end < a || alias_clear(a, end)) return;
+    if (!held) mem_lock();
+    if (__atomic_load_n(&g_alias_built, __ATOMIC_RELAXED) != __atomic_load_n(&g_alias_gen, __ATOMIC_RELAXED))
+        aliases_build_nl();
+    hi = g_alias_n;
+    while (lo < hi) { /* the first range ending past a */
+        u32 mid = lo + (hi - lo) / 2;
+        if (g_alias[mid].addr + g_alias[mid].size <= a)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    for (i = lo; i < g_alias_n && g_alias[i].addr < end; i++) {
+        const AliasRange* r = &g_alias[i];
+        u64 at = r->addr > a ? r->addr : a, to = r->addr + r->size < end ? r->addr + r->size : end;
+        u64 plo = r->off + (at - r->addr), phi = plo + (to - at);
+        for (j = 0; j < g_alias_n; j++) { /* every other range over those pool pages */
+            const AliasRange* q = &g_alias[j];
+            u64 olo = q->off > plo ? q->off : plo, ohi = q->off + q->size < phi ? q->off + q->size : phi;
+            if (j == i || olo >= ohi) continue;
+            fn(user, q->addr + (olo - q->off), ohi - olo);
+        }
+    }
+    if (!held) mem_unlock();
 }
 
 /* ============================================================ the alias pool */
@@ -939,6 +1066,7 @@ void mem_init(void) {
     g_blk[0].size = AS_END;
     g_nblk = 1;
     runs_stale_nl();
+    aliases_stale_nl();
     mem_unlock();
     /* a view shares pages only at the same place in a host page as its source, which a game picking addresses in
        4 KiB steps leaves to chance with larger pages: they copy, as hosts without a pool do. Alias pool off asks for
@@ -1780,6 +1908,7 @@ int mem_restore_blocks(const MemBlock* blk, u32 n) {
     if (n > g_nblk) blk_reserve_nl(n - g_nblk);
     memcpy(g_blk, blk, sizeof *blk * (size_t)n);
     g_nblk = n;
+    aliases_stale_nl();
     return 0;
 }
 void mem_restore_end(u64 heap_size, u64 phys_mapped) {
