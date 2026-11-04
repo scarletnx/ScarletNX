@@ -356,10 +356,13 @@ int agb_vk_toggle_hdr(AgbVk* v) { return v && v->fx ? snx_fx_hdr_toggle(v->fx) :
 void agb_vk_toast(AgbVk* v, const char* text) {
     if (v && v->toast) snx_toast_show(v->toast, text, SDL_GetTicksNS());
 }
+void agb_vk_toast_ms(AgbVk* v, const char* text, unsigned ms) {
+    if (v && v->toast) snx_toast_show_ms(v->toast, text, SDL_GetTicksNS(), ms);
+}
 void agb_vk_keys(AgbVk* v, uint16_t keys) {
     if (v) v->keys = keys;
 }
-int agb_vk_stats_toggle(AgbVk* v) { return v ? snx_stats_toggle(&v->stats) : 0; }
+int agb_vk_stats_toggle(AgbVk* v, int showcase) { return v ? snx_stats_toggle(&v->stats, showcase) : 0; }
 
 /* the keys the player holds, in the overlay's words */
 static const SnxStatsButton agb_buttons[] = {
@@ -369,8 +372,12 @@ static const SnxStatsButton agb_buttons[] = {
 static void stats_overlay(AgbVk* v, VkCommandBuffer cb, VkImageView view, VkFormat format, float white, uint32_t w,
                           uint32_t h, unsigned slot) {
     char inputs[80];
-    if (!v->overlay || !v->stats.on) return;
-    snx_stats_inputs(inputs, sizeof inputs, v->keys, agb_buttons, (unsigned)(sizeof agb_buttons / sizeof *agb_buttons));
+    if (!v->overlay || !snx_stats_visible(&v->stats)) return;
+    if (v->stats.showcase)
+        snx_stats_inputs(inputs, sizeof inputs, v->keys, agb_buttons,
+                         (unsigned)(sizeof agb_buttons / sizeof *agb_buttons));
+    else
+        inputs[0] = 0;
     snx_stats_draw(v->overlay, &v->stats, cb, view, format, w, h, white, slot, SDL_GetTicksNS(), inputs);
 }
 

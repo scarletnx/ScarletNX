@@ -16,6 +16,8 @@ SnxToast* snx_toast_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, u
 void snx_toast_destroy(SnxToast* toast);
 /* the message, shown from now_ns for a couple of seconds */
 void snx_toast_show(SnxToast* toast, const char* text, uint64_t now_ns);
+/* the message, shown from now_ns for ms milliseconds (the quit confirmation asks for three seconds) */
+void snx_toast_show_ms(SnxToast* toast, const char* text, uint64_t now_ns, unsigned ms);
 int snx_toast_active(const SnxToast* toast, uint64_t now_ns);
 /* Draw the message over view, which is in COLOR_ATTACHMENT_OPTIMAL and comes back so. white is the text's value in
    the target's space (1.0 for an SDR or scRGB image, the paper white in nits for a linear composition), and the box

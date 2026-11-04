@@ -15,6 +15,7 @@
 static struct {
     char* shot;
     bool video;
+    uint64_t quit_armed_ns; /* the second Esc, before this, quits: a first one only warns */
 } g_present;
 static volatile sig_atomic_t g_interrupted;
 static void on_signal(int signal) {
@@ -61,12 +62,24 @@ bool vita_present_vblank(VitaProcess* p) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) return false;
         if (event.type == SDL_EVENT_KEY_DOWN) {
             int action;
+            if (event.key.key == SDLK_ESCAPE && !event.key.repeat) {
+                uint64_t now = SDL_GetTicksNS();
+                if (g_present.quit_armed_ns && now < g_present.quit_armed_ns) return false;
+                g_present.quit_armed_ns = now + 3000000000ull;
+                vita_vk_toast_ms("Press Esc again to quit", 3000);
+                printf("Press Esc again to quit\n");
+                continue;
+            }
             if (event.key.key == SDLK_F11 || (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT))) {
                 if (!event.key.repeat) vita_vk_toggle_fullscreen();
                 continue;
             }
             if (event.key.key == SDLK_F6 && !event.key.repeat) {
-                printf("stats: %s\n", vita_vk_stats_toggle() ? "on" : "off");
+                printf("showcase: %s\n", vita_vk_stats_toggle(1) ? "on" : "off");
+                continue;
+            }
+            if (event.key.key == SDLK_F12 && !event.key.repeat) {
+                printf("stats: %s\n", vita_vk_stats_toggle(0) ? "on" : "off");
                 continue;
             }
             action = snx_hotkey_match(&event.key);

@@ -38,6 +38,7 @@ struct AgbHost {
     SnxInterpAuto interp_auto; /* Auto's 1 % figures and its on and off delays */
     uint16_t keyboard, buttons; /* the keys the keyboard and the gamepads hold */
     uint64_t due;               /* when the next frame goes on screen, SDL_GetTicksNS's */
+    uint64_t quit_armed_ns;     /* the second Esc, before this, quits: a first one only warns */
 };
 
 uint16_t agb_host_key(int scancode) {
@@ -242,6 +243,17 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: open = false; break;
             case SDL_EVENT_GAMEPAD_ADDED: SDL_OpenGamepad(event.gdevice.which); break;
             case SDL_EVENT_KEY_DOWN:
+                if (event.key.key == SDLK_ESCAPE && !event.key.repeat) {
+                    uint64_t now = SDL_GetTicksNS();
+                    if (host->quit_armed_ns && now < host->quit_armed_ns) {
+                        open = false;
+                        break;
+                    }
+                    host->quit_armed_ns = now + 3000000000ull;
+                    agb_vk_toast_ms(host->vk, "Press Esc again to quit", 3000);
+                    fprintf(stderr, "Press Esc again to quit\n");
+                    break;
+                }
                 if ((event.key.scancode == SDL_SCANCODE_F11 ||
                      (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT))) &&
                     !event.key.repeat) {
@@ -250,7 +262,11 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
                     break;
                 }
                 if (event.key.key == SDLK_F6 && !event.key.repeat) {
-                    fprintf(stderr, "stats: %s\n", agb_vk_stats_toggle(host->vk) ? "on" : "off");
+                    fprintf(stderr, "showcase: %s\n", agb_vk_stats_toggle(host->vk, 1) ? "on" : "off");
+                    break;
+                }
+                if (event.key.key == SDLK_F12 && !event.key.repeat) {
+                    fprintf(stderr, "stats: %s\n", agb_vk_stats_toggle(host->vk, 0) ? "on" : "off");
                     break;
                 }
                 if (agb_hotkey(host, &event.key)) break;

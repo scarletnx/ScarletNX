@@ -75,6 +75,7 @@ static struct {
     const char* frame_dir;
     unsigned dumps;
     uint64_t presents;     /* past the first dumps, two presents (one a screen) of every 120 are kept as the latest */
+    uint64_t quit_armed_ns; /* the second Esc, before this, quits: a first one only warns */
     unsigned bottom_alone; /* bottom screen frames since the window last showed, the top screen showing none */
     unsigned up : 1, closed : 1, separate : 1;
     int have_mix[2];
@@ -568,8 +569,24 @@ static void pump(void) {
             if (!event.key.repeat) toggle_fullscreen(&event.key);
             continue;
         }
+        if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && !event.key.repeat) {
+            uint64_t now = SDL_GetTicksNS();
+            if (g_present.quit_armed_ns && now < g_present.quit_armed_ns) {
+                g_present.closed = 1;
+            } else {
+                g_present.quit_armed_ns = now + 3000000000ull;
+                if (g_present.toast)
+                    snx_toast_show_ms(g_present.toast, "Press Esc again to quit", now, 3000);
+                printf("Press Esc again to quit\n");
+            }
+            continue;
+        }
         if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F6 && !event.key.repeat) {
-            printf("stats: %s\n", snx_stats_toggle(&g_present.stats) ? "on" : "off");
+            printf("showcase: %s\n", snx_stats_toggle(&g_present.stats, 1) ? "on" : "off");
+            continue;
+        }
+        if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F12 && !event.key.repeat) {
+            printf("stats: %s\n", snx_stats_toggle(&g_present.stats, 0) ? "on" : "off");
             continue;
         }
         if (event.type == SDL_EVENT_KEY_DOWN && hotkey_event(&event.key)) continue;
@@ -677,8 +694,9 @@ static void stats_inputs(char* out, size_t size) {
 /* the frame rate and the held buttons, at the window's bottom left */
 static void stats_overlay(VkCommandBuffer cb, VkImageView view, VkFormat format, float white, VkExtent2D extent) {
     char inputs[96];
-    if (!g_present.overlay || !g_present.stats.on) return;
-    stats_inputs(inputs, sizeof inputs);
+    if (!g_present.overlay || !snx_stats_visible(&g_present.stats)) return;
+    if (g_present.stats.showcase) stats_inputs(inputs, sizeof inputs);
+    else inputs[0] = 0;
     snx_stats_draw(g_present.overlay, &g_present.stats, cb, view, format, extent.width, extent.height, white,
                    snx_ctr_vk_slot(), SDL_GetTicksNS(), inputs);
 }

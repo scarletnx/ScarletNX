@@ -16,7 +16,8 @@ typedef struct {
     uint64_t since, since_gen;
     uint64_t last_ns, prev_ns; /* the two last frames' times, for the frame time */
     int fps10, gen10;          /* tenths of a frame a second over the last half second; -1 before the first */
-    int on;
+    int on;                    /* F12's: the rates and the frame time alone */
+    int showcase;              /* F6's: the same and the buttons held */
 } SnxStats;
 
 /* a button of the frontend's input and the word the overlay gives it */
@@ -31,15 +32,18 @@ void snx_stats_init(SnxStats* stats);
 void snx_stats_frame(SnxStats* stats, uint64_t now_ns);
 /* a generated frame shown (frame interpolation's blend) */
 void snx_stats_generated(SnxStats* stats);
-/* on to off, or off to on from nothing; the state after */
-int snx_stats_toggle(SnxStats* stats);
+/* on to off, or off to on from nothing: showcase picks F6's overlay (the rates and the held buttons) or F12's (the
+   rates alone); the state of that one after */
+int snx_stats_toggle(SnxStats* stats, int showcase);
+/* either overlay shows */
+int snx_stats_visible(const SnxStats* stats);
 /* the rate line: "60.0 fps  60.0 gen  120.0 total  16.7 ms", the generated and total rates only with frame
    interpolation, ? for what is not known yet */
 void snx_stats_line(SnxStats* stats, uint64_t now_ns, char* out, size_t size);
 /* the held buttons' names, "A B L", or "-" for none */
 void snx_stats_inputs(char* out, size_t size, uint32_t held, const SnxStatsButton* buttons, unsigned count);
-/* Draws the two lines at the target's bottom left through text, with its box, when the overlay is on. white and slot
-   are snx_text_draw's. 0 when the overlay is off or nothing was drawn. */
+/* Draws the rates, and the inputs line when it is given, at the target's bottom left through text, with its box, while
+   either overlay shows. white and slot are snx_text_draw's. 0 when both are off or nothing was drawn. */
 int snx_stats_draw(SnxText* text, SnxStats* stats, VkCommandBuffer cb, VkImageView view, VkFormat format,
                    uint32_t width, uint32_t height, float white, uint32_t slot, uint64_t now_ns, const char* inputs);
 #endif

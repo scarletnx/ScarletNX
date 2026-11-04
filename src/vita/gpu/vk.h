@@ -43,9 +43,11 @@ int vita_vk_cycle_upscaler(void);
 int vita_vk_cycle_aa(void);
 int vita_vk_toggle_hdr(void);
 void vita_vk_toast(const char* text);
-/* F6's overlay: the game's frames a second, the generated ones, their total, the frame time and the held buttons. The
-   state after */
-int vita_vk_stats_toggle(void);
+/* the same, shown for ms milliseconds */
+void vita_vk_toast_ms(const char* text, unsigned ms);
+/* F6's and F12's overlays: the game's frames a second, the generated ones, their total and the frame time, with the
+   held buttons on F6's. showcase picks which; the state of that one after */
+int vita_vk_stats_toggle(int showcase);
 /* F11 and Alt+Enter: the window fullscreen or back */
 void vita_vk_toggle_fullscreen(void);
 /* the device and the window (none headless, or without a display): false with the reason when the host has no

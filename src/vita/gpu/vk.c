@@ -385,7 +385,10 @@ int vita_vk_toggle_hdr(void) { return g.fx ? snx_fx_hdr_toggle(g.fx) : -1; }
 void vita_vk_toast(const char* text) {
     if (g.toast) snx_toast_show(g.toast, text, SDL_GetTicksNS());
 }
-int vita_vk_stats_toggle(void) { return snx_stats_toggle(&g.stats); }
+void vita_vk_toast_ms(const char* text, unsigned ms) {
+    if (g.toast) snx_toast_show_ms(g.toast, text, SDL_GetTicksNS(), ms);
+}
+int vita_vk_stats_toggle(int showcase) { return snx_stats_toggle(&g.stats, showcase); }
 void vita_vk_toggle_fullscreen(void) {
     SDL_Window* window = g.vk.host.window;
     if (window) SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
@@ -416,8 +419,9 @@ static void stats_inputs(char* out, size_t size) {
 static void stats_overlay(VkCommandBuffer cb, VkImageView view, VkFormat format, float white, uint32_t w, uint32_t h,
                           unsigned slot) {
     char inputs[128];
-    if (!g.overlay || !g.stats.on) return;
-    stats_inputs(inputs, sizeof inputs);
+    if (!g.overlay || !snx_stats_visible(&g.stats)) return;
+    if (g.stats.showcase) stats_inputs(inputs, sizeof inputs);
+    else inputs[0] = 0;
     snx_stats_draw(g.overlay, &g.stats, cb, view, format, w, h, white, slot, SDL_GetTicksNS(), inputs);
 }
 

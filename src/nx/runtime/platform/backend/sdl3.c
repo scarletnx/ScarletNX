@@ -55,6 +55,7 @@ static u64 g_menu_held_extra[SNX_GAMEPADS - 1];
 static int g_fullscreen;
 static void set_fullscreen(int on);
 static int g_shot_req;
+static u64 g_quit_armed_ns; /* the second Esc, before this, quits: a first one only warns */
 /* SDL's text input for the keyboard's box (overlay.h): the box it is on for (0: off), the system's keyboard asked for
    again (a tap on the box's line), and the box's line SDL was last given, in window points */
 static struct {
@@ -1534,7 +1535,15 @@ void video_poll(void) {
                 break;
             case SDL_EVENT_KEY_DOWN:
                 if (e.key.key == SDLK_ESCAPE) { /* a fresh press: the repeats of the Esc that closed the menu don't */
-                    if (!e.key.repeat) g_quit = 1;
+                    if (!e.key.repeat) {
+                        u64 now = plat_ns();
+                        if (g_quit_armed_ns && now < g_quit_armed_ns) {
+                            g_quit = 1;
+                        } else {
+                            g_quit_armed_ns = now + 3000000000ull;
+                            overlay_toast("Press Esc again to quit", now);
+                        }
+                    }
                     break;
                 }
                 if (e.key.key == SDLK_RETURN && (e.key.mod & SDL_KMOD_ALT)) {

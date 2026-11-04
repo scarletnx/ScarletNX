@@ -21,9 +21,9 @@ SDL_Window* agb_vk_window(AgbVk* vk);
 bool agb_vk_frame(AgbVk* vk, const uint32_t* framebuffer, int generated);
 /* the keys the player holds (AGB_KEY_), for the F6 overlay */
 void agb_vk_keys(AgbVk* vk, uint16_t keys);
-/* F6's overlay: the game's frames a second, the generated ones, their total, the frame time and the held keys. The
-   state after */
-int agb_vk_stats_toggle(AgbVk* vk);
+/* F6's and F12's overlays: the game's frames a second, the generated ones, their total and the frame time, with the
+   held keys on F6's. showcase picks which; the state of that one after */
+int agb_vk_stats_toggle(AgbVk* vk, int showcase);
 /* the live hotkeys, as every other frontend's: the upscaler and the anti aliasing cycle, HDR toggles. The changed
    value, or -1 with no effects */
 int agb_vk_cycle_upscaler(AgbVk* vk);
@@ -31,4 +31,6 @@ int agb_vk_cycle_aa(AgbVk* vk);
 int agb_vk_toggle_hdr(AgbVk* vk);
 /* a message over the frame, for a couple of seconds */
 void agb_vk_toast(AgbVk* vk, const char* text);
+/* the same, shown for ms milliseconds */
+void agb_vk_toast_ms(AgbVk* vk, const char* text, unsigned ms);
 #endif

@@ -676,7 +676,8 @@ pad.
 
 F1 help; F2 the game's menu; F3 screenshot; F4 FPS limit off and on; F5 thread dump; F6 showcase on and off;
 F7 save state; F8 load state; F9 next save state slot; F10 60-second Tracy capture (SNX_TRACY builds); F11/Alt+Enter
-fullscreen; F12 stats on and off; `upscaler_key` (Ctrl+U by default) cycles the spatial upscaler through AMD FSR 1,
+fullscreen; F12 stats on and off; Escape warns with a toast and quits only when pressed again within three seconds, on
+every frontend (the Switch, 3DS, Vita and GBA alike); `upscaler_key` (Ctrl+U by default) cycles the spatial upscaler through AMD FSR 1,
 Bilinear, NVIDIA NIS, Qualcomm SGSR and None; `aa_key` (Ctrl+Shift+A by default) cycles the anti aliasing through
 Auto, FXAA, SMAA, SSAA 2x, SSAA 4x and Off; `frame_interp_key` (Ctrl+Shift+F by default) cycles frame interpolation
 through Off, Auto and Blend; `hdr_key` (Ctrl+H by default) turns HDR on and off, the toast naming
@@ -685,6 +686,7 @@ toast work on every frontend: the Switch's overlay, and the 3DS, Vita and GBA sh
 frame interpolation on, F12's stats line shows the game's own frames a second, the generated ones beside it and their
 total. On the 3DS, Vita and GBA, which have no menu, F6 turns on a frame rate and input overlay instead: the game's
 frames a second, the generated ones, their total, the frame time and the buttons held, in the frame's bottom left.
+F12 there shows the same rates without the inputs; `stats` and `showcase` start either one on.
 F11 or Alt+Enter switches fullscreen on every frontend; with the 3DS's separate windows it switches the window the
 key came from. Pause pauses the whole game and
 resumes it (the window's title says "(paused)"); Escape quit. A window shows at most one image per refresh and drops

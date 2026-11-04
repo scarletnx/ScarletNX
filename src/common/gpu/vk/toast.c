@@ -35,10 +35,13 @@ void snx_toast_destroy(SnxToast* t) {
     free(t);
 }
 
-void snx_toast_show(SnxToast* t, const char* text, uint64_t now_ns) {
+void snx_toast_show_ms(SnxToast* t, const char* text, uint64_t now_ns, unsigned ms) {
     if (!t || !text) return;
     snprintf(t->message, sizeof t->message, "%s", text);
-    t->until_ns = now_ns + (uint64_t)TOAST_MS * 1000000u;
+    t->until_ns = now_ns + (uint64_t)ms * 1000000u;
+}
+void snx_toast_show(SnxToast* t, const char* text, uint64_t now_ns) {
+    snx_toast_show_ms(t, text, now_ns, TOAST_MS);
 }
 
 int snx_toast_active(const SnxToast* t, uint64_t now_ns) { return t && t->message[0] && now_ns < t->until_ns; }
