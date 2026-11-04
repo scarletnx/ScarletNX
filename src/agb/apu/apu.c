@@ -278,11 +278,12 @@ static int channel_sample(AgbBoard* board, int channel) {
     }
 }
 
-/* The mixer applies the PSG volume ratio and the master volumes, then adds the FIFOs at their own
-   volume settings, panning everything with the SOUNDCNT_L enables. */
+/* The mixer, at mGBA's levels: the PSG channels (each twice its level, centered on zero) at their master volume, 1 to 8
+   eighths, and SOUNDCNT_H's 25, 50 or 100 percent; the FIFOs at twice or four times their bytes; the sum clipped to
+   the 10 bit DAC's range around SOUNDBIAS's level, then scaled to 16 bits as mGBA's full volume scales it */
 static void mix_sample(AgbBoard* board, int16_t* left, int16_t* right) {
     AgbApu* apu = &board->apu;
-    int psg_left = 0, psg_right = 0, l = 0, r = 0, ratio;
+    int psg_left = 0, psg_right = 0, l, r, shift = 4 - (apu->soundcnt_h & 3), bias = apu->soundbias & 0x3FE;
     if (!(apu->soundcnt_x & 0x80)) {
         *left = *right = 0;
         return;
@@ -292,19 +293,18 @@ static void mix_sample(AgbBoard* board, int16_t* left, int16_t* right) {
         if (apu->soundcnt_l & (0x100 << channel)) psg_right += sample;
         if (apu->soundcnt_l & (0x1000 << channel)) psg_left += sample;
     }
-    ratio = 1 << (apu->soundcnt_h & 3); /* 25, 50 or 100 percent */
-    psg_left = (psg_left * ratio) >> 2;
-    psg_right = (psg_right * ratio) >> 2;
-    l = psg_left * (int)((apu->soundcnt_l >> 4) & 7) / 7;
-    r = psg_right * (int)(apu->soundcnt_l & 7) / 7;
+    l = psg_left * 4 * (1 + (apu->soundcnt_l >> 4 & 7)) >> shift;
+    r = psg_right * 4 * (1 + (apu->soundcnt_l & 7)) >> shift;
     for (int fifo = 0; fifo < 2; ++fifo) {
-        int sample = apu->fifo_sample[fifo];                    /* held between its timer's overflows */
+        int sample = apu->fifo_sample[fifo] * 4;                /* held between its timer's overflows */
         if (!(apu->soundcnt_h & (4 << fifo))) sample >>= 1;     /* the 50 percent volume setting */
         if (apu->soundcnt_h & (0x100 << fifo * 4)) r += sample; /* bits 8 and 12: to the right */
         if (apu->soundcnt_h & (0x200 << fifo * 4)) l += sample; /* bits 9 and 13: to the left */
     }
-    *left = (int16_t)(l * 64);
-    *right = (int16_t)(r * 64);
+    l = (l + bias < 0 ? 0 : l + bias > 0x3FF ? 0x3FF : l + bias) - bias;
+    r = (r + bias < 0 ? 0 : r + bias > 0x3FF ? 0x3FF : r + bias) - bias;
+    *left = (int16_t)(l * 48);
+    *right = (int16_t)(r * 48);
 }
 
 void agb_apu_timer_overflow(AgbBoard* board, int timer) {
