@@ -41,8 +41,10 @@
 #include "llvm_steps.h"
 #include "qemu_ref/qemu_ref.h"
 #include <fenv.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef u64 (*StepFn)(CPU* c);
 
@@ -66,8 +68,26 @@ typedef struct {
 
 static struct {
     u64 rng;
-    Events* events; /* the step running */
-} g_test = {0x9E3779B97F4A7C15ull, NULL};
+    Events* events;    /* the step running */
+    char running[160]; /* what runs, for on_fatal: the steps' compile, or a case's op, word and state */
+} g_test = {0x9E3779B97F4A7C15ull, NULL, "the start"};
+
+/* a fatal signal (the generated code's or the harness's) names what was running before its default action ends the
+   test, which under --quiet would otherwise print nothing */
+static void on_fatal(int signo) {
+    static const char head[] = "snx-test-llvm-qemu-differential: signal ";
+    char digits[4];
+    size_t n = 0;
+    for (unsigned v = (unsigned)signo; n < sizeof digits && (v || !n); v /= 10)
+        digits[sizeof digits - 1 - n++] = (char)('0' + v % 10);
+    (void)!write(2, head, sizeof head - 1);
+    (void)!write(2, digits + sizeof digits - n, n);
+    (void)!write(2, " in ", 4);
+    (void)!write(2, g_test.running, strlen(g_test.running));
+    (void)!write(2, "\n", 1);
+    signal(signo, SIG_DFL);
+    raise(signo);
+}
 
 static u64 next_random(void) {
     g_test.rng ^= g_test.rng << 13;
@@ -1080,6 +1100,12 @@ int main(int argc, char** argv) {
     }
 
     /* the LLVM steps, one function a word, at the word's pc; a word without an emitter is noted and left out */
+    {
+        static const int fatal[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE};
+        struct sigaction on = {0};
+        on.sa_handler = on_fatal;
+        for (i = 0; i < sizeof(fatal) / sizeof(fatal[0]); ++i) sigaction(fatal[i], &on, NULL);
+    }
     if (llvm_steps_begin(&built, jit, portable, error, sizeof(error))) return snx_error("%s", error);
     ir = built.ir;
     for (i = 0; i < nitems; ++i) {
@@ -1098,6 +1124,8 @@ int main(int argc, char** argv) {
                 features = SNX_A64_TARGET_MAX;
             else if (snx_a64_decode_word(it->words[k], 0, &sw) == SNX_A64_OP_UNDEF)
                 it->skip = 1;
+            snprintf(g_test.running, sizeof(g_test.running), "the IR of word %08x (%s emitters)", it->words[k],
+                     forms[portable]);
             llvm_steps_add(&built, it->words[k], item_pc(it) + 4 * k, features);
             ++nsteps;
             if (ir->fallbacks != before) {
@@ -1108,6 +1136,8 @@ int main(int argc, char** argv) {
     }
     if (!q.quiet) printf("%lu cases of %lu words; compiling %lu LLVM steps\n", (unsigned long)nitems,
                          (unsigned long)nwords, (unsigned long)nsteps);
+    snprintf(g_test.running, sizeof(g_test.running), "the compile of %lu LLVM steps (%s emitters)",
+             (unsigned long)nsteps, forms[portable]);
     if (llvm_steps_load(&built, error, sizeof(error))) return snx_error("%s", error);
     steps = built.steps;
     rt.svc = cb_svc;
@@ -1247,6 +1277,9 @@ int main(int argc, char** argv) {
                     break;
                 }
                 /* the LLVM side */
+                snprintf(g_test.running, sizeof(g_test.running),
+                         "the LLVM side of %s, word %08x, state %lu of %lu (%s emitters)", it->op,
+                         it->words[it->nwords - 1], (unsigned long)s, (unsigned long)states, forms[portable]);
                 cpu_from_state(&c, start);
                 c.rt = &rt;
                 c.mem = work - WINDOW;
