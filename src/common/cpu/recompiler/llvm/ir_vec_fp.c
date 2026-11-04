@@ -165,8 +165,40 @@ static void lanes_call(SnxIr* ir, V* ops) {
     V args[7] = {ops[0], ops[1], ops[2], ops[3], ops[4], fpcr(ir), fpsr(ir)};
     V function = ir_extern(ir, "snx_fp_host_lanes", ir->t_i32, params, 7);
     ir_argmem(ir, function);
+    /* The audited helper consumes these buffers synchronously and never retains their addresses. Without this,
+       LLVM's tail-call analysis follows each buffer through the returned FPSR chain, quadratically in big functions.
+       LLVM 21 names the attribute captures(none); older versions call it nocapture. This makes no alias claim. */
+    unsigned capture = LLVMGetEnumAttributeKindForName("captures", 8);
+    if (!capture) capture = LLVMGetEnumAttributeKindForName("nocapture", 9);
+    if (capture && !LLVMGetEnumAttributeAtIndex(function, 1, capture)) {
+        LLVMAttributeRef none = LLVMCreateEnumAttribute(ir->ctx, capture, 0);
+        for (unsigned i = 1; i <= 4; i++) LLVMAddAttributeAtIndex(function, i, none);
+    }
     V flags = LLVMBuildCall2(B, LLVMFunctionType(ir->t_i32, params, 7, 0), function, args, 7, "");
     ir_cpu_store(ir, LLVMBuildOr(B, fpsr(ir), flags, ""), offsetof(CPU, fpsr));
+}
+
+/* Every input is stored in full before the synchronous helper call. Its output may alias x because the helper
+   consumes each lane's inputs before writing that lane, and its vector path reads all inputs before any write.
+   Calls never retain these pointers. Reuse one function-local allocation, grown to the largest active input set.
+   Three 16-byte FMA inputs bound it at 48 bytes; shorter vectors and fewer inputs require less. */
+static V lanes_scratch(SnxIr* ir, unsigned bytes) {
+    if (!ir->fp_lanes_scratch) {
+        LLVMBasicBlockRef here = LLVMGetInsertBlock(B), entry = LLVMGetEntryBasicBlock(ir->fn);
+        V first = LLVMGetFirstInstruction(entry);
+        if (first) LLVMPositionBuilderBefore(B, first);
+        else LLVMPositionBuilderAtEnd(B, entry);
+        ir->fp_lanes_scratch = LLVMBuildArrayAlloca(B, ir->t_i8, ir_i32(ir, bytes), "fp.lanes");
+        LLVMSetAlignment(ir->fp_lanes_scratch, 16);
+        LLVMPositionBuilderAtEnd(B, here);
+    } else if (LLVMConstIntGetZExtValue(LLVMGetOperand(ir->fp_lanes_scratch, 0)) < bytes) {
+        LLVMSetOperand(ir->fp_lanes_scratch, 0, ir_i32(ir, bytes));
+    }
+    return ir->fp_lanes_scratch;
+}
+static V scratch_offset(SnxIr* ir, V base, unsigned bytes) {
+    V offset = ir_i32(ir, bytes);
+    return LLVMBuildInBoundsGEP2(B, ir->t_i8, base, &offset, 1, "");
 }
 
 /* the lanes of X (Y, Z: the other operands, or NULL) through the helper, as <lanes x i out_bits>. The arithmetic,
@@ -177,11 +209,16 @@ static V map(SnxIr* ir, const LaneOp* o, V X, V Y, V Z, unsigned out_bits) {
     LLVMTypeRef type = LLVMVectorType(LLVMIntTypeInContext(ir->ctx, out_bits), lanes);
     V r = LLVMGetUndef(type);
     if (lanes > 1 && o->helper <= H_MINMAX) {
-        V out = ir_local(ir, type), x = spill(ir, X), ops[5];
+        unsigned bytes = lanes * (o->width / 8);
+        V out = ir->promote ? lanes_scratch(ir, bytes * (1 + (Y != NULL) + (Z != NULL))) : ir_local(ir, type);
+        V x = ir->promote ? out : spill(ir, X), ops[5];
+        if (ir->promote) LLVMSetAlignment(LLVMBuildStore(B, X, x), 8);
         ops[0] = out;
         ops[1] = x;
-        ops[2] = Y ? spill(ir, Y) : x;
-        ops[3] = Z ? spill(ir, Z) : x;
+        ops[2] = Y ? (ir->promote ? scratch_offset(ir, out, bytes) : spill(ir, Y)) : x;
+        ops[3] = Z ? (ir->promote ? scratch_offset(ir, out, bytes * (1 + (Y != NULL))) : spill(ir, Z)) : x;
+        if (ir->promote && Y) LLVMSetAlignment(LLVMBuildStore(B, Y, ops[2]), 8);
+        if (ir->promote && Z) LLVMSetAlignment(LLVMBuildStore(B, Z, ops[3]), 8);
         ops[4] = ir_i32(ir, o->helper | (o->width / 8) << 4 | lanes << 8 | o->op << 12 | o->p1 << 16);
         lanes_call(ir, ops);
         V load = LLVMBuildLoad2(B, type, out, "");

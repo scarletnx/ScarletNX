@@ -152,7 +152,26 @@ The combined 681-test local suite passed all CPU tests, including the full QEMU 
 page-tracking assertion still fails. Both ASTC Vulkan tests fail on the Intel device and pass with lavapipe.
 Their 61 tracked build inputs match upstream, and their link includes no CPU backend. This GPU test discrepancy
 is separate from the CPU emitter changes. The retained O0 decisions also passed the focused eleven-check run.
-Final game and native CI validation of min/max and rounding remain pending here.
+Native Linux x86-64, Linux AArch64 and Windows CI passed at `efb12311`, including the native CPU tests.
+The final game rebuild exposed a compiler bottleneck before its scene comparison could run.
+
+LLVM's tail-call analysis followed each temporary pointer through the helper's returned FPSR and later control-flow
+joins. On one private unit, the isolated pass finished in 3.63 seconds with accurate non-capture attributes. The
+original declaration exceeded the 35-second limit. This is an isolated pass comparison, not a complete rebuild ratio.
+The helper consumes its buffers synchronously and never retains their addresses. Its pointer parameters now declare
+that fact without adding a no-alias claim.
+
+At O1 and above, batched FP calls also reuse one function-local scratch allocation. The helper reads an input lane
+before it writes that lane, so output can reuse the first input's space. The allocation grows only when a larger
+input set is emitted, to at most three 16-byte inputs, or 48 bytes. O0 keeps its existing allocation sequence.
+The alias test compares all helper kinds and modes against their exact results and FPSR. A guarded-loop fixture
+checks buffer growth, function boundaries and full CPU state with and without the pointer attributes.
+The initial 48-workload runtime search had inconclusive per-workload bounds. A fresh 35-round comparison checks
+the 16 distinct O1 kernels, each with 20,000 bootstrap resamples. Every workload clears the unchanged 2-percent
+regression bound. The aggregate ratio is 1.004 with a 95-percent interval of 0.999 to 1.011, so runtime improvement
+is inconclusive. This is a compiler-cost and stack-space change, not a demonstrated runtime speedup. All four O0
+arithmetic objects remain byte-identical. Each O1/O2 arithmetic object is 16 bytes smaller, and the corresponding
+O1 and O2 objects are byte-identical for both candidates. A fresh game rebuild remains required.
 
 The earlier half-conversion and estimate continuation was recompiled and checked against its preceding module with the
 same current runtime and restored private save. Both 100-second scene runs completed without crashes, and both

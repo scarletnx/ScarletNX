@@ -738,6 +738,14 @@ snx_cpu_helpers_flags(snx-test-llvm-simd-shift)
 target_link_libraries(snx-test-llvm-simd-shift PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_simd_shift COMMAND snx-test-llvm-simd-shift)
 
+add_executable(snx-test-llvm-fp-pointer-chain llvm_fp_pointer_chain.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-fp-pointer-chain 11)
+snx_cpu_helpers_flags(snx-test-llvm-fp-pointer-chain)
+target_link_libraries(snx-test-llvm-fp-pointer-chain PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_fp_pointer_chain COMMAND snx-test-llvm-fp-pointer-chain)
+set_tests_properties(llvm_fp_pointer_chain PROPERTIES TIMEOUT 120)
+
 add_executable(snx-test-llvm-vfp-minmax llvm_vfp_minmax.c llvm_steps.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
 snx_test_target(snx-test-llvm-vfp-minmax 11)

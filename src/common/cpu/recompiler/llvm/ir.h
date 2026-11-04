@@ -165,6 +165,7 @@ typedef struct SnxIr {
     LLVMTypeRef t_void, t_i1, t_i8, t_i16, t_i32, t_i64, t_i128, t_ptr, t_guest;
     /* the function being emitted: its CPU* and the guest memory base (u8* const M=c->mem) */
     LLVMValueRef fn, c, M;
+    LLVMValueRef fp_lanes_scratch; /* one lazy, non-escaping byte array for this function, at most 48 bytes */
     LLVMValueRef helpers[SNX_IR_HELPER_COUNT];
     SnxIrBlockState state;
     /* alias scopes: guest memory (through M) and the CPU structure never overlap */

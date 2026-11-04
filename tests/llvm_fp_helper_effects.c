@@ -43,8 +43,15 @@ int main(void) {
     unsigned reloads = (unsigned)ir->stats.sync_reloads, call_stores = (unsigned)ir->stats.call_stores;
     LLVMValueRef lanes = LLVMGetNamedFunction(ir->mod, "snx_fp_host_lanes");
     int marked = memory(lanes) == 3 && !noregs(lanes); /* its arguments' memory alone */
+    unsigned capture = LLVMGetEnumAttributeKindForName("captures", 8);
+    if (!capture) capture = LLVMGetEnumAttributeKindForName("nocapture", 9);
+    for (unsigned i = 1; i <= 4; i++) {
+        LLVMAttributeRef attribute = LLVMGetEnumAttributeAtIndex(lanes, i, capture);
+        marked = marked && attribute && LLVMGetEnumAttributeValue(attribute) == 0;
+    }
     LLVMValueRef other = LLVMAddFunction(ir->mod, "writes_vectors", LLVMFunctionType(ir->t_void, params, 2, 0));
     snx_ir_begin(ir, other);
+    if (ir->fp_lanes_scratch) return snx_error("scratch storage leaked from the previous function");
     LLVMValueRef operands[] = {ir_i32(ir, 0), ir_i32(ir, 1), ir_i32(ir, 2), ir_i32(ir, 0)};
     ir_vec_call(ir, "snx_vec_shl", ir->t_void, operands, 4);
     LLVMBuildRetVoid(ir->b);
