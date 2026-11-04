@@ -4,12 +4,13 @@
    (snx.android.opengl.Egl10), which share its objects: a context or surface that Java makes is current for the
    native GLES calls of the same thread, as on Android.
 
-   The configs are GLES 1.1's alone (EGL_OPENGL_ES_BIT), with window surfaces of the host window, which GLES 1.1 over
-   Vulkan draws (hle_gles.c). An engine that asks for GLES 2 or 3 finds no config, and then chooses Vulkan. Engines
-   name the GPU from a throwaway context's glGetString(GL_RENDERER) before they choose an API, and choose Vulkan only
+   The configs are GLES 1.1's, 2's and 3's (EGL_OPENGL_ES_BIT, EGL_OPENGL_ES2_BIT, EGL_OPENGL_ES3_BIT_KHR), with
+   window surfaces of the host window and pbuffers. A context of version 1 draws with GLES 1.1 over Vulkan
+   (hle_gles.c), one of 2 or 3 with GLES 3.0 over Vulkan (gles2.h). Engines name the GPU from a throwaway context's glGetString(GL_RENDERER) before they choose an API, and choose Vulkan only
    on the GPUs of their own lists: so a context without a config (EGL_KHR_no_config_context) of any version can be
    made current without a surface, and glGetString answers with the device that Vulkan reports */
 #include "android/bridge/hle.h"
+#include "android/bridge/gles2.h"
 #include "android/bridge/hle_gles.h"
 #include "android/bridge/hle_impl.h"
 #include "android/bridge/jni.h"
@@ -83,8 +84,15 @@ enum {
     EGL_CONTEXT_CLIENT_VERSION_ = 0x3098,
     EGL_OPENGL_ES_API_ = 0x30a0,
     EGL_RECORDABLE_ANDROID_ = 0x3142,
+    EGL_PBUFFER_BIT_ = 0x01,
     EGL_WINDOW_BIT_ = 0x04,
     EGL_OPENGL_ES_BIT_ = 0x01,
+    EGL_OPENGL_ES2_BIT_ = 0x04,
+    EGL_OPENGL_ES3_BIT_ = 0x40,
+    EGL_ES_BITS_ = EGL_OPENGL_ES_BIT_ | EGL_OPENGL_ES2_BIT_ | EGL_OPENGL_ES3_BIT_,
+    EGL_SURFACE_BITS_ = EGL_WINDOW_BIT_ | EGL_PBUFFER_BIT_,
+    EGL_CONTEXT_MINOR_VERSION_ = 0x30fb,
+    EGL_LARGEST_PBUFFER_ = 0x3058,
     GL_VENDOR_ = 0x1f00,
     GL_RENDERER_ = 0x1f01,
     GL_VERSION_ = 0x1f02,
@@ -108,7 +116,8 @@ typedef struct {
     bool used;
     int version;
     const Config* config; /* NULL: made without one */
-    GlesContext* gl;      /* GLES 1.1's state; NULL for another version, which draws nothing */
+    GlesContext* gl;      /* GLES 1.1's state, for version 1 */
+    Gles2Context* gl2;    /* GLES 2 and 3's, for versions 2 and 3 */
 } Context;
 typedef struct {
     bool used;
@@ -122,6 +131,7 @@ static struct {
     unsigned char display;
     Context contexts[CONTEXTS];
     Surface surfaces[SURFACES];
+    bool said[4]; /* the versions whose first context was said */
 } e = {.lock = PTHREAD_MUTEX_INITIALIZER};
 static _Thread_local Context* t_context; /* the calling thread's current ones */
 static _Thread_local Surface *t_draw, *t_read;
@@ -168,18 +178,18 @@ static bool config_attribute(const Config* c, int32_t attribute, int32_t* value)
     case EGL_CONFIG_CAVEAT_: *value = EGL_NONE_; break;
     case EGL_CONFIG_ID_: *value = c->id; break;
     case EGL_NATIVE_VISUAL_ID_: *value = c->visual; break;
-    case EGL_SURFACE_TYPE_: *value = EGL_WINDOW_BIT_; break;
+    case EGL_SURFACE_TYPE_: *value = EGL_SURFACE_BITS_; break;
     case EGL_TRANSPARENT_TYPE_: *value = EGL_NONE_; break;
     case EGL_MIN_SWAP_INTERVAL_:
     case EGL_MAX_SWAP_INTERVAL_: *value = 1; break;
     case EGL_COLOR_BUFFER_TYPE_: *value = EGL_RGB_BUFFER_; break;
     case EGL_RENDERABLE_TYPE_:
-    case EGL_CONFORMANT_: *value = EGL_OPENGL_ES_BIT_; break;
+    case EGL_CONFORMANT_: *value = EGL_ES_BITS_; break;
     case EGL_RECORDABLE_ANDROID_: *value = EGL_TRUE_; break;
     case EGL_LEVEL_:
     case EGL_MAX_PBUFFER_HEIGHT_:
-    case EGL_MAX_PBUFFER_PIXELS_:
-    case EGL_MAX_PBUFFER_WIDTH_:
+    case EGL_MAX_PBUFFER_WIDTH_: *value = 4096; break;
+    case EGL_MAX_PBUFFER_PIXELS_: *value = 4096 * 4096; break;
     case EGL_NATIVE_RENDERABLE_:
     case EGL_NATIVE_VISUAL_TYPE_:
     case EGL_SAMPLES_:
@@ -207,7 +217,7 @@ static bool config_matches(const Config* c, const int32_t* attributes, int* bits
         case EGL_SURFACE_TYPE_: surface = want; continue;
         case EGL_RENDERABLE_TYPE_: renderable = want; continue;
         case EGL_CONFORMANT_:
-            if (want != EGL_DONT_CARE_ && (want & ~EGL_OPENGL_ES_BIT_)) return false;
+            if (want != EGL_DONT_CARE_ && (want & ~EGL_ES_BITS_)) return false;
             continue;
         case EGL_RED_SIZE_:
         case EGL_GREEN_SIZE_:
@@ -240,8 +250,9 @@ static bool config_matches(const Config* c, const int32_t* attributes, int* bits
         default: continue; /* the others hold for every config here */
         }
     }
-    return (surface == EGL_DONT_CARE_ || !(surface & ~EGL_WINDOW_BIT_)) &&
-           (renderable == EGL_DONT_CARE_ || !(renderable & ~EGL_OPENGL_ES_BIT_));
+    /* EGL_SWAP_BEHAVIOR_PRESERVED_BIT (0x400) and the others are not here */
+    return (surface == EGL_DONT_CARE_ || !(surface & ~EGL_SURFACE_BITS_)) &&
+           (renderable == EGL_DONT_CARE_ || !(renderable & ~EGL_ES_BITS_));
 }
 
 /* eglChooseConfig: the configs that match, in EGL's order (more of the requested color bits first, then a smaller
@@ -276,20 +287,30 @@ static int choose_configs(const int32_t* attributes, const Config** out, int siz
     return out && n > size ? size : n;
 }
 
-/* eglCreateContext: a config's (GLES 1.1 alone) or one without a config, of the version the attributes ask */
+/* eglCreateContext: a config's or one without a config, of the version the attributes ask: GLES 1.1, or GLES 2
+   and 3.0 (gles2.h). A minor version past 3.0 is not here: an engine then asks for 3.0 */
 static uint64_t create_context(uint64_t display, uint64_t config, const int32_t* attributes) {
     if (!is_display(display)) return done(0, EGL_BAD_DISPLAY_);
     const Config* c = config ? config_of(config) : NULL;
     if (config && !c) return done(0, EGL_BAD_CONFIG_);
-    int version = 1;
-    for (const int32_t* a = attributes; a && a[0] != EGL_NONE_; a += 2)
+    int version = 1, minor = 0;
+    for (const int32_t* a = attributes; a && a[0] != EGL_NONE_; a += 2) {
         if (a[0] == EGL_CONTEXT_CLIENT_VERSION_) version = a[1];
-    if (c && version != 1) return done(0, EGL_BAD_CONFIG_); /* the configs are GLES 1.1's */
+        if (a[0] == EGL_CONTEXT_MINOR_VERSION_) minor = a[1];
+    }
+    if (version < 1 || version > 3 || (version == 3 && minor > 0) || (version == 1 && minor > 1))
+        return done(0, EGL_BAD_MATCH_);
+    if (!e.said[version]) { /* each version's first context, said once */
+        e.said[version] = true;
+        fprintf(stderr, "scarletnx-android: EGL: a context of GLES %d%s\n", version, c ? "" : ", without a config");
+    }
     pthread_mutex_lock(&e.lock);
     Context* x = NULL;
     for (size_t i = 0; i < CONTEXTS && !x; ++i)
         if (!e.contexts[i].used) x = &e.contexts[i];
-    if (x) *x = (Context){.used = true, .version = version, .config = c, .gl = version == 1 ? gles_context_new() : NULL};
+    if (x)
+        *x = (Context){.used = true, .version = version, .config = c, .gl = version == 1 ? gles_context_new() : NULL,
+                       .gl2 = version >= 2 ? gles2_context_new(version) : NULL};
     pthread_mutex_unlock(&e.lock);
     return x ? done(handle(x), EGL_SUCCESS_) : done(0, EGL_BAD_ALLOC_);
 }
@@ -300,14 +321,17 @@ static bool destroy_context(uint64_t display, uint64_t context) {
         if (t_context == x) {
             t_context = NULL;
             gles_make_current(NULL, NULL);
+            gles2_make_current(NULL, NULL, NULL);
         }
         gles_context_free(x->gl);
+        gles2_context_free(x->gl2);
         *x = (Context){0};
     }
     pthread_mutex_unlock(&e.lock);
     return done(x != NULL, x ? EGL_SUCCESS_ : EGL_BAD_CONTEXT_);
 }
 
+static uint64_t add_surface(const Config* c, GlesSurface* gles);
 /* eglCreateWindowSurface: the host window, width by height where its surface leaves the size to the swapchain */
 static uint64_t create_window_surface(uint64_t display, uint64_t config, int width, int height) {
     if (!is_display(display)) return done(0, EGL_BAD_DISPLAY_);
@@ -315,6 +339,26 @@ static uint64_t create_window_surface(uint64_t display, uint64_t config, int wid
     if (!c) return done(0, EGL_BAD_CONFIG_);
     GlesSurface* gles = gles_window_surface(width, height);
     if (!gles) return done(0, EGL_BAD_NATIVE_WINDOW_);
+    gles_surface_depth(gles, c->depth, c->stencil);
+    return add_surface(c, gles);
+}
+/* eglCreatePbufferSurface: an image of its own, the attributes' width by height */
+static uint64_t create_pbuffer_surface(uint64_t display, uint64_t config, const int32_t* attributes) {
+    if (!is_display(display)) return done(0, EGL_BAD_DISPLAY_);
+    const Config* c = config_of(config);
+    if (!c) return done(0, EGL_BAD_CONFIG_);
+    int width = 0, height = 0;
+    for (const int32_t* a = attributes; a && a[0] != EGL_NONE_; a += 2) {
+        if (a[0] == EGL_WIDTH_) width = a[1];
+        if (a[0] == EGL_HEIGHT_) height = a[1];
+    }
+    if (width < 0 || height < 0) return done(0, EGL_BAD_PARAMETER_);
+    GlesSurface* gles = gles_pbuffer_surface(width ? width : 1, height ? height : 1);
+    if (!gles) return done(0, EGL_BAD_ALLOC_);
+    gles_surface_depth(gles, c->depth, c->stencil);
+    return add_surface(c, gles);
+}
+static uint64_t add_surface(const Config* c, GlesSurface* gles) {
     pthread_mutex_lock(&e.lock);
     Surface* s = NULL;
     for (size_t i = 0; i < SURFACES && !s; ++i)
@@ -335,6 +379,7 @@ static bool destroy_surface(uint64_t display, uint64_t surface) {
         if (t_draw == s || t_read == s) {
             t_draw = t_read = NULL;
             gles_make_current(t_context ? t_context->gl : NULL, NULL);
+            gles2_make_current(t_context ? t_context->gl2 : NULL, NULL, NULL);
         }
         *s = (Surface){0};
     }
@@ -377,6 +422,7 @@ static bool make_current(uint64_t display, uint64_t draw, uint64_t read, uint64_
         t_context = NULL;
         t_draw = t_read = NULL;
         gles_make_current(NULL, NULL);
+        gles2_make_current(NULL, NULL, NULL);
         return done(1, EGL_SUCCESS_);
     }
     if (!is_display(display)) return done(0, EGL_BAD_DISPLAY_);
@@ -389,6 +435,7 @@ static bool make_current(uint64_t display, uint64_t draw, uint64_t read, uint64_
     t_draw = d;
     t_read = r;
     gles_make_current(x->gl, d ? d->gles : NULL);
+    gles2_make_current(x->gl2, d ? d->gles : NULL, r ? r->gles : NULL);
     return done(1, EGL_SUCCESS_);
 }
 static bool swap_buffers(uint64_t display, uint64_t surface) {
@@ -402,7 +449,9 @@ static const char* query_string(uint64_t display, int32_t name) {
     case EGL_VENDOR_: s = "ARM"; break;
     case EGL_VERSION_: s = "1.5 Android META-EGL"; break;
     case EGL_EXTENSIONS_:
-        s = display ? "EGL_KHR_no_config_context EGL_KHR_surfaceless_context EGL_ANDROID_recordable" : "";
+        s = display ? "EGL_KHR_no_config_context EGL_KHR_surfaceless_context EGL_ANDROID_recordable "
+                      "EGL_KHR_create_context"
+                    : "";
         break;
     case EGL_CLIENT_APIS_: s = "OpenGL_ES"; break;
     }
@@ -504,9 +553,9 @@ static void g_create_window_surface(CPU* c, void* data) {
     hle_android_window(&w, &h);
     X(0) = create_window_surface(X(0), X(1), w, h);
 }
-static void g_bad_match(CPU* c, void* data) {
+static void g_create_pbuffer_surface(CPU* c, void* data) {
     (void)data;
-    X(0) = done(0, EGL_BAD_MATCH_);
+    X(0) = create_pbuffer_surface(X(0), X(1), PTR(2));
 }
 static void g_destroy_surface(CPU* c, void* data) {
     (void)data;
@@ -545,20 +594,18 @@ static void g_query_string(CPU* c, void* data) {
 }
 
 /* glGetString: the device's identity in the current context, NULL without one (GL_INVALID_ENUM's NULL for others).
-   A GLES 1.1 context names its version and extensions as GLES 1.1's */
+   A GLES 1.1 context names its version and extensions as GLES 1.1's, one of GLES 2 or 3 as GLES 3.0's (gles2.c) */
 static void g_gl_get_string(CPU* c, void* data) {
     (void)data;
     const char* s = NULL;
-    bool v1 = t_context && t_context->version == 1;
-    if (t_context) switch ((int)X(0)) {
+    if (t_context && t_context->version >= 2) s = gles2_string(t_context->version, (unsigned)X(0));
+    else if (t_context) switch ((int)X(0)) {
         case GL_VENDOR_: s = "ARM"; break;
         case GL_RENDERER_: s = hle_gpu_name; break;
-        case GL_VERSION_: s = v1 ? "OpenGL ES-CM 1.1" : "OpenGL ES 3.2"; break;
-        case GL_SHADING_LANGUAGE_VERSION_: s = v1 ? NULL : "OpenGL ES GLSL ES 3.20"; break;
+        case GL_VERSION_: s = "OpenGL ES-CM 1.1"; break;
         case GL_EXTENSIONS_:
-            s = v1 ? "GL_OES_draw_texture GL_OES_fixed_point GL_OES_single_precision GL_OES_matrix_get "
-                     "GL_EXT_texture_format_BGRA8888"
-                   : "";
+            s = "GL_OES_draw_texture GL_OES_fixed_point GL_OES_single_precision GL_OES_matrix_get "
+                "GL_EXT_texture_format_BGRA8888";
             break;
         }
     X(0) = handle(s);
@@ -588,7 +635,7 @@ const HleSymbol hle_egl[] = {
     {"eglGetCurrentDisplay", g_get_current_display, NULL},
     {"eglGetCurrentSurface", g_get_current_surface, NULL},
     {"eglCreateWindowSurface", g_create_window_surface, NULL},
-    {"eglCreatePbufferSurface", g_bad_match, NULL},
+    {"eglCreatePbufferSurface", g_create_pbuffer_surface, NULL},
     {"eglDestroySurface", g_destroy_surface, NULL},
     {"eglQuerySurface", g_query_surface, NULL},
     {"eglQueryContext", g_query_context, NULL},
@@ -700,8 +747,11 @@ static jlong JNICALL j_create_window_surface(JNIEnv* env, jclass unused, jlong d
 }
 static jlong JNICALL j_create_pbuffer_surface(JNIEnv* env, jclass unused, jlong display, jlong config,
                                               jintArray list) {
-    (void)env, (void)unused, (void)display, (void)config, (void)list;
-    return (jlong)done(0, EGL_BAD_MATCH_); /* the configs have no EGL_PBUFFER_BIT */
+    (void)unused;
+    int32_t* attributes = attributes_of(env, list);
+    uint64_t h = create_pbuffer_surface((uint64_t)display, (uint64_t)config, attributes);
+    free(attributes);
+    return (jlong)h;
 }
 static jboolean JNICALL j_destroy_surface(JNIEnv* env, jclass unused, jlong display, jlong surface) {
     (void)env, (void)unused;

@@ -33,6 +33,12 @@ extern const HleSymbol hle_media[];
 extern const HleSymbol hle_android[];
 extern const HleSymbol hle_egl[];
 extern const HleSymbol hle_gles[]; /* hle_gles.c: GLES 1.1 over Vulkan */
+/* GLES 2 and 3 over Vulkan (gles2.h): the state, the objects, the programs and the draws. The names that GLES 1.1 has
+   too call the current context's */
+extern const HleSymbol hle_gles2[];
+extern const HleSymbol hle_gles2_object[];
+extern const HleSymbol hle_gles2_program[];
+extern const HleSymbol hle_gles2_draw[];
 extern const HleSymbol hle_zlib[]; /* hle_zlib.c: libz, the build's zlib */
 extern const HleSymbol hle_signal[];
 /* the GPU the guest sees, in Vulkan's device properties and GLES's GL_RENDERER alike (hle_vulkan.c): a Mali that the
