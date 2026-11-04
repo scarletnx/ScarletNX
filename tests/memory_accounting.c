@@ -757,6 +757,12 @@ static void test_alias_layouts(void) {
     printf("32 and 48 GiB layouts: a 16 GiB alias region with the game's 12 GiB in it, %u checks passed\n", checks);
 }
 
+/* a word GP reaches from a guest address, checked as the runtime checks an object it is handed: the address can be 0,
+   so a null host pointer stands for none. Not inlined, so the compiler sees only GP's own arithmetic */
+static __attribute__((noinline)) int gp_holds(u64 a, u32 want) {
+    const u32* p = a ? (const u32*)(void*)GP(a) : NULL;
+    return p && *p == want;
+}
 /* NCE on Android (mem_reserve_identity from 64 GiB): the guest's addresses are the host's, above what the app's process
    holds, so the whole layout moves up to the first base from 64 GiB, in 2 MiB steps, where a tier is free. A page held
    at 65 GiB takes the 64 GiB tier's one base and the 48 GiB tier's first 449; the 48 GiB layout then lies from 64 GiB
@@ -791,6 +797,10 @@ static void test_moved(void) {
     CHECK(mem_map(HEAP_BASE, 0x1000, MS_NORMAL, PERM_RW) == 0 && state(HEAP_BASE) == MS_NORMAL);
     p = GP(HEAP_BASE);
     CHECK((u64)(uintptr_t)p == HEAP_BASE);
+    /* with g_mem 0, a pointer GP makes is not null for a nonzero address: as g_mem plus a it was undefined, and the
+       compiler took it for non-null only when g_mem is, which dropped every NVN program bind under NCE */
+    memcpy(p, "PROG", 4);
+    CHECK(gp_holds(HEAP_BASE, 0x474f5250));
     p[0] = 0x5A;
     CHECK(*(volatile u8*)(uintptr_t)(by + (20ull << 30)) == 0x5A);
     /* the 12 GiB the game reserves in the alias region, there in the moved layout too */
