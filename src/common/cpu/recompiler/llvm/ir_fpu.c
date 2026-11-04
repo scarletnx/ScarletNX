@@ -587,9 +587,10 @@ static void fp_from_int(SnxIr* ir, const SnxA64Args* a, unsigned uns) {
         else
             ok = LLVMBuildICmp(B, LLVMIntULT, LLVMBuildAdd(B, v, kint(ir, integer, (SnxU64)1 << precision), ""),
                                kint(ir, integer, (SnxU64)1 << (precision + 1)), "");
-        /* an unsigned value that fits converts as a signed one: x86 before AVX-512 has no unsigned conversion from
-           64 bits, and LLVM's sum of two exact halves there is -0 for 0 when the host rounds toward minus infinity */
-        if (uns && integer > precision)
+        /* an unsigned value that fits converts as a signed one, unless the host converts unsigned values itself:
+           LLVM's sum of two exact halves on x86 before AVX-512 is -0 for 0 when the host rounds toward minus
+           infinity */
+        if (uns && integer > precision && !host_unsigned_to_float(ir, integer, 0))
             f = LLVMBuildSelect(B, ok, LLVMBuildSIToFP(B, v, type, ""), LLVMBuildUIToFP(B, v, type, ""), "");
         else
             f = uns ? LLVMBuildUIToFP(B, v, type, "") : LLVMBuildSIToFP(B, v, type, "");

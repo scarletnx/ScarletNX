@@ -154,6 +154,13 @@ static inline int host_round_dynamic(SnxIr* ir) {
     return host_round_mode(ir, 0) && host_round_mode(ir, 1) && host_round_mode(ir, 2) && host_round_mode(ir, 3);
 }
 static inline int host_round_vec_dynamic(SnxIr* ir) { return host_fp_vec(ir) && host_round_dynamic(ir); }
+/* An unsigned integer of integer bits (lanes when vector) to a float in one instruction, +0 for 0 in every rounding
+   mode: AVX-512's VCVTUSI2SS and VCVTUSI2SD, VCVTUDQ2PS on 128-bit vectors with VL, and VCVTUQQ2PD with DQ too. x86
+   without it gets LLVM's sum of two exact parts, which is -0 for 0 when the host rounds toward minus infinity */
+static inline int host_unsigned_to_float(SnxIr* ir, unsigned integer, int vector) {
+    if (!ir->features->x86 || !ir->features->avx512f) return 0;
+    return !vector || (ir->features->avx512vl && (integer == 32 || ir->features->avx512dq));
+}
 
 /* the constant v as a float like f (a scalar or a vector) */
 static inline LLVMValueRef fp_like(LLVMValueRef f, double v) {

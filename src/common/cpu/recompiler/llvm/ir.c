@@ -28,8 +28,38 @@ static struct {
     int mips_tail_calls; /* snx_ir_init's, of LLVM's MIPS tail calls */
     int stats, dump;     /* snx_ir_diagnostics's: ir_stats, and whether ir_dump_pc names a function */
     SnxU64 dump_pc;
+    int initialized;    /* snx_ir_init ran */
+    char host_drop[32]; /* snx_ir_host_drop's prefix */
 } g_ir;
 static const SnxIrFeatures generic_features;
+
+int snx_ir_host_drop(const char* prefix, char* error, size_t error_size) {
+    size_t n = prefix ? strlen(prefix) : 0;
+    if (g_ir.initialized) {
+        snprintf(error, error_size, "host features without %s: snx_ir_init has read the host's already",
+                 prefix ? prefix : "");
+        return -1;
+    }
+    if (!n || n >= sizeof(g_ir.host_drop)) {
+        snprintf(error, error_size, "host features without \"%s\": the prefix takes 1 to %zu characters, not %zu",
+                 prefix ? prefix : "", sizeof(g_ir.host_drop) - 1, n);
+        return -1;
+    }
+    memcpy(g_ir.host_drop, prefix, n + 1);
+    return 0;
+}
+
+char* snx_ir_host_features(void) {
+    char* features = LLVMGetHostCPUFeatures();
+    size_t n = strlen(g_ir.host_drop);
+    /* "+name" becomes "-name" where it stands: a later "+" of one that needs it would turn it on again */
+    for (char* p = features; n && p && *p;) {
+        if (*p == '+' && !strncmp(p + 1, g_ir.host_drop, n)) *p = '-';
+        p = strchr(p, ',');
+        if (p) ++p;
+    }
+    return features;
+}
 
 static int has_feature(const char* features, const char* name) {
     size_t n = strlen(name);
@@ -120,7 +150,7 @@ int snx_ir_init(char* error, size_t error_size) {
         g_ir.region_budget = 1;
     }
     if (x86 && !snx_ir_host.x86) {
-        char* f = LLVMGetHostCPUFeatures();
+        char* f = snx_ir_host_features();
         snx_ir_host.ssse3 = has_feature(f, "ssse3");
         snx_ir_host.sse42 = has_feature(f, "sse4.2");
         snx_ir_host.crc32 = snx_ir_host.sse42 && has_feature(f, "crc32");
@@ -131,11 +161,15 @@ int snx_ir_init(char* error, size_t error_size) {
         snx_ir_host.fma = has_feature(f, "fma");
         snx_ir_host.f16c = has_feature(f, "f16c");
         snx_ir_host.avx2 = has_feature(f, "avx2");
+        snx_ir_host.avx512f = has_feature(f, "avx512f");
+        snx_ir_host.avx512dq = has_feature(f, "avx512dq");
+        snx_ir_host.avx512vl = has_feature(f, "avx512vl");
+        snx_ir_host.avx512vbmi = has_feature(f, "avx512vbmi");
         LLVMDisposeMessage(f);
         snx_ir_host.x86 = 1; /* last: snx_ir_init may run again, the features stay as read */
     }
     if (arm && !snx_ir_host.aarch64) {
-        char* f = LLVMGetHostCPUFeatures();
+        char* f = snx_ir_host_features();
         snx_ir_host.arm_aes = has_feature(f, "aes") || has_feature(f, "crypto");
         snx_ir_host.arm_sha2 = has_feature(f, "sha2") || has_feature(f, "crypto");
         snx_ir_host.arm_crc = has_feature(f, "crc");
@@ -143,30 +177,31 @@ int snx_ir_init(char* error, size_t error_size) {
         snx_ir_host.aarch64 = 1; /* last, as x86 above */
     }
     if (ppc && !snx_ir_host.ppc) {
-        char *f = LLVMGetHostCPUFeatures(), *cpu = LLVMGetHostCPUName();
+        char *f = snx_ir_host_features(), *cpu = LLVMGetHostCPUName();
         snx_ir_host.ppc_vsx = has_feature(f, "vsx") || ppc_cpu_vsx(cpu, ppc_le);
         LLVMDisposeMessage(f);
         LLVMDisposeMessage(cpu);
         snx_ir_host.ppc = 1;
     }
     if (riscv && !snx_ir_host.riscv) {
-        char* f = LLVMGetHostCPUFeatures();
+        char* f = snx_ir_host_features();
         snx_ir_host.riscv_v = has_feature(f, "v") || has_feature(f, "zve64x");
         LLVMDisposeMessage(f);
         snx_ir_host.riscv = 1;
     }
     if (loongarch && !snx_ir_host.loongarch) {
-        char* f = LLVMGetHostCPUFeatures();
+        char* f = snx_ir_host_features();
         snx_ir_host.la_lsx = has_feature(f, "lsx");
         LLVMDisposeMessage(f);
         snx_ir_host.loongarch = 1;
     }
     if (mips64 && !snx_ir_host.mips64) {
-        char* f = LLVMGetHostCPUFeatures();
+        char* f = snx_ir_host_features();
         snx_ir_host.mips_msa = has_feature(f, "msa");
         LLVMDisposeMessage(f);
         snx_ir_host.mips64 = 1;
     }
+    g_ir.initialized = 1;
     return x86 || arm || ppc || other ? 0 : -1;
 }
 
@@ -243,7 +278,7 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
     int ppc = !strncmp(triple, "powerpc64", 9) || !strncmp(triple, "ppc64", 5);
     if (!target_triple) {
         cpu = LLVMGetHostCPUName();
-        features = LLVMGetHostCPUFeatures();
+        features = snx_ir_host_features();
     } else if (!strncmp(triple, "x86_64", 6)) {
         cpu = LLVMCreateMessage("x86-64");
         features = LLVMCreateMessage("+cx16");
