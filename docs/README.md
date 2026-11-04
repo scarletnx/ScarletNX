@@ -80,6 +80,7 @@ ScarletNX yourself, see [Build](./BUILD.md).
 - [Remaining work](./REMAINING.md): the feature checklist and the phase after it
 - [Side issue ledger](./SIDE_ISSUES.md): one branch per open issue, off the latest `origin/main`
 - [The effects proof](./GAME-EFFECTS-PROOF.md): every game with the effects off and on, and the mode matrix
+- [HDR](./HDR.md): the mapping, the numbers it needs, the reference (Horizon) and the faults already fixed
 - [How the effects were checked](./GAME-EFFECTS-METHOD.md): the exact commands and the limits of each proof
 - [Defects found](./issues/README.md): one record per defect, with its mechanism and its next step
   - [RADV refuses the host pointer's memfd](./issues/1116-radv-host-pointer-memfd.md)
