@@ -475,7 +475,10 @@ the spatial upscaler (`upscaler`, `upscaler_sharpness`, `upscaler_mult`), the
 anti aliasing (`aa`, after the upscale and before the encode) and HDR (`hdr*`).
 Each screen is upscaled and anti aliased at its own rectangle. In one window the
 pair is composited first and the HDR passes encode the whole window, so the
-letterbox is composed with the screens. Bounded PPM snapshots land in
+letterbox is composed with the screens. Frame interpolation (`frame_interp`, or
+`frame_interp_key`) keeps the pair the frame before made and presents a blend of
+the two pairs and then the current pair, in two swapchain images (one per screen
+with Separate screens). Bounded PPM snapshots land in
 `<output>/frames` in every mode. Without a display the window path is
 unavailable and frames are only recorded; without a Vulkan device the presenter
 reports unavailability and no frame is fabricated.
