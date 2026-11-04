@@ -309,7 +309,8 @@ separate SPIRV-Tools is needed.
   `astc_vulkan` and `astc_vulkan_pieces` also upload random blocks into BC7 images, footprints whose strips step
   4, 2 and 1 block rows, with mips, layers, slices and many strips, and a level of `VK_BC7_FAST_TEXELS` that the
   fast build encodes, and compare the GPU's blocks with the same encoder (or its fast build) run on the CPU over the
-  CPU decoder's texels, byte for byte. `--bench` times an 8192x8192 level as RGBA8 and as BC7.
+  CPU decoder's texels, byte for byte. `--bench [file.astc]` times a 4096x4096 level (the fast build) and a
+  2040x2040 one (the full build) as RGBA8 and as BC7, of random 8x8 blocks or a file's repeated over the level.
 - `tex_upload_rows` checks what `texture.c` hands `vk_astc_upload`: an ASTC level's block rows, strip by strip,
   against the block-linear layout walked byte by byte, and the bands other formats take past the cap.
 

@@ -511,18 +511,49 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
     fflush(stdout);
 }
 
-/* --bench: one w x h level of random 8x8 ASTC blocks uploaded into an RGBA8 image and into a BC7 one, as texture.c
+/* --bench [file.astc]: one w x h level of ASTC blocks uploaded into an RGBA8 image and into a BC7 one, as texture.c
    does without and with astc_bc, each runs times: the time from the upload's start to the GPU's end of it, and the
-   texels a second. A game's sparse texture of 68 such layers takes seven of them */
-static void bench(u32 w, u32 h, int runs) {
+   texels a second. The blocks are random 8x8 ones, or a file's (astcenc's .astc) repeated over the level. A level of
+   4096x4096 takes the BC7 encoder's fast build, one of 2040x2040 its full one. A game's sparse texture of 68 such
+   layers takes seven of them */
+typedef struct {
+    const char* name; /* NULL: random 8x8 blocks */
+    u32 bw, bh;       /* the footprint */
+} BenchSource;
+static u8* bench_blocks(BenchSource* src, u32 w, u32 h) {
+    if (!src->name) return blocks_new(w, h, 1, src->bw = 8, src->bh = 8);
+    FILE* f = fopen(src->name, "rb");
+    u8 hdr[16];
+    if (!f || fread(hdr, 1, 16, f) != 16) fatal("cannot read %s\n", src->name);
+    u32 sw = hdr[7] | hdr[8] << 8 | hdr[9] << 16, sh = hdr[10] | hdr[11] << 8 | hdr[12] << 16;
+    u32 snx = (sw + hdr[4] - 1) / hdr[4], sny = (sh + hdr[5] - 1) / hdr[5];
+    u8* file = malloc((size_t)snx * sny * 16);
+    if (fread(file, 16, (size_t)snx * sny, f) != (size_t)snx * sny) fatal("%s is short\n", src->name);
+    fclose(f);
+    src->bw = hdr[4];
+    src->bh = hdr[5];
+    u32 nx = (w + src->bw - 1) / src->bw, ny = (h + src->bh - 1) / src->bh;
+    u8* b = malloc((size_t)nx * ny * 16);
+    for (u32 y = 0; y < ny; y++)
+        for (u32 x = 0; x < nx; x++)
+            memcpy(b + ((size_t)y * nx + x) * 16, file + ((size_t)(y % sny) * snx + x % snx) * 16, 16);
+    free(file);
+    return b;
+}
+static void bench(u32 w, u32 h, int runs, BenchSource src) {
     const VkFormat formats[2] = {VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_BC7_SRGB_BLOCK};
-    u8* b = blocks_new(w, h, 1, 8, 8);
+    u8* b = bench_blocks(&src, w, h);
     for (int fi = 0; fi < 2; fi++) {
         if (fi && !g_vk.feat.textureCompressionBC) {
             puts("BENCH BC7: the device samples no BCn");
             continue;
         }
-        Surf t = {.w = w, .h = h, .layers = 1, .levels = 1, .depth3d = 1, .f = {.vk = formats[fi], .bw = 8, .bh = 8}};
+        Surf t = {.w = w,
+                  .h = h,
+                  .layers = 1,
+                  .levels = 1,
+                  .depth3d = 1,
+                  .f = {.vk = formats[fi], .bw = src.bw, .bh = src.bh}};
         VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                                 .imageType = VK_IMAGE_TYPE_2D,
                                 .format = formats[fi],
@@ -537,13 +568,13 @@ static void bench(u32 w, u32 h, int runs) {
                 VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         vk_finish();
         for (int r = 0; r < runs; r++) {
-            Level lv = {b, (w + 7) / 8, (h + 7) / 8, NULL, 2, 0};
+            Level lv = {b, (w + src.bw - 1) / src.bw, (h + src.bh - 1) / src.bh, NULL, 2, 0};
             u64 t0 = plat_ns();
             if (!vk_astc_upload(vk_cmd(), &t, w, h, 1, 0, 0, 1, level_rows, &lv)) fatal("bench upload failed\n");
             vk_finish();
             double s = (plat_ns() - t0) / 1e9;
-            printf("BENCH %s %ux%u: %.1f ms, %.0f Mtexels/s\n", fi ? "ASTC 8x8 as BC7" : "ASTC 8x8 as RGBA8", w, h,
-                   s * 1e3, (double)w * h / s / 1e6);
+            printf("BENCH ASTC %ux%u as %s %ux%u: %.1f ms, %.0f Mtexels/s\n", src.bw, src.bh, fi ? "BC7" : "RGBA8", w,
+                   h, s * 1e3, (double)w * h / s / 1e6);
             fflush(stdout);
         }
         vk_image_destroy(t.img, t.mem);
@@ -904,14 +935,19 @@ static void bc_native_case(void) {
 
 int main(int argc, char** argv) {
     int large = 0;
+    BenchSource src = {NULL, 8, 8};
     /* --vk_max_allocation_mb=N as the runtime takes it (ctest's astc_vulkan_pieces: 4), and --large */
     for (int i = 1; i < argc; i++)
         if (!strncmp(argv[i], "--vk_max_allocation_mb=", 23)) g_settings.vulkan_allocation_cap = atoi(argv[i] + 23);
         else if (!strcmp(argv[i], "--large")) large = 1;
-        else if (!strcmp(argv[i], "--bench")) large = 2;
+        else if (!strcmp(argv[i], "--bench")) {
+            large = 2;
+            if (i + 1 < argc && argv[i + 1][0] != '-') src.name = argv[++i];
+        }
     init();
     if (large == 2) {
-        bench(8192, 8192, 3);
+        bench(4096, 4096, 5, src);
+        bench(2040, 2040, 5, src);
         return 0;
     }
     if (large) {
