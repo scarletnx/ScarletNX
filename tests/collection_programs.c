@@ -164,10 +164,9 @@ static void handover(const char* root) {
     char *path = snx_path_join(root, "0100ABCD12340000.next"), why[512];
     static const unsigned char first[] = {0x00, 0xff, 0x10, 0x7f};
     unsigned char big[3000];
-    SnxNext next, back;
+    SnxNext next = {0}, back;
     size_t i;
     for (i = 0; i < sizeof big; i++) big[i] = (unsigned char)(i * 7);
-    memset(&next, 0, sizeof next);
     snprintf(next.program, sizeof next.program, "%s", "0100ABCD12340000_0100ABCD12340002");
     next.index = 2;
     next.previous = 0;

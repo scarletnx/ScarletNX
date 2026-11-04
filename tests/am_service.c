@@ -313,9 +313,8 @@ extern unsigned g_test_program_ends; /* am_service_stubs.c's snx_program_end, co
    no program has are refused, said with their values, and end nothing */
 static void test_execute_program(void) {
     SvcObj *a = am_storage_new(3, "ab"), *b = am_storage_new(5, "wxyz"), *s = NULL;
-    SnxNext next;
+    SnxNext next = {0};
     i32 index = 0;
-    memset(&next, 0, sizeof next);
     am_handover_in(1, NULL); /* program 1, which the player started */
     CHECK(am_handover_out(&next) == -1 && next.count == 0);
     CHECK(nn_am_service_IApplicationFunctions_GetPreviousProgramIndex(NULL, &index) == 0 && index == -1);
