@@ -321,7 +321,8 @@ two; left out, none) and `language` (`auto`, `en` or a
   `zh-SG` simplified, `zh-TW`, `zh-HK`, `zh-MO` traditional): a system in one never takes a catalog of the other. The
   words change at once; a phrase the language has not translated stays English.
 - **Share Log** asks how. **Share Zip** saves `scarletnx-logs-2026-10-28_14-05-33.zip`. Its `summary.txt` holds the message on the screen,
-  the summary of the last run's game log, the last run's output, the queue's recompiles' (`last-recompile.log`), the
+  the summary of the last run's game log (its build line says how many days before the run its commit was made, by
+  when the run wrote that log), the last run's output, the queue's recompiles' (`last-recompile.log`), the
   launcher's own log and its fatal errors (below) and that game log: the one the run's output names (`log: written to
   <path>`, which the runtime prints as it makes it), an update's named after its program. A run that names none (it
   ended before its game's code loaded) shares `== no game log ==` and why, never another game's log; with no run kept,

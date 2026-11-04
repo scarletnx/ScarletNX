@@ -12329,14 +12329,21 @@ int main(int argc, char** argv) {
         run_was = (char*)snx_read_file(app.run_log, &run_was_size);
         {
             char *game = snx_path_join(app.games_dir, "Some Game"), *log = snx_path_join(game, "Some Game.log");
+            /* the run wrote its log at yesterday's noon (UTC), 2.32 s after it began, with a build of a commit made
+               two days before: the summary says how much older the build is than the run, by the run's own time */
+            time_t ran = (time(NULL) / 86400 - 1) * 86400 + 43200, made = ran - 2 * 86400;
+            char committed[16], *crashed, *built;
+            assert(strftime(committed, sizeof committed, "%Y-%m-%d", gmtime(&made)) == 10);
             /* with CRLF lines, as a game log is on Windows (plat.c writes it in text mode) */
-            static const char crashed[] =
-                "[   0.00] ScarletNX - Some Game\r\n"
-                "[   0.00] build: ScarletNX main 1234abc (clang 23.1.3, Windows x86_64)\r\n"
-                "[   2.25] \r\n*** The game called svcBreak (reason 0, info 1300100df8, 4 bytes) ***\r\n"
-                "[   2.25]    #0 163d18d8 <_ZN2nn4diag6detail10VAbortImplEv+d8>\r\n"
-                "[   2.25]    #1 1683a358 <_ZN2nn3hid18GetNpadJoyHoldTypeEv+38>\r\n"
-                "[   2.32] FATAL: The game stopped (svcBreak, reason 0). See the .log for details.\r\n";
+            crashed =
+                snx_format("[   0.00] ScarletNX - Some Game\r\n"
+                           "[   0.00] build: ScarletNX main 1234abc, committed %s (clang 23.1.3, Windows x86_64)\r\n"
+                           "[   2.25] \r\n*** The game called svcBreak (reason 0, info 1300100df8, 4 bytes) ***\r\n"
+                           "[   2.25]    #0 163d18d8 <_ZN2nn4diag6detail10VAbortImplEv+d8>\r\n"
+                           "[   2.25]    #1 1683a358 <_ZN2nn3hid18GetNpadJoyHoldTypeEv+38>\r\n"
+                           "[   2.32] FATAL: The game stopped (svcBreak, reason 0). See the .log for details.\r\n",
+                           committed);
+            built = snx_format("**Build:** `main 1234abc`, committed %s, 2 days before this run\n", committed);
             /* the launcher's log: a failure written once however often it is said, shown in its box or not; a fatal
                error in the other log too; both in the shared file under their paths, after the recompile's */
             char *logs = snx_path_join(temporary, "launcher logs"), *console = console_in(logs);
@@ -12354,7 +12361,9 @@ int main(int argc, char** argv) {
                    !strstr(line + 1, "] a failure the log"));
             assert(strstr(text, "] a fatal error the log keeps\n"));
             free(text);
-            assert(!snx_mkdirs(game) && !snx_write_file(log, crashed, sizeof crashed - 1));
+            assert(!snx_mkdirs(game) && !snx_write_file(log, crashed, strlen(crashed)));
+            assert(!snx_set_file_time(log, (SnxU64)ran));
+            free(crashed);
             assert(!run_kept(app.run_log, game, log, 1)); /* the run that wrote it, which named it */
             snprintf(app.message, sizeof(app.message), "before the log");
             share_pick(&app, 0);
@@ -12392,8 +12401,7 @@ int main(int argc, char** argv) {
             free(errors);
             free(console);
             free(logs);
-            assert(strstr(text, "== summary ==\n### `Some Game`") &&
-                   strstr(text, "**Build:** `ScarletNX main 1234abc (clang 23.1.3, Windows x86_64)`") &&
+            assert(strstr(text, "== summary ==\n### `Some Game`") && strstr(text, built) &&
                    strstr(text, "**Signature:** `svcBreak in _ZN2nn3hid18GetNpadJoyHoldTypeEv`") &&
                    strstr(text, "**In:** `nn::hid::GetNpadJoyHoldType()+38`"));
             assert(strstr(text, "== summary ==") < strstr(text, "== the last run: ") &&
@@ -12401,6 +12409,7 @@ int main(int argc, char** argv) {
             /* the log's copy, CR gone: no line ends in the '?' a CR would have become */
             assert(strstr(text, "ScarletNX - Some Game\n") && !strstr(text, "?\n"));
             free(text);
+            free(built);
             { /* the box's other two: the one log of before, alone, the zip gone, and the logs' folder opened; Back does
                  neither */
                 char *one = snx_path_join(share, "scarletnx.log"), *want, *url, *before = shared_path(&app);

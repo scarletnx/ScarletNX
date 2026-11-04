@@ -161,10 +161,11 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
 ```
 
 - `--scan-log` (`src/common/utilities/logscan.c`, also built as `build/snx-logscan`): a log, or the launcher's Share
-  log file (the game log in it), as a summary: the build, title ID, game version and GPU from the log's header, how
-  the run ended, the game function it is pinned on (for `svcBreak`, the first frame past the SDK's abort), the service
-  commands the runtime doesn't implement, warnings, the frames over 50 ms (how many, the slowest, and what the
-  slowest did, from the renderer's frame lines), and a signature that is the same for every log failing the same way.
+  log file (the game log in it), as a summary: the build (with the day its commit was made, when the log says it),
+  title ID, game version and GPU from the log's header, how the run ended, the game function it is pinned on (for
+  `svcBreak`, the first frame past the SDK's abort), the service commands the runtime doesn't implement, warnings, the
+  frames over 50 ms (how many, the slowest, and what the slowest did, from the renderer's frame lines), and a signature
+  that is the same for every log failing the same way.
   JSON (a line a log, versioned by `schema`) or a markdown summary for an issue. Paths are shortened to `~`, and the
   crash report's code and memory dumps are left out. The launcher's Share Log puts the same summary at the top of
   `scarletnx.log`. A log is read once, a line at a time, in fixed memory: a gigabyte takes about two seconds.

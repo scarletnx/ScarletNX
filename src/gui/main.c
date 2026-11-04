@@ -15045,6 +15045,7 @@ static char* log_summary(const char* path) {
         if (f) snx_logscan_free(&scan);
         return snx_strdup("");
     }
+    scan.written = (long long)snx_file_time(path); /* the run's own time, for how much older its build is */
     markdown = snx_logscan_markdown(&scan, "the game log", "###", 1, snx_demangle);
     snx_logscan_free(&scan);
     out = markdown ? snx_format("== summary ==\n%s\n", markdown) : snx_strdup("");
