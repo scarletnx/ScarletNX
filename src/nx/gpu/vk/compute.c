@@ -770,6 +770,32 @@ static void cs_free(CsPipe* p) {
     free(p->cbr.r);
     free(p);
 }
+/* the pipelines the pipeline file's reading thread made (vk_cs_pipe_load), for the next dispatch to put in the table */
+static int cs_reads_same(const VkCbReads* a, const VkCbReads* b);
+static PMutex g_cs_loaded_lock = PMUTEX_INIT;
+static CsPipe* g_cs_loaded;
+static int g_cs_any_loaded;
+/* vk_lock held: the loaded pipelines in the table, but those a dispatch made meanwhile (a game started without waiting
+   for the shaders) */
+static void cs_take_loaded(void) {
+    if (!__atomic_load_n(&g_cs_any_loaded, __ATOMIC_ACQUIRE)) return;
+    pm_lock(&g_cs_loaded_lock);
+    CsPipe* list = g_cs_loaded;
+    g_cs_loaded = NULL;
+    __atomic_store_n(&g_cs_any_loaded, 0, __ATOMIC_RELAXED);
+    pm_unlock(&g_cs_loaded_lock);
+    while (list) {
+        CsPipe *p = list, *q;
+        list = p->next;
+        for (q = g_csp[p->key & 255]; q && (q->key != p->key || !cs_reads_same(&q->cbr, &p->cbr)); q = q->next) {}
+        if (q) {
+            cs_free(p);
+            continue;
+        }
+        p->next = g_csp[p->key & 255];
+        g_csp[p->key & 255] = p;
+    }
+}
 /* the reads a kept pipeline was translated with, which translating it again answers from (vk_cs_pipe_load's thread
    alone). A read it didn't make answers that the buffer isn't bound; a dispatch whose buffers hold more then makes its
    own (cs_pipe checks every read) */
@@ -808,16 +834,14 @@ int vk_cs_pipe_load(const u32 launch[4], const u32* cbr, u32 ncbr, const u8* vke
     int made = p && !p->failed;
     if (made) {
         if (record) cs_keep(p, window, blen, launch[0], launch[1], launch[2], launch[3], &k);
-        /* in the table unless a dispatch made it meanwhile (a game started without waiting for the shaders) */
-        vk_lock();
-        CsPipe* q = g_csp[key & 255];
-        while (q && (q->key != key || !cs_reads_same(&q->cbr, &p->cbr))) q = q->next;
-        if (!q) {
-            p->next = g_csp[key & 255];
-            g_csp[key & 255] = p;
-            p = NULL;
-        }
-        vk_unlock();
+        /* queued for the next dispatch to put in the table (cs_take_loaded): this thread holds the file's lock, which
+           a dispatch recording a pipeline takes under vk_lock, so it can't take vk_lock itself */
+        pm_lock(&g_cs_loaded_lock);
+        p->next = g_cs_loaded;
+        g_cs_loaded = p;
+        __atomic_store_n(&g_cs_any_loaded, 1, __ATOMIC_RELEASE);
+        pm_unlock(&g_cs_loaded_lock);
+        p = NULL;
     }
     if (p) cs_free(p);
     free(window);
@@ -1009,6 +1033,7 @@ void vk_dispatch(const DispatchState* d) {
         return;
     }
     cs_init();
+    cs_take_loaded();
     /* the constant buffers bound (reading them lands results they overlap), or the dispatch's inline blocks */
     for (u32 i = 0; i < QMD_NUM_CONST_BUFFERS; i++) {
         g_cbn[i] = 0;
