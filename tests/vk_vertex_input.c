@@ -2,8 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* vertex_input_dynamic_state (gpu/vk/vertex_input.c), with no GPU: its values, the setting read from a game's .ini of
    a version without it and of one with it, the drivers' bans against stand-in devices (each ban, the first version past
-   it, on over it), and the log line of every case naming the device, the driver, its version, the value given and the
-   path in effect */
+   it, on over it), auto off on Android whatever the driver (Qualcomm's and Turnip there, Qualcomm's elsewhere keeping
+   it), and the log line of every case naming the device, the driver, its version, the value given and the path in
+   effect */
 #include "nx/gpu/vk/vertex_input.h"
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
@@ -179,12 +180,25 @@ static void check_choices(void) {
         const char* version;
         int banned;
     } devices[] = {
-        {{"NVIDIA GeForce RTX 3060", "NVIDIA", "575.64.05", VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(575u, 64u, 5u), 2},
+        {{"NVIDIA GeForce RTX 3060", "NVIDIA", "575.64.05", VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(575u, 64u, 5u), 2, 0},
          "575.64.05",
          1},
         {{"AMD Radeon RX 6700 XT (RADV NAVI22)", "radv", "Mesa 26.1.8", VK_DRIVER_ID_MESA_RADV,
-          VK_MAKE_VERSION(26u, 1u, 8u), 2},
+          VK_MAKE_VERSION(26u, 1u, 8u), 2, 0},
          "26.1.8",
+         0},
+        /* Android: auto off whatever the driver; the same Qualcomm driver off Android keeps it */
+        {{"Adreno (TM) 830", "Qualcomm Technologies Inc. Adreno Vulkan Driver", "Driver Build: 2fbb164246",
+          VK_DRIVER_ID_QUALCOMM_PROPRIETARY, VK_MAKE_VERSION(512u, 800u, 48u), 2, 1},
+         "512.800.48",
+         0},
+        {{"Turnip Adreno (TM) 830", "turnip Mesa driver", "Mesa 26.0.0", VK_DRIVER_ID_MESA_TURNIP,
+          VK_MAKE_VERSION(26u, 0u, 0u), 2, 1},
+         "26.0.0",
+         0},
+        {{"Adreno (TM) 830", "Qualcomm Technologies Inc. Adreno Vulkan Driver", "Driver Build: 2fbb164246",
+          VK_DRIVER_ID_QUALCOMM_PROPRIETARY, VK_MAKE_VERSION(512u, 800u, 48u), 2, 0},
+         "512.800.48",
          0},
     };
     for (size_t d = 0; d < sizeof devices / sizeof *devices; d++)
@@ -195,7 +209,9 @@ static void check_choices(void) {
                 int warn = -1;
                 dev.has = has;
                 int dynamic = vk_vi_choose(mode, &dev, line, sizeof line, &warn);
-                int want = mode != SNX_VK_VI_OFF && has == 2 && (mode == SNX_VK_VI_ON || !devices[d].banned);
+                int android = dev.android && mode == SNX_VK_VI_AUTO;
+                int want =
+                    mode != SNX_VK_VI_OFF && has == 2 && (mode == SNX_VK_VI_ON || (!devices[d].banned && !android));
                 snprintf(what, sizeof what, "%s, has %d, %s: dynamic %d, warn %d: %s", dev.device, has, modes[mode],
                          dynamic, warn, line);
                 CHECK(dynamic == want, what);
@@ -211,6 +227,8 @@ static void check_choices(void) {
                 int names_ban = strstr(line, "NVIDIA's driver before 580.119.02") != NULL;
                 CHECK(names_ban == (devices[d].banned && has == 2 && mode != SNX_VK_VI_OFF), what);
                 CHECK(!strstr(line, "over the ban") == !(devices[d].banned && dynamic), what);
+                /* Android is named where it decides */
+                CHECK((strstr(line, "off on Android, as Eden") != NULL) == (android && has == 2), what);
                 if (has < 2 && mode != SNX_VK_VI_OFF)
                     CHECK(strstr(line, has ? "without its vertexInputDynamicState" : "has no VK_EXT_vertex_input") !=
                               NULL,

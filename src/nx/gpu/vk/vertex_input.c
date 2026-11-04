@@ -49,7 +49,10 @@ int vk_vi_choose(int mode, const VkViDevice* d, char* line, size_t n, int* warn)
                         : d->has == 1 ? "has VK_EXT_vertex_input_dynamic_state without its vertexInputDynamicState"
                                       : NULL;
     char version[32], device[400];
-    int dynamic = mode != SNX_VK_VI_OFF && !lacks && (mode == SNX_VK_VI_ON || !ban);
+    /* auto is off on Android whatever the driver, as Eden and rEden have it (settings.h, vertex_input_dynamic_state):
+       Qualcomm's driver 512.800.48 drew draws of edenprobe's coherence suite wrong with it */
+    int android = mode == SNX_VK_VI_AUTO && d->android;
+    int dynamic = mode != SNX_VK_VI_OFF && !lacks && (mode == SNX_VK_VI_ON || (!ban && !android));
     vk_driver_version_text(d->driver_id, d->driver_version, version, sizeof version);
     snprintf(device, sizeof device, "%s (%s, %s, driver version %s)", d->device, d->driver_name, d->driver_info,
              version);
@@ -67,6 +70,12 @@ int vk_vi_choose(int mode, const VkViDevice* d, char* line, size_t n, int* warn)
         snprintf(line, n,
                  "vulkan: vertex_input_dynamic_state=%s, but %s %s: each vertex layout takes a pipeline of its own",
                  vi_words[mode], device, lacks);
+    else if (android)
+        snprintf(
+            line, n,
+            "vulkan: vertex_input_dynamic_state=auto: each vertex layout takes a pipeline of its own on %s: off on "
+            "Android, as Eden (vertex_input_dynamic_state=on sets it anyway)",
+            device);
     else
         snprintf(line, n,
                  "vulkan: vertex_input_dynamic_state=auto: each vertex layout takes a pipeline of its own on %s, as %s "

@@ -243,7 +243,8 @@ setting Vertex input dynamic state
     words auto=Auto|on=On|off=Off
     help How a draw gives the GPU its vertex layout. auto = as dynamic state (VK_EXT_vertex_input_dynamic_state) where
     help the GPU's driver has it, but NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0, which
-    help draw it wrong; on = as dynamic state wherever the driver has it, those too; off = in the pipeline. Dynamic,
+    help draw it wrong, and on Android, as Eden; on = as dynamic state wherever the driver has it, those too; off = in
+    help the pipeline. Dynamic,
     help one pipeline serves every layout a program is drawn with, so fewer pipelines are made; in the pipeline, each
     help layout takes one of its own. Any other value stops the game, saying so
 
