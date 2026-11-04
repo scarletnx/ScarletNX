@@ -195,6 +195,9 @@ static bool swap_create(unsigned screen) {
         swap_views_free(screen);
     }
     if (!snx_vk_swapchain_make(v->phys, v->device, &info, &g_present.swap[screen])) return false;
+    if (v->hdr_metadata)
+        snx_vk_swapchain_metadata(v->device, g_present.swap[screen].swapchain, g_present.swap[screen].format.format,
+                                  g_present.swap[screen].format.colorSpace, g_present.peak, g_present.paper);
     /* a view of every window image: the HDR encode draws into it, and the toast draws into the SDR one too */
     for (uint32_t i = 0; i < g_present.swap[screen].count; ++i) {
         VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,

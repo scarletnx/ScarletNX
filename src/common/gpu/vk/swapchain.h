@@ -51,4 +51,9 @@ bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSw
                            SnxVkSwapchain* sc);
 /* the swapchain destroyed: nothing may use its images any more */
 void snx_vk_swapchain_free(VkDevice device, SnxVkSwapchain* sc);
+/* An HDR10 swapchain's metadata: the display's peak as the content's brightest light and the paper white as its
+   average, in BT.2020's primaries, so a compositor does not tone-map the whole signal into a guessed peak. Call it
+   only where VK_EXT_hdr_metadata is enabled; it does nothing for another format or colour space */
+void snx_vk_swapchain_metadata(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR space,
+                               int peak_nits, int paper_nits);
 #endif

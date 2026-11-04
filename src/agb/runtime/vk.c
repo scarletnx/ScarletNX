@@ -175,6 +175,9 @@ static bool swapchain_make(AgbVk* v) {
     vkDeviceWaitIdle(v->device);
     views_free(v);
     if (!snx_vk_swapchain_make(v->phys, v->device, &info, &v->swap)) return false;
+    if (v->hdr_metadata)
+        snx_vk_swapchain_metadata(v->device, v->swap.swapchain, v->swap.format.format, v->swap.format.colorSpace, v->peak,
+                                  v->paper);
     for (uint32_t i = 0; i < v->swap.count; ++i) {
         VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                     .image = v->swap.images[i],

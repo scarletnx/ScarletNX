@@ -24,6 +24,7 @@ typedef struct {
     VkDeviceSize host_alignment; /* minImportedHostPointerAlignment */
     bool preserve_infnan;    /* shaderSignedZeroInfNanPreserveFloat32: the shaders declare SignedZeroInfNanPreserve */
     bool fp16;               /* shaderFloat16: the FSR 1 fp16 passes where the device runs them */
+    int hdr_metadata;        /* VK_EXT_hdr_metadata: the PQ swapchain's light is named to the compositor */
     bool bc;                 /* the device samples BC1 to BC3 (textureCompressionBC) */
     bool depth16_blit;       /* D16 depth images blit both ways (a depth surface scaled to and from its samples) */
     bool depth_clamp;        /* the device clamps depth rather than clipping it (depthClamp), as the console does */

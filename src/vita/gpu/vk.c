@@ -55,8 +55,10 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     if (v->host.surface) {
         ok = ok && snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-        if (snx_vk_extensions_has(&list, VK_EXT_HDR_METADATA_EXTENSION_NAME))
+        if (snx_vk_extensions_has(&list, VK_EXT_HDR_METADATA_EXTENSION_NAME)) {
             extensions[n++] = VK_EXT_HDR_METADATA_EXTENSION_NAME;
+            v->hdr_metadata = 1;
+        }
     }
     /* fragment programs that read their pixel's color (the program flag FRAGCOLOR_USED): the color attachment read
        as an input attachment while it is rendered to, in the order its primitives are drawn when the device keeps it */
@@ -202,6 +204,9 @@ static bool swapchain_make(VitaVk* v) {
         g.swap_views_for = VK_NULL_HANDLE;
     }
     if (!snx_vk_swapchain_make(v->phys, v->device, &info, &v->swap)) return false;
+    if (v->hdr_metadata)
+        snx_vk_swapchain_metadata(v->device, v->swap.swapchain, v->swap.format.format, v->swap.format.colorSpace, g.peak,
+                                  g.paper);
     for (uint32_t i = 0; i < v->swap.count; ++i) {
         VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                     .image = v->swap.images[i],

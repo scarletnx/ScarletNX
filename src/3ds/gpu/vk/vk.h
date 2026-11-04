@@ -40,6 +40,7 @@ typedef struct {
     bool preserve_infnan;  /* shaderSignedZeroInfNanPreserveFloat32: the generated shaders keep infinities and NaNs */
     bool import_host;      /* VK_EXT_external_memory_host */
     bool export_dmabuf;    /* VK_KHR_external_memory_fd and VK_EXT_external_memory_dma_buf */
+    int hdr_metadata;      /* VK_EXT_hdr_metadata: the PQ swapchain's light is named to the compositor */
     SnxCtrVkRam ram[8];
     unsigned ram_count;
     /* the board's RAM as the device's memory, each region's buffer bound at the region's offset in the RAM;

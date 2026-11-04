@@ -100,8 +100,10 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     if (v->host.surface || v->second_surface) {
         ok = ok && snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-        if (snx_vk_extensions_has(&list, VK_EXT_HDR_METADATA_EXTENSION_NAME))
+        if (snx_vk_extensions_has(&list, VK_EXT_HDR_METADATA_EXTENSION_NAME)) {
             extensions[n++] = VK_EXT_HDR_METADATA_EXTENSION_NAME;
+            v->hdr_metadata = 1;
+        }
     }
     bool dma_buf = snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME) &&
                    snx_vk_extensions_has(&list, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);

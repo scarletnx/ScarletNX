@@ -66,6 +66,23 @@ uint32_t snx_vk_swap_image_count(const VkSurfaceCapabilitiesKHR* caps, uint32_t 
     return count;
 }
 
+void snx_vk_swapchain_metadata(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR space,
+                               int peak_nits, int paper_nits) {
+    VkHdrMetadataEXT meta = {.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,
+                             .minLuminance = 0.005f,
+                             .maxLuminance = (float)peak_nits,
+                             .maxContentLightLevel = (float)peak_nits,
+                             .maxFrameAverageLightLevel = (float)paper_nits};
+    if (!swapchain || space != VK_COLOR_SPACE_HDR10_ST2084_EXT ||
+        (format != VK_FORMAT_A2B10G10R10_UNORM_PACK32 && format != VK_FORMAT_A2R10G10B10_UNORM_PACK32))
+        return;
+    meta.displayPrimaryRed = (VkXYColorEXT){0.708f, 0.292f};
+    meta.displayPrimaryGreen = (VkXYColorEXT){0.170f, 0.797f};
+    meta.displayPrimaryBlue = (VkXYColorEXT){0.131f, 0.046f};
+    meta.whitePoint = (VkXYColorEXT){0.3127f, 0.3290f};
+    vkSetHdrMetadataEXT(device, 1, &swapchain, &meta);
+}
+
 void snx_vk_swapchain_free(VkDevice device, SnxVkSwapchain* sc) {
     if (sc->swapchain) vkDestroySwapchainKHR(device, sc->swapchain, NULL);
     *sc = (SnxVkSwapchain){0};
