@@ -275,6 +275,7 @@ static const SnxModule* load_module(const char* path) {
     } else
         fatal("%s is not a ScarletNX game module", path);
     if (!m) fatal("%s could not be loaded: it describes no game", path);
+    plat_crash_code_module(sym); /* the module its descriptor's function is in */
     if ((sym = plat_dl_sym(lib, "snx_variants")) != NULL) {
         memcpy(&get_variants, &sym, sizeof get_variants);
         g_variants = get_variants();
@@ -636,6 +637,7 @@ static void frontend_loop(void) {
         if (tick % 300 == 0) {
             save_hints();
             if (g_renderer->save) g_renderer->save(0);
+            plat_crash_handler_check(); /* a driver may take the crash filter once its device is up */
         }
         /* Walking every guest stack is diagnostic work, not a normal frontend tick. Real stalls still dump below;
            a verbose run explicitly opts into periodic snapshots. */
