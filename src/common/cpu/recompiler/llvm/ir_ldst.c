@@ -221,13 +221,17 @@ static V rmw_value(SnxIr* ir, LLVMAtomicRMWBinOp op, V old, V operand) {
 }
 
 /* the old value of an atomic read-modify-write of operand (iN) at address. Bitwise operations and exchanges commute
-   with the byte order; on a big-endian host the arithmetic ones are a compare-and-swap loop on the guest's value */
+   with the byte order; on a big-endian host the arithmetic ones are a compare-and-swap loop on the guest's value. So
+   are PowerPC64's byte and halfword UMAX and UMIN: its LLVM compares the operand in all 32 bits of its register
+   (cmplw after lbarx or lharx, the operand never zero-extended), which bits above the byte or halfword change */
 static V atomic_rmw(SnxIr* ir, LLVMAtomicRMWBinOp op, V address, V operand) {
     LLVMTypeRef type = LLVMTypeOf(operand);
     V pointer = ir_mp(ir, address);
     int bitwise = op == LLVMAtomicRMWBinOpXchg || op == LLVMAtomicRMWBinOpAnd || op == LLVMAtomicRMWBinOpOr ||
                   op == LLVMAtomicRMWBinOpXor;
-    if (!ir->big_endian || bitwise) {
+    int partword_unsigned =
+        ir->ppc && LLVMGetIntTypeWidth(type) < 32 && (op == LLVMAtomicRMWBinOpUMax || op == LLVMAtomicRMWBinOpUMin);
+    if ((!ir->big_endian || bitwise) && !partword_unsigned) {
         V rmw = LLVMBuildAtomicRMW(B, op, pointer, ir_guest_order(ir, operand), LLVMAtomicOrderingSequentiallyConsistent,
                                    0);
         return ir_guest_order(ir, atomic_tag(ir, rmw));
