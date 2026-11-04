@@ -39,6 +39,7 @@
 #include "llvm_qemu_words.h"
 #include "llvm_steps.h"
 #include "qemu_ref/qemu_ref.h"
+#include <fenv.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1248,10 +1249,14 @@ int main(int argc, char** argv) {
                 c.mem = work - WINDOW;
                 if (it->nwords == 1) memcpy(work + PC - WINDOW, &it->words[0], 4);
                 g_test.events = &ev;
+                /* the host FP environment as other code on the thread may leave it, rounding upward: each generated
+                   function's snx_fp_env puts back what its fast paths assume, on every host that has them */
+                fesetround(FE_UPWARD);
                 for (w = 0; w < it->nwords; ++w) {
                     l.pc = steps[it->step + w](&c);
                     if (ev.undef || ev.brk || l.pc != item_pc(it) + 4 * (w + 1)) break;
                 }
+                fesetround(FE_TONEAREST);
                 l.outcome = ev.undef ? SNX_QREF_UNDEF
                             : ev.brk ? SNX_QREF_BRK
                             : ev.svc ? SNX_QREF_SVC
