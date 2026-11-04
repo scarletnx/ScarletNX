@@ -103,12 +103,15 @@
         "tests/llvm_vfp_compare.c",
         "tools/profile_cpu.py",
         "tests/llvm_vfp_batch.c",
-        "tests/llvm_perf/half_widen_math.py"
+        "tests/llvm_perf/half_widen_math.py",
+        "tests/llvm_vfp_minmax.c",
+        "tests/llvm_perf/half_order_math.py",
+        "tests/llvm_perf/half_round_math.py"
       ],
-      "note": "Exact vector comparisons and half estimates extend the existing guarded arithmetic. A batching extension for conversion fallbacks failed the performance gate and was rejected. Vector half-to-single and single-to-half conversions now use exact whole-vector fixups, including NaNs, AHP and all rounding modes, with no helper calls in checked ordinary, broadcast and zero sequences. Other conversion and rounding forms retain pure scalar helpers. Existing arithmetic batches and big-endian packing retain their previous paths. Native tests ran on x86-64. Focused kernel gains do not establish game FPS gains."
+      "note": "Whole-vector comparisons, half conversions and estimates, min/max fixups and half rounding preserve exact results and FPSR. Supported optimized single/double rounding paths sanitize exceptional inputs and restore guest flags. Measured O0 single/double regressions retain byte-identical original objects. Conversion batching, broad helper imports and a masked arithmetic extension failed their gates and remain removed. Batched arithmetic and pure conversion helpers remain where no faster exact replacement was proven. The final min/max and rounding game/native-CI checks are pending. No synthetic kernel gain is a game-FPS claim."
     },
     "I8": {
-      "status": "in_progress",
+      "status": "implemented",
       "evidence": [
         "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
         "tests/llvm_recpe.c",
@@ -118,7 +121,7 @@
         "tests/llvm_unsigned_estimates.c",
         "tests/llvm_perf/recpe_candidates.json"
       ],
-      "note": "Exact scalar/vector float32/64 FRECPE/FRSQRTE now cover little-endian x86 and AArch64 emitter paths. Without AVX2, ordinary reciprocal inputs keep their faster division sequence while exceptional inputs use integer fixups. The hybrid passed the synthetic regression gate on x86-64. Unsigned estimates remain on x86 AVX2. Half estimates and FRECPX now use integer paths on little-endian targets, with input FZ16 semantics and unflushed reciprocal outputs. Other unproven lowerings retain exact helpers."
+      "note": "Exact scalar/vector FRECPE and FRSQRTE cover little-endian x86, including baseline hosts without AVX2, and AArch64 emitter paths. Ordinary reciprocal inputs without AVX2 retain the faster division sequence, while exceptional inputs and square-root estimates use exact table fixups. FRECPX uses integer exponent operations, and half estimates use exact little-endian integer paths. Unsigned AVX2 estimates remain unchanged. Other unproven host lowerings retain exact helpers. Native Linux AArch64 CI at 3b9ffab5 passed the full QEMU sweep and all estimate tests. The local x86-64 sweep and 40,225,792 estimate cases under qemu64 passed. The hybrid passed its fixed synthetic regression gate. No physical old-x86 or native AArch64 performance claim is made."
     },
     "I9": {
       "status": "implemented",

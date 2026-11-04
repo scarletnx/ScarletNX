@@ -11,8 +11,9 @@
    complex additions and products, FEAT_FRINTTS, and FEAT_BF16's BFDOT, BFMMLA, BFMLAL and BFCVTN, on
    halves (FEAT_FP16) as on singles and doubles. Every lane is the architecture's: FPCR (FZ, FZ16, DN, AHP, RMode),
    NaN propagation and FPSR's cumulative flags are the helpers' (helpers/fp.c, through helpers/fp_host.c's host
-   arithmetic where it is exact), one call per lane. The common single and double operations first try the host's
-   IEEE arithmetic on whole vectors, behind the guards ir_fpu.c's scalar fast paths use, checked in every lane: round
+   arithmetic where it is exact). Proven groups use whole-vector masks and fixups. Other groups retain a batched
+   helper or pure lane calls where no faster exact replacement passed its gate. Common single and double operations
+   first try the host's IEEE arithmetic on whole vectors, behind the guards ir_fpu.c's scalar fast paths use, checked in every lane: round
    to nearest, no denormal operand under FZ, a finite result above the smallest normal or an exact zero, and IXC
    computed exactly or already set. */
 #include "common/cpu/recompiler/llvm/ir_vec.h"
@@ -525,6 +526,46 @@ static V fma_lanes(SnxIr* ir, unsigned width, V add, V n, V m) {
     return map(ir, &o, add, n, m, width);
 }
 
+/* FPMax/FPMin process both input flushes first, then the first signaling NaN or first quiet NaN.
+   Numeric variants ignore one quiet NaN only when the other operand is numeric. Equal signed zeros use OR
+   for minimum and AND for maximum. Integer ordering preserves every finite value and infinity exactly. */
+static V minmax_exact(SnxIr* ir, unsigned width, unsigned minimum, unsigned numeric, V n, V m) {
+    V zero = ir_vec_like(ir, n, 0), quiet = ir_vec_like(ir, n, min_normal(width) >> 1);
+    V nan_n = is_nan(ir, width, n), nan_m = is_nan(ir, width, m);
+    V snan_n = both(ir, nan_n, LLVMBuildICmp(B, LLVMIntEQ, LLVMBuildAnd(B, n, quiet, ""), zero, ""));
+    V snan_m = both(ir, nan_m, LLVMBuildICmp(B, LLVMIntEQ, LLVMBuildAnd(B, m, quiet, ""), zero, ""));
+    V flush = not1(ir, fpcr_clear(ir, width == 16 ? FPCR_FZ16 : FPCR_FZ));
+    V flush_n = LLVMBuildSelect(B, flush, is_denormal(ir, width, n), LLVMConstNull(LLVMTypeOf(nan_n)), "");
+    V flush_m = LLVMBuildSelect(B, flush, is_denormal(ir, width, m), LLVMConstNull(LLVMTypeOf(nan_m)), "");
+    n = LLVMBuildSelect(B, flush_n, LLVMBuildAnd(B, n, ir_vec_like(ir, n, sign_mask(width)), ""), n, "");
+    m = LLVMBuildSelect(B, flush_m, LLVMBuildAnd(B, m, ir_vec_like(ir, m, sign_mask(width)), ""), m, "");
+    V negative_n = LLVMBuildICmp(B, LLVMIntSLT, n, zero, "");
+    V negative_m = LLVMBuildICmp(B, LLVMIntSLT, m, zero, "");
+    V key_n = LLVMBuildXor(B, n, LLVMBuildSelect(B, negative_n, ir_vec_like(ir, n, ~(SnxU64)0),
+                                                 ir_vec_like(ir, n, sign_mask(width)), ""), "");
+    V key_m = LLVMBuildXor(B, m, LLVMBuildSelect(B, negative_m, ir_vec_like(ir, m, ~(SnxU64)0),
+                                                 ir_vec_like(ir, m, sign_mask(width)), ""), "");
+    V result = LLVMBuildSelect(B, LLVMBuildICmp(B, minimum ? LLVMIntULT : LLVMIntUGT, key_n, key_m, ""), n, m, "");
+    V zeros = both(ir, is_zero(ir, width, n), is_zero(ir, width, m));
+    result = LLVMBuildSelect(B, zeros, minimum ? LLVMBuildOr(B, n, m, "") : LLVMBuildAnd(B, n, m, ""), result, "");
+    V prefer_n = either(ir, snan_n, both(ir, nan_n, not1(ir, snan_m)));
+    V payload = LLVMBuildOr(B, LLVMBuildSelect(B, prefer_n, n, m, ""), quiet, "");
+    payload = LLVMBuildSelect(B, fpcr_clear(ir, 1u << 25), payload,
+                              ir_vec_like(ir, n, inf_bits(width) | (min_normal(width) >> 1)), "");
+    result = LLVMBuildSelect(B, either(ir, nan_n, nan_m), payload, result, "");
+    if (numeric) {
+        result = LLVMBuildSelect(B, both(ir, nan_n, both(ir, not1(ir, snan_n), not1(ir, nan_m))), m, result, "");
+        result = LLVMBuildSelect(B, both(ir, nan_m, both(ir, not1(ir, snan_m), not1(ir, nan_n))), n, result, "");
+    }
+    V flags = LLVMBuildZExt(B, ir_vec_any(ir, either(ir, snan_n, snan_m)), ir->t_i32, "");
+    if (width != 16) {
+        V denormal = LLVMBuildZExt(B, ir_vec_any(ir, either(ir, flush_n, flush_m)), ir->t_i32, "");
+        flags = LLVMBuildOr(B, flags, LLVMBuildShl(B, denormal, ir_i32(ir, 7), ""), "");
+    }
+    ir_cpu_store(ir, LLVMBuildOr(B, fpsr(ir), flags, ""), offsetof(CPU, fpsr));
+    return result;
+}
+
 static V minmax(SnxIr* ir, unsigned width, unsigned minimum, unsigned numeric, V n, V m) {
     LaneOp o = op_simple(H_MINMAX, width);
     o.op = minimum;
@@ -534,9 +575,11 @@ static V minmax(SnxIr* ir, unsigned width, unsigned minimum, unsigned numeric, V
         Split s;
         fast_minmax(ir, width, minimum, n, m, &f);
         split_begin(ir, f.quick, f.ok, f.value, NULL, &s);
-        return split_end(ir, &s, map(ir, &o, n, m, NULL, width));
+        /* O0 keeps the original float fallback after its ordinary-path regression gate failed. */
+        return split_end(ir, &s, ir->big_endian || !ir->promote ? map(ir, &o, n, m, NULL, width) :
+                                  minmax_exact(ir, width, minimum, numeric, n, m));
     }
-    return map(ir, &o, n, m, NULL, width);
+    return ir->big_endian ? map(ir, &o, n, m, NULL, width) : minmax_exact(ir, width, minimum, numeric, n, m);
 }
 
 /* The normal path supplies a bounded index for each lane. AVX2 has a native 32-bit gather.
@@ -950,6 +993,75 @@ static V compare(SnxIr* ir, unsigned cmp, unsigned width, V a, V b, int abs) {
     return compare_exact(ir, cmp, width, a, b);
 }
 
+/* Half FRINT never needs host FP arithmetic. Below one, compare the magnitude to one half. Otherwise discard
+   25-E fraction bits and round the retained integer in FPCR's mode. E >= 25 is already integral. Every emitted
+   shift is capped at ten even in discarded lanes. Input FZ16 raises no IDC, and FRINTX raises IXC only after flush. */
+static V round_half(SnxIr* ir, V a, V mode, unsigned exact) {
+    V zero = ir_vec_like(ir, a, 0), one = ir_vec_like(ir, a, 1), nan = is_nan(ir, 16, a);
+    V flush = LLVMBuildSelect(B, fpcr_clear(ir, FPCR_FZ16), LLVMConstNull(LLVMTypeOf(nan)), is_denormal(ir, 16, a), "");
+    V sign = LLVMBuildAnd(B, a, ir_vec_like(ir, a, 0x8000), "");
+    V bits = magnitude(ir, 16, LLVMBuildSelect(B, flush, sign, a, ""));
+    V exponent = LLVMBuildLShr(B, bits, ir_vec_like(ir, a, 10), "");
+    V small = LLVMBuildICmp(B, LLVMIntULT, exponent, ir_vec_like(ir, a, 15), "");
+    V big = LLVMBuildICmp(B, LLVMIntUGE, exponent, ir_vec_like(ir, a, 25), "");
+    V args[] = {LLVMBuildSub(B, ir_vec_like(ir, a, 25), exponent, ""), ir_vec_like(ir, a, 10)};
+    V count = ir_intrinsic(ir, "llvm.umin", LLVMTypeOf(a), args, 2);
+    V unit = LLVMBuildShl(B, one, count, "");
+    V mask = LLVMBuildSub(B, unit, one, ""), rest = LLVMBuildAnd(B, bits, mask, "");
+    V base = LLVMBuildAnd(B, bits, LLVMBuildNot(B, mask, ""), "");
+    V half = LLVMBuildLShr(B, unit, one, "");
+    V nonzero = LLVMBuildICmp(B, LLVMIntNE, bits, zero, "");
+    V inexact = LLVMBuildSelect(B, small, nonzero, LLVMBuildICmp(B, LLVMIntNE, rest, zero, ""), "");
+    inexact = both(ir, inexact, not1(ir, big));
+    V odd = LLVMBuildICmp(B, LLVMIntNE, LLVMBuildAnd(B, LLVMBuildLShr(B, base, count, ""), one, ""), zero, "");
+    V nearest = either(ir, LLVMBuildICmp(B, LLVMIntUGT, rest, half, ""),
+                          both(ir, LLVMBuildICmp(B, LLVMIntEQ, rest, half, ""), odd));
+    nearest = LLVMBuildSelect(B, small, LLVMBuildICmp(B, LLVMIntUGT, bits, ir_vec_like(ir, a, 0x3800), ""), nearest, "");
+    V away = LLVMBuildSelect(B, small, LLVMBuildICmp(B, LLVMIntUGE, bits, ir_vec_like(ir, a, 0x3800), ""),
+                            LLVMBuildICmp(B, LLVMIntUGE, rest, half, ""), "");
+    V negative = LLVMBuildICmp(B, LLVMIntNE, sign, zero, ""), never = LLVMConstNull(LLVMTypeOf(nan));
+    V up = LLVMBuildSelect(B, LLVMBuildICmp(B, LLVMIntEQ, mode, ir_i32(ir, 1), ""), not1(ir, negative), never, "");
+    up = LLVMBuildSelect(B, LLVMBuildICmp(B, LLVMIntEQ, mode, ir_i32(ir, 2), ""), negative, up, "");
+    up = LLVMBuildSelect(B, LLVMBuildICmp(B, LLVMIntEQ, mode, ir_i32(ir, 0), ""), nearest, up, "");
+    up = LLVMBuildSelect(B, LLVMBuildICmp(B, LLVMIntEQ, mode, ir_i32(ir, 4), ""), away, up, "");
+    up = both(ir, up, inexact);
+    V rounded = LLVMBuildAdd(B, base, LLVMBuildSelect(B, up, unit, zero, ""), "");
+    rounded = LLVMBuildSelect(B, small, LLVMBuildSelect(B, up, ir_vec_like(ir, a, 0x3c00), zero, ""), rounded, "");
+    rounded = LLVMBuildSelect(B, big, bits, rounded, "");
+    rounded = LLVMBuildOr(B, rounded, sign, "");
+    V payload = LLVMBuildOr(B, a, ir_vec_like(ir, a, 0x200), "");
+    payload = LLVMBuildSelect(B, fpcr_clear(ir, 1u << 25), payload, ir_vec_like(ir, a, 0x7e00), "");
+    rounded = LLVMBuildSelect(B, nan, payload, rounded, "");
+    V invalid = both(ir, nan, LLVMBuildICmp(B, LLVMIntEQ, LLVMBuildAnd(B, a, ir_vec_like(ir, a, 0x200), ""), zero, ""));
+    V flags = LLVMBuildZExt(B, ir_vec_any(ir, invalid), ir->t_i32, "");
+    if (exact && snx_ir_fpsr_exact()) flags = LLVMBuildOr(B, flags,
+        LLVMBuildShl(B, LLVMBuildZExt(B, ir_vec_any(ir, inexact), ir->t_i32, ""), ir_i32(ir, 4), ""), "");
+    ir_cpu_store(ir, LLVMBuildOr(B, fpsr(ir), flags, ""), offsetof(CPU, fpsr));
+    return rounded;
+}
+
+/* Sanitize exceptional operands before host rounding, then restore guest NaN selection and input-flush flags.
+   This is the cold path: ordinary single/double vectors retain their original compact guarded sequence. */
+static V round_special(SnxIr* ir, unsigned width, unsigned rm, unsigned exact, V a) {
+    V nan = is_nan(ir, width, a), zero = ir_vec_like(ir, a, 0);
+    V flush = LLVMBuildSelect(B, fpcr_clear(ir, FPCR_FZ), LLVMConstNull(LLVMTypeOf(nan)), is_denormal(ir, width, a), "");
+    V input = LLVMBuildSelect(B, flush, LLVMBuildAnd(B, a, ir_vec_like(ir, a, sign_mask(width)), ""), a, "");
+    input = LLVMBuildSelect(B, nan, zero, input, "");
+    V f = as_float(ir, input, width), rounded = rm == RM_FPCR ? ir_fp_round_value(ir, f, rm) : host_rint(ir, f, rm);
+    V result = as_bits(ir, rounded, width), quiet = ir_vec_like(ir, a, min_normal(width) >> 1);
+    V payload = LLVMBuildOr(B, a, quiet, "");
+    payload = LLVMBuildSelect(B, fpcr_clear(ir, 1u << 25), payload,
+                              ir_vec_like(ir, a, inf_bits(width) | (min_normal(width) >> 1)), "");
+    result = LLVMBuildSelect(B, nan, payload, result, "");
+    V invalid = both(ir, nan, LLVMBuildICmp(B, LLVMIntEQ, LLVMBuildAnd(B, a, quiet, ""), zero, ""));
+    V flags = LLVMBuildZExt(B, ir_vec_any(ir, invalid), ir->t_i32, "");
+    flags = LLVMBuildOr(B, flags, LLVMBuildShl(B, LLVMBuildZExt(B, ir_vec_any(ir, flush), ir->t_i32, ""), ir_i32(ir, 7), ""), "");
+    if (exact && snx_ir_fpsr_exact()) flags = LLVMBuildOr(B, flags,
+        LLVMBuildShl(B, LLVMBuildZExt(B, ir_vec_any(ir, float_ne(ir, f, rounded)), ir->t_i32, ""), ir_i32(ir, 4), ""), "");
+    ir_cpu_store(ir, LLVMBuildOr(B, fpsr(ir), flags, ""), offsetof(CPU, fpsr));
+    return result;
+}
+
 /* FRINT[NPMZA] (rm 0-4), FRINTX and FRINTI (rm RM_FPCR: FPCR's mode, ir_fp_round_value; exact: FRINTX's IXC).
    The host's rounding (host_rint, which on x86 gives ties away from zero too) gives the modes exactly for every lane
    but a NaN or a flushed denormal, and raises nothing. FRINTX's IXC is a lane that rounding changed */
@@ -957,12 +1069,15 @@ static V round_lanes(SnxIr* ir, unsigned width, unsigned rm, unsigned exact, V a
     LaneOp o = op_simple(H_ROUND, width);
     o.p1 = exact;
     o.rm = rm == RM_FPCR ? fpcr_rmode(ir) : ir_i32(ir, rm);
+    if (width == 16 && !ir->big_endian) return round_half(ir, a, o.rm, exact);
     if (width != 16 && host_round(ir)) {
         V fa = as_float(ir, a, width), r = rm == RM_FPCR ? ir_fp_round_value(ir, fa, rm) : host_rint(ir, fa, rm);
         Split s;
         split_begin(ir, NULL, both(ir, no_nan(ir, width, a), unflushed(ir, width, a)), as_bits(ir, r, width),
                     exact && snx_ir_fpsr_exact() ? ir_vec_any(ir, float_ne(ir, fa, r)) : NULL, &s);
-        return split_end(ir, &s, map(ir, &o, a, NULL, NULL, width));
+        /* Exceptional inlining regressed O0 dynamic-rounding kernels. Keep their original object sequence. */
+        return split_end(ir, &s, ir->big_endian || !ir->promote ? map(ir, &o, a, NULL, NULL, width) :
+                                  round_special(ir, width, rm, exact, a));
     }
     return map(ir, &o, a, NULL, NULL, width);
 }

@@ -738,12 +738,27 @@ snx_cpu_helpers_flags(snx-test-llvm-simd-shift)
 target_link_libraries(snx-test-llvm-simd-shift PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_simd_shift COMMAND snx-test-llvm-simd-shift)
 
+add_executable(snx-test-llvm-vfp-minmax llvm_vfp_minmax.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-vfp-minmax 11)
+snx_cpu_helpers_flags(snx-test-llvm-vfp-minmax)
+target_link_libraries(snx-test-llvm-vfp-minmax PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_vfp_minmax COMMAND snx-test-llvm-vfp-minmax)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME llvm_half_order_math COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/llvm_perf/half_order_math.py")
+endif()
+
 add_executable(snx-test-llvm-round llvm_round.c llvm_steps.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
 snx_test_target(snx-test-llvm-round 11)
 snx_cpu_helpers_flags(snx-test-llvm-round)
 target_link_libraries(snx-test-llvm-round PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_round COMMAND snx-test-llvm-round)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME llvm_half_round_math COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/llvm_perf/half_round_math.py")
+endif()
 
 add_executable(snx-test-llvm-estimates llvm_estimates.c llvm_steps.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")

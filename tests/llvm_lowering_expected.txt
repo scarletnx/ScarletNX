@@ -498,86 +498,86 @@ FMADD              aarch64   guarded  snx_fp_host_fma
 FMADD              generic   helper   snx_fp_host_fma
 FMADD              x86       guarded  snx_fp_host_fma
 FMADD              x86-base  helper   snx_fp_host_fma
-FMAXNMP_s          aarch64   guarded  snx_fp_host_minmax
-FMAXNMP_s          generic   guarded  snx_fp_host_minmax
-FMAXNMP_s          x86       guarded  snx_fp_host_minmax
-FMAXNMP_s          x86-base  guarded  snx_fp_host_minmax
-FMAXNMP_v          aarch64   guarded  snx_fp_host_lanes
-FMAXNMP_v          generic   guarded  snx_fp_host_lanes
-FMAXNMP_v          x86       guarded  snx_fp_host_lanes
-FMAXNMP_v          x86-base  guarded  snx_fp_host_lanes
-FMAXNMV_s          aarch64   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXNMV_s          generic   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXNMV_s          x86       guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXNMV_s          x86-base  guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMAXNMP_s          aarch64   inline
+FMAXNMP_s          generic   inline
+FMAXNMP_s          x86       inline
+FMAXNMP_s          x86-base  inline
+FMAXNMP_v          aarch64   inline
+FMAXNMP_v          generic   inline
+FMAXNMP_v          x86       inline
+FMAXNMP_v          x86-base  inline
+FMAXNMV_s          aarch64   inline
+FMAXNMV_s          generic   inline
+FMAXNMV_s          x86       inline
+FMAXNMV_s          x86-base  inline
 FMAXNM_s           aarch64   guarded  snx_fp_host_minmax
 FMAXNM_s           generic   guarded  snx_fp_host_minmax
 FMAXNM_s           x86       guarded  snx_fp_host_minmax
 FMAXNM_s           x86-base  guarded  snx_fp_host_minmax
-FMAXNM_v           aarch64   guarded  snx_fp_host_lanes
-FMAXNM_v           generic   guarded  snx_fp_host_lanes
-FMAXNM_v           x86       guarded  snx_fp_host_lanes
-FMAXNM_v           x86-base  guarded  snx_fp_host_lanes
-FMAXP_s            aarch64   guarded  snx_fp_host_minmax
-FMAXP_s            generic   guarded  snx_fp_host_minmax
-FMAXP_s            x86       guarded  snx_fp_host_minmax
-FMAXP_s            x86-base  guarded  snx_fp_host_minmax
-FMAXP_v            aarch64   guarded  snx_fp_host_lanes
-FMAXP_v            generic   guarded  snx_fp_host_lanes
-FMAXP_v            x86       guarded  snx_fp_host_lanes
-FMAXP_v            x86-base  guarded  snx_fp_host_lanes
-FMAXV_s            aarch64   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXV_s            generic   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXV_s            x86       guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXV_s            x86-base  guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMAXNM_v           aarch64   inline
+FMAXNM_v           generic   inline
+FMAXNM_v           x86       inline
+FMAXNM_v           x86-base  inline
+FMAXP_s            aarch64   inline
+FMAXP_s            generic   inline
+FMAXP_s            x86       inline
+FMAXP_s            x86-base  inline
+FMAXP_v            aarch64   inline
+FMAXP_v            generic   inline
+FMAXP_v            x86       inline
+FMAXP_v            x86-base  inline
+FMAXV_s            aarch64   inline
+FMAXV_s            generic   inline
+FMAXV_s            x86       inline
+FMAXV_s            x86-base  inline
 FMAX_s             aarch64   guarded  snx_fp_host_minmax
 FMAX_s             generic   guarded  snx_fp_host_minmax
 FMAX_s             x86       guarded  snx_fp_host_minmax
 FMAX_s             x86-base  guarded  snx_fp_host_minmax
-FMAX_v             aarch64   guarded  snx_fp_host_lanes
-FMAX_v             generic   guarded  snx_fp_host_lanes
-FMAX_v             x86       guarded  snx_fp_host_lanes
-FMAX_v             x86-base  guarded  snx_fp_host_lanes
-FMINNMP_s          aarch64   guarded  snx_fp_host_minmax
-FMINNMP_s          generic   guarded  snx_fp_host_minmax
-FMINNMP_s          x86       guarded  snx_fp_host_minmax
-FMINNMP_s          x86-base  guarded  snx_fp_host_minmax
-FMINNMP_v          aarch64   guarded  snx_fp_host_lanes
-FMINNMP_v          generic   guarded  snx_fp_host_lanes
-FMINNMP_v          x86       guarded  snx_fp_host_lanes
-FMINNMP_v          x86-base  guarded  snx_fp_host_lanes
-FMINNMV_s          aarch64   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINNMV_s          generic   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINNMV_s          x86       guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINNMV_s          x86-base  guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMAX_v             aarch64   inline
+FMAX_v             generic   inline
+FMAX_v             x86       inline
+FMAX_v             x86-base  inline
+FMINNMP_s          aarch64   inline
+FMINNMP_s          generic   inline
+FMINNMP_s          x86       inline
+FMINNMP_s          x86-base  inline
+FMINNMP_v          aarch64   inline
+FMINNMP_v          generic   inline
+FMINNMP_v          x86       inline
+FMINNMP_v          x86-base  inline
+FMINNMV_s          aarch64   inline
+FMINNMV_s          generic   inline
+FMINNMV_s          x86       inline
+FMINNMV_s          x86-base  inline
 FMINNM_s           aarch64   guarded  snx_fp_host_minmax
 FMINNM_s           generic   guarded  snx_fp_host_minmax
 FMINNM_s           x86       guarded  snx_fp_host_minmax
 FMINNM_s           x86-base  guarded  snx_fp_host_minmax
-FMINNM_v           aarch64   guarded  snx_fp_host_lanes
-FMINNM_v           generic   guarded  snx_fp_host_lanes
-FMINNM_v           x86       guarded  snx_fp_host_lanes
-FMINNM_v           x86-base  guarded  snx_fp_host_lanes
-FMINP_s            aarch64   guarded  snx_fp_host_minmax
-FMINP_s            generic   guarded  snx_fp_host_minmax
-FMINP_s            x86       guarded  snx_fp_host_minmax
-FMINP_s            x86-base  guarded  snx_fp_host_minmax
-FMINP_v            aarch64   guarded  snx_fp_host_lanes
-FMINP_v            generic   guarded  snx_fp_host_lanes
-FMINP_v            x86       guarded  snx_fp_host_lanes
-FMINP_v            x86-base  guarded  snx_fp_host_lanes
-FMINV_s            aarch64   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINV_s            generic   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINV_s            x86       guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINV_s            x86-base  guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMINNM_v           aarch64   inline
+FMINNM_v           generic   inline
+FMINNM_v           x86       inline
+FMINNM_v           x86-base  inline
+FMINP_s            aarch64   inline
+FMINP_s            generic   inline
+FMINP_s            x86       inline
+FMINP_s            x86-base  inline
+FMINP_v            aarch64   inline
+FMINP_v            generic   inline
+FMINP_v            x86       inline
+FMINP_v            x86-base  inline
+FMINV_s            aarch64   inline
+FMINV_s            generic   inline
+FMINV_s            x86       inline
+FMINV_s            x86-base  inline
 FMIN_s             aarch64   guarded  snx_fp_host_minmax
 FMIN_s             generic   guarded  snx_fp_host_minmax
 FMIN_s             x86       guarded  snx_fp_host_minmax
 FMIN_s             x86-base  guarded  snx_fp_host_minmax
-FMIN_v             aarch64   guarded  snx_fp_host_lanes
-FMIN_v             generic   guarded  snx_fp_host_lanes
-FMIN_v             x86       guarded  snx_fp_host_lanes
-FMIN_v             x86-base  guarded  snx_fp_host_lanes
+FMIN_v             aarch64   inline
+FMIN_v             generic   inline
+FMIN_v             x86       inline
+FMIN_v             x86-base  inline
 FMLA_si            aarch64   guarded  snx_fp_host_fma
 FMLA_si            generic   helper   snx_fp_host_fma
 FMLA_si            x86       guarded  snx_fp_host_fma
@@ -714,57 +714,57 @@ FRINTA_s           aarch64   guarded  snx_fp_round
 FRINTA_s           generic   helper   snx_fp_round
 FRINTA_s           x86       guarded  snx_fp_round
 FRINTA_s           x86-base  helper   snx_fp_round
-FRINTA_v           aarch64   guarded  snx_fp_round
+FRINTA_v           aarch64   inline
 FRINTA_v           generic   helper   snx_fp_round
-FRINTA_v           x86       guarded  snx_fp_round
+FRINTA_v           x86       inline
 FRINTA_v           x86-base  helper   snx_fp_round
 FRINTI_s           aarch64   guarded  snx_fp_round
 FRINTI_s           generic   helper   snx_fp_round
 FRINTI_s           x86       guarded  snx_fp_round
 FRINTI_s           x86-base  helper   snx_fp_round
-FRINTI_v           aarch64   guarded  snx_fp_round
+FRINTI_v           aarch64   inline
 FRINTI_v           generic   helper   snx_fp_round
-FRINTI_v           x86       guarded  snx_fp_round
+FRINTI_v           x86       inline
 FRINTI_v           x86-base  helper   snx_fp_round
 FRINTM_s           aarch64   guarded  snx_fp_round
 FRINTM_s           generic   helper   snx_fp_round
 FRINTM_s           x86       guarded  snx_fp_round
 FRINTM_s           x86-base  helper   snx_fp_round
-FRINTM_v           aarch64   guarded  snx_fp_round
+FRINTM_v           aarch64   inline
 FRINTM_v           generic   helper   snx_fp_round
-FRINTM_v           x86       guarded  snx_fp_round
+FRINTM_v           x86       inline
 FRINTM_v           x86-base  helper   snx_fp_round
 FRINTN_s           aarch64   guarded  snx_fp_round
 FRINTN_s           generic   helper   snx_fp_round
 FRINTN_s           x86       guarded  snx_fp_round
 FRINTN_s           x86-base  helper   snx_fp_round
-FRINTN_v           aarch64   guarded  snx_fp_round
+FRINTN_v           aarch64   inline
 FRINTN_v           generic   helper   snx_fp_round
-FRINTN_v           x86       guarded  snx_fp_round
+FRINTN_v           x86       inline
 FRINTN_v           x86-base  helper   snx_fp_round
 FRINTP_s           aarch64   guarded  snx_fp_round
 FRINTP_s           generic   helper   snx_fp_round
 FRINTP_s           x86       guarded  snx_fp_round
 FRINTP_s           x86-base  helper   snx_fp_round
-FRINTP_v           aarch64   guarded  snx_fp_round
+FRINTP_v           aarch64   inline
 FRINTP_v           generic   helper   snx_fp_round
-FRINTP_v           x86       guarded  snx_fp_round
+FRINTP_v           x86       inline
 FRINTP_v           x86-base  helper   snx_fp_round
 FRINTX_s           aarch64   guarded  snx_fp_round
 FRINTX_s           generic   helper   snx_fp_round
 FRINTX_s           x86       guarded  snx_fp_round
 FRINTX_s           x86-base  helper   snx_fp_round
-FRINTX_v           aarch64   guarded  snx_fp_round
+FRINTX_v           aarch64   inline
 FRINTX_v           generic   helper   snx_fp_round
-FRINTX_v           x86       guarded  snx_fp_round
+FRINTX_v           x86       inline
 FRINTX_v           x86-base  helper   snx_fp_round
 FRINTZ_s           aarch64   guarded  snx_fp_round
 FRINTZ_s           generic   helper   snx_fp_round
 FRINTZ_s           x86       guarded  snx_fp_round
 FRINTZ_s           x86-base  helper   snx_fp_round
-FRINTZ_v           aarch64   guarded  snx_fp_round
+FRINTZ_v           aarch64   inline
 FRINTZ_v           generic   helper   snx_fp_round
-FRINTZ_v           x86       guarded  snx_fp_round
+FRINTZ_v           x86       inline
 FRINTZ_v           x86-base  helper   snx_fp_round
 FRSQRTE_s          aarch64   inline
 FRSQRTE_s          generic   helper   snx_fp_host_unary

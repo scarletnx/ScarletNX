@@ -132,7 +132,29 @@ FP-focused workloads, with about a 13-percent geometric gain. `SNX_IR_OBJECT_VER
 objects made by the old pipeline. `SNX_ABI` remains 17, and old modules remain compatible. Recompile to use the new
 emitter paths. Large arithmetic helpers remain out of line.
 
-The retained continuation was recompiled into a game module and checked against its preceding module with the
+The min/max continuation removes helper calls from vector and pairwise min/max paths on little-endian targets.
+Integer ordering handles NaNs, numeric variants, input flushes and signed zero, with one FPSR reduction. A new
+30,112,768-case test covers all half encodings, mixed exceptional lanes and aliases. An independent rational model
+proves the ordering of all 63,488 finite half encodings, which establishes the order of 4,030,726,144 finite pairs
+with signed-zero ties handled explicitly. The original 60-kernel search measured a 4.53-times geometric ratio.
+A fresh 35-round ordinary-input check passed the fixed regression bounds. O0 single/double paths retain the
+original fallback after their separate regression gate failed. All twelve checked O0 min/max objects remain
+byte-identical. O0 half min/max retains its measured vector improvement.
+
+Rounding uses integer masks for half vectors and sanitized host rounding plus exact NaN/flush fixups for supported
+single/double hosts. The expanded test checks 19,970,048 full states, including aliases. An independent rational
+model checks all 634,880 finite-half/mode/flush combinations. The first 144-kernel search measured a 3.94-times
+geometric ratio but rejected two O0 dynamic-rounding regressions. Those paths retain their original fallback.
+Eight checked O0 single/double rounding objects remain byte-identical. The revised candidate passed the fixed
+bounds in a fresh 35-round ordinary-input check. These ratios are synthetic kernels, not game-FPS multipliers.
+
+The combined 681-test local suite passed all CPU tests, including the full QEMU sweep. The known `platform_posix`
+page-tracking assertion still fails. Both ASTC Vulkan tests fail on the Intel device and pass with lavapipe.
+Their 61 tracked build inputs match upstream, and their link includes no CPU backend. This GPU test discrepancy
+is separate from the CPU emitter changes. The retained O0 decisions also passed the focused eleven-check run.
+Final game and native CI validation of min/max and rounding remain pending here.
+
+The earlier half-conversion and estimate continuation was recompiled and checked against its preceding module with the
 same current runtime and restored private save. Both 100-second scene runs completed without crashes, and both
 screenshots rendered correctly. The final four five-second gameplay windows averaged 32.95 FPS for the preceding
 module and 33.00 FPS for the candidate. This single pair does not establish a game-FPS gain. The captures recorded
