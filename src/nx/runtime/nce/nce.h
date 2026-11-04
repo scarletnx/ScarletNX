@@ -41,6 +41,7 @@ void nce_code_added(u64 base, u64 text_size);
    place, so nothing reads an address from before the move; *entry: where the main thread starts, the first module's
    text, in it */
 const struct SnxModule* nce_module(const struct SnxModule* m, u64* entry);
-/* the crash handler's signal context: the guest's registers into the crashing thread's CPU, when it ran guest code */
-void nce_crash_context(const void* context);
+/* the crash handler's signal context and the address that faulted: the guest's registers into the crashing thread's
+   CPU, when it ran guest code. A branch of the guest's to where nothing is ends there, reported as rt_miss reports it */
+void nce_crash_context(const void* context, const void* fault);
 #endif

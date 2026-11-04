@@ -64,6 +64,20 @@ static void rt_wfe(CPU* c) {
 }
 static void rt_poll(CPU* c) { core_poll((KThread*)c->thread); }
 
+/* a call through an empty pointer comes here at 0: its caller is what to look into */
+void rt_missed_report(CPU* c, u64 pc, const char* why) {
+    KThread* t = (KThread*)c->thread;
+    WARN("\n*** The game's thread %llu stopped at %llx: code the recompiler missed (%llx) ***\n",
+         (unsigned long long)(t ? t->id : 0), (unsigned long long)pc, (unsigned long long)pc);
+    WARN("  %s\n", why);
+    if (t) WARN("  thread %llu (%s)\n", (unsigned long long)t->id, t->name);
+    fs_save_report(); /* a save a newer version wrote, whose pointers a game may call through */
+    kernel_dump_regs(c);
+    save_hints();
+    fatal("The game reached code at %llx that the recompiler missed, and %s. See the .log for details.",
+          (unsigned long long)pc, why);
+}
+
 /* snx_lookup found no function for pc: first the AOT module's variant table, which the build linked in from a profile
    run's cache, then the JIT for the functions the pack does not cover. A JIT compile may still be running: wait for it
    off the guest core, so the core's other threads run meanwhile. It is noted as a hint, so the next AOT build can put
@@ -80,17 +94,7 @@ static void rt_miss(CPU* c, u64 pc) {
         f = jit_wait(pc);
         kthread_unblock(t);
         if (t) core_enter(t);
-        if (!f) { /* a call through an empty pointer comes here at 0: its caller is what to look into */
-            WARN("\n*** The game's thread %llu stopped at %llx: code the recompiler missed (%llx) ***\n",
-                 (unsigned long long)(t ? t->id : 0), (unsigned long long)pc, (unsigned long long)pc);
-            WARN("  %s\n", jit_failure());
-            if (t) WARN("  thread %llu (%s)\n", (unsigned long long)t->id, t->name);
-            fs_save_report(); /* a save a newer version wrote, whose pointers a game may call through */
-            kernel_dump_regs(c);
-            save_hints();
-            fatal("The game reached code at %llx that the recompiler missed, and %s. See the .log for details.",
-                  (unsigned long long)pc, jit_failure());
-        }
+        if (!f) rt_missed_report(c, pc, jit_failure());
     }
     if (pc - g_code_lo < g_code_hi - g_code_lo) hints_add(pc);
     f(c, pc);

@@ -112,7 +112,10 @@ int gpu_wait_note(const char* what, u64 value) {
 }
 /* plat_posix.c's crash handler, which the test never installs, and the nce.c function it calls */
 void log_crash_mode(void) {}
-void nce_crash_context(const void* context) { (void)context; }
+void nce_crash_context(const void* context, const void* fault) {
+    (void)context;
+    (void)fault;
+}
 void crash_report(void* host_pc, void* fault, int sig) {
     (void)host_pc;
     (void)fault;
