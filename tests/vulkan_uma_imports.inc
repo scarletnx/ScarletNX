@@ -935,3 +935,56 @@ static int check_uma_region_writes(void) {
            "copied there, nothing GPU-owned\n");
     return 0;
 }
+/* A range over the edge between two regions makes one region of their union, whose buffer takes the bytes the pages
+   hold (mem_migrate): a write in place pending in one of them (its submit not done, the copy engine's result over a
+   region, say) lands in that region's buffer first, or it would land in a buffer no page maps any more, and the guest
+   would read the bytes from before it */
+#define UMA_RM  (HEAP_BASE + 0x5000000)
+#define UMA_GRM 0x4e8000000ull
+static int check_uma_region_merge(void) {
+    const u64 window = 0x200000;
+    VkBuffer w, b;
+    u64 wo, bo;
+#if defined(__ANDROID__)
+    printf("skip: the migrate way runs here as the device chose it (vk_memory), not from this check\n");
+    return 0;
+#endif
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    if (!uma_imports_shared()) {
+        printf("skip: the driver imports no buffer's pages as host memory, which the migrate way needs here\n");
+        return 0;
+    }
+    CHECK(mem_map(UMA_RM, 2 * window, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GRM, UMA_RM, 2 * window);
+    u8* g = GP(UMA_RM);
+    memset(g, 0x91, 0x1000);
+    memset(g + window - 0x1000, 0x91, 0x2000);
+    vk_lock();
+    CHECK(vk_uma_migrate(1));
+    /* a region of each window: the second's for a range read in place, the first's for a write in place */
+    CHECK(vk_buf_get_input(UMA_GRM + window + 0x100, 256, 4, &b, &bo));
+    CHECK(vk_buf_copy_writable(UMA_GRM + 0x100, 256, &w, &wo, 1));
+    int regions = vk_uma_imports(UMA_RM, 2 * window) == 2 && uma_in_buffer(g) == 1 && uma_in_buffer(g + window) == 1;
+    CHECK(!owned_test_fill(w, wo, 256, 0x95));
+    vk_buf_writable_commit();
+    /* a range over the edge, before anything waited for the write: one region of both windows holds it */
+    CHECK(vk_buf_get_input(UMA_GRM + window - 0x100, 0x200, 4, &b, &bo));
+    int merged = vk_uma_held(UMA_RM + window - 0x100, 0x200) && uma_in_buffer(g) == 1;
+    vk_finish();
+    vk_unlock();
+    CHECK(g[0x100] == 0x95 && g[0x1ff] == 0x95 && g[0xff] == 0x91 && g[0x200] == 0x91);
+    vk_lock();
+    CHECK(vk_uma_migrate(0)); /* the region moves back with its bytes */
+    vk_finish();
+    vk_unlock();
+    CHECK(uma_in_buffer(g) == 0 && g[0x100] == 0x95 && g[0x1ff] == 0x95 && g[0xff] == 0x91);
+    CHECK(mem_unmap(UMA_RM, 2 * window) == 0);
+    if (!regions || !merged) fprintf(stderr, "region merge: two regions %d, one of their union %d\n", regions, merged);
+    CHECK(regions && merged);
+    printf("in place, the migrate way: a region that takes over another lands the writes in place pending there "
+           "first\n");
+    return 0;
+}

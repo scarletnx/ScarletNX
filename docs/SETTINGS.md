@@ -24,9 +24,9 @@ Settings show a group for each section ([GUI launcher](GUI.md)).
 
 `Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
 Restart for `docked` (`Auto` follows the host's power while the game runs), `fullscreen`, `language`, `resolution`,
-`anisotropy`, `memory_gb`, `memory_fit`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
+`anisotropy`, `memory_gb`, `memory_fit_mode`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
 `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `prepare_shaders`, `compress_shader_cache`,
-`compress_prepared_shaders`, `jit_threads`, `vertex_input_dynamic_state`, and
+`compress_prepared_shaders`, `jit_threads`, `vertex_input_dynamic_state`, `astc_bc`, and
 the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
 `scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
 type, range and help, tab-separated. Every setting, the recompiler's too, is described once in
@@ -69,6 +69,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle |
 | `vulkan_video` | `0` | `1` decodes H.264 movies on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver have an H.264 decode queue. Experimental and untested. `0` decodes them on the CPU, as VP9 movies always are |
 | `vertex_input_dynamic_state` | `auto` | How a draw gives the GPU its vertex layout. `auto` sets it as dynamic state (`VK_EXT_vertex_input_dynamic_state`) where the GPU's driver has the extension and its `vertexInputDynamicState` feature, but not on the drivers known to draw it wrong: NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0 (of whose four numbers the driver gives the last two: below 100.0), and not on Android, whatever the driver, as Eden: Qualcomm's 512.800.48 draws it wrong. `on` sets it as dynamic state wherever the driver has it, those too. `off` puts it in the pipeline: each layout a program is drawn with takes a pipeline of its own, where dynamic state has one serve them all. The log says which, with the device, its driver and version. `on` on a device without the extension says so and puts the layout in the pipeline; any value but `auto`, `on` and `off` stops the game, saying so. Pipelines kept for the next run (`.vkshaders`) are made again when the choice changes |
+| `astc_bc` | `0` | `1`, on a GPU that samples BCn but not ASTC (most desktop ones), decodes ASTC textures and encodes them again as BC7, in a quarter of RGBA8's memory, close to what the blocks decode to but not always the same. `0` decodes them to RGBA8 exactly. Where the GPU samples ASTC it does nothing |
 
 ## Performance
 
@@ -76,7 +77,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | --- | --- | --- |
 | `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS |
 | `memory_gb` | `0` | Memory the game sees. Below `6` it is the console's 3.2 GB, `6` gives 4.8 GB and `8` gives 6.8 GB. Games that run out of memory on 3.2 GB need `6` |
-| `memory_fit` | `0` (iOS `1`) | `1` tells the game no more of `memory_gb`'s memory than the device can still give it, measured as the game starts, less what the rest of ScarletNX takes, so a device with less than the console has is not run out of memory. The log says what it measured. `0` tells it all of it |
+| `memory_fit_mode` | `0` | `0` (Auto) tells the game no more of `memory_gb`'s memory than the device can still give it, measured as the game starts, less what the rest of ScarletNX takes, so a device with less than the console has is not run out of memory, and one that can give it all tells it all of it. The log says what it measured. `1` (Off) tells it all of it. It takes the place of `memory_fit`, whose `0` was Off ([DEPRECATIONS](DEPRECATIONS.md)) |
 | `heap_max_mb` | `0` | The most heap the game can allocate, in MB. `0` is as much as the memory allows |
 | `map_limit_mb` | `0` (iOS `256`) | The most of the game's RomFS and ExeFS files mapped into memory, in MB: the ExeFS and a `romfs.bin` at start, a `romfs` folder's files as the game first reads them. `0` is no limit. A file past it is read from disk when the game asks, which is slower and leaves address space for threads and graphics where a device has little |
 | `map_limit_files` | `0` (iOS `2048`) | The most of those files mapped. `0` is no limit. Each mapped file holds a descriptor, of which a device may give the whole app a few thousand |
@@ -143,7 +144,6 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `diag` | `0` | `1` saves the data of each new compute shader to `captures/compute`, and each new shader's snx-shaderc corpus entry to `captures/shaders`, for debugging |
 | `vk_validation` | `0` | `1` turns on the Vulkan validation layer (`VK_LAYER_KHRONOS_validation`, from the Vulkan SDK or the distribution's validation layers package), which logs each misuse of Vulkan it finds. It slows the game down a lot. Without the layer installed the run only warns |
 | `native_astc` | `1` | `1` samples ASTC textures as the game's blocks where the GPU samples ASTC (most phone and tablet GPUs), in a quarter to a 36th of the memory. `0` decodes them to RGBA8 on the GPU, as on GPUs without ASTC (most desktop ones), to compare the two. On such a GPU `1` is a warning at start ([ASTC](ASTC.md)) |
-| `astc_bc` | `0` | `1`, on a GPU that samples BCn but not ASTC (most desktop ones), decodes ASTC textures and encodes them again as BC7, in a quarter of RGBA8's memory, close to what the blocks decode to but not always the same. `0` decodes them to RGBA8 exactly. Where the GPU samples ASTC it does nothing |
 | `native_bc` | `1` | `1` samples BC1 to BC7 textures as the game's blocks where the GPU samples BCn (desktop GPUs and some phone ones). `0` decodes them on the GPU, as on GPUs without BCn (most phone ones), to compare the two on a desktop GPU |
 | `native_etc2` | `1` | `1` samples ETC2 and EAC textures as the game's blocks where the GPU samples ETC2 (most phone and tablet GPUs), in a quarter to an eighth of the memory. `0` decodes them on the GPU, as on GPUs without ETC2 (most desktop ones), to compare the two. On such a GPU `1` is a warning at start |
 | `slp_vectorizer` | `0` | `1` runs LLVM's SLP vectorizer, which packs scalar instructions into SIMD ones, in the recompile and the JIT; the next recompile and the JIT's next run take it. Off while LLVM 23 can break a module with it and stop the recompile (llvm-project issue 231525). LLVM Internals' `llvm_slp_vectorization` leaves it running |

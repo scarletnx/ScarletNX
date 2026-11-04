@@ -18,7 +18,8 @@
    has no VK_EXT_external_memory_host); auto copies there, as no phone has measured the moves yet (vk_uma_way). The
    windows a range touches become a region: a buffer imported once, which the pages then move into with their bytes,
    mapped where they were (mem.c's mem_migrate); the regions it meets move on into it, so one region of their union
-   holds them. A region is 256 MiB at most, the biggest AHardwareBuffer Android's
+   holds them, once the writes in place pending in them have landed (the move copies what their pages hold). A region
+   is 256 MiB at most, the biggest AHardwareBuffer Android's
    allocator gave on a Snapdragon 8 Elite (512 MiB aborted its service), and its memory is taken whole when it is made
    and never swapped: one that goes for idleness or room moves its pages back into the reservation's own (mem_unmigrate)
    first. A region's buffer is memory of its own, which no change of the guest's pages touches: one whose pages are
@@ -954,6 +955,15 @@ static u32 imp_get(u64 cpu, u64 len) {
             if ((i32)(g_uma.imp[k].used - g_uma.imp[old].used) < 0) old = k;
         imp_let_go(old);
         return ~0u; /* the indexes moved: the next lookup makes it */
+    }
+    /* the regions the new one takes over: the writes in place still pending in them land in their buffers first, as
+       the move copies what their pages hold (mem_migrate), and a write landing after it would land in a buffer no
+       page maps any more (a copy engine's results into a region read nought past the lookup that grew it) */
+    if (g_uma.migrate && last > first) {
+        u32 n = g_uma.nimp;
+        u64 dropped = g_uma.dropped;
+        region_writes_land(lo, hi);
+        if (g_uma.nimp != n || g_uma.dropped != dropped) return ~0u; /* the wait moved the indexes: the next lookup */
     }
     Imp m;
     u64 t0 = plat_ns();

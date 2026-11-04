@@ -2974,6 +2974,7 @@ int main(int argc, char** argv) {
         if (!strcmp(name, "migrate") && ++ran) CHECK(!check_uma_migrate());
         if (!strcmp(name, "way") && ++ran) CHECK(!check_uma_way());
         if (!strcmp(name, "region_writes") && ++ran) CHECK(!check_uma_region_writes());
+        if (!strcmp(name, "region_merge") && ++ran) CHECK(!check_uma_region_merge());
         if (!strcmp(name, "writes") && ++ran) CHECK(!check_uma_writes());
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
         if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
@@ -2983,7 +2984,7 @@ int main(int argc, char** argv) {
         if (!ran) {
             fprintf(stderr,
                     "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, migrate, way, region_writes, "
-                    "writes, feedback, publish, dispatch, placed or placed_view\n",
+                    "region_merge, writes, feedback, publish, dispatch, placed or placed_view\n",
                     name);
             return 2;
         }
@@ -3008,6 +3009,7 @@ int main(int argc, char** argv) {
         CHECK(!check_uma_way());
         CHECK(!check_uma_migrate());
         CHECK(!check_uma_region_writes());
+        CHECK(!check_uma_region_merge());
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan in place only: %u validation messages\n", g_vk_validation_messages);
         return 0;
@@ -3096,6 +3098,7 @@ int main(int argc, char** argv) {
     CHECK(!check_uma_way());
     CHECK(!check_uma_migrate());
     CHECK(!check_uma_region_writes());
+    CHECK(!check_uma_region_merge());
     CHECK(!check_write_tracking());
     CHECK(!check_descriptor_room());
     /* the pipeline workers: pipeline_threads when given, else a quarter of the CPUs, two to six */

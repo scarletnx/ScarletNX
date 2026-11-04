@@ -271,7 +271,8 @@ into AHardwareBuffers instead of importing it where it is (`vk_uma_way`; the mig
 as no phone has measured the moves yet (`check_uma_way`). The windows a range touches become a region, a buffer of its
 own that Vulkan imports once, and their pages then move into it with their bytes, mapped where they were
 (`mem_migrate`: a copy, then the buffer's dma-buf mapped over the range, writers held off by `plat_freeze`). A region
-that a range reaches moves on into one region of their union. A region is 256 MiB at most: on an Adreno 830
+that a range reaches moves on into one region of their union, once the writes in place pending in it have landed, as
+the move copies what its pages hold (`check_uma_region_merge`). A region is 256 MiB at most: on an Adreno 830
 (Snapdragon 8 Elite) Android's allocator gave 256 MiB, and 512 MiB aborted its service. The memory of an
 AHardwareBuffer is taken whole when it is made and never swapped, so only what the GPU reads moves, and a region that
 goes for idleness or room first moves its pages back into the reservation's own (`mem_unmigrate`).

@@ -2223,6 +2223,11 @@ int snx_title_parse(const char* text, SnxU64* id) {
     *id = value;
     return 1;
 }
+/* 1 when id is the game's update or the patch of one of its other programs: an ID its entry gives a version */
+static int update_of(SnxU64 game, SnxU64 id) {
+    return snx_addon_kind(game, id) == SNX_ADDON_UPDATE ||
+           (snx_addon_kind(game, id) == SNX_ADDON_PROGRAM && id - game > SNX_PROGRAMS_MAX);
+}
 int snx_addon_name(const char* base, const char* name, SnxU64* id) {
     size_t n = strlen(base);
     SnxU64 game;
@@ -2237,31 +2242,53 @@ int snx_addon_entry_id(SnxU64 game, const char* entry, SnxU64* id) {
     memcpy(text, entry, 16);
     text[16] = 0;
     if (!snx_title_parse(text, &value) || snx_addon_kind(game, value) == SNX_ADDON_NONE) return 0;
-    if (entry[16]) { /* an update's version: v and up to ten digits */
+    if (entry[16]) { /* an update's version (its programs' too): v and up to ten digits */
         digits = strspn(entry + 17, "0123456789");
-        if (entry[16] != 'v' || !digits || digits > 10 || entry[17 + digits] ||
-            snx_addon_kind(game, value) != SNX_ADDON_UPDATE)
-            return 0;
+        if (entry[16] != 'v' || !digits || digits > 10 || entry[17 + digits] || !update_of(game, value)) return 0;
     }
     if (id) *id = value;
     return 1;
 }
 void snx_addon_entry(SnxU64 game, SnxU64 id, SnxU64 version, char entry[32]) {
     snx_title_text(id, entry);
-    if (snx_addon_kind(game, id) == SNX_ADDON_UPDATE && version != SNX_NO_VERSION)
+    if (update_of(game, id) && version != SNX_NO_VERSION)
         sprintf(entry + 16, "v%llu", (unsigned long long)(version & 0xFFFFFFFFu));
 }
 SnxU64 snx_addon_version(const char* entry) {
     return strlen(entry) > 17 && entry[16] == 'v' ? (SnxU64)strtoull(entry + 17, NULL, 10) : SNX_NO_VERSION;
 }
 int snx_addon_kind(SnxU64 game, SnxU64 id) {
-    /* the console's rule: an application's patch is its ID with 0x800 added; any other add-on of it is content */
+    /* the console's rule: an application's patch is its ID with 0x800 added, its other programs follow its ID and
+       their patches the patch's; any other add-on of it is content */
     if (!id || id == game) return SNX_ADDON_NONE;
-    return id == (game | 0x800) ? SNX_ADDON_UPDATE : SNX_ADDON_DLC;
+    if (id == (game | 0x800)) return SNX_ADDON_UPDATE;
+    return snx_program_index(game, id) > 0 ? SNX_ADDON_PROGRAM : SNX_ADDON_DLC;
+}
+int snx_program_index(SnxU64 game, SnxU64 id) {
+    SnxU64 update = game | 0x800, step;
+    if (id == game || id == update) return 0;
+    if (id > game && id - game < SNX_PROGRAMS_MAX && id < update) return (int)(id - game);
+    step = id - update;
+    return id > update && step < SNX_PROGRAMS_MAX ? (int)step : -1;
+}
+int snx_program_name(const char* game, const char* update, int index, char* out, size_t size) {
+    SnxU64 own, id;
+    char text[32];
+    if (!snx_title_parse(game, &own) || index < 0 || index >= SNX_PROGRAMS_MAX) return 1;
+    if (!index)
+        return update && update[0] ? snx_path_format(out, size, "%s_%s", game, update)
+                                   : snx_path_format(out, size, "%s", game);
+    if (update && update[0]) { /* the update's ID and version, then its program's ID with that version */
+        if (!snx_addon_entry_id(own, update, &id) || snx_addon_kind(own, id) != SNX_ADDON_UPDATE) return 1;
+        snx_addon_entry(own, id + (SnxU64)index, snx_addon_version(update), text);
+    } else
+        snx_title_text(own + (SnxU64)index, text);
+    return snx_path_format(out, size, "%s_%s", game, text);
 }
 SnxU64 snx_addon_guess(SnxU64 id) {
-    /* a patch's ID is its application's with 0x800; add-on content's commonly starts at its application's 0x1000 */
-    return id & ~(SnxU64)(id & 0x800 ? 0x800 : 0x1FFF);
+    /* a patch's ID is its application's with 0x800 (and a program's index); add-on content's commonly starts at its
+       application's 0x1000 */
+    return id & ~(SnxU64)(id & 0x800 ? 0x8FF : 0x1FFF);
 }
 SnxU64 snx_nacp_aoc_base(const unsigned char* nacp, size_t size, SnxU64 application) {
     /* AddOnContentBaseId: a u64 at 0x3070; the SDK's default, the application's ID less its low bits plus 0x1000 */

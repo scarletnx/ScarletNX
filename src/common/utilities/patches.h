@@ -14,6 +14,8 @@
 /* the .ips and .pchtxt files of the played mods' exefs/ (snx_mods_played, off as mods_off= has it), each mod in the
    order they are laid and its files by name, into *paths (snx_free_strings): their count */
 size_t snx_mods_patches(const char* folder, const char* off, char*** paths);
+/* the same for a program with mods of its own in own (NULL for none), mods.h's snx_mods_played_of */
+size_t snx_mods_patches_of(const char* folder, const char* own, const char* off, char*** paths);
 /* 1 when the patch at path is for the module built as build_id: a .ips by its name (the build ID's hex, any case, its
    ending zeros left out or not), a .pchtxt by its @nsobid; 0 for another build or another file; -1 when a .pchtxt
    cannot be read, error saying why */

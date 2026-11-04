@@ -223,6 +223,9 @@ typedef struct {
     u32 resolution_event; /* signaled when docked's Auto changes the display resolution while the game runs */
     SvcObj* user_channel[AM_USER_CHANNEL]; /* copies of the storages unpopped, the last one on top */
     u32 user_count;
+    /* the application's programs (ExecuteProgram): this one's index, the one that started it (its index plus 1, 0 when
+       the system did) and the one to start once this one ends (its index plus 1, 0 for none) */
+    int program, started_by, execute;
     u8 vr_mode; /* as the game turned it: the screen is not split for it */
     u32 msgs[AM_MESSAGES];
     u32 head, count;

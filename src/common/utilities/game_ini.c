@@ -249,3 +249,211 @@ int snx_place_runtime(const char* runtime, const char* copy, char* error, size_t
     free(own);
     return rc;
 }
+
+/* ---- a collection's programs */
+#if defined(_WIN32)
+#define PROGRAM_CODE "_code.dll"
+#elif defined(SNX_IOS)
+#define PROGRAM_CODE "_code.snxobj"
+#else
+#define PROGRAM_CODE "_code.so"
+#endif
+char* snx_program_code(const char* folder, const char* name) { return snx_format("%s/%s" PROGRAM_CODE, folder, name); }
+static int program_made(const char* folder, const char* name) {
+    char* code = snx_program_code(folder, name);
+    int made = snx_is_file(code);
+    free(code);
+    return made;
+}
+void snx_game_update(const char* folder, const char* name, char update[32]) {
+    char *ini = snx_game_ini(folder, name), *text = snx_ini_value(ini, "addons");
+    SnxAddon* list = (SnxAddon*)snx_alloc(SNX_ADDONS_MAX * sizeof *list);
+    size_t count = snx_addons_parse(text, name, list, SNX_ADDONS_MAX), i;
+    SnxU64 own = 0;
+    update[0] = 0;
+    snx_title_parse(name, &own);
+    for (i = 0; i < count; i++)
+        if (snx_addon_kind(own, list[i].id) == SNX_ADDON_UPDATE) memcpy(update, list[i].entry, sizeof list[i].entry);
+    free(list);
+    free(text);
+    free(ini);
+}
+int snx_program_played(const char* folder, const char* name, int index, char* out, size_t size) {
+    char update[32];
+    snx_game_update(folder, name, update);
+    if (update[0] && !snx_program_name(name, update, index, out, size) && program_made(folder, out)) return 1;
+    if (snx_program_name(name, NULL, index, out, size)) {
+        if (size) out[0] = 0;
+        return 0;
+    }
+    return program_made(folder, out);
+}
+int snx_game_programs(const char* folder, const char* name, unsigned char made[SNX_PROGRAMS_MAX]) {
+    char program[SNX_PATH_SIZE];
+    int count = 0, i;
+    for (i = 0; i < SNX_PROGRAMS_MAX; i++) {
+        made[i] = (unsigned char)snx_program_played(folder, name, i, program, sizeof program);
+        count += made[i];
+    }
+    return count;
+}
+/* the made programs' indices as a message names them: "0-3", "0, 1 and 3" */
+static void programs_text(const unsigned char* made, char* out, size_t size) {
+    int i, count = 0, last = -1, from_zero = 1, k = 0;
+    size_t n = 0;
+    out[0] = 0;
+    for (i = 0; i < SNX_PROGRAMS_MAX; i++)
+        if (made[i]) {
+            from_zero = from_zero && i == last + 1;
+            last = i;
+            count++;
+        }
+    if (count > 2 && from_zero) {
+        snprintf(out, size, "0-%d", last);
+        return;
+    }
+    for (i = 0; i < SNX_PROGRAMS_MAX && n < size; i++)
+        if (made[i]) {
+            n += (size_t)snprintf(out + n, size - n, "%s%d", !k ? "" : k == count - 1 ? " and " : ", ", i);
+            k++;
+        }
+}
+int snx_program_pick(const char* folder, const char* name, int index, char* out, size_t size, char* why,
+                     size_t why_size) {
+    unsigned char made[SNX_PROGRAMS_MAX];
+    char list[256];
+    if (why_size) why[0] = 0;
+    if (index >= 0 && index < SNX_PROGRAMS_MAX && snx_program_played(folder, name, index, out, size)) return index;
+    snx_game_programs(folder, name, made);
+    programs_text(made, list, sizeof list);
+    snprintf(why, why_size, "program %d is not one of this application's programs %s: it starts program 0", index,
+             list[0] ? list : "(none made)");
+    snx_program_played(folder, name, 0, out, size);
+    return 0;
+}
+
+char* snx_next_path(const char* folder, const char* name) { return snx_format("%s/%s.next", folder, name); }
+int snx_next_write(const char* path, const SnxNext* next) {
+    static const char digits[] = "0123456789abcdef";
+    size_t total = 128 + strlen(next->program), i, j, n;
+    char *text, *tmp;
+    int rc;
+    for (i = 0; i < next->count; i++) total += 16 + 2 * next->size[i];
+    text = (char*)snx_alloc(total);
+    n = (size_t)snprintf(text, total, "program=%s\nindex=%d\nprevious=%d\ncontext=%d\nserial=%lu\n", next->program,
+                         next->index, next->previous, next->context, next->serial);
+    for (i = 0; i < next->count; i++) {
+        memcpy(text + n, "storage=", 8);
+        n += 8;
+        for (j = 0; j < next->size[i]; j++) {
+            text[n++] = digits[next->storage[i][j] >> 4];
+            text[n++] = digits[next->storage[i][j] & 15];
+        }
+        text[n++] = '\n';
+    }
+    tmp = snx_format("%s.tmp", path);
+    rc = snx_write_file(tmp, text, n) || snx_replace(tmp, path);
+    if (rc) {
+        snx_error("cannot write %s, the hand-over to the program %s", path, next->program);
+        if (snx_is_file(tmp)) snx_remove_tree(tmp);
+    }
+    free(tmp);
+    free(text);
+    return rc;
+}
+static int hex_digit(char c) {
+    return c >= '0' && c <= '9'   ? c - '0'
+           : c >= 'a' && c <= 'f' ? c - 'a' + 10
+           : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                  : -1;
+}
+/* a whole number from 0 (from -1 when negative is set) to max, all of text: 1 with it in *value, else 0 */
+static int whole(const char* text, int negative, int max, int* value) {
+    char* end;
+    long v;
+    if (!*text) return 0;
+    v = strtol(text, &end, 10);
+    if (*end || v < (negative ? -1 : 0) || v > max) return 0;
+    *value = (int)v;
+    return 1;
+}
+int snx_next_read(const char* path, SnxNext* next, char* why, size_t why_size) {
+    size_t size, line = 0;
+    char *text = (char*)snx_read_file(path, &size), *at, *end, *eq;
+    int fields = 0;
+    memset(next, 0, sizeof *next);
+    if (why_size) why[0] = 0;
+    if (!text) return 0;
+    for (at = text; at < text + size; at = end + 1) {
+        end = memchr(at, '\n', (size_t)(text + size - at));
+        if (!end) end = text + size;
+        *end = 0;
+        line++;
+        if (!*at) continue;
+        eq = strchr(at, '=');
+        if (!eq) {
+            snprintf(why, why_size, "%s line %zu, %.40s, is no key=value", path, line, at);
+            break;
+        }
+        *eq++ = 0;
+        if (!strcmp(at, "program") && *eq && strlen(eq) < sizeof next->program && !strpbrk(eq, "/\\")) {
+            memcpy(next->program, eq, strlen(eq) + 1);
+            fields |= 1;
+        } else if (!strcmp(at, "index") && whole(eq, 0, SNX_PROGRAMS_MAX - 1, &next->index))
+            fields |= 2;
+        else if (!strcmp(at, "previous") && whole(eq, 1, SNX_PROGRAMS_MAX - 1, &next->previous))
+            fields |= 4;
+        else if (!strcmp(at, "context") && whole(eq, 0, 1, &next->context))
+            fields |= 8;
+        else if (!strcmp(at, "serial") && *eq >= '1' && *eq <= '9' && strspn(eq, "0123456789") == strlen(eq) &&
+                 strlen(eq) < 10) {
+            next->serial = strtoul(eq, NULL, 10);
+            fields |= 16;
+        } else if (!strcmp(at, "storage")) {
+            size_t digits = strlen(eq), k;
+            unsigned char* bytes;
+            if (next->count == SNX_NEXT_STORAGES || digits % 2 || digits / 2 > SNX_NEXT_STORAGE_MAX) {
+                snprintf(why, why_size,
+                         "%s line %zu: a storage of %zu hex digits, past the %d storages of %d bytes "
+                         "at most or not whole bytes",
+                         path, line, digits, SNX_NEXT_STORAGES, SNX_NEXT_STORAGE_MAX);
+                break;
+            }
+            bytes = (unsigned char*)snx_alloc(digits / 2 + 1);
+            for (k = 0; k < digits / 2; k++) {
+                int hi = hex_digit(eq[2 * k]), lo = hex_digit(eq[2 * k + 1]);
+                if (hi < 0 || lo < 0) break;
+                bytes[k] = (unsigned char)(hi << 4 | lo);
+            }
+            if (k < digits / 2) {
+                free(bytes);
+                snprintf(why, why_size, "%s line %zu: storage byte %zu, %.2s, is not hex", path, line, k, eq + 2 * k);
+                break;
+            }
+            next->storage[next->count] = bytes;
+            next->size[next->count++] = digits / 2;
+        } else {
+            snprintf(why, why_size,
+                     "%s line %zu: %s=%.40s is none of program=, index= (0 to %d), previous= (-1 to %d), "
+                     "context= (0 or 1), serial= (1 to 999999999) and storage=",
+                     path, line, at, eq, SNX_PROGRAMS_MAX - 1, SNX_PROGRAMS_MAX - 1);
+            break;
+        }
+    }
+    free(text);
+    if (!why[0] && fields != 31)
+        snprintf(why, why_size, "%s lacks %s", path,
+                 !(fields & 1)   ? "program="
+                 : !(fields & 2) ? "index="
+                 : !(fields & 4) ? "previous="
+                 : !(fields & 8) ? "context="
+                                 : "serial=");
+    if (!why[0]) return 1;
+    snx_next_free(next);
+    return -1;
+}
+void snx_next_free(SnxNext* next) {
+    size_t i;
+    for (i = 0; i < next->count; i++) free(next->storage[i]);
+    memset(next, 0, sizeof *next);
+}

@@ -167,6 +167,9 @@ typedef struct {
     PMutex dlock;
     FsShare romfs;
     char save_root[FS_TREE_PATH_MAX]; /* save_layout=global's folder, the data folder's save/ (fs_saves_init) */
+    /* the title ID the saves are kept by (fs_saves_init): the program's own, a collection's other program its
+       application's */
+    u64 save_title;
     unsigned save_told;               /* the save types whose folder of the other layout was said, a bit each */
     char save_newer[FS_TREE_PATH_MAX + 256]; /* the last save opened that a newer version wrote, said (save_note) */
 } HostFs;

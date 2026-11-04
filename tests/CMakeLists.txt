@@ -1329,6 +1329,12 @@ target_link_libraries(snx-test-nce-module PRIVATE snx_nx_flags snx_settings_runt
 # of the runtime
 target_compile_definitions(snx-test-nce-module PRIVATE SNX_NCE_HOST=0)
 add_test(NAME nce_module COMMAND snx-test-nce-module)
+# rt_miss (runtime/rtapi.c): a pc with no code runs the game's native code under NCE (an NVN memory callback), and the
+# JIT's without it
+add_executable(snx-test-rtapi-miss rtapi_miss.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/rtapi.c")
+snx_test_target(snx-test-rtapi-miss 23)
+target_link_libraries(snx-test-rtapi-miss PRIVATE snx_nx_flags snx_settings_runtime)
+add_test(NAME rtapi_miss COMMAND snx-test-rtapi-miss)
 
 add_executable(snx-test-ini-deprecated ini_deprecated.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-ini-deprecated 11)
@@ -1485,6 +1491,12 @@ if(WIN32)
     target_link_libraries(snx_test_common PUBLIC advapi32)
 endif()
 
+# a collection's programs (common.h's snx_program_index, game_ini.h's hand-over, mods.h's own mods of a program)
+add_executable(snx-test-collection-programs collection_programs.c)
+snx_test_target(snx-test-collection-programs 99)
+target_link_libraries(snx-test-collection-programs PRIVATE scarletnx-common)
+add_test(NAME collection_programs COMMAND snx-test-collection-programs)
+
 # the console a game's folder plays and its copy of the runtime (common/utilities/game_ini.c), which the launcher reads
 add_executable(snx-test-game-system game_system.c)
 snx_test_target(snx-test-game-system 99)
@@ -1510,6 +1522,25 @@ if(APPLE) # driver/setup.c's weak snx_menu_language, as snx_driver has it: ld64 
 endif()
 add_test(NAME driver_workflow COMMAND snx-test-driver)
 set_tests_properties(driver_workflow PROPERTIES TIMEOUT 60)
+# the same driver as an app's child, which names the game it made ready (SNX_DRIVER_READY, the Android and iOS
+# driver's); its collection case, as the other runs need a game played
+if(NOT WIN32)
+    add_executable(snx-test-driver-ready driver_workflow.c
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/driver.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/setup.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c"
+        "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
+    snx_test_target(snx-test-driver-ready 99)
+    target_compile_definitions(snx-test-driver-ready PRIVATE SNX_DRIVER_READY=1)
+    target_link_libraries(snx-test-driver-ready PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle
+                                                        snx_nx_module)
+    set_target_properties(snx-test-driver-ready PROPERTIES LINKER_LANGUAGE CXX)
+    if(APPLE)
+        target_link_options(snx-test-driver-ready PRIVATE "LINKER:-U,_snx_menu_language")
+    endif()
+    add_test(NAME driver_ready COMMAND snx-test-driver-ready)
+    set_tests_properties(driver_ready PROPERTIES TIMEOUT 60)
+endif()
 add_executable(snx-test-link-file link_file.c)
 snx_test_target(snx-test-link-file 99)
 target_link_libraries(snx-test-link-file PRIVATE snx_test_common)
@@ -2684,6 +2715,9 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-vulkan-backing vulkan_backing.c)
     snx_test_target(snx-test-vulkan-backing 11)
     add_test(NAME vulkan_backing COMMAND snx-test-vulkan-backing)
+    add_executable(snx-test-astc-bc-suggest astc_bc_suggest.c)
+    snx_test_target(snx-test-astc-bc-suggest 99)
+    add_test(NAME astc_bc_suggest COMMAND snx-test-astc-bc-suggest)
     add_executable(snx-test-vk-uma-budget vk_uma_budget.c)
     snx_test_target(snx-test-vk-uma-budget 99)
     add_test(NAME vk_uma_budget COMMAND snx-test-vk-uma-budget)

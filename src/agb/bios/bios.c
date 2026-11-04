@@ -92,13 +92,14 @@ static void bios_cpu_fast_set(AgbBoard* board, uint32_t regs[16]) {
     }
 }
 
-/* The affine calls build the matrix of a rotation and a scale in 8.8 fixed point, from an angle whose low
-   byte is dropped, giving 256 steps around the circle. */
+/* The affine calls build the matrix of a rotation and a scale in 8.8 fixed point, as the console's BIOS does: the angle's
+   high byte picks one of 256 steps around the circle, its sine and cosine 1.14 values cut toward zero, each product
+   shifted down by 14, and pb the negated product (its sign last) */
 static void affine(int32_t* pa, int32_t* pb, int32_t* pc, int32_t* pd, int32_t sx, int32_t sy, uint32_t angle) {
     double theta = (double)((angle >> 8) & 0xFF) * (2.0 * AGB_PI / 256.0);
-    int64_t cs = llround(cos(theta) * 16384.0), sn = llround(sin(theta) * 16384.0);
+    int64_t cs = (int64_t)(cos(theta) * 16384.0), sn = (int64_t)(sin(theta) * 16384.0);
     *pa = (int32_t)(sx * cs >> 14);
-    *pb = (int32_t)(-(int64_t)sx * sn >> 14);
+    *pb = (int32_t)-(sx * sn >> 14);
     *pc = (int32_t)(sy * sn >> 14);
     *pd = (int32_t)(sy * cs >> 14);
 }

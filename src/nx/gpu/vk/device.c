@@ -275,6 +275,7 @@ static int create_device(void) {
        decoded on the GPU as they are uploaded; ASTC decoded so is encoded again as BC7 where the GPU samples BCn and
        astc_bc asks for it */
     if (g_settings.native_bc || g_settings.astc_bc) WANT(textureCompressionBC);
+    g_vk.astc_bc7_could = have.textureCompressionBC && !have.textureCompressionASTC_LDR;
     if (g_settings.native_astc) WANT(textureCompressionASTC_LDR);
     if (g_settings.native_etc2) WANT(textureCompressionETC2);
     if (g_settings.native_bc && !want->textureCompressionBC)

@@ -71,6 +71,8 @@ void gui_apple_stats(char* out, size_t size);
 char g_datadir[1024], g_exename[256], g_exedir[1024];
 u64 g_addon;
 char g_addondir[1024], g_gamename[256];
+int g_program;
+char g_addonrec[256];
 char g_confdir[1024], g_statedir[1024], g_cachedir[1024];
 volatile int g_quit;
 int (*snx_menu)(const char* self);
@@ -379,23 +381,35 @@ static void game_dirs(void) {
     free(full);
 }
 
-/* An update of the game whose folder it is in (snx_addon_name: <folder>/<folder>_<the update's title ID>) runs as
-   that game: with its settings, ini set to the game's .ini, and its data folder, its saves the
-   game's (g_datadir, set by the caller from base). Its own .ini names only the add-on's dump, source=, and its own data
-   folder lies over the game's, both read by fs.c. base: the game's name, "" for no add-on */
+/* An update of the game whose folder it is in (snx_addon_name: <folder>/<folder>_<the update's title ID>), or another
+   program of a collection's application (<folder>_<its ID>, or its update's patch of it, <folder>_<the update's ID +
+   index>v<version>), runs as that game: with its settings, ini set to the game's .ini, and its data folder, its saves
+   the game's (g_datadir, set by the caller from base). Its own data folder lies over the game's, and an update's own
+   .ini (g_addonrec's) names only its dump, source=, both read by fs.c. base: the game's name, "" for no add-on */
 static void addon_init(char* ini, size_t ini_size, char* base, size_t base_size) {
     char* dir = snx_absolute(g_exedir[0] ? g_exedir : ".");
     size_t n = dir ? strlen(dir) : 0, cut;
+    SnxU64 id = 0;
     base[0] = 0;
     while (n > 1 && is_separator(dir[n - 1])) dir[--n] = 0;
     for (cut = n; cut && !is_separator(dir[cut - 1]); cut--) continue;
-    if (dir && snx_addon_name(dir + cut, g_exename, &g_addon)) {
+    if (dir && snx_addon_name(dir + cut, g_exename, &id)) {
         SnxU64 game = 0;
+        int kind;
         snx_title_parse(dir + cut, &game);
-        if (snx_addon_kind(game, g_addon) != SNX_ADDON_UPDATE)
+        kind = snx_addon_kind(game, id);
+        if (kind == SNX_ADDON_DLC)
             fatal("%s is a DLC's program, which an older version made: a DLC plays with its game, checked in the "
                   "game's list of updates and DLCs (addons= in its .ini). Play the DLC's dump again",
                   g_exename);
+        g_program = snx_program_index(game, id);
+        if (kind == SNX_ADDON_UPDATE || id - game > SNX_PROGRAMS_MAX) { /* the update's, or its patch of a program */
+            char entry[32];
+            g_addon = game | 0x800;
+            /* its version, after <folder>_ and the 16 digits of its ID */
+            snx_addon_entry(game, g_addon, snx_addon_version(g_exename + strlen(dir + cut) + 1), entry);
+            snprintf(g_addonrec, sizeof g_addonrec, "%s_%s", dir + cut, entry);
+        }
         snprintf(base, base_size, "%s", dir + cut);
         snprintf(g_addondir, sizeof g_addondir, "%s%s_data/", g_exedir, g_exename);
         snprintf(ini, ini_size, "%s%s.ini", g_confdir, base);
@@ -412,9 +426,11 @@ static void addons_line(char* out, size_t size) {
     u64 base = am_aoc_base_id();
     char version[16];
     out[0] = 0;
+    if (g_program) snprintf(out, size, "Program %d", g_program); /* a collection's other program */
     if (g_addon) {
+        n = strlen(out);
         am_display_version(version);
-        snprintf(out, size, "Update %s", version);
+        snprintf(out + n, size - n, "%sUpdate %s", n ? ", " : "", version);
     }
     for (i = 0; i < count && i < 4; i++) {
         n = strlen(out);
@@ -467,7 +483,7 @@ static const char* game_shown(const char* title, char* name, size_t size, char* 
    is, each start saying where its folder goes */
 static void say_old_layout(void) {
     char* full;
-    if (g_addon) return; /* an update, in its game's folder */
+    if (g_addon || g_program) return; /* an update or another program, in its game's folder */
     full = snx_absolute(g_exedir[0] ? g_exedir : ".");
     size_t n = full ? strlen(full) : 0, cut;
     for (;;) { /* "games/", "games/." and "games" alike */
@@ -566,6 +582,8 @@ void snx_save_before_exit(void) {
 }
 
 /* ---- the frontend's loop ---- */
+
+static void handover_write(void); /* ExecuteProgram's hand-over, written as the program ends */
 
 /* this long without a new frame is worth a line and a dump; and without progress on the shader loading screen, a
    line (prepare_wait) */
@@ -680,6 +698,7 @@ static void frontend_loop(void) {
     }
     ini_poll(1); /* the settings the game's menu changed, even over an edit of the file */
     snx_save_before_exit();
+    handover_write();
     LOG("Exit.\n");
     snx_tracy_shutdown();
     plat_exit_now(0);
@@ -880,6 +899,99 @@ static int runtime_key_options(int* argc, char** argv, char** keys, char** title
     return 0;
 }
 
+/* ---- a collection's programs: ExecuteProgram's hand-over (game_ini.h's SnxNext) */
+
+/* the hand-over this program took as it started, in g_next: 1, 0 for none (the system started it), -1 for a file that
+   is not one, g_next_why saying why */
+static SnxNext g_next;
+static int g_next_taken;
+static unsigned long g_next_serial; /* the one taken's, which the next hand-over follows */
+static char g_next_why[512];
+/* g_exedir as a folder's path, without its last separator */
+static void exe_folder(char* out, size_t size) {
+    size_t n;
+    snprintf(out, size, "%s", g_exedir[0] ? g_exedir : ".");
+    n = strlen(out);
+    while (n > 1 && is_separator(out[n - 1])) out[--n] = 0;
+}
+/* <game>.next in the game's folder, read and taken away when it names this program, before anything reads the game's
+   files: what the program that ended for it handed over. One naming another program is left for that one */
+static void handover_take(void) {
+    char folder[sizeof g_exedir], path[sizeof g_exedir + 300];
+    const char* leaf;
+    exe_folder(folder, sizeof folder);
+    for (leaf = folder + strlen(folder); leaf > folder && !is_separator(leaf[-1]); leaf--) continue;
+    if (snx_path_format(path, sizeof path, "%s/%s.next", folder, leaf)) return;
+    g_next_taken = snx_next_read(path, &g_next, g_next_why, sizeof g_next_why);
+    if (g_next_taken > 0 && strcmp(g_next.program, g_exename)) { /* another's */
+        snprintf(g_next_why, sizeof g_next_why,
+                 "%s hands over to the program %s, and this one is %s: it is left for it", path, g_next.program,
+                 g_exename);
+        snx_next_free(&g_next);
+        g_next_taken = 0;
+        return;
+    }
+    if (g_next_taken && remove(path))
+        snprintf(g_next_why + strlen(g_next_why), sizeof g_next_why - strlen(g_next_why), "%s%s could not be removed",
+                 g_next_why[0] ? "; " : "", path);
+}
+/* what the program that started this one handed over, to am and acc, before the game's first thread; said */
+static void handover_give(void) {
+    if (g_next_why[0]) WARN("game: %s\n", g_next_why);
+    if (g_next_taken > 0 && g_next.index != g_program)
+        WARN("game: the hand-over names program %d, and this program, %s, is %d: GetPreviousProgramIndex answers %d "
+             "all the same\n",
+             g_next.index, g_exename, g_program, g_next.previous);
+    am_handover_in(g_program, g_next_taken > 0 ? &g_next : NULL);
+    if (g_next_taken > 0) g_next_serial = g_next.serial;
+    if (g_next_taken > 0)
+        LOG("game: program %d, started by program %d: %u storage%s in the user channel, its open user %s\n", g_program,
+            g_next.previous, (unsigned)g_next.count, g_next.count == 1 ? "" : "s",
+            g_next.context ? "stored for it" : "not stored");
+    snx_next_free(&g_next);
+}
+/* the program of index that plays for this game: its checked update's (addons=) when made beside it, else its own;
+   1, else 0 for a game named by no title ID, which numbers no programs */
+static int program_named(int index, char* out, size_t size) {
+    SnxAddon* list = (SnxAddon*)snx_alloc(SNX_ADDONS_MAX * sizeof *list);
+    size_t count = snx_addons_parse(g_settings.game_addons, g_gamename, list, SNX_ADDONS_MAX), i;
+    char update[32] = "", code[sizeof g_exedir + 320];
+    SnxU64 own = 0;
+    snx_title_parse(g_gamename, &own);
+    for (i = 0; i < count; i++)
+        if (snx_addon_kind(own, list[i].id) == SNX_ADDON_UPDATE) memcpy(update, list[i].entry, sizeof update);
+    free(list);
+    if (update[0] && !snx_program_name(g_gamename, update, index, out, size) &&
+        !snx_path_format(code, sizeof code, "%s%s" MODULE_SUFFIX, g_exedir, out) && snx_is_file(code))
+        return 1;
+    return !snx_program_name(g_gamename, NULL, index, out, size);
+}
+void snx_program_end(void) { g_quit = 1; }
+/* The program ExecuteProgram asked for (am.c), once this one has saved what it saves at exit: its hand-over into
+   <game>.next in the game's folder, for the launcher that started this program to start it */
+static void handover_write(void) {
+    SnxNext next = {0};
+    char folder[sizeof g_exedir], *path;
+    if (am_handover_out(&next) < 0) return;
+    if (!program_named(next.index, next.program, sizeof next.program)) {
+        WARN("game: program %d is asked for, and %s is named by no title ID, which numbers an application's "
+             "programs: none starts\n",
+             next.index, g_gamename);
+        snx_next_free(&next);
+        return;
+    }
+    next.serial = g_next_serial + 1;
+    exe_folder(folder, sizeof folder);
+    path = snx_next_path(folder, g_gamename);
+    if (!snx_next_write(path, &next))
+        LOG("game: program %d hands over to program %d, %s (%u storage%s in the user channel, its open user %s), in %s: "
+            "the launcher that started this one starts it; run alone, it is %s --game=%s/%s\n",
+            next.previous, next.index, next.program, (unsigned)next.count, next.count == 1 ? "" : "s",
+            next.context ? "stored" : "not stored", path, g_gamename, folder, next.program);
+    free(path);
+    snx_next_free(&next);
+}
+
 int snx_main(int argc, char** argv) {
     char module[sizeof g_exedir + sizeof g_exename + 16], ini[sizeof g_confdir + sizeof g_exename + 8];
     char base[sizeof g_exename], shown[0x200], why[sizeof g_datadir + 0x300];
@@ -920,6 +1032,8 @@ int snx_main(int argc, char** argv) {
     game = game_option(argc, argv);
     refuse_dumps(argc, argv, game);
     name_game(game ? game : program_path(argv[0]));
+    handover_take(); /* before anything the program reads, its code included: a program that fails takes it all the
+                        same, and its launcher starts nothing more */
     snprintf(module, sizeof module, "%s%s%s", g_exedir, g_exename, MODULE_SUFFIX);
     if (argc == 1 && !snx_module_static && snx_menu && snx_launcher_name(g_exename) && !snx_is_file(module)) {
         status = open_menu(argv[0]);
@@ -978,6 +1092,10 @@ int snx_main(int argc, char** argv) {
         LOG("system: %s\n", sys);
     }
     {
+        char list[2048];
+        if (options_settings(list, sizeof list)) LOG("settings: %s\n", list);
+    }
+    {
         char list[HUD_DEBUG_MAX];
         if (options_debug(INI_CHANGED_DEFAULT, list, sizeof list))
             LOG("debug: %s; shown at the top of the picture while the game runs\n", list);
@@ -993,7 +1111,11 @@ int snx_main(int argc, char** argv) {
         LOG("gdb: the code the JIT compiles is named to GDB (gdb_jit=1): it stops the game for each compile while "
             "attached\n");
     }
-    if (g_addon) LOG("game: the update of the game in %s, with its settings and saves\n", base);
+    if (g_program)
+        LOG("game: program %d of the application in %s, with the game's settings and saves%s\n", g_program, base,
+            g_addon ? ", its update's patch of it" : "");
+    else if (g_addon)
+        LOG("game: the update of the game in %s, with its settings and saves\n", base);
     if (why[0]) LOG("game: %s\n", why);
     snx_ir_slp_vectorizer(g_settings.slp_vectorizer); /* before the JIT's first compile too */
     snx_ir_fpsr_flags(g_settings.fpsr_flags);
@@ -1010,7 +1132,7 @@ int snx_main(int argc, char** argv) {
     g_settings.log_level = 2; /* a phone's log is the only way to see what a run did: everything, until it is steadier */
 #endif
     mem_init();
-    if (g_settings.memory_fit) { /* before the game allocates: what the process holds is the runtime's alone */
+    if (!g_settings.memory_fit_mode) { /* Auto, before the game allocates: what the process holds is the runtime's */
         SnxU64 available = 0, footprint = snx_footprint();
         mem_fit(snx_memory_available(&available) && footprint, available, footprint);
     }
@@ -1028,6 +1150,7 @@ int snx_main(int argc, char** argv) {
     if (!g_arm_mod && !nce_on()) jit_init();
     read_npdm();
     svc_core_init();
+    handover_give();
     {
         char version[16];
         am_display_version(version);

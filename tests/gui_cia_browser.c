@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gui/browser.h"
 #include "common/utilities/common.h"
+#include "common/utilities/game_ini.h"
 #include <assert.h>
 #include <errno.h>
 #ifndef _WIN32
@@ -162,7 +163,9 @@ int main(void) {
         static const char* const data[] = {"0100ABCD12340000_data", "0100ABCD12340000_0100ABCD12341002_data",
                                            "0100ABCD12340000_0100ABCD12340800_data",
                                            "0100ABCD12340000_0100ABCD12341005_data",
-                                           "0100ABCD12340000_0100ABCD5555A001_data", "0100ABCD12340000_junk_data"};
+                                           "0100ABCD12340000_0100ABCD5555A001_data", "0100ABCD12340000_junk_data",
+                                           /* a collection's program 3, its code beside it: no add-on */
+                                           "0100ABCD12340000_0100ABCD12340003_data"};
         static unsigned char nacp[0x4000];
         char *ready = snx_temp_dir(NULL), *path, *folder, *game, *update;
         GuiGames addons = {0};
@@ -200,6 +203,33 @@ int main(void) {
         assert(!strcmp(addons.names[3], "0100ABCD12340000_0100ABCD5555A001") &&
                !strcmp(addons.shown[3], "DLC 0100ABCD5555A001"));
         assert(!gui_game_addons(update, &addons) && !addons.count); /* an add-on has none of its own */
+        { /* the collection's program 3, made: a program of the game's, which gui_game_programs lists */
+            int programs[SNX_PROGRAMS_MAX];
+            char* code = snx_program_code(folder, "0100ABCD12340000_0100ABCD12340003");
+            assert(gui_game_programs(game, programs) == 0); /* its data folder alone: not made */
+            assert(!snx_write_file(code, "code", 4));
+            assert(gui_game_programs(game, programs) == 1 && programs[0] == 3);
+            assert(gui_game_addons(game, &addons) && addons.count == 4);
+            free(code);
+        }
+        { /* the game a run of the driver made ready, which a phone plays: the program its Ready line names beside the
+             update's program 0 the box ran (--program 3 there), and a dump's in games/ */
+            char *played = gui_ready_game(update, ready, "0100ABCD12340000_0100ABCD12340003"),
+                 *want = snx_path_join(folder, "0100ABCD12340000_0100ABCD12340003");
+            assert(!strcmp(played, want));
+            free(played);
+            free(want);
+            played = gui_ready_game(update, ready, "0100ABCD12340000_0100ABCD12340800"); /* the one it ran */
+            want = snx_path_join(folder, "0100ABCD12340000_0100ABCD12340800");
+            assert(!strcmp(played, want));
+            free(played);
+            free(want);
+            played = gui_ready_game(NULL, ready, "0100ABCD12340000");
+            want = snx_path_join(folder, "0100ABCD12340000");
+            assert(!strcmp(played, want));
+            free(played);
+            free(want);
+        }
         gui_games_free(&addons);
         free(game);
         free(update);

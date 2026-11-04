@@ -5,6 +5,7 @@
 #define SNX_SERVICES_H
 #include "nx/runtime/state_fns.h"
 #include "nx/hle/kernel/ipc.h"
+#include "common/utilities/game_ini.h" /* SnxNext, ExecuteProgram's hand-over */
 
 /* each registers its family's service names with the service manager */
 void svc_core_init(void);
@@ -36,6 +37,13 @@ void am_keyboard_answered(u32 ticket, int cancelled, const char* text);
 void am_state_loaded(void);
 /* the TV mode changed while the game runs: am's display resolution change event, and the performance mode message */
 void am_display_mode_changed(void);
+/* A collection's program starting another (nn::oe::ExecuteProgram, am's 120), as game_ini.h's SnxNext hands it over.
+   am_handover_out: the program asked for, its index (-1 for none, then nothing else is filled), with the user channel's
+   storages copied into next (owned there), this program's index as the previous one and the open user acc stored.
+   am_handover_in: this program's index (main.c's g_program), and what the one that started it handed over, NULL for a
+   program the system started */
+int am_handover_out(SnxNext* next);
+void am_handover_in(int program, const SnxNext* next);
 /* the functions a save state may hold of each file (nx/runtime/state_fns.h) */
 extern const StateFnTable g_am_state_fns;     /* am.c */
 extern const StateFnTable g_audio_state_fns;  /* audio.c */

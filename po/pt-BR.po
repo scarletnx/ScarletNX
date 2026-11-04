@@ -1739,6 +1739,11 @@ msgid "Cheat %s"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "Play Program %d"
+msgstr "Jogar Programa %d"
+
+#: src/gui/main.c
 msgid "No update"
 msgstr ""
 
@@ -3821,6 +3826,11 @@ msgstr "Guardado para a próxima vez:"
 #: src/gui/main.c
 msgid "Nothing to keep: no file of the menu's"
 msgstr "Nada a guardar: nenhum arquivo do menu"
+
+#: src/gui/main.c
+#, c-format
+msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
+msgstr "O jogo inicia o seu programa %d, %s, que não foi compilado: Recompilar o jogo compila os programas dele"
 
 #: src/gui/main.c
 msgid "the game wrote no log"

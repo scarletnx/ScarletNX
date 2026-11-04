@@ -12,7 +12,8 @@
 
 typedef struct {
     const char *base, *update, *name, *out, *keys, *title_keys;
-    int icon; /* --icon: the game's icon alone */
+    int icon;    /* --icon: the game's icon alone */
+    int program; /* --program: the program of the application extracted, 0 its own */
 } ExtractOptions;
 
 typedef struct {
@@ -33,6 +34,7 @@ static void extract_help(void) {
          "  --out DIR           Output folder (default: work/NAME of the data folder)\n"
          "  --keys FILE         prod.keys (default: the data folder's, then ~/.switch)\n"
          "  --title-keys FILE   title.keys (same discovery order; optional)\n"
+         "  --program N         Program N of an application of several (default: 0, the application's own)\n"
          "  --icon              The game's icon alone, icon.jpg into --out DIR (what Games shows), nothing extracted\n"
          "  --help              Show this help");
     puts("The data folder: --data, else a portable copy's or the user's (scarletnx --help).");
@@ -62,7 +64,7 @@ static int option_is(const char* arg, const char* name) {
 
 static int parse_options(int argc, char** argv, ExtractOptions* options) {
     int i, positional;
-    const char **slot, *value, *option;
+    const char **slot, *value, *option, *program = NULL;
     memset(options, 0, sizeof *options);
     positional = 0;
     for (i = 0; i < argc; i++) {
@@ -94,6 +96,8 @@ static int parse_options(int argc, char** argv, ExtractOptions* options) {
             slot = &options->keys;
         else if (option_is(argv[i], "--title-keys"))
             slot = &options->title_keys;
+        else if (option_is(argv[i], "--program"))
+            slot = &program;
         if (!slot) return snx_error("unknown option: %s (scarletnx -x -h lists them)", argv[i]);
         option = argv[i];
         value = strchr(argv[i], '=');
@@ -109,6 +113,14 @@ static int parse_options(int argc, char** argv, ExtractOptions* options) {
     if (!options->base) {
         extract_help();
         return 1;
+    }
+    if (program) {
+        char* end;
+        long n = strtol(program, &end, 10);
+        if (*end || n < 0 || n >= SNX_PROGRAMS_MAX)
+            return snx_error("--program %s: not a whole number from 0 to %d, an application's program index", program,
+                             SNX_PROGRAMS_MAX - 1);
+        options->program = (int)n;
     }
     return 0;
 }
@@ -338,10 +350,10 @@ static int extract_files(ExtractState* state, const ExtractOptions* options, con
     SnxU64 title, game;
     int failed;
     /* a game, an add-on over it, or a dump of a DLC alone */
-    if (state->update ? snx_dump_open(&state->dump, state->base, state->update, options->keys, options->title_keys,
-                                      paths->repo, 1)
-                      : snx_dump_title(&state->dump, state->base, options->keys, options->title_keys, paths->repo, 1,
-                                       &title, &game, NULL))
+    if (state->update || options->program ? snx_dump_open(&state->dump, state->base, state->update, options->program,
+                                                          options->keys, options->title_keys, paths->repo, 1)
+                                          : snx_dump_title(&state->dump, state->base, options->keys,
+                                                           options->title_keys, paths->repo, 1, &title, &game, NULL))
         return 1;
     if (!program->found && patch->found)
         return snx_error("%s is an update, which goes over its game: give the game's dump, with this one as --update",
@@ -358,7 +370,11 @@ static int extract_files(ExtractState* state, const ExtractOptions* options, con
     state->said = 0;
     state->said_at = snx_seconds(); /* a quick one says nothing */
     snx_hac_progress(progress_tick, state);
-    puts(patch->found ? "Extracting the base with the update applied" : "Extracting the base game");
+    if (options->program)
+        printf("Extracting program %d of the base%s\n", options->program,
+               patch->found ? ", with the update's patch of it applied" : "");
+    else
+        puts(patch->found ? "Extracting the base with the update applied" : "Extracting the base game");
     fflush(stdout);
     { /* what is used, under the step's line */
         char size[32], other[32], title[17];
@@ -491,7 +507,8 @@ int snx_extract_icon(const char* dump, const SnxPaths* paths, const char* out) {
     free(to);
     return cleanup(&state, result);
 }
-int snx_extract_title(const char* dump, const SnxPaths* paths, SnxU64* title, SnxU64* game, SnxU64* version) {
+int snx_extract_title(const char* dump, const SnxPaths* paths, SnxU64* title, SnxU64* game, SnxU64* version,
+                      int* programs) {
     ExtractState state;
     int result;
     memset(&state, 0, sizeof state);
@@ -504,6 +521,7 @@ int snx_extract_title(const char* dump, const SnxPaths* paths, SnxU64* title, Sn
         snx_hac_on_exit(hactool_exit, &state);
         result = snx_dump_title(&state.dump, state.base, paths->keys, paths->title_keys, paths->repo, 0, title,
                                 game, version);
+        if (programs) *programs = state.dump.programs;
         snx_hac_on_exit(NULL, NULL);
     }
     return cleanup(&state, result);

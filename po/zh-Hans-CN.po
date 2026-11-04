@@ -1739,6 +1739,11 @@ msgid "Cheat %s"
 msgstr "金手指 %s"
 
 #: src/gui/main.c
+#, c-format
+msgid "Play Program %d"
+msgstr ""
+
+#: src/gui/main.c
 msgid "No update"
 msgstr "无更新"
 
@@ -3821,6 +3826,11 @@ msgstr "保留到下次启动："
 #: src/gui/main.c
 msgid "Nothing to keep: no file of the menu's"
 msgstr "无需保留：菜单没有任何文件"
+
+#: src/gui/main.c
+#, c-format
+msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
+msgstr ""
 
 #: src/gui/main.c
 msgid "the game wrote no log"

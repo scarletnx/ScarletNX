@@ -305,6 +305,55 @@ static void test_previous_program(void) {
     i32 index = 0;
     CHECK(nn_am_service_IApplicationFunctions_GetPreviousProgramIndex(NULL, &index) == 0 && index == -1);
 }
+extern unsigned g_test_program_ends; /* am_service_stubs.c's snx_program_end, counted */
+/* ExecuteProgram (120): ExecuteProgram (kind 0) asks for program value once this one ends, which it ends at once,
+   RestartProgram (2) this one again; the hand-over carries this program's index, the user channel bottom first and
+   whether acc stored the open user. The program it starts answers GetPreviousProgramIndex with the caller's index and
+   pops the channel's top first; one the system starts, -1 and none. The jump to another application (1) and an index
+   no program has are refused, said with their values, and end nothing */
+static void test_execute_program(void) {
+    SvcObj *a = am_storage_new(3, "ab"), *b = am_storage_new(5, "wxyz"), *s = NULL;
+    SnxNext next = {0};
+    i32 index = 0;
+    am_handover_in(1, NULL); /* program 1, which the player started */
+    CHECK(am_handover_out(&next) == -1 && next.count == 0);
+    CHECK(nn_am_service_IApplicationFunctions_GetPreviousProgramIndex(NULL, &index) == 0 && index == -1);
+    CHECK(nn_am_service_IApplicationFunctions_UnpopToUserChannel(NULL, a) == 0);
+    CHECK(nn_am_service_IApplicationFunctions_UnpopToUserChannel(NULL, b) == 0);
+    g_hle.acc.context_stored = 1;
+    CHECK(nn_am_service_IApplicationFunctions_ExecuteProgram(NULL, 1, 4096) == AM_NO_APPLICATION);
+    CHECK(log_has("am: ExecuteProgram kind 1 value 4096: a development jump to another application"));
+    CHECK(nn_am_service_IApplicationFunctions_ExecuteProgram(NULL, 0, 300) == AM_NO_APPLICATION);
+    CHECK(log_has("am: ExecuteProgram kind 0 value 300: no program of an application has that index"));
+    CHECK(g_test_program_ends == 0 && am_handover_out(&next) == -1);
+    CHECK(nn_am_service_IApplicationFunctions_ExecuteProgram(NULL, 2, 77) == 0 && g_test_program_ends == 1);
+    CHECK(log_has("am: program 1 starts program 1 (ExecuteProgram kind 2)"));
+    CHECK(nn_am_service_IApplicationFunctions_ExecuteProgram(NULL, 0, 3) == 0 && g_test_program_ends == 2);
+    CHECK(log_has("am: program 1 starts program 3 (ExecuteProgram kind 0), once it has ended"));
+    CHECK(am_handover_out(&next) == 3 && next.index == 3 && next.previous == 1 && next.context == 1);
+    CHECK(next.count == 2 && next.size[0] == 3 && !memcmp(next.storage[0], "ab", 3));
+    CHECK(next.size[1] == 5 && !memcmp(next.storage[1], "wxyz", 5));
+    /* program 3, which program 1 started: this process's am as a new one's */
+    CHECK(nn_am_service_IApplicationFunctions_ClearUserChannel(NULL) == 0);
+    g_hle.am.execute = 0;
+    g_hle.acc.context_stored = 0;
+    am_handover_in(3, &next);
+    CHECK(nn_am_service_IApplicationFunctions_GetPreviousProgramIndex(NULL, &index) == 0 && index == 1);
+    CHECK(g_hle.am.program == 3 && g_hle.acc.context_stored == 1);
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == 0);
+    CHECK(((StorageData*)s->data)->size == 5 && !memcmp(am_storage_bytes(s), "wxyz", 5));
+    svcobj_unref(s);
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == 0);
+    CHECK(((StorageData*)s->data)->size == 3 && !memcmp(am_storage_bytes(s), "ab", 3));
+    svcobj_unref(s);
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == AM_NO_DATA);
+    snx_next_free(&next);
+    am_handover_in(0, NULL); /* back as the game's own program, the system's */
+    g_hle.acc.context_stored = 0;
+    svcobj_unref(a);
+    svcobj_unref(b);
+    CHECK(test_objects == 0);
+}
 /* IStorageAccessor's Read: the whole buffer within the storage, or InvalidOffset */
 static void test_storage_read(void) {
     static u8 guest[32];
@@ -855,6 +904,7 @@ int main(void) {
     test_user_channel();
     test_preselected();
     test_previous_program();
+    test_execute_program();
     test_storage_read();
     test_vr_mode();
     test_inline();
