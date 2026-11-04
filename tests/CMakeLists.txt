@@ -1425,6 +1425,12 @@ if(WIN32)
     target_link_libraries(snx_test_common PUBLIC advapi32)
 endif()
 
+# a collection's programs (common.h's snx_program_index, game_ini.h's hand-over, mods.h's own mods of a program)
+add_executable(snx-test-collection-programs collection_programs.c)
+snx_test_target(snx-test-collection-programs 99)
+target_link_libraries(snx-test-collection-programs PRIVATE scarletnx-common)
+add_test(NAME collection_programs COMMAND snx-test-collection-programs)
+
 # the console a game's folder plays and its copy of the runtime (common/utilities/game_ini.c), which the launcher reads
 add_executable(snx-test-game-system game_system.c)
 snx_test_target(snx-test-game-system 99)
