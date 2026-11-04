@@ -549,7 +549,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
     VkSemaphore wait = VK_NULL_HANDLE, signal = VK_NULL_HANDLE;
     VkSemaphore acq2 = VK_NULL_HANDLE, signal2 = VK_NULL_HANDLE; /* the second image of an interpolated frame */
     u32 idx = 0, idx2 = 0;
-    int show2 = 0;
+    int show2 = 0, blend_shown = 0;
     int recreate = 0;
     if (shown && (src || !game) && (g_vk.swapchain || (!tried && vk_swapchain_create(want_mode)))) {
         VkCommandBuffer cb = vk_cmd(); /* waits for this frame slot, so its acquire semaphore is free */
@@ -842,6 +842,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                     /* the second image is acquired for a pair: with no blend it still shows this frame */
                     if (npic == 1) pic[npic] = pic[0];
                     npic = 2;
+                    blend_shown = have_blend;
                 }
             }
             if (npic) {
@@ -976,6 +977,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         last_present_ns = now_ns;
         g_vk_present++;
         stats_frame(now_ns);
+        if (blend_shown) stats_generated();
         if (g_vk_present == 1 || g_vk_present % 600 == 0) guest_stats_log(now_ns, g_vk_present);
         vk_mem_present();
         if (g_last) vk_surf_touch(g_last); /* what screenshots read stays */

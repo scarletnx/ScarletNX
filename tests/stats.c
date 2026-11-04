@@ -63,7 +63,7 @@ static void draw(u64 now) {
 /* the line of letters drawn at x, y in scale 2's letters, its spaces back, trimmed */
 static const char* line_at(float x, float y) {
     int k, i, end = 0;
-    for (k = 0; k < STATS_COLS; ++k) {
+    for (k = 0; k < STATS_COLS_FRAMEGEN; ++k) {
         g_test.line[k] = ' ';
         for (i = 0; i < g_test.l.n; ++i)
             if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 && g_test.quads[i].x == x + (float)k * 16 &&
@@ -77,19 +77,24 @@ static const char* line_at(float x, float y) {
 }
 static const char* first(void) {
     float box[4];
-    stats_box(safe, 2, box);
+    stats_box(safe, 2, STATS_COLS, box);
+    return line_at(box[0] + 16, box[1] + 8);
+}
+static const char* first_wide(void) {
+    float box[4];
+    stats_box(safe, 2, STATS_COLS_FRAMEGEN, box);
     return line_at(box[0] + 16, box[1] + 8);
 }
 static const char* second(void) {
     float box[4];
-    stats_box(safe, 2, box);
+    stats_box(safe, 2, STATS_COLS, box);
     return line_at(box[0] + 16, box[1] + 8 + 32);
 }
 /* the graph's bars: the plain fills narrower than it */
 static int bars(const SnxUiQuad** newest) {
     float box[4];
     int i, n = 0;
-    stats_box(safe, 2, box);
+    stats_box(safe, 2, STATS_COLS, box);
     *newest = NULL;
     for (i = 1; i < g_test.l.n; ++i)
         if (g_test.quads[i].uw == 2 && g_test.quads[i].w < box[2] - 32) {
@@ -113,7 +118,7 @@ int main(void) {
     assert(g_test.l.n == 0);
     /* on, in its default corner, top left: half a line in from the safe area's; ? before a frame or a measure */
     g_settings.stats = 1;
-    stats_box(safe, 2, box);
+    stats_box(safe, 2, STATS_COLS, box);
     assert(box[0] == 100 + 16 && box[1] == 50 + 16 && box[2] == STATS_COLS * 16 && box[3] == 5 * 32 + 24);
     draw(t);
     assert(!strcmp(first(), "? fps  ? ms") && !strcmp(second(), "cpu ?  ? MiB"));
@@ -151,25 +156,36 @@ int main(void) {
     /* bottom right; beside showcase's box in showcase's own corner, above it there, below it in a top one; showcase in
        another corner leaves it in its own */
     stats_corner_set(corner, "br");
-    stats_box(safe, 2, box);
+    stats_box(safe, 2, STATS_COLS, box);
     assert(box[0] + box[2] == 100 + 1280 - 16 && box[1] + box[3] == 50 + 720 - 16);
     g_settings.showcase = 1;
     vpad_showcase_corner_set(showcase, "br");
     assert(vpad_showcase_box(safe, show) == 3);
-    stats_box(safe, 2, box);
+    stats_box(safe, 2, STATS_COLS, box);
     assert(box[0] + box[2] == show[0] + show[2] && box[1] + box[3] == show[1] - 16);
     stats_corner_set(corner, "tl");
     vpad_showcase_corner_set(showcase, "tl");
-    stats_box(safe, 2, box);
+    stats_box(safe, 2, STATS_COLS, box);
     assert(vpad_showcase_box(safe, show) == 0 && box[0] == show[0] && box[1] == show[1] + show[3] + 16);
     vpad_showcase_corner_set(showcase, "br");
-    stats_box(safe, 2, box);
+    stats_box(safe, 2, STATS_COLS, box);
     assert(box[0] == 100 + 16 && box[1] == 50 + 16);
     g_settings.showcase = 0;
     /* a word that is no corner: the corner it had, said with both */
     stats_corner_set(corner, "middle");
     assert(!strcmp(g_test.logged, "settings: stats_corner=middle is not tl, tr, bl or br: it keeps tl\n") &&
            !strcmp(g_settings.stats_corner, "tl"));
+    /* frame interpolation on: the real rate, the generated frames beside it, then their total */
+    g_settings.stats = 0;
+    stats_frame(at += 16 * MS);
+    g_settings.stats = 1;
+    draw(at);
+    for (k = 1; k <= 30; ++k) {
+        stats_frame(at + (u64)k * 16666667ull);
+        stats_generated();
+    }
+    draw(at + 500 * MS);
+    assert(!strcmp(first_wide(), "60.0 fps  60.0 gen  120.0 total  16.7 ms"));
     /* off forgets what it had: on again, ? until it has frames and measures again */
     g_settings.stats = 0;
     stats_frame(at += 16 * MS);
