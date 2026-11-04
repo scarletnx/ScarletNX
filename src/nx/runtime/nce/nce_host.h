@@ -81,8 +81,10 @@ void nce_host_run(CPU* c);
 SNX_NORETURN void nce_host_leave(void);
 /* from dispatch, preempted or trapped: the guest goes on at once from the whole of c */
 SNX_NORETURN void nce_host_resume(CPU* c);
-/* the guest's state in a signal's context (a ucontext_t) into c, when the signal stopped this thread's guest code: 1,
-   else 0. For a crash report, which then shows the guest's registers */
-int nce_host_context(const void* context, CPU* c);
+/* the guest's state in a signal's context (a ucontext_t) into c, when the signal stopped this thread's guest code: 1;
+   2 when the guest's code branched to fault, outside the guest's memory (a fetch from it, after a call from the
+   guest's code: a branch through an empty pointer); else 0. For a crash report, which then shows the guest's
+   registers */
+int nce_host_context(const void* context, const void* fault, CPU* c);
 #endif
 #endif

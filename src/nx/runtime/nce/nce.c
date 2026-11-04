@@ -17,6 +17,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
+#include "nx/runtime/rtapi.h"
 #include "snx_settings.h"
 #include <signal.h>
 #include <stdio.h>
@@ -101,7 +102,10 @@ void nce_code_added(u64 base, u64 text_size) {
     (void)base;
     (void)text_size;
 }
-void nce_crash_context(const void* context) { (void)context; }
+void nce_crash_context(const void* context, const void* fault) {
+    (void)context;
+    (void)fault;
+}
 #else
 
 static void file_path(char* out, size_t size) { snprintf(out, size, "%s%s.nce", g_exedir, g_exename); }
@@ -272,9 +276,10 @@ void nce_thread_run(struct KThread* t, u64 pc) {
     __atomic_store_n(&g_nce.tid[ix], 0, __ATOMIC_RELEASE);
 }
 
-void nce_crash_context(const void* context) {
+void nce_crash_context(const void* context, const void* fault) {
     KThread* t = g_nce.on ? kthread_cur() : NULL;
-    if (t) nce_host_context(context, &t->cpu);
+    if (t && nce_host_context(context, fault, &t->cpu) == 2)
+        rt_missed_report(&t->cpu, t->cpu.pc, "nothing of the game's is mapped there (its code runs natively, NCE)");
 }
 
 /* ---- the patches ---- */

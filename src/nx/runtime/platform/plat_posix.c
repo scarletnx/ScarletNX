@@ -2120,7 +2120,7 @@ static void crash_signal(int sig, siginfo_t* si, void* ctx) {
     log_crash_mode();
     /* for SIGILL and SIGFPE si_addr is the instruction, not an address it touched */
     fault = sig == SIGSEGV || sig == SIGBUS ? si->si_addr : NULL;
-    nce_crash_context(ctx); /* the guest's registers, when the native code of the game crashed */
+    nce_crash_context(ctx, fault); /* the guest's registers, when the native code of the game crashed */
     crash_report(context_pc(ctx), fault, sig);
     _exit(1);
 }
