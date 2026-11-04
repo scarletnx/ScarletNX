@@ -491,6 +491,37 @@ static int write_file(void) {
 /* ini_read's line about a value clamped or left, in the log */
 static void say_setting(const char* line) { WARN("%s\n", line); }
 
+int options_memory_fit_old(const char* old, int ios) {
+    if (!strcmp(old, "1")) return 0;
+    if (!strcmp(old, "0")) return ios ? 1 : -1;
+    return -2;
+}
+/* memory_fit, deprecated for memory_fit_mode, read while the file and the command line give memory_fit_mode no value:
+   the value it maps to goes in the store, which the file is written with, so the next run reads memory_fit_mode */
+static void memory_fit_old(void) {
+    const char* old = ini_deprecated_value("memory_fit");
+    int now;
+    if (!old || override_of("memory_fit_mode") || store_find("memory_fit_mode")) return;
+#if defined(SNX_IOS)
+    now = options_memory_fit_old(old, 1);
+#else
+    now = options_memory_fit_old(old, 0);
+#endif
+    if (now == -2)
+        WARN("settings: memory_fit=%s, deprecated, is neither 0 nor 1: memory_fit_mode takes its default, 0 (Auto)\n",
+             old);
+    else if (now == -1)
+        WARN(
+            "settings: memory_fit=%s, deprecated, was its default: memory_fit_mode takes its own, 0 (Auto), which fits "
+            "the game to the device (docs/DEPRECATIONS.md)\n",
+            old);
+    else {
+        store_put("memory_fit_mode", now ? "1" : "0");
+        WARN("settings: memory_fit=%s, deprecated, is memory_fit_mode=%d (%s) now (docs/DEPRECATIONS.md)\n", old, now,
+             now ? "Off" : "Auto");
+    }
+}
+
 static void say_deprecated(void) {
     const char* keys[STORE_MAX];
     char line[2048];
@@ -571,6 +602,7 @@ void ini_open(const char* path) {
         g_hash = g_seen = fnv1a(text, size);
         free(text);
     }
+    memory_fit_old();
     n = pending_take(taken);
     say_deprecated();
     apply_all();

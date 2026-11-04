@@ -4,7 +4,8 @@
    the charger TV, a state that cannot be read TV), the log line that names both, am's and hid's change on a switch
    and on no other update, a change only when the watcher marks one, the 15 s query of a host with no watcher, and
    Off and On never asking the host. And a key the .ini gives twice: the last line's value, and a line that names the
-   key and both values */
+   key and both values; and memory_fit, deprecated, read from an old .ini as memory_fit_mode while the file gives that
+   one none, and the file written with memory_fit_mode and memory_fit under [Deprecated] */
 #include "common/utilities/common.h"
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h"
@@ -42,6 +43,7 @@ static struct {
     int lines;      /* the log's lines */
     char logged[256];
     char said[4096]; /* every line, one after the other */
+    int write;       /* plat_replace_file replaces the file: ini_open writes it */
 } g_test;
 
 int plat_power_on_charger(void) {
@@ -84,11 +86,7 @@ void fatal(const char* fmt, ...) {
 }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
-int plat_replace_file(const char* tmp, const char* dst) {
-    (void)tmp;
-    (void)dst;
-    return -1;
-}
+int plat_replace_file(const char* tmp, const char* dst) { return g_test.write ? rename(tmp, dst) : -1; }
 int backend_ini(const char* k, const char* v) {
     (void)k;
     (void)v;
@@ -235,6 +233,56 @@ static void test_key_twice(void) {
     free(dir);
 }
 
+/* a game's .ini of text, opened as a run opens it, with the log's lines from then in g_test.said; the file as ini_open
+   wrote it back (g_test.write), else NULL */
+static char* open_ini(const char* text) {
+    char *dir = snx_temp_dir(NULL), *path, *now = NULL;
+    size_t size;
+    CHECK(dir);
+    path = snx_path_join(dir, "game.ini");
+    CHECK(path && !snx_write_file(path, text, strlen(text)));
+    g_test.said[0] = 0;
+    ini_open(path);
+    if (g_test.write) CHECK((now = (char*)snx_read_file(path, &size)));
+    CHECK(!snx_remove_tree(dir));
+    free(path);
+    free(dir);
+    return now;
+}
+/* memory_fit (0 Off, 1 On; 1 by default on iOS) in an old .ini: 1 is memory_fit_mode's Auto, 0 the default every
+   game's .ini had written, which leaves memory_fit_mode at its own Auto, and on iOS, whose default was 1, an Off. The
+   file is written with memory_fit_mode, and memory_fit under [Deprecated], which the next run does not read */
+static void test_memory_fit_old(void) {
+    char *text, *again;
+    CHECK(options_memory_fit_old("1", 0) == 0 && options_memory_fit_old("1", 1) == 0);
+    CHECK(options_memory_fit_old("0", 0) == -1 && options_memory_fit_old("0", 1) == 1);
+    CHECK(options_memory_fit_old("2", 0) == -2 && options_memory_fit_old("", 1) == -2);
+    g_test.write = 1;
+    text = open_ini("[Performance]\nmemory_fit=1\n");
+    CHECK(strstr(g_test.said, "settings: memory_fit=1, deprecated, is memory_fit_mode=0 (Auto) now "
+                              "(docs/DEPRECATIONS.md)\n"));
+    CHECK(text && strstr(text, "\nmemory_fit_mode=0\n") && strstr(text, "\n[Deprecated]\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\nmemory_fit=1\n"));
+    again = open_ini(text); /* the next run: memory_fit_mode given, memory_fit not read again */
+    CHECK(!strstr(g_test.said, "settings: memory_fit=") && again && strstr(again, "\nmemory_fit_mode=0\n"));
+    free(again);
+    free(text);
+    text = open_ini("[Performance]\nmemory_fit=0\n");
+    CHECK(strstr(g_test.said, "settings: memory_fit=0, deprecated, was its default: memory_fit_mode takes its own, 0 "
+                              "(Auto), which fits the game to the device (docs/DEPRECATIONS.md)\n"));
+    CHECK(text && strstr(text, "\nmemory_fit_mode=0\n"));
+    free(text);
+    text = open_ini("[Performance]\nmemory_fit=yes\n");
+    CHECK(strstr(g_test.said, "settings: memory_fit=yes, deprecated, is neither 0 nor 1: memory_fit_mode takes its "
+                              "default, 0 (Auto)\n"));
+    free(text);
+    /* the new key given, the old one is not read */
+    text = open_ini("[Performance]\nmemory_fit=1\nmemory_fit_mode=1\n");
+    CHECK(!strstr(g_test.said, "settings: memory_fit=") && text && strstr(text, "\nmemory_fit_mode=1\n"));
+    free(text);
+    g_test.write = 0;
+}
+
 /* the log's settings line: the Display, Graphics and Performance settings off their default, each with its default */
 static void test_settings_line(void) {
     char list[2048];
@@ -251,6 +299,7 @@ int main(void) {
     test_auto_polled();
     test_key_twice(); /* after the TV mode tests: the file's every setting applied, which they count from nought */
     test_settings_line();
+    test_memory_fit_old();
     printf("options_tv_mode: ok\n");
     return 0;
 }
