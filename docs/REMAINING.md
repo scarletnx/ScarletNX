@@ -15,8 +15,10 @@ sentinel `docs/.work-complete` only when every box is checked. Do not push to an
       presenter path.
 - [x] **NIS and SGSR on 3DS, Vita and GBA.** The shared filter picker currently falls back to FSR 1. Port the NIS and
       SGSR pipelines into `present_fx` with the same staging and coefficient upload the Switch presenter uses.
-- [ ] **3DS PICA shadow rendering.** Implement register `0x22f` and the shadow path so a retail title reaches the
-      presenter. See `docs/issues/3ds-pica-shadow-rendering.md`.
+- [ ] **3DS PICA shadow rendering.** The shadow pass (OM_MODE 3), its packed R32_UINT map, the tiled store/load
+      shader and the Shadow2D read are implemented and pass `3ds_vk_draw --shadow` and its validation mode. The retail
+      title still does not reach the GPU: it waits in APT/GSP before its first draw (see
+      `docs/issues/3ds-pica-shadow-rendering.md`), so the box waits for that HLE gap.
 - [ ] **Full verification.** `ctest` for every non-device test, the three validation runs, a headless GBA run with
       Blend and Auto, and a Switch run with AA under `--vk_validation=1`. Update the demo folder, panels and patches.
 - [ ] **Docs and issues.** Every fixed issue gets a status section. Update `docs/SETTINGS.md`, `docs/USAGE.md`,

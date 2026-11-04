@@ -11,6 +11,7 @@
 #include "3ds/gpu/vk/vk_render.h"
 #include "3ds/gpu/vk/fsgen.h"
 #include "3ds/gpu/vk/shaders/color_spv.h"
+#include "3ds/gpu/vk/shaders/shadow_spv.h"
 #include "3ds/gpu/vk/shaders/depth_spv.h"
 #include "3ds/gpu/vk/shaders/texture_spv.h"
 #include "3ds/gpu/vk/vk.h"
@@ -83,6 +84,7 @@ typedef struct {
 typedef struct {
     uint32_t color_pa, depth_pa, width, height;
     uint8_t color_format, depth_format, flip, scale; /* color in transfer.h's order; depth 0 D16, 2 D24, 3 D24S8 */
+    uint8_t shadow; /* OM_MODE 3: the colour buffer is a shadow map of packed depth and strength words */
 } TargetKey;
 /* A render target kept: its images hold memory's contents when valid, and newer ones when dirty (drawn into since they
    were loaded or stored), whose memory is the GPU's until they are stored */
@@ -125,7 +127,7 @@ typedef struct {
     uint32_t vs, fs; /* indices into the shader caches */
     uint32_t blend, logic, depth_color, stencil, stencil_op;
     uint8_t blend_on, color_mask, depth_write, stencil_on;
-    uint8_t topology, cull, depth, pad;
+    uint8_t topology, cull, depth, shadow;
     uint16_t binding_mask, pad2;
     uint32_t stride[13];
     struct {
@@ -158,8 +160,8 @@ typedef struct {
 
 static struct {
     bool made, failed;
-    SnxCtrVkCompute color, depth, texture;
-    VkDescriptorSetLayout set0, set1;
+    SnxCtrVkCompute color, depth, texture, shadow;
+    VkDescriptorSetLayout set0, set1, set2;
     VkPipelineLayout layout;
     VkFormat depth_format;
     bool depth_float;
@@ -168,7 +170,7 @@ static struct {
     unsigned char* ring_map;
     VkDeviceSize ring_at, align; /* ring_at: in the open slot's part */
     unsigned slot;               /* the open recording's */
-    Image dummy, dummy_cube;
+    Image dummy, dummy_cube, shadow_dummy; /* a shadow map for a draw that renders none */
     struct {
         uint32_t key;
         VkSampler sampler;
@@ -236,7 +238,7 @@ static void image_free(Image* m) {
 static bool image_new(VkFormat format, uint32_t width, uint32_t height, uint32_t levels, uint32_t layers,
                       VkImageUsageFlags usage, Image* m) {
     VkDevice d = device();
-    bool depth = format != VK_FORMAT_R8G8B8A8_UNORM;
+    bool depth = format != VK_FORMAT_R8G8B8A8_UNORM && format != VK_FORMAT_R32_UINT;
     VkImageAspectFlags aspect = depth ? VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT
                                       : VK_IMAGE_ASPECT_COLOR_BIT;
     *m = (Image){0};
@@ -337,7 +339,8 @@ static bool made(void) {
     SnxCtrVk* v = snx_ctr_vk();
     if (!v) return false;
     g.failed = true;
-    if (!snx_ctr_vk_compute(snx_ctr_color_spv, snx_ctr_color_spv_size / 4, 1, 1, 28, &g.color) ||
+    if (!snx_ctr_vk_compute(snx_ctr_shadow_spv, snx_ctr_shadow_spv_size / 4, 1, 1, 28, &g.shadow) ||
+        !snx_ctr_vk_compute(snx_ctr_color_spv, snx_ctr_color_spv_size / 4, 1, 1, 28, &g.color) ||
         !snx_ctr_vk_compute(snx_ctr_depth_spv, snx_ctr_depth_spv_size / 4, 3, 0, 32, &g.depth) ||
         !snx_ctr_vk_compute(snx_ctr_texture_spv, snx_ctr_texture_spv_size / 4, 1, 1, 20, &g.texture))
         return false;
@@ -359,6 +362,7 @@ static bool made(void) {
     for (uint32_t i = 0; i < 3; ++i)
         set1[i] = (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                                                  VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
+    VkDescriptorSetLayoutBinding set2 = {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
     VkDescriptorSetLayoutCreateInfo si = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                           .bindingCount = 6,
                                           .pBindings = set0};
@@ -366,9 +370,12 @@ static bool made(void) {
     si.bindingCount = 3;
     si.pBindings = set1;
     if (vkCreateDescriptorSetLayout(v->device, &si, NULL, &g.set1) != VK_SUCCESS) return false;
-    VkDescriptorSetLayout sets[2] = {g.set0, g.set1};
+    si.bindingCount = 1;
+    si.pBindings = &set2;
+    if (vkCreateDescriptorSetLayout(v->device, &si, NULL, &g.set2) != VK_SUCCESS) return false;
+    VkDescriptorSetLayout sets[3] = {g.set0, g.set1, g.set2};
     VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                     .setLayoutCount = 2,
+                                     .setLayoutCount = 3,
                                      .pSetLayouts = sets};
     if (vkCreatePipelineLayout(v->device, &li, NULL, &g.layout) != VK_SUCCESS) return false;
     if (!buffer_new(RING_SIZE,
@@ -385,13 +392,21 @@ static bool made(void) {
     /* the samplers of disabled textures: transparent black */
     VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (!image_new(VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1, usage, &g.dummy) ||
-        !image_new(VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 6, usage, &g.dummy_cube))
+        !image_new(VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 6, usage, &g.dummy_cube) ||
+        !image_new(VK_FORMAT_R32_UINT, 1, 1, 1, 1,
+                   VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                   &g.shadow_dummy))
         return false;
     VkClearColorValue black = {{0}};
     VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
     vkCmdClearColorImage(snx_ctr_vk_commands(), g.dummy_cube.image, VK_IMAGE_LAYOUT_GENERAL, &black, 1, &all);
     all.layerCount = 1;
     vkCmdClearColorImage(snx_ctr_vk_commands(), g.dummy.image, VK_IMAGE_LAYOUT_GENERAL, &black, 1, &all);
+    {
+        /* the word a fully lit shadow texel holds: depth 0xFFFFFF, strength 0xFF */
+        VkClearColorValue lit = {.uint32 = {0xffffffffu, 0, 0, 0}};
+        vkCmdClearColorImage(snx_ctr_vk_commands(), g.shadow_dummy.image, VK_IMAGE_LAYOUT_GENERAL, &lit, 1, &all);
+    }
     snx_ctr_vk_barrier(snx_ctr_vk_commands());
     g.failed = false;
     g.made = true;
@@ -644,7 +659,8 @@ static bool target_move(Target* t, bool store, bool color, bool depth) {
     snx_ctr_vk_barrier(cb);
     if (color && snx_ctr_vk_window(k->color_pa, color_span(k), &w[0], &inside)) {
         uint32_t push[7] = {inside, k->width, k->height, k->color_format, k->flip, store, k->scale};
-        if (!dispatch(&g.color, w, 1, t->color.view, push, sizeof push, store ? k->width : width,
+        const SnxCtrVkCompute* program = k->shadow ? &g.shadow : &g.color;
+        if (!dispatch(program, w, 1, t->color.view, push, sizeof push, store ? k->width : width,
                       store ? k->height : height))
             return false;
         gpu_uses(k->color_pa, color_span(k), store);
@@ -717,13 +733,16 @@ static void stale(uint32_t pa, uint64_t size) {
         }
     }
 }
-static bool target_images(Target* t, uint32_t width, uint32_t height) {
+static bool target_images(Target* t, uint32_t width, uint32_t height, int shadow) {
     VkDeviceSize pixels = (VkDeviceSize)width * height;
     VkDeviceSize alignment = snx_ctr_vk()->properties.limits.minStorageBufferOffsetAlignment;
     if (alignment < 4) alignment = 4;
     t->stencil_at = (pixels * 4 + alignment - 1) / alignment * alignment;
-    if (!image_new(VK_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT, &t->color))
+    if (!image_new(shadow ? VK_FORMAT_R32_UINT : VK_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1,
+                   shadow ? VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                          : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+                   &t->color))
         return false;
     if (!image_new(g.depth_format, width, height, 1, 1,
                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
@@ -765,7 +784,7 @@ static Target* target_find(const TargetKey* k) {
         bury(&t->depth, &t->scratch, &t->scratch_memory);
     }
     *t = (Target){0};
-    if (!target_images(t, k->width * k->scale, k->height * k->scale)) return NULL;
+    if (!target_images(t, k->width * k->scale, k->height * k->scale, k->shadow)) return NULL;
     t->key = *k;
     if (t == &g.targets[g.target_count]) ++g.target_count;
     return t;
@@ -920,6 +939,8 @@ static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned typ
     if (!(r[TEX_MAIN] >> unit & 1) || (unit == 0 && type == SNX_CTR_FS_TEX_DISABLED) || format > 13 || width < 8 ||
         height < 8)
         return SNX_CTR_PICA_OK;
+    bool shadow = unit == 0 && (type == SNX_CTR_FS_TEX_SHADOW_2D || type == SNX_CTR_FS_TEX_SHADOW_CUBE);
+    if (shadow) format = 0; /* a shadow map is a packed-word RGBA8 surface (Azahar's ShadowSource) */
     uint32_t levels = 1;
     while (levels <= max_level && levels < 11 && (width >> levels) >= 8 && (height >> levels) >= 8) ++levels;
     uint32_t bytes = 0;
@@ -932,6 +953,23 @@ static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned typ
     for (unsigned f = 0; f < (cube ? 6u : 1u); ++f)
         if (g.made && !store_over(pa[f], bytes)) return AGAIN;
     uint64_t serial = snx_ctr_vk_serial();
+    if (shadow) {
+        /* The shadow map is sampled in the coordinates its pass wrote (texelFetch, no filtering): the target's own
+           R32_UINT image, whose words hold the depth and the strength. A map no target keeps (an evicted one, or one
+           only memory has) reads as no shadow at all rather than stopping the draw */
+        if (!cube)
+            for (unsigned i = 0; i < g.target_count; ++i) {
+                Target* t = &g.targets[i];
+                if (t->key.shadow && t->key.color_pa == pa[0] && t->key.width == width && t->key.height == height &&
+                    (t->color_valid || t->color_dirty) && t->color.view) {
+                    t->used = serial;
+                    out->imageView = t->color.view;
+                    return SNX_CTR_PICA_OK;
+                }
+            }
+        out->imageView = g.shadow_dummy.view;
+        return SNX_CTR_PICA_OK;
+    }
     for (unsigned i = 0; i < g.texture_count; ++i) {
         Texture* t = &g.textures[i];
         if (t->valid && t->cube == cube && t->format == format && t->width == width && t->height == height &&
@@ -1146,8 +1184,8 @@ static VkPipeline make_pipeline(const PipeKey* k) {
                                 k->stencil >> 16 & 0xff};
     VkPipelineDepthStencilStateCreateInfo depth = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        .depthTestEnable = depth_test,
-        .depthWriteEnable = k->depth && k->depth_write && (k->depth_color >> 12 & 1),
+        .depthTestEnable = depth_test && !k->shadow,
+        .depthWriteEnable = !k->shadow && k->depth && k->depth_write && (k->depth_color >> 12 & 1),
         .depthCompareOp = k->depth_color & 1 ? compare_op[k->depth_color >> 4 & 7] : VK_COMPARE_OP_ALWAYS,
         .stencilTestEnable = k->depth && k->stencil_on,
         .front = stencil,
@@ -1162,7 +1200,7 @@ static VkPipeline make_pipeline(const PipeKey* k) {
         .alphaBlendOp = blend_op(k->blend >> 8 & 7),
         .colorWriteMask = k->color_mask};
     VkPipelineColorBlendStateCreateInfo blend = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-                                                 .logicOpEnable = !k->blend_on && v->logic_op &&
+                                                 .logicOpEnable = !k->shadow && !k->blend_on && v->logic_op &&
                                                                   (k->logic & 15) != 3,
                                                  .logicOp = logic_op[k->logic & 15],
                                                  .attachmentCount = 1,
@@ -1172,7 +1210,7 @@ static VkPipeline make_pipeline(const PipeKey* k) {
     VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                                 .dynamicStateCount = 3,
                                                 .pDynamicStates = dynamic_states};
-    VkFormat color_format = VK_FORMAT_R8G8B8A8_UNORM;
+    VkFormat color_format = k->shadow ? VK_FORMAT_R32_UINT : VK_FORMAT_R8G8B8A8_UNORM;
     VkPipelineRenderingCreateInfo rendering = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
                                                .colorAttachmentCount = 1,
                                                .pColorAttachmentFormats = &color_format,
@@ -1314,8 +1352,8 @@ static SnxCtrPicaResult stop(SnxCtrPica* p, const char* why) {
 }
 /* the uploads of a draw: the uniform blocks and LUTs (the last ones again when they hold the same), the default
    attributes; the descriptor sets that point at them */
-static SnxCtrPicaResult descriptors(const SnxCtrPica* p, const SnxCtrFsConfig* fs, unsigned scale,
-                                    VkDescriptorSet sets[2], VkDeviceSize* defaults) {
+static SnxCtrPicaResult descriptors(const SnxCtrPica* p, const SnxCtrFsConfig* fs, unsigned scale, int shadow,
+                                    VkDescriptorSet sets[3], VkDeviceSize* defaults) {
     SnxCtrVsPica vs_pica;
     SnxCtrVsData vs_data;
     SnxCtrFsUniforms* fs_data = (SnxCtrFsUniforms*)malloc(sizeof *fs_data);
@@ -1382,7 +1420,8 @@ static SnxCtrPicaResult descriptors(const SnxCtrPica* p, const SnxCtrFsConfig* f
     if (!ok || !upload(attributes, sizeof attributes, defaults)) return AGAIN;
     sets[0] = snx_ctr_vk_set(g.set0);
     sets[1] = snx_ctr_vk_set(g.set1);
-    if (!sets[0] || !sets[1]) return AGAIN;
+    sets[2] = snx_ctr_vk_set(g.set2);
+    if (!sets[0] || !sets[1] || !sets[2]) return AGAIN;
     VkDescriptorBufferInfo blocks[3] = {{g.ring, g.vs_at, sizeof(SnxCtrVsPica)},
                                         {g.ring, g.vs_data_at, sizeof(SnxCtrVsData)},
                                         {g.ring, g.fs_at, sizeof(SnxCtrFsUniforms)}};
@@ -1410,6 +1449,18 @@ static SnxCtrPicaResult descriptors(const SnxCtrPica* p, const SnxCtrFsConfig* f
                                                     .pImageInfo = &images[unit]};
     }
     vkUpdateDescriptorSets(device(), 3, image_writes, 0, NULL);
+    {
+        /* set 2: the shadow map the fragment shader writes (its real target), or a word no draw reads */
+        VkDescriptorImageInfo shadow_image = {
+            VK_NULL_HANDLE, shadow ? g.targets[g.open].color.view : g.shadow_dummy.view, VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet shadow_write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                             .dstSet = sets[2],
+                                             .dstBinding = 0,
+                                             .descriptorCount = 1,
+                                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                             .pImageInfo = &shadow_image};
+        vkUpdateDescriptorSets(device(), 1, &shadow_write, 0, NULL);
+    }
     return SNX_CTR_PICA_OK;
 }
 
@@ -1464,21 +1515,24 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     if (!key.width || key.color_format == 0xff ||
         !snx_ctr_vk_window(key.color_pa, pixels * color_bytes(key.color_format), &probe, &inside))
         return SNX_CTR_PICA_OK;
-    key.scale = target_scale(&key);
+    /* the shaders: a shadow map's draw writes the map's words, not a colour */
+    SnxCtrFsConfig fs;
+    snx_ctr_fs_config(p, &fs);
+    key.shadow = (uint8_t)(fs.shadow_rendering ? 1 : 0);
+    /* the map is sampled with texelFetch at the PICA's own size: it is not scaled with the 3D rendering */
+    key.scale = key.shadow ? 1 : target_scale(&key);
     if (key.depth_format == 1 || !key.depth_pa ||
         !snx_ctr_vk_window(key.depth_pa, pixels * depth_bytes(key.depth_format), &probe, &inside)) {
         key.depth_format = NO_DEPTH;
         key.depth_pa = 0;
     }
+    if (key.shadow) { /* no depth attachment (Azahar's shadow pass has none) */
+        key.depth_format = NO_DEPTH;
+        key.depth_pa = 0;
+    }
     float half_x = snx_ctr_f24(r[VIEWPORT_X] & 0xffffff), half_y = snx_ctr_f24(r[VIEWPORT_Y] & 0xffffff);
     if (!(half_x > 0.0f) || !(half_y > 0.0f) || isinf(half_x) || isinf(half_y)) return SNX_CTR_PICA_OK;
-    /* the shaders */
-    SnxCtrFsConfig fs;
-    snx_ctr_fs_config(p, &fs);
     const char* why = snx_ctr_fs_unsupported(&fs);
-    if (!why && (fs.texture0_type == SNX_CTR_FS_TEX_SHADOW_2D || fs.texture0_type == SNX_CTR_FS_TEX_SHADOW_CUBE) &&
-        (r[TEX_MAIN] & 1))
-        why = "shadow textures are not ported yet";
     if (why) return stop(p, why);
     PipeKey k;
     SnxCtrVsConfig vs;
@@ -1518,6 +1572,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     k.stencil_op = k.stencil_on ? r[OM_STENCIL_OP] & 0x777 : 0;
     k.topology = (uint8_t)(source == TRIANGLES ? 0 : r[SNX_PICA_TOPOLOGY] >> 8 & 3); /* the triangles made: a list */
     k.cull = (uint8_t)(r[CULL_MODE] & 3);
+    k.shadow = key.shadow;
     VkPipeline pipe = pipeline(&k);
     if (!pipe) return stop(p, "the device refuses a draw's pipeline");
     /* the vertices: an index buffer, the loaders' bindings, the immediate vertices or the triangles made */
@@ -1552,9 +1607,9 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     }
     SnxCtrPicaResult result = target_open(&key);
     if (result != SNX_CTR_PICA_OK) return result;
-    VkDescriptorSet sets[2];
+    VkDescriptorSet sets[3];
     VkDeviceSize defaults;
-    result = descriptors(p, &fs, key.scale, sets, &defaults);
+    result = descriptors(p, &fs, key.scale, key.shadow, sets, &defaults);
     if (result != SNX_CTR_PICA_OK) return result;
     if (source == IMMEDIATE) {
         if (!upload(g.immediate, g.immediate_count * sizeof *g.immediate, &offsets[0])) return AGAIN;
@@ -1597,7 +1652,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     vkCmdSetViewport(cb, 0, 1, &viewport);
     vkCmdSetScissor(cb, 0, 1, &scissor);
     vkCmdSetBlendConstants(cb, constants);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 2, sets, 0, NULL);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 3, sets, 0, NULL);
     for (uint32_t b = 0; b < 13; ++b)
         if (k.binding_mask >> b & 1) vkCmdBindVertexBuffers(cb, b, 1, &buffers[b], &offsets[b]);
     if (source == ARRAYS) draw_reads(&k, binding_pa, index_pa, index_bytes, count, r[VERTEX_OFFSET], index_max);
@@ -1611,7 +1666,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     /* drawn into: newer than memory, which is the GPU's until the target is stored, and the textures made from that
        memory stale */
     t->used = snx_ctr_vk_serial();
-    if (k.color_mask && !t->color_dirty) {
+    if ((k.color_mask || k.shadow) && !t->color_dirty) {
         drop_textures(t->key.color_pa, color_span(&t->key));
         set_color(t, t->color_valid, true);
     }
@@ -1743,14 +1798,17 @@ void snx_ctr_vk_render_free(void) {
     for (unsigned i = 0; i < g.sampler_count; ++i) vkDestroySampler(d, g.samplers[i].sampler, NULL);
     image_free(&g.dummy);
     image_free(&g.dummy_cube);
+    image_free(&g.shadow_dummy);
     if (g.ring) vkDestroyBuffer(d, g.ring, NULL);
     if (g.ring_memory) vkFreeMemory(d, g.ring_memory, NULL);
     if (g.layout) vkDestroyPipelineLayout(d, g.layout, NULL);
     if (g.set0) vkDestroyDescriptorSetLayout(d, g.set0, NULL);
     if (g.set1) vkDestroyDescriptorSetLayout(d, g.set1, NULL);
+    if (g.set2) vkDestroyDescriptorSetLayout(d, g.set2, NULL);
     snx_ctr_vk_compute_free(&g.color);
     snx_ctr_vk_compute_free(&g.depth);
     snx_ctr_vk_compute_free(&g.texture);
+    snx_ctr_vk_compute_free(&g.shadow);
     free(g.vs);
     free(g.fs);
     free(g.pipes);
