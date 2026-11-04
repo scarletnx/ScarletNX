@@ -208,6 +208,18 @@ int main(void) {
                strstr(list, "log_max=64 (default 16)"));
         g_settings.log_size_limit = 16;
     }
+    /* ASTC as BC7 is a Graphics setting: astc_bc=1 is not said at the top of the picture with the Debug ones, and the
+       Graphics settings past their default say it */
+    {
+        char list[2048];
+        assert(ini_find(g_graphics_ini, "astc_bc") && !ini_find(g_debug_ini, "astc_bc"));
+        g_settings.astc_bc = 1;
+        ini_changed(g_debug_ini, INI_CHANGED_NO_TEXT, list, sizeof list);
+        assert(!strstr(list, "astc_bc"));
+        assert(ini_changed(g_graphics_ini, INI_CHANGED_DEFAULT, list, sizeof list) >= 1 &&
+               strstr(list, "astc_bc=1 (default 0)"));
+        g_settings.astc_bc = 0;
+    }
     puts("ini passed");
     return 0;
 }
