@@ -1584,6 +1584,13 @@ int snx_fx_hdr_encode(SnxFx* fx, VkCommandBuffer cb, const SnxFxImage* composed,
     tone[2] = (float)enc;
     tone[3] = dst_fmt == VK_FORMAT_B8G8R8A8_SRGB || dst_fmt == VK_FORMAT_R8G8B8A8_SRGB ? 1.0f : 0.0f;
     bind_combined(fx, fx->encode_set[slot], composed->view, 0);
+    /* the composition comes from the compose pass, or the test pattern's and the overlays' over it: an attachment
+       either way, and this pass samples it. Without the transition a tiled GPU may read the tiles the earlier pass has
+       not written yet, which shows as the frame bleeding through the test pattern in a checker of tiles */
+    fx_barrier(fx, cb, composed->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     fx_barrier(fx, cb, dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
