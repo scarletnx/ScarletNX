@@ -248,6 +248,12 @@ int main(void) {
         CHECK(block);
         cpu.arm.r[14] = 0x08000200;
         CHECK(run_block(&cpu, block) == 2 && cpu.arm.r[15] == 0x08000200);
+        /* its Thumb BX takes no notice of the bits under the register, which should be zero */
+        agb_write16(&board, 0x03000120, 0x2003); /* movs r0, #3 */
+        agb_write16(&board, 0x03000122, 0x4775); /* bx lr, bits 2 to 0 set */
+        block = agb_recomp_lookup(&recomp, &board, 0x03000120, 1, error, sizeof error);
+        CHECK(block);
+        CHECK(run_block(&cpu, block) == 3 && cpu.arm.r[15] == 0x08000200);
     }
     {
         /* code the game puts in RAM runs as RAM holds it: a block built from it goes once the game writes over it,

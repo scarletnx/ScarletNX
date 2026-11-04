@@ -77,6 +77,8 @@ int main(void) {
                 assert(z == 1 && c.shape == TH_LEGACY_BL);
             else if ((i & 0xf800) == 0x4800)
                 assert(z == 1 && c.shape == TH_LOAD && c.rn == 15);
+            else if ((i & 0xff80) == 0x4700) /* BX takes no notice of bits 2 to 0 */
+                assert(z == 1 && c.shape == TH_BRANCH && c.op == BR_BX && c.rm == ((i >> 3) & 15));
             else
                 assert(z == x && (!z || !memcmp(&a, &c, sizeof a))); /* a refusal leaves A57's partly filled */
         }
@@ -97,6 +99,7 @@ int main(void) {
     assert(!snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xbf08, 0, &t));     /* IT EQ */
     assert(!snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xbf00, 0, &t));     /* NOP */
     assert(snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0x4708, 0, &t) == 1); /* BX r1 */
+    assert(snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0x4775, 0, &t) == 1 && t.op == BR_BX && t.rm == 14);
     assert(snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xb510, 0, &t) == 1 && t.shape == TH_PUSHPOP);
     puts("ARM11 and ARM7TDMI profiles and unchanged default decoder witnesses passed");
     /* The Cortex-A9's stores with writeback into the register they store (llvm-mc -mcpu=cortex-a9, which warns that
