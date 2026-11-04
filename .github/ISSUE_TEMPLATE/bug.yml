@@ -21,7 +21,7 @@ body:
   - type: textarea
     id: problem
     attributes:
-      label: The wrong behavior
+      label: The problem
       description: What you did, what you saw, and what you expected instead. A command line or a click path is ideal.
     validations:
       required: true
