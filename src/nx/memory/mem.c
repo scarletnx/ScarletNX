@@ -1036,6 +1036,9 @@ int mem_reserve_identity(u64 from) {
 }
 #endif
 int mem_identity(void) { return g_mem_identity; }
+/* where the written-page tracking starts (plat_vm_track): g_mem, or under NCE the code region's base */
+static u8* tracked_base(void) { return g_mem_identity ? (u8*)(uintptr_t)(IDENTITY_LO + g_mem_moved) : g_mem; }
+int mem_ww_probe(void (*cb)(u8* p, u64 size)) { return plat_ww_scan(tracked_base(), 4096, cb); }
 int mem_reserved(void) { return g_mem || g_mem_identity; }
 
 void mem_reserve(void) {
@@ -1060,10 +1063,7 @@ void mem_init(void) {
     mem_reserve();
     /* the settings are read by now, which mem_reserve may have run before. NCE's reservation is the guest's own
        addresses, from the code region's base, which mem_layout_move moved up by g_mem_moved */
-    if (g_mem_identity)
-        plat_vm_track((u8*)(uintptr_t)(IDENTITY_LO + g_mem_moved), g_as_size - IDENTITY_LO - g_mem_moved);
-    else
-        plat_vm_track(g_mem, g_as_size);
+    plat_vm_track(tracked_base(), g_mem_identity ? g_as_size - IDENTITY_LO - g_mem_moved : g_as_size);
     mem_lock();
     blk_reserve_nl(1);
     memset(&g_blk[0], 0, sizeof *g_blk);

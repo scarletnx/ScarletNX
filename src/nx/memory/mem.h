@@ -106,6 +106,10 @@ void mem_reserve(void);
 int mem_reserved(void);
 /* 1 when the guest's addresses are the host's, for NCE: g_mem is 0 */
 int mem_identity(void);
+/* 0 when the host tracks the writes to guest memory (plat_ww_scan), -1 when it can't: a scan, reported to cb, of the
+   first page the tracking covers. Under NCE that is the code region's base at the guest's own addresses, as g_mem is
+   0 there, below the tracked range */
+int mem_ww_probe(void (*cb)(u8* p, u64 size));
 /* NCE's reservation at the guest's own addresses (mem.c says why), the layout moved up by from or more: 1, or 0 with
    the reason logged. POSIX only */
 int mem_reserve_identity(u64 from);

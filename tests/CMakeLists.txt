@@ -2443,6 +2443,11 @@ if(UNIX)
     # views over pages the write tracking protects (write_tracking=1: the tracking of hosts without Linux 6.7's)
     add_test(NAME memory_alias_signal_ww COMMAND snx-test-memory-alias --write_tracking=1)
     set_tests_properties(memory_alias_signal_ww PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    # the write tracking in NCE's layout (g_mem 0, moved up from 64 GiB), each kind: Android's is the protection
+    add_test(NAME memory_alias_nce COMMAND snx-test-memory-alias --nce)
+    set_tests_properties(memory_alias_nce PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    add_test(NAME memory_alias_nce_signal_ww COMMAND snx-test-memory-alias --nce --write_tracking=1)
+    set_tests_properties(memory_alias_nce_signal_ww PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
     # GPU-owned memory over the real pool and traps, owners whose GPU copy is host memory (77 without traps)
     add_executable(snx-test-memory-own memory_own.c
         "${PROJECT_SOURCE_DIR}/src/nx/memory/mem.c" "${PROJECT_SOURCE_DIR}/src/nx/memory/own.c"
