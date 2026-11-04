@@ -56,7 +56,15 @@ typedef struct {
 } SamplesCount; /* vk.h's */
 #include "nx/gpu/vk/release.c"
 typedef void (*VkChangedRun)(void* user, u32 from, u32 to); /* vk.h's, for writeback.c */
+typedef struct {
+    u32 from, to;
+} VkRun;
+int vk_written_since(const u8* host, u64 len, u32 since);
 #include "nx/gpu/vk/writeback.c"
+int vk_written_since(const u8* host, u64 len, u32 since) { /* no write tracking here */
+    (void)host, (void)len, (void)since;
+    return -1;
+}
 
 int g_gpu_releases;
 static unsigned lock_depth, landing_calls, payload_writes, submits, query_reads, events_signaled;
@@ -155,6 +163,10 @@ int gmem_write(u64 address, const void* data, u64 size) {
 u8* gmem_ptr(u64 address, u64 size) {
     (void)size;
     return writeback_direct ? memory + gmmu_translate(address) : NULL;
+}
+u8* gmem_host(u64 address, u64 size) {
+    (void)size;
+    return memory + gmmu_translate(address);
 }
 int gmem_read(u64 address, void* data, u64 size) {
     vk_release_need(address, size);
