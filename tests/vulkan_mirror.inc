@@ -3,8 +3,8 @@
 /* The GPU mirror of guest memory (mirror.c): a range bound into it holds guest memory's bytes; a byte the CPU changes
    since goes in when the range is bound again, and a byte the GPU wrote there and the CPU didn't stays */
 
-/* len bytes of the mirror at cpu, read back once the work recorded so far is done */
-static int mirror_read(u64 cpu, u32 len, u8* out) {
+/* len bytes of src at from, read back once the work recorded so far is done */
+static int buffer_read(VkBuffer src, u64 from, u32 len, u8* out) {
     VkBuffer back;
     u64 at;
     VmaAllocation mem;
@@ -18,8 +18,8 @@ static int mirror_read(u64 cpu, u32 len, u8* out) {
     VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
     vk_render_end();
     rec_CmdPipelineBarrier2(vk_cmd(), &d);
-    VkBufferCopy copy = {cpu, at, len};
-    rec_CmdCopyBuffer(vk_cmd(), vk_mirror_buffer(), back, 1, &copy);
+    VkBufferCopy copy = {from, at, len};
+    rec_CmdCopyBuffer(vk_cmd(), src, back, 1, &copy);
     b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     b.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
@@ -30,6 +30,8 @@ static int mirror_read(u64 cpu, u32 len, u8* out) {
     memcpy(out, p, len);
     return 0;
 }
+/* len bytes of the mirror at cpu */
+static int mirror_read(u64 cpu, u32 len, u8* out) { return buffer_read(vk_mirror_buffer(), cpu, len, out); }
 /* the mirror's bytes against guest memory's, but [from, from + n), which hold value */
 static int mirror_expect(const u8* got, const u8* guest, u32 len, u32 from, u32 n, u8 value) {
     for (u32 i = 0; i < len; i++) {
@@ -147,9 +149,23 @@ static int check_mirror(void) {
             }
         }
     }
+    /* a draw's constants over a program's pending write, at an address a uniform buffer doesn't bind at: copied on the
+       GPU from the mirror into memory it binds at, the program's bytes, without waiting for the GPU */
+    {
+        static u8 u[20], guest[20];
+        CHECK(!mirror_write(cpu + 0x208, 8, 0x3c, 1));
+        vk_mirror_wrote(cpu + 0x208, 8);
+        u64 finishes = g_vk_finishes;
+        CHECK(vk_buf_get_uniform(gva + 0x204, 20, &buf, &off));
+        CHECK(g_vk_finishes == finishes);
+        CHECK(buf != vk_mirror_buffer() && off % vk_stage_align() == 0);
+        memcpy(guest, GP(cpu + 0x204), 20);
+        CHECK(!buffer_read(buf, off, 20, u));
+        CHECK(!mirror_expect(u, guest, 20, 4, 8, 0x3c));
+    }
     CHECK(g_vk_validation_messages == validation);
     vk_unlock();
     puts("The GPU mirror takes the bytes the CPU changed and keeps those the GPU wrote; the bytes its programs logged "
-         "land, and no others");
+         "land, and no others; a draw reads pending bytes at any address without a wait");
     return 0;
 }
