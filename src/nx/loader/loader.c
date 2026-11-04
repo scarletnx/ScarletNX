@@ -517,6 +517,9 @@ static const char* read_cie(const unsigned char* image, SnxU64 size, SnxU64 cie,
     if (!inside(cie, 9, size)) return "CIE outside the image";
     length = rd32(image + cie);
     if (!length || length == 0xFFFFFFFFUL) return "unsupported CIE length";
+    /* the length, the CIE id, the version and at least the augmentation string's NUL: a shorter length leaves the
+       augmentation's search and the FDE's start past the CIE's end */
+    if (length < 6) return "truncated CIE";
     end = cie + 4 + length;
     if (!inside(cie, 4 + length, size)) return "CIE outside the image";
     if (rd32(image + cie + 4)) return "FDE points at another FDE";
