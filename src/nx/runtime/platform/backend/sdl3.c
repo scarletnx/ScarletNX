@@ -609,7 +609,7 @@ static int android_share(const char* path) {
 static void fatal_share(const char* msg, const char* game_log, char* saved, size_t saved_size, char* said,
                         size_t size) {
     char made[1300], *folder = snx_dirname(game_log);
-    int ok = folder && !fatal_share_log(folder, snx_build_info(), msg, game_log, made, sizeof made);
+    int ok = folder && !fatal_share_log(folder, snx_build_log_line(), msg, game_log, made, sizeof made);
     if (!ok) snprintf(said, size, "The log could not be saved: %s", folder ? made : game_log);
 #ifdef __ANDROID__
     else if (!android_share(made))

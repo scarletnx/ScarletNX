@@ -486,8 +486,8 @@ static int marker(Span line, Marker* m) {
 }
 
 /* ============================================================ the scan */
-/* A game log is all of itself. The launcher's Share Log file (src/gui/main.c's share_log) starts with snx_build_info's
-   line, "ScarletNX <branch> <commit> (<compiler>, <system>)", then its message and sections: the last run's output
+/* A game log is all of itself. The launcher's Share Log file (src/gui/main.c's share_log) starts with
+   snx_build_log_line's line, "ScarletNX <branch> <commit>, committed <YYYY-MM-DD> (<compiler>, <system>)", then its message and sections: the last run's output
    under "== the last run: <path> ==" and the newest game log under "== <path> ==", which can come alone, without the
    run's. The game log's lines are scanned, else the run's output when it had none. The newest game log can be another game's, one played before: the run's
    output is kept while it is read, and stands for itself when its title ID is not the game log's */

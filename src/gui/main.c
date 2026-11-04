@@ -15252,7 +15252,7 @@ static void share_log(App* app, bool zip) {
     text = snx_format(
         "%s\nMessage: %s\n%s%s%s%s\n%s== the last run: %s ==\n%s\n\n== the last recompile of the queue: %s "
         "==\n%s\n\n== the launcher's log: %s ==\n%s\n\n== fatal errors: %s ==\n%s\n\n== %s ==\n%s\n",
-        snx_build_info(), app->message, app->left ? app->left : "", app->left_clear ? SAY_LEFT_CLEAR "\n" : "",
+        snx_build_log_line(), app->message, app->left ? app->left : "", app->left_clear ? SAY_LEFT_CLEAR "\n" : "",
         app->cleaned.count ? "Clean Old Settings:\n" : "", app->cleaned.text ? app->cleaned.text : "", summary,
         app->run_log ? app->run_log : "", run, app->job_log ? app->job_log : "", recompiled,
         console[0] ? console : "none", said, errors[0] ? errors : "none", fatal, game ? game : "no game log", played);
@@ -17193,7 +17193,7 @@ static void open_files(App* app) {
 #endif
     drivers_load(app);
     if (!app->look_only)
-        gui_log("%s starts, its data folder %s", snx_build_info(), app->data_dir ? app->data_dir : "(none)");
+        gui_log("%s starts, its data folder %s", snx_build_log_line(), app->data_dir ? app->data_dir : "(none)");
     if (prefs) run_log_follow(app);  /* in the Logs folder app.ini picked */
     if (prefs) recent_as_games(app); /* by the recompiled/ app.ini picked */
     app->users_dir = snx_users_dir(app->home_dir ? app->home_dir : app->data_dir);

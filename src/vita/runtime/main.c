@@ -225,9 +225,10 @@ static int play(const char* folder, bool recompile, double seconds, const char* 
                              ? NULL
                              : snx_read_file(sfo_path, &sfo_size);
     title = sfo ? vita_sfo_string(sfo, sfo_size, "TITLE") : NULL;
-    /* the window's title as the 3DS driver's and a Switch game's: the game's name, then the build */
+    /* the window's title as the 3DS driver's and a Switch game's: the game's name, then the build; the log's line with
+       the day its commit was made */
     char* header = snx_format("%s - %s", title ? title : image.name, snx_build_info());
-    printf("Game: %s\n", header ? header : image.name);
+    printf("Game: %s - %s\n", title ? title : image.name, snx_build_log_line());
     vita_present_init(header ? header : image.name, shot);
     free(header);
     free(sfo);
