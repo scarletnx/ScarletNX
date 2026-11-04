@@ -2375,9 +2375,25 @@ static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
     o->gs = gs_on ? vk_shader_get(ds, p->code[4], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, p->tess_params),
                                   0, clip, 0, 0, 0, 0, xfb_on ? xfb : NULL, NULL)
                   : NULL;
-    if ((tcs_on && (!o->tcs || o->tcs->failed)) || (tes_on && (!o->tes || o->tes->failed)) ||
-        (gs_on && (!o->gs || o->gs->failed)) || !o->vs || o->vs->failed)
-        return 0;
+    {
+        /* the first stage that has no shader to run: the draw is left out, and the log says which program and why */
+        int bad = !o->vs || o->vs->failed                 ? 1
+                  : tcs_on && (!o->tcs || o->tcs->failed) ? 2
+                  : tes_on && (!o->tes || o->tes->failed) ? 3
+                  : gs_on && (!o->gs || o->gs->failed)    ? 4
+                                                          : 0;
+        static const char* const names[5] = {"", "vertex", "tessellation control", "tessellation evaluation",
+                                             "geometry"};
+        const VkSh* s = bad == 1 ? o->vs : bad == 2 ? o->tcs : bad == 3 ? o->tes : o->gs;
+        if (bad) {
+            LOG_LIMIT(8, "vulkan: a draw skipped: its %s program at %llx %s%s\n", names[bad],
+                      (unsigned long long)p->code[bad], s ? "isn't translated: " : "has no shader: out of memory",
+                      !s                           ? ""
+                      : s->si.first_unsupported[0] ? s->si.first_unsupported
+                                                   : "unsupported feature or float controls");
+            return 0;
+        }
+    }
     o->fs0 = (p->on >> 5 & 1) ? vk_shader_get(ds, p->code[5], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL) : NULL;
     rt_int_targets(&ds->tgt, &o->rt_int, &o->rt_sint);
     return 1;
