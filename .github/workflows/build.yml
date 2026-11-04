@@ -875,8 +875,15 @@ jobs:
       - name: Check the build line names the checkout as it is
         run: |
           set -euo pipefail
+          # the commit's define alone: a branch's name may end in -dirty too
+          dirty() { grep -q '^#define SNX_COMMIT "[^"]*-dirty"' "$1"; }
+          printf '#define SNX_BRANCH "a-dirty"\n#define SNX_COMMIT "abc1234"\n' > build/default/commit-check.h
+          if dirty build/default/commit-check.h; then
+            echo "a branch named a-dirty reads as a commit with changes" >&2
+            exit 1
+          fi
           ctest --test-dir build/default -R '^build_info$' --verbose | grep -F 'ScarletNX '
-          if grep -qF -- '-dirty"' build/default/generated/snx_commit.h; then
+          if dirty build/default/generated/snx_commit.h; then
             echo "the build line says -dirty; the tracked files MSYS2's git sees changed:" >&2
             git status --porcelain --untracked-files=no | head -20 >&2
             echo "$(git status --porcelain --untracked-files=no | wc -l) files; read with CR LF line ends:" \
@@ -889,7 +896,7 @@ jobs:
           echo >> README.md
           cmake -DSRC=. -DOUT=build/default/commit-check.h -P cmake/commit.cmake
           git checkout -- README.md
-          if ! grep -qF -- '-dirty"' build/default/commit-check.h; then
+          if ! dirty build/default/commit-check.h; then
             echo "README.md changed, and the build line would say $(cat build/default/commit-check.h)" >&2
             exit 1
           fi
