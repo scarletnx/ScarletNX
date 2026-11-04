@@ -799,11 +799,16 @@ SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, uint32_
                               .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                               .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                               .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
-    VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 256};
+    /* NIS's set is a uniform buffer, a sampler, sampled images and a storage image; the rest are combined samplers */
+    VkDescriptorPoolSize sizes[5] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 256},
+                                     {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 16},
+                                     {VK_DESCRIPTOR_TYPE_SAMPLER, 16},
+                                     {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 32},
+                                     {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 16}};
     VkDescriptorPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                       .maxSets = 128,
-                                      .poolSizeCount = 1,
-                                      .pPoolSizes = &size};
+                                      .poolSizeCount = 5,
+                                      .pPoolSizes = sizes};
     if (!fx_ok(vkCreateSampler(fx->dev, &si, NULL, &fx->sampler)) || !make_layouts(fx) ||
         !fx_ok(vkCreateDescriptorPool(fx->dev, &pci, NULL, &fx->pool)))
         goto failed;
