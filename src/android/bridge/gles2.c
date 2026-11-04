@@ -168,13 +168,13 @@ static const char* const extensions[] = {
 enum { EXTENSIONS = sizeof extensions / sizeof *extensions - 1 }; /* the last is a placeholder, not given */
 
 const char* gles2_string(int version, unsigned name) {
-    (void)version; /* a context of version 2 is one of 3.0, as on a phone */
+    (void)version; /* a context of version 2 is one of 3.1, as on a phone */
     char* all = g_gles2.extensions;
     switch (name) {
     case GL_VENDOR_: return "ARM";
     case GL_RENDERER_: return hle_gpu_name;
-    case GL_VERSION_: return "OpenGL ES 3.0 ScarletNX";
-    case GL_SHADING_LANGUAGE_VERSION_: return "OpenGL ES GLSL ES 3.00";
+    case GL_VERSION_: return "OpenGL ES 3.1 ScarletNX";
+    case GL_SHADING_LANGUAGE_VERSION_: return "OpenGL ES GLSL ES 3.10";
     case GL_EXTENSIONS_:
         if (!all[0]) {
             size_t n = 0;
@@ -481,7 +481,7 @@ static int state(Gles2Context* gl, unsigned pname, double* v) {
     case 0x8904: v[0] = -8; return 1;
     case 0x8905: v[0] = 7; return 1;
     case 0x821b: v[0] = 3; return 1;    /* GL_MAJOR_VERSION */
-    case 0x821c: v[0] = 0; return 1;
+    case 0x821c: v[0] = 1; return 1; /* GL_MINOR_VERSION */
     case 0x821d: v[0] = EXTENSIONS; return 1;
     case 0x84ff: v[0] = V.features.samplerAnisotropy ? l->maxSamplerAnisotropy : 1; return 1;
     case 0x86a2: /* GL_NUM_COMPRESSED_TEXTURE_FORMATS */

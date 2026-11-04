@@ -6,8 +6,9 @@
 
    The configs are GLES 1.1's, 2's and 3's (EGL_OPENGL_ES_BIT, EGL_OPENGL_ES2_BIT, EGL_OPENGL_ES3_BIT_KHR), with
    window surfaces of the host window and pbuffers. A context of version 1 draws with GLES 1.1 over Vulkan
-   (hle_gles.c), one of 2 or 3 with GLES 3.0 over Vulkan (gles2.h). Engines name the GPU from a throwaway context's glGetString(GL_RENDERER) before they choose an API, and choose Vulkan only
-   on the GPUs of their own lists: so a context without a config (EGL_KHR_no_config_context) of any version can be
+   (hle_gles.c), one of 2 or 3 with GLES 3.1 over Vulkan (gles2.h). Engines name the GPU from a throwaway
+   context's glGetString(GL_RENDERER) before they choose an API, and choose Vulkan only on the GPUs of their own
+   lists: so a context without a config (EGL_KHR_no_config_context) of any version can be
    made current without a surface, and glGetString answers with the device that Vulkan reports */
 #include "android/bridge/hle.h"
 #include "android/bridge/gles2.h"
@@ -288,7 +289,7 @@ static int choose_configs(const int32_t* attributes, const Config** out, int siz
 }
 
 /* eglCreateContext: a config's or one without a config, of the version the attributes ask: GLES 1.1, or GLES 2
-   and 3.0 (gles2.h). A minor version past 3.0 is not here: an engine then asks for 3.0 */
+   and 3.1 (gles2.h). GLES 3.2 is not here: an engine then asks for 3.1 */
 static uint64_t create_context(uint64_t display, uint64_t config, const int32_t* attributes) {
     if (!is_display(display)) return done(0, EGL_BAD_DISPLAY_);
     const Config* c = config ? config_of(config) : NULL;
@@ -298,7 +299,7 @@ static uint64_t create_context(uint64_t display, uint64_t config, const int32_t*
         if (a[0] == EGL_CONTEXT_CLIENT_VERSION_) version = a[1];
         if (a[0] == EGL_CONTEXT_MINOR_VERSION_) minor = a[1];
     }
-    if (version < 1 || version > 3 || (version == 3 && minor > 0) || (version == 1 && minor > 1))
+    if (version < 1 || version > 3 || (version == 3 && minor > 1) || (version == 1 && minor > 1))
         return done(0, EGL_BAD_MATCH_);
     if (!e.said[version]) { /* each version's first context, said once */
         e.said[version] = true;
@@ -594,7 +595,7 @@ static void g_query_string(CPU* c, void* data) {
 }
 
 /* glGetString: the device's identity in the current context, NULL without one (GL_INVALID_ENUM's NULL for others).
-   A GLES 1.1 context names its version and extensions as GLES 1.1's, one of GLES 2 or 3 as GLES 3.0's (gles2.c) */
+   A GLES 1.1 context names its version and extensions as GLES 1.1's, one of GLES 2 or 3 as GLES 3.1's (gles2.c) */
 static void g_gl_get_string(CPU* c, void* data) {
     (void)data;
     const char* s = NULL;

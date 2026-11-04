@@ -1047,7 +1047,7 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
         gles2_error(gl, GL_INVALID_VALUE_);
         return;
     }
-    G2Program* p = gles2_program(gl->program);
+    G2Program* p = gles2_draw_program(gl, false);
     GlesSurface* s = gles2_surface(gl);
     if (!p || !p->linked || !p->modules[0] || (!indirect && (!count || !instances)) || !s) return;
     if (!V.v13) return;
@@ -1251,7 +1251,7 @@ static void g_draw_elements_indirect(CPU* c, Gles2Context* gl) {
    the writes before visible to the dispatch and its writes to what follows (GLES 3.1 asks a glMemoryBarrier for
    those; one here costs little and keeps the GPU's order) */
 static void dispatch(Gles2Context* gl, uint32_t x, uint32_t y, uint32_t z, G2Buffer* indirect, uint64_t offset) {
-    G2Program* p = gles2_program(gl->program);
+    G2Program* p = gles2_draw_program(gl, true);
     if (!p || !p->linked || !p->modules[2]) {
         gles2_error(gl, GL_INVALID_OPERATION_);
         return;
