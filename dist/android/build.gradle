@@ -38,6 +38,28 @@ android {
     }
     // extracted into the app's libraries folder, where the menu runs the driver from
     packaging.jniLibs.useLegacyPackaging = true
+    // Robolectric's tests read the merged manifest (the provider's declaration) and resources
+    testOptions.unitTests.includeAndroidResources = true
+}
+
+// The unit tests (src/test, docs/ANDROID.md): JUnit on the JVM, Robolectric where a test needs Android's own classes
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.17'
+}
+
+// JniContractTest reads the C code that calls the app's Java and that its native methods call. Each test is named in
+// the log, and a failure with its whole message
+tasks.withType(Test).configureEach {
+    def source = file('../../src')
+    systemProperty 'scarletnx.source', source.path
+    inputs.files(fileTree(source) { include '**/*.c' }).withPathSensitivity(PathSensitivity.RELATIVE)
+    // Robolectric's Android 16 (the targetSdk) reads and sets a file descriptor's number through the JDK's internals
+    jvmArgs '--add-exports=java.base/jdk.internal.access=ALL-UNNAMED', '--add-opens=java.base/java.io=ALL-UNNAMED'
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat = 'full'
+    }
 }
 
 // AGP 9 adds Kotlin's standard library (2.4 MB of dex) to every app; this one is Java only
