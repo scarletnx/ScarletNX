@@ -36,6 +36,8 @@ COMMENT = (
     'When yours is ready, say so in a comment and a maintainer will mark it ready. Marking it ready yourself makes it '
     'a draft again.'
 )
+# PROBE ONLY, dropped before the pull request: logins taken as without write access
+AS_OUTSIDER = set()
 CONVERT = 'mutation($id: ID!) { convertPullRequestToDraft(input: {pullRequestId: $id}) { pullRequest { isDraft } } }'
 
 
@@ -92,6 +94,9 @@ def permission(repo, login, number):
             f'the permission of {login} on {repo} reads {value!r}, none of {", ".join(sorted(PERMISSIONS))}. '
             f'#{number} stays ready for review, nothing was changed'
         )
+    if login in AS_OUTSIDER:
+        print(f'probe: {login} has {value}, taken as read')
+        return 'read'
     return value
 
 
@@ -192,7 +197,9 @@ def main():
     parser.add_argument('sender', help="the event's sender, who acted")
     parser.add_argument('--attempt', type=int, default=1, help="the run's attempt, 1 for its first run (default 1)")
     parser.add_argument('--dry-run', action='store_true', help='say what it would do, change nothing')
+    parser.add_argument('--as-outsider', action='append', default=[], help='PROBE ONLY: take LOGIN as read')
     args = parser.parse_args()
+    AS_OUTSIDER.update(args.as_outsider)
     if not LOGIN.fullmatch(args.sender):
         parser.error(f'the sender {args.sender!r} is not a GitHub login')
     if args.attempt < 1:
