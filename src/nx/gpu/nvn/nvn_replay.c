@@ -282,8 +282,9 @@ void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64* ready, u32* shown) {
        again (gpu.c does the same before a GPFIFO job) */
     if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
     pm_lock(&g_nvn.replay.lock);
-    for (i = 0; i < n; i++) walk(j->handles[i], promise, &p, 0);
+    /* Reserve before either reader starts: retiring command blocks must protect the CPU walk too. */
     __atomic_add_fetch(&g_nvn.replay.submitted, 1, __ATOMIC_RELEASE);
+    for (i = 0; i < n; i++) walk(j->handles[i], promise, &p, 0);
     gpu_call(run, j, NULL, 0);
     pm_unlock(&g_nvn.replay.lock);
     *ready = p.ready;

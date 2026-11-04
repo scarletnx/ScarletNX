@@ -28,6 +28,7 @@ static struct {
     u32 used[32], current[32], promised[32], pending[32], npending;
     struct { void (*fn)(void*); void* arg; } jobs[64];
     u32 head, count, allocated, freed, draws, in_gpu, zero_strides;
+    u64 expected_submission;
 } fixture;
 
 void pm_init(PMutex* m) { (void)m; }
@@ -56,6 +57,7 @@ void syncpt_free(u32 id) {
 }
 u32 syncpt_promise(u32 id, u32 n) {
     assert(fixture.used[id]);
+    if (fixture.expected_submission) assert(nvn_replay_submitted() == fixture.expected_submission);
     return fixture.promised[id] += n;
 }
 void syncpt_incr(u32 id) { assert(fixture.used[id]); fixture.current[id]++; }
@@ -150,7 +152,9 @@ static void freed_sync(void) {
     memcpy(GP(live), &s, sizeof s);
     memcpy(GP(freed), &s, sizeof s);
     snx_st_le64(GP(freed), link); /* finalized and freed after the recording */
+    fixture.expected_submission = nvn_replay_submitted() + 1;
     nvn_replay_submit(queue, 1, 0x108, &ready, &shown);
+    fixture.expected_submission = 0;
     assert(gr64(freed) == link);
     const NvnSync* f = NVN_OBJ(const NvnSync, live);
     assert(f->magic == NVN_MAGIC('S', 'Y', 'N', 'C') && f->fenced == 1 && f->syncpt == id);
