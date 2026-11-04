@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""A fake gh (a small GitHub kept in a JSON file: releases and tags, pull requests, issues and their comments, Build
-runs and their jobs, files of a branch) and a fake Discord (a local HTTP server keeping each webhook's messages), for
-tests/publish_builds_test.py. Offline."""
+"""A fake gh (a small GitHub kept in a JSON file: releases and tags, pull requests and their turn into a draft, issues
+and their comments, the users' permissions, Build runs and their jobs, files of a branch) and a fake Discord (a local
+HTTP server keeping each webhook's messages), for tests/publish_builds_test.py and tests/pr_ready_test.py. Offline."""
 
 import http.server
 import json
@@ -43,6 +43,17 @@ method = args[args.index('-X') + 1] if '-X' in args else 'GET'
 target = [a for a in args[1:] if not a.startswith('-') and a not in ('GET', 'POST', 'PATCH', 'PUT', 'DELETE')][0]
 if target == 'graphql':  # the links of a pull request or an issue, as GitHub's GraphQL gives them
     asked = next(a for a in args if a.startswith('query='))
+    if 'convertPullRequestToDraft' in asked:  # a pull request turned into a draft, by its node id
+        if s.pop('fail_convert_once', None):
+            save()
+            stop('GraphQL: Resource not accessible by integration (convertPullRequestToDraft)')
+        node = next(a for a in args if a.startswith('id='))[len('id='):]
+        pull = (next((p for p in s['pulls'] if p.get('node_id') == node), None)
+                or stop(f"GraphQL: Could not resolve to a node with the global id of '{node}'"))
+        pull['draft'] = True
+        save()
+        out({'data': {'convertPullRequestToDraft': {'pullRequest': {'isDraft': True}}}})
+        sys.exit(0)
     number = re.search(r'number:(\d+)', asked).group(1)
     field, refs = (('pullRequest', 'closingIssuesReferences') if 'pullRequest(' in asked
                    else ('issue', 'closedByPullRequestsReferences'))
@@ -111,7 +122,10 @@ elif re.fullmatch(r'issues/\d+/labels/.+', rest) and method == 'DELETE':
     pull['labels'] = [l for l in pull['labels'] if l['name'] != label]
     save()
 elif re.fullmatch(r'collaborators/[^/]+/permission', rest):
-    out({'permission': s['permissions'].get(rest.split('/')[1], 'read')})
+    login = rest.split('/')[1]
+    if login in s.get('permission_errors', {}):  # what gh says when GitHub can't answer for that login
+        stop(s['permission_errors'][login])
+    out({'permission': s['permissions'].get(login, 'read')})
 elif rest == 'actions/workflows/build.yml/runs':
     out({'workflow_runs': [r for r in s['runs'] if r['head_sha'] == query.get('head_sha')]})
 elif rest == '' and method == 'GET':
@@ -159,6 +173,13 @@ elif rest.startswith('contents/'):
         out({'content': files[key]})
 elif re.fullmatch(r'issues/\d+', rest):
     out(s['issues'][rest.split('/')[1]])
+elif re.fullmatch(r'issues/\d+/comments', rest) and method == 'POST':  # made with the job's token
+    s['next'] += 1
+    comment = {'id': s['next'], 'user': {'login': 'github-actions[bot]'}, 'body': data['body'],
+               'html_url': f'https://github.com/{repo}/pull/{rest.split("/")[1]}#issuecomment-{s["next"]}'}
+    s.setdefault('comments', {}).setdefault(rest.split('/')[1], []).append(comment)
+    save()
+    out(comment)
 elif re.fullmatch(r'issues/\d+/comments', rest):
     listing(s.get('comments', {}).get(rest.split('/')[1], []))
 elif re.fullmatch(r'pulls/\d+/reviews', rest):
