@@ -211,8 +211,25 @@ int main(void) {
     CHECK((int16_t)agb_read16(&board, 0x02000602) == -256); /* pb = -sin */
     CHECK((int16_t)agb_read16(&board, 0x02000604) == 256);  /* pc = sin */
     CHECK((int16_t)agb_read16(&board, 0x02000606) == 0);    /* pd = cos */
-    CHECK((int32_t)agb_read32(&board, 0x02000608) == (128 << 8) - (-256 * 60 >> 8));
-    CHECK((int32_t)agb_read32(&board, 0x0200060C) == (64 << 8) - (120 * 256 >> 8));
+    /* the start point puts the screen center on the origin: start + 120 * pa + 60 * pb, in 8.8 */
+    CHECK((int32_t)agb_read32(&board, 0x02000608) == (128 << 8) + 60 * 256);
+    CHECK((int32_t)agb_read32(&board, 0x0200060C) == (64 << 8) - 120 * 256);
+    /* twice the size, half a turn, the screen point (100, 40) on the origin (16.5, 8.25) */
+    agb_write32(&board, 0x02000400, 0x1080);
+    agb_write32(&board, 0x02000404, 0x0840);
+    agb_write16(&board, 0x02000408, 100);
+    agb_write16(&board, 0x0200040A, 40);
+    agb_write16(&board, 0x0200040C, 512);
+    agb_write16(&board, 0x0200040E, 512);
+    agb_write16(&board, 0x02000410, 0x8000);
+    regs[0] = 0x02000400;
+    regs[1] = 0x02000600;
+    regs[2] = 1;
+    CHECK(call(regs, AGB_SWI_BG_AFFINE_SET) == 0);
+    CHECK((int16_t)agb_read16(&board, 0x02000600) == -512 && (int16_t)agb_read16(&board, 0x02000606) == -512);
+    CHECK(agb_read16(&board, 0x02000602) == 0 && agb_read16(&board, 0x02000604) == 0);
+    CHECK((int32_t)agb_read32(&board, 0x02000608) + 100 * -512 == 0x1080);
+    CHECK((int32_t)agb_read32(&board, 0x0200060C) + 40 * -512 == 0x0840);
 
     /* ObjAffineSet writes the matrix with the stride OAM uses */
     agb_write16(&board, 0x02000500, 256);

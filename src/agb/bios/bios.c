@@ -104,7 +104,8 @@ static void affine(int32_t* pa, int32_t* pb, int32_t* pc, int32_t* pd, int32_t s
 }
 
 /* BgAffineSet: r2 entries of origin (24.8), screen coordinates, scale (8.8) and angle, 20 bytes each,
-   written as the matrix and the start coordinate (24.8), 16 bytes each. */
+   written as the matrix and the start coordinate (24.8), 16 bytes each: the start is the origin less the matrix times
+   the screen point, which lands that point on the origin. */
 static void bios_bg_affine_set(AgbBoard* board, uint32_t regs[16]) {
     uint32_t source = regs[0], destination = regs[1];
     for (uint32_t count = regs[2]; count; --count) {
@@ -119,8 +120,8 @@ static void bios_bg_affine_set(AgbBoard* board, uint32_t regs[16]) {
         agb_write16(board, destination + 2, (uint16_t)b);
         agb_write16(board, destination + 4, (uint16_t)c);
         agb_write16(board, destination + 6, (uint16_t)d);
-        agb_write32(board, destination + 8, (uint32_t)(ox - (int32_t)(((int64_t)a * cx + (int64_t)b * cy) >> 8)));
-        agb_write32(board, destination + 12, (uint32_t)(oy - (int32_t)(((int64_t)c * cx + (int64_t)d * cy) >> 8)));
+        agb_write32(board, destination + 8, (uint32_t)ox - (uint32_t)((int64_t)a * cx + (int64_t)b * cy));
+        agb_write32(board, destination + 12, (uint32_t)oy - (uint32_t)((int64_t)c * cx + (int64_t)d * cy));
         source += 20;
         destination += 16;
     }
