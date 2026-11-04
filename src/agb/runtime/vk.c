@@ -52,7 +52,8 @@ struct AgbVk {
     uint16_t keys; /* the keys the player holds, for the overlay */
     int display_kind;
     int said_kind;  /* the display kind last said in the console, -1 before the first */
-    int auto_tried; /* Auto has looked for the display's headroom once, which SDL reports after the first frame */
+    int auto_tried;
+    int paper; /* the SDR white in nits: the setting, or the display's own */ /* Auto has looked for the display's headroom once, which SDL reports after the first frame */
     int headroom_pct;
     int lost;
 };
@@ -159,7 +160,7 @@ static bool swapchain_make(AgbVk* v) {
         int reported = snx_vk_window_headroom_pct(v->host.window);
         v->headroom_pct =
             kind == SNX_FX_DISPLAY_PQ
-                ? snx_clamp_int(g_settings.hdr_peak * 100 / g_settings.hdr_paper_white, 100, 1000)
+                ? snx_clamp_int(g_settings.hdr_peak * 100 / v->paper, 100, 1000)
                 : (reported > 100 ? snx_clamp_int(reported, 100, 1000) : 100);
     }
     if (kind != v->said_kind) {
@@ -295,6 +296,7 @@ AgbVk* agb_vk_open(const char* title, bool fullscreen, char* error, size_t error
     for (unsigned i = 0; i < AGB_VK_SLOTS; ++i)
         if (!frame_make(v, &v->frame[i])) goto failed;
     v->said_kind = -1;
+    v->paper = snx_vk_paper_nits(g_settings.hdr_paper_white);
     v->fx = snx_fx_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, AGB_VK_SLOTS, agb_slot, NULL,
                           agb_fx_log);
     if (v->fx) {
@@ -304,7 +306,7 @@ AgbVk* agb_vk_open(const char* title, bool fullscreen, char* error, size_t error
                            snx_fx_hdr_parse(g_settings.hdr),
                            snx_fx_colorspace_parse(g_settings.hdr_colours),
                            snx_fx_source_parse(g_settings.hdr_source),
-                           g_settings.hdr_paper_white,
+                           v->paper,
                            g_settings.hdr_peak,
                            g_settings.hdr_expansion,
                            g_settings.hdr_test_pattern};
@@ -456,8 +458,8 @@ bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer, int generated) {
                 if (g_settings.hdr_test_pattern) snx_fx_hdr_test(v->fx, cb, &comp);
                 if (v->toast)
                     snx_toast_draw(v->toast, cb, comp.view, snx_fx_compose_format(), w, h,
-                                   (float)g_settings.hdr_paper_white, slot % AGB_VK_SLOTS, SDL_GetTicksNS());
-                stats_overlay(v, cb, comp.view, snx_fx_compose_format(), (float)g_settings.hdr_paper_white, w, h,
+                                   (float)v->paper, slot % AGB_VK_SLOTS, SDL_GetTicksNS());
+                stats_overlay(v, cb, comp.view, snx_fx_compose_format(), (float)v->paper, w, h,
                               slot % AGB_VK_SLOTS);
                 if (snx_fx_hdr_encode(v->fx, cb, &comp, v->swap.images[index], v->swap_views[index],
                                       v->swap.format.format, w, h, snx_fx_encode_kind(v->fx))) {

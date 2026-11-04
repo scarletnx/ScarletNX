@@ -329,13 +329,14 @@ setting HDR source
 setting HDR paper white
     key hdr_paperwhite
     label Paper white (nits)
-    int 80 480
-    default 203
+    int 0 480
+    default 0
     startup
     step 10
-    help The light an SDR frame's white maps to, in nits: 203 is BT.2408's reference white and Horizon's own, 100 the
-    help darkest and 480 a bright room. With the extended kinds it is the white the lift and the peak are measured
-    help from, not a fixed brightness
+    help The light an SDR frame's white maps to, in nits: 0 = Auto, the display's own SDR white where it can be read
+    help (KWin's sdrBrightness on Linux), else 203, BT.2408's reference white and Horizon's own. 100 the darkest and
+    help 480 a bright room. With the extended kinds it is the white the lift and the peak are measured from, not a
+    help fixed brightness
 setting HDR peak
     key hdr_peak
     label Peak light (nits)

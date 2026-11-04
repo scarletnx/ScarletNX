@@ -102,6 +102,52 @@ void snx_vk_window_close(SnxVkWindow* w) {
     *w = (SnxVkWindow){0};
 }
 
+/* KWin keeps each output's SDR white in its config: "sdrBrightness": N, in nits */
+int snx_vk_display_white_nits(void) {
+    const char* config = getenv("XDG_CONFIG_HOME");
+    char path[1024];
+    char* text = NULL;
+    long size;
+    FILE* file;
+    const char* at;
+    int nits = 0;
+    if (config && *config)
+        snprintf(path, sizeof path, "%s/kwinoutputconfig.json", config);
+    else if ((config = getenv("HOME")) && *config)
+        snprintf(path, sizeof path, "%s/.config/kwinoutputconfig.json", config);
+    else
+        return 0;
+    file = fopen(path, "rb");
+    if (!file) return 0;
+    if (fseek(file, 0, SEEK_END) != 0 || (size = ftell(file)) <= 0 || size > 1 << 20 ||
+        fseek(file, 0, SEEK_SET) != 0 || !(text = (char*)malloc((size_t)size + 1))) {
+        fclose(file);
+        free(text);
+        return 0;
+    }
+    if (fread(text, 1, (size_t)size, file) != (size_t)size) {
+        fclose(file);
+        free(text);
+        return 0;
+    }
+    fclose(file);
+    text[size] = 0;
+    at = strstr(text, "\"sdrBrightness\"");
+    if (at && (at = strchr(at, ':')) != NULL) {
+        nits = atoi(at + 1);
+        if (nits < 80 || nits > 480) nits = 0;
+    }
+    free(text);
+    return nits;
+}
+
+int snx_vk_paper_nits(int setting) {
+    int white;
+    if (setting > 0) return setting;
+    white = snx_vk_display_white_nits();
+    return white > 0 ? white : 203;
+}
+
 int snx_vk_window_refresh_hz(SDL_Window* window) {
     SDL_DisplayID id = window ? SDL_GetDisplayForWindow(window) : 0;
     const SDL_DisplayMode* mode = id ? SDL_GetCurrentDisplayMode(id) : NULL;

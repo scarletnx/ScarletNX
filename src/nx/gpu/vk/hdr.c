@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "common/gpu/vk/present_fx.h"
+#include "common/gpu/vk/window.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/utilities/bits.h"
 #include "nx/gpu/vk/hdr.h"
@@ -145,7 +146,7 @@ int vk_hdr_available(void) {
 void vk_hdr_configure(int mode, int source, int paper_nits, int peak_nits, int expand, int test) {
     __atomic_store_n(&g_hdr.mode, mode >= SNX_HDR_OFF && mode < SNX_HDR_COUNT ? mode : SNX_HDR_OFF, __ATOMIC_RELAXED);
     g_hdr.source = source >= 0 && source < SNX_HDR_SRC_COUNT ? source : SNX_HDR_SRC_AUTO;
-    g_hdr.paper = snx_clamp_int(paper_nits, 80, 480);
+    g_hdr.paper = snx_clamp_int(snx_vk_paper_nits(paper_nits), 80, 480);
     g_hdr.peak = snx_clamp_int(peak_nits, 400, 4000);
     if (g_hdr.peak < g_hdr.paper) g_hdr.peak = g_hdr.paper;
     g_hdr.expand = snx_clamp_int(expand, 0, 100);

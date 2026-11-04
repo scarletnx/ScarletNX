@@ -58,6 +58,7 @@ static struct {
     SnxToast* toast;  /* the hotkeys' messages, over both windows */
     SnxText* overlay; /* the frame rate and the held buttons, on F6, over both windows */
     SnxStats stats;
+    int paper; /* the SDR white in nits: the setting, or the display's own */
     int display_kind[2];
     int said_kind[2];  /* the display kind last said in the console, -1 before the first */
     int auto_tried[2]; /* Auto has looked for the display's headroom once, which SDL reports after the first frame */
@@ -177,7 +178,7 @@ static bool swap_create(unsigned screen) {
         int reported = snx_vk_window_headroom_pct(window);
         g_present.headroom_pct[screen] =
             kind == SNX_FX_DISPLAY_PQ
-                ? snx_clamp_int(g_settings.hdr_peak * 100 / g_settings.hdr_paper_white, 100, 1000)
+                ? snx_clamp_int(g_settings.hdr_peak * 100 / g_present.paper, 100, 1000)
                 : (reported > 100 ? snx_clamp_int(reported, 100, 1000) : 100);
     }
     if (kind != g_present.said_kind[screen]) {
@@ -316,6 +317,7 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     g_present.toast = snx_toast_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, SNX_CTR_VK_SLOTS);
     g_present.overlay = snx_text_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, SNX_CTR_VK_SLOTS);
     snx_stats_init(&g_present.stats);
+    g_present.paper = snx_vk_paper_nits(g_settings.hdr_paper_white);
     snx_interp_auto_init(&g_present.interp_auto);
     g_present.stats.on = g_settings.stats != 0; /* the setting starts it, F6 turns it over for the run */
     g_present.separate = g_settings.ctr_separate_screens && v->second && v->second_surface;
@@ -329,7 +331,7 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
                                snx_fx_hdr_parse(g_settings.hdr),
                                snx_fx_colorspace_parse(g_settings.hdr_colours),
                                snx_fx_source_parse(g_settings.hdr_source),
-                               g_settings.hdr_paper_white,
+                               g_present.paper,
                                g_settings.hdr_peak,
                                g_settings.hdr_expansion,
                                g_settings.hdr_test_pattern};
@@ -716,8 +718,8 @@ static void draw_mix(VkCommandBuffer cb, VkImage mix, VkImageView mix_view, VkIm
             if (g_settings.hdr_test_pattern) snx_fx_hdr_test(g_present.fx[window], cb, &comp);
             if (g_present.toast)
                 snx_toast_draw(g_present.toast, cb, comp.view, snx_fx_compose_format(), extent.width, extent.height,
-                               (float)g_settings.hdr_paper_white, snx_ctr_vk_slot(), SDL_GetTicksNS());
-            stats_overlay(cb, comp.view, snx_fx_compose_format(), (float)g_settings.hdr_paper_white, extent);
+                               (float)g_present.paper, snx_ctr_vk_slot(), SDL_GetTicksNS());
+            stats_overlay(cb, comp.view, snx_fx_compose_format(), (float)g_present.paper, extent);
             if (snx_fx_hdr_encode(g_present.fx[window], cb, &comp, target, target_view,
                                   g_present.swap[window].format.format, extent.width, extent.height,
                                   snx_fx_encode_kind(g_present.fx[window]))) {

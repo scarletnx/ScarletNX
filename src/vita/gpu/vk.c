@@ -27,6 +27,7 @@ static struct {
     SnxText* overlay; /* F6's frame rate and held buttons */
     SnxStats stats;
     SnxInterpAuto interp_auto;
+    int paper; /* the SDR white in nits: the setting, or the display's own */
     int display_kind;
     int said_kind;  /* the display kind last said in the console, -1 before the first */
     int auto_tried; /* Auto has looked for the display's headroom once, which SDL reports after the first frame */
@@ -181,7 +182,7 @@ static bool swapchain_make(VitaVk* v) {
         int reported = snx_vk_window_headroom_pct(v->host.window);
         g.headroom_pct =
             kind == SNX_FX_DISPLAY_PQ
-                ? snx_clamp_int(g_settings.hdr_peak * 100 / g_settings.hdr_paper_white, 100, 1000)
+                ? snx_clamp_int(g_settings.hdr_peak * 100 / g.paper, 100, 1000)
                 : (reported > 100 ? snx_clamp_int(reported, 100, 1000) : 100);
     }
     if (kind != g.said_kind) {
@@ -256,6 +257,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     g.up = true;
     g.said_kind = -1;
     snx_interp_auto_init(&g.interp_auto);
+    g.paper = snx_vk_paper_nits(g_settings.hdr_paper_white);
     g.fx = snx_fx_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, VITA_VK_SLOTS, vita_vk_slot, NULL,
                          present_fx_log);
     if (g.fx) {
@@ -265,7 +267,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
                            snx_fx_hdr_parse(g_settings.hdr),
                            snx_fx_colorspace_parse(g_settings.hdr_colours),
                            snx_fx_source_parse(g_settings.hdr_source),
-                           g_settings.hdr_paper_white,
+                           g.paper,
                            g_settings.hdr_peak,
                            g_settings.hdr_expansion,
                            g_settings.hdr_test_pattern};
@@ -465,9 +467,9 @@ static bool present_image(VitaVk* v, VkImage src_image, VkImageView src_view, ui
                                x, y, sw, sh, &comp)) {
             if (g_settings.hdr_test_pattern) snx_fx_hdr_test(g.fx, cb, &comp);
             if (g.toast)
-                snx_toast_draw(g.toast, cb, comp.view, snx_fx_compose_format(), w, h, (float)g_settings.hdr_paper_white,
+                snx_toast_draw(g.toast, cb, comp.view, snx_fx_compose_format(), w, h, (float)g.paper,
                                slot, SDL_GetTicksNS());
-            stats_overlay(cb, comp.view, snx_fx_compose_format(), (float)g_settings.hdr_paper_white, w, h, slot);
+            stats_overlay(cb, comp.view, snx_fx_compose_format(), (float)g.paper, w, h, slot);
             if (snx_fx_hdr_encode(g.fx, cb, &comp, target, target_view, v->swap.format.format, w, h,
                                   snx_fx_encode_kind(g.fx))) {
                 image_barrier(cb, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
