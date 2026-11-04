@@ -47,6 +47,23 @@ becomes its own mode (for example `motion`) and `blend` keeps its name; if none 
 `on`, since it would then be the only frame generation there is. Nothing promises more than the temporal average
 until such a pass exists.
 
+## Proving it: a slow motion comparison
+
+`scripts/framegen-demo.sh` records the same scene twice, `frame_interp=off` and `frame_interp=auto`, from the same save
+state, and writes a side by side video slowed four times (`compare-slowmo.mp4`). Both runs are unattended
+(`--seconds`), the state loads at 3 s (`state_load`), and the screen is captured through X11/Xwayland at the display's
+own rate.
+
+The use case that shows it best: a Switch game in an area that holds a solid 30 frames a second, on a display that
+refreshes at least 1.9 times that (120 Hz or more). Tears of the Kingdom at 30 on a 180 Hz display: the save state is
+in a spot that holds 30, its 1 % low at 25 or more (the gate's floor), and Auto runs. Off shows each game frame held
+for six refreshes; Auto shows the blend and the frame, an image at every refresh.
+
+    scripts/framegen-demo.sh ~/.local/share/scarletnx/recompiled/0100F2C0115B6000 15 1
+
+The third argument is the save state slot, the fourth the output folder. `MODE=blend` compares Blend instead (for a
+display that is not twice the game's rate, where Auto stays Off); `LOAD_MS` moves the state's load.
+
 ## Defaults and practice
 
 - `frame_interp=auto` is the default: it only runs where two presents fit and the game's 1 % low is 25 a second or
