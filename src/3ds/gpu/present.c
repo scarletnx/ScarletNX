@@ -545,10 +545,26 @@ static int hotkey_event(const SDL_KeyboardEvent* e) {
     printf("%s (%s)\n", text, snx_hotkey_key_name(action));
     return 1;
 }
+/* F11 and Alt+Enter: the window the key came from, fullscreen or back, as every other frontend's */
+static void toggle_fullscreen(const SDL_KeyboardEvent* key) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    SDL_Window* window = NULL;
+    if (v->host.window && SDL_GetWindowID(v->host.window) == key->windowID)
+        window = v->host.window;
+    else if (v->second && SDL_GetWindowID(v->second) == key->windowID)
+        window = v->second;
+    if (!window) window = v->host.window;
+    if (window) SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+}
 static void pump(void) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) g_present.closed = 1;
+        if (event.type == SDL_EVENT_KEY_DOWN &&
+            (event.key.key == SDLK_F11 || (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT)))) {
+            if (!event.key.repeat) toggle_fullscreen(&event.key);
+            continue;
+        }
         if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F6 && !event.key.repeat) {
             printf("stats: %s\n", snx_stats_toggle(&g_present.stats) ? "on" : "off");
             continue;

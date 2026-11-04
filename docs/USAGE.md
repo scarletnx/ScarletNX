@@ -684,7 +684,9 @@ what the display took; `docked_key` (Ctrl+D by default) cycles TV mode On, Off a
 toast work on every frontend: the Switch's overlay, and the 3DS, Vita and GBA show the same words over the frame. With
 frame interpolation on, F12's stats line shows the game's own frames a second, the generated ones beside it and their
 total. On the 3DS, Vita and GBA, which have no menu, F6 turns on a frame rate and input overlay instead: the game's
-frames a second, the generated ones, their total, the frame time and the buttons held, in the frame's bottom left. Pause pauses the whole game and
+frames a second, the generated ones, their total, the frame time and the buttons held, in the frame's bottom left.
+F11 or Alt+Enter switches fullscreen on every frontend; with the 3DS's separate windows it switches the window the
+key came from. Pause pauses the whole game and
 resumes it (the window's title says "(paused)"); Escape quit. A window shows at most one image per refresh and drops
 the rest unless images tear, and the game keeps the pace `fps_limit` sets.
 

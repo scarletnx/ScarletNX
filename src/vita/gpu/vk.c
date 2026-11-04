@@ -383,6 +383,10 @@ void vita_vk_toast(const char* text) {
     if (g.toast) snx_toast_show(g.toast, text, SDL_GetTicksNS());
 }
 int vita_vk_stats_toggle(void) { return snx_stats_toggle(&g.stats); }
+void vita_vk_toggle_fullscreen(void) {
+    SDL_Window* window = g.vk.host.window;
+    if (window) SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+}
 
 /* the buttons the player holds, in the overlay's words, with the sticks where they are off their rest */
 static const SnxStatsButton ctrl_buttons[] = {{VITA_CTRL_CROSS, "Cross"},   {VITA_CTRL_CIRCLE, "Circle"},

@@ -239,8 +239,13 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: open = false; break;
             case SDL_EVENT_GAMEPAD_ADDED: SDL_OpenGamepad(event.gdevice.which); break;
             case SDL_EVENT_KEY_DOWN:
-                if (event.key.scancode == SDL_SCANCODE_F11 && !event.key.repeat)
-                    SDL_SetWindowFullscreen(host->window, !(SDL_GetWindowFlags(host->window) & SDL_WINDOW_FULLSCREEN));
+                if ((event.key.scancode == SDL_SCANCODE_F11 ||
+                     (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT))) &&
+                    !event.key.repeat) {
+                    SDL_SetWindowFullscreen(host->window,
+                                            !(SDL_GetWindowFlags(host->window) & SDL_WINDOW_FULLSCREEN));
+                    break;
+                }
                 if (event.key.key == SDLK_F6 && !event.key.repeat) {
                     fprintf(stderr, "stats: %s\n", agb_vk_stats_toggle(host->vk) ? "on" : "off");
                     break;

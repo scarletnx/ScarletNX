@@ -61,6 +61,10 @@ bool vita_present_vblank(VitaProcess* p) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) return false;
         if (event.type == SDL_EVENT_KEY_DOWN) {
             int action;
+            if (event.key.key == SDLK_F11 || (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT))) {
+                if (!event.key.repeat) vita_vk_toggle_fullscreen();
+                continue;
+            }
             if (event.key.key == SDLK_F6 && !event.key.repeat) {
                 printf("stats: %s\n", vita_vk_stats_toggle() ? "on" : "off");
                 continue;
