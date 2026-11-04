@@ -526,10 +526,27 @@ void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDevice
     rec_commit();
 }
 REC3(CmdBindIndexBuffer, VkBuffer, VkDeviceSize, VkIndexType)
+/* generated under other names: the calls go through vk_gpuprof's timing of each dispatch first */
+void rec_CmdDispatch_raw(VkCommandBuffer cb, u32 a1, u32 a2, u32 a3);
+void rec_CmdDispatchIndirect_raw(VkCommandBuffer cb, VkBuffer a1, VkDeviceSize a2);
+#define rec_CmdDispatch         rec_CmdDispatch_raw
+#define rec_CmdDispatchIndirect rec_CmdDispatchIndirect_raw
 REC3(CmdDispatch, u32, u32, u32)
 REC1(CmdSetCheckpointNV, const void*)
 REC2(CmdDispatchIndirect, VkBuffer, VkDeviceSize)
 REC4(CmdFillBuffer, VkBuffer, VkDeviceSize, VkDeviceSize, u32)
+#undef rec_CmdDispatch
+#undef rec_CmdDispatchIndirect
+void rec_CmdDispatch(VkCommandBuffer cb, u32 x, u32 y, u32 z) {
+    int timed = vk_gpuprof_dispatch_begin(cb);
+    rec_CmdDispatch_raw(cb, x, y, z);
+    if (timed) vk_gpuprof_dispatch_end(cb);
+}
+void rec_CmdDispatchIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off) {
+    int timed = vk_gpuprof_dispatch_begin(cb);
+    rec_CmdDispatchIndirect_raw(cb, buf, off);
+    if (timed) vk_gpuprof_dispatch_end(cb);
+}
 REC0(CmdEndRendering)
 REC1(CmdSetCullMode, VkCullModeFlags)
 REC1(CmdSetFrontFace, VkFrontFace)
@@ -996,6 +1013,11 @@ u64 g_rec_xfers, g_rec_barriers; /* copies and blits, and barriers, put in the f
 u64 g_rec_barriers_synced;       /* barriers with a pNext chain, recorded after the ring drained */
 u64 g_rec_xfer_kind[3], g_rec_buf_bytes; /* buffer copies, buffer-image copies, image copies and blits; buffer bytes */
 static void copy_buffer_run(const void* p);
+static u64 copy_bytes(u32 n, const VkBufferCopy* r) {
+    u64 b = 0;
+    for (u32 i = 0; i < n; i++) b += r[i].size;
+    return b;
+}
 static void buffer_to_image_run(const void* p);
 static void image_to_buffer_run(const void* p);
 static XferArgs* rec_xfer(RecFn fn, VkCommandBuffer cb, u64 h1, VkImageLayout l1, u64 h2, VkImageLayout l2, u32 n,
@@ -1017,7 +1039,7 @@ static XferArgs* rec_xfer(RecFn fn, VkCommandBuffer cb, u64 h1, VkImageLayout l1
     memcpy((u8*)x + REC_AL(sizeof *x), regions, size);
     return x;
 }
-void rec_CmdCopyBuffer(VkCommandBuffer cb, VkBuffer src, VkBuffer dst, u32 n, const VkBufferCopy* r) {
+static void rec_CmdCopyBuffer_raw(VkCommandBuffer cb, VkBuffer src, VkBuffer dst, u32 n, const VkBufferCopy* r) {
     if (!rec_on(cb)) {
         vkCmdCopyBuffer(cb, src, dst, n, r);
         return;
@@ -1025,14 +1047,32 @@ void rec_CmdCopyBuffer(VkCommandBuffer cb, VkBuffer src, VkBuffer dst, u32 n, co
     rec_xfer(copy_buffer_run, cb, (u64)src, 0, (u64)dst, 0, n, r, n * sizeof *r);
     rec_commit();
 }
-void rec_CmdCopyImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
-                      const VkImageCopy* r) {
+void rec_CmdCopyBuffer(VkCommandBuffer cb, VkBuffer src, VkBuffer dst, u32 n, const VkBufferCopy* r) {
+    /* timed for vk_gpu_profile by where it was recorded */
+    int timed = vk_gpuprof_profiled(cb) &&
+                vk_gpuprof_op_begin(cb, VK_OP_COPY,
+                                    (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()),
+                                    copy_bytes(n, r));
+    rec_CmdCopyBuffer_raw(cb, src, dst, n, r);
+    if (timed) vk_gpuprof_op_end(cb);
+}
+static void rec_CmdCopyImage_raw(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl,
+                                 u32 n, const VkImageCopy* r) {
     if (!rec_on(cb)) {
         vkCmdCopyImage(cb, src, sl, dst, dl, n, r);
         return;
     }
     rec_xfer(copy_image_run, cb, (u64)src, sl, (u64)dst, dl, n, r, n * sizeof *r);
     rec_commit();
+}
+void rec_CmdCopyImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
+                      const VkImageCopy* r) {
+    /* timed for vk_gpu_profile by where it was recorded */
+    int timed = vk_gpuprof_profiled(cb) &&
+                vk_gpuprof_op_begin(cb, VK_OP_IMAGE,
+                                    (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()), 0);
+    rec_CmdCopyImage_raw(cb, src, sl, dst, dl, n, r);
+    if (timed) vk_gpuprof_op_end(cb);
 }
 void rec_CmdBlitImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
                       const VkImageBlit* r, VkFilter filter) {
@@ -1052,8 +1092,8 @@ void rec_CmdResolveImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkIm
     rec_xfer(resolve_run, cb, (u64)src, sl, (u64)dst, dl, n, r, n * sizeof *r);
     rec_commit();
 }
-void rec_CmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkImageLayout dl, u32 n,
-                              const VkBufferImageCopy* r) {
+static void rec_CmdCopyBufferToImage_raw(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkImageLayout dl, u32 n,
+                                         const VkBufferImageCopy* r) {
     if (!rec_on(cb)) {
         vkCmdCopyBufferToImage(cb, src, dst, dl, n, r);
         return;
@@ -1061,14 +1101,32 @@ void rec_CmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkI
     rec_xfer(buffer_to_image_run, cb, (u64)src, 0, (u64)dst, dl, n, r, n * sizeof *r);
     rec_commit();
 }
-void rec_CmdCopyImageToBuffer(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkBuffer dst, u32 n,
+void rec_CmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkImageLayout dl, u32 n,
                               const VkBufferImageCopy* r) {
+    /* timed for vk_gpu_profile by where it was recorded */
+    int timed = vk_gpuprof_profiled(cb) &&
+                vk_gpuprof_op_begin(cb, VK_OP_TO_IMAGE,
+                                    (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()), 0);
+    rec_CmdCopyBufferToImage_raw(cb, src, dst, dl, n, r);
+    if (timed) vk_gpuprof_op_end(cb);
+}
+static void rec_CmdCopyImageToBuffer_raw(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkBuffer dst, u32 n,
+                                         const VkBufferImageCopy* r) {
     if (!rec_on(cb)) {
         vkCmdCopyImageToBuffer(cb, src, sl, dst, n, r);
         return;
     }
     rec_xfer(image_to_buffer_run, cb, (u64)src, sl, (u64)dst, 0, n, r, n * sizeof *r);
     rec_commit();
+}
+void rec_CmdCopyImageToBuffer(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkBuffer dst, u32 n,
+                              const VkBufferImageCopy* r) {
+    /* timed for vk_gpu_profile by where it was recorded */
+    int timed = vk_gpuprof_profiled(cb) &&
+                vk_gpuprof_op_begin(cb, VK_OP_TO_BUFFER,
+                                    (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()), 0);
+    rec_CmdCopyImageToBuffer_raw(cb, src, sl, dst, n, r);
+    if (timed) vk_gpuprof_op_end(cb);
 }
 void rec_CmdClearColorImage(VkCommandBuffer cb, VkImage img, VkImageLayout l, const VkClearColorValue* c, u32 n,
                             const VkImageSubresourceRange* r) {

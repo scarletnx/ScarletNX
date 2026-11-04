@@ -533,6 +533,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
                 w, height, nx, n, t->f.vk == VK_FORMAT_R8G8B8A8_SRGB || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK, shift};
             rec_CmdPushConstants(cb, g_astc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
             vk_ck(cb, VK_CK_ASTC, nx, n, nz, bw << 8 | bh);
+            vk_gpuprof_tag(VK_PROF_ASTC);
             rec_CmdDispatch(cb, (nx + tw - 1) / tw, (n + th - 1) / th, nz);
             VkBuffer from = g_astc_scratch;
             u32 row_texels = 0, image_rows = 0;
@@ -552,6 +553,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
                 Bc7Params q = {w, height, cx, cy};
                 rec_CmdPushConstants(cb, g_bc7_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof q, &q);
                 vk_ck(cb, VK_CK_BC7, cx, cy, nz, w);
+                vk_gpuprof_tag(VK_PROF_BC7);
                 rec_CmdDispatch(cb, (cx + 63) / 64, cy, nz);
                 g_bc7_dispatches++;
                 scratch_barrier(cb, g_bc7_scratch, USE_WRITE, 0, USE_COPY);
