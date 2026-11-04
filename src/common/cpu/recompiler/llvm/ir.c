@@ -38,6 +38,17 @@ static int has_feature(const char* features, const char* name) {
     return 0;
 }
 
+/* VSX in the CPU new_ir gives the target machine on a PowerPC64 host: LLVM reads no PowerPC host features (its
+   getHostCPUFeatures has no PowerPC branch), so the CPU's name says it, POWER7 on, and an unknown one is LLVM's
+   triple default, ppc64le (POWER8) on little-endian and ppc64 (the 970's AltiVec) on big-endian */
+static int ppc_cpu_vsx(const char* cpu, int little_endian) {
+    static const char* const vsx[] = {"pwr7", "pwr8", "pwr9", "pwr10", "pwr11", "future", "ppc64le"};
+    if (!cpu || !*cpu || !strcmp(cpu, "generic")) return little_endian;
+    for (size_t i = 0; i < sizeof(vsx) / sizeof(vsx[0]); ++i)
+        if (!strcmp(cpu, vsx[i])) return 1;
+    return 0;
+}
+
 /* RISC-V's and LoongArch's: their objects go through the module's own linker (link_elf.c), which takes no relaxation */
 static int riscv_triple(const char* triple) { return !strncmp(triple, "riscv64", 7); }
 static int loongarch_triple(const char* triple) { return !strncmp(triple, "loongarch64", 11); }
@@ -74,6 +85,7 @@ int snx_ir_init(char* error, size_t error_size) {
     int x86 = !strncmp(triple, "x86_64", 6);
     int arm = !strncmp(triple, "aarch64", 7) || !strncmp(triple, "arm64", 5); /* Apple names AArch64 arm64 */
     int ppc = !strncmp(triple, "powerpc64", 9) || !strncmp(triple, "ppc64", 5);
+    int ppc_le = !strncmp(triple, "powerpc64le", 11) || !strncmp(triple, "ppc64le", 7);
     int riscv = riscv_triple(triple), loongarch = loongarch_triple(triple), mips = !strncmp(triple, "mips64", 6);
     int other = riscv || loongarch || mips || !strncmp(triple, "s390x", 5);
     if (!x86 && !arm && !ppc && !other)
@@ -131,9 +143,10 @@ int snx_ir_init(char* error, size_t error_size) {
         snx_ir_host.aarch64 = 1; /* last, as x86 above */
     }
     if (ppc && !snx_ir_host.ppc) {
-        char* f = LLVMGetHostCPUFeatures();
-        snx_ir_host.ppc_vsx = has_feature(f, "vsx");
+        char *f = LLVMGetHostCPUFeatures(), *cpu = LLVMGetHostCPUName();
+        snx_ir_host.ppc_vsx = has_feature(f, "vsx") || ppc_cpu_vsx(cpu, ppc_le);
         LLVMDisposeMessage(f);
+        LLVMDisposeMessage(cpu);
         snx_ir_host.ppc = 1;
     }
     if (riscv && !snx_ir_host.riscv) {
