@@ -150,10 +150,11 @@ static int check_mirror(void) {
     CHECK(buf == vk_mirror_buffer() && off == cpu);
     CHECK(!mirror_read(cpu, len, got));
     CHECK(!mirror_expect(got, GP(cpu), len, 0, 0, 0));
-    /* the GPU writes 16 bytes at 0x100 (as a program's stores would); the CPU writes the byte after them and one
-       on another page: bound again, the CPU's bytes go in and the GPU's stay */
-    CHECK(!owned_test_fill(vk_mirror_buffer(), cpu + 0x100, 16, 0x77));
-    vk_finish();
+    /* a program writes 16 bytes at 0x100, pending on page 0; the CPU writes the byte after them, and one on page 2,
+       where nothing is pending: bound again, the CPU's bytes go in, page 2 whole and page 0 the bytes it changed, and
+       the program's stay */
+    CHECK(!mirror_write(cpu + 0x100, 16, 0x77, 1));
+    vk_mirror_wrote(cpu + 0x100, 16);
     GP(cpu)[0x110] = 0x5a;
     GP(cpu)[0x2003] = 0xa5;
     vk_ww_new_epoch();
@@ -223,13 +224,14 @@ static int check_mirror(void) {
             CHECK(0);
         }
     }
-    /* bound again: what landed is in the shadow, so nothing is copied over the program's bytes */
+    /* bound again, nothing pending: the mirror is guest memory's bytes, the landed ones with them (the 8 bytes at
+       0x400 that no store logged, which no program leaves, are guest memory's again) */
     vk_ww_new_epoch();
     CHECK(vk_mirror_slice(gva, len, &buf, &off));
     {
         static u8 m[0x3000];
         CHECK(!mirror_read(cpu, len, m));
-        CHECK(m[0x200] == 0x66 && m[0x217] == 0x66 && m[0x219] == 0x11 && m[0x400] == 0x99);
+        CHECK(!mirror_expect(m, GP(cpu), len, 0, 0, 0));
     }
 
     /* more pages written than the harvest's room (64 at first): those past it land by a pass of their own */
