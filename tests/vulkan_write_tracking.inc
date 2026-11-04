@@ -9,6 +9,7 @@
    - a write after a draw recorded its upload and before its submission
    - the runtime's own writes: a system call's, a decommit's, a GPU engine's, a landing's
    - a range the GPU owns (memory traps) written by the CPU in the middle of an epoch
+   - a render target's write-back and freshness over pages a scan reports written at every scan (hot pages)
    Each case runs in a 4 MiB leaf of the tracking's table of its own. SNX_TEST_WW_ONLY=1 runs them alone */
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -218,6 +219,7 @@ static int check_wt_shared(void) {
 static struct {
     u32 hold, held, stop, writes; /* atomic */
     u64 race_cpu;
+    u32 race_pages; /* the writer's pages from race_cpu on */
     u8 seen[WT_RACE_PAGES * 0x1000];
 } g_wt;
 static void wt_writer(void* arg) {
@@ -233,7 +235,7 @@ static void wt_writer(void* arg) {
         }
         x ^= x << 13, x ^= x >> 17, x ^= x << 5;
         u32 n = __atomic_add_fetch(&g_wt.writes, 1, __ATOMIC_RELAXED);
-        snx_st_le32(GP(g_wt.race_cpu) + (u64)(x % WT_RACE_PAGES) * 0x1000 + (x >> 20) % 1024 * 4, n);
+        snx_st_le32(GP(g_wt.race_cpu) + (u64)(x % g_wt.race_pages) * 0x1000 + (x >> 20) % 1024 * 4, n);
     }
 }
 static int check_wt_concurrent(void) {
@@ -253,6 +255,7 @@ static int check_wt_concurrent(void) {
     memcpy(g_wt.seen, GP(cpu), size);
     vk_unlock();
     g_wt.race_cpu = cpu;
+    g_wt.race_pages = WT_RACE_PAGES;
     __atomic_store_n(&g_wt.stop, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_wt.hold, 0, __ATOMIC_RELEASE);
     CHECK(plat_thread(wt_writer, NULL, 0) == 0);
@@ -629,6 +632,297 @@ static int check_wt_hot_page(void) {
     return 0;
 }
 
+/* Hot pages (write_tracking_hot=1, vulkan_write_tracking_hot): a page the scans found written in a row stays writable
+   and reads as written at each scan, and a render target protects its hot pages again before each baseline
+   (vk_ww_cool). The cases below fail without that step, each for one way a target meets a hot page: under two
+   targets, at the target's own baseline, through another address, and with the CPU writing beside the GPU in one
+   frame. Without hot pages they hold as well: a scan reports only what was written */
+
+/* n epochs, each with a check's scan of [cpu, cpu + size) */
+static void wt_scans(u64 cpu, u64 size, int n) {
+    for (int i = 0; i < n; i++) {
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        (void)vk_written_since(GP(cpu), size, 0);
+        vk_unlock();
+    }
+}
+/* pages[0..n) of the memory at cpu written in each of epochs epochs, all of a page byte v + the epoch, and scanned
+   over [cpu, cpu + size): hot after the second */
+static void wt_heat(u64 cpu, u64 size, const u32* pages, int n, u8 v, int epochs) {
+    for (int e = 0; e < epochs; e++) {
+        for (int i = 0; i < n; i++) memset(GP(cpu + (u64)pages[i] * 0x1000), v + e, 0x1000);
+        wt_scans(cpu, size, 1);
+    }
+}
+#define WT_BLUE (-1) /* a page of blue pixels (rt_clear's) */
+#define WT_RED  (-2)
+#define WT_KEPT (-3) /* the page as it was before the write-back: the CPU's bytes */
+/* each of the pages pages at cpu as want has it (WT_BLUE, WT_RED, WT_KEPT against kept, or every byte that value): 1
+   when they all are, else each one that isn't on stderr under what (none when what is NULL) */
+static int wt_expect(const char* what, u64 cpu, u32 pages, const int* want, const u8* kept) {
+    static const u8 red[4] = {255, 0, 0, 255};
+    int ok = 1;
+    for (u32 pg = 0; pg < pages; pg++) {
+        const u8* p = GP(cpu + (u64)pg * 0x1000);
+        int good;
+        if (want[pg] == WT_BLUE)
+            good = all_blue(p, 0x1000);
+        else if (want[pg] == WT_RED) {
+            good = 1;
+            for (u32 i = 0; i < 0x1000 && good; i += 4) good = !memcmp(p + i, red, 4);
+        } else if (want[pg] == WT_KEPT)
+            good = !memcmp(p, kept + (u64)pg * 0x1000, 0x1000);
+        else
+            good = all_bytes(p, 0x1000, (u8)want[pg]);
+        if (good) continue;
+        ok = 0;
+        if (!what) continue;
+        if (want[pg] >= 0)
+            fprintf(stderr, "%s: page %u should be all %02x, and starts %02x %02x %02x %02x\n", what, pg, want[pg],
+                    p[0], p[1], p[2], p[3]);
+        else
+            fprintf(stderr, "%s: page %u should be %s, and starts %02x %02x %02x %02x\n", what, pg,
+                    want[pg] == WT_BLUE  ? "blue (00 00 ff ff)"
+                    : want[pg] == WT_RED ? "red (ff 00 00 ff)"
+                                         : "the CPU's bytes it held before the write-back",
+                    p[0], p[1], p[2], p[3]);
+    }
+    return ok;
+}
+/* the rows [y0, y1) of the target at gva cleared blue: a draw over part of it, its first baseline of the present kept */
+static void rt_clear_rows(GpuChannel* ch, u64 gva, u32 w, u32 h, u32 y0, u32 y1) {
+    u32* r = ch->r3d;
+    r[0x43E] |= 0x100; /* the clear limited to viewport 0's scissor */
+    r[0x380] = 1;
+    r[0x381] = w << 16;
+    r[0x382] = y0 | y1 << 16;
+    rt_clear(ch, gva, w, h, 0, 1);
+    r[0x43E] &= ~0x100u;
+    r[0x380] = 0;
+}
+
+/* Two targets over hot pages, one over part of the other (A over pages [0, 16), B over [8, 24)), each drawn after
+   the pages went hot, B after the CPU wrote one of A's pages again: each write-back keeps the GPU's pixels but on the
+   pages the CPU wrote after that target's baseline, and B's cooling of the pages they share is no write to A */
+static int check_wt_hot_rt_overlap(void) {
+    const u64 cpu = WT_CPU + 11 * WT_LEAF, ga = WT_GVA + 0xA000000, gb = ga + 0x8000, size = 0x18000;
+    const u32 hot[3] = {3, 12, 20}, again = 5; /* A's alone, both's, B's alone; and A's, after A's draw */
+    int want[24];
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(ga, cpu, size);
+    memset(GP(cpu), 0x11, size);
+    vk_lock();
+    int tracking = wt_tracking(cpu);
+    vk_unlock();
+    if (!tracking) {
+        printf("skip: two targets over hot pages need write tracking\n");
+        CHECK(mem_unmap(cpu, size) == 0);
+        free(ch);
+        return 0;
+    }
+    wt_heat(cpu, size, hot, 3, 0x20, 8);
+    rt_clear(ch, ga, 128, 128, 0, 0);
+    wt_heat(cpu, size, &again, 1, 0x55, 3); /* after A's baseline: A keeps the last of them, 0x57 */
+    rt_clear(ch, gb, 128, 128, 0, 1);
+    wt_scans(cpu, size, 2);
+    memset(GP(cpu + 22 * 0x1000), 0x77, 0x1000); /* after B's baseline: B keeps it */
+    g_renderer->mem_may_have_changed();
+    g_renderer->rt_flush(gb);
+    g_renderer->rt_flush(ga);
+    guest_done(cpu, size);
+    for (u32 pg = 0; pg < 24; pg++) want[pg] = pg < 8 ? WT_RED : WT_BLUE;
+    want[again] = 0x57;
+    want[22] = 0x77;
+    int ok = wt_expect("hot pages under two targets", cpu, 24, want, NULL);
+    CHECK(mem_unmap(cpu, size) == 0);
+    free(ch);
+    CHECK(ok);
+    puts("write tracking: two targets over hot pages, one over part of the other, keep their pixels at their "
+         "write-backs");
+    return 0;
+}
+
+/* The target's own baseline makes a page hot: the CPU wrote it in the epoch before, reported once, and again in the
+   epoch of the draw, so the draw's own scan of the target reports it a second time in a row. The pages are cooled
+   after that scan, or the page reads as written at every scan after the draw: the target isn't fresh (a texture over
+   it would take memory's old bytes over its pixels, and it could go while it holds pixels memory hasn't got) and its
+   write-back keeps the CPU's bytes there. A page hot long before is the same. Checked by the target's freshness two
+   epochs later, then a write the CPU does make, then the write-back */
+static int check_wt_hot_rt_fresh(void) {
+    const u64 cpu = WT_CPU + 12 * WT_LEAF, gva = WT_GVA + 0xB000000, size = 0x10000;
+    const u32 hot = 3, late = 5;
+    int want[16];
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, size);
+    memset(GP(cpu), 0x11, size);
+    vk_lock();
+    int tracking = wt_tracking(cpu);
+    vk_unlock();
+    if (!tracking) {
+        printf("skip: a target's baseline over hot pages needs write tracking\n");
+        CHECK(mem_unmap(cpu, size) == 0);
+        free(ch);
+        return 0;
+    }
+    rt_clear(ch, gva, 128, 128, 0, 0); /* the target, made red */
+    wt_heat(cpu, size, &hot, 1, 0x20, 8);
+    wt_heat(cpu, size, &late, 1, 0x50, 1);
+    memset(GP(cpu + late * 0x1000), 0x51, 0x1000);
+    g_renderer->mem_may_have_changed(); /* the draw's epoch, not scanned yet */
+    rt_clear(ch, gva, 128, 128, 0, 1);
+    wt_scans(cpu, size, 2);
+    vk_lock();
+    Surf* s = vk_rt_find(gva);
+    int fresh = s && vk_rt_drawn_fresh(s);
+    vk_unlock();
+    memset(GP(cpu + 0x8000), 0x77, 0x1000);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    s = vk_rt_find(gva);
+    int stale = s && !vk_rt_drawn_fresh(s);
+    vk_unlock();
+    g_renderer->rt_flush(gva);
+    guest_done(cpu, size);
+    for (u32 pg = 0; pg < 16; pg++) want[pg] = WT_BLUE;
+    want[8] = 0x77;
+    int ok = wt_expect("hot pages at a target's baseline", cpu, 16, want, NULL);
+    if (!fresh || !stale)
+        fprintf(stderr,
+                "hot pages at a target's baseline: two epochs after its draw, with nothing written, the target %s; "
+                "after the CPU wrote one of its pages it %s\n",
+                fresh ? "was fresh" : "was not fresh (written since its draw, it said)",
+                stale ? "was not fresh" : "was still fresh");
+    CHECK(mem_unmap(cpu, size) == 0);
+    free(ch);
+    CHECK(ok && fresh && stale);
+    puts("write tracking: a page that went hot at a target's own baseline, or long before, is no write after it");
+    return 0;
+}
+
+/* a target at ga over the memory at over, a page of it hot through the other address through */
+static int wt_hot_alias_way(const char* what, u64 over, u64 through, u64 ga, u64 size) {
+    const u32 hot = 3;
+    int want[16];
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    if (!ch) return 0;
+    gmmu_map(ga, over, size);
+    memset(GP(over), 0x11, size);
+    for (int e = 0; e < 8; e++) { /* written through the other address, scanned as the target's pages are */
+        memset(GP(through + hot * 0x1000), 0x20 + e, 0x1000);
+        wt_scans(over, size, 1);
+    }
+    rt_clear(ch, ga, 128, 128, 0, 1);
+    wt_scans(over, size, 2);
+    memset(GP(over + 0x8000), 0x77, 0x1000);
+    g_renderer->mem_may_have_changed();
+    g_renderer->rt_flush(ga);
+    guest_done(over, size);
+    for (u32 pg = 0; pg < 16; pg++) want[pg] = WT_BLUE;
+    want[8] = 0x77;
+    int ok = wt_expect(what, over, 16, want, NULL);
+    free(ch);
+    return ok;
+}
+/* A view and its source are the same pages (the alias pool), each with its own protection and hot count: a page hot
+   at one address reads as written at the other too (the tracking marks a write at every address), so a target over
+   either cools its pages at the other as well */
+static int check_wt_hot_alias(void) {
+    const u64 src = WT_CPU + 13 * WT_LEAF, view = WT_CPU + 14 * WT_LEAF, size = 0x10000;
+    CHECK(mem_map(src, size, MS_NORMAL, PERM_RW) == 0);
+    vk_lock();
+    int tracking = wt_tracking(src);
+    vk_unlock();
+    if (!tracking || !mem_pool_active() || mem_alias_begin(src, size)) {
+        printf("skip: hot pages at a view's address need write tracking and the alias pool\n");
+        CHECK(mem_unmap(src, size) == 0);
+        return 0;
+    }
+    CHECK(mem_alias_map(view, src, size, MS_NORMAL, PERM_RW) == 0);
+    int one = wt_hot_alias_way("hot pages written through a view, a target over its source", src, view,
+                               WT_GVA + 0xC000000, size);
+    int other = wt_hot_alias_way("hot pages written through the source, a target over its view", view, src,
+                                 WT_GVA + 0xD000000, size);
+    CHECK(mem_alias_unmap(view, size, src) == 0);
+    mem_alias_end(src, size);
+    CHECK(mem_unmap(src, size) == 0);
+    CHECK(one && other);
+    puts("write tracking: a target over a view or its source keeps its pixels over pages hot at the other address");
+    return 0;
+}
+
+/* The CPU and the GPU write the same target's pages in one frame: a game thread writes two of its pages (4 and 5)
+   before the target's draw, through it and after it, while the scans run and a second draw covers part of the target
+   again; four of its pages (2 to 5) went hot before the frame. The write-back keeps the CPU's bytes on the pages it
+   wrote after the draw's baseline and the GPU's pixels on every other, hot before or not. 20 frames */
+static int check_wt_hot_same_frame(void) {
+    const u64 cpu = WT_CPU + 15 * WT_LEAF, gva = WT_GVA + 0xE000000, size = 0x10000;
+    const u32 hot[4] = {2, 3, 4, 5}, frames = 20;
+    u32 failed = 0;
+    int want[16];
+    u8* kept = malloc(size);
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch && kept);
+    CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, size);
+    memset(GP(cpu), 0x11, size);
+    vk_lock();
+    int tracking = wt_tracking(cpu);
+    vk_unlock();
+    if (!tracking) {
+        printf("skip: the CPU and the GPU on one target's hot pages need write tracking\n");
+        CHECK(mem_unmap(cpu, size) == 0);
+        free(ch);
+        free(kept);
+        return 0;
+    }
+    for (u32 pg = 0; pg < 16; pg++) want[pg] = pg == 4 || pg == 5 ? WT_KEPT : WT_BLUE;
+    g_wt.race_cpu = cpu + 4 * 0x1000;
+    g_wt.race_pages = 2;
+    __atomic_store_n(&g_wt.stop, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_wt.hold, 1, __ATOMIC_RELEASE);
+    CHECK(plat_thread(wt_writer, NULL, 0) == 0);
+    while (!__atomic_load_n(&g_wt.held, __ATOMIC_ACQUIRE)) plat_yield();
+    for (u32 f = 0; f < frames; f++) {
+        wt_heat(cpu, size, hot, 4, 0x20, 4); /* the writer held */
+        u32 from = __atomic_load_n(&g_wt.writes, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_wt.hold, 0, __ATOMIC_RELEASE);
+        while (__atomic_load_n(&g_wt.writes, __ATOMIC_RELAXED) - from < 16) plat_yield();
+        rt_clear(ch, gva, 128, 128, 0, 1);
+        from = __atomic_load_n(&g_wt.writes, __ATOMIC_RELAXED);
+        for (int k = 0; k < 4; k++) {
+            wt_scans(cpu, size, 1);
+            if (k == 1) rt_clear_rows(ch, gva, 128, 128, 0, 48); /* pages 0 to 5 drawn again */
+        }
+        while (__atomic_load_n(&g_wt.writes, __ATOMIC_RELAXED) - from < 64) plat_yield(); /* both pages, surely */
+        __atomic_store_n(&g_wt.hold, 1, __ATOMIC_RELEASE);
+        while (!__atomic_load_n(&g_wt.held, __ATOMIC_ACQUIRE)) plat_yield();
+        memcpy(kept, GP(cpu), size);
+        g_renderer->mem_may_have_changed();
+        g_renderer->rt_flush(gva);
+        guest_done(cpu, size);
+        if (!wt_expect(failed ? NULL : "the CPU and the GPU on one target's hot pages", cpu, 16, want, kept) &&
+            !failed++)
+            fprintf(stderr, "the CPU and the GPU on one target's hot pages: that was frame %u\n", f);
+    }
+    __atomic_store_n(&g_wt.stop, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_wt.hold, 0, __ATOMIC_RELEASE);
+    plat_sleep_ns(20000000);
+    if (failed)
+        fprintf(stderr, "the CPU and the GPU on one target's hot pages: %u of %u frames wrong\n", failed, frames);
+    CHECK(mem_unmap(cpu, size) == 0);
+    free(ch);
+    free(kept);
+    CHECK(!failed);
+    printf("write tracking: %u frames of the CPU and the GPU on one target's hot pages, each page whose it should be\n",
+           frames);
+    return 0;
+}
+
 /* the cases by name, for SNX_TEST_WW_ONLY=NAME */
 static const struct {
     const char* name;
@@ -643,6 +937,10 @@ static const struct {
     {"shared", check_wt_shared},
     {"mixed_leaf", check_wt_mixed_leaf},
     {"hot_page", check_wt_hot_page},
+    {"hot_rt_overlap", check_wt_hot_rt_overlap},
+    {"hot_rt_fresh", check_wt_hot_rt_fresh},
+    {"hot_alias", check_wt_hot_alias},
+    {"hot_same_frame", check_wt_hot_same_frame},
 };
 /* whether the tracking answers, asked at a leaf no case maps */
 static int wt_on(void) {
@@ -677,7 +975,8 @@ static int check_write_tracking(void) {
     if (!ran) {
         fprintf(stderr,
                 "SNX_TEST_WW_ONLY=%s names no case: 1, each, two_consumers, concurrent, record_submit, runtime_writes, "
-                "owned, alias, shared, mixed_leaf or hot_page\n",
+                "owned, alias, shared, mixed_leaf, hot_page, hot_rt_overlap, hot_rt_fresh, hot_alias or "
+                "hot_same_frame\n",
                 only);
         return 2;
     }
