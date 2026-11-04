@@ -54,12 +54,13 @@ state, and writes a side by side video slowed four times (`compare-slowmo.mp4`).
 (`--seconds`), the state loads at 30 s (`state_load`) because a 3D title can take that long to reach its screen, and
 the screen is captured through X11/Xwayland at the display's own rate.
 
-The use case that shows it best: a Switch game in an area that holds a solid 30 frames a second, on a display that
-refreshes at least 1.9 times that (120 Hz or more). Tears of the Kingdom at 30 on a 180 Hz display: the save state is
-in a spot that holds 30, its 1 % low at 25 or more (the gate's floor), and Auto runs. Off shows each game frame held
-for six refreshes; Auto shows the blend and the frame, an image at every refresh.
+The use case that shows it best is a game whose title screen moves, on a display at least 1.9 times its rate. New
+Super Mario Bros. U Deluxe at 60 on a 180 Hz display: Auto runs (180 is more than 1.9 times 60, and the 1 % low is far
+above the 25 floor), Off shows each game frame held for three refreshes, and Auto shows the blend and the frame, an
+image at every refresh. A 30 fps game in a solid area, Tears of the Kingdom for instance, shows the same at six
+refreshes.
 
-    scripts/framegen-demo.sh ~/.local/share/scarletnx/recompiled/0100F2C0115B6000 45 1
+    scripts/framegen-demo.sh ~/.local/share/scarletnx/recompiled/0100EA80032EA000 45 1
 
 The third argument is the save state slot, the fourth the output folder. `MODE=blend` compares Blend instead (for a
 display that is not twice the game's rate, where Auto stays Off); `LOAD_MS` moves the state's load.
