@@ -111,14 +111,18 @@ void plat_vm_track(u8* p, u64 size) { (void)p, (void)size; }
 /* mem.c's reservation at the guest's own addresses (NCE), which test_moved asks for: at addr or nowhere. Each call
    counted, for test_moved_tries */
 static int reserve_at_on;
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
 static u64 reserve_at_calls;
+#endif
 u8* plat_vm_reserve_at(u64 addr, u64 size) {
     void* p;
     if (!reserve_at_on) {
         errno = ENOSYS;
         return NULL;
     }
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
     reserve_at_calls++;
+#endif
     p = mmap((void*)(uintptr_t)addr, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) return NULL;
     if (p != (void*)(uintptr_t)addr) {
@@ -723,7 +727,9 @@ static void moved_smaller(u64 from, u64 by) {
     _exit(0);
 }
 #endif
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
 static MemLayout g_console; /* the layout a process starts with, which the scenarios before test_moved change */
+#endif
 /* NCE's search from 64 GiB in a process where something is mapped every 60 to 70 GiB up to 512 GiB, so neither 256
    nor 128 GiB is free anywhere and 64 GiB first fits after the page at 130 GiB: in a child, the bases it asks for with
    the free runs listed, then without a list, every 2 MiB step. Both take the same base; the list asks for one, the
@@ -866,7 +872,9 @@ static void test_moved(void) {
 }
 
 int main(void) {
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
     g_console = g_layout;
+#endif
     hle_init();
     /* this host's pages, then those of hosts with larger ones (16 KiB: Apple silicon, some Android kernels; 64 KiB:
        PowerPC64 and some AArch64 distributions), which mem.c commits in whole */
