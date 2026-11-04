@@ -898,6 +898,23 @@ setting Guest memory
     help AHardwareBuffers), as the console's GPU does: for a GPU that shares system memory. On a discrete GPU it goes
     help across the bus, which is slow, but it shows that the path is correct. 0 = 2 on a GPU that shares system memory,
     help but never the moves into AHardwareBuffers, else 1
+setting Wait probe
+    key vk_wait_probe
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = logs where the threads wait for the GPU and for each other (fences, releases, syncpoints, the GPU
+    help thread's idle time), every 5 seconds per present, for testing
+setting In-place release rule
+    key vk_uma_release
+    int 0 2
+    default 0
+    startup
+    words Stream stop|Before it|Writes only
+    help With guest memory read in place (vk_memory), what a release the guest sees waits for, for testing: 0 = every
+    help command recorded up to the stream's stop that read guest memory in place, 1 = those recorded before the
+    help release only, 2 = only the in-place writes (unsafe: the GPU may read what the guest writes after it)
 setting Buffer copy stats
     key vk_buffer_stats
     int 0 1

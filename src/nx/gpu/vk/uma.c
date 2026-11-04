@@ -211,6 +211,7 @@ static _Thread_local struct {
 
 int vk_uma(void) { return g_vk.mem_path == VK_MEM_PATH_UMA; }
 u64 vk_uma_bound(void) { return g_uma.bound; }
+u64 vk_uma_wbound(void) { return g_uma.nout ? g_uma.out[g_uma.nout - 1].sub : 0; }
 
 /* ------------------------------------------------------------ the model */
 static const char* model_name(int m) {
@@ -1137,12 +1138,14 @@ static u64 newest_out(u64 cpu, u64 n) {
 static void wait_out(u64 sub) {
     if (!sub) return;
     g_uma.out_waits++;
+    u64 t0 = g_gpu_wp ? plat_ns() : 0;
     if (sub > vk_last_submit())
         vk_finish();
     else {
         vk_wait_submit(sub);
         vk_land_through(sub);
     }
+    if (t0) gpu_wp_add(GPU_WP_UMA_OUT, plat_ns() - t0);
 }
 /* The writes in place pending in the regions over guest memory [lo, hi) done, before their pages change or move back:
    a region's buffer is the guest's memory until then, and its readers are waited for by nobody (quiesce), as the buffer
@@ -1341,7 +1344,9 @@ static int quiesce(u64 cpu, u64 size) {
     if (!sub) return any;
     vk_submit_progress(&submitted, &done);
     if (done >= sub) return any;
+    u64 t0 = g_gpu_wp ? plat_ns() : 0;
     read_done(sub);
+    if (t0) gpu_wp_add(GPU_WP_UMA_QUIESCE, plat_ns() - t0);
     g_uma.quiesces++;
     return any;
 }
@@ -1446,7 +1451,9 @@ static void front_write(u64 cpu, u64 n) {
         wait = vk_last_submit();
     if (!wait) return;
     g_uma.waits++;
+    u64 t0 = g_gpu_wp ? plat_ns() : 0;
     read_done(wait);
+    if (t0) gpu_wp_add(GPU_WP_UMA_FRONT, plat_ns() - t0);
 }
 void vk_uma_before_write(u64 gva, u64 len) {
     if (!vk_uma()) return;

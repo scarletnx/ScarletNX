@@ -59,11 +59,13 @@ static void rec_thread(void* arg) {
            a publish every 4 KiB kept it from sleeping at all: a host core spent on waiting (0.8 of one in Tears of
            the Kingdom, 0.26 with this) */
         if (head == tail) {
+            u64 t0 = g_gpu_wp ? plat_ns() : 0;
             pm_lock(&g_m);
             __atomic_store_n(&g_sleep, 1, __ATOMIC_SEQ_CST);
             while ((head = __atomic_load_n(&g_head, __ATOMIC_SEQ_CST)) == tail) pc_wait(&g_cv, &g_m, -1);
             __atomic_store_n(&g_sleep, 0, __ATOMIC_RELAXED);
             pm_unlock(&g_m);
+            if (t0) gpu_wp_add(GPU_WP_REC_IDLE, plat_ns() - t0);
         }
         [[maybe_unused]] u64 records = 0; /* the zone's value; only the profiler reads it */
         SNX_ZONE(z_rec, "vk record");
@@ -209,9 +211,11 @@ static void submit_run(const void* p) {
                         .signalSemaphoreInfoCount = x->ns,
                         .pSignalSemaphoreInfos = x->s};
     vk_wait_foreground();
+    u64 t0 = g_gpu_wp ? plat_ns() : 0;
     vk_queue_lock(g_vk.gfx);
     VkResult r = vkQueueSubmit2(g_vk.gfx, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock(g_vk.gfx);
+    if (t0) gpu_wp_add(GPU_WP_QSUBMIT, plat_ns() - t0);
     if (r == VK_ERROR_DEVICE_LOST) fatal("vulkan: the GPU device was lost (driver reset or crash)");
     VK_OK(r);
     /* a timeline of FFmpeg's never reaching its value would hang its decoder for good */

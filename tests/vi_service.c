@@ -34,6 +34,12 @@ int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
 }
 int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) { return pc_wait(c, m, timeout_ns); }
 void kthread_commit(void) {}
+u64 plat_ns(void) { return 0; }
+int g_gpu_wp; /* vk_wait_probe: off here, its sites still link */
+void gpu_wp_add(int site, u64 ns) {
+    (void)site;
+    (void)ns;
+}
 void logf_(int level, const char* format, ...) {
     (void)level;
     (void)format;

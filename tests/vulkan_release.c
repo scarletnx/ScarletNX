@@ -36,6 +36,7 @@ u64 vk_last_submit(void);
 u64 vk_submit_number(void);
 int vk_uma(void);
 u64 vk_uma_bound(void);
+u64 vk_uma_wbound(void);
 void vk_rt_before_write(u64, u64);
 u64 vk_query_value(u32, u64, u64);
 u64 vk_query_peek(u32, u64, u64);
@@ -59,6 +60,13 @@ typedef void (*VkChangedRun)(void* user, u32 from, u32 to); /* vk.h's, for write
 #include "nx/gpu/vk/writeback.c"
 
 int g_gpu_releases;
+int g_gpu_wp; /* vk_wait_probe: off here, its sites still link */
+void gpu_wp_add(int site, u64 ns) {
+    (void)site;
+    (void)ns;
+}
+void gpu_wp_set_release_thread(void) {}
+u64 plat_ns(void) { return 0; }
 static unsigned lock_depth, landing_calls, payload_writes, submits, query_reads, events_signaled;
 static int events_due;
 static u64 next_compute, next_graphics = 1, waited_compute, waited_graphics;
@@ -283,6 +291,7 @@ static int uma_on;
 static u64 uma_bound;
 int vk_uma(void) { return uma_on; }
 u64 vk_uma_bound(void) { return uma_bound; }
+u64 vk_uma_wbound(void) { return 0; }
 
 /* Compare both mapping paths against the byte merge rule, including chunk
  * boundaries, dense writes, unchanged output and intervening CPU writes.

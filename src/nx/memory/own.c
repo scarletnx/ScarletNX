@@ -35,6 +35,7 @@ typedef struct {
 
 int g_own_any;
 static u64 g_own_lands; /* landings so far, for the statistics */
+static u64 g_own_faults, g_own_fault_ns; /* the CPU's faults on owned pages, and their time (vk_wait_probe) */
 static OwnHooks g_hooks;
 static int g_traps;    /* own_init found traps */
 static u64 g_page;     /* the host's page, which traps are armed in */
@@ -342,7 +343,12 @@ static void own_fault(u8* p, int write, u32 tid) {
         }
         /* never under g_trap_lk: the landing takes the producer's lock. A page owned again by the time it is done (a
            republish) lands again */
-        land_pages(page, page + g_page);
+        {
+            u64 t0 = plat_ns();
+            land_pages(page, page + g_page);
+            __atomic_add_fetch(&g_own_fault_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+            __atomic_add_fetch(&g_own_faults, 1, __ATOMIC_RELAXED);
+        }
     }
 }
 
@@ -511,4 +517,6 @@ void own_drop(u64 addr, u64 size) {
     res_release(&rel);
 }
 u64 own_landings(void) { return __atomic_load_n(&g_own_lands, __ATOMIC_RELAXED); }
+u64 own_faults(void) { return __atomic_load_n(&g_own_faults, __ATOMIC_RELAXED); }
+u64 own_fault_ns(void) { return __atomic_load_n(&g_own_fault_ns, __ATOMIC_RELAXED); }
 int own_traps(void) { return g_traps; }

@@ -650,6 +650,7 @@ int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
     if (syncpt_reached(id, thresh)) return 1;
     if (!timeout_ns) return 0;
     deadline = timeout_ns > 0 ? guest_ns() + (u64)timeout_ns : 0;
+    u64 t0 = g_gpu_wp ? plat_ns() : 0;
     /* syncpt_bump broadcasts under it, so no increment slips between the check and the wait */
     pm_lock(&g_host.nvdrv.sync_lk);
     for (;;) {
@@ -664,6 +665,7 @@ int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
         kthread_wait(&g_host.nvdrv.sync_cv, &g_host.nvdrv.sync_lk, left);
     }
     pm_unlock(&g_host.nvdrv.sync_lk);
+    if (t0) gpu_wp_add(GPU_WP_SYNCPT, plat_ns() - t0);
     return reached;
 }
 /* every syncpoint user (GPU channels here, host1x channels in host1x.c) allocates here, lowest free id first, so ids
@@ -799,6 +801,7 @@ static void nv_events_check(void) {
             NvEvent* e = &g_hle.nvdrv.ctrl_evt[t].slot[i];
             if (!e->armed || !syncpt_reached(e->id, e->thresh)) continue;
             e->armed = 0;
+            if (g_gpu_wp && e->armed_ns) gpu_wp_add(GPU_WP_NVEV, plat_ns() - e->armed_ns);
             if (e->ev) kevent_signal(kev(e->ev));
         }
     nvev_unlock();
@@ -1258,6 +1261,7 @@ static u32 ctrl_event_wait(u32 fd, u8* d, int async) {
         e->id = id;
         e->thresh = thresh;
         e->armed = 1;
+        e->armed_ns = g_gpu_wp ? plat_ns() : 0;
     }
     nvev_unlock();
     nv_events_check(); /* it may have got there meanwhile */

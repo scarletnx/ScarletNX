@@ -61,6 +61,9 @@ void own_acquire(u64 addr, u64 size);
 void own_drop(u64 addr, u64 size);
 /* landings so far (each a wait for the GPU: the statistics count them), and whether own_init found traps */
 u64 own_landings(void);
+/* the CPU's faults on owned pages so far, and the ns they took (own_fault) */
+u64 own_faults(void);
+u64 own_fault_ns(void);
 int own_traps(void);
 /* whether anything is owned: the common case's test, without a lock */
 extern int g_own_any;

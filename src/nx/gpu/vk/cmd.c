@@ -279,6 +279,8 @@ static void timeline_wait(u64 value, int kind) {
         g_vk_wait_ns[kind] += plat_ns() - t0;
         g_vk_waits[kind]++;
     }
+    if (g_gpu_wp && gpu_wp_thread() != 2) /* the release thread's are split by its own sites */
+        gpu_wp_add(mine ? GPU_WP_FENCE_GPU : GPU_WP_FENCE_OTHER, plat_ns() - t0);
 }
 /* the storage results of every submission up to value, which has finished, land in guest memory, in order */
 static void land_through(u64 value) {

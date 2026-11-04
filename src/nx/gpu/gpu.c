@@ -25,6 +25,7 @@
    bound to the call's subchannel (engines.c, compute.c, fermi2d.c, dma.c). */
 #include "nx/runtime/state_fns.h"
 #include "nx/runtime/state_io.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "common/utilities/common.h"
@@ -976,6 +977,56 @@ static int run_pass(i64* wake) {
     }
     return 0;
 }
+/* ---- vk_wait_probe (gpu.h) */
+int g_gpu_wp;
+static u64 g_wp_ns[GPU_WP_N], g_wp_n[GPU_WP_N];
+static _Thread_local int t_wp_release;
+void gpu_wp_add(int site, u64 ns) {
+    __atomic_add_fetch(&g_wp_ns[site], ns, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_wp_n[site], 1, __ATOMIC_RELAXED);
+}
+int gpu_wp_thread(void) { return t_gpu ? 1 : t_wp_release ? 2 : 0; }
+void gpu_wp_set_release_thread(void) { t_wp_release = 1; }
+/* each present (the GPU thread): every 5 s, each site's ms and count a present since the last line, and the CPU's
+   faults on GPU-owned memory (own.c's landings) */
+void gpu_wp_frame(void) {
+    static const char* const name[GPU_WP_N] = {
+        "gpu_run",      "gpu_idle_empty", "gpu_idle_parked", "fence_gpu",  "fence_rel",   "fence_rel_uma",
+        "fence_rel_cs", "fence_other",    "uma_front",       "uma_out",    "uma_quiesce", "syncpt",
+        "nvev",         "vi_dequeue",     "queue_full",      "qsubmit",    "rec_idle",    "rel_lat",
+        "rel_lat_uma",  "rel_drain",      "rel_need",        "rel_retire", "rel_read"};
+    static u64 ns0[GPU_WP_N], n0[GPU_WP_N], at, own_n0, own_ns0;
+    static u32 presents;
+    char line[1024];
+    int len;
+    u64 now;
+    if (!g_gpu_wp) return;
+    presents++;
+    now = plat_ns();
+    if (!at) at = now;
+    if (now - at < 5000000000ull) return;
+    double f = (double)presents;
+    len = snprintf(line, sizeof line, "waitprobe: presents=%u frame_ms=%.2f", presents, (double)(now - at) / 1e6 / f);
+    for (int s = 0; s < GPU_WP_N; s++) {
+        u64 ns = __atomic_load_n(&g_wp_ns[s], __ATOMIC_RELAXED), n = __atomic_load_n(&g_wp_n[s], __ATOMIC_RELAXED);
+        if (len < (int)sizeof line)
+            len += snprintf(line + len, sizeof line - (size_t)len, " %s=%.2f/%.1f", name[s],
+                            (double)(ns - ns0[s]) / 1e6 / f, (double)(n - n0[s]) / f);
+        ns0[s] = ns;
+        n0[s] = n;
+    }
+    {
+        u64 on = own_faults(), ons = own_fault_ns();
+        if (len < (int)sizeof line)
+            snprintf(line + len, sizeof line - (size_t)len, " own_fault=%.2f/%.1f", (double)(ons - own_ns0) / 1e6 / f,
+                     (double)(on - own_n0) / f);
+        own_n0 = on;
+        own_ns0 = ons;
+    }
+    LOG("%s\n", line);
+    at = now;
+    presents = 0;
+}
 int gpu_wait_note(const char* what, u64 value) {
     if (!t_gpu) return 0;
     if (what) {
@@ -1040,13 +1091,21 @@ static void gpu_thread(void* arg) {
     SNX_THREAD_NAME("GPU");
     pm_lock(&g_qlk);
     for (;;) {
-        u64 gen = g_qgen;
+        u64 gen = g_qgen, t0 = g_gpu_wp ? plat_ns() : 0;
         i64 wake = -1;
-        if (run_pass(&wake)) continue;
+        if (run_pass(&wake)) {
+            if (t0) gpu_wp_add(GPU_WP_GPU_RUN, plat_ns() - t0);
+            continue;
+        }
         /* A whole pass ran nothing: sleep until a new item, a kick, or the next look at a wait. A plot, not a zone:
            this wait can last the rest of the run. */
         SNX_PLOT("gpu idle", 1);
-        if (gen == g_qgen) pc_wait(&g_qcv, &g_qlk, wake);
+        if (gen == g_qgen) {
+            int parked = g_qhead != NULL; /* jobs queued, none of them runnable */
+            if (t0) t0 = plat_ns();
+            pc_wait(&g_qcv, &g_qlk, wake);
+            if (t0) gpu_wp_add(parked ? GPU_WP_GPU_IDLE_PARKED : GPU_WP_GPU_IDLE_EMPTY, plat_ns() - t0);
+        }
         SNX_PLOT("gpu idle", 0);
     }
 }
@@ -1282,7 +1341,11 @@ void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, 
     if (!s->stopped) scan_job(s, j);
     may_have_changed(); /* before the job can run: what the CPU wrote is for it to see */
     pm_lock(&g_qlk);
-    while (runnable() >= QUEUE_ROOM) pc_wait(&g_qcv, &g_qlk, -1);
+    if (runnable() >= QUEUE_ROOM) {
+        u64 t0 = g_gpu_wp ? plat_ns() : 0;
+        while (runnable() >= QUEUE_ROOM) pc_wait(&g_qcv, &g_qlk, -1);
+        if (t0) gpu_wp_add(GPU_WP_QUEUE_FULL, plat_ns() - t0);
+    }
     g_qjobs[channel]++;
     g_qtotal++;
     queue_append(j);

@@ -158,6 +158,7 @@ typedef struct {
     u32 ev; /* its kernel object id */
     u32 id, thresh;
     int armed;
+    u64 armed_ns; /* when it was armed (vk_wait_probe) */
 } NvEvent;
 /* a ctrl fd's event slots (ctrl_evt, a pool under nvev_lk) */
 typedef struct {

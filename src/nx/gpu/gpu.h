@@ -395,6 +395,41 @@ extern volatile u64 g_gpu_submits;
 int gpu_wait_note(const char* what, u64 value);
 /* the stall watchdog's report of what the GPU thread and each channel with queued jobs are doing. Any thread */
 void gpu_report_stall(void);
+/* vk_wait_probe=1, a test branch's: the time each kind of thread spends waiting, and on what, summed (atomics, any
+   thread) and logged every 5 s per present (gpu_wp_frame, at each present). Off, a site costs a branch. The UMA_
+   sites are parts of the FENCE_ ones of the thread they ran on */
+enum {
+    GPU_WP_GPU_RUN,         /* the GPU thread runs jobs and calls */
+    GPU_WP_GPU_IDLE_EMPTY,  /* the GPU thread has nothing queued: the game submitted nothing */
+    GPU_WP_GPU_IDLE_PARKED, /* jobs queued, each waiting (a syncpoint, a semaphore, a fence) */
+    GPU_WP_FENCE_GPU,       /* the GPU thread waits for a graphics submission */
+    GPU_WP_FENCE_REL,       /* the release thread waits for the work a release was queued behind */
+    GPU_WP_FENCE_REL_UMA,   /* and then for what read guest memory in place before the stream stopped (hold_inplace) */
+    GPU_WP_FENCE_REL_CS,    /* and for its compute batch */
+    GPU_WP_FENCE_OTHER,     /* another thread (a game's) waits for a graphics submission */
+    GPU_WP_UMA_FRONT,       /* a runtime write waits for the in-place readers of its pages (front_write) */
+    GPU_WP_UMA_OUT,         /* a reader waits for in-place writes (wait_out) */
+    GPU_WP_UMA_QUIESCE,     /* a trap or a remap waits for in-place readers (quiesce) */
+    GPU_WP_SYNCPT,          /* a thread blocked in syncpt_wait */
+    GPU_WP_NVEV,            /* an nvhost-ctrl event, from armed to signaled: a game's asynchronous fence wait */
+    GPU_WP_VI_DEQUEUE,      /* a dequeue waits for a free buffer */
+    GPU_WP_QUEUE_FULL,      /* a submission waits for room in the GPU thread's queue */
+    GPU_WP_QSUBMIT,         /* vkQueueSubmit2 of the graphics queue */
+    GPU_WP_REC_IDLE,        /* the recording thread has nothing to record */
+    GPU_WP_REL_LAT,         /* a release, from the stream's stop (hold_inplace) to performed */
+    GPU_WP_REL_LAT_UMA,     /* the same, for the releases whose gate in-place reads raised */
+    GPU_WP_REL_DRAIN,       /* a wait for every queued release (a mapping change, an idle) */
+    GPU_WP_REL_NEED,        /* a wait for the releases over a range read or written */
+    GPU_WP_REL_RETIRE,      /* a wait for a syncpoint's releases */
+    GPU_WP_REL_READ,        /* a read past queued releases waits for a samples count */
+    GPU_WP_N
+};
+extern int g_gpu_wp;
+void gpu_wp_add(int site, u64 ns);
+/* the thread's kind for the FENCE_ sites: 1 the GPU thread, 2 the release thread, 0 any other */
+int gpu_wp_thread(void);
+void gpu_wp_set_release_thread(void);
+void gpu_wp_frame(void);
 /* guest memory [cpu_addr, cpu_addr + len) changed without a write the host's write tracking sees: decommitted pages,
    which now read as zero (memory/mem.c). Caches over that memory check it again. Any thread */
 void gpu_mem_changed(u64 cpu_addr, u64 len);

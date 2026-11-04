@@ -16,6 +16,7 @@
 #include "nx/hle/services/vi.h"
 #include "nx/hle/services/nvdrv.h"
 
+#include "nx/gpu/gpu.h"
 #include "hle/services/vi.swipc.inc"
 
 #define VI_OPERATION_FAILED RC(114, 1)
@@ -326,9 +327,16 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
             /* async, width, height, format, usage: the buffers are the game's own, whatever it asks */
             gen = l->gen;
             /* every buffer the game gave is in use: wait for one, never taking one back from the display */
-            while ((slot = vi_free_slot(l)) < 0 && l->gen == gen)
-                if (kthread_wait(&g_host.vi.freed, &g_host.vi.lock, 1000000000ll))
-                    WARN_LIMIT(8, "vi: no buffer came free for %d s, still waiting\n", ++waits);
+            {
+                u64 t0 = g_gpu_wp ? plat_ns() : 0;
+                int waited = 0;
+                while ((slot = vi_free_slot(l)) < 0 && l->gen == gen) {
+                    waited = 1;
+                    if (kthread_wait(&g_host.vi.freed, &g_host.vi.lock, 1000000000ll))
+                        WARN_LIMIT(8, "vi: no buffer came free for %d s, still waiting\n", ++waits);
+                }
+                if (t0 && waited) gpu_wp_add(GPU_WP_VI_DEQUEUE, plat_ns() - t0);
+            }
             if (l->gen != gen) { /* the layer closed while it waited */
                 status = BQ_NO_INIT;
                 break;

@@ -42,6 +42,10 @@ typedef struct {
        is known to be without the GPU, PRED_ZERO or PRED_NONZERO, or PRED_NONE when no predicate can be had */
     int pred;
     u64 cpu; /* the guest address of its payload, translated when it was queued, 0 when it isn't in the word index */
+    /* vk_wait_probe: its gate before hold_inplace raised it (the queue's prefix too), and when the stream stopped
+       holding it */
+    u64 gate0, unheld;
+    u64 ubound; /* vk_uma_release=1: the submit that last read guest memory in place when it was queued (the prefix's) */
 } Release;
 enum { PRED_NONE = -3, PRED_ZERO = -2, PRED_NONZERO = -1 };
 #define RQ_N   1024 /* queued releases at most: a full queue performs its oldest at once */
@@ -59,6 +63,10 @@ static int g_rthread;
    translation changes (vkr_mapping_begin), so a payload loses the pages it gained */
 static PendPages g_rpages = {.also = &g_pend_any};
 u64 g_vk_release_forwards;
+/* vk_uma_release, a test branch's arms for measuring what the in-place hold costs: 0 the rule (hold_inplace), 1 a
+   release waits only for what read in place before it was queued, 2 only for the in-place writes recorded up to the
+   stop (unsafe: commands not run yet may read what the guest writes after the release) */
+int g_vk_uma_release;
 
 /* The queued payloads by the guest words they write: for each 4-byte word, the latest release queued over it and how
    many are, so the render enable finds the release that decides a count without looking through the queue
@@ -168,6 +176,10 @@ static void release_through(u64 gate, u64 cgate) {
         r = g_rq[g_rtail % RQ_N];
         if (r.gva) rix_track(&r, g_rtail, -1);
         g_rtail++;
+        if (g_gpu_wp && r.unheld) {
+            u64 lat = plat_ns() - r.unheld;
+            gpu_wp_add(r.gate > r.gate0 ? GPU_WP_REL_LAT_UMA : GPU_WP_REL_LAT, lat);
+        }
         if (r.pred > 0) vk_query_pred_drop((u32)r.pred - 1); /* the draws recorded with it may still hold it */
         if (r.gva) pend_add(&g_rpages, r.gva, r.len, -1);
         if (!r.gva) {
@@ -184,14 +196,27 @@ static void release_through(u64 gate, u64 cgate) {
 static void release_thread(void* p) {
     (void)p;
     SNX_THREAD_NAME("Vulkan release");
+    gpu_wp_set_release_thread();
     for (;;) {
-        u64 gate, cgate;
+        u64 gate, cgate, gate0;
         pm_lock(&g_rlock);
         while (g_rtail == g_rheld) pc_wait(&g_rcv, &g_rlock, -1);
         gate = g_rq[g_rtail % RQ_N].gate;
         cgate = g_rq[g_rtail % RQ_N].cgate;
+        gate0 = g_rq[g_rtail % RQ_N].gate0;
         pm_unlock(&g_rlock);
         SNX_ZONE(z_release, "vk release");
+        if (g_gpu_wp) { /* the wait for the work before the release, then for the in-place readers after it */
+            u64 t0 = plat_ns(), t1, t2;
+            vk_wait_submit(gate0 < gate ? gate0 : gate);
+            t1 = plat_ns();
+            vk_wait_submit(gate);
+            t2 = plat_ns();
+            vk_compute_wait(cgate);
+            gpu_wp_add(GPU_WP_FENCE_REL, t1 - t0);
+            if (gate0 < gate) gpu_wp_add(GPU_WP_FENCE_REL_UMA, t2 - t1);
+            if (cgate) gpu_wp_add(GPU_WP_FENCE_REL_CS, plat_ns() - t2);
+        }
         vk_wait_submit(gate);
         vk_compute_wait(cgate);
         {
@@ -208,9 +233,14 @@ static void release_thread(void* p) {
    the console's GPU runs at once (the stream's hold above). Gates stay in order: what the queue holds before from
    waits for less, and the submit that read in place last only grows. Under g_rlock */
 static void hold_inplace(u64 from, u64 to) {
-    u64 bound = vk_uma() ? vk_uma_bound() : 0;
-    for (u64 i = from; bound && i < to; i++)
-        if (g_rq[i % RQ_N].gate < bound) g_rq[i % RQ_N].gate = bound;
+    int mode = vk_uma() ? g_vk_uma_release : -1;
+    u64 bound = mode == 0 ? vk_uma_bound() : mode == 2 ? vk_uma_wbound() : 0, now = g_gpu_wp ? plat_ns() : 0;
+    for (u64 i = from; (bound || now || mode == 1) && i < to; i++) {
+        Release* r = &g_rq[i % RQ_N];
+        u64 b = mode == 1 ? r->ubound : bound;
+        if (now) r->unheld = now;
+        if (r->gate < b) r->gate = b;
+    }
 }
 /* the submit gate names, recorded still: submitted now, so waiting for it ends (vk_lock) */
 static void submit_through(u64 gate) {
@@ -249,9 +279,13 @@ static void release(Release* r) {
     }
     /* Gates cover the entire queued prefix even if ordinary reads already landed
        the batches belonging to earlier releases. */
+    r->gate0 = r->gate;
+    r->ubound = vk_uma() && g_vk_uma_release == 1 ? vk_uma_bound() : 0;
     if (g_rhead != g_rtail) {
         const Release* prev = &g_rq[(g_rhead - 1) % RQ_N];
         if (r->gate < prev->gate) r->gate = prev->gate;
+        if (r->gate0 < prev->gate0) r->gate0 = prev->gate0;
+        if (r->ubound < prev->ubound) r->ubound = prev->ubound;
         if (r->cgate < prev->cgate) r->cgate = prev->cgate;
     }
     if (r->gva) rix_track(r, g_rhead, 1);
@@ -462,10 +496,12 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
     u64 gate = last >= 0 ? g_rq[last % RQ_N].gate : 0, cgate = last >= 0 ? g_rq[last % RQ_N].cgate : 0;
     pm_unlock(&g_rlock);
     if (last >= 0) {
+        u64 t0 = g_gpu_wp ? plat_ns() : 0;
         submit_through(gate);
         vk_wait_submit(gate);
         vk_compute_wait(cgate);
         release_through(gate, cgate);
+        if (t0) gpu_wp_add(all ? GPU_WP_REL_DRAIN : len ? GPU_WP_REL_NEED : GPU_WP_REL_RETIRE, plat_ns() - t0);
     }
     vk_unlock();
 }
@@ -527,8 +563,10 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
         g_rheld = g_rhead;
         if (g_rthread) pc_broadcast(&g_rcv);
         pm_unlock(&g_rlock);
+        u64 t0 = g_gpu_wp ? plat_ns() : 0;
         submit_through(sgate);
         vk_wait_submit(sgate);
+        if (t0) gpu_wp_add(GPU_WP_REL_READ, plat_ns() - t0);
     }
     if (r > 0) {
         pm_lock(&g_rlock);

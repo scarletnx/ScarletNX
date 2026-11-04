@@ -814,6 +814,12 @@ static int create_device(void) {
     if (g_vk.has_descriptor_buffers) vai.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
     vk_uma_init();
+    g_gpu_wp = g_settings.wait_probe; /* before the GPU thread records anything */
+    g_vk_uma_release = g_settings.in_place_release_rule;
+    if (g_vk_uma_release && vk_uma())
+        LOG("vulkan: vk_uma_release=%d: a release waits for %s\n", g_vk_uma_release,
+            g_vk_uma_release == 1 ? "the in-place reads before it only" : "the in-place writes only (unsafe)");
+    if (g_gpu_wp) LOG("vulkan: vk_wait_probe=1: where the threads wait, every 5 s per present (waitprobe lines)\n");
     {
         /* which driver runs, by its own name: the system's, or a package's (gpu_driver) */
         VkPhysicalDeviceDriverProperties dp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};

@@ -221,6 +221,8 @@ void vk_uma_init(void);                            /* after it */
 int vk_uma(void);                                  /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
+u64 vk_uma_wbound(void);     /* the newest submit with an in-place write not done yet, 0 for none */
+extern int g_vk_uma_release; /* release.c: vk_uma_release, a test branch's */
 void vk_uma_frame(void);
 void vk_uma_forget_all(void);
 void vk_uma_owning(u64 cpu, u64 size);        /* that guest memory becomes GPU-owned next, trapped (vk_own_publish) */
