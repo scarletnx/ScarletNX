@@ -381,8 +381,10 @@ static void import_capture_info(SnxCtrIpc* c) {
 static void vram_sys_area(SnxCtrIpc* c) {
     if (!snx_ctr_ipc_expect(c, 0, 0)) return;
     SnxCtrProcess* p = c->process;
-    uint32_t thread = p->gsp.relay_thread;
-    if (thread == UINT32_MAX || thread >= CTR_GSP_THREADS ||
+    /* the right is the calling session's: a second session that never registered its relay queue holds none, even
+       while the first one did */
+    uint32_t thread = p->objects[c->object].data.session.gsp_thread;
+    if (thread == UINT32_MAX || thread >= CTR_GSP_THREADS || !p->gsp.event_object[thread] ||
         !(p->gsp.relay_flags[thread] & GSP_SAVE_VRAM_ALLOWED)) {
         snx_ctr_ipc_error_reply(c, GSP_ERR_NO_RIGHT);
         return;
@@ -589,11 +591,10 @@ static void trigger_queue(SnxCtrIpc* c) {
     if (!snx_ctr_ipc_expect(c, 0, 0)) return;
     SnxCtrProcess* p = c->process;
     CtrSharedMap* map = p->gsp.shared_object ? shared_map(p, p->gsp.shared_object) : NULL;
-    if (p->gsp.rights_thread == UINT32_MAX) {
-        c->out[0] = (c->in[0] & 0xffff0000u) | 0x40; /* succeeds with no active queue */
-        return;
-    }
-    uint32_t thread = p->gsp.relay_thread;
+    /* The queue is the calling session's: it must hold the GPU right, and its relay thread's queue is the one run
+       (a session that never registered one has none, so the call succeeds and runs nothing) */
+    uint32_t thread = p->objects[c->object].data.session.gsp_thread;
+    if (!has_right(c)) thread = UINT32_MAX;
     if (!map || thread == UINT32_MAX || thread >= CTR_GSP_THREADS) {
         /* Real hardware answers success with no registered relay queue: there is no command to run */
         c->out[0] = (c->in[0] & 0xffff0000u) | 0x40;
