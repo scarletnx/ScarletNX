@@ -46,4 +46,8 @@ extern const u32 fx_hdr_encode_spv[];
 extern const u64 fx_hdr_encode_spv_size;
 extern const u32 fx_hdr_test_spv[];
 extern const u64 fx_hdr_test_spv_size;
+extern const u32 fx_toast_vert_spv[];
+extern const u64 fx_toast_vert_spv_size;
+extern const u32 fx_toast_frag_spv[];
+extern const u64 fx_toast_frag_spv_size;
 #endif

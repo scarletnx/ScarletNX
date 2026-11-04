@@ -100,7 +100,7 @@ endif()
 # whose functions these call
 if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/ring.c gpu/vk/swapchain.c gpu/vk/window.c
-                                 gpu/vk/present_fx.c gpu/vk/fx/fx_fsr.c)
+                                 gpu/vk/present_fx.c gpu/vk/fx/fx_fsr.c gpu/vk/toast.c)
     set_target_properties(snx_vk_common PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_vk_common PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                                  -Werror=missing-variable-declarations)
@@ -113,7 +113,8 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
                           "fsr_easu.frag=fx_fsr_easu" "fsr_rcas.frag=fx_fsr_rcas" "fxaa.frag=fx_fxaa" "blend.frag=fx_blend"
                           "smaa_edge.frag=fx_smaa_edge" "smaa_weights.frag=fx_smaa_weights"
                           "smaa_blend.frag=fx_smaa_blend" "hdr.vert=fx_hdr_vert" "hdr_compose.frag=fx_hdr_compose"
-                          "hdr_encode.frag=fx_hdr_encode" "hdr_test.frag=fx_hdr_test")
+                          "hdr_encode.frag=fx_hdr_encode" "hdr_test.frag=fx_hdr_test" "toast.vert=fx_toast_vert"
+                          "toast.frag=fx_toast_frag")
         string(REPLACE "=" ";" parts "${pair}")
         list(GET parts 0 shader)
         list(GET parts 1 symbol)
