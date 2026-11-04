@@ -178,6 +178,13 @@ int pend_hit(const PendPages* t, u64 gva, u64 size) {
     }
     return 0;
 }
+int pend_hit_guest(const PendPages* t, u64 a, u64 size) {
+    if (!t->total || !size) return 0;
+    if (t->overflow) return 1;
+    u64 first = a >> 12, last = (a + size - 1 < a ? ~0ull : a + size - 1) >> 12;
+    if (first >= TABLE_PAGES) return 0;
+    return leaves_hit(t->leaf, first, last < TABLE_PAGES ? last : TABLE_PAGES - 1);
+}
 /* GPU pages from gva on show guest pages from cpu on now: each takes their count */
 static void remap_piece(void* ctx, u64 gva, u64 cpu, u64 n) {
     PendPages* t = ctx;

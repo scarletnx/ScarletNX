@@ -598,7 +598,13 @@ void snx_svc(CPU* c, u32 imm) { (imm < SNX_SVC_COUNT ? g_svc64[imm] : svc64_unkn
 void snx_svc32(SnxArmCPU* a, u32 imm) { (imm < SNX_SVC_COUNT ? g_svc32[imm] : svc32_unknown)(a, imm); }
 
 /* ============================================================ the handlers, in hos.svc's order */
+/* An SVC that changes guest memory lets go of its core first, as the console's kernel lets the core's other threads
+   run while it works. The change waits for the renderer's lock (vkr_mapping_begin), which the GPU thread holds while
+   it records and submits: one game's memory thread waited for it with its core held, for seconds, and every thread of
+   that core waited behind it. svc_leave takes the core back */
+static void mem_change_off_core(void) { core_leave(kthread_cur()); }
 static u32 svc_SetHeapSize(u64* out_address, u64 size) {
+    mem_change_off_core();
     u32 r = svc_set_heap_size(size);
     if (!r) *out_address = HEAP_BASE;
     return r;
@@ -611,15 +617,19 @@ static u32 svc_SetGpuMemoryAttribute(u64 address, u64 size, u32 mask, u32 attr) 
     return svc_set_gpu_mem_attr(address, size, mask, attr);
 }
 static u32 svc_MapMemory(u64 dst_address, u64 src_address, u64 size) {
+    mem_change_off_core();
     return svc_map_memory(dst_address, src_address, size);
 }
 static u32 svc_UnmapMemory(u64 dst_address, u64 src_address, u64 size) {
+    mem_change_off_core();
     return svc_unmap_memory(dst_address, src_address, size);
 }
 static u32 svc_MapProcessMemory(u64 dst_address, u32 process_handle, u64 src_address, u64 size) {
+    mem_change_off_core();
     return svc_map_process_memory(dst_address, process_handle, src_address, size);
 }
 static u32 svc_UnmapProcessMemory(u64 dst_address, u32 process_handle, u64 src_address, u64 size) {
+    mem_change_off_core();
     return svc_unmap_process_memory(dst_address, process_handle, src_address, size);
 }
 static u32 svc_QueryMemory(u64 out_memory_info, u32* out_page_info, u64 address) {
@@ -658,9 +668,11 @@ static i32 svc_GetCurrentProcessorNumber(void) { return kthread_cur()->core; }
 static u32 svc_SignalEvent(u32 event_handle) { return signal_event(event_handle); }
 static u32 svc_ClearEvent(u32 event_handle) { return clear_event(event_handle, 0); }
 static u32 svc_MapSharedMemory(u32 shmem_handle, u64 address, u64 size, u32 map_perm) {
+    mem_change_off_core();
     return svc_map_shm(shmem_handle, address, size, map_perm);
 }
 static u32 svc_UnmapSharedMemory(u32 shmem_handle, u64 address, u64 size) {
+    mem_change_off_core();
     return svc_unmap_shm(shmem_handle, address, size);
 }
 static u32 svc_CreateTransferMemory(u32* out_handle, u64 address, u64 size, u32 map_perm) {
@@ -727,8 +739,14 @@ static u32 svc_FlushDataCache(u64 address, u64 size) {
     (void)size;
     R_SUCCEED();
 }
-static u32 svc_MapPhysicalMemory(u64 address, u64 size) { return svc_map_physical(address, size); }
-static u32 svc_UnmapPhysicalMemory(u64 address, u64 size) { return svc_unmap_physical(address, size); }
+static u32 svc_MapPhysicalMemory(u64 address, u64 size) {
+    mem_change_off_core();
+    return svc_map_physical(address, size);
+}
+static u32 svc_UnmapPhysicalMemory(u64 address, u64 size) {
+    mem_change_off_core();
+    return svc_unmap_physical(address, size);
+}
 static u32 svc_GetResourceLimitLimitValue(i64* out_limit_value, u32 resource_limit_handle, u32 which) {
     return resource_limit(resource_limit_handle, which, 0, (u64*)out_limit_value);
 }
@@ -772,6 +790,7 @@ static u32 svc_CreateCodeMemory(u32* out_handle, u64 address, u64 size) {
 }
 static u32 svc_ControlCodeMemory(u32 code_memory_handle, u32 operation, u64 address, u64 size, u32 perm) {
     KObj* o = h_get_ref(code_memory_handle, KO_CODEMEM);
+    mem_change_off_core();
     u32 r = o ? svc_codemem_control(o, operation, address, size, perm) : R_BADHANDLE;
     kobj_unref(o);
     return r;
