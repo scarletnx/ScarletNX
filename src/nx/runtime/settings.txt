@@ -265,7 +265,7 @@ setting Anti aliasing
 setting Frame interpolation
     key frame_interp
     text 8
-    default auto
+    default off
     startup
     words off=Off|auto=Auto|blend=Blend
     help The frames shown between the game's frames: one between each two, so twice the game's rate, and no more.

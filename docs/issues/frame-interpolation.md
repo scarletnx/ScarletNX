@@ -67,8 +67,10 @@ display that is not twice the game's rate, where Auto stays Off); `LOAD_MS` move
 
 ## Defaults and practice
 
-- `frame_interp=auto` is the default: it only runs where two presents fit and the game's 1 % low is 25 a second or
-  more. `off` and `blend` are there when the gate cannot judge.
+- `frame_interp=off` is the default. Frame generation adds one refresh of latency by construction (the blend takes the
+  slot before the frame), and Reflex/AntiLag cannot remove that — they trim the queue, and neither is available on
+  Linux anyway. `auto` is the recommended choice on a display at least 1.9 times the game's rate; `blend` is there when
+  the gate cannot judge.
 - `auto` is the recommended mode on a high refresh display: it runs only where the display is at least 1.9x the
   game's present rate, and it uses the cheapest method that works, the temporal blend.
 - `blend` is the explicit choice for a display that is slower than 2x, with the ghosting it brings.
