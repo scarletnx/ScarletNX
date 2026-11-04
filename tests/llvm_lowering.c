@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The lowering census of the A64 SIMD, FP and crypto emitters: what each op becomes on four emitter paths, against a
+/* The lowering census of the A64 SIMD, FP and crypto emitters: what each op becomes on eight emitter paths, against a
    checked-in summary, and what the target's object makes of it.
      snx-test-llvm-lowering EXPECTED [--update] [--report FILE] [--ir DIR] [--objects DIR] [--objdump PATH]
                                     [--counts FILE] [--path NAME [--triple TRIPLE]]
@@ -10,7 +10,10 @@
      x86       x86-64 with every extension SnxIrFeatures has
      x86-base  x86-64 with none of them
      aarch64   AArch64 with AES, SHA2 and CRC32, the Cortex-A57's
-     generic   no feature bit, as PowerPC64, RISC-V, LoongArch and MIPS64 hosts emit (riscv64's triple)
+     generic   no feature bit, as PowerPC64, RISC-V, LoongArch and MIPS64 hosts without their vectors emit (riscv64's
+               triple)
+     ppc64le, riscv64-v, la64-lsx, mips-msa
+               those hosts with VSX, V, LSX and MSA, on their own triples
    An op's class on a path is the worst of its words': inline (no runtime helper is called), guarded (a helper on some
    paths and one path calling none: an inline fast path with a helper when its guard fails) or helper (every path
    calls one), with the helpers it calls. The step's entry call to snx_fp_env, which every generated function makes,
@@ -39,7 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PATHS   4
+#define PATHS   8
 #define HELPERS 256 /* the helpers a word or an op calls, space-separated (add_helper stops the test past it) */
 #define LINE    256
 
@@ -78,7 +81,12 @@ static const Path paths[PATHS] = {
      {.aarch64 = 1, .arm_aes = 1, .arm_sha2 = 1, .arm_crc = 1},
      "+neon,+aes,+sha2,+crc"},
     {"generic", "riscv64-unknown-linux-gnu", {0}, ""},
+    {"ppc64le", "powerpc64le-unknown-linux-gnu", {.ppc = 1, .ppc_vsx = 1}, "+altivec,+vsx"},
+    {"riscv64-v", "riscv64-unknown-linux-gnu", {.riscv = 1, .riscv_v = 1}, "+v"},
+    {"la64-lsx", "loongarch64-unknown-linux-gnu", {.loongarch = 1, .la_lsx = 1}, "+lsx"},
+    {"mips-msa", "mips64el-unknown-linux-gnuabi64", {.mips = 1, .mips_msa = 1}, "+mips64r5,+msa,+fp64"},
 };
+#define GENERIC 3 /* paths[]'s generic one, which any triple may run */
 
 /* ir_ldst.c's ops that load or store V registers */
 static const char* const simd_ldst[] = {"LD_mult", "ST_mult", "LD_single", "ST_single", "LD_single_repl", "LDR_v",
@@ -803,7 +811,10 @@ int main(int argc, char** argv) {
         for (only = 0; only < PATHS; ++only)
             if (!strcmp(path_name, paths[only].name)) break;
         if (only == PATHS) {
-            fprintf(stderr, "snx-test-llvm-lowering: no path %s (x86, x86-base, aarch64, generic)\n", path_name);
+            fprintf(stderr,
+                    "snx-test-llvm-lowering: no path %s (x86, x86-base, aarch64, generic, ppc64le, riscv64-v, "
+                    "la64-lsx, mips-msa)\n",
+                    path_name);
             return 2;
         }
         if (update) {
@@ -814,15 +825,15 @@ int main(int argc, char** argv) {
         fprintf(stderr, "snx-test-llvm-lowering: --triple runs one --path NAME\n");
         return 2;
     }
-    if (triple) {
-        int x86 = !strncmp(triple, "x86_64", 6) || !strncmp(triple, "i386", 4) || !strncmp(triple, "i686", 4);
-        int aarch64 = !strncmp(triple, "aarch64", 7) || !strncmp(triple, "arm64", 5);
-        if ((only == 0 || only == 1) && !x86) {
-            fprintf(stderr, "snx-test-llvm-lowering: path %s needs an x86-64 --triple, not %s\n", path_name, triple);
-            return 2;
-        }
-        if (only == 2 && !aarch64) {
-            fprintf(stderr, "snx-test-llvm-lowering: path %s needs an AArch64 --triple, not %s\n", path_name, triple);
+    if (triple && only != GENERIC) {
+        /* the path's emitters use its architecture's intrinsics: another triple's must be the same architecture */
+        Target want, given;
+        target_of(&want, paths[only].triple);
+        target_of(&given, triple);
+        if (want.x86 != given.x86 || want.aarch64 != given.aarch64 || want.ppc != given.ppc ||
+            want.riscv != given.riscv || want.loongarch != given.loongarch || want.mips != given.mips) {
+            fprintf(stderr, "snx-test-llvm-lowering: path %s needs a --triple of %s's architecture, not %s\n",
+                    path_name, paths[only].triple, triple);
             return 2;
         }
     }
