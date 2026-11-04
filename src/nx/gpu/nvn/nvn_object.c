@@ -1693,8 +1693,13 @@ static u32 stage11(u64 data) {
 /* a control section's word, zero when the bytes past its end are not the game's: one game's section ends at a
    page's last word, and the next page is not mapped for the CPU */
 static u32 sec32(u64 control, u32 off) {
+    u64 at = control + off;
     u8 w[4] = {0, 0, 0, 0};
-    gmem_read_code_cpu(control + off, w, sizeof w);
+    /* a section the game mapped for the CPU is read as it is; the past its end, which the game did not map for the
+       CPU, answers zero. One Switch 2 game's sections are in pool memory the GPU page table does not map, so the GPU
+       walk would answer zero for a whole section */
+    if (mem_mapped_run(at, sizeof w) == sizeof w) return gr32(at);
+    if (mem_mapped_run(at, 1)) memcpy(w, GP(at), (size_t)mem_mapped_run(at, sizeof w));
     return snx_ld_le32(w);
 }
 static int stage_of(NvnProgram* o, u64 data, u64 control) {
@@ -1853,7 +1858,11 @@ static int set_shaders(u64 p, const NvnShaderSet* st, i32 n) {
         u32 stage;
         i32 rank;
         if (!control) continue; /* a slot the game never set, which the game's own driver skips */
-        if (!stage_of(o, data, control)) return 0;
+        if (!stage_of(o, data, control)) {
+            LOG_LIMIT(8, "nvn: stage %d refused (control %llx magic %x version %x data %llx)\n", i,
+                      (unsigned long long)control, sec32(control, 0), sec32(control, 4), (unsigned long long)data);
+            return 0;
+        }
         /* a Switch 2 compute program's c[0] record (NVN_PROG_C0) */
         if (g_nvn.loader.api >= 231u << 16 && switch2_section(control) &&
             stage11(data) == NVN_SHADER_STAGE_COMPUTE)
@@ -1931,9 +1940,10 @@ int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {
     (void)c;
     if (n < 0 || n > 6) return 0;
     for (i = 0; i < n; i++) {
-        st[i].data = gr64(sd + 0x18 * (u64)i);
-        st[i].control = nvn_gptr(sd + 0x18 * (u64)i + 8);
+        st[i].data = gr64(sd + sizeof(NVNshaderData) * (u64)i);
+        st[i].control = nvn_gptr(sd + sizeof(NVNshaderData) * (u64)i + 8);
     }
+
     return set_shaders(p, st, n);
 }
 /* NVN 55's SetShaders: 0x18 bytes a stage, NVNshaderData and an 8-byte extension, which nxnative doesn't use either */
@@ -1943,8 +1953,8 @@ int nvn_ProgramSetShadersExt(CPU* c, u64 p, i32 n, u64 sd) {
     (void)c;
     if (n < 0 || n > 6) return 0;
     for (i = 0; i < n; i++) {
-        st[i].data = gr64(sd + 0x18 * (u64)i);
-        st[i].control = nvn_gptr(sd + 0x18 * (u64)i + 8);
+        st[i].data = gr64(sd + sizeof(NVNshaderData) * (u64)i);
+        st[i].control = nvn_gptr(sd + sizeof(NVNshaderData) * (u64)i + 8);
     }
     return set_shaders(p, st, n);
 }
