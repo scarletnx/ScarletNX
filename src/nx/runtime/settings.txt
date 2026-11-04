@@ -178,7 +178,8 @@ setting Stats
     default 0
     words Off|On
     help 1 = the frames a second, the last frame's time, the processor and memory the game takes and a graph of its
-    help last 120 frames' times, in a corner over the game. F12 or the game's menu turns it on and off
+    help last 120 frames' times, in a corner over the game. With frame interpolation on, the generated frames a second
+    help and their total stand beside the game's own. F12 or the game's menu turns it on and off
 setting Stats corner
     key stats_corner
     text 3

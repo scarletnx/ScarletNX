@@ -680,7 +680,10 @@ fullscreen; F12 stats on and off; `upscaler_key` (Ctrl+U by default) cycles the 
 Bilinear, NVIDIA NIS, Qualcomm SGSR and None; `aa_key` (Ctrl+Shift+A by default) cycles the anti aliasing through
 Auto, FXAA, SMAA, SSAA 2x, SSAA 4x and Off; `frame_interp_key` (Ctrl+Shift+F by default) cycles frame interpolation
 through Off, Auto and Blend; `hdr_key` (Ctrl+H by default) turns HDR on and off, the toast naming
-what the display took; `docked_key` (Ctrl+D by default) cycles TV mode On, Off and Auto; Pause pauses the whole game and
+what the display took; `docked_key` (Ctrl+D by default) cycles TV mode On, Off and Auto. The four effect keys and their
+toast work on every frontend: the Switch's overlay, and the 3DS, Vita and GBA show the same words over the frame. With
+frame interpolation on, F12's stats line shows the game's own frames a second, the generated ones beside it and their
+total. Pause pauses the whole game and
 resumes it (the window's title says "(paused)"); Escape quit. A window shows at most one image per refresh and drops
 the rest unless images tear, and the game keeps the pace `fps_limit` sets.
 

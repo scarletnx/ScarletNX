@@ -37,7 +37,9 @@ frame takes the shared effects of every Vulkan frontend (`upscaler`, `aa`,
 `hdr*`): FSR 1 and the other spatial filters, FXAA, SMAA or SSAA, and the HDR
 composition and encode. A host with no Vulkan window keeps SDL's renderer and
 the plain blit. `frame_interp` presents a blended frame between each two game frames where `auto` finds a display
-fast enough, or with `blend` where the player asks. `frame_interp_key` (Ctrl+Shift+F) cycles it. `--fullscreen=1` starts it fullscreen, and F11
+fast enough, or with `blend` where the player asks. The runtime's keys work here as on every frontend: `upscaler_key`,
+`aa_key`, `hdr_key` and `frame_interp_key` change the effects live, and the same toast names the choice over the
+frame. `--fullscreen=1` starts it fullscreen, and F11
 switches. The keyboard is the Switch runtime's: the arrows are the D-pad, X or
 Space A, Z B, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are
 where the console has them (A east, B south), its shoulders and triggers L and
