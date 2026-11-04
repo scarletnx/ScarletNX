@@ -1338,11 +1338,8 @@ static int ww_scan_free(u64 a, u64 e) {
     }
     return r;
 }
-/* scans leaves [lo, hi], claimed by the caller, in the epoch seen - 1, and ends the claims: 0, or -1 when tracking
-   failed */
-static int ww_scan_leaves(u64 lo, u64 hi, u32 seen, WwStage* st) {
-    t_buffer.wstage = st;
-    int r = ww_scan_free(lo << WW_LEAF_SHIFT, (hi + 1) << WW_LEAF_SHIFT);
+/* what a scan put in st, in g_wres for the next check to mark, before its leaves' claims end */
+static void ww_publish(WwStage* st) {
     pm_lock(&g_wres_lk);
     int n = g_wres_n;
     for (int i = 0; i < st->n; i++)
@@ -1356,6 +1353,13 @@ static int ww_scan_leaves(u64 lo, u64 hi, u32 seen, WwStage* st) {
     __atomic_store_n(&g_wres_n, n, __ATOMIC_RELEASE);
     pm_unlock(&g_wres_lk);
     st->n = 0;
+}
+/* scans leaves [lo, hi], claimed by the caller, in the epoch seen - 1, and ends the claims: 0, or -1 when tracking
+   failed */
+static int ww_scan_leaves(u64 lo, u64 hi, u32 seen, WwStage* st) {
+    t_buffer.wstage = st;
+    int r = ww_scan_free(lo << WW_LEAF_SHIFT, (hi + 1) << WW_LEAF_SHIFT);
+    ww_publish(st);
     if (r < 0) __atomic_store_n(&g_wscan_failed, 1, __ATOMIC_RELEASE);
     for (u64 l = lo; l <= hi; l++) {
         if (r == 0) __atomic_store_n(&g_wleaf_done[l], seen, __ATOMIC_RELEASE);
@@ -1636,6 +1640,35 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
     return 0;
 }
 u32 vk_ww_now(void) { return g_wclock; }
+/* the hot pages of guest memory [a, e) protected again and reported (plat_ww_cool), its leaves claimed as a check's
+   scan claims them: 1 when it had any, which the next ww_take_scanned marks */
+static int ww_cool_range(u64 a, u64 e) {
+    u64 lo = a >> WW_LEAF_SHIFT, hi = (e - 1) >> WW_LEAF_SHIFT;
+    if (!plat_ww_hot_in(GP(a), e - a)) return 0;
+    for (u64 l = lo; l <= hi; l++)
+        while (!ww_claim(l)) plat_yield();
+    t_buffer.wstage = &g_wstage_check;
+    plat_ww_cool(GP(a), e - a, ww_note);
+    ww_publish(&g_wstage_check);
+    for (u64 l = lo; l <= hi; l++) __atomic_store_n(&g_wleaf_busy[l], 0, __ATOMIC_RELEASE);
+    return 1;
+}
+void vk_ww_cool(const u8* host, u64 len) {
+    if (g_ww <= 0 || !host || !len) return;
+    u64 o = (u64)(host - g_mem);
+    if (o >= AS_SIZE) return;
+    if (len > AS_SIZE - o) len = AS_SIZE - o;
+    int cooled = ww_cool_range(o, o + len);
+    if (mem_alias_any()) { /* a write through another address of the pages reads as one at these (ww_take_peers) */
+        WwPeers at;
+        at.n = at.over = 0;
+        mem_alias_peers(o, len, ww_peer_note, &at);
+        for (int i = 0; i < at.n; i++) cooled |= ww_cool_range(at.r[i].a, at.r[i].e);
+    }
+    if (!cooled) return;
+    ww_take_scanned(); /* newer than every baseline before, and no newer than the one the caller takes next */
+    ww_take_peers();
+}
 /* fn(user, at, n) for each run of [host, host + len) on pages written after since, at the range's byte offset at: for
    a range vk_written_since(host, len, since) has just found written, so its pages are marked */
 static int page_written(u64 pg, u32 since) {

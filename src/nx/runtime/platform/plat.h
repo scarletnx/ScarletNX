@@ -144,6 +144,13 @@ int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size));
    Windows' write watch) */
 void plat_ww_open(u8* p, u64 size);
 void plat_ww_close(u8* p, u64 size);
+/* Hot pages (write_tracking_hot=1, with page protection only): a page the scans found written in a row is left
+   writable and reported written by every scan, so a scan may report one nothing wrote. plat_ww_hot_in says whether
+   [p, p + size) has one; plat_ww_cool protects its hot pages again and reports them to cb as written, as a scan
+   would, so from then on a report of one stands for a write. A consumer whose "written" must be exact (a render
+   target's baseline) cools its pages after it took their writes in. Nothing where no page is hot */
+int plat_ww_hot_in(const u8* p, u64 size);
+void plat_ww_cool(u8* p, u64 size, void (*cb)(u8* p, u64 size));
 /* The alias pool: one host memory object whose pages can be mapped at several addresses of the reservation at once,
    and outside it, so two guest addresses (MapMemory's view and its source, code memory's owner and slave, shared
    memory and its service) are the same pages. Linux and Android (a memfd); elsewhere plat_alias_init says -1 and

@@ -2683,13 +2683,20 @@ if(NOT WIN32 AND TARGET SDL3::SDL3) # SDL3 is there with a driver that draws (cm
         target_link_libraries(snx-test-platform-posix PRIVATE "-framework IOKit" "-framework CoreFoundation")
     endif()
     add_test(NAME platform_posix COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}")
-    # the written-page tracking macOS, FreeBSD, Android and older Linux have: protection and the fault handler; and
-    # none: the scan says so, and the caches compare contents. Each in a folder of its own, as ctest may run them at
-    # once and each writes and replaces the same files
+    # the written-page tracking macOS, FreeBSD, Android and older Linux have: protection and the fault handler, also
+    # with its hot pages from the setting (write_tracking_hot, which says it does nothing where userfaultfd tracks);
+    # and none: the scan says so, and the caches compare contents. Each in a folder of its own, as ctest may run them
+    # at once and each writes and replaces the same files
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_signal_ww"
+         "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_signal_ww_hot" "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_hot"
          "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_no_tracking")
     add_test(NAME platform_posix_signal_ww
              COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_signal_ww" --write_tracking=1)
+    add_test(NAME platform_posix_signal_ww_hot
+             COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_signal_ww_hot"
+                     --write_tracking=1 --write_tracking_hot=1)
+    add_test(NAME platform_posix_hot
+             COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_hot" --write_tracking_hot=1)
     add_test(NAME platform_posix_no_tracking
              COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_no_tracking" --write_tracking=2)
 endif()
