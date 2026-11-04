@@ -13,6 +13,7 @@
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/utilities/bits.h"
+#include "snx_settings.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -177,6 +178,10 @@ int snx_fx_hdr_parse(const char* value) {
     static const signed char ids[] = {SNX_FX_HDR_OFF, SNX_FX_HDR_OFF, SNX_FX_HDR_OFF, SNX_FX_HDR_AUTO,
                                       SNX_FX_HDR_ON,  SNX_FX_HDR_ON,  SNX_FX_HDR_ON};
     return parse_word(value, words, ids, (int)(sizeof ids / sizeof *ids), SNX_FX_HDR_OFF);
+}
+int snx_fx_hdr_wanted(void) {
+    int mode = snx_fx_hdr_parse(g_settings.hdr);
+    return g_settings.hdr_test_pattern && mode == SNX_FX_HDR_OFF ? SNX_FX_HDR_ON : mode;
 }
 const char* snx_fx_hdr_key(int mode) {
     static const char* const keys[] = {"off", "auto", "on"};

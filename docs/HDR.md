@@ -87,6 +87,6 @@ Horizon (`https://github.com/horizon-rust/horizon`) does the same job and is wor
 - `src/3ds/gpu/present.c`, `src/vita/gpu/vk.c`, `src/agb/runtime/vk.c`: their paper and peak, resolved once at start.
 - `tests/present_fx.c`: the headless check of the paper white's effect on the light (compose, PQ encode, decode back).
 - `hdr_test` (Debug): draws the band of known light (black, the paper white, then 1.25×, 1.5×, 1.75× and 2× it) on
-  every frontend. Where the steps above the paper white look the same, the display clips there: the test of whether the
+  every frontend, taking the HDR passes even where `hdr` would be off. Where the steps above the paper white look the same, the display clips there: the test of whether the
   lift reaches the screen, and of how much headroom the display really has.
 - `tests/hdr_select.c`: the shaders' numbers against `hdr_select.c`'s.

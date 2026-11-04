@@ -50,6 +50,9 @@ int snx_fx_aa_parse(const char* value);
 const char* snx_fx_aa_key(int aa);
 const char* snx_fx_aa_label(int aa);
 int snx_fx_hdr_parse(const char* value);
+/* The HDR mode the run takes: the hdr setting, with the test pattern forcing HDR on, since the band is drawn in the HDR
+   passes and a run that would be SDR has none to show */
+int snx_fx_hdr_wanted(void);
 const char* snx_fx_hdr_key(int mode);
 const char* snx_fx_hdr_label(int mode);
 int snx_fx_colorspace_parse(const char* value);

@@ -111,8 +111,13 @@ static int vkr_start(void) {
     g_vk_scale = g_settings.resolution_scale;       /* the .ini keeps resolution within 0.25 to 16 (options.c) */
     g_vk_anisotropy = g_settings.anisotropic_filtering; /* the sampler table keeps what it makes: anisotropy applies at start */
     vk_upscale_configure(snx_upscale_parse(g_settings.upscaler), g_settings.sharpness);
-    vk_hdr_configure(snx_hdr_parse(g_settings.hdr), snx_hdr_source_parse(g_settings.hdr_source),
-                     g_settings.hdr_paper_white, g_settings.hdr_peak, g_settings.hdr_expansion, g_settings.hdr_test_pattern);
+    {
+        /* the test pattern is drawn in the HDR passes: it takes them even where hdr would be off */
+        int mode = snx_hdr_parse(g_settings.hdr);
+        if (g_settings.hdr_test_pattern && mode == SNX_HDR_OFF) mode = SNX_HDR_ON;
+        vk_hdr_configure(mode, snx_hdr_source_parse(g_settings.hdr_source), g_settings.hdr_paper_white,
+                         g_settings.hdr_peak, g_settings.hdr_expansion, g_settings.hdr_test_pattern);
+    }
     g_present_fx = snx_fx_create(g_vk.phys, g_vk.dev, g_vk.gfx, g_vk.gfx_family, vk_pipeline_cache(), VK_FRAMES,
                                  vk_frame_slot, vk_render_forget_state, present_fx_log);
     if (g_present_fx) {

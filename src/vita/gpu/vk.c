@@ -134,7 +134,7 @@ static int choose_display(VitaVk* v, VkFormat* format, VkColorSpaceKHR* space) {
     static const VkFormat hdr_formats[] = {VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_FORMAT_A2R10G10B10_UNORM_PACK32};
     static const VkFormat scrgb_formats[] = {VK_FORMAT_R16G16B16A16_SFLOAT};
     VkSurfaceFormatKHR f = {0};
-    int mode = snx_fx_hdr_parse(g_settings.hdr);
+    int mode = snx_fx_hdr_wanted();
     int cs = snx_fx_colorspace_parse(g_settings.hdr_colours);
     int kind = SNX_FX_DISPLAY_NONE;
     if (!v->host.surface || mode == SNX_FX_HDR_OFF) return SNX_FX_DISPLAY_NONE;
@@ -279,7 +279,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
         SnxFxConfig cfg = {snx_fx_upscale_parse(g_settings.upscaler),
                            g_settings.sharpness,
                            snx_fx_aa_parse(g_settings.anti_aliasing),
-                           snx_fx_hdr_parse(g_settings.hdr),
+                           snx_fx_hdr_wanted(),
                            snx_fx_colorspace_parse(g_settings.hdr_colours),
                            snx_fx_source_parse(g_settings.hdr_source),
                            g.paper,

@@ -791,7 +791,8 @@ setting HDR test pattern
     words Off|On
     help On = a band at the bottom of the window shows six patches of known light: black, the paper white, and 1.25, 1.5,
     help 1.75 and 2 times it. The steps above the paper white are the display's headroom; where the last ones look the
-    help same, the display or its layer clips there. It proves the lift reaches the screen, and is drawn in the frame
+    help same, the display or its layer clips there. It proves the lift reaches the screen, and is drawn in the frame.
+    help It takes the HDR passes even where hdr would be off
 setting Log level
     key log
     int 0 2
