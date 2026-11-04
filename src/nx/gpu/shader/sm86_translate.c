@@ -33,6 +33,7 @@ typedef struct {
     /* resources, made when first used */
     u32 cbuf[18], cbuf_ptr, root;
     u32 gbuf[16], gbuf_ptr;
+    u32 wpages; /* SNX_VKB_WPAGES, once a store marks a window (mark_written) */
     u32 shared, shared_ptr, shared_words;
     u32 in_attr[32], out_attr[32], position, point_size, fragcoord, color[8], depth;
     u32 vertex_index, instance_index, local_id, group_id, lane_id;
@@ -560,6 +561,31 @@ static u32 gbuf_slot(Ctx* c, u32 key, int write) {
     if (write) c->si->gbuf_wmask |= 1u << slot;
     return c->gbuf[slot];
 }
+/* A compute program's store to global buffer slot marks the 4 KiB window of its byte offset in the binding
+   (ShaderInfo.gbuf_marks): a plain store of 1, as every store of a window writes the same, into the word slot *
+   SH_WPAGE_SLOT + window of the binding SNX_VKB_WPAGES. A store past the windows marks the last. The renderer then
+   lands only the windows marked: an Ounce program's buffer is all of the memory mapped from its address, up to 16 MiB,
+   and comparing all of it after each dispatch was most of one game's CPU time */
+static void mark_written(Ctx* c, u32 key, u32 offset) {
+    int slot = -1;
+    if (c->stage != ST_CS) return;
+    for (int i = 0; i < c->si->ngbuf; i++)
+        if (c->si->gbuf_cbuf_off[i] == key) slot = i;
+    if (slot < 0) return;
+    if (!c->wpages) {
+        u32 array = spv_emit_type_runtime_array(&c->e, c->t_u32, 4);
+        u32 structure = spv_emit_type_struct_one(&c->e, array);
+        c->wpages = spv_emit_storage_buffer(&c->e, structure, (u32)shader_vk_set(c->stage), SNX_VKB_WPAGES);
+        add_interface(c, c->wpages);
+    }
+    u32 window = spv_emit_shift_right_u32(&c->e, c->t_u32, offset, cu(c, 12)), last = cu(c, SH_WPAGE_SLOT - 1);
+    window = spv_emit_select(&c->e, c->t_u32, spv_emit_u_less(&c->e, c->t_bool, last, window), last, window);
+    u32 index = spv_emit_iadd_u32(&c->e, c->t_u32, window, cu(c, (u32)slot * SH_WPAGE_SLOT));
+    u32 ptr = spv_emit_storage_access_u32(&c->e, spv_emit_type_storage_pointer(&c->e, c->t_u32), c->wpages, c->zero,
+                                          index);
+    spv_emit_store(&c->e, ptr, cu(c, 1));
+    c->si->gbuf_marks |= 1u << slot;
+}
 /* LDG and STG, as spirv_translate.c's global memory: the buffer is the one whose 64-bit address the constant buffer
    word that track_globals found holds (ShaderInfo.gbuf_cbuf_off), and the byte offset into it is the address less
    that word, read at run time. The address is a register (a pair with bit 90 for the uniform form, bit 72 for the
@@ -586,7 +612,9 @@ static u32 global_address(Ctx* c, const Sm86Insn* in, int uniform_form, int writ
     }
     u32 base = cbuf_load(c, SH_GBUF_BANK(key), SH_GBUF_OFFSET(key), 0);
     *offset = spv_emit_isub_u32(&c->e, c->t_u32, at, base);
-    return gbuf_slot(c, key, write);
+    u32 buffer = gbuf_slot(c, key, write);
+    if (write && buffer) mark_written(c, key, *offset);
+    return buffer;
 }
 /* The constant buffer word that holds the base of each LDG's and STG's address, in program order: a register
    gets the word that ULDC.64, LDC.64 or MOV loads into it, and keeps it through moves and through IADD3, IMAD,

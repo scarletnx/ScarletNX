@@ -48,6 +48,7 @@ typedef struct {
     u64 addr;
     u64 off;
     u32 size;
+    u64 marks; /* where in the arena the windows its stores marked are (vk_dispatch's marks), ~0 when none were */
 } CsOut;
 static CsOut g_out[256];
 static int g_nout;
@@ -353,9 +354,33 @@ static void cs_wait(u64 value) {
     __atomic_add_fetch(&g_vk_cs_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
 }
 /* the arena's results that changed, into guest memory, after its batch is done */
+/* the arena's results that changed, into guest memory, after its batch is done: of a result whose stores marked the
+   windows they wrote, those windows alone, each run of marked ones at once */
 static void cs_write_back(VmaAllocation mem, const u8* ar, const u8* org, const CsOut* out, int nout) {
     vmaInvalidateAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE);
-    for (int i = 0; i < nout; i++) vk_write_changed(out[i].addr, ar + out[i].off, org + out[i].off, out[i].size);
+    for (int i = 0; i < nout; i++) {
+        u64 a = out[i].addr, o = out[i].off;
+        u32 size = out[i].size;
+        if (out[i].marks == ~0ull) {
+            vk_write_changed(a, ar + o, org + o, size);
+            continue;
+        }
+        const u32* w = (const u32*)(const void*)(ar + out[i].marks);
+        u32 windows = (size + 4095) / 4096;
+        if (windows > SH_WPAGE_SLOT) windows = SH_WPAGE_SLOT;
+        for (u32 j = 0; j < windows;) {
+            if (!w[j]) {
+                j++;
+                continue;
+            }
+            u32 k = j;
+            while (k < windows && w[k]) k++;
+            u64 from = (u64)j * 4096, to = (u64)k * 4096 < size ? (u64)k * 4096 : size;
+            if (k == SH_WPAGE_SLOT) to = size; /* the last window takes every store past the windows */
+            vk_write_changed(a + from, ar + o + from, org + o + from, (u32)(to - from));
+            j = k;
+        }
+    }
 }
 /* an arena whose batch has landed: draws that read it may still run (gfx), so it waits for their frame like the
    arenas draws read; one they didn't read is free now */
@@ -1373,6 +1398,31 @@ rebind:
                                        .pBufferInfo = &bi[nw]};
         nw++;
     }
+    /* the windows a marking program's stores write (ShaderInfo.gbuf_marks), a word each, its global buffers' one after
+       another: cleared, and on the graphics queue read where each result lands (buffer.c's land_marked), which then
+       compares those windows alone. On the compute queue, whose results land whole, they are scratch */
+    u32* marks = NULL;
+    VmaAllocation marks_mem = VK_NULL_HANDLE;
+    VkBuffer marks_buf = VK_NULL_HANDLE;
+    u64 marks_off = 0, marks_size = 0;
+    if (p->si.gbuf_marks) {
+        u32 slots = 0;
+        while (p->si.gbuf_marks >> slots) slots++;
+        marks_size = (u64)slots * SH_WPAGE_SLOT * 4;
+        if (deferred) {
+            marks = (u32*)vk_stage_output(marks_size, g_vk.props.limits.minStorageBufferOffsetAlignment, &marks_buf,
+                                          &marks_off, &marks_mem);
+            if (!marks) {
+                g_cs_skips[CS_SKIP_RESOURCES]++;
+                return;
+            }
+            memset(marks, 0, marks_size);
+        } else {
+            marks_buf = g_ar;
+            marks_off = arena_alloc(marks_size);
+            memset(g_ar_ptr + marks_off, 0, marks_size);
+        }
+    }
     u64 so[16];
     VkBuffer bi_buf[16];
     int chained = 0;
@@ -1404,6 +1454,8 @@ rebind:
                 g_cs_skips[CS_SKIP_STORAGE_BUFFER]++;
                 return;
             }
+            if (marks && (p->si.gbuf_wmask >> i & 1) && (p->si.gbuf_marks >> i & 1))
+                vk_buf_writable_marks(marks + (size_t)i * SH_WPAGE_SLOT, marks_mem);
             so[i] = o;
         } else {
             if (chain[i] >= 0) chained = 1;
@@ -1420,6 +1472,16 @@ rebind:
         w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
                                        .dstBinding = SNX_VKB_SSBO + i,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                       .pBufferInfo = &bi[nw]};
+        nw++;
+    }
+    if (marks_size) {
+        bi[nw] = (VkDescriptorBufferInfo){marks_buf, marks_off, marks_size};
+        w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = SNX_VKB_WPAGES,
                                        .descriptorCount = 1,
                                        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                        .pBufferInfo = &bi[nw]};
@@ -1643,7 +1705,9 @@ rebind:
     for (int i = 0; i < ng && !deferred; i++)
         if (((p->si.gbuf_wmask >> i) & 1) && sa[i]) {
             memcpy(g_org + so[i], g_ar_ptr + so[i], ss[i]);
-            g_out[g_nout++] = (CsOut){sa[i], so[i], ss[i]};
+            g_out[g_nout++] =
+                (CsOut){sa[i], so[i], ss[i],
+                        marks_size && (p->si.gbuf_marks >> i & 1) ? marks_off + (u64)i * SH_WPAGE_SLOT * 4 : ~0ull};
             pend_add(&g_pages, sa[i], ss[i], 1);
         }
     /* buffer images land like storage buffers: only the bytes the dispatch changed are written back */
@@ -1656,6 +1720,7 @@ rebind:
             g_out[g_nout].addr = bimg[i].gva;
             g_out[g_nout].off = bufimg_off[i];
             g_out[g_nout].size = bimg[i].bytes;
+            g_out[g_nout].marks = ~0ull;
             g_nout++;
             pend_add(&g_pages, bimg[i].gva, bimg[i].bytes, 1);
         }

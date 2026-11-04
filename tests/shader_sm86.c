@@ -365,6 +365,7 @@ static void test_programs(const char* spirv_val, const char* dir) {
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "compute: %s\n", si.first_unsupported);
     CHECK(si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x20 && si.gbuf_wmask == 1 && (si.cbuf_mask & 1));
+    CHECK(si.gbuf_marks == 1); /* its store marks its window (SNX_VKB_WPAGES) */
     if (spv) CHECK(validate(spirv_val, dir, "cs", spv, count));
     free(spv);
     si = (ShaderInfo){0};
