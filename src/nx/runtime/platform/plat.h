@@ -127,8 +127,8 @@ void plat_gpu_buffer_free(int fd, void* handle, u64 size);
    device, a named anonymous mapping such as ART's or the allocator's, a memfd other than the alias pool's), and a run
    that nothing maps, which any mmap of the process may then be given. Their count, each one named in out (its range,
    permissions and name) as far as it fits; 0 when the range is the guest's alone; -1 where the system does not say
-   (no /proc/self/maps). A plain anonymous mapping of another owner reads as the guest's. It reads with read(2) into a
-   buffer of its own, so a crash handler may call it */
+   (no /proc/self/maps, or a read of it failed: errno), which tells nothing of the range. A plain anonymous mapping of
+   another owner reads as the guest's. It reads with read(2) into a buffer of its own, so a crash handler may call it */
 int plat_vm_foreign(u64 lo, u64 hi, char* out, size_t size);
 /* Calls cb for each run of pages in [p, p + size) written since they were last scanned, and watches them again.
    -1 when the host can't tell (the caller then compares contents). Linux 6.7 and later use userfaultfd's asynchronous

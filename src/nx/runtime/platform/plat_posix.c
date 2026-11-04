@@ -1369,36 +1369,69 @@ static int foreign_line(char* line, u64 lo, u64 hi, u64* cursor, char* out, size
     return found;
 }
 #endif
-int plat_vm_foreign(u64 lo, u64 hi, char* out, size_t size) {
 #if defined(__linux__)
+/* Each whole line of the maps read from fd, to line(line, ctx), which stops the reading by returning nonzero. 0 at the
+   end of the file or when line stopped it; -1 when a read fails (errno), which says nothing of what follows: the
+   caller must not take the lines it did not get as unmapped. read(2) into a buffer of its own, so a crash handler may
+   call it */
+static int maps_lines(int fd, int (*line)(char*, void*), void* ctx) {
     char buf[8192];
-    size_t have = 0, at = 0;
-    u64 cursor = lo;
-    int found = 0, fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
-    if (size) out[0] = 0;
-    if (fd < 0) return -1;
+    size_t have = 0;
     for (;;) {
         ssize_t n = read(fd, buf + have, sizeof buf - 1 - have);
-        char *line = buf, *nl;
+        char *at = buf, *nl;
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) break;
+        if (n < 0) return -1;
+        if (n == 0) return 0;
         have += (size_t)n;
-        while ((nl = (char*)memchr(line, '\n', have - (size_t)(line - buf)))) {
+        while ((nl = (char*)memchr(at, '\n', have - (size_t)(at - buf)))) {
             *nl = 0;
-            found += foreign_line(line, lo, hi, &cursor, out, size, &at);
-            line = nl + 1;
+            if (line(at, ctx)) return 0;
+            at = nl + 1;
         }
-        have -= (size_t)(line - buf);
-        memmove(buf, line, have);
+        have -= (size_t)(at - buf);
+        memmove(buf, at, have);
         if (have == sizeof buf - 1) have = 0; /* a line longer than the buffer, none of /proc/self/maps' */
     }
+}
+typedef struct {
+    u64 lo, hi, cursor;
+    char* out;
+    size_t size, at;
+    int found;
+} Foreign;
+static int foreign_cb(char* line, void* ctx) {
+    Foreign* f = (Foreign*)ctx;
+    f->found += foreign_line(line, f->lo, f->hi, &f->cursor, f->out, f->size, &f->at);
+    return 0;
+}
+/* plat_vm_foreign over the maps read from fd */
+static int foreign_scan(int fd, u64 lo, u64 hi, char* out, size_t size) {
+    Foreign f = {lo, hi, lo, out, size, 0, 0};
+    if (size) out[0] = 0;
+    if (maps_lines(fd, foreign_cb, &f)) {
+        if (size) out[0] = 0;
+        return -1;
+    }
+    if (f.cursor < hi) f.found += foreign_add(out, size, &f.at, "nothing mapped at", f.cursor, hi, NULL, NULL);
+    if (size) out[f.at < size ? f.at : size - 1] = 0;
+    return f.found;
+}
+#endif
+int plat_vm_foreign(u64 lo, u64 hi, char* out, size_t size) {
+#if defined(__linux__)
+    int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC), found, err;
+    if (size) out[0] = 0;
+    if (fd < 0) return -1;
+    found = foreign_scan(fd, lo, hi, out, size);
+    err = errno;
     close(fd);
-    if (cursor < hi) found += foreign_add(out, size, &at, "nothing mapped at", cursor, hi, NULL, NULL);
-    if (size) out[at < size ? at : size - 1] = 0;
+    errno = err;
     return found;
 #else
     (void)lo, (void)hi;
     if (size) out[0] = 0;
+    errno = ENOSYS;
     return -1;
 #endif
 }

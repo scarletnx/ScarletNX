@@ -18,6 +18,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "snx_settings.h"
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -229,6 +230,9 @@ void nce_kick(struct KThread* t) {
 static int guest_foreign(const char* when) {
     char found[1024];
     int n = mem_foreign(found, sizeof found);
+    if (n < 0)
+        WARN_LIMIT(1, "nce: what lies in the guest's addresses cannot be read (%s): it is not looked at\n",
+                   strerror(errno));
     if (n > 0) {
         WARN("nce: in the guest's addresses: %s\n", found); /* names and paths, which the fatal's text keeps out */
         fatal("NCE: %s, the guest's addresses %#llx to %#llx hold %d thing%s of the host's process that %s not the "

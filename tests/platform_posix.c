@@ -377,6 +377,15 @@ static void test_foreign(void) {
         printf("  a named anonymous mapping skipped: this kernel names none (%s)\n", strerror(errno));
 #endif
     CHECK(plat_vm_foreign(hi, hi + pg, out, sizeof out) >= 0, "a range past it reads");
+    /* a read that fails is no answer, not the end of the maps: nothing past it reads as unmapped */
+    {
+        int dir = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        CHECK(dir >= 0, "a directory to read from");
+        errno = 0;
+        n = foreign_scan(dir, lo, hi, out, sizeof out);
+        CHECK(n == -1 && errno == EISDIR && !out[0], "a failed read of the maps is no gap");
+        close(dir);
+    }
     munmap(r, 64 * pg);
     close(alias);
     close(jit);
