@@ -14901,14 +14901,17 @@ static void open_picker(App* app) {
     if (app->picked) SDL_ShowOpenFileDialog(picker_done, &app->picked, app->window, NULL, 0, NULL, false);
 #endif
 }
-/* the last max bytes of a file, as text with only ASCII (what Java takes as a string from any log), or "". A CR before
-   an LF goes (a log on Windows has CRLF lines), so a line ends where its text does */
+/* the last max bytes of a file from the first line that starts in them, as text with only ASCII (what Java takes as a
+   string from any log), or "". A home folder cut in two is no longer one to the tilde, so its account's name would
+   stay. A CR before an LF goes (a log on Windows has CRLF lines), so a line ends where its text does */
 static char* log_tail(const char* path, size_t max) {
-    size_t size = 0, i, n = 0;
+    size_t size = 0, at, n = 0;
     unsigned char* data = path ? snx_read_file(path, &size) : NULL;
-    char* text = (char*)snx_alloc(SDL_min(size, max) + 1);
-    for (i = 0; i < SDL_min(size, max); ++i) {
-        size_t at = size - SDL_min(size, max) + i;
+    char* text;
+    at = size > max ? size - max : 0;
+    while (at > 0 && at < size && data[at - 1] != '\n') ++at;
+    text = (char*)snx_alloc(size - at + 1);
+    for (; at < size; ++at) {
         unsigned char c = data[at];
         if (c == '\r' && at + 1 < size && data[at + 1] == '\n') continue;
         text[n++] = c == '\n' || c == '\t' || (c >= 32 && c < 127) ? (char)c : '?';

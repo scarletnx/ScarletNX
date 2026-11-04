@@ -12292,6 +12292,32 @@ int main(int argc, char** argv) {
         app.browser = (GuiBrowser){0};
         app.theme = *gui_theme_builtin("default");
     }
+    /* Share Log's logs from a line's start (log_tail): a cut inside one would leave part of a home folder's path, which
+       the tilde no longer knows as one, and the account's name with it. A log within max whole; past it, from the first
+       line that starts in its last max bytes to its end, nothing when none does; CRs before LFs gone */
+    {
+        static const char lines[] = "[   0.10] first\r\n"
+                                    "[   0.20] fs: sdmc in C:\\Users\\Some One\\AppData\\Roaming\r\n"
+                                    "[   0.30] last\r\n";
+        char *path = snx_path_join(temporary, "tail.log"), *tail;
+        size_t cut = (size_t)(strstr(lines, "sers\\") - lines), size = sizeof lines - 1;
+        assert(!snx_write_file(path, lines, size));
+        tail = log_tail(path, size);
+        assert(!strcmp(
+            tail, "[   0.10] first\n[   0.20] fs: sdmc in C:\\Users\\Some One\\AppData\\Roaming\n[   0.30] last\n"));
+        free(tail);
+        tail = log_tail(path, size - cut); /* cut after "C:\U": the next line on */
+        assert(!strcmp(tail, "[   0.30] last\n"));
+        free(tail);
+        tail = log_tail(path, sizeof "[   0.30] last\r\n" - 1); /* cut where a line starts: from it */
+        assert(!strcmp(tail, "[   0.30] last\n"));
+        free(tail);
+        tail = log_tail(path, 3); /* inside the last line */
+        assert(!strcmp(tail, ""));
+        free(tail);
+        assert(!remove(path));
+        free(path);
+    }
     /* Share Log, on every system: share/ of Folders' Logs emptied of what was shared before, scarletnx-logs-<when>.zip
        in it (its summary.txt with the message and the last run's output), and that folder opened */
     {
