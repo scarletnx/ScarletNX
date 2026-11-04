@@ -10,6 +10,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32) || defined(__APPLE__)
+int main(void) {
+    printf("llvm_object_symbols skipped: the object check reads ELF objects, and this host writes COFF or Mach-O\n");
+    return 77;
+}
+#else
 /* name(double) or name(ptr, i64) as one function of a fresh x86-64 module; 0 when snx_ir_object made the object, -1
    with its error when it refused */
 static int object_of(const char* what, char* error, size_t error_size) {
@@ -43,10 +49,6 @@ static int object_of(const char* what, char* error, size_t error_size) {
 }
 
 int main(void) {
-#if defined(_WIN32) || defined(__APPLE__)
-    printf("llvm_object_symbols skipped: the object check reads ELF objects, and this host writes COFF or Mach-O\n");
-    return 77;
-#else
     char error[1024] = {0};
     int failed = 0, rc;
     if (snx_ir_init(error, sizeof error)) return snx_error("%s", error);
@@ -78,5 +80,5 @@ int main(void) {
         failed = 1;
     }
     return failed;
-#endif
 }
+#endif
