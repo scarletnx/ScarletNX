@@ -12,7 +12,8 @@ body:
         idea. Replace `[area]` in the title with the part of ScarletNX this belongs to: `[runtime]`, `[gpu]`,
         `[gui]`, `[loader]`, `[services]`, `[kernel]`, `[build]`, `[ci]`, `[test]` or `[docs]`. Add the platform
         when it matters, as in `[gpu, linux]`. The label workflow turns those into the matching `area:` and
-        `platform:` labels; this form adds `kind: enhancement` itself.
+        `platform:` labels; this form adds `kind: enhancement` itself. After the area, write a short, descriptive
+        title.
 
         Attach nothing of a game: no keys, dumps, ROMs or game files.
   - type: textarea
