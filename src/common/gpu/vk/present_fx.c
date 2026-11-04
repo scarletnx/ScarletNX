@@ -78,6 +78,7 @@ struct SnxFx {
     FxImage weight[SNX_FX_SLOTS_MAX];
     VkDescriptorSet fsr_easu[SNX_FX_SLOTS_MAX], fsr_rcas[SNX_FX_SLOTS_MAX];
     VkDescriptorSet copy_set[SNX_FX_SLOTS_MAX], fxaa_set[SNX_FX_SLOTS_MAX];
+    VkDescriptorSet ssaa_set[SNX_FX_SLOTS_MAX]; /* the downsample's own: the copy set is bound by the pass before it */
     VkDescriptorSet edge_set[SNX_FX_SLOTS_MAX], weight_set[SNX_FX_SLOTS_MAX], blend_set[SNX_FX_SLOTS_MAX];
     VkImage area, search;
     VkDeviceMemory area_mem, search_mem;
@@ -629,7 +630,7 @@ SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, uint32_
                                           .descriptorSetCount = 1,
                                           .pSetLayouts = all};
         VkDescriptorSet* sets[] = {&fx->fsr_easu[i], &fx->fsr_rcas[i], &fx->copy_set[i], &fx->fxaa_set[i],
-                                   &fx->edge_set[i]};
+                                   &fx->edge_set[i], &fx->ssaa_set[i]};
         for (uint32_t s = 0; s < sizeof sets / sizeof *sets; ++s) {
             ai.pSetLayouts = &one;
             if (!fx_ok(vkAllocateDescriptorSets(fx->dev, &ai, sets[s]))) goto failed;
@@ -1120,7 +1121,9 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, VkImageView src, uint32_t img_w
                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     if (ssaa) {
         if (!img_make(fx, &fx->aa[slot], out_w, out_h, choose_format(fx), fx_usage())) return 0;
-        record_copy(fx, cb, fx->copy_set[slot], fx->main[slot].view, fx->main[slot].width, fx->main[slot].height, 0, 0,
+        /* its own set: the copy set is bound by the pass that filled main, and updating it again would invalidate
+           that draw */
+        record_copy(fx, cb, fx->ssaa_set[slot], fx->main[slot].view, fx->main[slot].width, fx->main[slot].height, 0, 0,
                     fx->main[slot].width, fx->main[slot].height, 0, out_w, out_h, 1, &fx->aa[slot]);
         out->image = fx->aa[slot].image;
         out->view = fx->aa[slot].view;
