@@ -479,6 +479,7 @@ static void make_viewports(NvnDraw* d) {
     int upper_left = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
     DsViewports v;
     memset(&v, 0, sizeof v); /* every byte: keep compares the bytes */
+    /* NVN has no call that turns the viewport transform off */
     v.transform_on = 1;
     v.scissor_on = 1; /* scissor 0, the only one recorded: NVN's covers everything until it is set */
     for (u32 j = 0; j < DS_VIEWPORTS_MAX; j++) {

@@ -245,7 +245,7 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     u32 position_in = t->position_in;
     u32 primitive_id = t->primitive_id;
     u32 primitive_id_out = t->primitive_id_out;
-    int depth_fix = t->depth_fix;
+    int position_fix = t->position_fix;
     u32 sample_mask_output = t->sample_mask_output;
     u32 push = t->push;
     u32 push_pointer = t->push_pointer;
@@ -360,10 +360,10 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         if (passthrough)
             shader_geometry_passthrough(c, si, in_vertices, vec4, position, position_in, output_attrs, inputs,
                                         point_size, layer_output, i32_type, clip_output, clip_count, primitive_id,
-                                        primitive_id_out, depth_fix, push, push_pointer);
+                                        primitive_id_out, position_fix, push, push_pointer);
         if (xfb_on && stage != ST_GS) shader_xfb_store(c, vec4, output_attrs, attr_private, xfb_components);
-        if (depth_fix && stage != ST_GS) { /* a geometry program's vertices are fixed as it emits them */
-            shader_vertex_depth_fix(c, position, push, push_pointer, vec4);
+        if (position_fix && stage != ST_GS) { /* a geometry program's vertices are fixed as it emits them */
+            shader_vertex_position_fix(c, position, push, push_pointer, vec4);
         } else if (stage == ST_FS) {
             u32 reg = 0, output = 0, alpha = zero_f;
             for (u32 rt = 0; rt < 8; rt++) {
