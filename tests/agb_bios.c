@@ -265,6 +265,27 @@ int main(void) {
     CHECK((int32_t)agb_read32(&board, 0x02000608) + 100 * -512 == 0x1080);
     CHECK((int32_t)agb_read32(&board, 0x0200060C) + 40 * -512 == 0x0840);
 
+    /* the console's BIOS, at angles where its sines cut toward zero and pb's sign comes last: 0xBB3B at 1x1 and
+       0x1E84 at 3.2x1, with the start point from that matrix */
+    {
+        static const int32_t in[2][7] = {{154838, -207935, 104, -251, 256, 256, 47931},
+                                         {-308165, -130294, 81, -201, 819, 256, 7812}};
+        static const int32_t out[2][6] = {{-32, 255, -255, -32, 222171, -189447},
+                                          {606, -549, 171, 189, -467600, -106156}};
+        for (int i = 0; i < 2; ++i) {
+            agb_write32(&board, 0x02000400, (uint32_t)in[i][0]);
+            agb_write32(&board, 0x02000404, (uint32_t)in[i][1]);
+            for (int k = 0; k < 5; ++k) agb_write16(&board, 0x02000408 + (uint32_t)k * 2, (uint16_t)in[i][2 + k]);
+            regs[0] = 0x02000400;
+            regs[1] = 0x02000600;
+            regs[2] = 1;
+            CHECK(call(regs, AGB_SWI_BG_AFFINE_SET) == 0);
+            for (int k = 0; k < 4; ++k) CHECK((int16_t)agb_read16(&board, 0x02000600 + (uint32_t)k * 2) == out[i][k]);
+            CHECK((int32_t)agb_read32(&board, 0x02000608) == out[i][4] &&
+                  (int32_t)agb_read32(&board, 0x0200060C) == out[i][5]);
+        }
+    }
+
     /* ObjAffineSet writes the matrix with the stride OAM uses */
     agb_write16(&board, 0x02000500, 256);
     agb_write16(&board, 0x02000502, 256);
@@ -279,6 +300,20 @@ int main(void) {
     CHECK((int16_t)agb_read16(&board, 0x07000002) == 0);
     CHECK((int16_t)agb_read16(&board, 0x07000004) == 0);
     CHECK((int16_t)agb_read16(&board, 0x07000006) == 256);
+    /* and the console BIOS's values at 0x0D37 and 0x2537 (1x1), and 0x2C37 at 1.5x0.75 */
+    {
+        static const int16_t in[3][3] = {{256, 256, 0x0D37}, {256, 256, 0x2537}, {384, 192, 0x2C37}};
+        static const int16_t out[3][4] = {{243, -80, 80, 243}, {157, -201, 201, 157}, {181, -338, 169, 90}};
+        for (int i = 0; i < 3; ++i) {
+            for (int k = 0; k < 3; ++k) agb_write16(&board, 0x02000500 + (uint32_t)k * 2, (uint16_t)in[i][k]);
+            regs[0] = 0x02000500;
+            regs[1] = 0x02000580;
+            regs[2] = 1;
+            regs[3] = 2;
+            CHECK(call(regs, AGB_SWI_OBJ_AFFINE_SET) == 0);
+            for (int k = 0; k < 4; ++k) CHECK((int16_t)agb_read16(&board, 0x02000580 + (uint32_t)k * 2) == out[i][k]);
+        }
+    }
 
     /* MidiKey2Freq: the wave header's rate at the top of the key range is the rate itself */
     agb_write32(&board, 0x02000704, 16744000);
