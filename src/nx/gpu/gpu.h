@@ -342,6 +342,9 @@ void dma_snap_staged_free(DmaStaged* d);
    address and by the guest pages behind them */
 void gpu_mem_written(u64 gva, u64 size);
 void gpu_mem_written_shader(u64 gva, u64 size); /* a shader's result landing in guest memory */
+/* the GPU's pages [gva, gva + size) map other guest memory now (nvdrv.c's mapping changes): they alone read as
+   written, as no guest byte changed */
+void gpu_mem_remapped(u64 gva, u64 size);
 /* guest CPU bytes [cpu, cpu + size) written by an engine that doesn't go through the GPU's address space (VIC's
    picture, published over them, memory/own.c): what is built from them checks them again */
 void gpu_mem_written_cpu(u64 cpu, u64 size);

@@ -334,6 +334,13 @@ int main(void) {
         expect(gpu_mem_dirty_since(g, 0xA000, 0x1000) && gpu_mem_dirty_since(g, 0x4000, 4) &&
                    !gpu_mem_dirty_since(g, 0xB000, 0x1000),
                "a write of guest memory dirties the GPU pages showing it");
+        /* a mapping change writes no guest memory: the GPU page it changed alone reads as written, not the other GPU
+           address showing the same guest page (nvdrv.c's gmmu_change_end) */
+        g = gpu_mem_generation();
+        gpu_mem_remapped(0x3000, 0x1000);
+        expect(gpu_mem_dirty_since(g, 0x3000, 0x1000) && !gpu_mem_dirty_since(g, 0xA000, 0x1000) &&
+                   !gpu_mem_dirty_since(g, 0x4000, 0x1000),
+               "a mapping change dirties its own GPU pages alone");
     }
 
     /* NVN temporarily forces rendering in passthrough mode, then replays the default override without ever
