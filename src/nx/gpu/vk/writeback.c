@@ -139,3 +139,35 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
 void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
     vk_write_changed_runs(addr, res, org, size, NULL, NULL);
 }
+
+u32 vk_write_runs(u64 addr, const u8* res, const VkRun* runs, u32 n, u32 since) {
+    u32 conflicts = 0;
+    if (!n) return 0;
+    if (in_guest(res, runs[n - 1].to)) fatal("vulkan: a storage result landed from guest memory");
+    /* first, before any of them writes a page: the runs the CPU wrote over since the shader's input was taken. On
+       the console the GPU's store and the CPU's both reached memory, in an order the program left open; here the
+       GPU's bytes land last. A run of bytes the CPU wrote and the shader did not is not touched */
+    if (since)
+        for (u32 i = 0; i < n; i++) {
+            const u8* host = gmem_host(addr + runs[i].from, runs[i].to - runs[i].from);
+            conflicts += host && vk_written_since(host, runs[i].to - runs[i].from, since) > 0;
+        }
+    vk_result_begin();
+    for (u32 i = 0; i < n; i++) {
+        u64 a = addr + runs[i].from, len = runs[i].to - runs[i].from;
+        vk_rt_before_write(a, len);
+        u8* dst = gmem_ptr(a, len);
+        if (dst)
+            memcpy(dst, res + runs[i].from, len);
+        else
+            gmem_write(a, res + runs[i].from, len);
+    }
+    /* other GPU virtual addresses can alias these guest pages: stamped once for each run of pages written */
+    for (u32 i = 0; i < n;) {
+        u64 a = addr + runs[i].from, b = addr + runs[i].to;
+        for (i++; i < n && ((addr + runs[i].from) >> 12) <= ((b - 1) >> 12) + 1; i++) b = addr + runs[i].to;
+        gpu_mem_written_shader(a, b - a);
+    }
+    vk_result_end();
+    return conflicts;
+}

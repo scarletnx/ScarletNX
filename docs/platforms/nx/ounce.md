@@ -81,11 +81,24 @@ One control section also holds SPIR-V 1.6 at `+0x128`.
 A compute program reaches its storage buffers through 64-bit addresses (`LDG`, `STG`), with no check against a
 size. Of about 400 storage buffers of one game's programs, 5 read the size word after their address, so the size
 the game binds doesn't bound the accesses: binding exactly that size hung the GPU, with accesses past it. The
-renderer binds all of the memory mapped from the address, up to 16 MiB (`vk_gbuf_desc`). The translator marks the
-4 KiB window of every store and atomic (`ShaderInfo.gbuf_marks`, binding `SNX_VKB_WPAGES`), and a result compares
-and lands only its marked windows (`buffer.c`'s `land_marked`, `compute.c`'s `cs_write_back`). Comparing the 16
-MiB of every result was a fifth of the game's CPU time. The copy of each range's original bytes, taken before the
-dispatch for that comparison, is still whole.
+renderer binds all of the memory mapped from the address, up to 16 MiB (`vk_gbuf_desc`).
+
+So each such result lands from a write log, not from a comparison. The translator has every store and atomic of a
+compute program record the bytes it writes (`mark_written`, `ShaderInfo.gbuf_mark`, binding `SNX_VKB_WPAGES`): an
+atomic OR of a bit for each byte into a mask, and a flag for its 4 KiB window, which indexes the masks
+(`shader.h`'s `SH_WLOG_*`). A result lands the bytes its writers logged, every one of them and no other, read where
+the shader wrote them (`buffer.c`'s `land_logged`, `compute.c`'s `cs_write_back`, `writeback.c`'s
+`vk_write_runs`). The logs are host memory from a pool (`writelog.c`), cleared when they go back where their flags
+say they were written. Before, every writing dispatch copied the 16 MiB of each range twice (its original bytes,
+and its input), compared all of it after the dispatch and copied it back from the GPU first: with the window flags
+alone the copy of the original bytes was still a quarter of one game's CPU time, for about 260 bytes a result the
+shader had changed. The input is still copied whole.
+
+A byte the CPU writes while a logged result is pending, which the shader writes too, takes the shader's value when
+the result lands: on the console both reach memory in an order the program left open. A byte the CPU writes and
+the shader doesn't is kept. The comparison took the CPU's value instead; over 80 seconds of one game, 14,000
+results landed with no byte written by both. `vulkan: logged storage results` in the buffer report
+(`vk_buffer_stats=1`) counts such runs.
 
 ## Surfaces
 

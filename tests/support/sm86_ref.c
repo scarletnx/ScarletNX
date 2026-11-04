@@ -163,6 +163,13 @@ static u8* global_at(const Sm86RefEnv* env, u64 va, u32 bytes) {
             return env->global[k] + (va - env->global_va[k]);
     return NULL;
 }
+/* bytes stored at va: recorded where the caller asked (Sm86RefEnv.stored) */
+static void global_stored(const Sm86RefEnv* env, u64 va, u32 bytes) {
+    for (int k = 0; k < 4; k++)
+        if (env->stored[k] && env->global[k] && va >= env->global_va[k] &&
+            va - env->global_va[k] + bytes <= env->global_bytes[k])
+            memset(env->stored[k] + (va - env->global_va[k]), 1, bytes);
+}
 static int fcmp(u32 op, float x, float y) {
     int un = isnan(x) || isnan(y);
     switch (op) {
@@ -508,8 +515,17 @@ static const char* step(Thread* t, Sm86RefEnv* env, const Sm86Insn* in, u8* shar
             u64 at = pair ? ((u64)rget(t, reg + 1) << 32) | rget(t, reg) : rget(t, reg);
             u64 va = base + at + (imm & 0x800000u ? (u64)imm - 0x1000000u : imm);
             u32 type = sm86_field(in, 73, 3), words = type == 5 ? 2 : type == 6 ? 4 : 1;
+            if (!load && type < 4) { /* a byte or halfword: the register's low bytes, the others left */
+                u32 n = type < 2 ? 1 : 2, v = rget(t, sm86_field(in, 32, 8));
+                u8* q = global_at(env, va, n);
+                if (!q) return "global address outside the buffers";
+                global_stored(env, va, n);
+                for (u32 b = 0; b < n; b++) q[b] = (u8)(v >> (8 * b));
+                return NULL;
+            }
             u8* p = global_at(env, va, 4 * words);
             if (!p) return "global address outside the buffers";
+            if (!load) global_stored(env, va, 4 * words);
             for (u32 k = 0; k < words; k++) {
                 if (load)
                     rset(t, in->dst + k,

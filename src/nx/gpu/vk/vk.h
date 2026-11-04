@@ -1390,10 +1390,36 @@ u64 vk_buf_copy_src_read(void);
 /* a copy of len bytes made now (data that changes within a frame), or of zeros when gva is 0 */
 int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off);
 /* ordered=0 only for a front end that supplies execution and shader-data barriers explicitly. */
-/* the windows the writer vk_buf_copy_writable bound last marks (words, a word a 4 KiB window from its binding's start,
-   in staging memory mem): its result then compares and lands only the marked windows of every writer (buffer.c's
-   land_marked), and all of it when one writer marked none */
-void vk_buf_writable_marks(const u32* words, VmaAllocation mem);
+/* A compute program's write log (writelog.c, shader.h's SH_WLOG_*): host memory the GPU writes, from a pool. get
+   gives a clear one of parts parts with one reference, the caller's; put gives back one no recorded work used; unref
+   drops a reference, and the last, once the work that wrote it is done, clears what was written and gives it back */
+typedef struct VkWriteLog VkWriteLog;
+VkWriteLog* vk_wlog_get(u32 parts);
+VkBuffer vk_wlog_buffer(const VkWriteLog* l);
+u64 vk_wlog_size(const VkWriteLog* l);
+void vk_wlog_ref(VkWriteLog* l);
+void vk_wlog_unref(VkWriteLog* l);
+void vk_wlog_put(VkWriteLog* l);
+/* a run of bytes [from, to) of a range, from its start */
+typedef struct {
+    u32 from, to;
+} VkRun;
+typedef void (*VkRunFn)(void* user, u32 from, u32 to);
+/* the bytes part of l logs for a binding of size bytes, once its work is done: fn gets each run, in order, runs that
+   meet joined. The windows that were written */
+u32 vk_wlog_runs(VkWriteLog* l, u32 part, u32 size, VkRunFn fn, void* user);
+void vk_wlog_stats(u64* logs, u64* bytes, u64* in_use, u64* windows);
+void vk_wlog_trim(void); /* the logs the pool hasn't given out for a while go */
+/* the bytes of a result at res a writer logged (n sorted runs that don't meet, from addr), into guest memory: as
+   vk_write_changed lands what it finds changed. The runs whose guest pages the CPU wrote since the write tracking
+   clock since, which the GPU's bytes then win over: their count */
+u32 vk_write_runs(u64 addr, const u8* res, const VkRun* runs, u32 n, u32 since);
+/* the writer vk_buf_copy_writable bound last logs its writes in part of l: the result it writes lands those of all of
+   its writers and no other bytes, once its commit gives it a reference to l. A writer that logs nothing (a draw, a
+   Switch program, a buffer image) has its result compared with its original bytes as before */
+int vk_buf_copy_writable_logged(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered, VkWriteLog* l, u32 part);
+/* the dispatch's own reference to l, dropped once the submit being recorded is done */
+void vk_buf_log_retire(VkWriteLog* l);
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered);
 /* Shader-data invalidation needs writes only. Execution order also covers reads before an in-place writer. */
 int vk_buf_order_pending(int writes_only);

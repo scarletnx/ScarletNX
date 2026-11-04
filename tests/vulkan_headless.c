@@ -5205,6 +5205,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_storage_suffix.inc"
 #include "vulkan_pending_index.inc"
 #include "vulkan_draw_storage_stages.inc"
+#include "vulkan_storage_logged.inc"
 #include "vulkan_mesh_inputs.inc"
 #include "vulkan_shader_stage_images.inc"
 #include "vulkan_cross_stage_blend.inc"
@@ -5873,6 +5874,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_storage_suffix());
     CHECK(!check_pending_index());
     CHECK(!check_draw_storage_stages());
+    CHECK(!check_storage_logged());
     CHECK(!bench_nvn_storage(0, 32, 1));
     CHECK(!bench_nvn_storage(1, 32, 1));
     CHECK(!bench_nvn_storage(2, 32, 1));
