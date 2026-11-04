@@ -17,6 +17,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
+#include "nx/runtime/rtapi.h"
 #include "snx_settings.h"
 #include <signal.h>
 #include <stdio.h>
@@ -101,7 +102,10 @@ void nce_code_added(u64 base, u64 text_size) {
     (void)base;
     (void)text_size;
 }
-void nce_crash_context(const void* context) { (void)context; }
+void nce_crash_context(const void* context, const void* fault) {
+    (void)context;
+    (void)fault;
+}
 #else
 
 static void file_path(char* out, size_t size) { snprintf(out, size, "%s%s.nce", g_exedir, g_exename); }
@@ -272,17 +276,18 @@ void nce_thread_run(struct KThread* t, u64 pc) {
     __atomic_store_n(&g_nce.tid[ix], 0, __ATOMIC_RELEASE);
 }
 
-void nce_crash_context(const void* context) {
+void nce_crash_context(const void* context, const void* fault) {
     KThread* t = g_nce.on ? kthread_cur() : NULL;
-    if (t) nce_host_context(context, &t->cpu);
+    if (t && nce_host_context(context, fault, &t->cpu) == 2)
+        rt_missed_report(&t->cpu, t->cpu.pc, "nothing of the game's is mapped there (its code runs natively, NCE)");
 }
 
 /* ---- the patches ---- */
 
-/* a pool in guest memory, which the guest's allocations then leave alone */
+/* a pool in guest memory, which the guest's allocations then leave alone and rtld does not take for a module */
 static int pool_add(u64 addr, u64 size) {
     NcePool* p;
-    if (mem_map(addr, size, MS_CODE, PERM_RX)) return -1;
+    if (mem_map(addr, size, NCE_POOL_STATE, NCE_POOL_PERM)) return -1;
     g_nce.pool = (NcePool*)snx_realloc(g_nce.pool, (g_nce.pools + 1) * sizeof *g_nce.pool);
     p = &g_nce.pool[g_nce.pools++];
     p->buf = GP(addr);
@@ -378,11 +383,21 @@ void nce_slot_taken(u64 addr, const char* family) {
         return;
     }
     if (i == NCE_DIVERTS) fatal("NCE: more than %d functions take handlers", NCE_DIVERTS);
-    if (nce_divert(g_nce.pool, g_nce.pools, &g_nce.env, addr, gr32(addr), i, &word, &original)) {
-        pm_unlock(&g_nce.lock);
-        WARN("nce: the function at %llx keeps its own code: its first word cannot move, or no pool is in reach\n",
-             (unsigned long long)addr);
-        return;
+    {
+        u32 first = gr32(addr);
+        int r = nce_divert(g_nce.pool, g_nce.pools, &g_nce.env, addr, first, i, &word, &original);
+        if (r) {
+            pm_unlock(&g_nce.lock);
+            if (r == -2)
+                WARN("nce: the function at %llx (%s) keeps its own code, its handler never run: its first word %08x "
+                     "branches beyond a stub's reach (128 MiB)\n",
+                     (unsigned long long)addr, family, first);
+            else
+                WARN("nce: the function at %llx (%s) keeps its own code, its handler never run: no pool of stubs "
+                     "within a B's reach (128 MiB) of it has room for one more\n",
+                     (unsigned long long)addr, family);
+            return;
+        }
     }
     g_nce.entry[i] = addr;
     g_nce.original[i] = original;

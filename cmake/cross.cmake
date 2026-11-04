@@ -17,9 +17,9 @@
 #     moves no code. MIPS64 builds MIPS64 Release 2 with the n64 ABI, in either byte order, and s390x z13: before
 #     it LLVM makes the runtime library's 128-bit shifts calls to libgcc's __ashlti3 and __lshrti3, which a module
 #     links no library to have.
-#   - for a Linux cross build with Clang (the linux-*-cross presets): the target triple and the sysroot, which CMake
-#     passes to its own compiles from CMAKE_C_COMPILER_TARGET and CMAKE_SYSROOT and the others don't get from the
-#     compiler's path, and the GCC toolchain whose runtime (crt files, libgcc, libstdc++) Clang links where it isn't
+#   - for a Linux or NetBSD cross build with Clang (the linux-*-cross and netbsd-*-cross presets): the target triple
+#     and the sysroot, which CMake passes to its own compiles from CMAKE_C_COMPILER_TARGET and CMAKE_SYSROOT and the
+#     others don't get from the compiler's path, and the GCC toolchain whose runtime (crt files, libgcc, libstdc++) Clang links where it isn't
 #     in the sysroot (CMAKE_C_COMPILER_EXTERNAL_TOOLCHAIN: gnu-cross's buildroots, docs/MIPS64.md).
 #     SNX_TARGET_LDFLAGS adds what their links need: LLD, as the build machine's ld only knows its own architecture,
 #     or the target's GNU ld.
@@ -54,10 +54,11 @@ endif()
 
 set(SNX_TARGET_FLAGS "")
 set(SNX_TARGET_LDFLAGS "")
-if(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+if(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME MATCHES "^(Linux|NetBSD)$" AND NOT ANDROID)
     if(NOT CMAKE_C_COMPILER_TARGET)
-        message(FATAL_ERROR "A Linux cross build names its target in CMAKE_C_COMPILER_TARGET (e.g. "
-                            "powerpc64le-linux-gnu), which FFmpeg, OpenSSL and the runtime library are built for.")
+        message(FATAL_ERROR "A ${CMAKE_SYSTEM_NAME} cross build names its target in CMAKE_C_COMPILER_TARGET (e.g. "
+                            "powerpc64le-linux-gnu, x86_64-unknown-netbsd11.1), which FFmpeg, OpenSSL and the "
+                            "runtime library are built for.")
     endif()
     list(APPEND SNX_TARGET_FLAGS --target=${CMAKE_C_COMPILER_TARGET})
     if(CMAKE_SYSROOT)

@@ -24,7 +24,7 @@ target_sources(snx_ctr_process PRIVATE services/uds.c)
 target_link_libraries(snx_ctr_process PUBLIC scarletnx-ldn)
 # the player's input lives beside the presenter, whose window's events it reads
 add_library(snx_ctr_gpu STATIC gpu/present.c input/input.c gpu/transfer.c gpu/y2r.c gpu/vk/y2r.c gpu/vk/device.c gpu/vk/transfer.c
-            gpu/vk/vsgen.c gpu/vk/fsgen.c gpu/vk/render.c gpu/pica.c "${volk_SOURCE_DIR}/volk.c")
+            gpu/vk/vsgen.c gpu/vk/fsgen.c gpu/vk/render.c gpu/pica.c gpu/shader.c gpu/draw.c "${volk_SOURCE_DIR}/volk.c")
 target_include_directories(snx_ctr_gpu PUBLIC "${volk_SOURCE_DIR}")
 target_link_libraries(snx_ctr_gpu PUBLIC snx_ctr_memory scarletnx-common Vulkan::Headers SDL3::SDL3 snx_settings snx_build_info
                                          snx_window_icon snx_vk_common ${CMAKE_DL_LIBS})
@@ -36,8 +36,9 @@ foreach(shader fill display_transfer texture_copy present texture color depth y2
                    HEADER 3ds/gpu/vk/shaders/${shader}_spv.h)
 endforeach()
 # the PICA's software renderer, ported from Azahar's: the CPU reference the GPU's draws are tested against, which the
-# runtime does not draw with
-add_library(snx_ctr_gpu_reference STATIC gpu/shader.c gpu/draw.c gpu/raster.c gpu/lighting.c gpu/texture.c)
+# runtime does not draw with. Its shader units and vertex processing (gpu/shader.c, gpu/draw.c) are the runtime's, which
+# runs a draw with a geometry shader there
+add_library(snx_ctr_gpu_reference STATIC gpu/raster.c gpu/lighting.c gpu/texture.c)
 target_link_libraries(snx_ctr_gpu_reference PUBLIC snx_ctr_gpu m)
 # the HLE DSP, its SDL3 output and the AAC decoder of its binary pipe
 add_library(snx_ctr_audio STATIC audio/dsp.c audio/source.c audio/mixers.c audio/output.c)
@@ -78,13 +79,14 @@ target_link_libraries(snx_ctr_program PUBLIC snx_arm_llvm snx_llvm)
 # at startup: resolve them without a caller-provided environment. A static
 # LLVM (SNX_LLVM_SHARED off, cmake/llvm.cmake) has none to load.
 if(SNX_LLVM_SHARED)
-    set(ctr_llvm_rpath "${SNX_LLVM_LIBRARY_DIR}")
+    snx_target_path(ctr_llvm_rpath "${SNX_LLVM_LIBRARY_DIR}")
     find_library(SNX_Z3_LIBRARY NAMES z3 libz3.so.4
         HINTS "${SNX_LLVM_LIBRARY_DIR}" "${SNX_LLVM_LIBRARY_DIR}/../.."
         PATH_SUFFIXES lib x86_64-linux-gnu)
     if(SNX_Z3_LIBRARY)
         get_filename_component(ctr_z3_dir "${SNX_Z3_LIBRARY}" DIRECTORY)
-        string(APPEND ctr_llvm_rpath ":${ctr_z3_dir}")
+        snx_target_path(ctr_z3_rpath "${ctr_z3_dir}")
+        string(APPEND ctr_llvm_rpath ":${ctr_z3_rpath}")
         # Forced into the dependency table (--as-needed would drop unreferenced
         # libraries): libLLVM's own z3/xml2 dependencies then resolve through
         # the binary's search path instead of the caller's environment.

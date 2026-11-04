@@ -6,6 +6,7 @@
 
 * [Extract → AOT → run](#extract--aot--run)
   * [Updates and DLC](#updates-and-dlc)
+  * [Collections](#collections)
   * [Mods](#mods)
   * [NRO applications](#nro-applications)
 * [GDB (Linux)](#gdb-linux)
@@ -141,6 +142,35 @@ playing, Play keeps it and plays the game, and Back leaves the list as it was.
 
 `-x` keeps extracting an update over its game into one folder (`-x Game.nsp --update Update.nsp`), and extracts a
 DLC's dump given alone as its RomFS image.
+
+### Collections
+
+A collection is one application of several programs: its menu, program 0, starts each of its games, another program
+of the same application, through `nn::oe::ExecuteProgram`. Its content meta numbers them, program `i` the
+application's title ID plus `i`, and that program's patch in an update the update's ID plus `i`.
+
+- **Programs:** making the game's dump makes every program of it, the game's own first; each other one is made beside
+  it in the game's folder as `recompiled/<id>/<id>_<its ID>`: its code (`_code.so`), its stamp (`.abi`) and its data
+  folder (`_data/`, its own `control.nacp`, and its ExeFS and RomFS with Extract dump), no copy of the runtime. An
+  update's patch of program `i` is `recompiled/<id>/<id>_<the update's ID + i>v<version>` the same way, and plays
+  while the update is checked. Each reads its own program of the dump in place, as the game's does.
+- **The switch:** a program that starts another ends as a quit does, saving what it saves at exit, and leaves
+  `recompiled/<id>/<id>.next`, the hand-over: the program it starts, its own index, the user channel's storages it
+  passes and whether it stored its open user. Its launcher (the driver, and the launcher, which plays through it;
+  the phone's app) starts that program with the same options, on the game's runtime with `--game=` it, and the program
+  takes the hand-over away as it starts. `GetPreviousProgramIndex` then answers the index of the program that started
+  it, -1 for one the player started.
+- **Settings and saves:** every program plays with the game's `.ini` and data folder, and keeps its saves as the
+  application's, under the game's title ID: the owner each program's `control.nacp` names (SaveDataOwnerId), one save
+  for all of them, as the console keeps a program of several by its main program.
+- **Mods:** a program plays the game's mods and the mods of its own data folder, `<id>_<its ID>_data/mods/`, laid as
+  Eden lays a program's (`load/<its ID>/` over `load/<the application's ID>/`): both folders' mods by their names,
+  its own after the game's of the same name; `mods_off=` is the game's for both. Cheats find their program by the
+  build ID of its main module.
+- **Playing one:** `scarletnx Game.nsp --program 2` (or `--program=2`) plays program 2 directly, without its menu,
+  `0` (the default) being the menu. One that is not made plays program 0, and the run says both: *--program 5:
+  program 5 is not one of this application's programs 0-3: it starts program 0*. `-r --program 2` recompiles that
+  program alone, and `-x --program 2` extracts it.
 
 ### Mods
 
@@ -548,8 +578,8 @@ nickname=Xuji
 or a line that is no key stops the game and says why. `mii` is the user's Mii, one of the Mii database's by its name:
 `Baguette` (the default), `Leek Girl`, `Phone Girl`, `Alex`, `Sam`, `Kai`, `Robin`, `Jamie`, `Taylor`, `Morgan` or
 `Riley`, as written. A game that takes the database's first Mii as the player's takes it. `picture` is `mii`, the
-user's picture drawn from that Mii, or `file`, `users/<uid>.jpg`; without the key it is `file` for a user with that
-file and `mii` for one without. Neither ever stops the game: no key, no users.ini, a name the database does not hold or
+user's picture drawn from that Mii, or `file`, `users/<uid>.jpg`; without the key it is `file`, so a user with no
+picture file is Wimsy. Neither ever stops the game: no key, no users.ini, a name the database does not hold or
 another word is the default, and the game's log and the launcher's say what was read and what is in effect. The
 launcher's Settings > User renames a user (Enter types its nickname, the rule above checked), picks each user's Mii
 (its `User N Mii` row, left and right) and the one the games play as; the file's other lines stay as they are. A
@@ -562,7 +592,10 @@ the game's user selector gets that user. Each user's Account saves are in the da
 (`save_layout=global`, the default, [FILESYSTEM](FILESYSTEM.md)); with
 `save_layout=game` they are `save/user.<uid>` in the game's `<id>_data/`. A save in the other layout's folder is played
 there until Settings > App > Move Old Files moves it. Those an older version left in a game's `save/user`, of the uid
-`0123456789abcdeffedcba9876543210`, are played there until you move them ([DEPRECATIONS](DEPRECATIONS.md)). The game's
+`0123456789abcdeffedcba9876543210`, are played there until you move them ([DEPRECATIONS](DEPRECATIONS.md)). Beside
+an Account, Device or BCAT save's folder, `<its folder>.version` names the program and version that last committed it:
+when an older version of the game opens a save a newer one wrote, which a game may not read, the log says both, and so
+does the report if the game crashes or stops. The game's
 menu (Home, F2) shows the user playing in a box at its head's right, their nickname and picture, and the launcher the
 one its Settings' `user_uid` names, where a click picks another ([GUI](GUI.md)); a users.ini that lists no users is said
 in the launcher's foot.

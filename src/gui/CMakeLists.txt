@@ -2,10 +2,10 @@
 # Copyright 2026 the ScarletNX contributors
 if(WIN32)
     set(gui_process process_win32.c)
-elseif(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD|Android|Darwin|iOS)$")
+elseif(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD|NetBSD|Android|Darwin|iOS)$")
     set(gui_process process_posix.c)
 else()
-    message(FATAL_ERROR "scarletnx-gui currently supports Linux, FreeBSD, macOS, iOS and Windows")
+    message(FATAL_ERROR "scarletnx-gui currently supports Linux, FreeBSD, NetBSD, macOS, iOS and Windows")
 endif()
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 # The menu's languages (i18n.h): snx_tr and the catalogs' reader, strict ISO C99 as the build info; each po/*.po a

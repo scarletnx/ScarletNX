@@ -73,6 +73,16 @@ bool gui_game_addons(const char* path, GuiGames* addons);
    into *folder (owned, NULL for any other game), and its mods (snx_mods_list) into *names when names is not NULL:
    their count */
 size_t gui_game_mods(const char* path, char** folder, char*** names);
+/* The other programs of a collection's application the game at path (its program, in a folder of its own) has made
+   beside it, each one's index into programs (room for SNX_PROGRAMS_MAX), the game's own (0) left out: their count. A
+   program plays with the update the game's addons= checks when that update has it made (game_ini.h's
+   snx_program_played) */
+int gui_game_programs(const char* path, int* programs);
+/* The game a run of the driver made ready, which a phone's game activity plays: name, as the driver's "Ready NAME"
+   gives it, beside file, the game made already that the run was given (the program the driver plays for it: its
+   checked update's, or a collection's program that --program asks for), else for a dump (file NULL) games/NAME/NAME,
+   where the driver made it. Owned */
+char* gui_ready_game(const char* file, const char* games, const char* name);
 /* The cheats folder of the game at path, a program in a folder of its own (<name>/<name>_data/cheats/,
    snx_cheats_folder), into *folder (owned, NULL for any other game), and its cheats' names (snx_cheats_list) into
    *names when names is not NULL: their count */

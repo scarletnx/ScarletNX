@@ -97,6 +97,7 @@ typedef struct {
     /* optional features that were enabled */
     VkPhysicalDeviceFeatures feat;
     int has_divisor; /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
+    int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_bc=1 would hold its ASTC textures as BC7 */
     /* VK_EXT_vertex_input_dynamic_state in effect (vertex_input.h's choice): each draw sets its vertex layout, which
        pipelines leave out of their keys */
     int vertex_input_dynamic;
@@ -945,6 +946,8 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 lev
                    void* ctx);
 /* the image levels uploaded as BC7 so far, their bytes, and the bytes they would have taken as RGBA8 */
 void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes);
+/* the bytes of the ASTC textures decoded to RGBA8 so far (astc_bc off, or a GPU without BCn) */
+u64 vk_astc_rgba8_bytes(void);
 
 /* vic.c: the VIC composition as a compute shader, recorded in the frame's command buffer, its output planes
    published (vk_own_publish): 1 when composed, 0 when the job exceeds the device (it is skipped). Takes vk_lock */
@@ -997,6 +1000,10 @@ Surf* vk_tex_from_tic_raw(const u32* tic); /* UINT view of raw RGBA8 texel bytes
    VK_NULL_HANDLE when the image can't be viewed that way */
 /* stencil: a depth/stencil surface's stencil aspect instead of its depth */
 VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map, int stencil);
+/* why s has no view of type, NULL when it can have one: what vk_tex_view checks before it asks the driver */
+const char* vk_tex_view_refusal(const Surf* s, VkImageViewType type);
+/* a view type's name in a message: "2D", "cube array"... */
+const char* vk_view_type_name(VkImageViewType type);
 /* the format of s's views, its sRGB form when srgb (a depth format stays) */
 VkFormat vk_tex_view_format(const Surf* s, int srgb);
 /* One selected mip for storage; the sampled view retains the complete chain. */
@@ -1043,12 +1050,21 @@ typedef struct {
     VkBuffer buf;
     u64 off, range;
 } VkDrawGbuf;
+/* a draw's global memory, by the stage that reads it: vertex, the two tessellation stages, geometry, fragment (ST_VS
+   to ST_FS) */
+#define VK_DRAW_STAGES 5
 typedef struct {
-    VkDrawGbuf b[2][16];
-    int n[2];
-    VkBuffer map_buf[2];
-    u64 map_off[2], map_size[2];
+    VkDrawGbuf b[VK_DRAW_STAGES][16];
+    int n[VK_DRAW_STAGES];
+    VkBuffer map_buf[VK_DRAW_STAGES];
+    u64 map_off[VK_DRAW_STAGES], map_size[VK_DRAW_STAGES];
 } VkDrawStorage;
+/* whether any stage of the draw reads or writes global memory */
+static inline int vk_draw_storage_any(const VkDrawStorage* draw) {
+    for (int s = 0; s < VK_DRAW_STAGES; s++)
+        if (draw->n[s]) return 1;
+    return 0;
+}
 int vk_buf_draw_has_alias(const VkDrawStorage* draw);
 int vk_buf_draw_prepare(VkDrawStorage* draw);
 void vk_buf_writable_abort(void);

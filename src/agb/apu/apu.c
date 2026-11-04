@@ -36,6 +36,10 @@ static void trigger(AgbBoard* board, int channel) {
 
 /* ---- registers ---- */
 
+/* SOUND3CNT_L's bit 6 names the wave RAM bank the channel plays (bit 5 makes it 64 digits, that bank then the other);
+   the registers at 0x04000090 reach the other bank, while the channel plays too */
+static uint32_t cpu_bank(const AgbApu* apu) { return apu->cnt_l[2] & 0x40 ? 0 : 1; }
+
 uint16_t agb_apu_read(AgbBoard* board, uint32_t offset) {
     AgbApu* apu = &board->apu;
     switch (offset) {
@@ -60,10 +64,7 @@ uint16_t agb_apu_read(AgbBoard* board, uint32_t offset) {
         case 0x088: return apu->soundbias;
         default: break;
     }
-    if (offset >= 0x090 && offset <= 0x09E) {
-        uint32_t bank = offset >= 0x098, index = offset & 7;
-        return snx_ld_le16(&apu->wave_ram[bank][index]);
-    }
+    if (offset >= 0x090 && offset <= 0x09E) return snx_ld_le16(&apu->wave_ram[cpu_bank(apu)][offset & 15]);
     return 0;
 }
 
@@ -86,10 +87,7 @@ uint16_t agb_apu_written(AgbBoard* board, uint32_t offset) {
         case 0x088: return apu->soundbias;
         default: break;
     }
-    if (offset >= 0x090 && offset <= 0x09E) {
-        uint32_t bank = apu->cnt_l[2] & 0x20 ? 1 : 0, index = offset & 7; /* where agb_apu_write puts it */
-        return snx_ld_le16(&apu->wave_ram[bank][index]);
-    }
+    if (offset >= 0x090 && offset <= 0x09E) return snx_ld_le16(&apu->wave_ram[cpu_bank(apu)][offset & 15]);
     return 0;
 }
 
@@ -127,7 +125,7 @@ void agb_apu_write(AgbBoard* board, uint32_t offset, uint16_t value) {
             if (value & 0x8000) trigger(board, 3);
             return;
         case 0x070:
-            /* bit 7 turns the wave channel on; bit 5 selects the bank writes go to */
+            /* bit 7 turns the wave channel on, bit 6 picks the bank it plays and bit 5 makes it play both */
             apu->cnt_l[2] = value & 0xE0;
             if (!(value & 0x80)) apu->enabled[2] = 0;
             return;
@@ -156,9 +154,7 @@ void agb_apu_write(AgbBoard* board, uint32_t offset, uint16_t value) {
         default: break;
     }
     if (offset >= 0x090 && offset <= 0x09E) {
-        uint32_t bank = apu->cnt_l[2] & 0x20 ? 1 : 0, index = offset & 7;
-        if (apu->cnt_l[2] & 0x80) return; /* wave RAM is not writable while the channel plays */
-        snx_st_le16(&apu->wave_ram[bank][index], value);
+        snx_st_le16(&apu->wave_ram[cpu_bank(apu)][offset & 15], value);
         return;
     }
     if (offset == 0x0A0 || offset == 0x0A2) {
@@ -246,20 +242,19 @@ static int channel_sample(AgbBoard* board, int channel) {
         return high ? apu->envelope_volume[channel] : -apu->envelope_volume[channel];
     }
     if (channel == 2) {
-        uint32_t bank = apu->cnt_l[2] & 0x20;
-        int sample;
-        /* one bank mode plays the selected bank; two bank mode plays the other one */
-        if (apu->cnt_l[2] & 0x40) bank = !bank;
-        {
-            uint8_t byte = apu->wave_ram[bank][(apu->wave_position >> 1) & 15];
-            sample = apu->wave_position & 1 ? byte >> 4 : byte & 15;
-        }
+        /* the played bank's 32 digits, or with bit 5 both banks' 64 from the played one on; each byte's high digit
+           first */
+        uint32_t digits = apu->cnt_l[2] & 0x20 ? 63 : 31,
+                 bank = (apu->cnt_l[2] >> 6 & 1) ^ (apu->wave_position >> 5 & 1);
+        uint8_t byte = apu->wave_ram[bank][(apu->wave_position >> 1) & 15];
+        int sample = apu->wave_position & 1 ? byte & 15 : byte >> 4;
         uint32_t frequency = (uint32_t)(apu->cnt_x[2] & 0x7FF);
-        /* 32 four bit digits per wave cycle, one quarter of the square's rate */
+        /* 2097152 / (2048 - n) digits a second: 64 / (2048 - n) of them each output sample */
         apu->phase[2] += 0x10000u * 64 / (2048u - frequency);
-        apu->wave_position = (uint8_t)((apu->wave_position + (apu->phase[2] >> 16)) & 31);
+        apu->wave_position = (uint8_t)((apu->wave_position + (apu->phase[2] >> 16)) & digits);
         apu->phase[2] &= 0xFFFF;
         int centered = sample * 2 - 15;
+        if (apu->cnt_h[2] & 0x8000) return centered * 3 >> 2; /* bit 15 forces 75 percent */
         switch (apu->cnt_h[2] >> 13 & 3) {
             case 0: return 0;
             case 2: return centered >> 1;
@@ -267,10 +262,10 @@ static int channel_sample(AgbBoard* board, int channel) {
             default: return centered;
         }
     }
-    /* the noise channel clocks a linear feedback register at its own rate */
+    /* the noise channel clocks a linear feedback register at 524288 Hz / r / 2^(s+1), r 0 counting as a half */
     {
         uint32_t code = (uint32_t)(apu->cnt_x[3] & 7), shift = (uint32_t)(apu->cnt_x[3] >> 4 & 15);
-        uint32_t rate = code ? 524288u / (code << shift) : 1048576u >> shift;
+        uint32_t rate = code ? 262144u / (code << shift) : 524288u >> shift;
         apu->phase[3] += rate;
         while (apu->phase[3] >= AGB_APU_RATE) {
             uint32_t bit = (apu->noise_lfsr & 1) ^ ((apu->noise_lfsr >> 1) & 1);
@@ -283,11 +278,12 @@ static int channel_sample(AgbBoard* board, int channel) {
     }
 }
 
-/* The mixer applies the PSG volume ratio and the master volumes, then adds the FIFOs at their own
-   volume settings, panning everything with the SOUNDCNT_L enables. */
+/* The mixer, at mGBA's levels: the PSG channels (each twice its level, centered on zero) at their master volume, 1 to 8
+   eighths, and SOUNDCNT_H's 25, 50 or 100 percent; the FIFOs at twice or four times their bytes; the sum clipped to
+   the 10 bit DAC's range around SOUNDBIAS's level, then scaled to 16 bits as mGBA's full volume scales it */
 static void mix_sample(AgbBoard* board, int16_t* left, int16_t* right) {
     AgbApu* apu = &board->apu;
-    int psg_left = 0, psg_right = 0, l = 0, r = 0, ratio;
+    int psg_left = 0, psg_right = 0, l, r, shift = 4 - (apu->soundcnt_h & 3), bias = apu->soundbias & 0x3FE;
     if (!(apu->soundcnt_x & 0x80)) {
         *left = *right = 0;
         return;
@@ -297,19 +293,18 @@ static void mix_sample(AgbBoard* board, int16_t* left, int16_t* right) {
         if (apu->soundcnt_l & (0x100 << channel)) psg_right += sample;
         if (apu->soundcnt_l & (0x1000 << channel)) psg_left += sample;
     }
-    ratio = 1 << (apu->soundcnt_h & 3); /* 25, 50 or 100 percent */
-    psg_left = (psg_left * ratio) >> 2;
-    psg_right = (psg_right * ratio) >> 2;
-    l = psg_left * (int)((apu->soundcnt_l >> 4) & 7) / 7;
-    r = psg_right * (int)(apu->soundcnt_l & 7) / 7;
+    l = psg_left * 4 * (1 + (apu->soundcnt_l >> 4 & 7)) >> shift;
+    r = psg_right * 4 * (1 + (apu->soundcnt_l & 7)) >> shift;
     for (int fifo = 0; fifo < 2; ++fifo) {
-        int sample = apu->fifo_sample[fifo];                    /* held between its timer's overflows */
+        int sample = apu->fifo_sample[fifo] * 4;                /* held between its timer's overflows */
         if (!(apu->soundcnt_h & (4 << fifo))) sample >>= 1;     /* the 50 percent volume setting */
         if (apu->soundcnt_h & (0x100 << fifo * 4)) r += sample; /* bits 8 and 12: to the right */
         if (apu->soundcnt_h & (0x200 << fifo * 4)) l += sample; /* bits 9 and 13: to the left */
     }
-    *left = (int16_t)(l * 64);
-    *right = (int16_t)(r * 64);
+    l = (l + bias < 0 ? 0 : l + bias > 0x3FF ? 0x3FF : l + bias) - bias;
+    r = (r + bias < 0 ? 0 : r + bias > 0x3FF ? 0x3FF : r + bias) - bias;
+    *left = (int16_t)(l * 48);
+    *right = (int16_t)(r * 48);
 }
 
 void agb_apu_timer_overflow(AgbBoard* board, int timer) {

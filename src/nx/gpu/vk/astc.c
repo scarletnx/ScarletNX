@@ -38,6 +38,8 @@ static VkBuffer g_bc7_scratch;
 static VmaAllocation g_bc7_mem;
 /* image levels uploaded as BC7, their bytes, and what they would have taken as RGBA8 (vk_astc_stats) */
 static u64 g_bc7_levels, g_bc7_bytes, g_bc7_rgba8_bytes;
+/* the bytes of the ASTC levels decoded to RGBA8 (vk_astc_rgba8_bytes) */
+static u64 g_rgba8_bytes;
 
 /* astc.comp's push constants: the strip's width and its slices' height in texels and in blocks, and whether to use
    the specification's sRGB decode mode, whose void extents' R, G and B bytes differ from the UNORM mode's. An SRGB
@@ -140,6 +142,7 @@ void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes) {
     *bytes = g_bc7_bytes;
     *rgba8_bytes = g_bc7_rgba8_bytes;
 }
+u64 vk_astc_rgba8_bytes(void) { return g_rgba8_bytes; }
 
 static VkPipeline astc_pipeline(u32 bw, u32 bh) {
     VkPipeline* pipe = &g_astc_pipes[bw - 4][bh - 4];
@@ -289,6 +292,7 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 lev
                 g_bc7_rgba8_bytes += texels;
             } else {
                 scratch_barrier(cb, g_astc_scratch, USE_WRITE, 0, USE_COPY);
+                g_rgba8_bytes += texels;
             }
             VkBufferImageCopy copy = {.bufferRowLength = row_texels,
                                       .bufferImageHeight = image_rows,

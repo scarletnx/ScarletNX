@@ -116,13 +116,13 @@ u64 mem_fit_budget(u64 available, u64 footprint) {
 void mem_fit(int measured, u64 available, u64 footprint) {
     g_hle.svcmem.fit = 0;
     if (!measured) {
-        LOG("memory: memory_fit=1, but this system tells neither what it can still give nor what the process holds: "
+        LOG("memory: memory_fit_mode=0 (Auto), but this system tells neither what it can still give nor what the process holds: "
             "the game is told the console's %llu MiB\n",
             (unsigned long long)(process_memory_total() >> 20));
         return;
     }
     g_hle.svcmem.fit = mem_fit_budget(available, footprint);
-    LOG("memory: memory_fit=1: the game is told %llu MiB, the console's being %llu (the system can still give %llu MiB, "
+    LOG("memory: memory_fit_mode=0 (Auto): the game is told %llu MiB, the console's being %llu (the system can still give %llu MiB, "
         "the process holds %llu)\n",
         (unsigned long long)(process_memory_total() >> 20),
         (unsigned long long)((pool() < HEAP_SIZE ? pool() : HEAP_SIZE) >> 20), (unsigned long long)(available >> 20),

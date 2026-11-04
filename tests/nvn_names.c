@@ -569,7 +569,18 @@ static void test_sampler(void) {
     nvn_SamplerGetBorderColori(NULL, SAMPLER, s + 0x60);
     check(!memcmp(GP(s), GP(s + 0x60), 16), "the sampler's integer border color");
     /* a pool's descriptor from the builder: the sampler's */
+    memset(GP(POOL_MEM + 0x40000), 0, 2 * 32);
     check(nvn_SamplerPoolInitialize(NULL, SAMPLER_P, POOL, 0x40000, 16), "a sampler pool");
+    /* the driver's samplers 0 and 1, which the pool starts with: wrap 2 (clamp to edge) on u, v and p, linear
+       magnification and minification with no mip filter, LODs 0 to 15 (1000 clamped), anisotropy 1 then 2 */
+    for (i = 0; i < 2; i++) {
+        u32 w0 = gr32(POOL_MEM + 0x40000 + 32 * i), w1 = gr32(POOL_MEM + 0x40000 + 32 * i + 4),
+            w2 = gr32(POOL_MEM + 0x40000 + 32 * i + 8);
+        check((w0 & 0x1ff) == (2u | 2u << 3 | 2u << 6) && !(w0 >> 9 & 1) && (w0 >> 20 & 7) == i,
+              "a reserved sampler's wrap, compare and anisotropy");
+        check((w1 & 0xff) == (2u | 2u << 4 | 1u << 6) && !(w1 >> 10 & 3), "a reserved sampler's filters");
+        check((w2 & 0xfff) == 0 && (w2 >> 12 & 0xfff) == 15u * 256, "a reserved sampler's LOD range");
+    }
     nvn_SamplerPoolRegisterSamplerBuilder(NULL, SAMPLER_P, 3, SAMPLER_B);
     nvn_SamplerPoolRegisterSampler(NULL, SAMPLER_P, 4, SAMPLER);
     memcpy(tsc_b, GP(POOL_MEM + 0x40000 + 32 * 3), 32);

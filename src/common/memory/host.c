@@ -71,6 +71,17 @@ void snx_host_memory_free(SnxHostMemory* m) {
     if (m->handle) CloseHandle((HANDLE)m->handle);
     *m = (SnxHostMemory){0};
 }
+bool snx_host_memory_fill(const SnxHostMemory* m, const void* bytes) {
+    void* view = MapViewOfFile((HANDLE)m->handle, FILE_MAP_ALL_ACCESS, 0, 0, (SIZE_T)m->size);
+    if (!view) return false;
+    memcpy(view, bytes, (size_t)m->size);
+    UnmapViewOfFile(view);
+    return true;
+}
+void snx_host_memory_close(SnxHostMemory* m) {
+    if (m->handle) CloseHandle((HANDLE)m->handle);
+    *m = (SnxHostMemory){0};
+}
 unsigned char* snx_host_reserve(uint64_t size) {
     if (!calls()) return NULL;
     return g_host.alloc2(GetCurrentProcess(), NULL, (SIZE_T)size, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS,
@@ -142,6 +153,8 @@ bool snx_host_memory_new(SnxHostMemory* m, uint64_t size) {
     /* the system call itself: Android's C library has memfd_create only from Android 11 (API 30), as code_loader.c
        says */
     fd = (int)syscall(SYS_memfd_create, "snx-host", 1u /* MFD_CLOEXEC */);
+#elif defined(__NetBSD__)
+    fd = memfd_create("snx-host", MFD_CLOEXEC); /* NetBSD 11's, in libc: shm_open is librt's */
 #else
     char name[64]; /* macOS takes 31 characters at most */
     snprintf(name, sizeof name, "/snx-%ld-%p", (long)getpid(), (void*)m);
@@ -163,6 +176,17 @@ bool snx_host_memory_new(SnxHostMemory* m, uint64_t size) {
 void snx_host_memory_free(SnxHostMemory* m) {
     if (m->view) munmap(m->view, (size_t)m->size);
     if (m->view) close((int)m->handle);
+    *m = (SnxHostMemory){0};
+}
+bool snx_host_memory_fill(const SnxHostMemory* m, const void* bytes) {
+    void* view = mmap(NULL, (size_t)m->size, PROT_READ | PROT_WRITE, MAP_SHARED, (int)m->handle, 0);
+    if (view == MAP_FAILED) return false;
+    memcpy(view, bytes, (size_t)m->size);
+    munmap(view, (size_t)m->size);
+    return true;
+}
+void snx_host_memory_close(SnxHostMemory* m) {
+    close((int)m->handle);
     *m = (SnxHostMemory){0};
 }
 unsigned char* snx_host_reserve(uint64_t size) {

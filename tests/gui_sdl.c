@@ -5396,6 +5396,13 @@ int main(int argc, char** argv) {
             }
             assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/bcat", game) &&
                    !snx_mkdirs(path));
+            /* the notes of the user's and the Device save beside their folders (fs.c's save_note) go with them */
+            assert(!snx_path_format(path, sizeof path,
+                                    "%s/0100000000ABC000_data/save/user.0123456789abcdeffedcba9876543210.version",
+                                    game) &&
+                   !snx_write_file(path, "u", 1));
+            assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/device.version", game) &&
+                   !snx_write_file(path, "d", 1));
             app.data_dir = data_saves;
             left_behind(&app);
             for (i = 0; i < sizeof said / sizeof *said; ++i)
@@ -5403,11 +5410,23 @@ int main(int argc, char** argv) {
             assert(app.lefts == 3 && strstr(app.left, want[0]) && strstr(app.left, want[1]) &&
                    strstr(app.left, want[2]) && !strstr(app.left, want[3]) && !strstr(app.left, want[4]) &&
                    !strstr(app.left, want[5]));
-            assert(move_old(&app, &done, true) == 3);
+            assert(move_old(&app, &done, true) == 5);
             for (i = 0; i < sizeof now / sizeof *now; ++i) {
                 assert(!snx_path_format(path, sizeof path, "%s/save/%s", data_saves, now[i]));
                 assert(snx_is_file(path));
             }
+            assert(!snx_path_format(path, sizeof path,
+                                    "%s/save/user.0123456789abcdeffedcba9876543210/0100000000ABC000.version",
+                                    data_saves) &&
+                   snx_is_file(path));
+            assert(!snx_path_format(path, sizeof path, "%s/save/device/0100000000ABC000.version", data_saves) &&
+                   snx_is_file(path));
+            assert(!snx_path_format(path, sizeof path,
+                                    "%s/0100000000ABC000_data/save/user.0123456789abcdeffedcba9876543210.version",
+                                    game) &&
+                   !snx_path_exists(path));
+            assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/device.version", game) &&
+                   !snx_path_exists(path));
             assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/system/s.bin", game) &&
                    snx_is_file(path));
             gui_cleaned_free(&done);
@@ -11745,8 +11764,8 @@ int main(int argc, char** argv) {
                            !strcmp(app.user_name, "Aogo"));
                 }
                 /* each user's Mii under its nickname, Baguette without one, Left and Right round the Mii database's:
-                   users.ini's mii= written, the head's picture drawn from it (the user has no picture file) */
-                assert(app.users_form.mii[0] == 0 && app.user_mii == 0);
+                   users.ini's mii= written; the head's picture stays Wimsy (no picture=mii, no picture file) */
+                assert(app.users_form.mii[0] == 0 && app.user_mii == -1);
                 key(&app, SDLK_DOWN);
                 assert(app.editor.row == 2);
                 render(&app);
@@ -11754,7 +11773,7 @@ int main(int argc, char** argv) {
                 shows(&app, "Baguette", rgb(app.theme.page));
                 key(&app, SDLK_RIGHT);
                 assert(!strcmp(app.editor.note, "User 1's Mii is Leek Girl now") && g_users[0].mii == 1 &&
-                       app.user_mii == 1);
+                       app.user_mii == -1);
                 kept = (char*)snx_read_file(ini, &size);
                 assert(kept && strstr(kept, "[user1]\nnickname=Aogo\nmii=Leek Girl\n[user2]"));
                 free(kept);
@@ -12273,6 +12292,32 @@ int main(int argc, char** argv) {
         app.browser = (GuiBrowser){0};
         app.theme = *gui_theme_builtin("default");
     }
+    /* Share Log's logs from a line's start (log_tail): a cut inside one would leave part of a home folder's path, which
+       the tilde no longer knows as one, and the account's name with it. A log within max whole; past it, from the first
+       line that starts in its last max bytes to its end, nothing when none does; CRs before LFs gone */
+    {
+        static const char lines[] = "[   0.10] first\r\n"
+                                    "[   0.20] fs: sdmc in C:\\Users\\Some One\\AppData\\Roaming\r\n"
+                                    "[   0.30] last\r\n";
+        char *path = snx_path_join(temporary, "tail.log"), *tail;
+        size_t cut = (size_t)(strstr(lines, "sers\\") - lines), size = sizeof lines - 1;
+        assert(!snx_write_file(path, lines, size));
+        tail = log_tail(path, size);
+        assert(!strcmp(
+            tail, "[   0.10] first\n[   0.20] fs: sdmc in C:\\Users\\Some One\\AppData\\Roaming\n[   0.30] last\n"));
+        free(tail);
+        tail = log_tail(path, size - cut); /* cut after "C:\U": the next line on */
+        assert(!strcmp(tail, "[   0.30] last\n"));
+        free(tail);
+        tail = log_tail(path, sizeof "[   0.30] last\r\n" - 1); /* cut where a line starts: from it */
+        assert(!strcmp(tail, "[   0.30] last\n"));
+        free(tail);
+        tail = log_tail(path, 3); /* inside the last line */
+        assert(!strcmp(tail, ""));
+        free(tail);
+        assert(!remove(path));
+        free(path);
+    }
     /* Share Log, on every system: share/ of Folders' Logs emptied of what was shared before, scarletnx-logs-<when>.zip
        in it (its summary.txt with the message and the last run's output), and that folder opened */
     {
@@ -12383,8 +12428,15 @@ int main(int argc, char** argv) {
             assert(strstr(text, "ScarletNX - Some Game\n") && !strstr(text, "?\n"));
             free(text);
             { /* the box's other two: the one log of before, alone, the zip gone, and the logs' folder opened; Back does
-                 neither */
+                 neither. The one log has each home folder as ~, as the zip: the account's name, spaces and all, is the
+                 player's, Windows' and a POSIX system's alike */
+                static const char homes[] =
+                    "[   2.40] fs: sdmc in C:\\Users\\Some One\\AppData\\Roaming\\scarletnx\\sdmc\r\n"
+                    "[   2.40] fs: saves in /home/some one/.local/share/scarletnx/saves\r\n";
                 char *one = snx_path_join(share, "scarletnx.log"), *want, *url, *before = shared_path(&app);
+                char* homed = snx_format("%s%s", crashed, homes);
+                assert(!snx_write_file(log, homed, strlen(homed)));
+                free(homed);
                 snprintf(app.message, sizeof(app.message), "before the one log");
                 assert(before && snx_is_file(before));
                 share_pick(&app, 1);
@@ -12393,6 +12445,9 @@ int main(int argc, char** argv) {
                 free(before);
                 text = (char*)snx_read_file(one, &size);
                 assert(text && strstr(text, "Message: before the one log") && strstr(text, "== the last run: "));
+                assert(strstr(text, "] fs: sdmc in ~\\AppData\\Roaming\\scarletnx\\sdmc\n") &&
+                       strstr(text, "] fs: saves in ~/.local/share/scarletnx/saves\n") && !strstr(text, "Some One") &&
+                       !strstr(text, "some one"));
                 free(text);
                 free(want);
                 assert(!remove(one));

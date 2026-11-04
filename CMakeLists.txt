@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# Builds the ScarletNX runtime for Linux or FreeBSD, for Windows with llvm-mingw (natively, or cross-built), or for
+# Builds the ScarletNX runtime for Linux or FreeBSD, for NetBSD (cross-built, docs/NETBSD.md), for Windows with
+# llvm-mingw (natively, or cross-built), or for
 # macOS and iOS with Xcode's Clang (the macos and ios presets, docs/APPLE.md). The
 # game module (<Game>_code.so or .dll) comes from `scarletnx -r`. The
 # third-party libraries are fetched and built with the runtime, see cmake/dependencies.cmake.
@@ -304,3 +305,7 @@ endif()
 # No -fno-strict-aliasing or -fwrapv in ScarletNX's own code, once every target is defined (cmake/banned_flags.cmake)
 include(cmake/banned_flags.cmake)
 snx_check_project_flags()
+# plat_posix.c's power watcher needs both Apple frameworks named by every target that compiles it, once every
+# target is defined (cmake/power_frameworks.cmake)
+include(cmake/power_frameworks.cmake)
+snx_check_power_frameworks()

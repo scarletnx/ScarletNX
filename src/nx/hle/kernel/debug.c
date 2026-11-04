@@ -252,6 +252,8 @@ void kernel_dump_regs(CPU* c) {
         WARN("  pc %s  lr %s\n", ps, ls);
         backtrace(0, c->x[30], c->x[29], 1);
         dump_code(0, "code", c->pc - 0x20, c->pc + 0x20, c->pc);
+        if (!readable(c->pc, 4)) /* a branch to where nothing is mapped: the caller's code says through what */
+            dump_code(0, "code at lr", c->x[30] - 0x20, c->x[30] + 0x20, c->x[30]);
         dump_pointees(0, "x", c->x, 31, 4);
     }
     dump_rings(0);

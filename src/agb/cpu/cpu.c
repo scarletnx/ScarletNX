@@ -90,7 +90,7 @@ void agb_cpu_init(AgbCpu* cpu, AgbBoard* board, uint8_t* map) {
     for (int i = 0; i < 6; ++i) cpu->banked_r13[i] = 0x03007F00;
     cpu->banked_r13[2] = 0x03007FA0;
     cpu->banked_r13[3] = 0x03007FE0;
-    cpu->arm.r[15] = 0x080000C0;
+    cpu->arm.r[15] = 0x08000000; /* the BIOS jumps to the cartridge's first word, the branch its header starts with */
 }
 
 static void advance(AgbCpu* cpu, AgbSink* sink, uint32_t cycles) {
@@ -131,6 +131,7 @@ static int irq_enter(AgbBoard* board, AgbCpu* cpu) {
     cpu->arm.cpsr = (cpu->arm.cpsr & ~(uint32_t)SNX_ARM_T) | (handler & 1 ? SNX_ARM_T : 0);
     cpu->arm.r[15] = handler & ~(uint32_t)1;
     board->bios_prefetch = AGB_BIOS_PREFETCH_IRQ;
+    ++cpu->irq_depth;
     return 1;
 }
 
@@ -148,6 +149,7 @@ static void irq_return(AgbBoard* board, AgbCpu* cpu) {
     cpu->arm.cpsr = saved_cpsr;
     cpu->arm.r[15] = back - 4;
     board->bios_prefetch = AGB_BIOS_PREFETCH_IRQ_RETURN;
+    if (cpu->irq_depth) --cpu->irq_depth;
 }
 
 /* ---- software interrupts and the privileged residue ---- */
@@ -167,7 +169,7 @@ static void soft_reset(AgbBoard* board, AgbCpu* cpu) {
     cpu->banked_r14[2] = cpu->banked_r14[3] = cpu->spsr[2] = cpu->spsr[3] = 0;
     cpu->arm.cpsr = 0x1F;
     cpu->arm.r[15] = entry;
-    cpu->wait = 0;
+    cpu->wait = cpu->irq_depth = 0;
 }
 
 static int handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb) {
@@ -188,6 +190,7 @@ static int handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb) 
            hardware's IF is the handler's to acknowledge */
         int discard = number == AGB_SWI_VBLANK_INTR_WAIT || cpu->arm.r[0];
         cpu->wait = number == AGB_SWI_VBLANK_INTR_WAIT ? AGB_IRQ_VBLANK : (uint16_t)(cpu->arm.r[1] & 0x3FFF);
+        cpu->wait_depth = cpu->irq_depth;
         if (discard) agb_write16(board, AGB_BIOS_FLAGS, agb_read16(board, AGB_BIOS_FLAGS) & (uint16_t)~cpu->wait);
         board->irq_ime = 1;
         if (discard) board->cpu_halted = 1;
@@ -522,9 +525,9 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
                 uint32_t audio_capacity, uint32_t* audio_written, char* error, size_t error_size) {
     AgbSink sink = {board, audio, audio_capacity, 0, cpu->over};
     while (sink.elapsed < cycles) {
-        /* IntrWait, outside the interrupt handler: over once the handler flagged what it waits for, which it takes out
-           of the flags; else it halts for the next interrupt */
-        if (cpu->wait && !board->cpu_halted && (cpu->arm.cpsr & 0x1F) != 0x12) {
+        /* IntrWait, back where it was called once the handlers it ran returned: over once a handler flagged what it
+           waits for, which it takes out of the flags; else it halts for the next interrupt */
+        if (cpu->wait && !board->cpu_halted && cpu->irq_depth == cpu->wait_depth) {
             uint16_t flags = agb_read16(board, AGB_BIOS_FLAGS), done = flags & cpu->wait;
             if (done) {
                 agb_write16(board, AGB_BIOS_FLAGS, (uint16_t)(flags & ~done));
@@ -543,6 +546,11 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
         }
         if (cpu->arm.r[15] == AGB_IRQ_RETURN) {
             irq_return(board, cpu);
+            continue;
+        }
+        if (cpu->arm.r[15] == AGB_BIOS_NOP_CALL) { /* a sound driver function SoundDriverGetJumpList named: bx lr */
+            cpu->arm.cpsr = (cpu->arm.cpsr & ~(uint32_t)SNX_ARM_T) | (cpu->arm.r[14] & 1 ? SNX_ARM_T : 0);
+            cpu->arm.r[15] = cpu->arm.r[14] & ~(uint32_t)1;
             continue;
         }
         const AgbBlock* block =

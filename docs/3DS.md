@@ -103,9 +103,11 @@ generically), creates its save data and stops at its first prompt for the A
 button, drawn through the PICA renderer. Input is the next gap.
 
 The GPU's work runs on one Vulkan device (`src/3ds/gpu/vk/`), which needs Vulkan
-1.3, 8-bit storage buffers and `VK_EXT_external_memory_host`: the board's RAM
-regions are imported as buffers, so the GPU reads and writes the guest's memory
-in place and nothing of it is copied by the CPU. Memory fills, display transfers
+1.3, 8-bit storage buffers and `VK_EXT_external_memory_host` or
+`VK_EXT_external_memory_dma_buf`: the board's RAM regions are its buffers, imported
+or, where the driver will not import them, the device's own memory (below), so the
+GPU reads and writes the guest's memory in place and nothing of it is copied by the
+CPU. Memory fills, display transfers
 and texture copies are compute shaders (`gpu/vk/shaders/`), held byte for byte to
 the CPU reference `gpu/transfer.c` by `tests/3ds_vk_transfer.c`. The Y2R engine (`y2r:u`, `services/y2r.c`), which
 turns a video's YUV frames to RGB, converts on the GPU too (`gpu/vk/y2r.c`). Its streams
@@ -116,8 +118,9 @@ on the GPU too (`gpu/vk/render.c`). The vertex program is decompiled (`gpu/vk/vs
 and the fragment pipeline generated (`gpu/vk/fsgen.c`), both ported from Azahar's
 shader generators and both written as SPIR-V words directly (`src/common/utilities/spirv_emit.c`, shared with NX), with no
 shader compiler at run time. The output merger is the pipeline's fixed state. Vertex and
-index data are read in place. `tests/3ds_vk_draw.c` holds the draws to the software
-renderer they replaced, which stays only as that reference. The shown
+index data are read in place, except in a draw with a geometry shader, whose vertex and
+geometry shaders run on the CPU (see below). `tests/3ds_vk_draw.c` holds the draws to the
+software renderer they replaced, which stays as their reference. The shown
 framebuffers are decoded and turned to the landscape screen by a compute shader
 straight from guest memory into the window's swapchain; the frame dumps are the
 one readback.
@@ -187,7 +190,7 @@ blocks presented frames until it was ended. It is **not playable** yet:
   are at rest (`hid:USER`, below).
 - The music has a gap after every rendered frame, because rendering and presenting
   run inside the guest's GSP call.
-- Geometry shaders, procedural textures and shadows still stop the run explicitly.
+- Procedural textures and shadows still stop the run explicitly.
 
 The [parity roadmap](#parity-roadmap-azahar) lists the remaining work, and the
 [SuperTux integration target](3DS-SUPERTUX.md) holds the pinned input.
@@ -429,10 +432,12 @@ the lighting, fog and procedural-texture LUTs, default attributes and immediate 
 command buffer jumps and the P3D interrupt request with autostop. A list outside memory
 raises P3D without running. Draws go to the GPU (see above). The software renderer
 ported from Azahar's (`gpu/shader.c`, `gpu/draw.c`, `gpu/raster.c`, `gpu/lighting.c`,
-`gpu/texture.c`) is only built into the tests, as the reference the GPU's draws are
-compared with. It samples the nearest texel only, as Azahar's does, so texture
-filtering has no reference. Geometry shaders and shadow textures and rendering are not
-drawn yet: a draw that needs one stops the run and names it. The ExHeader's address-mapping capabilities
+`gpu/texture.c`) is the reference the GPU's draws are compared with. Only its shader
+units and vertex processing (`gpu/shader.c`, `gpu/draw.c`) are built into the runtime:
+a draw with a geometry shader runs its vertex and geometry shaders there on the CPU, as
+Azahar does, and the GPU draws the triangles they make. The reference samples the
+nearest texel only, as Azahar's does, so texture filtering has no reference. Shadow
+textures and rendering are not drawn yet: a draw that needs one stops the run and names it. The ExHeader's address-mapping capabilities
 are applied at process creation (VRAM, DSP RAM, New 3DS extra RAM), as Azahar's
 `HandleSpecialMapping` does; MMIO areas stay unmapped. SetBufferSwap and the shared
 FrameBufferUpdate blocks latch real framebuffer descriptors in the five formats
@@ -470,14 +475,34 @@ The separate windows and the two render resolutions are checked by `3ds_windows`
 screen takes its own setting's scale and no other's, both screens present, and the PPM
 dumps stay the framebuffer's own size whatever the scale. With Separate screens on, that
 test fails unless both windows present, and it skips where the host makes no window (CI).
-On a host whose Vulkan driver cannot import the board's RAM (`VK_EXT_external_memory_host`),
-the 3DS device does not start, and its error says which call refused which region, the
-`VkResult`, and the device and driver. The RAM is one shared mapping (a memfd on Linux), so
-that every guest view of a page is the same memory, and RADV imports a host pointer as an
-amdgpu user pointer of private anonymous memory only: its `vkAllocateMemory` gives
-`VK_ERROR_INVALID_EXTERNAL_HANDLE` for the first region, VRAM. The CPU side, the AOT modules
-and the settings still run; the game ends at its first GX command that needs the GPU (a
-command list, fill, display transfer or texture copy), with that error as the run's last line.
+A window minimized and restored gets its swapchain back, checked by `3ds_windows_minimized`
+(it skips where the host keeps the swapchain or does not minimize). On Windows a minimized
+window's surface is 0x0 and no swapchain can be made at that size, so the first frame after
+the restore makes one.
+The RAM is one shared mapping (a memfd on Linux), so that every guest view of a page is the
+same memory, and some drivers will not import it (`VK_EXT_external_memory_host`): RADV
+imports a host pointer as an amdgpu user pointer of private anonymous memory only, and its
+`vkAllocateMemory` gives `VK_ERROR_INVALID_EXTERNAL_HANDLE` for the first region, VRAM. There
+the RAM moves into the device's own memory, one allocation of a host-visible, coherent and
+cached type exported as a dma-buf (`VK_EXT_external_memory_dma_buf`), each region's buffer
+bound at the region's offset: before the guest runs, the RAM's bytes are copied into it, and
+the object's view and every flat view of a RAM page are mapped from the dma-buf at the same
+address and protection (`snx_ctr_memory_adopt`). The device says so on the standard error,
+with the import's refusal, the size and the memory type. On an RX 6700 XT the CPU reads that
+memory at 52.7 GB/s and the memfd at 51.0, and a page's first touch costs 0.31 us against
+1.95. A mapping of a dma-buf never merges with its neighbours, though, so each page that
+write tracking protects and opens again stays a mapping of its own: a host with few of them
+(`vm.max_map_count`, 65530 where systemd 256's 1048576 is not set) can run out, and write
+tracking then says, for each view it cannot protect, its address and the system's errno.
+
+When the device's memory cannot hold the RAM either, the 3DS device does not start, and its
+error gives both reasons (which call refused which region, the `VkResult`), then the device
+and driver. The CPU side, the AOT modules and the settings still run; the game ends at its
+first GX command that needs the GPU (a command list, fill, display transfer or texture copy),
+with that error as the run's last line. `3ds_vk_ram` checks the RAM on whatever device there
+is: what the guest wrote reaches the GPU, a GPU fill shows in every guest view, a store through
+the flat space reaches the GPU, and the RAM outlives the device; `3ds_memory_adopt` checks the
+move with a memfd standing in for the dma-buf, on every host.
 
 Audio runs on a high-level DSP (`src/3ds/audio/`, ported from Azahar's HLE audio core):
 dsp::DSP (`services/dsp.c`) takes the application's pipe writes, interrupt events, the
@@ -774,7 +799,7 @@ The command processor ports `video_core/pica/pica_core.cpp`, `shader_setup.cpp`,
 `packed_attribute.h`, `pica_types.h` and the register layouts of `regs_*.h`
 (GPL-2.0-or-later) at the same revision.
 The software pipeline ports `video_core/shader/shader_interpreter.cpp`,
-`video_core/pica/{shader_unit,vertex_loader,primitive_assembly,output_vertex}.cpp`,
+`video_core/pica/{shader_unit,vertex_loader,primitive_assembly,output_vertex,geometry_pipeline}.cpp`,
 `video_core/renderer_software/{sw_rasterizer,sw_clipper,sw_texturing,sw_framebuffer,sw_lighting}.cpp`
 and `video_core/texture/{texture_decode,etc1}.cpp` (GPL-2.0-or-later), with the shader
 instruction encoding of nihstro's `shader_bytecode.h` (BSD-3-Clause, notice kept in
@@ -860,7 +885,7 @@ recorded under [Source provenance and licensing](#source-provenance-and-licensin
 | F1 Kernel and time (done 2026-10-17, audited 2026-10-19) | The scheduler delivers every deadline (vblank, DSP frame, timers, wait timeouts, sleeps, the shared page's hourly time). The dispatcher reaches it every 4096 blocks, so a thread a deadline wakes with a better priority preempts one that makes no SVC. Priorities are effective ones, with mutex priority inheritance. WaitSynchronization1 and N and the arbiter take finite timeouts. SleepThread 0 yields and -1 sleeps forever. ExitThread ends the process at its last thread. Timers and pulse events exist. CreateThread runs threads on processors -2 to 3 within the APPLICATION limit's priority, and the resource limit's counts are enforced. Also implemented: GetHandleInfo, GetSystemInfo (Luma's queries too), GetProcessInfo, GetThreadInfo, GetProcessIdOfThread, the resource limit SVCs, Break, the cache SVCs and Luma's 0x93 and 0x94, QueryMemory with the console's register layout and memory states, CreateMemoryBlock, UnmapMemoryBlock, MapMemoryBlock of the application's own blocks and ControlMemory MAP and UNMAP. Any well-formed IPC descriptor is translated, buffers are checked against the caller's memory and moved handles are closed. `--ipc-stubs` answers the unknown commands of the services it names. The shared page has its retail, battery, Wi-Fi and hourly local time fields. Guest time stays host time. Subtracting slow HLE work from it waits for the GPU thread (F2), since the audio device plays in host time | `core_timing.*`, `kernel/{svc,thread,timer,mutex,semaphore,address_arbiter,resource_limit,shared_memory,process,shared_page,vm_manager,hle_ipc}.cpp`, `service/service.cpp`, `service/gsp/gsp_gpu.cpp` |
 | F2 SuperTux playable | Presenter without readback or queue waits, on its own thread; both screens and the Default, Single, Large, Side-by-side and Hybrid layouts; keyboard, SDL3 gamepad, touch and motion input; full `hid:USER`/`hid:SPVR` rings and `ir:rst`; GX work on a GPU thread with interrupts delivered by the poll; banded raster threads; audio prebuffer and hold-last-frame | `frontend/framebuffer_layout.cpp`, `frontend/emu_window.cpp`, `service/hid/hid.*`, `service/ir/ir_rst.*`, `renderer_software/sw_rasterizer.cpp`, `audio_core/dsp_interface.cpp` |
 | F3 OS for retail titles | cfg blocks; APT:U/APT:A and the `aptMainLoop` lifecycle; shared font; HLE applets (swkbd first); FS save data, extdata, system save data, the NCCH archive and the SDMC write-only archive; ptm:u, ac:u and registered stubs for the small services; err:f | `service/{cfg,apt,fs,ptm,ac,err}/`, `hle/applets/`, `file_sys/archive_*` |
-| F4 Software GPU | Geometry shaders, procedural textures, shadow textures and rendering, VRAM save and restore, the stereo right eye | `pica/geometry_pipeline.cpp`, `pica/shader_unit.cpp`, `renderer_software/{sw_proctex,sw_framebuffer,sw_rasterizer}.cpp` |
+| F4 Software GPU | Procedural textures, shadow textures and rendering, VRAM save and restore, the stereo right eye | `renderer_software/{sw_proctex,sw_framebuffer,sw_rasterizer}.cpp` |
 | F5 Dynamic code | ldr:ro CROs compiled ahead of time, with a design for their run-time base and relocations; a log of missed targets for a second discovery pass; an explicit result for self-modifying code | `service/ldr_ro/` |
 | F6 Audio | The DSP's AAC pipe on FFmpeg; CSND; time stretching if gaps remain | `audio_core/hle/aac_decoder.cpp`, `audio_core/csnd.cpp`, `service/csnd/`, `audio_core/time_stretch.cpp` |
 | F7 Peripherals and network | y2r, mic, cam (no camera), ir:USER (its startup, events and the no-accessory answers are in place; a Circle Pad Pro is not emulated), soc:U, then ssl and http | `service/{cam,mic,ir,soc,ssl,http}/`, `hw/y2r.cpp` |
@@ -1039,6 +1064,9 @@ The backend implements discovery, host/join, node status, channel bindings, pack
 and disconnect. It uses a private protocol inside the room's datagram transport. It does
 not connect to physical consoles, Citra/Azahar rooms or Switch LDN sessions. With LAN mode
 (the default), Initialize succeeds, scans find no network and hosting works with no peer.
+Command 0x23, which some games send before a scan, answers 0x0421, the value libctru's
+udsScanBeacons puts in its scan input. Read as a mask with bit n for channel n + 1, that is
+channels 1, 6 and 11.
 The 3DS backend has no LAN transport, and ldn_mitm's protocol is for the Switch only. Nothing
 leaves the machine and no room is joined.
 

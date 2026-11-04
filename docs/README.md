@@ -25,6 +25,7 @@ ScarletNX yourself, see [Build](./BUILD.md).
 - [RISC-V and LoongArch](./RISCV-LOONGARCH.md): building, and what differs from the other hosts
 - [MIPS64](./MIPS64.md): mips64 and mips64el, built from their presets, and what differs from the other hosts
 - [s390x](./S390X.md): IBM Z, built from its preset, and what differs from the other hosts
+- [NetBSD](./NETBSD.md): x86-64, cross-built from Linux with its preset, and what differs from the other hosts
 
 ## Other systems
 

@@ -17,8 +17,8 @@
 static const char* text(const CPU* c, u64 a, char* out, size_t n) {
     size_t i;
     if (!a) return "none";
-    for (i = 0; i + 1 < n && c->mem[a + i]; i++) {
-        u8 b = c->mem[a + i];
+    for (i = 0; i + 1 < n && *hook_host(c, a + i); i++) {
+        u8 b = *hook_host(c, a + i);
         out[i] = b >= 32 && b < 127 ? (char)b : '?';
     }
     out[i] = 0;
@@ -32,7 +32,7 @@ void diag_abort(CPU* c, u64 condition, u64 function, u64 file, i32 line, u64 res
     GuestFn own = hook_original(own_at);
     (void)exception, (void)args;
     if (result) {
-        u32 r = snx_ld_le32(c->mem + result);
+        u32 r = snx_ld_le32(hook_host(c, result));
         snprintf(res, sizeof res, "result 0x%x (error %04u-%04u)", r, 2000 + (r & 0x1ff), (r >> 9) & 0x1fff);
     }
     WARN("nn::diag abort: \"%s\" failed in %s (%s, line %d) with %s, message format \"%s\"\n",

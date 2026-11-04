@@ -168,6 +168,9 @@ list(TRANSFORM components PREPEND snx_)
 add_library(scarletnx-nx STATIC)
 set_target_properties(scarletnx-nx PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(scarletnx-nx PUBLIC snx_nx_flags ${components} snx_driver)
+if(CMAKE_SYSTEM_NAME STREQUAL "NetBSD")
+    target_link_libraries(scarletnx-nx PUBLIC execinfo) # backtrace, for the crash report's host frames (crash.c)
+endif()
 # The Switch driver's entry (runtime/entry.c's snx_switch_main), which scarletnx runs (src/multicall). Started with
 # nothing to run it opens the menu (src/gui), which runs games with it; Android's app has the menu as a library of its
 # own
@@ -186,8 +189,8 @@ target_link_libraries(snx_platform PRIVATE SDL3::SDL3 snx_window_icon snx_build_
 if(WIN32)
     target_link_libraries(snx_platform PUBLIC synchronization powrprof) # plat_wait_word's WaitOnAddress, the power notification
 endif()
-if(APPLE AND NOT IOS)
-    target_link_libraries(snx_platform PUBLIC "-framework IOKit") # plat_posix.c's power source run loop
+if(APPLE AND NOT IOS) # plat_posix.c's power source: IOKit's notifications on CoreFoundation's run loop
+    target_link_libraries(snx_platform PUBLIC "-framework IOKit" "-framework CoreFoundation")
 endif()
 # the build is part of the key of the shader files, .vkshaders and .vkshipped (gpu/vk/pipeline.c)
 target_link_libraries(snx_vk PRIVATE snx_build_info FFmpeg::avutil) # vk/nvdec.c: FFmpeg's Vulkan device and pictures
@@ -281,6 +284,14 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk_memory=2)
     set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the write tracking's contract alone (tests/vulkan_write_tracking.inc), with each way the host tracks: its own
+    # (userfaultfd on Linux), page protection and the fault handler for the tracking and the traps (macOS, FreeBSD,
+    # Android, older Linux), and unified memory's reads in place
+    add_test(NAME vulkan_write_tracking COMMAND snx-test-vulkan -H)
+    add_test(NAME vulkan_write_tracking_protection COMMAND snx-test-vulkan -H --write_tracking=1 --memory_traps=1)
+    add_test(NAME vulkan_write_tracking_uma COMMAND snx-test-vulkan -H --vk_memory=2)
+    set_tests_properties(vulkan_write_tracking vulkan_write_tracking_protection vulkan_write_tracking_uma PROPERTIES
+        TIMEOUT 120 ENVIRONMENT "SNX_TEST_WW_ONLY=1" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # an argument the test doesn't take stops it, named, before any device is made; the setting before it, as
     # the runtime takes it, goes through
     add_test(NAME vulkan_headless_options COMMAND snx-test-vulkan -H --memory_traps=2 --memory_trap=2)
@@ -318,8 +329,8 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     if(WIN32)
         target_link_libraries(snx-test-astc-vulkan PRIVATE powrprof)
     endif()
-    if(APPLE AND NOT IOS)
-        target_link_libraries(snx-test-astc-vulkan PRIVATE "-framework IOKit")
+    if(APPLE AND NOT IOS) # plat_posix.c's power source: IOKit's notifications on CoreFoundation's run loop
+        target_link_libraries(snx-test-astc-vulkan PRIVATE "-framework IOKit" "-framework CoreFoundation")
     endif()
     set_target_properties(snx-test-astc-vulkan PROPERTIES LINKER_LANGUAGE CXX)
     add_test(NAME astc_vulkan COMMAND snx-test-astc-vulkan)

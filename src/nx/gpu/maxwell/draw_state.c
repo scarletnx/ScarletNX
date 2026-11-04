@@ -143,6 +143,10 @@ void mx_draw_dynamic(const u32* r, DsDynamic* d) {
     memcpy(&d->bias_clamp, &r[0x61F], 4);
     memcpy(d->blend_const, &r[0x4C7], 16);
     memcpy(&d->alpha_ref, &r[0x4C4], 4);
+    /* SET_SURFACE_CLIP_HORIZONTAL (x, then the width in bits 16-31) and VERTICAL */
+    d->clip_x = r[0x3FD] & 0xFFFF;
+    d->clip_width = r[0x3FD] >> 16;
+    d->clip_y = r[0x3FE] & 0xFFFF;
     d->clip_height = r[0x3FE] >> 16;
     d->depth_word = r[0x50E];
 }

@@ -14,7 +14,8 @@
    - Textures are decoded from memory on the GPU (shaders/texture.comp) and kept while their memory is unchanged:
      their pages are watched, and a write to them, the CPU's or a GPU engine's, drops them.
    - Memory the GPU writes (stores, transfers, fills, Y2R) is the GPU's until the submission that writes it is done.
-   Vertex and index data are read in place from the imported RAM. */
+   Vertex and index data are read in place from the imported RAM. A draw with a geometry shader runs its vertex and
+   geometry shaders on the CPU instead (draw.c), reading memory as the CPU does, and draws the triangles they make. */
 /* the renderer of SnxCtrPicaHost (memory is the device's, imported): the draw triggers, DrawArrays indexed or not;
    one immediate-mode vertex, pica->immediate_vertex, kept until snx_ctr_vk_vertices_end draws the ones kept */
 SnxCtrPicaResult snx_ctr_vk_draw(SnxCtrPica* pica, SnxCtrMemory* memory, bool indexed);

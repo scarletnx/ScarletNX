@@ -4,6 +4,7 @@
    functions, each in the console's layout so that the SDK's resource loader and shaders take it. */
 #include "common/utilities/mii_model.h"
 #include "common/utilities/endian.h"
+#include <libdeflate.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -256,12 +257,15 @@ static u16 half_of(float f) {
     return (u16)(sign | ((u32)exp << 10) | (mant >> 13));
 }
 
-/* ============================================================ the output and zlib's stored blocks */
+/* ============================================================ the output and its zlib streams */
 
-/* where a file's bytes go (NULL: only measured) and the next free byte of its data */
+/* where a file's bytes go (NULL: only measured) and the next free byte of its data; while it is written, the part
+   being made (raw, cap bytes) and the compressor that deflates it */
 typedef struct {
     u8* b;
-    u32 at;
+    u32 at, cap;
+    u8* raw;
+    struct libdeflate_compressor* z;
 } Out;
 
 static u32 adler32(const u8* p, u32 n) {
@@ -295,6 +299,38 @@ static void zstored_wrap(Out* o, u32 n) {
         snx_st_le16(hdr + 3, (u16)~len);
     }
     snx_st_be32(z + 2 + 5u * blocks + n, adler);
+}
+/* the n bytes of o->raw into a zlib stream at o->at, deflated at zlib's default level as the console's parts are, or
+   in stored blocks where that takes no more: its bytes, zstored_size(n) at most. The SDK reads a file whole into a
+   heap the game sizes for the console's files */
+static u32 zpart(Out* o, u32 n) {
+    size_t z = libdeflate_zlib_compress(o->z, o->raw, n, o->b + o->at, zstored_size(n));
+    if (z) return (u32)z;
+    memcpy(zstored_raw(o, n), o->raw, n);
+    zstored_wrap(o, n);
+    return zstored_size(n);
+}
+/* a file's compressor, for o->b (its part buffer grows as parts need it): 0, or -1 when there is no memory for it */
+static int out_open(Out* o) {
+    o->raw = NULL;
+    o->cap = 0;
+    o->z = o->b ? libdeflate_alloc_compressor(6) : NULL;
+    return o->b && !o->z ? -1 : 0;
+}
+static void out_close(Out* o) {
+    free(o->raw);
+    libdeflate_free_compressor(o->z);
+}
+/* o->raw zeroed for a part of n bytes, as a drawing writes only what it covers: NULL when there is no memory for it */
+static u8* part_buffer(Out* o, u32 n) {
+    if (n > o->cap) {
+        u8* r = (u8*)realloc(o->raw, n);
+        if (!r) return NULL;
+        o->raw = r;
+        o->cap = n;
+    }
+    memset(o->raw, 0, n);
+    return o->raw;
 }
 
 /* ============================================================ the head */
@@ -669,6 +705,36 @@ static u32 shape_raw_size(const Shape* sh, u32 off[5], u32 size[5], u32* idx_off
     *idx_off = (at + 3) & ~3u;
     *idx_size = quads * 6 * 2;
     return *idx_off + *idx_size;
+}
+/* a shape file's quality, in the archive's order */
+enum { Q_MID, Q_HIGH, Q_SHAPES };
+/* the console's largest decompressed part of each shape kind in its Mid and High files. A shape file's header gives
+   its own to the SDK, which sizes a Mii model's memory with them, and a game sizes its Mii heaps for the console's */
+static const u32 shape_budget[Q_SHAPES][S_KINDS] = {
+    {0x6fa, 0xbf0, 0x9f8, 0x10f0, 0x390, 0x6d0, 0x420, 0x23b8, 0x1f70, 0x4c, 0x33c, 0xe4},
+    {0xa4a, 0x18c4, 0x12dc, 0x6088, 0x684, 0x1b78, 0xd0c, 0x10872, 0xb23c, 0x4c, 0xb82, 0xe4},
+};
+/* n less an eighth, not under least (n itself when it is not over least) */
+static u32 fewer(u32 n, u32 least) {
+    u32 m = n - (n + 7) / 8;
+    return n <= least ? n : m < least ? least : m;
+}
+/* a part of a shape file of quality q: shape_of's, with an eighth fewer quads each way at a time (down to 3 by 1 a
+   grid) until its bytes are no more than the console's largest of its kind there */
+static Shape shape_in(u32 kind, u32 variant, u32 q) {
+    Shape sh = shape_of(kind, variant);
+    u32 off[5], size[5], idx_off, idx_size;
+    while (shape_raw_size(&sh, off, size, &idx_off, &idx_size) > shape_budget[q][kind]) {
+        u32 g, changed = 0;
+        for (g = 0; g < sh.grids; g++) {
+            u32 ns = fewer(sh.ns[g], 3), nt = fewer(sh.nt[g], 1);
+            changed |= ns != sh.ns[g] || nt != sh.nt[g];
+            sh.ns[g] = ns;
+            sh.nt[g] = nt;
+        }
+        if (!changed) break;
+    }
+    return sh;
 }
 static u32 snorm10(float v) { return (u32)(i32)lroundf(clampf(v, -1, 1) * 511.0f) & 0x3ffu; }
 static u8 snorm8(float v) { return (u8)(i8)lroundf(clampf(v, -1, 1) * 127.0f); }
@@ -1156,6 +1222,7 @@ static u32 texture_file(u32 mid, u8* b) {
     memset(placed, 0, sizeof placed);
     o.b = b;
     o.at = TEX_DATA;
+    if (out_open(&o)) return 0;
     for (kind = 0; kind < T_KINDS; kind++)
         for (i = 0; i < tex_counts[kind]; i++, e++) {
             TexGeom g = tex_geom(kind, i, mid);
@@ -1168,8 +1235,13 @@ static u32 texture_file(u32 mid, u8* b) {
                 p->raw = raw;
                 p->stored = zstored_size(raw);
                 if (b) {
-                    tex_write(kind, v, &g, zstored_raw(&o, raw));
-                    zstored_wrap(&o, raw);
+                    u8* r = part_buffer(&o, raw);
+                    if (!r) {
+                        out_close(&o);
+                        return 0;
+                    }
+                    tex_write(kind, v, &g, r);
+                    p->stored = zpart(&o, raw);
                 }
                 o.at += p->stored;
             }
@@ -1196,19 +1268,21 @@ static u32 texture_file(u32 mid, u8* b) {
             snx_st_le32(b + 0xc + 4 * T_KINDS + 4 * kind, TEX_ALIGN);
         }
     }
+    out_close(&o);
     return o.at;
 }
 
-static u32 shape_file(u8* b) {
+static u32 shape_file(u32 q, u8* b) {
     Out o;
     Placed placed[S_KINDS][VARIANTS_MAX];
     u32 largest[S_KINDS] = {0}, kind, i, e = 0;
     memset(placed, 0, sizeof placed);
     o.b = b;
     o.at = SHAPE_DATA;
+    if (out_open(&o)) return 0;
     for (kind = 0; kind < S_KINDS; kind++)
         for (i = 0; i < shape_counts[kind]; i++, e++) {
-            Shape sh = shape_of(kind, shape_variant(kind, i));
+            Shape sh = shape_in(kind, shape_variant(kind, i), q);
             u32 off[5], size[5], idx_off, idx_size, raw = shape_raw_size(&sh, off, size, &idx_off, &idx_size), k;
             Placed* p = &placed[kind][sh.variant];
             if (!shape_present(kind, i)) continue;
@@ -1218,8 +1292,13 @@ static u32 shape_file(u8* b) {
                 p->raw = raw;
                 p->stored = zstored_size(raw);
                 if (b) {
-                    shape_write(&sh, zstored_raw(&o, raw), p->box);
-                    zstored_wrap(&o, raw);
+                    u8* r = part_buffer(&o, raw);
+                    if (!r) {
+                        out_close(&o);
+                        return 0;
+                    }
+                    shape_write(&sh, r, p->box);
+                    p->stored = zpart(&o, raw);
                 }
                 o.at += p->stored;
             }
@@ -1271,6 +1350,7 @@ static u32 shape_file(u8* b) {
             }
         }
     }
+    out_close(&o);
     return o.at;
 }
 
@@ -1280,8 +1360,8 @@ void snx_mii_model_name(u32 i, char name[32]) {
                                                            "ShapeMid.dat",           "ShapeHigh.dat"};
     snprintf(name, 32, "%s", names[i]);
 }
-u32 snx_mii_model_same(u32 i) { return i == 1 || i == 3 || i == 5 ? i - 1 : i; }
-u32 snx_mii_model_write(u32 i, u8* out) { return i < 4 ? texture_file(i >= 2, out) : shape_file(out); }
+u32 snx_mii_model_same(u32 i) { return i == 1 || i == 3 ? i - 1 : i; }
+u32 snx_mii_model_write(u32 i, u8* out) { return i < 4 ? texture_file(i >= 2, out) : shape_file(i - 4, out); }
 
 /* ============================================================ a Mii's picture */
 

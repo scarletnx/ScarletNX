@@ -508,6 +508,9 @@ typedef struct App {
     bool* mods_on;                 /* each of mods': played, not in mods_off= */
     char *cheats_folder, **cheats; /* the game's cheats folder and its cheats' names (gui_game_cheats), cheats_count */
     size_t cheats_count;
+    /* a collection's other programs the game has made (gui_game_programs), a row each that plays it, programs_count of
+       them; and the one a run plays (--program, the run's --game= on a phone), 0 for the game's own */
+    int programs[SNX_PROGRAMS_MAX], programs_count, play_program;
     bool* cheats_on;     /* each of cheats': run, not in cheats_off= */
     Uint32 addon_picked; /* the event the system's picker answers Add Mod's folder or Add Cheats' file with */
     int addon_adding;    /* the row it was opened for, ROW_ADD_MOD or ROW_ADD_CHEATS; 0 while none waits */
@@ -742,6 +745,7 @@ typedef struct App {
     const char* told_result; /* how the last of them ended, English (snx_tr's), for the one left once none runs */
     bool playing; /* a game started here plays in the game activity, the menu behind it until it shows again */
     bool played;  /* that activity ended: how the game's run did is read once the menu shows (game_end) */
+    char* played_game; /* the program it played: its game's folder holds the hand-over to the next (next_program) */
     SDL_Time played_at; /* when it started: a game log older than that is another run's */
 #endif
 } App;
@@ -4192,6 +4196,7 @@ static void addons_close(App* app) {
     app->cheats_count = 0;
     app->mods = NULL;
     app->mods_count = 0;
+    app->programs_count = 0;
     app->addons_shown = false;
 }
 /* folder as a URL the system's file manager opens, owned: file://, on iOS shareddocuments:// (the Files app's), its
@@ -4327,7 +4332,8 @@ static size_t addons_updates(const App* app) {
 }
 /* whether game, a program's path, keeps save states: a recompiled game's, not a dump's or a CIA's (states_focus's) */
 static bool states_kept(const char* game) { return !gui_is_cia(game) && !gui_is_dump(game); }
-/* the box's rows: the updates and No update (with any update), the DLCs, the mods, the cheats, then addons_tail's */
+/* the box's rows: the updates and No update (with any update), the DLCs, the mods, the cheats, a collection's other
+   programs, then addons_tail's */
 enum {
     ROW_NO_UPDATE = -1,
     ROW_SAVE = -2,
@@ -4352,10 +4358,11 @@ static const int addons_tail[] = {ROW_ADD_MOD,     ROW_MODS_FOLDER, ROW_ADD_CHEA
 /* the box's rows; on Open Folder's page, a folder of the game's each */
 static int addons_rows(const App* app) {
     if (app->addons_folders_shown) return GUI_GAME_FOLDERS;
-    return (int)(app->addons.count + app->mods_count + app->cheats_count) + (addons_updates(app) ? 1 : 0) + ADDONS_TAIL;
+    return (int)(app->addons.count + app->mods_count + app->cheats_count) + app->programs_count +
+           (addons_updates(app) ? 1 : 0) + ADDONS_TAIL;
 }
 /* what row is: its add-on's index in addons, a mod's (mods' index past addons' count), a cheat's (cheats' past the
-   mods'), ROW_NO_UPDATE, or one of addons_tail */
+   mods'), a program's (past the cheats'), ROW_NO_UPDATE, or one of addons_tail */
 static int addons_row(const App* app, int row) {
     int updates = (int)addons_updates(app), rows = addons_rows(app);
     if (row >= rows - ADDONS_TAIL) return addons_tail[row - (rows - ADDONS_TAIL)];
@@ -4371,7 +4378,12 @@ static int addons_mod(const App* app, int item) {
 /* a cheat's row's item (addons_row): its index in cheats, else -1 */
 static int addons_cheat(const App* app, int item) {
     int cheat = item - (int)(app->addons.count + app->mods_count);
-    return item >= 0 && cheat >= 0 ? cheat : -1;
+    return item >= 0 && cheat >= 0 && cheat < (int)app->cheats_count ? cheat : -1;
+}
+/* a program's row's item (addons_row): its index in programs, else -1 */
+static int addons_program_row(const App* app, int item) {
+    int program = item - (int)(app->addons.count + app->mods_count + app->cheats_count);
+    return item >= 0 && program >= 0 && program < app->programs_count ? program : -1;
 }
 /* a cheat cheats_off= cannot name (a | in it), which runs whatever its box says */
 static bool cheat_kept(const App* app, int cheat) { return strchr(app->cheats[cheat], SNX_CHEATS_SEPARATOR) != NULL; }
@@ -4553,7 +4565,8 @@ static void addons_open(App* app, const char* game, const char* title, bool alwa
     gui_game_addons(game, &app->addons);
     app->mods_count = gui_game_mods(game, &app->mods_folder, &app->mods);
     app->cheats_count = gui_game_cheats(game, &app->cheats_folder, &app->cheats);
-    if (!always && !app->addons.count && !app->mods_count && !app->cheats_count) {
+    app->programs_count = gui_game_programs(game, app->programs);
+    if (!always && !app->addons.count && !app->mods_count && !app->cheats_count && !app->programs_count) {
         addons_close(app);
         return;
     }
@@ -4605,7 +4618,7 @@ static unsigned addons_icon(const App* app, int row) {
            : item == ROW_ADD_CHEATS                                                          ? GUI_ICON_FILE_PLUS
            : item == ROW_SAVE || item == ROW_STATES                                          ? GUI_ICON_SAVE
            : item == ROW_PLAY && app->addons_recompile                                       ? GUI_ICON_HAMMER
-           : item == ROW_PLAY                                                                ? GUI_ICON_PLAY
+           : item == ROW_PLAY || addons_program_row(app, item) >= 0                          ? GUI_ICON_PLAY
                                                                                              : GUI_ICON_NONE;
 }
 static void addons_label(const App* app, int row, char* label, size_t size) {
@@ -4627,6 +4640,9 @@ static void addons_label(const App* app, int row, char* label, size_t size) {
         snprintf(label, size, "%s%s %s", app->theme.marker,
                  app->cheats_on[addons_cheat(app, item)] || cheat_kept(app, addons_cheat(app, item)) ? "[x]" : "[ ]",
                  what);
+    } else if (addons_program_row(app, item) >= 0) {
+        snprintf(what, sizeof what, snx_tr("Play Program %d"), app->programs[addons_program_row(app, item)]);
+        snprintf(label, size, "%s%s", app->theme.marker, what);
     } else if (item >= 0)
         snprintf(label, size, "%s%s %s", app->theme.marker,
                  addon_kind(app, (size_t)item) == SNX_ADDON_UPDATE ? (app->addons_checked[item] ? "(*)" : "( )")
@@ -5096,12 +5112,14 @@ static void addons_play(App* app, char* program) {
     launch(app, program, true);
     if (!app->menu.running) app->menu.selected = selected;
     app->recompile = recompile;
+    app->play_program = 0; /* a program row's, for that run alone */
 }
 /* row pressed: an update picked (the others not: one runs at a time), No update, a DLC's, a mod's or a cheat's box
    checked or not; Add Mod or Add Cheats, the picker, whose folder or file goes into the mods or cheats folder (mod_add,
    cheats_add); Open Mods Folder or Open Cheats Folder, the folder opened; Open Folder, its page of the game's other
    folders, one opened as it is pressed there; Clean Cache, the caches' deletion asked; Save, the picks kept and the box
-   closed; or Play, the picks kept and the game played (addons_play) */
+   closed; Play, the picks kept and the game played (addons_play); or a collection's Play Program N, the same with that
+   program played */
 static void addons_press(App* app, int row) {
     int item;
     size_t i;
@@ -5171,6 +5189,13 @@ static void addons_press(App* app, int row) {
     }
     if (item == ROW_CHEATS_FOLDER) {
         if (app->cheats_folder) show_folder(app, app->cheats_folder);
+        return;
+    }
+    if (addons_program_row(app, item) >= 0) {
+        int program = app->programs[addons_program_row(app, item)];
+        if (!addons_save(app, &path)) return;
+        app->play_program = program;
+        addons_play(app, path);
         return;
     }
     if (item >= 0 && addon_kind(app, (size_t)item) == SNX_ADDON_DLC) {
@@ -12608,11 +12633,47 @@ static void leave_run(App* app) {
     app->fade_ms = app->theme.fade_in_ms ? SDL_max(now_ms(app), 1) : 0;
     layout(app);
 }
+/* The program a run of game, a recompiled game's program, plays where the app runs the game itself (a phone): a
+   collection's Play Program N (app->play_program), the one that is made (game_ini.h's snx_program_pick: program 0,
+   said in the message, for one that is not), else game; owned. A hand-over a run before left (<game>.next, its next
+   program never started) is taken away, unless next says this run follows it */
+#if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
+static char* play_program(App* app, const char* game, bool next) {
+    char *folder = snx_dirname(game), picked[SNX_PATH_SIZE], why[512], *path = NULL, *handover;
+    const char* leaf = folder + strlen(folder);
+    while (leaf > folder && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
+    handover = snx_next_path(folder, leaf);
+    if (!next && snx_is_file(handover)) {
+        gui_log("Removing %s: a hand-over a run left, whose next program never started", handover);
+        remove(handover);
+    }
+    if (app->play_program > 0) {
+        snx_program_pick(folder, leaf, app->play_program, picked, sizeof picked, why, sizeof why);
+        if (why[0]) {
+            snprintf(app->message, sizeof app->message, "%s", why);
+            gui_log("--program %d: %s", app->play_program, why);
+        }
+        if (picked[0]) path = snx_path_join(folder, picked);
+    }
+    free(handover);
+    free(folder);
+    return path ? path : snx_strdup(game);
+}
+#endif
 #ifdef SDL_PLATFORM_ANDROID
+/* the hand-over's file of the game whose program is game, owned */
+static char* play_handover(const char* game) {
+    char *folder = snx_dirname(game), *path;
+    const char* leaf = folder + strlen(folder);
+    while (leaf > folder && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
+    path = snx_next_path(folder, leaf);
+    free(folder);
+    return path;
+}
 /* A game runs in the app's game activity, a process of its own: no child of this one gets a window */
-static int play(App* app, const char* game) {
+static int play_as(App* app, const char* asked, bool next) {
     GuiSettings* s = settings_of(app);
-    char *option = snx_format("--game=%s", game), *ini = game_ini_of(game);
+    char *game = play_program(app, asked, next), *option = snx_format("--game=%s", game), *ini = game_ini_of(game);
     /* the launcher's GPU driver and Freedreno variables, where the game has none of its own */
     char *driver = gui_run_option("gpu_driver", ini, app->gpu_driver),
          *freedreno = gui_run_option("freedreno_env", ini, app->freedreno);
@@ -12628,11 +12689,58 @@ static int play(App* app, const char* game) {
     SDL_GetCurrentTime(&app->played_at);
     ok = gui_android_play(argv, app->message, sizeof(app->message));
     if (ok) app->playing = true; /* the queue's recompile goes gently until the menu shows again */
+    if (ok) {
+        free(app->played_game);
+        app->played_game = snx_strdup(game);
+    }
     free(argv);
     free(option);
     free(driver);
     free(freedreno);
     free(ini);
+    free(game);
+    return ok;
+}
+static int play(App* app, const char* game) { return play_as(app, game, false); }
+/* The program a collection's program started as its game activity ended (ExecuteProgram, its hand-over <game>.next
+   beside it, which that program takes away as it starts): played as the one before was, true. False when it named
+   none, and for one that cannot be played, said in the message: a hand-over that is not one, or a program not made
+   (Recompile makes every program of the game) */
+static bool next_program(App* app) {
+    char *path = app->played_game ? play_handover(app->played_game) : NULL, why[1024], *folder, *program, *code;
+    SnxNext next;
+    int read = path ? snx_next_read(path, &next, why, sizeof why) : 0;
+    bool ok = false;
+    if (read <= 0) {
+        if (read < 0) {
+            snprintf(app->message, sizeof app->message, "%s", why);
+            gui_log("%s", why);
+            remove(path);
+        }
+        free(path);
+        return false;
+    }
+    folder = snx_dirname(app->played_game);
+    program = snx_path_join(folder, next.program);
+    code = snx_program_code(folder, next.program);
+    if (!snx_is_file(code)) {
+        snprintf(
+            app->message, sizeof app->message,
+            snx_tr("The game starts its program %d, %s, which is not made: Recompile the game to make its programs"),
+            next.index, next.program);
+        gui_log("%s", app->message);
+        remove(path);
+    } else {
+        gui_log("The game starts its program %d, %s (ExecuteProgram from program %d)", next.index, next.program,
+                next.previous);
+        app->play_program = 0;
+        ok = play_as(app, program, true) != 0;
+    }
+    snx_next_free(&next);
+    free(code);
+    free(program);
+    free(folder);
+    free(path);
     return ok;
 }
 static char* newest_log(const App* app);
@@ -12662,18 +12770,13 @@ static void game_end(App* app) {
     layout(app);
     free(log);
 }
-/* the game a run of the driver made ready: the one it ran, when it was a game already, else in its folder of games/,
-   where the driver names it, as it cannot open it; whether it opened */
+/* the game a run of the driver made ready, as it names it (gui_ready_game): beside the one it ran, when that was a
+   game already, else in its folder of games/, as it cannot open it; whether it opened */
 static int ready(App* app) {
     const GuiStep* made = gui_steps_last(&app->steps, "READY");
-    char* folder = made && !app->native ? snx_path_join(app->games_dir, made->detail) : NULL;
-    char* game = !made         ? NULL
-                 : app->native ? snx_strdup(app->file)
-                 : folder      ? snx_path_join(folder, made->detail)
-                               : NULL;
+    char* game = made ? gui_ready_game(app->native ? app->file : NULL, app->games_dir, made->detail) : NULL;
     int ok = game && play(app, game);
     free(game);
-    free(folder);
     return ok;
 }
 /* the run in its notification, which keeps the app going behind others: the menu's while one runs, else the queue's
@@ -12715,9 +12818,9 @@ static void tell(App* app) {
 #ifdef SDL_PLATFORM_IOS
 /* A game runs in this process once the menu has closed (gui_apple_play, src/nx/runtime/entry.c): an iOS app has no
    other */
-static int play(App* app, const char* game) {
+static int play(App* app, const char* asked) {
     GuiSettings* s = settings_of(app);
-    char* option = snx_format("--game=%s", game);
+    char *game = play_program(app, asked, false), *option = snx_format("--game=%s", game);
     char *ini = game_ini_of(game), *driver = gui_run_option("gpu_driver", ini, app->gpu_driver),
          *freedreno = gui_run_option("freedreno_env", ini, app->freedreno);
     const char** argv = (const char**)snx_alloc((size_t)(s->count + 6) * sizeof(*argv));
@@ -12732,6 +12835,7 @@ static int play(App* app, const char* game) {
     free(driver);
     free(freedreno);
     free(ini);
+    free(game);
     app->menu.quit = true;
     free(argv);
     free(option);
@@ -13076,6 +13180,7 @@ static int move_old(App* app, GuiCleaned* done, bool apply) {
         if (!strcmp(last_part(old), "gui") && snx_is_dir(old))
             files = config && !strcmp(now, config) ? only[0] : state && !strcmp(now, state) ? only[1] : NULL;
         moves += gui_move_entries(done, old, now, files, apply);
+        moves += gui_move_save_note(done, old, now, apply); /* a save's folder (left_saves) brings its note */
         for (k = SNX_USER_CONFIG; games && !strcmp(old, games) && k <= SNX_USER_CACHE; ++k) {
             char *from = snx_user_path(old, k), *to = snx_user_path(now, k);
             if (from && to && strcmp(from, old) && strcmp(to, now))
@@ -13295,7 +13400,7 @@ static void pump(App* app) {
     }
     if (app->played && !app->hidden) {
         app->played = false;
-        game_end(app);
+        if (!next_program(app)) game_end(app); /* a collection's program starting another ended well */
     }
 #endif
 #ifdef SDL_PLATFORM_ANDROID
@@ -13828,8 +13933,9 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     /* the driver, the file, the settings, --repo and its folder, the picked games and extraction folders, NULL */
     GuiSettings* s = settings_of(app);
-    const char** argv = (const char**)snx_alloc((size_t)(s->count + 19) * sizeof(*argv));
+    const char** argv = (const char**)snx_alloc((size_t)(s->count + 21) * sizeof(*argv));
     char* out = NULL; /* a dump's extraction in the picked extractions folder */
+    char program[16]; /* --program's, a collection's Play Program N */
     /* what runs, and what R makes: the program Play runs; the queue and Recent go by the file opened */
     char* run = run_program(app, absolute, prepared);
     size_t n = 1;
@@ -13851,6 +13957,11 @@ static void launch(App* app, char* absolute, bool prepared) {
         if (app->aot_hook) argv[n++] = "--hook-direct-calls";
     }
     if (app->menu.selected == GUI_SWITCH && !make) n += gui_settings_options(s, 1, argv + n);
+    if (app->menu.selected == GUI_SWITCH && !make && app->play_program > 0) {
+        snprintf(program, sizeof program, "%d", app->play_program);
+        argv[n++] = "--program";
+        argv[n++] = program;
+    }
     if (app->menu.selected == GUI_3DS && !make) n += gui_settings_ctr_options(s, argv + n);
     /* the launcher's GPU driver and Freedreno variables, where the game's .ini has none of its own */
     if (app->menu.selected == GUI_SWITCH && !make) {
@@ -14900,14 +15011,17 @@ static void open_picker(App* app) {
     if (app->picked) SDL_ShowOpenFileDialog(picker_done, &app->picked, app->window, NULL, 0, NULL, false);
 #endif
 }
-/* the last max bytes of a file, as text with only ASCII (what Java takes as a string from any log), or "". A CR before
-   an LF goes (a log on Windows has CRLF lines), so a line ends where its text does */
+/* the last max bytes of a file from the first line that starts in them, as text with only ASCII (what Java takes as a
+   string from any log), or "". A home folder cut in two is no longer one to the tilde, so its account's name would
+   stay. A CR before an LF goes (a log on Windows has CRLF lines), so a line ends where its text does */
 static char* log_tail(const char* path, size_t max) {
-    size_t size = 0, i, n = 0;
+    size_t size = 0, at, n = 0;
     unsigned char* data = path ? snx_read_file(path, &size) : NULL;
-    char* text = (char*)snx_alloc(SDL_min(size, max) + 1);
-    for (i = 0; i < SDL_min(size, max); ++i) {
-        size_t at = size - SDL_min(size, max) + i;
+    char* text;
+    at = size > max ? size - max : 0;
+    while (at > 0 && at < size && data[at - 1] != '\n') ++at;
+    text = (char*)snx_alloc(size - at + 1);
+    for (; at < size; ++at) {
         unsigned char c = data[at];
         if (c == '\r' && at + 1 < size && data[at + 1] == '\n') continue;
         text[n++] = c == '\n' || c == '\t' || (c >= 32 && c < 127) ? (char)c : '?';
@@ -15231,8 +15345,9 @@ static int share_folder_empty(App* app, const char* share) {
 /* the message on the screen, the summary of the last run's game log (share_game_log), the last run's output, the
    launcher's own log and its fatal errors, and that game log, or why there is none under "== no game log ==", in
    share/ of logs_folder, emptied first: with zip as summary.txt of scarletnx-logs-<when>.zip beside the launcher's
-   logs and the games' of the last GUI_LOG_DAYS days (gui/logzip.h), else as scarletnx.log alone; then that folder
-   opened in the system's file manager, to share from there */
+   logs and the games' of the last GUI_LOG_DAYS days (gui/logzip.h), else as scarletnx.log alone; either way each home
+   folder as ~ (snx_logscan_tilde), since the paths name the player; then that folder opened in the system's file
+   manager, to share from there */
 static void share_log(App* app, bool zip) {
     char *game, *run, *recompiled, *said, *fatal, *played, *summary, *text, *saved = NULL, *share, *logs;
     char console[4096], errors[4096], no_game[4400];
@@ -15259,13 +15374,16 @@ static void share_log(App* app, bool zip) {
     if (!share) snprintf(app->message, sizeof(app->message), snx_tr("The logs could not be saved: %s"), logs_none());
     ready = share && !share_folder_empty(app, share); /* else why, in the message */
     if (ready && !zip) {
+        size_t shown = 0;
+        char* tilde = snx_logscan_tilde(text, strlen(text), &shown);
         saved = snx_path_join(share, "scarletnx.log");
-        written = saved && !snx_write_file(saved, text, strlen(text));
+        written = saved && tilde && !snx_write_file(saved, tilde, shown);
         if (saved && !written) {
             char why[256];
             snprintf(app->message, sizeof(app->message), snx_tr("The log could not be saved to %s: %s"), saved,
-                     snx_os_error(why, sizeof why));
+                     tilde ? snx_os_error(why, sizeof why) : snx_tr("out of memory"));
         }
+        free(tilde);
     } else if (ready) {
         char stamp[32], *zip_name, error[sizeof app->message], *at[3];
         LogFiles files = {0};

@@ -46,7 +46,8 @@ static const char* fswzadd_path;
 static const char* surface_op_paths[7];
 static const char* legacy_paths[4];
 static const char* rect_paths[3];
-static char* fixture_paths[109];
+static const char* window_paths[3];
+static char* fixture_paths[112];
 static size_t fixture_count;
 
 static const char* fixture_path(const char* directory, const char* name) {
@@ -2121,6 +2122,43 @@ static void viewport_capabilities(void) {
     g_shader_viewport_index = 3;
 }
 
+/* The viewport transform off (SNX_SH_WINDOW_XY): the last stage before rasterization takes its position's x and y
+   from the surface clip's pixels, dividing 2 by the clip's width and height (from the push constant's w) where it
+   ends or emits a vertex, which takes two OpFDiv more than without the key. A stage before the last one leaves its
+   position as written. The vertex, evaluation and geometry fixtures go through spirv-val */
+static void window_positions(void) {
+    const u64 vertex[] = {0xeff1ff800707ff00ull};   /* AST a[0x70], R0..R3: the position */
+    const u64 geometry[] = {0xefd9ff800707ff00ull,  /* ALD R0..R3, a[0x70] of vertex RZ */
+                            0xeff1ff800707ff00ull,  /* AST a[0x70], R0..R3 */
+                            0xfbe000800ff70404ull,  /* OUT.EMIT R4, R4, RZ */
+                            0xfbe001000ff70404ull}; /* OUT.CUT R4, R4, RZ */
+    const u32 geometry_sph[3] = {1u << 24, 7u << 24, 3}, none[3] = {0};
+    const int stages[3] = {ST_VS, ST_TES, ST_GS};
+    const u32 keys[3] = {0, SNX_SH_WINDOW_XY, SNX_SH_WINDOW_XY | SNX_SH_NOT_LAST};
+    for (int i = 0; i < 3; i++) {
+        int divisions[3] = {0};
+        for (int k = 0; k < (i == 2 ? 2 : 3); k++) { /* a geometry program is the last stage */
+            size_t slots, words = 0;
+            const u32* sph = i == 0 ? NULL : i == 1 ? none : geometry_sph;
+            u64* code = guest_program(i == 2 ? geometry : vertex, i == 2 ? 4 : 1, sph, &slots);
+            ShaderInfo info = {0};
+            info.rt_int_mask = i == 2 ? 3 : i ? 0x302 : 0; /* a triangle in; quads, equal spacing, counterclockwise */
+            info.clip_enable = keys[k];
+            u32* spv = code ? spirv_of(code, slots * sizeof *code, stages[i], &info, &words, 1, 1, 1, 1) : NULL;
+            check_translated(spv, &info,
+                             "a position from pixels translates in the vertex, evaluation and geometry stages");
+            if (spv) {
+                divisions[k] = count_opcode(spv, words, 136, 0xffffffffu); /* OpFDiv */
+                if (k == 1) save_fixture(window_paths[i], spv, words);
+            }
+            free(spv);
+            free(code);
+        }
+        check(divisions[1] == divisions[0] + 2, "the last stage divides by the surface clip's width and height");
+        check(i == 2 || divisions[2] == divisions[0], "a stage before the last one leaves its position as written");
+    }
+}
+
 /* Loads from a constant buffer (a Uniform variable bound below 18) by result type: u32 or anything else. */
 static void cbuf_load_types(const u32* code, size_t words, int* integer, int* other) {
     u32 bound = words > 5 ? code[3] : 0, uint_type = 0;
@@ -3950,6 +3988,10 @@ int main(int argc, char** argv) {
             snprintf(name, sizeof name, "rect_%d", i);
             rect_paths[i] = fixture_path(argv[1], name);
         }
+        for (int i = 0; i < 3; i++) {
+            snprintf(name, sizeof name, "window_%d", i);
+            window_paths[i] = fixture_path(argv[1], name);
+        }
         if (fixture_count != sizeof fixture_paths / sizeof *fixture_paths) {
             fprintf(stderr, "failed to allocate fixture paths\n");
             return 2;
@@ -3990,6 +4032,7 @@ int main(int argc, char** argv) {
     between_stages();
     layer_capabilities();
     viewport_capabilities();
+    window_positions();
     fragment_queries();
     eden_forms();
     pexit_flow();

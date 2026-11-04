@@ -50,7 +50,7 @@ typedef struct {
     u32 n;
 } IseList;
 
-static u32 popcount(u32 v) {
+static u32 astc_popcount(u32 v) {
     u32 n = 0;
     for (; v; v &= v - 1) n++;
     return n;
@@ -64,17 +64,17 @@ static IseValue ise_encoding(u32 max_value) {
         u32 check = max_value + 1;
         if (!(check & (check - 1))) {
             e.encoding = ISE_BITS;
-            e.num_bits = popcount(max_value);
+            e.num_bits = astc_popcount(max_value);
             return e;
         }
         if (check % 3 == 0 && !((check / 3) & ((check / 3) - 1))) {
             e.encoding = ISE_TRIT;
-            e.num_bits = popcount(check / 3 - 1);
+            e.num_bits = astc_popcount(check / 3 - 1);
             return e;
         }
         if (check % 5 == 0 && !((check / 5) & ((check / 5) - 1))) {
             e.encoding = ISE_QUINT;
-            e.num_bits = popcount(check / 5 - 1);
+            e.num_bits = astc_popcount(check / 5 - 1);
             return e;
         }
         max_value--;

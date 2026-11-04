@@ -473,6 +473,58 @@ def check_target_sources(repo, build):
     return errors
 
 
+# a header whose functions only its library defines: a target compiling a source that includes it links that library,
+# itself or through what it links, or a build without another target that links it fails at its link
+LINK_NEEDS = {'common/utilities/build_info.h': 'snx_build_info'}
+
+
+def check_link_needs(repo, build, graph):
+    source = graph.read_text(encoding='utf-8')
+    nodes = {
+        node: label.split('\\n', 1)[0] for node, label in re.findall(r'"([^"]+)"\s*\[\s*label\s*=\s*"([^"]+)"', source)
+    }
+    edges = {}
+    for left, right in re.findall(r'"([^"]+)"\s*->\s*"([^"]+)"', source):
+        edges.setdefault(nodes.get(left, left), set()).add(nodes.get(right, right))
+
+    def links(name):
+        result, pending = set(), [name]
+        while pending:
+            for child in edges.get(pending.pop(), ()):
+                if child not in result:
+                    result.add(child)
+                    pending.append(child)
+        return result
+
+    reply = build / '.cmake/api/v1/reply'
+    indexes = sorted(reply.glob('index-*.json'))
+    if not indexes:
+        return ['CMake file API did not produce a target/source snapshot']
+    index = json.loads(indexes[-1].read_text(encoding='utf-8'))
+    model = json.loads((reply / index['reply']['codemodel-v2']['jsonFile']).read_text(encoding='utf-8'))
+    errors = []
+    for configuration in model['configurations']:
+        for entry in configuration['targets']:
+            target = json.loads((reply / entry['jsonFile']).read_text(encoding='utf-8'))
+            needs = set()
+            for item in target.get('sources', ()):
+                path = Path(item['path'])
+                path = (path if path.is_absolute() else repo / path).resolve()
+                if path.suffix not in {'.c', '.cpp'} or not path.is_file() or not path.is_relative_to(repo.resolve()):
+                    continue
+                for match in INCLUDE.finditer(path.read_text(encoding='utf-8', errors='replace')):
+                    library = LINK_NEEDS.get(match.group(2))
+                    if library and library != entry['name']:
+                        needs.add((library, match.group(2), path.relative_to(repo.resolve())))
+            linked = links(entry['name'])
+            for library, header, path in sorted(needs):
+                if library not in linked:
+                    errors.append(
+                        f'{entry["name"]} compiles {path}, which includes {header}, but does not link {library}'
+                    )
+    return errors
+
+
 SANITIZERS = {'address', 'undefined'}
 LIBRARIES = {'STATIC_LIBRARY', 'SHARED_LIBRARY', 'MODULE_LIBRARY', 'OBJECT_LIBRARY'}
 
@@ -599,6 +651,7 @@ def main():
             return result.returncode
         errors.extend(check_graph(graph))
         errors.extend(check_target_sources(args.repo.resolve(), args.build.resolve()))
+        errors.extend(check_link_needs(args.repo.resolve(), args.build.resolve(), graph))
         errors.extend(check_include_shadows(args.repo.resolve(), args.build.resolve()))
         errors.extend(check_include_roots(args.repo.resolve(), args.build.resolve()))
         if args.sanitizers:

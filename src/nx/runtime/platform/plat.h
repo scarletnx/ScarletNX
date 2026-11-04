@@ -95,8 +95,11 @@ u64 plat_vm_page(void);
 #define SNX_PLAT_PAGE_MAX ((u64)1 << 20) /* the largest page plat_vm_page works in */
 /* Inaccessible until committed; NULL, the reason in errno. Aligned to SNX_PLAT_PAGE_MAX, so it can be made before the
    settings say which page the runtime works in (Windows: its 64 KiB allocation granularity, as it commits any 4 KiB
-   page) */
+   page). Windows makes it with its write watch (plat_ww_scan), or not at all */
 u8* plat_vm_reserve(u64 size);
+/* plat_vm_reserve without the write watch, where the system gives no reservation of that size with it (Windows). NULL
+   with ENOSYS elsewhere: the written-page tracking comes after the reservation there (plat_vm_track) */
+u8* plat_vm_reserve_unwatched(u64 size);
 /* The written-page tracking (plat_ww_scan) and the traps' page states (plat_trap_init) of the reservation [p, p +
    size): once, after the settings are read and before a page of it is committed (mem_init) */
 void plat_vm_track(u8* p, u64 size);
@@ -226,6 +229,11 @@ void plat_audio_volume(PAudio* a, float volume);
 
 /* ---- crash reports and profiling */
 void plat_install_crash_handler(void);
+/* The game's code module, by any address in it: a fault in its code is reported first, whatever else the process
+   installed since. Windows only; elsewhere the signal handler sees every fault, and this does nothing */
+void plat_crash_code_module(const void* inside);
+/* The runtime's crash filter back where another part of the process replaced it, said once. Windows only */
+void plat_crash_handler_check(void);
 void plat_prof_start(void); /* starts the sampling profiler (the profile option): Windows only */
 #if defined(_WIN32)
 void plat_prof_add_thread(HANDLE h); /* a thread to sample; the profiler keeps its own handle */

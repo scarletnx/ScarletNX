@@ -20,11 +20,12 @@ name: Pull request checks
 # that held the merge would require them by the names they run under: "Title and assignees" and "Tracked material and
 # docs".
 #
-# The title and the assignees run on pull_request_target, which takes this workflow and its scripts from the base
-# branch, so a pull request can't change the check it is held by, and lets the token label a pull request from a fork;
-# a review's run (pull_request_review) checks out the base branch's scripts too. Nothing of the pull request is checked
-# out or run. Tracked material and docs run the pull request's own scripts on
-# its own files, so they run on pull_request, whose token can't write for a fork, and never on pull_request_target.
+# The title and the assignees run on pull_request_target, for which GitHub takes this workflow from the default branch
+# whatever the base, and the job checks out the base branch's scripts, so a pull request can't change the check it is
+# held by; it also lets the token label a pull request from a fork. A review's run (pull_request_review) checks out the
+# base branch's scripts too. Nothing of the pull request is checked out or run. Tracked material and docs run the pull
+# request's own scripts on its own files, so they run on pull_request, whose token can't write for a fork, and never on
+# pull_request_target.
 # The links run on workflow_run, from the default branch's workflow and script too, and check out nothing of the pull
 # request. A fork's pull request gets no comment: its Build ran the fork's workflow, which names the builds and jobs
 # the comment would show.

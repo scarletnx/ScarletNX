@@ -3,6 +3,7 @@
 /* Verify mode's check of one call (verify.h). It depends on the CPU and guest memory alone, so tests run it on
    functions of their own */
 #include "nx/hle/hook/verify.h"
+#include "nx/hle/hook/hook.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -127,7 +128,7 @@ int hook_verify_call(CPU* c, u64 entry, GuestFn original, GuestFn handler, const
     }
     for (i = 0; i < groups; i++)
         if (group_hi[i] > group_lo[i])
-            memcpy(c->mem + group_copy[i], c->mem + group_lo[i], (size_t)(group_hi[i] - group_lo[i]));
+            memcpy(hook_host(c, group_copy[i]), hook_host(c, group_lo[i]), (size_t)(group_hi[i] - group_lo[i]));
     for (i = 0; i < n; i++) e[i].copy = group_copy[e[i].group] + (e[i].lo - group_lo[e[i].group]);
 
     /* the function's own code on the copies: its entry, then whatever it left for the dispatch loop until it
@@ -144,8 +145,8 @@ int hook_verify_call(CPU* c, u64 entry, GuestFn original, GuestFn handler, const
 
     if (!compare_regs(c, &orig, v->ret, e, n, r)) return r->what;
     for (i = 0; i < n; i++) {
-        const u8* live = c->mem + e[i].lo;
-        const u8* copy = c->mem + e[i].copy;
+        const u8* live = hook_host(c, e[i].lo);
+        const u8* copy = hook_host(c, e[i].copy);
         u64 len = e[i].hi - e[i].lo, k;
         if (!memcmp(live, copy, (size_t)len)) continue;
         for (k = 0; live[k] == copy[k]; k++) {

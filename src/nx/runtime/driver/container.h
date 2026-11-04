@@ -27,6 +27,10 @@ typedef struct {
     SnxU64 game;      /* the game the content picked is of: the base's own ID, or the one an add-on's content meta
                          names (else the usual numbering's, snx_addon_guess) */
     SnxU64 version;   /* the picked content's version, its content meta's: SNX_NO_VERSION without one */
+    /* the program of the application picked (snx_program_index: 0 the application's own), and how many programs the
+       base's application, or the update's patch, has: 1 for one alone, as for a dump without a content meta that
+       tells of more */
+    int index, programs;
     int base, update; /* the containers, either -1 without one; update is the add-on's (an update or a DLC) */
     /* the base's Program NCA, the update's (the patch an NSP of both has, else found 0), the Control NCA, the
        update's when it has one, a DLC's Data NCA (aoc), and the HtmlDocument NCA, the offline pages the web applet
@@ -46,13 +50,16 @@ int snx_is_dump(const char* path);
 int snx_hac_error(const char* what);
 /* base and addon, either NULL for none, opened and their NCAs picked, with the keys given or found (snx_find_keys, the
    ones given must be there). addon is an update (patch, with its control) or a DLC (aoc): the base's when base is
-   given. say prints which dump is read. 0, else nonzero, said why; snx_dump_close either way */
-int snx_dump_open(SnxDump* dump, const char* base, const char* addon, const char* keys, const char* title_keys,
-                  const char* repo, int say);
+   given. index is the program of the application whose NCAs are picked, its Program, Control and HtmlDocument and the
+   update's patch of it (0 for a DLC). say prints which dump is read. 0, else nonzero, said why (a program the dump
+   lacks too); snx_dump_close either way */
+int snx_dump_open(SnxDump* dump, const char* base, const char* addon, int index, const char* keys,
+                  const char* title_keys, const char* repo, int say);
 /* path opened alone, with the keys as snx_dump_open takes them: a game's dump (program, and the patch it may have), whose title ID is its
    program's, or else an add-on's (patch or aoc, in update), its title ID the add-on's own and game the game it belongs
    to, as its content meta names it (snx_addon_kind(game, title) tells which), and its version in *version when version
-   is not NULL (SNX_NO_VERSION without a content meta, or for a game). 0, else nonzero, said why; snx_dump_close either way */
+   is not NULL (SNX_NO_VERSION without a content meta, or for a game). Its programs in dump->programs. 0, else
+   nonzero, said why; snx_dump_close either way */
 int snx_dump_title(SnxDump* dump, const char* path, const char* keys, const char* title_keys, const char* repo, int say,
                    SnxU64* title, SnxU64* game, SnxU64* version);
 void snx_dump_close(SnxDump* dump);

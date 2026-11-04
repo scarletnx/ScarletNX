@@ -1163,6 +1163,32 @@ static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) 
     return vk_shader_get(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, fk->rect,
                          NULL, fk->queried ? fk->query : NULL);
 }
+/* whether slots a and b read their handles from the same words (tex_handle) */
+static int tex_same_handle(const ShTex* a, const ShTex* b) {
+    return a->cbuf_off == b->cbuf_off && a->bindless == b->bindless && a->bl_cbuf == b->bl_cbuf && a->bl2 == b->bl2 &&
+           a->bl2_cbuf == b->bl2_cbuf && a->bl2_off == b->bl2_off &&
+           (a->flags & SNX_TEX_INDEXED) == (b->flags & SNX_TEX_INDEXED);
+}
+/* the resolutions of s's texture slots, from res0, which fs_key filled for s0's: res0 itself when s numbers its slots
+   as s0 does, else out, each slot taking the resolution of the slot of s0 that reads its handle, or its own. A variant
+   may number them otherwise: a texture only a TXQ names takes the dimension of its header there, and its slot is then
+   the one that samples the texture as that dimension, which moves the slots after it down by one */
+static TexRes* fs_slot_res(const DsState* ds, const VkSh* s0, TexRes* res0, const VkSh* s, TexRes* out) {
+    int n0 = s0->si.ntex > SH_MAXTEX ? SH_MAXTEX : s0->si.ntex, n = s->si.ntex > SH_MAXTEX ? SH_MAXTEX : s->si.ntex;
+    int same = n == n0;
+    for (int i = 0; same && i < n; i++) same = tex_same_handle(&s->si.tex[i], &s0->si.tex[i]);
+    if (same) return res0;
+    for (int i = 0; i < n; i++) {
+        const ShTex* st = &s->si.tex[i];
+        int j = 0;
+        while (j < n0 && !tex_same_handle(st, &s0->si.tex[j])) j++;
+        if (j < n0)
+            out[i] = res0[j];
+        else
+            tex_resolve(ds, tex_handle(ds, 4, ds->bind.tex_bank, st), &out[i]);
+    }
+    return out;
+}
 
 VkImageViewType vk_tex_view_type(const ShTex* st) {
     return st->type == 2   ? VK_IMAGE_VIEW_TYPE_3D
@@ -1690,12 +1716,13 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
     return 1;
 }
 
-static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* vs, VkSh* fs) {
-    VkSh* sh[2] = {vs, fs};
+/* the global memory each stage of the draw reads or writes, sh[] by stage (vertex, the tessellation stages, geometry,
+   fragment) */
+static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* const sh[VK_DRAW_STAGES]) {
     memset(draw, 0, sizeof *draw);
-    for (int s = 0; s < 2; s++) {
+    for (int s = 0; s < VK_DRAW_STAGES; s++) {
         if (!sh[s]) continue;
-        int stage = s ? 4 : 0;
+        int stage = s;
         u64 cb0 = ds_cb_inline(ds, stage, 0).bytes ? 0 : ds->bind.cb_addr[stage][0];
         draw->n[s] = sh[s]->si.ngbuf < 16 ? sh[s]->si.ngbuf : 16;
         if (cb0 && draw->n[s]) vk_buf_mem_need(cb0, 0x610);
@@ -1784,7 +1811,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     }
     int ordered = !(ds->owner & 0x80000000u) || !g_settings.nvn_storage_ordering;
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
-        const VkDrawGbuf* gb = &draw->b[stage ? 1 : 0][i];
+        const VkDrawGbuf* gb = &draw->b[stage][i];
         u64 addr = gb->addr;
         u32 size = gb->size;
         u64 sa = g_vk.props.limits.minStorageBufferOffsetAlignment; /* an earlier draw's result is read in place */
@@ -1799,8 +1826,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o, gb->aliased ? gb->range : size);
     }
     if (s->si.ngbuf)
-        dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, draw->map_buf[stage ? 1 : 0],
-                  draw->map_off[stage ? 1 : 0], draw->map_size[stage ? 1 : 0]);
+        dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, draw->map_buf[stage], draw->map_off[stage],
+                  draw->map_size[stage]);
     VkBuffer cb;
     u64 co;
     if (stage == 4 && frame_consts(&cb, &co))
@@ -1913,7 +1940,15 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         else if (view)
             vk_surf_use(vk_cmd(), t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         else {
-            if (t)
+            const char* why = t ? vk_tex_view_refusal(t, want) : NULL;
+            if (why)
+                LOG_LIMIT(4,
+                          "vulkan: texture %d of stage %d shader %016llx (handle %08x, header format %02x, type %u) "
+                          "is read as %s, of a %ux%u %s %s of %u layers, and %s: it reads zeros\n",
+                          i, stage, (unsigned long long)s->hash, handle, x->tic[0] & 0x7F, (x->tic[4] >> 23) & 0xF,
+                          vk_view_type_name(want), t->w, t->h, vk_view_type_name(t->type),
+                          t->is_rt ? "render target" : "texture", t->layers, why);
+            else if (t)
                 LOG_LIMIT(4,
                           "vulkan: texture %d of stage %d (header format %02x) has no %s view of its %s surface: it "
                           "reads zeros\n",
@@ -2046,21 +2081,36 @@ static struct {
 void vk_render_forget_state(void) { g_dyn.cb = 0; }
 u64 g_vk_drawn, g_vk_skipped;
 
+/* The viewport's size with the transform off: the surface clip's, at most the device's viewport dimensions at the
+   resolution scale (a game's driver leaves the clip at 16384 x 16384, past every target). The last stage divides
+   the position by the same size (the push constant's w), so every pixel stays where it is */
+static void window_size(const DsDynamic* d, u32* width, u32* height) {
+    const u32* most = g_vk.props.limits.maxViewportDimensions;
+    u32 w = (u32)((float)most[0] / g_vk_scale), h = (u32)((float)most[1] / g_vk_scale);
+    *width = d->clip_width < w ? d->clip_width : w;
+    *height = d->clip_height < h ? d->clip_height : h;
+}
 /* NVB197_SET_VIEWPORT_COORDINATE_SWIZZLE (0x0A18) can negate Y before the scale and offset. A negative Vulkan
    height implements the same mapping without changing texture coordinates or guest render-target contents.
-   Reference: NVIDIA open-gpu-doc/classes/3d/clb197.h. */
+   Reference: NVIDIA open-gpu-doc/classes/3d/clb197.h. With the transform off (0x64B) the program's x and y are
+   pixels, which its last stage takes to clip space by the surface clip's size (SNX_SH_WINDOW_XY): every viewport is
+   the surface clip then, depth 0 to 1, the scale, offset and swizzle left to the transform, as Eden's
+   UpdateViewportsState has it. */
 VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index) {
     if (index >= DS_VIEWPORTS_MAX) fatal("vulkan: viewport %u of the %u the GPU has", index, DS_VIEWPORTS_MAX);
     const float* vs = v->scale[index];
     const float* vt = v->translate[index];
-    float sx = vs[0], sy = vs[1], tx = vt[0], ty = vt[1], ax = sx < 0 ? -sx : sx, ay = sy < 0 ? -sy : sy;
+    float sx = vs[0], sy = vs[1], tx = vt[0], ty = vt[1], ax = sx < 0 ? -sx : sx;
     VkViewport vp;
-    int small = 2 * ax < 1 || 2 * ay < 1;
-    if (small != !v->transform_on)
-        LOG_LIMIT(1, "vulkan: viewport scale %g x %g with transform enable %x\n", sx, sy, v->transform_on);
-    if (small) {
-        u32 vx = v->clip_x[index], vy = v->clip_y[index];
-        vp = (VkViewport){vk_scf(vx & 0xFFFF), vk_scf(vy & 0xFFFF), vk_scf(vx >> 16), vk_scf(vy >> 16), 0, 1};
+    if (!v->transform_on) {
+        u32 w, h;
+        window_size(d, &w, &h);
+        LOG_LIMIT(1,
+                  "vulkan: viewport transform off: positions are pixels of the %ux%u surface clip at (%u, %u), "
+                  "the viewport %ux%u of it\n",
+                  d->clip_width, d->clip_height, d->clip_x, d->clip_y, w, h);
+        float x = vk_scf((float)d->clip_x), y = vk_scf((float)d->clip_y);
+        vp = (VkViewport){x, y, vk_scf((float)w), vk_scf((float)h), 0, 1};
     } else
         vp = (VkViewport){vk_scf(tx - ax), vk_scf(ty - sy), vk_scf(2 * ax), vk_scf(2 * sy), 0, 1};
     /* A lower-left window measures y from the surface clip's bottom. Match the 3D blit path's conversion. */
@@ -2068,6 +2118,7 @@ VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index)
         vp.y += vk_scf((float)d->clip_height);
         vp.height = -vp.height;
     }
+    if (!v->transform_on) return vp;
     if (((v->swizzle[index] >> 4) & 7) == 3) {
         vp.y += vp.height;
         vp.height = -vp.height;
@@ -2132,6 +2183,7 @@ typedef struct {
     u32 rt_int, rt_sint;       /* the integer color targets the registers name (rt_int_targets) */
     u32 topology;              /* the draw's, every primitive a patch with tessellation */
     int xfb_on;                /* transform feedback captures */
+    int window_xy;             /* the viewport transform is off: the last stage keyed SNX_SH_WINDOW_XY */
 } DrawShaders;
 /* a draw's vertex layout (vi, which the pipeline key holds too without dynamic vertex input) and its bindings, for
    finding their buffers each draw: binding b reads guest stream key[b] & 31 from its base offset key[b] >> 5 on, with
@@ -2251,6 +2303,7 @@ static int draw_kept(const DsState* ds, u32 topology, u32 epoch) {
             g_draw.gen[DS_VFORMAT] = ds->gen[DS_VFORMAT];
         }
     if (s->xfb_on != (g_vk.has_xfb && ds->prog.xfb_on && xfb_counters())) return 0; /* the counters were made since */
+    if (s->window_xy != !ds->vp.transform_on) return 0; /* the viewports' group keys no shader otherwise */
     const VkSh* used[6] = {s->vs, s->tcs, s->tes, s->gs, s->fs0, g_draw.fs};
     for (int i = 0; i < 6; i++)
         if (used[i] && used[i]->cbr.n && !vk_shader_cb_hold(ds, used[i])) return 0;
@@ -2258,7 +2311,9 @@ static int draw_kept(const DsState* ds, u32 topology, u32 epoch) {
 }
 static int draw_shaders_same(const DrawShaders* a, const DrawShaders* b) {
     return a->vs == b->vs && a->tcs == b->tcs && a->tes == b->tes && a->gs == b->gs && a->fs0 == b->fs0 &&
-           a->attr_int == b->attr_int && a->attr_sint == b->attr_sint && a->rt_int == b->rt_int && a->rt_sint == b->rt_sint && a->topology == b->topology && a->xfb_on == b->xfb_on;
+           a->attr_int == b->attr_int && a->attr_sint == b->attr_sint && a->rt_int == b->rt_int &&
+           a->rt_sint == b->rt_sint && a->topology == b->topology && a->xfb_on == b->xfb_on &&
+           a->window_xy == b->window_xy;
 }
 /* the shaders of the programs, the vertex format and the targets of ds for a draw of topology: 0 when the draw is
    skipped */
@@ -2285,13 +2340,15 @@ static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
     if ((topology == 14 && !tes_on) || (topology >= 10 && topology <= 13 && !gs_on))
         return 0; /* patches and adjacency need the stages above */
     if (tes_on) topology = 14; /* every primitive is a patch with tessellation, as Vulkan requires */
-    /* a clip distance the program writes clips only when its bit is set, in the last stage before rasterization */
-    clip = p->clip_enable;
+    /* a clip distance the program writes clips only when its bit is set, in the last stage before rasterization,
+       which takes its position from pixels with the viewport transform off */
+    clip = p->clip_enable | (ds->vp.transform_on ? 0 : SNX_SH_WINDOW_XY);
     /* transform feedback: what the last stage before rasterization captures */
     const ShXfb* xfb = &ds->xfb;
     int xfb_on = g_vk.has_xfb && p->xfb_on && xfb_counters();
     o->topology = topology;
     o->xfb_on = xfb_on;
+    o->window_xy = !ds->vp.transform_on;
     o->attr_int = attr_int;
     o->attr_sint = attr_sint;
     o->vs = vk_shader_get(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint, 0, 0,
@@ -2894,7 +2951,8 @@ retry:
     /* the fragment shader's variant, keyed on its textures each draw: they are resolved for stage_set anyway. fres is
        filled for the fragment program's textures (each resolved, have set), and read only for them: a clear of all
        SH_MAXTEX (10 KiB) and a check of all of them against each target were per draw */
-    TexRes fres[SH_MAXTEX];
+    TexRes fres[SH_MAXTEX], vres[SH_MAXTEX];
+    TexRes* res = fres; /* the variant's slots, as stage_set reads them */
     VkSh* last = gs ? gs : tes ? tes : vs;
     VkSh* fs = NULL;
     FsKey fk = {0};
@@ -2916,6 +2974,7 @@ retry:
             g_vk_skipped++;
             return;
         }
+        if (fs && fs != sh.fs0) res = fs_slot_res(ds, sh.fs0, fres, fs, vres);
     }
     cb_prefetch(ds, 0, vs, 0);
     if (fs) cb_prefetch(ds, 4, fs, 0);
@@ -2942,14 +3001,15 @@ retry:
         for (u32 j = 0; j < n; j++) {
             if (!rt[j] || (((fs->si.sph[18] >> (j * 4)) & 15) && ds->blend.mask[j])) continue;
             for (int i = 0; i < (fs->si.ntex > SH_MAXTEX ? SH_MAXTEX : fs->si.ntex); i++)
-                if (fres[i].have && fres[i].t == rt[j]) {
+                if (res[i].have && res[i].t == rt[j]) {
                     rt[j] = NULL;
                     break;
                 }
         }
     /* nothing drawn to, captured or stored. A program's stores to memory or images still run in a pass without
        attachments: a per-pixel pass may set every target's format to 0 and keep only what it stores */
-    int stores = vs->si.gbuf_wmask || vs->si.nimg || (fs && (fs->si.gbuf_wmask || fs->si.nimg));
+    int stores = vs->si.gbuf_wmask || vs->si.nimg || (fs && (fs->si.gbuf_wmask || fs->si.nimg)) ||
+                 (tcs && tcs->si.gbuf_wmask) || (tes && tes->si.gbuf_wmask) || (gs && gs->si.gbuf_wmask);
     if (!n && !zt && !xfb_on && !stores) {
         g_vk_skipped++;
         return;
@@ -3100,13 +3160,14 @@ retry:
     if (fs) cb_prefetch(ds, 4, fs, 1);
     if (!dc->indirect) draw_indices_prefetch(&ds->index, indexed, first, count, 1);
     VkDrawStorage storage;
-    draw_storage_read(ds, &storage, vs, fs);
-    int alias = storage.n[0] || storage.n[1] ? vk_buf_draw_has_alias(&storage) : 0;
+    VkSh* const staged[VK_DRAW_STAGES] = {vs, tcs, tes, gs, fs};
+    draw_storage_read(ds, &storage, staged);
+    int alias = vk_draw_storage_any(&storage) ? vk_buf_draw_has_alias(&storage) : 0;
     if (alias < 0) {
         g_vk_skipped++;
         return;
     }
-    if ((storage.n[0] || storage.n[1]) && !vk_buf_draw_prepare(&storage)) {
+    if (vk_draw_storage_any(&storage) && !vk_buf_draw_prepare(&storage)) {
         g_vk_skipped++;
         return;
     }
@@ -3116,7 +3177,7 @@ retry:
     DrawImages images = {0};
     VkDescriptorSet vset = stage_set(ds, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images);
     VkDescriptorSet fset =
-        fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, fres, &storage, &images) : VK_NULL_HANDLE;
+        fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, res, &storage, &images) : VK_NULL_HANDLE;
     /* the sets of the stages between, at their stage's index (shader_vk_set) */
     between[0] = tcs;
     between[1] = tes;
@@ -3125,8 +3186,12 @@ retry:
     for (b = 0; b < 3; b++) {
         bset[b] = VK_NULL_HANDLE;
         if (!between[b]) continue;
-        if (between[b]->si.ngbuf || between[b]->si.nimg) { /* global memory and images are read in VS and FS */
-            LOG_LIMIT(1, "vulkan: a tessellation or geometry program uses global memory or images (draw skipped)\n");
+        if (between[b]->si.nimg) { /* storage images are bound in the vertex and fragment stages' sets only */
+            static const char* const name[3] = {"tessellation control", "tessellation evaluation", "geometry"};
+            LOG_LIMIT(4,
+                      "vulkan: the %s program %016llx uses %d storage images, which only the vertex and fragment "
+                      "stages bind: its draws are skipped\n",
+                      name[b], (unsigned long long)between[b]->hash, between[b]->si.nimg);
             bset_ok = 0;
             break;
         }
@@ -3505,6 +3570,12 @@ retry:
        textures (stage_set), and whether the window is lower left and its surface clip's height, which the fragment's
        y counts up from there (shader/emit_io.c's shader_frag_y_origin) */
     float pc[12] = {0, ds->dyn.depth_mode ? 0.0f : 1.0f, 0, 0};
+    /* with the viewport transform off, the viewport's width and height (window_size), which the last stage before
+       rasterization takes the position's pixels to clip space by (SNX_SH_WINDOW_XY) */
+    u32 window_w = 0, window_h = 0;
+    if (!ds->vp.transform_on) window_size(&ds->dyn, &window_w, &window_h);
+    u32 window_words = window_w | window_h << 16;
+    memcpy(&pc[3], &window_words, sizeof(u32));
     /* the instance ID: InstanceIndex less the base instance pushed (depth_word, the 3D engine's base instance), or
        with draw parameters less BaseInstance plus what the draw's first instance adds to the base instance: the
        3D engine's instanced draws continue from an earlier draw's instances, and an indirect draw's base instance is

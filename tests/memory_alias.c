@@ -4,7 +4,8 @@
    tracking): MapMemory's view and its source, code memory's owner and slave, ldr:ro's code view and shared memory are
    the same pages; the pool gives everything back; write tracking keeps working over remapped ranges. Skips (77)
    where the host has no pool. --copies runs the same calls with alias_pool=0, as Windows has them: views are
-   copies, and a flush of a line written through one copies it back into the code */
+   copies, and a flush of a line written through one copies it back into the code. --nce checks the write tracking in
+   NCE's layout, as on Android: g_mem 0, the guest's addresses the host's, moved up from 64 GiB */
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/hle/hle.h"
@@ -51,7 +52,10 @@ void log_crash_mode(void) {}
 /* nce.c, whose NCE no game here is of: mem.c's reservation asks it first, and the crash handler gives it the
    signal's context */
 int nce_wanted(void) { return 0; }
-void nce_crash_context(const void* context) { (void)context; }
+void nce_crash_context(const void* context, const void* fault) {
+    (void)context;
+    (void)fault;
+}
 void crash_report(void* host_pc, void* fault, int sig) {
     (void)host_pc;
     (void)fault;
@@ -512,15 +516,19 @@ static void test_physical_pool(void)
 }
 
 int main(int argc, char** argv) {
-    int copies = 0;
+    int copies = 0, nce = 0;
     /* Debug settings as the runtime takes them, --key=value (--write_tracking=1: the tracking of hosts without Linux
-       6.7's); --copies runs the Windows path on a host that has a pool (alias_pool=0) */
+       6.7's); --copies runs the Windows path on a host that has a pool (alias_pool=0); --nce NCE's layout */
     for (int i = 1; i < argc; i++) {
         const char* eq = strchr(argv[i], '=');
         char key[64];
         if (!strcmp(argv[i], "--copies")) {
             copies = 1;
             g_settings.alias_pool = 0;
+            continue;
+        }
+        if (!strcmp(argv[i], "--nce")) {
+            nce = 1;
             continue;
         }
         CHECK(!strncmp(argv[i], "--", 2) && eq && (size_t)(eq - argv[i] - 2) < sizeof key);
@@ -542,6 +550,19 @@ int main(int argc, char** argv) {
         printf("skipped: this host's pages are %ld bytes, and guest memory needs 4 KiB ones\n", sysconf(_SC_PAGESIZE));
         return 77;
     }
+    if (nce) {
+        /* Linux only (a reservation at an address), and not under ASan, whose shadow holds those addresses */
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
+        if (!mem_reserve_identity(64ull << 30)) {
+            printf("skipped: no 5 GiB from 64 GiB up are free in this process for NCE's layout\n");
+            return 77;
+        }
+        CHECK(mem_identity() && g_mem == NULL && mem_moved() >= 64ull << 30);
+#else
+        printf("skipped: NCE's layout is reserved at fixed addresses, which this build cannot take\n");
+        return 77;
+#endif
+    }
     mem_init();
     if (copies) {
         test_process_memory_copies();
@@ -555,13 +576,19 @@ int main(int argc, char** argv) {
         return 77;
     }
     mem_pool_host_free(p, off, 0x1000);
-    g_ww = plat_ww_scan(g_mem, 4096, on_written) == 0;
+    /* the runtime's probe (vk_written_since): in NCE's layout too, every host tracks writes but with write_tracking=2 */
+    g_ww = mem_ww_probe(on_written) == 0;
+    if (nce) CHECK(g_ww == (g_settings.write_tracking != 2));
     if (!g_ww) printf("written-page tracking unavailable here: not checking it\n");
     g_code_memory = 55 * MIB;
     g_main_stack_size = MIB;
     CHECK(svc_set_heap_size(2 * MIB) == 0);
     CHECK(mem_map(info, 0x1000, MS_STACK, PERM_RW) == 0);
     check_tracking(HEAP_BASE, 2 * MIB);
+    if (nce) { /* the tracking that the runtime's probe found, at the moved heap */
+        printf("memory alias in NCE's layout: %u checks passed%s\n", checks, g_ww ? "" : " (no write tracking)");
+        return 0;
+    }
     test_map_memory(info);
     test_code_memory();
     test_code_view();

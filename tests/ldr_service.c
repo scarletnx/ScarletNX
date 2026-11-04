@@ -47,6 +47,16 @@ u8* plat_vm_reserve(u64 size) {
     return p == MAP_FAILED ? NULL : (u8*)(((uintptr_t)p + page - 1) & ~(uintptr_t)(page - 1));
 }
 void plat_vm_track(u8* p, u64 size) { (void)p, (void)size; } /* no tracking here */
+int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
+    (void)p, (void)size, (void)cb;
+    return -1;
+}
+/* the reservation without the write watch, which only Windows has: as plat_posix.c */
+u8* plat_vm_reserve_unwatched(u64 size) {
+    (void)size;
+    errno = ENOSYS;
+    return NULL;
+}
 /* mem.c's reservation at the guest's own addresses, which nce_wanted's 0 never takes: an AArch64 Linux host links it */
 u8* plat_vm_reserve_at(u64 addr, u64 size) {
     (void)addr, (void)size;

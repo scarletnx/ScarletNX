@@ -19,6 +19,10 @@ typedef struct {
     /* IntrWait's interrupts while it waits: the machine halts until the game's handler flags one of them in the BIOS's
        flags (0x03007FF8), as the BIOS does; 0 when it waits for none */
     uint16_t wait;
+    /* the interrupts entered and not yet returned from through the BIOS, and that count when IntrWait was called: the
+       BIOS checks its flags where the call was made, once every handler it ran returned, whichever mode a handler
+       switched to (a nested one runs in system mode) */
+    uint16_t irq_depth, wait_depth;
     /* the cycles the last run went past its budget, which the next run's takes back: a run of a frame's cycles then
        ends where the machine's frame does, not later at each frame */
     uint32_t over;

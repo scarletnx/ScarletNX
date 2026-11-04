@@ -54,6 +54,12 @@ made later is made empty, so nothing is enumerated after startup (`fs_tree_graft
 holds is played where it is, the game's log and stderr saying once a run where it goes; both holding one stops the
 game, which leaves both.
 
+An Account, Device or BCAT save's Commit writes its note, `<its folder>.version` beside it on the host and out of every
+mount: `program=` (the title ID that ran, an update's own), `version=` (its content meta's, when known) and `display=`.
+Opening a save whose note names a newer version of the same game, by the content meta versions when both are known,
+else by the numbers of the display versions, warns once with both, and the crash, svcBreak and BRK reports repeat the
+line (`fs_save_report`).
+
 Init rejects scan/stat errors, symlinks/junctions, regular-file hardlinks, special files and invalid names.
 Tree limits: 4096-byte path buffers including NUL, 256 directory levels below the data root.
 IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
@@ -73,11 +79,14 @@ IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
   the caps, ties, bands, bow and clip of the hat parts, the noseline's and the glasses' quads) and every texture
   drawn from distance functions (eyes, brows, mouths, glasses, mustaches, beards, lines, make-up, the mole, the
   noselines, the hats), none of the console's own. Its six files
-  (`NXTexture{Low,Mid}{Linear,SRGB}.dat`, `Shape{Mid,High}.dat`, the copies sharing their bytes) keep the console's
+  (`NXTexture{Low,Mid}{Linear,SRGB}.dat`, `Shape{Mid,High}.dat`, the SRGB copies sharing their Linear ones' bytes, each
+  shape with as many quads as fit the console's largest part of its kind in that file) keep the console's
   layout: the part tables with each kind's largest part and alignment, the console's list of parts (which are
   absent), each texture in its format (BC4, BC5 or ASTC 4x4), size and levels, block linear, and each part a zlib
-  stream. It is about 4.5 MiB, made at the game's first open of it. The player's own firmware's (its RomFS as
-  `system/archives/0100000000000802.romfs`) is still served first and looks like the console.
+  stream, deflated as the console's are. The SDK reads a file whole into a heap the game sizes for the console's, so
+  none is bigger than the console's of its name. It is about 1.2 MiB, made at the game's first open of it. The
+  player's own firmware's (its RomFS as `system/archives/0100000000000802.romfs`) is still served first and looks like
+  the console.
 - `0100000000000823` (NgWord2) is the exception: when absent, it is synthesized with firmware 11.0.1's 52-file
   profanity-filter set (the `ac_*` pattern files and `version.dat` 0x1A), from Eden's stand-in archive, in place of an
   empty image. A game that calls `CheckProfanityWords` (Yo-kai Watch) reads the pattern files, and stops on the empty

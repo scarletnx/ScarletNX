@@ -8,11 +8,11 @@
 
    Where the 3D engine reads what NVN's driver put in its own constant buffers, the queue gives them as inline blocks
    (renderer.h): bank 0 holds each stage's storage buffers (address and size, 16 bytes apart: the vertex stage's at
-   0x110, the fragment stage's at 0x510), the largest point size at 0x610 and the draw's base vertex and base instance
-   at 0x640 and 0x644; bank 2 the texture handles at 0x20 + 8 r, the images' at 0x120 + 8 r, separate textures' at
-   0x168 + 8 r and separate samplers' at 0x568 + 8 r. Those layouts are nxnative's measurements of the games' shaders
-   (dm/gfx/nvn/nvn_mtl.m, MIT, Copyright (c) 2026 seedds). Bank 1 is the program's own constants, after its code in
-   the code area; the application's uniform buffer r is bank 3 + r */
+   0x110, the geometry stage's at 0x410, the fragment stage's at 0x510), the largest point size at 0x610 and the draw's
+   base vertex and base instance at 0x640 and 0x644; bank 2 the texture handles at 0x20 + 8 r, the images' at
+   0x120 + 8 r, separate textures' at 0x168 + 8 r and separate samplers' at 0x568 + 8 r. Those layouts are nxnative's
+   measurements of the games' shaders (dm/gfx/nvn/nvn_mtl.m, MIT, Copyright (c) 2026 seedds). Bank 1 is the program's
+   own constants, after its code in the code area; the application's uniform buffer r is bank 3 + r */
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "common/utilities/bits.h"
 #include "nx/gpu/draw_state.h"
@@ -479,6 +479,7 @@ static void make_viewports(NvnDraw* d) {
     int upper_left = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
     DsViewports v;
     memset(&v, 0, sizeof v); /* every byte: keep compares the bytes */
+    /* NVN has no call that turns the viewport transform off */
     v.transform_on = 1;
     v.scissor_on = 1; /* scissor 0, the only one recorded: NVN's covers everything until it is set */
     for (u32 j = 0; j < DS_VIEWPORTS_MAX; j++) {
@@ -657,10 +658,17 @@ static void bind_buffer(NvnDraw* d, u32 op, const NvnPBindBuf* r) {
         d->bind.cb_size[s][3 + r->index] = size >= 0x10000 ? 0 : (u32)size;
         d->dirty |= D_BIND;
     } else {
-        /* the storage buffer table's base in bank 0, measured for the vertex and fragment stages */
-        u32 base = s == 0 ? 0x110 : s == 4 ? 0x510 : 0;
+        /* the storage buffer table's base in bank 0 by graphics stage; no game's tessellation programs were seen
+           reading one */
+        static const u32 table[DS_GFX_STAGES] = {0x110, 0, 0, 0x410, 0x510};
+        static const char* const name[DS_GFX_STAGES] = {"vertex", "tessellation control", "tessellation evaluation",
+                                                        "geometry", "fragment"};
+        u32 base = table[s];
         if (!base) {
-            LOG_LIMIT(1, "nvn: a storage buffer of shader stage %d, whose table nobody measured\n", r->stage);
+            LOG_LIMIT(4,
+                      "nvn: storage buffer %d of the %s stage (%#llx, %llu bytes) is not bound: that stage's table "
+                      "in bank 0 was never measured, so its programs read address 0\n",
+                      r->index, name[s], (unsigned long long)r->address, (unsigned long long)r->size);
             return;
         }
         put64(d, d->inl.bank0[s], DS_INLINE_BANK0, base + 16 * (u32)r->index, r->address);

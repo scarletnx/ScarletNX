@@ -48,6 +48,8 @@ void mem_query(u64 addr, MemBlock* out) {
 }
 char g_datadir[1024], g_exename[256], g_exedir[1024], g_confdir[1024], g_addondir[1024], g_gamename[256];
 u64 g_addon;
+int g_program; /* main.c's: the game's own program unless a test says another */
+char g_addonrec[256];
 const u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull}; /* am.c's: the first user */
 static jmp_buf* test_fatal_jump;                                   /* a fatal() the test waits for comes back here */
 static char test_fatal_text[1024];
@@ -167,6 +169,7 @@ void own_acquire(u64 addr, u64 size) { (void)addr, (void)size; }
 void plat_ww_open(u8* p, u64 size) { (void)p, (void)size; }
 void plat_ww_close(u8* p, u64 size) { (void)p, (void)size; }
 static char test_fs_text[1024];    /* the last warning of fs.c's own, "fs: ..." */
+static char test_report_text[1024]; /* the last warning of a report's, indented: "  ..." */
 static char test_romfs_text[1024]; /* the last warning about the RomFS, "RomFS: ..." */
 void logf_(int level, const char* format, ...) {
     char text[1024];
@@ -179,10 +182,17 @@ void logf_(int level, const char* format, ...) {
         snprintf(test_left_text, sizeof test_left_text, "%s", text);
     }
     if (!level && !strncmp(text, "fs: ", 4)) snprintf(test_fs_text, sizeof test_fs_text, "%s", text);
+    if (!level && !strncmp(text, "  ", 2)) snprintf(test_report_text, sizeof test_report_text, "%s", text);
     if (!level && !strncmp(text, "RomFS: ", 7)) snprintf(test_romfs_text, sizeof test_romfs_text, "%s", text);
 }
 /* options.c's: the game's settings, where the runtime read them */
 const char* ini_file(void) { return "config/Game.ini"; }
+/* am.c's: the display version of the program's control data, which this test sets */
+static char test_display[16] = "1.0.0";
+void am_display_version(char version[16]) {
+    memcpy(version, test_display, sizeof test_display);
+    version[15] = 0;
+}
 void fatal(const char* format, ...) {
     va_list args;
     va_start(args, format);
@@ -840,10 +850,10 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
     }
 
     /* MiiModel (0100000000000802), with none in system/archives: the archive mii_model.c generates (its parts are
-       checked in mii_model), made at the first open and not before; its six files, a Linear and an SRGB copy and the
-       two shape qualities sharing their bytes */
+       checked in mii_model), made at the first open and not before; its six files, a Linear and an SRGB copy sharing
+       their bytes */
     {
-        static u8 file[0x280000];
+        static u8 file[0x280000], want[0x280000];
         Request a;
         unsigned i;
         u64 at[6];
@@ -878,8 +888,9 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
             offset = snx_ld_le64(tables + header[7] + entry + 8);
             size = snx_ld_le64(tables + header[7] + entry + 16);
             at[i] = offset;
-            CHECK(size == snx_mii_model_write(i, NULL) && size <= sizeof file &&
-                  header[9] + offset + size <= model_size);
+            memset(want, 0, sizeof want);
+            CHECK(snx_mii_model_write(i, NULL) <= sizeof want && snx_mii_model_write(i, want) == size &&
+                  size <= sizeof file && header[9] + offset + size <= model_size);
             CHECK(snx_mii_model_same(i) == i || at[snx_mii_model_same(i)] == offset);
             for (done = 0; done < size && size <= sizeof file; done += 0x8000) {
                 u64 len = size - done < 0x8000 ? size - done : 0x8000;
@@ -890,7 +901,8 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
                 dispatch(model, &a, 0);
                 memcpy(file + done, GP(0x5000), (size_t)len);
             }
-            CHECK(!memcmp(file, i < 4 ? "NFTR\1\0\0\0" : "NFSR\1\0\0\0", 8) && snx_ld_le32(file + 8) == size);
+            CHECK(!memcmp(file, i < 4 ? "NFTR\1\0\0\0" : "NFSR\1\0\0\0", 8) && snx_ld_le32(file + 8) == size &&
+                  size <= sizeof want && !memcmp(file, want, (size_t)size));
         }
         svcobj_unref(model);
     }
@@ -1279,6 +1291,7 @@ static void addon_write(int update, int extracted) {
     if (update) {
         g_addon = 0x0100000000AB0800ULL;
         strcpy(g_exename, "0100000000AB0000_0100000000AB0800");
+        strcpy(g_addonrec, g_exename); /* main.c's addon_init: the update's own program, its own record */
         snprintf(g_addondir, sizeof g_addondir, "dump-data/%s_data/", g_exename);
         addon_dump("dump-data/Update.nsp", 1, g_addon, "asset.bin", addon_asset, g_exename);
     } else {
@@ -1562,7 +1575,7 @@ static void mods_write(int image, int stale) {
               !snx_write_file("mods-data/0100000000AB0000_data/romfs/dir/c.bin", "the game's c", 12));
     }
 #if !defined(_WIN32)
-    CHECK(!symlink("a.bin", "mods-data/0100000000AB0000_data/mods/3 off/romfs/link"));
+    CHECK(!snx_symlink("a.bin", "mods-data/0100000000AB0000_data/mods/3 off/romfs/link"));
 #endif
     strcpy(g_exedir, "mods-data/");
     strcpy(g_exename, "0100000000AB0000");
@@ -1902,6 +1915,12 @@ static void test_save_data(SvcObj* proxy) {
     CHECK(v == 0);
     v = snx_ld_le32(r.c.out + 4);
     CHECK(v == 1);
+    /* a collection's program 2, no dump read: its own index, of as many programs as reach it */
+    g_program = 2;
+    request(&r, 1011);
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.out_size == 8 && snx_ld_le32(r.c.out) == 2 && snx_ld_le32(r.c.out + 4) == 3);
+    g_program = 0;
     puts(
         "PASS SaveDataType folders, a folder per user, save/user and save/system played where they are, two saves of one "
         "user "
@@ -2036,6 +2055,53 @@ static void test_save_layout(SvcObj* proxy) {
     svcobj_unref(save);
     CHECK(tree_has("save/cache/homebrew.bin"));
     g_hle.kernel.title_id = 0x0100000000010000ull;
+    /* a collection's program 2: its saves are its application's, the owner its control.nacp names (SaveDataOwnerId),
+       the folder program 0 plays, not one of its own ID */
+    {
+        static u8 nacp[0x4000];
+        snx_st_le64(nacp + 0x3078, 0x0100000000010000ull);
+        pm_lock(&g_hle.fs.tree.lock);
+        fs_tree_forget(&g_hle.fs.tree, "control.nacp");
+        CHECK(!fs_tree_add_virtual(&g_hle.fs.tree, "control.nacp", nacp, sizeof nacp, NULL));
+        pm_unlock(&g_hle.fs.tree.lock);
+        g_program = 2;
+        g_hle.kernel.title_id = 0x0100000000010002ull;
+        pm_lock(&g_hle.fs.tree.lock); /* as a new process's: none of program 0's folders grafted */
+        fs_tree_forget(&g_hle.fs.tree, "global-user.0123456789abcdeffedcba9876543210");
+        pm_unlock(&g_hle.fs.tree.lock);
+        test_scans_allowed = 1;
+        fs_saves_init(root);
+        test_scans_allowed = 0;
+        CHECK(g_host.fs.save_title == 0x0100000000010000ull);
+        /* the application's folder grafted, the one program 0 wrote kept.bin into */
+        CHECK(tree_has("global-user.0123456789abcdeffedcba9876543210/kept.bin"));
+        save = open_user_save(proxy, g_user_id);
+        fs_command(save, 0, "/program2.bin", 4, 0);
+        svcobj_unref(save);
+        snprintf(path, sizeof path, "%s/user.0123456789abcdeffedcba9876543210/" TITLE "/program2.bin", root);
+        CHECK(host_file(path));
+        snprintf(path, sizeof path, "%s/user.0123456789abcdeffedcba9876543210/0100000000010002", root);
+        CHECK(!snx_is_dir(path));
+        /* its control.nacp naming no owner: its game's, the folder's name */
+        memset(nacp + 0x3078, 0, 8);
+        pm_lock(&g_hle.fs.tree.lock);
+        fs_tree_forget(&g_hle.fs.tree, "control.nacp");
+        CHECK(!fs_tree_add_virtual(&g_hle.fs.tree, "control.nacp", nacp, sizeof nacp, NULL));
+        pm_unlock(&g_hle.fs.tree.lock);
+        char was[sizeof g_gamename];
+        snprintf(was, sizeof was, "%s", g_gamename);
+        snprintf(g_gamename, sizeof g_gamename, "%s", "0100000000010000");
+        test_scans_allowed = 1;
+        fs_saves_init(root);
+        test_scans_allowed = 0;
+        CHECK(g_host.fs.save_title == 0x0100000000010000ull);
+        pm_lock(&g_hle.fs.tree.lock);
+        fs_tree_forget(&g_hle.fs.tree, "control.nacp");
+        pm_unlock(&g_hle.fs.tree.lock);
+        snprintf(g_gamename, sizeof g_gamename, "%s", was);
+        g_program = 0;
+        g_hle.kernel.title_id = 0x0100000000010000ull;
+    }
     /* fs_user_saves_take, DeleteUser's: the folders of a user's saves, out of the index and their host paths */
     {
         char paths[2][FS_TREE_PATH_MAX];
@@ -2051,6 +2117,173 @@ static void test_save_layout(SvcObj* proxy) {
     free(root);
 #undef TITLE
     puts("PASS save_layout: global's folders, game's, a save played where it is, two of one refused");
+}
+
+/* the program the run is, as main.c's addon_init leaves its names: the game's own (update 0), or its update of
+   version, whose program is named <game>_<update>v<version>; display its control data's display version */
+static void test_program(u64 update, unsigned long version, const char* display) {
+    strcpy(g_gamename, "0100000000010000");
+    if (update)
+        snprintf(g_exename, sizeof g_exename, "%s_%016llXv%lu", g_gamename, (unsigned long long)update, version);
+    else
+        strcpy(g_exename, g_gamename);
+    g_addon = update;
+    snprintf(g_addonrec, sizeof g_addonrec, "%s", update ? g_exename : "");
+    snprintf(test_display, sizeof test_display, "%s", display);
+}
+/* IFileSystem's Commit */
+static void commit(SvcObj* fs) {
+    Request r;
+    request(&r, 10);
+    dispatch(fs, &r, 0);
+}
+/* the host folder of a save's file system */
+static void save_host_folder(SvcObj* save, char* out, size_t size) {
+    pm_lock(&g_hle.fs.tree.lock);
+    CHECK(!fs_tree_path(&g_hle.fs.tree, ((FsData*)save->data)->root, out, size));
+    pm_unlock(&g_hle.fs.tree.lock);
+}
+/* the file at path is text */
+static int host_text(const char* path, const char* text) {
+    size_t size;
+    char* had = (char*)snx_read_file(path, &size);
+    int same = had && size == strlen(text) && !memcmp(had, text, size);
+    if (had && !same) fprintf(stderr, "%s holds:\n%s", path, had);
+    free(had);
+    return same;
+}
+/* path, written with text */
+static void host_write(const char* path, const char* text) { CHECK(!snx_write_file(path, text, strlen(text))); }
+/* A save's note (fs.c's save_note): the program that committed the save last, in <its folder>.version beside it, out
+   of the game's reach. A save opened whose note names a newer version of the game says both versions, once, and the
+   crash reports say it again; an older, the same version or another game's says nothing. Versions compare by their
+   content meta's when both are known, else by the numbers of their display versions. An Account, Device and BCAT save
+   have one, temporary and cache storage none, and nor does a program with no title ID of its own; save_layout=global's
+   is beside the title's folder in user.<uid>/ */
+static void test_save_note(SvcObj* proxy) {
+    static const u64 update = 0x0100000000010800ull, third[2] = {0x0505050505050505ull, 0x0505050505050505ull},
+                     fourth[2] = {0x0606060606060606ull, 0x0606060606060606ull};
+    char folder[FS_TREE_PATH_MAX], note[FS_TREE_PATH_MAX + 16], other[FS_TREE_PATH_MAX + 16], *root;
+    size_t n;
+    SvcObj* save;
+    strcpy(g_settings.save_layout, "game");
+    g_host.fs.save_newer[0] = 0;
+    /* the update 2.1.0, content meta version 983040: a write alone notes nothing, its commit does */
+    test_program(update, 983040, "2.1.0");
+    save = open_user_save(proxy, g_user_id);
+    save_host_folder(save, folder, sizeof folder);
+    n = strlen(folder);
+    CHECK(n > 0 && strstr(folder, FIRST_SAVE) && folder[n - 1] != '/');
+    snprintf(note, sizeof note, "%s.version", folder);
+    fs_command(save, 0, "/progress.bin", 4, 0);
+    CHECK(!host_file(note));
+    commit(save);
+    CHECK(host_text(note, "program=0100000000010800\nversion=983040\ndisplay=2.1.0\n"));
+    snprintf(other, sizeof other, "%s/.version", folder);
+    CHECK(!host_file(other));
+    fs_command(save, 7, "/progress.bin", 0, 0); /* the save's own files are the game's alone */
+    svcobj_unref(save);
+    /* the game's own program 1.0.0 opens it: said with both versions, once however often it opens it */
+    test_program(0, 0, "1.0.0");
+    test_fs_text[0] = 0;
+    save = open_user_save(proxy, g_user_id);
+    svcobj_unref(save);
+    CHECK(strstr(test_fs_text, folder) &&
+          strstr(test_fs_text, ", this game's user save, was last written by version 2.1.0 (983040, program "
+                               "0100000000010800); this program is 1.0.0 (program 0100000000010000): a game may not "
+                               "read a save a newer version of it wrote\n"));
+    test_fs_text[0] = 0;
+    save = open_user_save(proxy, g_user_id);
+    CHECK(!test_fs_text[0]);
+    /* a crash report says it again */
+    test_report_text[0] = 0;
+    fs_save_report();
+    CHECK(!strncmp(test_report_text, "  ", 2) && strstr(test_report_text, folder) &&
+          strstr(test_report_text, "last written by version 2.1.0 (983040"));
+    /* its commit: the note names it from then on, its version not known (its program extracted, no dump read) */
+    commit(save);
+    svcobj_unref(save);
+    CHECK(host_text(note, "program=0100000000010000\ndisplay=1.0.0\n"));
+    /* the update again: an older version's note, nothing said */
+    test_program(update, 983040, "2.1.0");
+    g_host.fs.save_newer[0] = 0;
+    test_fs_text[0] = 0;
+    save = open_user_save(proxy, g_user_id);
+    commit(save);
+    svcobj_unref(save);
+    CHECK(!test_fs_text[0] && !g_host.fs.save_newer[0]);
+    /* an older update, version 65536: the content meta versions tell, whatever the display versions say */
+    test_program(update, 65536, "9.9.9");
+    save = open_user_save(proxy, g_user_id);
+    svcobj_unref(save);
+    CHECK(strstr(test_fs_text, "last written by version 2.1.0 (983040, program 0100000000010800); this program is "
+                               "9.9.9 (65536, program 0100000000010800):"));
+    /* the same version: nothing */
+    test_program(update, 983040, "2.1.0");
+    g_host.fs.save_newer[0] = 0;
+    test_fs_text[0] = 0;
+    save = open_user_save(proxy, g_user_id);
+    svcobj_unref(save);
+    CHECK(!test_fs_text[0] && !g_host.fs.save_newer[0]);
+    /* by the numbers of the display versions when a content meta version is not known: 1.10.0 after 1.9.2 */
+    test_program(0, 0, "1.9.2");
+    host_write(note, "program=0100000000010000\ndisplay=1.10.0\n");
+    save = open_user_save(proxy, g_user_id);
+    svcobj_unref(save);
+    CHECK(strstr(test_fs_text, "last written by version 1.10.0 (program 0100000000010000); this program is 1.9.2 "
+                               "(program 0100000000010000):"));
+    test_program(0, 0, "1.10.0");
+    host_write(note, "program=0100000000010000\ndisplay=1.9.2\n");
+    g_host.fs.save_newer[0] = 0;
+    test_fs_text[0] = 0;
+    save = open_user_save(proxy, g_user_id);
+    svcobj_unref(save);
+    CHECK(!test_fs_text[0] && !g_host.fs.save_newer[0]);
+    /* another game's note: not compared, newer as its version is */
+    test_program(update, 983040, "2.1.0");
+    host_write(note, "program=0100000000020000\nversion=99999999\ndisplay=99.0.0\n");
+    save = open_user_save(proxy, g_user_id);
+    svcobj_unref(save);
+    CHECK(!test_fs_text[0] && !g_host.fs.save_newer[0]);
+    /* the Device and BCAT saves have one; temporary and cache storage none */
+    for (u8 type = 2; type <= 5; type++) {
+        save = open_save_data(proxy, 51, type);
+        save_host_folder(save, folder, sizeof folder);
+        commit(save);
+        svcobj_unref(save);
+        snprintf(note, sizeof note, "%s.version", folder);
+        CHECK(type <= 3 ? host_text(note, "program=0100000000010800\nversion=983040\ndisplay=2.1.0\n")
+                        : !host_file(note));
+    }
+    /* a program with no title ID of its own: none */
+    g_hle.kernel.title_id = SNX_NPDM_DEFAULT_TITLE;
+    save = open_user_save(proxy, fourth); /* test_save_layout took the other user's saves out of the index */
+    save_host_folder(save, folder, sizeof folder);
+    commit(save);
+    svcobj_unref(save);
+    snprintf(note, sizeof note, "%s.version", folder);
+    CHECK(!host_file(note));
+    g_hle.kernel.title_id = 0x0100000000010000ull;
+    /* save_layout=global: beside the title's folder in user.<uid>/ */
+    root = snx_absolute("../../note-saves");
+    CHECK(root != NULL);
+    strcpy(g_settings.save_layout, "global");
+    fs_saves_init(root);
+    test_program(update, 983040, "2.1.0");
+    save = open_user_save(proxy, third);
+    fs_command(save, 0, "/g.bin", 4, 0);
+    commit(save);
+    svcobj_unref(save);
+    snprintf(note, sizeof note, "%s/user.05050505050505050505050505050505/0100000000010000.version", root);
+    CHECK(host_text(note, "program=0100000000010800\nversion=983040\ndisplay=2.1.0\n"));
+    g_settings.save_layout[0] = 0;
+    g_host.fs.save_root[0] = 0;
+    g_host.fs.save_newer[0] = 0;
+    test_program(0, 0, "1.0.0");
+    g_gamename[0] = g_exename[0] = 0;
+    free(root);
+    puts("PASS a save's note: written on commit beside its folder, a newer version's said once and in a crash report, "
+         "an older, the same or another game's not, by the content meta's versions else the display versions'");
 }
 
 static void cleanup_service(void) {
@@ -2344,6 +2577,7 @@ int main(int argc, char** argv) {
     test_extracted_romfs(proxy);
     test_save_data(proxy);
     test_save_layout(proxy);
+    test_save_note(proxy);
     test_state_temp(proxy);
     test_notifiers_and_program_index(proxy);
     svcobj_unref(fs);

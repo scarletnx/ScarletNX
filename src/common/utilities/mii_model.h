@@ -4,14 +4,16 @@
    SDK (nn::mii::detail, as the game links it) builds a Mii's head from, drawn in code so that a game draws a Mii
    with a face, hair and a nose when the player's firmware is not in the game's data folder. Nothing of the console's
    own parts is in it: only their format and their list (which part kinds there are, how many of each, which are
-   absent, each texture's size, format and mip levels).
+   absent, each texture's size, format and mip levels, each shape kind's largest part).
 
    The archive is six files, each read whole by the SDK and indexed from its start without a check of its header:
    four of textures (NFTR: Low and Mid quality, each in a Linear and an SRGB copy, the same here) and two of shapes
-   (NFSR: Mid and High, the same here). A file is 0xc bytes of header (its magic, version 1, its size), then per
-   part kind its largest decompressed part and that part's alignment (which size the SDK's pool), then a table of
-   one entry per part, then (shapes only) the hair and faceline transforms, then each part's data as a zlib stream.
-   A part whose decompressed size is 0 is absent. */
+   (NFSR: Mid and High, each part with as many quads as fit the console's largest of its kind there). A file is 0xc
+   bytes of header (its magic, version 1, its size), then per part kind its largest decompressed part and that part's
+   alignment (which size the SDK's pool), then a table of one entry per part, then (shapes only) the hair and faceline
+   transforms, then each part's data as a zlib stream. A part whose decompressed size is 0 is absent. A game sizes its
+   Mii heap for the console's files, which the SDK reads whole into it, so no file here is bigger than the console's
+   of its name. */
 #ifndef SNX_MII_MODEL_H
 #define SNX_MII_MODEL_H
 #include "common/cpu/aarch64/cpu.h"
@@ -22,10 +24,10 @@
 
 /* file i's name, as the SDK opens it */
 void snx_mii_model_name(u32 i, char name[32]);
-/* the file whose bytes file i has: an earlier one (a Linear and an SRGB copy are the same, as are the two shape
-   qualities), or i */
+/* the file whose bytes file i has: an earlier one (a Linear and an SRGB copy are the same), or i */
 u32 snx_mii_model_same(u32 i);
-/* file i, into out (zeroed, at least its size), or only measured with out NULL: its size in bytes */
+/* file i into out (zeroed, at least the bytes out NULL gives): its size, 0 when there was no memory to make it. With
+   out NULL, the most bytes it takes: its parts are deflated as they are made, so only writing it tells its size */
 u32 snx_mii_model_write(u32 i, u8* out);
 
 /* A Mii's picture (a nn::mii::CharInfo) as the launcher and acc show a user's: a bust from the front, side x side

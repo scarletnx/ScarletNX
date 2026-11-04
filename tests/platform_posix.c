@@ -34,7 +34,10 @@ void fatal(const char* fmt, ...) {
 }
 void log_crash_mode(void) {}
 /* nce.c, whose NCE no game here is of: the crash handler gives it the signal's context */
-void nce_crash_context(const void* context) { (void)context; }
+void nce_crash_context(const void* context, const void* fault) {
+    (void)context;
+    (void)fault;
+}
 static int g_reports;     /* crash reports made */
 static int g_report_exit; /* a child's: a report ends it with 42, which its parent checks */
 void crash_report(void* host_pc, void* fault, int sig) {

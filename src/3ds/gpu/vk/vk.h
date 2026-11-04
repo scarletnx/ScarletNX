@@ -8,18 +8,21 @@
 #include <stdbool.h>
 #include <stdint.h>
 /* The 3DS's one Vulkan device, which the PICA renderer, the transfer engine and the presenter share (device.c).
-   The board's RAM regions (FCRAM, VRAM, DSP RAM, the New 3DS's extra RAM) are the host memory the guest runs in,
-   imported into Vulkan as buffers (VK_EXT_external_memory_host): vertex and index data, textures, render targets'
-   load and store, transfers and the shown framebuffers are read and written in place on the GPU, and nothing of them
-   is copied by the CPU. Work is recorded into a command buffer until it is submitted, a few submissions in flight
+   The board's RAM regions (FCRAM, VRAM, DSP RAM, the New 3DS's extra RAM) are the host memory the guest runs in, a
+   buffer of the device's each: the host's memory imported (VK_EXT_external_memory_host), or, where the driver will
+   not import it (RADV takes no shared memory), the device's own memory, host-visible and cached, whose dma-buf the RAM
+   moves into (VK_EXT_external_memory_dma_buf, snx_ctr_memory_adopt), every guest view of a page a map of it. Either
+   way vertex and index data, textures, render targets' load and store, transfers and the shown framebuffers are read
+   and written in place on the GPU, and nothing of them is copied by the CPU. Work is recorded into a command buffer
+   until it is submitted, a few submissions in flight
    at once, each with a serial: nothing waits for the GPU but what needs its results. The guest's CPU finds them
    through write tracking (memory/ctr_memory.h): the pages the GPU writes, or keeps newer in its render targets, trap
    until they are in memory, and the GSP's interrupts come when the submission is done. */
 #define SNX_CTR_VK_SLOTS 4
 typedef struct {
     VkBuffer buffer;
-    VkDeviceMemory memory;
-    uint32_t base, size; /* the physical range it holds */
+    VkDeviceMemory memory; /* its import; VK_NULL_HANDLE when the RAM is the device's memory (SnxCtrVk's ram_memory) */
+    uint32_t base, size;   /* the physical range it holds */
 } SnxCtrVkRam;
 typedef struct {
     SnxVkWindow host;   /* the window (none headless), the instance and the surface */
@@ -34,8 +37,14 @@ typedef struct {
     bool index8, logic_op; /* VK_EXT_index_type_uint8; the logicOp feature */
     bool clip_distance;    /* shaderClipDistance */
     bool preserve_infnan;  /* shaderSignedZeroInfNanPreserveFloat32: the generated shaders keep infinities and NaNs */
+    bool import_host;      /* VK_EXT_external_memory_host */
+    bool export_dmabuf;    /* VK_KHR_external_memory_fd and VK_EXT_external_memory_dma_buf */
     SnxCtrVkRam ram[8];
     unsigned ram_count;
+    /* the board's RAM as the device's memory, each region's buffer bound at the region's offset in the RAM;
+       VK_NULL_HANDLE when the regions are imported */
+    VkDeviceMemory ram_memory;
+    uint32_t ram_type;    /* its memory type */
     SnxCtrMemory* memory; /* the board's, whose RAM the renderer tracks */
     /* the submissions in flight, SNX_CTR_VK_SLOTS of them: each recording's command buffer, fence and descriptor
        sets, free again once its fence passed and its serial is completed */
@@ -46,9 +55,11 @@ SnxCtrVk* snx_ctr_vk(void);
 /* the 3D render scale of a screen of these framebuffer sizes: the CTR top or bottom resolution setting, as far as
    the device's largest image takes (1 before a device, or with none) */
 uint8_t snx_ctr_vk_target_scale(unsigned width, unsigned height);
-/* The device and the window (unless headless or none can be made), with memory's RAM regions imported. False, with
-   the reason in error, when the host has no Vulkan device that can: Vulkan 1.2, 8-bit storage buffers and
-   VK_EXT_external_memory_host */
+/* The device and the window (unless headless or none can be made), with memory's RAM regions its buffers: imported,
+   or, when the driver refuses that, the RAM moved into the device's memory (which says so, and why, on the standard
+   error). Before the guest runs, as the move copies the RAM. False, with the reason in error, when the host has no
+   Vulkan device that can: Vulkan 1.3, 8-bit storage buffers, dynamic rendering, and VK_EXT_external_memory_host or
+   VK_EXT_external_memory_dma_buf, one of which takes the RAM */
 bool snx_ctr_vk_init(SnxCtrMemory* memory, char* error, size_t error_size);
 void snx_ctr_vk_free(void);
 /* why the last snx_ctr_vk_init failed, without the device's name, which its error adds ("; device <name>, driver
@@ -76,6 +87,34 @@ typedef struct {
 } SnxCtrVkImport;
 /* the error a failed import gives, with the region's name */
 void snx_ctr_vk_import_error(const SnxCtrVkImport* import, const char* region, char* error, size_t error_size);
+/* The board's RAM as the device's memory, after the import was refused (snx_ctr_vk_init): the step that stopped it,
+   the driver's answer and what was asked */
+typedef enum {
+    SNX_CTR_VK_DEVICE_RAM_EXTENSIONS, /* no VK_KHR_external_memory_fd and VK_EXT_external_memory_dma_buf */
+    SNX_CTR_VK_DEVICE_RAM_EXPORT,     /* the RAM's buffers export no dma-buf, or one only in a dedicated allocation */
+    SNX_CTR_VK_DEVICE_RAM_BUFFER,     /* vkCreateBuffer */
+    SNX_CTR_VK_DEVICE_RAM_ALIGNMENT,  /* a region's offset in the RAM is not a multiple of its buffer's alignment */
+    SNX_CTR_VK_DEVICE_RAM_TYPE,       /* no host-visible, coherent, cached memory type every buffer takes */
+    SNX_CTR_VK_DEVICE_RAM_ALLOCATE,   /* vkAllocateMemory, exportable as a dma-buf */
+    SNX_CTR_VK_DEVICE_RAM_BIND,       /* vkBindBufferMemory */
+    SNX_CTR_VK_DEVICE_RAM_EXPORT_FD,  /* vkGetMemoryFdKHR */
+    SNX_CTR_VK_DEVICE_RAM_VIEWS       /* snx_ctr_memory_adopt: the guest's views do not map the dma-buf */
+} SnxCtrVkDeviceRamStep;
+typedef struct {
+    SnxCtrVkDeviceRamStep step;
+    VkResult result;            /* the call's (BUFFER, ALLOCATE, BIND, EXPORT_FD) */
+    uint64_t size;              /* the board's RAM, its regions one after another */
+    uint32_t features;          /* the dma-buf's VkExternalMemoryFeatureFlags for the buffers (EXPORT) */
+    uint32_t region;            /* the region's index in the board's profile (BUFFER, ALIGNMENT, BIND) */
+    uint64_t offset, alignment; /* its offset in the RAM, and its buffer's alignment (ALIGNMENT, BIND) */
+    uint32_t buffer_types;      /* the memory types every buffer takes (TYPE) */
+    uint32_t visible_types;     /* of those, the host-visible and coherent ones, none cached (TYPE) */
+    uint64_t allocation;        /* the bytes allocated: the RAM and its buffers' last padding (ALLOCATE on) */
+    uint32_t type;              /* the memory type allocated (ALLOCATE on) */
+    int error;                  /* the system's reason the views did not map, an errno (VIEWS) */
+} SnxCtrVkDeviceRam;
+/* the error the device's memory gives when it cannot hold the RAM, with the region's name (BUFFER, ALIGNMENT, BIND) */
+void snx_ctr_vk_device_ram_error(const SnxCtrVkDeviceRam* ram, const char* region, char* error, size_t error_size);
 /* the open command buffer, begun if none was (in a slot free again, which may wait for its submission) */
 VkCommandBuffer snx_ctr_vk_commands(void);
 /* The recording submitted, without waiting: its serial (the last one's when nothing was recorded and there is no

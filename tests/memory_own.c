@@ -75,7 +75,10 @@ void log_crash_mode(void) {}
 /* nce.c, whose NCE no game here is of: mem.c's reservation asks it first, and the crash handler gives it the
    signal's context */
 int nce_wanted(void) { return 0; }
-void nce_crash_context(const void* context) { (void)context; }
+void nce_crash_context(const void* context, const void* fault) {
+    (void)context;
+    (void)fault;
+}
 void crash_report(void* host_pc, void* fault, int sig) {
     (void)host_pc;
     (void)fault;

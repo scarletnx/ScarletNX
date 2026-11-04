@@ -272,6 +272,10 @@ static void out_pages(const GfxOut* o, int delta) {
 static VkPipelineStageFlags2 out_stages(void) {
     return VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT |
+           (g_shader_tessellation ? VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT |
+                                        VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT
+                                  : 0) |
+           (g_shader_geometry ? VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT : 0) |
            (g_vk.has_xfb ? VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT : 0);
 }
 static VkAccessFlags2 out_access(void) {
@@ -1168,13 +1172,13 @@ static int gfx_composed(u64 gva, u64 len, VkBuffer* buf, u64* off) {
    from another entry over the same memory. The table has a leaf of 1024 pages per 4 MB that has been written, with
    the newest generation in the leaf beside it so whole leaves are skipped */
 #define WW_LEAF_SHIFT 22
-static u32* g_wleaf[AS_MAX >> WW_LEAF_SHIFT];
-static u32 g_wleaf_max[AS_MAX >> WW_LEAF_SHIFT];
+static u32* g_wleaf[AS_TOP >> WW_LEAF_SHIFT];
+static u32 g_wleaf_max[AS_TOP >> WW_LEAF_SHIFT];
 /* The CPU writes a GPU stream may see come before its submission or the end of one of its waits: each of those starts
    a write epoch (vk_ww_new_epoch). A leaf scanned whole in an epoch isn't scanned again in it, and a scan covers whole
    leaves, so the textures and buffers checked in one epoch share a few scans: one game made 5,600 of them a frame.
    g_wleaf_seen holds the epoch + 1 whose scans of the leaf its table has taken in (checks only, under vk_lock) */
-static u32 g_wleaf_seen[AS_MAX >> WW_LEAF_SHIFT];
+static u32 g_wleaf_seen[AS_TOP >> WW_LEAF_SHIFT];
 static u32 g_ww_epoch; /* atomic */
 static u32 g_wclock = 1;
 static int g_ww = -1; /* -1 not tried yet, 0 not available, 1 on */
@@ -1195,27 +1199,51 @@ static void ww_mark(u8* p, u64 n) {
         g_wleaf_max[l] = g_wclock;
     }
 }
+/* a range of guest memory [a, e) */
+typedef struct {
+    u64 a, e;
+} WwRange;
 /* the pages of guest memory [o, e) as written now. A leaf the range covers whole, and that has no table, only gets
    its newest generation: kernel/mem.c can unmap gigabytes at once */
-static void ww_mark_range(u64 o, u64 e) {
+static void ww_mark_pages(u64 o, u64 e) {
     const u64 lp = 1ull << (WW_LEAF_SHIFT - 12);
     for (u64 pg = o >> 12, pe = (e + 4095) >> 12; pg < pe;) {
         u64 l = pg >> (WW_LEAF_SHIFT - 12), lend = (l + 1) * lp, end = pe < lend ? pe : lend;
         if (!g_wleaf[l] && pg == l * lp && end == lend)
             g_wleaf_max[l] = g_wclock;
         else
-            ww_mark(g_mem + (pg << 12), (end - pg) << 12);
+            ww_mark(GP(pg << 12), (end - pg) << 12);
         pg = end;
     }
+}
+/* Pages with two addresses (a view and its source, mem_alias_peers): what a check marks written is noted, and once
+   the scans' locks are gone (ww_take_peers) its pages are marked at their other addresses too, so a write through
+   either address is news to a cache over the other. Under vk_lock; when full, the last range grows over the next,
+   marking more than was written */
+#define WW_PEER_N 4096
+static struct {
+    WwRange r[WW_PEER_N];
+    int n;
+} g_wpeer;
+static void ww_mark_range(u64 o, u64 e) {
+    if (o < e) {
+        if (g_wpeer.n && g_wpeer.r[g_wpeer.n - 1].e == o)
+            g_wpeer.r[g_wpeer.n - 1].e = e;
+        else if (g_wpeer.n < WW_PEER_N)
+            g_wpeer.r[g_wpeer.n++] = (WwRange){o, e};
+        else {
+            WwRange* r = &g_wpeer.r[WW_PEER_N - 1];
+            if (o < r->a) r->a = o;
+            if (e > r->e) r->e = e;
+        }
+    }
+    ww_mark_pages(o, e);
 }
 
 /* ranges of guest memory changed without a write the tracking sees (vk_mem_changed: decommitted pages, which read
    as zero now). Noted on the game's threads, outside vk_lock, and marked written by the next vk_written_since, as if
    its scan had found them. When the list is full its last range grows to cover the new one, marking more than
    changed: a cache over the rest only checks its contents once */
-typedef struct {
-    u64 a, e;
-} WwRange;
 #define WW_CHG_N 32
 static WwRange g_wchg[WW_CHG_N];
 static int g_wchg_n; /* atomic: read without the lock to skip it */
@@ -1259,12 +1287,15 @@ static void ww_take_changed(void) {
 #define WW_RES_N       4096
 #define WW_RUN_MAX     8 /* leaves the scanner scans in one call at most */
 #define WW_USED_EPOCHS 4 /* the scanner scans the leaves the checks of the last epochs needed */
-static u32 g_wleaf_done[AS_MAX >> WW_LEAF_SHIFT]; /* atomic, stored by the leaf's claimer */
-static u32 g_wleaf_used[AS_MAX >> WW_LEAF_SHIFT]; /* atomic: only a hint for the scanner */
-static u8 g_wleaf_busy[AS_MAX >> WW_LEAF_SHIFT];  /* atomic: 1 while a scan has claimed the leaf */
+static u32 g_wleaf_done[AS_TOP >> WW_LEAF_SHIFT]; /* atomic, stored by the leaf's claimer */
+static u32 g_wleaf_used[AS_TOP >> WW_LEAF_SHIFT]; /* atomic: only a hint for the scanner */
+static u8 g_wleaf_busy[AS_TOP >> WW_LEAF_SHIFT];  /* atomic: 1 while a scan has claimed the leaf */
 static u32 g_ww_used[WW_USED_EPOCHS];             /* the last epochs + 1 checks needed leaves in, under vk_lock */
 static u32 g_ww_used_i;
 static u32 g_ww_used_from; /* atomic: the oldest of them */
+/* one past the highest leaf a check has needed, where the scanner's pass ends: a leaf above it was never needed, and a
+   pass to AS_SIZE's last leaf read 131072 of them at 512 GiB (atomic, stored by the checks under vk_lock) */
+static u64 g_wleaf_top;
 /* a scan's written pages before they go to g_wres: the scanner's, and the checks' (under vk_lock) */
 struct WwStage {
     WwRange r[WW_RES_N];
@@ -1302,7 +1333,7 @@ static int ww_scan_free(u64 a, u64 e) {
     int r = 0;
     while (a < e && !r) {
         u64 hi, lo = vk_uma_import_in(a, e, &hi);
-        if (lo > a) r = plat_ww_scan(g_mem + a, lo - a, ww_note);
+        if (lo > a) r = plat_ww_scan(GP(a), lo - a, ww_note);
         a = hi;
     }
     return r;
@@ -1446,7 +1477,7 @@ static void ww_scanner(void* arg) {
         last = e;
         seen = e + 1;
         from = __atomic_load_n(&g_ww_used_from, __ATOMIC_RELAXED);
-        for (u64 l = 0, n = AS_SIZE >> WW_LEAF_SHIFT; l < n;) {
+        for (u64 l = 0, n = __atomic_load_n(&g_wleaf_top, __ATOMIC_RELAXED); l < n;) {
             if (!ww_wanted(l, seen, from)) {
                 l++;
                 continue;
@@ -1488,10 +1519,69 @@ static void ww_used_epoch(u32 seen) {
     __atomic_store_n(&g_ww_used_from, oldest ? oldest : seen, __ATOMIC_RELAXED);
 }
 
+/* the leaves [lo, hi] taken in for the epoch seen - 1: those not taken in yet scanned in it (by the scanner already,
+   or here) and what the scans found marked. 0, or -1 when the tracking failed (under vk_lock) */
+static int ww_take_leaves(u64 lo, u64 hi, u32 seen) {
+    u64 l, a;
+    for (l = lo; l <= hi && (i32)(g_wleaf_seen[l] - seen) >= 0; l++) {}
+    if (l > hi) return 0;
+    u64 first = hi + 1, last = 0;
+    ww_used_epoch(seen);
+    if (__atomic_load_n(&g_wleaf_top, __ATOMIC_RELAXED) <= hi) __atomic_store_n(&g_wleaf_top, hi + 1, __ATOMIC_RELAXED);
+    for (a = l; a <= hi; a++) {
+        if ((i32)(g_wleaf_seen[a] - seen) >= 0) continue;
+        __atomic_store_n(&g_wleaf_used[a], seen, __ATOMIC_RELAXED);
+        if ((i32)(__atomic_load_n(&g_wleaf_done[a], __ATOMIC_ACQUIRE) - seen) < 0) {
+            if (first > hi) first = a;
+            last = a;
+        }
+    }
+    if (first <= hi) {
+        /* the scanner may be scanning some of them: wait for those, which it may have scanned in this epoch */
+        for (a = first; a <= last; a++)
+            while (!ww_claim(a)) plat_yield();
+        for (; first <= last && (i32)(__atomic_load_n(&g_wleaf_done[first], __ATOMIC_RELAXED) - seen) >= 0; first++)
+            __atomic_store_n(&g_wleaf_busy[first], 0, __ATOMIC_RELEASE);
+        for (; last > first && (i32)(__atomic_load_n(&g_wleaf_done[last], __ATOMIC_RELAXED) - seen) >= 0; last--)
+            __atomic_store_n(&g_wleaf_busy[last], 0, __ATOMIC_RELEASE);
+        if (first <= last && ww_scan_leaves(first, last, seen, &g_wstage_check) < 0) return -1;
+    }
+    ww_take_scanned();
+    for (a = l; a <= hi; a++)
+        if ((i32)(g_wleaf_seen[a] - seen) < 0) g_wleaf_seen[a] = seen;
+    return 0;
+}
+/* the other addresses of a range's pages (mem_alias_peers), noted to be taken in after the memory lock goes; past
+   WW_PEERS of them the range's answer is -1 (the caches compare contents) */
+#define WW_PEERS 64
+typedef struct {
+    WwRange r[WW_PEERS];
+    int n, over;
+} WwPeers;
+static void ww_peer_note(void* user, u64 at, u64 n) {
+    WwPeers* p = (WwPeers*)user;
+    if (p->n < WW_PEERS)
+        p->r[p->n++] = (WwRange){at, at + n};
+    else
+        p->over = 1;
+}
+static void ww_peer_mark(void* user, u64 at, u64 n) {
+    (void)user;
+    ww_mark_pages(at, at + n);
+}
+/* what this check marked written, marked at the pages' other addresses too (the scans' locks gone: mem.c's lock comes
+   before them, as a landing under it notes its pages) */
+static void ww_take_peers(void) {
+    int n = g_wpeer.n;
+    g_wpeer.n = 0;
+    if (!n || !mem_alias_any()) return; /* read after the takes: a view made before a write its scan found counts */
+    for (int i = 0; i < n; i++) mem_alias_peers(g_wpeer.r[i].a, g_wpeer.r[i].e - g_wpeer.r[i].a, ww_peer_mark, NULL);
+}
+
 int vk_written_since(const u8* host, u64 len, u32 since) {
     if (!g_ww || !host || !len) return -1;
     if (g_ww < 0) {
-        g_ww = plat_ww_scan(g_mem, 4096, ww_mark) == 0;
+        g_ww = mem_ww_probe(ww_mark) == 0;
         LOG("vulkan: %s\n",
             g_ww ? "write tracking on (caches skip unchanged memory)" : "no write tracking (caches check contents)");
         if (!g_ww) return -1;
@@ -1509,46 +1599,31 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
         g_ww = 0;
         return -1;
     }
-    u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, l, end;
+    u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end;
     if (vk_uma_import_in(o, o + len, &end) < o + len) return -1; /* pages no scan watches (ww_scan_free) */
     u32 seen = vk_ww_epoch() + 1;
-    for (l = lo; l <= hi && (i32)(g_wleaf_seen[l] - seen) >= 0; l++) {}
+    WwPeers peers;
+    peers.n = peers.over = 0;
     /* the clock moves only when this call marks pages, in ww_take_changed and ww_take_scanned when they take ranges,
        so what it marks is newer than every baseline taken before: a query that marks nothing, most of them, leaves
        it, and it doesn't reach its wrap within a session at thousands of queries a frame */
     ww_take_changed();
-    if (l <= hi) {
-        /* the leaves not taken in for this epoch: scanned in it by the scanner already, or here */
-        u64 first = hi + 1, last = 0, a;
-        ww_used_epoch(seen);
-        for (a = l; a <= hi; a++) {
-            if ((i32)(g_wleaf_seen[a] - seen) >= 0) continue;
-            __atomic_store_n(&g_wleaf_used[a], seen, __ATOMIC_RELAXED);
-            if ((i32)(__atomic_load_n(&g_wleaf_done[a], __ATOMIC_ACQUIRE) - seen) < 0) {
-                if (first > hi) first = a;
-                last = a;
-            }
-        }
-        if (first <= hi) {
-            int r = 0;
-            /* the scanner may be scanning some of them: wait for those, which it may have scanned in this epoch */
-            for (a = first; a <= last; a++)
-                while (!ww_claim(a)) plat_yield();
-            for (; first <= last && (i32)(__atomic_load_n(&g_wleaf_done[first], __ATOMIC_RELAXED) - seen) >= 0; first++)
-                __atomic_store_n(&g_wleaf_busy[first], 0, __ATOMIC_RELEASE);
-            for (; last > first && (i32)(__atomic_load_n(&g_wleaf_done[last], __ATOMIC_RELAXED) - seen) >= 0; last--)
-                __atomic_store_n(&g_wleaf_busy[last], 0, __ATOMIC_RELEASE);
-            if (first <= last) r = ww_scan_leaves(first, last, seen, &g_wstage_check);
-            if (r < 0) {
-                g_ww = 0;
-                LOG("vulkan: write tracking failed, caches check contents\n");
-                return -1;
-            }
-        }
-        ww_take_scanned();
-        for (a = l; a <= hi; a++)
-            if ((i32)(g_wleaf_seen[a] - seen) < 0) g_wleaf_seen[a] = seen;
+    int r = ww_take_leaves(lo, hi, seen);
+    /* pages of the range with another address (a view's): that address's leaves taken in too, so a write through it is
+       found, and marked here below */
+    if (!r) mem_alias_peers(o, len, ww_peer_note, &peers);
+    for (int i = 0; !r && i < peers.n; i++)
+        if (vk_uma_import_in(peers.r[i].a, peers.r[i].e, &end) < peers.r[i].e)
+            peers.over = 1; /* written through pages no scan watches */
+        else
+            r = ww_take_leaves(peers.r[i].a >> WW_LEAF_SHIFT, (peers.r[i].e - 1) >> WW_LEAF_SHIFT, seen);
+    ww_take_peers();
+    if (r < 0) {
+        g_ww = 0;
+        LOG("vulkan: write tracking failed, caches check contents\n");
+        return -1;
     }
+    if (peers.over) return -1;
     for (u64 pg = o >> 12, e = (o + len - 1) >> 12; pg <= e;) {
         u64 l = pg >> (WW_LEAF_SHIFT - 12), lend = (l + 1) << (WW_LEAF_SHIFT - 12);
         if (g_wleaf_max[l] > since) {
@@ -1760,7 +1835,7 @@ static u64 draw_page_key(u64 gva) {
 }
 static DrawPage* draw_pages(const VkDrawStorage* draw, size_t* count) {
     size_t n = 0;
-    for (int s = 0; s < 2; s++)
+    for (int s = 0; s < VK_DRAW_STAGES; s++)
         for (int i = 0; i < draw->n[s]; i++) {
             const VkDrawGbuf* b = &draw->b[s][i];
             if (b->addr) n += ((b->addr & 4095) + b->size + 4095) >> 12;
@@ -1768,7 +1843,7 @@ static DrawPage* draw_pages(const VkDrawStorage* draw, size_t* count) {
     DrawPage* p = malloc((n ? n : 1) * sizeof *p);
     if (!p) return NULL;
     size_t k = 0;
-    for (int s = 0; s < 2; s++)
+    for (int s = 0; s < VK_DRAW_STAGES; s++)
         for (int i = 0; i < draw->n[s]; i++) {
             const VkDrawGbuf* b = &draw->b[s][i];
             if (!b->addr) continue;
@@ -1779,8 +1854,8 @@ static DrawPage* draw_pages(const VkDrawStorage* draw, size_t* count) {
     *count = k;
     return p;
 }
-static int draw_alias_bindings(const DrawPage* p, size_t n, u8 active[32]) {
-    memset(active, 0, 32);
+static int draw_alias_bindings(const DrawPage* p, size_t n, u8 active[VK_DRAW_STAGES * 16]) {
+    memset(active, 0, VK_DRAW_STAGES * 16);
     int alias = 0;
     for (size_t i = 0; i < n;) {
         size_t j = i + 1;
@@ -1795,7 +1870,7 @@ static int draw_alias_bindings(const DrawPage* p, size_t n, u8 active[32]) {
     return alias;
 }
 static int draw_has_writable(const VkDrawStorage* draw) {
-    for (int s = 0; s < 2; s++)
+    for (int s = 0; s < VK_DRAW_STAGES; s++)
         for (int i = 0; i < draw->n[s]; i++)
             if (draw->b[s][i].addr && draw->b[s][i].writable) return 1;
     return 0;
@@ -1804,9 +1879,9 @@ static int draw_has_writable(const VkDrawStorage* draw) {
    memory and their page ranges, compared pairwise, meet no writable one's, 1 otherwise (the page list decides). Every
    draw with storage asked the page list, allocated and sorted, twice: a twentieth of the GPU thread in one game */
 static int draw_may_alias(const VkDrawStorage* draw) {
-    u64 lo[32], hi[32];
-    int w[32], k = 0;
-    for (int s = 0; s < 2; s++)
+    u64 lo[VK_DRAW_STAGES * 16], hi[VK_DRAW_STAGES * 16];
+    int w[VK_DRAW_STAGES * 16], k = 0;
+    for (int s = 0; s < VK_DRAW_STAGES; s++)
         for (int i = 0; i < draw->n[s]; i++) {
             const VkDrawGbuf* b = &draw->b[s][i];
             u64 cpu = 0;
@@ -1826,7 +1901,7 @@ int vk_buf_draw_has_alias(const VkDrawStorage* draw) {
     size_t n;
     DrawPage* p = draw_pages(draw, &n);
     if (!p) return -1;
-    u8 active[32];
+    u8 active[VK_DRAW_STAGES * 16];
     int alias = draw_alias_bindings(p, n, active);
     free(p);
     return alias;
@@ -1940,7 +2015,7 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
     int writable = draw_has_writable(draw) && draw_may_alias(draw);
     DrawPage* p = writable ? draw_pages(draw, &n) : NULL;
     if (writable && !p) return 0;
-    u8 active[32] = {0};
+    u8 active[VK_DRAW_STAGES * 16] = {0};
     int alias = p ? draw_alias_bindings(p, n, active) : 0;
     size_t unique = 0;
     if (alias)
@@ -1968,7 +2043,7 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
         composed = atlas_fill(p, unique, ptr, atlas, atlas_off);
         copy_note(1, atlas_size);
     }
-    for (int s = 0; s < 2; s++) {
+    for (int s = 0; s < VK_DRAW_STAGES; s++) {
         if (!draw->n[s]) continue;
         size_t words = 48;
         if (alias)

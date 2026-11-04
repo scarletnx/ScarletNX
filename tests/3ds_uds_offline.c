@@ -62,6 +62,14 @@ static void unsupported(SnxCtrProcess* p, uint32_t handle, uint32_t header) {
     assert(sent);
     assert(!result);
 }
+/* command 0x23's answer, the value libctru's udsScanBeacons scans with */
+static void scan_channels(SnxCtrProcess* p, uint32_t handle) {
+    uint32_t command[] = {0x230000};
+    uint32_t reply = call(p, handle, command, 1);
+    assert(!reply);
+    assert(ctr_word(p, CTR_COMMAND) == 0x230080);
+    assert(ctr_word(p, CTR_COMMAND + 8) == 0x0421);
+}
 static uint32_t own_node(SnxCtrProcess* p) { return ctr_word(p, STATUS_NODE) & 0xffff; }
 static uint32_t node_count(SnxCtrProcess* p) { return ctr_word(p, STATUS_NODES) & 0xff; }
 /* The application's own shared block, made by SVC 0x1e from a private data page */
@@ -212,9 +220,9 @@ int main(void) {
     reply = scan(p, handle, event);
     assert(p->uds && !reply);
     assert(ctr_word(p, BUFFER + 8) == 0);
-    /* commands 0x22 and 0x23 are not implemented */
+    /* command 0x22 is not implemented; 0x23 answers */
     unsupported(p, handle, 0x220000);
-    unsupported(p, handle, 0x230000);
+    scan_channels(p, handle);
     /* a second initialization while active leaves the state untouched */
     uint32_t words[15];
     initialize_words(words, shared);
@@ -249,6 +257,8 @@ int main(void) {
     reply = status(p, handle);
     assert(!reply);
     assert(ctr_word(p, STATUS_STATE) == STATUS_IDLE);
+    /* the same answer after a hosted network is destroyed, where games ask before they scan */
+    scan_channels(p, handle);
     shutdown_ok(p, handle, event, base);
     /* a command after shutdown reports the missing service state */
     uint32_t after[21];

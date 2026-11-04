@@ -1430,35 +1430,39 @@ texture_from_memory:
 
 VkFormat vk_tex_view_format(const Surf* s, int srgb) { return s->f.depth ? s->f.vk : vk_srgb_as(s->f.vk, srgb); }
 
-static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map, int stencil,
-                            u32 levels) {
-    /* what a view of each image type can be */
-    u32 layers;
+const char* vk_view_type_name(VkImageViewType type) {
+    static const char* const name[] = {"1D", "2D", "3D", "cube", "1D array", "2D array", "cube array"};
+    return (unsigned)type < sizeof name / sizeof name[0] ? name[type] : "unknown";
+}
+
+/* what a view of each image type can be: 2D images (render targets too) take 2D views, 3D ones a 3D view, cubes need 6
+   square layers of an image made cube compatible, which a render target isn't */
+const char* vk_tex_view_refusal(const Surf* s, VkImageViewType type) {
+    int is3d = s->type == VK_IMAGE_VIEW_TYPE_3D;
     switch (type) {
         case VK_IMAGE_VIEW_TYPE_2D:
-            if (s->type == VK_IMAGE_VIEW_TYPE_3D) return VK_NULL_HANDLE;
-            layers = 1;
-            break;
-        case VK_IMAGE_VIEW_TYPE_2D_ARRAY:
-            if (s->type == VK_IMAGE_VIEW_TYPE_3D) return VK_NULL_HANDLE;
-            layers = s->layers;
-            break;
+        case VK_IMAGE_VIEW_TYPE_2D_ARRAY: return is3d ? "a 3D image has no 2D view" : NULL;
         case VK_IMAGE_VIEW_TYPE_CUBE:
-            if (s->layers < 6 || s->w != s->h || s->type == VK_IMAGE_VIEW_TYPE_3D || s->is_rt) return VK_NULL_HANDLE;
-            layers = 6;
-            break;
         case VK_IMAGE_VIEW_TYPE_CUBE_ARRAY:
-            if (s->layers < 6 || s->w != s->h || s->type == VK_IMAGE_VIEW_TYPE_3D || s->is_rt ||
-                !g_vk.feat.imageCubeArray)
-                return VK_NULL_HANDLE;
-            layers = s->layers / 6 * 6;
-            break;
-        case VK_IMAGE_VIEW_TYPE_3D:
-            if (s->type != VK_IMAGE_VIEW_TYPE_3D) return VK_NULL_HANDLE;
-            layers = 1;
-            break;
-        default: return VK_NULL_HANDLE;
+            if (is3d) return "a 3D image has no cube view";
+            if (s->is_rt) return "a render target isn't made cube compatible";
+            if (s->layers < 6) return "a cube needs 6 layers";
+            if (s->w != s->h) return "a cube's faces are square";
+            if (type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && !g_vk.feat.imageCubeArray)
+                return "the device has no cube arrays";
+            return NULL;
+        case VK_IMAGE_VIEW_TYPE_3D: return is3d ? NULL : "a 2D image has no 3D view";
+        default: return "textures take no view of that type";
     }
+}
+
+static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map, int stencil,
+                            u32 levels) {
+    if (vk_tex_view_refusal(s, type)) return VK_NULL_HANDLE;
+    u32 layers = type == VK_IMAGE_VIEW_TYPE_2D_ARRAY     ? s->layers
+                 : type == VK_IMAGE_VIEW_TYPE_CUBE       ? 6
+                 : type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY ? s->layers / 6 * 6
+                                                         : 1;
     VkFormat fmt = vk_tex_view_format(s, srgb);
     stencil = stencil && s->f.stencil;
     u64 key = (u64)type | (u64)map->r << 4 | (u64)map->g << 8 | (u64)map->b << 12 | (u64)map->a << 16 | (u64)fmt << 20 |

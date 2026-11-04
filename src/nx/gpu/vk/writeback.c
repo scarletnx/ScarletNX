@@ -17,7 +17,10 @@ int vk_result_landing(void) { return t_result_depth != 0; }
 
 /* whether [p, p + n) overlaps the guest's address space, where pages the GPU holds fault when read. From AS_BASE:
    under NCE g_mem is 0, and on Android what lies below the moved layout is the app's own (mem.c) */
-static int in_guest(const u8* p, u32 n) { return p < g_mem + AS_SIZE && p + n > g_mem + AS_BASE; }
+static int in_guest(const u8* p, u32 n) {
+    uintptr_t a = (uintptr_t)p;
+    return a < (uintptr_t)GP(AS_SIZE) && a + n > (uintptr_t)GP(AS_BASE);
+}
 
 /* the bytes of [k, k + w) where res and org differ (w at most 8): eight at a time when there are eight */
 static int granule_differs(const u8* res, const u8* org, u32 k, u32 w) {

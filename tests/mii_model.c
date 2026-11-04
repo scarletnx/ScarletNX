@@ -12,6 +12,7 @@
 #include "common/utilities/endian.h"
 #include "support/astc.h"
 #include "support/bcn.h"
+#include <libdeflate.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,7 @@
    files */
 static struct {
     int fails;
+    struct libdeflate_decompressor* inflate;
     u8 raw[0x40000];
     u8 lin[0x40000];
     u8 px[256 * 512 * 8];
@@ -93,32 +95,13 @@ static void want_tex(u32 k, u32 i, int mid, u32* fmt, u32* w, u32* h, u32* mips)
     if (k == 6 || k == 10) *mips = 1;
 }
 
-/* ---- zlib's stored blocks, the only kind the archive writes: the n bytes inflated into out, 0 when anything
-   differs */
-static u32 want_adler(const u8* p, u32 n) {
-    u32 a = 1, s = 0, i;
-    for (i = 0; i < n; i++) {
-        a = (a + p[i]) % 65521u;
-        s = (s + a) % 65521u;
-    }
-    return s << 16 | a;
-}
+/* ---- a part's zlib stream (a deflate window of 32 KiB, as the console's parts take): the n bytes inflated into out,
+   all of the stored bytes and no more; 0 when anything differs */
 static int want_inflate(const u8* z, u32 stored, u8* out, u32 n) {
-    u32 at = 2, got = 0;
+    size_t in = 0, got = 0;
     if (stored < 6 || z[0] != 0x78 || (z[0] * 256u + z[1]) % 31) return 0;
-    for (;;) {
-        u32 len;
-        int last;
-        if (at + 5 > stored || (z[at] & 6)) return 0; /* BTYPE 0 */
-        last = z[at] & 1;
-        len = snx_ld_le16(z + at + 1);
-        if ((u16)~len != snx_ld_le16(z + at + 3) || at + 5 + len > stored || got + len > n) return 0;
-        memcpy(out + got, z + at + 5, len);
-        got += len;
-        at += 5 + len;
-        if (last) break;
-    }
-    return got == n && at + 4 == stored && snx_ld_be32(z + at) == want_adler(out, n);
+    return libdeflate_zlib_decompress_ex(g_mii_model.inflate, z, stored, out, n, &in, &got) == LIBDEFLATE_SUCCESS &&
+           in == stored && got == n;
 }
 
 /* ---- the block linear layout */
@@ -265,7 +248,13 @@ static void check_textures(const u8* f, u32 size, int mid) {
     }
 }
 
-static void check_shapes(const u8* f, u32 size) {
+/* a shape file, high its High quality: the console's largest part of each kind there, which the SDK sizes a Mii
+   model's memory with, bounds each of ours */
+static void check_shapes(const u8* f, u32 size, int high) {
+    static const u32 console[2][12] = {
+        {0x6fa, 0xbf0, 0x9f8, 0x10f0, 0x390, 0x6d0, 0x420, 0x23b8, 0x1f70, 0x4c, 0x33c, 0xe4},
+        {0xa4a, 0x18c4, 0x12dc, 0x6088, 0x684, 0x1b78, 0xd0c, 0x10872, 0xb23c, 0x4c, 0xb82, 0xe4},
+    };
     u32 k, i, e = 0, largest[12] = {0}, tris = 0;
     float ty[12];
     CHECK(!memcmp(f, "NFSR", 4) && snx_ld_le32(f + 4) == 1 && snx_ld_le32(f + 8) == size);
@@ -396,8 +385,13 @@ static void check_shapes(const u8* f, u32 size) {
             }
         }
     CHECK(e == 857 && tris > 0);
-    for (k = 0; k < 12; k++)
+    for (k = 0; k < 12; k++) {
         CHECK(snx_ld_le32(f + 0xc + 4 * k) == largest[k] && largest[k] && snx_ld_le32(f + 0x3c + 4 * k) == 4);
+        if (largest[k] > console[high][k])
+            fprintf(stderr, "%s shape kind %u: largest part %#x, the console's %#x\n", high ? "High" : "Mid", k,
+                    largest[k], console[high][k]);
+        CHECK(largest[k] <= console[high][k]);
+    }
 }
 
 /* a pixel of a picture side pixels wide at the model's (x, y): its RGB */
@@ -455,13 +449,21 @@ static void check_picture(void) {
 }
 
 int main(void) {
+    /* the console's file of each name, in bytes: the SDK reads a file whole into the game's Mii heap, which a game
+       sizes for these, so none of ours is bigger */
+    static const u32 console[6] = {0x49e34, 0x4a0b0, 0xa58f0, 0xa5c78, 0xe517c, 0x2bcf40};
     u32 i, sizes[6];
+    g_mii_model.inflate = libdeflate_alloc_decompressor();
+    if (!g_mii_model.inflate) return 1;
     for (i = 0; i < SNX_MII_MODEL_FILES; i++) {
         char name[32];
-        sizes[i] = snx_mii_model_write(i, NULL);
-        CHECK(sizes[i] <= sizeof g_mii_model.files[i]);
-        if (sizes[i] > sizeof g_mii_model.files[i]) return 1;
-        CHECK(snx_mii_model_write(i, g_mii_model.files[i]) == sizes[i]);
+        u32 room = snx_mii_model_write(i, NULL);
+        CHECK(room <= sizeof g_mii_model.files[i]);
+        if (room > sizeof g_mii_model.files[i]) return 1;
+        sizes[i] = snx_mii_model_write(i, g_mii_model.files[i]);
+        CHECK(sizes[i] && sizes[i] <= room);
+        if (sizes[i] > console[i]) fprintf(stderr, "file %u: %#x bytes, the console's %#x\n", i, sizes[i], console[i]);
+        CHECK(sizes[i] <= console[i]);
         snx_mii_model_name(i, name);
         CHECK(!strcmp(name,
                       (const char* const[]){"NXTextureLowLinear.dat", "NXTextureLowSRGB.dat", "NXTextureMidLinear.dat",
@@ -472,16 +474,19 @@ int main(void) {
             CHECK(s < i && sizes[s] == sizes[i] && !memcmp(g_mii_model.files[s], g_mii_model.files[i], sizes[i]));
         }
     }
-    /* each SRGB copy is its Linear file, and the High shapes the Mid ones: the archive keeps them once */
+    /* each SRGB copy is its Linear file: the archive keeps them once */
     CHECK(snx_mii_model_same(0) == 0 && snx_mii_model_same(1) == 0 && snx_mii_model_same(2) == 2 &&
-          snx_mii_model_same(3) == 2 && snx_mii_model_same(4) == 4 && snx_mii_model_same(5) == 4);
+          snx_mii_model_same(3) == 2 && snx_mii_model_same(4) == 4 && snx_mii_model_same(5) == 5);
     check_textures(g_mii_model.files[0], sizes[0], 0);
     check_textures(g_mii_model.files[2], sizes[2], 1);
-    check_shapes(g_mii_model.files[4], sizes[4]);
+    check_shapes(g_mii_model.files[4], sizes[4], 0);
+    check_shapes(g_mii_model.files[5], sizes[5], 1);
     check_picture();
     /* the six files with the RomFS's tables fit the room fs.h keeps for them */
-    CHECK(sizes[0] + sizes[2] + sizes[4] + 0x1000 <= 0x500000);
+    CHECK(sizes[0] + sizes[2] + sizes[4] + sizes[5] + 0x1000 <= 0x500000);
+    libdeflate_free_decompressor(g_mii_model.inflate);
     if (g_mii_model.fails) return 1;
-    printf("PASS generated MiiModel: Low %u, Mid %u, shapes %u bytes\n", sizes[0], sizes[2], sizes[4]);
+    printf("PASS generated MiiModel: Low %u, Mid %u, shapes Mid %u, High %u bytes\n", sizes[0], sizes[2], sizes[4],
+           sizes[5]);
     return 0;
 }

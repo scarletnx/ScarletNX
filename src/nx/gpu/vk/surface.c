@@ -13,10 +13,12 @@
 #include "nx/gpu/gpu.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
+#include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pending_pages.h"
+#include "nx/gpu/texture/astc_bc.h"
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/memory/own.h"
 #include "nx/runtime/platform/tracy.h"
@@ -830,6 +832,22 @@ static void flush_note_landed(u64 gva, u64 from, u64 to) {
     u8* mirror = plat_alias_mirror();
     if (to > from && mirror) span_runs(lo, hi - lo, run_landed, mirror);
 }
+static u32 rt_pending_over(u64 gva, u64 size, Surf** local, u32 nlocal, Surf*** out);
+/* The targets over s's bytes whose images are newer than s's and newer than memory, with nothing written under them
+   since they last matched it: s's landing goes under them, as rt_flush_older leaves them pending on top, so it is no
+   write of theirs: loading memory there would drop their pixels for bytes that never held them. In local while it
+   holds nlocal, else in a list the caller frees */
+static u32 rt_newer_over(const Surf* s, u64 size, Surf** local, u32 nlocal, Surf*** out) {
+    u32 n, k = 0;
+    *out = local;
+    if ((s->gva >> 63) || !size || !pend_hit_va(&g_rt_pages, s->gva, size)) return 0;
+    n = rt_pending_over(s->gva, size, local, nlocal, out);
+    for (u32 i = 0; i < n; i++) {
+        Surf* t = (*out)[i];
+        if (t != s && t->wseq > s->wseq && !gpu_mem_dirty_since(t->gw, t->gva, rt_bytes(t))) (*out)[k++] = t;
+    }
+    return k;
+}
 /* s's pixels, read back to p as of its write generation wgen, into guest memory in its layout (or over original, a
    storage image's merge), but for the pages the CPU wrote since s's draws (cpu_newer) */
 static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** keep, u64* keep_size) {
@@ -860,6 +878,8 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** 
                 for (u32 y = 0; y < gh; y++)
                     memcpy(layer_dst + (u64)y * s->pitch, p + (u64)layer * slice + y * row, row);
         }
+    Surf *above_local[16], **above;
+    u32 nabove = rt_newer_over(s, sz, above_local, 16, &above);
     int guest_changed = 0, flushing = g_rt_flushing;
     g_rt_flushing = 1; /* s's own write: the targets newer than s over its bytes stay pending (vk_rt_before_write) */
     if (original) {
@@ -905,6 +925,8 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** 
         s->gw = gpu_mem_generation();
     else
         flush_rebase(s, sz, kept != 0, gw0);
+    for (u32 i = 0; i < nabove; i++) above[i]->gw = gpu_mem_generation(); /* their images are still the newest */
+    if (above != above_local) free(above);
     vk_surf_relist(s);
     if (!s->is_rt) vk_tex_note_writeback(s);
     if (guest_changed) {
@@ -1709,6 +1731,33 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
 }
 
 /* ------------------------------------------------------------ the budget */
+/* A trim that found the images short of memory, where ASTC textures were decoded to RGBA8 on a GPU that samples BCn
+   but not ASTC: the log suggests astc_bc=1 once a run, with the numbers, and never turns it on (snx_astc_bc_suggest).
+   Short: an image allocation found no memory (force), the caches left past their budget once all that could go went,
+   or the working set evicted (what the last two presents used, the trim's second step), which the next frames load
+   again: a game held slow by eviction */
+static void astc_bc_suggest(int force, u64 extra, u64 usage, u64 budget, u64 freed, u64 working) {
+    u64 left = usage > freed ? usage - freed : 0, astc = vk_astc_rgba8_bytes();
+    int why = force           ? SNX_ASTC_SHORT_NO_MEMORY
+              : left > budget ? SNX_ASTC_SHORT_PAST_BUDGET
+              : working       ? SNX_ASTC_SHORT_WORKING_SET
+                              : SNX_ASTC_SHORT_NONE;
+    char said[128];
+    if (!snx_astc_bc_suggest(g_settings.astc_bc, g_vk.astc_bc7_could, 0, astc, why)) return;
+    if (why == SNX_ASTC_SHORT_NO_MEMORY)
+        snprintf(said, sizeof said, "an image of %llu MB found no memory", (unsigned long long)(extra >> 20));
+    else if (why == SNX_ASTC_SHORT_PAST_BUDGET)
+        snprintf(said, sizeof said, "the caches stay %llu MB past their budget after a trim",
+                 (unsigned long long)((left - budget) >> 20));
+    else
+        snprintf(said, sizeof said, "a trim took %llu MB of textures and targets the last two presents used",
+                 (unsigned long long)(working >> 20));
+    LOG_LIMIT(1,
+              "vulkan: %s, %llu of %llu MB budgeted in use: astc_bc=1 (Settings > Graphics) would hold the %llu MB of "
+              "ASTC textures decoded to RGBA8 in a quarter, as BC7\n",
+              said, (unsigned long long)(usage >> 20), (unsigned long long)(budget >> 20),
+              (unsigned long long)(astc >> 20));
+}
 static u64 g_trimmed;   /* statistics: bytes freed for the budget */
 static u32 g_trim_dry;  /* the present a trim last found too little to free (+1: 0 is none) */
 static u32 g_forced;    /* the present a failed allocation last forced a trim (+1) */
@@ -1748,7 +1797,7 @@ void vk_mem_trim(u64 extra, int force) {
         int lossy;
         u32 mark; /* percent of the budget the step frees down to */
     } steps[] = {{1000, 8, 0, 80}, {0, 2, 0, 95}, {5000, 30, 1, 90}, {1000, 8, 1, 95}};
-    u64 freed = superseded, by[3] = {0, 0, superseded};
+    u64 freed = superseded, by[3] = {0, 0, superseded}, working = 0;
     int short_of = 0;
     for (u32 i = 0; i < sizeof steps / sizeof steps[0]; i++) {
         u64 mark = budget / 100 * steps[i].mark, left = usage > freed ? usage - freed : 0;
@@ -1770,9 +1819,11 @@ void vk_mem_trim(u64 extra, int force) {
             got += n;
         }
         freed += got;
+        if (i == 1) working = got;
         short_of = got < want;
     }
     g_trimmed += freed;
+    astc_bc_suggest(force, extra, usage, budget, freed, working);
     if (short_of) g_trim_dry = g_vk_present + 1;
     if (freed || short_of)
         LOG_LIMIT(20,

@@ -98,6 +98,55 @@ static int check_hash_copy(void) {
     return 0;
 }
 
+/* The views a surface of each type can have (vk_tex_view_refusal), and the reason the log gives when a shader reads a
+   texture through one it can't: a 3D texture bound to a 2D sampler, a render target or too few layers read as a cube.
+   A refused view is never asked of the driver: vk_tex_view gives none for the 3D surface, which has no image */
+static int check_tex_view_refusal(void) {
+    Surf flat = {0};
+    flat.type = VK_IMAGE_VIEW_TYPE_2D;
+    flat.w = flat.h = 16;
+    flat.layers = flat.levels = 1;
+    Surf vol = flat, cube = flat, target = flat, wide = flat, line = flat;
+    vol.type = VK_IMAGE_VIEW_TYPE_3D;
+    vol.depth3d = 16;
+    cube.type = VK_IMAGE_VIEW_TYPE_CUBE;
+    cube.layers = 6;
+    target = cube;
+    target.is_rt = 1;
+    wide = cube;
+    wide.w = 32;
+    line.type = VK_IMAGE_VIEW_TYPE_1D;
+    const VkImageViewType all[] = {VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_IMAGE_VIEW_TYPE_CUBE,
+                                   VK_IMAGE_VIEW_TYPE_CUBE_ARRAY, VK_IMAGE_VIEW_TYPE_3D};
+    const char* const why[][5] = {
+        {NULL, NULL, "a cube needs 6 layers", "a cube needs 6 layers", "a 2D image has no 3D view"},
+        {"a 3D image has no 2D view", "a 3D image has no 2D view", "a 3D image has no cube view",
+         "a 3D image has no cube view", NULL},
+        {NULL, NULL, NULL, g_vk.feat.imageCubeArray ? NULL : "the device has no cube arrays",
+         "a 2D image has no 3D view"},
+        {NULL, NULL, "a render target isn't made cube compatible", "a render target isn't made cube compatible",
+         "a 2D image has no 3D view"},
+        {NULL, NULL, "a cube's faces are square", "a cube's faces are square", "a 2D image has no 3D view"}};
+    const Surf* surf[] = {&flat, &vol, &cube, &target, &wide};
+    for (u32 s = 0; s < 5; s++)
+        for (u32 v = 0; v < 5; v++) {
+            const char* got = vk_tex_view_refusal(surf[s], all[v]);
+            if (!why[s][v] ? got != NULL : !got || strcmp(got, why[s][v])) {
+                fprintf(stderr, "vulkan_headless: surface %u read as %s: \"%s\", wanted \"%s\"\n", s,
+                        vk_view_type_name(all[v]), got ? got : "(a view)", why[s][v] ? why[s][v] : "(a view)");
+                return 1;
+            }
+        }
+    CHECK(!strcmp(vk_tex_view_refusal(&line, VK_IMAGE_VIEW_TYPE_1D), "textures take no view of that type"));
+    CHECK(!strcmp(vk_view_type_name(VK_IMAGE_VIEW_TYPE_CUBE_ARRAY), "cube array") &&
+          !strcmp(vk_view_type_name(VK_IMAGE_VIEW_TYPE_3D), "3D") &&
+          !strcmp(vk_view_type_name((VkImageViewType)99), "unknown"));
+    const VkComponentMapping identity = {0};
+    CHECK(vk_tex_view(&vol, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0) == VK_NULL_HANDLE);
+    printf("Texture views: 3D read as 2D, a target or one layer read as a cube are refused, and why\n");
+    return 0;
+}
+
 /* A long buffer texture keeps consecutive texels across an image-row boundary,
    including a final row that is only partly used. Read actual uploaded pixels. */
 static int check_buffer_texture_rows(void) {
@@ -379,6 +428,35 @@ static int check_viewport_orientation(void) {
     CHECK(vp.x == 40 && vp.y == 40 && vp.width == 20 && vp.height == 40);
     CHECK(vp.minDepth == 0.25f && vp.maxDepth == 0.75f);
     CHECK(viewport_of(r, 0).width == 64);
+    /* The transform off: every viewport is the surface clip (0x3FD's x and width, 0x3FE's y and height), depth 0 to
+       1, whatever the scale, offset, swizzle and depth registers hold; a lower-left window flips it about its bottom */
+    r[0x64B] = 0;
+    r[0x3FD] = 64u << 16;
+    r[0x3FE] = 48u << 16;
+    r[0x286] = 0x6430;
+    for (u32 i = 0; i < 2; i++) {
+        vp = viewport_of(r, i);
+        CHECK(vp.x == 0 && vp.y == 0 && vp.width == 64 && vp.height == 48 && vp.minDepth == 0 && vp.maxDepth == 1);
+    }
+    r[0x4eb] = 1;
+    vp = viewport_of(r, 0);
+    CHECK(vp.x == 0 && vp.y == 48 && vp.width == 64 && vp.height == -48);
+    /* a clip wider than the device's viewports gives the widest the device takes (a game's driver leaves it 16384
+       wide; 65535 here, past any device's limit) */
+    r[0x4eb] = 0;
+    r[0x3FD] = 0xFFFFu << 16;
+    CHECK(viewport_of(r, 0).width == vk_scf((float)(u32)(g_vk.props.limits.maxViewportDimensions[0] / g_vk_scale)));
+    CHECK(viewport_of(r, 0).width <= (float)g_vk.props.limits.maxViewportDimensions[0]);
+    /* The transform on, a scale under half a pixel is still the transform's, never the viewport's clip rectangle: no
+       area, so nothing is drawn */
+    r[0x64B] = 1;
+    r[0x4eb] = 0;
+    r[0x286] = 0x6420;
+    const float none[6] = {0, 0, 0.5f, 32, 24, 0.5f};
+    memcpy(&r[0x280], none, sizeof none);
+    r[0x300] = 64u << 16;
+    r[0x301] = 48u << 16;
+    CHECK(viewport_of(r, 0).width == 0);
     return 0;
 }
 
@@ -662,21 +740,25 @@ static int check_srgb_write(void) {
     return 0;
 }
 
-/* a single-layer target's pixel 0 as its image holds it */
-static int read_pixel0(Surf* target, u8 out[4]) {
+/* a single-layer target's pixel at (x, y) as its image holds it */
+static int read_pixel_at(Surf* target, u32 x, u32 y, u8 out[4]) {
     VkBuffer buffer;
     u8* data = vk_readback_buffer(4, &buffer);
     CHECK(data);
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .imageOffset = {(i32)x, (i32)y, 0},
+                              .imageExtent = {1, 1, 1}};
     rec_CmdCopyImageToBuffer(cb, target->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
     vk_finish();
     vk_readback_ready();
     memcpy(out, data, 4);
     return 0;
 }
+/* a single-layer target's pixel 0 as its image holds it */
+static int read_pixel0(Surf* target, u8 out[4]) { return read_pixel_at(target, 0, 0, out); }
 
 /* Clears as load ops: a whole-target clear before any draw of its pass is the pass's LOAD_OP_CLEAR, and gives the
    pixels a vkCmdClearAttachments gave. A discarded target's next pass loads it as DONT_CARE, and what that pass writes
@@ -2455,6 +2537,7 @@ static int check_rt_overlap(void) {
     GpuChannel* ch = calloc(1, sizeof *ch);
     GpuDmaOp o;
     u64 readbacks;
+    u8 px[4];
     CHECK(ch);
     memset(&o, 0, sizeof o);
     o.multi = 1;
@@ -2474,6 +2557,25 @@ static int check_rt_overlap(void) {
     rt_clear(ch, DMA_GA + 0x10000, 64, 64, 3, 0);
     rt_clear(ch, DMA_GA, 160, 128, 4, 1);
     g_renderer->rt_flush(DMA_GA);
+    vk_rt_before_write(DMA_GA, 0x14000);
+    guest_done(DMA_A, 0x14000);
+    CHECK(all_blue(GP(DMA_A), 0x14000));
+    /* the older one written back alone: under the newer one, which keeps its pixels in a copy of it and goes on top
+       when it is written back */
+    rt_clear(ch, DMA_GA + 0x10000, 64, 64, 3, 0);
+    rt_clear(ch, DMA_GA, 160, 128, 4, 1);
+    g_renderer->rt_flush(DMA_GA + 0x10000);
+    guest_done(DMA_A + 0x10000, 4);
+    CHECK(GP(DMA_A + 0x10000)[0] == 255 && GP(DMA_A + 0x10000)[2] == 0); /* it landed */
+    vk_lock();
+    Surf* newer = vk_rt_find(DMA_GA);
+    CHECK(newer);
+    vk_rt_note_read(newer); /* a use of it, as a texture bind asks */
+    CHECK(!read_pixel_at(newer, 140, 10, px) && px[0] == 0 && px[2] == 255);
+    vk_unlock();
+    CHECK(g_renderer->dma_copy(&o));
+    guest_done(DMA_A + 0x40000, 160 * 128 * 4);
+    CHECK(all_blue(GP(DMA_A + 0x40000), 160 * 128 * 4));
     vk_rt_before_write(DMA_GA, 0x14000);
     guest_done(DMA_A, 0x14000);
     CHECK(all_blue(GP(DMA_A), 0x14000));
@@ -2723,6 +2825,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_rect_textures.inc"
 #include "vulkan_owned_readback.inc"
 #include "vulkan_storage_suffix.inc"
+#include "vulkan_draw_storage_stages.inc"
 #include "vulkan_mesh_inputs.inc"
 #include "vulkan_vertex_input.inc"
 #include "vulkan_frag_coord.inc"
@@ -2730,6 +2833,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_msaa.inc"
 #include "vulkan_targetless_stores.inc"
 #include "vulkan_uma_imports.inc"
+#include "vulkan_write_tracking.inc"
 
 #include "vulkan_descriptor_bench.inc"
 #include "vulkan_nvn_storage.inc"
@@ -2856,6 +2960,12 @@ int main(int argc, char** argv) {
         printf("PASS headless Vulkan vertex input only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_WW_ONLY")) { /* the write tracking's contract alone (vulkan_write_tracking.inc) */
+        CHECK(!check_write_tracking());
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan write tracking only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_UMA_ONLY") && strcmp(getenv("SNX_TEST_UMA_ONLY"), "1")) { /* one of them, by name */
         const char* name = getenv("SNX_TEST_UMA_ONLY");
         int ran = 0;
@@ -2864,6 +2974,7 @@ int main(int argc, char** argv) {
         if (!strcmp(name, "migrate") && ++ran) CHECK(!check_uma_migrate());
         if (!strcmp(name, "way") && ++ran) CHECK(!check_uma_way());
         if (!strcmp(name, "region_writes") && ++ran) CHECK(!check_uma_region_writes());
+        if (!strcmp(name, "region_merge") && ++ran) CHECK(!check_uma_region_merge());
         if (!strcmp(name, "writes") && ++ran) CHECK(!check_uma_writes());
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
         if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
@@ -2873,7 +2984,7 @@ int main(int argc, char** argv) {
         if (!ran) {
             fprintf(stderr,
                     "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, migrate, way, region_writes, "
-                    "writes, feedback, publish, dispatch, placed or placed_view\n",
+                    "region_merge, writes, feedback, publish, dispatch, placed or placed_view\n",
                     name);
             return 2;
         }
@@ -2898,6 +3009,7 @@ int main(int argc, char** argv) {
         CHECK(!check_uma_way());
         CHECK(!check_uma_migrate());
         CHECK(!check_uma_region_writes());
+        CHECK(!check_uma_region_merge());
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan in place only: %u validation messages\n", g_vk_validation_messages);
         return 0;
@@ -2911,6 +3023,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     CHECK(!check_hash_copy());
+    CHECK(!check_tex_view_refusal());
     CHECK(!check_staging_overflow()); /* first: it counts the staging blocks of a fresh device */
     CHECK(!check_rings_without_present());
     CHECK(!check_fresh_frame_kept());
@@ -2921,6 +3034,7 @@ int main(int argc, char** argv) {
     CHECK(!check_owned_peek_identity());
     CHECK(!check_owned_whole_identity());
     CHECK(!check_storage_suffix());
+    CHECK(!check_draw_storage_stages());
     CHECK(!bench_nvn_storage(0, 32, 1));
     CHECK(!bench_nvn_storage(1, 32, 1));
     CHECK(!bench_nvn_storage(2, 32, 1));
@@ -2984,6 +3098,8 @@ int main(int argc, char** argv) {
     CHECK(!check_uma_way());
     CHECK(!check_uma_migrate());
     CHECK(!check_uma_region_writes());
+    CHECK(!check_uma_region_merge());
+    CHECK(!check_write_tracking());
     CHECK(!check_descriptor_room());
     /* the pipeline workers: pipeline_threads when given, else a quarter of the CPUs, two to six */
     CHECK(vk_pipeline_worker_count(0, 8) == 6 && vk_pipeline_worker_count(0, 12) == 10 &&
