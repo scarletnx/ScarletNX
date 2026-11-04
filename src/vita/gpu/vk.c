@@ -28,6 +28,7 @@ static struct {
     SnxStats stats;
     SnxInterpAuto interp_auto;
     int paper; /* the SDR white in nits: the setting, or the display's own */
+    int peak;  /* the peak in nits: the setting, or the display's own */
     int display_kind;
     int said_kind;  /* the display kind last said in the console, -1 before the first */
     int auto_tried; /* Auto has looked for the display's headroom once, which SDL reports after the first frame */
@@ -182,7 +183,7 @@ static bool swapchain_make(VitaVk* v) {
         int reported = snx_vk_window_headroom_pct(v->host.window);
         g.headroom_pct =
             kind == SNX_FX_DISPLAY_PQ
-                ? snx_clamp_int(g_settings.hdr_peak * 100 / g.paper, 100, 1000)
+                ? snx_clamp_int(g.peak * 100 / g.paper, 100, 1000)
                 : (reported > 100 ? snx_clamp_int(reported, 100, 1000) : 100);
     }
     if (kind != g.said_kind) {
@@ -258,6 +259,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     g.said_kind = -1;
     snx_interp_auto_init(&g.interp_auto);
     g.paper = snx_vk_paper_nits(g_settings.hdr_paper_white);
+    g.peak = snx_vk_peak_nits(g_settings.hdr_peak);
     g.fx = snx_fx_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, VITA_VK_SLOTS, vita_vk_slot, NULL,
                          present_fx_log);
     if (g.fx) {
@@ -268,7 +270,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
                            snx_fx_colorspace_parse(g_settings.hdr_colours),
                            snx_fx_source_parse(g_settings.hdr_source),
                            g.paper,
-                           g_settings.hdr_peak,
+                           g.peak,
                            g_settings.hdr_expansion,
                            g_settings.hdr_test_pattern};
         snx_fx_configure(g.fx, &cfg);

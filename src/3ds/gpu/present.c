@@ -59,6 +59,7 @@ static struct {
     SnxText* overlay; /* the frame rate and the held buttons, on F6, over both windows */
     SnxStats stats;
     int paper; /* the SDR white in nits: the setting, or the display's own */
+    int peak;  /* the peak in nits: the setting, or the display's own */
     int display_kind[2];
     int said_kind[2];  /* the display kind last said in the console, -1 before the first */
     int auto_tried[2]; /* Auto has looked for the display's headroom once, which SDL reports after the first frame */
@@ -178,7 +179,7 @@ static bool swap_create(unsigned screen) {
         int reported = snx_vk_window_headroom_pct(window);
         g_present.headroom_pct[screen] =
             kind == SNX_FX_DISPLAY_PQ
-                ? snx_clamp_int(g_settings.hdr_peak * 100 / g_present.paper, 100, 1000)
+                ? snx_clamp_int(g_present.peak * 100 / g_present.paper, 100, 1000)
                 : (reported > 100 ? snx_clamp_int(reported, 100, 1000) : 100);
     }
     if (kind != g_present.said_kind[screen]) {
@@ -318,6 +319,7 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     g_present.overlay = snx_text_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, SNX_CTR_VK_SLOTS);
     snx_stats_init(&g_present.stats);
     g_present.paper = snx_vk_paper_nits(g_settings.hdr_paper_white);
+    g_present.peak = snx_vk_peak_nits(g_settings.hdr_peak);
     snx_interp_auto_init(&g_present.interp_auto);
     g_present.stats.on = g_settings.stats != 0; /* the setting starts it, F6 turns it over for the run */
     g_present.separate = g_settings.ctr_separate_screens && v->second && v->second_surface;
@@ -332,7 +334,7 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
                                snx_fx_colorspace_parse(g_settings.hdr_colours),
                                snx_fx_source_parse(g_settings.hdr_source),
                                g_present.paper,
-                               g_settings.hdr_peak,
+                               g_present.peak,
                                g_settings.hdr_expansion,
                                g_settings.hdr_test_pattern};
             snx_fx_configure(g_present.fx[i], &cfg);

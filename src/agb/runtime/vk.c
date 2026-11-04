@@ -53,7 +53,8 @@ struct AgbVk {
     int display_kind;
     int said_kind;  /* the display kind last said in the console, -1 before the first */
     int auto_tried;
-    int paper; /* the SDR white in nits: the setting, or the display's own */ /* Auto has looked for the display's headroom once, which SDL reports after the first frame */
+    int paper; /* the SDR white in nits: the setting, or the display's own */
+    int peak;  /* the peak in nits: the setting, or the display's own */ /* Auto has looked for the display's headroom once, which SDL reports after the first frame */
     int headroom_pct;
     int lost;
 };
@@ -160,7 +161,7 @@ static bool swapchain_make(AgbVk* v) {
         int reported = snx_vk_window_headroom_pct(v->host.window);
         v->headroom_pct =
             kind == SNX_FX_DISPLAY_PQ
-                ? snx_clamp_int(g_settings.hdr_peak * 100 / v->paper, 100, 1000)
+                ? snx_clamp_int(v->peak * 100 / v->paper, 100, 1000)
                 : (reported > 100 ? snx_clamp_int(reported, 100, 1000) : 100);
     }
     if (kind != v->said_kind) {
@@ -297,6 +298,7 @@ AgbVk* agb_vk_open(const char* title, bool fullscreen, char* error, size_t error
         if (!frame_make(v, &v->frame[i])) goto failed;
     v->said_kind = -1;
     v->paper = snx_vk_paper_nits(g_settings.hdr_paper_white);
+    v->peak = snx_vk_peak_nits(g_settings.hdr_peak);
     v->fx = snx_fx_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, AGB_VK_SLOTS, agb_slot, NULL,
                           agb_fx_log);
     if (v->fx) {
@@ -307,7 +309,7 @@ AgbVk* agb_vk_open(const char* title, bool fullscreen, char* error, size_t error
                            snx_fx_colorspace_parse(g_settings.hdr_colours),
                            snx_fx_source_parse(g_settings.hdr_source),
                            v->paper,
-                           g_settings.hdr_peak,
+                           v->peak,
                            g_settings.hdr_expansion,
                            g_settings.hdr_test_pattern};
         snx_fx_configure(v->fx, &cfg);

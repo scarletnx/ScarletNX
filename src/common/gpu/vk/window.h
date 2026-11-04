@@ -31,4 +31,7 @@ int snx_vk_display_white_nits(void);
 /* The paper white: the display's own SDR white where it can be read (KWin's), else the setting's value, else BT.2408's
    203 */
 int snx_vk_paper_nits(int setting);
+/* The display's own peak, in nits, where it can be read (KWin's maxPeakBrightnessOverride), else the setting's value
+   (clamped to 400..4000) */
+int snx_vk_peak_nits(int setting);
 #endif

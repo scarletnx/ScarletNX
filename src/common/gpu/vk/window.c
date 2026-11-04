@@ -102,8 +102,17 @@ void snx_vk_window_close(SnxVkWindow* w) {
     *w = (SnxVkWindow){0};
 }
 
-/* KWin keeps each output's SDR white in its config: "sdrBrightness": N, in nits */
+/* KWin keeps each output's SDR white and peak in its config: "sdrBrightness": N and "maxPeakBrightnessOverride": N,
+   in nits. A scan for the key is enough: one output's value is the display's for a fullscreen game */
+static int kwin_output_nits(const char* key);
+
 int snx_vk_display_white_nits(void) {
+    int nits = kwin_output_nits("\"sdrBrightness\"");
+    return nits >= 80 && nits <= 480 ? nits : 0;
+}
+
+/* KWin keeps each output's peak in its config too: "maxPeakBrightnessOverride": N, in nits */
+static int kwin_output_nits(const char* key) {
     const char* config = getenv("XDG_CONFIG_HOME");
     char path[1024];
     char* text = NULL;
@@ -132,13 +141,19 @@ int snx_vk_display_white_nits(void) {
     }
     fclose(file);
     text[size] = 0;
-    at = strstr(text, "\"sdrBrightness\"");
+    at = strstr(text, key);
     if (at && (at = strchr(at, ':')) != NULL) {
         nits = atoi(at + 1);
-        if (nits < 80 || nits > 480) nits = 0;
+        if (nits < 80 || nits > 4000) nits = 0;
     }
     free(text);
     return nits;
+}
+
+int snx_vk_peak_nits(int setting) {
+    int peak = kwin_output_nits("\"maxPeakBrightnessOverride\"");
+    if (peak > 0) return peak < 400 ? 400 : peak;
+    return setting < 400 ? 400 : setting > 4000 ? 4000 : setting;
 }
 
 int snx_vk_paper_nits(int setting) {
