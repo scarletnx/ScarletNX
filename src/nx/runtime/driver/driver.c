@@ -23,6 +23,15 @@
 #endif
 /* play_dump's: the game made and ready, not played (an update's or a DLC's game, before it) */
 #define PLAY_PREPARE 0x10000u
+/* An app's child process has no window to play in: the driver names the game it made ready, which the app plays
+   (docs/ANDROID.md). The Android and iOS builds; a test of that line sets it elsewhere */
+#ifndef SNX_DRIVER_READY
+#if defined(__ANDROID__) || defined(SNX_IOS)
+#define SNX_DRIVER_READY 1
+#else
+#define SNX_DRIVER_READY 0
+#endif
+#endif
 /* the driver's run: the program of a collection's application --program asks for, -1 for none (its own, 0) */
 static struct {
     int program;
@@ -681,6 +690,21 @@ static const char* folder_game(const char* folder) {
     while (leaf > folder && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
     return leaf;
 }
+/* The program a run of name in folder plays: the one --program asks for (snx_program_pick; program 0 for one not
+   made, said with both), else name; into out */
+static void program_asked(const char* folder, const char* name, char* out, size_t size) {
+    char why[1024];
+    int index;
+    snprintf(out, size, "%s", name);
+    if (g_driver.program >= 0 && game_id(folder_game(folder))) {
+        index = snx_program_pick(folder, folder_game(folder), g_driver.program, out, size, why, sizeof why);
+        if (why[0]) printf("--program %d: %s\n", g_driver.program, why);
+        if (index) printf("Playing program %d of the game, %s\n", index, out);
+    } else if (g_driver.program > 0)
+        printf("--program %d: program %d is not one of this game's programs, named by no title ID: it starts program "
+               "0\n",
+               g_driver.program, g_driver.program);
+}
 #ifndef SNX_IOS
 /* The other programs of a collection beside the program name in folder, of its own family (the game's, or its
    update's of that version): each made and stamped by this build with the mods its game plays now, and with
@@ -825,16 +849,8 @@ static int run_programs(const char** command, const char* game, const char* fold
         printf("Removing %s: a hand-over a run left, whose next program never started\n", next_path);
         remove(next_path);
     }
-    if (g_driver.program >= 0 && game_id(folder_game(folder))) {
-        int index =
-            snx_program_pick(folder, folder_game(folder), g_driver.program, picked, sizeof picked, why, sizeof why);
-        if (why[0]) printf("--program %d: %s\n", g_driver.program, why);
-        if (strcmp(picked, name)) run_as = snx_format("--game=%s/%s", folder, picked);
-        if (index) printf("Playing program %d of the game, %s\n", index, picked);
-    } else if (g_driver.program > 0)
-        printf("--program %d: program %d is not one of this game's programs, named by no title ID: it starts program "
-               "0\n",
-               g_driver.program, g_driver.program);
+    program_asked(folder, name, picked, sizeof picked);
+    if (strcmp(picked, name)) run_as = snx_format("--game=%s/%s", folder, picked);
     for (;;) {
         n = 0;
         command[n++] = game;
@@ -1245,9 +1261,12 @@ made:
     /* the game may start with another environment than this run's (its copy outside an AppImage, a shortcut) */
     if (!rc) rc = snx_record_folders(folder, name);
     if (rc) goto done;
-#if defined(__ANDROID__) || defined(SNX_IOS)
-    /* an app's child process has no window to play in: the app runs the game this names (docs/ANDROID.md) */
-    printf("Ready %s\n", name);
+#if SNX_DRIVER_READY
+    { /* the app runs the game this names: the program --program asks for, which the run below would play */
+        char picked[SNX_PATH_SIZE];
+        program_asked(folder, name, picked, sizeof picked);
+        printf("Ready %s\n", picked);
+    }
     rc = 0;
     goto done;
 #endif

@@ -1462,6 +1462,25 @@ if(APPLE) # driver/setup.c's weak snx_menu_language, as snx_driver has it: ld64 
 endif()
 add_test(NAME driver_workflow COMMAND snx-test-driver)
 set_tests_properties(driver_workflow PROPERTIES TIMEOUT 60)
+# the same driver as an app's child, which names the game it made ready (SNX_DRIVER_READY, the Android and iOS
+# driver's); its collection case, as the other runs need a game played
+if(NOT WIN32)
+    add_executable(snx-test-driver-ready driver_workflow.c
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/driver.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/setup.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c"
+        "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
+    snx_test_target(snx-test-driver-ready 99)
+    target_compile_definitions(snx-test-driver-ready PRIVATE SNX_DRIVER_READY=1)
+    target_link_libraries(snx-test-driver-ready PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle
+                                                        snx_nx_module)
+    set_target_properties(snx-test-driver-ready PROPERTIES LINKER_LANGUAGE CXX)
+    if(APPLE)
+        target_link_options(snx-test-driver-ready PRIVATE "LINKER:-U,_snx_menu_language")
+    endif()
+    add_test(NAME driver_ready COMMAND snx-test-driver-ready)
+    set_tests_properties(driver_ready PROPERTIES TIMEOUT 60)
+endif()
 add_executable(snx-test-link-file link_file.c)
 snx_test_target(snx-test-link-file 99)
 target_link_libraries(snx-test-link-file PRIVATE snx_test_common)

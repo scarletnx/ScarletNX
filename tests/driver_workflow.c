@@ -685,6 +685,32 @@ static void reset(const char* repo, const char* dump) {
     CHECK(!snx_write_file(dump, "synthetic", 9));
     set_env("SNX_WORKFLOW_FAIL", "");
 }
+#if SNX_DRIVER_READY
+/* The driver as an app's child (driver.c's SNX_DRIVER_READY, as on Android and iOS), which plays nothing and names
+   after "Ready " the program the app plays: a collection of 3 programs made, then the one --program asks for, and
+   program 0 for one not made, said */
+static void ready_runs(const char* exe, const char* repo, const char* dump, const char* log) {
+    char *game_dump = snx_path_join(repo, "Game.nsp"), *folder = snx_path_join(repo, "recompiled/0100ABCD12340000");
+    set_env("SNX_WORKFLOW_ADDON", "1");
+    set_env("SNX_WORKFLOW_PROGRAMS", "3");
+    set_env("SNX_WORKFLOW_GAMES", folder);
+    set_env("SNX_WORKFLOW_EXTRACT", "");
+    reset(repo, dump);
+    CHECK(!snx_write_file(game_dump, "game", 4));
+    run(exe, repo, game_dump, log, 0, "R", "Ready 0100ABCD12340000\n");
+    CHECK(records_dump(folder, "0100ABCD12340000", game_dump)); /* what the app's Recompile makes it from again */
+    set_env("SNX_WORKFLOW_PROGRAM", "1");
+    run(exe, repo, game_dump, log, 0, "",
+        "Playing program 1 of the game, 0100ABCD12340000_0100ABCD12340001\nReady 0100ABCD12340000_0100ABCD12340001\n");
+    set_env("SNX_WORKFLOW_PROGRAM", "5");
+    run(exe, repo, game_dump, log, 0, "",
+        "--program 5: program 5 is not one of this application's programs 0-2: it starts program 0\nReady "
+        "0100ABCD12340000\n");
+    set_env("SNX_WORKFLOW_PROGRAM", "");
+    free(folder);
+    free(game_dump);
+}
+#endif
 int main(int argc, char** argv) {
     char *exe, *root, *repo, *dump, *log, *extracted, *extracting, *kept, *game, *cwd, *expected_cwd, *keys,
         *title_keys;
@@ -787,6 +813,15 @@ int main(int argc, char** argv) {
     set_env("SNX_WORKFLOW_DUMP", "");
     set_env("SNX_WORKFLOW_ADDON", "");
     set_env("SNX_WORKFLOW_UPDATE", "");
+#if SNX_DRIVER_READY /* an app's child plays nothing: what it names, and none of the runs below */
+    ready_runs(exe, repo, dump, log);
+    (void)output;
+#ifndef _WIN32
+    (void)modes;
+    (void)statuses;
+    (void)i;
+#endif
+#else
     /* Extract dump on: the dump extracted into its game's data folder, which the game is made from */
     set_env("SNX_WORKFLOW_EXTRACT", "1");
     reset(repo, dump);
@@ -1509,6 +1544,7 @@ int main(int argc, char** argv) {
         free(output);
         free(home);
     }
+#endif
 #endif
     set_env("SNX_WORKFLOW_KEYS", "");
     set_env("SNX_WORKFLOW_TITLE_KEYS", "");

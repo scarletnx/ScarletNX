@@ -212,6 +212,24 @@ int main(void) {
             assert(gui_game_addons(game, &addons) && addons.count == 4);
             free(code);
         }
+        { /* the game a run of the driver made ready, which a phone plays: the program its Ready line names beside the
+             update's program 0 the box ran (--program 3 there), and a dump's in games/ */
+            char *played = gui_ready_game(update, ready, "0100ABCD12340000_0100ABCD12340003"),
+                 *want = snx_path_join(folder, "0100ABCD12340000_0100ABCD12340003");
+            assert(!strcmp(played, want));
+            free(played);
+            free(want);
+            played = gui_ready_game(update, ready, "0100ABCD12340000_0100ABCD12340800"); /* the one it ran */
+            want = snx_path_join(folder, "0100ABCD12340000_0100ABCD12340800");
+            assert(!strcmp(played, want));
+            free(played);
+            free(want);
+            played = gui_ready_game(NULL, ready, "0100ABCD12340000");
+            want = snx_path_join(folder, "0100ABCD12340000");
+            assert(!strcmp(played, want));
+            free(played);
+            free(want);
+        }
         gui_games_free(&addons);
         free(game);
         free(update);
