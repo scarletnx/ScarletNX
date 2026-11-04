@@ -623,7 +623,14 @@ static u32 svc_QueryMemory(u64 out_memory_info, u32* out_page_info, u64 address)
     *out_page_info = 0; /* no flags */
     return svc_query(out_memory_info, address);
 }
-static void svc_ExitProcess(void) { process_exit(0); }
+/* the thread that ends the game, and its callers: a game that ends itself before its first frame says where */
+static void svc_ExitProcess(void) {
+    KThread* t = kthread_cur();
+    WARN("\n*** The game called svcExitProcess on thread %llu (%s) ***\n", (unsigned long long)(t ? t->id : 0),
+         t ? t->name : "");
+    if (t) kernel_dump_regs(&t->cpu);
+    process_exit(0);
+}
 static u32 svc_CreateThread(u32* out_handle, u64 func, u64 arg, u64 stack_bottom, i32 priority, i32 core_id) {
     return create_thread(func, arg, stack_bottom, priority, core_id, out_handle);
 }
