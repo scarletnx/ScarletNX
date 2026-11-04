@@ -478,13 +478,19 @@ pair is composited first and the HDR passes encode the whole window, so the
 letterbox is composed with the screens. A 3DS game presents SDR frames: with
 `hdr` on (or Auto and an HDR display) the shared compose pass maps that SDR frame
 into the display's headroom, which is the one SDL reports (Wayland's color
-management, Windows' Advanced Color) or `hdr_peak` where it reports none. Frame interpolation (`frame_interp`, or
-`frame_interp_key`) keeps the pair the frame before made and presents a blend of
-the two pairs and then the current pair, in two swapchain images (one per screen
-with Separate screens). Bounded PPM snapshots land in
-`<output>/frames` in every mode. Without a display the window path is
-unavailable and frames are only recorded; without a Vulkan device the presenter
-reports unavailability and no frame is fabricated.
+management, Windows' Advanced Color) or `hdr_peak` where it reports none. Frame
+interpolation (`frame_interp`, or `frame_interp_key`) keeps the pair the frame
+before made and presents a blend of the two pairs and then the current pair, in
+two swapchain images (one per screen with Separate screens). Bounded PPM
+snapshots land in `<output>/frames` in every mode. Without a display the window
+path is unavailable and frames are only recorded; without a Vulkan device the
+presenter reports unavailability and no frame is fabricated.
+
+A 3DS run writes no log file: the console gets the startup lines, the errors,
+`3ds: the window takes Display P3` (or `no HDR image`, once per window and again
+when `hdr` changes it), the effects' `vulkan: presentation effects ready`, and
+each hotkey's message. `--ctr_ipc_trace=1` adds every service request and
+`--ctr_jit_trace=1` every translated block.
 
 The separate windows and the two render resolutions are checked by `3ds_windows`: each
 screen takes its own setting's scale and no other's, both screens present, and the PPM

@@ -202,6 +202,14 @@ const char* snx_fx_colorspace_label(int cs) {
     static const char* const labels[] = {"Auto", "Display P3", "scRGB", "HDR10 (PQ)"};
     return cs >= 0 && cs < SNX_FX_CS_COUNT ? labels[cs] : labels[SNX_FX_CS_AUTO];
 }
+const char* snx_fx_display_label(int kind) {
+    switch (kind) {
+        case SNX_FX_DISPLAY_P3: return "Display P3";
+        case SNX_FX_DISPLAY_SCRGB: return "scRGB";
+        case SNX_FX_DISPLAY_PQ: return "HDR10 (PQ)";
+        default: return "no HDR image";
+    }
+}
 
 int snx_fx_source_parse(const char* value) {
     static const char* const words[] = {"auto", "detect", "format", "sdr", "srgb", "linear", "hdr", "lin", "pq", "hdr10",

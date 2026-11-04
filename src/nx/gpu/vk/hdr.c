@@ -9,6 +9,7 @@
    game's menu draw over it (vk/ui.c) in the same space, so an overlay's letters are not coded twice. */
 #include <stdio.h>
 #include <string.h>
+#include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/utilities/bits.h"
 #include "nx/gpu/vk/hdr.h"
@@ -112,11 +113,7 @@ int vk_hdr_display_kind(void) {
         g_hdr.display_kind = SNX_HDR_DISPLAY_PQ;
     else
         g_hdr.display_kind = SNX_HDR_DISPLAY_NONE;
-    LOG("vulkan: hdr: the window takes %s\n",
-        g_hdr.display_kind == SNX_HDR_DISPLAY_P3      ? "Display P3"
-        : g_hdr.display_kind == SNX_HDR_DISPLAY_SCRGB ? "scRGB"
-        : g_hdr.display_kind == SNX_HDR_DISPLAY_PQ    ? "HDR10 (PQ)"
-                                                      : "no HDR image");
+    LOG("vulkan: hdr: the window takes %s\n", snx_fx_display_label(g_hdr.display_kind));
     return g_hdr.display_kind;
 }
 

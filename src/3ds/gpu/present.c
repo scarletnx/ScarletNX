@@ -55,6 +55,7 @@ static struct {
     SnxFx* fx[2];            /* each screen's effects, a context of its own so their frame slots stay apart */
     SnxToast* toast;         /* the hotkeys' messages, over both windows */
     int display_kind[2];
+    int said_kind[2]; /* the display kind last said in the console, -1 before the first */
     int headroom_pct[2];
     /* the SDR window image the pair is composed in before the HDR passes (source/upscale first, then the whole pair) */
     VkImage mix[2];
@@ -74,6 +75,8 @@ static struct {
 } g_present;
 
 static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, VkImageLayout next);
+/* the effects' short messages: the console, where this frontend has no log file */
+static void present_fx_log(const char* text) { fprintf(stderr, "%s\n", text); }
 
 static void swap_destroy(unsigned screen) { snx_vk_swapchain_free(snx_ctr_vk()->device, &g_present.swap[screen]); }
 static SDL_Window* screen_window(unsigned screen) {
@@ -149,6 +152,13 @@ static bool swap_create(unsigned screen) {
                           : fallback;
     }
     g_present.display_kind[screen] = kind;
+    if (kind != g_present.said_kind[screen]) {
+        g_present.said_kind[screen] = kind;
+        if (g_present.separate)
+            printf("3ds: the %s window takes %s\n", screen ? "bottom" : "top", snx_fx_display_label(kind));
+        else
+            printf("3ds: the window takes %s\n", snx_fx_display_label(kind));
+    }
     {
         /* the display's own headroom where SDL reports it (Wayland's color management, Windows' Advanced Color),
            else the configured peak: the SDR frame is mapped into it when HDR is on */
@@ -284,11 +294,12 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     }
     const SnxCtrVk* v = snx_ctr_vk();
     g_present.frame_dir = frame_dir;
+    g_present.said_kind[0] = g_present.said_kind[1] = -1;
     g_present.toast = snx_toast_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, SNX_CTR_VK_SLOTS);
     g_present.separate = g_settings.ctr_separate_screens && v->second && v->second_surface;
     for (unsigned i = 0; i < 2; ++i) {
         g_present.fx[i] = snx_fx_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, SNX_CTR_VK_SLOTS,
-                                        snx_ctr_vk_slot, NULL, NULL);
+                                        snx_ctr_vk_slot, NULL, present_fx_log);
         if (g_present.fx[i]) {
             SnxFxConfig cfg = {snx_fx_upscale_parse(g_settings.upscaler),
                                g_settings.sharpness,

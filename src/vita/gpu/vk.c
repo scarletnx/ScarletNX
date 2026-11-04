@@ -21,6 +21,7 @@ static struct {
     SnxFx* fx;
     SnxToast* toast;
     int display_kind;
+    int said_kind; /* the display kind last said in the console, -1 before the first */
     int headroom_pct;
     int have_frame;
     VkImageView swap_views[SNX_VK_SWAP_IMAGES];
@@ -145,8 +146,8 @@ static int choose_display(VitaVk* v, VkFormat* format, VkColorSpaceKHR* space) {
         snx_vk_surface_format_cs(v->phys, v->host.surface, hdr_formats, 2, VK_COLOR_SPACE_HDR10_ST2084_EXT, &f))
         kind = SNX_FX_DISPLAY_PQ;
     if (kind == SNX_FX_DISPLAY_NONE) return SNX_FX_DISPLAY_NONE;
-    /* an extended-kind image's 1.0 is the display's SDR white, and Linux does not report its headroom: Auto keeps an
-       SDR image there, as the Switch frontend does. On is explicit, and the peak bounds the lift. */
+    /* an extended-kind image's 1.0 is the display's SDR white: Auto keeps an SDR image unless the window takes HDR10,
+       as the Switch frontend does. On is explicit, and the display's headroom (SDL's, else the peak) bounds the lift. */
     if (mode == SNX_FX_HDR_AUTO && kind != SNX_FX_DISPLAY_PQ) return SNX_FX_DISPLAY_NONE;
     *format = f.format;
     *space = f.colorSpace;
@@ -166,6 +167,10 @@ static bool swapchain_make(VitaVk* v) {
         .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 544})};
     g.display_kind = kind;
+    if (kind != g.said_kind) {
+        g.said_kind = kind;
+        printf("vita: the window takes %s\n", snx_fx_display_label(kind));
+    }
     {
         int reported = snx_vk_window_headroom_pct(v->host.window);
         g.headroom_pct =
@@ -198,6 +203,8 @@ static bool swapchain_make(VitaVk* v) {
     g.swap_views_for = v->swap.swapchain;
     return true;
 }
+/* the effects' short messages: the console, where this frontend has no log file */
+static void present_fx_log(const char* text) { fprintf(stderr, "%s\n", text); }
 bool vita_vk_init(const char* title, char* error, size_t error_size) {
     VitaVk* v = &g.vk;
     if (g.up) return true;
@@ -235,8 +242,9 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
         return false;
     }
     g.up = true;
+    g.said_kind = -1;
     g.fx = snx_fx_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, VITA_VK_SLOTS, vita_vk_slot, NULL,
-                         NULL);
+                         present_fx_log);
     if (g.fx) {
         SnxFxConfig cfg = {snx_fx_upscale_parse(g_settings.upscaler),
                            g_settings.sharpness,

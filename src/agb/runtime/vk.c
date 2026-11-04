@@ -45,6 +45,7 @@ struct AgbVk {
     SnxFx* fx;
     SnxToast* toast;
     int display_kind;
+    int said_kind; /* the display kind last said in the console, -1 before the first */
     int headroom_pct;
     int lost;
 };
@@ -144,6 +145,10 @@ static bool swapchain_make(AgbVk* v) {
         .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 640})};
     v->display_kind = kind;
+    if (kind != v->said_kind) {
+        v->said_kind = kind;
+        printf("agb: the window takes %s\n", snx_fx_display_label(kind));
+    }
     {
         int reported = snx_vk_window_headroom_pct(v->host.window);
         v->headroom_pct =
@@ -279,8 +284,9 @@ AgbVk* agb_vk_open(const char* title, bool fullscreen, char* error, size_t error
     }
     for (unsigned i = 0; i < AGB_VK_SLOTS; ++i)
         if (!frame_make(v, &v->frame[i])) goto failed;
+    v->said_kind = -1;
     v->fx = snx_fx_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, AGB_VK_SLOTS, agb_slot, NULL,
-                               agb_fx_log);
+                          agb_fx_log);
     if (v->fx) {
         SnxFxConfig cfg = {snx_fx_upscale_parse(g_settings.upscaler),
                            g_settings.sharpness,

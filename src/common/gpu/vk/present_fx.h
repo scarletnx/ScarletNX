@@ -39,6 +39,8 @@ enum { SNX_FX_CS_AUTO, SNX_FX_CS_P3, SNX_FX_CS_SCRGB, SNX_FX_CS_HDR10, SNX_FX_CS
 enum { SNX_FX_SRC_AUTO, SNX_FX_SRC_SDR, SNX_FX_SRC_LINEAR, SNX_FX_SRC_PQ, SNX_FX_SRC_COUNT };
 /* what the window's surface took: none, HDR10 (PQ), scRGB or Display P3's wide gamut */
 enum { SNX_FX_DISPLAY_NONE, SNX_FX_DISPLAY_PQ, SNX_FX_DISPLAY_SCRGB, SNX_FX_DISPLAY_P3 };
+/* the kind in words, for the frontends' startup line: "no HDR image", "HDR10 (PQ)", "scRGB" or "Display P3" */
+const char* snx_fx_display_label(int kind);
 
 /* the .ini's names, and the menu's labels, for the settings every frontend shares */
 int snx_fx_upscale_parse(const char* value);
