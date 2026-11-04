@@ -237,6 +237,19 @@ int main(void) {
         result = 1;
     }
     {
+        /* the ARM7TDMI's NV condition: an instruction with it never runs, which ARMv5 made BLX and later cores CPS */
+        const AgbBlock* block;
+        agb_write32(&board, 0x03000100, 0xE3A00001); /* mov r0, #1 */
+        agb_write32(&board, 0x03000104, 0xF1000000); /* cond NV */
+        agb_write32(&board, 0x03000108, 0xFA000003); /* cond NV: ARMv5's BLX */
+        agb_write32(&board, 0x0300010C, 0xE2800001); /* add r0, r0, #1 */
+        agb_write32(&board, 0x03000110, 0xE12FFF1E); /* bx lr */
+        block = agb_recomp_lookup(&recomp, &board, 0x03000100, 0, error, sizeof error);
+        CHECK(block);
+        cpu.arm.r[14] = 0x08000200;
+        CHECK(run_block(&cpu, block) == 2 && cpu.arm.r[15] == 0x08000200);
+    }
+    {
         /* code the game puts in RAM runs as RAM holds it: a block built from it goes once the game writes over it,
            this run or the next one, which the cache hands it */
         const AgbBlock* block;
