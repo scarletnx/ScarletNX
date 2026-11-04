@@ -229,6 +229,11 @@ void plat_audio_volume(PAudio* a, float volume);
 
 /* ---- crash reports and profiling */
 void plat_install_crash_handler(void);
+/* The game's code module, by any address in it: a fault in its code is reported first, whatever else the process
+   installed since. Windows only; elsewhere the signal handler sees every fault, and this does nothing */
+void plat_crash_code_module(const void* inside);
+/* The runtime's crash filter back where another part of the process replaced it, said once. Windows only */
+void plat_crash_handler_check(void);
 void plat_prof_start(void); /* starts the sampling profiler (the profile option): Windows only */
 #if defined(_WIN32)
 void plat_prof_add_thread(HANDLE h); /* a thread to sample; the profiler keeps its own handle */

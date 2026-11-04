@@ -2155,6 +2155,9 @@ void plat_install_crash_handler(void) {
     sa.sa_flags = SA_RESETHAND | SA_ONSTACK;
     sigaction(SIGABRT, &sa, NULL);
 }
+/* the fault signals' handler sees a fault in the game's code already: nothing to note, nothing to put back */
+void plat_crash_code_module(const void* inside) { (void)inside; }
+void plat_crash_handler_check(void) {}
 
 void plat_prof_start(void) {}
 
