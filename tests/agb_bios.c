@@ -194,6 +194,28 @@ int main(void) {
     CHECK(agb_read16(&board, 0x02030100) == 1 && agb_read16(&board, 0x02030102) == 2);
     CHECK(agb_read16(&board, 0x02030104) == 0xBEEF && regs[1] == 0x02030104);
 
+    /* HuffUnComp: a tree of two symbols, left 0 and right 1, both ends at the root; 8 bit symbols "ABBABAAB" from
+       the bits 0110 1001, then 4 bit ones 3, C, C, 3, C, 3, 3, C from the same bits */
+    agb_write32(&board, 0x02000700, 8u << 8 | 0x28); /* 8 bytes out, Huffman, 8 bit symbols */
+    agb_write8(&board, 0x02000704, 1);               /* the tree: (1 + 1) * 2 bytes from 0x02000704 */
+    agb_write8(&board, 0x02000705, 0xC0);            /* the root: both children end a symbol, offset 0 */
+    agb_write8(&board, 0x02000706, 'A');             /* left: 0 */
+    agb_write8(&board, 0x02000707, 'B');             /* right: 1 */
+    agb_write32(&board, 0x02000708, 0x69000000);     /* 0110 1001 from the top */
+    memset(regs, 0, sizeof(regs));
+    regs[0] = 0x02000700;
+    regs[1] = 0x02000780;
+    CHECK(call(regs, AGB_SWI_HUFF_UNCOMP) == 0);
+    CHECK(agb_read32(&board, 0x02000780) == 0x41424241 && agb_read32(&board, 0x02000784) == 0x42414142);
+    CHECK(regs[0] == 0x0200070C && regs[1] == 0x02000788);
+    agb_write32(&board, 0x02000700, 4u << 8 | 0x24); /* 4 bytes out, 4 bit symbols */
+    agb_write8(&board, 0x02000706, 0x3);
+    agb_write8(&board, 0x02000707, 0xC);
+    regs[0] = 0x02000700;
+    regs[1] = 0x02000790;
+    CHECK(call(regs, AGB_SWI_HUFF_UNCOMP) == 0);
+    CHECK(agb_read32(&board, 0x02000790) == 0xC33C3CC3);
+
     /* BgAffineSet: a 90 degree turn, no scale, the origin at the screen center */
     agb_write32(&board, 0x02000400, 128 << 8); /* origin x (24.8) */
     agb_write32(&board, 0x02000404, 64 << 8);  /* origin y */
