@@ -576,12 +576,12 @@ msgstr "返回."
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Pick the prod.keys file."
-msgstr "选取 prod.keys 文件."
+msgid "Pick a keys file."
+msgstr "选取密钥文件."
 
 #: src/gui/main.c
-msgid "Pick prod.keys"
-msgstr "选取 prod.keys"
+msgid "Pick a keys file"
+msgstr "选取密钥文件"
 
 #: src/gui/main.c
 msgid "tap the box to open the file picker"
@@ -832,8 +832,8 @@ msgid "Ctrl+V: paste. ESC: back."
 msgstr "Ctrl+V: 粘贴. ESC: 返回."
 
 #: src/gui/main.c
-msgid "Pick or drop prod.keys"
-msgstr "选取或拖入 prod.keys"
+msgid "Pick or drop a keys file"
+msgstr "选取或拖入密钥文件"
 
 #: src/gui/main.c
 msgid "Pick or drop a file"
@@ -1577,6 +1577,16 @@ msgstr "F2: 侧栏."
 
 #: src/gui/main.c
 #, c-format
+msgid "user=%d is deprecated, and the Settings have no user_uid to write %s in"
+msgstr "user=%d 是旧的设置，而设置中没有可写入 %s 的 user_uid"
+
+#: src/gui/main.c
+#, c-format
+msgid "user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"
+msgstr "user=%d 是旧的设置：由 user_uid=%s（[user%d] 的）取代"
+
+#: src/gui/main.c
+#, c-format
 msgid "No user shown: %s"
 msgstr "未显示用户：%s"
 
@@ -1668,6 +1678,10 @@ msgstr "设置"
 
 #: src/gui/main.c
 msgid "its dump is not known: the game was made before the recompile named it"
+msgstr ""
+
+#: src/gui/main.c
+msgid "not known"
 msgstr ""
 
 #: src/gui/main.c
@@ -2276,6 +2290,11 @@ msgid "No home folder"
 msgstr "没有主文件夹"
 
 #: src/gui/main.c
+#, c-format
+msgid "3DS keys to: %s"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Installed"
 msgstr "已安装"
 
@@ -2825,8 +2844,8 @@ msgid "The settings of All, or of player 1 to 8"
 msgstr "「全部」或玩家 1 到 8 的设置"
 
 #: src/gui/main.c
-msgid "nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr "昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+msgid "nickname of 1 to 32 bytes, no control character, no space at either end"
+msgstr "昵称为 1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
 #, c-format
@@ -2851,8 +2870,17 @@ msgid "User %d"
 msgstr "用户 %d"
 
 #: src/gui/main.c
-msgid "Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr "其昵称，游戏和 Eden 房间中显示为：4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+msgid "Its nickname, as the games show it: 1 to 32 bytes, no control character, no space at either end"
+msgstr "昵称，按游戏中的显示：1 到 32 字节，不含控制字符，不以空格开始或结束"
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d Mii"
+msgstr "用户 %d 的 Mii"
+
+#: src/gui/main.c
+msgid "Its Mii, which the games get as the user's and its picture shows unless it has a picture file"
+msgstr "它的 Mii：游戏把它当作该用户的 Mii，没有头像文件时头像也显示它"
 
 #: src/gui/main.c
 msgid "System driver"
@@ -3077,10 +3105,6 @@ msgid "GPU: %s. Recommended: %s."
 msgstr ""
 
 #: src/gui/main.c
-msgid "not known"
-msgstr ""
-
-#: src/gui/main.c
 msgid "This build of the launcher has no HTTPS client: Add Driver takes a zip downloaded by hand"
 msgstr ""
 
@@ -3228,12 +3252,22 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "User %d's new nickname is not written: %s"
-msgstr "用户 %d 的新昵称未写入：%s"
+msgid "User %d's Mii is not written: %s"
+msgstr "用户 %d 的 Mii 未写入：%s"
 
 #: src/gui/main.c
 msgid "no users/ folder"
 msgstr "没有 users/ 文件夹"
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's Mii is %s now"
+msgstr "用户 %d 的 Mii 现在是 %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's new nickname is not written: %s"
+msgstr "用户 %d 的新昵称未写入：%s"
 
 #: src/gui/main.c
 #, c-format
@@ -3337,12 +3371,16 @@ msgid "Data, Logs, Caches, Extractions and the recompiled library's Main"
 msgstr "数据、日志、缓存、提取和已重编译游戏库的主文件夹"
 
 #: src/gui/main.c
-msgid "For the next runs. [default]: as the game's .ini says"
-msgstr "用于之后的运行。[默认]：按游戏的 .ini"
-
-#: src/gui/main.c
 msgid "The runtime listed no settings"
 msgstr "运行时未列出任何设置"
+
+#: src/gui/main.c
+msgid "For the next runs, over the game's .ini"
+msgstr "用于之后的运行，优先于游戏的 .ini"
+
+#: src/gui/main.c
+msgid "For the next runs. [default]: as the game's .ini says"
+msgstr "用于之后的运行。[默认]：按游戏的 .ini"
 
 #: src/gui/main.c src/gui/settings.c
 msgid "[default]"
@@ -3369,8 +3407,8 @@ msgid "Ctrl+S saves too"
 msgstr "Ctrl+S 也可保存"
 
 #: src/gui/main.c
-msgid "A nickname, 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr ""
+msgid "A nickname, 1 to 32 bytes, no control character, no space at either end"
+msgstr "昵称，1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
 msgid "Preview"
@@ -3533,6 +3571,11 @@ msgstr "已将 prod.keys 安装到 %s"
 
 #: src/gui/main.c
 #, c-format
+msgid "; aes_keys.txt to %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "This copy is portable: to install it, first move away %s"
 msgstr "此副本为便携版：要安装，请先移走 %s"
 
@@ -3628,8 +3671,8 @@ msgid "Tip: Menu > Install Keys changes them"
 msgstr "提示：「菜单 > 安装密钥」可更改它们"
 
 #: src/gui/main.c
-msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr "提示：昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+msgid "Tip: nickname of 1 to 32 bytes, no control character, no space at either end"
+msgstr "提示：昵称为 1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
 msgid "before"
@@ -3742,6 +3785,10 @@ msgstr "提取游戏时需要"
 #: src/gui/main.c
 msgid "only some .nsp need it"
 msgstr "仅部分 .nsp 需要"
+
+#: src/gui/main.c
+msgid "only encrypted 3DS games need it"
+msgstr ""
 
 #: src/gui/main.c
 msgid "nickname"
@@ -4164,6 +4211,18 @@ msgid "M opens the mods and cheats of a recompiled Switch game in focus."
 msgstr "M 打开选中的已重编译 Switch 游戏的模组和金手指。"
 
 #: src/gui/main.c
+msgid "Cannot install aes_keys.txt: neither USERPROFILE nor HOME is set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Cannot install aes_keys.txt: HOME is not set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "aes_keys.txt installed: encrypted 3DS games can be decrypted now."
+msgstr ""
+
+#: src/gui/main.c
 msgid "prod.keys installed: games can be extracted now."
 msgstr "prod.keys 已安装：现在可以提取游戏了。"
 
@@ -4173,18 +4232,18 @@ msgid "Cannot install %s: %s"
 msgstr "无法安装 %s：%s"
 
 #: src/gui/main.c
-msgid "Please drop a readable file named prod.keys."
-msgstr "请拖入一个名为 prod.keys 的可读文件。"
+msgid "Please drop a readable file named prod.keys or aes_keys.txt."
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "This file could not be read. Pick prod.keys again, from the device's storage (%s)."
-msgstr "无法读取此文件。请从设备存储中重新选取 prod.keys（%s）。"
+msgid "This file could not be read. Pick prod.keys or aes_keys.txt again, from the device's storage (%s)."
+msgstr "无法读取此文件。请从设备存储中重新选取 prod.keys 或 aes_keys.txt（%s）。"
 
 #: src/gui/main.c
 #, c-format
-msgid "This file is not a prod.keys. Pick the prod.keys file (%s)."
-msgstr "此文件不是 prod.keys。请选取 prod.keys 文件（%s）。"
+msgid "This file is not prod.keys or aes_keys.txt. Pick the keys file (%s)."
+msgstr "此文件不是 prod.keys 或 aes_keys.txt。请选取密钥文件（%s）。"
 
 #: src/gui/main.c
 #, c-format
@@ -4193,13 +4252,13 @@ msgstr "无法通过路径读取此文件。请在 Android 设置中确认 Scarl
 
 #: src/gui/main.c
 #, c-format
-msgid "The picked file could not be read as prod.keys (%s)."
-msgstr "所选文件无法作为 prod.keys 读取（%s）。"
+msgid "The picked file could not be read as prod.keys or aes_keys.txt (%s)."
+msgstr "无法将所选文件读取为 prod.keys 或 aes_keys.txt（%s）。"
 
 #: src/gui/main.c
 #, c-format
-msgid "The picked file is not a prod.keys (%s)."
-msgstr "所选文件不是 prod.keys（%s）。"
+msgid "The picked file is not prod.keys or aes_keys.txt (%s)."
+msgstr "所选文件不是 prod.keys 或 aes_keys.txt（%s）。"
 
 #: src/gui/main.c
 #, c-format
@@ -4701,6 +4760,16 @@ msgstr "独立的页面，如同游戏菜单中"
 #: src/gui/settings.c
 msgid "Every row of this page at once"
 msgstr "一次设置此页的所有行"
+
+#: src/gui/settings.c
+#, c-format
+msgid "%s=.ini is no longer a value of %s: %s=%s now"
+msgstr "%s=.ini 已不再是 %s 的值：现在为 %s=%s"
+
+#: src/gui/settings.c
+#, c-format
+msgid "%s=%s is the default of %s: no run is given it over the game's .ini"
+msgstr "%s=%s 是 %s 的默认值：运行时不再以它覆盖游戏的 .ini"
 
 #: src/gui/settings.c
 msgid "Mixed"
@@ -5288,6 +5357,30 @@ msgstr "为一次运行设置的 SNX_WW、SNX_HOST_PAGE、VITA_LOCKSTEP 等"
 msgid "settings and the drivers' options; a variable still set works, and the run says so"
 msgstr "设置和驱动程序的选项；仍设置的变量依然有效，运行时会提示"
 
+#: src/common/utilities/setup.c
+msgid "Fullscreen and Show controls"
+msgstr "Fullscreen 和 Show controls"
+
+#: src/common/utilities/setup.c
+msgid "Off, On, or each game's .ini, shown as Off [default]"
+msgstr "关、开或各游戏的 .ini，显示为 关 [默认]"
+
+#: src/common/utilities/setup.c
+msgid "Off or On, given to every run: Off on a computer, On on a phone"
+msgstr "关或开，用于每次运行：电脑上为关，手机上为开"
+
+#: src/common/utilities/setup.c
+msgid "A setting's default"
+msgstr "设置的默认值"
+
+#: src/common/utilities/setup.c
+msgid "a value of its own, [default], beside the same value picked"
+msgstr "单独的一个值 [默认]，与选中的同一值并列"
+
+#: src/common/utilities/setup.c
+msgid "[default] on that value, which no run is given: the game's .ini keeps it"
+msgstr "[默认] 标在该值上，任何运行都不会收到它：由游戏的 .ini 保持"
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr "gdbstub"
@@ -5349,8 +5442,8 @@ msgid "AOT threads"
 msgstr "AOT 线程数"
 
 #: src/nx/runtime/settings.txt
-msgid "The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores"
-msgstr "重新编译时编译游戏代码的线程数：0 = 电脑每个核心一个"
+msgid "The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last quarter left free, so the machine stays responsive; N = that many"
+msgstr "重新编译时编译游戏代码的线程数：0（自动）= 留出四分之一的核心空闲，使电脑保持响应；N = 该数量"
 
 #: src/nx/runtime/settings.txt
 msgid "Unit size"
@@ -5365,8 +5458,8 @@ msgid "Unit cache limit"
 msgstr "单元缓存上限"
 
 #: src/nx/runtime/settings.txt
-msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, removing its oldest units for a new one"
-msgstr "已编译代码单元缓存的最大容量，单位为 GB：缓存文件夹中的 units/，每次重新编译都会在其中找到之前编译的单元。超过上限时，最久未使用的单元会被删除。0 = 无限制。无论是否设限，缓存始终保留磁盘的十分之一空闲，为新单元删除最旧的单元"
+msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
+msgstr "已编译代码单元缓存的最大容量，单位为 GB：缓存文件夹中的 units/，每次重新编译都会在其中找到之前编译的单元。超过上限时，最久未使用的单元会被删除。0 = 无限制。无论是否设限，缓存始终保留磁盘的十分之一空闲（最多 10 GB），为新单元删除最旧的单元"
 
 #: src/nx/runtime/settings.txt
 msgid "Instruction combining"
@@ -5495,6 +5588,24 @@ msgstr "启动"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "LLVM 内部选项"
+
+#~ msgid "user=%d is deprecated: user_uid=%s (%s) replaces it"
+#~ msgstr "user=%d 是旧的设置：由 user_uid=%s（%s）取代"
+
+#~ msgid "nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
+#~ msgstr "昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+
+#~ msgid "Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"
+#~ msgstr "其昵称，游戏和 Eden 房间中显示为：4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+
+#~ msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
+#~ msgstr "提示：昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+
+#~ msgid "Please drop a readable file named prod.keys."
+#~ msgstr "请拖入一个名为 prod.keys 的可读文件。"
+
+#~ msgid "The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores"
+#~ msgstr "重新编译时编译游戏代码的线程数：0 = 电脑每个核心一个"
 
 #~ msgid "The log could not be shown: it is at %s"
 #~ msgstr "无法显示日志：它位于 %s"

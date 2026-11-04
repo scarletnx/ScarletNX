@@ -1,0 +1,33 @@
+#version 310 es
+// GLSL ES 3.10: shared arrays of structs, atomicCompSwap and atomicExchange on shared memory, a runtime array of
+// structs in a buffer, a local array of arrays indexed at run time, and a switch with its default in the middle
+layout(local_size_x = 32) in;
+struct Cell { uint count; float weight; vec2 at; };
+layout(std430, binding = 0) buffer Cells { Cell cells[]; };
+shared Cell tile[32];
+shared uint lock;
+void main() {
+    uint l = gl_LocalInvocationID.x;
+    tile[l] = cells[gl_GlobalInvocationID.x];
+    barrier();
+    while (atomicCompSwap(lock, 0u, 1u) != 0u) {
+    }
+    tile[0].count += 1u;
+    atomicExchange(lock, 0u);
+    barrier();
+    float grid[4][4];
+    for (int y = 0; y < 4; y++)
+        for (int x = 0; x < 4; x++) grid[y][x] = float(x * y);
+    int at = int(l % 16u);
+    float pick = grid[at / 4][at % 4];
+    switch (int(l % 4u)) {
+        case 0:
+            pick += 1.0;
+        default:
+            pick *= 2.0;
+            break;
+        case 2:
+            pick = 0.0;
+    }
+    cells[gl_GlobalInvocationID.x] = Cell(tile[l].count, tile[l].weight + pick, tile[(l + 1u) % 32u].at);
+}

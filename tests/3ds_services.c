@@ -9,14 +9,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-static uint32_t endpoint(SnxCtrProcess* p, uint32_t srv, const char* name) {
-    uint32_t words[5] = {0x50100, 0, 0, (uint32_t)strlen(name), 1};
-    for (unsigned i = 0; name[i]; ++i) words[1 + i / 4] |= (uint32_t)(unsigned char)name[i] << ((i & 3) * 8);
-    ctr_request(p, words, 5);
-    ctr_send(p, srv, SNX_CTR_SVC_RETURN, 0);
-    assert(ctr_command_word(p, 0) == 0x50042 && !ctr_command_word(p, 1) && ctr_command_word(p, 2) == 0x10);
-    return ctr_command_word(p, 3);
-}
 static void static_output(SnxCtrProcess* p, unsigned size, uint32_t address) {
     ctr_put(p, CTR_COMMAND + 256, (size << 14) | 2);
     ctr_put(p, CTR_COMMAND + 260, address);
@@ -198,7 +190,7 @@ int main(void) {
         uint32_t reg[] = {0x10002, 0x20, 0xffffffff};
         ctr_request(p, reg, 3);
         ctr_send(p, srv, SNX_CTR_SVC_RETURN, 0);
-        uint32_t apt = endpoint(p, srv, "APT:S"), args[6] = {0x10040, 0};
+        uint32_t apt = ctr_service_handle(p, srv, "APT:S"), args[6] = {0x10040, 0};
         ctr_request(p, args, 2);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 0) == 0x100c2 && !ctr_command_word(p, 1) && !ctr_command_word(p, 2) &&
@@ -206,7 +198,7 @@ int main(void) {
         uint32_t lock = ctr_command_word(p, 5), lock_id = snx_ctr_handle_object(p, lock);
         assert(lock_id == p->apt_lock && p->objects[lock_id].type == CTR_OBJ_MUTEX);
         assert(!snx_ctr_handle_close(p, apt));
-        apt = endpoint(p, srv, "APT:S");
+        apt = ctr_service_handle(p, srv, "APT:S");
         ctr_request(p, args, 2);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         uint32_t other_lock = ctr_command_word(p, 5);
@@ -249,27 +241,49 @@ int main(void) {
         ctr_request(p, init, 3);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 1) == 0xc8a0cffc);
-        uint32_t ready[] = {0x430040, 0x300};
-        ctr_request(p, ready, 2);
+        uint32_t glance[] = {0xe0080, 0x300, 256};
+        static_output(p, 256, 0x300800);
+        ctr_request(p, glance, 3);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
-        assert(p->apt_phase == 2);
+        assert(ctr_command_word(p, 0) == 0xe0104 && !ctr_command_word(p, 1) && !ctr_command_word(p, 2) &&
+               ctr_command_word(p, 3) == 1 && !ctr_command_word(p, 4) && p->apt_phase == 1);
+        uint32_t ready[] = {0x430040, 0x300};
         uint32_t receive[] = {0xd0080, 0x300, 256};
-        static_output(p, 256, 0x301f80);
         unsigned char fill[128], unchanged[128];
         memset(fill, 0x55, sizeof fill);
-        assert(snx_ctr_write_ram(p->space, 0x301f80, fill, sizeof fill) == SNX_CTR_MEM_OK);
-        ctr_request(p, receive, 3);
-        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0xe0e01bf5);
-        assert(p->apt_phase == 2 && ctr_command_word(p, 0) == receive[0]);
-        assert(snx_ctr_read_ram(p->space, 0x301f80, unchanged, 128) == SNX_CTR_MEM_OK && !memcmp(fill, unchanged, 128));
-        static_output(p, 256, 0x300800);
-        ctr_request(p, receive, 3);
-        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
-        assert(ctr_command_word(p, 0) == 0xd0104 && !ctr_command_word(p, 1) && !ctr_command_word(p, 2) &&
-               ctr_command_word(p, 3) == 1 && !ctr_command_word(p, 4));
-        assert(ctr_command_word(p, 5) == 0x10 && !ctr_command_word(p, 6) && ctr_command_word(p, 7) == 0x400002 &&
-               ctr_command_word(p, 8) == 0x300800);
-        assert(p->apt_phase == 3);
+        if (model) {
+            /* model 1: the startup Wakeup is received in phase 1, and the NotifyToWait after it keeps phase 3 */
+            static_output(p, 256, 0x300800);
+            ctr_request(p, receive, 3);
+            ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+            assert(ctr_command_word(p, 0) == 0xd0104 && !ctr_command_word(p, 1) && !ctr_command_word(p, 2) &&
+                   ctr_command_word(p, 3) == 1 && !ctr_command_word(p, 4));
+            assert(ctr_command_word(p, 5) == 0x10 && !ctr_command_word(p, 6) && ctr_command_word(p, 7) == 0x400002 &&
+                   ctr_command_word(p, 8) == 0x300800);
+            assert(p->apt_phase == 3);
+            ctr_request(p, ready, 2);
+            ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+            assert(ctr_command_word(p, 0) == 0x430040 && !ctr_command_word(p, 1) && p->apt_phase == 3);
+        } else {
+            ctr_request(p, ready, 2);
+            ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+            assert(p->apt_phase == 2);
+            static_output(p, 256, 0x301f80);
+            assert(snx_ctr_write_ram(p->space, 0x301f80, fill, sizeof fill) == SNX_CTR_MEM_OK);
+            ctr_request(p, receive, 3);
+            ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0xe0e01bf5);
+            assert(p->apt_phase == 2 && ctr_command_word(p, 0) == receive[0]);
+            assert(snx_ctr_read_ram(p->space, 0x301f80, unchanged, 128) == SNX_CTR_MEM_OK &&
+                   !memcmp(fill, unchanged, 128));
+            static_output(p, 256, 0x300800);
+            ctr_request(p, receive, 3);
+            ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+            assert(ctr_command_word(p, 0) == 0xd0104 && !ctr_command_word(p, 1) && !ctr_command_word(p, 2) &&
+                   ctr_command_word(p, 3) == 1 && !ctr_command_word(p, 4));
+            assert(ctr_command_word(p, 5) == 0x10 && !ctr_command_word(p, 6) && ctr_command_word(p, 7) == 0x400002 &&
+                   ctr_command_word(p, 8) == 0x300800);
+            assert(p->apt_phase == 3);
+        }
         uint32_t utility[] = {0x4b00c2, 7, 4, 1, 0x10402, 0x300700};
         ctr_put(p, 0x300700, 0x10);
         static_output(p, 1, 0x300710);
@@ -288,9 +302,10 @@ int main(void) {
         ctr_request(p, utility, 6);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 0) == 0x4b0082);
+        /* the NotifyToWait before each later wakeup (a library applet's) succeeds and leaves the startup done */
         ctr_request(p, ready, 2);
-        ctr_send(p, apt, SNX_CTR_SVC_UNSUPPORTED, 0);
-        assert(p->apt_phase == 4);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x430040 && !ctr_command_word(p, 1) && p->apt_phase == 4);
         ctr_request(p, receive, 3);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 1) == 0xc8a0cfef && p->apt_phase == 4);
@@ -299,7 +314,7 @@ int main(void) {
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 2) == model);
         check_shared_font(p, srv, apt);
-        uint32_t ptm = endpoint(p, srv, "ptm:sysm");
+        uint32_t ptm = ctr_service_handle(p, srv, "ptm:sysm");
         query[0] = 0x40a0000;
         ctr_request(p, query, 1);
         ctr_send(p, ptm, SNX_CTR_SVC_RETURN, 0);
@@ -313,7 +328,7 @@ int main(void) {
         assert(!ctr_command_word(p, 1));
         /* cfg: GetConfig of the sound output mode (libctru's ndsp reads it), stereo, into a writable mapped buffer.
            All three names are served, as Azahar does; another block stops */
-        uint32_t cfg = endpoint(p, srv, "cfg:i");
+        uint32_t cfg = ctr_service_handle(p, srv, "cfg:i");
         ctr_put(p, 0x300000, 0xffffffffu);
         uint32_t sound[] = {0x10082, 1, 0x70001, 1 << 4 | 0xc, 0x300000};
         ctr_request(p, sound, 5);
@@ -337,6 +352,19 @@ int main(void) {
         for (unsigned i = 0; i < 10; ++i)
             assert(name_bytes[i * 2] == (unsigned char)"Mario_Test"[i] && !name_bytes[i * 2 + 1]);
         for (unsigned i = 20; i < sizeof name_bytes; ++i) assert(!name_bytes[i]);
+        /* a nickname of UTF-8 as UTF-16: an accent one unit, an emoji its surrogate pair, the rest zero */
+        {
+            static const uint16_t units[] = {'J', 'o', 0xE3, 'o', ' ', 0xD83C, 0xDFAE};
+            strcpy(g_users[0].nickname, "Jo\xc3\xa3o \xf0\x9f\x8e\xae");
+            assert(snx_ctr_write_ram(p->space, 0x300000, (const unsigned char[0x1c]){0}, 0x1c) == SNX_CTR_MEM_OK);
+            ctr_request(p, username, 5);
+            ctr_send(p, cfg, SNX_CTR_SVC_RETURN, 0);
+            assert(!ctr_command_word(p, 1));
+            assert(snx_ctr_read_ram(p->space, 0x300000, name_bytes, sizeof name_bytes) == SNX_CTR_MEM_OK);
+            for (unsigned i = 0; i < sizeof units / sizeof *units; ++i)
+                assert(name_bytes[i * 2] == (units[i] & 0xFF) && name_bytes[i * 2 + 1] == units[i] >> 8);
+            for (unsigned i = 14; i < sizeof name_bytes; ++i) assert(!name_bytes[i]);
+        }
         memcpy(g_users[0].nickname, old_nickname, sizeof old_nickname);
         sound[3] = 4 << 4 | 0xc;
         ctr_request(p, sound, 5);
@@ -352,10 +380,11 @@ int main(void) {
         ctr_request(p, sound, 5);
         ctr_send(p, cfg, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 1) == 0xd90103fa); /* NotFound */
-        assert(!snx_ctr_handle_close(p, cfg) && endpoint(p, srv, "cfg:u") && endpoint(p, srv, "cfg:s"));
+        assert(!snx_ctr_handle_close(p, cfg) && ctr_service_handle(p, srv, "cfg:u") &&
+               ctr_service_handle(p, srv, "cfg:s"));
         /* am:app on a console with no add-on content: one content info for a DLC title, none listed, a title ID that
            is no DLC's refused (Azahar am.cpp) */
-        uint32_t am = endpoint(p, srv, "am:app");
+        uint32_t am = ctr_service_handle(p, srv, "am:app");
         uint32_t dlc_count[] = {0x100100c0, 1, 0x00095000, 0x0004008c};
         ctr_request(p, dlc_count, 4);
         ctr_send(p, am, SNX_CTR_SVC_RETURN, 0);
@@ -369,7 +398,7 @@ int main(void) {
         ctr_send(p, am, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 0) == 0x10030080 && !ctr_command_word(p, 1) && !ctr_command_word(p, 2));
         assert(!snx_ctr_handle_close(p, am));
-        uint32_t hid = endpoint(p, srv, "hid:USER"), hid_args[] = {0xa0000};
+        uint32_t hid = ctr_service_handle(p, srv, "hid:USER"), hid_args[] = {0xa0000};
         n = 0;
         while (n < CTR_HANDLES && !snx_ctr_handle_add(p, snx_ctr_handle_object(p, srv), &duplicates[n])) ++n;
         assert(n > 5);
@@ -407,7 +436,7 @@ int main(void) {
             assert(snx_ctr_handle_object(p, ctr_command_word(p, 3 + i)) == p->hid_objects[i]);
             assert(!snx_ctr_handle_close(p, ctr_command_word(p, 3 + i)));
         }
-        uint32_t fs = endpoint(p, srv, "fs:USER");
+        uint32_t fs = ctr_service_handle(p, srv, "fs:USER");
         reg[0] = 0x8010002;
         ctr_request(p, reg, 3);
         ctr_send(p, fs, SNX_CTR_SVC_RETURN, 0);
@@ -421,7 +450,7 @@ int main(void) {
         ctr_send(p, fs, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 0) == 0x80c0040 &&
                ctr_command_word(p, 1) == 0xc8804464); /* no configured RomFS backing */
-        uint32_t gsp = endpoint(p, srv, "gsp::Gpu"), gsp_event = 0;
+        uint32_t gsp = ctr_service_handle(p, srv, "gsp::Gpu"), gsp_event = 0;
         assert(!snx_ctr_object_create(p, CTR_OBJ_EVENT, &gsp_event));
         uint32_t relay[] = {0x00130042, 1, 0, gsp_event};
         ctr_request(p, relay, 4);

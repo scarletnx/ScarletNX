@@ -24,10 +24,14 @@
 #pragma clang diagnostic pop
 #endif
 
-static unsigned checks;
+/* the checks made, and the last error line said, which snx_error_sink sends to said_line */
+static struct {
+    unsigned checks;
+    char said[2048];
+} g_extract;
 
 static void check(int good, const char* expression, int line) {
-    checks++;
+    g_extract.checks++;
     if (!good) {
         fprintf(stderr, "extract.c:%d: check failed: %s\n", line, expression);
         exit(90);
@@ -47,6 +51,15 @@ static const char prod_keys[] = "# synthetic\n"
                                 "not_a_key = " SECRET "\n"
                                 "titlekek_00 = abc\n";
 static const char user_titles[] = "A0A0A0A0A0A0A0A0A0A0A0A0A0A0A0A0 = " SECRET "\n";
+/* a keys file that goes up to master key 19 (0x13), and its header_key as bytes (its XTS halves differ, which OpenSSL
+   requires), which nca_encrypt seals a header with */
+static const char keys_to_19[] = "header_key = " SECRET "fedcba9876543210fedcba9876543210\n"
+                                 "key_area_key_application_00 = " SECRET "\n"
+                                 "key_area_key_application_13 = " SECRET "\n";
+static const unsigned char header_key[32] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+                                             0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+                                             0x32, 0x10, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10};
+static void said_line(const char* line) { snprintf(g_extract.said, sizeof g_extract.said, "%s", line); }
 
 static void set_env(const char* name, const char* value) {
 #if defined(_WIN32)
@@ -275,7 +288,9 @@ static int scenario(const char* scratch, const char* mode) {
     set_env("USERPROFILE", home);
     /* the keys from the data folder, from ~/.switch, or named */
     keys = snx_path_join(!strcmp(mode, "homekeys") || !strncmp(mode, "explicit", 8) ? switch_dir : repo, "prod.keys");
-    if (strcmp(mode, "encrypted-no-keys") && strcmp(mode, "explicit-missing-keys"))
+    if (!strcmp(mode, "keys-too-old"))
+        CHECK(!snx_write_file(keys, keys_to_19, strlen(keys_to_19)));
+    else if (strcmp(mode, "encrypted-no-keys") && strcmp(mode, "explicit-missing-keys"))
         CHECK(!snx_write_file(keys, prod_keys, strlen(prod_keys)));
     {
         char* titles = snx_path_join(repo, "title.keys");
@@ -297,10 +312,20 @@ static int scenario(const char* scratch, const char* mode) {
             game_add(&game, "patch.nca", program(TITLE | 0x800, 1)); /* an update's alone */
         else if (!strcmp(mode, "dlc-alone"))
             game_add(&game, "dlc.nca", dlc(TITLE + 0x1001));
-        else
+        else if (!strcmp(mode, "keys-too-old")) { /* made with master key 20, which the keys file stops short of */
+            blob_t nca = program(TITLE, 1);
+            nca_encrypt(&nca, header_key, 20);
+            game_add(&game, "program.nca", nca);
+        } else
             game_add(&game, "program.nca", program(TITLE, strcmp(mode, "no-main")));
         if (strcmp(mode, "no-control") && strcmp(mode, "dlc-alone")) game_add(&game, "control.nca", control(TITLE));
         write_container(base, &game, kind);
+    }
+    if (!strcmp(mode, "cut-short")) { /* a copy that stopped 1024 bytes before its table's end */
+        size_t size = 0;
+        unsigned char* nsp = snx_read_file(base, &size);
+        CHECK(nsp && pfs0_files_end(nsp) <= size && !snx_write_file(base, nsp, pfs0_files_end(nsp) - 1024));
+        free(nsp);
     }
     if (!strcmp(mode, "hactool-exit")) { /* a gamecard whose root partition is not what its header hashed */
         blob_t card = gamecard_build(NULL, 0, 0);
@@ -417,7 +442,11 @@ int main(int argc, char** argv) {
         {"no-control", "The game keeps the name of its file: it has no Control NCA", 0},
         {"unsupported", "(&).NSP is not an NSP/DNSP (PFS0) or an XCI/DXCI", 1},
         {"encrypted-no-keys", "encrypted content needs prod.keys", 1},
+        /* the master key the dump needs, and the keys file that stops short of it, below */
+        {"keys-too-old", "The game's Program NCA is encrypted with master key 20 (a firmware newer than 20.0.0), and ",
+         1},
         {"explicit-missing-keys", "prod.keys is not a file", 1},
+        {"cut-short", "the dump is incomplete, 1024 bytes short. Copy or dump it again", 1}, /* sizes below */
         {"unmatched-update", "has no Program NCA of the game 0100000000AB0000", 1},
         {"update-alone", "is an update, which goes over its game", 1},
         {"dlc-alone", "Extracting the DLC 0100000000AB1001", 0},
@@ -438,18 +467,37 @@ int main(int argc, char** argv) {
     int result;
     if (argc == 4 && !strcmp(argv[1], "--scenario")) return scenario(argv[2], argv[3]) ? 1 : 0;
     CHECK(argc == 1);
-    { /* what an NCA's missing keys are said as: none for a decrypted one, its master key's generation, its title key */
-        SnxNcaRef nca;
-        memset(&nca, 0, sizeof nca);
+    { /* what an NCA's missing keys are said as: none for a decrypted one; the master key it needs, how far the keys
+         file goes and its path; the title key, and the title.keys file */
+        char keys[] = "/keys/prod.keys", titles[] = "/keys/title.keys", *said = g_extract.said;
+        SnxNcaRef nca = {0};
+        SnxDump dump = {0};
+        dump.keys = keys;
+        dump.title_keys = titles;
+        snx_error_sink(said_line);
         nca.info.decrypted = 1;
-        CHECK(!snx_nca_keys(&nca, "A decrypted NCA"));
+        CHECK(!snx_nca_keys(&dump, &nca, "A decrypted NCA"));
         nca.info.decrypted = 0;
         nca.info.generation = 16;
-        CHECK(snx_nca_keys(&nca, "An NCA of master key 16"));
+        nca.info.newest = 15;
+        CHECK(snx_nca_keys(&dump, &nca, "An NCA"));
+        CHECK(!strcmp(said, "An NCA is encrypted with master key 16 (firmware 17.0.0 and later), and /keys/prod.keys "
+                            "goes up to master key 15 (firmware 16.0.0 and later): it needs the keys of a console with "
+                            "master key 16, on its firmware or a later one"));
+        nca.info.newest = -1;
+        CHECK(snx_nca_keys(&dump, &nca, "An NCA"));
+        CHECK(!strcmp(said, "An NCA is encrypted with master key 16 (firmware 17.0.0 and later), and /keys/prod.keys "
+                            "has the keys of no master key: it needs the keys of a console on that firmware or a later "
+                            "one"));
         nca.info.keys = 1;
-        CHECK(!snx_nca_keys(&nca, "An NCA with its keys"));
+        said[0] = 0;
+        CHECK(!snx_nca_keys(&dump, &nca, "An NCA with its keys") && !said[0]);
         nca.info.title_key = -1;
-        CHECK(snx_nca_keys(&nca, "An NCA without its title key"));
+        CHECK(snx_nca_keys(&dump, &nca, "An NCA"));
+        CHECK(!strcmp(said,
+                      "An NCA needs a title key that no ticket in the dump and no line of /keys/title.keys has: a "
+                      "personalized ticket's key is its console's, so dump that console's title.keys"));
+        snx_error_sink(NULL);
     }
     self = snx_executable(argv[0]);
     scratch = snx_temp_dir(NULL);
@@ -469,6 +517,29 @@ int main(int argc, char** argv) {
             fprintf(stderr, "scenario %s exited %d:\n%s", scenarios[i].mode, result, output);
         CHECK((result != 0) == scenarios[i].fails);
         CHECK(strstr(output, scenarios[i].says) != NULL);
+        if (!strcmp(scenarios[i].mode, "keys-too-old")) { /* the keys file, by the path it was read from */
+            char *repo = snx_path_join(directory, "repo space & ()"), *keys = snx_path_join(repo, "prod.keys");
+            char* named =
+                snx_format("and %s goes up to master key 19 (firmware 20.0.0 and later): it needs the keys of "
+                           "a console with master key 20, on its firmware or a later one",
+                           keys);
+            CHECK(strstr(output, named) != NULL);
+            free(named);
+            free(keys);
+            free(repo);
+        }
+        if (!strcmp(scenarios[i].mode, "cut-short")) { /* the file's size, and its table's 1024 bytes past it */
+            char *base = snx_path_join(directory, "Base Game (&).NSP"), has[32], needs[32], *named;
+            SnxU64 size = snx_file_size(base);
+            snx_size_text(size, has, sizeof has);
+            snx_size_text(size + 1024, needs, sizeof needs);
+            named = snx_format("%s is %s (%llu bytes), and its table puts its files up to %s (%llu bytes): the dump is "
+                               "incomplete, 1024 bytes short",
+                               base, has, (unsigned long long)size, needs, (unsigned long long)(size + 1024));
+            CHECK(size > 0 && strstr(output, named) != NULL);
+            free(named);
+            free(base);
+        }
         CHECK(strstr(output, SECRET) == NULL); /* no key, whatever hactool said */
         CHECK(strstr(output, "extracted ") == NULL); /* a quick one says nothing */
         printf("PASS extraction scenario %s\n", scenarios[i].mode);
@@ -478,6 +549,6 @@ int main(int argc, char** argv) {
     CHECK(!snx_remove_tree(scratch));
     free(scratch);
     free(self);
-    printf("PASS %u extraction driver checks; synthetic dumps, no console keys\n", checks);
+    printf("PASS %u extraction driver checks; synthetic dumps, no console keys\n", g_extract.checks);
     return 0;
 }

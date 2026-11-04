@@ -9,15 +9,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/* the 16 rows of the menu font's glyph c: CP437's, then the Latin letters past it, then the wide letters' halves, then
-   the icons' (gui_menu_glyph) */
-static inline const uint8_t* font_rows(int c) {
-    int wide = 256 + gui_latin_count + 2 * gui_wide_count;
-    return c < 256                     ? gui_vga_font + c * 16
-           : c < 256 + gui_latin_count ? gui_latin_font + (c - 256) * 16
-           : c < wide                  ? gui_wide_font + (c - 256 - gui_latin_count) * 16
-                                       : gui_icon_font + (c - wide) * 16;
-}
+/* the 16 rows of the menu font's glyph c (gui_menu_glyph's) */
+static inline const uint8_t* font_rows(int c) { return gui_glyph_rows(c); }
 /* the icons as a row's text holds them, UTF-8 to write beside a label ("- " ICON_SETTINGS " Settings"): icons_are
    checks each is its icons.h code point */
 #define ICON_GAMEPAD_2           "\uE000"

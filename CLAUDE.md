@@ -265,3 +265,8 @@ flourishes. This rule does not apply to code comments. The Claude files follow A
 - An Ounce game calls about 170 NVN functions that the Switch does not have. `tools/nvn_missing.py work/Game`
   lists the functions that `nvn.hook` does not implement for the API version of the game. Read the body of each
   function in the driver before you write its handler. Many are setters that store at a fixed offset.
+- A check of `tests/gui_sdl.c` can fail on Windows alone because of the state that an `#ifdef SNX_XDG` block
+  leaves. Those blocks run on Linux only. One of them presses ESC on the Keys page, and ESC clears `app->message`
+  before the next check reads the tips. CMake registers `gui_sdl_events` only when `NOT APPLE`, so the Mac builds
+  `snx-test-gui-sdl` and runs it in no test. Run it by hand (`snx-build`, "The screen tests"). Then look at the frame
+  that the check failed on.

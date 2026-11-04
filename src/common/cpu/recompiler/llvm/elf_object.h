@@ -1,15 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* ELF64 x86-64, AArch64, PowerPC64, RISC-V and LoongArch relocatable objects, as LLVM and Clang write them: what the
-   AOT linker (link_elf.c) and the JIT loader (code_loader.c) both do with one. Both take the same sections, resolve
-   symbols by the same rules and write every relocation through snx_elf_relocate (and an AArch64 branch beyond B's reach
-   through snx_elf_veneer), so code loaded into the process runs as the same code linked into a module. One set of
-   objects is one machine: the machines' relocation numbers mean different things (AArch64's ILP32 ones and the others'
-   overlap x86-64's), so every function that reads a type takes the machine too. The objects are in the host's byte
-   order, as they are linked or loaded where they run. Only the AOT linker takes PowerPC64's, RISC-V's and LoongArch's
-   (code_loader.h). Not on Windows,
-   whose objects are COFF (link_coff.c, code_loader_coff.c). Darwin has no <elf.h>: its definitions are elf_defs.h's,
-   for the JIT loader's ELF objects there (code_loader.c) */
+/* ELF64 x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 and s390x relocatable objects, as LLVM and Clang write
+   them: what the AOT linker (link_elf.c) and the JIT loader (code_loader.c) both do with one. Both take the same
+   sections, resolve symbols by the same rules and write every relocation through snx_elf_relocate (and an AArch64
+   branch beyond B's reach through snx_elf_veneer), so code loaded into the process runs as the same code linked into a
+   module. One set of objects is one machine: the machines' relocation numbers mean different things (AArch64's ILP32
+   ones and the others' overlap x86-64's), so every function that reads a type takes the machine too. The objects are in
+   the host's byte order, as they are linked or loaded where they run. Only the AOT linker takes PowerPC64's, RISC-V's,
+   LoongArch's, MIPS64's and s390x's (code_loader.h). Not on Windows, whose objects are COFF (link_coff.c,
+   code_loader_coff.c). Darwin has no <elf.h>: its definitions are elf_defs.h's, for the JIT loader's ELF objects there
+   (code_loader.c) */
 #ifndef SNX_RECOMPILER_LLVM_ELF_OBJECT_H
 #define SNX_RECOMPILER_LLVM_ELF_OBJECT_H
 #if !defined(_WIN32)
@@ -167,6 +167,75 @@ enum {
     SNX_LA_64_PCREL = 109,
     SNX_LA_CALL36 = 110
 };
+#ifndef EM_MIPS
+#define EM_MIPS 8
+#endif
+/* MIPS64's (n64), by number (the MIPS ELF64 ABI, the MIPSpro 64-bit supplement). An n64 relocation applies up to three
+   types in turn, each taking the one before's value as its addend: snx_elf_type gives them as one number, the first
+   type in the low byte (glibc's ELF64_MIPS_R_TYPE), and these name the ones LLVM writes. The objects are made for a
+   32-bit GOT offset (+xgot, ir.c) and without code the linker moves */
+enum {
+    SNX_MIPS_NONE = 0,
+    SNX_MIPS_32 = 2,
+    SNX_MIPS_REL32 = 3,
+    SNX_MIPS_HI16 = 5,
+    SNX_MIPS_LO16 = 6,
+    SNX_MIPS_GPREL16 = 7,
+    SNX_MIPS_CALL16 = 11,
+    SNX_MIPS_GPREL32 = 12,
+    SNX_MIPS_64 = 18,
+    SNX_MIPS_GOT_DISP = 19,
+    SNX_MIPS_GOT_PAGE = 20,
+    SNX_MIPS_GOT_OFST = 21,
+    SNX_MIPS_GOT_HI16 = 22,
+    SNX_MIPS_GOT_LO16 = 23,
+    SNX_MIPS_SUB = 24,
+    SNX_MIPS_CALL_HI16 = 30,
+    SNX_MIPS_CALL_LO16 = 31,
+    SNX_MIPS_JALR = 37,
+    SNX_MIPS_PC32 = 248, /* .eh_frame's pointers */
+    /* the composites: %hi and %lo of %neg(%gp_rel(f)), which a function's prologue adds to its own address (t9) for
+       gp; a jump table's .gpdword, a label's 64-bit distance from gp; and the dynamic loader's relocation of an
+       address in data by the module's base (glibc's (R_MIPS_64 << 8) | R_MIPS_REL32, symbol 0) */
+    SNX_MIPS_GPREL_HI = SNX_MIPS_GPREL16 | SNX_MIPS_SUB << 8 | SNX_MIPS_HI16 << 16,
+    SNX_MIPS_GPREL_LO = SNX_MIPS_GPREL16 | SNX_MIPS_SUB << 8 | SNX_MIPS_LO16 << 16,
+    SNX_MIPS_GPREL32_64 = SNX_MIPS_GPREL32 | SNX_MIPS_64 << 8,
+    SNX_MIPS_RELATIVE = SNX_MIPS_REL32 | SNX_MIPS_64 << 8
+};
+/* MIPS's section types (glibc's SHT_MIPS_*): allocated, read by a linker that merges them, and left out of a module */
+enum { SNX_SHT_MIPS_REGINFO = 0x70000006, SNX_SHT_MIPS_OPTIONS = 0x7000000d, SNX_SHT_MIPS_ABIFLAGS = 0x7000002a };
+/* e_flags' noreorder: the assembler kept the instructions' order, delay slots its own. LLVM marks an object with code
+   so, and an object of data alone (an index of functions) not: the objects' ABI (snx_elf_parse) leaves it out */
+#define SNX_EF_MIPS_NOREORDER  1u
+/* gp, which MIPS code reaches its GOT through: the GOT's address plus this, so a signed 16-bit offset from it reaches
+   the GOT's first 64 KiB (the ABI's, which glibc assumes) */
+#define SNX_ELF_MIPS_GP_OFFSET 0x7FF0
+
+#ifndef EM_S390
+#define EM_S390 22
+#endif
+/* s390x's, by number (the s390x ELF ABI supplement). The DBL ones count halfwords, the unit of its instructions'
+   PC-relative fields: a call's brasl (PLT32DBL) and an address's larl (PC32DBL) reach 4 GiB either way, the whole of
+   any module, and a GOT slot's address (GOTENT) likewise */
+enum {
+    SNX_390_NONE = 0,
+    SNX_390_PC32 = 5,
+    SNX_390_RELATIVE = 12,
+    SNX_390_PC16DBL = 17,
+    SNX_390_PLT16DBL = 18,
+    SNX_390_PC32DBL = 19,
+    SNX_390_PLT32DBL = 20,
+    SNX_390_64 = 22,
+    SNX_390_PC64 = 23,
+    SNX_390_GOTENT = 26
+};
+
+/* A relocation's type and symbol, from its r_info: ELF64_R_TYPE and ELF64_R_SYM, but for MIPS64, whose r_info is the
+   symbol (a 32-bit word in the object's byte order) and then four bytes: a special symbol and the third, second and
+   first types. snx_elf_info writes one */
+unsigned snx_elf_type(unsigned machine, Elf64_Xword info);
+size_t snx_elf_symbol(unsigned machine, Elf64_Xword info);
+Elf64_Xword snx_elf_info(unsigned machine, size_t symbol, unsigned type);
 
 /* where an allocated section goes, by its flags: the order of the AOT module's segments */
 enum { SNX_ELF_RODATA, SNX_ELF_TEXT, SNX_ELF_DATA, SNX_ELF_BSS, SNX_ELF_KINDS };
@@ -190,10 +259,11 @@ typedef struct {
     uint64_t island;
 } SnxElfObject;
 
-/* Checks the object and classifies its sections. *machine is the set's (EM_X86_64, EM_AARCH64, EM_PPC64, EM_RISCV or
-   EM_LOONGARCH): 0 takes the object's, anything else refuses another machine's object. *abi likewise: PowerPC64's ABI
-   as the objects' e_flags say (snx_elf_ppc_abi), RISC-V's and LoongArch's e_flags whole (their float ABI, which the
-   module's own e_flags repeat for the loader), 0 for the other machines. 0, or -1 with the reason in error */
+/* Checks the object and classifies its sections. *machine is the set's (EM_X86_64, EM_AARCH64, EM_PPC64, EM_RISCV,
+   EM_LOONGARCH, EM_MIPS or EM_S390): 0 takes the object's, anything else refuses another machine's object. *abi
+   likewise: PowerPC64's ABI as the objects' e_flags say (snx_elf_ppc_abi), RISC-V's and LoongArch's e_flags whole
+   (their float ABI, which the module's own e_flags repeat for the loader), MIPS64's but noreorder (its ISA, PIC and NaN
+   encoding), 0 for the other machines. 0, or -1 with the reason in error */
 int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine, unsigned* abi, char* error,
                   size_t error_size);
 /* PowerPC64's ABI from an object's e_flags: SNX_ELF_PPC_ELFV2 (ppc64le, and big-endian musl), or SNX_ELF_PPC_ELFV1
@@ -223,8 +293,12 @@ int snx_elf_definition(const SnxElfObject* objs, const SnxLinkNames* globals, si
 /* The address of a definition in the set once its sections have addresses; *absolute for an SHN_ABS value */
 uint64_t snx_elf_symbol_address(const SnxElfObject* objs, size_t object, size_t index, int* absolute);
 
-/* 1 for the relocations that go through a GOT slot */
+/* 1 for the relocations that go through a GOT slot of their symbol */
 int snx_elf_got_relocation(unsigned machine, unsigned type);
+/* 1 for MIPS64's GOT_PAGE, whose slot holds the 64 KiB page of S + A that its GOT_OFST adds to, not the symbol */
+int snx_elf_mips_page_relocation(unsigned machine, unsigned type);
+/* the page a MIPS64 GOT_PAGE's slot holds for value, rounded to the nearest: GOT_OFST's signed 16 bits reach value */
+static inline uint64_t snx_elf_mips_page(uint64_t value) { return (value + 0x8000) & ~(uint64_t)0xFFFF; }
 /* 1 for a call or jump that may go through a stub or veneer when its target is out of its reach: x86-64's PLT32
    (rel32, so only a target outside the 2 GiB the code is in), AArch64's CALL26 and JUMP26 (B and BL: 128 MiB),
    PowerPC64's REL24 (b and bl: 32 MiB, and its target is an entry point: snx_elf_ppc_entry) */
@@ -232,7 +306,8 @@ int snx_elf_call_relocation(unsigned machine, unsigned type);
 /* 1 for the 64-bit absolute address, which a position-independent module rebases with the machine's R_*_RELATIVE.
    PowerPC64's R_PPC64_TOC is one too: the TOC's address, in an ELFv1 .opd descriptor */
 int snx_elf_absolute_relocation(unsigned machine, unsigned type);
-/* R_X86_64_RELATIVE, R_AARCH64_RELATIVE, R_PPC64_RELATIVE, R_RISCV_RELATIVE or R_LARCH_RELATIVE */
+/* R_X86_64_RELATIVE, R_AARCH64_RELATIVE, R_PPC64_RELATIVE, R_RISCV_RELATIVE, R_LARCH_RELATIVE, MIPS64's
+   SNX_MIPS_RELATIVE or R_390_RELATIVE */
 unsigned snx_elf_relative_type(unsigned machine);
 /* RISC-V's low halves, R_RISCV_PCREL_LO12_I and _S: their symbol is the label of the AUIPC whose HI20 relocation
    (PCREL_HI20 or GOT_HI20) they complete, and their value that relocation's own displacement. 1 for them */
@@ -260,7 +335,9 @@ uint64_t snx_elf_text_size(const SnxElfObject* objs, size_t count);
 /* Writes relocation type of machine at p, the place at address P with room bytes left in its section: S the symbol's
    address, A the addend, got the GOT's address and slot the address of the symbol's GOT slot (GOT relocations only).
    On PowerPC64, which has no GOT relocations, got is the TOC's address (.TOC.), which the TOC16 relocations count
-   from and R_PPC64_TOC writes, and a REL24's S + A is the entry point the branch goes to (snx_elf_ppc_entry). For
+   from and R_PPC64_TOC writes, and a REL24's S + A is the entry point the branch goes to (snx_elf_ppc_entry). On
+   MIPS64 got is gp (the GOT's address plus SNX_ELF_MIPS_GP_OFFSET), which the GOT and GPREL relocations count from,
+   and a GOT_PAGE's slot the one holding its page (snx_elf_mips_page). For
    RISC-V's PCREL_LO12_I and _S, S is the displacement of the HI20 relocation they complete (snx_elf_riscv_hi20) and A
    must be 0. The instruction relocations patch the immediate of the instruction already there. 0, or
    SNX_LINK_OUTSIDE when the field does not fit in the section, SNX_LINK_RANGE when the value does not fit the field

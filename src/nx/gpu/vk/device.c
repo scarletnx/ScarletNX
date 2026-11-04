@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/vertex_input.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
@@ -316,6 +317,8 @@ static int create_device(void) {
     }
     if (sparse_queue) {
         WANT(sparseBinding);
+        /* textures with holes in their mapping given memory only where it is mapped (memory.c): 3D volumes in bricks,
+           and other textures in the device's sparse blocks */
         WANT(sparseResidencyImage2D);
         WANT(sparseResidencyImage3D);
     }
@@ -332,14 +335,16 @@ static int create_device(void) {
     int has_portability = 0, has_reconvergence = 0;
     int has_calibrated = 0, has_present_id = 0, has_present_wait = 0, has_present_v2 = 0, has_calibrated_khr = 0;
     int has_google_timing = 0;
-    int has_host_import = 0, has_placed = 0;
+    int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0, has_dmabuf = 0;
     int has_descriptor_buffer = 0;
+    int has_vertex_input = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     {
         SnxVkExtensions e;
         snx_vk_device_extensions(g_vk.phys, &e);
         g_vk.has_divisor = snx_vk_extensions_has(&e, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
+        has_vertex_input = snx_vk_extensions_has(&e, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
         has_shader_clock = snx_vk_extensions_has(&e, VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
@@ -378,10 +383,18 @@ static int create_device(void) {
         has_google_timing = !g_opt_headless && snx_vk_extensions_has(&e, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
         has_host_import = snx_vk_extensions_has(&e, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
         has_placed = snx_vk_extensions_has(&e, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME);
+        has_map2 = snx_vk_extensions_has(&e, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
+        has_dmabuf = snx_vk_extensions_has(&e, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
+                     snx_vk_extensions_has(&e, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+#if defined(__ANDROID__) /* every driver there takes AHardwareBuffers, which guest memory can move into (uma.c) */
+        has_ahb = snx_vk_extensions_has(&e, "VK_ANDROID_external_memory_android_hardware_buffer");
+#endif
         snx_vk_extensions_free(&e);
     }
     /* guest memory the GPU reads in place (uma.c) */
-    if (vk_uma_choose(has_host_import, has_placed)) ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    int uma_with = vk_uma_choose(has_host_import, has_ahb, has_placed && has_map2);
+    if (uma_with == VK_UMA_WITH_HOST) ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    if (uma_with == VK_UMA_WITH_AHB) ext[next++] = "VK_ANDROID_external_memory_android_hardware_buffer";
     if (has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
     /* the extension only with a host time domain among the calibrateable ones: CLOCK_MONOTONIC_RAW is the clock
        the Tracy client keeps its own time in, so the two domains' pair maps the GPU's timestamps onto it */
@@ -439,6 +452,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR qindex8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR};
+    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT qvertex_input = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT};
     /* with the subset enabled, each of its features is off until the device asks for it: a view's swizzle, for one */
     PortabilityFeatures qport = {.sType = PORTABILITY_FEATURES_STYPE};
     VkPhysicalDevicePresentIdFeaturesKHR qpid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
@@ -466,6 +481,7 @@ static int create_device(void) {
                            has_cond ? &qcond : NULL,
                            has_provoking ? &qprov : NULL,
                            index8_ext ? &qindex8 : NULL,
+                           has_vertex_input ? &qvertex_input : NULL,
                            has_portability ? &qport : NULL,
                            has_reconvergence ? &qreconv : NULL,
                            robustness ? &qpipeline : NULL,
@@ -486,6 +502,25 @@ static int create_device(void) {
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
     g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
+    {
+        /* each draw's vertex layout as dynamic state, or a pipeline per layout: the setting, then the device and the
+           drivers known to draw it wrong (vertex_input.h). A value the setting doesn't take stops the game here, as
+           a player who wrote vertex_input_dynamic_state=of would otherwise play with what they meant to turn off */
+        int mode = vk_vi_mode(g_settings.vertex_input_dynamic_state), warn;
+        char line[1024];
+        if (mode < 0)
+            fatal("settings: vertex_input_dynamic_state=%s is not auto, on or off",
+                  g_settings.vertex_input_dynamic_state);
+        VkViDevice vd = {
+            g_vk.props.deviceName,    p12.driverName,
+            p12.driverInfo,           (u32)p12.driverID,
+            g_vk.props.driverVersion, has_vertex_input ? (qvertex_input.vertexInputDynamicState ? 2 : 1) : 0};
+        g_vk.vertex_input_dynamic = vk_vi_choose(mode, &vd, line, sizeof line, &warn);
+        if (warn)
+            WARN("%s\n", line);
+        else
+            LOG("%s\n", line);
+    }
     /* the dynamic state and the barriers within a pass only serve feedback loops */
     g_vk.has_feedback = g_vk.has_feedback && qloop.attachmentFeedbackLoopLayout;
     g_vk.has_feedback_dynamic =
@@ -591,6 +626,22 @@ static int create_device(void) {
         chain = &fxfb;
         ext[next++] = VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME;
     }
+    /* the heap as GPU memory where it is (uma.c's placed maps) */
+    VkPhysicalDeviceMapMemoryPlacedFeaturesEXT fplaced = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_FEATURES_EXT,
+        .pNext = chain,
+        .memoryMapPlaced = VK_TRUE,
+        .memoryUnmapReserve = VK_TRUE};
+    if (vk_uma_can_place()) {
+        chain = &fplaced;
+        ext[next++] = VK_KHR_MAP_MEMORY_2_EXTENSION_NAME;
+        ext[next++] = VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME;
+        vk_uma_dmabuf(has_dmabuf); /* a view of it maps the same memory again, through a dma-buf */
+        if (vk_uma_can_view()) {
+            ext[next++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+            ext[next++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
+        }
+    }
     VkPhysicalDeviceShaderClockFeaturesKHR fclock = {.sType =
                                                          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR,
                                                      .pNext = chain,
@@ -664,6 +715,14 @@ static int create_device(void) {
         ext[next++] = VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME;
     }
     /* the 3D engine's 8-bit indices, read as they are (render.c); without it they are widened on the GPU */
+    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT fvertex_input = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT,
+        .pNext = chain,
+        .vertexInputDynamicState = VK_TRUE};
+    if (g_vk.vertex_input_dynamic) {
+        chain = &fvertex_input;
+        ext[next++] = VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME;
+    }
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR findex8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR, .pNext = chain, .indexTypeUint8 = VK_TRUE};
     if (g_vk.has_index8) {

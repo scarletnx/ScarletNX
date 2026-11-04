@@ -8,8 +8,8 @@
 /* The host's side of a guest's flat address space (the 3DS's src/3ds/memory, the GBA's src/agb/cpu/memmap.c): the
    guest's RAM as host memory objects that can be mapped at several host addresses at once, a reservation the guest's
    addresses are offsets into, and pages of the objects mapped there as views, so every guest address of a page (a
-   mirror, an alias) is the same memory. Linux and Android use a memfd, the other POSIX systems an unlinked shm_open
-   object, Windows a pagefile section mapped into placeholders (Windows 10 1803). */
+   mirror, an alias) is the same memory. Linux, Android and NetBSD use a memfd, the other POSIX systems an unlinked
+   shm_open object, Windows a pagefile section mapped into placeholders (Windows 10 1803). */
 
 #define SNX_HOST_READ  1u
 #define SNX_HOST_WRITE 2u

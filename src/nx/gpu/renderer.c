@@ -10,3 +10,4 @@ u64 g_draws;
    each */
 _Alignas(64) _Atomic int g_cs_any;
 _Alignas(64) _Atomic int g_gfx_any;
+_Alignas(64) _Atomic int g_uma_any;

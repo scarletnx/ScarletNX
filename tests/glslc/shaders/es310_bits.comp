@@ -1,0 +1,31 @@
+#version 310 es
+// GLSL ES 3.10: the integer functions, packing, frexp, ldexp, arrays of arrays, bool members of a block
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(std430, binding = 0) buffer Data {
+    uint words[16];
+    int signed_words[16];
+    vec4 floats[4];
+    bool flags[4];
+    ivec2 grid[2][3];
+} data;
+void main() {
+    uint i = gl_LocalInvocationIndex % 16u;
+    uint w = data.words[i];
+    int s = data.signed_words[i];
+    uint carry, lo, hi;
+    int slo, shi;
+    uint sum = uaddCarry(w, 0xffffffffu, carry);
+    uint diff = usubBorrow(w, 1u, carry);
+    umulExtended(w, w, hi, lo);
+    imulExtended(s, s, shi, slo);
+    int msb = findMSB(s) + findMSB(w) + findLSB(w) + bitCount(w) + bitCount(s);
+    uint ext = bitfieldExtract(w, 3, 5) + bitfieldReverse(w) + bitfieldInsert(w, 7u, 4, 3);
+    int sext = bitfieldExtract(s, 1, 30);
+    int e;
+    float m = frexp(data.floats[0].x, e);
+    vec4 packed = unpackUnorm4x8(packSnorm4x8(data.floats[1])) + unpackSnorm4x8(packUnorm4x8(data.floats[2]));
+    data.floats[3] = vec4(ldexp(m, e), float(msb), float(sext), packed.x);
+    data.words[i] = sum + diff + hi + lo + ext + uint(shi + slo);
+    data.flags[i % 4u] = !data.flags[(i + 1u) % 4u] || w > 3u;
+    data.grid[i % 2u][i % 3u] = ivec2(data.grid[1][2].y, 3) + ivec2(data.flags[0]);
+}

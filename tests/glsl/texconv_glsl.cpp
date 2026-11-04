@@ -349,7 +349,8 @@ static void restride_case(uint32_t gstride, uint32_t len, uint32_t lead, uint32_
     for (uint32_t i = 0; i < nv; i++) {
         uint32_t at = i * gstride, m = len - at < stride ? len - at : stride;
         std::memcpy(&want[4 * out_bias + i * stride], &inb[lead + at], m);
-        std::memset(&want[4 * out_bias + i * stride + m], 0, stride - m);
+        // the last vertex, when it fills its stride, ends at want's end: a pointer may be there, want[] may not
+        std::memset(want.data() + 4 * out_bias + i * stride + m, 0, stride - m);
     }
     std::vector<glsl::leuint> in(words), out(want.size() / 4, 0xA5A5A5A5u);
     std::memcpy(in.data(), inb.data(), inb.size());

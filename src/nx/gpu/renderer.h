@@ -62,7 +62,8 @@ typedef struct Renderer {
        next loaded. NULL: they are kept */
     void (*discard)(const DsState* ds, u32 targets);
     /* Maxwell ordering methods: 0 texture barrier, 1 tiled barrier, 2 data-cache invalidate,
-       3 descriptor-cache invalidate, 4 wait for idle, 5 shader instruction invalidate. */
+       3 descriptor-cache invalidate, 4 wait for idle, 5 shader instruction invalidate.
+       6 explicit execution and memory order, 7 shader-data visibility when pending shader writes exist. */
     void (*method_barrier)(int kind);
     /* the 2D engine: 1 when the renderer did the blit on the GPU, 0 to do it in guest memory */
     int (*blit)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
@@ -197,5 +198,6 @@ extern u64 g_draws;
 extern _Atomic int g_cs_any;      /* compute results are pending somewhere */
 extern _Atomic int g_gfx_any;     /* graphics storage-buffer results are pending somewhere */
 extern _Atomic int g_gfx_img_any; /* graphics storage-image results are pending somewhere */
+extern _Atomic int g_uma_any;     /* writes into guest memory in place are pending somewhere (gpu/vk/uma.c) */
 
 #endif

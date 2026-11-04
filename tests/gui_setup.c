@@ -494,8 +494,10 @@ static void test_first(App* app) {
     typed(app, "da");
     render(app);
     shows(app, "Nickname: Ada_", rgb(app->theme.page));
+    typed(app, " "); /* a space at its end, which the account service does not keep */
     key(app, SDLK_RETURN);
-    assert(app->setup_on && app->setup_failed && strstr(app->message, "Ada is not a nickname"));
+    assert(app->setup_on && app->setup_failed && strstr(app->message, "Ada  is not a nickname"));
+    key(app, SDLK_BACKSPACE);
     typed(app, "m");
     key(app, SDLK_RETURN);
     /* done: setup.ini and users.ini in the portable copy, the language in its app.ini, the menu with its user */

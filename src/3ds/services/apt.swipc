@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# Scalar/owned-handle commands. ReceiveParameter's bounded static buffer and
-# absent object are checked explicitly in apt.c, not emitted as fake handles.
+# Scalar/owned-handle commands. The parameter commands' static buffers and
+# objects (Send, Receive, Glance, StartLibraryApplet) are checked in apt.c.
 interface snx::ctr::apt_wire is APT:S {
     [1] GetLockHandle(u32 attributes) -> (u32 corrected, u32 state, handle<copy> lock);
     [2] Initialize(u32 app_id, u32 attributes) -> (handle<copy> notification, handle<copy> parameter);
     [3] Enable(u32 attributes);
+    [9] IsRegistered(u32 app_id) -> u32 registered;
+    [0xf] CancelParameter(u32 check_sender, u32 sender, u32 check_receiver, u32 receiver) -> u32 cancelled;
+    [0x18] PrepareToStartLibraryApplet(u32 app_id);
     [0x43] NotifyToWait(u32 app_id);
     [0x44] GetSharedFont() -> (u32 address, handle<copy> font);
     [0x102] IsNew3DS() -> u32 is_new;

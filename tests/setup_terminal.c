@@ -171,9 +171,9 @@ static void test_portable(void) {
     fresh();
     assert(run("\n\n2\n", 0) == 1 && snx_is_dir(portable)); /* made as it is picked, though nothing else was */
     assert(!snx_remove_tree(portable));
-    assert(!run("\n\n2\n\n\nAda\nAogo\n", 0));
+    assert(!run("\n\n2\n\n\nAbcdefghijklmnopqrstuvwxyz0123456\nAogo\n", 0));
     said("Portable: everything in ");
-    said("Ada is not 4 to 20 of A-Z a-z 0-9 space . _ -");
+    said("Abcdefghijklmnopqrstuvwxyz0123456 is not 1 to 32 bytes with no control character nor a space at either end");
     expect(pconfig, "setup.ini", "version = 1");
     expect(users, "users.ini", "nickname=Aogo");
     assert(!text_of(config, "setup.ini"));

@@ -466,6 +466,8 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
         si->tex_dc_color_funcs = mask[9];
         si->in_unfed_mask = mask[10];
         si->early_fragment_tests = mask[11];
+        si->tex_rect_mask = mask[12] | (u64)mask[13] << 32;
+        shader_query_hint_unpack(mask + 14, si->tex_query_hint);
     } else {
         si->attr_int_mask = ints;
         si->attr_sint_mask = sints;
@@ -474,7 +476,12 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
         si->tex_sint_mask = mask[10];
         si->rt_int_mask = mask[4]; /* the tessellation or geometry primitive */
         si->clip_enable = mask[6];
-        memcpy(si->gp_skip_mask, mask + 12, sizeof si->gp_skip_mask);
+        if (stage == ST_GS) {
+            memcpy(si->gp_skip_mask, mask + 12, sizeof si->gp_skip_mask);
+        } else {
+            si->tex_rect_mask = mask[12] | (u64)mask[13] << 32;
+            shader_query_hint_unpack(mask + 14, si->tex_query_hint);
+        }
         if (xfb) si->xfb = *xfb;
     }
 }
@@ -551,7 +558,8 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
     return s;
 }
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
-                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb) {
+                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
+                    const u8* query_hint) {
     const DsPrograms* p = ds ? &ds->prog : NULL;
     pf_merge();
     g_sh_ds = ds;
@@ -569,6 +577,15 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
                     unfed};
     if (stage == ST_FS && p) mask[11] = p->early_z;
     if (stage == ST_GS && p) memcpy(mask + 12, p->gs_skip, 8 * sizeof(u32));
+    /* the rectangle textures, and the dimensions of the textures only a TXQ names (ShaderInfo.tex_query_hint,
+       3 bits a slot), in words only the geometry stage's key uses otherwise */
+    int queried = 0;
+    if (stage != ST_GS) {
+        mask[12] = (u32)rect;
+        mask[13] = (u32)(rect >> 32);
+        if (query_hint) shader_query_hint_pack(query_hint, mask + 14);
+        for (int i = 14; i < 14 + SH_QUERY_WORDS; i++) queried |= mask[i] != 0;
+    }
     /* a capture's layout, in the words only the fragment stage's key uses otherwise */
     if (stage != ST_FS && xfb) {
         u64 xh = vk_hash(xfb, sizeof *xfb);
@@ -577,6 +594,8 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
     }
     u32 mix = (u32)vk_hash(mask, 12 * sizeof(u32));
     if (stage == ST_GS) mix ^= (u32)vk_hash(mask + 12, 8 * sizeof(u32));
+    if (stage != ST_GS && rect) mix ^= (u32)vk_hash(mask + 12, 2 * sizeof(u32));
+    if (queried) mix ^= (u32)vk_hash(mask + 14, SH_QUERY_WORDS * sizeof(u32));
     /* the set from every bit of the key, mixed by multiplying: programs are 256-byte aligned, and a shift and xor of
        their addresses left most sets unused */
     u64 hk = (gva * 0x9E3779B97F4A7C15ull) ^ (gva_a * 0xC2B2AE3D27D4EB4Full) ^ ((u64)mix << 24) ^ (u64)stage;
@@ -826,30 +845,32 @@ static VkPipeline pipe_create(const Pipe* e) {
     memset(&ts, 0, sizeof ts);
     ts.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
     ts.patchControlPoints = k->patch;
+    /* the key's layout: none with dynamic vertex input, which the draws set */
+    const VertexLayout* l = &k->vi;
     VkVertexInputBindingDescription vb[33];
     VkVertexInputBindingDivisorDescriptionEXT dv[33];
     u32 ndv = 0;
-    for (u32 i = 0; i < k->nbind; i++) {
+    for (u32 i = 0; i < l->nbind; i++) {
         vb[i] = (VkVertexInputBindingDescription){.binding = i,
-                                                  .stride = k->bind[i].stride, /* 0: dynamic */
-                                                  .inputRate = k->bind[i].divisor ? VK_VERTEX_INPUT_RATE_INSTANCE
+                                                  .stride = l->bind[i].stride, /* 0: dynamic */
+                                                  .inputRate = l->bind[i].divisor ? VK_VERTEX_INPUT_RATE_INSTANCE
                                                                                   : VK_VERTEX_INPUT_RATE_VERTEX};
-        if (k->bind[i].divisor > 1 && g_vk.has_divisor)
-            dv[ndv++] = (VkVertexInputBindingDivisorDescriptionEXT){i, k->bind[i].divisor};
+        if (l->bind[i].divisor > 1 && g_vk.has_divisor)
+            dv[ndv++] = (VkVertexInputBindingDivisorDescriptionEXT){i, l->bind[i].divisor};
     }
     VkVertexInputAttributeDescription va[32];
-    for (u32 i = 0; i < k->nattr; i++)
-        va[i] = (VkVertexInputAttributeDescription){k->attr[i].loc, k->attr[i].binding, (VkFormat)k->attr[i].format,
-                                                    k->attr[i].offset};
+    for (u32 i = 0; i < l->nattr; i++)
+        va[i] = (VkVertexInputAttributeDescription){l->attr[i].loc, l->attr[i].binding, (VkFormat)l->attr[i].format,
+                                                    l->attr[i].offset};
     VkPipelineVertexInputDivisorStateCreateInfoEXT dvi = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT,
         .vertexBindingDivisorCount = ndv,
         .pVertexBindingDivisors = dv};
     VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
                                                .pNext = ndv ? &dvi : NULL,
-                                               .vertexBindingDescriptionCount = k->nbind,
+                                               .vertexBindingDescriptionCount = l->nbind,
                                                .pVertexBindingDescriptions = vb,
-                                               .vertexAttributeDescriptionCount = k->nattr,
+                                               .vertexAttributeDescriptionCount = l->nattr,
                                                .pVertexAttributeDescriptions = va};
     VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                  .topology = (VkPrimitiveTopology)k->topo_class};
@@ -927,7 +948,7 @@ static VkPipeline pipe_create(const Pipe* e) {
                                               .logicOp = k->logic_op ? (VkLogicOp)(k->logic_op - 1) : VK_LOGIC_OP_COPY,
                                               .attachmentCount = k->ncolor,
                                               .pAttachments = cba};
-    VkDynamicState dyn[21 + 2] = {VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT,
+    VkDynamicState dyn[21 + 3] = {VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT,
                                   VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT,
                                   VK_DYNAMIC_STATE_CULL_MODE,
                                   VK_DYNAMIC_STATE_FRONT_FACE,
@@ -952,8 +973,9 @@ static VkPipeline pipe_create(const Pipe* e) {
     /* without the feedback loop's dynamic state, a pipeline enables the loop with a flag (k->feedback) instead */
     if (g_vk.has_feedback_dynamic) dyn[ndyn++] = VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT;
     /* the stride is set by vkCmdBindVertexBuffers2, which a draw without vertex buffers never calls: a pipeline without
-       bindings leaves it out */
-    if (k->nbind && g_vk.has_dynamic_stride) dyn[ndyn++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
+       bindings leaves it out. With dynamic vertex input the draw's layout holds its strides */
+    if (l->nbind && g_vk.has_dynamic_stride) dyn[ndyn++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
+    if (g_vk.vertex_input_dynamic) dyn[ndyn++] = VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = ndyn,
                                            .pDynamicStates = dyn};
@@ -1498,8 +1520,9 @@ static int pf_key_holds(const PipeKey* k) {
         if (sh->indexed) arrays |= 1u << shader_vk_set(sh->stage);
         if (i == 0) in = sh->si.in_mask;
     }
-    for (u32 i = 0; i < k->nattr; i++) attrs |= 1u << k->attr[i].loc;
-    return arrays == k->arrays && attrs == in;
+    for (u32 i = 0; i < k->vi.nattr; i++) attrs |= 1u << k->vi.attr[i].loc;
+    /* with dynamic vertex input a key holds no layout, which the draws give */
+    return arrays == k->arrays && (g_vk.vertex_input_dynamic ? !k->vi.nattr && !k->vi.nbind : attrs == in);
 }
 /* on the reading thread: a pipeline of the file, whose shaders were made, queued to the workers behind the draws'. In
    a file being rebuilt it is recorded in the new one, whose shader records its modules have */
@@ -1509,7 +1532,7 @@ static void pf_load_pipe(void* ctx, const u64 m[5], const void* key, u32 keylen)
     p = calloc(1, sizeof *p);
     if (!p) return;
     memcpy(&p->k, key, sizeof p->k);
-    if (p->k.nattr > 32 || p->k.nbind > 33 || p->k.ncolor > 8) { /* pipe_create's arrays */
+    if (p->k.vi.nattr > 32 || p->k.vi.nbind > 33 || p->k.ncolor > 8) { /* pipe_create's arrays */
         free(p);
         return;
     }
@@ -1582,7 +1605,11 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   g_vk_stage_sets,
                   g_vk_buffer_image_slots,
                   d->limits.maxPerStageDescriptorStorageImages,
-                  d->limits.maxDescriptorSetStorageImages};
+                  d->limits.maxDescriptorSetStorageImages,
+                  (u32)g_vk.vertex_input_dynamic};
+    /* the last word, dynamic vertex input, only where it is on: its keys hold no vertex layout (PipeKey.vi), and the
+       files of every device without it keep the key they have */
+    size_t ncaps = sizeof caps / sizeof *caps - !g_vk.vertex_input_dynamic;
     /* a tree with changes builds under one commit name: the runtime's own bytes tell those builds apart. Not its
        modification time, which a copy of the same runtime (each game has one) changes */
     if (len >= 6 && !strcmp(commit + len - 6, "-dirty")) {
@@ -1595,17 +1622,19 @@ static void pf_key(char* out, size_t n, size_t* guest) {
         free(self);
     }
     for (int i = 0; i < 16; i++) snprintf(uuid + 2 * i, 3, "%02x", d->pipelineCacheUUID[i]);
-    int g = snprintf(out, n, "guest=%d gpu=%04x:%04x features=%016llx caps=%016llx sizes=%u,%u,%u,%u;",
-                     PF_GUEST_VERSION, d->vendorID, d->deviceID,
-                     (unsigned long long)vk_hash(&g_vk.feat, sizeof g_vk.feat),
-                     (unsigned long long)vk_hash(caps, sizeof caps), (unsigned)sizeof(PipeKey),
-                     (unsigned)sizeof(PfSource), (unsigned)sizeof(PfPipe), (unsigned)sizeof(ShXfb));
+    int g =
+        snprintf(out, n, "guest=%d gpu=%04x:%04x features=%016llx caps=%016llx sizes=%u,%u,%u,%u;", PF_GUEST_VERSION,
+                 d->vendorID, d->deviceID, (unsigned long long)vk_hash(&g_vk.feat, sizeof g_vk.feat),
+                 (unsigned long long)vk_hash(caps, ncaps * sizeof *caps), (unsigned)sizeof(PipeKey),
+                 (unsigned)sizeof(PfSource), (unsigned)sizeof(PfPipe), (unsigned)sizeof(ShXfb));
     *guest = g > 0 && (size_t)g < n ? (size_t)g : 0;
     if (*guest)
         snprintf(out + *guest, n - *guest, " %s%s driver=%u api=%u uuid=%s ftz=%d quad=%d sizes=%u,%u vertex_bounds=%d",
                  snx_build_info(), exe, d->driverVersion, d->apiVersion, uuid, g_vk_ftz, g_shader_quad,
                  (unsigned)sizeof(ShaderInfo), (unsigned)sizeof(PfShader), g_vk.has_vertex_robustness2);
 }
+
+void vk_pipeline_file_key(char* out, size_t n, size_t* guest) { pf_key(out, n, guest); }
 
 /* ---- the shaders of the programs the game ships (gpu/shipped_pass.c finds them), translated before a draw asks */
 #define SHIP_MAX (4ull << 30) /* the shipped file's limit: one game's 2,700 programs made 245 MB of SPIR-V */
@@ -1719,6 +1748,11 @@ static void pf_ship_rec(void* ctx, u32 type, const u8* p, u32 len, u64 at) {
         scan_add(w[0], w[1]);
     } else if (type == PF_SHADER && ship_record(p, len, &r, &cbr) && ship_key_only_clip(r.mask))
         idx_add(r.hash, (int)r.stage, r.mask[6], r.clen, r.qh, r.clen_a, r.qh_a, at);
+    else if (type == PF_ZSHADER && len >= sizeof r) { /* its PfShader as it is: the rest is unpacked once a draw asks */
+        memcpy(&r, p, sizeof r);
+        if (r.stage <= ST_FS && ship_key_only_clip(r.mask))
+            idx_add(r.hash, (int)r.stage, r.mask[6], r.clen, r.qh, r.clen_a, r.qh_a, at);
+    }
 }
 /* on the reading thread: a record of the scan file, into the scans' set */
 static void pf_scan_rec(void* ctx, u32 type, const u8* p, u32 len, u64 at) {
@@ -1729,10 +1763,11 @@ static void pf_scan_rec(void* ctx, u32 type, const u8* p, u32 len, u64 at) {
     memcpy(w, p, sizeof w);
     if (w[0] == SHIP_NONE) scan_add(w[0], w[1]);
 }
-/* the shipped file's record that starts at at, into r, its check, its reads and its SPIR-V: NULL when it isn't one */
-static const u32* ship_payload(u64 at, PfShader* r, u64* check, const u32** cbr) {
+/* the shipped file's record that starts at at, into r, its check, its reads and its SPIR-V: NULL when it isn't one.
+   A packed one's are in *owned, for the caller to free once the module is made */
+static const u32* ship_payload(u64 at, PfShader* r, u64* check, const u32** cbr, u8** owned) {
     u32 n = 0;
-    const u8* p = pf_payload(&g_pf.ship, at, &n, check);
+    const u8* p = pf_payload(&g_pf.ship, at, &n, check, owned);
     return ship_record(p, n, r, cbr);
 }
 /* on the reading thread: a PF_SHIPREF of the main file, a shader of the shipped file that an earlier run's draw found,
@@ -1740,10 +1775,12 @@ static const u32* ship_payload(u64 at, PfShader* r, u64* check, const u32** cbr)
 static u64 pf_load_shipref(void* ctx, u64 at, u64 check) {
     PfShader r;
     u64 c = 0;
+    u8* owned;
     const u32* cbr;
-    const u32* spv = ship_payload(at, &r, &c, &cbr);
+    const u32* spv = ship_payload(at, &r, &c, &cbr, &owned);
     VkSh* s = spv && c == check ? sh_from_record(&r, cbr, spv) : NULL;
     (void)ctx;
+    free(owned); /* sh_from_record copied the reads */
     if (!s) return 0;
     pf_sh_append(s);
     return mod_bits(s->mod);
@@ -1758,16 +1795,18 @@ static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[20], u32 len, u64 qh,
     const u32 *spv, *cbr;
     PfShader r;
     u64 check = 0;
+    u8* owned;
     VkSh* s;
     if (!g_pf.on || !__atomic_load_n(&g_pf.ship_ready, __ATOMIC_ACQUIRE) || !ship_key_only_clip(mask) ||
         !(e = idx_slot(h, stage, mask[6], len, qh, len_a, qh_a)) || !e->at)
         return NULL;
-    spv = ship_payload(e->at, &r, &check, &cbr);
+    spv = ship_payload(e->at, &r, &check, &cbr, &owned);
     /* the record there is the one indexed, unless another process rewrote the file before it was mapped again */
-    if (!spv || r.hash != h || r.stage != (u32)stage || r.clen != len || r.qh != qh || r.clen_a != len_a ||
-        r.qh_a != qh_a || memcmp(r.mask, mask, sizeof r.mask))
-        return NULL;
-    s = sh_from_record(&r, cbr, spv);
+    s = !spv || r.hash != h || r.stage != (u32)stage || r.clen != len || r.qh != qh || r.clen_a != len_a ||
+                r.qh_a != qh_a || memcmp(r.mask, mask, sizeof r.mask)
+            ? NULL
+            : sh_from_record(&r, cbr, spv);
+    free(owned); /* sh_from_record copied the reads */
     if (!s) return NULL;
     if (!vk_cb_reads_hold(&s->cbr, sh_cb_read)) {
         vkDestroyShaderModule(g_vk.dev, s->mod, NULL);
@@ -1973,6 +2012,8 @@ static void pf_load(void* arg) {
     SNX_ZONE(z_load, "pipeline file load");
     pf_key(key, sizeof key, &guest);
     g_pf.ship.max = SHIP_MAX;
+    g_pf.ship.pack = g_settings.compress_prepared_shaders ? PF_PACK_SHADERS : 0;
+    g_pf.file.pack = g_settings.compress_shader_cache ? PF_PACK_UNITS : 0;
     pf_open_mapped(&g_pf.ship, g_pf.ship_path, key, pf_ship_rec, NULL);
     pf_open(&g_pf.file, g_pf.path, key, guest, &load, loaded);
     LOG("vulkan: %u shaders and %u pipelines of earlier runs loaded from %s in %llu ms, the pipelines to be made in "

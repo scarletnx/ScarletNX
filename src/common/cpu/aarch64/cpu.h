@@ -569,7 +569,7 @@ SNX_INLINE u32 snx_cas8(u8* p, u8 expected, u8 desired) {
     return __atomic_compare_exchange_n(p, &expected, desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
 }
 /* one atomic 16-byte compare-and-swap of both halves (p[0] the low one): cmpxchg16b on x86-64, lqarx/stqcx. on
-   POWER8, c->rt->cas128 on RISC-V, LoongArch and PowerPC64 builds for an older baseline */
+   POWER8, c->rt->cas128 on RISC-V, LoongArch, MIPS64 and PowerPC64 builds for an older baseline */
 u32 snx_cas128(CPU* c, u64* p, u64 o0, u64 o1, u64 n0, u64 n1);
 /* ABI 3 made these and snx_cas128 atomic, so modules from before are refused */
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__

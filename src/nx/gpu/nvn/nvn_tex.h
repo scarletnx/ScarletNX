@@ -16,13 +16,25 @@ typedef struct {
     u64 size, layer_size;      /* the storage's bytes, and a layer's */
     u32 align, layers, bpb;    /* alignment, layer count, bytes per block */
     unsigned tile_h, tile_d;   /* block height and depth (log2 of the GOB count) */
+    unsigned tile_w;           /* a sparse texture's tile, its GOBs across (log2): a level at least a tile wide, high
+                                  and deep has rows of whole tiles. 0 for a texture that isn't sparse */
 } NvnTexLayout;
 
 void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o);
+/* The 64 KiB tile of a sparse texture (SPARSE, block linear; 2D, 3D, an array or a cube; 1, 2, 4, 8 or 16 bytes a
+   block), in blocks across, down and deep: the standard shapes the game's driver answers, 2D 256x256, 256x128,
+   128x128, 128x64 and 64x64, 3D 64x32x32, 32x32x32, 32x32x16, 32x16x16 and 16x16x16 by those bytes. 0 for a texture
+   that has none. nvn_tex_layout lays such a texture out in blocks as high and deep as the tile, so that each 64 KiB
+   page holds one tile, the tiles across, then down, then deep, a row of them whole where the texture ends inside its
+   last tile (tile_w) */
+int nvn_tex_sparse_tile(const NvnTexDesc* d, u32 tile[3]);
 /* a level's offset from its layer's start */
 u64 nvn_tex_level_offset(const NvnTexDesc* d, unsigned level);
 /* the block height and depth level `level` is laid out with (log2 of the GOBs): they shrink with its rows and slices */
 void nvn_tex_level_tiles(const NvnTexDesc* d, unsigned level, unsigned* tile_h, unsigned* tile_d);
+/* the GOBs across a block-linear level's rows: its bytes in whole GOBs, or a sparse texture's whole tiles at a level at
+   least a tile wide, high and deep (tile_w). A target or a copy of the level is that wide in memory */
+u32 nvn_tex_level_gobs(const NvnTexDesc* d, unsigned level);
 /* the bytes from a block-linear volume level's start to its depth slice z */
 u64 nvn_tex_slice_offset(const NvnTexDesc* d, unsigned level, u32 z);
 /* the 3D engine's sample layout (gpu/draw_state.h DS_MSAA_) of NVN's sample count, as the game's driver writes it

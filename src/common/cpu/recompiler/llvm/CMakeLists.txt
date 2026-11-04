@@ -98,6 +98,21 @@ if(snx_clang_major GREATER snx_llvm_major)
                             "translate. Use a Clang no newer than LLVM ${snx_llvm_major}, or an LLVM as new as this "
                             "Clang.")
     endif()
+    # a cross build's is the target's program (pkgsrc's in a NetBSD sysroot), which this machine may not run, and a
+    # newer one writes the same unreadable bitcode: SNX_LLVM_AS then names one of this machine's
+    execute_process(COMMAND "${SNX_LLVM_AS}" --version RESULT_VARIABLE snx_llvm_as_result
+                    OUTPUT_VARIABLE snx_llvm_as_version ERROR_VARIABLE snx_llvm_as_error)
+    string(REGEX MATCH "LLVM version ([0-9]+)" snx_llvm_as_match "${snx_llvm_as_version}")
+    if(NOT snx_llvm_as_result STREQUAL "0" OR NOT snx_llvm_as_match)
+        string(STRIP "${snx_llvm_as_result} ${snx_llvm_as_error}" snx_llvm_as_error)
+        message(FATAL_ERROR "SNX_LLVM_AS=${SNX_LLVM_AS} does not run here (${snx_llvm_as_error}): set SNX_LLVM_AS to "
+                            "an llvm-as of LLVM ${snx_llvm_major} this machine runs, or use a Clang no newer than "
+                            "LLVM ${snx_llvm_major}.")
+    endif()
+    if(CMAKE_MATCH_1 GREATER snx_llvm_major)
+        message(FATAL_ERROR "SNX_LLVM_AS=${SNX_LLVM_AS} is LLVM ${CMAKE_MATCH_1}, whose bitcode LLVM "
+                            "${SNX_LLVM_VERSION} cannot read: set SNX_LLVM_AS to an llvm-as of LLVM ${snx_llvm_major}.")
+    endif()
     add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_ir_raw.ll"
         COMMAND "${CMAKE_C_COMPILER}" ${snx_rtlib_flags} -g0 -emit-llvm -S -I "${CMAKE_CURRENT_BINARY_DIR}"
             -I "${PROJECT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/rtlib.c"

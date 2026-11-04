@@ -28,4 +28,8 @@ void gui_cleaned_free(GuiCleaned* done);
    each said with both paths; only, NULL-terminated, names the entries to move (NULL: every one). With apply false
    nothing is touched and the entries say what would move; with it, old goes once it is empty. How many move */
 int gui_move_entries(GuiCleaned* done, const char* old, const char* now, const char* const* only, bool apply);
+/* the note beside the save folder old (<old>.version, SNX_SAVE_NOTE), when there is one, to <now>.version beside the
+   folder the save moves to, as gui_move_entries moves an entry and says it: one at the new place stays, and the
+   old one with it. 1 when it moves (or would, without apply) */
+int gui_move_save_note(GuiCleaned* done, const char* old, const char* now, bool apply);
 #endif

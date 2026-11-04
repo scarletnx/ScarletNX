@@ -4,12 +4,14 @@
 
 ## Index
 
+* [Measure NVN storage ordering](#measure-nvn-storage-ordering)
 * [Measure descriptor submission](#measure-descriptor-submission)
 * [Search for faster GPU settings](#search-for-faster-gpu-settings)
 * [Rebuild / checks](#rebuild--checks)
 * [Run / diagnose](#run--diagnose)
 * [Profiling](#profiling)
 * [Shaders](#shaders)
+* [Vertex input](#vertex-input)
 * [SVCs](#svcs)
 * [Provenance](#provenance)
 
@@ -21,6 +23,41 @@ the examples name its folders on Linux, and `--data DIR` keeps a run's files in 
 ```sh
 games=~/.local/share/scarletnx/recompiled work=~/.cache/scarletnx/work
 ```
+
+## Measure NVN storage ordering
+
+`nvn_storage_order=2` is the default. It defers each storage-order requirement until a dependent buffer use.
+Mode 1 emits the required barriers at their command-stream points. Mode 0 retains conservative per-draw storage
+dependencies for controlled comparisons or older command recordings. NVN permits draws to overlap until an explicit
+ordering command. A writable storage view can cover the same buffer in many draws even when each draw writes a
+different word. Treating that view alone as a dependency ended the render pass at each reuse. NVN graphics draws now use the command stream's execution and shader-data barriers for that
+ordering. Barrier flags survive recording and command copies. Shader instruction invalidation remains separate.
+
+Maxwell draws, compute bindings and transform feedback retain conservative write ordering. Read-only consumers,
+internal copies, submission boundaries and CPU readbacks keep their visibility and lifetime checks.
+Upstream fragment and texture barriers remain in the NVN command path. The descriptor-buffer setting retains its
+existing choice of whether those barriers can be omitted.
+
+```sh
+cmake --build build --target snx-test-vulkan
+python3 tools/bench_nvn_draws.py --out /local/scratch/nvn-draw-search
+```
+
+The Python search checks descriptor sets and descriptor buffers, each with and without the recording thread.
+Every supported backend first runs the exact headless renderer checks. The fixture also checks a dependent GPU read
+and a read followed by an in-place overwrite, with no host wait between the operations. Then shuffled serial rounds
+compare the conservative, immediate explicit and deferred explicit ordering paths on identical synthetic draws. One
+vertex writes one distinct word per draw through overlapping storage views. The fixture checks every output byte
+and records render-pass counts.
+It warms pipelines before timing and includes GPU completion in each batch's time.
+
+A candidate must run the requested backend and pass every output check. The explicit path must beat its matching
+conservative baseline by at least 3 percent in every paired round to qualify. Logs and the binary fingerprint go
+into the output folder. The result is specific to this workload and does not establish a game FPS improvement.
+
+When the upstream ABI changes, build a matching AOT module before the gameplay comparison. A cold JIT-only boot
+that compiles guest code but submits no GPU work has not exercised draw barriers. A successful exit without presented
+frames does not verify the renderer.
 
 ## Measure descriptor submission
 
@@ -45,8 +82,9 @@ configurations. This is a CPU submission benchmark, not a prediction of game FPS
 ## Search for faster GPU settings
 
 `tools/tune_gpu.py` tests execution strategies and then tries combinations around the fastest candidates.
-It searches descriptor sets versus descriptor buffers, Vulkan recording, guest thread scheduling and buffer memory paths. It searches compiler worker counts
-when the logs show compilation. Resolution, shadows, filtering and effects stay fixed. Async pipelines stay off,
+It searches NVN storage ordering, descriptor sets versus descriptor buffers, Vulkan recording, guest thread scheduling
+and buffer memory paths. Storage ordering only competes when the log confirms that the NVN loader is active.
+It searches compiler worker counts when the logs show compilation. Resolution, shadows, filtering and effects stay fixed. Async pipelines stay off,
 so a candidate cannot win by skipping draws. It does not edit source code or apply settings.
 
 ```sh
@@ -96,7 +134,8 @@ FS tests use production tree/HLE + synthetic temp data; `--only tree|service` se
 
 CI: Linux/Windows builds, ABI syntax, native tool/FS regressions, optional Python diagnostics, the Linux AppImages
 and the Windows zip (each then run as installed), the Android APK, and [edenprobe](EDENPROBE.md)'s probes on lavapipe
-against the cases that passed before (`scripts/edenprobe.py`). `.github/workflows/publish.yml` publishes what
+against the cases that passed before (`scripts/edenprobe.py`). A push to `main` cancels the build of the one before it
+still running, as a push to a pull request does that pull request's. `.github/workflows/publish.yml` publishes what
 builds everywhere, each said on Discord (`scripts/publish-builds.py`): a version tag pushed (`v1.0.0`; `v1.0.0-rc1` a
 prerelease) as this repository's release of it, the latest, its notes listing the changes since the version before;
 each push to `main` as a release of [scarletnx/nightly](https://github.com/scarletnx/nightly/releases), the newest 30
@@ -322,6 +361,33 @@ that one is tried first. A new opcode is a row there (its `O_` name then exists 
 `ctest -R 'shaderdec|shader_decode'` checks the spec and decodes every row back to itself.
 `[Debug] shader_corpus=` in the game's INI does the same for every run. Where the game gets no command line
 (Android), its INI's `[Debug] diag=1` keeps each shader's entry in `captures/shaders` beside the game, for the same `snx-shaderc`.
+
+## Vertex input
+
+A pipeline is made per key (`src/nx/gpu/vk/pipeline.c`, `PipeKey`), and the vertex layout a program is drawn with,
+its attributes' formats and offsets and its bindings' strides and divisors, is part of the key unless it is dynamic
+state. Where the GPU's driver has `VK_EXT_vertex_input_dynamic_state` and its `vertexInputDynamicState` feature,
+each draw sets its layout in the command buffer instead (`vkCmdSetVertexInputEXT`), and one pipeline serves every layout
+of a program: the pipelines kept across runs of one game, 1984 with the layout in the key, come to 1218. The setting
+is `vertex_input_dynamic_state` ([Settings](SETTINGS.md#graphics)): `auto`, `on` or `off`, with the drivers known to
+draw it wrong (`src/nx/gpu/vk/vertex_input.c`) taking the layout in the key under `auto`. The log's
+`vulkan: vertex_input_dynamic_state=` line says which a run takes, with the device, its driver and version.
+
+A draw sets the layout when it differs from the one its command buffer has. A new command buffer, a pipeline that
+holds its own layout (the multisample resolves, the on-screen controls) and the renderer's own draws (a clear of some
+color components, which reads no vertices) leave the next draw to set it again. The pipelines kept for the next run
+(`<id>.vkshaders`) are made again when the choice changes: the file's key holds it.
+
+```sh
+"$games/Game/Game" --vertex_input_dynamic_state=off   # a pipeline per layout, to compare
+ctest --test-dir build -R 'vk_vertex_input|vulkan_headless'
+```
+
+`vk_vertex_input` checks the setting's values, its row read from a game's `.ini` written before it, the bans against
+stand-in devices and the log line of each case. `vulkan_headless` (`-DSNX_TEST_VULKAN=ON`) watches what every draw
+of its checks finds in its command buffer: a draw with a dynamic layout and none set fails it. Its vertex input check
+draws one program with three layouts in one command buffer, and `vulkan_headless_vertex_input_off` runs every check
+again with the layout in the key.
 
 ## SVCs
 

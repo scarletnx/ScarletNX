@@ -10,8 +10,8 @@ extern "C" {
 #endif
 /* program stages; the values index tables and are stored in the corpus */
 enum { ST_VS = 0, ST_TCS = 1, ST_TES = 2, ST_GS = 3, ST_FS = 4, ST_CS = 5 };
-#define SH_MAXTEX         64 /* texture slots per program */
-#define SH_INDEXED_TABLES 10 /* indexed texture tables per program */
+#define SH_MAXTEX          64 /* texture slots per program */
+#define SH_INDEXED_TABLES  10 /* indexed texture tables per program */
 /* A 1D texture is bound as a 2D image, and a buffer texture longer than a row of one as rows of 2^SH_TEXEL_ROW_SHIFT
    texels (texture.c): a 1D texel fetch at x reads (x mod row, x / row) of it, which is (x, 0) for every texture that
    fits one row */
@@ -82,8 +82,8 @@ typedef struct {
     int fp32_flush, fp32_preserve;
     u32 gbuf_cbuf_off[16]; /* the global buffers found, by where a constant buffer holds their address (SH_GBUF_*) */
     int ngbuf;
-    int unsupported; /* instructions or forms translation refused */
-    char first_unsupported[96]; /* the longest: an untracked global memory base with its writer */
+    int unsupported;            /* instructions or forms translation refused */
+    char first_unsupported[96]; /* the longest: an untracked handle with its writer's constant (93 bytes) */
     u32 cs_local[3];
     int shared_size;
     u32 gbuf_wmask; /* global buffers the program writes */
@@ -97,7 +97,7 @@ typedef struct {
        primitive's vertex count */
     u64 tex_int_mask, tex_sint_mask;
     u32 rt_int_mask, rt_sint_mask; /* FS/CS bits 8-15 also key storage image stores' integer and signed types */
-    u32 gp_skip_mask[8]; /* GS key: POST_VTG_SHADER_ATTRIB_SKIP_MASK, a bit per scalar attribute */
+    u32 gp_skip_mask[8];           /* GS key: POST_VTG_SHADER_ATTRIB_SKIP_MASK, a bit per scalar attribute */
     /* FS key: color textures sampled with a depth compare (TEX.DC compares their first component, which a Vulkan
        compare sampler can't do on a color format): the slots, and their compare functions, 3 bits each in slot
        order */
@@ -116,9 +116,41 @@ typedef struct {
        force_early_z has them: a program that stores to images or buffers then leaves no trace for fragments they
        reject */
     u32 early_fragment_tests;
-    ShXfb xfb; /* key: transform feedback's capture of this program's outputs */
+    ShXfb xfb;           /* key: transform feedback's capture of this program's outputs */
     int writes_viewport; /* the last vertex stage selects one of the 16 viewport/scissor pairs */
+    /* key (fragment, vertex and compute programs): texture slots whose header takes unnormalized coordinates (TIC
+       word 5 bit 31 clear, NVN's rectangle textures, 2D): their sample coordinates are texels, divided here by the
+       size, as Ryujinx's TexturePass and Eden's texture_pass do */
+    u64 tex_rect_mask;
+    /* key (fragment, vertex and compute programs): the dimension of the texture slots only a TXQ names (tex_query_mask, set by the
+       translation: no TEX or TLD of the program reads the same handle, so TXQ, which doesn't say, is translated as a
+       2D query; a bound query's texture may be read bindlessly in the same program). Each the header's: 1 + its
+       ShTex type (0 1D, 1 2D, 2 3D, 3 cube), + 4 for an array; 0 when nothing is known yet */
+    u8 tex_query_hint[SH_MAXTEX];
+    u64 tex_query_mask;
 } ShaderInfo;
+/* ShaderInfo.tex_query_hint in a graphics key's words (vk_shader_get's mask words 14 to 19: 3 bits a slot, the 64
+   slots in 6 words), and back. A 1D header's hint (1) goes as none: its query is the 2D slot's, a texel high, as the
+   translation binds 1D textures */
+#define SH_QUERY_WORDS 6
+static inline void shader_query_hint_pack(const u8 hint[SH_MAXTEX], u32 words[SH_QUERY_WORDS]) {
+    for (int i = 0; i < SH_QUERY_WORDS; i++) words[i] = 0;
+    for (int k = 0; k < SH_MAXTEX; k++) {                       /* a slot's 3 bits may straddle two words */
+        u64 v = hint[k] > 1 && hint[k] <= 8 ? hint[k] - 1u : 0; /* 1 to 7: hints 2 to 8 */
+        int at = 3 * k;
+        v <<= at % 32;
+        words[at / 32] |= (u32)v;
+        if (at / 32 + 1 < SH_QUERY_WORDS) words[at / 32 + 1] |= (u32)(v >> 32);
+    }
+}
+static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 hint[SH_MAXTEX]) {
+    for (int k = 0; k < SH_MAXTEX; k++) {
+        int at = 3 * k;
+        u64 w = words[at / 32] | (at / 32 + 1 < SH_QUERY_WORDS ? (u64)words[at / 32 + 1] << 32 : 0);
+        u32 v = (u32)(w >> (at % 32)) & 7;
+        hint[k] = v ? (u8)(v + 1) : 0;
+    }
+}
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs has room for */
 /* Each stage has a descriptor set (shader_vk_set), its bindings grouped by kind. */
 #define SNX_VKB_CB       0                         /* 18 constant buffers */
@@ -167,9 +199,9 @@ extern int g_shader_draw_parameters;
    draw's are in its record, on the GPU: with draw parameters, a vertex program's reads of these words take
    BaseVertex and BaseInstance where the push constant's z has SH_PUSH_GPU_BASE_VERTEX and SH_PUSH_GPU_BASE_INSTANCE
    set (render.c) */
-#define SH_CB0_BASE_VERTEX 0x640u
-#define SH_CB0_BASE_INSTANCE 0x644u
-#define SH_PUSH_GPU_BASE_VERTEX 1u
+#define SH_CB0_BASE_VERTEX        0x640u
+#define SH_CB0_BASE_INSTANCE      0x644u
+#define SH_PUSH_GPU_BASE_VERTEX   1u
 #define SH_PUSH_GPU_BASE_INSTANCE 2u
 /* quad operations in fragment programs (the subgroup's QUAD bit): SHFL within a quad reads its helper lanes. 1 offline */
 extern int g_shader_quad;
@@ -197,6 +229,17 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                      int can_preserve, int can_preserve_f64, int can_subgroup);
 u32* shader_compute_to_spirv(const u8* code, u32 max_bytes, ShaderInfo* si, size_t* word_count, int can_flush,
                              int can_preserve);
+/* shared_reach.c: one past the highest byte of shared memory a compute program (code, readable up to max_bytes, of
+   blocks local[0] x local[1] x local[2]) can touch with LDS, STS, ATOMS and ATOMS.CAS as its translation runs it, 0
+   for none, and SH_SHARED_ANY when an address has no bound the walk proves: a value from memory or a constant buffer,
+   a loop's counter, a 32-bit product of registers, a call, a jump table or more than 4096 blocks */
+#define SH_SHARED_ANY 0xFFFFFFFFu
+u32 shader_shared_reach(const u8* code, u32 max_bytes, const u32 local[3]);
+/* the shared memory a compute program declares on a device that gives a block device_max bytes, for a launch asking
+   for shm: 1 with shm in *size when it fits, or device_max when shader_shared_reach (in *reach) proves no access goes
+   past that; 0 when one may, the dispatch then left out */
+int shader_shared_fit(const u8* code, u32 max_bytes, const u32 local[3], u32 shm, u32 device_max, u32* size,
+                      u32* reach);
 /* reads word off (bytes) of constant buffer idx for jump tables, into *out as a host number: 1 when it could. Set by
    whoever translates, NULL offline */
 extern int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);

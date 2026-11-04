@@ -23,6 +23,10 @@ void ctr_call(SnxCtrProcess* p, uint32_t handle, const uint32_t* words, unsigned
               uint32_t result);
 /* A command of only its header, which succeeds on the session. It returns the header of the reply. */
 uint32_t ctr_send_header(SnxCtrProcess* p, uint32_t session, uint32_t header);
+/* a session to srv:, through its port */
+uint32_t ctr_srv(SnxCtrProcess* p);
+/* a session to the service of that name, from GetServiceHandle on srv */
+uint32_t ctr_service_handle(SnxCtrProcess* p, uint32_t srv, const char* name);
 /* a field of 2 or 4 bytes of hid:USER's shared memory, little endian, as the game reads it */
 uint32_t ctr_hid_shared(SnxCtrProcess* p, uint32_t offset, unsigned size);
 unsigned ctr_object_count(SnxCtrProcess* p);

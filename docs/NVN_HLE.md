@@ -121,6 +121,12 @@ drivers' code (NVN 12.3 and 55.15, the same rules):
 - The ZCull area: 0 for a format without depth bits (stencil only counts with ZCULL_SUPPORT_STENCIL). Else 0x20 bytes
   for each 32x32 tile of each layer, plus 0xE0 of headers (nvdrv's ZCULL_GET_INFO answer).
 - A multisampled or rectangle texture has one level, whatever the builder says.
+- A SPARSE block-linear texture is mapped in 64 KiB tiles of the standard shapes (2D 256x256 to 64x64 blocks, 3D
+  64x32x32 to 16x16x16, by the block's bytes): its blocks are as high and deep as the tile, a level at least a tile
+  wide, high and deep has rows of whole tiles, and the storage is whole tiles. Each page is then one tile, the tiles
+  across, down and deep, where the game maps it, whether or not the texture ends inside its last tile across. Its
+  texture header gives the tile's GOBs across (word 3 bits 10-12, log2), as the driver writes it, and the renderer
+  pads the same rows with it.
 
 The layout (`nvn_tex_layout`) stays the texture's extent, which `tests/nvn_tex_storage.c` keeps inside the answered
 size over targets, formats, sizes, levels, samples and flags. The verify mode's storage sweep ran the driver's
@@ -221,8 +227,10 @@ called the recordings made there. The counts, from one NVN 55 driver's code:
 | a recording still open when the game adds control memory | 0x10, the link to the new memory |
 
 The driver keeps the last 0x10 bytes of the memory for that link. When the entries don't fit, it calls the memory
-callback with event 1 and 0x100 bytes at least, and stops the game if there is still no room: nvn counts nothing
-more then. It merges a range with the one before it when the two touch, which nvn doesn't model, so its count can be
+callback with event 1 and 0x100 bytes, and stops the game if there is still no room: nvn counts nothing
+more then. The room it checks is the entry's own bytes (0x20 for a range entry, also one of 0x18). The 0x100 is only
+what it asks the callback for, so a game that gives 0x100 bytes records there without a callback (the NVN drivers of
+SDK 6.5 and 19.3 both do this). It merges a range with the one before it when the two touch, which nvn doesn't model, so its count can be
 higher. A call also copies the callee's other entries (its compute binds), which nvn doesn't count: the handles of
 recordings in the runtime's memory are used again once their pieces come back, so a count kept by handle went to the
 wrong recording (a recording that calls the one before it at the same handle counted 0x18 more each frame, and one

@@ -57,6 +57,7 @@ typedef struct {
     Dead* dead;
     int ndead, capdead;
     u64 dead_bytes; /* device memory evicted cache entries among them release (vk_defer_bytes) */
+    u64 outgrown;   /* bytes of the rings this use of the frame outgrew, among its dead */
     /* descriptor pools, reset when the frame is reused and kept */
     VkDescriptorPool pool_d[64];
     int npool, ipool; /* pool_d[ipool] is the one allocating; the ones after it are reset and waiting */
@@ -301,6 +302,7 @@ static void frame_recycle(Frame* f) {
     dead_free(f);
     g_dead_bytes -= f->dead_bytes;
     f->dead_bytes = 0;
+    f->outgrown = 0;
     vkResetCommandPool(g_vk.dev, f->pool, 0);
     /* the pools stay, reset: a frame's draws fill several, and making them again every frame costs */
     for (int i = 0; i < f->npool; i++) vkResetDescriptorPool(g_vk.dev, f->pool_d[i], 0);
@@ -422,6 +424,7 @@ static int ring_take(Frame* f, Ring* r, u64 size, u64 align, VkBufferUsageFlags 
                dispatches still read its host writes (the readback ring has none) */
             if (r == &f->stage || r == &f->output) vmaFlushAllocation(g_vk.vma, r->mem, 0, VK_WHOLE_SIZE);
             dead_push(f, (Dead){.buf = r->buf, .mem = r->mem});
+            f->outgrown += r->cap;
         }
         u64 cap = r->cap ? r->cap * 2 : STAGE_MIN;
         if (r == &f->stage && f->istage) cap = g_vk.alloc_cap;
@@ -627,13 +630,50 @@ void vk_frame_next(void) {
    fps, 40.3 with these). Earlier submissions also land their storage results sooner, so the pending results a draw's
    buffers are looked up in stay fewer. 2 ms and 0.5 ms were both slower. The limit on submissions leaves room for
    these in a slow frame: one that reaches it records the rest in the other slot, and its present then waits for this
-   one's work */
-void vk_frame_check(void) {
+   one's work.
+   A frame's rings, and the ones it outgrew, come back only with its slot, so it also ends once it has written
+   VK_FRAME_RING_CAPS allocations' worth to them: a game's load that drew without a present for 8 s kept every ring it
+   made, GPU memory went from 270 to 1062 MiB, and a phone's system ended the app at its 4 GiB limit. What a frame
+   wrote counts, not its rings' size: a slot keeps its rings between uses, four of them, each up to an allocation */
+/* the bytes this use of the frame has written to rings: in the current ones, the spares it filled and the rings it
+   outgrew */
+static u64 frame_rings(const Frame* f) {
+    u64 n = f->stage.used + f->output.used + f->back.used + f->dev.used + f->outgrown;
+    for (u32 i = 0; i < f->istage; i++) n += f->stage_spare[i].cap;
+    return n;
+}
+static void frame_check(void) {
     const Frame* f = &g_fr[g_cur];
-    if (f->icb >= 128 || f->ipool >= 32 || vk_rec_frame_sets(g_cur) >= 32 * 1024 || !vk_descriptors_room(g_cur))
+    /* a fresh frame has recorded nothing, and its counts are still its last use's until frame_recycle: ending it
+       would only move on to the slot whose work was just submitted, and wait for it */
+    if (f->fresh) return;
+    u64 rings = frame_rings(f);
+    if (rings >= VK_FRAME_RING_CAPS * g_vk.alloc_cap) {
+        LOG_LIMIT(4,
+                  "vulkan: frame %llu ends before a present: %llu MiB written to its rings, %d allocations of %llu "
+                  "MiB\n",
+                  (unsigned long long)g_frame_id, (unsigned long long)(rings >> 20), VK_FRAME_RING_CAPS,
+                  (unsigned long long)(g_vk.alloc_cap >> 20));
+        vk_frame_next();
+    } else if (f->icb >= 128 || f->ipool >= 32 || vk_rec_frame_sets(g_cur) >= 32 * 1024 || !vk_descriptors_room(g_cur))
         vk_frame_next();
     else if (f->recording && plat_ns() - g_sub_ns >= SUBMIT_EVERY_NS)
         submit(NULL, NULL, 1, VK_SUB_PERIODIC);
+}
+void vk_frame_check(void) {
+    u64 ended = vk_submit_number(); /* the earlier draws' and dispatches' last, before any submit here */
+    frame_check();
+    vk_uma_settle(ended); /* on every way out: what they looked up is read by submits up to ended */
+}
+/* the bytes of ring memory every frame slot holds, spares and outgrown rings included */
+u64 vk_ring_bytes(void) {
+    u64 n = 0;
+    for (u32 s = 0; s < VK_FRAMES; s++) {
+        const Frame* f = &g_fr[s];
+        n += f->stage.cap + f->output.cap + f->back.cap + f->dev.cap + f->outgrown;
+        for (u32 i = 0; i < f->nstage; i++) n += f->stage_spare[i].cap;
+    }
+    return n;
 }
 
 u64 vk_submit_number(void) { return g_gval + 1; }

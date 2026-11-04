@@ -163,7 +163,9 @@ int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 api, u3
             if (image && (tt == TT_CUBE || tt == TT_CUBE_ARRAY)) tt = TT_2D_ARRAY;
             out[2] |= (u32)TIC_HDR_BLOCK_LINEAR << 21 | (u32)(image != 0) << 24;
             out[4] |= tt << 23 | 1u << 27 | 7u << 29;
-            out[3] |= (l.tile_h & 7) << 3 | (l.tile_d & 7) << 6 | 1u << 16 | 1u << 17 | 1u << 18;
+            /* bits 10-12: a sparse texture's tile width in GOBs (log2), which pads its big levels' rows to whole
+               tiles */
+            out[3] |= (l.tile_h & 7) << 3 | (l.tile_d & 7) << 6 | (l.tile_w & 7) << 10 | 1u << 16 | 1u << 17 | 1u << 18;
             out[6] |= 2u << 23 | 1u << 25; /* aniso fine spread: two, coarse: one */
         }
         out[5] |= (u32)!rect << 31;

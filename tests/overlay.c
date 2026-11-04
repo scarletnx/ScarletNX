@@ -15,6 +15,8 @@
 #include "gui/icons.h"
 #include "gui_theme_colors.h"
 #include "common/utilities/users.h"
+#include "common/utilities/mii_db.h"
+#include "common/utilities/mii_model.h"
 #include "common/utilities/common.h"
 #include "gui/splash.h"
 #include "common/utilities/endian.h"
@@ -47,6 +49,10 @@ void fatal(const char* fmt, ...) {
 }
 /* settings.txt's Display table, which holds the menu's Stats, names options.c's setter of the game's language */
 void options_language_set(const IniOpt* o, const char* v) {
+    (void)o;
+    (void)v;
+}
+void options_tv_mode_set(const IniOpt* o, const char* v) {
     (void)o;
     (void)v;
 }
@@ -247,6 +253,40 @@ static void prepare_screen(void) {
     prepare_screen_set(NULL, NULL, NULL, 0, NULL, 0, NULL, 0);
     assert(!prepare_screen_shown());
 }
+/* the height of the letters the screen before the game draws on a picture w x h with the theme's text_size (the
+   launcher's UI scale, 0 for its Auto), for a display at display_percent: its glyphs are 8 by 16 pixels times it */
+static float prepare_letters(int text_size, int w, int h, int display_percent) {
+    static SnxUiQuad q[4096];
+    SnxUiList l = {q, 0, 4096};
+    SnxPrepareStep st[1] = {{0}};
+    SnxRunTheme t = {0};
+    float letters = 0;
+    t.ink = 0xFFFFFFu;
+    t.text_size = text_size;
+    st[0].label = "PREPARING SHADERS";
+    st[0].value = 1;
+    st[0].total = 2;
+    prepare_screen_set(&t, "GAME", st, 1, NULL, 0, "FOOT", 1000);
+    prepare_screen_draw(&l, w, h, NULL, display_percent);
+    for (int i = 0; i < l.n; ++i)
+        if (q[i].h >= 16 && q[i].w * 2 == q[i].h) { /* a glyph */
+            assert(!letters || q[i].h == letters);  /* one size for all of them */
+            letters = q[i].h;
+        }
+    prepare_screen_set(NULL, NULL, NULL, 0, NULL, 0, NULL, 0);
+    return letters;
+}
+/* Its letters are the launcher's: its UI scale, else twice the display's scale, smaller only while 16 rows don't fit
+   the height; a 1280x720 window at 100% shows them 2x as the launcher does, not 1x */
+static void prepare_screen_size(void) {
+    assert(prepare_letters(0, 1280, 720, 100) == 32);  /* Auto at 100%: 2x, 22 rows */
+    assert(prepare_letters(0, 1920, 1080, 150) == 48); /* Auto at 150%: 3x */
+    assert(prepare_letters(1, 1920, 1080, 100) == 16); /* the launcher's 1x */
+    assert(prepare_letters(3, 1920, 1080, 100) == 48);
+    assert(prepare_letters(4, 1920, 1080, 100) == 64); /* 16 rows of 64 fit 1080 */
+    assert(prepare_letters(4, 1280, 720, 100) == 32);  /* 4x and 3x leave under 16 rows of 720: 2x */
+    assert(prepare_letters(2, 640, 200, 100) == 16);   /* never under 1x */
+}
 /* a tap on a row of the dialog drawn last, list.q[0] its page: rows from its top, items counted from its foot */
 static int tap_row(int row) {
     return overlay_tap(list.q[0].x + 10.0f, list.q[0].y + (float)(row * 16 * s) + 5.0f, SW, SH);
@@ -392,6 +432,7 @@ int main(void) {
     snx_pad_map_unset(&pads.own); /* as gamepad.c starts it: every control the button in its place */
     snx_pad_map_unset(&players[0].own);
     prepare_screen();
+    prepare_screen_size();
     assert(!overlay_shown());
     overlay_toggle();
     assert(overlay_shown());
@@ -999,9 +1040,10 @@ int main(void) {
         assert(!fatal_log_url("", url, sizeof url) && !*url);
         assert(!fatal_log_url("/tmp/a.log", NULL, 0));
     }
-    /* the user playing on the head's band: Player, without users.ini, and Wimsy, as the YoRHa theme has it (square),
-       in the atlas under the sprites; on the right of the band, its frame in the page colour and the nickname before
-       it; none on a stopped game's panel */
+    /* the user playing on the head's band: Player, without users.ini, as the YoRHa theme has it (square), in the
+       atlas under the sprites: Wimsy (no picture= and no picture file), and its Mii's (Baguette's) with
+       picture=mii; on the right of the band, its frame in the page colour
+       and the nickname before it; none on a stopped game's panel */
     {
         char why[256];
         u32* sprites = calloc((size_t)SNX_CONTROLS_ATLAS_WIDTH * SNX_CONTROLS_ATLAS_HEIGHT, 4);
@@ -1013,6 +1055,27 @@ int main(void) {
         assert(sprites && !snx_users_load("/nonexistent/users", 1, why, sizeof why));
         assert(g_user_count == 1 && !strcmp(snx_users_selected()->nickname, "Player"));
         assert(SNX_GUI_THEME_YORHA_PICTURE == 1); /* square: the frame is the fills' */
+        assert(!snx_users_selected()->picture_mii && snx_users_selected()->mii == 0);
+        g_users[0].picture_mii = 1; /* picture=mii: Baguette's face */
+        ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
+        a = ui_atlas(&w, &h, &version);
+        assert(a && h == SNX_CONTROLS_ATLAS_HEIGHT + SNX_UI_PICTURE);
+        { /* texel for texel the Mii's picture (mii_model.h), R G B A from the low byte, opaque */
+            static uint8_t rgba[SNX_UI_PICTURE * SNX_UI_PICTURE * 4];
+            uint8_t charinfo[SNX_MII_CHARINFO];
+            SnxMiiLook look;
+            snx_mii_db_charinfo(0, charinfo);
+            snx_mii_db_look(0, &look);
+            assert(!snx_mii_picture(charinfo, &look, SNX_UI_PICTURE, rgba));
+            for (y = 0; y < SNX_UI_PICTURE; ++y)
+                for (x = 0; x < SNX_UI_PICTURE; ++x) {
+                    const uint8_t* p = rgba + 4 * (y * SNX_UI_PICTURE + x);
+                    assert(snx_le32(a[(SNX_CONTROLS_ATLAS_HEIGHT + y) * w + x]) ==
+                           ((u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | 0xFF000000u));
+                }
+        }
+        ui_atlas_done();
+        g_users[0].picture_mii = 0; /* the default again: no users/<uid>.jpg, Wimsy */
         ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
         a = ui_atlas(&w, &h, &version);
         assert(a && h == SNX_CONTROLS_ATLAS_HEIGHT + SNX_UI_PICTURE);

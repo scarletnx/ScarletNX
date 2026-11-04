@@ -92,8 +92,19 @@ typedef struct {
 static u64 plane_stage(const VicPlane* pl, u8* host, u64 at, u64 done, Copies* cp) {
     OwnRange o[16];
     u32 n, i;
+    VkBuffer ib;
+    u64 io;
     if (!pl->p || !pl->lim) return done; /* nothing here: its space, if it has any, is cleared with what follows */
     memset(host + done, 0, at - done);
+    /* written in place on the GPU (uma.c: an NVDEC picture, the last job's output), not done yet: copied from guest
+       memory on the GPU, after the write */
+    if (cp->n < sizeof cp->c / sizeof *cp->c && vk_uma_copy_pending((u64)(pl->p - g_mem), pl->lim, &ib, &io)) {
+        cp->src[cp->n] = ib;
+        cp->c[cp->n] = (VkBufferCopy){io, at, pl->lim};
+        cp->n++;
+        return at + pl->lim;
+    }
+    vk_uma_mem_need_cpu((u64)(pl->p - g_mem), pl->lim); /* or waited for */
     host += at;
     n = own_stage((u64)(pl->p - g_mem), pl->lim, host, o, sizeof o / sizeof *o);
     if (n > sizeof o / sizeof *o || cp->n + n > sizeof cp->c / sizeof *cp->c) {
@@ -220,5 +231,9 @@ int vk_vic_compose(const VicJob* j) {
     vk_lock();
     int r = compose(j);
     vk_unlock();
+    /* with unified memory the planes are copied in on the GPU and no trap lands them: host1x increments the job's
+       syncpoint once this returns, and the guest reads them then */
+    if (r) vk_uma_mem_need_cpu((u64)(j->oy.p - g_mem), j->oy.lim);
+    if (r && j->oc.p && j->oc.lim) vk_uma_mem_need_cpu((u64)(j->oc.p - g_mem), j->oc.lim);
     return r;
 }

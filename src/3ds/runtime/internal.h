@@ -49,8 +49,9 @@ enum { CTR_FILE_VIEW, CTR_FILE_HOST, CTR_FILE_DIR };
 typedef struct {
     uint64_t token;
     uint32_t kind; /* 0: SelfNCCH RomFS view (read-only), 1: SDMC host area, 2: SaveData host area (read-write),
-                      3: an ExtSaveData's user folder (read-write, its files' sizes fixed) */
-    FsNode* root;  /* kind 3: the user folder, retained while the archive is open */
+                      3: an ExtSaveData's user folder (read-write, its files' sizes fixed),
+                      4: another title's save data folder (read-write) */
+    FsNode* root;  /* kinds 3 and 4: the folder, retained while the archive is open */
 } CtrSelfArchive;
 typedef struct {
     SnxArmCPU context; /* inactive architectural prefix only; never the checked adapter */
@@ -91,7 +92,8 @@ typedef struct {
             uint32_t physical, size, permissions;
             /* a block the application made with CreateMemoryBlock: its own range at address (heap-backed, Locked
                while the block lives, physical 0) or a new zeroed one (address 0); permissions are then its own and
-               other_permissions everyone else's (0x10000000: don't care) */
+               other_permissions everyone else's (0x10000000: don't care). A block APT made for a library applet has
+               other_permissions too, and MapMemoryBlock checks its rights as it does an application's block */
             uint32_t address, other_permissions, by_application;
         } shared;
         struct {
@@ -158,6 +160,11 @@ typedef struct {
     uint64_t done_ns; /* host monotonic end of the conversion running, 0 when none is */
     uint64_t serial;  /* the GPU submission it runs in: it ends no sooner than that is done */
 } SnxCtrY2rService;
+/* ir:USER: the block whose header it wrote, which it keeps until FinalizeIrNop, and the events it handed out, which
+   live as long as the process (services/ir.c) */
+typedef struct {
+    uint32_t shared, status_event, receive_event, send_event;
+} SnxCtrIrService;
 /* hid:USER's sampling (services/hid.c): each update's next deadline, host monotonic ns (0: not running), the index
    each writes next, how many times the game enabled each sensor, and the circle pad's last two raw positions, which
    each sample averages with */
@@ -188,10 +195,26 @@ struct SnxCtrProcess {
     /* the cores take turns on the one host thread: the one the next scheduling serves, and each one's thread last run */
     uint32_t next_core, core_thread[4];
     uint32_t last_ipc_service, last_ipc_header;
+    /* why a service ended the run, when one did (a GX command with no GPU): the run's last line; "" otherwise */
+    char stopped[640];
     uint32_t apt_lock;         /* manager-owned object index; independent of client sessions */
     uint32_t srv_notification; /* srv:'s notification semaphore (retained), made at the first EnableNotification */
     uint32_t apt_phase, apt_notification, apt_parameter;
     uint32_t apt_font;       /* the shared font's block (services/font.c), made at the first GetSharedFont */
+    /* APT's one parameter for the application after its startup (Azahar AppletManager's next_parameter): who sent it,
+       its signal, its object (retained, 0 for none) and its buffer (services/apt.c) */
+    struct {
+        uint32_t pending, sender, signal, object, size;
+        unsigned char buffer[0x1000];
+    } apt_next;
+    uint32_t apt_library; /* the library applet APT registered for the application: its AppletId, 0 for none */
+    uint32_t apt_capture; /* the capture block made at a library applet's first Request (retained), 0 before one */
+    /* the software keyboard the application started (services/swkbd.c): its SoftwareKeyboardConfig and the block its
+       text goes in (retained while it runs) */
+    struct {
+        unsigned char config[0x400];
+        uint32_t text;
+    } swkbd;
     uint32_t hid_objects[6]; /* the shared memory, then the events: pad 1, pad 2, accelerometer, gyroscope, debug pad */
     SnxCtrHid hid;
     uint32_t shell_closed; /* virtual console starts with its shell open */
@@ -214,6 +237,7 @@ struct SnxCtrProcess {
     SnxCtrDspService dsp;
     struct SnxCtrUds* uds;
     SnxCtrY2rService y2r;
+    SnxCtrIrService ir;
     uint64_t svc_count, svc_counts[256]; /* all, and each SVC's */
     uint64_t idle_ns, idle_waits;        /* the host time the scheduler slept with no thread to run, and how often */
     /* the codeset GetProcessInfo describes: segments as loaded, BSS, title and name (ExHeader) */

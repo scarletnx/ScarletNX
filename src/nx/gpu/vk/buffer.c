@@ -138,8 +138,8 @@ static struct {
        advance writes. A writable reuse still needs ordering against intervening readers. */
     struct {
         u64 writes, visible, submit, work;
-        u64 barriers, read_reuses, counted_work;
-        int reused_write;
+        u64 barriers, read_reuses, counted_work, explicit_barriers, parallel_writes;
+        int reused_write, read_pending, required;
     } order;
 } g_buffer;
 static void own_link(u32 i) {
@@ -165,6 +165,7 @@ static void own_unlink(u32 i) {
 }
 /* Optional copy telemetry. Counters are updated under vk_lock. */
 static u64 g_copy_stage, g_copy_owned, g_copy_uncached, g_copy_zero, g_copy_calls, g_copy_peak, g_read_bound;
+static u64 g_owned_bound; /* bytes draws read where their owners hold them (buf_get_owned) */
 static u64 g_wb_outputs, g_wb_bytes, g_wb_waits, g_wb_wait_ns, g_wb_reuses;
 static u64 g_alias_draws, g_alias_pages;
 enum { WB_DRAW, WB_READ, WB_WRITE, WB_SIGNAL, WB_SYNCWAIT, WB_MAP, WB_REASON_N };
@@ -376,6 +377,7 @@ static _Thread_local struct {
 } t_buffer;
 
 void vk_buf_writable_abort(void) {
+    vk_uma_writes_abort();
     g_buffer.order.reused_write = 0;
     while (g_prep) {
         GfxOut* o = g_prep;
@@ -385,6 +387,7 @@ void vk_buf_writable_abort(void) {
     g_prep_tail = NULL;
 }
 void vk_buf_writable_commit(void) {
+    vk_uma_writes_commit();
     /* Reusing an output writes its existing buffer without adding another pending result. Count that write
        too, but only after the draw or dispatch was recorded. An abandoned setup must not invent writes. */
     if (g_prep || g_buffer.order.reused_write) g_buffer.order.writes++;
@@ -554,10 +557,12 @@ void vk_buf_frame_done(u64 frame) {
     }
     t_buffer.out_landing--;
     g_gfx_any = g_out != NULL;
+    vk_uma_frame_done(frame);
 }
 /* At the frame's submit: its storage results are copied into host-cached memory (vk_stage_back), where landing them
    compares bytes quickly. A result whose copy can't be allocated is read where the shader wrote it. */
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
+    vk_uma_host_barrier(cb, frame);
     GfxOut* first = g_out;
     while (first && first->frame != frame) first = first->next;
     if (!first) return;
@@ -725,7 +730,7 @@ static void mem_need_reason(u64 gva, u64 len, int reason) {
 }
 void vk_buf_mem_need(u64 gva, u64 len) { mem_need_reason(gva, len, WB_READ); }
 int vk_buf_pending_any(void) { return g_gfx_any; }
-u64 vk_buf_adds(void) { return g_out_pages.adds; }
+u64 vk_buf_adds(void) { return g_out_pages.adds + vk_uma_out_adds(); } /* a write in place is one too */
 int vk_buf_pending_unsubmitted(void) {
     for (GfxOut* o = g_out; o; o = o->next)
         if (o->frame == vk_submit_number()) return 1;
@@ -1046,7 +1051,7 @@ static int out_take_into_submit(GfxOut* m) {
    with the other's results, which gave it nothing. A result of the frame before is read where it is too (transform
    feedback captures the same buffers every frame, over the last frame's capture), its frame's rings held until the
    reader is done (vk_frame_hold) */
-static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, u64 align) {
+static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, u64 align, int ordered) {
     GfxOut *match = NULL, *newest = NULL;
     int count = 0, before = 0;
     RangePages q;
@@ -1095,17 +1100,17 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     if (count == 1 && gva >= match->addr && gva + len <= match->addr + match->size &&
         !((match->off + (gva - match->addr)) & (align - 1)) &&
         (!writable || match->frame == vk_submit_number() || out_take_into_submit(match))) {
-        /* The barrier makes all earlier buffer writes visible to later graphics and compute consumers.
-           Keep that visibility across read-only draws instead of ending a pass for each consumer. A writable
-           binding must also wait for reads since the last barrier, so retain the per-work check for it. */
+        /* Maxwell bindings retain conservative read/write ordering. NVN permits overlapping draws and supplies
+           storage dependencies through explicit barriers; a writable view alone does not create a dependency.
+           Read-only consumers and new submissions retain their automatic visibility checks. */
         u64 work = g_vk_drawn + g_vk_dispatches;
         int new_write = match->written > g_buffer.order.visible;
         /* A writable binding below stamps the next generation before its draw is recorded. Later bindings of
            this same draw need no second barrier. After commit, work advances and its consumers see the stamp.
            An aborted setup can leave a future stamp, which only causes an extra barrier, never a missing one. */
         if (g_buffer.order.submit != vk_submit_number() ||
-            ((writable || new_write) &&
-             (g_buffer.order.work != work || g_buffer.order.visible != g_buffer.order.writes))) {
+            (((writable && (ordered || g_buffer.order.required)) || (!writable && new_write)) &&
+             (g_buffer.order.work != work || g_buffer.order.visible != g_buffer.order.writes || g_buffer.order.required))) {
             vk_render_end();
             copy_barrier(out_stages(), out_access(),
                          VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1113,18 +1118,25 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
             g_buffer.order.submit = vk_submit_number();
             g_buffer.order.work = work;
             g_buffer.order.visible = g_buffer.order.writes;
+            g_buffer.order.read_pending = 0;
+            g_buffer.order.required = 0;
             if (copy_stats_on()) {
                 g_buffer.order.barriers++;
                 g_buffer.order.counted_work = work;
             }
-        } else if (!writable && copy_stats_on() && g_buffer.order.counted_work != work) {
+        } else if (copy_stats_on() && g_buffer.order.counted_work != work) {
             /* Count omitted barriers once per consumer, excluding bindings the old per-work check skipped too. */
-            g_buffer.order.read_reuses++;
+            if (writable && !ordered) g_buffer.order.parallel_writes++;
+            else if (!writable) g_buffer.order.read_reuses++;
             g_buffer.order.counted_work = work;
         }
         if (writable) {
             match->written = g_buffer.order.writes + 1;
             g_buffer.order.reused_write = 1;
+        } else {
+            /* A later in-place writer must wait for this read at the front end's execution-order point.
+               An abandoned setup may leave the flag set, which only adds a conservative barrier. */
+            g_buffer.order.read_pending = 1;
         }
         *buf = match->buf;
         *off = match->off + (gva - match->addr);
@@ -1156,13 +1168,13 @@ static int gfx_composed(u64 gva, u64 len, VkBuffer* buf, u64* off) {
    from another entry over the same memory. The table has a leaf of 1024 pages per 4 MB that has been written, with
    the newest generation in the leaf beside it so whole leaves are skipped */
 #define WW_LEAF_SHIFT 22
-static u32* g_wleaf[AS_MAX >> WW_LEAF_SHIFT];
-static u32 g_wleaf_max[AS_MAX >> WW_LEAF_SHIFT];
+static u32* g_wleaf[AS_TOP >> WW_LEAF_SHIFT];
+static u32 g_wleaf_max[AS_TOP >> WW_LEAF_SHIFT];
 /* The CPU writes a GPU stream may see come before its submission or the end of one of its waits: each of those starts
    a write epoch (vk_ww_new_epoch). A leaf scanned whole in an epoch isn't scanned again in it, and a scan covers whole
    leaves, so the textures and buffers checked in one epoch share a few scans: one game made 5,600 of them a frame.
    g_wleaf_seen holds the epoch + 1 whose scans of the leaf its table has taken in (checks only, under vk_lock) */
-static u32 g_wleaf_seen[AS_MAX >> WW_LEAF_SHIFT];
+static u32 g_wleaf_seen[AS_TOP >> WW_LEAF_SHIFT];
 static u32 g_ww_epoch; /* atomic */
 static u32 g_wclock = 1;
 static int g_ww = -1; /* -1 not tried yet, 0 not available, 1 on */
@@ -1247,12 +1259,15 @@ static void ww_take_changed(void) {
 #define WW_RES_N       4096
 #define WW_RUN_MAX     8 /* leaves the scanner scans in one call at most */
 #define WW_USED_EPOCHS 4 /* the scanner scans the leaves the checks of the last epochs needed */
-static u32 g_wleaf_done[AS_MAX >> WW_LEAF_SHIFT]; /* atomic, stored by the leaf's claimer */
-static u32 g_wleaf_used[AS_MAX >> WW_LEAF_SHIFT]; /* atomic: only a hint for the scanner */
-static u8 g_wleaf_busy[AS_MAX >> WW_LEAF_SHIFT];  /* atomic: 1 while a scan has claimed the leaf */
+static u32 g_wleaf_done[AS_TOP >> WW_LEAF_SHIFT]; /* atomic, stored by the leaf's claimer */
+static u32 g_wleaf_used[AS_TOP >> WW_LEAF_SHIFT]; /* atomic: only a hint for the scanner */
+static u8 g_wleaf_busy[AS_TOP >> WW_LEAF_SHIFT];  /* atomic: 1 while a scan has claimed the leaf */
 static u32 g_ww_used[WW_USED_EPOCHS];             /* the last epochs + 1 checks needed leaves in, under vk_lock */
 static u32 g_ww_used_i;
 static u32 g_ww_used_from; /* atomic: the oldest of them */
+/* one past the highest leaf a check has needed, where the scanner's pass ends: a leaf above it was never needed, and a
+   pass to AS_SIZE's last leaf read 131072 of them at 512 GiB (atomic, stored by the checks under vk_lock) */
+static u64 g_wleaf_top;
 /* a scan's written pages before they go to g_wres: the scanner's, and the checks' (under vk_lock) */
 struct WwStage {
     WwRange r[WW_RES_N];
@@ -1283,11 +1298,23 @@ static int ww_claim(u64 l) {
     u8 free = 0;
     return __atomic_compare_exchange_n(&g_wleaf_busy[l], &free, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
 }
+/* guest memory [a, e) scanned, but for the pages an import of unified memory holds: the driver takes them again at
+   each submission, writable, which a scan would report as the CPU's writes, and after a scan protected them it faults
+   every one of them in again (uma.c). vk_written_since can't tell there */
+static int ww_scan_free(u64 a, u64 e) {
+    int r = 0;
+    while (a < e && !r) {
+        u64 hi, lo = vk_uma_import_in(a, e, &hi);
+        if (lo > a) r = plat_ww_scan(g_mem + a, lo - a, ww_note);
+        a = hi;
+    }
+    return r;
+}
 /* scans leaves [lo, hi], claimed by the caller, in the epoch seen - 1, and ends the claims: 0, or -1 when tracking
    failed */
 static int ww_scan_leaves(u64 lo, u64 hi, u32 seen, WwStage* st) {
     t_buffer.wstage = st;
-    int r = plat_ww_scan(g_mem + (lo << WW_LEAF_SHIFT), (hi - lo + 1) << WW_LEAF_SHIFT, ww_note);
+    int r = ww_scan_free(lo << WW_LEAF_SHIFT, (hi + 1) << WW_LEAF_SHIFT);
     pm_lock(&g_wres_lk);
     int n = g_wres_n;
     for (int i = 0; i < st->n; i++)
@@ -1422,7 +1449,7 @@ static void ww_scanner(void* arg) {
         last = e;
         seen = e + 1;
         from = __atomic_load_n(&g_ww_used_from, __ATOMIC_RELAXED);
-        for (u64 l = 0, n = AS_SIZE >> WW_LEAF_SHIFT; l < n;) {
+        for (u64 l = 0, n = __atomic_load_n(&g_wleaf_top, __ATOMIC_RELAXED); l < n;) {
             if (!ww_wanted(l, seen, from)) {
                 l++;
                 continue;
@@ -1485,7 +1512,8 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
         g_ww = 0;
         return -1;
     }
-    u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, l;
+    u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, l, end;
+    if (vk_uma_import_in(o, o + len, &end) < o + len) return -1; /* pages no scan watches (ww_scan_free) */
     u32 seen = vk_ww_epoch() + 1;
     for (l = lo; l <= hi && (i32)(g_wleaf_seen[l] - seen) >= 0; l++) {}
     /* the clock moves only when this call marks pages, in ww_take_changed and ww_take_scanned when they take ranges,
@@ -1496,6 +1524,8 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
         /* the leaves not taken in for this epoch: scanned in it by the scanner already, or here */
         u64 first = hi + 1, last = 0, a;
         ww_used_epoch(seen);
+        if (__atomic_load_n(&g_wleaf_top, __ATOMIC_RELAXED) <= hi)
+            __atomic_store_n(&g_wleaf_top, hi + 1, __ATOMIC_RELAXED);
         for (a = l; a <= hi; a++) {
             if ((i32)(g_wleaf_seen[a] - seen) >= 0) continue;
             __atomic_store_n(&g_wleaf_used[a], seen, __ATOMIC_RELAXED);
@@ -1591,9 +1621,17 @@ static const u8* draw_bytes(u64 gva, u64 len, SamplesCount* counts, u32 max, u32
 }
 
 int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off) {
-    int src = gva ? gfx_gpu_src(gva, len, buf, off, 0, vk_stage_align()) : 0;
+    int src = gva ? gfx_gpu_src(gva, len, buf, off, 0, vk_stage_align(), 1) : 0;
     if (src == 1) return 1;
     if (src == 2) return gfx_composed(gva, len, buf, off);
+    if (gva && vk_uma_pending(gva, len)) { /* written in place, the write pending: copied after it, on the GPU */
+        u8* q = vk_stage(len, vk_stage_align(), buf, off);
+        if (!q) return 0;
+        vk_render_end();
+        vk_guest_read(gva, len, q, *buf, *off);
+        copy_note(gva, len);
+        return 1;
+    }
     u8* p = vk_stage(len ? len : 16, vk_stage_align(), buf, off);
     if (!p) return 0;
     if (!gva)
@@ -1637,7 +1675,7 @@ static void gap_copy(void* user, u8* to, u64 a, u64 b) {
 }
 /* Each writable binding keeps its original bytes until its draw's frame completes. The guest can keep writing RAM:
    vk_write_changed resolves those writes against the GPU result at the fence. */
-int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
+int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered) {
     GfxOut* o;
     if (!gva) return vk_buf_copy(0, len, buf, off);
     /* Repeated bindings of one writable range in the same draw must name the same storage. */
@@ -1653,8 +1691,16 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
     if (bind_align < g_vk.props.limits.minTexelBufferOffsetAlignment)
         bind_align = g_vk.props.limits.minTexelBufferOffsetAlignment;
     if (bind_align < 4) bind_align = 4;
-    int pending = gfx_gpu_src(gva, len, buf, off, 1, bind_align);
+    int pending = gfx_gpu_src(gva, len, buf, off, 1, bind_align, ordered);
     if (pending == 1) return 1;
+    /* with unified memory the shader writes guest memory where it is, with nothing to land: not over bytes the GPU
+       holds elsewhere (owned, a compute or storage image result, a queued release), which land first as before. Its
+       barriers go by page (uma.c's order) whether or not the front end gives its own (ordered 0): more than NVN asks
+       for, never fewer */
+    if (!pending && vk_uma() && !range_owned(gva, len) && !(g_cs_any && vk_compute_pending(gva, len)) &&
+        !(g_gfx_img_any && vk_gfx_image_pending(gva, len)) && !vk_release_pending(gva, len) &&
+        vk_uma_write(gva, len, bind_align, buf, off))
+        return 1;
     if (!pending) gmem_need(gva, len);
     int owned = !pending && range_owned(gva, len);
     if (owned) (void)written_since_gva(gva, len, 0); /* establish the CPU-write baseline before the GPU copy */
@@ -2186,14 +2232,20 @@ static int range_owned(u64 gva, u64 len) {
     }
     return 0;
 }
-/* A range over bytes the GPU holds: copied into this frame's device ring, the CPU's bytes staged by the CPU and the
-   owned ones from their owners by the GPU (vk_guest_read_device), with nothing landed. It isn't hashed (the CPU's copy of the
-   owned bytes is stale) or given a buffer of its own: it is copied again when the GPU writes those bytes again
-   (gpu_mem_dirty_since) or a later submit reads it. Draws over the results of the GPU's engines landed them, a wait
-   for the GPU each */
-static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, VkBuffer* buf, u64* off) {
+int vk_buf_owned(u64 gva, u64 len) { return range_owned(gva, len); }
+/* A range over bytes the GPU holds, with nothing landed. One owner holding it whole is bound where it is, as a dispatch
+   binds it (compute.c res_bind): every write to an owner's buffer is recorded outside rendering passes and followed by
+   a barrier before the next one begins (vk_own_res_wrote), so a draw reads it inside the pass it is in. Copied, each
+   such draw ended the pass, about 22 of a frame's 380 in one game, and on a tiling GPU every target of the pass is
+   stored and loaded again. Any other range is copied into this frame's device ring, the CPU's bytes staged by the CPU
+   and the owned ones from their owners by the GPU (vk_guest_read_device). Neither is hashed (the CPU's copy of the
+   owned bytes is stale) or given a buffer of its own: it is bound or copied again when the GPU writes those bytes
+   again (gpu_mem_dirty_since) or a later submit reads it. Draws over the results of the GPU's engines landed them, a
+   wait for the GPU each */
+static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, u64 align, VkBuffer* buf, u64* off) {
     VkBuffer sb;
-    u64 so;
+    u64 so, cpu = 0;
+    OwnRange o[2];
     if (!e) {
         if (!(i = vb_new(gva, (u32)len))) return 0;
         e = &g_vb[i];
@@ -2203,11 +2255,18 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, 
     drop_own(i);
     e->hash = 0;
     e->stable = 0;
-    vk_render_end(); /* the GPU's copies happen outside rendering passes */
-    /* in device memory, where the GPU's bytes stay on the GPU and the draws read all of it: in staging, the GPU copied
-       its own bytes out over PCIe and every draw read them back over it */
-    if (!vk_stage_device(len, vk_stage_align(), &sb, &so) || !vk_guest_read_device(gva, len, sb, so)) return 0;
-    if (copy_stats_on()) g_copy_stage += len;
+    if (gmmu_run(gva, len, &cpu) == len && own_lookup(cpu, len, o, 2) == 1 && o[0].addr == cpu && o[0].size == len &&
+        !(o[0].res_off & ((align ? align : 1) - 1))) {
+        sb = ((const VkOwnRes*)o[0].res)->buf;
+        so = o[0].res_off;
+        if (copy_stats_on()) g_owned_bound += len;
+    } else {
+        vk_render_end(); /* the GPU's copies happen outside rendering passes */
+        /* in device memory, where the GPU's bytes stay on the GPU and the draws read all of it: in staging, the GPU
+           copied its own bytes out over PCIe and every draw read them back over it */
+        if (!vk_stage_device(len, vk_stage_align(), &sb, &so) || !vk_guest_read_device(gva, len, sb, so)) return 0;
+        if (copy_stats_on()) g_copy_stage += len;
+    }
     e->buf = sb;
     e->off = so;
     e->frame = vk_submit_number();
@@ -2233,7 +2292,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     /* Pending results over the range, unless none was added since they were last checked for here (only the sweep in
        vk_buf_frame frees entries, and only this function adds them, so e stays good meanwhile) */
     if (!e || e->cs_adds != vk_compute_adds() || e->gfx_adds != vk_buf_adds()) {
-        pending = gfx_gpu_src(gva, len, buf, off, 0, align);
+        pending = gfx_gpu_src(gva, len, buf, off, 0, align, 1);
         if (pending == 1) return 1;
         if (pending == 2) return gfx_composed(gva, len, buf, off); /* newer than any cached copy */
         if (vk_compute_gpu_src(gva, len, buf, off)) return 1;      /* a compute result that hasn't landed yet */
@@ -2250,7 +2309,8 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     if (inplace && vk_uma() && !range_owned(gva, len) && vk_uma_get(gva, len, align, buf, off)) return 1;
     if (inplace == IN_ONLY) return 0;
     /* valid: the data is where draws can read it this frame */
-    int valid = e && e->buf && (e->own || e->frame == vk_submit_number());
+    /* not while an in-place write is pending over it: a copy from before the write would be read */
+    int valid = e && e->buf && (e->own || e->frame == vk_submit_number()) && !vk_uma_pending(gva, len);
     if (valid && !gpu_mem_dirty_since(e->gw, gva, len)) {
         if (e->epoch == epoch && (!strict || e->strict_epoch == epoch)) {
             use(i, buf, off);
@@ -2323,7 +2383,9 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             : gpu_mem_dirty_since(e->gw, gva, len) ? ST_DIRTY
             : e->own ? ST_WRITTEN
                      : ST_EPOCH;
-    if (range_owned(gva, len)) return buf_get_owned(i, e, gva, len, strict, epoch, buf, off);
+    /* GPU-owned bytes, or bytes written in place by a submit not done yet: copied on the GPU (vk_guest_read) */
+    if (range_owned(gva, len) || vk_uma_pending(gva, len))
+        return buf_get_owned(i, e, gva, len, strict, epoch, align, buf, off);
     u32 wnow = vk_ww_now();
     SamplesCount counts[4];
     u32 ncounts;
@@ -2490,6 +2552,11 @@ void vk_buf_prefetch(u64 gva, u64 len, int step) {
 int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     return buf_get(gva, len, buf, off, 1, vk_stage_align(), IN_NO);
 }
+/* a constant buffer: read in place where it can be, as vertices are, but the pages the runtime wrote (uma.c's front,
+   its constant buffer updates among them), which are copied as before */
+int vk_buf_get_uniform(u64 gva, u64 len, VkBuffer* buf, u64* off) {
+    return buf_get(gva, len, buf, off, 1, vk_stage_align(), IN_TRY);
+}
 int vk_buf_get_copy_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     return buf_get(gva, len, buf, off, 2, vk_stage_align(), IN_NO);
 }
@@ -2504,6 +2571,22 @@ u64 vk_buf_reclaim(u32 before, u64 want) {
     }
     return freed;
 }
+/* A front end with explicit storage ordering supplies these barriers in command-stream order. */
+int vk_buf_order_pending(int writes_only) {
+    return g_buffer.order.writes != g_buffer.order.visible || (!writes_only && g_buffer.order.read_pending);
+}
+void vk_buf_order_request(int writes_only) {
+    /* One later dependency covers every earlier point. Readbacks and surface consumers retain their own orders. */
+    if (vk_buf_order_pending(writes_only)) g_buffer.order.required = 1;
+}
+void vk_buf_ordered(void) {
+    g_buffer.order.submit = vk_submit_number();
+    g_buffer.order.work = g_vk_drawn + g_vk_dispatches;
+    g_buffer.order.visible = g_buffer.order.writes;
+    g_buffer.order.read_pending = 0;
+    g_buffer.order.required = 0;
+    if (copy_stats_on()) g_buffer.order.explicit_barriers++;
+}
 void vk_buf_stats(u32* count, u64* bytes) {
     *count = g_buffer.n;
     *bytes = g_buffer.bytes;
@@ -2514,15 +2597,17 @@ void vk_buf_frame(void) {
     vk_uma_frame();
     if (g_vk_present % 4) return;
     if (copy_stats_on() && g_vk_present % 600 == 0) {
-        LOG("vulkan: buffer bytes over 600 presents: uncached=%llu zero=%llu calls=%llu peak=%llu staged=%llu owned=%llu bound=%llu writeback=%llu/%llu waits=%llu/%llums reused=%llu\n",
+        LOG("vulkan: buffer bytes over 600 presents: uncached=%llu zero=%llu calls=%llu peak=%llu staged=%llu owned=%llu bound=%llu owner_bound=%llu writeback=%llu/%llu waits=%llu/%llums reused=%llu\n",
             (unsigned long long)g_copy_uncached, (unsigned long long)g_copy_zero, (unsigned long long)g_copy_calls,
             (unsigned long long)g_copy_peak, (unsigned long long)g_copy_stage, (unsigned long long)g_copy_owned,
-            (unsigned long long)g_read_bound, (unsigned long long)g_wb_outputs, (unsigned long long)g_wb_bytes,
-            (unsigned long long)g_wb_waits, (unsigned long long)(g_wb_wait_ns / 1000000),
-            (unsigned long long)g_wb_reuses);
-        LOG("vulkan: buffer dependencies: %llu barriers, %llu consumer barriers avoided\n",
-            (unsigned long long)g_buffer.order.barriers, (unsigned long long)g_buffer.order.read_reuses);
+            (unsigned long long)g_read_bound, (unsigned long long)g_owned_bound, (unsigned long long)g_wb_outputs,
+            (unsigned long long)g_wb_bytes, (unsigned long long)g_wb_waits,
+            (unsigned long long)(g_wb_wait_ns / 1000000), (unsigned long long)g_wb_reuses);
+        LOG("vulkan: buffer dependencies: %llu barriers, %llu consumer barriers avoided, %llu parallel writes, %llu explicit barriers\n",
+            (unsigned long long)g_buffer.order.barriers, (unsigned long long)g_buffer.order.read_reuses,
+            (unsigned long long)g_buffer.order.parallel_writes, (unsigned long long)g_buffer.order.explicit_barriers);
         g_buffer.order.barriers = g_buffer.order.read_reuses = 0;
+        g_buffer.order.parallel_writes = g_buffer.order.explicit_barriers = 0;
         stage_report();
         vk_stage_report();
         LOG("vulkan: buffer waits: draw=%llu/%llums read=%llu/%llums write=%llu/%llums signal=%llu/%llums syncwait=%llu/%llums map=%llu/%llums draw_landed=old_frame:%llu changed:%llu composed=%llu+%llu\n",
@@ -2539,7 +2624,8 @@ void vk_buf_frame(void) {
             (unsigned long long)g_alias_draws, (unsigned long long)g_alias_pages, g_vblive,
             (unsigned long long)g_vb_lookups, (unsigned long long)g_vb_probes);
         g_vb_lookups = g_vb_probes = 0;
-        g_copy_uncached = g_copy_stage = g_copy_owned = g_copy_zero = g_copy_calls = g_copy_peak = g_read_bound = 0;
+        g_copy_uncached = g_copy_stage = g_copy_owned = g_copy_zero = g_copy_calls = g_copy_peak = g_read_bound =
+            g_owned_bound = 0;
         g_wb_outputs = g_wb_bytes = g_wb_waits = g_wb_wait_ns = g_wb_reuses = 0;
         g_alias_draws = g_alias_pages = 0;
         memset(g_wb_reason, 0, sizeof g_wb_reason);

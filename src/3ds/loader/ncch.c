@@ -18,7 +18,15 @@ static bool parse(CtrReader* r, const CtrSource* s, CtrNcch* n, bool overlay) {
     if (memcmp(h + 0x100, "NCCH", 4)) return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "boot content is not NCCH");
     if (h[0x18e] || h[0x18c] != 1)
         return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "unsupported NCCH media unit/platform");
-    if (!(h[0x18f] & 4)) return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "encrypted NCCH is not supported");
+    if (!(h[0x18f] & 4)) {
+        /* A decryption tool that left the flag: the ExHeader is plain, which the header's own hash of it says. A
+           CIA's contents are decrypted through the ticket, where a flag like that is a broken archive instead */
+        if (s->kind == CTR_KIND_CIA || !ctr_ncch_plain(r, boot, h))
+            return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "encrypted NCCH is not supported");
+        fprintf(stderr,
+                "3ds loader: the NCCH says it is encrypted, but its ExHeader is plain: read as NoCrypto. A tool that "
+                "decrypted this game left the flag; its keys are not needed\n");
+    }
     if (!(h[0x18d] & 2) || ((h[0x18d] >> 2) & 7))
         return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "boot NCCH is not an executable application");
     /* An NCCH's content size and section sizes are in media units of 0x200 bytes, except a proto image's (an early

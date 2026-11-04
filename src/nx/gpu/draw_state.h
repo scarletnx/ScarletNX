@@ -106,6 +106,16 @@ typedef struct {
     u32 depth_word;  /* the vertex stage's viewport and depth word, pushed as it is */
 } DsDynamic;
 
+/* A draw's depth bias as vkCmdSetDepthBias takes it (constant, clamp, slope) for targets scale times the console's
+   size. The slope factor multiplies the depth's slope per pixel, which such a target has scale times less of: scaled
+   by it, the bias moves the depth as far as on the console. The constant (the 3D engine's units register, which is
+   Vulkan's units as they are) and the clamp are in depth units, which no scale changes */
+static inline void ds_depth_bias(const DsDynamic* d, float scale, float out[3]) {
+    out[0] = d->bias_units;
+    out[1] = d->bias_clamp;
+    out[2] = d->bias_slope * scale;
+}
+
 /* The viewports, struct of arrays (a program that writes the viewport index selects among them) */
 typedef struct {
     u32 transform_on; /* the guest's viewport transform enable (the renderer picks by the scale, and logs a mismatch) */

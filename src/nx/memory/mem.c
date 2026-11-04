@@ -12,6 +12,8 @@
 #include "nx/gpu/gpu.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/nce/nce.h"
+#include "nx/runtime/nce/nce_host.h"
 #include "nx/runtime/platform/tracy.h"
 #include "snx_settings.h"
 #include <errno.h>
@@ -24,12 +26,14 @@
 
 /* The 39-bit layout of a 64-bit application without ASLR, as Eden's KPageTableBase::InitializeForProcess lays it out
    from k_address_space_info.cpp's sizes: code at 0x8000000, then the 64 GiB alias region, the 8 GiB heap region and
-   the 2 GiB stack region. The console's address space is 512 GiB; the host reservation is AS_SIZE (128 GiB), so the
-   address space (the ASLR region of GetInfo 12 and 13) ends there, and the kernel map region, 64 GiB on the console,
-   is the 1 GiB the kernel's own pages (TLS) need. The alias region starts at 4 GiB, which leaves the code below it
-   up to 3.9 GiB, as the end of the code isn't known yet when the layout is made */
-MemLayout g_layout = {0x8000000ull,  AS_MAX,      0x1100000000ull, 8 * GIB, 0x100000000ull, 64 * GIB,
-                      0x1300000000ull, 2 * GIB, 0x1380000000ull, 0x13C0000000ull};
+   the 2 GiB stack region. The address space (the ASLR region of GetInfo 12 and 13) ends where the host reservation
+   does, AS_SIZE: the console's 512 GiB where the host gives that much. The kernel map region, 64 GiB on the console,
+   is the 1 GiB the kernel's own pages (TLS) need. The alias region starts at 4 GiB, which leaves the code below it up
+   to 3.9 GiB, as the end of the code isn't known yet when the layout is made */
+#define LAYOUT39                                                                                                       \
+    {0x8000000ull, AS_MAX,          0x1100000000ull, 8 * GIB,         0x100000000ull,                                  \
+     64 * GIB,     0x1300000000ull, 2 * GIB,         0x1380000000ull, 0x13C0000000ull}
+MemLayout g_layout = LAYOUT39;
 u64 g_as_size = AS_MAX;
 u8* g_mem;
 u64 g_heap_size, g_phys_mapped, g_heap_max, g_code_memory, g_main_stack_size;
@@ -102,6 +106,28 @@ static void ev_remove(u64 addr, u64 size) {
 #define ev_remove(addr, size) ((void)0)
 #endif
 
+/* NCE on Android moves the whole layout up (mem_reserve_identity): mem_moved is how far, 0 elsewhere */
+static u64 g_mem_moved;
+u64 mem_moved(void) { return g_mem_moved; }
+void mem_layout_move(u64 by) {
+    g_layout.base += by;
+    g_layout.end += by;
+    g_layout.heap += by;
+    g_layout.alias += by;
+    g_layout.stack += by;
+    g_layout.kern += by;
+    g_layout.kern_end += by;
+    g_as_size = g_layout.end;
+    g_mem_moved += by;
+}
+/* a layout of fixed addresses, which a moved address space cannot take: the game was recompiled for NCE elsewhere */
+static void layout_fixed(const char* which) {
+    if (g_mem_moved)
+        fatal("NCE: the game's address space is %s, and the guest's addresses start at %#llx here, where NCE "
+              "moved them. Recompile the game on this device, which makes its code ahead of time",
+              which, (unsigned long long)g_layout.base);
+}
+
 /* The 36-bit layout of a 64-bit application built before 2.0, the NPDM's address space type 1 (Eden's
    "AddressSpace64BitDeprecated", Ryujinx's of the same name, the bit_width 36 entries of their
    k_address_space_info): the console's 64 GiB, the code region at a fixed 128 MiB (no ASLR moves it), the stack
@@ -111,6 +137,7 @@ static void ev_remove(u64 addr, u64 size) {
    layout comes back to the runtime as that address's low 36 bits, which nothing was ever mapped at. Zelda: Breath
    of the Wild's main stack, at 78 GiB above, came back as 12 GiB and its first RomFS read wrote the header there */
 void mem_layout36(void) {
+    layout_fixed("the 36-bit one, which lies below 64 GiB with its code at 128 MiB");
     g_layout.base = 0x8000000ull;
     g_layout.end = AS36;
     g_layout.alias = 2 * GIB;
@@ -126,14 +153,14 @@ void mem_layout36(void) {
 void mem_layout_large_heap(void) {
     u64 extra = 4 * GIB;
     if (g_as_size < 32 * GIB || g_layout.heap_size != 8 * GIB ||
-        (g_as_size == AS_MAX ? g_layout.kern_end + extra > g_layout.end
+        (g_as_size >= AS_MAX ? g_layout.kern_end + extra > g_layout.end
                              : g_layout.stack + g_layout.stack_size + extra > g_layout.kern))
         return;
     g_layout.heap_size += extra;
     g_layout.stack += extra;
     /* The full-size layout places the kernel region immediately after the stack. Smaller layouts keep it at the
        high end of the reservation, with enough free space between them for this extension. */
-    if (g_as_size == AS_MAX) {
+    if (g_as_size >= AS_MAX) {
         g_layout.kern += extra;
         g_layout.kern_end += extra;
     }
@@ -143,6 +170,7 @@ void mem_layout_large_heap(void) {
    is the stack region too, then from 1 GiB the 1 GiB alias region and the 1 GiB heap region, or a 2 GiB heap region
    without an alias region. The kernel's pages go in the last GiB, above both */
 void mem_layout32(unsigned aspace) {
+    layout_fixed("a 32-bit one, which lies below 4 GiB");
     g_layout.base = AS32_CODE_BASE;
     g_layout.end = 4 * GIB;
     g_layout.stack = AS32_CODE_BASE;
@@ -213,6 +241,16 @@ void mem_set_pages_replaced(void (*fn)(u64, u64)) { __atomic_store_n(&g_pages_re
 static void pages_replaced_nl(u64 a, u64 size) {
     void (*fn)(u64, u64) = __atomic_load_n(&g_pages_replaced, __ATOMIC_ACQUIRE);
     if (fn) fn(a, size);
+}
+/* the renderer's GPU memory under the heap (mem_set_placed): set once, as the device is made, before the game's
+   threads */
+static const MemPlaced* g_placed;
+void mem_set_placed(const MemPlaced* p) { g_placed = p; }
+static int placed_nl(u64 a, u64 size) { return g_placed && size && g_placed->held(a, size); }
+/* the end of the window of MEM_PLACED bytes a is in, or end when sooner */
+static u64 window_end(u64 a, u64 end) {
+    u64 hi = (a | (MEM_PLACED - 1)) + 1;
+    return hi < end && hi > a ? hi : end;
 }
 static u64 blk_end(const MemBlock* b) { return b->addr + b->size; }
 /* b follows a: they join when alike, the pool's pages continuing from a's when they are the pool's */
@@ -318,21 +356,131 @@ static int range_is_nl(u64 a, u64 size, u32 state, u32 perm, u32 attr) {
     }
     return 1;
 }
+/* a state whose pages hold the guest's data: code and its aliases are the code's, I/O and the kernel's aren't the
+   guest's */
+static int data_state(u32 st) {
+    return st != MS_FREE && st != MS_CODE && st != MS_ALIASCODE && st != MS_SHAREDCODE && st != MS_GENCODE &&
+           st != MS_CODEOUT && st != MS_IO && st != MS_KERNEL && st != MS_INACCESSIBLE && st != MS_TLS;
+}
+/* [a, a + size) is all the guest's data on the reservation's own pages: not the pool's, which other mappings share, nor
+   a placed window's, which are the renderer's memory already */
+static int movable_nl(u64 a, u64 size) {
+    u64 end = a + size;
+    u32 i;
+    if (!g_nblk || placed_nl(a, size)) return 0;
+    for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++)
+        if (g_blk[i].pool || !data_state(g_blk[i].state)) return 0;
+    return 1;
+}
+/* Guest memory whose pages are a buffer a GPU shares (mem_migrate): runs sorted and disjoint, under g_mem_lk */
+typedef struct {
+    u64 a, b;
+} ExtRun;
+static struct {
+    ExtRun* run;
+    u32 n, cap;
+} g_ext;
+/* room for more runs: 0, or -1 */
+static int ext_room_nl(u32 more) {
+    u32 cap = g_ext.cap ? g_ext.cap : 16;
+    ExtRun* v;
+    while (cap < g_ext.n + more) cap *= 2;
+    if (cap == g_ext.cap) return 0;
+    v = (ExtRun*)realloc(g_ext.run, sizeof *v * (size_t)cap);
+    if (!v) return -1;
+    g_ext.run = v;
+    g_ext.cap = cap;
+    return 0;
+}
+/* whether a page of [a, b) is a buffer's */
+static int ext_meets_nl(u64 a, u64 b) {
+    for (u32 i = 0; i < g_ext.n; i++)
+        if (g_ext.run[i].a < b && a < g_ext.run[i].b) return 1;
+    return 0;
+}
+/* [a, b) isn't a buffer's any more: the runs over it cut around it */
+static void ext_cut_nl(u64 a, u64 b) {
+    for (u32 i = 0; i < g_ext.n; i++) {
+        ExtRun r = g_ext.run[i];
+        if (r.b <= a || b <= r.a) continue;
+        if (r.a < a && b < r.b) { /* split in two */
+            if (ext_room_nl(1)) fatal("Out of memory noting guest memory a GPU shares");
+            memmove(&g_ext.run[i + 2], &g_ext.run[i + 1], sizeof *g_ext.run * (size_t)(g_ext.n - i - 1));
+            g_ext.run[i] = (ExtRun){r.a, a};
+            g_ext.run[i + 1] = (ExtRun){b, r.b};
+            g_ext.n++;
+            return;
+        }
+        if (r.a < a)
+            g_ext.run[i].b = a;
+        else if (b < r.b)
+            g_ext.run[i].a = b;
+        else {
+            memmove(&g_ext.run[i], &g_ext.run[i + 1], sizeof *g_ext.run * (size_t)(g_ext.n - i - 1));
+            g_ext.n--;
+            i--;
+        }
+    }
+}
+/* [a, a + size) decommitted: where its pages are a buffer's, fresh inaccessible ones are mapped over them instead, as
+   decommitting shared pages keeps their bytes */
+static void give_back_nl(u64 a, u64 size) {
+    u64 end = a + size, at = a;
+    for (u32 i = 0; i < g_ext.n && at < end; i++) {
+        u64 lo = g_ext.run[i].a > at ? g_ext.run[i].a : at, hi = g_ext.run[i].b < end ? g_ext.run[i].b : end;
+        if (lo >= hi) continue;
+        if (lo > at) plat_vm_decommit(GP(at), lo - at);
+        if (plat_alias_unmap(GP(lo), hi - lo))
+            fatal("Could not give back %llu KiB of guest memory a GPU shared", (unsigned long long)((hi - lo) >> 10));
+        at = hi;
+    }
+    if (at < end) plat_vm_decommit(GP(at), end - at);
+    ext_cut_nl(a, end);
+}
 /* host memory under [a, a + size): the host pages it touches committed, whole */
 static int commit_nl(u64 a, u64 size) {
     u64 mask = g_host_page - 1, lo = a & ~mask, hi = (a + size + mask) & ~mask;
     return plat_vm_commit(GP(lo), hi - lo);
 }
+static void decommit_nl(u64 a, u64 size);
+/* the heap's and physical memory's: the renderer's GPU memory where it takes the window (mem_set_placed), host pages
+   elsewhere. Nothing of it stays committed when it fails */
+static int commit_heap_nl(u64 a, u64 size) {
+    const MemPlaced* p = g_placed;
+    u64 end = a + size, at = a;
+    if (!p) return commit_nl(a, size);
+    while (at < end) {
+        u64 hi = window_end(at, end), wlo = at & ~(MEM_PLACED - 1);
+        if ((ext_meets_nl(wlo, wlo + MEM_PLACED) || p->commit(at, hi - at)) && commit_nl(at, hi - at)) {
+            if (at > a) decommit_nl(a, at - a);
+            return -1;
+        }
+        at = hi;
+    }
+    return 0;
+}
 /* [a, a + size), free in the block list now, given back: the host pages left with no mapped guest page decommitted,
    and in a host page a neighbour still maps, the range's part zeroed, as fresh pages read when mapped again */
+static void decommit_host_nl(u64 a, u64 size);
 static void decommit_nl(u64 a, u64 size) {
-    u64 mask = g_host_page - 1, end = a + size, first = a & ~mask, last = (end - 1) & ~mask, edge[2];
-    int i, n = 0;
     runs_stale_nl();
     pages_replaced_nl(a, size);
     own_drop(a, size);
+    if (placed_nl(a, size)) { /* the renderer's windows go back to it, the rest as host pages */
+        const MemPlaced* p = g_placed;
+        for (u64 at = a, end = a + size, hi; at < end; at = hi) {
+            hi = window_end(at, end);
+            if (!p->decommit(at, hi - at)) decommit_host_nl(at, hi - at);
+        }
+        return;
+    }
+    decommit_host_nl(a, size);
+}
+static void decommit_host_nl(u64 a, u64 size) {
+    u64 mask = g_host_page - 1, end = a + size, first = a & ~mask, last = (end - 1) & ~mask, edge[2];
+    int i, n = 0;
     if (!((a | end) & mask)) { /* whole host pages, all of them free */
-        plat_vm_decommit(GP(a), size);
+        give_back_nl(a, size);
         return;
     }
     edge[n++] = first;
@@ -340,13 +488,13 @@ static void decommit_nl(u64 a, u64 size) {
     for (i = 0; i < n; i++) {
         u64 lo = edge[i] > a ? edge[i] : a, hi = edge[i] + g_host_page < end ? edge[i] + g_host_page : end;
         if (range_is_nl(edge[i], g_host_page, MS_FREE, ANY, ANY))
-            plat_vm_decommit(GP(edge[i]), g_host_page);
+            give_back_nl(edge[i], g_host_page);
         else {
             own_acquire(edge[i], g_host_page); /* a neighbour's bytes the GPU holds land before the page is written */
             memset(GP(lo), 0, (size_t)(hi - lo));
         }
     }
-    if (last > first + g_host_page) plat_vm_decommit(GP(first + g_host_page), last - first - g_host_page);
+    if (last > first + g_host_page) give_back_nl(first + g_host_page, last - first - g_host_page);
 }
 /* [a, a + size) widened to whole pages, inside the address space [AS_BASE, AS_END) and not empty: 0 when it can't be */
 static int page_range(u64* a, u64* size) {
@@ -497,8 +645,16 @@ static void unmap_nl(u64 a, u64 size) {
             if (plat_alias_unmap(GP(lo), hi - lo))
                 fatal("Could not unmap %llu KiB of guest memory from the alias pool",
                       (unsigned long long)((hi - lo) >> 10));
-        } else if (g_host_page == PAGE)
-            plat_vm_decommit(GP(lo), hi - lo);
+        } else if (g_host_page == PAGE) {
+            const MemPlaced* p = g_placed;
+            if (!placed_nl(lo, hi - lo))
+                give_back_nl(lo, hi - lo);
+            else /* the renderer's windows go back to it */
+                for (u64 at = lo, w; at < hi; at = w) {
+                    w = window_end(at, hi);
+                    if (!p->decommit(at, w - at)) give_back_nl(at, w - at);
+                }
+        }
     }
     blk_set_nl(a, size, MS_FREE, PERM_NONE, 0);
     if (g_host_page != PAGE) decommit_nl(a, size); /* no pool with larger pages (mem_init) */
@@ -521,7 +677,8 @@ static int host_view_nl(u64 off, u64 size);
 static int promote_nl(u64 a, u64 size) {
     u64 end = a + size, off;
     u32 i;
-    if (!g_pool_on || pool_run_nl(a, size)) return 0;
+    /* the renderer's GPU memory stays where it is: views of it are copies, as without a pool */
+    if (!g_pool_on || pool_run_nl(a, size) || placed_nl(a, size)) return 0;
     for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
         const MemBlock* b = &g_blk[i];
         u64 lo, hi, boff;
@@ -541,6 +698,7 @@ static int promote_nl(u64 a, u64 size) {
         return MEM_NOMEM;
     }
     pages_replaced_nl(a, size); /* the pool's pages over the reservation's */
+    ext_cut_nl(a, end);         /* and over a buffer's, or fresh ones when that fails */
     if (plat_alias_map(GP(a), off, size)) {
         unpool_nl(a, size, &off);
         pool_free_nl(off, size);
@@ -589,7 +747,9 @@ static int alias_map_nl(u64 dst, u64 src, u64 size, u32 state, u32 perm) {
         unpool_nl(dst, size, NULL);
         return MEM_NOMEM;
     }
-    if (!p) {
+    if (!p && placed_nl(src, size) && !g_placed->view(dst, src, size))
+        ; /* the renderer's GPU memory, mapped at dst too */
+    else if (!p) {
         if (commit_nl(dst, size)) return MEM_NOMEM;
         memcpy(GP(dst), GP(src), size);
     }
@@ -603,10 +763,17 @@ static int alias_map_nl(u64 dst, u64 src, u64 size, u32 state, u32 perm) {
     return 0;
 }
 
-/* The layout in size bytes of address space, smaller than the console's: the alias and heap regions shrink, in the
-   same order and below the stack, with the kernel's pages in the last GiB. The game finds the sizes it asks of
-   GetInfo (the alias region 4 GiB to 32 GiB, the heap region 4 GiB to 8 GiB) */
+/* The layout in size bytes of address space. From AS_MAX up, the console's regions, with the address space ending
+   where the reservation does. Smaller: the alias and heap regions shrink, in the same order and below the stack, with
+   the kernel's pages in the last GiB. The game finds the sizes it asks of GetInfo (the alias region 4 GiB to 32 GiB,
+   the heap region 4 GiB to 8 GiB) */
 static void layout_for(u64 size) {
+    if (size >= AS_MAX) {
+        static const MemLayout console = LAYOUT39;
+        g_layout = console;
+        g_layout.end = size;
+        return;
+    }
     g_layout.end = size;
     if (size >= 16 * GIB) {
         u64 alias = size >= 64 * GIB ? 32 * GIB : size >= 32 * GIB ? 8 * GIB : 4 * GIB;
@@ -680,45 +847,108 @@ static u64 largest_hole(void) {
 /* elsewhere the reservation's own answer says whether a run that large is free */
 static u64 largest_hole(void) { return UINT64_MAX; }
 #endif
-/* The largest of these the system gives is the guest's address space: the console's 128 GiB where it can, else a
-   smaller layout (an iOS app without the extended virtual addressing entitlement, a process RLIMIT_AS holds to less) */
+/* The largest of these the system gives is the guest's address space: the console's 512 GiB where it can, else a
+   smaller layout (a kernel of 39 bits of address space, as a Raspberry Pi 4's, has less than that free; a process
+   RLIMIT_AS holds to less; an iOS app without the extended virtual addressing entitlement). NCE's reservation takes
+   them up to AS_MAX */
+static const u64 tiers[] = {512 * GIB, 256 * GIB, 128 * GIB, 64 * GIB, 48 * GIB, 32 * GIB, 24 * GIB,
+                            16 * GIB,  12 * GIB,  8 * GIB,   7 * GIB,  6 * GIB,  5 * GIB};
+/* Windows makes the written-page tracking with the reservation (plat_vm_reserve), and a reservation without it leaves
+   the caches comparing guest memory's contents: so every tier with it comes before any without. Elsewhere the tracking
+   comes after the reservation (plat_vm_track), plat_vm_reserve_unwatched answers ENOSYS, and the first pass is all */
 static u8* reserve_tiers(void) {
-    static const u64 tiers[] = {128 * GIB, 64 * GIB, 48 * GIB, 32 * GIB, 24 * GIB, 16 * GIB,
-                                12 * GIB,  8 * GIB,  7 * GIB,  6 * GIB,  5 * GIB};
     u64 hole = largest_hole();
-    size_t i;
-    for (i = 0; i < sizeof tiers / sizeof *tiers; ++i) {
-        u8* p = tiers[i] > hole ? NULL : plat_vm_reserve(tiers[i]);
-        if (!p) {
-            if (tiers[i] > hole)
-                LOG("memory: %llu GiB of address space skipped: no free run that large\n",
-                    (unsigned long long)(tiers[i] >> 30));
-            else
-                LOG("memory: %llu GiB of address space refused: %s\n", (unsigned long long)(tiers[i] >> 30),
-                    strerror(errno));
-            continue;
+    for (int watched = 1; watched >= 0; watched--) {
+        for (size_t i = 0; i < sizeof tiers / sizeof *tiers; ++i) {
+            u8* p;
+            if (tiers[i] > hole) {
+                if (watched)
+                    LOG("memory: %llu GiB of address space skipped: no free run that large\n",
+                        (unsigned long long)(tiers[i] >> 30));
+                continue;
+            }
+            p = watched ? plat_vm_reserve(tiers[i]) : plat_vm_reserve_unwatched(tiers[i]);
+            if (!p) {
+                if (!watched && errno == ENOSYS) return NULL;
+                LOG("memory: %llu GiB of address space%s refused: %s\n", (unsigned long long)(tiers[i] >> 30),
+                    watched ? "" : " without the write watch", strerror(errno));
+                continue;
+            }
+            g_as_size = tiers[i];
+            layout_for(tiers[i]);
+            if (!watched)
+                WARN("memory: %llu GiB of address space reserved without the write watch, as no tier from %llu GiB "
+                     "down was given with it: the caches compare guest memory's contents to find what changed\n",
+                     (unsigned long long)(tiers[i] >> 30), (unsigned long long)(tiers[0] >> 30));
+            return p;
         }
-        g_as_size = tiers[i];
-        if (tiers[i] < AS_MAX) layout_for(tiers[i]);
-        return p;
     }
     return NULL;
 }
 
+/* NCE (runtime/nce/nce.h): the guest's code runs on the host's CPU, so the guest's addresses are the host's, and g_mem
+   stays 0. The address space is reserved from the code region's base (each layout of a 64-bit game has it there),
+   moved up by from or more. Linux: from is 0, the guest's own addresses: an executable that is position independent,
+   and the libraries, lie far above them on a host with 39 bits of address space or more. Android: the app's process
+   holds the low 4 GiB (ART's heap and boot image), so the whole layout moves to the first base from 64 GiB, in 2 MiB
+   steps, where a tier is free, as Eden's host_memory.cpp takes its base above 36 bits. The guest's addresses stay
+   below AS_MAX, which the tables indexed by them are sized for, and so within 39 bits */
+#define IDENTITY_LO   0x8000000ull
+#define IDENTITY_STEP (2ull << 20)
+static int g_mem_identity;
+#if !defined(_WIN32)
+int mem_reserve_identity(u64 from) {
+    for (size_t i = 0; i < sizeof tiers / sizeof *tiers; ++i) {
+        if (tiers[i] > AS_MAX - from) continue;
+        for (u64 by = from; by <= AS_MAX - tiers[i]; by += IDENTITY_STEP) {
+            if (plat_vm_reserve_at(by + IDENTITY_LO, tiers[i] - IDENTITY_LO)) {
+                g_as_size = tiers[i];
+                if (tiers[i] < AS_MAX) layout_for(tiers[i]);
+                if (by) mem_layout_move(by);
+                g_mem_identity = 1;
+                LOG("memory: %llu GiB of address space reserved at the guest's own addresses, for NCE: the code region "
+                    "from %#llx, the address space to %#llx\n",
+                    (unsigned long long)(tiers[i] >> 30), (unsigned long long)AS_BASE, (unsigned long long)AS_END);
+                return 1;
+            }
+            if (!from) break; /* the guest's own addresses, or none */
+        }
+    }
+    WARN("memory: the guest's addresses from %#llx up are taken in the host's process (%s), so its code cannot run "
+         "natively\n",
+         (unsigned long long)(from + IDENTITY_LO), strerror(errno));
+    return 0;
+}
+#endif
+int mem_identity(void) { return g_mem_identity; }
+int mem_reserved(void) { return g_mem || g_mem_identity; }
+
 void mem_reserve(void) {
-    if (g_mem) return;
+    if (mem_reserved()) return;
+#if SNX_NCE_HOST
+    if (nce_wanted() && mem_reserve_identity(SNX_NCE_MOVE_FROM)) return;
+#endif
     g_mem = reserve_tiers();
     if (!g_mem) fatal("Could not reserve even 5 GiB of address space for the game's memory");
-    if (g_as_size < AS_MAX)
-        LOG("memory: %llu GiB of address space reserved, a smaller layout than the console's %llu\n",
-            (unsigned long long)(g_as_size >> 30), (unsigned long long)(AS_MAX >> 30));
+    if (g_as_size == AS_TOP)
+        LOG("memory: %llu GiB of address space reserved, the console's\n", (unsigned long long)(g_as_size >> 30));
+    else
+        LOG("memory: %llu GiB of address space reserved, of the console's %llu: the game's address space ends "
+            "there%s\n",
+            (unsigned long long)(g_as_size >> 30), (unsigned long long)(AS_TOP >> 30),
+            g_as_size < AS_MAX ? ", in a smaller layout" : "");
 }
 
 void mem_init(void) {
     pm_lock_announce(&g_mem_lk, "guest memory"); /* every thread's reads and writes of the game's memory */
     g_host_page = plat_vm_page();
     mem_reserve();
-    plat_vm_track(g_mem, g_as_size); /* the settings are read by now, which mem_reserve may have run before */
+    /* the settings are read by now, which mem_reserve may have run before. NCE's reservation is the guest's own
+       addresses, from the code region's base, which mem_layout_move moved up by g_mem_moved */
+    if (g_mem_identity)
+        plat_vm_track((u8*)(uintptr_t)(IDENTITY_LO + g_mem_moved), g_as_size - IDENTITY_LO - g_mem_moved);
+    else
+        plat_vm_track(g_mem, g_as_size);
     mem_lock();
     blk_reserve_nl(1);
     memset(&g_blk[0], 0, sizeof *g_blk);
@@ -930,7 +1160,7 @@ int mem_alias_unmap(u64 dst, u64 size, u64 back) {
        so an engine may own it), with the producer's lock held but not mem.c's */
     if (back) own_acquire(back, size);
     mem_lock();
-    if (back && !any_pool_nl(dst, size)) memcpy(GP(back), GP(dst), size);
+    if (back && !any_pool_nl(dst, size) && !placed_nl(dst, size)) memcpy(GP(back), GP(dst), size); /* a copy's */
     unmap_nl(dst, size);
     mem_unlock();
     mapping_end();
@@ -986,13 +1216,10 @@ int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
     *n = 0;
     if (!g_pool_on || (a | size) & (PAGE - 1) || !size || a < AS_BASE || end > AS_END) return -1;
     mem_lock();
+    if (placed_nl(a, size)) goto out; /* the renderer's GPU memory isn't trapped: what it gets lands at once */
     for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
         const MemBlock* b = &g_blk[i];
-        u32 st = b->state;
-        /* data only: code and its aliases are the code's, I/O and the kernel's aren't the guest's */
-        if (st == MS_FREE || st == MS_CODE || st == MS_ALIASCODE || st == MS_SHAREDCODE || st == MS_GENCODE ||
-            st == MS_CODEOUT || st == MS_IO || st == MS_KERNEL || st == MS_INACCESSIBLE || st == MS_TLS)
-            goto out;
+        if (!data_state(b->state)) goto out;
         if (b->pool) { /* pool pages already: only when mapped here alone */
             u64 lo = b->addr > a ? b->addr : a, hi = blk_end(b) < end ? blk_end(b) : end;
             u64 boff = b->pool - 1 + (lo - b->addr);
@@ -1040,6 +1267,69 @@ int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
     }
     r = 0;
 out:
+    mem_unlock();
+    return r;
+}
+int mem_movable(u64 a, u64 size) {
+    int r;
+    if (!size || (a | size) & (g_host_page - 1) || a < AS_BASE || a + size > AS_END || a + size < a) return 0;
+    mem_lock();
+    r = movable_nl(a, size);
+    mem_unlock();
+    return r;
+}
+int mem_migrate(u64 a, u64 size, int fd) {
+    u64 end = a + size;
+    u32 at;
+    int r = 0, s;
+    if (!size || (a | size) & (g_host_page - 1) || a < AS_BASE || end > AS_END || end < a) return MEM_BADSTATE;
+    mem_lock();
+    if (!movable_nl(a, size)) {
+        r = MEM_BADSTATE;
+        goto out;
+    }
+    if (ext_room_nl(2)) { /* a run cut in two, and this one */
+        r = MEM_NOMEM;
+        goto out;
+    }
+    plat_freeze(GP(a), size);
+    s = plat_vm_share(GP(a), fd, size);
+    plat_thaw();
+    if (s == -2) fatal("Could not move %llu KiB of guest memory to a GPU's buffer", (unsigned long long)(size >> 10));
+    if (s) {
+        r = MEM_NOMEM;
+        goto out;
+    }
+    ext_cut_nl(a, end); /* pages another buffer had are this one's now */
+    for (at = 0; at < g_ext.n && g_ext.run[at].a < a; at++) {}
+    memmove(&g_ext.run[at + 1], &g_ext.run[at], sizeof *g_ext.run * (size_t)(g_ext.n - at));
+    g_ext.run[at] = (ExtRun){a, end};
+    g_ext.n++;
+out:
+    mem_unlock();
+    return r;
+}
+int mem_unmigrate(u64 a, u64 size) {
+    u64 end = a + size, at = a;
+    int r = 0;
+    mem_lock();
+    for (;;) {
+        u32 i = 0;
+        while (i < g_ext.n && g_ext.run[i].b <= at) i++;
+        if (i == g_ext.n || g_ext.run[i].a >= end) break;
+        u64 lo = g_ext.run[i].a > at ? g_ext.run[i].a : at, hi = g_ext.run[i].b < end ? g_ext.run[i].b : end;
+        plat_freeze(GP(lo), hi - lo);
+        int u = plat_vm_unshare(GP(lo), hi - lo);
+        plat_thaw();
+        if (u == -2)
+            fatal("Could not move %llu KiB of guest memory back from a GPU's buffer",
+                  (unsigned long long)((hi - lo) >> 10));
+        if (u)
+            r = MEM_NOMEM;
+        else
+            ext_cut_nl(lo, hi);
+        at = hi;
+    }
     mem_unlock();
     return r;
 }
@@ -1145,7 +1435,7 @@ int mem_heap_set(u64 size, u64 budget) {
             r = MEM_LIMIT;
         else if (!range_is_nl(a, grow, MS_FREE, ANY, ANY))
             r = MEM_BADSTATE;
-        else if (commit_nl(a, grow))
+        else if (commit_heap_nl(a, grow))
             r = MEM_NOMEM;
         else {
             blk_set_nl(a, grow, MS_NORMAL, PERM_RW, 0);
@@ -1192,7 +1482,7 @@ int mem_map_physical(u64 addr, u64 size, u64 budget) {
         while (a < end && !r) {
             u32 k = blk_index_nl(a);
             u64 hi = blk_end(&g_blk[k]) < end ? blk_end(&g_blk[k]) : end;
-            if (g_blk[k].state == MS_FREE && commit_nl(a, hi - a)) r = MEM_NOMEM;
+            if (g_blk[k].state == MS_FREE && commit_heap_nl(a, hi - a)) r = MEM_NOMEM;
             if (!r) done = hi;
             a = hi;
         }

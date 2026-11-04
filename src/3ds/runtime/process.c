@@ -123,7 +123,8 @@ void snx_ctr_process_free(SnxCtrProcess* p) {
     /* files still open when the process ends close their host files and release their nodes before the tree goes */
     for (uint32_t i = 1; i < CTR_OBJECTS; ++i)
         if (p->objects[i].type == CTR_OBJ_FILE && !p->objects[i].data.file.closed) snx_ctr_file_release(p, i);
-    for (unsigned i = 0; i < CTR_SELF_ARCHIVES; ++i) /* and so do the ExtSaveData archives still open */
+    /* and so do the archives still open on a folder (an ExtSaveData, another title's save data) */
+    for (unsigned i = 0; i < CTR_SELF_ARCHIVES; ++i)
         if (p->self_archives[i].root) fs_tree_release(p->self_archives[i].root);
     snx_ctr_romfs_free(p->romfs);
     if (p->tree) {

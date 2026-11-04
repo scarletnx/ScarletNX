@@ -102,10 +102,6 @@ static void lru_add(Surf* s, int kind) {
     g_held[kind].n++;
     g_held[kind].bytes += s->bytes;
 }
-void vk_surf_set_bytes(Surf* s, u64 bytes) {
-    if (s->lru) g_held[lru_kind(s)].bytes = g_held[lru_kind(s)].bytes - s->bytes + bytes;
-    s->bytes = bytes;
-}
 void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked) {
     *count = g_held[kind].n;
     *bytes = g_held[kind].bytes;
@@ -493,7 +489,20 @@ static u64 g_wseq;
    guest memory still at it, so its next write looked written back already and never landed */
 static u32 g_surf_gen;
 u32 vk_surf_gen(void) { return ++g_surf_gen; }
+/* What a texture takes from the drawn targets over it (texture.c tex_take_drawn) changes only with the targets in its
+   range and their pixels, so a texture that had nothing left to take is passed over while this count hasn't moved. It
+   moves when a target enters the list of drawn targets or leaves it, is parked or taken out of parking, and when one
+   vk_rt_drawn_in returned since its last write is written or drawn again (take_seen). A texture searched each time
+   it was bound, and found the targets it had copied already: most of its searches in one game */
+static u64 g_take_gen = 1;
+u64 vk_rt_take_gen(void) { return g_take_gen; }
+static void take_changed(Surf* s) {
+    if (!s->take_seen) return;
+    s->take_seen = 0;
+    g_take_gen++;
+}
 void vk_surf_wrote(Surf* s) {
+    take_changed(s);
     s->wgen = vk_surf_gen();
     s->wseq = ++g_wseq;
 }
@@ -1292,11 +1301,13 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
             rt_pages(s, -1);
             rtx_del(gva);
             s->gva = gva | 1ull << 63;
+            g_take_gen++;
             g_parked++;
             surf_changed(gva);
         }
     if (parked) {
         parked->gva = gva;
+        g_take_gen++;
         rtx_add(parked);
         g_parked--;
         surf_changed(gva);
@@ -1510,6 +1521,7 @@ static int rt_superseded(const Surf* s) {
     return 0;
 }
 void vk_rt_drawn(Surf* s) {
+    take_changed(s);
     linear_note(s);
     s->draw_wseq = s->wseq;
     if (s->rt_size > g_drawn_max) g_drawn_max = s->rt_size;
@@ -1542,6 +1554,7 @@ void vk_rt_drawn(Surf* s) {
     g_drawn[at] = s;
     g_ndrawn++;
     s->in_drawn = 1;
+    g_take_gen++;
     pend_add_va(&g_drawn_pages, s->drawn_from, 1, 1);
 }
 void vk_rt_drawn_full(Surf* s) {
@@ -1575,6 +1588,7 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
         if (s->gva == s->drawn_from) {
             if (n < max) out[n] = s;
             n++;
+            s->take_seen = 1;
         }
     }
     return n;
@@ -1592,6 +1606,7 @@ static void surf_free(Surf* s) {
     if (s->gva >> 63) g_parked--;
     linear_drop(s);
     if (s->in_drawn) {
+        g_take_gen++;
         int i = drawn_lower(s->drawn_from);
         while (i < g_ndrawn && g_drawn[i] != s) i++;
         if (i < g_ndrawn) {
@@ -1769,6 +1784,11 @@ void vk_mem_trim(u64 extra, int force) {
                   short_of ? ", all that could go" : "");
 }
 
+void vk_surf_bytes(Surf* s, u64 bytes) {
+    if (s->lru) g_held[lru_kind(s)].bytes = g_held[lru_kind(s)].bytes - s->bytes + bytes;
+    s->bytes = bytes;
+}
+
 int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u64* bytes) {
     VkDeviceImageMemoryRequirements q = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
                                          .pCreateInfo = ii};
@@ -1780,6 +1800,16 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
     SNX_ZONE_VALUE(z, *bytes);
     *img = VK_NULL_HANDLE;
     *mem = VK_NULL_HANDLE;
+    /* more than the whole heap: never made, and the caches aren't emptied for it (a header's garbage size) */
+    const VkPhysicalDeviceMemoryProperties* mp;
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    u64 heap = mp->memoryHeaps[vk_mem_heap()].size;
+    if (*bytes > heap) {
+        LOG_LIMIT(4, "vulkan: a %ux%ux%u image of %u layers takes %llu MB, more than the GPU's %llu MB (not made)\n",
+                  ii->extent.width, ii->extent.height, ii->extent.depth, ii->arrayLayers,
+                  (unsigned long long)(*bytes >> 20), (unsigned long long)(heap >> 20));
+        return 0;
+    }
     /* one as big found no memory this present: neither will this one (what was freed meanwhile is released when the
        frame is done). Its draws go without it until the next present */
     if (g_oom == g_vk_present + 1 && *bytes >= g_oom_bytes) return 0;

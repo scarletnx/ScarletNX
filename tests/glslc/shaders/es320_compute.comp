@@ -1,0 +1,15 @@
+#version 320 es
+// GLSL ES 3.20: image buffers, cube map array images, image atomics, imageAtomicCompSwap, dynamic sampler indexing
+layout(local_size_x = 4, local_size_y = 4) in;
+layout(binding = 0, r32ui) uniform highp uimageBuffer counters;
+layout(binding = 1, rgba8) uniform readonly highp imageCubeArray faces;
+layout(binding = 2, r32f) uniform highp image2D accum;
+layout(binding = 3) uniform highp sampler2D textures[4];
+void main() {
+    int i = int(gl_LocalInvocationIndex);
+    uint prev = imageAtomicCompSwap(counters, i, 0u, 1u) + imageAtomicExchange(counters, i + 1, 2u);
+    vec4 face = imageLoad(faces, ivec3(gl_LocalInvocationID.xy, 7));
+    float a = imageLoad(accum, ivec2(gl_GlobalInvocationID.xy)).x + imageAtomicExchange(accum, ivec2(0), 1.0);
+    vec4 t = textureLod(textures[i % 4], vec2(0.5), 0.0);
+    imageStore(accum, ivec2(gl_GlobalInvocationID.xy), vec4(a + face.x + t.x + float(prev)));
+}

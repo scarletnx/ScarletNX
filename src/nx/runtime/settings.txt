@@ -133,11 +133,13 @@ setting Save layout
 table g_display_ini
 setting TV mode
     key docked
-    int 0 1
+    int 0 2
     default 1
     startup
-    words Off|On
-    help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720)
+    set options_tv_mode_set
+    words Off|On|Auto
+    help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720), 2 = Auto: TV mode while the
+    help host is on its charger, handheld mode on its battery. Auto switches while the game runs
 setting Fullscreen
     key fullscreen
     int 0 1
@@ -233,6 +235,17 @@ setting Vulkan Video decode
     help 1 = H.264 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver
     help have an H.264 decode queue. Experimental and untested. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
+setting Vertex input dynamic state
+    key vertex_input_dynamic_state
+    text 16
+    default auto
+    startup
+    words auto=Auto|on=On|off=Off
+    help How a draw gives the GPU its vertex layout. auto = as dynamic state (VK_EXT_vertex_input_dynamic_state) where
+    help the GPU's driver has it, but NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0, which
+    help draw it wrong; on = as dynamic state wherever the driver has it, those too; off = in the pipeline. Dynamic,
+    help one pipeline serves every layout a program is drawn with, so fewer pipelines are made; in the pipeline, each
+    help layout takes one of its own. Any other value stops the game, saying so
 
 table g_performance_ini
 setting FPS limit
@@ -321,6 +334,36 @@ setting Prepare shaders
     help background, used once all are ready. Before starting = a loading screen waits for them and for the shader cache
     help of earlier sessions. Any key, button or tap starts the game at once and the rest is prepared while you play.
     help Esc quits (on Android, back opens the menu)
+setting Compress shader cache
+    key compress_shader_cache
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = the shaders and pipelines saved from earlier sessions are packed with zstd, about 70 shaders at a time:
+    help about a quarter of the space, a few milliseconds more to read when the game starts, and up to 7 ms on the
+    help thread that made the last of each 70 new shaders. 0 = saved as they are made. What is packed is read either way
+setting Compress prepared shaders
+    key compress_prepared_shaders
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = each shader Prepare shaders makes is packed with zstd on its own: about a quarter of the space, about
+    help 50 microseconds more for each as it is prepared and 15 the first time a draw uses it. 0 = saved as they are
+    help made. What is packed is read either way
+setting NCE
+    key nce
+    int 0 1
+    default 1
+    startup
+    recompile
+    words Off|On
+    help On an AArch64 Linux host or Android 10 and later on arm64, 1 = the game's 64-bit code runs natively on the
+    help host's CPU (native code execution), with the words patched that cannot run as they are: SVCs, the TLS
+    help registers, the counter registers, and the exclusives made ordered, as Eden patches them. The recompile then
+    help makes no code ahead of time. 0 = the code is recompiled. Other hosts, 32-bit games and, on Android, games of
+    help the 36-bit address space always recompile, whatever this says
 setting JIT threads
     key jit_threads
     int 0 4
@@ -572,13 +615,13 @@ setting Eden room
     help and a room's password is room_password in users/online.ini
 
 table g_user_ini
-setting User
-    key user
-    int 1 SNX_USERS_MAX
-    default 1
+setting User uid
+    key user_uid
+    text 33
+    default ""
     startup
-    help The console's user the game plays as: 1 to 8, as users/users.ini of the data folder lists them (1, "Player",
-    help without one). A number with no user stops the game
+    help The console's user the game plays as, by its uid: 32 hex digits, as users/users.ini of the data folder lists
+    help them; empty is its [user1] ("Player" without one). A uid no user has stops the game
 
 table g_debug_ini
 setting Log level
@@ -865,10 +908,12 @@ setting Guest memory
     default 0
     startup
     words Auto|Copy|UMA
-    help How the GPU reads guest buffers (vertices, indices, read-only storage; docs/GPU_OWNERSHIP.md). 1 = copied into
-    help the renderer's buffers when they change. 2 = read where they are in guest memory (VK_EXT_external_memory_host),
-    help as the console's GPU reads them: for a GPU that shares system memory. On a discrete GPU it reads them across
-    help the bus, which is slow, but it shows that the path is correct. 0 = 2 on a GPU that shares system memory, else 1
+    help How the GPU reads and writes guest buffers (vertices, indices, storage, the engines' results;
+    help docs/GPU_OWNERSHIP.md). 1 = copied into the renderer's buffers when they change, and back. 2 = read and written
+    help where they are in guest memory (VK_EXT_external_memory_host; on Android without it, guest memory moves into
+    help AHardwareBuffers), as the console's GPU does: for a GPU that shares system memory. On a discrete GPU it goes
+    help across the bus, which is slow, but it shows that the path is correct. 0 = 2 on a GPU that shares system memory,
+    help but never the moves into AHardwareBuffers, else 1
 setting Buffer copy stats
     key vk_buffer_stats
     int 0 1
@@ -876,6 +921,15 @@ setting Buffer copy stats
     startup
     words Off|On
     help 1 = logs what the renderer copies between guest memory and its buffers, and why it waits for their results
+setting NVN storage ordering
+    key nvn_storage_order
+    int 0 2
+    default 2
+    startup
+    words Conservative|Explicit|Deferred
+    help NVN draws use their explicit storage barriers, allowing independent writes through overlapping views.
+    help Deferred records the ordering requirement and emits a Vulkan barrier at the next dependent buffer use.
+    help 0 keeps conservative per-draw dependencies for comparisons or command recordings from older builds.
 setting Descriptor buffers
     key vk_descriptors
     int 0 1
@@ -1042,6 +1096,35 @@ setting State checks
     help Save state round trips, a comma between: at saves the game at that many ms of the scripted input's clock into
     help the check slot, loads it back at once, and logs whether guest memory and guest time came back the same
 
+# ---- the 3DS driver's display ----
+
+table g_ctr_display_ini
+setting CTR separate screens
+    key ctr_separate_windows
+    label Separate screens
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = the top and bottom screens each have a window of their own, each taking its whole window, instead of the
+    help top screen above the bottom one in one window
+setting CTR top resolution
+    key ctr_top_resolution
+    label Top screen resolution
+    int 1 16
+    default 1
+    startup
+    help The scale of the top screen's 3D rendering, 1 to 16: 1 = the console's 400x240, 2 = 800x480. The screen is
+    help scaled to its window
+setting CTR bottom resolution
+    key ctr_bottom_resolution
+    label Bottom screen resolution
+    int 1 16
+    default 1
+    startup
+    help The scale of the bottom screen's 3D rendering, 1 to 16: 1 = the console's 320x240, 2 = 640x480. The screen
+    help is scaled to its window
+
 # ---- the 3DS driver's (scarletnx-3ds --key=value), in no section of the game's .ini ----
 
 table g_ctr_debug_ini
@@ -1161,6 +1244,7 @@ setting Vita lockstep steps
 section Game: g_game_ini
 section Display: g_display_ini
 section Graphics: g_graphics_ini
+section 3DS: g_ctr_display_ini
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend
 section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player    backend
@@ -1227,7 +1311,8 @@ setting AOT threads
     int 0 1024
     default 0
     words Auto|#
-    help The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores
+    help The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last quarter
+    help left free, so the machine stays responsive; N = that many
 setting Unit size
     key unit_instructions
     int 1 INT_MAX
@@ -1246,7 +1331,7 @@ setting Unit cache limit
     words No limit|# GB
     help The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile
     help finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either
-    help way the cache always leaves a tenth of its disk free, removing its oldest units for a new one
+    help way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one
 
 # LLVM's own: every pass of its pipelines for -O0 to -Oz, on unless turned off, and each option LLVM's C API sets on the
 # pass builder and the target machine, LLVM's own value until it is set

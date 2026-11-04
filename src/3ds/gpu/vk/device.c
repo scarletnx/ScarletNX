@@ -2,15 +2,21 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
+#include "common/gpu/vk/vk_common.h"
+#include "snx_settings.h"
+#include <SDL3/SDL_vulkan.h>
 #include <stdio.h>
 #include <string.h>
 
 static struct {
     SnxCtrVk vk;
     int up;
+    char error[512];  /* why the last snx_ctr_vk_init failed */
+    char device[512]; /* the device it chose and its driver, "" before one */
 } g_device;
 
 SnxCtrVk* snx_ctr_vk(void) { return g_device.up ? &g_device.vk : NULL; }
+const char* snx_ctr_vk_error(void) { return g_device.error; }
 
 bool snx_ctr_vk_window(uint32_t pa, uint64_t size, SnxCtrVkWindow* w, uint32_t* inside) {
     const SnxCtrVk* v = &g_device.vk;
@@ -35,18 +41,26 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     SnxCtrVk* v = user;
     SnxVkExtensions list;
     if (!snx_vk_device_extensions(phys, &list)) return false;
-    const char* extensions[4];
+    const char* extensions[5];
     uint32_t n = 0;
     bool ok = snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     extensions[n++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
-    if (v->host.surface) {
+    if (v->host.surface || v->second_surface) {
         ok = ok && snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     }
     bool index8 = snx_vk_extensions_has(&list, VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME);
     if (index8) extensions[n++] = VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME;
+    /* a portability driver's subset must be enabled when it lists one (MoltenVK), as the Switch frontend does */
+    bool portability = snx_vk_extensions_has(&list, "VK_KHR_portability_subset");
+    if (portability) extensions[n++] = "VK_KHR_portability_subset";
     snx_vk_extensions_free(&list);
     if (!ok) return false;
+    if (v->second_surface) { /* the same queue presents to both windows */
+        VkBool32 presents = VK_FALSE;
+        if (vkGetPhysicalDeviceSurfaceSupportKHR(phys, family, v->second_surface, &presents) != VK_SUCCESS || !presents)
+            return false;
+    }
     VkPhysicalDeviceIndexTypeUint8FeaturesEXT index_features = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT};
     VkPhysicalDeviceVulkan13Features v13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
@@ -87,59 +101,99 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     v->preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32;
     return true;
 }
+void snx_ctr_vk_import_error(const SnxCtrVkImport* f, const char* region, char* error, size_t error_size) {
+    const char* call = "";
+    switch (f->step) {
+        case SNX_CTR_VK_IMPORT_ALIGNMENT: break;
+        case SNX_CTR_VK_IMPORT_POINTER: call = "vkGetMemoryHostPointerPropertiesEXT"; break;
+        case SNX_CTR_VK_IMPORT_BUFFER: call = "vkCreateBuffer"; break;
+        case SNX_CTR_VK_IMPORT_TYPE: break;
+        case SNX_CTR_VK_IMPORT_ALLOCATE: call = "vkAllocateMemory"; break;
+        case SNX_CTR_VK_IMPORT_BIND: call = "vkBindBufferMemory"; break;
+    }
+    char why[256];
+    if (f->step == SNX_CTR_VK_IMPORT_ALIGNMENT)
+        snprintf(why, sizeof why, "its host address or its size is not a multiple of the alignment");
+    else if (f->step == SNX_CTR_VK_IMPORT_TYPE)
+        snprintf(why, sizeof why,
+                 "no host-coherent memory type is both one of the host pointer's (0x%x) and one of the buffer's (0x%x)",
+                 f->pointer_types, f->buffer_types);
+    else if (f->step == SNX_CTR_VK_IMPORT_ALLOCATE || f->step == SNX_CTR_VK_IMPORT_BIND)
+        snprintf(why, sizeof why,
+                 "%s gave %s (%d) for memory type %u (the host pointer's types 0x%x, the buffer's 0x%x)", call,
+                 snx_vk_result_str(f->result), (int)f->result, f->type, f->pointer_types, f->buffer_types);
+    else
+        snprintf(why, sizeof why, "%s gave %s (%d)", call, snx_vk_result_str(f->result), (int)f->result);
+    snprintf(error, error_size,
+             "the driver cannot import the %s region (0x%08x, 0x%x bytes at host 0x%llx, alignment %llu): %s", region,
+             f->base, f->size, (unsigned long long)f->host, (unsigned long long)f->alignment, why);
+}
+/* one RAM region's host memory, at view, a buffer in place: false with the step it stopped at and the driver's
+   answer in f, nothing of it left */
+static bool import_region(SnxCtrVk* v, unsigned char* view, SnxCtrVkRam* ram, SnxCtrVkImport* f) {
+    if ((f->host | f->size) & (f->alignment - 1)) return false;
+    VkMemoryHostPointerPropertiesEXT pointer = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+    f->step = SNX_CTR_VK_IMPORT_POINTER;
+    f->result = vkGetMemoryHostPointerPropertiesEXT(v->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                                    view, &pointer);
+    if (f->result != VK_SUCCESS) return false;
+    f->pointer_types = pointer.memoryTypeBits;
+    VkExternalMemoryBufferCreateInfo external = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+                                                 .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                             .pNext = &external,
+                             .size = f->size,
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    f->step = SNX_CTR_VK_IMPORT_BUFFER;
+    if ((f->result = vkCreateBuffer(v->device, &bi, NULL, &ram->buffer)) != VK_SUCCESS) return false;
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(v->device, ram->buffer, &req);
+    f->buffer_types = req.memoryTypeBits;
+    /* host-coherent: the guest's CPU writes before a submit are seen by it, its writes after the fence by the CPU */
+    f->step = SNX_CTR_VK_IMPORT_TYPE;
+    f->type = snx_ctr_vk_memory_type(req.memoryTypeBits & pointer.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkImportMemoryHostPointerInfoEXT import = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
+                                               .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                               .pHostPointer = view};
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                               .pNext = &import,
+                               .allocationSize = f->size,
+                               .memoryTypeIndex = f->type};
+    if (f->type != UINT32_MAX) {
+        f->step = SNX_CTR_VK_IMPORT_ALLOCATE;
+        if ((f->result = vkAllocateMemory(v->device, &ai, NULL, &ram->memory)) == VK_SUCCESS) {
+            f->step = SNX_CTR_VK_IMPORT_BIND;
+            if ((f->result = vkBindBufferMemory(v->device, ram->buffer, ram->memory, 0)) == VK_SUCCESS) return true;
+            vkFreeMemory(v->device, ram->memory, NULL);
+        }
+    }
+    vkDestroyBuffer(v->device, ram->buffer, NULL);
+    return false;
+}
+/* every RAM region a buffer of its host memory in place: false at the first one the driver does not take, with why in
+   error (the call that failed, the driver's answer and the region) */
 static bool import_ram(SnxCtrVk* v, SnxCtrMemory* memory, char* error, size_t error_size) {
     const SnxCtrProfile* profile = snx_ctr_memory_profile(memory);
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT host = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
     VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &host};
     vkGetPhysicalDeviceProperties2(v->phys, &properties);
+    uint64_t alignment = host.minImportedHostPointerAlignment ? host.minImportedHostPointerAlignment : 4096;
     for (size_t i = 0; i < profile->region_count; ++i) {
         unsigned char* view = snx_ctr_memory_region(memory, i);
         const SnxCtrRegion* r = &profile->regions[i];
         if (!view) continue;
-        uint64_t alignment = host.minImportedHostPointerAlignment ? host.minImportedHostPointerAlignment : 4096;
-        if (((uintptr_t)view | r->size) & (alignment - 1)) {
-            snprintf(error, error_size, "the %s region is not aligned to the %llu bytes the driver imports", r->name,
-                     (unsigned long long)alignment);
-            return false;
-        }
-        VkMemoryHostPointerPropertiesEXT pointer = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
-        if (vkGetMemoryHostPointerPropertiesEXT(v->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, view,
-                                                &pointer) != VK_SUCCESS) {
-            snprintf(error, error_size, "the driver cannot import the %s region", r->name);
-            return false;
-        }
+        SnxCtrVkImport f = {.step = SNX_CTR_VK_IMPORT_ALIGNMENT,
+                            .base = r->base,
+                            .size = r->size,
+                            .host = (uintptr_t)view,
+                            .alignment = alignment};
         SnxCtrVkRam* ram = &v->ram[v->ram_count];
-        VkExternalMemoryBufferCreateInfo external = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
-                                                     .handleTypes =
-                                                         VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
-        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                                 .pNext = &external,
-                                 .size = r->size,
-                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                                          VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-        if (vkCreateBuffer(v->device, &bi, NULL, &ram->buffer) != VK_SUCCESS) {
-            snprintf(error, error_size, "cannot make a buffer of the %s region", r->name);
-            return false;
-        }
-        VkMemoryRequirements req;
-        vkGetBufferMemoryRequirements(v->device, ram->buffer, &req);
-        /* host-coherent: the guest's CPU writes before a submit are seen by it, its writes after the fence by the CPU */
-        uint32_t type = snx_ctr_vk_memory_type(req.memoryTypeBits & pointer.memoryTypeBits,
-                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        VkImportMemoryHostPointerInfoEXT import = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
-                                                   .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
-                                                   .pHostPointer = view};
-        VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                                   .pNext = &import,
-                                   .allocationSize = r->size,
-                                   .memoryTypeIndex = type};
-        if (type == UINT32_MAX || vkAllocateMemory(v->device, &ai, NULL, &ram->memory) != VK_SUCCESS ||
-            vkBindBufferMemory(v->device, ram->buffer, ram->memory, 0) != VK_SUCCESS) {
-            vkDestroyBuffer(v->device, ram->buffer, NULL);
-            snprintf(error, error_size, "the driver cannot import the %s region", r->name);
+        if (!import_region(v, view, ram, &f)) {
+            snx_ctr_vk_import_error(&f, r->name, error, error_size);
             return false;
         }
         ram->base = r->base;
@@ -148,21 +202,44 @@ static bool import_ram(SnxCtrVk* v, SnxCtrMemory* memory, char* error, size_t er
     }
     return true;
 }
-bool snx_ctr_vk_init(SnxCtrMemory* memory, char* error, size_t error_size) {
+static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     SnxCtrVk* v = &g_device.vk;
-    if (g_device.up) return true;
     memset(v, 0, sizeof *v);
     /* a window first: a display server and a Vulkan surface make it the output; without one frames go to the frame
        dumps only */
     if (!snx_vk_window_open("scarletnx-ctr", "ScarletNX 3DS", 600, 720, &v->host, error, error_size)) return false;
+    /* another window for the bottom screen when the screens are apart, on this instance */
+    if (g_settings.ctr_separate_screens && v->host.window) {
+        v->second = SDL_CreateWindow("ScarletNX 3DS (Bottom)", 640, 480, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+        if (!v->second || !SDL_Vulkan_CreateSurface(v->second, v->host.instance.instance, NULL, &v->second_surface)) {
+            if (v->second) SDL_DestroyWindow(v->second);
+            v->second = NULL;
+            v->second_surface = VK_NULL_HANDLE;
+        }
+    }
     const VkQueueFlags queue = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
-    if (!snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v)) {
+    bool made =
+        snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v);
+    if (!made && v->second) { /* no device presents to both windows: one window again */
+        vkDestroySurfaceKHR(v->host.instance.instance, v->second_surface, NULL);
+        SDL_DestroyWindow(v->second);
+        v->second = NULL;
+        v->second_surface = VK_NULL_HANDLE;
+        made =
+            snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v);
+    }
+    if (!made) {
         snprintf(error, error_size,
                  "no Vulkan 1.3 device with 8-bit storage buffers, dynamic rendering and VK_EXT_external_memory_host");
         snx_ctr_vk_free();
         return false;
     }
     volkLoadDevice(v->device);
+    VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 chosen = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
+    vkGetPhysicalDeviceProperties2(v->phys, &chosen);
+    snprintf(g_device.device, sizeof g_device.device, "%s, driver %s%s%s", chosen.properties.deviceName,
+             driver.driverName, driver.driverInfo[0] ? " " : "", driver.driverInfo);
     vkGetDeviceQueue(v->device, v->family, 0, &v->queue);
     vkGetPhysicalDeviceProperties(v->phys, &v->properties);
     vkGetPhysicalDeviceMemoryProperties(v->phys, &v->memory_properties);
@@ -197,6 +274,14 @@ bool snx_ctr_vk_init(SnxCtrMemory* memory, char* error, size_t error_size) {
     snx_ctr_track_handler(memory, snx_ctr_vk_track, NULL);
     return true;
 }
+bool snx_ctr_vk_init(SnxCtrMemory* memory, char* error, size_t error_size) {
+    if (g_device.up) return true;
+    /* the reason stays here, for what stops because the device did not start (the GSP's GX commands) */
+    g_device.error[0] = g_device.device[0] = 0;
+    if (init(memory, g_device.error, sizeof g_device.error)) return true;
+    snprintf(error, error_size, "%s%s%s", g_device.error, g_device.device[0] ? "; device " : "", g_device.device);
+    return false;
+}
 void snx_ctr_vk_free(void) {
     SnxCtrVk* v = &g_device.vk;
     if (v->device) {
@@ -214,6 +299,8 @@ void snx_ctr_vk_free(void) {
         snx_vk_ring_free(&v->ring);
         vkDestroyDevice(v->device, NULL);
     }
+    if (v->second_surface) vkDestroySurfaceKHR(v->host.instance.instance, v->second_surface, NULL);
+    if (v->second) SDL_DestroyWindow(v->second);
     snx_vk_window_close(&v->host);
     memset(v, 0, sizeof *v);
     g_device.up = 0;

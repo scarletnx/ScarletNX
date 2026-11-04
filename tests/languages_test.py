@@ -230,11 +230,14 @@ class Files(unittest.TestCase):
     def test_letters_the_font_draws(self):
         # CP437's, and the Latin letters past it: the a and o with a tilde, the s with a comma
         self.compile(entry('Settings', 'Configura\u00e7\u00f5es') + entry('Back', 'N\u00e3o') + entry('Up', '\u0219'))
-        for text in ('Ajustes\u2026', '\u201cAjustes\u201d', '\u8a2d\u5b9a', 'Ajustes \U0001f600'):
+        for text in ('Ajustes\u2026', '\u201cAjustes\u201d', '\ua000\ua001', 'Ajustes \U0001f600'):
             with self.assertRaises(bl.Refused, msg=text):
                 self.compile(entry('Settings', text))
         with self.assertRaises(bl.Refused):  # the name Settings > App > Language shows
-            self.compile(entry('Settings', 'Ajustes'), name='\u65e5\u672c\u8a9e')
+            self.compile(entry('Settings', 'Ajustes'), name='\ua000\ua001')
+        # the titles' blocks, Chinese, Japanese and Korean, whatever the languages show
+        self.compile(entry('Settings', '\u8a2d\u5b9a') + entry('Back', '\u3082\u3069\u308b \ub4a4\ub85c'))
+        self.compile(entry('Settings', 'Ajustes'), name='\u65e5\u672c\u8a9e')
         self.assertIn(0x00E3, DRAWN)
         self.assertIn(0x00E9, DRAWN)
         self.assertNotIn(0x2026, DRAWN)
@@ -242,9 +245,10 @@ class Files(unittest.TestCase):
         # saying how it gets its glyph
         self.compile(entry('Settings', '\u83dc\u5355'))
         self.assertIn(0x83DC, DRAWN)
-        self.assertNotIn(0x9F8D, DRAWN)
-        with self.assertRaisesRegex(bl.Refused, r'\(U\+9F8D\).*build-glyphs\.py --from'):
-            self.compile(entry('Settings', '\u83dc\u9f8d'))
+        self.assertIn(0x9F8D, DRAWN)  # the titles' blocks, whatever the languages show
+        self.assertNotIn(0xA000, DRAWN)
+        with self.assertRaisesRegex(bl.Refused, r'\(U\+A000\).*build-glyphs\.py --from'):
+            self.compile(entry('Settings', '\u83dc\ua000'))
 
     def test_refused_headers_and_names(self):
         with self.assertRaises(bl.Refused):
@@ -294,8 +298,13 @@ class Files(unittest.TestCase):
         self.assertIn('#: src/gui/b.c\n#, c-format\nmsgid "Load %s"\nmsgstr ""\n', merged)
         self.assertTrue(merged.endswith('#~ msgid "Share log"\n#~ msgstr "Partilhar"\n'))
         self.assertTrue(merged.startswith(HEADER.format(code='pt-BR', name='Português (Brasil)')))
+        # --check only warns of it: the drift and how many entries lag, never a refusal
+        warned = bl.lagging(folder, pot, DRAWN)
+        self.assertEqual(warned[:2], bl.po_drift(po, pot))
+        self.assertIn('2 entries lag po/scarletnx.pot, which the menu shows in English', warned[2])
         po.write_text(merged)
         self.assertEqual(bl.po_drift(po, pot), [])
+        self.assertEqual(bl.lagging(folder, pot, DRAWN), [])
         self.assertEqual(bl.merged_po(po, phrases), merged)
         # the phrase back in the code takes its obsolete translation back
         phrases['Share log'] = (set(), ['src/gui/c.c'])

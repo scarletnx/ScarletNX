@@ -125,6 +125,12 @@ def main():
         assert (expected / f'{name}_code.so').is_file() and os.access(expected / name, os.X_OK)
         ini = dict(line.split('=', 1) for line in (expected / f'{name}.ini').read_text().splitlines())
         assert ini == {'source': str(source.resolve()), 'model': 'old', 'system': '3ds'}, ini
+        # A line a player added stays when the game is played again, which writes source, model and system only
+        with (expected / f'{name}.ini').open('a') as added:
+            added.write('ctr_top_resolution=2\ncustom=1\n')
+        run(plain, run_status, run_message, extra=('--repo', str(data)), explicit=False)
+        ini = dict(line.split('=', 1) for line in (expected / f'{name}.ini').read_text().splitlines())
+        assert ini.get('ctr_top_resolution') == '2' and ini.get('custom') == '1', ini
         assert not (data / 'work/3ds/input with spacesliteral').exists()
         # the copy plays its game alone, from the CIA its .ini names, with what --script= and --seconds= set
         env = {**os.environ, 'HOME': str(root), 'USERPROFILE': str(root)}

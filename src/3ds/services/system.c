@@ -12,10 +12,10 @@
 
 /* the services of a retail console an application may name in its ExHeader (3dbrew's Services list) */
 static const char* const names[] = {
-    "ac:u",     "ac:i",     "act:u",    "boss:U", "boss:P", "cam:u",  "cecd:u",  "cecd:s", "csnd:SND",
-    "dlp:FKCL", "dlp:SRVR", "dlp:CLNT", "frd:u",  "frd:a",  "http:C", "ir:USER", "ir:u",   "ir:rst",
-    "ldr:ro",   "mic:u",    "mvd:STD",  "ndm:u",  "news:u", "news:s", "nim:aoc", "nim:u",  "nwm::UDS",
-    "pxi:dev",  "qtm:u",    "soc:U",    "ssl:C",  "nfc:u",  "nfc:m",  "cdc:CSN",
+    "ac:u",     "ac:i",     "act:u",    "boss:U", "boss:P", "cam:u",   "cecd:u", "cecd:s",   "csnd:SND",
+    "dlp:FKCL", "dlp:SRVR", "dlp:CLNT", "frd:u",  "frd:a",  "http:C",  "ir:u",   "ir:rst",   "ldr:ro",
+    "mic:u",    "mvd:STD",  "ndm:u",    "news:u", "news:s", "nim:aoc", "nim:u",  "nwm::UDS", "pxi:dev",
+    "qtm:u",    "soc:U",    "ssl:C",    "nfc:u",  "nfc:m",  "cdc:CSN",
 };
 _Static_assert(sizeof names / sizeof *names + 16 < 256, "a name index per session, stand-ins included");
 uint32_t snx_ctr_system_open(SnxCtrProcess* p, const uint8_t* name, uint32_t length, uint32_t* session) {
@@ -52,6 +52,17 @@ const char* snx_ctr_system_name(const SnxCtrProcess* p, uint32_t index) {
     const uint32_t known = sizeof names / sizeof *names;
     return index < known ? names[index] : index - known < p->stand_in_count ? p->stand_ins[index - known] : "?";
 }
+void snx_ctr_system_unmodeled(SnxCtrIpc* c, const char* service, uint32_t key) {
+    SnxCtrProcess* p = c->process;
+    uint32_t command = c->in[0] >> 16, seen = 0;
+    while (seen < p->stub_logged_count && p->stub_logged[seen] != key) ++seen;
+    if (seen == p->stub_logged_count) {
+        if (seen < sizeof p->stub_logged / sizeof *p->stub_logged) p->stub_logged[p->stub_logged_count++] = key;
+        fprintf(stderr, "3ds ipc: %s command 0x%04x (header 0x%08x) answered success\n", service, command, c->in[0]);
+    }
+    memset(c->out, 0, sizeof c->out);
+    c->out[0] = command << 16 | 0x40;
+}
 void snx_ctr_system_dispatch(SnxCtrIpc* c) {
     SnxCtrProcess* p = c->process;
     if (!strcmp(snx_ctr_system_name(p, p->objects[c->object].data.session.name), "nwm::UDS")) {
@@ -59,13 +70,6 @@ void snx_ctr_system_dispatch(SnxCtrIpc* c) {
         return;
     }
     uint32_t name = p->objects[c->object].data.session.name, command = c->in[0] >> 16;
-    uint32_t key = (SNX_CTR_SERVICE_COUNT + name) << 16 | command, seen = 0;
-    while (seen < p->stub_logged_count && p->stub_logged[seen] != key) ++seen;
-    if (seen == p->stub_logged_count) {
-        if (seen < sizeof p->stub_logged / sizeof *p->stub_logged) p->stub_logged[p->stub_logged_count++] = key;
-        fprintf(stderr, "3ds ipc: %s command 0x%04x (header 0x%08x) answered success\n", snx_ctr_system_name(p, name),
-                command, c->in[0]);
-    }
-    memset(c->out, 0, sizeof c->out);
-    c->out[0] = command << 16 | 0x40;
+    uint32_t key = (SNX_CTR_SERVICE_COUNT + name) << 16 | command;
+    snx_ctr_system_unmodeled(c, snx_ctr_system_name(p, name), key);
 }

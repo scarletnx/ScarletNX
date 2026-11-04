@@ -46,6 +46,21 @@ description: "Build the ScarletNX runtime and recompile games correctly. Avoid t
 | Nobody sees a new warning | The runtime builds with only the default warnings of Clang. The third-party packages and the generated game module build with `-w`. A warning does not stop the build. | Check a changed file with more warnings on. Take the line of the file from `build/compile_commands.json`. Run it with `-Wall -Wextra -fsyntax-only`. Fix the warnings that come from the change. |
 | The game crashes at startup with `recompiled code is from another ScarletNX version` | The build of the game module used another `SNX_ABI` (`src/common/cpu/aarch64/cpu.h`) | Recompile the game. |
 
+## The screen tests
+
+A build makes `snx-test-gui-sdl` and `snx-test-gui-setup` on the Mac too. But `src/gui/CMakeLists.txt` registers
+`gui_sdl_events` and `gui_setup` in its `NOT APPLE` branch only. Thus `ctest` on the Mac runs neither. Run one by
+hand to see what a Linux or Windows check does. Give it the drivers and the language that CI gives it:
+
+    SDL_VIDEO_DRIVER=dummy SDL_RENDER_DRIVER=software SDL_FILE_DIALOG_DRIVER=none SDL_PREFERRED_LOCALES=en_US \
+      build/macos/src/gui/snx-test-gui-sdl
+
+A check that fails keeps its frame when `SNX_GUI_FAILED_SHOT` names a file: `SNX_GUI_FAILED_SHOT=shot.bmp`, then
+`sips -s format png shot.bmp --out shot.png` to look at it. Read the checks in the order they run. Read them with the
+`#ifdef` blocks of the platform. A check can pass on Linux alone because an `SNX_XDG` block cleared state that the
+other platforms keep. Some checks also fail on the Mac from the folders of your own home and from longer temporary
+paths, which wrap.
+
 ## The Vulkan renderer
 
 The renderer is Vulkan. The sdl3 backend is the only window backend on Linux and Windows. The project removed the

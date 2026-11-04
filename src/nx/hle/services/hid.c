@@ -85,7 +85,7 @@ static void hid_sources(HidSource src[HID_ENTRIES]) {
             src[p].p = p;
         }
     }
-    if (!g_settings.tv_mode) src[8].kind = SRC_HANDHELD;
+    if (!snx_tv_mode()) src[8].kind = SRC_HANDHELD;
 }
 /* the one style an Npad has: its controller's when the game supports it, else the nearest the game does */
 static u32 hid_style_of(int e, const HidSource* s) {
@@ -217,6 +217,9 @@ static void hid_layout(void) {
         ev_signal(g_hle.hid.style_ev[e]);
     }
 }
+
+/* the TV mode changed while the game runs: the handheld Npad comes or goes now, and a new sample carries it */
+void hid_mode_changed(void) { hid_update(); }
 
 /* ============================================================ LIFOs */
 /* the next state of a LIFO of entries of size n (the sampling stamp, then the state): the stamp is odd while the

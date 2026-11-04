@@ -28,6 +28,51 @@ static int frag_coord_draw(GpuChannel* channel, u64 target, float out[4][4][2]) 
     return 0;
 }
 
+/* texel (0, 0) of level 0 of s, 16 bytes */
+static int texel0_16(Surf* s, u8 out[16]) {
+    VkBuffer buffer;
+    u8* data = vk_readback_buffer(16, &buffer);
+    CHECK(data);
+    vk_surf_use(vk_cmd(), s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    memcpy(out, data, 16);
+    return 0;
+}
+
+/* A draw over a target a texture took: a texture of two levels, the target's pixels its first, holds pixel (0, 0) as
+   the draw before wrote it, (0.5, 0.5); the draw after it, in a lower-left window, writes (0.5, 3.5) there, which moves
+   the count tex_take_drawn passes over textures by (vk_rt_take_gen) and reaches the texture. A fragment reading its
+   own pixel draws through the same step (render.c target_written) */
+static int frag_coord_taken(GpuChannel* channel, u64 target) {
+    const u32 rgba32f = 0x01 | 7u << 7 | 7u << 10 | 7u << 13 | 7u << 16;
+    const u32 tic[8] = {rgba32f, (u32)target, (u32)(target >> 32) | 3u << 21, 1u << 28, 3 | 1u << 23, 3, 0, 1u << 4};
+    u8 texel[16];
+    float xy[2];
+    if (vk_tic_format(tic[0], 0).vk != VK_FORMAT_R32G32B32A32_SFLOAT) return 0;
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    CHECK(t && !t->is_rt && t->levels == 2 && !texel0_16(t, texel));
+    memcpy(xy, texel, 8);
+    CHECK(xy[0] == 0.5f && xy[1] == 0.5f);
+    u64 gen = vk_rt_take_gen();
+    channel->r3d[0x4eb] = 1;
+    channel->r3d_dirty = ~0u;
+    mx_draw_state_sync(channel);
+    DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    vk_render_end();
+    CHECK(vk_rt_take_gen() != gen);
+    CHECK(vk_tex_from_tic(tic) == t && !texel0_16(t, texel));
+    memcpy(xy, texel, 8);
+    CHECK(xy[0] == 0.5f && xy[1] == 3.5f);
+    vk_unlock();
+    return 0;
+}
+
 /* every pixel's x and y as the fragment reads them: x + 0.5, and y + 0.5 counted down from the target's first row, or
    up from the bottom of a surface clip clip_height high (y_from_bottom) */
 static int frag_coord_expect(GpuChannel* channel, u64 target, int y_from_bottom, u32 clip_height) {
@@ -93,6 +138,7 @@ static int check_frag_coord_origin(void) {
     r[0x7c1] = (u32)(positions + sizeof bytes - 1);
     r[0x4eb] = 0; /* upper left: y counts down from the first row */
     CHECK(!frag_coord_expect(channel, target, 0, 0));
+    CHECK(!frag_coord_taken(channel, target));
     r[0x4eb] = 1; /* lower left: up from the bottom of the surface clip, here the target's */
     CHECK(!frag_coord_expect(channel, target, 1, 4));
     r[0x4eb] = 0x11; /* the facing flip changes nothing of the position */

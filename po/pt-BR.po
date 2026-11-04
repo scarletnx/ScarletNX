@@ -576,12 +576,12 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Pick the prod.keys file."
+msgid "Pick a keys file."
 msgstr ""
 
 #: src/gui/main.c
-msgid "Pick prod.keys"
-msgstr "Escolha o prod.keys"
+msgid "Pick a keys file"
+msgstr "Escolha um arquivo de chaves"
 
 #: src/gui/main.c
 msgid "tap the box to open the file picker"
@@ -832,8 +832,8 @@ msgid "Ctrl+V: paste. ESC: back."
 msgstr ""
 
 #: src/gui/main.c
-msgid "Pick or drop prod.keys"
-msgstr "Escolha ou solte o prod.keys"
+msgid "Pick or drop a keys file"
+msgstr "Escolha ou solte um arquivo de chaves"
 
 #: src/gui/main.c
 msgid "Pick or drop a file"
@@ -1577,6 +1577,16 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "user=%d is deprecated, and the Settings have no user_uid to write %s in"
+msgstr "user=%d está obsoleto, e as Configurações não têm user_uid para gravar %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"
+msgstr "user=%d está obsoleto: user_uid=%s, o de [user%d], o substitui"
+
+#: src/gui/main.c
+#, c-format
 msgid "No user shown: %s"
 msgstr "Nenhum usuário mostrado: %s"
 
@@ -1668,6 +1678,10 @@ msgstr "Configurações"
 
 #: src/gui/main.c
 msgid "its dump is not known: the game was made before the recompile named it"
+msgstr ""
+
+#: src/gui/main.c
+msgid "not known"
 msgstr ""
 
 #: src/gui/main.c
@@ -2276,6 +2290,11 @@ msgid "No home folder"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "3DS keys to: %s"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Installed"
 msgstr "Instalado"
 
@@ -2825,8 +2844,8 @@ msgid "The settings of All, or of player 1 to 8"
 msgstr ""
 
 #: src/gui/main.c
-msgid "nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr "apelido de 4 a 20 de A-Z a-z 0-9 espaço . _ -"
+msgid "nickname of 1 to 32 bytes, no control character, no space at either end"
+msgstr "apelido de 1 a 32 bytes, sem caractere de controle, sem espaço nas pontas"
 
 #: src/gui/main.c
 #, c-format
@@ -2851,8 +2870,17 @@ msgid "User %d"
 msgstr "Usuário %d"
 
 #: src/gui/main.c
-msgid "Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr ""
+msgid "Its nickname, as the games show it: 1 to 32 bytes, no control character, no space at either end"
+msgstr "O apelido, como os jogos o mostram: 1 a 32 bytes, sem caractere de controle, sem espaço nas pontas"
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d Mii"
+msgstr "Mii do usuário %d"
+
+#: src/gui/main.c
+msgid "Its Mii, which the games get as the user's and its picture shows unless it has a picture file"
+msgstr "O Mii dele, que os jogos recebem como o do usuário e que a foto mostra quando ele não tem um arquivo de foto"
 
 #: src/gui/main.c
 msgid "System driver"
@@ -3077,10 +3105,6 @@ msgid "GPU: %s. Recommended: %s."
 msgstr ""
 
 #: src/gui/main.c
-msgid "not known"
-msgstr ""
-
-#: src/gui/main.c
 msgid "This build of the launcher has no HTTPS client: Add Driver takes a zip downloaded by hand"
 msgstr ""
 
@@ -3228,12 +3252,22 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "User %d's new nickname is not written: %s"
-msgstr "O novo apelido do usuário %d não foi gravado: %s"
+msgid "User %d's Mii is not written: %s"
+msgstr "O Mii do usuário %d não foi gravado: %s"
 
 #: src/gui/main.c
 msgid "no users/ folder"
 msgstr "sem pasta users/"
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's Mii is %s now"
+msgstr "O Mii do usuário %d agora é %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "User %d's new nickname is not written: %s"
+msgstr "O novo apelido do usuário %d não foi gravado: %s"
 
 #: src/gui/main.c
 #, c-format
@@ -3337,12 +3371,16 @@ msgid "Data, Logs, Caches, Extractions and the recompiled library's Main"
 msgstr "Dados, Logs, Caches, Extrações e a Principal da biblioteca de recompilados"
 
 #: src/gui/main.c
-msgid "For the next runs. [default]: as the game's .ini says"
-msgstr "Para as próximas execuções. [padrão]: como diz o .ini do jogo"
-
-#: src/gui/main.c
 msgid "The runtime listed no settings"
 msgstr "O runtime não listou nenhum ajuste"
+
+#: src/gui/main.c
+msgid "For the next runs, over the game's .ini"
+msgstr "Para as próximas execuções, acima do .ini do jogo"
+
+#: src/gui/main.c
+msgid "For the next runs. [default]: as the game's .ini says"
+msgstr "Para as próximas execuções. [padrão]: como diz o .ini do jogo"
 
 #: src/gui/main.c src/gui/settings.c
 msgid "[default]"
@@ -3369,8 +3407,8 @@ msgid "Ctrl+S saves too"
 msgstr "Ctrl+S também salva"
 
 #: src/gui/main.c
-msgid "A nickname, 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr ""
+msgid "A nickname, 1 to 32 bytes, no control character, no space at either end"
+msgstr "Um apelido, de 1 a 32 bytes, sem caractere de controle, sem espaço nas pontas"
 
 #: src/gui/main.c
 msgid "Preview"
@@ -3533,6 +3571,11 @@ msgstr "prod.keys instalado em %s"
 
 #: src/gui/main.c
 #, c-format
+msgid "; aes_keys.txt to %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "This copy is portable: to install it, first move away %s"
 msgstr "Esta cópia é portátil: para instalá-la, primeiro tire do lugar %s"
 
@@ -3628,8 +3671,8 @@ msgid "Tip: Menu > Install Keys changes them"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr "Dica: apelido de 4 a 20 de A-Z a-z 0-9 espaço . _ -"
+msgid "Tip: nickname of 1 to 32 bytes, no control character, no space at either end"
+msgstr "Dica: apelido de 1 a 32 bytes, sem caractere de controle, sem espaço nas pontas"
 
 #: src/gui/main.c
 msgid "before"
@@ -3742,6 +3785,10 @@ msgstr "os jogos são extraídos com ele"
 #: src/gui/main.c
 msgid "only some .nsp need it"
 msgstr "só alguns .nsp precisam dele"
+
+#: src/gui/main.c
+msgid "only encrypted 3DS games need it"
+msgstr ""
 
 #: src/gui/main.c
 msgid "nickname"
@@ -4164,6 +4211,18 @@ msgid "M opens the mods and cheats of a recompiled Switch game in focus."
 msgstr ""
 
 #: src/gui/main.c
+msgid "Cannot install aes_keys.txt: neither USERPROFILE nor HOME is set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Cannot install aes_keys.txt: HOME is not set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "aes_keys.txt installed: encrypted 3DS games can be decrypted now."
+msgstr ""
+
+#: src/gui/main.c
 msgid "prod.keys installed: games can be extracted now."
 msgstr "prod.keys instalado: os jogos já podem ser extraídos."
 
@@ -4173,18 +4232,18 @@ msgid "Cannot install %s: %s"
 msgstr "Não foi possível instalar %s: %s"
 
 #: src/gui/main.c
-msgid "Please drop a readable file named prod.keys."
-msgstr "Solte um arquivo legível chamado prod.keys."
+msgid "Please drop a readable file named prod.keys or aes_keys.txt."
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "This file could not be read. Pick prod.keys again, from the device's storage (%s)."
-msgstr "Não foi possível ler este arquivo. Escolha o prod.keys de novo, no armazenamento do aparelho (%s)."
+msgid "This file could not be read. Pick prod.keys or aes_keys.txt again, from the device's storage (%s)."
+msgstr "Não foi possível ler este arquivo. Escolha prod.keys ou aes_keys.txt de novo, no armazenamento do aparelho (%s)."
 
 #: src/gui/main.c
 #, c-format
-msgid "This file is not a prod.keys. Pick the prod.keys file (%s)."
-msgstr "Este arquivo não é um prod.keys. Escolha o arquivo prod.keys (%s)."
+msgid "This file is not prod.keys or aes_keys.txt. Pick the keys file (%s)."
+msgstr "Este arquivo não é prod.keys nem aes_keys.txt. Escolha o arquivo de chaves (%s)."
 
 #: src/gui/main.c
 #, c-format
@@ -4193,13 +4252,13 @@ msgstr "Não foi possível ler este arquivo pelo caminho. Confira nas configura�
 
 #: src/gui/main.c
 #, c-format
-msgid "The picked file could not be read as prod.keys (%s)."
-msgstr "Não foi possível ler o arquivo escolhido como prod.keys (%s)."
+msgid "The picked file could not be read as prod.keys or aes_keys.txt (%s)."
+msgstr "Não foi possível ler o arquivo escolhido como prod.keys ou aes_keys.txt (%s)."
 
 #: src/gui/main.c
 #, c-format
-msgid "The picked file is not a prod.keys (%s)."
-msgstr "O arquivo escolhido não é um prod.keys (%s)."
+msgid "The picked file is not prod.keys or aes_keys.txt (%s)."
+msgstr "O arquivo escolhido não é prod.keys nem aes_keys.txt (%s)."
 
 #: src/gui/main.c
 #, c-format
@@ -4701,6 +4760,16 @@ msgstr "Uma página própria, como no menu do jogo"
 #: src/gui/settings.c
 msgid "Every row of this page at once"
 msgstr "Todas as linhas desta página de uma vez"
+
+#: src/gui/settings.c
+#, c-format
+msgid "%s=.ini is no longer a value of %s: %s=%s now"
+msgstr "%s=.ini não é mais um valor de %s: agora %s=%s"
+
+#: src/gui/settings.c
+#, c-format
+msgid "%s=%s is the default of %s: no run is given it over the game's .ini"
+msgstr "%s=%s é o padrão de %s: nenhuma execução o recebe acima do .ini do jogo"
 
 #: src/gui/settings.c
 msgid "Mixed"
@@ -5288,6 +5357,30 @@ msgstr "SNX_WW, SNX_HOST_PAGE, VITA_LOCKSTEP e outras definidas para uma execuç
 msgid "settings and the drivers' options; a variable still set works, and the run says so"
 msgstr "configurações e as opções dos drivers; uma variável ainda definida funciona, e a execução avisa"
 
+#: src/common/utilities/setup.c
+msgid "Fullscreen and Show controls"
+msgstr "Fullscreen e Show controls"
+
+#: src/common/utilities/setup.c
+msgid "Off, On, or each game's .ini, shown as Off [default]"
+msgstr "Desligado, Ligado ou o .ini de cada jogo, mostrado como Desligado [padrão]"
+
+#: src/common/utilities/setup.c
+msgid "Off or On, given to every run: Off on a computer, On on a phone"
+msgstr "Desligado ou Ligado, passado a toda execução: Desligado num computador, Ligado num celular"
+
+#: src/common/utilities/setup.c
+msgid "A setting's default"
+msgstr "O padrão de uma configuração"
+
+#: src/common/utilities/setup.c
+msgid "a value of its own, [default], beside the same value picked"
+msgstr "um valor à parte, [padrão], ao lado do mesmo valor escolhido"
+
+#: src/common/utilities/setup.c
+msgid "[default] on that value, which no run is given: the game's .ini keeps it"
+msgstr "[padrão] nesse valor, que nenhuma execução recebe: o .ini do jogo o mantém"
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr "gdbstub"
@@ -5349,8 +5442,8 @@ msgid "AOT threads"
 msgstr "Threads AOT"
 
 #: src/nx/runtime/settings.txt
-msgid "The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores"
-msgstr "As threads que compilam o código do jogo ao recompilar: 0 = uma para cada núcleo do computador"
+msgid "The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last quarter left free, so the machine stays responsive; N = that many"
+msgstr "As threads que compilam o código do jogo ao recompilar: 0 (Auto) = os núcleos deixando o último quarto livre, para o computador seguir respondendo; N = esse número"
 
 #: src/nx/runtime/settings.txt
 msgid "Unit size"
@@ -5365,8 +5458,8 @@ msgid "Unit cache limit"
 msgstr "Limite do cache de unidades"
 
 #: src/nx/runtime/settings.txt
-msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, removing its oldest units for a new one"
-msgstr "O máximo que o cache de unidades de código compiladas pode ocupar, em GB: units/ da pasta de cache, onde cada recompilação acha as unidades que já compilou. Passando dele, saem as unidades reusadas há mais tempo. 0 = sem limite. De todo jeito o cache sempre deixa um décimo do disco livre, tirando as unidades mais antigas para caber uma nova"
+msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
+msgstr "O máximo que o cache de unidades de código compiladas pode ocupar, em GB: units/ da pasta de cache, onde cada recompilação acha as unidades que já compilou. Passando dele, saem as unidades reusadas há mais tempo. 0 = sem limite. De todo jeito o cache sempre deixa um décimo do disco livre, no máximo 10 GB, tirando as unidades mais antigas para caber uma nova"
 
 #: src/nx/runtime/settings.txt
 msgid "Instruction combining"
@@ -5495,6 +5588,21 @@ msgstr "Inicialização"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "Internos do LLVM"
+
+#~ msgid "user=%d is deprecated: user_uid=%s (%s) replaces it"
+#~ msgstr "user=%d está obsoleto: user_uid=%s (%s) o substitui"
+
+#~ msgid "nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
+#~ msgstr "apelido de 4 a 20 de A-Z a-z 0-9 espaço . _ -"
+
+#~ msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
+#~ msgstr "Dica: apelido de 4 a 20 de A-Z a-z 0-9 espaço . _ -"
+
+#~ msgid "Please drop a readable file named prod.keys."
+#~ msgstr "Solte um arquivo legível chamado prod.keys."
+
+#~ msgid "The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores"
+#~ msgstr "As threads que compilam o código do jogo ao recompilar: 0 = uma para cada núcleo do computador"
 
 #~ msgid "The log could not be shown: it is at %s"
 #~ msgstr "Não foi possível mostrar o log: ele está em %s"

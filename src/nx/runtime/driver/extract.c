@@ -5,6 +5,7 @@
    error, keys left out */
 #include "nx/runtime/driver/extract.h"
 #include "nx/runtime/driver/container.h"
+#include "nx/loader/loader.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -236,13 +237,15 @@ static void control_nacp(ExtractState* state) {
     const char* why = NULL;
     size_t size = 0;
     unsigned char* nacp = to ? snx_dump_nacp(&state->dump, &size, &why) : NULL;
-    char name[0x200], version[0x20], title[17];
+    char name[0x200], version[0x20], title[17], reason[256];
     if (!to)
         why = "out of memory";
     else if (nacp && snx_write_file(to, nacp, size))
         why = "its control.nacp could not be written beside exefs/";
     if (why) printf("The game keeps the name of its file: %s\n", why);
-    if (nacp && snx_nacp_name(nacp, size, name, sizeof name)) { /* what it is, from its own control data */
+    if (nacp && !snx_nacp_name_why(nacp, size, name, sizeof name, reason, sizeof reason))
+        printf("The game keeps the name of its file: its control.nacp gives it none, %s\n", reason);
+    else if (nacp) { /* what it is, from its own control data */
         snx_title_text(state->dump.program.title_id, title);
         printf("  The game: %s", name);
         if (snx_nacp_version(nacp, size, version, sizeof version)) printf(", version %s", version);
@@ -290,7 +293,7 @@ static int extract_aoc(ExtractState* state) {
     }
     printf("Extracting the DLC %s\n", text);
     fflush(stdout);
-    if (!failed && snx_nca_keys(aoc, "The DLC's Data NCA")) failed = 1;
+    if (!failed && snx_nca_keys(&state->dump, aoc, "The DLC's Data NCA")) failed = 1;
     if (failed || snx_mkdirs(folder) || !(fs = snx_dump_aoc_fs(&state->dump))) {
         failed = 1;
         goto done;
@@ -346,8 +349,8 @@ static int extract_files(ExtractState* state, const ExtractOptions* options, con
     if (!program->found) return extract_aoc(state);
     if (state->dump.aoc.found && extract_aoc(state)) return 1;
     /* the keys each NCA picked needs, said before anything is written */
-    if (snx_nca_keys(program, "The game's Program NCA") ||
-        (patch->found && snx_nca_keys(patch, "The update's Program NCA")))
+    if (snx_nca_keys(&state->dump, program, "The game's Program NCA") ||
+        (patch->found && snx_nca_keys(&state->dump, patch, "The update's Program NCA")))
         return 1;
     /* the base's program NCA: its RomFS is most of it, and an update's RomFS is about as big */
     state->total = program->size;
@@ -437,6 +440,23 @@ int snx_extract(int argc, char** argv, const SnxPaths* paths) {
     }
     return cleanup(&state, result);
 }
+/* an NRO's icon, from its assets, into to: 0, else said why */
+static int nro_icon(const char* nro, const char* to) {
+    unsigned char* jpeg;
+    size_t size;
+    char error[512];
+    int none = snx_nro_icon(nro, &jpeg, &size, error, sizeof error), result = 1;
+    if (none < 0)
+        snx_error("Games shows no icon for %s: %s", nro, error);
+    else if (none)
+        snx_error("Games shows no icon for %s: its assets hold none", nro);
+    else if (snx_write_file(to, jpeg, size))
+        snx_error("Games shows no icon for %s: %s cannot be written", nro, to);
+    else
+        result = 0;
+    free(jpeg);
+    return result;
+}
 int snx_extract_icon(const char* dump, const SnxPaths* paths, const char* out) {
     ExtractState state;
     SnxU64 title, game;
@@ -445,6 +465,11 @@ int snx_extract_icon(const char* dump, const SnxPaths* paths, const char* out) {
     char* to = snx_path_join(out, "icon.jpg");
     size_t size = 0;
     int result;
+    if (snx_ends_with_nocase(dump, ".nro")) { /* no extraction: its assets after its code */
+        result = to ? nro_icon(dump, to) : snx_error("cannot resolve %s", dump);
+        free(to);
+        return result;
+    }
     memset(&state, 0, sizeof state);
     state.base = snx_absolute(dump);
     if (!state.base || !to)

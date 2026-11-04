@@ -121,7 +121,7 @@ static int check_mesh_inputs(void) {
     vk_lock();
     VkBuffer output;
     u64 offset;
-    CHECK(vk_buf_copy_writable(colors, 32, &output, &offset));
+    CHECK(vk_buf_copy_writable(colors, 32, &output, &offset, 1));
     vk_buf_writable_commit();
     vk_unlock();
     /* Instance 1 exists in the allocation, but not in the guest binding. */

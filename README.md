@@ -18,8 +18,9 @@ The newest build of `main` for Linux (AppImage), Windows and Android is in
 [scarletnx/nightly](https://github.com/scarletnx/nightly/releases/latest); [Install](docs/INSTALL.md) lists each
 download. Games need a Vulkan 1.3 driver, and keys and games must be dumped from your own console.
 
-Started with no arguments, ScarletNX opens its [launcher](docs/GUI.md): **Install Keys** installs your `prod.keys`, and
-**Load Switch NSP/XCI/NRO** picks a dump, recompiles it and starts the game. The command line does the same with
+Started with no arguments, ScarletNX opens its [launcher](docs/GUI.md): **Install Keys** installs your `prod.keys` for
+Switch and your `aes_keys.txt` for the encrypted 3DS games, to `~/.switch` and `~/.3ds` (`%USERPROFILE%` on Windows),
+and **Load Switch NSP/XCI/NRO** picks a dump, recompiles it and starts the game. The command line does the same with
 `scarletnx "Game.xci"` ([Usage](docs/USAGE.md)). To build it yourself, see [Build](docs/BUILD.md).
 
 ## Documentation
@@ -33,7 +34,8 @@ Started with no arguments, ScarletNX opens its [launcher](docs/GUI.md): **Instal
 - [Development](docs/DEVELOPMENT.md): checks, diagnostics and profiling; [Contributing](CONTRIBUTING.md)
 - [Architecture](docs/ARCHITECTURE.md) and [the recompiler as a library](docs/LIBRARY.md)
 - Platforms: [Android](docs/ANDROID.md), [macOS and iOS](docs/APPLE.md), [PowerPC64](docs/PPC64.md),
-  [RISC-V and LoongArch](docs/RISCV-LOONGARCH.md)
+  [RISC-V and LoongArch](docs/RISCV-LOONGARCH.md), [MIPS64](docs/MIPS64.md), [s390x](docs/S390X.md),
+  [NetBSD](docs/NETBSD.md)
 - Other systems: [3DS](docs/3DS.md), [PS Vita](docs/VITA.md), [Game Boy Advance](docs/AGB.md),
   [Linux AArch64 programs](docs/GNUABI.md)
 - [Every document](docs/README.md), by subject

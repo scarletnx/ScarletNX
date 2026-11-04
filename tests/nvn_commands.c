@@ -67,18 +67,20 @@ void fatal(const char* fmt, ...) {
 }
 
 /* the game's memory callback (a guest function, run through the dispatch table): it adds 0x100 bytes at 0x7000. Its
-   calls and the size each asked for */
+   calls, and the event, the size each asked for and the control memory used when it was asked */
 #define CALLBACK_PC 0x2000000ull
 static void callback(CPU* c, u64 entry);
 static struct {
     int calls;
-    u64 size;
+    u64 event, size, ctl_used;
     GuestFn disp[1];
-} g_cb = {0, 0, {callback}};
+} g_cb = {0, 0, 0, 0, {callback}};
 static void callback(CPU* c, u64 entry) {
     (void)entry;
     g_cb.calls++;
+    g_cb.event = c->x[1];
     g_cb.size = c->x[2];
+    g_cb.ctl_used = nvn_CommandBufferGetControlMemoryUsed(c, c->x[0]);
     nvn_CommandBufferAddCommandMemory(c, c->x[0], 1, 0x7000, 0x100);
     c->pc = c->x[30];
 }
@@ -309,8 +311,8 @@ int main(void) {
     /* One game's short recordings: a call and a uniform buffer, 48 bytes of records for the 20 the driver counts. Such
        a recording stays in the runtime's memory, in a block of the small store, not in a segment that recordings grow
        in, and its handle is a JUMP there from where the driver's commands would be. The game builds it again in the
-       same range: the handle stays, and runs the new one. The last one's piece stays while a JUMP reaches it, and
-       comes back at the next look once the new one's JUMP took its place. The next such recording takes its block */
+       same range: the handle stays, and runs the new one. The last one's piece comes back as the new one's JUMP takes
+       its place, not at the next sweep, and the next such recording takes its block */
     {
         const u64 cbg = 0xb80, callee = 0x4f8;
         u64 hg, hg2 = 0, block;
@@ -338,13 +340,13 @@ int main(void) {
               "the recording walks from its block");
         for (int n = 0; n < 2; n++) { /* the game records over it, and again */
             nvn_CommandBufferAddCommandMemory(&cpu, cbg, 1, 0xfa00, 0x80);
-            if (n) g_nvn.cmd.sweep = 0; /* the next cut looks at the pieces */
+            if (n) g_nvn.cmd.sweep = 0; /* the next cut looks at the pieces: nothing is left for it */
             nvn_CommandBufferBeginRecording(&cpu, cbg);
             nvn_CommandBufferCallCommands(&cpu, cbg, 1, callee);
             nvn_CommandBufferBindUniformBuffer(&cpu, cbg, 0, 2, 0x605640000ull, 0x100);
             hg2 = nvn_CommandBufferEndRecording(&cpu, cbg);
-            check(hg2 == hg && g_nvn.cmd.np == before + 2,
-                  "the last recording's piece stays until a look finds the new JUMP in its place");
+            check(hg2 == hg && g_nvn.cmd.np == before + 1,
+                  "the last recording's piece comes back as the new one's JUMP takes its place");
         }
         walk(hg, &a);
         check(gr64(hg + 8) == block && a.n == 2 && gr32(a.at[1] + 8 + offsetof(NvnPBindBuf, index)) == 2,
@@ -610,6 +612,51 @@ int main(void) {
         walk(h2, &b);
         check(b.n == a.n && !memcmp(a.op, b.op, (size_t)a.n * sizeof a.op[0]),
               "copying commands preserves the barrier stream");
+    }
+    /* control memory that holds exactly what a recording writes (0x10 at its start, a draw's range 0x20, 8 at its end,
+       and the 0x10 the driver keeps for a link): the driver checks room for each entry it writes, so the game's
+       callback, which one game leaves without a handler for control memory, isn't called. One more recording's start
+       doesn't fit, and asks it for 0x100 bytes of control memory (event 1) */
+    {
+        const u64 cbf = 0x4b000, ctl = 0x4c000;
+        int calls = g_cb.calls;
+        nvn_CommandBufferInitialize(&cpu, cbf, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbf, 1, 0x2a000, 0x100);
+        nvn_CommandBufferSetMemoryCallback(&cpu, cbf, CALLBACK_PC);
+        nvn_CommandBufferAddControlMemory(&cpu, cbf, ctl, 0x48);
+        nvn_CommandBufferBeginRecording(&cpu, cbf);
+        nvn_CommandBufferDrawArrays(&cpu, cbf, 4, 0, 3);
+        nvn_CommandBufferEndRecording(&cpu, cbf);
+        check(g_cb.calls == calls, "control memory that holds the recording calls no callback");
+        check(nvn_CommandBufferGetControlMemoryUsed(&cpu, cbf) == 0x38, "the recording takes its 0x38 control bytes");
+        nvn_CommandBufferBeginRecording(&cpu, cbf);
+        check(g_cb.calls == calls + 1 && g_cb.event == 1 && g_cb.size == 0x100,
+              "a start entry that doesn't fit asks the callback for 0x100 bytes of control memory");
+        nvn_CommandBufferEndRecording(&cpu, cbf);
+    }
+    /* a range entry in an open block of them is 0x18 bytes, but the driver checks room for 0x20 before it, as for one
+       that opens a block: with 0x18 bytes free before the recording's last range (a call opened the block), the range
+       asks the callback, not the end mark after it */
+    {
+        const u64 cbg = 0x4b100, ctl = 0x4d000, callee = 0x4b0f8;
+        int calls;
+        nvn_CommandBufferInitialize(&cpu, cbg, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbg, 1, 0x2b000, 0x400);
+        nvn_CommandBufferSetMemoryCallback(&cpu, cbg, CALLBACK_PC);
+        nvn_CommandBufferBeginRecording(&cpu, cbg);
+        nvn_CommandBufferDrawArrays(&cpu, cbg, 4, 0, 3);
+        gw64(callee, nvn_CommandBufferEndRecording(&cpu, cbg));
+        nvn_CommandBufferAddControlMemory(&cpu, cbg, ctl, 0x70);
+        calls = g_cb.calls;
+        nvn_CommandBufferBeginRecording(&cpu, cbg);
+        nvn_CommandBufferDrawArrays(&cpu, cbg, 4, 0, 3);
+        nvn_CommandBufferCallCommands(&cpu, cbg, 1, callee);
+        nvn_CommandBufferDrawArrays(&cpu, cbg, 4, 3, 3);
+        check(g_cb.calls == calls && nvn_CommandBufferGetControlMemoryUsed(&cpu, cbg) == 0x48,
+              "a start, a range, a call's range in the block: 0x48 bytes, with 0x18 free");
+        nvn_CommandBufferEndRecording(&cpu, cbg);
+        check(g_cb.calls == calls + 1 && g_cb.event == 1 && g_cb.size == 0x100 && g_cb.ctl_used == 0x48,
+              "the last range in the open block asks the callback at 0x48 bytes, before the end mark");
     }
     if (failures) return 1;
     puts("nvn_commands: ok");

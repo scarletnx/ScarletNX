@@ -46,6 +46,12 @@ game plays as `<data folder>/recompiled/<id>/<id>`, outside the bundle, where SD
 checkout has no library to deploy and no bundle around it, so it uses the system's Vulkan loader (Homebrew's
 `molten-vk` and `vulkan-loader`).
 
+The 3DS and the Vita's windows open through `common/gpu/vk/window.c`, which names the same library to SDL and takes
+its own entry points from it. One process must hold one copy of MoltenVK: a second copy's `MVKInstance` is a
+different type, so the surface call hands one copy's instance to the other's `vkGetInstanceProcAddr` and the process
+segfaults. That is what a Mac with Homebrew's `molten-vk` in the loader's ICD folders saw when volk took the system
+loader and SDL took the bundle's library.
+
 ### iOS
 
 An iOS app runs one process and may not start another, so the iOS app works like Android's game activity without its
@@ -111,7 +117,7 @@ A Mac still prepares a game the same way (`scarletnx -x "Game.nsp" --name Game`,
 `scarletnx -r work/Game --target ios --outdir recompiled`), and its `recompiled/<id>/` can be copied into the app.
 
 Limits found on an iPhone 14 Pro (iOS 26.6.1): without the paid extended-virtual-addressing entitlement the app has
-about 13 GiB of address space and about 3 GB of memory, so the runtime takes the largest free run it can (128 GiB
+about 13 GiB of address space and about 3 GB of memory, so the runtime takes the largest free run it can (512 GiB
 down to 5 GiB) and lays the guest out to fit, with no alias region below 12 GiB.
 
 ### Installing from a Mac

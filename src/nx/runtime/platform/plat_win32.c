@@ -11,6 +11,8 @@
 #include <SDL3/SDL_thread.h>
 #include <errno.h>
 #include <io.h>
+#include <powersetting.h>
+#include <powrprof.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -114,6 +116,41 @@ void plat_thread_exit(void) {
     SDL_CleanupTLS();
     ExitThread(0);
 }
+
+/* ================================================================ the host's power source */
+/* the notification marks this; the main thread takes it, so only there does the runtime ask SDL for the new state */
+static int g_power_changed;
+void plat_power_mark_changed(void) { __atomic_store_n(&g_power_changed, 1, __ATOMIC_RELEASE); }
+int plat_power_take_change(void) { return __atomic_exchange_n(&g_power_changed, 0, __ATOMIC_ACQ_REL); }
+/* The system's power setting notification for the AC/DC source: the charger in or out calls this on a system thread.
+   The SDK's DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS is not in every _WIN32_WINNT's powrprof.h, so this is the same two
+   pointers, and DEVICE_NOTIFY_CALLBACK is 2 (winuser.h) */
+#ifndef DEVICE_NOTIFY_CALLBACK
+#define DEVICE_NOTIFY_CALLBACK 2
+#endif
+typedef ULONG(CALLBACK* SnxPowerCallback)(PVOID, ULONG, PVOID);
+typedef struct {
+    SnxPowerCallback Callback;
+    PVOID Context;
+} SnxPowerSubscribe;
+static ULONG CALLBACK power_changed(PVOID context, ULONG type, PVOID setting) {
+    (void)context;
+    (void)type;
+    (void)setting;
+    plat_power_mark_changed();
+    return ERROR_SUCCESS;
+}
+static SnxPowerSubscribe g_power_sub = {power_changed, NULL};
+static HPOWERNOTIFY g_power_notify;
+int plat_power_watch(void) {
+    /* GUID_ACDC_POWER_SOURCE: 5D3E9A59-E9D5-4B00-A6BD-FF34FF516548 */
+    static const GUID acdc = {0x5D3E9A59, 0xE9D5, 0x4B00, {0xA6, 0xBD, 0xFF, 0x34, 0xFF, 0x51, 0x65, 0x48}};
+    if (g_power_notify) return 0;
+    if (PowerSettingRegisterNotification(&acdc, DEVICE_NOTIFY_CALLBACK, &g_power_sub, &g_power_notify) !=
+        ERROR_SUCCESS)
+        return -1;
+    return 0;
+}
 int plat_cpus(int* ids, int max) {
     (void)ids;
     (void)max;
@@ -206,18 +243,21 @@ int plat_address_space(u64* mapped, u64* largest_free) {
     *largest_free = hole;
     return 1;
 }
-u8* plat_vm_reserve(u64 size) {
-    void* p = VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS);
-    if (p) {
-        g_ww_watched = (u8*)p;
-        return (u8*)p;
-    }
-    p = VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE, PAGE_NOACCESS);
-    if (!p) { /* the reason in errno, as mmap's */
+/* the reason in errno, as mmap's */
+static u8* vm_reserved(void* p) {
+    if (!p) {
         DWORD why = GetLastError();
         errno = why == ERROR_NOT_ENOUGH_MEMORY || why == ERROR_COMMITMENT_LIMIT ? ENOMEM : EINVAL;
     }
     return (u8*)p;
+}
+u8* plat_vm_reserve(u64 size) {
+    u8* p = vm_reserved(VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS));
+    if (p) g_ww_watched = p;
+    return p;
+}
+u8* plat_vm_reserve_unwatched(u64 size) {
+    return vm_reserved(VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE, PAGE_NOACCESS));
 }
 void plat_vm_track(u8* p, u64 size) {
     if (g_settings.write_tracking == 1)
@@ -267,6 +307,24 @@ int plat_vm_commit(u8* p, u64 size) {
     return -1;
 }
 void plat_vm_decommit(u8* p, u64 size) { VirtualFree(p, (SIZE_T)size, MEM_DECOMMIT); }
+int plat_vm_share(u8* p, int fd, u64 size) {
+    (void)p, (void)fd, (void)size;
+    errno = ENOSYS;
+    return -1;
+}
+int plat_vm_unshare(u8* p, u64 size) {
+    (void)p, (void)size;
+    errno = ENOSYS;
+    return -1;
+}
+int plat_gpu_buffer(u64 size, int* fd, void** handle) {
+    (void)size;
+    *fd = -1;
+    *handle = NULL;
+    errno = ENOSYS;
+    return -1;
+}
+void plat_gpu_buffer_free(int fd, void* handle, u64 size) { (void)fd, (void)handle, (void)size; }
 
 /* No alias pool yet: views of the same pages need the reservation made of placeholders (VirtualAlloc2 and
    MapViewOfFile3, Windows 10 1803), and whether the write watch survives that is untested. mem.c copies instead */
@@ -285,6 +343,14 @@ int plat_alias_unmap(u8* p, u64 size) {
     (void)size;
     return -1;
 }
+int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off) {
+    (void)p;
+    (void)size;
+    (void)fd;
+    (void)off;
+    return -1;
+}
+void plat_vm_fd_close(int fd) { (void)fd; }
 int plat_alias_write(u64 off, const void* src, u64 size) {
     (void)off;
     (void)src;

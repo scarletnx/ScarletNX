@@ -1,8 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
+   Copyright 2014-2024 Citra Emulator Project / Azahar Emulator Project
    Initial FS session wire shapes referenced against Azahar service/fs/fs_user.cpp
    and libctru services/fs.c. The extracted title directory is the NX-style
-   shared tree: romfs/exefs read-only and always open, sdmc read-write. */
+   shared tree: romfs/exefs read-only and always open, sdmc read-write. Another title's save data follows Azahar
+   (GPL-2.0-or-later) at azahar-emu/azahar 6e42de8: core/file_sys/archive_other_savedata.cpp and
+   archive_source_sd_savedata.cpp. */
 #include "3ds/runtime/internal.h"
 #include "common/utilities/endian.h"
 #include "3ds/services/archives.h"
@@ -43,15 +46,18 @@ static uint32_t snx_ctr_fs_wire_Initialize(SnxCtrIpc* c, uint32_t process) {
 /* NotFound, FS, InvalidState, Status: an ExtSaveData that was never created (Azahar ResultNotFoundInvalidState) */
 #define CTR_NO_EXTDATA      0xc8a04478u
 #define CTR_UNSUPPORTED_OPEN 0xe0c046f8u /* UnsupportedOpenFlags, FS, NotSupported, Usage */
+#define CTR_INVALID_PATH     0xe0e046beu /* InvalidPath, FS, InvalidArgument, Usage */
+#define CTR_NO_GAMECARD      0xc880448du /* GamecardNotInserted, FS, NotFound, Status */
 static CtrSelfArchive* archive(SnxCtrProcess* p, uint64_t token) {
     if (token)
         for (unsigned i = 0; i < CTR_SELF_ARCHIVES; ++i)
             if (p->self_archives[i].token == token) return &p->self_archives[i];
     return NULL;
 }
-/* the host area an archive's paths are in: the SD card's or the save data's; NULL for the read-only RomFS */
+/* the host area an archive's paths are in: the SD card's, the save data's, or an ExtSaveData's or another title's save
+   data folder; NULL for the read-only RomFS */
 static FsNode* area(const SnxCtrProcess* p, const CtrSelfArchive* a) {
-    return !a ? NULL : a->kind == 1 ? p->sd : a->kind == 2 ? p->save : a->kind == 3 ? a->root : NULL;
+    return !a ? NULL : a->kind == 1 ? p->sd : a->kind == 2 ? p->save : a->kind == 3 || a->kind == 4 ? a->root : NULL;
 }
 static uint32_t snx_ctr_fs_wire_CloseArchive(SnxCtrIpc* c, uint64_t token) {
     if (!initialized(c)) return SNX_CTR_IPC_INVALID_STATE;
@@ -180,13 +186,13 @@ static void open_self(SnxCtrIpc* c, const unsigned char path[12]) {
         return;
     }
     if (type != 2) {
-        snx_ctr_ipc_error_reply(c, type == 1 ? 0xd9004676u : 0xe0e046beu); /* CommandNotAllowed, InvalidPath */
+        snx_ctr_ipc_error_reply(c, type == 1 ? 0xd9004676u : CTR_INVALID_PATH); /* CommandNotAllowed */
         return;
     }
     char name[9] = {0}, relative[16];
     memcpy(name, path + 4, 8);
     if (strcmp(name, "icon") && strcmp(name, "logo") && strcmp(name, "banner")) {
-        snx_ctr_ipc_error_reply(c, 0xe0e046beu);
+        snx_ctr_ipc_error_reply(c, CTR_INVALID_PATH);
         return;
     }
     snprintf(relative, sizeof relative, "exefs/%s", name);
@@ -580,17 +586,31 @@ static void control_archive(SnxCtrIpc* c) {
 /* An ExtSaveData's folder in the title's tree, as the console lays them out (Azahar's GetExtDataContainerPath and
    GetExtSaveDataPath): a game's own (archive 6) on the SD card, a shared one (archive 7, the system's) on the NAND,
    whose high word the FS module makes 0x48000 whatever the path says. The folder holds user/ (the archive), boss/,
-   metadata (its ArchiveFormatInfo) and icon */
-#define CTR_EXTDATA        "sdmc/Nintendo 3DS/00000000000000000000000000000000/00000000000000000000000000000000/extdata"
+   metadata (its ArchiveFormatInfo) and icon. The SD card's title/ folder holds the save data of other titles (Azahar's
+   GetSaveDataPath) */
+#define CTR_SD_ID          "sdmc/Nintendo 3DS/00000000000000000000000000000000/00000000000000000000000000000000"
+#define CTR_EXTDATA        CTR_SD_ID "/extdata"
+#define CTR_TITLE_SAVE     CTR_SD_ID "/title"
 #define CTR_SHARED_EXTDATA "nand/data/00000000000000000000000000000000/extdata"
+
+/* Azahar's MediaType: NAND 0, SDMC 1, game card 2 */
+#define CTR_MEDIA_SDMC           1u
+#define CTR_MEDIA_GAMECARD       2u
+#define CTR_APPLICATION_HIGH     0x00040000u /* the high word of an application's program ID */
+#define CTR_OTHER_SAVE_GENERAL   0x567890b2u /* ArchiveIdCode::OtherSaveDataGeneral (Azahar) */
+#define CTR_OTHER_SAVE_PERMITTED 0x567890b4u /* ArchiveIdCode::OtherSaveDataPermitted (Azahar) */
 static void extdata_folder(char out[160], bool shared, uint32_t high, uint32_t low) {
     if (shared)
         snprintf(out, 160, CTR_SHARED_EXTDATA "/%08x/%08x", 0x48000u, low);
     else
         snprintf(out, 160, CTR_EXTDATA "/%08x/%08x", high, low);
 }
-/* An ExtSaveData archive's binary path: media type, save ID low, save ID high (Azahar ExtSaveDataArchivePath) */
-static bool extdata_path(SnxCtrIpc* c, uint32_t address, uint32_t words[3]) {
+static void title_save_folder(char out[160], uint32_t high, uint32_t low) {
+    snprintf(out, 160, CTR_TITLE_SAVE "/%08x/%08x/data/00000001", high, low);
+}
+/* A 12-byte binary archive path of an ExtSaveData or another title's save data (Azahar ExtSaveDataArchivePath):
+   media type, then the save or program ID's low and high words (Permitted: the unique ID only) */
+static bool binary_path(SnxCtrIpc* c, uint32_t address, uint32_t words[3]) {
     unsigned char raw[12];
     if (snx_ctr_read_ram(c->process->space, address, raw, sizeof raw) != SNX_CTR_MEM_OK) {
         c->transport_result = 0xe0e01bf5u;
@@ -598,6 +618,34 @@ static bool extdata_path(SnxCtrIpc* c, uint32_t address, uint32_t words[3]) {
     }
     for (unsigned i = 0; i < 3; ++i)
         words[i] = snx_ld_le32(raw + i * 4);
+    return true;
+}
+/* Another title's save data, as the console finds it on its SD card (Azahar's OtherSaveData archives): the 12-byte
+   path at in[5] names the media and the title. Returns false once it has answered, or the read failed. A title that is
+   this one sets *own: its save data is archive 4's, which Azahar keeps in the same folder */
+static bool other_save(SnxCtrIpc* c, char folder[160], bool* own) {
+    uint32_t id = c->in[1], type = c->in[2], size = c->in[3];
+    if (type != 2 || size != 12) {
+        snx_ctr_ipc_error_reply(c, CTR_INVALID_PATH);
+        return false;
+    }
+    uint32_t words[3];
+    if (!binary_path(c, c->in[5], words)) return false;
+    if (words[0] == CTR_MEDIA_GAMECARD) {
+        snx_ctr_ipc_error_reply(c, CTR_NO_GAMECARD);
+        return false;
+    }
+    if (words[0] != CTR_MEDIA_SDMC) {
+        snx_ctr_ipc_error_reply(c, CTR_UNSUPPORTED_OPEN);
+        return false;
+    }
+    uint32_t high = words[2], low = words[1];
+    if (id == CTR_OTHER_SAVE_PERMITTED) {
+        high = CTR_APPLICATION_HIGH;
+        low = words[1] << 8;
+    }
+    *own = (((uint64_t)high << 32) | low) == c->process->title_id;
+    if (!*own) title_save_folder(folder, high, low);
     return true;
 }
 static void open_archive(SnxCtrIpc* c) {
@@ -609,7 +657,8 @@ static void open_archive(SnxCtrIpc* c) {
     }
     uint32_t id = c->in[1], type = c->in[2], size = c->in[3];
     bool extdata = (id == 6 || id == 7) && type == 2 && size == 12;
-    if (!extdata && ((id != 9 && id != 3 && id != 4) || type != 1 || size != 1)) {
+    bool other = id == CTR_OTHER_SAVE_GENERAL || id == CTR_OTHER_SAVE_PERMITTED;
+    if (!extdata && !other && ((id != 9 && id != 3 && id != 4) || type != 1 || size != 1)) {
         c->state = SNX_CTR_IPC_UNSUPPORTED;
         return;
     }
@@ -626,37 +675,45 @@ static void open_archive(SnxCtrIpc* c) {
         snx_ctr_ipc_error_reply(c, 0xc8804478u);
         return;
     }
-    if (id == 4 && !p->save) { /* the game formats its save data when told it has none */
-        snx_ctr_ipc_error_reply(c, CTR_NOT_FORMATTED);
-        return;
-    }
     /* An ExtSaveData is where its archive keeps it whatever media its path names, as Azahar's archives are. A game
        creates its own when told it has none (NotFound); a shared one that is missing is NotFormatted, as Azahar
        answers, the system having made the ones the console has (services/ptm.c) */
     FsNode* root = NULL;
-    if (extdata) {
-        uint32_t path[3];
-        if (!extdata_path(c, c->in[5], path)) return;
+    bool own = false;
+    if (extdata || other) {
         char folder[160 + 8];
-        extdata_folder(folder, id == 7, path[2], path[1]);
-        strcat(folder, "/user");
-        pm_lock(&p->tree->lock);
-        FsTreeResult rc = fs_tree_lookup(p->tree, NULL, folder, &root);
-        if (!rc && !root->is_dir) rc = FS_TREE_NOTFOUND;
-        if (!rc) fs_tree_retain(root);
-        pm_unlock(&p->tree->lock);
-        if (rc) {
-            snx_ctr_ipc_error_reply(c, rc != FS_TREE_NOTFOUND ? tree_result(rc) : id == 7 ? CTR_NOT_FORMATTED
-                                                                                            : CTR_NO_EXTDATA);
+        if (extdata) {
+            uint32_t path[3];
+            if (!binary_path(c, c->in[5], path)) return;
+            extdata_folder(folder, id == 7, path[2], path[1]);
+            strcat(folder, "/user");
+        } else if (!other_save(c, folder, &own)) {
             return;
         }
+        if (!own) {
+            pm_lock(&p->tree->lock);
+            FsTreeResult rc = fs_tree_lookup(p->tree, NULL, folder, &root);
+            if (!rc && !root->is_dir) rc = FS_TREE_NOTFOUND;
+            if (!rc) fs_tree_retain(root);
+            pm_unlock(&p->tree->lock);
+            if (rc) {
+                snx_ctr_ipc_error_reply(c, rc != FS_TREE_NOTFOUND ? tree_result(rc)
+                                           : id == 7 || other     ? CTR_NOT_FORMATTED
+                                                                  : CTR_NO_EXTDATA);
+                return;
+            }
+        }
+    }
+    if ((id == 4 || own) && !p->save) { /* the game formats its save data when told it has none */
+        snx_ctr_ipc_error_reply(c, CTR_NOT_FORMATTED);
+        return;
     }
     if (p->archive_sequence != UINT64_MAX)
         for (unsigned i = 0; i < CTR_SELF_ARCHIVES; ++i) {
             if (p->self_archives[i].token) continue;
             uint64_t token = ++p->archive_sequence;
             p->self_archives[i].token = token;
-            p->self_archives[i].kind = id == 9 ? 1u : id == 4 ? 2u : extdata ? 3u : 0u;
+            p->self_archives[i].kind = id == 9 ? 1u : (id == 4 || own) ? 2u : extdata ? 3u : other ? 4u : 0u;
             p->self_archives[i].root = root;
             c->out[0] = 0x080c00c0;
             c->out[2] = (uint32_t)token;
@@ -806,12 +863,13 @@ static void format_save(SnxCtrIpc* c) {
     }
     format_save_data(c, c->in[4], c->in[5], c->in[6], c->in[9]);
 }
-/* FSUSER GetFormatInfo of the save data or an ExtSaveData: the numbers it was formatted with */
+/* FSUSER GetFormatInfo of the save data, another title's or an ExtSaveData: the numbers it was formatted with */
 static void format_info(SnxCtrIpc* c) {
     if (!snx_ctr_ipc_expect(c, 3, 2)) return;
     SnxCtrProcess* p = c->process;
     bool extdata = (c->in[1] == 6 || c->in[1] == 7) && c->in[2] == 2 && c->in[3] == 12;
-    if (!extdata && (c->in[1] != 4 || c->in[2] != 1)) {
+    bool other = c->in[1] == CTR_OTHER_SAVE_GENERAL || c->in[1] == CTR_OTHER_SAVE_PERMITTED;
+    if (!extdata && !other && (c->in[1] != 4 || c->in[2] != 1)) {
         c->state = SNX_CTR_IPC_UNSUPPORTED;
         return;
     }
@@ -820,16 +878,23 @@ static void format_info(SnxCtrIpc* c) {
         return;
     }
     char path[160 + 16] = CTR_FORMAT_FILE;
+    bool own = false;
     if (extdata) {
         uint32_t words[3];
-        if (!extdata_path(c, c->in[5], words)) return;
+        if (!binary_path(c, c->in[5], words)) return;
         extdata_folder(path, c->in[1] == 7, words[2], words[1]);
         strcat(path, "/metadata");
+    } else if (other) {
+        char folder[160];
+        if (!other_save(c, folder, &own)) return;
+        if (!own) snprintf(path, sizeof path, "%s.metadata", folder);
     }
+    /* archive 4's format, or this title's own, lives with the save data, so it is NotFormatted without one */
+    bool in_save = c->in[1] == 4 || own;
     unsigned char bytes[16] = {0};
     FsNode* format = NULL;
     pm_lock(&p->tree->lock);
-    FILE* f = (extdata || p->save) && !fs_tree_lookup(p->tree, NULL, path, &format) && !format->is_dir
+    FILE* f = (!in_save || p->save) && !fs_tree_lookup(p->tree, NULL, path, &format) && !format->is_dir
                   ? fs_tree_open(p->tree, format, "rb")
                   : NULL;
     bool read = f && fread(bytes, 1, sizeof bytes, f) == sizeof bytes;

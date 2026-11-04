@@ -24,12 +24,27 @@
    ShaderInfo of a PF_SHADER record depend on. A file whose guest part is the same is rebuilt rather than started
    over: each shader translated again from the program its PF_SOURCE record keeps, and each pipeline made again, into
    a file of the new key. After an update of the runtime or the driver every pipeline would otherwise be new again,
-   made as the game first draws with it, with the frame waiting (a second on NVIDIA for one game's largest) */
+   made as the game first draws with it, with the frame waiting (a second on NVIDIA for one game's largest)
+
+   The main file packs its records: once those after its last unit reach PF_UNIT_BYTES (pipeline_file.c), they are
+   read back, packed into one zstd frame and written over themselves as a PF_UNIT record. So the file is its units,
+   then the records of the open unit as they were appended, and reading unpacks each unit in its place. A crash while a unit is written
+   over its records loses them, as the unit's check then fails, the way a record cut short ends the reading. The
+   shipped file's records are read in place, by where each starts (pf_payload), so each shader record is packed alone:
+   a PF_ZSHADER keeps its PfShader as it is, for the index its reading makes, and its reads and SPIR-V in one zstd
+   frame, which pf_payload unpacks. Whether a file packs is its pack (compress_shader_cache, compress_prepared_shaders);
+   what is packed already is read either way */
 #define PF_SHADER  1
 #define PF_PIPE    2
 #define PF_SCAN    3 /* the shipped programs' walk (gpu/shipped_pass.c) read a file, or all of them: two u64s */
 #define PF_SHIPREF 4 /* a shader of the shipped file, by where its record starts there and the record's check */
 #define PF_SOURCE  5 /* what the PF_SHADER record right after it was translated from (PfSource) */
+#define PF_UNIT    6 /* records packed together: a PfUnit, then one zstd frame of them, padded to 8 */
+#define PF_ZSHADER 7 /* a shipped file's shader packed alone: PfShader, PfZip, a zstd frame, padded to 8 */
+
+/* PFile.pack: pf_open's file packs its records into units, pf_open_mapped's each shader record alone; 0 for neither */
+#define PF_PACK_UNITS   1
+#define PF_PACK_SHADERS 2
 #define PF_MAX     (256u << 20) /* past this size nothing more is appended */
 #define PF_REC     16           /* a record's header: type, payload bytes, check */
 /* a shader record: this, then ncbr constant buffer reads ({idx, off, ok, v}, VkCbRead's words) and nspv SPIR-V
@@ -69,6 +84,10 @@ typedef struct {
     u64 size; /* the file's bytes */
     u64 max;  /* past this size nothing more is appended: PF_MAX for 0 */
     int kept; /* pf_open_mapped's file that is there but couldn't be mapped or rewritten: never appended to */
+    int pack; /* how what is appended is packed, set before the file is opened: PF_PACK_UNITS for pf_open's file,
+                 PF_PACK_SHADERS for pf_open_mapped's, 0 for none */
+    u64 open; /* pf_open's file with PF_PACK_UNITS: where the open unit's records start, packed once they reach
+                 PF_UNIT_BYTES. 0 when nothing is packed into units */
     PFileMap view; /* pf_open_mapped's: the file as it was mapped, its records read from there */
     /* pf_open's files only: the shader records in it, and each module with a record, its number and check, by open
        addressing on the handle (cap a power of two), for pf_pipe */
@@ -93,12 +112,13 @@ typedef struct {
 /* opens path: the records written there with the same key go to load in their order, and what follows is appended.
    A missing file, or one with another key, is started over, except that one whose key's first guest bytes are the
    same is rebuilt: started over, with each PF_SOURCE record handed to load->source (which records the shader in the
-   new file), and each pipeline whose shaders were made to load->pipe. The counts of shader and pipeline records
-   handed on go in loaded[0] and [1] */
+   new file), and each pipeline whose shaders were made to load->pipe. A file of version 2, whose records are those of
+   this one unpacked, is rebuilt so too. The counts of shader and pipeline records handed on go in loaded[0] and [1] */
 void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad* load, u32 loaded[2]);
 /* a shader record for module (made from spv; 0 for none), whose number pf_pipe then refers to; skipped once the file
    is full. With src (its reads src_cbr, its program code, xfb with PF_SRC_XFB), a PF_SOURCE record right before it.
-   Where the shader record starts in the file, 0 when it wasn't written */
+   Where the shader record starts in the file (pf_open_mapped's: pf_open's records move as they are packed), 0 when it
+   wasn't written */
 u64 pf_shader(PFile* pf, u64 module, const PfShader* s, const u32* cbr, const u32* spv, const PfSource* src,
               const u8* code, const ShXfb* xfb);
 /* a pipeline record with modules (vs, tcs, tes, gs, fs; 0 for none): skipped when one of them has no record */
@@ -115,7 +135,8 @@ void pf_shipref(PFile* pf, u64 module, u64 at, u64 check);
    can't be mapped is left as it is, and nothing is appended to it. It stays mapped for pf_payload until pf_unseal
    unmaps it (a Windows view doesn't share writing) and opens it for appending, and pf_seal ends the appending and
    maps it again. pf_payload: the payload of the record that starts at at, and its check, NULL when it isn't there or
-   doesn't check out */
+   doesn't check out. A PF_ZSHADER's comes back as the PF_SHADER payload it was packed from, in *owned (malloc'd, for
+   the caller to free; NULL for a record read in place) */
 typedef void (*PfEach)(void* ctx, u32 type, const u8* payload, u32 len, u64 at);
 void pf_open_mapped(PFile* pf, const char* path, const char* key, PfEach each, void* ctx);
 void pf_unseal(PFile* pf);
@@ -124,6 +145,6 @@ void pf_close(PFile* pf);
 /* the process's id, for a temporary file of its own: two runs of a game started together would write the same one */
 unsigned pf_pid(void);
 void pf_seal(PFile* pf);
-const u8* pf_payload(const PFile* pf, u64 at, u32* len, u64* check);
+const u8* pf_payload(const PFile* pf, u64 at, u32* len, u64* check, u8** owned);
 
 #endif

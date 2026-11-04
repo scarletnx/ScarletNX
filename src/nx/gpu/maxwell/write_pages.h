@@ -16,5 +16,8 @@ typedef struct {
 void write_pages_stamp(WritePages* t, u64 a, u64 size, u64 gen);
 /* nonzero if a page of [a,a+size) was stamped with a generation after since */
 int write_pages_since(const WritePages* t, u64 since, u64 a, u64 size);
+/* fn(ctx, at, n) for each run of [a,a+size) on pages stamped after since, in order, clipped to the range: pages that
+   touch make one run. The whole range at once where the overflow stands for every page */
+void write_pages_runs(const WritePages* t, u64 since, u64 a, u64 size, void (*fn)(void* ctx, u64 at, u64 n), void* ctx);
 
 #endif

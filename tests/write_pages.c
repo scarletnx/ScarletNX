@@ -13,6 +13,36 @@ static void check(int ok, const char* what) {
     }
 }
 
+/* the runs write_pages_runs hands out, in order */
+typedef struct {
+    u64 at[160], n[160];
+    u32 count;
+} Runs;
+static void take_run(void* ctx, u64 at, u64 n) {
+    Runs* r = ctx;
+    if (r->count < 160) r->at[r->count] = at, r->n[r->count] = n;
+    r->count++;
+}
+/* write_pages_runs over bytes [lo, hi) of pages first to last: each byte on a page newer than since in exactly one run,
+   no other byte in any, the runs in order and apart (pages that touch make one run) */
+static int runs_match(const WritePages* t, const u64* pages, u64 base, u64 first, u64 last, u64 lo, u64 hi, u64 since) {
+    Runs r = {{0}, {0}, 0};
+    write_pages_runs(t, since, lo, hi - lo, take_run, &r);
+    if (r.count > 160) return 0;
+    for (u32 k = 0; k < r.count; k++)
+        if (!r.n[k] || r.at[k] < lo || r.at[k] + r.n[k] > hi || (k && r.at[k - 1] + r.n[k - 1] >= r.at[k])) return 0;
+    for (u64 i = first; i <= last; i++) {
+        u64 a = base + i * 4096, b = a + 4096, in = 0;
+        if (a < lo) a = lo;
+        if (b > hi) b = hi;
+        for (u32 k = 0; k < r.count; k++)
+            if (r.at[k] < b && a < r.at[k] + r.n[k])
+                in += (r.at[k] + r.n[k] < b ? r.at[k] + r.n[k] : b) - (r.at[k] > a ? r.at[k] : a);
+        if (in != (pages[i] > since ? b - a : 0)) return 0;
+    }
+    return 1;
+}
+
 static void ranges(void) {
     static WritePages table;
     /* Include a leaf boundary and several group boundaries, then compare both clean and dirty subranges against a
@@ -34,6 +64,9 @@ static void ranges(void) {
                 for (u64 i = begin; i <= end; i++) expected |= pages[i] > since;
                 check(write_pages_since(&table, since, base + begin * 4096, (end - begin + 1) * 4096) == expected,
                       "batched stamps match exact page generations across group and leaf boundaries");
+                check(runs_match(&table, pages, base, begin, end, base + begin * 4096 + 100, base + end * 4096 + 4000,
+                                 since),
+                      "the runs of written pages are exactly the pages written since, clipped to the range");
             }
         }
     }
@@ -44,6 +77,12 @@ static void ranges(void) {
     check(!write_pages_since(&table, 256, base, 144 * 4096), "an empty stamp changes no generation");
     write_pages_stamp(&table, ~0ull - 3, 8, 258);
     check(write_pages_since(&table, 257, base, 1), "a wrapped range conservatively stamps overflow");
+    {
+        Runs r = {{0}, {0}, 0};
+        write_pages_runs(&table, 257, base + 5, 3 * 4096, take_run, &r);
+        check(r.count == 1 && r.at[0] == base + 5 && r.n[0] == 3 * 4096,
+              "past an overflow newer than since, the whole range is one run");
+    }
 }
 
 int main(void) {

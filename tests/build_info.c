@@ -30,6 +30,12 @@ int main(void) {
     arch = "x86_64";
 #elif defined(__aarch64__) || defined(_M_ARM64)
     arch = "arm64";
+#elif defined(__mips64) && defined(__MIPSEL__)
+    arch = "mips64el";
+#elif defined(__mips64)
+    arch = "mips64";
+#elif defined(__s390x__)
+    arch = "s390x";
 #else
     arch = NULL;
 #endif

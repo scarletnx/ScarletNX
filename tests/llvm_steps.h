@@ -14,11 +14,19 @@
 
 typedef u64 (*LlvmStep)(CPU* c);
 
+/* what of the host the emitters may use (llvm_steps_begin's portable) */
+enum {
+    LLVM_STEPS_HOST,     /* the host's architecture and extensions, as the recompiler builds for it */
+    LLVM_STEPS_PORTABLE, /* the architecture without its extensions: the emitters' portable forms (x86's PSHUFB,
+                            PCLMULQDQ, AES-NI, SSE4.2's CRC32C and the like, AArch64's CRC32 and crypto) */
+    LLVM_STEPS_GENERIC   /* neither: the path of the hosts SnxIrFeatures has no bit for (PowerPC64, RISC-V,
+                            LoongArch, MIPS64), as an SnxIr for another triple gets it */
+};
+
 typedef struct {
     int jit;      /* load with the JIT's loader, not as a module file */
     char opt;     /* both the target machine and the IR pipeline: normally '2' */
-    int portable; /* none of the host's extensions: the emitters' portable forms (x86's PSHUFB, PCLMULQDQ, AES-NI,
-                     SSE4.2's CRC32C and the like, AArch64's CRC32 and crypto) */
+    int portable; /* LLVM_STEPS_HOST, LLVM_STEPS_PORTABLE or LLVM_STEPS_GENERIC */
     SnxIr* ir;    /* while steps are added; its functions in fns */
     LLVMValueRef* fns;
     size_t count, cap;
@@ -26,9 +34,12 @@ typedef struct {
     SnxCodeLoader* loader;
     void* library;
     char* dir; /* the module file's */
+    /* the emitters' (ir->features) unless portable is LLVM_STEPS_HOST */
+    SnxIrFeatures features;
 } LlvmSteps;
 
-/* starts a set of steps (snx_ir_init included): 0, or -1 with the reason in error */
+/* starts a set of steps (snx_ir_init included), portable one of the LLVM_STEPS_ values: 0, or -1 with the reason
+   in error */
 int llvm_steps_begin(LlvmSteps* s, int jit, int portable, char* error, size_t error_size);
 int llvm_steps_begin_opt(LlvmSteps* s, int jit, int portable, char opt, char* error, size_t error_size);
 /* word's step at pc for a guest with these A64 features (0: the Switch's); its index */

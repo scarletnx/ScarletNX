@@ -113,7 +113,7 @@ static void log_keep_run(const char* path, char* why, size_t size) {
 /* The log is made once the game's code module is loaded (g_mod), so a run that never gets that far (a mistyped
    --game, a dump given instead of a game) leaves no log behind */
 static void log_create_nl(void) {
-    char path[1400], why[1700], out[LINE_MAX_ + 32];
+    char path[1400], why[1700], out[LINE_MAX_ + 32], *full, *where;
     FILE* file;
     if (g_log || g_log_gave_up || !g_mod) return;
     snprintf(path, sizeof path, "%s%s.log", g_statedir, g_exename);
@@ -131,6 +131,17 @@ static void log_create_nl(void) {
             fputs(out, file);
             fputs(why, stderr);
         }
+        /* whatever the log level: the launcher's Share Log reads it from the run's output */
+        full = snx_absolute(path);
+        where = snx_format(SNX_LOG_WRITTEN "%s\n", full ? full : path);
+        if (where) {
+            g_log_size += log_compose(out, sizeof out, where);
+            fputs(out, file);
+            fputs(where, stderr);
+            fflush(stderr);
+        }
+        free(where);
+        free(full);
         fflush(file);
 #if !defined(_WIN32)
         __atomic_store_n(&g_log_fd, fileno(file), __ATOMIC_RELEASE);

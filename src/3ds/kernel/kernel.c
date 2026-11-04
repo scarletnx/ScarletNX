@@ -376,17 +376,25 @@ static bool free_map_slot(const SnxCtrProcess* p) {
    target): the rights asked (r2: read, write or both, never execute or don't-care) within the block's own; the
    rights another process gets (r3) must include the block's own, and don't-care is refused for a heap-backed block
    (ResultWrongPermission, ResultInvalidCombination). The address lies in [0x08000000, 0x14000000). The mapping
-   mirrors the owner's pages. */
+   mirrors the owner's pages. A block APT made for a library applet is marked by a set other_permissions (it has a
+   base address of its own and no owner): it is held to those other permissions instead and maps its own physical
+   pages. */
 static uint32_t map_own_block(SnxCtrProcess* p, uint32_t id, uint32_t address, uint32_t asked, uint32_t other) {
     CtrObject* o = &p->objects[id];
     uint32_t size = o->data.shared.size, own = o->data.shared.permissions == DONT_CARE ? 3 : o->data.shared.permissions;
-    if (!asked || asked > 3 || (asked & ~own) || other == DONT_CARE) return INVALID_COMBINATION;
+    uint32_t allowed = o->data.shared.by_application ? own : o->data.shared.other_permissions;
+    if (!asked || asked > 3 || (asked & ~allowed) || other == DONT_CARE) return INVALID_COMBINATION;
     if (own & ~other) return WRONG_PERMISSION;
     if ((address & 4095) || address < CTR_HEAP || (uint64_t)address + size >= CTR_LINEAR) return INVALID_ADDRESS;
     if (!available(p, address, size)) return INVALID_STATE;
     if (!free_map_slot(p)) return OUT_OF_MEMORY;
-    if (!mirror(p, address, o->data.shared.address, size, asked)) return OUT_OF_MEMORY;
-    return record_map(p, id, address, size);
+    if (o->data.shared.by_application) {
+        if (!mirror(p, address, o->data.shared.address, size, asked)) return OUT_OF_MEMORY;
+        return record_map(p, id, address, size);
+    }
+    SnxCtrMemResult mapped = snx_ctr_map(p->space, address, o->data.shared.physical, size, asked);
+    if (mapped == SNX_CTR_MEM_OK) return record_map(p, id, address, size);
+    return mapped == SNX_CTR_MEM_NOMEM ? OUT_OF_MEMORY : INVALID_STATE;
 }
 /* Heap/linear commit, free and protect, and MAP/UNMAP aliases; no mappings, ownership or accounting change on
    rejected calls. */
@@ -947,7 +955,7 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
             uint32_t id = snx_ctr_handle_object(p, r[0]);
             if (!id || p->objects[id].type != CTR_OBJ_SHARED)
                 r[0] = INVALID_HANDLE;
-            else if (p->objects[id].data.shared.by_application)
+            else if (p->objects[id].data.shared.by_application || p->objects[id].data.shared.other_permissions)
                 r[0] = map_own_block(p, id, r[1], r[2], r[3]);
             else {
                 CtrObject* o = &p->objects[id];

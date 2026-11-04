@@ -20,6 +20,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/stats.h"
+#include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/memory/mem.h"
@@ -39,6 +40,7 @@ static void vkr_before_write(u64 gva, u64 size) {
     vk_lock();
     if (size) vk_release_need(gva, size);
     vk_buf_before_write(gva, size);
+    if (size) vk_uma_before_write(gva, size); /* what reads it in place runs first */
     if (size)
         vk_gfx_image_mem_need(gva, size);
     else
@@ -59,6 +61,7 @@ static int vkr_mem_pending(u64 gva, u64 size) {
 }
 static void vkr_gfx_mem_need(u64 gva, u64 size) {
     vk_buf_mem_need(gva, size);
+    vk_uma_mem_need(gva, size); /* the in-place writes there done */
     vk_gfx_image_mem_need(gva, size);
 }
 /* the GPU range a mapping change is changing, from its begin to its end (size 0 for a change of guest memory) */
@@ -67,12 +70,14 @@ static void vkr_mapping_begin(u64 gva, u64 size, int full) {
     vk_lock();
     g_mapping_gva = full ? 0 : gva;
     g_mapping_size = full ? 0 : size;
-    if (full) vk_uma_quiesce(gva, size); /* mem.c's change of guest memory [gva, gva + size): its in-place readers run */
     vk_release_drain();
     if (full) {
         vk_buf_land_map();
         vk_gfx_image_land();
         vk_compute_land();
+        /* last, as the landings may submit: mem.c's change of guest memory [gva, gva + size), whose in-place readers
+           run and reach the driver first */
+        vk_uma_mapping_begin(gva, size);
     } else {
         vk_buf_mem_need_map(gva, size);
         vk_gfx_image_mem_need(gva, size);
@@ -84,6 +89,7 @@ static void vkr_mapping_begin(u64 gva, u64 size, int full) {
 /* the pages changed count what is pending at the guest pages they show now. A change of guest memory (full) leaves
    the GMMU as it was: pending pages are compared by address, and freed memory is landed first */
 static void vkr_mapping_end(void) {
+    vk_uma_mapping_end(); /* first: what follows may submit */
     vk_buf_mapping_changed();
     pend_remap(g_mapping_gva, g_mapping_size);
     g_mapping_size = 0;
@@ -188,6 +194,17 @@ static void vkr_method_barrier(int kind)
 		return;
 
 	vk_lock();
+	if ((kind == 6 || kind == 7) && g_settings.nvn_storage_ordering == 2) {
+		vk_buf_order_request(kind == 7);
+		vk_unlock();
+		return;
+	}
+	/* Surface and copy consumers retain their own dependencies. NVN's points need an additional buffer
+	 * barrier only after a shader write or a pending read that a later in-place writer could overwrite. */
+	if ((kind == 6 || kind == 7) && !vk_buf_order_pending(kind == 7)) {
+		vk_unlock();
+		return;
+	}
 	if (kind == 5) {
 		/* Content caches keep their modules. Only address shortcuts expire. */
 		g_vk.shader_generation++;
@@ -197,6 +214,7 @@ static void vkr_method_barrier(int kind)
 	vk_render_end();
 	/* CPU-visible releases wait for completion in the release path. */
 	rec_CmdPipelineBarrier2(vk_cmd(), &di);
+	vk_buf_ordered();
 	vk_unlock();
 }
 static int vkr_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
@@ -525,6 +543,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         last_present_ns = now_ns;
         g_vk_present++;
         stats_frame(now_ns);
+        if (g_vk_present == 1 || g_vk_present % 600 == 0) guest_stats_log(now_ns, g_vk_present);
         vk_mem_present();
         if (g_last) vk_surf_touch(g_last); /* what screenshots read stays */
         vk_tex_frame();
@@ -536,7 +555,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
             LOG("vulkan: %llu draws, %llu skipped; %llu dispatches in %llu batches (%llu ms waiting), %llu skipped%s; "
                 "%llu finishes (%llu ms); %llu reads past queued releases (%llu samples counts written on the GPU); "
                 "%llu descriptor sets written, %llu reused; "
-                "%llu draws kept the last one's shaders and pipeline (%llu checked)\n",
+                "%llu draws kept the last one's shaders and pipeline (%llu checked), %llu its targets\n",
                 (unsigned long long)g_vk_drawn, (unsigned long long)g_vk_skipped, (unsigned long long)g_vk_dispatches,
                 (unsigned long long)g_vk_cs_batches,
                 (unsigned long long)(__atomic_load_n(&g_vk_cs_wait_ns, __ATOMIC_RELAXED) / 1000000),
@@ -545,7 +564,8 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 (unsigned long long)__atomic_load_n(&g_vk_release_forwards, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&g_vk_counts_on_gpu, __ATOMIC_RELAXED),
                 (unsigned long long)g_vk_dset_new, (unsigned long long)g_vk_dset_reused,
-                (unsigned long long)g_vk_draw_kept, (unsigned long long)g_vk_draw_checked);
+                (unsigned long long)g_vk_draw_kept, (unsigned long long)g_vk_draw_checked,
+                (unsigned long long)g_vk_targets_kept);
             {
                 u64 pipes, hits, make_ms, pipe_ms, shaders, shader_ms, uploads, upload_bytes;
                 vk_pipeline_stats(&pipes, &hits, &make_ms, &pipe_ms, &shaders, &shader_ms);

@@ -123,6 +123,10 @@ int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) {
     return q.dirty;
 }
 
+void gpu_mem_dirty_runs(u64 since, u64 a, u64 sz, void (*fn)(void* ctx, u64 at, u64 n), void* ctx) {
+    if (sz && since < __atomic_load_n(&g_wgen, __ATOMIC_ACQUIRE)) write_pages_runs(&g_wgpu, since, a, sz, fn, ctx);
+}
+
 /* ------------------------------------------------------------ draws and clears */
 /* the separate topology (0x652 bit 0, PrimitiveTopologyControl UseSeparateState) and its override enum (0x65C) as
    the draw's topology: points and lines are numbered one past the draw's enum, the legacy values by name */

@@ -248,6 +248,36 @@ int main(void) {
         assert(snx_is_file(c) && done.count == 1);
         gui_cleaned_free(&done);
         assert(!gui_move_entries(&done, "/nonexistent/snx-move", now, NULL, true) && !done.count); /* none there */
+        /* a save folder's note beside it (SNX_SAVE_NOTE) to beside the folder it moves to: said and left without
+           apply, moved with it; one there already stays, and so does the old; no note, nothing said */
+        {
+            char *note = snx_path_join(root, "save.version"), *saves = snx_path_join(root, "saves"),
+                 *into = snx_path_join(saves, "title"), *noted = snx_format("%s.version", into);
+            char* said;
+            assert(!snx_mkdirs(saves));
+            write_text(note, "program=0100000000ABC000\n");
+            free(c);
+            c = snx_path_join(root, "save");
+            assert(gui_move_save_note(&done, c, into, false) == 1 && snx_is_file(note) && !snx_path_exists(noted));
+            said = native(snx_format("+save.version|Moves to %s/saves/title.version\n", root));
+            assert(!strcmp(entries(&done, base), said));
+            free(said);
+            gui_cleaned_free(&done);
+            assert(gui_move_save_note(&done, c, into, true) == 1 && !snx_path_exists(note) && snx_is_file(noted));
+            gui_cleaned_free(&done);
+            write_text(note, "program=0100000000ABC800\n");
+            assert(!gui_move_save_note(&done, c, into, true) && snx_is_file(note) && snx_is_file(noted));
+            said = native(snx_format("!save.version|Stays: %s/saves/title.version is there\n", root));
+            assert(!strcmp(entries(&done, base), said));
+            free(said);
+            gui_cleaned_free(&done);
+            assert(!snx_remove_tree(note) && !gui_move_save_note(&done, c, into, true) && !done.count);
+            assert(!snx_remove_tree(saves));
+            free(noted);
+            free(into);
+            free(saves);
+            free(note);
+        }
 #ifdef SNX_XDG
         { /* another disk: the entry not moved, the folder on the other named */
             char* shm = snx_is_dir("/dev/shm") ? snx_temp_dir("/dev/shm") : NULL;

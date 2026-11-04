@@ -11,7 +11,8 @@
   * [What the GPU reads in place](#what-the-gpu-reads-in-place)
   * [What still copies, and why](#what-still-copies-and-why)
   * [What keeps it correct](#what-keeps-it-correct)
-  * [Why imports and not placed maps (yet)](#why-imports-and-not-placed-maps-yet)
+  * [Android: guest memory moved into AHardwareBuffers](#android-guest-memory-moved-into-ahardwarebuffers)
+  * [Placed maps](#placed-maps)
   * [Measurements on a discrete GPU (RTX 2080, 246 MiB BAR)](#measurements-on-a-discrete-gpu-rtx-2080-246-mib-bar)
   * [Testing on a Steam Deck (or any integrated GPU)](#testing-on-a-steam-deck-or-any-integrated-gpu)
 * [Phases](#phases)
@@ -55,7 +56,9 @@ page cache.
   and their page table entries dropped (`MADV_DONTNEED`). A guest access then blocks the faulting thread in the
   kernel. A handler thread, in ordinary thread context, lands the GPU data through the mirror and installs the page
   with `UFFDIO_CONTINUE`. No Vulkan call, lock or allocation runs in a signal handler.
-- Owned spans are not write-tracked: their consumers use the ownership map. `plat_ww_scan` skips them.
+- Owned spans are not write-tracked: their consumers use the ownership map. `plat_ww_scan` skips them. A span the
+  trap lets go is mapped with `UFFDIO_CONTINUE` and registered for write tracking again while no scan runs: it reads as
+  written once, with what the woken thread writes.
 - `UFFD_USER_MODE_ONLY` (needed without privileges) means a system call that reads or writes an owned page from the
   kernel gets EFAULT rather than a fault. Every system call that takes a guest pointer (files, sockets, TLS) and
   `pread`/`pwrite` on the pool first acquires the range (`own_acquire`).
@@ -150,9 +153,11 @@ thread to hash and copy, and memory bandwidth.
 - Discrete with a small BAR: anything else. An RTX 2080 without resizable BAR has a 246 MiB window.
 
 The `[Debug]` setting `vk_memory` (also `--vk_memory=N`) chooses the path for guest buffers: 0 auto (in place on
-UMA, copied otherwise), 1 copy, 2 in place. In place needs `VK_EXT_external_memory_host`. Without it the log warns
-and the path is the copy. On a discrete GPU, 2 works but the GPU reads guest memory across the bus: it is for testing
-correctness there, not for speed.
+UMA, copied otherwise), 1 copy, 2 in place. In place needs `VK_EXT_external_memory_host`, or on Android with 2
+`VK_ANDROID_external_memory_android_hardware_buffer` ([below](#android-guest-memory-moved-into-ahardwarebuffers)).
+Without either the log warns and the path is the copy. Auto with the second alone copies, and the log says
+`(vk_memory=auto: AHardwareBuffers only with vk_memory=2)`. On a discrete GPU, 2 works but the GPU reads guest memory
+across the bus: it is for testing correctness there, not for speed.
 
 With resizable BAR, the staging ring of streamed uploads goes in device-local memory that the CPU maps
 (`vk_stage_upload`, within the heap's budget): the CPU's sequential writes cross the bus once, and every draw that
@@ -166,6 +171,19 @@ Vertex and index ranges and read-only storage buffers (`vk_buf_get_input`, `vk_b
 the GPU holds) and GPU ownership (`own.c`). If guest memory holds the bytes, `vk_uma_get` binds the import that covers
 them, at the range's offset: no hash, no copy, no own buffer, no window.
 
+What the GPU writes goes there too:
+
+- Writable storage buffers and transform feedback buffers (`vk_buf_copy_writable`, `vk_uma_write`): the range bound for
+  writing is the import of its guest memory, so a draw's or dispatch's writes need no `GfxOut`, no readback and no
+  landing. They are pending (`out`) until their submit is done.
+- Dispatches run on the graphics queue (`compute.c`), so their storage is written in place like a draw's and in order
+  with the draws, with nothing kept GPU-owned on a queue of its own.
+- An engine's result (the copy engine, the 2D engine, VIC, NVDEC, a render target's write-back) over memory an import
+  holds already is copied there on the GPU in stream order (`vk_uma_publish`, from `vk_own_publish`), a write in place
+  like the shaders': not GPU-owned, no page trapped, and the import stays. Elsewhere it is published GPU-owned, as
+  without UMA: an import made for the result would take its pages from write tracking, and a sparse texture a copy
+  feeds would then load again whole instead of the pages written.
+
 Guest memory is imported with `VK_EXT_external_memory_host` in pieces. An import covers the 2 MiB windows that a range
 touches, clipped to mapped guest memory. Imports never overlap: a range across two imports makes one import of their
 union. At most 512 imports, the least recently used goes past that, and an import unused for 600 presents goes. A
@@ -174,23 +192,21 @@ its ranges are copied. On an RTX 2080 a span with one page the driver cannot pin
 with `VK_ERROR_OUT_OF_DEVICE_MEMORY`, while anonymous and shared (memfd, the alias pool's) pages import. Before the
 list, every range in such a window asked the driver again, and one scene fell from 28 to 5 frames a second. The whole guest heap is never one import. A driver that checks each import's
 pages at each submit (amdgpu's user pointers) pays for the bytes imported, and LASRecomp measured 45 ms of driver
-time a frame on AMD with the whole heap as one import.
+time a frame on AMD with the whole heap as one import. On an RX 6700 XT (RADV, Mesa 26.1.8) a submission takes 6.4 us
+more per MiB imported in one import, from 16 MiB to 512 MiB, and 7.2 us per MiB with 160 MiB in 160 imports.
 
 ### What still copies, and why
 
-- Constant buffers. The GPU front end writes them between draws (`CONST_BUFFER_DATA`, `r3d_const_upload`) on the CPU,
-  when the GPU thread meets the method. A draw recorded before the write but run by the GPU after it would read the
-  new constants. In place, they need the write done on the GPU in order (`vkCmdUpdateBuffer` into the import), with a
-  CPU copy for the runtime's own readers (bindless texture handles are read from constant buffers when a draw is
-  recorded).
-- Writable storage and transform feedback. Their results land through the pending results (`GfxOut`), which the
-  runtime's own readers (texture uploads, the shader translator, `gmem_need`) wait for. In place, the GPU writes guest
-  memory at once, and that is the next step: the pending results then only need the fence, not the copy back. That is
-  where the `vk_finish` landings of the agreed work go away on UMA.
+- The constant buffers the GPU front end writes between draws (`CONST_BUFFER_DATA`, `r3d_const_upload`) on the CPU,
+  when the GPU thread meets the method, and every other page the runtime wrote (`front`). A draw recorded before the
+  write but run by the GPU after it would read the new constants. The other constant buffers, the ones the game's CPU
+  or GPU writes, are read in place (`vk_buf_get_uniform`).
+- Writable storage over bytes the GPU holds elsewhere (a GPU-owned range, a compute or storage image result, a queued
+  release's payload), and a page the runtime wrote (`front`): those land first and are copied, as before.
 - Ranges under pending results, and GPU-owned ranges: their bytes are not in guest memory.
 - Textures and render targets: their layout differs from guest memory (block linear, formats the host lacks), so they
   are always made on the GPU from a staging copy.
-- Compute dispatches read their storage through `vk_buf_get_strict`: copied.
+- The read-only storage of a dispatch, through `vk_buf_get_strict`: copied.
 
 ### What keeps it correct
 
@@ -203,33 +219,102 @@ time a frame on AMD with the whole heap as one import.
 - Pages that change under an import. The driver pins the pages it imported. When mem.c gives guest pages back
   (unmap, decommit), or moves them into the alias pool (`promote_nl`), the host pages at that guest address are other
   pages, and the import still has the old ones. mem.c tells the renderer (`mem_set_pages_replaced`), and the imports on
-  those pages go at the next lookup. `vulkan_headless` (`check_uma`) unmaps and maps a range again, and checks that the
-  GPU reads the new bytes.
-- Hazards. A GPU-side write to guest memory (a front-end write, a landed result) on a page that a command not finished
-  yet reads in place can change what that command reads. They are counted (`gpu_set_write_watch`), not prevented, and
-  the report every 600 presents gives the count:
+  those pages are destroyed before anything else is submitted (`vk_uma_mapping_end`). A driver keeps every import in
+  every submission, and amdgpu takes all their pages again in each one's ioctl: one page gone fails the submission
+  (`The CS has been rejected (-14)`, `EFAULT`), and the device is lost. So before the pages change, the commands that
+  read an import over them run, and every submission the recording thread holds reaches the driver
+  (`vk_uma_mapping_begin`). Pages becoming GPU-owned are trapped, which amdgpu can't take either: the imports over
+  them go before the trap (`vk_uma_owning`). An import dropped from the table (the least recently used, one a union
+  replaced, a save state's load) is destroyed once the submit that last read it is done, or before its pages change
+  if that comes first. The submit that last read an import is the one its last lookup was in, unless the draw's setup
+  submitted after the lookup (a wait for a landing) and recorded its use in the next: so until the next draw or
+  dispatch begins, an import looked up since counts the submit being recorded as its reader (`vk_uma_settle`).
+  `vulkan_headless` (`check_uma`) unmaps and maps a range again, and checks that the GPU reads the new bytes;
+  `check_uma_page_changes` unmaps, traps and drops imports with a submission after each; `vulkan_uma_imports.inc`
+  traps pages under a read still running, under two imports, under the import made after a page landed, after an
+  unmap, and under a lookup used after a submit (`SNX_TEST_UMA_ONLY=1` runs these alone, `runtime_write` or
+  `constants` one by name).
+- Write tracking. amdgpu takes an import's pages again, writable, at each submission, which undoes the protection a
+  scan put on them: the next scan reports every imported page written with no CPU write (16 pages of 16 after each
+  submission, none without the import). Trusted, those reports made a render target's write-back keep memory's old
+  bytes over its pixels (`check_rt_overlap`), and a submission after a scan faults every protected page in again
+  (16 ms for 32 MiB imported, against 0.3 ms with no scan). So the scans leave the pages an import holds alone, and
+  `vk_written_since` can't tell there (-1): its users compare the bytes. An import's pages count as written once when
+  it goes (`vk_mem_changed`), for what the CPU wrote there meanwhile.
+- Hazards. A write of the runtime's own (`gmem_write`: a front-end write, a constant buffer update, a target's
+  write-back) on a page that a submit not done yet reads in place waits for that submit (`vk_uma_before_write`, the
+  `live` pages), and the page is copied from then on (`front`), so the next write there waits for nothing. Any other
+  GPU-side write (a landed result) on such a page can change what that command reads: those are counted
+  (`gpu_set_write_watch`), not prevented, and the report every 600 presents gives the count:
 
   `vulkan: in place over 600 presents: N ranges (M MB) read in guest memory, N copied; N imports made (M MB, T ms),
   N failed, N dropped; N imports hold M MB; N hazards (...)`
 
   The count is by 4 KiB page, so a constant buffer next to vertices on one page counts too.
+- Writes in place. The console's GPU runs its work in order: what reads a range in place after it was written in place
+  comes after a barrier, and so does what writes a range read or written before (`order`, by page since the last
+  barrier). A publish records its own barriers before and after its copy, so a draw that reads the result in the next
+  rendering pass reads it there without ending that pass. A GPU copy of bytes a submit not done yet writes in place
+  copies them from the import, after a barrier (owned.c's `cpu_read`, VIC's `plane_stage`), not from the CPU's view.
+  The runtime's own CPU readers (`gmem_need`, `gmem_read`) wait for that submit, and so does a write of the runtime's
+  there (`vk_uma_before_write`). The end of a submit with writes in place makes them visible to the host
+  (`vk_uma_host_barrier`), and a release waits for the submit that last bound guest memory in place, a write included
+  (`vk_uma_bound`). VIC and NVDEC wait for their pictures before host1x increments the job's syncpoint, which the guest
+  waits for before it reads them. The report every 600 presents adds `N MB written in place (M MB of them engines'
+  results), N barriers for it, N waits for it`.
 
-### Why imports and not placed maps (yet)
+### Android: guest memory moved into AHardwareBuffers
 
-`VK_EXT_map_memory_placed` maps device memory at an address the caller gives. With it, the guest heap would be driver
-memory, with nothing to import or pin. This host's driver has it (`memoryMapPlaced`, not `memoryMapRangePlaced`). It
-is not used yet, for these reasons:
+Every Android driver takes AHardwareBuffers (`VK_ANDROID_external_memory_android_hardware_buffer`), and Qualcomm's has
+no `VK_EXT_external_memory_host`. Where a device has the first and not the second, `vk_memory=2` moves guest memory
+into AHardwareBuffers instead of importing it where it is (`vk_uma_way`; the migrate way in `uma.c`), and auto copies,
+as no phone has measured the moves yet (`check_uma_way`). The windows a range touches become a region, a buffer of its
+own that Vulkan imports once, and their pages then move into it with their bytes, mapped where they were
+(`mem_migrate`: a copy, then the buffer's dma-buf mapped over the range, writers held off by `plat_freeze`). A region
+that a range reaches moves on into one region of their union. A region is 256 MiB at most: on an Adreno 830
+(Snapdragon 8 Elite) Android's allocator gave 256 MiB, and 512 MiB aborted its service. The memory of an
+AHardwareBuffer is taken whole when it is made and never swapped, so only what the GPU reads moves, and a region that
+goes for idleness or room first moves its pages back into the reservation's own (`mem_unmigrate`).
 
-- Write tracking and the traps use userfaultfd on guest memory (above). The kernel registers userfaultfd only on
-  anonymous, shmem and hugetlb mappings, and a mapping of driver memory is none of those. The texture cache and the
-  shader cache would lose write tracking on those pages and hash them again.
-- The alias pool maps one page at two guest addresses (`svcMapMemory` views, code). A placed map maps one memory object
-  once, at one address.
-- Without `memoryMapRangePlaced`, only a whole memory object maps placed, so the heap would be one object or one per
-  mapping.
+A probe on that phone (Android 16) found the buffer's mapping to be the memory `AHardwareBuffer_lock` gives, the GPU
+reading what the CPU wrote and the CPU what the GPU wrote with no sync, the CPU's bandwidth there that of `malloc`'s
+memory (31.5 against 31.2 GB/s), `mprotect` trapping there, and a submission costing the same with 16 or 256 MiB
+imported (7 to 30 us), where amdgpu's user pointers cost 6.4 us more per MiB.
 
-Placed maps need write tracking by protection for those ranges (the signal trap path has it) and aliases by `mremap`.
-That is the step after imports, and it is the one that removes the per-submit cost of user pointers on amdgpu.
+A region's buffer is memory of its own, which no change of the guest's pages touches. Pages of a region unmapped,
+decommitted or moved into the alias pool (a view, a trap) get other pages there (`give_back_nl` maps fresh ones, as
+decommitting shared pages keeps their bytes); the region goes then with no wait, the commands recorded before read the
+bytes it had, and it is destroyed once the last of them is done. Write tracking leaves a region's pages alone as it
+leaves an import's: that phone's kernel (6.6) has no `PAGEMAP_SCAN`, and userfaultfd can't protect a dma-buf mapping.
+Off Android `plat_gpu_buffer` makes a memfd, which the driver imports as host memory: `vulkan_headless`'s
+`check_uma_migrate` runs the migrate way where the driver takes a memfd's pages (lavapipe) and skips where it doesn't
+(amdgpu's user pointers take anonymous memory only), and `memory_alias` moves guest memory into memfds and back.
+
+### Placed maps
+
+`VK_EXT_map_memory_placed` maps device memory at an address the caller gives: the guest heap as driver memory, with
+nothing to import or pin, and none of the per-submit cost of user pointers on amdgpu. `vk/uma.c` has it, off by default
+(`vk_uma_placed`, which `check_uma_placed` and `check_uma_placed_view` turn on), on a device with `memoryMapPlaced` and
+`memoryUnmapReserve`:
+
+- A window of 2 MiB that the heap or physical memory commits whole (`mem_heap_set`, `mem_map_physical`) is a chunk:
+  host-visible, coherent memory, cached where a type is, mapped at its guest address over the reservation, one object a
+  window (RADV has no `memoryMapRangePlaced`). The GPU binds the chunk's buffer at the range's offset. mem.c commits and
+  decommits through it (`mem_set_placed`): a page committed again is zeroed then, as the GPU may still read it; a chunk
+  with no page committed goes, its address reserved again, and its memory once the submit that last bound it is done.
+- A view of it (`svcMapMemory`, code memory) maps the chunk's pages again from its dma-buf
+  (`VK_EXT_external_memory_dma_buf`). The alias pool never takes a chunk's pages, nor do the traps: a result over a
+  chunk is copied there (`vk_uma_publish`).
+- Write tracking leaves its pages alone (`vk_uma_import_in`): userfaultfd refuses to register a mapping of the
+  driver's (EINVAL on RADV and on Turnip), and caches compare their contents there.
+- A chunk and the migrate way's regions never share a window: a window with pages moved into a region is committed as
+  host pages, and a chunk's pages never move (`mem_movable`).
+
+On an RX 6700 XT (RADV) a chunk reads and writes as fast as malloc'd memory, the GPU and the CPU see each other's
+writes with no flush, `mprotect` traps on it, and a submission costs the same with 256 MiB placed as with none. Before
+it is on by default: write tracking by protection on its pages (or every texture over the heap is hashed again at each
+check); one sparse buffer over the heap with each chunk bound into it (a range across two chunks is copied now); and a
+view and its source counted as one address by the in-place bookkeeping (`live`, `out`).
 
 ### Measurements on a discrete GPU (RTX 2080, 246 MiB BAR)
 
@@ -283,7 +368,7 @@ and a write-after-write of two image-to-buffer copies, all in the copy run too).
 
 The hazard counter found 2,500 GPU-side writes every 600 presents in scene A on pages that unfinished work read in
 place, 300 in scene B. They are counted by page, so constant buffers beside vertices count too, and the screenshots
-show nothing. Which of them are real is not traced yet: that comes before in place is the default anywhere.
+show nothing. Which of them are real is not traced yet.
 
 ### Testing on a Steam Deck (or any integrated GPU)
 
@@ -342,6 +427,7 @@ Nothing of the game leaves the machine: the steps below compare numbers and scre
    result lands at once (a readback per result, correct and slow). The setting `memory_traps=2` makes a Linux host
    take that path, to measure and test it there.
 6. Started: memory the CPU and the GPU share (above). Guest vertex, index and read-only storage ranges are read in
-   place on a GPU that shares memory (`vk_memory`). Next: writable storage in place (its results then need the fence,
-   not the copy back), constant buffers with the front end's writes done on the GPU in order, the hazards traced, and
-   placed maps once write tracking works without userfaultfd on those pages.
+   place on a GPU that shares memory (`vk_memory`), and so are constant buffers but the pages the runtime wrote;
+   writable storage, transform feedback and the engines' results are written there in place, and dispatches run on the
+   graphics queue. Placed maps are there, off by default (above). Next: write tracking by protection on their pages,
+   and then placed maps on by default.

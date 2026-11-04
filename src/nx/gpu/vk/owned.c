@@ -55,10 +55,13 @@ VkOwnRes* vk_own_res_new(u64 size) {
     u32 fam[2];
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = size ? size : 16,
-                             /* VIC binds the job's first words as a uniform buffer (vk/vic.c) */
-                             .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                      VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                             /* bound where it is for whatever reads the bytes it holds: a draw's vertices, indices and
+                                buffers (buffer.c buf_get_owned), a dispatch's (compute.c res_bind), VIC's job words */
+                             .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (!r) return NULL;
@@ -269,14 +272,21 @@ void vk_own_res_wrote(VkOwnRes* r) {
     __atomic_store_n(&r->serial, __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
 }
 
-void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
+static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     OwnRange o;
     u8* d;
     if (!size) return;
     vk_own_res_wrote(r); /* every producer records its writes before it publishes them */
     vk_rt_before_write_cpu(cpu, size);
     gpu_mem_written_cpu(cpu, size); /* what is built from the bytes (textures, buffers) takes the new ones */
-    if (g_owned.traps) vk_uma_quiesce(cpu, size); /* commands reading the pages in place run before the trap */
+    /* Unified memory, over memory an import holds: the result is copied there on the GPU, in stream order, with no
+       owner and no trap (each trap let go of the imports over its pages, and the next use made them again). Older
+       owners of the bytes go: they are written over whole */
+    if (in_place && vk_uma_held(cpu, size)) {
+        own_drop(cpu, size);
+        if (vk_uma_publish(cpu, size, r->buf, off)) return;
+    }
+    if (g_owned.traps) vk_uma_owning(cpu, size); /* what reads the pages in place runs and goes before the trap */
     if (g_owned.traps && !own_begin(cpu, size, r, off)) return;
     /* not trapped here: older owners of the bytes let go of them, and the result lands now */
     own_drop(cpu, size);
@@ -290,6 +300,8 @@ void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
     d = GP(cpu);
     own_land(&o, &d, 1);
 }
+void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) { own_publish(cpu, size, r, off, 1); }
+void vk_own_publish_owned(u64 cpu, u64 size, VkOwnRes* r, u64 off) { own_publish(cpu, size, r, off, 0); }
 
 /* ---------------------------------------------------------------- reading guest memory without landing it */
 /* GPU writes before reading what they wrote (before), the reads' copies before what consumes them (after) */
@@ -308,6 +320,18 @@ static void read_barrier(VkCommandBuffer cb, int before) {
 static void cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at, int* any) {
     OwnRange o[16];
     u32 n, i;
+    VkBuffer ib;
+    u64 io;
+    /* written in place (uma.c) by a submit not done yet: copied from the import on the GPU, after the write. Never
+       GPU-owned as well: those are written over whole */
+    if (vk_uma_copy_pending(cpu, size, &ib, &io)) {
+        VkBufferCopy c = {io, at, size};
+        if (!*any) read_barrier(vk_cmd(), 1);
+        *any = 1;
+        rec_CmdCopyBuffer(vk_cmd(), ib, buf, 1, &c);
+        return;
+    }
+    vk_uma_mem_need_cpu(cpu, size); /* across imports: waited for */
     if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) {
         memcpy(host, GP(cpu), (size_t)size);
         return;
@@ -334,7 +358,9 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     u64 o = 0;
     int any = 0;
     if (!size) return;
+    vk_uma_gpu_reads(1);  /* the in-place writes there are copied below (cpu_read), not waited for */
     gmem_need(gva, size); /* results the renderer has pending there land first, as gmem_read has them */
+    vk_uma_gpu_reads(0);
     while (o < size) {
         u64 cpu = 0, n = gmmu_run(gva + o, size - o, &cpu);
         if (!n) { /* an unmapped page reads as zero */
@@ -380,12 +406,24 @@ int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) {
     if (!size) return 1;
     if (!(p = vk_stage_upload(size, 16, &d.sb, &d.so))) return 0;
     vk_render_end(); /* the copies happen outside rendering passes */
+    vk_uma_gpu_reads(1);  /* the in-place writes there are copied below, not waited for */
     gmem_need(gva, size); /* results the renderer has pending there land first, as gmem_read has them */
+    vk_uma_gpu_reads(0);
     while (o < size) {
-        u64 cpu = 0, n = gmmu_run(gva + o, size - o, &cpu);
+        u64 cpu = 0, n = gmmu_run(gva + o, size - o, &cpu), io;
         OwnRange r[16];
         u32 k, i;
-        if (!n) { /* an unmapped page reads as zero */
+        VkBuffer ib;
+        /* written in place (uma.c) by a submit not done yet: copied from the import on the GPU, after the write, or
+           waited for where it spans imports */
+        int inplace = n && vk_uma_copy_pending(cpu, n, &ib, &io);
+        if (n && !inplace) vk_uma_mem_need_cpu(cpu, n);
+        if (inplace) {
+            VkBufferCopy c = {io, at + o, n};
+            if (!any) read_barrier(vk_cmd(), 1);
+            any = 1;
+            rec_CmdCopyBuffer(vk_cmd(), ib, buf, 1, &c);
+        } else if (!n) { /* an unmapped page reads as zero */
             n = 0x1000 - ((gva + o) & 0xFFF);
             if (n > size - o) n = size - o;
             memset(p + o, 0, (size_t)n);
@@ -466,6 +504,18 @@ void vk_guest_peek(u64 gva, void* dst, u64 size) {
         }
         o += n;
     }
+}
+
+int vk_guest_owned_whole(u64 gva, u64 size, u64* tag) {
+    OwnRange r[2];
+    u64 cpu = 0;
+    if (!size || !__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) return 0;
+    gmem_need(gva, size);
+    if (gmmu_run(gva, size, &cpu) != size || own_lookup(cpu, size, r, 2) != 1 || r[0].addr != cpu || r[0].size != size)
+        return 0;
+    *tag =
+        __atomic_load_n(&((const VkOwnRes*)r[0].res)->serial, __ATOMIC_ACQUIRE) * 0x9E3779B97F4A7C15ull ^ r[0].res_off;
+    return 1;
 }
 
 void vk_all_barrier(VkCommandBuffer cb) {

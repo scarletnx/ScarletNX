@@ -327,16 +327,16 @@ static int user(Ask* a) {
         if (saves) fprintf(a->out, "%d game%s\n", saves, saves == 1 ? "" : "s");
     }
     while (!rc && yes) {
-        fprintf(a->out, "  Nickname, %d to %d of A-Z a-z 0-9 space . _ - [Player] ", SNX_USERS_NICKNAME_MIN,
-                SNX_USERS_NICKNAME_MAX);
+        fprintf(a->out, "  Nickname, %d to %d bytes, no control character, no space at either end [Player] ",
+                SNX_USERS_NICKNAME_MIN, SNX_USERS_NICKNAME_MAX);
         if (answer(a, line, sizeof line)) {
             rc = 1;
             break;
         }
         if (!line[0]) strcpy(line, "Player");
         if (!snx_users_nickname_valid(line))
-            fprintf(a->out, "  %s is not %d to %d of A-Z a-z 0-9 space . _ -\n", line, SNX_USERS_NICKNAME_MIN,
-                    SNX_USERS_NICKNAME_MAX);
+            fprintf(a->out, "  %s is not %d to %d bytes with no control character nor a space at either end\n", line,
+                    SNX_USERS_NICKNAME_MIN, SNX_USERS_NICKNAME_MAX);
         else if (snx_users_start(users, uid, line, why, sizeof why)) {
             fprintf(a->out, "  %s\n", why);
             rc = 1;

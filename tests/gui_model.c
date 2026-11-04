@@ -4,6 +4,7 @@
 #include "gui/browser.h"
 #include "gui/icons.h"
 #include "gui/latin.h"
+#include "gui/titles.h"
 #include "gui/wide.h"
 #include <assert.h>
 #include <stdio.h>
@@ -270,14 +271,15 @@ int main(void) {
         for (i = 0; i < (size_t)gui_latin_count; ++i) assert(gui_glyph(gui_latin_points[i]) == '?'); /* CP437's own */
     }
     assert(gui_menu_glyph('?') == '?' && gui_menu_glyph(0x9f) == '?' && gui_menu_glyph(0xad) == '?');
-    assert(gui_menu_glyph(0x250) == '?' && gui_menu_glyph(0x2026) == '?' && gui_menu_glyph(0x9f98) == '?');
+    assert(gui_menu_glyph(0x250) == '?' && gui_menu_glyph(0x2026) == '?' && gui_menu_glyph(0x3400) == '?');
     assert(gui_menu_glyph(0x1f600) == '?');
-    /* the wide letters the languages show, two halves each after the Latin ones: tests/po/xx.po's U+83DC, U+5355 */
+    /* the wide letters, two halves each: those the languages show past the titles' blocks after the Latin ones, and
+       the titles' 16x16 ones, tests/po/xx.po's U+83DC and U+5355 among them */
     {
         size_t i;
         int c = gui_menu_glyph(0x83dc), d = gui_menu_glyph(0x5355);
-        assert(c >= 256 + gui_latin_count && (c - 256 - gui_latin_count) % 2 == 0 && c != d);
-        assert(gui_wide_points[(c - 256 - gui_latin_count) / 2] == 0x83dc && gui_glyph_cols(c) == 2);
+        assert(gui_wide_letter(c) >= 0 && gui_wide_letter_point(gui_wide_letter(c)) == 0x83dc && c != d);
+        assert(gui_wide_letter(c + 1) == gui_wide_letter(c) && gui_wide_letter(d) >= 0 && gui_glyph_cols(c) == 2);
         assert(gui_glyph_cols('a') == 1 && gui_glyph_cols(gui_menu_glyph(0xe3)) == 1 && gui_glyph_cols('?') == 1);
         assert(gui_glyph_cols(256 + gui_latin_count - 1) == 1);
         for (i = 1; i < (size_t)gui_wide_count; ++i) assert(gui_wide_points[i - 1] < gui_wide_points[i]);
@@ -301,6 +303,47 @@ int main(void) {
         assert(gui_menu_glyph(GUI_ICON_END) == '?' && gui_menu_glyph(GUI_ICON_FIRST - 1) == '?');
         assert(!gui_icon_utf8(GUI_ICON_NONE, utf8)[0] && gui_text_cols(gui_icon_utf8(GUI_ICON_SAVE, utf8)) == 2);
     }
+    /* the letters of game titles whatever the languages show (titles.h): every code point of the CJK and Hangul blocks,
+       16x16 but the halfwidth forms and U+303F, as GNU Unifont 18.0.01 draws them (its rows copied here from
+       unifont_all-18.0.01.hex); Extension A's and what is past the blocks '?' */
+    {
+        static const struct {
+            uint32_t point;
+            const char* rows;
+        } unifont[] = {
+            {0x65e5, "00001FF0101010101010101010101FF01010101010101010101010101FF01010"},
+            {0x3042, "00000400020002C01F000480048007E00D101508220826082A10106000000000"},
+            {0xac00, "0000000000043F8400840084008400870104010402040C043004000400040004"},
+            {0xff21, "00000000000001000100028002800440044008200FE010101010383800000000"},
+            {0xff71, "00007F01090A0A080808081010202000"},
+        };
+        int i, all = 0, last = -1, titles = gui_glyph_count() - gui_title_narrow_count - 2 * gui_title_wide_count;
+        for (i = 0; i < (int)(sizeof unifont / sizeof *unifont); ++i) {
+            int c = gui_menu_glyph(unifont[i].point), n = (int)strlen(unifont[i].rows) / 32;
+            assert(c != '?' && gui_glyph_cols(c) == n && (gui_wide_letter(c) >= 0) == (n == 2));
+            for (int half = 0; half < n; ++half)
+                for (int y = 0; y < 16; ++y) {
+                    unsigned row;
+                    assert(sscanf(unifont[i].rows + (y * n + half) * 2, "%2x", &row) == 1);
+                    assert(gui_glyph_rows(c + half)[y] == row);
+                }
+        }
+        assert(titles == 256 + gui_latin_count + 2 * gui_wide_count + 2 * GUI_ICON_COUNT);
+        for (i = 0; i < gui_title_run_count; ++i) { /* each run's ends: its width, past the run before it */
+            const GuiTitleRun* run = &gui_title_runs[i];
+            int first = gui_menu_glyph(run->first), end = gui_menu_glyph(run->last);
+            assert((int)run->first > last && run->last >= run->first && first >= titles && end >= first);
+            assert(gui_glyph_cols(first) == 1 + run->wide && gui_glyph_cols(end) == 1 + run->wide);
+            assert(end - first == (int)(run->last - run->first) * (1 + run->wide));
+            if (run->wide) assert(gui_wide_letter_point(gui_wide_letter(end)) == run->last);
+            all += (int)(run->last - run->first) + 1;
+            last = (int)run->last;
+        }
+        assert(all == 32772 && gui_title_narrow_count == 123 && gui_title_wide_count == 32649);
+        assert(gui_menu_glyph(0x2fff) == '?' && gui_menu_glyph(0x4dbf) == '?' && gui_menu_glyph(0xd7a4) == '?');
+        assert(gui_menu_glyph(0xfff0) == '?' && gui_menu_glyph(0x20000) == '?');
+        assert(gui_wide_letters() == gui_wide_count + gui_title_wide_count);
+    }
     /* UTF-8 a character a step; U+FFFD and a byte for what no character is (overlong, a surrogate, past U+10FFFF, cut
        short, a stray byte), 0 at the end */
     {
@@ -320,7 +363,7 @@ int main(void) {
         const char* menu = "\xe8\x8f\x9c\xe5\x8d\x95"
                            "A"; /* xx's Menu then A: 5 columns in 7 bytes */
         assert(gui_text_cols(menu) == 5 && gui_text_cols("\xc3\xa3o") == 2 && gui_text_cols("") == 0);
-        assert(gui_text_cols("\xe9\xbe\x98\xff") == 2); /* none of the font's: a '?' each */
+        assert(gui_text_cols("\xe3\x90\x80\xff") == 2); /* none of the font's (U+3400, Extension A): a '?' each */
         assert(gui_cols_fit(menu, 1) == 0 && gui_cols_fit(menu, 2) == 3 && gui_cols_fit(menu, 3) == 3);
         assert(gui_cols_fit(menu, 4) == 6 && gui_cols_fit(menu, 5) == 7 && gui_cols_fit(menu, 9) == 7);
         assert(gui_cols_fit(menu, 0) == 0 && gui_cols_fit(menu, -1) == 0);
@@ -328,6 +371,31 @@ int main(void) {
                gui_cols_skip(menu, 2) == menu + 3);
         assert(gui_cols_skip(menu, 3) == menu + 6 && gui_cols_skip(menu, 5) == menu + 7 &&
                gui_cols_skip(menu, 9) == menu + 7);
+    }
+    /* a text in a row's columns: whole when it fits, else its start and "..." in them, a wide letter whole or left out,
+       no space before the dots; under 4 columns its start alone, as "..." would take them all */
+    {
+        const char* menu = "\xe8\x8f\x9c\xe5\x8d\x95"
+                           "AB"; /* xx's Menu then AB: 6 columns */
+        char out[64];
+        gui_text_fit("A name that is too long", 23, out, sizeof out);
+        assert(!strcmp(out, "A name that is too long"));
+        gui_text_fit("A name that is too long", 22, out, sizeof out); /* its first 19, less the space they end in */
+        assert(!strcmp(out, "A name that is too..."));
+        gui_text_fit("A name that is too long", 20, out, sizeof out);
+        assert(!strcmp(out, "A name that is to..."));
+        gui_text_fit("A name that is too long", 4, out, sizeof out);
+        assert(!strcmp(out, "A..."));
+        gui_text_fit("A name that is too long", 3, out, sizeof out);
+        assert(!strcmp(out, "A n"));
+        gui_text_fit("A name that is too long", 0, out, sizeof out);
+        assert(!out[0]);
+        gui_text_fit(menu, 6, out, sizeof out);
+        assert(!strcmp(out, menu));
+        gui_text_fit(menu, 5, out, sizeof out); /* the first letter and the dots: the second would cross into them */
+        assert(!strcmp(out, "\xe8\x8f\x9c...") && gui_text_cols(out) == 5);
+        gui_text_fit(menu, 4, out, sizeof out); /* none fits beside the dots */
+        assert(!strcmp(out, "..."));
     }
     /* a path in a row's columns: whole when it fits, else the root and its first folder, "...", and as many of the last
        folders as fit; a last name too long alone keeps its last letters; never wider than asked, a wide letter whole */

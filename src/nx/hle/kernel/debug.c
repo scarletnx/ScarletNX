@@ -19,7 +19,7 @@
    holds the memory lock */
 static int readable(u64 a, u64 n) {
     u64 p = a, end;
-    if (!g_mem || a < AS_BASE || a >= AS_END || n > AS_END - a) return 0;
+    if (!mem_reserved() || a < AS_BASE || a >= AS_END || n > AS_END - a) return 0;
     end = a + n;
     while (p < end) {
         MemBlock b;
@@ -392,6 +392,13 @@ void kernel_core_report(void) {
             (double)t->core_wait_ns / 1e9, t->core_waits);
     }
     pm_unlock(&g_host.thread.core_lk);
+}
+u64 kernel_thread_name(u32 ix, char* out, int n) {
+    const KThread* t = kt_at(ix);
+    out[0] = 0;
+    if (!t || t->o.type != KO_THREAD) return 0;
+    if (!sdk_name(t, out, n)) snprintf(out, (size_t)n, "%s", t->name);
+    return t->id;
 }
 /* Read without g_klock or the pool's lock: the dump is how a hang is diagnosed, and a hang may be a thread that keeps
    the lock. The values can be a moment stale or mid-change (a slot freed or taken meanwhile), which is all a dump

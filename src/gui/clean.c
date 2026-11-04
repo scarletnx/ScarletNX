@@ -155,6 +155,13 @@ static int move_entry(GuiCleaned* done, const char* from, const char* to, const 
     gui_cleaned_add(done, ok, from, what);
     return ok;
 }
+int gui_move_save_note(GuiCleaned* done, const char* old, const char* now, bool apply) {
+    char *from = snx_format("%s" SNX_SAVE_NOTE, old), *to = snx_format("%s" SNX_SAVE_NOTE, now);
+    int moves = from && to && snx_is_file(from) ? move_entry(done, from, to, now, apply) : 0;
+    free(from);
+    free(to);
+    return moves;
+}
 int gui_move_entries(GuiCleaned* done, const char* old, const char* now, const char* const* only, bool apply) {
     char **names = NULL, *from, *to, what[4400], why[256];
     const char* slash;

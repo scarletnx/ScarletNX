@@ -17,6 +17,16 @@ const u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull};
 /* acc.c's IsUserAccountSwitchLocked asks am.c, which this test doesn't compile: the NACP field is a switch here */
 static int test_account_switch_lock;
 int am_user_account_switch_lock(void) { return test_account_switch_lock; }
+/* fs.c's, which this test doesn't compile: no folder of saves */
+int fs_user_saves_take(const u64 uid[2], char (*paths)[FS_TREE_PATH_MAX], int max) {
+    (void)uid, (void)paths, (void)max;
+    return 0;
+}
+/* the runtime's users.c reads the deprecated user through options.c, which this test doesn't compile */
+const char* ini_deprecated_value(const char* key) {
+    (void)key;
+    return NULL;
+}
 char g_exedir[1024];
 static unsigned test_checks, test_objects, test_kobjs;
 static u32 test_next_handle = 0x100;
@@ -625,7 +635,7 @@ static void test_hid(void) {
     }
     CHECK(npad_style_at(8) == 1u << 1);
     g_settings.tv_mode = 1;
-    hid_update();
+    hid_mode_changed();
     CHECK(npad_style_at(8) == 0);
     g_settings.tv_mode = 0;
     hid_update();
@@ -1209,6 +1219,9 @@ static void test_mii_random(void) {
                     CHECK(r.c.out_size == 0x58 && mii_valid(c));
                     if (gender < 2) CHECK(c[0x28] == gender);
                     female += c[0x28] == 1, male += c[0x28] == 0;
+                    if (memcmp(last, c, 16)) differ++;
+                    memcpy(last, c, 16);
+                    if (c[0x10] != 'n') continue; /* one of our own (test_mii_own): her own face, not a drawn one */
                     u32 axis = c[0x3a] - 12u; /* the eyes' height is the face's offset plus 12 */
                     CHECK(axis <= 3 && (axis == 0 || (c[0x28] == 1 && age != 1 && age != 2)));
                     if (race < 3) CHECK(c[0x41] == axis + (race == 2 ? 6 : 7) + 3); /* eyebrows: CoreData's + 3 */
@@ -1216,8 +1229,6 @@ static void test_mii_random(void) {
                     CHECK(c[0x3c] == c[0x32] && c[0x4a] == c[0x32]); /* eyebrows and beard the hair's color */
                     CHECK(c[0x50] == 8 && c[0x56] == 20 && c[0x29] == 64 && c[0x2a] == 64);
                     if (c[0x28] == 1) CHECK(c[0x4b] == 0 && c[0x4c] == 0); /* no beard nor mustache */
-                    if (memcmp(last, c, 16)) differ++;
-                    memcpy(last, c, 16);
                 }
     CHECK(differ == 4 * 3 * 4 * 40 && female > 300 && male > 300);
     /* an age, gender or race past All is InvalidArgument */
@@ -1234,7 +1245,7 @@ static void test_mii_random(void) {
     svcobj_unref(service);
 }
 
-/* the database (source flag 1): eight fixed Miis, each valid with its own name and create id, the same on every
+/* the database (source flag 1): eleven fixed Miis, each valid with its own name and create id, the same on every
    call, given before the six defaults when both are asked for */
 static void test_mii_database(void) {
     SvcObj* service = new_mii();
@@ -1245,38 +1256,38 @@ static void test_mii_database(void) {
     request(&r, 2);
     argument32(&r, 0, 1);
     call(db, &r);
-    CHECK(reply32(&r, 0) == 8);
+    CHECK(reply32(&r, 0) == 11);
     request(&r, 2);
     argument32(&r, 0, 3);
     call(db, &r);
-    CHECK(reply32(&r, 0) == 14);
-    memset(g_mem + 0x4000, 0xee, 15 * 0x5c);
+    CHECK(reply32(&r, 0) == 17);
+    memset(g_mem + 0x4000, 0xee, 18 * 0x5c);
     request(&r, 3);
     argument32(&r, 0, 3);
     r.c.nb = 1;
     r.c.b[0].addr = 0x4000;
-    r.c.b[0].size = 14 * 0x5c;
+    r.c.b[0].size = 17 * 0x5c;
     call(db, &r);
-    CHECK(reply32(&r, 0) == 14);
-    for (u32 i = 0; i < 14; i++) {
+    CHECK(reply32(&r, 0) == 17);
+    for (u32 i = 0; i < 17; i++) {
         const u8* c = g_mem + 0x4000 + i * 0x5c;
         CHECK(mii_valid(c));
-        CHECK(gr32(0x4000 + i * 0x5c + 0x58) == (i >= 8));
-        for (u32 j = 0; j < i && i < 8; j++) {
+        CHECK(gr32(0x4000 + i * 0x5c + 0x58) == (i >= 11));
+        for (u32 j = 0; j < i && i < 11; j++) {
             CHECK(memcmp(c, g_mem + 0x4000 + j * 0x5c, 16) != 0);
             CHECK(memcmp(c + 0x10, g_mem + 0x4000 + j * 0x5c + 0x10, 0x16) != 0);
         }
     }
-    CHECK(g_mem[0x4000 + 14 * 0x5c] == 0xee);
-    CHECK(g_mem[0x4000 + 8 * 0x5c + 0x10] == 'n');
+    CHECK(g_mem[0x4000 + 17 * 0x5c] == 0xee);
+    CHECK(g_mem[0x4000 + 11 * 0x5c + 0x10] == 'n');
     request(&r, 4);
     argument32(&r, 0, 1);
     r.c.nb = 1;
     r.c.b[0].addr = 0x6000;
-    r.c.b[0].size = 8 * 0x58;
+    r.c.b[0].size = 11 * 0x58;
     call(db, &r);
-    CHECK(reply32(&r, 0) == 8);
-    for (u32 i = 0; i < 8; i++) CHECK(memcmp(g_mem + 0x6000 + i * 0x58, g_mem + 0x4000 + i * 0x5c, 0x58) == 0);
+    CHECK(reply32(&r, 0) == 11);
+    for (u32 i = 0; i < 11; i++) CHECK(memcmp(g_mem + 0x6000 + i * 0x58, g_mem + 0x4000 + i * 0x5c, 0x58) == 0);
     /* a buffer short of the whole database is InvalidArgumentSize, after the Miis that fit */
     request(&r, 4);
     argument32(&r, 0, 3);
@@ -1291,10 +1302,10 @@ static void test_mii_database(void) {
     argument32(&r, 0, 3);
     r.c.nb = 1;
     r.c.b[0].addr = 0x8000;
-    r.c.b[0].size = 14 * 0x44;
+    r.c.b[0].size = 17 * 0x44;
     call(db, &r);
-    CHECK(reply32(&r, 0) == 14);
-    for (u32 i = 0; i < 14; i++) {
+    CHECK(reply32(&r, 0) == 17);
+    for (u32 i = 0; i < 17; i++) {
         const u8 *s = g_mem + 0x8000 + i * 0x44, *c = g_mem + 0x4000 + i * 0x5c;
         u32 w0 = snx_ld_le32(s), w2 = snx_ld_le32(s + 8), w5 = snx_ld_le32(s + 20), w6 = snx_ld_le32(s + 24);
         CHECK(mii_crc16(s, 0x42, 0) == 0);
@@ -1304,19 +1315,135 @@ static void test_mii_database(void) {
         CHECK((w5 >> 8 & 0xf) == c[0x27] && (w5 >> 12 & 0xf) == c[0x2d]);
         CHECK((w6 >> 12 & 0xf) == c[0x41] - 3u);
         CHECK(memcmp(s + 0x1c, c + 0x10, 0x14) == 0);
-        if (i < 8) CHECK(memcmp(s + 0x30, c, 16) == 0); /* a default's create id is new each time */
+        if (i < 11) CHECK(memcmp(s + 0x30, c, 16) == 0); /* a default's create id is new each time */
     }
     request(&r, 8);
     argument32(&r, 0, 1);
     r.c.nb = 1;
     r.c.b[0].addr = 0x9000;
-    r.c.b[0].size = 8 * 0x48;
+    r.c.b[0].size = 11 * 0x48;
     call(db, &r);
-    CHECK(reply32(&r, 0) == 8);
-    for (u32 i = 0; i < 8; i++) {
+    CHECK(reply32(&r, 0) == 11);
+    for (u32 i = 0; i < 11; i++) {
         CHECK(memcmp(g_mem + 0x9000 + i * 0x48, g_mem + 0x8000 + i * 0x44, 0x44) == 0);
         CHECK(gr32(0x9000 + i * 0x48 + 0x44) == 0);
     }
+    svcobj_unref(db);
+    svcobj_unref(service);
+}
+/* a nickname (CharInfo's UTF-16, ten characters) holds none of the names our own three are drawn after: no stretch
+   of 4 to 7 of its letters, lowercased, has the FNV-1a hash of one of them. The names are never spelled here */
+static int mii_name_clean(const u8* c) {
+    static const u32 names[6] = {0xc4dd5ee7u, 0x7a7d1b77u, 0x61ce9aadu, 0xc053c19cu, 0xe8111e93u, 0xaf72bce3u};
+    char n[11] = {0};
+    u32 i, j, len, k;
+    for (i = 0; i < 10 && c[0x10 + 2 * i]; i++) {
+        char ch = (char)c[0x10 + 2 * i];
+        n[i] = ch >= 'A' && ch <= 'Z' ? (char)(ch - 'A' + 'a') : ch;
+    }
+    for (i = 0; n[i]; i++)
+        for (len = 4; len <= 7 && i + len <= 10 && n[i + len - 1]; len++) { /* within its ten letters */
+            u32 h = 0x811c9dc5u;
+            for (j = 0; j < len; j++) h = (h ^ (u8)n[i + j]) * 0x01000193u;
+            for (k = 0; k < 6; k++)
+                if (h == names[k]) return 0;
+        }
+    return 1;
+}
+/* our own three Miis (misc.c): first in the database, baguette girl first of all (the Mii a game takes as the
+   first), each valid, a woman, with her name, hair and eyes; and BuildRandom gives one of them in one random Mii in
+   ten where she fits the age, gender and race asked (exactly 3 of mii_own_pick's 30 draws), never where she does not */
+static void test_mii_own(void) {
+    static const char* const want[3] = {"Baguette", "Leek Girl", "Phone Girl"};
+    static const u8 hair[3] = {112, 126, 84}, hair_color[3] = {32, 61, 85}, eye_color[3] = {15, 60, 90};
+    SvcObj* service = new_mii();
+    Request r;
+    u32 i, j, picks[3] = {0}, own = 0, n = 3000;
+    request(&r, 0);
+    call(service, &r);
+    SvcObj* db = r.c.out_objs[0];
+    request(&r, 4);
+    argument32(&r, 0, 1);
+    r.c.nb = 1;
+    r.c.b[0].addr = 0x6000;
+    r.c.b[0].size = 11 * 0x58;
+    call(db, &r);
+    CHECK(reply32(&r, 0) == 11);
+    for (i = 0; i < 11; i++) CHECK(mii_name_clean(g_mem + 0x6000 + i * 0x58));
+    for (i = 0; i < 3; i++) {
+        const u8* c = g_mem + 0x6000 + i * 0x58;
+        CHECK(mii_valid(c) && c[0x28] == 1 && c[0x2b] == 0);
+        for (j = 0; want[i][j]; j++) CHECK(c[0x10 + 2 * j] == (u8)want[i][j] && c[0x11 + 2 * j] == 0);
+        CHECK(c[0x10 + 2 * j] == 0 && c[0x11 + 2 * j] == 0);
+        CHECK(c[0x31] == hair[i] && c[0x32] == hair_color[i] && c[0x3c] == hair_color[i] && c[0x35] == eye_color[i]);
+        CHECK(mii_find((const nn_mii_CharInfo*)(const void*)c) == (int)i);
+    }
+    /* the draw: one each of the 30 for each of the three */
+    for (i = 0; i < MII_OWN_ODDS; i++) {
+        int k = mii_own_pick(i);
+        CHECK(k < 3);
+        if (k >= 0) picks[k]++;
+    }
+    CHECK(picks[0] == 1 && picks[1] == 1 && picks[2] == 1);
+    /* through the service, any age, gender and race: about one in ten, each valid, named, a new create id each time.
+       3000 Miis: 300 expected, the bounds 7 standard deviations off */
+    for (i = 0; i < n; i++) {
+        const u8* c;
+        request(&r, 6);
+        argument32(&r, 0, 3);
+        argument32(&r, 4, 2);
+        argument32(&r, 8, 3);
+        call(db, &r);
+        c = r.c.out;
+        CHECK(mii_valid(c) && mii_name_clean(c));
+        if (c[0x10] != 'n') {
+            own++;
+            CHECK(mii_find((const nn_mii_CharInfo*)(const void*)c) < 0 && c[0x28] == 1);
+            CHECK(c[0x10] == 'B' || c[0x10] == 'L' || c[0x10] == 'P');
+        }
+    }
+    CHECK(own >= 180 && own <= 420);
+    /* never a man, an old woman, nor a face Black takes */
+    for (i = 0; i < 400; i++) {
+        static const u32 asked[3][3] = {{3, 0, 3}, {2, 2, 3}, {3, 2, 0}};
+        request(&r, 6);
+        argument32(&r, 0, asked[i % 3][0]);
+        argument32(&r, 4, asked[i % 3][1]);
+        argument32(&r, 8, asked[i % 3][2]);
+        call(db, &r);
+        CHECK(r.c.out[0x10] == 'n');
+    }
+    svcobj_unref(db);
+    svcobj_unref(service);
+}
+/* the user playing's Mii (users.ini's mii=) first in the database, the others after it in their order: a game that
+   takes the database's first takes it, and finds each Mii again at its listed place */
+static void test_mii_user(void) {
+    SvcObj* service = new_mii();
+    Request r;
+    static const u32 order[11] = {2, 0, 1, 3, 4, 5, 6, 7, 8, 9, 10};
+    u32 i;
+    request(&r, 0);
+    call(service, &r);
+    SvcObj* db = r.c.out_objs[0];
+    g_users[0].mii = 2; /* Phone Girl */
+    request(&r, 4);
+    argument32(&r, 0, 1);
+    r.c.nb = 1;
+    r.c.b[0].addr = 0x6000;
+    r.c.b[0].size = 11 * 0x58;
+    call(db, &r);
+    CHECK(reply32(&r, 0) == 11);
+    for (i = 0; i < 11; i++) {
+        u8 want[SNX_MII_CHARINFO];
+        snx_mii_db_charinfo(order[i], want);
+        CHECK(!memcmp(g_mem + 0x6000 + i * 0x58, want, sizeof want));
+        request(&r, 21);
+        memcpy(r.raw, want, sizeof want);
+        call(db, &r);
+        CHECK(reply32(&r, 0) == i);
+    }
+    g_users[0].mii = 0;
     svcobj_unref(db);
     svcobj_unref(service);
 }
@@ -1352,7 +1479,7 @@ static void test_mii_latest(void) {
     argument32(&r, 0, 1);
     r.c.nb = 1;
     r.c.b[0].addr = 0x4000;
-    r.c.b[0].size = 8 * 0x58;
+    r.c.b[0].size = 11 * 0x58;
     call(db, &r);
     memcpy(mii, g_mem + 0x4000 + 2 * 0x58, sizeof mii);
     request(&r, 5);
@@ -1454,6 +1581,8 @@ int main(void) {
     test_aoc_content();
     test_mii_random();
     test_mii_database();
+    test_mii_own();
+    test_mii_user();
     test_acc_resource_cache();
     test_prepo_reports();
     test_mii_latest();

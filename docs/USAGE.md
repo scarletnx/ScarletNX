@@ -187,9 +187,11 @@ dump's folder in `Download/`), iOS's the app's Documents alone, so there a folde
 says so.
 
 The box also has **Open Folder**, the game's other folders a row each: its dump's (as the recompile named it), the game's
-own, its saves (`<id>_data/save/`), its settings, its logs and its caches, each where the table below puts it. One not
-known (a game made before the recompile named its dump) or not there yet is greyed, and pressed it says why and makes
-nothing; Back goes back to the box's rows. **Clean Cache** deletes the game's shader cache (`shader_cache/` of its cache
+own, its saves (the user playing's where the game plays them: the data folder's `save/user.<uid>/<title ID>/`, the
+game's `<id>_data/save/` while only that is there, for a homebrew and with `save_layout=game`, [Users](#users)), its
+settings, its logs and its caches, each where the table below puts it. One not known (a game made before the recompile
+named its dump) or not there yet is greyed, and pressed it says why and makes nothing; Back goes back to the box's rows.
+**Clean Cache** deletes the game's shader cache (`shader_cache/` of its cache
 folder: the pipeline cache, the translated shaders and those prepared ahead of time) and its code cache
 (`<id>.jitcache`), asked first with each one's size and folder; the game makes them again as it runs, and its saves,
 settings and dump stay. It is greyed while the game has neither.
@@ -301,7 +303,12 @@ Remaining examples: POSIX.
 - **Recompile:** AOT → module (LLVM) →
   final runtime deployment, for this machine's CPU. Shaders compile directly to SPIR-V at runtime.
   `-O 0..3,s,z` (`--opt=`) sets the optimization level (2 by default), and `--jobs N` (`--aot_threads=N`) the threads
-  compiling (0 or none, one for each core). Every pass of LLVM's pipelines can be turned off for the game's code,
+  compiling (0 or none: the machine's cores with a quarter left free, the physical cores where it says them,
+  else the logical ones, at most 75%, so a recompile does not make the computer stutter). The quarter is
+  deliberate: a large game's recompile runs for minutes, a pass that took every core would keep the machine
+  unusable that long and heat a phone, while an LLVM pass gains little from a hyperthread. At most 75%, rounded
+  down, leaves one whole core free on a machine of 4, and a quarter of the largest ones. Every pass of LLVM's
+  pipelines can be turned off for the game's code,
   `--llvm_pass_<pass>=0` (`--llvm_pass_instcombine=0`), and each option LLVM's C API sets on the pass builder and the
   target machine set, `--llvm_<option>=N` (`--llvm_inliner_threshold=50`). `scarletnx --settings=recompile` lists
   them, as the launcher's LLVM Internals page shows them: the passes are those of the pipelines the build's LLVM prints
@@ -323,11 +330,11 @@ Remaining examples: POSIX.
   code changed in a few units, or one cut short, which goes on from the units it had compiled), and the last line says
   how many were (`unit cache: 241 of 259 units reused (310.2 MB) from ...`). The module
   descriptor and the link are made each time. A kept object that is not whole is compiled again, and said. The cache
-  always leaves a tenth of its disk free: when a new unit would take that, the units reused longest ago are removed
-  for it, and a unit there is still no room for is not cached (said once, with the disk's free bytes, and how many
-  units at the end; the units removed for room are summed there too). `--unit_cache_gb=N`
-  (0, no limit, by default) also holds the folder to N GB after each recompile, the units reused longest ago removed
-  first. A cache folder that cannot be made stops the recompile, saying why.
+  always leaves a tenth of its disk free, at most 10 GB: when a new unit would take that, the units reused longest ago
+  are removed for it, and a unit there is still no room for is not cached (said once, with the disk's free bytes, the
+  unit's size and that rule, and how many units at the end; the units removed for room are summed there too).
+  `--unit_cache_gb=N` (0, no limit, by default) also holds the folder to N GB after each recompile, the units reused
+  longest ago removed first. A cache folder that cannot be made stops the recompile, saying why.
   `--keep-ir` saves the generated code (LLVM IR) in `<outdir>/<NAME>/<NAME>_build/`.
   `--hook-direct-calls` sends calls and branches between guest functions through the dispatch table too, so the
   runtime's NVN handlers also take calls made by direct branch.
@@ -343,8 +350,8 @@ With `--out work/Game` and `--outdir games` as above (without them, see [Folders
 | `recompiled/<id>/<id>_data/`, `<id>.ini` | Data/saves (and `control.nacp`) + settings |
 | `recompiled/<id>/<id>_build/` | Generated code, only with `--keep-ir` |
 | `recompiled/<id>/shader_cache/vk_pipelines.bin` | Vulkan pipeline cache |
-| `recompiled/<id>/shader_cache/<id>.vkshaders` | Translated shaders and the pipelines made, made again at the next start |
-| `recompiled/<id>/shader_cache/<id>.vkshipped` | The shaders found in the game's own files and executables, prepared ahead of time (`prepare_shaders`), each read when the game first draws with it. It can be large: one game's 2,700 shaders took 245 MB, another's 18,500 took 2 GB |
+| `recompiled/<id>/shader_cache/<id>.vkshaders` | Translated shaders and the pipelines made, made again at the next start; packed with zstd as they add up (`compress_shader_cache`) |
+| `recompiled/<id>/shader_cache/<id>.vkshipped` | The shaders found in the game's own files and executables, prepared ahead of time (`prepare_shaders`), each read when the game first draws with it, each packed with zstd on its own (`compress_prepared_shaders`). Unpacked it can be large: one game's 2,700 shaders took 245 MB, another's 18,500 took 2 GB; packed, about a quarter of that |
 | `recompiled/<id>/shader_cache/<id>.vkscan` | The game's files found to hold no shaders, so that after an update of ScarletNX or the driver the files aren't all read again to look for them |
 
 ## GDB (Linux)
@@ -504,6 +511,7 @@ list). The user's data folder and a portable copy's keep each kind of file apart
 | the menu's Share Log, `scarletnx-logs-<date>.zip` or `scarletnx.log` (iOS: `logs/share/` of its Documents) | - | `~/.local/state/scarletnx/share/` | `state/share/` |
 | `prod.keys`, read before `~/.switch` | the folder | `~/.local/share/scarletnx/` | the folder |
 | the console's users, `users.ini` and `<uid>.jpg` ([Users](#users)), and `online.ini`, an Eden room's password (`room`) | `users/` of the user's data folder | `~/.local/share/scarletnx/users/` | `users/` |
+| the users a program deleted, each in `user.<uid>.<UTC time>/` with its users.ini section, picture and saves ([Users](#users)) | `trash/` of the user's data folder | `~/.local/share/scarletnx/trash/` | `trash/` |
 
 The menu works in the user's data folder or a portable copy's, unless its Settings > App > Folders picks a data
 folder, a games folder or an extractions folder ([GUI](GUI.md)): it passes them to the driver as `--data`, `--outdir`
@@ -541,8 +549,10 @@ as [DEPRECATIONS](DEPRECATIONS.md) says.
 The console's users are in `users/users.ini` of the data folder ([Folders](#folders)), every game's: up to 8, each a
 section in the console's order. Without the file there is one, `Player`. User 1 has the uid users.ini gives it; with
 none it has the one it always had, `0123456789abcdeffedcba9876543210`, so the saves made before there were others stay
-its own. Each other one needs a uid of 32 hex digits of its own (not zero) and a nickname. A nickname is 4 to 20
-letters, digits, spaces, `.`, `_` or `-`, the names Eden's rooms take; any other stops the game and says why:
+its own. Each other one needs a uid of 32 hex digits of its own (not zero) and a nickname. A nickname is what the
+console's account service keeps: 1 to 32 bytes of UTF-8, with no control character and no space at either end; any
+other stops the game and says why. An Eden room takes 4 to 20 letters, digits, spaces, `.`, `_` or `-`, and says so
+when it refuses another:
 
 ```ini
 [user1]
@@ -552,19 +562,40 @@ uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e
 nickname=Xuji
 ```
 
-`uid` and `nickname` are the keys; any other key, a section out of order or twice, or a line that is no key stops the
-game and says why. The launcher's Settings > User renames a user (Enter types its nickname, the rule above checked) and
-picks the one the games play as; the file's other lines stay as they are. A user's picture is `users/<uid>.jpg`, a JPEG of at most 128 KiB (256x256 as the console's), read
-when the game starts; without one it is Wimsy. The game plays as the user its `.ini`'s `user` names (`--user=N` for one
-run): with one user, the game picks it on its own; with more, the game's user selector gets that user. Each user's
-Account saves are in the data folder's `save/user.<uid>/<title ID>/`, every save of a game in the data folder's
-`save/` as the console keeps them (`save_layout=global`, the default, [FILESYSTEM](FILESYSTEM.md)); with
+`uid`, `nickname`, `user_data`, `mii` and `picture` are the keys: `user_data` is the profile's UserData a program stored
+(its icon, colour and Mii), 256 hex digits, empty or left out for zeros; any other key, a section out of order or twice,
+or a line that is no key stops the game and says why. `mii` is the user's Mii, one of the Mii database's by its name:
+`Baguette` (the default), `Leek Girl`, `Phone Girl`, `Alex`, `Sam`, `Kai`, `Robin`, `Jamie`, `Taylor`, `Morgan` or
+`Riley`, as written. A game that takes the database's first Mii as the player's takes it. `picture` is `mii`, the
+user's picture drawn from that Mii, or `file`, `users/<uid>.jpg`; without the key it is `file`, so a user with no
+picture file is Wimsy. Neither ever stops the game: no key, no users.ini, a name the database does not hold or
+another word is the default, and the game's log and the launcher's say what was read and what is in effect. The
+launcher's Settings > User renames a user (Enter types its nickname, the rule above checked), picks each user's Mii
+(its `User N Mii` row, left and right) and the one the games play as; the file's other lines stay as they are. A
+user's picture file is `users/<uid>.jpg`, the bytes the account service keeps (a JPEG, 256x256 as the console's, from
+its editor), at most 128 KiB, read when the game starts; with `picture=file` and none, or an empty file, it is Wimsy,
+and a launcher that cannot draw it says so and shows Wimsy. The game plays as the user its `.ini`'s `user_uid` names by
+its uid, empty for `[user1]` (`--user_uid=<uid>` for one run): with one user, the game picks it on its own; with more,
+the game's user selector gets that user. Each user's Account saves are in the data folder's
+`save/user.<uid>/<title ID>/`, every save of a game in the data folder's `save/` as the console keeps them
+(`save_layout=global`, the default, [FILESYSTEM](FILESYSTEM.md)); with
 `save_layout=game` they are `save/user.<uid>` in the game's `<id>_data/`. A save in the other layout's folder is played
 there until Settings > App > Move Old Files moves it. Those an older version left in a game's `save/user`, of the uid
-`0123456789abcdeffedcba9876543210`, are played there until you move them ([DEPRECATIONS](DEPRECATIONS.md)). The game's
+`0123456789abcdeffedcba9876543210`, are played there until you move them ([DEPRECATIONS](DEPRECATIONS.md)). Beside
+an Account, Device or BCAT save's folder, `<its folder>.version` names the program and version that last committed it:
+when an older version of the game opens a save a newer one wrote, which a game may not read, the log says both, and so
+does the report if the game crashes or stops. The game's
 menu (Home, F2) shows the user playing in a box at its head's right, their nickname and picture, and the launcher the
-one its Settings' `user` names, where a click picks another ([GUI](GUI.md)); a users.ini that lists no users is said in
-the launcher's foot.
+one its Settings' `user_uid` names, where a click picks another ([GUI](GUI.md)); a users.ini that lists no users is said
+in the launcher's foot.
+
+A program with the console's administrator account service (acc:su, as the system's user settings) changes users.ini as
+the console's does, and the log says each change: a user it registers is the next `[userN]`, `Player` until it stores
+the profile; a profile it stores writes the nickname (the rule above), the UserData and the picture; a user it deletes
+goes to the Trash, a folder `trash/user.<uid>.<UTC time>/` of the data folder with its users.ini section, its picture
+and its saves in `save/user.<uid>/` (with `save_layout=game`, the running game's), the users after it a place up, and
+the user playing is refused; a user it moves takes its new place, those between a place over, user 1 given its uid and
+nickname lines as it leaves `[user1]`. An empty `user_uid` plays as whoever is `[user1]` then.
 
 ## Setup
 

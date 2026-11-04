@@ -350,6 +350,9 @@ void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n));
 u64 gpu_mem_generation(void);                   /* the last generation fully published */
 void gpu_mem_written_all(void); /* a save state's load: every page written, after anything asked before */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz); /* a GPU-side write after since touched [a, a + sz) */
+/* fn(ctx, at, n) for each run of [a, a + sz) on the GPU pages a GPU-side write after since touched, in order: what
+   gpu_mem_dirty_since finds by GPU address (not its SNX_ALIAS_CHECK answers) */
+void gpu_mem_dirty_runs(u64 since, u64 a, u64 sz, void (*fn)(void* ctx, u64 at, u64 n), void* ctx);
 
 /* ---- gpu.c: GPFIFO submission and the GPU thread's queue */
 void gpu_init(void);

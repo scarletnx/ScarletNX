@@ -546,6 +546,38 @@ static void test_graft_writable(const char* scratch) {
     puts("PASS a writable graft changes its own folder; a new one is made empty, with nothing scanned");
 }
 
+/* fs_tree_forget: a folder out of the index, its files on the host as they were, to move; a handle open in it reads
+   nothing more; the root and the guest's root can't go */
+static void test_forget(const char* scratch) {
+    char base[FS_TREE_PATH_MAX], path[FS_TREE_PATH_MAX];
+    FsTree other;
+    FsNode *file = NULL, *dir = NULL;
+    FILE* f;
+    CHECK(snprintf(base, sizeof base, "%s/forget-base", scratch) < (int)sizeof base);
+    CHECK(!plat_mkdir(base));
+    CHECK(snprintf(path, sizeof path, "%s/save", base) < (int)sizeof path && !plat_mkdir(path));
+    CHECK(snprintf(path, sizeof path, "%s/save/user.1", base) < (int)sizeof path && !plat_mkdir(path));
+    CHECK(snprintf(path, sizeof path, "%s/save/user.1/s.bin", base) < (int)sizeof path);
+    f = fopen(path, "wb");
+    CHECK(f != NULL && fwrite("save", 1, 4, f) == 4 && !fclose(f));
+    scans_allowed = 1;
+    OK(fs_tree_init(&other, base));
+    scans_allowed = 0;
+    pm_lock(&other.lock);
+    OK(fs_tree_lookup(&other, NULL, "save/user.1/s.bin", &file));
+    fs_tree_retain(file); /* a handle open on it */
+    OK(fs_tree_forget(&other, "save/user.1"));
+    CHECK(fs_tree_lookup(&other, NULL, "save/user.1", &dir) == FS_TREE_NOTFOUND && host_there(path));
+    CHECK(fs_tree_path(&other, file, base, sizeof base) != FS_TREE_OK);
+    fs_tree_release(file);
+    OK(fs_tree_lookup(&other, NULL, "save", &dir));
+    CHECK(fs_tree_forget(&other, "root") == FS_TREE_NOTDELETABLE || fs_tree_forget(&other, "root") == FS_TREE_NOTFOUND);
+    CHECK(fs_tree_forget(&other, "nothing") == FS_TREE_NOTFOUND);
+    fs_tree_destroy(&other);
+    pm_unlock(&other.lock);
+    puts("PASS a folder forgotten by the index, its files where they were");
+}
+
 /* fs_tree_share maps what its limits let it, in bytes and in files; the rest is left to be read on demand, counted
    apart from what failed. A lazy share maps nothing but makes the files readonly, and fs_tree_map maps each when
    asked, within the same limits */
@@ -634,6 +666,7 @@ int main(int argc, char** argv) {
     test_failed_initialization(argv[1]);
     test_graft(argv[1]);
     test_graft_writable(argv[1]);
+    test_forget(argv[1]);
     test_share_limits(argv[1]);
     CHECK(!host_chdir(argv[1]));
     printf("PASS %u checks; native enumeration was restricted to initialization (%u opens)\n", checks, scan_count);

@@ -43,7 +43,10 @@ static const char* xfb_path;
 static const char* passthrough_paths[6];
 static const char* structured_paths[2];
 static const char* fswzadd_path;
-static char* fixture_paths[94];
+static const char* surface_op_paths[7];
+static const char* legacy_paths[4];
+static const char* rect_paths[3];
+static char* fixture_paths[109];
 static size_t fixture_count;
 
 static const char* fixture_path(const char* directory, const char* name) {
@@ -89,8 +92,8 @@ static u8* guest_bytes(const u64* code, size_t bytes) {
 static u32* spirv_of(const u64* code, size_t bytes, int stage, ShaderInfo* info, size_t* words, int flush,
                      int can_preserve, int can_preserve_f64, int can_subgroup) {
     u8* guest = guest_bytes(code, bytes);
-    u32* result = guest ? shader_to_spirv(guest, (u32)bytes, stage, info, words, flush, can_preserve,
-                                          can_preserve_f64, can_subgroup)
+    u32* result = guest ? shader_to_spirv(guest, (u32)bytes, stage, info, words, flush, can_preserve, can_preserve_f64,
+                                          can_subgroup)
                         : NULL;
     free(guest);
     return result;
@@ -690,10 +693,10 @@ static u64 mov32i(u32 reg, u32 value) { return 0x0100000000000000ull | ((u64)val
    those ids left R2P loading id 0, invalid SPIR-V that radv crashed on while making the pipeline. */
 static void flag_transfers(void) {
     const u64 program[] = {
-        mov32i(5, 15),                                                   /* r5 = 15: the flags' bits */
-        mov32i(6, 15),                                                   /* r6 = 15: the mask */
-        R2P_R | (1ull << 40) | (5ull << 8) | (6ull << 20),               /* R2P: z,s,c,o = r5 & r6 */
-        P2R_R | (1ull << 40) | 7 | (5ull << 8) | (6ull << 20),           /* P2R: r7 = r5 with the flags */
+        mov32i(5, 15),                                         /* r5 = 15: the flags' bits */
+        mov32i(6, 15),                                         /* r6 = 15: the mask */
+        R2P_R | (1ull << 40) | (5ull << 8) | (6ull << 20),     /* R2P: z,s,c,o = r5 & r6 */
+        P2R_R | (1ull << 40) | 7 | (5ull << 8) | (6ull << 20), /* P2R: r7 = r5 with the flags */
     };
     ShaderInfo info;
     size_t words = 0;
@@ -816,8 +819,7 @@ static void float_controls(void) {
             if (code) {
                 int flush = i == 0 && available == SH_FTZ_MODE;
                 int soft_ftz = available != SH_FTZ_NATIVE && ((i == 0 && available == SH_FTZ_EMULATE) || i == 1);
-                check(info.fp32_flush == (i == 0 || i == 1) && info.fp32_preserve == (i != 0),
-                      "FP32 modes recorded");
+                check(info.fp32_flush == (i == 0 || i == 1) && info.fp32_preserve == (i != 0), "FP32 modes recorded");
                 check((count_opcode(code, words, 17, 4465) > 0) == flush, "FP32 flush capability");
                 check(ext_sets_imported(code, words), "every OpExtInst names an imported instruction set");
                 /* the translation keeps signed zeros here: the flush is a float test (FOrdLessThan on the magnitude) */
@@ -904,6 +906,111 @@ static void f2f_half_rounding(void) {
     u32* code = translate(&plain, 1, ST_FS, &info, &words, 1);
     check_translated(code, &info, "F2F between halves without rounding translates");
     if (code) check(glsl_ext_count(code, words, 8) == 0, "F2F between halves without bit 42 does not floor");
+    free(code);
+}
+
+/* the word at which the instruction whose first word is head (its width and opcode) defines id, its result, or 0 */
+static size_t defined_as(const u32* code, size_t words, u32 id, u32 head) {
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return 0;
+        if (code[i] == head && width > 2 && code[i + 2] == id) return i;
+        i += width;
+    }
+    return 0;
+}
+/* whether id is OpBitwiseAnd(OpBitcast(x), 0x7fffffff) in either order: x's bits without the sign */
+static int magnitude_bits_of(const u32* code, size_t words, u32 id, u32 x) {
+    size_t at = defined_as(code, words, id, 5u << 16 | 199);
+    if (!at) return 0;
+    for (int k = 0; k < 2; k++) {
+        size_t cast = defined_as(code, words, code[at + 3 + k], 4u << 16 | 124);
+        if (cast && code[cast + 3] == x && is_constant_value(code, words, code[at + 4 - k], 0x7fffffffu)) return 1;
+    }
+    return 0;
+}
+/* .SAT's FClamp(x, 0, 1) results (*clamps), and how many of them an OpSelect replaces with +0 where x's bits are a
+   NaN's, 0x7f800000 < (x & 0x7fffffff): GLSL.std.450 leaves FClamp's result undefined for a NaN, and the console's
+   saturate gives +0 */
+static void saturate_guards(const u32* code, size_t words, int* clamps, int* guarded) {
+    *clamps = *guarded = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return;
+        if ((code[i] & 0xffff) == 12 && width == 8 && code[i + 4] == 43 &&
+            is_constant_value(code, words, code[i + 6], 0) &&
+            is_constant_value(code, words, code[i + 7], 0x3f800000u)) {
+            u32 clamp = code[i + 2], x = code[i + 5];
+            ++*clamps;
+            for (size_t s = 5; s < words;) {
+                u32 sw = code[s] >> 16;
+                if (!sw || s + sw > words) return;
+                if (code[s] == (6u << 16 | 169) && code[s + 5] == clamp &&
+                    is_constant_value(code, words, code[s + 4], 0)) {
+                    size_t test = defined_as(code, words, code[s + 3], 5u << 16 | 176);
+                    if (test && is_constant_value(code, words, code[test + 3], 0x7f800000u) &&
+                        magnitude_bits_of(code, words, code[test + 4], x)) {
+                        ++*guarded;
+                        break;
+                    }
+                }
+                s += sw;
+            }
+        }
+        i += width;
+    }
+}
+static const char* saturate_path;
+/* Every float .SAT (FADD, FMUL, FFMA, MUFU, F2F, IPA and each half of HADD2) gives +0 for a NaN, with or without the
+   module keeping NaNs (SignedZeroInfNanPreserve), and an instruction without .SAT clamps nothing (issue #865) */
+static void saturate_nan(void) {
+    static const struct {
+        u64 insn;
+        int clamps;
+        const char* what;
+    } cases[] = {
+        {0x5C58000000070000ull | 1ull << 50, 1, "FADD.SAT R0, R0, R0"},
+        {0x5C68000000070000ull | 1ull << 50, 1, "FMUL.SAT R0, R0, R0"},
+        {0x5980000000070000ull | 1ull << 50, 1, "FFMA.SAT R0, R0, R0, R0"},
+        {0x5080000000470000ull | 1ull << 50, 1, "MUFU.RCP.SAT R0, R0"},
+        {0x5CA8000000070A00ull | 1ull << 50, 1, "F2F.F32.F32.SAT R0, R0"},
+        {0xe003ff880ff7ff00ull | 1ull << 51, 1, "IPA.SAT R0, a[0x80]"},
+        {0x5D10000100070000ull, 2, "HADD2.SAT R0, R0, R0: each half"},
+        {0x5C58000000070000ull, 0, "FADD R0, R0, R0 without .SAT"},
+    };
+    u64 all[sizeof cases / sizeof *cases];
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        all[i] = cases[i].insn;
+        for (int preserve = 0; preserve < 2; preserve++) {
+            size_t slots, words = 0;
+            u64* program = guest_program(&cases[i].insn, 1, NULL, &slots);
+            ShaderInfo info;
+            memset(&info, 0, sizeof info);
+            u32* code =
+                program ? spirv_of(program, slots * sizeof *program, ST_FS, &info, &words, 1, preserve, 1, 1) : NULL;
+            free(program);
+            check_translated(code, &info, cases[i].what);
+            if (code) {
+                int clamps, guarded;
+                saturate_guards(code, words, &clamps, &guarded);
+                if (clamps != cases[i].clamps || guarded != clamps)
+                    fprintf(stderr, "%s (NaNs %s): %d clamps to [0, 1] (%d expected), %d of them +0 for a NaN\n",
+                            cases[i].what, preserve ? "kept" : "not kept", clamps, cases[i].clamps, guarded);
+                check(clamps == cases[i].clamps && guarded == clamps, "a float .SAT gives +0 for a NaN");
+            }
+            free(code);
+        }
+    }
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code = translate(all, (int)(sizeof all / sizeof *all), ST_FS, &info, &words, 1);
+    check_translated(code, &info, "every float .SAT in one program translates");
+    if (code) {
+        int clamps, guarded;
+        saturate_guards(code, words, &clamps, &guarded);
+        check(clamps == 8 && guarded == 8, "every float .SAT in one program gives +0 for a NaN");
+        if (saturate_path) save_fixture(saturate_path, code, words);
+    }
     free(code);
 }
 
@@ -998,12 +1105,10 @@ static void fragment_storage_images(void) {
         for (u32 dim = 3; dim <= 5; dim++) {
             u64 instructions[] = {cases[0].instructions[0],
                                   (cases[0].instructions[1] & ~(7ull << 33)) | (u64)dim << 33};
-            code = translate_with_rt_masks(instructions, 2, signed_stages[stage], &alternate, &words, 1,
-                                           0, 1u << 8);
+            code = translate_with_rt_masks(instructions, 2, signed_stages[stage], &alternate, &words, 1, 0, 1u << 8);
             check_translated(code, &alternate, "signed surface store translates");
             if (code) {
-                check(alternate.nimg == 1 && alternate.img[0].kind == 3 &&
-                          has_storage_image_format(code, words, 0),
+                check(alternate.nimg == 1 && alternate.img[0].kind == 3 && has_storage_image_format(code, words, 0),
                       "a signed image store follows the signed runtime format key");
                 save_fixture(storage_signed_paths[stage * 3 + dim - 3], code, words);
             }
@@ -1154,8 +1259,8 @@ static void guarded_handle_merges(void) {
 }
 
 static void volume_surface_atomics(void) {
-    const u64 operations[] = {0xea40020a00870009ull, 0xea48020a20870009ull,
-                               0xeb50020a00070008ull, 0xeb50020a01170008ull};
+    const u64 operations[] = {0xea40020a00870009ull, 0xea48020a20870009ull, 0xeb50020a00070008ull,
+                              0xeb50020a01170008ull};
     for (u32 i = 0; i < 4; i++) {
         const u64 instructions[] = {0x4c98078804a70004ull, operations[i]};
         ShaderInfo info;
@@ -1172,15 +1277,60 @@ static void volume_surface_atomics(void) {
         }
         free(code);
     }
-    const u64 refused[] = {operations[0] | 1ull << 49, operations[0] | 3ull << 29,
-                           operations[0] | 2ull << 51, operations[2] | 1ull << 23};
+    const u64 refused[] = {operations[0] | 1ull << 49, operations[0] | 9ull << 29, operations[0] | 2ull << 51,
+                           operations[2] | 1ull << 23};
     for (u32 i = 0; i < 4; i++) {
         const u64 instructions[] = {0x4c98078804a70004ull, refused[i]};
         ShaderInfo info;
         size_t words = 0;
         u32* code = translate(instructions, 2, ST_CS, &info, &words, 1);
         check_refused(code, &info, i == 3 ? "SURED" : "SUATOM",
-                      "unimplemented 3D atomic widths, clamp and wrap modes remain rejected");
+                      "unimplemented 3D atomic widths, clamp modes and operation 9 remain rejected");
+        free(code);
+    }
+}
+
+/* One game's compute program ORs flags into a buffer surface: SURED.OR with the value in R5 at the texel R4, the
+   handle in R6 (MOV R6, c[0x2][0x128]), the word its log names. Every operation of SURED (bits 24-26) and SUATOM
+   (bits 29-32) translates: AND, OR and XOR as SPIR-V atomics; INC and DEC, which wrap at the operand, as a loop of
+   compare and exchange that reads the texel atomically, and SUATOM returns what it held */
+static void surface_atomic_operations(void) {
+    static const u32 bitwise[3] = {240, 241, 242}; /* OpAtomicAnd, OpAtomicOr, OpAtomicXor */
+    const u64 sured = 0xeb50030206070405ull & ~(7ull << 24);
+    for (u32 operation = 3; operation <= 7; operation++) {
+        const u64 instructions[] = {0x4c98078804a70006ull, sured | (u64)operation << 24};
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(instructions, 2, ST_CS, &info, &words, 1);
+        check_translated(code, &info, "a buffer surface reduction of every operation translates");
+        if (code) {
+            int wraps = operation <= 4;
+            check(info.nimg == 1 && info.img[0].type == 1 && info.img[0].kind == 1,
+                  "a buffer surface reduction reaches one R32UI texel buffer");
+            check(wraps ? count_opcode(code, words, 230, 0xffffffffu) == 1 &&
+                              count_opcode(code, words, 227, 0xffffffffu) == 1 &&
+                              count_opcode(code, words, 246, 0xffffffffu) == 1
+                        : count_opcode(code, words, bitwise[operation - 5], 0xffffffffu) == 1 &&
+                              count_opcode(code, words, 230, 0xffffffffu) == 0,
+                  wraps ? "SURED.INC and .DEC loop on a compare and exchange from an atomic load"
+                        : "SURED.AND, .OR and .XOR are one SPIR-V atomic each");
+            save_fixture(surface_op_paths[operation - 3], code, words);
+        }
+        free(code);
+    }
+    for (u32 k = 0; k < 2; k++) {
+        const u64 instructions[] = {0x4c98078804a70004ull, (0xea40020a00870009ull & ~(0xfull << 29)) | (u64)(3 + k)
+                                                                                                           << 29};
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(instructions, 2, ST_CS, &info, &words, 1);
+        check_translated(code, &info, "SUATOM.INC and .DEC on a 3D surface translate");
+        if (code) {
+            check(info.nimg == 1 && info.img[0].type == 5 && count_opcode(code, words, 230, 0xffffffffu) == 1 &&
+                      count_opcode(code, words, 227, 0xffffffffu) == 1,
+                  "SUATOM.INC and .DEC loop on a compare and exchange of one voxel");
+            save_fixture(surface_op_paths[5 + k], code, words);
+        }
         free(code);
     }
 }
@@ -1238,8 +1388,8 @@ static void layered_surface_loads(void) {
                 u32* code = translate(instructions, 2, stage ? ST_CS : ST_FS, &info, &words, 1);
                 check_translated(code, &info, "layered or volume surface load translates");
                 if (code) {
-                    check(info.ntex == 1 && info.tex[0].type == (dim == 5 ? 2 : 1) &&
-                              info.tex[0].array == (dim == 4) && (info.tex[0].flags & 1) == raw,
+                    check(info.ntex == 1 && info.tex[0].type == (dim == 5 ? 2 : 1) && info.tex[0].array == (dim == 4) &&
+                              (info.tex[0].flags & 1) == raw,
                           "surface load preserves the image dimension, array layers and raw mode");
                     check(count_opcode(code, words, 95, 0xffffffffu) == 1,
                           "surface load fetches one texel from its typed image");
@@ -1581,8 +1731,7 @@ static void issue126_shader_modes(void) {
         free(code);
         code = translate(fetch_2d, 2, ST_VS, &info, &words, 1);
         check_translated(code, &info, "a 2D texel fetch translates");
-        if (code)
-            check(count_opcode(code, words, 195, 0xffffffffu) == 0, "a 2D texel fetch keeps its coordinates");
+        if (code) check(count_opcode(code, words, 195, 0xffffffffu) == 0, "a 2D texel fetch keeps its coordinates");
         free(code);
     }
     /* One game's histogram: SURED.ADD into a buffer surface, U32 and then S32 (bit 20), on the handle
@@ -1622,9 +1771,35 @@ static void issue126_shader_modes(void) {
     ShaderInfo info;
     size_t words = 0;
     u32* code = translate(clobbered_handle, 3, ST_FS, &info, &words, 1);
-    check(!code && info.unsupported && !strcmp(info.first_unsupported, "untracked texture handle"),
-          "a handle overwritten by a texture result is not tracked");
+    if (code || strcmp(info.first_unsupported, "untracked texture handle R6 of TEX.B at 68: TEX.B at 60"))
+        fprintf(stderr, "overwritten handle: '%s'\n", info.first_unsupported);
+    check(!code && info.unsupported &&
+              !strcmp(info.first_unsupported, "untracked texture handle R6 of TEX.B at 68: TEX.B at 60"),
+          "a handle overwritten by a texture result is not tracked, and the refusal names the register, the "
+          "instruction, its offset and the last write of the register");
     free(code);
+    /* a handle no constant buffer holds: the refusal says where it came from, and its value when that is a constant
+       (a MOV of RZ, a MOV32I's handle, a flat varying, no write at all) */
+    const u64 tex_r6 = 0xdeb8000000070004ull | (0xfull << 31) | (2ull << 28) | (1ull << 37) | (6ull << 20);
+    const u64 zero_handle[] = {0x5c9807800ff70006ull, tex_r6};
+    const u64 imm_handle[] = {mov32i(6, 0x00100105u), tex_r6};
+    const u64 varying_handle[] = {0xe083ff8a0ff7ff06ull, tex_r6};
+    const struct {
+        const u64* program;
+        u32 count;
+        const char* reason;
+    } from[] = {{zero_handle, 2, "untracked texture handle R6 of TEX.B at 60: MOV (reg) at 58 (the constant 0)"},
+                {imm_handle, 2, "untracked texture handle R6 of TEX.B at 60: MOV32I at 58 (the constant 0x100105)"},
+                {varying_handle, 2, "untracked texture handle R6 of TEX.B at 60: IPA at 58"},
+                {&tex_r6, 1, "untracked texture handle R6 of TEX.B at 58: no write before"}};
+    for (int k = 0; k < 4; k++) {
+        code = translate(from[k].program, from[k].count, ST_FS, &info, &words, 1);
+        if (code || strcmp(info.first_unsupported, from[k].reason))
+            fprintf(stderr, "handle %d: '%s'\n", k, info.first_unsupported);
+        check(!code && info.unsupported && !strcmp(info.first_unsupported, from[k].reason),
+              "an untracked handle's refusal names its last write, and the value a constant write gives");
+        free(code);
+    }
     const u64 zero_mask_handle[] = {
         0x4c98078800070006ull,
         0xdeb8000000070004ull | (2ull << 28) | (1ull << 37) | (6ull << 20),
@@ -1667,12 +1842,11 @@ static void issue126_shader_modes(void) {
     const u64 choose = 0xe24000000000000full | (32ull << 20);
     const u64 merge = 0xe24000000007000full | (24ull << 20);
     const u64 pair_or = 0x4c47020800070006ull | (6ull << 8) | (0x100ull << 20);
-    const u64 joined[] = {choose, 0x4c98078800070006ull, pair_or, merge,
-                          0x4c98078800070006ull, pair_or, tex_b};
+    const u64 joined[] = {choose, 0x4c98078800070006ull, pair_or, merge, 0x4c98078800070006ull, pair_or, tex_b};
     code = translate(joined, 7, ST_FS, &info, &words, 1);
     check_translated(code, &info, "equal split handles merge across a forward branch");
-    check(code && info.ntex == 1 && info.tex[0].bl2 && info.tex[0].bl_cbuf == 2 &&
-              info.tex[0].cbuf_off == 0 && info.tex[0].bl2_cbuf == 2 && info.tex[0].bl2_off == 0x100,
+    check(code && info.ntex == 1 && info.tex[0].bl2 && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0 &&
+              info.tex[0].bl2_cbuf == 2 && info.tex[0].bl2_off == 0x100,
           "a merged split handle retains both descriptor sources");
     free(code);
     u64 disagree[7];
@@ -1704,16 +1878,15 @@ static void issue126_shader_modes(void) {
         const u64 after_exit[] = {0x4c98078800070006ull, conditional_exits[i], tex_b, FMUL_KEEP | 5, back};
         code = translate(after_exit, 5, ST_FS, &info, &words, 1);
         check_translated(code, &info, "a handle survives a predicate or condition-code exit before a loop");
-        check(code && info.ntex == 1 && info.tex[0].bindless && info.tex[0].bl_cbuf == 2 &&
-                  info.tex[0].cbuf_off == 0,
+        check(code && info.ntex == 1 && info.tex[0].bindless && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0,
               "the surviving lanes retain the original handle source");
         free(code);
         const u64 store = 0xeb20000a00f70c10ull | (6ull << 39);
         const u64 store_after_exit[] = {0x4c98078800070006ull, conditional_exits[i], store, FMUL_KEEP | 5, back};
         code = translate(store_after_exit, 5, ST_VS, &info, &words, 1);
         check_translated(code, &info, "a vertex image-store handle survives a conditional exit before a loop");
-        check(code && info.nimg == 1 && info.img[0].bindless && info.img[0].bl_cbuf == 2 &&
-                  info.img[0].cbuf_off == 0 && info.img[0].type == 5,
+        check(code && info.nimg == 1 && info.img[0].bindless && info.img[0].bl_cbuf == 2 && info.img[0].cbuf_off == 0 &&
+                  info.img[0].type == 5,
               "the vertex loop retains its 3D storage image descriptor");
         free(code);
         const u64 overwritten[] = {0x4c98078800070006ull, conditional_exits[i], store, FMUL_KEEP | 6, back};
@@ -1745,8 +1918,7 @@ static void issue126_shader_modes(void) {
     code = translate(saved_guard, 6, ST_FS, &info, &words, 1);
     check_translated(code, &info, "a saved guard survives predicate and saved-register reuse");
     free(code);
-    const u64 renamed_guard[] = {load_p0, save_p0, fsetp_p0, (restore_p0 & ~63ull) | 15,
-                                 pred_tex | (1ull << 16)};
+    const u64 renamed_guard[] = {load_p0, save_p0, fsetp_p0, (restore_p0 & ~63ull) | 15, pred_tex | (1ull << 16)};
     code = translate(renamed_guard, 5, ST_FS, &info, &words, 1);
     check_translated(code, &info, "a restored guard can use another predicate register");
     free(code);
@@ -1869,8 +2041,8 @@ static void between_stages(void) {
        primitive's vertex count in bits 16-23, including adjacency vertices. */
     for (u32 vertices = 1; vertices <= 6; vertices++) {
         if (vertices == 5) continue;
-        const u64 invocation[] = {0xf0c8000001d70000ull, /* S2R R0, SR_INVOCATION_INFO */
-                                   0xeff07f800807ff00ull}; /* AST a[0x80], R0 */
+        const u64 invocation[] = {0xf0c8000001d70000ull,  /* S2R R0, SR_INVOCATION_INFO */
+                                  0xeff07f800807ff00ull}; /* AST a[0x80], R0 */
         ShaderInfo info;
         size_t words = 0;
         u32* code = translate_stage(invocation, 2, ST_GS, geometry_sph, vertices, &info, &words);
@@ -1920,34 +2092,33 @@ static void layer_capabilities(void) {
     g_shader_output_layer = g_shader_geometry = 1;
 }
 
-static void viewport_capabilities(void)
-{
-	const u64 write = 0xeff07f800687ff00ull; /* AST a[0x68], R0 */
-	const u32 geometry_sph[3] = {1u << 24, 7u << 24, 3};
-	const u32 none[3] = {0};
-	int stages[3] = {ST_VS, ST_TES, ST_GS};
+static void viewport_capabilities(void) {
+    const u64 write = 0xeff07f800687ff00ull; /* AST a[0x68], R0 */
+    const u32 geometry_sph[3] = {1u << 24, 7u << 24, 3};
+    const u32 none[3] = {0};
+    int stages[3] = {ST_VS, ST_TES, ST_GS};
 
-	for (int i = 0; i < 3; i++) {
-		ShaderInfo info = {0};
-		size_t words = 0;
-		u32* code = translate_stage(&write, 1, stages[i], i == 2 ? geometry_sph : none, i == 2 ? 3 : 0,
-					    &info, &words);
-		check_translated(code, &info, "viewport index stores translate in vertex, evaluation and geometry stages");
-		if (code) {
-			check(info.writes_viewport, "viewport writes request indexed dynamic state");
-			check(has_builtin(code, words, 10), "viewport index has its own scalar output");
-			check(!has_builtin(code, words, 0), "viewport index is not a position component");
-			check(count_opcode(code, words, 17, i == 2 ? 57 : 70) == 1, "viewport output declares the stage capability");
-		}
-		free(code);
-	}
-	g_shader_viewport_index = 0;
-	ShaderInfo info = {0};
-	size_t words = 0;
-	u32* code = translate(&write, 1, ST_VS, &info, &words, 1);
-	check_refused(code, &info, "viewport index output unavailable", "unsupported devices refuse viewport output");
-	free(code);
-	g_shader_viewport_index = 3;
+    for (int i = 0; i < 3; i++) {
+        ShaderInfo info = {0};
+        size_t words = 0;
+        u32* code = translate_stage(&write, 1, stages[i], i == 2 ? geometry_sph : none, i == 2 ? 3 : 0, &info, &words);
+        check_translated(code, &info, "viewport index stores translate in vertex, evaluation and geometry stages");
+        if (code) {
+            check(info.writes_viewport, "viewport writes request indexed dynamic state");
+            check(has_builtin(code, words, 10), "viewport index has its own scalar output");
+            check(!has_builtin(code, words, 0), "viewport index is not a position component");
+            check(count_opcode(code, words, 17, i == 2 ? 57 : 70) == 1,
+                  "viewport output declares the stage capability");
+        }
+        free(code);
+    }
+    g_shader_viewport_index = 0;
+    ShaderInfo info = {0};
+    size_t words = 0;
+    u32* code = translate(&write, 1, ST_VS, &info, &words, 1);
+    check_refused(code, &info, "viewport index output unavailable", "unsupported devices refuse viewport output");
+    free(code);
+    g_shader_viewport_index = 3;
 }
 
 /* Loads from a constant buffer (a Uniform variable bound below 18) by result type: u32 or anything else. */
@@ -2222,7 +2393,7 @@ static void eden_forms(void) {
             info.rt_int_mask = counts[i];
             memset(info.gp_skip_mask, 0xff, sizeof info.gp_skip_mask);
             info.gp_skip_mask[0] &= ~(15u << 28); /* position */
-            info.gp_skip_mask[1] &= ~5u; /* only x and z of attribute 0 */
+            info.gp_skip_mask[1] &= ~5u;          /* only x and z of attribute 0 */
             code = spirv_of(program, sizeof program, ST_GS, &info, &words, 1, 1, 1, 1);
             check_translated(code, &info, "point, line and adjacency passthrough translate");
             if (code) {
@@ -2236,7 +2407,7 @@ static void eden_forms(void) {
             free(code);
         }
         program[11] = 0xeff07f800647ff00ull; /* AST Layer, R0: generated per primitive */
-        program[12] = EXIT & ~(7ull << 16); /* conditional exit */
+        program[12] = EXIT & ~(7ull << 16);  /* conditional exit */
         program[13] = EXIT;
         memset(&info, 0, sizeof info);
         info.rt_int_mask = 3;
@@ -2713,6 +2884,202 @@ static void transform_feedback(void) {
     free(spv);
 }
 
+/* how many OpDecorate give decoration (30 Location, 14 Flat) with this literal, or with none when literal is ~0 */
+static int decorations(const u32* code, size_t words, u32 decoration, u32 literal) {
+    int found = 0;
+    for (size_t i = 5; i < words && code[i] >> 16;) {
+        u32 width = code[i] >> 16;
+        if ((code[i] & 0xffff) == 71 && width >= 3 && code[i + 2] == decoration &&
+            (literal == 0xffffffffu || (width >= 4 && code[i + 3] == literal)))
+            found++;
+        i += width;
+    }
+    return found;
+}
+
+/* The fixed function's varyings take the generics 17-31, the same in every stage (legacy_varyings): a vertex
+   program's front diffuse green from R43 (AST a[0x284], one game's), another's whole first texture coordinate
+   (AST a[0x300] x4, another game's), a fragment program reading them and the fog with the header's color and texture
+   coordinate interpolation, and an evaluation program passing a coordinate on. A program writing a legacy varying
+   and the generic it moves to is refused, naming both; a store running from a color into the clip distances is
+   refused as before; a captured texture coordinate is captured where it moved */
+static void legacy_varyings_forms(void) {
+    const u64 ast = 0xeff07f800007ff00ull, ald = 0xefd87f800007ff00ull, ipa = 0xe003ff800ff7ff00ull;
+#define LEGACY_AST(addr, count, reg) (ast | (u64)(addr) << 20 | (u64)((count) - 1) << 47 | (reg))
+#define LEGACY_IPA(addr, reg)        (ipa | (u64)((addr) / 4) << 30 | (reg))
+    ShaderInfo info;
+    size_t words = 0, slots;
+    const u64 diffuse[] = {mov32i(43, 0x3f000000), LEGACY_AST(0x284, 1, 43)};
+    u32* code = translate(diffuse, 2, ST_VS, &info, &words, 1);
+    check_translated(code, &info, "a vertex program writing a legacy color translates");
+    if (code) {
+        check(info.out_mask == 1u << 17 && decorations(code, words, 30, 17) == 1,
+              "the front diffuse color is written as generic 17");
+        save_fixture(legacy_paths[0], code, words);
+    }
+    free(code);
+    const u64 coordinate[] = {LEGACY_AST(0x300, 4, 4)};
+    code = translate(coordinate, 1, ST_VS, &info, &words, 1);
+    check_translated(code, &info, "a vertex program writing a texture coordinate translates");
+    check(code && info.out_mask == 1u << 22 && decorations(code, words, 30, 22) == 1,
+          "the first texture coordinate is written as generic 22");
+    if (code) save_fixture(legacy_paths[1], code, words);
+    free(code);
+    /* the header's color map flat (1) for the diffuse color's four components, its first coordinate perspective (2) */
+    const u64 reads[] = {LEGACY_IPA(0x284, 0), LEGACY_IPA(0x2e8, 1), LEGACY_IPA(0x308, 2)};
+    u64* program = guest_program(reads, 3, NULL, &slots);
+    if (program) {
+        set_sph(program, 14, 0x55);
+        set_sph(program, 15, 0xaa);
+        memset(&info, 0, sizeof info);
+        code = spirv_of(program, slots * sizeof *program, ST_FS, &info, &words, 1, 1, 1, 1);
+        check_translated(code, &info, "a fragment program reading legacy varyings translates");
+        if (code) {
+            check(info.in_mask == (1u << 17 | 1u << 21 | 1u << 22) && decorations(code, words, 30, 17) == 1 &&
+                      decorations(code, words, 30, 21) == 1 && decorations(code, words, 30, 22) == 1,
+                  "the diffuse color, the fog and the first texture coordinate are read as generics 17, 21 and 22");
+            check(decorations(code, words, 14, 0xffffffffu) == 1,
+                  "only the color the header's map makes constant is a flat input");
+            save_fixture(legacy_paths[2], code, words);
+        }
+        free(code);
+        free(program);
+    }
+    const u64 passed[] = {ald | 0x300ull << 20, LEGACY_AST(0x300, 1, 0)};
+    code = translate_stage(passed, 2, ST_TES, NULL, 0, &info, &words);
+    check_translated(code, &info, "an evaluation program passing a texture coordinate on translates");
+    check(code && info.in_mask == 1u << 22 && info.out_mask == 1u << 22,
+          "an evaluation program reads and writes the coordinate as generic 22");
+    if (code) save_fixture(legacy_paths[3], code, words);
+    free(code);
+    const u64 both[] = {LEGACY_AST(0x190, 1, 0), LEGACY_AST(0x280, 1, 1)};
+    code = translate(both, 2, ST_VS, &info, &words, 1);
+    check_refused(code, &info, "legacy varying 0x280 written as generic 17, which the program also writes",
+                  "a program writing a legacy color and its generic is refused, naming both");
+    free(code);
+    const u64 across[] = {LEGACY_AST(0x2bc, 2, 0)};
+    code = translate(across, 1, ST_VS, &info, &words, 1);
+    check_refused(code, &info, "AST addr 700 count 2", "a store from a color into the clip distances stays refused");
+    free(code);
+    program = guest_program(coordinate, 1, NULL, &slots);
+    if (program) {
+        memset(&info, 0, sizeof info);
+        info.xfb.layout[0][0] = 0x300 / 4 + 1; /* the first coordinate's y */
+        info.xfb.count[0] = 1;
+        info.xfb.stride[0] = 4;
+        code = spirv_of(program, slots * sizeof *program, ST_VS, &info, &words, 0, 1, 1, 1);
+        check_translated(code, &info, "a captured texture coordinate translates");
+        check(code && count_opcode(code, words, 71, 36) == 1, "a captured texture coordinate is captured");
+        free(code);
+        free(program);
+    }
+#undef LEGACY_AST
+#undef LEGACY_IPA
+}
+
+/* A rectangle texture's (ShaderInfo.tex_rect_mask, the key) sample takes texel coordinates, divided by the size at
+   level 0 (one OpImageQuerySizeLod, an OpFDiv each for x and y, and for TXD each gradient's two too); a fragment
+   program keeps a scaled target's size unscaled first (the push constant's scaled-slot bits). Without the key the
+   program is the same as it was. TEX R8, R0, 2D, a texel of a bound slot; TXD R0, R4, R8, 2D; TLD4 R0, R4, 2D */
+static void rect_textures(void) {
+    const u64 tex =
+        0xc000000000000000ull | 0x10ull << 36 | 7ull << 51 | 1ull << 31 | 2ull << 28 | 0xffull << 20 | 7ull << 16 | 8;
+    const u64 txd = 0xde00000000000000ull | 7ull << 51 | 0x10ull << 36 | 0xfull << 31 | 2ull << 28 | 8ull << 20 |
+                    7ull << 16 | 4ull << 8;
+    const u64 tld4 = 0xc800000000000000ull | 7ull << 51 | 0x10ull << 36 | 0xfull << 31 | 2ull << 28 | 0xffull << 20 |
+                     7ull << 16 | 4ull << 8;
+    const u64* programs[3] = {&tex, &txd, &tld4};
+    static const int divisions[3] = {2, 6, 2};
+    static const char* names[3] = {"TEX", "TXD", "TLD4"};
+    for (int k = 0; k < 3; k++) {
+        ShaderInfo info;
+        size_t words = 0, plain_words = 0;
+        u32* plain = translate(programs[k], 1, ST_FS, &info, &plain_words, 1);
+        check_translated(plain, &info, "a sample of a normalized texture translates");
+        int plain_query = plain ? count_opcode(plain, plain_words, 103, 0xffffffffu) : -1;
+        int plain_div = plain ? count_opcode(plain, plain_words, 136, 0xffffffffu) : -1;
+        size_t slots;
+        u64* code = guest_program(programs[k], 1, NULL, &slots);
+        if (!code) continue;
+        memset(&info, 0, sizeof info);
+        info.tex_rect_mask = 1;
+        u32* rect = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 1, 1, 1, 1);
+        free(code);
+        check_translated(rect, &info, "a sample of a rectangle texture translates");
+        if (rect && plain) {
+            if (count_opcode(rect, words, 103, 0xffffffffu) != plain_query + 1 ||
+                count_opcode(rect, words, 136, 0xffffffffu) != plain_div + divisions[k])
+                fprintf(stderr, "%s of a rectangle texture: %d size queries, %d divisions; without the key %d and %d\n",
+                        names[k], count_opcode(rect, words, 103, 0xffffffffu),
+                        count_opcode(rect, words, 136, 0xffffffffu), plain_query, plain_div);
+            check(count_opcode(rect, words, 103, 0xffffffffu) == plain_query + 1 &&
+                      count_opcode(rect, words, 136, 0xffffffffu) == plain_div + divisions[k],
+                  "a rectangle texture's coordinates (and gradients) are divided by its size");
+            check(plain_query == 0, "a normalized texture's sample queries no size");
+            save_fixture(rect_paths[k], rect, words);
+        }
+        free(plain);
+        free(rect);
+    }
+}
+
+/* One game's culling geometry program stores RZ or a MOV32I's 1 to the viewport mask (AST a[0x3a0]): no viewport or
+   viewport 0 alone, no broadcast, so the program is the one without the store, word for word. A mask the translation
+   can't know (R0, an attribute's), one of more viewports (3) and a mask of 1 beside a written viewport index are
+   refused, each naming what it holds. A vertex program's zero mask is taken too */
+static void viewport_mask(void) {
+    const u64 mask_rz = 0xeff07f800007ff00ull | 0x3a0ull << 20 | 0xffull, mask_r0 = mask_rz & ~0xffull;
+    const u64 with[] = {0xefd9ff800707ff00ull, 0xeff1ff800707ff00ull, mask_rz, 0xfbe000800ff70404ull,
+                        0xfbe001000ff70404ull};
+    const u64 without[] = {0xefd9ff800707ff00ull, 0xeff1ff800707ff00ull, 0x50b0000000070f00ull /* NOP */,
+                           0xfbe000800ff70404ull, 0xfbe001000ff70404ull};
+    const u32 geometry_sph[3] = {1u << 24, 7u << 24, 3};
+    ShaderInfo info;
+    size_t words = 0, plain_words = 0;
+    u32* code = translate_stage(with, 5, ST_GS, geometry_sph, 3, &info, &words);
+    check_translated(code, &info, "a geometry program storing a zero viewport mask translates");
+    u32* plain = translate_stage(without, 5, ST_GS, geometry_sph, 3, &info, &plain_words);
+    check(code && plain && words == plain_words && !memcmp(code, plain, words * sizeof *code),
+          "a zero viewport mask's store emits nothing");
+    free(code);
+    free(plain);
+    const u64 dynamic[] = {0xefd9ff800707ff00ull, 0xeff1ff800707ff00ull, mask_r0, 0xfbe000800ff70404ull,
+                           0xfbe001000ff70404ull};
+    code = translate_stage(dynamic, 5, ST_GS, geometry_sph, 3, &info, &words);
+    check_refused(code, &info, "viewport mask R0 at 68: no constant", "a viewport mask no constant holds is refused");
+    free(code);
+    const u64 mask_r5 = (mask_rz & ~0xffull) | 5;
+    for (u32 k = 0; k < 3; k++) {
+        static const u32 values[3] = {1, 3, 1};
+        const u64 constant[] = {mov32i(5, values[k]),
+                                0xefd9ff800707ff00ull,
+                                0xeff1ff800707ff00ull,
+                                k == 2 ? 0xeff07f800007ff00ull | 0x68ull << 20 | 0xffull : 0x50b0000000070f00ull,
+                                mask_r5,
+                                0xfbe000800ff70404ull,
+                                0xfbe001000ff70404ull};
+        const u64 plain[] = {mov32i(5, values[k]),  0xefd9ff800707ff00ull, 0xeff1ff800707ff00ull, 0x50b0000000070f00ull,
+                             0x50b0000000070f00ull, 0xfbe000800ff70404ull, 0xfbe001000ff70404ull};
+        code = translate_stage(constant, 7, ST_GS, geometry_sph, 3, &info, &words);
+        if (k == 0) {
+            check_translated(code, &info, "a viewport mask of viewport 0 from a MOV32I translates");
+            plain_words = 0;
+            u32* expected = translate_stage(plain, 7, ST_GS, geometry_sph, 3, &info, &plain_words);
+            check(code && expected && words == plain_words && !memcmp(code, expected, words * sizeof *code),
+                  "a viewport mask of viewport 0 emits nothing");
+            free(expected);
+        } else
+            check_refused(code, &info,
+                          k == 1 ? "viewport mask 0x3 at 80: a broadcast" : "viewport mask 1 beside a viewport index",
+                          "a broadcast, or a mask beside a viewport index, is refused");
+        free(code);
+    }
+    const u64 vertex[] = {mask_rz};
+    code = translate(vertex, 1, ST_VS, &info, &words, 1);
+    check_translated(code, &info, "a vertex program storing a zero viewport mask translates");
+    free(code);
+}
+
 static void attribute_pointer(void) {
     const u64 base = 0xefa070010607ff01ull; /* a game's: AL2P R1, RZ + 0x60, PT */
     const u64 instructions[] = {mov32i(4, 0x1234),
@@ -2776,7 +3143,8 @@ static void attribute_pointer(void) {
     check_translated(code, &info, "ISBERD output-buffer handles translate");
     int seed_stores = 0;
     for (size_t i = 5; code && i < words && code[i] >> 16; i += code[i] >> 16)
-        seed_stores += (code[i] & 0xffff) == 62 && (code[i] >> 16) == 3 && is_constant_value(code, words, code[i + 2], 3);
+        seed_stores +=
+            (code[i] & 0xffff) == 62 && (code[i] >> 16) == 3 && is_constant_value(code, words, code[i + 2], 3);
     check(seed_stores == 3, "ISBERD preserves the vertex index");
     if (code) save_fixture(attribute_paths[5], code, words);
     free(code);
@@ -2933,10 +3301,13 @@ static void system_values(void) {
    valid in a single module; the emitted fixtures also run through spirv-val. */
 static void audit_shader_regressions(void) {
     const u64 indexed[] = {
-        0xe003ff870ff7ff00ull, 0x5cb0118000070a00ull, 0x3848000000470000ull,
-        0xef94002000070004ull, 0x5c9807800ff70000ull, 0x5c9807800ff70001ull,
-        0xdeb8000000070008ull | (2ull << 28) | (1ull << 37) | (4ull << 20) |
-            (1ull << 50) | (1ull << 31),
+        0xe003ff870ff7ff00ull,
+        0x5cb0118000070a00ull,
+        0x3848000000470000ull,
+        0xef94002000070004ull,
+        0x5c9807800ff70000ull,
+        0x5c9807800ff70001ull,
+        0xdeb8000000070008ull | (2ull << 28) | (1ull << 37) | (4ull << 20) | (1ull << 50) | (1ull << 31),
     };
     ShaderInfo info;
     size_t words = 0;
@@ -2975,8 +3346,13 @@ static void audit_shader_regressions(void) {
        tables of more than one kind. Each kind has its own array on the shared bindings, so the views of each array's
        elements match its type. */
     const u64 mixed[] = {
-        0xe003ff870ff7ff00ull, 0x5cb0118000070a00ull, 0x3848000000470000ull, 0xef94002000070004ull,
-        0x5c9807800ff70000ull, 0x5c9807800ff70001ull, 0x5c9807800ff70002ull,
+        0xe003ff870ff7ff00ull,
+        0x5cb0118000070a00ull,
+        0x3848000000470000ull,
+        0xef94002000070004ull,
+        0x5c9807800ff70000ull,
+        0x5c9807800ff70001ull,
+        0x5c9807800ff70002ull,
         0xdeb8000000070008ull | (2ull << 28) | (4ull << 20) | (1ull << 31),
         0xdeb8000000070009ull | (6ull << 28) | (4ull << 20) | (1ull << 31),
         0xdeb800000007000aull | (2ull << 28) | (1ull << 37) | (4ull << 20) | (1ull << 50) | (1ull << 31),
@@ -3007,8 +3383,7 @@ static void audit_shader_regressions(void) {
     if (code) {
         check(count_builtin(code, words, 43) == 1 && count_builtin(code, words, 4425) == 0,
               "instance without draw parameters uses InstanceIndex and not BaseInstance");
-        check(count_opcode(code, words, 130, 0xffffffffu) == 1,
-              "instance subtracts the original guest base");
+        check(count_opcode(code, words, 130, 0xffffffffu) == 1, "instance subtracts the original guest base");
         save_fixture(audit_paths[1], code, words);
     }
     free(code);
@@ -3055,6 +3430,121 @@ static void tlds_fp16(void) {
         check(code && !info.unsupported, "TLDS fp16 translates");
         if (code) check(count_opcode(code, size, 115, 0xffffffffu) >= 1, "TLDS fp16 converts to halves");
         free(code);
+    }
+}
+
+/* OpTypeImage declarations of that dimensionality (0 1D, 1 2D, 2 3D, 3 cube) */
+static int count_image_dim(const u32* code, size_t words, u32 dim) {
+    int found = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16, op = code[i] & 0xffff;
+        if (!width || i + width > words) return -1;
+        if (op == 25 && width > 3 && code[i + 3] == dim) found++;
+        i += width;
+    }
+    return found;
+}
+/* A compute program of one game queries a volume's size with a TXQ through a bound handle and fetches its texels with
+   a TLD.B through a bindless one: nothing in the program joins the two, so the query's texture was a 2D one, which
+   the renderer binds a 1x1 null view to (a 3D texture has no 2D view), and every invocation but the first left on
+   the size check. The translation marks the slot a TXQ alone names (tex_query_mask), and the renderer keys the
+   program on the header's dimension (tex_query_hint): a 3D query then, answering the depth too */
+static void query_only_volume(void) {
+    static const u64 insns[] = {HANDLE_CBUF_R4, 0x5c9807800ff70008ull /* MOV R8, RZ */,
+                                0xdf48048380470808ull /* TXQ R8, R8, 0x48 */,
+                                0xdd380007c0470004ull /* TLD.B R4, R0, R4, 3D */};
+    size_t slots, words = 0;
+    u64* guest = guest_program(insns, 4, NULL, &slots);
+    ShaderInfo info = {0};
+    if (!guest) {
+        check(0, "query_only_volume: out of memory");
+        return;
+    }
+    info.cs_local[0] = info.cs_local[1] = info.cs_local[2] = 1;
+    u32* code = spirv_of(guest, slots * sizeof *guest, ST_CS, &info, &words, 1, 1, 1, 1);
+    check_translated(code, &info, "a bound TXQ beside a bindless TLD.B translates");
+    if (code) {
+        check(info.tex_query_mask == 1, "the texture a TXQ alone names is slot 0 of tex_query_mask");
+        check(count_image_dim(code, words, 1) == 1 && count_image_dim(code, words, 2) == 1 && info.ntex == 2 &&
+                  info.tex[0].type == 1 && info.tex[0].cbuf_off == 0x48 && info.tex[1].type == 2,
+              "without a hint the query's texture is 2D and the fetch's 3D");
+    }
+    free(code);
+    memset(&info, 0, sizeof info);
+    info.cs_local[0] = info.cs_local[1] = info.cs_local[2] = 1;
+    info.tex_query_hint[0] = 1 + 2; /* the header: a 3D texture */
+    code = spirv_of(guest, slots * sizeof *guest, ST_CS, &info, &words, 1, 1, 1, 1);
+    check_translated(code, &info, "a bound TXQ keyed as a volume translates");
+    if (code) {
+        check(info.tex_query_mask == 1, "the keyed query's texture is still slot 0 of tex_query_mask");
+        /* one OpTypeImage serves both 3D textures, the query's and the fetch's */
+        check(count_image_dim(code, words, 1) == 0 && count_image_dim(code, words, 2) == 1 && info.ntex == 2 &&
+                  info.tex[0].type == 2 && !info.tex[0].array && info.tex[0].cbuf_off == 0x48,
+              "keyed on a 3D header the query's texture is 3D");
+    }
+    free(code);
+    free(guest);
+}
+
+/* the query hints of a graphics program's key (words 14 to 17 of vk_shader_get's mask) hold every slot's hint and
+   come back as they went */
+static void query_hint_words(void) {
+    u8 hint[SH_MAXTEX], back[SH_MAXTEX], want[SH_MAXTEX];
+    u32 words[SH_QUERY_WORDS];
+    int zero = 1;
+    for (int i = 0; i < SH_MAXTEX; i++) {
+        hint[i] = (u8)(i % 9);                /* 0 to 8, the hints there are */
+        want[i] = hint[i] == 1 ? 0 : hint[i]; /* a 1D header's query is the 2D slot's */
+    }
+    shader_query_hint_pack(hint, words);
+    shader_query_hint_unpack(words, back);
+    check(!memcmp(want, back, sizeof want), "a graphics key's query hint words carry every slot's hint back");
+    memset(hint, 0, sizeof hint);
+    shader_query_hint_pack(hint, words);
+    for (int i = 0; i < SH_QUERY_WORDS; i++) zero &= words[i] == 0;
+    check(zero, "no hint packs as zero words");
+}
+
+/* the same for a vertex and a fragment program: the slot a TXQ alone names is marked, 2D without a hint and the
+   header's dimension with one (the graphics key carries it, pipeline.c sh_key_info) */
+static void query_only_volume_stages(void) {
+    static const u64 insns[] = {
+        0x0100000000071005ull /* MOV32I R5, 0 */, 0xdf48010200470500ull /* TXQ.DIMENSION R0, R5, 0x10, depth only */,
+        0x1c0ffffffff00009ull /* IADD32I R9, R0, -1 */, 0x5cb8000000970a09ull /* I2F.F32.U32 R9, R9 */};
+    const int stages[] = {ST_VS, ST_FS};
+    for (int k = 0; k < 2; k++) {
+        size_t slots, words = 0;
+        u64* guest = guest_program(insns, 4, NULL, &slots);
+        ShaderInfo info = {0};
+        if (!guest) {
+            check(0, "query_only_volume_stages: out of memory");
+            return;
+        }
+        u32* code = spirv_of(guest, slots * sizeof *guest, stages[k], &info, &words, 1, 1, 1, 1);
+        check_translated(code, &info, "a TXQ alone translates in a vertex or fragment program");
+        if (code) {
+            fprintf(stderr, "stage %d no hint: ntex %d type %d query_mask %llx 2D %d 3D %d\n", stages[k], info.ntex,
+                    info.ntex ? info.tex[0].type : -1, (unsigned long long)info.tex_query_mask,
+                    count_image_dim(code, words, 1), count_image_dim(code, words, 2));
+            check(info.tex_query_mask == 1 && info.ntex == 1 && info.tex[0].type == 1 &&
+                      count_image_dim(code, words, 1) == 1 && count_image_dim(code, words, 2) == 0,
+                  "without a hint a vertex or fragment program's lone query is 2D");
+        }
+        free(code);
+        memset(&info, 0, sizeof info);
+        info.tex_query_hint[0] = 1 + 2;
+        code = spirv_of(guest, slots * sizeof *guest, stages[k], &info, &words, 1, 1, 1, 1);
+        check_translated(code, &info, "a TXQ alone keyed as a volume translates in a vertex or fragment program");
+        if (code) {
+            fprintf(stderr, "stage %d hint 3D: ntex %d type %d query_mask %llx 2D %d 3D %d\n", stages[k], info.ntex,
+                    info.ntex ? info.tex[0].type : -1, (unsigned long long)info.tex_query_mask,
+                    count_image_dim(code, words, 1), count_image_dim(code, words, 2));
+            check(info.tex_query_mask == 1 && info.ntex == 1 && info.tex[0].type == 2 &&
+                      count_image_dim(code, words, 1) == 0 && count_image_dim(code, words, 2) == 1,
+                  "keyed on a 3D header a vertex or fragment program's lone query is 3D");
+        }
+        free(code);
+        free(guest);
     }
 }
 
@@ -3204,7 +3694,8 @@ static void fswzadd_forms(void) {
         code = fswzadd_spirv(fswzadd(mode * 0x55), ST_FS, 0, &info, &words);
         check_translated(code, &info, "FSWZADD with one mode for every lane translates without subgroups");
         adds[mode] = code ? count_opcode(code, words, 129, 0xffffffffu) : -1;
-        if (code) check(count_opcode(code, words, 169, 0xffffffffu) == 0, "one FSWZADD mode for all lanes selects nothing");
+        if (code)
+            check(count_opcode(code, words, 169, 0xffffffffu) == 0, "one FSWZADD mode for all lanes selects nothing");
         free(code);
     }
     check(adds[0] == adds[3] + 1 && adds[1] == adds[0] && adds[2] == adds[0], "FSWZADD mode 3 moves b, the others add");
@@ -3446,6 +3937,19 @@ int main(int argc, char** argv) {
             structured_paths[i] = fixture_path(argv[1], name);
         }
         fswzadd_path = fixture_path(argv[1], "fswzadd");
+        saturate_path = fixture_path(argv[1], "saturate");
+        for (int i = 0; i < 7; i++) {
+            snprintf(name, sizeof name, "surface_op_%d", i);
+            surface_op_paths[i] = fixture_path(argv[1], name);
+        }
+        for (int i = 0; i < 4; i++) {
+            snprintf(name, sizeof name, "legacy_%d", i);
+            legacy_paths[i] = fixture_path(argv[1], name);
+        }
+        for (int i = 0; i < 3; i++) {
+            snprintf(name, sizeof name, "rect_%d", i);
+            rect_paths[i] = fixture_path(argv[1], name);
+        }
         if (fixture_count != sizeof fixture_paths / sizeof *fixture_paths) {
             fprintf(stderr, "failed to allocate fixture paths\n");
             return 2;
@@ -3464,15 +3968,20 @@ int main(int argc, char** argv) {
     float_controls();
     precise_math();
     f2f_half_rounding();
+    saturate_nan();
     hfma2_immediate();
     tlds_fp16();
     scaled_texel_fetch();
+    query_only_volume();
+    query_hint_words();
+    query_only_volume_stages();
     txd_grad();
     fragment_storage_images();
     buffer_formatted_loads();
     immediate_sampler_handle();
     guarded_handle_merges();
     volume_surface_atomics();
+    surface_atomic_operations();
     draw_buffer_surfaces();
     layered_surface_loads();
     transform_feedback();
@@ -3490,6 +3999,9 @@ int main(int argc, char** argv) {
     beyond_eden();
     system_values();
     attribute_pointer();
+    legacy_varyings_forms();
+    rect_textures();
+    viewport_mask();
     indexed_attribute_load();
     structured_flow();
     fswzadd_forms();

@@ -1123,21 +1123,17 @@ i32 nvn_TextureGetRawStorageClass(CPU* c, u64 t) {
     return raw_storage_class(&CT(t)->d);
 }
 /* A sparse texture's tile: the texels of one 64 KiB page of its block-linear layout, as the game's driver answers
-   (a 2D tile of 1, 2, 4, 8 or 16 bytes a block is 256x256, 256x128, 128x128, 128x64 or 64x64 blocks, a 3D one
-   64x32x32, 32x32x32, 32x32x16, 32x16x16 or 16x16x16), and the levels at least a tile in each dimension, before the
-   mip tail. A texture that isn't sparse, or a target or format that can't be, has all zeros */
+   (nvn_tex_sparse_tile's shape in blocks, times the block's texels), and the levels at least a tile in each
+   dimension, before the mip tail. A texture that isn't sparse, or a target or format that can't be, has all zeros */
 static void sparse_tile_layout(const NvnTexDesc* d, u64 out) {
-    static const u16 tile2d[5][2] = {{256, 256}, {256, 128}, {128, 128}, {128, 64}, {64, 64}};
-    static const u16 tile3d[5][3] = {{64, 32, 32}, {32, 32, 32}, {32, 32, 16}, {32, 16, 16}, {16, 16, 16}};
-    i32 v[4] = {0, 0, 0, 0}, bw = 1, bh = 1, b = nvn_fmt_bpb(d->format, &bw, &bh), k = 0, level;
+    i32 v[4] = {0, 0, 0, 0}, bw = 1, bh = 1, level;
+    u32 tile[3];
     int is3d = d->target == NVN_TEXTURE_TARGET_3D;
-    while (k < 5 && (1 << k) != b) k++;
-    if ((d->flags & NVN_TEXTURE_FLAGS_SPARSE) && !(d->flags & NVN_TEX_LINEAR) && k < 5 &&
-        (is3d || d->target == NVN_TEXTURE_TARGET_2D || d->target == NVN_TEXTURE_TARGET_2D_ARRAY ||
-         d->target == NVN_TEXTURE_TARGET_CUBEMAP || d->target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY)) {
-        v[1] = (is3d ? tile3d[k][0] : tile2d[k][0]) * bw;
-        v[2] = (is3d ? tile3d[k][1] : tile2d[k][1]) * bh;
-        v[3] = is3d ? tile3d[k][2] : 1;
+    if (nvn_tex_sparse_tile(d, tile)) {
+        nvn_fmt_bpb(d->format, &bw, &bh);
+        v[1] = (i32)tile[0] * bw;
+        v[2] = (i32)tile[1] * bh;
+        v[3] = (i32)tile[2];
         for (level = 0; level < (i32)d->levels; level++) {
             u32 w = d->width >> level, h = d->height >> level, z = is3d ? d->depth >> level : 1;
             if (w < (u32)v[1] || h < (u32)v[2] || z < (u32)v[3]) break;
@@ -1150,37 +1146,39 @@ void nvn_TextureGetSparseTileLayout(CPU* c, u64 t, u64 out) {
     (void)c;
     sparse_tile_layout(&CT(t)->d, out);
 }
-/* The surface description NVIDIA's NvRm library keeps of the texture (NvRmSurface, 0x58 bytes), which one movie
-   player takes to have its decoder write into the texture, as the game's driver fills it (NVN 55.12 and 55.15, read
-   from their code): 0x00 the width and height of level 0, 0x08 the color format (NvColorFormat: the driver knows nine
-   NVN formats, others are 0; from 55.15 on its codes hold bits 16 to 31 doubled), 0x10 the layout (1 pitch linear, 3 block linear), 0x14 the pitch in bytes, 0x18 the nvmap handle of
-   the texture's pool, 0x1c the texture's offset in it, 0x20 the GMMU kind (0 pitch, 0xfe block linear), 0x24 the block
-   height (log2 of the GOBs), 0x30 bit 63 once the size is known, 0x38 the size. A block-linear pitch is the row's
-   bytes rounded up to the 64-byte GOB (NvRmSurfaceComputePitch), the size the pitch times the rows rounded up to whole
-   blocks (NvRmSurfaceComputeSize). The second argument is unused, as in the driver */
+/* The surface description NVIDIA's NvRm library keeps of the texture (NvRmSurface, 0x58 bytes), which one movie player
+   takes to have its decoder write into the texture, as the game's driver fills it (NVN 53.312, 55.12 and 55.15, read
+   from their code): 0x00 the width and height of level 0, 0x08 the color format (NvColorFormat, in the codes of the
+   game's NvRm library: the driver knows nine NVN formats, others are 0; the color space in bits 32 up counts from 1 up
+   to 53.312 and from 2 from 53.314 on, 53.313 unread; from 55.15 on bits 16 to 31 are doubled), 0x10 the layout (1
+   pitch linear, 3 block linear), 0x14 the pitch in bytes, 0x18 the nvmap handle of the texture's pool, 0x1c the
+   texture's offset in it, 0x20 the GMMU kind (0 pitch, 0xfe block linear), 0x24 the block height (log2 of the GOBs),
+   0x30 bit 63 once the size is known, 0x38 the size. A block-linear pitch is the row's bytes rounded up to the 64-byte
+   GOB (NvRmSurfaceComputePitch), the size the pitch times the rows rounded up to whole blocks (NvRmSurfaceComputeSize).
+   The second argument is unused, as in the driver */
 void nvn_TextureGetNvRmSurfaceNVX(CPU* c, u64 t, u64 unused, u64 surface) {
     static const struct {
         u16 format;
-        u64 color[2]; /* the 55.12 driver's, the 55.15 one's */
+        u64 color[3]; /* the 53.312 driver's, the 55.12 one's, the 55.15 one's */
     } colors[] = {
-        {NVN_FORMAT_R8, {0xf09200408ull, 0xf12400408ull}},
-        {NVN_FORMAT_RG8, {0xf08440710ull, 0xf10880710ull}},
-        {NVN_FORMAT_RGBA8, {0x200532120ull, 0x200a62120ull}},
-        {NVN_FORMAT_RGBX8_SRGB, {0x20a532120ull, 0x214a62120ull}},
-        {NVN_FORMAT_RGBA8_SRGB, {0x200532120ull, 0x200a62120ull}},
-        {NVN_FORMAT_RGB565, {0x20a881210ull, 0x215101210ull}},
-        {NVN_FORMAT_RGBX8, {0x20a532120ull, 0x214a62120ull}},
-        {NVN_FORMAT_BGRA8, {0x200d12120ull, 0x201a22120ull}},
-        {NVN_FORMAT_BGRA8_SRGB, {0x200d12120ull, 0x201a22120ull}},
+        {NVN_FORMAT_R8, {0xe09200408ull, 0xf09200408ull, 0xf12400408ull}},
+        {NVN_FORMAT_RG8, {0xe08440710ull, 0xf08440710ull, 0xf10880710ull}},
+        {NVN_FORMAT_RGBA8, {0x100532120ull, 0x200532120ull, 0x200a62120ull}},
+        {NVN_FORMAT_RGBX8_SRGB, {0x10a532120ull, 0x20a532120ull, 0x214a62120ull}},
+        {NVN_FORMAT_RGBA8_SRGB, {0x100532120ull, 0x200532120ull, 0x200a62120ull}},
+        {NVN_FORMAT_RGB565, {0x10a881210ull, 0x20a881210ull, 0x215101210ull}},
+        {NVN_FORMAT_RGBX8, {0x10a532120ull, 0x20a532120ull, 0x214a62120ull}},
+        {NVN_FORMAT_BGRA8, {0x100d12120ull, 0x200d12120ull, 0x201a22120ull}},
+        {NVN_FORMAT_BGRA8_SRGB, {0x100d12120ull, 0x200d12120ull, 0x201a22120ull}},
     };
     const NvnTexture* o = CT(t);
     u64 color = 0, size = 0, flags = 0;
-    u32 width = o->d.width, height = o->d.height, layout, pitch, kind, block_h = 0;
-    int v55_15 = g_nvn.loader.api >= (55u << 16 | 15);
+    u32 width = o->d.width, height = o->d.height, layout, pitch, kind, block_h = 0, api = g_nvn.loader.api;
+    int nvrm = api >= (55u << 16 | 15) ? 2 : api && api < (53u << 16 | 313) ? 0 : 1;
     (void)c;
     (void)unused;
     for (size_t i = 0; i < sizeof colors / sizeof *colors; i++)
-        if (colors[i].format == o->d.format) color = colors[i].color[v55_15];
+        if (colors[i].format == o->d.format) color = colors[i].color[nvrm];
     u32 bits = (u32)(color & 0xff); /* the format's bits per pixel */
     if (o->d.flags & NVN_TEX_LINEAR) {
         layout = 1;
