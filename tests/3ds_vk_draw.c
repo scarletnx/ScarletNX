@@ -1019,14 +1019,15 @@ typedef struct {
     const char* flag;
     const char* what;
     void (*run)(SnxCtrMemory* memory);
+    int cpu_reference; /* the scenes compare against the CPU reference; the shadow map checks its own results */
 } Mode;
-static const Mode scenes = {NULL, "the scenes", all_scenes};
+static const Mode scenes = {NULL, "the scenes", all_scenes, 1};
 /* the validation runs record only the commands under test */
-static const Mode modes[] = {{"--present", "the presented screens", screens},
-                             {"--after-draw", "the commands after a draw", presented_after_draw},
-                             {"--texture-after-draw", "the textures after a draw", texture_after_draw},
-                             {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy},
-                             {"--shadow", "the shadow map", shadow_map}};
+static const Mode modes[] = {{"--present", "the presented screens", screens, 1},
+                             {"--after-draw", "the commands after a draw", presented_after_draw, 1},
+                             {"--texture-after-draw", "the textures after a draw", texture_after_draw, 1},
+                             {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy, 1},
+                             {"--shadow", "the shadow map", shadow_map, 0}};
 
 int main(int argc, char** argv) {
     const Mode* mode = &scenes;
@@ -1057,6 +1058,9 @@ int main(int argc, char** argv) {
     snx_ctr_present_free();
     snx_ctr_vk_free();
     snx_ctr_memory_free(m);
-    printf("3ds vk draw: %s %s the CPU reference\n", mode->what, failures ? "differ from" : "agree with");
+    if (mode->cpu_reference)
+        printf("3ds vk draw: %s %s the CPU reference\n", mode->what, failures ? "differ from" : "agree with");
+    else
+        printf("3ds vk draw: %s %s\n", mode->what, failures ? "FAILED" : "passed");
     return failures != 0;
 }
