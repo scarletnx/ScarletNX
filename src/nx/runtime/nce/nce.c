@@ -284,10 +284,10 @@ void nce_crash_context(const void* context, const void* fault) {
 
 /* ---- the patches ---- */
 
-/* a pool in guest memory, which the guest's allocations then leave alone */
+/* a pool in guest memory, which the guest's allocations then leave alone and rtld does not take for a module */
 static int pool_add(u64 addr, u64 size) {
     NcePool* p;
-    if (mem_map(addr, size, MS_CODE, PERM_RX)) return -1;
+    if (mem_map(addr, size, NCE_POOL_STATE, NCE_POOL_PERM)) return -1;
     g_nce.pool = (NcePool*)snx_realloc(g_nce.pool, (g_nce.pools + 1) * sizeof *g_nce.pool);
     p = &g_nce.pool[g_nce.pools++];
     p->buf = GP(addr);
