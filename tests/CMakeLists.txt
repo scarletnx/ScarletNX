@@ -1717,13 +1717,14 @@ add_test(NAME runtime_present COMMAND snx-test-runtime-present)
 # the shared presentation effects (common/gpu/vk/present_fx.c) on a real device: FSR 1, FXAA, SMAA, SSAA
 if(TARGET Vulkan::Headers AND TARGET snx_vk_common)
     add_executable(snx-test-present-fx present_fx.c "${volk_SOURCE_DIR}/volk.c")
+    snx_test_sanitize(snx-test-present-fx)
     target_include_directories(snx-test-present-fx PRIVATE "${PROJECT_SOURCE_DIR}/src" "${volk_SOURCE_DIR}")
     target_link_libraries(snx-test-present-fx PRIVATE snx_vk_common Vulkan::Headers ${CMAKE_DL_LIBS} m)
     add_test(NAME present_fx COMMAND snx-test-present-fx)
-    set_tests_properties(present_fx PROPERTIES TIMEOUT 120)
+    set_tests_properties(present_fx PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
     # the same passes under the Khronos layer: the SSAA copy once updated a set it had bound, which only the layer sees
     add_test(NAME present_fx_validation COMMAND snx-test-present-fx --validation)
-    set_tests_properties(present_fx_validation PROPERTIES TIMEOUT 180)
+    set_tests_properties(present_fx_validation PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77)
 endif()
 
 # nvdrv's IPC side (nvdrv.c), with the GPU and host1x stand-ins in the test
