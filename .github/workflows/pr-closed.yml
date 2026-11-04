@@ -5,8 +5,8 @@ name: Pull request closed
 # A pull request merged or closed while its Build still runs keeps that run going to the end, on the runners the
 # organization's jobs share, though nothing will merge what it builds: its runs still going are cancelled
 # (scripts/cancel-pr-runs.py). A push to a pull request already cancels its run before (build.yml's concurrency).
-# pull_request_target, so a fork's are cancelled too: the job runs the base branch's copy of this file and its script,
-# and checks out nothing of the pull request
+# pull_request_target, so a fork's are cancelled too: GitHub runs the default branch's copy of this file for every
+# pull request, whatever its base, and the job checks out that branch's script and nothing of the pull request
 on:
   pull_request_target:
     types: [closed]
