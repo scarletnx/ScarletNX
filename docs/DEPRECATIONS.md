@@ -70,6 +70,10 @@ renderer=opengl
 | `fullscreen=.ini` or `controls=.ini` in `settings.ini` (Settings' **Fullscreen** or **Show controls** left to each game's `.ini`, which showed as *Off [default]*) | [gui] Fullscreen and Show controls are Off or On, no third value | the launcher's own choice, passed to every run: Off on a computer, On on a phone | the launcher as it opens: `settings.ini` is written again without it, said once |
 | In `settings.ini`, `<key>=.ini` for any other setting whose default is one of its values (shown *On [default]* beside a picked *On*), or that default picked (`docked=1`), which every run was given over the game's `.ini` | [gui] A setting's values are its own, [default] on the default's | the default, which no run is given: each game's `.ini` keeps it | the launcher as it opens: `settings.ini` is written again without it, said once |
 
+To come: `astc_bc`, ASTC as BC7, is off unless a player turns it on, which the log suggests where the images run out
+of memory ([ASTC](ASTC.md#encoded-again-as-bc7)). It may become automatic later, depending on the players' reports; an
+Auto would then be a key of its own, as `astc_bc`'s `0` stays Off.
+
 Settings > App > Move Old Files in the launcher, or `scarletnx --migrate=yes`, moves the rest of these, an entry at a
 time, each to the folder its line names; `scarletnx --migrate` says first what would move ([USAGE](USAGE.md#folders)).
 

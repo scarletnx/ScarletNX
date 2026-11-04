@@ -182,6 +182,12 @@ it whatever `native_bc` says, and `format.c` then samples BCn as it is only when
 keeps RGBA8 where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many
 levels went up as BC7 and their megabytes against RGBA8's.
 
+It never turns on by itself: it holds a game's textures in less memory, and a game short of it then hides the reason.
+Off, on a GPU that samples BCn but not ASTC, the log suggests it once a run, with the budget, the use and the megabytes
+of ASTC textures decoded to RGBA8, when the images run short (`surface.c`'s `astc_bc_suggest`): an image allocation
+finds no memory, a trim leaves the caches past their budget, or a trim takes what the last two presents used (the
+working set, which the next frames load again).
+
 The encoder tries each block in the modes that suit it and writes the one with the least squared error. Every
 block takes mode 6, one line through RGBA with 4-bit weights, which holds a block of one gradient closely. An opaque
 block (every alpha 255) also takes the modes that store no alpha and so keep it 255: modes 1 and 3, two subsets of
