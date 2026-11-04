@@ -30,6 +30,18 @@ int main(void) {
     CHECK(agb_bios_call(&board, AGB_SWI_HALT, regs) == 1);
     CHECK(agb_bios_call(&board, 0x55, regs) == -1);
     CHECK(!strcmp(agb_bios_name(AGB_SWI_BG_AFFINE_SET), "BgAffineSet"));
+    /* the BIOS's sound driver is not here: its calls are stubs, its jump list names a call that returns at once, and
+       MultiBoot fails with no cable */
+    CHECK(agb_bios_call(&board, AGB_SWI_SOUND_DRIVER_VSYNC, regs) == 1);
+    CHECK(!strcmp(agb_bios_name(0x28), "SoundDriverVSyncOff") &&
+          !strcmp(agb_bios_name(0x2A), "SoundDriverGetJumpList"));
+    memset(regs, 0, sizeof(regs));
+    regs[0] = 0x02000900;
+    CHECK(agb_bios_call(&board, AGB_SWI_SOUND_DRIVER_GET_JUMP_LIST, regs) == 0);
+    CHECK(agb_read32(&board, 0x02000900) == AGB_BIOS_NOP_CALL &&
+          agb_read32(&board, 0x02000900 + 35 * 4) == AGB_BIOS_NOP_CALL);
+    CHECK(regs[0] == 0x02000900 + 36 * 4);
+    CHECK(agb_bios_call(&board, AGB_SWI_MULTI_BOOT, regs) == 0 && regs[0] == 1);
     CHECK(!agb_bios_name(0x55));
 
     /* Div and DivArm */

@@ -548,6 +548,11 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
             irq_return(board, cpu);
             continue;
         }
+        if (cpu->arm.r[15] == AGB_BIOS_NOP_CALL) { /* a sound driver function SoundDriverGetJumpList named: bx lr */
+            cpu->arm.cpsr = (cpu->arm.cpsr & ~(uint32_t)SNX_ARM_T) | (cpu->arm.r[14] & 1 ? SNX_ARM_T : 0);
+            cpu->arm.r[15] = cpu->arm.r[14] & ~(uint32_t)1;
+            continue;
+        }
         const AgbBlock* block =
             agb_recomp_lookup(recomp, board, cpu->arm.r[15], (cpu->arm.cpsr & SNX_ARM_T) != 0, error, error_size);
         if (!block) return -1;
