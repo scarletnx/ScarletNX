@@ -130,6 +130,10 @@ void plat_gpu_buffer_free(int fd, void* handle, u64 size);
    (no /proc/self/maps, or a read of it failed: errno), which tells nothing of the range. A plain anonymous mapping of
    another owner reads as the guest's. It reads with read(2) into a buffer of its own, so a crash handler may call it */
 int plat_vm_foreign(u64 lo, u64 hi, char* out, size_t size);
+/* The runs of [lo, hi) that nothing of the process maps, each at least min bytes long, from the lowest: up to max of
+   them as start and end pairs in runs. Their count; -1 where the system does not say (errno), or when there were more
+   than max (E2BIG). A snapshot: a run may be taken before the caller maps it, which a MAP_FIXED_NOREPLACE then says */
+int plat_vm_free_runs(u64 lo, u64 hi, u64 min, u64* runs, int max);
 /* Calls cb for each run of pages in [p, p + size) written since they were last scanned, and watches them again.
    -1 when the host can't tell (the caller then compares contents). Linux 6.7 and later use userfaultfd's asynchronous
    write protection with PAGEMAP_SCAN, Windows the write watch of the reservation. The other POSIX hosts (macOS,

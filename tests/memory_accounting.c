@@ -16,6 +16,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #if defined(__linux__)
 #include <sys/prctl.h>
@@ -107,14 +108,17 @@ void plat_vm_track(u8* p, u64 size) { tracked = p, tracked_size = size; }
 #else
 void plat_vm_track(u8* p, u64 size) { (void)p, (void)size; }
 #endif
-/* mem.c's reservation at the guest's own addresses (NCE), which test_moved asks for: at addr or nowhere */
+/* mem.c's reservation at the guest's own addresses (NCE), which test_moved asks for: at addr or nowhere. Each call
+   counted, for test_moved_tries */
 static int reserve_at_on;
+static u64 reserve_at_calls;
 u8* plat_vm_reserve_at(u64 addr, u64 size) {
     void* p;
     if (!reserve_at_on) {
         errno = ENOSYS;
         return NULL;
     }
+    reserve_at_calls++;
     p = mmap((void*)(uintptr_t)addr, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) return NULL;
     if (p != (void*)(uintptr_t)addr) {
@@ -125,6 +129,36 @@ u8* plat_vm_reserve_at(u64 addr, u64 size) {
     reservation = (u8*)p;
     reservation_size = size;
     return (u8*)p;
+}
+/* plat_posix.c's free runs, read from this process's /proc/self/maps as it does (platform_posix tests the real one);
+   off, the answer of a system that lists none */
+static int free_runs_on = 1;
+int plat_vm_free_runs(u64 lo, u64 hi, u64 min, u64* runs, int max) {
+    FILE* f = free_runs_on ? fopen("/proc/self/maps", "r") : NULL;
+    unsigned long long a, b;
+    u64 cursor = lo;
+    int n = 0;
+    char line[512];
+    if (!f) {
+        errno = ENOSYS;
+        return -1;
+    }
+    while (fgets(line, sizeof line, f) && cursor < hi) {
+        if (sscanf(line, "%llx-%llx", &a, &b) < 2 || b <= cursor) continue;
+        if (a > cursor && (a < hi ? a : hi) - cursor >= min && n < max) {
+            runs[2 * n] = cursor;
+            runs[2 * n + 1] = a < hi ? a : hi;
+            n++;
+        }
+        cursor = b;
+    }
+    if (cursor < hi && hi - cursor >= min && n < max) {
+        runs[2 * n] = cursor;
+        runs[2 * n + 1] = hi;
+        n++;
+    }
+    fclose(f);
+    return n;
 }
 /* nce.c, whose NCE no game here is of: mem.c's reservation asks it first */
 int nce_wanted(void) { return 0; }
@@ -688,6 +722,65 @@ static void moved_smaller(u64 from, u64 by) {
     _exit(0);
 }
 static MemLayout g_console; /* the layout a process starts with, which the scenarios before test_moved change */
+/* NCE's search from 64 GiB in a process where something is mapped every 60 to 70 GiB up to 512 GiB, so neither 256
+   nor 128 GiB is free anywhere and 64 GiB first fits after the page at 130 GiB: in a child, the bases it asks for with
+   the free runs listed, then without a list, every 2 MiB step. Both take the same base; the list asks for one, the
+   steps for ~296000 (said with the time they took). Linux only, and not under ASan, whose shadow holds those addresses */
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
+static void moved_tries(int listed, int fd) {
+    static const u64 held_gib[] = {70, 130, 200, 260, 330, 400, 470};
+    const u64 from = 64ull << 30;
+    struct timespec t0, t1;
+    u64 out[3];
+    for (size_t i = 0; i < sizeof held_gib / sizeof *held_gib; i++) {
+        void* at = (void*)(uintptr_t)(held_gib[i] << 30);
+        if (mmap(at, 2 * MIB, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) != at) _exit(3);
+    }
+    free_runs_on = listed;
+    reserve_at_calls = 0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    if (mem_reserve_identity(from) != 1) _exit(4);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    out[0] = reserve_at_calls;
+    out[1] = mem_moved();
+    out[2] = (u64)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec)) / 1000000;
+    if (write(fd, out, sizeof out) != (ssize_t)sizeof out) _exit(5);
+    _exit(0);
+}
+#endif
+static void test_moved_tries(void) {
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
+    u64 got[2][3];
+    for (int listed = 1; listed >= 0; listed--) {
+        int fds[2], status = 0;
+        pid_t child;
+        CHECK(pipe(fds) == 0);
+        reserve_at_on = 1;
+        g_layout = g_console;
+        g_as_size = AS_MAX;
+        fflush(stdout);
+        child = fork();
+        if (!child) moved_tries(listed, fds[1]);
+        close(fds[1]);
+        CHECK(child > 0 && waitpid(child, &status, 0) == child && WIFEXITED(status));
+        if (WEXITSTATUS(status) == 3) {
+            printf("NCE's search: 64 to 512 GiB are taken in this process, skipped\n");
+            close(fds[0]);
+            reserve_at_on = 0;
+            return;
+        }
+        CHECK(WEXITSTATUS(status) == 0 && read(fds[0], got[listed], sizeof got[listed]) == (ssize_t)sizeof got[listed]);
+        close(fds[0]);
+    }
+    reserve_at_on = 0;
+    printf("NCE's search from 64 GiB: %llu reservation asked with the free runs listed (%llu ms), %llu in 2 MiB steps "
+           "(%llu ms)\n",
+           (unsigned long long)got[1][0], (unsigned long long)got[1][2], (unsigned long long)got[0][0],
+           (unsigned long long)got[0][2]);
+    CHECK(got[1][1] == (130ull << 30) + 2 * MIB - 0x8000000ull && got[0][1] == got[1][1]);
+    CHECK(got[1][0] == 1 && got[0][0] > 100000);
+#endif
+}
 static void test_moved(void) {
 #if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
     const u64 from = 64ull << 30, held_at = 65ull << 30, by = from + 898 * MIB, size = 256ull << 30;
@@ -826,6 +919,7 @@ int main(void) {
     CHECK(munmap(reservation, reservation_size) == 0);
     g_mem = NULL;
     refuse_above = 0;
+    test_moved_tries();
     test_moved(); /* last: it leaves the layout moved */
     return 0;
 }

@@ -1417,7 +1417,59 @@ static int foreign_scan(int fd, u64 lo, u64 hi, char* out, size_t size) {
     if (size) out[f.at < size ? f.at : size - 1] = 0;
     return f.found;
 }
+typedef struct {
+    u64 hi, min, cursor;
+    u64* runs;
+    int max, n;
+} FreeRuns;
+static void free_add(FreeRuns* f, u64 a, u64 b) {
+    if (b - a < f->min) return;
+    if (f->n < f->max) {
+        f->runs[2 * f->n] = a;
+        f->runs[2 * f->n + 1] = b;
+    }
+    f->n++;
+}
+static int free_cb(char* line, void* ctx) {
+    FreeRuns* f = (FreeRuns*)ctx;
+    unsigned long long a, b;
+    if (sscanf(line, "%llx-%llx", &a, &b) < 2 || b <= f->cursor) return 0;
+    if (a >= f->hi) { /* the maps are in address order: the rest lies past the range */
+        free_add(f, f->cursor, f->hi);
+        f->cursor = f->hi;
+        return 1;
+    }
+    if (a > f->cursor) free_add(f, f->cursor, a);
+    f->cursor = b;
+    return 0;
+}
+/* plat_vm_free_runs over the maps read from fd */
+static int free_runs_scan(int fd, u64 lo, u64 hi, u64 min, u64* runs, int max) {
+    FreeRuns f = {hi, min, lo, runs, max, 0};
+    if (maps_lines(fd, free_cb, &f)) return -1;
+    if (f.cursor < hi) free_add(&f, f.cursor, hi);
+    if (f.n > max) {
+        errno = E2BIG;
+        return -1;
+    }
+    return f.n;
+}
 #endif
+int plat_vm_free_runs(u64 lo, u64 hi, u64 min, u64* runs, int max) {
+#if defined(__linux__)
+    int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC), n, err;
+    if (fd < 0) return -1;
+    n = free_runs_scan(fd, lo, hi, min, runs, max);
+    err = errno;
+    close(fd);
+    errno = err;
+    return n;
+#else
+    (void)lo, (void)hi, (void)min, (void)runs, (void)max;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
 int plat_vm_foreign(u64 lo, u64 hi, char* out, size_t size) {
 #if defined(__linux__)
     int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC), found, err;

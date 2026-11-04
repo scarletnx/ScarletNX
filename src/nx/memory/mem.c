@@ -874,39 +874,66 @@ static u8* reserve_tiers(void) {
    stays 0. The address space is reserved from the code region's base (each layout of a 64-bit game has it there),
    moved up by from or more. Linux: from is 0, the guest's own addresses: an executable that is position independent,
    and the libraries, lie far above them on a host with 39 bits of address space or more. Android: the app's process
-   holds the low 4 GiB (ART's heap and boot image), so the whole layout moves to the first base from 64 GiB, in 2 MiB
-   steps, where a tier is free, as Eden's host_memory.cpp takes its base above 36 bits. The guest's addresses stay
-   below AS_TOP (2^39), so the console's 512 GiB fit only where the layout stays at its own addresses (Linux); moved,
-   the largest tier is Eden's under NCE, 256 GiB (device_memory.cpp: an arm64 build reserves 1 << 38), from any base up
-   to 256 GiB. A smaller one, where those are taken, says the one that fit and was not free */
+   holds the low 4 GiB (ART's heap and boot image), so the whole layout moves to the first base from 64 GiB, on a 2 MiB
+   step, where a tier is free (identity_at), as Eden's host_memory.cpp takes its base above 36 bits. The guest's
+   addresses stay below AS_TOP (2^39), so the console's 512 GiB fit only where the layout stays at its own addresses
+   (Linux); moved, the largest tier is Eden's under NCE, 256 GiB (device_memory.cpp: an arm64 build reserves 1 << 38),
+   from any base up to 256 GiB. A smaller one, where those are taken, says the one that fit and was not free */
 #define IDENTITY_LO   0x8000000ull
 #define IDENTITY_STEP (2ull << 20)
+#define IDENTITY_RUNS 64
 static int g_mem_identity;
 #if !defined(_WIN32)
+/* The move (from or more, a multiple of 2 MiB) at which tier's layout is reserved, or ~0 where none is. From 0, only
+   the guest's own addresses. Else the lowest base of each run that the system lists as free and long enough, in
+   address order, so the first base that fits is taken with one reservation; one another thread took since the listing
+   reads the list again, once. Only where the system lists nothing (no /proc/self/maps, more runs than listed), every
+   2 MiB step from from, which for the 256 GiB tier from 64 GiB is 98304 reservations when none is free */
+static u64 identity_at(u64 from, u64 tier) {
+    u64 runs[2 * IDENTITY_RUNS];
+    if (!from) return plat_vm_reserve_at(IDENTITY_LO, tier - IDENTITY_LO) ? 0 : ~0ull;
+    for (int pass = 0; pass < 2; pass++) {
+        int n = plat_vm_free_runs(from + IDENTITY_LO, AS_TOP, tier - IDENTITY_LO, runs, IDENTITY_RUNS), taken = 0;
+        if (n < 0) {
+            if (pass) return ~0ull; /* listed once: the second list is no reason to try every step */
+            break;
+        }
+        for (int i = 0; i < n; i++) {
+            u64 by = (runs[2 * i] - IDENTITY_LO + IDENTITY_STEP - 1) / IDENTITY_STEP * IDENTITY_STEP;
+            if (by < from) by = from;
+            if (by > AS_TOP - tier || by + tier > runs[2 * i + 1]) continue;
+            if (plat_vm_reserve_at(by + IDENTITY_LO, tier - IDENTITY_LO)) return by;
+            taken = 1;
+        }
+        if (!taken || pass) {
+            if (!taken) errno = ENOMEM; /* the list holds no run that large */
+            return ~0ull;
+        }
+    }
+    for (u64 by = from; by <= AS_TOP - tier; by += IDENTITY_STEP)
+        if (plat_vm_reserve_at(by + IDENTITY_LO, tier - IDENTITY_LO)) return by;
+    return ~0ull;
+}
 int mem_reserve_identity(u64 from) {
     u64 want = 0; /* the largest tier that fits below AS_TOP from there */
     for (size_t i = 0; i < sizeof tiers / sizeof *tiers; ++i) {
         u64 tier = tiers[i];
         if (tier > AS_TOP - from) continue;
         if (!want) want = tier;
-        for (u64 by = from; by <= AS_TOP - tier; by += IDENTITY_STEP) {
-            if (plat_vm_reserve_at(by + IDENTITY_LO, tier - IDENTITY_LO)) {
-                char not_free[96] = "";
-                g_as_size = tier;
-                if (tier != AS_MAX) layout_for(tier);
-                if (by) mem_layout_move(by);
-                g_mem_identity = 1;
-                if (tier < want)
-                    snprintf(not_free, sizeof not_free, "; %llu GiB, the most that fits from %#llx, was not free",
-                             (unsigned long long)(want >> 30), (unsigned long long)(from + IDENTITY_LO));
-                LOG("memory: %llu GiB of address space reserved at the guest's own addresses, for NCE: the code region "
-                    "from %#llx, the address space to %#llx%s\n",
-                    (unsigned long long)(tier >> 30), (unsigned long long)AS_BASE, (unsigned long long)AS_END,
-                    not_free);
-                return 1;
-            }
-            if (!from) break; /* the guest's own addresses, or none */
-        }
+        char not_free[96] = "";
+        u64 by = identity_at(from, tier);
+        if (by == ~0ull) continue;
+        g_as_size = tier;
+        if (tier != AS_MAX) layout_for(tier);
+        if (by) mem_layout_move(by);
+        g_mem_identity = 1;
+        if (tier < want)
+            snprintf(not_free, sizeof not_free, "; %llu GiB, the most that fits from %#llx, was not free",
+                     (unsigned long long)(want >> 30), (unsigned long long)(from + IDENTITY_LO));
+        LOG("memory: %llu GiB of address space reserved at the guest's own addresses, for NCE: the code region from "
+            "%#llx, the address space to %#llx%s\n",
+            (unsigned long long)(tier >> 30), (unsigned long long)AS_BASE, (unsigned long long)AS_END, not_free);
+        return 1;
     }
     WARN("memory: the guest's addresses from %#llx up are taken in the host's process (%s), so its code cannot run "
          "natively\n",
