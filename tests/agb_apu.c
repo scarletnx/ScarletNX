@@ -106,7 +106,7 @@ int main(void) {
 
     /* the wave channel plays its 4 bit digits */
     reset();
-    agb_apu_write(&board, 0x070, 0x00); /* wave RAM writes go to bank 0 */
+    agb_apu_write(&board, 0x070, 0x40); /* bank 1 to play: the registers reach bank 0 */
     for (int i = 0; i < 8; ++i) agb_apu_write(&board, 0x090 + (uint32_t)i * 2, 0xFFFF);
     agb_apu_write(&board, 0x080, 0x4477); /* wave to both sides */
     agb_apu_write(&board, 0x082, 0x0002); /* PSG at 100 percent */
@@ -115,6 +115,30 @@ int main(void) {
     agb_apu_write(&board, 0x074, 0x8400); /* frequency 1024 and trigger */
     CHECK(run_samples(64) == 64);
     CHECK(out[0] == 960 && out[2 * 63] == 960); /* every digit is 15 */
+
+    /* a byte's high digit plays first; the registers reach the bank the channel does not play, while it plays; with
+       bit 5 it plays 64 digits, its bank's then the other's; bit 15 forces 75 percent. At frequency 1984 a digit lasts
+       one output sample */
+    reset();
+    agb_apu_write(&board, 0x080, 0x4477);
+    agb_apu_write(&board, 0x082, 0x0002);
+    agb_apu_write(&board, 0x070, 0x40);   /* the registers reach bank 0 */
+    agb_apu_write(&board, 0x090, 0x00F0); /* digits 15, 0, then 0, 0 */
+    agb_apu_write(&board, 0x070, 0x80);   /* bank 0 plays: the registers reach bank 1 */
+    for (int i = 0; i < 8; ++i) agb_apu_write(&board, 0x090 + (uint32_t)i * 2, 0xFFFF);
+    agb_apu_write(&board, 0x072, 0x2000);
+    agb_apu_write(&board, 0x074, 0x8000 | 1984);
+    CHECK(run_samples(32) == 32);
+    CHECK(out[0] == 960 && out[2 * 1] == -960 && out[2 * 2] == -960 && out[2 * 31] == -960);
+    agb_apu_write(&board, 0x070, 0xC0); /* bank 1 plays, written while bank 0 played */
+    CHECK(run_samples(4) == 4 && left_count(4, 960) == 4);
+    agb_apu_write(&board, 0x070, 0xA0); /* 64 digits from bank 0 */
+    agb_apu_write(&board, 0x074, 0x8000 | 1984);
+    CHECK(run_samples(64) == 64);
+    CHECK(out[0] == 960 && out[2 * 1] == -960 && out[2 * 31] == -960 && left_count(64, 960) == 33);
+    agb_apu_write(&board, 0x072, 0x8000); /* 75 percent */
+    agb_apu_write(&board, 0x070, 0xC0);
+    CHECK(run_samples(4) == 4 && left_count(4, 11 * 64) == 4);
 
     /* the FIFOs play the bytes the direct sound DMA queues, one each time their timer overflows, held between: none
        while no timer runs, and with timer 0 at 1024 cycles each byte lasts two output samples of 512 */
