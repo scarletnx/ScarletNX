@@ -99,26 +99,34 @@ static void entitlement_lines(void) {
 /* MetricKit's payloads: what the system saw of the app's runs, a crash, a hang or an exit for memory among them, which
    the app itself cannot log. Each goes as JSON into logs/metrickit-YYYY-MM-DD_HHMMSS.json, named by the end of the time
    it covers, with -2, -3 and on for a different payload of the same name. A payload that a file already holds (iOS
-   gives the past ones again at each start) is not written again. A line in the console log names the file and what
-   it holds. The system calls the subscriber on a queue of its own, and it can give the payloads of a run at a later
-   start */
+   gives the past ones again at each start) is not written again. A line in the console log names the file, or the
+   file and why it was not written, and what it holds. The system calls the subscriber on a queue of its own, and it
+   can give the payloads of a run at a later start */
 static NSURL* metrics_folder;
-/* the file of json for the payload that ends at end, written when it is not there yet: its name, nil when it cannot be
-   written */
+/* the file of json for the payload that ends at end, written when it is not there yet: its name for the payload's
+   line, or that it was not written, with the file and the system's reason, since the payload is the exit's only
+   record */
 static NSString* metrics_write_one(NSData* json, NSDate* end) {
     NSDateFormatter* format = [[NSDateFormatter alloc] init];
     format.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
     format.dateFormat = @"yyyy-MM-dd_HHmmss";
     NSString* stem = [@"metrickit-" stringByAppendingString:[format stringFromDate:end ? end : [NSDate date]]];
-    for (int n = 1; json && metrics_folder && n < 100; n++) {
+    if (!json) return [stem stringByAppendingString:@" not written: the payload gave no JSON"];
+    if (!metrics_folder) return [stem stringByAppendingString:@" not written: no logs folder"];
+    for (int n = 1; n < 100; n++) {
         NSString* name = n == 1 ? [stem stringByAppendingString:@".json"]
                                 : [stem stringByAppendingFormat:@"-%d.json", n];
         NSURL* file = [metrics_folder URLByAppendingPathComponent:name];
         NSData* there = [NSData dataWithContentsOfURL:file];
         if ([there isEqualToData:json]) return name;
-        if (!there) return [json writeToURL:file atomically:YES] ? name : nil;
+        if (there) continue;
+        NSError* error = nil;
+        if ([json writeToURL:file options:NSDataWritingAtomic error:&error]) return name;
+        return [NSString stringWithFormat:@"not written to %@: %@", file.path,
+                                          error ? error.localizedDescription : @"the system gave no reason"];
     }
-    return nil;
+    return [NSString stringWithFormat:@"not written: %@.json to %@-99.json in %@ all hold other payloads", stem, stem,
+                                      metrics_folder.path];
 }
 static NSString* metrics_write(NSData* json, NSDate* end) {
     @synchronized(NSFileManager.class) { /* the subscriber's queue and the past payloads of the main thread */
@@ -130,9 +138,8 @@ static void metrics_count(NSMutableString* line, NSArray* diagnostics, const cha
     if (diagnostics.count) [line appendFormat:@", %lu %s", (unsigned long)diagnostics.count, type];
 }
 static void metrics_diagnostic(MXDiagnosticPayload* payload, const char* when) {
-    NSString* name = metrics_write(payload.JSONRepresentation, payload.timeStampEnd);
-    NSMutableString* line = [NSMutableString stringWithFormat:@"metrickit: %s diagnostic payload %@", when,
-                                                              name ? name : @"(not written)"];
+    NSString* file = metrics_write(payload.JSONRepresentation, payload.timeStampEnd);
+    NSMutableString* line = [NSMutableString stringWithFormat:@"metrickit: %s diagnostic payload %@", when, file];
     metrics_count(line, payload.crashDiagnostics, "crash");
     metrics_count(line, payload.hangDiagnostics, "hang");
     metrics_count(line, payload.cpuExceptionDiagnostics, "CPU exception");
@@ -142,12 +149,12 @@ static void metrics_diagnostic(MXDiagnosticPayload* payload, const char* when) {
 }
 /* MetricKit has no diagnostic for an exit for memory: its count is in a metric payload's exit metrics */
 static void metrics_metric(MXMetricPayload* payload, const char* when) {
-    NSString* name = metrics_write(payload.JSONRepresentation, payload.timeStampEnd);
+    NSString* file = metrics_write(payload.JSONRepresentation, payload.timeStampEnd);
     MXAppExitMetric* exits = payload.applicationExitMetrics;
     fprintf(stderr,
             "metrickit: %s metric payload %s, memory exit: %lu at the memory limit in the foreground, %lu at the "
             "memory limit and %lu for memory pressure in the background\n",
-            when, name ? name.UTF8String : "(not written)",
+            when, file.UTF8String,
             (unsigned long)exits.foregroundExitData.cumulativeMemoryResourceLimitExitCount,
             (unsigned long)exits.backgroundExitData.cumulativeMemoryResourceLimitExitCount,
             (unsigned long)exits.backgroundExitData.cumulativeMemoryPressureExitCount);

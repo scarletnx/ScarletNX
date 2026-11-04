@@ -76,8 +76,9 @@ menu's driver:
 - **MetricKit.** The app subscribes to MetricKit at its start. Each payload that the system gives (a diagnostic
   payload with crashes, hangs, CPU and disk write exceptions, or a metric payload with the counts of exits for memory)
   goes as JSON to `logs/metrickit-<date>_<time>.json`, named by the end of the time that it covers. The console log
-  gets one line for each payload, with its file and what it holds. The payloads that the system gave before this start
-  are read again at each start, and a file that already holds one is not written again.
+  gets one line for each payload, with its file (or the file and why it was not written) and what it holds. The
+  payloads that the system gave before this start are read again at each start, and a file that already holds one is
+  not written again.
 
 The IPA is unsigned: AltStore, SideStore or a developer account signs it for the device (a Mac can too:
 [Installing from a Mac](#installing-from-a-mac)), with
