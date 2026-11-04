@@ -12,7 +12,10 @@
 #include "nx/gpu/nvn/nvn_state.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "common/filesystem/host.h" /* PMutex */
+#include <errno.h>
 #include <stdarg.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,13 +28,23 @@ u8* g_mem = memory; /* guest address a is memory + a */
 static u64 g_pool_memory = 0x10000;
 u64 nvn_pool_memory(u64 pool) { return pool ? g_pool_memory : 0; }
 u64 nvn_pool_gpu(u64 pool) { return pool ? 0x10000 : 0; }
-/* the runtime's own memory a command buffer is lent: from 0x80000 on */
+/* the runtime's own memory a command buffer is lent: guest 0x80000 on, or a host address while g_mem is 0 (NCE's
+   layout, where a guest address is the host's), so its records are written where GP goes */
 static u64 g_lent = 0x80000;
+static _Alignas(16) u8 g_lent_host[1 << 20];
+static size_t g_lent_used;
 u64 kmem_alloc(u64 size, u32 state, u32 perm) {
-    u64 at = g_lent;
+    u64 at;
     (void)state;
     (void)perm;
-    g_lent += size;
+    if (g_mem) {
+        at = g_lent;
+        g_lent += size;
+        return at;
+    }
+    g_lent_used = (g_lent_used + 15) & ~(size_t)15;
+    at = (u64)(uintptr_t)(g_lent_host + g_lent_used);
+    g_lent_used += size;
     return at;
 }
 /* all of the guest memory is mapped */
@@ -123,6 +136,36 @@ static void walk(u64 p, Walk* w) {
         p += h.size;
     }
 }
+/* g_mem 0, as under NCE, where a guest address is the host's: a bind of a program that SetShaders gave stages records
+   them. GP as an addition to the null g_mem let the compiler take the program for null and drop the copy. It runs in
+   a child of its own (main's fork): the runtime's memory for records is cut where g_mem points, so a run that
+   started in the guest layout cannot lend a piece of it to a run that moved to the NCE layout, and the child starts
+   with no piece cut at all. 0 when every check passed */
+static int nce_bind(CPU* cpu) {
+    static _Alignas(16) u8 host[0x2000];
+    const u64 cbn = (u64)(uintptr_t)host, prog = cbn + 0x200;
+    NvnProgram pr;
+    Walk w;
+    memset(&pr, 0, sizeof pr);
+    pr.magic = NVN_MAGIC('P', 'R', 'O', 'G');
+    pr.st[NVN_SHADER_STAGE_VERTEX].data = 0x41e0c0000ull;
+    pr.st[NVN_SHADER_STAGE_VERTEX].off = 0x30;
+    memcpy(host + 0x200, &pr, sizeof pr);
+    g_mem = NULL;
+    g_pool_memory = cbn + 0x1000;
+    nvn_CommandBufferInitialize(cpu, cbn, 0);
+    nvn_CommandBufferAddCommandMemory(cpu, cbn, 1, 0, 0x1000);
+    nvn_CommandBufferBeginRecording(cpu, cbn);
+    nvn_CommandBufferBindProgram(cpu, cbn, prog, 0x1f);
+    walk(nvn_CommandBufferEndRecording(cpu, cbn), &w);
+    int ok = w.n == 1 && w.op[0] == OP_BIND_PROGRAM &&
+              gr64(w.at[0] + 8 + offsetof(NvnPBindProgram, st) + NVN_SHADER_STAGE_VERTEX * sizeof(NvnStage)) ==
+                  0x41e0c0000ull;
+    g_mem = memory;
+    g_pool_memory = 0x10000;
+    return !ok;
+}
+
 /* bytes [from, to) all hold v */
 static int untouched(u64 from, u64 to, u8 v) {
     for (; from < to; from++)
@@ -159,6 +202,16 @@ int main(void) {
     memcpy(GP(tex), &t, sizeof t);
     gw64(colors, tex);
 
+    /* the NCE layout's bind, in a child of its own: its runtime memory is cut where g_mem points, and it has none
+       cut before it */
+    {
+        int status = 0;
+        pid_t pid = fork();
+        if (pid == 0) _exit(nce_bind(&cpu));
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        }
+        check(WIFEXITED(status) && WEXITSTATUS(status) == 0, "with g_mem 0 a bind records the program's stages");
+    }
     /* a recording to call, then the source: a clear (the driver's 48 bytes leave 16 to spare past its record), a render
        target (its texture's snapshot in the record, far bigger than the driver's 96 bytes: the rest of the recording
        goes on in the runtime's memory past a JUMP), more memory added, a draw and a call */
@@ -700,33 +753,6 @@ int main(void) {
         nvn_CommandBufferBindUniformBuffer(&cpu, cbh, 0, 3, 0x605640000ull, 0x100);
         check(nvn_CommandBufferEndRecording(&cpu, cbh) == hh && gr64(hh + 8) == b1 && b2 != b1,
               "once the submission is read, the next recording takes the block given back first");
-    }
-    /* g_mem 0, as under NCE, where a guest address is the host's: a bind of a program that SetShaders gave stages records
-       them. GP as an addition to the null g_mem let the compiler take the program for null and drop the copy */
-    {
-        static _Alignas(16) u8 host[0x2000];
-        u8* base = g_mem;
-        const u64 cbn = (u64)(uintptr_t)host, prog = cbn + 0x200;
-        NvnProgram pr;
-        Walk w;
-        memset(&pr, 0, sizeof pr);
-        pr.magic = NVN_MAGIC('P', 'R', 'O', 'G');
-        pr.st[NVN_SHADER_STAGE_VERTEX].data = 0x41e0c0000ull;
-        pr.st[NVN_SHADER_STAGE_VERTEX].off = 0x30;
-        memcpy(host + 0x200, &pr, sizeof pr);
-        g_mem = NULL;
-        g_pool_memory = cbn + 0x1000;
-        nvn_CommandBufferInitialize(&cpu, cbn, 0);
-        nvn_CommandBufferAddCommandMemory(&cpu, cbn, 1, 0, 0x1000);
-        nvn_CommandBufferBeginRecording(&cpu, cbn);
-        nvn_CommandBufferBindProgram(&cpu, cbn, prog, 0x1f);
-        walk(nvn_CommandBufferEndRecording(&cpu, cbn), &w);
-        check(w.n == 1 && w.op[0] == OP_BIND_PROGRAM &&
-                  gr64(w.at[0] + 8 + offsetof(NvnPBindProgram, st) + NVN_SHADER_STAGE_VERTEX * sizeof(NvnStage)) ==
-                      0x41e0c0000ull,
-              "with g_mem 0 a bind records the program's stages");
-        g_mem = base;
-        g_pool_memory = 0x10000;
     }
     if (failures) return 1;
     puts("nvn_commands: ok");
