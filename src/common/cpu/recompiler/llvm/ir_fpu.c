@@ -284,7 +284,7 @@ static V fast_binary(SnxIr* ir, unsigned op, unsigned width, V a, V b, V* ok, V*
             exact_zero = both(ir, is_zero(ir, width, rb), either(ir, is_zero(ir, width, a), is_zero(ir, width, b)));
             if (width == 32)
                 *inexact = float_ne(ir, LLVMBuildFMul(B, widen(ir, fa), widen(ir, fb), ""), widen(ir, r));
-            else if (host_fma(ir)) {
+            else if (host_fma_scalar(ir)) {
                 *inexact = float_ne(ir, fma3(ir, fa, fb, LLVMBuildFNeg(B, r, "")), kfloat(ir, 64, 0.0));
                 cut = either(ir, exact_zero, magnitude_in(ir, 64, rb, RESIDUAL_FLOOR, inf_bits(64)));
             }
@@ -296,7 +296,7 @@ static V fast_binary(SnxIr* ir, unsigned op, unsigned width, V a, V b, V* ok, V*
             if (width == 32) {
                 V product = LLVMBuildFMul(B, widen(ir, r), widen(ir, fb), "");
                 *inexact = float_ne(ir, LLVMBuildFSub(B, widen(ir, fa), product, ""), kfloat(ir, 64, 0.0));
-            } else if (host_fma(ir)) {
+            } else if (host_fma_scalar(ir)) {
                 *inexact = float_ne(ir, fma3(ir, LLVMBuildFNeg(B, r, ""), fb, fa), kfloat(ir, 64, 0.0));
                 cut = either(ir, is_zero(ir, 64, a), magnitude_in(ir, 64, a, RESIDUAL_FLOOR, inf_bits(64)));
             }
@@ -319,7 +319,7 @@ static V fast_sqrt(SnxIr* ir, unsigned width, V a, V* ok, V* inexact) {
     *ok = both(ir, both(ir, fpcr_clear(ir, FPCR_RMODE), unflushed(ir, width, a)), either(ir, roomy(ir, width, rb), zero));
     if (width == 32)
         *inexact = float_ne(ir, widen(ir, fa), LLVMBuildFMul(B, widen(ir, r), widen(ir, r), ""));
-    else if (host_fma(ir)) {
+    else if (host_fma_scalar(ir)) {
         *inexact = float_ne(ir, fma3(ir, LLVMBuildFNeg(B, r, ""), r, fa), kfloat(ir, 64, 0.0));
         *ok = both(ir, *ok, either(ir, zero, magnitude_in(ir, 64, a, RESIDUAL_FLOOR, inf_bits(64))));
     } else
@@ -401,7 +401,7 @@ static void fp_fma(SnxIr* ir, const SnxA64Args* a, int negate_add, int negate_n)
     V add = fp_reg(ir, (unsigned)a->ra, width);
     if (negate_add) add = LLVMBuildXor(B, add, kint(ir, width, sign_mask(width)), "");
     if (negate_n) n = LLVMBuildXor(B, n, kint(ir, width, sign_mask(width)), "");
-    if (width != 16 && host_fma(ir)) {
+    if (width != 16 && host_fma_scalar(ir)) {
         FmaResidual residual;
         V ok, fast = fast_fma(ir, width, add, n, m, &ok, &residual);
         relax(ir, width, fast, &ok, NULL);
@@ -425,7 +425,7 @@ static void fp_move(SnxIr* ir, const SnxA64Args* a, int op) {
 static void fp_sqrt(SnxIr* ir, const SnxA64Args* a) {
     unsigned width = width_of(a->esz);
     V n = fp_reg(ir, (unsigned)a->rn, width), r;
-    if (width != 16 && host_native(ir)) {
+    if (width != 16 && host_fp(ir)) {
         V ok, inexact, fast = fast_sqrt(ir, width, n, &ok, &inexact);
         relax(ir, width, fast, &ok, &inexact);
         Split s;
@@ -437,13 +437,13 @@ static void fp_sqrt(SnxIr* ir, const SnxA64Args* a) {
 }
 
 /* FRINTN, P, M, Z, A (rm the encoding's), X and I (rm < 0: FPCR's mode, ir_fp_round_value); exact: FRINTX's IXC.
-   The host's rounding (host_rint, which on x86 gives ties away from zero too) gives the modes exactly for all but a
-   NaN or a flushed denormal, and raises nothing; FRINTX's IXC is a value rounding changed */
+   The host's rounding (host_rint) gives the modes exactly for all but a NaN or a flushed denormal, and raises
+   nothing; FRINTX's IXC is a value rounding changed */
 static void fp_round(SnxIr* ir, const SnxA64Args* a, int rm, unsigned exact) {
     unsigned width = width_of(a->esz);
     V mode = rm < 0 ? fpcr_rmode(ir) : ir_i32(ir, (SnxU32)rm);
     V n = fp_reg(ir, (unsigned)a->rn, width), result;
-    if (width != 16 && host_round(ir)) {
+    if (width != 16 && (rm < 0 ? host_round_dynamic(ir) : host_round_mode(ir, (unsigned)rm))) {
         V value = as_float(ir, n, width);
         V rounded = rm < 0 ? ir_fp_round_value(ir, value, 5) : host_rint(ir, value, (unsigned)rm);
         V ok = both(ir, LLVMBuildNot(B, is_nan(ir, width, n), ""), unflushed(ir, width, n));
@@ -611,7 +611,7 @@ static void fp_to_int(SnxIr* ir, const SnxA64Args* a, unsigned rm, unsigned uns)
     unsigned width = width_of(a->esz), integer = a->sf ? 64 : 32, fbits = (unsigned)a->shift;
     unsigned precision = width == 32 ? 24 : 53;
     V n = fp_reg(ir, (unsigned)a->rn, width), r;
-    if (width != 16 && (rm == 3 || host_round(ir))) {
+    if (width != 16 && (rm == 3 || host_round_mode(ir, rm))) {
         LLVMTypeRef type = ir_int_type(ir, integer);
         V f = as_float(ir, n, width), low;
         Split s;

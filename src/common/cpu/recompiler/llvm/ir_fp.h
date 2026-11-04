@@ -104,12 +104,47 @@ static inline LLVMValueRef ir_fp_call_fpsr(SnxIr* ir, const char* name, LLVMValu
 static inline LLVMValueRef both(SnxIr* ir, LLVMValueRef a, LLVMValueRef b) { return LLVMBuildAnd(ir->b, a, b, ""); }
 static inline LLVMValueRef either(SnxIr* ir, LLVMValueRef a, LLVMValueRef b) { return LLVMBuildOr(ir->b, a, b, ""); }
 
-static inline int host_native(SnxIr* ir) { return ir->features->x86 || ir->features->aarch64; }
-static inline int host_fma(SnxIr* ir) { return (ir->features->x86 && ir->features->fma) || ir->features->aarch64; }
-/* roundss/roundsd (SSE4.1) or FRINT*: the rounding intrinsics never become libm calls */
-static inline int host_round(SnxIr* ir) {
-    return (ir->features->x86 && ir->features->sse42) || ir->features->aarch64;
+/* The host's own scalar FP arithmetic: LLVM gives MIPS64's FP operations to libm, so every gate here leaves that one
+   on the helpers */
+static inline int host_fp(SnxIr* ir) {
+    return ir->features->x86 || ir->features->aarch64 || ir->features->ppc || ir->features->riscv ||
+           ir->features->loongarch;
 }
+/* The same over 128-bit vectors: PowerPC64 needs VSX (AltiVec alone has no vector double arithmetic and flushes
+   single-precision denormals), RISC-V the V extension, LoongArch LSX. MIPS64's MSA keeps the helpers too */
+static inline int host_fp_vec(SnxIr* ir) {
+    return ir->features->x86 || ir->features->aarch64 || (ir->features->ppc && ir->features->ppc_vsx) ||
+           (ir->features->riscv && ir->features->riscv_v) || (ir->features->loongarch && ir->features->la_lsx);
+}
+static inline int host_fma_scalar(SnxIr* ir) {
+    return (ir->features->x86 && ir->features->fma) || ir->features->aarch64 || ir->features->ppc ||
+           ir->features->riscv || ir->features->loongarch;
+}
+static inline int host_fma_vec(SnxIr* ir) {
+    return (ir->features->x86 && ir->features->fma) || ir->features->aarch64 ||
+           (ir->features->ppc && ir->features->ppc_vsx) || (ir->features->riscv && ir->features->riscv_v) ||
+           (ir->features->loongarch && ir->features->la_lsx);
+}
+/* The host's rounding instructions for mode rm (FPRounding: 0 TIEEVEN, 1 POSINF, 2 NEGINF, 3 ZERO, 4 TIEAWAY), never
+   a libm call: x86's need SSE4.2, PowerPC64's the FPU instructions of POWER5 and later (a 970's are libm), where
+   roundeven stays a call too, and LoongArch's round as well (host_rint does that one in arithmetic). A mode this
+   refuses uses the helper */
+static inline int host_round_mode(SnxIr* ir, unsigned rm) {
+    if (ir->features->x86) return ir->features->sse42;
+    if (ir->features->aarch64) return 1;
+    if (ir->features->ppc) return ir->features->ppc_vsx && rm != 0;
+    if (ir->features->riscv) return 1;
+    if (ir->features->loongarch) return 1;
+    return 0;
+}
+static inline int host_round_vec_mode(SnxIr* ir, unsigned rm) {
+    return host_fp_vec(ir) && host_round_mode(ir, rm);
+}
+/* FPCR's mode, which picks one of 0-3 at run time: every one of them must be an instruction */
+static inline int host_round_dynamic(SnxIr* ir) {
+    return host_round_mode(ir, 0) && host_round_mode(ir, 1) && host_round_mode(ir, 2) && host_round_mode(ir, 3);
+}
+static inline int host_round_vec_dynamic(SnxIr* ir) { return host_fp_vec(ir) && host_round_dynamic(ir); }
 
 /* the constant v as a float like f (a scalar or a vector) */
 static inline LLVMValueRef fp_like(LLVMValueRef f, double v) {
@@ -121,11 +156,10 @@ static inline LLVMValueRef fp_like(LLVMValueRef f, double v) {
     return LLVMConstVector(all, lanes);
 }
 /* f (a float or a vector of them, neither a NaN) rounded to an integral value in rm (0-4: FPRounding's TIEEVEN,
-   POSINF, NEGINF, ZERO, TIEAWAY) by the host_round rounding instructions. x86 has none for ties away from zero
-   (LLVM's llvm.round there adds the half's predecessor, whose sum the host's rounding mode rounds): the truncation,
-   one more away from zero where the fraction it dropped is a half or more. Exact in every host rounding mode: the
-   fraction f - trunc(f) is f's own low bits, and trunc(f) + 1 or - 1 is taken only where a fraction was dropped,
-   so below 2^24 (2^53) */
+   POSINF, NEGINF, ZERO, TIEAWAY) by the host_round_mode instructions. x86 and PowerPC64 have none for ties away from
+   zero (and LLVM 23 makes a libm call of LoongArch's): the truncation, one more away from zero where the fraction it
+   dropped is a half or more. Exact in every host rounding mode: the fraction f - trunc(f) is f's own low bits, and
+   trunc(f) + 1 or - 1 is taken only where a fraction was dropped, so below 2^24 (2^53) */
 static inline LLVMValueRef host_rint(SnxIr* ir, LLVMValueRef f, unsigned rm) {
     static const char* const names[] = {"llvm.roundeven", "llvm.ceil", "llvm.floor", "llvm.trunc", "llvm.round"};
     LLVMTypeRef type = LLVMTypeOf(f);

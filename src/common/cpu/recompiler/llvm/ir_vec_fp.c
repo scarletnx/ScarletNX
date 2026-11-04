@@ -371,7 +371,7 @@ typedef struct {
 /* a op b, op SNX_FP_ADD, SUB, MUL (MULX: the same without infinities), DIV */
 static void fast_binary(SnxIr* ir, unsigned op, unsigned width, V a, V b, Fast* f, BinaryResidual* residual) {
     V fa = as_float(ir, a, width), fb = as_float(ir, b, width), r, rb, exact_zero, cut = NULL;
-    int has_residual = width == 32 || op == SNX_FP_ADD || op == SNX_FP_SUB || host_fma(ir);
+    int has_residual = width == 32 || op == SNX_FP_ADD || op == SNX_FP_SUB || host_fma_vec(ir);
     switch (op) {
         case SNX_FP_ADD:
         case SNX_FP_SUB: {
@@ -386,7 +386,7 @@ static void fast_binary(SnxIr* ir, unsigned op, unsigned width, V a, V b, Fast* 
             r = LLVMBuildFMul(B, fa, fb, "");
             rb = as_bits(ir, r, width);
             exact_zero = both(ir, is_zero(ir, width, rb), either(ir, is_zero(ir, width, a), is_zero(ir, width, b)));
-            if (width == 64 && host_fma(ir)) {
+            if (width == 64 && host_fma_vec(ir)) {
                 cut = either(ir, exact_zero, magnitude_in(ir, 64, rb, RESIDUAL_FLOOR, inf_bits(64)));
             }
             break;
@@ -394,7 +394,7 @@ static void fast_binary(SnxIr* ir, unsigned op, unsigned width, V a, V b, Fast* 
             r = LLVMBuildFDiv(B, fa, fb, "");
             rb = as_bits(ir, r, width);
             exact_zero = both(ir, is_zero(ir, width, rb), is_zero(ir, width, a));
-            if (width == 64 && host_fma(ir)) {
+            if (width == 64 && host_fma_vec(ir)) {
                 cut = either(ir, is_zero(ir, 64, a), magnitude_in(ir, 64, a, RESIDUAL_FLOOR, inf_bits(64)));
             }
             break;
@@ -450,7 +450,7 @@ static void fast_sqrt(SnxIr* ir, unsigned width, V a, Fast* f) {
     V ok = either(ir, roomy(ir, width, rb), zero);
     if (width == 32)
         inexact = float_ne(ir, widen_f(ir, fa), LLVMBuildFMul(B, widen_f(ir, r), widen_f(ir, r), ""));
-    else if (host_fma(ir)) {
+    else if (host_fma_vec(ir)) {
         inexact = nonzero(ir, fma3(ir, LLVMBuildFNeg(B, r, ""), r, fa), 64);
         ok = both(ir, ok, either(ir, zero, magnitude_in(ir, 64, a, RESIDUAL_FLOOR, inf_bits(64))));
     }
@@ -501,7 +501,7 @@ static V binary(SnxIr* ir, unsigned op, unsigned width, V a, V b) {
                              residual.result && snx_ir_fpsr_exact() ? &residual : NULL, &s);
         return split_end(ir, &s, map(ir, &o, a, b, NULL, width));
     }
-    if (width != 16 && host_fma(ir) && (op == SNX_FP_RECPS || op == SNX_FP_RSQRTS)) {
+    if (width != 16 && host_fma_vec(ir) && (op == SNX_FP_RECPS || op == SNX_FP_RSQRTS)) {
         Fast f;
         Split s;
         fast_step(ir, width, op == SNX_FP_RSQRTS, a, b, &f);
@@ -514,7 +514,7 @@ static V binary(SnxIr* ir, unsigned op, unsigned width, V a, V b) {
 
 static V fma_lanes(SnxIr* ir, unsigned width, V add, V n, V m) {
     LaneOp o = op_simple(H_FMA, width);
-    if (width != 16 && host_fma(ir)) {
+    if (width != 16 && host_fma_vec(ir)) {
         Fast f;
         Split s;
         BinaryResidual residual;
@@ -844,14 +844,14 @@ static V unary(SnxIr* ir, unsigned op, unsigned width, V a) {
         return split_end(ir, &s, slow);
     }
     /* the other hosts, where the table's gather is not validated: fast_estimate needs no table */
-    if ((op == SNX_FP_RECPE || op == SNX_FP_RSQRTE) && width != 16 && host_native(ir)) {
+    if ((op == SNX_FP_RECPE || op == SNX_FP_RSQRTE) && width != 16 && host_fp_vec(ir)) {
         Fast f;
         Split s;
         fast_estimate(ir, op, width, a, &f);
         split_begin(ir, NULL, f.ok, f.value, NULL, &s);
         return split_end(ir, &s, map(ir, &o, a, NULL, NULL, width));
     }
-    if (op == SNX_FP_SQRT && width != 16 && host_native(ir)) {
+    if (op == SNX_FP_SQRT && width != 16 && host_fp_vec(ir)) {
         Fast f;
         Split s;
         fast_sqrt(ir, width, a, &f);
@@ -894,13 +894,13 @@ static V compare(SnxIr* ir, unsigned cmp, unsigned width, V a, V b, int abs) {
 }
 
 /* FRINT[NPMZA] (rm 0-4), FRINTX and FRINTI (rm RM_FPCR: FPCR's mode, ir_fp_round_value; exact: FRINTX's IXC).
-   The host's rounding (host_rint, which on x86 gives ties away from zero too) gives the modes exactly for every lane
-   but a NaN or a flushed denormal, and raises nothing. FRINTX's IXC is a lane that rounding changed */
+   The host's rounding (host_rint) gives the modes exactly for every lane but a NaN or a flushed denormal, and raises
+   nothing. FRINTX's IXC is a lane that rounding changed */
 static V round_lanes(SnxIr* ir, unsigned width, unsigned rm, unsigned exact, V a) {
     LaneOp o = op_simple(H_ROUND, width);
     o.p1 = exact;
     o.rm = rm == RM_FPCR ? fpcr_rmode(ir) : ir_i32(ir, rm);
-    if (width != 16 && host_round(ir)) {
+    if (width != 16 && (rm == RM_FPCR ? host_round_vec_dynamic(ir) : host_round_vec_mode(ir, rm))) {
         V fa = as_float(ir, a, width), r = rm == RM_FPCR ? ir_fp_round_value(ir, fa, rm) : host_rint(ir, fa, rm);
         Split s;
         split_begin(ir, NULL, both(ir, no_nan(ir, width, a), unflushed(ir, width, a)), as_bits(ir, r, width),
@@ -949,7 +949,7 @@ static V to_int(SnxIr* ir, unsigned width, unsigned integer, unsigned uns, unsig
     o.p2 = uns;
     o.p3 = fbits;
     o.rm = ir_i32(ir, rm);
-    if (width != 16 && integer == width && (rm == 3 || host_round(ir))) {
+    if (width != 16 && integer == width && (rm == 3 || host_round_vec_mode(ir, rm))) {
         unsigned precision = width == 32 ? 24 : 53, lanes = ir_vec_count(a);
         LLVMTypeRef type = ir_vec_type(ir, esz_of(integer), lanes);
         V f = as_float(ir, a, width), low;

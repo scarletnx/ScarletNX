@@ -2,6 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/aarch64/cpu.h"
+#if !defined(_WIN32) && !defined(__APPLE__)
+#include "common/cpu/recompiler/llvm/elf_object.h"
+#endif
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitReader.h>
 #include <llvm/Config/llvm-config.h>
@@ -70,8 +73,8 @@ int snx_ir_init(char* error, size_t error_size) {
     int x86 = !strncmp(triple, "x86_64", 6);
     int arm = !strncmp(triple, "aarch64", 7) || !strncmp(triple, "arm64", 5); /* Apple names AArch64 arm64 */
     int ppc = !strncmp(triple, "powerpc64", 9) || !strncmp(triple, "ppc64", 5);
-    int other = riscv_triple(triple) || loongarch_triple(triple) || !strncmp(triple, "mips64", 6) ||
-                !strncmp(triple, "s390x", 5);
+    int riscv = riscv_triple(triple), loongarch = loongarch_triple(triple), mips = !strncmp(triple, "mips64", 6);
+    int other = riscv || loongarch || mips || !strncmp(triple, "s390x", 5);
     if (!x86 && !arm && !ppc && !other)
         snprintf(error, error_size,
                  "the LLVM backend targets x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 and s390x hosts, this "
@@ -105,6 +108,7 @@ int snx_ir_init(char* error, size_t error_size) {
     }
     if (x86 && !snx_ir_host.x86) {
         char* f = LLVMGetHostCPUFeatures();
+        snx_ir_host.ssse3 = has_feature(f, "ssse3");
         snx_ir_host.sse42 = has_feature(f, "sse4.2");
         snx_ir_host.crc32 = snx_ir_host.sse42 && has_feature(f, "crc32");
         snx_ir_host.pclmul = has_feature(f, "pclmul");
@@ -114,9 +118,6 @@ int snx_ir_init(char* error, size_t error_size) {
         snx_ir_host.fma = has_feature(f, "fma");
         snx_ir_host.f16c = has_feature(f, "f16c");
         snx_ir_host.avx2 = has_feature(f, "avx2");
-        snx_ir_host.avx512bw = has_feature(f, "avx512bw");
-        snx_ir_host.avx512vl = has_feature(f, "avx512vl");
-        snx_ir_host.avx512bitalg = has_feature(f, "avx512bitalg");
         LLVMDisposeMessage(f);
         snx_ir_host.x86 = 1; /* last: snx_ir_init may run again, the features stay as read */
     }
@@ -127,6 +128,30 @@ int snx_ir_init(char* error, size_t error_size) {
         snx_ir_host.arm_crc = has_feature(f, "crc");
         LLVMDisposeMessage(f);
         snx_ir_host.aarch64 = 1; /* last, as x86 above */
+    }
+    if (ppc && !snx_ir_host.ppc) {
+        char* f = LLVMGetHostCPUFeatures();
+        snx_ir_host.ppc_vsx = has_feature(f, "vsx");
+        LLVMDisposeMessage(f);
+        snx_ir_host.ppc = 1;
+    }
+    if (riscv && !snx_ir_host.riscv) {
+        char* f = LLVMGetHostCPUFeatures();
+        snx_ir_host.riscv_v = has_feature(f, "v") || has_feature(f, "zve64x");
+        LLVMDisposeMessage(f);
+        snx_ir_host.riscv = 1;
+    }
+    if (loongarch && !snx_ir_host.loongarch) {
+        char* f = LLVMGetHostCPUFeatures();
+        snx_ir_host.la_lsx = has_feature(f, "lsx");
+        LLVMDisposeMessage(f);
+        snx_ir_host.loongarch = 1;
+    }
+    if (mips && !snx_ir_host.mips) {
+        char* f = LLVMGetHostCPUFeatures();
+        snx_ir_host.mips_msa = has_feature(f, "msa");
+        LLVMDisposeMessage(f);
+        snx_ir_host.mips = 1;
     }
     return x86 || arm || ppc || other ? 0 : -1;
 }
@@ -449,6 +474,72 @@ static void mips_tail_callees(LLVMModuleRef module) {
 }
 #endif
 
+#if !defined(_WIN32) && !defined(__APPLE__)
+/* The linker makes these, no IR declares them: PowerPC64's TOC base and the GOT's conventional name */
+static int linker_symbol(const char* name) {
+    return !strcmp(name, ".TOC.") || !strcmp(name, "_GLOBAL_OFFSET_TABLE_");
+}
+
+/* The names a module declares, which its object may refer to: the runtime library's helpers, and the linker's own
+   names. The set is read before code generation, so a call the backend adds a declaration for is still refused. */
+static void declared_names(LLVMModuleRef module, SnxLinkNames* declared) {
+    for (LLVMValueRef value = LLVMGetFirstGlobal(module); value; value = LLVMGetNextGlobal(value)) {
+        size_t length = 0;
+        const char* name = LLVMGetValueName2(value, &length);
+        if (LLVMIsDeclaration(value) && length) snx_link_insert(declared, name, 1);
+    }
+    for (LLVMValueRef value = LLVMGetFirstFunction(module); value; value = LLVMGetNextFunction(value)) {
+        size_t length = 0;
+        const char* name = LLVMGetValueName2(value, &length);
+        if (LLVMIsDeclaration(value) && length) snx_link_insert(declared, name, 1);
+    }
+}
+
+/* An object may refer to what the module's IR declares (the runtime library's helpers), and to the linker's names:
+   anything else is a call LLVM made at code generation, such as the libm ones ir_fp.h's gates exist to avoid. That
+   fails the module's build and its tests here, not the module's load. Windows and Darwin write COFF and Mach-O,
+   which only the linker reads here and whose undefined symbols it already refuses. */
+static int object_refuses(const SnxIr* ir, SnxLinkNames* declared, const unsigned char* data, size_t size, char* error,
+                          size_t error_size) {
+    SnxLinkInput input = {data, size, "module"};
+    SnxElfObject object;
+    unsigned machine = 0, abi = 0;
+    size_t found;
+    if (ir->windows) return 0;
+    if (snx_elf_parse(&object, &input, &machine, &abi, error, error_size)) {
+        snx_elf_free(&object);
+        return -1;
+    }
+    for (size_t i = 1; i < object.nsyms; ++i) {
+        const Elf64_Sym* symbol = &object.syms[i];
+        const char* name;
+        if (symbol->st_shndx != SHN_UNDEF || ELF64_ST_BIND(symbol->st_info) == STB_WEAK) continue;
+        name = snx_elf_symbol_name(&object, symbol);
+        if (!name || !*name || linker_symbol(name) || snx_link_find(declared, name, &found)) continue;
+        snprintf(error, error_size, "the object refers to %s, which the module does not declare", name);
+        snx_elf_free(&object);
+        return -1;
+    }
+    snx_elf_free(&object);
+    return 0;
+}
+#else
+/* COFF and Mach-O objects: only ELF's symbol table is read */
+static void declared_names(LLVMModuleRef module, SnxLinkNames* declared) {
+    (void)module;
+    (void)declared;
+}
+static int object_refuses(SnxLinkNames* declared, const unsigned char* data, size_t size, char* error,
+                          size_t error_size) {
+    (void)declared;
+    (void)data;
+    (void)size;
+    (void)error;
+    (void)error_size;
+    return 0;
+}
+#endif
+
 int snx_ir_object(SnxIr* ir, char opt, unsigned char** data, size_t* size, char* error, size_t error_size) {
     *data = NULL;
     *size = 0;
@@ -564,9 +655,11 @@ int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned cha
     LLVMMemoryBufferRef buffer;
     LLVMPassBuilderOptionsRef options;
     LLVMErrorRef failure;
+    SnxLinkNames declared = {0};
     *data = NULL;
     *size = 0;
     if (snx_ir_module_optimize(ir, module, opt, error, error_size)) return -1;
+    declared_names(module, &declared);
     if (ppc_target(ir)) {
         ppc_tail_calls(ir);
         /* the pointer's load the stub repeats is dead now */
@@ -577,6 +670,7 @@ int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned cha
             message = LLVMGetErrorMessage(failure);
             snprintf(error, error_size, "LLVM passes: %s", message);
             LLVMDisposeErrorMessage(message);
+            snx_link_names_free(&declared);
             return -1;
         }
     }
@@ -587,6 +681,7 @@ int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned cha
     if (LLVMTargetMachineEmitToMemoryBuffer(ir->tm, module, LLVMObjectFile, &message, &buffer)) {
         snprintf(error, error_size, "LLVM code generation: %s", message ? message : "");
         LLVMDisposeMessage(message);
+        snx_link_names_free(&declared);
         return -1;
     }
     *size = LLVMGetBufferSize(buffer);
@@ -595,8 +690,17 @@ int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned cha
     LLVMDisposeMemoryBuffer(buffer);
     if (!*data) {
         snprintf(error, error_size, "out of memory");
+        snx_link_names_free(&declared);
         return -1;
     }
+    if (object_refuses(ir, &declared, *data, *size, error, error_size)) {
+        free(*data);
+        *data = NULL;
+        *size = 0;
+        snx_link_names_free(&declared);
+        return -1;
+    }
+    snx_link_names_free(&declared);
     return 0;
 }
 
