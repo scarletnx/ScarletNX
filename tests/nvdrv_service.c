@@ -458,9 +458,9 @@ static void test_quiet_increments(u32 ctrl) {
     CHECK(syncpt_read(42) == base + 1 && test_gpu.kicks == kicks + 1 && e->armed && !kev(e->ev)->signaled);
     syncpt_events();
     CHECK(!e->armed && kev(e->ev)->signaled);
-    /* armed again where it already is, so only a check of the slots signals it: none is due */
+    /* armed again through the service, so only a check of the slots signals it: none is due */
     kevent_clear(kev(e->ev));
-    e->armed = 1;
+    CHECK(event_wait(ctrl, 42, syncpt_read(42) + 1, 100, 11) == 5 && e->armed);
     syncpt_events();
     CHECK(e->armed && !kev(e->ev)->signaled);
     syncpt_add_quiet(42, 0);
