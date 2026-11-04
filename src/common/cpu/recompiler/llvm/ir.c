@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/aarch64/cpu.h"
+#include "common/cpu/recompiler/llvm/link.h"
 #if !defined(_WIN32) && !defined(__APPLE__)
 #include "common/cpu/recompiler/llvm/elf_object.h"
 #endif
@@ -529,8 +530,9 @@ static void declared_names(LLVMModuleRef module, SnxLinkNames* declared) {
     (void)module;
     (void)declared;
 }
-static int object_refuses(SnxLinkNames* declared, const unsigned char* data, size_t size, char* error,
+static int object_refuses(const SnxIr* ir, SnxLinkNames* declared, const unsigned char* data, size_t size, char* error,
                           size_t error_size) {
+    (void)ir;
     (void)declared;
     (void)data;
     (void)size;
