@@ -705,6 +705,7 @@ static void test_ladder(void) {
    and guest memory there is the host's. With a page held at 300 GiB too, no base up to 256 GiB leaves 256 GiB free:
    the 128 GiB tier takes it, and the log names the 256 GiB that fit and were not free. A layout of fixed addresses
    (36-bit) then ends the game. Linux only, and not under ASan, whose shadow holds those addresses */
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
 static void moved_smaller(u64 from, u64 by) {
     const u64 at = 300ull << 30;
     void* held = mmap((void*)(uintptr_t)at, 2 * MIB, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -721,6 +722,7 @@ static void moved_smaller(u64 from, u64 by) {
           strstr(said, "; 256 GiB, the most that fits from 0x1008000000, was not free\n"));
     _exit(0);
 }
+#endif
 static MemLayout g_console; /* the layout a process starts with, which the scenarios before test_moved change */
 /* NCE's search from 64 GiB in a process where something is mapped every 60 to 70 GiB up to 512 GiB, so neither 256
    nor 128 GiB is free anywhere and 64 GiB first fits after the page at 130 GiB: in a child, the bases it asks for with
