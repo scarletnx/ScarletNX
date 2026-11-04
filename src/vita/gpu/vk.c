@@ -138,7 +138,14 @@ static int choose_display(VitaVk* v, VkFormat* format, VkColorSpaceKHR* space) {
     int cs = snx_fx_colorspace_parse(g_settings.hdr_colours);
     int kind = SNX_FX_DISPLAY_NONE;
     if (!v->host.surface || mode == SNX_FX_HDR_OFF) return SNX_FX_DISPLAY_NONE;
-    if (cs == SNX_FX_CS_AUTO || cs == SNX_FX_CS_P3) {
+#if !defined(__APPLE__)
+    /* Auto takes HDR10 first: its signal is absolute, and the swapchain's metadata names its light; an extended
+       kind's 1.0 depends on the compositor's reference, which SDL does not report on Wayland */
+    if (cs == SNX_FX_CS_AUTO &&
+        snx_vk_surface_format_cs(v->phys, v->host.surface, hdr_formats, 2, VK_COLOR_SPACE_HDR10_ST2084_EXT, &f))
+        kind = SNX_FX_DISPLAY_PQ;
+#endif
+    if (kind == SNX_FX_DISPLAY_NONE && (cs == SNX_FX_CS_AUTO || cs == SNX_FX_CS_P3)) {
         if (snx_vk_surface_format_cs(v->phys, v->host.surface, scrgb_formats, 1, VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT,
                                      &f)) {
             kind = SNX_FX_DISPLAY_P3;

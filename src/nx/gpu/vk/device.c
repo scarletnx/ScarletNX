@@ -953,6 +953,9 @@ int vk_swapchain_create(int kind) {
         int want_p3 = cs == SNX_HDR_CS_AUTO || cs == SNX_HDR_CS_P3;
         int want_scrgb = cs == SNX_HDR_CS_AUTO || cs == SNX_HDR_CS_SCRGB;
         int want_pq = cs == SNX_HDR_CS_AUTO || cs == SNX_HDR_CS_PQ;
+#if defined(__APPLE__)
+        /* macOS misrepresents an HDR10 layer's luminance (about half the exposure, mpv #16899): the extended kinds,
+           whose 1.0 is the display's SDR white, keep the look */
         if (want_p3 && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, scrgb_formats, 1,
                                                 VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT, &fmt))
             hdr = p3 = 1;
@@ -962,6 +965,20 @@ int vk_swapchain_create(int kind) {
         else if (want_pq && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, hdr_formats, 2,
                                                      VK_COLOR_SPACE_HDR10_ST2084_EXT, &fmt))
             hdr = 1;
+#else
+        /* HDR10 first: its signal is absolute, and with VK_EXT_hdr_metadata (the peak and the paper white) a
+           compositor maps it as it is. The extended kinds' 1.0 depends on the compositor's reference, which SDL does
+           not report on Wayland */
+        if (want_pq && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, hdr_formats, 2,
+                                                VK_COLOR_SPACE_HDR10_ST2084_EXT, &fmt))
+            hdr = 1;
+        else if (want_p3 && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, scrgb_formats, 1,
+                                                     VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT, &fmt))
+            hdr = p3 = 1;
+        else if (want_scrgb && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, scrgb_formats, 1,
+                                                        VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, &fmt))
+            hdr = scrgb = 1;
+#endif
     }
     if (!hdr) {
         if (kind == VK_SC_SRGB && snx_vk_surface_format(g_vk.phys, g_vk.surface, srgb_formats, 2, &fmt)) {
