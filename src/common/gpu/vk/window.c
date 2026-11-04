@@ -142,10 +142,11 @@ int snx_vk_display_white_nits(void) {
 }
 
 int snx_vk_paper_nits(int setting) {
-    int white;
-    if (setting > 0) return setting;
-    white = snx_vk_display_white_nits();
-    return white > 0 ? white : 203;
+    int white = snx_vk_display_white_nits();
+    /* the display's own white is the right anchor for the SDR range wherever it can be read, whatever the .ini says:
+       a paper that is not the display's white puts the whole picture above it (washed out) or below it (dim) */
+    if (white > 0) return white;
+    return setting > 0 ? setting : 203;
 }
 
 int snx_vk_window_refresh_hz(SDL_Window* window) {

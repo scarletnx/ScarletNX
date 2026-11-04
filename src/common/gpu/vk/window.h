@@ -28,7 +28,7 @@ int snx_vk_window_refresh_hz(SDL_Window* window);
 /* The display's own SDR white in nits where it can be read without a window (KWin's sdrBrightness in its output
    config, the compositor this runs under on Linux), 0 when it cannot */
 int snx_vk_display_white_nits(void);
-/* The paper white the settings name: their value, or 0 for Auto, which takes the display's own SDR white where it can
-   be read, else BT.2408's 203 */
+/* The paper white: the display's own SDR white where it can be read (KWin's), else the setting's value, else BT.2408's
+   203 */
 int snx_vk_paper_nits(int setting);
 #endif
