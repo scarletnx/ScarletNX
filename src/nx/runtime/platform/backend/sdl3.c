@@ -1444,13 +1444,46 @@ static void keyboard_sync(void) {
     }
     if (answer >= 0) am_keyboard_answered(ticket, answer, text);
 }
+#if !defined(__APPLE__)
+/* The window's HDR headroom over its SDR white, which SDL reports: 1.0 with none, so 100 in percent. On Wayland it
+   comes from the compositor's color management (`wp_color_management_v1`, which KWin implements), on Windows from
+   Advanced Color, and on Apple the AppKit path (plat_apple.m) gives the same numbers. The Vulkan surface's colorspaces
+   say which HDR image the compositor takes; this says how much light over white it has for the SDR-to-HDR lift */
+static void sdl_headroom_poll(void) {
+    SDL_PropertiesID props = g_win ? SDL_GetWindowProperties(g_win) : 0;
+    float headroom, white;
+    u32 pct, was;
+    if (!props) return;
+    headroom = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1.0f);
+    white = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT, 1.0f);
+    if (!(headroom >= 1.0f)) headroom = 1.0f;
+    if (headroom > 16.0f) headroom = 16.0f;
+    pct = (u32)(headroom * 100.0f + 0.5f);
+    was = __atomic_load_n(&g_display_headroom_pct, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_display_headroom_pct, pct, __ATOMIC_RELAXED);
+    /* the potential is what the display can reach: SDL reports whether HDR is enabled now, so an enabled window
+       takes auto there even while its current headroom changes with the brightness */
+    __atomic_store_n(&g_display_edr_potential_pct,
+                     SDL_GetBooleanProperty(props, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false)
+                         ? (pct > 100 ? pct : 101)
+                         : 100,
+                     __ATOMIC_RELAXED);
+    if (pct != was)
+        LOG("video: the display's HDR headroom is %.2f (SDR white %.2f)\n", (double)pct / 100.0, (double)white);
+}
+#endif
+
 void video_poll(void) {
     SDL_Event e;
     /* the display's EDR headroom, which the HDR lift uses: it changes with the display's brightness */
     static u64 headroom_ns;
     if (!g_opt_headless && plat_ns() - headroom_ns > 1000000000ull) {
         headroom_ns = plat_ns();
+#if defined(__APPLE__)
         plat_display_headroom_poll();
+#else
+        sdl_headroom_poll();
+#endif
     }
     char* left = __atomic_load_n(&g_fatal_left, __ATOMIC_ACQUIRE);
     if (left) { /* another thread's fatal error, left for this thread to show */
