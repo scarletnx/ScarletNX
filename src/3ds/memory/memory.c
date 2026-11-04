@@ -39,6 +39,7 @@ struct SnxCtrMemory {
     uint32_t alias_count, alias_capacity, alias_free; /* alias_free: a freed entry + 1, 0 for none */
     SnxCtrAddressSpace* spaces[TRACK_SPACES];         /* the flat spaces, whose views a level protects */
     uint32_t tracked;                                 /* pages above SNX_CTR_TRACK_NONE */
+    uint32_t protect_failures;                        /* views of tracked pages the host could not protect */
     SnxCtrTrackHandler handler;
     void* handler_context;
     bool resolving;
@@ -159,13 +160,44 @@ static uint32_t ram_index(const SnxCtrMemory* m, uint32_t pa) {
 static unsigned tracked_permissions(unsigned level, unsigned permissions) {
     return level == SNX_CTR_TRACK_OWN ? 0u : level == SNX_CTR_TRACK_WATCH ? permissions & ~SNX_CTR_WRITE : permissions;
 }
+/* digits of value in base 10 or 16 at at, for a line a fault handler writes (no stdio): the end of them */
+static char* digits(char* at, uint32_t value, unsigned base, unsigned width) {
+    char buffer[10];
+    unsigned n = 0;
+    do {
+        buffer[n++] = "0123456789abcdef"[value % base];
+        value /= base;
+    } while (value || n < width);
+    while (n) *at++ = buffer[--n];
+    return at;
+}
+/* A RAM page's flat view at va given its tracking level's protection. A host that cannot says so, at the 1st, 2nd,
+   4th... failure, as the page's traps are wrong from then on (the GPU's copy missed, or a fault where none should be):
+   mprotect gives ENOMEM once the process has as many mappings as the system allows (vm.max_map_count), which the views
+   of a GPU's dma-buf can come to, as a mapping of one never merges with its neighbours again */
+static void protect(SnxCtrMemory* m, unsigned char* base, uint32_t va, unsigned permissions) {
+    if (snx_host_protect(base, va, 4096, permissions)) return;
+    int error = errno;
+    uint32_t n = ++m->protect_failures;
+    if (n & (n - 1)) return;
+    char line[160], *at = line;
+    static const char head[] = "3ds memory: write tracking cannot protect the view at guest 0x", middle[] = " (errno ",
+                      tail[] = "): its traps are wrong from here; failures so far: ";
+    memcpy(at, head, sizeof head - 1);
+    at = digits(at + sizeof head - 1, va, 16, 8);
+    memcpy(at, middle, sizeof middle - 1);
+    at = digits(at + sizeof middle - 1, (uint32_t)error, 10, 1);
+    memcpy(at, tail, sizeof tail - 1);
+    at = digits(at + sizeof tail - 1, n, 10, 1);
+    *at++ = '\n';
+    ctr_host_say(line, (size_t)(at - line));
+}
 /* every flat view of the page given its level's protection */
 static void apply(SnxCtrMemory* m, uint32_t index) {
     for (uint32_t a = m->alias_head[index]; a; a = m->aliases[a - 1].next) {
         const Alias* alias = &m->aliases[a - 1];
         SnxCtrAddressSpace* s = m->spaces[alias->space];
-        (void)snx_host_protect(s->base, alias->va, 4096,
-                               tracked_permissions(m->level[index], page(s, alias->va)->permissions));
+        protect(m, s->base, alias->va, tracked_permissions(m->level[index], page(s, alias->va)->permissions));
     }
 }
 static bool alias_add(SnxCtrMemory* m, uint32_t index, const SnxCtrAddressSpace* s, uint32_t va) {
@@ -364,8 +396,8 @@ SnxCtrMemResult snx_ctr_map(SnxCtrAddressSpace* s, uint32_t va, uint32_t pa, uin
                 return SNX_CTR_MEM_NOMEM;
             }
             if (s->memory->level[index])
-                (void)snx_host_protect(s->base, va + (uint32_t)offset, 4096,
-                                       tracked_permissions(s->memory->level[index], permissions));
+                protect(s->memory, s->base, va + (uint32_t)offset,
+                        tracked_permissions(s->memory->level[index], permissions));
         }
     changed(s->memory);
     return SNX_CTR_MEM_OK;
@@ -409,8 +441,7 @@ static SnxCtrMemResult change(SnxCtrAddressSpace* s, uint32_t va, uint32_t size,
         } else {
             p->permissions = (unsigned char)permissions;
             if (index != UINT32_MAX && s->memory->level[index]) /* a tracked page keeps its level's protection */
-                (void)snx_host_protect(s->base, (uint32_t)at, 4096,
-                                       tracked_permissions(s->memory->level[index], permissions));
+                protect(s->memory, s->base, (uint32_t)at, tracked_permissions(s->memory->level[index], permissions));
         }
     }
     changed(s->memory);

@@ -4,7 +4,8 @@
    import the RAM (gpu/vk/device.c): a memfd stands in for its dma-buf, so every host runs it. What the RAM held is
    there, every view of it is the new object's (the host's, an alias, a run of pages, VRAM), a watched page still
    traps writes and a read-only alias stays read-only, and an object that does not map is refused with every view as
-   it was. On Windows the call refuses. */
+   it was. On Windows the call refuses. Then a view the host cannot protect for write tracking: said, with its address
+   and the system's errno. */
 #include "3ds/memory/ctr_memory.h"
 #include "3ds/memory/host.h"
 #include "common/memory/host.h"
@@ -130,6 +131,38 @@ int main(void) {
     flat[0x100020] = 0xc1;
     assert(g.watched == 1 && v[fcram_at + 0x20] == 0xc1 && snx_ctr_track_level(g.m, FCRAM) == SNX_CTR_TRACK_NONE);
     ctr_host_faults(NULL, NULL, NULL, NULL);
+    ++checks;
+    /* a view the host cannot protect says so, at the 1st, 2nd and 4th failure: the VRAM page's view taken away behind
+       the memory's back, which mprotect refuses as the dma-buf's views refuse once the process has too many mappings */
+    munmap(base + 0x1f000000, 4096);
+    errno = 0;
+    assert(mprotect(base + 0x1f000000, 4096, PROT_READ) && errno);
+    int refusal = errno;
+    FILE* said = tmpfile();
+    int standard_error = dup(2);
+    assert(said && standard_error >= 0);
+    fflush(stderr);
+    assert(dup2(fileno(said), 2) == 2);
+    for (unsigned i = 0; i < 4; ++i)
+        snx_ctr_track_set(g.m, VRAM, 4096, i % 2 ? SNX_CTR_TRACK_NONE : SNX_CTR_TRACK_WATCH);
+    assert(dup2(standard_error, 2) == 2);
+    close(standard_error);
+    char text[512] = {0}, want[512], line[160];
+    rewind(said);
+    assert(fread(text, 1, sizeof text - 1, said) > 0);
+    fclose(said);
+    want[0] = 0;
+    for (unsigned n = 1; n <= 4; n *= 2) {
+        snprintf(line, sizeof line,
+                 "3ds memory: write tracking cannot protect the view at guest 0x1f000000 (errno %d): its traps are "
+                 "wrong from here; failures so far: %u\n",
+                 refusal, n);
+        strcat(want, line);
+    }
+    if (strcmp(text, want)) {
+        fprintf(stderr, "said:\n%swanted:\n%s", text, want);
+        return 1;
+    }
     ++checks;
     munmap(outside, (size_t)size); /* the memory holds the object from here, and closes it */
     printf("memory adopt: %u checks\n", checks);
