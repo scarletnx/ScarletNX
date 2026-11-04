@@ -512,6 +512,62 @@ static int check_wt_owned(void) {
     return 0;
 }
 
+/* A leaf with pages the host's scan watches beside a GPU-owned span it can't (armed for its trap in minor mode, not
+   registered for the write watch): each epoch's scan takes the CPU's writes on the watched pages, leaves the span
+   owned, and the tracking stays on. Told by its answers, not the bytes: with the tracking off every cache compares
+   contents and the textures still match (a split scan that took the span for written pages failed at the first) */
+static int check_wt_mixed_leaf(void) {
+    const u64 cpu = WT_CPU + 7 * WT_LEAF, gva = WT_GVA + 0x6000000, size = 0x10000, at = cpu + 0x8000;
+    u32 tic[8];
+    if (!own_traps() || vk_uma()) {
+        printf("skip: a GPU-owned span beside watched pages needs memory traps, and no unified memory\n");
+        return 0;
+    }
+    CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, at, 0x1000);
+    wt_tic(tic, gva, 16, 16);
+    memset(GP(cpu), 0x11, size);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    if (!wt_tracking(at)) {
+        vk_unlock();
+        printf("skip: a GPU-owned span beside watched pages needs write tracking\n");
+        CHECK(mem_unmap(cpu, size) == 0);
+        return 0;
+    }
+    CHECK(wt_texel(tic) == wt_fill(0x11));
+    VkOwnRes* owner = vk_own_res_new(0x2000);
+    CHECK(owner && !owned_test_fill(owner->buf, 0, 0x2000, 0x42));
+    vk_own_publish_owned(cpu, 0x2000, owner, 0);
+    CHECK(own_lookup(cpu, 0x2000, NULL, 0) == 1);
+    vk_unlock();
+    int ok = 1;
+    for (u8 v = 0x22; v <= 0x33; v += 0x11) { /* two epochs: the scan, then the scan after its re-arm */
+        vk_lock();
+        u32 since = vk_ww_now();
+        vk_unlock();
+        memset(GP(at), v, 0x1000);
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        int told = vk_written_since(GP(at), 0x1000, since), owned = own_lookup(cpu, 0x2000, NULL, 0);
+        u32 t = wt_texel(tic);
+        int on = wt_tracking(at);
+        vk_unlock();
+        if (told != 1 || owned != 1 || t != wt_fill(v) || !on) {
+            fprintf(stderr,
+                    "mixed leaf: after the CPU wrote %#x beside a GPU-owned span, the tracking told %d (1), the span "
+                    "is %s, the texture holds %08x, the tracking is %s\n",
+                    v, told, owned == 1 ? "owned" : "landed", t, on ? "on" : "off");
+            ok = 0;
+        }
+    }
+    vk_own_res_unref(owner);
+    CHECK(mem_unmap(cpu, size) == 0);
+    CHECK(ok);
+    puts("write tracking: a leaf with a GPU-owned span beside written pages, scanned twice with the tracking on");
+    return 0;
+}
+
 /* the cases by name, for SNX_TEST_WW_ONLY=NAME */
 static const struct {
     const char* name;
@@ -524,7 +580,15 @@ static const struct {
     {"owned", check_wt_owned},
     {"alias", check_wt_alias},
     {"shared", check_wt_shared},
+    {"mixed_leaf", check_wt_mixed_leaf},
 };
+/* whether the tracking answers, asked at a leaf no case maps */
+static int wt_on(void) {
+    vk_lock();
+    int on = wt_tracking(WT_CPU + 16 * WT_LEAF);
+    vk_unlock();
+    return on;
+}
 /* SNX_TEST_WW_ONLY: 1 every case, stopping at the first that fails; each, every case with a line of its
    own (for a mutant's run: which cases see it); or one case's name */
 static int check_write_tracking(void) {
@@ -534,10 +598,16 @@ static int check_write_tracking(void) {
         int all = !only || !strcmp(only, "1");
         if (!all && !each && strcmp(only, g_wt_cases[i].name)) continue;
         ran++;
-        int r = g_wt_cases[i].check();
+        int on = wt_on(), r = g_wt_cases[i].check();
         /* a case that failed under the renderer's lock returned holding it: the next would run as its holder (a trap's
            fault there is fatal), so it lets go first */
         while (vk_lock_owner() == plat_tid()) vk_unlock();
+        /* a case passes on the bytes the caches compared once the tracking failed under it, and those after it skip */
+        if (on && !wt_on()) {
+            fprintf(stderr, "%s: the write tracking was on before the case and answers -1 after it (it failed)\n",
+                    g_wt_cases[i].name);
+            r = 1;
+        }
         if (each) printf("write tracking case %s: %s\n", g_wt_cases[i].name, r ? "FAILED" : "passed");
         if (r && !each) return 1;
         failed += r != 0;
@@ -545,7 +615,7 @@ static int check_write_tracking(void) {
     if (!ran) {
         fprintf(stderr,
                 "SNX_TEST_WW_ONLY=%s names no case: 1, each, two_consumers, concurrent, record_submit, runtime_writes, "
-                "owned, alias or shared\n",
+                "owned, alias, shared or mixed_leaf\n",
                 only);
         return 2;
     }
