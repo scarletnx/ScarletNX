@@ -70,6 +70,20 @@ int main(void) {
     agb_apu_write(&board, 0x06C, 0xC400);
     CHECK(board.apu.enabled[1] && board.apu.length_enabled[1]);
 
+    /* the noise register steps at 524288 Hz / r / 2^(s+1), r 0 a half: 8 steps a sample at r 1, s 0, and 16 at r 0 */
+    for (uint32_t r = 0; r < 2; ++r) {
+        uint16_t lfsr = 0x7FFF;
+        reset();
+        agb_apu_write(&board, 0x080, 0x8877); /* the noise to both sides */
+        agb_apu_write(&board, 0x082, 0x0002);
+        agb_apu_write(&board, 0x078, 0xF000);
+        agb_apu_write(&board, 0x07C, (uint16_t)(0x8000 | r)); /* 15 bit register, s 0, trigger */
+        CHECK(run_samples(16) == 16);
+        for (int step = 0; step < (r ? 8 : 16) * 16; ++step)
+            lfsr = (uint16_t)(lfsr >> 1 | ((lfsr ^ lfsr >> 1) & 1) << 14);
+        CHECK(board.apu.noise_lfsr == lfsr);
+    }
+
     /* the envelope steps down at 64 Hz */
     reset();
     agb_apu_write(&board, 0x080, 0x2277);
