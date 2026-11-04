@@ -122,11 +122,12 @@ int main(void) {
     assert(box[0] == 100 + 16 && box[1] == 50 + 16 && box[2] == STATS_COLS * 16 && box[3] == 5 * 32 + 24);
     draw(t);
     assert(!strcmp(first(), "? fps  ? ms") && !strcmp(second(), "cpu ?  ? MiB"));
-    /* 30 frames in half a second: 60.0 frames a second, the last 16.7 ms; 29 bars under the 60 FPS guide */
-    for (k = 1; k <= 30; ++k) stats_frame(at = t + (u64)k * 16666667ull);
-    draw(t + 500 * MS);
+    /* 30 frames in half a second: 60.0 frames a second, the last 16.7 ms; 30 bars under the 60 FPS guide (the
+       first frame starts the half second, so the 31st closes it) */
+    for (k = 1; k <= 31; ++k) stats_frame(at = t + (u64)k * 16666667ull);
+    draw(at);
     assert(!strcmp(first(), "60.0 fps  16.7 ms"));
-    assert(bars(&newest) == 29 && newest->rgba != FAILURE && newest->h > gh * 16 / 50 && newest->h < gh * 17 / 50);
+    assert(bars(&newest) == 30 && newest->rgba != FAILURE && newest->h > gh * 16 / 50 && newest->h < gh * 17 / 50);
     /* the processor's share and the memory as measured, and ? for one not told */
     stats_measured(25, 512ull << 20);
     draw(t + 600 * MS);
@@ -140,11 +141,11 @@ int main(void) {
     /* a 40 ms frame in the failure colour, then an 80 ms one as tall as the graph */
     stats_frame(at += 40 * MS);
     draw(t + 700 * MS);
-    assert(strstr(first(), "40.0 ms") && bars(&newest) == 30 && newest->rgba == FAILURE);
+    assert(strstr(first(), "40.0 ms") && bars(&newest) == 31 && newest->rgba == FAILURE);
     assert(newest->h > gh * 39 / 50 && newest->h < gh * 41 / 50);
     stats_frame(at += 80 * MS);
     draw(t + 800 * MS);
-    assert(strstr(first(), "80.0 ms") && bars(&newest) == 31 && newest->h == gh);
+    assert(strstr(first(), "80.0 ms") && bars(&newest) == 32 && newest->h == gh);
     /* no frame for half a second: 0.0 frames a second */
     draw(t + 1100 * MS); /* the window that counted the two slow frames */
     draw(t + 1700 * MS);
@@ -181,8 +182,8 @@ int main(void) {
     g_settings.stats = 1;
     draw(at);
     for (k = 1; k <= 30; ++k) {
-        stats_frame(at + (u64)k * 16666667ull);
         stats_generated();
+        stats_frame(at + (u64)k * 16666667ull);
     }
     draw(at + 500 * MS);
     assert(!strcmp(first_wide(), "60.0 fps  60.0 gen  120.0 total  16.7 ms"));
@@ -194,6 +195,15 @@ int main(void) {
     g_settings.stats = 1;
     draw(at);
     assert(!strcmp(first(), "? fps  ? ms") && !strcmp(second(), "cpu ?  ? MiB") && !bars(&newest));
+    /* the showcase's line reads the same counters: they run while it shows and the stats do not */
+    g_settings.stats = 0;
+    g_settings.showcase = 1;
+    for (k = 1; k <= 40; ++k) {
+        stats_generated();
+        stats_frame(at + (u64)k * 16666667ull);
+    }
+    assert(stats_rate10() > 0 && stats_gen10() > 0);
+    g_settings.showcase = 0;
     puts("stats passed");
     return 0;
 }

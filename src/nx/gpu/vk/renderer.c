@@ -957,8 +957,8 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         memcpy(was, is, sizeof was);
         last_present_ns = now_ns;
         g_vk_present++;
+        if (blend_shown) stats_generated(); /* before the frame, so the half second's rates count it */
         stats_frame(now_ns);
-        if (blend_shown) stats_generated();
         if (g_vk_present == 1 || g_vk_present % 600 == 0) guest_stats_log(now_ns, g_vk_present);
         vk_mem_present();
         if (g_last) vk_surf_touch(g_last); /* what screenshots read stays */

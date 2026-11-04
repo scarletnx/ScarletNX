@@ -522,18 +522,6 @@ void vpad_showcase_input(u64 buttons, const i32 sticks[4]) {
         g_show_axis[s][1] = ay;
     }
 }
-int vpad_showcase_fps(u32 presents, u64 now_ns) {
-    static u64 since_ns;
-    static u32 since;
-    static int fps = -1;
-    if (!since_ns || now_ns - since_ns >= 500000000ull) {
-        if (since_ns)
-            fps = (int)(((u64)(presents - since) * 1000000000ull + (now_ns - since_ns) / 2) / (now_ns - since_ns));
-        since_ns = now_ns;
-        since = presents;
-    }
-    return fps;
-}
 int vpad_showcase_box(const int safe[4], float box[4]) {
     float shorter = (float)(safe[2] < safe[3] ? safe[2] : safe[3]), h = SHOWCASE_BOX * shorter, w = h * 5 / 3;
     int corner = __atomic_load_n(&g_corner, __ATOMIC_RELAXED);
@@ -544,11 +532,11 @@ int vpad_showcase_box(const int safe[4], float box[4]) {
     box[3] = h;
     return corner;
 }
-void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
+void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps, int gen_fps) {
     const u32 alpha = 230;
     float box[4], x0, y0, w, h, r[4];
     int c, scale;
-    char text[24];
+    char text[48];
     if (vpad_showcase_box(safe, box) < 0) return;
     x0 = box[0];
     y0 = box[1];
@@ -573,8 +561,12 @@ void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
             ui_sprite(l, INFO[c].sprite + (int)(g_show_buttons >> INFO[c].bit & 1), r[0], r[1], r[2], r[3], alpha, 0);
     }
     if (fps < 0) return;
+    if (gen_fps > 0)
+        snprintf(text, sizeof text, "%d FPS  +%d gen  %d total", fps, gen_fps, fps + gen_fps);
+    else
+        snprintf(text, sizeof text, "%d FPS", fps);
     scale = (int)(h * 0.11f / 16 + 0.5f);
     if (scale < 1) scale = 1;
-    snprintf(text, sizeof text, "%d FPS", fps);
+    while (scale > 1 && (float)strlen(text) * 8 * (float)scale > w - 8) --scale;
     ui_text(l, x0 + (w - (float)(strlen(text) * 8 * (size_t)scale)) / 2, y0 + h / 25, scale, text, 0xFFFFFFFFu);
 }

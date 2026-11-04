@@ -357,7 +357,11 @@ int vk_ui_draw(VkCommandBuffer cb, const VkUiTarget* t, const int safe[4]) {
     else {
         int px, py, scale;
         vpad_draw(&list, safe);
-        vpad_showcase_draw(&list, safe, vpad_showcase_fps(g_vk_present, plat_ns()));
+        {
+            int fps10 = stats_rate10(), gen10 = stats_gen10();
+            vpad_showcase_draw(&list, safe, fps10 < 0 ? -1 : (fps10 + 5) / 10,
+                               gen10 < 0 ? 0 : (gen10 + 5) / 10);
+        }
         overlay_place(sw, sh, &px, &py, &scale); /* the menu's letters */
         stats_draw(&list, safe, scale, plat_ns());
     }

@@ -96,7 +96,9 @@ void vpad_showcase_input(u64 buttons, const i32 sticks[4]);
 /* the frames a second the showcase shows: the game's presents (a count that only grows) over the last half second or
    more, at now_ns; -1 until the first half second is over */
 int vpad_showcase_fps(u32 presents, u64 now_ns);
-void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps);
+/* fps is the game's frames a second (-1 unknown); gen_fps the generated ones beside them when frame interpolation
+   runs, 0 when it does not */
+void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps, int gen_fps);
 /* the showcase's box on safe (x, y, w, h into box) and its corner, 0 top left, 1 top right, 2 bottom left, 3 bottom
    right; -1 while it is off */
 int vpad_showcase_box(const int safe[4], float box[4]);

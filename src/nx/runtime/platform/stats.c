@@ -50,8 +50,15 @@ void stats_measured(int cpu, u64 memory) {
     g_stats.memory = memory;
     ui_unlock();
 }
+/* the counters run while either overlay shows: the stats box reads them, and the showcase's line too */
+static int counting(void) {
+    return __atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED) || g_settings.showcase;
+}
+int stats_rate10(void) { return g_stats.fps10; }
+int stats_gen10(void) { return g_stats.gen10; }
+
 void stats_generated(void) {
-    if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) return;
+    if (!counting()) return;
     ui_lock();
     ++g_stats.generated;
     ui_unlock();
@@ -60,8 +67,8 @@ void stats_generated(void) {
 void stats_frame(u64 now_ns) {
     u64 cpu_ns;
     unsigned cores;
-    if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) {
-        if (g_stats.frames || g_stats.sampled_ns) { /* the next turn on starts from nothing */
+    if (!counting()) {
+        if (g_stats.frames || g_stats.sampled_ns || g_stats.since_ns) { /* the next turn on starts from nothing */
             int corner = g_stats.corner;
             ui_lock();
             memset(&g_stats, 0, sizeof g_stats);
@@ -76,6 +83,20 @@ void stats_frame(u64 now_ns) {
     g_stats.next = (g_stats.next + 1) % STATS_FRAMES;
     if (g_stats.count < STATS_FRAMES) ++g_stats.count;
     ++g_stats.frames;
+    /* the half second's rates here, not at the draw: the showcase's line reads them too, and it draws no box */
+    if (!g_stats.since_ns) {
+        g_stats.since_ns = now_ns;
+        g_stats.since = g_stats.frames;
+    } else if (now_ns > g_stats.since_ns && now_ns - g_stats.since_ns >= STATS_SPAN_NS) {
+        g_stats.fps10 = (int)(((g_stats.frames - g_stats.since) * 10000000000ull + (now_ns - g_stats.since_ns) / 2) /
+                              (now_ns - g_stats.since_ns));
+        g_stats.gen10 = (int)(((g_stats.generated - g_stats.since_gen) * 10000000000ull +
+                               (now_ns - g_stats.since_ns) / 2) /
+                              (now_ns - g_stats.since_ns));
+        g_stats.since_ns = now_ns;
+        g_stats.since = g_stats.frames;
+        g_stats.since_gen = g_stats.generated;
+    }
     ui_unlock();
     if (g_stats.sampled_ns && now_ns - g_stats.sampled_ns < STATS_SAMPLE_NS) return;
     cpu_ns = snx_process_cpu_ns();
@@ -115,10 +136,11 @@ void stats_draw(SnxUiList* l, const int safe[4], int scale, u64 now_ns) {
     unsigned j;
     int cols = STATS_COLS;
     if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) return;
-    if (!g_stats.since_ns) { /* the first half second starts at the first draw */
+    /* the rates are also taken here, so a stall (no frame for a while) reads 0.0 rather than the last rate */
+    if (!g_stats.since_ns) {
         g_stats.since_ns = now_ns;
         g_stats.since = g_stats.frames;
-    } else if (now_ns - g_stats.since_ns >= STATS_SPAN_NS) {
+    } else if (now_ns > g_stats.since_ns && now_ns - g_stats.since_ns >= STATS_SPAN_NS) {
         g_stats.fps10 = (int)(((g_stats.frames - g_stats.since) * 10000000000ull + (now_ns - g_stats.since_ns) / 2) /
                               (now_ns - g_stats.since_ns));
         g_stats.gen10 = (int)(((g_stats.generated - g_stats.since_gen) * 10000000000ull +
