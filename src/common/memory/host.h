@@ -26,6 +26,11 @@ typedef struct {
 size_t snx_host_page(void);
 bool snx_host_memory_new(SnxHostMemory* memory, uint64_t size);
 void snx_host_memory_free(SnxHostMemory* memory);
+/* An object to take another's place (src/3ds/memory's snx_ctr_memory_adopt): its size bytes copied from bytes,
+   through a mapping of its own, whatever memory's view shows. False when the object does not map */
+bool snx_host_memory_fill(const SnxHostMemory* memory, const void* bytes);
+/* The object's handle closed, its view not unmapped: another object's mapping over that view holds it from then on */
+void snx_host_memory_close(SnxHostMemory* memory);
 /* size bytes, inaccessible; NULL on failure */
 unsigned char* snx_host_reserve(uint64_t size);
 void snx_host_release(unsigned char* base, uint64_t size);
