@@ -11,7 +11,7 @@ with the runtime this branch built and deployed. A native frame is the runtime's
 | Mario Kart 8 Deluxe | `0100152000022000` | switch | 0 / frames=121 | 0 | frames=139 | 1 | 0 | 0 |
 | Super Mario 3D World + Bowser's Fury | `010028600EBDA000` | switch | 0 / frames=225 | 0 | frames=28 | 1 | 0 | 0 |
 | Super Mario 3D All-Stars | `010049900F546000` | switch | 0 / frames=281 | 0 | frames=281 | 1 | 0 | 0 |
-| Minecraft: Nintendo Switch Edition | `01006BD001E06000` | switch | 0 / frames=265 | 0 | frames=212 | 1 | 0 | 0 |
+| Minecraft: Switch Edition | `01006BD001E06000` | switch | 0 / frames=265 | 0 | frames=212 | 1 | 0 | 0 |
 | 01008CF01BAAC000 | `01008CF01BAAC000` | switch | 124 / none | 124 | none | 0 | 0 | 0 |
 | Luigi's Mansion 3 | `0100DCA0064A6000` | switch | 0 / frames=55 | 0 | frames=19 | 1 | 0 | 0 |
 | New Super Mario Bros. U Deluxe | `0100EA80032EA000` | switch | 0 / frames=1094 | 0 | frames=824 | 1 | 0 | 0 |
