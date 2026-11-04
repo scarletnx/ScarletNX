@@ -787,6 +787,11 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
+      # Git for Windows checks out with the core.autocrlf of its own system config (true), which MSYS2's git, the
+      # build's, does not read: every text file would read as changed to it, and the build line say -dirty
+      - name: Keep the checkout's line ends for MSYS2's git
+        shell: bash
+        run: git config --local core.autocrlf "$(git config core.autocrlf || echo false)"
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
