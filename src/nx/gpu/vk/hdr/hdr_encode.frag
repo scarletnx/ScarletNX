@@ -59,14 +59,15 @@ void main() {
     if (pc.tone.z > 0.5 && pc.tone.z < 1.5) {
         o = vec4(pq_encode(max(nits, vec3(0.0))), 1.0);
     } else if (pc.tone.z > 2.5) {
-        /* Display P3: the same extended linear light in P3's wider primaries */
-        vec3 lin = bt2020_to_p3(max(nits, vec3(0.0))) / pc.tone.x;
-        o = vec4(clamp(lin, vec3(0.0), vec3(64.0)), 1.0);
+        /* Display P3: the same extended linear light in P3's wider primaries, 1.0 at 80 nits, as the extended linear
+           transfer is defined (scRGB's reference), not at the paper white */
+        vec3 lin = bt2020_to_p3(max(nits, vec3(0.0))) / 80.0;
+        o = vec4(clamp(lin, vec3(0.0), vec3(125.0)), 1.0);
     } else if (pc.tone.z > 1.5) {
-        /* scRGB: linear light in sRGB's primaries, 1.0 at the paper white, so the SDR range is exactly what the
-           display shows in SDR and the frame's own headroom is above 1 */
-        vec3 lin = bt2020_to_bt709(max(nits, vec3(0.0))) / pc.tone.x;
-        o = vec4(clamp(lin, vec3(0.0), vec3(64.0)), 1.0);
+        /* scRGB: linear light in sRGB's primaries, 1.0 = 80 nits, its reference; the SDR range lands at the paper
+           white (nits / 80), and the frame's headroom above it */
+        vec3 lin = bt2020_to_bt709(max(nits, vec3(0.0))) / 80.0;
+        o = vec4(clamp(lin, vec3(0.0), vec3(125.0)), 1.0);
     } else {
         // the knee on the luminance, so a highlight keeps its hue
         float y = max(dot(nits, vec3(0.2627, 0.6780, 0.0593)), 1e-6);
