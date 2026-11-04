@@ -1163,6 +1163,32 @@ static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) 
     return vk_shader_get(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, fk->rect,
                          NULL, fk->queried ? fk->query : NULL);
 }
+/* whether slots a and b read their handles from the same words (tex_handle) */
+static int tex_same_handle(const ShTex* a, const ShTex* b) {
+    return a->cbuf_off == b->cbuf_off && a->bindless == b->bindless && a->bl_cbuf == b->bl_cbuf && a->bl2 == b->bl2 &&
+           a->bl2_cbuf == b->bl2_cbuf && a->bl2_off == b->bl2_off &&
+           (a->flags & SNX_TEX_INDEXED) == (b->flags & SNX_TEX_INDEXED);
+}
+/* the resolutions of s's texture slots, from res0, which fs_key filled for s0's: res0 itself when s numbers its slots
+   as s0 does, else out, each slot taking the resolution of the slot of s0 that reads its handle, or its own. A variant
+   may number them otherwise: a texture only a TXQ names takes the dimension of its header there, and its slot is then
+   the one that samples the texture as that dimension, which moves the slots after it down by one */
+static TexRes* fs_slot_res(const DsState* ds, const VkSh* s0, TexRes* res0, const VkSh* s, TexRes* out) {
+    int n0 = s0->si.ntex > SH_MAXTEX ? SH_MAXTEX : s0->si.ntex, n = s->si.ntex > SH_MAXTEX ? SH_MAXTEX : s->si.ntex;
+    int same = n == n0;
+    for (int i = 0; same && i < n; i++) same = tex_same_handle(&s->si.tex[i], &s0->si.tex[i]);
+    if (same) return res0;
+    for (int i = 0; i < n; i++) {
+        const ShTex* st = &s->si.tex[i];
+        int j = 0;
+        while (j < n0 && !tex_same_handle(st, &s0->si.tex[j])) j++;
+        if (j < n0)
+            out[i] = res0[j];
+        else
+            tex_resolve(ds, tex_handle(ds, 4, ds->bind.tex_bank, st), &out[i]);
+    }
+    return out;
+}
 
 VkImageViewType vk_tex_view_type(const ShTex* st) {
     return st->type == 2   ? VK_IMAGE_VIEW_TYPE_3D
@@ -2903,7 +2929,8 @@ retry:
     /* the fragment shader's variant, keyed on its textures each draw: they are resolved for stage_set anyway. fres is
        filled for the fragment program's textures (each resolved, have set), and read only for them: a clear of all
        SH_MAXTEX (10 KiB) and a check of all of them against each target were per draw */
-    TexRes fres[SH_MAXTEX];
+    TexRes fres[SH_MAXTEX], vres[SH_MAXTEX];
+    TexRes* res = fres; /* the variant's slots, as stage_set reads them */
     VkSh* last = gs ? gs : tes ? tes : vs;
     VkSh* fs = NULL;
     FsKey fk = {0};
@@ -2925,6 +2952,7 @@ retry:
             g_vk_skipped++;
             return;
         }
+        if (fs && fs != sh.fs0) res = fs_slot_res(ds, sh.fs0, fres, fs, vres);
     }
     cb_prefetch(ds, 0, vs, 0);
     if (fs) cb_prefetch(ds, 4, fs, 0);
@@ -2951,7 +2979,7 @@ retry:
         for (u32 j = 0; j < n; j++) {
             if (!rt[j] || (((fs->si.sph[18] >> (j * 4)) & 15) && ds->blend.mask[j])) continue;
             for (int i = 0; i < (fs->si.ntex > SH_MAXTEX ? SH_MAXTEX : fs->si.ntex); i++)
-                if (fres[i].have && fres[i].t == rt[j]) {
+                if (res[i].have && res[i].t == rt[j]) {
                     rt[j] = NULL;
                     break;
                 }
@@ -3127,7 +3155,7 @@ retry:
     DrawImages images = {0};
     VkDescriptorSet vset = stage_set(ds, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images);
     VkDescriptorSet fset =
-        fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, fres, &storage, &images) : VK_NULL_HANDLE;
+        fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, res, &storage, &images) : VK_NULL_HANDLE;
     /* the sets of the stages between, at their stage's index (shader_vk_set) */
     between[0] = tcs;
     between[1] = tes;
