@@ -41,6 +41,7 @@
 #define PF_SOURCE  5 /* what the PF_SHADER record right after it was translated from (PfSource) */
 #define PF_UNIT    6 /* records packed together: a PfUnit, then one zstd frame of them, padded to 8 */
 #define PF_ZSHADER 7 /* a shipped file's shader packed alone: PfShader, PfZip, a zstd frame, padded to 8 */
+#define PF_CSPIPE  8 /* a compute pipeline (compute.c): a PfCsPipe and what follows it */
 
 /* PFile.pack: pf_open's file packs its records into units, pf_open_mapped's each shader record alone; 0 for neither */
 #define PF_PACK_UNITS   1
@@ -72,6 +73,16 @@ typedef struct {
     u32 sh[5];
     u32 keylen;
 } PfPipe;
+/* a compute pipeline record: this, then ncbr reads ({idx, off, ok, v}), nkey bytes of compute.c's key of the
+   pipeline's variant (padded to 8) and ncode bytes of its program window (80 zero bytes, then the code). Its program
+   rather than its SPIR-V, so that any build translates it again, and the pipeline is made again before the game asks
+   for it (compute.c's vk_cs_pipe_load). Of a build-independent layout but for the variant's key, whose size is
+   checked */
+typedef struct {
+    u64 key;             /* compute.c's, of the program, its launch parameters and the variant */
+    u32 lx, ly, lz, shm; /* the block's threads, and its shared memory bytes */
+    u32 ncbr, nkey, ncode, pad;
+} PfCsPipe;
 typedef struct {
     u64 module, check; /* module 0: a free slot */
     u32 rec, pad;
@@ -108,6 +119,9 @@ typedef struct {
     u64 (*source)(void* ctx, const PfSource* s, const u32* cbr, const u8* code, const ShXfb* xfb);
     void* ctx;
     int rebuild;
+    /* a PF_CSPIPE record, its reads, its variant's key and its program (NULL: such records are skipped). With pf's
+       lock held, except in a rebuild, where it records the pipeline in the new file */
+    void (*cspipe)(void* ctx, const PfCsPipe* c, const u32* cbr, const u8* key, const u8* code);
 } PfLoad;
 /* opens path: the records written there with the same key go to load in their order, and what follows is appended.
    A missing file, or one with another key, is started over, except that one whose key's first guest bytes are the
@@ -123,6 +137,8 @@ u64 pf_shader(PFile* pf, u64 module, const PfShader* s, const u32* cbr, const u3
               const u8* code, const ShXfb* xfb);
 /* a pipeline record with modules (vs, tcs, tes, gs, fs; 0 for none): skipped when one of them has no record */
 void pf_pipe(PFile* pf, const u64 modules[5], const void* key, u32 keylen);
+/* a compute pipeline record (PfCsPipe's), with its reads, its variant's key and its program */
+void pf_cspipe(PFile* pf, const PfCsPipe* c, const u32* cbr, const void* key, const u8* code);
 /* a PF_SCAN record: what was read (shipped_pass.h's SHIP_FILE or SHIP_ALL) and its id */
 void pf_scan(PFile* pf, u64 what, u64 id);
 /* a PF_SHIPREF record for module, which pf_pipe then refers to as it does a shader record */

@@ -788,6 +788,7 @@ static struct {
     VkSh *sh, *sh_tail; /* its shaders, in the file's order, linked by next until merged */
     Pipe* pipes[PIPEH]; /* its pipelines by key hash, linked by next until merged */
     u32 nsh, npipe;
+    u32 ncs, ncs_failed; /* the compute pipelines of the file made, and those that could not be */
     /* The shader programs the game ships (pf_ship_pass), translated before a draw asks for them, in a file of their
        own (ship, <game>.vkshipped) that is read as they are used: a game ships thousands, and a session uses a few of
        them. Its PF_SCAN records say what the pass read. The reading thread alone writes the index and the scans' set,
@@ -1524,6 +1525,21 @@ static int pf_key_holds(const PipeKey* k) {
     /* with dynamic vertex input a key holds no layout, which the draws give */
     return arrays == k->arrays && (g_vk.vertex_input_dynamic ? !k->vi.nattr && !k->vi.nbind : attrs == in);
 }
+void vk_pf_cspipe(u64 key, const u32 launch[4], const VkCbReads* cbr, const void* vkey, u32 nkey, const u8* code,
+                  u32 ncode) {
+    PfCsPipe c = {key, launch[0], launch[1], launch[2], launch[3], cbr->n, nkey, ncode, 0};
+    if (g_pf.on) pf_cspipe(&g_pf.file, &c, (const u32*)(const void*)cbr->r, vkey, code);
+}
+/* on the reading thread: a compute pipeline of the file, made now, before the game starts (vk_pipeline_prepare's done
+   waits for the file). Built here, its driver's compile is the prepare screen's rather than a dispatch's, which held
+   the GPU thread and every thread waiting on it for seconds after an update of the runtime or the driver */
+static void pf_load_cspipe(void* ctx, const PfCsPipe* c, const u32* cbr, const u8* key, const u8* code) {
+    const u32 launch[4] = {c->lx, c->ly, c->lz, c->shm};
+    if (vk_cs_pipe_load(launch, cbr, c->ncbr, key, c->nkey, code, c->ncode, ((const PfLoad*)ctx)->rebuild))
+        g_pf.ncs++;
+    else
+        g_pf.ncs_failed++;
+}
 /* on the reading thread: a pipeline of the file, whose shaders were made, queued to the workers behind the draws'. In
    a file being rebuilt it is recorded in the new one, whose shader records its modules have */
 static void pf_load_pipe(void* ctx, const u64 m[5], const void* key, u32 keylen) {
@@ -2003,7 +2019,7 @@ void vk_pipeline_prepare(RendererPrepare* p) {
 /* the reading thread (arg non-NULL), or vk_pipeline_init's when there is none, which doesn't run the pass: the
    shipped file first, whose records the main file's PF_SHIPREFs name, then the main file, then the pass */
 static void pf_load(void* arg) {
-    PfLoad load = {pf_load_shader, pf_load_pipe, pf_load_shipref, pf_load_source, NULL, 0};
+    PfLoad load = {pf_load_shader, pf_load_pipe, pf_load_shipref, pf_load_source, NULL, 0, pf_load_cspipe};
     char key[1024];
     size_t guest;
     u32 loaded[2] = {0, 0};
@@ -2017,8 +2033,10 @@ static void pf_load(void* arg) {
     pf_open_mapped(&g_pf.ship, g_pf.ship_path, key, pf_ship_rec, NULL);
     pf_open(&g_pf.file, g_pf.path, key, guest, &load, loaded);
     LOG("vulkan: %u shaders and %u pipelines of earlier runs loaded from %s in %llu ms, the pipelines to be made in "
-        "the background; %u shaders of the game's own programs in %s\n",
-        g_pf.nsh, g_pf.npipe, g_pf.path, (unsigned long long)((plat_ns() - t0) / 1000000), g_pf.nidx, g_pf.ship_path);
+        "the background, and %u compute pipelines made (%u could not be); %u shaders of the game's own programs in "
+        "%s\n",
+        g_pf.nsh, g_pf.npipe, g_pf.path, (unsigned long long)((plat_ns() - t0) / 1000000), g_pf.ncs, g_pf.ncs_failed,
+        g_pf.nidx, g_pf.ship_path);
     __atomic_store_n(&g_pf.shaders_total, g_pf.nsh, __ATOMIC_RELAXED);
     __atomic_store_n(&g_pf.pipes_total, g_pf.npipe, __ATOMIC_RELAXED);
     pm_lock(&g_pf.lock);

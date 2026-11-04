@@ -650,21 +650,44 @@ typedef struct {
     u8 query[SH_MAXTEX]; /* the dimension of each texture only a TXQ names (ShaderInfo.tex_query_hint) */
 } CsKey;
 static CsPipe g_cs_alloc_failed = {.failed = 1}; /* out of memory: not cached, retried */
+/* the key of a program (code, its window as cs_read_code makes it), its launch parameters and its variant, its BRX
+   tables read through read; *blen: the bytes of the window the program takes */
+static u64 cs_key(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, const CsKey* k, VkCbReader read, u32* blen) {
+    u64 key = vk_shader_hash(code, CS_CODE + 80, blen, read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^ ((u64)lz << 56) ^
+              ((u64)shm << 20) ^ ((u64)k->image << 32) ^ (u64)k->tex_int * 0x9E3779B97F4A7C15ull ^
+              (u64)k->tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k->image_sint * 0xA24BAED4963EE407ull ^
+              (u64)k->tex_rect * 0x165667B19E3779F9ull;
+    for (u32 q = 0; q < SH_MAXTEX; q++) key ^= (u64)k->query[q] * (0x9E3779B97F4A7C15ull + 2 * q + 1) << (q & 15);
+    return key;
+}
+static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k, VkCbReader read);
+/* p, made from code (blen bytes of its window), kept in the pipeline file for the next run, which makes it before the
+   game asks (vk_cs_pipe_load): the window's bytes the translation reads, with the words after them that a lookahead
+   past its last instruction would read, as a graphics shader's source is kept (pipeline.c) */
+static void cs_keep(const CsPipe* p, const u8* code, u32 blen, u32 lx, u32 ly, u32 lz, u32 shm, const CsKey* k) {
+    const u32 launch[4] = {lx, ly, lz, shm};
+    u32 n = ((blen + 7u) & ~7u) + 64u;
+    if (n > CS_CODE + 80) n = CS_CODE + 80;
+    vk_pf_cspipe(p->key, launch, &p->cbr, k, sizeof *k, code, n);
+}
 static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k) {
     u32 blen;
-    u64 key = vk_shader_hash(code, CS_CODE + 80, &blen, cs_cb_read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^
-              ((u64)lz << 56) ^ ((u64)shm << 20) ^ ((u64)k.image << 32) ^ (u64)k.tex_int * 0x9E3779B97F4A7C15ull ^
-              (u64)k.tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k.image_sint * 0xA24BAED4963EE407ull ^
-              (u64)k.tex_rect * 0x165667B19E3779F9ull;
-    for (u32 q = 0; q < SH_MAXTEX; q++) key ^= (u64)k.query[q] * (0x9E3779B97F4A7C15ull + 2 * q + 1) << (q & 15);
+    u64 key = cs_key(code, lx, ly, lz, shm, &k, cs_cb_read, &blen);
     CsPipe* p = g_csp[key & 255];
     while (p && (p->key != key || !vk_cb_reads_hold(&p->cbr, cs_cb_read))) p = p->next;
     if (p) return p;
-    p = calloc(1, sizeof *p);
+    p = cs_make(code, blen, key, lx, ly, lz, shm, k, cs_cb_read);
     if (!p) return &g_cs_alloc_failed;
-    p->key = key;
     p->next = g_csp[key & 255];
     g_csp[key & 255] = p;
+    if (!p->failed) cs_keep(p, code, blen, lx, ly, lz, shm, &k);
+    return p;
+}
+/* the pipeline of a program, made but not in the table: NULL when out of memory */
+static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k, VkCbReader read) {
+    CsPipe* p = calloc(1, sizeof *p);
+    if (!p) return NULL;
+    p->key = key;
     p->si.cs_local[0] = lx;
     p->si.cs_local[1] = ly;
     p->si.cs_local[2] = lz;
@@ -701,7 +724,7 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k)
     const char* corpus = vk_corpus_dir();
     if (corpus) shader_corpus_save(corpus, code, blen, CS_CODE + 80, ST_CS, &p->si, key);
     size_t nw = 0;
-    u32* spv = vk_translate_spirv(code, CS_CODE + 80, ST_CS, &p->si, &nw, cs_cb_read, &p->cbr);
+    u32* spv = vk_translate_spirv(code, CS_CODE + 80, ST_CS, &p->si, &nw, read, &p->cbr);
     if (!spv || p->si.unsupported) {
         p->failed = 1;
         LOG("vulkan: compute %016llx not translated: %s\n", (unsigned long long)key,
@@ -739,6 +762,67 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k)
         LOG_LIMIT(12, "vulkan: compute %016llx ready: block %ux%ux%u, %d global buffers, %d textures, %d images\n",
                   (unsigned long long)key, lx, ly, lz, p->si.ngbuf, p->si.ntex, p->si.nimg);
     return p;
+}
+
+/* a pipeline that isn't in the table, gone */
+static void cs_free(CsPipe* p) {
+    if (p->p) vkDestroyPipeline(g_vk.dev, p->p, NULL);
+    free(p->cbr.r);
+    free(p);
+}
+/* the reads a kept pipeline was translated with, which translating it again answers from (vk_cs_pipe_load's thread
+   alone). A read it didn't make answers that the buffer isn't bound; a dispatch whose buffers hold more then makes its
+   own (cs_pipe checks every read) */
+static const VkCbReads* g_cs_replay;
+static int cs_replay_read(u32 idx, u32 off, u32* out) {
+    for (u32 i = 0; i < g_cs_replay->n; i++)
+        if (g_cs_replay->r[i].idx == idx && g_cs_replay->r[i].off == off) {
+            *out = g_cs_replay->r[i].v;
+            return (int)g_cs_replay->r[i].ok;
+        }
+    return 0;
+}
+static int cs_reads_same(const VkCbReads* a, const VkCbReads* b) {
+    return a->n == b->n && (!a->n || !memcmp(a->r, b->r, a->n * sizeof *a->r));
+}
+int vk_cs_pipe_load(const u32 launch[4], const u32* cbr, u32 ncbr, const u8* vkey, u32 nkey, const u8* code,
+                    u32 ncode, int record) {
+    CsKey k;
+    if (nkey != sizeof k || ncode > CS_CODE + 80) return 0;
+    memcpy(&k, vkey, sizeof k);
+    u8* window = calloc(1, CS_CODE + 80);
+    VkCbRead* reads = ncbr ? malloc(ncbr * sizeof *reads) : NULL;
+    if (!window || (ncbr && !reads)) {
+        free(window);
+        free(reads);
+        return 0;
+    }
+    memcpy(window, code, ncode);
+    if (ncbr) memcpy(reads, cbr, ncbr * sizeof *reads);
+    VkCbReads replay = {reads, ncbr};
+    u32 blen;
+    g_cs_replay = &replay;
+    u64 key = cs_key(window, launch[0], launch[1], launch[2], launch[3], &k, cs_replay_read, &blen);
+    CsPipe* p = cs_make(window, blen, key, launch[0], launch[1], launch[2], launch[3], k, cs_replay_read);
+    g_cs_replay = NULL;
+    int made = p && !p->failed;
+    if (made) {
+        if (record) cs_keep(p, window, blen, launch[0], launch[1], launch[2], launch[3], &k);
+        /* in the table unless a dispatch made it meanwhile (a game started without waiting for the shaders) */
+        vk_lock();
+        CsPipe* q = g_csp[key & 255];
+        while (q && (q->key != key || !cs_reads_same(&q->cbr, &p->cbr))) q = q->next;
+        if (!q) {
+            p->next = g_csp[key & 255];
+            g_csp[key & 255] = p;
+            p = NULL;
+        }
+        vk_unlock();
+    }
+    if (p) cs_free(p);
+    free(window);
+    free(reads);
+    return made;
 }
 
 int vk_buffer_image(const u32* tic, int kind, VkBufImg* out) {

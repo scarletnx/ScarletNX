@@ -294,14 +294,34 @@ static void shiprefs(void) {
     remove(PATH);
 }
 
+/* the compute pipeline records handed back (load_cspipe): how many, the last one's fields and bytes, and whether it
+   came in a rebuild. cspipe_off: the loader takes none (its cspipe NULL) */
+static struct {
+    int n, rebuild;
+    PfCsPipe c;
+    u8 bytes[256];
+} cs_got;
+static int cspipe_off;
+static void load_cspipe(void* ctx, const PfCsPipe* c, const u32* cbr, const u8* key, const u8* code) {
+    const PfLoad* load = ctx;
+    cs_got.n++;
+    cs_got.rebuild = load->rebuild;
+    cs_got.c = *c;
+    CHECK(c->ncbr * 16u + c->nkey + c->ncode <= sizeof cs_got.bytes);
+    memcpy(cs_got.bytes, cbr, c->ncbr * 16u);
+    memcpy(cs_got.bytes + c->ncbr * 16u, key, c->nkey);
+    memcpy(cs_got.bytes + c->ncbr * 16u + c->nkey, code, c->ncode);
+    if (load->rebuild && rebuilding) pf_cspipe(rebuilding, c, cbr, key, code); /* as compute.c records it again */
+}
 static void open_file(PFile* pf, const char* key, u64 first_module, int fail_first, u32 loaded[2]) {
-    PfLoad load;
+    static PfLoad load;
     load.shader = load_shader;
     load.pipe = load_pipe;
     load.shipref = load_shipref;
     load.source = load_source;
-    load.ctx = NULL;
+    load.ctx = &load;
     load.rebuild = 0;
+    load.cspipe = cspipe_off ? NULL : load_cspipe;
     memset(&got, 0, sizeof got);
     got.next_module = first_module;
     got.fail_first = fail_first;
@@ -434,6 +454,64 @@ static void rebuilds(void) {
     guest_bytes = 0;
     remove(PATH);
 }
+/* a compute pipeline record of parts whose sizes aren't multiples of 8 (a key of 13 bytes, a window of 37), between a
+   shader and a pipeline: handed back as it was, the records after it read too; skipped by a loader that takes none;
+   in a rebuild handed back as such and recorded in the new file, which the next run reads */
+static void add_cspipe(PFile* pf) {
+    PfCsPipe c = {0x1122334455667788ull, 64, 2, 1, 4096, 2, 13, 37, 0};
+    u32 cbr[8];
+    u8 key[13], code[37];
+    for (int i = 0; i < 8; i++) cbr[i] = 0xC0DE0000u + (u32)i;
+    for (int i = 0; i < 13; i++) key[i] = (u8)(0xA0 + i);
+    for (int i = 0; i < 37; i++) code[i] = (u8)(3 * i + 1);
+    pf_cspipe(pf, &c, cbr, key, code);
+}
+static void check_cspipe(void) {
+    CHECK(cs_got.c.key == 0x1122334455667788ull && cs_got.c.lx == 64 && cs_got.c.ly == 2 && cs_got.c.lz == 1 &&
+          cs_got.c.shm == 4096 && cs_got.c.ncbr == 2 && cs_got.c.nkey == 13 && cs_got.c.ncode == 37);
+    for (int i = 0; i < 8; i++) CHECK(snx_ld_le32(cs_got.bytes + 4 * i) == 0xC0DE0000u + (u32)i);
+    for (int i = 0; i < 13; i++) CHECK(cs_got.bytes[32 + i] == 0xA0 + i);
+    for (int i = 0; i < 37; i++) CHECK(cs_got.bytes[45 + i] == (u8)(3 * i + 1));
+}
+static void cspipes(void) {
+    PFile pf;
+    u32 loaded[2] = {0, 0};
+    remove(PATH);
+    guest_bytes = 6;
+    open_file(&pf, "guest;build one", 0x10, 0, loaded);
+    add_sourced(&pf, 0, 0x8001, 0);
+    add_cspipe(&pf);
+    add_pipe(&pf, 0, 0x8001, 0, 0, 0, 0);
+    close_file(&pf);
+    memset(&cs_got, 0, sizeof cs_got);
+    open_file(&pf, "guest;build one", 0x20, 0, loaded);
+    CHECK(cs_got.n == 1 && !cs_got.rebuild && loaded[0] == 1 && loaded[1] == 1);
+    check_cspipe();
+    close_file(&pf);
+    memset(&cs_got, 0, sizeof cs_got);
+    cspipe_off = 1;
+    open_file(&pf, "guest;build one", 0x20, 0, loaded);
+    CHECK(cs_got.n == 0 && loaded[0] == 1 && loaded[1] == 1);
+    close_file(&pf);
+    cspipe_off = 0;
+    /* another build: the record handed back in the rebuild, recorded again, read by the next run */
+    memset(&cs_got, 0, sizeof cs_got);
+    memset(&source_got, 0, sizeof source_got);
+    source_module = 0x30;
+    rebuilding = &pf;
+    open_file(&pf, "guest;build two", 0x90, 0, loaded);
+    CHECK(cs_got.n == 1 && cs_got.rebuild && source_got.n == 1);
+    check_cspipe();
+    close_file(&pf);
+    rebuilding = NULL;
+    memset(&cs_got, 0, sizeof cs_got);
+    open_file(&pf, "guest;build two", 0xA0, 0, loaded);
+    CHECK(cs_got.n == 1 && !cs_got.rebuild);
+    check_cspipe();
+    close_file(&pf);
+    guest_bytes = 0;
+    remove(PATH);
+}
 static void add_pipe(PFile* pf, int n, u64 vs, u64 tcs, u64 tes, u64 gs, u64 fs) {
     u64 m[5];
     u8 key[KEYB];
@@ -556,7 +634,7 @@ static void unit_load_pipe(void* ctx, const u64 modules[5], const void* key, u32
 }
 /* the units tests' file opened, packing as pack says (compress_shader_cache) */
 static void unit_open_as(PFile* pf, u64 first, u32 loaded[2], int pack) {
-    PfLoad load = {unit_load_shader, unit_load_pipe, load_shipref, load_source, NULL, 0};
+    PfLoad load = {unit_load_shader, unit_load_pipe, load_shipref, load_source, NULL, 0, NULL};
     memset(&ug, 0, sizeof ug);
     ug.first = first;
     memset(pf, 0, sizeof *pf);
@@ -1204,6 +1282,7 @@ int main(void) {
     zipped();
     shiprefs();
     rebuilds();
+    cspipes();
     large_checks();
     units_round_trip();
     units_off();
