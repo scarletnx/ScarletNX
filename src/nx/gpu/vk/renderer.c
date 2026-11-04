@@ -672,11 +672,12 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                     if (aa != SNX_FX_AA_OFF) {
                         VkImageView aa_src = frame_view;
                         u32 aw = fw2, ah = fh2, ax = fx, ay = fy, awid = fwid, ahei = fhei, atransform = ftransform;
-                        /* the recording thread has begun this frame's command buffer once its ring drained */
-                        vk_rec_sync();
                         if (!aa_src) {
                             VkComponentMapping identity = {0};
-                            aa_src = vk_tex_view(src, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
+                            /* the same space the upscaler reads: an sRGB frame is decoded, and the blit of the
+                               pass's float output encodes it back once */
+                            aa_src = vk_tex_view(src, VK_IMAGE_VIEW_TYPE_2D, is_srgb(src->f.vk) && g_vk.sc_srgb,
+                                                 &identity, 0);
                             vk_surf_use(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
                                         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
                             aw = src->sw;
@@ -692,6 +693,9 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                         }
+                        /* the transitions above are in the ring: drain them first, so the pass records after them
+                           (a direct command before its barrier reads the frame in its old layout) */
+                        vk_rec_sync();
                         {
                             SnxFxImage fxout = {0};
                             if (aa_src &&
