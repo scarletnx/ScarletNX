@@ -276,7 +276,8 @@ setting HDR
     startup
     words off=Off|auto=Auto|on=On
     help Auto = HDR where the display takes an HDR image and reports headroom over its white, and the plain blit where
-    help it does not, so an SDR display pays nothing. On = the passes run even without, and the SDR range stands in.
+    help it does not, so an SDR display pays nothing. On = a frame that already holds HDR data still takes the passes
+    help where the display has no HDR image, tone mapped down into the SDR range.
     help Display P3's wide gamut (linear light, white at the paper white) comes first where offered, then scRGB, else
     help HDR10 (PQ, BT.2020). A frame that already holds HDR data is never lifted again. The hdr_key toggles it live
 setting HDR colours
