@@ -431,8 +431,8 @@ static void write_ppm(unsigned screen, unsigned width, unsigned height, const un
         (void)snx_replace(staged, path);
 }
 /* The blit rectangle of a screen in swapchain pixels: in one window the pair scaled to fit and centred, each screen
-   centred across the layout; in its own window the screen scaled to fit and centred. False before a layout and a
-   swapchain exist. */
+   centred across the layout; in its own window the screen scaled to fit and centred (the window keeps its screen's
+   shape, so it fills it). False before a layout and a swapchain exist. */
 static bool screen_rect(unsigned screen, VkOffset2D rect[2]) {
     const Frame* frames = g_present.frames;
     unsigned window = g_present.separate ? screen : 0;

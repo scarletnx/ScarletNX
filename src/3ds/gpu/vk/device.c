@@ -446,6 +446,11 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
             v->second_surface = VK_NULL_HANDLE;
         }
     }
+    /* each window keeps its screen's shape as it is resized, so the screen fills it: no bars, and no stretching */
+    if (g_settings.ctr_separate_screens && v->host.window) {
+        SDL_SetWindowAspectRatio(v->host.window, 400.0f / 240.0f, 400.0f / 240.0f);
+        if (v->second) SDL_SetWindowAspectRatio(v->second, 320.0f / 240.0f, 320.0f / 240.0f);
+    }
     const VkQueueFlags queue = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
     bool made =
         snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v);
