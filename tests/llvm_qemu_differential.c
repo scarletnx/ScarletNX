@@ -6,9 +6,9 @@
    the memory it changed and how it ended (the next pc, UNDEF, BRK or SVC) must match. A store-exclusive also runs
    after a load-exclusive of its address, so that it can succeed.
      snx-test-llvm-qemu-differential QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] [--quiet] [--update]
-                                     [--jit] [--portable | --generic] [--record FILE]
+                                     [--jit] [--portable | --generic] [--without-avx512] [--record FILE]
      snx-test-llvm-qemu-differential DIR EXPECTED --reference FILE [--quiet] [--update] [--jit]
-                                     [--portable | --generic]
+                                     [--portable | --generic] [--without-avx512]
      snx-test-llvm-qemu-differential --skip REASON
    --record writes the QEMU side of the run (the words, each case's start state, its end state, how it ended and the
    memory it changed) to FILE. --reference runs the LLVM side alone against such a file, so that the cross-built hosts
@@ -22,6 +22,8 @@
    PCLMULQDQ, AES-NI, SSE4.2's CRC32C, AArch64's CRC32 and crypto...), so the emitters' portable forms are compared.
    --generic builds them without the host's architecture too: the path of the hosts SnxIrFeatures has no bit for
    (PowerPC64, RISC-V, LoongArch, MIPS64), a byte loop for TBL and helpers for FMA, square roots and rounding.
+   --without-avx512 runs an AVX-512 host as an x86-64 without it (snx_ir_host_drop): the emitters' choices and the
+   target machine both, as a host with AVX2 alone compiles them; on a host without AVX-512 it is skipped (77).
    A word the backend leaves UNDEF (the generated decoder for the Switch target), or decodes without an emitter,
    while QEMU runs it, has no emitter yet: it is listed in DIR/llvm_qemu_coverage.txt, not failed. So is a word that
    differs where the Switch target decodes it as another name (a hint's NOP) or, as the backend does, as UNDEF: what
@@ -989,7 +991,7 @@ int main(int argc, char** argv) {
     const char *expected_path, *reference_path = NULL, *record_path = NULL;
     size_t states, samples, rounds, nwords, nitems = 0, i, k, nsteps = 0, compared = 0, mismatched = 0,
                                                     no_emitter = 0, nexpected;
-    int sweep = 0, update = 0, jit = 0, portable = LLVM_STEPS_HOST, a, failed = 0, reference = 0;
+    int sweep = 0, update = 0, jit = 0, portable = LLVM_STEPS_HOST, a, failed = 0, reference = 0, no_avx512 = 0;
     static const char* const forms[] = {"host", "portable", "generic"}; /* the emitters', by LLVM_STEPS_ value */
     u32* words = NULL;
     Item* items;
@@ -1026,9 +1028,9 @@ int main(int argc, char** argv) {
         a = 5;
     } else {
         fputs("usage: snx-test-llvm-qemu-differential QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] "
-              "[--quiet] [--update] [--jit] [--portable | --generic] [--record FILE]\n"
+              "[--quiet] [--update] [--jit] [--portable | --generic] [--without-avx512] [--record FILE]\n"
               "       snx-test-llvm-qemu-differential DIR EXPECTED --reference FILE [--quiet] [--update] [--jit] "
-              "[--portable | --generic]\n"
+              "[--portable | --generic] [--without-avx512]\n"
               "       snx-test-llvm-qemu-differential --skip REASON\n",
               stderr);
         return 2;
@@ -1044,6 +1046,8 @@ int main(int argc, char** argv) {
             update = 1;
         else if (!strcmp(argv[a], "--jit"))
             jit = 1;
+        else if (!strcmp(argv[a], "--without-avx512"))
+            no_avx512 = 1;
         else if (!strcmp(argv[a], "--portable") || !strcmp(argv[a], "--generic")) {
             int form = !strcmp(argv[a], "--portable") ? LLVM_STEPS_PORTABLE : LLVM_STEPS_GENERIC;
             if (portable && portable != form)
@@ -1059,6 +1063,20 @@ int main(int argc, char** argv) {
             return snx_error("unknown argument %s", argv[a]);
     }
     initial_seed = g_test.rng;
+    if (no_avx512) {
+        char *host, *dropped;
+        int same;
+        if (snx_ir_host_drop("avx512", error, sizeof error)) return snx_error("%s", error);
+        host = LLVMGetHostCPUFeatures();
+        dropped = snx_ir_host_features();
+        same = !strcmp(host, dropped);
+        LLVMDisposeMessage(host);
+        LLVMDisposeMessage(dropped);
+        if (same) {
+            printf("llvm_qemu_differential skipped: --without-avx512 on a host without AVX-512 runs its own path\n");
+            return 77;
+        }
+    }
     if (reference) {
         size_t size = 0;
         u64 window, window_size, pc, seed, pad;
@@ -1381,10 +1399,10 @@ int main(int argc, char** argv) {
             g->listed = 1;
         }
     }
-    printf("LLVM against %sQEMU%s, %s emitters: %zu cases of %zu rows' and directed words, %zu runs compared, %zu "
+    printf("LLVM against %sQEMU%s, %s emitters%s: %zu cases of %zu rows' and directed words, %zu runs compared, %zu "
            "without an emitter yet, %zu differing in %zu groups\n",
-           reference ? "a recorded " : "", sweep ? " (sweep)" : "", forms[portable], nitems, lqd_rows(), compared,
-           no_emitter, mismatched, groups.ngroups);
+           reference ? "a recorded " : "", sweep ? " (sweep)" : "", forms[portable],
+           no_avx512 ? " without AVX-512" : "", nitems, lqd_rows(), compared, no_emitter, mismatched, groups.ngroups);
     for (i = 0; i < groups.ngroups; ++i) {
         const Group* g = &groups.groups[i];
         if (!g->listed) failed = 1;

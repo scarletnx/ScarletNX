@@ -1798,8 +1798,13 @@ if(NOT WIN32)
         add_test(NAME llvm_qemu_differential_generic COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
                  "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu_generic" "${snx_lqd_expected}"
                  --quiet --generic)
+        # an AVX-512 host as one with AVX2 alone (--without-avx512), skipped on a host without AVX-512
+        add_test(NAME llvm_qemu_differential_avx2 COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
+                 "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu_avx2" "${snx_lqd_expected}" --quiet
+                 --without-avx512)
         set_tests_properties(llvm_qemu_differential_jit llvm_qemu_differential_portable llvm_qemu_differential_generic
                              PROPERTIES TIMEOUT 600)
+        set_tests_properties(llvm_qemu_differential_avx2 PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
         if(SNX_TEST_LLVM_SWEEP)
             add_test(NAME llvm_qemu_differential_sweep COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
                      "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu_sweep" "${snx_lqd_expected}"
