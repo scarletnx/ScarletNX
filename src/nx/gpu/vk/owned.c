@@ -285,7 +285,12 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     if (in_place && vk_uma_held(cpu, size)) {
         own_drop(cpu, size);
         if (vk_uma_publish(cpu, size, r->buf, off)) return;
+        LOG_LIMIT(8, "vulkan: a GPU result over guest memory %llx+%llx an import holds could not be copied there\n",
+                  (unsigned long long)cpu, (unsigned long long)size);
     }
+    LOG_LIMIT(16, "vulkan: a GPU result over guest memory %llx+%llx (in place %d, held %d) %s\n",
+              (unsigned long long)cpu, (unsigned long long)size, in_place, vk_uma_held(cpu, size),
+              g_owned.traps ? "is trapped until the CPU reads it" : "lands now");
     if (g_owned.traps) vk_uma_owning(cpu, size); /* what reads the pages in place runs and goes before the trap */
     if (g_owned.traps && !own_begin(cpu, size, r, off)) return;
     /* not trapped here: older owners of the bytes let go of them, and the result lands now */

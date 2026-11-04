@@ -812,6 +812,22 @@ static int imp_bind(Imp* m, u64 cpu, u64 size, VkExternalMemoryHandleTypeFlagBit
         if ((bits >> k) & 1) {
             if (t == ~0u || (mp->memoryTypes[k].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) t = k;
         }
+    /* DIAGNOSTICS (dravee/test/ahb-dma-diag, never merged): an AHardwareBuffer's import takes a host-coherent type
+       where it allows one, to tell a cache coherence loss from a wrong place */
+#if defined(__ANDROID__)
+    if (type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID)
+        for (u32 k = 0; k < mp->memoryTypeCount; k++)
+            if (((bits >> k) & 1) && (mp->memoryTypes[k].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                t = k;
+                break;
+            }
+#endif
+    LOG_LIMIT(8,
+              "vulkan: an import of guest memory %llx+%llx (handle type %#x) takes memory type %u (flags %#x, heap %u) "
+              "of the types %#x it allows\n",
+              (unsigned long long)cpu, (unsigned long long)size, (unsigned)type, t,
+              t != ~0u ? (unsigned)mp->memoryTypes[t].propertyFlags : 0u, t != ~0u ? mp->memoryTypes[t].heapIndex : 0u,
+              bits);
     VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
                                        .pNext = import,
                                        .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
@@ -1183,6 +1199,16 @@ int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off) {
     VkBuffer ib;
     u64 io;
     if (!vk_uma_held(cpu, len) || !bind(cpu, len, 1, &ib, &io)) return 0; /* no import made for it */
+    {
+        u32 i = imp_find(cpu);
+        const Imp* m = i < g_uma.nimp ? &g_uma.imp[i] : NULL;
+        LOG_LIMIT(16,
+                  "vulkan: a GPU result over guest memory %llx+%llx is copied into its import's buffer at %llx, the "
+                  "import %llx+%llx%s\n",
+                  (unsigned long long)cpu, (unsigned long long)len, (unsigned long long)io,
+                  (unsigned long long)(m ? m->cpu : 0), (unsigned long long)(m ? m->size : 0),
+                  m && m->fd >= 0 ? " (a region its pages moved into)" : "");
+    }
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     vk_all_barrier(cb); /* the producer's writes, and what read or wrote the bytes in place before, first */
