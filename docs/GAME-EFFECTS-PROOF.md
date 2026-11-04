@@ -1,5 +1,16 @@
 # Effects proof across the games
 
+## Index
+
+* [Notes](#notes)
+* [Window proof](#window-proof)
+* [Modes on one game](#modes-on-one-game)
+* [GBA](#gba)
+* [3DS](#3ds)
+* [Vita](#vita)
+* [Frame interpolation, per frontend](#frame-interpolation-per-frontend)
+* [3DS shadows](#3ds-shadows)
+
 The method and the commands are in `docs/GAME-EFFECTS-METHOD.md`. Effects means
 `--aa=fxaa --upscaler=fsr1 --hdr=auto`. Baseline means
 `--aa=off --upscaler=off --hdr=off`. Both ran for 5 seconds on the private headless X11 display,
