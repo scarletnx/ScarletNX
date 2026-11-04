@@ -225,7 +225,9 @@ void gui_apple_stats(char* out, size_t size) {
    abort() with no reason. libc++abi writes the type and what() of a C++ exception to stderr itself */
 static NSUncaughtExceptionHandler* g_next_uncaught;
 static void uncaught(NSException* e) {
-    fprintf(stderr, "uncaught exception: %s: %s\n", e.name.UTF8String ?: "?", e.reason.UTF8String ?: "(no reason)");
+    const char* name = e.name.UTF8String;
+    const char* reason = e.reason.UTF8String;
+    fprintf(stderr, "uncaught exception: %s: %s\n", name ? name : "?", reason ? reason : "(no reason)");
     for (NSString* frame in e.callStackSymbols) fprintf(stderr, "  %s\n", frame.UTF8String);
     if (g_next_uncaught) g_next_uncaught(e);
 }
