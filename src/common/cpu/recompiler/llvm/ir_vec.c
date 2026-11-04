@@ -795,21 +795,30 @@ static V intrinsic_at(SnxIr* ir, const char* name, LLVMTypeRef* types, unsigned 
     return LLVMBuildCall2(B, LLVMIntrinsicGetType(ir->ctx, id, types, count), function, args, nargs, "");
 }
 
-/* The hosts with a two-table byte permute besides x86's pshufb and AArch64's tbl: PowerPC64 (vperm, VSX's), LoongArch
-   (vshuf.b, LSX's), MIPS (vshf.b, MSA's) and RISC-V (vrgather.vv, of V). */
+/* The hosts with a two-table byte permute besides AArch64's tbl: x86 with AVX-512 VBMI and VL (VPERMI2B, where
+   pshufb takes one table at a time), PowerPC64 (vperm, VSX's), LoongArch (vshuf.b, LSX's), MIPS (vshf.b, MSA's) and
+   RISC-V (vrgather.vv, of V). */
 static int other_permute(const SnxIrFeatures* features) {
-    return (features->ppc && features->ppc_vsx) || (features->riscv && features->riscv_v) ||
-           (features->loongarch && features->la_lsx) || (features->mips64 && features->mips_msa);
+    return (features->x86 && features->avx512vbmi && features->avx512vl) || (features->ppc && features->ppc_vsx) ||
+           (features->riscv && features->riscv_v) || (features->loongarch && features->la_lsx) ||
+           (features->mips64 && features->mips_msa);
 }
 
 /* One host permute of two 16-byte tables: byte i of the result is a's byte c[i] when c[i] is 0 to 15, b's byte
    c[i] - 16 when it is 16 to 31, and 0 past that (a's or b's byte 0 of the next 32 for c's high bits, which the
-   caller's range test discards). The tables' orders differ: vperm indexes a 32-byte big-endian pair, so a little-endian
-   host indexes with 15 - c; vshuf.b takes the high table first; vshf.b's first operand is the index and the
-   destination; vrgather.vv gathers one register, so the two results are selected between. */
+   caller's range test discards). The tables' orders differ: VPERMI2B takes the index between the tables and reads
+   its low five bits; vperm indexes a 32-byte big-endian pair, so a little-endian host indexes with 15 - c; vshuf.b
+   takes the high table first; vshf.b's first operand is the index and the destination; vrgather.vv gathers one
+   register, so the two results are selected between. */
 static V shuffle16(SnxIr* ir, V a, V b, V c) {
     LLVMTypeRef v16i8 = LLVMTypeOf(a);
     V args[4];
+    if (ir->features->x86) {
+        args[0] = a;
+        args[1] = c;
+        args[2] = b;
+        return ir_intrinsic(ir, "llvm.x86.avx512.vpermi2var.qi.128", NULL, args, 3);
+    }
     if (ir->features->ppc) {
         /* vperm shuffles the 32-byte pair big-endian: index byte k takes the pair's byte k, which is the IR lane
            15 - k. A little-endian host therefore indexes the tables with 15 - c, whose low five bits still pick the
@@ -874,8 +883,8 @@ static V widen_low(SnxIr* ir, V v) {
 }
 
 /* TBL, TBX: each index byte of Vm picks a byte of the len + 1 consecutive table registers from Vn (modulo 32), out
-   of range giving 0 (TBL) or Vd's byte (TBX). pshufb or AArch64's TBL where the host has them, a host permute of two
-   tables at a time where it has one, else one byte at a time */
+   of range giving 0 (TBL) or Vd's byte (TBX). AArch64's TBL where the host has it, a host permute of two tables at a
+   time where it has one, else pshufb a table at a time, else one byte at a time */
 static void tbl(SnxIr* ir, const SnxA64Args* a) {
     unsigned bytes = a->q ? 16 : 8, regs = (unsigned)a->len + 1;
     V idx = reg(ir, (unsigned)a->rm, 0, bytes), r = NULL, d = a->tbx ? reg(ir, (unsigned)a->rd, 0, bytes) : NULL;
@@ -892,19 +901,6 @@ static void tbl(SnxIr* ir, const SnxA64Args* a) {
         for (unsigned t = 0; t < regs; ++t) args[count++] = tables[t];
         args[count++] = idx;
         r = ir_intrinsic(ir, a->tbx ? tbx_names[regs - 1] : tbl_names[regs - 1], LLVMTypeOf(idx), args, count);
-    } else if (ir->features->x86 && ir->features->ssse3) {
-        LLVMTypeRef bytes16 = ir_vec_type(ir, 0, 16);
-        V wide = bytes == 16 ? idx : widen_low(ir, idx);
-        V out = LLVMConstNull(bytes16);
-        for (unsigned t = 0; t < regs; ++t) {
-            V rel = LLVMBuildSub(B, wide, ir_vec_k(ir, bytes16, 16 * t), ""), args[2];
-            V outside = mask_of(ir, cmp(ir, LLVMIntUGE, rel, ir_vec_k(ir, bytes16, 16)), rel);
-            args[0] = tables[t];
-            args[1] = LLVMBuildOr(B, rel, LLVMBuildAnd(B, outside, ir_vec_k(ir, bytes16, 0x80), ""), "");
-            out = LLVMBuildOr(B, out, ir_intrinsic(ir, "llvm.x86.ssse3.pshuf.b.128", NULL, args, 2), "");
-        }
-        r = bytes == 16 ? out : ir_vec_shuffle(ir, out, out, (const unsigned[]){0, 1, 2, 3, 4, 5, 6, 7}, 8);
-        if (a->tbx) r = sel(ir, cmp(ir, LLVMIntUGE, idx, ir_vec_like(ir, idx, 16 * regs)), d, r);
     } else if (other_permute(ir->features)) {
         LLVMTypeRef bytes16 = ir_vec_type(ir, 0, 16);
         V wide = bytes == 16 ? idx : widen_low(ir, idx);
@@ -916,6 +912,19 @@ static void tbl(SnxIr* ir, const SnxA64Args* a) {
             V inside = cmp(ir, LLVMIntULT, control, ir_vec_k(ir, bytes16, 32));
             V part = shuffle16(ir, first, second, control);
             out = LLVMBuildOr(B, out, sel(ir, inside, part, LLVMConstNull(bytes16)), "");
+        }
+        r = bytes == 16 ? out : ir_vec_shuffle(ir, out, out, (const unsigned[]){0, 1, 2, 3, 4, 5, 6, 7}, 8);
+        if (a->tbx) r = sel(ir, cmp(ir, LLVMIntUGE, idx, ir_vec_like(ir, idx, 16 * regs)), d, r);
+    } else if (ir->features->x86 && ir->features->ssse3) {
+        LLVMTypeRef bytes16 = ir_vec_type(ir, 0, 16);
+        V wide = bytes == 16 ? idx : widen_low(ir, idx);
+        V out = LLVMConstNull(bytes16);
+        for (unsigned t = 0; t < regs; ++t) {
+            V rel = LLVMBuildSub(B, wide, ir_vec_k(ir, bytes16, 16 * t), ""), args[2];
+            V outside = mask_of(ir, cmp(ir, LLVMIntUGE, rel, ir_vec_k(ir, bytes16, 16)), rel);
+            args[0] = tables[t];
+            args[1] = LLVMBuildOr(B, rel, LLVMBuildAnd(B, outside, ir_vec_k(ir, bytes16, 0x80), ""), "");
+            out = LLVMBuildOr(B, out, ir_intrinsic(ir, "llvm.x86.ssse3.pshuf.b.128", NULL, args, 2), "");
         }
         r = bytes == 16 ? out : ir_vec_shuffle(ir, out, out, (const unsigned[]){0, 1, 2, 3, 4, 5, 6, 7}, 8);
         if (a->tbx) r = sel(ir, cmp(ir, LLVMIntUGE, idx, ir_vec_like(ir, idx, 16 * regs)), d, r);

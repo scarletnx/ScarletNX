@@ -927,12 +927,13 @@ static V from_int(SnxIr* ir, unsigned width, unsigned uns, unsigned fbits, V v) 
         else
             fits = LLVMBuildICmp(B, LLVMIntULT, LLVMBuildAdd(B, v, ir_vec_like(ir, v, (SnxU64)1 << precision), ""),
                                  ir_vec_like(ir, v, (SnxU64)1 << (precision + 1)), "");
-        /* an unsigned lane that fits converts as a signed one: x86 before AVX-512 has no unsigned lane conversion,
-           and LLVM's sum of two exact parts there is -0 for 0 when the host rounds toward minus infinity */
-        if (uns)
+        /* an unsigned lane that fits converts as a signed one, unless the host converts unsigned lanes itself:
+           LLVM's sum of two exact parts on x86 before AVX-512 is -0 for 0 when the host rounds toward minus
+           infinity */
+        if (uns && !host_unsigned_to_float(ir, width, 1))
             f = LLVMBuildSelect(B, fits, LLVMBuildSIToFP(B, v, type, ""), LLVMBuildUIToFP(B, v, type, ""), "");
         else
-            f = LLVMBuildSIToFP(B, v, type, "");
+            f = uns ? LLVMBuildUIToFP(B, v, type, "") : LLVMBuildSIToFP(B, v, type, "");
         if (fbits) f = LLVMBuildFMul(B, f, KF(ir, width, lanes, 1.0 / (double)((SnxU64)1 << (fbits - 1)) / 2.0), "");
         V ok = either(ir, ir_vec_all(ir, fits), both(ir, fpcr_clear(ir, FPCR_RMODE), ixc_set(ir)));
         split_begin(ir, NULL, ok, as_bits(ir, f, width), NULL, &s);

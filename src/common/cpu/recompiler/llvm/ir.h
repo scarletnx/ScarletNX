@@ -68,6 +68,10 @@ typedef struct {
     unsigned x86 : 1; /* x86-64 target: x86 intrinsics are available at all */
     unsigned ssse3 : 1, sse42 : 1, crc32 : 1, pclmul : 1, aes : 1, sha_ni : 1, gfni : 1, fma : 1, f16c : 1;
     unsigned avx2 : 1;
+    /* AVX-512: F's unsigned scalar conversions, VL's on 128-bit vectors (DQ's of 64-bit lanes), VBMI's two-table byte
+       permute (VPERMI2B, VL for 128 bits). LLVM picks the rest of it (masks, VPTERNLOG, BW's per-lane word shifts,
+       BITALG's VPOPCNTB) from plain IR, since the target machine has the host's features */
+    unsigned avx512f : 1, avx512dq : 1, avx512vl : 1, avx512vbmi : 1;
     unsigned aarch64 : 1;                /* AArch64 target: AArch64 intrinsics are available at all */
     unsigned arm_aes : 1, arm_sha2 : 1; /* AArch64 crypto extensions (PMULL comes with AES) */
     unsigned arm_crc : 1;                /* AArch64 CRC32 extension */
@@ -213,6 +217,14 @@ LLVMValueRef ir_flags_cond(SnxIr* ir, unsigned cond);
 
 /* Once per process, before any other call; threads may then each own SnxIrs. 0, or -1 with the reason */
 int snx_ir_init(char* error, size_t error_size);
+/* Tests': takes every host feature whose name begins with prefix out of what snx_ir_init reads into snx_ir_host and
+   of the target machines snx_ir_new and snx_ir_new_jit make, so the host runs as one without them (prefix "avx512":
+   an x86-64 with AVX2 and no AVX-512). prefix names a whole family, as "avx512" does: a feature left in that needs
+   one taken out would keep it. Before snx_ir_init; -1 with the reason in error after it, or for an empty prefix */
+int snx_ir_host_drop(const char* prefix, char* error, size_t error_size);
+/* The host's CPU features as the target machines get them, LLVMGetHostCPUFeatures's less snx_ir_host_drop's, which
+   the caches' keys hold. LLVMDisposeMessage frees it */
+char* snx_ir_host_features(void);
 /* LLVM's SLP vectorizer on or off for every module this process makes (the setting slp_vectorizer): an option of
    LLVM's command line, so once per process, from one thread, before any module is made */
 void snx_ir_slp_vectorizer(int on);
