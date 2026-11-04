@@ -1045,7 +1045,12 @@ typedef struct VkOwnRes {
     u64 serial;  /* new with each write: what its bytes hash as (vk_guest_peek), never its address, a freed one's */
     u64 read;    /* buffer.c's count of reads where it is when a draw or dispatch last read it there (buf_get_owned) */
     u32 refs;    /* the creator's, and one an owned range */
+    u8 borrowed; /* buf is another's (the GPU mirror's): letting go of the last reference frees only this record */
 } VkOwnRes;
+/* a resource whose bytes are in buf, at the guest address of each range it owns (the GPU mirror's): one reference */
+VkOwnRes* vk_own_res_borrow(VkBuffer buf);
+/* mirror.c: guest memory [cpu, cpu + size) landed from an owner: the mirror's shadow of its pages goes */
+void vk_mirror_landed(u64 cpu, u64 size);
 int vk_own_init(void);
 /* whether the CPU made GPU-owned bytes of guest memory [cpu, cpu + size) land within the last presents presents, or
    touched them under a draw's storage image kept on the GPU (vk_own_cpu_touched) */
