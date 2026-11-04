@@ -84,9 +84,15 @@ same offsets, with the mask beside it, memory bound in granules of 2 MiB where b
 guest memory are the same bytes, and the programs run one after another on the graphics queue, as on the console.
 A host shadow keeps the guest bytes each page was given. When a buffer is bound, its pages the CPU wrote since
 (write tracking) are compared with the shadow, and only the bytes the CPU changed are copied in, so the bytes the
-programs wrote there and haven't landed stay. At each submit a pass copies the pages written in it, those with mask
-bits set, with their bytes into a ring in host memory, and clears their masks (`mirror_harvest.comp`); once the submit
-is done they land in guest memory and in the shadow, the bytes logged and no others. A read of guest memory under
+programs wrote there and haven't landed stay. At each submit a pass lists the pages written in it, those with mask
+bits set, with their masks, and clears the masks (`mirror_harvest.comp`). Once the submit is done, where the host
+traps guest memory, each listed page stays GPU-owned in the mirror (`own_entries`): the CPU's changes to it since it
+was brought up to date, the bytes its programs didn't log, are copied into the mirror first (a byte both wrote keeps
+the program's), then the page is published over guest memory with the mirror as its owner (`docs/GPU_OWNERSHIP.md`).
+The CPU's first touch of it lands it whole, which is exact as none of its bytes can change in between, and the mirror
+lets go of its shadow then (`vk_mirror_landed`). Pages the CPU never reads never come back. Without traps the pass
+copies the pages' bytes too, and they land in guest memory and in the shadow once the submit is done, the bytes logged
+and no others. Landing every written page at each submit took most of the GPU thread in one game's menus. A read of guest memory under
 pending writes lands them first, and a draw reading them takes the mirror instead (`buffer.c`'s `buf_get`).
 Before, every writing dispatch copied the 16 MiB of each range twice (its original bytes, and its input), compared
 all of it after the dispatch and copied it back from the GPU, and the per-dispatch buffers took gigabytes of rings.
@@ -95,8 +101,9 @@ Without the mirror (no sparse residency of buffers, memory shared with the CPU, 
 result is made for the dispatch as before and lands from a log of the dispatch's own (`vk/writelog.c`), a mask
 for each buffer's 16 MiB. A writer that logs nothing (a draw, a Switch program, a buffer image) is compared.
 
-A byte the CPU writes while the programs' writes are pending, which a program writes too, takes the program's value
-when they land: on the console both reach memory in an order the program left open. A byte the CPU writes and the
+A byte the CPU writes while the programs' writes are pending, which a program writes too, takes the program's value:
+on the console both reach memory in an order the program left open. Once the submit is done and the page is the
+mirror's, the CPU's write traps and lands the page first, so the CPU's value comes last. A byte the CPU writes and the
 program doesn't is kept. The comparison took the CPU's value instead; over 80 seconds of one game, 14,000 results
 landed with no byte written by both.
 
