@@ -117,6 +117,29 @@ static const char* game_option(int argc, char** argv) {
     return game;
 }
 
+/* The runtime's own options after the "--" are game arguments, which the runtime does not read: a timed run given so
+   never ends. Say where the option belongs instead of ignoring it */
+static void refuse_options_after(int argc, char** argv) {
+    int i;
+    for (i = 1; i < argc && strcmp(argv[i], "--"); i++) continue;
+    for (++i; i < argc; i++) {
+        const char* arg = argv[i];
+        const char* eq;
+        char key[64];
+        if (strncmp(arg, "--", 2)) continue;
+        if (!strncmp(arg, "--game=", 7))
+            fatal("%s comes after the \"--\": put the runtime's options before it, the game's own arguments after it",
+                  arg);
+        eq = strchr(arg, '=');
+        if (!eq || (size_t)(eq - arg - 2) >= sizeof key) continue;
+        memcpy(key, arg + 2, (size_t)(eq - arg - 2));
+        key[eq - arg - 2] = 0;
+        if (snx_setting_known(key))
+            fatal("--%s comes after the \"--\": put the runtime's options before it, the game's own arguments after it",
+                  key);
+    }
+}
+
 static void refuse_dumps(int argc, char** argv, const char* game) {
     const char* dump = game && is_dump(game) ? game : NULL;
     int i;
@@ -1008,6 +1031,7 @@ int snx_main(int argc, char** argv) {
         status = 2;
         goto done;
     }
+    refuse_options_after(argc, argv);
     status = snx_startup_options(argc, argv);
     if (status) goto done;
     if (argc == 2 && !strcmp(argv[1], "--settings")) {
