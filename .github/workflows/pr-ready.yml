@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+name: Pull request ready
+
+# A pull request leaves draft when someone with write access to the repository marks it ready for review. GitHub has no
+# setting for it, as the author may always mark their own ready: one opened, reopened or marked ready by anyone else
+# goes back to a draft, with one comment saying so, unless someone with write access marked it ready before
+# (scripts/pr-ready.py). A draft is built and tested as much as one ready for review (build.yml), so only the review
+# waits.
+# pull_request_target, so a fork's are held too: GitHub runs the default branch's copy of this file for every pull
+# request, whatever its base, and the job checks out that branch's script and nothing of the pull request
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  hold:
+    name: Draft until a maintainer marks it ready
+    # a draft opened or reopened has nothing to hold
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      # GitHub turns a pull request into a draft only for a token that may write contents too (cli/cli#8910). The job
+      # runs nothing of the pull request
+      contents: write
+      pull-requests: write # the comment and the draft
+    # one at a time per pull request, so two runs can't both post the comment. On the job, not the workflow: a draft's
+    # event, which the job skips, never waits
+    concurrency:
+      group: pr-ready-${{ github.event.pull_request.number }}
+    steps:
+      # the default branch's script, as the workflow is, never the pull request's: an older base has none
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: scripts/pr-ready.py
+          sparse-checkout-cone-mode: false
+      # the sender is who acted (a re-run keeps the event's); the script reads the pull request as it is now
+      - name: Hold it as a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          ACTION: ${{ github.event.action }}
+          SENDER: ${{ github.event.sender.login }}
+        run: >-
+          python3 scripts/pr-ready.py --repo "$GITHUB_REPOSITORY" "$PR" "$ACTION" "$SENDER"
+          --attempt "$GITHUB_RUN_ATTEMPT"
