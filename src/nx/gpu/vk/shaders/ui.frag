@@ -21,7 +21,10 @@ void main() {
     // target encodes it once (as before), or the composition keeps it (in nits, BT.2020's primaries)
     if (pc.mode != 0u && c.a > 0.0) {
         vec3 lin = decode(c.rgb / c.a);
-        if (pc.mode == 2u) lin = mat3(0.6274, 0.3293, 0.0433, 0.0691, 0.9195, 0.0114, 0.0164, 0.0880, 0.8956) * lin * pc.gain;
+        // BT.709's primaries to BT.2020's, for linear light: the rows of the matrix, which GLSL's mat3 takes by
+        // columns (hdr_compose.frag's dot form, written the same way)
+        if (pc.mode == 2u)
+            lin = mat3(0.6274, 0.0691, 0.0164, 0.3293, 0.9195, 0.0880, 0.0433, 0.0114, 0.8956) * lin * pc.gain;
         c.rgb = lin * c.a;
     }
     o = c;
