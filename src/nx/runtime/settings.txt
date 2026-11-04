@@ -879,6 +879,15 @@ setting GPU trace target
     startup
     help address[:bytes]: logs the clears and draws that write a render target starting in that GPU address range
     help (0x for hex, one byte without a size), to find what produced a wrong target. Empty: none
+setting Feedback in place
+    key vk_feedback_inplace
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = a draw that samples a color target it renders to at pixels other than its own samples the target itself
+    help where the device has attachment feedback loops, as Eden does, its pass begun again first so every earlier write
+    help is seen; the draw's reads of its own writes are then in any order. 0 = it samples a copy of the target
 setting GPU profile
     key vk_gpu_profile
     int 0 1
