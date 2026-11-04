@@ -102,6 +102,13 @@ void snx_vk_window_close(SnxVkWindow* w) {
     *w = (SnxVkWindow){0};
 }
 
+int snx_vk_window_refresh_hz(SDL_Window* window) {
+    SDL_DisplayID id = window ? SDL_GetDisplayForWindow(window) : 0;
+    const SDL_DisplayMode* mode = id ? SDL_GetCurrentDisplayMode(id) : NULL;
+    if (!mode || !(mode->refresh_rate > 0)) return 0;
+    return (int)(mode->refresh_rate + 0.5f);
+}
+
 int snx_vk_window_headroom_pct(SDL_Window* window) {
     SDL_PropertiesID props = window ? SDL_GetWindowProperties(window) : 0;
     float headroom;

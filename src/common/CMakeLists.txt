@@ -101,7 +101,7 @@ endif()
 if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/ring.c gpu/vk/swapchain.c gpu/vk/window.c
                                  gpu/vk/present_fx.c gpu/vk/fx/fx_fsr.c gpu/vk/toast.c gpu/vk/text.c
-                                 gpu/vk/stats.c gpu/vk/hotkeys.c)
+                                 gpu/vk/stats.c gpu/vk/interp_auto.c gpu/vk/hotkeys.c)
     set_target_properties(snx_vk_common PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_vk_common PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                                  -Werror=missing-variable-declarations)

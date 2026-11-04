@@ -3,10 +3,12 @@
 ## What is done
 
 `frame_interp` and `frame_interp_key` (Ctrl+Shift+F) exist. The GBA runner reads them, and `auto` or `blend` presents
-a byte average of the previous and current 240x160 frame before the current frame. `auto` runs only where
-`snx_fx_interp_auto` finds the display at least 1.9 times the game's rate, so two presented frames fit between the
-game's own. On a 60 Hz display with the GBA's 59.73 Hz, Auto stays Off. A 120 Hz display runs it. The hotkey cycles
-Off, Auto and Blend with a log line, and the `.ini` is not changed.
+a byte average of the previous and current 240x160 frame before the current frame. `auto` is the shared gate
+(`common/gpu/vk/interp_auto.c`): over the last four seconds it takes the game's fastest 1 % of frames (the display must
+refresh at least 1.9 times that, so two presents fit even then) and its slowest 1 % (within twice the fastest, so a
+game that hitches every few frames is left alone), turns on after a second of fitting and off only after two seconds of
+failing. On a 60 Hz display with the GBA's 59.73 Hz, Auto stays Off. A 120 Hz display runs it. The hotkey cycles Off,
+Auto and Blend with a log line, and the `.ini` is not changed.
 
 ## What is not done
 
@@ -33,6 +35,17 @@ ghosting on fast motion.
 - `src/agb/runtime/host.c`: the GBA CPU blend and the `auto` gate.
 - `src/3ds/gpu/present.c`, `src/vita/gpu/vk.c`, `src/nx/gpu/vk/renderer.c`: the presenters that still need the two
   image path.
+
+## Rate and naming
+
+It presents **one** intermediate frame between each two game frames, so the shown rate is 2x the game's, never 3x or
+4x: two swapchain images are acquired per game frame and no more. A mode that generated more would need more images
+and a display with that much room.
+
+The mode is named `blend` because that is the technique, not just the state. If a motion compensated pass lands it
+becomes its own mode (for example `motion`) and `blend` keeps its name; if none is possible, `blend` may be renamed
+`on`, since it would then be the only frame generation there is. Nothing promises more than the temporal average
+until such a pass exists.
 
 ## Defaults and practice
 

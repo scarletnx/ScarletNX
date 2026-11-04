@@ -23,4 +23,6 @@ VkExtent2D snx_vk_window_extent(const SnxVkWindow* w, VkExtent2D fallback);
    window. Wayland's color management (KWin), Windows' Advanced Color and Apple's EDR report it; 100 when the backend
    does not, and the caller keeps its own bound (hdr_peak) */
 int snx_vk_window_headroom_pct(SDL_Window* window);
+/* the refresh rate of the display the window is on, in whole Hz, 0 when it is not known */
+int snx_vk_window_refresh_hz(SDL_Window* window);
 #endif

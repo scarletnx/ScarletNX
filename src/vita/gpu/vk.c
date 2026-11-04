@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/vk.h"
+#include "common/gpu/vk/interp_auto.h"
 #include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/stats.h"
 #include "common/gpu/vk/text.h"
@@ -25,6 +26,7 @@ static struct {
     SnxToast* toast;
     SnxText* overlay; /* F6's frame rate and held buttons */
     SnxStats stats;
+    SnxInterpAuto interp_auto;
     int display_kind;
     int said_kind;  /* the display kind last said in the console, -1 before the first */
     int auto_tried; /* Auto has looked for the display's headroom once, which SDL reports after the first frame */
@@ -254,6 +256,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     }
     g.up = true;
     g.said_kind = -1;
+    snx_interp_auto_init(&g.interp_auto);
     g.fx = snx_fx_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, VITA_VK_SLOTS, vita_vk_slot, NULL,
                          present_fx_log);
     if (g.fx) {
@@ -533,7 +536,8 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
     VkCommandBuffer cb = vita_vk_commands();
     int interp =
         snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_BLEND ||
-        (snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_AUTO && snx_fx_interp_auto(60, 60));
+        (snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_AUTO &&
+         snx_interp_auto_frame(&g.interp_auto, SDL_GetTicksNS(), snx_vk_window_refresh_hz(v->host.window)));
     SnxFxImage keep = {0};
     int have_keep = g.fx && interp && g.have_frame && snx_fx_keep(g.fx, cb, g.frame_view, width, height, &keep);
     if (have_keep)

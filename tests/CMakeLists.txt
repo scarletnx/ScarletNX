@@ -1245,6 +1245,12 @@ target_include_directories(snx-test-keybind PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-keybind PRIVATE snx_keybind SDL3::SDL3)
 add_test(NAME keybind COMMAND snx-test-keybind)
 
+# frame interpolation's Auto gate (common/gpu/vk/interp_auto.c): the 1 % figures and the on and off delays
+add_executable(snx-test-interp-auto interp_auto.c "${PROJECT_SOURCE_DIR}/src/common/gpu/vk/interp_auto.c")
+snx_test_target(snx-test-interp-auto 11)
+target_include_directories(snx-test-interp-auto PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME interp_auto COMMAND snx-test-interp-auto)
+
 # nvdrv's IPC side (nvdrv.c), with the GPU and host1x stand-ins in the test
 add_executable(snx-test-nvdrv-service nvdrv_service.c)
 snx_test_target(snx-test-nvdrv-service 23)

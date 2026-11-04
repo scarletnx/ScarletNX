@@ -12,6 +12,7 @@
    from its render target while the GPU keeps that newer than memory. */
 #include "3ds/gpu/present.h"
 #include "3ds/input/input.h"
+#include "common/gpu/vk/interp_auto.h"
 #include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/stats.h"
 #include "common/gpu/vk/toast.h"
@@ -60,6 +61,7 @@ static struct {
     int display_kind[2];
     int said_kind[2];  /* the display kind last said in the console, -1 before the first */
     int auto_tried[2]; /* Auto has looked for the display's headroom once, which SDL reports after the first frame */
+    SnxInterpAuto interp_auto; /* Auto's 1 % figures and its on and off delays */
     int headroom_pct[2];
     /* the SDR window image the pair is composed in before the HDR passes (source/upscale first, then the whole pair) */
     VkImage mix[2];
@@ -314,6 +316,7 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     g_present.toast = snx_toast_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, SNX_CTR_VK_SLOTS);
     g_present.overlay = snx_text_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, SNX_CTR_VK_SLOTS);
     snx_stats_init(&g_present.stats);
+    snx_interp_auto_init(&g_present.interp_auto);
     g_present.stats.on = g_settings.stats != 0; /* the setting starts it, F6 turns it over for the run */
     g_present.separate = g_settings.ctr_separate_screens && v->second && v->second_surface;
     for (unsigned i = 0; i < 2; ++i) {
@@ -893,7 +896,8 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     int interp = show && g_present.fx[window_index] &&
                  (snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_BLEND ||
                   (snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_AUTO &&
-                   snx_fx_interp_auto(ctr_display_hz(screen_window(window_index)), 60)));
+                   snx_interp_auto_frame(&g_present.interp_auto, SDL_GetTicksNS(),
+                                         ctr_display_hz(screen_window(window_index)))));
     uint32_t index2 = 0;
     int show2 = 0;
     /* two images only where a pair is already kept: the first frame shows one and keeps its pair for the next */

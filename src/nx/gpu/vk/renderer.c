@@ -8,6 +8,7 @@
    presents on the GPU thread (gpu/gpu.c), the menu's refresh on the main thread (vkr_refresh), screenshots on the
    thread asking, and shader results landing on whichever thread reads their memory first. Acquiring a swapchain image
    never waits for the display: with every image still on it or queued for it, that frame isn't shown (counted). */
+#include "common/gpu/vk/interp_auto.h"
 #include "common/utilities/bits.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +36,7 @@
 static VkSemaphore g_acquired[VK_FRAMES];
 static VkSemaphore g_acquired2[VK_FRAMES]; /* the second image of an interpolated frame */
 static SnxFx* g_present_fx;
+static SnxInterpAuto g_interp_auto; /* frame interpolation's Auto gate */
 static void present_fx_log(const char* text) { LOG("%s\n", text); }
 /* the CPU fallback's image, and the last presented frame for screenshots */
 static Surf* g_cpu_img;
@@ -491,29 +493,6 @@ static int display_hz(void) {
     return refresh ? (int)(1000000000ull / refresh) : 0;
 }
 
-/* The game's frame rate for the frame interpolation's Auto mode: the pace it gave (period_ns), else the shortest of
-   the last few gaps between the frames it released. The shortest, not the last: a hitch or a skipped frame makes one
-   gap longer, and a pause in a load screen is not the rate at all */
-static int game_hz(u64 released_ns, u64 period_ns) {
-    static u64 gaps[8], before_ns;
-    static u32 n, at;
-    u64 shortest = 0;
-    if (period_ns) return (int)(1000000000ull / period_ns);
-    if (released_ns) {
-        if (before_ns && released_ns > before_ns) {
-            u64 d = released_ns - before_ns;
-            if (d < 500000000ull) { /* half a second or more: a pause, not a frame */
-                gaps[at++ % 8] = d;
-                if (n < 8) n++;
-            }
-        }
-        before_ns = released_ns;
-    }
-    for (u32 i = 0; i < n; ++i)
-        if (!shortest || gaps[i] < shortest) shortest = gaps[i];
-    return shortest ? (int)(1000000000ull / shortest) : 0;
-}
-
 /* The window's image: src's g_last_ rectangle (a frame of fw x fh, flipped by transform) letterboxed on black, or
    black alone, with the on-screen controls and the game's menu over it; then the frame's commands are submitted and
    the image presented. A game's frame (game, which the game released at released_ns, 0 unknown, at its pace of a
@@ -580,8 +559,10 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
             acq2 = g_acquired2[vk_frame_id() % VK_FRAMES];
             if (game && src && g_present_fx) {
                 int mode = snx_fx_interp_parse(g_settings.frame_interpolation);
-                int ghz = game_hz(released_ns, period_ns), dhz = display_hz();
-                if (mode == SNX_FX_INTERP_BLEND || (mode == SNX_FX_INTERP_AUTO && snx_fx_interp_auto(dhz, ghz))) {
+                int dhz = display_hz();
+                if (mode == SNX_FX_INTERP_BLEND ||
+                    (mode == SNX_FX_INTERP_AUTO &&
+                     snx_interp_auto_frame(&g_interp_auto, released_ns ? released_ns : plat_ns(), dhz))) {
                     VkResult r2;
                     pm_lock(&g_vk.sc_lock);
                     r2 = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 0, acq2, VK_NULL_HANDLE, &idx2);
@@ -591,8 +572,8 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                         signal2 = g_vk.sc_done[idx2];
                         if (!g_interp_pairs)
                             LOG("vulkan: frame interpolation %s: a blend and the frame itself for each game frame "
-                                "(display %d Hz, game %d Hz)\n",
-                                snx_fx_interp_label(mode), dhz, ghz);
+                                "(display %d Hz)\n",
+                                snx_fx_interp_label(mode), dhz);
                         g_interp_pairs++;
                     } else
                         g_interp_plain++;

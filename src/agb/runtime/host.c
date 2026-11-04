@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "agb/runtime/host.h"
 #include "agb/runtime/vk.h"
+#include "common/gpu/vk/interp_auto.h"
 #include "common/gpu/vk/present_fx.h"
 #include "common/utilities/keybind.h"
 #include "common/gpu/vk/hotkeys.h"
@@ -34,6 +35,7 @@ struct AgbHost {
     uint32_t* prev;  /* the last frame, for frame interpolation */
     uint32_t* blend; /* the frame between the last and this one */
     int have_prev, display_hz;
+    SnxInterpAuto interp_auto; /* Auto's 1 % figures and its on and off delays */
     uint16_t keyboard, buttons; /* the keys the keyboard and the gamepads hold */
     uint64_t due;               /* when the next frame goes on screen, SDL_GetTicksNS's */
 };
@@ -177,6 +179,7 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
     snx_window_icon(host->window);
 
     host->display_hz = display_hz(host->window);
+    snx_interp_auto_init(&host->interp_auto);
     fprintf(stderr, "frame interpolation: %s (display %d Hz)\n",
             snx_fx_interp_label(snx_fx_interp_parse(g_settings.frame_interpolation)), host->display_hz);
     host->prev = malloc((size_t)AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT * 4);
@@ -278,7 +281,8 @@ void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* s
     int mode = snx_fx_interp_parse(g_settings.frame_interpolation);
     agb_vk_keys(host->vk, (uint16_t)(host->keyboard | host->buttons));
     int interp =
-        mode == SNX_FX_INTERP_BLEND || (mode == SNX_FX_INTERP_AUTO && snx_fx_interp_auto(host->display_hz, 60));
+        mode == SNX_FX_INTERP_BLEND ||
+        (mode == SNX_FX_INTERP_AUTO && snx_interp_auto_frame(&host->interp_auto, SDL_GetTicksNS(), host->display_hz));
     if (interp && host->prev && host->blend && host->have_prev) {
         blend_frames(host->blend, host->prev, framebuffer);
         present_frame(host, host->blend, 1);
