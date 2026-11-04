@@ -19,9 +19,9 @@ sentinel `docs/.work-complete` only when every box is checked. Do not push to an
       shader and the Shadow2D read are implemented and pass `3ds_vk_draw --shadow` and its validation mode. The retail
       title still does not reach the GPU: it waits in APT/GSP before its first draw (see
       `docs/issues/3ds-pica-shadow-rendering.md`), so the box waits for that HLE gap.
-- [ ] **Full verification.** `ctest` for every non-device test, the three validation runs, a headless GBA run with
+- [x] **Full verification.** `ctest` for every non-device test, the three validation runs, a headless GBA run with
       Blend and Auto, and a Switch run with AA under `--vk_validation=1`. Update the demo folder, panels and patches.
-- [ ] **Docs and issues.** Every fixed issue gets a status section. Update `docs/SETTINGS.md`, `docs/USAGE.md`,
+- [x] **Docs and issues.** Every fixed issue gets a status section. Update `docs/SETTINGS.md`, `docs/USAGE.md`,
       `docs/3DS.md`, `docs/VITA.md`, `docs/AGB.md`, `README`, and the demo folder.
 
 ## Rules for the continuation
