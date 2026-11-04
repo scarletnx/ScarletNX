@@ -100,6 +100,16 @@ static const u32 k_code[] = {
 /* u, at 0x800: getpid's number in x8, then SVC #0x30, which no stub holds, then RET */
 static const u32 u_code[] = {0xD2801588u, 0xD4000601u, 0xD65F03C0u};
 #define U_AT 0x800u
+/* functions whose first word reads the pc, each hooked to run its own code from its moved first word: c, CBZ X0 (1 for
+   x0 = 0, else 2); t, TBNZ W1, #0 (11 for an odd x1, else 10); x, LDR X0 from a literal; q, LDR Q0 from a literal */
+static const u32 c_code[] = {0xB4000060u, 0xD2800040u, 0xD65F03C0u, 0xD2800020u, 0xD65F03C0u};
+#define C_AT 0x900u
+static const u32 t_code[] = {0x37000061u, 0xD2800140u, 0xD65F03C0u, 0xD2800160u, 0xD65F03C0u};
+#define T_AT 0xA00u
+static const u32 x_code[] = {0x58000040u, 0xD65F03C0u, 0x11223344u, 0x55667788u};
+#define X_AT 0xB00u
+static const u32 q_code[] = {0x9C000040u, 0xD65F03C0u, 0x0A0B0C0Du, 0x01020304u, 0xA1A2A3A4u, 0xB1B2B3B4u};
+#define Q_AT 0xC00u
 
 /* the clock that plat_ns is (plat_sdl.c's SDL_GetTicksNS), which the guest clock follows until the counter's stubs
    take it to the host's counter. Twice as fast as CLOCK_MONOTONIC: qemu-user's counter keeps the host clock's pace, so
@@ -155,6 +165,7 @@ static void patch(u32 offset, size_t count) { patch_with(offset, count, &g_env);
 static int g_hook_handles = 1; /* 1: the hook's handler answers, 0: the function's own code runs */
 static u64 g_reads;            /* the main thread's count of counter reads, which the stubs add to */
 static u64 g_original;
+static u64 g_moved[4]; /* c's, t's, x's and q's own code, from their moved first words: hooks 8 to 11 */
 static unsigned g_preempts, g_traps;
 static volatile u32 g_flag;
 
@@ -172,6 +183,10 @@ static void dispatch(CPU* c, u64 code) {
     __asm__ volatile("mov x19, #0\n movi v31.16b, #0\n fmov d8, xzr\n cmn x19, #1\n msr fpcr, xzr" ::
                          : "x19", "v8", "v31", "cc", "memory");
     if (kind == NCE_HOOK && imm == NCE_TRAP) nce_host_leave();
+    if (kind == NCE_HOOK && imm >= 8 && imm < 12) {
+        c->pc = g_moved[imm - 8];
+        return;
+    }
     if (kind == NCE_HOOK && imm == 7) {
         if (g_hook_handles) {
             c->x[0] = 42;
@@ -358,6 +373,20 @@ int main(void) {
         check(!nce_divert(&g_pool, 1, &g_env, at(G_AT), g_code[0], 7, &word, &g_original), "g's hook");
         snx_st_le32(g_guest + G_AT, word);
     }
+    {
+        static const struct {
+            u32 at;
+            const u32* code;
+            size_t count;
+        } hooked[] = {{C_AT, c_code, 5}, {T_AT, t_code, 5}, {X_AT, x_code, 4}, {Q_AT, q_code, 6}};
+        for (u32 i = 0; i < 4; i++) {
+            u32 word;
+            put(hooked[i].at, hooked[i].code, hooked[i].count);
+            check(!nce_divert(&g_pool, 1, &g_env, at(hooked[i].at), hooked[i].code[0], 8 + i, &word, &g_moved[i]),
+                  "a hook of a function whose first word reads the pc");
+            snx_st_le32(g_guest + hooked[i].at, word);
+        }
+    }
     check(!nce_trap(&g_pool, 1, &g_env, NCE_TRAP, &g_trap), "the trap");
     __builtin___clear_cache((char*)g_guest, (char*)g_guest + GUEST_SIZE);
 
@@ -379,6 +408,29 @@ int main(void) {
     c.x[0] = 0;
     run_from(&c, at(0));
     check(c.x[3] == 9, "the hooked function's own code, from its moved first word");
+    {
+        static const struct {
+            u32 at;
+            u64 x0, x1, want;
+            const char* what;
+        } runs[] = {
+            {C_AT, 0, 0, 1, "a hooked function's own CBZ, taken, from its moved first word"},
+            {C_AT, 5, 0, 2, "and not taken"},
+            {T_AT, 0, 1, 11, "its own TBNZ, taken"},
+            {T_AT, 0, 2, 10, "and not taken"},
+            {X_AT, 0, 0, 0x5566778811223344ull, "its own literal load, from the literal's address made absolute"},
+        };
+        for (size_t i = 0; i < sizeof runs / sizeof *runs; i++) {
+            c.x[0] = runs[i].x0;
+            c.x[1] = runs[i].x1;
+            run_from(&c, at(runs[i].at));
+            check(c.x[0] == runs[i].want, runs[i].what);
+        }
+        c.x[0] = 0x5A5A; /* q's argument, which a load through x16 keeps */
+        run_from(&c, at(Q_AT));
+        check(c.v[0].d[0] == 0x010203040A0B0C0Dull && c.v[0].d[1] == 0xB1B2B3B4A1A2A3A4ull && c.x[0] == 0x5A5A,
+              "its own literal load of a Q register, through x16, its x0 kept");
+    }
 
     c.x[0] = 1;
     run_from(&c, at(H_AT));

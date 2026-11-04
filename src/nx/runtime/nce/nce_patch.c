@@ -516,44 +516,91 @@ int nce_emit(NcePool* pools, size_t count, const NceEnv* env, const NceSite* sit
     return 0;
 }
 
+/* the address absolute in d: MOVZ, then MOVK for each other half-word */
+static void mov_abs(Out* o, unsigned d, SnxU64 v) {
+    put(o, movz(d, (unsigned)v, 0));
+    put(o, movk(d, (unsigned)(v >> 16), 1));
+    put(o, movk(d, (unsigned)(v >> 32), 2));
+    put(o, movk(d, (unsigned)(v >> 48), 3));
+}
+/* a branch from o's place to target: B where it reaches, else through x16, which the code at a function's entry may
+   change (AAPCS64's intra-procedure-call scratch) */
+static void jump(Out* o, SnxU64 target) {
+    if (reaches(o->at, target)) {
+        put(o, b_to(o->at, target));
+        return;
+    }
+    mov_abs(o, 16, target);
+    put(o, 0xD61F0200u); /* BR X16 */
+}
+/* the signed field of bits [lo, lo + bits) of w, in words, as a byte distance */
+static SnxU64 field_offset(SnxU32 w, unsigned lo, unsigned bits) {
+    SnxU64 v = (w >> lo) & ((1u << bits) - 1u);
+    if (v >> (bits - 1)) v |= ~(SnxU64)0 << bits;
+    return v << 2;
+}
+
 int nce_divert(NcePool* pools, size_t count, const NceEnv* env, SnxU64 entry, SnxU32 first, unsigned index,
                SnxU32* patch, SnxU64* original) {
     SnxU64 size = nce_stub_size(NCE_HOOK), target = 0;
     NcePool* p;
     Out o;
-    int moved = 0; /* 1: an ADR or ADRP, made absolute; 2: a B, which never comes back to entry + 4; 3: a BL */
-    if ((first & 0xFF000010u) == 0x54000000u || (first & 0x7E000000u) == 0x34000000u ||
-        (first & 0x7E000000u) == 0x36000000u || (first & 0x3B000000u) == 0x18000000u)
-        return -1; /* B.cond, CBZ, CBNZ, TBZ, TBNZ, a literal load: none starts a function that a hook names */
+    /* how the first word moves: 0 as it is; 1 an ADR or ADRP, made absolute; 2 a B, which never comes back to entry +
+       4; 3 a BL; 4 a branch on a condition (B.cond, BC.cond, CBZ, CBNZ, TBZ, TBNZ: what a function that checks its
+       argument first begins with), its taken path a branch of its own; 5 a literal load, from its address made
+       absolute */
+    int moved = 0;
     if ((first & 0x1F000000u) == 0x10000000u) { /* ADR, ADRP */
         SnxU64 imm = (SnxU64)(((first >> 5) & 0x7FFFFu) << 2 | ((first >> 29) & 3u));
         if (imm & 0x100000u) imm |= ~(SnxU64)0 << 21;
         target = first >> 31 ? (entry & ~(SnxU64)0xFFF) + (imm << 12) : entry + imm;
         moved = 1;
     } else if ((first & 0x7C000000u) == 0x14000000u) { /* B, BL */
-        SnxU64 imm = first & 0x3FFFFFFu;
-        if (imm & 0x2000000u) imm |= ~(SnxU64)0 << 26;
-        target = entry + (imm << 2);
+        target = entry + field_offset(first, 0, 26);
         moved = first >> 31 ? 3 : 2;
+    } else if ((first & 0xFF000000u) == 0x54000000u || (first & 0x7E000000u) == 0x34000000u) { /* B(C).cond, CB(N)Z */
+        target = entry + field_offset(first, 5, 19);
+        moved = 4;
+    } else if ((first & 0x7E000000u) == 0x36000000u) { /* TBZ, TBNZ */
+        target = entry + field_offset(first, 5, 14);
+        moved = 4;
+    } else if ((first & 0x3B000000u) == 0x18000000u) { /* LDR (literal): W, X, SW, PRFM; S, D, Q */
+        target = entry + field_offset(first, 5, 19);
+        moved = 5;
     }
     if (!tls_reached(env) || !(p = pool_for(pools, count, size, entry))) return -1;
     o.p = p->buf + p->used;
     o.at = p->addr + p->used;
-    *patch = b_to(entry, o.at);
     outcall(&o, env, NCE_OUTCALL(NCE_HOOK, index), 1, 0);
     *original = o.at;
     if (moved == 1) {
-        unsigned d = first & 31u;
-        put(&o, movz(d, (unsigned)target, 0));
-        put(&o, movk(d, (unsigned)(target >> 16), 1));
-        put(&o, movk(d, (unsigned)(target >> 32), 2));
-        put(&o, movk(d, (unsigned)(target >> 48), 3));
-    } else if (moved >= 2) {
-        if (!reaches(o.at, target)) return -1;
+        mov_abs(&o, first & 31u, target);
+    } else if (moved >= 2 && moved <= 3) {
+        if (!reaches(o.at, target)) return -2;
         put(&o, moved == 2 ? b_to(o.at, target) : bl_to(o.at, target));
+    } else if (moved == 4) {
+        /* the same condition two words on: not taken, on at entry + 4; taken, on at its target */
+        SnxU32 field = (first & 0x7E000000u) == 0x36000000u ? 0x3FFFu << 5 : 0x7FFFFu << 5;
+        put(&o, (first & ~field) | 2u << 5);
+        put(&o, b_to(o.at, entry + 4));
+        jump(&o, target);
+    } else if (moved == 5) {
+        unsigned t = first & 31u, opc = first >> 30, simd = (first >> 26) & 1u;
+        /* a general register loads through itself, or x16 for XZR (base 31 is SP); an FP/SIMD one through x16 */
+        unsigned base = simd || t == 31 ? 16 : t;
+        static const SnxU32 gp[4] = {0xB9400000u, 0xF9400000u, 0xB9800000u, 0}; /* LDR W, LDR X, LDRSW, PRFM */
+        static const SnxU32 fp[4] = {0xBD400000u, 0xFD400000u, 0x3DC00000u, 0}; /* LDR S, D, Q, (none) */
+        SnxU32 load = simd ? fp[opc] : gp[opc];
+        if (simd && !load) return -2; /* opc 3 with V set is unallocated: no instruction to move */
+        /* PRFM, a hint, has nothing to load */
+        if (load) {
+            mov_abs(&o, base, target);
+            put(&o, load | base << 5 | t);
+        }
     } else
         put(&o, first);
-    if (moved != 2) put(&o, b_to(o.at, entry + 4));
+    if (moved != 2 && moved != 4) put(&o, b_to(o.at, entry + 4));
+    *patch = b_to(entry, p->addr + p->used);
     p->used += size;
     return 0;
 }
