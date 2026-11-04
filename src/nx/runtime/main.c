@@ -970,9 +970,8 @@ void snx_program_end(void) { g_quit = 1; }
 /* The program ExecuteProgram asked for (am.c), once this one has saved what it saves at exit: its hand-over into
    <game>.next in the game's folder, for the launcher that started this program to start it */
 static void handover_write(void) {
-    SnxNext next;
+    SnxNext next = {0};
     char folder[sizeof g_exedir], *path;
-    memset(&next, 0, sizeof next);
     if (am_handover_out(&next) < 0) return;
     if (!program_named(next.index, next.program, sizeof next.program)) {
         WARN("game: program %d is asked for, and %s is named by no title ID, which numbers an application's "
