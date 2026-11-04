@@ -58,19 +58,40 @@ int snx_mods_exefs_file(const char* name) {
     for (digit = name + 6; *digit >= '0' && *digit <= '9'; ++digit) continue;
     return !*digit;
 }
+char* snx_program_own_mods(const char* folder, const char* name, int index) {
+    char own[SNX_PATH_SIZE], *data, *mods;
+    if (index <= 0 || snx_program_name(name, NULL, index, own, sizeof own)) return NULL;
+    strcat(own, "_data");
+    data = snx_path_join(folder, own);
+    mods = snx_mods_folder(data);
+    free(data);
+    return mods;
+}
 size_t snx_mods_played(const char* folder, const char* off, const char* part, char*** paths) {
-    char** names;
-    size_t count = snx_mods_list(folder, &names), n = 0;
-    *paths = count ? (char**)snx_alloc(count * sizeof **paths) : NULL;
-    for (size_t i = 0; i < count; ++i) {
-        char *mod = snx_path_join(folder, names[i]), *path = snx_path_join(mod, part);
-        if (!snx_mod_off(off, names[i]) && snx_is_dir(path) && !snx_is_link(path))
+    return snx_mods_played_of(folder, NULL, off, part, paths);
+}
+size_t snx_mods_played_of(const char* folder, const char* own, const char* off, const char* part, char*** paths) {
+    const char* folders[2];
+    char** names[2] = {NULL, NULL};
+    size_t count[2], at[2] = {0, 0}, n = 0, total;
+    folders[0] = folder;
+    folders[1] = own;
+    count[0] = snx_mods_list(folder, &names[0]);
+    count[1] = own ? snx_mods_list(own, &names[1]) : 0;
+    total = count[0] + count[1];
+    *paths = total ? (char**)snx_alloc(total * sizeof **paths) : NULL;
+    while (at[0] < count[0] || at[1] < count[1]) { /* by name, the application's first of a name both have */
+        int k = at[1] == count[1] || (at[0] < count[0] && strcmp(names[0][at[0]], names[1][at[1]]) <= 0) ? 0 : 1;
+        const char* mod_name = names[k][at[k]++];
+        char *mod = snx_path_join(folders[k], mod_name), *path = snx_path_join(mod, part);
+        if (!snx_mod_off(off, mod_name) && snx_is_dir(path) && !snx_is_link(path))
             (*paths)[n++] = path;
         else
             free(path);
         free(mod);
     }
-    snx_free_strings(names, count);
+    snx_free_strings(names[0], count[0]);
+    snx_free_strings(names[1], count[1]);
     if (!n) {
         free(*paths);
         *paths = NULL;
@@ -78,8 +99,11 @@ size_t snx_mods_played(const char* folder, const char* off, const char* part, ch
     return n;
 }
 size_t snx_mods_exefs(const char* folder, const char* off, char*** names, char*** paths) {
+    return snx_mods_exefs_of(folder, NULL, off, names, paths);
+}
+size_t snx_mods_exefs_of(const char* folder, const char* own, const char* off, char*** names, char*** paths) {
     char** exefs;
-    size_t count = snx_mods_played(folder, off, "exefs", &exefs), n = 0, k;
+    size_t count = snx_mods_played_of(folder, own, off, "exefs", &exefs), n = 0, k;
     *names = *paths = NULL;
     for (size_t i = 0; i < count; ++i) {
         char** files = NULL;
@@ -127,9 +151,11 @@ static SnxU64 hash_file(SnxU64 h, const char* name, const char* path) {
     free(data);
     return h;
 }
-char* snx_mods_stamp(const char* folder, const char* off) {
+char* snx_mods_stamp(const char* folder, const char* off) { return snx_mods_stamp_of(folder, NULL, off); }
+char* snx_mods_stamp_of(const char* folder, const char* own, const char* off) {
     char **names, **paths, **patches;
-    size_t count = snx_mods_exefs(folder, off, &names, &paths), npatches = snx_mods_patches(folder, off, &patches);
+    size_t count = snx_mods_exefs_of(folder, own, off, &names, &paths),
+           npatches = snx_mods_patches_of(folder, own, off, &patches);
     SnxU64 h = SNX_FNV_BASIS;
     char* stamp;
     for (size_t i = 0; i < count; ++i) h = hash_file(h, names[i], paths[i]);
@@ -148,12 +174,19 @@ char* snx_game_stamp_for(unsigned abi, const char* mods) {
     return mods[0] ? snx_format("%u mods %s", abi, mods) : snx_format("%u", abi);
 }
 char* snx_game_mods_stamp(const char* base) {
-    char *folder = snx_dirname(base), *off = NULL;
-    const char* game = folder + strlen(folder);
+    char *folder = snx_dirname(base), *off = NULL, *own = NULL;
+    const char *game = folder + strlen(folder), *leaf = base + strlen(base);
+    SnxU64 own_id = 0, id = 0;
     while (game > folder && game[-1] != '/' && game[-1] != '\\') --game; /* the game's folder is named as it is */
+    while (leaf > base && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
+    /* another program of the game's, or that program's patch: its own mods too */
+    if (snx_title_parse(game, &own_id) && snx_addon_name(game, leaf, &id) &&
+        snx_addon_kind(own_id, id) == SNX_ADDON_PROGRAM)
+        own = snx_program_own_mods(folder, game, snx_program_index(own_id, id));
     char* mods = snx_game_mods(folder, game, &off);
-    char* made = snx_mods_stamp(mods, off);
+    char* made = snx_mods_stamp_of(mods, own, off);
     free(mods);
+    free(own);
     free(off);
     free(folder);
     return made;
