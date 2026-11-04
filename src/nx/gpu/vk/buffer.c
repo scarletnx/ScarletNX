@@ -1217,16 +1217,18 @@ static void ww_mark_pages(u64 o, u64 e) {
    either address is news to a cache over the other. Under vk_lock; when full, the last range grows over the next,
    marking more than was written */
 #define WW_PEER_N 4096
-static WwRange g_wpeer[WW_PEER_N];
-static int g_wpeer_n;
+static struct {
+    WwRange r[WW_PEER_N];
+    int n;
+} g_wpeer;
 static void ww_mark_range(u64 o, u64 e) {
     if (o < e) {
-        if (g_wpeer_n && g_wpeer[g_wpeer_n - 1].e == o)
-            g_wpeer[g_wpeer_n - 1].e = e;
-        else if (g_wpeer_n < WW_PEER_N)
-            g_wpeer[g_wpeer_n++] = (WwRange){o, e};
+        if (g_wpeer.n && g_wpeer.r[g_wpeer.n - 1].e == o)
+            g_wpeer.r[g_wpeer.n - 1].e = e;
+        else if (g_wpeer.n < WW_PEER_N)
+            g_wpeer.r[g_wpeer.n++] = (WwRange){o, e};
         else {
-            WwRange* r = &g_wpeer[WW_PEER_N - 1];
+            WwRange* r = &g_wpeer.r[WW_PEER_N - 1];
             if (o < r->a) r->a = o;
             if (e > r->e) r->e = e;
         }
@@ -1566,10 +1568,10 @@ static void ww_peer_mark(void* user, u64 at, u64 n) {
 /* what this check marked written, marked at the pages' other addresses too (the scans' locks gone: mem.c's lock comes
    before them, as a landing under it notes its pages) */
 static void ww_take_peers(void) {
-    int n = g_wpeer_n;
-    g_wpeer_n = 0;
+    int n = g_wpeer.n;
+    g_wpeer.n = 0;
     if (!n || !mem_alias_any()) return; /* read after the takes: a view made before a write its scan found counts */
-    for (int i = 0; i < n; i++) mem_alias_peers(g_wpeer[i].a, g_wpeer[i].e - g_wpeer[i].a, ww_peer_mark, NULL);
+    for (int i = 0; i < n; i++) mem_alias_peers(g_wpeer.r[i].a, g_wpeer.r[i].e - g_wpeer.r[i].a, ww_peer_mark, NULL);
 }
 
 int vk_written_since(const u8* host, u64 len, u32 since) {
