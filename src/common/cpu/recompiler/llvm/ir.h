@@ -75,7 +75,8 @@ typedef struct {
                                             denormals and has no vector double arithmetic */
     unsigned riscv : 1, riscv_v : 1;     /* RISC-V target, and the V extension: per-lane variable shifts, gathers */
     unsigned loongarch : 1, la_lsx : 1;  /* LoongArch target, and LSX: 128-bit vectors */
-    unsigned mips : 1, mips_msa : 1;     /* MIPS64 target, and MSA: 128-bit vectors */
+    unsigned mips64 : 1, mips_msa : 1;   /* MIPS64 target, and MSA: 128-bit vectors (not "mips", which GNU C on
+                                            MIPS predefines as 1) */
 } SnxIrFeatures;
 extern SnxIrFeatures snx_ir_host;
 

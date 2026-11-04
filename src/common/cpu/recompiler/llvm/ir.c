@@ -86,8 +86,8 @@ int snx_ir_init(char* error, size_t error_size) {
     int arm = !strncmp(triple, "aarch64", 7) || !strncmp(triple, "arm64", 5); /* Apple names AArch64 arm64 */
     int ppc = !strncmp(triple, "powerpc64", 9) || !strncmp(triple, "ppc64", 5);
     int ppc_le = !strncmp(triple, "powerpc64le", 11) || !strncmp(triple, "ppc64le", 7);
-    int riscv = riscv_triple(triple), loongarch = loongarch_triple(triple), mips = !strncmp(triple, "mips64", 6);
-    int other = riscv || loongarch || mips || !strncmp(triple, "s390x", 5);
+    int riscv = riscv_triple(triple), loongarch = loongarch_triple(triple), mips64 = !strncmp(triple, "mips64", 6);
+    int other = riscv || loongarch || mips64 || !strncmp(triple, "s390x", 5);
     if (!x86 && !arm && !ppc && !other)
         snprintf(error, error_size,
                  "the LLVM backend targets x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 and s390x hosts, this "
@@ -161,11 +161,11 @@ int snx_ir_init(char* error, size_t error_size) {
         LLVMDisposeMessage(f);
         snx_ir_host.loongarch = 1;
     }
-    if (mips && !snx_ir_host.mips) {
+    if (mips64 && !snx_ir_host.mips64) {
         char* f = LLVMGetHostCPUFeatures();
         snx_ir_host.mips_msa = has_feature(f, "msa");
         LLVMDisposeMessage(f);
-        snx_ir_host.mips = 1;
+        snx_ir_host.mips64 = 1;
     }
     return x86 || arm || ppc || other ? 0 : -1;
 }

@@ -84,7 +84,7 @@ static const Path paths[PATHS] = {
     {"ppc64le", "powerpc64le-unknown-linux-gnu", {.ppc = 1, .ppc_vsx = 1}, "+altivec,+vsx"},
     {"riscv64-v", "riscv64-unknown-linux-gnu", {.riscv = 1, .riscv_v = 1}, "+v"},
     {"la64-lsx", "loongarch64-unknown-linux-gnu", {.loongarch = 1, .la_lsx = 1}, "+lsx"},
-    {"mips-msa", "mips64el-unknown-linux-gnuabi64", {.mips = 1, .mips_msa = 1}, "+mips64r5,+msa,+fp64"},
+    {"mips-msa", "mips64el-unknown-linux-gnuabi64", {.mips64 = 1, .mips_msa = 1}, "+mips64r5,+msa,+fp64"},
 };
 #define GENERIC 3 /* paths[]'s generic one, which any triple may run */
 

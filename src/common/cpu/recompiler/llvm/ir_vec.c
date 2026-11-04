@@ -274,7 +274,7 @@ static V shl_register(SnxIr* ir, V a, V b, int sign) {
 static int variable_shifts(const SnxIrFeatures* features) {
     return (features->x86 && features->avx2) || features->aarch64 || (features->ppc && features->ppc_vsx) ||
            (features->riscv && features->riscv_v) || (features->loongarch && features->la_lsx) ||
-           (features->mips && features->mips_msa);
+           (features->mips64 && features->mips_msa);
 }
 
 /* Whole-vector rounding and saturating shifts. All counts are clamped before evaluation, even in discarded lanes.
@@ -799,7 +799,7 @@ static V intrinsic_at(SnxIr* ir, const char* name, LLVMTypeRef* types, unsigned 
    (vshuf.b, LSX's), MIPS (vshf.b, MSA's) and RISC-V (vrgather.vv, of V). */
 static int other_permute(const SnxIrFeatures* features) {
     return (features->ppc && features->ppc_vsx) || (features->riscv && features->riscv_v) ||
-           (features->loongarch && features->la_lsx) || (features->mips && features->mips_msa);
+           (features->loongarch && features->la_lsx) || (features->mips64 && features->mips_msa);
 }
 
 /* One host permute of two 16-byte tables: byte i of the result is a's byte c[i] when c[i] is 0 to 15, b's byte
@@ -827,7 +827,7 @@ static V shuffle16(SnxIr* ir, V a, V b, V c) {
         args[2] = c;
         return ir_intrinsic(ir, "llvm.loongarch.lsx.vshuf.b", NULL, args, 3);
     }
-    if (ir->features->mips) {
+    if (ir->features->mips64) {
         args[0] = c;
         args[1] = b;
         args[2] = a;
