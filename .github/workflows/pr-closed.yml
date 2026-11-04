@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+name: Pull request closed
+
+# A pull request merged or closed while its Build still runs keeps that run going to the end, on the runners the
+# organization's jobs share, though nothing will merge what it builds: its runs still going are cancelled
+# (scripts/cancel-pr-runs.py). A push to a pull request already cancels its run before (build.yml's concurrency).
+# pull_request_target, so a fork's are cancelled too: the job runs the base branch's copy of this file and its script,
+# and checks out nothing of the pull request
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions: {}
+
+jobs:
+  cancel:
+    name: Cancel its runs still going
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      # the script of the branch it merged into, never the pull request's
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          sparse-checkout: scripts/cancel-pr-runs.py
+          sparse-checkout-cone-mode: false
+      - name: Cancel them
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          # empty when the fork it came from is gone
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: python3 scripts/cancel-pr-runs.py "$PR" "$HEAD_REPO" "$HEAD_BRANCH"

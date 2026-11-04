@@ -63,6 +63,10 @@ A pull request, a draft as one ready for review, is built and tested on every pl
 (with edenprobe, and ASan and UBSan), Windows, Android, macOS and iOS, and the cross-built AppImages (PowerPC64,
 RISC-V, LoongArch).
 
+A push to a pull request cancels the run of its commit before, and a pull request merged or closed cancels its runs
+still going (`.github/workflows/pr-closed.yml`, `scripts/cancel-pr-runs.py`), so no runner builds what nobody will
+merge.
+
 GitHub asks the owners of the files a pull request changes for their review once it is out of draft:
 `.github/CODEOWNERS` names those of the CI, GUI, GPU and CPU code, and of the 3DS and the Vita.
 
