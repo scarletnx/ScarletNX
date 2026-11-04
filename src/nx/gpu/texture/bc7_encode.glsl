@@ -23,8 +23,9 @@
 
    Written for the code the GPU runs (docs/ASTC.md): a partition is read from its table once a shape (SetShape), and
    each body is called from one place, in a loop (the jobs of Encode, the lines of FitSubset), as glslang inlines
-   every call and the copies came to 1.2 MB of NVIDIA machine code. SNX_BC7_FAST 1 builds mode 6 alone, for large
-   levels (vk/astc.c). */
+   every call and the copies came to 1.2 MB of NVIDIA machine code. SNX_BC7_FAST 1 builds the encoder for large levels
+   (vk/astc.c), which keeps mode 6 where it is close and tries the other modes only where it is not, and 2 mode 6
+   alone, for the largest. */
 
 /* BC7's partitions: two subsets (a bit a texel, the texel's subset), three subsets (two bits a texel); and the
    anchors, the texel of each subset after the first whose weight drops its top bit (two: bits 0 to 3; three: the
@@ -71,12 +72,16 @@ uint sh_ib;
    (7) and their alpha (8) apart */
 uint sh_mask;
 
-/* modes 4 and 5 are tried unless this is 0: tests/glsl/bc7_glsl.cpp builds the encoder without them as well, to
-   measure what they add */
-/* mode 6 alone, a fast build for very large uploads (vk/astc.c) */
+/* the fast build (1), for large uploads (vk/astc.c): a block whose mode 6 error is SNX_BC7_ENOUGH or less keeps it,
+   the others try every mode; 2 is mode 6 alone, for the largest. The full build keeps mode 6 only where it is exact. 256 is the squared error summed over the
+   16 texels and 4 channels, 2 a channel on average: on one game's ASTC textures 96% of the blocks kept mode 6, and the
+   worst error of mode 6 alone (147 to 239 a channel) came down to that of the full build (50 to 68) */
 #ifndef SNX_BC7_FAST
 #define SNX_BC7_FAST 0
 #endif
+#define SNX_BC7_ENOUGH (SNX_BC7_FAST == 1 ? 256u : 0u)
+/* modes 4 and 5 are tried unless this is 0: tests/glsl/bc7_glsl.cpp builds the encoder without them as well, to
+   measure what they add */
 #ifndef SNX_BC7_MODES_4_5
 #define SNX_BC7_MODES_4_5 1
 #endif
@@ -728,11 +733,11 @@ uvec4 Encode() {
        other block mode 7 (two subsets, RGBA, 5 bits and a p-bit an end, 2-bit weights) in each. Last modes 5, 4 and 4
        with the other index selection, in each rotation */
     const uint shapes = 1u + (opaque ? 5u : 2u);
-    const uint jobs = shapes + (SNX_BC7_FAST == 0 && SNX_BC7_MODES_4_5 != 0 ? 12u : 0u);
+    const uint jobs = shapes + (SNX_BC7_MODES_4_5 != 0 ? 12u : 0u);
     uint first = 0u, second = 1u, third = 0u;
     for (uint j = 0u; j < jobs; j++) {
         if (j == 1u) {
-            if (SNX_BC7_FAST != 0 || best_err == 0u) break;
+            if (SNX_BC7_FAST == 2 || best_err <= SNX_BC7_ENOUGH) break;
             BlockSums();
             const uint alpha = opaque ? 0u : 1u;
             uint f_cost = 0xFFFFFFFFu, s_cost = 0xFFFFFFFFu;

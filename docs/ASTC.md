@@ -189,10 +189,34 @@ device has it for this. A sparse texture's levels are decoded only in the strips
 (`vk_image_sparse_bound`), in strips as high as the device's sparse blocks.
 
 A level of `VK_BC7_FAST_TEXELS` (2048x2048) or more takes the encoder's fast build, `bc7_fast_spv` (`SNX_BC7_FAST`
-1): mode 6 alone. On a GeForce RTX 2080 an 8192x8192 level of random 8x8 blocks
-(`snx-test-astc-vulkan --bench`) decodes in 15 ms, encodes in 860 ms with every mode and in 48 ms with mode 6 alone;
-the game above needed about a thousand million texels at once. The cost is the edges: on the picture below, mode 6
-alone holds gradients at 43 dB, edges at 26, noise at 25 and alpha at 40.
+1): a block whose mode 6 error is 256 or less (squared, summed over its 16 texels and 4 channels: 2 a channel on
+average) keeps mode 6, and only the others try every mode, where the full build keeps mode 6 only when it is exact.
+A level of `VK_BC7_MODE6_TEXELS` (8192x8192) or more takes mode 6 alone, `bc7_mode6_spv` (`SNX_BC7_FAST` 2). On a
+GeForce RTX 2080 an 8192x8192 level of random 8x8 blocks (`snx-test-astc-vulkan --bench`) decoded in 15 ms and
+encoded in 860 ms with every mode and in 48 ms with mode 6 alone; the game above needed about a thousand million
+texels at once.
+
+The fast build was mode 6 alone, which holds gradients but not edges: on the picture below gradients at 43 dB, edges
+at 26, noise at 25 and alpha at 40, and on astcenc's normal maps (luminance and alpha apart) errors of up to 239 a
+channel. The threshold keeps 96% of the blocks in mode 6 and most of the full build's quality:
+
+| One game's ASTC 6x6 textures (25), and astcenc's 4x4, 8x8 and 12x12 encodings of 7 of them (CPU model) | Full | Fast build | Mode 6 alone |
+| --- | --- | --- | --- |
+| 6x6, PSNR over RGBA / worst channel error | 53.8 dB / 50 | 50.7 dB / 50 | 46.5 dB / 147 |
+| 4x4 | 46.6 dB / 65 | 45.9 dB / 65 | 32.9 dB / 239 |
+| 8x8 | 47.6 dB / 50 | 46.7 dB / 50 | 36.2 dB / 231 |
+| 12x12 | 46.4 dB / 68 | 45.7 dB / 68 | 38.0 dB / 196 |
+| The picture below: gradients, edges, noise, alpha | 51.1, 49.0, 29.0, 48.0 | 43.4, 46.8, 29.0, 47.7 | 43.2, 26.2, 25.2, 40.0 |
+
+What it costs depends on the content, as the blocks that try every mode are as slow as in the full build and hold up
+the invocations beside them. On the RTX 2080, beside a running game, a 4096x4096 level took (decoding included):
+
+| Content | Mode 6 alone | Fast build | Full build (2040x2040, scaled) |
+| --- | --- | --- | --- |
+| One game's ASTC 6x6 albedo | 7 to 11 ms | 12 to 14 ms | 190 ms |
+| One game's ASTC 6x6 packed masks (the worst of its textures tried) | 7 to 8 ms | 85 to 88 ms | 250 ms |
+| astcenc 8x8 normal map | not measured | 256 to 267 ms | not measured |
+| Random 8x8 blocks | 21 to 29 ms | 189 to 196 ms | 260 ms |
 
 The encoder tries each block in the modes that suit it and writes the one with the least squared error. Every
 block takes mode 6, one line through RGBA with 4-bit weights, which holds a block of one gradient closely. An opaque

@@ -489,8 +489,10 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
             for (u32 z = 0; z < ld; z++)
                 astc_decode_image(blocks[layer * levels + l] + (size_t)z * nx * ny * 16, lw, lh, bw, bh,
                                   texels + (size_t)z * lw * lh * 4, srgb);
-            /* a large level takes the encoder's fast build (astc.c) */
-            if ((u64)lw * lh * ld >= VK_BC7_FAST_TEXELS)
+            /* a large level takes the encoder's fast build, the largest mode 6 alone (astc.c) */
+            if ((u64)lw * lh * ld >= VK_BC7_MODE6_TEXELS)
+                bc7_encode_cpu_mode6(texels, lw, lh, ld, expected);
+            else if ((u64)lw * lh * ld >= VK_BC7_FAST_TEXELS)
                 bc7_encode_cpu_fast(texels, lw, lh, ld, expected);
             else
                 bc7_encode_cpu(texels, lw, lh, ld, expected);
@@ -1011,7 +1013,7 @@ int main(int argc, char** argv) {
     run_bc7(12, 12, 1, 97, 61, 1, 1, 1);
     run_bc7(6, 6, 0, 61, 37, 9, 1, 1);
     run_bc7(5, 5, 0, 2051, 1101, 1, 1, 1);
-    /* a level of VK_BC7_FAST_TEXELS: the fast build, mode 6 alone */
+    /* a level of VK_BC7_FAST_TEXELS: the fast build */
     run_bc7(8, 8, 1, 2048, 2048, 1, 1, 1);
     /* arrays' layers uploaded a level at a time, all of them at once (texture.c's ASTC arrays): RGBA8 and BC7, strips
        stepping 1, 2 and 4 block rows */

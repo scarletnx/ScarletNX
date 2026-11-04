@@ -26,10 +26,21 @@ struct EncoderWithout45 : Invocation {
     leuvec4* bc7_blocks;
 #include "nx/gpu/texture/bc7_encode.glsl"
 };
-// mode 6 alone, the fast build vk/astc.c uses for large uploads
+// the fast build vk/astc.c uses for large uploads: mode 6 where it is close, every mode elsewhere
+#undef SNX_BC7_MODES_4_5
+#define SNX_BC7_MODES_4_5 1
 #undef SNX_BC7_FAST
 #define SNX_BC7_FAST 1
 struct EncoderFast : Invocation {
+    uint width, height, blocks_x, blocks_y;
+    const leuint* rgba;
+    leuvec4* bc7_blocks;
+#include "nx/gpu/texture/bc7_encode.glsl"
+};
+// mode 6 alone, which vk/astc.c uses for the largest uploads
+#undef SNX_BC7_FAST
+#define SNX_BC7_FAST 2
+struct EncoderMode6 : Invocation {
     uint width, height, blocks_x, blocks_y;
     const leuint* rgba;
     leuvec4* bc7_blocks;
@@ -94,4 +105,8 @@ extern "C" void bc7_encode_cpu_without_45(const uint8_t* rgba, uint32_t w, uint3
 
 extern "C" void bc7_encode_cpu_fast(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
     encode<bc7_shader::EncoderFast>(rgba, w, h, depth, out);
+}
+
+extern "C" void bc7_encode_cpu_mode6(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
+    encode<bc7_shader::EncoderMode6>(rgba, w, h, depth, out);
 }

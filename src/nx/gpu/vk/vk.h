@@ -978,8 +978,10 @@ int vk_tc_convert_vi(VkCommandBuffer cb, u32 fmt, u32 w, u32 rows, VkBuffer in, 
    command buffer, which ends the one cb names: rows then stores the buffer recording now through cb, and the caller
    records the rest of the strip there */
 typedef int (*VkAstcRows)(void* ctx, VkCommandBuffer* cb, u32 z, u32 nz, u32 y, u32 n, VkBuffer* buf, u64* off);
-/* a level of ASTC encoded again as BC7 with this many texels or more takes the encoder's fast build (astc.c) */
+/* a level of ASTC encoded again as BC7 with this many texels or more takes the encoder's fast build, and one of
+   VK_BC7_MODE6_TEXELS or more its build of mode 6 alone (astc.c) */
 #define VK_BC7_FAST_TEXELS (2048u * 2048u)
+#define VK_BC7_MODE6_TEXELS (8192u * 8192u)
 /* layers: more than 1, that level of layers layers from layer on, a 2D array's (depth 1), which rows gives as slices */
 int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, u32 layers,
                    VkAstcRows rows, void* ctx);

@@ -13,9 +13,10 @@
    A BC7 image (format.c's TA, the astc_bc setting, on a GPU that samples BCn but not ASTC) takes a second
    dispatch: bc7.comp encodes the decoded texels into BC7 blocks, a quarter of RGBA8's bytes, and those are what
    the copy writes. Its strips then start on whole 4x4 blocks. A level of VK_BC7_FAST_TEXELS or more takes the
-   encoder's fast build, mode 6 alone: the full encoder tries every mode on every block, and a game's sparse texture
-   of seven mapped layers of 8192x8192 took it 14 seconds on a GeForce RTX 2080, which the fast build encodes at
-   1200 megatexels a second. */
+   encoder's fast build, which tries every mode only on the blocks mode 6 does not hold closely (the full encoder on
+   every block mode 6 does not hold exactly), and one of VK_BC7_MODE6_TEXELS or more mode 6 alone: a game's sparse
+   texture of seven mapped layers of 8192x8192 took the full encoder 14 seconds on a GeForce RTX 2080, which mode 6
+   alone encodes at 1200 megatexels a second and the fast build at 65 to 1400 (one of its normal maps, its albedo). */
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
@@ -35,8 +36,8 @@ static u64 g_astc_cap;
 /* the BC7 encoder, made on the first BC7 image, and the blocks it writes: as large as the texels' scratch, which a
    strip's blocks never pass (vk_astc_upload sizes strips by both) */
 static VkPipelineLayout g_bc7_layout;
-static VkShaderModule g_bc7_module, g_bc7_fast_module;
-static VkPipeline g_bc7_pipe, g_bc7_fast_pipe;
+static VkShaderModule g_bc7_module, g_bc7_fast_module, g_bc7_mode6_module;
+static VkPipeline g_bc7_pipe, g_bc7_fast_pipe, g_bc7_mode6_pipe;
 static VkBuffer g_bc7_scratch;
 static VmaAllocation g_bc7_mem;
 /* image levels uploaded as BC7, their bytes, and what they would have taken as RGBA8 (vk_astc_stats) */
@@ -121,22 +122,27 @@ static void bc7_init(void) {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = bc7_spv_size, .pCode = bc7_spv};
     VkShaderModuleCreateInfo fi = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = bc7_fast_spv_size, .pCode = bc7_fast_spv};
+    VkShaderModuleCreateInfo si = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = bc7_mode6_spv_size, .pCode = bc7_mode6_spv};
     if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &g_bc7_module)) ||
-        !VK_OK(vkCreateShaderModule(g_vk.dev, &fi, NULL, &g_bc7_fast_module)))
+        !VK_OK(vkCreateShaderModule(g_vk.dev, &fi, NULL, &g_bc7_fast_module)) ||
+        !VK_OK(vkCreateShaderModule(g_vk.dev, &si, NULL, &g_bc7_mode6_module)))
         fatal("vulkan: cannot load the BC7 encoder");
-    VkComputePipelineCreateInfo ci[2];
-    for (int i = 0; i < 2; i++)
+    const VkShaderModule modules[3] = {g_bc7_module, g_bc7_fast_module, g_bc7_mode6_module};
+    VkComputePipelineCreateInfo ci[3];
+    for (int i = 0; i < 3; i++)
         ci[i] = (VkComputePipelineCreateInfo){.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                                               .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                         .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                        .module = i ? g_bc7_fast_module : g_bc7_module,
+                                                        .module = modules[i],
                                                         .pName = "main"},
                                               .layout = g_bc7_layout};
-    VkPipeline made[2];
-    if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 2, ci, NULL, made)))
+    VkPipeline made[3];
+    if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 3, ci, NULL, made)))
         fatal("vulkan: cannot create the BC7 encoder's pipelines");
     g_bc7_pipe = made[0];
     g_bc7_fast_pipe = made[1];
+    g_bc7_mode6_pipe = made[2];
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = g_astc_cap,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -303,9 +309,11 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 lev
                 }
                 scratch_barrier(cb, g_astc_scratch, USE_WRITE, 0, USE_READ);
                 scratch_barrier(cb, g_bc7_scratch, USE_COPY, 0, USE_WRITE);
+                const u64 level_texels = (u64)w * h * (as_layers ? 1 : depth);
                 rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    (u64)w * h * (as_layers ? 1 : depth) >= VK_BC7_FAST_TEXELS ? g_bc7_fast_pipe
-                                                                                              : g_bc7_pipe);
+                                    level_texels >= VK_BC7_MODE6_TEXELS  ? g_bc7_mode6_pipe
+                                    : level_texels >= VK_BC7_FAST_TEXELS ? g_bc7_fast_pipe
+                                                                         : g_bc7_pipe);
                 rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bc7_layout, 0, 1, &set7, 0, NULL);
                 Bc7Params q = {w, height, cx, cy};
                 rec_CmdPushConstants(cb, g_bc7_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof q, &q);

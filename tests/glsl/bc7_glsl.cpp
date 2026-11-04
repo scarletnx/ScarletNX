@@ -344,28 +344,52 @@ static void picture_psnr() {
     bc7_encode_cpu_fast(reinterpret_cast<const uint8_t*>(texels.data()), 128, 128, 1,
                         reinterpret_cast<uint8_t*>(fast_blocks.data()));
     const auto fast = decode(fast_blocks.data(), 128, 128);
-    uint32_t modes[8] = {0};
+    std::vector<glsl::leuvec4> mode6_blocks((size_t)32 * 32);
+    bc7_encode_cpu_mode6(reinterpret_cast<const uint8_t*>(texels.data()), 128, 128, 1,
+                         reinterpret_cast<uint8_t*>(mode6_blocks.data()));
+    const auto mode6 = decode(mode6_blocks.data(), 128, 128);
+    uint32_t mode6_modes[8] = {0};
+    known_modes(mode6_blocks, "picture in mode 6 alone", mode6_modes);
+    if (mode6_modes[6] != 32 * 32) {
+        std::printf("FAIL the build of mode 6 alone wrote %u blocks of the picture in mode 6 of 1024\n", mode6_modes[6]);
+        failures++;
+    }
+    uint32_t modes[8] = {0}, fast_modes[8] = {0};
     known_modes(blocks, "picture", modes);
+    known_modes(fast_blocks, "picture in the fast build", fast_modes);
+    // the fast build keeps mode 6 on the blocks it holds closely, where the full build finds better: more of them
+    if (fast_modes[6] <= modes[6]) {
+        std::printf("FAIL the fast build keeps mode 6 on %u blocks of the picture, the full build on %u\n",
+                    fast_modes[6], modes[6]);
+        failures++;
+    }
     std::printf("picture modes: 1 %u, 2 %u, 3 %u, 4 %u, 5 %u, 6 %u, 7 %u\n", modes[1], modes[2], modes[3], modes[4],
                 modes[5], modes[6], modes[7]);
     static const struct {
         const char* name;
         uint32_t x0, y0;
-        double floor, fast_floor; /* the fast build's (mode 6 alone) */
-    } regions[4] = {{"gradients", 0, 0, 50.8, 43.0},
-                    {"edges", 64, 0, 48.7, 26.0},
-                    {"noise", 0, 64, 28.7, 25.0},
-                    {"alpha", 64, 64, 47.6, 39.8}};
+        double floor, fast_floor, mode6_floor; /* the fast build's (mode 6 where it is close, every mode elsewhere),
+                                                  and mode 6 alone's */
+    } regions[4] = {{"gradients", 0, 0, 50.8, 43.0, 43.0},
+                    {"edges", 64, 0, 48.7, 46.5, 26.0},
+                    {"noise", 0, 64, 28.7, 28.7, 25.0},
+                    {"alpha", 64, 64, 47.6, 47.4, 39.8}};
     for (const auto& r : regions) {
         const double fast_db = psnr(texels, fast, 128, r.x0, r.y0, r.x0 + 64, r.y0 + 64);
         if (fast_db < r.fast_floor) {
-            std::printf("FAIL %s in mode 6 alone: %.2f dB, at least %.1f\n", r.name, fast_db, r.fast_floor);
+            std::printf("FAIL %s in the fast build: %.2f dB, at least %.1f\n", r.name, fast_db, r.fast_floor);
+            failures++;
+        }
+        const double mode6_db = psnr(texels, mode6, 128, r.x0, r.y0, r.x0 + 64, r.y0 + 64);
+        if (mode6_db < r.mode6_floor) {
+            std::printf("FAIL %s in mode 6 alone: %.2f dB, at least %.1f\n", r.name, mode6_db, r.mode6_floor);
             failures++;
         }
         const double db = psnr(texels, got, 128, r.x0, r.y0, r.x0 + 64, r.y0 + 64);
-        std::printf("%s %s: %.2f dB, at least %.1f (%.2f without modes 4 and 5, %.2f in mode 6 alone)\n",
-                    db >= r.floor ? "PASS" : "FAIL", r.name, db, r.floor,
-                    psnr(texels, without, 128, r.x0, r.y0, r.x0 + 64, r.y0 + 64), fast_db);
+        std::printf(
+            "%s %s: %.2f dB, at least %.1f (%.2f without modes 4 and 5, %.2f in the fast build, %.2f in mode 6 alone)\n",
+            db >= r.floor ? "PASS" : "FAIL", r.name, db, r.floor,
+            psnr(texels, without, 128, r.x0, r.y0, r.x0 + 64, r.y0 + 64), fast_db, mode6_db);
         if (db < r.floor) failures++;
     }
 }
