@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The whole machine: a hand assembled ROM goes through the AOT recompiler and runs on the board, through
    a BIOS call and an interrupt, and the board's memory shows what happened. */
+#include "agb/bios/bios.h"
 #include "agb/board/board.h"
 #include "agb/cpu/agb_cpu.h"
 #include "agb/cpu/memmap.h"
@@ -271,6 +272,20 @@ int main(void) {
         agb_recomp_free(&next);
         CHECK(!result);
         result = 1;
+    }
+    {
+        /* a sound driver function SoundDriverGetJumpList named returns at once, as the BIOS's bx lr: here to Thumb
+           code that puts 7 in r0 and spins, interrupts off */
+        uint32_t written = 0;
+        agb_write16(&board, 0x03000200, 0x2007); /* movs r0, #7 */
+        agb_write16(&board, 0x03000202, 0xE7FE); /* b . */
+        cpu.arm.r[0] = 0;
+        cpu.arm.r[14] = 0x03000201;
+        cpu.arm.r[15] = AGB_BIOS_NOP_CALL;
+        cpu.arm.cpsr = 0x9F;
+        board.cpu_halted = cpu.wait = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2000, audio, AGB_APU_RATE, &written, error, sizeof error));
+        CHECK(cpu.arm.r[0] == 7 && cpu.arm.r[15] == 0x03000202 && (cpu.arm.cpsr & SNX_ARM_T));
     }
     {
         /* a recompile (-r) builds every block of the map into the module, the hints too: here from a copy of the map
