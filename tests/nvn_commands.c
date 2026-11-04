@@ -38,9 +38,12 @@ u64 mem_mapped_run(u64 addr, u64 size) {
     return size;
 }
 /* a 64-bit game's: no 32-bit thread runs the game's callbacks */
-/* no GPU thread: each submission is read at once */
-u64 nvn_replay_submitted(void) { return 0; }
-u64 nvn_replay_walked(void) { return 0; }
+/* no GPU thread: each submission is read at once, but where a test says it waits (submitted ahead of walked) */
+static struct {
+    u64 submitted, walked;
+} g_replay;
+u64 nvn_replay_submitted(void) { return g_replay.submitted; }
+u64 nvn_replay_walked(void) { return g_replay.walked; }
 SnxArmCPU* arm_cpu(CPU* c) {
     (void)c;
     return NULL;
@@ -657,6 +660,44 @@ int main(void) {
         nvn_CommandBufferEndRecording(&cpu, cbg);
         check(g_cb.calls == calls + 1 && g_cb.event == 1 && g_cb.size == 0x100 && g_cb.ctl_used == 0x48,
               "the last range in the open block asks the callback at 0x48 bytes, before the end mark");
+    }
+    /* A block of the small store given back keeps its records until it is taken again: a submission made before
+       still walks them (the GPU thread runs seconds late at loads), from a JUMP or a handle that reaches the block.
+       One game's scene change walked into a block whose first words held the store's list, a record of op 0 and size
+       0. The game builds a recording again in the range of one a submission waits on: the new one takes another block,
+       the last one's keeps its records, and once the GPU thread has read the submission, the next takes it */
+    {
+        const u64 cbh = 0x4b200, callee = 0x4b1f8;
+        u64 hh, b1, b2;
+        u8 kept[64];
+        gw64(callee, h);
+        nvn_CommandBufferInitialize(&cpu, cbh, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbh, 1, 0x2c000, 0x80);
+        nvn_CommandBufferBeginRecording(&cpu, cbh);
+        nvn_CommandBufferCallCommands(&cpu, cbh, 1, callee);
+        nvn_CommandBufferBindUniformBuffer(&cpu, cbh, 0, 1, 0x605640000ull, 0x100);
+        hh = nvn_CommandBufferEndRecording(&cpu, cbh);
+        b1 = gr64(hh + 8);
+        memcpy(kept, GP(b1), sizeof kept);
+        g_replay.submitted++; /* a submission of it waits for the GPU thread */
+        nvn_CommandBufferAddCommandMemory(&cpu, cbh, 1, 0x2c000, 0x80);
+        nvn_CommandBufferBeginRecording(&cpu, cbh);
+        nvn_CommandBufferCallCommands(&cpu, cbh, 1, callee);
+        nvn_CommandBufferBindUniformBuffer(&cpu, cbh, 0, 2, 0x605640000ull, 0x100);
+        check(nvn_CommandBufferEndRecording(&cpu, cbh) == hh && (b2 = gr64(hh + 8)) != b1,
+              "the new recording takes another block while the GPU thread hasn't read the last one's submission");
+        check(!memcmp(GP(b1), kept, sizeof kept), "the block given back keeps its records");
+        walk(b1, &a);
+        check(a.n == 2 && a.op[0] == OP_CALL && a.op[1] == OP_BIND_UBO &&
+                  gr32(a.at[1] + 8 + offsetof(NvnPBindBuf, index)) == 1,
+              "a walk that reached the block given back runs the recording it held");
+        g_replay.walked = g_replay.submitted; /* the GPU thread read it */
+        nvn_CommandBufferAddCommandMemory(&cpu, cbh, 1, 0x2c000, 0x80);
+        nvn_CommandBufferBeginRecording(&cpu, cbh);
+        nvn_CommandBufferCallCommands(&cpu, cbh, 1, callee);
+        nvn_CommandBufferBindUniformBuffer(&cpu, cbh, 0, 3, 0x605640000ull, 0x100);
+        check(nvn_CommandBufferEndRecording(&cpu, cbh) == hh && gr64(hh + 8) == b1 && b2 != b1,
+              "once the submission is read, the next recording takes the block given back first");
     }
     if (failures) return 1;
     puts("nvn_commands: ok");
