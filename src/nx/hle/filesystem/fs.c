@@ -105,13 +105,14 @@ static SnxU64 game_title(void) {
     SnxU64 id = 0;
     return snx_title_parse(g_gamename, &id) ? id : 0;
 }
-/* dump opened as snx_dump_open takes it (base, addon, either NULL) and each container mapped read-only for the whole
+/* dump opened as snx_dump_open takes it (base, addon, either NULL; index the program of the application this is,
+   g_program) and each container mapped read-only for the whole
    run: the base's into base_map, the add-on's into addon_map. Ends the run on a dump that cannot be read, and on one
    whose keys the keys file lacks, which would read as garbage: no ExeFS, its modules missing */
 static void dump_map(SnxDump* dump, PFileMap* base_map, PFileMap* addon_map, const char* base, const char* addon,
-                     const char* keys, const char* title_keys, const char* repo) {
+                     int index, const char* keys, const char* title_keys, const char* repo) {
     snx_hac_on_exit(dump_exit, NULL);
-    if (snx_dump_open(dump, base, addon, keys, title_keys, repo, 0))
+    if (snx_dump_open(dump, base, addon, index, keys, title_keys, repo, 0))
         fatal("Could not read the game's dump %s, which it reads its files from: the line before says why",
               addon ? addon : base);
     if ((dump->program.found && snx_nca_keys(dump, &dump->program, "The game's Program NCA")) ||
@@ -159,7 +160,7 @@ static void dump_open(const char* keys, const char* title_keys) {
         at = snx_format("%sexefs", g_addondir);
         extracted = snx_is_dir(at);
         free(at);
-        own = snx_format("%s%s.ini", g_confdir, g_exename);
+        own = snx_format("%s%s.ini", g_confdir, g_addonrec); /* the update's own record, its programs' too */
         addon = extracted ? NULL : snx_ini_value(own, "source");
         if (!extracted && (!addon || !snx_is_file(addon)))
             fatal("The update %s can't be read: its settings %s name %s. Play its dump again to record it", g_exename,
@@ -199,13 +200,17 @@ static void dump_open(const char* keys, const char* title_keys) {
     }
     data_repo(repo, sizeof repo);
     /* an update over the game: both in one hactool, its Patch RomFS reading the game's */
-    dump_map(&g_hle.fs.dump, &g_hle.fs.dmap, &g_hle.fs.amap, source,
-             kind == SNX_ADDON_UPDATE ? addon : NULL, keys, title_keys, repo);
+    dump_map(&g_hle.fs.dump, &g_hle.fs.dmap, &g_hle.fs.amap, source, kind == SNX_ADDON_UPDATE ? addon : NULL, g_program,
+             keys, title_keys, repo);
     snx_hac_on_exit(dump_exit, NULL);
     g_hle.fs.dfs = snx_dump_fs(&g_hle.fs.dump);
     if (!g_hle.fs.dfs) fatal("Could not read the game's program in its dump %s: the line before says why", source);
     snx_hac_on_exit(NULL, NULL);
     pm_init(&g_host.fs.dlock);
+    if (g_program)
+        LOG("fs: program %d of the application read from the dump%s %s (its %d programs; %.1f MB mapped)\n", g_program,
+            kind == SNX_ADDON_UPDATE ? ", its update's patch of it over the game's," : "", source,
+            g_hle.fs.dump.programs, (double)(g_hle.fs.dmap.size + g_hle.fs.amap.size) / 1048576.0);
     if (kind == SNX_ADDON_UPDATE) {
         LOG("fs: ExeFS and RomFS read from the update %s over the game's dump %s (%.1f MB mapped)\n", addon, source,
             (double)(g_hle.fs.dmap.size + g_hle.fs.amap.size) / 1048576.0);
@@ -256,7 +261,7 @@ static void dlcs_open(const char* keys, const char* title_keys) {
                  "again to record it\n",
                  text, ini, dump ? "a dump that is not there" : "no dump (source=)");
         else {
-            dump_map(&aoc->dump, NULL, &aoc->map, NULL, dump, keys, title_keys, repo);
+            dump_map(&aoc->dump, NULL, &aoc->map, NULL, dump, 0, keys, title_keys, repo);
             snx_hac_on_exit(dump_exit, NULL);
             aoc->fs = snx_dump_aoc_fs(&aoc->dump);
             if (!aoc->fs) fatal("Could not read the DLC in its dump %s: the line before says why", dump);
@@ -284,7 +289,9 @@ static void dlcs_open(const char* keys, const char* title_keys) {
    ExeFS, which its code was made from, a line saying so. A mod whose files can't be indexed is left out, said. At
    startup, under tree.lock */
 static void mods_open(void) {
-    char *folder = snx_mods_folder(g_datadir), *stamp = snx_mods_stamp(folder, g_settings.game_mods_off), **romfs;
+    char *folder = snx_mods_folder(g_datadir), **romfs;
+    char* own = snx_program_own_mods(g_exedir[0] ? g_exedir : ".", g_gamename, g_program); /* Eden's load/<its ID>/ */
+    char* stamp = snx_mods_stamp_of(folder, own, g_settings.game_mods_off);
     char path[sizeof g_exedir + sizeof g_exename + 8], *built, *recorded;
     size_t count, i, size = 0;
     snprintf(path, sizeof path, "%s%s.abi", g_exedir, g_exename);
@@ -294,10 +301,10 @@ static void mods_open(void) {
     recorded = recorded ? recorded + 6 : "";
     if (!strcmp(recorded, stamp)) {
         g_hle.fs.nmexefs =
-            snx_mods_exefs(folder, g_settings.game_mods_off, &g_hle.fs.mexefs_names, &g_hle.fs.mexefs_paths);
+            snx_mods_exefs_of(folder, own, g_settings.game_mods_off, &g_hle.fs.mexefs_names, &g_hle.fs.mexefs_paths);
         for (i = 0; i < g_hle.fs.nmexefs; i++)
             LOG("fs: exefs/%s from the mod's %s\n", g_hle.fs.mexefs_names[i], g_hle.fs.mexefs_paths[i]);
-        g_hle.fs.npatches = snx_mods_patches(folder, g_settings.game_mods_off, &g_hle.fs.patches);
+        g_hle.fs.npatches = snx_mods_patches_of(folder, own, g_settings.game_mods_off, &g_hle.fs.patches);
     } else if (stamp[0])
         WARN("fs: the mods played replace ExeFS files, and the program was recompiled with %s: it runs the ExeFS it "
              "was made from until it is recompiled, which playing it from the launcher does\n",
@@ -305,7 +312,7 @@ static void mods_open(void) {
     else
         WARN("fs: the program was recompiled with ExeFS files of mods not played now: recompile it, which playing it "
              "from the launcher does\n");
-    count = snx_mods_played(folder, g_settings.game_mods_off, "romfs", &romfs);
+    count = snx_mods_played_of(folder, own, g_settings.game_mods_off, "romfs", &romfs);
     for (i = 0; i < count; i++) {
         char name[32];
         FsTreeResult r;
@@ -322,6 +329,7 @@ static void mods_open(void) {
     snx_free_strings(romfs, count);
     free(built);
     free(stamp);
+    free(own);
     free(folder);
 }
 
@@ -404,9 +412,19 @@ static void overlays(void) {
         free(folder);
     }
     free(ids);
-    if (g_addon && snx_is_dir(g_addondir)) { /* the update's, on top */
+    if (g_program) { /* another program of the application: the game's own program's files are none of its */
+        for (i = 0; whole[i]; i++) {
+            char* own = snx_format("%s%s", g_addondir, whole[i]);
+            FsNode* node;
+            if (!snx_path_exists(own) && !fs_tree_lookup(&g_hle.fs.tree, NULL, whole[i], &node))
+                fs_tree_forget(&g_hle.fs.tree, whole[i]);
+            free(own);
+        }
+    }
+    if ((g_addon || g_program) && snx_is_dir(g_addondir)) { /* the update's or the program's, on top */
         r = fs_tree_overlay(&g_hle.fs.tree, g_addondir, whole, merged);
-        if (r != FS_TREE_OK) fatal("Could not index the update's files %s (error %d)", g_addondir, r);
+        if (r != FS_TREE_OK)
+            fatal("Could not index the %s's files %s (error %d)", g_addon ? "update" : "program", g_addondir, r);
     }
 }
 
@@ -1836,11 +1854,13 @@ static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, ch
 }
 /* save data folders, by SaveDataType */
 static const char* const g_save_kinds[] = {"system", "user", "bcat", "device", "temp", "cache", "sysbcat"};
+/* the title ID the saves are kept by: the program's own, and a collection's other program (g_program) its
+   application's, which fs_saves_init found */
+static u64 save_title(void) { return g_program ? g_host.fs.save_title : g_hle.kernel.title_id; }
 /* save_layout=global is in effect: its folder is known (fs_saves_init) and the program has a title ID of its own */
 static int save_layout_global(void) {
     char title[17];
-    return g_host.fs.save_root[0] && strcmp(g_settings.save_layout, "game") &&
-           snx_title_text(g_hle.kernel.title_id, title);
+    return g_host.fs.save_root[0] && strcmp(g_settings.save_layout, "game") && snx_title_text(save_title(), title);
 }
 /* An Account save is save/user.<uid>, the folder of its user (users.c). The fixed uid's (am.c's g_user_id, user 1's
    when users.ini gives it none), while it has none, is the one an older version left, played where it is and said once
@@ -1909,10 +1929,11 @@ static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByPath(SvcObj* self, IpcB
                                                               SvcObj** storage) {
     R_THROW(RC(2, 1001));
 }
-/* index 0 is this program, the only one GetProgramIndexForAccessLog reports: its data filesystem is not here either */
+/* this program's own index (g_program, which GetProgramIndexForAccessLog reports): its data filesystem is not here
+   either; another program's is TargetNotFound */
 static int nn_fssrv_sf_IFileSystemProxy_OpenDataFileSystemWithProgramIndex(SvcObj* self, u8 program_index,
                                                                            SvcObj** filesystem) {
-    R_THROW(program_index ? RC(2, 1002) : RC(2, 1001));
+    R_THROW(program_index != g_program ? RC(2, 1002) : RC(2, 1001));
 }
 static int nn_fssrv_sf_IFileSystemProxy_OpenFileSystemWithPatch(SvcObj* self, nn_ncm_ProgramId program_id,
                                                                 nn_fs_FileSystemProxyType type, SvcObj** filesystem) {
@@ -1956,10 +1977,13 @@ static int nn_fssrv_sf_IFileSystemProxy_IsSdCardAccessible(SvcObj* self, u8* acc
     *accessible = 1;
     R_SUCCEED();
 }
-/* one program, the first: a program count of 0 doesn't happen on the console */
+/* this program's index and its application's programs: those of the dump read in place, else as many as reach its
+   index (a program count of 0 doesn't happen on the console) */
 static int nn_fssrv_sf_IFileSystemProxy_GetProgramIndexForAccessLog(SvcObj* self, u32* program_index,
                                                                     u32* program_count) {
-    *program_count = 1;
+    (void)self;
+    *program_index = (u32)g_program;
+    *program_count = (u32)(g_hle.fs.dfs && g_hle.fs.dump.programs > g_program ? g_hle.fs.dump.programs : g_program + 1);
     R_SUCCEED();
 }
 /* save_layout=global: each save in one folder of every game's, the data folder's save/ (g_host.fs.save_root), apart
@@ -1974,7 +1998,7 @@ static int save_global(const nn_fs_SaveDataAttribute* attribute, char* name, siz
     u8 type = attribute->type;
     u64 uid[2];
     sub[0] = 0;
-    if (type == 4 || !g_host.fs.save_root[0] || !snx_title_text(g_hle.kernel.title_id, title)) return 0;
+    if (type == 4 || !g_host.fs.save_root[0] || !snx_title_text(save_title(), title)) return 0;
     if (type == 1) {
         uid[0] = snx_ld_le64(attribute->uid.v);
         uid[1] = snx_ld_le64(attribute->uid.v + 8);
@@ -2001,11 +2025,27 @@ static int save_there(const char* path) { /* tree.lock held */
 }
 /* save_layout=global's folders of this title there now, grafted: a save is found then without enumerating anything
    later. Called at startup, after the users are known */
+/* A collection's other program keeps the saves of its application, by the ID its control.nacp names their owner
+   (SaveDataOwnerId, at 0x3078), else its game's: the console's fs keeps the saves of a program of several by its
+   main program (ProgramIndexMapInfo), and every program of such an application names that one owner, so they all
+   play one save. Eden keeps one by each program's own ID */
+static void save_title_find(void) {
+    u64 size = 0, owner = 0;
+    u8* nacp;
+    if (!g_program) return;
+    nacp = fs_read_file("control.nacp", &size);
+    if (nacp && size >= 0x3080) owner = snx_ld_le64(nacp + 0x3078);
+    free(nacp);
+    g_host.fs.save_title = owner ? owner : game_title();
+    LOG("fs: program %d keeps its saves as %016llx, %s\n", g_program, (unsigned long long)g_host.fs.save_title,
+        owner ? "the owner its control.nacp names (SaveDataOwnerId)" : "its game's: its control.nacp names no owner");
+}
 void fs_saves_init(const char* root) {
     static const u8 types[] = {2, 3, 5, 0, 6};
     nn_fs_SaveDataAttribute a;
     char name[64], host[FS_TREE_PATH_MAX], sub[24];
     int i;
+    save_title_find();
     snprintf(g_host.fs.save_root, sizeof g_host.fs.save_root, "%s", root ? root : "");
     pm_lock(&g_hle.fs.tree.lock);
     for (i = 0; i < g_user_count + (int)sizeof types; i++) {
@@ -2225,10 +2265,10 @@ static void save_note_check(FsNode* root, const char* kind) { /* tree.lock held 
     SaveNote now, was;
     char path[FS_TREE_PATH_MAX + sizeof SNX_SAVE_NOTE], line[sizeof g_host.fs.save_newer], a[64], b[64];
     if (!save_note_now(&now) || save_note_path(root, path, sizeof path) || !save_note_read(path, &was)) return;
-    if (was.program != g_hle.kernel.title_id &&
-        snx_addon_kind(g_hle.kernel.title_id, was.program) != SNX_ADDON_UPDATE) {
+    /* the game's, its update's, or one of its application's other programs, which play the same save */
+    if (snx_program_index(save_title(), was.program) < 0) {
         LOG_LIMIT(4, "fs: %s names the program %016llX, not this game's %016llX: its version is not compared\n", path,
-                  (unsigned long long)was.program, (unsigned long long)g_hle.kernel.title_id);
+                  (unsigned long long)was.program, (unsigned long long)save_title());
         return;
     }
     if (!save_note_newer(&was, &now)) return;
@@ -2318,12 +2358,15 @@ static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByCurrentProcess(SvcObj* 
     R_SUCCEED();
 }
 /* nn::fs::QueryMountRomCacheSize(size_t*, int) and MountRom's program index overloads, which a game calls.
-   Index 0 is this program, the only one GetProgramIndexForAccessLog reports. Any other index names a program
-   the application doesn't have: TargetNotFound, never a success without a storage, which the SDK wraps as a
-   storage with a null backend and calls through. */
+   This program's own index (g_program, which GetProgramIndexForAccessLog reports) is its RomFS. Another program's
+   is not read here: TargetNotFound, never a success without a storage, which the SDK wraps as a storage with a null
+   backend and calls through. */
 static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageWithProgramIndex(SvcObj* self, u8 program_index,
                                                                         SvcObj** storage) {
-    R_UNLESS(!program_index, RC(2, 1002));
+    if (program_index != g_program)
+        WARN_LIMIT(4, "fs: program %d opens the RomFS of program %u, which is not read here: TargetNotFound\n",
+                   g_program, (unsigned)program_index);
+    R_UNLESS(program_index == g_program, RC(2, 1002));
     return nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByCurrentProcess(self, storage);
 }
 /* this program's id is the only one there is: another program's is TargetNotFound */
