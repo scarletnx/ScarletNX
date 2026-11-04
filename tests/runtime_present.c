@@ -89,6 +89,14 @@ static void pacing(void) {
     present_pace(4, -1); /* a number ignores the interval */
     CHECK(slept_ns - before == 2 * (1000000000u / 30), "fps_limit=30 waited %llu ns over two frames",
           (unsigned long long)(slept_ns - before));
+    /* a numeric limit is a ceiling: a frame that ran half a period late doesn't let the next one run early to catch
+       up */
+    now_ns += 3 * (1000000000u / 30) / 2;
+    present_pace(0, -1); /* the late frame starts the schedule again, now */
+    before = slept_ns;
+    present_pace(0, -1);
+    CHECK(slept_ns - before == 1000000000u / 30, "a numeric limit caught up after a slow frame (waited %llu ns)",
+          (unsigned long long)(slept_ns - before));
     g_opt_fps = 0;
     before = slept_ns;
     present_pace(1, -1);
