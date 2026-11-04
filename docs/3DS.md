@@ -475,6 +475,10 @@ The separate windows and the two render resolutions are checked by `3ds_windows`
 screen takes its own setting's scale and no other's, both screens present, and the PPM
 dumps stay the framebuffer's own size whatever the scale. With Separate screens on, that
 test fails unless both windows present, and it skips where the host makes no window (CI).
+A window minimized and restored gets its swapchain back, checked by `3ds_windows_minimized`
+(it skips where the host keeps the swapchain or does not minimize). On Windows a minimized
+window's surface is 0x0 and no swapchain can be made at that size, so the first frame after
+the restore makes one.
 The RAM is one shared mapping (a memfd on Linux), so that every guest view of a page is the
 same memory, and some drivers will not import it (`VK_EXT_external_memory_host`): RADV
 imports a host pointer as an amdgpu user pointer of private anonymous memory only, and its

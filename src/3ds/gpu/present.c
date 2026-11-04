@@ -51,7 +51,7 @@ static struct {
     unsigned dumps;
     uint64_t presents;     /* past the first dumps, two presents (one a screen) of every 120 are kept as the latest */
     unsigned bottom_alone; /* bottom screen frames since the window last showed, the top screen showing none */
-    int up, windowed[2], closed, separate;
+    unsigned up : 1, closed : 1, separate : 1;
 } g_present;
 
 static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, VkImageLayout next);
@@ -179,8 +179,8 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     image_barrier(snx_ctr_vk_commands(), g_present.source_dummy.image, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_GENERAL);
     g_present.source_dummy.layout = VK_IMAGE_LAYOUT_GENERAL;
-    if (v->host.surface) g_present.windowed[0] = swap_create(0);
-    if (g_present.separate) g_present.windowed[1] = swap_create(1);
+    (void)swap_create(0);
+    if (g_present.separate) (void)swap_create(1);
     g_present.up = 1;
     return true;
 }
@@ -204,9 +204,9 @@ void snx_ctr_present_title(const char* name, const char* addons) {
     snx_window_icon(v->host.window);
 }
 bool snx_ctr_present_ready(void) { return g_present.up; }
-bool snx_ctr_present_windowed(void) { return g_present.windowed[0] || g_present.windowed[1]; }
+bool snx_ctr_present_windowed(void) { return g_present.swap[0].swapchain || g_present.swap[1].swapchain; }
 bool snx_ctr_present_separate(void) {
-    return g_present.up && g_present.separate && g_present.windowed[0] && g_present.windowed[1];
+    return g_present.up && g_present.separate && g_present.swap[0].swapchain && g_present.swap[1].swapchain;
 }
 
 /* whether this present is one the dumps keep: the first eight frames, then about one a second as
@@ -442,13 +442,15 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     unsigned window_index = g_present.separate ? screen : 0;
     uint32_t index = 0;
     g_present.bottom_alone = screen ? g_present.bottom_alone + 1 : 0;
-    bool show = g_present.windowed[window_index];
+    /* a window without a swapchain gets one again when its surface has a size: on Windows a minimized window's
+       surface is 0x0, and no swapchain can be made at that size */
+    bool show = g_present.swap[window_index].swapchain || swap_create(window_index);
     if (!g_present.separate && screen == 1 && g_present.bottom_alone < 2) show = false;
     if (show) {
         VkResult acquired = vkAcquireNextImageKHR(v->device, g_present.swap[window_index].swapchain, UINT64_MAX,
                                                   g_present.acquire[window_index][slot], VK_NULL_HANDLE, &index);
         if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
-            g_present.windowed[window_index] = swap_create(window_index);
+            (void)swap_create(window_index);
             show = false;
         } else if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
             show = false;
@@ -473,8 +475,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
                                     .pSwapchains = &g_present.swap[window_index].swapchain,
                                     .pImageIndices = &index};
         VkResult shown = vkQueuePresentKHR(v->queue, &present);
-        if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR)
-            g_present.windowed[window_index] = swap_create(window_index);
+        if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR) (void)swap_create(window_index);
     }
     pump();
     if (!ok) return false;
