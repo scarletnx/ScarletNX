@@ -563,6 +563,8 @@ static int table_read(u32 idx, u32 off, u32* out) {
     *out = table[(off - 0x10) / 4];
     return 1;
 }
+static u32 spv_find(const u32* words, size_t count, u32 op, u32* at, u32 max);
+static Word mov_imm(u32 dst, u32 value);
 /* LDC R2, c[1][R1 + 0x10]; BRX R2, -(the next instruction's address); two cases that write R0 and exit */
 static void test_brx(const char* spirv_val, const char* dir) {
     u8 code[16 * 8] = {0};
@@ -574,7 +576,7 @@ static void test_brx(const char* spirv_val, const char* dir) {
     put(code, 0, x);
     x = fix(0x949);
     set(&x, 24, 8, 2);
-    set(&x, 33, 49, (u64)0 - 8); /* -32 bytes in 4-byte units */
+    set(&x, 34, 48, (u64)0 - 8); /* -32 bytes (minus the next instruction's address) in 4-byte units */
     set(&x, 87, 3, 7);
     put(code, 1, x);
     for (u32 k = 0; k < 2; k++) {
@@ -597,6 +599,71 @@ static void test_brx(const char* spirv_val, const char* dir) {
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "brx: %s\n", si.first_unsupported);
     if (spv) CHECK(validate(spirv_val, dir, "fs_brx", spv, count));
+    /* the switch's cases are the instructions the table's bytes name, 2 and 4 */
+    if (spv) {
+        u32 at[4];
+        CHECK(spv_find(spv, count, 251 /* OpSwitch */, at, 4) == 1);
+        const u32* sw = spv + at[0];
+        CHECK((sw[0] >> 16) == 7 && ((sw[3] == 2 && sw[5] == 4) || (sw[3] == 4 && sw[5] == 2)));
+    }
+    free(spv);
+}
+
+/* two entries, then a word that names instruction 0 as well: another table's, as one game's two lie in c[1] */
+static int table2_read(u32 idx, u32 off, u32* out) {
+    static const u32 table[4] = {5 * 16, 7 * 16, 0, 0xffffffffu};
+    if (idx != 1 || off < 0x10 || off >= 0x10 + sizeof table) return 0;
+    *out = table[(off - 0x10) / 4];
+    return 1;
+}
+/* ptxas's bounded switch: IMNMX.U32 R1, R0, 1 (index 0 or 1); IMAD R2, R1, 4, RZ; LDC R2, c[1][R2 + 0x10]; BRX R2,
+   -(the next instruction's address). The table is its two entries, not up to the first word that names no
+   instruction: the third would go back to the program's start */
+static void test_brx_bounded(const char* spirv_val, const char* dir) {
+    u8 code[16 * 10] = {0};
+    Word x = alu(0x017, 4, 1, 0);
+    set(&x, 32, 32, 1);
+    set(&x, 87, 3, 7);
+    put(code, 0, x);
+    x = alu(0x024, 4, 2, 1);
+    set(&x, 32, 32, 4);
+    set(&x, 64, 8, 255);
+    put(code, 1, x);
+    x = fix(0xb82);
+    set(&x, 16, 8, 2);
+    set(&x, 24, 8, 2);
+    cbuf(&x, 1, 0x10);
+    set(&x, 73, 3, 4);
+    put(code, 2, x);
+    x = fix(0x949);
+    set(&x, 24, 8, 2);
+    set(&x, 34, 48, (u64)0 - 16); /* -64 bytes in 4-byte units */
+    set(&x, 87, 3, 7);
+    put(code, 3, x);
+    for (u32 k = 0; k < 2; k++) {
+        put(code, 5 + 2 * k, mov_imm(0, k ? 0x40000000u : 0x3f800000u));
+        put(code, 6 + 2 * k, exit_insn());
+    }
+    put(code, 4, exit_insn());
+    put(code, 9, bra(9, 9, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    g_shader_cb_read = table2_read;
+    u32* spv = sm86_to_spirv(code, 10 * 16, ST_FS, fsph, &si, &count);
+    g_shader_cb_read = NULL;
+    CHECK(spv != NULL);
+    if (!spv) fprintf(stderr, "bounded brx: %s\n", si.first_unsupported);
+    if (spv) {
+        u32 at[4];
+        CHECK(spv_find(spv, count, 251 /* OpSwitch */, at, 4) == 1);
+        const u32* sw = spv + at[0];
+        CHECK((sw[0] >> 16) == 7 && ((sw[3] == 5 && sw[5] == 7) || (sw[3] == 7 && sw[5] == 5)));
+        CHECK(spv_find(spv, count, 246 /* OpLoopMerge */, at, 4) == 0);
+        CHECK(validate(spirv_val, dir, "fs_brx_bounded", spv, count));
+    }
     free(spv);
 }
 
@@ -1013,6 +1080,52 @@ static void test_texel_offsets(const char* spirv_val, const char* dir) {
     free(spv);
 }
 
+/* ULDC.64 UR4, c[0][off] */
+static Word uldc64(u32 off) {
+    Word x = fix(0xab9);
+    set(&x, 16, 6, 4);
+    cbuf(&x, 0, off);
+    set(&x, 73, 3, 5);
+    return x;
+}
+/* An address's base along the flow: UR4 is c[0][0x20] where @P0 BRA jumps to the LDG, and c[0][0x40] on the path
+   that exits before it. The LDG's buffer is the first; in program order it was the second. With both paths reaching
+   the LDG, they disagree, and the program is refused */
+static void test_global_flow(const char* spirv_val, const char* dir) {
+    u8 code[16 * 8];
+    memset(code, 0, sizeof code);
+    put(code, 0, uldc64(0x20));
+    put(code, 1, bra(1, 4, 0, 0));
+    put(code, 2, uldc64(0x40));
+    put(code, 3, exit_insn());
+    {
+        Word x = fix(0x981); /* LDG.E R2, [R0.U32 + UR4] */
+        set(&x, 16, 8, 2);
+        set(&x, 24, 8, 0);
+        set(&x, 32, 6, 4);
+        set(&x, 72, 1, 1);
+        set(&x, 73, 3, 4);
+        set(&x, 81, 3, 7);
+        set(&x, 91, 1, 1);
+        put(code, 4, x);
+    }
+    put(code, 5, exit_insn());
+    put(code, 6, bra(6, 6, 7, 0));
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 7 * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) fprintf(stderr, "global flow: %s\n", si.first_unsupported);
+    CHECK(si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x20);
+    if (spv) CHECK(validate(spirv_val, dir, "global_flow", spv, count));
+    free(spv);
+    put(code, 3, mov_imm(5, 1)); /* the second path goes on to the LDG */
+    si = (ShaderInfo){0};
+    spv = sm86_to_spirv(code, 7 * 16, ST_CS, NULL, &si, &count);
+    CHECK(!spv && strstr(si.first_unsupported, "global address whose base"));
+    free(spv);
+}
+
 int main(int argc, char** argv) {
     const char* spirv_val = argc > 2 ? argv[2] : NULL;
     const char* dir = argc > 1 ? argv[1] : ".";
@@ -1024,11 +1137,13 @@ int main(int argc, char** argv) {
     test_programs(spirv_val, dir);
     test_game_forms(spirv_val, dir);
     test_brx(spirv_val, dir);
+    test_brx_bounded(spirv_val, dir);
     test_alu_group(spirv_val, dir);
     test_compute_forms(spirv_val, dir);
     test_image_kinds(spirv_val, dir);
     test_root_tables(spirv_val, dir);
     test_texel_offsets(spirv_val, dir);
+    test_global_flow(spirv_val, dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

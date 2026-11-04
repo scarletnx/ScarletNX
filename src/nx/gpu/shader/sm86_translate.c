@@ -10,6 +10,7 @@
    Control flow is the program's own branches. BSSY, BSYNC, BREAK and WARPSYNC only manage the convergence of the
    warp, so the translation reads past them, and structure.c (shader_structure_graph) places the blocks that BRA and
    EXIT end into structured constructs. structure_step follows spirv_translate.c's, which takes its own context. */
+#include <stddef.h>
 #include "nx/gpu/shader/sm86.h"
 #include "nx/gpu/shader/translator.h"
 #include "common/utilities/spirv_emit.h"
@@ -638,89 +639,159 @@ static u32 global_address(Ctx* c, const Sm86Insn* in, int uniform_form, int writ
     c->gkey = key;
     return gbuf_slot(c, key, write);
 }
-/* The constant buffer word that holds the base of each LDG's and STG's address, in program order: a register
-   gets the word that ULDC.64, LDC.64 or MOV loads into it, and keeps it through moves and through IADD3, IMAD,
-   IMAD.WIDE and LEA with one source that has it, as Eden's Track follows Maxwell's */
+/* what track_globals follows at an instruction: each register's key, then the opcode that last wrote it (for the
+   message of an address without one). The keys first: the flow settles on them */
+typedef struct {
+    u32 rkey[256], ukey[64];
+    u16 rsrc[256], usrc[64];
+} TrackState;
+#define TRACK_KEYS offsetof(TrackState, rsrc)
+/* one instruction of track_globals: an LDG's or STG's key into addr_key, and what its destination gets */
+static void track_step(Ctx* c, u32 i, TrackState* s) {
+    const Sm86Insn* in = &c->in[i];
+    int op = in->op, uniform = sm86_ops[op].kind == SM86_K_UALU;
+    if (op == SM86_LDG || op == SM86_STG || op == SM86_LDG_NOU || op == SM86_STG_NOU || op == SM86_ATOMG ||
+        op == SM86_ATOMG_NOU || op == SM86_RED) {
+        int uniform_form = op == SM86_LDG || op == SM86_STG || op == SM86_ATOMG || op == SM86_RED;
+        u32 reg = sm86_field(in, 24, 8), ur = uniform_form ? sm86_field(in, op == SM86_LDG ? 32 : 64, 6) : SM86_URZ;
+        u32 k = ur < SM86_URZ && s->ukey[ur] ? s->ukey[ur] : reg < SM86_RZ ? s->rkey[reg] : 0;
+        c->addr_key[i] = k;
+        c->addr_key[c->n + 1 + i] = ur < SM86_URZ && s->ukey[ur] ? s->usrc[ur] : reg < SM86_RZ ? s->rsrc[reg] : 0;
+        if (!k && ur < SM86_URZ && !s->ukey[ur] && s->usrc[ur]) c->addr_key[c->n + 1 + i] = s->usrc[ur];
+        if (op == SM86_LDG || op == SM86_LDG_NOU || op == SM86_ATOMG || op == SM86_ATOMG_NOU) {
+            /* the words loaded are data: one, or two or four for an LDG.64 or .128 */
+            u32 type = sm86_field(in, 73, 3), words = op == SM86_ATOMG || op == SM86_ATOMG_NOU ? 1
+                                                      : type == 5                              ? 2
+                                                      : type == 6                              ? 4
+                                                                                               : 1;
+            for (u32 w = 0; w < words && in->dst + w < SM86_RZ; w++)
+                s->rkey[in->dst + w] = 0, s->rsrc[in->dst + w] = (u16)op;
+        }
+        return;
+    }
+    u32 key = 0;
+    int found = 0;
+    if (op == SM86_ULDC || (op == SM86_LDC && sm86_field(in, 24, 8) == SM86_RZ))
+        key = (sm86_field(in, 54, 5) << 16 | sm86_field(in, 38, 16)) + 1, found = 1;
+    else if (op == SM86_MOV || op == SM86_UMOV || op == SM86_R2UR) {
+        const Sm86Src* b = &in->b;
+        if (op == SM86_R2UR)
+            key = s->rkey[sm86_field(in, 24, 8) & 255];
+        else if (b->kind == SM86_SRC_CBUF && !b->bindless)
+            key = (u32)(b->bank << 16 | b->value) + 1;
+        else if (b->kind == SM86_SRC_REG && b->reg < SM86_RZ)
+            key = s->rkey[b->reg];
+        else if (b->kind == SM86_SRC_UREG && b->reg < SM86_URZ)
+            key = s->ukey[b->reg];
+        found = 1;
+    } else if ((op == SM86_IADD3 || op == SM86_UIADD3 || op == SM86_IMAD || op == SM86_UIMAD ||
+                op == SM86_IMAD_WIDE || op == SM86_UIMAD_WIDE || op == SM86_LEA || op == SM86_ULEA) &&
+               !sm86_field(in, 74, 1) && !((op == SM86_LEA || op == SM86_ULEA) && sm86_field(in, 80, 1))) {
+        /* one source with a base: the result is that base at an offset. A constant buffer operand is a base
+           itself, as in ptxas's LEA R0, P0, R2, c[0x0][0x60], 0x2 */
+        const Sm86Src* s3[3] = {&in->a, &in->b, &in->c};
+        u32 count = 0, first = 0, last = 3;
+        if (op == SM86_IMAD || op == SM86_UIMAD || op == SM86_IMAD_WIDE || op == SM86_UIMAD_WIDE)
+            first = 2; /* a product is an offset: only the sum's c can be the base */
+        else if (op == SM86_LEA || op == SM86_ULEA)
+            first = 1, last = 2; /* the shifted a is an offset: only b */
+        for (u32 k = first; k < last; k++) {
+            const Sm86Src* x = s3[k];
+            u32 v = x->kind == SM86_SRC_REG && x->reg < SM86_RZ     ? s->rkey[x->reg]
+                    : x->kind == SM86_SRC_UREG && x->reg < SM86_URZ ? s->ukey[x->reg]
+                    : x->kind == SM86_SRC_CBUF && !x->bindless      ? (u32)(x->bank << 16 | x->value) + 1
+                                                                    : 0;
+            if (v) key = v, count++;
+        }
+        if (count != 1) key = 0;
+        found = 1;
+    }
+    /* the destination: the key, or none for any other write (the high word of a pair takes none either) */
+    u32 d = uniform || op == SM86_ULDC || op == SM86_UMOV || op == SM86_R2UR ? sm86_field(in, 16, 6) : in->dst;
+    int to_uniform = uniform || op == SM86_ULDC || op == SM86_R2UR || op == SM86_S2UR || op == SM86_ULDC_IDX;
+    int wide = op == SM86_ULDC || op == SM86_LDC || op == SM86_IMAD_WIDE || op == SM86_UIMAD_WIDE;
+    if (!found) key = 0;
+    if (to_uniform) {
+        if (d < SM86_URZ) s->ukey[d] = key, s->usrc[d] = (u16)op;
+        if (wide && d + 1 < SM86_URZ) s->ukey[d + 1] = 0;
+    } else if ((sm86_ops[op].kind == SM86_K_ALU || op == SM86_LDC || op == SM86_S2R || op == SM86_CS2R) &&
+               op != SM86_FSETP && op != SM86_ISETP && op != SM86_DSETP && op != SM86_HSETP2 && op != SM86_R2P) {
+        if (d < SM86_RZ) s->rkey[d] = key, s->rsrc[d] = (u16)op;
+        if (wide && d + 1 < SM86_RZ) s->rkey[d + 1] = 0;
+    }
+}
+static int falls_through(const Sm86Insn* in);
+static int flow_sources(Ctx* c);
+/* The constant buffer word that holds the base of each LDG's and STG's address: a register gets the word that
+   ULDC.64, LDC.64 or MOV loads into it, and keeps it through moves and through IADD3, IMAD, IMAD.WIDE and LEA with
+   one source that has it, as Eden's Track follows Maxwell's. Along the flow: a block starts with the keys its
+   reached predecessors end with where they agree, until no block's end changes. In program order, a jump table's
+   cases wrote over a register that the code after them had from before them, on every path */
 static int track_globals(Ctx* c) {
-    u32 rkey[256] = {0}, ukey[64] = {0};
-    /* the keys, then the opcode that last wrote each address register (for the message of an address without one) */
-    c->addr_key = calloc(2 * ((size_t)c->n + 1), sizeof *c->addr_key);
-    u16 rsrc[256] = {0}, usrc[64] = {0};
-    if (!c->addr_key) return 0;
-    for (u32 i = 0; i < c->n; i++) {
-        const Sm86Insn* in = &c->in[i];
-        int op = in->op, uniform = sm86_ops[op].kind == SM86_K_UALU;
-        if (op == SM86_LDG || op == SM86_STG || op == SM86_LDG_NOU || op == SM86_STG_NOU || op == SM86_ATOMG ||
-            op == SM86_ATOMG_NOU || op == SM86_RED) {
-            int uniform_form = op == SM86_LDG || op == SM86_STG || op == SM86_ATOMG || op == SM86_RED;
-            u32 reg = sm86_field(in, 24, 8), ur = uniform_form ? sm86_field(in, op == SM86_LDG ? 32 : 64, 6) : SM86_URZ;
-            u32 k = ur < SM86_URZ && ukey[ur] ? ukey[ur] : reg < SM86_RZ ? rkey[reg] : 0;
-            c->addr_key[i] = k;
-            c->addr_key[c->n + 1 + i] = ur < SM86_URZ && ukey[ur] ? usrc[ur] : reg < SM86_RZ ? rsrc[reg] : 0;
-            if (!k && ur < SM86_URZ && !ukey[ur] && usrc[ur]) c->addr_key[c->n + 1 + i] = usrc[ur];
-            if (op == SM86_LDG || op == SM86_LDG_NOU || op == SM86_ATOMG || op == SM86_ATOMG_NOU) {
-                /* the words loaded are data: one, or two or four for an LDG.64 or .128 */
-                u32 type = sm86_field(in, 73, 3), words = op == SM86_ATOMG || op == SM86_ATOMG_NOU ? 1
-                                                          : type == 5                              ? 2
-                                                          : type == 6                              ? 4
-                                                                                                   : 1;
-                for (u32 w = 0; w < words && in->dst + w < SM86_RZ; w++)
-                    rkey[in->dst + w] = 0, rsrc[in->dst + w] = (u16)op;
-            }
-            continue;
+    u32 n = c->n, nb = 0;
+    c->addr_key = calloc(2 * ((size_t)n + 1), sizeof *c->addr_key);
+    if (!c->addr_key || !flow_sources(c)) return 0;
+    if (c->failed) return 1;
+    u32* start = malloc(((size_t)n + 1) * sizeof *start);
+    u32* block_of = malloc(((size_t)n + 1) * sizeof *block_of);
+    TrackState *out = NULL, *s = malloc(sizeof *s);
+    u8* reached = NULL;
+    int ok = start && block_of && s;
+    for (u32 i = 0; ok && i < n; i++) {
+        const Sm86Insn* prev = i ? &c->in[i - 1] : NULL;
+        if (!i || c->jump_first[i] < c->jump_first[i + 1] || !falls_through(prev) || prev->op == SM86_BRA ||
+            prev->op == SM86_BRX)
+            start[nb++] = i;
+        block_of[i] = nb - 1;
+    }
+    if (ok) {
+        start[nb] = n;
+        out = malloc((size_t)nb * sizeof *out);
+        reached = calloc(nb, 1);
+        ok = out && reached;
+    }
+    /* the keys only fall to none, but where one source of an add has a base: a loop could go round, so a cap */
+    int changed = 1;
+    for (u32 pass = 0; ok && changed; pass++) {
+        if (pass == 64) {
+            fail(c, "global address bases the flow doesn't settle");
+            break;
         }
-        u32 key = 0;
-        int found = 0;
-        if (op == SM86_ULDC || (op == SM86_LDC && sm86_field(in, 24, 8) == SM86_RZ))
-            key = (sm86_field(in, 54, 5) << 16 | sm86_field(in, 38, 16)) + 1, found = 1;
-        else if (op == SM86_MOV || op == SM86_UMOV || op == SM86_R2UR) {
-            const Sm86Src* b = &in->b;
-            if (op == SM86_R2UR)
-                key = rkey[sm86_field(in, 24, 8) & 255];
-            else if (b->kind == SM86_SRC_CBUF && !b->bindless)
-                key = (u32)(b->bank << 16 | b->value) + 1;
-            else if (b->kind == SM86_SRC_REG && b->reg < SM86_RZ)
-                key = rkey[b->reg];
-            else if (b->kind == SM86_SRC_UREG && b->reg < SM86_URZ)
-                key = ukey[b->reg];
-            found = 1;
-        } else if ((op == SM86_IADD3 || op == SM86_UIADD3 || op == SM86_IMAD || op == SM86_UIMAD ||
-                    op == SM86_IMAD_WIDE || op == SM86_UIMAD_WIDE || op == SM86_LEA || op == SM86_ULEA) &&
-                   !sm86_field(in, 74, 1) && !((op == SM86_LEA || op == SM86_ULEA) && sm86_field(in, 80, 1))) {
-            /* one source with a base: the result is that base at an offset. A constant buffer operand is a base
-               itself, as in ptxas's LEA R0, P0, R2, c[0x0][0x60], 0x2 */
-            const Sm86Src* s3[3] = {&in->a, &in->b, &in->c};
-            u32 count = 0, first = 0, last = 3;
-            if (op == SM86_IMAD || op == SM86_UIMAD || op == SM86_IMAD_WIDE || op == SM86_UIMAD_WIDE)
-                first = 2; /* a product is an offset: only the sum's c can be the base */
-            else if (op == SM86_LEA || op == SM86_ULEA)
-                first = 1, last = 2; /* the shifted a is an offset: only b */
-            for (u32 k = first; k < last; k++) {
-                const Sm86Src* x = s3[k];
-                u32 v = x->kind == SM86_SRC_REG && x->reg < SM86_RZ     ? rkey[x->reg]
-                        : x->kind == SM86_SRC_UREG && x->reg < SM86_URZ ? ukey[x->reg]
-                        : x->kind == SM86_SRC_CBUF && !x->bindless      ? (u32)(x->bank << 16 | x->value) + 1
-                                                                        : 0;
-                if (v) key = v, count++;
+        changed = 0;
+        for (u32 b = 0; b < nb; b++) {
+            u32 first = start[b], preds = 0;
+            if (!b) memset(s, 0, sizeof *s), preds = 1; /* the program's start: no register has a base */
+            const u32 jumps = c->jump_first[first + 1] - c->jump_first[first];
+            for (u32 k = 0; k <= jumps; k++) {
+                u32 p;
+                if (k == jumps) {
+                    if (!first || !falls_through(&c->in[first - 1])) continue;
+                    p = block_of[first - 1];
+                } else
+                    p = block_of[c->jump_from[c->jump_first[first] + k]];
+                if (!reached[p]) continue;
+                if (!preds++) {
+                    *s = out[p];
+                    continue;
+                }
+                for (u32 r = 0; r < 256; r++)
+                    if (s->rkey[r] != out[p].rkey[r]) s->rkey[r] = 0;
+                for (u32 r = 0; r < 64; r++)
+                    if (s->ukey[r] != out[p].ukey[r]) s->ukey[r] = 0;
             }
-            if (count != 1) key = 0;
-            found = 1;
-        }
-        /* the destination: the key, or none for any other write (the high word of a pair takes none either) */
-        u32 d = uniform || op == SM86_ULDC || op == SM86_UMOV || op == SM86_R2UR ? sm86_field(in, 16, 6) : in->dst;
-        int to_uniform = uniform || op == SM86_ULDC || op == SM86_R2UR || op == SM86_S2UR || op == SM86_ULDC_IDX;
-        int wide = op == SM86_ULDC || op == SM86_LDC || op == SM86_IMAD_WIDE || op == SM86_UIMAD_WIDE;
-        if (!found) key = 0;
-        if (to_uniform) {
-            if (d < SM86_URZ) ukey[d] = key, usrc[d] = (u16)op;
-            if (wide && d + 1 < SM86_URZ) ukey[d + 1] = 0;
-        } else if ((sm86_ops[op].kind == SM86_K_ALU || op == SM86_LDC || op == SM86_S2R || op == SM86_CS2R) &&
-                   op != SM86_FSETP && op != SM86_ISETP && op != SM86_DSETP && op != SM86_HSETP2 && op != SM86_R2P) {
-            if (d < SM86_RZ) rkey[d] = key, rsrc[d] = (u16)op;
-            if (wide && d + 1 < SM86_RZ) rkey[d + 1] = 0;
+            if (!preds) continue; /* nothing reaches it yet */
+            for (u32 i = first; i < start[b + 1]; i++) track_step(c, i, s);
+            if (!reached[b] || memcmp(&out[b], s, TRACK_KEYS)) changed = 1;
+            out[b] = *s;
+            reached[b] = 1;
         }
     }
-    return 1;
+    free(s);
+    free(reached);
+    free(out);
+    free(block_of);
+    free(start);
+    return ok;
 }
 static u32 shared_var(Ctx* c) {
     if (!c->shared) {
@@ -2424,16 +2495,47 @@ static int structure_step(Ctx* c, StructEmit* se) {
     return SE_DONE;
 }
 
-/* BRX R, offset (CuAssembler sm_86): to the byte R + offset + the next instruction's, where the offset is in 4-byte
-   units from bit 33 to 81, signed. ptxas writes minus the next instruction's address, so that R is the target's own.
-   The constant added to R, as a u32 */
+/* BRX R, offset: to the byte R + offset + the next instruction's, where the offset is in 4-byte units in bits 34 to
+   81, signed, as BRA's (sm86_branch_target). ptxas writes minus the next instruction's address, so that R is the
+   target's own: read from bit 33, one game's two BRX each went to their own index plus one less than the table's
+   targets, and back to the program's start. The constant added to R, as a u32 */
 static u32 brx_bias(const Sm86Insn* in, u32 i) {
-    u64 v = (in->lo >> 33) | (in->hi & 0x3ffffull) << 31; /* 49 bits */
-    if (v >> 48) v |= ~0ull << 49;
+    u64 v = (in->lo >> 34) | (in->hi & 0x3ffffull) << 30; /* 48 bits */
+    if (v >> 47) v |= ~0ull << 48;
     return (u32)(v * 4 + ((u64)i + 1) * 16);
 }
+/* the instruction before k, back to the last branch, that writes register r: its index, or -1 */
+static int writer_before(Ctx* c, u32 k, u32 r) {
+    for (u32 j = k; j-- > 0 && j + 16 > k;) {
+        const Sm86Insn* w = &c->in[j];
+        if (w->op == SM86_BRA || w->op == SM86_EXIT || w->op == SM86_BRX) return -1;
+        if (sm86_ops[w->op].kind != SM86_K_UALU && w->dst == r) return (int)j;
+    }
+    return -1;
+}
+/* The entries of the jump table that the LDC at k indexes with register r, as ptxas bounds a switch's index: an
+   unsigned IMNMX with an immediate, then an IMAD by 4 into r (index = min(x, last) * 4). 0 when it isn't that */
+static u32 jump_table_entries(Ctx* c, u32 k, u32 r) {
+    int m = writer_before(c, k, r);
+    if (m < 0) return 0;
+    const Sm86Insn* mul = &c->in[m];
+    if (mul->op != SM86_IMAD || mul->pred != SM86_PT || mul->pred_not || sm86_field(mul, 74, 1) ||
+        mul->a.kind != SM86_SRC_REG || mul->b.kind != SM86_SRC_IMM || mul->b.value != 4 ||
+        mul->c.kind != SM86_SRC_REG || mul->c.reg != SM86_RZ)
+        return 0;
+    int b = writer_before(c, (u32)m, mul->a.reg);
+    if (b < 0) return 0;
+    const Sm86Insn* bound = &c->in[b];
+    if (bound->op != SM86_IMNMX || bound->pred != SM86_PT || bound->pred_not || sm86_field(bound, 73, 1) ||
+        sm86_field(bound, 87, 3) != SM86_PT || sm86_field(bound, 90, 1) || bound->b.kind != SM86_SRC_IMM ||
+        bound->b.value >= 64)
+        return 0;
+    return bound->b.value + 1;
+}
 /* The targets of the BRX at i: the jump table of the LDC before it that writes its register, read through
-   g_shader_cb_read as spirv_translate.c reads Maxwell's, up to the first word that is no target. The count, or 0 */
+   g_shader_cb_read as spirv_translate.c reads Maxwell's: as many entries as ptxas's bound on the index says, else up
+   to the first word that is no target. Two tables one after the other were read as one, and gave a BRX the other's
+   targets as its own. The count, or 0 */
 static u32 brx_targets(Ctx* c, u32 i, u32* targets, u32 max) {
     const Sm86Insn* in = &c->in[i];
     u32 reg = sm86_field(in, 24, 8), bias = brx_bias(in, i);
@@ -2451,12 +2553,21 @@ static u32 brx_targets(Ctx* c, u32 i, u32* targets, u32 max) {
         if (w->dst != reg || sm86_ops[w->op].kind == SM86_K_UALU) continue;
         if (w->op != SM86_LDC || sm86_field(w, 73, 3) != 4 || sm86_field(w, 78, 2)) break;
         u32 bank = sm86_field(w, 54, 5), off = sm86_field(w, 38, 16), count = 0;
-        for (; count < max; count++) {
+        u32 entries = jump_table_entries(c, k, sm86_field(w, 24, 8));
+        if (entries > max) {
+            fail(c, "BRX with a jump table of %u entries", entries);
+            return 0;
+        }
+        for (; count < (entries ? entries : max); count++) {
             u32 entry;
             if (!g_shader_cb_read(bank, off + 4 * count, &entry)) break;
             u32 at = entry + bias;
             if ((at & 15) || at / 16 >= c->n) break;
             targets[count] = at / 16;
+        }
+        if (entries && count < entries) {
+            fail(c, "BRX whose jump table in c[%u][0x%x] has %u targets of its %u entries", bank, off, count, entries);
+            return 0;
         }
         if (!count) {
             u32 first = 0;
