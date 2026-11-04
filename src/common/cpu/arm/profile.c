@@ -71,6 +71,8 @@ SnxA32Kind snx_a32_decode_profile(SnxArmProfile profile, uint32_t w) {
     if (profile == SNX_ARM_PROFILE_A57) return snx_a32_decode(w);
     if (profile == SNX_ARM_PROFILE_A9) return a9_a32(w);
     if (profile == SNX_ARM_PROFILE_ARM7TDMI) {
+        /* ARMv4's NV condition never holds: the word runs as nothing, where ARMv5 and later made it BLX, PLD and more */
+        if ((w >> 28) == 15) return SNX_A32_HINT;
         /* An MSR that writes the control or extension byte switches modes on the AGB board, which banks the
            registers: the board runs it. A57's EL0 MSR would drop the mode bits */
         SnxA32Kind kind = snx_a32_decode(w);
