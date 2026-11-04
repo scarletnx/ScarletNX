@@ -703,9 +703,16 @@ static void flatten(Link* l, const Spv* s, uint32_t type, const char* prefix, ui
 
 /* what a stage's module says: its default block's uniforms, its samplers' kinds, the vertex shader's outputs, and
    the fragment shader's inputs moved to them */
-static void reflect_module(Link* l, uint32_t* words, size_t n, int stage) {
+static void reflect_module(Link* l, uint32_t* words, size_t n, int stage, uint32_t local_size[3]) {
     Spv s;
     if (!spv_open(&s, words, n)) return;
+    for (size_t i = 5; stage == 2 && i < n;) { /* OpExecutionMode LocalSize */
+        uint32_t count = words[i] >> 16;
+        if (!count) break;
+        if ((words[i] & 0xffff) == 16 && count >= 6 && words[i + 2] == 17)
+            for (int k = 0; k < 3; ++k) local_size[k] = words[i + 3 + k];
+        i += count;
+    }
     for (uint32_t id = 1; id < s.bound; ++id) {
         if (op(&s, id) != OP_VARIABLE) continue;
         const uint32_t* v = at(&s, id);
@@ -930,6 +937,11 @@ static bool program_arrays(G2Program* p, Link* l) {
             for (uint32_t k = 0; k < b->count; ++k)
                 p->units[unit + k] = r->source_binding >= 0 ? r->source_binding + (int32_t)k : 0;
             unit += b->count;
+        } else if (r->kind == SNX_GLSLC_REFLECT_IMAGE || r->kind == SNX_GLSLC_REFLECT_BUFFER_BLOCK) {
+            /* GLES 3.1 gives their image units and binding points in the source alone */
+            b->first = (uint16_t)(r->source_binding >= 0 ? r->source_binding : 0);
+            b->dim = (uint8_t)(r->texel_buffer >> 4);
+            b->texel_buffer = r->texel_buffer & 1;
         } else if (r->kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK) {
             b->first = (uint16_t)block_index;
             if (block_index < G2_UBO_BINDINGS)
@@ -1001,10 +1013,8 @@ static void g_link_program(CPU* c, Gles2Context* gl) {
             const GlslcReflect* e = &g_gles2.result.reflect[k];
             if (e->kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK && !e->name.len) l->default_size[i] = e->offset;
         }
-        if (i == 2)
-            for (int k = 0; k < 3; ++k) p->local_size[k] = 1;
         interface(l, stages[i], i);
-        reflect_module(l, g_gles2.words, g_gles2.result.words, i);
+        reflect_module(l, g_gles2.words, g_gles2.result.words, i, p->local_size);
         p->modules[i] = gles_vk_shader(g_gles2.words, (size_t)g_gles2.result.words * 4);
         if (!p->modules[i]) {
             link_fail(p, l, "Vulkan does not take a stage's module");
@@ -1335,16 +1345,8 @@ static void g_get_frag_data_location(CPU* c, Gles2Context* gl) {
             if (!strcmp(p->names + p->outputs[i].name, name)) loc = p->outputs[i].spirv;
     X(0) = (uint64_t)(int64_t)loc;
 }
-/* glGetUniformLocation(program, name): "a", "a[0]" and "a[i]" of an array, "s.m", "s[i].m" */
-static void g_get_uniform_location(CPU* c, Gles2Context* gl) {
-    G2Program* p = program_arg(gl, X(0));
-    const char* name = STR(1);
-    X(0) = (uint64_t)(int64_t)-1;
-    if (!p || !name) return;
-    if (!p->linked) {
-        gles2_error(gl, GL_INVALID_OPERATION_);
-        return;
-    }
+/* a uniform's location by GL's name: "a", "a[0]" and "a[i]" of an array, "s.m", "s[i].m"; -1 for none */
+static int32_t uniform_location(const G2Program* p, const char* name) {
     size_t len = strlen(name);
     uint32_t element = 0;
     size_t base = len;
@@ -1359,17 +1361,24 @@ static void g_get_uniform_location(CPU* c, Gles2Context* gl) {
         const G2Uniform* u = &p->uniforms[i];
         const char* n = p->names + u->name;
         if (u->location < 0) continue;
-        if (!strcmp(n, name)) {
-            X(0) = (uint64_t)(int64_t)u->location;
-            return;
-        }
+        if (!strcmp(n, name)) return u->location;
         /* an array's "a[0]": its "a" and "a[i]" */
         size_t nl = strlen(n);
-        if (nl == base + 3 && !memcmp(n, name, base) && !strcmp(n + base, "[0]") && element < u->count) {
-            X(0) = (uint64_t)(int64_t)(u->location + (int32_t)element);
-            return;
-        }
+        if (nl == base + 3 && !memcmp(n, name, base) && !strcmp(n + base, "[0]") && element < u->count)
+            return u->location + (int32_t)element;
     }
+    return -1;
+}
+static void g_get_uniform_location(CPU* c, Gles2Context* gl) {
+    G2Program* p = program_arg(gl, X(0));
+    const char* name = STR(1);
+    X(0) = (uint64_t)(int64_t)-1;
+    if (!p || !name) return;
+    if (!p->linked) {
+        gles2_error(gl, GL_INVALID_OPERATION_);
+        return;
+    }
+    X(0) = (uint64_t)(int64_t)uniform_location(p, name);
 }
 /* the program's uniform blocks: their bindings, in order */
 static const G2Binding* uniform_block(const G2Program* p, uint32_t index) {
@@ -1487,6 +1496,196 @@ static void g_get_active_uniformsiv(CPU* c, Gles2Context* gl) {
         memcpy((unsigned char*)PTR(4) + 4 * k, &v, 4);
     }
 }
+/* ---- GLES 3.1's program interface queries ---- */
+
+enum { IF_UNIFORM = 0x92e1, IF_UNIFORM_BLOCK, IF_INPUT, IF_OUTPUT, IF_BUFFER_VARIABLE, IF_STORAGE_BLOCK };
+
+/* the binding of the index'th block of a kind */
+static const G2Binding* block_of(const G2Program* p, uint8_t kind, uint32_t index) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < p->binding_count; ++i)
+        if (p->bindings[i].kind == kind && p->bindings[i].name && n++ == index) return &p->bindings[i];
+    return NULL;
+}
+static uint32_t resources(const G2Program* p, unsigned interface) {
+    switch (interface) {
+    case IF_UNIFORM: return p->uniform_count;
+    case IF_INPUT: return p->input_count;
+    case IF_OUTPUT: return p->output_count;
+    case IF_UNIFORM_BLOCK:
+    case IF_STORAGE_BLOCK: {
+        uint32_t n = 0;
+        uint8_t kind = interface == IF_UNIFORM_BLOCK ? SNX_GLSLC_REFLECT_UNIFORM_BLOCK : SNX_GLSLC_REFLECT_BUFFER_BLOCK;
+        while (block_of(p, kind, n)) ++n;
+        return n;
+    }
+    default: return 0; /* buffer variables: not listed yet */
+    }
+}
+static const char* resource_name(const G2Program* p, unsigned interface, uint32_t i) {
+    switch (interface) {
+    case IF_UNIFORM: return p->names + p->uniforms[i].name;
+    case IF_INPUT: return p->names + p->inputs[i].name;
+    case IF_OUTPUT: return p->names + p->outputs[i].name;
+    case IF_UNIFORM_BLOCK: return p->names + block_of(p, SNX_GLSLC_REFLECT_UNIFORM_BLOCK, i)->name;
+    case IF_STORAGE_BLOCK: return p->names + block_of(p, SNX_GLSLC_REFLECT_BUFFER_BLOCK, i)->name;
+    default: return "";
+    }
+}
+static bool valid_interface(unsigned interface) {
+    return interface >= IF_UNIFORM && interface <= IF_STORAGE_BLOCK;
+}
+static void g_get_program_interfaceiv(CPU* c, Gles2Context* gl) {
+    G2Program* p = program_arg(gl, X(0));
+    unsigned interface = (unsigned)X(1), pname = (unsigned)X(2);
+    if (!p) return;
+    if (!valid_interface(interface)) {
+        gles2_error(gl, GL_INVALID_ENUM_);
+        return;
+    }
+    int32_t v = 0;
+    uint32_t n = resources(p, interface);
+    if (pname == 0x92f5) v = (int32_t)n; /* GL_ACTIVE_RESOURCES */
+    else if (pname == 0x92f6) /* GL_MAX_NAME_LENGTH */
+        for (uint32_t i = 0; i < n; ++i) {
+            int32_t len = (int32_t)strlen(resource_name(p, interface, i)) + 1;
+            if (len > v) v = len;
+        }
+    else if (pname == 0x92f7) /* GL_MAX_NUM_ACTIVE_VARIABLES */
+        for (uint32_t i = 0; interface == IF_UNIFORM_BLOCK && i < n; ++i) {
+            int32_t k = 0;
+            for (uint32_t u = 0; u < p->uniform_count; ++u) k += p->uniforms[u].block == (int16_t)i;
+            if (k > v) v = k;
+        }
+    else {
+        gles2_error(gl, GL_INVALID_ENUM_);
+        return;
+    }
+    memcpy(PTR(3), &v, 4);
+}
+static void g_get_program_resource_index(CPU* c, Gles2Context* gl) {
+    G2Program* p = program_arg(gl, X(0));
+    unsigned interface = (unsigned)X(1);
+    const char* name = STR(2);
+    X(0) = 0xffffffffu;
+    if (!p || !name || !valid_interface(interface)) return;
+    size_t len = strlen(name);
+    uint32_t n = resources(p, interface);
+    for (uint32_t i = 0; i < n; ++i) {
+        const char* r = resource_name(p, interface, i);
+        size_t rl = strlen(r);
+        /* an array's "a[0]" by its "a" too */
+        if (!strcmp(r, name) || (rl == len + 3 && !memcmp(r, name, len) && !strcmp(r + len, "[0]"))) {
+            X(0) = i;
+            return;
+        }
+    }
+}
+static void g_get_program_resource_name(CPU* c, Gles2Context* gl) {
+    G2Program* p = program_arg(gl, X(0));
+    unsigned interface = (unsigned)X(1);
+    uint32_t index = (uint32_t)X(2);
+    if (!p) return;
+    if (!valid_interface(interface) || index >= resources(p, interface)) {
+        gles2_error(gl, valid_interface(interface) ? GL_INVALID_VALUE_ : GL_INVALID_ENUM_);
+        return;
+    }
+    string_out(resource_name(p, interface, index), (int32_t)X(3), PTR(4), PTR(5));
+}
+/* one property of a resource: its values into out (up to max), their count */
+static int32_t resource_property(const G2Program* p, unsigned interface, uint32_t i, unsigned prop, int32_t* out,
+                                 int32_t max) {
+    const char* name = resource_name(p, interface, i);
+    if (prop == 0x92f9) return out[0] = (int32_t)strlen(name) + 1, 1; /* GL_NAME_LENGTH */
+    if (prop >= 0x9306 && prop <= 0x930b) /* GL_REFERENCED_BY_*: the stages the program has */
+        return out[0] = prop == 0x9306 ? p->shaders[0] != 0 : prop == 0x930a ? p->shaders[1] != 0
+                                    : prop == 0x930b ? p->shaders[2] != 0 : 0, 1;
+    if (interface == IF_UNIFORM) {
+        const G2Uniform* u = &p->uniforms[i];
+        int columns = 1;
+        if (u->type >= 0x8b5a && u->type <= 0x8b6a) columns = 2;
+        switch (prop) {
+        case 0x92fa: return out[0] = (int32_t)u->type, 1;
+        case 0x92fb: return out[0] = u->count, 1;
+        case 0x92fc: return out[0] = u->block >= 0 ? (u->offset[0] >= 0 ? u->offset[0] : u->offset[1]) : -1, 1;
+        case 0x92fd: return out[0] = u->block, 1;
+        case 0x92fe: return out[0] = u->block >= 0 ? u->array_stride : -1, 1;
+        case 0x92ff: return out[0] = u->block >= 0 ? (columns > 1 ? u->matrix_stride : 0) : -1, 1;
+        case 0x9300: return out[0] = 0, 1;
+        case 0x930e: return out[0] = u->location, 1;
+        case 0x9301: return out[0] = -1, 1; /* GL_ATOMIC_COUNTER_BUFFER_INDEX */
+        default: return -1;
+        }
+    }
+    if (interface == IF_INPUT || interface == IF_OUTPUT) {
+        const G2Input* x = interface == IF_INPUT ? &p->inputs[i] : &p->outputs[i];
+        switch (prop) {
+        case 0x92fa: return out[0] = (int32_t)x->type, 1;
+        case 0x92fb: return out[0] = x->count, 1;
+        case 0x930e: return out[0] = interface == IF_INPUT ? x->location : x->spirv, 1;
+        default: return -1;
+        }
+    }
+    const G2Binding* b = block_of(p, interface == IF_UNIFORM_BLOCK ? SNX_GLSLC_REFLECT_UNIFORM_BLOCK
+                                                                   : SNX_GLSLC_REFLECT_BUFFER_BLOCK, i);
+    switch (prop) {
+    case 0x9302: /* GL_BUFFER_BINDING */
+        return out[0] = (int32_t)(interface == IF_UNIFORM_BLOCK && b->first < G2_UBO_BINDINGS ? p->block_binding[b->first]
+                                                                                               : b->first), 1;
+    case 0x9303: return out[0] = (int32_t)b->size, 1;
+    case 0x9304:
+    case 0x9305: {
+        int32_t n = 0;
+        for (uint32_t u = 0; interface == IF_UNIFORM_BLOCK && u < p->uniform_count; ++u)
+            if (p->uniforms[u].block == (int16_t)b->first) {
+                if (prop == 0x9305 && n < max) out[n] = (int32_t)u;
+                ++n;
+            }
+        if (prop == 0x9304) return out[0] = n, 1;
+        return n < max ? n : max;
+    }
+    default: return -1;
+    }
+}
+/* glGetProgramResourceiv(program, interface, index, count, props, size, length, params) */
+static void g_get_program_resourceiv(CPU* c, Gles2Context* gl) {
+    G2Program* p = program_arg(gl, X(0));
+    unsigned interface = (unsigned)X(1);
+    uint32_t index = (uint32_t)X(2);
+    int32_t count = (int32_t)X(3), size = (int32_t)X(5), written = 0;
+    const unsigned char* props = PTR(4);
+    unsigned char* params = PTR(7);
+    if (!p) return;
+    if (!valid_interface(interface) || index >= resources(p, interface)) {
+        gles2_error(gl, valid_interface(interface) ? GL_INVALID_VALUE_ : GL_INVALID_ENUM_);
+        return;
+    }
+    for (int32_t k = 0; k < count && written < size; ++k) {
+        uint32_t prop;
+        memcpy(&prop, props + 4 * k, 4);
+        int32_t values[64];
+        int32_t n = resource_property(p, interface, index, prop, values, 64);
+        if (n < 0) {
+            gles2_error(gl, GL_INVALID_OPERATION_);
+            return;
+        }
+        for (int32_t v = 0; v < n && written < size; ++v) memcpy(params + 4 * written++, &values[v], 4);
+    }
+    if (X(6)) memcpy(PTR(6), &written, 4);
+}
+static void g_get_program_resource_location(CPU* c, Gles2Context* gl) {
+    G2Program* p = program_arg(gl, X(0));
+    unsigned interface = (unsigned)X(1);
+    const char* name = STR(2);
+    X(0) = (uint64_t)(int64_t)-1;
+    if (!p || !name || !p->linked) return;
+    if (interface == IF_UNIFORM) X(0) = (uint64_t)(int64_t)uniform_location(p, name);
+    for (uint32_t i = 0; interface == IF_INPUT && i < p->input_count; ++i)
+        if (!strcmp(p->names + p->inputs[i].name, name)) X(0) = (uint64_t)(int64_t)p->inputs[i].location;
+    for (uint32_t i = 0; interface == IF_OUTPUT && i < p->output_count; ++i)
+        if (!strcmp(p->names + p->outputs[i].name, name)) X(0) = (uint64_t)(int64_t)p->outputs[i].spirv;
+}
+
 static void g_program_binary(CPU* c, Gles2Context* gl) {
     G2Program* p = program_arg(gl, X(0));
     if (p) link_fail(p, NULL, "no program binary formats");
@@ -1542,6 +1741,11 @@ const HleSymbol hle_gles2_program[] = {
     FN("glGetActiveUniformBlockName", g_get_active_uniform_block_name),
     FN("glGetUniformIndices", g_get_uniform_indices),
     FN("glGetActiveUniformsiv", g_get_active_uniformsiv),
+    FN("glGetProgramInterfaceiv", g_get_program_interfaceiv),
+    FN("glGetProgramResourceIndex", g_get_program_resource_index),
+    FN("glGetProgramResourceName", g_get_program_resource_name),
+    FN("glGetProgramResourceiv", g_get_program_resourceiv),
+    FN("glGetProgramResourceLocation", g_get_program_resource_location),
     FN("glProgramBinary", g_program_binary),
     FN("glProgramBinaryOES", g_program_binary),
     FN("glGetProgramBinary", g_get_program_binary),
