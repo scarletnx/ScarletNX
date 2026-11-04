@@ -272,6 +272,10 @@ static void out_pages(const GfxOut* o, int delta) {
 static VkPipelineStageFlags2 out_stages(void) {
     return VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT |
+           (g_shader_tessellation ? VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT |
+                                        VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT
+                                  : 0) |
+           (g_shader_geometry ? VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT : 0) |
            (g_vk.has_xfb ? VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT : 0);
 }
 static VkAccessFlags2 out_access(void) {
@@ -1765,7 +1769,7 @@ static u64 draw_page_key(u64 gva) {
 }
 static DrawPage* draw_pages(const VkDrawStorage* draw, size_t* count) {
     size_t n = 0;
-    for (int s = 0; s < 2; s++)
+    for (int s = 0; s < VK_DRAW_STAGES; s++)
         for (int i = 0; i < draw->n[s]; i++) {
             const VkDrawGbuf* b = &draw->b[s][i];
             if (b->addr) n += ((b->addr & 4095) + b->size + 4095) >> 12;
@@ -1773,7 +1777,7 @@ static DrawPage* draw_pages(const VkDrawStorage* draw, size_t* count) {
     DrawPage* p = malloc((n ? n : 1) * sizeof *p);
     if (!p) return NULL;
     size_t k = 0;
-    for (int s = 0; s < 2; s++)
+    for (int s = 0; s < VK_DRAW_STAGES; s++)
         for (int i = 0; i < draw->n[s]; i++) {
             const VkDrawGbuf* b = &draw->b[s][i];
             if (!b->addr) continue;
@@ -1784,8 +1788,8 @@ static DrawPage* draw_pages(const VkDrawStorage* draw, size_t* count) {
     *count = k;
     return p;
 }
-static int draw_alias_bindings(const DrawPage* p, size_t n, u8 active[32]) {
-    memset(active, 0, 32);
+static int draw_alias_bindings(const DrawPage* p, size_t n, u8 active[VK_DRAW_STAGES * 16]) {
+    memset(active, 0, VK_DRAW_STAGES * 16);
     int alias = 0;
     for (size_t i = 0; i < n;) {
         size_t j = i + 1;
@@ -1800,7 +1804,7 @@ static int draw_alias_bindings(const DrawPage* p, size_t n, u8 active[32]) {
     return alias;
 }
 static int draw_has_writable(const VkDrawStorage* draw) {
-    for (int s = 0; s < 2; s++)
+    for (int s = 0; s < VK_DRAW_STAGES; s++)
         for (int i = 0; i < draw->n[s]; i++)
             if (draw->b[s][i].addr && draw->b[s][i].writable) return 1;
     return 0;
@@ -1809,9 +1813,9 @@ static int draw_has_writable(const VkDrawStorage* draw) {
    memory and their page ranges, compared pairwise, meet no writable one's, 1 otherwise (the page list decides). Every
    draw with storage asked the page list, allocated and sorted, twice: a twentieth of the GPU thread in one game */
 static int draw_may_alias(const VkDrawStorage* draw) {
-    u64 lo[32], hi[32];
-    int w[32], k = 0;
-    for (int s = 0; s < 2; s++)
+    u64 lo[VK_DRAW_STAGES * 16], hi[VK_DRAW_STAGES * 16];
+    int w[VK_DRAW_STAGES * 16], k = 0;
+    for (int s = 0; s < VK_DRAW_STAGES; s++)
         for (int i = 0; i < draw->n[s]; i++) {
             const VkDrawGbuf* b = &draw->b[s][i];
             u64 cpu = 0;
@@ -1831,7 +1835,7 @@ int vk_buf_draw_has_alias(const VkDrawStorage* draw) {
     size_t n;
     DrawPage* p = draw_pages(draw, &n);
     if (!p) return -1;
-    u8 active[32];
+    u8 active[VK_DRAW_STAGES * 16];
     int alias = draw_alias_bindings(p, n, active);
     free(p);
     return alias;
@@ -1945,7 +1949,7 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
     int writable = draw_has_writable(draw) && draw_may_alias(draw);
     DrawPage* p = writable ? draw_pages(draw, &n) : NULL;
     if (writable && !p) return 0;
-    u8 active[32] = {0};
+    u8 active[VK_DRAW_STAGES * 16] = {0};
     int alias = p ? draw_alias_bindings(p, n, active) : 0;
     size_t unique = 0;
     if (alias)
@@ -1973,7 +1977,7 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
         composed = atlas_fill(p, unique, ptr, atlas, atlas_off);
         copy_note(1, atlas_size);
     }
-    for (int s = 0; s < 2; s++) {
+    for (int s = 0; s < VK_DRAW_STAGES; s++) {
         if (!draw->n[s]) continue;
         size_t words = 48;
         if (alias)
