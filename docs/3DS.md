@@ -1060,6 +1060,9 @@ The backend implements discovery, host/join, node status, channel bindings, pack
 and disconnect. It uses a private protocol inside the room's datagram transport. It does
 not connect to physical consoles, Citra/Azahar rooms or Switch LDN sessions. With LAN mode
 (the default), Initialize succeeds, scans find no network and hosting works with no peer.
+Command 0x23, which some games send before a scan, answers 0x0421, the value libctru's
+udsScanBeacons puts in its scan input. Read as a mask with bit n for channel n + 1, that is
+channels 1, 6 and 11.
 The 3DS backend has no LAN transport, and ldn_mitm's protocol is for the Switch only. Nothing
 leaves the machine and no room is joined.
 
