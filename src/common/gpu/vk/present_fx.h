@@ -153,8 +153,15 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, VkImageView src, uint32_t img_w
 int snx_fx_blend(SnxFx* fx, VkCommandBuffer cb, VkImageView previous, VkImageView current, uint32_t width,
                  uint32_t height, float step, SnxFxImage* out);
 /* a copy of a frame in the module's keep image for its slot, which the next frame can blend with. It is the same format
-   as the effects' output. The source is in SHADER_READ_ONLY_OPTIMAL. */
+   as the effects' output. The source is in SHADER_READ_ONLY_OPTIMAL. The image comes back in TRANSFER_SRC_OPTIMAL. */
 int snx_fx_keep(SnxFx* fx, VkCommandBuffer cb, VkImageView source, uint32_t width, uint32_t height, SnxFxImage* out);
+/* The shown crop (x, y, w, h) of a frame (img_w by img_h) in the keep image: the next frame blends a full image of
+   the crop's size. */
+int snx_fx_keep_crop(SnxFx* fx, VkCommandBuffer cb, VkImageView source, uint32_t img_w, uint32_t img_h, uint32_t x,
+                     uint32_t y, uint32_t w, uint32_t h, SnxFxImage* out);
+/* the keep image the frame before this one wrote, in TRANSFER_SRC_OPTIMAL: what snx_fx_blend's previous is. 0 when
+   the last keep was this frame's or none was made. */
+int snx_fx_keep_previous(SnxFx* fx, SnxFxImage* out);
 
 /* the composition's format (RGBA16F, linear light in nits) */
 VkFormat snx_fx_compose_format(void);

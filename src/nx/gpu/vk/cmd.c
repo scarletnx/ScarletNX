@@ -529,7 +529,8 @@ int vk_stage_device(u64 size, u64 align, VkBuffer* buf, u64* off) {
 
 /* the frame's commands submitted, waiting for xw and signaling xs besides the graphics timeline (one each at most), for
    why (VK_SUB_*: the statistics) */
-static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land, int why) {
+static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xw2, const VkSemaphoreSubmitInfo* xs,
+                   u32 nxs, int land, int why) {
     SNX_ZONE(z_submit, "vk submit");
     vk_render_end();
     Frame* f = &g_fr[g_cur];
@@ -539,13 +540,14 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     /* staging memory may not be host coherent: the host writes are made visible to the GPU here */
     if (f->stage.mem) vmaFlushAllocation(g_vk.vma, f->stage.mem, 0, VK_WHOLE_SIZE);
     if (f->output.mem) vmaFlushAllocation(g_vk.vma, f->output.mem, 0, VK_WHOLE_SIZE);
-    VkSemaphoreSubmitInfo w[2];
+    VkSemaphoreSubmitInfo w[3];
     u32 nw = 0;
     if (g_after[0].semaphore) { /* at most one of the two: vk_submit_after's comes with no other */
         xw = &g_after[0];
         xs = &g_after[1];
     }
     if (xw) w[nw++] = *xw;
+    if (xw2) w[nw++] = *xw2;
     if (g_vk_cs_wait_value) { /* draws read compute results on the GPU: after that batch */
         w[nw++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                           .semaphore = g_vk_csem,
@@ -553,15 +555,15 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
                                           .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
         g_vk_cs_wait_value = 0;
     }
-    VkSemaphoreSubmitInfo s[2] = {{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+    VkSemaphoreSubmitInfo s[3] = {{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                    .semaphore = g_gsem,
                                    .value = g_gval + 1,
                                    .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
-    if (xs) s[1] = *xs;
+    if (xs) memcpy(&s[1], xs, nxs * sizeof *xs);
     vk_gpuprof_cb_end(cb, why, g_gval + 1);
     /* ended and submitted after its commands, on the recording thread (a submission that fails signals the timeline
        from the host there, so waits for it end) */
-    vk_rec_submit(cb, w, nw, s, xs ? 2u : 1u);
+    vk_rec_submit(cb, w, nw, s, 1u + (xs ? nxs : 0u));
     memset(g_after, 0, sizeof g_after);
     __atomic_store_n(&g_gval, g_gval + 1, __ATOMIC_RELAXED); /* read by the stall report too */
     g_sub_ns = plat_ns();
@@ -581,17 +583,31 @@ static void submit_why(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSem
                                .stageMask = wait_stage};
     VkSemaphoreSubmitInfo s = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = signal,
                                .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
-    submit(wait ? &w : NULL, signal ? &s : NULL, 1, why);
+    submit(wait ? &w : NULL, NULL, signal ? &s : NULL, signal ? 1 : 0, 1, why);
 }
 /* a submission that signals a binary semaphore is the present's (renderer.c) */
 void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal) {
     submit_why(wait, wait_stage, signal, signal ? VK_SUB_PRESENT : VK_SUB_OTHER);
 }
+void vk_submit_present2(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore wait2, VkSemaphore signal,
+                        VkSemaphore signal2) {
+    VkSemaphoreSubmitInfo w = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = wait,
+                               .stageMask = wait_stage};
+    VkSemaphoreSubmitInfo w2 = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = wait2,
+                                .stageMask = wait_stage};
+    VkSemaphoreSubmitInfo s[2] = {{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                   .semaphore = signal,
+                                   .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT},
+                                  {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                   .semaphore = signal2,
+                                   .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
+    submit(wait ? &w : NULL, wait2 ? &w2 : NULL, s, 2, 1, VK_SUB_PRESENT);
+}
 /* Ownership readback runs while its ranges are marked landing. Flush only an
    open command buffer: starting/recycling a frame or landing completed results
    here could acquire those same ranges and wait for this thread itself. */
 void vk_submit_for_readback(void) {
-    if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_READBACK);
+    if (g_fr[g_cur].recording) submit(NULL, NULL, NULL, 0, 0, VK_SUB_READBACK);
     vk_rec_sync(); /* the immediate copy must follow the recorder's queue calls */
 }
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
@@ -658,7 +674,7 @@ static void frame_check(void) {
     } else if (f->icb >= 128 || f->ipool >= 32 || vk_rec_frame_sets(g_cur) >= 32 * 1024 || !vk_descriptors_room(g_cur))
         vk_frame_next();
     else if (f->recording && plat_ns() - g_sub_ns >= SUBMIT_EVERY_NS)
-        submit(NULL, NULL, 1, VK_SUB_PERIODIC);
+        submit(NULL, NULL, NULL, 0, 1, VK_SUB_PERIODIC);
 }
 void vk_frame_check(void) {
     u64 ended = vk_submit_number(); /* the earlier draws' and dispatches' last, before any submit here */

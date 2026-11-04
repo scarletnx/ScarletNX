@@ -33,6 +33,7 @@
 #include "nx/gpu/renderer.h"
 
 static VkSemaphore g_acquired[VK_FRAMES];
+static VkSemaphore g_acquired2[VK_FRAMES]; /* the second image of an interpolated frame */
 static SnxFx* g_present_fx;
 static void present_fx_log(const char* text) { LOG("%s\n", text); }
 /* the CPU fallback's image, and the last presented frame for screenshots */
@@ -132,7 +133,9 @@ static int vkr_start(void) {
     VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     if (!g_opt_headless)
         for (int i = 0; i < VK_FRAMES; i++)
-            if (!VK_OK(vkCreateSemaphore(g_vk.dev, &sci, NULL, &g_acquired[i]))) return 0;
+            if (!VK_OK(vkCreateSemaphore(g_vk.dev, &sci, NULL, &g_acquired[i])) ||
+                !VK_OK(vkCreateSemaphore(g_vk.dev, &sci, NULL, &g_acquired2[i])))
+                return 0;
     g_renderer_up = 1; /* a renderer is active */
     return 1;
 }
@@ -378,6 +381,7 @@ static int g_sc_mode = VK_SC_UNORM; /* the swapchain's kind the last create aske
 /* the window's surface: lost while the app is in the background (Android), made anew when it comes back */
 static u32 g_generation;
 static int g_lost;
+static u64 g_interp_pairs, g_interp_plain; /* frames shown as a blend and a frame, and those that could not */
 static u64 g_shown_ns; /* when the game last gave the window a frame (atomic: vkr_refresh reads it unlocked) */
 /* a blit's source flipped as the frame's Android transform says (FlipH 1, FlipV 2): the endpoints swapped */
 static void flip_src(VkImageBlit* b, u32 transform) {
@@ -414,6 +418,102 @@ static void gpu_memory_plots(void) {
 }
 #endif
 
+/* One image of the window filled with a frame: the frame's crop letterboxed on black (the upscaler's or the
+   effects' output when they ran), through the HDR composition and the encode when hdr, else a plain blit, with the
+   menu and the controls over it. The image comes back in PRESENT_SRC_KHR. */
+typedef struct {
+    VkImage sc;
+    VkImageView view; /* the frame the HDR passes compose, or VK_NULL_HANDLE */
+    u32 vw, vh;       /* the view's pixels */
+    u32 vx, vy, vw_crop, vh_crop;
+    u32 transform;
+    int source;       /* SNX_HDR_SRC_* */
+    VkImage blit;     /* the plain blit's source, when HDR is off or cannot run */
+    u32 bx, by, bw, bh;
+    u32 btransform;
+    VkFilter bfilter;
+    i32 dx, dy;
+    u32 dw, dh;
+    int enc;          /* VK_HDR_ENC_* */
+    const int* safe;
+} PresentedPic;
+
+static void draw_presented(VkCommandBuffer cb, const PresentedPic* p, int hdr, VkPipelineStageFlags2* end_stage,
+                           VkAccessFlags2* end_access, VkImageLayout* end_layout) {
+    u32 sw = g_vk.sc_extent.width, sh = g_vk.sc_extent.height;
+    if (hdr && p->view) {
+        VkImage comp_img = VK_NULL_HANDLE;
+        VkImageView comp_view = VK_NULL_HANDLE;
+        if (vk_hdr_compose(cb, p->view, p->source, p->vw, p->vh, p->vx, p->vy, p->vw_crop, p->vh_crop, p->transform,
+                           sw, sh, p->dx, p->dy, p->dw, p->dh, &comp_img, &comp_view)) {
+            VkUiTarget t = {.img = comp_img,
+                            .view = comp_view,
+                            .fmt = vk_hdr_compose_format(),
+                            .extent = {sw, sh},
+                            .mode = VK_UI_HDR_NITS,
+                            .gain = (float)vk_hdr_paper_nits(),
+                            .from_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            .from_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                            .from_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+            vk_ui_draw(cb, &t, p->safe);
+            if (vk_hdr_encode(cb, comp_img, comp_view, sw, sh, p->sc, vk_ui_image_view(p->sc, g_vk.sc_format),
+                              g_vk.sc_format, p->enc)) {
+                *end_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                *end_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                *end_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                return;
+            }
+        }
+    }
+    present_blit(cb, p->blit, p->bx, p->by, p->bw, p->bh, p->sc, p->dx, p->dy, p->dw, p->dh, p->btransform,
+                 p->bfilter);
+    {
+        VkUiTarget t = {.img = p->sc,
+                        .view = VK_NULL_HANDLE,
+                        .fmt = g_vk.sc_format,
+                        .extent = g_vk.sc_extent,
+                        .mode = g_vk.sc_srgb ? VK_UI_SRGB : VK_UI_ENCODED,
+                        .gain = 1.0f,
+                        .from_stage = VK_PIPELINE_STAGE_2_BLIT_BIT,
+                        .from_access = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                        .from_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL};
+        if (vk_ui_draw(cb, &t, p->safe)) {
+            *end_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            *end_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            *end_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        }
+    }
+}
+
+/* the display's refresh in Hz, 0 when the backend does not know it */
+static int display_hz(void) {
+    u64 refresh = backend_display_refresh_ns();
+    return refresh ? (int)(1000000000ull / refresh) : 0;
+}
+
+/* The game's frame rate for the frame interpolation's Auto mode: the pace it gave (period_ns), else the shortest of
+   the last few gaps between the frames it released. The shortest, not the last: a hitch or a skipped frame makes one
+   gap longer, and a pause in a load screen is not the rate at all */
+static int game_hz(u64 released_ns, u64 period_ns) {
+    static u64 gaps[8], before_ns;
+    static u32 n, at;
+    u64 shortest = 0;
+    if (period_ns) return (int)(1000000000ull / period_ns);
+    if (released_ns) {
+        if (before_ns && released_ns > before_ns) {
+            u64 d = released_ns - before_ns;
+            if (d < 500000000ull) { /* half a second or more: a pause, not a frame */
+                gaps[at++ % 8] = d;
+                if (n < 8) n++;
+            }
+        }
+        before_ns = released_ns;
+    }
+    for (u32 i = 0; i < n; ++i)
+        if (!shortest || gaps[i] < shortest) shortest = gaps[i];
+    return shortest ? (int)(1000000000ull / shortest) : 0;
+}
+
 /* The window's image: src's g_last_ rectangle (a frame of fw x fh, flipped by transform) letterboxed on black, or
    black alone, with the on-screen controls and the game's menu over it; then the frame's commands are submitted and
    the image presented. A game's frame (game, which the game released at released_ns, 0 unknown, at its pace of a
@@ -447,7 +547,9 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         tried = 1;
     }
     VkSemaphore wait = VK_NULL_HANDLE, signal = VK_NULL_HANDLE;
-    u32 idx = 0;
+    VkSemaphore acq2 = VK_NULL_HANDLE, signal2 = VK_NULL_HANDLE; /* the second image of an interpolated frame */
+    u32 idx = 0, idx2 = 0;
+    int show2 = 0;
     int recreate = 0;
     if (shown && (src || !game) && (g_vk.swapchain || (!tried && vk_swapchain_create(want_mode)))) {
         VkCommandBuffer cb = vk_cmd(); /* waits for this frame slot, so its acquire semaphore is free */
@@ -472,6 +574,30 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
             wait = acq;
             signal = g_vk.sc_done[idx];
             VkImage sc = g_vk.sc_images[idx];
+            /* Frame interpolation shows each game frame in two window images: the blend of the frame before it and
+               itself, then itself. The second image is taken without waiting, so a display still holding every image
+               makes this frame a plain one instead of stalling the guest */
+            acq2 = g_acquired2[vk_frame_id() % VK_FRAMES];
+            if (game && src && g_present_fx) {
+                int mode = snx_fx_interp_parse(g_settings.frame_interpolation);
+                int ghz = game_hz(released_ns, period_ns), dhz = display_hz();
+                if (mode == SNX_FX_INTERP_BLEND || (mode == SNX_FX_INTERP_AUTO && snx_fx_interp_auto(dhz, ghz))) {
+                    VkResult r2;
+                    pm_lock(&g_vk.sc_lock);
+                    r2 = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 0, acq2, VK_NULL_HANDLE, &idx2);
+                    pm_unlock(&g_vk.sc_lock);
+                    if (r2 == VK_SUCCESS || r2 == VK_SUBOPTIMAL_KHR) {
+                        show2 = 1;
+                        signal2 = g_vk.sc_done[idx2];
+                        if (!g_interp_pairs)
+                            LOG("vulkan: frame interpolation %s: a blend and the frame itself for each game frame "
+                                "(display %d Hz, game %d Hz)\n",
+                                snx_fx_interp_label(mode), dhz, ghz);
+                        g_interp_pairs++;
+                    } else
+                        g_interp_plain++;
+                }
+            }
             /* the submit waits for the acquire at the clear, the image's first use */
             vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_CLEAR_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
                        VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -500,11 +626,10 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                       : g_vk.sc_hdr   ? VK_HDR_ENC_PQ
                                       : VK_HDR_ENC_SDR;
             int safe[4] = {(int)cx, (int)cy, (int)cw, (int)ch};
-            /* the state of the window's image after the frame's drawing, for the present */
-            VkPipelineStageFlags2 end_stage = VK_PIPELINE_STAGE_2_BLIT_BIT;
-            VkAccessFlags2 end_access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            VkImageLayout end_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            /* the state of each window's image after the frame's drawing, for its present */
             int use_hdr = 0;
+            PresentedPic pic[2];
+            u32 npic = 0;
             if (src && fw && fh) {
                 dw = cw;
                 dh = (u32)((u64)cw * fh / fw);
@@ -525,9 +650,10 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 VkImageView frame_view = VK_NULL_HANDLE;
                 u32 fw2 = src->sw, fh2 = src->sh, fx = g_last_x, fy = g_last_y, fwid = g_last_w, fhei = g_last_h,
                     ftransform = transform;
-                VkImage up_img = VK_NULL_HANDLE;
-                VkImageView up_view = VK_NULL_HANDLE;
-                int upscaled = 0, drawn = 0;
+                VkImage up_img = VK_NULL_HANDLE, aa_img = VK_NULL_HANDLE;
+                VkImageView up_view = VK_NULL_HANDLE, aa_view = VK_NULL_HANDLE;
+                u32 aa_w = 0, aa_h = 0;
+                int upscaled = 0;
                 use_hdr = vk_hdr_available() && g_vk.sc_hdr && vk_hdr_active();
                 if (!use_hdr && source != SNX_HDR_SRC_SDR) use_hdr = vk_hdr_available();
                 if (filter > SNX_UPSCALE_BILINEAR) {
@@ -551,18 +677,9 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                         fwid = uw;
                         fhei = uh;
                         ftransform = 0;
-                    } else if (!use_hdr) { /* the filter could not run: the plain blit still shows the frame */
-                        vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
-                                    VK_ACCESS_2_TRANSFER_READ_BIT);
-                        present_blit(cb, src->img, g_last_x, g_last_y, g_last_w, g_last_h, sc, dx, dy, dw, dh,
-                                     transform, VK_FILTER_LINEAR);
-                        drawn = 1;
                     }
                 }
-                VkImage aa_img = VK_NULL_HANDLE;
-                VkImageView aa_view = VK_NULL_HANDLE;
-                u32 aa_w = 0, aa_h = 0;
-                if (g_present_fx && !drawn) {
+                if (g_present_fx) {
                     int aa = snx_fx_pick_aa(g_present_fx, snx_fx_aa_parse(g_settings.anti_aliasing), g_last_w, g_last_h,
                                             dw, dh, g_vk.props.limits.maxImageDimension2D);
                     snx_fx_set_aa(g_present_fx, aa);
@@ -609,13 +726,60 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                         }
                     }
                 }
-                if (use_hdr && !drawn) {
-                    if (!frame_view) {
-                        VkComponentMapping identity = {0};
-                        frame_view = vk_tex_view(src, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
-                        vk_surf_use(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
-                                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                /* the frame the blend and the keep copy read, and the layout it is in: the effects leave their
+                   output in TRANSFER_SRC, the frame itself is sampled */
+                VkImage frame_img = src->img;
+                VkImageLayout frame_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                if (aa_img) {
+                    frame_img = aa_img;
+                    frame_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                } else if (upscaled) {
+                    frame_img = up_img;
+                    frame_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                }
+                /* The blend of the frame before and this one, and this one in the keep image for the next blend.
+                   The passes write the descriptor sets they bind, so the recording thread must have taken the
+                   frame's commands before they change */
+                SnxFxImage blend = {0};
+                int have_blend = 0;
+                if (show2 && frame_view) {
+                    vk_rec_sync();
+                    if (frame_layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                        vk_barrier(cb, frame_img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                   VK_ACCESS_2_TRANSFER_READ_BIT, frame_layout, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    {
+                        SnxFxImage prev = {0};
+                        if (snx_fx_keep_previous(g_present_fx, &prev) && prev.width == fw2 && prev.height == fh2) {
+                            vk_barrier(cb, prev.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                       VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                            have_blend =
+                                snx_fx_blend(g_present_fx, cb, prev.view, frame_view, fw2, fh2, 0.5f, &blend);
+                            vk_barrier(cb, prev.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                       VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                        }
                     }
+                    {
+                        SnxFxImage kept = {0};
+                        snx_fx_keep(g_present_fx, cb, frame_view, fw2, fh2, &kept);
+                    }
+                    if (frame_layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                        vk_barrier(cb, frame_img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                                   frame_layout);
+                }
+                if (use_hdr && !frame_view) {
+                    VkComponentMapping identity = {0};
+                    frame_view = vk_tex_view(src, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
+                    vk_surf_use(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
+                                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                }
+                if (use_hdr) {
                     if (upscaled)
                         vk_barrier(cb, up_img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                                    VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -626,97 +790,133 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                                    VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                    {
-                        VkImage comp_img = VK_NULL_HANDLE;
-                        VkImageView comp_view = VK_NULL_HANDLE;
-                        if (frame_view &&
-                            vk_hdr_compose(cb, frame_view, source, fw2, fh2, fx, fy, fwid, fhei, ftransform, sw, sh, dx,
-                                           dy, dw, dh, &comp_img, &comp_view)) {
-                            VkUiTarget t = {.img = comp_img,
-                                            .view = comp_view,
-                                            .fmt = vk_hdr_compose_format(),
-                                            .extent = {sw, sh},
-                                            .mode = VK_UI_HDR_NITS,
-                                            .gain = (float)vk_hdr_paper_nits(),
-                                            .from_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                            .from_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                                            .from_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-                            vk_ui_draw(cb, &t, safe);
-                            if (vk_hdr_encode(cb, comp_img, comp_view, sw, sh, sc,
-                                              vk_ui_image_view(sc, g_vk.sc_format), g_vk.sc_format, enc)) {
-                                end_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-                                end_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-                                end_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                                drawn = 1;
-                            }
+                    if (have_blend)
+                        vk_barrier(cb, blend.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                   VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                }
+                /* the frame itself */
+                pic[npic++] = (PresentedPic){
+                    .view = frame_view,
+                    .vw = fw2,
+                    .vh = fh2,
+                    .vx = fx,
+                    .vy = fy,
+                    .vw_crop = fwid,
+                    .vh_crop = fhei,
+                    .transform = ftransform,
+                    .source = source,
+                    .blit = aa_img ? aa_img : upscaled ? up_img : src->img,
+                    .bx = aa_img || upscaled ? 0 : g_last_x,
+                    .by = aa_img || upscaled ? 0 : g_last_y,
+                    .bw = aa_img ? aa_w : upscaled ? uw : g_last_w,
+                    .bh = aa_img ? aa_h : upscaled ? uh : g_last_h,
+                    .btransform = aa_img || upscaled ? 0 : transform,
+                    .bfilter = aa_img || upscaled ? (mult > 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST) : VK_FILTER_LINEAR,
+                    .dx = dx,
+                    .dy = dy,
+                    .dw = dw,
+                    .dh = dh,
+                    .enc = enc,
+                    .safe = safe};
+                /* the blend, before the frame it comes from */
+                if (show2) {
+                    if (have_blend)
+                        pic[npic++] = (PresentedPic){.view = blend.view,
+                                                     .vw = blend.width,
+                                                     .vh = blend.height,
+                                                     .vw_crop = blend.width,
+                                                     .vh_crop = blend.height,
+                                                     .source = source,
+                                                     .blit = blend.image,
+                                                     .bw = blend.width,
+                                                     .bh = blend.height,
+                                                     .bfilter = VK_FILTER_NEAREST,
+                                                     .dx = dx,
+                                                     .dy = dy,
+                                                     .dw = dw,
+                                                     .dh = dh,
+                                                     .enc = enc,
+                                                     .safe = safe};
+                    /* the second image is acquired for a pair: with no blend it still shows this frame */
+                    if (npic == 1) pic[npic] = pic[0];
+                    npic = 2;
+                }
+            }
+            if (npic) {
+                for (u32 i = 0; i < npic; ++i) {
+                    VkImage target = i ? g_vk.sc_images[idx2] : sc;
+                    VkPipelineStageFlags2 end_stage = VK_PIPELINE_STAGE_2_BLIT_BIT;
+                    VkAccessFlags2 end_access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                    VkImageLayout end_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    pic[i].sc = target;
+                    if (i) { /* the second image waits for its acquire at its clear */
+                        vk_barrier(cb, target, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_CLEAR_BIT, 0,
+                                   VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                                   VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                        rec_CmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+                        vk_barrier(cb, target, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                                   VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                   VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    }
+                    draw_presented(cb, &pic[i], use_hdr, &end_stage, &end_access, &end_layout);
+                    vk_barrier(cb, target, VK_IMAGE_ASPECT_COLOR_BIT, end_stage, end_access, end_layout,
+                               VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+                }
+            } else {
+                if (vk_hdr_active() && g_vk.sc_hdr && vk_hdr_available()) {
+                    /* the menu's screen or the shader loading one, with no frame under it: its colours still go
+                       through the composition, so the PQ image holds them in its encoding, not as the codes of
+                       another one */
+                    VkImage comp = VK_NULL_HANDLE;
+                    VkImageView comp_view = VK_NULL_HANDLE;
+                    if (vk_hdr_compose(cb, VK_NULL_HANDLE, SNX_HDR_SRC_SDR, 0, 0, 0, 0, 0, 0, 0, sw, sh, 0, 0, sw,
+                                       sh, &comp, &comp_view)) {
+                        VkUiTarget t = {.img = comp,
+                                        .view = comp_view,
+                                        .fmt = vk_hdr_compose_format(),
+                                        .extent = {sw, sh},
+                                        .mode = VK_UI_HDR_NITS,
+                                        .gain = (float)vk_hdr_paper_nits(),
+                                        .from_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                        .from_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                        .from_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+                        vk_ui_draw(cb, &t, safe);
+                        if (vk_hdr_encode(cb, comp, comp_view, sw, sh, sc, vk_ui_image_view(sc, g_vk.sc_format),
+                                          g_vk.sc_format, enc)) {
+                            vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT,
+                                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                       VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+                            use_hdr = 1;
                         }
                     }
-                    if (!drawn) { /* the passes could not run: the plain blit still shows the frame */
-                        use_hdr = 0;
-                        vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
-                                    VK_ACCESS_2_TRANSFER_READ_BIT);
-                        present_blit(cb, src->img, g_last_x, g_last_y, g_last_w, g_last_h, sc, dx, dy, dw, dh,
-                                     transform, VK_FILTER_LINEAR);
+                }
+                if (!use_hdr) { /* the menu and the controls over the window's image, as the blit leaves it */
+                    VkUiTarget t = {.img = sc,
+                                    .view = VK_NULL_HANDLE,
+                                    .fmt = g_vk.sc_format,
+                                    .extent = g_vk.sc_extent,
+                                    .mode = g_vk.sc_srgb ? VK_UI_SRGB : VK_UI_ENCODED,
+                                    .gain = 1.0f,
+                                    .from_stage = VK_PIPELINE_STAGE_2_BLIT_BIT,
+                                    .from_access = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                    .from_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL};
+                    VkPipelineStageFlags2 st = VK_PIPELINE_STAGE_2_BLIT_BIT;
+                    VkAccessFlags2 ac = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                    VkImageLayout ly = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    if (vk_ui_draw(cb, &t, safe)) {
+                        st = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                        ac = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                        ly = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
                     }
-                } else if (!drawn) {
-                    if (aa_img)
-                        present_blit(cb, aa_img, 0, 0, aa_w, aa_h, sc, dx, dy, dw, dh, 0,
-                                     mult > 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
-                    else if (upscaled)
-                        present_blit(cb, up_img, 0, 0, uw, uh, sc, dx, dy, dw, dh, 0,
-                                     mult > 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
-                    else {
-                        vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
-                                    VK_ACCESS_2_TRANSFER_READ_BIT);
-                        present_blit(cb, src->img, g_last_x, g_last_y, g_last_w, g_last_h, sc, dx, dy, dw, dh,
-                                     transform, VK_FILTER_LINEAR);
-                    }
+                    vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, st, ac, ly,
+                               VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
                 }
             }
-            if (!use_hdr && vk_hdr_active() && g_vk.sc_hdr && vk_hdr_available()) {
-                /* the menu's screen or the shader loading one, with no frame under it: its colours still go through
-                   the composition, so the PQ image holds them in its encoding, not as the codes of another one */
-                VkImage comp = VK_NULL_HANDLE;
-                VkImageView comp_view = VK_NULL_HANDLE;
-                if (vk_hdr_compose(cb, VK_NULL_HANDLE, SNX_HDR_SRC_SDR, 0, 0, 0, 0, 0, 0, 0, sw, sh, 0, 0, sw, sh,
-                                   &comp, &comp_view)) {
-                    VkUiTarget t = {.img = comp,
-                                    .view = comp_view,
-                                    .fmt = vk_hdr_compose_format(),
-                                    .extent = {sw, sh},
-                                    .mode = VK_UI_HDR_NITS,
-                                    .gain = (float)vk_hdr_paper_nits(),
-                                    .from_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                    .from_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                                    .from_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-                    vk_ui_draw(cb, &t, safe);
-                    if (vk_hdr_encode(cb, comp, comp_view, sw, sh, sc, vk_ui_image_view(sc, g_vk.sc_format),
-                                      g_vk.sc_format, enc)) {
-                        end_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-                        end_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-                        end_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                        use_hdr = 1;
-                    }
-                }
-            }
-            if (!use_hdr) { /* the menu and the controls over the window's image, as the blit leaves it */
-                VkUiTarget t = {.img = sc,
-                                .view = VK_NULL_HANDLE,
-                                .fmt = g_vk.sc_format,
-                                .extent = g_vk.sc_extent,
-                                .mode = g_vk.sc_srgb ? VK_UI_SRGB : VK_UI_ENCODED,
-                                .gain = 1.0f,
-                                .from_stage = VK_PIPELINE_STAGE_2_BLIT_BIT,
-                                .from_access = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                                .from_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL};
-                if (vk_ui_draw(cb, &t, safe)) {
-                    end_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-                    end_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-                    end_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                }
-            }
-            vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, end_stage, end_access, end_layout,
-                       VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
         } else
             VK_OK(r);
     }
@@ -799,6 +999,10 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 (unsigned long long)g_vk_dset_new, (unsigned long long)g_vk_dset_reused,
                 (unsigned long long)g_vk_draw_kept, (unsigned long long)g_vk_draw_checked,
                 (unsigned long long)g_vk_targets_kept);
+            if (g_interp_pairs || g_interp_plain)
+                LOG("vulkan: %llu game frames shown as a blend and a frame, %llu as one image (the display held "
+                    "every image)\n",
+                    (unsigned long long)g_interp_pairs, (unsigned long long)g_interp_plain);
             {
                 u64 pipes, hits, make_ms, pipe_ms, shaders, shader_ms, uploads, upload_bytes;
                 vk_pipeline_stats(&pipes, &hits, &make_ms, &pipe_ms, &shaders, &shader_ms);
@@ -876,7 +1080,10 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         }
     }
     /* Offscreen frames still submit and advance the frame ring. g_last remains available for readback. */
-    vk_submit(wait, VK_PIPELINE_STAGE_2_CLEAR_BIT, signal);
+    if (signal2)
+        vk_submit_present2(wait, VK_PIPELINE_STAGE_2_CLEAR_BIT, acq2, signal, signal2);
+    else
+        vk_submit(wait, VK_PIPELINE_STAGE_2_CLEAR_BIT, signal);
     if (game) vk_renderdoc_present(g_vk_present);
     vk_frame_next(); /* every show used this frame's slot and acquire semaphore, the menu's own too */
     if (signal) {
@@ -884,7 +1091,15 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         /* display.c watches for it before it is made, which says so (vk_display_made) */
         u64 id = vk_display_id(), target = game && id ? vk_display_target(period_ns) : 0;
         vk_display_presented(g_vk.swapchain, id, game, released_ns, shown_syncpt);
-        VkResult r = vk_rec_present(g_vk.swapchain, idx, signal, id, target);
+        VkResult r;
+        if (signal2) {
+            /* the blend at the frame's refresh, the frame itself at the one after: FIFO shows them in this order */
+            u64 refresh = backend_display_refresh_ns();
+            r = vk_rec_present(g_vk.swapchain, idx2, signal2, id, target);
+            VkResult r2 = vk_rec_present(g_vk.swapchain, idx, signal, 0, target && refresh ? target + refresh : 0);
+            if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) r = r2;
+        } else
+            r = vk_rec_present(g_vk.swapchain, idx, signal, id, target);
         if (r == VK_ERROR_OUT_OF_DATE_KHR || (r == VK_SUBOPTIMAL_KHR && !g_vk.sc_turned))
             recreate = 1;
         else if (r == VK_ERROR_SURFACE_LOST_KHR)

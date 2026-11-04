@@ -315,6 +315,10 @@ void vk_stage_report(void);
    The frame goes on: its staging, pools and deferred resources live until vk_frame_next and its slot's next use.
    Either semaphore may be VK_NULL_HANDLE */
 void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal);
+/* a present's submission that shows two swapchain images: both semaphores signal when the frame's commands are
+   done (frame interpolation presents the blend and the frame it comes from) */
+void vk_submit_present2(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore wait2, VkSemaphore signal,
+                        VkSemaphore signal2);
 void vk_submit_for_readback(void);
 /* the next submission waits for a timeline semaphore of someone else's (FFmpeg's picture's) at one value and signals
    it at another: whichever submit comes next takes them, so commands recorded from now on never run before the wait */

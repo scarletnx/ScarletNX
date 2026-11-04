@@ -85,7 +85,11 @@ struct SnxFx {
     FxImage edge[SNX_FX_SLOTS_MAX];
     FxImage weight[SNX_FX_SLOTS_MAX];
     FxImage comp[SNX_FX_SLOTS_MAX];
-    FxImage keep[SNX_FX_SLOTS_MAX];
+    FxImage keep[SNX_FX_SLOTS_MAX][2]; /* two per slot: the next frame reads one while the next use of the slot
+                                          writes the other */
+    uint32_t keep_toggle[SNX_FX_SLOTS_MAX];
+    uint32_t keep_slot, keep_index; /* the image the last snx_fx_keep wrote, for the next frame */
+    int have_keep;
     FxImage blend_img[SNX_FX_SLOTS_MAX];
     VkDescriptorSet fsr_easu[SNX_FX_SLOTS_MAX], fsr_rcas[SNX_FX_SLOTS_MAX];
     VkDescriptorSet copy_set[SNX_FX_SLOTS_MAX], fxaa_set[SNX_FX_SLOTS_MAX];
@@ -828,7 +832,8 @@ void snx_fx_destroy(SnxFx* fx) {
         img_free(fx, &fx->edge[i]);
         img_free(fx, &fx->weight[i]);
         img_free(fx, &fx->comp[i]);
-        img_free(fx, &fx->keep[i]);
+        img_free(fx, &fx->keep[i][0]);
+        img_free(fx, &fx->keep[i][1]);
         img_free(fx, &fx->blend_img[i]);
     }
     img_free(fx, &fx->coef[0]);
@@ -1419,18 +1424,44 @@ int snx_fx_blend(SnxFx* fx, VkCommandBuffer cb, VkImageView previous, VkImageVie
     return 1;
 }
 
-int snx_fx_keep(SnxFx* fx, VkCommandBuffer cb, VkImageView source, uint32_t width, uint32_t height, SnxFxImage* out) {
-    uint32_t slot;
-    if (!fx || !cb || !source || !width || !height || !out) return 0;
+int snx_fx_keep_crop(SnxFx* fx, VkCommandBuffer cb, VkImageView source, uint32_t img_w, uint32_t img_h, uint32_t x,
+                     uint32_t y, uint32_t w, uint32_t h, SnxFxImage* out) {
+    uint32_t slot, index;
+    FxImage* keep;
+    if (!fx || !cb || !source || !img_w || !img_h || !w || !h || !out) return 0;
     if (!make_pipelines(fx)) return 0;
     slot = fx->slot ? fx->slot() % fx->slots : 0;
-    if (!img_make(fx, &fx->keep[slot], width, height, choose_format(fx), fx_usage())) return 0;
-    record_copy(fx, cb, fx->copy_set[slot], source, width, height, 0, 0, width, height, 0, width, height, 1,
-                &fx->keep[slot]);
-    out->image = fx->keep[slot].image;
-    out->view = fx->keep[slot].view;
-    out->width = width;
-    out->height = height;
+    index = fx->keep_toggle[slot] & 1;
+    fx->keep_toggle[slot] ^= 1;
+    keep = &fx->keep[slot][index];
+    if (!img_make(fx, keep, w, h, choose_format(fx), fx_usage())) return 0;
+    record_copy(fx, cb, fx->copy_set[slot], source, img_w, img_h, x, y, w, h, 0, w, h, 1, keep);
+    fx->keep_slot = slot;
+    fx->keep_index = index;
+    fx->have_keep = 1;
+    out->image = keep->image;
+    out->view = keep->view;
+    out->width = w;
+    out->height = h;
+    return 1;
+}
+
+int snx_fx_keep(SnxFx* fx, VkCommandBuffer cb, VkImageView source, uint32_t width, uint32_t height, SnxFxImage* out) {
+    return snx_fx_keep_crop(fx, cb, source, width, height, 0, 0, width, height, out);
+}
+
+int snx_fx_keep_previous(SnxFx* fx, SnxFxImage* out) {
+    uint32_t slot;
+    const FxImage* keep;
+    if (!fx || !out || !fx->have_keep) return 0;
+    slot = fx->slot ? fx->slot() % fx->slots : 0;
+    if (fx->keep_slot == slot) return 0; /* the last keep was this frame's: not a frame before it */
+    keep = &fx->keep[fx->keep_slot][fx->keep_index];
+    if (!keep->image) return 0;
+    out->image = keep->image;
+    out->view = keep->view;
+    out->width = keep->width;
+    out->height = keep->height;
     return 1;
 }
 
