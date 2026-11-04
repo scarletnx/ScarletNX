@@ -78,6 +78,7 @@ struct SnxFx {
     FxImage weight[SNX_FX_SLOTS_MAX];
     VkDescriptorSet fsr_easu[SNX_FX_SLOTS_MAX], fsr_rcas[SNX_FX_SLOTS_MAX];
     VkDescriptorSet copy_set[SNX_FX_SLOTS_MAX], fxaa_set[SNX_FX_SLOTS_MAX];
+    VkDescriptorSet ssaa_set[SNX_FX_SLOTS_MAX]; /* the downsample's own: the copy set is bound by the pass before it */
     VkDescriptorSet edge_set[SNX_FX_SLOTS_MAX], weight_set[SNX_FX_SLOTS_MAX], blend_set[SNX_FX_SLOTS_MAX];
     VkImage area, search;
     VkDeviceMemory area_mem, search_mem;
@@ -86,6 +87,7 @@ struct SnxFx {
     VkDeviceMemory tex_mem;
     int tex_uploaded;
     int aa_logged;
+    int aa_last; /* the anti aliasing last said in the log, -1 before the first */
 };
 
 static int fx_ok(VkResult r) { return r == VK_SUCCESS; }
@@ -604,6 +606,7 @@ SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, uint32_
     fx->slot = slot;
     fx->forget = forget;
     fx->log = log;
+    fx->aa_last = -1;
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                               .magFilter = VK_FILTER_LINEAR,
                               .minFilter = VK_FILTER_LINEAR,
@@ -611,11 +614,16 @@ SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, uint32_
                               .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                               .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                               .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
-    VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 256};
+    /* NIS's set is a uniform buffer, a sampler, sampled images and a storage image; the rest are combined samplers */
+    VkDescriptorPoolSize sizes[5] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 256},
+                                     {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 16},
+                                     {VK_DESCRIPTOR_TYPE_SAMPLER, 16},
+                                     {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 32},
+                                     {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 16}};
     VkDescriptorPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                       .maxSets = 128,
-                                      .poolSizeCount = 1,
-                                      .pPoolSizes = &size};
+                                      .poolSizeCount = 5,
+                                      .pPoolSizes = sizes};
     if (!fx_ok(vkCreateSampler(fx->dev, &si, NULL, &fx->sampler)) || !make_layouts(fx) ||
         !fx_ok(vkCreateDescriptorPool(fx->dev, &pci, NULL, &fx->pool)))
         goto failed;
@@ -627,7 +635,7 @@ SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, uint32_
                                           .descriptorSetCount = 1,
                                           .pSetLayouts = all};
         VkDescriptorSet* sets[] = {&fx->fsr_easu[i], &fx->fsr_rcas[i], &fx->copy_set[i], &fx->fxaa_set[i],
-                                   &fx->edge_set[i]};
+                                   &fx->edge_set[i], &fx->ssaa_set[i]};
         for (uint32_t s = 0; s < sizeof sets / sizeof *sets; ++s) {
             ai.pSetLayouts = &one;
             if (!fx_ok(vkAllocateDescriptorSets(fx->dev, &ai, sets[s]))) goto failed;
@@ -1080,6 +1088,13 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, VkImageView src, uint32_t img_w
     if (!fx || !cb || !src || !img_w || !img_h || !w || !h || !out_w || !out_h || !out) return 0;
     slot = fx->slot ? fx->slot() % fx->slots : 0;
     aa = snx_fx_pick_aa(fx, aa, w, h, out_w, out_h, 16384);
+    if (aa != fx->aa_last) {
+        char said[96];
+        fx->aa_last = aa;
+        snprintf(said, sizeof said, "vulkan: anti aliasing %s over %ux%u to %ux%u", snx_fx_aa_label(aa), w, h, out_w,
+                 out_h);
+        fx_echo(fx, said);
+    }
     if ((filter == SNX_FX_UPSCALE_OFF || filter == SNX_FX_UPSCALE_BILINEAR) && aa == SNX_FX_AA_OFF) return 0;
     if (!make_pipelines(fx)) return 0;
     if (aa == SNX_FX_AA_SSAA2 || aa == SNX_FX_AA_SSAA4) {
@@ -1111,7 +1126,9 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, VkImageView src, uint32_t img_w
                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     if (ssaa) {
         if (!img_make(fx, &fx->aa[slot], out_w, out_h, choose_format(fx), fx_usage())) return 0;
-        record_copy(fx, cb, fx->copy_set[slot], fx->main[slot].view, fx->main[slot].width, fx->main[slot].height, 0, 0,
+        /* its own set: the copy set is bound by the pass that filled main, and updating it again would invalidate
+           that draw */
+        record_copy(fx, cb, fx->ssaa_set[slot], fx->main[slot].view, fx->main[slot].width, fx->main[slot].height, 0, 0,
                     fx->main[slot].width, fx->main[slot].height, 0, out_w, out_h, 1, &fx->aa[slot]);
         out->image = fx->aa[slot].image;
         out->view = fx->aa[slot].view;
