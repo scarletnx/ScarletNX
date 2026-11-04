@@ -1221,6 +1221,9 @@ if(TARGET Vulkan::Headers AND TARGET snx_vk_common)
     target_link_libraries(snx-test-present-fx PRIVATE snx_vk_common Vulkan::Headers ${CMAKE_DL_LIBS} m)
     add_test(NAME present_fx COMMAND snx-test-present-fx)
     set_tests_properties(present_fx PROPERTIES TIMEOUT 120)
+    # the same passes under the Khronos layer: the SSAA copy once updated a set it had bound, which only the layer sees
+    add_test(NAME present_fx_validation COMMAND snx-test-present-fx --validation)
+    set_tests_properties(present_fx_validation PROPERTIES TIMEOUT 180)
 endif()
 
 # the upscaler setting's names and FSR 1 as the default (gpu/vk/upscale_select.c)

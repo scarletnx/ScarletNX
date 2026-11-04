@@ -54,6 +54,21 @@ static double pq_decode1(double e) {
 
 static void log_line(const char* text) { puts(text); }
 
+/* --validation: the Khronos layer's errors fail the test. The SSAA pass once updated a descriptor set while the
+   command buffer that bound it was recording, which the layer names and a plain run does not */
+static unsigned g_val_errors;
+static VKAPI_ATTR VkBool32 VKAPI_CALL val_cb(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                                             VkDebugUtilsMessageTypeFlagsEXT type,
+                                             const VkDebugUtilsMessengerCallbackDataEXT* data, void* user) {
+    (void)type;
+    (void)user;
+    if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+        ++g_val_errors;
+        fprintf(stderr, "present_fx validation: %s\n", data->pMessage);
+    }
+    return VK_FALSE;
+}
+
 static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     Test* t = user;
     VkPhysicalDeviceVulkan13Features v13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
@@ -259,6 +274,64 @@ static unsigned char* read_image(Test* t, VkImage image, VkImageLayout layout, u
     return out;
 }
 
+/* the effects' images are R16G16B16A16_SFLOAT: read them back as 8-bit linear values */
+static double half1(unsigned short h) {
+    int e = (h >> 10) & 0x1F, m = h & 0x3FF, sign = h >> 15;
+    double v;
+    if (!e) v = m / 1024.0 * pow(2.0, -14.0);
+    else if (e == 31) v = m ? NAN : INFINITY;
+    else v = (1.0 + m / 1024.0) * pow(2.0, e - 15.0);
+    return sign ? -v : v;
+}
+static unsigned char* read_image_f16(Test* t, VkImage image, VkImageLayout layout, uint32_t w, uint32_t h) {
+    size_t n = (size_t)w * h * 8;
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    void* mapped;
+    unsigned char* out = malloc((size_t)w * h * 4);
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                             .size = (VkDeviceSize)n,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    VkPhysicalDeviceMemoryProperties mp;
+    VkMemoryRequirements req;
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+    VkCommandBuffer cb;
+    uint64_t serial;
+    if (!out) return NULL;
+    if (!succeed(vkCreateBuffer(t->dev, &bi, NULL, &buffer))) return NULL;
+    vkGetBufferMemoryRequirements(t->dev, buffer, &req);
+    vkGetPhysicalDeviceMemoryProperties(t->phys, &mp);
+    {
+        VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size};
+        ai.memoryTypeIndex = snx_vk_memory_type(
+            &mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (!succeed(vkAllocateMemory(t->dev, &ai, NULL, &memory)) ||
+            !succeed(vkBindBufferMemory(t->dev, buffer, memory, 0)) ||
+            !succeed(vkMapMemory(t->dev, memory, 0, VK_WHOLE_SIZE, 0, &mapped)))
+            return NULL;
+    }
+    cb = snx_vk_ring_commands(&t->ring);
+    barrier(cb, image, layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    vkCmdCopyImageToBuffer(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    serial = snx_vk_ring_submit(&t->ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    (void)snx_vk_ring_wait(&t->ring, serial, UINT64_MAX);
+    {
+        const unsigned short* src = mapped;
+        for (size_t i = 0; i < (size_t)w * h; ++i) {
+            for (int c = 0; c < 3; ++c) {
+                double v = half1(src[i * 4 + c]);
+                out[i * 4 + c] = v <= 0.0 ? 0 : v >= 1.0 ? 255 : (unsigned char)(v * 255.0 + 0.5);
+            }
+            out[i * 4 + 3] = 255;
+        }
+    }
+    vkUnmapMemory(t->dev, memory);
+    vkDestroyBuffer(t->dev, buffer, NULL);
+    vkFreeMemory(t->dev, memory, NULL);
+    return out;
+}
+
 static void write_ppm(const char* dir, const char* name, const unsigned char* rgba, uint32_t w, uint32_t h) {
     char path[1024];
     FILE* f;
@@ -308,9 +381,12 @@ int main(int argc, char** argv) {
         SNX_FX_UPSCALE_FSR1, 25, SNX_FX_AA_OFF, SNX_FX_HDR_ON, SNX_FX_CS_HDR10, SNX_FX_SRC_SDR, 203, 1000, 50, 0};
     for (int i = 1; i < argc; ++i)
         if (!strncmp(argv[i], "--showcase=", 11)) showcase = argv[i] + 11;
-    CHECK(volkInitialize() == VK_SUCCESS);
     {
-        SnxVkInstanceInfo info = {.app_name = "present_fx"};
+        int validation = 0;
+        for (int i = 1; i < argc; ++i)
+            if (!strcmp(argv[i], "--validation")) validation = 1;
+        SnxVkInstanceInfo info = {.app_name = "present_fx", .validation = validation != 0, .debug = val_cb};
+        CHECK(volkInitialize() == VK_SUCCESS);
         CHECK(succeed(snx_vk_instance_create(&info, &t.instance)));
     }
     CHECK(snx_vk_first_device(t.instance.instance, VK_API_VERSION_1_3, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT,
@@ -372,7 +448,7 @@ int main(int argc, char** argv) {
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
         CHECK(out.width == 640 && out.height == 480);
-        got = read_image(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 640, 480);
+        got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 640, 480);
         CHECK(got);
         CHECK(max_step(got, 640, 480, &step) > 0);
         write_ppm(showcase, "fx-fsr1", got, 640, 480);
@@ -407,7 +483,7 @@ int main(int argc, char** argv) {
                             SNX_FX_AA_FXAA, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
-        got = read_image(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 320, 240);
+        got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 320, 240);
         CHECK(got);
         max_step(got, 320, 240, &fxaa_step);
         fxaa_avg = avg_step(got, 320, 240);
@@ -418,7 +494,7 @@ int main(int argc, char** argv) {
                             SNX_FX_AA_SMAA, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
-        got = read_image(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 320, 240);
+        got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 320, 240);
         CHECK(got);
         max_step(got, 320, 240, &smaa_step);
         smaa_avg = avg_step(got, 320, 240);
@@ -456,6 +532,45 @@ int main(int argc, char** argv) {
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
         CHECK(out.width == 320 && out.height == 240);
     }
+    /* SSAA 4x with the upscaler off: the pass runs at 4x and a flat frame keeps its colour (no second encode) */
+    {
+        Image flat = {0};
+        unsigned char* flat_pixels;
+        unsigned char* got;
+        SnxFxImage out = {0};
+        VkCommandBuffer cb;
+        uint64_t serial;
+        CHECK(image_make(&t, &flat, 320, 240, VK_FORMAT_R8G8B8A8_UNORM,
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
+        flat_pixels = malloc((size_t)320 * 240 * 4);
+        CHECK(flat_pixels);
+        for (size_t i = 0; i < (size_t)320 * 240; ++i) {
+            flat_pixels[i * 4 + 0] = 128;
+            flat_pixels[i * 4 + 1] = 64;
+            flat_pixels[i * 4 + 2] = 32;
+            flat_pixels[i * 4 + 3] = 255;
+        }
+        CHECK(upload(&t, &flat, flat_pixels));
+        CHECK(snx_fx_pick_aa(fx, SNX_FX_AA_SSAA4, 320, 240, 320, 240, 16384) == SNX_FX_AA_SSAA4);
+        cb = snx_vk_ring_commands(&t.ring);
+        CHECK(snx_fx_render(fx, cb, flat.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_OFF,
+                            SNX_FX_AA_SSAA4, &out));
+        serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+        CHECK(out.width == 320 && out.height == 240);
+        got = read_image_f16(&t, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 320, 240);
+        CHECK(got);
+        {
+            size_t at = ((size_t)120 * 320 + 160) * 4;
+            CHECK(got[at + 0] >= 127 && got[at + 0] <= 129);
+            CHECK(got[at + 1] >= 63 && got[at + 1] <= 65);
+            CHECK(got[at + 2] >= 31 && got[at + 2] <= 33);
+        }
+        write_ppm(showcase, "fx-ssaa4", got, 320, 240);
+        free(got);
+        free(flat_pixels);
+        image_free(&t, &flat);
+    }
     /* HDR: white at the paper white, black stays black, and the letterbox is black */
     {
         SnxFxImage comp = {0};
@@ -468,7 +583,7 @@ int main(int argc, char** argv) {
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
         CHECK(image_make(&t, &target, 640, 480, VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT));
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT));
         cb = snx_vk_ring_commands(&t.ring);
         CHECK(snx_fx_hdr_encode(fx, cb, &comp, target.image, target.view, VK_FORMAT_A2B10G10R10_UNORM_PACK32, 640, 480,
                                 SNX_FX_ENC_PQ));
@@ -490,7 +605,7 @@ int main(int argc, char** argv) {
         unsigned char* got;
         unsigned white = 0, x, y;
         CHECK(image_make(&t, &target, 640, 480, VK_FORMAT_R8G8B8A8_UNORM,
-                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT));
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT));
         cb = snx_vk_ring_commands(&t.ring);
         barrier(cb, target.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -554,7 +669,7 @@ int main(int argc, char** argv) {
         snx_stats_line(&stats, 0, line, sizeof line);
         CHECK(!strcmp(line, "60.0 fps  60.0 gen  120.0 total  16.7 ms"));
         CHECK(image_make(&t, &target, 640, 480, VK_FORMAT_R8G8B8A8_UNORM,
-                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT));
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT));
         cb = snx_vk_ring_commands(&t.ring);
         barrier(cb, target.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -612,7 +727,7 @@ int main(int argc, char** argv) {
             snx_fx_configure(fx, &c);
             snx_fx_set_display(fx, SNX_FX_DISPLAY_PQ, 100);
             CHECK(image_make(&t, &target, 640, 480, VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT));
+                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT));
             cb = snx_vk_ring_commands(&t.ring);
             CHECK(snx_fx_hdr_compose(fx, cb, src.view, VK_FORMAT_R8G8B8A8_UNORM, 320, 240, 0, 0, 320, 240, 0, 640, 480,
                                      0, 60, 640, 360, &comp));
@@ -641,6 +756,7 @@ int main(int argc, char** argv) {
     snx_vk_ring_free(&t.ring);
     vkDestroyDevice(t.dev, NULL);
     snx_vk_instance_free(&t.instance);
+    CHECK(g_val_errors == 0);
     puts("present_fx: passed");
     return 0;
 }
