@@ -288,11 +288,19 @@ if(TARGET snx_ctr_board)
     target_link_libraries(snx-test-3ds-vk-transfer PRIVATE snx_ctr_gpu)
     add_test(NAME 3ds_vk_transfer COMMAND snx-test-3ds-vk-transfer)
     set_tests_properties(3ds_vk_transfer PROPERTIES SKIP_RETURN_CODE 77)
-    # what a RAM region's import that the driver refuses says: the call, its VkResult, the region and the device
+    # what a RAM region's import that the driver refuses says (the call, its VkResult, the region and the device), and
+    # what the device's own memory says when it cannot hold the RAM either
     add_executable(snx-test-3ds-vk-import-error 3ds_vk_import_error.c)
     snx_test_target(snx-test-3ds-vk-import-error 11)
     target_link_libraries(snx-test-3ds-vk-import-error PRIVATE snx_ctr_gpu)
     add_test(NAME 3ds_vk_import_error COMMAND snx-test-3ds-vk-import-error)
+    # the RAM as the GPU has it, imported or the device's own memory: the guest's bytes and the GPU's are one memory,
+    # in every view, before, during and after the device
+    add_executable(snx-test-3ds-vk-ram 3ds_vk_ram.c)
+    snx_test_target(snx-test-3ds-vk-ram 11)
+    target_link_libraries(snx-test-3ds-vk-ram PRIVATE snx_ctr_gpu)
+    add_test(NAME 3ds_vk_ram COMMAND snx-test-3ds-vk-ram)
+    set_tests_properties(3ds_vk_ram PROPERTIES SKIP_RETURN_CODE 77)
     # the Y2R engine's conversion on the GPU against its CPU reference
     add_executable(snx-test-3ds-vk-y2r 3ds_vk_y2r.c)
     snx_test_target(snx-test-3ds-vk-y2r 11)

@@ -3,15 +3,18 @@
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
 #include "common/gpu/vk/vk_common.h"
+#include "common/memory/host.h"
+#include "common/utilities/common.h"
 #include "snx_settings.h"
 #include <SDL3/SDL_vulkan.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
 static struct {
     SnxCtrVk vk;
     int up;
-    char error[512];  /* why the last snx_ctr_vk_init failed */
+    char error[768];  /* why the last snx_ctr_vk_init failed (an import refused, then the device's memory's reason) */
     char device[512]; /* the device it chose and its driver, "" before one */
 } g_device;
 
@@ -41,10 +44,18 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     SnxCtrVk* v = user;
     SnxVkExtensions list;
     if (!snx_vk_device_extensions(phys, &list)) return false;
-    const char* extensions[5];
+    const char* extensions[7];
     uint32_t n = 0;
-    bool ok = snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
-    extensions[n++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    /* the RAM imported, or the device's memory that the RAM moves into (snx_ctr_vk_init): one of them */
+    bool host = snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    bool dmabuf = snx_vk_extensions_has(&list, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
+                  snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+    bool ok = host || dmabuf;
+    if (host) extensions[n++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    if (dmabuf) {
+        extensions[n++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+        extensions[n++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
+    }
     if (v->host.surface || v->second_surface) {
         ok = ok && snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -95,6 +106,8 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     v->index8 = index8 && index_features.indexTypeUint8;
     v->logic_op = features.features.logicOp;
     v->clip_distance = features.features.shaderClipDistance;
+    v->import_host = host;
+    v->export_dmabuf = dmabuf;
     VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
     VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
     vkGetPhysicalDeviceProperties2(phys, &properties);
@@ -128,6 +141,68 @@ void snx_ctr_vk_import_error(const SnxCtrVkImport* f, const char* region, char* 
              "the driver cannot import the %s region (0x%08x, 0x%x bytes at host 0x%llx, alignment %llu): %s", region,
              f->base, f->size, (unsigned long long)f->host, (unsigned long long)f->alignment, why);
 }
+void snx_ctr_vk_device_ram_error(const SnxCtrVkDeviceRam* f, const char* region, char* error, size_t error_size) {
+    const char* result = snx_vk_result_str(f->result);
+    char reason[128];
+    switch (f->step) {
+        case SNX_CTR_VK_DEVICE_RAM_EXTENSIONS:
+            snprintf(error, error_size,
+                     "the device has no VK_KHR_external_memory_fd and VK_EXT_external_memory_dma_buf to export it");
+            break;
+        case SNX_CTR_VK_DEVICE_RAM_EXPORT:
+            snprintf(error, error_size, "its buffers export a dma-buf %s (external memory features 0x%x)",
+                     f->features & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT ? "only from a dedicated allocation"
+                                                                             : "never",
+                     f->features);
+            break;
+        case SNX_CTR_VK_DEVICE_RAM_BUFFER:
+            snprintf(error, error_size, "vkCreateBuffer gave %s (%d) for the %s region at offset 0x%llx", result,
+                     (int)f->result, region, (unsigned long long)f->offset);
+            break;
+        case SNX_CTR_VK_DEVICE_RAM_ALIGNMENT:
+            snprintf(error, error_size,
+                     "the %s region's offset 0x%llx is not a multiple of its buffer's alignment %llu", region,
+                     (unsigned long long)f->offset, (unsigned long long)f->alignment);
+            break;
+        case SNX_CTR_VK_DEVICE_RAM_TYPE:
+            snprintf(error, error_size,
+                     "no host-visible, coherent, cached memory type is one of its buffers' (0x%x; the host-visible "
+                     "coherent ones, uncached: 0x%x)",
+                     f->buffer_types, f->visible_types);
+            break;
+        case SNX_CTR_VK_DEVICE_RAM_ALLOCATE:
+            snprintf(error, error_size, "vkAllocateMemory gave %s (%d) for 0x%llx bytes of memory type %u", result,
+                     (int)f->result, (unsigned long long)f->allocation, f->type);
+            break;
+        case SNX_CTR_VK_DEVICE_RAM_BIND:
+            snprintf(error, error_size, "vkBindBufferMemory gave %s (%d) for the %s region at offset 0x%llx", result,
+                     (int)f->result, region, (unsigned long long)f->offset);
+            break;
+        case SNX_CTR_VK_DEVICE_RAM_EXPORT_FD:
+            snprintf(error, error_size, "vkGetMemoryFdKHR gave %s (%d) for its dma-buf", result, (int)f->result);
+            break;
+        case SNX_CTR_VK_DEVICE_RAM_VIEWS:
+            errno = f->error;
+            snprintf(error, error_size, "the guest's views of the RAM do not map its dma-buf: %s",
+                     snx_os_error(reason, sizeof reason));
+            break;
+    }
+}
+/* what the RAM's buffers are used for: the GPU reads and writes the guest's memory through them */
+static const VkBufferUsageFlags ram_usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                            VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+/* every RAM region's buffer gone, and the memory under them: imports, or the device's memory the RAM is in (which the
+   RAM's dma-buf keeps, mapped at every view, after the device is gone) */
+static void release_ram(SnxCtrVk* v) {
+    for (unsigned i = 0; i < v->ram_count; ++i) {
+        vkDestroyBuffer(v->device, v->ram[i].buffer, NULL);
+        vkFreeMemory(v->device, v->ram[i].memory, NULL);
+    }
+    vkFreeMemory(v->device, v->ram_memory, NULL);
+    v->ram_count = 0;
+    v->ram_memory = VK_NULL_HANDLE;
+}
 /* one RAM region's host memory, at view, a buffer in place: false with the step it stopped at and the driver's
    answer in f, nothing of it left */
 static bool import_region(SnxCtrVk* v, unsigned char* view, SnxCtrVkRam* ram, SnxCtrVkImport* f) {
@@ -143,9 +218,7 @@ static bool import_region(SnxCtrVk* v, unsigned char* view, SnxCtrVkRam* ram, Sn
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .pNext = &external,
                              .size = f->size,
-                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                                      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                             .usage = ram_usage,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     f->step = SNX_CTR_VK_IMPORT_BUFFER;
     if ((f->result = vkCreateBuffer(v->device, &bi, NULL, &ram->buffer)) != VK_SUCCESS) return false;
@@ -174,9 +247,13 @@ static bool import_region(SnxCtrVk* v, unsigned char* view, SnxCtrVkRam* ram, Sn
     return false;
 }
 /* every RAM region a buffer of its host memory in place: false at the first one the driver does not take, with why in
-   error (the call that failed, the driver's answer and the region) */
+   error (the call that failed, the driver's answer and the region), and none of them left */
 static bool import_ram(SnxCtrVk* v, SnxCtrMemory* memory, char* error, size_t error_size) {
     const SnxCtrProfile* profile = snx_ctr_memory_profile(memory);
+    if (!v->import_host) {
+        snprintf(error, error_size, "the device has no VK_EXT_external_memory_host to import the RAM");
+        return false;
+    }
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT host = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
     VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &host};
@@ -194,6 +271,7 @@ static bool import_ram(SnxCtrVk* v, SnxCtrMemory* memory, char* error, size_t er
         SnxCtrVkRam* ram = &v->ram[v->ram_count];
         if (!import_region(v, view, ram, &f)) {
             snx_ctr_vk_import_error(&f, r->name, error, error_size);
+            release_ram(v);
             return false;
         }
         ram->base = r->base;
@@ -201,6 +279,103 @@ static bool import_ram(SnxCtrVk* v, SnxCtrMemory* memory, char* error, size_t er
         ++v->ram_count;
     }
     return true;
+}
+/* Every RAM region a buffer of one allocation of the device's own memory, host-visible, coherent (the GPU sees the
+   CPU's writes before a submit, the CPU its writes after the fence) and cached (the guest's CPU runs in it: an uncached
+   type reads at a hundredth of the speed), at the region's offset in the board's RAM; then the allocation's dma-buf
+   becomes the RAM's object, so the guest's every view of the RAM maps the device's memory. The buffers are bound before
+   the RAM moves, the one step there is no going back from. False with the step it stopped at in f, nothing of it left
+   and the RAM where it was */
+static bool device_ram(SnxCtrVk* v, SnxCtrMemory* memory, SnxCtrVkDeviceRam* f) {
+    const SnxCtrProfile* profile = snx_ctr_memory_profile(memory);
+    const unsigned char* ram = snx_ctr_memory_ram(memory, &f->size);
+    f->step = SNX_CTR_VK_DEVICE_RAM_EXTENSIONS;
+    if (!v->export_dmabuf) return false;
+    VkPhysicalDeviceExternalBufferInfo info = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO,
+                                               .usage = ram_usage,
+                                               .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkExternalBufferProperties external = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES};
+    vkGetPhysicalDeviceExternalBufferProperties(v->phys, &info, &external);
+    f->step = SNX_CTR_VK_DEVICE_RAM_EXPORT;
+    f->features = external.externalMemoryProperties.externalMemoryFeatures;
+    if (!(f->features & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) ||
+        (f->features & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT))
+        return false;
+    VkExternalMemoryBufferCreateInfo exported = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+                                                 .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    uint64_t offset[8]; /* by buffer: its region's offset in the RAM, and the region */
+    uint32_t region[8];
+    f->buffer_types = UINT32_MAX;
+    f->allocation = f->size;
+    for (size_t i = 0; i < profile->region_count; ++i) {
+        const unsigned char* view = snx_ctr_memory_region(memory, i);
+        const SnxCtrRegion* r = &profile->regions[i];
+        if (!view) continue;
+        SnxCtrVkRam* b = &v->ram[v->ram_count];
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                 .pNext = &exported,
+                                 .size = r->size,
+                                 .usage = ram_usage,
+                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        f->region = region[v->ram_count] = (uint32_t)i;
+        f->offset = offset[v->ram_count] = (uint64_t)(view - ram);
+        f->step = SNX_CTR_VK_DEVICE_RAM_BUFFER;
+        if ((f->result = vkCreateBuffer(v->device, &bi, NULL, &b->buffer)) != VK_SUCCESS) goto fail;
+        b->memory = VK_NULL_HANDLE;
+        b->base = r->base;
+        b->size = r->size;
+        ++v->ram_count;
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(v->device, b->buffer, &req);
+        f->step = SNX_CTR_VK_DEVICE_RAM_ALIGNMENT;
+        f->alignment = req.alignment;
+        if (f->offset % req.alignment) goto fail;
+        f->buffer_types &= req.memoryTypeBits;
+        if (f->offset + req.size > f->allocation) f->allocation = f->offset + req.size;
+    }
+    f->step = SNX_CTR_VK_DEVICE_RAM_TYPE;
+    const VkMemoryPropertyFlags visible = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    f->type = snx_ctr_vk_memory_type(f->buffer_types, visible | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    if (f->type == UINT32_MAX) {
+        f->visible_types = 0;
+        for (uint32_t t = 0; t < v->memory_properties.memoryTypeCount; ++t)
+            if ((f->buffer_types >> t & 1) && (v->memory_properties.memoryTypes[t].propertyFlags & visible) == visible)
+                f->visible_types |= 1u << t;
+        goto fail;
+    }
+    VkExportMemoryAllocateInfo export_info = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                              .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                               .pNext = &export_info,
+                               .allocationSize = f->allocation,
+                               .memoryTypeIndex = f->type};
+    f->step = SNX_CTR_VK_DEVICE_RAM_ALLOCATE;
+    if ((f->result = vkAllocateMemory(v->device, &ai, NULL, &v->ram_memory)) != VK_SUCCESS) goto fail;
+    f->step = SNX_CTR_VK_DEVICE_RAM_BIND;
+    for (unsigned i = 0; i < v->ram_count; ++i) {
+        f->offset = offset[i];
+        f->region = region[i];
+        if ((f->result = vkBindBufferMemory(v->device, v->ram[i].buffer, v->ram_memory, offset[i])) != VK_SUCCESS)
+            goto fail;
+    }
+    VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+                               .memory = v->ram_memory,
+                               .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    int fd = -1;
+    f->step = SNX_CTR_VK_DEVICE_RAM_EXPORT_FD;
+    if ((f->result = vkGetMemoryFdKHR(v->device, &gi, &fd)) != VK_SUCCESS) goto fail;
+    f->step = SNX_CTR_VK_DEVICE_RAM_VIEWS;
+    if (!snx_ctr_memory_adopt(memory, fd)) {
+        f->error = errno;
+        SnxHostMemory refused = {.handle = fd};
+        snx_host_memory_close(&refused);
+        goto fail;
+    }
+    v->ram_type = f->type;
+    return true;
+fail:
+    release_ram(v);
+    return false;
 }
 static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     SnxCtrVk* v = &g_device.vk;
@@ -229,8 +404,10 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
             snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v);
     }
     if (!made) {
-        snprintf(error, error_size,
-                 "no Vulkan 1.3 device with 8-bit storage buffers, dynamic rendering and VK_EXT_external_memory_host");
+        snprintf(
+            error, error_size,
+            "no Vulkan 1.3 device with 8-bit storage buffers, dynamic rendering and VK_EXT_external_memory_host or "
+            "VK_EXT_external_memory_dma_buf");
         snx_ctr_vk_free();
         return false;
     }
@@ -265,9 +442,22 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     v->ring.close = snx_ctr_vk_render_close;
     v->ring.retire = snx_ctr_vk_render_retire;
     g_device.up = 1;
-    if (!import_ram(v, memory, error, error_size)) {
-        snx_ctr_vk_free();
-        return false;
+    /* the RAM imported where it is; where the driver refuses that, the RAM moved into the device's memory, said with
+       the refusal, which stays in the error when the device's memory cannot hold it either */
+    char refused[384];
+    if (!import_ram(v, memory, refused, sizeof refused)) {
+        SnxCtrVkDeviceRam f = {0};
+        if (!device_ram(v, memory, &f)) {
+            char why[256];
+            snx_ctr_vk_device_ram_error(&f, snx_ctr_memory_profile(memory)->regions[f.region].name, why, sizeof why);
+            snprintf(error, error_size, "%s; nor can the board's RAM be the device's memory: %s", refused, why);
+            snx_ctr_vk_free();
+            return false;
+        }
+        fprintf(stderr,
+                "3ds gpu: %s; the board's RAM is the device's memory instead: 0x%llx bytes of memory type %u "
+                "(host-visible, coherent, cached), its dma-buf mapped at every guest view\n",
+                refused, (unsigned long long)f.allocation, f.type);
     }
     /* the renderer answers for the pages the GPU keeps (memory/ctr_memory.h) */
     v->memory = memory;
@@ -292,10 +482,7 @@ void snx_ctr_vk_free(void) {
             for (unsigned i = 0; i < v->ram_count; ++i)
                 snx_ctr_track_set(v->memory, v->ram[i].base, v->ram[i].size, SNX_CTR_TRACK_NONE);
         }
-        for (unsigned i = 0; i < v->ram_count; ++i) {
-            vkDestroyBuffer(v->device, v->ram[i].buffer, NULL);
-            vkFreeMemory(v->device, v->ram[i].memory, NULL);
-        }
+        release_ram(v);
         snx_vk_ring_free(&v->ring);
         vkDestroyDevice(v->device, NULL);
     }
