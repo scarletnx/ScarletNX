@@ -4,6 +4,7 @@
 
 ## Index
 
+* [SIMD continuation](#simd-continuation)
 * [Prepare the next implementation](#prepare-the-next-implementation)
 * [Search a bounded set of exact candidates](#search-a-bounded-set-of-exact-candidates)
 * [Compiler diagnostics](#compiler-diagnostics)
@@ -18,11 +19,11 @@ python3 tools/cpu_plan.py list
 python3 tools/cpu_plan.py show I15
 ```
 
-Current work starts at upstream `34c0be36`. The O0 vector-arithmetic prerequisite moves residual calculations
+The earlier prerequisite started at upstream `34c0be36`. The O0 vector-arithmetic prerequisite moves residual calculations
 behind the sticky IXC check and removes a redundant O0 shortcut guard. Directed tests compare the complete CPU
 state across optimization levels and loaders. This does not complete I15's mixed-lane fallback replacement.
 I7 classifies the audited vector FP helpers at their first declaration. A fixture keeps a dirty X4 live across
-four helper calls, verifies zero reloads of it and checks the emitted synchronization counts. This affects register
+one batched helper call, verifies zero reloads of it and checks the emitted synchronization counts. This affects register
 promotion at O1 and above. It does not add promotion to O0.
 
 I8 emits scalar and vector float32/float64 FRECPE and FRSQRTE on x86 hosts with AVX2, including exceptional lanes.
@@ -30,11 +31,12 @@ The shared estimate tables contain 256 reciprocal and 384 reciprocal-square-root
 them. Unsigned URECPE/URSQRTE also use bounded table lookups. All table indices and shift counts are bounded even
 in discarded lanes. NaN payloads, signed zeros, denormals, rounding modes and sticky exceptions are checked against
 the exact helper. FPSR contributions are reduced across the vector once. Scalar 32/64-bit FRECPX uses integer
-exponent operations with exact NaN and denormal handling on all targets. Half estimates and other host lowerings
+exponent operations with exact NaN and denormal handling on all targets. Half estimates now use the integer paths described below on little-endian targets. Other unproven host lowerings
 retain the exact helper paths.
 
-I9 emits rounding and saturating shifts for 8/16/32/64-bit lanes on x86 AVX2. Shift counts use their signed low
-byte, are bounded before LLVM shifts, and contribute to QC once per vector. Other hosts retain exact helpers.
+I9 emits rounding and saturating shifts for 8/16/32/64-bit lanes on x86 and AArch64. Shift counts use their signed
+low byte, are bounded before LLVM shifts, and contribute to QC once per vector. x86 without AVX2 uses bounded
+constant-stage shifts. Other hosts retain exact helpers.
 
 I11 adds guarded scalar rounding, FPCR-selected scalar/vector rounding, F16C half conversions and exact FMA
 inexactness residuals. The FMA residual runs only when IXC is clear. Float64 residuals use the error expansion of
@@ -46,8 +48,8 @@ for AHP, NaNs, underflow boundaries, unsupported rounding modes and direct float
 Guarded FABD reuses exact subtraction followed by sign clearing. Directed tests cover all shift counts, every
 half encoding, estimate bins/exponents, mixed exceptional lanes, aliases, rounding modes and FPSR. They run through
 O0/O2, AOT/JIT loaders and native/portable paths. The executed host is x86-64; these checks do not establish native
-execution on other hosts. Native AArch64 FPCR/FPSR integration (I12) and I15's remaining lane-helper replacements
-are outside this measured pass. Existing exact paths remain available.
+execution on other hosts. Native AArch64 FPCR/FPSR integration (I12) remains a separate project. Exact scalar
+arithmetic remains inside batched fallbacks where no vector replacement is proven.
 
 T5 has a seeded block corpus with flag joins, bounded loops, guest calls, memory, SIMD/FP and aligned exclusive
 retry loops. It runs through both loaders and optimization levels, plus portable, hook and volatile configurations.
@@ -56,6 +58,43 @@ grammar, not exhaustive sequence coverage. Native execution has been checked on 
 
 T6 corrects the stale documentation and source comments listed in the plan, preserving historical audit examples
 as historical evidence rather than current failure claims. Other items require their own implementation and proof.
+
+## SIMD continuation
+
+The 2026-11-04 continuation adds exact whole-vector comparisons. Ordinary single/double comparisons retain the
+short floating-point path. Exceptional lanes use integer classification and ordering, including signaling NaNs,
+flushed denormals and signed zero. Half comparisons use integer vectors for all lanes. The directed test covers
+80 instruction forms, destination aliases and every half encoding across modes, loaders and optimization levels.
+
+A tested extension that batched conversion and rounding fallbacks was rejected. It reduced outer calls but made
+portable conversion kernels about 15% slower, and hid repeated values from LLVM's common-call elimination.
+These paths retain their pure scalar helpers. The sequence test checks ordinary, DUP and constant-zero producers
+before conversion, including full register state. Narrowing broadcasts and constant-zero forms must retain one
+shared scalar call. Existing arithmetic batches keep their descriptor and exact fallback behavior.
+
+Half FRECPE/FRSQRTE use bounded integer-vector tables, and half FRECPX uses exponent operations on little-endian
+targets. FZ16 flushes input denormals without IDC. Reciprocal estimate output denormals remain unflushed, as the exact
+helper requires. Register shifts also use a constant-stage barrel sequence when the x86 emitter lacks AVX2. AArch64
+uses generic vector shifts, and other targets retain the previous exact helper. Native tests ran on x86-64.
+
+Two independent Python searches used two warmups, nine measured paired rounds and 20,000 bootstrap resamples.
+The selected comparison sequence had a 5.18-times geometric speedup across its supplied synthetic workloads.
+Half-estimate kernels improved by about 2.5 to 8.8 times. Portable-emitter shift kernels improved by about 2 to
+9.8 times on the native test machine. That machine's LLVM target still used its native ISA, so portable-emitter
+results are not timings from an SSE2-only processor. These figures do not establish whole-game FPS gains.
+
+The small-helper experiment imports only the audited FP-environment leaf from the embedded runtime bitcode.
+Only functions with host FP operations use its inline copy. The checked integer-shift object remains byte-identical.
+An initial broad import did not pass the regression gate. The selective version passed 19 paired rounds across six
+FP-focused workloads, with about a 13-percent geometric gain. `SNX_IR_OBJECT_VERSION` increases to five to invalidate
+objects made by the old pipeline. `SNX_ABI` remains 17, and old modules remain compatible. Recompile to use the new
+emitter paths. Large arithmetic helpers remain out of line.
+
+The Linux CPU-clock sampler starts its buffer search at one slot and reports overflows, timer coalescing and exit
+recovery separately. A native calibration selected two slots per thread. A later real game capture lost one record
+at two slots, so the next run used four slots and lost none. The capture's weighted CPU samples placed FP helpers
+at a small share of the scene's CPU work. This limits the expected effect of SIMD improvements on that scene.
+The [development guide](DEVELOPMENT.md#cpu-sampling-without-perf) gives the commands and the file format.
 
 ## Prepare the next implementation
 

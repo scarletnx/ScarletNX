@@ -86,7 +86,7 @@
         "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
         "tests/llvm_fp_helper_effects.c"
       ],
-      "note": "Audited raw-bit lane helpers are classified at first declaration. The fixture keeps X4 live across four calls with zero reloads and checks static synchronization counts. O0 does not use register promotion."
+      "note": "Audited raw-bit lane helpers are classified at first declaration. The fixture keeps X4 live across one batched vector helper call with zero reloads and checks static synchronization counts. O0 does not use register promotion."
     },
     "I15": {
       "status": "in_progress",
@@ -99,9 +99,12 @@
         "tests/llvm_round.c",
         "tests/llvm_half.c",
         "tests/llvm_fma_residual.c",
-        "tests/llvm_perf/recpe_candidates.json"
+        "tests/llvm_perf/recpe_candidates.json",
+        "tests/llvm_vfp_compare.c",
+        "tools/profile_cpu.py",
+        "tests/llvm_vfp_batch.c"
       ],
-      "note": "Guarded FABD, rounding, half conversions, FMA residuals and exact whole-vector estimates are implemented on the measured x86 paths. Exceptional estimate flags reduce across lanes once. Remaining mixed-lane helper replacements and other native host lowerings remain open. Kernel gains do not establish game FPS gains."
+      "note": "Exact vector comparisons and half estimates extend the existing guarded arithmetic. A batching extension for conversion fallbacks failed the performance gate and was rejected. Conversion and rounding retain pure scalar helpers, including common-call elimination for broadcasts. Existing arithmetic batches and big-endian packing retain their previous paths. Native tests ran on x86-64. Focused kernel gains do not establish game FPS gains."
     },
     "I8": {
       "status": "in_progress",
@@ -114,7 +117,7 @@
         "tests/llvm_unsigned_estimates.c",
         "tests/llvm_perf/recpe_candidates.json"
       ],
-      "note": "Exact scalar/vector float32/64 FRECPE/FRSQRTE and unsigned URECPE/URSQRTE on x86 AVX2, including exceptional lanes. Scalar 32/64 FRECPX uses integer exponent operations. Half estimates and other host lowerings retain exact helpers."
+      "note": "Exact scalar/vector float32/64 FRECPE/FRSQRTE and unsigned estimates remain on x86 AVX2. Half estimates and FRECPX now use integer paths on little-endian targets, with input FZ16 semantics and unflushed reciprocal outputs. Other unproven lowerings retain exact helpers."
     },
     "I9": {
       "status": "implemented",
@@ -122,11 +125,15 @@
         "src/common/cpu/recompiler/llvm/ir_vec.c",
         "tests/llvm_simd_shift.c"
       ],
-      "note": "Rounding/saturating register shifts use bounded whole-vector IR on x86 AVX2, with one QC reduction. All 256 signed-byte counts, lane sizes, aliases, O0/O2 and loaders are checked against exact helpers. Other hosts keep exact fallback. Native hardware execution was checked only on x86-64."
+      "note": "Bounded whole-vector rounding/saturating shifts now cover x86 and AArch64 IR. x86 without AVX2 uses constant-stage barrel shifts. All signed-byte counts, widths, aliases and loaders pass the exact tests on x86-64. Native AArch64 and weak-host performance remain unmeasured."
     },
     "I10": {
-      "status": "unverified",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "src/common/cpu/recompiler/llvm/ir.c",
+        "tests/llvm_fp_env.c"
+      ],
+      "note": "An audited leaf environment helper is imported only into functions with host FP operations. Integer functions retain their previous object bytes in the checked fixture. Broader imports and cross-host performance remain unverified."
     },
     "I11": {
       "status": "in_progress",

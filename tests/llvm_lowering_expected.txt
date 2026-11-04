@@ -210,22 +210,22 @@ FABS_v             aarch64   inline
 FABS_v             generic   inline
 FABS_v             x86       inline
 FABS_v             x86-base  inline
-FACGE_s            aarch64   guarded  snx_fp_host_compare
-FACGE_s            generic   guarded  snx_fp_host_compare
-FACGE_s            x86       guarded  snx_fp_host_compare
-FACGE_s            x86-base  guarded  snx_fp_host_compare
-FACGE_v            aarch64   guarded  snx_fp_host_compare
-FACGE_v            generic   guarded  snx_fp_host_compare
-FACGE_v            x86       guarded  snx_fp_host_compare
-FACGE_v            x86-base  guarded  snx_fp_host_compare
-FACGT_s            aarch64   guarded  snx_fp_host_compare
-FACGT_s            generic   guarded  snx_fp_host_compare
-FACGT_s            x86       guarded  snx_fp_host_compare
-FACGT_s            x86-base  guarded  snx_fp_host_compare
-FACGT_v            aarch64   guarded  snx_fp_host_compare
-FACGT_v            generic   guarded  snx_fp_host_compare
-FACGT_v            x86       guarded  snx_fp_host_compare
-FACGT_v            x86-base  guarded  snx_fp_host_compare
+FACGE_s            aarch64   inline
+FACGE_s            generic   inline
+FACGE_s            x86       inline
+FACGE_s            x86-base  inline
+FACGE_v            aarch64   inline
+FACGE_v            generic   inline
+FACGE_v            x86       inline
+FACGE_v            x86-base  inline
+FACGT_s            aarch64   inline
+FACGT_s            generic   inline
+FACGT_s            x86       inline
+FACGT_s            x86-base  inline
+FACGT_v            aarch64   inline
+FACGT_v            generic   inline
+FACGT_v            x86       inline
+FACGT_v            x86-base  inline
 FADDP_s            aarch64   guarded  snx_fp_host_binary
 FADDP_s            generic   guarded  snx_fp_host_binary
 FADDP_s            x86       guarded  snx_fp_host_binary
@@ -246,70 +246,70 @@ FCCMP              aarch64   guarded  snx_fp_host_compare
 FCCMP              generic   guarded  snx_fp_host_compare
 FCCMP              x86       guarded  snx_fp_host_compare
 FCCMP              x86-base  guarded  snx_fp_host_compare
-FCMEQ0_s           aarch64   guarded  snx_fp_host_compare
-FCMEQ0_s           generic   guarded  snx_fp_host_compare
-FCMEQ0_s           x86       guarded  snx_fp_host_compare
-FCMEQ0_s           x86-base  guarded  snx_fp_host_compare
-FCMEQ0_v           aarch64   guarded  snx_fp_host_compare
-FCMEQ0_v           generic   guarded  snx_fp_host_compare
-FCMEQ0_v           x86       guarded  snx_fp_host_compare
-FCMEQ0_v           x86-base  guarded  snx_fp_host_compare
-FCMEQ_s            aarch64   guarded  snx_fp_host_compare
-FCMEQ_s            generic   guarded  snx_fp_host_compare
-FCMEQ_s            x86       guarded  snx_fp_host_compare
-FCMEQ_s            x86-base  guarded  snx_fp_host_compare
-FCMEQ_v            aarch64   guarded  snx_fp_host_compare
-FCMEQ_v            generic   guarded  snx_fp_host_compare
-FCMEQ_v            x86       guarded  snx_fp_host_compare
-FCMEQ_v            x86-base  guarded  snx_fp_host_compare
-FCMGE0_s           aarch64   guarded  snx_fp_host_compare
-FCMGE0_s           generic   guarded  snx_fp_host_compare
-FCMGE0_s           x86       guarded  snx_fp_host_compare
-FCMGE0_s           x86-base  guarded  snx_fp_host_compare
-FCMGE0_v           aarch64   guarded  snx_fp_host_compare
-FCMGE0_v           generic   guarded  snx_fp_host_compare
-FCMGE0_v           x86       guarded  snx_fp_host_compare
-FCMGE0_v           x86-base  guarded  snx_fp_host_compare
-FCMGE_s            aarch64   guarded  snx_fp_host_compare
-FCMGE_s            generic   guarded  snx_fp_host_compare
-FCMGE_s            x86       guarded  snx_fp_host_compare
-FCMGE_s            x86-base  guarded  snx_fp_host_compare
-FCMGE_v            aarch64   guarded  snx_fp_host_compare
-FCMGE_v            generic   guarded  snx_fp_host_compare
-FCMGE_v            x86       guarded  snx_fp_host_compare
-FCMGE_v            x86-base  guarded  snx_fp_host_compare
-FCMGT0_s           aarch64   guarded  snx_fp_host_compare
-FCMGT0_s           generic   guarded  snx_fp_host_compare
-FCMGT0_s           x86       guarded  snx_fp_host_compare
-FCMGT0_s           x86-base  guarded  snx_fp_host_compare
-FCMGT0_v           aarch64   guarded  snx_fp_host_compare
-FCMGT0_v           generic   guarded  snx_fp_host_compare
-FCMGT0_v           x86       guarded  snx_fp_host_compare
-FCMGT0_v           x86-base  guarded  snx_fp_host_compare
-FCMGT_s            aarch64   guarded  snx_fp_host_compare
-FCMGT_s            generic   guarded  snx_fp_host_compare
-FCMGT_s            x86       guarded  snx_fp_host_compare
-FCMGT_s            x86-base  guarded  snx_fp_host_compare
-FCMGT_v            aarch64   guarded  snx_fp_host_compare
-FCMGT_v            generic   guarded  snx_fp_host_compare
-FCMGT_v            x86       guarded  snx_fp_host_compare
-FCMGT_v            x86-base  guarded  snx_fp_host_compare
-FCMLE0_s           aarch64   guarded  snx_fp_host_compare
-FCMLE0_s           generic   guarded  snx_fp_host_compare
-FCMLE0_s           x86       guarded  snx_fp_host_compare
-FCMLE0_s           x86-base  guarded  snx_fp_host_compare
-FCMLE0_v           aarch64   guarded  snx_fp_host_compare
-FCMLE0_v           generic   guarded  snx_fp_host_compare
-FCMLE0_v           x86       guarded  snx_fp_host_compare
-FCMLE0_v           x86-base  guarded  snx_fp_host_compare
-FCMLT0_s           aarch64   guarded  snx_fp_host_compare
-FCMLT0_s           generic   guarded  snx_fp_host_compare
-FCMLT0_s           x86       guarded  snx_fp_host_compare
-FCMLT0_s           x86-base  guarded  snx_fp_host_compare
-FCMLT0_v           aarch64   guarded  snx_fp_host_compare
-FCMLT0_v           generic   guarded  snx_fp_host_compare
-FCMLT0_v           x86       guarded  snx_fp_host_compare
-FCMLT0_v           x86-base  guarded  snx_fp_host_compare
+FCMEQ0_s           aarch64   inline
+FCMEQ0_s           generic   inline
+FCMEQ0_s           x86       inline
+FCMEQ0_s           x86-base  inline
+FCMEQ0_v           aarch64   inline
+FCMEQ0_v           generic   inline
+FCMEQ0_v           x86       inline
+FCMEQ0_v           x86-base  inline
+FCMEQ_s            aarch64   inline
+FCMEQ_s            generic   inline
+FCMEQ_s            x86       inline
+FCMEQ_s            x86-base  inline
+FCMEQ_v            aarch64   inline
+FCMEQ_v            generic   inline
+FCMEQ_v            x86       inline
+FCMEQ_v            x86-base  inline
+FCMGE0_s           aarch64   inline
+FCMGE0_s           generic   inline
+FCMGE0_s           x86       inline
+FCMGE0_s           x86-base  inline
+FCMGE0_v           aarch64   inline
+FCMGE0_v           generic   inline
+FCMGE0_v           x86       inline
+FCMGE0_v           x86-base  inline
+FCMGE_s            aarch64   inline
+FCMGE_s            generic   inline
+FCMGE_s            x86       inline
+FCMGE_s            x86-base  inline
+FCMGE_v            aarch64   inline
+FCMGE_v            generic   inline
+FCMGE_v            x86       inline
+FCMGE_v            x86-base  inline
+FCMGT0_s           aarch64   inline
+FCMGT0_s           generic   inline
+FCMGT0_s           x86       inline
+FCMGT0_s           x86-base  inline
+FCMGT0_v           aarch64   inline
+FCMGT0_v           generic   inline
+FCMGT0_v           x86       inline
+FCMGT0_v           x86-base  inline
+FCMGT_s            aarch64   inline
+FCMGT_s            generic   inline
+FCMGT_s            x86       inline
+FCMGT_s            x86-base  inline
+FCMGT_v            aarch64   inline
+FCMGT_v            generic   inline
+FCMGT_v            x86       inline
+FCMGT_v            x86-base  inline
+FCMLE0_s           aarch64   inline
+FCMLE0_s           generic   inline
+FCMLE0_s           x86       inline
+FCMLE0_s           x86-base  inline
+FCMLE0_v           aarch64   inline
+FCMLE0_v           generic   inline
+FCMLE0_v           x86       inline
+FCMLE0_v           x86-base  inline
+FCMLT0_s           aarch64   inline
+FCMLT0_s           generic   inline
+FCMLT0_s           x86       inline
+FCMLT0_s           x86-base  inline
+FCMLT0_v           aarch64   inline
+FCMLT0_v           generic   inline
+FCMLT0_v           x86       inline
+FCMLT0_v           x86-base  inline
 FCMP               aarch64   guarded  snx_fp_host_compare
 FCMP               generic   guarded  snx_fp_host_compare
 FCMP               x86       guarded  snx_fp_host_compare
@@ -1186,14 +1186,14 @@ SQRDMULH_vi        aarch64   inline
 SQRDMULH_vi        generic   inline
 SQRDMULH_vi        x86       inline
 SQRDMULH_vi        x86-base  inline
-SQRSHL_s           aarch64   helper   snx_vec_shl
+SQRSHL_s           aarch64   inline
 SQRSHL_s           generic   helper   snx_vec_shl
 SQRSHL_s           x86       inline
-SQRSHL_s           x86-base  helper   snx_vec_shl
-SQRSHL_v           aarch64   helper   snx_vec_shl
+SQRSHL_s           x86-base  inline
+SQRSHL_v           aarch64   inline
 SQRSHL_v           generic   helper   snx_vec_shl
 SQRSHL_v           x86       inline
-SQRSHL_v           x86-base  helper   snx_vec_shl
+SQRSHL_v           x86-base  inline
 SQRSHRN_si         aarch64   inline
 SQRSHRN_si         generic   inline
 SQRSHRN_si         x86       inline
@@ -1218,18 +1218,18 @@ SQSHLU_vi          aarch64   inline
 SQSHLU_vi          generic   inline
 SQSHLU_vi          x86       inline
 SQSHLU_vi          x86-base  inline
-SQSHL_s            aarch64   helper   snx_vec_shl
+SQSHL_s            aarch64   inline
 SQSHL_s            generic   helper   snx_vec_shl
 SQSHL_s            x86       inline
-SQSHL_s            x86-base  helper   snx_vec_shl
+SQSHL_s            x86-base  inline
 SQSHL_si           aarch64   inline
 SQSHL_si           generic   inline
 SQSHL_si           x86       inline
 SQSHL_si           x86-base  inline
-SQSHL_v            aarch64   helper   snx_vec_shl
+SQSHL_v            aarch64   inline
 SQSHL_v            generic   helper   snx_vec_shl
 SQSHL_v            x86       inline
-SQSHL_v            x86-base  helper   snx_vec_shl
+SQSHL_v            x86-base  inline
 SQSHL_vi           aarch64   inline
 SQSHL_vi           generic   inline
 SQSHL_vi           x86       inline
@@ -1286,14 +1286,14 @@ SRI_v              aarch64   inline
 SRI_v              generic   inline
 SRI_v              x86       inline
 SRI_v              x86-base  inline
-SRSHL_s            aarch64   helper   snx_vec_shl
+SRSHL_s            aarch64   inline
 SRSHL_s            generic   helper   snx_vec_shl
 SRSHL_s            x86       inline
-SRSHL_s            x86-base  helper   snx_vec_shl
-SRSHL_v            aarch64   helper   snx_vec_shl
+SRSHL_s            x86-base  inline
+SRSHL_v            aarch64   inline
 SRSHL_v            generic   helper   snx_vec_shl
 SRSHL_v            x86       inline
-SRSHL_v            x86-base  helper   snx_vec_shl
+SRSHL_v            x86-base  inline
 SRSHR_s            aarch64   inline
 SRSHR_s            generic   inline
 SRSHR_s            x86       inline
@@ -1518,14 +1518,14 @@ UQADD_v            aarch64   inline
 UQADD_v            generic   inline
 UQADD_v            x86       inline
 UQADD_v            x86-base  inline
-UQRSHL_s           aarch64   helper   snx_vec_shl
+UQRSHL_s           aarch64   inline
 UQRSHL_s           generic   helper   snx_vec_shl
 UQRSHL_s           x86       inline
-UQRSHL_s           x86-base  helper   snx_vec_shl
-UQRSHL_v           aarch64   helper   snx_vec_shl
+UQRSHL_s           x86-base  inline
+UQRSHL_v           aarch64   inline
 UQRSHL_v           generic   helper   snx_vec_shl
 UQRSHL_v           x86       inline
-UQRSHL_v           x86-base  helper   snx_vec_shl
+UQRSHL_v           x86-base  inline
 UQRSHRN_si         aarch64   inline
 UQRSHRN_si         generic   inline
 UQRSHRN_si         x86       inline
@@ -1534,18 +1534,18 @@ UQRSHRN_v          aarch64   inline
 UQRSHRN_v          generic   inline
 UQRSHRN_v          x86       inline
 UQRSHRN_v          x86-base  inline
-UQSHL_s            aarch64   helper   snx_vec_shl
+UQSHL_s            aarch64   inline
 UQSHL_s            generic   helper   snx_vec_shl
 UQSHL_s            x86       inline
-UQSHL_s            x86-base  helper   snx_vec_shl
+UQSHL_s            x86-base  inline
 UQSHL_si           aarch64   inline
 UQSHL_si           generic   inline
 UQSHL_si           x86       inline
 UQSHL_si           x86-base  inline
-UQSHL_v            aarch64   helper   snx_vec_shl
+UQSHL_v            aarch64   inline
 UQSHL_v            generic   helper   snx_vec_shl
 UQSHL_v            x86       inline
-UQSHL_v            x86-base  helper   snx_vec_shl
+UQSHL_v            x86-base  inline
 UQSHL_vi           aarch64   inline
 UQSHL_vi           generic   inline
 UQSHL_vi           x86       inline
@@ -1582,14 +1582,14 @@ URHADD_v           aarch64   inline
 URHADD_v           generic   inline
 URHADD_v           x86       inline
 URHADD_v           x86-base  inline
-URSHL_s            aarch64   helper   snx_vec_shl
+URSHL_s            aarch64   inline
 URSHL_s            generic   helper   snx_vec_shl
 URSHL_s            x86       inline
-URSHL_s            x86-base  helper   snx_vec_shl
-URSHL_v            aarch64   helper   snx_vec_shl
+URSHL_s            x86-base  inline
+URSHL_v            aarch64   inline
 URSHL_v            generic   helper   snx_vec_shl
 URSHL_v            x86       inline
-URSHL_v            x86-base  helper   snx_vec_shl
+URSHL_v            x86-base  inline
 URSHR_s            aarch64   inline
 URSHR_s            generic   inline
 URSHR_s            x86       inline

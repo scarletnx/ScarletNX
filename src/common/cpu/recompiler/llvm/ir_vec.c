@@ -270,9 +270,24 @@ static V shl_register(SnxIr* ir, V a, V b, int sign) {
 
 /* Whole-vector rounding and saturating shifts. All counts are clamped before evaluation, even in discarded lanes.
    A right shift rounds by adding its last discarded bit after shifting, without overflowing the lane. */
+/* SSE2 has uniform-count shifts. A bounded barrel sequence keeps distinct lane counts in vectors instead of
+   extracting every lane. All stages are smaller than a lane, so even unselected results cannot become poison. */
+static V lane_shift(SnxIr* ir, V value, V count, int direction) {
+    if (!ir->features->x86 || ir->features->avx2)
+        return direction == 0 ? LLVMBuildShl(B, value, count, "")
+             : direction == 1 ? LLVMBuildLShr(B, value, count, "") : LLVMBuildAShr(B, value, count, "");
+    for (unsigned bit = 1; bit < bits_of(value); bit <<= 1) {
+        V amount = ir_vec_like(ir, value, bit);
+        V shifted = direction == 0 ? LLVMBuildShl(B, value, amount, "")
+                  : direction == 1 ? LLVMBuildLShr(B, value, amount, "") : LLVMBuildAShr(B, value, amount, "");
+        V selected = cmp(ir, LLVMIntNE, LLVMBuildAnd(B, count, amount, ""), ir_vec_like(ir, value, 0));
+        value = sel(ir, selected, shifted, value);
+    }
+    return value;
+}
 enum { SHL_UNS = 1, SHL_ROUND = 2, SHL_SAT = 4 };
 static void shl_helper(SnxIr* ir, const SnxA64Args* a, unsigned lanes, unsigned flags) {
-    if (ir->features->x86 && ir->features->avx2) {
+    if (ir->features->x86 || ir->features->aarch64) {
         V n = ir_vec_read(ir, (unsigned)a->rn, (unsigned)a->esz, 0, lanes);
         V m = ir_vec_read(ir, (unsigned)a->rm, (unsigned)a->esz, 0, lanes);
         unsigned bits = bits_of(n);
@@ -280,10 +295,10 @@ static void shl_helper(SnxIr* ir, const SnxA64Args* a, unsigned lanes, unsigned 
         V shift = LLVMBuildSExt(B, LLVMBuildTrunc(B, m, with_bits(ir, m, 8), ""), LLVMTypeOf(n), "");
         V negative = cmp(ir, LLVMIntSLT, shift, zero);
         V left_count = call2(ir, "llvm.umin", shift, top);
-        V left = LLVMBuildShl(B, n, left_count, "");
+        V left = lane_shift(ir, n, left_count, 0);
         V too_far = cmp(ir, LLVMIntUGT, shift, top);
         if (flags & SHL_SAT) {
-            V restored = flags & SHL_UNS ? LLVMBuildLShr(B, left, left_count, "") : LLVMBuildAShr(B, left, left_count, "");
+            V restored = lane_shift(ir, left, left_count, flags & SHL_UNS ? 1 : 2);
             V overflow = LLVMBuildOr(B, cmp(ir, LLVMIntNE, restored, n),
                                     LLVMBuildAnd(B, too_far, cmp(ir, LLVMIntNE, n, zero), ""), "");
             V limit = flags & SHL_UNS ? ir_vec_like(ir, n, ones(bits)) :
@@ -297,7 +312,7 @@ static void shl_helper(SnxIr* ir, const SnxA64Args* a, unsigned lanes, unsigned 
         V right = LLVMBuildNeg(B, shift, "");
         V count = flags & SHL_ROUND ? LLVMBuildSub(B, right, one, "") : right;
         count = call2(ir, "llvm.umin", count, top);
-        V down = flags & SHL_UNS ? LLVMBuildLShr(B, n, count, "") : LLVMBuildAShr(B, n, count, "");
+        V down = lane_shift(ir, n, count, flags & SHL_UNS ? 1 : 2);
         if (flags & SHL_ROUND) {
             V half = flags & SHL_UNS ? LLVMBuildLShr(B, down, one, "") : LLVMBuildAShr(B, down, one, "");
             down = LLVMBuildAdd(B, half, LLVMBuildAnd(B, down, one, ""), "");

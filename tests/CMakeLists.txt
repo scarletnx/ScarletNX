@@ -681,6 +681,19 @@ snx_test_target(snx-test-llvm-vfp-lanes 11)
 snx_cpu_helpers_flags(snx-test-llvm-vfp-lanes)
 target_link_libraries(snx-test-llvm-vfp-lanes PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_vfp_lanes COMMAND snx-test-llvm-vfp-lanes)
+add_executable(snx-test-llvm-vfp-batch llvm_vfp_batch.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-vfp-batch 11)
+snx_cpu_helpers_flags(snx-test-llvm-vfp-batch)
+target_link_libraries(snx-test-llvm-vfp-batch PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_vfp_batch COMMAND snx-test-llvm-vfp-batch)
+# exact vector comparisons, including NaN and flushed-denormal lanes
+add_executable(snx-test-llvm-vfp-compare llvm_vfp_compare.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-vfp-compare 11)
+snx_cpu_helpers_flags(snx-test-llvm-vfp-compare)
+target_link_libraries(snx-test-llvm-vfp-compare PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_vfp_compare COMMAND snx-test-llvm-vfp-compare)
 # the same fast paths taken for normal operands, with FPCR.FZ clear and set and without FPSR's flags: no helper call
 # left once LLVM folds the guards
 add_executable(snx-test-llvm-fp-fast llvm_fp_fast.c llvm_steps.c)
@@ -766,6 +779,11 @@ snx_test_target(snx-test-llvm-vfp-residual 11)
 snx_cpu_helpers_flags(snx-test-llvm-vfp-residual)
 target_link_libraries(snx-test-llvm-vfp-residual PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_vfp_residual COMMAND snx-test-llvm-vfp-residual)
+
+add_executable(snx-test-llvm-fp-env llvm_fp_env.c llvm_steps.c)
+snx_test_target(snx-test-llvm-fp-env 11)
+target_link_libraries(snx-test-llvm-fp-env PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_fp_env COMMAND snx-test-llvm-fp-env)
 
 add_executable(snx-test-llvm-fp-helper-effects llvm_fp_helper_effects.c)
 snx_test_target(snx-test-llvm-fp-helper-effects 11)
@@ -1316,6 +1334,7 @@ add_test(NAME result_macros COMMAND snx-test-result-macros)
 
 # generated and checked in (the controls' atlas, their shaders): their sources must still make them
 if(Python3_Interpreter_FOUND)
+    add_test(NAME cpu_sample_recovery COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/cpu_sample.py")
     add_test(NAME nvn_coverage COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/nvn_coverage.py")
     add_test(NAME gpu_tuner COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tune_gpu_test.py")
     add_test(NAME nvn_draw_benchmark COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/bench_nvn_draws_test.py")
