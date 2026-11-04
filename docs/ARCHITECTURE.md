@@ -269,7 +269,8 @@ runs on the host's CPU. The recompile makes no code ahead of time. It finds the 
 (`nce_patch.c`): SVC, the TLS registers, the counter registers, and the exclusives, which become their ordered forms.
 Each module moves up to leave a pool for its stubs after it, in the reach of a B (128 MiB); a module whose first
 words that pool would not reach gets one before it too, as Eden splits its patch section, and a word that neither
-reaches (a module past about 256 MiB) makes the recompile make the code ahead of time, saying which (`nce_layout`).
+reaches (a module past about 256 MiB) ends the recompile, naming the word, the module and its size, with NCE to set
+off for the game (`nce_layout`).
 The pools and the sites go in `<game>.nce`. The game sees a pool as code it has no permission on (QueryMemory), as
 Eden reprotects its patch sections, while the host's pages run it: the game's rtld takes each readable and executable
 region of code for a module and reads its MOD0 header from the offset at +4. With that file, the runtime reserves the guest's address space at the guest's own addresses (`g_mem` is
