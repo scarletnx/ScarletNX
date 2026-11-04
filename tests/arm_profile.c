@@ -42,16 +42,21 @@ int main(void) {
     assert(snx_a32_decode(0xee070fba) == SNX_A32_COPROC);
     assert(snx_a32_decode_profile((SnxArmProfile)99, 0xe1a00000) == SNX_A32_UNDEFINED);
     /* ARM7TDMI: A57's decoder, but for an MSR that writes the control or extension byte, a mode switch the AGB board
-       runs (msr cpsr_c, #0xd2; msr cpsr_fc, r0); the flags alone stay an MSR (msr cpsr_f, r0) */
+       runs (msr cpsr_c, #0xd2; msr cpsr_fc, r0), the flags alone staying an MSR (msr cpsr_f, r0); and the NV condition,
+       which never holds on ARMv4: those words run as nothing (later cores' CPS, ARMv5's BLX) */
     assert(snx_a32_decode(0xe321f0d2) == SNX_A32_MSR && snx_a32_decode(0xe129f000) == SNX_A32_MSR);
     assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xe321f0d2) == SNX_A32_UNDEFINED);
     assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xe129f000) == SNX_A32_UNDEFINED);
     assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xe128f000) == SNX_A32_MSR);
+    assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xf1000000) == SNX_A32_HINT);
+    assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xfa000003) == SNX_A32_HINT);
     uint32_t state = 1234;
     for (unsigned i = 0; i < 100000; ++i) {
         state = state * 1664525u + 1013904223u;
         assert(snx_a32_decode_profile(SNX_ARM_PROFILE_A57, state) == snx_a32_decode(state));
-        if (snx_a32_decode(state) != SNX_A32_MSR || !((state >> 16) & 3))
+        if ((state >> 28) == 15)
+            assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, state) == SNX_A32_HINT);
+        else if (snx_a32_decode(state) != SNX_A32_MSR || !((state >> 16) & 3))
             assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, state) == snx_a32_decode(state));
     }
     for (unsigned i = 0; i <= 65535; ++i) {
