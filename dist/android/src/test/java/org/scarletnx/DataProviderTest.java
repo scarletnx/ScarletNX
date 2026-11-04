@@ -10,6 +10,7 @@ import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.robolectric.Shadows.shadowOf;
 
+import android.Manifest;
 import android.content.Context;
 import android.content.pm.ProviderInfo;
 import android.database.Cursor;
@@ -279,6 +280,56 @@ public class DataProviderTest {
         assertNull(DataProvider.documentUri(context, outside.newFile("x.log")));
     }
 
+    /** the Files app opens a folder of the data where it is from the IDs of each folder down to it: without them it
+        opened on its own default place, Downloads ("findDocumentPath not supported") */
+    @Test
+    public void findDocumentPathNamesEachFolderFromTheRootDown() throws FileNotFoundException {
+        DocumentsContract.Path path = provider.findDocumentPath(null, "data/games/demo/demo.nro");
+        assertEquals("data", path.getRootId());
+        assertEquals(Arrays.asList("data", "data/games", "data/games/demo", "data/games/demo/demo.nro"),
+                     path.getPath());
+        DocumentsContract.Path root = provider.findDocumentPath(null, "data");
+        assertEquals("data", root.getRootId());
+        assertEquals(Arrays.asList("data"), root.getPath());
+    }
+
+    @Test
+    public void findDocumentPathFromAParentStartsThereWithoutTheRoot() throws FileNotFoundException {
+        DocumentsContract.Path path = provider.findDocumentPath("data/games", "data/games/demo/demo.nro");
+        assertNull(path.getRootId());
+        assertEquals(Arrays.asList("data/games", "data/games/demo", "data/games/demo/demo.nro"), path.getPath());
+        assertEquals(Arrays.asList("data/games"), provider.findDocumentPath("data/games", "data/games").getPath());
+    }
+
+    @Test
+    public void findDocumentPathGoesThroughTheFoldersALinkLeadsTo() throws IOException {
+        Files.createSymbolicLink(new File(data, "logs").toPath(), new File(data, "state").toPath());
+        assertEquals(Arrays.asList("data", "data/state", "data/state/scarletnx.log"),
+                     provider.findDocumentPath(null, "data/logs/scarletnx.log").getPath());
+    }
+
+    @Test
+    public void findDocumentPathRefusesADocumentOutsideTheParent() throws IOException {
+        assertTrue(new File(data, "gam").mkdir());
+        FileNotFoundException beside =
+            assertThrows(FileNotFoundException.class, () -> provider.findDocumentPath("data/gam", "data/games/demo"));
+        assertEquals("data/games/demo is not in data/gam", beside.getMessage());
+        assertThrows(FileNotFoundException.class, () -> provider.findDocumentPath("data/games", "data/state"));
+        FileNotFoundException outside =
+            assertThrows(FileNotFoundException.class, () -> provider.findDocumentPath(null, "data/.."));
+        assertEquals("data/.. is not in the data folder", outside.getMessage());
+    }
+
+    /** the way the Files app asks it, through the content resolver, with the permission it holds */
+    @Test
+    public void theFilesAppFindsAFoldersPathThroughTheResolver() throws FileNotFoundException {
+        shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.MANAGE_DOCUMENTS);
+        DocumentsContract.Path path = DocumentsContract.findDocumentPath(
+            context.getContentResolver(), DocumentsContract.buildDocumentUri("org.scarletnx.data", "data/state"));
+        assertNotNull(path);
+        assertEquals("data", path.getRootId());
+        assertEquals(Arrays.asList("data", "data/state"), path.getPath());
+    }
     private Uri children(String id) {
         return DocumentsContract.buildChildDocumentsUri("org.scarletnx.data", id);
     }

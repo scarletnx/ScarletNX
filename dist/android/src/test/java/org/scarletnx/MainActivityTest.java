@@ -15,6 +15,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Environment;
@@ -104,6 +105,42 @@ public class MainActivityTest {
         assertNull(shadowOf(menu).getNextStartedActivity());
     }
 
+    /** the Files app that reads both providers, which Android lists apart from the rest */
+    private void files(String pack, String name) throws IntentFilter.MalformedMimeTypeException {
+        ComponentName files = new ComponentName(pack, name);
+        IntentFilter view = new IntentFilter(Intent.ACTION_VIEW);
+        view.addCategory(Intent.CATEGORY_DEFAULT);
+        view.addDataType(Document.MIME_TYPE_DIR);
+        view.addDataType("vnd.android.document/root");
+        shadowOf(menu.getPackageManager()).addActivityIfNotPresent(files);
+        shadowOf(menu.getPackageManager()).addIntentFilterForActivity(files, view);
+    }
+
+    /** only the system's Files app reads the app's data (MANAGE_DOCUMENTS): a folder opens there, never in another app
+        the chooser would offer, a file manager or a hex editor, which opened on a place of its own */
+    @Test
+    public void aFolderOpensInTheSystemsFilesApp() {
+        assertEquals("com.google.android.documentsui", opened(data.getPath()).getPackage());
+        assertEquals("com.google.android.documentsui", opened(shared + "/Download").getPackage());
+    }
+
+    @Test
+    public void withoutGooglesFilesAppAndroidsOwnOpens() throws IntentFilter.MalformedMimeTypeException {
+        shadowOf(menu.getApplication()).checkActivities(true);
+        files("com.android.documentsui", "com.android.documentsui.files.FilesActivity");
+        files("org.example.hexeditor", "org.example.hexeditor.Open");
+        assertEquals("com.android.documentsui", opened(data.getPath()).getPackage());
+    }
+
+    @Test
+    public void withNeitherTheAppTheSystemNamesOpens() throws IntentFilter.MalformedMimeTypeException {
+        shadowOf(menu.getApplication()).checkActivities(true);
+        files("com.maker.filemanager", "com.maker.filemanager.Browse");
+        Intent view = opened(shared + "/Download");
+        assertNull(view.getPackage());
+        assertEquals(DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:Download"),
+                     view.getData());
+    }
     @Test
     public void pickFolderAsksTheSystemsFolderPicker() {
         menu.pickFolder();
