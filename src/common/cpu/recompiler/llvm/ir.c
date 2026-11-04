@@ -476,9 +476,15 @@ static void mips_tail_callees(LLVMModuleRef module) {
 #endif
 
 #if !defined(_WIN32) && !defined(__APPLE__)
-/* The linker makes these, no IR declares them: PowerPC64's TOC base and the GOT's conventional name */
-static int linker_symbol(const char* name) {
-    return !strcmp(name, ".TOC.") || !strcmp(name, "_GLOBAL_OFFSET_TABLE_");
+/* What a module's object may name that no IR declares: the linker's own names (PowerPC64's TOC base, the GOT's
+   conventional name), and the C library functions the runtime library defines for the calls LLVM makes of large or
+   variable copies and of 128-bit division (libc.inc) */
+static int provided_symbol(const char* name) {
+    static const char* const names[] = {".TOC.",  "_GLOBAL_OFFSET_TABLE_", "memcpy",    "memmove",
+                                        "memset", "memcmp",                "__udivti3", "__umodti3"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+        if (!strcmp(name, names[i])) return 1;
+    return 0;
 }
 
 /* The names a module declares, which its object may refer to: the runtime library's helpers, and the linker's own
@@ -496,7 +502,7 @@ static void declared_names(LLVMModuleRef module, SnxLinkNames* declared) {
     }
 }
 
-/* An object may refer to what the module's IR declares (the runtime library's helpers), and to the linker's names:
+/* An object may refer to what the module's IR declares (the runtime library's helpers) and to provided_symbol's:
    anything else is a call LLVM made at code generation, such as the libm ones ir_fp.h's gates exist to avoid. That
    fails the module's build and its tests here, not the module's load. Windows and Darwin write COFF and Mach-O,
    which only the linker reads here and whose undefined symbols it already refuses. */
@@ -516,7 +522,7 @@ static int object_refuses(const SnxIr* ir, SnxLinkNames* declared, const unsigne
         const char* name;
         if (symbol->st_shndx != SHN_UNDEF || ELF64_ST_BIND(symbol->st_info) == STB_WEAK) continue;
         name = snx_elf_symbol_name(&object, symbol);
-        if (!name || !*name || linker_symbol(name) || snx_link_find(declared, name, &found)) continue;
+        if (!name || !*name || provided_symbol(name) || snx_link_find(declared, name, &found)) continue;
         snprintf(error, error_size, "the object refers to %s, which the module does not declare", name);
         snx_elf_free(&object);
         return -1;
