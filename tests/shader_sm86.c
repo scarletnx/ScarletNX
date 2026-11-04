@@ -809,6 +809,207 @@ static void test_root_tables(const char* dir) {
     free(spv);
 }
 
+/* ---- texel offsets ---- */
+
+/* the SPIR-V instructions of opcode op in words, from the header's end: their first words' indices into at */
+static u32 spv_find(const u32* words, size_t count, u32 op, u32* at, u32 max) {
+    u32 found = 0;
+    for (size_t i = 5; i < count && words[i] >> 16; i += words[i] >> 16)
+        if ((words[i] & 0xffff) == op && found < max) at[found++] = (u32)i;
+    return found;
+}
+/* the value of the integer constant id: 1 when it is one */
+static int spv_int(const u32* words, size_t count, u32 id, i32* value) {
+    u32 at[4096];
+    u32 n = spv_find(words, count, 43 /* OpConstant */, at, 4096);
+    for (u32 k = 0; k < n; k++)
+        if (words[at[k] + 2] == id) {
+            *value = (i32)words[at[k] + 3];
+            return 1;
+        }
+    return 0;
+}
+/* the components of the constant vector id, two of them */
+static int spv_ivec2(const u32* words, size_t count, u32 id, i32* x, i32* y) {
+    u32 at[4096];
+    u32 n = spv_find(words, count, 44 /* OpConstantComposite */, at, 4096);
+    for (u32 k = 0; k < n; k++)
+        if (words[at[k] + 2] == id && (words[at[k]] >> 16) == 5)
+            return spv_int(words, count, words[at[k] + 3], x) && spv_int(words, count, words[at[k] + 4], y);
+    return 0;
+}
+/* TEX.SCR R0-R3, R4, R5 (the coordinates), offset R10, c[2][0x40], 2D, implicit LOD */
+static Word tex_offset(void) {
+    Word x = fix(0xb60);
+    set(&x, 16, 8, 0);
+    set(&x, 24, 8, 4);
+    set(&x, 32, 8, 10);
+    set(&x, 40, 14, 0x10);
+    set(&x, 54, 5, 2);
+    set(&x, 60, 1, 1);
+    set(&x, 61, 3, 1);
+    set(&x, 64, 8, 255);
+    set(&x, 72, 4, 0xf);
+    set(&x, 76, 1, 1);
+    set(&x, 81, 3, 7);
+    return x;
+}
+static Word mov_imm(u32 dst, u32 value) {
+    Word x = alu(0x002, 4, dst, 255);
+    set(&x, 32, 32, value);
+    return x;
+}
+/* the program's sample: its ConstOffset (x, y) and 1, or 0 when it takes none */
+static int sample_const_offset(const u32* spv, size_t count, i32* x, i32* y) {
+    u32 at[8];
+    if (spv_find(spv, count, 87 /* OpImageSampleImplicitLod */, at, 8) != 1) return -1;
+    const u32* s = spv + at[0];
+    if ((s[0] >> 16) < 7 || !(s[5] & 8)) return 0;
+    return spv_ivec2(spv, count, s[6], x, y) ? 1 : -1;
+}
+static u32* translate_fs(const u8* code, u32 n, ShaderInfo* si, size_t* count) {
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    *si = (ShaderInfo){0};
+    u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, si, count);
+    if (!spv) fprintf(stderr, "texel offsets: %s\n", si->first_unsupported);
+    return spv;
+}
+/* TEX, TLD and TLD4 with texel offsets: a register every path sets to one immediate is ConstOffset, as the program
+   packs it (four bits a component); a register two paths set apart moves the coordinates instead. TLD adds its
+   offset to the coordinates, and TLD4's offset for each texel takes four gathers */
+static void test_texel_offsets(const char* dir) {
+    u8 code[16 * 16];
+    ShaderInfo si;
+    size_t count = 0;
+    i32 ox = 0, oy = 0;
+    u32 n, *spv;
+
+    /* MOV R10, 0xf1; TEX: (1, -1) */
+    memset(code, 0, sizeof code);
+    n = 0;
+    put(code, n++, mov_imm(10, 0xf1));
+    put(code, n++, tex_offset());
+    put(code, n, exit_insn());
+    n++;
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    spv = translate_fs(code, n, &si, &count);
+    CHECK(spv != NULL);
+    if (spv) {
+        CHECK(sample_const_offset(spv, count, &ox, &oy) == 1 && ox == 1 && oy == -1);
+        CHECK(keep_module(dir, "tex_offset", spv, count));
+    }
+    free(spv);
+
+    /* @P0 BRA L; MOV R10, 0x10; BRA M; L: MOV R10, 0x10; M: TEX: both paths set (0, 1) */
+    memset(code, 0, sizeof code);
+    put(code, 0, bra(0, 3, 0, 0));
+    put(code, 1, mov_imm(10, 0x10));
+    put(code, 2, bra(2, 4, 7, 0));
+    put(code, 3, mov_imm(10, 0x10));
+    put(code, 4, tex_offset());
+    put(code, 5, exit_insn());
+    put(code, 6, bra(6, 6, 7, 0));
+    spv = translate_fs(code, 7, &si, &count);
+    CHECK(spv != NULL);
+    if (spv) {
+        CHECK(sample_const_offset(spv, count, &ox, &oy) == 1 && ox == 0 && oy == 1);
+        CHECK(keep_module(dir, "tex_offset_paths", spv, count));
+    }
+    free(spv);
+
+    /* the same with the paths apart (0x10 and 0x01): no ConstOffset, the coordinates move by the level's size */
+    put(code, 3, mov_imm(10, 0x01));
+    spv = translate_fs(code, 7, &si, &count);
+    CHECK(spv != NULL);
+    if (spv) {
+        u32 at[4];
+        CHECK(sample_const_offset(spv, count, &ox, &oy) == 0);
+        CHECK(spv_find(spv, count, 103 /* OpImageQuerySizeLod */, at, 4) == 1);
+        CHECK(keep_module(dir, "tex_offset_apart", spv, count));
+    }
+    free(spv);
+
+    /* a guarded MOV, or none on the path from the start: not a constant either */
+    put(code, 3, mov_imm(10, 0x10));
+    {
+        Word guarded = mov_imm(10, 0x10);
+        set(&guarded, 12, 3, 1); /* @P1 */
+        put(code, 1, guarded);
+    }
+    spv = translate_fs(code, 7, &si, &count);
+    CHECK(spv && sample_const_offset(spv, count, &ox, &oy) == 0);
+    free(spv);
+    put(code, 1, mov_imm(11, 0x10)); /* the other path writes another register */
+    spv = translate_fs(code, 7, &si, &count);
+    CHECK(spv && sample_const_offset(spv, count, &ox, &oy) == 0);
+    free(spv);
+
+    /* TLD4.SCR R0-R3, R4, R5, offsets R10 and R11 for each texel: four gathers, each with an Offset */
+    memset(code, 0, sizeof code);
+    n = 0;
+    {
+        Word x = fix(0xb63);
+        set(&x, 24, 8, 4);
+        set(&x, 32, 8, 10);
+        set(&x, 40, 14, 0x10);
+        set(&x, 54, 5, 2);
+        set(&x, 60, 1, 1);
+        set(&x, 61, 3, 1);
+        set(&x, 64, 8, 255);
+        set(&x, 72, 4, 0xf);
+        set(&x, 76, 2, 2);
+        set(&x, 81, 3, 7);
+        put(code, n++, x);
+    }
+    put(code, n, exit_insn());
+    n++;
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    spv = translate_fs(code, n, &si, &count);
+    CHECK(spv != NULL);
+    if (spv) {
+        u32 at[8];
+        u32 gathers = spv_find(spv, count, 96 /* OpImageGather */, at, 8), with = 0;
+        for (u32 k = 0; k < gathers; k++) with += (spv[at[k]] >> 16) == 8 && spv[at[k] + 6] == 16;
+        CHECK(gathers == 4 && with == 4);
+        CHECK(keep_module(dir, "tld4_offsets", spv, count));
+    }
+    free(spv);
+
+    /* TLD.SCR.LL R0-R3, R4, R6, offset R7 (list1: the level R6, then R7): translated, fetching without Offset */
+    memset(code, 0, sizeof code);
+    n = 0;
+    {
+        Word x = fix(0xb66);
+        set(&x, 24, 8, 4);
+        set(&x, 32, 8, 6);
+        set(&x, 40, 14, 0x10);
+        set(&x, 54, 5, 2);
+        set(&x, 61, 3, 1);
+        set(&x, 64, 8, 255);
+        set(&x, 72, 4, 0xf);
+        set(&x, 76, 1, 1);
+        set(&x, 81, 3, 7);
+        set(&x, 87, 3, 3);
+        put(code, n++, x);
+    }
+    put(code, n, exit_insn());
+    n++;
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    spv = translate_fs(code, n, &si, &count);
+    CHECK(spv != NULL);
+    if (spv) {
+        u32 at[4];
+        CHECK(spv_find(spv, count, 95 /* OpImageFetch */, at, 4) == 1 && !(spv[at[0] + 5] & 0x18));
+        CHECK(keep_module(dir, "tld_offset", spv, count));
+    }
+    free(spv);
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     test_alu_forms();
@@ -823,6 +1024,7 @@ int main(int argc, char** argv) {
     test_compute_forms(dir);
     test_image_kinds(dir);
     test_root_tables(dir);
+    test_texel_offsets(dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
