@@ -1543,6 +1543,20 @@ enum { VK_SUB_OTHER, VK_SUB_PRESENT, VK_SUB_FINISH, VK_SUB_PERIODIC, VK_SUB_READ
    (a release's gate, a result's landing: vk_wait_submit) */
 enum { VK_WAIT_FINISH, VK_WAIT_RECYCLE, VK_WAIT_SUBMIT, VK_WAIT_N };
 extern u64 g_vk_wait_ns[VK_WAIT_N], g_vk_waits[VK_WAIT_N]; /* cmd.c: the GPU thread's waits, by kind */
+/* Each dispatch recorded into the frame's command buffer, timed (record.c's rec_CmdDispatch): begin before it, 1 when
+   it is timed, end after it. tag names the next one: a compute program's key, or a VK_PROF_* constant; untagged it is
+   one of the renderer's own */
+int vk_gpuprof_dispatch_begin(VkCommandBuffer cb);
+void vk_gpuprof_dispatch_end(VkCommandBuffer cb);
+void vk_gpuprof_tag(u64 key);
+/* any operation the same way: kind VK_OP_*, key what it is (a copy's: where it was recorded, from vk_gpuprof_base) */
+enum { VK_OP_DISPATCH, VK_OP_COPY, VK_OP_TO_IMAGE, VK_OP_TO_BUFFER, VK_OP_IMAGE, VK_OP_N };
+int vk_gpuprof_op_begin(VkCommandBuffer cb, u32 kind, u64 key, u64 bytes);
+void vk_gpuprof_op_end(VkCommandBuffer cb);
+const void* vk_gpuprof_base(void);
+int vk_gpuprof_profiled(VkCommandBuffer cb); /* cb is the frame's command buffer the profile times */
+#define VK_PROF_ASTC 1 /* the ASTC decode (astc.comp) */
+#define VK_PROF_BC7  2 /* its BC7 encode (bc7.comp) */
 void vk_gpuprof_cb_begin(VkCommandBuffer cb);
 void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value);
 void vk_gpuprof_waited(u64 value, int kind);

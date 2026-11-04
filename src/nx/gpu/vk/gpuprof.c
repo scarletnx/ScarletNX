@@ -23,7 +23,8 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 
-#define GP_QUERIES 8192 /* timestamps per frame slot: two per pass */
+#define GP_QUERIES 16384 /* timestamps per frame slot: two per pass, two per dispatch */
+#define GP_DISP    4096  /* dispatches timed per frame slot */
 #define GP_KEYS    1024 /* targets summed over 600 presents */
 
 typedef struct {
@@ -39,6 +40,9 @@ typedef struct {
 #define GP_SUBS 512 /* submissions per frame slot: cmd.c's slots take at most 128 */
 typedef struct {
     u32 q0, q1; /* its begin's and its end's timestamps, q1 0 while it is not submitted */
+    /* what it holds: passes, dispatches and copies recorded into it, the counts at its begin until its end */
+    u32 passes, dispatches;
+    u64 xfers;
     u64 cpu;    /* CLOCK_MONOTONIC at its submit */
     u64 value;  /* its value on the graphics timeline */
     int why;    /* VK_SUB_* */
@@ -47,9 +51,14 @@ typedef struct {
     VkQueryPool pool;
     u32 used; /* timestamps written in this slot since its reset */
     int reset; /* the reset is recorded for this use of the slot */
-    u32 npass, nsub;
+    u32 npass, nsub, ndisp;
     GpPass pass[GP_QUERIES / 2];
     GpSub sub[GP_SUBS];
+    struct {
+        u32 qi; /* its begin's timestamp, its end's the one after */
+        u32 kind; /* VK_OP_* */
+        u64 key, bytes;
+    } disp[GP_DISP];
 } GpSlot;
 typedef struct {
     u64 gva;
@@ -79,6 +88,21 @@ static const char* const g_idle_name[IDLE_N] = {
     "the CPU still recording the next one", "submitted, not started (semaphores, the recording thread)"};
 static u64 g_idle_ns[IDLE_N], g_idles[IDLE_N], g_busy_ns, g_subs, g_sub_why[VK_SUB_N];
 static u64 g_round_ns[VK_WAIT_N]; /* IDLE_WAITED by the kind of the CPU's wait */
+/* The busy time by what the submissions held: rendering passes, else dispatches, else copies, else nothing. Most of
+   one game's submissions held no pass, so the passes' times said nothing of most of the GPU's */
+enum { HOLD_PASSES, HOLD_DISPATCHES, HOLD_COPIES, HOLD_NOTHING, HOLD_N };
+static const char* const g_hold_name[HOLD_N] = {"rendering passes", "dispatches and no pass", "copies only", "nothing"};
+static u64 g_hold_ns[HOLD_N], g_holds[HOLD_N];
+/* The dispatches recorded into the frame's command buffers, timed each, summed by tag (vk_gpuprof_tag) */
+#define GP_DKEYS 512
+typedef struct {
+    u64 key, ns, n, bytes;
+    u32 kind;
+} GpDKey;
+static GpDKey g_dkey[GP_DKEYS];
+static u64 g_disp_ns, g_disps;
+static VkCommandBuffer g_cur_cb; /* the frame's command buffer being recorded, between cb_begin and cb_end */
+static u64 g_tag, g_dispatched;  /* the next dispatch's tag, and the dispatches recorded into g_cur_cb */
 static u64 g_last_end;            /* CLOCK_MONOTONIC of the last submission's end, 0 none */
 static int g_prev_why, g_prev_kind; /* that submission's VK_SUB_*, and the CPU's wait for it (VK_WAIT_* + 1, 0 none) */
 static u64 g_t0;        /* the report window's start (plat_ns) */
@@ -140,7 +164,7 @@ static GpSlot* gp_slot_reset(VkCommandBuffer cb) {
     if (!g->reset) {
         rec_CmdResetQueryPool(cb, g->pool, 0, GP_QUERIES);
         g->reset = 1;
-        g->used = g->npass = g->nsub = 0;
+        g->used = g->npass = g->nsub = g->ndisp = 0;
     }
     return g;
 }
@@ -152,9 +176,10 @@ void vk_gpuprof_cb_begin(VkCommandBuffer cb) {
         g_lost++;
         return;
     }
-    g->sub[g->nsub] = (GpSub){.q0 = g->used};
+    g->sub[g->nsub] = (GpSub){.q0 = g->used, .passes = g->npass, .dispatches = (u32)g_dispatched, .xfers = g_rec_xfers};
     rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->pool, g->used++);
     g->nsub++;
+    g_cur_cb = cb;
 }
 /* the command buffer ends: submitted for why (VK_SUB_*) as the timeline's value */
 void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value) {
@@ -167,10 +192,57 @@ void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value) {
         return;
     }
     s->q1 = g->used;
+    s->passes = g->npass - s->passes;
+    s->dispatches = (u32)g_dispatched - s->dispatches;
+    s->xfers = g_rec_xfers - s->xfers;
+    g_cur_cb = VK_NULL_HANDLE;
     s->cpu = plat_monotonic_ns();
     s->value = value;
     s->why = why;
     rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->pool, g->used++);
+}
+void vk_gpuprof_tag(u64 key) { g_tag = key; }
+int vk_gpuprof_profiled(VkCommandBuffer cb) { return cb && cb == g_cur_cb; }
+int vk_gpuprof_op_begin(VkCommandBuffer cb, u32 kind, u64 key, u64 bytes) {
+    if (cb != g_cur_cb || !cb) return 0; /* another queue's, or no frame command buffer is profiled */
+    if (kind == VK_OP_DISPATCH) g_dispatched++;
+    GpSlot* g = gp_slot_reset(cb);
+    if (!g) return 0;
+    if (g->used + 2 > GP_QUERIES || g->ndisp >= GP_DISP) {
+        g_lost++;
+        return 0;
+    }
+    g->disp[g->ndisp].qi = g->used;
+    g->disp[g->ndisp].kind = kind;
+    g->disp[g->ndisp].key = key;
+    g->disp[g->ndisp].bytes = bytes;
+    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->pool, g->used);
+    return 1;
+}
+void vk_gpuprof_op_end(VkCommandBuffer cb) {
+    GpSlot* g = g_slot[vk_frame_slot()];
+    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->pool, g->used + 1);
+    g->used += 2;
+    g->ndisp++;
+}
+int vk_gpuprof_dispatch_begin(VkCommandBuffer cb) {
+    u64 key = g_tag;
+    g_tag = 0;
+    return vk_gpuprof_op_begin(cb, VK_OP_DISPATCH, key, 0);
+}
+void vk_gpuprof_dispatch_end(VkCommandBuffer cb) { vk_gpuprof_op_end(cb); }
+const void* vk_gpuprof_base(void) { return (const void*)vk_gpuprof_tag; }
+static GpDKey* gp_dkey(u32 kind, u64 key) {
+    u64 h = key ^ (key >> 29) ^ kind;
+    for (u32 i = 0; i < GP_DKEYS; i++) {
+        GpDKey* k = &g_dkey[(h + i) & (GP_DKEYS - 1)];
+        if (!k->n || (k->key == key && k->kind == kind)) {
+            k->key = key;
+            k->kind = kind;
+            return k;
+        }
+    }
+    return NULL;
 }
 /* the CPU waits for the timeline's value (kind: VK_WAIT_*) */
 void vk_gpuprof_waited(u64 value, int kind) {
@@ -251,6 +323,9 @@ static void gp_idle(const GpSlot* g, const u64* ts, double period) {
         u64 e = pair[1] - (u64)((double)(pair[0] - ts[s->q1]) * period);
         if (e < b) e = b;
         g_busy_ns += e - b;
+        int hold = s->passes ? HOLD_PASSES : s->dispatches ? HOLD_DISPATCHES : s->xfers ? HOLD_COPIES : HOLD_NOTHING;
+        g_hold_ns[hold] += e - b;
+        g_holds[hold]++;
         g_subs++;
         g_sub_why[s->why]++;
         if (g_last_end && b > g_last_end) {
@@ -335,6 +410,17 @@ void vk_gpuprof_frame_done(u32 slot) {
     }
 #endif
     double period = g_vk.props.limits.timestampPeriod;
+    for (u32 i = 0; i < g->ndisp; i++) {
+        u64 ns = (u64)((double)(ts[g->disp[i].qi + 1] - ts[g->disp[i].qi]) * period);
+        GpDKey* k = gp_dkey(g->disp[i].kind, g->disp[i].key);
+        g_disp_ns += ns;
+        g_disps++;
+        if (!k) continue;
+        k->ns += ns;
+        k->n++;
+        k->bytes += g->disp[i].bytes;
+    }
+    g->ndisp = 0;
     for (u32 i = 0; i < g->npass; i++) {
         const GpPass* p = &g->pass[i];
         u64 ns = (u64)((double)(ts[p->qi + 1] - ts[p->qi]) * period);
@@ -418,7 +504,13 @@ static void gp_idle_report(void) {
             at += snprintf(line + at, sizeof line - (size_t)at, "%s %s %.1f", w ? "," : "", why[w],
                            (double)g_sub_why[w] / f);
         LOG("vulkan: GPU   submissions a present by why:%s\n", line);
+        for (int c = 0; c < HOLD_N; c++)
+            if (g_holds[c])
+                LOG("vulkan: GPU   busy in submissions holding %s: %.2f ms a present, %.1f of them\n", g_hold_name[c],
+                    (double)g_hold_ns[c] / 1e6 / f, (double)g_holds[c] / f);
     }
+    memset(g_hold_ns, 0, sizeof g_hold_ns);
+    memset(g_holds, 0, sizeof g_holds);
     for (int k = 0; k < VK_WAIT_N; k++) {
         wait0[k] = g_vk_wait_ns[k];
         waits0[k] = g_vk_waits[k];
@@ -431,6 +523,10 @@ static void gp_idle_report(void) {
     g_busy_ns = g_subs = 0;
     g_t0 = now;
     g_present0 = g_vk_present;
+}
+static int dkey_cmp(const void* a, const void* b) {
+    u64 x = ((const GpDKey*)a)->ns, y = ((const GpDKey*)b)->ns;
+    return x < y ? 1 : x > y ? -1 : 0;
 }
 static int key_cmp(const void* a, const void* b) {
     u64 x = ((const GpKey*)a)->ns, y = ((const GpKey*)b)->ns;
@@ -467,6 +563,34 @@ static void gp_report(void) {
             (unsigned long long)sorted[i].draws, (unsigned long long)sorted[i].gva, sorted[i].w, sorted[i].h,
             sorted[i].fmt);
     memset(g_key, 0, sizeof g_key);
+    /* the dispatches by tag: compute programs by key (vulkan: compute KEY ready), the ASTC decode and BC7 encode, and
+       the renderer's own (0) */
+    if (g_disps) {
+        static GpDKey ds[GP_DKEYS];
+        memcpy(ds, g_dkey, sizeof ds);
+        qsort(ds, GP_DKEYS, sizeof *ds, dkey_cmp);
+        static const char* const kinds[VK_OP_N] = {"dispatch", "buffer copy", "buffer to image copy",
+                                                   "image to buffer copy", "image copy"};
+        LOG("vulkan: GPU   dispatches and copies: %.2f ms a frame, %llu of them timed\n",
+            (double)g_disp_ns / 1e6 / (double)g_frames, (unsigned long long)g_disps);
+        for (int i = 0; i < 16 && ds[i].n; i++) {
+            char what[64];
+            if (ds[i].kind != VK_OP_DISPATCH) /* a copy: by where it was recorded, from vk_gpuprof_base */
+                snprintf(what, sizeof what, "recorded at base%+lld", (long long)ds[i].key);
+            else
+                snprintf(what, sizeof what, "%s %016llx",
+                         ds[i].key == VK_PROF_ASTC ? "the ASTC decode"
+                         : ds[i].key == VK_PROF_BC7 ? "the BC7 encode"
+                         : ds[i].key               ? "compute"
+                                                   : "the renderer's own",
+                         (unsigned long long)ds[i].key);
+            LOG("vulkan: GPU     %.2f ms a frame (%.3f ms each, %.1f MB a frame): %llu %s, %s\n",
+                (double)ds[i].ns / 1e6 / (double)g_frames, (double)ds[i].ns / 1e6 / (double)ds[i].n,
+                (double)ds[i].bytes / 1048576.0 / (double)g_frames, (unsigned long long)ds[i].n, kinds[ds[i].kind], what);
+        }
+        memset(g_dkey, 0, sizeof g_dkey);
+        g_disp_ns = g_disps = 0;
+    }
     g_pass_ns = g_span_ns = g_frames = g_lost = 0;
     gp_idle_report();
 }

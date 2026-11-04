@@ -99,6 +99,14 @@ void vk_gpuprof_waited(u64 value, int kind) {
     (void)value;
     (void)kind;
 }
+/* and record.c's dispatches and copies, which it would time */
+void vk_gpuprof_tag(u64 key) { (void)key; }
+int vk_gpuprof_dispatch_begin(VkCommandBuffer cb) { return (void)cb, 0; }
+void vk_gpuprof_dispatch_end(VkCommandBuffer cb) { (void)cb; }
+int vk_gpuprof_profiled(VkCommandBuffer cb) { return (void)cb, 0; }
+int vk_gpuprof_op_begin(VkCommandBuffer cb, u32 kind, u64 key, u64 bytes) { return (void)cb, (void)kind, (void)key, (void)bytes, 0; }
+void vk_gpuprof_op_end(VkCommandBuffer cb) { (void)cb; }
+const void* vk_gpuprof_base(void) { return NULL; }
 /* record.c's presents tell display.c they were made, which isn't here (nor are presents) */
 void vk_display_made(u64 id, VkResult r) {
     (void)id;
