@@ -54,7 +54,7 @@ if(list MATCHES "\nOn-screen controls/Buttons\t[^\n]*\nOn-screen controls\t") # 
 endif()
 # the HDR setting, its source, the paper white, the peak and the boost, and its toggle key: a game's menu shows them,
 # with their words (gpu/vk/hdr_select.c, gpu/vk/hdr.c)
-foreach(row "Graphics\thdr\tauto\ttext\t0\t0\t" "\tHDR\toff=Off|auto=Auto|on=On\n"
+foreach(row "Graphics\thdr\toff\ttext\t0\t0\t" "\tHDR\toff=Off|auto=Auto|on=On\n"
             "Graphics\thdr_colorspace\tauto\ttext\t0\t0\t" "\tHDR colours\tauto=Auto|p3=Display P3|scrgb=scRGB|hdr10=HDR10 (PQ)\n"
             "Graphics\thdr_source\tauto\ttext\t0\t0\t" "\tHDR source\tauto=Auto|sdr=SDR|linear=Linear|pq=PQ (HDR10)\n"
             "Graphics\thdr_test\t0\tint\t0\t1\t" "\tHDR test pattern\t0=Off|1=On\n"

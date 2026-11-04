@@ -100,19 +100,28 @@ int vk_hdr_display_kind(void) {
     static const VkFormat scrgb_formats[] = {VK_FORMAT_R16G16B16A16_SFLOAT};
     VkSurfaceFormatKHR out = {0};
     if (g_hdr.display_kind >= 0) return g_hdr.display_kind;
-    /* a frame asks this for each present: the surface's formats don't move under it */
-    if (!g_vk.surface || !g_vk.has_swapchain_colorspace)
-        g_hdr.display_kind = SNX_HDR_DISPLAY_NONE;
-    else if (snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, scrgb_formats, 1, VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT,
-                                      &out))
-        g_hdr.display_kind = SNX_HDR_DISPLAY_P3;
-    else if (snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, scrgb_formats, 1, VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT,
-                                      &out))
-        g_hdr.display_kind = SNX_HDR_DISPLAY_SCRGB;
-    else if (snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, hdr_formats, 2, VK_COLOR_SPACE_HDR10_ST2084_EXT, &out))
-        g_hdr.display_kind = SNX_HDR_DISPLAY_PQ;
-    else
-        g_hdr.display_kind = SNX_HDR_DISPLAY_NONE;
+    /* a frame asks this for each present: the surface's formats don't move under it. The order is the swapchain's
+       (device.c): hdr_colorspace names one kind, and auto takes the extended ones first */
+    {
+        int cs = snx_hdr_colorspace_parse(g_settings.hdr_colours);
+        int want_p3 = cs == SNX_HDR_CS_AUTO || cs == SNX_HDR_CS_P3;
+        int want_scrgb = cs == SNX_HDR_CS_AUTO || cs == SNX_HDR_CS_SCRGB;
+        int want_pq = cs == SNX_HDR_CS_AUTO || cs == SNX_HDR_CS_PQ;
+        if (!g_vk.surface || !g_vk.has_swapchain_colorspace)
+            g_hdr.display_kind = SNX_HDR_DISPLAY_NONE;
+        else if (want_p3 && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, scrgb_formats, 1,
+                                                     VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT, &out))
+            g_hdr.display_kind = SNX_HDR_DISPLAY_P3;
+        else if (want_scrgb && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, scrgb_formats, 1,
+                                                        VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, &out))
+            g_hdr.display_kind = SNX_HDR_DISPLAY_SCRGB;
+        else if (want_pq &&
+                 snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, hdr_formats, 2, VK_COLOR_SPACE_HDR10_ST2084_EXT,
+                                          &out))
+            g_hdr.display_kind = SNX_HDR_DISPLAY_PQ;
+        else
+            g_hdr.display_kind = SNX_HDR_DISPLAY_NONE;
+    }
     LOG("vulkan: hdr: the window takes %s\n", snx_fx_display_label(g_hdr.display_kind));
     return g_hdr.display_kind;
 }

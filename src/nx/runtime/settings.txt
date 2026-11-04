@@ -276,7 +276,7 @@ setting Frame interpolation
 setting HDR
     key hdr
     text 8
-    default auto
+    default off
     startup
     words off=Off|auto=Auto|on=On
     help Auto = HDR where the display takes an HDR image and reports headroom over its white, and the plain blit where
