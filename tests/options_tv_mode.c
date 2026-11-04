@@ -235,11 +235,22 @@ static void test_key_twice(void) {
     free(dir);
 }
 
+/* the log's settings line: the Display, Graphics and Performance settings off their default, each with its default */
+static void test_settings_line(void) {
+    char list[2048];
+    g_settings.astc_bc = 1;
+    CHECK(options_settings(list, sizeof list) >= 1 && strstr(list, "astc_bc=1 (default 0)"));
+    g_settings.astc_bc = 0;
+    options_settings(list, sizeof list);
+    CHECK(!strstr(list, "astc_bc"));
+}
+
 int main(void) {
     test_fixed();
     test_auto_watched();
     test_auto_polled();
-    test_key_twice(); /* last: the file's every setting applied, which the TV mode tests count from nought */
+    test_key_twice(); /* after the TV mode tests: the file's every setting applied, which they count from nought */
+    test_settings_line();
     printf("options_tv_mode: ok\n");
     return 0;
 }
