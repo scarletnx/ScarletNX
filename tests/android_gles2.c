@@ -51,6 +51,8 @@ static uint64_t call(const char* name, const uint64_t* x, size_t nx, const float
 #define GLF(name, ints, ...)                                                                                           \
     call(name, (uint64_t[]){ints}, sizeof((uint64_t[]){ints}) / 8, (float[]){__VA_ARGS__},                            \
          sizeof((float[]){__VA_ARGS__}) / 4)
+#define GLF2(name, a, b, ...)                                                                                      \
+    call(name, (uint64_t[]){a, b}, 2, (float[]){__VA_ARGS__}, sizeof((float[]){__VA_ARGS__}) / 4)
 #define GLF0(name, ...) call(name, NULL, 0, (float[]){__VA_ARGS__}, sizeof((float[]){__VA_ARGS__}) / 4)
 
 enum {
@@ -606,12 +608,52 @@ static void vertex_bindings(void) {
     GL("glBindVertexArray", 0);
 }
 
+/* GLES 3.1's separate shader objects: two programs of one stage each in a program pipeline, a uniform of each set
+   with glProgramUniform* */
+static void separate_programs(void) {
+    g_t.test = "separate programs";
+    const char* vs = "#version 310 es\nlayout(location = 0) in vec2 position;\nuniform vec2 shift;\n"
+                     "layout(location = 2) out vec4 c;\n"
+                     "void main() { gl_Position = vec4(position * 0.5 + shift, 0.0, 1.0); c = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    const char* fs = "#version 310 es\nprecision mediump float;\nlayout(location = 2) in vec4 c;\n"
+                     "uniform vec4 tint;\nout vec4 frag;\nvoid main() { frag = c * tint; }\n";
+    uint64_t vs_strings[1] = {P(vs)}, fs_strings[1] = {P(fs)};
+    unsigned v = (unsigned)GL("glCreateShaderProgramv", GL_VERTEX_SHADER, 1, P(vs_strings));
+    unsigned f = (unsigned)GL("glCreateShaderProgramv", GL_FRAGMENT_SHADER, 1, P(fs_strings));
+    int32_t ok = 0;
+    GL("glGetProgramiv", v, GL_LINK_STATUS, P(&ok));
+    if (!ok) fprintf(stderr, "android_gles2: separate programs: the vertex program does not link\n"), g_t.failures++;
+    uint32_t pipeline = 0;
+    GL("glGenProgramPipelines", 1, P(&pipeline));
+    GL("glUseProgramStages", pipeline, 1, v);
+    GL("glUseProgramStages", pipeline, 2, f);
+    GL("glUseProgram", 0);
+    GL("glBindProgramPipeline", pipeline);
+    GLF2("glProgramUniform2f", v, GL("glGetUniformLocation", v, P("shift")), 0.5f, 0.5f);
+    GLF2("glProgramUniform4f", f, GL("glGetUniformLocation", f, P("tint")), 1, 1, 1, 1);
+    buffer(GL_ARRAY_BUFFER, quad, sizeof quad);
+    GL("glVertexAttribPointer", 0, 2, GL_FLOAT, 0, 0, 0);
+    GL("glEnableVertexAttribArray", 0);
+    clear(0, 0, 0, 1);
+    GL("glDrawArrays", GL_TRIANGLE_STRIP, 0, 4);
+    no_error("draw");
+    expect(3 * W / 4, 3 * H / 4, 0, 255, 0, 255, "the shifted quad");
+    expect(W / 4, H / 4, 0, 0, 0, 255, "outside it");
+    /* a uniform changed after the first draw reaches the next */
+    GLF2("glProgramUniform4f", f, GL("glGetUniformLocation", f, P("tint")), 1, 1, 1, 0.5f);
+    GL("glDrawArrays", GL_TRIANGLE_STRIP, 0, 4);
+    expect(3 * W / 4, 3 * H / 4, 0, 255, 0, 128, "the new tint");
+    GL("glBindProgramPipeline", 0);
+}
+
 /* the queries of state and of the program */
 static void queries(void) {
     g_t.test = "queries";
     int32_t v = 0;
     GL("glGetIntegerv", 0x821b, P(&v));
     if (v != 3) fprintf(stderr, "android_gles2: queries: GL_MAJOR_VERSION %d\n", v), g_t.failures++;
+    GL("glGetIntegerv", 0x821c, P(&v));
+    if (v != 1) fprintf(stderr, "android_gles2: queries: GL_MINOR_VERSION %d\n", v), g_t.failures++;
     GL("glGetIntegerv", 0x0ba2, P((int32_t[4]){0}));
     unsigned p = program(textured_vs, textured_fs);
     int32_t count = 0, size = 0;
@@ -645,6 +687,7 @@ int main(void) {
     window_coords();
     compute();
     vertex_bindings();
+    separate_programs();
     queries();
     gles2_make_current(NULL, NULL, NULL);
     gles2_context_free(gl);
