@@ -33,7 +33,8 @@ typedef struct {
     /* resources, made when first used */
     u32 cbuf[18], cbuf_ptr, root;
     u32 gbuf[16], gbuf_ptr;
-    u32 wpages; /* SNX_VKB_WPAGES, once a store marks a window (mark_written) */
+    u32 wpages; /* SNX_VKB_WPAGES, once a store logs its bytes (mark_written) */
+    u32 gkey;   /* the global buffer the last global_address named */
     u32 shared, shared_ptr, shared_words;
     u32 in_attr[32], out_attr[32], position, point_size, fragcoord, color[8], depth;
     u32 vertex_index, instance_index, local_id, group_id, lane_id;
@@ -561,29 +562,46 @@ static u32 gbuf_slot(Ctx* c, u32 key, int write) {
     if (write) c->si->gbuf_wmask |= 1u << slot;
     return c->gbuf[slot];
 }
-/* A compute program's store to global buffer slot marks the 4 KiB window of its byte offset in the binding
-   (ShaderInfo.gbuf_marks): a plain store of 1, as every store of a window writes the same, into the word slot *
-   SH_WPAGE_SLOT + window of the binding SNX_VKB_WPAGES. A store past the windows marks the last. The renderer then
-   lands only the windows marked: an Ounce program's buffer is all of the memory mapped from its address, up to 16 MiB,
-   and comparing all of it after each dispatch was most of one game's CPU time */
-static void mark_written(Ctx* c, u32 key, u32 offset) {
+/* A compute program's store of bytes bytes (1, 2, 4, 8 or 16) at byte offset into global buffer key records them in
+   the write log (ShaderInfo.gbuf_mark, SH_WLOG_*): a plain store of 1 into its window's flag, as every store of a
+   window writes the same, and an atomic OR of its bytes' bits into that window's mask, which other invocations OR
+   into too. The offset is taken as aligned to the size, as the GPU requires of every global access, so its bits are
+   in one mask word. A store past the windows sets the last window's flag and no bit. The renderer lands the bytes
+   logged and no others: an Ounce program's buffer is all of the memory mapped from its address, up to 16 MiB, and
+   finding what changed by comparing its bytes with a copy taken before the dispatch was most of one game's CPU time */
+static void mark_written(Ctx* c, u32 key, u32 offset, u32 bytes) {
     int slot = -1;
     if (c->stage != ST_CS) return;
     for (int i = 0; i < c->si->ngbuf; i++)
         if (c->si->gbuf_cbuf_off[i] == key) slot = i;
     if (slot < 0) return;
+    if (!c->si->gbuf_mark[slot]) c->si->gbuf_mark[slot] = ++c->si->nmarks;
+    u32 part = (u32)(c->si->gbuf_mark[slot] - 1) * SH_WLOG_PART;
     if (!c->wpages) {
         u32 array = spv_emit_type_runtime_array(&c->e, c->t_u32, 4);
         u32 structure = spv_emit_type_struct_one(&c->e, array);
         c->wpages = spv_emit_storage_buffer(&c->e, structure, (u32)shader_vk_set(c->stage), SNX_VKB_WPAGES);
         add_interface(c, c->wpages);
     }
-    u32 window = spv_emit_shift_right_u32(&c->e, c->t_u32, offset, cu(c, 12)), last = cu(c, SH_WPAGE_SLOT - 1);
-    window = spv_emit_select(&c->e, c->t_u32, spv_emit_u_less(&c->e, c->t_bool, last, window), last, window);
-    u32 index = spv_emit_iadd_u32(&c->e, c->t_u32, window, cu(c, (u32)slot * SH_WPAGE_SLOT));
-    u32 ptr = spv_emit_storage_access_u32(&c->e, spv_emit_type_storage_pointer(&c->e, c->t_u32), c->wpages, c->zero,
-                                          index);
-    spv_emit_store(&c->e, ptr, cu(c, 1));
+    u32 ptr_type = spv_emit_type_storage_pointer(&c->e, c->t_u32);
+    u32 at = spv_emit_bitwise_and_u32(&c->e, c->t_u32, offset, cu(c, ~(bytes - 1)));
+    u32 window = spv_emit_shift_right_u32(&c->e, c->t_u32, at, cu(c, 12)), last = cu(c, SH_WPAGE_SLOT - 1);
+    u32 past = spv_emit_u_less(&c->e, c->t_bool, last, window);
+    window = spv_emit_select(&c->e, c->t_u32, past, last, window);
+    u32 flag = spv_emit_iadd_u32(&c->e, c->t_u32, window, cu(c, part));
+    spv_emit_store(&c->e, spv_emit_storage_access_u32(&c->e, ptr_type, c->wpages, c->zero, flag), cu(c, 1));
+    u32 word = spv_emit_iadd_u32(
+        &c->e, c->t_u32,
+        spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_imul_u32(&c->e, c->t_u32, window, cu(c, SH_WLOG_MASK)),
+                          spv_emit_shift_right_u32(&c->e, c->t_u32,
+                                                   spv_emit_bitwise_and_u32(&c->e, c->t_u32, at, cu(c, 4095)),
+                                                   cu(c, 5))),
+        cu(c, part + SH_WPAGE_SLOT));
+    u32 bits = spv_emit_shift_left_u32(&c->e, c->t_u32, cu(c, (u32)((1ull << bytes) - 1)),
+                                       spv_emit_bitwise_and_u32(&c->e, c->t_u32, at, cu(c, 31)));
+    bits = spv_emit_select(&c->e, c->t_u32, past, cu(c, 0), bits);
+    spv_emit_atomic_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_OR,
+                        spv_emit_storage_access_u32(&c->e, ptr_type, c->wpages, c->zero, word), bits);
     c->si->gbuf_marks |= 1u << slot;
 }
 /* LDG and STG, as spirv_translate.c's global memory: the buffer is the one whose 64-bit address the constant buffer
@@ -612,9 +630,8 @@ static u32 global_address(Ctx* c, const Sm86Insn* in, int uniform_form, int writ
     }
     u32 base = cbuf_load(c, SH_GBUF_BANK(key), SH_GBUF_OFFSET(key), 0);
     *offset = spv_emit_isub_u32(&c->e, c->t_u32, at, base);
-    u32 buffer = gbuf_slot(c, key, write);
-    if (write && buffer) mark_written(c, key, *offset);
-    return buffer;
+    c->gkey = key;
+    return gbuf_slot(c, key, write);
 }
 /* The constant buffer word that holds the base of each LDG's and STG's address, in program order: a register
    gets the word that ULDC.64, LDC.64 or MOV loads into it, and keeps it through moves and through IADD3, IMAD,
@@ -1673,6 +1690,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             }
             u32 address, buffer = global_address(c, in, op != SM86_ATOMG_NOU, 1, &address);
             if (!buffer) return;
+            mark_written(c, c->gkey, address, 4);
             u32 old = spv_emit_atomic_u32(&c->e, c->t_u32, ops[type][how], mem_ptr(c, buffer, address, 0),
                                           rd(c, sm86_field(in, 32, 8)));
             if (op != SM86_RED) wr(c, in->dst, old);
@@ -1876,10 +1894,13 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             int load = op == SM86_LDG || op == SM86_LDG_NOU;
             u32 address, buffer = global_address(c, in, op == SM86_LDG || op == SM86_STG, !load, &address);
             if (!buffer) return;
+            u32 type = sm86_field(in, 73, 3);
             if (load)
-                mem_load(c, buffer, address, sm86_field(in, 73, 3), in->dst, 0);
-            else
-                mem_store(c, buffer, address, sm86_field(in, 73, 3), sm86_field(in, 32, 8));
+                mem_load(c, buffer, address, type, in->dst, 0);
+            else {
+                mark_written(c, c->gkey, address, type < 2 ? 1 : type < 4 ? 2 : type == 4 ? 4 : type == 5 ? 8 : 16);
+                mem_store(c, buffer, address, type, sm86_field(in, 32, 8));
+            }
             return;
         }
         case SM86_LDS:

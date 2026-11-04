@@ -97,6 +97,19 @@ static void store(Prog* p, u32 k, u32 reg) {
     f(&w, 91, 1, 1);
     emit(p, w);
 }
+/* STG.E of mem_type type (0 a byte, 2 a halfword, 4 a word, 5 two, 6 four) at byte off of the invocation's outputs */
+static void store_typed(Prog* p, u32 off, u32 reg, u32 type) {
+    Sm86Word w = sm86_fix(0x986); /* STG.E [R6.U32 + UR6 + off], reg */
+    f(&w, 24, 8, 6);
+    f(&w, 32, 8, reg);
+    f(&w, 40, 24, off);
+    f(&w, 64, 6, 6);
+    f(&w, 72, 1, 1);
+    f(&w, 73, 3, type);
+    f(&w, 84, 3, 1);
+    f(&w, 91, 1, 1);
+    emit(p, w);
+}
 static void epilogue(Prog* p) {
     emit(p, sm86_exit());
     emit(p, sm86_bra(p->n, p->n, 7, 0));
@@ -379,6 +392,20 @@ static void flow_program(Prog* p) {
     epilogue(p);
 }
 
+/* stores of every size the write log takes: 16, 8 and 4 bytes, a halfword and a byte, at offsets 0, 16, 24, 28 and
+   31 of each invocation's 32 bytes; byte 30 is written by none, and must not be logged */
+static void stores_program(Prog* p) {
+    p->outputs = 8;
+    prologue(p);
+    for (u32 k = 0; k < 6; k++) emit(p, ri(0x024, 12 + k, 2, 0x01020300u + 7 * k + 3, 4)); /* IMAD R12+k = R2 * c + R4 */
+    store_typed(p, 0, 12, 6);
+    store_typed(p, 16, 16, 5);
+    store_typed(p, 24, 13, 4);
+    store_typed(p, 28, 14, 2);
+    store_typed(p, 31, 15, 0);
+    epilogue(p);
+}
+
 /* global memory through register pairs, as the game's compute programs address it: MOV of the buffers' addresses
    from c[0], IMAD.WIDE to the invocation's words, LDG and STG without a uniform register, and IMAD.HI, SGXT and
    PRMT on the words */
@@ -551,16 +578,17 @@ static void buf_free(Gpu* g, Buf* b) {
     if (b->memory) vkFreeMemory(g->device, b->memory, NULL);
     if (b->buffer) vkDestroyBuffer(g->device, b->buffer, NULL);
 }
-/* the windows the last run's stores marked (ShaderInfo.gbuf_marks, SNX_VKB_WPAGES): of each global buffer, how many
-   from its first were marked one after another, and how many in all */
-static u32 g_marked_run[2], g_marked_all[2];
+/* what the last run's stores logged (ShaderInfo.gbuf_mark, SNX_VKB_WPAGES, SH_WLOG_*) of each global buffer: its
+   window flags and byte masks, empty for one the program logs nothing of */
+static u32 g_flags[2][SH_WPAGE_SLOT], g_masks[2][SH_WPAGE_SLOT * SH_WLOG_MASK];
 /* Runs the module with cbuf 0 and the global buffers that si names (each a buffer of the bytes at in or out): 0 when
    Vulkan fails */
 static int gpu_run(Gpu* g, const u32* spv, size_t words, const ShaderInfo* si, const u32* cb0, const u32* in,
                    u32 in_bytes, u32* out, u32 out_bytes) {
     Buf cb = {0}, gb[2] = {{0}}, marks = {0};
     int ok = buf_make(g, &cb, 65536, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-    if (ok && si->gbuf_marks) ok = buf_make(g, &marks, 2 * SH_WPAGE_SLOT * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    if (ok && si->nmarks)
+        ok = buf_make(g, &marks, (u32)si->nmarks * SH_WLOG_PART * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     if (ok) memcpy(cb.map, cb0, 256);
     for (int k = 0; k < si->ngbuf && ok; k++) {
         int is_out = si->gbuf_cbuf_off[k] == 0x28;
@@ -653,10 +681,15 @@ static int gpu_run(Gpu* g, const u32* spv, size_t words, const ShaderInfo* si, c
     for (int k = 0; k < si->ngbuf && ok; k++)
         if (si->gbuf_cbuf_off[k] == 0x28) memcpy(out, gb[k].map, out_bytes);
     for (int k = 0; k < 2; k++) {
-        const u32* w = marks.map ? (const u32*)marks.map + (size_t)k * SH_WPAGE_SLOT : NULL;
-        g_marked_run[k] = g_marked_all[k] = 0;
-        for (u32 j = 0; w && j < SH_WPAGE_SLOT; j++) g_marked_all[k] += w[j] != 0;
-        while (w && g_marked_run[k] < SH_WPAGE_SLOT && w[g_marked_run[k]]) g_marked_run[k]++;
+        const u32* w = marks.map && si->gbuf_mark[k] && k < si->ngbuf
+                           ? (const u32*)marks.map + (size_t)(si->gbuf_mark[k] - 1) * SH_WLOG_PART
+                           : NULL;
+        memset(g_flags[k], 0, sizeof g_flags[k]);
+        memset(g_masks[k], 0, sizeof g_masks[k]);
+        if (w) {
+            memcpy(g_flags[k], w, sizeof g_flags[k]);
+            memcpy(g_masks[k], w + SH_WPAGE_SLOT, sizeof g_masks[k]);
+        }
     }
     buf_free(g, &marks);
     if (fence) vkDestroyFence(g->device, fence, NULL);
@@ -694,6 +727,9 @@ static int run_program(Gpu* g, const char* name, void (*build)(Prog*)) {
     env.global[1] = (u8*)(void*)ref;
     env.global_va[1] = VA_OUT;
     env.global_bytes[1] = out_bytes;
+    static u8 stored[INVOCATIONS * MAX_OUT * 4];
+    memset(stored, 0, sizeof stored);
+    env.stored[1] = stored;
     env.local[0] = LOCAL, env.local[1] = env.local[2] = 1;
     env.groups[0] = GROUPS, env.groups[1] = env.groups[2] = 1;
     env.shared_bytes = LOCAL * 4;
@@ -718,16 +754,26 @@ static int run_program(Gpu* g, const char* name, void (*build)(Prog*)) {
         fprintf(stderr, "%s: Vulkan failed\n", name);
         return 0;
     }
-    /* the stores marked each 4 KiB window of the output's bytes, every invocation's, and no other, nor any of the
-       input's */
+    /* the stores logged exactly the bytes the reference stored, and none of the input's; and flagged the 4 KiB
+       windows of those bytes and no other */
     for (int k = 0; k < 2; k++) {
         int is_out = si.gbuf_cbuf_off[k] == 0x28;
-        u32 want = is_out ? (out_bytes + 4095) / 4096 : 0;
-        if (g_marked_run[k] != want || g_marked_all[k] != want || ((si.gbuf_marks >> k & 1) != (u32)is_out)) {
-            fprintf(stderr, "%s: global buffer %d (%s) marked %u windows from its first and %u in all, not %u (in "
-                            "gbuf_marks %u)\n",
-                    name, k, is_out ? "the output" : "the input", g_marked_run[k], g_marked_all[k], want,
-                    si.gbuf_marks >> k & 1);
+        u32 wrong = 0, first = ~0u, flags_wrong = 0, logged = 0;
+        for (u32 b = 0; b < SH_WPAGE_SLOT * 4096u; b++) {
+            int want = is_out && b < out_bytes && stored[b], have = g_masks[k][b / 32] >> (b % 32) & 1;
+            logged += (u32)have;
+            if (want != have && !wrong++) first = b;
+        }
+        for (u32 j = 0; j < SH_WPAGE_SLOT; j++) {
+            int any = 0;
+            for (u32 b = j * 4096; is_out && b < (j + 1) * 4096 && b < out_bytes; b++) any |= stored[b];
+            flags_wrong += (g_flags[k][j] != 0) != any;
+        }
+        if (wrong || flags_wrong || ((si.gbuf_marks >> k & 1) != (u32)is_out) || (!si.gbuf_mark[k]) == is_out) {
+            fprintf(stderr, "%s: global buffer %d (%s) logged %u bytes, %u of them or of the bytes stored wrong (the "
+                            "first at %u), %u window flags wrong (in gbuf_marks %u, part %u)\n",
+                    name, k, is_out ? "the output" : "the input", logged, wrong, first, flags_wrong,
+                    si.gbuf_marks >> k & 1, si.gbuf_mark[k]);
             return 0;
         }
     }
@@ -768,6 +814,7 @@ int main(void) {
     ok &= run_program(&g, "float", float_program);
     ok &= run_program(&g, "flow", flow_program);
     ok &= run_program(&g, "wide", wide_program);
+    ok &= run_program(&g, "stores", stores_program);
     vkDestroyDevice(g.device, NULL);
     vkDestroyInstance(g.instance, NULL);
     return ok ? 0 : 1;

@@ -36,6 +36,10 @@ an earlier result in the same frame with a storage barrier when the binding is c
 is unchanged; other overlaps land before taking another snapshot. Frame-ring reuse processes output before freeing its
 staging allocation. The compute and graphics paths share `vk_write_changed`.
 
+A compute program of the SM86 translator logs the bytes its stores write instead (see
+[Ounce](./OUNCE.md)): its results keep no input bytes, and land exactly the bytes logged, the shader's value winning
+over a CPU write made to the same byte while the result was pending.
+
 The byte-value reconciliation cannot distinguish a later CPU write that restores the original value from no write.
 Games must synchronize CPU and GPU writes to the same bytes for deterministic ordering. When writable bindings in one
 draw share guest backing, the bindings involved in that overlap use a shared page atlas. Each such binding maps its

@@ -17,6 +17,7 @@ typedef struct {
     u8* global[4];
     u64 global_va[4];
     u32 global_bytes[4];
+    u8* stored[4]; /* where not NULL, as many bytes as global[k]: each set to 1 when a store writes that byte */
     u32 local[3], groups[3];
     u32 shared_bytes;
 } Sm86RefEnv;
