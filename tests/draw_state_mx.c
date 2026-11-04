@@ -62,13 +62,15 @@ static void stencil(void) {
     CHECK(d.stencil_test == 0 && d.face[0].cmp == DS_CMP_ALWAYS);
 }
 
-/* 0x4EB bit 0 lower left, bit 4 facing flip; 0x3FE's top half the clip height; 0x286 the swizzle; 0x581 bit 2 the
-   point sprite's origin; 0x647 0x900 clockwise; 0x646 cull on, 0x648 0x404 front, 0x405 back, 0x408 both */
+/* 0x4EB bit 0 lower left, bit 4 facing flip; 0x3FD and 0x3FE the surface clip (x and width, y and height, the start
+   in the low half); 0x286 the swizzle; 0x581 bit 2 the point sprite's origin; 0x647 0x900 clockwise; 0x646 cull on,
+   0x648 0x404 front, 0x405 back, 0x408 both */
 static void origin(void) {
     u32 r[REGS] = {0};
     DsDynamic d;
     DsViewports v;
     r[0x4EB] = 0x11 | 0x100; /* a bit the state has no use for */
+    r[0x3FD] = (64u << 16) | 3;
     r[0x3FE] = (100u << 16) | 7;
     r[0x286] = 0x6430; /* NegativeY */
     r[0x581] = 4;
@@ -77,7 +79,7 @@ static void origin(void) {
     mx_draw_dynamic(r, &d);
     mx_draw_viewports(r, &v);
     CHECK(d.window_origin == (DS_ORIGIN_LOWER_LEFT | DS_ORIGIN_FLIP_Y));
-    CHECK(d.clip_height == 100);
+    CHECK(d.clip_height == 100 && d.clip_y == 7 && d.clip_x == 3 && d.clip_width == 64);
     CHECK(v.swizzle[0] == 0x6430 && ((v.swizzle[0] >> 4) & 7) == 3);
     CHECK(d.sprite_origin == 1 && d.front_cw == 1 && d.depth_mode == 1);
     CHECK(d.cull == DS_CULL_NONE);

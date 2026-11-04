@@ -2083,19 +2083,21 @@ u64 g_vk_drawn, g_vk_skipped;
 
 /* NVB197_SET_VIEWPORT_COORDINATE_SWIZZLE (0x0A18) can negate Y before the scale and offset. A negative Vulkan
    height implements the same mapping without changing texture coordinates or guest render-target contents.
-   Reference: NVIDIA open-gpu-doc/classes/3d/clb197.h. */
+   Reference: NVIDIA open-gpu-doc/classes/3d/clb197.h. With the transform off (0x64B) the program's x and y are
+   pixels, which its last stage takes to clip space by the surface clip's size (SNX_SH_WINDOW_XY): every viewport is
+   the surface clip then, depth 0 to 1, the scale, offset and swizzle left to the transform, as Eden's
+   UpdateViewportsState has it. */
 VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index) {
     if (index >= DS_VIEWPORTS_MAX) fatal("vulkan: viewport %u of the %u the GPU has", index, DS_VIEWPORTS_MAX);
     const float* vs = v->scale[index];
     const float* vt = v->translate[index];
-    float sx = vs[0], sy = vs[1], tx = vt[0], ty = vt[1], ax = sx < 0 ? -sx : sx, ay = sy < 0 ? -sy : sy;
+    float sx = vs[0], sy = vs[1], tx = vt[0], ty = vt[1], ax = sx < 0 ? -sx : sx;
     VkViewport vp;
-    int small = 2 * ax < 1 || 2 * ay < 1;
-    if (small != !v->transform_on)
-        LOG_LIMIT(1, "vulkan: viewport scale %g x %g with transform enable %x\n", sx, sy, v->transform_on);
-    if (small) {
-        u32 vx = v->clip_x[index], vy = v->clip_y[index];
-        vp = (VkViewport){vk_scf(vx & 0xFFFF), vk_scf(vy & 0xFFFF), vk_scf(vx >> 16), vk_scf(vy >> 16), 0, 1};
+    if (!v->transform_on) {
+        LOG_LIMIT(1, "vulkan: viewport transform off: positions are pixels of the %ux%u surface clip at (%u, %u)\n",
+                  d->clip_width, d->clip_height, d->clip_x, d->clip_y);
+        float x = vk_scf((float)d->clip_x), y = vk_scf((float)d->clip_y);
+        vp = (VkViewport){x, y, vk_scf((float)d->clip_width), vk_scf((float)d->clip_height), 0, 1};
     } else
         vp = (VkViewport){vk_scf(tx - ax), vk_scf(ty - sy), vk_scf(2 * ax), vk_scf(2 * sy), 0, 1};
     /* A lower-left window measures y from the surface clip's bottom. Match the 3D blit path's conversion. */
@@ -2103,6 +2105,7 @@ VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index)
         vp.y += vk_scf((float)d->clip_height);
         vp.height = -vp.height;
     }
+    if (!v->transform_on) return vp;
     if (((v->swizzle[index] >> 4) & 7) == 3) {
         vp.y += vp.height;
         vp.height = -vp.height;
@@ -2167,6 +2170,7 @@ typedef struct {
     u32 rt_int, rt_sint;       /* the integer color targets the registers name (rt_int_targets) */
     u32 topology;              /* the draw's, every primitive a patch with tessellation */
     int xfb_on;                /* transform feedback captures */
+    int window_xy;             /* the viewport transform is off: the last stage keyed SNX_SH_WINDOW_XY */
 } DrawShaders;
 /* a draw's vertex layout (vi, which the pipeline key holds too without dynamic vertex input) and its bindings, for
    finding their buffers each draw: binding b reads guest stream key[b] & 31 from its base offset key[b] >> 5 on, with
@@ -2286,6 +2290,7 @@ static int draw_kept(const DsState* ds, u32 topology, u32 epoch) {
             g_draw.gen[DS_VFORMAT] = ds->gen[DS_VFORMAT];
         }
     if (s->xfb_on != (g_vk.has_xfb && ds->prog.xfb_on && xfb_counters())) return 0; /* the counters were made since */
+    if (s->window_xy != !ds->vp.transform_on) return 0; /* the viewports' group keys no shader otherwise */
     const VkSh* used[6] = {s->vs, s->tcs, s->tes, s->gs, s->fs0, g_draw.fs};
     for (int i = 0; i < 6; i++)
         if (used[i] && used[i]->cbr.n && !vk_shader_cb_hold(ds, used[i])) return 0;
@@ -2293,7 +2298,9 @@ static int draw_kept(const DsState* ds, u32 topology, u32 epoch) {
 }
 static int draw_shaders_same(const DrawShaders* a, const DrawShaders* b) {
     return a->vs == b->vs && a->tcs == b->tcs && a->tes == b->tes && a->gs == b->gs && a->fs0 == b->fs0 &&
-           a->attr_int == b->attr_int && a->attr_sint == b->attr_sint && a->rt_int == b->rt_int && a->rt_sint == b->rt_sint && a->topology == b->topology && a->xfb_on == b->xfb_on;
+           a->attr_int == b->attr_int && a->attr_sint == b->attr_sint && a->rt_int == b->rt_int &&
+           a->rt_sint == b->rt_sint && a->topology == b->topology && a->xfb_on == b->xfb_on &&
+           a->window_xy == b->window_xy;
 }
 /* the shaders of the programs, the vertex format and the targets of ds for a draw of topology: 0 when the draw is
    skipped */
@@ -2320,13 +2327,15 @@ static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
     if ((topology == 14 && !tes_on) || (topology >= 10 && topology <= 13 && !gs_on))
         return 0; /* patches and adjacency need the stages above */
     if (tes_on) topology = 14; /* every primitive is a patch with tessellation, as Vulkan requires */
-    /* a clip distance the program writes clips only when its bit is set, in the last stage before rasterization */
-    clip = p->clip_enable;
+    /* a clip distance the program writes clips only when its bit is set, in the last stage before rasterization,
+       which takes its position from pixels with the viewport transform off */
+    clip = p->clip_enable | (ds->vp.transform_on ? 0 : SNX_SH_WINDOW_XY);
     /* transform feedback: what the last stage before rasterization captures */
     const ShXfb* xfb = &ds->xfb;
     int xfb_on = g_vk.has_xfb && p->xfb_on && xfb_counters();
     o->topology = topology;
     o->xfb_on = xfb_on;
+    o->window_xy = !ds->vp.transform_on;
     o->attr_int = attr_int;
     o->attr_sint = attr_sint;
     o->vs = vk_shader_get(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint, 0, 0,
@@ -3548,6 +3557,10 @@ retry:
        textures (stage_set), and whether the window is lower left and its surface clip's height, which the fragment's
        y counts up from there (shader/emit_io.c's shader_frag_y_origin) */
     float pc[12] = {0, ds->dyn.depth_mode ? 0.0f : 1.0f, 0, 0};
+    /* with the viewport transform off, the surface clip's width and height, which the last stage before
+       rasterization takes the position's pixels to clip space by (SNX_SH_WINDOW_XY) */
+    u32 window_words = ds->vp.transform_on ? 0 : ds->dyn.clip_width | ds->dyn.clip_height << 16;
+    memcpy(&pc[3], &window_words, sizeof(u32));
     /* the instance ID: InstanceIndex less the base instance pushed (depth_word, the 3D engine's base instance), or
        with draw parameters less BaseInstance plus what the draw's first instance adds to the base instance: the
        3D engine's instanced draws continue from an earlier draw's instances, and an indirect draw's base instance is

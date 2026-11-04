@@ -1493,7 +1493,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     u32 tess_outer = 0, tess_inner = 0, patch_vars[30] = {0}, position_in = 0, primitive_id = 0, primitive_id_out = 0,
         tess_coord = 0;
     u32 invocation_id = 0, patch_vertices = 0;
-    int depth_fix = position_used && last && stage != ST_FS && stage != ST_CS;
+    int position_fix = position_used && last && stage != ST_FS && stage != ST_CS;
+    c->window_xy = position_fix && (si->clip_enable & SNX_SH_WINDOW_XY);
     /* BuiltIn Layer takes the Geometry capability (a geometry program has it; the device's geometryShader) or
        ShaderLayer (its shaderOutputLayer), which a vertex or tessellation program writing the layer needs. A fragment
        program reads it with either. Without one a write is dropped and a read is 0 */
@@ -1844,7 +1845,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         interfaces[count++] = shared_array;
     }
     u32 push = 0, push_pointer = 0;
-    if ((stage == ST_FS && ((target & 15) || needs_point_coord || needs_texel_scale || needs_frag_y)) || depth_fix ||
+    if ((stage == ST_FS && ((target & 15) || needs_point_coord || needs_texel_scale || needs_frag_y)) || position_fix ||
         needs_instance || base_vertex) {
         /* the fragment stage's uvec4: its scaled textures (shader_scaled_coords) and the window's origin (shader_frag_y_origin) */
         push = spv_emit_push_vec4(&c->emit, vec4, c->f32_type, stage == ST_FS ? 16 : 0,
@@ -2149,7 +2150,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         .tess_coord = tess_coord,
         .invocation_id = invocation_id,
         .patch_vertices = patch_vertices,
-        .depth_fix = depth_fix,
+        .position_fix = position_fix,
         .sample_mask_output = sample_mask_output,
         .sample_id = sample_id,
         .coverage = coverage,
@@ -2205,9 +2206,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (passthrough)
                 shader_geometry_passthrough(c, si, in_vertices, vec4, position, position_in, output_attrs, inputs,
                                             point_size, layer_output, i32_type, clip_output, clip_count, primitive_id,
-                                            primitive_id_out, depth_fix, push, push_pointer);
+                                            primitive_id_out, position_fix, push, push_pointer);
             if (xfb_on && stage != ST_GS) shader_xfb_store(c, vec4, output_attrs, attr_private, xfb_components);
-            if (depth_fix && stage != ST_GS) shader_vertex_depth_fix(c, position, push, push_pointer, vec4);
+            if (position_fix && stage != ST_GS) shader_vertex_position_fix(c, position, push, push_pointer, vec4);
             spv_emit_return(&c->emit);
             se.open = 0;
         }
@@ -2308,9 +2309,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         if (passthrough)
             shader_geometry_passthrough(c, si, in_vertices, vec4, position, position_in, output_attrs, inputs,
                                         point_size, layer_output, i32_type, clip_output, clip_count, primitive_id,
-                                        primitive_id_out, depth_fix, push, push_pointer);
+                                        primitive_id_out, position_fix, push, push_pointer);
         if (xfb_on && stage != ST_GS) shader_xfb_store(c, vec4, output_attrs, attr_private, xfb_components);
-        if (depth_fix && stage != ST_GS) shader_vertex_depth_fix(c, position, push, push_pointer, vec4);
+        if (position_fix && stage != ST_GS) shader_vertex_position_fix(c, position, push, push_pointer, vec4);
         spv_emit_return(&c->emit);
     }
     spv_emit_function_end(&c->emit);

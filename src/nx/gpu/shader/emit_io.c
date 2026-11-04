@@ -62,8 +62,34 @@ u32 shader_frag_y_origin(DirectCtx* c, u32 push, u32 y) {
                            y);
 }
 
-void shader_vertex_depth_fix(DirectCtx* c, u32 position, u32 push, u32 push_pointer, u32 vec4_type) {
+/* The last stage's position as the rasterizer takes it. With the viewport transform off (SNX_SH_WINDOW_XY) x and y
+   are pixels of the surface clip, the viewport then (vk/render.c): x * 2 / width - 1 and y * 2 / height - 1 take
+   them to clip space, the width and height in bits 0-15 and 16-31 of the push constant's w, as Eden's
+   position_pass.cpp does with its render area. Then z goes from -w..w to 0..w where the push constant's y says the
+   depth mode is -1 to 1 */
+void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_pointer, u32 vec4_type) {
     u32 member = spv_emit_constant_u32(&c->emit, c->u32_type, 0);
+    if (c->window_xy) {
+        u32 size =
+            spv_emit_bitcast(&c->emit, c->u32_type,
+                             spv_emit_push_component_f32(&c->emit, push_pointer, push, member,
+                                                         spv_emit_constant_u32(&c->emit, c->u32_type, 3), c->f32_type));
+        u32 extent[2] = {
+            spv_emit_bitwise_and_u32(&c->emit, c->u32_type, size, spv_emit_constant_u32(&c->emit, c->u32_type, 0xFFFF)),
+            spv_emit_shift_right_u32(&c->emit, c->u32_type, size, spv_emit_constant_u32(&c->emit, c->u32_type, 16))};
+        u32 two = spv_emit_constant_f32(&c->emit, c->f32_type, 2.0f);
+        u32 minus_one = spv_emit_constant_f32(&c->emit, c->f32_type, -1.0f);
+        u32 value = spv_emit_load(&c->emit, vec4_type, position);
+        for (u32 k = 0; k < 2; k++) {
+            u32 scale =
+                spv_emit_fdiv(&c->emit, c->f32_type, two, spv_emit_convert_u_to_f(&c->emit, c->f32_type, extent[k]));
+            u32 pixels = spv_emit_vec4_extract(&c->emit, c->f32_type, value, k);
+            u32 clip =
+                spv_emit_fadd(&c->emit, c->f32_type, spv_emit_fmul(&c->emit, c->f32_type, pixels, scale), minus_one);
+            value = spv_emit_vec4_insert(&c->emit, vec4_type, value, clip, k);
+        }
+        spv_emit_store(&c->emit, position, value);
+    }
     u32 component = spv_emit_constant_u32(&c->emit, c->u32_type, 1);
     u32 enabled = spv_emit_push_component_f32(&c->emit, push_pointer, push, member, component, c->f32_type);
     u32 zero = spv_emit_constant_f32(&c->emit, c->f32_type, 0.0f);
@@ -102,7 +128,7 @@ void shader_xfb_store(DirectCtx* c, u32 vec4, const u32* output_attrs, const u8*
 void shader_geometry_passthrough(DirectCtx* c, const ShaderInfo* si, u32 vertices, u32 vec4, u32 position,
                                  u32 position_in, const u32* outputs, const u32* inputs, u32 point_size, u32 layer,
                                  u32 layer_type, u32 clip, u32 clip_count, u32 primitive_id, u32 primitive_id_out,
-                                 int depth_fix, u32 push, u32 push_pointer) {
+                                 int position_fix, u32 push, u32 push_pointer) {
     u32 saved[33] = {0}, saved_clip[8] = {0};
     for (u32 a = 0; a < 33; a++) {
         u32 out = a ? outputs[a - 1] : position;
@@ -141,7 +167,7 @@ void shader_geometry_passthrough(DirectCtx* c, const ShaderInfo* si, u32 vertice
                                                            spv_emit_constant_u32(&c->emit, c->u32_type, k)),
                            saved_clip[k]);
         spv_emit_store(&c->emit, primitive_id_out, id);
-        if (depth_fix) shader_vertex_depth_fix(c, position, push, push_pointer, vec4);
+        if (position_fix) shader_vertex_position_fix(c, position, push, push_pointer, vec4);
         spv_emit_emit_vertex(&c->emit);
     }
     spv_emit_end_primitive(&c->emit);
@@ -183,7 +209,7 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     u32 primitive_id = t->primitive_id;
     u32 primitive_id_out = t->primitive_id_out;
     u32 invocation_id = t->invocation_id;
-    int depth_fix = t->depth_fix;
+    int position_fix = t->position_fix;
     u32 sample_id = t->sample_id;
     u32 coverage = t->coverage;
     u32 fragcoord = t->fragcoord;
@@ -362,7 +388,7 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         if (op != O_OUT_I || !B(w, 20, 2)) {
             /* the vertex is complete: the depth mode applies to it, as at the end of the other stages */
             if (B(w, 39, 1)) {
-                if (depth_fix) shader_vertex_depth_fix(c, position, push, push_pointer, vec4);
+                if (position_fix) shader_vertex_position_fix(c, position, push, push_pointer, vec4);
                 spv_emit_store(&c->emit, primitive_id_out, spv_emit_load(&c->emit, c->u32_type, primitive_id));
                 if (xfb_on) shader_xfb_store(c, vec4, output_attrs, attr_private, xfb_components);
                 spv_emit_emit_vertex(&c->emit);
