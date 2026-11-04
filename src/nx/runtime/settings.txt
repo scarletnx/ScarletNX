@@ -895,6 +895,14 @@ setting Guest memory
     help AHardwareBuffers), as the console's GPU does: for a GPU that shares system memory. On a discrete GPU it goes
     help across the bus, which is slow, but it shows that the path is correct. 0 = 2 on a GPU that shares system memory,
     help but never the moves into AHardwareBuffers, else 1
+setting Placed maps
+    key vk_placed
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = with guest memory read in place (vk_memory), the heap's and physical memory's whole 2 MiB windows are GPU
+    help memory mapped where they are (VK_EXT_map_memory_placed), for testing. Not under NCE, nor where the device can't
 setting Buffer copy stats
     key vk_buffer_stats
     int 0 1

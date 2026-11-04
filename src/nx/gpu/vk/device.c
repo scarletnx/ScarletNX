@@ -805,6 +805,15 @@ static int create_device(void) {
     if (g_vk.has_descriptor_buffers) vai.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
     vk_uma_init();
+    /* vk_placed: the placed maps on, once vk_uma_init has their memory type */
+    if (g_settings.placed_maps) {
+        vk_uma_placed(1);
+        if (vk_uma_can_place())
+            LOG("vulkan: vk_placed=1: placed maps on\n");
+        else
+            WARN("vulkan: vk_placed=1, but the device can't map memory where it is told%s: placed maps off\n",
+                 vk_uma() ? "" : " (guest memory is copied)");
+    }
     {
         /* which driver runs, by its own name: the system's, or a package's (gpu_driver) */
         VkPhysicalDeviceDriverProperties dp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};

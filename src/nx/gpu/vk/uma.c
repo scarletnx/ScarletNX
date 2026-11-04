@@ -819,6 +819,9 @@ static int imp_bind(Imp* m, u64 cpu, u64 size, VkExternalMemoryHandleTypeFlagBit
                                .pNext = g_vk.has_descriptor_buffers ? (const void*)&flags : import,
                                .allocationSize = alloc,
                                .memoryTypeIndex = t};
+    if (t != ~0u)
+        LOG_LIMIT(1, "vulkan: an import takes memory type %u (flags %#x, heap %u) of the types it allows, %#x\n", t,
+                  (unsigned)mp->memoryTypes[t].propertyFlags, mp->memoryTypes[t].heapIndex, bits);
     if (t == ~0u || req.size > alloc ||
         (g_uma.import_result = vkAllocateMemory(g_vk.dev, &ai, NULL, &m->mem)) != VK_SUCCESS) {
         vkDestroyBuffer(g_vk.dev, m->buf, NULL);
