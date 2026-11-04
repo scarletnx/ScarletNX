@@ -8,4 +8,4 @@ contact_links:
     about: A build, a setting or a game that needs a hand before it becomes a report.
   - name: Report a security problem privately
     url: https://github.com/scarletnx/ScarletNX/security/advisories/new
-    about: Not in an issue, and with nothing of a game attached.
+    about: Do not open an issue. Attach nothing of a game.
