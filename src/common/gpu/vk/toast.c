@@ -133,7 +133,10 @@ SnxToast* snx_toast_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, u
                              .size = TOAST_VERTS * TOAST_STRIDE,
                              .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    if (!t) return NULL;
+    if (!t) {
+        fprintf(stderr, "toast: out of memory\n");
+        return NULL;
+    }
     t->phys = phys;
     t->dev = dev;
     t->queue = queue;
@@ -142,11 +145,13 @@ SnxToast* snx_toast_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, u
     {
         VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         if (vkCreatePipelineLayout(dev, &li, NULL, &t->layout) != VK_SUCCESS) {
+            fprintf(stderr, "toast: no pipeline layout\n");
             snx_toast_destroy(t);
             return NULL;
         }
     }
     if (vkCreateBuffer(dev, &bi, NULL, &t->buffer) != VK_SUCCESS) {
+        fprintf(stderr, "toast: no vertex buffer\n");
         snx_toast_destroy(t);
         return NULL;
     }
@@ -163,6 +168,7 @@ SnxToast* snx_toast_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, u
     if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(dev, &ai, NULL, &t->memory) != VK_SUCCESS ||
         vkBindBufferMemory(dev, t->buffer, t->memory, 0) != VK_SUCCESS ||
         vkMapMemory(dev, t->memory, 0, VK_WHOLE_SIZE, 0, (void**)&t->verts) != VK_SUCCESS || !t->verts) {
+        fprintf(stderr, "toast: no mapped vertex buffer\n");
         snx_toast_destroy(t);
         return NULL;
     }
@@ -216,6 +222,7 @@ int snx_toast_draw(SnxToast* t, VkCommandBuffer cb, VkImageView view, VkFormat f
     if (t->failed) return 0;
     if (!t->pipe || t->pipe_format != format) {
         if (!make_pipeline(t, format)) {
+            fprintf(stderr, "toast: no pipeline for format %d\n", (int)format);
             t->failed = 1;
             return 0;
         }

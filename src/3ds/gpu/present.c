@@ -160,21 +160,19 @@ static bool swap_create(unsigned screen) {
         swap_views_free(screen);
     }
     if (!snx_vk_swapchain_make(v->phys, v->device, &info, &g_present.swap[screen])) return false;
-    /* the SDR image is only blitted into; the HDR encode draws into the window's image, which needs a view */
-    if (kind != SNX_FX_DISPLAY_NONE) {
-        for (uint32_t i = 0; i < g_present.swap[screen].count; ++i) {
-            VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                                        .image = g_present.swap[screen].images[i],
-                                        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-                                        .format = g_present.swap[screen].format.format,
-                                        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-            if (vkCreateImageView(v->device, &vi, NULL, &g_present.swap_views[screen][i]) != VK_SUCCESS) {
-                swap_views_free(screen);
-                return false;
-            }
+    /* a view of every window image: the HDR encode draws into it, and the toast draws into the SDR one too */
+    for (uint32_t i = 0; i < g_present.swap[screen].count; ++i) {
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                    .image = g_present.swap[screen].images[i],
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                    .format = g_present.swap[screen].format.format,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        if (vkCreateImageView(v->device, &vi, NULL, &g_present.swap_views[screen][i]) != VK_SUCCESS) {
+            swap_views_free(screen);
+            return false;
         }
-        g_present.swap_views_for[screen] = g_present.swap[screen].swapchain;
     }
+    g_present.swap_views_for[screen] = g_present.swap[screen].swapchain;
     return true;
 }
 /* the SDR image the pair is composed in before the HDR passes, at the window's image size */
@@ -662,13 +660,29 @@ static void show_screens_interp(VkCommandBuffer cb, VkImage target, VkImageView 
     if (have_prev)
         image_barrier(cb, prev.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (!build_mix(cb, screen)) return;
-    if (have_prev) {
-        SnxFxImage blend = {0};
-        if (snx_fx_blend(g_present.fx[window], cb, prev.view, g_present.mix_view[window], extent.width, extent.height,
-                         0.5f, &blend)) {
-            image_barrier(cb, blend.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    {
+        int blended = 0;
+        if (have_prev) {
+            SnxFxImage blend = {0};
+            /* the blend samples the new pair, and draw_mix expects a mix in TRANSFER_DST after it */
+            image_barrier(cb, g_present.mix[window], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            draw_mix(cb, blend.image, blend.view, target, target_view, window);
+            if (snx_fx_blend(g_present.fx[window], cb, prev.view, g_present.mix_view[window], extent.width,
+                             extent.height, 0.5f, &blend)) {
+                image_barrier(cb, blend.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                draw_mix(cb, blend.image, blend.view, target, target_view, window);
+                blended = 1;
+            }
+            image_barrier(cb, g_present.mix[window], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            g_present.mix_layout[window] = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        }
+        if (!blended) {
+            /* the first frame, or a blend that could not run: the pair itself in the first image too, so both the
+               images the frame presents are drawn */
+            draw_mix(cb, g_present.mix[window], g_present.mix_view[window], target, target_view, window);
+            if (!build_mix(cb, screen)) return;
         }
     }
     draw_mix(cb, g_present.mix[window], g_present.mix_view[window], target2, target_view2, window);
@@ -773,7 +787,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
         } else if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
             show = false;
     }
-    int interp = show && g_present.fx[window_index] &&
+    int interp = show && g_present.fx[window_index] && g_present.have_mix[window_index] &&
                  (snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_BLEND ||
                   (snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_AUTO &&
                    snx_fx_interp_auto(ctr_display_hz(screen_window(window_index)), 60)));

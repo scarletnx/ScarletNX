@@ -349,6 +349,14 @@ if(TARGET snx_ctr_board)
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-interp" --interp)
     set_tests_properties(3ds_windows 3ds_windows_separate 3ds_windows_interp PROPERTIES SKIP_RETURN_CODE 77)
     set_tests_properties(3ds_windows_minimized PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    if(NOT WIN32 AND Python3_Interpreter_FOUND)
+        # the interpolated pair under Khronos synchronization validation: both images drawn, and the blend's reads
+        # waited for
+        add_test(NAME 3ds_windows_interp_validation
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                $<TARGET_FILE:snx-test-3ds-windows> "${CMAKE_CURRENT_BINARY_DIR}/window-frames-interp-validation" --interp)
+        set_tests_properties(3ds_windows_interp_validation PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     # the transfer engine alone: fills, display transfers, texture copies against hand-written goldens
     add_executable(snx-test-3ds-transfer 3ds_transfer.c)
     snx_test_target(snx-test-3ds-transfer 11)
