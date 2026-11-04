@@ -129,6 +129,8 @@ static void publish(void) {
 /* room for a packet of size bytes of arguments, filled in and then made known by rec_commit */
 static void* rec_push(RecFn fn, u64 size) {
     u64 need = (sizeof(RecHdr) + size + 15) & ~15ull, at = g_pending & (REC_CAP - 1);
+    /* one that could never fit would wait for room forever, with vk_lock held and every thread that takes it behind */
+    if (need > REC_CAP / 2) fatal("vulkan: a command of %llu bytes, past what the recording ring takes", (unsigned long long)need);
     if (at + need > REC_CAP) { /* the packet doesn't fit before the end: the rest is skipped */
         u64 skip = REC_CAP - at;
         while (g_pending + skip - __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) > REC_CAP) {

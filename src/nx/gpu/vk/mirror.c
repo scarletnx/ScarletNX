@@ -30,6 +30,7 @@
 #define MIR_G      (2ull << 20)  /* a granule: memory is bound and kept up to date a granule at a time */
 #define MIR_PAGES  (MIR_G / 4096) /* its 4 KiB pages */
 #define MIR_MASK_G (MIR_G / 8)    /* its mask's bytes */
+#define MIR_REGIONS 1024u        /* the regions of one copy command */
 
 typedef struct {
     u8* shadow;               /* the guest bytes the mirror was given, as the GPU holds them less its own writes */
@@ -40,6 +41,8 @@ typedef struct {
     u32 synced[MIR_PAGES];
 } Gran;
 
+/* the guest pages programs wrote in the mirror that haven't landed (vk_mirror_wrote to vk_mirror_done) */
+static PendPages g_mir_pend = {.also = &g_pend_any};
 static struct {
     int on; /* -1 until vk_mirror_init has decided */
     VkBuffer buf, mask;
@@ -203,7 +206,8 @@ static int up_end(Up* u) {
                 .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
             vk_render_end();
             rec_CmdPipelineBarrier2(vk_cmd(), &d);
-            rec_CmdCopyBuffer(vk_cmd(), sb, g_mir.buf, u->n, u->r);
+            for (u32 i = 0; i < u->n; i += MIR_REGIONS) /* commands of a size the recording ring takes */
+                rec_CmdCopyBuffer(vk_cmd(), sb, g_mir.buf, u->n - i < MIR_REGIONS ? u->n - i : MIR_REGIONS, u->r + i);
         } else
             ok = 0;
     }
@@ -241,10 +245,20 @@ static void diff_run(void* user, u64 at, u64 n) {
         OwnRange o[16];
         u8* sh = d->r->shadow + p * 4096;
         const u8* now = page;
-        u32 owned = own_stage(d->base + p * 4096, 4096, page, o, 16);
+        u64 a = d->base + p * 4096;
+        u32 owned = own_stage(a, 4096, page, o, 16);
         for (u32 i = 0; i < owned && i < 16; i++)
-            memcpy(page + (o[i].addr - (d->base + p * 4096)), sh + (o[i].addr - (d->base + p * 4096)), o[i].size);
+            memcpy(page + (o[i].addr - a), sh + (o[i].addr - a), o[i].size);
         if (owned > 16) continue; /* too many to tell: left to the owners' copies */
+        /* a page no program's write is pending on: whole, if anything changed, as nothing of the GPU's is there to
+           keep. A page written on the CPU in scattered bytes made one region of each run, 194,545 in one copy */
+        if (!pend_hit_pages(&g_mir_pend, a >> 12, a >> 12)) {
+            if (memcmp(page, sh, 4096)) {
+                memcpy(up_bytes(d->u, a, 4096), page, 4096);
+                memcpy(sh, page, 4096);
+            }
+            continue;
+        }
         for (u32 k = 0; k < 4096;) {
             if (now[k] == sh[k]) { /* eight at a time where they agree */
                 u64 x, y;
@@ -351,7 +365,6 @@ typedef struct {
     u32* out; /* in host memory, MIR_HEAD words then room entries then the pages left */
     VmaAllocation mem;
 } MirBatch;
-static PendPages g_mir_pend = {.also = &g_pend_any};
 static MirRange* g_mir_now; /* the ranges written in the submit being recorded */
 static u32 g_mir_nnow, g_mir_capnow;
 static MirBatch* g_mir_batch;
