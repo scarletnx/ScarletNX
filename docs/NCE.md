@@ -9,6 +9,7 @@
 * [The guest's addresses: moved above 64 GiB](#the-guests-addresses-moved-above-64-gib)
 * [The system counter: read in its stub](#the-system-counter-read-in-its-stub)
 * [An SVC outside the analysed code: the net](#an-svc-outside-the-analysed-code-the-net)
+* [The runtime's calls into the game's code](#the-runtimes-calls-into-the-games-code)
 * [Against the recompiled code](#against-the-recompiled-code)
 * [Tests](#tests)
 
@@ -124,6 +125,14 @@ Limits:
 - A kernel without seccomp filters, and qemu-user, which has none, run without the net and say so in the log.
 - An app's process on Android has the system's filter already, and ours stacks on it: only a phone shows it does.
 
+## The runtime's calls into the game's code
+
+The runtime calls the game's code itself where the console's driver calls it back: an NVN command buffer's memory
+callback, when its memory runs out (`nvn_cmd.c`'s `guest_call`). No dispatch slot holds the game's code under NCE and
+no JIT runs, so `snx_lookup` misses; `RtAPI.miss` then runs the code natively from its pc, as an empty slot does
+(`nce_slot`), in a run nested in the outcall that called NVN. It returns to the caller's link register, and the
+runtime goes on from there.
+
 ## Against the recompiled code
 
 The renderer's first present and every 600 after log what the game's threads cost the host (`runtime/guest_stats.c`),
@@ -148,6 +157,8 @@ run or a kick is a signal. Each thread adds to counters of its own, with no lock
   stubs read between `guest_ticks` before and after them, keep their scratch registers, count each read, and read
   where a pause stopped the clock. Under the net, an SVC that no stub holds stops in the runtime with no system
   call made (a host with seccomp filters: qemu-user skips it).
+- `rtapi_miss`, any host: a pc with no code runs the game's native code under NCE and returns to the caller's link
+  register, asking no JIT; without NCE the JIT's code runs.
 - `guest_stats`, any host: a window's SVCs, misses, outcalls and families, a thread's time read from another thread,
   and the lines that say them.
 - `memory_accounting`: the 48 GiB tier moved past a page held at 65 GiB, its regions, a mapping there, and a 36-bit

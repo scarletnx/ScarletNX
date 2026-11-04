@@ -1270,6 +1270,12 @@ target_link_libraries(snx-test-nce-module PRIVATE snx_nx_flags snx_settings_runt
 # of the runtime
 target_compile_definitions(snx-test-nce-module PRIVATE SNX_NCE_HOST=0)
 add_test(NAME nce_module COMMAND snx-test-nce-module)
+# rt_miss (runtime/rtapi.c): a pc with no code runs the game's native code under NCE (an NVN memory callback), and the
+# JIT's without it
+add_executable(snx-test-rtapi-miss rtapi_miss.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/rtapi.c")
+snx_test_target(snx-test-rtapi-miss 23)
+target_link_libraries(snx-test-rtapi-miss PRIVATE snx_nx_flags snx_settings_runtime)
+add_test(NAME rtapi_miss COMMAND snx-test-rtapi-miss)
 
 add_executable(snx-test-ini-deprecated ini_deprecated.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-ini-deprecated 11)
