@@ -539,6 +539,55 @@ static void test_mapped_runs(void) {
     CHECK(mem_unmap(a, 0x1000) == 0 && mem_unmap(a + 0x2000, 0x1000) == 0);
     CHECK(mem_mapped_run(a, 0x3000) == 0);
 }
+/* rtld's walk of the modules (the game's own rtld: from address 0, QueryMemory on each region; a region of code that
+   is readable and executable is a module, the word at +4 the offset of its MOD0 header) over NCE's layout: rtld and a
+   pool of stubs after it, a pool before main and main, each module's header where its +4 says. The walk finds the two
+   modules and no pool, whose word at +4 is a stub's (STP x16, x17) and would send it past any mapping */
+static void map_module(u64 base, u32 mod0) {
+    CHECK(mem_map(base, 0x2000, MS_CODE, PERM_RX) == 0 && mem_map(base + 0x2000, 0x1000, MS_CODE, PERM_R) == 0 &&
+          mem_map(base + 0x3000, 0x1000, MS_CODEDATA, PERM_RW) == 0);
+    gw32(base, 0x14000000u | (0x24u >> 2)); /* B past the header, as a module begins */
+    gw32(base + 4, mod0);
+    gw32(base + mod0, 0x30444F4Du); /* "MOD0" */
+}
+static void map_pool(u64 base) {
+    CHECK(mem_map(base, 0x1000, NCE_POOL_STATE, NCE_POOL_PERM) == 0);
+    gw32(base, 0xD10083FFu);     /* SUB sp, sp, #32: a stub's first words */
+    gw32(base + 4, 0xA90047F0u); /* STP x16, x17, [sp] */
+}
+static void test_pool_walk(void) {
+    const u64 rtld = AS_BASE, main_mod = AS_BASE + 0x8000, info = STACK_BASE;
+    u64 addr = 0, found[4];
+    unsigned n = 0, bad = 0;
+    base_process();
+    CHECK(mem_map(info, 0x1000, MS_STACK, PERM_RW) == 0);
+    map_module(rtld, 0x100);
+    map_pool(rtld + 0x4000);     /* after rtld's image */
+    map_pool(main_mod - 0x2000); /* before main's, a guard page between */
+    map_module(main_mod, 0x80);
+    map_pool(main_mod + 0x4000);
+    for (;;) {
+        u64 base, size, end;
+        CHECK(svc_query(info, addr) == 0);
+        base = gr64(info);
+        size = gr64(info + 8);
+        if (gr32(info + 16) == 3 && gr32(info + 24) == PERM_RX) { /* CodeStatic and RX: rtld's test */
+            u64 mod0 = base + gr32(base + 4);
+            MemBlock b;
+            mem_query(mod0, &b);
+            if (mod0 + 4 > AS_END || b.state == MS_FREE || b.state == MS_INACCESSIBLE || mod0 + 4 > b.addr + b.size ||
+                gr32(mod0) != 0x30444F4Du)
+                bad++; /* where rtld faults, or finds no MOD0 */
+            else if (n < 4)
+                found[n++] = base;
+        }
+        end = base + size;
+        if (end <= addr || end <= base) break; /* the last block, to the end of the address space */
+        addr = end;
+    }
+    CHECK(bad == 0 && n == 2 && found[0] == rtld && found[1] == main_mod);
+    CHECK(mem_unmap(rtld, 0x5000) == 0 && mem_unmap(main_mod - 0x2000, 0x7000) == 0 && mem_unmap(info, 0x1000) == 0);
+}
 /* a service's shared memory: its host buffer until the game maps it, the guest's pages while mapped */
 static void test_shared_memory(void) {
     KShmem* s = kshmem_new(0x2000, "test");
@@ -786,6 +835,7 @@ int main(void) {
         test_shared_memory();
         test_host_pages();
         test_mapped_runs();
+        test_pool_walk();
         test_mapping_boundary(); /* last: every commit after it must be inside a mapping */
         CHECK(munmap(reservation, reservation_size) == 0);
         g_mem = NULL; /* the next round reserves it again */
