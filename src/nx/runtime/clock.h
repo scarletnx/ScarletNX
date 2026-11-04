@@ -16,7 +16,13 @@ void clock_set(u64 ns); /* a save state's load: guest time ns from here */
 /* the same time as the console's system tick (svcGetSystemTick, CNTPCT_EL0): 19.2 MHz, or an Ounce's 31.25 MHz after
    clock_ounce */
 u64 guest_ticks(void);
-void clock_ounce(void);    /* an Ounce game's tick, set once before the game's first thread */
+void clock_ounce(void); /* an Ounce game's tick, set once before the game's first thread */
+/* the system tick's rate: freq ticks a second, counted as step_ticks ticks every step_ns nanoseconds (19.2 MHz: 192
+   every 10 us; 31.25 MHz: 125 every 4 us), whole steps, then the rest. NCE's counter stubs count the same way */
+typedef struct {
+    u32 freq, step_ns, step_ticks;
+} ClockRate;
+ClockRate clock_rate(void);
 u64 guest_gpu_ticks(void); /* the GPU's 19.2 MHz timestamps, which the NVN handlers convert back to nanoseconds */
 
 /* The guest clock in the host's virtual counter (CNTVCT_EL0), as NCE's stubs read it with no outcall (nce_patch.c):

@@ -191,16 +191,18 @@ static void ticks_words(const Pool* pool, const NceEnv* env, const NceSite* s, S
               word(pool, stub + 80) == (0xC8DFFC00u | a << 5 | b) &&
               word(pool, stub + 84) == (0xCB000000u | b << 16 | t << 5 | t),
           "less origin, then start, loaded with acquire after frozen");
-    check(word(pool, stub + 88) == (0xD2800000u | 10000u << 5 | a) &&
+    SnxU32 step_ns = env->step_ns ? env->step_ns : 10000u, step_ticks = env->step_ns ? env->step_ticks : 192u;
+    check(word(pool, stub + 88) == (0xD2800000u | step_ns << 5 | a) &&
               word(pool, stub + 92) == (0x9AC00800u | a << 16 | t << 5 | b) &&
               word(pool, stub + 96) == (0x9B008000u | a << 16 | t << 10 | b << 5 | t),
-          "ns / 10000 and ns % 10000");
-    check(word(pool, stub + 100) == (0xD2800000u | 192u << 5 | a) &&
+          "ns / step_ns and ns % step_ns");
+    check(word(pool, stub + 100) == (0xD2800000u | step_ticks << 5 | a) &&
               word(pool, stub + 104) == (0x9B007C00u | a << 16 | t << 5 | t) &&
               word(pool, stub + 108) == (0x9B007C00u | a << 16 | b << 5 | b) &&
+              word(pool, stub + 112) == (0xD2800000u | step_ns << 5 | a) &&
               word(pool, stub + 116) == (0x9AC00800u | a << 16 | t << 5 | t) &&
               word(pool, stub + 120) == (0x8B000000u | b << 16 | t << 5 | t),
-          "192 ticks every 10 us, as guest_ticks counts them");
+          "step_ticks every step_ns, as guest_ticks counts them");
     check(word(pool, stub + 124) == (0xA8C10000u | b << 10 | 31u << 5 | a), "the scratch registers back");
     check(b_target(word(pool, stub + 128), stub + 128) == s->addr + 4, "back at the next word");
     check(word(pool, stub + 132) == (0xD1000400u | b << 5 | t) &&
@@ -220,7 +222,8 @@ static void ticks_words(const Pool* pool, const NceEnv* env, const NceSite* s, S
 
 static void stub_test(const NceSites* sites) {
     /* tls past a page, to take the ADD */
-    static const NceEnv env = {0x1010, 0x7F0012345678ull, 0, 0x7F00AABB0000ull, 0x1555555555555555ull, 52, 0x123456789};
+    static const NceEnv env = {0x1010, 0x7F0012345678ull, 0, 0x7F00AABB0000ull, 0x1555555555555555ull, 52,
+                               0x123456789, 0, 0, 0};
     Pool pool, far;
     SnxU32 patch;
     pool_init(&pool, BASE + 0x100000); /* after the module, as the runtime puts it */
@@ -307,10 +310,39 @@ static void stub_test(const NceSites* sites) {
     }
 }
 
+/* an Ounce game's tick (runtime/clock.h's ClockRate): the counter's stub counts 125 ticks every 4 us, and CNTFRQ_EL0
+   reads 31.25 MHz */
+static void ounce_test(const NceSites* sites) {
+    static const NceEnv env = {0x1010, 0x7F0012345678ull, 0, 0x7F00AABB0000ull, 0x1555555555555555ull, 52, 0x123456789,
+                               31250000u, 4000u, 125u};
+    const NceSite* ticks = site_at(sites, AT(4));
+    const NceSite* freq = site_at(sites, AT(5));
+    Pool pool;
+    SnxU32 patch;
+    pool_init(&pool, BASE + 0x100000);
+    check(ticks && freq && ticks->kind == NCE_TICKS && freq->kind == NCE_FREQ, "the counter's and frequency's sites");
+    if (!ticks || !freq) return;
+    SnxU64 stub = pool.pool.addr;
+    check(!nce_emit(&pool.pool, 1, &env, ticks, &patch), "the Ounce's counter stub");
+    SnxU32 a = ticks->reg < 2 ? 2 : 0;
+    const SnxU32 tls[3] = {0xD53BD040u | a, 0x91400000u | 1u << 10 | a << 5 | a,
+                           0xF9400000u | ((0x10u + NCE_TLS_READS) / 8) << 10 | a << 5 | a};
+    ticks_words(&pool, &env, ticks, stub, tls);
+    stub = pool.pool.addr + pool.pool.used;
+    check(!nce_emit(&pool.pool, 1, &env, freq, &patch), "the Ounce's frequency stub");
+    check(word(&pool, stub) == (0xD2800000u | (31250000u & 0xFFFFu) << 5 | freq->reg) &&
+              word(&pool, stub + 4) == (0xF2A00000u | (31250000u >> 16) << 5 | freq->reg),
+          "31.25 MHz");
+    NceEnv wide = env;
+    wide.step_ns = 0x10000u;
+    check(nce_emit(&pool.pool, 1, &wide, ticks, &patch) == -1, "no counter's stub for a step past a MOVZ");
+}
+
 /* the indirect form (Android's TLS_SLOT_APP): the word at tls holds a pointer to the thread's block, whose first word
    is the CPU pointer. The same three words, so the stubs keep their sizes; tls within an LDR's 32 KiB */
 static void indirect_test(const NceSites* sites) {
-    static const NceEnv env = {0x10, 0x7F0012345678ull, 1, 0x7F00AABB0000ull, 0x1555555555555555ull, 52, 0x123456789};
+    static const NceEnv env = {0x10, 0x7F0012345678ull, 1, 0x7F00AABB0000ull, 0x1555555555555555ull, 52,
+                               0x123456789, 0, 0, 0};
     NceEnv far = env;
     Pool pool;
     SnxU32 patch;
@@ -373,7 +405,7 @@ static void refused_test(void) {
 }
 
 static void divert_test(void) {
-    static const NceEnv env = {0x10, 0x7F0012345678ull, 0, 0, 0, 0, 0};
+    static const NceEnv env = {0x10, 0x7F0012345678ull, 0, 0, 0, 0, 0, 0, 0, 0};
     static const struct {
         SnxU32 first;
         int ok;
@@ -425,7 +457,7 @@ static void divert_test(void) {
 
 /* the trap, the stub's way back, and the sites file of an NCE recompile with the moves of its modules */
 static void trap_file_test(const NceSites* found, const char* dir) {
-    static const NceEnv env = {0x10, 0x7F0012345678ull, 0, 0, 0, 0, 0};
+    static const NceEnv env = {0x10, 0x7F0012345678ull, 0, 0, 0, 0, 0, 0, 0, 0};
     static const NceRange ranges[2] = {{BASE + 0x100000, 0x41000}, {BASE + 0x200000, 0x1000}};
     char path[1024];
     Pool pool;
@@ -502,7 +534,7 @@ static void make_sites(NceSites* s, SnxU64 base, const SnxU64* offsets, size_t n
 
 /* the pool that site i's stub goes to, as the runtime fills them: its index, or -1 */
 static int pool_of(const NceRange* ranges, size_t n, const NceSites* s, size_t i) {
-    static const NceEnv env = {0x10, 1, 0, 1, 0, 1, 0};
+    static const NceEnv env = {0x10, 1, 0, 1, 0, 1, 0, 0, 0, 0};
     NcePool* pools = (NcePool*)snx_alloc(n * sizeof *pools);
     SnxU64 trap;
     SnxU32 word;
@@ -815,6 +847,7 @@ int main(int argc, char** argv) {
     scan_test(&sites);
     stub_test(&sites);
     indirect_test(&sites);
+    ounce_test(&sites);
     trap_file_test(&sites, argc > 1 ? argv[1] : ".");
     nce_sites_free(&sites);
     divert_test();

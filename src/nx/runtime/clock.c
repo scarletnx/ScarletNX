@@ -105,8 +105,12 @@ u64 guest_gpu_ticks(void) {
    conversions use the same constant. It never reads CNTFRQ_EL0. With 19.2 MHz ticks, the game's time ran at 0.61 of
    real time */
 void clock_ounce(void) { g_clock.ounce = 1; }
+ClockRate clock_rate(void) {
+    static const ClockRate switch_rate = {19200000u, 10000u, 192u}, ounce_rate = {31250000u, 4000u, 125u};
+    return g_clock.ounce ? ounce_rate : switch_rate;
+}
 u64 guest_ticks(void) {
-    if (!g_clock.ounce) return guest_gpu_ticks();
+    ClockRate r = clock_rate();
     u64 ns = guest_ns();
-    return ns / 4000u * 125u + ns % 4000u * 125u / 4000u;
+    return ns / r.step_ns * r.step_ticks + ns % r.step_ns * r.step_ticks / r.step_ns;
 }
