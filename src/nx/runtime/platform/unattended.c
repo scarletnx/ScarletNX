@@ -3,7 +3,7 @@
 /* Unattended runs, for the windowed and the headless backend alike: the run's limit, screenshots and scripted
    presses */
 #include "nx/runtime/platform/unattended.h"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"

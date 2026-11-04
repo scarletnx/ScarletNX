@@ -147,7 +147,7 @@ add_custom_command(OUTPUT ${snx_settings_outputs}
 add_custom_target(snx_settings_generated DEPENDS ${snx_settings_outputs})
 
 add_library(snx_settings STATIC "${snx_settings_out}/settings.c" "${snx_settings_out}/settings_launch.c"
-                                "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+                                "${PROJECT_SOURCE_DIR}/src/common/utilities/ini.c")
 set_target_properties(snx_settings PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON) # ini.c: __atomic
 target_compile_options(snx_settings PRIVATE -Wall -Wextra -Werror=missing-prototypes -Werror=missing-variable-declarations)
 target_include_directories(snx_settings PUBLIC "${snx_settings_out}" "${PROJECT_SOURCE_DIR}/src")

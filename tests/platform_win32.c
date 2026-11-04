@@ -8,7 +8,7 @@
    The arguments: the folder for its files, then Debug settings as the runtime takes them, --key=value; or
    --crash-child=CASE, a child the test starts and reads the exit status of */
 #include "nx/runtime/platform/plat_win32.c"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include <stdarg.h>
 #include <stdio.h>
 

@@ -14,7 +14,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/script.h"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>

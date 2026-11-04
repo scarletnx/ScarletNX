@@ -4,7 +4,7 @@
    For one version each one set is still this run's value for its setting, as --key=value is, unless the command line
    or a variable before it gives that key; once the settings are read, the log names it with the value in effect. The
    runtime's only getenv of a setting (tests/architecture.py's ENV_DEPRECATED), removed with those rows */
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "snx_settings.h"

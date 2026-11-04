@@ -6,7 +6,7 @@
 #ifndef SNX_VPAD_H
 #define SNX_VPAD_H
 #include "nx/runtime/platform/ui.h"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include "snx_settings.h"
 
 /* in the order they are drawn: a finger presses the last one drawn under it */

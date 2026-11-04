@@ -3,7 +3,7 @@
 #
 # Every setting of ScarletNX: the game's .ini (the runtime's), the launcher's own and the recompiler's. tools/settingsgen
 # reads this file and generates settings.h, the struct Settings that holds every value (g_settings, its members the
-# settings' names in snake_case), and the tables (nx/runtime/ini.h's IniOpt) that read and write them. The format,
+# settings' names in snake_case), and the tables (common/utilities/ini.h's IniOpt) that read and write them. The format,
 # a line at a time (leading spaces left out, # starts a comment):
 #
 #   include FILE          a header the generated tables include, for a constant they name (a range's)

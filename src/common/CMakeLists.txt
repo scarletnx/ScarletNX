@@ -30,6 +30,11 @@ else()
     target_link_libraries(scarletnx-common PUBLIC m)
 endif()
 
+# snx_keybind (utilities/keybind.c): a runtime hotkey's setting, the event that matches it, and the text a captured
+# event takes. It is created here, in the common runtime, because the Switch, the 3DS, the AGB, the launcher and the
+# tests all link it (cmake/keybind.cmake's include guard keeps the later includes from making it again elsewhere)
+include("${PROJECT_SOURCE_DIR}/cmake/keybind.cmake")
+
 # snx_demangle (utilities/demangle.h): C++ names through the C++ runtime's demangler, for the log summary. C, but what
 # links it links the C++ runtime (LINKER_LANGUAGE CXX)
 add_library(snx_demangle STATIC utilities/demangle.c)

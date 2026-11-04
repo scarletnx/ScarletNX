@@ -3,7 +3,7 @@
 #ifndef SNX_RECOMPILE_H
 #define SNX_RECOMPILE_H
 #include "common/utilities/common.h"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 /* the ABI stamped into the games this build recompiles */
 unsigned snx_game_abi(void);
 /* what a game this build recompiled has in its <name>.abi, owned: the ABI, and " mods " and the stamp of the mods'

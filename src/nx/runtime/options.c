@@ -11,7 +11,7 @@
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h"
 #include "nx/memory/mem.h"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/backend.h"

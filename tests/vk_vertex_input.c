@@ -5,7 +5,7 @@
    it, on over it), and the log line of every case naming the device, the driver, its version, the value given and the
    path in effect */
 #include "nx/gpu/vk/vertex_input.h"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include "snx_settings.h"
 #include <stdio.h>
 #include <string.h>

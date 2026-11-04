@@ -7,7 +7,7 @@
 #ifndef SNX_STATS_H
 #define SNX_STATS_H
 #include "nx/runtime/platform/ui.h"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 
 #define STATS_FRAMES 120   /* the frames the graph shows */
 #define STATS_COLS   24    /* the box's width, in letters */

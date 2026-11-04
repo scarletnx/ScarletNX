@@ -11,7 +11,7 @@
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/game_ini.h"
 #include "snx_settings.h"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>

@@ -4,7 +4,7 @@
 #ifndef SNX_GAMEPAD_H
 #define SNX_GAMEPAD_H
 #include "common/cpu/aarch64/cpu.h"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include "snx_settings.h"
 #include "common/utilities/pad_map.h"
 #include "nx/hle/services/hid.h"
