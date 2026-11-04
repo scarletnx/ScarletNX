@@ -262,12 +262,21 @@ static void store_put(const char* key, const char* value) {
     }
     memcpy(e->value, value, n + 1);
 }
+/* a key the file gives twice takes its last line's value (sections only group the keys), and the file is written back
+   with that one line */
 static void store_parse(char* text) {
     SnxIni ini;
     char *key, *value;
     g_nstore = 0;
     snx_ini_start(&ini, text);
-    while (snx_ini_next(&ini, &key, &value)) store_put(key, value);
+    while (snx_ini_next(&ini, &key, &value)) {
+        const Entry* e = store_find(key);
+        if (e && strcmp(e->value, value))
+            WARN("settings: %s is in the file twice, %s=%s and then %s=%s: it takes %s, the last, and the file keeps "
+                 "that line only\n",
+                 key, key, e->value, key, value, value);
+        store_put(key, value);
+    }
 }
 static const char* value_of(const IniOpt* o) {
     const char* v = override_of(o->key);

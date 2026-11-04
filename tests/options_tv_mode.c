@@ -3,7 +3,9 @@
 /* docked's Auto (runtime/options.c) over a faked host power source: the mode each state picks (the battery handheld,
    the charger TV, a state that cannot be read TV), the log line that names both, am's and hid's change on a switch
    and on no other update, a change only when the watcher marks one, the 15 s query of a host with no watcher, and
-   Off and On never asking the host */
+   Off and On never asking the host. And a key the .ini gives twice: the last line's value, and a line that names the
+   key and both values */
+#include "common/utilities/common.h"
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h"
 #include "nx/memory/mem.h"
@@ -39,6 +41,7 @@ static struct {
     int am, hid;    /* am_display_mode_changed's and hid_mode_changed's calls */
     int lines;      /* the log's lines */
     char logged[256];
+    char said[4096]; /* every line, one after the other */
 } g_test;
 
 int plat_power_on_charger(void) {
@@ -61,6 +64,7 @@ void logf_(int lvl, const char* fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(g_test.logged, sizeof g_test.logged, fmt, ap);
     va_end(ap);
+    if (strlen(g_test.said) + strlen(g_test.logged) < sizeof g_test.said) strcat(g_test.said, g_test.logged);
     g_test.lines++;
 }
 
@@ -213,10 +217,29 @@ static void test_auto_polled(void) {
     CHECK(!strcmp(g_test.logged, "power: the host is on its charger: TV mode Auto picks TV mode\n"));
 }
 
+/* vk_memory at the top, in no section, and again in [Debug]: the second line's 0 is taken, and a line says so with
+   both values, as the runtime writes the file back with that one line */
+static void test_key_twice(void) {
+    static const char text[] = "vk_memory=2\n[Debug]\nvk_memory=0\n";
+    char *dir = snx_temp_dir(NULL), *path;
+    CHECK(dir);
+    path = snx_path_join(dir, "game.ini");
+    CHECK(path && !snx_write_file(path, text, sizeof text - 1));
+    g_test.said[0] = 0;
+    ini_open(path);
+    CHECK(g_settings.guest_memory == 0);
+    CHECK(strstr(g_test.said, "settings: vk_memory is in the file twice, vk_memory=2 and then vk_memory=0: it takes 0, "
+                              "the last, and the file keeps that line only\n"));
+    CHECK(!snx_remove_tree(dir));
+    free(path);
+    free(dir);
+}
+
 int main(void) {
     test_fixed();
     test_auto_watched();
     test_auto_polled();
+    test_key_twice(); /* last: the file's every setting applied, which the TV mode tests count from nought */
     printf("options_tv_mode: ok\n");
     return 0;
 }
