@@ -744,7 +744,7 @@ int main(void) {
         cpu.x[30] = 0x1008a0251c;
         g_log[0] = 0;
         nvn_CommandBufferBindProgram(&cpu, cbp, program, 0x1f);
-        walk(gr64(nvn_CommandBufferEndRecording(&cpu, cbp) + 8), &w);
+        walk(nvn_CommandBufferEndRecording(&cpu, cbp), &w);
         check(w.n == 1 && w.op[0] == OP_BIND_PROGRAM &&
                   gr64(w.at[0] + 8 + offsetof(NvnPBindProgram, st) + NVN_SHADER_STAGE_VERTEX * sizeof(NvnStage)) == 0,
               "a program not initialized yet is bound with no stage");
