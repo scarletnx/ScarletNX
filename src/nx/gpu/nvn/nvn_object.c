@@ -588,9 +588,38 @@ int nvn_TexturePoolInitialize(CPU* c, u64 tp, u64 pool, i64 offset, i32 count) {
     (void)c;
     return desc_pool_init(tp, pool, offset, count, "texture");
 }
+/* The driver's own samplers, which its nvnSamplerPoolInitialize writes into a new pool's descriptors 0 and 1 (read in
+   an API 53.313 driver): linear filters without mipmaps, every coordinate clamped to its edge, LODs 0 to 1000, no
+   compare, and an anisotropy of 1 in descriptor 0 and 2 in descriptor 1. Games sample with them by those IDs without
+   registering them; an empty descriptor reads the nearest texel and wraps */
+static void reserved_samplers(u64 sp) {
+    const NvnDescPool* p = NVN_OBJ(const NvnDescPool, sp);
+    u64 memory = nvn_pool_memory(p->pool);
+    NvnSamplerPar par = {0};
+    u32 tsc[8], i;
+    if (!memory || p->count < 2) {
+        LOG("nvn: sampler pool %llx has %d descriptors and memory %llx: the driver's samplers 0 and 1 aren't written\n",
+            (unsigned long long)sp, p->count, (unsigned long long)memory);
+        return;
+    }
+    par.min_filter = NVN_MIN_FILTER_LINEAR;
+    par.mag_filter = NVN_MAG_FILTER_LINEAR;
+    par.wrap_s = par.wrap_t = par.wrap_r = NVN_WRAP_MODE_CLAMP_TO_EDGE;
+    par.compare_mode = NVN_COMPARE_MODE_NONE;
+    par.compare_func = NVN_COMPARE_FUNC_LESS;
+    par.reduction = NVN_SAMPLER_REDUCTION_AVERAGE;
+    par.lod_max = 1000.0f;
+    for (i = 0; i < 2; i++) {
+        par.anisotropy = (f32)(i + 1);
+        nvn_tsc_encode(&par, tsc);
+        memcpy(GP(memory + p->offset + i * NVN_DESCRIPTOR_SIZE), tsc, sizeof tsc);
+    }
+}
 int nvn_SamplerPoolInitialize(CPU* c, u64 sp, u64 pool, i64 offset, i32 count) {
     (void)c;
-    return desc_pool_init(sp, pool, offset, count, "sampler");
+    if (!desc_pool_init(sp, pool, offset, count, "sampler")) return 0;
+    reserved_samplers(sp);
+    return 1;
 }
 /* what a descriptor pool was initialized with */
 u64 nvn_TexturePoolGetMemoryPool(CPU* c, u64 tp) {
