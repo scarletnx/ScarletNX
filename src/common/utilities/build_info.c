@@ -56,4 +56,8 @@
 const char* snx_build_info(void) {
     return "ScarletNX " SNX_BRANCH " " SNX_COMMIT " (" SNX_COMPILER ", " SNX_OS " " SNX_ARCH ")";
 }
+const char* snx_build_log_line(void) {
+    return "ScarletNX " SNX_BRANCH " " SNX_COMMIT ", committed " SNX_COMMIT_DATE " (" SNX_COMPILER ", " SNX_OS
+           " " SNX_ARCH ")";
+}
 const char* snx_build_commit(void) { return SNX_COMMIT; }
