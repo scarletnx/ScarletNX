@@ -69,12 +69,12 @@ type nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternalEx = stru
 
 # The native audio service (aud:u): a TIPC session that hands back the managers audren:u/audout:u/audin:u
 # serve, one per command. Native-ABI games reach the renderer manager this way, then its GetWorkBufferSize (cmd 1).
-# Its 2 is the one a Switch 2 SDK's nn::audio::CreateUserClientSessionByHipc calls, with the same argument it sends,
-# and it hands back the Switch 2 SDK's own manager, where the commands it knows by number take the shapes it sends
+# Its 2 is the one a Switch 2 SDK's nn::audio::CreateUserClientSessionByHipc calls, with no argument of its own, and
+# it hands back the Switch 2 SDK's own manager, where the commands it knows by number take the shapes it sends
 interface nn::audio::detail::INativeAudioManager is aud:u {
     [0] GetAudioInManager() -> object<nn::audio::detail::IAudioInManager> manager;
     [1] GetAudioOutManager() -> object<nn::audio::detail::IAudioOutManager> manager;
-    [2] GetAudioRendererManager(u32 arg) -> object<nn::audio::detail::IAudioRendererManager2> renderer;
+    [2] GetAudioRendererManager() -> object<nn::audio::detail::IAudioRendererManager2> renderer;
 }
 
 interface nn::audio::detail::IAudioRendererManager is audren:u {
@@ -141,6 +141,10 @@ interface nn::audio::detail::IAudioRendererManager2 is audren2 {
         -> object<nn::audio::detail::IAudioRenderer> renderer;
     [1] GetWorkBufferSize(nn::audio::detail::AudioRendererParameterInternal params) -> u64 size;
     [2] GetAudioDeviceService() -> object<nn::audio::detail::IAudioDevice2> device;
+    # the device service with the revision tag this SDK's nn::audio::ListAudioOutputDeviceName sends before it: the
+    # same device object, whose 4 answers the output names
+    [4] GetAudioDeviceServiceWithRevisionInfo(nn::applet::AppletResourceUserId aruid, u32 revision)
+        -> object<nn::audio::detail::IAudioDevice2> device;
 }
 
 # The device a Switch 2 SDK's audio manager hands back (Eden's work reaches the same stack through its own device

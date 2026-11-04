@@ -409,8 +409,8 @@ static int nn_audio_detail_INativeAudioManager_GetAudioOutManager(SvcObj* self, 
     *manager = new_audout();
     R_SUCCEED();
 }
-static int nn_audio_detail_INativeAudioManager_GetAudioRendererManager(SvcObj* self, u32 arg, SvcObj** renderer) {
-    (void)self, (void)arg;
+static int nn_audio_detail_INativeAudioManager_GetAudioRendererManager(SvcObj* self, SvcObj** renderer) {
+    (void)self;
     *renderer = new_audren2();
     R_SUCCEED();
 }
@@ -623,6 +623,13 @@ static int nn_audio_detail_IAudioRendererManager2_GetWorkBufferSize(
 }
 static int nn_audio_detail_IAudioRendererManager2_GetAudioDeviceService(SvcObj* self, SvcObj** device) {
     (void)self;
+    *device = nn_audio_detail_IAudioDevice2_new();
+    R_SUCCEED();
+}
+/* the device service with the revision tag the SDK's ListAudioOutputDeviceName sends: the same object */
+static int nn_audio_detail_IAudioRendererManager2_GetAudioDeviceServiceWithRevisionInfo(
+    SvcObj* self, nn_applet_AppletResourceUserId aruid, u32 revision, SvcObj** device) {
+    (void)self, (void)aruid, (void)revision;
     *device = nn_audio_detail_IAudioDevice2_new();
     R_SUCCEED();
 }
