@@ -21,6 +21,12 @@ sentinel `docs/.work-complete` only when every box is checked. Do not push to an
       `docs/issues/3ds-pica-shadow-rendering.md`), so the box waits for that HLE gap.
 - [x] **Full verification.** `ctest` for every non-device test, the three validation runs, a headless GBA run with
       Blend and Auto, and a Switch run with AA under `--vk_validation=1`. Update the demo folder, panels and patches.
+- [x] **Live keys on every frontend.** The upscaler, anti aliasing, HDR and frame interpolation keys are matched in
+      one place (`common/gpu/vk/hotkeys.c`); the Switch gained the interpolation key, the Vita gained all four, and the
+      GBA reads the interpolation mode from the setting. Each change shows a toast: the Switch's overlay, and the
+      shared `common/gpu/vk/toast.c` over the frame on the 3DS, Vita and GBA.
+- [x] **Stats with frame interpolation.** The stats box shows the game's own frames a second, the generated frames
+      beside it and their total, widening the box when the blend runs.
 - [x] **Docs and issues.** Every fixed issue gets a status section. Update `docs/SETTINGS.md`, `docs/USAGE.md`,
       `docs/3DS.md`, `docs/VITA.md`, `docs/AGB.md`, `README`, and the demo folder.
 

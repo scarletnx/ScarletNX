@@ -9,6 +9,7 @@
 * [3DS](#3ds)
 * [Vita](#vita)
 * [Frame interpolation, per frontend](#frame-interpolation-per-frontend)
+* [Live keys and toasts](#live-keys-and-toasts)
 * [3DS shadows](#3ds-shadows)
 
 The method and the commands are in `docs/GAME-EFFECTS-METHOD.md`. Effects means
@@ -114,6 +115,13 @@ compiled and uses the same tested `snx_fx_blend`.
 - **3DS.** `snx-test-3ds-windows OUT` and `--interp` pass, the latter with `frame_interp=blend` (two swapchain
   images, the blend then the pair).
 - **Vita.** The synthetic `present_fx` path covers the blend; no Vita title is on this machine.
+
+## Live keys and toasts
+
+The four effect keys (`upscaler_key`, `aa_key`, `hdr_key`, `frame_interp_key`) are matched in one place and work on
+every frontend. Each change shows the same words: the Switch's overlay toast, and the shared toast over the frame on
+the 3DS, Vita and GBA (the panel `panels/toast.png` in the demo folder is the offscreen check in `present_fx`). With
+frame interpolation on, F12's stats line reads the game's own rate, the generated rate and their total.
 
 ## 3DS shadows
 
