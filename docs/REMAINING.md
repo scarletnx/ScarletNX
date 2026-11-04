@@ -18,7 +18,8 @@ sentinel `docs/.work-complete` only when every box is checked. Do not push to an
 - [ ] **3DS PICA shadow rendering.** The shadow pass (OM_MODE 3), its packed R32_UINT map, the tiled store/load
       shader and the Shadow2D read are implemented and pass `3ds_vk_draw --shadow` and its validation mode. The retail
       title still does not reach the GPU: it waits in APT/GSP before its first draw (see
-      `docs/issues/3ds-pica-shadow-rendering.md`), so the box waits for that HLE gap.
+      `docs/issues/3ds-pica-shadow-rendering.md`). The retail title now draws its title screen; a real scene's
+      shadow pass is what the box waits for.
 - [x] **Full verification.** `ctest` for every non-device test, the three validation runs, a headless GBA run with
       Blend and Auto, and a Switch run with AA under `--vk_validation=1`. Update the demo folder, panels and patches.
 - [x] **Live keys on every frontend.** The upscaler, anti aliasing, HDR and frame interpolation keys are matched in
@@ -33,8 +34,8 @@ sentinel `docs/.work-complete` only when every box is checked. Do not push to an
 ## Rules for the continuation
 
 - Read `CLAUDE.md` and the skills `snx-build`, `snx-run`, `snx-code-quality`, `snx-gpu-shader` and `ste100` first.
-- Work in `/home/greenstar/.local/share/opencode/worktree/515586/shiny-comet` on branch `greatgreenstar/feat/hdr-780`.
-- Commit every verified step, signed with the SSH key. Never force-push and never push.
+- Work in `/home/greenstar/.local/share/opencode/worktree/515586/shiny-comet` on branch `AA-HDR-etc-all-plats`.
+- Commit every verified step, signed with the SSH key. Never force-push.
 - Test with the headless private KWin session or `-H`. Do not use the user's desktop.
 - If a test fails, find the mechanism before changing code. Record anything that cannot be finished in `docs/issues/`.
 - When every box is checked and the full verification passed, run the demo update, then create

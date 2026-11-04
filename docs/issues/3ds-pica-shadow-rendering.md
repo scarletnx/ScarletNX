@@ -35,13 +35,10 @@ The GPU renderer (`src/3ds/gpu/vk/`) now draws the shadow pass:
 - `3ds_vk_draw_shadow_validation` runs the same mode under Khronos synchronization validation with no errors. The
   four earlier validation modes and the CPU-reference scenes still pass.
 
-## What still blocks the retail title
+## The retail title now reaches the presenter
 
-The title no longer reaches the shadow pass. With the current runtime it stops before the GPU starts: it calls
-`apt:u` command `0x0055` (`SetScreenCapturePostPermission`, stubbed with success), then waits on an APT address
-arbiter and an event, and runs its whole `--seconds` budget idle. No `3ds gpu:` line appears, so the shadow code is
-not the blocker any more.
-
-Next step: find what APT answer the game waits for after `0x0055`. Compare the trace with Azahar's APT:U lifecycle
-(`aptMainLoop`, the parameter and notification events) and implement the missing command or the event it signals.
-Then run the title again to reach the presenter.
+On 2026-11-04 the retail title started, reached the presenter and drew its title screen and its "Press A" prompt
+(see `docs/GAME-EFFECTS-PROOF.md`). The APT wait on `apt:u` command `0x0055` that stopped an earlier run before the
+first draw no longer blocks startup. The shadow path is still unverified in a real scene: the title screen does not
+draw one, and the APT wait may still come after the prompt. Next step: press A into a scene that uses shadows and
+watch for the `3ds gpu:` shadow line, with the PICA shadow pass already covered by its tests.

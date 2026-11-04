@@ -92,9 +92,11 @@ A `--frames=300 --shot` run without a window is the control. It writes the same 
 - `snx-test-3ds-windows OUT` and `--separate`: both pass, top 400x240 and bottom 320x240.
 - `3ds_vk_draw --present`, `--after-draw`, `--texture-after-draw`, `--draw-after-index-copy`: pass.
 - The four `3ds_vk_validation.py` runs: pass, 0 validation messages.
-- `Luigi's Mansion: Dark Moon` (0004000000055F00) starts, imports the board RAM and reaches the presenter, then
-  stops at PICA's shadow rendering before the first draw. This is a renderer gap, not a presentation one. See
-  `docs/issues/3ds-pica-shadow-rendering.md`.
+- `Luigi's Mansion: Dark Moon` (0004000000055F00) starts, imports the board RAM, reaches the presenter and draws
+  its title screen and "Press A" prompt (captured 2026-11-04). The shadow path in a real scene is still unverified;
+  see `docs/issues/3ds-pica-shadow-rendering.md`.
+- With `--hdr=on --hdr_test=1 --hdr_debug_headroom=1` the HDR test band draws on the title screen, the PQ swapchain
+  takes its metadata, and the steps separate at 200 % headroom.
 
 ## Vita
 
