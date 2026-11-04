@@ -284,6 +284,19 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk_memory=2)
     set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the write tracking's contract alone (tests/vulkan_write_tracking.inc), with each way the host tracks: its own
+    # (userfaultfd on Linux), page protection and the fault handler for the tracking and the traps (macOS, FreeBSD,
+    # Android, older Linux), and unified memory's reads in place
+    add_test(NAME vulkan_write_tracking COMMAND snx-test-vulkan -H)
+    add_test(NAME vulkan_write_tracking_protection COMMAND snx-test-vulkan -H --write_tracking=1 --memory_traps=1)
+    add_test(NAME vulkan_write_tracking_uma COMMAND snx-test-vulkan -H --vk_memory=2)
+    set_tests_properties(vulkan_write_tracking vulkan_write_tracking_protection vulkan_write_tracking_uma PROPERTIES
+        TIMEOUT 120 ENVIRONMENT "SNX_TEST_WW_ONLY=1" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # a view's write (check_wt_alias): main tracks a pool page at the address it was written through only, so the
+    # source's texture keeps its old bytes; expected to fail until the tracking carries a write to every address
+    add_test(NAME vulkan_write_tracking_alias COMMAND snx-test-vulkan -H)
+    set_tests_properties(vulkan_write_tracking_alias PROPERTIES TIMEOUT 120 ENVIRONMENT "SNX_TEST_WW_ONLY=alias"
+        WILL_FAIL TRUE)
     # an argument the test doesn't take stops it, named, before any device is made; the setting before it, as
     # the runtime takes it, goes through
     add_test(NAME vulkan_headless_options COMMAND snx-test-vulkan -H --memory_traps=2 --memory_trap=2)
