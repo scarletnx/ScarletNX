@@ -1,0 +1,40 @@
+#version 450
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 the ScarletNX contributors
+// A GLES 2 or 3 texture upload of 3 components (GL_RGB8, GL_RGB16F, GL_RGB32F and their integer forms) for a device
+// that has only the 4-component format (gles2_object.c): the packed texels of 1, 2 or 4 bytes a component made into
+// 4-component ones in another buffer, which the transfer then copies into the image. The bits move as they are, and
+// the fourth component is the format's one. Each invocation writes one texel
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) readonly buffer Source { uint words[]; } src;
+layout(set = 0, binding = 1, std430) writeonly buffer Dest { uint words[]; } dst;
+layout(push_constant) uniform Expand {
+    uint texels; // how many
+    uint size;   // the bytes of a component: 1, 2 or 4
+    uint one;    // the fourth component's bits
+} expand;
+// the component of size bytes at byte offset at (a multiple of size)
+uint load(uint at, uint size) {
+    uint word = src.words[at >> 2];
+    if (size == 4u) return word;
+    uint shift = (at & 3u) * 8u;
+    return size == 2u ? (word >> shift) & 0xffffu : (word >> shift) & 0xffu;
+}
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= expand.texels) return;
+    uint size = expand.size;
+    uint at = i * 3u * size;
+    uint r = load(at, size), g = load(at + size, size), b = load(at + 2u * size, size);
+    if (size == 1u) {
+        dst.words[i] = r | (g << 8) | (b << 16) | (expand.one << 24);
+    } else if (size == 2u) {
+        dst.words[2u * i] = r | (g << 16);
+        dst.words[2u * i + 1u] = b | (expand.one << 16);
+    } else {
+        dst.words[4u * i] = r;
+        dst.words[4u * i + 1u] = g;
+        dst.words[4u * i + 2u] = b;
+        dst.words[4u * i + 3u] = expand.one;
+    }
+}

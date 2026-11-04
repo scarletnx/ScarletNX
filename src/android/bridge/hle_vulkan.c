@@ -1146,6 +1146,18 @@ void hle_vulkan_destroy_device(VkDevice device) {
     pthread_mutex_unlock(&compose_lock);
     if (destroy) destroy(device, NULL);
 }
+void hle_vulkan_destroy_instance(VkInstance instance) {
+    if (!instance) return;
+    /* volk loads no instance's commands here: each is the instance's own (vk) */
+    PFN_vkDestroyInstance destroy = (PFN_vkDestroyInstance)vkGetInstanceProcAddr(instance, "vkDestroyInstance");
+    pthread_mutex_lock(&v.lock);
+    if (v.instance == instance) {
+        v.instance = VK_NULL_HANDLE;
+        for (size_t i = 0; i < v.count; ++i) __atomic_store_n(&v.commands[i]->host, NULL, __ATOMIC_RELEASE);
+    }
+    pthread_mutex_unlock(&v.lock);
+    if (destroy) destroy(instance, NULL);
+}
 static void destroy_device(CPU* c, void* data) {
     (void)data;
     hle_vulkan_destroy_device((VkDevice)(uintptr_t)X(0));
