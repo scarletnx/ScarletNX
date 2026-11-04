@@ -511,6 +511,78 @@ static int fragment_query_volume_case(GpuChannel* channel, u64 target, u64 addre
     return 0;
 }
 
+/* A fragment program that queries a volume, samples it, then samples a 2D texture through another handle: its own
+   slots are the query's (2D until the header says otherwise), the volume's and the 2D texture's, and its variant
+   keyed on the volume's header samples and queries the volume through one slot, so the 2D texture's slot is the
+   second there. The variant's second slot took the program's second texture, the volume, which a 2D sample can't view
+   (zeros: one game's dungeon lost its light mask so, and drew dark). Here the 2D texture is green, its green is the
+   quad's green, and the query's depth less 2 its blue: the quad is green only when each slot reads its own texture */
+static int fragment_query_slots_case(GpuChannel* channel, u64 target, u64 address) {
+    const u64 program = address + 0x4000, pool = address + 0x1F000, samplers = pool + 0x100, cbuf = pool + 0x200,
+              texels = pool + 0x400, green = pool + 0x600;
+    const u64 fragment[] = {0x0100000000071005ull,                /* MOV32I R5, 0: the level */
+                            0x010fffffffe71006ull,                /* MOV32I R6, -2 */
+                            0x0100000000071008ull,                /* MOV32I R8, 0: the coordinates */
+                            0x0100000000071009ull,                /* MOV32I R9, 0 */
+                            0x010000000007100aull,                /* MOV32I R10, 0 */
+                            0xdf48010200470504ull | 0xcull << 36, /* TXQ.DIMENSION R4, R5, 0x1c, depth only */
+                            /* TEXS 3D R0 (red), R8, R10: the volume, handle at 0x70 */
+                            0xd000000000000000ull | 1ull << 59 | 10ull << 53 | 0x1cull << 36 | 0xffull << 28 |
+                                10ull << 20 | 7ull << 16 | 8ull << 8,
+                            /* TEXS 2D.LZ R1 (green), R8, R9: the 2D texture, handle at 0x74 */
+                            0xd000000000000000ull | 1ull << 59 | 2ull << 53 | 1ull << 50 | 0x1dull << 36 |
+                                0xffull << 28 | 9ull << 20 | 7ull << 16 | 8ull << 8 | 1,
+                            0x5c10000000670402ull, /* IADD R2, R4, R6 */
+                            0x5cb8000000270a02ull, /* I2F.F32.U32 R2, R2: the blue */
+                            0x0103f80000071003ull, /* MOV32I R3, 1.0 */
+                            0xe30000000007000full};
+    /* the 2D texture: header 1, 1x1 A8B8G8R8, block linear, its texel green */
+    const u32 tic[8] = {0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                        (u32)green,
+                        (u32)(green >> 32) | 3u << 21,
+                        0,
+                        1u << 23, /* width 1, 2D */
+                        1u << 31, /* height 1, depth 1, normalized */
+                        0,
+                        0};
+    u8 bytes[512] = {0};
+    IndexPixels px;
+    CHECK(!query_volume_header(pool, samplers, cbuf, texels));
+    for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+    CHECK(!gmem_write(pool + 32, bytes, 32));
+    memset(bytes, 0, sizeof bytes);
+    bytes[1] = bytes[3] = 0xFF;
+    CHECK(!gmem_write(green, bytes, sizeof bytes));
+    memset(bytes, 0, sizeof bytes);
+    snx_st_le32(bytes, 1); /* the 2D texture's handle at 0x74: header 1, sampler 0 */
+    CHECK(!gmem_write(cbuf + 0x74, bytes, 4));
+    u32* r = channel->r3d;
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 1;
+    r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 0;
+    r[0x48D] = 0;
+    r[0x982] = 2;
+    channel->ds.bind.cb_addr[4][2] = cbuf;
+    channel->ds.bind.cb_size[4][2] = 256;
+    DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    CHECK(index_program(program, fragment, sizeof fragment / sizeof fragment[0], 1));
+    r[0x851] = (u32)(program - address);
+    int ok = !index_draw(channel, target, &call, &px) && index_all_green(&px);
+    if (!ok) {
+        u8 first[4] = {0};
+        index_first_pixel(target, first);
+        fprintf(stderr, "fragment query slots: %u green, %u blue, %u red; first pixel %u %u %u %u\n", px.green, px.blue,
+                px.red, first[0], first[1], first[2], first[3]);
+    }
+    r[0x851] = 0x10000;
+    r[0x55F] = 0;
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    CHECK(ok);
+    puts("fragment textures: a variant that samples and queries a volume through one slot reads its next texture "
+         "from that texture's own handle");
+    return 0;
+}
+
 /* A vertex program's texture of an integer format keys the program's variant, as a fragment program's does: its texels
    come back as their bits, where a program keyed float got no view of the image and read zeros (one game's virtual
    texture page table, drawn by a vertex program from an unsigned buffer texture, pointed past its cache). Here a
@@ -682,6 +754,7 @@ static int check_index_draws(void) {
     CHECK(!vertex_int_texture_case(channel, target, address));
     CHECK(!vertex_query_volume_case(channel, target, address));
     CHECK(!fragment_query_volume_case(channel, target, address));
+    CHECK(!fragment_query_slots_case(channel, target, address));
     CHECK(!index_bound_cases(channel, target, indices, address + 0x1A000, address + 0x1C000));
     printf("index draws: quads, widened and native 8-bit indices, restart indices and rewritten indices' bounds checked "
            "(8-bit indices %s)\n",
