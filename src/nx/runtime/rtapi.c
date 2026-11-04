@@ -11,6 +11,7 @@
 #include "nx/runtime/guest_stats.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
+#include "nx/runtime/nce/nce.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include <stdio.h>
@@ -81,9 +82,15 @@ void rt_missed_report(CPU* c, u64 pc, const char* why) {
 /* snx_lookup found no function for pc: first the AOT module's variant table, which the build linked in from a profile
    run's cache, then the JIT for the functions the pack does not cover. A JIT compile may still be running: wait for it
    off the guest core, so the core's other threads run meanwhile. It is noted as a hint, so the next AOT build can put
-   the function in the pack: not code the game mapped, which the pack never holds and which lands elsewhere next time */
+   the function in the pack: not code the game mapped, which the pack never holds and which lands elsewhere next time.
+   Under NCE no slot holds the game's code and no JIT runs: the runtime's own calls into it (the memory callback of an
+   NVN command buffer) run it natively, as an empty slot does (nce_slot) */
 static void rt_miss(CPU* c, u64 pc) {
-    GuestFn f;
+    GuestFn f = nce_slot(NULL);
+    if (f) {
+        f(c, pc);
+        return;
+    }
     guest_stats_add(kt_ix((KThread*)c->thread), GSTAT_MISS);
     f = jit_resolve_or_add(pc);
     if (!f) {
