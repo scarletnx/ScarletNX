@@ -9,7 +9,7 @@ sentinel `docs/.work-complete` only when every box is checked. Do not push to an
       `docs/issues/switch-aa-frame-interpolation.md`.
 - [ ] **Switch frame interpolation.** Keep the previous presented image and present the blend through the HDR/blit
       path, with two swapchain images per game frame. Use `auto` at 1.9x the measured game rate.
-- [ ] **3DS frame interpolation.** Per window, keep the previous composited pair and present the blend before the
+- [x] **3DS frame interpolation.** Per window, keep the previous composited pair and present the blend before the
       current pair. Use the shared blend pass. Check `3ds_windows` and a real run.
 - [x] **Vita frame interpolation.** Same two-image present on the single Vita window. Check with the synthetic
       presenter path.

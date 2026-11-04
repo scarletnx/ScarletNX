@@ -92,6 +92,7 @@ int main(int argc, char** argv)
     const char* dir = argc > 1 ? argv[1] : ".";
     bool separate = argc > 2 && !strcmp(argv[2], "--separate");
     bool minimized = argc > 2 && !strcmp(argv[2], "--minimize");
+    bool interp = argc > 2 && !strcmp(argv[2], "--interp");
     char stale[1024];
     if (snx_mkdirs(dir)) return 1;
     for (unsigned screen = 0; screen < 2; ++screen)
@@ -100,12 +101,14 @@ int main(int argc, char** argv)
             remove(stale);
         }
     /* two screens at different scales: each setting reaches its own screen's render scale, and no other's */
+    if (interp) snprintf(g_settings.frame_interpolation, sizeof g_settings.frame_interpolation, "blend");
     g_settings.ctr_top_resolution = 2;
     g_settings.ctr_bottom_resolution = 1;
     bool scales = snx_ctr_vk_target_scale(240, 400) == 2 && snx_ctr_vk_target_scale(240, 320) == 1;
     g_settings.ctr_top_resolution = 1;
     g_settings.ctr_bottom_resolution = 2;
     scales = scales && snx_ctr_vk_target_scale(240, 400) == 1 && snx_ctr_vk_target_scale(240, 320) == 2;
+    if (interp) snprintf(g_settings.frame_interpolation, sizeof g_settings.frame_interpolation, "blend");
     g_settings.ctr_top_resolution = 2;
     g_settings.ctr_bottom_resolution = 1;
     if (!scales) {

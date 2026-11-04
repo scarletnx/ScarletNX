@@ -58,13 +58,16 @@ static struct {
     VkDeviceMemory mix_memory[2];
     VkImageView mix_view[2];
     uint32_t mix_width[2], mix_height[2];
+    VkImageLayout mix_layout[2];
     /* each submission slot's: a slot is free again only once its submission is done, and so are they */
     VkSemaphore acquire[2][SNX_CTR_VK_SLOTS], presented[2][SNX_CTR_VK_SLOTS];
+    VkFence acquire_fence[2]; /* the second image of an interpolated pair, waited for on the CPU */
     const char* frame_dir;
     unsigned dumps;
     uint64_t presents;     /* past the first dumps, two presents (one a screen) of every 120 are kept as the latest */
     unsigned bottom_alone; /* bottom screen frames since the window last showed, the top screen showing none */
     unsigned up : 1, closed : 1, separate : 1;
+    int have_mix[2];
 } g_present;
 
 static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, VkImageLayout next);
@@ -298,6 +301,10 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    for (unsigned i = 0; i < 2; ++i) {
+        VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        if (vkCreateFence(v->device, &fi, NULL, &g_present.acquire_fence[i]) != VK_SUCCESS) return false;
+    }
     if (!snx_ctr_vk_compute(snx_ctr_present_spv, snx_ctr_present_spv_size / 4, 2, 2, 36, &g_present.decode) ||
         !frame_make(&g_present.source_dummy, 1, 1, 1) ||
         vkCreateBuffer(v->device, &bi, NULL, &g_present.readback) != VK_SUCCESS)
@@ -521,25 +528,20 @@ static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, 
 /* The window's picture: in one window the top screen above the bottom one, which is centred under it (400 and 320
    pixels wide, 240 high), the pair scaled as one to fit the swapchain's image and centred in it, the rest black; in
    separate windows this screen alone, scaled to fit and centred. */
-static void show_screens(VkCommandBuffer cb, VkImage target, VkImageView target_view, unsigned screen) {
+/* The pair of screens in one image of the window's size: the top above the bottom, or this screen alone. The image
+   is left in TRANSFER_DST_OPTIMAL. */
+static int build_mix(VkCommandBuffer cb, unsigned screen) {
     const SnxCtrVk* v = snx_ctr_vk();
     unsigned window = g_present.separate ? screen : 0;
     VkExtent2D extent = g_present.swap[window].extent;
-    int hdr = g_present.fx[window] && g_present.display_kind[window] != SNX_FX_DISPLAY_NONE &&
-              snx_fx_hdr_active(g_present.fx[window]);
-    VkImage dst = target;
-    if (hdr) {
-        if (!mix_image(window, extent.width, extent.height))
-            hdr = 0;
-        else
-            dst = g_present.mix[window];
-    }
+    if (!mix_image(window, extent.width, extent.height)) return 0;
+    VkImage dst = g_present.mix[window];
     image_barrier(cb, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkClearColorValue black = {.float32 = {0, 0, 0, 1}};
     VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vkCmdClearColorImage(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
-    /* the blits below overwrite the clear's pixels: their writes must wait for it */
     image_barrier(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    g_present.mix_layout[window] = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     for (unsigned i = 0; i < 2; ++i) {
         if (g_present.separate && i != screen) continue;
         Frame* f = &g_present.frames[i];
@@ -547,7 +549,6 @@ static void show_screens(VkCommandBuffer cb, VkImage target, VkImageView target_
         VkImage src_image;
         VkImageView src_view;
         uint32_t src_width, src_height;
-        /* a screen not drawn yet stays black */
         if (!f->image || f->layout == VK_IMAGE_LAYOUT_UNDEFINED || !screen_rect(i, rect)) continue;
         uint32_t tw = (uint32_t)(rect[1].x - rect[0].x), th = (uint32_t)(rect[1].y - rect[0].y);
         src_image = f->image, src_view = f->view, src_width = f->width, src_height = f->height;
@@ -582,34 +583,94 @@ static void show_screens(VkCommandBuffer cb, VkImage target, VkImageView target_
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
         }
     }
+    return 1;
+}
+
+/* A composited pair (or a blend) into the window's image: the HDR passes, or the plain blit. The target comes back in
+   PRESENT_SRC_KHR. */
+static void draw_mix(VkCommandBuffer cb, VkImage mix, VkImageView mix_view, VkImage target, VkImageView target_view,
+                     unsigned window) {
+    VkExtent2D extent = g_present.swap[window].extent;
+    int hdr = g_present.fx[window] && g_present.display_kind[window] != SNX_FX_DISPLAY_NONE &&
+              snx_fx_hdr_active(g_present.fx[window]);
     if (hdr) {
         SnxFxImage comp = {0};
-        image_barrier(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        if (snx_fx_hdr_compose(g_present.fx[window], cb, g_present.mix_view[window], VK_FORMAT_R8G8B8A8_UNORM,
-                               extent.width, extent.height, 0, 0, extent.width, extent.height, 0, extent.width,
-                               extent.height, 0, 0, extent.width, extent.height, &comp)) {
+        image_barrier(cb, mix, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (snx_fx_hdr_compose(g_present.fx[window], cb, mix_view, VK_FORMAT_R8G8B8A8_UNORM, extent.width,
+                               extent.height, 0, 0, extent.width, extent.height, 0, extent.width, extent.height, 0, 0,
+                               extent.width, extent.height, &comp)) {
             if (g_settings.hdr_test_pattern) snx_fx_hdr_test(g_present.fx[window], cb, &comp);
             if (snx_fx_hdr_encode(g_present.fx[window], cb, &comp, target, target_view,
                                   g_present.swap[window].format.format, extent.width, extent.height,
                                   snx_fx_encode_kind(g_present.fx[window]))) {
                 image_barrier(cb, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+                g_present.mix_layout[window] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 return;
             }
         }
-        /* the HDR passes could not run: the composited SDR pair is blitted instead */
-        image_barrier(cb, dst, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        image_barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        vkCmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
-        image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        VkImageBlit full = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                            .srcOffsets = {{0, 0, 0}, {(int32_t)extent.width, (int32_t)extent.height, 1}},
-                            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                            .dstOffsets = {{0, 0, 0}, {(int32_t)extent.width, (int32_t)extent.height, 1}}};
-        vkCmdBlitImage(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                       &full, VK_FILTER_NEAREST);
+        image_barrier(cb, mix, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    } else {
+        image_barrier(cb, mix, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     }
+    g_present.mix_layout[window] = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    VkClearColorValue black = {.float32 = {0, 0, 0, 1}};
+    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    image_barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vkCmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+    image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageBlit full = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .srcOffsets = {{0, 0, 0}, {(int32_t)extent.width, (int32_t)extent.height, 1}},
+                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .dstOffsets = {{0, 0, 0}, {(int32_t)extent.width, (int32_t)extent.height, 1}}};
+    vkCmdBlitImage(cb, mix, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &full,
+                   VK_FILTER_NEAREST);
     image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
+
+/* The shown picture without interpolation. */
+static void show_screens(VkCommandBuffer cb, VkImage target, VkImageView target_view, unsigned screen) {
+    unsigned window = g_present.separate ? screen : 0;
+    if (!build_mix(cb, screen)) return;
+    draw_mix(cb, g_present.mix[window], g_present.mix_view[window], target, target_view, window);
+}
+
+/* The blend of the previous pair and this one, then this pair, into two window images. */
+static void show_screens_interp(VkCommandBuffer cb, VkImage target, VkImageView target_view, VkImage target2,
+                                VkImageView target_view2, unsigned screen) {
+    unsigned window = g_present.separate ? screen : 0;
+    VkExtent2D extent = g_present.swap[window].extent;
+    SnxFxImage prev = {0};
+    int have_prev;
+    if (g_present.have_mix[window] && g_present.fx[window]) {
+        image_barrier(cb, g_present.mix[window], g_present.mix_layout[window],
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        g_present.mix_layout[window] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    have_prev = g_present.have_mix[window] && g_present.fx[window] &&
+                snx_fx_keep(g_present.fx[window], cb, g_present.mix_view[window], extent.width, extent.height, &prev);
+    if (have_prev)
+        image_barrier(cb, prev.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (!build_mix(cb, screen)) return;
+    if (have_prev) {
+        SnxFxImage blend = {0};
+        if (snx_fx_blend(g_present.fx[window], cb, prev.view, g_present.mix_view[window], extent.width, extent.height,
+                         0.5f, &blend)) {
+            image_barrier(cb, blend.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            draw_mix(cb, blend.image, blend.view, target, target_view, window);
+        }
+    }
+    draw_mix(cb, g_present.mix[window], g_present.mix_view[window], target2, target_view2, window);
+    g_present.have_mix[window] = 1;
+}
+
+static int ctr_display_hz(SDL_Window* window) {
+    SDL_DisplayID id = window ? SDL_GetDisplayForWindow(window) : 0;
+    const SDL_DisplayMode* mode = id ? SDL_GetCurrentDisplayMode(id) : NULL;
+    if (!mode || !(mode->refresh_rate > 0)) return 0;
+    return (int)(mode->refresh_rate + 0.5f);
+}
+
 bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigned height, unsigned format,
                            unsigned pitch, uint64_t* hash) {
     if (!g_present.up || screen > 1 || !width || !height || width > MAX_SIDE || height > MAX_SIDE || format > 4)
@@ -701,16 +762,60 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
         } else if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
             show = false;
     }
+    int interp = show && g_present.fx[window_index] &&
+                 (snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_BLEND ||
+                  (snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_AUTO &&
+                   snx_fx_interp_auto(ctr_display_hz(screen_window(window_index)), 60)));
+    uint32_t index2 = 0;
+    int show2 = 0;
+    if (interp) {
+        VkFence fence = g_present.acquire_fence[window_index];
+        VkResult r2;
+        vkResetFences(v->device, 1, &fence);
+        r2 = vkAcquireNextImageKHR(v->device, g_present.swap[window_index].swapchain, UINT64_MAX, VK_NULL_HANDLE, fence,
+                                   &index2);
+        if (r2 == VK_SUCCESS || r2 == VK_SUBOPTIMAL_KHR) {
+            vkWaitForFences(v->device, 1, &fence, VK_TRUE, UINT64_MAX);
+            show2 = 1;
+        }
+    }
     if (show) {
         g_present.bottom_alone = 0;
-        show_screens(cb, g_present.swap[window_index].images[index], g_present.swap_views[window_index][index], screen);
+        if (show2)
+            show_screens_interp(cb, g_present.swap[window_index].images[index],
+                                g_present.swap_views[window_index][index], g_present.swap[window_index].images[index2],
+                                g_present.swap_views[window_index][index2], screen);
+        else
+            show_screens(cb, g_present.swap[window_index].images[index],
+                         g_present.swap_views[window_index][index], screen);
     }
     /* submitted, waited for only when the host reads the frame (a dump, a test's hash) */
     bool ok = true;
     if (show) {
         uint64_t serial =
             snx_ctr_vk_submit_with(g_present.acquire[window_index][slot], g_present.presented[window_index][slot]);
-        ok = !readback || snx_ctr_vk_wait(serial, UINT64_MAX);
+        ok = (!readback && !show2) || snx_ctr_vk_wait(serial, UINT64_MAX);
+        if (show2 && ok) {
+            VkPresentInfoKHR p[2] = {
+                {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                 .swapchainCount = 1,
+                 .pSwapchains = &g_present.swap[window_index].swapchain,
+                 .pImageIndices = &index},
+                {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                 .swapchainCount = 1,
+                 .pSwapchains = &g_present.swap[window_index].swapchain,
+                 .pImageIndices = &index2}};
+            VkResult shown = vkQueuePresentKHR(v->queue, &p[0]);
+            if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR)
+                g_present.windowed[window_index] = swap_create(window_index);
+            if (shown == VK_SUCCESS || shown == VK_SUBOPTIMAL_KHR) {
+                shown = vkQueuePresentKHR(v->queue, &p[1]);
+                if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR)
+                    g_present.windowed[window_index] = swap_create(window_index);
+            }
+            index = index2;
+            goto presented;
+        }
     } else if (readback)
         ok = snx_ctr_vk_finish();
     if (show && ok) {
@@ -723,6 +828,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
         VkResult shown = vkQueuePresentKHR(v->queue, &present);
         if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR) (void)swap_create(window_index);
     }
+presented:;
     pump();
     if (!ok) return false;
     if (readback) {
@@ -755,6 +861,8 @@ void snx_ctr_present_free(void) {
             if (g_present.acquire[screen][i]) vkDestroySemaphore(v->device, g_present.acquire[screen][i], NULL);
             if (g_present.presented[screen][i]) vkDestroySemaphore(v->device, g_present.presented[screen][i], NULL);
         }
+    for (unsigned i = 0; i < 2; ++i)
+        if (g_present.acquire_fence[i]) vkDestroyFence(v->device, g_present.acquire_fence[i], NULL);
     if (g_present.readback) vkDestroyBuffer(v->device, g_present.readback, NULL);
     if (g_present.readback_memory) vkFreeMemory(v->device, g_present.readback_memory, NULL);
     snx_ctr_vk_compute_free(&g_present.decode);
