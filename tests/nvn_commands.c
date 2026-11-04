@@ -58,9 +58,14 @@ void arm_run(SnxArmCPU* c, SnxArmBlock first, u32 stop_at) {
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
+/* the last line logged */
+static char g_log[256];
 void logf_(int lvl, const char* fmt, ...) {
+    va_list ap;
     (void)lvl;
-    (void)fmt;
+    va_start(ap, fmt);
+    vsnprintf(g_log, sizeof g_log, fmt, ap);
+    va_end(ap);
 }
 void fatal(const char* fmt, ...) {
     va_list ap;
@@ -727,6 +732,26 @@ int main(void) {
               "with g_mem 0 a bind records the program's stages");
         g_mem = base;
         g_pool_memory = 0x10000;
+    }
+    /* a program bound before the game initializes it: its record binds no stage of it, and the log says which program,
+       the stages the game asked for and where it called from */
+    {
+        const u64 cbp = 0x4c000, program = 0x4c400;
+        Walk w;
+        nvn_CommandBufferInitialize(&cpu, cbp, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbp, 1, 0x2d000, 0x400);
+        nvn_CommandBufferBeginRecording(&cpu, cbp);
+        cpu.x[30] = 0x1008a0251c;
+        g_log[0] = 0;
+        nvn_CommandBufferBindProgram(&cpu, cbp, program, 0x1f);
+        walk(gr64(nvn_CommandBufferEndRecording(&cpu, cbp) + 8), &w);
+        check(w.n == 1 && w.op[0] == OP_BIND_PROGRAM &&
+                  gr64(w.at[0] + 8 + offsetof(NvnPBindProgram, st) + NVN_SHADER_STAGE_VERTEX * sizeof(NvnStage)) == 0,
+              "a program not initialized yet is bound with no stage");
+        check(!strcmp(g_log,
+                      "nvn: program 4c400 isn't initialized as it is bound (stages 0x1f, called from 1008a0251c)\n"),
+              "the log names the program, its stages and the call's return");
+        cpu.x[30] = 0x1234;
     }
     if (failures) return 1;
     puts("nvn_commands: ok");
