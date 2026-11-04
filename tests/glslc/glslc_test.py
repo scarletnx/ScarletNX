@@ -188,6 +188,12 @@ def check_shaders(args, failures):
             valid = run([args.spirv_val, '--target-env', 'vulkan1.1', str(mapped)])
             if result.returncode != 0 or valid.returncode != 0:
                 failures.append(f'{shader.name}: with a binding map: {result.stdout.strip()} {valid.stdout.strip()}')
+            if shader.suffix == '.frag':  # gl_FragCoord and gl_PointCoord through the push constant's flip
+                flipped = Path(directory) / (shader.name + '.flipped.spv')
+                result = run([args.cli, '-f', '-o', str(flipped), str(shader)])
+                valid = run([args.spirv_val, '--target-env', 'vulkan1.1', str(flipped)])
+                if result.returncode != 0 or valid.returncode != 0:
+                    failures.append(f'{shader.name}: flipped: {result.stdout.strip()} {valid.stdout.strip()}')
             if not args.glslang:
                 continue
             note = re.search(r'^// glslang: rejects \((.*)\)$', source, re.MULTILINE)
