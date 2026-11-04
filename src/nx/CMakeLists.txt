@@ -284,6 +284,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk_memory=2)
     set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again with the write tracking by page protection and its hot pages (write_tracking_hot): each render
+    # target's baseline cools its pages, or its write-back keeps the CPU's old bytes over its pixels
+    add_test(NAME vulkan_headless_hot COMMAND snx-test-vulkan -H --write_tracking=1 --write_tracking_hot=1)
+    set_tests_properties(vulkan_headless_hot PROPERTIES TIMEOUT 60
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the write tracking's contract alone (tests/vulkan_write_tracking.inc), with each way the host tracks: its own
     # (userfaultfd on Linux), page protection and the fault handler for the tracking and the traps (macOS, FreeBSD,
     # Android, older Linux), with its hot pages (write_tracking_hot), and unified memory's reads in place
