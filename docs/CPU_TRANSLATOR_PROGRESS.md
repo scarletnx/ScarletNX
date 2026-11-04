@@ -132,7 +132,7 @@ FP-focused workloads, with about a 13-percent geometric gain. `SNX_IR_OBJECT_VER
 objects made by the old pipeline. `SNX_ABI` remains 17, and old modules remain compatible. Recompile to use the new
 emitter paths. Large arithmetic helpers remain out of line.
 
-The min/max continuation removes helper calls from vector and pairwise min/max paths on little-endian targets.
+The initial min/max continuation replaced helper calls in vector and pairwise min/max paths on little-endian targets.
 Integer ordering handles NaNs, numeric variants, input flushes and signed zero, with one FPSR reduction. A new
 30,112,768-case test covers all half encodings, mixed exceptional lanes and aliases. An independent rational model
 proves the ordering of all 63,488 finite half encodings, which establishes the order of 4,030,726,144 finite pairs
@@ -181,7 +181,34 @@ pass at 21 graph sizes. All 52 local CPU/tool/document checks pass, including th
 independent callback-state models and the seed matrix. A nine-round Python comparison with 20,000 bootstrap resamples
 passes the fixed regression limits. Promotion alone improves 1.026 times at eight joins and 14.02 times at 2,048
 joins, with a 95-percent interval of 12.77 to 15.68 for the latter. These are compiler-fixture results, not game FPS
-or complete recompile ratios. Native CI and the final game rebuild remain pending for this last compiler change.
+or complete recompile ratios. Native CI and the final game rebuild are reported below.
+
+The indexed promotion change passed native Linux x86-64, AArch64 and Windows CI at `1a851232`.
+The macOS job was canceled before its first step. The fresh game rebuild completed all 155 units, reusing
+149 of 154 unit objects. Its module grew from 695.4 to 734.1 MiB, about 5.6 percent.
+
+Two warmups and five alternating pairs of 100-second game runs completed without crashes. All twelve screenshots
+rendered the same scene correctly. The sampler recorded no ring drops or incomplete exit records. The paired
+median ratio of final gameplay FPS-window means was 0.959, with a 95-percent bootstrap interval of 0.783 to 1.120.
+A second, unsampled series captured process-wide CPU counters at FPS-report boundaries. All five pairs completed.
+Its CPU-time-per-frame geometric speed ratio was 0.989, with interval 0.970 to 1.008. Its paired median FPS ratio
+was 1.012, with interval 0.783 to 1.044. Neither series establishes the fixed 2-percent non-regression bound.
+These are report-window measurements, not individual-frame p95 values. The expanded inline fixups therefore
+remain unapproved for the final SIMD signoff.
+
+A follow-up shares wide exceptional min/max and rounding fixups within an IR unit. Value arguments and a
+`{vector, flags}` result keep unrelated guest registers in SSA. The internal functions reuse the same exact
+emitters and have no external runtime ABI. Short x86 vectors retain the original fallback after shared fixups
+regressed ordinary short-vector kernels. The lowering census counts these calls explicitly. A repeated sequence
+of 256 wide min/max and rounding pairs shrank from 390,040 to 173,312 object bytes. One pair grew from 2,824 to
+3,672 bytes, so sharing is not universally smaller. The retained 45-workload rounding search passed 35 measured rounds with 20,000 bootstrap resamples per comparison.
+Its geometric speed ratio was 1.595, with interval 1.593 to 1.599. Every workload passed the unchanged 2-percent
+regression bound. The separate 35-round ordinary/infinity min/max check also passed every bound. These are
+synthetic kernels on the x86-64 host, not game-FPS gains. All 53 local CPU, tooling and documentation checks pass, including the full QEMU differential sweep.
+Under `qemu64`, the sharing fixture, 30,112,768 min/max cases and 19,970,048 rounding cases also pass.
+Forty-eight object checks confirm unchanged O0 code and matching O1/O2 objects for the selected forms.
+The changed C files pass additional warnings as errors. Native CI and a fresh game comparison remain pending.
+I15 stays open.
 
 The earlier half-conversion and estimate continuation was recompiled and checked against its preceding module with the
 same current runtime and restored private save. Both 100-second scene runs completed without crashes, and both

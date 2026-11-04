@@ -20,6 +20,7 @@
 #include "common/cpu/recompiler/llvm/ir_fp.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/aarch64/helpers/fp_rsqrt_table.h"
+#include <stdio.h>
 
 typedef LLVMValueRef V;
 #define B ir->b
@@ -603,6 +604,75 @@ static V minmax_exact(SnxIr* ir, unsigned width, unsigned minimum, unsigned nume
     return result;
 }
 
+/* Share a cold vector fixup within the unit. Its value arguments and {vector, flags} reply keep CPU state in SSA.
+   The body may read FPCR and raise flags, but cannot inspect initial FPSR.
+   A private CPU-shaped local lets the exact emitter supply the body without a second implementation.
+   SROA removes that local. The internal fast convention has no external C ABI or runtime helper dependency. */
+typedef V (*ColdVector)(SnxIr*, unsigned, unsigned, unsigned, V, V);
+static V cold_vector(SnxIr* ir, const char* tag, unsigned width, unsigned p0, unsigned p1, V n, V m,
+                      ColdVector emit) {
+    unsigned active = ir_vec_count(n), wide = 128 / width;
+    if (active < wide) {
+        /* A short integer vector can use GPRs in a host call convention. Pad with exact +0 lanes so the shared
+           call uses a full SIMD register. These min/max and rounding lanes contribute no exception flags. */
+        unsigned mask[8];
+        for (unsigned i = 0; i < wide; ++i) mask[i] = i < active ? i : active;
+        n = ir_vec_shuffle(ir, n, LLVMConstNull(LLVMTypeOf(n)), mask, wide);
+        if (m) m = ir_vec_shuffle(ir, m, LLVMConstNull(LLVMTypeOf(m)), mask, wide);
+    }
+    LLVMTypeRef type = LLVMTypeOf(n), fields[] = {type, ir->t_i32};
+    LLVMTypeRef reply = LLVMStructTypeInContext(ir->ctx, fields, 2, 0);
+    LLVMTypeRef params[3] = {type, m ? type : ir->t_i32, ir->t_i32};
+    unsigned count = m ? 3 : 2;
+    LLVMTypeRef signature = LLVMFunctionType(reply, params, count, 0);
+    unsigned lanes = ir_vec_count(n);
+    char name[96];
+    snprintf(name, sizeof name, "snx_fp_cold_%s_%u_%u_%u_%u_%u_%u", tag, width, lanes,
+             (unsigned)LLVMGetTypeKind(type), p0, p1, (unsigned)snx_ir_fpsr_exact());
+    V function = LLVMGetNamedFunction(ir->mod, name);
+    if (!function) {
+        function = LLVMAddFunction(ir->mod, name, signature);
+        LLVMSetLinkage(function, LLVMInternalLinkage);
+        LLVMSetFunctionCallConv(function, LLVMFastCallConv);
+        ir_pure(ir, function);
+        LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex,
+            LLVMCreateEnumAttribute(ir->ctx, LLVMGetEnumAttributeKindForName("noinline", 8), 0));
+        LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex,
+            LLVMCreateEnumAttribute(ir->ctx, LLVMGetEnumAttributeKindForName("cold", 4), 0));
+        /* Borrow module-owned handles, but use a separate builder and empty per-function state. */
+        SnxIr body = *ir;
+        body.b = LLVMCreateBuilderInContext(ir->ctx);
+        body.fn = function;
+        body.M = NULL;
+        body.fp_lanes_scratch = NULL;
+        body.state = (SnxIrBlockState){0};
+        body.stats.enabled = 0;
+        body.dump_active = 0;
+        LLVMPositionBuilderAtEnd(body.b, LLVMAppendBasicBlockInContext(ir->ctx, function, "entry"));
+        body.c = LLVMBuildArrayAlloca(body.b, body.t_i8,
+            ir_i32(&body, (unsigned)(offsetof(CPU, fpsr) + sizeof(u32))), "fp.state");
+        LLVMSetAlignment(body.c, 16);
+        ir_cpu_store(&body, LLVMGetParam(function, count - 1), offsetof(CPU, fpcr));
+        ir_cpu_store(&body, ir_i32(&body, 0), offsetof(CPU, fpsr));
+        V value = emit(&body, width, p0, p1, LLVMGetParam(function, 0), m ? LLVMGetParam(function, 1) : NULL);
+        V result = LLVMBuildInsertValue(body.b, LLVMGetUndef(reply), value, 0, "");
+        result = LLVMBuildInsertValue(body.b, result, fpsr(&body), 1, "");
+        LLVMBuildRet(body.b, result);
+        LLVMDisposeBuilder(body.b);
+    }
+    V args[3] = {n, m ? m : fpcr(ir), m ? fpcr(ir) : NULL};
+    V call = LLVMBuildCall2(B, signature, function, args, count, "");
+    LLVMSetInstructionCallConv(call, LLVMFastCallConv);
+    ir_cpu_store(ir, LLVMBuildOr(B, fpsr(ir), LLVMBuildExtractValue(B, call, 1, ""), ""), offsetof(CPU, fpsr));
+    V value = LLVMBuildExtractValue(B, call, 0, "");
+    if (active < wide) {
+        unsigned mask[8];
+        for (unsigned i = 0; i < active; ++i) mask[i] = i;
+        value = ir_vec_shuffle(ir, value, LLVMConstNull(LLVMTypeOf(value)), mask, active);
+    }
+    return value;
+}
+
 static V minmax(SnxIr* ir, unsigned width, unsigned minimum, unsigned numeric, V n, V m) {
     LaneOp o = op_simple(H_MINMAX, width);
     o.op = minimum;
@@ -612,9 +682,13 @@ static V minmax(SnxIr* ir, unsigned width, unsigned minimum, unsigned numeric, V
         Split s;
         fast_minmax(ir, width, minimum, n, m, &f);
         split_begin(ir, f.quick, f.ok, f.value, NULL, &s);
-        /* O0 keeps the original float fallback after its ordinary-path regression gate failed. */
-        return split_end(ir, &s, ir->big_endian || !ir->promote ? map(ir, &o, n, m, NULL, width) :
-                                  minmax_exact(ir, width, minimum, numeric, n, m));
+        /* O0 keeps its original sequence. Short x86 vectors also retain the exact fallback: their outlined
+           variant regressed ordinary kernels. Share the wider cold fixups without expanding each call site. */
+        int fallback = ir->big_endian || !ir->promote || (ir->features->x86 && width * ir_vec_count(n) < 128);
+        return split_end(ir, &s, fallback ? map(ir, &o, n, m, NULL, width) :
+                                  (ir->features->x86 || ir->features->aarch64 ?
+                                   cold_vector(ir, "minmax", width, minimum, numeric, n, m, minmax_exact) :
+                                   minmax_exact(ir, width, minimum, numeric, n, m)));
     }
     return ir->big_endian ? map(ir, &o, n, m, NULL, width) : minmax_exact(ir, width, minimum, numeric, n, m);
 }
@@ -1099,6 +1173,11 @@ static V round_special(SnxIr* ir, unsigned width, unsigned rm, unsigned exact, V
     return result;
 }
 
+static V round_cold(SnxIr* ir, unsigned width, unsigned rm, unsigned exact, V a, V unused) {
+    (void)unused;
+    return round_special(ir, width, rm, exact, a);
+}
+
 /* FRINT[NPMZA] (rm 0-4), FRINTX and FRINTI (rm RM_FPCR: FPCR's mode, ir_fp_round_value; exact: FRINTX's IXC).
    The host's rounding (host_rint, which on x86 gives ties away from zero too) gives the modes exactly for every lane
    but a NaN or a flushed denormal, and raises nothing. FRINTX's IXC is a lane that rounding changed */
@@ -1112,9 +1191,11 @@ static V round_lanes(SnxIr* ir, unsigned width, unsigned rm, unsigned exact, V a
         Split s;
         split_begin(ir, NULL, both(ir, no_nan(ir, width, a), unflushed(ir, width, a)), as_bits(ir, r, width),
                     exact && snx_ir_fpsr_exact() ? ir_vec_any(ir, float_ne(ir, fa, r)) : NULL, &s);
-        /* Exceptional inlining regressed O0 dynamic-rounding kernels. Keep their original object sequence. */
-        return split_end(ir, &s, ir->big_endian || !ir->promote ? map(ir, &o, a, NULL, NULL, width) :
-                                  round_special(ir, width, rm, exact, a));
+        /* O0 and short x86 vectors retain their original sequence. Outlined short-vector rounding regressed
+           ordinary kernels, although wider exceptional kernels improved. */
+        int fallback = ir->big_endian || !ir->promote || (ir->features->x86 && width * ir_vec_count(a) < 128);
+        return split_end(ir, &s, fallback ? map(ir, &o, a, NULL, NULL, width) :
+                                  cold_vector(ir, "round", width, rm, exact, a, NULL, round_cold));
     }
     return map(ir, &o, a, NULL, NULL, width);
 }
