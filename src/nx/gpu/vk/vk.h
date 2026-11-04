@@ -819,6 +819,9 @@ void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked);
    what is being released already, once a present */
 void vk_mem_trim(u64 extra, int force);
 u64 vk_mem_trimmed(void); /* statistics: the bytes vk_mem_trim freed */
+/* 1 once vk_mem_trim has had to free what the last second used, or an allocation found no memory: the working set
+   is bigger than the budget, and stays 1 for the run (vk_astc_as_bc7) */
+int vk_mem_pressed(void);
 /* vk_image_create for a surface of the caches, with room made for it first (vk_mem_trim). When no memory is found, a
    forced trim makes room for later, and images as big fail at once for the rest of the present. bytes: the device
    memory it takes */
@@ -987,6 +990,13 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 lev
                    VkAstcRows rows, void* ctx);
 /* the image levels uploaded as BC7 so far, their bytes, and the bytes they would have taken as RGBA8 */
 void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes);
+/* Whether an ASTC texture the GPU decodes, where it samples BCn, is encoded again as BC7 rather than kept as exact
+   RGBA8 (astc_bc aside, which makes every one BC7: format.c TA). texels: its first level's, all layers; is3d: a 3D
+   texture (no 3D BC7 images on some devices); holes: holes in its mapping (a sparse texture: always BC7); pressed:
+   memory has run short of the working set (vk_mem_pressed). Under pressure every texture of VK_BC7_AUTO_TEXELS or
+   more is BC7: in one game's sample those were three quarters of the ASTC textures and 98% of their RGBA8 bytes */
+#define VK_BC7_AUTO_TEXELS (256u * 256u)
+int vk_astc_as_bc7(u64 texels, int is3d, int holes, int pressed);
 
 /* vic.c: the VIC composition as a compute shader, recorded in the frame's command buffer, its output planes
    published (vk_own_publish): 1 when composed, 0 when the job exceeds the device (it is skipped). Takes vk_lock */

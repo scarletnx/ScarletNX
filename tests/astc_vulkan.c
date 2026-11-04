@@ -584,6 +584,25 @@ static void bench(u32 w, u32 h, int runs, BenchSource src) {
     free(b);
 }
 
+/* vk_astc_as_bc7, texture.c's choice of exact RGBA8 or BC7 for an ASTC texture the GPU decodes: RGBA8 while memory
+   holds the working set, BC7 for textures of VK_BC7_AUTO_TEXELS or more once it has not (3D ones aside), and BC7
+   for a texture with holes in its mapping whatever memory says */
+static void policy_case(void) {
+    static const struct {
+        u64 texels;
+        int is3d, holes, pressed, bc7;
+    } cases[] = {
+        {VK_BC7_AUTO_TEXELS, 0, 0, 0, 0},       {8192ull * 8192 * 68, 0, 0, 0, 0}, {VK_BC7_AUTO_TEXELS, 0, 0, 1, 1},
+        {VK_BC7_AUTO_TEXELS - 1, 0, 0, 1, 0},   {8192ull * 8192, 0, 0, 1, 1},      {512ull * 512 * 512, 1, 0, 1, 0},
+        {16, 0, 1, 0, 1},                       {16, 1, 1, 1, 1},
+    };
+    for (u32 i = 0; i < sizeof cases / sizeof cases[0]; i++)
+        if (vk_astc_as_bc7(cases[i].texels, cases[i].is3d, cases[i].holes, cases[i].pressed) != cases[i].bc7)
+            fatal("vk_astc_as_bc7(%llu texels, 3d %d, holes %d, pressed %d) is not %d\n",
+                  (unsigned long long)cases[i].texels, cases[i].is3d, cases[i].holes, cases[i].pressed, cases[i].bc7);
+    puts("PASS ASTC textures become BC7 under memory pressure, from 256x256 texels, never 3D, always with holes");
+}
+
 /* block linear bytes deswizzled and swizzled on the GPU (vk/blocklinear.c), compared with ref_bl: a surface of
    row_bytes x h x d in blocks of 2^bh x 2^bd GOBs, moved in bands of band rows (not GOB aligned, as ASTC's strips
    aren't) of all slices, or a slice at a time. Swizzling leaves all bytes outside the valid row width as they were,
@@ -962,6 +981,7 @@ int main(int argc, char** argv) {
         puts("The 512 MiB ASTC textures decode as the CPU reference does");
         return 0;
     }
+    policy_case();
     /* block linear moves: whole GOBs, rows not a multiple of 16 or 64 bytes, partial GOB rows and blocks, bands that
        start inside a GOB, volumes whose depth isn't a multiple of their blocks' */
     for (u32 width = 1; width < 16; width++) bl_case(width, 3, 2, 0, 0, 2, 1);

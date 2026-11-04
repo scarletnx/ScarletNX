@@ -153,6 +153,10 @@ static void bc7_init(void) {
     vk_mem_track(g_bc7_mem);
 }
 
+int vk_astc_as_bc7(u64 texels, int is3d, int holes, int pressed) {
+    return holes || (pressed && !is3d && texels >= VK_BC7_AUTO_TEXELS);
+}
+
 void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes) {
     *levels = g_bc7_levels;
     *bytes = g_bc7_bytes;

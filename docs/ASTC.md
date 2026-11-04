@@ -182,6 +182,16 @@ it whatever `native_bc` says, and `format.c` then samples BCn as it is only when
 keeps RGBA8 where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many
 levels went up as BC7 and their megabytes against RGBA8's.
 
+Without `astc_bc` the runtime chooses (`vk_astc_as_bc7`): an ASTC texture is exact RGBA8 while the memory budget holds
+the working set, and from the first time it does not, BC7 for the rest of the run for every texture of
+`VK_BC7_AUTO_TEXELS` (256x256 texels, all layers) or more, 3D ones aside. "Does not hold" is `vk_mem_trim` having to free
+what the last second used (any step past its first): one game's textures then took 5.7 GB of a 5.7 GB budget as RGBA8
+and were evicted and uploaded again every frame (600 to 1000 ms frames), where as BC7 they took 2.5 GB. The textures
+made before keep RGBA8 until the trimmer evicts them, and come back as BC7. In a sample of 1116 of another game's ASTC
+textures, those under 256x256 were a quarter of them and 1.5% of their RGBA8 bytes: small textures (often UI) stay
+exact for almost no memory. BC7 is not exact: on one game's 6x6 textures the full build gives 53.8 dB over RGBA, the
+fast build 50.7, both with a worst channel error of 50 (see the tables below).
+
 A texture with holes in its mapping (a game's sparse texture, `texture.c`) is BC7 whatever `astc_bc` says, where the
 GPU samples BCn: one game's are 68 layers of 8192x8192 ASTC 8x8 with seven of them mapped, 1.7 GB each as RGBA8 (16
 times the game's bytes), which took the GPU past its memory. `device.c` turns `textureCompressionBC` on wherever the
@@ -330,7 +340,8 @@ separate SPIRV-Tools is needed.
   modes 4 and 5 brings them (`SNX_BC7_MODES_4_5` 0, `bc7_encode_cpu_without_45`), edenprobe's astcimage picture comes
   back no worse than the PSNR each region is held to (its fast build, `bc7_encode_cpu_fast`, to floors of its own),
   and a 13x7 image of three slices encodes slice by slice as each alone.
-  `astc_vulkan` and `astc_vulkan_pieces` also upload random blocks into BC7 images, footprints whose strips step
+  `astc_vulkan` checks `vk_astc_as_bc7`: RGBA8 without pressure, BC7 from 256x256 texels under it but never 3D, BC7
+  with holes always. `astc_vulkan` and `astc_vulkan_pieces` also upload random blocks into BC7 images, footprints whose strips step
   4, 2 and 1 block rows, with mips, layers, slices and many strips, and a level of `VK_BC7_FAST_TEXELS` that the
   fast build encodes, and compare the GPU's blocks with the same encoder (or its fast build) run on the CPU over the
   CPU decoder's texels, byte for byte. `--bench [file.astc]` times a 4096x4096 level (the fast build) and a

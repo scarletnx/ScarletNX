@@ -1714,7 +1714,9 @@ static u32 g_trim_dry;  /* the present a trim last found too little to free (+1:
 static u32 g_forced;    /* the present a failed allocation last forced a trim (+1) */
 static u32 g_oom;       /* the present an image allocation last found no memory (+1) */
 static u64 g_oom_bytes; /* the smallest size that found none in that present */
+static int g_pressed;   /* vk_mem_pressed */
 u64 vk_mem_trimmed(void) { return g_trimmed; }
+int vk_mem_pressed(void) { return g_pressed; }
 void vk_mem_trim(u64 extra, int force) {
     u64 usage, budget, need = 0;
     if (force) {
@@ -1771,6 +1773,13 @@ void vk_mem_trim(u64 extra, int force) {
         }
         freed += got;
         short_of = got < want;
+        /* past the first step, what goes was used within the last second: the working set does not fit */
+        if (i && got && !g_pressed) {
+            g_pressed = 1;
+            LOG("vulkan: the working set is bigger than the memory budget: ASTC textures of %ux%u texels or more are "
+                "encoded again as BC7 from now on, a quarter of RGBA8's memory\n",
+                256u, VK_BC7_AUTO_TEXELS / 256u);
+        }
     }
     g_trimmed += freed;
     if (short_of) g_trim_dry = g_vk_present + 1;
