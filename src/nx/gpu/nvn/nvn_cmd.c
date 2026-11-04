@@ -280,10 +280,9 @@ static u32 small_class(u64 bytes) {
 static u64 small_take(NvnCmdState* st, u32 k) {
     NvnSmallClass* c = &st->small[k];
     u64 size = 64u << k, at;
-    if (c->head && (i64)(nvn_replay_walked() - gr64(c->head + 8)) >= 0) {
-        at = c->head;
-        c->head = gr64(at);
-        if (!c->head) c->tail = 0;
+    if (c->n && (i64)(nvn_replay_walked() - c->given[c->first].quiet) >= 0) {
+        at = c->given[c->first].at;
+        c->first = --c->n ? c->first + 1 : 0;
         return at;
     }
     if (c->end - c->slab < size) {
@@ -295,16 +294,25 @@ static u64 small_take(NvnCmdState* st, u32 k) {
     c->slab += size;
     return at;
 }
-/* block at of class k comes back, after the others (under the lock) */
+/* block at of class k comes back, after the others (under the lock). Its records stay as they are until it is taken
+   again: a JUMP or a handle of a submission made before still reaches them, and one game's scene change walked into a
+   block whose first words held the store's list (a record of op 0 and size 0) */
 static void small_give(NvnCmdState* st, u32 k, u64 at) {
     NvnSmallClass* c = &st->small[k];
-    gw64(at, 0);
-    gw64(at + 8, nvn_replay_submitted());
-    if (c->tail)
-        gw64(c->tail, at);
-    else
-        c->head = at;
-    c->tail = at;
+    if (c->first + c->n == c->cap) { /* at the array's end: grown when half of it is in use, else moved down */
+        if (c->n >= c->cap / 2) {
+            u32 cap = c->cap ? c->cap * 2 : 256;
+            NvnSmallFree* given = (NvnSmallFree*)realloc(c->given, (size_t)cap * sizeof *given);
+            if (!given)
+                fatal("nvn: no memory for a list of %u blocks given back of the small store's %u-byte class", cap,
+                      64u << k);
+            c->given = given;
+            c->cap = cap;
+        }
+        memmove(c->given, c->given + c->first, (size_t)c->n * sizeof *c->given);
+        c->first = 0;
+    }
+    c->given[c->first + c->n++] = (NvnSmallFree){at, nvn_replay_submitted()};
 }
 /* piece slot, out of its chain by canchor (control) or by anchor, comes back */
 static void piece_free(NvnCmdState* st, u32 slot, int control) {
