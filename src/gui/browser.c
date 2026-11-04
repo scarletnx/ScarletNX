@@ -364,6 +364,11 @@ int gui_game_programs(const char* path, int* programs) {
     free(dir);
     return count;
 }
+char* gui_ready_game(const char* file, const char* games, const char* name) {
+    char *folder = file ? snx_dirname(file) : snx_path_join(games, name), *game = snx_path_join(folder, name);
+    free(folder);
+    return game;
+}
 size_t gui_game_cheats(const char* path, char** folder, char*** names) {
     char *dir, data[SNX_PATH_SIZE];
     const char* leaf;

@@ -12770,18 +12770,13 @@ static void game_end(App* app) {
     layout(app);
     free(log);
 }
-/* the game a run of the driver made ready: the one it ran, when it was a game already, else in its folder of games/,
-   where the driver names it, as it cannot open it; whether it opened */
+/* the game a run of the driver made ready, as it names it (gui_ready_game): beside the one it ran, when that was a
+   game already, else in its folder of games/, as it cannot open it; whether it opened */
 static int ready(App* app) {
     const GuiStep* made = gui_steps_last(&app->steps, "READY");
-    char* folder = made && !app->native ? snx_path_join(app->games_dir, made->detail) : NULL;
-    char* game = !made         ? NULL
-                 : app->native ? snx_strdup(app->file)
-                 : folder      ? snx_path_join(folder, made->detail)
-                               : NULL;
+    char* game = made ? gui_ready_game(app->native ? app->file : NULL, app->games_dir, made->detail) : NULL;
     int ok = game && play(app, game);
     free(game);
-    free(folder);
     return ok;
 }
 /* the run in its notification, which keeps the app going behind others: the menu's while one runs, else the queue's
