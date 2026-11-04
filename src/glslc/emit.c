@@ -55,6 +55,7 @@ enum {
     OP_VECTOR_SHUFFLE = 79,
     OP_COMPOSITE_CONSTRUCT = 80,
     OP_COMPOSITE_EXTRACT = 81,
+    OP_COMPOSITE_INSERT = 82,
     OP_TRANSPOSE = 84,
     OP_IMAGE_SAMPLE_IMPLICIT_LOD = 87,
     OP_IMAGE_SAMPLE_EXPLICIT_LOD = 88,
@@ -148,6 +149,7 @@ enum {
     SC_OUTPUT = 3,
     SC_WORKGROUP = 4,
     SC_PRIVATE = 6,
+    SC_PUSH_CONSTANT = 9,
     SC_FUNCTION = 7,
     SC_IMAGE = 11,
     SC_STORAGE_BUFFER = 12
@@ -729,7 +731,11 @@ static uint32_t storage_of(const Glslc* g, uint32_t s) {
         case GLSLC_ST_GLOBAL:
         case GLSLC_ST_CONST:
             return y->kind == GLSLC_SK_VAR && g->nodes[y->node].kind == GLSLC_N_GLOBAL ? SC_PRIVATE : SC_FUNCTION;
-        case GLSLC_ST_IN: return SC_INPUT;
+        case GLSLC_ST_IN:
+            /* flip_y's gl_FragCoord and gl_PointCoord: their Private copies */
+            for (uint32_t k = 0; k < 2; k++)
+                if (g->e.flip_copy[k] && g->e.sym_ids[s] == g->e.flip_copy[k]) return SC_PRIVATE;
+            return SC_INPUT;
         case GLSLC_ST_OUT: return SC_OUTPUT;
         case GLSLC_ST_UNIFORM: {
             uint32_t e = y->type;
@@ -2031,6 +2037,30 @@ static void sampler_parameters(Glslc* g, const GlslcParam* p) {
     }
 }
 
+/* flip_y at main's start: gl_FragCoord's and gl_PointCoord's y through the push constant's flip, into the copies
+   the shader reads */
+static void flip_prologue(Glslc* g) {
+    GlslcEmitter* e = &g->e;
+    if (!e->flip_in[0] && !e->flip_in[1]) return;
+    uint32_t vec4 = val_type(g, GT_VEC4), f = val_type(g, GT_FLOAT), block = id(g), v = id(g);
+    EMIT(g, &e->globals, OP_TYPE_STRUCT, block, vec4);
+    EMIT(g, &e->annotations, OP_DECORATE, block, DEC_BLOCK);
+    EMIT(g, &e->annotations, OP_MEMBER_DECORATE, block, 0, DEC_OFFSET, 0);
+    static const char block_name[] = "gl_ScarletFlip";
+    inst_string(g, &e->names, OP_NAME, &block, 1, block_name, (uint32_t)sizeof block_name - 1, NULL, 0);
+    EMIT(g, &e->globals, OP_VARIABLE, ptr_type(g, SC_PUSH_CONSTANT, block), v, SC_PUSH_CONSTANT);
+    uint32_t flip = op1(g, OP_LOAD, vec4, op2(g, OP_ACCESS_CHAIN, ptr_type(g, SC_PUSH_CONSTANT, vec4), v, const_int(g, 0)));
+    for (uint32_t k = 0; k < 2; k++) {
+        if (!e->flip_in[k]) continue;
+        uint32_t t = val_type(g, k ? GT_VEC2 : GT_VEC4);
+        uint32_t value = op1(g, OP_LOAD, t, e->flip_in[k]);
+        uint32_t y = extract(g, f, value, 1);
+        uint32_t scaled = op2(g, OP_F_MUL, f, y, extract(g, f, flip, 2 * k));
+        uint32_t moved = op2(g, OP_F_ADD, f, scaled, extract(g, f, flip, 2 * k + 1));
+        EMIT(g, &e->body, OP_STORE, e->flip_copy[k], op3(g, OP_COMPOSITE_INSERT, t, moved, value, 1));
+    }
+}
+
 static void emit_function(Glslc* g, uint32_t n) {
     const GlslcNode* x = nd(g, n);
     uint32_t s = x->a;
@@ -2063,6 +2093,7 @@ static void emit_function(Glslc* g, uint32_t n) {
     }
     uint32_t first = id(g);
     g->e.cur_block = first;
+    if (fid == g->e.main_id) flip_prologue(g);
     if (fid == g->e.main_id) {
         for (uint32_t d = g->first_decl; d; d = nd(g, d)->next) {
             const GlslcNode* gd = nd(g, d);
@@ -2368,6 +2399,19 @@ static void builtin_variables(Glslc* g) {
         if (!s || b->value == GLSLC_BUILTIN_VALUE_LOCAL_SIZE) continue;
         GlslcSymbol* y = &g->syms[s];
         int in = b->storage == GLSLC_ST_IN;
+        if (g->flip_y && g->stage == SNX_GLSLC_FRAGMENT && (b->builtin == 15 || b->builtin == 16)) {
+            /* FragCoord, PointCoord: the shader reads a Private copy, which main's start writes (flip_prologue) */
+            uint32_t k = b->builtin - 15, t = val_type(g, y->type), real = id(g);
+            g->e.flip_copy[k] = variable(g, s, SC_PRIVATE, t, 0);
+            EMIT(g, &g->e.globals, OP_VARIABLE, ptr_type(g, SC_INPUT, t), real, SC_INPUT);
+            EMIT(g, &g->e.annotations, OP_DECORATE, real, DEC_BUILTIN, b->builtin);
+            if (g->e.interface_count >= sizeof g->e.interface / sizeof g->e.interface[0])
+                glslc_fail(g, y->name.pos, "the shader has more than the %u inputs and outputs glslc takes",
+                           (unsigned)(sizeof g->e.interface / sizeof g->e.interface[0]));
+            g->e.interface[g->e.interface_count++] = real;
+            g->e.flip_in[k] = real;
+            continue;
+        }
         uint32_t v = variable(g, s, in ? SC_INPUT : SC_OUTPUT, val_type(g, y->type), 0);
         if (b->builtin != GLSLC_NOT_BUILTIN) {
             EMIT(g, &g->e.annotations, OP_DECORATE, v, DEC_BUILTIN, b->builtin);
