@@ -2055,6 +2055,15 @@ static struct {
 void vk_render_forget_state(void) { g_dyn.cb = 0; }
 u64 g_vk_drawn, g_vk_skipped;
 
+/* The viewport's size with the transform off: the surface clip's, at most the device's viewport dimensions at the
+   resolution scale (a game's driver leaves the clip at 16384 x 16384, past every target). The last stage divides
+   the position by the same size (the push constant's w), so every pixel stays where it is */
+static void window_size(const DsDynamic* d, u32* width, u32* height) {
+    const u32* most = g_vk.props.limits.maxViewportDimensions;
+    u32 w = (u32)((float)most[0] / g_vk_scale), h = (u32)((float)most[1] / g_vk_scale);
+    *width = d->clip_width < w ? d->clip_width : w;
+    *height = d->clip_height < h ? d->clip_height : h;
+}
 /* NVB197_SET_VIEWPORT_COORDINATE_SWIZZLE (0x0A18) can negate Y before the scale and offset. A negative Vulkan
    height implements the same mapping without changing texture coordinates or guest render-target contents.
    Reference: NVIDIA open-gpu-doc/classes/3d/clb197.h. With the transform off (0x64B) the program's x and y are
@@ -2068,10 +2077,14 @@ VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index)
     float sx = vs[0], sy = vs[1], tx = vt[0], ty = vt[1], ax = sx < 0 ? -sx : sx;
     VkViewport vp;
     if (!v->transform_on) {
-        LOG_LIMIT(1, "vulkan: viewport transform off: positions are pixels of the %ux%u surface clip at (%u, %u)\n",
-                  d->clip_width, d->clip_height, d->clip_x, d->clip_y);
+        u32 w, h;
+        window_size(d, &w, &h);
+        LOG_LIMIT(1,
+                  "vulkan: viewport transform off: positions are pixels of the %ux%u surface clip at (%u, %u), "
+                  "the viewport %ux%u of it\n",
+                  d->clip_width, d->clip_height, d->clip_x, d->clip_y, w, h);
         float x = vk_scf((float)d->clip_x), y = vk_scf((float)d->clip_y);
-        vp = (VkViewport){x, y, vk_scf((float)d->clip_width), vk_scf((float)d->clip_height), 0, 1};
+        vp = (VkViewport){x, y, vk_scf((float)w), vk_scf((float)h), 0, 1};
     } else
         vp = (VkViewport){vk_scf(tx - ax), vk_scf(ty - sy), vk_scf(2 * ax), vk_scf(2 * sy), 0, 1};
     /* A lower-left window measures y from the surface clip's bottom. Match the 3D blit path's conversion. */
@@ -3529,9 +3542,11 @@ retry:
        textures (stage_set), and whether the window is lower left and its surface clip's height, which the fragment's
        y counts up from there (shader/emit_io.c's shader_frag_y_origin) */
     float pc[12] = {0, ds->dyn.depth_mode ? 0.0f : 1.0f, 0, 0};
-    /* with the viewport transform off, the surface clip's width and height, which the last stage before
+    /* with the viewport transform off, the viewport's width and height (window_size), which the last stage before
        rasterization takes the position's pixels to clip space by (SNX_SH_WINDOW_XY) */
-    u32 window_words = ds->vp.transform_on ? 0 : ds->dyn.clip_width | ds->dyn.clip_height << 16;
+    u32 window_w = 0, window_h = 0;
+    if (!ds->vp.transform_on) window_size(&ds->dyn, &window_w, &window_h);
+    u32 window_words = window_w | window_h << 16;
     memcpy(&pc[3], &window_words, sizeof(u32));
     /* the instance ID: InstanceIndex less the base instance pushed (depth_word, the 3D engine's base instance), or
        with draw parameters less BaseInstance plus what the draw's first instance adds to the base instance: the

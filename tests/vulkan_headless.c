@@ -441,6 +441,12 @@ static int check_viewport_orientation(void) {
     r[0x4eb] = 1;
     vp = viewport_of(r, 0);
     CHECK(vp.x == 0 && vp.y == 48 && vp.width == 64 && vp.height == -48);
+    /* a clip wider than the device's viewports gives the widest the device takes (a game's driver leaves it 16384
+       wide; 65535 here, past any device's limit) */
+    r[0x4eb] = 0;
+    r[0x3FD] = 0xFFFFu << 16;
+    CHECK(viewport_of(r, 0).width == vk_scf((float)(u32)(g_vk.props.limits.maxViewportDimensions[0] / g_vk_scale)));
+    CHECK(viewport_of(r, 0).width <= (float)g_vk.props.limits.maxViewportDimensions[0]);
     /* The transform on, a scale under half a pixel is still the transform's, never the viewport's clip rectangle: no
        area, so nothing is drawn */
     r[0x64B] = 1;
