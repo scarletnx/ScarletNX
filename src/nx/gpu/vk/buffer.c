@@ -2501,14 +2501,32 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     u32 i = 0, epoch = vk_ww_epoch(); /* before anything is checked or read */
     Vb* e = NULL;
     if (!len || len > 0xFFFFFFFFull) return 0; /* no buffer the GPU reads is 4 GB */
-    /* over writes of the GPU mirror's programs that haven't landed: read in the mirror, which has them, after them */
+    /* over writes of the GPU mirror's programs that haven't landed: read in the mirror, which has them, after them. At
+       an offset the use can't bind (a draw's constants or vertices, a few bytes at any address, where a uniform
+       buffer binds at 64), the bytes are copied on the GPU from the mirror into device memory that it can: landing
+       them took a submit and a wait for the GPU, 150 a second in one game's menus */
     if (vk_mirror_pending(gva, len)) {
-        u64 cpu = 0;
-        if (gmmu_run(gva, len, &cpu) == len && !(cpu & ((align ? align : 1) - 1)) && vk_mirror_slice(gva, len, buf, off)) {
+        u64 cpu = 0, a = align ? align : 1;
+        VkBuffer mb;
+        u64 mo;
+        if (gmmu_run(gva, len, &cpu) == len && vk_mirror_slice(gva, len, &mb, &mo)) {
             vk_render_end();
-            copy_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
-            return 1;
+            if (!(cpu & (a - 1))) {
+                copy_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
+                *buf = mb;
+                *off = mo;
+                return 1;
+            }
+            if (vk_stage_device(len, a > vk_stage_align() ? a : vk_stage_align(), buf, off)) {
+                copy_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                             VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+                VkBufferCopy r = {mo, *off, len};
+                rec_CmdCopyBuffer(vk_cmd(), mb, *buf, 1, &r);
+                copy_barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
+                return 1;
+            }
         }
         vk_mirror_mem_need(gva, len); /* where it can't be: landed first */
     }
