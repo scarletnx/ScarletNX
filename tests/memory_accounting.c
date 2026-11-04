@@ -658,6 +658,49 @@ static void test_ladder(void) {
     printf("address space ladder: 512, 256 and 128 GiB, the write watch's second pass, %u checks passed\n", checks);
 }
 
+/* The 32 and 48 GiB layouts (an iPhone app without the extended virtual addressing entitlement has about 52 GiB): a
+   game asks 12 GiB of the alias region at once (an allocator's heap reserved there, then backed page by page with
+   MapPhysicalMemory), so the region is 16 GiB. GetInfo names each region as the layout lays it out, a physical mapping
+   goes up to the alias region's last page and not past it, and the stack region keeps a free GiB before the kernel's
+   pages */
+static void test_alias_layouts(void) {
+    static const u64 sizes[] = {32, 48}; /* GiB */
+    for (unsigned i = 0; i < sizeof sizes / sizeof *sizes; i++) {
+        const u64 size = sizes[i] << 30, want = 12ull << 30;
+        base_process();
+        refuse_above = size;
+        mapping_begins = mapping_ends = 0;
+        mem_init();
+        CHECK(g_mem && g_as_size == size);
+        /* the 12 GiB the game reserves, as it finds room for it: GetInfo's alias region holds a free run of it from
+           the region's base, and its first and last pages map */
+        g_hle.kernel.sysres_size = 64 * MIB;
+        CHECK(info(3) >= want && mem_find_free(info(2), info(2) + info(3), want, 0x1000) == info(2));
+        CHECK(svc_map_physical(ALIAS_BASE, 0x1000) == 0);
+        CHECK(svc_map_physical(ALIAS_BASE + want - 0x1000, 0x1000) == 0);
+        /* the regions as GetInfo names them, apart, and a free GiB between the stack region and the kernel's pages */
+        CHECK(g_layout.alias == 4ull << 30 && g_layout.alias_size == 16ull << 30 && g_layout.heap == 20ull << 30 &&
+              g_layout.heap_size == 8ull << 30 && g_layout.stack == 28ull << 30 && g_layout.stack_size == 2ull << 30 &&
+              g_layout.kern == size - (1ull << 30) && g_layout.kern_end == size);
+        CHECK(info(2) == 4ull << 30 && info(3) == 16ull << 30 && info(4) == 20ull << 30 && info(5) == 8ull << 30);
+        CHECK(info(12) == 0x8000000ull && info(13) == size - 0x8000000ull);
+        CHECK(info(14) == 28ull << 30 && info(15) == 2ull << 30);
+        CHECK(STACK_BASE + STACK_SIZE + (1ull << 30) <= KERN_BASE);
+        /* the region's edges */
+        CHECK(svc_map_physical(ALIAS_BASE + ALIAS_SIZE - 0x1000, 0x1000) == 0);
+        CHECK(g_phys_mapped == 3 * 0x1000 && state(ALIAS_BASE + want - 0x1000) == MS_NORMAL);
+        CHECK(svc_map_physical(ALIAS_BASE + ALIAS_SIZE - 0x1000, 0x2000) == R_BADREGION);
+        CHECK(svc_map_physical(ALIAS_BASE - 0x1000, 0x1000) == R_BADREGION);
+        CHECK(svc_map_physical(HEAP_BASE, 0x1000) == R_BADREGION);
+        CHECK(svc_unmap_physical(ALIAS_BASE, ALIAS_SIZE) == 0 && g_phys_mapped == 0);
+        g_hle.kernel.sysres_size = 0;
+        CHECK(munmap(reservation, reservation_size) == 0);
+        g_mem = NULL;
+    }
+    refuse_above = 0;
+    printf("32 and 48 GiB layouts: a 16 GiB alias region with the game's 12 GiB in it, %u checks passed\n", checks);
+}
+
 /* NCE on Android (mem_reserve_identity from 64 GiB): the guest's addresses are the host's, above what the app's process
    holds, so the whole layout moves up to the first base from 64 GiB, in 2 MiB steps, where a tier is free. A page held
    at 65 GiB takes the 64 GiB tier's one base and the 48 GiB tier's first 449; the 48 GiB layout then lies from 64 GiB
@@ -692,6 +735,8 @@ static void test_moved(void) {
     CHECK((u64)(uintptr_t)p == HEAP_BASE);
     p[0] = 0x5A;
     CHECK(*(volatile u8*)(uintptr_t)(by + (20ull << 30)) == 0x5A);
+    /* the 12 GiB the game reserves in the alias region, there in the moved layout too */
+    CHECK(mem_find_free(ALIAS_BASE, ALIAS_BASE + ALIAS_SIZE, 12ull << 30, 0x1000) == ALIAS_BASE);
     CHECK(mem_unmap(HEAP_BASE, 0x1000) == 0);
     fflush(stdout);
     child = fork();
@@ -748,6 +793,7 @@ int main(void) {
                (unsigned long long)(host_page >> 10), checks);
     }
     test_ladder();
+    test_alias_layouts();
     /* a system that gives less than 128 GiB: the largest tier it gives, in a smaller layout of that size */
     host_page = (u64)sysconf(_SC_PAGESIZE);
     refuse_above = 24ull << 30;
