@@ -13,7 +13,8 @@
    exception masked (a trap would leave the generated function where it cannot continue). A new host thread starts
    in that state, but generated code shares its thread with whatever the runtime calls into, so every generated
    function calls this on entry, and this writes the control word only when it has drifted. The fast paths exist
-   only on x86-64 and AArch64, so every other host has nothing to normalize. */
+   on x86-64, AArch64, PowerPC64, RISC-V and LoongArch (ir_fp.h's gates); MIPS64 and s390x keep the helpers, so they
+   have nothing to normalize. */
 #if defined(_M_X64) || defined(__x86_64__)
 #include <xmmintrin.h>
 #endif
@@ -26,6 +27,28 @@ void snx_fp_env(void) {
     __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
     if (fpcr & 0x07C8FF00ull) /* FZ, DN, AHP, RMode, FZ16 and the trap enables */
         __asm__ volatile("msr fpcr, %0" : : "r"(0ull));
+#elif defined(__powerpc64__) && (defined(__GNUC__) || defined(__clang__))
+    /* FPSCR's low byte: the enables (VE, OE, UE, ZE, XE), NI and RN. The fast paths' vectors are VSX's, which
+       VSCR's NJ does not flush (ir_fp.h's host_fp_vec asks for VSX) */
+    union {
+        double d;
+        u64 u;
+    } fpscr;
+    __asm__ volatile("mffs %0" : "=f"(fpscr.d));
+    if (fpscr.u & 0xFFull) {
+        fpscr.u &= ~0xFFull;
+        __asm__ volatile("mtfsf 0xff, %0" : : "f"(fpscr.d));
+    }
+#elif defined(__riscv) && defined(__riscv_flen)
+    /* frm, the dynamic rounding mode every FP instruction LLVM emits uses; RISC-V has no traps and no flush */
+    unsigned long frm;
+    __asm__ volatile("frrm %0" : "=r"(frm));
+    if (frm) __asm__ volatile("fsrm zero");
+#elif defined(__loongarch64)
+    /* FCSR0's enables (bits 0-4) and RM (bits 8-9) */
+    unsigned fcsr;
+    __asm__ volatile("movfcsr2gr %0, $fcsr0" : "=r"(fcsr));
+    if (fcsr & 0x31Fu) __asm__ volatile("movgr2fcsr $fcsr0, %0" : : "r"(fcsr & ~0x31Fu));
 #endif
 }
 
