@@ -46,6 +46,8 @@ typedef struct {
     u32 interfaces[MAX_INTERFACES], ninterfaces;
     /* the uniform register pair a ULDC.64 last loaded from a constant buffer: (bank << 16 | offset) + 1, 0 for none */
     u32* addr_key;   /* by instruction: the constant buffer word (bank << 16 | offset) + 1 of an LDG's or STG's base */
+    u32* jump_first; /* by instruction, the first of the BRAs and BRX that go to it in jump_from (n + 1 words), and */
+    u32* jump_from;  /* those instructions: made the first time reg_const_at needs them (flow_sources) */
     u32 cur;         /* the instruction being written */
     u32 branch_cond; /* the condition of the BRA that ends the body before, 0 for always */
     u32 branch_target; /* the instruction that the BRX which ends the body before goes to */
@@ -790,6 +792,143 @@ static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data) {
 
 /* ---- textures and surfaces ---- */
 
+/* whether the instruction at k goes on to k + 1: not after a BRA, BRX or EXIT that always leaves, nor a RET */
+static int falls_through(const Sm86Insn* in) {
+    int always = in->pred == SM86_PT && !in->pred_not;
+    return !((in->op == SM86_BRA || in->op == SM86_BRX || in->op == SM86_EXIT) && always) && in->op != SM86_RET;
+}
+static u32 brx_targets(Ctx* c, u32 i, u32* targets, u32 max);
+/* the instructions that jump to each one, build_structure's edges: a BRA's target, a BRX's cases. Returns 0 when it
+   can't be made */
+static int flow_sources(Ctx* c) {
+    if (c->jump_first) return 1;
+    u32 n = c->n, total = 0, t[64];
+    for (u32 i = 0; i < n; i++) {
+        const Sm86Insn* in = &c->in[i];
+        if (in->pred == SM86_PT && in->pred_not) continue;
+        if (in->op == SM86_BRA) total++;
+        else if (in->op == SM86_BRX) total += brx_targets(c, i, t, 64);
+    }
+    u32* first = calloc((size_t)n + 1 + total + 1, sizeof *first);
+    if (!first) return 0;
+    u32 *from = first + n + 1, *fill = calloc((size_t)n + 1, sizeof *fill);
+    if (!fill) {
+        free(first);
+        return 0;
+    }
+    /* counts by target, then their running sum as each target's first, then the sources in place */
+    for (int pass = 0; pass < 2; pass++)
+        for (u32 i = 0; i < n; i++) {
+            const Sm86Insn* in = &c->in[i];
+            if (in->pred == SM86_PT && in->pred_not) continue;
+            u32 count = 0;
+            if (in->op == SM86_BRA) t[count++] = sm86_branch_target(in, i);
+            else if (in->op == SM86_BRX) count = brx_targets(c, i, t, 64);
+            for (u32 k = 0; k < count; k++) {
+                if (t[k] >= n) continue;
+                if (pass == 0) first[t[k] + 1]++;
+                else from[first[t[k]] + fill[t[k]]++] = i;
+            }
+            if (pass == 0 && i + 1 == n)
+                for (u32 k = 0; k < n; k++) first[k + 1] += first[k];
+        }
+    free(fill);
+    c->jump_first = first;
+    c->jump_from = from;
+    return 1;
+}
+/* whether the instruction may write register r: the registers from its destination field on, four for those that
+   load (a texture's results go to two pairs, the second from bits 64-71), two for the others (a 64-bit result) */
+static int may_write(const Sm86Insn* in, u32 r) {
+    int op = in->op;
+    if (sm86_ops[op].kind == SM86_K_UALU) return 0;
+    switch (op) {
+        case SM86_BRA: case SM86_BRX: case SM86_EXIT: case SM86_RET: case SM86_CALL: case SM86_UBRA:
+        case SM86_BSSY: case SM86_BSYNC: case SM86_BREAK: case SM86_WARPSYNC: case SM86_KILL: case SM86_BAR:
+        case SM86_NOP: case SM86_ERRBAR: case SM86_DEPBAR: case SM86_NANOSLEEP: case SM86_MEMBAR: case SM86_CCTL:
+        case SM86_STG: case SM86_STG_NOU: case SM86_STL: case SM86_STL_NOU: case SM86_STS: case SM86_STS_NOU:
+        case SM86_RED: case SM86_AST: case SM86_SUST_P: case SM86_SUST_D: case SM86_SUST_P_B: case SM86_SUST_D_B:
+        case SM86_ULDC: case SM86_ULDC_IDX: case SM86_ULDCG: case SM86_S2UR: case SM86_R2UR: case SM86_PLOP3:
+        case SM86_UPLOP3: case SM86_UVOTE: case SM86_ISETP: case SM86_FSETP: case SM86_DSETP: case SM86_HSETP2:
+        case SM86_R2P: case SM86_BMOV_B:
+            return 0;
+        case SM86_TEX: case SM86_TEX_B: case SM86_TLD: case SM86_TLD_B: case SM86_TLD4: case SM86_TLD4_B:
+        case SM86_TMML: case SM86_TMML_B: case SM86_TXD: case SM86_TXD_B: case SM86_TXQ: case SM86_TXQ_B: {
+            u32 d1 = sm86_field(in, 64, 8);
+            if (d1 < SM86_RZ && r >= d1 && r < d1 + 4) return 1;
+            return in->dst < SM86_RZ && r >= in->dst && r < in->dst + 4u;
+        }
+        case SM86_LDG: case SM86_LDG_NOU: case SM86_LDL: case SM86_LDS: case SM86_LDC: case SM86_LDC_BINDLESS:
+        case SM86_ALD: case SM86_ATOMG: case SM86_ATOMG_NOU: case SM86_ATOMG_CAS: case SM86_ATOMS: case SM86_ATOMS_NOU:
+        case SM86_ATOMS_CAS: case SM86_SULD_P: case SM86_SULD_P_B: case SM86_SULD_D: case SM86_SULD_D_B:
+        case SM86_SURED: case SM86_SURED_B: case SM86_SUATOM_B: case SM86_SUATOM_CAS_B:
+            return in->dst < SM86_RZ && r >= in->dst && r < in->dst + 4u;
+        default: return in->dst < SM86_RZ && r >= in->dst && r < in->dst + 2u;
+    }
+}
+/* Whether register r holds one constant at instruction i on every path there: the immediate that an unpredicated
+   MOV wrote last on each, with no instruction that may write r after it. 0 when that can't be shown (another
+   writer, a guard, a path from the program's start, or a jump the flow can't name) */
+static int reg_const_at(Ctx* c, u32 i, u32 r, u32* value) {
+    if (r >= SM86_RZ) {
+        *value = 0;
+        return 1;
+    }
+    if (!flow_sources(c)) return 0;
+    u32 n = c->n, *stack = malloc(((size_t)n + 1) * sizeof *stack), top = 0, found = 0, v = 0;
+    u8* seen = calloc((size_t)n + 1, 1);
+    int ok = stack && seen;
+    /* the instructions before i on each path, walked back from i: k - 1 when it goes on to k, and the jumps to k */
+#define PREDS(k)                                                                                                       \
+    do {                                                                                                               \
+        if ((k) == 0) ok = 0; /* the program's start: r is not written on this path */                               \
+        if ((k) > 0 && falls_through(&c->in[(k) - 1]) && !seen[(k) - 1]) seen[(k) - 1] = 1, stack[top++] = (k) - 1;  \
+        for (u32 j = c->jump_first[k]; j < c->jump_first[(k) + 1]; j++)                                              \
+            if (!seen[c->jump_from[j]]) seen[c->jump_from[j]] = 1, stack[top++] = c->jump_from[j];                   \
+    } while (0)
+    if (ok) PREDS(i);
+    while (ok && top) {
+        u32 k = stack[--top];
+        const Sm86Insn* in = &c->in[k];
+        if (!may_write(in, r)) {
+            PREDS(k);
+            continue;
+        }
+        if (in->op != SM86_MOV || in->dst != r || in->b.kind != SM86_SRC_IMM || in->pred != SM86_PT || in->pred_not ||
+            (found && in->b.value != v)) {
+            ok = 0;
+            break;
+        }
+        v = in->b.value;
+        found = 1;
+    }
+#undef PREDS
+    free(stack);
+    free(seen);
+    if (!ok || !found) return 0;
+    *value = v;
+    return 1;
+}
+/* a packed texel offset's component k, bits signed bits from k * bits: a constant, or read from x */
+static u32 offset_part(Ctx* c, int known, u32 value, u32 x, u32 k, u32 bits) {
+    if (known) {
+        u32 raw = value >> (k * bits) & ((1u << bits) - 1);
+        return spv_emit_constant_u32(&c->e, c->t_i32, raw >> (bits - 1) ? raw | ~((1u << bits) - 1) : raw);
+    }
+    return spv_emit_bitfield_sextract(&c->e, c->t_i32, spv_emit_bitcast(&c->e, c->t_i32, x), cu(c, k * bits),
+                                      cu(c, bits));
+}
+/* the offset a texture instruction packs in a register, as the integer vector of dims components SPIR-V takes (a
+   1D texture's y, bound as 2D, is 0): constant when known */
+static u32 offset_vector(Ctx* c, int known, u32 value, u32 x, u32 dims, u32 used, u32 bits) {
+    u32 v[3];
+    for (u32 k = 0; k < dims; k++)
+        v[k] = k < used ? offset_part(c, known, value, x, k, bits) : spv_emit_constant_u32(&c->e, c->t_i32, 0);
+    u32 type = spv_emit_type_vector(&c->e, c->t_i32, dims);
+    if (known) return dims == 2 ? spv_emit_constant_vec2(&c->e, type, v[0], v[1]) : spv_emit_constant_vec3(&c->e, type, v[0], v[1], v[2]);
+    return dims == 2 ? spv_emit_vec2_construct(&c->e, type, v[0], v[1]) : spv_emit_vec3_construct(&c->e, type, v[0], v[1], v[2]);
+}
+
 /* the texture slot of a handle at byte offset off of a bank */
 static int tex_slot(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 shadow) {
     ShaderInfo* si = c->si;
@@ -871,9 +1010,11 @@ static void texture(Ctx* c, const Sm86Insn* in) {
     }
     u32 shadow = op == SM86_TMML ? 0 : sm86_field(in, 78, 1);
     u32 lod_mode = op == SM86_TEX ? sm86_field(in, 87, 3) : 0;
+    /* the texel offset (NAK's TexOffsetMode): 1 one offset packed in a register (four bits a component, TLD4's eight),
+       2 TLD4's own offset for each of its four texels, eight bits a component in two registers */
     u32 offset = op == SM86_TEX ? sm86_field(in, 76, 1) : op == SM86_TLD4 ? sm86_field(in, 76, 2) : 0;
-    if (offset) {
-        fail(c, "%s with a texel offset", sm86_ops[op].name);
+    if (offset == 3 || (offset && type == 3)) {
+        fail(c, "%s with texel offset mode %u%s", sm86_ops[op].name, offset, type == 3 ? " on a cube" : "");
         return;
     }
     if (lod_mode > 3) {
@@ -887,7 +1028,8 @@ static void texture(Ctx* c, const Sm86Insn* in) {
     u32 handle = sm86_field(in, 40, 19);
     int slot = tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, shadow);
     if (slot < 0) return;
-    u32 n0 = array + coords, n1 = (lod_mode == 2 || lod_mode == 3) + shadow, regs[8];
+    /* list1: the LOD or bias, the offset, the depth reference (nak_nir_lower_tex.c) */
+    u32 n0 = array + coords, n1 = (lod_mode == 2 || lod_mode == 3) + offset + shadow, regs[8];
     if (!tex_operands(in, n0, n1, regs)) {
         fail(c, "%s with %u operands in the scalar form", sm86_ops[op].name, n0 + n1);
         return;
@@ -900,11 +1042,38 @@ static void texture(Ctx* c, const Sm86Insn* in) {
         f[count++] = spv_emit_convert_u_to_f(&c->e, c->t_f32,
                                              spv_emit_bitwise_and_u32(&c->e, c->t_u32, rd(c, regs[0]), cu(c, 0xffff)));
     u32 coord = coord_vector(c, f, count);
-    u32 next = n0, level = 0, dref = 0;
+    u32 next = n0, level = 0, dref = 0, off_reg = SM86_RZ;
     if (lod_mode == 2 || lod_mode == 3) level = to_f(c, rd(c, regs[next++]));
+    if (offset) {
+        off_reg = regs[next];
+        next += offset;
+    }
     if (shadow) dref = to_f(c, rd(c, regs[next++]));
+    /* SPIR-V's offset has a component for each coordinate but the layer */
+    u32 dims = type == 2 ? 3 : 2, used = type == 0 ? 1 : dims;
     u32 result;
-    if (op == SM86_TLD4) {
+    if (op == SM86_TLD4 && offset) {
+        /* Offset, which a gather may take from a register (ImageGatherExtended). Each texel's own offset: four
+           gathers, each texel from the one with its offset, as SPIR-V's ConstOffsets defines it */
+        spv_emit_image_gather_extended_capability(&c->e);
+        u32 comp = cu(c, sm86_field(in, 87, 2)), v[4];
+        if (offset == 1) {
+            u32 o = offset_vector(c, 0, 0, rd(c, off_reg), dims, used, 8);
+            result = spv_emit_image_gather_ex(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, comp, dref, o);
+        } else {
+            for (u32 k = 0; k < 4; k++) {
+                u32 word = rd(c, off_reg >= SM86_RZ ? off_reg : off_reg + k / 2);
+                u32 type2 = spv_emit_type_vector(&c->e, c->t_i32, 2);
+                u32 o = spv_emit_vec2_construct(&c->e, type2, offset_part(c, 0, 0, word, (k % 2) * 2, 8),
+                                                offset_part(c, 0, 0, word, (k % 2) * 2 + 1, 8));
+                v[k] = spv_emit_vec4_extract(&c->e, c->t_f32,
+                                             spv_emit_image_gather_ex(&c->e, c->t_v4f, c->tex_sampled[slot],
+                                                                      c->tex[slot], coord, comp, dref, o),
+                                             k);
+            }
+            result = spv_emit_vec4_construct(&c->e, c->t_v4f, v);
+        }
+    } else if (op == SM86_TLD4) {
         result = spv_emit_image_gather_ex(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord,
                                           cu(c, sm86_field(in, 87, 2)), dref, 0);
     } else if (op == SM86_TMML) {
@@ -926,9 +1095,49 @@ static void texture(Ctx* c, const Sm86Insn* in) {
             mode = 1;
             level = cf(c, 0.0f);
         }
-        u32 rtype = shadow ? c->t_f32 : c->t_v4f;
-        result =
-            spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord, dref, mode, level, 0, 0);
+        u32 rtype = shadow ? c->t_f32 : c->t_v4f, const_offset = 0;
+        if (offset) {
+            /* Vulkan takes a sample's offset as a constant only (ConstOffset): the register's when every path
+               sets it to one, else the coordinates move by the offset over the size of the level sampled */
+            u32 value = 0;
+            if (reg_const_at(c, c->cur, off_reg, &value))
+                const_offset = offset_vector(c, 1, value, 0, dims, used, 4);
+            else {
+                u32 o = offset_vector(c, 0, 0, rd(c, off_reg), dims, used, 4), at;
+                if (mode == 1)
+                    at = spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_MAX,
+                                              spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_FLOOR, level),
+                                              cf(c, 0.0f));
+                else { /* the level the implicit LOD, with its bias, accesses */
+                    spv_emit_capability(&c->e, SPV_CAPABILITY_IMAGE_QUERY);
+                    at = spv_emit_glsl_unary(
+                        &c->e, c->t_f32, c->glsl, SPV_GLSL_FLOOR,
+                        spv_emit_vec4_extract(&c->e, c->t_f32,
+                                              spv_emit_image_query_lod(&c->e, c->t_v2f, c->tex_sampled[slot],
+                                                                       c->tex[slot], coord),
+                                              0));
+                }
+                spv_emit_capability(&c->e, SPV_CAPABILITY_IMAGE_QUERY);
+                u32 size = spv_emit_image_query_size_lod(&c->e, spv_emit_type_vector(&c->e, c->t_i32, dims + array),
+                                                         c->tex_sampled[slot], c->tex[slot],
+                                                         spv_emit_convert_f_to_s(&c->e, c->t_i32, at));
+                u32 moved[4];
+                for (u32 k = 0; k < count; k++) {
+                    moved[k] = spv_emit_vec4_extract(&c->e, c->t_f32, coord, k);
+                    if (k < used)
+                        moved[k] = spv_emit_fadd(
+                            &c->e, c->t_f32, moved[k],
+                            spv_emit_fdiv(&c->e, c->t_f32,
+                                          spv_emit_convert_s_to_f(&c->e, c->t_f32,
+                                                                  spv_emit_vec4_extract(&c->e, c->t_i32, o, k)),
+                                          spv_emit_convert_s_to_f(&c->e, c->t_f32,
+                                                                  spv_emit_vec4_extract(&c->e, c->t_i32, size, k))));
+                }
+                coord = coord_vector(c, moved, count);
+            }
+        }
+        result = spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord, dref, mode, level,
+                                       const_offset, 0);
         if (shadow) {
             u32 v[4] = {result, cf(c, 0.0f), cf(c, 0.0f), cf(c, 1.0f)};
             result = spv_emit_vec4_construct(&c->e, c->t_v4f, v);
@@ -944,22 +1153,30 @@ static void texel_fetch(Ctx* c, const Sm86Insn* in) {
         fail(c, "TLD dimension %u", sm86_field(in, 61, 3));
         return;
     }
-    if (sm86_field(in, 76, 1) || sm86_field(in, 78, 1) || (lod_mode != 1 && lod_mode != 3)) {
-        fail(c, "TLD with an offset, of a multisample texture or LOD mode %u", lod_mode);
+    u32 offset = sm86_field(in, 76, 1);
+    if (sm86_field(in, 78, 1) || (lod_mode != 1 && lod_mode != 3)) {
+        fail(c, "TLD of a multisample texture or LOD mode %u", lod_mode);
         return;
     }
     u32 handle = sm86_field(in, 40, 19);
     int slot = tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, 0);
     if (slot < 0) return;
-    u32 n0 = array + coords, regs[8];
-    if (!tex_operands(in, n0, lod_mode == 3, regs)) {
-        fail(c, "TLD with %u operands in the scalar form", n0 + (lod_mode == 3));
+    /* list1: the level, then the offset, four bits a component (nak_nir_lower_tex.c) */
+    u32 n0 = array + coords, n1 = (lod_mode == 3) + offset, regs[8];
+    if (!tex_operands(in, n0, n1, regs)) {
+        fail(c, "TLD with %u operands in the scalar form", n0 + n1);
         return;
     }
     /* the coordinates, a 1D texture's as a 2D one's, then the layer */
     u32 v[4], count = 0;
     for (u32 k = 0; k < coords; k++) v[count++] = rd(c, regs[array + k]);
     if (type == 0) v[count++] = c->zero;
+    /* a fetch's offset adds to its coordinates: the texel is the one there, as Offset's would be */
+    if (offset)
+        for (u32 k = 0; k < coords; k++)
+            v[k] = spv_emit_iadd_u32(&c->e, c->t_u32, v[k],
+                                     spv_emit_bitcast(&c->e, c->t_u32,
+                                                      offset_part(c, 0, 0, rd(c, regs[n0 + (lod_mode == 3)]), k, 4)));
     if (array) v[count++] = spv_emit_bitwise_and_u32(&c->e, c->t_u32, rd(c, regs[0]), cu(c, 0xffff));
     u32 ivec = spv_emit_type_vector(&c->e, c->t_i32, count);
     u32 uvec = spv_emit_type_vector(&c->e, c->t_u32, count);
@@ -2606,6 +2823,7 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
     if (!out && si->unsupported) sm86_debug_dump("program", code, bytes, sph, si->first_unsupported);
     free(st);
     free(c->addr_key);
+    free(c->jump_first);
     free(insn);
     free(words);
     free(c);
