@@ -212,27 +212,32 @@ static int check_wt_shared(void) {
    after it) must hold the bytes memory has whenever it is told nothing changed. Checked with the writer held between
    its writes, 300 times, each after 64 writes at least; the writer's thread is a game's, outside the renderer's lock */
 #define WT_RACE_PAGES 16u
-static u32 g_wt_hold, g_wt_held, g_wt_stop, g_wt_writes;
-static u64 g_wt_race_cpu;
+/* the race's state: the writer's pause (hold, held), its end (stop), its count of writes, its pages, and the bytes a
+   consumer took (seen). The writer writes held and writes; the main thread the rest, twice a round at most, so they
+   share a cache line */
+static struct {
+    u32 hold, held, stop, writes; /* atomic */
+    u64 race_cpu;
+    u8 seen[WT_RACE_PAGES * 0x1000];
+} g_wt;
 static void wt_writer(void* arg) {
     u32 x = 0x9e3779b9u;
     (void)arg;
-    while (!__atomic_load_n(&g_wt_stop, __ATOMIC_ACQUIRE)) {
-        if (__atomic_load_n(&g_wt_hold, __ATOMIC_ACQUIRE)) {
-            __atomic_store_n(&g_wt_held, 1, __ATOMIC_RELEASE);
-            while (__atomic_load_n(&g_wt_hold, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_wt_stop, __ATOMIC_ACQUIRE))
+    while (!__atomic_load_n(&g_wt.stop, __ATOMIC_ACQUIRE)) {
+        if (__atomic_load_n(&g_wt.hold, __ATOMIC_ACQUIRE)) {
+            __atomic_store_n(&g_wt.held, 1, __ATOMIC_RELEASE);
+            while (__atomic_load_n(&g_wt.hold, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_wt.stop, __ATOMIC_ACQUIRE))
                 plat_yield();
-            __atomic_store_n(&g_wt_held, 0, __ATOMIC_RELEASE);
+            __atomic_store_n(&g_wt.held, 0, __ATOMIC_RELEASE);
             continue;
         }
         x ^= x << 13, x ^= x >> 17, x ^= x << 5;
-        u32 n = __atomic_add_fetch(&g_wt_writes, 1, __ATOMIC_RELAXED);
-        snx_st_le32(GP(g_wt_race_cpu) + (u64)(x % WT_RACE_PAGES) * 0x1000 + (x >> 20) % 1024 * 4, n);
+        u32 n = __atomic_add_fetch(&g_wt.writes, 1, __ATOMIC_RELAXED);
+        snx_st_le32(GP(g_wt.race_cpu) + (u64)(x % WT_RACE_PAGES) * 0x1000 + (x >> 20) % 1024 * 4, n);
     }
 }
 static int check_wt_concurrent(void) {
     const u64 cpu = WT_CPU + 3 * WT_LEAF, size = WT_RACE_PAGES * 0x1000;
-    static u8 seen[WT_RACE_PAGES * 0x1000];
     u32 lost = 0, told = 0, rounds = 300;
     CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
     memset(GP(cpu), 0, size);
@@ -245,47 +250,47 @@ static int check_wt_concurrent(void) {
     }
     (void)vk_written_since(GP(cpu), size, 0);
     u32 since = vk_ww_now();
-    memcpy(seen, GP(cpu), size);
+    memcpy(g_wt.seen, GP(cpu), size);
     vk_unlock();
-    g_wt_race_cpu = cpu;
-    __atomic_store_n(&g_wt_stop, 0, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_wt_hold, 0, __ATOMIC_RELEASE);
+    g_wt.race_cpu = cpu;
+    __atomic_store_n(&g_wt.stop, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_wt.hold, 0, __ATOMIC_RELEASE);
     CHECK(plat_thread(wt_writer, NULL, 0) == 0);
     for (u32 r = 0; r < rounds; r++) {
         /* questions while it writes (at least 4, and until it wrote 64 times, which protection's faults slow): each
            answer the scans give is taken as a texture takes it */
-        u32 from = __atomic_load_n(&g_wt_writes, __ATOMIC_RELAXED);
-        for (u32 k = 0; k < 4 || (__atomic_load_n(&g_wt_writes, __ATOMIC_RELAXED) - from < 64 && k < 100000); k++) {
+        u32 from = __atomic_load_n(&g_wt.writes, __ATOMIC_RELAXED);
+        for (u32 k = 0; k < 4 || (__atomic_load_n(&g_wt.writes, __ATOMIC_RELAXED) - from < 64 && k < 100000); k++) {
             g_renderer->mem_may_have_changed();
             vk_lock();
             u32 now = vk_ww_now();
             if (vk_written_since(GP(cpu), size, since) == 1) {
                 since = now;
-                memcpy(seen, GP(cpu), size);
+                memcpy(g_wt.seen, GP(cpu), size);
             }
             vk_unlock();
         }
         /* held: told nothing changed, the bytes must be the ones taken */
-        __atomic_store_n(&g_wt_hold, 1, __ATOMIC_RELEASE);
-        while (!__atomic_load_n(&g_wt_held, __ATOMIC_ACQUIRE)) plat_yield();
+        __atomic_store_n(&g_wt.hold, 1, __ATOMIC_RELEASE);
+        while (!__atomic_load_n(&g_wt.held, __ATOMIC_ACQUIRE)) plat_yield();
         g_renderer->mem_may_have_changed();
         vk_lock();
         u32 now = vk_ww_now();
         int w = vk_written_since(GP(cpu), size, since);
-        if (!w && memcmp(seen, GP(cpu), size)) lost++;
+        if (!w && memcmp(g_wt.seen, GP(cpu), size)) lost++;
         if (w) {
             told++;
             since = now;
-            memcpy(seen, GP(cpu), size);
+            memcpy(g_wt.seen, GP(cpu), size);
         }
         vk_unlock();
-        __atomic_store_n(&g_wt_hold, 0, __ATOMIC_RELEASE);
-        while (__atomic_load_n(&g_wt_held, __ATOMIC_ACQUIRE)) plat_yield();
+        __atomic_store_n(&g_wt.hold, 0, __ATOMIC_RELEASE);
+        while (__atomic_load_n(&g_wt.held, __ATOMIC_ACQUIRE)) plat_yield();
     }
-    __atomic_store_n(&g_wt_stop, 1, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_wt_hold, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_wt.stop, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_wt.hold, 0, __ATOMIC_RELEASE);
     plat_sleep_ns(20000000);
-    u32 writes = __atomic_load_n(&g_wt_writes, __ATOMIC_RELAXED);
+    u32 writes = __atomic_load_n(&g_wt.writes, __ATOMIC_RELAXED);
     if (lost)
         fprintf(stderr, "concurrent writes: %u of %u rounds told nothing changed over changed bytes\n", lost, rounds);
     CHECK(!lost && told && writes >= 64 * rounds);
@@ -396,8 +401,7 @@ static int check_wt_runtime_writes(void) {
     CHECK(t == 0);
     /* a GPU engine's: a DMA copy of 0x33 over it, then the CPU's 0x44 over that */
     memset(GP(cpu + 0x8000), 0x33, 0x400);
-    GpuDmaOp o;
-    memset(&o, 0, sizeof o);
+    GpuDmaOp o = {0};
     o.width = o.line_in = o.line_out = 0x400;
     o.lines = 1;
     o.src = pitch_side(gva + 0x8000, 0);
