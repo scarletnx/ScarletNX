@@ -1567,7 +1567,8 @@ void nvn_CommandBufferBindProgram(CPU* c, u64 cb, u64 program, i32 stages) {
         memcpy(r->block, p->block, sizeof r->block);
         r->sample_shading = p->sample_shading;
     } else if (program)
-        LOG_LIMIT(4, "nvn: program %llx isn't initialized as it is bound\n", (unsigned long long)program);
+        LOG_LIMIT(4, "nvn: program %llx isn't initialized as it is bound (stages %#x, called from %llx)\n",
+                  (unsigned long long)program, (unsigned)stages, (unsigned long long)c->x[30]);
 }
 static void bind_state(CPU* c, u64 cb, i32 kind, u64 st, size_t n, u32 cost) {
     NvnPBindState* r = REC(c, cb, OP_BIND_STATE, NvnPBindState, cost);
