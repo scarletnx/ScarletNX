@@ -169,13 +169,12 @@ snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/nis.comp NAME nis8_spv HEADER nx/gpu
                DEFINES NIS_OUTPUT_RGBA8)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/sgsr1.vert NAME sgsr_vert_spv HEADER nx/gpu/vk/upscale_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/sgsr1.frag NAME sgsr_frag_spv HEADER nx/gpu/vk/upscale_spv.h)
-# the presented frame's HDR passes (gpu/vk/hdr.c): the frame into the linear composition, and the composition into the
-# window's image (PQ or the SDR range)
-snx_glsl_spirv(snx_vk SOURCE gpu/vk/hdr/hdr.vert NAME hdr_vert_spv HEADER nx/gpu/vk/hdr_spv.h)
-snx_glsl_spirv(snx_vk SOURCE gpu/vk/hdr/hdr_compose.frag NAME hdr_compose_frag_spv HEADER nx/gpu/vk/hdr_spv.h)
-snx_glsl_spirv(snx_vk SOURCE gpu/vk/hdr/hdr_encode.frag NAME hdr_encode_frag_spv HEADER nx/gpu/vk/hdr_spv.h)
-# the test pattern a run draws to prove the lift reaches the display (hdr_test)
-snx_glsl_spirv(snx_vk SOURCE gpu/vk/hdr/hdr_test.frag NAME hdr_test_frag_spv HEADER nx/gpu/vk/hdr_spv.h)
+# The presented frame's HDR passes (gpu/vk/hdr.c) and the test pattern a run draws to prove the lift reaches the
+# display: the same sources the 3DS, Vita and GBA share (common/gpu/vk/fx), so the two paths cannot drift apart.
+snx_glsl_spirv(snx_vk SOURCE ../common/gpu/vk/fx/hdr.vert NAME hdr_vert_spv HEADER nx/gpu/vk/hdr_spv.h)
+snx_glsl_spirv(snx_vk SOURCE ../common/gpu/vk/fx/hdr_compose.frag NAME hdr_compose_frag_spv HEADER nx/gpu/vk/hdr_spv.h)
+snx_glsl_spirv(snx_vk SOURCE ../common/gpu/vk/fx/hdr_encode.frag NAME hdr_encode_frag_spv HEADER nx/gpu/vk/hdr_spv.h)
+snx_glsl_spirv(snx_vk SOURCE ../common/gpu/vk/fx/hdr_test.frag NAME hdr_test_frag_spv HEADER nx/gpu/vk/hdr_spv.h)
 set(components core kernel hle video gpu platform shader vk)
 # third-party code (vma.cpp is VMA's implementation), cmake/dependencies.cmake
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" gpu/vk/vma.cpp PROPERTIES COMPILE_OPTIONS
