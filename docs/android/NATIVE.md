@@ -232,9 +232,14 @@ alpha test, mipmaps, the second texture unit, and `glReadPixels`, which reads ze
   or client arrays (the range a draw reads copied into the frame's arena), divisors of 0 and 1, the generic attributes'
   current values, and indices of 8, 16 and 32 bits. A line loop is a line strip with an index back to its start.
   Vertex arrays, occlusion queries (`GL_ANY_SAMPLES_PASSED`), fence syncs and uniform buffers are there.
+- **GLES 3.1's calls** are there too, though a context names itself 3.0: compute shaders (`glDispatchCompute` and its
+  indirect form), shader storage buffers, image units (`glBindImageTexture`: the texture then rests in `GENERAL`),
+  `glMemoryBarrier`, indirect draws, the vertex attribute bindings (`glBindVertexBuffer`, `glVertexAttribFormat`),
+  multisample textures, `glGetTexLevelParameter*`, the sample mask, the depth and stencil texture mode, and the
+  program interface queries. A dispatch has a barrier of every write on each side.
 
-What GLES 2 and 3 do not do yet: transform feedback, the compute shaders, images and storage buffers of GLES 3.1,
-GLES 3.2's geometry and tessellation, a divisor past 1, `glClear` with a partial color mask (it clears every
+What GLES 2 and 3 do not do yet: transform feedback, GLES 3.1's separate shader objects (program pipelines) and its
+buffer variables in the interface queries, GLES 3.2's geometry and tessellation, a divisor past 1, `glClear` with a partial color mask (it clears every
 channel), client depth and stencil texels for a 24-bit depth texture, ETC2 and ASTC on a device that has neither
 (the decode on the GPU), `glReadPixels` of a format other than RGBA or BGRA bytes, program binaries, and a pbuffer bound as a texture.
 

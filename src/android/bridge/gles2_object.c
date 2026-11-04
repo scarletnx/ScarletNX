@@ -190,7 +190,8 @@ static void sampler_init(G2Sampler* s) {
     s->state = t.sampler;
 }
 static void vao_init(G2VertexArray* a) {
-    for (int i = 0; i < G2_ATTRIBS; ++i) a->attribs[i].size = 4, a->attribs[i].type = GL_FLOAT_;
+    for (int i = 0; i < G2_ATTRIBS; ++i)
+        a->attribs[i].size = 4, a->attribs[i].type = GL_FLOAT_, a->attribs[i].binding = (uint8_t)i;
 }
 GEN(buffers, buffer_count, buffers, G2Buffer, (void)0)
 GEN(textures, texture_count, textures, G2Texture, texture_init(x))
@@ -265,6 +266,9 @@ static unsigned* buffer_binding(Gles2Context* gl, unsigned target) {
     case GL_COPY_WRITE_BUFFER_: return &gl->copy_write;
     case GL_UNIFORM_BUFFER_: return &gl->uniform_buffer;
     case GL_TRANSFORM_FEEDBACK_BUFFER_: return &gl->tf_buffer;
+    case 0x90d2: return &gl->storage_buffer;    /* GL_SHADER_STORAGE_BUFFER */
+    case 0x8f3f: return &gl->draw_indirect;     /* GL_DRAW_INDIRECT_BUFFER */
+    case 0x90ee: return &gl->dispatch_indirect; /* GL_DISPATCH_INDIRECT_BUFFER */
     default: return NULL;
     }
 }
@@ -313,11 +317,20 @@ static void g_bind_buffer(CPU* c, Gles2Context* gl) {
 }
 static void bind_indexed(Gles2Context* gl, unsigned target, unsigned index, unsigned name, int64_t offset,
                          int64_t size) {
-    if (target != GL_UNIFORM_BUFFER_ && target != GL_TRANSFORM_FEEDBACK_BUFFER_) {
+    if (target != GL_UNIFORM_BUFFER_ && target != GL_TRANSFORM_FEEDBACK_BUFFER_ && target != 0x90d2) {
         gles2_error(gl, GL_INVALID_ENUM_);
         return;
     }
     if (name && !buffer_made(name)) return;
+    if (target == 0x90d2) { /* GL_SHADER_STORAGE_BUFFER */
+        if (index >= G2_SSBO_BINDINGS) {
+            gles2_error(gl, GL_INVALID_VALUE_);
+            return;
+        }
+        gl->storage_buffer = name;
+        gl->storage_buffers[index] = (G2IndexedBuffer){name, offset, size};
+        return;
+    }
     if (target == GL_TRANSFORM_FEEDBACK_BUFFER_) {
         gl->tf_buffer = name;
         return;
@@ -346,14 +359,17 @@ static void forget_buffer(Gles2Context* gl, unsigned name) {
     *b = (G2Buffer){0};
     unsigned* bindings[] = {&gl->array_buffer, &gl->copy_read, &gl->copy_write, &gl->pixel_pack,
                             &gl->pixel_unpack, &gl->uniform_buffer, &gl->tf_buffer,
-                            &gles2_vertex_array(gl)->elements};
+                            &gles2_vertex_array(gl)->elements, &gl->storage_buffer, &gl->draw_indirect,
+                            &gl->dispatch_indirect};
     for (size_t i = 0; i < sizeof bindings / sizeof *bindings; ++i)
         if (*bindings[i] == name) *bindings[i] = 0;
     for (int i = 0; i < G2_UBO_BINDINGS; ++i)
         if (gl->uniform_buffers[i].buffer == name) gl->uniform_buffers[i] = (G2IndexedBuffer){0};
+    for (int i = 0; i < G2_SSBO_BINDINGS; ++i)
+        if (gl->storage_buffers[i].buffer == name) gl->storage_buffers[i] = (G2IndexedBuffer){0};
     G2VertexArray* a = gles2_vertex_array(gl);
     for (int i = 0; i < G2_ATTRIBS; ++i)
-        if (a->attribs[i].buffer == name) a->attribs[i].buffer = 0;
+        if (a->bindings[i].buffer == name) a->bindings[i].buffer = 0;
 }
 static void g_delete_buffers(CPU* c, Gles2Context* gl) {
     each_name(c, gl, forget_buffer);
@@ -402,6 +418,12 @@ static void g_buffer_data(CPU* c, Gles2Context* gl) {
 /* the bytes the GPU wrote into the Vulkan copy, brought into data */
 static void buffer_read_back(G2Buffer* b) {
     if (!b->gpu_newer) return;
+    Gles2Context* gl = gles2_current();
+    if (b->serial > V.submitted && gl && gl->draw) {
+        /* the frame being recorded writes it: its commands go to the GPU now */
+        gles2_rendering_stop(gl);
+        gles_flush(gl->draw);
+    }
     gles_vk_wait(b->serial);
     if (b->map) {
         VkMappedMemoryRange range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = b->memory,
@@ -867,6 +889,9 @@ bool gles2_texture_storage(Gles2Context* gl, G2Texture* t, const G2Format* f, in
     if (p.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     if (p.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
         usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if (p.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    VkSampleCountFlagBits samples = t->target == G2_TMS && t->samples > 1 ? t->samples : VK_SAMPLE_COUNT_1_BIT;
+    if (samples > 1) usage &= ~VK_IMAGE_USAGE_STORAGE_BIT;
     VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                               .flags = (t->target == G2_TCUBE ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0) |
                                        (t->target == G2_T3D ? VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT : 0),
@@ -875,7 +900,7 @@ bool gles2_texture_storage(Gles2Context* gl, G2Texture* t, const G2Format* f, in
                               .extent = {(uint32_t)width, (uint32_t)height, (uint32_t)d},
                               .mipLevels = (uint32_t)levels,
                               .arrayLayers = (uint32_t)layers,
-                              .samples = VK_SAMPLE_COUNT_1_BIT,
+                              .samples = samples,
                               .tiling = VK_IMAGE_TILING_OPTIMAL,
                               .usage = usage};
     if (!gles_vk_image(&info, VK_IMAGE_VIEW_TYPE_MAX_ENUM, 0, &t->image)) {
@@ -888,7 +913,7 @@ bool gles2_texture_storage(Gles2Context* gl, G2Texture* t, const G2Format* f, in
     t->width = width, t->height = height, t->depth = d;
     t->levels = levels;
     t->layers = layers;
-    t->samples = VK_SAMPLE_COUNT_1_BIT;
+    t->samples = samples;
     t->generation++;
     t->defined = 0;
     (void)expanded;
@@ -1200,6 +1225,127 @@ static void g_tex_storage_3d(CPU* c, Gles2Context* gl) {
     tex_storage(gl, (unsigned)X(0), (int)X(1), (unsigned)X(2), (int)X(3), (int)X(4), (int)X(5));
 }
 
+/* glTexStorage2DMultisample(target, samples, internal, width, height, fixed locations) */
+static void g_tex_storage_2d_multisample(CPU* c, Gles2Context* gl) {
+    G2Texture* t = bound_texture(gl, (unsigned)X(0), NULL);
+    int samples = (int)X(1);
+    if (!t) return;
+    if (t->target != G2_TMS || samples < 1) {
+        gles2_error(gl, samples < 1 ? GL_INVALID_VALUE_ : GL_INVALID_ENUM_);
+        return;
+    }
+    t->samples = samples > 2 ? VK_SAMPLE_COUNT_4_BIT : samples > 1 ? VK_SAMPLE_COUNT_2_BIT : VK_SAMPLE_COUNT_1_BIT;
+    tex_storage(gl, (unsigned)X(0), 1, (unsigned)X(2), (int)X(3), (int)X(4), 1);
+}
+
+/* glGetTexLevelParameter*(target, level, pname, params): a level's size, format and samples */
+static bool tex_level(Gles2Context* gl, unsigned target, int level, unsigned pname, float* v) {
+    G2Texture* t = bound_texture(gl, target, NULL);
+    if (!t) return false;
+    bool has = t->image.image && level >= 0 && level < t->levels && (t->defined & (1u << level));
+    switch (pname) {
+    case 0x1000: *v = has ? (float)at_level(t->width, level) : 0; return true;  /* GL_TEXTURE_WIDTH */
+    case 0x1001: *v = has ? (float)at_level(t->height, level) : 0; return true; /* GL_TEXTURE_HEIGHT */
+    case 0x8071: *v = has ? (float)(t->target == G2_T3D ? at_level(t->depth, level) : t->layers) : 0; return true;
+    case 0x1003: *v = has ? (float)t->format->internal : (float)GL_RGBA_; return true; /* GL_TEXTURE_INTERNAL_FORMAT */
+    case 0x9106: *v = has && t->samples > 1 ? (float)t->samples : 0; return true;     /* GL_TEXTURE_SAMPLES */
+    case 0x9107: *v = 1; return true;                                                    /* fixed sample locations */
+    case 0x86a1: *v = has && t->format->block; return true;                              /* GL_TEXTURE_COMPRESSED */
+    default:
+        if (pname >= 0x805c && pname <= 0x805f) { /* GL_TEXTURE_RED_SIZE .. ALPHA */
+            *v = has && t->format->kind < G2_DEPTH ? 8 : 0;
+            return true;
+        }
+        gles2_error(gl, GL_INVALID_ENUM_);
+        return false;
+    }
+}
+static void g_get_tex_level_parameteriv(CPU* c, Gles2Context* gl) {
+    float v = 0;
+    if (!tex_level(gl, (unsigned)X(0), (int)X(1), (unsigned)X(2), &v)) return;
+    int32_t x = (int32_t)v;
+    memcpy(PTR(3), &x, 4);
+}
+static void g_get_tex_level_parameterfv(CPU* c, Gles2Context* gl) {
+    float v = 0;
+    if (tex_level(gl, (unsigned)X(0), (int)X(1), (unsigned)X(2), &v)) memcpy(PTR(3), &v, 4);
+}
+
+/* ---- image units ---- */
+
+/* glBindImageTexture(unit, texture, level, layered, layer, access, format): the texture rests in GENERAL from now,
+   which storage images take, and sampling too */
+static void g_bind_image_texture(CPU* c, Gles2Context* gl) {
+    unsigned unit = (unsigned)X(0), name = (unsigned)X(1);
+    if (unit >= G2_IMAGE_UNITS) {
+        gles2_error(gl, GL_INVALID_VALUE_);
+        return;
+    }
+    gl->images[unit].texture = name;
+    gl->images[unit].level = (int)X(2);
+    gl->images[unit].layered = (X(3) & 0xff) != 0;
+    gl->images[unit].layer = (int)X(4);
+    gl->images[unit].access = (unsigned)X(5);
+    gl->images[unit].format = (unsigned)X(6);
+    G2Texture* t = gles2_texture(name);
+    if (!t || !t->image.image || t->layout == VK_IMAGE_LAYOUT_GENERAL) return;
+    GlesSlot* slot = gles2_transfer_slot(gl);
+    if (!slot) return;
+    level_barrier(slot->cb, t->image.image, gles2_aspect(t->format), 0, t->levels, t->layout, VK_IMAGE_LAYOUT_GENERAL,
+                  VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, READERS | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  READERS);
+    t->layout = VK_IMAGE_LAYOUT_GENERAL;
+}
+
+VkImageView gles2_image_unit(Gles2Context* gl, unsigned unit, uint8_t dim) {
+    if (unit >= G2_IMAGE_UNITS) return VK_NULL_HANDLE;
+    G2Texture* t = gles2_texture(gl->images[unit].texture);
+    int level = gl->images[unit].level;
+    if (!t || !t->image.image || t->layout != VK_IMAGE_LAYOUT_GENERAL || level < 0 || level >= t->levels)
+        return VK_NULL_HANDLE;
+    static const VkImageViewType types[G2_TARGETS] = {VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_VIEW_TYPE_CUBE,
+                                                      VK_IMAGE_VIEW_TYPE_3D, VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+                                                      VK_IMAGE_VIEW_TYPE_2D};
+    bool whole = gl->images[unit].layered || t->layers == 1;
+    VkImageViewType type = whole ? types[dim < G2_TARGETS ? dim : 0] : VK_IMAGE_VIEW_TYPE_2D;
+    if (type == VK_IMAGE_VIEW_TYPE_3D && !whole) type = VK_IMAGE_VIEW_TYPE_2D;
+    return gles2_texture_view(t, type, level, 1, whole ? 0 : gl->images[unit].layer, whole ? t->layers : 1, false,
+                              VK_IMAGE_ASPECT_COLOR_BIT);
+}
+
+void gles2_memory_barrier(VkCommandBuffer cb) {
+    VkMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                         .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
+                                          VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT,
+                         .dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_INDEX_READ_BIT |
+                                          VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT |
+                                          VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                                          VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
+                                          VK_ACCESS_HOST_READ_BIT};
+    V.vk.vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &b, 0,
+                              NULL, 0, NULL);
+}
+static void g_memory_barrier(CPU* c, Gles2Context* gl) {
+    (void)c;
+    GlesSlot* slot = gles2_transfer_slot(gl);
+    if (slot) gles2_memory_barrier(slot->cb);
+}
+static void g_sample_maski(CPU* c, Gles2Context* gl) {
+    if ((unsigned)X(0) == 0) gl->sample_mask = (uint32_t)X(1);
+    else gles2_error(gl, GL_INVALID_VALUE_);
+}
+/* glGetMultisamplefv(GL_SAMPLE_POSITION, index, values): Vulkan's standard positions of 4 samples */
+static void g_get_multisamplefv(CPU* c, Gles2Context* gl) {
+    static const float positions[4][2] = {{0.375f, 0.125f}, {0.875f, 0.375f}, {0.125f, 0.625f}, {0.625f, 0.875f}};
+    unsigned i = (unsigned)X(1);
+    if ((unsigned)X(0) != 0x8e50 || i >= 4) {
+        gles2_error(gl, GL_INVALID_VALUE_);
+        return;
+    }
+    memcpy(PTR(2), positions[i], 8);
+}
+
 static void g_gen_textures(CPU* c, Gles2Context* gl) {
     gen_call(c, gl, gen_textures);
 }
@@ -1291,6 +1437,7 @@ static void tex_parameter(Gles2Context* gl, unsigned target, unsigned pname, flo
     case GL_TEXTURE_SWIZZLE_R_ + 2:
     case GL_TEXTURE_SWIZZLE_R_ + 3: t->swizzles[pname - GL_TEXTURE_SWIZZLE_R_] = (unsigned)v; break;
     case 0x8191: break; /* GL_GENERATE_MIPMAP: GLES 1.1's */
+    case 0x90ea: t->stencil_mode = (unsigned)v == 0x1901; break; /* GL_DEPTH_STENCIL_TEXTURE_MODE */
     default: gles2_error(gl, GL_INVALID_ENUM_);
     }
 }
@@ -1319,6 +1466,7 @@ static bool tex_get(Gles2Context* gl, unsigned target, unsigned pname, float* v)
     case GL_TEXTURE_MAX_LEVEL_: *v = (float)t->max_level; return true;
     case GL_TEXTURE_IMMUTABLE_FORMAT_: *v = t->immutable; return true;
     case GL_TEXTURE_IMMUTABLE_LEVELS_: *v = t->immutable ? (float)t->levels : 0; return true;
+    case 0x90ea: *v = t->stencil_mode ? 0x1901 : (float)GL_DEPTH_COMPONENT_; return true;
     case GL_TEXTURE_SWIZZLE_R_:
     case GL_TEXTURE_SWIZZLE_R_ + 1:
     case GL_TEXTURE_SWIZZLE_R_ + 2:
@@ -1929,6 +2077,19 @@ static G2Attrib* attrib(Gles2Context* gl, unsigned index) {
     }
     return &gles2_vertex_array(gl)->attribs[index];
 }
+uint32_t gles2_vertex_bytes(unsigned type, int size) {
+    switch (type) {
+    case GL_BYTE_:
+    case GL_UNSIGNED_BYTE_: return (uint32_t)size;
+    case GL_SHORT_:
+    case GL_UNSIGNED_SHORT_:
+    case GL_HALF_FLOAT_:
+    case GL_HALF_FLOAT_OES_: return 2u * (uint32_t)size;
+    case 0x8d9f:
+    case GL_UI_2101010_: return 4;
+    default: return 4u * (uint32_t)size;
+    }
+}
 static void attrib_pointer(Gles2Context* gl, unsigned index, int size, unsigned type, bool normalized, bool integer,
                            int stride, uint64_t pointer) {
     G2Attrib* a = attrib(gl, index);
@@ -1942,8 +2103,12 @@ static void attrib_pointer(Gles2Context* gl, unsigned index, int size, unsigned 
     a->normalized = normalized;
     a->integer = integer;
     a->stride = stride;
-    a->pointer = pointer;
-    a->buffer = gl->array_buffer;
+    a->relative = 0;
+    a->binding = (uint8_t)index;
+    G2VertexBinding* b = &gles2_vertex_array(gl)->bindings[index];
+    b->offset = pointer;
+    b->buffer = gl->array_buffer;
+    b->stride = stride ? (uint32_t)stride : gles2_vertex_bytes(type, size);
 }
 static void g_vertex_attrib_pointer(CPU* c, Gles2Context* gl) {
     attrib_pointer(gl, (unsigned)X(0), (int)X(1), (unsigned)X(2), (X(3) & 0xff) != 0, false, (int)X(4), X(5));
@@ -1951,6 +2116,50 @@ static void g_vertex_attrib_pointer(CPU* c, Gles2Context* gl) {
 static void g_vertex_attrib_ipointer(CPU* c, Gles2Context* gl) {
     attrib_pointer(gl, (unsigned)X(0), (int)X(1), (unsigned)X(2), false, true, (int)X(3), X(4));
 }
+/* GLES 3.1's vertex attribute bindings */
+static void attrib_format(Gles2Context* gl, unsigned index, int size, unsigned type, bool normalized, bool integer,
+                          uint32_t relative) {
+    G2Attrib* a = attrib(gl, index);
+    if (!a) return;
+    if (size < 1 || size > 4 || relative > 2047) {
+        gles2_error(gl, GL_INVALID_VALUE_);
+        return;
+    }
+    a->size = size;
+    a->type = type;
+    a->normalized = normalized;
+    a->integer = integer;
+    a->relative = relative;
+}
+static void g_vertex_attrib_format(CPU* c, Gles2Context* gl) {
+    attrib_format(gl, (unsigned)X(0), (int)X(1), (unsigned)X(2), (X(3) & 0xff) != 0, false, (uint32_t)X(4));
+}
+static void g_vertex_attrib_iformat(CPU* c, Gles2Context* gl) {
+    attrib_format(gl, (unsigned)X(0), (int)X(1), (unsigned)X(2), false, true, (uint32_t)X(3));
+}
+static void g_vertex_attrib_binding(CPU* c, Gles2Context* gl) {
+    G2Attrib* a = attrib(gl, (unsigned)X(0));
+    if (a && X(1) < G2_ATTRIBS) a->binding = (uint8_t)X(1);
+    else if (a) gles2_error(gl, GL_INVALID_VALUE_);
+}
+/* glBindVertexBuffer(binding, buffer, offset, stride) */
+static void g_bind_vertex_buffer(CPU* c, Gles2Context* gl) {
+    unsigned i = (unsigned)X(0), name = (unsigned)X(1);
+    if (i >= G2_ATTRIBS || (int64_t)X(2) < 0 || (int32_t)X(3) < 0 || (uint32_t)X(3) > 2048) {
+        gles2_error(gl, GL_INVALID_VALUE_);
+        return;
+    }
+    if (name && !buffer_made(name)) return;
+    G2VertexBinding* b = &gles2_vertex_array(gl)->bindings[i];
+    b->buffer = name;
+    b->offset = X(2);
+    b->stride = (uint32_t)X(3);
+}
+static void g_vertex_binding_divisor(CPU* c, Gles2Context* gl) {
+    if ((unsigned)X(0) >= G2_ATTRIBS) gles2_error(gl, GL_INVALID_VALUE_);
+    else gles2_vertex_array(gl)->bindings[X(0)].divisor = (uint32_t)X(1);
+}
+
 static void g_enable_vertex_attrib_array(CPU* c, Gles2Context* gl) {
     G2Attrib* a = attrib(gl, (unsigned)X(0));
     if (a) a->enabled = true;
@@ -1961,7 +2170,9 @@ static void g_disable_vertex_attrib_array(CPU* c, Gles2Context* gl) {
 }
 static void g_vertex_attrib_divisor(CPU* c, Gles2Context* gl) {
     G2Attrib* a = attrib(gl, (unsigned)X(0));
-    if (a) a->divisor = (unsigned)X(1);
+    if (!a) return;
+    a->binding = (uint8_t)X(0);
+    gles2_vertex_array(gl)->bindings[X(0)].divisor = (uint32_t)X(1);
 }
 static void generic(Gles2Context* gl, unsigned index, const void* v, int n, uint8_t base) {
     if (index >= G2_ATTRIBS) {
@@ -2030,9 +2241,11 @@ static int vertex_attrib(Gles2Context* gl, unsigned index, unsigned pname, doubl
     case 0x8624: v[0] = a->stride; return 1;
     case 0x8625: v[0] = a->type; return 1;
     case 0x886a: v[0] = a->normalized; return 1;
-    case 0x889f: v[0] = a->buffer; return 1;
+    case 0x889f: v[0] = gles2_vertex_array(gl)->bindings[a->binding].buffer; return 1;
+    case 0x82d4: v[0] = a->binding; return 1;  /* GL_VERTEX_ATTRIB_BINDING */
+    case 0x82d5: v[0] = a->relative; return 1; /* GL_VERTEX_ATTRIB_RELATIVE_OFFSET */
     case 0x88fd: v[0] = a->integer; return 1;
-    case 0x88fe: v[0] = a->divisor; return 1;
+    case 0x88fe: v[0] = gles2_vertex_array(gl)->bindings[a->binding].divisor; return 1;
     case 0x8626: {
         const G2Generic* g = &gl->generic[index];
         for (int i = 0; i < 4; ++i) {
@@ -2064,7 +2277,7 @@ static void g_get_vertex_attribfv(CPU* c, Gles2Context* gl) {
 }
 static void g_get_vertex_attrib_pointerv(CPU* c, Gles2Context* gl) {
     G2Attrib* a = attrib(gl, (unsigned)X(0));
-    if (a) memcpy(PTR(2), &a->pointer, 8);
+    if (a) memcpy(PTR(2), &gles2_vertex_array(gl)->bindings[a->binding].offset, 8);
 }
 
 /* ---- queries ---- */
@@ -2346,6 +2559,14 @@ const HleSymbol hle_gles2_object[] = {
     FN("glGetTexParameteriv", g_get_tex_parameteriv),
     FN("glGetTexParameterfv", g_get_tex_parameterfv),
     FN("glGenerateMipmap", g_generate_mipmap),
+    FN("glTexStorage2DMultisample", g_tex_storage_2d_multisample),
+    FN("glGetTexLevelParameteriv", g_get_tex_level_parameteriv),
+    FN("glGetTexLevelParameterfv", g_get_tex_level_parameterfv),
+    FN("glBindImageTexture", g_bind_image_texture),
+    FN("glMemoryBarrier", g_memory_barrier),
+    FN("glMemoryBarrierByRegion", g_memory_barrier),
+    FN("glSampleMaski", g_sample_maski),
+    FN("glGetMultisamplefv", g_get_multisamplefv),
     FN("glGenSamplers", g_gen_samplers),
     FN("glDeleteSamplers", g_delete_samplers),
     FN("glIsSampler", g_is_sampler),
@@ -2392,6 +2613,11 @@ const HleSymbol hle_gles2_object[] = {
     FN("glEnableVertexAttribArray", g_enable_vertex_attrib_array),
     FN("glDisableVertexAttribArray", g_disable_vertex_attrib_array),
     FN("glVertexAttribDivisor", g_vertex_attrib_divisor),
+    FN("glVertexAttribFormat", g_vertex_attrib_format),
+    FN("glVertexAttribIFormat", g_vertex_attrib_iformat),
+    FN("glVertexAttribBinding", g_vertex_attrib_binding),
+    FN("glBindVertexBuffer", g_bind_vertex_buffer),
+    FN("glVertexBindingDivisor", g_vertex_binding_divisor),
     FN("glVertexAttribDivisorEXT", g_vertex_attrib_divisor),
     FN("glVertexAttribDivisorANGLE", g_vertex_attrib_divisor),
     FN("glVertexAttrib1f", g_vertex_attrib1f),

@@ -29,6 +29,8 @@ enum {
     G2_ATTRIBS = 16,     /* GL_MAX_VERTEX_ATTRIBS */
     G2_COLORS = 4,       /* GL_MAX_COLOR_ATTACHMENTS and GL_MAX_DRAW_BUFFERS */
     G2_UBO_BINDINGS = 36,
+    G2_SSBO_BINDINGS = 8, /* GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS */
+    G2_IMAGE_UNITS = 8,   /* GL_MAX_IMAGE_UNITS */
     G2_TARGETS = 5,      /* the texture targets of a unit: 2D, cube map, 3D, 2D array, 2D multisample */
     G2_VIEWS = 8         /* the image views a texture keeps */
 };
@@ -106,6 +108,7 @@ typedef struct {
     int base_level, max_level;
     unsigned swizzles[4];
     uint32_t generation; /* counts the images made: a framebuffer's views of an older one are stale */
+    bool stencil_mode;   /* GL_DEPTH_STENCIL_TEXTURE_MODE is GL_STENCIL_INDEX: a sampler reads the stencil */
     struct {
         uint64_t key;
         VkImageView view;
@@ -140,19 +143,27 @@ typedef struct {
     uint32_t generation; /* counts the changes of its attachments */
 } G2Framebuffer;
 
+/* an attribute's format, and the binding it reads (GLES 3.1's glVertexAttribBinding; glVertexAttribPointer sets
+   binding i of attribute i) */
 typedef struct {
     bool enabled, normalized, integer;
     int size;
     unsigned type;
-    int stride;
-    uint64_t pointer; /* an offset into buffer, or the guest's client array without one */
-    unsigned buffer;
-    unsigned divisor;
+    int stride;        /* glVertexAttribPointer's, for its query */
+    uint32_t relative; /* the offset in the binding's vertex */
+    uint8_t binding;
 } G2Attrib;
+
+typedef struct {
+    unsigned buffer;
+    uint64_t offset; /* in buffer, or the guest's client array without one */
+    uint32_t stride, divisor;
+} G2VertexBinding;
 
 typedef struct {
     bool used;
     G2Attrib attribs[G2_ATTRIBS];
+    G2VertexBinding bindings[G2_ATTRIBS];
     unsigned elements;
 } G2VertexArray;
 
@@ -305,6 +316,17 @@ typedef struct Gles2Context {
     /* the bindings */
     unsigned array_buffer, copy_read, copy_write, pixel_pack, pixel_unpack, uniform_buffer, tf_buffer;
     G2IndexedBuffer uniform_buffers[G2_UBO_BINDINGS];
+    /* GLES 3.1: the shader storage buffers, the image units, the indirect buffers, the sample mask */
+    unsigned storage_buffer, draw_indirect, dispatch_indirect;
+    G2IndexedBuffer storage_buffers[G2_SSBO_BINDINGS];
+    struct {
+        unsigned texture;
+        int level, layer;
+        bool layered;
+        unsigned access, format;
+    } images[G2_IMAGE_UNITS];
+    bool sample_mask_on;
+    uint32_t sample_mask;
     unsigned vertex_array; /* 0: the context's own */
     G2VertexArray default_vao;
     unsigned draw_fbo, read_fbo, renderbuffer;
@@ -434,6 +456,14 @@ void gles2_queries_begin(Gles2Context* gl, VkCommandBuffer cb);
 void gles2_queries_end(Gles2Context* gl, VkCommandBuffer cb);
 /* the texture of a unit and target, or NULL */
 G2Texture* gles2_unit_texture(Gles2Context* gl, unsigned unit, unsigned target);
+
+/* the bytes of a vertex attribute of size components of type, packed */
+uint32_t gles2_vertex_bytes(unsigned type, int size);
+/* the image unit's view for a storage image of dimension dim (G2_T*), its texture in GENERAL; NULL without one */
+VkImageView gles2_image_unit(Gles2Context* gl, unsigned unit, uint8_t dim);
+/* a barrier of every write before it to every read and write after it, outside rendering (glMemoryBarrier, a
+   dispatch's ends) */
+void gles2_memory_barrier(VkCommandBuffer cb);
 
 /* gles2_program.c */
 /* the default block's of program p written to the frame's arena when they changed: true when each stage's is */

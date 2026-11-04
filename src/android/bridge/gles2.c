@@ -77,6 +77,7 @@ Gles2Context* gles2_context_new(int version) {
         gl->stencil[f].mask = gl->stencil[f].write = 0xffffffffu;
     }
     gl->clear_depth = 1;
+    gl->sample_mask = 0xffffffffu;
     gl->line_width = 1;
     gl->coverage_value = 1;
     gl->dither = true;
@@ -91,6 +92,7 @@ Gles2Context* gles2_context_new(int version) {
     for (int i = 0; i < G2_ATTRIBS; ++i) {
         gl->default_vao.attribs[i].size = 4;
         gl->default_vao.attribs[i].type = 0x1406; /* GL_FLOAT */
+        gl->default_vao.attribs[i].binding = (uint8_t)i;
     }
     gl->default_vao.used = true;
     return gl;
@@ -216,6 +218,7 @@ static bool* capability(Gles2Context* gl, unsigned cap) {
     case 0x80a0: return &gl->sample_coverage;
     case 0x8c89: return &gl->rasterizer_discard;
     case 0x8d69: return &gl->primitive_restart;
+    case 0x8e51: return &gl->sample_mask_on; /* GL_SAMPLE_MASK */
     default: return NULL;
     }
 }
@@ -486,6 +489,56 @@ static int state(Gles2Context* gl, unsigned pname, double* v) {
     case 0x80a9: v[0] = 0; return 1; /* GL_SAMPLE_BUFFERS, GL_SAMPLES */
     case 0x8b9a: v[0] = GL_UNSIGNED_BYTE_; return 1;
     case 0x8b9b: v[0] = GL_RGBA_; return 1;
+    /* GLES 3.1's: compute, storage buffers, images, vertex bindings, samples */
+    case 0x90eb: v[0] = l->maxComputeWorkGroupInvocations < 1024 ? l->maxComputeWorkGroupInvocations : 1024; return 1;
+    case 0x8262: v[0] = l->maxComputeSharedMemorySize < 32768 ? l->maxComputeSharedMemorySize : 32768; return 1;
+    case 0x90dd: v[0] = G2_SSBO_BINDINGS; return 1;
+    case 0x90de: v[0] = 1 << 27; return 1;  /* GL_MAX_SHADER_STORAGE_BLOCK_SIZE */
+    case 0x90d6: v[0] = 0; return 1;        /* GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS: a Mali's */
+    case 0x90da:
+    case 0x90db:
+    case 0x90dc: v[0] = G2_SSBO_BINDINGS; return 1;
+    case 0x90df: v[0] = (double)l->minStorageBufferOffsetAlignment; return 1;
+    case 0x8f38: v[0] = G2_IMAGE_UNITS; return 1;
+    case 0x90ca: v[0] = 0; return 1; /* GL_MAX_VERTEX_IMAGE_UNIFORMS */
+    case 0x90ce:
+    case 0x91bd:
+    case 0x90cf: v[0] = G2_IMAGE_UNITS; return 1;
+    case 0x91bb: v[0] = 12; return 1;
+    case 0x91bc: v[0] = 16; return 1;
+    case 0x8263: v[0] = 1024; return 1;
+    case 0x8264: /* GL_MAX_COMPUTE_ATOMIC_COUNTER_BUFFERS and the other atomic counters: none */
+    case 0x8265:
+    case 0x92cc:
+    case 0x92d0:
+    case 0x92d1:
+    case 0x92d2:
+    case 0x92d3:
+    case 0x92d4:
+    case 0x92d6:
+    case 0x92d7:
+    case 0x92d8:
+    case 0x92d9:
+    case 0x92dc: v[0] = 0; return 1;
+    case 0x8266: v[0] = 1024 + 12 * 16384; return 1;
+    case 0x8e59: v[0] = 1; return 1;   /* GL_MAX_SAMPLE_MASK_WORDS */
+    case 0x910e:
+    case 0x910f:
+    case 0x9110: v[0] = 4; return 1;   /* GL_MAX_COLOR_TEXTURE_SAMPLES, DEPTH, INTEGER */
+    case 0x82d9: v[0] = 2047; return 1;
+    case 0x82da: v[0] = G2_ATTRIBS; return 1;
+    case 0x82e5: v[0] = 2048; return 1;
+    case 0x9315:
+    case 0x9316: v[0] = max_texture; return 1;
+    case 0x9318: v[0] = 4; return 1;
+    case 0x826e: v[0] = 1024; return 1; /* GL_MAX_UNIFORM_LOCATIONS */
+    case 0x8e5e: v[0] = -8; return 1;
+    case 0x8e5f: v[0] = 7; return 1;
+    case 0x90d3: v[0] = gl->storage_buffer; return 1;
+    case 0x8f43: v[0] = gl->draw_indirect; return 1;
+    case 0x90ef: v[0] = gl->dispatch_indirect; return 1;
+    case 0x825a: v[0] = 0; return 1;    /* GL_PROGRAM_PIPELINE_BINDING */
+    case 0x8e52: v[0] = gl->sample_mask; return 1;
     /* the state */
     case 0x0ba2: for (int i = 0; i < 4; ++i) v[i] = gl->viewport[i]; return 4;
     case 0x0c10: for (int i = 0; i < 4; ++i) v[i] = gl->scissor[i]; return 4;
@@ -626,6 +679,30 @@ static void g_get_booleanv(CPU* c, Gles2Context* gl) {
 }
 /* glGetIntegeri_v and glGetInteger64i_v: the indexed buffer bindings */
 static bool indexed(Gles2Context* gl, unsigned pname, unsigned i, int64_t* v) {
+    if (i < 3 && pname == 0x91be) { /* GL_MAX_COMPUTE_WORK_GROUP_COUNT */
+        *v = V.props.limits.maxComputeWorkGroupCount[i] < 65535 ? V.props.limits.maxComputeWorkGroupCount[i] : 65535;
+        return true;
+    }
+    if (i < 3 && pname == 0x91bf) {
+        static const uint32_t least[3] = {128, 128, 64}; /* GLES 3.1's minimums, which a Mali gives */
+        uint32_t d = V.props.limits.maxComputeWorkGroupSize[i];
+        *v = d < least[i] ? d : least[i];
+        return true;
+    }
+    if (i < G2_SSBO_BINDINGS && pname >= 0x90d3 && pname <= 0x90d5) {
+        const G2IndexedBuffer* b = &gl->storage_buffers[i];
+        *v = pname == 0x90d3 ? b->buffer : pname == 0x90d4 ? b->offset : b->size;
+        return true;
+    }
+    if (i < G2_IMAGE_UNITS && pname >= 0x8f3a && pname <= 0x8f3e) {
+        *v = pname == 0x8f3a ? gl->images[i].texture : pname == 0x8f3b ? gl->images[i].level
+             : pname == 0x8f3c ? gl->images[i].layered : pname == 0x8f3d ? gl->images[i].layer : gl->images[i].access;
+        return true;
+    }
+    if (i < 1 && pname == 0x8e52) {
+        *v = gl->sample_mask;
+        return true;
+    }
     if (i >= G2_UBO_BINDINGS) return false;
     switch (pname) {
     case 0x8a28: *v = gl->uniform_buffers[i].buffer; return true;
@@ -650,6 +727,14 @@ static void g_get_integer64i(CPU* c, Gles2Context* gl) {
         return;
     }
     memcpy(PTR(2), &v, 8);
+}
+static void g_get_booleani(CPU* c, Gles2Context* gl) {
+    int64_t v = 0;
+    if (!indexed(gl, (unsigned)X(0), (unsigned)X(1), &v)) {
+        gles2_error(gl, GL_INVALID_ENUM_);
+        return;
+    }
+    *(unsigned char*)PTR(2) = v != 0;
 }
 static void g_get_stringi(CPU* c, Gles2Context* gl) {
     unsigned i = (unsigned)X(1);
@@ -706,6 +791,7 @@ const HleSymbol hle_gles2[] = {
     FN("glGetIntegeri_v", g_get_integeri),
     FN("glGetInteger64i_v", g_get_integer64i),
     FN("glGetStringi", g_get_stringi),
+    FN("glGetBooleani_v", g_get_booleani),
     FN("glReleaseShaderCompiler", g_nothing),
     FN("glInsertEventMarkerEXT", g_nothing),
     FN("glPushGroupMarkerEXT", g_nothing),

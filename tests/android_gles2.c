@@ -496,6 +496,116 @@ static void window_coords(void) {
     no_error("points");
 }
 
+static unsigned compute_program(const char* source) {
+    unsigned p = (unsigned)GL0("glCreateProgram");
+    GL("glAttachShader", p, shader(0x91b9, source));
+    GL("glLinkProgram", p);
+    int32_t ok = 0;
+    GL("glGetProgramiv", p, GL_LINK_STATUS, P(&ok));
+    if (!ok) {
+        char log[512] = {0};
+        GL("glGetProgramInfoLog", p, sizeof log, 0, P(log));
+        fprintf(stderr, "android_gles2: %s: a compute program does not link: %s\n", g_t.test, log);
+        exit(1);
+    }
+    GL("glUseProgram", p);
+    return p;
+}
+
+/* GLES 3.1: a compute shader writes a storage buffer (read back mapped) and an image (sampled by a draw), by a
+   direct and an indirect dispatch; an indirect draw */
+static void compute(void) {
+    g_t.test = "compute";
+    const char* cs = "#version 310 es\nlayout(local_size_x = 4) in;\n"
+                     "layout(std430, binding = 1) buffer Data { uint scale; uint v[]; } data;\n"
+                     "void main() { data.v[gl_GlobalInvocationID.x] = gl_GlobalInvocationID.x * data.scale; }\n";
+    unsigned p = compute_program(cs);
+    uint32_t init[17] = {3};
+    unsigned b = buffer(0x90d2, init, sizeof init);
+    GL("glBindBufferBase", 0x90d2, 1, b);
+    GL("glDispatchCompute", 4, 1, 1);
+    no_error("dispatch");
+    GL("glMemoryBarrier", 0x2000); /* GL_BUFFER_UPDATE_BARRIER_BIT */
+    const uint32_t* v = (const uint32_t*)(uintptr_t)GL("glMapBufferRange", 0x90d2, 0, sizeof init, 1);
+    if (!v || v[1] != 0 || v[2] != 3 || v[16] != 45) {
+        fprintf(stderr, "android_gles2: compute: the buffer reads %u %u %u\n", v ? v[1] : 0, v ? v[2] : 0,
+                v ? v[16] : 0);
+        g_t.failures++;
+    }
+    GL("glUnmapBuffer", 0x90d2);
+    uint64_t block = GL("glGetProgramResourceIndex", p, 0x92e6, P("Data"));
+    int32_t binding = -1;
+    uint32_t prop = 0x9302;
+    GL("glGetProgramResourceiv", p, 0x92e6, block, 1, P(&prop), 1, 0, P(&binding));
+    if (block == 0xffffffffu || binding != 1) {
+        fprintf(stderr, "android_gles2: compute: the block's index %llu and binding %d\n", (unsigned long long)block,
+                binding);
+        g_t.failures++;
+    }
+    /* an image written by an indirect dispatch, then sampled over the window */
+    const char* image = "#version 310 es\nlayout(local_size_x = 8, local_size_y = 8) in;\n"
+                        "layout(rgba8, binding = 2) writeonly uniform highp image2D img;\n"
+                        "void main() { ivec2 at = ivec2(gl_GlobalInvocationID.xy);\n"
+                        "  imageStore(img, at, at.y < 8 ? vec4(1.0, 0.5, 0.0, 1.0) : vec4(0.0, 0.0, 1.0, 1.0)); }\n";
+    compute_program(image);
+    uint32_t t = 0;
+    GL("glGenTextures", 1, P(&t));
+    GL("glBindTexture", GL_TEXTURE_2D, t);
+    GL("glTexStorage2D", GL_TEXTURE_2D, 1, GL_RGBA8, 16, 16);
+    GL("glTexParameteri", GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    GL("glTexParameteri", GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    GL("glBindImageTexture", 2, t, 0, 0, 0, 0x88b9, GL_RGBA8); /* GL_WRITE_ONLY */
+    static const uint32_t groups[3] = {2, 2, 1};
+    unsigned ib = buffer(0x90ee, groups, sizeof groups);
+    GL("glBindBuffer", 0x90ee, ib);
+    GL("glDispatchComputeIndirect", 0);
+    no_error("indirect dispatch");
+    unsigned q = program(textured_vs, textured_fs);
+    GL("glUniform1i", GL("glGetUniformLocation", q, P("tex")), 0);
+    buffer(GL_ARRAY_BUFFER, quad, sizeof quad);
+    GL("glVertexAttribPointer", 0, 2, GL_FLOAT, 0, 0, 0);
+    GL("glEnableVertexAttribArray", 0);
+    /* glDrawArraysIndirect: count 4, one instance, from 0 */
+    static const uint32_t command[4] = {4, 1, 0, 0};
+    unsigned db = buffer(0x8f3f, command, sizeof command);
+    GL("glBindBuffer", 0x8f3f, db);
+    GL("glDrawArraysIndirect", GL_TRIANGLE_STRIP, 0);
+    no_error("indirect draw");
+    expect(W / 2, 8, 255, 128, 0, 255, "the image's row 0, at the bottom");
+    expect(W / 2, H - 8, 0, 0, 255, 255, "the image's top");
+}
+
+/* GLES 3.1's vertex bindings: a position and a color interleaved in one buffer, by their relative offsets */
+static void vertex_bindings(void) {
+    g_t.test = "vertex bindings";
+    const char* vs = "#version 310 es\nlayout(location = 0) in vec2 position;\nlayout(location = 3) in vec4 tint;\n"
+                     "out vec4 c;\nvoid main() { gl_Position = vec4(position, 0.0, 1.0); c = tint; }\n";
+    const char* fs = "#version 310 es\nprecision mediump float;\nin vec4 c;\nout vec4 frag;\n"
+                     "void main() { frag = c; }\n";
+    program(vs, fs);
+    struct {
+        float x, y;
+        unsigned char rgba[4];
+    } vertices[4] = {{-1, -1, {0, 255, 128, 255}}, {1, -1, {0, 255, 128, 255}}, {-1, 1, {0, 255, 128, 255}},
+                     {1, 1, {0, 255, 128, 255}}};
+    uint32_t vao = 0;
+    GL("glGenVertexArrays", 1, P(&vao));
+    GL("glBindVertexArray", vao);
+    unsigned b = buffer(GL_ARRAY_BUFFER, vertices, sizeof vertices);
+    GL("glBindVertexBuffer", 5, b, 0, sizeof vertices[0]);
+    GL("glVertexAttribFormat", 0, 2, GL_FLOAT, 0, 0);
+    GL("glVertexAttribFormat", 3, 4, GL_UNSIGNED_BYTE, 1, 8);
+    GL("glVertexAttribBinding", 0, 5);
+    GL("glVertexAttribBinding", 3, 5);
+    GL("glEnableVertexAttribArray", 0);
+    GL("glEnableVertexAttribArray", 3);
+    clear(0, 0, 0, 1);
+    GL("glDrawArrays", GL_TRIANGLE_STRIP, 0, 4);
+    no_error("draw");
+    expect(W / 2, H / 2, 0, 255, 128, 255, "the interleaved color");
+    GL("glBindVertexArray", 0);
+}
+
 /* the queries of state and of the program */
 static void queries(void) {
     g_t.test = "queries";
@@ -533,6 +643,8 @@ int main(void) {
     uniform_block();
     client_arrays();
     window_coords();
+    compute();
+    vertex_bindings();
     queries();
     gles2_make_current(NULL, NULL, NULL);
     gles2_context_free(gl);

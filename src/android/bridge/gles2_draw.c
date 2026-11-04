@@ -660,8 +660,7 @@ static uint32_t type_bytes(unsigned type) {
     }
 }
 static uint32_t attrib_bytes(const G2Attrib* a) {
-    if (a->type == GL_INT_2101010_ || a->type == GL_UNSIGNED_INT_2101010_) return 4;
-    return type_bytes(a->type) * (uint32_t)a->size;
+    return gles2_vertex_bytes(a->type, a->size);
 }
 
 /* a draw's vertices: the bindings, their offsets and strides by location */
@@ -703,20 +702,22 @@ static bool vertex_inputs(Gles2Context* gl, GlesSlot* slot, const G2Program* p, 
                 continue;
             }
             key->formats[loc] = (uint32_t)format;
-            uint32_t stride = a->stride ? (uint32_t)a->stride : attrib_bytes(a);
+            const G2VertexBinding* binding = &vao->bindings[a->binding];
+            uint32_t stride = binding->stride;
+            uint64_t pointer = binding->offset + a->relative;
             v->strides[loc] = stride;
-            bool instanced = a->divisor != 0;
+            bool instanced = binding->divisor != 0;
             if (instanced) key->rates |= (uint16_t)(1u << loc);
-            if (a->divisor > 1) gles2_warn(11, "a vertex attribute divisor past 1 steps each instance");
-            G2Buffer* b = gles2_buffer(a->buffer);
+            if (binding->divisor > 1) gles2_warn(11, "a vertex attribute divisor past 1 steps each instance");
+            G2Buffer* b = gles2_buffer(binding->buffer);
             if (b) {
                 G2Ref ref;
                 if (!gles2_buffer_ref(slot, b, false, &ref)) return false;
                 v->buffers[loc] = ref.buffer;
-                v->offsets[loc] = ref.offset + a->pointer;
+                v->offsets[loc] = ref.offset + pointer;
                 continue;
             }
-            if (!a->pointer) return false; /* an array without memory: nothing to draw */
+            if (!pointer) return false; /* an array without memory: nothing to draw */
             /* the client's array: the range the draw reads, copied at its place from the start */
             uint32_t first = instanced ? 0 : lo, last = instanced ? (instances ? instances - 1 : 0) : hi;
             uint64_t from = (uint64_t)first * stride, end = (uint64_t)last * stride + attrib_bytes(a);
@@ -726,7 +727,7 @@ static bool vertex_inputs(Gles2Context* gl, GlesSlot* slot, const G2Program* p, 
             }
             VkDeviceSize at = gles_vk_arena_take(slot, &slot->vertices, end, 16, 4u << 20, 0);
             if (at == VK_WHOLE_SIZE) return false;
-            memcpy(slot->vertices.map + at + from, (const unsigned char*)(uintptr_t)a->pointer + from,
+            memcpy(slot->vertices.map + at + from, (const unsigned char*)(uintptr_t)pointer + from,
                    (size_t)(end - from));
             v->buffers[loc] = slot->vertices.buffer;
             v->offsets[loc] = at;
@@ -816,12 +817,13 @@ static VkDescriptorSet descriptor_set(Gles2Context* gl, GlesSlot* slot, G2Progra
                                                                       VK_IMAGE_VIEW_TYPE_2D};
                     VkImageAspectFlags aspect = gles2_aspect(t->format);
                     if (aspect & VK_IMAGE_ASPECT_DEPTH_BIT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-                    if (t->vk == VK_FORMAT_D24_UNORM_S8_UINT && t->format->kind == G2_STENCIL)
+                    if ((t->vk == VK_FORMAT_D24_UNORM_S8_UINT && t->format->kind == G2_STENCIL) ||
+                        (t->stencil_mode && (depth_aspect_of(t->vk) & VK_IMAGE_ASPECT_STENCIL_BIT)))
                         aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
                     view = gles2_texture_view(t, types[b->dim], t->base_level, levels, 0, t->layers, true, aspect);
                     const G2SamplerState* st = gles2_unit_sampler(gl, (unsigned)unit, t);
                     bool integer = t->format->kind == G2_INT || t->format->kind == G2_UINT ||
-                                   (t->format->kind >= G2_DEPTH && st->compare_mode == 0 && 0);
+                                   aspect == VK_IMAGE_ASPECT_STENCIL_BIT;
                     sampler = gles2_vk_sampler(st, integer);
                     layout = t->layout;
                 }
@@ -847,10 +849,12 @@ static VkDescriptorSet descriptor_set(Gles2Context* gl, GlesSlot* slot, G2Progra
                                                              p->default_ref[b->stage].offset, size};
                     continue;
                 }
-                unsigned point = b->kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK && b->first + k < G2_UBO_BINDINGS
-                                     ? p->block_binding[b->first + k]
-                                     : 0;
-                const G2IndexedBuffer* x = point < G2_UBO_BINDINGS ? &gl->uniform_buffers[point] : NULL;
+                bool uniform = b->kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK;
+                unsigned point = uniform ? (b->first + k < G2_UBO_BINDINGS ? p->block_binding[b->first + k] : 0)
+                                         : b->first + k;
+                const G2IndexedBuffer* x = uniform && point < G2_UBO_BINDINGS        ? &gl->uniform_buffers[point]
+                                           : !uniform && point < G2_SSBO_BINDINGS ? &gl->storage_buffers[point]
+                                                                                  : NULL;
                 G2Buffer* buffer = x ? gles2_buffer(x->buffer) : NULL;
                 G2Ref ref;
                 VkDeviceSize offset = 0;
@@ -875,8 +879,20 @@ static VkDescriptorSet descriptor_set(Gles2Context* gl, GlesSlot* slot, G2Progra
                 }
                 buffers[nb++] = (VkDescriptorBufferInfo){ref.buffer, offset, size};
             }
+        } else if (b->kind == SNX_GLSLC_REFLECT_IMAGE && !b->texel_buffer) {
+            if (ni + b->count > MAX_DESCRIPTORS) return VK_NULL_HANDLE;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            w.pImageInfo = &images[ni];
+            for (uint32_t k = 0; k < b->count; ++k) {
+                VkImageView view = gles2_image_unit(gl, b->first + k, b->dim);
+                if (!view) {
+                    gles2_warn(13, "an image uniform without a texture of its image unit: the draw is left out");
+                    return VK_NULL_HANDLE;
+                }
+                images[ni++] = (VkDescriptorImageInfo){VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
+            }
         } else {
-            gles2_warn(13, "images and texel buffers in shaders are not bound yet: the draw is left out");
+            gles2_warn(20, "texel buffers in shaders are not bound yet: the draw is left out");
             return VK_NULL_HANDLE;
         }
         writes[nw++] = w;
@@ -1005,8 +1021,10 @@ static uint32_t index_at(const unsigned char* p, unsigned type, uint32_t i) {
     return v;
 }
 
+/* a draw of count vertices (indices, with idx) from first, instances times; or the one an indirect buffer holds at
+   indirect_offset (GLES 3.1), which reads vertex and index buffers alone */
 static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, int32_t instances, Indices idx,
-                 int32_t base_vertex) {
+                 int32_t base_vertex, G2Buffer* indirect, uint64_t indirect_offset) {
     if (mode > GL_TRIANGLE_FAN_) {
         gles2_error(gl, GL_INVALID_ENUM_);
         return;
@@ -1017,7 +1035,7 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
     }
     G2Program* p = gles2_program(gl->program);
     GlesSurface* s = gles2_surface(gl);
-    if (!p || !p->linked || !p->modules[0] || !count || !instances || !s) return;
+    if (!p || !p->linked || !p->modules[0] || (!indirect && (!count || !instances)) || !s) return;
     if (!V.v13) return;
     if (!gles_frame_begin(s)) return;
     GlesSlot* slot = &s->slots[s->slot];
@@ -1025,7 +1043,12 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
     const unsigned char* bytes = NULL;
     uint32_t lo = (uint32_t)first, hi = (uint32_t)(first + count - 1);
     unsigned restart = idx.type == GL_UNSIGNED_BYTE_ ? 0xff : idx.type == GL_UNSIGNED_SHORT_ ? 0xffff : 0xffffffffu;
-    if (idx.type) {
+    if (indirect && (mode == GL_LINE_LOOP_ || (idx.type && !idx.buffer) ||
+                     (idx.type == GL_UNSIGNED_BYTE_ && !V.index_uint8))) {
+        gles2_warn(21, "an indirect draw of a line loop, client indices or bytes the device has no index type of");
+        return;
+    }
+    if (idx.type && !indirect) {
         bytes = idx.buffer ? gles2_buffer_bytes(idx.buffer) + idx.pointer : (const unsigned char*)(uintptr_t)idx.pointer;
         uint32_t size = type_bytes(idx.type);
         if (!bytes || (idx.buffer && idx.pointer + (uint64_t)count * size > idx.buffer->size)) {
@@ -1035,7 +1058,8 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
         /* the vertices a client array copies: the indices' range (a buffer's arrays need none) */
         bool clients = false;
         G2VertexArray* vao = gles2_vertex_array(gl);
-        for (int i = 0; i < G2_ATTRIBS; ++i) clients |= vao->attribs[i].enabled && !vao->attribs[i].buffer;
+        for (int i = 0; i < G2_ATTRIBS; ++i)
+            clients |= vao->attribs[i].enabled && !vao->bindings[vao->attribs[i].binding].buffer;
         lo = 0, hi = 0;
         if (clients) {
             lo = UINT32_MAX;
@@ -1059,7 +1083,7 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
     VkIndexType index_type = VK_INDEX_TYPE_UINT32;
     uint32_t draw_count = (uint32_t)count;
     bool loop = mode == GL_LINE_LOOP_ && count > 1;
-    if (loop || (idx.type == GL_UNSIGNED_BYTE_ && !V.index_uint8) || (idx.type && !idx.buffer)) {
+    if (!indirect && (loop || (idx.type == GL_UNSIGNED_BYTE_ && !V.index_uint8) || (idx.type && !idx.buffer))) {
         uint32_t n = (uint32_t)count + (loop ? 1 : 0);
         bool wide = loop || idx.type == GL_UNSIGNED_INT_ || idx.type == 0;
         uint32_t size = wide ? 4 : idx.type == GL_UNSIGNED_BYTE_ && V.index_uint8 ? 1 : 2;
@@ -1096,6 +1120,8 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
             return;
         }
     }
+    G2Ref command = {0};
+    if (indirect && !gles2_buffer_ref(slot, indirect, false, &command)) return;
     VkDescriptorSet set = descriptor_set(gl, slot, p);
     if (!set) return;
     if (!gles2_rendering_begin(gl)) return;
@@ -1122,11 +1148,11 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
         key.ops[0] = equation_code(gl->blend_eq[0]);
         key.ops[1] = equation_code(gl->blend_eq[1]);
     }
-    key.sample_mask = 0xffffffffu;
+    key.sample_mask = gl->sample_mask_on ? gl->sample_mask : 0xffffffffu;
     if (gl->sample_coverage && t->samples > 1) {
         uint32_t covered = (uint32_t)(gl->coverage_value * (float)t->samples + 0.5f);
-        key.sample_mask = covered >= 32 ? 0xffffffffu : (1u << covered) - 1;
-        if (gl->coverage_invert) key.sample_mask = ~key.sample_mask;
+        uint32_t coverage = covered >= 32 ? 0xffffffffu : (1u << covered) - 1;
+        key.sample_mask &= gl->coverage_invert ? ~coverage : coverage;
     }
     if (!V.depth_clip_control) gles2_warn(15, "the device has no VK_EXT_depth_clip_control: depth is [0, 1] of GL's");
     VkPipeline pl = pipeline(p, &key);
@@ -1144,7 +1170,11 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
         if (vertices.used & (1u << loc))
             V.vk.vkCmdBindVertexBuffers2(cb, loc, 1, &vertices.buffers[loc], &vertices.offsets[loc], NULL,
                                          &vertices.strides[loc]);
-    if (index_buffer) {
+    if (indirect) {
+        if (index_buffer) V.vk.vkCmdBindIndexBuffer(cb, index_buffer, index_offset, index_type);
+        if (index_buffer) V.vk.vkCmdDrawIndexedIndirect(cb, command.buffer, command.offset + indirect_offset, 1, 20);
+        else V.vk.vkCmdDrawIndirect(cb, command.buffer, command.offset + indirect_offset, 1, 16);
+    } else if (index_buffer) {
         V.vk.vkCmdBindIndexBuffer(cb, index_buffer, index_offset, index_type);
         V.vk.vkCmdDrawIndexed(cb, draw_count, (uint32_t)instances, 0, base_vertex, 0);
     } else {
@@ -1162,23 +1192,101 @@ static Indices indices_of(Gles2Context* gl, unsigned type, uint64_t pointer) {
 }
 
 static void g_draw_arrays(CPU* c, Gles2Context* gl) {
-    draw(gl, (unsigned)X(0), (int32_t)X(1), (int32_t)X(2), 1, (Indices){0}, 0);
+    draw(gl, (unsigned)X(0), (int32_t)X(1), (int32_t)X(2), 1, (Indices){0}, 0, NULL, 0);
 }
 static void g_draw_arrays_instanced(CPU* c, Gles2Context* gl) {
-    draw(gl, (unsigned)X(0), (int32_t)X(1), (int32_t)X(2), (int32_t)X(3), (Indices){0}, 0);
+    draw(gl, (unsigned)X(0), (int32_t)X(1), (int32_t)X(2), (int32_t)X(3), (Indices){0}, 0, NULL, 0);
 }
 static void g_draw_elements(CPU* c, Gles2Context* gl) {
     Indices i = indices_of(gl, (unsigned)X(2), X(3));
-    if (i.type) draw(gl, (unsigned)X(0), 0, (int32_t)X(1), 1, i, 0);
+    if (i.type) draw(gl, (unsigned)X(0), 0, (int32_t)X(1), 1, i, 0, NULL, 0);
 }
 static void g_draw_elements_instanced(CPU* c, Gles2Context* gl) {
     Indices i = indices_of(gl, (unsigned)X(2), X(3));
-    if (i.type) draw(gl, (unsigned)X(0), 0, (int32_t)X(1), (int32_t)X(4), i, 0);
+    if (i.type) draw(gl, (unsigned)X(0), 0, (int32_t)X(1), (int32_t)X(4), i, 0, NULL, 0);
 }
 /* glDrawRangeElements(mode, start, end, count, type, indices) */
 static void g_draw_range_elements(CPU* c, Gles2Context* gl) {
     Indices i = indices_of(gl, (unsigned)X(4), X(5));
-    if (i.type) draw(gl, (unsigned)X(0), 0, (int32_t)X(3), 1, i, 0);
+    if (i.type) draw(gl, (unsigned)X(0), 0, (int32_t)X(3), 1, i, 0, NULL, 0);
+}
+
+/* glDrawArraysIndirect(mode, indirect) and glDrawElementsIndirect(mode, type, indirect): the command in the draw
+   indirect buffer, at the offset indirect */
+static void g_draw_arrays_indirect(CPU* c, Gles2Context* gl) {
+    G2Buffer* b = gles2_buffer(gl->draw_indirect);
+    if (!b || X(1) + 16 > b->size || X(1) % 4) {
+        gles2_error(gl, GL_INVALID_OPERATION_);
+        return;
+    }
+    draw(gl, (unsigned)X(0), 0, 0, 0, (Indices){0}, 0, b, X(1));
+}
+static void g_draw_elements_indirect(CPU* c, Gles2Context* gl) {
+    G2Buffer* b = gles2_buffer(gl->draw_indirect);
+    if (!b || X(2) + 20 > b->size || X(2) % 4) {
+        gles2_error(gl, GL_INVALID_OPERATION_);
+        return;
+    }
+    Indices i = indices_of(gl, (unsigned)X(1), 0);
+    if (i.type) draw(gl, (unsigned)X(0), 0, 0, 0, i, 0, b, X(2));
+}
+
+/* ---- compute ---- */
+
+/* glDispatchCompute(x, y, z), or the counts the dispatch indirect buffer holds at offset: outside rendering, with
+   the writes before visible to the dispatch and its writes to what follows (GLES 3.1 asks a glMemoryBarrier for
+   those; one here costs little and keeps the GPU's order) */
+static void dispatch(Gles2Context* gl, uint32_t x, uint32_t y, uint32_t z, G2Buffer* indirect, uint64_t offset) {
+    G2Program* p = gles2_program(gl->program);
+    if (!p || !p->linked || !p->modules[2]) {
+        gles2_error(gl, GL_INVALID_OPERATION_);
+        return;
+    }
+    if (!V.v13) return;
+    GlesSlot* slot = gles2_transfer_slot(gl);
+    if (!slot) return;
+    if (!p->compute) {
+        VkComputePipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                            .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                      .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                                                      .module = p->modules[2],
+                                                      .pName = "main"},
+                                            .layout = p->layout};
+        if (V.vk.vkCreateComputePipelines(V.device, VK_NULL_HANDLE, 1, &info, NULL, &p->compute) != VK_SUCCESS) {
+            p->compute = VK_NULL_HANDLE;
+            gles2_warn(22, "Vulkan does not make a compute pipeline of a program");
+            return;
+        }
+    }
+    G2Ref command = {0};
+    if (indirect && !gles2_buffer_ref(slot, indirect, false, &command)) return;
+    VkDescriptorSet set = descriptor_set(gl, slot, p);
+    if (!set) return;
+    /* descriptor_set may have recorded copies (a texture made for a sampler): the slot's frame is the same */
+    VkCommandBuffer cb = slot->cb;
+    gles2_memory_barrier(cb);
+    V.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->compute);
+    V.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->layout, 0, 1, &set, 0, NULL);
+    if (indirect) V.vk.vkCmdDispatchIndirect(cb, command.buffer, command.offset + offset);
+    else V.vk.vkCmdDispatch(cb, x, y, z);
+    gles2_memory_barrier(cb);
+}
+static void g_dispatch_compute(CPU* c, Gles2Context* gl) {
+    uint32_t x = (uint32_t)X(0), y = (uint32_t)X(1), z = (uint32_t)X(2);
+    const uint32_t* max = V.props.limits.maxComputeWorkGroupCount;
+    if (x > max[0] || y > max[1] || z > max[2]) {
+        gles2_error(gl, GL_INVALID_VALUE_);
+        return;
+    }
+    if (x && y && z) dispatch(gl, x, y, z, NULL, 0);
+}
+static void g_dispatch_compute_indirect(CPU* c, Gles2Context* gl) {
+    G2Buffer* b = gles2_buffer(gl->dispatch_indirect);
+    if (!b || X(0) + 12 > b->size || X(0) % 4) {
+        gles2_error(gl, GL_INVALID_OPERATION_);
+        return;
+    }
+    dispatch(gl, 0, 0, 0, b, X(0));
 }
 
 /* ---- clears ---- */
@@ -1558,6 +1666,10 @@ const HleSymbol hle_gles2_draw[] = {
     FN("glDrawElementsInstanced", g_draw_elements_instanced),
     FN("glDrawElementsInstancedEXT", g_draw_elements_instanced),
     FN("glDrawElementsInstancedANGLE", g_draw_elements_instanced),
+    FN("glDrawArraysIndirect", g_draw_arrays_indirect),
+    FN("glDrawElementsIndirect", g_draw_elements_indirect),
+    FN("glDispatchCompute", g_dispatch_compute),
+    FN("glDispatchComputeIndirect", g_dispatch_compute_indirect),
     FN("glClear", g_clear),
     FN("glClearBufferfv", g_clear_bufferfv),
     FN("glClearBufferiv", g_clear_bufferiv),
