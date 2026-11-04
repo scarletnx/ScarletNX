@@ -175,9 +175,10 @@ VkImageAspectFlags vk_aspect(const VkFmt* f) {
 }
 /* the ASTC upload asks for its block rows in strips of 3: they land in astc_out, slice after slice */
 static u8 astc_out[128 << 10];
-int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, VkAstcRows rows,
-                   void* ctx) {
+int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, u32 layers,
+                   VkAstcRows rows, void* ctx) {
     (void)level, (void)layer;
+    if (layers > 1 && depth == 1) depth = layers; /* a 2D array's layers, asked for as slices */
     u32 nx = (w + t->f.bw - 1) / t->f.bw, ny = (h + t->f.bh - 1) / t->f.bh;
     for (u32 z = 0; z < depth; z++)
         for (u32 y = 0; y < ny; y += 3) {
@@ -739,6 +740,21 @@ int main(void) {
         for (u32 y = 0; y < 10; y++)
             for (u32 x = 0; x < 15 * 16; x++)
                 CHECK(astc_out[((z * 10 + y) * 15) * 16 + x] == guest[bl_offset(x, y, z, 15 * 16, 10, 1, 1)]);
+    /* the same level as a 2D array of 3 layers 64 KiB apart: asked for at once, each layer's block rows after the last
+       one's, each from its own layer */
+    Surf ka = tex(60, 37, 1, 1, 16, 1, 0, 1);
+    ka.f.bw = ka.f.bh = 4;
+    ka.f.conv = VKC_ASTC;
+    ka.layers = 3;
+    ka.type = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    ka.layer_size = 0x10000;
+    stage_used = nregs = 0;
+    memset(astc_out, 0, sizeof astc_out);
+    CHECK(tex_upload(&ka) && nregs == 0);
+    for (u32 z = 0; z < 3; z++)
+        for (u32 y = 0; y < 10; y++)
+            for (u32 x = 0; x < 15 * 16; x++)
+                CHECK(astc_out[((z * 10 + y) * 15) * 16 + x] == guest[z * 0x10000 + bl_offset(x, y, 0, 15 * 16, 10, 1, 0)]);
     /* a sparse texture's levels at least a tile in size have rows of whole tiles (tile_w). RGBA8 tiles of 128x128
        texels (8 GOBs across, blocks 16 high): 200 texels across (13 GOBs) take 16 at level 0, and levels 1 and 2 are
        narrower than a tile. Whole, in rows of blocks under 160 KiB (2 of them), and 8 GOB rows at a time under 64 KiB,

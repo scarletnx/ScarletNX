@@ -974,8 +974,9 @@ int vk_tc_convert_vi(VkCommandBuffer cb, u32 fmt, u32 w, u32 rows, VkBuffer in, 
 typedef int (*VkAstcRows)(void* ctx, VkCommandBuffer* cb, u32 z, u32 nz, u32 y, u32 n, VkBuffer* buf, u64* off);
 /* a level of ASTC encoded again as BC7 with this many texels or more takes the encoder's fast build (astc.c) */
 #define VK_BC7_FAST_TEXELS (2048u * 2048u)
-int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, VkAstcRows rows,
-                   void* ctx);
+/* layers: more than 1, that level of layers layers from layer on, a 2D array's (depth 1), which rows gives as slices */
+int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, u32 layers,
+                   VkAstcRows rows, void* ctx);
 /* the image levels uploaded as BC7 so far, their bytes, and the bytes they would have taken as RGBA8 */
 void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes);
 

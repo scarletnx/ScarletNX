@@ -269,6 +269,21 @@ static int level_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32
                (size_t)n * l->nx * 16);
     return 1;
 }
+/* each level of an array's layers uploaded at once, as texture.c uploads an array's ASTC levels (vk_astc_upload's
+   layers): the layers' blocks one after another, as a volume's slices */
+static int g_batch_layers;
+static void upload_layers(Surf* t, u8** blocks, u32 w, u32 h, u32 layers, u32 levels, u32 bw, u32 bh) {
+    for (u32 l = 0; l < levels; l++) {
+        u32 lw = w >> l ? w >> l : 1, lh = h >> l ? h >> l : 1, nx = (lw + bw - 1) / bw, ny = (lh + bh - 1) / bh;
+        size_t one = (size_t)nx * ny * 16;
+        u8* all = malloc(one * layers);
+        for (u32 layer = 0; layer < layers; layer++) memcpy(all + one * layer, blocks[layer * levels + l], one);
+        Level lv = {all, nx, ny, NULL, 2, 0};
+        if (!vk_astc_upload(vk_cmd(), t, lw, lh, 1, l, 0, layers, level_rows, &lv)) fatal("layers upload failed\n");
+        free(all);
+    }
+}
+
 static int g_bl_source; /* run's blocks come block linear */
 
 static void barrier(VkImage img, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src, VkImageLayout from,
@@ -350,10 +365,13 @@ static void run(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layers, u
                             memcpy(bl + ref_bl(x * 16, y, z, lv.nx * 16, lv.ny, lv.bh, lv.bd),
                                    b + (((size_t)z * lv.ny + y) * lv.nx + x) * 16, 16);
             }
-            if (!vk_astc_upload(vk_cmd(), &t, lw, lh, ld, l, layer, level_rows, &lv)) fatal("upload failed\n");
+            if (!(g_batch_layers && layers > 1 && depth == 1) &&
+                !vk_astc_upload(vk_cmd(), &t, lw, lh, ld, l, layer, 1, level_rows, &lv))
+                fatal("upload failed\n");
             free(bl); /* copied into staging already */
             bytes += (size_t)lw * lh * ld * 4;
         }
+    if (g_batch_layers && layers > 1 && depth == 1) upload_layers(&t, blocks, w, h, layers, levels, bw, bh);
     if (grow) {
         VkBuffer ignored;
         u64 off;
@@ -438,8 +456,11 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
             u32 lw = w >> l ? w >> l : 1, lh = h >> l ? h >> l : 1, ld = depth >> l ? depth >> l : 1;
             u8* b = blocks[layer * levels + l] = blocks_new(lw, lh, ld, bw, bh);
             Level lv = {b, (lw + bw - 1) / bw, (lh + bh - 1) / bh, NULL, 2, ld > 1};
-            if (!vk_astc_upload(vk_cmd(), &t, lw, lh, ld, l, layer, level_rows, &lv)) fatal("BC7 upload failed\n");
+            if (!(g_batch_layers && layers > 1 && depth == 1) &&
+                !vk_astc_upload(vk_cmd(), &t, lw, lh, ld, l, layer, 1, level_rows, &lv))
+                fatal("BC7 upload failed\n");
         }
+    if (g_batch_layers && layers > 1 && depth == 1) upload_layers(&t, blocks, w, h, layers, levels, bw, bh);
     barrier(t.img, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     for (u32 layer = 0; layer < layers; layer++)
@@ -510,7 +531,7 @@ static void bench(u32 w, u32 h, int runs) {
         for (int r = 0; r < runs; r++) {
             Level lv = {b, (w + 7) / 8, (h + 7) / 8, NULL, 2, 0};
             u64 t0 = plat_ns();
-            if (!vk_astc_upload(vk_cmd(), &t, w, h, 1, 0, 0, level_rows, &lv)) fatal("bench upload failed\n");
+            if (!vk_astc_upload(vk_cmd(), &t, w, h, 1, 0, 0, 1, level_rows, &lv)) fatal("bench upload failed\n");
             vk_finish();
             double s = (plat_ns() - t0) / 1e9;
             printf("BENCH %s %ux%u: %.1f ms, %.0f Mtexels/s\n", fi ? "ASTC 8x8 as BC7" : "ASTC 8x8 as RGBA8", w, h,
@@ -948,6 +969,15 @@ int main(int argc, char** argv) {
     run_bc7(5, 5, 0, 2051, 1101, 1, 1, 1);
     /* a level of VK_BC7_FAST_TEXELS: the fast build, mode 6 alone */
     run_bc7(8, 8, 1, 2048, 2048, 1, 1, 1);
+    /* arrays' layers uploaded a level at a time, all of them at once (texture.c's ASTC arrays): RGBA8 and BC7, strips
+       stepping 1, 2 and 4 block rows */
+    g_batch_layers = 1;
+    run(6, 6, 0, 17, 13, 1, 6, 5, 0, NULL, NULL);
+    run(4, 4, 1, 97, 61, 1, 5, 3, 0, NULL, NULL);
+    run_bc7(6, 6, 0, 17, 13, 1, 6, 5);
+    run_bc7(5, 5, 1, 97, 61, 1, 4, 2);
+    run_bc7(8, 8, 0, 96, 96, 1, 144, 3);
+    g_batch_layers = 0;
     /* Multiple scratch chunks, staging-ring retirement, and frame reuse. */
     run(4, 4, 0, 2051, 1055, 1, 1, 1, 1, NULL, NULL);
     run(12, 12, 1, 2051, 1055, 1, 1, 1, 0, NULL, NULL);

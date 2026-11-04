@@ -186,12 +186,15 @@ static int stage_bl(const VkBlMove* m, u64 gva, u64 lsz, VkBuffer* buf, u64* off
     return 1;
 }
 
-/* one level of one layer in guest memory, for vk_astc_upload to ask for its block rows */
+/* one level of one layer in guest memory, for vk_astc_upload to ask for its block rows; with layers, that level of
+   each of layers layers, layer_size bytes apart, which vk_astc_upload asks for as slices */
 typedef struct {
     Surf* t;
     u64 gva;
     u64 lsz;
     u32 rowb, th, lbh, lbd, gobs_x;
+    u32 layers;
+    u64 layer_size;
 } LevelSource;
 /* A guest read while staging lands GPU results, and landing can submit the frame's command buffer: the upload's
    commands then belong to the one recording after it, with the image's transfer use established there again */
@@ -206,6 +209,35 @@ static VkCommandBuffer upload_cb(Surf* t, VkCommandBuffer cb) {
    a row at a time */
 static int astc_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32 n, VkBuffer* buf, u64* off) {
     LevelSource* l = ctx;
+    if (l->layers > 1 && l->t->bl) { /* rows y to y + n of layers z to z + nz, one after another */
+        VkBlMove m = {l->rowb, l->th, l->lbh, l->lbd, y, n, 0, 1, l->rowb, l->gobs_x};
+        u64 cap;
+        *buf = vk_bl_scratch((u64)l->rowb * n * nz, &cap);
+        *off = 0;
+        if (!*buf) return 0;
+        VkCommandBuffer cb = *pcb = upload_cb(l->t, *pcb);
+        vk_bl_barrier(cb, 1);
+        for (u32 k = 0; k < nz; k++) {
+            VkBuffer staged;
+            u64 at;
+            if (!stage_bl(&m, l->gva + (u64)(z + k) * l->layer_size, l->lsz, &staged, &at) ||
+                !vk_bl_move(cb, &m, 0, staged, at, *buf, (u64)k * l->rowb * n))
+                return 0;
+        }
+        vk_bl_barrier(cb, 0);
+        return 1;
+    }
+    if (l->layers > 1) {
+        u8* p = vk_stage((u64)l->rowb * n * nz, vk_stage_align(), buf, off);
+        if (!p) return 0;
+        for (u32 k = 0; k < nz; k++)
+            for (u32 r = 0; r < n; r++) {
+                u64 at = (u64)(z + k) * l->layer_size + (u64)(y + r) * l->t->pitch, to = ((u64)k * n + r) * l->rowb;
+                vk_guest_read(l->gva + at, l->rowb, p + to, *buf, *off + to);
+            }
+        *pcb = upload_cb(l->t, *pcb);
+        return 1;
+    }
     if (l->t->bl) {
         VkBlMove m = {l->rowb, l->th, l->lbh, l->lbd, y, n, z, nz, l->rowb, l->gobs_x}; /* 16 byte blocks: whole runs */
         VkBuffer staged;
@@ -581,6 +613,9 @@ static int tex_upload_(Surf* t) {
     u64 band = g_vk.alloc_cap < TEX_BAND ? g_vk.alloc_cap : TEX_BAND;
     int complete = 1;
     Upload u = {.cb = cb, .t = t};
+    /* the ASTC levels of a 2D array's layers decoded together, a level at a time, with its first layer: an upload of
+       one game's 144 layers of 96x96 in 7 levels was a thousand dispatches and copies of one row of blocks each */
+    const int astc_layers = f->conv == VKC_ASTC && !t->sparse && !is3d && layers > 1;
     for (u32 layer = 0; layer < layers && complete; layer++) {
         u64 at = layer * t->layer_size;
         for (u32 l = 0; l < t->levels && complete; l++) {
@@ -597,10 +632,15 @@ static int tex_upload_(Surf* t) {
                 at += lsz;
                 continue;
             }
+            if (f->conv == VKC_ASTC && astc_layers && layer) { /* decoded with the first layer's */
+                at += lsz;
+                continue;
+            }
             if (f->conv == VKC_ASTC) { /* decoded on the GPU from its block rows, deswizzled on the GPU */
                 complete = up_flush(&u);
-                LevelSource ls = {t, t->gva + at, lsz, rowb, th, lbh, lbd, gobs_x};
-                complete = complete && vk_astc_upload(u.cb, t, lw, lh, ld, l, layer, astc_rows, &ls);
+                LevelSource ls = {t, t->gva + at, lsz, rowb, th, lbh, lbd, gobs_x, astc_layers ? layers : 1,
+                                  t->layer_size};
+                complete = complete && vk_astc_upload(u.cb, t, lw, lh, ld, l, layer, ls.layers, astc_rows, &ls);
                 u.scratch = VK_NULL_HANDLE; /* astc_rows may have grown the scratch buffer: asked for again */
                 u.cap = 0;
             } else {

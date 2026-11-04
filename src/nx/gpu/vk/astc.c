@@ -211,8 +211,11 @@ static VkDescriptorSet two_buffers(VkBuffer in, u64 in_off, u64 in_size, VkBuffe
     return set;
 }
 
-int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, VkAstcRows rows,
-                   void* ctx) {
+int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, u32 layers,
+                   VkAstcRows rows, void* ctx) {
+    /* layers of a 2D array: decoded as the slices of a volume are, each strip of them copied at once */
+    const int as_layers = layers > 1 && depth == 1;
+    if (as_layers) depth = layers;
     astc_init();
     const int bc7 = t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK;
     if (bc7) bc7_init();
@@ -300,7 +303,8 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 lev
                 scratch_barrier(cb, g_astc_scratch, USE_WRITE, 0, USE_READ);
                 scratch_barrier(cb, g_bc7_scratch, USE_COPY, 0, USE_WRITE);
                 rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    (u64)w * h * depth >= VK_BC7_FAST_TEXELS ? g_bc7_fast_pipe : g_bc7_pipe);
+                                    (u64)w * h * (as_layers ? 1 : depth) >= VK_BC7_FAST_TEXELS ? g_bc7_fast_pipe
+                                                                                              : g_bc7_pipe);
                 rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bc7_layout, 0, 1, &set7, 0, NULL);
                 Bc7Params q = {w, height, cx, cy};
                 rec_CmdPushConstants(cb, g_bc7_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof q, &q);
@@ -314,11 +318,12 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 lev
             } else {
                 scratch_barrier(cb, g_astc_scratch, USE_WRITE, 0, USE_COPY);
             }
-            VkBufferImageCopy copy = {.bufferRowLength = row_texels,
-                                      .bufferImageHeight = image_rows,
-                                      .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1},
-                                      .imageOffset = {0, (i32)(y * bh), (i32)z},
-                                      .imageExtent = {w, height, nz}};
+            VkBufferImageCopy copy = {
+                .bufferRowLength = row_texels,
+                .bufferImageHeight = image_rows,
+                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, as_layers ? layer + z : layer, as_layers ? nz : 1},
+                .imageOffset = {0, (i32)(y * bh), as_layers ? 0 : (i32)z},
+                .imageExtent = {w, height, as_layers ? 1 : nz}};
             rec_CmdCopyBufferToImage(cb, from, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
         }
     }
