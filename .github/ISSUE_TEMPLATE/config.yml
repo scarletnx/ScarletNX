@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and help
+    url: https://discord.gg/tRTRXXbyjp
+    about: A build, a setting or a game that needs a hand before it becomes a report.
+  - name: Report a security problem privately
+    url: https://github.com/scarletnx/ScarletNX/security/advisories/new
+    about: Not in an issue, and with nothing of a game attached.

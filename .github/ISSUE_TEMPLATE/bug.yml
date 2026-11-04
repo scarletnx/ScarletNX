@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# A problem of the runtime itself, not of one game: the launcher, a driver, the recompiler, a service, the build.
+name: Bug
+description: ScarletNX itself does something wrong, not one game
+title: '[bug] '
+labels: ['kind: bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. This form is for the runtime, the launcher, a driver or the build. A game that
+        doesn't start, crashes or looks wrong has its own form: [Game report](?template=game-report.yml).
+
+        Attach nothing of a game: no keys, dumps, ROMs or game files.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you did, what you saw, and what you expected instead. A command line or a click path is ideal.
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build
+      description: The build from the launcher's About page, or the `build:` line of a log.
+      placeholder: ScarletNX main 0123abcd (clang 20.1.0, Linux x86_64)
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System and GPU
+      description: The system, its version, and the GPU and driver. A log's `system:` line has all of them.
+      placeholder: Fedora 43, Radeon RX 9070 XT, RADV (Mesa 25.2)
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        Drag the log here. In the launcher, Share log saves one with the last run's output. `--log=2` adds the
+        detail a report usually needs. A log over 25 MB can be zipped or gzipped first.
+      placeholder: Drop the .log, .zip or .gz file here
+  - type: checkboxes
+    id: nothing
+    attributes:
+      label: Nothing of a game
+      options:
+        - label: The report attaches no key, dump, ROM or game file.
+          required: true
