@@ -12,6 +12,7 @@
 #include "nx/gpu/nvn/nvn_state.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "common/filesystem/host.h" /* PMutex */
+#include "snx_settings.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -722,6 +723,18 @@ int main(void) {
         check(!strcmp(g_log,
                       "nvn: program 4c400 isn't initialized as it is bound (stages 0x1f, called from 1008a0251c)\n"),
               "the log names the program, its stages and the call's return");
+        /* at log level 2 every one, past the 4 the default level says: when they stop, the game binds it no more */
+        g_settings.log_level = 2;
+        nvn_CommandBufferBeginRecording(&cpu, cbp);
+        for (int i = 0; i < 6; i++) {
+            g_log[0] = 0;
+            nvn_CommandBufferBindProgram(&cpu, cbp, program + 0x100 * (u64)i, 0x1f);
+        }
+        nvn_CommandBufferEndRecording(&cpu, cbp);
+        check(!strcmp(g_log,
+                      "nvn: program 4c900 isn't initialized as it is bound (stages 0x1f, called from 1008a0251c)\n"),
+              "at log level 2 the sixth bind of a program not initialized yet is said too");
+        g_settings.log_level = 1;
         cpu.x[30] = 0x1234;
     }
     if (failures) return 1;
