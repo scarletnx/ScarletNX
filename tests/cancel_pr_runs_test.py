@@ -3,14 +3,19 @@
 # Copyright 2026 the ScarletNX contributors
 """scripts/cancel-pr-runs.py's choice of the runs a closed pull request left going, then the script against
 tests/fake_github.py's gh: a pull request still closed has them cancelled, one reopened seconds after its close keeps
-them, and its runs cancelled already since the close are named. Offline."""
+them, and its runs cancelled already since the close are named. The script runs in this process with its gh calls sent
+to the fake through this Python, as Windows starts no script by its name. Offline."""
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import traceback
+import types
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -86,10 +91,8 @@ def going(id, status='in_progress', conclusion=None, created='2026-11-04T04:40:0
 
 with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary)
-    bin_dir = root / 'bin'
-    bin_dir.mkdir()
-    (bin_dir / 'gh').write_text(FAKE_GH)
-    (bin_dir / 'gh').chmod(0o755)
+    fake_gh = root / 'gh.py'
+    fake_gh.write_text(FAKE_GH)
     state_file, log_file = root / 'state.json', root / 'gh.log'
 
     def start(pr_state, runs, **extra):
@@ -99,23 +102,39 @@ with tempfile.TemporaryDirectory() as temporary:
         log_file.write_text('')
 
     def script(*extra):
-        env = dict(
-            os.environ,
-            PATH=f'{bin_dir}{os.pathsep}{os.environ["PATH"]}',
-            FAKE_GH_STATE=str(state_file),
-            FAKE_GH_LOG=str(log_file),
-        )
-        return subprocess.run(
-            [sys.executable, str(SCRIPT), '1137', 'scarletnx/ScarletNX', 'feature', '--closed-at', CLOSED, *extra],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
+        """the script's main with its gh calls going to the fake: its exit status and what it printed"""
+        env = dict(os.environ, FAKE_GH_STATE=str(state_file), FAKE_GH_LOG=str(log_file))
+
+        def gh(*args):
+            done = subprocess.run(
+                [sys.executable, str(fake_gh), *args], capture_output=True, text=True, env=env, check=False
+            )
+            if done.returncode:
+                raise subprocess.CalledProcessError(done.returncode, ['gh', *args], done.stdout, done.stderr)
+            return done.stdout
+
+        served = len(log_file.read_text().splitlines())
+        out, err = io.StringIO(), io.StringIO()
+        real, argv = cancel.gh, sys.argv
+        cancel.gh = gh
+        sys.argv = [str(SCRIPT), '1137', 'scarletnx/ScarletNX', 'feature', '--closed-at', CLOSED, *extra]
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cancel.main()
+        except SystemExit as e:  # argparse's
+            code = e.code
+        except (subprocess.CalledProcessError, ValueError, KeyError):  # as it ends run on its own: 1 and the traceback
+            code = 1
+            err.write(traceback.format_exc())
+        finally:
+            cancel.gh, sys.argv = real, argv
+        # a gh that is not the fake would leave its state as it was, and every case after it meaningless
+        check(f'the fake served the run with {list(extra)}', len(log_file.read_text().splitlines()) > served, True)
+        return types.SimpleNamespace(returncode=code, stdout=out.getvalue(), stderr=err.getvalue())
 
     def ended(id):
-        found = next(r for r in json.loads(state_file.read_text())['runs'] if r['id'] == id)
-        return found['status'], found['conclusion']
+        found = next((r for r in json.loads(state_file.read_text())['runs'] if r['id'] == id), None)
+        return (found['status'], found['conclusion']) if found else (f'no run {id} in the fake', None)
 
     def writes():
         return [c['args'] for c in map(json.loads, log_file.read_text().splitlines()) if '-X' in c['args']]
