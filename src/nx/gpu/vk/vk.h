@@ -1047,12 +1047,21 @@ typedef struct {
     VkBuffer buf;
     u64 off, range;
 } VkDrawGbuf;
+/* a draw's global memory, by the stage that reads it: vertex, the two tessellation stages, geometry, fragment (ST_VS
+   to ST_FS) */
+#define VK_DRAW_STAGES 5
 typedef struct {
-    VkDrawGbuf b[2][16];
-    int n[2];
-    VkBuffer map_buf[2];
-    u64 map_off[2], map_size[2];
+    VkDrawGbuf b[VK_DRAW_STAGES][16];
+    int n[VK_DRAW_STAGES];
+    VkBuffer map_buf[VK_DRAW_STAGES];
+    u64 map_off[VK_DRAW_STAGES], map_size[VK_DRAW_STAGES];
 } VkDrawStorage;
+/* whether any stage of the draw reads or writes global memory */
+static inline int vk_draw_storage_any(const VkDrawStorage* draw) {
+    for (int s = 0; s < VK_DRAW_STAGES; s++)
+        if (draw->n[s]) return 1;
+    return 0;
+}
 int vk_buf_draw_has_alias(const VkDrawStorage* draw);
 int vk_buf_draw_prepare(VkDrawStorage* draw);
 void vk_buf_writable_abort(void);

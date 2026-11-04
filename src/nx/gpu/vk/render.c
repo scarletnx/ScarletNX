@@ -1690,12 +1690,13 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
     return 1;
 }
 
-static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* vs, VkSh* fs) {
-    VkSh* sh[2] = {vs, fs};
+/* the global memory each stage of the draw reads or writes, sh[] by stage (vertex, the tessellation stages, geometry,
+   fragment) */
+static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* const sh[VK_DRAW_STAGES]) {
     memset(draw, 0, sizeof *draw);
-    for (int s = 0; s < 2; s++) {
+    for (int s = 0; s < VK_DRAW_STAGES; s++) {
         if (!sh[s]) continue;
-        int stage = s ? 4 : 0;
+        int stage = s;
         u64 cb0 = ds_cb_inline(ds, stage, 0).bytes ? 0 : ds->bind.cb_addr[stage][0];
         draw->n[s] = sh[s]->si.ngbuf < 16 ? sh[s]->si.ngbuf : 16;
         if (cb0 && draw->n[s]) vk_buf_mem_need(cb0, 0x610);
@@ -1784,7 +1785,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     }
     int ordered = !(ds->owner & 0x80000000u) || !g_settings.nvn_storage_ordering;
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
-        const VkDrawGbuf* gb = &draw->b[stage ? 1 : 0][i];
+        const VkDrawGbuf* gb = &draw->b[stage][i];
         u64 addr = gb->addr;
         u32 size = gb->size;
         u64 sa = g_vk.props.limits.minStorageBufferOffsetAlignment; /* an earlier draw's result is read in place */
@@ -1799,8 +1800,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o, gb->aliased ? gb->range : size);
     }
     if (s->si.ngbuf)
-        dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, draw->map_buf[stage ? 1 : 0],
-                  draw->map_off[stage ? 1 : 0], draw->map_size[stage ? 1 : 0]);
+        dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, draw->map_buf[stage], draw->map_off[stage],
+                  draw->map_size[stage]);
     VkBuffer cb;
     u64 co;
     if (stage == 4 && frame_consts(&cb, &co))
@@ -2957,7 +2958,8 @@ retry:
         }
     /* nothing drawn to, captured or stored. A program's stores to memory or images still run in a pass without
        attachments: a per-pixel pass may set every target's format to 0 and keep only what it stores */
-    int stores = vs->si.gbuf_wmask || vs->si.nimg || (fs && (fs->si.gbuf_wmask || fs->si.nimg));
+    int stores = vs->si.gbuf_wmask || vs->si.nimg || (fs && (fs->si.gbuf_wmask || fs->si.nimg)) ||
+                 (tcs && tcs->si.gbuf_wmask) || (tes && tes->si.gbuf_wmask) || (gs && gs->si.gbuf_wmask);
     if (!n && !zt && !xfb_on && !stores) {
         g_vk_skipped++;
         return;
@@ -3108,13 +3110,14 @@ retry:
     if (fs) cb_prefetch(ds, 4, fs, 1);
     if (!dc->indirect) draw_indices_prefetch(&ds->index, indexed, first, count, 1);
     VkDrawStorage storage;
-    draw_storage_read(ds, &storage, vs, fs);
-    int alias = storage.n[0] || storage.n[1] ? vk_buf_draw_has_alias(&storage) : 0;
+    VkSh* const staged[VK_DRAW_STAGES] = {vs, tcs, tes, gs, fs};
+    draw_storage_read(ds, &storage, staged);
+    int alias = vk_draw_storage_any(&storage) ? vk_buf_draw_has_alias(&storage) : 0;
     if (alias < 0) {
         g_vk_skipped++;
         return;
     }
-    if ((storage.n[0] || storage.n[1]) && !vk_buf_draw_prepare(&storage)) {
+    if (vk_draw_storage_any(&storage) && !vk_buf_draw_prepare(&storage)) {
         g_vk_skipped++;
         return;
     }
@@ -3133,8 +3136,12 @@ retry:
     for (b = 0; b < 3; b++) {
         bset[b] = VK_NULL_HANDLE;
         if (!between[b]) continue;
-        if (between[b]->si.ngbuf || between[b]->si.nimg) { /* global memory and images are read in VS and FS */
-            LOG_LIMIT(1, "vulkan: a tessellation or geometry program uses global memory or images (draw skipped)\n");
+        if (between[b]->si.nimg) { /* storage images are bound in the vertex and fragment stages' sets only */
+            static const char* const name[3] = {"tessellation control", "tessellation evaluation", "geometry"};
+            LOG_LIMIT(4,
+                      "vulkan: the %s program %016llx uses %d storage images, which only the vertex and fragment "
+                      "stages bind: its draws are skipped\n",
+                      name[b], (unsigned long long)between[b]->hash, between[b]->si.nimg);
             bset_ok = 0;
             break;
         }
