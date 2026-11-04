@@ -2,6 +2,7 @@
 // Copyright 2026 the ScarletNX contributors
 package org.scarletnx;
 
+import android.annotation.TargetApi;
 import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
@@ -15,6 +16,8 @@ import android.webkit.MimeTypeMap;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 /** The data folder (src/gui/android.c: .scarletnx in the app's own files) in the system's Files app and its pickers,
     which show nothing of an app's own storage otherwise. A document's ID is its path in the folder after "data/"
@@ -161,6 +164,23 @@ public class DataProvider extends DocumentsProvider {
         } catch (FileNotFoundException e) {
             return false;
         }
+    }
+
+    /** the IDs of each folder from parent (the root when null) down to id: the Files app opens a folder of the data
+        there (MainActivity.openFolder), and on its own default place, Downloads, without them */
+    @TargetApi(26)
+    @Override
+    public DocumentsContract.Path findDocumentPath(String parent, String id) throws FileNotFoundException {
+        String from = idOf(fileOf(parent != null ? parent : ROOT)), to = idOf(fileOf(id));
+        if (!to.equals(from) && !to.startsWith(from + "/")) throw new FileNotFoundException(id + " is not in " + from);
+        List<String> ids = new ArrayList<>();
+        ids.add(from);
+        for (int at = from.length(); at < to.length();) {
+            int next = to.indexOf('/', at + 1);
+            at = next < 0 ? to.length() : next;
+            ids.add(to.substring(0, at));
+        }
+        return new DocumentsContract.Path(parent != null ? null : ROOT, ids);
     }
 
     @Override

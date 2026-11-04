@@ -42,16 +42,21 @@ int main(void) {
     assert(snx_a32_decode(0xee070fba) == SNX_A32_COPROC);
     assert(snx_a32_decode_profile((SnxArmProfile)99, 0xe1a00000) == SNX_A32_UNDEFINED);
     /* ARM7TDMI: A57's decoder, but for an MSR that writes the control or extension byte, a mode switch the AGB board
-       runs (msr cpsr_c, #0xd2; msr cpsr_fc, r0); the flags alone stay an MSR (msr cpsr_f, r0) */
+       runs (msr cpsr_c, #0xd2; msr cpsr_fc, r0), the flags alone staying an MSR (msr cpsr_f, r0); and the NV condition,
+       which never holds on ARMv4: those words run as nothing (later cores' CPS, ARMv5's BLX) */
     assert(snx_a32_decode(0xe321f0d2) == SNX_A32_MSR && snx_a32_decode(0xe129f000) == SNX_A32_MSR);
     assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xe321f0d2) == SNX_A32_UNDEFINED);
     assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xe129f000) == SNX_A32_UNDEFINED);
     assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xe128f000) == SNX_A32_MSR);
+    assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xf1000000) == SNX_A32_HINT);
+    assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xfa000003) == SNX_A32_HINT);
     uint32_t state = 1234;
     for (unsigned i = 0; i < 100000; ++i) {
         state = state * 1664525u + 1013904223u;
         assert(snx_a32_decode_profile(SNX_ARM_PROFILE_A57, state) == snx_a32_decode(state));
-        if (snx_a32_decode(state) != SNX_A32_MSR || !((state >> 16) & 3))
+        if ((state >> 28) == 15)
+            assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, state) == SNX_A32_HINT);
+        else if (snx_a32_decode(state) != SNX_A32_MSR || !((state >> 16) & 3))
             assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, state) == snx_a32_decode(state));
     }
     for (unsigned i = 0; i <= 65535; ++i) {
@@ -77,6 +82,8 @@ int main(void) {
                 assert(z == 1 && c.shape == TH_LEGACY_BL);
             else if ((i & 0xf800) == 0x4800)
                 assert(z == 1 && c.shape == TH_LOAD && c.rn == 15);
+            else if ((i & 0xff80) == 0x4700) /* BX takes no notice of bits 2 to 0 */
+                assert(z == 1 && c.shape == TH_BRANCH && c.op == BR_BX && c.rm == ((i >> 3) & 15));
             else
                 assert(z == x && (!z || !memcmp(&a, &c, sizeof a))); /* a refusal leaves A57's partly filled */
         }
@@ -97,6 +104,7 @@ int main(void) {
     assert(!snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xbf08, 0, &t));     /* IT EQ */
     assert(!snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xbf00, 0, &t));     /* NOP */
     assert(snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0x4708, 0, &t) == 1); /* BX r1 */
+    assert(snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0x4775, 0, &t) == 1 && t.op == BR_BX && t.rm == 14);
     assert(snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xb510, 0, &t) == 1 && t.shape == TH_PUSHPOP);
     puts("ARM11 and ARM7TDMI profiles and unchanged default decoder witnesses passed");
     /* The Cortex-A9's stores with writeback into the register they store (llvm-mc -mcpu=cortex-a9, which warns that

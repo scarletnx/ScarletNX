@@ -7,6 +7,7 @@
 * [Keys](#keys)
 * [Building](#building)
   * [Signing](#signing)
+  * [Tests](#tests)
 
 The app is the [GUI](GUI.md) and the runtime, each in SDL's activity (`dist/android`): the menu extracts and
 recompiles on the phone, then the game opens.
@@ -129,3 +130,19 @@ shared storage stays.
 
 The Android emulator runs it on an x86_64 image; `-gpu swiftshader_indirect` gives it SwiftShader's Vulkan 1.3. Its
 ARM translation runs the arm64 build too (an APK with arm64 alone, or an arm64 program from `adb shell`), slowly.
+
+### Tests
+
+The app's unit tests (`dist/android/src/test`) run on the computer, from the stage `android-apk.sh` made: the app's
+classes build against SDL's Java there.
+
+```sh
+gradle -p dist/android testDebugUnitTest -Pscarletnx.stage=$HOME/android-build/stage
+```
+
+JUnit alone checks what needs nothing of Android: the setting a maker's phone gets, that each method the native code
+calls by name is in the app and that each native method is in the native code. Robolectric runs the rest on Android's
+own classes: the data folder's provider, what the menu hands the Files app and the share sheet, a game's arguments and
+the recompile's notification. Its first run fetches those classes for the app's `targetSdk` from Maven Central (about
+210 MB, into `~/.m2`). The CI runs the tests at the end of its Android job: one that fails fails the job, with the APKs
+already uploaded.

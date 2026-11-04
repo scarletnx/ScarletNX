@@ -424,8 +424,22 @@ static const AgbBiosCall calls[] = {
     {AGB_SWI_DIFF_8BIT_UNFILTER_VRAM, "Diff8bitUnFilterVram", 0},
     {AGB_SWI_DIFF_16BIT_UNFILTER, "Diff16bitUnFilter", 0},
     {AGB_SWI_SOUND_BIAS, "SoundBias", 1},
+    /* the BIOS's sound driver (the games' own players run without it): stubs, as mGBA's HLE BIOS has them */
+    {AGB_SWI_SOUND_DRIVER_INIT, "SoundDriverInit", 1},
+    {AGB_SWI_SOUND_DRIVER_MODE, "SoundDriverMode", 1},
+    {AGB_SWI_SOUND_DRIVER_MAIN, "SoundDriverMain", 1},
+    {AGB_SWI_SOUND_DRIVER_VSYNC, "SoundDriverVSync", 1},
+    {AGB_SWI_SOUND_CHANNEL_CLEAR, "SoundChannelClear", 1},
     {AGB_SWI_MIDI_KEY_2_FREQ, "MidiKey2Freq", 0},
-    {AGB_SWI_SOUND_DRIVER_GET_JUMP_LIST, "SoundDriverGetJumpList", 1},
+    {AGB_SWI_MUSIC_PLAYER_OPEN, "MusicPlayerOpen", 1},
+    {AGB_SWI_MUSIC_PLAYER_START, "MusicPlayerStart", 1},
+    {AGB_SWI_MUSIC_PLAYER_STOP, "MusicPlayerStop", 1},
+    {AGB_SWI_MUSIC_PLAYER_CONTINUE, "MusicPlayerContinue", 1},
+    {AGB_SWI_MUSIC_PLAYER_FADE_OUT, "MusicPlayerFadeOut", 1},
+    {AGB_SWI_MULTI_BOOT, "MultiBoot", 0},
+    {AGB_SWI_SOUND_DRIVER_VSYNC_OFF, "SoundDriverVSyncOff", 1},
+    {AGB_SWI_SOUND_DRIVER_VSYNC_ON, "SoundDriverVSyncOn", 1},
+    {AGB_SWI_SOUND_DRIVER_GET_JUMP_LIST, "SoundDriverGetJumpList", 0},
     {AGB_SWI_SOUND_DRIVER_GET_VERSION, "SoundDriverGetVersion", 1},
 };
 
@@ -460,6 +474,13 @@ int agb_bios_call(AgbBoard* board, uint32_t swi, uint32_t regs[16]) {
         case AGB_SWI_DIFF_8BIT_UNFILTER_VRAM: bios_diff_unfilter(board, regs, 1, 2); break;
         case AGB_SWI_DIFF_16BIT_UNFILTER: bios_diff_unfilter(board, regs, 2, 2); break;
         case AGB_SWI_MIDI_KEY_2_FREQ: bios_midi_key_to_freq(board, regs); break;
+        case AGB_SWI_MULTI_BOOT: regs[0] = 1; break; /* no cable: the transfer fails */
+        case AGB_SWI_SOUND_DRIVER_GET_JUMP_LIST:
+            /* 36 function pointers, each to a call that returns at once (AGB_BIOS_NOP_CALL) */
+            for (uint32_t i = 0; i < 36; ++i) agb_write32(board, regs[0] + i * 4, AGB_BIOS_NOP_CALL);
+            regs[0] += 36 * 4;
+            regs[1] = 0;
+            break;
         default: {
             /* the table entry says whether the call is a stub */
             for (size_t i = 0; i < sizeof(calls) / sizeof(calls[0]); ++i)

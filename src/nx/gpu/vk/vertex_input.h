@@ -10,17 +10,18 @@
 #include "common/cpu/aarch64/cpu.h"
 
 /* vertex_input_dynamic_state's values: auto, dynamic where the device has the extension unless its driver is banned
-   (vk_vi_ban); on, dynamic wherever it has it; off, never */
+   (vk_vi_ban) or the runtime runs on Android; on, dynamic wherever it has it; off, never */
 enum { SNX_VK_VI_AUTO, SNX_VK_VI_ON, SNX_VK_VI_OFF };
 /* the value text names, SNX_VK_VI_*; -1 for none of auto, on and off */
 int vk_vi_mode(const char* text);
 
-/* a device as the choice reads it: its name, its driver's VkDriverId, driverName, driverInfo and driverVersion, and
-   what it has of the extension: 0 nothing, 1 the extension without its vertexInputDynamicState feature, 2 both */
+/* a device as the choice reads it: its name, its driver's VkDriverId, driverName, driverInfo and driverVersion, what
+   it has of the extension (0 nothing, 1 the extension without its vertexInputDynamicState feature, 2 both), and
+   whether the runtime runs on Android */
 typedef struct {
     const char *device, *driver_name, *driver_info;
     u32 driver_id, driver_version;
-    int has;
+    int has, android;
 } VkViDevice;
 /* driverVersion v of a driver of VkDriverId id, as its vendor numbers it: NVIDIA's 580.119.02, Intel's Windows
    101.4502 (the last two of its four numbers), the rest as Vulkan versions (Mesa's 26.1.8) */

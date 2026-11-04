@@ -90,7 +90,7 @@ void agb_cpu_init(AgbCpu* cpu, AgbBoard* board, uint8_t* map) {
     for (int i = 0; i < 6; ++i) cpu->banked_r13[i] = 0x03007F00;
     cpu->banked_r13[2] = 0x03007FA0;
     cpu->banked_r13[3] = 0x03007FE0;
-    cpu->arm.r[15] = 0x080000C0;
+    cpu->arm.r[15] = 0x08000000; /* the BIOS jumps to the cartridge's first word, the branch its header starts with */
 }
 
 static void advance(AgbCpu* cpu, AgbSink* sink, uint32_t cycles) {
@@ -546,6 +546,11 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
         }
         if (cpu->arm.r[15] == AGB_IRQ_RETURN) {
             irq_return(board, cpu);
+            continue;
+        }
+        if (cpu->arm.r[15] == AGB_BIOS_NOP_CALL) { /* a sound driver function SoundDriverGetJumpList named: bx lr */
+            cpu->arm.cpsr = (cpu->arm.cpsr & ~(uint32_t)SNX_ARM_T) | (cpu->arm.r[14] & 1 ? SNX_ARM_T : 0);
+            cpu->arm.r[15] = cpu->arm.r[14] & ~(uint32_t)1;
             continue;
         }
         const AgbBlock* block =

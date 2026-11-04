@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The whole machine: a hand assembled ROM goes through the AOT recompiler and runs on the board, through
    a BIOS call and an interrupt, and the board's memory shows what happened. */
+#include "agb/bios/bios.h"
 #include "agb/board/board.h"
 #include "agb/cpu/agb_cpu.h"
 #include "agb/cpu/memmap.h"
@@ -237,6 +238,25 @@ int main(void) {
         result = 1;
     }
     {
+        /* the ARM7TDMI's NV condition: an instruction with it never runs, which ARMv5 made BLX and later cores CPS */
+        const AgbBlock* block;
+        agb_write32(&board, 0x03000100, 0xE3A00001); /* mov r0, #1 */
+        agb_write32(&board, 0x03000104, 0xF1000000); /* cond NV */
+        agb_write32(&board, 0x03000108, 0xFA000003); /* cond NV: ARMv5's BLX */
+        agb_write32(&board, 0x0300010C, 0xE2800001); /* add r0, r0, #1 */
+        agb_write32(&board, 0x03000110, 0xE12FFF1E); /* bx lr */
+        block = agb_recomp_lookup(&recomp, &board, 0x03000100, 0, error, sizeof error);
+        CHECK(block);
+        cpu.arm.r[14] = 0x08000200;
+        CHECK(run_block(&cpu, block) == 2 && cpu.arm.r[15] == 0x08000200);
+        /* its Thumb BX takes no notice of the bits under the register, which should be zero */
+        agb_write16(&board, 0x03000120, 0x2003); /* movs r0, #3 */
+        agb_write16(&board, 0x03000122, 0x4775); /* bx lr, bits 2 to 0 set */
+        block = agb_recomp_lookup(&recomp, &board, 0x03000120, 1, error, sizeof error);
+        CHECK(block);
+        CHECK(run_block(&cpu, block) == 3 && cpu.arm.r[15] == 0x08000200);
+    }
+    {
         /* code the game puts in RAM runs as RAM holds it: a block built from it goes once the game writes over it,
            this run or the next one, which the cache hands it */
         const AgbBlock* block;
@@ -271,6 +291,20 @@ int main(void) {
         agb_recomp_free(&next);
         CHECK(!result);
         result = 1;
+    }
+    {
+        /* a sound driver function SoundDriverGetJumpList named returns at once, as the BIOS's bx lr: here to Thumb
+           code that puts 7 in r0 and spins, interrupts off */
+        uint32_t written = 0;
+        agb_write16(&board, 0x03000200, 0x2007); /* movs r0, #7 */
+        agb_write16(&board, 0x03000202, 0xE7FE); /* b . */
+        cpu.arm.r[0] = 0;
+        cpu.arm.r[14] = 0x03000201;
+        cpu.arm.r[15] = AGB_BIOS_NOP_CALL;
+        cpu.arm.cpsr = 0x9F;
+        board.cpu_halted = cpu.wait = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2000, audio, AGB_APU_RATE, &written, error, sizeof error));
+        CHECK(cpu.arm.r[0] == 7 && cpu.arm.r[15] == 0x03000202 && (cpu.arm.cpsr & SNX_ARM_T));
     }
     {
         /* a recompile (-r) builds every block of the map into the module, the hints too: here from a copy of the map

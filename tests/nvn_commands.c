@@ -21,7 +21,9 @@ static u8 memory[1 << 20];
 u8* g_mem = memory; /* guest address a is memory + a */
 
 /* the one pool: command memory from 0x10000 on */
-u64 nvn_pool_memory(u64 pool) { return pool ? 0x10000 : 0; }
+/* where the pool's command memory is: guest 0x10000, or a host address when g_mem is 0 (NCE's layout) */
+static u64 g_pool_memory = 0x10000;
+u64 nvn_pool_memory(u64 pool) { return pool ? g_pool_memory : 0; }
 u64 nvn_pool_gpu(u64 pool) { return pool ? 0x10000 : 0; }
 /* the runtime's own memory a command buffer is lent: from 0x80000 on */
 static u64 g_lent = 0x80000;
@@ -698,6 +700,33 @@ int main(void) {
         nvn_CommandBufferBindUniformBuffer(&cpu, cbh, 0, 3, 0x605640000ull, 0x100);
         check(nvn_CommandBufferEndRecording(&cpu, cbh) == hh && gr64(hh + 8) == b1 && b2 != b1,
               "once the submission is read, the next recording takes the block given back first");
+    }
+    /* g_mem 0, as under NCE, where a guest address is the host's: a bind of a program that SetShaders gave stages records
+       them. GP as an addition to the null g_mem let the compiler take the program for null and drop the copy */
+    {
+        static _Alignas(16) u8 host[0x2000];
+        u8* base = g_mem;
+        const u64 cbn = (u64)(uintptr_t)host, prog = cbn + 0x200;
+        NvnProgram pr;
+        Walk w;
+        memset(&pr, 0, sizeof pr);
+        pr.magic = NVN_MAGIC('P', 'R', 'O', 'G');
+        pr.st[NVN_SHADER_STAGE_VERTEX].data = 0x41e0c0000ull;
+        pr.st[NVN_SHADER_STAGE_VERTEX].off = 0x30;
+        memcpy(host + 0x200, &pr, sizeof pr);
+        g_mem = NULL;
+        g_pool_memory = cbn + 0x1000;
+        nvn_CommandBufferInitialize(&cpu, cbn, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbn, 1, 0, 0x1000);
+        nvn_CommandBufferBeginRecording(&cpu, cbn);
+        nvn_CommandBufferBindProgram(&cpu, cbn, prog, 0x1f);
+        walk(nvn_CommandBufferEndRecording(&cpu, cbn), &w);
+        check(w.n == 1 && w.op[0] == OP_BIND_PROGRAM &&
+                  gr64(w.at[0] + 8 + offsetof(NvnPBindProgram, st) + NVN_SHADER_STAGE_VERTEX * sizeof(NvnStage)) ==
+                      0x41e0c0000ull,
+              "with g_mem 0 a bind records the program's stages");
+        g_mem = base;
+        g_pool_memory = 0x10000;
     }
     if (failures) return 1;
     puts("nvn_commands: ok");

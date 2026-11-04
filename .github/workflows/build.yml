@@ -1133,6 +1133,10 @@ jobs:
           path: ScarletNX-android-arm64-v8a-${{ steps.commit.outputs.short }}.apk
           archive: false
           if-no-files-found: error
+      # The app's unit tests (docs/ANDROID.md), on the stage the APK was packed from: its classes build against SDL's
+      # Java and the icon there. Last, so a test that fails fails the job and still leaves the APKs to try
+      - name: Test the app's Java
+        run: JAVA_HOME=$JAVA_HOME_21_X64 gradle -p dist/android testDebugUnitTest -Pscarletnx.stage="$PWD/stage"
 
   # macOS and iOS (docs/APPLE.md), both on one Apple silicon runner with Xcode's Clang and SDKs; FFmpeg, OpenSSL and
   # SDL3 are built from the pinned sources as everywhere. Until both have built green once, a failure here does not

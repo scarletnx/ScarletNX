@@ -71,6 +71,8 @@ SnxA32Kind snx_a32_decode_profile(SnxArmProfile profile, uint32_t w) {
     if (profile == SNX_ARM_PROFILE_A57) return snx_a32_decode(w);
     if (profile == SNX_ARM_PROFILE_A9) return a9_a32(w);
     if (profile == SNX_ARM_PROFILE_ARM7TDMI) {
+        /* ARMv4's NV condition never holds: the word runs as nothing, where ARMv5 and later made it BLX, PLD and more */
+        if ((w >> 28) == 15) return SNX_A32_HINT;
         /* An MSR that writes the control or extension byte switches modes on the AGB board, which banks the
            registers: the board runs it. A57's EL0 MSR would drop the mode bits */
         SnxA32Kind kind = snx_a32_decode(w);
@@ -163,6 +165,14 @@ unsigned snx_thumb_decode_profile(SnxArmProfile profile, uint16_t h, uint16_t h2
         o->len = TH_F16;
         o->op = BR_BKPT;
         o->imm = h & 255;
+        return TH_F16;
+    }
+    /* the ARM7TDMI's BX takes no notice of bits 2 to 0, which should be zero */
+    if (!v6 && (h & 0xff80) == 0x4700) {
+        o->shape = TH_BRANCH;
+        o->len = TH_F16;
+        o->op = BR_BX;
+        o->rm = (h >> 3) & 15;
         return TH_F16;
     }
     if (top >= 0xe800 || !snx_thumb_decode(h, h2, o)) goto invalid;

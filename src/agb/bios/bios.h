@@ -36,10 +36,27 @@ enum {
     AGB_SWI_DIFF_8BIT_UNFILTER_VRAM = 0x17,
     AGB_SWI_DIFF_16BIT_UNFILTER = 0x18,
     AGB_SWI_SOUND_BIAS = 0x19,
+    AGB_SWI_SOUND_DRIVER_INIT = 0x1A,
+    AGB_SWI_SOUND_DRIVER_MODE = 0x1B,
+    AGB_SWI_SOUND_DRIVER_MAIN = 0x1C,
+    AGB_SWI_SOUND_DRIVER_VSYNC = 0x1D,
+    AGB_SWI_SOUND_CHANNEL_CLEAR = 0x1E,
     AGB_SWI_MIDI_KEY_2_FREQ = 0x1F,
-    AGB_SWI_SOUND_DRIVER_GET_JUMP_LIST = 0x28,
+    AGB_SWI_MUSIC_PLAYER_OPEN = 0x20,
+    AGB_SWI_MUSIC_PLAYER_START = 0x21,
+    AGB_SWI_MUSIC_PLAYER_STOP = 0x22,
+    AGB_SWI_MUSIC_PLAYER_CONTINUE = 0x23,
+    AGB_SWI_MUSIC_PLAYER_FADE_OUT = 0x24,
+    AGB_SWI_MULTI_BOOT = 0x25,
+    AGB_SWI_SOUND_DRIVER_VSYNC_OFF = 0x28,
+    AGB_SWI_SOUND_DRIVER_VSYNC_ON = 0x29,
+    AGB_SWI_SOUND_DRIVER_GET_JUMP_LIST = 0x2A,
     AGB_SWI_SOUND_DRIVER_GET_VERSION = 0x2F
 };
+
+/* The BIOS address every entry of SoundDriverGetJumpList's table names: a call there returns at once (bx lr), as
+   mGBA's HLE BIOS answers the sound driver's functions, which the HLE BIOS does not have */
+#define AGB_BIOS_NOP_CALL 0x00003FF0u
 
 /* Runs one software interrupt. The register file is the caller's r0 through r15: the call reads its
    arguments there and writes its results there. Returns 0 when the call ran, 1 when it is a known call

@@ -506,10 +506,18 @@ static int create_device(void) {
         if (mode < 0)
             fatal("settings: vertex_input_dynamic_state=%s is not auto, on or off",
                   g_settings.vertex_input_dynamic_state);
-        VkViDevice vd = {
-            g_vk.props.deviceName,    p12.driverName,
-            p12.driverInfo,           (u32)p12.driverID,
-            g_vk.props.driverVersion, has_vertex_input ? (qvertex_input.vertexInputDynamicState ? 2 : 1) : 0};
+#if defined(__ANDROID__)
+        int android = 1;
+#else
+        int android = 0;
+#endif
+        VkViDevice vd = {g_vk.props.deviceName,
+                         p12.driverName,
+                         p12.driverInfo,
+                         (u32)p12.driverID,
+                         g_vk.props.driverVersion,
+                         has_vertex_input ? (qvertex_input.vertexInputDynamicState ? 2 : 1) : 0,
+                         android};
         g_vk.vertex_input_dynamic = vk_vi_choose(mode, &vd, line, sizeof line, &warn);
         if (warn)
             WARN("%s\n", line);

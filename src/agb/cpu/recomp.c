@@ -505,7 +505,7 @@ int agb_recomp_load_cache(AgbRecomp* recomp, AgbBoard* board, char* error, size_
 }
 
 int agb_recomp_build(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size) {
-    if (!recomp->base || !recomp->count) discover(recomp, board, 0x080000C0, 0);
+    if (!recomp->base || !recomp->count) discover(recomp, board, 0x08000000, 0);
     if (!recomp->count) {
         snprintf(error, error_size, "no code found at the ROM entry");
         return -1;
