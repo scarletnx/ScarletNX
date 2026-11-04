@@ -557,6 +557,12 @@ static u32 gbuf_slot(Ctx* c, u32 key, int write) {
         c->gbuf_ptr = spv_emit_type_storage_pointer(&c->e, c->t_u32);
         c->gbuf[slot] =
             spv_emit_storage_buffer(&c->e, structure, (u32)shader_vk_set(c->stage), SNX_VKB_SSBO + (u32)slot);
+        /* global memory as the console has it: two buffers may be the same bytes (one game binds a range and a part of
+           it, writes through one and reads through the other), and another invocation's store is seen. Without these
+           the compiler kept a value it had read, and a program waiting on its own store through the other buffer
+           never finished: the GPU's context timed out */
+        spv_emit_decorate(&c->e, c->gbuf[slot], 20 /* Aliased */, NULL, 0);
+        spv_emit_decorate(&c->e, c->gbuf[slot], 23 /* Coherent */, NULL, 0);
         add_interface(c, c->gbuf[slot]);
     }
     if (write) c->si->gbuf_wmask |= 1u << slot;
