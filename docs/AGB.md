@@ -132,7 +132,8 @@ flags at 0x03007FF8. SoundBias and the sound driver's calls are known stubs.
 
 Angles are turns in 16 bits, the way the BIOS counts them, and the affine matrix
 drops the low byte of the rotation angle, giving 256 steps around the circle.
-The trigonometry rounds to 1.14 fixed point like the BIOS's own tables.
+The trigonometry cuts its sines toward zero in 1.14 fixed point, as the BIOS's
+own table has them, and BgAffineSet's start point comes from that matrix.
 
 ## The recompiled ROM
 
