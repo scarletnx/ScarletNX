@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The lowering census of the A64 SIMD, FP and crypto emitters: what each op becomes on four emitter paths, against a
-   checked-in summary.
-     snx-test-llvm-lowering EXPECTED [--update] [--report FILE] [--ir DIR]
+   checked-in summary, and what the target's object makes of it.
+     snx-test-llvm-lowering EXPECTED [--update] [--report FILE] [--ir DIR] [--objects DIR] [--objdump PATH]
+                                    [--counts FILE] [--path NAME [--triple TRIPLE]]
    Every decoder-row word the Switch target decodes (llvm_qemu_words.c) that ir_fpu.c, ir_vec.c, ir_vec_fp.c,
    ir_vec_crypto.c or ir_ldst.c's SIMD loads and stores emit becomes one step (snx_ir_static_step), optimized as a
    game's module is (snx_ir_module_optimize, the SLP vectorizer off as the setting's default), on each path:
@@ -17,8 +18,15 @@
    change that moves an op updates EXPECTED in the same commit (--update rewrites it). A path whose target this LLVM
    lacks is not compared, and the run says so. --report FILE writes each word's class, its shape when inline (vector,
    scalar, or lanes: extract and insert one lane at a time) and the counts of its optimized IR behind them; --ir DIR
-   writes each path's optimized module as DIR/<path>.ll. The counts are of IR, cold paths included: code inspection,
-   never a speed claim. */
+   writes each path's optimized module as DIR/<path>.ll.
+   --objects DIR makes each path's target object as snx_ir_object makes a game's, writes it as DIR/<path>.o and, through
+   llvm-objdump (--objdump PATH, "llvm-objdump" by default), counts each function's instructions, calls, instructions
+   that name a vector register, shuffles and moves between a general register and a vector register. --counts FILE
+   writes one row per op and path: its class, its helpers and those counts summed over its words. --path NAME runs one
+   path only, and --triple TRIPLE runs it on another target (the path's and the triple's instruction sets must agree;
+   snx_ir_object refuses an object of the other byte order, and big-endian PowerPC64's ELFv1 object names no function
+   in .text, so on a big-endian host use its ELFv2 triple, powerpc64-unknown-linux-musl). The counts are of IR and of
+   static code, cold paths included: code inspection, never a speed claim. */
 #include "common/utilities/common.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/recompiler/llvm/ir.h"
@@ -44,12 +52,16 @@ typedef struct {
     const char* name;
     const char* triple;
     SnxIrFeatures features;
+    /* the target features the emitters' instructions need, as Clang writes them on a function for -mattr: the target
+       machine's own are its triple's baseline, which the x86 and AArch64 paths outgrow */
+    const char* target_features;
 } Path;
 
 static const Path paths[PATHS] = {
     {"x86",
      "x86_64-unknown-linux-gnu",
      {.x86 = 1,
+      .ssse3 = 1,
       .sse42 = 1,
       .crc32 = 1,
       .pclmul = 1,
@@ -58,13 +70,14 @@ static const Path paths[PATHS] = {
       .gfni = 1,
       .fma = 1,
       .f16c = 1,
-      .avx2 = 1,
-      .avx512bw = 1,
-      .avx512vl = 1,
-      .avx512bitalg = 1}},
-    {"x86-base", "x86_64-unknown-linux-gnu", {.x86 = 1}},
-    {"aarch64", "aarch64-unknown-linux-gnu", {.aarch64 = 1, .arm_aes = 1, .arm_sha2 = 1, .arm_crc = 1}},
-    {"generic", "riscv64-unknown-linux-gnu", {0}},
+      .avx2 = 1},
+     "+ssse3,+sse4.2,+crc32,+pclmul,+aes,+sha,+gfni,+fma,+f16c,+avx2"},
+    {"x86-base", "x86_64-unknown-linux-gnu", {.x86 = 1}, ""},
+    {"aarch64",
+     "aarch64-unknown-linux-gnu",
+     {.aarch64 = 1, .arm_aes = 1, .arm_sha2 = 1, .arm_crc = 1},
+     "+neon,+aes,+sha2,+crc"},
+    {"generic", "riscv64-unknown-linux-gnu", {0}, ""},
 };
 
 /* ir_ldst.c's ops that load or store V registers */
@@ -74,8 +87,13 @@ static const char* const simd_ldst[] = {"LD_mult", "ST_mult", "LD_single", "ST_s
 
 /* one word on one path */
 typedef struct {
+    unsigned instructions, calls, vector, shuffles, moves;
+} ObjectCount;
+
+typedef struct {
     unsigned char cls, shape;
     unsigned insns, vector, extract, insert, shuffle, calls, target;
+    ObjectCount object; /* when --objects made one */
     char helpers[HELPERS];
 } Result;
 
@@ -262,12 +280,210 @@ static int classify(LLVMValueRef fn, Result* r) {
     return 0;
 }
 
+/* ---- the object's counts ----
+   Each function's instructions as llvm-objdump prints them, split by what they are: a call, an instruction that names
+   a vector register, a shuffle (a lane or byte permutation), and a move between a general register and a vector
+   register. The register names and the shuffle and move mnemonics are the target's, which is what the triple says. */
+typedef struct {
+    int x86, aarch64, ppc, riscv, loongarch, mips;
+} Target;
+
+static int has_text(const char* text, const char* part) { return strstr(text, part) != NULL; }
+
+static int begins(const char* text, const char* prefix) { return !strncmp(text, prefix, strlen(prefix)); }
+
+/* operands name a register token: prefix and digits, then a '.' and its lanes when lanes; not part of a longer name */
+static int reg_token(const char* operands, const char* prefix, int lanes) {
+    size_t length = strlen(prefix);
+    for (const char* p = operands; (p = strstr(p, prefix)) != NULL; p += length) {
+        const char* q = p + length;
+        if (*q < '0' || *q > '9') continue;
+        while (*q >= '0' && *q <= '9') ++q;
+        if (lanes ? *q != '.'
+                  : (*q &&
+                     ((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || *q == '_' || (*q >= '0' && *q <= '9'))))
+            continue;
+        if (p > operands && ((p[-1] >= 'a' && p[-1] <= 'z') || (p[-1] >= 'A' && p[-1] <= 'Z') || p[-1] == '_'))
+            continue;
+        return 1;
+    }
+    return 0;
+}
+
+static int x86_gpr(const char* operands) {
+    static const char* const names[] = {"%eax", "%ebx", "%ecx", "%edx", "%esi", "%edi", "%esp", "%ebp",
+                                        "%rax", "%rbx", "%rcx", "%rdx", "%rsi", "%rdi", "%rsp", "%rbp"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+        if (has_text(operands, names[i])) return 1;
+    for (const char* p = operands; (p = strstr(p, "%r")) != NULL; ++p) {
+        const char* q = p + 2;
+        if (*q < '0' || *q > '9') continue;
+        while (*q >= '0' && *q <= '9') ++q;
+        if (!*q || !((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || *q == '_')) return 1;
+    }
+    return 0;
+}
+
+static int arm_gpr(const char* operands) {
+    return reg_token(operands, "x", 0) || reg_token(operands, "w", 0) || has_text(operands, "sp") ||
+           has_text(operands, "xzr") || has_text(operands, "wzr") || has_text(operands, "lr");
+}
+
+static int arm_fp(const char* operands) {
+    return reg_token(operands, "v", 1) || reg_token(operands, "q", 0) || reg_token(operands, "d", 0) ||
+           reg_token(operands, "s", 0) || reg_token(operands, "h", 0) || reg_token(operands, "b", 0);
+}
+
+/* PowerPC64's objdump prints a vector register as a bare number, as it prints a general one: the instruction says */
+static int ppc_vector(const char* mnemonic) {
+    return begins(mnemonic, "v") || begins(mnemonic, "xx") || begins(mnemonic, "xv") || begins(mnemonic, "lv") ||
+           begins(mnemonic, "stv") || begins(mnemonic, "lxv") || begins(mnemonic, "stxv") || begins(mnemonic, "lxs") ||
+           begins(mnemonic, "stxs") || begins(mnemonic, "mtvsr") || begins(mnemonic, "mfvsr");
+}
+
+static int vector_register(const Target* t, const char* mnemonic, const char* operands) {
+    if (t->x86) return has_text(operands, "%xmm") || has_text(operands, "%ymm") || has_text(operands, "%zmm");
+    if (t->aarch64) return reg_token(operands, "v", 1) || reg_token(operands, "q", 0);
+    if (t->ppc) return ppc_vector(mnemonic);
+    if (t->riscv) return reg_token(operands, "v", 0);
+    if (t->loongarch) return reg_token(operands, "$vr", 0);
+    if (t->mips) return reg_token(operands, "$w", 0);
+    return 0;
+}
+
+static int call_instruction(const Target* t, const char* mnemonic) {
+    if (t->x86) return !strcmp(mnemonic, "call") || !strcmp(mnemonic, "callq") || !strcmp(mnemonic, "calll");
+    if (t->aarch64) return begins(mnemonic, "bl");
+    if (t->ppc) return !strcmp(mnemonic, "bl") || !strcmp(mnemonic, "bctrl") || !strcmp(mnemonic, "blrl");
+    if (t->riscv) return !strcmp(mnemonic, "jal") || !strcmp(mnemonic, "jalr");
+    if (t->loongarch) return !strcmp(mnemonic, "bl") || !strcmp(mnemonic, "jirl");
+    if (t->mips) return !strcmp(mnemonic, "jal") || !strcmp(mnemonic, "jalr") || !strcmp(mnemonic, "bal");
+    return 0;
+}
+
+static int shuffle_instruction(const Target* t, const char* mnemonic, const char* operands) {
+    if (t->x86)
+        return has_text(mnemonic, "shuf") || has_text(mnemonic, "perm") || has_text(mnemonic, "unpck") ||
+               has_text(mnemonic, "palign") || has_text(mnemonic, "broadcast") || has_text(mnemonic, "ddup") ||
+               has_text(mnemonic, "shdup") || has_text(mnemonic, "sldup");
+    if (t->aarch64)
+        return vector_register(t, mnemonic, operands) &&
+               (begins(mnemonic, "tbl") || begins(mnemonic, "tbx") || begins(mnemonic, "zip") ||
+                begins(mnemonic, "uzp") || begins(mnemonic, "trn") || !strcmp(mnemonic, "ext") ||
+                begins(mnemonic, "rev") || begins(mnemonic, "dup"));
+    if (t->ppc)
+        return has_text(mnemonic, "perm") || has_text(mnemonic, "sldoi") || begins(mnemonic, "vsl") ||
+               begins(mnemonic, "vsr");
+    if (t->riscv) return begins(mnemonic, "vrgather") || begins(mnemonic, "vslide");
+    if (t->loongarch)
+        return begins(mnemonic, "vshuf") || begins(mnemonic, "vext") || begins(mnemonic, "vilv") ||
+               begins(mnemonic, "vpick");
+    if (t->mips)
+        return begins(mnemonic, "vshf") || begins(mnemonic, "vsldoi") || begins(mnemonic, "vinsve") ||
+               begins(mnemonic, "vext");
+    return 0;
+}
+
+static int move_instruction(const Target* t, const char* mnemonic, const char* operands) {
+    static const char* const x86_moves[] = {"movd",  "movq",   "vmovd",  "vmovq",    "movss",
+                                            "movsd", "vmovss", "vmovsd", "insertps", "extractps"};
+    if (t->x86) {
+        if (strchr(operands, '(')) return 0; /* the general register is an address, not the other operand */
+        if (!vector_register(t, mnemonic, operands) || !x86_gpr(operands)) return 0;
+        for (size_t i = 0; i < sizeof(x86_moves) / sizeof(x86_moves[0]); ++i)
+            if (!strcmp(mnemonic, x86_moves[i])) return 1;
+        return begins(mnemonic, "pinsr") || begins(mnemonic, "pextr") || begins(mnemonic, "vpinsr") ||
+               begins(mnemonic, "vpextr");
+    }
+    if (t->aarch64)
+        return (!strcmp(mnemonic, "fmov") || !strcmp(mnemonic, "umov") || !strcmp(mnemonic, "smov") ||
+                !strcmp(mnemonic, "ins") || begins(mnemonic, "dup")) &&
+               arm_gpr(operands) && arm_fp(operands);
+    if (t->ppc) return begins(mnemonic, "mtvsr") || begins(mnemonic, "mfvsr");
+    if (t->riscv) return !strcmp(mnemonic, "vmv.x.s") || !strcmp(mnemonic, "vmv.s.x");
+    if (t->loongarch) return begins(mnemonic, "movfr2gr") || begins(mnemonic, "movgr2fr");
+    if (t->mips) return begins(mnemonic, "insert.") || begins(mnemonic, "copy_s.") || begins(mnemonic, "copy_u.");
+    return 0;
+}
+
+static void count_instruction(const Target* t, const char* mnemonic, const char* operands, ObjectCount* c) {
+    ++c->instructions;
+    if (call_instruction(t, mnemonic)) ++c->calls;
+    if (vector_register(t, mnemonic, operands)) ++c->vector;
+    if (shuffle_instruction(t, mnemonic, operands)) ++c->shuffles;
+    if (move_instruction(t, mnemonic, operands)) ++c->moves;
+}
+
+static void target_of(Target* t, const char* triple) {
+    memset(t, 0, sizeof(*t));
+    t->x86 = !strncmp(triple, "x86_64", 6) || !strncmp(triple, "i386", 4) || !strncmp(triple, "i686", 4);
+    t->aarch64 = !strncmp(triple, "aarch64", 7) || !strncmp(triple, "arm64", 5);
+    t->ppc = !strncmp(triple, "powerpc64", 9) || !strncmp(triple, "ppc64", 5);
+    t->riscv = !strncmp(triple, "riscv64", 7);
+    t->loongarch = !strncmp(triple, "loongarch64", 11);
+    t->mips = !strncmp(triple, "mips64", 6);
+}
+
+/* counts the object at path into words' at[p], from llvm-objdump's disassembly of its S_<n> functions */
+static int object_counts(const char* path, const char* objdump, const char* triple, Word* words, size_t count,
+                         unsigned p) {
+    const char* argv[] = {objdump, "-d", "--no-show-raw-insn", path, NULL};
+    Target target;
+    char* text = NULL;
+    long at = -1;
+    size_t missing = 0;
+    target_of(&target, triple);
+    if (snx_run_all(argv, NULL, NULL, &text) || !text) {
+        fprintf(stderr, "cannot run %s on %s\n", objdump, path);
+        free(text);
+        return -1;
+    }
+    for (char* line = text; line && *line;) {
+        char* end = strchr(line, '\n');
+        char* start = line;
+        char* q = NULL;
+        if (end) *end = 0;
+        while (*start == ' ' || *start == '\t') ++start;
+        if ((*start >= '0' && *start <= '9') || (*start >= 'a' && *start <= 'f')) (void)strtoul(start, &q, 16);
+        if (q && *q == ':') {
+            char* mnemonic = q + 1;
+            char* operands;
+            char save;
+            while (*mnemonic == ' ' || *mnemonic == '\t') ++mnemonic;
+            operands = mnemonic;
+            while (*operands && *operands != ' ' && *operands != '\t') ++operands;
+            save = *operands;
+            *operands = 0;
+            if (at >= 0 && (size_t)at < count)
+                count_instruction(&target, mnemonic, save ? operands + 1 : "", &words[at].at[p].object);
+            *operands = save;
+        } else if (q && *q == ' ' && !strncmp(q + 1, "<S_", 3)) {
+            char* index = NULL;
+            unsigned long n = strtoul(q + 4, &index, 10);
+            at = index && !strncmp(index, ">:", 2) && n < count ? (long)n : -1;
+        }
+        line = end ? end + 1 : NULL;
+    }
+    for (size_t i = 0; i < count; ++i)
+        if (!words[i].at[p].object.instructions) ++missing;
+    free(text);
+    if (missing) {
+        fprintf(stderr,
+                "%s: %zu of %zu functions are not in %s's symbols (big-endian PowerPC64's ELFv1 object has "
+                "none: use its ELFv2 triple, powerpc64-unknown-linux-musl)\n",
+                path, missing, count, objdump);
+        return -1;
+    }
+    return 0;
+}
+
 /* every word's result on path p: 1 when this LLVM has the path's target, 0 when not (said), -1 on an error */
-static int run_path(unsigned p, Word* words, size_t count, const char* ir_dir) {
+static int run_path(unsigned p, Word* words, size_t count, const char* ir_dir, const char* triple,
+                    const char* object_dir, const char* objdump) {
     char error[1024];
-    SnxIr* ir = snx_ir_new_target("lowering", '2', paths[p].triple, error, sizeof error);
+    SnxIr* ir = snx_ir_new_target("lowering", '2', triple, error, sizeof error);
     if (!ir) {
-        printf("path %s (%s) not compared: %s\n", paths[p].name, paths[p].triple, error);
+        printf("path %s (%s) not compared: %s\n", paths[p].name, triple, error);
         return 0;
     }
     ir->features = &paths[p].features;
@@ -282,6 +498,11 @@ static int run_path(unsigned p, Word* words, size_t count, const char* ir_dir) {
             return -1;
         }
     }
+    /* the path's instructions in the object, whatever the triple's baseline CPU has */
+    if (*paths[p].target_features)
+        for (LLVMValueRef fn = LLVMGetFirstFunction(ir->mod); fn; fn = LLVMGetNextFunction(fn))
+            if (!LLVMIsDeclaration(fn))
+                LLVMAddTargetDependentFunctionAttr(fn, "target-features", paths[p].target_features);
     if (snx_ir_module_optimize(ir, ir->mod, '2', error, sizeof error)) {
         fprintf(stderr, "path %s: %s\n", paths[p].name, error);
         snx_ir_free(ir);
@@ -306,6 +527,25 @@ static int run_path(unsigned p, Word* words, size_t count, const char* ir_dir) {
         if (!fn || classify(fn, &words[i].at[p])) {
             fprintf(stderr, "path %s: %s (%s) has no body after the passes\n", paths[p].name, name,
                     lqd_switch_op_name(words[i].word));
+            snx_ir_free(ir);
+            return -1;
+        }
+    }
+    if (object_dir) {
+        unsigned char* data = NULL;
+        size_t size = 0;
+        char* path = snx_format("%s/%s.o", object_dir, paths[p].name);
+        int failed = snx_ir_object(ir, '2', &data, &size, error, sizeof error);
+        if (failed)
+            fprintf(stderr, "path %s: %s\n", paths[p].name, error);
+        else if (snx_write_file(path, data, size)) {
+            fprintf(stderr, "cannot write %s\n", path);
+            failed = -1;
+        } else
+            failed = object_counts(path, objdump, triple, words, count, p);
+        free(data);
+        free(path);
+        if (failed) {
             snx_ir_free(ir);
             return -1;
         }
@@ -472,21 +712,60 @@ static int write_summary(const char* path, char** lines, size_t count) {
 static int write_report(const char* path, const Word* words, size_t count, const int* ran) {
     FILE* f = fopen(path, "w");
     if (!f) return -1;
-    fprintf(f, "word\tname\tpath\tclass\tshape\tinsns\tvector\textract\tinsert\tshuffle\ttarget\tcalls\thelpers\n");
+    fprintf(f, "word\tname\tpath\tclass\tshape\tinsns\tvector\textract\tinsert\tshuffle\ttarget\tcalls\thelpers"
+               "\tobject_insns\tobject_calls\tobject_vector\tobject_shuffles\tobject_moves\n");
     for (size_t i = 0; i < count; ++i)
         for (unsigned p = 0; p < PATHS; ++p) {
             const Result* r = &words[i].at[p];
             if (ran[p] != 1) continue;
-            fprintf(f, "%08x\t%s\t%s\t%s\t%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%s\n", (unsigned)words[i].word,
-                    lqd_switch_op_name(words[i].word), paths[p].name, class_names[r->cls], shape_names[r->shape],
-                    r->insns, r->vector, r->extract, r->insert, r->shuffle, r->target, r->calls, r->helpers);
+            fprintf(f, "%08x\t%s\t%s\t%s\t%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%s\t%u\t%u\t%u\t%u\t%u\n",
+                    (unsigned)words[i].word, lqd_switch_op_name(words[i].word), paths[p].name, class_names[r->cls],
+                    shape_names[r->shape], r->insns, r->vector, r->extract, r->insert, r->shuffle, r->target, r->calls,
+                    r->helpers, r->object.instructions, r->object.calls, r->object.vector, r->object.shuffles,
+                    r->object.moves);
         }
     return fclose(f);
 }
 
+/* one row per op and path: its class, its helpers and the object's counts summed over its words */
+static int write_counts(const char* path, const Word* words, size_t count, const int* ran) {
+    FILE* f = fopen(path, "w");
+    if (!f) return -1;
+    fprintf(f, "op\tpath\tclass\tinstructions\tcalls\tvector\tshuffles\tmoves\thelpers\n");
+    for (size_t i = 0; i < count;) {
+        const char* name = lqd_switch_op_name(words[i].word);
+        size_t end = i;
+        while (end < count && !strcmp(lqd_switch_op_name(words[end].word), name)) ++end;
+        for (unsigned p = 0; p < PATHS; ++p) {
+            unsigned cls = 0, instructions = 0, calls = 0, vector = 0, shuffles = 0, moves = 0;
+            char helpers[HELPERS] = {0};
+            if (ran[p] != 1) continue;
+            for (size_t k = i; k < end; ++k) {
+                const Result* r = &words[k].at[p];
+                if (r->cls > cls) cls = r->cls;
+                instructions += r->object.instructions;
+                calls += r->object.calls;
+                vector += r->object.vector;
+                shuffles += r->object.shuffles;
+                moves += r->object.moves;
+                for (const char* t = r->helpers; *t;) {
+                    size_t length = strcspn(t, " ");
+                    add_helper(helpers, t, length);
+                    t += length + (t[length] == ' ');
+                }
+            }
+            fprintf(f, "%s\t%s\t%s\t%u\t%u\t%u\t%u\t%u\t%s\n", name, paths[p].name, class_names[cls], instructions,
+                    calls, vector, shuffles, moves, helpers);
+        }
+        i = end;
+    }
+    return fclose(f);
+}
+
 int main(int argc, char** argv) {
-    const char *expected = NULL, *report = NULL, *ir_dir = NULL;
-    int update = 0, ran[PATHS] = {0}, any = 0;
+    const char *expected = NULL, *report = NULL, *ir_dir = NULL, *objects = NULL, *objdump = "llvm-objdump";
+    const char *counts = NULL, *path_name = NULL, *triple = NULL;
+    int update = 0, ran[PATHS] = {0}, any = 0, only = -1;
     char error[1024];
     for (int a = 1; a < argc; ++a) {
         if (!strcmp(argv[a], "--update"))
@@ -495,19 +774,65 @@ int main(int argc, char** argv) {
             report = argv[++a];
         else if (!strcmp(argv[a], "--ir") && a + 1 < argc)
             ir_dir = argv[++a];
+        else if (!strcmp(argv[a], "--objects") && a + 1 < argc)
+            objects = argv[++a];
+        else if (!strcmp(argv[a], "--objdump") && a + 1 < argc)
+            objdump = argv[++a];
+        else if (!strcmp(argv[a], "--counts") && a + 1 < argc)
+            counts = argv[++a];
+        else if (!strcmp(argv[a], "--path") && a + 1 < argc)
+            path_name = argv[++a];
+        else if (!strcmp(argv[a], "--triple") && a + 1 < argc)
+            triple = argv[++a];
         else if (argv[a][0] != '-' && !expected)
             expected = argv[a];
         else {
             fprintf(stderr,
-                    "snx-test-llvm-lowering: %s is not an option (--update, --report FILE, --ir DIR) or the one "
-                    "EXPECTED file\n",
+                    "snx-test-llvm-lowering: %s is not an option (--update, --report FILE, --ir DIR, --objects DIR, "
+                    "--objdump PATH, --counts FILE, --path NAME, --triple TRIPLE) or the one EXPECTED file\n",
                     argv[a]);
             return 2;
         }
     }
     if (!expected) {
-        fprintf(stderr, "usage: snx-test-llvm-lowering EXPECTED [--update] [--report FILE] [--ir DIR]\n");
+        fprintf(stderr, "usage: snx-test-llvm-lowering EXPECTED [--update] [--report FILE] [--ir DIR] [--objects DIR]\n"
+                        "           [--objdump PATH] [--counts FILE] [--path NAME [--triple TRIPLE]]\n");
         return 2;
+    }
+    if (path_name) {
+        for (only = 0; only < PATHS; ++only)
+            if (!strcmp(path_name, paths[only].name)) break;
+        if (only == PATHS) {
+            fprintf(stderr, "snx-test-llvm-lowering: no path %s (x86, x86-base, aarch64, generic)\n", path_name);
+            return 2;
+        }
+        if (update) {
+            fprintf(stderr, "snx-test-llvm-lowering: --update rewrites every path's line: run it without --path\n");
+            return 2;
+        }
+    } else if (triple) {
+        fprintf(stderr, "snx-test-llvm-lowering: --triple runs one --path NAME\n");
+        return 2;
+    }
+    if (triple) {
+        int x86 = !strncmp(triple, "x86_64", 6) || !strncmp(triple, "i386", 4) || !strncmp(triple, "i686", 4);
+        int aarch64 = !strncmp(triple, "aarch64", 7) || !strncmp(triple, "arm64", 5);
+        if ((only == 0 || only == 1) && !x86) {
+            fprintf(stderr, "snx-test-llvm-lowering: path %s needs an x86-64 --triple, not %s\n", path_name, triple);
+            return 2;
+        }
+        if (only == 2 && !aarch64) {
+            fprintf(stderr, "snx-test-llvm-lowering: path %s needs an AArch64 --triple, not %s\n", path_name, triple);
+            return 2;
+        }
+    }
+    if (counts && !objects) {
+        fprintf(stderr, "snx-test-llvm-lowering: --counts writes the object's counts, which --objects DIR makes\n");
+        return 2;
+    }
+    if (objects && snx_mkdirs(objects)) {
+        fprintf(stderr, "snx-test-llvm-lowering: cannot make %s\n", objects);
+        return 1;
     }
     if (snx_ir_init(error, sizeof error)) {
         fprintf(stderr, "%s\n", error);
@@ -516,6 +841,7 @@ int main(int argc, char** argv) {
     LLVMInitializeAllTargetInfos();
     LLVMInitializeAllTargets();
     LLVMInitializeAllTargetMCs();
+    LLVMInitializeAllAsmPrinters();
     snx_ir_slp_vectorizer(0);
 
     uint32_t* rows = NULL;
@@ -541,7 +867,8 @@ int main(int argc, char** argv) {
         }
     qsort(words, count, sizeof(Word), by_name);
     for (unsigned p = 0; p < PATHS; ++p) {
-        ran[p] = run_path(p, words, count, ir_dir);
+        if (only >= 0 && (int)p != only) continue;
+        ran[p] = run_path(p, words, count, ir_dir, triple ? triple : paths[p].triple, objects, objdump);
         if (ran[p] < 0) return 1;
         any |= ran[p];
     }
@@ -551,6 +878,10 @@ int main(int argc, char** argv) {
     }
     if (report && write_report(report, words, count, ran)) {
         fprintf(stderr, "cannot write %s\n", report);
+        return 1;
+    }
+    if (counts && write_counts(counts, words, count, ran)) {
+        fprintf(stderr, "cannot write %s\n", counts);
         return 1;
     }
     size_t ngot = 0, nwant = 0;

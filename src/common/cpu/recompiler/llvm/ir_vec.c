@@ -268,11 +268,20 @@ static V shl_register(SnxIr* ir, V a, V b, int sign) {
     return sel(ir, cmp(ir, LLVMIntSLT, s, ir_vec_like(ir, s, 0)), down, left);
 }
 
+/* The hosts whose vectors shift by a per-lane count: AVX2's vpsllv*, AArch64's SSHL and USHL, PowerPC64's VSX
+   (POWER8's vslv and vsrv for 32-bit lanes and vsld and vsrd for 64-bit ones; POWER7 widens the narrow lanes), RISC-V's
+   V, LoongArch's LSX and MIPS's MSA. Elsewhere the helper below shifts a lane at a time. */
+static int variable_shifts(const SnxIrFeatures* features) {
+    return (features->x86 && features->avx2) || features->aarch64 || (features->ppc && features->ppc_vsx) ||
+           (features->riscv && features->riscv_v) || (features->loongarch && features->la_lsx) ||
+           (features->mips && features->mips_msa);
+}
+
 /* Whole-vector rounding and saturating shifts. All counts are clamped before evaluation, even in discarded lanes.
    A right shift rounds by adding its last discarded bit after shifting, without overflowing the lane. */
 enum { SHL_UNS = 1, SHL_ROUND = 2, SHL_SAT = 4 };
 static void shl_helper(SnxIr* ir, const SnxA64Args* a, unsigned lanes, unsigned flags) {
-    if (ir->features->x86 && ir->features->avx2) {
+    if (variable_shifts(ir->features)) {
         V n = ir_vec_read(ir, (unsigned)a->rn, (unsigned)a->esz, 0, lanes);
         V m = ir_vec_read(ir, (unsigned)a->rm, (unsigned)a->esz, 0, lanes);
         unsigned bits = bits_of(n);
@@ -778,9 +787,95 @@ static void ext(SnxIr* ir, const SnxA64Args* a, unsigned bytes) {
     ir_vec_write(ir, (unsigned)a->rd, ir_vec_shuffle(ir, n, m, mask, bytes));
 }
 
+/* an intrinsic whose declaration takes more than one overloaded type, which ir_intrinsic does not (LLVM's vector
+   insert and extract) */
+static V intrinsic_at(SnxIr* ir, const char* name, LLVMTypeRef* types, unsigned count, V* args, unsigned nargs) {
+    unsigned id = LLVMLookupIntrinsicID(name, strlen(name));
+    LLVMValueRef function = LLVMGetIntrinsicDeclaration(ir->mod, id, types, count);
+    return LLVMBuildCall2(B, LLVMIntrinsicGetType(ir->ctx, id, types, count), function, args, nargs, "");
+}
+
+/* The hosts with a two-table byte permute besides x86's pshufb and AArch64's tbl: PowerPC64 (vperm, VSX's), LoongArch
+   (vshuf.b, LSX's), MIPS (vshf.b, MSA's) and RISC-V (vrgather.vv, of V). */
+static int other_permute(const SnxIrFeatures* features) {
+    return (features->ppc && features->ppc_vsx) || (features->riscv && features->riscv_v) ||
+           (features->loongarch && features->la_lsx) || (features->mips && features->mips_msa);
+}
+
+/* One host permute of two 16-byte tables: byte i of the result is a's byte c[i] when c[i] is 0 to 15, b's byte
+   c[i] - 16 when it is 16 to 31, and 0 past that (a's or b's byte 0 of the next 32 for c's high bits, which the
+   caller's range test discards). The tables' orders differ: vperm indexes a 32-byte big-endian pair, so a little-endian
+   host indexes with 15 - c; vshuf.b takes the high table first; vshf.b's first operand is the index and the
+   destination; vrgather.vv gathers one register, so the two results are selected between. */
+static V shuffle16(SnxIr* ir, V a, V b, V c) {
+    LLVMTypeRef v16i8 = LLVMTypeOf(a);
+    V args[4];
+    if (ir->features->ppc) {
+        /* vperm shuffles the 32-byte pair big-endian: index byte k takes the pair's byte k, which is the IR lane
+           15 - k. A little-endian host therefore indexes the tables with 15 - c, whose low five bits still pick the
+           right table for c's high bit */
+        LLVMTypeRef v4i32 = ir_vec_type(ir, 2, 4);
+        if (!ir->big_endian) c = LLVMBuildSub(B, ir_vec_like(ir, c, 15), c, "");
+        args[0] = LLVMBuildBitCast(B, a, v4i32, "");
+        args[1] = LLVMBuildBitCast(B, b, v4i32, "");
+        args[2] = c;
+        return LLVMBuildBitCast(B, ir_intrinsic(ir, "llvm.ppc.altivec.vperm", NULL, args, 3), v16i8, "");
+    }
+    if (ir->features->loongarch) {
+        args[0] = b;
+        args[1] = a;
+        args[2] = c;
+        return ir_intrinsic(ir, "llvm.loongarch.lsx.vshuf.b", NULL, args, 3);
+    }
+    if (ir->features->mips) {
+        args[0] = c;
+        args[1] = b;
+        args[2] = a;
+        return ir_intrinsic(ir, "llvm.mips.vshf.b", NULL, args, 3);
+    }
+    {
+        /* RISC-V V: vrgather.vv gathers one register, so each table is gathered on its own (an index past the 16
+           lanes gives 0) and the two results are selected between. Its declaration's overloaded types are the vector
+           and the AVL, which the name mangles as .i64 */
+        LLVMTypeRef scalable = LLVMScalableVectorType(ir->t_i8, 16), v16i8_type = ir_vec_type(ir, 0, 16);
+        LLVMTypeRef insert_types[2] = {scalable, v16i8_type}, extract_types[2] = {v16i8_type, scalable};
+        LLVMTypeRef gather_types[2] = {scalable, ir->t_i64};
+        V zero = LLVMConstInt(ir->t_i64, 0, 0), vl = LLVMConstInt(ir->t_i64, 16, 0), inserted[3], gathered[4];
+        V tables[2], indices[2], result[2];
+        tables[0] = a;
+        tables[1] = b;
+        indices[0] = c;
+        indices[1] = LLVMBuildSub(B, c, ir_vec_like(ir, c, 16), "");
+        for (unsigned t = 0; t < 2; ++t) {
+            inserted[0] = LLVMGetUndef(scalable);
+            inserted[1] = tables[t];
+            inserted[2] = zero;
+            V table = intrinsic_at(ir, "llvm.vector.insert.nxv16i8.v16i8", insert_types, 2, inserted, 3);
+            inserted[1] = indices[t];
+            inserted[2] = zero;
+            V index = intrinsic_at(ir, "llvm.vector.insert.nxv16i8.v16i8", insert_types, 2, inserted, 3);
+            gathered[0] = LLVMGetUndef(scalable);
+            gathered[1] = table;
+            gathered[2] = index;
+            gathered[3] = vl;
+            V gathered_vector = intrinsic_at(ir, "llvm.riscv.vrgather.vv.nxv16i8", gather_types, 2, gathered, 4);
+            V extracted[2] = {gathered_vector, zero};
+            result[t] = intrinsic_at(ir, "llvm.vector.extract.v16i8.nxv16i8", extract_types, 2, extracted, 2);
+        }
+        return sel(ir, cmp(ir, LLVMIntULT, c, ir_vec_like(ir, c, 16)), result[0], result[1]);
+    }
+}
+
+/* An 8-byte index in the lower lanes of a 16-lane one, the rest poison: Q=0 only reads the low lanes, and duplicating
+   them makes LLVM 23's MIPS backend emit a malformed dinsu */
+static V widen_low(SnxIr* ir, V v) {
+    static const unsigned mask[16] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 8, 8, 8, 8, 8};
+    return ir_vec_shuffle(ir, v, LLVMGetUndef(LLVMTypeOf(v)), mask, 16);
+}
+
 /* TBL, TBX: each index byte of Vm picks a byte of the len + 1 consecutive table registers from Vn (modulo 32), out
-   of range giving 0 (TBL) or Vd's byte (TBX). pshufb or AArch64's TBL where the host has them, else one byte at a
-   time */
+   of range giving 0 (TBL) or Vd's byte (TBX). pshufb or AArch64's TBL where the host has them, a host permute of two
+   tables at a time where it has one, else one byte at a time */
 static void tbl(SnxIr* ir, const SnxA64Args* a) {
     unsigned bytes = a->q ? 16 : 8, regs = (unsigned)a->len + 1;
     V idx = reg(ir, (unsigned)a->rm, 0, bytes), r = NULL, d = a->tbx ? reg(ir, (unsigned)a->rd, 0, bytes) : NULL;
@@ -797,10 +892,9 @@ static void tbl(SnxIr* ir, const SnxA64Args* a) {
         for (unsigned t = 0; t < regs; ++t) args[count++] = tables[t];
         args[count++] = idx;
         r = ir_intrinsic(ir, a->tbx ? tbx_names[regs - 1] : tbl_names[regs - 1], LLVMTypeOf(idx), args, count);
-    } else if (ir->features->x86 && ir->features->sse42) {
+    } else if (ir->features->x86 && ir->features->ssse3) {
         LLVMTypeRef bytes16 = ir_vec_type(ir, 0, 16);
-        static const unsigned twice[16] = {0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7};
-        V wide = bytes == 16 ? idx : ir_vec_shuffle(ir, idx, idx, twice, 16);
+        V wide = bytes == 16 ? idx : widen_low(ir, idx);
         V out = LLVMConstNull(bytes16);
         for (unsigned t = 0; t < regs; ++t) {
             V rel = LLVMBuildSub(B, wide, ir_vec_k(ir, bytes16, 16 * t), ""), args[2];
@@ -808,6 +902,20 @@ static void tbl(SnxIr* ir, const SnxA64Args* a) {
             args[0] = tables[t];
             args[1] = LLVMBuildOr(B, rel, LLVMBuildAnd(B, outside, ir_vec_k(ir, bytes16, 0x80), ""), "");
             out = LLVMBuildOr(B, out, ir_intrinsic(ir, "llvm.x86.ssse3.pshuf.b.128", NULL, args, 2), "");
+        }
+        r = bytes == 16 ? out : ir_vec_shuffle(ir, out, out, (const unsigned[]){0, 1, 2, 3, 4, 5, 6, 7}, 8);
+        if (a->tbx) r = sel(ir, cmp(ir, LLVMIntUGE, idx, ir_vec_like(ir, idx, 16 * regs)), d, r);
+    } else if (other_permute(ir->features)) {
+        LLVMTypeRef bytes16 = ir_vec_type(ir, 0, 16);
+        V wide = bytes == 16 ? idx : widen_low(ir, idx);
+        V out = LLVMConstNull(bytes16);
+        for (unsigned pair = 0; 2 * pair < regs; ++pair) {
+            V first = tables[2 * pair];
+            V second = 2 * pair + 1 < regs ? tables[2 * pair + 1] : LLVMConstNull(bytes16);
+            V control = LLVMBuildSub(B, wide, ir_vec_k(ir, bytes16, 32 * pair), "");
+            V inside = cmp(ir, LLVMIntULT, control, ir_vec_k(ir, bytes16, 32));
+            V part = shuffle16(ir, first, second, control);
+            out = LLVMBuildOr(B, out, sel(ir, inside, part, LLVMConstNull(bytes16)), "");
         }
         r = bytes == 16 ? out : ir_vec_shuffle(ir, out, out, (const unsigned[]){0, 1, 2, 3, 4, 5, 6, 7}, 8);
         if (a->tbx) r = sel(ir, cmp(ir, LLVMIntUGE, idx, ir_vec_like(ir, idx, 16 * regs)), d, r);

@@ -970,45 +970,45 @@ SCVTF_vi           aarch64   guarded  snx_fp_from_int
 SCVTF_vi           generic   guarded  snx_fp_from_int
 SCVTF_vi           x86       guarded  snx_fp_from_int
 SCVTF_vi           x86-base  guarded  snx_fp_from_int
-SHA1C              aarch64   helper   v_sha1
+SHA1C              aarch64   inline
 SHA1C              generic   helper   v_sha1
 SHA1C              x86       helper   v_sha1
 SHA1C              x86-base  helper   v_sha1
-SHA1H              aarch64   helper   v_sha1
+SHA1H              aarch64   inline
 SHA1H              generic   helper   v_sha1
 SHA1H              x86       helper   v_sha1
 SHA1H              x86-base  helper   v_sha1
-SHA1M              aarch64   helper   v_sha1
+SHA1M              aarch64   inline
 SHA1M              generic   helper   v_sha1
 SHA1M              x86       helper   v_sha1
 SHA1M              x86-base  helper   v_sha1
-SHA1P              aarch64   helper   v_sha1
+SHA1P              aarch64   inline
 SHA1P              generic   helper   v_sha1
 SHA1P              x86       helper   v_sha1
 SHA1P              x86-base  helper   v_sha1
-SHA1SU0            aarch64   helper   v_sha1
+SHA1SU0            aarch64   inline
 SHA1SU0            generic   helper   v_sha1
 SHA1SU0            x86       helper   v_sha1
 SHA1SU0            x86-base  helper   v_sha1
-SHA1SU1            aarch64   helper   v_sha1
+SHA1SU1            aarch64   inline
 SHA1SU1            generic   helper   v_sha1
 SHA1SU1            x86       helper   v_sha1
 SHA1SU1            x86-base  helper   v_sha1
-SHA256H            aarch64   helper   v_sha256
+SHA256H            aarch64   inline
 SHA256H            generic   helper   v_sha256
-SHA256H            x86       helper   v_sha256
+SHA256H            x86       inline
 SHA256H            x86-base  helper   v_sha256
-SHA256H2           aarch64   helper   v_sha256
+SHA256H2           aarch64   inline
 SHA256H2           generic   helper   v_sha256
-SHA256H2           x86       helper   v_sha256
+SHA256H2           x86       inline
 SHA256H2           x86-base  helper   v_sha256
-SHA256SU0          aarch64   helper   v_sha256
+SHA256SU0          aarch64   inline
 SHA256SU0          generic   helper   v_sha256
-SHA256SU0          x86       helper   v_sha256
+SHA256SU0          x86       inline
 SHA256SU0          x86-base  helper   v_sha256
-SHA256SU1          aarch64   helper   v_sha256
+SHA256SU1          aarch64   inline
 SHA256SU1          generic   helper   v_sha256
-SHA256SU1          x86       helper   v_sha256
+SHA256SU1          x86       inline
 SHA256SU1          x86-base  helper   v_sha256
 SHADD_v            aarch64   inline
 SHADD_v            generic   inline
@@ -1186,11 +1186,11 @@ SQRDMULH_vi        aarch64   inline
 SQRDMULH_vi        generic   inline
 SQRDMULH_vi        x86       inline
 SQRDMULH_vi        x86-base  inline
-SQRSHL_s           aarch64   helper   snx_vec_shl
+SQRSHL_s           aarch64   inline
 SQRSHL_s           generic   helper   snx_vec_shl
 SQRSHL_s           x86       inline
 SQRSHL_s           x86-base  helper   snx_vec_shl
-SQRSHL_v           aarch64   helper   snx_vec_shl
+SQRSHL_v           aarch64   inline
 SQRSHL_v           generic   helper   snx_vec_shl
 SQRSHL_v           x86       inline
 SQRSHL_v           x86-base  helper   snx_vec_shl
@@ -1218,7 +1218,7 @@ SQSHLU_vi          aarch64   inline
 SQSHLU_vi          generic   inline
 SQSHLU_vi          x86       inline
 SQSHLU_vi          x86-base  inline
-SQSHL_s            aarch64   helper   snx_vec_shl
+SQSHL_s            aarch64   inline
 SQSHL_s            generic   helper   snx_vec_shl
 SQSHL_s            x86       inline
 SQSHL_s            x86-base  helper   snx_vec_shl
@@ -1226,7 +1226,7 @@ SQSHL_si           aarch64   inline
 SQSHL_si           generic   inline
 SQSHL_si           x86       inline
 SQSHL_si           x86-base  inline
-SQSHL_v            aarch64   helper   snx_vec_shl
+SQSHL_v            aarch64   inline
 SQSHL_v            generic   helper   snx_vec_shl
 SQSHL_v            x86       inline
 SQSHL_v            x86-base  helper   snx_vec_shl
@@ -1286,11 +1286,11 @@ SRI_v              aarch64   inline
 SRI_v              generic   inline
 SRI_v              x86       inline
 SRI_v              x86-base  inline
-SRSHL_s            aarch64   helper   snx_vec_shl
+SRSHL_s            aarch64   inline
 SRSHL_s            generic   helper   snx_vec_shl
 SRSHL_s            x86       inline
 SRSHL_s            x86-base  helper   snx_vec_shl
-SRSHL_v            aarch64   helper   snx_vec_shl
+SRSHL_v            aarch64   inline
 SRSHL_v            generic   helper   snx_vec_shl
 SRSHL_v            x86       inline
 SRSHL_v            x86-base  helper   snx_vec_shl
@@ -1518,11 +1518,11 @@ UQADD_v            aarch64   inline
 UQADD_v            generic   inline
 UQADD_v            x86       inline
 UQADD_v            x86-base  inline
-UQRSHL_s           aarch64   helper   snx_vec_shl
+UQRSHL_s           aarch64   inline
 UQRSHL_s           generic   helper   snx_vec_shl
 UQRSHL_s           x86       inline
 UQRSHL_s           x86-base  helper   snx_vec_shl
-UQRSHL_v           aarch64   helper   snx_vec_shl
+UQRSHL_v           aarch64   inline
 UQRSHL_v           generic   helper   snx_vec_shl
 UQRSHL_v           x86       inline
 UQRSHL_v           x86-base  helper   snx_vec_shl
@@ -1534,7 +1534,7 @@ UQRSHRN_v          aarch64   inline
 UQRSHRN_v          generic   inline
 UQRSHRN_v          x86       inline
 UQRSHRN_v          x86-base  inline
-UQSHL_s            aarch64   helper   snx_vec_shl
+UQSHL_s            aarch64   inline
 UQSHL_s            generic   helper   snx_vec_shl
 UQSHL_s            x86       inline
 UQSHL_s            x86-base  helper   snx_vec_shl
@@ -1542,7 +1542,7 @@ UQSHL_si           aarch64   inline
 UQSHL_si           generic   inline
 UQSHL_si           x86       inline
 UQSHL_si           x86-base  inline
-UQSHL_v            aarch64   helper   snx_vec_shl
+UQSHL_v            aarch64   inline
 UQSHL_v            generic   helper   snx_vec_shl
 UQSHL_v            x86       inline
 UQSHL_v            x86-base  helper   snx_vec_shl
@@ -1582,11 +1582,11 @@ URHADD_v           aarch64   inline
 URHADD_v           generic   inline
 URHADD_v           x86       inline
 URHADD_v           x86-base  inline
-URSHL_s            aarch64   helper   snx_vec_shl
+URSHL_s            aarch64   inline
 URSHL_s            generic   helper   snx_vec_shl
 URSHL_s            x86       inline
 URSHL_s            x86-base  helper   snx_vec_shl
-URSHL_v            aarch64   helper   snx_vec_shl
+URSHL_v            aarch64   inline
 URSHL_v            generic   helper   snx_vec_shl
 URSHL_v            x86       inline
 URSHL_v            x86-base  helper   snx_vec_shl

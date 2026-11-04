@@ -262,6 +262,8 @@ char* snx_find_tool(const char* name);
 /* argv is NULL terminated. No shell. Captured output is heap-owned by caller.
    home isolates HOME/USERPROFILE and removes XDG_CONFIG_HOME in the child. */
 int snx_run(const char* const* argv, const char* cwd, const char* home, char** output);
+/* snx_run's, the whole output: snx_run keeps the last megabyte of a long one, a listing needs all of it */
+int snx_run_all(const char* const* argv, const char* cwd, const char* home, char** output);
 /* snx_run calling tick(data) about once a second while the child runs: a long tool can say how far it is */
 int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, char** output, void (*tick)(void*),
                     void* data);

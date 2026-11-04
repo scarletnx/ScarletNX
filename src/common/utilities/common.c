@@ -1829,15 +1829,15 @@ char* snx_find_tool(const char* name) {
     return NULL;
 }
 
-/* Keep a bounded diagnostic tail: container tools can emit gigabytes of listings. */
-static void append_output(char** text, size_t* used, const char* buf, size_t n) {
+/* limit keeps the last limit bytes (0 keeps all): a tool's error report is at its end, its listing is not */
+static void append_output(char** text, size_t* used, const char* buf, size_t n, size_t limit) {
     size_t drop;
-    if (n > 1048576) {
-        buf += n - 1048576;
-        n = 1048576;
+    if (limit && n > limit) {
+        buf += n - limit;
+        n = limit;
     }
-    if (*used + n > 1048576) {
-        drop = *used + n - 1048576;
+    if (limit && *used + n > limit) {
+        drop = *used + n - limit;
         memmove(*text, *text + drop, *used - drop);
         *used -= drop;
     }
@@ -1910,11 +1910,20 @@ static void tick_due(double* ticked, void (*tick)(void*), void* data) {
     *ticked = snx_seconds();
     tick(data);
 }
+static int run_ticking(const char* const* argv, const char* cwd, const char* home, char** output, void (*tick)(void*),
+                       void* data, size_t limit);
 int snx_run(const char* const* argv, const char* cwd, const char* home, char** output) {
     return snx_run_ticking(argv, cwd, home, output, NULL, NULL);
 }
+int snx_run_all(const char* const* argv, const char* cwd, const char* home, char** output) {
+    return run_ticking(argv, cwd, home, output, NULL, NULL, 0);
+}
 int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, char** output, void (*tick)(void*),
                     void* data) {
+    return run_ticking(argv, cwd, home, output, tick, data, 1048576);
+}
+static int run_ticking(const char* const* argv, const char* cwd, const char* home, char** output, void (*tick)(void*),
+                       void* data, size_t limit) {
     char buf[8192];
     size_t used = 0;
     double ticked = snx_seconds();
@@ -1930,7 +1939,7 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
         free(cmd);
         free(dir);
         free(env);
-        int result = snx_run_ticking(argv, cwd, home, &captured, tick, data);
+        int result = run_ticking(argv, cwd, home, &captured, tick, data, limit);
         if (captured) {
             fputs(captured, stdout);
             free(captured);
@@ -2010,7 +2019,7 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
                 }
             }
             if (!ReadFile(rd, buf, ready && ready < sizeof(buf) ? ready : sizeof(buf), &got, NULL) || !got) break;
-            append_output(output, &used, buf, got);
+            append_output(output, &used, buf, got, limit);
         }
         CloseHandle(rd);
     }
@@ -2062,7 +2071,7 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
             }
             got = read(fds[0], buf, sizeof(buf));
             if (got > 0)
-                append_output(output, &used, buf, (size_t)got);
+                append_output(output, &used, buf, (size_t)got, limit);
             else if (got == 0 || errno != EINTR)
                 break;
         }
