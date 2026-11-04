@@ -970,12 +970,8 @@ static bool program_arrays(G2Program* p, Link* l) {
     return true;
 }
 
-static void g_link_program(CPU* c, Gles2Context* gl) {
-    G2Program* p = gles2_program((unsigned)X(0));
-    if (!p) {
-        gles2_error(gl, GL_INVALID_VALUE_);
-        return;
-    }
+/* the program's stages compiled and linked */
+static void link(G2Program* p) {
     program_unlink(p);
     p->generation++;
     Link* l = calloc(1, sizeof *l);
@@ -983,7 +979,7 @@ static void g_link_program(CPU* c, Gles2Context* gl) {
     name_add(l, "", 0); /* offset 0 is the empty name: a default block's */
     G2Shader* stages[3] = {shader_object(p->shaders[0]), shader_object(p->shaders[1]), shader_object(p->shaders[2])};
     bool compute = stages[2] != NULL;
-    if (!compute && (!stages[0] || !stages[1])) {
+    if (!compute && (!stages[0] || !stages[1]) && (!p->separable || (!stages[0] && !stages[1]))) {
         link_fail(p, l, "a program needs a vertex and a fragment shader");
         goto done;
     }
@@ -1037,6 +1033,14 @@ done:
     free(l->outputs);
     free(l->names);
     free(l);
+}
+static void g_link_program(CPU* c, Gles2Context* gl) {
+    G2Program* p = gles2_program((unsigned)X(0));
+    if (!p) {
+        gles2_error(gl, GL_INVALID_VALUE_);
+        return;
+    }
+    link(p);
 }
 
 /* ---- the program in use, and its uniforms ---- */
@@ -1092,9 +1096,8 @@ static G2Uniform* uniform_at(Gles2Context* gl, G2Program* p, int32_t location, u
 }
 
 /* count values of comps 32-bit components (a matrix: cols columns) at data into the uniform at location */
-static void uniform_write(Gles2Context* gl, int32_t location, int count, const unsigned char* data, int comps,
-                          char kind, bool transpose) {
-    G2Program* p = gles2_program(gl->program);
+static void uniform_write(Gles2Context* gl, G2Program* p, int32_t location, int count, const unsigned char* data,
+                          int comps, char kind, bool transpose) {
     uint32_t element = 0;
     G2Uniform* u = uniform_at(gl, p, location, &element);
     if (!u || count <= 0) return;
@@ -1143,6 +1146,194 @@ static void uniform_write(Gles2Context* gl, int32_t location, int count, const u
     }
 }
 
+/* ---- program pipelines (GLES 3.1) ---- */
+
+static G2ProgramPipeline* pipeline_object(unsigned name) {
+    return name && name < g_gles2.program_pipeline_count && g_gles2.program_pipelines[name].used
+               ? &g_gles2.program_pipelines[name]
+               : NULL;
+}
+/* the program glUniform* writes: the current one, else the bound pipeline's active program */
+static G2Program* uniform_program(Gles2Context* gl) {
+    if (gl->program || !gl->program_pipeline) return gles2_program(gl->program);
+    G2ProgramPipeline* pp = pipeline_object(gl->program_pipeline);
+    return pp ? gles2_program(pp->active) : NULL;
+}
+/* the binding of program q of the same kind and name as b, or NULL */
+static const G2Binding* same_binding(const G2Program* p, const G2Binding* b, const G2Program* q) {
+    for (uint32_t i = 0; q && i < q->binding_count; ++i)
+        if (q->bindings[i].kind == b->kind && b->name && q->bindings[i].name &&
+            !strcmp(q->names + q->bindings[i].name, p->names + b->name))
+            return &q->bindings[i];
+    return NULL;
+}
+G2Program* gles2_draw_program(Gles2Context* gl, bool compute) {
+    G2Program* p = gles2_program(gl->program);
+    if (p || !gl->program_pipeline) return p;
+    G2ProgramPipeline* pp = pipeline_object(gl->program_pipeline);
+    if (!pp) return NULL;
+    if (compute) return gles2_program(pp->stages[2]);
+    G2Program* v = gles2_program(pp->stages[0]);
+    G2Program* f = gles2_program(pp->stages[1]);
+    if (!v || !f || !v->linked || !f->linked) return NULL;
+    G2Program* h = gles2_program(pp->linked);
+    if (!h || pp->names[0] != pp->stages[0] || pp->names[1] != pp->stages[1] || pp->generations[0] != v->generation ||
+        pp->generations[1] != f->generation) {
+        /* the two stages' shaders linked together, as one program would have them */
+        G2Shader* vs = shader_object(v->shaders[0]);
+        G2Shader* fs = shader_object(f->shaders[1]);
+        if (!vs || !fs) {
+            gles2_warn(23, "a program pipeline whose programs' shaders are gone: it is not drawn");
+            return NULL;
+        }
+        if (h) program_free(h);
+        unsigned name = new_name();
+        h = slot((void**)&g_gles2.programs, &g_gles2.program_count, sizeof *h, name);
+        if (!h) return NULL;
+        /* the programs may have moved with the array */
+        v = gles2_program(pp->stages[0]);
+        f = gles2_program(pp->stages[1]);
+        *h = (G2Program){.used = true, .hidden = true, .shaders = {v->shaders[0], f->shaders[1], 0}};
+        vs->attached++;
+        fs->attached++;
+        link(h);
+        pp->linked = name;
+        pp->names[0] = pp->stages[0], pp->names[1] = pp->stages[1];
+        pp->generations[0] = v->generation, pp->generations[1] = f->generation;
+        if (!h->linked) return NULL;
+    }
+    /* the stages' uniforms: each stage's default block, the samplers' units, the blocks' binding points */
+    for (int stage = 0; stage < 2; ++stage) {
+        const G2Program* from = stage ? f : v;
+        if (h->default_size[stage] == from->default_size[stage] && h->default_size[stage] &&
+            memcmp(h->defaults[stage], from->defaults[stage], h->default_size[stage])) {
+            memcpy(h->defaults[stage], from->defaults[stage], h->default_size[stage]);
+            h->default_dirty[stage] = true;
+        }
+    }
+    for (uint32_t i = 0; i < h->binding_count; ++i) {
+        const G2Binding* b = &h->bindings[i];
+        const G2Program* owner = v;
+        const G2Binding* x = same_binding(h, b, v);
+        if (!x) x = same_binding(h, b, f), owner = f;
+        if (!x || x->count != b->count) continue;
+        if (b->kind == SNX_GLSLC_REFLECT_SAMPLER)
+            memcpy(&h->units[b->first], &owner->units[x->first], b->count * sizeof *h->units);
+        else if (b->kind == SNX_GLSLC_REFLECT_UNIFORM_BLOCK && b->first < G2_UBO_BINDINGS && x->first < G2_UBO_BINDINGS)
+            h->block_binding[b->first] = owner->block_binding[x->first];
+    }
+    return h;
+}
+
+static void g_gen_program_pipelines(CPU* c, Gles2Context* gl) {
+    int n = (int)X(0);
+    if (n < 0) {
+        gles2_error(gl, GL_INVALID_VALUE_);
+        return;
+    }
+    unsigned name = 1;
+    for (int i = 0; i < n; ++i) {
+        while (name < g_gles2.program_pipeline_count && g_gles2.program_pipelines[name].used) ++name;
+        G2ProgramPipeline* pp = slot((void**)&g_gles2.program_pipelines, &g_gles2.program_pipeline_count, sizeof *pp,
+                                     name);
+        uint32_t v = 0;
+        if (pp) {
+            *pp = (G2ProgramPipeline){.used = true};
+            v = name++;
+        }
+        memcpy((unsigned char*)PTR(1) + 4 * i, &v, 4);
+    }
+}
+static void g_delete_program_pipelines(CPU* c, Gles2Context* gl) {
+    int n = (int)X(0);
+    for (int i = 0; i < n; ++i) {
+        uint32_t name;
+        memcpy(&name, (unsigned char*)PTR(1) + 4 * i, 4);
+        G2ProgramPipeline* pp = pipeline_object(name);
+        if (!pp) continue;
+        G2Program* h = gles2_program(pp->linked);
+        if (h && h->hidden) program_free(h);
+        *pp = (G2ProgramPipeline){0};
+        if (gl->program_pipeline == name) gl->program_pipeline = 0;
+    }
+}
+static void g_is_program_pipeline(CPU* c, Gles2Context* gl) {
+    (void)gl;
+    X(0) = pipeline_object((unsigned)X(0)) != NULL;
+}
+static void g_bind_program_pipeline(CPU* c, Gles2Context* gl) {
+    unsigned name = (unsigned)X(0);
+    if (name && !pipeline_object(name)) gles2_error(gl, GL_INVALID_OPERATION_);
+    else gl->program_pipeline = name;
+}
+/* glUseProgramStages(pipeline, stages, program): GL_VERTEX_SHADER_BIT 1, GL_FRAGMENT_SHADER_BIT 2,
+   GL_COMPUTE_SHADER_BIT 0x20 */
+static void g_use_program_stages(CPU* c, Gles2Context* gl) {
+    G2ProgramPipeline* pp = pipeline_object((unsigned)X(0));
+    unsigned bits = (unsigned)X(1), name = (unsigned)X(2);
+    G2Program* p = gles2_program(name);
+    if (!pp || (name && (!p || !p->linked || !p->separable))) {
+        gles2_error(gl, GL_INVALID_OPERATION_);
+        return;
+    }
+    if (bits & 1) pp->stages[0] = name;
+    if (bits & 2) pp->stages[1] = name;
+    if (bits & 0x20) pp->stages[2] = name;
+}
+static void g_active_shader_program(CPU* c, Gles2Context* gl) {
+    G2ProgramPipeline* pp = pipeline_object((unsigned)X(0));
+    if (pp) pp->active = (unsigned)X(1);
+    else gles2_error(gl, GL_INVALID_OPERATION_);
+}
+static void g_validate_program_pipeline(CPU* c, Gles2Context* gl) {
+    if (!pipeline_object((unsigned)X(0))) gles2_error(gl, GL_INVALID_OPERATION_);
+}
+static void g_get_program_pipelineiv(CPU* c, Gles2Context* gl) {
+    G2ProgramPipeline* pp = pipeline_object((unsigned)X(0));
+    int32_t v = 0;
+    if (!pp) {
+        gles2_error(gl, GL_INVALID_OPERATION_);
+        return;
+    }
+    switch ((unsigned)X(1)) {
+    case 0x8259: v = (int32_t)pp->active; break; /* GL_ACTIVE_PROGRAM */
+    case GL_VERTEX_SHADER_: v = (int32_t)pp->stages[0]; break;
+    case GL_FRAGMENT_SHADER_: v = (int32_t)pp->stages[1]; break;
+    case GL_COMPUTE_SHADER_: v = (int32_t)pp->stages[2]; break;
+    case 0x8b83: v = pp->stages[2] || (pp->stages[0] && pp->stages[1]); break; /* GL_VALIDATE_STATUS */
+    case 0x8b84: v = 0; break;
+    default: gles2_error(gl, GL_INVALID_ENUM_); return;
+    }
+    memcpy(PTR(2), &v, 4);
+}
+static void g_get_program_pipeline_info_log(CPU* c, Gles2Context* gl) {
+    (void)gl;
+    string_out("", (int32_t)X(1), PTR(2), PTR(3));
+}
+/* glCreateShaderProgramv(type, count, strings): a separable program of one stage, its shader kept with it */
+static void g_create_shader_program(CPU* c, Gles2Context* gl) {
+    unsigned type = (unsigned)X(0);
+    uint64_t count = X(1), strings = X(2);
+    X(0) = type;
+    g_create_shader(c, gl);
+    unsigned shader = (unsigned)X(0);
+    if (!shader) return;
+    X(0) = shader, X(1) = count, X(2) = strings, X(3) = 0;
+    g_shader_source(c, gl);
+    X(0) = shader;
+    g_compile_shader(c, gl);
+    g_create_program(c, gl);
+    unsigned name = (unsigned)X(0);
+    G2Program* p = gles2_program(name);
+    if (!p) return;
+    p->separable = true;
+    p->shaders[stage_index(type)] = shader;
+    shader_object(shader)->attached++;
+    shader_object(shader)->deleted = true; /* it goes with the program */
+    link(p);
+    X(0) = name;
+}
+
 #define UNIFORM_SCALARS(n, suffix, kind)                                                                               \
     static void g_uniform##n##suffix(CPU* c, Gles2Context* gl) {                                                       \
         uint32_t v[4];                                                                                                 \
@@ -1154,10 +1345,25 @@ static void uniform_write(Gles2Context* gl, int32_t location, int count, const u
                 v[i] = (uint32_t)X(1 + i);                                                                             \
             }                                                                                                          \
         }                                                                                                              \
-        uniform_write(gl, (int32_t)X(0), 1, (const unsigned char*)v, n, kind, false);                                  \
+        uniform_write(gl, uniform_program(gl), (int32_t)X(0), 1, (const unsigned char*)v, n, kind, false);             \
     }                                                                                                                  \
     static void g_uniform##n##suffix##v(CPU* c, Gles2Context* gl) {                                                    \
-        uniform_write(gl, (int32_t)X(0), (int)X(1), PTR(2), n, kind, false);                                           \
+        uniform_write(gl, uniform_program(gl), (int32_t)X(0), (int)X(1), PTR(2), n, kind, false);                      \
+    }                                                                                                                  \
+    static void g_program_uniform##n##suffix(CPU* c, Gles2Context* gl) {                                               \
+        uint32_t v[4];                                                                                                 \
+        for (unsigned i = 0; i < n; ++i) {                                                                             \
+            if (kind == 'f') {                                                                                         \
+                float f = hle_f(c, i);                                                                                 \
+                memcpy(&v[i], &f, 4);                                                                                  \
+            } else {                                                                                                   \
+                v[i] = (uint32_t)X(2 + i);                                                                             \
+            }                                                                                                          \
+        }                                                                                                              \
+        uniform_write(gl, gles2_program((unsigned)X(0)), (int32_t)X(1), 1, (const unsigned char*)v, n, kind, false);   \
+    }                                                                                                                  \
+    static void g_program_uniform##n##suffix##v(CPU* c, Gles2Context* gl) {                                            \
+        uniform_write(gl, gles2_program((unsigned)X(0)), (int32_t)X(1), (int)X(2), PTR(3), n, kind, false);            \
     }
 UNIFORM_SCALARS(1, f, 'f')
 UNIFORM_SCALARS(2, f, 'f')
@@ -1174,7 +1380,11 @@ UNIFORM_SCALARS(4, ui, 'u')
 #undef UNIFORM_SCALARS
 #define UNIFORM_MATRIX(name, n)                                                                                        \
     static void g_uniform_matrix##name(CPU* c, Gles2Context* gl) {                                                     \
-        uniform_write(gl, (int32_t)X(0), (int)X(1), PTR(3), n, 'f', (X(2) & 0xff) != 0);                               \
+        uniform_write(gl, uniform_program(gl), (int32_t)X(0), (int)X(1), PTR(3), n, 'f', (X(2) & 0xff) != 0);          \
+    }                                                                                                                  \
+    static void g_program_uniform_matrix##name(CPU* c, Gles2Context* gl) {                                             \
+        uniform_write(gl, gles2_program((unsigned)X(0)), (int32_t)X(1), (int)X(2), PTR(4), n, 'f',                     \
+                      (X(3) & 0xff) != 0);                                                                             \
     }
 UNIFORM_MATRIX(2, 4)
 UNIFORM_MATRIX(3, 9)
@@ -1275,6 +1485,7 @@ static void g_get_programiv(CPU* c, Gles2Context* gl) {
     switch ((unsigned)X(1)) {
     case 0x8b80: v = p->deleted; break;
     case 0x8b82: v = p->linked; break;
+    case 0x8258: v = p->separable; break; /* GL_PROGRAM_SEPARABLE */
     case 0x8b83: v = p->linked; break;
     case 0x8b84: v = p->log && p->log[0] ? (int32_t)strlen(p->log) + 1 : 0; break;
     case 0x8b85: v = (p->shaders[0] != 0) + (p->shaders[1] != 0) + (p->shaders[2] != 0); break;
@@ -1699,6 +1910,11 @@ static void g_get_program_binary(CPU* c, Gles2Context* gl) {
 static void g_program_nothing(CPU* c, Gles2Context* gl) {
     (void)c, (void)gl;
 }
+/* glProgramParameteri(program, pname, value): GL_PROGRAM_SEPARABLE; the binary hint has no effect */
+static void g_program_parameteri(CPU* c, Gles2Context* gl) {
+    G2Program* p = program_arg(gl, X(0));
+    if (p && (unsigned)X(1) == 0x8258) p->separable = X(2) != 0;
+}
 static void g_transform_feedback_varyings(CPU* c, Gles2Context* gl) {
     (void)c, (void)gl;
     gles2_warn(7, "transform feedback is not drawn yet");
@@ -1750,7 +1966,17 @@ const HleSymbol hle_gles2_program[] = {
     FN("glProgramBinaryOES", g_program_binary),
     FN("glGetProgramBinary", g_get_program_binary),
     FN("glGetProgramBinaryOES", g_get_program_binary),
-    FN("glProgramParameteri", g_program_nothing),
+    FN("glProgramParameteri", g_program_parameteri),
+    FN("glGenProgramPipelines", g_gen_program_pipelines),
+    FN("glDeleteProgramPipelines", g_delete_program_pipelines),
+    FN("glIsProgramPipeline", g_is_program_pipeline),
+    FN("glBindProgramPipeline", g_bind_program_pipeline),
+    FN("glUseProgramStages", g_use_program_stages),
+    FN("glActiveShaderProgram", g_active_shader_program),
+    FN("glValidateProgramPipeline", g_validate_program_pipeline),
+    FN("glGetProgramPipelineiv", g_get_program_pipelineiv),
+    FN("glGetProgramPipelineInfoLog", g_get_program_pipeline_info_log),
+    FN("glCreateShaderProgramv", g_create_shader_program),
     FN("glTransformFeedbackVaryings", g_transform_feedback_varyings),
     FN("glGetTransformFeedbackVarying", g_program_nothing),
     FN("glUniform1f", g_uniform1f),
@@ -1786,5 +2012,38 @@ const HleSymbol hle_gles2_program[] = {
     FN("glUniformMatrix4x2fv", g_uniform_matrix4x2),
     FN("glUniformMatrix3x4fv", g_uniform_matrix3x4),
     FN("glUniformMatrix4x3fv", g_uniform_matrix4x3),
+    FN("glProgramUniform1f", g_program_uniform1f),
+    FN("glProgramUniform1fv", g_program_uniform1fv),
+    FN("glProgramUniform1i", g_program_uniform1i),
+    FN("glProgramUniform1iv", g_program_uniform1iv),
+    FN("glProgramUniform1ui", g_program_uniform1ui),
+    FN("glProgramUniform1uiv", g_program_uniform1uiv),
+    FN("glProgramUniform2f", g_program_uniform2f),
+    FN("glProgramUniform2fv", g_program_uniform2fv),
+    FN("glProgramUniform2i", g_program_uniform2i),
+    FN("glProgramUniform2iv", g_program_uniform2iv),
+    FN("glProgramUniform2ui", g_program_uniform2ui),
+    FN("glProgramUniform2uiv", g_program_uniform2uiv),
+    FN("glProgramUniform3f", g_program_uniform3f),
+    FN("glProgramUniform3fv", g_program_uniform3fv),
+    FN("glProgramUniform3i", g_program_uniform3i),
+    FN("glProgramUniform3iv", g_program_uniform3iv),
+    FN("glProgramUniform3ui", g_program_uniform3ui),
+    FN("glProgramUniform3uiv", g_program_uniform3uiv),
+    FN("glProgramUniform4f", g_program_uniform4f),
+    FN("glProgramUniform4fv", g_program_uniform4fv),
+    FN("glProgramUniform4i", g_program_uniform4i),
+    FN("glProgramUniform4iv", g_program_uniform4iv),
+    FN("glProgramUniform4ui", g_program_uniform4ui),
+    FN("glProgramUniform4uiv", g_program_uniform4uiv),
+    FN("glProgramUniformMatrix2fv", g_program_uniform_matrix2),
+    FN("glProgramUniformMatrix3fv", g_program_uniform_matrix3),
+    FN("glProgramUniformMatrix4fv", g_program_uniform_matrix4),
+    FN("glProgramUniformMatrix2x3fv", g_program_uniform_matrix2x3),
+    FN("glProgramUniformMatrix3x2fv", g_program_uniform_matrix3x2),
+    FN("glProgramUniformMatrix2x4fv", g_program_uniform_matrix2x4),
+    FN("glProgramUniformMatrix4x2fv", g_program_uniform_matrix4x2),
+    FN("glProgramUniformMatrix3x4fv", g_program_uniform_matrix3x4),
+    FN("glProgramUniformMatrix4x3fv", g_program_uniform_matrix4x3),
     {"", NULL, NULL},
 };

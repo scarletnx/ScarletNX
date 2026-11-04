@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_ANDROID_GLES2_H
 #define SNX_ANDROID_GLES2_H
-/* OpenGL ES 2.0 and 3.0 over Vulkan 1.3, as Mesa's zink does it (docs/android/NATIVE.md, "EGL and GLES"), on the
+/* OpenGL ES 2.0, 3.0 and 3.1 over Vulkan 1.3, as Mesa's zink does it (docs/android/NATIVE.md, "EGL and GLES"), on the
    device and surfaces of gles_vk.h:
 
    gles2.c          the contexts, the fixed state (enables, blend, depth, stencil, viewport), the queries of state,
@@ -230,6 +230,8 @@ typedef struct {
 
 typedef struct {
     bool used, deleted, linked;
+    bool separable; /* GL_PROGRAM_SEPARABLE: it links without the other stage */
+    bool hidden;    /* a program pipeline's stages linked together, which GL does not name */
     unsigned shaders[3]; /* the vertex, fragment and compute shaders attached */
     char* log;
     /* glBindAttribLocation's: name\0 pairs with their location, at the next link */
@@ -265,6 +267,17 @@ typedef struct {
     uint64_t default_serial[3];
     uint32_t local_size[3];
 } G2Program;
+
+/* GLES 3.1's program pipeline: a separable program for each stage. A draw uses a hidden program linked from the
+   stages' shaders, its uniforms copied from theirs */
+typedef struct {
+    bool used;
+    unsigned stages[3]; /* the vertex, fragment and compute stages' programs */
+    unsigned active;    /* glActiveShaderProgram's, for glUniform* */
+    unsigned linked;    /* the hidden program */
+    uint32_t generations[2]; /* of the vertex and fragment programs it was linked from */
+    unsigned names[2];
+} G2ProgramPipeline;
 
 /* the current values of the generic attributes (glVertexAttrib4f) */
 typedef struct {
@@ -313,6 +326,7 @@ typedef struct Gles2Context {
     unsigned textures[G2_UNITS][G2_TARGETS];
     unsigned samplers[G2_UNITS];
     unsigned program;
+    unsigned program_pipeline;
     /* the bindings */
     unsigned array_buffer, copy_read, copy_write, pixel_pack, pixel_unpack, uniform_buffer, tf_buffer;
     G2IndexedBuffer uniform_buffers[G2_UBO_BINDINGS];
@@ -375,6 +389,8 @@ typedef struct {
     size_t shader_count;
     G2Program* programs;
     size_t program_count;
+    G2ProgramPipeline* program_pipelines;
+    size_t program_pipeline_count;
     /* the Vulkan samplers by their state */
     struct {
         G2SamplerState state;
@@ -473,6 +489,9 @@ VkImageView gles2_image_unit(Gles2Context* gl, unsigned unit, uint8_t dim);
 void gles2_memory_barrier(VkCommandBuffer cb);
 
 /* gles2_program.c */
+/* the program a draw (or a dispatch, compute) uses: the current one, else the bound program pipeline's; NULL for
+   none */
+G2Program* gles2_draw_program(Gles2Context* gl, bool compute);
 /* the default block's of program p written to the frame's arena when they changed: true when each stage's is */
 bool gles2_program_defaults(GlesSlot* slot, G2Program* p);
 

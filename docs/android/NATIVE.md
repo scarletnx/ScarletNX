@@ -156,10 +156,10 @@ current are current for the native GLES calls of the same thread, as on Android.
 - **The configs** are GLES 1.1's, 2's and 3's (`EGL_OPENGL_ES_BIT`, `EGL_OPENGL_ES2_BIT`,
   `EGL_OPENGL_ES3_BIT_KHR`): RGBA 8888, RGB 888 and RGB 565, each with no depth buffer, a 16-bit one and a 24-bit one
   with 8 bits of stencil, for window surfaces and pbuffers, matched and sorted as `eglChooseConfig` does.
-- **A context** of version 1 is GLES 1.1's (`hle_gles.c`). One of version 2 or 3 is GLES 3.0's (`gles2*.c`), as a
-  phone's version 2 context is. A minor version past 3.0 is refused with `EGL_BAD_MATCH`, so an engine asks for 3.0
-  next. `glGetString` names the version that is there (`OpenGL ES 3.0`, `OpenGL ES GLSL ES 3.00`), and the Mali GPU
-  of `hle_gpu_name` as the renderer.
+- **A context** of version 1 is GLES 1.1's (`hle_gles.c`). One of version 2 or 3 is GLES 3.1's (`gles2*.c`), as a
+  phone's version 2 context is. Version 3.2 is refused with `EGL_BAD_MATCH`, so an engine asks for 3.1 next.
+  `glGetString` names the version that is there (`OpenGL ES 3.1`, `OpenGL ES GLSL ES 3.10`), and the Mali GPU of
+  `hle_gpu_name` as the renderer.
 - **A context without a config** (`EGL_KHR_no_config_context`) of any version can be made current without a surface,
   and `glGetString` answers with the GPU that Vulkan reports. Engines name the GPU from such a throwaway context
   before they choose an API, and choose Vulkan on the GPUs of their own lists. A GLES 2 context without a surface
@@ -192,7 +192,7 @@ GLES 1.1's formats, the texture environment of unit 0, the matrix stacks, `glDra
 `glDrawTexOES`, blending, the scissor and `glClear`. It does not do yet: depth and stencil tests, lighting, fog, the
 alpha test, mipmaps, the second texture unit, and `glReadPixels`, which reads zeros.
 
-**GLES 2 and 3.0** (`gles2.c`, `gles2_object.c`, `gles2_program.c`, `gles2_draw.c`) are done as Mesa's zink does them:
+**GLES 2, 3.0 and 3.1** (`gles2.c`, `gles2_object.c`, `gles2_program.c`, `gles2_draw.c`) are done as Mesa's zink does them:
 
 - **Shaders** compile with glslc (`docs/GLSLC.md`). `glCompileShader` compiles for the errors and the info log.
   `glLinkProgram` compiles each stage again with a binding map: binding 0 of the program's set is the vertex
@@ -232,14 +232,17 @@ alpha test, mipmaps, the second texture unit, and `glReadPixels`, which reads ze
   or client arrays (the range a draw reads copied into the frame's arena), divisors of 0 and 1, the generic attributes'
   current values, and indices of 8, 16 and 32 bits. A line loop is a line strip with an index back to its start.
   Vertex arrays, occlusion queries (`GL_ANY_SAMPLES_PASSED`), fence syncs and uniform buffers are there.
-- **GLES 3.1's calls** are there too, though a context names itself 3.0: compute shaders (`glDispatchCompute` and its
+- **GLES 3.1's calls**: compute shaders (`glDispatchCompute` and its
   indirect form), shader storage buffers, image units (`glBindImageTexture`: the texture then rests in `GENERAL`),
   `glMemoryBarrier`, indirect draws, the vertex attribute bindings (`glBindVertexBuffer`, `glVertexAttribFormat`),
   multisample textures, `glGetTexLevelParameter*`, the sample mask, the depth and stencil texture mode, and the
-  program interface queries. A dispatch has a barrier of every write on each side.
+  program interface queries, and separate shader objects: a program pipeline draws through a hidden program that
+  links its stages' shaders together, with the stages' uniforms copied into it at each draw. A dispatch has a
+  barrier of every write on each side. GLES 3.1's atomic counters are not there (glslc has no `atomic_uint`), and
+  their limits are 0.
 
-What GLES 2 and 3 do not do yet: transform feedback, GLES 3.1's separate shader objects (program pipelines) and its
-buffer variables in the interface queries, GLES 3.2's geometry and tessellation, a divisor past 1, `glClear` with a partial color mask (it clears every
+What GLES 2 and 3 do not do yet: transform feedback, GLES 3.1's atomic counters and its buffer variables in the
+interface queries, `glFramebufferParameteri`, GLES 3.2's geometry and tessellation, a divisor past 1, `glClear` with a partial color mask (it clears every
 channel), client depth and stencil texels for a 24-bit depth texture, ETC2 and ASTC on a device that has neither
 (the decode on the GPU), `glReadPixels` of a format other than RGBA or BGRA bytes, program binaries, and a pbuffer bound as a texture.
 
