@@ -5,6 +5,7 @@
 #include "common/utilities/cheat_list.h"
 #include "gui/aot.h"
 #include "common/utilities/mods.h"
+#include "common/utilities/game_ini.h"
 #include "gui/i18n.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -252,7 +253,8 @@ static size_t addons_of(const char* path, GuiGames* addons) {
         /* <game>_<its ID>_data: a DLC's record, or an update's beside its program */
         bool listed = n > 5 && !strcmp(names[i] + n - 5, "_data") && snx_is_dir(data);
         if (listed) stem[n - 5] = 0;
-        listed = listed && snx_addon_name(leaf, stem, &id);
+        /* another program of a collection's is no add-on: its game plays it (gui_game_programs) */
+        listed = listed && snx_addon_name(leaf, stem, &id) && snx_addon_kind(game, id) != SNX_ADDON_PROGRAM;
         if (listed && snx_addon_kind(game, id) == SNX_ADDON_UPDATE) {
 #if defined(__ANDROID__) || defined(SNX_IOS)
             char* file = snx_format("%s" GAME_CODE, stem);
@@ -345,6 +347,20 @@ size_t gui_game_mods(const char* path, char** folder, char*** names) {
         *names = listed;
     else
         snx_free_strings(listed, count);
+    free(dir);
+    return count;
+}
+int gui_game_programs(const char* path, int* programs) {
+    unsigned char made[SNX_PROGRAMS_MAX];
+    char* dir;
+    const char* leaf;
+    int i, count = 0;
+    if (!gui_game_folder(path)) return 0;
+    dir = snx_dirname(path);
+    for (leaf = dir + strlen(dir); leaf > dir && leaf[-1] != '/' && leaf[-1] != '\\'; --leaf) continue;
+    snx_game_programs(dir, leaf, made);
+    for (i = 1; i < SNX_PROGRAMS_MAX; i++)
+        if (made[i]) programs[count++] = i;
     free(dir);
     return count;
 }
