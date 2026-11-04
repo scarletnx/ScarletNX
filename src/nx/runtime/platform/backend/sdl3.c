@@ -13,6 +13,7 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/platform/backend.h"
 #include "common/utilities/keybind.h"
+#include "common/gpu/vk/hotkeys.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
@@ -929,37 +930,46 @@ static const char* help_text(char* out, size_t size) {
                  g_settings.tv_mode_key);
     return out;
 }
-/* the live upscaler cycle, at the key the .ini names: 1 when the event was that key (a repeat included, so the game
-   never sees it) */
-static int upscale_key_event(const SDL_KeyboardEvent* e) {
-    SnxKeybind bind;
-    if (!snx_keybind_parse(g_settings.upscaler_cycle_key, &bind) || !snx_keybind_match(&bind, e)) return 0;
-    if (!e->repeat) {
-        const char* label = g_renderer && g_renderer->cycle_upscale ? g_renderer->cycle_upscale() : NULL;
-        char text[64];
-        if (label) {
-            snprintf(text, sizeof text, "Upscaler: %s", label);
+/* The runtime's live keys, the same as the other frontends': the upscaler, the anti aliasing, HDR and frame
+   interpolation. A press is taken, a repeat included, so the game never sees it. */
+static void hdr_toggled(const char* why);
+static int effects_key_event(const SDL_KeyboardEvent* e) {
+    int action = snx_hotkey_match(e);
+    char text[64];
+    const char* label;
+    int value;
+    if (action == SNX_HOTKEY_NONE) return 0;
+    if (e->repeat) return 1;
+    switch (action) {
+        case SNX_HOTKEY_UPSCALER:
+            label = g_renderer && g_renderer->cycle_upscale ? g_renderer->cycle_upscale() : NULL;
+            if (label) {
+                snprintf(text, sizeof text, "Upscaler: %s", label);
+                ui_lock();
+                overlay_toast(text, plat_ns());
+                ui_unlock();
+                LOG("upscaler: %s (%s)\n", label, g_settings.upscaler_cycle_key);
+            }
+            break;
+        case SNX_HOTKEY_AA:
+            label = g_renderer && g_renderer->cycle_aa ? g_renderer->cycle_aa() : NULL;
+            if (label) {
+                snprintf(text, sizeof text, "Anti aliasing: %s", label);
+                ui_lock();
+                overlay_toast(text, plat_ns());
+                ui_unlock();
+                LOG("anti aliasing: %s (%s)\n", label, g_settings.anti_aliasing_key);
+            }
+            break;
+        case SNX_HOTKEY_HDR: hdr_toggled(g_settings.hdr_key); break;
+        case SNX_HOTKEY_INTERP:
+            value = snx_hotkey_next_interp();
+            snx_hotkey_text(action, value, text, sizeof text);
             ui_lock();
             overlay_toast(text, plat_ns());
             ui_unlock();
-            LOG("upscaler: %s (%s)\n", label, g_settings.upscaler_cycle_key);
-        }
-    }
-    return 1;
-}
-static int aa_key_event(const SDL_KeyboardEvent* e) {
-    SnxKeybind bind;
-    if (!snx_keybind_parse(g_settings.anti_aliasing_key, &bind) || !snx_keybind_match(&bind, e)) return 0;
-    if (!e->repeat) {
-        const char* label = g_renderer && g_renderer->cycle_aa ? g_renderer->cycle_aa() : NULL;
-        char text[64];
-        if (label) {
-            snprintf(text, sizeof text, "Anti aliasing: %s", label);
-            ui_lock();
-            overlay_toast(text, plat_ns());
-            ui_unlock();
-            LOG("anti aliasing: %s (%s)\n", label, g_settings.anti_aliasing_key);
-        }
+            LOG("%s (%s)\n", text, g_settings.frame_interpolation_key);
+            break;
     }
     return 1;
 }
@@ -973,14 +983,6 @@ static void hdr_toggled(const char* why) {
     overlay_toast(text, plat_ns());
     ui_unlock();
     LOG("hdr: %s (%s)\n", label, why);
-}
-/* the live HDR toggle, at the key the .ini names: 1 when the event was that key (a repeat included, so the game
-   never sees it) */
-static int hdr_key_event(const SDL_KeyboardEvent* e) {
-    SnxKeybind bind;
-    if (!snx_keybind_parse(g_settings.hdr_key, &bind) || !snx_keybind_match(&bind, e)) return 0;
-    if (!e->repeat) hdr_toggled(g_settings.hdr_key);
-    return 1;
 }
 /* the docked_key hotkey: the choice cycles On, Off and Auto while the game runs, with a toast that names it and, in
    Auto, the mode it picked and why. The .ini is not changed. */
@@ -1539,9 +1541,7 @@ void video_poll(void) {
                     if (!e.key.repeat) set_fullscreen(!g_fullscreen);
                     break;
                 }
-                if (upscale_key_event(&e.key)) break;
-                if (aa_key_event(&e.key)) break;
-                if (hdr_key_event(&e.key)) break;
+                if (effects_key_event(&e.key)) break;
                 if (docked_key_event(&e.key)) break;
                 /* not with Ctrl, Alt or the system key: Alt+F4 also arrives as F4 on Windows */
                 if (!e.key.repeat && !(e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) hotkey(e.key.key);

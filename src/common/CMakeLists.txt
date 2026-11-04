@@ -100,13 +100,13 @@ endif()
 # whose functions these call
 if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/ring.c gpu/vk/swapchain.c gpu/vk/window.c
-                                 gpu/vk/present_fx.c gpu/vk/fx/fx_fsr.c gpu/vk/toast.c)
+                                 gpu/vk/present_fx.c gpu/vk/fx/fx_fsr.c gpu/vk/toast.c gpu/vk/hotkeys.c)
     set_target_properties(snx_vk_common PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_vk_common PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                                  -Werror=missing-variable-declarations)
     target_compile_definitions(snx_vk_common PRIVATE VK_NO_PROTOTYPES)
     target_include_directories(snx_vk_common PUBLIC "${volk_SOURCE_DIR}")
-    target_link_libraries(snx_vk_common PUBLIC Vulkan::Headers SDL3::SDL3)
+    target_link_libraries(snx_vk_common PUBLIC Vulkan::Headers SDL3::SDL3 snx_settings snx_keybind)
     # the spatial upscalers, the anti aliasing and the HDR passes (gpu/vk/present_fx.c, gpu/vk/fx/)
     include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
     foreach(pair IN ITEMS "fsr.vert=fx_fsr_vert" "copy.frag=fx_copy" "copy_linear.frag=fx_copy_linear"

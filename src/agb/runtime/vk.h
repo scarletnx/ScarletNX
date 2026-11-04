@@ -23,4 +23,6 @@ bool agb_vk_frame(AgbVk* vk, const uint32_t* framebuffer);
 int agb_vk_cycle_upscaler(AgbVk* vk);
 int agb_vk_cycle_aa(AgbVk* vk);
 int agb_vk_toggle_hdr(AgbVk* vk);
+/* a message over the frame, for a couple of seconds */
+void agb_vk_toast(AgbVk* vk, const char* text);
 #endif

@@ -5,6 +5,7 @@
    --showcase=DIR writes the frames as PPM panels. */
 #include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/ring.h"
+#include "common/gpu/vk/toast.h"
 #include "common/gpu/vk/vk_common.h"
 #include <math.h>
 #include <stdio.h>
@@ -465,6 +466,52 @@ int main(int argc, char** argv) {
         CHECK(pq);
         write_ppm(showcase, "fx-hdr-pq", pq, 640, 480);
         free(pq);
+        image_free(&t, &target);
+    }
+
+    /* the toast: the message over a black frame, its letters white and its box dark */
+    {
+        Image target = {0};
+        SnxToast* toast;
+        VkCommandBuffer cb;
+        uint64_t serial;
+        unsigned char* got;
+        unsigned white = 0, x, y;
+        CHECK(image_make(&t, &target, 640, 480, VK_FORMAT_R8G8B8A8_UNORM,
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT));
+        cb = snx_vk_ring_commands(&t.ring);
+        barrier(cb, target.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        {
+            VkClearColorValue black = {{0, 0, 0, 1}};
+            VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdClearColorImage(cb, target.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+        }
+        barrier(cb, target.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        toast = snx_toast_create(t.phys, t.dev, t.queue, t.family, VK_NULL_HANDLE);
+        CHECK(toast);
+        snx_toast_show(toast, "Anti aliasing: FXAA", 0);
+        CHECK(snx_toast_active(toast, 0));
+        CHECK(!snx_toast_active(toast, 3000000000ull));
+        CHECK(snx_toast_draw(toast, cb, target.view, VK_FORMAT_R8G8B8A8_UNORM, 640, 480, 1.0f, 0));
+        serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
+        got = read_image(&t, target.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 640, 480);
+        CHECK(got);
+        for (y = 0; y < 64; ++y)
+            for (x = 0; x < 640; ++x) {
+                const unsigned char* p = got + ((size_t)y * 640 + x) * 4;
+                if (p[0] > 200 && p[1] > 200 && p[2] > 200) ++white;
+            }
+        CHECK(white > 100);
+        /* the box above the letters is black, and the frame under the box too */
+        CHECK(got[((size_t)6 * 640 + 320) * 4] < 40);
+        write_ppm(showcase, "toast", got, 640, 480);
+        free(got);
+        CHECK(!snx_toast_draw(toast, cb, target.view, VK_FORMAT_R8G8B8A8_UNORM, 640, 480, 1.0f, 3000000000ull));
+        snx_toast_destroy(toast);
         image_free(&t, &target);
     }
 

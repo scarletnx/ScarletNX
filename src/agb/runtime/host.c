@@ -4,6 +4,7 @@
 #include "agb/runtime/vk.h"
 #include "common/gpu/vk/present_fx.h"
 #include "common/utilities/keybind.h"
+#include "common/gpu/vk/hotkeys.h"
 #include "snx_settings.h"
 #include "agb/apu/apu.h"
 #include "agb/ppu/ppu.h"
@@ -32,7 +33,7 @@ struct AgbHost {
     SnxPadMap pad;
     uint32_t* prev;  /* the last frame, for frame interpolation */
     uint32_t* blend; /* the frame between the last and this one */
-    int interp, have_prev, display_hz;
+    int have_prev, display_hz;
     uint16_t keyboard, buttons; /* the keys the keyboard and the gamepads hold */
     uint64_t due;               /* when the next frame goes on screen, SDL_GetTicksNS's */
 };
@@ -174,10 +175,10 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
                     SDL_GetError());
     }
     snx_window_icon(host->window);
-    host->interp = snx_fx_interp_parse(g_settings.frame_interpolation);
+
     host->display_hz = display_hz(host->window);
-    fprintf(stderr, "frame interpolation: %s (display %d Hz)\n", snx_fx_interp_label(host->interp),
-            host->display_hz);
+    fprintf(stderr, "frame interpolation: %s (display %d Hz)\n",
+            snx_fx_interp_label(snx_fx_interp_parse(g_settings.frame_interpolation)), host->display_hz);
     host->prev = malloc((size_t)AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT * 4);
     host->blend = malloc((size_t)AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT * 4);
     snx_pad_map_position(&host->pad); /* A where the console has it, east */
@@ -211,32 +212,22 @@ void agb_host_close(AgbHost* host) {
 /* the runtime's own keys, as the other frontends take them: the upscaler, the anti aliasing and HDR change the shared
    effects live, and frame interpolation the CPU blend. 1 when the key was one of them */
 static int agb_hotkey(AgbHost* host, const SDL_KeyboardEvent* key) {
-    SnxKeybind bind;
-    if (key->repeat) return 1; /* held: the key is the runtime's, and does nothing more */
-    if (snx_keybind_parse(g_settings.upscaler_cycle_key, &bind) && snx_keybind_match(&bind, key)) {
-        int f = agb_vk_cycle_upscaler(host->vk);
-        if (f >= 0) fprintf(stderr, "upscaler: %s (%s)\n", snx_fx_upscale_label(f), g_settings.upscaler_cycle_key);
-        return 1;
+    int action = snx_hotkey_match(key);
+    char text[64];
+    int value = -1;
+    if (action == SNX_HOTKEY_NONE) return 0;
+    if (key->repeat) return 1;
+    switch (action) {
+        case SNX_HOTKEY_UPSCALER: value = agb_vk_cycle_upscaler(host->vk); break;
+        case SNX_HOTKEY_AA: value = agb_vk_cycle_aa(host->vk); break;
+        case SNX_HOTKEY_HDR: value = agb_vk_toggle_hdr(host->vk); break;
+        case SNX_HOTKEY_INTERP: value = snx_hotkey_next_interp(); break;
     }
-    if (snx_keybind_parse(g_settings.anti_aliasing_key, &bind) && snx_keybind_match(&bind, key)) {
-        int aa = agb_vk_cycle_aa(host->vk);
-        if (aa >= 0) fprintf(stderr, "anti aliasing: %s (%s)\n", snx_fx_aa_label(aa), g_settings.anti_aliasing_key);
-        return 1;
-    }
-    if (snx_keybind_parse(g_settings.hdr_key, &bind) && snx_keybind_match(&bind, key)) {
-        int hdr = agb_vk_toggle_hdr(host->vk);
-        if (hdr >= 0) fprintf(stderr, "hdr: %s (%s)\n", snx_fx_hdr_label(hdr), g_settings.hdr_key);
-        return 1;
-    }
-    if (snx_keybind_parse(g_settings.frame_interpolation_key, &bind) && snx_keybind_match(&bind, key)) {
-        host->interp = host->interp == SNX_FX_INTERP_OFF      ? SNX_FX_INTERP_AUTO
-                       : host->interp == SNX_FX_INTERP_AUTO ? SNX_FX_INTERP_BLEND
-                                                            : SNX_FX_INTERP_OFF;
-        fprintf(stderr, "frame interpolation: %s (%s)\n", snx_fx_interp_label(host->interp),
-                g_settings.frame_interpolation_key);
-        return 1;
-    }
-    return 0;
+    if (value < 0) return 1;
+    snx_hotkey_text(action, value, text, sizeof text);
+    agb_vk_toast(host->vk, text);
+    fprintf(stderr, "%s (%s)\n", text, snx_hotkey_key_name(action));
+    return 1;
 }
 
 bool agb_host_poll(AgbHost* host, uint16_t* keys) {
@@ -275,8 +266,9 @@ static void present_frame(AgbHost* host, const uint32_t* framebuffer) {
     }
 }
 void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* samples, uint32_t count) {
-    int interp = host->interp == SNX_FX_INTERP_BLEND ||
-                 (host->interp == SNX_FX_INTERP_AUTO && snx_fx_interp_auto(host->display_hz, 60));
+    int mode = snx_fx_interp_parse(g_settings.frame_interpolation);
+    int interp = mode == SNX_FX_INTERP_BLEND ||
+                 (mode == SNX_FX_INTERP_AUTO && snx_fx_interp_auto(host->display_hz, 60));
     if (interp && host->prev && host->blend && host->have_prev) {
         blend_frames(host->blend, host->prev, framebuffer);
         present_frame(host, host->blend);

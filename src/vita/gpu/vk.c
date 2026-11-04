@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/vk.h"
 #include "common/gpu/vk/present_fx.h"
+#include "common/gpu/vk/toast.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
@@ -18,6 +19,7 @@ static struct {
     uint32_t frame_width, frame_height;
     VkImageLayout frame_layout;
     SnxFx* fx;
+    SnxToast* toast;
     int display_kind;
     int headroom_pct;
     int have_frame;
@@ -242,6 +244,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
                            g_settings.hdr_expansion,
                            g_settings.hdr_test_pattern};
         snx_fx_configure(g.fx, &cfg);
+        g.toast = snx_toast_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE);
         snx_fx_set_fp16(g.fx, v->fp16);
     }
     if (v->host.surface && !swapchain_make(v)) fprintf(stderr, "scarletnx-vita: no swapchain for the window yet\n");
@@ -258,6 +261,8 @@ void vita_vk_free(void) {
         if (g.frame_view) vkDestroyImageView(v->device, g.frame_view, NULL);
         if (g.frame) vkDestroyImage(v->device, g.frame, NULL);
         if (g.frame_memory) vkFreeMemory(v->device, g.frame_memory, NULL);
+        if (g.toast) snx_toast_destroy(g.toast);
+        g.toast = NULL;
         snx_fx_destroy(g.fx);
         g.fx = NULL;
         for (unsigned i = 0; i < VITA_VK_SLOTS; ++i)
@@ -342,6 +347,13 @@ static bool frame_image(VitaVk* v, uint32_t width, uint32_t height) {
 /* one presented image: an acquired swapchain image, the effects on the source, HDR or the blit, and the present. The
    source is in SHADER_READ_ONLY_OPTIMAL. Each call takes the next ring slot, so two calls can present the blend and
    then the current frame. */
+int vita_vk_cycle_upscaler(void) { return g.fx ? snx_fx_upscale_cycle(g.fx) : -1; }
+int vita_vk_cycle_aa(void) { return g.fx ? snx_fx_aa_cycle(g.fx) : -1; }
+int vita_vk_toggle_hdr(void) { return g.fx ? snx_fx_hdr_toggle(g.fx) : -1; }
+void vita_vk_toast(const char* text) {
+    if (g.toast) snx_toast_show(g.toast, text, SDL_GetTicksNS());
+}
+
 static bool present_image(VitaVk* v, VkImage src_image, VkImageView src_view, uint32_t width, uint32_t height,
                           uint32_t frame_w, uint32_t frame_h) {
     unsigned slot = v->ring.slot;
@@ -382,6 +394,9 @@ static bool present_image(VitaVk* v, VkImage src_image, VkImageView src_view, ui
         if (snx_fx_hdr_compose(g.fx, cb, src_view, VK_FORMAT_R8G8B8A8_UNORM, out_w, out_h, 0, 0, out_w, out_h, 0, w, h,
                                x, y, sw, sh, &comp)) {
             if (g_settings.hdr_test_pattern) snx_fx_hdr_test(g.fx, cb, &comp);
+            if (g.toast)
+                snx_toast_draw(g.toast, cb, comp.view, snx_fx_compose_format(), w, h,
+                               (float)g_settings.hdr_paper_white, SDL_GetTicksNS());
             if (snx_fx_hdr_encode(g.fx, cb, &comp, target, target_view, v->swap.format.format, w, h,
                                   snx_fx_encode_kind(g.fx))) {
                 image_barrier(cb, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -413,8 +428,14 @@ static bool present_image(VitaVk* v, VkImage src_image, VkImageView src_view, ui
         vkCmdBlitImage(cb, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
     }
-    image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+    image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    if (g.toast)
+        snx_toast_draw(g.toast, cb, target_view, v->swap.format.format, w, h, 1.0f, SDL_GetTicksNS());
+    image_barrier(cb, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_NONE, 0);
     submit_with(v->acquired[slot], v->rendered[index]);
 present:;
     {

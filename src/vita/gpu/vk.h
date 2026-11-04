@@ -37,6 +37,12 @@ typedef struct {
     SnxVkRing ring; /* the submissions in flight, VITA_VK_SLOTS of them */
 } VitaVk;
 
+/* the live hotkeys, as the other frontends take them: the upscaler and the anti aliasing cycle, HDR toggles. The
+   changed value, or -1 with no effects; a message over the frame for a couple of seconds */
+int vita_vk_cycle_upscaler(void);
+int vita_vk_cycle_aa(void);
+int vita_vk_toggle_hdr(void);
+void vita_vk_toast(const char* text);
 /* the device and the window (none headless, or without a display): false with the reason when the host has no
    Vulkan 1.3 device with VK_EXT_external_memory_host */
 bool vita_vk_init(const char* title, char* error, size_t error_size);

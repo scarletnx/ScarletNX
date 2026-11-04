@@ -13,6 +13,8 @@
 #include "3ds/gpu/present.h"
 #include "3ds/input/input.h"
 #include "common/gpu/vk/present_fx.h"
+#include "common/gpu/vk/toast.h"
+#include "common/gpu/vk/hotkeys.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/shaders/present_spv.h"
 #include "3ds/gpu/vk/vk_transfer.h"
@@ -51,6 +53,7 @@ static struct {
     VkImageView swap_views[2][SNX_VK_SWAP_IMAGES];
     VkSwapchainKHR swap_views_for[2];
     SnxFx* fx[2];            /* each screen's effects, a context of its own so their frame slots stay apart */
+    SnxToast* toast;         /* the hotkeys' messages, over both windows */
     int display_kind[2];
     int headroom_pct[2];
     /* the SDR window image the pair is composed in before the HDR passes (source/upscale first, then the whole pair) */
@@ -277,6 +280,7 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     }
     const SnxCtrVk* v = snx_ctr_vk();
     g_present.frame_dir = frame_dir;
+    g_present.toast = snx_toast_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE);
     g_present.separate = g_settings.ctr_separate_screens && v->second && v->second_surface;
     for (unsigned i = 0; i < 2; ++i) {
         g_present.fx[i] = snx_fx_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, SNX_CTR_VK_SLOTS,
@@ -467,35 +471,35 @@ static void pointer_event(const SDL_Event* event) {
             break;
     }
 }
-/* the live keys the settings name: the upscaler, the anti aliasing and HDR. A press is taken, a repeat included, so
-   the game never sees it. */
+/* The runtime's live keys, the same as the other frontends': the upscaler, the anti aliasing, HDR and frame
+   interpolation change the effects, with a toast and a log line. A press is taken, a repeat included, so the game
+   never sees it. */
 static int hotkey_event(const SDL_KeyboardEvent* e) {
-    SnxKeybind bind;
-    if (snx_keybind_parse(g_settings.upscaler_cycle_key, &bind) && snx_keybind_match(&bind, e)) {
-        if (!e->repeat && g_present.fx[0]) {
-            int f = snx_fx_upscale_cycle(g_present.fx[0]);
+    int action = snx_hotkey_match(e);
+    char text[64];
+    int value = -1;
+    if (action == SNX_HOTKEY_NONE) return 0;
+    if (e->repeat || !g_present.fx[0]) return 1;
+    switch (action) {
+        case SNX_HOTKEY_UPSCALER:
+            value = snx_fx_upscale_cycle(g_present.fx[0]);
             if (g_present.fx[1]) snx_fx_upscale_cycle(g_present.fx[1]);
-            printf("upscaler: %s (%s)\n", snx_fx_upscale_label(f), g_settings.upscaler_cycle_key);
-        }
-        return 1;
-    }
-    if (snx_keybind_parse(g_settings.anti_aliasing_key, &bind) && snx_keybind_match(&bind, e)) {
-        if (!e->repeat && g_present.fx[0]) {
-            int aa = snx_fx_aa_cycle(g_present.fx[0]);
+            break;
+        case SNX_HOTKEY_AA:
+            value = snx_fx_aa_cycle(g_present.fx[0]);
             if (g_present.fx[1]) snx_fx_aa_cycle(g_present.fx[1]);
-            printf("anti aliasing: %s (%s)\n", snx_fx_aa_label(aa), g_settings.anti_aliasing_key);
-        }
-        return 1;
-    }
-    if (snx_keybind_parse(g_settings.hdr_key, &bind) && snx_keybind_match(&bind, e)) {
-        if (!e->repeat && g_present.fx[0]) {
-            int hdr = snx_fx_hdr_toggle(g_present.fx[0]);
+            break;
+        case SNX_HOTKEY_HDR:
+            value = snx_fx_hdr_toggle(g_present.fx[0]);
             if (g_present.fx[1]) snx_fx_hdr_toggle(g_present.fx[1]);
-            printf("hdr: %s (%s)\n", snx_fx_hdr_label(hdr), g_settings.hdr_key);
-        }
-        return 1;
+            break;
+        case SNX_HOTKEY_INTERP: value = snx_hotkey_next_interp(); break;
     }
-    return 0;
+    if (value < 0) return 1;
+    snx_hotkey_text(action, value, text, sizeof text);
+    if (g_present.toast) snx_toast_show(g_present.toast, text, SDL_GetTicksNS());
+    printf("%s (%s)\n", text, snx_hotkey_key_name(action));
+    return 1;
 }
 static void pump(void) {
     SDL_Event event;
@@ -600,6 +604,9 @@ static void draw_mix(VkCommandBuffer cb, VkImage mix, VkImageView mix_view, VkIm
                                extent.height, 0, 0, extent.width, extent.height, 0, extent.width, extent.height, 0, 0,
                                extent.width, extent.height, &comp)) {
             if (g_settings.hdr_test_pattern) snx_fx_hdr_test(g_present.fx[window], cb, &comp);
+            if (g_present.toast)
+                snx_toast_draw(g_present.toast, cb, comp.view, snx_fx_compose_format(), extent.width, extent.height,
+                               (float)g_settings.hdr_paper_white, SDL_GetTicksNS());
             if (snx_fx_hdr_encode(g_present.fx[window], cb, &comp, target, target_view,
                                   g_present.swap[window].format.format, extent.width, extent.height,
                                   snx_fx_encode_kind(g_present.fx[window]))) {
@@ -624,7 +631,11 @@ static void draw_mix(VkCommandBuffer cb, VkImage mix, VkImageView mix_view, VkIm
                         .dstOffsets = {{0, 0, 0}, {(int32_t)extent.width, (int32_t)extent.height, 1}}};
     vkCmdBlitImage(cb, mix, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &full,
                    VK_FILTER_NEAREST);
-    image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    if (g_present.toast)
+        snx_toast_draw(g_present.toast, cb, target_view, g_present.swap[window].format.format, extent.width,
+                       extent.height, 1.0f, SDL_GetTicksNS());
+    image_barrier(cb, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
 
 /* The shown picture without interpolation. */
@@ -845,6 +856,8 @@ void snx_ctr_present_free(void) {
     if (!g_present.up) return;
     const SnxCtrVk* v = snx_ctr_vk();
     vkDeviceWaitIdle(v->device);
+    if (g_present.toast) snx_toast_destroy(g_present.toast);
+    g_present.toast = NULL;
     for (unsigned screen = 0; screen < 2; ++screen) {
         swap_views_free(screen);
         if (g_present.swap[screen].swapchain) swap_destroy(screen);

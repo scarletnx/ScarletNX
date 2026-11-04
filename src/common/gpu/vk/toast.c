@@ -193,7 +193,7 @@ int snx_toast_active(const SnxToast* t, uint64_t now_ns) { return t && t->text[0
 static void rect(ToastVert* v, uint32_t* n, float x, float y, float w, float h, float r, float g, float b, float a,
                  uint32_t width, uint32_t height) {
     float x0 = x / (float)width * 2.0f - 1.0f, x1 = (x + w) / (float)width * 2.0f - 1.0f;
-    float y0 = 1.0f - y / (float)height * 2.0f, y1 = 1.0f - (y + h) / (float)height * 2.0f;
+    float y0 = y / (float)height * 2.0f - 1.0f, y1 = (y + h) / (float)height * 2.0f - 1.0f;
     ToastVert p[6] = {{x0, y0, r, g, b, a}, {x1, y0, r, g, b, a}, {x1, y1, r, g, b, a},
                       {x0, y0, r, g, b, a}, {x1, y1, r, g, b, a}, {x0, y1, r, g, b, a}};
     if (*n + 6 > TOAST_VERTS) return;
