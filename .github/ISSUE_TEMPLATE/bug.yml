@@ -3,7 +3,7 @@
 # A problem of the runtime itself, not of one game: the launcher, a driver, the recompiler, a service, the build.
 name: Bug
 description: ScarletNX itself does something wrong, not one game
-title: '[bug] '
+title: '[area] '
 labels: ['kind: bug']
 body:
   - type: markdown
@@ -11,6 +11,11 @@ body:
       value: |
         Thanks for the report. This form is for the runtime, the launcher, a driver or the build. A game that
         doesn't start, crashes or looks wrong has its own form: [Game report](?template=game-report.yml).
+
+        Replace `[area]` in the title with the part of ScarletNX that is wrong: `[runtime]`, `[gpu]`, `[gui]`,
+        `[loader]`, `[services]`, `[kernel]`, `[build]`, `[ci]`, `[test]` or `[docs]`. Add the platform when it
+        matters, as in `[gpu, linux]`. The label workflow turns those into the matching `area:` and `platform:`
+        labels; this form adds `kind: bug` itself.
 
         Attach nothing of a game: no keys, dumps, ROMs or game files.
   - type: textarea

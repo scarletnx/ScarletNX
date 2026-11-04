@@ -2,14 +2,19 @@
 # Copyright 2026 the ScarletNX contributors
 name: Feature request
 description: Something ScarletNX should do that it does not
-title: '[feature] '
+title: '[area] '
 labels: ['kind: enhancement']
 body:
   - type: markdown
     attributes:
       value: |
         Say what you want to do and what stops you. A concrete game, setting or workflow helps more than a general
-        idea. Attach nothing of a game: no keys, dumps, ROMs or game files.
+        idea. Replace `[area]` in the title with the part of ScarletNX this belongs to: `[runtime]`, `[gpu]`,
+        `[gui]`, `[loader]`, `[services]`, `[kernel]`, `[build]`, `[ci]`, `[test]` or `[docs]`. Add the platform
+        when it matters, as in `[gpu, linux]`. The label workflow turns those into the matching `area:` and
+        `platform:` labels; this form adds `kind: enhancement` itself.
+
+        Attach nothing of a game: no keys, dumps, ROMs or game files.
   - type: textarea
     id: problem
     attributes:
