@@ -275,11 +275,8 @@ int main(void) {
     test_fixed();
     test_auto_watched();
     test_auto_polled();
-<<<<<<< HEAD
-    test_key_twice(); /* last: the file's every setting applied, which the TV mode tests count from nought */
-=======
     test_cycle();
->>>>>>> 214a4cd4 ([runtime] Cycle TV mode and the presented effects live)
+    test_key_twice(); /* last: the file's every setting applied, which the TV mode tests count from nought */
     printf("options_tv_mode: ok\n");
     return 0;
 }
