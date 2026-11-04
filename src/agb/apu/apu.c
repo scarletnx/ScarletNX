@@ -36,6 +36,10 @@ static void trigger(AgbBoard* board, int channel) {
 
 /* ---- registers ---- */
 
+/* SOUND3CNT_L's bit 6 names the wave RAM bank the channel plays (bit 5 makes it 64 digits, that bank then the other);
+   the registers at 0x04000090 reach the other bank, while the channel plays too */
+static uint32_t cpu_bank(const AgbApu* apu) { return apu->cnt_l[2] & 0x40 ? 0 : 1; }
+
 uint16_t agb_apu_read(AgbBoard* board, uint32_t offset) {
     AgbApu* apu = &board->apu;
     switch (offset) {
@@ -60,10 +64,7 @@ uint16_t agb_apu_read(AgbBoard* board, uint32_t offset) {
         case 0x088: return apu->soundbias;
         default: break;
     }
-    if (offset >= 0x090 && offset <= 0x09E) {
-        uint32_t bank = offset >= 0x098, index = offset & 7;
-        return snx_ld_le16(&apu->wave_ram[bank][index]);
-    }
+    if (offset >= 0x090 && offset <= 0x09E) return snx_ld_le16(&apu->wave_ram[cpu_bank(apu)][offset & 15]);
     return 0;
 }
 
@@ -86,10 +87,7 @@ uint16_t agb_apu_written(AgbBoard* board, uint32_t offset) {
         case 0x088: return apu->soundbias;
         default: break;
     }
-    if (offset >= 0x090 && offset <= 0x09E) {
-        uint32_t bank = apu->cnt_l[2] & 0x20 ? 1 : 0, index = offset & 7; /* where agb_apu_write puts it */
-        return snx_ld_le16(&apu->wave_ram[bank][index]);
-    }
+    if (offset >= 0x090 && offset <= 0x09E) return snx_ld_le16(&apu->wave_ram[cpu_bank(apu)][offset & 15]);
     return 0;
 }
 
@@ -127,7 +125,7 @@ void agb_apu_write(AgbBoard* board, uint32_t offset, uint16_t value) {
             if (value & 0x8000) trigger(board, 3);
             return;
         case 0x070:
-            /* bit 7 turns the wave channel on; bit 5 selects the bank writes go to */
+            /* bit 7 turns the wave channel on, bit 6 picks the bank it plays and bit 5 makes it play both */
             apu->cnt_l[2] = value & 0xE0;
             if (!(value & 0x80)) apu->enabled[2] = 0;
             return;
@@ -156,9 +154,7 @@ void agb_apu_write(AgbBoard* board, uint32_t offset, uint16_t value) {
         default: break;
     }
     if (offset >= 0x090 && offset <= 0x09E) {
-        uint32_t bank = apu->cnt_l[2] & 0x20 ? 1 : 0, index = offset & 7;
-        if (apu->cnt_l[2] & 0x80) return; /* wave RAM is not writable while the channel plays */
-        snx_st_le16(&apu->wave_ram[bank][index], value);
+        snx_st_le16(&apu->wave_ram[cpu_bank(apu)][offset & 15], value);
         return;
     }
     if (offset == 0x0A0 || offset == 0x0A2) {
@@ -246,20 +242,19 @@ static int channel_sample(AgbBoard* board, int channel) {
         return high ? apu->envelope_volume[channel] : -apu->envelope_volume[channel];
     }
     if (channel == 2) {
-        uint32_t bank = apu->cnt_l[2] & 0x20;
-        int sample;
-        /* one bank mode plays the selected bank; two bank mode plays the other one */
-        if (apu->cnt_l[2] & 0x40) bank = !bank;
-        {
-            uint8_t byte = apu->wave_ram[bank][(apu->wave_position >> 1) & 15];
-            sample = apu->wave_position & 1 ? byte >> 4 : byte & 15;
-        }
+        /* the played bank's 32 digits, or with bit 5 both banks' 64 from the played one on; each byte's high digit
+           first */
+        uint32_t digits = apu->cnt_l[2] & 0x20 ? 63 : 31,
+                 bank = (apu->cnt_l[2] >> 6 & 1) ^ (apu->wave_position >> 5 & 1);
+        uint8_t byte = apu->wave_ram[bank][(apu->wave_position >> 1) & 15];
+        int sample = apu->wave_position & 1 ? byte & 15 : byte >> 4;
         uint32_t frequency = (uint32_t)(apu->cnt_x[2] & 0x7FF);
-        /* 32 four bit digits per wave cycle, one quarter of the square's rate */
+        /* 2097152 / (2048 - n) digits a second: 64 / (2048 - n) of them each output sample */
         apu->phase[2] += 0x10000u * 64 / (2048u - frequency);
-        apu->wave_position = (uint8_t)((apu->wave_position + (apu->phase[2] >> 16)) & 31);
+        apu->wave_position = (uint8_t)((apu->wave_position + (apu->phase[2] >> 16)) & digits);
         apu->phase[2] &= 0xFFFF;
         int centered = sample * 2 - 15;
+        if (apu->cnt_h[2] & 0x8000) return centered * 3 >> 2; /* bit 15 forces 75 percent */
         switch (apu->cnt_h[2] >> 13 & 3) {
             case 0: return 0;
             case 2: return centered >> 1;
