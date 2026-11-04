@@ -110,14 +110,57 @@ static int check_wt_two_consumers(void) {
     return 0;
 }
 
+/* Two guest addresses of the same pages, a and b, with a texture over each (at the GPU addresses ga and gb): the CPU
+   writes through b, then through a, and each time both textures must hold the new bytes. 1 when they do; what each
+   held when they don't, on stderr under what */
+static int wt_both_ways(const char* what, u64 a, u64 b, u64 ga, u64 gb, u64 size) {
+    u32 tic_a[8], tic_b[8];
+    memset(GP(a), 0x11, size);
+    gmmu_map(ga, a, size);
+    gmmu_map(gb, b, size);
+    wt_tic(tic_a, ga, 16, 16);
+    wt_tic(tic_b, gb, 16, 16);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    u32 ta = wt_texel(tic_a), tb = wt_texel(tic_b);
+    u32 since = vk_ww_now();
+    vk_unlock();
+    if (ta != wt_fill(0x11) || tb != wt_fill(0x11)) {
+        fprintf(stderr, "%s: written 0x11 before either texture was made, they hold %08x and %08x\n", what, ta, tb);
+        return 0;
+    }
+    memset(GP(b), 0x22, 0x400); /* through b: the texture over a */
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    int told_a = vk_written_since(GP(a), 0x1000, since), told_b = vk_written_since(GP(b), 0x1000, since);
+    ta = wt_texel(tic_a);
+    tb = wt_texel(tic_b);
+    vk_unlock();
+    int one = ta == wt_fill(0x22) && tb == wt_fill(0x22);
+    if (!one)
+        fprintf(stderr,
+                "%s: written 0x22 through the second address, the first's texture holds %08x and the second's %08x "
+                "(the tracking told the first %d, the second %d)\n",
+                what, ta, tb, told_a, told_b);
+    memset(GP(a), 0x33, 0x400); /* through a: the texture over b */
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    ta = wt_texel(tic_a);
+    tb = wt_texel(tic_b);
+    vk_unlock();
+    int other = ta == wt_fill(0x33) && tb == wt_fill(0x33);
+    if (!other)
+        fprintf(stderr,
+                "%s: written 0x33 through the first address, the first's texture holds %08x and the second's %08x\n",
+                what, ta, tb);
+    return one && other;
+}
+
 /* A view of guest memory and its source are the same pages (the alias pool): a write through either address reaches a
-   texture over the other's, and the tracking's answer for each address */
+   texture over the other's */
 static int check_wt_alias(void) {
-    const u64 src = WT_CPU + WT_LEAF, view = WT_CPU + 2 * WT_LEAF, size = 0x10000, gsrc = WT_GVA + 0x1000000,
-              gview = WT_GVA + 0x2000000;
-    u32 tic_s[8], tic_v[8];
+    const u64 src = WT_CPU + WT_LEAF, view = WT_CPU + 2 * WT_LEAF, size = 0x10000;
     CHECK(mem_map(src, size, MS_NORMAL, PERM_RW) == 0);
-    memset(GP(src), 0x11, size);
     vk_lock();
     int tracking = wt_tracking(src);
     vk_unlock();
@@ -127,45 +170,40 @@ static int check_wt_alias(void) {
         return 0;
     }
     CHECK(mem_alias_map(view, src, size, MS_NORMAL, PERM_RW) == 0);
-    CHECK(GP(view)[0] == 0x11 && GP(view)[size - 1] == 0x11);
-    gmmu_map(gsrc, src, size);
-    gmmu_map(gview, view, size);
-    wt_tic(tic_s, gsrc, 16, 16);
-    wt_tic(tic_v, gview, 16, 16);
-    g_renderer->mem_may_have_changed();
-    vk_lock();
-    u32 s = wt_texel(tic_s), v = wt_texel(tic_v);
-    CHECK(s == wt_fill(0x11) && v == wt_fill(0x11));
-    u32 since = vk_ww_now();
-    vk_unlock();
-    memset(GP(view), 0x22, 0x400); /* through the view: the texture over the source */
-    g_renderer->mem_may_have_changed();
-    vk_lock();
-    int told_src = vk_written_since(GP(src), 0x1000, since), told_view = vk_written_since(GP(view), 0x1000, since);
-    s = wt_texel(tic_s);
-    v = wt_texel(tic_v);
-    vk_unlock();
-    int one = s == wt_fill(0x22) && v == wt_fill(0x22);
-    if (!one)
-        fprintf(stderr,
-                "alias: written 0x22 through the view, the source's texture holds %08x and the view's %08x (the "
-                "tracking told the source %d, the view %d)\n",
-                s, v, told_src, told_view);
-    memset(GP(src), 0x33, 0x400); /* through the source: the texture over the view */
-    g_renderer->mem_may_have_changed();
-    vk_lock();
-    s = wt_texel(tic_s);
-    v = wt_texel(tic_v);
-    vk_unlock();
-    int other = s == wt_fill(0x33) && v == wt_fill(0x33);
-    if (!other)
-        fprintf(stderr, "alias: written 0x33 through the source, the source's texture holds %08x and the view's %08x\n",
-                s, v);
+    int both = wt_both_ways("alias", src, view, WT_GVA + 0x1000000, WT_GVA + 0x2000000, size);
     CHECK(mem_alias_unmap(view, size, src) == 0);
     mem_alias_end(src, size);
     CHECK(mem_unmap(src, size) == 0);
-    CHECK(one && other);
+    CHECK(both);
     puts("write tracking: a view and its source, written through one and read through the other");
+    return 0;
+}
+
+/* Shared memory mapped twice (a service's pages at two guest addresses, the alias pool's): the same, mapping to
+   mapping */
+static int check_wt_shared(void) {
+    const u64 a = WT_CPU + 8 * WT_LEAF, b = WT_CPU + 9 * WT_LEAF, size = 0x10000;
+    u64 off = 0;
+    u8* host = mem_pool_host(size, &off);
+    if (!host) {
+        printf("skip: shared memory mapped twice needs the alias pool\n");
+        return 0;
+    }
+    CHECK(mem_map_pool(a, off, size, MS_SHARED, PERM_RW) == 0);
+    CHECK(mem_map_pool(b, off, size, MS_SHARED, PERM_RW) == 0);
+    vk_lock();
+    int tracking = wt_tracking(a);
+    vk_unlock();
+    int both = !tracking || wt_both_ways("shared", a, b, WT_GVA + 0x7000000, WT_GVA + 0x8000000, size);
+    CHECK(mem_unmap(b, size) == 0);
+    CHECK(mem_unmap(a, size) == 0);
+    mem_pool_host_free(host, off, size);
+    if (!tracking) {
+        printf("skip: shared memory mapped twice needs write tracking\n");
+        return 0;
+    }
+    CHECK(both);
+    puts("write tracking: shared memory at two addresses, written through one and read through the other");
     return 0;
 }
 
@@ -474,28 +512,27 @@ static int check_wt_owned(void) {
     return 0;
 }
 
-/* the cases by name, for SNX_TEST_WW_ONLY=NAME; main passes all but the view's (alias): a write through one address of
-   a pool page is news to the tracking only at that address (vulkan_write_tracking_alias) */
+/* the cases by name, for SNX_TEST_WW_ONLY=NAME */
 static const struct {
     const char* name;
     int (*check)(void);
-    int main_passes;
 } g_wt_cases[] = {
-    {"two_consumers", check_wt_two_consumers, 1},
-    {"concurrent", check_wt_concurrent, 1},
-    {"record_submit", check_wt_record_submit, 1},
-    {"runtime_writes", check_wt_runtime_writes, 1},
-    {"owned", check_wt_owned, 1},
-    {"alias", check_wt_alias, 0},
+    {"two_consumers", check_wt_two_consumers},
+    {"concurrent", check_wt_concurrent},
+    {"record_submit", check_wt_record_submit},
+    {"runtime_writes", check_wt_runtime_writes},
+    {"owned", check_wt_owned},
+    {"alias", check_wt_alias},
+    {"shared", check_wt_shared},
 };
-/* SNX_TEST_WW_ONLY: 1 the cases main passes, stopping at the first that fails; each, every case with a line of its
+/* SNX_TEST_WW_ONLY: 1 every case, stopping at the first that fails; each, every case with a line of its
    own (for a mutant's run: which cases see it); or one case's name */
 static int check_write_tracking(void) {
     const char* only = getenv("SNX_TEST_WW_ONLY");
     int failed = 0, ran = 0, each = only && !strcmp(only, "each");
     for (size_t i = 0; i < sizeof g_wt_cases / sizeof *g_wt_cases; i++) {
         int all = !only || !strcmp(only, "1");
-        if (all ? !g_wt_cases[i].main_passes : !each && strcmp(only, g_wt_cases[i].name)) continue;
+        if (!all && !each && strcmp(only, g_wt_cases[i].name)) continue;
         ran++;
         int r = g_wt_cases[i].check();
         /* a case that failed under the renderer's lock returned holding it: the next would run as its holder (a trap's
@@ -508,7 +545,7 @@ static int check_write_tracking(void) {
     if (!ran) {
         fprintf(stderr,
                 "SNX_TEST_WW_ONLY=%s names no case: 1, each, two_consumers, concurrent, record_submit, runtime_writes, "
-                "owned or alias\n",
+                "owned, alias or shared\n",
                 only);
         return 2;
     }
