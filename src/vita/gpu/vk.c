@@ -249,7 +249,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
                            g_settings.hdr_expansion,
                            g_settings.hdr_test_pattern};
         snx_fx_configure(g.fx, &cfg);
-        g.toast = snx_toast_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE);
+        g.toast = snx_toast_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, VITA_VK_SLOTS);
         snx_fx_set_fp16(g.fx, v->fp16);
     }
     if (v->host.surface && !swapchain_make(v)) fprintf(stderr, "scarletnx-vita: no swapchain for the window yet\n");
@@ -401,7 +401,7 @@ static bool present_image(VitaVk* v, VkImage src_image, VkImageView src_view, ui
             if (g_settings.hdr_test_pattern) snx_fx_hdr_test(g.fx, cb, &comp);
             if (g.toast)
                 snx_toast_draw(g.toast, cb, comp.view, snx_fx_compose_format(), w, h,
-                               (float)g_settings.hdr_paper_white, SDL_GetTicksNS());
+                               (float)g_settings.hdr_paper_white, slot, SDL_GetTicksNS());
             if (snx_fx_hdr_encode(g.fx, cb, &comp, target, target_view, v->swap.format.format, w, h,
                                   snx_fx_encode_kind(g.fx))) {
                 image_barrier(cb, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -437,7 +437,7 @@ static bool present_image(VitaVk* v, VkImage src_image, VkImageView src_view, ui
                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     if (g.toast)
-        snx_toast_draw(g.toast, cb, target_view, v->swap.format.format, w, h, 1.0f, SDL_GetTicksNS());
+        snx_toast_draw(g.toast, cb, target_view, v->swap.format.format, w, h, 1.0f, slot, SDL_GetTicksNS());
     image_barrier(cb, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_NONE, 0);

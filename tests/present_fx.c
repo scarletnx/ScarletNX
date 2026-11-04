@@ -490,12 +490,12 @@ int main(int argc, char** argv) {
         barrier(cb, target.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-        toast = snx_toast_create(t.phys, t.dev, t.queue, t.family, VK_NULL_HANDLE);
+        toast = snx_toast_create(t.phys, t.dev, t.queue, t.family, VK_NULL_HANDLE, 2);
         CHECK(toast);
         snx_toast_show(toast, "Anti aliasing: FXAA", 0);
         CHECK(snx_toast_active(toast, 0));
         CHECK(!snx_toast_active(toast, 3000000000ull));
-        CHECK(snx_toast_draw(toast, cb, target.view, VK_FORMAT_R8G8B8A8_UNORM, 640, 480, 1.0f, 0));
+        CHECK(snx_toast_draw(toast, cb, target.view, VK_FORMAT_R8G8B8A8_UNORM, 640, 480, 1.0f, 0, 0));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
         got = read_image(&t, target.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 640, 480);
@@ -510,7 +510,7 @@ int main(int argc, char** argv) {
         CHECK(got[((size_t)6 * 640 + 320) * 4] < 40);
         write_ppm(showcase, "toast", got, 640, 480);
         free(got);
-        CHECK(!snx_toast_draw(toast, cb, target.view, VK_FORMAT_R8G8B8A8_UNORM, 640, 480, 1.0f, 3000000000ull));
+        CHECK(!snx_toast_draw(toast, cb, target.view, VK_FORMAT_R8G8B8A8_UNORM, 640, 480, 1.0f, 0, 3000000000ull));
         snx_toast_destroy(toast);
         image_free(&t, &target);
     }

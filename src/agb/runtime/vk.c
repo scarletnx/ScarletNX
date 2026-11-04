@@ -293,7 +293,7 @@ AgbVk* agb_vk_open(const char* title, bool fullscreen, char* error, size_t error
                            g_settings.hdr_expansion,
                            g_settings.hdr_test_pattern};
         snx_fx_configure(v->fx, &cfg);
-        v->toast = snx_toast_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE);
+        v->toast = snx_toast_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, AGB_VK_SLOTS);
         snx_fx_set_fp16(v->fx, v->fp16);
     }
     if (!swapchain_make(v)) goto failed;
@@ -403,7 +403,7 @@ bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer) {
                 if (g_settings.hdr_test_pattern) snx_fx_hdr_test(v->fx, cb, &comp);
                 if (v->toast)
                     snx_toast_draw(v->toast, cb, comp.view, snx_fx_compose_format(), w, h,
-                                   (float)g_settings.hdr_paper_white, SDL_GetTicksNS());
+                                   (float)g_settings.hdr_paper_white, slot % AGB_VK_SLOTS, SDL_GetTicksNS());
                 if (snx_fx_hdr_encode(v->fx, cb, &comp, v->swap.images[index], v->swap_views[index],
                                       v->swap.format.format, w, h, snx_fx_encode_kind(v->fx))) {
                     barrier(cb, v->swap.images[index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -438,7 +438,8 @@ bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer) {
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-            snx_toast_draw(v->toast, cb, v->swap_views[index], v->swap.format.format, w, h, 1.0f, SDL_GetTicksNS());
+            snx_toast_draw(v->toast, cb, v->swap_views[index], v->swap.format.format, w, h, 1.0f,
+                           slot % AGB_VK_SLOTS, SDL_GetTicksNS());
         }
         barrier(cb, v->swap.images[index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,

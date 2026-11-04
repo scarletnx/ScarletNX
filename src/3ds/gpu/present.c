@@ -284,7 +284,7 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     }
     const SnxCtrVk* v = snx_ctr_vk();
     g_present.frame_dir = frame_dir;
-    g_present.toast = snx_toast_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE);
+    g_present.toast = snx_toast_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, SNX_CTR_VK_SLOTS);
     g_present.separate = g_settings.ctr_separate_screens && v->second && v->second_surface;
     for (unsigned i = 0; i < 2; ++i) {
         g_present.fx[i] = snx_fx_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, SNX_CTR_VK_SLOTS,
@@ -610,7 +610,7 @@ static void draw_mix(VkCommandBuffer cb, VkImage mix, VkImageView mix_view, VkIm
             if (g_settings.hdr_test_pattern) snx_fx_hdr_test(g_present.fx[window], cb, &comp);
             if (g_present.toast)
                 snx_toast_draw(g_present.toast, cb, comp.view, snx_fx_compose_format(), extent.width, extent.height,
-                               (float)g_settings.hdr_paper_white, SDL_GetTicksNS());
+                               (float)g_settings.hdr_paper_white, snx_ctr_vk_slot(), SDL_GetTicksNS());
             if (snx_fx_hdr_encode(g_present.fx[window], cb, &comp, target, target_view,
                                   g_present.swap[window].format.format, extent.width, extent.height,
                                   snx_fx_encode_kind(g_present.fx[window]))) {
@@ -638,7 +638,7 @@ static void draw_mix(VkCommandBuffer cb, VkImage mix, VkImageView mix_view, VkIm
     image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     if (g_present.toast)
         snx_toast_draw(g_present.toast, cb, target_view, g_present.swap[window].format.format, extent.width,
-                       extent.height, 1.0f, SDL_GetTicksNS());
+                       extent.height, 1.0f, snx_ctr_vk_slot(), SDL_GetTicksNS());
     image_barrier(cb, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
 

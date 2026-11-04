@@ -2,7 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* The toast of the frontends with no menu (toast.h): a message in the common 8x16 VGA font, over the frame the
    presenter has just drawn. One pixel of a glyph is one rectangle, so no atlas or sampler is needed; the vertices go in
-   a mapped buffer and one draw call fills the box and the letters. */
+   a mapped buffer and one draw call fills the box and the letters. A buffer and a pipeline a recording slot keep: the
+   frontends submit without waiting, and two windows (the 3DS's) draw the same message into different images before
+   the first is done. */
 #include "common/gpu/vk/toast.h"
 #include "common/gpu/vk/fx_spv.h"
 #include "common/gpu/vk/vk_common.h"
@@ -11,14 +13,23 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define TOAST_MS     2200u      /* how long a message shows */
-#define TOAST_TEXT   96         /* the message kept, its NUL included */
-#define TOAST_VERTS  16384u     /* the buffer's room, rectangles of 6 vertices */
-#define TOAST_STRIDE 24u        /* x, y, then r, g, b, a */
+#define TOAST_MS     2200u     /* how long a message shows */
+#define TOAST_TEXT   96        /* the message kept, its NUL included */
+#define TOAST_VERTS  16384u    /* a buffer's room, rectangles of 6 vertices */
+#define TOAST_STRIDE 24u       /* x, y, then r, g, b, a */
+#define TOAST_SLOTS  8u        /* the most recording slots one toast serves */
+#define TOAST_PIPES  8u        /* the target formats one toast draws into */
 
 typedef struct {
     float x, y, r, g, b, a;
 } ToastVert;
+
+typedef struct {
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    ToastVert* verts;
+    int coherent;
+} ToastSlot;
 
 struct SnxToast {
     VkPhysicalDevice phys;
@@ -26,13 +37,12 @@ struct SnxToast {
     VkQueue queue;
     uint32_t family;
     VkPipelineCache cache;
-    VkPipeline pipe;
-    VkFormat pipe_format;
+    uint32_t slots;
+    VkPipeline pipe[TOAST_PIPES];
+    VkFormat pipe_format[TOAST_PIPES];
+    uint32_t pipe_count;
     VkPipelineLayout layout;
-    VkBuffer buffer;
-    VkDeviceMemory memory;
-    ToastVert* verts;
-    int coherent;
+    ToastSlot slot[TOAST_SLOTS];
     int failed;
     char text[TOAST_TEXT];
     uint64_t until_ns;
@@ -48,14 +58,15 @@ static VkShaderModule module(VkDevice dev, const uint32_t* words, uint64_t bytes
 }
 
 /* the pipeline for one target format: dynamic rendering, no depth, the colour blended over the frame */
-static int make_pipeline(SnxToast* t, VkFormat format) {
+static VkPipeline make_pipeline(SnxToast* t, VkFormat format) {
     VkPipelineShaderStageCreateInfo stages[2];
     VkPipelineVertexInputStateCreateInfo vertex = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkVertexInputBindingDescription binding = {0, TOAST_STRIDE, VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription attributes[2] = {{0, 0, VK_FORMAT_R32G32_SFLOAT, 0},
                                                        {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 8}};
-    VkPipelineInputAssemblyStateCreateInfo assembly = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-                                                       .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+    VkPipelineInputAssemblyStateCreateInfo assembly = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
     VkPipelineViewportStateCreateInfo viewport = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                                                   .viewportCount = 1,
                                                   .scissorCount = 1};
@@ -117,15 +128,10 @@ static int make_pipeline(SnxToast* t, VkFormat format) {
     if (v && f && vkCreateGraphicsPipelines(t->dev, t->cache, 1, &ci, NULL, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
     if (v) vkDestroyShaderModule(t->dev, v, NULL);
     if (f) vkDestroyShaderModule(t->dev, f, NULL);
-    if (!pipe) return 0;
-    if (t->pipe) vkDestroyPipeline(t->dev, t->pipe, NULL);
-    t->pipe = pipe;
-    t->pipe_format = format;
-    return 1;
+    return pipe;
 }
 
-SnxToast* snx_toast_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, uint32_t family, VkPipelineCache cache) {
-    SnxToast* t = (SnxToast*)calloc(1, sizeof *t);
+static int make_slot(SnxToast* t, ToastSlot* s) {
     VkPhysicalDeviceMemoryProperties mp;
     VkMemoryRequirements req;
     VkMemoryAllocateInfo ai;
@@ -133,55 +139,59 @@ SnxToast* snx_toast_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, u
                              .size = TOAST_VERTS * TOAST_STRIDE,
                              .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    if (!t) {
-        fprintf(stderr, "toast: out of memory\n");
-        return NULL;
+    if (vkCreateBuffer(t->dev, &bi, NULL, &s->buffer) != VK_SUCCESS) return 0;
+    vkGetBufferMemoryRequirements(t->dev, s->buffer, &req);
+    vkGetPhysicalDeviceMemoryProperties(t->phys, &mp);
+    ai = (VkMemoryAllocateInfo){.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size};
+    ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    s->coherent = 1;
+    if (ai.memoryTypeIndex == UINT32_MAX) {
+        ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        s->coherent = 0;
     }
+    if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(t->dev, &ai, NULL, &s->memory) != VK_SUCCESS ||
+        vkBindBufferMemory(t->dev, s->buffer, s->memory, 0) != VK_SUCCESS ||
+        vkMapMemory(t->dev, s->memory, 0, VK_WHOLE_SIZE, 0, (void**)&s->verts) != VK_SUCCESS || !s->verts)
+        return 0;
+    return 1;
+}
+
+SnxToast* snx_toast_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, uint32_t family, VkPipelineCache cache,
+                           uint32_t slots) {
+    SnxToast* t = (SnxToast*)calloc(1, sizeof *t);
+    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    if (!t) return NULL;
     t->phys = phys;
     t->dev = dev;
     t->queue = queue;
     t->family = family;
     t->cache = cache;
-    {
-        VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-        if (vkCreatePipelineLayout(dev, &li, NULL, &t->layout) != VK_SUCCESS) {
-            fprintf(stderr, "toast: no pipeline layout\n");
+    t->slots = slots < 1 ? 1 : slots > TOAST_SLOTS ? TOAST_SLOTS : slots;
+    if (vkCreatePipelineLayout(dev, &li, NULL, &t->layout) != VK_SUCCESS) {
+        fprintf(stderr, "toast: no pipeline layout\n");
+        snx_toast_destroy(t);
+        return NULL;
+    }
+    for (uint32_t i = 0; i < t->slots; ++i)
+        if (!make_slot(t, &t->slot[i])) {
+            fprintf(stderr, "toast: no mapped vertex buffer\n");
             snx_toast_destroy(t);
             return NULL;
         }
-    }
-    if (vkCreateBuffer(dev, &bi, NULL, &t->buffer) != VK_SUCCESS) {
-        fprintf(stderr, "toast: no vertex buffer\n");
-        snx_toast_destroy(t);
-        return NULL;
-    }
-    vkGetBufferMemoryRequirements(dev, t->buffer, &req);
-    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
-    ai = (VkMemoryAllocateInfo){.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size};
-    ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    t->coherent = 1;
-    if (ai.memoryTypeIndex == UINT32_MAX) {
-        ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-        t->coherent = 0;
-    }
-    if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(dev, &ai, NULL, &t->memory) != VK_SUCCESS ||
-        vkBindBufferMemory(dev, t->buffer, t->memory, 0) != VK_SUCCESS ||
-        vkMapMemory(dev, t->memory, 0, VK_WHOLE_SIZE, 0, (void**)&t->verts) != VK_SUCCESS || !t->verts) {
-        fprintf(stderr, "toast: no mapped vertex buffer\n");
-        snx_toast_destroy(t);
-        return NULL;
-    }
     return t;
 }
 
 void snx_toast_destroy(SnxToast* t) {
     if (!t) return;
     if (t->dev) {
-        if (t->verts) vkUnmapMemory(t->dev, t->memory);
-        if (t->buffer) vkDestroyBuffer(t->dev, t->buffer, NULL);
-        if (t->memory) vkFreeMemory(t->dev, t->memory, NULL);
-        if (t->pipe) vkDestroyPipeline(t->dev, t->pipe, NULL);
+        for (uint32_t i = 0; i < t->slots; ++i) {
+            if (t->slot[i].verts) vkUnmapMemory(t->dev, t->slot[i].memory);
+            if (t->slot[i].buffer) vkDestroyBuffer(t->dev, t->slot[i].buffer, NULL);
+            if (t->slot[i].memory) vkFreeMemory(t->dev, t->slot[i].memory, NULL);
+        }
+        for (uint32_t i = 0; i < t->pipe_count; ++i)
+            if (t->pipe[i]) vkDestroyPipeline(t->dev, t->pipe[i], NULL);
         if (t->layout) vkDestroyPipelineLayout(t->dev, t->layout, NULL);
     }
     free(t);
@@ -208,11 +218,13 @@ static void rect(ToastVert* v, uint32_t* n, float x, float y, float w, float h, 
 }
 
 int snx_toast_draw(SnxToast* t, VkCommandBuffer cb, VkImageView view, VkFormat format, uint32_t width, uint32_t height,
-                   float white, uint64_t now_ns) {
+                   float white, uint32_t slot, uint64_t now_ns) {
     const char* text;
     unsigned len, i, row, col, scale;
     float gx, tw, th, x0, y0;
     uint32_t n = 0;
+    VkPipeline pipe;
+    ToastSlot* s;
     VkViewport vp;
     VkRect2D sc;
     VkRenderingAttachmentInfo at;
@@ -220,13 +232,24 @@ int snx_toast_draw(SnxToast* t, VkCommandBuffer cb, VkImageView view, VkFormat f
     VkDeviceSize offset = 0;
     if (!snx_toast_active(t, now_ns) || !width || !height || !cb || !view) return 0;
     if (t->failed) return 0;
-    if (!t->pipe || t->pipe_format != format) {
-        if (!make_pipeline(t, format)) {
+    pipe = VK_NULL_HANDLE;
+    for (uint32_t k = 0; k < t->pipe_count; ++k)
+        if (t->pipe_format[k] == format) {
+            pipe = t->pipe[k];
+            break;
+        }
+    if (!pipe) {
+        pipe = make_pipeline(t, format);
+        if (!pipe || t->pipe_count == TOAST_PIPES) {
+            if (pipe && t->pipe_count == TOAST_PIPES) vkDestroyPipeline(t->dev, pipe, NULL);
             fprintf(stderr, "toast: no pipeline for format %d\n", (int)format);
             t->failed = 1;
             return 0;
         }
+        t->pipe[t->pipe_count] = pipe;
+        t->pipe_format[t->pipe_count++] = format;
     }
+    s = &t->slot[slot % t->slots];
     text = t->text;
     len = (unsigned)strlen(text);
     scale = height >= 400 ? 2u : 1u;
@@ -236,7 +259,7 @@ int snx_toast_draw(SnxToast* t, VkCommandBuffer cb, VkImageView view, VkFormat f
     th = (float)(16u * scale);
     x0 = ((float)width - tw) * 0.5f;
     y0 = (float)(8u * scale);
-    rect(t->verts, &n, x0 - 4.0f * (float)scale, y0 - 4.0f * (float)scale, tw + 8.0f * (float)scale,
+    rect(s->verts, &n, x0 - 4.0f * (float)scale, y0 - 4.0f * (float)scale, tw + 8.0f * (float)scale,
          th + 8.0f * (float)scale, 0.0f, 0.0f, 0.0f, 0.75f, width, height);
     gx = x0;
     for (i = 0; i < len; ++i) {
@@ -245,16 +268,16 @@ int snx_toast_draw(SnxToast* t, VkCommandBuffer cb, VkImageView view, VkFormat f
         for (row = 0; row < 16; ++row) {
             for (col = 0; col < 8; ++col) {
                 if (!(rows[row] & (0x80u >> col))) continue;
-                rect(t->verts, &n, gx + (float)(col * scale), y0 + (float)(row * scale), (float)scale, (float)scale,
+                rect(s->verts, &n, gx + (float)(col * scale), y0 + (float)(row * scale), (float)scale, (float)scale,
                      white, white, white, 1.0f, width, height);
             }
         }
         gx += 8.0f * (float)scale;
     }
     if (!n) return 0;
-    if (!t->coherent) {
+    if (!s->coherent) {
         VkMappedMemoryRange range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
-                                     .memory = t->memory,
+                                     .memory = s->memory,
                                      .offset = 0,
                                      .size = VK_WHOLE_SIZE};
         vkFlushMappedMemoryRanges(t->dev, 1, &range);
@@ -274,8 +297,8 @@ int snx_toast_draw(SnxToast* t, VkCommandBuffer cb, VkImageView view, VkFormat f
     sc = (VkRect2D){{0, 0}, {width, height}};
     vkCmdSetViewport(cb, 0, 1, &vp);
     vkCmdSetScissor(cb, 0, 1, &sc);
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, t->pipe);
-    vkCmdBindVertexBuffers(cb, 0, 1, &t->buffer, &offset);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    vkCmdBindVertexBuffers(cb, 0, 1, &s->buffer, &offset);
     vkCmdDraw(cb, n, 1, 0, 0);
     vkCmdEndRendering(cb);
     return 1;
