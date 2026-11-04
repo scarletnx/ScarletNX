@@ -106,6 +106,10 @@ void mem_reserve(void);
 int mem_reserved(void);
 /* 1 when the guest's addresses are the host's, for NCE: g_mem is 0 */
 int mem_identity(void);
+/* 0 when the host tracks the writes to guest memory (plat_ww_scan), -1 when it can't: a scan, reported to cb, of the
+   first page the tracking covers. Under NCE that is the code region's base at the guest's own addresses, as g_mem is
+   0 there, below the tracked range */
+int mem_ww_probe(void (*cb)(u8* p, u64 size));
 /* NCE's reservation at the guest's own addresses (mem.c says why), the layout moved up by from or more: 1, or 0 with
    the reason logged. POSIX only */
 int mem_reserve_identity(u64 from);
@@ -176,6 +180,12 @@ int mem_alias_unmap(u64 dst, u64 size, u64 back);
 void mem_alias_end(u64 src, u64 size);
 /* whether a view shares its source's pages: the alias pool is on (a view is a copy without it) */
 int mem_pool_active(void);
+/* Pages with two addresses (a view and its source, shared memory mapped twice, on a host with the pool): fn(user, at,
+   n) for each other guest range [at, at + n) that maps the pool pages behind [a, a + size), under the memory lock
+   (fn takes no lock of mem.c's). Nothing for a range no other address maps, and no lock for one whose 4 MiB grains
+   no such page is on. mem_alias_any: whether any page may have two addresses now, without the lock */
+void mem_alias_peers(u64 a, u64 size, void (*fn)(void* user, u64 at, u64 n), void* user);
+int mem_alias_any(void);
 /* Pool pages of their own (shared memory): size bytes mapped outside the reservation at the pointer returned, with
    their pool offset in off; NULL without a pool or when it is full */
 u8* mem_pool_host(u64 size, u64* off);

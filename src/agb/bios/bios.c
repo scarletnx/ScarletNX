@@ -104,7 +104,8 @@ static void affine(int32_t* pa, int32_t* pb, int32_t* pc, int32_t* pd, int32_t s
 }
 
 /* BgAffineSet: r2 entries of origin (24.8), screen coordinates, scale (8.8) and angle, 20 bytes each,
-   written as the matrix and the start coordinate (24.8), 16 bytes each. */
+   written as the matrix and the start coordinate (24.8), 16 bytes each: the start is the origin less the matrix times
+   the screen point, which lands that point on the origin. */
 static void bios_bg_affine_set(AgbBoard* board, uint32_t regs[16]) {
     uint32_t source = regs[0], destination = regs[1];
     for (uint32_t count = regs[2]; count; --count) {
@@ -119,8 +120,8 @@ static void bios_bg_affine_set(AgbBoard* board, uint32_t regs[16]) {
         agb_write16(board, destination + 2, (uint16_t)b);
         agb_write16(board, destination + 4, (uint16_t)c);
         agb_write16(board, destination + 6, (uint16_t)d);
-        agb_write32(board, destination + 8, (uint32_t)(ox - (int32_t)(((int64_t)a * cx + (int64_t)b * cy) >> 8)));
-        agb_write32(board, destination + 12, (uint32_t)(oy - (int32_t)(((int64_t)c * cx + (int64_t)d * cy) >> 8)));
+        agb_write32(board, destination + 8, (uint32_t)ox - (uint32_t)((int64_t)a * cx + (int64_t)b * cy));
+        agb_write32(board, destination + 12, (uint32_t)oy - (uint32_t)((int64_t)c * cx + (int64_t)d * cy));
         source += 20;
         destination += 16;
     }
@@ -227,6 +228,51 @@ static void bios_lz77_uncomp(AgbBoard* board, uint32_t regs[16], int halfwords) 
         }
     }
     if (halfwords && count) agb_write16(board, destination & ~(uint32_t)1, held);
+}
+
+/* HuffUnComp, as mGBA's _unHuffman reads the BIOS's: a header (the output's size, the symbols' width in bits), the tree's
+   size, the tree from source + 5 (a node: the offset to its pair of children, and which of them ends a symbol), then
+   words of bits read from the top, 1 the right child. The symbols fill 32 bit words from their low bits; a width
+   that does not divide 32 (or 1) is left undecoded, as mGBA leaves it, and 0 counts as 8 */
+static void bios_huff_uncomp(AgbBoard* board, uint32_t regs[16]) {
+    uint32_t source = regs[0] & ~(uint32_t)3, destination = regs[1], header = agb_read32(board, source);
+    uint32_t bits = header & 15 ? header & 15 : 8, block = 0, seen = 0, tree = source + 5, at = tree;
+    int32_t remaining = (int32_t)(header >> 8);
+    uint8_t node;
+    if (32 % bits || bits == 1) return;
+    source += 5 + ((uint32_t)agb_read8(board, source + 4) << 1) + 1;
+    node = agb_read8(board, at);
+    while (remaining > 0) {
+        uint32_t stream = agb_read32(board, source);
+        source += 4;
+        for (int left = 32; left > 0 && remaining > 0; --left, stream <<= 1) {
+            uint32_t next = (at & ~(uint32_t)1) + (node & 0x3Fu) * 2 + 2, symbol;
+            if (stream & 0x80000000u) {
+                if (!(node & 0x40)) {
+                    node = agb_read8(board, at = next + 1);
+                    continue;
+                }
+                symbol = agb_read8(board, next + 1);
+            } else {
+                if (!(node & 0x80)) {
+                    node = agb_read8(board, at = next);
+                    continue;
+                }
+                symbol = agb_read8(board, next);
+            }
+            block |= (symbol & ((1u << bits) - 1)) << seen;
+            seen += bits;
+            node = agb_read8(board, at = tree);
+            if (seen == 32) {
+                agb_write32(board, destination, block);
+                destination += 4;
+                remaining -= 4;
+                block = seen = 0;
+            }
+        }
+    }
+    regs[0] = source;
+    regs[1] = destination;
 }
 
 static void bios_rl_uncomp(AgbBoard* board, uint32_t regs[16], int halfwords) {
@@ -371,7 +417,7 @@ static const AgbBiosCall calls[] = {
     {AGB_SWI_BIT_UNPACK, "BitUnPack", 0},
     {AGB_SWI_LZ77_UNCOMP_WRAM, "LZ77UnCompWram", 0},
     {AGB_SWI_LZ77_UNCOMP_VRAM, "LZ77UnCompVram", 0},
-    {AGB_SWI_HUFF_UNCOMP, "HuffUnComp", 1},
+    {AGB_SWI_HUFF_UNCOMP, "HuffUnComp", 0},
     {AGB_SWI_RL_UNCOMP_WRAM, "RLUnCompWram", 0},
     {AGB_SWI_RL_UNCOMP_VRAM, "RLUnCompVram", 0},
     {AGB_SWI_DIFF_8BIT_UNFILTER_WRAM, "Diff8bitUnFilterWram", 0},
@@ -407,6 +453,7 @@ int agb_bios_call(AgbBoard* board, uint32_t swi, uint32_t regs[16]) {
         case AGB_SWI_BIT_UNPACK: bios_bit_unpack(board, regs); break;
         case AGB_SWI_LZ77_UNCOMP_WRAM: bios_lz77_uncomp(board, regs, 0); break;
         case AGB_SWI_LZ77_UNCOMP_VRAM: bios_lz77_uncomp(board, regs, 1); break;
+        case AGB_SWI_HUFF_UNCOMP: bios_huff_uncomp(board, regs); break;
         case AGB_SWI_RL_UNCOMP_WRAM: bios_rl_uncomp(board, regs, 0); break;
         case AGB_SWI_RL_UNCOMP_VRAM: bios_rl_uncomp(board, regs, 1); break;
         case AGB_SWI_DIFF_8BIT_UNFILTER_WRAM: bios_diff_unfilter(board, regs, 1, 1); break;

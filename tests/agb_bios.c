@@ -194,6 +194,28 @@ int main(void) {
     CHECK(agb_read16(&board, 0x02030100) == 1 && agb_read16(&board, 0x02030102) == 2);
     CHECK(agb_read16(&board, 0x02030104) == 0xBEEF && regs[1] == 0x02030104);
 
+    /* HuffUnComp: a tree of two symbols, left 0 and right 1, both ends at the root; 8 bit symbols "ABBABAAB" from
+       the bits 0110 1001, then 4 bit ones 3, C, C, 3, C, 3, 3, C from the same bits */
+    agb_write32(&board, 0x02000700, 8u << 8 | 0x28); /* 8 bytes out, Huffman, 8 bit symbols */
+    agb_write8(&board, 0x02000704, 1);               /* the tree: (1 + 1) * 2 bytes from 0x02000704 */
+    agb_write8(&board, 0x02000705, 0xC0);            /* the root: both children end a symbol, offset 0 */
+    agb_write8(&board, 0x02000706, 'A');             /* left: 0 */
+    agb_write8(&board, 0x02000707, 'B');             /* right: 1 */
+    agb_write32(&board, 0x02000708, 0x69000000);     /* 0110 1001 from the top */
+    memset(regs, 0, sizeof(regs));
+    regs[0] = 0x02000700;
+    regs[1] = 0x02000780;
+    CHECK(call(regs, AGB_SWI_HUFF_UNCOMP) == 0);
+    CHECK(agb_read32(&board, 0x02000780) == 0x41424241 && agb_read32(&board, 0x02000784) == 0x42414142);
+    CHECK(regs[0] == 0x0200070C && regs[1] == 0x02000788);
+    agb_write32(&board, 0x02000700, 4u << 8 | 0x24); /* 4 bytes out, 4 bit symbols */
+    agb_write8(&board, 0x02000706, 0x3);
+    agb_write8(&board, 0x02000707, 0xC);
+    regs[0] = 0x02000700;
+    regs[1] = 0x02000790;
+    CHECK(call(regs, AGB_SWI_HUFF_UNCOMP) == 0);
+    CHECK(agb_read32(&board, 0x02000790) == 0xC33C3CC3);
+
     /* BgAffineSet: a 90 degree turn, no scale, the origin at the screen center */
     agb_write32(&board, 0x02000400, 128 << 8); /* origin x (24.8) */
     agb_write32(&board, 0x02000404, 64 << 8);  /* origin y */
@@ -211,8 +233,25 @@ int main(void) {
     CHECK((int16_t)agb_read16(&board, 0x02000602) == -256); /* pb = -sin */
     CHECK((int16_t)agb_read16(&board, 0x02000604) == 256);  /* pc = sin */
     CHECK((int16_t)agb_read16(&board, 0x02000606) == 0);    /* pd = cos */
-    CHECK((int32_t)agb_read32(&board, 0x02000608) == (128 << 8) - (-256 * 60 >> 8));
-    CHECK((int32_t)agb_read32(&board, 0x0200060C) == (64 << 8) - (120 * 256 >> 8));
+    /* the start point puts the screen center on the origin: start + 120 * pa + 60 * pb, in 8.8 */
+    CHECK((int32_t)agb_read32(&board, 0x02000608) == (128 << 8) + 60 * 256);
+    CHECK((int32_t)agb_read32(&board, 0x0200060C) == (64 << 8) - 120 * 256);
+    /* twice the size, half a turn, the screen point (100, 40) on the origin (16.5, 8.25) */
+    agb_write32(&board, 0x02000400, 0x1080);
+    agb_write32(&board, 0x02000404, 0x0840);
+    agb_write16(&board, 0x02000408, 100);
+    agb_write16(&board, 0x0200040A, 40);
+    agb_write16(&board, 0x0200040C, 512);
+    agb_write16(&board, 0x0200040E, 512);
+    agb_write16(&board, 0x02000410, 0x8000);
+    regs[0] = 0x02000400;
+    regs[1] = 0x02000600;
+    regs[2] = 1;
+    CHECK(call(regs, AGB_SWI_BG_AFFINE_SET) == 0);
+    CHECK((int16_t)agb_read16(&board, 0x02000600) == -512 && (int16_t)agb_read16(&board, 0x02000606) == -512);
+    CHECK(agb_read16(&board, 0x02000602) == 0 && agb_read16(&board, 0x02000604) == 0);
+    CHECK((int32_t)agb_read32(&board, 0x02000608) + 100 * -512 == 0x1080);
+    CHECK((int32_t)agb_read32(&board, 0x0200060C) + 40 * -512 == 0x0840);
 
     /* ObjAffineSet writes the matrix with the stride OAM uses */
     agb_write16(&board, 0x02000500, 256);
