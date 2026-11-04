@@ -1208,7 +1208,7 @@ static void ww_mark_range(u64 o, u64 e) {
         if (!g_wleaf[l] && pg == l * lp && end == lend)
             g_wleaf_max[l] = g_wclock;
         else
-            ww_mark(g_mem + (pg << 12), (end - pg) << 12);
+            ww_mark(GP(pg << 12), (end - pg) << 12);
         pg = end;
     }
 }
@@ -1309,7 +1309,7 @@ static int ww_scan_free(u64 a, u64 e) {
     int r = 0;
     while (a < e && !r) {
         u64 hi, lo = vk_uma_import_in(a, e, &hi);
-        if (lo > a) r = plat_ww_scan(g_mem + a, lo - a, ww_note);
+        if (lo > a) r = plat_ww_scan(GP(a), lo - a, ww_note);
         a = hi;
     }
     return r;

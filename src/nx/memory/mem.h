@@ -45,8 +45,10 @@ typedef struct {
 /* where a 32-bit process's first module goes */
 #define AS32_CODE_BASE 0x200000ull
 
-/* the host address of guest address a */
-#define GP(a) (g_mem + (u64)(a))
+/* the host address of guest address a. In integers: under NCE g_mem is 0, and a pointer made by adding to a null one
+   is undefined, which lets the compiler take any pointer GP makes for non-null exactly when g_mem is, and drop the
+   checks of it (one game's every program bind went empty that way) */
+#define GP(a) ((u8*)(uintptr_t)((uintptr_t)g_mem + (u64)(a)))
 
 /* a run of pages with one state, permission and attribute (QueryMemory's MemoryInfo, less the address width) */
 typedef struct {

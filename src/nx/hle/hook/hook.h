@@ -50,16 +50,20 @@ void hook_version_text(char* out, size_t n, int key, u32 version);
 /* an entry's versions as @version writes them ("sdk >= 12.0.0, < 16.0.0"), "any version" for HOOK_ANY */
 void hook_range_text(char* out, size_t n, int key, u32 lo, u32 hi);
 
+/* the host address of guest address a, in integers as GP (memory/mem.h) makes it: under NCE c->mem is 0 */
+static inline u8* hook_host(const CPU* c, u64 a) { return (u8*)(uintptr_t)((uintptr_t)c->mem + a); }
 /* A field of a guest struct, as a layout hookgen generated from a struct declaration gives it for the module a hook
    was installed in: its offset, in a type of its own per field type, so that hook_get_u32 takes only a u32 field.
    hook_get_<type>(c, L->field, addr) reads the field of the struct at guest address addr, hook_put_<type> writes it,
-   little-endian whatever the host's order; an atomic access takes c->mem + addr + L->field.offset itself */
+   little-endian whatever the host's order; an atomic access takes hook_host(c, addr + L->field.offset) itself */
 #define HOOK_FIELD(T, C, U, LD, ST)                                                                                    \
     typedef struct {                                                                                                   \
         u32 offset;                                                                                                    \
     } HookField_##T;                                                                                                   \
-    static inline C hook_get_##T(const CPU* c, HookField_##T f, u64 addr) { return (C)LD(c->mem + addr + f.offset); }  \
-    static inline void hook_put_##T(CPU* c, HookField_##T f, u64 addr, C v) { ST(c->mem + addr + f.offset, (U)v); }
+    static inline C hook_get_##T(const CPU* c, HookField_##T f, u64 addr) {                                            \
+        return (C)LD(hook_host(c, addr + f.offset));                                                                   \
+    }                                                                                                                  \
+    static inline void hook_put_##T(CPU* c, HookField_##T f, u64 addr, C v) { ST(hook_host(c, addr + f.offset), (U)v); }
 static inline u8 hook_ld8(const void* p) { return *(const u8*)p; }
 static inline void hook_st8(void* p, u8 v) { *(u8*)p = v; }
 HOOK_FIELD(u8, u8, u8, hook_ld8, hook_st8)
@@ -76,13 +80,17 @@ HOOK_FIELD(addr, u64, u64, snx_ld_le64, snx_st_le64)
 typedef struct {
     u32 offset;
 } HookField_bool;
-static inline int hook_get_bool(const CPU* c, HookField_bool f, u64 addr) { return c->mem[addr + f.offset] != 0; }
-static inline void hook_put_bool(CPU* c, HookField_bool f, u64 addr, int v) { c->mem[addr + f.offset] = (u8)(v != 0); }
+static inline int hook_get_bool(const CPU* c, HookField_bool f, u64 addr) {
+    return *hook_host(c, addr + f.offset) != 0;
+}
+static inline void hook_put_bool(CPU* c, HookField_bool f, u64 addr, int v) {
+    *hook_host(c, addr + f.offset) = (u8)(v != 0);
+}
 typedef struct {
     u32 offset;
 } HookField_f32;
 static inline f32 hook_get_f32(const CPU* c, HookField_f32 f, u64 addr) {
-    u32 bits = snx_ld_le32(c->mem + addr + f.offset);
+    u32 bits = snx_ld_le32(hook_host(c, addr + f.offset));
     f32 v;
     memcpy(&v, &bits, sizeof v);
     return v;
@@ -90,13 +98,13 @@ static inline f32 hook_get_f32(const CPU* c, HookField_f32 f, u64 addr) {
 static inline void hook_put_f32(CPU* c, HookField_f32 f, u64 addr, f32 v) {
     u32 bits;
     memcpy(&bits, &v, sizeof bits);
-    snx_st_le32(c->mem + addr + f.offset, bits);
+    snx_st_le32(hook_host(c, addr + f.offset), bits);
 }
 typedef struct {
     u32 offset;
 } HookField_f64;
 static inline f64 hook_get_f64(const CPU* c, HookField_f64 f, u64 addr) {
-    u64 bits = snx_ld_le64(c->mem + addr + f.offset);
+    u64 bits = snx_ld_le64(hook_host(c, addr + f.offset));
     f64 v;
     memcpy(&v, &bits, sizeof v);
     return v;
@@ -104,7 +112,7 @@ static inline f64 hook_get_f64(const CPU* c, HookField_f64 f, u64 addr) {
 static inline void hook_put_f64(CPU* c, HookField_f64 f, u64 addr, f64 v) {
     u64 bits;
     memcpy(&bits, &v, sizeof bits);
-    snx_st_le64(c->mem + addr + f.offset, bits);
+    snx_st_le64(hook_host(c, addr + f.offset), bits);
 }
 
 /* the functions hooked: a hook's symbol may name one in each of the game's modules */
