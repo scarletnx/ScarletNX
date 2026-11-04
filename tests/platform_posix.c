@@ -392,6 +392,69 @@ static void test_foreign(void) {
 #endif
 }
 
+#if defined(__linux__)
+/* what test_foreign_churn's threads change in the range, as the runtime does in the guest's: the alias pool's pages
+   mapped over it and taken back (MAP_FIXED, never a hole), and pages committed and decommitted (mprotect, which
+   splits and joins the mappings the maps list) */
+typedef struct {
+    u8* r;
+    u64 pg, pages;
+    int alias, stop;
+    char pad[64]; /* the scans' stop and the threads' count, each on a line of its own */
+    int rounds;
+} Churn;
+static void* churn_alias(void* arg) {
+    Churn* c = (Churn*)arg;
+    for (u64 i = 0; !__atomic_load_n(&c->stop, __ATOMIC_ACQUIRE); i = (i + 3) % (c->pages - 2)) {
+        u8* p = c->r + i * c->pg;
+        mmap(p, 2 * c->pg, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, c->alias, 0);
+        mmap(p, 2 * c->pg, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+        __atomic_fetch_add(&c->rounds, 1, __ATOMIC_RELAXED);
+    }
+    return NULL;
+}
+static void* churn_commit(void* arg) {
+    Churn* c = (Churn*)arg;
+    for (u64 i = 1; !__atomic_load_n(&c->stop, __ATOMIC_ACQUIRE); i = (i + 5) % (c->pages - 1)) {
+        u8* p = c->r + i * c->pg;
+        mprotect(p, c->pg, PROT_READ | PROT_WRITE);
+        mprotect(p, c->pg, PROT_NONE);
+        __atomic_fetch_add(&c->rounds, 1, __ATOMIC_RELAXED);
+    }
+    return NULL;
+}
+#endif
+/* plat_vm_foreign while other threads change the range's mappings without ever leaving a hole: the maps are read in
+   pieces as they change, and no scan may name a run as unmapped or anything as another owner's */
+static void test_foreign_churn(void) {
+#if defined(__linux__)
+    enum { THREADS = 4, SCANS = 3000 };
+    const u64 pg = (u64)sysconf(_SC_PAGESIZE), pages = 512;
+    Churn c = {0};
+    pthread_t t[THREADS];
+    char out[512], first[512] = "";
+    int wrong = 0;
+    printf("what is not the guest's, while its mappings change\n");
+    c.r = (u8*)mmap(NULL, pages * pg, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    c.pg = pg, c.pages = pages;
+    c.alias = (int)syscall(SYS_memfd_create, "snx-alias", 1u);
+    CHECK(c.r != (u8*)MAP_FAILED && c.alias >= 0 && !ftruncate(c.alias, (off_t)(2 * pg)), "a range and a pool");
+    for (int i = 0; i < THREADS; i++)
+        CHECK(!pthread_create(&t[i], NULL, i % 2 ? churn_commit : churn_alias, &c), "a thread that maps");
+    for (int s = 0; s < SCANS; s++) {
+        int n = plat_vm_foreign((u64)(uintptr_t)c.r, (u64)(uintptr_t)c.r + pages * pg, out, sizeof out);
+        if (n != 0 && !wrong++) snprintf(first, sizeof first, "%s", out);
+    }
+    __atomic_store_n(&c.stop, 1, __ATOMIC_RELEASE);
+    for (int i = 0; i < THREADS; i++) pthread_join(t[i], NULL);
+    printf("  %d scans, %d mapping changes beside them, %d said something wrong%s%s\n", SCANS, c.rounds, wrong,
+           wrong ? ": " : "", first);
+    CHECK(!wrong && c.rounds > SCANS, "a scan named what was the guest's while its mappings changed");
+    munmap(c.r, pages * pg);
+    close(c.alias);
+#endif
+}
+
 static void test_host_page(void) {
     u64 host = (u64)sysconf(_SC_PAGESIZE);
     int given = g_settings.host_page_size;
@@ -448,6 +511,7 @@ int main(int argc, char** argv) {
     }
     test_host_page();
     test_foreign();
+    test_foreign_churn();
     if (sysconf(_SC_PAGESIZE) == 4096)
         test_guest_memory(dir);
     else /* plat_vm_reserve refuses the host: guest memory needs 4 KiB pages, and Apple silicon's are 16 KiB */

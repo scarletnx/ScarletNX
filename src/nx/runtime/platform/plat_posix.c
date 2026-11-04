@@ -1354,6 +1354,15 @@ static int foreign_add(char* out, size_t size, size_t* at, const char* what, u64
     }
     return 1;
 }
+/* A run the maps listed with nothing in it is unmapped still. The maps are read in pieces while other threads map and
+   unmap, so a run read as empty may have been one mapping changing between two pieces: msync, which fails with ENOMEM
+   on a range with a hole, asks again, and a run mapped whole now was not a hole. A system call, so a crash handler may
+   call it */
+static int gap_held(u64 a, u64 b) {
+    int err = errno, held = msync((void*)(uintptr_t)a, (size_t)(b - a), MS_ASYNC) != 0 && errno == ENOMEM;
+    errno = err;
+    return held;
+}
 /* one line of /proc/self/maps: start-end perms offset dev inode [name] */
 static int foreign_line(char* line, u64 lo, u64 hi, u64* cursor, char* out, size_t size, size_t* at) {
     unsigned long long a, b;
@@ -1362,7 +1371,8 @@ static int foreign_line(char* line, u64 lo, u64 hi, u64* cursor, char* out, size
     const char* name;
     if (sscanf(line, "%llx-%llx %7s %*s %*s %*s %n", &a, &b, perms, &name_at) < 3) return 0;
     if (b <= lo || a >= hi) return 0;
-    if (a > *cursor) found += foreign_add(out, size, at, "nothing mapped at", *cursor, a, NULL, NULL);
+    if (a > *cursor && gap_held(*cursor, a))
+        found += foreign_add(out, size, at, "nothing mapped at", *cursor, a, NULL, NULL);
     if (b > *cursor) *cursor = b;
     name = name_at ? line + name_at : "";
     if (name[0] && strcmp(name, ALIAS_MAPS)) found += foreign_add(out, size, at, "mapped at", a, b, perms, name);
@@ -1413,7 +1423,8 @@ static int foreign_scan(int fd, u64 lo, u64 hi, char* out, size_t size) {
         if (size) out[0] = 0;
         return -1;
     }
-    if (f.cursor < hi) f.found += foreign_add(out, size, &f.at, "nothing mapped at", f.cursor, hi, NULL, NULL);
+    if (f.cursor < hi && gap_held(f.cursor, hi))
+        f.found += foreign_add(out, size, &f.at, "nothing mapped at", f.cursor, hi, NULL, NULL);
     if (size) out[f.at < size ? f.at : size - 1] = 0;
     return f.found;
 }
