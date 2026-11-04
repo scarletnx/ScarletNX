@@ -3,6 +3,7 @@
 #include "3ds/memory/ctr_memory.h"
 #include "3ds/memory/host.h"
 #include "common/memory/host.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -84,6 +85,10 @@ SnxCtrMemory* snx_ctr_memory_new(SnxCtrModel model) {
 }
 unsigned char* snx_ctr_memory_region(const SnxCtrMemory* m, size_t index) {
     return m && index < m->profile->region_count ? m->backing[index] : NULL;
+}
+const unsigned char* snx_ctr_memory_ram(const SnxCtrMemory* m, uint64_t* size) {
+    *size = m->host.size;
+    return m->host.view;
 }
 const SnxCtrProfile* snx_ctr_memory_profile(const SnxCtrMemory* m) { return m ? m->profile : NULL; }
 void snx_ctr_memory_free(SnxCtrMemory* m) {
@@ -251,6 +256,67 @@ bool snx_ctr_track_fault(SnxCtrAddressSpace* s, uint32_t va) {
     if (index == UINT32_MAX || m->level[index] == SNX_CTR_TRACK_NONE) return false; /* the guest's own data abort */
     step(m, index, p->pa);
     return true;
+}
+
+/* ---- the RAM moved into another object ---- */
+
+/* The flat space's views of RAM pages mapped from host's object at their addresses, each at its guest permissions less
+   its tracking level's: a run of pages one after another in the space and in the object at one protection is one map.
+   MMIO pages were never mapped there, and stay inaccessible */
+static bool map_space(const SnxCtrAddressSpace* s, const SnxHostMemory* host) {
+    uint64_t start = 0, from = 0, run = 0;
+    unsigned protection = 0;
+    for (uint64_t va = 0; va <= CTR_HOST_SPACE; va += 4096) {
+        const Page* p = va < CTR_HOST_SPACE ? page(s, (uint32_t)va) : NULL;
+        if (!p && !run && va < CTR_HOST_SPACE) { /* no table: its 4 MiB at once */
+            va |= 0x3FF000;
+            continue;
+        }
+        uint32_t index = p && p->present ? ram_index(s->memory, p->pa) : UINT32_MAX;
+        unsigned permissions = index == UINT32_MAX ? 0 : tracked_permissions(s->memory->level[index], p->permissions);
+        if (run && index != UINT32_MAX && (uint64_t)index * 4096 == from + run && permissions == protection) {
+            run += 4096;
+            continue;
+        }
+        if (run && !snx_host_map(host, s->base, start, from, run, protection)) return false;
+        run = index == UINT32_MAX ? 0 : 4096;
+        start = va;
+        from = (uint64_t)index * 4096;
+        protection = permissions;
+    }
+    return true;
+}
+/* every view of the RAM mapped from host's object: the object's own, then each flat space's */
+static bool map_views(const SnxCtrMemory* m, const SnxHostMemory* host) {
+    if (!snx_host_map(host, host->view, 0, 0, host->size, SNX_HOST_READ | SNX_HOST_WRITE)) return false;
+    for (unsigned i = 0; i < TRACK_SPACES; ++i)
+        if (m->spaces[i] && !map_space(m->spaces[i], host)) return false;
+    return true;
+}
+bool snx_ctr_memory_adopt(SnxCtrMemory* m, intptr_t handle) {
+#ifdef _WIN32
+    (void)m;
+    (void)handle;
+    return false; /* only a placeholder takes a view (memory/host.c), and the object's own view is none */
+#else
+    SnxHostMemory next = {handle, m->host.view, m->host.size};
+    if (!snx_host_memory_fill(&next, m->host.view)) return false;
+    if (!map_views(m, &next)) {
+        int error = errno;
+        /* every view back on the old object, which still holds the RAM: nothing wrote it meanwhile. Views of two
+           objects would be RAM whose aliases differ: no run goes on from there */
+        if (!map_views(m, &m->host)) {
+            static const char line[] = "3ds memory: the RAM's views could not be mapped back from its object\n";
+            ctr_host_say(line, sizeof line - 1);
+            abort();
+        }
+        errno = error;
+        return false;
+    }
+    snx_host_memory_close(&m->host);
+    m->host = next;
+    return true;
+#endif
 }
 
 /* A board-wide epoch conservatively invalidates every reservation on any
