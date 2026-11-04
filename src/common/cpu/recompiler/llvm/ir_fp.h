@@ -43,6 +43,7 @@ static inline int ir_fp_reply_in_memory(SnxIr* ir) {
 #ifdef __x86_64__
     return ir->windows;
 #else
+    (void)ir;
     return 0;
 #endif
 }
