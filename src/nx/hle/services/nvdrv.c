@@ -790,15 +790,20 @@ static NvEvent* nvev_detach(u32 fd, NvEvent* out) {
     nvev_unlock();
     return t ? out : NULL;
 }
+/* the event slots armed now, under nvev_lk: syncpt_add skips the scan of every slot while none is, which is the
+   common case for a game that waits on none of them */
+static u32 armed_count;
 /* signals the armed event slots whose syncpoint got where they wait for, and disarms them */
 static void nv_events_check(void) {
     u32 t, i;
+    if (!__atomic_load_n(&armed_count, __ATOMIC_ACQUIRE)) return;
     nvev_lock();
     for (t = 0; t < NV_CTRL_TABLES; t++)
         for (i = 0; g_hle.nvdrv.ctrl_evt[t].fd && i < NV_CTRL_EVENT_SLOTS; i++) {
             NvEvent* e = &g_hle.nvdrv.ctrl_evt[t].slot[i];
             if (!e->armed || !syncpt_reached(e->id, e->thresh)) continue;
             e->armed = 0;
+            __atomic_sub_fetch(&armed_count, 1, __ATOMIC_RELEASE);
             if (e->ev) kevent_signal(kev(e->ev));
         }
     nvev_unlock();
@@ -1225,7 +1230,10 @@ static u32 ioctl_as(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
 static void nvev_disarm(u32 fd, u32 slot) { /* under nvev_lk; the event stays unsignaled: the wait was canceled */
     NvEvent* e = nvev_slot(fd, slot, 0);
     if (!e || !e->ev) return;
-    e->armed = 0;
+    if (e->armed) {
+        e->armed = 0;
+        __atomic_sub_fetch(&armed_count, 1, __ATOMIC_RELEASE);
+    }
     kevent_clear(kev(e->ev));
 }
 /* a ctrl wait's timeout in ms as syncpt_wait's ns: negative waits for good */
@@ -1257,7 +1265,10 @@ static u32 ctrl_event_wait(u32 fd, u8* d, int async) {
         kevent_clear(kev(e->ev)); /* before arming: see nvev_lk */
         e->id = id;
         e->thresh = thresh;
-        e->armed = 1;
+        if (!e->armed) {
+            e->armed = 1;
+            __atomic_add_fetch(&armed_count, 1, __ATOMIC_RELEASE);
+        }
     }
     nvev_unlock();
     nv_events_check(); /* it may have got there meanwhile */
