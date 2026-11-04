@@ -7,6 +7,8 @@ description: "Run a recompiled game unattended and judge the result. It covers s
 
 ## One command
 
+Use independent files in a test copy of a game's data folder. The file tree rejects symbolic links and hard links.
+
 ```bash
 tools/run_game.py <id> --dump work/<Game>                 # 60 s with the default script
 tools/run_game.py <id> --runs 5 --dump work/<Game>        # crash rate
