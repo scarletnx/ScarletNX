@@ -102,6 +102,16 @@ void snx_vk_window_close(SnxVkWindow* w) {
     *w = (SnxVkWindow){0};
 }
 
+int snx_vk_window_headroom_pct(SDL_Window* window) {
+    SDL_PropertiesID props = window ? SDL_GetWindowProperties(window) : 0;
+    float headroom;
+    if (!props) return 100;
+    headroom = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1.0f);
+    if (!(headroom >= 1.0f)) headroom = 1.0f;
+    if (headroom > 10.0f) headroom = 10.0f;
+    return (int)(headroom * 100.0f + 0.5f);
+}
+
 VkExtent2D snx_vk_window_extent(const SnxVkWindow* w, VkExtent2D fallback) {
     int width = 0, height = 0;
     if (!w->window || !SDL_GetWindowSizeInPixels(w->window, &width, &height) || width <= 0 || height <= 0)

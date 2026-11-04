@@ -149,10 +149,16 @@ static bool swap_create(unsigned screen) {
                           : fallback;
     }
     g_present.display_kind[screen] = kind;
-    g_present.headroom_pct[screen] =
-        kind != SNX_FX_DISPLAY_NONE
-            ? snx_clamp_int(g_settings.hdr_peak * 100 / g_settings.hdr_paper_white, 100, 1000)
-            : 100;
+    {
+        /* the display's own headroom where SDL reports it (Wayland's color management, Windows' Advanced Color),
+           else the configured peak: the SDR frame is mapped into it when HDR is on */
+        int reported = snx_vk_window_headroom_pct(window);
+        g_present.headroom_pct[screen] =
+            kind != SNX_FX_DISPLAY_NONE
+                ? (reported > 100 ? snx_clamp_int(reported, 100, 1000)
+                                  : snx_clamp_int(g_settings.hdr_peak * 100 / g_settings.hdr_paper_white, 100, 1000))
+                : 100;
+    }
     if (g_present.fx[screen])
         snx_fx_set_display(g_present.fx[screen], kind, g_present.headroom_pct[screen]);
     if (g_present.swap_views_for[screen]) {

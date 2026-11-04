@@ -475,7 +475,10 @@ the spatial upscaler (`upscaler`, `upscaler_sharpness`, `upscaler_mult`), the
 anti aliasing (`aa`, after the upscale and before the encode) and HDR (`hdr*`).
 Each screen is upscaled and anti aliased at its own rectangle. In one window the
 pair is composited first and the HDR passes encode the whole window, so the
-letterbox is composed with the screens. Frame interpolation (`frame_interp`, or
+letterbox is composed with the screens. A 3DS game presents SDR frames: with
+`hdr` on (or Auto and an HDR display) the shared compose pass maps that SDR frame
+into the display's headroom, which is the one SDL reports (Wayland's color
+management, Windows' Advanced Color) or `hdr_peak` where it reports none. Frame interpolation (`frame_interp`, or
 `frame_interp_key`) keeps the pair the frame before made and presents a blend of
 the two pairs and then the current pair, in two swapchain images (one per screen
 with Separate screens). Bounded PPM snapshots land in

@@ -144,9 +144,14 @@ static bool swapchain_make(AgbVk* v) {
         .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 640})};
     v->display_kind = kind;
-    v->headroom_pct = kind != SNX_FX_DISPLAY_NONE
-                          ? snx_clamp_int(g_settings.hdr_peak * 100 / g_settings.hdr_paper_white, 100, 1000)
-                          : 100;
+    {
+        int reported = snx_vk_window_headroom_pct(v->host.window);
+        v->headroom_pct =
+            kind != SNX_FX_DISPLAY_NONE
+                ? (reported > 100 ? snx_clamp_int(reported, 100, 1000)
+                                  : snx_clamp_int(g_settings.hdr_peak * 100 / g_settings.hdr_paper_white, 100, 1000))
+                : 100;
+    }
     if (v->fx) snx_fx_set_display(v->fx, kind, v->headroom_pct);
     vkDeviceWaitIdle(v->device);
     views_free(v);

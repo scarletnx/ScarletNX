@@ -19,4 +19,8 @@ bool snx_vk_window_open(const char* app, const char* title, int width, int heigh
 void snx_vk_window_close(SnxVkWindow* w);
 /* the window's size in pixels, the fallback's when it has none */
 VkExtent2D snx_vk_window_extent(const SnxVkWindow* w, VkExtent2D fallback);
+/* The display's HDR headroom over its SDR white, in percent, from SDL's window properties: 100 with none, or with no
+   window. Wayland's color management (KWin), Windows' Advanced Color and Apple's EDR report it; 100 when the backend
+   does not, and the caller keeps its own bound (hdr_peak) */
+int snx_vk_window_headroom_pct(SDL_Window* window);
 #endif
