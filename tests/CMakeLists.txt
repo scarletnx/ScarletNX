@@ -1807,7 +1807,7 @@ if(NOT WIN32)
         add_test(NAME llvm_qemu_differential COMMAND snx-test-llvm-qemu-differential --skip "${SNX_QEMU_REF_MISSING}")
     endif()
     set_tests_properties(llvm_qemu_differential PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
-    # The lowering census (llvm_lowering.c): each A64 SIMD, FP and crypto op's class on four emitter paths against
+    # The lowering census (llvm_lowering.c): each A64 SIMD, FP and crypto op's class on eight emitter paths against
     # llvm_lowering_expected.txt, which a change that moves an op updates in the same commit (--update)
     add_executable(snx-test-llvm-lowering llvm_lowering.c llvm_qemu_words.c)
     snx_test_target(snx-test-llvm-lowering 99)
