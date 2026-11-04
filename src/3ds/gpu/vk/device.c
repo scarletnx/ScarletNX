@@ -432,7 +432,11 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     memset(v, 0, sizeof *v);
     /* a window first: a display server and a Vulkan surface make it the output; without one frames go to the frame
        dumps only */
-    if (!snx_vk_window_open("scarletnx-ctr", "ScarletNX 3DS", 600, 720, &v->host, error, error_size)) return false;
+    /* the top screen alone fills its window when the screens are apart, 400x240 at twice its size; the pair needs the
+       taller window, 600x720 for the two at 1.5 times */
+    if (!snx_vk_window_open("scarletnx-ctr", "ScarletNX 3DS", g_settings.ctr_separate_screens ? 800 : 600,
+                            g_settings.ctr_separate_screens ? 480 : 720, &v->host, error, error_size))
+        return false;
     /* another window for the bottom screen when the screens are apart, on this instance */
     if (g_settings.ctr_separate_screens && v->host.window) {
         v->second = SDL_CreateWindow("ScarletNX 3DS (Bottom)", 640, 480, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
@@ -445,11 +449,12 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     const VkQueueFlags queue = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
     bool made =
         snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v);
-    if (!made && v->second) { /* no device presents to both windows: one window again */
+    if (!made && v->second) { /* no device presents to both windows: one window again, the pair's size */
         vkDestroySurfaceKHR(v->host.instance.instance, v->second_surface, NULL);
         SDL_DestroyWindow(v->second);
         v->second = NULL;
         v->second_surface = VK_NULL_HANDLE;
+        if (v->host.window) SDL_SetWindowSize(v->host.window, 600, 720);
         made =
             snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v);
     }

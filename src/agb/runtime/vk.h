@@ -16,8 +16,14 @@ AgbVk* agb_vk_open(const char* title, bool fullscreen, char* error, size_t error
 void agb_vk_close(AgbVk* vk);
 /* the SDL window the events come from */
 SDL_Window* agb_vk_window(AgbVk* vk);
-/* the 240x160 RGBA frame on screen: false when the swapchain had no image free this frame */
-bool agb_vk_frame(AgbVk* vk, const uint32_t* framebuffer);
+/* The 240x160 RGBA frame on screen: false when the swapchain had no image free this frame. generated says it is frame
+   interpolation's blend, which the F6 overlay counts beside the game's own frames */
+bool agb_vk_frame(AgbVk* vk, const uint32_t* framebuffer, int generated);
+/* the keys the player holds (AGB_KEY_), for the F6 overlay */
+void agb_vk_keys(AgbVk* vk, uint16_t keys);
+/* F6's overlay: the game's frames a second, the generated ones, their total, the frame time and the held keys. The
+   state after */
+int agb_vk_stats_toggle(AgbVk* vk);
 /* the live hotkeys, as every other frontend's: the upscaler and the anti aliasing cycle, HDR toggles. The changed
    value, or -1 with no effects */
 int agb_vk_cycle_upscaler(AgbVk* vk);

@@ -60,7 +60,12 @@ bool vita_present_vblank(VitaProcess* p) {
     while (SDL_WasInit(SDL_INIT_EVENTS) && SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) return false;
         if (event.type == SDL_EVENT_KEY_DOWN) {
-            int action = snx_hotkey_match(&event.key);
+            int action;
+            if (event.key.key == SDLK_F6 && !event.key.repeat) {
+                printf("stats: %s\n", vita_vk_stats_toggle() ? "on" : "off");
+                continue;
+            }
+            action = snx_hotkey_match(&event.key);
             if (action != SNX_HOTKEY_NONE) {
                 if (!event.key.repeat) vita_hotkey(action);
                 continue;

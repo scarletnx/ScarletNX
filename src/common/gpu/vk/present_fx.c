@@ -1530,9 +1530,11 @@ int snx_fx_hdr_compose(SnxFx* fx, VkCommandBuffer cb, VkImageView src, VkFormat 
     sc.extent.height = (uint32_t)((int64_t)dy + dh > (int64_t)dst_h ? (int64_t)dst_h - sc.offset.y : (int64_t)dh);
     if ((int64_t)sc.offset.x + sc.extent.width > dst_w) sc.extent.width = dst_w - sc.offset.x;
     if ((int64_t)sc.offset.y + sc.extent.height > dst_h) sc.extent.height = dst_h - sc.offset.y;
+    /* the toast and the stats overlay load the composed image, so the transition must allow the read too */
     fx_barrier(fx, cb, fx->comp[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
-               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT);
     fx_draw_scissor(fx, cb, fx->comp[slot].view, fx->compose, fx->pl1, dst_w, dst_h, sc,
                     src ? fx->compose_set[slot] : VK_NULL_HANDLE, &pc, sizeof pc, VK_ATTACHMENT_LOAD_OP_CLEAR);
     out->image = fx->comp[slot].image;

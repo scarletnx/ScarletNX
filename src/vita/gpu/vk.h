@@ -22,11 +22,11 @@ typedef struct {
     VkPhysicalDeviceProperties properties;
     VkPhysicalDeviceMemoryProperties memory_properties;
     VkDeviceSize host_alignment; /* minImportedHostPointerAlignment */
-    bool preserve_infnan; /* shaderSignedZeroInfNanPreserveFloat32: the shaders declare SignedZeroInfNanPreserve */
-    bool fp16; /* shaderFloat16: the FSR 1 fp16 passes where the device runs them */
-    bool bc; /* the device samples BC1 to BC3 (textureCompressionBC) */
-    bool depth16_blit; /* D16 depth images blit both ways (a depth surface scaled to and from its samples) */
-    bool depth_clamp;  /* the device clamps depth rather than clipping it (depthClamp), as the console does */
+    bool preserve_infnan;    /* shaderSignedZeroInfNanPreserveFloat32: the shaders declare SignedZeroInfNanPreserve */
+    bool fp16;               /* shaderFloat16: the FSR 1 fp16 passes where the device runs them */
+    bool bc;                 /* the device samples BC1 to BC3 (textureCompressionBC) */
+    bool depth16_blit;       /* D16 depth images blit both ways (a depth surface scaled to and from its samples) */
+    bool depth_clamp;        /* the device clamps depth rather than clipping it (depthClamp), as the console does */
     VkFormat stencil_format; /* a depth and stencil format it renders to (D24S8, else D32S8), UNDEFINED for none */
     /* the color attachment read as an input attachment while rendered to (VK_KHR_dynamic_rendering_local_read), in
        primitive order within a draw (VK_EXT_rasterization_order_attachment_access) */
@@ -43,6 +43,9 @@ int vita_vk_cycle_upscaler(void);
 int vita_vk_cycle_aa(void);
 int vita_vk_toggle_hdr(void);
 void vita_vk_toast(const char* text);
+/* F6's overlay: the game's frames a second, the generated ones, their total, the frame time and the held buttons. The
+   state after */
+int vita_vk_stats_toggle(void);
 /* the device and the window (none headless, or without a display): false with the reason when the host has no
    Vulkan 1.3 device with VK_EXT_external_memory_host */
 bool vita_vk_init(const char* title, char* error, size_t error_size);

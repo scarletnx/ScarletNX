@@ -487,10 +487,13 @@ path is unavailable and frames are only recorded; without a Vulkan device the
 presenter reports unavailability and no frame is fabricated.
 
 A 3DS run writes no log file: the console gets the startup lines, the errors,
-`3ds: the window takes Display P3` (or `no HDR image`, once per window and again
-when `hdr` changes it), the effects' `vulkan: presentation effects ready`, and
-each hotkey's message. `--ctr_ipc_trace=1` adds every service request and
-`--ctr_jit_trace=1` every translated block.
+`3ds: the window takes Display P3, 250% headroom` (or `no HDR image`, once per
+window and again when `hdr` changes it), the effects'
+`vulkan: presentation effects ready`, and each hotkey's message.
+`--ctr_ipc_trace=1` adds every service request and `--ctr_jit_trace=1` every
+translated block. F6 draws a frame rate and input overlay at each window's
+bottom left: the top screen's frames a second, the generated ones when frame
+interpolation runs, their total, the frame time and the buttons held.
 
 The separate windows and the two render resolutions are checked by `3ds_windows`: each
 screen takes its own setting's scale and no other's, both screens present, and the PPM
@@ -524,6 +527,8 @@ with that error as the run's last line. `3ds_vk_ram` checks the RAM on whatever 
 is: what the guest wrote reaches the GPU, a GPU fill shows in every guest view, a store through
 the flat space reaches the GPU, and the RAM outlives the device; `3ds_memory_adopt` checks the
 move with a memfd standing in for the dma-buf, on every host.
+Each window opens at twice its screen's size, 800x480 for the top and 640x480 for the
+bottom, so neither carries the black bars a window of another shape would.
 
 Audio runs on a high-level DSP (`src/3ds/audio/`, ported from Azahar's HLE audio core):
 dsp::DSP (`services/dsp.c`) takes the application's pipe writes, interrupt events, the

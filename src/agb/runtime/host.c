@@ -241,6 +241,10 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
             case SDL_EVENT_KEY_DOWN:
                 if (event.key.scancode == SDL_SCANCODE_F11 && !event.key.repeat)
                     SDL_SetWindowFullscreen(host->window, !(SDL_GetWindowFlags(host->window) & SDL_WINDOW_FULLSCREEN));
+                if (event.key.key == SDLK_F6 && !event.key.repeat) {
+                    fprintf(stderr, "stats: %s\n", agb_vk_stats_toggle(host->vk) ? "on" : "off");
+                    break;
+                }
                 if (agb_hotkey(host, &event.key)) break;
                 host->keyboard |= agb_host_key(event.key.scancode);
                 break;
@@ -254,9 +258,9 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
     return open;
 }
 
-static void present_frame(AgbHost* host, const uint32_t* framebuffer) {
+static void present_frame(AgbHost* host, const uint32_t* framebuffer, int generated) {
     if (host->vk) {
-        (void)agb_vk_frame(host->vk, framebuffer);
+        (void)agb_vk_frame(host->vk, framebuffer, generated);
     } else {
         SDL_UpdateTexture(host->texture, NULL, framebuffer, AGB_SCREEN_WIDTH * 4);
         SDL_SetRenderDrawColor(host->renderer, 0, 0, 0, 255);
@@ -267,13 +271,14 @@ static void present_frame(AgbHost* host, const uint32_t* framebuffer) {
 }
 void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* samples, uint32_t count) {
     int mode = snx_fx_interp_parse(g_settings.frame_interpolation);
-    int interp = mode == SNX_FX_INTERP_BLEND ||
-                 (mode == SNX_FX_INTERP_AUTO && snx_fx_interp_auto(host->display_hz, 60));
+    agb_vk_keys(host->vk, (uint16_t)(host->keyboard | host->buttons));
+    int interp =
+        mode == SNX_FX_INTERP_BLEND || (mode == SNX_FX_INTERP_AUTO && snx_fx_interp_auto(host->display_hz, 60));
     if (interp && host->prev && host->blend && host->have_prev) {
         blend_frames(host->blend, host->prev, framebuffer);
-        present_frame(host, host->blend);
+        present_frame(host, host->blend, 1);
     }
-    present_frame(host, framebuffer);
+    present_frame(host, framebuffer, 0);
     if (host->prev) {
         memcpy(host->prev, framebuffer, (size_t)AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT * 4);
         host->have_prev = 1;

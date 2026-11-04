@@ -2,10 +2,13 @@
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/vk.h"
 #include "common/gpu/vk/present_fx.h"
+#include "common/gpu/vk/stats.h"
+#include "common/gpu/vk/text.h"
 #include "common/gpu/vk/toast.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
+#include "vita/platform/input.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -20,8 +23,11 @@ static struct {
     VkImageLayout frame_layout;
     SnxFx* fx;
     SnxToast* toast;
+    SnxText* overlay; /* F6's frame rate and held buttons */
+    SnxStats stats;
     int display_kind;
-    int said_kind; /* the display kind last said in the console, -1 before the first */
+    int said_kind;  /* the display kind last said in the console, -1 before the first */
+    int auto_tried; /* Auto has looked for the display's headroom once, which SDL reports after the first frame */
     int headroom_pct;
     int have_frame;
     VkImageView swap_views[SNX_VK_SWAP_IMAGES];
@@ -135,8 +141,8 @@ static int choose_display(VitaVk* v, VkFormat* format, VkColorSpaceKHR* space) {
         }
     }
     if (kind == SNX_FX_DISPLAY_NONE && (cs == SNX_FX_CS_AUTO || cs == SNX_FX_CS_SCRGB)) {
-        if (snx_vk_surface_format_cs(v->phys, v->host.surface, scrgb_formats, 1, VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT,
-                                     &f)) {
+        if (snx_vk_surface_format_cs(v->phys, v->host.surface, scrgb_formats, 1,
+                                     VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, &f)) {
             kind = SNX_FX_DISPLAY_SCRGB;
         } else if (cs == SNX_FX_CS_SCRGB) {
             return SNX_FX_DISPLAY_NONE;
@@ -146,9 +152,11 @@ static int choose_display(VitaVk* v, VkFormat* format, VkColorSpaceKHR* space) {
         snx_vk_surface_format_cs(v->phys, v->host.surface, hdr_formats, 2, VK_COLOR_SPACE_HDR10_ST2084_EXT, &f))
         kind = SNX_FX_DISPLAY_PQ;
     if (kind == SNX_FX_DISPLAY_NONE) return SNX_FX_DISPLAY_NONE;
-    /* an extended-kind image's 1.0 is the display's SDR white: Auto keeps an SDR image unless the window takes HDR10,
-       as the Switch frontend does. On is explicit, and the display's headroom (SDL's, else the peak) bounds the lift. */
-    if (mode == SNX_FX_HDR_AUTO && kind != SNX_FX_DISPLAY_PQ) return SNX_FX_DISPLAY_NONE;
+    /* an extended-kind image's 1.0 is the display's SDR white: Auto takes one only where the display reports headroom
+       over its white, as the Switch frontend does. On is explicit, and the display's headroom (SDL's, else the peak)
+       bounds the lift. */
+    if (mode == SNX_FX_HDR_AUTO && kind != SNX_FX_DISPLAY_PQ && snx_vk_window_headroom_pct(v->host.window) <= 100)
+        return SNX_FX_DISPLAY_NONE;
     *format = f.format;
     *space = f.colorSpace;
     return kind;
@@ -167,10 +175,6 @@ static bool swapchain_make(VitaVk* v) {
         .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 544})};
     g.display_kind = kind;
-    if (kind != g.said_kind) {
-        g.said_kind = kind;
-        printf("vita: the window takes %s\n", snx_fx_display_label(kind));
-    }
     {
         int reported = snx_vk_window_headroom_pct(v->host.window);
         g.headroom_pct =
@@ -178,6 +182,13 @@ static bool swapchain_make(VitaVk* v) {
                 ? (reported > 100 ? snx_clamp_int(reported, 100, 1000)
                                   : snx_clamp_int(g_settings.hdr_peak * 100 / g_settings.hdr_paper_white, 100, 1000))
                 : 100;
+    }
+    if (kind != g.said_kind) {
+        g.said_kind = kind;
+        if (kind != SNX_FX_DISPLAY_NONE)
+            printf("vita: the window takes %s, %d%% headroom\n", snx_fx_display_label(kind), g.headroom_pct);
+        else
+            printf("vita: the window takes %s\n", snx_fx_display_label(kind));
     }
     if (g.fx) snx_fx_set_display(g.fx, g.display_kind, g.headroom_pct);
     if (g.swap_views_for) {
@@ -258,6 +269,9 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
                            g_settings.hdr_test_pattern};
         snx_fx_configure(g.fx, &cfg);
         g.toast = snx_toast_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, VITA_VK_SLOTS);
+        g.overlay = snx_text_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, VITA_VK_SLOTS);
+        snx_stats_init(&g.stats);
+        g.stats.on = g_settings.stats != 0; /* the setting starts it, F6 turns it over for the run */
         snx_fx_set_fp16(g.fx, v->fp16);
     }
     if (v->host.surface && !swapchain_make(v)) fprintf(stderr, "scarletnx-vita: no swapchain for the window yet\n");
@@ -276,6 +290,8 @@ void vita_vk_free(void) {
         if (g.frame_memory) vkFreeMemory(v->device, g.frame_memory, NULL);
         if (g.toast) snx_toast_destroy(g.toast);
         g.toast = NULL;
+        if (g.overlay) snx_text_destroy(g.overlay);
+        g.overlay = NULL;
         snx_fx_destroy(g.fx);
         g.fx = NULL;
         for (unsigned i = 0; i < VITA_VK_SLOTS; ++i)
@@ -313,8 +329,8 @@ static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from,
                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .image = image,
                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
-                          .pImageMemoryBarriers = &b};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b};
     vkCmdPipelineBarrier2(cb, &d);
 }
 /* the presenter's image of the framebuffer's size */
@@ -341,8 +357,8 @@ static bool frame_image(VitaVk* v, uint32_t width, uint32_t height) {
     vkGetImageMemoryRequirements(v->device, g.frame, &req);
     VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                .allocationSize = req.size,
-                               .memoryTypeIndex = vita_vk_memory_type(req.memoryTypeBits,
-                                                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
+                               .memoryTypeIndex =
+                                   vita_vk_memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
     if (ai.memoryTypeIndex == UINT32_MAX) ai.memoryTypeIndex = vita_vk_memory_type(req.memoryTypeBits, 0);
     if (vkAllocateMemory(v->device, &ai, NULL, &g.frame_memory) != VK_SUCCESS ||
         vkBindImageMemory(v->device, g.frame, g.frame_memory, 0) != VK_SUCCESS)
@@ -365,6 +381,37 @@ int vita_vk_cycle_aa(void) { return g.fx ? snx_fx_aa_cycle(g.fx) : -1; }
 int vita_vk_toggle_hdr(void) { return g.fx ? snx_fx_hdr_toggle(g.fx) : -1; }
 void vita_vk_toast(const char* text) {
     if (g.toast) snx_toast_show(g.toast, text, SDL_GetTicksNS());
+}
+int vita_vk_stats_toggle(void) { return snx_stats_toggle(&g.stats); }
+
+/* the buttons the player holds, in the overlay's words, with the sticks where they are off their rest */
+static const SnxStatsButton ctrl_buttons[] = {{VITA_CTRL_CROSS, "Cross"},   {VITA_CTRL_CIRCLE, "Circle"},
+                                              {VITA_CTRL_SQUARE, "Square"}, {VITA_CTRL_TRIANGLE, "Triangle"},
+                                              {VITA_CTRL_LTRIGGER, "L"},    {VITA_CTRL_RTRIGGER, "R"},
+                                              {VITA_CTRL_START, "Start"},   {VITA_CTRL_SELECT, "Select"},
+                                              {VITA_CTRL_UP, "^"},          {VITA_CTRL_DOWN, "v"},
+                                              {VITA_CTRL_LEFT, "<"},        {VITA_CTRL_RIGHT, ">"}};
+static void stats_inputs(char* out, size_t size) {
+    VitaInput in;
+    size_t at;
+    int lx, ly, rx, ry;
+    vita_input_read(&in);
+    snx_stats_inputs(out, size, in.buttons, ctrl_buttons, (unsigned)(sizeof ctrl_buttons / sizeof *ctrl_buttons));
+    lx = (int)in.lx - 128, ly = (int)in.ly - 128, rx = (int)in.rx - 128, ry = (int)in.ry - 128;
+    at = strlen(out);
+    if ((lx > 20 || lx < -20 || ly > 20 || ly < -20 || rx > 20 || rx < -20 || ry > 20 || ry < -20) && at + 40 < size) {
+        if (!strcmp(out, "-")) out[at = 0] = 0;
+        snprintf(out + at, size - at, "%sL %+.1f,%+.1f R %+.1f,%+.1f", at ? "  " : "", (double)lx / 128.0,
+                 (double)ly / 128.0, (double)rx / 128.0, (double)ry / 128.0);
+    }
+}
+/* the frame rate and the held buttons, at the window's bottom left */
+static void stats_overlay(VkCommandBuffer cb, VkImageView view, VkFormat format, float white, uint32_t w, uint32_t h,
+                          unsigned slot) {
+    char inputs[128];
+    if (!g.overlay || !g.stats.on) return;
+    stats_inputs(inputs, sizeof inputs);
+    snx_stats_draw(g.overlay, &g.stats, cb, view, format, w, h, white, slot, SDL_GetTicksNS(), inputs);
 }
 
 static bool present_image(VitaVk* v, VkImage src_image, VkImageView src_view, uint32_t width, uint32_t height,
@@ -408,13 +455,14 @@ static bool present_image(VitaVk* v, VkImage src_image, VkImageView src_view, ui
                                x, y, sw, sh, &comp)) {
             if (g_settings.hdr_test_pattern) snx_fx_hdr_test(g.fx, cb, &comp);
             if (g.toast)
-                snx_toast_draw(g.toast, cb, comp.view, snx_fx_compose_format(), w, h,
-                               (float)g_settings.hdr_paper_white, slot, SDL_GetTicksNS());
+                snx_toast_draw(g.toast, cb, comp.view, snx_fx_compose_format(), w, h, (float)g_settings.hdr_paper_white,
+                               slot, SDL_GetTicksNS());
+            stats_overlay(cb, comp.view, snx_fx_compose_format(), (float)g_settings.hdr_paper_white, w, h, slot);
             if (snx_fx_hdr_encode(g.fx, cb, &comp, target, target_view, v->swap.format.format, w, h,
                                   snx_fx_encode_kind(g.fx))) {
                 image_barrier(cb, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                              VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                              VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+                              VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                              VK_PIPELINE_STAGE_2_NONE, 0);
                 submit_with(v->acquired[slot], v->rendered[index]);
                 goto present;
             }
@@ -426,7 +474,8 @@ static bool present_image(VitaVk* v, VkImage src_image, VkImageView src_view, ui
                       VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     }
     image_barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                  VK_ACCESS_2_TRANSFER_WRITE_BIT);
     {
         VkClearColorValue black = {{0, 0, 0, 1}};
         VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -443,9 +492,10 @@ static bool present_image(VitaVk* v, VkImage src_image, VkImageView src_view, ui
     }
     image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    if (g.toast)
-        snx_toast_draw(g.toast, cb, target_view, v->swap.format.format, w, h, 1.0f, slot, SDL_GetTicksNS());
+                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT);
+    if (g.toast) snx_toast_draw(g.toast, cb, target_view, v->swap.format.format, w, h, 1.0f, slot, SDL_GetTicksNS());
+    stats_overlay(cb, target_view, v->swap.format.format, 1.0f, w, h, slot);
     image_barrier(cb, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_NONE, 0);
@@ -467,22 +517,28 @@ present:;
 bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint32_t width, uint32_t height) {
     VitaVk* v = &g.vk;
     if (!g.up || !v->host.surface) return false;
+    /* Auto follows the display's headroom, which SDL reports only once the window is on screen: the first frame that
+       sees it takes the HDR swapchain, and no more than once where the surface offers none */
+    if (g.fx && snx_fx_hdr_mode(g.fx) == SNX_FX_HDR_AUTO && !g.auto_tried && g.display_kind == SNX_FX_DISPLAY_NONE &&
+        snx_vk_window_headroom_pct(v->host.window) > 100) {
+        g.auto_tried = 1;
+        if (!swapchain_make(v)) return false;
+    }
     if (!v->swap.swapchain && !swapchain_make(v)) return false;
     if (!frame_image(v, width, height)) return false;
     VkCommandBuffer cb = vita_vk_commands();
-    int interp = snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_BLEND ||
-                 (snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_AUTO &&
-                  snx_fx_interp_auto(60, 60));
+    int interp =
+        snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_BLEND ||
+        (snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_AUTO && snx_fx_interp_auto(60, 60));
     SnxFxImage keep = {0};
-    int have_keep = g.fx && interp && g.have_frame &&
-                    snx_fx_keep(g.fx, cb, g.frame_view, width, height, &keep);
+    int have_keep = g.fx && interp && g.have_frame && snx_fx_keep(g.fx, cb, g.frame_view, width, height, &keep);
     if (have_keep)
-        image_barrier(cb, keep.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                      VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    image_barrier(cb, g.frame, g.frame_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                  VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        image_barrier(cb, keep.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    image_barrier(cb, g.frame, g.frame_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                  VK_ACCESS_2_TRANSFER_WRITE_BIT);
     {
         VkBufferImageCopy copy = {.bufferOffset = offset,
                                   .bufferRowLength = pitch,
@@ -505,6 +561,10 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
         }
     }
     bool ok = present_image(v, g.frame, g.frame_view, width, height, width, height);
+    if (ok) {
+        snx_stats_frame(&g.stats, SDL_GetTicksNS());
+        if (have_keep) snx_stats_generated(&g.stats);
+    }
     g.have_frame = 1;
     return ok;
 }

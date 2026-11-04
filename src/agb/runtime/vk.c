@@ -4,7 +4,10 @@
    host-visible staging buffer, then the shared presentation effects run: the spatial upscaler, the anti aliasing and
    the HDR composition and encode. A host without a Vulkan window keeps the SDL renderer of host.c. */
 #include "agb/runtime/vk.h"
+#include "agb/runtime/host.h"
 #include "common/gpu/vk/present_fx.h"
+#include "common/gpu/vk/stats.h"
+#include "common/gpu/vk/text.h"
 #include "common/gpu/vk/toast.h"
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/swapchain.h"
@@ -44,8 +47,12 @@ struct AgbVk {
     AgbFrame frame[AGB_VK_SLOTS];
     SnxFx* fx;
     SnxToast* toast;
+    SnxText* overlay; /* F6's frame rate and held keys */
+    SnxStats stats;
+    uint16_t keys; /* the keys the player holds, for the overlay */
     int display_kind;
-    int said_kind; /* the display kind last said in the console, -1 before the first */
+    int said_kind;  /* the display kind last said in the console, -1 before the first */
+    int auto_tried; /* Auto has looked for the display's headroom once, which SDL reports after the first frame */
     int headroom_pct;
     int lost;
 };
@@ -116,8 +123,8 @@ static int choose_display(AgbVk* v, VkFormat* format, VkColorSpaceKHR* space) {
             return SNX_FX_DISPLAY_NONE;
     }
     if (kind == SNX_FX_DISPLAY_NONE && (cs == SNX_FX_CS_AUTO || cs == SNX_FX_CS_SCRGB)) {
-        if (snx_vk_surface_format_cs(v->phys, v->host.surface, scrgb_formats, 1, VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT,
-                                     &f))
+        if (snx_vk_surface_format_cs(v->phys, v->host.surface, scrgb_formats, 1,
+                                     VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, &f))
             kind = SNX_FX_DISPLAY_SCRGB;
         else if (cs == SNX_FX_CS_SCRGB)
             return SNX_FX_DISPLAY_NONE;
@@ -126,7 +133,10 @@ static int choose_display(AgbVk* v, VkFormat* format, VkColorSpaceKHR* space) {
         snx_vk_surface_format_cs(v->phys, v->host.surface, hdr_formats, 2, VK_COLOR_SPACE_HDR10_ST2084_EXT, &f))
         kind = SNX_FX_DISPLAY_PQ;
     if (kind == SNX_FX_DISPLAY_NONE) return SNX_FX_DISPLAY_NONE;
-    if (mode == SNX_FX_HDR_AUTO && kind != SNX_FX_DISPLAY_PQ) return SNX_FX_DISPLAY_NONE;
+    /* an extended-kind image's 1.0 is the display's SDR white: Auto takes one only where the display reports headroom
+       over its white, as the Switch frontend does */
+    if (mode == SNX_FX_HDR_AUTO && kind != SNX_FX_DISPLAY_PQ && snx_vk_window_headroom_pct(v->host.window) <= 100)
+        return SNX_FX_DISPLAY_NONE;
     *format = f.format;
     *space = f.colorSpace;
     return kind;
@@ -145,10 +155,6 @@ static bool swapchain_make(AgbVk* v) {
         .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 640})};
     v->display_kind = kind;
-    if (kind != v->said_kind) {
-        v->said_kind = kind;
-        printf("agb: the window takes %s\n", snx_fx_display_label(kind));
-    }
     {
         int reported = snx_vk_window_headroom_pct(v->host.window);
         v->headroom_pct =
@@ -156,6 +162,13 @@ static bool swapchain_make(AgbVk* v) {
                 ? (reported > 100 ? snx_clamp_int(reported, 100, 1000)
                                   : snx_clamp_int(g_settings.hdr_peak * 100 / g_settings.hdr_paper_white, 100, 1000))
                 : 100;
+    }
+    if (kind != v->said_kind) {
+        v->said_kind = kind;
+        if (kind != SNX_FX_DISPLAY_NONE)
+            printf("agb: the window takes %s, %d%% headroom\n", snx_fx_display_label(kind), v->headroom_pct);
+        else
+            printf("agb: the window takes %s\n", snx_fx_display_label(kind));
     }
     if (v->fx) snx_fx_set_display(v->fx, kind, v->headroom_pct);
     vkDeviceWaitIdle(v->device);
@@ -186,9 +199,8 @@ static bool frame_make(AgbVk* v, AgbFrame* f) {
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                             .size = size,
-                             .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    VkBufferCreateInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
     if (vkCreateImage(v->device, &ii, NULL, &f->image) != VK_SUCCESS ||
         vkCreateBuffer(v->device, &bi, NULL, &f->staging) != VK_SUCCESS)
         return false;
@@ -210,10 +222,9 @@ static bool frame_make(AgbVk* v, AgbFrame* f) {
     if (vkCreateImageView(v->device, &vi, NULL, &f->view) != VK_SUCCESS) return false;
     vkGetBufferMemoryRequirements(v->device, f->staging, &req);
     ai.allocationSize = req.size;
-    ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (ai.memoryTypeIndex == UINT32_MAX ||
-        vkAllocateMemory(v->device, &ai, NULL, &f->staging_memory) != VK_SUCCESS ||
+    ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits,
+                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(v->device, &ai, NULL, &f->staging_memory) != VK_SUCCESS ||
         vkBindBufferMemory(v->device, f->staging, f->staging_memory, 0) != VK_SUCCESS ||
         vkMapMemory(v->device, f->staging_memory, 0, VK_WHOLE_SIZE, 0, (void**)&f->mapped) != VK_SUCCESS)
         return false;
@@ -244,8 +255,8 @@ static void barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, VkImag
                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .image = image,
                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
-                          .pImageMemoryBarriers = &b};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b};
     vkCmdPipelineBarrier2(cb, &d);
     (void)old;
 }
@@ -300,6 +311,9 @@ AgbVk* agb_vk_open(const char* title, bool fullscreen, char* error, size_t error
                            g_settings.hdr_test_pattern};
         snx_fx_configure(v->fx, &cfg);
         v->toast = snx_toast_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, AGB_VK_SLOTS);
+        v->overlay = snx_text_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, AGB_VK_SLOTS);
+        snx_stats_init(&v->stats);
+        v->stats.on = g_settings.stats != 0; /* the setting starts it, F6 turns it over for the run */
         snx_fx_set_fp16(v->fx, v->fp16);
     }
     if (!swapchain_make(v)) goto failed;
@@ -318,6 +332,8 @@ void agb_vk_close(AgbVk* v) {
         vkDeviceWaitIdle(v->device);
         if (v->toast) snx_toast_destroy(v->toast);
         v->toast = NULL;
+        if (v->overlay) snx_text_destroy(v->overlay);
+        v->overlay = NULL;
         if (v->fx) snx_fx_destroy(v->fx);
         v->fx = NULL;
         views_free(v);
@@ -340,13 +356,37 @@ int agb_vk_toggle_hdr(AgbVk* v) { return v && v->fx ? snx_fx_hdr_toggle(v->fx) :
 void agb_vk_toast(AgbVk* v, const char* text) {
     if (v && v->toast) snx_toast_show(v->toast, text, SDL_GetTicksNS());
 }
+void agb_vk_keys(AgbVk* v, uint16_t keys) {
+    if (v) v->keys = keys;
+}
+int agb_vk_stats_toggle(AgbVk* v) { return v ? snx_stats_toggle(&v->stats) : 0; }
 
-bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer) {
+/* the keys the player holds, in the overlay's words */
+static const SnxStatsButton agb_buttons[] = {
+    {AGB_KEY_A, "A"},           {AGB_KEY_B, "B"},  {AGB_KEY_L, "L"},    {AGB_KEY_R, "R"},    {AGB_KEY_START, "Start"},
+    {AGB_KEY_SELECT, "Select"}, {AGB_KEY_UP, "^"}, {AGB_KEY_DOWN, "v"}, {AGB_KEY_LEFT, "<"}, {AGB_KEY_RIGHT, ">"}};
+/* the frame rate and the held keys, at the window's bottom left */
+static void stats_overlay(AgbVk* v, VkCommandBuffer cb, VkImageView view, VkFormat format, float white, uint32_t w,
+                          uint32_t h, unsigned slot) {
+    char inputs[80];
+    if (!v->overlay || !v->stats.on) return;
+    snx_stats_inputs(inputs, sizeof inputs, v->keys, agb_buttons, (unsigned)(sizeof agb_buttons / sizeof *agb_buttons));
+    snx_stats_draw(v->overlay, &v->stats, cb, view, format, w, h, white, slot, SDL_GetTicksNS(), inputs);
+}
+
+bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer, int generated) {
     uint32_t slot, index = 0;
     AgbFrame* f;
     VkCommandBuffer cb;
     VkResult r;
     if (!v || !v->swap.swapchain) return false;
+    /* Auto follows the display's headroom, which SDL reports only once the window is on screen: the first frame that
+       sees it takes the HDR swapchain, and no more than once where the surface offers none */
+    if (v->fx && snx_fx_hdr_mode(v->fx) == SNX_FX_HDR_AUTO && !v->auto_tried &&
+        v->display_kind == SNX_FX_DISPLAY_NONE && snx_vk_window_headroom_pct(v->host.window) > 100) {
+        v->auto_tried = 1;
+        if (!swapchain_make(v)) return false;
+    }
     if (snx_fx_hdr_active(v->fx) != (v->display_kind != SNX_FX_DISPLAY_NONE)) {
         if (!swapchain_make(v)) return false;
     }
@@ -354,7 +394,8 @@ bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer) {
     g_agb_slot = slot % AGB_VK_SLOTS;
     f = &v->frame[g_agb_slot];
     memcpy(f->mapped, framebuffer, (size_t)240 * 160 * 4);
-    r = vkAcquireNextImageKHR(v->device, v->swap.swapchain, 0, v->acquired[slot % AGB_VK_SLOTS], VK_NULL_HANDLE, &index);
+    r = vkAcquireNextImageKHR(v->device, v->swap.swapchain, 0, v->acquired[slot % AGB_VK_SLOTS], VK_NULL_HANDLE,
+                              &index);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         if (swapchain_make(v)) return false;
         return false;
@@ -410,6 +451,8 @@ bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer) {
                 if (v->toast)
                     snx_toast_draw(v->toast, cb, comp.view, snx_fx_compose_format(), w, h,
                                    (float)g_settings.hdr_paper_white, slot % AGB_VK_SLOTS, SDL_GetTicksNS());
+                stats_overlay(v, cb, comp.view, snx_fx_compose_format(), (float)g_settings.hdr_paper_white, w, h,
+                              slot % AGB_VK_SLOTS);
                 if (snx_fx_hdr_encode(v->fx, cb, &comp, v->swap.images[index], v->swap_views[index],
                                       v->swap.format.format, w, h, snx_fx_encode_kind(v->fx))) {
                     barrier(cb, v->swap.images[index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -439,19 +482,24 @@ bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer) {
             vkCmdBlitImage(cb, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, v->swap.images[index],
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
         }
-        if (v->toast) {
-            barrier(cb, v->swap.images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                    VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-            snx_toast_draw(v->toast, cb, v->swap_views[index], v->swap.format.format, w, h, 1.0f,
-                           slot % AGB_VK_SLOTS, SDL_GetTicksNS());
-        }
+        /* the toast and the overlay draw into it as an attachment, and the present waits for that layout */
+        barrier(cb, v->swap.images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT);
+        if (v->toast)
+            snx_toast_draw(v->toast, cb, v->swap_views[index], v->swap.format.format, w, h, 1.0f, slot % AGB_VK_SLOTS,
+                           SDL_GetTicksNS());
+        stats_overlay(v, cb, v->swap_views[index], v->swap.format.format, 1.0f, w, h, slot % AGB_VK_SLOTS);
         barrier(cb, v->swap.images[index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                 VK_PIPELINE_STAGE_2_NONE, 0);
     }
 present:;
+    if (generated)
+        snx_stats_generated(&v->stats);
+    else
+        snx_stats_frame(&v->stats, SDL_GetTicksNS());
     snx_vk_ring_submit(&v->ring, v->acquired[slot % AGB_VK_SLOTS], v->rendered[index]);
     {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
