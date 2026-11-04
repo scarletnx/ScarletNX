@@ -383,11 +383,21 @@ void nce_slot_taken(u64 addr, const char* family) {
         return;
     }
     if (i == NCE_DIVERTS) fatal("NCE: more than %d functions take handlers", NCE_DIVERTS);
-    if (nce_divert(g_nce.pool, g_nce.pools, &g_nce.env, addr, gr32(addr), i, &word, &original)) {
-        pm_unlock(&g_nce.lock);
-        WARN("nce: the function at %llx keeps its own code: its first word cannot move, or no pool is in reach\n",
-             (unsigned long long)addr);
-        return;
+    {
+        u32 first = gr32(addr);
+        int r = nce_divert(g_nce.pool, g_nce.pools, &g_nce.env, addr, first, i, &word, &original);
+        if (r) {
+            pm_unlock(&g_nce.lock);
+            if (r == -2)
+                WARN("nce: the function at %llx (%s) keeps its own code, its handler never run: its first word %08x "
+                     "branches beyond a stub's reach (128 MiB)\n",
+                     (unsigned long long)addr, family, first);
+            else
+                WARN("nce: the function at %llx (%s) keeps its own code, its handler never run: no pool of stubs "
+                     "within a B's reach (128 MiB) of it has room for one more\n",
+                     (unsigned long long)addr, family);
+            return;
+        }
     }
     g_nce.entry[i] = addr;
     g_nce.original[i] = original;

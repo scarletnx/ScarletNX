@@ -372,54 +372,110 @@ static void refused_test(void) {
           "nor a 36-bit game on Android, which says why");
 }
 
+/* x16 = v in four words at a (the stub's MOVZ and three MOVK) */
+static int mov16_at(const Pool* pool, SnxU64 a, unsigned d, SnxU64 v) {
+    return word(pool, a) == (0xD2800000u | (SnxU32)(v & 0xFFFF) << 5 | d) &&
+           word(pool, a + 4) == (0xF2A00000u | (SnxU32)((v >> 16) & 0xFFFF) << 5 | d) &&
+           word(pool, a + 8) == (0xF2C00000u | (SnxU32)((v >> 32) & 0xFFFF) << 5 | d) &&
+           word(pool, a + 12) == (0xF2E00000u | (SnxU32)((v >> 48) & 0xFFFF) << 5 | d);
+}
+/* a hook's stubs: the outcall, then the function's own first word, moved. A word that reads the pc keeps its target:
+   ADR and ADRP made absolute, B and BL to their targets, a branch on a condition with its taken path a branch of its
+   own (through x16 past a B's reach), a literal load from its address made absolute */
 static void divert_test(void) {
     static const NceEnv env = {0x10, 0x7F0012345678ull, 0, 0, 0, 0, 0};
+    enum { AS_IS, ADRP, B, BL, COND, LIT, PRFM };
     static const struct {
         SnxU32 first;
-        int ok;
+        int how;
+        SnxU64 target; /* from entry */
+        SnxU32 moved;  /* COND: the condition two words on; LIT: the load from x(base) */
+        unsigned base; /* LIT: the register that holds the address */
         const char* what;
     } cases[] = {
-        {0xA9BF7BFDu, 1, "STP X29, X30, [SP, #-16]! moves as it is"},
-        {0x90000010u, 1, "ADRP X16 becomes its address"},
-        {0x14000040u, 1, "B moves to the stub"},
-        {0x94000040u, 1, "BL moves to the stub, then on at entry + 4"},
-        {0x54000040u, 0, "B.EQ cannot move"},
-        {0xB4000040u, 0, "CBZ cannot move"},
-        {0x58000040u, 0, "a literal load cannot move"},
+        {0xA9BF7BFDu, AS_IS, 0, 0, 0, "STP X29, X30, [SP, #-16]! moves as it is"},
+        {0x90000010u, ADRP, 0, 0, 0, "ADRP X16 becomes its address"},
+        {0x14000040u, B, 0x100, 0, 0, "B moves to the stub"},
+        {0x94000040u, BL, 0x100, 0, 0, "BL moves to the stub, then on at entry + 4"},
+        {0x54000040u, COND, 8, 0x54000040u, 0, "B.EQ keeps its taken path"},
+        {0xB4000662u, COND, 0xCC, 0xB4000042u, 0, "CBZ X2 keeps its taken path"},
+        {0x37000061u, COND, 12, 0x37000041u, 0, "TBNZ W1, #0 keeps its taken path"},
+        {0x58000040u, LIT, 8, 0xF9400000u, 0, "LDR X0 from a literal loads from its address"},
+        {0x18000041u, LIT, 8, 0xB9400021u, 1, "LDR W1 from a literal"},
+        {0x98000042u, LIT, 8, 0xB9800042u, 2, "LDRSW X2 from a literal"},
+        {0x9C000043u, LIT, 8, 0x3DC00203u, 16, "LDR Q3 from a literal, through x16"},
+        {0x5800005Fu, LIT, 8, 0xF940021Fu, 16, "a literal load into XZR, through x16 (base 31 is SP)"},
+        {0xD8000040u, PRFM, 8, 0, 0, "PRFM of a literal, a hint: nothing to load"},
     };
     SnxU64 entry = BASE + 0x2004;
+    SnxU32 patch = 0;
+    SnxU64 original = 0;
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         Pool pool;
-        SnxU32 patch = 0;
-        SnxU64 original = 0, stub;
+        SnxU64 stub, target = entry + cases[i].target;
         pool_init(&pool, BASE + 0x100000);
         stub = pool.pool.addr;
-        check((nce_divert(&pool.pool, 1, &env, entry, cases[i].first, 7, &patch, &original) == 0) == cases[i].ok,
-              cases[i].what);
-        if (!cases[i].ok) continue;
+        check(nce_divert(&pool.pool, 1, &env, entry, cases[i].first, 7, &patch, &original) == 0, cases[i].what);
         check(is_b(patch) && b_target(patch, entry) == stub, "the entry branches to the hook's outcall");
         check(word(&pool, stub + 12) == (0xD2800010u | 7u << 5) &&
                   word(&pool, stub + 16) == (0xF2A00010u | (SnxU32)NCE_HOOK << 5),
               "the hook's index in x16");
         check(word(&pool, stub + 40) == 0xD61F0200u, "the hook goes on at the pc that the runtime gives");
         check(original == stub + 56, "the original after the outcall");
-        if (i == 0) {
-            check(word(&pool, original) == cases[i].first, "the first word as it is");
-            check(b_target(word(&pool, original + 4), original + 4) == entry + 4, "then on at entry + 4");
-        } else if (i == 1) {
-            SnxU64 page = entry & ~(SnxU64)0xFFF;
-            check(word(&pool, original) == (0xD2800010u | (SnxU32)(page & 0xFFFF) << 5) &&
-                      word(&pool, original + 4) == (0xF2A00010u | (SnxU32)((page >> 16) & 0xFFFF) << 5),
-                  "the page's address in X16");
-            check(b_target(word(&pool, original + 16), original + 16) == entry + 4, "then on at entry + 4");
-        } else if (i == 2) {
-            check(b_target(word(&pool, original), original) == entry + 0x100, "the B's target, and nothing after");
-        } else {
-            check((word(&pool, original) & 0xFC000000u) == 0x94000000u &&
-                      b_target(word(&pool, original), original) == entry + 0x100,
-                  "the BL's target");
-            check(b_target(word(&pool, original + 4), original + 4) == entry + 4, "then on at entry + 4");
+        switch (cases[i].how) {
+            case AS_IS:
+                check(word(&pool, original) == cases[i].first, "the first word as it is");
+                check(b_target(word(&pool, original + 4), original + 4) == entry + 4, "then on at entry + 4");
+                break;
+            case ADRP:
+                check(mov16_at(&pool, original, 16, entry & ~(SnxU64)0xFFF), "the page's address in X16");
+                check(b_target(word(&pool, original + 16), original + 16) == entry + 4, "then on at entry + 4");
+                break;
+            case B:
+                check(b_target(word(&pool, original), original) == target, "the B's target, and nothing after");
+                break;
+            case BL:
+                check((word(&pool, original) & 0xFC000000u) == 0x94000000u &&
+                          b_target(word(&pool, original), original) == target,
+                      "the BL's target");
+                check(b_target(word(&pool, original + 4), original + 4) == entry + 4, "then on at entry + 4");
+                break;
+            case COND:
+                check(word(&pool, original) == cases[i].moved, "the condition, two words on");
+                check(b_target(word(&pool, original + 4), original + 4) == entry + 4, "not taken: on at entry + 4");
+                check(b_target(word(&pool, original + 8), original + 8) == target, "taken: on at its target");
+                break;
+            case LIT:
+                check(mov16_at(&pool, original, cases[i].base, target), "the literal's address made absolute");
+                check(word(&pool, original + 16) == cases[i].moved, "the load from it");
+                check(b_target(word(&pool, original + 20), original + 20) == entry + 4, "then on at entry + 4");
+                break;
+            default: check(b_target(word(&pool, original), original) == entry + 4, "on at entry + 4"); break;
         }
+    }
+    {
+        /* a CBZ whose target a B from the stub cannot reach (the pool 127.5 MiB up, the target 1 MiB down): the
+           taken path branches through x16 */
+        Pool pool;
+        SnxU32 cbz = 0xB4800000u; /* CBZ X0, entry - 1 MiB: -0x40000 words, 0x40000 in the 19-bit field */
+        SnxU64 far = entry - (1ull << 20);
+        pool_init(&pool, entry - 4 + (255ull << 19));
+        check(nce_divert(&pool.pool, 1, &env, entry, cbz, 7, &patch, &original) == 0 &&
+                  b_target(patch, entry) == pool.pool.addr,
+              "a CBZ whose target a stub's B cannot reach moves too");
+        check(word(&pool, original) == 0xB4000040u && b_target(word(&pool, original + 4), original + 4) == entry + 4 &&
+                  mov16_at(&pool, original + 8, 16, far) && word(&pool, original + 24) == 0xD61F0200u,
+              "its taken path through x16, BR X16");
+    }
+    {
+        /* a B whose target a stub cannot reach stays: -2, the first word that cannot move; no pool in reach: -1 */
+        Pool pool, far;
+        pool_init(&pool, entry - 4 + (255ull << 19));
+        check(nce_divert(&pool.pool, 1, &env, entry, 0x16000000u, 7, &patch, &original) == -2,
+              "a B 128 MiB down from a stub 127.5 MiB up cannot move");
+        pool_init(&far, entry + (129ull << 20));
+        check(nce_divert(&far.pool, 1, &env, entry, 0xA9BF7BFDu, 7, &patch, &original) == -1,
+              "a pool past a B's reach takes no hook");
     }
 }
 

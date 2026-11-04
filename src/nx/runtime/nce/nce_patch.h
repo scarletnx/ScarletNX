@@ -87,8 +87,11 @@ int nce_emit(NcePool* pools, size_t count, const NceEnv* env, const NceSite* sit
 
 /* the stubs of a hooked function at entry, whose first word is first. The outcall stub calls the runtime with
    NCE_OUTCALL(NCE_HOOK, index), and goes on at the pc that the runtime gives back. The original runs first, moved,
-   and then goes on at entry + 4: *original is its guest address. *patch: the word that goes at entry. 0, or -1 when
-   first cannot move (a PC-relative branch on a condition, or a literal load) or no pool is in reach */
+   and then goes on at entry + 4: *original is its guest address. A first word that reads the pc moves with its
+   target made the stub's: a branch on a condition (a function that checks an argument first) keeps its taken path,
+   a literal load loads from its address made absolute. *patch: the word that goes at entry. 0; -1 with no pool in
+   reach that has room; -2 when first cannot move (a B or BL whose target is out of the stub's reach, or an
+   unallocated literal load) */
 int nce_divert(NcePool* pools, size_t count, const NceEnv* env, SnxU64 entry, SnxU32 first, unsigned index,
                SnxU32* patch, SnxU64* original);
 
