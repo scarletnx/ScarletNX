@@ -2803,6 +2803,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_msaa.inc"
 #include "vulkan_targetless_stores.inc"
 #include "vulkan_uma_imports.inc"
+#include "vulkan_write_tracking.inc"
 
 #include "vulkan_descriptor_bench.inc"
 #include "vulkan_nvn_storage.inc"
@@ -2927,6 +2928,12 @@ int main(int argc, char** argv) {
         vk_pipeline_quiesce();
         CHECK(!viw_report());
         printf("PASS headless Vulkan vertex input only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (getenv("SNX_TEST_WW_ONLY")) { /* the write tracking's contract alone (vulkan_write_tracking.inc) */
+        CHECK(!check_write_tracking());
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan write tracking only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
     if (getenv("SNX_TEST_UMA_ONLY") && strcmp(getenv("SNX_TEST_UMA_ONLY"), "1")) { /* one of them, by name */
@@ -3058,6 +3065,7 @@ int main(int argc, char** argv) {
     CHECK(!check_uma_way());
     CHECK(!check_uma_migrate());
     CHECK(!check_uma_region_writes());
+    CHECK(!check_write_tracking());
     CHECK(!check_descriptor_room());
     /* the pipeline workers: pipeline_threads when given, else a quarter of the CPUs, two to six */
     CHECK(vk_pipeline_worker_count(0, 8) == 6 && vk_pipeline_worker_count(0, 12) == 10 &&
