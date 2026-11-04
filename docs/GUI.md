@@ -494,15 +494,17 @@ cannot be read is named and the others still listed.
   program, or another row, R says why it does nothing. **B** builds the focused game's AOT pack from its JIT cache
   ([AOT packs](AOT_PACKS.md)) through the same queue.
 - **M** (on Android a tap on *Mods* at the foot) opens the box of the recompiled Switch game in focus, recent or on
-  the page, that Enter opens for a game with updates, DLCs, mods or cheats beside it, and for a game with none of them
-  too, whose **Add Mod** and **Add Cheats** copy a folder or a `.txt` the system's picker gives into the game's mods
-  and cheats, **Open Folder** lists the game's folders to open (its dump's, its own, saves, settings, logs, caches; one
+  the page, that Enter opens for a game with updates, DLCs, mods, cheats or other programs beside it, and for a game
+  with none of them too, whose **Add Mod** and **Add Cheats** copy a folder or a `.txt` the system's picker gives
+  into the game's mods and cheats, **Open Folder** lists the game's folders to open (its dump's, its own, saves, settings, logs, caches; one
   not there greyed), **Save States** opens the box of its save states that S opens (greyed for a dump, which has
   none; on a phone the way to them, with a tap on *Save states* at the foot), **Clean Cache** deletes its shader
   and code caches, asked first ([USAGE](USAGE.md#mods)), and **GPU Driver** and **Freedreno Settings** open
   Settings > App's pages for that game alone: GPU Driver's first row, **Global**, follows the launcher's pick, the
   game's own kept as `gpu_driver=` in its `.ini` (nothing: the system's driver); Freedreno Settings with none of its
-  own takes the launcher's. On
+  own takes the launcher's. A collection's game ([USAGE](USAGE.md#collections)) has a **Play Program N** row for
+  each other program it has made, which plays that program directly as Play plays the game's own (its menu, program
+  0), the box's picks kept. On
   another row, a dump, a package or another console's game, it says what it opens. The side panel of a recompiled
   game says how its code was made (`Made with: O2, AOT 81%`, `?` for one an older version made), or, in the failure
   colour, `Needs Recompile` when Play compiles it first: of the program Play runs, the checked update's when it has
