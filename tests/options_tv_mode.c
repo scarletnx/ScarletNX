@@ -23,6 +23,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #define CHECK(c)                                                                                                       \
     do {                                                                                                               \
@@ -86,7 +89,14 @@ void fatal(const char* fmt, ...) {
 }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
-int plat_replace_file(const char* tmp, const char* dst) { return g_test.write ? rename(tmp, dst) : -1; }
+int plat_replace_file(const char* tmp, const char* dst) {
+    if (!g_test.write) return -1;
+#ifdef _WIN32
+    return MoveFileExA(tmp, dst, MOVEFILE_REPLACE_EXISTING) ? 0 : -1; /* rename fails over an existing file there */
+#else
+    return rename(tmp, dst);
+#endif
+}
 int backend_ini(const char* k, const char* v) {
     (void)k;
     (void)v;
