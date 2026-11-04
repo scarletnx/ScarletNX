@@ -15232,8 +15232,9 @@ static int share_folder_empty(App* app, const char* share) {
 /* the message on the screen, the summary of the last run's game log (share_game_log), the last run's output, the
    launcher's own log and its fatal errors, and that game log, or why there is none under "== no game log ==", in
    share/ of logs_folder, emptied first: with zip as summary.txt of scarletnx-logs-<when>.zip beside the launcher's
-   logs and the games' of the last GUI_LOG_DAYS days (gui/logzip.h), else as scarletnx.log alone; then that folder
-   opened in the system's file manager, to share from there */
+   logs and the games' of the last GUI_LOG_DAYS days (gui/logzip.h), else as scarletnx.log alone; either way each home
+   folder as ~ (snx_logscan_tilde), since the paths name the player; then that folder opened in the system's file
+   manager, to share from there */
 static void share_log(App* app, bool zip) {
     char *game, *run, *recompiled, *said, *fatal, *played, *summary, *text, *saved = NULL, *share, *logs;
     char console[4096], errors[4096], no_game[4400];
@@ -15260,13 +15261,16 @@ static void share_log(App* app, bool zip) {
     if (!share) snprintf(app->message, sizeof(app->message), snx_tr("The logs could not be saved: %s"), logs_none());
     ready = share && !share_folder_empty(app, share); /* else why, in the message */
     if (ready && !zip) {
+        size_t shown = 0;
+        char* tilde = snx_logscan_tilde(text, strlen(text), &shown);
         saved = snx_path_join(share, "scarletnx.log");
-        written = saved && !snx_write_file(saved, text, strlen(text));
+        written = saved && tilde && !snx_write_file(saved, tilde, shown);
         if (saved && !written) {
             char why[256];
             snprintf(app->message, sizeof(app->message), snx_tr("The log could not be saved to %s: %s"), saved,
-                     snx_os_error(why, sizeof why));
+                     tilde ? snx_os_error(why, sizeof why) : snx_tr("out of memory"));
         }
+        free(tilde);
     } else if (ready) {
         char stamp[32], *zip_name, error[sizeof app->message], *at[3];
         LogFiles files = {0};

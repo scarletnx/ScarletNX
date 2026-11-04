@@ -12402,8 +12402,15 @@ int main(int argc, char** argv) {
             assert(strstr(text, "ScarletNX - Some Game\n") && !strstr(text, "?\n"));
             free(text);
             { /* the box's other two: the one log of before, alone, the zip gone, and the logs' folder opened; Back does
-                 neither */
+                 neither. The one log has each home folder as ~, as the zip: the account's name, spaces and all, is the
+                 player's, Windows' and a POSIX system's alike */
+                static const char homes[] =
+                    "[   2.40] fs: sdmc in C:\\Users\\Some One\\AppData\\Roaming\\scarletnx\\sdmc\r\n"
+                    "[   2.40] fs: saves in /home/some one/.local/share/scarletnx/saves\r\n";
                 char *one = snx_path_join(share, "scarletnx.log"), *want, *url, *before = shared_path(&app);
+                char* homed = snx_format("%s%s", crashed, homes);
+                assert(!snx_write_file(log, homed, strlen(homed)));
+                free(homed);
                 snprintf(app.message, sizeof(app.message), "before the one log");
                 assert(before && snx_is_file(before));
                 share_pick(&app, 1);
@@ -12412,6 +12419,9 @@ int main(int argc, char** argv) {
                 free(before);
                 text = (char*)snx_read_file(one, &size);
                 assert(text && strstr(text, "Message: before the one log") && strstr(text, "== the last run: "));
+                assert(strstr(text, "] fs: sdmc in ~\\AppData\\Roaming\\scarletnx\\sdmc\n") &&
+                       strstr(text, "] fs: saves in ~/.local/share/scarletnx/saves\n") && !strstr(text, "Some One") &&
+                       !strstr(text, "some one"));
                 free(text);
                 free(want);
                 assert(!remove(one));
