@@ -39,7 +39,7 @@ typedef struct {
     /* resources, made when first used */
     u32 cbuf[18], cbuf_ptr, root;
     u32 gbuf[16], gbuf_ptr, smap;
-    u32 wpages; /* SNX_VKB_WPAGES, once a store logs its bytes (mark_written) */
+    u32 wpages, mbase; /* SNX_VKB_WPAGES and SNX_VKB_MBASE, once a store logs its bytes (mark_written) */
     u32 gkey;   /* the global buffer the last global_address named */
     u32 shared, shared_ptr, shared_words;
     u32 local, local_ptr, local_words; /* LDL and STL's memory: a Function array, made at the start */
@@ -627,45 +627,43 @@ static u32 gbuf_slot(Ctx* c, u32 key, int write) {
     if (write) c->si->gbuf_wmask |= 1u << slot;
     return c->gbuf[slot];
 }
-/* A compute program's store of bytes bytes (1, 2, 4, 8 or 16) at byte offset into global buffer key records them in
-   the write log (ShaderInfo.gbuf_mark, SH_WLOG_*): a plain store of 1 into its window's flag, as every store of a
-   window writes the same, and an atomic OR of its bytes' bits into that window's mask, which other invocations OR
-   into too. The offset is taken as aligned to the size, as the GPU requires of every global access, so its bits are
-   in one mask word. A store past the windows sets the last window's flag and no bit. The renderer lands the bytes
-   logged and no others: an Ounce program's buffer is all of the memory mapped from its address, up to 16 MiB, and
-   finding what changed by comparing its bytes with a copy taken before the dispatch was most of one game's CPU time */
+/* A compute program's store of bytes bytes (1, 2, 4, 8 or 16) at byte offset into global buffer key logs them: an
+   atomic OR of their bits into the mask (SNX_VKB_WPAGES), which other invocations OR into too, at the buffer's base
+   (SNX_VKB_MBASE) plus the offset. The offset is taken as aligned to the size, as the GPU requires of every global
+   access, and a base is a multiple of 16, so the bits are in one mask word. One at or past the buffer's length sets
+   none: its binding drops the store. The renderer lands the bytes logged and no others: an Ounce program's buffer is
+   all of the memory mapped from its address, up to 16 MiB, and finding what changed by comparing its bytes with a copy
+   taken before the dispatch was most of one game's CPU time */
 static void mark_written(Ctx* c, u32 key, u32 offset, u32 bytes) {
     int slot = -1;
     if (c->stage != ST_CS) return;
     for (int i = 0; i < c->si->ngbuf; i++)
         if (c->si->gbuf_cbuf_off[i] == key) slot = i;
     if (slot < 0) return;
-    if (!c->si->gbuf_mark[slot]) c->si->gbuf_mark[slot] = ++c->si->nmarks;
-    u32 part = (u32)(c->si->gbuf_mark[slot] - 1) * SH_WLOG_PART;
     if (!c->wpages) {
         u32 array = spv_emit_type_runtime_array(&c->e, c->t_u32, 4);
         u32 structure = spv_emit_type_struct_one(&c->e, array);
         c->wpages = spv_emit_storage_buffer(&c->e, structure, (u32)shader_vk_set(c->stage), SNX_VKB_WPAGES);
         add_interface(c, c->wpages);
+        c->mbase = spv_emit_uniform_vec4_array(&c->e, c->t_v4u, c->t_u32, c->t_u32, (u32)shader_vk_set(c->stage),
+                                               SNX_VKB_MBASE, SH_MB_WORDS / 4, &c->cbuf_ptr);
+        add_interface(c, c->mbase);
     }
-    u32 ptr_type = spv_emit_type_storage_pointer(&c->e, c->t_u32);
+    u32 base = spv_emit_uniform_component(&c->e, c->cbuf_ptr, c->mbase, c->zero, cu(c, (u32)slot / 4),
+                                          cu(c, (u32)slot % 4), c->t_u32);
+    u32 len = spv_emit_uniform_component(&c->e, c->cbuf_ptr, c->mbase, c->zero, cu(c, 4 + (u32)slot / 4),
+                                         cu(c, (u32)slot % 4), c->t_u32);
     u32 at = spv_emit_bitwise_and_u32(&c->e, c->t_u32, offset, cu(c, ~(bytes - 1)));
-    u32 window = spv_emit_shift_right_u32(&c->e, c->t_u32, at, cu(c, 12)), last = cu(c, SH_WPAGE_SLOT - 1);
-    u32 past = spv_emit_u_less(&c->e, c->t_bool, last, window);
-    window = spv_emit_select(&c->e, c->t_u32, past, last, window);
-    u32 flag = spv_emit_iadd_u32(&c->e, c->t_u32, window, cu(c, part));
-    spv_emit_store(&c->e, spv_emit_storage_access_u32(&c->e, ptr_type, c->wpages, c->zero, flag), cu(c, 1));
-    u32 word = spv_emit_iadd_u32(
-        &c->e, c->t_u32,
-        spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_imul_u32(&c->e, c->t_u32, window, cu(c, SH_WLOG_MASK)),
-                          spv_emit_shift_right_u32(
-                              &c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, at, cu(c, 4095)), cu(c, 5))),
-        cu(c, part + SH_WPAGE_SLOT));
+    u32 inside = spv_emit_u_less(&c->e, c->t_bool, at, len);
+    u32 byte = spv_emit_iadd_u32(&c->e, c->t_u32, base, spv_emit_select(&c->e, c->t_u32, inside, at, c->zero));
     u32 bits = spv_emit_shift_left_u32(&c->e, c->t_u32, cu(c, (u32)((1ull << bytes) - 1)),
-                                       spv_emit_bitwise_and_u32(&c->e, c->t_u32, at, cu(c, 31)));
-    bits = spv_emit_select(&c->e, c->t_u32, past, cu(c, 0), bits);
-    spv_emit_atomic_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_OR,
-                        spv_emit_storage_access_u32(&c->e, ptr_type, c->wpages, c->zero, word), bits);
+                                       spv_emit_bitwise_and_u32(&c->e, c->t_u32, byte, cu(c, 31)));
+    bits = spv_emit_select(&c->e, c->t_u32, inside, bits, c->zero);
+    u32 word = spv_emit_shift_right_u32(&c->e, c->t_u32, byte, cu(c, 5));
+    spv_emit_atomic_u32(
+        &c->e, c->t_u32, SPV_OP_ATOMIC_OR,
+        spv_emit_storage_access_u32(&c->e, spv_emit_type_storage_pointer(&c->e, c->t_u32), c->wpages, c->zero, word),
+        bits);
     c->si->gbuf_marks |= 1u << slot;
 }
 /* LDG and STG, as spirv_translate.c's global memory: the buffer is the one whose 64-bit address the constant buffer

@@ -604,6 +604,8 @@ static int create_device(void) {
     if (sparse_queue) {
         WANT(sparseResidencyImage2D);
         WANT(sparseResidencyImage3D);
+        /* the mirror of guest memory that the programs logging their writes read and write in place (mirror.c) */
+        WANT(sparseResidencyBuffer);
     }
 #undef WANT
     /* points out of tessellation and geometry programs take the size those write, as the vertex program's do */
