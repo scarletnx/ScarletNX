@@ -735,6 +735,7 @@ static void show_screens(VkCommandBuffer cb, VkImage target, VkImageView target_
     unsigned window = g_present.separate ? screen : 0;
     if (!build_mix(cb, screen)) return;
     draw_mix(cb, g_present.mix[window], g_present.mix_view[window], target, target_view, window);
+    g_present.have_mix[window] = 1; /* the pair is there for the next frame's blend */
 }
 
 /* The blend of the previous pair and this one, then this pair, into two window images. */
@@ -889,13 +890,14 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
         } else if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
             show = false;
     }
-    int interp = show && g_present.fx[window_index] && g_present.have_mix[window_index] &&
+    int interp = show && g_present.fx[window_index] &&
                  (snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_BLEND ||
                   (snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_AUTO &&
                    snx_fx_interp_auto(ctr_display_hz(screen_window(window_index)), 60)));
     uint32_t index2 = 0;
     int show2 = 0;
-    if (interp) {
+    /* two images only where a pair is already kept: the first frame shows one and keeps its pair for the next */
+    if (interp && g_present.have_mix[window_index]) {
         VkFence fence = g_present.acquire_fence[window_index];
         VkResult r2;
         vkResetFences(v->device, 1, &fence);

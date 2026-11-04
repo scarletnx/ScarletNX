@@ -92,7 +92,7 @@ struct SnxFx {
     int have_keep;
     FxImage blend_img[SNX_FX_SLOTS_MAX];
     VkDescriptorSet fsr_easu[SNX_FX_SLOTS_MAX], fsr_rcas[SNX_FX_SLOTS_MAX];
-    VkDescriptorSet copy_set[SNX_FX_SLOTS_MAX], fxaa_set[SNX_FX_SLOTS_MAX];
+    VkDescriptorSet copy_set[SNX_FX_SLOTS_MAX], keep_set[SNX_FX_SLOTS_MAX], fxaa_set[SNX_FX_SLOTS_MAX];
     VkDescriptorSet edge_set[SNX_FX_SLOTS_MAX], weight_set[SNX_FX_SLOTS_MAX], blend_set[SNX_FX_SLOTS_MAX];
     VkDescriptorSet mix_set[SNX_FX_SLOTS_MAX];
     VkDescriptorSet compose_set[SNX_FX_SLOTS_MAX], encode_set[SNX_FX_SLOTS_MAX];
@@ -806,8 +806,8 @@ SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, uint32_
                                           .descriptorPool = fx->pool,
                                           .descriptorSetCount = 1,
                                           .pSetLayouts = all};
-        VkDescriptorSet* sets[] = {&fx->fsr_easu[i], &fx->fsr_rcas[i], &fx->copy_set[i], &fx->fxaa_set[i],
-                                   &fx->edge_set[i], &fx->compose_set[i], &fx->encode_set[i]};
+        VkDescriptorSet* sets[] = {&fx->fsr_easu[i], &fx->fsr_rcas[i], &fx->copy_set[i], &fx->keep_set[i],
+                                   &fx->fxaa_set[i], &fx->edge_set[i], &fx->compose_set[i], &fx->encode_set[i]};
         for (uint32_t s = 0; s < sizeof sets / sizeof *sets; ++s) {
             ai.pSetLayouts = &one;
             if (!fx_ok(vkAllocateDescriptorSets(fx->dev, &ai, sets[s]))) goto failed;
@@ -1443,7 +1443,8 @@ int snx_fx_keep_crop(SnxFx* fx, VkCommandBuffer cb, VkImageView source, uint32_t
     fx->keep_toggle[slot] ^= 1;
     keep = &fx->keep[slot][index];
     if (!img_make(fx, keep, w, h, choose_format(fx), fx_usage())) return 0;
-    record_copy(fx, cb, fx->copy_set[slot], source, img_w, img_h, x, y, w, h, 0, w, h, 1, keep);
+    /* a set of its own: the render after it may update the copy set, which must not happen while it is bound */
+    record_copy(fx, cb, fx->keep_set[slot], source, img_w, img_h, x, y, w, h, 0, w, h, 1, keep);
     fx->keep_slot = slot;
     fx->keep_index = index;
     fx->have_keep = 1;
