@@ -333,6 +333,7 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
     LLVMSetTarget(ir->mod, triple);
     LLVMTargetDataRef data = LLVMCreateTargetDataLayout(ir->tm);
     ir->big_endian = LLVMByteOrder(data) == LLVMBigEndian;
+    ir->ppc = ppc;
     char* layout = LLVMCopyStringRepOfTargetData(data);
     LLVMSetDataLayout(ir->mod, layout);
     LLVMDisposeMessage(layout);
