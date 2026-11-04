@@ -3055,6 +3055,7 @@ int main(int argc, char** argv) {
     CHECK(!check_owned_whole_identity());
     CHECK(!check_storage_suffix());
     CHECK(!check_storage_logged());
+    CHECK(!check_need_unlocked());
     CHECK(!check_mirror());
     CHECK(!bench_nvn_storage(0, 32, 1));
     CHECK(!bench_nvn_storage(1, 32, 1));

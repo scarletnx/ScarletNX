@@ -831,6 +831,9 @@ static void mem_need_reason(u64 gva, u64 len, int reason) {
     RangePages q;
     u64 local[16], *rmap = NULL;
     if (!g_gfx_any || t_buffer.out_landing || !len) return;
+    /* asked first without the lock, which another thread may hold: results are added on the GPU thread, so a miss
+       here can only be one another thread has landed since. A hit is asked again with it */
+    if (reason != WB_MAP && !pend_hit(&g_out_pages, gva, len)) return;
     vk_lock();
     if (reason != WB_MAP && !pend_hit(&g_out_pages, gva, len)) {
         vk_unlock();
