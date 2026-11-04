@@ -384,6 +384,8 @@ static void imp_let_go(u32 i) {
     pm_unlock(&g_uma.lk);
     /* the writes in place still pending there land in its buffer first, which the move back copies; a dead one's pages
        are other pages already, which waited for them (vk_uma_mapping_begin) */
+    LOG_LIMIT(32, "vulkan: the import %llx+%llx goes%s%s\n", (unsigned long long)m->cpu, (unsigned long long)m->size,
+              m->fd >= 0 ? ", a region whose pages move back" : "", dead ? " (dead: its pages are other pages already)" : "");
     if (m->fd >= 0 && !dead) region_writes_land(m->cpu, m->cpu + m->size);
     if (m->fd >= 0 && (r = mem_unmigrate(m->cpu, m->size)) != 0)
         WARN("vulkan: guest memory %llx+%llx stays in the buffer it moved into (error %d) until it is unmapped\n",
@@ -1202,7 +1204,7 @@ int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off) {
     {
         u32 i = imp_find(cpu);
         const Imp* m = i < g_uma.nimp ? &g_uma.imp[i] : NULL;
-        LOG_LIMIT(16,
+        LOG_LIMIT(64,
                   "vulkan: a GPU result over guest memory %llx+%llx is copied into its import's buffer at %llx, the "
                   "import %llx+%llx%s\n",
                   (unsigned long long)cpu, (unsigned long long)len, (unsigned long long)io,
