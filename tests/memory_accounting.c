@@ -752,10 +752,12 @@ static void test_alias_layouts(void) {
 
 /* a word GP reaches from a guest address, checked as the runtime checks an object it is handed: the address can be 0,
    so a null host pointer stands for none. Not inlined, so the compiler sees only GP's own arithmetic */
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__) /* test_moved's hosts, the one caller */
 static __attribute__((noinline)) int gp_holds(u64 a, u32 want) {
     const u32* p = a ? (const u32*)(void*)GP(a) : NULL;
     return p && *p == want;
 }
+#endif
 /* NCE on Android (mem_reserve_identity from 64 GiB): the guest's addresses are the host's, above what the app's process
    holds, so the whole layout moves up to the first base from 64 GiB, in 2 MiB steps, where a tier is free. A page held
    at 65 GiB takes the 64 GiB tier's one base and the 48 GiB tier's first 449; the 48 GiB layout then lies from 64 GiB
