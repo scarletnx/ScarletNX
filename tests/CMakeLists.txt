@@ -1449,6 +1449,11 @@ snx_test_target(snx-test-script 99)
 target_link_libraries(snx-test-script PRIVATE snx_test_common)
 add_test(NAME script COMMAND snx-test-script)
 
+# the summary's build line: its commit's day, and the days from it to the run (common/utilities/logscan.c)
+add_executable(snx-test-logscan-age logscan_age.c "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
+snx_test_target(snx-test-logscan-age 99)
+add_test(NAME logscan_age COMMAND snx-test-logscan-age)
+
 add_executable(snx-test-driver driver_workflow.c
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/driver.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/setup.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"

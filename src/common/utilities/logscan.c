@@ -512,9 +512,18 @@ static void header(SnxLogScan* s, Span title) {
     s->title = add(s, title);
 }
 
-/* "build: ScarletNX <branch> <commit> (<compiler>, <system>)" or the launcher's line without "build: " */
+/* "YYYY-MM-DD", a month 01 to 12 and a day 01 to 31 */
+static int is_day(Span s) {
+    if (s.n != 10) return 0;
+    for (size_t i = 0; i < 10; i++)
+        if (i == 4 || i == 7 ? s.p[i] != '-' : s.p[i] < '0' || s.p[i] > '9') return 0;
+    return (s.p[5] == '0' ? s.p[6] != '0' : s.p[5] == '1' && s.p[6] <= '2') &&
+           (s.p[8] == '0' ? s.p[9] != '0' : s.p[8] < '3' || (s.p[8] == '3' && s.p[9] <= '1'));
+}
+/* "build: ScarletNX <branch> <commit>, committed <YYYY-MM-DD> (<compiler>, <system>)", a build before the day had no
+   ", committed ...", or the launcher's line without "build: " */
 static int build_line(SnxLogScan* s, Span line) {
-    Span rest = line;
+    Span rest = line, day;
     if (!take_lit(&rest, "ScarletNX ") || !rest.n || rest.p[rest.n - 1] != ')') return 0;
     long sp = find(rest, " ");
     if (sp <= 0) return 0;
@@ -523,9 +532,13 @@ static int build_line(SnxLogScan* s, Span line) {
     sp = find(rest, " (");
     if (sp <= 0) return 0;
     Span commit = span(rest.p, (size_t)sp);
+    long at = find(commit, ", committed ");
+    day = at > 0 ? skip(commit, (size_t)at + 12) : span(commit.p, 0);
+    if (at > 0) commit.n = (size_t)at;
     s->build = add(s, line);
     s->branch = add(s, branch);
     s->commit = add(s, commit);
+    s->committed = is_day(day) || (day.n == 7 && starts(day, "unknown")) ? add(s, day) : 0;
     return 1;
 }
 
@@ -1670,6 +1683,35 @@ static void md_sym(Buf* b, const SnxLogScan* s, const SnxLogSym* sym, SnxDemangl
     }
     free(plain);
 }
+/* the days from 1970-01-01 to y-m-d of the Gregorian calendar (Howard Hinnant's days_from_civil) */
+static long days_from_civil(long y, long m, long d) {
+    long era, yoe, doy;
+    y -= m <= 2;
+    era = (y >= 0 ? y : y - 399) / 400;
+    yoe = y - era * 400;
+    doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+    return era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
+}
+/* "`<branch> <commit>`, committed <day>", and when the run's time is known (written) and the day is one, ", <n> days
+   before this run", by the days of the UTC calendar */
+static void md_build_age(Buf* b, const SnxLogScan* s) {
+    Buf name = {0};
+    const char* day = snx_logscan_text(s, s->committed);
+    long long began = s->written - (s->centiseconds > 0 ? s->centiseconds / 100 : 0);
+    put(&name, snx_logscan_text(s, s->branch));
+    put(&name, " ");
+    put(&name, snx_logscan_text(s, s->commit));
+    md_code(b, name.p ? name.p : "");
+    free(name.p);
+    put(b, ", committed ");
+    put(b, day);
+    if (s->written > 0 && began >= 0 && strcmp(day, "unknown")) {
+        char age[64];
+        long days = (long)(began / 86400) - days_from_civil(atol(day), atol(day + 5), atol(day + 8));
+        sprintf(age, ", %ld %s before this run", days, days == 1 || days == -1 ? "day" : "days");
+        put(b, age);
+    }
+}
 static void md_fold_start(Buf* b, const char* summary) {
     put(b, "\n<details><summary>");
     put(b, summary);
@@ -1701,7 +1743,9 @@ char* snx_logscan_markdown(const SnxLogScan* s, const char* name, const char* he
         put(&b, "\n");
     }
     put(&b, "- **Build:** ");
-    if (s->build)
+    if (s->committed)
+        md_build_age(&b, s);
+    else if (s->build)
         md_code(&b, snx_logscan_text(s, s->build));
     else
         put(&b, "not in the log");
