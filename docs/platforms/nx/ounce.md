@@ -78,6 +78,15 @@ halfword at 0xba for every program checked. The driver's
 `nvnProgramSetShaders` (sdk offset `0x5bf8b0`) reads them, and it checks the version and the format at `0x5bfde8`.
 One control section also holds SPIR-V 1.6 at `+0x128`.
 
+A compute program reaches its storage buffers through 64-bit addresses (`LDG`, `STG`), with no check against a
+size. Of about 400 storage buffers of one game's programs, 5 read the size word after their address, so the size
+the game binds doesn't bound the accesses: binding exactly that size hung the GPU, with accesses past it. The
+renderer binds all of the memory mapped from the address, up to 16 MiB (`vk_gbuf_desc`). The translator marks the
+4 KiB window of every store and atomic (`ShaderInfo.gbuf_marks`, binding `SNX_VKB_WPAGES`), and a result compares
+and lands only its marked windows (`buffer.c`'s `land_marked`, `compute.c`'s `cs_write_back`). Comparing the 16
+MiB of every result was a fifth of the game's CPU time. The copy of each range's original bytes, taken before the
+dispatch for that comparison, is still whole.
+
 ## Surfaces
 
 An Ounce game's block linear surfaces use another GOB: bits 5 and 6 of a byte's offset in it are swapped, so x

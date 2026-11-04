@@ -1390,6 +1390,10 @@ u64 vk_buf_copy_src_read(void);
 /* a copy of len bytes made now (data that changes within a frame), or of zeros when gva is 0 */
 int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off);
 /* ordered=0 only for a front end that supplies execution and shader-data barriers explicitly. */
+/* the windows the writer vk_buf_copy_writable bound last marks (words, a word a 4 KiB window from its binding's start,
+   in staging memory mem): its result then compares and lands only the marked windows of every writer (buffer.c's
+   land_marked), and all of it when one writer marked none */
+void vk_buf_writable_marks(const u32* words, VmaAllocation mem);
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered);
 /* Shader-data invalidation needs writes only. Execution order also covers reads before an in-place writer. */
 int vk_buf_order_pending(int writes_only);

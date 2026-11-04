@@ -285,9 +285,23 @@ typedef struct GfxOut {
     u64 keep_off;
     u32 wseen; /* the write tracking clock before org was read (vk_ww_now): copyable_span skips comparing pages since */
     u64 seq;   /* its place in g_out's order: higher is later (g_outx.seq when it went to the end) */
+    /* The windows its writers marked (vk_buf_writable_marks): mark[k]'s word j set when a store of that writer wrote
+       [at + j * 4096, at + (j + 1) * 4096) of it. unmarked: the writers that marked none, after which all of it is
+       compared as before */
+    u32 unmarked, nmarks;
+    struct {
+        const u32* w;
+        VmaAllocation mem;
+        u32 at, n;
+    } mark[8];
     struct GfxOut* next;
 } GfxOut;
 static GfxOut *g_prep, *g_prep_tail, *g_out, *g_out_tail;
+/* the output the last vk_buf_copy_writable bound, and where in it, for vk_buf_writable_marks (the GPU thread's) */
+static GfxOut* g_last_out;
+static u32 g_last_at, g_last_len;
+/* gfx_gpu_src's result taken in place for writing, when it answers 1 */
+static GfxOut* g_src_match;
 /* The results in g_out by the pages they cover, so a binding or a read compares (out_meets) the results over its range
    alone, not each of the hundreds a frame keeps pending until it is done. Each run of a result's guest pages [lo, hi]
    is an entry, in order of lo, as surface.c keeps the live render targets by address (g_rts); a search starts as far
@@ -695,6 +709,53 @@ static void out_rebase_later(const GfxOut* e, GfxOut* rest) {
         if (o->composed && pages_meet(e, o)) out_rebase(e, o);
 }
 
+/* a changed run of a marked window being landed, from its start (Marked.at) */
+typedef struct {
+    const GfxOut* o;
+    u32 at;
+} Marked;
+static void marked_chg(void* user, u32 from, u32 to) {
+    const Marked* m = user;
+    chg_add((void*)m->o, m->at + from, m->at + to);
+}
+static int run_cmp(const void* a, const void* b) {
+    u32 x = ((const ChgRun*)a)->from, y = ((const ChgRun*)b)->from;
+    return (x > y) - (x < y);
+}
+/* o, whose every writer marked the windows it wrote: those alone compared and landed, their changed runs in g_chg as
+   vk_write_changed_runs gives them for all of it. A window no writer marked holds what o started from, or bytes of an
+   earlier result composed into it (gfx_overlay), which that one lands */
+static void land_marked(GfxOut* o) {
+    u32 cap = 0, n = 0;
+    VmaAllocation inv = VK_NULL_HANDLE;
+    for (u32 k = 0; k < o->nmarks; k++) cap += o->mark[k].n;
+    ChgRun* w = malloc((cap ? cap : 1) * sizeof *w);
+    if (!w) {
+        vk_write_changed_runs(o->addr, o->ptr, o->org, o->size, chg_add, o);
+        return;
+    }
+    for (u32 k = 0; k < o->nmarks; k++) {
+        if (o->mark[k].mem != inv) {
+            if (!VK_OK(vmaInvalidateAllocation(g_vk.vma, o->mark[k].mem, 0, VK_WHOLE_SIZE)))
+                fatal("Could not invalidate a storage buffer's written windows after its frame completed");
+            inv = o->mark[k].mem;
+        }
+        for (u32 j = 0; j < o->mark[k].n; j++) {
+            u64 a = (u64)o->mark[k].at + (u64)j * 4096, b = a + 4096;
+            if (!o->mark[k].w[j] || a >= o->size) continue;
+            w[n++] = (ChgRun){(u32)a, (u32)(b < o->size ? b : o->size)};
+        }
+    }
+    qsort(w, n, sizeof *w, run_cmp);
+    for (u32 i = 0; i < n;) { /* merged: windows that meet or overlap are one run */
+        u32 a = w[i].from, b = w[i].to;
+        for (i++; i < n && w[i].from <= b; i++)
+            if (w[i].to > b) b = w[i].to;
+        Marked m = {o, a};
+        vk_write_changed_runs(o->addr + a, o->ptr + a, o->org + a, b - a, marked_chg, &m);
+    }
+    free(w);
+}
 /* The frame fence has signaled. Its stage allocations still exist here; cmd.c frees them only after this call. */
 void vk_buf_frame_done(u64 frame) {
     GfxOut *done = NULL, *done_tail = NULL;
@@ -740,7 +801,10 @@ void vk_buf_frame_done(u64 frame) {
             o->initial = NULL;
         }
         g_nchg = 0;
-        vk_write_changed_runs(o->addr, o->ptr, o->org, o->size, chg_add, o);
+        if (o->nmarks && !o->unmarked)
+            land_marked(o);
+        else
+            vk_write_changed_runs(o->addr, o->ptr, o->org, o->size, chg_add, o);
         g_buffer.wstat.merged++;
         out_pages(o, -1);
         out_rebase_later(o, done);
@@ -1058,6 +1122,27 @@ static int keep_intact(const GfxOut* o) {
     return own_lookup(o->cpu, o->size, r, 2) == 1 && r[0].res == o->keep && r[0].addr == o->cpu &&
            r[0].size == o->size && r[0].res_off == o->keep_off;
 }
+/* whether n bytes of guest memory (host, as write tracking watches them; untracked, the same read without a trap) still
+   hold org, written answering vk_written_since since a snapshot: 0, all of them; 1, those of the pages it saw written
+   alone, as the others do; -1 (no tracking), all compared. A storage range of an Ounce program is all of the memory
+   mapped from its address, up to 16 MiB, and one page written in it had every byte compared: a tenth of one game's
+   CPU time */
+typedef struct {
+    const u8 *untracked, *org;
+    int same;
+} OrgRuns;
+static void org_run(void* user, u64 at, u64 n) {
+    OrgRuns* r = user;
+    if (r->same && memcmp(r->untracked + at, r->org + at, n)) r->same = 0;
+}
+static int org_holds(const u8* host, const u8* untracked, const u8* org, u64 n, u32 since, int written) {
+    if (!written) return 1;
+    if (!untracked) return 0;
+    if (written < 0) return !memcmp(untracked, org, n);
+    OrgRuns r = {untracked, org, 1};
+    vk_written_runs(host, n, since, org_run, &r);
+    return r.same;
+}
 /* a pending result can be copied over guest memory on the GPU: this frame's staging or the last one's still holds
    it, and the guest hasn't written the bytes it covers in [lo, hi) since it was snapshotted (a kept one: its owner
    still holds them) */
@@ -1065,11 +1150,12 @@ static int out_copyable(const GfxOut* o, u64 lo, u64 hi) {
     if (o->keep) return keep_intact(o);
     const u8* host = gmem_host(lo, hi - lo);
     if (o->frame_id + 1 < vk_frame_id() || !host) return 0;
-    if (vk_written_since(host, hi - lo, o->wseen) == 0) return 1;
+    int written = vk_written_since(host, hi - lo, o->wseen);
+    if (written == 0) return 1;
     if (o->initial) return 0; /* the baseline is still being produced by the GPU */
-    host = gmem_ptr_untracked(lo, hi - lo);
-    if (host) g_checks.compares++;
-    return host && !memcmp(host, o->org + (lo - o->addr), hi - lo);
+    const u8* untracked = gmem_ptr_untracked(lo, hi - lo);
+    if (untracked) g_checks.compares++;
+    return org_holds(host, untracked, o->org + (lo - o->addr), hi - lo, o->wseen, written);
 }
 /* the same for each run of o's bytes in [gva, gva + len), through whichever GPU address maps them (out_spans) */
 typedef struct {
@@ -1088,14 +1174,15 @@ static void copyable_span(void* user, u64 at, u64 from, u64 n) {
         c->ok = 0;
         return;
     }
-    if (vk_written_since(host, n, c->o->wseen) == 0) return;
+    int written = vk_written_since(host, n, c->o->wseen);
+    if (written == 0) return;
     if (c->o->initial) {
         c->ok = 0;
         return;
     }
-    host = gmem_ptr_untracked(c->gva + at, n);
-    if (host) g_checks.compares++;
-    if (!host || memcmp(host, c->o->org + from, n)) c->ok = 0;
+    const u8* untracked = gmem_ptr_untracked(c->gva + at, n);
+    if (untracked) g_checks.compares++;
+    if (!org_holds(host, untracked, c->o->org + from, n, c->o->wseen, written)) c->ok = 0;
 }
 /* A composition takes each byte from the newest pending result over it: that result was made over the ones before it
    (composed, or over guest memory they hadn't touched) and its draw ran after theirs, so its buffer holds the byte as
@@ -1385,6 +1472,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
             match->written = g_buffer.order.writes + 1;
             g_buffer.order.reused_write = 1;
             if (match->keep) vk_own_res_wrote(match->keep); /* a landing waits for this submission's draw */
+            g_src_match = match;
         } else {
             /* A later in-place writer must wait for this read at the front end's execution-order point.
                An abandoned setup may leave the flag set, which only adds a conservative barrier. */
@@ -2130,14 +2218,36 @@ static void gap_copy(void* user, u8* to, u64 a, u64 b) {
 }
 /* Each writable binding keeps its original bytes until its draw's frame completes. The guest can keep writing RAM:
    vk_write_changed resolves those writes against the GPU result at the fence. */
+/* o is written at [at, at + len) by the writer being bound, which may mark the windows it writes
+   (vk_buf_writable_marks) or not */
+static void writer_of(GfxOut* o, u64 at, u32 len) {
+    g_last_out = o;
+    g_last_at = (u32)at;
+    g_last_len = len;
+    o->unmarked++;
+}
+void vk_buf_writable_marks(const u32* words, VmaAllocation mem) {
+    GfxOut* o = g_last_out;
+    g_last_out = NULL;
+    if (!o || o->nmarks == sizeof o->mark / sizeof *o->mark) return; /* no room: it stays unmarked, compared whole */
+    u32 n = (g_last_len + 4095) / 4096;
+    o->mark[o->nmarks].w = words;
+    o->mark[o->nmarks].mem = mem;
+    o->mark[o->nmarks].at = g_last_at;
+    o->mark[o->nmarks].n = n < SH_WPAGE_SLOT ? n : SH_WPAGE_SLOT;
+    o->nmarks++;
+    o->unmarked--;
+}
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered) {
     GfxOut* o;
+    g_last_out = NULL;
     if (!gva) return vk_buf_copy(0, len, buf, off);
     /* Repeated bindings of one writable range in the same draw must name the same storage. */
     for (GfxOut* p = g_prep; p; p = p->next)
         if (p->addr == gva && p->size == len) {
             *buf = p->buf;
             *off = p->off;
+            writer_of(p, 0, len);
             return 1;
         }
     /* bound as a storage buffer, a storage texel buffer (a compute buffer image) or a transform feedback buffer (a
@@ -2146,8 +2256,12 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
     if (bind_align < g_vk.props.limits.minTexelBufferOffsetAlignment)
         bind_align = g_vk.props.limits.minTexelBufferOffsetAlignment;
     if (bind_align < 4) bind_align = 4;
+    g_src_match = NULL;
     int pending = gfx_gpu_src(gva, len, buf, off, 1, bind_align, ordered);
-    if (pending == 1) return 1;
+    if (pending == 1) {
+        if (g_src_match) writer_of(g_src_match, gva - g_src_match->addr, len);
+        return 1;
+    }
     /* with unified memory the shader writes guest memory where it is, with nothing to land: not over bytes the GPU
        holds elsewhere (owned, a compute or storage image result, a queued release), which land first as before. Its
        barriers go by page (uma.c's order) whether or not the front end gives its own (ordered 0): more than NVN asks
@@ -2206,6 +2320,7 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
     else
         g_prep = o;
     g_prep_tail = o;
+    writer_of(o, 0, len);
     copy_note(gva, len);
     return 1;
 }
