@@ -47,6 +47,7 @@ static struct {
        kick then stops it. By the thread's index (kt_ix) */
     int tid[KTHREAD_MAX + 1];
     u8 guest[KTHREAD_MAX + 1];
+    char foreign[1024]; /* what guest_foreign last found, so a finding is said once */
 } g_nce = {.lock = PMUTEX_INIT};
 
 int nce_on(void) { return g_nce.on; }
@@ -225,20 +226,22 @@ void nce_kick(struct KThread* t) {
 
 /* The guest's addresses are the host's, in the host's process with its other owners (ART's heap and JIT, the
    allocator, the GPU's driver). Nothing of the runtime gives a page of them back, so a mapping there that is not the
-   game's (mem_foreign) is another owner's, made over the game's memory: the game's code would read and write it as
-   its own, so the game ends with what it is. 0 when there is none, -1 when the system does not say */
+   game's (mem_foreign) is another owner's, made over the game's memory, which the game's code would read and write as
+   its own. Said once for each finding, never the game's end: the scan cannot see another owner's plain anonymous
+   mapping, so it names what it finds and guards nothing, and a crash report names it again. Its count, 0 when there is
+   none, -1 when the system does not say */
 static int guest_foreign(const char* when) {
     char found[1024];
     int n = mem_foreign(found, sizeof found);
     if (n < 0)
         WARN_LIMIT(1, "nce: what lies in the guest's addresses cannot be read (%s): it is not looked at\n",
                    strerror(errno));
-    if (n > 0) {
-        WARN("nce: in the guest's addresses: %s\n", found); /* names and paths, which the fatal's text keeps out */
-        fatal("NCE: %s, the guest's addresses %#llx to %#llx hold %d thing%s of the host's process that %s not the "
-              "game's, named in the log",
-              when, (unsigned long long)AS_BASE, (unsigned long long)AS_END, n, n == 1 ? "" : "s",
-              n == 1 ? "is" : "are");
+    if (n > 0 && strcmp(found, g_nce.foreign)) {
+        snprintf(g_nce.foreign, sizeof g_nce.foreign, "%s", found);
+        WARN("nce: %s, the guest's addresses %#llx to %#llx hold %d thing%s of the host's process that %s not the "
+             "game's, which its code would read and write as its own: %s\n",
+             when, (unsigned long long)AS_BASE, (unsigned long long)AS_END, n, n == 1 ? "" : "s", n == 1 ? "is" : "are",
+             found);
     }
     return n;
 }

@@ -87,8 +87,10 @@ The guest's addresses share the process with ART's heap and JIT, the allocator a
 runtime gives a page of its reservation back (a decommit leaves the pages reserved), so none of them is handed a guest
 address by an mmap of its own; one that maps over guest memory at a fixed address would make memory the game's code
 reads and writes as its own. The runtime looks for anything there that is not the game's (`mem_foreign`: a named
-mapping, or a run nothing maps) as the game's code starts and every 10 s after, and ends the game with each one named
-in the log; a crash report names them too. A plain anonymous mapping of another owner reads as the game's.
+mapping, or a run nothing maps) as the game's code starts and every 10 s after, and names each one in the log once; a
+crash report names them too. A plain anonymous mapping of another owner reads as the game's, so the scan is a
+diagnosis, not a guard: it never ends the game. The maps are read while other threads change them, so a run read as
+empty is asked again (`msync`) before it is named, and a failed read of them is no answer, not an empty range.
 
 The path for the 36-bit games is to run the runtime outside ART: an executable child of `GameActivity`, as the driver
 already is (`libscarletnx-run.so`), whose low addresses are free. The window would come from the app over a socket
