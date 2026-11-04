@@ -86,6 +86,7 @@ struct SnxFx {
     VkDeviceMemory tex_mem;
     int tex_uploaded;
     int aa_logged;
+    int aa_last; /* the anti aliasing last said in the log, -1 before the first */
 };
 
 static int fx_ok(VkResult r) { return r == VK_SUCCESS; }
@@ -604,6 +605,7 @@ SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, uint32_
     fx->slot = slot;
     fx->forget = forget;
     fx->log = log;
+    fx->aa_last = -1;
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                               .magFilter = VK_FILTER_LINEAR,
                               .minFilter = VK_FILTER_LINEAR,
@@ -1080,6 +1082,13 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, VkImageView src, uint32_t img_w
     if (!fx || !cb || !src || !img_w || !img_h || !w || !h || !out_w || !out_h || !out) return 0;
     slot = fx->slot ? fx->slot() % fx->slots : 0;
     aa = snx_fx_pick_aa(fx, aa, w, h, out_w, out_h, 16384);
+    if (aa != fx->aa_last) {
+        char said[96];
+        fx->aa_last = aa;
+        snprintf(said, sizeof said, "vulkan: anti aliasing %s over %ux%u to %ux%u", snx_fx_aa_label(aa), w, h, out_w,
+                 out_h);
+        fx_echo(fx, said);
+    }
     if ((filter == SNX_FX_UPSCALE_OFF || filter == SNX_FX_UPSCALE_BILINEAR) && aa == SNX_FX_AA_OFF) return 0;
     if (!make_pipelines(fx)) return 0;
     if (aa == SNX_FX_AA_SSAA2 || aa == SNX_FX_AA_SSAA4) {
