@@ -572,6 +572,63 @@ static int check_wt_mixed_leaf(void) {
     return 0;
 }
 
+/* A render target's write-back keeps memory's bytes on the pages the CPU wrote since the target's baseline, and the
+   GPU's pixels on the rest: so a page the tracking reports written when it wasn't loses the GPU's pixels. The CPU
+   writes one page of the target's memory in every epoch first (hot under any scheme that leaves such a page writable
+   and reports it at each scan), then the target is drawn over it all, then the CPU writes another page only, and the
+   write-back must hold the GPU's blue everywhere but that page (a prototype that reported hot pages at every scan kept
+   the CPU's old bytes there) */
+static int check_wt_hot_page(void) {
+    const u64 cpu = WT_CPU + 10 * WT_LEAF, gva = WT_GVA + 0x9000000, size = 0x10000; /* 128 by 128, 4 bytes a pixel */
+    const u64 hot = cpu + 0x3000, later = cpu + 0x8000;
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, size);
+    memset(GP(cpu), 0x11, size);
+    vk_lock();
+    int tracking = wt_tracking(cpu);
+    vk_unlock();
+    if (!tracking) {
+        printf("skip: a render target's write-back over a hot page needs write tracking\n");
+        CHECK(mem_unmap(cpu, size) == 0);
+        free(ch);
+        return 0;
+    }
+    for (u8 v = 0x20; v < 0x28; v++) { /* eight epochs, the page written and scanned in each */
+        memset(GP(hot), v, 0x1000);
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        (void)vk_written_since(GP(cpu), size, 0);
+        vk_unlock();
+    }
+    rt_clear(ch, gva, 128, 128, 0, 1);
+    for (int i = 0; i < 2; i++) { /* epochs with scans, the hot page left alone */
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        (void)vk_written_since(GP(cpu), size, 0);
+        vk_unlock();
+    }
+    memset(GP(later), 0x77, 0x1000);
+    g_renderer->mem_may_have_changed();
+    g_renderer->rt_flush(gva);
+    guest_done(cpu, size);
+    int blue =
+        all_blue(GP(cpu), (u32)(later - cpu)) && all_blue(GP(later + 0x1000), (u32)(cpu + size - later - 0x1000));
+    int kept = all_bytes(GP(later), 0x1000, 0x77);
+    if (!blue || !kept)
+        fprintf(stderr,
+                "hot page: after the write-back the page written in every epoch before the target holds %02x %02x %02x "
+                "%02x (blue: 00 00 ff ff), the rest of the target is %s, and the page the CPU wrote after it %s\n",
+                GP(hot)[0], GP(hot)[1], GP(hot)[2], GP(hot)[3], blue ? "blue" : "not all blue",
+                kept ? "keeps 0x77" : "lost 0x77");
+    CHECK(mem_unmap(cpu, size) == 0);
+    free(ch);
+    CHECK(blue && kept);
+    puts("write tracking: a render target over a page written in every epoch keeps its pixels there at its write-back");
+    return 0;
+}
+
 /* the cases by name, for SNX_TEST_WW_ONLY=NAME */
 static const struct {
     const char* name;
@@ -585,6 +642,7 @@ static const struct {
     {"alias", check_wt_alias},
     {"shared", check_wt_shared},
     {"mixed_leaf", check_wt_mixed_leaf},
+    {"hot_page", check_wt_hot_page},
 };
 /* whether the tracking answers, asked at a leaf no case maps */
 static int wt_on(void) {
@@ -619,7 +677,7 @@ static int check_write_tracking(void) {
     if (!ran) {
         fprintf(stderr,
                 "SNX_TEST_WW_ONLY=%s names no case: 1, each, two_consumers, concurrent, record_submit, runtime_writes, "
-                "owned, alias, shared or mixed_leaf\n",
+                "owned, alias, shared, mixed_leaf or hot_page\n",
                 only);
         return 2;
     }
