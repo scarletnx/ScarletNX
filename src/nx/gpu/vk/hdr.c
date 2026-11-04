@@ -74,7 +74,9 @@ int vk_hdr_display_hdr(void) {
     if (kind == SNX_HDR_DISPLAY_NONE) return 0;
     /* an HDR10 target's signal is absolute: the surface taking it is the test. The extended kinds need the display's
        own headroom, which the system reports; 1.00 there means it can go no brighter than its SDR white */
-    if (kind == SNX_HDR_DISPLAY_PQ) return 1;
+    /* an HDR10 signal is absolute, but Auto gains nothing where the display's peak is its white, and a compositor's
+       mapping of it can desaturate; hdr=on is the player's explicit choice */
+    if (kind == SNX_HDR_DISPLAY_PQ) return vk_hdr_mode() == SNX_HDR_ON || g_hdr.peak > g_hdr.paper;
     return __atomic_load_n(&g_display_edr_potential_pct, __ATOMIC_RELAXED) > 100;
 }
 
@@ -110,6 +112,7 @@ int vk_hdr_display_kind(void) {
         int want_pq = cs == SNX_HDR_CS_AUTO || cs == SNX_HDR_CS_PQ;
         if (!g_vk.surface || !g_vk.has_swapchain_colorspace)
             g_hdr.display_kind = SNX_HDR_DISPLAY_NONE;
+#if defined(__APPLE__)
         else if (want_p3 && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, scrgb_formats, 1,
                                                      VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT, &out))
             g_hdr.display_kind = SNX_HDR_DISPLAY_P3;
@@ -120,6 +123,18 @@ int vk_hdr_display_kind(void) {
                  snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, hdr_formats, 2, VK_COLOR_SPACE_HDR10_ST2084_EXT,
                                           &out))
             g_hdr.display_kind = SNX_HDR_DISPLAY_PQ;
+#else
+        else if (want_pq &&
+                 snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, hdr_formats, 2, VK_COLOR_SPACE_HDR10_ST2084_EXT,
+                                          &out))
+            g_hdr.display_kind = SNX_HDR_DISPLAY_PQ;
+        else if (want_p3 && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, scrgb_formats, 1,
+                                                     VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT, &out))
+            g_hdr.display_kind = SNX_HDR_DISPLAY_P3;
+        else if (want_scrgb && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, scrgb_formats, 1,
+                                                        VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, &out))
+            g_hdr.display_kind = SNX_HDR_DISPLAY_SCRGB;
+#endif
         else
             g_hdr.display_kind = SNX_HDR_DISPLAY_NONE;
     }

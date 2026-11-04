@@ -15,6 +15,7 @@
 #include "nx/gpu/vk/hdr.h"
 #include "nx/gpu/vk/upscale.h"
 #include "common/gpu/vk/swapchain.h"
+#include "common/gpu/vk/window.h"
 #include "common/gpu/vk/vk_common.h"
 
 int g_vk_preserve_infnan;
@@ -949,7 +950,12 @@ int vk_swapchain_create(int kind) {
        misrepresented: it shows at about half the exposure on an HDR display (mpv #16899), where 1.0 of an extended
        linear layer is the display's SDR white on every display. The SDR look is what this mapping keeps, so the
        extended kinds are the ideal here, and hdr_colorspace=hdr10 forces Horizon's order for a comparison. */
-    if (kind == VK_SC_HDR && g_vk.has_swapchain_colorspace) {
+    /* Auto takes an HDR image only where the display has light over its white: a display whose peak is its white
+       (KWin with sdrBrightness = maxPeakBrightnessOverride) gains nothing from HDR, and the compositor's mapping of it
+       can desaturate. hdr=on still takes one. */
+    int auto_sdr = snx_hdr_parse(g_settings.hdr) == SNX_HDR_AUTO &&
+                   snx_vk_peak_nits(g_settings.hdr_peak) <= snx_vk_paper_nits(g_settings.hdr_paper_white);
+    if (kind == VK_SC_HDR && g_vk.has_swapchain_colorspace && !auto_sdr) {
         int want_p3 = cs == SNX_HDR_CS_AUTO || cs == SNX_HDR_CS_P3;
         int want_scrgb = cs == SNX_HDR_CS_AUTO || cs == SNX_HDR_CS_SCRGB;
         int want_pq = cs == SNX_HDR_CS_AUTO || cs == SNX_HDR_CS_PQ;
@@ -1143,7 +1149,7 @@ int vk_swapchain_create(int kind) {
                                  .minLuminance = 0.005f,
                                  .maxLuminance = (float)vk_hdr_peak_nits(),
                                  .maxContentLightLevel = (float)vk_hdr_peak_nits(),
-                                 .maxFrameAverageLightLevel = (float)vk_hdr_paper_nits()};
+                                 .maxFrameAverageLightLevel = (float)(vk_hdr_paper_nits() / 4)};
         meta.displayPrimaryRed = (VkXYColorEXT){0.708f, 0.292f};
         meta.displayPrimaryGreen = (VkXYColorEXT){0.170f, 0.797f};
         meta.displayPrimaryBlue = (VkXYColorEXT){0.131f, 0.046f};

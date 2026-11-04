@@ -144,7 +144,11 @@ static int choose_display(AgbVk* v, VkFormat* format, VkColorSpaceKHR* space) {
     if (kind == SNX_FX_DISPLAY_NONE) return SNX_FX_DISPLAY_NONE;
     /* an extended-kind image's 1.0 is the display's SDR white: Auto takes one only where the display reports headroom
        over its white, as the Switch frontend does */
-    if (mode == SNX_FX_HDR_AUTO && kind != SNX_FX_DISPLAY_PQ && snx_vk_window_headroom_pct(v->host.window) <= 100)
+    /* Auto takes an HDR image only where the display has light over its white: a display whose peak is its white
+       (KWin with sdrBrightness = maxPeakBrightnessOverride) gains nothing from HDR, and the compositor's mapping of
+       it can desaturate. hdr=on still takes one. */
+    if (mode == SNX_FX_HDR_AUTO &&
+        snx_vk_peak_nits(g_settings.hdr_peak) <= snx_vk_paper_nits(g_settings.hdr_paper_white))
         return SNX_FX_DISPLAY_NONE;
     *format = f.format;
     *space = f.colorSpace;

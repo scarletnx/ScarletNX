@@ -130,10 +130,11 @@ static int choose_display(unsigned window, VkFormat* format, VkColorSpaceKHR* sp
         snx_vk_surface_format_cs(v->phys, surface, hdr_formats, 2, VK_COLOR_SPACE_HDR10_ST2084_EXT, &f))
         kind = SNX_FX_DISPLAY_PQ;
     if (kind == SNX_FX_DISPLAY_NONE) return SNX_FX_DISPLAY_NONE;
-    /* Auto takes an extended kind only where the display reports headroom over its white, as the Switch does: an
-       HDR10 target's signal is absolute and the surface taking it is the test */
-    if (mode == SNX_FX_HDR_AUTO && kind != SNX_FX_DISPLAY_PQ &&
-        snx_vk_window_headroom_pct(screen_window(window)) <= 100)
+    /* Auto takes an HDR image only where the display has light over its white. An HDR10 signal is absolute, but a
+       display whose peak is its white (KWin with sdrBrightness = maxPeakBrightnessOverride) gains nothing from it and
+       the compositor's mapping of it can desaturate; the SDR image is the frame's own then. hdr=on still takes one. */
+    if (mode == SNX_FX_HDR_AUTO &&
+        snx_vk_peak_nits(g_settings.hdr_peak) <= snx_vk_paper_nits(g_settings.hdr_paper_white))
         return SNX_FX_DISPLAY_NONE;
     *format = f.format;
     *space = f.colorSpace;

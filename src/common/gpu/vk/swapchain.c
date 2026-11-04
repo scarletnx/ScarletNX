@@ -72,7 +72,10 @@ void snx_vk_swapchain_metadata(VkDevice device, VkSwapchainKHR swapchain, VkForm
                              .minLuminance = 0.005f,
                              .maxLuminance = (float)peak_nits,
                              .maxContentLightLevel = (float)peak_nits,
-                             .maxFrameAverageLightLevel = (float)paper_nits};
+                             /* the content's maximum frame average, not the paper white: an average equal to the
+                                peak tells a compositor the whole frame is at the peak, and it tone maps the signal
+                                down to fit, which desaturates it. SDR content's average is a fraction of its white */
+                             .maxFrameAverageLightLevel = (float)(paper_nits / 4)};
     if (!swapchain || space != VK_COLOR_SPACE_HDR10_ST2084_EXT ||
         (format != VK_FORMAT_A2B10G10R10_UNORM_PACK32 && format != VK_FORMAT_A2R10G10B10_UNORM_PACK32))
         return;
