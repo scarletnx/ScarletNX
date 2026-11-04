@@ -265,11 +265,12 @@ setting Anti aliasing
 setting Frame interpolation
     key frame_interp
     text 8
-    default off
+    default auto
     startup
     words off=Off|auto=Auto|blend=Blend
     help The frames shown between the game's frames: one between each two, so twice the game's rate, and no more.
-    help Auto runs only where the display refreshes at least 1.9 times the game's rate. Blend averages the previous
+    help Auto runs only where the display refreshes at least 1.9 times the game's rate and the game's 1 % low stays at
+    help 25 a second or more, so a game already running badly is left alone. Blend averages the previous
     help and current frame, a temporal blend until a motion compensated pass lands. The frame_interp_key cycles it
     help live
 setting HDR

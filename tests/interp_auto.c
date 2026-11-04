@@ -49,6 +49,12 @@ int main(void) {
         t += i & 1 ? 100 * MS : 16 * MS;
         CHECK(!snx_interp_auto_frame(&a, t, 120));
     }
+    /* 20 a second on a 60 Hz display: the 1.9 rule fits, but the 1 % low is under 25, so no blend */
+    snx_interp_auto_init(&a);
+    for (int i = 0; i < 300; ++i) {
+        t += 50 * MS;
+        CHECK(!snx_interp_auto_frame(&a, t, 60));
+    }
     /* no display rate: never on */
     snx_interp_auto_init(&a);
     CHECK(!feed(&a, &t, 33333333, 240, 0));

@@ -8,6 +8,8 @@
 #define ON_NS   1000000000ull /* the fit must hold a second before the blend comes on */
 #define OFF_NS  2000000000ull /* and fail two before it goes off */
 #define LEAST   8u            /* fewer intervals than this say nothing yet */
+#define LOW_NS  40000000ull   /* the 1 % low must be 25 frames a second or more: a game already running badly gains
+                                 nothing from a blend, and would lose more */
 
 static int by_time(const void* a, const void* b) {
     uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
@@ -15,8 +17,9 @@ static int by_time(const void* a, const void* b) {
 }
 
 /* Whether the game leaves room for two presents a refresh: the display refreshes at least 1.9 times the game's fastest
-   1 % of frames (two presents of a frame at that pace still fit), and its slowest 1 % stays within twice that fastest
-   one, so a game that hitches every few frames is not blended */
+   1 % of frames (two presents of a frame at that pace still fit), its slowest 1 % stays within twice that fastest one,
+   so a game that hitches every few frames is not blended, and that slowest 1 % is 25 frames a second or more, so a game
+   already running badly is not made worse */
 static int fits(const SnxInterpAuto* a, int display_hz) {
     uint64_t v[SNX_INTERP_AUTO_FRAMES];
     unsigned n = a->count;
@@ -24,6 +27,7 @@ static int fits(const SnxInterpAuto* a, int display_hz) {
     memcpy(v, a->at, n * sizeof *v);
     qsort(v, n, sizeof *v, by_time);
     if ((uint64_t)display_hz * v[n / 100] * 10 < 19000000000ull) return 0;
+    if (v[n - 1 - n / 100] > LOW_NS) return 0;
     return v[n - 1 - n / 100] <= v[n / 100] * 2;
 }
 

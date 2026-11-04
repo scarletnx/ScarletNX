@@ -6,8 +6,8 @@
 a byte average of the previous and current 240x160 frame before the current frame. `auto` is the shared gate
 (`common/gpu/vk/interp_auto.c`): over the last four seconds it takes the game's fastest 1 % of frames (the display must
 refresh at least 1.9 times that, so two presents fit even then) and its slowest 1 % (within twice the fastest, so a
-game that hitches every few frames is left alone), turns on after a second of fitting and off only after two seconds of
-failing. On a 60 Hz display with the GBA's 59.73 Hz, Auto stays Off. A 120 Hz display runs it. The hotkey cycles Off,
+game that hitches every few frames is left alone, and its 1 % low at 25 a second or more, so a game already running
+badly is not made worse), turns on after a second of fitting and off only after two seconds of failing. On a 60 Hz display with the GBA's 59.73 Hz, Auto stays Off. A 120 Hz display runs it. The hotkey cycles Off,
 Auto and Blend with a log line, and the `.ini` is not changed.
 
 ## What is not done
@@ -49,7 +49,8 @@ until such a pass exists.
 
 ## Defaults and practice
 
-- `frame_interp=off` is the default. Frame generation adds latency and can show ghosting, so it is opt-in.
+- `frame_interp=auto` is the default: it only runs where two presents fit and the game's 1 % low is 25 a second or
+  more. `off` and `blend` are there when the gate cannot judge.
 - `auto` is the recommended mode on a high refresh display: it runs only where the display is at least 1.9x the
   game's present rate, and it uses the cheapest method that works, the temporal blend.
 - `blend` is the explicit choice for a display that is slower than 2x, with the ghosting it brings.
