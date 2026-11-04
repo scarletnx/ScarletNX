@@ -63,6 +63,7 @@ static int vkr_mem_pending(u64 gva, u64 size) {
     return hit;
 }
 static void vkr_gfx_mem_need(u64 gva, u64 size) {
+    vk_mirror_mem_need(gva, size); /* the GPU mirror's programs' writes there landed */
     vk_buf_mem_need(gva, size);
     vk_uma_mem_need(gva, size); /* the in-place writes there done */
     vk_gfx_image_mem_need(gva, size);
@@ -81,6 +82,7 @@ static void vkr_mapping_begin(u64 gva, u64 size, int full) {
            wait for all of the GPU's work, and one game's memory thread waited so with its core held */
         int hit = pend_hit_guest(&g_pend_any, gva, size);
         if (hit) vk_buf_land_map();
+        if (hit) vk_mirror_mem_need(0, ~0ull); /* the GPU mirror's programs' writes, all of them */
         vk_gfx_image_land();
         if (hit) vk_compute_land();
         /* last, as the landings may submit: mem.c's change of guest memory [gva, gva + size), whose in-place readers
@@ -88,6 +90,7 @@ static void vkr_mapping_begin(u64 gva, u64 size, int full) {
         vk_uma_mapping_begin(gva, size);
     } else {
         vk_buf_mem_need_map(gva, size);
+        vk_mirror_mem_need(gva, size);
         vk_gfx_image_mem_need(gva, size);
         vk_compute_mem_need_map(gva, size);
         /* Images still describe the old backing until the page table changes. */
