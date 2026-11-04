@@ -1498,7 +1498,7 @@ static void ww_used_epoch(u32 seen) {
 int vk_written_since(const u8* host, u64 len, u32 since) {
     if (!g_ww || !host || !len) return -1;
     if (g_ww < 0) {
-        g_ww = plat_ww_scan(g_mem, 4096, ww_mark) == 0;
+        g_ww = mem_ww_probe(ww_mark) == 0;
         LOG("vulkan: %s\n",
             g_ww ? "write tracking on (caches skip unchanged memory)" : "no write tracking (caches check contents)");
         if (!g_ww) return -1;

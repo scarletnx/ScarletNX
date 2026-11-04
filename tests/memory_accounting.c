@@ -102,6 +102,13 @@ void plat_vm_track(u8* p, u64 size) { tracked = p, tracked_size = size; }
 #else
 void plat_vm_track(u8* p, u64 size) { (void)p, (void)size; }
 #endif
+/* mem_ww_probe's scan: where it looked */
+static u8* scanned;
+int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
+    (void)size, (void)cb;
+    scanned = p;
+    return -1;
+}
 /* mem.c's reservation at the guest's own addresses (NCE), which test_moved asks for: at addr or nowhere */
 static int reserve_at_on;
 u8* plat_vm_reserve_at(u64 addr, u64 size) {
@@ -779,6 +786,8 @@ static void test_moved(void) {
     CHECK((u64)(uintptr_t)reservation == g_layout.base && reservation_size == size - 0x8000000ull);
     mem_init();
     CHECK(tracked == reservation && tracked_size == reservation_size);
+    /* the tracking's probe scans the moved code base, not g_mem's 0, which no tracking covers */
+    CHECK(mem_ww_probe(NULL) == -1 && scanned == tracked && g_mem == NULL);
     CHECK(mem_map(HEAP_BASE, 0x1000, MS_NORMAL, PERM_RW) == 0 && state(HEAP_BASE) == MS_NORMAL);
     p = GP(HEAP_BASE);
     CHECK((u64)(uintptr_t)p == HEAP_BASE);
@@ -824,6 +833,7 @@ int main(void) {
         }
         mapping_begins = mapping_ends = 0; /* test_mapping_boundary's, from the round before */
         mem_init();
+        CHECK(mem_ww_probe(NULL) == -1 && scanned == g_mem && g_mem); /* the tracking starts at g_mem */
         test_heap();
         test_heap32();
         test_fit();
