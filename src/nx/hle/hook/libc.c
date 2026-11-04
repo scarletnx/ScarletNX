@@ -9,11 +9,11 @@
 #include "hle/hook/hooks.hook.h"
 
 u64 hook_memmove(CPU* c, u64 dst, u64 src, u64 size) {
-    if (size) memmove(c->mem + dst, c->mem + src, (size_t)size);
+    if (size) memmove(hook_host(c, dst), hook_host(c, src), (size_t)size);
     return dst;
 }
 
 u64 hook_memset(CPU* c, u64 dst, i32 value, u64 size) {
-    if (size) memset(c->mem + dst, value, (size_t)size); /* the value as an unsigned char, as both take it */
+    if (size) memset(hook_host(c, dst), value, (size_t)size); /* the value as an unsigned char, as both take it */
     return dst;
 }
