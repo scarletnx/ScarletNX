@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors
    The 3DS's two windows and its per-screen render scales (present.c, vk/device.c). A run whose window the
    host cannot make, as CI's, checks that the setting costs nothing and the dumps stay the framebuffer's own
-   size; one with a window checks that Separate screens gives each screen its own swapchain. */
+   size. A run with a window checks that Separate screens gives each screen its own swapchain (--separate), and that
+   a window minimized and restored gets its swapchain back (--minimize). */
 #include "3ds/gpu/present.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/memory/ctr_memory.h"
@@ -15,6 +16,7 @@
 #define FCRAM 0x20000000u
 #define TOP (FCRAM + 0x00100000u)
 #define BOTTOM (FCRAM + 0x00400000u)
+#define PHASE_FRAMES 4 /* each screen's frames while the window is minimized, and again once it is restored */
 
 /* an RGBA8 (A, B, G, R) framebuffer of one colour, with its top-left screen pixel white and the rest as given */
 static void fill(SnxCtrMemory* m, uint32_t at, unsigned width, unsigned height, unsigned char alpha)
@@ -48,10 +50,48 @@ static int ppm_size(const char* dir, unsigned screen, unsigned* a, unsigned* b)
     return 0;
 }
 
+/* one frame of each screen */
+static bool present_pair(void) {
+    return snx_ctr_present_frame(0, TOP, 240, 400, 0, 240 * 4, NULL) &&
+           snx_ctr_present_frame(1, BOTTOM, 240, 320, 0, 240 * 4, NULL);
+}
+
+/* Frames go on while the window is minimized, then it is restored: it must have a swapchain again. The surface's
+   size and smallest size while minimized are printed: 0x0 on Windows, where no swapchain can be made for it. A host
+   that does not minimize the window, or keeps its swapchain while it is minimized, has nothing to check here. */
+static int minimize_restore(void) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    SDL_Window* window = v->host.window;
+    bool ok = present_pair();
+    SDL_MinimizeWindow(window);
+    SDL_SyncWindow(window);
+    for (unsigned i = 0; i < PHASE_FRAMES; ++i) ok = ok && present_pair();
+    VkSurfaceCapabilitiesKHR caps = {0};
+    ok = ok && vkGetPhysicalDeviceSurfaceCapabilitiesKHR(v->phys, v->host.surface, &caps) == VK_SUCCESS;
+    if (ok && !(SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)) {
+        printf("the window did not minimize on this host: nothing to check\n");
+        return 77;
+    }
+    if (ok && snx_ctr_present_windowed()) {
+        printf("the swapchain outlived the minimize on this host (surface %ux%u): nothing to check\n",
+               caps.currentExtent.width, caps.currentExtent.height);
+        return 77;
+    }
+    SDL_RestoreWindow(window);
+    SDL_SyncWindow(window);
+    for (unsigned i = 0; i < PHASE_FRAMES; ++i) ok = ok && present_pair();
+    ok = ok && snx_ctr_present_windowed();
+    printf("%-24s %s: the surface was %ux%u, at least %ux%u, while minimized\n", "minimized and restored",
+           ok ? "ok" : "FAIL", caps.currentExtent.width, caps.currentExtent.height, caps.minImageExtent.width,
+           caps.minImageExtent.height);
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char** argv)
 {
     const char* dir = argc > 1 ? argv[1] : ".";
     bool separate = argc > 2 && !strcmp(argv[2], "--separate");
+    bool minimized = argc > 2 && !strcmp(argv[2], "--minimize");
     char stale[1024];
     if (snx_mkdirs(dir)) return 1;
     for (unsigned screen = 0; screen < 2; ++screen)
@@ -83,11 +123,18 @@ int main(int argc, char** argv)
         snx_ctr_memory_free(m);
         return 77;
     }
-    if (separate && !snx_ctr_present_windowed()) {
-        printf("no window on this host: the separate windows cannot be checked here\n");
+    if ((separate || minimized) && !snx_ctr_present_windowed()) {
+        printf("no window on this host: %s cannot be checked here\n",
+               separate ? "the separate windows" : "a minimized window");
         snx_ctr_present_free();
         snx_ctr_memory_free(m);
         return 77;
+    }
+    if (minimized) {
+        int result = minimize_restore();
+        snx_ctr_present_free();
+        snx_ctr_memory_free(m);
+        return result;
     }
     bool ok = snx_ctr_present_separate() == separate;
     ok = ok && snx_ctr_present_frame(0, TOP, 240, 400, 0, 240 * 4, NULL);
