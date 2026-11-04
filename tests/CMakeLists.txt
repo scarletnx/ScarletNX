@@ -52,6 +52,8 @@ if(SNX_TEST_SANITIZERS)
         scarletnx snx_core snx_kernel snx_hle snx_video snx_gpu snx_platform snx_shader snx_vk
         # the GNU ABI runtime and its kernel
         scarletnx-gnuabi scarletnx-gnuabi-kernel
+        # the Android app driver: its DEX translator, its program and the native bridge
+        snx_android_dex snx_android_program snx_android_bridge
         # the 3DS runtime
         scarletnx-3ds snx_ctr_program snx_ctr_board snx_ctr_memory snx_ctr_loader snx_ctr_cpu snx_ctr_process snx_ctr_native
         snx_ctr_audio snx_ctr_gpu snx_ctr_gpu_reference

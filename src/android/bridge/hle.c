@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The HLE libraries' symbols (hle.h), found by name through one sorted index of every table */
 #include "android/bridge/hle.h"
+#include "android/bridge/gles2.h"
 #include "android/bridge/hle_vulkan.h"
 #include "common/utilities/common.h"
 #include <pthread.h>
@@ -23,14 +24,35 @@ bool hle_is_system_library(const char* name) {
     return false;
 }
 
-static const HleSymbol* const tables[] = {hle_libc, hle_posix, hle_thread, hle_sync, hle_dl, hle_sles, hle_media,
-                                          hle_android, hle_egl, hle_gles, hle_zlib, hle_signal};
+static const HleSymbol* const tables[] = {hle_libc,   hle_posix,  hle_thread,       hle_sync,          hle_dl,
+                                          hle_sles,   hle_media,  hle_android,      hle_egl,           hle_gles,
+                                          hle_gles2,  hle_gles2_object, hle_gles2_program, hle_gles2_draw, hle_zlib,
+                                          hle_signal};
+
+/* a name that GLES 1.1 (hle_gles) and GLES 2 (gles2*.c) both have: one export, which calls the current context's */
+typedef struct {
+    HleSymbol symbol;        /* the export's: gles_either with this pair */
+    const HleSymbol* gles1;
+    const HleSymbol* gles2;
+} HleEither;
 
 static struct {
     const HleSymbol** sorted;
     size_t count;
+    HleEither* either;
     pthread_once_t once;
 } h = {.once = PTHREAD_ONCE_INIT};
+
+static void gles_either(CPU* c, void* data) {
+    const HleEither* e = data;
+    const HleSymbol* s = gles2_current() ? e->gles2 : e->gles1;
+    s->handler(c, s->data);
+}
+static bool in_table(const HleSymbol* s, const HleSymbol* table) {
+    for (const HleSymbol* t = table; t->name[0]; ++t)
+        if (t == s) return true;
+    return false;
+}
 
 static int by_name(const void* a, const void* b) {
     return strcmp((*(const HleSymbol* const*)a)->name, (*(const HleSymbol* const*)b)->name);
@@ -45,6 +67,27 @@ static void index_tables(void) {
     for (size_t t = 0; t < sizeof tables / sizeof *tables; ++t)
         for (const HleSymbol* s = tables[t]; s->name[0]; ++s) h.sorted[n++] = s;
     qsort(h.sorted, h.count, sizeof *h.sorted, by_name);
+    /* the names of both GLES libraries: the pair as one entry */
+    size_t pairs = 0;
+    for (size_t i = 1; i < h.count; ++i) pairs += !strcmp(h.sorted[i - 1]->name, h.sorted[i]->name);
+    h.either = snx_alloc((pairs ? pairs : 1) * sizeof *h.either);
+    size_t kept = 0, made = 0;
+    for (size_t i = 0; i < h.count; ++i) {
+        const HleSymbol* a = h.sorted[i];
+        const HleSymbol* b = i + 1 < h.count ? h.sorted[i + 1] : NULL;
+        bool first_gles1 = b && in_table(a, hle_gles);
+        if (b && !strcmp(a->name, b->name) && (first_gles1 || in_table(b, hle_gles))) {
+            HleEither* e = &h.either[made++];
+            e->gles1 = first_gles1 ? a : b;
+            e->gles2 = first_gles1 ? b : a;
+            e->symbol = (HleSymbol){a->name, gles_either, e};
+            h.sorted[kept++] = &e->symbol;
+            ++i;
+            continue;
+        }
+        h.sorted[kept++] = h.sorted[i];
+    }
+    h.count = kept;
 }
 
 /* the functions that can wait as long as another thread or the system makes them: a guest signal runs its handler

@@ -153,31 +153,90 @@ lists.
 that `GLSurfaceView` uses): both reach the same objects in `hle_egl.c`, so a context and a surface that Java makes
 current are current for the native GLES calls of the same thread, as on Android.
 
-- **The configs** are GLES 1.1's alone (`EGL_OPENGL_ES_BIT`): RGBA 8888, RGB 888 and RGB 565, each with no depth
-  buffer, a 16-bit one and a 24-bit one with 8 bits of stencil, matched and sorted as `eglChooseConfig` does. An
-  engine that asks for GLES 2 or 3 finds no config and takes Vulkan.
+- **The configs** are GLES 1.1's, 2's and 3's (`EGL_OPENGL_ES_BIT`, `EGL_OPENGL_ES2_BIT`,
+  `EGL_OPENGL_ES3_BIT_KHR`): RGBA 8888, RGB 888 and RGB 565, each with no depth buffer, a 16-bit one and a 24-bit one
+  with 8 bits of stencil, for window surfaces and pbuffers, matched and sorted as `eglChooseConfig` does.
+- **A context** of version 1 is GLES 1.1's (`hle_gles.c`). One of version 2 or 3 is GLES 3.0's (`gles2*.c`), as a
+  phone's version 2 context is. A minor version past 3.0 is refused with `EGL_BAD_MATCH`, so an engine asks for 3.0
+  next. `glGetString` names the version that is there (`OpenGL ES 3.0`, `OpenGL ES GLSL ES 3.00`), and the Mali GPU
+  of `hle_gpu_name` as the renderer.
 - **A context without a config** (`EGL_KHR_no_config_context`) of any version can be made current without a surface,
   and `glGetString` answers with the GPU that Vulkan reports. Engines name the GPU from such a throwaway context
-  before they choose an API, and choose Vulkan only on the GPUs of their own lists.
-- **A window surface** is a swapchain on the host window (or on a headless surface), which `libGLESv1_CM.so` draws
-  into: GLES 1.1's fixed function over Vulkan (`hle_gles.c`).
+  before they choose an API, and choose Vulkan on the GPUs of their own lists. A GLES 2 context without a surface
+  makes a 1x1 pbuffer of its own only when a call first records commands, so a throwaway context makes no Vulkan
+  device.
+- **A window surface** is a swapchain on the host window (or on a headless surface). **A pbuffer** is an RGBA8 image
+  of its own.
 
-`hle_gles.c` is a Vulkan app of its own. It makes its instance, surface, device, queue and swapchain, and presents,
-through the pass-through's commands (`hle_vulkan_host.h`), so its presents get the renderer's layer and `--shot`'s
-copies as a guest's own Vulkan presents do. A frame is one command buffer, recorded as the calls come. A draw goes
-into a render pass on the swapchain image. A texture upload ends the pass, copies from a staging buffer and starts
-the pass again (loading what it drew), so each draw reads the texture as it was at its call. The client arrays of a
-draw are converted into one vertex format (position, texture coordinate and color as floats) in a buffer of the
-frame, as triangle, line or point lists. GL's window origin is the bottom left: the viewport has a negative height,
-so GL's viewport, scissor and `glDrawTexOES` coordinates are used as they are. A texture of 3-byte texels (`GL_RGB`,
-`GL_UNSIGNED_BYTE`) on a device that cannot sample that format is an RGBA8 image, which a compute shader
-(`gles_rgb.comp`) writes from the packed rows. Two frames are in flight, and what a frame used (a replaced texture's
-image, a staging buffer that grew) is destroyed when its fence is signaled.
+Both GLES libraries export most of their names twice (`glDrawArrays`, `glClear`): `hle.c` makes one export of each
+such name, which calls the current context's.
 
-What it does: 2D textures (the base level) in the formats GLES 1.1 has, the texture environment of unit 0, the
-matrix stacks, the client arrays, `glDrawArrays`, `glDrawElements`, `glDrawTexOES`, blending, the scissor and
-`glClear`. What it does not do yet: GLES 2 and 3, depth and stencil tests, lighting, fog, the alpha test, mipmaps, the
-second texture unit, pbuffers, and `glReadPixels`, which reads zeros (a readback of the window is the last resort).
+`gles_vk.c` is the Vulkan app that both share. It makes the instance, surface, device, queue and swapchain, and
+presents, through the pass-through's commands (`hle_vulkan_host.h`), so its presents get the renderer's layer and
+`--shot`'s copies as a guest's own Vulkan presents do. The device is Vulkan 1.3 where the host has it, with dynamic
+rendering, and `VK_EXT_depth_clip_control` and `VK_EXT_index_type_uint8` where the device has them. A frame is one
+command buffer of a slot, recorded as the calls come, and two slots are in flight. Each submission has a serial: an
+object that a frame may still use goes when its serial completed. A call that must see the GPU's results
+(`glReadPixels`, `glFinish`, `glClientWaitSync`) submits what the frame recorded so far and waits for it, and the frame
+goes on in the same command buffer. Between passes an acquired image is in `PRESENT_SRC_KHR`, so GLES 1.1's render
+passes and GLES 2's dynamic rendering can share a frame.
+
+**GLES 1.1** (`hle_gles.c`) is the fixed function. A draw goes into a render pass on the swapchain image. A texture
+upload ends the pass, copies from a staging buffer and starts the pass again (loading what it drew), so each draw
+reads the texture as it was at its call. The client arrays of a draw are converted into one vertex format (position,
+texture coordinate and color as floats) in a buffer of the frame, as triangle, line or point lists. GL's window
+origin is the bottom left: the viewport has a negative height, so GL's viewport, scissor and `glDrawTexOES`
+coordinates are used as they are. A texture of 3-byte texels on a device that cannot sample that format is an RGBA8
+image, which a compute shader (`gles_rgb.comp`) writes from the packed rows. It does 2D textures (the base level) in
+GLES 1.1's formats, the texture environment of unit 0, the matrix stacks, `glDrawArrays`, `glDrawElements`,
+`glDrawTexOES`, blending, the scissor and `glClear`. It does not do yet: depth and stencil tests, lighting, fog, the
+alpha test, mipmaps, the second texture unit, and `glReadPixels`, which reads zeros.
+
+**GLES 2 and 3.0** (`gles2.c`, `gles2_object.c`, `gles2_program.c`, `gles2_draw.c`) are done as Mesa's zink does them:
+
+- **Shaders** compile with glslc (`docs/GLSLC.md`). `glCompileShader` compiles for the errors and the info log.
+  `glLinkProgram` compiles each stage again with a binding map: binding 0 of the program's set is the vertex
+  shader's default uniform block, 1 the fragment shader's, then each sampler, image and block of one name at one
+  binding for both stages. The link writes the vertex outputs' locations into the fragment shader's inputs of the
+  same names, as OpenGL ES links the stages by name. The loose uniforms are the members of each stage's default
+  block: the link reads their offsets, strides and types from the module, and flattens structs and arrays into GL's
+  names and locations. `glUniform*` writes into each stage's copy, which a draw puts into the frame's arena when it
+  changed. The vertex inputs take `glBindAttribLocation`'s locations, else glslc's.
+- **Buffers** keep the guest's bytes in memory of their own, which `glMapBufferRange` gives the guest. A draw reads
+  their Vulkan copy, written in place when no submission in flight reads it, else copied into the frame's arena.
+  A buffer that the GPU writes (`glReadPixels` into a pack buffer) moves to host-cached memory, and is read back.
+- **Textures** are one image each, with the whole chain of levels of the base level: 2D, cube maps, 3D and 2D arrays,
+  GLES 2's unsized formats with luminance and alpha as swizzles, GLES 3's sized formats, depth and stencil,
+  `glTexStorage*`, ETC2 and EAC and ASTC where the device has them, `glGenerateMipmap` by blits, the texture swizzle
+  and the base and max levels. A texture rests in `SHADER_READ_ONLY_OPTIMAL`, so a draw samples it without a barrier,
+  and an upload copies from the frame's staging buffer and returns the image to its rest. The unpack row length,
+  skip and alignment are applied by copying whole rows. A 3-component format that the device does not have
+  (`GL_RGB8`, `GL_RGB16F`, `GL_RGB32F` and their integer forms) is the 4-component one, which `gles_expand.comp`
+  writes on the GPU: the CPU does not convert texels. Samplers are kept by their state, sampler objects included. A
+  sampler whose texture is missing or incomplete reads a black texture.
+- **Framebuffers**: a render target is dynamic rendering into its attachments' images, open from the first draw or
+  clear into it until a copy, another target or the frame's end. The window's framebuffer is the swapchain image and
+  a depth and stencil buffer of the config's sizes. Its viewport has a negative height, so GL's coordinates are kept.
+  A framebuffer object's images are drawn upright instead, with the front face turned, so a texture holds its rows in
+  GL's order. GL's clip depth of -1 to 1 is `VK_EXT_depth_clip_control`'s. The fragment shaders read `gl_FragCoord`
+  and `gl_PointCoord` through glslc's `flip_y`, with the flip of the target in a push constant, so both are GL's in
+  the window and in a framebuffer object. Renderbuffers are images in their
+  attachment layout, multisampled when asked. `glBlitFramebuffer` and `glCopyTexSubImage2D` are blits, and resolves
+  from a multisampled image. `glReadPixels` blits the rectangle into an RGBA8 or BGRA8 image upright, copies it into
+  host-cached memory, and then copies the rows into the guest's memory.
+- **Pipelines** are made from the state of a draw (the program, the target's formats, the vertex formats, the
+  blending) at its first draw, and kept by a hash of that state. The rest is Vulkan 1.3's dynamic state: viewport,
+  scissor, cull mode, front face, topology, depth and stencil tests, depth bias, line width, blend constants,
+  primitive restart, rasterizer discard and the vertex strides.
+- **Draws**: `glDrawArrays`, `glDrawElements`, `glDrawRangeElements` and their instanced forms, with vertex buffers
+  or client arrays (the range a draw reads copied into the frame's arena), divisors of 0 and 1, the generic attributes'
+  current values, and indices of 8, 16 and 32 bits. A line loop is a line strip with an index back to its start.
+  Vertex arrays, occlusion queries (`GL_ANY_SAMPLES_PASSED`), fence syncs and uniform buffers are there.
+
+What GLES 2 and 3 do not do yet: transform feedback, the compute shaders, images and storage buffers of GLES 3.1,
+GLES 3.2's geometry and tessellation, a divisor past 1, `glClear` with a partial color mask (it clears every
+channel), client depth and stencil texels for a 24-bit depth texture, ETC2 and ASTC on a device that has neither
+(the decode on the GPU), `glReadPixels` of a format other than RGBA or BGRA bytes, program binaries, and a pbuffer bound as a texture.
 
 `libz.so` is the build's own zlib (`hle_zlib.c`): z_stream has the guest's layout on an LP64 host, and a stream's
 allocator, when the guest gives one, is called through the bridge. Windows' `uLong` is 32 bits, so Windows has no
