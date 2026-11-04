@@ -70,7 +70,7 @@ bool snx_ctr_vk_window(uint32_t pa, uint64_t size, SnxCtrVkWindow* w, uint32_t* 
     if (!ram) return false;
     VkDeviceSize alignment = v->properties.limits.minStorageBufferOffsetAlignment;
     VkDeviceSize start = offset / alignment * alignment;
-    VkDeviceSize range = ram->size - (offset - ram->buffer_offset);
+    VkDeviceSize range = ram->size - start;
     if (range > v->properties.limits.maxStorageBufferRange) range = v->properties.limits.maxStorageBufferRange;
     if (offset - start + size > range) return false;
     *w = (SnxCtrVkWindow){ram->buffer, start, range};
@@ -570,7 +570,7 @@ const SnxCtrVkRam* snx_ctr_vk_ram(uint32_t pa, uint32_t size, VkDeviceSize* offs
     for (unsigned i = 0; i < v->ram_count; ++i) {
         const SnxCtrVkRam* r = &v->ram[i];
         if (pa >= r->base && (uint64_t)pa - r->base + size <= r->size) {
-            *offset = r->buffer_offset + (pa - r->base);
+            *offset = pa - r->base;
             return r;
         }
     }

@@ -971,11 +971,11 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
                                       .pImageIndices = &index2}};
             VkResult shown = vkQueuePresentKHR(v->queue, &p[0]);
             if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR)
-                g_present.windowed[window_index] = swap_create(window_index);
+                (void)swap_create(window_index);
             if (shown == VK_SUCCESS || shown == VK_SUBOPTIMAL_KHR) {
                 shown = vkQueuePresentKHR(v->queue, &p[1]);
                 if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR)
-                    g_present.windowed[window_index] = swap_create(window_index);
+                    (void)swap_create(window_index);
             }
             index = index2;
             goto presented;
