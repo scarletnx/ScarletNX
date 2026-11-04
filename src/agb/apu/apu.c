@@ -267,10 +267,10 @@ static int channel_sample(AgbBoard* board, int channel) {
             default: return centered;
         }
     }
-    /* the noise channel clocks a linear feedback register at its own rate */
+    /* the noise channel clocks a linear feedback register at 524288 Hz / r / 2^(s+1), r 0 counting as a half */
     {
         uint32_t code = (uint32_t)(apu->cnt_x[3] & 7), shift = (uint32_t)(apu->cnt_x[3] >> 4 & 15);
-        uint32_t rate = code ? 524288u / (code << shift) : 1048576u >> shift;
+        uint32_t rate = code ? 262144u / (code << shift) : 524288u >> shift;
         apu->phase[3] += rate;
         while (apu->phase[3] >= AGB_APU_RATE) {
             uint32_t bit = (apu->noise_lfsr & 1) ^ ((apu->noise_lfsr >> 1) & 1);
