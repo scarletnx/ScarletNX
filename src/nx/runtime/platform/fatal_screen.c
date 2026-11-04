@@ -15,6 +15,8 @@ int fatal_share_log(const char* folder, const char* build, const char* msg, cons
     char *log = game_log ? (char*)snx_read_file(game_log, &n) : NULL, *path, *text, *tilde, why[256];
     const char* from = log && n > TAIL ? log + n - TAIL : log;
     int failed;
+    /* from a line's start: a home folder cut in two is no longer one to the tilde, and its account's name would stay */
+    while (from > log && from < log + n && from[-1] != '\n') ++from;
     if (size) saved[0] = 0;
     path = folder ? snx_path_join(folder, "scarletnx.log") : NULL;
     text = snx_format("%s\nMessage: %s\n\n== %s ==\n%s\n", build ? build : "", msg ? msg : "",
