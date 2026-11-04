@@ -318,6 +318,10 @@ void agb_vk_close(AgbVk* v) {
     free(v);
 }
 
+int agb_vk_cycle_upscaler(AgbVk* v) { return v && v->fx ? snx_fx_upscale_cycle(v->fx) : -1; }
+int agb_vk_cycle_aa(AgbVk* v) { return v && v->fx ? snx_fx_aa_cycle(v->fx) : -1; }
+int agb_vk_toggle_hdr(AgbVk* v) { return v && v->fx ? snx_fx_hdr_toggle(v->fx) : -1; }
+
 bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer) {
     uint32_t slot, index = 0;
     AgbFrame* f;

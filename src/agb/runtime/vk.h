@@ -18,4 +18,9 @@ void agb_vk_close(AgbVk* vk);
 SDL_Window* agb_vk_window(AgbVk* vk);
 /* the 240x160 RGBA frame on screen: false when the swapchain had no image free this frame */
 bool agb_vk_frame(AgbVk* vk, const uint32_t* framebuffer);
+/* the live hotkeys, as every other frontend's: the upscaler and the anti aliasing cycle, HDR toggles. The changed
+   value, or -1 with no effects */
+int agb_vk_cycle_upscaler(AgbVk* vk);
+int agb_vk_cycle_aa(AgbVk* vk);
+int agb_vk_toggle_hdr(AgbVk* vk);
 #endif

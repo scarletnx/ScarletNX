@@ -208,6 +208,37 @@ void agb_host_close(AgbHost* host) {
     SDL_Quit();
 }
 
+/* the runtime's own keys, as the other frontends take them: the upscaler, the anti aliasing and HDR change the shared
+   effects live, and frame interpolation the CPU blend. 1 when the key was one of them */
+static int agb_hotkey(AgbHost* host, const SDL_KeyboardEvent* key) {
+    SnxKeybind bind;
+    if (key->repeat) return 1; /* held: the key is the runtime's, and does nothing more */
+    if (snx_keybind_parse(g_settings.upscaler_cycle_key, &bind) && snx_keybind_match(&bind, key)) {
+        int f = agb_vk_cycle_upscaler(host->vk);
+        if (f >= 0) fprintf(stderr, "upscaler: %s (%s)\n", snx_fx_upscale_label(f), g_settings.upscaler_cycle_key);
+        return 1;
+    }
+    if (snx_keybind_parse(g_settings.anti_aliasing_key, &bind) && snx_keybind_match(&bind, key)) {
+        int aa = agb_vk_cycle_aa(host->vk);
+        if (aa >= 0) fprintf(stderr, "anti aliasing: %s (%s)\n", snx_fx_aa_label(aa), g_settings.anti_aliasing_key);
+        return 1;
+    }
+    if (snx_keybind_parse(g_settings.hdr_key, &bind) && snx_keybind_match(&bind, key)) {
+        int hdr = agb_vk_toggle_hdr(host->vk);
+        if (hdr >= 0) fprintf(stderr, "hdr: %s (%s)\n", snx_fx_hdr_label(hdr), g_settings.hdr_key);
+        return 1;
+    }
+    if (snx_keybind_parse(g_settings.frame_interpolation_key, &bind) && snx_keybind_match(&bind, key)) {
+        host->interp = host->interp == SNX_FX_INTERP_OFF      ? SNX_FX_INTERP_AUTO
+                       : host->interp == SNX_FX_INTERP_AUTO ? SNX_FX_INTERP_BLEND
+                                                            : SNX_FX_INTERP_OFF;
+        fprintf(stderr, "frame interpolation: %s (%s)\n", snx_fx_interp_label(host->interp),
+                g_settings.frame_interpolation_key);
+        return 1;
+    }
+    return 0;
+}
+
 bool agb_host_poll(AgbHost* host, uint16_t* keys) {
     SDL_Event event;
     bool open = true;
@@ -219,20 +250,7 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
             case SDL_EVENT_KEY_DOWN:
                 if (event.key.scancode == SDL_SCANCODE_F11 && !event.key.repeat)
                     SDL_SetWindowFullscreen(host->window, !(SDL_GetWindowFlags(host->window) & SDL_WINDOW_FULLSCREEN));
-                {
-                    SnxKeybind bind;
-                    if (snx_keybind_parse(g_settings.frame_interpolation_key, &bind) &&
-                        snx_keybind_match(&bind, &event.key)) {
-                        if (!event.key.repeat) {
-                            host->interp = host->interp == SNX_FX_INTERP_OFF      ? SNX_FX_INTERP_AUTO
-                                           : host->interp == SNX_FX_INTERP_AUTO ? SNX_FX_INTERP_BLEND
-                                                                                : SNX_FX_INTERP_OFF;
-                            fprintf(stderr, "frame interpolation: %s (%s)\n", snx_fx_interp_label(host->interp),
-                                    g_settings.frame_interpolation_key);
-                        }
-                        break;
-                    }
-                }
+                if (agb_hotkey(host, &event.key)) break;
                 host->keyboard |= agb_host_key(event.key.scancode);
                 break;
             case SDL_EVENT_KEY_UP: host->keyboard &= (uint16_t)~agb_host_key(event.key.scancode); break;
