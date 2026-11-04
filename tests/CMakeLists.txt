@@ -765,6 +765,10 @@ snx_test_target(snx-test-llvm-half 11)
 snx_cpu_helpers_flags(snx-test-llvm-half)
 target_link_libraries(snx-test-llvm-half PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_half COMMAND snx-test-llvm-half)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME llvm_half_widen_math COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/llvm_perf/half_widen_math.py")
+endif()
 
 add_executable(snx-test-llvm-fma-residual llvm_fma_residual.c llvm_steps.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")

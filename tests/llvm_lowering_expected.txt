@@ -342,10 +342,10 @@ FCVTAU_vi          aarch64   guarded  snx_fp_to_int
 FCVTAU_vi          generic   helper   snx_fp_to_int
 FCVTAU_vi          x86       guarded  snx_fp_to_int
 FCVTAU_vi          x86-base  helper   snx_fp_to_int
-FCVTL_v            aarch64   helper   snx_fp_convert
-FCVTL_v            generic   helper   snx_fp_convert
+FCVTL_v            aarch64   guarded  snx_fp_convert
+FCVTL_v            generic   guarded  snx_fp_convert
 FCVTL_v            x86       guarded  snx_fp_convert
-FCVTL_v            x86-base  helper   snx_fp_convert
+FCVTL_v            x86-base  guarded  snx_fp_convert
 FCVTMS_f           aarch64   guarded  snx_fp_to_int
 FCVTMS_f           generic   helper   snx_fp_to_int
 FCVTMS_f           x86       guarded  snx_fp_to_int
@@ -394,10 +394,10 @@ FCVTNU_vi          aarch64   guarded  snx_fp_to_int
 FCVTNU_vi          generic   helper   snx_fp_to_int
 FCVTNU_vi          x86       guarded  snx_fp_to_int
 FCVTNU_vi          x86-base  helper   snx_fp_to_int
-FCVTN_v            aarch64   helper   snx_fp_convert
-FCVTN_v            generic   helper   snx_fp_convert
+FCVTN_v            aarch64   guarded  snx_fp_convert
+FCVTN_v            generic   guarded  snx_fp_convert
 FCVTN_v            x86       guarded  snx_fp_convert
-FCVTN_v            x86-base  helper   snx_fp_convert
+FCVTN_v            x86-base  guarded  snx_fp_convert
 FCVTPS_f           aarch64   guarded  snx_fp_to_int
 FCVTPS_f           generic   helper   snx_fp_to_int
 FCVTPS_f           x86       guarded  snx_fp_to_int
@@ -690,14 +690,14 @@ FNMUL_s            aarch64   guarded  snx_fp_host_binary
 FNMUL_s            generic   guarded  snx_fp_host_binary
 FNMUL_s            x86       guarded  snx_fp_host_binary
 FNMUL_s            x86-base  guarded  snx_fp_host_binary
-FRECPE_s           aarch64   guarded  snx_fp_host_unary
+FRECPE_s           aarch64   inline
 FRECPE_s           generic   helper   snx_fp_host_unary
 FRECPE_s           x86       inline
-FRECPE_s           x86-base  guarded  snx_fp_host_unary
-FRECPE_v           aarch64   guarded  snx_fp_host_lanes
+FRECPE_s           x86-base  inline
+FRECPE_v           aarch64   inline
 FRECPE_v           generic   helper   snx_fp_host_lanes
 FRECPE_v           x86       inline
-FRECPE_v           x86-base  guarded  snx_fp_host_lanes
+FRECPE_v           x86-base  inline
 FRECPS_s           aarch64   guarded  snx_fp_host_binary
 FRECPS_s           generic   helper   snx_fp_host_binary
 FRECPS_s           x86       guarded  snx_fp_host_binary
@@ -766,14 +766,14 @@ FRINTZ_v           aarch64   guarded  snx_fp_round
 FRINTZ_v           generic   helper   snx_fp_round
 FRINTZ_v           x86       guarded  snx_fp_round
 FRINTZ_v           x86-base  helper   snx_fp_round
-FRSQRTE_s          aarch64   guarded  snx_fp_host_unary
+FRSQRTE_s          aarch64   inline
 FRSQRTE_s          generic   helper   snx_fp_host_unary
 FRSQRTE_s          x86       inline
-FRSQRTE_s          x86-base  guarded  snx_fp_host_unary
-FRSQRTE_v          aarch64   guarded  snx_fp_host_lanes
+FRSQRTE_s          x86-base  inline
+FRSQRTE_v          aarch64   inline
 FRSQRTE_v          generic   helper   snx_fp_host_lanes
 FRSQRTE_v          x86       inline
-FRSQRTE_v          x86-base  guarded  snx_fp_host_lanes
+FRSQRTE_v          x86-base  inline
 FRSQRTS_s          aarch64   guarded  snx_fp_host_binary
 FRSQRTS_s          generic   helper   snx_fp_host_binary
 FRSQRTS_s          x86       guarded  snx_fp_host_binary

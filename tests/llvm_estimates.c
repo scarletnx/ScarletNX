@@ -34,7 +34,7 @@ static int run(int jit,int portable,char opt,unsigned long long*count) {
     LlvmSteps steps;char error[1024];
     if(llvm_steps_begin_opt(&steps,jit,portable,opt,error,sizeof error))return snx_error("%s",error);
     for(unsigned i=0;i<sizeof instructions/sizeof instructions[0];++i)llvm_steps_add(&steps,instructions[i].word,0x1000,SNX_A64_TARGET_MAX);
-    if(!portable&&steps.ir->features->x86&&steps.ir->features->avx2&&LLVMGetNamedFunction(steps.ir->mod,"snx_fp_unary"))
+    if(!steps.ir->big_endian&&(steps.ir->features->x86||steps.ir->features->aarch64)&&LLVMGetNamedFunction(steps.ir->mod,"snx_fp_unary"))
         return snx_error("an estimate still contains a lane helper");
     if(llvm_steps_load(&steps,error,sizeof error))return snx_error("%s",error);
     u64 rng=0x729e4a13dcbf5608ull;int failed=0;

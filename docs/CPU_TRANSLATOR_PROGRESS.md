@@ -26,7 +26,8 @@ I7 classifies the audited vector FP helpers at their first declaration. A fixtur
 one batched helper call, verifies zero reloads of it and checks the emitted synchronization counts. This affects register
 promotion at O1 and above. It does not add promotion to O0.
 
-I8 emits scalar and vector float32/float64 FRECPE and FRSQRTE on x86 hosts with AVX2, including exceptional lanes.
+I8 emits scalar and vector float32/float64 FRECPE and FRSQRTE on little-endian x86 and AArch64 emitter paths,
+including exceptional lanes. Without AVX2, ordinary reciprocal inputs retain the proven division sequence.
 The shared estimate tables contain 256 reciprocal and 384 reciprocal-square-root entries per IR unit that needs
 them. Unsigned URECPE/URSQRTE also use bounded table lookups. All table indices and shift counts are bounded even
 in discarded lanes. NaN payloads, signed zeros, denormals, rounding modes and sticky exceptions are checked against
@@ -42,8 +43,12 @@ I11 adds guarded scalar rounding, FPCR-selected scalar/vector rounding, F16C hal
 inexactness residuals. The FMA residual runs only when IXC is clear. Float64 residuals use the error expansion of
 [Boldo and Muller](https://perso.ens-lyon.fr/jean-michel.muller/correct_fma_err.pdf), with conservative intermediate
 range guards and exact fallback. Scalar O0 FMA retains the original emitted sequence: its candidate did not pass
-the measured regression gate. Vector O0/O2 and scalar O2 residuals passed that gate. Half conversions retain helpers
-for AHP, NaNs, underflow boundaries, unsupported rounding modes and direct float64-to-half conversion.
+the measured regression gate. Vector O0/O2 and scalar O2 residuals passed that gate. Vector half-to-single and single-to-half conversions now
+use whole-vector exact fixups. Direct float64-to-half conversion retains the helper.
+
+Native Linux AArch64 CI at `9a7cfd0d` passed the full QEMU sweep, rounding, half-conversion and scalar/vector
+residual tests. The x86-64 local sweep also passed. This completes I11's guarded-FP host checks for these native
+hosts. The newer I15 conversion changes still require their separate integration checks.
 
 Guarded FABD reuses exact subtraction followed by sign clearing. Directed tests cover all shift counts, every
 half encoding, estimate bins/exponents, mixed exceptional lanes, aliases, rounding modes and FPSR. They run through
@@ -56,10 +61,11 @@ both in one unit and split at function boundaries. The CLI checks also require f
 promoted registers and IR before and after promotion.
 
 T5 draws safe data operations from 81 families of the generated decoder. It varies conditional branches, bounded
-loop counts, direct and indirect calls, tail calls, memory order and aligned exclusive retry loops. It runs through both loaders and optimization levels, plus portable, hook and volatile configurations.
+loop counts, direct and indirect calls, tail calls, memory order and aligned exclusive retry loops. It runs
+through both loaders and optimization levels, plus portable, hook and volatile configurations.
 A 20-configuration seed matrix checks 10,240 complete program states. Two self-tests must detect planted flag-origin
-and exclusive-update defects. This remains a bounded instruction
-grammar, not exhaustive sequence coverage. Native execution has been checked on x86-64.
+and exclusive-update defects. This remains a bounded instruction grammar, not exhaustive sequence coverage.
+Native Linux x86-64 and AArch64 CI passed the seed matrix and both planted-defect tests at `72deb357`.
 
 T6 corrects the stale documentation and source comments listed in the plan, preserving historical audit examples
 as historical evidence rather than current failure claims. Other items require their own implementation and proof.
@@ -73,9 +79,40 @@ flushed denormals and signed zero. Half comparisons use integer vectors for all 
 
 A tested extension that batched conversion and rounding fallbacks was rejected. It reduced outer calls but made
 portable conversion kernels about 15% slower, and hid repeated values from LLVM's common-call elimination.
-These paths retain their pure scalar helpers. The sequence test checks ordinary, DUP and constant-zero producers
-before conversion, including full register state. Narrowing broadcasts and constant-zero forms must retain one
-shared scalar call. Existing arithmetic batches keep their descriptor and exact fallback behavior.
+A later integer-vector conversion replaces the vector half-to-single and single-to-half paths, including exceptional
+lanes and all FPCR modes. The sequence test checks ordinary, DUP and constant-zero producers before conversion,
+including full register state, and requires zero conversion helper calls. Other conversion and rounding paths
+retain their pure scalar helpers. Existing arithmetic batches keep their descriptor and exact fallback behavior.
+
+The half-conversion tests compare full CPU state across every half encoding, rounding and alternate-half modes,
+source/destination aliases, both loaders and O0/O2. Random single encodings cover narrowing boundaries and special
+values. A reversed-byte model checks lane packing separately from native big-endian ABI execution. An independent
+Python rational-arithmetic check proves exact widening for all 129,024 finite IEEE and alternate-half encodings.
+The first 24-kernel narrowing timing search was inconclusive for two ordinary-input regression bounds. A fresh
+25-round paired check of all four native ordinary-input forms cleared the unchanged regression gate, with speedups
+of 1.058 to 1.207. The exceptional and portable-emitter forms in the original search improved by about 5.6 to 7.3
+times. Widening passed its original gate, with a 9.48-times geometric kernel ratio and a 95-percent bootstrap
+interval of 9.17 to 9.63. These figures describe the supplied synthetic kernels on x86-64, not game FPS.
+
+The retained candidate also passed the full half-conversion and estimate tests under `qemu-x86_64 -cpu qemu64`:
+71,303,168 conversion cases and 40,225,792 estimate cases. This verifies correctness under the emulator's baseline
+x86 feature set. It does not measure performance on a physical older CPU. Selected optimized half-conversion
+objects for baseline x86-64, Cortex-A57 and generic RISC-V contain no conversion-helper calls. The entry's
+FP-environment normalization remains where needed.
+
+The estimate continuation rejected tables for every reciprocal input without AVX2: ordinary reciprocal kernels
+regressed to about 0.29 times baseline speed. A hybrid keeps the original ordinary reciprocal calculation, uses
+integer fixups for exceptional lanes, and uses the table path for reciprocal-square-root estimates. The revised
+16-kernel search passed the unchanged gate with a 2.65-times geometric ratio and a 95-percent interval of 2.62 to
+2.73. The emitter lacked AVX2, but the target machine still used the test host's native ISA. Physical old-x86
+performance and native AArch64 performance remain separate checks.
+
+A mixed-lane arithmetic experiment kept ordinary lanes in vectors when IXC was sticky. Its first mask encoded
+lane weights incorrectly, which full-state tests caught through missing exception flags. A sign-extended mask
+corrected the defect, and the directed tests passed. Both timing searches still failed the fixed regression gate:
+the revised candidate improved mixed sticky-IXC kernels by about 29 to 35 percent, but several IXC-clear paths
+regressed by about 2 to 3 percent. The experiment was removed, including its helper descriptor extension. The
+original batched arithmetic fallback remains. This is an open part of I15, not a completed optimization.
 
 Half FRECPE/FRSQRTE use bounded integer-vector tables, and half FRECPX uses exponent operations on little-endian
 targets. FZ16 flushes input denormals without IDC. Reciprocal estimate output denormals remain unflushed, as the exact
@@ -94,6 +131,13 @@ An initial broad import did not pass the regression gate. The selective version 
 FP-focused workloads, with about a 13-percent geometric gain. `SNX_IR_OBJECT_VERSION` increases to five to invalidate
 objects made by the old pipeline. `SNX_ABI` remains 17, and old modules remain compatible. Recompile to use the new
 emitter paths. Large arithmetic helpers remain out of line.
+
+The retained continuation was recompiled into a game module and checked against its preceding module with the
+same current runtime and restored private save. Both 100-second scene runs completed without crashes, and both
+screenshots rendered correctly. The final four five-second gameplay windows averaged 32.95 FPS for the preceding
+module and 33.00 FPS for the candidate. This single pair does not establish a game-FPS gain. The captures recorded
+56,707 and 59,154 CPU samples with zero ring drops. Timer coalescing remains separate from ring drops. Game-derived
+files and saves remain local.
 
 The Linux CPU-clock sampler starts its buffer search at one slot and reports overflows, timer coalescing and exit
 recovery separately. A native calibration selected two slots per thread. A later real game capture lost one record

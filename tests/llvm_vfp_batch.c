@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Conversion fallbacks after DUP: preserve LLVM's common-call elimination for broadcasts and exact full state. */
+/* Whole-vector half conversions after ordinary, DUP and zero producers: no helper calls and exact full state. */
 #include "llvm_steps.h"
-#include "common/cpu/recompiler/llvm/ir_fp.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
@@ -67,14 +66,9 @@ static int run(int jit, char opt) {
     for (unsigned i = 0; i < 12; i++) llvm_steps_add_function(&steps, &code, &functions[i]);
     if (opt != '0' && !steps.ir->big_endian) {
         if (snx_ir_module_optimize(steps.ir, steps.ir->mod, opt, error, sizeof error)) return snx_error("%s", error);
-        /* A register-return reply permits common-call elimination. Windows x86-64 uses sret, so the pure
-           helper still writes distinct result locals. Bound it by the original four calls there. */
-        for (unsigned i = 6; i < 12; i++) {
-            unsigned calls = convert_calls(steps.fns[i], "snx_fp_convert");
-            unsigned limit = ir_fp_reply_in_memory(steps.ir) ? 4u : 1u;
-            if (calls > limit || convert_calls(steps.fns[i], "snx_fp_host_lanes"))
-                return snx_error("broadcast conversion exceeds its ABI call bound at O%c: %u > %u", opt, calls, limit);
-        }
+        for (unsigned i = 0; i < 12; i++)
+            if (convert_calls(steps.fns[i], "snx_fp_convert") || convert_calls(steps.fns[i], "snx_fp_host_lanes"))
+                return snx_error("half conversion sequence %u still calls a helper at O%c", i, opt);
     }
     if (llvm_steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     for (unsigned i = 0; i < 12; i++) {

@@ -774,7 +774,7 @@ static V lanes_as(SnxIr* ir, V v, LLVMTypeRef type) {
     unsigned to = LLVMGetIntTypeWidth(LLVMGetElementType(type));
     return from == to ? v : from > to ? LLVMBuildTrunc(B, v, type, "") : LLVMBuildZExt(B, v, type, "");
 }
-/* FRECPE and FRSQRTE where unary has no table path (x86 without AVX2, AArch64): of normal operands whose estimate
+/* FRECPE without AVX2, and the unvalidated big-endian table paths: of normal operands whose estimate
    is normal (FPRecipEstimate's exponent 2*bias-1 - e at least 1; FPRSqrtEstimate's operand positive): no flag, no
    rounding, and the result is the sign, the estimate's exponent
    and the low 8 bits of RecipEstimate or RecipSqrtEstimate of the fraction's top bits. Those take integers a' from
@@ -825,7 +825,7 @@ static V unary(SnxIr* ir, unsigned op, unsigned width, V a) {
     o.op = op;
     if (op == SNX_FP_RECPX && (width != 16 || !ir->big_endian)) return recip_exponent(ir, width, a);
     if ((op == SNX_FP_RSQRTE || op == SNX_FP_RECPE) &&
-        ((ir->features->x86 && ir->features->avx2) || (width == 16 && !ir->big_endian))) {
+        (!ir->big_endian && (host_native(ir) || width == 16))) {
         unsigned fb = width == 16 ? 10 : width == 32 ? 23 : 52;
         unsigned bias = width == 16 ? 15 : width == 32 ? 127 : 1023;
         V exponent = LLVMBuildAnd(B, LLVMBuildLShr(B, a, ir_vec_like(ir, a, fb), ""), ir_vec_like(ir, a, 2 * bias + 1), "");
@@ -839,14 +839,22 @@ static V unary(SnxIr* ir, unsigned op, unsigned width, V a) {
         s.join = ir_block(ir, "vfp_join");
         ir_likely(ir, LLVMBuildCondBr(B, ok, on, off));
         LLVMPositionBuilderAtEnd(B, on);
-        s.fast = op == SNX_FP_RECPE ? recip_normal(ir, a, exponent, width) : rsqrt_normal(ir, a, width);
+        /* Division wins over gathers for ordinary reciprocal lanes without AVX2. Keep that proven short
+           sequence, and use the exact table fixups below only when at least one lane is exceptional. */
+        if (op == SNX_FP_RECPE && width != 16 && !(ir->features->x86 && ir->features->avx2)) {
+            Fast f;
+            fast_estimate(ir, op, width, a, &f);
+            s.fast = f.value;
+        } else {
+            s.fast = op == SNX_FP_RECPE ? recip_normal(ir, a, exponent, width) : rsqrt_normal(ir, a, width);
+        }
         s.fast_end = LLVMGetInsertBlock(B);
         LLVMBuildBr(B, s.join);
         LLVMPositionBuilderAtEnd(B, off);
         V slow = op == SNX_FP_RECPE ? recip_exact(ir, a, exponent, width) : rsqrt_exact(ir, a, exponent, width);
         return split_end(ir, &s, slow);
     }
-    /* the other hosts, where the table's gather is not validated: fast_estimate needs no table */
+    /* A big-endian native host keeps the existing table-free path until its table lowering is checked. */
     if ((op == SNX_FP_RECPE || op == SNX_FP_RSQRTE) && width != 16 && host_native(ir)) {
         Fast f;
         Split s;
@@ -1023,6 +1031,104 @@ static V to_int(SnxIr* ir, unsigned width, unsigned integer, unsigned uns, unsig
     return map(ir, &o, a, NULL, NULL, integer);
 }
 
+/* FPUnpackCV never flushes a half. Its finite values need at most 11 significant bits and exponents -24..16,
+   so every conversion to single is exact in every rounding mode. The subnormal fraction times 2^-24 is a normal
+   single (or zero). AHP makes exponent 31 finite. IEEE NaNs need only payload/sign selection and one IOC reduction. */
+static V half_widen(SnxIr* ir, V a) {
+    unsigned lanes = ir_vec_count(a);
+    V x = ir_cast(ir, a, ir_vec_type(ir, 2, lanes), 0);
+    V zero = ir_vec_like(ir, x, 0), fraction = LLVMBuildAnd(B, x, ir_vec_like(ir, x, 0x3ff), "");
+    V exponent = LLVMBuildAnd(B, x, ir_vec_like(ir, x, 0x7c00), "");
+    V sub = LLVMBuildFMul(B, LLVMBuildUIToFP(B, fraction, fvec(ir, 32, lanes), ""),
+                         KF(ir, 32, lanes, 1.0 / 16777216.0), "");
+    V normal = LLVMBuildAdd(B, LLVMBuildShl(B, LLVMBuildAnd(B, x, ir_vec_like(ir, x, 0x7fff), ""),
+                                          ir_vec_like(ir, x, 13), ""), ir_vec_like(ir, x, 0x38000000), "");
+    V result = LLVMBuildSelect(B, LLVMBuildICmp(B, LLVMIntEQ, exponent, zero, ""), as_bits(ir, sub, 32), normal, "");
+    V top = LLVMBuildICmp(B, LLVMIntEQ, exponent, ir_vec_like(ir, x, 0x7c00), "");
+    top = LLVMBuildSelect(B, fpcr_clear(ir, 1u << 26), top, LLVMConstNull(LLVMTypeOf(top)), "");
+    V nan = both(ir, top, LLVMBuildICmp(B, LLVMIntNE, fraction, zero, ""));
+    V payload = LLVMBuildOr(B, ir_vec_like(ir, x, 0x7f800000),
+                              LLVMBuildShl(B, fraction, ir_vec_like(ir, x, 13), ""), "");
+    payload = LLVMBuildOr(B, payload, LLVMBuildSelect(B, nan, ir_vec_like(ir, x, 0x400000), zero, ""), "");
+    result = LLVMBuildSelect(B, top, payload, result, "");
+    result = LLVMBuildOr(B, result, LLVMBuildShl(B, LLVMBuildAnd(B, x, ir_vec_like(ir, x, 0x8000), ""),
+                                              ir_vec_like(ir, x, 16), ""), "");
+    V default_nan = LLVMBuildSelect(B, fpcr_clear(ir, 1u << 25), LLVMConstNull(LLVMTypeOf(nan)), nan, "");
+    result = LLVMBuildSelect(B, default_nan, ir_vec_like(ir, x, 0x7fc00000), result, "");
+    V invalid = both(ir, nan, LLVMBuildICmp(B, LLVMIntEQ,
+                        LLVMBuildAnd(B, fraction, ir_vec_like(ir, x, 0x200), ""), zero, ""));
+    ir_cpu_store(ir, LLVMBuildOr(B, fpsr(ir), LLVMBuildZExt(B, ir_vec_any(ir, invalid), ir->t_i32, ""), ""),
+                 offsetof(CPU, fpsr));
+    return result;
+}
+
+/* FP32 -> FP16, rounded once in FPCR's mode. Normal halves discard 13 bits. Tiny results discard 126-E,
+   capped at 31: below that threshold every nonzero source is less than half a half-subnormal unit. Counts are
+   always 13..31, including discarded lanes. Tininess precedes rounding; AHP overflow raises IOC without IXC. */
+static V half_narrow(SnxIr* ir, V a) {
+    unsigned lanes = ir_vec_count(a);
+    V zero = ir_vec_like(ir, a, 0), one = ir_vec_like(ir, a, 1), control = fpcr(ir);
+    V mode = LLVMBuildAnd(B, LLVMBuildLShr(B, control, ir_i32(ir, 22), ""), ir_i32(ir, 3), "");
+    V ahp = LLVMBuildICmp(B, LLVMIntNE, LLVMBuildAnd(B, control, ir_i32(ir, 1u << 26), ""), ir_i32(ir, 0), "");
+    V fz = LLVMBuildICmp(B, LLVMIntNE, LLVMBuildAnd(B, control, ir_i32(ir, FPCR_FZ), ""), ir_i32(ir, 0), "");
+    V dn = LLVMBuildICmp(B, LLVMIntNE, LLVMBuildAnd(B, control, ir_i32(ir, 1u << 25), ""), ir_i32(ir, 0), "");
+    V sign = LLVMBuildAnd(B, LLVMBuildLShr(B, a, ir_vec_like(ir, a, 16), ""), ir_vec_like(ir, a, 0x8000), "");
+    V negative = LLVMBuildICmp(B, LLVMIntNE, sign, zero, "");
+    V exponent = LLVMBuildAnd(B, LLVMBuildLShr(B, a, ir_vec_like(ir, a, 23), ""), ir_vec_like(ir, a, 255), "");
+    V fraction = LLVMBuildAnd(B, a, ir_vec_like(ir, a, 0x7fffff), "");
+    V subnormal = LLVMBuildICmp(B, LLVMIntEQ, exponent, zero, "");
+    V flush = both(ir, subnormal, LLVMBuildICmp(B, LLVMIntNE, fraction, zero, ""));
+    flush = LLVMBuildSelect(B, fz, flush, LLVMConstNull(LLVMTypeOf(flush)), "");
+    V mantissa = LLVMBuildSelect(B, subnormal, fraction,
+                                LLVMBuildOr(B, fraction, ir_vec_like(ir, a, 0x800000), ""), "");
+    mantissa = LLVMBuildSelect(B, flush, zero, mantissa, "");
+    V tiny = LLVMBuildICmp(B, LLVMIntULT, exponent, ir_vec_like(ir, a, 113), "");
+    V counts[] = {LLVMBuildSub(B, ir_vec_like(ir, a, 126), exponent, ""), ir_vec_like(ir, a, 31)};
+    V count = ir_intrinsic(ir, "llvm.umin", LLVMTypeOf(a), counts, 2);
+    count = LLVMBuildSelect(B, tiny, count, ir_vec_like(ir, a, 13), "");
+    V kept = LLVMBuildLShr(B, mantissa, count, "");
+    V rest = LLVMBuildAnd(B, mantissa, LLVMBuildSub(B, LLVMBuildShl(B, one, count, ""), one, ""), "");
+    V half = LLVMBuildShl(B, one, LLVMBuildSub(B, count, one, ""), "");
+    V inexact = LLVMBuildICmp(B, LLVMIntNE, rest, zero, "");
+    V nearest = either(ir, LLVMBuildICmp(B, LLVMIntUGT, rest, half, ""),
+                          both(ir, LLVMBuildICmp(B, LLVMIntEQ, rest, half, ""),
+                                   LLVMBuildICmp(B, LLVMIntNE, LLVMBuildAnd(B, kept, one, ""), zero, "")));
+    V never = LLVMConstNull(LLVMTypeOf(tiny));
+    V up = LLVMBuildSelect(B, LLVMBuildICmp(B, LLVMIntEQ, mode, ir_i32(ir, 2), ""), both(ir, inexact, negative), never, "");
+    up = LLVMBuildSelect(B, LLVMBuildICmp(B, LLVMIntEQ, mode, ir_i32(ir, 1), ""), both(ir, inexact, not1(ir, negative)), up, "");
+    up = LLVMBuildSelect(B, LLVMBuildICmp(B, LLVMIntEQ, mode, ir_i32(ir, 0), ""), nearest, up, "");
+    V to_inf = LLVMBuildSelect(B, LLVMBuildICmp(B, LLVMIntEQ, mode, ir_i32(ir, 2), ""), negative, never, "");
+    to_inf = LLVMBuildSelect(B, LLVMBuildICmp(B, LLVMIntEQ, mode, ir_i32(ir, 1), ""), not1(ir, negative), to_inf, "");
+    to_inf = LLVMBuildSelect(B, LLVMBuildICmp(B, LLVMIntEQ, mode, ir_i32(ir, 0), ""), LLVMConstAllOnes(LLVMTypeOf(tiny)), to_inf, "");
+    V base = LLVMBuildShl(B, LLVMBuildSub(B, exponent, ir_vec_like(ir, a, 113), ""), ir_vec_like(ir, a, 10), "");
+    base = LLVMBuildSelect(B, tiny, zero, base, "");
+    V encoded = LLVMBuildAdd(B, base, LLVMBuildAdd(B, kept, LLVMBuildZExt(B, up, LLVMTypeOf(a), ""), ""), "");
+    V limit = LLVMBuildSelect(B, ahp, ir_vec_like(ir, a, 0x8000), ir_vec_like(ir, a, 0x7c00), "");
+    V overflow = LLVMBuildICmp(B, LLVMIntUGE, encoded, limit, "");
+    V saturated = LLVMBuildSelect(B, to_inf, ir_vec_like(ir, a, 0x7c00), ir_vec_like(ir, a, 0x7bff), "");
+    saturated = LLVMBuildSelect(B, ahp, ir_vec_like(ir, a, 0x7fff), saturated, "");
+    V result = LLVMBuildOr(B, sign, LLVMBuildSelect(B, overflow, saturated, encoded, ""), "");
+    V flags = LLVMBuildSelect(B, inexact, ir_vec_like(ir, a, 16), zero, "");
+    flags = LLVMBuildOr(B, flags, LLVMBuildSelect(B, both(ir, tiny, inexact), ir_vec_like(ir, a, 8), zero, ""), "");
+    V over_flags = LLVMBuildSelect(B, ahp, ir_vec_like(ir, a, 1), ir_vec_like(ir, a, 20), "");
+    flags = LLVMBuildSelect(B, overflow, over_flags, flags, "");
+    V special = LLVMBuildICmp(B, LLVMIntEQ, exponent, ir_vec_like(ir, a, 255), "");
+    V nan = both(ir, special, LLVMBuildICmp(B, LLVMIntNE, fraction, zero, ""));
+    V payload = LLVMBuildOr(B, ir_vec_like(ir, a, 0x7e00),
+                    LLVMBuildAnd(B, LLVMBuildLShr(B, fraction, ir_vec_like(ir, a, 13), ""), ir_vec_like(ir, a, 0x1ff), ""), "");
+    payload = LLVMBuildSelect(B, dn, ir_vec_like(ir, a, 0x7e00), LLVMBuildOr(B, sign, payload, ""), "");
+    payload = LLVMBuildSelect(B, ahp, sign, payload, "");
+    V infinity = LLVMBuildOr(B, sign, LLVMBuildSelect(B, ahp, ir_vec_like(ir, a, 0x7fff), ir_vec_like(ir, a, 0x7c00), ""), "");
+    result = LLVMBuildSelect(B, special, LLVMBuildSelect(B, nan, payload, infinity, ""), result, "");
+    V invalid = both(ir, nan, LLVMBuildICmp(B, LLVMIntEQ,
+                            LLVMBuildAnd(B, fraction, ir_vec_like(ir, a, 0x400000), ""), zero, ""));
+    invalid = LLVMBuildSelect(B, ahp, special, invalid, "");
+    flags = LLVMBuildSelect(B, special, LLVMBuildZExt(B, invalid, LLVMTypeOf(a), ""), flags, "");
+    flags = LLVMBuildOr(B, flags, LLVMBuildSelect(B, flush, ir_vec_like(ir, a, 128), zero, ""), "");
+    ir_cpu_store(ir, LLVMBuildOr(B, fpsr(ir), ir_vec_any(ir, flags), ""), offsetof(CPU, fpsr));
+    return ir_cast(ir, result, ir_vec_type(ir, 1, lanes), 0);
+}
+
 /* FCVTL and FCVTN between precisions (odd: FCVTXN's rounding to odd). Singles widen exactly unless a NaN or a
    flushed denormal; doubles narrow in round to nearest as the host does when no lane is a NaN and every single is
    finite and above the smallest normal, or the double a zero */
@@ -1031,22 +1137,28 @@ static V convert(SnxIr* ir, unsigned from, unsigned to, int odd, V a) {
     unsigned lanes = ir_vec_count(a);
     o.p1 = to;
     o.rm = odd ? ir_i32(ir, 5) : fpcr_rmode(ir);
-    if (from == 16 && to == 32 && ir->features->x86 && ir->features->f16c) {
-        V value = LLVMBuildFPExt(B, as_float(ir, a, 16), fvec(ir, 32, lanes), "");
-        Split s;
-        split_begin(ir, NULL, both(ir, fpcr_clear(ir, 1u << 26), no_nan(ir, 16, a)),
-                    as_bits(ir, value, 32), NULL, &s);
-        return split_end(ir, &s, map(ir, &o, a, NULL, NULL, to));
+    if (from == 16 && to == 32) {
+        if (ir->features->x86 && ir->features->f16c) {
+            V value = LLVMBuildFPExt(B, as_float(ir, a, 16), fvec(ir, 32, lanes), "");
+            Split s;
+            split_begin(ir, NULL, both(ir, fpcr_clear(ir, 1u << 26), no_nan(ir, 16, a)),
+                        as_bits(ir, value, 32), NULL, &s);
+            return split_end(ir, &s, half_widen(ir, a));
+        }
+        return half_widen(ir, a);
     }
-    if (from == 32 && to == 16 && !odd && ir->features->x86 && ir->features->f16c) {
-        V value = as_float(ir, a, 32), narrow = LLVMBuildFPTrunc(B, value, fvec(ir, 16, lanes), "");
-        V bits = as_bits(ir, narrow, 16);
-        V ok = both(ir, fpcr_clear(ir, FPCR_RMODE | (1u << 26)), both(ir, unflushed(ir, 32, a),
-                    ir_vec_all(ir, either(ir, roomy(ir, 16, bits), is_zero(ir, 32, a)))));
-        Split s;
-        split_begin(ir, NULL, ok, bits, ir_vec_any(ir, float_ne(ir, value,
-                    LLVMBuildFPExt(B, narrow, fvec(ir, 32, lanes), ""))), &s);
-        return split_end(ir, &s, map(ir, &o, a, NULL, NULL, to));
+    if (from == 32 && to == 16 && !odd) {
+        if (ir->features->x86 && ir->features->f16c) {
+            V value = as_float(ir, a, 32), narrow = LLVMBuildFPTrunc(B, value, fvec(ir, 16, lanes), "");
+            V bits = as_bits(ir, narrow, 16);
+            V ok = both(ir, fpcr_clear(ir, FPCR_RMODE | (1u << 26)), both(ir, unflushed(ir, 32, a),
+                        ir_vec_all(ir, either(ir, roomy(ir, 16, bits), is_zero(ir, 32, a)))));
+            Split s;
+            split_begin(ir, NULL, ok, bits, ir_vec_any(ir, float_ne(ir, value,
+                        LLVMBuildFPExt(B, narrow, fvec(ir, 32, lanes), ""))), &s);
+            return split_end(ir, &s, half_narrow(ir, a));
+        }
+        return half_narrow(ir, a);
     }
     if (from == 32 && to == 64) {
         Split s;

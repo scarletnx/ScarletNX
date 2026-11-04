@@ -102,9 +102,10 @@
         "tests/llvm_perf/recpe_candidates.json",
         "tests/llvm_vfp_compare.c",
         "tools/profile_cpu.py",
-        "tests/llvm_vfp_batch.c"
+        "tests/llvm_vfp_batch.c",
+        "tests/llvm_perf/half_widen_math.py"
       ],
-      "note": "Exact vector comparisons and half estimates extend the existing guarded arithmetic. A batching extension for conversion fallbacks failed the performance gate and was rejected. Conversion and rounding retain pure scalar helpers, including common-call elimination for broadcasts. Existing arithmetic batches and big-endian packing retain their previous paths. Native tests ran on x86-64. Focused kernel gains do not establish game FPS gains."
+      "note": "Exact vector comparisons and half estimates extend the existing guarded arithmetic. A batching extension for conversion fallbacks failed the performance gate and was rejected. Vector half-to-single and single-to-half conversions now use exact whole-vector fixups, including NaNs, AHP and all rounding modes, with no helper calls in checked ordinary, broadcast and zero sequences. Other conversion and rounding forms retain pure scalar helpers. Existing arithmetic batches and big-endian packing retain their previous paths. Native tests ran on x86-64. Focused kernel gains do not establish game FPS gains."
     },
     "I8": {
       "status": "in_progress",
@@ -117,7 +118,7 @@
         "tests/llvm_unsigned_estimates.c",
         "tests/llvm_perf/recpe_candidates.json"
       ],
-      "note": "Exact scalar/vector float32/64 FRECPE/FRSQRTE and unsigned estimates remain on x86 AVX2. Half estimates and FRECPX now use integer paths on little-endian targets, with input FZ16 semantics and unflushed reciprocal outputs. Other unproven lowerings retain exact helpers."
+      "note": "Exact scalar/vector float32/64 FRECPE/FRSQRTE now cover little-endian x86 and AArch64 emitter paths. Without AVX2, ordinary reciprocal inputs keep their faster division sequence while exceptional inputs use integer fixups. The hybrid passed the synthetic regression gate on x86-64. Unsigned estimates remain on x86 AVX2. Half estimates and FRECPX now use integer paths on little-endian targets, with input FZ16 semantics and unflushed reciprocal outputs. Other unproven lowerings retain exact helpers."
     },
     "I9": {
       "status": "implemented",
@@ -128,15 +129,15 @@
       "note": "Bounded whole-vector rounding/saturating shifts now cover x86 and AArch64 IR. x86 without AVX2 uses constant-stage barrel shifts. All signed-byte counts, widths, aliases and loaders pass the exact tests on x86-64. Native AArch64 and weak-host performance remain unmeasured."
     },
     "I10": {
-      "status": "in_progress",
+      "status": "implemented",
       "evidence": [
         "src/common/cpu/recompiler/llvm/ir.c",
         "tests/llvm_fp_env.c"
       ],
-      "note": "An audited leaf environment helper is imported only into functions with host FP operations. Integer functions retain their previous object bytes in the checked fixture. Broader imports and cross-host performance remain unverified."
+      "note": "Selectively imports the audited FP-environment leaf from embedded runtime bitcode only in functions with host FP operations. Larger arithmetic and callback helpers remain out of line. The selective import passed 19 paired rounds over six FP kernels with about a 13-percent geometric gain. The checked integer-shift object remains byte-identical. The environment fixture passed native Linux x86-64 and AArch64 CI at 72deb357. A broader import failed its performance gate and was removed. Object cache version 5 invalidates the old pipeline, while ABI 17 remains compatible."
     },
     "I11": {
-      "status": "in_progress",
+      "status": "implemented",
       "evidence": [
         "src/common/cpu/recompiler/llvm/ir_fp.h",
         "src/common/cpu/recompiler/llvm/ir_fpu.c",
@@ -145,7 +146,7 @@
         "tests/llvm_half.c",
         "tests/llvm_fma_residual.c"
       ],
-      "note": "Guarded scalar/dynamic rounding, F16C conversions and exact FMA residuals pass directed and QEMU checks on x86-64. Scalar O0 FMA retains its byte-identical original sequence because the candidate did not pass the regression gate. Vector O0/O2 and scalar O2 residuals passed. Other native host execution proofs remain open."
+      "note": "Guarded scalar/dynamic rounding, F16C half conversions and exact FMA residuals preserve values and FPSR. Scalar O0 FMA retains the original sequence because its candidate failed the regression gate. Vector O0/O2 and scalar O2 residuals passed that gate. Native Linux AArch64 CI at 9a7cfd0d passed the full QEMU sweep plus rounding, half conversions and scalar/vector residual tests. Linux x86-64 passed the local full sweep. New whole-vector exceptional half conversions belong to the ongoing I15 continuation and need their own final integration checks."
     },
     "I12": {
       "status": "unverified",
@@ -207,19 +208,20 @@
         "tests/llvm_fp_helper_effects.c",
         "tests/llvm_module.c"
       ],
-      "note": "The CLI emits per-unit counts and one-function dumps. Two integer-only whole-module fixtures check all 19 counter fields against hand counts, both in one unit and split at function boundaries. The CLI test verifies leaders, flag origins, promoted registers and IR before and after promotion. Directed helper fixtures separately check FP/vector/guest/indirect call classification. These checks passed on x86-64 and run in the native CI matrix."
+      "note": "The CLI emits per-unit counts and one-function dumps. Two integer-only whole-module fixtures check all 19 counter fields against hand counts, both in one unit and split at function boundaries. The CLI test verifies leaders, flag origins, promoted registers and IR before and after promotion. Directed helper fixtures separately check FP/vector/guest/indirect call classification. These checks passed in native Linux x86-64 and AArch64 CI at 72deb357."
     },
     "T4": {
       "status": "unverified",
       "evidence": []
     },
     "T5": {
-      "status": "in_progress",
+      "status": "implemented",
       "evidence": [
         "tests/llvm_block_fuzz.c",
-        "tests/CMakeLists.txt"
+        "tests/CMakeLists.txt",
+        "tests/llvm_block_fuzz_matrix.py"
       ],
-      "note": "Seeded bounded programs test flag joins, loops, guest calls, memory, SIMD/FP and aligned exclusive retry loops against QEMU through O0/O2 AOT/JIT, portable, hook and volatile configurations. Planted flag and exclusive-update defects are detected. Instruction/control-flow grammar remains bounded, with native execution verified only on x86-64. A larger four-seed sweep passed 10,240 whole-program comparisons in 20 configurations."
+      "note": "The generated-decoder-row grammar covers 81 safe integer/SIMD/FP families with varied branches, bounded loops, direct/indirect/tail calls, memory order and aligned exclusive retries. O0/O2, AOT/JIT, portable, hooks and volatile configurations compare complete states against QEMU. Two planted flag-origin and exclusive-update defects are detected. The four-seed matrix checks 10,240 states in 20 configurations. All these tests passed in native Linux x86-64 and AArch64 CI at 72deb357. The grammar is bounded and is not exhaustive sequence coverage."
     },
     "T6": {
       "status": "implemented",
