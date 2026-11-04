@@ -31,7 +31,9 @@ static void handler(void* context, uint32_t pa, SnxCtrTrackLevel level) {
     snx_ctr_track_set(g.m, pa, 4096, SNX_CTR_TRACK_NONE);
     ++g.watched;
 }
+#ifndef _WIN32
 static bool resolve(void* context, uint32_t va) { return snx_ctr_track_fault(context, va); }
+#endif
 /* the region at physical address pa: where the host holds it */
 static unsigned char* region(uint32_t pa) {
     const SnxCtrProfile* p = snx_ctr_memory_profile(g.m);
@@ -57,12 +59,10 @@ int main(void) {
     g.m = snx_ctr_memory_new(SNX_CTR_OLD);
     SnxCtrAddressSpace* s = snx_ctr_space_new(g.m);
     assert(g.m && s);
-    unsigned char* base = snx_ctr_space_base(s);
     uint64_t size;
     const unsigned char* ram = snx_ctr_memory_ram(g.m, &size);
     unsigned char *fcram = region(FCRAM), *vram = region(VRAM);
     assert(ram && fcram && vram && size == 0x08000000u + 0x00600000u + 0x00080000u + 0x00080000u);
-    uint64_t fcram_at = (uint64_t)(fcram - ram), vram_at = (uint64_t)(vram - ram);
     /* a page and its read-only alias, a run of three pages, a VRAM page */
     assert(snx_ctr_map(s, 0x100000, FCRAM, 4096, RW) == SNX_CTR_MEM_OK);
     assert(snx_ctr_map(s, 0x200000, FCRAM, 4096, SNX_CTR_READ) == SNX_CTR_MEM_OK);
@@ -83,6 +83,15 @@ int main(void) {
     snx_host_memory_free(&next);
     printf("memory adopt: refused on Windows, the RAM as it was\n");
 #else
+    unsigned char* base = snx_ctr_space_base(s);
+    if (!base) { /* pages that are not 4 KiB (memory/host.h): no flat space, whose views the move is about */
+        printf("memory adopt: no flat space on this host, skipped\n");
+        snx_host_memory_free(&next);
+        snx_ctr_space_free(s);
+        snx_ctr_memory_free(g.m);
+        return 77;
+    }
+    uint64_t fcram_at = (uint64_t)(fcram - ram), vram_at = (uint64_t)(vram - ram);
     unsigned checks = 0;
     /* an object that does not map: refused, every view still the old object's */
     int pipe_ends[2];
