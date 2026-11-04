@@ -514,12 +514,14 @@ static VkPipeline pipeline(const G2Program* p, const G2PipelineKey* k) {
         VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_LINE_WIDTH, VK_DYNAMIC_STATE_DEPTH_BIAS,
         VK_DYNAMIC_STATE_BLEND_CONSTANTS, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
         VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE,
-        VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY, VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE,
-        VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
-        VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE,
-        VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE, VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE};
+        VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY, VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP,
+        VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE, VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE,
+        VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE, VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE};
+    /* the strides, last, are dynamic only with vertex inputs: a draw without them binds no vertex buffer */
+    uint32_t dynamic_count = sizeof dynamic / sizeof *dynamic - (n ? 0 : 1);
     VkPipelineDynamicStateCreateInfo dyn = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-                                            .dynamicStateCount = sizeof dynamic / sizeof *dynamic,
+                                            .dynamicStateCount = dynamic_count,
                                             .pDynamicStates = dynamic};
     VkFormat depth = (VkFormat)k->depth;
     VkImageAspectFlags aspect = depth ? depth_aspect_of(depth) : 0;
@@ -1133,6 +1135,11 @@ static void draw(Gles2Context* gl, unsigned mode, int32_t first, int32_t count, 
     V.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl);
     dynamic_state(gl, cb, t, mode);
     V.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p->layout, 0, 1, &set, 0, NULL);
+    /* gl_FragCoord.y and gl_PointCoord.y as GL has them: the window's from the bottom, a framebuffer's points' t
+       from the top */
+    float flip[4] = {-1, (float)t->extent.height, 1, 0};
+    if (!t->flip) flip[0] = 1, flip[1] = 0, flip[2] = -1, flip[3] = 1;
+    V.vk.vkCmdPushConstants(cb, p->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof flip, flip);
     for (uint32_t loc = 0; loc < G2_ATTRIBS; ++loc)
         if (vertices.used & (1u << loc))
             V.vk.vkCmdBindVertexBuffers2(cb, loc, 1, &vertices.buffers[loc], &vertices.offsets[loc], NULL,

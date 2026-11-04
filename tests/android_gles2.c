@@ -446,6 +446,56 @@ static void client_arrays(void) {
     }
 }
 
+/* the red channel at x, y, within 40 of a value */
+static void expect_red(int x, int y, int red, const char* what) {
+    unsigned char p[4];
+    pixel(x, y, p);
+    if (abs((int)p[0] - red) > 40) {
+        fprintf(stderr, "android_gles2: %s: %s: red %u at %d,%d, want about %d\n", g_t.test, what, p[0], x, y, red);
+        g_t.failures++;
+    }
+}
+
+/* gl_FragCoord from the bottom left, and gl_PointCoord's t from the top, in the window and in a framebuffer */
+static void window_coords(void) {
+    g_t.test = "window coordinates";
+    const char* fs = "#version 300 es\nprecision highp float;\nuniform float half_height;\nout vec4 frag;\n"
+                     "void main() { frag = vec4(gl_FragCoord.y < half_height ? 1.0 : 0.0, 0.0, 0.0, 1.0); }\n";
+    unsigned p = program(plain_vs, fs);
+    buffer(GL_ARRAY_BUFFER, quad, sizeof quad);
+    GL("glVertexAttribPointer", 0, 2, GL_FLOAT, 0, 0, 0);
+    GL("glEnableVertexAttribArray", 0);
+    GLF("glUniform1f", GL("glGetUniformLocation", p, P("half_height")), H / 2.0f);
+    GL("glDrawArrays", GL_TRIANGLE_STRIP, 0, 4);
+    expect(4, 4, 255, 0, 0, 255, "the window's bottom");
+    expect(4, H - 4, 0, 0, 0, 255, "the window's top");
+    uint32_t fb = 0;
+    unsigned t = texture(32, 32, GL_RGBA, NULL);
+    GL("glGenFramebuffers", 1, P(&fb));
+    GL("glBindFramebuffer", GL_FRAMEBUFFER, fb);
+    GL("glFramebufferTexture2D", GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t, 0);
+    GL("glViewport", 0, 0, 32, 32);
+    GLF("glUniform1f", GL("glGetUniformLocation", p, P("half_height")), 16.0f);
+    GL("glDrawArrays", GL_TRIANGLE_STRIP, 0, 4);
+    expect(4, 4, 255, 0, 0, 255, "the framebuffer's bottom");
+    expect(4, 28, 0, 0, 0, 255, "the framebuffer's top");
+    const char* vs = "#version 300 es\nvoid main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 16.0; }\n";
+    const char* points = "#version 300 es\nprecision highp float;\nout vec4 frag;\n"
+                         "void main() { frag = vec4(gl_PointCoord.y, 0.0, 0.0, 1.0); }\n";
+    program(vs, points);
+    clear(0, 0, 0, 1);
+    GL("glDrawArrays", 0, 0, 1);
+    expect_red(16, 22, 50, "a point's top in the framebuffer");
+    expect_red(16, 9, 205, "a point's bottom in the framebuffer");
+    GL("glBindFramebuffer", GL_FRAMEBUFFER, 0);
+    GL("glViewport", 0, 0, W, H);
+    clear(0, 0, 0, 1);
+    GL("glDrawArrays", 0, 0, 1);
+    expect_red(W / 2, H / 2 + 6, 50, "a point's top in the window");
+    expect_red(W / 2, H / 2 - 7, 205, "a point's bottom in the window");
+    no_error("points");
+}
+
 /* the queries of state and of the program */
 static void queries(void) {
     g_t.test = "queries";
@@ -482,6 +532,7 @@ int main(void) {
     instanced();
     uniform_block();
     client_arrays();
+    window_coords();
     queries();
     gles2_make_current(NULL, NULL, NULL);
     gles2_context_free(gl);

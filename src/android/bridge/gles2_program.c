@@ -309,7 +309,8 @@ static int compile(const G2Shader* sh, Link* l) {
         return -1;
     }
     if (l) l->source = sh->source;
-    GlslcOptions o = {stage_of(sh->type), l ? link_bind : NULL, l, l != NULL};
+    /* the window is drawn with a negative viewport height: gl_FragCoord and gl_PointCoord through the draw's flip */
+    GlslcOptions o = {stage_of(sh->type), l ? link_bind : NULL, l, l != NULL, sh->type == GL_FRAGMENT_SHADER_};
     return snx_glslc_compile(&g_gles2.workspace, &o, sh->source, sh->length, g_gles2.words, SNX_GLSLC_MAX_WORDS,
                              &g_gles2.result);
 }
@@ -831,9 +832,13 @@ static bool program_layouts(G2Program* p, bool compute) {
                                            .bindingCount = n,
                                            .pBindings = b};
     if (V.vk.vkCreateDescriptorSetLayout(V.device, &set, NULL, &p->set_layout) != VK_SUCCESS) return false;
+    /* the fragment shader's flip of gl_FragCoord and gl_PointCoord (GlslcOptions.flip_y) */
+    VkPushConstantRange flip = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
     VkPipelineLayoutCreateInfo layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                          .setLayoutCount = 1,
-                                         .pSetLayouts = &p->set_layout};
+                                         .pSetLayouts = &p->set_layout,
+                                         .pushConstantRangeCount = compute ? 0 : 1,
+                                         .pPushConstantRanges = &flip};
     return V.vk.vkCreatePipelineLayout(V.device, &layout, NULL, &p->layout) == VK_SUCCESS;
 }
 

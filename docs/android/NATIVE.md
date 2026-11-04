@@ -218,7 +218,9 @@ alpha test, mipmaps, the second texture unit, and `glReadPixels`, which reads ze
   clear into it until a copy, another target or the frame's end. The window's framebuffer is the swapchain image and
   a depth and stencil buffer of the config's sizes. Its viewport has a negative height, so GL's coordinates are kept.
   A framebuffer object's images are drawn upright instead, with the front face turned, so a texture holds its rows in
-  GL's order. GL's clip depth of -1 to 1 is `VK_EXT_depth_clip_control`'s. Renderbuffers are images in their
+  GL's order. GL's clip depth of -1 to 1 is `VK_EXT_depth_clip_control`'s. The fragment shaders read `gl_FragCoord`
+  and `gl_PointCoord` through glslc's `flip_y`, with the flip of the target in a push constant, so both are GL's in
+  the window and in a framebuffer object. Renderbuffers are images in their
   attachment layout, multisampled when asked. `glBlitFramebuffer` and `glCopyTexSubImage2D` are blits, and resolves
   from a multisampled image. `glReadPixels` blits the rectangle into an RGBA8 or BGRA8 image upright, copies it into
   host-cached memory, and then copies the rows into the guest's memory.
@@ -234,8 +236,7 @@ alpha test, mipmaps, the second texture unit, and `glReadPixels`, which reads ze
 What GLES 2 and 3 do not do yet: transform feedback, the compute shaders, images and storage buffers of GLES 3.1,
 GLES 3.2's geometry and tessellation, a divisor past 1, `glClear` with a partial color mask (it clears every
 channel), client depth and stencil texels for a 24-bit depth texture, ETC2 and ASTC on a device that has neither
-(the decode on the GPU), `glReadPixels` of a format other than RGBA or BGRA bytes, `gl_FragCoord` in the window
-(Vulkan's origin, the top left), program binaries, and a pbuffer bound as a texture.
+(the decode on the GPU), `glReadPixels` of a format other than RGBA or BGRA bytes, program binaries, and a pbuffer bound as a texture.
 
 `libz.so` is the build's own zlib (`hle_zlib.c`): z_stream has the guest's layout on an LP64 host, and a stream's
 allocator, when the guest gives one, is called through the bridge. Windows' `uLong` is 32 bits, so Windows has no
