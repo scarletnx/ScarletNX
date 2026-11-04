@@ -1436,6 +1436,23 @@ static void uniform_read(CPU* c, Gles2Context* gl, char kind) {
         return;
     }
 }
+/* glGetnUniform*v(program, location, size, params): glGetUniform*v's into a buffer of size bytes */
+static void g_get_nuniformfv(CPU* c, Gles2Context* gl) {
+    unsigned char value[64];
+    uint64_t out = X(3);
+    int32_t size = (int32_t)X(2);
+    X(2) = (uint64_t)(uintptr_t)value;
+    uniform_read(c, gl, 'f');
+    if (size > 0) memcpy((void*)(uintptr_t)out, value, (size_t)size < sizeof value ? (size_t)size : sizeof value);
+}
+static void g_get_nuniformiv(CPU* c, Gles2Context* gl) {
+    unsigned char value[64];
+    uint64_t out = X(3);
+    int32_t size = (int32_t)X(2);
+    X(2) = (uint64_t)(uintptr_t)value;
+    uniform_read(c, gl, 'i');
+    if (size > 0) memcpy((void*)(uintptr_t)out, value, (size_t)size < sizeof value ? (size_t)size : sizeof value);
+}
 static void g_get_uniformfv(CPU* c, Gles2Context* gl) {
     uniform_read(c, gl, 'f');
 }
@@ -1948,6 +1965,11 @@ const HleSymbol hle_gles2_program[] = {
     FN("glGetUniformfv", g_get_uniformfv),
     FN("glGetUniformiv", g_get_uniformiv),
     FN("glGetUniformuiv", g_get_uniformiv),
+    FN("glGetnUniformfv", g_get_nuniformfv),
+    FN("glGetnUniformiv", g_get_nuniformiv),
+    FN("glGetnUniformuiv", g_get_nuniformiv),
+    FN("glGetnUniformfvEXT", g_get_nuniformfv),
+    FN("glGetnUniformivEXT", g_get_nuniformiv),
     FN("glGetUniformBlockIndex", g_get_uniform_block_index),
     FN("glUniformBlockBinding", g_uniform_block_binding),
     FN("glGetActiveUniformBlockiv", g_get_active_uniform_blockiv),

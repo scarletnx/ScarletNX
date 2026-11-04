@@ -3,7 +3,9 @@
 /* GLES 2 and 3 over Vulkan (src/android/bridge/gles2*.c), drawn on the host's Vulkan (lavapipe) into a pbuffer and
    framebuffer objects, and read back with glReadPixels: a triangle, textures (RGBA, RGB, luminance), blending,
    the depth test, a framebuffer object sampled as a texture, instanced draws with gl_InstanceID and a divisor, a
-   uniform block, client arrays and indices, a line loop, glBlitFramebuffer and glCopyTexSubImage2D. The calls go
+   uniform block, client arrays and indices, a line loop, glBlitFramebuffer and glCopyTexSubImage2D, gl_FragCoord
+   and gl_PointCoord, GLES 3.1's compute shaders, images, indirect draws, vertex bindings and program pipelines,
+   and GLES 3.2's base vertex draws and glCopyImageSubData. The calls go
    through the HLE's handlers with the arguments in a CPU state, as a guest's do. Exits 77 without a Vulkan 1.3
    device */
 #include "android/bridge/gles2.h"
@@ -646,6 +648,31 @@ static void separate_programs(void) {
     GL("glBindProgramPipeline", 0);
 }
 
+/* GLES 3.2's calls without new stages: a base vertex draw, and glCopyImageSubData between two textures */
+static void gles32(void) {
+    g_t.test = "3.2";
+    unsigned p = program(textured_vs, textured_fs);
+    GL("glUniform1i", GL("glGetUniformLocation", p, P("tex")), 0);
+    static const float verts[] = {5, 5, -1, -1, 1, -1, -1, 1, 1, 1};
+    buffer(GL_ARRAY_BUFFER, verts, sizeof verts);
+    GL("glVertexAttribPointer", 0, 2, GL_FLOAT, 0, 0, 0);
+    GL("glEnableVertexAttribArray", 0);
+    static const uint16_t indices[6] = {0, 1, 2, 2, 1, 3};
+    buffer(GL_ELEMENT_ARRAY_BUFFER, indices, sizeof indices);
+    static const unsigned char rgba[16] = {200, 0, 0, 255, 0, 200, 0, 255, 0, 0, 200, 255, 200, 200, 200, 255};
+    unsigned a = texture(2, 2, GL_RGBA, rgba);
+    unsigned b = texture(2, 2, GL_RGBA, NULL);
+    GL("glCopyImageSubData", a, GL_TEXTURE_2D, 0, 0, 0, 0, b, GL_TEXTURE_2D, 0, 0, 0, 0, 2, 2, 1);
+    no_error("copy");
+    GL("glBindTexture", GL_TEXTURE_2D, b);
+    clear(0, 0, 0, 1);
+    GL("glDrawElementsBaseVertex", GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0, 1);
+    no_error("base vertex");
+    expect(8, 8, 200, 0, 0, 255, "the copied texel 0,0");
+    expect(W - 8, H - 8, 200, 200, 200, 255, "the copied texel 1,1");
+    GL("glBindBuffer", GL_ELEMENT_ARRAY_BUFFER, 0);
+}
+
 /* the queries of state and of the program */
 static void queries(void) {
     g_t.test = "queries";
@@ -688,6 +715,7 @@ int main(void) {
     compute();
     vertex_bindings();
     separate_programs();
+    gles32();
     queries();
     gles2_make_current(NULL, NULL, NULL);
     gles2_context_free(gl);
@@ -697,7 +725,8 @@ int main(void) {
         return 1;
     }
     printf("android_gles2: a triangle, textures, blending, depth, a framebuffer object, instanced draws, a uniform "
-           "block, client arrays and a line loop drawn on %s\n",
+           "block, client arrays, a line loop, the window's coordinates, compute, vertex bindings, a program pipeline "
+           "and GLES 3.2's base vertex and image copy drawn on %s\n",
            g_gles_vk.props.deviceName);
     return 0;
 }

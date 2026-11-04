@@ -1211,6 +1211,22 @@ static void g_draw_range_elements(CPU* c, Gles2Context* gl) {
     if (i.type) draw(gl, (unsigned)X(0), 0, (int32_t)X(3), 1, i, 0, NULL, 0);
 }
 
+/* GLES 3.2's base vertex draws: glDrawElementsBaseVertex(mode, count, type, indices, base),
+   glDrawRangeElementsBaseVertex(mode, start, end, count, type, indices, base) and
+   glDrawElementsInstancedBaseVertex(mode, count, type, indices, instances, base) */
+static void g_draw_elements_base_vertex(CPU* c, Gles2Context* gl) {
+    Indices i = indices_of(gl, (unsigned)X(2), X(3));
+    if (i.type) draw(gl, (unsigned)X(0), 0, (int32_t)X(1), 1, i, (int32_t)X(4), NULL, 0);
+}
+static void g_draw_range_elements_base_vertex(CPU* c, Gles2Context* gl) {
+    Indices i = indices_of(gl, (unsigned)X(4), X(5));
+    if (i.type) draw(gl, (unsigned)X(0), 0, (int32_t)X(3), 1, i, (int32_t)X(6), NULL, 0);
+}
+static void g_draw_elements_instanced_base_vertex(CPU* c, Gles2Context* gl) {
+    Indices i = indices_of(gl, (unsigned)X(2), X(3));
+    if (i.type) draw(gl, (unsigned)X(0), 0, (int32_t)X(1), (int32_t)X(4), i, (int32_t)X(5), NULL, 0);
+}
+
 /* glDrawArraysIndirect(mode, indirect) and glDrawElementsIndirect(mode, type, indirect): the command in the draw
    indirect buffer, at the offset indirect */
 static void g_draw_arrays_indirect(CPU* c, Gles2Context* gl) {
@@ -1600,6 +1616,85 @@ void gles2_read_pixels(Gles2Context* gl, int x, int y, int width, int height, un
     gles_vk_retire((GlesGarbage){.image = temp.image, .memory = temp.memory});
 }
 
+/* an image of glCopyImageSubData: a texture's or a renderbuffer's, its layout at rest */
+static bool copy_image_of(unsigned name, unsigned target, VkImage* image, VkImageLayout* rest, VkImageAspectFlags* aspect,
+                          bool* layered) {
+    if (target == 0x8d41) { /* GL_RENDERBUFFER */
+        G2Renderbuffer* r = gles2_renderbuffer(name);
+        if (!r || !r->image.image || !r->ready) return false;
+        *image = r->image.image;
+        *rest = gles2_rest_layout(r->format, false);
+        *aspect = depth_aspect_of(r->vk);
+        if (r->format->kind < G2_DEPTH) *aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+        *layered = false;
+        return true;
+    }
+    G2Texture* t = gles2_texture(name);
+    if (!t || !t->image.image) return false;
+    *image = t->image.image;
+    *rest = t->layout;
+    *aspect = gles2_aspect(t->format);
+    if (*aspect != VK_IMAGE_ASPECT_COLOR_BIT) *aspect = depth_aspect_of(t->vk);
+    *layered = t->target == G2_TCUBE || t->target == G2_TARRAY;
+    return true;
+}
+/* glCopyImageSubData(src, src target, src level, x, y, z, dst, dst target, dst level, x, y, z, width, height,
+   depth): a copy of the texels as they are, on the GPU */
+static void g_copy_image_sub_data(CPU* c, Gles2Context* gl) {
+    uint64_t a[15];
+    for (unsigned i = 0; i < 15; ++i) a[i] = gles2_arg(c, i);
+    VkImage src, dst;
+    VkImageLayout src_rest, dst_rest;
+    VkImageAspectFlags src_aspect, dst_aspect;
+    bool src_layers, dst_layers;
+    if (!copy_image_of((unsigned)a[0], (unsigned)a[1], &src, &src_rest, &src_aspect, &src_layers) ||
+        !copy_image_of((unsigned)a[6], (unsigned)a[7], &dst, &dst_rest, &dst_aspect, &dst_layers)) {
+        gles2_error(gl, GL_INVALID_VALUE_);
+        return;
+    }
+    GlesSlot* slot = gles2_transfer_slot(gl);
+    if (!slot) return;
+    int32_t sz = (int32_t)a[5], dz = (int32_t)a[11];
+    uint32_t depth = (uint32_t)a[14];
+    VkImageCopy region = {.srcSubresource = {src_aspect, (uint32_t)a[2], src_layers ? (uint32_t)sz : 0,
+                                             src_layers ? depth : 1},
+                          .srcOffset = {(int32_t)a[3], (int32_t)a[4], src_layers ? 0 : sz},
+                          .dstSubresource = {dst_aspect, (uint32_t)a[8], dst_layers ? (uint32_t)dz : 0,
+                                             dst_layers ? depth : 1},
+                          .dstOffset = {(int32_t)a[9], (int32_t)a[10], dst_layers ? 0 : dz},
+                          .extent = {(uint32_t)a[12], (uint32_t)a[13], src_layers || dst_layers ? 1 : depth}};
+    VkCommandBuffer cb = slot->cb;
+    gles_image_barrier(cb, src, src_aspect, src_rest, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ATTACHMENT_ACCESS |
+                       VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, ATTACHMENT_STAGES | ALL_READERS,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT);
+    if (dst != src)
+        gles_image_barrier(cb, dst, dst_aspect, dst_rest, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           ATTACHMENT_ACCESS | VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                           ATTACHMENT_STAGES | ALL_READERS, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    V.vk.vkCmdCopyImage(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst,
+                        dst == src ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                        &region);
+    gles_image_barrier(cb, src, src_aspect, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, src_rest,
+                       VK_ACCESS_TRANSFER_READ_BIT, ATTACHMENT_ACCESS | VK_ACCESS_SHADER_READ_BIT |
+                       VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, ATTACHMENT_STAGES | ALL_READERS);
+    if (dst != src)
+        gles_image_barrier(cb, dst, dst_aspect, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, dst_rest,
+                           VK_ACCESS_TRANSFER_WRITE_BIT, ATTACHMENT_ACCESS | VK_ACCESS_SHADER_READ_BIT |
+                           VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           ATTACHMENT_STAGES | ALL_READERS);
+    G2Texture* t = (unsigned)a[7] != 0x8d41 ? gles2_texture((unsigned)a[6]) : NULL;
+    if (t) t->defined |= 1u << (unsigned)a[8];
+}
+/* glReadnPixels(x, y, width, height, format, type, size, pixels): glReadPixels when size holds the rows */
+static void g_readn_pixels(CPU* c, Gles2Context* gl) {
+    uint64_t size = X(6);
+    if ((uint64_t)(uint32_t)X(2) * (uint32_t)X(3) * 4 > size && !gles2_buffer(gl->pixel_pack)) {
+        gles2_error(gl, GL_INVALID_OPERATION_);
+        return;
+    }
+    gles2_read_pixels(gl, (int)X(0), (int)X(1), (int)X(2), (int)X(3), (unsigned)X(4), (unsigned)X(5), X(7));
+}
+
 /* glCopyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height): the read framebuffer's rectangle
    blitted into the texture's level, upright */
 static void copy_tex(Gles2Context* gl, unsigned target, int level, int dx, int dy, int layer, int x, int y, int w,
@@ -1666,6 +1761,21 @@ const HleSymbol hle_gles2_draw[] = {
     FN("glDrawElementsInstanced", g_draw_elements_instanced),
     FN("glDrawElementsInstancedEXT", g_draw_elements_instanced),
     FN("glDrawElementsInstancedANGLE", g_draw_elements_instanced),
+    FN("glDrawElementsBaseVertex", g_draw_elements_base_vertex),
+    FN("glDrawElementsBaseVertexEXT", g_draw_elements_base_vertex),
+    FN("glDrawElementsBaseVertexOES", g_draw_elements_base_vertex),
+    FN("glDrawRangeElementsBaseVertex", g_draw_range_elements_base_vertex),
+    FN("glDrawRangeElementsBaseVertexEXT", g_draw_range_elements_base_vertex),
+    FN("glDrawRangeElementsBaseVertexOES", g_draw_range_elements_base_vertex),
+    FN("glDrawElementsInstancedBaseVertex", g_draw_elements_instanced_base_vertex),
+    FN("glDrawElementsInstancedBaseVertexEXT", g_draw_elements_instanced_base_vertex),
+    FN("glDrawElementsInstancedBaseVertexOES", g_draw_elements_instanced_base_vertex),
+    FN("glCopyImageSubData", g_copy_image_sub_data),
+    FN("glCopyImageSubDataEXT", g_copy_image_sub_data),
+    FN("glCopyImageSubDataOES", g_copy_image_sub_data),
+    FN("glReadnPixels", g_readn_pixels),
+    FN("glReadnPixelsEXT", g_readn_pixels),
+    FN("glReadnPixelsKHR", g_readn_pixels),
     FN("glDrawArraysIndirect", g_draw_arrays_indirect),
     FN("glDrawElementsIndirect", g_draw_elements_indirect),
     FN("glDispatchCompute", g_dispatch_compute),

@@ -748,6 +748,11 @@ static void g_get_stringi(CPU* c, Gles2Context* gl) {
 static void g_nothing(CPU* c, Gles2Context* gl) {
     (void)c, (void)gl;
 }
+/* glGetGraphicsResetStatus: the device was not lost (a lost one ends the process here) */
+static void g_reset_status(CPU* c, Gles2Context* gl) {
+    (void)gl;
+    X(0) = 0;
+}
 
 const HleSymbol hle_gles2[] = {
     FN("glGetError", g_get_error),
@@ -796,6 +801,21 @@ const HleSymbol hle_gles2[] = {
     FN("glInsertEventMarkerEXT", g_nothing),
     FN("glPushGroupMarkerEXT", g_nothing),
     FN("glPopGroupMarkerEXT", g_nothing),
+    FN("glGetGraphicsResetStatus", g_reset_status),
+    FN("glGetGraphicsResetStatusEXT", g_reset_status),
+    FN("glGetGraphicsResetStatusKHR", g_reset_status),
+    FN("glPrimitiveBoundingBox", g_nothing),
+    FN("glPrimitiveBoundingBoxEXT", g_nothing),
+    FN("glDebugMessageCallback", g_nothing),
+    FN("glDebugMessageControl", g_nothing),
+    FN("glDebugMessageInsert", g_nothing),
+    FN("glObjectLabel", g_nothing),
+    FN("glObjectPtrLabel", g_nothing),
+    FN("glPushDebugGroup", g_nothing),
+    FN("glPopDebugGroup", g_nothing),
+    FN("glDebugMessageInsertKHR", g_nothing),
+    FN("glObjectPtrLabelKHR", g_nothing),
+    FN("glLabelObjectEXT", g_nothing),
     FN("glDebugMessageCallbackKHR", g_nothing),
     FN("glDebugMessageControlKHR", g_nothing),
     FN("glObjectLabelKHR", g_nothing),
