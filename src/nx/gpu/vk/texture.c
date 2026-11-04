@@ -557,6 +557,7 @@ static int tex_upload(Surf* t) {
     SNX_ZONE_END(z);
     return r;
 }
+static int tex_upload_(Surf* t);
 static int tex_upload_(Surf* t) {
     const VkFmt* f = &t->f;
     SNX_ZONE_T(z_up, "texture upload", "%ux%u", t->w, t->h);
@@ -1562,6 +1563,12 @@ texture_from_memory:
         gmmu_pieces(gva, sz, tex_run, &runs);
         holes = runs.mapped < sz;
     }
+    /* ASTC with holes in its mapping that the GPU decodes: encoded again as BC7, a quarter of RGBA8's memory, where the
+       GPU samples BCn, astc_bc or not. Such a texture is a game's sparse one, as big as 68 layers of 8192x8192 with
+       seven of them mapped, which as RGBA8 took more memory than the GPU had */
+    if (holes && f.conv == VKC_ASTC && g_vk.feat.textureCompressionBC &&
+        (f.vk == VK_FORMAT_R8G8B8A8_UNORM || f.vk == VK_FORMAT_R8G8B8A8_SRGB))
+        f.vk = f.vk == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
     Surf* t = tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, tile_w, pitch, stride, msaa, holes);
     if (!t) return NULL;
     t->size = sz;

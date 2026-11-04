@@ -182,6 +182,18 @@ it whatever `native_bc` says, and `format.c` then samples BCn as it is only when
 keeps RGBA8 where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many
 levels went up as BC7 and their megabytes against RGBA8's.
 
+A texture with holes in its mapping (a game's sparse texture, `texture.c`) is BC7 whatever `astc_bc` says, where the
+GPU samples BCn: one game's are 68 layers of 8192x8192 ASTC 8x8 with seven of them mapped, 1.7 GB each as RGBA8 (16
+times the game's bytes), which took the GPU past its memory. `device.c` turns `textureCompressionBC` on wherever the
+device has it for this. A sparse texture's levels are decoded only in the strips that have memory bound
+(`vk_image_sparse_bound`), in strips as high as the device's sparse blocks.
+
+A level of `VK_BC7_FAST_TEXELS` (2048x2048) or more takes the encoder's fast build, `bc7_fast_spv` (`SNX_BC7_FAST`
+1): mode 6 alone. On a GeForce RTX 2080 an 8192x8192 level of random 8x8 blocks
+(`snx-test-astc-vulkan --bench`) decodes in 15 ms, encodes in 860 ms with every mode and in 48 ms with mode 6 alone;
+the game above needed about a thousand million texels at once. The cost is the edges: on the picture below, mode 6
+alone holds gradients at 43 dB, edges at 26, noise at 25 and alpha at 40.
+
 The encoder tries each block in the modes that suit it and writes the one with the least squared error. Every
 block takes mode 6, one line through RGBA with 4-bit weights, which holds a block of one gradient closely. An opaque
 block (every alpha 255) also takes the modes that store no alpha and so keep it 255: modes 1 and 3, two subsets of
@@ -203,6 +215,16 @@ bit that keeps it exactly: a nearly opaque texel blends, and a nearly clear one 
 nought. Modes 4 and 5 have no p-bits and hold 255 and 0 as they are. Each texel takes the best of the three weights
 around its projection. All of it is integer arithmetic in the part of GLSL that is also C++, so the tests run the
 same file on the CPU and get the GPU's bytes.
+
+The encoder is written for the code the GPU runs, not only for what it computes. Each partition is read from its
+table once a shape (`SetShape`), into registers: the tables are arrays indexed by a value that differs between
+invocations, which the GPU keeps in local memory, and reading them for each texel of each fit made a block with
+subsets cost hundreds of times one without. Each body is called from one place, in a loop: the shapes and modes 4 and
+5 are jobs of one loop in `Encode`, a subset's four candidate lines one loop in `FitSubset`, and the least squares
+fit sums every channel in one pass. glslang inlines every call, and the copies came to 1.2 MB of machine code for
+NVIDIA's driver; it is 145 KB now, and an 8192x8192 level that took 10.9 seconds takes 0.86. The blocks are the same,
+byte for byte: the old and new files, run on the CPU over 65,536 blocks of noise, opaque noise, edges and two
+colours with alpha, wrote the same bytes, and a broken anchor in the new one showed.
 
 What it costs, as PSNR against what it encodes, on edenprobe's astcimage picture (gradients, hard edges where three
 colours meet in a block, noise, and alpha) decoded from ASTC: 39.9 dB over the picture at 4x4 (gradients 53.1,
@@ -282,11 +304,12 @@ separate SPIRV-Tools is needed.
   blocks that lie on a line mode 6 holds and blocks each other mode holds (modes 4 and 5 in each rotation and index
   selection) come back exact, blocks with one channel apart come back closer than the same encoder built without
   modes 4 and 5 brings them (`SNX_BC7_MODES_4_5` 0, `bc7_encode_cpu_without_45`), edenprobe's astcimage picture comes
-  back no worse than the PSNR each region is held to, and a 13x7 image of three slices encodes slice by slice as each
-  alone.
+  back no worse than the PSNR each region is held to (its fast build, `bc7_encode_cpu_fast`, to floors of its own),
+  and a 13x7 image of three slices encodes slice by slice as each alone.
   `astc_vulkan` and `astc_vulkan_pieces` also upload random blocks into BC7 images, footprints whose strips step
-  4, 2 and 1 block rows, with mips, layers, slices and many strips, and compare the GPU's blocks with the same
-  encoder run on the CPU over the CPU decoder's texels, byte for byte.
+  4, 2 and 1 block rows, with mips, layers, slices and many strips, and a level of `VK_BC7_FAST_TEXELS` that the
+  fast build encodes, and compare the GPU's blocks with the same encoder (or its fast build) run on the CPU over the
+  CPU decoder's texels, byte for byte. `--bench` times an 8192x8192 level as RGBA8 and as BC7.
 - `tex_upload_rows` checks what `texture.c` hands `vk_astc_upload`: an ASTC level's block rows, strip by strip,
   against the block-linear layout walked byte by byte, and the bands other formats take past the cap.
 

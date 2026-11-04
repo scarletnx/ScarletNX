@@ -460,7 +460,11 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
             for (u32 z = 0; z < ld; z++)
                 astc_decode_image(blocks[layer * levels + l] + (size_t)z * nx * ny * 16, lw, lh, bw, bh,
                                   texels + (size_t)z * lw * lh * 4, srgb);
-            bc7_encode_cpu(texels, lw, lh, ld, expected);
+            /* a large level takes the encoder's fast build (astc.c) */
+            if ((u64)lw * lh * ld >= VK_BC7_FAST_TEXELS)
+                bc7_encode_cpu_fast(texels, lw, lh, ld, expected);
+            else
+                bc7_encode_cpu(texels, lw, lh, ld, expected);
             for (u64 i = 0; i < size; i++)
                 if (actual[i] != expected[i])
                     fatal("ASTC as BC7 %ux%u srgb=%d %ux%ux%u level %u layer %u: byte %llu (block %llu) expected %u "
@@ -476,6 +480,46 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
     printf("PASS ASTC as BC7 %ux%u srgb=%d image=%ux%ux%u layers=%u mips=%u\n", bw, bh, srgb, w, h, depth, layers,
            levels);
     fflush(stdout);
+}
+
+/* --bench: one w x h level of random 8x8 ASTC blocks uploaded into an RGBA8 image and into a BC7 one, as texture.c
+   does without and with astc_bc, each runs times: the time from the upload's start to the GPU's end of it, and the
+   texels a second. A game's sparse texture of 68 such layers takes seven of them */
+static void bench(u32 w, u32 h, int runs) {
+    const VkFormat formats[2] = {VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_BC7_SRGB_BLOCK};
+    u8* b = blocks_new(w, h, 1, 8, 8);
+    for (int fi = 0; fi < 2; fi++) {
+        if (fi && !g_vk.feat.textureCompressionBC) {
+            puts("BENCH BC7: the device samples no BCn");
+            continue;
+        }
+        Surf t = {.w = w, .h = h, .layers = 1, .levels = 1, .depth3d = 1, .f = {.vk = formats[fi], .bw = 8, .bh = 8}};
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .imageType = VK_IMAGE_TYPE_2D,
+                                .format = formats[fi],
+                                .extent = {w, h, 1},
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+        if (!vk_image_create(&ii, &t.img, &t.mem)) fatal("cannot create a %ux%u bench image\n", w, h);
+        barrier(t.img, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        vk_finish();
+        for (int r = 0; r < runs; r++) {
+            Level lv = {b, (w + 7) / 8, (h + 7) / 8, NULL, 2, 0};
+            u64 t0 = plat_ns();
+            if (!vk_astc_upload(vk_cmd(), &t, w, h, 1, 0, 0, level_rows, &lv)) fatal("bench upload failed\n");
+            vk_finish();
+            double s = (plat_ns() - t0) / 1e9;
+            printf("BENCH %s %ux%u: %.1f ms, %.0f Mtexels/s\n", fi ? "ASTC 8x8 as BC7" : "ASTC 8x8 as RGBA8", w, h,
+                   s * 1e3, (double)w * h / s / 1e6);
+            fflush(stdout);
+        }
+        vk_image_destroy(t.img, t.mem);
+    }
+    free(b);
 }
 
 /* block linear bytes deswizzled and swizzled on the GPU (vk/blocklinear.c), compared with ref_bl: a surface of
@@ -835,7 +879,12 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++)
         if (!strncmp(argv[i], "--vk_max_allocation_mb=", 23)) g_settings.vulkan_allocation_cap = atoi(argv[i] + 23);
         else if (!strcmp(argv[i], "--large")) large = 1;
+        else if (!strcmp(argv[i], "--bench")) large = 2;
     init();
+    if (large == 2) {
+        bench(8192, 8192, 3);
+        return 0;
+    }
     if (large) {
         /* 512 MiB each once decoded, as some games' textures are: a square 2D one (11584 is a multiple of 4 and 8)
            and a cube of slices, both past the 256 MiB allocation cap, so their memory is in pieces where the device
@@ -897,6 +946,8 @@ int main(int argc, char** argv) {
     run_bc7(12, 12, 1, 97, 61, 1, 1, 1);
     run_bc7(6, 6, 0, 61, 37, 9, 1, 1);
     run_bc7(5, 5, 0, 2051, 1101, 1, 1, 1);
+    /* a level of VK_BC7_FAST_TEXELS: the fast build, mode 6 alone */
+    run_bc7(8, 8, 1, 2048, 2048, 1, 1, 1);
     /* Multiple scratch chunks, staging-ring retirement, and frame reuse. */
     run(4, 4, 0, 2051, 1055, 1, 1, 1, 1, NULL, NULL);
     run(12, 12, 1, 2051, 1055, 1, 1, 1, 0, NULL, NULL);

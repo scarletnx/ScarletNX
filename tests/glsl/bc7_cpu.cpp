@@ -26,6 +26,15 @@ struct EncoderWithout45 : Invocation {
     leuvec4* bc7_blocks;
 #include "nx/gpu/texture/bc7_encode.glsl"
 };
+// mode 6 alone, the fast build vk/astc.c uses for large uploads
+#undef SNX_BC7_FAST
+#define SNX_BC7_FAST 1
+struct EncoderFast : Invocation {
+    uint width, height, blocks_x, blocks_y;
+    const leuint* rgba;
+    leuvec4* bc7_blocks;
+#include "nx/gpu/texture/bc7_encode.glsl"
+};
 } // namespace bc7_shader
 
 extern "C" uint32_t bc7_weight_cpu(uint32_t bits, uint32_t index) {
@@ -37,8 +46,7 @@ extern "C" uint32_t bc7_weight_cpu(uint32_t bits, uint32_t index) {
 extern "C" int bc7_least_squares_cpu(const uint32_t texels[16], const uint8_t index[16], uint32_t bits,
                                      uint32_t subsets, uint32_t partition, uint32_t subset, uint32_t ends[2]) {
     bc7_shader::Encoder e;
-    e.sh_ns = subsets;
-    e.sh_part = partition;
+    e.SetShape(subsets, partition);
     e.sh_ib = bits;
     e.sh_mask = 15u;
     e.fit_lo = 0u;
@@ -82,4 +90,8 @@ extern "C" void bc7_encode_cpu(const uint8_t* rgba, uint32_t w, uint32_t h, uint
 
 extern "C" void bc7_encode_cpu_without_45(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
     encode<bc7_shader::EncoderWithout45>(rgba, w, h, depth, out);
+}
+
+extern "C" void bc7_encode_cpu_fast(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
+    encode<bc7_shader::EncoderFast>(rgba, w, h, depth, out);
 }
