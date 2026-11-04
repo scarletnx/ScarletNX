@@ -342,7 +342,10 @@ static void apple_power_thread(void* arg) {
     CFRunLoopRun();
 }
 int plat_power_watch(void) {
+    static int started;
+    if (started) return 0;
     if (plat_thread(apple_power_thread, NULL, 0)) return -1;
+    started = 1;
     return 0;
 }
 #else

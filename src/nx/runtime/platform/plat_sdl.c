@@ -12,6 +12,15 @@
 /* CLOCK_MONOTONIC_RAW on Linux (CLOCK_MONOTONIC on Android), QueryPerformanceCounter on Windows, mach_absolute_time
    on Apple systems, counted from SDL's first call */
 u64 plat_ns(void) { return SDL_GetTicksNS(); }
+
+/* the display's EDR headroom, which plat_display_headroom_poll keeps: 1.0 with none */
+u32 g_display_headroom_pct = 100;
+u32 g_display_edr_potential_pct = 100;
+#if !defined(__APPLE__)
+/* macOS alone reports its display's headroom (plat_apple.m): elsewhere both stay 1.0, so `hdr=auto` leaves the frame
+   as SDR, and `hdr=on` bounds the lift by `hdr_peak` instead */
+void plat_display_headroom_poll(void) {}
+#endif
 i64 plat_unix_time(void) {
     SDL_Time t;
     return SDL_GetCurrentTime(&t) ? (i64)(t / (SDL_Time)SDL_NS_PER_SECOND) : 0;

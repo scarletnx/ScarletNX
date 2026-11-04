@@ -12,7 +12,10 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/vertex_input.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/hdr.h"
+#include "nx/gpu/vk/upscale.h"
 #include "common/gpu/vk/swapchain.h"
+#include "common/gpu/vk/window.h"
 #include "common/gpu/vk/vk_common.h"
 
 int g_vk_preserve_infnan;
@@ -65,7 +68,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
                                                const VkDebugUtilsMessengerCallbackDataEXT* d, void* user) {
     (void)type;
     (void)user;
-    g_vk_validation_messages++;
+    /* a driver's own message (MoltenVK's mvk-warn and mvk-error) is not the layer's: it is logged, and the tests
+       that hold a path to no layer message don't count it */
+    if (d->pMessageIdName && !strncmp(d->pMessageIdName, "VUID", 4)) g_vk_validation_messages++;
     if (sev & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
         WARN("vulkan validation: %s\n", d->pMessage);
     else
@@ -89,13 +94,18 @@ static int create_instance(void) {
     const char* const* be = g_opt_headless ? NULL : backend_vk_extensions(&nbe);
     /* the window's, and the surface's present timing capabilities (VK_EXT_present_timing) are asked through
        VK_KHR_get_surface_capabilities2 */
-    const char* ext[17];
+    const char* ext[18];
     u32 next = 0;
     for (u32 i = 0; i < nbe && next < 16; i++) ext[next++] = be[i];
     if (nbe > 16) WARN("vulkan: the window backend wants %u instance extensions, only 16 are taken\n", nbe);
     if (!g_opt_headless && snx_vk_has_instance_extension(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) {
         ext[next++] = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
         g_vk.has_surface_caps2 = 1;
+    }
+    /* an HDR10 swapchain's color space is one of this instance extension's */
+    if (!g_opt_headless && next < 17 && snx_vk_has_instance_extension(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) {
+        ext[next++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
+        g_vk.has_swapchain_colorspace = 1;
     }
     SnxVkInstanceInfo info = {.app_name = "ScarletNX",
                               .extensions = ext,
@@ -333,6 +343,7 @@ static int create_device(void) {
     int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0, has_dmabuf = 0;
     int has_descriptor_buffer = 0;
     int has_vertex_input = 0;
+    int has_hdr_metadata = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     {
@@ -384,6 +395,8 @@ static int create_device(void) {
 #if defined(__ANDROID__) /* every driver there takes AHardwareBuffers, which guest memory can move into (uma.c) */
         has_ahb = snx_vk_extensions_has(&e, "VK_ANDROID_external_memory_android_hardware_buffer");
 #endif
+        /* an HDR10 swapchain's light levels, which display.c's frames are tone mapped for */
+        has_hdr_metadata = !g_opt_headless && snx_vk_extensions_has(&e, VK_EXT_HDR_METADATA_EXTENSION_NAME);
         snx_vk_extensions_free(&e);
     }
     /* guest memory the GPU reads in place (uma.c) */
@@ -391,6 +404,10 @@ static int create_device(void) {
     if (uma_with == VK_UMA_WITH_HOST) ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     if (uma_with == VK_UMA_WITH_AHB) ext[next++] = "VK_ANDROID_external_memory_android_hardware_buffer";
     if (has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+    if (has_hdr_metadata) {
+        ext[next++] = VK_EXT_HDR_METADATA_EXTENSION_NAME;
+        g_vk.has_hdr_metadata = 1;
+    }
     /* the extension only with a host time domain among the calibrateable ones: CLOCK_MONOTONIC_RAW is the clock
        the Tracy client keeps its own time in, so the two domains' pair maps the GPU's timestamps onto it */
     if (has_calibrated) {
@@ -883,7 +900,10 @@ int vk_window_release(void) {
         plat_sleep_ns(10000000);
     }
     vk_rec_sync();
+    if (g_vk.dev) vk_finish();
     device_wait_idle(); /* a lost device answers at once */
+    vk_upscale_release();
+    vk_hdr_release();
     pm_lock(&g_vk.sc_lock);
     if (g_vk.swapchain) swapchain_retire();
     pm_unlock(&g_vk.sc_lock);
@@ -895,7 +915,7 @@ int vk_window_release(void) {
     return 1;
 }
 
-int vk_swapchain_create(int srgb) {
+int vk_swapchain_create(int kind) {
     if (g_opt_headless) return 0; /* no WSI calls, even on a resize/recreate path */
     VkSurfaceCapabilitiesKHR caps;
     VkResult cr = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps);
@@ -915,13 +935,65 @@ int vk_swapchain_create(int srgb) {
     if (!ext.width || !ext.height) return 0;
 
     /* 8-bit, in the encoding of the frames presented: a blit from an sRGB target to a UNORM image decodes the bytes,
-       where the console's display shows them as they are */
+       where the console's display shows them as they are. HDR10 is 10 bits of PQ in BT.2020's primaries, where the
+       surface and the instance have it (the hdr setting) */
     static const VkFormat srgb_formats[] = {VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB};
     static const VkFormat unorm_formats[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
-    VkSurfaceFormatKHR fmt;
-    if (!(srgb && snx_vk_surface_format(g_vk.phys, g_vk.surface, srgb_formats, 2, &fmt)))
-        snx_vk_surface_format(g_vk.phys, g_vk.surface, unorm_formats, 2, &fmt);
-    if (srgb && fmt.format != VK_FORMAT_B8G8R8A8_SRGB && fmt.format != VK_FORMAT_R8G8B8A8_SRGB) {
+    static const VkFormat hdr_formats[] = {VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_FORMAT_A2R10G10B10_UNORM_PACK32};
+    static const VkFormat scrgb_formats[] = {VK_FORMAT_R16G16B16A16_SFLOAT};
+    VkSurfaceFormatKHR fmt = {0};
+    int hdr = 0, scrgb = 0, p3 = 0;
+    int cs = snx_hdr_colorspace_parse(g_settings.hdr_colours);
+    /* the extended linear kinds first: 1.0 is the display's own white, so an SDR frame's brightness is the SDR one at
+       any display brightness, and only the light above the paper white is the headroom. Display P3 widens the gamut;
+       PQ is the absolute signal a TV takes. Horizon prefers PQ, but on macOS an HDR10 (PQ) layer's luminance is
+       misrepresented: it shows at about half the exposure on an HDR display (mpv #16899), where 1.0 of an extended
+       linear layer is the display's SDR white on every display. The SDR look is what this mapping keeps, so the
+       extended kinds are the ideal here, and hdr_colorspace=hdr10 forces Horizon's order for a comparison. */
+    /* Auto takes an HDR image only where the display has light over its white: a display whose peak is its white
+       (KWin with sdrBrightness = maxPeakBrightnessOverride) gains nothing from HDR, and the compositor's mapping of it
+       can desaturate. hdr=on still takes one. */
+    int auto_sdr = snx_hdr_parse(g_settings.hdr) == SNX_HDR_AUTO &&
+                   snx_vk_peak_nits(g_settings.hdr_peak) <= snx_vk_paper_nits(g_settings.hdr_paper_white);
+    if (kind == VK_SC_HDR && g_vk.has_swapchain_colorspace && !auto_sdr) {
+        int want_p3 = cs == SNX_HDR_CS_AUTO || cs == SNX_HDR_CS_P3;
+        int want_scrgb = cs == SNX_HDR_CS_AUTO || cs == SNX_HDR_CS_SCRGB;
+        int want_pq = cs == SNX_HDR_CS_AUTO || cs == SNX_HDR_CS_PQ;
+#if defined(__APPLE__)
+        /* macOS misrepresents an HDR10 layer's luminance (about half the exposure, mpv #16899): the extended kinds,
+           whose 1.0 is the display's SDR white, keep the look */
+        if (want_p3 && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, scrgb_formats, 1,
+                                                VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT, &fmt))
+            hdr = p3 = 1;
+        else if (want_scrgb && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, scrgb_formats, 1,
+                                                        VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, &fmt))
+            hdr = scrgb = 1;
+        else if (want_pq && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, hdr_formats, 2,
+                                                     VK_COLOR_SPACE_HDR10_ST2084_EXT, &fmt))
+            hdr = 1;
+#else
+        /* HDR10 first: its signal is absolute, and with VK_EXT_hdr_metadata (the peak and the paper white) a
+           compositor maps it as it is. The extended kinds' 1.0 depends on the compositor's reference, which SDL does
+           not report on Wayland */
+        if (want_pq && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, hdr_formats, 2,
+                                                VK_COLOR_SPACE_HDR10_ST2084_EXT, &fmt))
+            hdr = 1;
+        else if (want_p3 && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, scrgb_formats, 1,
+                                                     VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT, &fmt))
+            hdr = p3 = 1;
+        else if (want_scrgb && snx_vk_surface_format_cs(g_vk.phys, g_vk.surface, scrgb_formats, 1,
+                                                        VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, &fmt))
+            hdr = scrgb = 1;
+#endif
+    }
+    if (!hdr) {
+        if (kind == VK_SC_SRGB && snx_vk_surface_format(g_vk.phys, g_vk.surface, srgb_formats, 2, &fmt)) {
+        } else
+            snx_vk_surface_format(g_vk.phys, g_vk.surface, unorm_formats, 2, &fmt);
+    }
+    if (kind == VK_SC_HDR && !hdr)
+        LOG_LIMIT(1, "vulkan: the display takes no HDR image: the frame stays in the SDR range\n");
+    if (kind == VK_SC_SRGB && fmt.format != VK_FORMAT_B8G8R8A8_SRGB && fmt.format != VK_FORMAT_R8G8B8A8_SRGB) {
         LOG_LIMIT(1, "vulkan: the window has no sRGB format: frames in sRGB show darker\n");
     }
 
@@ -1062,15 +1134,34 @@ int vk_swapchain_create(int srgb) {
     g_vk.sc_win_w = ww;
     g_vk.sc_win_h = wh;
     g_vk.sc_srgb = fmt.format == VK_FORMAT_B8G8R8A8_SRGB || fmt.format == VK_FORMAT_R8G8B8A8_SRGB;
+    g_vk.sc_hdr = hdr;
+    g_vk.sc_scrgb = scrgb;
+    g_vk.sc_p3 = p3;
     g_vk.sc_format = fmt.format;
     g_vk.sc_turned = transform != caps.currentTransform;
     g_vk.sc_vsync = vsync;
     g_vk.sc_count = nimg;
     vkGetSwapchainImagesKHR(g_vk.dev, sc, &g_vk.sc_count, g_vk.sc_images);
     memcpy(g_vk.sc_done, done, sizeof done[0] * nimg);
+    if (hdr && !scrgb && !p3 && g_vk.has_hdr_metadata) {
+        /* the display's own report of the light: the paper white's frame, and the peak the tone mapping clips at */
+        VkHdrMetadataEXT meta = {.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,
+                                 .minLuminance = 0.005f,
+                                 .maxLuminance = (float)vk_hdr_peak_nits(),
+                                 .maxContentLightLevel = (float)vk_hdr_peak_nits(),
+                                 .maxFrameAverageLightLevel = (float)(vk_hdr_paper_nits() / 4)};
+        meta.displayPrimaryRed = (VkXYColorEXT){0.708f, 0.292f};
+        meta.displayPrimaryGreen = (VkXYColorEXT){0.170f, 0.797f};
+        meta.displayPrimaryBlue = (VkXYColorEXT){0.131f, 0.046f};
+        meta.whitePoint = (VkXYColorEXT){0.3127f, 0.3290f};
+        vkSetHdrMetadataEXT(g_vk.dev, 1, &sc, &meta);
+    }
     LOG("vulkan: swapchain %ux%u, %u images%s%s, %s\n", ext.width, ext.height, g_vk.sc_count,
         g_vk.sc_srgb ? ", sRGB" : "",
-        g_vk.sc_hold    ? ", presents timed and held until they are due"
+        g_vk.sc_p3      ? ", Display P3 (linear, 1.0 at the paper white)"
+        : g_vk.sc_scrgb ? ", scRGB (linear, 1.0 at the paper white)"
+        : g_vk.sc_hdr   ? ", HDR10 (PQ, BT.2020)"
+        : g_vk.sc_hold  ? ", presents timed and held until they are due"
         : g_vk.sc_clock ? ", presents timed"
                         : "",
         mode == VK_PRESENT_MODE_MAILBOX_KHR     ? "mailbox"

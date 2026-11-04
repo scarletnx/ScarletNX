@@ -4,6 +4,7 @@
 #include "vita/gpu/render.h"
 #include "vita/gpu/vk.h"
 #include "vita/platform/input.h"
+#include "common/gpu/vk/hotkeys.h"
 #include "snx_settings.h"
 #include <SDL3/SDL.h>
 #include <signal.h>
@@ -14,6 +15,7 @@
 static struct {
     char* shot;
     bool video;
+    uint64_t quit_armed_ns; /* the second Esc, before this, quits: a first one only warns */
 } g_present;
 static volatile sig_atomic_t g_interrupted;
 static void on_signal(int signal) {
@@ -30,6 +32,23 @@ void vita_present_init(const char* title, const char* shot) {
 }
 /* the framebuffer shown last as PATH<suffix>.ppm, once the GPU drew it */
 static void shot_write(VitaProcess* p, const char* suffix);
+/* the runtime's live keys, the same as the other frontends': the upscaler, the anti aliasing, HDR and frame
+   interpolation, with a message over the frame and a log line */
+static void vita_hotkey(int action) {
+    char text[64];
+    int value = -1;
+    switch (action) {
+        case SNX_HOTKEY_UPSCALER: value = vita_vk_cycle_upscaler(); break;
+        case SNX_HOTKEY_AA: value = vita_vk_cycle_aa(); break;
+        case SNX_HOTKEY_HDR: value = vita_vk_toggle_hdr(); break;
+        case SNX_HOTKEY_INTERP: value = snx_hotkey_next_interp(); break;
+    }
+    if (value < 0) return;
+    snx_hotkey_text(action, value, text, sizeof text);
+    vita_vk_toast(text);
+    printf("%s (%s)\n", text, snx_hotkey_key_name(action));
+}
+
 bool vita_present_vblank(VitaProcess* p) {
     if (p->display.base) vita_render_show(p, p->display.base, p->display.pitch, p->display.width, p->display.height);
     unsigned every = (unsigned)g_settings.vita_screenshot_interval;
@@ -41,6 +60,34 @@ bool vita_present_vblank(VitaProcess* p) {
     SDL_Event event;
     while (SDL_WasInit(SDL_INIT_EVENTS) && SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) return false;
+        if (event.type == SDL_EVENT_KEY_DOWN) {
+            int action;
+            if (event.key.key == SDLK_ESCAPE && !event.key.repeat) {
+                uint64_t now = SDL_GetTicksNS();
+                if (g_present.quit_armed_ns && now < g_present.quit_armed_ns) return false;
+                g_present.quit_armed_ns = now + 3000000000ull;
+                vita_vk_toast_ms("Press Esc again to quit", 3000);
+                printf("Press Esc again to quit\n");
+                continue;
+            }
+            if (event.key.key == SDLK_F11 || (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT))) {
+                if (!event.key.repeat) vita_vk_toggle_fullscreen();
+                continue;
+            }
+            if (event.key.key == SDLK_F6 && !event.key.repeat) {
+                printf("showcase: %s\n", vita_vk_stats_toggle(1) ? "on" : "off");
+                continue;
+            }
+            if (event.key.key == SDLK_F12 && !event.key.repeat) {
+                printf("stats: %s\n", vita_vk_stats_toggle(0) ? "on" : "off");
+                continue;
+            }
+            action = snx_hotkey_match(&event.key);
+            if (action != SNX_HOTKEY_NONE) {
+                if (!event.key.repeat) vita_hotkey(action);
+                continue;
+            }
+        }
         vita_input_event(&event);
     }
     return !g_interrupted;

@@ -902,17 +902,132 @@ static void all_scenes(SnxCtrMemory* m) {
     index_count_past_ram(m);
 }
 
+/* ---- the shadow map ---- */
+
+#define SHADOW (VRAM + 0x500000u)
+#define SHADOW_SPAN (W * H * 4)
+
+/* the shader of both scenes: the base program, with o3 = c1 as texcoord0_w for the map's fetch */
+static void shadow_program(List* l, float w) {
+    const uint32_t code[7] = {op1(0x08, 0x10, 0x20, 0x00, 0), /* mul r0, c0, v0 */
+                              op1(0x13, 0x00, 0x10, 0x00, 0), /* mov o0, r0 */
+                              op1(0x13, 0x01, 0x01, 0x00, 0), /* mov o1, v1 */
+                              op1(0x13, 0x02, 0x02, 0x00, 0), /* mov o2, v2 */
+                              op1(0x13, 0x03, 0x21, 0x00, 0), /* mov o3, c1 (0x20 and up are the uniforms) */
+                              END};
+    put(l, SNX_PICA_VS + SNX_PICA_SH_PROGRAM_OFFSET, 0);
+    for (unsigned i = 0; i < 6; ++i) put(l, SNX_PICA_VS + SNX_PICA_SH_PROGRAM_WORD, code[i]);
+    /* c1 = (w, w, w, w) */
+    put(l, SNX_PICA_VS + SNX_PICA_SH_UNIFORM_SETUP, 1);
+    put(l, SNX_PICA_VS + SNX_PICA_SH_UNIFORM_VALUE, f24(w) << 8 | (f24(w) >> 16 & 0xff));
+    put(l, SNX_PICA_VS + SNX_PICA_SH_UNIFORM_VALUE, (f24(w) & 0xffff) << 16 | (f24(w) >> 8 & 0xff));
+    put(l, SNX_PICA_VS + SNX_PICA_SH_UNIFORM_VALUE, (f24(w) & 0xff) << 24 | f24(w));
+    put(l, SNX_PICA_VS + SNX_PICA_SH_OUTPUT_MASK, 15);
+    put(l, 0x04f, 4);
+    put(l, 0x053, 0x1f1f1f10u); /* o3.x is texcoord0_w */
+}
+/* a quad over the whole window at z = -0.5, its colour green 0 (an opaque caster, which writes the depth), its
+   texcoord (0.5, 0.5) */
+static void shadow_quad(Scene* s) {
+    static const float xy[6][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, -1}, {1, 1}, {-1, 1}};
+    for (unsigned i = 0; i < 6; ++i)
+        s->vertices[s->vertex_count++] = vertex(xy[i][0], xy[i][1], -0.5f, 0x000000ffu, 0.5f, 0.5f);
+    array_draw(s);
+    list_end(&s->list);
+}
+/* the shadow pass: OM_MODE 3 writes the map at SHADOW, with no depth attachment */
+static Scene* shadow_scene(void) {
+    Scene* s = scene("a shadow map rendered", 0, 0xff);
+    put(&s->list, 0x11d, SHADOW / 8);
+    put(&s->list, 0x117, 0);
+    put(&s->list, 0x11e, W | (H - 1) << 12 | 1u << 24);
+    put(&s->list, 0x11c, 0);
+    put(&s->list, 0x116, 0);
+    put(&s->list, 0x100, 3); /* shadow rendering */
+    put(&s->list, 0x080, 0); /* no texture */
+    put(&s->list, 0x0c0, 0); /* stage 0: the vertex's colour, its green is the strength */
+    shadow_program(&s->list, 1.0f);
+    shadow_quad(s);
+    return s;
+}
+/* a normal pass that samples the map: tex0 is Shadow2D, and the fragment's texcoord0_w is its depth */
+static Scene* shadow_read_scene(float w) {
+    Scene* s = scene("a shadow map read", 0, 0xff);
+    put(&s->list, 0x080, 1);              /* unit 0 on */
+    put(&s->list, 0x082, W << 16 | H);    /* its size */
+    put(&s->list, 0x083, 2u << 28);       /* Shadow2D, nearest */
+    put(&s->list, 0x085, SHADOW / 8);
+    put(&s->list, 0x08e, 0);
+    put(&s->list, 0x08b, 1);              /* orthographic: the texcoord is the map's */
+    put(&s->list, 0x0c0, 0x00030003u);    /* stage 0: texture 0 */
+    shadow_program(&s->list, w);
+    shadow_quad(s);
+    return s;
+}
+/* The map's words, then what reading it gives: a fragment nearer than the map is lit (1), one farther is shadowed
+   (0). The CPU reference stops on shadow rendering, so this checks the GPU's own results, not a comparison. */
+static void shadow_map(SnxCtrMemory* m) {
+    static unsigned char before[SHADOW_SPAN], words[SHADOW_SPAN], color[W * H * 4];
+    bool ok = true;
+    /* a map cleared to "far": every word's depth is 0xFFFFFF, so the draw's nearer depths go in */
+    for (unsigned i = 0; i < SHADOW_SPAN / 4; ++i) {
+        before[i * 4] = 0xff;
+        before[i * 4 + 1] = 0xff;
+        before[i * 4 + 2] = 0xff;
+        before[i * 4 + 3] = 0xff;
+    }
+    ok = ok && snx_ctr_phys_write(m, SHADOW, before, SHADOW_SPAN) == SNX_CTR_MEM_OK;
+    Scene* write = shadow_scene();
+    setup_clear(m, write);
+    ok = ok && record(m, write, &vulkan);
+    snx_ctr_vk_sync(SHADOW, SHADOW_SPAN, false);
+    ok = ok && snx_ctr_vk_finish();
+    ok = ok && snx_ctr_phys_read(m, SHADOW, words, SHADOW_SPAN) == SNX_CTR_MEM_OK;
+    uint32_t word = 0, first = 0;
+    unsigned wrong = 0;
+    memcpy(&first, words, 4);
+    for (unsigned i = 0; i < SHADOW_SPAN / 4; ++i) {
+        memcpy(&word, words + i * 4, 4);
+        if (word != first) ++wrong;
+    }
+    uint32_t depth = first >> 8, strength = first & 0xff;
+    bool pass = ok && !wrong && strength == 0xff && depth > 0x100000u && depth < 0xf00000u;
+    printf("%-24s word 0x%08x (%u of %u differ), depth 0x%06x, strength %u: %s\n", write->name, first, wrong,
+           SHADOW_SPAN / 4, depth, strength, pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+    float dw = (float)depth / 16777215.0f;
+    Scene* reads[2] = {shadow_read_scene(dw * 0.5f), shadow_read_scene(1.0f)};
+    static const unsigned char want[2][4] = {{0xff, 0xff, 0xff, 0xff}, {0x00, 0x00, 0x00, 0x00}};
+    for (unsigned k = 0; k < 2; ++k) {
+        setup_clear(m, reads[k]);
+        ok = record(m, reads[k], &vulkan) && snx_ctr_vk_finish();
+        ok = ok && snx_ctr_phys_read(m, COLOR, color, W * H * 4) == SNX_CTR_MEM_OK;
+        /* the middle pixel, where the quad and the map are */
+        const unsigned char* p = color + ((H / 2) * W + W / 2) * 4;
+        unsigned off = 0;
+        for (unsigned c = 0; c < 4; ++c) off += p[c] != want[k][c];
+        pass = ok && !off;
+        printf("%-24s %s: %s\n", k ? "a shadow map read, far" : "a shadow map read, near",
+               k ? "shadowed" : "lit", pass ? "ok" : "FAIL");
+        if (!pass) ++failures;
+        free(reads[k]);
+    }
+    free(write);
+}
+
 typedef struct {
     const char* flag;
     const char* what;
     void (*run)(SnxCtrMemory* memory);
+    int cpu_reference; /* the scenes compare against the CPU reference; the shadow map checks its own results */
 } Mode;
-static const Mode scenes = {NULL, "the scenes", all_scenes};
+static const Mode scenes = {NULL, "the scenes", all_scenes, 1};
 /* the validation runs record only the commands under test */
-static const Mode modes[] = {{"--present", "the presented screens", screens},
-                             {"--after-draw", "the commands after a draw", presented_after_draw},
-                             {"--texture-after-draw", "the textures after a draw", texture_after_draw},
-                             {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy}};
+static const Mode modes[] = {{"--present", "the presented screens", screens, 1},
+                             {"--after-draw", "the commands after a draw", presented_after_draw, 1},
+                             {"--texture-after-draw", "the textures after a draw", texture_after_draw, 1},
+                             {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy, 1},
+                             {"--shadow", "the shadow map", shadow_map, 0}};
 
 int main(int argc, char** argv) {
     const Mode* mode = &scenes;
@@ -943,6 +1058,9 @@ int main(int argc, char** argv) {
     snx_ctr_present_free();
     snx_ctr_vk_free();
     snx_ctr_memory_free(m);
-    printf("3ds vk draw: %s %s the CPU reference\n", mode->what, failures ? "differ from" : "agree with");
+    if (mode->cpu_reference)
+        printf("3ds vk draw: %s %s the CPU reference\n", mode->what, failures ? "differ from" : "agree with");
+    else
+        printf("3ds vk draw: %s %s\n", mode->what, failures ? "FAILED" : "passed");
     return failures != 0;
 }

@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* settingsgen: generates the settings from src/nx/runtime/settings.txt (its head describes the format): snx_settings.h,
    the struct Settings with a member for every setting (its name in snake_case) and g_settings, the tables of
-   nx/runtime/ini.h that read and write them, and the code that hands LLVM's settings to LLVM. An llvm table is
+   common/utilities/ini.h that read and write them, and the code that hands LLVM's settings to LLVM. An llvm table is
    filled with what the LLVM being built against has: every pass of the pipelines its opt prints for -O0 to -Oz (a
    file of "<level> <pipeline>" lines, --pipelines), on unless turned off, and each option its C API sets on the pass
    builder (LLVMPassBuilderOptionsSet*) and the target machine (LLVMSetTargetMachine*) taking a bool or an integer,
@@ -783,7 +783,7 @@ static void header(void) {
 static void write_h(const char* dir) {
     int i, t;
     header();
-    outs("#ifndef SNX_SETTINGS_H\n#define SNX_SETTINGS_H\n#include \"nx/runtime/ini.h\"\n#include <limits.h>\n\n");
+    outs("#ifndef SNX_SETTINGS_H\n#define SNX_SETTINGS_H\n#include \"common/utilities/ini.h\"\n#include <limits.h>\n\n");
     outs("/* an LLVM option's value while LLVM's own is kept */\n#define SETTINGS_UNSET INT_MIN\n\n");
     for (i = 0, t = 0; i < nsettings; i++) t += settings[i].repeat ? settings[i].repeat : 1;
     out("/* the keys of every table, a repeated setting's once for each repeat: what a settings file the runtime "

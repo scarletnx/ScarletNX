@@ -23,8 +23,11 @@ static struct {
     u64 at[STATS_FRAMES]; /* the presents of the game's last frames, a ring that next writes on */
     unsigned next, count;
     u64 frames;             /* the frames kept since stats went on */
+    u64 generated;          /* the generated frames presented beside them (frame interpolation's blends) */
     u64 since, since_ns;    /* the frames and the time the frame rate is counted from */
+    u64 since_gen;          /* the generated frames at that time */
     int fps10;              /* the frames a second over the last half second, in tenths; -1 for none yet */
+    int gen10;              /* the generated frames a second over the same span, in tenths */
     u64 sampled_ns, cpu_ns; /* when the processor's time was read last, and what it was: the renderer's thread's */
     int cpu;                /* stats_measured's */
     u64 memory;
@@ -47,11 +50,25 @@ void stats_measured(int cpu, u64 memory) {
     g_stats.memory = memory;
     ui_unlock();
 }
+/* the counters run while either overlay shows: the stats box reads them, and the showcase's line too */
+static int counting(void) {
+    return __atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED) || g_settings.showcase;
+}
+int stats_rate10(void) { return g_stats.fps10; }
+int stats_gen10(void) { return g_stats.gen10; }
+
+void stats_generated(void) {
+    if (!counting()) return;
+    ui_lock();
+    ++g_stats.generated;
+    ui_unlock();
+}
+
 void stats_frame(u64 now_ns) {
     u64 cpu_ns;
     unsigned cores;
-    if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) {
-        if (g_stats.frames || g_stats.sampled_ns) { /* the next turn on starts from nothing */
+    if (!counting()) {
+        if (g_stats.frames || g_stats.sampled_ns || g_stats.since_ns) { /* the next turn on starts from nothing */
             int corner = g_stats.corner;
             ui_lock();
             memset(&g_stats, 0, sizeof g_stats);
@@ -66,6 +83,20 @@ void stats_frame(u64 now_ns) {
     g_stats.next = (g_stats.next + 1) % STATS_FRAMES;
     if (g_stats.count < STATS_FRAMES) ++g_stats.count;
     ++g_stats.frames;
+    /* the half second's rates here, not at the draw: the showcase's line reads them too, and it draws no box */
+    if (!g_stats.since_ns) {
+        g_stats.since_ns = now_ns;
+        g_stats.since = g_stats.frames;
+    } else if (now_ns > g_stats.since_ns && now_ns - g_stats.since_ns >= STATS_SPAN_NS) {
+        g_stats.fps10 = (int)(((g_stats.frames - g_stats.since) * 10000000000ull + (now_ns - g_stats.since_ns) / 2) /
+                              (now_ns - g_stats.since_ns));
+        g_stats.gen10 = (int)(((g_stats.generated - g_stats.since_gen) * 10000000000ull +
+                               (now_ns - g_stats.since_ns) / 2) /
+                              (now_ns - g_stats.since_ns));
+        g_stats.since_ns = now_ns;
+        g_stats.since = g_stats.frames;
+        g_stats.since_gen = g_stats.generated;
+    }
     ui_unlock();
     if (g_stats.sampled_ns && now_ns - g_stats.sampled_ns < STATS_SAMPLE_NS) return;
     cpu_ns = snx_process_cpu_ns();
@@ -79,10 +110,10 @@ void stats_frame(u64 now_ns) {
     g_stats.cpu_ns = cpu_ns;
 }
 
-void stats_box(const int safe[4], int scale, float box[4]) {
+void stats_box(const int safe[4], int scale, int cols, float box[4]) {
     float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, gap = ch / 2, showcase[4];
     int corner = __atomic_load_n(&g_stats.corner, __ATOMIC_RELAXED);
-    box[2] = (float)STATS_COLS * cw;
+    box[2] = (float)cols * cw;
     box[3] = (2 + STATS_GRAPH_LINES) * ch + 3 * ch / 4; /* two lines and the graph, a quarter line around each */
     if (vpad_showcase_box(safe, showcase) == corner) {  /* beside showcase's box, toward the picture's middle */
         box[0] = corner & 1 ? showcase[0] + showcase[2] - box[2] : showcase[0];
@@ -101,17 +132,23 @@ static float frame_ms(unsigned j) {
 }
 void stats_draw(SnxUiList* l, const int safe[4], int scale, u64 now_ns) {
     float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, box[4], gx, gy, gw, gh, bw;
-    char fps[16], ms[16], line[2][STATS_COLS + 1];
+    char fps[16], ms[16], line[2][STATS_COLS_FRAMEGEN + 1];
     unsigned j;
+    int cols = STATS_COLS;
     if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) return;
-    if (!g_stats.since_ns) { /* the first half second starts at the first draw */
+    /* the rates are also taken here, so a stall (no frame for a while) reads 0.0 rather than the last rate */
+    if (!g_stats.since_ns) {
         g_stats.since_ns = now_ns;
         g_stats.since = g_stats.frames;
-    } else if (now_ns - g_stats.since_ns >= STATS_SPAN_NS) {
+    } else if (now_ns > g_stats.since_ns && now_ns - g_stats.since_ns >= STATS_SPAN_NS) {
         g_stats.fps10 = (int)(((g_stats.frames - g_stats.since) * 10000000000ull + (now_ns - g_stats.since_ns) / 2) /
+                              (now_ns - g_stats.since_ns));
+        g_stats.gen10 = (int)(((g_stats.generated - g_stats.since_gen) * 10000000000ull +
+                               (now_ns - g_stats.since_ns) / 2) /
                               (now_ns - g_stats.since_ns));
         g_stats.since_ns = now_ns;
         g_stats.since = g_stats.frames;
+        g_stats.since_gen = g_stats.generated;
     }
     if (g_stats.fps10 >= 0)
         snprintf(fps, sizeof fps, "%d.%d fps", g_stats.fps10 / 10, g_stats.fps10 % 10);
@@ -122,7 +159,14 @@ void stats_draw(SnxUiList* l, const int safe[4], int scale, u64 now_ns) {
         snprintf(ms, sizeof ms, "%d.%d ms", tenths / 10, tenths % 10);
     } else
         snprintf(ms, sizeof ms, "? ms");
-    snprintf(line[0], sizeof line[0], "%s  %s", fps, ms);
+    if (g_stats.gen10 > 0) {
+        /* frame interpolation on: the real rate, the generated frames a second beside it, then their total */
+        int total = g_stats.fps10 + g_stats.gen10;
+        snprintf(line[0], sizeof line[0], "%s  %d.%d gen  %d.%d total  %s", fps, g_stats.gen10 / 10,
+                 g_stats.gen10 % 10, total / 10, total % 10, ms);
+        cols = STATS_COLS_FRAMEGEN;
+    } else
+        snprintf(line[0], sizeof line[0], "%s  %s", fps, ms);
     if (g_stats.cpu >= 0 && g_stats.memory)
         snprintf(line[1], sizeof line[1], "cpu %d%%  %llu MiB", g_stats.cpu,
                  (unsigned long long)(g_stats.memory >> 20));
@@ -132,7 +176,7 @@ void stats_draw(SnxUiList* l, const int safe[4], int scale, u64 now_ns) {
         snprintf(line[1], sizeof line[1], "cpu ?  %llu MiB", (unsigned long long)(g_stats.memory >> 20));
     else
         snprintf(line[1], sizeof line[1], "cpu ?  ? MiB");
-    stats_box(safe, scale, box);
+    stats_box(safe, scale, cols, box);
     ui_fill(l, box[0], box[1], box[2], box[3], STATS_BACK);
     ui_text(l, box[0] + cw, box[1] + ch / 4, scale, line[0], STATS_TEXT);
     ui_text(l, box[0] + cw, box[1] + ch / 4 + ch, scale, line[1], STATS_TEXT);

@@ -297,11 +297,11 @@ int main(void) {
         l.max = 512;
         l.n = 0;
         g_settings.showcase = 0;
-        vpad_showcase_draw(&l, safe, 60);
+        vpad_showcase_draw(&l, safe, 60, 0);
         assert(!l.n);
         g_settings.showcase = 1;
         vpad_showcase_input(0, none);
-        vpad_showcase_draw(&l, safe, 60);
+        vpad_showcase_draw(&l, safe, 60, 0);
         assert(l.n > 13 && drawn(&l, SNX_SPRITE_A) && !drawn(&l, SNX_SPRITE_A_PRESSED) && drawn(&l, SNX_SPRITE_DPAD));
         assert(!drawn(&l, SNX_SPRITE_HOME) && !drawn(&l, SNX_SPRITE_CAPTURE) && !drawn(&l, SNX_SPRITE_L3) &&
                !drawn(&l, SNX_SPRITE_R3) && !drawn(&l, SNX_SPRITE_STICK_PRESSED));
@@ -318,7 +318,7 @@ int main(void) {
             static const char* const name[4] = {"tl", "tr", "bl", "br"};
             ini_read(where, name[k]);
             l.n = 0;
-            vpad_showcase_draw(&l, safe, -1);
+            vpad_showcase_draw(&l, safe, -1, 0);
             for (i = 0; i < l.n; ++i)
                 assert(l.q[i].x >= box[k][0] - 0.01f && l.q[i].x + l.q[i].w <= box[k][0] + 500.01f &&
                        l.q[i].y >= box[k][1] - 0.01f && l.q[i].y + l.q[i].h <= box[k][1] + 300.01f);
@@ -334,12 +334,12 @@ int main(void) {
         ini_read(where, "top"); /* longer than the setting holds: ini.c's own refusal, the corner the same */
         assert(!strcmp(g_settings.showcase_corner, "tl"));
         l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
+        vpad_showcase_draw(&l, safe, -1, 0);
         assert(l.q[0].x == 20 && l.q[0].y == 20);
         /* pressed: A lit, the D-pad's up, the left stick's click and its knob at the ring's edge */
         vpad_showcase_input(1u << 0 | 1u << 13 | 1u << 4, right);
         l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
+        vpad_showcase_draw(&l, safe, -1, 0);
         assert(drawn(&l, SNX_SPRITE_A_PRESSED) && !drawn(&l, SNX_SPRITE_A) && drawn(&l, SNX_SPRITE_B));
         assert((q = drawn(&l, SNX_SPRITE_DPAD_UP)) && q->turn == 0 && !drawn(&l, SNX_SPRITE_DPAD));
         ring = drawn(&l, SNX_SPRITE_STICK_RANGE);
@@ -349,7 +349,7 @@ int main(void) {
         assert(fabsf(knob->y + knob->h / 2 - (ring->y + ring->h / 2)) < 0.01f);
         vpad_showcase_input(1u << 14, up); /* up is positive, as the game reads it: the knob goes up the screen */
         l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
+        vpad_showcase_draw(&l, safe, -1, 0);
         assert((q = drawn(&l, SNX_SPRITE_DPAD_UP)) && q->turn == 1);
         ring = drawn(&l, SNX_SPRITE_STICK_RANGE);
         knob = drawn(&l, SNX_SPRITE_STICK);
@@ -357,7 +357,7 @@ int main(void) {
                fabsf(knob->x + knob->w / 2 - (ring->x + ring->w / 2)) < 0.01f);
         vpad_showcase_input(0, corner); /* a square of keys: the knob stays on its ring */
         l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
+        vpad_showcase_draw(&l, safe, -1, 0);
         ring = drawn(&l, SNX_SPRITE_STICK_RANGE);
         knob = drawn(&l, SNX_SPRITE_STICK);
         {
@@ -365,11 +365,6 @@ int main(void) {
                   dy = knob->y + knob->h / 2 - (ring->y + ring->h / 2);
             assert(fabsf(sqrtf(dx * dx + dy * dy) - ring->w / 2) < 0.01f && dx > 0 && dy < 0);
         }
-        /* the frames a second: none until half a second is over, then the presents over the last half or more */
-        assert(vpad_showcase_fps(100, 1000000000ull) == -1 && vpad_showcase_fps(115, 1250000000ull) == -1);
-        assert(vpad_showcase_fps(130, 1500000000ull) == 60 && vpad_showcase_fps(131, 1700000000ull) == 60);
-        assert(vpad_showcase_fps(148, 2100000000ull) == 30);
-        assert(vpad_showcase_fps(170, 2700000000ull) == 37); /* 22 in 0.6 s, to the nearest */
         g_settings.showcase = 0;
         ini_read(where, "br");
     }

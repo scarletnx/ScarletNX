@@ -11,7 +11,7 @@
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h"
 #include "nx/memory/mem.h"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/backend.h"
@@ -44,6 +44,7 @@ static int g_tv_mode_choice = 1;
 static int g_tv_on_charger; /* the host's state at the last update: 1, 0 or -1 */
 static int g_tv_power_logged;
 static int g_tv_watch; /* 1 when the platform watches the power source, 0 when the fallback polls it */
+static int g_tv_watch_started; /* the watcher was asked for once: Auto can be entered again without a second one */
 static int g_tv_first = 1;
 static u64 g_tv_poll_next; /* the fallback's next query, in plat_ns */
 /* a host with no watcher: rarely, since a charger is not a thing that changes every second */
@@ -63,7 +64,10 @@ void options_tv_mode_set(const IniOpt* o, const char* v) {
 }
 void options_tv_mode_start(void) {
     if (g_tv_mode_choice != 2) return; /* fixed On and Off need no watcher */
-    g_tv_watch = plat_power_watch() == 0;
+    if (!g_tv_watch_started) {
+        g_tv_watch = plat_power_watch() == 0;
+        g_tv_watch_started = 1;
+    }
     g_tv_first = 1;
     options_tv_mode_update();
 }
@@ -101,6 +105,37 @@ void options_tv_mode_update(void) {
     __atomic_store_n(&g_settings.tv_mode, mode, __ATOMIC_RELAXED);
     am_display_mode_changed();
     hid_mode_changed();
+}
+/* On, Off, Auto and round, as the docked_key hotkey goes: On -> Off -> Auto -> On. A cycle that lands on Auto starts
+   the watcher (once), and Auto names the mode it picks and why in the log. The .ini keeps its own value. */
+void options_tv_mode_forget_watcher(void) {
+    g_tv_watch_started = 0;
+    g_tv_watch = 0;
+}
+
+int options_tv_mode_next(void) {
+    int was = g_tv_mode_choice;
+    int next = was == 1 ? 0 : was == 0 ? 2 : 1;
+    g_tv_mode_choice = next;
+    if (next == 2) {
+        if (!g_tv_watch_started) {
+            g_tv_watch = plat_power_watch() == 0;
+            g_tv_watch_started = 1;
+        }
+        g_tv_first = 1;
+        options_tv_mode_update();
+        LOG("TV mode: Auto (%s)\n", __atomic_load_n(&g_settings.tv_mode, __ATOMIC_RELAXED) ? "TV mode" : "handheld mode");
+    } else {
+        int mode_now = next;
+        int mode_was = __atomic_load_n(&g_settings.tv_mode, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_settings.tv_mode, mode_now, __ATOMIC_RELAXED);
+        if (mode_now != mode_was) {
+            am_display_mode_changed();
+            hid_mode_changed();
+        }
+        LOG("TV mode: %s\n", mode_now ? "On (TV mode)" : "Off (handheld mode)");
+    }
+    return next;
 }
 
 /* "game" in any case, or a number: 0 and below 1 unlimited, 10 to 1000 frames a second (clamped), and the values an

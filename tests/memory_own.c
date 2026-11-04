@@ -12,7 +12,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/memory/own.h"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include "nx/runtime/platform/plat.h"
 #include "snx_settings.h"
 #include <errno.h>

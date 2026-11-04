@@ -30,6 +30,13 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | xxHash 0.8.4 (XXH3 and its x86 dispatcher, the renderer's content hashes: `src/nx/gpu/vk/xxh3.c`) | BSD-2-Clause |
 | Vulkan-Headers | Apache 2.0 |
 | volk / Vulkan Memory Allocator | MIT |
+| AMD FidelityFX Super Resolution 1.0 (`src/nx/gpu/vk/upscale/ffx_a.h`, `ffx_fsr1.h`, and the EASU and RCAS shaders' constants) | MIT |
+| NVIDIA Image Scaling 1.0.3 (`src/nx/gpu/vk/upscale/NIS_Scaler.h`, `nis.comp`, `nis_coef.h`, and NVScaler's config) | MIT |
+| Qualcomm Snapdragon Game Super Resolution 1 (`src/nx/gpu/vk/upscale/sgsr1.vert`, `sgsr1.frag`) | BSD-3-Clause |
+| The presented frame's upscaler wrapper (`src/nx/gpu/vk/upscale.c`, `upscale_fsr.c`), after Eden's and yuzu's FSR and SGSR wrappers | GPL-3.0-or-later, GPL-2.0-or-later |
+| FXAA 3.11 (`src/common/gpu/vk/fx/fxaa.frag`), after Timothy Lottes' public domain FXAA | Public domain |
+| SMAA 1x (`src/common/gpu/vk/fx/smaa_*.frag`, `AreaTex.h`, `SearchTex.h`), Jorge Jimenez and the SMAA contributors' shader and textures, with the Vulkan GLSL form of the OpenQ4 port | MIT |
+| The shared presentation effects (`src/common/gpu/vk/present_fx.c`), the presented frame's upscaler, anti aliasing and HDR of the 3DS, Vita and GBA frontends | GPL-3.0-or-later |
 | SDL3 | zlib |
 | The AppImage's runtime (uruntime) and launcher (sharun, with Anylinux-sharun's `anylinux.so` and cross-libc-dlopen) | MIT |
 | Tracy (the profiler client, built only with `SNX_TRACY`) | BSD-3-Clause |

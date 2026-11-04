@@ -89,6 +89,9 @@ rules that sessions get wrong, and it points to the skills that hold the procedu
 - Do not build while a test that is sensitive to time runs. The build deploys a new runtime into `recompiled/` of
   the data folder, and it loads the CPU.
 - Do not use `sudo` or install system packages. The user installs them.
+- Use a headless instance when a run or a test needs a window. Start a private headless KWin Wayland instance, or use
+  the runtime's `-H` for the Vulkan tests. Do not use the user's desktop, its focus or its keyboard. The user always
+  wants headless runs when they are possible.
 - The context is small. Never print a whole log, a whole disassembly or a ninja log. A game log (`<id>.log`) grows to
   megabytes. Use `grep -n`, `tail`, or `tools/disasm.py` on one function.
 

@@ -96,11 +96,24 @@ if(WIN32)
 else()
     list(APPEND platform runtime/platform/plat_posix.c)
 endif()
+if(APPLE AND (NOT DEFINED SNX_BUILD_GUI OR SNX_BUILD_GUI))
+    # the display's EDR headroom (plat_apple.m): AppKit reports it on macOS, and the file answers the poll with nothing
+    # on the other Apple systems, which have no AppKit. The menu's build enables OBJC
+    list(APPEND platform runtime/platform/plat_apple.m)
+    if(NOT IOS)
+        set(snx_apple_edr 1)
+    endif()
+endif()
 if(SNX_TRACY)
     # the C++ client's connection id, which the C layer's GPU track keys its epochs on
     list(APPEND platform runtime/platform/tracy_conn.cpp)
 endif()
 snx_component(platform ${platform})
+if(snx_apple_edr)
+    target_compile_definitions(snx_platform PRIVATE SNX_APPLE_EDR=1)
+    # AppKit's NSScreen reports the display's EDR headroom, and the ObjC runtime comes with it (iOS has no AppKit)
+    target_link_libraries(snx_platform PUBLIC "-framework AppKit")
+endif()
 
 snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c gpu/shader/shipped.c
                      gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/structure.c
@@ -112,7 +125,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/display.c gpu/vk/compute.c
-                 gpu/vk/pending_pages.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
+                 gpu/vk/pending_pages.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/vk/upscale.c gpu/vk/upscale_select.c gpu/vk/upscale_fsr.c gpu/vk/hdr.c gpu/vk/hdr_select.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
                  gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/draw_texture.c
                  "${volk_SOURCE_DIR}/volk.c")
 # the ASTC decoder's, the block linear deswizzle and swizzle's, the texture conversions', the VIC composition's and
@@ -142,6 +155,26 @@ snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.frag NAME msaa_unpack_spv HEADER nx/gpu
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.frag NAME msaa_unpack_depth_spv HEADER nx/gpu/vk/msaa_spv.h
                DEFINES MS_UNPACK_DEPTH)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.frag NAME msaa_pack_spv HEADER nx/gpu/vk/msaa_spv.h DEFINES MS_PACK)
+# the presented frame's spatial upscalers (gpu/vk/upscale.c): FSR 1's two passes, NIS's compute pass (RGBA16F and the
+# RGBA8 fallback), and SGSR's vertex and fragment
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/fsr.vert NAME fsr_vert_spv HEADER nx/gpu/vk/upscale_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/fsr_easu.frag NAME fsr_easu_spv HEADER nx/gpu/vk/upscale_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/fsr_rcas.frag NAME fsr_rcas_spv HEADER nx/gpu/vk/upscale_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/fsr_easu.frag NAME fsr_easu_fp16_spv HEADER nx/gpu/vk/upscale_spv.h
+               DEFINES YUZU_USE_FP16)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/fsr_rcas.frag NAME fsr_rcas_fp16_spv HEADER nx/gpu/vk/upscale_spv.h
+               DEFINES YUZU_USE_FP16)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/nis.comp NAME nis_spv HEADER nx/gpu/vk/upscale_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/nis.comp NAME nis8_spv HEADER nx/gpu/vk/upscale_spv.h
+               DEFINES NIS_OUTPUT_RGBA8)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/sgsr1.vert NAME sgsr_vert_spv HEADER nx/gpu/vk/upscale_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/sgsr1.frag NAME sgsr_frag_spv HEADER nx/gpu/vk/upscale_spv.h)
+# The presented frame's HDR passes (gpu/vk/hdr.c) and the test pattern a run draws to prove the lift reaches the
+# display: the same sources the 3DS, Vita and GBA share (common/gpu/vk/fx), so the two paths cannot drift apart.
+snx_glsl_spirv(snx_vk SOURCE ../common/gpu/vk/fx/hdr.vert NAME hdr_vert_spv HEADER nx/gpu/vk/hdr_spv.h)
+snx_glsl_spirv(snx_vk SOURCE ../common/gpu/vk/fx/hdr_compose.frag NAME hdr_compose_frag_spv HEADER nx/gpu/vk/hdr_spv.h)
+snx_glsl_spirv(snx_vk SOURCE ../common/gpu/vk/fx/hdr_encode.frag NAME hdr_encode_frag_spv HEADER nx/gpu/vk/hdr_spv.h)
+snx_glsl_spirv(snx_vk SOURCE ../common/gpu/vk/fx/hdr_test.frag NAME hdr_test_frag_spv HEADER nx/gpu/vk/hdr_spv.h)
 set(components core kernel hle video gpu platform shader vk)
 # third-party code (vma.cpp is VMA's implementation), cmake/dependencies.cmake
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" gpu/vk/vma.cpp PROPERTIES COMPILE_OPTIONS
@@ -185,7 +218,8 @@ endif()
 include("${PROJECT_SOURCE_DIR}/cmake/window_icon.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/build_info.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/pad_sdl.cmake")
-target_link_libraries(snx_platform PRIVATE SDL3::SDL3 snx_window_icon snx_build_info snx_pad_sdl snx_splash)
+include("${PROJECT_SOURCE_DIR}/cmake/keybind.cmake")
+target_link_libraries(snx_platform PRIVATE SDL3::SDL3 snx_window_icon snx_build_info snx_pad_sdl snx_keybind snx_splash)
 if(WIN32)
     target_link_libraries(snx_platform PUBLIC synchronization powrprof) # plat_wait_word's WaitOnAddress, the power notification
 endif()
@@ -296,6 +330,60 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_tests_properties(vulkan_headless_vic_validation PROPERTIES TIMEOUT 60
         ENVIRONMENT "SNX_TEST_VIC_ONLY=1"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the presented frame's upscalers on a synthetic image, then under the validation layer
+    add_executable(snx-test-vulkan-upscale "${PROJECT_SOURCE_DIR}/tests/vulkan_upscale.c"
+        "${PROJECT_SOURCE_DIR}/tests/support/half.c")
+    target_link_libraries(snx-test-vulkan-upscale PRIVATE snx_nx_flags ${components} snx_driver FFmpeg::avutil
+                                                          Threads::Threads ${CMAKE_DL_LIBS})
+    set_target_properties(snx-test-vulkan-upscale PROPERTIES LINKER_LANGUAGE CXX)
+    if(WIN32)
+        target_link_libraries(snx-test-vulkan-upscale PRIVATE user32)
+    else()
+        target_link_libraries(snx-test-vulkan-upscale PRIVATE m)
+    endif()
+    target_link_libraries(snx-test-vulkan-upscale PRIVATE SDL3::SDL3)
+    add_test(NAME vulkan_upscale COMMAND snx-test-vulkan-upscale -H)
+    set_tests_properties(vulkan_upscale PROPERTIES TIMEOUT 120
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    add_test(NAME vulkan_upscale_validation COMMAND snx-test-vulkan-upscale -H --vk_validation=1)
+    set_tests_properties(vulkan_upscale_validation PROPERTIES TIMEOUT 120
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the presented frame's HDR passes on a synthetic image, then under the validation layer
+    add_executable(snx-test-vulkan-hdr "${PROJECT_SOURCE_DIR}/tests/vulkan_hdr.c"
+        "${PROJECT_SOURCE_DIR}/tests/support/half.c" "${PROJECT_SOURCE_DIR}/tests/support/hdr_ref.c")
+    target_link_libraries(snx-test-vulkan-hdr PRIVATE snx_nx_flags ${components} snx_driver FFmpeg::avutil
+                                                          Threads::Threads ${CMAKE_DL_LIBS})
+    set_target_properties(snx-test-vulkan-hdr PROPERTIES LINKER_LANGUAGE CXX)
+    if(WIN32)
+        target_link_libraries(snx-test-vulkan-hdr PRIVATE user32)
+    else()
+        target_link_libraries(snx-test-vulkan-hdr PRIVATE m)
+    endif()
+    target_link_libraries(snx-test-vulkan-hdr PRIVATE SDL3::SDL3)
+    add_test(NAME vulkan_hdr COMMAND snx-test-vulkan-hdr -H)
+    set_tests_properties(vulkan_hdr PROPERTIES TIMEOUT 120
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    add_test(NAME vulkan_hdr_validation COMMAND snx-test-vulkan-hdr -H --vk_validation=1)
+    set_tests_properties(vulkan_hdr_validation PROPERTIES TIMEOUT 120
+        FAIL_REGULAR_EXPRESSION "vulkan_hdr: a validation message;failed: VK_ERROR")
+    # HDR on a Wayland session, the only Linux desktop that shows it: a real window and swapchain, skipped (77) where
+    # there is none
+    add_executable(snx-test-vulkan-hdr-wayland "${PROJECT_SOURCE_DIR}/tests/vulkan_hdr_wayland.c")
+    target_link_libraries(snx-test-vulkan-hdr-wayland PRIVATE snx_nx_flags ${components} snx_driver FFmpeg::avutil
+                                                               Threads::Threads ${CMAKE_DL_LIBS})
+    set_target_properties(snx-test-vulkan-hdr-wayland PROPERTIES LINKER_LANGUAGE CXX)
+    if(WIN32)
+        target_link_libraries(snx-test-vulkan-hdr-wayland PRIVATE user32)
+    else()
+        target_link_libraries(snx-test-vulkan-hdr-wayland PRIVATE m)
+    endif()
+    target_link_libraries(snx-test-vulkan-hdr-wayland PRIVATE SDL3::SDL3)
+    add_test(NAME vulkan_hdr_wayland COMMAND snx-test-vulkan-hdr-wayland)
+    set_tests_properties(vulkan_hdr_wayland PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77
+        FAIL_REGULAR_EXPRESSION "failed: VK_ERROR")
+    add_test(NAME vulkan_hdr_wayland_validation COMMAND snx-test-vulkan-hdr-wayland --vk_validation=1)
+    set_tests_properties(vulkan_hdr_wayland_validation PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77
+        FAIL_REGULAR_EXPRESSION "vulkan_hdr_wayland: a validation message;failed: VK_ERROR")
     # the ASTC upload against the CPU decoder, block linear moves on the GPU against bl_offset's layout and texture
     # conversions against the CPU's, with the
     # backend's own frames, staging and allocations and the SPIR-V

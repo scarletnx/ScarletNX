@@ -10,6 +10,7 @@
 * [Performance](#performance)
 * [On-screen controls](#on-screen-controls)
 * [Controllers](#controllers)
+* [Hotkeys](#hotkeys)
 * [Network](#network)
 * [User](#user)
 * [Debug](#debug)
@@ -24,9 +25,10 @@ Settings show a group for each section ([GUI launcher](GUI.md)).
 
 `Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
 Restart for `docked` (`Auto` follows the host's power while the game runs), `fullscreen`, `language`, `resolution`,
-`anisotropy`, `memory_gb`, `memory_fit`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
-`airplane_mode`, `ldn`, `room`, `pipeline_threads`, `prepare_shaders`, `compress_shader_cache`,
-`compress_prepared_shaders`, `jit_threads`, `vertex_input_dynamic_state`, and
+`anisotropy`, `upscaler`, `upscaler_sharpness`, `upscaler_mult`, `hdr`, `hdr_colorspace`, `hdr_expand`,
+`hdr_test`, `hdr_source`, `hdr_paperwhite`, `hdr_peak`, `memory_gb`, `memory_fit`, `heap_max_mb`,
+`thread_stack_mb`, `map_limit_mb`, `map_limit_files`, `airplane_mode`, `ldn`, `room`, `pipeline_threads`,
+`prepare_shaders`, `compress_shader_cache`, `jit_threads`, `vertex_input_dynamic_state`, and
 the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
 `scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
 type, range and help, tab-separated. Every setting, the recompiler's too, is described once in
@@ -50,12 +52,12 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `docked` | `1` | `1` is TV mode, `0` handheld mode (1280x720), `2` Auto: TV mode while the host is on its charger, handheld mode on its battery. Auto switches while the game runs |
+| `docked` | `1` | `1` is TV mode, `0` handheld mode (1280x720), `2` Auto: TV mode while the host is on its charger, handheld mode on its battery. Auto switches while the game runs. The `docked_key` hotkey moves this choice live without changing the `.ini` |
 | `fullscreen` | `0` | `1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets it for one run. F11 or Alt+Enter switches without changing it |
 | `language` | `1` | The game's language, English (US). The `.ini` lists the others, `0` to `17`. One the runtime doesn't know is English (US) |
 | `showcase` | `0` | `1` draws player 1's buttons and sticks, as the game gets them, and the frames a second in a corner of the window, for a video. F6 turns it on and off |
 | `showcase_corner` | `br` | The corner `showcase` draws in: `tl` top left, `tr` top right, `bl` bottom left, `br` bottom right |
-| `stats` | `0` | `1` draws the frames a second, the last frame's time, the processor and memory the game takes (`?` where the system does not tell) and a graph of its last 120 frames' times (guides at 60 and 30 FPS, a frame slower than 30 FPS in red) in a corner over the game. F12 or the game's menu turns it on and off |
+| `stats` | `0` | `1` draws the frames a second, the last frame's time, the processor and memory the game takes (`?` where the system does not tell) and a graph of its last 120 frames' times (guides at 60 and 30 FPS, a frame slower than 30 FPS in red) in a corner over the game. With frame interpolation on, the generated frames a second and their total stand beside the game's own. F12 or the game's menu turns it on and off |
 | `stats_corner` | `tl` | The corner `stats` draws in, as `showcase_corner`'s; in showcase's own corner it goes beside showcase's box, toward the middle |
 
 ## Graphics
@@ -67,6 +69,17 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `vsync` | `1` | Images are shown only on the display's refresh, so nothing tears. `0` doesn't wait for it: the newest image is shown on the next refresh where the display can do that, else at once (which may tear). A display that can do neither waits for the refresh as `1` does |
 | `frame_pacing` | `1` | With VSync and `fps_limit=game`: `0` paces the game's frames by a timer; `1` also has the next frame wait until the one before is on the display (`VK_KHR_present_wait` or `VK_GOOGLE_display_timing`), so frames don't queue for it; `2` also holds each frame of a game that asks for two refreshes or more a frame until its refresh, where the display can say when (`VK_EXT_present_timing` or `VK_GOOGLE_display_timing`). Where the display can't do one, the one before it |
 | `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle |
+| `upscaler` | `fsr1` | The spatial filter that grows the presented frame to the window. `fsr1` is AMD FSR 1 and the default on every device. `off` (`None`) blits the frame as it is, `bilinear` blits it softly, and `nis` and `sgsr` name NVIDIA NIS and Qualcomm SGSR as explicit choices. A filter's output keeps the frame's aspect and letterbox, and the on-screen controls keep their own resolution |
+| `upscaler_mult` | `1` | The multiple of the screen rectangle the upscaler writes, `1` to `4`: `1` is its size, so the frame is upscaled to the display, and `2` is twice it, which the presenter downsamples. Each step costs four times the filter's memory |
+| `upscaler_sharpness` | `25` | The upscaler's sharpening, `0` the sharpest and `100` the softest. `None` and `Bilinear` leave it out |
+| `aa` | `auto` | The anti aliasing of the presented frame, after the upscaler and before the HDR encode. Auto is FXAA at 1.25x, the cheap and compatible default. SMAA and SSAA are explicit choices. MSAA is the guest renderer's, not a presented-frame filter. `auto` runs FXAA only where the display shows the frame at least 1.25 times its rendered size in each direction, the point an upscale starts to make an edge visible, and leaves a frame at the display's size or larger alone. `off`, `fxaa` and `smaa` are the explicit choices. `ssaa2` and `ssaa4` render the pass at 2x or 4x and downsample, which also smooths edges a post process cannot see. MSAA belongs to the renderer that draws the game, so it is not a presented-frame filter. The `aa_key` hotkey cycles it live |
+| `frame_interp` | `off` | The frames shown between the game's frames: exactly one between each two, so the presented rate is twice the game's and no more (there is no 3x or 4x). Off is the default, because frame generation adds one refresh of latency by construction and the blend can ghost, so it is opt-in. `auto` runs only where the display refreshes at least 1.9 times the game's rate and the game's 1 % low stays at 25 a second or more, and it turns on after a second of that holding and off only after two seconds of it failing. `blend` is the explicit choice for the cases the gate cannot judge. Auto is the recommended mode on a display at least 1.9x the game's rate. `auto` runs only where the display refreshes at least 1.9 times the game's rate, so two presented frames fit between the game's own without the second waiting for a refresh: a 60 Hz game on a 120 Hz display runs, and a 60 Hz game on a 60 Hz one stays Off. It also needs the game's 1 % low at 25 frames a second or more. It takes the game's fastest 1 % of frames over the last four seconds (two presents must fit even then) and leaves a game whose slowest 1 % is more than twice that fastest one alone, and it turns on after a second of fitting and off only after two seconds of failing, so a game at the edge does not switch every frame. `blend` is the explicit choice and averages the previous and current frame, a temporal blend until a motion compensated pass lands. It is live through `frame_interp_key` and does not change the `.ini` |
+| `hdr` | `off` | `on` shows the frame at the paper white with the display's own gamut and headroom: **Display P3** linear where the surface offers it (macOS), then **scRGB**, else **HDR10** (PQ, SMPTE ST 2084, BT.2020), as a TV takes. An SDR frame is left exactly as SDR except for the top of its range, which `hdr_expand` lifts into the headroom the display reports; its hue and saturation never move. A display with no HDR keeps the SDR range. A frame that already holds HDR data, a float render target or the `hdr_source` setting, is never lifted again, and is tone mapped down where the display has no HDR. The menu and the on-screen controls are composited in the same light, so they are not coded twice |
+| `hdr_colorspace` | `auto` | The image an HDR display is given. `auto` takes **Display P3**'s wide gamut where the surface offers it (macOS): its `1.0` is the display's own white, so SDR content keeps its brightness and the expanded colours fit. Then **scRGB** (sRGB's primaries), else **HDR10** (PQ), the absolute signal a TV takes. `p3`, `scrgb` and `hdr10` force one where the display has it |
+| `hdr_expand` | `50` | The share of the display's own headroom the top of an SDR frame is lifted into, `0` to `100`: `0` shows the frame exactly as SDR, `50` uses half of the light the display has over white, and the lift starts at 80 % of the code range, so the darks and midtones stay as SDR. The colours' hue and saturation never move (the practice BT.2446, Dolby's inverse tone mapping and Horizon's HDR follow), and where the display reports no headroom (macOS at full brightness) nothing is lifted. A frame that already holds HDR data is never lifted |
+| `hdr_source` | `auto` | What the presented frame's pixels are. `auto` reads it from the frame's format: a float target is linear light, `1.0` at the paper white and its own headroom above. `sdr` is the console's display, `linear` names a linear frame in another format, and `pq` names one that is already an HDR10 signal |
+| `hdr_paperwhite` | `0` | The light an SDR frame's white maps to, in nits, `0` to `480`: `0` is Auto, the display's own SDR white where it can be read (KWin's `sdrBrightness` on Linux), else BT.2408's 203; `100` is the darkest and `480` a bright room. With the extended kinds it is the white the lift and the peak are measured from, and the level the SDR range lands at, so a value that does not match the display's white reads as washed out |
+| `hdr_peak` | `1000` | The brightest light the tone mapping and the HDR10 metadata name, in nits, `400` to `4000`: the display's own peak, `1000` for most TVs and `1600` for a bright one. Where the display reports its headroom through SDL (Wayland, Windows, Apple), that is used for the SDR-to-HDR lift instead, and this bounds it |
 | `vulkan_video` | `0` | `1` decodes H.264 movies on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver have an H.264 decode queue. Experimental and untested. `0` decodes them on the CPU, as VP9 movies always are |
 | `vertex_input_dynamic_state` | `auto` | How a draw gives the GPU its vertex layout. `auto` sets it as dynamic state (`VK_EXT_vertex_input_dynamic_state`) where the GPU's driver has the extension and its `vertexInputDynamicState` feature, but not on the drivers known to draw it wrong: NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0 (of whose four numbers the driver gives the last two: below 100.0). `on` sets it as dynamic state wherever the driver has it, those too. `off` puts it in the pipeline: each layout a program is drawn with takes a pipeline of its own, where dynamic state has one serve them all. The log says which, with the device, its driver and version. `on` on a device without the extension says so and puts the layout in the pipeline; any value but `auto`, `on` and `off` stops the game, saying so. Pipelines kept for the next run (`.vkshaders`) are made again when the choice changes |
 
@@ -117,6 +130,16 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `gamepad_p<N>_type` | `0` | The controller the game sees for player N: `0` as it is, `1` Pro Controller, `2` two Joy-Cons, `3` a left Joy-Con, `4` a right one |
 | `gamepad_p<N>_swap_ab`, `gamepad_p<N>_rumble`, `gamepad_p<N>_map` | `-1`, `-10`, empty | Player N's own `gamepad_swap_ab`, `gamepad_rumble` and `gamepad_map`; at these values, every player's |
 
+## Hotkeys
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `upscaler_key` | `ctrl+u` | The key that cycles the spatial upscaler while a game runs. The launcher's row under Settings > Hotkeys takes the next key you press, with Ctrl, Shift, Alt or the system key held. The cycle goes AMD FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR and None, and does not change the `.ini` |
+| `hdr_key` | `ctrl+h` | The key that turns HDR on and off while a game runs. The launcher's row under Settings > Hotkeys takes the next key you press, with Ctrl, Shift, Alt or the system key held. It does not change the `.ini` |
+| `aa_key` | `ctrl+shift+a` | The key that cycles the anti aliasing while a game runs: Auto, FXAA, SMAA, SSAA 2x, SSAA 4x and Off. The launcher's row takes the next key you press, with Ctrl, Shift, Alt or the system key held. It does not change the `.ini` |
+| `frame_interp_key` | `ctrl+shift+f` | The key that cycles frame interpolation while a game runs: Off, Auto and Blend. The launcher's row takes the next key you press, with Ctrl, Shift, Alt or the system key held. It does not change the `.ini` |
+| `docked_key` | `ctrl+d` | The key that cycles the console's TV mode while a game runs: On, Off, Auto and round. The launcher's row takes the next key you press, with Ctrl, Shift, Alt or the system key held. In Auto the toast and the log name the mode Auto picked and why. It does not change the `.ini` |
+
 ## Network
 
 | Key | Default | Effect |
@@ -133,9 +156,10 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `user_uid` | empty | The console's user the game plays as, by its uid: 32 hex digits, as [Users](USAGE.md#users) lists them; empty is its `[user1]` (`Player` without one). A uid no user has stops the game. `user`, the user's number before it, is read while `user_uid` names none ([DEPRECATIONS](DEPRECATIONS.md)) |
 
 ## Debug
-
 | Key | Default | Effect |
 | --- | --- | --- |
+| `hdr_debug_headroom` | `0` | `1` puts the SDR white at half the display's peak, so an HDR frame has twice the light above SDR even where the display reports no headroom, and the lift is plain to see. A debug aid for a display whose SDR white is set at its peak: it overrides `hdr_paperwhite` and the display's own report |
+| `hdr_test` | `0` | `1` draws a band at the bottom of the window with six patches of known light: black, the paper white, and 1.25, 1.5, 1.75 and 2 times it. The steps above white are the display's headroom; where the last ones look the same the display clips there. It proves the lift reaches the screen, and takes the HDR passes even where `hdr` would be off |
 | `log` | `1` | Log detail. `2` logs everything, which adds runtime overhead |
 | `log_max` | `16` | The game log's size in MiB, `1` to `1024`. Past it the log keeps the run's start and its last lines, saying so in the log and once over the game. The 5 last runs' logs are kept, the ones before this run's in `logs/` beside it |
 | `emulated_cores` | `1` | `1` runs a guest thread only while it holds one of the console's cores, one thread per core at a time, in priority order. `0` runs every guest thread as soon as the host schedules it (`svcGetCurrentProcessorNumber` still answers the thread's core) |
@@ -193,6 +217,7 @@ The unattended runs' settings ([Run / diagnose](DEVELOPMENT.md#run--diagnose)): 
 | `shot_every` | `0` | A screenshot every this many presents; `0`, at the end only |
 | `press_len` | `300` | How long a scripted press is held, in ms |
 | `script` | empty | The scripted input: `when:buttons`, a comma between two, when in ms or a present's number and `f` (`300f`) |
+| `hdr_toggle` | empty | An unattended run's live HDR toggles, the milliseconds they happen at with a comma between two: `3000,6000` turns HDR off and on again. A run that tests HDR's swapchain uses it |
 | `swkbd_text` | empty | The text the software keyboard answers instead of asking (shorter than the game's minimum: cancelled) |
 | `pause` | empty | Pauses of the whole game, a comma between two: `at:length` pauses it at that many ms of the scripted input's clock for `length` ms, and logs whether guest memory changed while it was paused |
 | `state_save` | empty | Save states the run writes, a comma between two: `at:slot` saves to that slot at that many ms of the scripted input's clock |

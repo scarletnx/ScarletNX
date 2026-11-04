@@ -150,6 +150,7 @@ SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) 
     p->title_id = image->title_id;
     memcpy(p->name, image->name, sizeof p->name);
     p->gsp.rights_thread = UINT32_MAX; /* no GPU right holder until an AcquireRight */
+    p->gsp.relay_thread = UINT32_MAX;
     p->fs_priority = UINT32_MAX;       /* fs:USER's, until a SetPriority (Azahar's starts at -1) */
     p->physical_next = CTR_PHYS_BASE;
     p->physical_end = p->physical_next + p->app_limit;

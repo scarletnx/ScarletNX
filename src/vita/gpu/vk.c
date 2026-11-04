@@ -1,7 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/vk.h"
+#include "common/gpu/vk/interp_auto.h"
+#include "common/gpu/vk/present_fx.h"
+#include "common/gpu/vk/stats.h"
+#include "common/gpu/vk/text.h"
+#include "common/gpu/vk/toast.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/window_icon.h"
+#include "snx_settings.h"
+#include "vita/platform/input.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -11,8 +19,23 @@ static struct {
     /* the presenter's copy of the framebuffer, which the swapchain image is blitted from */
     VkImage frame;
     VkDeviceMemory frame_memory;
+    VkImageView frame_view;
     uint32_t frame_width, frame_height;
     VkImageLayout frame_layout;
+    SnxFx* fx;
+    SnxToast* toast;
+    SnxText* overlay; /* F6's frame rate and held buttons */
+    SnxStats stats;
+    SnxInterpAuto interp_auto;
+    int paper; /* the SDR white in nits: the setting, or the display's own */
+    int peak;  /* the peak in nits: the setting, or the display's own */
+    int display_kind;
+    int said_kind;  /* the display kind last said in the console, -1 before the first */
+    int auto_tried; /* Auto has looked for the display's headroom once, which SDL reports after the first frame */
+    int headroom_pct;
+    int have_frame;
+    VkImageView swap_views[SNX_VK_SWAP_IMAGES];
+    VkSwapchainKHR swap_views_for;
 } g;
 
 VitaVk* vita_vk(void) { return g.up ? &g.vk : NULL; }
@@ -25,13 +48,17 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     VitaVk* v = user;
     SnxVkExtensions list;
     if (!snx_vk_device_extensions(phys, &list)) return false;
-    const char* extensions[4];
+    const char* extensions[5];
     uint32_t n = 0;
     bool ok = snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     extensions[n++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     if (v->host.surface) {
         ok = ok && snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+        if (snx_vk_extensions_has(&list, VK_EXT_HDR_METADATA_EXTENSION_NAME)) {
+            extensions[n++] = VK_EXT_HDR_METADATA_EXTENSION_NAME;
+            v->hdr_metadata = 1;
+        }
     }
     /* fragment programs that read their pixel's color (the program flag FRAGCOLOR_USED): the color attachment read
        as an input attachment while it is rendered to, in the order its primitives are drawn when the device keeps it */
@@ -84,6 +111,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     vkGetPhysicalDeviceProperties2(phys, &properties);
     v->host_alignment = host.minImportedHostPointerAlignment ? host.minImportedHostPointerAlignment : 4096;
     v->preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32;
+    v->fp16 = v12.shaderFloat16 != 0;
     v->bc = features.features.textureCompressionBC;
     v->depth_clamp = features.features.depthClamp;
     VkFormatProperties d16;
@@ -100,16 +128,114 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     }
     return true;
 }
-/* the window's swapchain, made anew for its size */
-static bool swapchain_make(VitaVk* v) {
-    static const VkFormat formats[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
-    SnxVkSwapchainInfo info = {.surface = v->host.surface,
-                               .formats = formats,
-                               .format_count = sizeof formats / sizeof *formats,
-                               .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-                               .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 544})};
-    return snx_vk_swapchain_make(v->phys, v->device, &info, &v->swap);
+/* the image the window takes: an HDR one where the settings and the surface allow it, else the SDR formats. The kind
+   and the light the lift may reach are kept for the presenter. */
+static int choose_display(VitaVk* v, VkFormat* format, VkColorSpaceKHR* space) {
+    static const VkFormat hdr_formats[] = {VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_FORMAT_A2R10G10B10_UNORM_PACK32};
+    static const VkFormat scrgb_formats[] = {VK_FORMAT_R16G16B16A16_SFLOAT};
+    VkSurfaceFormatKHR f = {0};
+    int mode = snx_fx_hdr_wanted();
+    int cs = snx_fx_colorspace_parse(g_settings.hdr_colours);
+    int kind = SNX_FX_DISPLAY_NONE;
+    if (!v->host.surface || mode == SNX_FX_HDR_OFF) return SNX_FX_DISPLAY_NONE;
+#if !defined(__APPLE__)
+    /* Auto takes HDR10 first: its signal is absolute, and the swapchain's metadata names its light; an extended
+       kind's 1.0 depends on the compositor's reference, which SDL does not report on Wayland */
+    if (cs == SNX_FX_CS_AUTO &&
+        snx_vk_surface_format_cs(v->phys, v->host.surface, hdr_formats, 2, VK_COLOR_SPACE_HDR10_ST2084_EXT, &f))
+        kind = SNX_FX_DISPLAY_PQ;
+#endif
+    if (kind == SNX_FX_DISPLAY_NONE && (cs == SNX_FX_CS_AUTO || cs == SNX_FX_CS_P3)) {
+        if (snx_vk_surface_format_cs(v->phys, v->host.surface, scrgb_formats, 1, VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT,
+                                     &f)) {
+            kind = SNX_FX_DISPLAY_P3;
+        } else if (cs == SNX_FX_CS_P3) {
+            return SNX_FX_DISPLAY_NONE;
+        }
+    }
+    if (kind == SNX_FX_DISPLAY_NONE && (cs == SNX_FX_CS_AUTO || cs == SNX_FX_CS_SCRGB)) {
+        if (snx_vk_surface_format_cs(v->phys, v->host.surface, scrgb_formats, 1,
+                                     VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, &f)) {
+            kind = SNX_FX_DISPLAY_SCRGB;
+        } else if (cs == SNX_FX_CS_SCRGB) {
+            return SNX_FX_DISPLAY_NONE;
+        }
+    }
+    if (kind == SNX_FX_DISPLAY_NONE &&
+        snx_vk_surface_format_cs(v->phys, v->host.surface, hdr_formats, 2, VK_COLOR_SPACE_HDR10_ST2084_EXT, &f))
+        kind = SNX_FX_DISPLAY_PQ;
+    if (kind == SNX_FX_DISPLAY_NONE) return SNX_FX_DISPLAY_NONE;
+    /* an extended-kind image's 1.0 is the display's SDR white: Auto takes one only where the display reports headroom
+       over its white, as the Switch frontend does. On is explicit, and the display's headroom (SDL's, else the peak)
+       bounds the lift. */
+    /* Auto takes an HDR image only where the display has light over its white: a display whose peak is its white
+       (KWin with sdrBrightness = maxPeakBrightnessOverride) gains nothing from HDR, and the compositor's mapping of
+       it can desaturate. hdr=on still takes one. */
+    if (mode == SNX_FX_HDR_AUTO &&
+        snx_vk_peak_nits(g_settings.hdr_peak) <= snx_vk_paper_nits(g_settings.hdr_paper_white))
+        return SNX_FX_DISPLAY_NONE;
+    *format = f.format;
+    *space = f.colorSpace;
+    return kind;
 }
+/* the window's swapchain, made anew for its size and the HDR choice */
+static bool swapchain_make(VitaVk* v) {
+    static const VkFormat sdr_formats[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+    VkFormat hdr_format = VK_FORMAT_UNDEFINED;
+    VkColorSpaceKHR hdr_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    int kind = choose_display(v, &hdr_format, &hdr_space);
+    SnxVkSwapchainInfo info = {
+        .surface = v->host.surface,
+        .formats = kind != SNX_FX_DISPLAY_NONE ? &hdr_format : sdr_formats,
+        .format_count = kind != SNX_FX_DISPLAY_NONE ? 1 : (uint32_t)(sizeof sdr_formats / sizeof *sdr_formats),
+        .color_space = kind != SNX_FX_DISPLAY_NONE ? hdr_space : VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 544})};
+    g.display_kind = kind;
+    {
+        int reported = snx_vk_window_headroom_pct(v->host.window), debug = snx_vk_hdr_headroom_pct();
+        g.headroom_pct =
+            kind == SNX_FX_DISPLAY_PQ
+                ? snx_clamp_int(g.peak * 100 / g.paper, 100, 1000)
+                : (reported > 100 ? snx_clamp_int(reported, 100, 1000) : 100);
+        if (debug > 0) g.headroom_pct = snx_clamp_int(debug, 100, 1000);
+    }
+    if (kind != g.said_kind) {
+        g.said_kind = kind;
+        if (kind != SNX_FX_DISPLAY_NONE)
+            printf("vita: the window takes %s, %d%% headroom\n", snx_fx_display_label(kind), g.headroom_pct);
+        else
+            printf("vita: the window takes %s\n", snx_fx_display_label(kind));
+    }
+    if (g.fx) snx_fx_set_display(g.fx, g.display_kind, g.headroom_pct);
+    if (g.swap_views_for) {
+        vkDeviceWaitIdle(v->device);
+        for (uint32_t i = 0; i < SNX_VK_SWAP_IMAGES; ++i)
+            if (g.swap_views[i]) vkDestroyImageView(v->device, g.swap_views[i], NULL);
+        memset(g.swap_views, 0, sizeof g.swap_views);
+        g.swap_views_for = VK_NULL_HANDLE;
+    }
+    if (!snx_vk_swapchain_make(v->phys, v->device, &info, &v->swap)) return false;
+    if (v->hdr_metadata)
+        snx_vk_swapchain_metadata(v->device, v->swap.swapchain, v->swap.format.format, v->swap.format.colorSpace, g.peak,
+                                  g.paper);
+    for (uint32_t i = 0; i < v->swap.count; ++i) {
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                    .image = v->swap.images[i],
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                    .format = v->swap.format.format,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        if (vkCreateImageView(v->device, &vi, NULL, &g.swap_views[i]) != VK_SUCCESS) {
+            for (uint32_t k = 0; k < i; ++k) vkDestroyImageView(v->device, g.swap_views[k], NULL);
+            memset(g.swap_views, 0, sizeof g.swap_views);
+            return false;
+        }
+    }
+    g.swap_views_for = v->swap.swapchain;
+    return true;
+}
+/* the effects' short messages: the console, where this frontend has no log file */
+static void present_fx_log(const char* text) { fprintf(stderr, "%s\n", text); }
 bool vita_vk_init(const char* title, char* error, size_t error_size) {
     VitaVk* v = &g.vk;
     if (g.up) return true;
@@ -147,6 +273,30 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
         return false;
     }
     g.up = true;
+    g.said_kind = -1;
+    snx_interp_auto_init(&g.interp_auto);
+    g.paper = snx_vk_paper_nits(g_settings.hdr_paper_white);
+    g.peak = snx_vk_peak_nits(g_settings.hdr_peak);
+    g.fx = snx_fx_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, VITA_VK_SLOTS, vita_vk_slot, NULL,
+                         present_fx_log);
+    if (g.fx) {
+        SnxFxConfig cfg = {snx_fx_upscale_parse(g_settings.upscaler),
+                           g_settings.sharpness,
+                           snx_fx_aa_parse(g_settings.anti_aliasing),
+                           snx_fx_hdr_wanted(),
+                           snx_fx_colorspace_parse(g_settings.hdr_colours),
+                           snx_fx_source_parse(g_settings.hdr_source),
+                           g.paper,
+                           g.peak,
+                           g_settings.hdr_expansion,
+                           g_settings.hdr_test_pattern};
+        snx_fx_configure(g.fx, &cfg);
+        g.toast = snx_toast_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, VITA_VK_SLOTS);
+        g.overlay = snx_text_create(v->phys, v->device, v->queue, v->family, VK_NULL_HANDLE, VITA_VK_SLOTS);
+        snx_stats_init(&g.stats);
+        g.stats.on = g_settings.stats != 0; /* the setting starts it, F6 turns it over for the run */
+        snx_fx_set_fp16(g.fx, v->fp16);
+    }
     if (v->host.surface && !swapchain_make(v)) fprintf(stderr, "scarletnx-vita: no swapchain for the window yet\n");
     return true;
 }
@@ -154,9 +304,19 @@ void vita_vk_free(void) {
     VitaVk* v = &g.vk;
     if (v->device) {
         vkDeviceWaitIdle(v->device);
+        for (uint32_t i = 0; i < SNX_VK_SWAP_IMAGES; ++i)
+            if (g.swap_views[i]) vkDestroyImageView(v->device, g.swap_views[i], NULL);
+        g.swap_views_for = VK_NULL_HANDLE;
         snx_vk_swapchain_free(v->device, &v->swap);
+        if (g.frame_view) vkDestroyImageView(v->device, g.frame_view, NULL);
         if (g.frame) vkDestroyImage(v->device, g.frame, NULL);
         if (g.frame_memory) vkFreeMemory(v->device, g.frame_memory, NULL);
+        if (g.toast) snx_toast_destroy(g.toast);
+        g.toast = NULL;
+        if (g.overlay) snx_text_destroy(g.overlay);
+        g.overlay = NULL;
+        snx_fx_destroy(g.fx);
+        g.fx = NULL;
         for (unsigned i = 0; i < VITA_VK_SLOTS; ++i)
             if (v->acquired[i]) vkDestroySemaphore(v->device, v->acquired[i], NULL);
         for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES; ++i)
@@ -192,17 +352,18 @@ static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from,
                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .image = image,
                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
-                          .pImageMemoryBarriers = &b};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b};
     vkCmdPipelineBarrier2(cb, &d);
 }
 /* the presenter's image of the framebuffer's size */
 static bool frame_image(VitaVk* v, uint32_t width, uint32_t height) {
     if (g.frame && g.frame_width == width && g.frame_height == height) return true;
     vkDeviceWaitIdle(v->device);
+    if (g.frame_view) vkDestroyImageView(v->device, g.frame_view, NULL);
     if (g.frame) vkDestroyImage(v->device, g.frame, NULL);
     if (g.frame_memory) vkFreeMemory(v->device, g.frame_memory, NULL);
-    g.frame = VK_NULL_HANDLE, g.frame_memory = VK_NULL_HANDLE;
+    g.frame = VK_NULL_HANDLE, g.frame_memory = VK_NULL_HANDLE, g.frame_view = VK_NULL_HANDLE;
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
                             .format = VK_FORMAT_R8G8B8A8_UNORM,
@@ -211,80 +372,231 @@ static bool frame_image(VitaVk* v, uint32_t width, uint32_t height) {
                             .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                     VK_IMAGE_USAGE_SAMPLED_BIT,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     if (vkCreateImage(v->device, &ii, NULL, &g.frame) != VK_SUCCESS) return false;
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(v->device, g.frame, &req);
     VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                .allocationSize = req.size,
-                               .memoryTypeIndex = vita_vk_memory_type(req.memoryTypeBits,
-                                                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
+                               .memoryTypeIndex =
+                                   vita_vk_memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
     if (ai.memoryTypeIndex == UINT32_MAX) ai.memoryTypeIndex = vita_vk_memory_type(req.memoryTypeBits, 0);
     if (vkAllocateMemory(v->device, &ai, NULL, &g.frame_memory) != VK_SUCCESS ||
         vkBindImageMemory(v->device, g.frame, g.frame_memory, 0) != VK_SUCCESS)
         return false;
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                .image = g.frame,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    if (vkCreateImageView(v->device, &vi, NULL, &g.frame_view) != VK_SUCCESS) return false;
     g.frame_width = width, g.frame_height = height;
     g.frame_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     return true;
 }
-bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint32_t width, uint32_t height) {
-    VitaVk* v = &g.vk;
-    if (!g.up || !v->host.surface) return false;
-    if (!v->swap.swapchain && !swapchain_make(v)) return false;
-    if (!frame_image(v, width, height)) return false;
+/* one presented image: an acquired swapchain image, the effects on the source, HDR or the blit, and the present. The
+   source is in SHADER_READ_ONLY_OPTIMAL. Each call takes the next ring slot, so two calls can present the blend and
+   then the current frame. */
+int vita_vk_cycle_upscaler(void) { return g.fx ? snx_fx_upscale_cycle(g.fx) : -1; }
+int vita_vk_cycle_aa(void) { return g.fx ? snx_fx_aa_cycle(g.fx) : -1; }
+int vita_vk_toggle_hdr(void) { return g.fx ? snx_fx_hdr_toggle(g.fx) : -1; }
+void vita_vk_toast(const char* text) {
+    if (g.toast) snx_toast_show(g.toast, text, SDL_GetTicksNS());
+}
+void vita_vk_toast_ms(const char* text, unsigned ms) {
+    if (g.toast) snx_toast_show_ms(g.toast, text, SDL_GetTicksNS(), ms);
+}
+int vita_vk_stats_toggle(int showcase) { return snx_stats_toggle(&g.stats, showcase); }
+void vita_vk_toggle_fullscreen(void) {
+    SDL_Window* window = g.vk.host.window;
+    if (window) SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+}
+
+/* the buttons the player holds, in the overlay's words, with the sticks where they are off their rest */
+static const SnxStatsButton ctrl_buttons[] = {{VITA_CTRL_CROSS, "Cross"},   {VITA_CTRL_CIRCLE, "Circle"},
+                                              {VITA_CTRL_SQUARE, "Square"}, {VITA_CTRL_TRIANGLE, "Triangle"},
+                                              {VITA_CTRL_LTRIGGER, "L"},    {VITA_CTRL_RTRIGGER, "R"},
+                                              {VITA_CTRL_START, "Start"},   {VITA_CTRL_SELECT, "Select"},
+                                              {VITA_CTRL_UP, "^"},          {VITA_CTRL_DOWN, "v"},
+                                              {VITA_CTRL_LEFT, "<"},        {VITA_CTRL_RIGHT, ">"}};
+static void stats_inputs(char* out, size_t size) {
+    VitaInput in;
+    size_t at;
+    int lx, ly, rx, ry;
+    vita_input_read(&in);
+    snx_stats_inputs(out, size, in.buttons, ctrl_buttons, (unsigned)(sizeof ctrl_buttons / sizeof *ctrl_buttons));
+    lx = (int)in.lx - 128, ly = (int)in.ly - 128, rx = (int)in.rx - 128, ry = (int)in.ry - 128;
+    at = strlen(out);
+    if ((lx > 20 || lx < -20 || ly > 20 || ly < -20 || rx > 20 || rx < -20 || ry > 20 || ry < -20) && at + 40 < size) {
+        if (!strcmp(out, "-")) out[at = 0] = 0;
+        snprintf(out + at, size - at, "%sL %+.1f,%+.1f R %+.1f,%+.1f", at ? "  " : "", (double)lx / 128.0,
+                 (double)ly / 128.0, (double)rx / 128.0, (double)ry / 128.0);
+    }
+}
+/* the frame rate and the held buttons, at the window's bottom left */
+static void stats_overlay(VkCommandBuffer cb, VkImageView view, VkFormat format, float white, uint32_t w, uint32_t h,
+                          unsigned slot) {
+    char inputs[128];
+    if (!g.overlay || !snx_stats_visible(&g.stats)) return;
+    if (g.stats.showcase) stats_inputs(inputs, sizeof inputs);
+    else inputs[0] = 0;
+    snx_stats_draw(g.overlay, &g.stats, cb, view, format, w, h, white, slot, SDL_GetTicksNS(), inputs);
+}
+
+static bool present_image(VitaVk* v, VkImage src_image, VkImageView src_view, uint32_t width, uint32_t height,
+                          uint32_t frame_w, uint32_t frame_h) {
     unsigned slot = v->ring.slot;
     uint32_t index = 0;
-    /* an image the window can take now, or none this vblank: the game's threads run on this one, which a wait for
-       the display's refresh (FIFO) would stall each vblank. The framebuffer stays in guest memory for the next */
     VkResult r = vkAcquireNextImageKHR(v->device, v->swap.swapchain, 0, v->acquired[slot], VK_NULL_HANDLE, &index);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         swapchain_make(v);
         return false;
     }
-    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return false; /* VK_NOT_READY, VK_TIMEOUT: none free yet */
+    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return false;
     VkCommandBuffer cb = vita_vk_commands();
-    image_barrier(cb, g.frame, g.frame_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                  VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkBufferImageCopy copy = {.bufferOffset = offset,
-                              .bufferRowLength = pitch,
-                              .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                              .imageExtent = {width, height, 1}};
-    vkCmdCopyBufferToImage(cb, buffer, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-    image_barrier(cb, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                  VK_ACCESS_2_TRANSFER_READ_BIT);
-    g.frame_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     VkImage target = v->swap.images[index];
-    image_barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkClearColorValue black = {{0, 0, 0, 1}};
-    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
-    image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                  VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    /* the frame scaled to the window, its aspect kept */
+    VkImageView target_view = g.swap_views[index];
     uint32_t w = v->swap.extent.width, h = v->swap.extent.height;
     uint32_t sw = w, sh = (uint32_t)((uint64_t)w * height / width);
     if (sh > h) sh = h, sw = (uint32_t)((uint64_t)h * width / height);
     int32_t x = (int32_t)(w - sw) / 2, y = (int32_t)(h - sh) / 2;
-    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                        .srcOffsets = {{0, 0, 0}, {(int32_t)width, (int32_t)height, 1}},
-                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                        .dstOffsets = {{x, y, 0}, {x + (int32_t)sw, y + (int32_t)sh, 1}}};
-    vkCmdBlitImage(cb, g.frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                   &blit, VK_FILTER_LINEAR);
-    image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+    int have_fx = 0;
+    SnxFxImage fxout = {0};
+    uint32_t out_w = width, out_h = height;
+    if (g.fx) {
+        int filter = snx_fx_pick_filter(g.fx, frame_w, frame_h, sw, sh, 0);
+        int aa = snx_fx_pick_aa(g.fx, snx_fx_aa_parse(g_settings.anti_aliasing), frame_w, frame_h, sw, sh,
+                                v->properties.limits.maxImageDimension2D);
+        have_fx = snx_fx_render(g.fx, cb, src_view, width, height, 0, 0, width, height, 0, sw, sh, filter, aa, &fxout);
+        if (have_fx) {
+            src_image = fxout.image;
+            src_view = fxout.view;
+            out_w = fxout.width;
+            out_h = fxout.height;
+            image_barrier(cb, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        }
+    }
+    if (g.fx && g.display_kind != SNX_FX_DISPLAY_NONE && snx_fx_hdr_active(g.fx)) {
+        SnxFxImage comp = {0};
+        if (snx_fx_hdr_compose(g.fx, cb, src_view, VK_FORMAT_R8G8B8A8_UNORM, out_w, out_h, 0, 0, out_w, out_h, 0, w, h,
+                               x, y, sw, sh, &comp)) {
+            if (g_settings.hdr_test_pattern) snx_fx_hdr_test(g.fx, cb, &comp);
+            if (g.toast)
+                snx_toast_draw(g.toast, cb, comp.view, snx_fx_compose_format(), w, h, (float)g.paper,
+                               slot, SDL_GetTicksNS());
+            stats_overlay(cb, comp.view, snx_fx_compose_format(), (float)g.paper, w, h, slot);
+            if (snx_fx_hdr_encode(g.fx, cb, &comp, target, target_view, v->swap.format.format, w, h,
+                                  snx_fx_encode_kind(g.fx))) {
+                image_barrier(cb, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                              VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                              VK_PIPELINE_STAGE_2_NONE, 0);
+                submit_with(v->acquired[slot], v->rendered[index]);
+                goto present;
+            }
+        }
+    }
+    if (!have_fx) {
+        image_barrier(cb, src_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    }
+    image_barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                  VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    {
+        VkClearColorValue black = {{0, 0, 0, 1}};
+        VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                            .srcOffsets = {{0, 0, 0}, {(int32_t)out_w, (int32_t)out_h, 1}},
+                            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                            .dstOffsets = {{x, y, 0}, {x + (int32_t)sw, y + (int32_t)sh, 1}}};
+        vkCmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+        image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        vkCmdBlitImage(cb, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+    }
+    image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT);
+    if (g.toast) snx_toast_draw(g.toast, cb, target_view, v->swap.format.format, w, h, 1.0f, slot, SDL_GetTicksNS());
+    stats_overlay(cb, target_view, v->swap.format.format, 1.0f, w, h, slot);
+    image_barrier(cb, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_NONE, 0);
     submit_with(v->acquired[slot], v->rendered[index]);
-    VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                           .waitSemaphoreCount = 1,
-                           .pWaitSemaphores = &v->rendered[index],
-                           .swapchainCount = 1,
-                           .pSwapchains = &v->swap.swapchain,
-                           .pImageIndices = &index};
-    r = vkQueuePresentKHR(v->queue, &pi);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) swapchain_make(v);
+present:;
+    {
+        VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                               .waitSemaphoreCount = 1,
+                               .pWaitSemaphores = &v->rendered[index],
+                               .swapchainCount = 1,
+                               .pSwapchains = &v->swap.swapchain,
+                               .pImageIndices = &index};
+        r = vkQueuePresentKHR(v->queue, &pi);
+        if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) swapchain_make(v);
+    }
     return r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;
+}
+
+bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint32_t width, uint32_t height) {
+    VitaVk* v = &g.vk;
+    if (!g.up || !v->host.surface) return false;
+    /* Auto follows the display's headroom, which SDL reports only once the window is on screen: the first frame that
+       sees it takes the HDR swapchain, and no more than once where the surface offers none */
+    if (g.fx && snx_fx_hdr_mode(g.fx) == SNX_FX_HDR_AUTO && !g.auto_tried && g.display_kind == SNX_FX_DISPLAY_NONE &&
+        snx_vk_window_headroom_pct(v->host.window) > 100) {
+        g.auto_tried = 1;
+        if (!swapchain_make(v)) return false;
+    }
+    if (!v->swap.swapchain && !swapchain_make(v)) return false;
+    if (!frame_image(v, width, height)) return false;
+    VkCommandBuffer cb = vita_vk_commands();
+    int interp =
+        snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_BLEND ||
+        (snx_fx_interp_parse(g_settings.frame_interpolation) == SNX_FX_INTERP_AUTO &&
+         snx_interp_auto_frame(&g.interp_auto, SDL_GetTicksNS(), snx_vk_window_refresh_hz(v->host.window)));
+    SnxFxImage keep = {0};
+    int have_keep = g.fx && interp && g.have_frame && snx_fx_keep(g.fx, cb, g.frame_view, width, height, &keep);
+    if (have_keep)
+        image_barrier(cb, keep.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    image_barrier(cb, g.frame, g.frame_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                  VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    {
+        VkBufferImageCopy copy = {.bufferOffset = offset,
+                                  .bufferRowLength = pitch,
+                                  .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                  .imageExtent = {width, height, 1}};
+        vkCmdCopyBufferToImage(cb, buffer, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    }
+    image_barrier(cb, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    g.frame_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    if (have_keep) {
+        SnxFxImage blend = {0};
+        if (snx_fx_blend(g.fx, cb, keep.view, g.frame_view, width, height, 0.5f, &blend)) {
+            image_barrier(cb, blend.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                          VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            (void)present_image(v, blend.image, blend.view, width, height, width, height);
+        }
+    }
+    bool ok = present_image(v, g.frame, g.frame_view, width, height, width, height);
+    if (ok) {
+        snx_stats_frame(&g.stats, SDL_GetTicksNS());
+        if (have_keep) snx_stats_generated(&g.stats);
+    }
+    g.have_frame = 1;
+    return ok;
 }

@@ -10,6 +10,47 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#if defined(__linux__)
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
+
+
+#if defined(__linux__)
+/* a dma-buf over the board's memfd, for a driver whose host pointer import refuses a file-backed mapping (RADV at
+   present). The kernel's udmabuf driver pins the pages, and the dma-buf is imported as external memory instead. */
+struct snx_udmabuf_create {
+    uint32_t memfd;
+    uint32_t flags;
+    uint64_t offset;
+    uint64_t size;
+};
+#define SNX_UDMABUF_CREATE _IOW('u', 0x42, struct snx_udmabuf_create)
+static int udmabuf_create(int memfd, uint64_t size) {
+    int control = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
+    int fd;
+    if (control < 0) {
+        fprintf(stderr, "3ds gpu: udmabuf: open: %s\n", strerror(errno));
+        return -1;
+    }
+    {
+        struct snx_udmabuf_create create = {(uint32_t)memfd, 0, 0, size};
+        fd = ioctl(control, SNX_UDMABUF_CREATE, &create);
+    }
+    close(control);
+    if (fd < 0) fprintf(stderr, "3ds gpu: udmabuf: ioctl(%d, %llu): %s\n", memfd, (unsigned long long)size,
+                        strerror(errno));
+    return fd;
+}
+#else
+static int udmabuf_create(int memfd, uint64_t size) {
+    (void)memfd;
+    (void)size;
+    return -1;
+}
+#endif
 
 static struct {
     SnxCtrVk vk;
@@ -59,6 +100,16 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     if (v->host.surface || v->second_surface) {
         ok = ok && snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+        if (snx_vk_extensions_has(&list, VK_EXT_HDR_METADATA_EXTENSION_NAME)) {
+            extensions[n++] = VK_EXT_HDR_METADATA_EXTENSION_NAME;
+            v->hdr_metadata = 1;
+        }
+    }
+    bool dma_buf = snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME) &&
+                   snx_vk_extensions_has(&list, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+    if (dma_buf) {
+        extensions[n++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
+        extensions[n++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
     }
     bool index8 = snx_vk_extensions_has(&list, VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME);
     if (index8) extensions[n++] = VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME;
@@ -104,6 +155,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     v->phys = phys;
     v->family = family;
     v->index8 = index8 && index_features.indexTypeUint8;
+    v->dma_buf = dma_buf;
     v->logic_op = features.features.logicOp;
     v->clip_distance = features.features.shaderClipDistance;
     v->import_host = host;
@@ -382,7 +434,11 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     memset(v, 0, sizeof *v);
     /* a window first: a display server and a Vulkan surface make it the output; without one frames go to the frame
        dumps only */
-    if (!snx_vk_window_open("scarletnx-ctr", "ScarletNX 3DS", 600, 720, &v->host, error, error_size)) return false;
+    /* the top screen alone fills its window when the screens are apart, 400x240 at twice its size; the pair needs the
+       taller window, 600x720 for the two at 1.5 times */
+    if (!snx_vk_window_open("scarletnx-ctr", "ScarletNX 3DS", g_settings.ctr_separate_screens ? 800 : 600,
+                            g_settings.ctr_separate_screens ? 480 : 720, &v->host, error, error_size))
+        return false;
     /* another window for the bottom screen when the screens are apart, on this instance */
     if (g_settings.ctr_separate_screens && v->host.window) {
         v->second = SDL_CreateWindow("ScarletNX 3DS (Bottom)", 640, 480, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
@@ -395,11 +451,12 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     const VkQueueFlags queue = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
     bool made =
         snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v);
-    if (!made && v->second) { /* no device presents to both windows: one window again */
+    if (!made && v->second) { /* no device presents to both windows: one window again, the pair's size */
         vkDestroySurfaceKHR(v->host.instance.instance, v->second_surface, NULL);
         SDL_DestroyWindow(v->second);
         v->second = NULL;
         v->second_surface = VK_NULL_HANDLE;
+        if (v->host.window) SDL_SetWindowSize(v->host.window, 600, 720);
         made =
             snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v);
     }

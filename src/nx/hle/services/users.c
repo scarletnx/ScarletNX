@@ -5,7 +5,7 @@
    anything users.ini says that is not a user stops it */
 #include "nx/hle/services/services_int.h"
 #include "common/utilities/common.h"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include "nx/hle/hle.h"
 
 void snx_users_init(void) {

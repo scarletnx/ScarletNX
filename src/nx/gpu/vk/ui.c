@@ -2,7 +2,11 @@
    Copyright 2026 the ScarletNX contributors */
 /* The on-screen controls, the game's menu (runtime/platform/ui.h) and the shader loading screen before the game
    (runtime/platform/prepare_screen.h) over a presented frame: the quads they give, blended onto the swapchain image
-   in a pass of their own after the frame's blit. Nothing is recorded while none shows */
+   (or the HDR composition's, in linear light) in a pass of their own after the frame's drawing. Nothing is recorded
+   while none shows.
+
+   The shaders are checked in as SPIR-V (ui_spv.h), made by scripts/build-ui-shaders.py from gpu/vk/shaders: edit those
+   and run it, or ui_shaders_current fails and the runtime keeps the old shader. */
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
@@ -24,8 +28,11 @@ typedef struct {
 static SnxUiQuad g_quads[MAX_QUADS];
 static VkDescriptorSetLayout g_dsl;
 static VkPipelineLayout g_layout;
-static VkPipeline g_pipe;
-static VkFormat g_pipe_format;
+/* one pipeline for each target format drawn to: the swapchain's, and the HDR composition's */
+#define UI_PIPES 8
+static VkPipeline g_pipe[UI_PIPES];
+static VkFormat g_pipe_format[UI_PIPES];
+static int g_pipe_n;
 static VkDescriptorPool g_pool;
 /* by a quad's sample: the atlas blended (sprites), at its nearest texel (the font, fills), and the picture blended */
 static VkDescriptorSet g_sets[3];
@@ -139,19 +146,22 @@ static int pipeline_make(VkFormat format) {
                                         .pDynamicState = &ds,
                                         .layout = g_layout};
     int ok;
-    if (g_pipe && g_pipe_format == format) return 1;
-    if (g_pipe) vkDestroyPipeline(g_vk.dev, g_pipe, NULL); /* vk_finish ran when the swapchain changed format */
-    g_pipe = VK_NULL_HANDLE;
+    VkPipeline* pipe;
+    for (int i = 0; i < g_pipe_n; ++i)
+        if (g_pipe_format[i] == format) return i + 1;
+    if (g_pipe_n >= UI_PIPES) return 0;
+    pipe = &g_pipe[g_pipe_n];
     vs = vk_module_spv(snx_ui_vs_spv, sizeof snx_ui_vs_spv / 4);
     fs = vk_module_spv(snx_ui_fs_spv, sizeof snx_ui_fs_spv / 4);
     st[0].module = vs;
     st[1].module = fs;
-    ok = vs && fs && VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipe));
+    *pipe = VK_NULL_HANDLE;
+    ok = vs && fs && VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, pipe));
     if (vs) vkDestroyShaderModule(g_vk.dev, vs, NULL);
     if (fs) vkDestroyShaderModule(g_vk.dev, fs, NULL);
-    g_pipe_format = format;
-    if (!ok) g_pipe = VK_NULL_HANDLE;
-    return ok;
+    if (!ok) return 0;
+    g_pipe_format[g_pipe_n++] = format;
+    return g_pipe_n;
 }
 
 /* the atlas to the GPU, once each time the frontend gives one (under ui_lock) */
@@ -289,8 +299,8 @@ static void image_upload(VkCommandBuffer cb) {
     g_image_version = version;
 }
 
-/* the swapchain image's view, made once per image */
-static VkImageView sc_view(VkImage sc) {
+/* a window image's view, made once per image */
+VkImageView vk_ui_image_view(VkImage sc, VkFormat format) {
     u32 i;
     for (i = 0; i < VK_SC_MAX; ++i)
         if (g_sc_img[i] == sc) return g_sc_view[i];
@@ -299,7 +309,7 @@ static VkImageView sc_view(VkImage sc) {
             VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                          .image = sc,
                                          .viewType = VK_IMAGE_VIEW_TYPE_2D,
-                                         .format = g_vk.sc_format,
+                                         .format = format,
                                          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
             if (!VK_OK(vkCreateImageView(g_vk.dev, &vci, NULL, &g_sc_view[i]))) return VK_NULL_HANDLE;
             g_sc_img[i] = sc;
@@ -324,18 +334,19 @@ static void vertex(Vertex* v, float x, float y, float u, float t, u32 rgba) {
     v->rgba = rgba;
     snx_le32_array(v, sizeof *v / 4); /* the device reads the words little-endian: the colour's low byte is R */
 }
-void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
+int vk_ui_draw(VkCommandBuffer cb, const VkUiTarget* t, const int safe[4]) {
     SnxUiList list = {g_quads, 0, MAX_QUADS};
-    int sw = (int)g_vk.sc_extent.width, sh = (int)g_vk.sc_extent.height, n, i, run;
+    int sw = (int)t->extent.width, sh = (int)t->extent.height, n, i, run, pipe;
     VkImageView view;
     Vertex* v;
     VkBuffer buf;
     u64 off;
     struct {
         float w, h;
-        u32 srgb, pad;
-    } pc = {(float)sw, (float)sh, (u32)g_vk.sc_srgb, 0};
-    if (!layout_make()) return;
+        u32 mode;
+        float gain;
+    } pc = {(float)sw, (float)sh, (u32)t->mode, t->gain};
+    if (!layout_make()) return 0;
     ui_lock();
     atlas_upload(cb);
     image_upload(cb);
@@ -346,7 +357,11 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
     else {
         int px, py, scale;
         vpad_draw(&list, safe);
-        vpad_showcase_draw(&list, safe, vpad_showcase_fps(g_vk_present, plat_ns()));
+        {
+            int fps10 = stats_rate10(), gen10 = stats_gen10();
+            vpad_showcase_draw(&list, safe, fps10 < 0 ? -1 : (fps10 + 5) / 10,
+                               gen10 < 0 ? 0 : (gen10 + 5) / 10);
+        }
         overlay_place(sw, sh, &px, &py, &scale); /* the menu's letters */
         stats_draw(&list, safe, scale, plat_ns());
     }
@@ -358,9 +373,10 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
     overlay_draw(&list, sw, sh, plat_ns());
     ui_unlock();
     n = list.n;
-    if (!n || !g_atlas || !pipeline_make(g_vk.sc_format) || !(view = sc_view(sc))) return;
+    if (!n || !g_atlas || !(pipe = pipeline_make(t->fmt)) || !(view = t->view ? t->view : vk_ui_image_view(t->img, t->fmt)))
+        return 0;
     v = (Vertex*)vk_stage((u64)n * 6 * sizeof(Vertex), 4, &buf, &off);
-    if (!v) return;
+    if (!v) return 0;
     for (i = 0; i < n; ++i) {
         const SnxUiQuad* q = &g_quads[i];
         /* the texels' corners, clockwise from the top left, turned: a quarter turn shows the bottom left one there */
@@ -381,8 +397,8 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
         vertex(&v[i * 6 + 4], px[2], py[2], cu[2], cv[2], q->rgba);
         vertex(&v[i * 6 + 5], px[3], py[3], cu[3], cv[3], q->rgba);
     }
-    vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+    vk_barrier(cb, t->img, VK_IMAGE_ASPECT_COLOR_BIT, t->from_stage, t->from_access, t->from_layout,
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     {
@@ -392,16 +408,16 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
                                         .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
                                         .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
         VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                              .renderArea = {{0, 0}, g_vk.sc_extent},
+                              .renderArea = {{0, 0}, t->extent},
                               .layerCount = 1,
                               .colorAttachmentCount = 1,
                               .pColorAttachments = &at};
         VkViewport vp = {0, 0, (float)sw, (float)sh, 0, 1};
-        VkRect2D sci = {{0, 0}, g_vk.sc_extent};
+        VkRect2D sci = {{0, 0}, t->extent};
         VkDeviceSize vo = off;
         rec_CmdBeginRendering(cb, &ri);
         vk_render_forget_state(); /* another pipeline and layout: a draw after it sets everything again */
-        rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
+        rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe[pipe - 1]);
         rec_CmdSetViewport(cb, 0, 1, &vp);
         rec_CmdSetScissor(cb, 0, 1, &sci);
         rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
@@ -416,7 +432,5 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
         }
         rec_CmdEndRendering(cb);
     }
-    vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-               VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    return 1;
 }

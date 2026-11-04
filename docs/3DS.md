@@ -436,8 +436,11 @@ ported from Azahar's (`gpu/shader.c`, `gpu/draw.c`, `gpu/raster.c`, `gpu/lightin
 units and vertex processing (`gpu/shader.c`, `gpu/draw.c`) are built into the runtime:
 a draw with a geometry shader runs its vertex and geometry shaders there on the CPU, as
 Azahar does, and the GPU draws the triangles they make. The reference samples the
-nearest texel only, as Azahar's does, so texture filtering has no reference. Shadow
-textures and rendering are not drawn yet: a draw that needs one stops the run and names it. The ExHeader's address-mapping capabilities
+nearest texel only, as Azahar's does, so texture filtering has no reference. The GPU's
+renderer draws shadows: a shadow pass (OM_MODE 3) writes each texel's depth and strength
+as one packed word in an R32_UINT image, stores the map through its own tiled copy
+(`shaders/shadow.comp`), and a Shadow2D texture unit samples that image in the
+coordinates the pass wrote. Shadow cubes still read a map that is lit everywhere. The ExHeader's address-mapping capabilities
 are applied at process creation (VRAM, DSP RAM, New 3DS extra RAM), as Azahar's
 `HandleSpecialMapping` does; MMIO areas stay unmapped. SetBufferSwap and the shared
 FrameBufferUpdate blocks latch real framebuffer descriptors in the five formats
@@ -466,10 +469,31 @@ The pair keeps its shape in a window of any size. The 3DS display's Separate
 screens setting gives each screen a window of its own instead, which fills with
 that screen. Top screen resolution and Bottom screen resolution scale the 3D
 rendering of that screen, 1 to 16 times the console's 400x240 and 320x240, and
-the window scales the larger image to its size. Bounded PPM snapshots land in
-`<output>/frames` in every mode. Without a display the window path is
-unavailable and frames are only recorded; without a Vulkan device the presenter
-reports unavailability and no frame is fabricated.
+the window scales the larger image to its size. The presented frame then takes
+the shared effects of every Vulkan frontend (`src/common/gpu/vk/present_fx.c`):
+the spatial upscaler (`upscaler`, `upscaler_sharpness`, `upscaler_mult`), the
+anti aliasing (`aa`, after the upscale and before the encode) and HDR (`hdr*`).
+Each screen is upscaled and anti aliased at its own rectangle. In one window the
+pair is composited first and the HDR passes encode the whole window, so the
+letterbox is composed with the screens. A 3DS game presents SDR frames: with
+`hdr` on (or Auto and an HDR display) the shared compose pass maps that SDR frame
+into the display's headroom, which is the one SDL reports (Wayland's color
+management, Windows' Advanced Color) or `hdr_peak` where it reports none. Frame
+interpolation (`frame_interp`, or `frame_interp_key`) keeps the pair the frame
+before made and presents a blend of the two pairs and then the current pair, in
+two swapchain images (one per screen with Separate screens). Bounded PPM
+snapshots land in `<output>/frames` in every mode. Without a display the window
+path is unavailable and frames are only recorded; without a Vulkan device the
+presenter reports unavailability and no frame is fabricated.
+
+A 3DS run writes no log file: the console gets the startup lines, the errors,
+`3ds: the window takes Display P3, 250% headroom` (or `no HDR image`, once per
+window and again when `hdr` changes it), the effects'
+`vulkan: presentation effects ready`, and each hotkey's message.
+`--ctr_ipc_trace=1` adds every service request and `--ctr_jit_trace=1` every
+translated block. F6 draws a frame rate and input overlay at each window's
+bottom left: the top screen's frames a second, the generated ones when frame
+interpolation runs, their total, the frame time and the buttons held.
 
 The separate windows and the two render resolutions are checked by `3ds_windows`: each
 screen takes its own setting's scale and no other's, both screens present, and the PPM
@@ -503,6 +527,16 @@ with that error as the run's last line. `3ds_vk_ram` checks the RAM on whatever 
 is: what the guest wrote reaches the GPU, a GPU fill shows in every guest view, a store through
 the flat space reaches the GPU, and the RAM outlives the device; `3ds_memory_adopt` checks the
 move with a memfd standing in for the dma-buf, on every host.
+Each window opens at twice its screen's size, 800x480 for the top and 640x480 for the
+bottom, so neither carries the black bars a window of another shape would. The aspect is
+not locked: a window of another shape stretches the screen at most half as much again,
+and fullscreen a quarter, bars covering the rest.
+The board's RAM is imported once as one host object. A driver whose
+`VK_EXT_external_memory_host` refuses a file-backed mapping, as RADV does at
+present, falls back to a udmabuf dma-buf over the same memfd
+(`VK_EXT_external_memory_dma_buf`). The log says which path ran. See
+`docs/issues/1116-radv-host-pointer-memfd.md` for the driver behavior and the
+minimal reproduction.
 
 Audio runs on a high-level DSP (`src/3ds/audio/`, ported from Azahar's HLE audio core):
 dsp::DSP (`services/dsp.c`) takes the application's pipe writes, interrupt events, the
@@ -885,7 +919,7 @@ recorded under [Source provenance and licensing](#source-provenance-and-licensin
 | F1 Kernel and time (done 2026-10-17, audited 2026-10-19) | The scheduler delivers every deadline (vblank, DSP frame, timers, wait timeouts, sleeps, the shared page's hourly time). The dispatcher reaches it every 4096 blocks, so a thread a deadline wakes with a better priority preempts one that makes no SVC. Priorities are effective ones, with mutex priority inheritance. WaitSynchronization1 and N and the arbiter take finite timeouts. SleepThread 0 yields and -1 sleeps forever. ExitThread ends the process at its last thread. Timers and pulse events exist. CreateThread runs threads on processors -2 to 3 within the APPLICATION limit's priority, and the resource limit's counts are enforced. Also implemented: GetHandleInfo, GetSystemInfo (Luma's queries too), GetProcessInfo, GetThreadInfo, GetProcessIdOfThread, the resource limit SVCs, Break, the cache SVCs and Luma's 0x93 and 0x94, QueryMemory with the console's register layout and memory states, CreateMemoryBlock, UnmapMemoryBlock, MapMemoryBlock of the application's own blocks and ControlMemory MAP and UNMAP. Any well-formed IPC descriptor is translated, buffers are checked against the caller's memory and moved handles are closed. `--ipc-stubs` answers the unknown commands of the services it names. The shared page has its retail, battery, Wi-Fi and hourly local time fields. Guest time stays host time. Subtracting slow HLE work from it waits for the GPU thread (F2), since the audio device plays in host time | `core_timing.*`, `kernel/{svc,thread,timer,mutex,semaphore,address_arbiter,resource_limit,shared_memory,process,shared_page,vm_manager,hle_ipc}.cpp`, `service/service.cpp`, `service/gsp/gsp_gpu.cpp` |
 | F2 SuperTux playable | Presenter without readback or queue waits, on its own thread; both screens and the Default, Single, Large, Side-by-side and Hybrid layouts; keyboard, SDL3 gamepad, touch and motion input; full `hid:USER`/`hid:SPVR` rings and `ir:rst`; GX work on a GPU thread with interrupts delivered by the poll; banded raster threads; audio prebuffer and hold-last-frame | `frontend/framebuffer_layout.cpp`, `frontend/emu_window.cpp`, `service/hid/hid.*`, `service/ir/ir_rst.*`, `renderer_software/sw_rasterizer.cpp`, `audio_core/dsp_interface.cpp` |
 | F3 OS for retail titles | cfg blocks; APT:U/APT:A and the `aptMainLoop` lifecycle; shared font; HLE applets (swkbd first); FS save data, extdata, system save data, the NCCH archive and the SDMC write-only archive; ptm:u, ac:u and registered stubs for the small services; err:f | `service/{cfg,apt,fs,ptm,ac,err}/`, `hle/applets/`, `file_sys/archive_*` |
-| F4 Software GPU | Procedural textures, shadow textures and rendering, VRAM save and restore, the stereo right eye | `renderer_software/{sw_proctex,sw_framebuffer,sw_rasterizer}.cpp` |
+| F4 Software GPU | Geometry shaders, procedural textures, shadow textures and rendering (the GPU's renderer has the shadow pass and Shadow2D), VRAM save and restore, the stereo right eye | `pica/geometry_pipeline.cpp`, `pica/shader_unit.cpp`, `renderer_software/{sw_proctex,sw_framebuffer,sw_rasterizer}.cpp` |
 | F5 Dynamic code | ldr:ro CROs compiled ahead of time, with a design for their run-time base and relocations; a log of missed targets for a second discovery pass; an explicit result for self-modifying code | `service/ldr_ro/` |
 | F6 Audio | The DSP's AAC pipe on FFmpeg; CSND; time stretching if gaps remain | `audio_core/hle/aac_decoder.cpp`, `audio_core/csnd.cpp`, `service/csnd/`, `audio_core/time_stretch.cpp` |
 | F7 Peripherals and network | y2r, mic, cam (no camera), ir:USER (its startup, events and the no-accessory answers are in place; a Circle Pad Pro is not emulated), soc:U, then ssl and http | `service/{cam,mic,ir,soc,ssl,http}/`, `hw/y2r.cpp` |

@@ -5,7 +5,7 @@
    write_tracking=1 (and every host without it) tracks by protection, and write_tracking=2 must make the scan say -1.
    The arguments: the folder for its files, then Debug settings as the runtime takes them, --key=value */
 #include "nx/runtime/platform/plat_posix.c"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <sys/wait.h>

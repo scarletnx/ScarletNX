@@ -2,9 +2,11 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/gpu/vk/window.h"
 #include "common/utilities/common.h"
+#include "snx_settings.h"
 #include <SDL3/SDL_vulkan.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 bool snx_vk_window_open(const char* app, const char* title, int width, int height, SnxVkWindow* out, char* error,
                         size_t error_size) {
@@ -52,15 +54,31 @@ bool snx_vk_window_open(const char* app, const char* title, int width, int heigh
 #endif
     Uint32 extension_count = 0;
     const char* const* extensions = out->window ? SDL_Vulkan_GetInstanceExtensions(&extension_count) : NULL;
+    /* VK_EXT_swapchain_colorspace is an instance extension, and the HDR image kinds are its color spaces: ask for it
+       when the loader has it. The instance keeps the names during the create only */
+    const char** asked = NULL;
+    uint32_t asked_count = 0;
+    if (extensions && extension_count) {
+        asked = malloc((extension_count + 2) * sizeof *asked);
+        if (asked) {
+            memcpy(asked, extensions, extension_count * sizeof *asked);
+            asked_count = extension_count;
+            if (snx_vk_has_instance_extension(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))
+                asked[asked_count++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
+            extensions = asked;
+        }
+    }
     SnxVkInstanceInfo info = {.app_name = app,
                               .extensions = extensions,
-                              .extension_count = extensions ? extension_count : 0,
+                              .extension_count = extensions ? (uint32_t)(asked_count ? asked_count : extension_count) : 0,
                               /* No window (a headless run, SDL's dummy video driver) means no extensions from SDL,
                                  which is also where MoltenVK's portability enumeration normally comes from: ask for
                                  it anyway, or the loader answers VK_ERROR_INCOMPATIBLE_DRIVER on macOS. It is
                                  enabled only when the loader has it. */
                               .portability = true};
-    if (snx_vk_instance_create(&info, &out->instance) != VK_SUCCESS) {
+    VkResult made = snx_vk_instance_create(&info, &out->instance);
+    free(asked);
+    if (made != VK_SUCCESS) {
         if (out->window) SDL_DestroyWindow(out->window);
         out->window = NULL;
         info.extensions = NULL;
@@ -83,6 +101,95 @@ void snx_vk_window_close(SnxVkWindow* w) {
     snx_vk_instance_free(&w->instance);
     if (w->window) SDL_DestroyWindow(w->window);
     *w = (SnxVkWindow){0};
+}
+
+/* KWin keeps each output's SDR white and peak in its config: "sdrBrightness": N and "maxPeakBrightnessOverride": N,
+   in nits. A scan for the key is enough: one output's value is the display's for a fullscreen game */
+static int kwin_output_nits(const char* key);
+
+int snx_vk_display_white_nits(void) {
+    int nits = kwin_output_nits("\"sdrBrightness\"");
+    return nits >= 80 && nits <= 480 ? nits : 0;
+}
+
+/* KWin keeps each output's peak in its config too: "maxPeakBrightnessOverride": N, in nits */
+static int kwin_output_nits(const char* key) {
+    const char* config = getenv("XDG_CONFIG_HOME");
+    char path[1024];
+    char* text = NULL;
+    long size;
+    FILE* file;
+    const char* at;
+    int nits = 0;
+    if (config && *config)
+        snprintf(path, sizeof path, "%s/kwinoutputconfig.json", config);
+    else if ((config = getenv("HOME")) && *config)
+        snprintf(path, sizeof path, "%s/.config/kwinoutputconfig.json", config);
+    else
+        return 0;
+    file = fopen(path, "rb");
+    if (!file) return 0;
+    if (fseek(file, 0, SEEK_END) != 0 || (size = ftell(file)) <= 0 || size > 1 << 20 ||
+        fseek(file, 0, SEEK_SET) != 0 || !(text = (char*)malloc((size_t)size + 1))) {
+        fclose(file);
+        free(text);
+        return 0;
+    }
+    if (fread(text, 1, (size_t)size, file) != (size_t)size) {
+        fclose(file);
+        free(text);
+        return 0;
+    }
+    fclose(file);
+    text[size] = 0;
+    at = strstr(text, key);
+    if (at && (at = strchr(at, ':')) != NULL) {
+        nits = atoi(at + 1);
+        if (nits < 80 || nits > 4000) nits = 0;
+    }
+    free(text);
+    return nits;
+}
+
+int snx_vk_peak_nits(int setting) {
+    int peak = kwin_output_nits("\"maxPeakBrightnessOverride\"");
+    if (peak > 0) return peak < 400 ? 400 : peak;
+    return setting < 400 ? 400 : setting > 4000 ? 4000 : setting;
+}
+
+int snx_vk_hdr_headroom_pct(void) {
+    int peak, paper;
+    if (!g_settings.hdr_debug_headroom) return 0;
+    peak = snx_vk_peak_nits(g_settings.hdr_peak);
+    paper = peak / 2;
+    return paper > 0 ? peak * 100 / paper : 200;
+}
+
+int snx_vk_paper_nits(int setting) {
+    int white;
+    if (g_settings.hdr_debug_headroom) return snx_vk_peak_nits(g_settings.hdr_peak) / 2;
+    white = snx_vk_display_white_nits();
+    /* the display's own white is the right anchor for the SDR range wherever it can be read, whatever the .ini says:
+       a paper that is not the display's white puts the whole picture above it (washed out) or below it (dim) */
+    if (white > 0) return white;
+    return setting > 0 ? setting : 203;
+}
+
+int snx_vk_window_refresh_hz(SDL_Window* window) {
+    SDL_DisplayID id = window ? SDL_GetDisplayForWindow(window) : 0;
+    const SDL_DisplayMode* mode = id ? SDL_GetCurrentDisplayMode(id) : NULL;
+    if (!mode || !(mode->refresh_rate > 0)) return 0;
+    return (int)(mode->refresh_rate + 0.5f);
+}
+
+int snx_vk_window_headroom_pct(SDL_Window* window) {
+    SDL_PropertiesID props = window ? SDL_GetWindowProperties(window) : 0;
+    float headroom;
+    if (!props) return 100;
+    headroom = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1.0f);
+    if (!(headroom >= 1.0f)) headroom = 1.0f;
+    if (headroom > 10.0f) headroom = 10.0f;
+    return (int)(headroom * 100.0f + 0.5f);
 }
 
 VkExtent2D snx_vk_window_extent(const SnxVkWindow* w, VkExtent2D fallback) {

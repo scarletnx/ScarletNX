@@ -92,6 +92,7 @@ const unsigned char* snx_ctr_memory_ram(const SnxCtrMemory* m, uint64_t* size) {
     return m->host.view;
 }
 const SnxCtrProfile* snx_ctr_memory_profile(const SnxCtrMemory* m) { return m ? m->profile : NULL; }
+int snx_ctr_memory_fd(const SnxCtrMemory* m) { return m ? (int)m->host.handle : -1; }
 void snx_ctr_memory_free(SnxCtrMemory* m) {
     if (!m) return;
     snx_host_memory_free(&m->host);

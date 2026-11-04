@@ -1,6 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "agb/runtime/host.h"
+#include "agb/runtime/vk.h"
+#include "common/gpu/vk/interp_auto.h"
+#include "common/gpu/vk/present_fx.h"
+#include "common/utilities/keybind.h"
+#include "common/gpu/vk/hotkeys.h"
+#include "snx_settings.h"
 #include "agb/apu/apu.h"
 #include "agb/ppu/ppu.h"
 #include "common/utilities/pad_map.h"
@@ -20,13 +26,19 @@
 #define STICK_DEAD    16384
 
 struct AgbHost {
+    AgbVk* vk;
     SDL_Window* window;
     SDL_Renderer* renderer;
     SDL_Texture* texture;
     SDL_AudioStream* audio;
     SnxPadMap pad;
+    uint32_t* prev;  /* the last frame, for frame interpolation */
+    uint32_t* blend; /* the frame between the last and this one */
+    int have_prev, display_hz;
+    SnxInterpAuto interp_auto; /* Auto's 1 % figures and its on and off delays */
     uint16_t keyboard, buttons; /* the keys the keyboard and the gamepads hold */
     uint64_t due;               /* when the next frame goes on screen, SDL_GetTicksNS's */
+    uint64_t quit_armed_ns;     /* the second Esc, before this, quits: a first one only warns */
 };
 
 uint16_t agb_host_key(int scancode) {
@@ -114,6 +126,20 @@ static uint16_t gamepads(const AgbHost* host) {
     return keys;
 }
 
+/* the display's refresh in Hz, 0 when the host does not say */
+static int display_hz(SDL_Window* window) {
+    SDL_DisplayID id = window ? SDL_GetDisplayForWindow(window) : 0;
+    const SDL_DisplayMode* mode = id ? SDL_GetCurrentDisplayMode(id) : NULL;
+    if (!mode || !(mode->refresh_rate > 0)) return 0;
+    return (int)(mode->refresh_rate + 0.5f);
+}
+
+/* a frame between the last and the current one: the byte average of the two, which is the temporal blend */
+static void blend_frames(uint32_t* out, const uint32_t* a, const uint32_t* b) {
+    for (unsigned i = 0; i < AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT; ++i)
+        out[i] = (a[i] & b[i]) + (((a[i] ^ b[i]) & 0xFEFEFEFEu) >> 1);
+}
+
 AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t error_size) {
     AgbHost* host = (AgbHost*)calloc(1, sizeof(*host));
     SDL_AudioSpec spec = {SDL_AUDIO_S16, 2, AGB_APU_RATE};
@@ -126,24 +152,39 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
         free(host);
         return NULL;
     }
-    if (!SDL_CreateWindowAndRenderer(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE,
-                                     SDL_WINDOW_RESIZABLE | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0), &host->window,
-                                     &host->renderer) ||
-        !(host->texture = SDL_CreateTexture(host->renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING,
-                                            AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT)) ||
-        !SDL_SetTextureScaleMode(host->texture, SDL_SCALEMODE_NEAREST) ||
-        !SDL_SetRenderLogicalPresentation(host->renderer, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT,
-                                          SDL_LOGICAL_PRESENTATION_INTEGER_SCALE)) {
-        snprintf(error, error_size, "cannot open the game's window: %s", SDL_GetError());
-        agb_host_close(host);
-        return NULL;
+    /* the shared presentation effects need a Vulkan window; a host without one keeps SDL's renderer, so a headless or
+       driverless run still shows its frame */
+    host->vk = agb_vk_open(title, fullscreen, error, error_size);
+    if (host->vk) {
+        host->window = agb_vk_window(host->vk);
+    } else {
+        fprintf(stderr, "scarletnx-agb: no Vulkan window (%s), using SDL's renderer\n", error);
+        if (!SDL_CreateWindowAndRenderer(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE,
+                                         SDL_WINDOW_RESIZABLE | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0), &host->window,
+                                         &host->renderer) ||
+            !(host->texture = SDL_CreateTexture(host->renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING,
+                                                AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT)) ||
+            !SDL_SetTextureScaleMode(host->texture, SDL_SCALEMODE_NEAREST) ||
+            !SDL_SetRenderLogicalPresentation(host->renderer, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT,
+                                              SDL_LOGICAL_PRESENTATION_INTEGER_SCALE)) {
+            snprintf(error, error_size, "cannot open the game's window: %s", SDL_GetError());
+            agb_host_close(host);
+            return NULL;
+        }
+        /* each frame whole on screen, as the launcher presents its own */
+        if (!SDL_SetRenderVSync(host->renderer, 1))
+            fprintf(stderr,
+                    "scarletnx-agb: the display refused vsync 1 (%s): frames go on screen with vsync 0 and may tear\n",
+                    SDL_GetError());
     }
-    /* each frame whole on screen, as the launcher presents its own */
-    if (!SDL_SetRenderVSync(host->renderer, 1))
-        fprintf(stderr,
-                "scarletnx-agb: the display refused vsync 1 (%s): frames go on screen with vsync 0 and may tear\n",
-                SDL_GetError());
     snx_window_icon(host->window);
+
+    host->display_hz = display_hz(host->window);
+    snx_interp_auto_init(&host->interp_auto);
+    fprintf(stderr, "frame interpolation: %s (display %d Hz)\n",
+            snx_fx_interp_label(snx_fx_interp_parse(g_settings.frame_interpolation)), host->display_hz);
+    host->prev = malloc((size_t)AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT * 4);
+    host->blend = malloc((size_t)AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT * 4);
     snx_pad_map_position(&host->pad); /* A where the console has it, east */
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO) ||
         !(host->audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL)) ||
@@ -159,11 +200,38 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
 void agb_host_close(AgbHost* host) {
     if (!host) return;
     if (host->audio) SDL_DestroyAudioStream(host->audio);
-    if (host->texture) SDL_DestroyTexture(host->texture);
-    if (host->renderer) SDL_DestroyRenderer(host->renderer);
-    if (host->window) SDL_DestroyWindow(host->window);
+    free(host->prev);
+    free(host->blend);
+    if (host->vk) {
+        agb_vk_close(host->vk);
+    } else {
+        if (host->texture) SDL_DestroyTexture(host->texture);
+        if (host->renderer) SDL_DestroyRenderer(host->renderer);
+        if (host->window) SDL_DestroyWindow(host->window);
+    }
     free(host);
     SDL_Quit();
+}
+
+/* the runtime's own keys, as the other frontends take them: the upscaler, the anti aliasing and HDR change the shared
+   effects live, and frame interpolation the CPU blend. 1 when the key was one of them */
+static int agb_hotkey(AgbHost* host, const SDL_KeyboardEvent* key) {
+    int action = snx_hotkey_match(key);
+    char text[64];
+    int value = -1;
+    if (action == SNX_HOTKEY_NONE) return 0;
+    if (key->repeat) return 1;
+    switch (action) {
+        case SNX_HOTKEY_UPSCALER: value = agb_vk_cycle_upscaler(host->vk); break;
+        case SNX_HOTKEY_AA: value = agb_vk_cycle_aa(host->vk); break;
+        case SNX_HOTKEY_HDR: value = agb_vk_toggle_hdr(host->vk); break;
+        case SNX_HOTKEY_INTERP: value = snx_hotkey_next_interp(); break;
+    }
+    if (value < 0) return 1;
+    snx_hotkey_text(action, value, text, sizeof text);
+    agb_vk_toast(host->vk, text);
+    fprintf(stderr, "%s (%s)\n", text, snx_hotkey_key_name(action));
+    return 1;
 }
 
 bool agb_host_poll(AgbHost* host, uint16_t* keys) {
@@ -175,8 +243,33 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: open = false; break;
             case SDL_EVENT_GAMEPAD_ADDED: SDL_OpenGamepad(event.gdevice.which); break;
             case SDL_EVENT_KEY_DOWN:
-                if (event.key.scancode == SDL_SCANCODE_F11 && !event.key.repeat)
-                    SDL_SetWindowFullscreen(host->window, !(SDL_GetWindowFlags(host->window) & SDL_WINDOW_FULLSCREEN));
+                if (event.key.key == SDLK_ESCAPE && !event.key.repeat) {
+                    uint64_t now = SDL_GetTicksNS();
+                    if (host->quit_armed_ns && now < host->quit_armed_ns) {
+                        open = false;
+                        break;
+                    }
+                    host->quit_armed_ns = now + 3000000000ull;
+                    agb_vk_toast_ms(host->vk, "Press Esc again to quit", 3000);
+                    fprintf(stderr, "Press Esc again to quit\n");
+                    break;
+                }
+                if ((event.key.scancode == SDL_SCANCODE_F11 ||
+                     (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT))) &&
+                    !event.key.repeat) {
+                    SDL_SetWindowFullscreen(host->window,
+                                            !(SDL_GetWindowFlags(host->window) & SDL_WINDOW_FULLSCREEN));
+                    break;
+                }
+                if (event.key.key == SDLK_F6 && !event.key.repeat) {
+                    fprintf(stderr, "showcase: %s\n", agb_vk_stats_toggle(host->vk, 1) ? "on" : "off");
+                    break;
+                }
+                if (event.key.key == SDLK_F12 && !event.key.repeat) {
+                    fprintf(stderr, "stats: %s\n", agb_vk_stats_toggle(host->vk, 0) ? "on" : "off");
+                    break;
+                }
+                if (agb_hotkey(host, &event.key)) break;
                 host->keyboard |= agb_host_key(event.key.scancode);
                 break;
             case SDL_EVENT_KEY_UP: host->keyboard &= (uint16_t)~agb_host_key(event.key.scancode); break;
@@ -189,12 +282,32 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
     return open;
 }
 
+static void present_frame(AgbHost* host, const uint32_t* framebuffer, int generated) {
+    if (host->vk) {
+        (void)agb_vk_frame(host->vk, framebuffer, generated);
+    } else {
+        SDL_UpdateTexture(host->texture, NULL, framebuffer, AGB_SCREEN_WIDTH * 4);
+        SDL_SetRenderDrawColor(host->renderer, 0, 0, 0, 255);
+        SDL_RenderClear(host->renderer);
+        SDL_RenderTexture(host->renderer, host->texture, NULL, NULL);
+        SDL_RenderPresent(host->renderer);
+    }
+}
 void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* samples, uint32_t count) {
-    SDL_UpdateTexture(host->texture, NULL, framebuffer, AGB_SCREEN_WIDTH * 4);
-    SDL_SetRenderDrawColor(host->renderer, 0, 0, 0, 255);
-    SDL_RenderClear(host->renderer);
-    SDL_RenderTexture(host->renderer, host->texture, NULL, NULL);
-    SDL_RenderPresent(host->renderer);
+    int mode = snx_fx_interp_parse(g_settings.frame_interpolation);
+    agb_vk_keys(host->vk, (uint16_t)(host->keyboard | host->buttons));
+    int interp =
+        mode == SNX_FX_INTERP_BLEND ||
+        (mode == SNX_FX_INTERP_AUTO && snx_interp_auto_frame(&host->interp_auto, SDL_GetTicksNS(), host->display_hz));
+    if (interp && host->prev && host->blend && host->have_prev) {
+        blend_frames(host->blend, host->prev, framebuffer);
+        present_frame(host, host->blend, 1);
+    }
+    present_frame(host, framebuffer, 0);
+    if (host->prev) {
+        memcpy(host->prev, framebuffer, (size_t)AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT * 4);
+        host->have_prev = 1;
+    }
     if (host->audio && SDL_GetAudioStreamQueued(host->audio) < (int)(QUEUED_FRAMES * count * 4))
         SDL_PutAudioStreamData(host->audio, samples, (int)(count * 4));
     uint64_t now = SDL_GetTicksNS();

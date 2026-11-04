@@ -12,6 +12,8 @@
 #include "nx/hle/services/services.h" /* am_keyboard_answered: the keyboard's box's answer */
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/platform/backend.h"
+#include "common/utilities/keybind.h"
+#include "common/gpu/vk/hotkeys.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
@@ -53,6 +55,7 @@ static u64 g_menu_held_extra[SNX_GAMEPADS - 1];
 static int g_fullscreen;
 static void set_fullscreen(int on);
 static int g_shot_req;
+static u64 g_quit_armed_ns; /* the second Esc, before this, quits: a first one only warns */
 /* SDL's text input for the keyboard's box (overlay.h): the box it is on for (0: off), the system's keyboard asked for
    again (a tap on the box's line), and the box's line SDL was last given, in window points */
 static struct {
@@ -392,6 +395,27 @@ void video_init(const char* title, const char* addons) {
         free(driver);
     }
 #endif
+    {
+        SnxKeybind key;
+        if (!snx_keybind_parse(g_settings.upscaler_cycle_key, &key))
+            WARN("video: upscaler_key '%s' is not a key: use ctrl+u, alt+u, shift+f13 or f13\n",
+                 g_settings.upscaler_cycle_key);
+        else
+            LOG("video: upscaler cycle key %s\n", g_settings.upscaler_cycle_key);
+        if (!snx_keybind_parse(g_settings.hdr_key, &key))
+            WARN("video: hdr_key '%s' is not a key: use ctrl+h, alt+h, shift+f14 or f14\n", g_settings.hdr_key);
+        else
+            LOG("video: hdr key %s\n", g_settings.hdr_key);
+        if (!snx_keybind_parse(g_settings.anti_aliasing_key, &key))
+            WARN("video: aa_key '%s' is not a key: use ctrl+shift+a, alt+a, shift+f13 or f13\n",
+                 g_settings.anti_aliasing_key);
+        else
+            LOG("video: anti aliasing key %s\n", g_settings.anti_aliasing_key);
+        if (!snx_keybind_parse(g_settings.tv_mode_key, &key))
+            WARN("video: docked_key '%s' is not a key: use ctrl+d, alt+d, shift+f15 or f15\n", g_settings.tv_mode_key);
+        else
+            LOG("video: docked key %s\n", g_settings.tv_mode_key);
+    }
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
     gamepad_scan();
     /* SDL subsystem initialization belongs to the main thread, before the guest can open audout sessions. */
@@ -556,6 +580,7 @@ static void set_fullscreen(int on) {
         g_fullscreen = on;
     else
         LOG("video: fullscreen %s failed: %s\n", on ? "on" : "off", SDL_GetError());
+
 }
 /* ---- a fatal error's box (plat.c's fatal): the game's menu panel (overlay.c) with the error, what it means and what
    to do, until the player closes it. The game's renderer lets go of the window first (its device may be what was
@@ -889,12 +914,106 @@ static void title_paused(int paused) {
     snprintf(title, sizeof title, "%.*s%s", (int)n, t, paused ? mark : "");
     SDL_SetWindowTitle(g_win, title);
 }
+/* the help's runtime keys, with the upscaler's cycle key and the HDR toggle key as the .ini has them */
+static const char* help_text(char* out, size_t size) {
+    const char* esc = strstr(HELP, "  Esc  quit");
+    if (esc)
+        snprintf(out, size,
+                 "%.*s  %s  cycle the spatial upscaler (upscaler_key)\n  %s  HDR on and off (hdr_key)\n"
+                 "  %s  cycle the anti aliasing (aa_key)\n  %s  TV mode On, Off and Auto (docked_key)\n%s",
+                 (int)(esc - HELP), HELP, g_settings.upscaler_cycle_key, g_settings.hdr_key,
+                 g_settings.anti_aliasing_key, g_settings.tv_mode_key, esc);
+    else
+        snprintf(out, size,
+                 "%s\n  %s  cycle the spatial upscaler (upscaler_key)\n  %s  HDR on and off (hdr_key)\n"
+                 "  %s  cycle the anti aliasing (aa_key)\n  %s  TV mode On, Off and Auto (docked_key)",
+                 HELP, g_settings.upscaler_cycle_key, g_settings.hdr_key, g_settings.anti_aliasing_key,
+                 g_settings.tv_mode_key);
+    return out;
+}
+/* The runtime's live keys, the same as the other frontends': the upscaler, the anti aliasing, HDR and frame
+   interpolation. A press is taken, a repeat included, so the game never sees it. */
+static void hdr_toggled(const char* why);
+static int effects_key_event(const SDL_KeyboardEvent* e) {
+    int action = snx_hotkey_match(e);
+    char text[64];
+    const char* label;
+    int value;
+    if (action == SNX_HOTKEY_NONE) return 0;
+    if (e->repeat) return 1;
+    switch (action) {
+        case SNX_HOTKEY_UPSCALER:
+            label = g_renderer && g_renderer->cycle_upscale ? g_renderer->cycle_upscale() : NULL;
+            if (label) {
+                snprintf(text, sizeof text, "Upscaler: %s", label);
+                ui_lock();
+                overlay_toast(text, plat_ns());
+                ui_unlock();
+                LOG("upscaler: %s (%s)\n", label, g_settings.upscaler_cycle_key);
+            }
+            break;
+        case SNX_HOTKEY_AA:
+            label = g_renderer && g_renderer->cycle_aa ? g_renderer->cycle_aa() : NULL;
+            if (label) {
+                snprintf(text, sizeof text, "Anti aliasing: %s", label);
+                ui_lock();
+                overlay_toast(text, plat_ns());
+                ui_unlock();
+                LOG("anti aliasing: %s (%s)\n", label, g_settings.anti_aliasing_key);
+            }
+            break;
+        case SNX_HOTKEY_HDR: hdr_toggled(g_settings.hdr_key); break;
+        case SNX_HOTKEY_INTERP:
+            value = snx_hotkey_next_interp();
+            snx_hotkey_text(action, value, text, sizeof text);
+            ui_lock();
+            overlay_toast(text, plat_ns());
+            ui_unlock();
+            LOG("%s (%s)\n", text, g_settings.frame_interpolation_key);
+            break;
+    }
+    return 1;
+}
+/* HDR turned over (the hdr_key hotkey or an unattended run's hdr_toggle): the toast and the log name the state */
+static void hdr_toggled(const char* why) {
+    const char* label = g_renderer && g_renderer->toggle_hdr ? g_renderer->toggle_hdr() : NULL;
+    char text[96];
+    if (!label) return;
+    snprintf(text, sizeof text, "HDR: %s", label);
+    ui_lock();
+    overlay_toast(text, plat_ns());
+    ui_unlock();
+    LOG("hdr: %s (%s)\n", label, why);
+}
+/* the docked_key hotkey: the choice cycles On, Off and Auto while the game runs, with a toast that names it and, in
+   Auto, the mode it picked and why. The .ini is not changed. */
+static int docked_key_event(const SDL_KeyboardEvent* e) {
+    SnxKeybind bind;
+    if (!snx_keybind_parse(g_settings.tv_mode_key, &bind) || !snx_keybind_match(&bind, e)) return 0;
+    if (!e->repeat) {
+        int choice = options_tv_mode_next();
+        char text[128];
+        if (choice == 2) {
+            int on = plat_power_on_charger();
+            snprintf(text, sizeof text, "TV mode: Auto (%s, %s)", snx_tv_mode() ? "TV mode" : "handheld mode",
+                     on > 0 ? "on the charger" : on == 0 ? "on the battery" : "power state not readable");
+        } else {
+            snprintf(text, sizeof text, "TV mode: %s", choice ? "On" : "Off");
+        }
+        ui_lock();
+        overlay_toast(text, plat_ns());
+        ui_unlock();
+        LOG("%s (%s)\n", text, g_settings.tv_mode_key);
+    }
+    return 1;
+}
 static void hotkey(SDL_Keycode k) {
     switch (k) {
         case SDLK_F1: {
             int fs = g_fullscreen;
+            char help[2048];
             if (fs) set_fullscreen(0);
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "ScarletNX", HELP, g_win);
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "ScarletNX", help_text(help, sizeof help), g_win);
             if (fs) set_fullscreen(1);
             break;
         }
@@ -1328,8 +1447,47 @@ static void keyboard_sync(void) {
     }
     if (answer >= 0) am_keyboard_answered(ticket, answer, text);
 }
+#if !defined(__APPLE__)
+/* The window's HDR headroom over its SDR white, which SDL reports: 1.0 with none, so 100 in percent. On Wayland it
+   comes from the compositor's color management (`wp_color_management_v1`, which KWin implements), on Windows from
+   Advanced Color, and on Apple the AppKit path (plat_apple.m) gives the same numbers. The Vulkan surface's colorspaces
+   say which HDR image the compositor takes; this says how much light over white it has for the SDR-to-HDR lift */
+static void sdl_headroom_poll(void) {
+    SDL_PropertiesID props = g_win ? SDL_GetWindowProperties(g_win) : 0;
+    float headroom, white;
+    u32 pct, was;
+    if (!props) return;
+    headroom = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1.0f);
+    white = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT, 1.0f);
+    if (!(headroom >= 1.0f)) headroom = 1.0f;
+    if (headroom > 16.0f) headroom = 16.0f;
+    pct = (u32)(headroom * 100.0f + 0.5f);
+    was = __atomic_load_n(&g_display_headroom_pct, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_display_headroom_pct, pct, __ATOMIC_RELAXED);
+    /* the potential is what the display can reach: SDL reports whether HDR is enabled now, so an enabled window
+       takes auto there even while its current headroom changes with the brightness */
+    __atomic_store_n(&g_display_edr_potential_pct,
+                     SDL_GetBooleanProperty(props, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false)
+                         ? (pct > 100 ? pct : 101)
+                         : 100,
+                     __ATOMIC_RELAXED);
+    if (pct != was)
+        LOG("video: the display's HDR headroom is %.2f (SDR white %.2f)\n", (double)pct / 100.0, (double)white);
+}
+#endif
+
 void video_poll(void) {
     SDL_Event e;
+    /* the display's EDR headroom, which the HDR lift uses: it changes with the display's brightness */
+    static u64 headroom_ns;
+    if (!g_opt_headless && plat_ns() - headroom_ns > 1000000000ull) {
+        headroom_ns = plat_ns();
+#if defined(__APPLE__)
+        plat_display_headroom_poll();
+#else
+        sdl_headroom_poll();
+#endif
+    }
     char* left = __atomic_load_n(&g_fatal_left, __ATOMIC_ACQUIRE);
     if (left) { /* another thread's fatal error, left for this thread to show */
         __atomic_store_n(&g_fatal_taken, 1, __ATOMIC_RELEASE);
@@ -1377,13 +1535,23 @@ void video_poll(void) {
                 break;
             case SDL_EVENT_KEY_DOWN:
                 if (e.key.key == SDLK_ESCAPE) { /* a fresh press: the repeats of the Esc that closed the menu don't */
-                    if (!e.key.repeat) g_quit = 1;
+                    if (!e.key.repeat) {
+                        u64 now = plat_ns();
+                        if (g_quit_armed_ns && now < g_quit_armed_ns) {
+                            g_quit = 1;
+                        } else {
+                            g_quit_armed_ns = now + 3000000000ull;
+                            overlay_toast("Press Esc again to quit", now);
+                        }
+                    }
                     break;
                 }
                 if (e.key.key == SDLK_RETURN && (e.key.mod & SDL_KMOD_ALT)) {
                     if (!e.key.repeat) set_fullscreen(!g_fullscreen);
                     break;
                 }
+                if (effects_key_event(&e.key)) break;
+                if (docked_key_event(&e.key)) break;
                 /* not with Ctrl, Alt or the system key: Alt+F4 also arrives as F4 on Windows */
                 if (!e.key.repeat && !(e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) hotkey(e.key.key);
                 /* a repeat doesn't press again: a key held as the menu closed (which cleared keys_held) stays from
@@ -1415,7 +1583,9 @@ void video_poll(void) {
     /* the scripted presses act like keys, stick keys included. Bits 16..23 (the stick directions as buttons) can be
        scripted too, but the stick keys (40..47) are no npad buttons */
     static u64 script_was; /* the scripted buttons of the last poll: a Home press opens or closes the menu */
-    u64 s = unattended_buttons(), k = keys_held | s;
+    u64 s = unattended_buttons(), k;
+    while (unattended_hdr_toggle_due(unattended_ms())) hdr_toggled("hdr_toggle");
+    k = keys_held | s;
     if (s & ~script_was & SNX_SCRIPT_HOME) {
         ui_lock();
         menu_open(!overlay_shown());

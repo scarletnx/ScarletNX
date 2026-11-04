@@ -3334,6 +3334,40 @@ msgstr "o controle apertado"
 
 #: src/gui/main.c
 #, c-format
+msgid "Upscaler cycle key: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "HDR key: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Anti aliasing key: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "TV mode key: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Press the key, with Ctrl, Shift or Alt held if you want them. ESC keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "That key name is too long. Press another key, or ESC"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Player %d keeps %s"
 msgstr "Jogador %d mantém %s"
 

@@ -24,6 +24,31 @@ bool snx_vk_surface_format(VkPhysicalDevice phys, VkSurfaceKHR surface, const Vk
     return found;
 }
 
+int snx_vk_pick_format(const VkSurfaceFormatKHR* formats, uint32_t n, const VkFormat* wanted, uint32_t count,
+                       VkColorSpaceKHR cs, VkSurfaceFormatKHR* out) {
+    for (uint32_t i = 0; i < n; ++i)
+        for (uint32_t w = 0; w < count; ++w)
+            if (formats[i].format == wanted[w] && formats[i].colorSpace == cs) {
+                *out = formats[i];
+                return 1;
+            }
+    return 0;
+}
+
+bool snx_vk_surface_format_cs(VkPhysicalDevice phys, VkSurfaceKHR surface, const VkFormat* wanted, uint32_t count,
+                              VkColorSpaceKHR cs, VkSurfaceFormatKHR* out) {
+    uint32_t n = 0;
+    int found = 0;
+    VkSurfaceFormatKHR* formats;
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(phys, surface, &n, NULL) != VK_SUCCESS || !n) return false;
+    formats = calloc(n, sizeof *formats);
+    if (!formats) return false;
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(phys, surface, &n, formats) >= 0)
+        found = snx_vk_pick_format(formats, n, wanted, count, cs, out);
+    free(formats);
+    return found != 0;
+}
+
 VkExtent2D snx_vk_swap_extent(const VkSurfaceCapabilitiesKHR* caps, VkExtent2D window) {
     VkExtent2D e = caps->currentExtent.width == UINT32_MAX ? window : caps->currentExtent;
     if (e.width < caps->minImageExtent.width) e.width = caps->minImageExtent.width;
@@ -41,6 +66,26 @@ uint32_t snx_vk_swap_image_count(const VkSurfaceCapabilitiesKHR* caps, uint32_t 
     return count;
 }
 
+void snx_vk_swapchain_metadata(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR space,
+                               int peak_nits, int paper_nits) {
+    VkHdrMetadataEXT meta = {.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,
+                             .minLuminance = 0.005f,
+                             .maxLuminance = (float)peak_nits,
+                             .maxContentLightLevel = (float)peak_nits,
+                             /* the content's maximum frame average, not the paper white: an average equal to the
+                                peak tells a compositor the whole frame is at the peak, and it tone maps the signal
+                                down to fit, which desaturates it. SDR content's average is a fraction of its white */
+                             .maxFrameAverageLightLevel = (float)(paper_nits / 4)};
+    if (!swapchain || space != VK_COLOR_SPACE_HDR10_ST2084_EXT ||
+        (format != VK_FORMAT_A2B10G10R10_UNORM_PACK32 && format != VK_FORMAT_A2R10G10B10_UNORM_PACK32))
+        return;
+    meta.displayPrimaryRed = (VkXYColorEXT){0.708f, 0.292f};
+    meta.displayPrimaryGreen = (VkXYColorEXT){0.170f, 0.797f};
+    meta.displayPrimaryBlue = (VkXYColorEXT){0.131f, 0.046f};
+    meta.whitePoint = (VkXYColorEXT){0.3127f, 0.3290f};
+    vkSetHdrMetadataEXT(device, 1, &swapchain, &meta);
+}
+
 void snx_vk_swapchain_free(VkDevice device, SnxVkSwapchain* sc) {
     if (sc->swapchain) vkDestroySwapchainKHR(device, sc->swapchain, NULL);
     *sc = (SnxVkSwapchain){0};
@@ -53,9 +98,17 @@ bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSw
     if (old) vkDeviceWaitIdle(device);
     VkSurfaceCapabilitiesKHR caps;
     VkSurfaceFormatKHR format = {0};
+    VkColorSpaceKHR color_space = info->color_space ? info->color_space : VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     bool ok = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys, info->surface, &caps) == VK_SUCCESS;
     if (ok) {
-        snx_vk_surface_format(phys, info->surface, info->formats, info->format_count, &format);
+        int found = color_space != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+                        ? snx_vk_surface_format_cs(phys, info->surface, info->formats, info->format_count, color_space,
+                                                   &format)
+                        : 0;
+        if (!found) {
+            color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+            snx_vk_surface_format(phys, info->surface, info->formats, info->format_count, &format);
+        }
         ok = format.format != VK_FORMAT_UNDEFINED;
     }
     VkExtent2D extent = ok ? snx_vk_swap_extent(&caps, info->window) : (VkExtent2D){0, 0};
@@ -90,6 +143,7 @@ bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSw
     }
     sc->swapchain = made;
     sc->format = format;
+    sc->color_space = color_space;
     sc->extent = extent;
     sc->count = count;
     return true;

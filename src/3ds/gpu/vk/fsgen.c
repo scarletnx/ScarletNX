@@ -179,7 +179,7 @@ void snx_ctr_fs_config(const SnxCtrPica* p, SnxCtrFsConfig* c) {
 }
 
 const char* snx_ctr_fs_unsupported(const SnxCtrFsConfig* c) {
-    if (c->shadow_rendering) return "shadow rendering";
+    (void)c;
     return NULL;
 }
 
@@ -1180,7 +1180,8 @@ static void shadow_write(Gen* g, uint32_t depth) {
     uint32_t image_coord = op1(g, SPV_OP_CONVERT_F_TO_S, g->t_iv2,
                                SPV(s, SPV_OP_VECTOR_SHUFFLE, g->t_v2, frag_coord, frag_coord, 0, 1));
     uint32_t old = spv_emit_local(s, u), new1 = spv_emit_local(s, u), old2 = spv_emit_local(s, u);
-    uint32_t texel = op2(g, SPV_OP_IMAGE_READ, g->t_uv4, load(g, g->shadow_image, g->shadow_buffer), image_coord);
+    uint32_t image = load(g, g->shadow_image, g->shadow_buffer);
+    uint32_t texel = op2(g, SPV_OP_IMAGE_READ, g->t_uv4, image, image_coord);
     store(g, old, SPV(s, SPV_OP_COMPOSITE_EXTRACT, u, texel, 0));
     uint32_t header = spv_emit_id(s), body = spv_emit_id(s), next = spv_emit_id(s), merge = spv_emit_id(s);
     SPV_VOID(s, SPV_OP_BRANCH, header);
@@ -1194,8 +1195,8 @@ static void shadow_write(Gen* g, uint32_t depth) {
     SPV_VOID(s, SPV_OP_BRANCH, next);
     /* while ((old = imageAtomicCompSwap(shadow_buffer, image_coord, old, new1)) != old2) */
     spv_emit_label(s, next);
-    uint32_t pointer = SPV(s, OP_IMAGE_TEXEL_POINTER, spv_emit_type_pointer(s, SPV_STORAGE_IMAGE, u), g->shadow_buffer,
-                           image_coord, uc(g, 0));
+    uint32_t pointer = SPV(s, OP_IMAGE_TEXEL_POINTER, spv_emit_type_pointer(s, SPV_STORAGE_IMAGE, u),
+                           g->shadow_buffer, image_coord, uc(g, 0));
     uint32_t swapped = SPV(s, SPV_OP_ATOMIC_COMPARE_EXCHANGE, u, pointer, uc(g, SCOPE_DEVICE), uc(g, 0), uc(g, 0),
                            load(g, u, new1), load(g, u, old));
     store(g, old, swapped);

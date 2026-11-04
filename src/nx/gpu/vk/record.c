@@ -192,7 +192,7 @@ void vk_rec_begin(VkCommandBuffer cb) {
 
 typedef struct {
     VkCommandBuffer cb;
-    VkSemaphoreSubmitInfo w[2], s[2];
+    VkSemaphoreSubmitInfo w[3], s[3];
     u32 nw, ns;
     VkSemaphore timeline;
     u64 value;

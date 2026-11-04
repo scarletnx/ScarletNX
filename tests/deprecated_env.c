@@ -6,7 +6,7 @@
 #if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L /* setenv, unsetenv */
 #endif
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include "nx/runtime/options.h"
 #include "snx_settings.h"
 #include <stdarg.h>

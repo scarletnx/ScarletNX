@@ -63,7 +63,7 @@ if(SNX_TEST_SANITIZERS)
         snx_switch_program
         # the menu, its splash, icon and pads
         scarletnx-gui snx_gui_support snx_gui_ui snx_i18n snx_gui_languages snx_gui_languages_test snx_splash snx-test-splash
-        snx_window_icon snx-test-window-icon snx_pad_sdl snx_gui_pad
+        snx_window_icon snx-test-window-icon snx_pad_sdl snx_keybind snx_gui_pad
         # GLSL ES into SPIR-V
         snx_glslc snx-glslc-cli snx-test-glslc-lex snx-test-glslc-parse snx-test-glslc-emit snx-test-glslc-fuzz
         # the code generators, which tests run on files they refuse
@@ -319,8 +319,9 @@ if(TARGET snx_ctr_board)
         # reports fails the test, such as a missing barrier (a synchronization hazard), a dispatch, barrier or image
         # transition inside a draw's open rendering, or a command recorded into a buffer that a submission ended
         set(snx_vk_validation_tests 3ds_vk_draw_present_validation 3ds_vk_draw_after_draw_validation
-            3ds_vk_draw_texture_after_draw_validation 3ds_vk_draw_index_copy_validation)
-        set(snx_vk_validation_modes --present --after-draw --texture-after-draw --draw-after-index-copy)
+            3ds_vk_draw_texture_after_draw_validation 3ds_vk_draw_index_copy_validation
+            3ds_vk_draw_shadow_validation)
+        set(snx_vk_validation_modes --present --after-draw --texture-after-draw --draw-after-index-copy --shadow)
         foreach(snx_test snx_mode IN ZIP_LISTS snx_vk_validation_tests snx_vk_validation_modes)
             add_test(NAME ${snx_test}
                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
@@ -344,8 +345,18 @@ if(TARGET snx_ctr_board)
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-separate" --separate)
     add_test(NAME 3ds_windows_minimized
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-minimized" --minimize)
-    set_tests_properties(3ds_windows 3ds_windows_separate PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME 3ds_windows_interp
+             COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-interp" --interp)
+    set_tests_properties(3ds_windows 3ds_windows_separate 3ds_windows_interp PROPERTIES SKIP_RETURN_CODE 77)
     set_tests_properties(3ds_windows_minimized PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    if(NOT WIN32 AND Python3_Interpreter_FOUND)
+        # the interpolated pair under Khronos synchronization validation: both images drawn, and the blend's reads
+        # waited for
+        add_test(NAME 3ds_windows_interp_validation
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                $<TARGET_FILE:snx-test-3ds-windows> "${CMAKE_CURRENT_BINARY_DIR}/window-frames-interp-validation" --interp)
+        set_tests_properties(3ds_windows_interp_validation PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     # the transfer engine alone: fills, display transfers, texture copies against hand-written goldens
     add_executable(snx-test-3ds-transfer 3ds_transfer.c)
     snx_test_target(snx-test-3ds-transfer 11)
@@ -1203,6 +1214,47 @@ add_executable(snx-test-runtime-present runtime_present.c)
 snx_test_target(snx-test-runtime-present 11)
 add_test(NAME runtime_present COMMAND snx-test-runtime-present)
 
+# the shared presentation effects (common/gpu/vk/present_fx.c) on a real device: FSR 1, FXAA, SMAA, SSAA, HDR
+if(TARGET Vulkan::Headers AND TARGET snx_vk_common)
+    add_executable(snx-test-present-fx present_fx.c "${volk_SOURCE_DIR}/volk.c")
+    snx_test_sanitize(snx-test-present-fx)
+    target_include_directories(snx-test-present-fx PRIVATE "${PROJECT_SOURCE_DIR}/src" "${volk_SOURCE_DIR}")
+    target_link_libraries(snx-test-present-fx PRIVATE snx_vk_common Vulkan::Headers ${CMAKE_DL_LIBS} m)
+    add_test(NAME present_fx COMMAND snx-test-present-fx)
+    set_tests_properties(present_fx PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    # the same passes under the Khronos layer: the SSAA copy once updated a set it had bound, which only the layer sees
+    add_test(NAME present_fx_validation COMMAND snx-test-present-fx --validation)
+    set_tests_properties(present_fx_validation PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77)
+endif()
+
+# the upscaler setting's names and FSR 1 as the default (gpu/vk/upscale_select.c)
+add_executable(snx-test-upscale-select upscale_select.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/upscale_select.c")
+snx_test_target(snx-test-upscale-select 99)
+target_include_directories(snx-test-upscale-select PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME upscale_select COMMAND snx-test-upscale-select)
+
+# the HDR setting's names and the numbers the shaders run (gpu/vk/hdr_select.c), held to the standards
+add_executable(snx-test-hdr-select hdr_select.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/hdr_select.c"
+    "${PROJECT_SOURCE_DIR}/tests/support/hdr_ref.c")
+snx_test_target(snx-test-hdr-select 99)
+target_include_directories(snx-test-hdr-select PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/tests")
+target_link_libraries(snx-test-hdr-select PRIVATE m)
+add_test(NAME hdr_select COMMAND snx-test-hdr-select)
+
+# a runtime hotkey's setting (common/utilities/keybind.c): its names, modifiers, spaces, the event and the capture
+include("${PROJECT_SOURCE_DIR}/cmake/keybind.cmake")
+add_executable(snx-test-keybind keybind.c)
+snx_test_target(snx-test-keybind 11)
+target_include_directories(snx-test-keybind PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx-test-keybind PRIVATE snx_keybind SDL3::SDL3)
+add_test(NAME keybind COMMAND snx-test-keybind)
+
+# frame interpolation's Auto gate (common/gpu/vk/interp_auto.c): the 1 % figures and the on and off delays
+add_executable(snx-test-interp-auto interp_auto.c "${PROJECT_SOURCE_DIR}/src/common/gpu/vk/interp_auto.c")
+snx_test_target(snx-test-interp-auto 11)
+target_include_directories(snx-test-interp-auto PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME interp_auto COMMAND snx-test-interp-auto)
+
 # nvdrv's IPC side (nvdrv.c), with the GPU and host1x stand-ins in the test
 add_executable(snx-test-nvdrv-service nvdrv_service.c)
 snx_test_target(snx-test-nvdrv-service 23)
@@ -1224,7 +1276,7 @@ add_executable(snx-test-overlay overlay.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/prepare_screen.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/ini.c")
 snx_test_target(snx-test-overlay 11)
 target_link_libraries(snx-test-overlay PRIVATE scarletnx-common snx_splash m)
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
@@ -1233,7 +1285,7 @@ add_test(NAME overlay COMMAND snx-test-overlay)
 
 add_executable(snx-test-vpad vpad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/ini.c")
 snx_test_target(snx-test-vpad 11)
 target_link_libraries(snx-test-vpad PRIVATE scarletnx-common snx_splash m)
 target_include_directories(snx-test-vpad PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
@@ -1248,7 +1300,7 @@ add_test(NAME hud COMMAND snx-test-hud)
 
 add_executable(snx-test-stats stats.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/ini.c")
 snx_test_target(snx-test-stats 11)
 target_link_libraries(snx-test-stats PRIVATE scarletnx-common snx_splash m)
 target_include_directories(snx-test-stats PRIVATE "${PROJECT_BINARY_DIR}/generated") # the theme's colours
@@ -1265,13 +1317,15 @@ add_test(NAME guest_stats COMMAND snx-test-guest-stats)
 # them, the moved one
 add_executable(snx-test-nce-module nce_module.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce.c")
 snx_test_target(snx-test-nce-module 23)
+# nce.c's module move alone: the rest of NCE reads the runtime, which this test does not link (nce_host.h)
+target_compile_definitions(snx-test-nce-module PRIVATE SNX_NCE_HOST_OFF)
 target_link_libraries(snx-test-nce-module PRIVATE snx_nx_flags snx_settings_runtime)
 # nce_module is the same on every host; on an AArch64 Linux one nce.c would also build NCE itself, which needs the rest
 # of the runtime
 target_compile_definitions(snx-test-nce-module PRIVATE SNX_NCE_HOST=0)
 add_test(NAME nce_module COMMAND snx-test-nce-module)
 
-add_executable(snx-test-ini-deprecated ini_deprecated.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+add_executable(snx-test-ini-deprecated ini_deprecated.c "${PROJECT_SOURCE_DIR}/src/common/utilities/ini.c")
 snx_test_target(snx-test-ini-deprecated 11)
 add_test(NAME ini_deprecated COMMAND snx-test-ini-deprecated)
 
@@ -1292,7 +1346,7 @@ add_test(NAME pad_screen COMMAND snx-test-pad-screen)
 
 include("${PROJECT_SOURCE_DIR}/cmake/pad_sdl.cmake")
 add_executable(snx-test-gamepad gamepad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/backend/gamepad.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/ini.c")
 snx_test_target(snx-test-gamepad 11)
 target_link_libraries(snx-test-gamepad PRIVATE scarletnx-common snx_pad_sdl snx_splash m)
 target_include_directories(snx-test-gamepad PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
@@ -1303,7 +1357,7 @@ snx_test_target(snx-test-fatal-screen 11)
 target_link_libraries(snx-test-fatal-screen PRIVATE scarletnx-common)
 add_test(NAME fatal_screen COMMAND snx-test-fatal-screen)
 
-add_executable(snx-test-ini ini.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+add_executable(snx-test-ini ini.c "${PROJECT_SOURCE_DIR}/src/common/utilities/ini.c")
 snx_test_target(snx-test-ini 11)
 add_test(NAME ini COMMAND snx-test-ini)
 add_executable(snx-test-ini-lines ini_lines.c "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c")
@@ -1694,7 +1748,7 @@ if(NOT SNX_TOOLS_ONLY)
     # vertex_input_dynamic_state (gpu/vk/vertex_input.c): its values, read from a .ini without it and with it, the
     # drivers' bans against stand-in devices and the log line of each case
     add_executable(snx-test-vk-vertex-input vk_vertex_input.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/vertex_input.c"
-                   "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+                   "${PROJECT_SOURCE_DIR}/src/common/utilities/ini.c")
     snx_test_target(snx-test-vk-vertex-input 99)
     target_link_libraries(snx-test-vk-vertex-input PRIVATE snx_nx_flags)
     add_test(NAME vk_vertex_input COMMAND snx-test-vk-vertex-input)
@@ -2502,7 +2556,7 @@ add_executable(snx-test-quad-indices quad_indices.c)
 snx_test_target(snx-test-quad-indices 99)
 target_include_directories(snx-test-quad-indices PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME quad_indices COMMAND snx-test-quad-indices)
-add_executable(snx-test-unattended-script unattended_script.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+add_executable(snx-test-unattended-script unattended_script.c "${PROJECT_SOURCE_DIR}/src/common/utilities/ini.c")
 snx_test_target(snx-test-unattended-script 11)
 target_link_libraries(snx-test-unattended-script PRIVATE m)
 add_test(NAME unattended_script COMMAND snx-test-unattended-script)

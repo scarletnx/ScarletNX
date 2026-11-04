@@ -5,6 +5,22 @@ description: "Run a recompiled game unattended and judge the result. It covers s
 
 # Run the game
 
+## Headless first
+
+Use a headless instance for every run that needs a window. The user's desktop keeps its focus and its keyboard. Start
+a private headless KWin Wayland instance in the scratchpad:
+
+```bash
+mkdir -p "$SCRATCH/rt" && chmod 700 "$SCRATCH/rt"
+XDG_RUNTIME_DIR="$SCRATCH/rt" kwin_wayland --virtual --width 1920 --height 1080 \
+    --socket wayland-test --xwayland > "$SCRATCH/kwin.log" 2>&1 &
+```
+
+Run the game with the private Wayland socket (`WAYLAND_DISPLAY=wayland-test`, `SDL_VIDEODRIVER=wayland`), or with its
+Xwayland display. The Xwayland sockets are `/tmp/.X11-unix/X*`. `DISPLAY=:2 xdpyinfo` says which one is the headless
+instance and its size. A test that needs no window uses `-H`. Use the user's desktop only when the user asks for it, or
+when the bug needs the desktop.
+
 ## One command
 
 ```bash

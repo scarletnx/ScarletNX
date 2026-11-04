@@ -225,7 +225,9 @@ void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets) {
         u32 i;
         for (i = 0; i < SNX_VKB_END; i++)
             if (binding_type(i) == ty[k]) n += (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? SNX_TEX_ARRAY : 1;
-        sz[k] = (VkDescriptorPoolSize){ty[k], n * sets};
+        /* a set of another layout (the VIC's, the compute's) may ask for a type the stage layouts do not: a zero
+           count reads as the type missing, and the allocation fails validation */
+        sz[k] = (VkDescriptorPoolSize){ty[k], n ? n * sets : sets};
     }
 }
 

@@ -186,6 +186,13 @@ typedef struct Renderer {
     /* RendererPrepare's progress, any thread. What isn't done when the game starts goes on in the background. NULL when
        the renderer makes nothing before */
     void (*prepare)(RendererPrepare* p);
+    /* the live spatial upscaler cycle (the upscaler_key hotkey): its label now, or NULL when there is none */
+    const char* (*cycle_upscale)(void);
+    /* the live HDR toggle (the hdr_key hotkey): its state now, or NULL when there is none. The window's image is
+       made anew at the next present when the display's side changes */
+    const char* (*toggle_hdr)(void);
+    /* the live anti aliasing cycle (the aa_key hotkey): its label now, or NULL when there is none */
+    const char* (*cycle_aa)(void);
 } Renderer;
 
 extern const Renderer vk_renderer;

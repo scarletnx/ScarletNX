@@ -30,6 +30,11 @@ else()
     target_link_libraries(scarletnx-common PUBLIC m)
 endif()
 
+# snx_keybind (utilities/keybind.c): a runtime hotkey's setting, the event that matches it, and the text a captured
+# event takes. It is created here, in the common runtime, because the Switch, the 3DS, the AGB, the launcher and the
+# tests all link it (cmake/keybind.cmake's include guard keeps the later includes from making it again elsewhere)
+include("${PROJECT_SOURCE_DIR}/cmake/keybind.cmake")
+
 # snx_demangle (utilities/demangle.h): C++ names through the C++ runtime's demangler, for the log summary. C, but what
 # links it links the C++ runtime (LINKER_LANGUAGE CXX)
 add_library(snx_demangle STATIC utilities/demangle.c)
@@ -94,11 +99,37 @@ endif()
 # the device's choice, the submission ring, the swapchain and the SDL window (gpu/vk/). Each frontend compiles volk.c,
 # whose functions these call
 if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
-    add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/ring.c gpu/vk/swapchain.c gpu/vk/window.c)
+    add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/ring.c gpu/vk/swapchain.c gpu/vk/window.c
+                                 gpu/vk/present_fx.c gpu/vk/fx/fx_fsr.c gpu/vk/toast.c gpu/vk/text.c
+                                 gpu/vk/stats.c gpu/vk/interp_auto.c gpu/vk/hotkeys.c)
     set_target_properties(snx_vk_common PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_vk_common PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                                  -Werror=missing-variable-declarations)
     target_compile_definitions(snx_vk_common PRIVATE VK_NO_PROTOTYPES)
     target_include_directories(snx_vk_common PUBLIC "${volk_SOURCE_DIR}")
-    target_link_libraries(snx_vk_common PUBLIC Vulkan::Headers SDL3::SDL3)
+    target_link_libraries(snx_vk_common PUBLIC Vulkan::Headers SDL3::SDL3 snx_settings snx_keybind)
+    # the spatial upscalers, the anti aliasing and the HDR passes (gpu/vk/present_fx.c, gpu/vk/fx/)
+    include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
+    foreach(pair IN ITEMS "fsr.vert=fx_fsr_vert" "copy.frag=fx_copy" "copy_linear.frag=fx_copy_linear"
+                          "fsr_easu.frag=fx_fsr_easu" "fsr_rcas.frag=fx_fsr_rcas" "fxaa.frag=fx_fxaa" "blend.frag=fx_blend"
+                          "smaa_edge.frag=fx_smaa_edge" "smaa_weights.frag=fx_smaa_weights"
+                          "smaa_blend.frag=fx_smaa_blend" "hdr.vert=fx_hdr_vert" "hdr_compose.frag=fx_hdr_compose"
+                          "hdr_encode.frag=fx_hdr_encode" "hdr_test.frag=fx_hdr_test" "toast.vert=fx_toast_vert"
+                          "toast.frag=fx_toast_frag")
+        string(REPLACE "=" ";" parts "${pair}")
+        list(GET parts 0 shader)
+        list(GET parts 1 symbol)
+        snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/${shader} NAME ${symbol}_spv
+                       HEADER common/gpu/vk/fx_spv.h)
+    endforeach()
+    # FSR 1's fp16 builds of the same two passes, where the device's shaderFloat16 runs them
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/fsr_easu.frag NAME fx_fsr_easu_fp16_spv
+                   HEADER common/gpu/vk/fx_spv.h DEFINES A_HALF=1)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/fsr_rcas.frag NAME fx_fsr_rcas_fp16_spv
+                   HEADER common/gpu/vk/fx_spv.h DEFINES A_HALF=1)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/nis.comp NAME fx_nis_spv HEADER common/gpu/vk/fx_spv.h)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/nis.comp NAME fx_nis8_spv HEADER common/gpu/vk/fx_spv.h
+                   DEFINES NIS_OUTPUT_RGBA8)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/sgsr1.vert NAME fx_sgsr_vert_spv HEADER common/gpu/vk/fx_spv.h)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/fx/sgsr1.frag NAME fx_sgsr_frag_spv HEADER common/gpu/vk/fx_spv.h)
 endif()

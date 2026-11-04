@@ -10,7 +10,7 @@
 #include "nx/hle/hle.h"
 #include "nx/gpu/gpu.h"
 #include "nx/runtime/clock.h"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include "snx_settings.h"
 #include <dirent.h>
 #include <stdarg.h>

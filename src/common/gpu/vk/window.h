@@ -19,4 +19,22 @@ bool snx_vk_window_open(const char* app, const char* title, int width, int heigh
 void snx_vk_window_close(SnxVkWindow* w);
 /* the window's size in pixels, the fallback's when it has none */
 VkExtent2D snx_vk_window_extent(const SnxVkWindow* w, VkExtent2D fallback);
+/* The display's HDR headroom over its SDR white, in percent, from SDL's window properties: 100 with none, or with no
+   window. Wayland's color management (KWin), Windows' Advanced Color and Apple's EDR report it; 100 when the backend
+   does not, and the caller keeps its own bound (hdr_peak) */
+int snx_vk_window_headroom_pct(SDL_Window* window);
+/* the refresh rate of the display the window is on, in whole Hz, 0 when it is not known */
+int snx_vk_window_refresh_hz(SDL_Window* window);
+/* The display's own SDR white in nits where it can be read without a window (KWin's sdrBrightness in its output
+   config, the compositor this runs under on Linux), 0 when it cannot */
+int snx_vk_display_white_nits(void);
+/* The paper white: the display's own SDR white where it can be read (KWin's), else the setting's value, else BT.2408's
+   203 */
+int snx_vk_paper_nits(int setting);
+/* The display's own peak, in nits, where it can be read (KWin's maxPeakBrightnessOverride), else the setting's value
+   (clamped to 400..4000) */
+int snx_vk_peak_nits(int setting);
+/* The debug setting's forced headroom in percent (hdr_debug_headroom: the SDR white at half the peak, 200 %), or 0
+   when it is off and the display's own report stands */
+int snx_vk_hdr_headroom_pct(void);
 #endif

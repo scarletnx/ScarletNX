@@ -22,10 +22,12 @@ typedef struct {
     VkPhysicalDeviceProperties properties;
     VkPhysicalDeviceMemoryProperties memory_properties;
     VkDeviceSize host_alignment; /* minImportedHostPointerAlignment */
-    bool preserve_infnan; /* shaderSignedZeroInfNanPreserveFloat32: the shaders declare SignedZeroInfNanPreserve */
-    bool bc; /* the device samples BC1 to BC3 (textureCompressionBC) */
-    bool depth16_blit; /* D16 depth images blit both ways (a depth surface scaled to and from its samples) */
-    bool depth_clamp;  /* the device clamps depth rather than clipping it (depthClamp), as the console does */
+    bool preserve_infnan;    /* shaderSignedZeroInfNanPreserveFloat32: the shaders declare SignedZeroInfNanPreserve */
+    bool fp16;               /* shaderFloat16: the FSR 1 fp16 passes where the device runs them */
+    int hdr_metadata;        /* VK_EXT_hdr_metadata: the PQ swapchain's light is named to the compositor */
+    bool bc;                 /* the device samples BC1 to BC3 (textureCompressionBC) */
+    bool depth16_blit;       /* D16 depth images blit both ways (a depth surface scaled to and from its samples) */
+    bool depth_clamp;        /* the device clamps depth rather than clipping it (depthClamp), as the console does */
     VkFormat stencil_format; /* a depth and stencil format it renders to (D24S8, else D32S8), UNDEFINED for none */
     /* the color attachment read as an input attachment while rendered to (VK_KHR_dynamic_rendering_local_read), in
        primitive order within a draw (VK_EXT_rasterization_order_attachment_access) */
@@ -36,6 +38,19 @@ typedef struct {
     SnxVkRing ring; /* the submissions in flight, VITA_VK_SLOTS of them */
 } VitaVk;
 
+/* the live hotkeys, as the other frontends take them: the upscaler and the anti aliasing cycle, HDR toggles. The
+   changed value, or -1 with no effects; a message over the frame for a couple of seconds */
+int vita_vk_cycle_upscaler(void);
+int vita_vk_cycle_aa(void);
+int vita_vk_toggle_hdr(void);
+void vita_vk_toast(const char* text);
+/* the same, shown for ms milliseconds */
+void vita_vk_toast_ms(const char* text, unsigned ms);
+/* F6's and F12's overlays: the game's frames a second, the generated ones, their total and the frame time, with the
+   held buttons on F6's. showcase picks which; the state of that one after */
+int vita_vk_stats_toggle(int showcase);
+/* F11 and Alt+Enter: the window fullscreen or back */
+void vita_vk_toggle_fullscreen(void);
 /* the device and the window (none headless, or without a display): false with the reason when the host has no
    Vulkan 1.3 device with VK_EXT_external_memory_host */
 bool vita_vk_init(const char* title, char* error, size_t error_size);

@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The .ini's deprecated keys (src/nx/runtime/ini.c, docs/DEPRECATIONS.md): which keys they are and what became of each,
+/* The .ini's deprecated keys (src/common/utilities/ini.c, docs/DEPRECATIONS.md): which keys they are and what became of each,
    the [Deprecated] section as the runtime writes it (the launcher's Clean Old Settings reads it), and the line a run
    says about them */
-#include "nx/runtime/ini.h"
+#include "common/utilities/ini.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
