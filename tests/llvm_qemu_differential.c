@@ -1239,8 +1239,9 @@ int main(int argc, char** argv) {
                         snprintf(g->examples[g->nexamples++], sizeof(text),
                                  "  word %08x (the Switch target decodes it as %s)\n  start x%u=%016llx\n"
                                  "  qemu fault pc %llx (signal %u, fault %llx), not run on the LLVM side\n",
-                                 word, it->switch_op[0] ? it->switch_op : "UNDEF", rn, (unsigned long long)start->x[rn],
-                                 (unsigned long long)r->pc, r->signo, (unsigned long long)r->fault);
+                                 word, it->switch_op[0] ? it->switch_op : "UNDEF", rn,
+                                 (unsigned long long)(rn < 31 ? start->x[rn] : start->sp), (unsigned long long)r->pc,
+                                 r->signo, (unsigned long long)r->fault);
                     ++g->count;
                     ++mismatched;
                     break;
