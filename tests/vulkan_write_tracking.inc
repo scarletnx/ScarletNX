@@ -635,8 +635,8 @@ static int check_wt_hot_page(void) {
 /* Hot pages (write_tracking_hot=1, vulkan_write_tracking_hot): a page the scans found written in a row stays writable
    and reads as written at each scan, and a render target protects its hot pages again before each baseline
    (vk_ww_cool). The cases below fail without that step, each for one way a target meets a hot page: under two
-   targets, at the target's own baseline, through another address, and with the CPU writing beside the GPU in one
-   frame. Without hot pages they hold as well: a scan reports only what was written */
+   targets, at the target's own baseline, through another address, with the CPU writing beside the GPU in one frame,
+   and going hot in the draw's own take-in. Without hot pages they hold as well: a scan reports only what was written */
 
 /* n epochs, each with a check's scan of [cpu, cpu + size) */
 static void wt_scans(u64 cpu, u64 size, int n) {
@@ -923,6 +923,61 @@ static int check_wt_hot_same_frame(void) {
     return 0;
 }
 
+/* A page reported once and written again goes hot at the next scan that reports it: when that scan is the target
+   draw's own take-in, only a cool after the take-in protects it again, and a cool before it leaves it hot past the
+   baseline (the target not fresh, nothing written since). The scanner thread scans the leaf at the epoch's start too,
+   and it would make the page hot first: 8 GiB of leaves below the target's, wanted, keep it busy (it scans from the
+   lowest leaf up). 40 draws; with the cool before the take-in 39 of 40 lose their freshness here */
+static int check_wt_hot_rt_take_in(void) {
+    const u64 cpu = WT_CPU + 2100 * WT_LEAF, gva = WT_GVA + 0xF000000, size = 0x10000;
+    const u64 busy = WT_CPU + 32 * WT_LEAF, busy_len = 2048 * WT_LEAF;
+    const u32 page = 5;
+    int draws = 40, stale = 0;
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, size);
+    memset(GP(cpu), 0x11, size);
+    vk_lock();
+    int tracking = wt_tracking(cpu);
+    vk_unlock();
+    if (!tracking) {
+        printf("skip: a page going hot at a draw's take-in needs write tracking\n");
+        CHECK(mem_unmap(cpu, size) == 0);
+        free(ch);
+        return 0;
+    }
+    rt_clear(ch, gva, 128, 128, 0, 0); /* the target, made red */
+    for (int d = 0; d < draws; d++) {
+        memset(GP(cpu + page * 0x1000), 0x50, 0x1000);
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        (void)vk_written_since(GP(cpu), size, 0);      /* reported once */
+        (void)vk_written_since(GP(busy), busy_len, 0); /* the scanner's work at the next epoch, first */
+        vk_unlock();
+        memset(GP(cpu + page * 0x1000), 0x51, 0x1000);
+        g_renderer->mem_may_have_changed();
+        rt_clear(ch, gva, 128, 128, 0, 1);
+        wt_scans(cpu, size, 2);
+        vk_lock();
+        Surf* s = vk_rt_find(gva);
+        if (!s || !vk_rt_drawn_fresh(s)) stale++;
+        vk_unlock();
+    }
+    if (stale)
+        fprintf(
+            stderr,
+            "hot pages at a draw's take-in: %d of %d draws left the target not fresh two epochs later, with nothing "
+            "written since\n",
+            stale, draws);
+    CHECK(mem_unmap(cpu, size) == 0);
+    free(ch);
+    CHECK(!stale);
+    printf("write tracking: %d draws over a page that went hot at their own take-in, the target fresh after each\n",
+           draws);
+    return 0;
+}
+
 /* the cases by name, for SNX_TEST_WW_ONLY=NAME */
 static const struct {
     const char* name;
@@ -941,6 +996,7 @@ static const struct {
     {"hot_rt_fresh", check_wt_hot_rt_fresh},
     {"hot_alias", check_wt_hot_alias},
     {"hot_same_frame", check_wt_hot_same_frame},
+    {"hot_rt_take_in", check_wt_hot_rt_take_in},
 };
 /* whether the tracking answers, asked at a leaf no case maps */
 static int wt_on(void) {
@@ -973,11 +1029,12 @@ static int check_write_tracking(void) {
         failed += r != 0;
     }
     if (!ran) {
-        fprintf(stderr,
-                "SNX_TEST_WW_ONLY=%s names no case: 1, each, two_consumers, concurrent, record_submit, runtime_writes, "
-                "owned, alias, shared, mixed_leaf, hot_page, hot_rt_overlap, hot_rt_fresh, hot_alias or "
-                "hot_same_frame\n",
-                only);
+        fprintf(
+            stderr,
+            "SNX_TEST_WW_ONLY=%s names no case: 1, each, two_consumers, concurrent, record_submit, runtime_writes, "
+            "owned, alias, shared, mixed_leaf, hot_page, hot_rt_overlap, hot_rt_fresh, hot_alias, hot_same_frame or "
+            "hot_rt_take_in\n",
+            only);
         return 2;
     }
     return failed ? 1 : 0;
