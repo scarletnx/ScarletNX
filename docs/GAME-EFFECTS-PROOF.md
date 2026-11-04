@@ -89,3 +89,24 @@ A `--frames=300 --shot` run without a window is the control. It writes the same 
 No Vita homebrew is on this machine. The proof is the synthetic `snx-test-present-fx` run, which reads FSR 1,
 FXAA, SMAA, SSAA 2x and the PQ encode back from the GPU, plus the Vita build. The two-image interpolation path is
 compiled and uses the same tested `snx_fx_blend`.
+
+## Frame interpolation, per frontend
+
+- **Switch.** Super Mario Bros. Wonder with `--frame_interp=blend --aa=fxaa --upscaler=fsr1 --hdr=auto
+  --vk_validation=1` exited 0 with 256 frames and no validation message; the log says
+  `frame interpolation Blend: a blend and the frame itself for each game frame (display 59 Hz, game 60 Hz)`.
+  With `--frame_interp=auto --fps_limit=30` it says `Auto ... (display 59 Hz, game 30 Hz)`. SMAA and SSAA 2x at
+  `--resolution=0.5` with the blend and validation also exit 0. Logs: `games/swi-*.log` in the demo folder.
+- **GBA.** A window run of `AGB KIRBY DX` with blur/auto and the effects logs
+  `frame interpolation: Blend (display 60 Hz)` and `Auto (display 60 Hz)`, and `vulkan: presentation effects ready`.
+  Logs: `games/gba-win-*.log`.
+- **3DS.** `snx-test-3ds-windows OUT` and `--interp` pass, the latter with `frame_interp=blend` (two swapchain
+  images, the blend then the pair).
+- **Vita.** The synthetic `present_fx` path covers the blend; no Vita title is on this machine.
+
+## 3DS shadows
+
+`snx-test-3ds-vk-draw --shadow` renders a shadow map, checks every packed word (depth 0x7FFFFF, strength 255), then
+samples it: a fragment in front is lit and one behind is shadowed. `3ds_vk_draw_shadow_validation` runs it under
+Khronos synchronization validation with no error. The retail title is blocked before the GPU by an APT wait, not by
+the shadow path; see `docs/issues/3ds-pica-shadow-rendering.md`.
