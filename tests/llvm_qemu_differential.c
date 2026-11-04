@@ -31,6 +31,7 @@
    and the sweep: a group missing from it fails the test, and so does a group it lists for this run that no longer
    differs. --update rewrites this run's counts in EXPECTED instead. */
 #include "common/utilities/common.h"
+#include "common/utilities/endian.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/ir_ldst.h"
@@ -1149,7 +1150,8 @@ int main(int argc, char** argv) {
         u64 v = snx_qref_seed64(SNX_QREF_SEED_RANDOM, SEED, WINDOW, i);
         for (k = 0; k < 8; ++k) initial[i + k] = (u8)(v >> (8 * k));
     }
-    for (i = PC - WINDOW; i < PC - WINDOW + CODE_SIZE; i += 4) memcpy(initial + i, &(u32){SNX_QREF_PAD}, 4);
+    /* guest memory is little-endian on every host, as QEMU's window is: a literal load at PC reads the word itself */
+    for (i = PC - WINDOW; i < PC - WINDOW + CODE_SIZE; i += 4) snx_st_le32(initial + i, SNX_QREF_PAD);
     memcpy(work, initial, WINDOW_SIZE);
 
     /* in batches: the states, QEMU's run of them (or the record's), then the LLVM side's of each and the comparison */
@@ -1247,7 +1249,7 @@ int main(int argc, char** argv) {
                 cpu_from_state(&c, start);
                 c.rt = &rt;
                 c.mem = work - WINDOW;
-                if (it->nwords == 1) memcpy(work + PC - WINDOW, &it->words[0], 4);
+                if (it->nwords == 1) snx_st_le32(work + PC - WINDOW, it->words[0]);
                 g_test.events = &ev;
                 /* the host FP environment as other code on the thread may leave it, rounding upward: each generated
                    function's snx_fp_env puts back what its fast paths assume, on every host that has them */
@@ -1271,9 +1273,9 @@ int main(int argc, char** argv) {
                 qe.imm = r->imm;
                 qe.state = r->state;
                 /* the window as the case found it: the words over the pads */
-                if (it->nwords == 1) memcpy(initial + PC - WINDOW, &it->words[0], 4);
+                if (it->nwords == 1) snx_st_le32(initial + PC - WINDOW, it->words[0]);
                 compare(it, start, &l, &qe, initial, work, &batch, r, cause, sizeof(cause), text, sizeof(text));
-                memcpy(initial + PC - WINDOW, &(u32){SNX_QREF_PAD}, 4);
+                snx_st_le32(initial + PC - WINDOW, SNX_QREF_PAD);
                 for (w = 0; w < WINDOW_SIZE; w += SNX_QREF_PAGE)
                     if (memcmp(work + w, initial + w, SNX_QREF_PAGE)) memcpy(work + w, initial + w, SNX_QREF_PAGE);
                 ++compared;
