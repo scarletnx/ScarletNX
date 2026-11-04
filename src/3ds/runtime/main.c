@@ -291,7 +291,7 @@ done:
 static int play(const char* input, SnxCtrSource* source, char* extracted, SnxCtrModel model, uint64_t max_blocks,
                 double seconds, bool recompile, bool extract_only, bool extract_container, uint32_t ipc_stubs,
                 const char* runtime) {
-    char error[512];
+    char error[1024]; /* the run's last line: a GX command's stop carries why the GPU did not start */
     unsigned flags = recompile ? SNX_CTR_RECOMPILE | SNX_CTR_COMPILE_ONLY : 0;
     if (source && !extract_container && !extract_only) { /* the game read where it lies, the folder keeping its state */
         int status =
