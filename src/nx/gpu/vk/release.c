@@ -65,7 +65,8 @@ static PendPages g_rpages = {.also = &g_pend_any};
 u64 g_vk_release_forwards;
 /* vk_uma_release, a test branch's arms for measuring what the in-place hold costs: 0 the rule (hold_inplace), 1 a
    release waits only for what read in place before it was queued, 2 only for the in-place writes recorded up to the
-   stop (unsafe: commands not run yet may read what the guest writes after the release) */
+   stop (unsafe: commands not run yet may read what the guest writes after the release), 3 for none of it (unsafe
+   both ways: the guest may also read what the GPU has not written yet) */
 int g_vk_uma_release;
 
 /* The queued payloads by the guest words they write: for each 4-byte word, the latest release queued over it and how

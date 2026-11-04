@@ -908,13 +908,14 @@ setting Wait probe
     help thread's idle time), every 5 seconds per present, for testing
 setting In-place release rule
     key vk_uma_release
-    int 0 2
+    int 0 3
     default 0
     startup
-    words Stream stop|Before it|Writes only
+    words Stream stop|Before it|Writes only|None
     help With guest memory read in place (vk_memory), what a release the guest sees waits for, for testing: 0 = every
     help command recorded up to the stream's stop that read guest memory in place, 1 = those recorded before the
-    help release only, 2 = only the in-place writes (unsafe: the GPU may read what the guest writes after it)
+    help release only, 2 = only the in-place writes (unsafe: the GPU may read what the guest writes after it), 3 =
+    help none of them (unsafe both ways)
 setting Buffer copy stats
     key vk_buffer_stats
     int 0 1
