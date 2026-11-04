@@ -26,6 +26,9 @@
 #define UDS_STATE     0xc86113eau
 #define UDS_NOT_FOUND 0xc8a113fau
 #define UDS_NETWORK   0xc8a113f8u
+/* command 0x23's answer. Games pass it, masked with an earlier answer, in the scan input where libctru's
+   udsScanBeacons puts 0x0421: channels 1, 6 and 11 if bit n is channel n + 1 */
+#define UDS_SCAN_CHANNELS 0x0421u
 static struct {
     char password[256], nickname[21];
     unsigned said; /* the old variables room_open said, a bit each */
@@ -1019,6 +1022,11 @@ void snx_ctr_uds_dispatch(SnxCtrIpc* c) {
             u->probe_oui = c->in[1];
             u->probe_data = (int8_t)c->in[2];
             reply(c, 1, 0, 0);
+            return;
+        case 0x23:
+            if (!snx_ctr_ipc_expect(c, 0, 0)) return;
+            reply(c, 2, 0, 0);
+            c->out[2] = UDS_SCAN_CHANNELS;
             return;
         case 7:
             if (!snx_ctr_ipc_expect(c, 2, 0)) return;
