@@ -498,6 +498,9 @@ static int check_write_tracking(void) {
         if (all ? !g_wt_cases[i].main_passes : !each && strcmp(only, g_wt_cases[i].name)) continue;
         ran++;
         int r = g_wt_cases[i].check();
+        /* a case that failed under the renderer's lock returned holding it: the next would run as its holder (a trap's
+           fault there is fatal), so it lets go first */
+        while (vk_lock_owner() == plat_tid()) vk_unlock();
         if (each) printf("write tracking case %s: %s\n", g_wt_cases[i].name, r ? "FAILED" : "passed");
         if (r && !each) return 1;
         failed += r != 0;
