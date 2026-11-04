@@ -313,6 +313,45 @@ static void test_vertex_formats(void) {
               cases[i].type, d.ds.vfmt.size[i], d.ds.vfmt.type[i]);
 }
 
+/* OP_BIND_SSBO: storage buffer r of a graphics stage goes to that stage's bank 0, address then size, at its table's
+   base + 16 r: the vertex stage's from 0x110, the geometry stage's from 0x410 (nxnative's dmsh_abi.h), the fragment
+   stage's from 0x510. A tessellation stage, whose table was never measured, writes no bank */
+#define SSBO 0x4000u
+static void test_storage_tables(void) {
+    static const struct {
+        i32 nvn;
+        int gfx;
+        u32 base;
+    } cases[] = {
+        {NVN_SHADER_STAGE_VERTEX, 0, 0x110},
+        {NVN_SHADER_STAGE_GEOMETRY, 3, 0x410},
+        {NVN_SHADER_STAGE_FRAGMENT, 4, 0x510},
+    };
+    static const u8 zero[DS_INLINE_BANK0] = {0};
+    memset(&d, 0, sizeof d);
+    nvn_draw_init(&d, 0);
+    for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) {
+        NvnPBindBuf r = {.stage = cases[i].nvn, .index = 3, .address = 0x4f0001000ull + 0x100 * i, .size = 0x340 + i};
+        memcpy(g_mem + SSBO, &r, sizeof r);
+        check(nvn_draw_record(&d, OP_BIND_SSBO, SSBO, sizeof r) == 1, "OP_BIND_SSBO was not taken");
+        const u8* at = d.inl.bank0[cases[i].gfx] + cases[i].base + 16 * 3;
+        u64 address = (u64)snx_ld_le32(at) | (u64)snx_ld_le32(at + 4) << 32;
+        u32 size = snx_ld_le32(at + 8);
+        check(address == r.address && size == (u32)r.size,
+              "NVN stage %d storage buffer 3 at bank 0 %#x: expected %#llx, %#x bytes; found %#llx, %#x bytes",
+              cases[i].nvn, cases[i].base + 16 * 3, (unsigned long long)r.address, (u32)r.size,
+              (unsigned long long)address, size);
+    }
+    for (i32 nvn = NVN_SHADER_STAGE_TESS_CONTROL; nvn <= NVN_SHADER_STAGE_TESS_EVALUATION; nvn++) {
+        NvnPBindBuf r = {.stage = nvn, .index = 3, .address = 0x4f0002000ull, .size = 0x40};
+        memcpy(g_mem + SSBO, &r, sizeof r);
+        check(nvn_draw_record(&d, OP_BIND_SSBO, SSBO, sizeof r) == 1, "OP_BIND_SSBO was not taken");
+    }
+    for (int s = 1; s <= 2; s++)
+        check(!memcmp(d.inl.bank0[s] + 0x110, zero, 0x500),
+              "tessellation stage %d: bank 0's tables from 0x110 to 0x610 were written", s);
+}
+
 static int barrier_kinds[3], barrier_count;
 static void capture_barrier(int kind) {
     if (barrier_count < 3) barrier_kinds[barrier_count] = kind;
@@ -346,6 +385,7 @@ int main(void) {
     test_window_origin();
     test_stencil_faces();
     test_vertex_formats();
+    test_storage_tables();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
