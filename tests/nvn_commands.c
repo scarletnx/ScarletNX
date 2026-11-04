@@ -704,7 +704,7 @@ int main(void) {
     /* g_mem 0, as under NCE, where a guest address is the host's: a bind of a program that SetShaders gave stages records
        them. GP as an addition to the null g_mem let the compiler take the program for null and drop the copy */
     {
-        static u8 host[0x2000] __attribute__((aligned(16)));
+        static _Alignas(16) u8 host[0x2000];
         u8* base = g_mem;
         const u64 cbn = (u64)(uintptr_t)host, prog = cbn + 0x200;
         NvnProgram pr;
