@@ -578,33 +578,44 @@ static void buf_free(Gpu* g, Buf* b) {
     if (b->memory) vkFreeMemory(g->device, b->memory, NULL);
     if (b->buffer) vkDestroyBuffer(g->device, b->buffer, NULL);
 }
-/* what the last run's stores logged (ShaderInfo.gbuf_mark, SNX_VKB_WPAGES, SH_WLOG_*) of each global buffer: its
-   window flags and byte masks, empty for one the program logs nothing of */
-static u32 g_flags[2][SH_WPAGE_SLOT], g_masks[2][SH_WPAGE_SLOT * SH_WLOG_MASK];
+/* what the last run's stores logged (ShaderInfo.gbuf_marks, SNX_VKB_WPAGES, SNX_VKB_MBASE) of each global buffer, its
+   mask from its base: a log of the dispatch's own, global buffer k's at k * SH_WLOG_SLOT, as vk/writelog.c's */
+static u32 g_masks[2][SH_WLOG_WORDS];
+/* the output's length given less this many bytes (SNX_VKB_MBASE's): its stores at or past it log nothing */
+static u32 g_len_cut;
 /* Runs the module with cbuf 0 and the global buffers that si names (each a buffer of the bytes at in or out): 0 when
    Vulkan fails */
 static int gpu_run(Gpu* g, const u32* spv, size_t words, const ShaderInfo* si, const u32* cb0, const u32* in,
                    u32 in_bytes, u32* out, u32 out_bytes) {
-    Buf cb = {0}, gb[2] = {{0}}, marks = {0};
+    Buf cb = {0}, gb[2] = {{0}}, marks = {0}, mbase = {0};
     int ok = buf_make(g, &cb, 65536, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-    if (ok && si->nmarks)
-        ok = buf_make(g, &marks, (u32)si->nmarks * SH_WLOG_PART * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    if (ok && si->gbuf_marks) {
+        ok = buf_make(g, &marks, 2 * SH_WLOG_WORDS * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) &&
+             buf_make(g, &mbase, SH_MB_WORDS * 4, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        for (int k = 0; k < si->ngbuf && ok; k++) { /* each buffer's base, and its bytes */
+            ((u32*)mbase.map)[k] = (u32)k * SH_WLOG_SLOT;
+            ((u32*)mbase.map)[16 + k] = si->gbuf_cbuf_off[k] == 0x28 ? out_bytes - g_len_cut : in_bytes;
+        }
+    }
     if (ok) memcpy(cb.map, cb0, 256);
     for (int k = 0; k < si->ngbuf && ok; k++) {
         int is_out = si->gbuf_cbuf_off[k] == 0x28;
         ok = buf_make(g, &gb[k], is_out ? out_bytes : in_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         if (ok) memcpy(gb[k].map, is_out ? (const void*)out : (const void*)in, is_out ? out_bytes : in_bytes);
     }
-    VkDescriptorSetLayoutBinding bindings[4];
+    VkDescriptorSetLayoutBinding bindings[5];
     u32 nb = 0;
     bindings[nb++] = (VkDescriptorSetLayoutBinding){SNX_VKB_CB, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                                                     VK_SHADER_STAGE_COMPUTE_BIT, NULL};
     for (int k = 0; k < si->ngbuf; k++)
         bindings[nb++] = (VkDescriptorSetLayoutBinding){SNX_VKB_SSBO + (u32)k, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                                                         VK_SHADER_STAGE_COMPUTE_BIT, NULL};
-    if (si->gbuf_marks)
+    if (si->gbuf_marks) {
         bindings[nb++] = (VkDescriptorSetLayoutBinding){SNX_VKB_WPAGES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                                                         VK_SHADER_STAGE_COMPUTE_BIT, NULL};
+        bindings[nb++] = (VkDescriptorSetLayoutBinding){SNX_VKB_MBASE, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+                                                        VK_SHADER_STAGE_COMPUTE_BIT, NULL};
+    }
     VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
     VkPipelineLayout pl = VK_NULL_HANDLE;
     VkShaderModule sm = VK_NULL_HANDLE;
@@ -627,19 +638,20 @@ static int gpu_run(Gpu* g, const u32* spv, size_t words, const ShaderInfo* si, c
         VK_NULL_HANDLE,
         0};
     ok = ok && vkCreateComputePipelines(g->device, VK_NULL_HANDLE, 1, &cpci, NULL, &pipe) == VK_SUCCESS;
-    VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}};
+    VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}};
     VkDescriptorPoolCreateInfo dpci = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, NULL, 0, 1, 2, sizes};
     ok = ok && vkCreateDescriptorPool(g->device, &dpci, NULL, &pool) == VK_SUCCESS;
     VkDescriptorSet set = VK_NULL_HANDLE;
     VkDescriptorSetAllocateInfo dsai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, pool, 1, &dsl};
     ok = ok && vkAllocateDescriptorSets(g->device, &dsai, &set) == VK_SUCCESS;
     if (ok) {
-        VkDescriptorBufferInfo infos[4];
-        VkWriteDescriptorSet writes[4];
+        VkDescriptorBufferInfo infos[5];
+        VkWriteDescriptorSet writes[5];
         for (u32 k = 0; k < nb; k++) {
-            infos[k] = (VkDescriptorBufferInfo){bindings[k].binding == SNX_VKB_WPAGES ? marks.buffer
-                                                : k                                   ? gb[k - 1].buffer
-                                                                                      : cb.buffer,
+            infos[k] = (VkDescriptorBufferInfo){bindings[k].binding == SNX_VKB_WPAGES  ? marks.buffer
+                                                : bindings[k].binding == SNX_VKB_MBASE ? mbase.buffer
+                                                : k                                    ? gb[k - 1].buffer
+                                                                                       : cb.buffer,
                                                 0, VK_WHOLE_SIZE};
             writes[k] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                                NULL,
@@ -681,17 +693,13 @@ static int gpu_run(Gpu* g, const u32* spv, size_t words, const ShaderInfo* si, c
     for (int k = 0; k < si->ngbuf && ok; k++)
         if (si->gbuf_cbuf_off[k] == 0x28) memcpy(out, gb[k].map, out_bytes);
     for (int k = 0; k < 2; k++) {
-        const u32* w = marks.map && si->gbuf_mark[k] && k < si->ngbuf
-                           ? (const u32*)marks.map + (size_t)(si->gbuf_mark[k] - 1) * SH_WLOG_PART
-                           : NULL;
-        memset(g_flags[k], 0, sizeof g_flags[k]);
-        memset(g_masks[k], 0, sizeof g_masks[k]);
-        if (w) {
-            memcpy(g_flags[k], w, sizeof g_flags[k]);
-            memcpy(g_masks[k], w + SH_WPAGE_SLOT, sizeof g_masks[k]);
-        }
+        if (marks.map && k < si->ngbuf)
+            memcpy(g_masks[k], (const u32*)marks.map + (size_t)k * SH_WLOG_WORDS, sizeof g_masks[k]);
+        else
+            memset(g_masks[k], 0, sizeof g_masks[k]);
     }
     buf_free(g, &marks);
+    buf_free(g, &mbase);
     if (fence) vkDestroyFence(g->device, fence, NULL);
     if (cpool) vkDestroyCommandPool(g->device, cpool, NULL);
     if (pool) vkDestroyDescriptorPool(g->device, pool, NULL);
@@ -754,26 +762,19 @@ static int run_program(Gpu* g, const char* name, void (*build)(Prog*)) {
         fprintf(stderr, "%s: Vulkan failed\n", name);
         return 0;
     }
-    /* the stores logged exactly the bytes the reference stored, and none of the input's; and flagged the 4 KiB
-       windows of those bytes and no other */
+    /* the stores logged exactly the bytes the reference stored, and none of the input's */
     for (int k = 0; k < 2; k++) {
         int is_out = si.gbuf_cbuf_off[k] == 0x28;
-        u32 wrong = 0, first = ~0u, flags_wrong = 0, logged = 0;
-        for (u32 b = 0; b < SH_WPAGE_SLOT * 4096u; b++) {
-            int want = is_out && b < out_bytes && stored[b], have = g_masks[k][b / 32] >> (b % 32) & 1;
+        u32 wrong = 0, first = ~0u, logged = 0;
+        for (u32 b = 0; b < SH_WLOG_SLOT; b++) {
+            int want = is_out && b < out_bytes - g_len_cut && stored[b], have = g_masks[k][b / 32] >> (b % 32) & 1;
             logged += (u32)have;
             if (want != have && !wrong++) first = b;
         }
-        for (u32 j = 0; j < SH_WPAGE_SLOT; j++) {
-            int any = 0;
-            for (u32 b = j * 4096; is_out && b < (j + 1) * 4096 && b < out_bytes; b++) any |= stored[b];
-            flags_wrong += (g_flags[k][j] != 0) != any;
-        }
-        if (wrong || flags_wrong || ((si.gbuf_marks >> k & 1) != (u32)is_out) || (!si.gbuf_mark[k]) == is_out) {
+        if (wrong || ((si.gbuf_marks >> k & 1) != (u32)is_out)) {
             fprintf(stderr, "%s: global buffer %d (%s) logged %u bytes, %u of them or of the bytes stored wrong (the "
-                            "first at %u), %u window flags wrong (in gbuf_marks %u, part %u)\n",
-                    name, k, is_out ? "the output" : "the input", logged, wrong, first, flags_wrong,
-                    si.gbuf_marks >> k & 1, si.gbuf_mark[k]);
+                            "first at %u; in gbuf_marks %u)\n",
+                    name, k, is_out ? "the output" : "the input", logged, wrong, first, si.gbuf_marks >> k & 1);
             return 0;
         }
     }
@@ -815,6 +816,9 @@ int main(void) {
     ok &= run_program(&g, "flow", flow_program);
     ok &= run_program(&g, "wide", wide_program);
     ok &= run_program(&g, "stores", stores_program);
+    g_len_cut = 100; /* past the length its binding is given: nothing logged */
+    ok &= run_program(&g, "stores past the length", stores_program);
+    g_len_cut = 0;
     vkDestroyDevice(g.device, NULL);
     vkDestroyInstance(g.instance, NULL);
     return ok ? 0 : 1;

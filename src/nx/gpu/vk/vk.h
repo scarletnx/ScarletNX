@@ -454,6 +454,7 @@ void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 count, u32 instances, u32 first,
 void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDeviceSize off, VkBuffer count_buf,
                          VkDeviceSize count_off, u32 max, u32 stride);
 void rec_CmdDispatch(VkCommandBuffer cb, u32 x, u32 y, u32 z);
+void rec_CmdFillBuffer(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, VkDeviceSize size, u32 data);
 void rec_CmdDispatchIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off);
 void rec_CmdEndRendering(VkCommandBuffer cb);
 void rec_CmdSetCullMode(VkCommandBuffer cb, VkCullModeFlags mode);
@@ -1088,6 +1089,23 @@ typedef void (*VkRunFn)(void* user, u32 from, u32 to);
 u32 vk_wlog_runs(VkWriteLog* l, u32 part, u32 size, VkRunFn fn, void* user);
 void vk_wlog_stats(u64* logs, u64* bytes, u64* in_use, u64* windows);
 void vk_wlog_trim(void); /* the logs the pool hasn't given out for a while go */
+/* The GPU mirror of guest memory (mirror.c): whether it is on, its buffer and its mask (a bit a byte) */
+int vk_mirror_on(void);
+VkBuffer vk_mirror_buffer(void);
+VkBuffer vk_mirror_mask(void);
+/* [gva, gva + len), one run of guest memory, up to date in the mirror for the work recorded next: the mirror in *buf, at
+   *off, which is the guest address of gva. 0 when it can't be (not one run, the mirror off) */
+int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off);
+/* a program recorded now writes [cpu, cpu + len) of the mirror: pending until the submit's harvest lands it */
+void vk_mirror_wrote(u64 cpu, u64 len);
+/* whether pending writes of the mirror are behind [gva, gva + len); a read of guest memory there lands them first */
+int vk_mirror_pending(u64 gva, u64 len);
+void vk_mirror_mem_need(u64 gva, u64 len);
+/* at a submit, recorded into cb: the pages its programs wrote, copied for landing; and once submissions up to done are,
+   their landing in guest memory */
+void vk_mirror_harvest(VkCommandBuffer cb, u64 submit);
+void vk_mirror_done(u64 done);
+void vk_mirror_stats(u64* granules, u64* harvests, u64* pages, u64* landed, u64* overflows, u32* room);
 /* the bytes of a result at res a writer logged (n sorted runs that don't meet, from addr), into guest memory: as
    vk_write_changed lands what it finds changed. The runs whose guest pages the CPU wrote since the write tracking
    clock since, which the GPU's bytes then win over: their count */

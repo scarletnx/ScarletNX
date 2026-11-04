@@ -87,13 +87,8 @@ typedef struct {
     u32 cs_local[3];
     int shared_size;
     u32 gbuf_wmask; /* global buffers the program writes */
-    /* The program's write log (SNX_VKB_WPAGES, SH_WLOG_*): every store and atomic of a compute program to global
-       buffer i records the bytes it writes in the log's part gbuf_mark[i] - 1 (0: none), parts numbered in the order
-       the program's first store to each buffer was translated, nmarks of them. gbuf_marks has bit i set when
-       gbuf_mark[i] is */
+    /* the global buffers whose writes the program logs (a compute program's every store and atomic: SNX_VKB_WPAGES) */
     u32 gbuf_marks;
-    u8 gbuf_mark[16];
-    u8 nmarks;
     struct {
         u32 cbuf_off;
         u8 type, bindless, bl_cbuf, kind; /* kind: 1 raw R32ui load/atomic; formatted: 0 float, 2 uint, 3 sint */
@@ -167,16 +162,19 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SNX_VKB_RS       (SNX_VKB_IMG + 8)         /* fragment: 1 / the resolution scale (SNX_RS) */
 #define SNX_VKB_FMT      (SNX_VKB_RS + 1)          /* compute: the images' format classes (SNX_FMT) */
 #define SNX_VKB_SMAP     (SNX_VKB_FMT + 1)         /* graphics: storage buffer page indices for aliased bindings */
-/* compute, the same binding, which no compute program reads otherwise: the program's write log (gbuf_marks) */
+/* compute, the same binding, which no compute program reads otherwise: the mask the program's stores log their bytes in
+   (gbuf_marks), a bit a byte, bit b of word w standing for byte w * 32 + b. A store of global buffer i at byte offset
+   o of it sets the bits of bytes SNX_MB_BASE(i) + o on, the base a word of SNX_VKB_MBASE: the GPU mirror's mask
+   (vk/mirror.c), where a buffer's base is its place in the mirror, or a log of the dispatch's own (vk/writelog.c),
+   where it is i * SH_WLOG_SLOT. A store at or past SNX_MB_LEN(i) bytes, which the buffer's binding drops, sets none */
 #define SNX_VKB_WPAGES   SNX_VKB_SMAP
-/* The write log: for each logged global buffer (ShaderInfo.gbuf_mark), a part of SH_WLOG_PART words. Its first
-   SH_WPAGE_SLOT words are flags, word j set to 1 by any store to the 4 KiB window j of the binding; then a bit for each
-   byte of each window, SH_WLOG_MASK words a window, bit b of word k of window j standing for byte j * 4096 + k * 32 +
-   b, set by the store that writes that byte. A store past the windows sets no bit. The flags are an index, so that
-   reading and clearing the log costs the windows written, not the windows bound */
-#define SH_WPAGE_SLOT    4096u /* the windows of a global buffer: 16 MiB, the most vk_gbuf_desc binds */
-#define SH_WLOG_MASK     128u  /* the mask words of a window: a bit for each of its 4096 bytes */
-#define SH_WLOG_PART     (SH_WPAGE_SLOT * (1u + SH_WLOG_MASK))
+/* compute, the fragment program's binding, which no compute program has: the mask's bases and the buffers' lengths, a
+   uniform buffer of 16 bases then 16 lengths, 4 a vec4 */
+#define SNX_VKB_MBASE    SNX_VKB_RS
+#define SH_MB_WORDS      32u                /* the uniform's words */
+#define SH_WLOG_SLOT     (16u << 20)        /* a global buffer's bytes in a log of the dispatch's own: 16 MiB, the most
+                                               vk_gbuf_desc binds */
+#define SH_WLOG_WORDS    (SH_WLOG_SLOT / 32) /* its mask words */
 #define SNX_VKB_ROOT     (SNX_VKB_SMAP + 1)        /* an Ounce program's root tables, banks 24 to 31 (SH_ROOT_BYTES) */
 #define SNX_VKB_IMGBUF   (SNX_VKB_ROOT + 1)        /* 8 buffer images (compute, vertex, fragment) */
 #define SNX_VKB_TEXARRAY (SNX_VKB_IMGBUF + 8)      /* up to SNX_TEX_ARRAY distinct indexed handles */

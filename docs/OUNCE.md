@@ -73,22 +73,35 @@ size. Of about 400 storage buffers of one game's programs, 5 read the size word 
 the game binds doesn't bound the accesses: binding exactly that size hung the GPU, with accesses past it. The
 renderer binds all of the memory mapped from the address, up to 16 MiB (`vk_gbuf_desc`).
 
-So each such result lands from a write log, not from a comparison. The translator has every store and atomic of a
-compute program record the bytes it writes (`mark_written`, `ShaderInfo.gbuf_mark`, binding `SNX_VKB_WPAGES`): an
-atomic OR of a bit for each byte into a mask, and a flag for its 4 KiB window, which indexes the masks
-(`shader.h`'s `SH_WLOG_*`). A result lands the bytes its writers logged, every one of them and no other, read where
-the shader wrote them (`buffer.c`'s `land_logged`, `compute.c`'s `cs_write_back`, `writeback.c`'s
-`vk_write_runs`). The logs are host memory from a pool (`writelog.c`), cleared when they go back where their flags
-say they were written. Before, every writing dispatch copied the 16 MiB of each range twice (its original bytes,
-and its input), compared all of it after the dispatch and copied it back from the GPU first: with the window flags
-alone the copy of the original bytes was still a quarter of one game's CPU time, for about 260 bytes a result the
-shader had changed. The input is still copied whole.
+So such a program's storage is not made for each dispatch. Its stores log the bytes they write: the translator has
+every store and atomic of a compute program OR a bit for each byte it writes into a mask (`mark_written`, binding
+`SNX_VKB_WPAGES`), at the buffer's base plus the store's offset, the bases and the buffers' lengths in a uniform
+(`SNX_VKB_MBASE`). A store at or past its buffer's length, which the binding drops, sets none.
 
-A byte the CPU writes while a logged result is pending, which the shader writes too, takes the shader's value when
-the result lands: on the console both reach memory in an order the program left open. A byte the CPU writes and
-the shader doesn't is kept. The comparison took the CPU's value instead; over 80 seconds of one game, 14,000
-results landed with no byte written by both. `vulkan: logged storage results` in the buffer report
-(`vk_buffer_stats=1`) counts such runs.
+Where the device has sparse residency of buffers and write tracking is on, the program reads and writes a mirror
+of guest memory in the GPU's memory (`vk/mirror.c`): one sparse buffer as big as the guest's address space, at the
+same offsets, with the mask beside it, memory bound in granules of 2 MiB where bindings are. Windows over the same
+guest memory are the same bytes, and the programs run one after another on the graphics queue, as on the console.
+A host shadow keeps the guest bytes each page was given. When a buffer is bound, its pages the CPU wrote since
+(write tracking) are compared with the shadow, and only the bytes the CPU changed are copied in, so the bytes the
+programs wrote there and haven't landed stay. At each submit a pass copies the pages written in it, those with mask
+bits set, with their bytes into a ring in host memory, and clears their masks (`mirror_harvest.comp`); once the submit
+is done they land in guest memory and in the shadow, the bytes logged and no others. A read of guest memory under
+pending writes lands them first, and a draw reading them takes the mirror instead (`buffer.c`'s `buf_get`).
+Before, every writing dispatch copied the 16 MiB of each range twice (its original bytes, and its input), compared
+all of it after the dispatch and copied it back from the GPU, and the per-dispatch buffers took gigabytes of rings.
+
+Without the mirror (no sparse residency of buffers, memory shared with the CPU, no write tracking) each writer's
+result is made for the dispatch as before and lands from a log of the dispatch's own (`vk/writelog.c`), a mask
+for each buffer's 16 MiB. A writer that logs nothing (a draw, a Switch program, a buffer image) is compared.
+
+A byte the CPU writes while the programs' writes are pending, which a program writes too, takes the program's value
+when they land: on the console both reach memory in an order the program left open. A byte the CPU writes and the
+program doesn't is kept. The comparison took the CPU's value instead; over 80 seconds of one game, 14,000 results
+landed with no byte written by both.
+
+The translator declares the global buffers `Aliased` and `Coherent`: one game binds a range and a part of it to the
+same program, writes through one and waits for the value through the other.
 
 ## Surfaces
 

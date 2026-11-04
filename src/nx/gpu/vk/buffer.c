@@ -675,6 +675,7 @@ void vk_buf_frame_done(u64 frame) {
         else
             g_retire[kept++] = g_retire[i];
     g_nretire = kept;
+    vk_mirror_done(frame);
     g_gfx_any = g_out != NULL;
     vk_uma_frame_done(frame);
 }
@@ -683,6 +684,7 @@ void vk_buf_frame_done(u64 frame) {
    is. */
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
     vk_uma_host_barrier(cb, frame);
+    vk_mirror_harvest(cb, frame); /* the pages the submit's programs wrote in the GPU mirror */
     GfxOut* first = g_out;
     while (first && first->frame != frame) first = first->next;
     /* the write logs of the submit's dispatches are read by the host too, results of theirs pending or not (the
@@ -2499,6 +2501,17 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     u32 i = 0, epoch = vk_ww_epoch(); /* before anything is checked or read */
     Vb* e = NULL;
     if (!len || len > 0xFFFFFFFFull) return 0; /* no buffer the GPU reads is 4 GB */
+    /* over writes of the GPU mirror's programs that haven't landed: read in the mirror, which has them, after them */
+    if (vk_mirror_pending(gva, len)) {
+        u64 cpu = 0;
+        if (gmmu_run(gva, len, &cpu) == len && !(cpu & ((align ? align : 1) - 1)) && vk_mirror_slice(gva, len, buf, off)) {
+            vk_render_end();
+            copy_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
+            return 1;
+        }
+        vk_mirror_mem_need(gva, len); /* where it can't be: landed first */
+    }
     if (g_vbi) {
         u32 sl = vb_slot(gva, (u32)len);
         if ((i = g_vbi[sl].idx)) e = &g_vb[i];
@@ -2829,6 +2842,16 @@ void vk_buf_frame(void) {
                 (unsigned long long)(bytes >> 20), (unsigned long long)in_use);
         }
         g_wb_logged = g_wb_logged_windows = g_wb_logged_bytes = g_wb_logged_conflicts = 0;
+        {
+            u64 gr, hv, pg, ld, ov;
+            u32 room;
+            vk_mirror_stats(&gr, &hv, &pg, &ld, &ov, &room);
+            if (gr)
+                LOG("vulkan: GPU mirror: %llu MB bound, %llu harvests, %llu pages written, %llu bytes landed, %llu "
+                    "harvests past their room (now %u pages)\n",
+                    (unsigned long long)(gr * 2), (unsigned long long)hv, (unsigned long long)pg,
+                    (unsigned long long)ld, (unsigned long long)ov, room);
+        }
         LOG("vulkan: buffer dependencies: %llu barriers, %llu consumer barriers avoided, %llu parallel writes, %llu explicit barriers\n",
             (unsigned long long)g_buffer.order.barriers, (unsigned long long)g_buffer.order.read_reuses,
             (unsigned long long)g_buffer.order.parallel_writes, (unsigned long long)g_buffer.order.explicit_barriers);

@@ -494,6 +494,7 @@ REC3(CmdResetQueryPool, VkQueryPool, u32, u32)
 REC3(CmdWriteTimestamp2, VkPipelineStageFlags2, VkQueryPool, u32)
 REC3(CmdBeginQuery, VkQueryPool, u32, VkQueryControlFlags)
 REC2(CmdEndQuery, VkQueryPool, u32)
+REC4(CmdFillBuffer, VkBuffer, VkDeviceSize, VkDeviceSize, u32)
 REC7(CmdCopyQueryPoolResults, VkQueryPool, u32, u32, VkBuffer, VkDeviceSize, VkDeviceSize, VkQueryResultFlags)
 REC0(CmdEndConditionalRenderingEXT)
 
