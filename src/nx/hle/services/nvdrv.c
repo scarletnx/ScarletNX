@@ -1158,8 +1158,8 @@ static u32 as_map_buffer(u8* d) {
 /* GET_VA_REGIONS: report the address-space range and split chosen by ALLOC_AS_EX. */
 static void as_va_regions(u8* d, u8* extra, u32 nextra) {
     u32 bits = g_hle.nvdrv.big_page_bits;
-    u64 big = (u64)1 << bits, start = g_hle.nvdrv.as_range_start, end = g_hle.nvdrv.as_range_end;
-    u64 split = g_hle.nvdrv.as_range_split;
+    u64 big = (u64)1 << bits, start = g_hle.nvdrv.as_va_first ? g_hle.nvdrv.as_va_first : big << AS_VA_START_SHIFT,
+        end = g_hle.nvdrv.as_va_last ? g_hle.nvdrv.as_va_last : AS_DEFAULT_VA_RANGE, split = VA_BASE;
     u8 r[AS_VA_REGIONS * AS_VA_REGION_BYTES];
     u8 *small_pages = r, *big_pages = r + AS_VA_REGION_BYTES;
     memset(r, 0, sizeof r);
@@ -1175,8 +1175,6 @@ static void as_va_regions(u8* d, u8* extra, u32 nextra) {
 }
 /* ALLOC_AS_EX: the big page size, 64 KiB or 128 KiB, 0 meaning Eden's default; another size leaves it as it was */
 static u32 as_alloc_as_ex(const u8* d) {
-    u64 start = rd64(d, AS_ALLOC_AS_EX_VA_START), end = rd64(d, AS_ALLOC_AS_EX_VA_END);
-    u64 requested_split = rd64(d, AS_ALLOC_AS_EX_VA_SPLIT);
     u32 big = rd32(d, AS_ALLOC_AS_EX_BIG_PAGE_SIZE) ? rd32(d, AS_ALLOC_AS_EX_BIG_PAGE_SIZE) : AS_DEFAULT_BIG_PAGE_SIZE;
     u64 first = rd64(d, AS_ALLOC_AS_EX_VA_RANGE_START), last = rd64(d, AS_ALLOC_AS_EX_VA_RANGE_END);
     if (big == 1u << AS_BIG_PAGE_BITS_64K) g_hle.nvdrv.big_page_bits = AS_BIG_PAGE_BITS_64K;
@@ -1254,17 +1252,15 @@ static u32 ioctl_as(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
         case NVHOST_AS_GPU_UNMAP_BUFFER: return as_unmap_buffer(rd64(d, AS_UNMAP_BUFFER_OFFSET));
         case NVHOST_AS_GPU_MAP_BUFFER_EX: return as_map_buffer(d);
         case NVHOST_AS_GPU_GET_VA_REGIONS: as_va_regions(d, extra, nextra); return NV_RESULT_SUCCESS;
-        case NVHOST_AS_GPU_GET_SYNCPOINT_SHIM: /* Switch 2 (nvdrv_as_gpu.h) */
+        case NVHOST_AS_GPU_GET_SYNCPOINT_SHIM: /* 0x0B: a Switch 2 program's shim page, a Switch's mapping of
+                                                     192 counters, 4 bytes each, which the game polls */
             if (g_guest_features) return as_syncpoint_shim_info(d);
-            return NV_RESULT_SUCCESS;
-        case NVHOST_AS_GPU_ALLOC_AS_EX: return as_alloc_as_ex(d);
-        case NVHOST_AS_GPU_GET_SYNC_RO_MAP: { /* the syncpoint shim: 192 counters, 4 bytes each, the game polls */
             /* The game maps this address through MAP_BUFFER_EX; gmmu_map records where so the shim can be fed. */
             wr64(d, 0, 0x1000000ull);
             wr32(d, 8, 4);
             wr32(d, 12, 192);
             return NV_RESULT_SUCCESS;
-        }
+        case NVHOST_AS_GPU_ALLOC_AS_EX: return as_alloc_as_ex(d);
         case NVHOST_AS_GPU_REMAP: return as_remap(d, n);
         default: WARN_LIMIT(16, "nvdrv: nvhost-as-gpu ioctl %08x not implemented\n", cmd); return NV_RESULT_SUCCESS;
     }
@@ -1440,46 +1436,6 @@ static void gpu_characteristics(u8* c) {
 }
 /* The Ounce's 0xC0E04705 request returns Ampere characteristics in Ioctl3's second output. Its first 0x70 bytes
    retain the older layout; the ioctl limits the inline output to 0xD0 bytes. */
-static void gpu_characteristics_s2(u8* c) {
-    memset(c, 0, 0xD0);
-    wr32(c, 0x00, 0x170);  /* arch */
-    wr32(c, 0x04, 0xE);    /* impl */
-    wr32(c, 0x08, 0xA1);   /* rev */
-    wr32(c, 0x0C, 1);     /* num_gpc */
-    wr64(c, 0x10, 0x100000);
-    wr32(c, 0x20, 6);     /* num_tpc_per_gpc */
-    wr32(c, 0x24, 0x20);  /* AXI */
-    wr32(c, 0x2C, 0x10000); /* compression_page_size */
-    wr32(c, 0x30, 0x15);  /* pde_coverage_bit_count */
-    wr32(c, 0x38, 1);     /* gpc_mask */
-    wr32(c, 0x3C, 0x808); /* sm_arch_sm_version */
-    wr32(c, 0x40, 0x806); /* sm_arch_spa_version */
-    wr32(c, 0x44, 0x60);  /* sm_arch_warp_count */
-    wr32(c, 0x48, 0x28);  /* gpu_va_bit_count */
-    wr64(c, 0x50, 0x935FAF1EDC0155ull);
-    wr32(c, 0x58, 0x902D); /* twod_class */
-    wr32(c, 0x5C, 0xC797); /* AMPERE_B */
-    wr32(c, 0x60, 0xC7C0); /* AMPERE_COMPUTE_B */
-    wr32(c, 0x64, 0xC76F); /* AMPERE_CHANNEL_GPFIFO_B */
-    wr32(c, 0x68, 0xA140); /* inline_to_memory_class */
-    wr32(c, 0x6C, 0xC7B5); /* AMPERE_DMA_COPY_B */
-    /* Seven u16 ioctl limits, beginning at 0x70. */
-    const u16 limits[8] = {0x1F, 0xF, 0x2B, 0x21, 0xD, 0xFFFF, 0xFFFF, 0xFFFF};
-    memcpy(c + 0x70, limits, sizeof limits);
-    wr32(c, 0x80, 0); /* max_fbps_count */
-    wr32(c, 0x84, 1); /* fbp_en_mask */
-    wr32(c, 0x88, 1); /* emc_en_mask */
-    wr32(c, 0x8C, 1); /* max_ltc_per_fbp */
-    wr32(c, 0x90, 4); /* max_lts_per_ltc */
-    wr32(c, 0x98, 1); /* max_gpc_count */
-    wr64(c, 0xA8, 0x6761313066ull); /* "ga10f" */
-    wr32(c, 0xB4, 2);
-    wr32(c, 0xB8, 0x40);
-    wr32(c, 0xBC, 3);
-    wr32(c, 0xC0, 7);
-    wr32(c, 0xC4, 1);
-    wr32(c, 0xC8, 1);
-}
 static_assert(sizeof(NvgpuGpuCharacteristics) == NVGPU_CHARACTERISTICS_BYTES, "the guest's IoctlGpuCharacteristics");
 static_assert(offsetof(NvgpuGpuCharacteristics, chipname) == 0x90, "the guest's IoctlGpuCharacteristics");
 /* The characteristics of the Switch 2's Ampere chip, which its NvRm checks and its NVN path needs: Eden's Switch 2
@@ -1551,9 +1507,6 @@ static void ctrlgpu_engine_info(u8* d, u8* extra, u32 nextra) {
 static_assert(sizeof(NvgpuGpuZcullGetInfoArgs) == 40, "the guest's IoctlNvgpuGpuZcullGetInfoArgs");
 static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra, int s2) {
     static const u8 sms[NVGPU_NUM_SMS * 2] = {0, 0, 0, 1}; /* {gpc, tpc} of each SM */
-    /* Six TPCs with two SMs each; the Ounce query has a 24-byte inline output. */
-    static const u8 s2_sms[24] = {0, 0, 0, 0, 0, 1, 0, 1, 0, 2, 0, 2,
-                                  0, 3, 0, 3, 0, 4, 0, 4, 0, 5, 0, 5};
     (void)n;
     switch (nv_ioctl_cmd(cmd)) {
         case NVGPU_GPU_ZCULL_GET_CTX_SIZE:
@@ -1585,9 +1538,6 @@ static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra, int s2) {
             wr32(d, CTRL_GPU_TPC_MASKS_MASK, s2 ? 0x3F : NVGPU_TPC_MASK);
             if (nextra >= 4) copy_extra(extra, nextra, d + CTRL_GPU_TPC_MASKS_MASK, 4);
             return NV_RESULT_SUCCESS;
-        case NVGPU_GPU_GET_ENGINE_INFO: /* the Switch 2 NvRm's runlist list (nvdrv_ctrl_gpu.h) */
-            if (g_guest_features) ctrlgpu_engine_info(d, extra, nextra);
-            return NV_RESULT_SUCCESS;
         case NVGPU_GPU_NUM_VSMS:
             /* A Switch 2 NvRm asks this for its Ampere chip's shape and then checks it against the
                characteristics' GPC and TPC counts, which the GM20B's shape of two SMs does not match.
@@ -1611,18 +1561,22 @@ static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra, int s2) {
         case NVGPU_GPU_GET_GPU_TIME: /* the system tick's timebase */
             wr64(d, CTRL_GPU_GPU_TIME, guest_ns());
             return NV_RESULT_SUCCESS;
-        case NVGPU_GPU_GET_ENGINE_INFO: {
-            /* nvgpu's engine IDs: graphics, graphics copy and asynchronous copy. */
-            u8 info[3 * 16] = {0};
-            for (u32 i = 0; i < 3; i++) {
-                wr32(info + i * 16, 0, i);
-                wr32(info + i * 16, 4, 0);
-                wr32(info + i * 16, 8, i);
+        case NVGPU_GPU_GET_ENGINE_INFO: /* a Switch 2 NvRm's runlist list, a Switch's engine IDs (nvdrv_ctrl_gpu.h) */
+            if (g_guest_features) {
+                ctrlgpu_engine_info(d, extra, nextra);
+                return NV_RESULT_SUCCESS;
             }
-            wr32(d, 0, sizeof info);
-            copy_extra(extra, nextra, info, sizeof info);
+            { /* nvgpu's engine IDs: graphics, graphics copy and asynchronous copy. */
+                u8 info[3 * 16] = {0};
+                for (u32 i = 0; i < 3; i++) {
+                    wr32(info + i * 16, 0, i);
+                    wr32(info + i * 16, 4, 0);
+                    wr32(info + i * 16, 8, i);
+                }
+                wr32(d, 0, sizeof info);
+                copy_extra(extra, nextra, info, sizeof info);
+            }
             return NV_RESULT_SUCCESS;
-        }
         default: WARN_LIMIT(16, "nvdrv: nvhost-ctrl-gpu ioctl %08x not implemented\n", cmd); return NV_RESULT_SUCCESS;
     }
 }
@@ -1988,9 +1942,8 @@ SvcObj* nvdrv_session(void) { return nns_nvdrv_INvDrvServices_new(); }
 void nv_init(void) {
     g_hle.nvdrv.nvh_next = 1;
     g_hle.nvdrv.big_page_bits = AS_BIG_PAGE_BITS_64K; /* MemoryManager's default big_page_bits */
-    g_hle.nvdrv.as_range_start = (u64)1 << (AS_BIG_PAGE_BITS_64K + AS_VA_START_SHIFT);
-    g_hle.nvdrv.as_range_end = AS_DEFAULT_VA_RANGE;
-    g_hle.nvdrv.as_range_split = VA_BASE;
+    g_hle.nvdrv.as_va_first = (u64)1 << (AS_BIG_PAGE_BITS_64K + AS_VA_START_SHIFT);
+    g_hle.nvdrv.as_va_last = AS_DEFAULT_VA_RANGE;
     pm_init(&g_host.nvdrv.lock);
     pm_init(&g_host.nvdrv.aslock);
     pm_init(&g_host.nvdrv.alias_lock);

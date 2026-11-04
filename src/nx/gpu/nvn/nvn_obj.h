@@ -236,6 +236,46 @@ typedef struct {
     u32 hashes;
 } NvnProgramBuilder;
 NVN_FITS(NvnProgramBuilder, 0xB0);
+/* ---- the Ounce's DLSS, device command buffers and device messages (API 231). The runtime keeps their state at
+   the offsets of the game's driver, as its setters and getters do */
+/* a {texture, view} pair */
+typedef struct {
+    u64 texture, view;
+} NvnTexturePair;
+typedef struct {
+    u64 device, pool; /* pool: SetTextureIDs's first argument */
+    u64 memory, memory_size;
+    i32 flags, method, preset, width, height, max_entries;
+    u8 ids[0x80]; /* SetTextureIDs's 128 bytes */
+    u64 last;     /* +0xb8, which SetDefaults clears */
+} NvnDlssNetworkBuilder;
+NVN_FITS(NvnDlssNetworkBuilder, 0xc0);
+/* base: the subrectangles' bases (x, y): input color, depth, motion vectors, bias, output. overlay: the debug
+   overlays (debug layer, full screen, show NaNs, jitter) */
+typedef struct {
+    NvnTexturePair input, output, motion, depth, bias;
+    f32 jitter[2], motion_scale[2], pre_exposure, pad;
+    NvnTexturePair exposure;
+    u8 history_reset, pad2[3];
+    i32 evaluation_index;
+    i32 input_size[2], base[5][2], overlay[4];
+    u64 last; /* +0xc0, which SetDefaults clears */
+} NvnDlssParameters;
+NVN_FITS(NvnDlssParameters, 0xc8);
+typedef struct {
+    u64 device;
+    u64 memory, offset, size; /* SetStorage's */
+    u64 command_size, compute_size;
+} NvnDeviceCommandBuffer;
+NVN_FITS(NvnDeviceCommandBuffer, 0x30);
+/* the messages' storage, and the begin and end the driver clears at EndMessages */
+typedef struct {
+    u64 device, pool;
+    i32 offset, size;
+    u64 begin, end;
+} NvnDeviceMessageBuffer;
+NVN_FITS(NvnDeviceMessageBuffer, 0x28);
+
 /* A fenced sync signals when the syncpoint reaches value (0: no syncpoint), the presents' syncpoint reaches shown (0:
    none; nvn_replay_shown_syncpt, a present on the display) and the pacer's clock (plat_ns) reaches ready: its queue's
    work before it replayed and done, and what the queue waited for before it (a window's texture comes free at the

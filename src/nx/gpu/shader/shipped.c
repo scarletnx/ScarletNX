@@ -160,8 +160,8 @@ const char* shipped_stage_name(int stage) {
            : stage >= 0 && stage < (int)(sizeof names / sizeof *names) ? names[stage]
                                                                        : "?";
 }
-/* an SPH's stage, of the version given */
-static int sph_stage(const u8* sph, u32 want) {
+/* an SPH's stage */
+static int sph_stage(const u8* sph) {
     u32 w = le32(sph), type = w & 0x1Fu, version = w >> 5 & 0x1Fu, shader = w >> 10 & 0xFu;
     /* version 4 is NVN2's: the Switch 2 SDK's, whose first 0x50 bytes keep version 3's layout (nxnative), so the
        type and shader fields are read the same. Its program header is 0x80 bytes where version 3's is 0x50 */
@@ -224,9 +224,9 @@ static Consts* all_consts(const u8* d, size_t n, size_t* count) {
     if (*count) qsort(c, *count, sizeof *c, snx_compare_u64);
     return c;
 }
-int shipped_sph_stage(const u8* sph) { return sph_stage(sph, 3); }
+int shipped_sph_stage(const u8* sph) { return sph_stage(sph); }
 int shipped_ounce_stage(const u8* sph) {
-    int stage = sph_stage(sph, 4);
+    int stage = sph_stage(sph);
     for (u32 i = 0x50; stage >= 0 && i < 0x80; i++) /* the 48 bytes past Maxwell's layout are zero */
         if (sph[i]) return -1;
     return stage;

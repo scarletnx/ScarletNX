@@ -217,7 +217,7 @@ void jit_init(u64 features) {
     }
 #endif
     /* an Ounce game's CPU, as the recompiler's module_llvm.c gives it from the same NPDM */
-    config.features = g_settings.cpu_extensions || g_ounce ? SNX_A64_TARGET_SWITCH_EXTENDED : 0;
+    config.features = g_settings.cpu_extensions || g_ounce ? (SnxU64)SNX_A64_TARGET_SWITCH2 : 0;
     config.opt = opt;
     config.images = g_jit_images;
     config.image_count = g_mod->nmods;

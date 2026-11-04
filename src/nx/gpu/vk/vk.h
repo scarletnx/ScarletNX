@@ -202,6 +202,22 @@ void vk_image_destroy(VkImage img, VmaAllocation mem);
 int vk_resident_block(VkFormat f, VkImageUsageFlags usage, VkExtent3D* block);
 int vk_image_create_resident(const VkImageCreateInfo* ii, const VkExtent3D* block, VkImage* img);
 int vk_image_resident(VkImage img, const u8* want, u32 n, u64* bytes);
+#define VK_SPARSE_LEVELS 16
+typedef struct {
+    VkExtent3D gran;                 /* a sparse block, in texels */
+    u32 layers, levels, tail_first;  /* tail_first: the mip tail's first level, levels when there is none */
+    u32 per_layer;                   /* the blocks of a layer */
+    u32 first[VK_SPARSE_LEVELS + 1]; /* level l's first block in its layer */
+    u32 bx[VK_SPARSE_LEVELS], by[VK_SPARSE_LEVELS], bz[VK_SPARSE_LEVELS]; /* level l's blocks across, down, deep */
+} VkSparseShape;
+int vk_sparse_supported(const VkImageCreateInfo* ii);
+int vk_image_create_sparse(const VkImageCreateInfo* ii, VkImage* img);
+const VkSparseShape* vk_image_sparse_shape(VkImage img); /* NULL for an image without sparse residency */
+int vk_image_sparse_bind(VkImage img, const u8* bits, u64* bytes);
+u64 vk_image_sparse_need(VkImage img, const u8* bits);
+int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32 z0, u32 z1, int all);
+/* how many binds a run made and how long they took (memory.c) */
+void vk_sparse_stats(u64* binds, u64* bind_ns);
 /* Tracy memory events for VMA allocations. */
 #if defined(SNX_TRACY)
 void vk_mem_track(VmaAllocation a);
@@ -656,6 +672,7 @@ typedef struct Surf {
        each brick_bytes of the guest's layout in one range, x first, then y, then z. 0 bricks for every other image */
     u32 bricks, brick_bytes;
     VkExtent3D grain;
+    u8 sparse; /* textures: the image has sparse residency, memory bound only where it is mapped (memory.c) */
     /* depth targets: undefined but for draws and clears predicated on the GPU, which may not have run, so they count
        as no draw (render.c zt_written) */
     int pred_undefined;

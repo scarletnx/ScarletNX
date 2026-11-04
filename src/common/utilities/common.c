@@ -1904,20 +1904,26 @@ static wchar_t* child_environment(const char* home) {
     return out;
 }
 #endif
-/* tick(data) once a second has gone by since the last one */
+/* tick(data) once a second has gone by since the last one: a deadline's run has no tick, and keeps the clock anyway */
 static void tick_due(double* ticked, void (*tick)(void*), void* data) {
-    if (snx_seconds() - *ticked < 1) return;
+    if (!tick || snx_seconds() - *ticked < 1) return;
     *ticked = snx_seconds();
     tick(data);
 }
 int snx_run(const char* const* argv, const char* cwd, const char* home, char** output) {
-    return snx_run_ticking(argv, cwd, home, output, NULL, NULL);
+    return snx_run_ticking(argv, cwd, home, output, NULL, NULL, 0, NULL);
+}
+int snx_run_timed(const char* const* argv, const char* cwd, const char* home, char** output, int timeout_ms,
+                  int* timed_out) {
+    return snx_run_ticking(argv, cwd, home, output, NULL, NULL, timeout_ms, timed_out);
 }
 int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, char** output, void (*tick)(void*),
-                    void* data) {
+                    void* data, int timeout_ms, int* timed_out) {
     char buf[8192];
     size_t used = 0;
     double ticked = snx_seconds();
+    double deadline = timeout_ms > 0 ? ticked + (double)timeout_ms / 1000.0 : 0;
+    if (timed_out) *timed_out = 0;
 #ifdef _WIN32
     PROCESS_INFORMATION pi;
     HANDLE rd = NULL, wr = NULL, input = INVALID_HANDLE_VALUE, handles[2];
@@ -1930,7 +1936,7 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
         free(cmd);
         free(dir);
         free(env);
-        int result = snx_run_ticking(argv, cwd, home, &captured, tick, data);
+        int result = snx_run_ticking(argv, cwd, home, &captured, tick, data, timeout_ms, timed_out);
         if (captured) {
             fputs(captured, stdout);
             free(captured);
@@ -2001,8 +2007,9 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
     if (output) {
         for (;;) {
             DWORD ready = 0;
-            if (tick) { /* a read waits only for what is there, so the tick keeps its second */
+            if (tick || deadline) { /* a read waits only for what is there, so the tick and deadline are kept */
                 tick_due(&ticked, tick, data);
+                if (deadline && snx_seconds() >= deadline) break;
                 if (!PeekNamedPipe(rd, NULL, 0, NULL, &ready, NULL)) break; /* every writer gone */
                 if (!ready) {
                     Sleep(50);
@@ -2014,11 +2021,19 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
         }
         CloseHandle(rd);
     }
+    {
+        DWORD wait = deadline ? (deadline - snx_seconds() > 0 ? (DWORD)((deadline - snx_seconds()) * 1000) + 1 : 0)
+                              : INFINITE;
+        if (WaitForSingleObject(pi.hProcess, wait) == WAIT_TIMEOUT) {
+            TerminateProcess(pi.hProcess, 124);
+            if (timed_out) *timed_out = 1;
+        }
+    }
     WaitForSingleObject(pi.hProcess, INFINITE);
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    return (int)code;
+    return timed_out && *timed_out ? 124 : (int)code;
 #else
     int fds[2] = {-1, -1}, status;
     pid_t waited;
@@ -2050,14 +2065,24 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
     }
     if (output) {
         for (;;) {
-            if (tick) { /* a read waits only for what is there, so the tick keeps its second */
+            if (tick || deadline) { /* a read waits only for what is there, so the tick and deadline are kept */
                 struct pollfd ready;
                 int ms = (int)((ticked + 1 - snx_seconds()) * 1000);
+                if (deadline) {
+                    double left = deadline - snx_seconds();
+                    int left_ms = left > 0 ? (int)(left * 1000) + 1 : 0;
+                    if (ms < 0 || left_ms < ms) ms = left_ms;
+                }
                 ready.fd = fds[0];
                 ready.events = POLLIN;
                 ready.revents = 0;
                 int any = poll(&ready, 1, ms > 0 ? ms : 0);
                 tick_due(&ticked, tick, data);
+                if (deadline && snx_seconds() >= deadline) {
+                    kill(pid, SIGKILL);
+                    if (timed_out) *timed_out = 1;
+                    break;
+                }
                 if (!any || (any < 0 && errno == EINTR)) continue;
             }
             got = read(fds[0], buf, sizeof(buf));
@@ -2069,13 +2094,85 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
         close(fds[0]);
     }
     for (;;) {
-        waited = waitpid(pid, &status, tick && !output ? WNOHANG : 0);
+        waited = waitpid(pid, &status, deadline || (tick && !output) ? WNOHANG : 0);
         if (waited < 0 && errno == EINTR) continue;
         if (waited) break;
+        if (deadline && snx_seconds() >= deadline) {
+            kill(pid, SIGKILL);
+            if (timed_out) *timed_out = 1;
+            break;
+        }
         poll(NULL, 0, 50); /* no output to wait on: the child's end is looked for, the tick kept */
         tick_due(&ticked, tick, data);
     }
+    if (timed_out && *timed_out) {
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {} /* the killed child's */
+        return 124;
+    }
     return waited < 0 ? 1 : WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+#endif
+}
+int snx_run_detached(const char* const* argv, const char* cwd, const char* home, const char* log_path, long* pid) {
+#ifdef _WIN32
+    wchar_t *cmd, *dir, *env, *log;
+    SECURITY_ATTRIBUTES sa;
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    HANDLE file, nul;
+    int ok;
+    cmd = command_line(argv);
+    dir = cwd ? wide(cwd) : NULL;
+    env = home ? child_environment(home) : NULL;
+    log = log_path ? wide(log_path) : NULL;
+    memset(&sa, 0, sizeof sa);
+    sa.nLength = sizeof sa;
+    sa.bInheritHandle = TRUE;
+    file = log ? CreateFileW(log, GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL)
+               : INVALID_HANDLE_VALUE;
+    nul = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = nul;
+    si.hStdOutput = file;
+    si.hStdError = file;
+    ok = cmd && log && file != INVALID_HANDLE_VALUE && nul != INVALID_HANDLE_VALUE &&
+         CreateProcessW(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, env, dir, &si, &pi);
+    free(cmd);
+    free(dir);
+    free(env);
+    free(log);
+    if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+    if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+    if (!ok) return 1;
+    if (pid) *pid = (long)pi.dwProcessId;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return 0;
+#else
+    int out = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    pid_t child;
+    if (out < 0) return 1;
+    child = fork();
+    if (!child) {
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) {
+            dup2(devnull, 0);
+            close(devnull);
+        }
+        dup2(out, 1);
+        dup2(out, 2);
+        if (out > 2) close(out);
+        if (cwd && chdir(cwd)) _exit(126);
+        if (home && (setenv("HOME", home, 1) || setenv("USERPROFILE", home, 1) || unsetenv("XDG_CONFIG_HOME")))
+            _exit(126);
+        execvp(argv[0], (char* const*)argv);
+        _exit(127);
+    }
+    close(out);
+    if (child < 0) return 1;
+    if (pid) *pid = (long)child;
+    return 0;
 #endif
 }
 /* a control.nacp's titles, one a language: its name (0x200 bytes), then its publisher. A NACP keeps 16 of them at its

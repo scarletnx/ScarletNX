@@ -3,7 +3,7 @@
 #include "nx/loader/codegen_view.h"
 #include <stdlib.h>
 int snx_nx_codegen_analyze(SnxCodegen* codegen, const SnxProgram* program, const SnxU64* hints, size_t hint_count,
-                           int quiet, SnxU64 features) {
+                           int quiet) {
     SnxCodeImage* views;
     size_t i;
     int result;

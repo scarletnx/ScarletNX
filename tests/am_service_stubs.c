@@ -90,17 +90,6 @@ void acc_playing(u64 uid[2], char* nickname, size_t size) {
     if (size) snprintf(nickname, size, "%s", "Nadia");
 }
 
-/* the kernel's session handles: no handle table in a test, so a fixed one stands in (ISelfController 2000, the
-   graphics system session a Switch 2 title's gsv boot asks for) */
-u32 session_new(SvcObj* obj) {
-    static u32 next = 0x1000;
-    (void)obj;
-    return next++;
-}
-void out_move_h(IpcCtx* c, u32 h) {
-    (void)c;
-    (void)h;
-}
 /* nvdrv's own interface, which the graphics system session's 1402 hands out (am.c): no NVIDIA devices in a test */
 SvcObj* nvdrv_session(void) { return NULL; }
 /* the host's threads and syncpoints, which the Switch 2 syncpoint session's poller waits on: neither exists in a

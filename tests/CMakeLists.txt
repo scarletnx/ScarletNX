@@ -2179,7 +2179,8 @@ add_test(NAME astc_decode COMMAND snx-test-astc)
 # console's part list and layout, every part's zlib stream, its textures decoded by the CPU references against what
 # they were drawn from, its shapes' attributes and triangles, each file no bigger than the console's
 add_executable(snx-test-mii-model mii_model.c support/astc.c support/bcn.c
-               "${PROJECT_SOURCE_DIR}/src/common/utilities/mii_db.c")
+               "${PROJECT_SOURCE_DIR}/src/common/utilities/mii_db.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c")
 snx_test_target(snx-test-mii-model 99)
 target_include_directories(snx-test-mii-model PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-mii-model PRIVATE snx_libdeflate) # mii_model.c deflates the parts, the test inflates

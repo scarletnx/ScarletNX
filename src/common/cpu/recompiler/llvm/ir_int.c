@@ -754,8 +754,6 @@ void snx_ir_int(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
         case SNX_A64_OP_AUTIB:
         case SNX_A64_OP_AUTDA:
         case SNX_A64_OP_AUTDB:
-        case SNX_A64_OP_XPACI:
-        case SNX_A64_OP_XPACD:
         case SNX_A64_OP_PACIAZ:
         case SNX_A64_OP_PACIASP:
         case SNX_A64_OP_PACIBZ:
@@ -767,8 +765,7 @@ void snx_ir_int(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
         case SNX_A64_OP_PACIA1716:
         case SNX_A64_OP_PACIB1716:
         case SNX_A64_OP_AUTIA1716:
-        case SNX_A64_OP_AUTIB1716:
-        case SNX_A64_OP_XPACLRI: break;
+        case SNX_A64_OP_AUTIB1716: break;
         case SNX_A64_OP_CLREX: ir_cpu_store(ir, ir_i32(ir, 0), ir_off_excl_on()); break;
         case SNX_A64_OP_DSB_DMB: barrier(ir, (unsigned)a->types); break;
         case SNX_A64_OP_ISB: ir_fence(ir); break;

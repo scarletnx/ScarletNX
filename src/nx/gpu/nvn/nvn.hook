@@ -347,10 +347,6 @@ hook nvnQueuePresentTexture(NVNqueue* q, NVNwindow* w, i32 index)
 hook nvnQueueSubmitCommands(NVNqueue* q, i32 n, const NVNcommandHandle* handles)
 hook nvnQueueWaitSync(NVNqueue* q, const NVNsync* sync) -> bool
 # the Ounce's multi-queue and ray-tracing memory (API 231+): primary queue is stored, the rest are no-ops for now
-hook nvnQueueBuilderSetPrimaryQueue(NVNqueueBuilder* b, NVNqueue* primary)
-hook nvnQueueBuilderGetRayTracingMemorySize(const NVNqueueBuilder* b) -> u64
-hook nvnQueueBuilderSetRayTracingMemorySize(NVNqueueBuilder* b, u64 size)
-hook nvnQueueGetTotalRayTracingMemoryUsed(NVNqueue* q) -> u64
 
 family window
 hook nvnWindowBuilderGetDevice(const NVNwindowBuilder* b) -> NVNdevice*

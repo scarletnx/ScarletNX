@@ -90,7 +90,6 @@ void svc_core_init(void) {
     svc_register("ldr:ro", new_ldr);
     svc_register("ro:1", new_ro1);
     nn_audio_detail_IAudioRendererManager_register(new_audren);
-    nn_audio_detail_IAudioUserSession_register(new_audren2); /* aud:u, whose manager is the Switch 2 SDK's */
     nn_audio_detail_IAudioOutManager_register(new_audout);
     nn_audio_detail_INativeAudioManager_register(new_aud);
     nn_codec_detail_IHardwareOpusDecoderManager_register(new_hwopus);

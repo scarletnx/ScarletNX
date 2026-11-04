@@ -16,9 +16,6 @@ family queue
 hook nvnQueueBuilderSetPrimaryQueue(NVNqueueBuilder* b, NVNqueue* q)
 
 family command_buffer
-hook nvnCommandBufferSetRecordingMode(NVNcommandBuffer* cb, i32 mode)
-hook nvnCommandBufferSetGeometryProcessingMode(NVNcommandBuffer* cb, i32 mode)
-hook nvnCommandBufferSetComputeOverlapMode(NVNcommandBuffer* cb, i32 mode)
 
 family device
 hook nvnDeviceGetFlags(const NVNdevice* d) -> u32
@@ -32,9 +29,6 @@ family program_builder
 hook nvnProgramBuilderGetRayTracingModuleCount(const NVNprogramBuilder* b) -> i32
 hook nvnProgramBuilderGetRayTracingModuleData(const NVNprogramBuilder* b, void* data) -> usize
 
-hook nvnCommandBufferBindShadingRateImage(NVNcommandBuffer* cb, NVNtexture* t, u32 level)
-hook nvnCommandBufferSetShadingRatePaletteMode(NVNcommandBuffer* cb, i32 mode)
-hook nvnCommandBufferShadingRateImagePalette(NVNcommandBuffer* cb, i32 first, i32 n, const u32* palette)
 hook nvnCommandBufferEnableExclusiveScissor(NVNcommandBuffer* cb, i32 index)
 hook nvnCommandBufferSetExclusiveScissor(NVNcommandBuffer* cb, i32 index, i32 x, i32 y, i32 w, i32 h)
 hook nvnCommandBufferSetExclusiveScissors(NVNcommandBuffer* cb, i32 first, i32 n, const NVNrectangle* rects)
@@ -46,9 +40,3 @@ hook nvnCommandBufferSetGraphicsWorkloadPriority(NVNcommandBuffer* cb, i32 prior
 hook nvnCommandBufferSetComputeWorkloadPriority(NVNcommandBuffer* cb, i32 priority)
 hook nvnCommandBufferSetComputeEnable(NVNcommandBuffer* cb, i32 enable)
 hook nvnCommandBufferSetCopyEnable(NVNcommandBuffer* cb, i32 enable)
-hook nvnCommandBufferPushDebugGroupGraphics(NVNcommandBuffer* cb, const char* label)
-hook nvnCommandBufferPushDebugGroupCompute(NVNcommandBuffer* cb, const char* label)
-hook nvnCommandBufferPopDebugGroupGraphics(NVNcommandBuffer* cb)
-hook nvnCommandBufferPopDebugGroupCompute(NVNcommandBuffer* cb)
-hook nvnCommandBufferInsertDebugMarkerGraphics(NVNcommandBuffer* cb, const char* label)
-hook nvnCommandBufferInsertDebugMarkerCompute(NVNcommandBuffer* cb, const char* label)

@@ -103,6 +103,21 @@ static void setup_program(SnxProgram* program, SnxModuleImage* module, unsigned 
     program->npdm.prio = 44;
     program->npdm.core = 2;
 }
+/* a program whose NPDM carries the extended ACID, so the codegen decodes it as a Switch 2 program's (the Switch 2
+   CPU features, without which PACIBSP and RETAB are UNDEF) */
+static void setup_switch2_program(SnxProgram* program, SnxModuleImage* module, unsigned char* image, size_t size) {
+    static unsigned char npdm[0x500];
+    setup_program(program, module, image, size);
+    memset(npdm, 0, sizeof npdm);
+    memcpy(npdm, "META", 4);
+    put32(npdm + 0x70, 4, 0); /* flags */
+    put32(npdm + 0x78, 4, 0x100); /* the ACID's offset */
+    put32(npdm + 0x7c, 4, 0x400); /* its size */
+    memcpy(npdm + 0x100 + 0x300, "ACID", 4);
+    program->npdm_data = npdm;
+    program->npdm_size = sizeof npdm;
+    program->npdm.is_switch2 = 1;
+}
 
 static void analysis_test(void) {
     static const SnxU32 words[] = {0xAA1E03F3UL, 0x91000400UL, 0x9400000AUL, 0xF1002C1FUL, 0x540000A1UL,
@@ -127,7 +142,7 @@ static void analysis_test(void) {
     symbol = 20;
     module.functions = &symbol;
     module.function_count = 1;
-    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze FDE and BL target");
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze FDE and BL target");
     check(codegen.function_count == 2, "overlapping FDE discarded, BL function discovered");
     function = snx_codegen_function(&codegen, SNX_CODE_BASE);
     check(function && function->addresses == NULL && function->count == 11, "FDE uses a compact address range");
@@ -140,7 +155,7 @@ static void analysis_test(void) {
     check(snx_codegen_function(&codegen, SNX_CODE_BASE + 48) != NULL, "recursive BL target exists");
     snx_codegen_free(&codegen);
     interior = SNX_CODE_BASE + 20;
-    check(!snx_nx_codegen_analyze(&codegen, &program, &interior, 1, 1, 0), "analyze explicit interior hint");
+    check(!snx_nx_codegen_analyze(&codegen, &program, &interior, 1, 1), "analyze explicit interior hint");
     function = snx_codegen_function(&codegen, SNX_CODE_BASE);
     check(function && has_leader(function, interior), "execution hint adds interior dispatch entry");
     snx_codegen_free(&codegen);
@@ -171,7 +186,7 @@ static void address_taken_test(void) {
         range.size = 16;
         module.fde = with_fde ? &range : NULL;
         module.fde_count = with_fde;
-        check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze address-taken callbacks");
+        check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze address-taken callbacks");
         check(snx_codegen_function(&codegen, SNX_CODE_BASE + 32) != NULL, "ADR callback discovered");
         check(snx_codegen_function(&codegen, SNX_CODE_BASE + 64) != NULL, "ADRP/ADD callback discovered");
         function = snx_codegen_function(&codegen, SNX_CODE_BASE);
@@ -195,7 +210,7 @@ static void address_taken_shifted_test(void) {
     put32(image, 0x1000, 0xD65F03C0UL); /* the callback */
     setup_program(&program, &module, image, sizeof(image));
     module.size = 0x2000;
-    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a shifted ADD");
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze a shifted ADD");
     check(snx_codegen_function(&codegen, SNX_CODE_BASE + 0x1000) != NULL, "ADRP/ADD LSL #12 callback discovered");
     snx_codegen_free(&codegen);
 }
@@ -216,7 +231,7 @@ static void large_range_test(void) {
     range.size = size;
     module.fde = &range;
     module.fde_count = 1;
-    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a large FDE");
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze a large FDE");
     check(codegen.function_count == 1 && codegen.functions[0].addresses == NULL &&
               codegen.functions[0].count == size / 4 && codegen.functions[0].leader_count == 1,
           "large FDE stays a range, without one address allocation per instruction");
@@ -743,7 +758,7 @@ static void poll_test(void) {
     range.size = sizeof(image);
     module.fde = &range;
     module.fde_count = 1;
-    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze the poll loop");
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze the poll loop");
     function = snx_codegen_function(&codegen, SNX_CODE_BASE);
     check(function != NULL, "the poll loop is one function");
     if (function && !llvm_steps_begin(&steps, 1, 0, error, sizeof(error))) {
@@ -784,12 +799,12 @@ static void cpu_extensions_test(void) {
             return;
         }
         for (size_t i = 0; i < sizeof words / sizeof words[0]; ++i)
-            llvm_steps_add(&steps, words[i], 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
-        size_t xpaci = llvm_steps_add(&steps, 0xdac143e3u, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
-        size_t xpacd = llvm_steps_add(&steps, 0xdac147e3u, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
-        size_t xpaclri = llvm_steps_add(&steps, 0xd50320ffu, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
-        size_t casal = llvm_steps_add(&steps, 0x88e1fc62u, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
-        size_t ldaprb = llvm_steps_add(&steps, 0x38bfc061u, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
+            llvm_steps_add(&steps, words[i], 0x1000, SNX_A64_TARGET_SWITCH2);
+        size_t xpaci = llvm_steps_add(&steps, 0xdac143e3u, 0x1000, SNX_A64_TARGET_SWITCH2);
+        size_t xpacd = llvm_steps_add(&steps, 0xdac147e3u, 0x1000, SNX_A64_TARGET_SWITCH2);
+        size_t xpaclri = llvm_steps_add(&steps, 0xd50320ffu, 0x1000, SNX_A64_TARGET_SWITCH2);
+        size_t casal = llvm_steps_add(&steps, 0x88e1fc62u, 0x1000, SNX_A64_TARGET_SWITCH2);
+        size_t ldaprb = llvm_steps_add(&steps, 0x38bfc061u, 0x1000, SNX_A64_TARGET_SWITCH2);
         if (llvm_steps_load(&steps, error, sizeof error)) {
             fprintf(stderr, "%s\n", error);
             check(0, "load PAuth steps");
@@ -861,8 +876,8 @@ static void cpu_extensions_test(void) {
     SnxCodegen codegen;
     put32(image, 0, 0xd503237fu); /* PACIBSP */
     put32(image, 4, 0xd65f0fffu); /* RETAB */
-    setup_program(&program, &module, image, sizeof image);
-    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, SNX_A64_TARGET_SWITCH_EXTENDED),
+    setup_switch2_program(&program, &module, image, sizeof image);
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1),
           "discover PAuth function");
     const SnxFunction* function = snx_codegen_function(&codegen, SNX_CODE_BASE);
     check(function && function->count == 2, "PAuth return terminates discovery");
@@ -930,7 +945,7 @@ static void clean_test(void) {
     range.size = sizeof(image);
     module.fde = &range;
     module.fde_count = 1;
-    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze the counting loop");
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze the counting loop");
     function = snx_codegen_function(&codegen, SNX_CODE_BASE);
     check(function != NULL && function->leader_count > 1, "the counting loop is one function, entered by dispatch");
     if (function && !llvm_steps_begin(&steps, 1, 0, error, sizeof(error))) {

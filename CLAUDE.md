@@ -259,11 +259,9 @@ flourishes. This rule does not apply to code comments. The Claude files follow A
   before the next check reads the tips. CMake registers `gui_sdl_events` only when `NOT APPLE`, so the Mac builds
   `snx-test-gui-sdl` and runs it in no test. Run it by hand (`snx-build`, "The screen tests"). Then look at the frame
   that the check failed on.
-  A previous session matched Maxwell tables against the wrong bytes. It recorded "Maxwell SASS" as a fact, and that
-  was wrong.
-
-  Before you trust a match of an ISA, find the end of a program in the bytes. On SM86, EXIT is `0x794d`, and a BRA
-  to itself comes after it. `docs/OUNCE.md` has the facts of the Ounce that the captures prove.
+- A previous session matched Maxwell tables against the wrong bytes, and it recorded "Maxwell SASS" as a fact. To
+  trust a match of an ISA, find the end of a program in the bytes. On SM86, EXIT is `0x794d`, and a BRA to itself
+  comes after it. `docs/OUNCE.md` has the facts of the Ounce that the captures prove.
 - `g_frames` counts presents, not frames with content. A hash that changes does not show that a frame has content.
   Look at the count of draws and skipped draws in the log, or take a screenshot.
 - An Ounce game calls about 170 NVN functions that the Switch does not have. `tools/nvn_missing.py work/Game`

@@ -2,6 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* Exercise the production memory SVCs and block list without game files. The POSIX backing is sparse, with
    injectable commit failures. Thread/handle/GPU services are stubs, not the code under test. */
+#define GIB (1ull << 30)
+#define SWITCH2_FEATURES 1 /* the NPDM extended ACID, which main.c reads into g_guest_features */
 #include "nx/memory/own.h"
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/hle/hle.h"
@@ -242,7 +244,9 @@ void kobj_unref(KObj* o) { (void)o; }
 
 static u64 info(u32 id) {
     u64 out = ~0ull;
-    CHECK(svc_get_info(id, H_CUR_PROC, 0, &out) == 0);
+    u32 rc = svc_get_info(id, H_CUR_PROC, 0, &out);
+    if (getenv("MEMDBG")) fprintf(stderr, "info(%u) rc %x out %llx\n", id, rc, (unsigned long long)out);
+    CHECK(rc == 0);
     return out;
 }
 static u32 state(u64 a) {
@@ -308,21 +312,24 @@ static void test_heap(void) {
 static void test_large_heap(void) {
     MemLayout saved = g_layout;
     base_process();
-    g_settings.memory_gb = 12;
-    mem_layout_large_heap();
-    CHECK(g_layout.heap_size == 12ull << 30);
-    CHECK(g_layout.stack == saved.stack + (4ull << 30));
-    CHECK(g_layout.kern == saved.kern + (4ull << 30));
-    CHECK(mem_total() == 10ull << 30);
-    CHECK(info(5) == 12ull << 30 && info(6) == 10ull << 30);
+    mem_layout_switch2();
+    CHECK(g_layout.heap_size == 12 * GIB);
+    CHECK(g_layout.stack == g_layout.heap + g_layout.heap_size);
+    CHECK(g_layout.stack_size == 2 * GIB);
+    CHECK(g_layout.kern == g_layout.stack + g_layout.stack_size);
+    g_guest_features = SWITCH2_FEATURES;
+    CHECK(mem_total() == 9809 * MIB);
+    CHECK(info(5) == 12 * GIB && info(6) == 9809 * MIB);
     CHECK(svc_set_heap_size(8500 * MIB) == 0);
     CHECK(g_heap_size == 8500 * MIB && state(HEAP_BASE + 8499 * MIB) == MS_NORMAL);
     CHECK(svc_set_heap_size(0) == 0);
+    g_guest_features = 0;
     CHECK(svc_set_heap_size(12ull << 30) == R_BADSIZE);
-    /* an Ounce game gets the same budget with memory_gb at its default */
+    /* an Ounce game gets the same budget, with memory_gb at its default and no Switch 2 CPU flag of its own: it runs
+       on the same 12 GiB board, and the flag is the NPDM's CPU answer, not the board's */
     g_settings.memory_gb = 0;
     g_ounce = 1;
-    CHECK(mem_total() == 10ull << 30 && info(5) == 12ull << 30);
+    CHECK(mem_total() == 9809 * MIB && info(5) == 12 * GIB);
     CHECK(svc_set_heap_size(8500 * MIB) == 0);
     CHECK(svc_set_heap_size(0) == 0);
     g_ounce = 0;

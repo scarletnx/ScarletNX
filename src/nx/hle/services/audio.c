@@ -409,9 +409,9 @@ static int nn_audio_detail_INativeAudioManager_GetAudioOutManager(SvcObj* self, 
     *manager = new_audout();
     R_SUCCEED();
 }
-static int nn_audio_detail_INativeAudioManager_GetAudioRendererManager(SvcObj* self, SvcObj** manager) {
-    (void)self;
-    *manager = new_audren();
+static int nn_audio_detail_INativeAudioManager_GetAudioRendererManager(SvcObj* self, u32 arg, SvcObj** renderer) {
+    (void)self, (void)arg;
+    *renderer = new_audren2();
     R_SUCCEED();
 }
 SvcObj* new_aud(void) { return nn_audio_detail_INativeAudioManager_new(); }
@@ -760,12 +760,6 @@ SvcObj* new_audren2(void) { return nn_audio_detail_IAudioRendererManager2_new();
 /* ------------------------------------------------------------ aud:u's Switch 2 session (audio.swipc) */
 /* 2: the renderer manager a Switch 2 title reaches the audio stack through (IAudioRendererManager2, above). The
    argument is the session's own, which this SDK sends and nothing reads */
-static int nn_audio_detail_IAudioUserSession_GetAudioRendererManager(SvcObj* self, u32 arg, SvcObj** renderer) {
-    (void)self, (void)arg;
-    *renderer = new_audren2();
-    R_SUCCEED();
-}
-
 /* ============================================================ the clock */
 void audio_init(void) {
     g_hle.audio.ev = owned_event("IAudioRenderer");

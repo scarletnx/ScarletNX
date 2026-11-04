@@ -1550,306 +1550,6 @@ void nvn_ProgramFinalize(CPU* c, u64 p) {
     (void)c;
     NVN_OBJ(NvnProgram, p)->magic = 0;
 }
-/* ---- the Ounce's program builder (API 231+) ---- */
-#define PB(b) NVN_OBJ(NvnProgramBuilder, b)
-void nvn_ProgramBuilderSetDefaults(CPU* c, u64 b) {
-    (void)c;
-    memset(PB(b), 0, sizeof(NvnProgramBuilder));
-    PB(b)->max_callable = 2; /* the driver's defaults ({2,2} at 0x58) */
-    PB(b)->max_trace = 2;
-}
-void nvn_ProgramBuilderSetDevice(CPU* c, u64 b, u64 d) {
-    (void)c;
-    PB(b)->device = d;
-}
-u64 nvn_ProgramBuilderGetDevice(CPU* c, u64 b) {
-    (void)c;
-    return PB(b)->device;
-}
-void nvn_ProgramBuilderSetSampleShading(CPU* c, u64 b, i32 mode) {
-    (void)c;
-    PB(b)->sample_shading = (u32)mode;
-}
-i32 nvn_ProgramBuilderGetSampleShading(CPU* c, u64 b) {
-    (void)c;
-    return (i32)PB(b)->sample_shading;
-}
-void nvn_ProgramBuilderSetShaders(CPU* c, u64 b, i32 n, u64 sd) {
-    (void)c;
-    PB(b)->shader_count = (u32)n;
-    PB(b)->shaders = sd;
-}
-u64 nvn_ProgramBuilderGetShaders(CPU* c, u64 b) {
-    (void)c;
-    return PB(b)->shaders;
-}
-i32 nvn_ProgramBuilderGetShaderCount(CPU* c, u64 b) {
-    (void)c;
-    return (i32)PB(b)->shader_count;
-}
-void nvn_ProgramBuilderSetDebugDataHashes(CPU* c, u64 b, i32 n, u64 hashes) {
-    (void)c, (void)b, (void)n, (void)hashes;
-}
-u64 nvn_ProgramBuilderGetDebugDataHashes(CPU* c, u64 b) {
-    (void)c, (void)b;
-    return 0;
-}
-void nvn_ProgramBuilderSetRayTracingModules(CPU* c, u64 b, i32 n, u64 modules) {
-    (void)c;
-    PB(b)->rt_modules = (u32)n;
-    PB(b)->rt_module_ptr = modules;
-}
-void nvn_ProgramBuilderSetSubroutineLinkage(CPU* c, u64 b, i32 n, u64 maps) {
-    (void)c, (void)b, (void)n, (void)maps;
-}
-u64 nvn_ProgramBuilderGetSubroutineLinkage(CPU* c, u64 b) {
-    (void)c, (void)b;
-    return 0;
-}
-i32 nvn_ProgramBuilderGetSubroutineLinkageCount(CPU* c, u64 b) {
-    (void)c, (void)b;
-    return 0;
-}
-void nvn_ProgramBuilderSetMaxCallableRecursionDepth(CPU* c, u64 b, i32 depth) {
-    (void)c;
-    PB(b)->max_callable = (u32)depth;
-}
-i32 nvn_ProgramBuilderGetMaxCallableRecursionDepth(CPU* c, u64 b) {
-    (void)c;
-    return (i32)PB(b)->max_callable;
-}
-void nvn_ProgramBuilderSetMaxTraceRecursionDepth(CPU* c, u64 b, i32 depth) {
-    (void)c;
-    PB(b)->max_trace = (u32)depth;
-}
-i32 nvn_ProgramBuilderGetMaxTraceRecursionDepth(CPU* c, u64 b) {
-    (void)c;
-    return (i32)PB(b)->max_trace;
-}
-void nvn_ProgramBuilderSetProgramRayTracingFlags(CPU* c, u64 b, i32 flags) {
-    (void)c;
-    PB(b)->rt_flags = (u32)flags;
-}
-i32 nvn_ProgramBuilderGetProgramRayTracingFlags(CPU* c, u64 b) {
-    (void)c;
-    return (i32)PB(b)->rt_flags;
-}
-/* An Ounce control section: version 0xc9 at 0x04 (where the older ones have 1), in formats 7 and 11 so far, which
-   share their layout */
-static int ounce_section(u64 control) {
-    u32 format = gr32(control + 8);
-    if (gr32(control + 4) != 0xc9) return 0;
-    if (format != 7 && format != 11) LOG_LIMIT(1, "nvn: an Ounce control section of format %u\n", format);
-    return 1;
-}
-/* an Ounce program's NVN stage (format 11), from word 0 of the header that starts a graphics program at its GPU
-   address data: compute when there is none */
-static u32 stage11(u64 data) {
-    static const u8 nvn_of[] = {NVN_SHADER_STAGE_VERTEX, NVN_SHADER_STAGE_TESS_CONTROL, NVN_SHADER_STAGE_TESS_EVALUATION,
-                                NVN_SHADER_STAGE_GEOMETRY, NVN_SHADER_STAGE_FRAGMENT}; /* by ST_VS to ST_FS */
-    u8 w[4];
-    gmem_read_code(data, w, sizeof w);
-    int s = sm86_sph_stage(snx_ld_le32(w));
-    return s < 0 ? NVN_SHADER_STAGE_COMPUTE : nvn_of[s];
-}
-/* A stage's control section, as the game's driver reads it (its accessor for the newest format, which one game's
-   format 8 sections share): 0x00 the magic, 0x04 1, 0x08 the format, 0x700 the constants' offset in the code area,
-   0x704 the code area's bytes, 0x708 the program's offset (past the driver's 0x30-byte wrapper in a graphics stage),
-   0x714 the stage, for a vertex program 0x748/0x74c and 0x754/0x758 VertexA's and VertexB's offsets and sizes,
-   both nonzero when it is dual, and for a compute program 0x6fc its constants' bytes, 0x748-0x750 its workgroup size
-   and 0x754 its shared memory. data: the code area's GPU address. 0 when the section isn't one */
-/* NVN2's control section, the Switch 2 SDK's, which nxnative documents and Mario Kart World and Pokémon Pokopia's
-   dumps show: 0x04 is the GPU code version (0xc9, not 1), 0x38 the instructions' length, 0x40 that rounded to 0x100,
-   0x44 the code area's with the c1 segment of constants between the last two, 0x4c the register count and 0x58 a
-   compute program's thread group. The code area starts with the shader program header (version 4, 0x80 bytes) and
-   the stage is the header's own, so no field of the section carries it: it is read through the code area, which is
-   mapped while the game holds the program it just uploaded */
-static int nvn2_stage_of(NvnProgram* o, u64 data, u64 control) {
-    u64 code = 0;
-    u32 rounded = gr32(control + 0x40), area = gr32(control + 0x44), regs = gr32(control + 0x4c);
-    int stage;
-    /* the guest address of the code area, and that its first bytes are readable: one walk of the GPU page table,
-       as the renderer's own access to a program's code is */
-    if (!data || !gmmu_run(data, 4, &code)) {
-        LOG_LIMIT(8, "nvn: an NVN2 control section at %llx names no code area (%llx)\n", (unsigned long long)control,
-                  (unsigned long long)data);
-        return 0;
-    }
-    if (gr32(control + 0x58)) { /* a compute stage: its thread group is 0x58-0x60, and its code area holds code
-                                    alone, where a graphics stage's starts with the program header */
-        stage = NVN_SHADER_STAGE_COMPUTE;
-        memset(&o->st[stage], 0, sizeof o->st[stage]);
-        o->st[stage].data = data;
-        o->st[stage].off = 0;
-        o->st[stage].cb = (u16)(rounded >> 8);
-        o->st[stage].cb_size = (u16)((area - rounded) >> 8);
-        o->block[0] = (u16)gr32(control + 0x58);
-        o->block[1] = (u16)gr32(control + 0x5c);
-        o->block[2] = (u16)gr32(control + 0x60);
-        if (!o->block[0] || !o->block[1] || !o->block[2]) {
-            LOG_LIMIT(8, "nvn: an NVN2 compute stage at %llx has no thread group\n",
-                      (unsigned long long)control);
-            return 0;
-        }
-        return 1;
-    }
-    stage = shipped_sph_stage((const u8*)GP(code));
-    if (stage < 0 || area < rounded || (rounded & 0xff) || regs >> 8) {
-        LOG_LIMIT(8, "nvn: an NVN2 control section at %llx has no stage the runtime reads (code %llx, area %#x of "
-                     "%#x, %u registers)\n",
-                  (unsigned long long)control, (unsigned long long)data, rounded, area, regs);
-        return 0;
-    }
-    if (stage == SHIPPED_VERTEX_A) stage = ST_VS; /* a VertexA: its VertexB is in the code area after it (ship_dual) */
-    memset(&o->st[stage], 0, sizeof o->st[stage]);
-    o->st[stage].data = data;
-    o->st[stage].off = 0; /* the code area starts with the program header, and the code follows it */
-    o->st[stage].cb = (u16)(rounded >> 8);
-    o->st[stage].cb_size = (u16)((area - rounded) >> 8);
-    return 1;
-}
-static int stage_of(NvnProgram* o, u64 data, u64 control) {
-    u32 magic = gr32(control), one = gr32(control + 4), format = gr32(control + 8), cb = gr32(control + 0x700),
-        size = gr32(control + 0x704), off = gr32(control + 0x708), stage = gr32(control + 0x714);
-    NvnStage* st;
-    /* NVN2's section reads its own fields, and its stage through its code area */
-    if (magic == 0x98761234u && one == 0xc9u) return nvn2_stage_of(o, data, control);
-    /* a graphics stage's program follows the driver's 0x30-byte wrapper; an older SDK's compute program (format 14)
-       starts its code area at 0, with no wrapper (its first words are a scheduling word, 0x001fc000e22007f0): its
-       SetShaders failing, one game's effects system went on to read the program's interface table, which the
-       failure left out, and crashed */
-    if (magic != 0x98761234u || one != 1 || format < 5 || format > 16 || stage > 5 ||
-        (off < 0x30 && stage != NVN_SHADER_STAGE_COMPUTE) || cb < off ||
-        size < cb || (cb & 0xff) || (size & 0xff) || size >> 24 || !data) {
-        LOG_LIMIT(8, "nvn: a shader's control section at %llx isn't one the runtime reads (magic %x, format %u, stage %u, "
-                     "program at %#x, constants %#x of %#x)\n",
-                  (unsigned long long)control, magic, format, stage, off, cb, size);
-        return 0;
-    }
-    if (format != 8 && format != 16) LOG_LIMIT(1, "nvn: shader control sections of format %u\n", format);
-    st = &o->st[stage];
-    st->data = data;
-    st->off = off;
-    st->cb = (u16)(cb >> 8);
-    st->cb_size = (u16)((size - cb) >> 8);
-    /* a compute program's workgroup size, shared memory and constants' bytes: 0x748-0x750, 0x754 and 0x6fc */
-    if (stage == NVN_SHADER_STAGE_COMPUTE) {
-        o->block[0] = (u16)gr32(control + 0x748);
-        o->block[1] = (u16)gr32(control + 0x74c);
-        o->block[2] = (u16)gr32(control + 0x750);
-        o->off_a = gr32(control + 0x754);
-        st->cb_size = (u16)((gr32(control + 0x6fc) + 0xff) >> 8);
-    } else if (stage == NVN_SHADER_STAGE_VERTEX && gr32(control + 0x74c) && gr32(control + 0x758)) {
-        o->off_a = gr32(control + 0x748);
-        st->off = gr32(control + 0x754);
-    }
-    return 1;
-}
-/* ---- transform feedback layouts: the programs whose last stage before rasterization captures, by serial (their
-   128-byte layouts don't fit the program object). Programs that capture are few, and their entries stay */
-int nvn_program_xfb(u64 serial, ShXfb* x) {
-    u32 i;
-    int found = 0;
-    pm_lock(&g_nvn.object.xfb_lock);
-    for (i = g_nvn.object.nxfb; i-- > 0 && !found;)
-        if (g_nvn.object.xfb[i].serial == serial) {
-            *x = g_nvn.object.xfb[i].x;
-            found = 1;
-        }
-    pm_unlock(&g_nvn.object.xfb_lock);
-    return found;
-}
-/* The capture layout a stage's control section gives, as the game's driver reads it into the 3D engine's
-   transform feedback registers: 0x6ec set when it captures; per buffer i, its stream at 0x6e4 + i, its stride
-   (u16) at 0x6dc + 2 i and its groups at 0x6e8 + i, each group j an output location (s8) at 0xdc + 0x80 i + j,
-   its first component at 0x2dc + 0x80 i + j and its component count at 0x4dc + 0x80 i + j. Each component
-   captured is an output attribute word, from the driver's table of locations (the position, the built-ins, the
-   clip distances, then generic n at 0x20 + 4 n). The varying count is the stride's words */
-static void xfb_of(u64 control, u64 serial) {
-    static const u8 word_of[32] = {0x1c, 0xa0, 0xa4, 0xa8, 0xac, 0xba, 0x1b, 0xc0, 0xc4, 0xc8, 0xcc,
-                                   0xd0, 0xd4, 0xd8, 0xdc, 0xe0, 0xe4, 0xb0, 0xb1, 0xb2, 0xb3, 0xb4,
-                                   0xb5, 0xb6, 0xb7, 0xbf, 0x1a, 0x19, 0xe8, 0xff, 0x18, 0xff};
-    const u8* c = GP(control);
-    /* an Ounce control section (version 0xc9) stores transform feedback differently: its 0x6ec byte is not the
-       capture flag, so treat it as not capturing (the old layout's reads would misread garbage) */
-    if (ounce_section(control)) return;
-    if (!c[0x6ec]) return;
-    NvnXfbEntry e = {0};
-    e.serial = serial;
-    for (u32 i = 0; i < 4; i++) {
-        u32 stride = gr16(control + 0x6dc + 2 * (u64)i), groups = c[0x6e8 + i], n = 0;
-        if (c[0x6e4 + i])
-            LOG_LIMIT(1, "nvn: transform feedback into stream %u is captured as stream 0\n", c[0x6e4 + i]);
-        e.x.stride[i] = (u16)stride;
-        e.x.count[i] = (u8)(stride / 4 > 128 ? 128 : stride / 4);
-        for (u32 j = 0; j < groups && j < 0x80; j++) {
-            i32 loc = (i8)c[0xdc + 0x80 * i + j];
-            u32 start = c[0x2dc + 0x80 * i + j], count = c[0x4dc + 0x80 * i + j];
-            u32 word = loc < 0 ? 0xff : loc < 32 ? word_of[loc] : 0x20 + 4 * (u32)(loc - 0x20);
-            for (u32 k = 0; k < count && n < 128; k++)
-                e.x.layout[i][n++] = (u8)(word == 0xff ? 0xff : word + start + k);
-        }
-    }
-    pm_lock(&g_nvn.object.xfb_lock);
-    if (g_nvn.object.nxfb == NVN_XFB_MAX)
-        fatal("nvn: more than %u programs that capture transform feedback, the layouts nvn holds", NVN_XFB_MAX);
-    g_nvn.object.xfb[g_nvn.object.nxfb++] = e;
-    pm_unlock(&g_nvn.object.xfb_lock);
-}
-
-/* the stages' {code, control} pairs, read from the control sections while they are the caller's (a program builder's
-   recorded ones, or the array the game passed) */
-static int set_shaders(u64 p, const NvnShaderSet* st, i32 n) {
-    NvnProgram* o = NVN_OBJ(NvnProgram, p);
-    u64 last = 0; /* the control section of the last stage before rasterization */
-    i32 i, last_rank = -1;
-    if (n < 0 || n > 6) {
-        LOG_LIMIT(8, "nvn: a program is given %d stages\n", n);
-        return 0;
-    }
-    /* guest memory: every byte the game sees */
-    memset(o->st, 0, sizeof o->st);
-    if (g_nvn.loader.api >= 231u << 16) memset(NVN_PROG_C0(p), 0, NVN_C0_RECORD);
-    memset(o->block, 0, sizeof o->block);
-    o->off_a = 0;
-    for (i = 0; i < n; i++) {
-        u32 stage;
-        i32 rank;
-        if (!stage_of(o, st[i].data, st[i].control)) return 0;
-        /* a Switch 2 compute program's c[0] record (NVN_PROG_C0) */
-        if (g_nvn.loader.api >= 231u << 16 && switch2_section(st[i].control) &&
-            stage11(st[i].data) == NVN_SHADER_STAGE_COMPUTE)
-            memcpy(NVN_PROG_C0(p), GP(st[i].control + 0xa8), NVN_C0_RECORD);
-        /* geometry, else tessellation evaluation, else control, else vertex: the driver's order */
-        stage = switch2_section(st[i].control) ? stage11(st[i].data) : gr32(st[i].control + 0x714);
-        rank = stage == NVN_SHADER_STAGE_GEOMETRY          ? 3
-               : stage == NVN_SHADER_STAGE_TESS_EVALUATION ? 2
-               : stage == NVN_SHADER_STAGE_TESS_CONTROL    ? 1
-               : stage == NVN_SHADER_STAGE_VERTEX          ? 0
-                                                            : -1;
-        if (rank > last_rank) {
-            last_rank = rank;
-            last = st[i].control;
-        }
-    }
-    o->serial = nvn_serial();
-    /* the sample shading the game asked for takes effect here, as its driver applies it in SetShaders */
-    o->sample_shading = (u16)((o->sample_shading & 0xff) | (o->sample_shading & 0xff) << 8);
-    if (last) xfb_of(last, o->serial);
-    return 1;
-}
-int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {
-    NvnShaderSet st[6];
-    i32 i;
-    (void)c;
-    if (n < 0 || n > 6) return 0;
-    for (i = 0; i < n; i++) { /* each stage's {code area, control section}, a pointer in a 32-bit game */
-        st[i].data = gr64(sd + sizeof(NVNshaderData) * (u64)i);
-        st[i].control = nvn_gptr(sd + sizeof(NVNshaderData) * (u64)i + 8);
-    }
-    return set_shaders(p, st, n);
-}
-
 /* ============================================================ the program builder */
 #define PB(b) NVN_OBJ(NvnProgramBuilder, b)
 void nvn_ProgramBuilderSetDefaults(CPU* c, u64 b) {
@@ -1966,6 +1666,173 @@ void nvn_ProgramBuilderSetRayTracingModules(CPU* c, u64 b, i32 n, u64 modules) {
     (void)n;
     (void)modules;
 }
+/* A Switch 2 control section: version 0xc9 at 0x04 (where the older ones have 1), in formats 7 and 11 so far, which
+   share their layout */
+static int switch2_section(u64 control) {
+    u32 format = gr32(control + 8);
+    if (gr32(control + 4) != 0xc9) return 0;
+    if (format != 7 && format != 11) LOG_LIMIT(1, "nvn: a Switch 2 control section of format %u\n", format);
+    return 1;
+}
+/* a Switch 2 program's NVN stage (format 11), from word 0 of the header that starts a graphics program at its GPU
+   address data: compute when there is none */
+static u32 stage11(u64 data) {
+    static const u8 nvn_of[] = {NVN_SHADER_STAGE_VERTEX, NVN_SHADER_STAGE_TESS_CONTROL, NVN_SHADER_STAGE_TESS_EVALUATION,
+                                NVN_SHADER_STAGE_GEOMETRY, NVN_SHADER_STAGE_FRAGMENT}; /* by ST_VS to ST_FS */
+    u8 w[4];
+    gmem_read_code(data, w, sizeof w);
+    int s = sm86_sph_stage(snx_ld_le32(w));
+    return s < 0 ? NVN_SHADER_STAGE_COMPUTE : nvn_of[s];
+}
+/* A stage's control section, as the game's driver reads it (its accessor for the newest format, which one game's
+   format 8 sections share): 0x00 the magic, 0x04 1, 0x08 the format, 0x700 the constants' offset in the code area,
+   0x704 the code area's bytes, 0x708 the program's offset (past the driver's 0x30-byte wrapper in a graphics stage),
+   0x714 the stage, for a vertex program 0x748/0x74c and 0x754/0x758 VertexA's and VertexB's offsets and sizes,
+   both nonzero when it is dual, and for a compute program 0x6fc its constants' bytes, 0x748-0x750 its workgroup size
+   and 0x754 its shared memory. data: the code area's GPU address. 0 when the section isn't one */
+static int stage_of(NvnProgram* o, u64 data, u64 control) {
+    u32 magic = gr32(control), one = gr32(control + 4), format = gr32(control + 8), cb = gr32(control + 0x700),
+        size = gr32(control + 0x704), off = gr32(control + 0x708), stage = gr32(control + 0x714);
+    /* NVN2's section reads its own fields, and its stage through its code area */
+    if (magic == 0x98761234u && one == 0xc9u) {
+        if (!data) return 0;
+        NvnStage* st = &o->st[stage11(data)];
+        st->data = data;
+        st->off = 0;
+        st->cb = (u16)(gr32(control + 0x40) >> 8);
+        st->cb_size = (u16)((gr32(control + 0x3c) + 0xff) >> 8);
+        if (st == &o->st[NVN_SHADER_STAGE_COMPUTE]) {
+            o->block[0] = (u16)gr32(control + 0x58);
+            o->block[1] = (u16)gr32(control + 0x5c);
+            o->block[2] = (u16)gr32(control + 0x60);
+        }
+        return 1;
+    }
+    /* a graphics stage's program follows the driver's 0x30-byte wrapper; an older SDK's compute program (format 14)
+       starts its code area at 0, with no wrapper (its first words are a scheduling word, 0x001fc000e22007f0): its
+       SetShaders failing, one game's effects system went on to read the program's interface table, which the
+       failure left out, and crashed */
+    if (magic != 0x98761234u || one != 1 || format < 5 || format > 16 || stage > 5 ||
+        (off < 0x30 && stage != NVN_SHADER_STAGE_COMPUTE) || cb < off ||
+        size < cb || (cb & 0xff) || (size & 0xff) || size >> 24 || !data) {
+        LOG_LIMIT(8, "nvn: a shader's control section at %llx isn't one the runtime reads (magic %x, format %u, stage %u, "
+                     "program at %#x, constants %#x of %#x)\n",
+                  (unsigned long long)control, magic, format, stage, off, cb, size);
+        return 0;
+    }
+    if (format != 8 && format != 16) LOG_LIMIT(1, "nvn: shader control sections of format %u\n", format);
+    {
+        NvnStage* st = &o->st[stage];
+        st->data = data;
+        st->off = off;
+        st->cb = (u16)(cb >> 8);
+        st->cb_size = (u16)((size - cb) >> 8);
+        /* a compute program's workgroup size, shared memory and constants' bytes: 0x748-0x750, 0x754 and 0x6fc */
+        if (stage == NVN_SHADER_STAGE_COMPUTE) {
+            o->block[0] = (u16)gr32(control + 0x748);
+            o->block[1] = (u16)gr32(control + 0x74c);
+            o->block[2] = (u16)gr32(control + 0x750);
+            o->off_a = gr32(control + 0x754);
+            st->cb_size = (u16)((gr32(control + 0x6fc) + 0xff) >> 8);
+        } else if (stage == NVN_SHADER_STAGE_VERTEX && gr32(control + 0x74c) && gr32(control + 0x758)) {
+            o->off_a = gr32(control + 0x748);
+            st->off = gr32(control + 0x754);
+        }
+    }
+    return 1;
+}
+/* ---- transform feedback layouts: the programs whose last stage before rasterization captures, by serial (their
+   128-byte layouts don't fit the program object). Programs that capture are few, and their entries stay */
+int nvn_program_xfb(u64 serial, ShXfb* x) {
+    u32 i;
+    int found = 0;
+    pm_lock(&g_nvn.object.xfb_lock);
+    for (i = g_nvn.object.nxfb; i-- > 0 && !found;)
+        if (g_nvn.object.xfb[i].serial == serial) {
+            *x = g_nvn.object.xfb[i].x;
+            found = 1;
+        }
+    pm_unlock(&g_nvn.object.xfb_lock);
+    return found;
+}
+/* The capture layout a stage's control section gives, as the game's driver reads it into the 3D engine's
+   transform feedback registers: 0x6ec set when it captures; per buffer i, its stream at 0x6e4 + i, its stride
+   (u16) at 0x6dc + 2 i and its groups at 0x6e8 + i, each group j an output location (s8) at 0xdc + 0x80 i + j,
+   its first component at 0x2dc + 0x80 i + j and its component count at 0x4dc + 0x80 i + j. Each component
+   captured is an output attribute word, from the driver's table of locations (the position, the built-ins, the
+   clip distances, then generic n at 0x20 + 4 n). The varying count is the stride's words */
+static void xfb_of(u64 control, u64 serial) {
+    static const u8 word_of[32] = {0x1c, 0xa0, 0xa4, 0xa8, 0xac, 0xba, 0x1b, 0xc0, 0xc4, 0xc8, 0xcc,
+                                   0xd0, 0xd4, 0xd8, 0xdc, 0xe0, 0xe4, 0xb0, 0xb1, 0xb2, 0xb3, 0xb4,
+                                   0xb5, 0xb6, 0xb7, 0xbf, 0x1a, 0x19, 0xe8, 0xff, 0x18, 0xff};
+    const u8* c = GP(control);
+    if (!c[0x6ec]) return;
+    NvnXfbEntry e = {0};
+    e.serial = serial;
+    for (u32 i = 0; i < 4; i++) {
+        u32 stride = gr16(control + 0x6dc + 2 * (u64)i), groups = c[0x6e8 + i], n = 0;
+        if (c[0x6e4 + i])
+            LOG_LIMIT(1, "nvn: transform feedback into stream %u is captured as stream 0\n", c[0x6e4 + i]);
+        e.x.stride[i] = (u16)stride;
+        e.x.count[i] = (u8)(stride / 4 > 128 ? 128 : stride / 4);
+        for (u32 j = 0; j < groups && j < 0x80; j++) {
+            i32 loc = (i8)c[0xdc + 0x80 * i + j];
+            u32 start = c[0x2dc + 0x80 * i + j], count = c[0x4dc + 0x80 * i + j];
+            u32 word = loc < 0 ? 0xff : loc < 32 ? word_of[loc] : 0x20 + 4 * (u32)(loc - 0x20);
+            for (u32 k = 0; k < count && n < 128; k++)
+                e.x.layout[i][n++] = (u8)(word == 0xff ? 0xff : word + start + k);
+        }
+    }
+    pm_lock(&g_nvn.object.xfb_lock);
+    if (g_nvn.object.nxfb == NVN_XFB_MAX)
+        fatal("nvn: more than %u programs that capture transform feedback, the layouts nvn holds", NVN_XFB_MAX);
+    g_nvn.object.xfb[g_nvn.object.nxfb++] = e;
+    pm_unlock(&g_nvn.object.xfb_lock);
+}
+
+/* the stages' {code, control} pairs, read from the control sections while they are the caller's (a program builder's
+   recorded ones, or the array the game passed) */
+static int set_shaders(u64 p, const NvnShaderSet* st, i32 n) {
+    NvnProgram* o = NVN_OBJ(NvnProgram, p);
+    u64 last = 0; /* the control section of the last stage before rasterization */
+    i32 i, last_rank = -1;
+    if (n < 0 || n > 6) {
+        LOG_LIMIT(8, "nvn: a program is given %d stages\n", n);
+        return 0;
+    }
+    /* guest memory: every byte the game sees */
+    memset(o->st, 0, sizeof o->st);
+    if (g_nvn.loader.api >= 231u << 16) memset(NVN_PROG_C0(p), 0, NVN_C0_RECORD);
+    memset(o->block, 0, sizeof o->block);
+    o->off_a = 0;
+    for (i = 0; i < n; i++) {
+        u64 data = st[i].data, control = st[i].control;
+        u32 stage;
+        i32 rank;
+        if (!stage_of(o, data, control)) return 0;
+        /* a Switch 2 compute program's c[0] record (NVN_PROG_C0) */
+        if (g_nvn.loader.api >= 231u << 16 && switch2_section(control) &&
+            stage11(data) == NVN_SHADER_STAGE_COMPUTE)
+            memcpy(NVN_PROG_C0(p), GP(control + 0xa8), NVN_C0_RECORD);
+        /* geometry, else tessellation evaluation, else control, else vertex: the driver's order */
+        stage = switch2_section(control) ? stage11(data) : gr32(control + 0x714);
+        rank = stage == NVN_SHADER_STAGE_GEOMETRY          ? 3
+               : stage == NVN_SHADER_STAGE_TESS_EVALUATION ? 2
+               : stage == NVN_SHADER_STAGE_TESS_CONTROL    ? 1
+               : stage == NVN_SHADER_STAGE_VERTEX          ? 0
+                                                            : -1;
+        if (rank > last_rank) {
+            last_rank = rank;
+            last = st[i].control;
+        }
+    }
+    o->serial = nvn_serial();
+    /* the sample shading the game asked for takes effect here, as its driver applies it in SetShaders */
+    o->sample_shading = (u16)((o->sample_shading & 0xff) | (o->sample_shading & 0xff) << 8);
+    if (last) xfb_of(last, o->serial);
+    return 1;
+}
+
 /* the program the builder describes: its stages and its sample shading, as nvnProgramSetShaders takes them */
 int nvn_ProgramInitializeFromBuilder(CPU* c, u64 p, u64 b) {
     NvnProgramBuilder* o = PB(b);
@@ -2010,6 +1877,17 @@ u64 nvn_ProgramGetShaderGroupHandle(CPU* c, u64 p) {
     return 0;
 }
 
+int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {
+    NvnShaderSet st[6];
+    i32 i;
+    (void)c;
+    if (n < 0 || n > 6) return 0;
+    for (i = 0; i < n; i++) {
+        st[i].data = gr64(sd + 0x18 * (u64)i);
+        st[i].control = nvn_gptr(sd + 0x18 * (u64)i + 8);
+    }
+    return set_shaders(p, st, n);
+}
 /* NVN 55's SetShaders: 0x18 bytes a stage, NVNshaderData and an 8-byte extension, which nxnative doesn't use either */
 int nvn_ProgramSetShadersExt(CPU* c, u64 p, i32 n, u64 sd) {
     NvnShaderSet st[6];
@@ -2022,17 +1900,6 @@ int nvn_ProgramSetShadersExt(CPU* c, u64 p, i32 n, u64 sd) {
     }
     return set_shaders(p, st, n);
 }
-/* The Ounce's program from a builder: its stages from the builder's shader data (NVNshaderData entries, which the
-   builder points to), with the builder's sample shading, as SetShaders takes them */
-int nvn_ProgramInitializeFromBuilder(CPU* c, u64 p, u64 b) {
-    NvnProgram* o = NVN_OBJ(NvnProgram, p);
-    (void)c;
-    memset(o, 0, sizeof *o); /* guest memory: every byte the game sees */
-    o->magic = NVN_MAGIC('P', 'R', 'O', 'G');
-    o->sample_shading = (u16)PB(b)->sample_shading;
-    return set_shaders(p, (i32)PB(b)->shader_count, PB(b)->shaders, sizeof(NVNshaderData));
-}
-
 /* the sample shading of the program's next SetShaders: NVN_SAMPLE_SHADING_* (0 as the program says, 1 every sample, 2
    not every sample), kept in the low byte until SetShaders applies it (the high byte, which the draws read) */
 void nvn_ProgramSetSampleShading(CPU* c, u64 p, i32 mode) {

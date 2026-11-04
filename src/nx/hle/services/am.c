@@ -1001,28 +1001,6 @@ static int nn_am_service_IApplicationProxy_GetDebugFunctions(SvcObj* self, SvcOb
     *functions = nn_am_service_IDebugFunctions_new();
     R_SUCCEED();
 }
-static int nn_am_service_IApplicationProxy_GetGraphicsScalingParametersFunctions(SvcObj* self, SvcObj** functions) {
-    (void)self;
-    *functions = nn_am_service_IGraphicsScalingParametersFunctions_new();
-    R_SUCCEED();
-}
-
-/* ============================================================ IGraphicsScalingParametersFunctions */
-static int nn_am_service_IGraphicsScalingParametersFunctions_GetGraphicsScalingParameters(
-    SvcObj* self, u32* graphics_scale, u32* screen_ratio_numerator, u32* screen_ratio_denominator) {
-    (void)self;
-    /* Eden's prototype policy: lowest SDK scale (10 maps to public scale 0), unit screen ratio */
-    *graphics_scale = 10;
-    *screen_ratio_numerator = 1;
-    *screen_ratio_denominator = 1;
-    R_SUCCEED();
-}
-static int nn_am_service_IGraphicsScalingParametersFunctions_SetGraphicsScaleChangedNotificationEnabled(SvcObj* self,
-                                                                                                         u8 enabled) {
-    (void)self, (void)enabled;
-    R_SUCCEED();
-}
-
 /* ============================================================ ICommonStateGetter */
 static int nn_am_service_ICommonStateGetter_GetEventHandle(SvcObj* self, u32* event) {
     (void)self;
@@ -1069,76 +1047,13 @@ static int nn_am_service_ICommonStateGetter_GetAcquiredSleepLockEvent(SvcObj* se
     *event = ev_handle(g_hle.am.sleep_lock_event);
     R_SUCCEED();
 }
-
-/* ILockAccessor: granted whenever it is free, with an event signaled when it is released (AmLock, services_int.h) */
-static void am_lock_destroy(SvcObj* o) { kobj_unref(kobj_at(((AmLock*)o->data)->event)); }
-static SvcObj* am_lock_new(void) {
-    SvcObj* o = nn_am_service_ILockAccessor_new_data(g_hle.am.lock_objs, g_hle.am.lock_obj_next, "am lock accessors");
-    ((AmLock*)o->data)->event = owned_event("am:lock accessor");
-    /* the lock is free: libnx's TryLock and Lock wait on the event before they ask for it */
-    ev_signal(((AmLock*)o->data)->event);
-    o->destroy = am_lock_destroy;
-    return o;
-}
-static int nn_am_service_ICommonStateGetter_GetHomeButtonReaderLockAccessor(SvcObj* self, SvcObj** accessor) {
-    (void)self;
-    *accessor = am_lock_new();
-    R_SUCCEED();
-}
-static int nn_am_service_ICommonStateGetter_GetReaderLockAccessorEx(SvcObj* self, u32 button_type,
-                                                                   SvcObj** accessor) {
-    (void)self, (void)button_type;
-    *accessor = am_lock_new();
-    R_SUCCEED();
-}
-static int nn_am_service_ICommonStateGetter_GetWriterLockAccessorEx(SvcObj* self, u32 button_type,
-                                                                   SvcObj** accessor) {
-    (void)self, (void)button_type;
-    *accessor = am_lock_new();
-    R_SUCCEED();
-}
-static int nn_am_service_ILockAccessor_TryLock(SvcObj* self, u8 return_handle, u8* is_locked, u32* event) {
-    AmLock* l = (AmLock*)self->data;
-    pm_lock(&g_host.am.lock);
-    *is_locked = (u8)!l->locked;
-    l->locked = 1;
-    pm_unlock(&g_host.am.lock);
-    if (return_handle) *event = ev_handle(l->event);
-    R_SUCCEED();
-}
-static int nn_am_service_ILockAccessor_Unlock(SvcObj* self) {
-    AmLock* l = (AmLock*)self->data;
-    pm_lock(&g_host.am.lock);
-    l->locked = 0;
-    pm_unlock(&g_host.am.lock);
-    ev_signal(l->event);
-    R_SUCCEED();
-}
-static int nn_am_service_ILockAccessor_GetEvent(SvcObj* self, u32* event) {
-    *event = ev_handle(((AmLock*)self->data)->event);
-    R_SUCCEED();
-}
-static int nn_am_service_ILockAccessor_IsLocked(SvcObj* self, u8* is_locked) {
-    AmLock* l = (AmLock*)self->data;
-    pm_lock(&g_host.am.lock);
-    *is_locked = (u8)l->locked;
-    pm_unlock(&g_host.am.lock);
-    R_SUCCEED();
-}
-
 static int am_set_vr_mode(u8 on) {
     pm_lock(&g_host.am.lock);
     g_hle.am.vr_mode = on;
     pm_unlock(&g_host.am.lock);
     R_SUCCEED();
 }
-static int nn_am_service_ICommonStateGetter_IsVrModeEnabled(SvcObj* self, u8* enabled) {
-    (void)self;
-    pm_lock(&g_host.am.lock);
-    *enabled = g_hle.am.vr_mode;
-    pm_unlock(&g_host.am.lock);
-    R_SUCCEED();
-}
+
 static int nn_am_service_ICommonStateGetter_SetVrModeEnabled(SvcObj* self, u8 enabled) {
     (void)self;
     return am_set_vr_mode(enabled != 0);
@@ -1223,6 +1138,71 @@ static int nn_am_service_ICommonStateGetter_IsVrModeEnabled3d(SvcObj* self, u8* 
     R_SUCCEED();
 }
 
+/* ILockAccessor: granted whenever it is free, with an event signaled when it is released (AmLock, services_int.h) */
+static void am_lock_destroy(SvcObj* o) { kobj_unref(kobj_at(((AmLock*)o->data)->event)); }
+static SvcObj* am_lock_new(void) {
+    SvcObj* o = nn_am_service_ILockAccessor_new_data(g_hle.am.lock_objs, g_hle.am.lock_obj_next, "am lock accessors");
+    ((AmLock*)o->data)->event = owned_event("am:lock accessor");
+    /* the lock is free: libnx's TryLock and Lock wait on the event before they ask for it */
+    ev_signal(((AmLock*)o->data)->event);
+    o->destroy = am_lock_destroy;
+    return o;
+}
+static int nn_am_service_ICommonStateGetter_GetHomeButtonReaderLockAccessor(SvcObj* self, SvcObj** accessor) {
+    (void)self;
+    *accessor = am_lock_new();
+    R_SUCCEED();
+}
+
+static int nn_am_service_ICommonStateGetter_GetReaderLockAccessorEx(SvcObj* self, u32 button_type,
+                                                                   SvcObj** accessor) {
+    (void)self, (void)button_type;
+    *accessor = am_lock_new();
+    R_SUCCEED();
+}
+static int nn_am_service_ICommonStateGetter_GetWriterLockAccessorEx(SvcObj* self, u32 button_type,
+                                                                   SvcObj** accessor) {
+    (void)self, (void)button_type;
+    *accessor = am_lock_new();
+    R_SUCCEED();
+}
+static int nn_am_service_ILockAccessor_TryLock(SvcObj* self, u8 return_handle, u8* is_locked, u32* event) {
+    AmLock* l = (AmLock*)self->data;
+    pm_lock(&g_host.am.lock);
+    *is_locked = (u8)!l->locked;
+    l->locked = 1;
+    pm_unlock(&g_host.am.lock);
+    if (return_handle) *event = ev_handle(l->event);
+    R_SUCCEED();
+}
+static int nn_am_service_ILockAccessor_Unlock(SvcObj* self) {
+    AmLock* l = (AmLock*)self->data;
+    pm_lock(&g_host.am.lock);
+    l->locked = 0;
+    pm_unlock(&g_host.am.lock);
+    ev_signal(l->event);
+    R_SUCCEED();
+}
+static int nn_am_service_ILockAccessor_GetEvent(SvcObj* self, u32* event) {
+    *event = ev_handle(((AmLock*)self->data)->event);
+    R_SUCCEED();
+}
+static int nn_am_service_ILockAccessor_IsLocked(SvcObj* self, u8* is_locked) {
+    AmLock* l = (AmLock*)self->data;
+    pm_lock(&g_host.am.lock);
+    *is_locked = (u8)l->locked;
+    pm_unlock(&g_host.am.lock);
+    R_SUCCEED();
+}
+
+static int nn_am_service_ICommonStateGetter_IsVrModeEnabled(SvcObj* self, u8* enabled) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    *enabled = g_hle.am.vr_mode;
+    pm_unlock(&g_host.am.lock);
+    R_SUCCEED();
+}
+
 /* ============================================================ ISelfController */
 static int nn_am_service_ISelfController_Exit(SvcObj* self) {
     (void)self;
@@ -1234,12 +1214,6 @@ static int nn_am_service_ISelfController_Exit(SvcObj* self) {
 static int nn_am_service_ISelfController_GetLibraryAppletLaunchableEvent(SvcObj* self, u32* event) {
     (void)self;
     *event = ev_handle(g_hle.am.launchable_event);
-    R_SUCCEED();
-}
-static int nn_am_service_ISelfController_GetGraphicsSupervisor(SvcObj* self, u32* session) {
-    (void)self;
-    *session = session_new(new_gsv_session());
-    R_UNLESS(*session, 0xD201); /* OutOfHandles */
     R_SUCCEED();
 }
 static int nn_am_service_ISelfController_CreateManagedDisplayLayer(SvcObj* self, u64* layer_id) {
@@ -1627,7 +1601,6 @@ static int nn_am_service_IApplicationFunctions_GetUnknownEvent210(SvcObj* self, 
    SwkbdCalcArgCommon at the start: SwkbdCalcArgOld puts the appear argument after the volume and cursor, New first */
 #define SWKBD_CALC_OLD_SIZE 0x4a0
 #define SWKBD_CALC_NEW_SIZE 0x4e8
-
 
 static int am_is_inline(const LibApplet* a) {
     return a->applet_id == AM_APPLET_SWKBD && (a->mode == 1 || a->mode == 3); /* PartialForeground(IndirectDisplay) */

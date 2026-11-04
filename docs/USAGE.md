@@ -11,7 +11,7 @@
   * [NRO applications](#nro-applications)
 * [GDB (Linux)](#gdb-linux)
   * [GDB through the MCP server](#gdb-through-the-mcp-server)
-* [Games through the MCP server](#games-through-the-mcp-server)
+  * [Games through the MCP server](#games-through-the-mcp-server)
 * [Headless Vulkan / lavapipe](#headless-vulkan--lavapipe)
 * [AppImage / display](#appimage--display)
 * [Folders](#folders)

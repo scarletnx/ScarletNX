@@ -67,12 +67,14 @@ type nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternalEx = stru
     u8[0x100] channel_mappings;
 };
 
-# The Ounce native audio service (aud:u): a TIPC session that hands back the managers audren:u/audout:u/audin:u
+# The native audio service (aud:u): a TIPC session that hands back the managers audren:u/audout:u/audin:u
 # serve, one per command. Native-ABI games reach the renderer manager this way, then its GetWorkBufferSize (cmd 1).
+# Its 2 is the one a Switch 2 SDK's nn::audio::CreateUserClientSessionByHipc calls, with the same argument it sends,
+# and it hands back the Switch 2 SDK's own manager, where the commands it knows by number take the shapes it sends
 interface nn::audio::detail::INativeAudioManager is aud:u {
     [0] GetAudioInManager() -> object<nn::audio::detail::IAudioInManager> manager;
     [1] GetAudioOutManager() -> object<nn::audio::detail::IAudioOutManager> manager;
-    [2] GetAudioRendererManager() -> object<nn::audio::detail::IAudioRendererManager> manager;
+    [2] GetAudioRendererManager(u32 arg) -> object<nn::audio::detail::IAudioRendererManager2> renderer;
 }
 
 interface nn::audio::detail::IAudioRendererManager is audren:u {
@@ -128,14 +130,6 @@ interface nn::audio::detail::IAudioDevice {
     # a mode in which the console tunes the output volume. A failed result stops the SDK's wrapper (an abort)
     [19] SetDeviceOutputVolumeAutoTuneModeEnabled(b8 enabled);
     [20] IsDeviceOutputVolumeAutoTuneModeEnabled() -> b8 enabled;
-}
-
-# A Switch 2 title's nn::audio::CreateUserClientSessionByHipc opens "aud:u", and reaches the same audio stack a
-# Switch 1 title reaches through audren:u: its command 2 hands back the renderer manager, which is an object of the
-# Switch 2 SDK's own manager, where the commands it knows by number take the arguments its SDK sends. The fork's
-# Switch 2 work hands back its own IAudioRendererManager the same way, backed by its audren
-interface nn::audio::detail::IAudioUserSession is aud:u {
-    [2] GetAudioRendererManager(u32 arg) -> object<nn::audio::detail::IAudioRendererManager2> renderer;
 }
 
 # The manager a Switch 2 SDK's aud:u hands back: the same audio stack a Switch 1 title reaches through audren:u's

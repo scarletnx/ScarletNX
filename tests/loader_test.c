@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/loader/loader.h"
+#include "nx/loader/ounce.h"
 #include "nx/runtime/driver/game_name.h"
 #include <libdeflate.h>
 #include <stdio.h>
@@ -406,13 +407,20 @@ static void test_nro_npdm(void) {
     put32(ounce + 0x78, 0x100);
     put32(ounce + 0x7c, 0x400);
     memcpy(ounce + 0x100 + 0x300, "ACID", 4);
-    CHECK(!snx_parse_npdm(ounce, sizeof ounce, &npdm, error, sizeof error) && npdm.ounce);
+    CHECK(!snx_parse_npdm(ounce, sizeof ounce, &npdm, error, sizeof error) && snx_npdm_ounce(ounce, sizeof ounce));
     put32(ounce + 0x7c, 0x300); /* the magic past the ACID's end */
-    CHECK(!snx_parse_npdm(ounce, sizeof ounce, &npdm, error, sizeof error) && !npdm.ounce);
+    CHECK(!snx_parse_npdm(ounce, sizeof ounce, &npdm, error, sizeof error) && !snx_npdm_ounce(ounce, sizeof ounce));
     put32(ounce + 0x7c, 0x400);
     memset(ounce + 0x400, 0, 4);
     memcpy(ounce + 0x100 + 0x200, "ACID", 4);
-    CHECK(!snx_parse_npdm(ounce, sizeof ounce, &npdm, error, sizeof error) && !npdm.ounce);
+    CHECK(!snx_parse_npdm(ounce, sizeof ounce, &npdm, error, sizeof error) &&
+          !snx_npdm_ounce(ounce, sizeof ounce)); /* a Switch's, its magic at 0x200 */
+    /* a Switch 2 program's: its ACID's magic at 0x300 and no one at 0x200, where a Switch's is the other way */
+    memset(ounce + 0x100 + 0x200, 0, 4);
+    memcpy(ounce + 0x100 + 0x300, "ACID", 4);
+    CHECK(!snx_parse_npdm(ounce, sizeof ounce, &npdm, error, sizeof error) && npdm.is_switch2);
+    memset(ounce + 0x100 + 0x300, 0, 4); /* neither magic: a shorter ACID, so not a Switch 2 one either */
+    CHECK(!snx_parse_npdm(ounce, sizeof ounce, &npdm, error, sizeof error) && !npdm.is_switch2);
     puts("PASS NRO assets/program loading and bounded NPDM metadata");
 }
 

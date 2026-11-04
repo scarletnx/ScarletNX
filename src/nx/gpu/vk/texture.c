@@ -89,25 +89,6 @@ static u64 bl_layer_size(u32 w, u32 h, u32 d, const VkFmt* f, u32 bh, u32 bd, u3
 }
 
 /* gmmu_pieces' callback: the bytes it maps, added up */
-static void pages_count(void* ctx, u64 gva, u64 cpu, u64 n) {
-    (void)gva;
-    (void)cpu;
-    *(u64*)ctx += n;
-}
-/* 1 when guest memory has no page of a part of the levels of a block-linear texture: a game's sparse texture, in a
-   virtual pool, where the game maps the pages of the regions it streams in. What it doesn't map reads as zero */
-static int has_gap(u64 gva, u32 w, u32 h, u32 d3, u32 layers, u32 levels, const VkFmt* f, u32 bh, u32 bd,
-                   u64 layer_size) {
-    u64 sz = 0, mapped = 0;
-    for (u32 l = 0; l < levels; l++) sz += bl_level_size(w, h, d3, f, bh, bd, l, NULL, NULL);
-    for (u32 layer = 0; layer < layers; layer++) {
-        u64 n = 0;
-        gmmu_pieces(gva + layer * layer_size, sz, pages_count, &n);
-        mapped += n;
-    }
-    return mapped < sz * layers;
-}
-
 /* One level of one layer, for mark_pages: which of the image's sparse blocks hold the texels of the block-linear blocks
    (64 bytes by 2^lbh GOB rows by 2^lbd slices) that the mapped pages touch */
 typedef struct {
@@ -157,7 +138,7 @@ static int tex_bind(Surf* t) {
         u64 at = t->gva + layer * t->layer_size;
         for (u32 l = 0; l < t->levels; l++) {
             u32 lbh, lbd;
-            u64 lsz = bl_level_size(t->w, t->h, d3, f, t->bh, t->bd, l, &lbh, &lbd);
+            u64 lsz = bl_level_size(t->w, t->h, d3, f, t->bh, t->bd, t->tile_w, l, &lbh, &lbd);
             if (l < sh->tail_first) {
                 u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, ld = d3 >> l ? d3 >> l : 1;
                 u32 th = (lh + f->bh - 1) / f->bh;
@@ -632,7 +613,7 @@ static int tex_upload_(Surf* t) {
             at += lsz;
         }
     }
-    complete = up_flush(&u) && complete && bound;
+    complete = up_flush(&u) && complete;
     return t->upload_valid = complete;
 }
 

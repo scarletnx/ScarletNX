@@ -88,7 +88,6 @@ static int user_writable(u64 a, u64 size) {
 /* ============================================================ accounting */
 /* The 4, 6 and 8 GiB application pools follow Mesosphere's KSystemControl. The 12 GiB setting, and an Ounce game,
    get an experimental 10 GiB application budget, more than the older console's pool. See docs/MEMORY_ACCOUNTING.md. */
-static int large(void) { return g_settings.memory_gb >= 12 || g_ounce; }
 static u64 pool(void) {
     /* A Switch 2 program is a 12 GiB board's, whatever memory_gb is set to for a Switch 1 title (g_guest_features is
        SNX_A64_TARGET_SWITCH2): the console has 12 GiB of DRAM beside the graphics server's own 8 GiB, and a Switch 2
@@ -96,7 +95,7 @@ static u64 pool(void) {
        it reserves for VAMM), so a 4 or 6 GiB pool leaves it with a heap too small for the pools it sets up and it
        stops at boot. The 12 GiB arrangement's pool (Eden's GetApplicationPoolSize for MemoryArrangement_12GB, whose
        Switch 2 work switches the layout to for the same reason) */
-    if (g_guest_features) return 9809 * MIB;
+    if (g_guest_features || g_ounce) return 9809 * MIB;
     if (g_settings.memory_gb >= 8) return 6964 * MIB;
     if (g_settings.memory_gb >= 6) return 4916 * MIB;
     return 3285 * MIB;
@@ -914,12 +913,7 @@ u32 svc_get_info(u32 id0, u32 h, u64 id1, u64* out) {
         case 22:
         case 23:
         case 24:
-        case 28:
-        case 29:
-        case 30:
-        case 31:
-        case 32:
-        case 33: {
+        case 28: {
             KObj* p;
             R_UNLESS(!id1, R_BADENUM);
             if (h != H_CUR_PROC) {
@@ -949,16 +943,19 @@ u32 svc_get_info(u32 id0, u32 h, u64 id1, u64* out) {
         case 30:
         case 31:
         case 32:
-        case 33: { /* the ids a Switch 2 program's kernel answers (npdm's extended ACID, read_npdm) */
+        case 33: { /* the ids a Switch 2 program's kernel answers (npdm's extended ACID, read_npdm). A Switch 1
+                      program is told nothing backs its remote memory, and its guest page size, which every program's
+                      SDK reads (heap_page_size, no runtime it maps through) */
             KObj* p;
-            R_UNLESS(g_guest_features, R_BADENUM);
             R_UNLESS(!id1, R_BADENUM);
             if (h != H_CUR_PROC) {
                 p = h_get_ref(h, KO_PROCESS);
                 R_UNLESS(p, R_BADHANDLE);
                 kobj_unref(p);
             }
-            return switch2_info(id0, out);
+            if (g_guest_features) return switch2_info(id0, out);
+            *out = id0 == 33 ? GMMU_PAGE_SIZE : 0;
+            R_SUCCEED();
         }
         case 25:
         case 0xF0000002: { /* ThreadTickCount (0xF0000002 before 13.0.0): -1 for the thread's total, or a core's */

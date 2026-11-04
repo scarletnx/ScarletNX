@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/loader/module_ir.h"
 #include "nx/loader/module_variants.h"
+#include "nx/loader/ounce.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/recompiler/compile_thread.h"
 #include "nx/loader/codegen_view.h"
@@ -637,7 +638,10 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         goto done;
     }
     /* an Ounce program's CPU (loader/ounce.h): the runtime JIT takes the same features from the same NPDM */
-    SnxU64 features = g_settings.cpu_extensions || loaded->npdm.ounce ? SNX_A64_TARGET_SWITCH_EXTENDED : 0;
+    SnxU64 features = g_settings.cpu_extensions ||
+                              snx_npdm_ounce(loaded->npdm_data, loaded->npdm_size ? loaded->npdm_size : 0)
+                          ? (SnxU64)SNX_A64_TARGET_SWITCH2
+                          : 0;
     if (options->jit_cache) {
         char* key = snx_jit_cache_key(build->opt, options->hook_direct_calls, 1,
                                       loaded->npdm.is_switch2 ? (SnxU64)SNX_A64_TARGET_SWITCH2 : 0);
@@ -654,7 +658,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         cache_count = snx_jit_cache_count(cache);
     }
     if (!options->interp_only &&
-        snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet, features))
+        snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet))
         goto done;
     if (build->found) *build->found = codegen.instruction_count;
     codegen.features = features;

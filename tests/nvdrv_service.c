@@ -509,23 +509,9 @@ static void test_ioctl3(u32 ctrlgpu) {
     ctx.b[1] = buf(OUT1, 0xD0);
     CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 0);
     CHECK(gr64(OUT0) == 0xD0 && gr32(OUT1) == 0x170 && gr32(OUT1 + 4) == 0xE);
-    CHECK(gr32(OUT1 + 0x5C) == 0xC797 && gr64(OUT1 + 0xA8) == 0x6761313066ull);
+    CHECK(gr32(OUT1 + 0x5C) == 0xC797 && gr64(OUT1 + 0x90) == 0x6631306167ull /* "ga10f" */);
     CHECK(GP(OUT1)[0xD0] == 0xCC);
     CHECK(g_hle.nvdrv.nvf[ctrlgpu].s2);
-    memset(GP(OUT1), 0xCC, 24);
-    request(12, ctrlgpu, 0xC0084713u);
-    ctx.a[0] = buf(IN0, 8);
-    ctx.b[0] = buf(OUT0, 8);
-    ctx.b[1] = buf(OUT1, 24);
-    CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 0);
-    CHECK(gr64(OUT1) == 0x0100010000000000ull);
-    CHECK(GP(OUT1)[22] == 0 && GP(OUT1)[23] == 5);
-    request(12, ctrlgpu, 0xC010471Fu);
-    ctx.a[0] = buf(IN0, 16);
-    ctx.b[0] = buf(OUT0, 16);
-    ctx.b[1] = buf(OUT1, 48);
-    CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 0);
-    CHECK(gr32(OUT0) == 48 && gr32(OUT1) == 0 && gr32(OUT1 + 16) == 1 && gr32(OUT1 + 32) == 2);
     /* Ioctl2's inline buffer is an input: ctrl-gpu writes nothing to it */
     memset(GP(IN1), 0xCC, 0xA0);
     request(11, ctrlgpu, GET_CHARACTERISTICS);
@@ -717,20 +703,24 @@ static void test_nvmap_as(void) {
     memset(d, 0, sizeof d);
     CHECK(as_call(0x09, d, 24) == 0 && g_hle.nvdrv.big_page_bits == 17);
     v = 0x10000;
-    snx_st_le32(d, v);
+    snx_st_le32(d + AS_ALLOC_AS_EX_BIG_PAGE_SIZE, v);
     CHECK(as_call(0x09, d, 24) == 0 && g_hle.nvdrv.big_page_bits == 16);
     /* NVN2 requests a 128 MiB..768 GiB space with no big-page split. */
     memset(d, 0, sizeof d);
-    snx_st_le32(d, 0x10000);
-    snx_st_le64(d + 16, 0x8000000ull);
-    snx_st_le64(d + 24, 0xc000000000ull);
+    snx_st_le32(d + AS_ALLOC_AS_EX_BIG_PAGE_SIZE, 0x10000);
+    snx_st_le64(d + AS_ALLOC_AS_EX_VA_RANGE_START, 0x8000000ull);
+    snx_st_le64(d + AS_ALLOC_AS_EX_VA_RANGE_END, 0xc000000000ull);
     CHECK(as_call(0x09, d, 40) == 0);
     memset(d, 0, sizeof d);
     CHECK(as_call(0x08, d, 64) == 0);
-    CHECK(snx_ld_le64(d + 16) == 0x8000000ull && snx_ld_le64(d + 32) ==
-          ((0xc000000000ull - 0x8000000ull) >> 12));
-    CHECK(snx_ld_le64(d + 40) == 0xc000000000ull && snx_ld_le32(d + 48) == 0x10000 &&
-          snx_ld_le64(d + 56) == 0);
+    /* the range the caller asked for, as the console reports it: the small-page region up to VA_BASE, the big-page
+       one from there to the range's end (nvdrv.c as_va_regions) */
+    CHECK(snx_ld_le64(d + AS_GET_VA_REGIONS_REGIONS) == 0x8000000ull);
+    CHECK(snx_ld_le32(d + AS_GET_VA_REGIONS_REGIONS + AS_VA_REGION_PAGE_SIZE) == AS_SMALL_PAGE_SIZE);
+    CHECK(snx_ld_le64(d + AS_GET_VA_REGIONS_REGIONS + AS_VA_REGION_PAGES) ==
+          ((VA_BASE - 0x8000000ull) >> GMMU_PAGE_BITS));
+    CHECK(snx_ld_le64(d + AS_GET_VA_REGIONS_REGIONS + AS_VA_REGION_BYTES) == VA_BASE);
+    CHECK(snx_ld_le32(d + AS_GET_VA_REGIONS_REGIONS + AS_VA_REGION_BYTES + AS_VA_REGION_PAGE_SIZE) == 0x10000);
 
     /* a GPU mapping pins the handle, as the console's nvmap does: FREE reports no memory and leaves it alive, and
        UNMAP_BUFFER of the last mapping ends it */

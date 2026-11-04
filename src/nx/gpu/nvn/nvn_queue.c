@@ -78,6 +78,11 @@ void nvn_QueueBuilderSetPrimaryQueue(CPU* c, u64 b, u64 primary) {
     (void)c;
     QB(b)->primary = primary;
 }
+/* the Ounce's primary queue (API 231+): a secondary queue's primary graphics queue, read back by its getter */
+u64 nvn_QueueBuilderGetPrimaryQueue(CPU* c, u64 b) {
+    (void)c;
+    return QB(b)->primary;
+}
 /* the Ounce's ray-tracing memory (API 231+): no ray tracing in the games the runtime runs yet */
 void nvn_QueueBuilderSetRayTracingMemorySize(CPU* c, u64 b, u64 size) {
     (void)c, (void)b, (void)size;
@@ -175,34 +180,6 @@ void nvn_QueueBuilderSetQueueMemory(CPU* c, u64 b, u64 memory, u64 size) {
     (void)c;
     o->memory = memory;
     o->memory_size = (u32)size;
-}
-/* NVN2 names the queue this builder makes the primary one, the queue a window presents on. The replay runs every
-   queue's submissions in order on one GPU thread, so which of them is primary changes nothing there: it is kept for
-   the record and for the log, as the driver keeps it in its own builder */
-void nvn_QueueBuilderSetPrimaryQueue(CPU* c, u64 b, u64 q) {
-    (void)c;
-    QB(b)->primary = q;
-}
-u64 nvn_QueueBuilderGetPrimaryQueue(CPU* c, u64 b) {
-    (void)c;
-    return QB(b)->primary;
-}
-/* the ray-tracing memory a queue takes: the runtime's renderer has no ray tracing, and the device answers 0 for the
-   memory its queue uses (nvnQueueGetTotalRayTracingMemoryUsed) */
-void nvn_QueueBuilderSetRayTracingMemorySize(CPU* c, u64 b, u64 size) {
-    (void)c;
-    (void)b;
-    (void)size;
-}
-u64 nvn_QueueBuilderGetRayTracingMemorySize(CPU* c, u64 b) {
-    (void)c;
-    (void)b;
-    return 0;
-}
-u64 nvn_QueueGetTotalRayTracingMemoryUsed(CPU* c, u64 q) {
-    (void)c;
-    (void)q;
-    return 0;
 }
 int nvn_QueueInitialize(CPU* c, u64 q, u64 b) {
     NvnQueue o = {0};
