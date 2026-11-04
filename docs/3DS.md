@@ -528,7 +528,15 @@ is: what the guest wrote reaches the GPU, a GPU fill shows in every guest view, 
 the flat space reaches the GPU, and the RAM outlives the device; `3ds_memory_adopt` checks the
 move with a memfd standing in for the dma-buf, on every host.
 Each window opens at twice its screen's size, 800x480 for the top and 640x480 for the
-bottom, so neither carries the black bars a window of another shape would.
+bottom, so neither carries the black bars a window of another shape would. The aspect is
+not locked: a window of another shape stretches the screen to fill it, and fullscreen
+stretches it at most a quarter of the way, bars covering the rest.
+The board's RAM is imported once as one host object. A driver whose
+`VK_EXT_external_memory_host` refuses a file-backed mapping, as RADV does at
+present, falls back to a udmabuf dma-buf over the same memfd
+(`VK_EXT_external_memory_dma_buf`). The log says which path ran. See
+`docs/issues/1116-radv-host-pointer-memfd.md` for the driver behavior and the
+minimal reproduction.
 
 Audio runs on a high-level DSP (`src/3ds/audio/`, ported from Azahar's HLE audio core):
 dsp::DSP (`services/dsp.c`) takes the application's pipe writes, interrupt events, the

@@ -430,33 +430,48 @@ static void write_ppm(unsigned screen, unsigned width, unsigned height, const un
     else if (closed)
         (void)snx_replace(staged, path);
 }
-/* The blit rectangle of a screen in swapchain pixels: in one window the pair scaled to fit and centred, each screen
-   centred across the layout; in its own window the screen scaled to fit and centred (the window keeps its screen's
-   shape, so it fills it). False before a layout and a swapchain exist. */
+/* The blit rectangle of a screen in swapchain pixels: in one window the pair fills the window, each screen centred
+   across the layout; in its own window the screen fills it. A window of another shape stretches the picture to fill
+   it; fullscreen stretches it at most a quarter of the way and bars the rest. False before a layout and a swapchain
+   exist. */
 static bool screen_rect(unsigned screen, VkOffset2D rect[2]) {
     const Frame* frames = g_present.frames;
     unsigned window = g_present.separate ? screen : 0;
     VkExtent2D e = g_present.swap[window].extent;
+    SDL_Window* win = screen_window(window);
+    /* a window shows the picture filling it, its own shape or not; fullscreen stretches it at most a quarter of the way
+       to fill the screen and bars the rest, the best practice for a screen of another shape */
+    double limit = win && (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) ? 1.25 : 0.0;
+    double sx, sy, scale, top;
     if (g_present.separate) {
         const Frame* f = &frames[screen];
         if (!f->width || !f->height || !e.width || !e.height) return false;
-        double scale = (double)e.width / f->width < (double)e.height / f->height ? (double)e.width / f->width
-                                                                                 : (double)e.height / f->height;
-        double x = (e.width - f->width * scale) / 2, y = (e.height - f->height * scale) / 2;
-        rect[0] = (VkOffset2D){(int32_t)x, (int32_t)y};
-        rect[1] = (VkOffset2D){(int32_t)(x + f->width * scale), (int32_t)(y + f->height * scale)};
+        sx = (double)e.width / f->width, sy = (double)e.height / f->height;
+        if (limit > 0.0) {
+            scale = sx < sy ? sx : sy;
+            top = scale * limit;
+            sx = sx < top ? sx : top;
+            sy = sy < top ? sy : top;
+        }
+        rect[0] = (VkOffset2D){(int32_t)((e.width - f->width * sx) / 2), (int32_t)((e.height - f->height * sy) / 2)};
+        rect[1] = (VkOffset2D){(int32_t)(rect[0].x + f->width * sx), (int32_t)(rect[0].y + f->height * sy)};
         return true;
     }
     uint32_t layout_w = snx_max_u32(frames[0].width, frames[1].width);
     uint32_t layout_h = frames[0].height + frames[1].height;
     if (!layout_w || !layout_h || !e.width || !e.height) return false;
-    double scale = (double)e.width / layout_w < (double)e.height / layout_h ? (double)e.width / layout_w
-                                                                            : (double)e.height / layout_h;
+    sx = (double)e.width / layout_w, sy = (double)e.height / layout_h;
+    if (limit > 0.0) {
+        scale = sx < sy ? sx : sy;
+        top = scale * limit;
+        sx = sx < top ? sx : top;
+        sy = sy < top ? sy : top;
+    }
     const Frame* f = &frames[screen];
-    double x = (e.width - layout_w * scale) / 2 + (layout_w - f->width) * scale / 2;
-    double y = (e.height - layout_h * scale) / 2 + (screen ? frames[0].height * scale : 0);
+    double x = (e.width - layout_w * sx) / 2 + (layout_w - f->width) * sx / 2;
+    double y = (e.height - layout_h * sy) / 2 + (screen ? frames[0].height * sy : 0);
     rect[0] = (VkOffset2D){(int32_t)x, (int32_t)y};
-    rect[1] = (VkOffset2D){(int32_t)(x + f->width * scale), (int32_t)(y + f->height * scale)};
+    rect[1] = (VkOffset2D){(int32_t)(x + f->width * sx), (int32_t)(y + f->height * sy)};
     return true;
 }
 /* The touch screen's pixel under a pointer at x and y, in the window's points as SDL reports them. The blit's own scale
