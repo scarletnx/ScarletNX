@@ -196,7 +196,7 @@
       "evidence": []
     },
     "T3": {
-      "status": "in_progress",
+      "status": "implemented",
       "evidence": [
         "src/common/cpu/recompiler/llvm/ir.h",
         "src/common/cpu/recompiler/llvm/ir_promote.c",
@@ -207,7 +207,7 @@
         "tests/llvm_fp_helper_effects.c",
         "tests/llvm_module.c"
       ],
-      "note": "Opt-in static per-unit counts and a single-function dump work through the AOT CLI. A four-call fixture checks counts by hand. The whole-module CLI smoke test checks output presence. Full whole-module hand counts and other host execution remain to verify."
+      "note": "The CLI emits per-unit counts and one-function dumps. Two integer-only whole-module fixtures check all 19 counter fields against hand counts, both in one unit and split at function boundaries. The CLI test verifies leaders, flag origins, promoted registers and IR before and after promotion. Directed helper fixtures separately check FP/vector/guest/indirect call classification. These checks passed on x86-64 and run in the native CI matrix."
     },
     "T4": {
       "status": "unverified",

@@ -64,12 +64,12 @@ static int run(int jit,int portable,char opt,unsigned long long* checks) {
         }
     llvm_steps_end(&steps);return failed;
 }
-static int bench(unsigned index,char opt,int reference, const char* dump) {
-    if(index>=sizeof instructions/sizeof instructions[0])return 2;
+static int bench(unsigned index,char opt,int reference, const char* dump, unsigned pattern) {
+    if(index>=sizeof instructions/sizeof instructions[0] || pattern>2)return 2;
     LlvmSteps steps;char error[1024];
     if(llvm_steps_begin_opt(&steps,1,reference,opt,error,sizeof error))return snx_error("%s",error);
     llvm_steps_add(&steps,instructions[index].word,0x1000,0);
-    if (dump) {
+    if (dump && strcmp(dump, "-")) {
         int failed=llvm_steps_dump(&steps,dump,error,sizeof error);
         if(failed)fprintf(stderr,"%s\n",error);
         llvm_steps_end(&steps);return failed!=0;
@@ -78,6 +78,15 @@ static int bench(unsigned index,char opt,int reference, const char* dump) {
     CPU c={0};c.pc=0x1000;
     if(instructions[index].from==16)for(unsigned lane=0;lane<8;++lane)c.v[1].h[lane]=(u16)(0x3555+lane*123);
     else c.v[1]=(V128){.s={0x3fc00000,0xc0200000,0x3faaaaab,0xbf000000}};
+    const Insn* insn=&instructions[index];
+    if(pattern==1) {
+        if(insn->from==16)c.v[1].h[insn->first_in]=0x7d01;
+        else c.v[1].s[0]=0x7f800001;
+    }
+    if(pattern==2) {
+        c.fpcr=1u<<26;
+        if(insn->from==16)c.v[1].h[insn->first_in]=0x7fff;
+    }
     u64 checksum=0;double begin=snx_seconds();
     for(unsigned n=0;n<1000000;++n){steps.steps[0](&c);checksum+=c.v[0].d[0]+(c.v[0].d[1]^c.fpsr);}
     double elapsed=snx_seconds()-begin;
@@ -86,7 +95,7 @@ static int bench(unsigned index,char opt,int reference, const char* dump) {
 }
 int main(int argc,char**argv) {
     if(argc>=3&&!strcmp(argv[1],"--bench"))
-        return bench((unsigned)strtoul(argv[2],NULL,10),argc>3?argv[3][0]:'0',argc>4&&!strcmp(argv[4],"--reference"),argc>5?argv[5]:NULL);
+        return bench((unsigned)strtoul(argv[2],NULL,10),argc>3?argv[3][0]:'0',argc>4&&!strcmp(argv[4],"--reference"),argc>5?argv[5]:NULL,argc>6?(unsigned)strtoul(argv[6],NULL,10):0);
     unsigned long long checks=0;
     for(int jit=0;jit<2;++jit)for(int portable=0;portable<2;++portable)for(unsigned opt=0;opt<2;++opt)
         if(run(jit,portable,opt?'2':'0',&checks))return 1;

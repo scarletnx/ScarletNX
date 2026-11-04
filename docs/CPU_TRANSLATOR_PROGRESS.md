@@ -51,9 +51,14 @@ O0/O2, AOT/JIT loaders and native/portable paths. The executed host is x86-64; t
 execution on other hosts. Native AArch64 FPCR/FPSR integration (I12) remains a separate project. Exact scalar
 arithmetic remains inside batched fallbacks where no vector replacement is proven.
 
-T5 has a seeded block corpus with flag joins, bounded loops, guest calls, memory, SIMD/FP and aligned exclusive
-retry loops. It runs through both loaders and optimization levels, plus portable, hook and volatile configurations.
-Two self-tests must detect planted flag-origin and exclusive-update defects. This remains a bounded instruction
+T3 now checks all 19 CLI statistics fields against hand counts for two complete integer modules. Each fixture runs
+both in one unit and split at function boundaries. The CLI checks also require function leaders, flag origins,
+promoted registers and IR before and after promotion.
+
+T5 draws safe data operations from 81 families of the generated decoder. It varies conditional branches, bounded
+loop counts, direct and indirect calls, tail calls, memory order and aligned exclusive retry loops. It runs through both loaders and optimization levels, plus portable, hook and volatile configurations.
+A 20-configuration seed matrix checks 10,240 complete program states. Two self-tests must detect planted flag-origin
+and exclusive-update defects. This remains a bounded instruction
 grammar, not exhaustive sequence coverage. Native execution has been checked on x86-64.
 
 T6 corrects the stale documentation and source comments listed in the plan, preserving historical audit examples

@@ -216,6 +216,7 @@ static int classify(LLVMValueRef fn, Result* r) {
             if (vector_opcode(op) && LLVMGetTypeKind(LLVMTypeOf(i)) == LLVMVectorTypeKind) ++r->vector;
             if (op != LLVMCall) continue;
             LLVMValueRef callee = LLVMGetCalledValue(i);
+            if (LLVMIsAInlineAsm(callee)) continue; /* native instructions, not an indirect helper call */
             size_t length = 0;
             const char* name = LLVMIsAFunction(callee) ? LLVMGetValueName2(callee, &length) : "(indirect)";
             if (!LLVMIsAFunction(callee)) length = strlen(name);
@@ -260,6 +261,32 @@ static int classify(LLVMValueRef fn, Result* r) {
                                                             : SHAPE_SCALAR;
     free(blocks);
     return 0;
+}
+
+/* A native FP-environment helper uses inline assembly on AArch64. Keep that distinct from a real function-pointer
+   call, even when the census runs on another host. Both controls retain their calls through optimization. */
+static int classify_controls(void) {
+    char error[1024];
+    SnxIr* ir = snx_ir_new("lowering_controls", '2', error, sizeof error);
+    if (!ir) return snx_error("%s", error);
+    LLVMTypeRef plain = LLVMFunctionType(ir->t_void, NULL, 0, 0);
+    LLVMValueRef assembly = LLVMAddFunction(ir->mod, "assembly", plain);
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, assembly, "entry"));
+    LLVMValueRef body = LLVMGetInlineAsm(plain, "", 0, "", 0, 1, 0, LLVMInlineAsmDialectATT, 0);
+    LLVMBuildCall2(ir->b, plain, body, NULL, 0, "");
+    LLVMBuildRetVoid(ir->b);
+    LLVMValueRef indirect = LLVMAddFunction(ir->mod, "indirect", LLVMFunctionType(ir->t_void, &ir->t_ptr, 1, 0));
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, indirect, "entry"));
+    LLVMBuildCall2(ir->b, plain, LLVMGetParam(indirect, 0), NULL, 0, "");
+    LLVMBuildRetVoid(ir->b);
+    int failed = snx_ir_module_optimize(ir, ir->mod, '2', error, sizeof error);
+    Result a, b;
+    if (!failed) {
+        failed = classify(assembly, &a) || classify(indirect, &b) || a.cls != CLASS_INLINE || a.calls ||
+                 b.cls != CLASS_HELPER || b.calls != 1 || strcmp(b.helpers, "(indirect)");
+    }
+    snx_ir_free(ir);
+    return failed ? snx_error("inline-assembly and indirect-call census controls differ") : 0;
 }
 
 /* every word's result on path p: 1 when this LLVM has the path's target, 0 when not (said), -1 on an error */
@@ -517,6 +544,7 @@ int main(int argc, char** argv) {
     LLVMInitializeAllTargets();
     LLVMInitializeAllTargetMCs();
     snx_ir_slp_vectorizer(0);
+    if (classify_controls()) return 1;
 
     uint32_t* rows = NULL;
     size_t nrows = lqd_row_words(1, next_random, &rows), count = 0;
