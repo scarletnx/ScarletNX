@@ -240,9 +240,13 @@ alpha test, mipmaps, the second texture unit, and `glReadPixels`, which reads ze
   links its stages' shaders together, with the stages' uniforms copied into it at each draw. A dispatch has a
   barrier of every write on each side. GLES 3.1's atomic counters are not there (glslc has no `atomic_uint`), and
   their limits are 0.
+- **GLES 3.2's calls that need no new shader stage**: the base vertex draws, `glCopyImageSubData`, the robustness
+  calls (`glGetGraphicsResetStatus`, `glReadnPixels`, `glGetnUniform*`), and the debug calls, which do nothing. A
+  context does not name itself 3.2: glslc has no geometry or tessellation stage.
 
 What GLES 2 and 3 do not do yet: transform feedback, GLES 3.1's atomic counters and its buffer variables in the
-interface queries, `glFramebufferParameteri`, GLES 3.2's geometry and tessellation, a divisor past 1, `glClear` with a partial color mask (it clears every
+interface queries, `glFramebufferParameteri`, GLES 3.2's geometry and tessellation, its indexed blending and color masks, texture buffers, sample shading and
+border colors, a divisor past 1, `glClear` with a partial color mask (it clears every
 channel), client depth and stencil texels for a 24-bit depth texture, ETC2 and ASTC on a device that has neither
 (the decode on the GPU), `glReadPixels` of a format other than RGBA or BGRA bytes, program binaries, and a pbuffer bound as a texture.
 
