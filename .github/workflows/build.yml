@@ -141,7 +141,7 @@ jobs:
           done
       - name: Build the runtime
         run: |
-          cmake --preset default -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_DIFF=ON \
+          cmake --preset default -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_DIFF=ON -DSNX_TEST_LLVM_SWEEP=ON \
             -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python" -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
