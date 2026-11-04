@@ -167,6 +167,14 @@ unsigned snx_thumb_decode_profile(SnxArmProfile profile, uint16_t h, uint16_t h2
         o->imm = h & 255;
         return TH_F16;
     }
+    /* the ARM7TDMI's BX takes no notice of bits 2 to 0, which should be zero */
+    if (!v6 && (h & 0xff80) == 0x4700) {
+        o->shape = TH_BRANCH;
+        o->len = TH_F16;
+        o->op = BR_BX;
+        o->rm = (h >> 3) & 15;
+        return TH_F16;
+    }
     if (top >= 0xe800 || !snx_thumb_decode(h, h2, o)) goto invalid;
     if (o->shape == TH_IT || o->shape == TH_HINT ||
         (o->shape == TH_BRANCH &&
