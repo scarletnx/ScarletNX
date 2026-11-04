@@ -29,6 +29,7 @@
 #include "hle/services/nvdrv.swipc.inc"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -803,11 +804,11 @@ static void nv_events_check(void) {
     nvev_lock();
     tables = __atomic_load_n(&armed_tables, __ATOMIC_RELAXED);
     while (tables) {
-        u32 t = (u32)__builtin_ctzll(tables);
+        u32 t = snx_ctz64(tables);
         u64 mask = g_hle.nvdrv.ctrl_evt[t].fd ? __atomic_load_n(&armed_mask[t], __ATOMIC_RELAXED) : 0;
         tables &= tables - 1;
         while (mask) {
-            u32 bit = (u32)__builtin_ctzll(mask);
+            u32 bit = snx_ctz64(mask);
             NvEvent* e = &g_hle.nvdrv.ctrl_evt[t].slot[bit];
             mask &= mask - 1;
             if (!e->armed) {
