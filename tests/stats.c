@@ -38,7 +38,7 @@ static struct {
     char logged[256];
     SnxUiQuad quads[4096];
     SnxUiList l;
-    char line[STATS_COLS + 1];
+    char line[STATS_COLS_FRAMEGEN + 1];
 } g_test;
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;

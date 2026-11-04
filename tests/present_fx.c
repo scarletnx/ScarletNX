@@ -386,11 +386,20 @@ int main(int argc, char** argv) {
         for (int i = 1; i < argc; ++i)
             if (!strcmp(argv[i], "--validation")) validation = 1;
         SnxVkInstanceInfo info = {.app_name = "present_fx", .validation = validation != 0, .debug = val_cb};
-        CHECK(volkInitialize() == VK_SUCCESS);
-        CHECK(succeed(snx_vk_instance_create(&info, &t.instance)));
+        if (volkInitialize() != VK_SUCCESS) {
+            fprintf(stderr, "present_fx: no Vulkan loader\n");
+            return 77;
+        }
+        if (!succeed(snx_vk_instance_create(&info, &t.instance))) {
+            fprintf(stderr, "present_fx: no Vulkan instance\n");
+            return 77;
+        }
     }
-    CHECK(snx_vk_first_device(t.instance.instance, VK_API_VERSION_1_3, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT,
-                              VK_NULL_HANDLE, make_device, &t));
+    if (!snx_vk_first_device(t.instance.instance, VK_API_VERSION_1_3, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT,
+                             VK_NULL_HANDLE, make_device, &t)) {
+        fprintf(stderr, "present_fx: no Vulkan device\n");
+        return 77;
+    }
     volkLoadDevice(t.dev);
     vkGetDeviceQueue(t.dev, t.family, 0, &t.queue);
     {
