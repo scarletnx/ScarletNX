@@ -46,6 +46,9 @@ typedef struct {
     /* a vertex program's reads of NVN's draw parameters in bank 0 (shader.h SH_CB0_): the push block and pointer type
        whose z says which come from BaseVertex and BaseInstance, and those inputs. 0 when it reads neither */
     u32 dp_push, dp_push_pointer, dp_base_vertex, dp_base_instance;
+    /* the last stage before rasterization takes its position's x and y from pixels (SNX_SH_WINDOW_XY), in
+       shader_vertex_position_fix */
+    int window_xy;
     /* constant buffer words read in the block being written, by bank and offset (a cache: a word that collides is
        read again), and their bitcast to a float, 0 until made. A draw's constant buffers don't change under it */
     struct {
@@ -237,12 +240,12 @@ void shader_texs_store(DirectCtx* c, u64 w, u32 sample, u32 scalar, int shadow, 
 u32 shader_ipa_interpolation(const u32* sph, u32 input);
 void shader_alpha_test(DirectCtx* c, u32 push, u32 push_pointer, u32 alpha);
 u32 shader_frag_y_origin(DirectCtx* c, u32 push, u32 y);
-void shader_vertex_depth_fix(DirectCtx* c, u32 position, u32 push, u32 push_pointer, u32 vec4_type);
+void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_pointer, u32 vec4_type);
 void shader_xfb_store(DirectCtx* c, u32 vec4, const u32* output_attrs, const u8* attr_private, u32 (*components)[4]);
 void shader_geometry_passthrough(DirectCtx* c, const ShaderInfo* si, u32 vertices, u32 vec4, u32 position,
                                  u32 position_in, const u32* outputs, const u32* inputs, u32 point_size, u32 layer,
                                  u32 layer_type, u32 clip, u32 clip_count, u32 primitive_id, u32 primitive_id_out,
-                                 int depth_fix, u32 push, u32 push_pointer);
+                                 int position_fix, u32 push, u32 push_pointer);
 /* emit_flow.c */
 void shader_dynamic_pop(DirectCtx* c, u32 stack_ptr, const u32 stack[32], u32 kind_value, u32 fallback, u32* found,
                         u32* destination, u32* new_sp);
@@ -423,7 +426,7 @@ typedef struct {
     u32 tess_coord;
     u32 invocation_id;
     u32 patch_vertices;
-    int depth_fix;
+    int position_fix;
     u32 sample_mask_output;
     u32 sample_id;
     u32 coverage;

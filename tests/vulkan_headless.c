@@ -428,6 +428,29 @@ static int check_viewport_orientation(void) {
     CHECK(vp.x == 40 && vp.y == 40 && vp.width == 20 && vp.height == 40);
     CHECK(vp.minDepth == 0.25f && vp.maxDepth == 0.75f);
     CHECK(viewport_of(r, 0).width == 64);
+    /* The transform off: every viewport is the surface clip (0x3FD's x and width, 0x3FE's y and height), depth 0 to
+       1, whatever the scale, offset, swizzle and depth registers hold; a lower-left window flips it about its bottom */
+    r[0x64B] = 0;
+    r[0x3FD] = 64u << 16;
+    r[0x3FE] = 48u << 16;
+    r[0x286] = 0x6430;
+    for (u32 i = 0; i < 2; i++) {
+        vp = viewport_of(r, i);
+        CHECK(vp.x == 0 && vp.y == 0 && vp.width == 64 && vp.height == 48 && vp.minDepth == 0 && vp.maxDepth == 1);
+    }
+    r[0x4eb] = 1;
+    vp = viewport_of(r, 0);
+    CHECK(vp.x == 0 && vp.y == 48 && vp.width == 64 && vp.height == -48);
+    /* The transform on, a scale under half a pixel is still the transform's, never the viewport's clip rectangle: no
+       area, so nothing is drawn */
+    r[0x64B] = 1;
+    r[0x4eb] = 0;
+    r[0x286] = 0x6420;
+    const float none[6] = {0, 0, 0.5f, 32, 24, 0.5f};
+    memcpy(&r[0x280], none, sizeof none);
+    r[0x300] = 64u << 16;
+    r[0x301] = 48u << 16;
+    CHECK(viewport_of(r, 0).width == 0);
     return 0;
 }
 

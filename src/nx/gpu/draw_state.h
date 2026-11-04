@@ -102,6 +102,8 @@ typedef struct {
     float blend_const[4];
     float alpha_ref;
     u32 clip_height; /* the surface clip's height, which a lower-left origin measures from */
+    /* the rest of the surface clip: the viewport while the viewport transform is off (DsViewports.transform_on) */
+    u32 clip_x, clip_y, clip_width;
     u32 depth_word;  /* the vertex stage's viewport and depth word, pushed as it is */
 } DsDynamic;
 
@@ -117,7 +119,7 @@ static inline void ds_depth_bias(const DsDynamic* d, float scale, float out[3]) 
 
 /* The viewports, struct of arrays (a program that writes the viewport index selects among them) */
 typedef struct {
-    u32 transform_on; /* the guest's viewport transform enable (the renderer picks by the scale, and logs a mismatch) */
+    u32 transform_on; /* the guest's viewport transform enable: off, positions are pixels of the surface clip */
     u32 scissor_on;   /* bit j: viewport j's scissor */
     float scale[DS_VIEWPORTS_MAX][3], translate[DS_VIEWPORTS_MAX][3];
     u32 swizzle[DS_VIEWPORTS_MAX]; /* a 3-bit code per component at bits 0, 4, 8, 12 (x, y, z, w): y's 3 negates y */
