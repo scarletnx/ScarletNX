@@ -34,4 +34,7 @@ int snx_vk_paper_nits(int setting);
 /* The display's own peak, in nits, where it can be read (KWin's maxPeakBrightnessOverride), else the setting's value
    (clamped to 400..4000) */
 int snx_vk_peak_nits(int setting);
+/* The debug setting's forced headroom in percent (hdr_debug_headroom: the SDR white at half the peak, 200 %), or 0
+   when it is off and the display's own report stands */
+int snx_vk_hdr_headroom_pct(void);
 #endif

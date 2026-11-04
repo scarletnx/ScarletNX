@@ -25,6 +25,11 @@ The HDR10 swapchain also carries `VK_EXT_hdr_metadata`: `maxLuminance` and `maxC
 `maxFrameAverageLightLevel` = the paper white, BT.2020's primaries for PQ (BT.709's for scRGB). Without the metadata the
 compositor guesses the content's peak, and a guess that is too high tone-maps the whole SDR range into the display.
 
+A display whose SDR white is set at its peak (KWin with `sdrBrightness` = `maxPeakBrightnessOverride`) reports no
+headroom, so nothing is lifted and HDR-on looks like HDR-off. The Debug setting `hdr_debug_headroom` puts the SDR white
+at half the peak instead (200 % headroom), so the lift has light to reach on any display; it is a debug aid, not a
+player's choice, and overrides `hdr_paperwhite` and the display's report.
+
 Where the display reports nothing (SDL exposes no SDR white or peak on Wayland for a Vulkan window), the settings
 `hdr_paperwhite` and `hdr_peak` stand in. The frontends read KWin's output config (`~/.config/kwinoutputconfig.json`,
 `sdrBrightness` and `maxPeakBrightnessOverride`) as the report there; see `snx_vk_paper_nits` and `snx_vk_peak_nits` in

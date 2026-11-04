@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/gpu/vk/window.h"
 #include "common/utilities/common.h"
+#include "snx_settings.h"
 #include <SDL3/SDL_vulkan.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -156,8 +157,18 @@ int snx_vk_peak_nits(int setting) {
     return setting < 400 ? 400 : setting > 4000 ? 4000 : setting;
 }
 
+int snx_vk_hdr_headroom_pct(void) {
+    int peak, paper;
+    if (!g_settings.hdr_debug_headroom) return 0;
+    peak = snx_vk_peak_nits(g_settings.hdr_peak);
+    paper = peak / 2;
+    return paper > 0 ? peak * 100 / paper : 200;
+}
+
 int snx_vk_paper_nits(int setting) {
-    int white = snx_vk_display_white_nits();
+    int white;
+    if (g_settings.hdr_debug_headroom) return snx_vk_peak_nits(g_settings.hdr_peak) / 2;
+    white = snx_vk_display_white_nits();
     /* the display's own white is the right anchor for the SDR range wherever it can be read, whatever the .ini says:
        a paper that is not the display's white puts the whole picture above it (washed out) or below it (dim) */
     if (white > 0) return white;

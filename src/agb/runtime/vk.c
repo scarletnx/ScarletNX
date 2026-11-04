@@ -165,11 +165,12 @@ static bool swapchain_make(AgbVk* v) {
         .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 640})};
     v->display_kind = kind;
     {
-        int reported = snx_vk_window_headroom_pct(v->host.window);
+        int reported = snx_vk_window_headroom_pct(v->host.window), debug = snx_vk_hdr_headroom_pct();
         v->headroom_pct =
             kind == SNX_FX_DISPLAY_PQ
                 ? snx_clamp_int(v->peak * 100 / v->paper, 100, 1000)
                 : (reported > 100 ? snx_clamp_int(reported, 100, 1000) : 100);
+        if (debug > 0) v->headroom_pct = snx_clamp_int(debug, 100, 1000);
     }
     if (kind != v->said_kind) {
         v->said_kind = kind;

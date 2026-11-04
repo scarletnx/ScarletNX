@@ -166,6 +166,14 @@ int vk_hdr_toggle(void) {
     return mode;
 }
 
+/* the display's headroom over its white, as a multiple: hdr_debug_headroom forces one where a display reports none, so
+   a debug run has light above white to reach */
+static float display_headroom(void) {
+    int debug = snx_vk_hdr_headroom_pct();
+    return debug > 0 ? (float)debug / 100.0f
+                     : (float)__atomic_load_n(&g_display_headroom_pct, __ATOMIC_RELAXED) / 100.0f;
+}
+
 /* the light the top of an SDR frame reaches, as a multiple of the paper white: the display's reported headroom (an
    HDR10 target's own peak standing in for it), its share being the expansion */
 static float lift_at_white(int display) {
@@ -174,7 +182,7 @@ static float lift_at_white(int display) {
        its white) would clip a guessed lift and wash the picture out. hdr_peak only bounds it, and names the light an
        HDR10 signal's metadata would */
     (void)display;
-    float max = (float)__atomic_load_n(&g_display_headroom_pct, __ATOMIC_RELAXED) / 100.0f;
+    float max = display_headroom();
     if (max < 1.0f) max = 1.0f;
     if (max > peak_rel) max = peak_rel;
     return 1.0f + (float)g_hdr.expand / 100.0f * (max - 1.0f);
@@ -187,7 +195,7 @@ void vk_hdr_describe(int display, char* out, size_t n) {
     }
     {
         float lift = lift_at_white(display);
-        float headroom = (float)__atomic_load_n(&g_display_headroom_pct, __ATOMIC_RELAXED) / 100.0f;
+        float headroom = display_headroom();
         snprintf(out, n, "On (%s, paper white %d nits, headroom %.2f, white at %.2f)",
                  display == SNX_HDR_DISPLAY_P3      ? "Display P3"
                  : display == SNX_HDR_DISPLAY_SCRGB ? "scRGB"
@@ -526,7 +534,7 @@ int vk_hdr_compose(VkCommandBuffer cb, VkImageView src, int source, u32 img_w, u
                 : kind == VK_HDR_ENC_SCRGB ? "scRGB"
                 : kind == VK_HDR_ENC_PQ    ? "HDR10 (PQ)"
                                            : "the SDR range",
-                (double)__atomic_load_n(&g_display_headroom_pct, __ATOMIC_RELAXED) / 100.0,
+                (double)display_headroom(),
                 (double)pc.tone[1]);
             g_hdr.last_src_mode = (u32)source;
             g_hdr.last_src_w = w;

@@ -189,11 +189,12 @@ static bool swapchain_make(VitaVk* v) {
         .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 544})};
     g.display_kind = kind;
     {
-        int reported = snx_vk_window_headroom_pct(v->host.window);
+        int reported = snx_vk_window_headroom_pct(v->host.window), debug = snx_vk_hdr_headroom_pct();
         g.headroom_pct =
             kind == SNX_FX_DISPLAY_PQ
                 ? snx_clamp_int(g.peak * 100 / g.paper, 100, 1000)
                 : (reported > 100 ? snx_clamp_int(reported, 100, 1000) : 100);
+        if (debug > 0) g.headroom_pct = snx_clamp_int(debug, 100, 1000);
     }
     if (kind != g.said_kind) {
         g.said_kind = kind;

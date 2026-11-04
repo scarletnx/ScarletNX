@@ -772,6 +772,16 @@ setting User uid
     help them; empty is its [user1] ("Player" without one). A uid no user has stops the game
 
 table g_debug_ini
+setting HDR debug headroom
+    key hdr_debug_headroom
+    label HDR debug headroom
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help On = the SDR white is half the display's peak, so an HDR frame has twice the light above SDR even where the
+    help display reports no headroom, and the lift is plain to see. A debug aid for a display whose SDR white is set at
+    help its peak; it overrides hdr_paperwhite and the display's reported headroom
 setting HDR test pattern
     key hdr_test
     label HDR test pattern

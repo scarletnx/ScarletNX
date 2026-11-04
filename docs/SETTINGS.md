@@ -158,6 +158,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 ## Debug
 | Key | Default | Effect |
 | --- | --- | --- |
+| `hdr_debug_headroom` | `0` | `1` puts the SDR white at half the display's peak, so an HDR frame has twice the light above SDR even where the display reports no headroom, and the lift is plain to see. A debug aid for a display whose SDR white is set at its peak: it overrides `hdr_paperwhite` and the display's own report |
 | `hdr_test` | `0` | `1` draws a band at the bottom of the window with six patches of known light: black, the paper white, and 1.25, 1.5, 1.75 and 2 times it. The steps above white are the display's headroom; where the last ones look the same the display clips there. It proves the lift reaches the screen |
 | `log` | `1` | Log detail. `2` logs everything, which adds runtime overhead |
 | `log_max` | `16` | The game log's size in MiB, `1` to `1024`. Past it the log keeps the run's start and its last lines, saying so in the log and once over the game. The 5 last runs' logs are kept, the ones before this run's in `logs/` beside it |
