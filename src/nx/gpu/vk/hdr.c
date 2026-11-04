@@ -169,11 +169,11 @@ int vk_hdr_toggle(void) {
    HDR10 target's own peak standing in for it), its share being the expansion */
 static float lift_at_white(int display) {
     float peak_rel = (float)g_hdr.peak / (float)g_hdr.paper;
-    /* an HDR10 target's signal is absolute, so its own peak stands in; an extended one (P3, scRGB) has no headroom
-       where the display reports none, and a guessed peak there clips the highlights and washes the picture out */
-    float max = display == SNX_HDR_DISPLAY_PQ
-                    ? peak_rel
-                    : (float)__atomic_load_n(&g_display_headroom_pct, __ATOMIC_RELAXED) / 100.0f;
+    /* the display's own headroom, whatever the kind: a compositor that reports none (Wayland) or has none (its peak at
+       its white) would clip a guessed lift and wash the picture out. hdr_peak only bounds it, and names the light an
+       HDR10 signal's metadata would */
+    (void)display;
+    float max = (float)__atomic_load_n(&g_display_headroom_pct, __ATOMIC_RELAXED) / 100.0f;
     if (max < 1.0f) max = 1.0f;
     if (max > peak_rel) max = peak_rel;
     return 1.0f + (float)g_hdr.expand / 100.0f * (max - 1.0f);
