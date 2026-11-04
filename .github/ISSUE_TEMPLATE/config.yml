@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-blank_issues_enabled: false
+# a report that fits no form still starts from a blank issue: the forms are the fast paths, not the only ones
+blank_issues_enabled: true
 contact_links:
   - name: Questions and help
     url: https://discord.gg/tRTRXXbyjp
