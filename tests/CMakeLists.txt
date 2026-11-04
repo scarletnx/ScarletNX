@@ -819,6 +819,12 @@ add_test(NAME llvm_fp_helper_effects COMMAND snx-test-llvm-fp-helper-effects)
 
 # ir_promote_registers at every boundary (SVC, BL, BLR, poll, dispatch entry, stale code, each helper class, a
 # register left in the CPU structure) with every register kind, against a C model and the same program at O0
+add_executable(snx-test-llvm-promote-edges llvm_promote_edges.c)
+snx_test_target(snx-test-llvm-promote-edges 99)
+target_link_libraries(snx-test-llvm-promote-edges PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_promote_edges COMMAND snx-test-llvm-promote-edges)
+set_tests_properties(llvm_promote_edges PROPERTIES TIMEOUT 120)
+
 add_executable(snx-test-llvm-promote-sync llvm_promote_sync.c llvm_steps.c)
 snx_test_target(snx-test-llvm-promote-sync 99)
 target_link_libraries(snx-test-llvm-promote-sync PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})

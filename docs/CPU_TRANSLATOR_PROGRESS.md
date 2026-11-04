@@ -173,6 +173,16 @@ is inconclusive. This is a compiler-cost and stack-space change, not a demonstra
 arithmetic objects remain byte-identical. Each O1/O2 arithmetic object is 16 bytes smaller, and the corresponding
 O1 and O2 objects are byte-identical for both candidates. A fresh game rebuild remains required.
 
+That rebuild exposed a separate scan in register promotion: each dirty register at a join searched every block for
+incoming edges. Some private functions contain about 40,000 blocks. The replacement indexes incoming edges once,
+retaining source and successor order, including duplicate switch edges. One allocation owns its arrays. The fixture
+checks ordinary joins, critical edges and duplicate switch edges. Full emitted IR is byte-identical to the original
+pass at 21 graph sizes. All 52 local CPU/tool/document checks pass, including the full QEMU sweep, promotion's
+independent callback-state models and the seed matrix. A nine-round Python comparison with 20,000 bootstrap resamples
+passes the fixed regression limits. Promotion alone improves 1.026 times at eight joins and 14.02 times at 2,048
+joins, with a 95-percent interval of 12.77 to 15.68 for the latter. These are compiler-fixture results, not game FPS
+or complete recompile ratios. Native CI and the final game rebuild remain pending for this last compiler change.
+
 The earlier half-conversion and estimate continuation was recompiled and checked against its preceding module with the
 same current runtime and restored private save. Both 100-second scene runs completed without crashes, and both
 screenshots rendered correctly. The final four five-second gameplay windows averaged 32.95 FPS for the preceding

@@ -108,9 +108,10 @@
         "tests/llvm_perf/half_order_math.py",
         "tests/llvm_perf/half_round_math.py",
         "tests/llvm_fp_pointer_chain.c",
-        "tests/llvm_fp_helper_effects.c"
+        "tests/llvm_fp_helper_effects.c",
+        "tests/llvm_promote_edges.c"
       ],
-      "note": "Whole-vector comparisons, half conversions and estimates, min/max fixups and half rounding preserve exact results and FPSR. Supported optimized single/double rounding paths sanitize exceptional inputs and restore guest flags. Measured O0 single/double regressions retain byte-identical original objects. Conversion batching, broad helper imports and a masked arithmetic extension failed their gates and remain removed. Batched arithmetic and pure conversion helpers remain where no faster exact replacement was proven. Native min/max and rounding CI passed at efb12311. A follow-up bounds reused helper scratch at 48 bytes and declares audited pointer non-capture effects. Its correctness checks and runtime regression bounds pass locally. Final game and follow-up native CI checks remain pending. No synthetic kernel gain is a game-FPS claim."
+      "note": "Whole-vector comparisons, half conversions and estimates, min/max fixups and half rounding preserve exact results and FPSR. Supported optimized single/double rounding paths sanitize exceptional inputs and restore guest flags. Measured O0 single/double regressions retain byte-identical original objects. Conversion batching, broad helper imports and a masked arithmetic extension failed their gates and remain removed. Batched arithmetic and pure conversion helpers remain where no faster exact replacement was proven. Native min/max and rounding CI passed at efb12311. A follow-up bounds reused helper scratch at 48 bytes and declares audited pointer non-capture effects. Its correctness checks and runtime regression bounds pass locally. The pointer follow-up passed native Linux x86-64, AArch64 and Windows CI at cd1141cf. An incoming-edge index removes a second compile-time scan, preserving byte-identical IR in 21 graph fixtures and passing the full local CPU checks and fixed compiler regression bounds. Final game and incoming-edge native CI checks remain pending. No synthetic kernel gain is a game-FPS claim."
     },
     "I8": {
       "status": "implemented",
