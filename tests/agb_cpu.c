@@ -307,6 +307,25 @@ int main(void) {
         CHECK(cpu.arm.r[0] == 7 && cpu.arm.r[15] == 0x03000202 && (cpu.arm.cpsr & SNX_ARM_T));
     }
     {
+        /* a Thumb BX PC two bytes past a word lands in ARM state at an address with bit 1 set, as a compiler's
+           interworking stub does: the ARM7TDMI holds R15's bits 1 and 0 at zero there, so the word below runs and
+           reads the PC from it. Here r0 = 42 and r2 = the first ARM word's address + 8, stored at 0x02000300 */
+        uint32_t written = 0;
+        agb_write16(&board, 0x03000502, 0x4778);     /* bx pc: ARM at 0x03000506 */
+        agb_write32(&board, 0x03000504, 0xE1A0200F); /* mov r2, pc */
+        agb_write32(&board, 0x03000508, 0xE3A0002A); /* mov r0, #42 */
+        agb_write32(&board, 0x0300050C, 0xE59F1004); /* ldr r1, [pc, #4]: 0x02000300 */
+        agb_write32(&board, 0x03000510, 0xE8810005); /* stmia r1, {r0, r2} */
+        agb_write32(&board, 0x03000514, 0xEAFFFFFE); /* b . */
+        agb_write32(&board, 0x03000518, 0x02000300);
+        cpu.arm.r[15] = 0x03000502;
+        cpu.arm.cpsr = 0x9F | SNX_ARM_T;
+        board.cpu_halted = cpu.wait = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2000, audio, AGB_APU_RATE, &written, error, sizeof error));
+        CHECK(agb_read32(&board, 0x02000300) == 42 && agb_read32(&board, 0x02000304) == 0x0300050C);
+        CHECK(cpu.arm.r[15] == 0x03000514 && !(cpu.arm.cpsr & SNX_ARM_T));
+    }
+    {
         /* a recompile (-r) builds every block of the map into the module, the hints too: here from a copy of the map
            under another name, as Windows keeps a module this process has loaded from being written */
         AgbRecomp made, after;
