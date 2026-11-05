@@ -1049,7 +1049,9 @@ int snx_vulkan_driver_choose(const char* program, const char* pick, SnxVulkanDri
         out->library = snx_vulkan_driver(program);
         for (size_t i = 0; !out->library && i < sizeof system / sizeof* system; ++i)
             if (snx_is_file(system[i])) out->library = snx_strdup(system[i]);
+#ifndef SNX_IOS
         if (!out->library) out->library = sdk_library("libMoltenVK.dylib");
+#endif
 #endif
         if (!out->library) {
             snprintf(reason, reason_size,
