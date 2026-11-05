@@ -26,6 +26,8 @@
 #include <math.h>
 #include <pthread.h>
 #if defined(_WIN32)
+/* without wingdi.h, whose Polyline() is path.h's type: Vulkan's Win32 types need none of it */
+#define NOGDI
 #include <windows.h>
 #include <vulkan/vulkan_win32.h>
 #endif
