@@ -3496,10 +3496,10 @@ static void recompile_queue(App* app) {
     }
     go_tab(app, GUI_TAB_MENU);
 }
-/* the fake driver's wait for the test: until path is there (taken), ten seconds at most */
+/* the fake driver's wait for the test: until path is there and taken away, ten seconds at most. Windows refuses the
+   removal while the test still has the file open, and a file left there would be the next wait's step too */
 static void wait_taken(const char* path) {
-    for (int n = 0; n < 2000 && !snx_is_file(path); ++n) SDL_Delay(5);
-    remove(path);
+    for (int n = 0; n < 2000 && (!snx_is_file(path) || remove(path)); ++n) SDL_Delay(5);
 }
 int main(int argc, char** argv) {
 #ifdef _WIN32
