@@ -1195,6 +1195,82 @@ static void test_fswzadd(const char* dir) {
     free(spv);
 }
 
+/* S2R R0, SR_LTMASK in a fragment program: the lanes below the invocation's, as in a compute program. A fragment
+   program's warp-wide atomics read it with a VOTE ballot */
+static void test_lane_masks(const char* dir) {
+    u8 code[16 * 3] = {0};
+    Word x = fix(0x919);
+    set(&x, 16, 8, 0);
+    set(&x, 72, 8, 0x39);
+    put(code, 0, x);
+    put(code, 1, exit_insn());
+    put(code, 2, bra(2, 2, 7, 0));
+    u32 out[4];
+    CHECK(run_fs_at(code, 3, 5, NULL, 0, out) && out[0] == 0x1fu);
+    x = fix(0x919); /* SR_TID.X stays a compute program's */
+    set(&x, 72, 8, 0x21);
+    put(code, 0, x);
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    CHECK(!sm86_to_spirv(code, 3 * 16, ST_FS, fsph, &si, &count));
+    (void)dir;
+}
+
+/* LDC c[bank][R + offset] of NAK's MemType U8 (0), I8 (1), U16 (2) and I16 (3): the byte or halfword at the
+   address, zero or sign extended */
+static Word ldc(u32 dst, u32 index, u32 bank, u32 off, u32 type) {
+    Word x = fix(0xb82);
+    set(&x, 16, 8, dst);
+    set(&x, 24, 8, index);
+    cbuf(&x, bank, off);
+    set(&x, 73, 3, type);
+    return x;
+}
+static void test_ldc_small(const char* dir) {
+    u8 code[16 * 7] = {0};
+    put(code, 0, mov_imm(4, 1));
+    put(code, 1, ldc(0, 4, 1, 0x4, 0));   /* the byte at 5 */
+    put(code, 2, ldc(1, 4, 1, 0x6, 1));   /* the byte at 7, signed */
+    put(code, 3, ldc(2, 4, 1, 0x9, 2));   /* the halfword at 10 */
+    put(code, 4, ldc(3, 255, 1, 0x6, 3)); /* the halfword at 6, signed */
+    put(code, 5, exit_insn());
+    put(code, 6, bra(6, 6, 7, 0));
+    static const u32 cb1[3] = {0x03020100u, 0x87068504u, 0x8899aabbu};
+    u32 out[4];
+    CHECK(run_fs_at(code, 7, 0, cb1, 3, out));
+    CHECK(out[0] == 0x85u && out[1] == 0xffffff87u && out[2] == 0x8899u && out[3] == 0xffff8706u);
+    if (out[0] != 0x85u || out[1] != 0xffffff87u || out[2] != 0x8899u || out[3] != 0xffff8706u)
+        fprintf(stderr, "ldc small: %08x %08x %08x %08x\n", out[0], out[1], out[2], out[3]);
+    (void)dir;
+}
+
+/* BSSY B0, 2; BREAK B0; BSYNC B0; MOV R0, 1.0: BREAK takes the lanes out of the barrier and goes on */
+static void test_break(const char* dir) {
+    u8 code[16 * 6] = {0};
+    Word x = fix(0x945);
+    set(&x, 16, 4, 0);
+    set(&x, 34, 48, (u64)(2 * 4 - 0 * 4 - 4));
+    set(&x, 87, 3, 7);
+    put(code, 0, x);
+    x = fix(0x942);
+    set(&x, 16, 4, 0);
+    set(&x, 87, 3, 7);
+    put(code, 1, x);
+    x = fix(0x941);
+    set(&x, 16, 4, 0);
+    set(&x, 87, 3, 7);
+    put(code, 2, x);
+    put(code, 3, mov_imm(0, f2u(1.0f)));
+    put(code, 4, exit_insn());
+    put(code, 5, bra(5, 5, 7, 0));
+    u32 out[4];
+    CHECK(run_fs_at(code, 6, 0, NULL, 0, out) && out[0] == f2u(1.0f));
+    (void)dir;
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     test_alu_forms();
@@ -1213,6 +1289,9 @@ int main(int argc, char** argv) {
     test_texel_offsets(dir);
     test_global_flow(dir);
     test_fswzadd(dir);
+    test_lane_masks(dir);
+    test_ldc_small(dir);
+    test_break(dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
