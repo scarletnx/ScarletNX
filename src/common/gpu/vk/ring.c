@@ -18,7 +18,8 @@ bool snx_vk_ring_init(SnxVkRing* ring, VkDevice device, VkQueue queue, uint32_t 
     for (unsigned i = 0; i < count && made; ++i)
         made = vkCreateFence(device, &fi, NULL, &ring->slots[i].fence) == VK_SUCCESS &&
                vkCreateDescriptorPool(device, descriptors, NULL, &ring->slots[i].descriptors) == VK_SUCCESS &&
-               vkAllocateCommandBuffers(device, &ai, &ring->slots[i].cb) == VK_SUCCESS;
+               vkAllocateCommandBuffers(device, &ai, &ring->slots[i].cb) == VK_SUCCESS &&
+               vkAllocateCommandBuffers(device, &ai, &ring->slots[i].uploads) == VK_SUCCESS;
     if (!made) snx_vk_ring_free(ring);
     return made;
 }
@@ -37,6 +38,7 @@ static void retire(SnxVkRing* ring, unsigned i) {
     SnxVkRingSlot* s = &ring->slots[i];
     vkResetFences(ring->device, 1, &s->fence);
     vkResetCommandBuffer(s->cb, 0);
+    vkResetCommandBuffer(s->uploads, 0);
     vkResetDescriptorPool(ring->device, s->descriptors, 0);
     if (s->serial > ring->completed) ring->completed = s->serial;
     if (ring->retire) ring->retire(i, s->serial);
@@ -81,6 +83,17 @@ VkCommandBuffer snx_vk_ring_commands(SnxVkRing* ring) {
     }
     return ring->slots[ring->slot].cb;
 }
+VkCommandBuffer snx_vk_ring_uploads(SnxVkRing* ring) {
+    snx_vk_ring_commands(ring); /* the open recording's slot */
+    VkCommandBuffer uploads = ring->slots[ring->slot].uploads;
+    if (!ring->uploading) {
+        VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+        vkBeginCommandBuffer(uploads, &bi);
+        ring->uploading = true;
+    }
+    return uploads;
+}
 uint64_t snx_vk_ring_submit(SnxVkRing* ring, VkSemaphore wait, VkSemaphore signal) {
     if (!ring->pool) return 0;
     if (!ring->recording && !wait && !signal) return ring->submitted;
@@ -92,20 +105,31 @@ uint64_t snx_vk_ring_submit(SnxVkRing* ring, VkSemaphore wait, VkSemaphore signa
                             .dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT};
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &host, 0, NULL, 0,
                          NULL);
+    SnxVkRingSlot* s = &ring->slots[ring->slot];
+    VkCommandBuffer buffers[2] = {s->uploads, cb};
+    bool ended = true;
+    if (ring->uploading) { /* what the uploads wrote, for every command after them */
+        VkMemoryBarrier uploaded = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                                    .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+        vkCmdPipelineBarrier(s->uploads, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
+                             &uploaded, 0, NULL, 0, NULL);
+        ended = vkEndCommandBuffer(s->uploads) == VK_SUCCESS;
+    }
     VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
     VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                        .waitSemaphoreCount = wait ? 1 : 0,
                        .pWaitSemaphores = &wait,
                        .pWaitDstStageMask = &stage,
-                       .commandBufferCount = 1,
-                       .pCommandBuffers = &cb,
+                       .commandBufferCount = ring->uploading ? 2 : 1,
+                       .pCommandBuffers = ring->uploading ? buffers : buffers + 1,
                        .signalSemaphoreCount = signal ? 1 : 0,
                        .pSignalSemaphores = &signal};
-    ring->recording = false;
-    SnxVkRingSlot* s = &ring->slots[ring->slot];
-    if (vkEndCommandBuffer(cb) != VK_SUCCESS || vkQueueSubmit(ring->queue, 1, &si, s->fence) != VK_SUCCESS) {
+    ring->recording = ring->uploading = false;
+    if (vkEndCommandBuffer(cb) != VK_SUCCESS || !ended || vkQueueSubmit(ring->queue, 1, &si, s->fence) != VK_SUCCESS) {
         /* a lost device: nothing more runs, and the slot is free as if it had */
         vkResetCommandBuffer(cb, 0);
+        vkResetCommandBuffer(s->uploads, 0);
         return ring->submitted;
     }
     s->serial = ++ring->submitted;
