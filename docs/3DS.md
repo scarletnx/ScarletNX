@@ -175,11 +175,12 @@ what refused it and that the run takes `vk_memory=2`. Its cost is the
 CPU's writes: a page the CPU rewrites after the GPU read it traps at each rewrite, where in
 place it traps only while a read is not done. The run's summary has a `gpu:` line: each
 screen's frames, what the GPU's work read and wrote, what was copied in and back, and the
-CPU's accesses that trapped. SuperTux's title screen on an RX 6700 XT (RADV, resizable BAR),
-three 60 s runs each, by that line: what crosses the bus falls to 6.1 MiB a second, 245 KiB a
-frame, all of it copied in, from 76.6 in place (3018 KiB a frame: 36.8 MiB a second read, 39.8
-written); amdgpu has the GPU busy 14.4 ms a second against 17.8; the CPU's time is the same,
-323 and 325 ms a second, though its writes trap 61 times a frame against 0.2.
+CPU's accesses that trapped. The pinned homebrew's title screen ([its target](3DS-SUPERTUX.md))
+on an RX 6700 XT (RADV, resizable BAR), three 60 s runs each, by that line: what crosses the bus
+falls to 6.1 MiB a second, 245 KiB a frame, all of it copied in, from 76.6 in place (3018 KiB a
+frame: 36.8 MiB a second read, 39.8 written); amdgpu has the GPU busy 14.4 ms a second against
+17.8; the CPU's time is the same, 323 and 325 ms a second, though its writes trap 61 times a
+frame against 0.2.
 `tests/3ds_vk_copies.c` checks which pages are copied in and back and when, and every GPU
 test runs again on each path (`_copy`, `_in_place`: `--vk_memory=1` and `2`), so lavapipe
 checks the copy too.
