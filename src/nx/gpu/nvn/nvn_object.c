@@ -18,6 +18,7 @@
 #include "nx/gpu/nvn/nvn_driver.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
+#include "nx/gpu/nvn/nvn_section.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/shader/sm86.h"
 #include "nx/hle/services/nvdrv.h"
@@ -1655,15 +1656,44 @@ static int ounce_section(u64 control) {
     if (format != 7 && format != 11) LOG_LIMIT(1, "nvn: an Ounce control section of format %u\n", format);
     return 1;
 }
-/* an Ounce program's NVN stage (format 11), from word 0 of the header that starts a graphics program at its GPU
-   address data: compute when there is none */
-static u32 stage11(u64 data) {
+/* an Ounce program's NVN stage: its control section's (nvn_section.h). The header that starts a graphics program
+   at its GPU address data cannot tell a task or mesh program from a vertex or tessellation evaluation one, so it only
+   checks the section's stage of the other programs */
+static u32 stage11(u64 data, u64 control) {
     static const u8 nvn_of[] = {NVN_SHADER_STAGE_VERTEX, NVN_SHADER_STAGE_TESS_CONTROL, NVN_SHADER_STAGE_TESS_EVALUATION,
                                 NVN_SHADER_STAGE_GEOMETRY, NVN_SHADER_STAGE_FRAGMENT}; /* by ST_VS to ST_FS */
+    u32 stage = nvn_section_stage(GP(control));
+    if (stage == NVN_SHADER_STAGE_TASK || stage == NVN_SHADER_STAGE_MESH) return stage;
     u8 w[4];
     gmem_read_code(data, w, sizeof w);
     int s = sm86_sph_stage(snx_ld_le32(w));
-    return s < 0 ? NVN_SHADER_STAGE_COMPUTE : nvn_of[s];
+    u32 sph = s < 0 ? NVN_SHADER_STAGE_COMPUTE : nvn_of[s];
+    if (stage != sph)
+        LOG_LIMIT(4, "nvn: an Ounce control section of stage %u for a program whose header says stage %u\n", stage, sph);
+    return sph;
+}
+/* An Ounce mesh or task program, logged with its section's fields, and its bytes kept with the sm86_dump setting */
+static void log_mesh(u64 data, u64 control, u32 stage) {
+    NvnSectionMesh m = nvn_section_mesh(GP(control));
+    u32 bytes = gr32(control + 0x44), sph[32];
+    u8 head[SM86_SPH_BYTES];
+    gmem_read_code(data, head, sizeof head);
+    for (u32 i = 0; i < 32; i++) sph[i] = snx_ld_le32(head + 4 * i);
+    LOG_LIMIT(64,
+              "nvn: %s program at %llx: %#x bytes, SPH %08x, %u invocations, payload %#x, %s, %u vertices, %u "
+              "primitives of %u vertices, per-primitive header at %#x\n",
+              stage == NVN_SHADER_STAGE_TASK ? "task" : "mesh", (unsigned long long)data, bytes, sph[0],
+              m.threads, m.payload, m.has_task ? "after a task program" : "alone", m.max_vertices, m.max_primitives,
+              m.primitive_vertices, m.gs_header);
+    if (g_shader_sm86_dump && g_shader_sm86_dump[0] && bytes > SM86_SPH_BYTES && bytes <= 0x100000) {
+        u8* code = malloc(bytes);
+        if (code) {
+            gmem_read_code(data, code, bytes);
+            sm86_debug_dump(stage == NVN_SHADER_STAGE_TASK ? "task" : "mesh", code + SM86_SPH_BYTES,
+                            bytes - SM86_SPH_BYTES, sph, "a mesh-pipeline program");
+            free(code);
+        }
+    }
 }
 /* A stage's control section, as the game's driver reads it (its accessor for the newest format, which one game's
    format 8 sections share): 0x00 the magic, 0x04 1, 0x08 the format, 0x700 the constants' offset in the code area,
@@ -1681,7 +1711,13 @@ static int stage_of(NvnProgram* o, u64 data, u64 control) {
        rounded up to 256 (a jump table at c[1][0] shows it) */
     if (magic == 0x98761234u && ounce_section(control)) {
         if (!data) return 0;
-        st = &o->st[stage11(data)];
+        u32 stage11_of = stage11(data, control);
+        if (stage11_of >= NVN_STAGES) {
+            LOG_LIMIT(4, "nvn: an Ounce control section of stage %u\n", stage11_of);
+            return 0;
+        }
+        if (stage11_of >= NVN_SHADER_STAGE_TASK) log_mesh(data, control, stage11_of);
+        st = &o->st[stage11_of];
         st->data = data;
         st->off = 0;
         st->cb = (u16)(gr32(control + 0x40) >> 8);
@@ -1873,10 +1909,10 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
         if (!stage_of(o, data, control)) return 0;
         /* an Ounce compute program's c[0] record (NVN_PROG_C0) */
         if (g_nvn.loader.api >= 231u << 16 && ounce_section(control) &&
-            stage11(data) == NVN_SHADER_STAGE_COMPUTE)
+            stage11(data, control) == NVN_SHADER_STAGE_COMPUTE)
             memcpy(NVN_PROG_C0(p), GP(control + 0xa8), NVN_C0_RECORD);
         /* geometry, else tessellation evaluation, else control, else vertex: the driver's order */
-        stage = ounce_section(control) ? stage11(data) : gr32(control + 0x714);
+        stage = ounce_section(control) ? stage11(data, control) : gr32(control + 0x714);
         if (stage == NVN_SHADER_STAGE_TESS_CONTROL) tess_controls[0] = control;
         if (stage == NVN_SHADER_STAGE_TESS_EVALUATION) tess_controls[1] = control;
         rank = stage == NVN_SHADER_STAGE_GEOMETRY          ? 3

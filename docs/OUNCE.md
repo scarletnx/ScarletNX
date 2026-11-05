@@ -8,6 +8,12 @@
 * [Surfaces](#surfaces)
 * [Driver offsets](#driver-offsets)
 * [Compute QMDs](#compute-qmds)
+* [Mesh shaders](#mesh-shaders)
+  * [Stages](#stages)
+  * [The programs' I/O](#the-programs-io)
+  * [Draws](#draws)
+  * [Design](#design)
+  * [Open questions](#open-questions)
 
 This page records what the bring-up of the first Ounce game found so far. It names one game's driver offsets, but
 not the game.
@@ -155,3 +161,157 @@ The compute QMD is version 3.0, which NVIDIA's `open-gpu-doc` documents (`classe
 dependence counter is word 4, bits 14 to 29. The PCAS action goes to method 0xB0 (`SEND_SIGNALING_PCAS2_B`, byte
 0x2C0): 0x2 schedules, 0x7 decrements the dependence and 0xC increments it. The game runs a chain of 7 empty QMDs on
 channel 22 and a ring of 16 on channel 23. Their increments and decrements don't balance in the runtime yet.
+
+## Mesh shaders
+
+The game draws part of its frames with mesh shaders: about 14 `nvnCommandBufferDrawMeshTasks` calls a frame in the
+screens after the title, all from the programs of `Shader/Drive.Nin_Ounce_NVN2.release.sarc.zs`
+(`DrivePassShaderDefault.sharcb`, the 3D scene's passes). The runtime skips these draws. No font or UI program
+(`Lib/sead/nvn2_font`, the programs in `main`) is a mesh program, so the missing menu text has another cause. Of the
+programs that the shipped pass translates, about 500 fragment and vertex programs are refused (most with "BRX with no
+jump table"), which is a better lead for the text.
+
+### Stages
+
+An Ounce control section names the program's stage in its halfword at 0x56: 0 vertex, 1 fragment, 5 compute, 6
+task, 7 mesh (`NVN_SHADER_STAGE_TASK` and `NVN_SHADER_STAGE_MESH`). The SPH cannot tell them, as NVIDIA's hardware
+runs a task program in the vertex slot and a mesh program in the tessellation slot when a task program launches it,
+else in the vertex slot (Mesa's NAK, `nak/sph.rs`, and NVK's `mesa_to_nv9097_shader_type`):
+
+| Program | SPH word 0 | Section 0x56 |
+| --- | --- | --- |
+| vertex | `0x020c0481` (bit 25, ISBE space sharing, set) | 0 |
+| task | `0x000c0481`, or `0x000d0481` with global stores | 6 |
+| mesh without a task program | `0x000c0481` | 7 |
+| mesh after a task program | `0x020c0c81` (type 1, shader 3) | 7 |
+| per-primitive outputs of a mesh program | `0x010c1081` (geometry, passthrough bit 24) | none |
+
+`sm86_sph_stage` thus gives ST_VS or ST_TES for these programs, never -1. `stage11` (`gpu/nvn/nvn_object.c`) now takes
+the section's stage, so a mesh program no longer replaces the vertex or tessellation stage of its program. The
+section's stage and the SPH agree for every other program of two runs.
+
+A mesh or task program's section also gives (`gpu/nvn/nvn_section.h`):
+
+| Offset | Field | Values seen |
+| --- | --- | --- |
+| 0x58 (u16) | invocations of the workgroup | 8, 32 |
+| 0x5a (u16) | task payload bytes, in 128-byte lines; a mesh program alone has 0x80 | 0x80, 0x100, 0x580 |
+| 0x5e (u8) | 1 when a task program launches the mesh program | |
+| 0x5f (u8) | vertices of a primitive | 3 |
+| 0x60, 0x62 (u16) | most vertices, most primitives | 32/16, 128/64, 256/192 |
+| 0x64, 0x68 | offset in the code area and bytes of the per-primitive SPH (0 for none) | 0xd00, 0x80 |
+
+The per-primitive SPH follows the code, in the 256-byte slot after it (0x44, the code area's bytes, includes it).
+Its OMAP gives the per-primitive output words, and the mesh SPH's OMAP the per-vertex ones.
+
+### The programs' I/O
+
+Every output, input and count goes through the ISBE (the "internal stage buffer entry"), with `ISBERD` (0x923) and
+`ISBEWR` (0x927), as NAK lowers them (`nak_nir_lower_mesh_intrinsics.c`). The fields (NAK's `sm70_encode.rs`): 24-31
+the offset register, 32-39 the data (ISBEWR), 40-55 an immediate offset, 74-75 the size (U8, U16, B32), 76-77 the
+access (MAP, PATCH, PRIM, ATTR), 78 SKEW, 79 output. The game's programs use no LDS, STS or BAR, and every workgroup
+is one warp (at most 32 invocations, `S2R SR_LANEID` as the invocation).
+
+| What | Instruction |
+| --- | --- |
+| workgroup index (task, mesh alone) | `ISBERD.ATTR.SKEW [RZ+0x0]` (the vertex ID of the point draw) |
+| workgroup index (mesh after a task) | `ISBERD.ATTR [RZ+0x0]` |
+| task payload, task side | `ISBEWR.ATTR.O [Rn+0x10+...]`, from byte 0x10 |
+| mesh groups to launch | `ISBEWR.ATTR.O [RZ+0x4]` (one count, x only; NAK also writes x, y, z at 0x8 to 0x10) |
+| task payload, mesh side | `ISBERD.ATTR [Rn+0x10+...]`, the same offsets |
+| per-vertex output | `ISBEWR.ATTR.SKEW.O` at `(v / 32) * G + (v % 32) * 4 + k * 0x80`, word k of the used words in OMAP order, G = 0x80 times their count |
+| per-primitive output | `ISBEWR.ATTR.SKEW.O` at `V + (p / 32) * P + (p % 32) * 4 + k * 0x80`, V the vertex area (G times the vertex groups), P from the per-primitive SPH |
+| primitive indices | `ISBEWR.MAP.O.U8 [4 + 3 p + i]` |
+| primitive count | `ISBEWR.MAP.O.B32 [RZ+0x3]`; no vertex count is written |
+| draw parameters, buffers | constant banks as in vertex programs (`c[0][0x670]`, `c[0][0x680]`, banks 3 to 5), `LDG`/`STG` |
+
+A mesh program after a task program, 8 invocations, 32 vertices of position and generic 1.xy, 16 primitives with
+generic 0.x per primitive:
+
+```
+ISBERD.ATTR.B32 R3, [RZ+0x0]                 ; this group's index in its task's launch
+IMAD R3, R3, 0x28, RZ                        ; its payload record
+ISBERD.ATTR.B32 R19, [R3+0x20]               ; payload words
+ISBEWR.ATTR.SKEW.O.B32 [R7+0x0], R16         ; position.x of vertex R7/4 (G = 6 words * 0x80 = 0x300)
+ISBEWR.ATTR.SKEW.O.B32 [R7+0x180], R6        ; position.w
+ISBEWR.ATTR.SKEW.O.B32 [R7+0x200], R2        ; generic 1.x
+ISBEWR.MAP.O.U8 [R4+0x4], R9                 ; R4 = lane * 6: two triangles a lane
+ISBEWR.ATTR.SKEW.O.B32 [R0+0x0], R3          ; R0 = 2 * lane * 4 + 0x300: generic 0.x per primitive
+MOV R0, 0x10 ; ISBEWR.MAP.O.B32 [RZ+0x3], R0 ; 16 primitives (lane 0)
+```
+
+Its task program, 32 invocations, one payload record of 0x28 bytes for each meshlet that passes the culling:
+
+```
+ISBERD.ATTR.SKEW.B32 R4, [RZ+0x0]            ; workgroup index
+S2R R15, SR_LANEID ; IMAD R4, R4, 0x20, R15  ; global invocation
+VOTEU.ANY ; POPC R6 (lanes below)            ; compacted slot
+IMAD R1, R6, 0x28, RZ
+ISBEWR.ATTR.O.B32 [R1+0x10], R2              ; payload, ten words
+POPC R0, UR5 ; ISBEWR.ATTR.O.B32 [RZ+0x4], R0 ; mesh groups to launch
+```
+
+### Draws
+
+The game calls `DrawMeshTasks(first 0, count 1)`, and `(0, 6)` and `(0, 30)`. It calls no indirect mesh draw in the
+runs so far, and it binds its mesh programs with stages `0xff`. `SetGeometryProcessingMode(2)` comes before them.
+
+The driver writes Turing macro calls (method 0xe00 + 2 n is `CALL_MME_MACRO(n)`), not 3D methods:
+
+| Function (sdk offset from 0xbd0c000) | Push buffer |
+| --- | --- |
+| `SetGeometryProcessingMode` (`0x5e2e10`) | `0x8000_0e26 \| mode << 16` (IMMD, macro 0x13), `0x8000_0e3e` (macro 0x1f, 0) |
+| `DrawMeshTasks` (`0x5e2e80`) | `0xa002_0ea2`, count, first (macro 0x51) |
+| `DrawMeshTasks3D` (`0x5e3320`) | `0xa003_0ec8`, x, y, z (macro 0x64) |
+| `DrawMeshTasksIndirect` (`0x5e2f00`) | `0x91120002`, `0x81900e36`, `0xa002_0e62` (macro 0x31), then a GPFIFO entry of the indirect buffer's words |
+| `MultiDrawMeshTasks*Indirect*` | a helper (`0x5e2830`) with macro methods 0x3b40 and 0x3990 |
+
+On the hardware the macros end in NVK's sequence (`nvk_mme_build_draw_mesh`): `SET_DRAW_CONTROL_A` with points,
+then `DRAW_VERTEX_ARRAY_BEGIN_END_A` (0x9c) with 0 and the task count x * y * z. Mesh state is `SET_MESH_CONTROL`
+(0x453), `SET_MESH_SHADER_A` (0x454: topology, most vertices, most primitives), `SET_MESH_SHADER_B` (0x455: shared
+lines, invocations) and `SET_MESH_INIT_SHADER` (0x456: invocations, local lines, payload lines) (`clc597.h`). With
+`nvn_direct` the runtime takes the API calls and needs none of the macros.
+
+### Design
+
+The host (an RTX 2080) has `VK_EXT_mesh_shader` with 256 vertices and primitives and 128 task invocations, more than
+the game asks for.
+
+1. NVN (small, done in part). `NvnProgram` keeps stages 6 and 7 (`NVN_STAGES`, the c[0] record moves to 0x98).
+   Still to do: keep the section's mesh fields (`NvnSectionMesh`) and the per-primitive SPH address in the program
+   and in `NvnPBindProgram`. Record the draws as `OP_DRAW_MESH` {first, count} or {x, y, z}, and the indirect ones
+   with the buffer's address, count address and stride, as `OP_DISPATCH_INDIRECT` does. Replay them in
+   `nvn_draw.c` as a draw whose program slots are task, mesh and fragment.
+2. Translator (the large part, `sm86_translate.c`). New stages ST_TS and ST_MS, given by NVN, not by the SPH. Model
+   the ISBE as Workgroup arrays: the output area (`u32 [V + primitive area]`), the map (`u32 [4 + 3 * most
+   primitives]`, a byte to a word) and, for a task program, the payload as `TaskPayloadWorkgroupEXT`. `ISBEWR` and
+   `ISBERD` become stores and loads at their offsets, so the program's own addressing needs no decode. `EXIT` returns
+   from the program's function. An epilogue in `main` after a workgroup barrier then does the outputs:
+   - mesh: `OpSetMeshOutputsEXT(most vertices, count)`, the count from map word 3 (0 at the start). Then a loop over
+     vertices and primitives that writes `gl_Position`, the generic outputs (`Location` = generic n, per-primitive ones
+     `PerPrimitiveEXT`), and `PrimitiveTriangleIndicesEXT` from the map. The skew offsets come from the OMAPs and
+     the most vertices, at translation.
+   - task: `OpEmitMeshTasksEXT(word 1, 1, 1)` with the payload.
+   The workgroup index is `WorkgroupId.x`, from either kind of read at offset 0. `SR_LANEID` is the subgroup
+   invocation. Constant banks, textures and global buffers are as in the vertex stage. About 600 to 900 lines with
+   tests, and SPIR-V tests through `snx-shaderc` with `spirv-val`.
+3. Fragment linkage. A fragment program reads per-primitive generic n as a plain input. Its module must declare
+   them `PerPrimitiveEXT`, so the fragment shader key gets a mask of per-primitive locations from the mesh program
+   (`pipeline.c`'s key, `fs_variant` in `render.c`).
+4. Vulkan (medium, `pipeline.c`, `render.c`, `vk.h`, `device.c`). Turn on `VK_EXT_mesh_shader` (`meshShader`,
+   `taskShader`), add the stage bits to the descriptor set layouts' visibility, and build pipelines without vertex
+   input and input assembly state from task, mesh and fragment modules. The key and the pipeline file need the two
+   new modules. Draw with `vkCmdDrawMeshTasksEXT(count, 1, 1)` and `first` in a push constant that the translator adds
+   to `WorkgroupId.x` (the hardware's index is the vertex ID, which starts at the draw's first vertex), or with
+   `(x * y * z, 1, 1)` for the 3D draws: the hardware draws one linear list of groups, and the program finds its
+   index. Indirect: `vkCmdDrawMeshTasksIndirectEXT` and `...IndirectCountEXT` on the guest buffer, with a pass that
+   multiplies x, y and z when the game uses the 3D forms. About 400 to 600 lines.
+
+### Open questions
+
+- Which mode values `SetGeometryProcessingMode` takes (2 before mesh draws) and what macro 0x1f does.
+- Whether a task program's payload header (bytes 0 to 0xf) holds more than the count at 0x4, and what the hardware
+  does when no lane writes the count. The design starts it at 0.
+- Whether `first` reaches the index as the first vertex of the point draw does (the game passes 0, so the runs
+  cannot show it).
+- The task and mesh stage bits of `BindProgram` (the game binds 0xff), probably 0x40 and 0x80.

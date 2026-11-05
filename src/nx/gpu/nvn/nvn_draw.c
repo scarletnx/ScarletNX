@@ -787,7 +787,8 @@ static void tf_buffers(NvnDraw* d) {
     }
     d->dirty |= D_BIND;
 }
-/* size: the record's payload bytes, which stop before c0 for a game other than an Ounce one (nvn_cmd.c) */
+/* size: the record's payload bytes, which stop after the first six stages for a game other than an Ounce one
+   (nvn_cmd.c) */
 static void bind_program(NvnDraw* d, u64 payload, u32 size) {
     NvnPBindProgram r = {0};
     static const i32 nvn_stage[DS_PROGRAM_SLOTS] = {NVN_SHADER_STAGE_VERTEX,       NVN_SHADER_STAGE_VERTEX,
