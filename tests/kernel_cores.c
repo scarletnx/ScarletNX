@@ -80,6 +80,8 @@ int mem_map(u64 addr, u64 size, u32 state, u32 perm) {
 u64 mem_total(void) { return 0; }
 u64 used_memory(void) { return 0; }
 void plat_exit_now(int code) { exit(code); }
+/* the system's name for a thread (common.c), which this test does not link */
+void snx_thread_name(const char* name) { (void)name; }
 /* a guest thread's host thread, never run here: the stack it was asked with; thread_fails makes the system refuse
    it, as one out of room does */
 static size_t started_stack;
