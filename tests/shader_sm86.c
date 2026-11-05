@@ -2123,6 +2123,27 @@ static void test_mesh_refused(void) {
     refused(code, 3, ST_TS, sph, k, "task payload of 0x4 bytes");
 }
 
+/* A fragment program's inputs that its draw's mesh program writes per primitive (ShaderInfo.prim_mask) are
+   PerPrimitiveEXT, and the others are not */
+static void test_fragment_per_primitive(const char* spirv_val, const char* dir) {
+    u8 code[16 * 8] = {0};
+    u32 n = fragment_program(code), fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[6] = 2;
+    fsph[18] = 0xf;
+    for (u32 mask = 0; mask < 4; mask += 3) {
+        ShaderInfo si = {0};
+        si.prim_mask = mask; /* generic 0 (its input), and generic 1, which it does not read */
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) return;
+        CHECK(spv_decorates(spv, count, 5271) == (mask != 0) && spv_declares(spv, count, 5283) == (mask != 0));
+        if (mask) CHECK(validate(spirv_val, dir, "fs_per_primitive", spv, count));
+        free(spv);
+    }
+}
+
 static void test_tcs_empty(void) {
     u8 code[16 * 2] = {0};
     put(code, 0, exit_insn());
@@ -2177,6 +2198,7 @@ int main(int argc, char** argv) {
     test_task(spirv_val, dir);
     test_mesh_after_task(spirv_val, dir);
     test_mesh_refused();
+    test_fragment_per_primitive(spirv_val, dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

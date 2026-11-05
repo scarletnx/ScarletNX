@@ -145,7 +145,8 @@ typedef struct {
     u64 tex_query_mask;
     ShMesh mesh; /* key (task and mesh programs) */
     /* the generics that go to the fragment program per primitive: of a mesh program, the per-primitive outputs that
-       translation found (in out_mask too) */
+       translation found (in out_mask too); and key (fragment programs), the inputs that the draw's mesh program
+       writes per primitive, which the module declares PerPrimitiveEXT */
     u32 prim_mask;
 } ShaderInfo;
 /* ShaderInfo.tex_query_hint in a graphics key's words (vk_shader_get's mask words 14 to 19: 3 bits a slot, the 64
