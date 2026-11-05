@@ -270,8 +270,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   the queue runs its tree's RAM and CPU are in the first line, and a last one says how it goes:
   `Background recompile: Full`, `Gentle`, `Gentle, a game plays` or `Gentle until it ends:` and why, the threads it
   was started with when they were halved, and when the taskbar cannot show its progress, SDL's reason.
-- Settings > App's **Theme** switches to the next theme, or the one before: the built-in Default
-  and YoRHa, then each folder of `themes/` (see [Themes](#themes)). The menu opens in YoRHa until one is picked.
+- Settings > App's **Theme** switches to the next theme, or the one before: the built-ins, Default first and the
+  others by their folder's name, then each folder of `themes/` (see [Themes](#themes)). The menu opens in YoRHa until
+  one is picked.
   It is kept for the next start,
   as are UI scale and Language, in `app.ini` beside `settings.ini`: `[app]` with `theme` (a theme's folder
   name), `ui_scale` (1 to 4; a start without it takes twice the display's
@@ -674,6 +675,12 @@ what hactool has written, the recompile by its blocks, shows how far it is on it
 `time`, what is left at its pace so far (`01:23 left`). With `layout = console` the
 driver's own row says it, `extracted 1229 of 4096 MB (30%)`, written over itself each second. The menu fades out to black as a run starts and the run fades in from it; ESC
 fades the run out and the menu back in.
+
+`sepia-dark`, `wimsy`, `wimsy-dark`, `fuddles` and `fuddles-dark` are YoRHa's layout in the colours of the sites'
+themes (SWS, wimsy-dist's `docs/SWS.md`), each palette's light and dark: Sepia, YoRHa's own colours with its menus
+dark too; Wimsy's, from `dist/wimsy.svg`; and Fuddles', from `dist/splash/wimsy-fuddles.svg`. Their run screen is
+dark in both. wimsy-dist's `themes/theme.py` writes their `theme.ini` from the same colours as the sites', each held
+to 4.5:1 for text: a colour changes there, not in the files.
 
 The runtime draws a loading screen of its own in the same look while it prepares the shaders before a game starts
 (`prepare_shaders = 2`, the default). It shows steps with their progress, the lines of the work scrolling under
