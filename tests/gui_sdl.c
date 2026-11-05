@@ -3687,6 +3687,9 @@ int main(int argc, char** argv) {
     set_env_path("XDG_CACHE_HOME", xdg_root, "cache");
     /* the menu runs Switch inputs with the runtime it is part of, the other drivers from beside it */
     assert(initialize(&app, "/nonexistent/snx-gui-test/bin/scarletnx"));
+    /* no screen shows the frames: the software renderer on the dummy video has no vsync of its own, and SDL's would
+       sleep to the next 60th of a second at each present */
+    assert(SDL_SetRenderVSync(app.renderer, 0));
     app.open_url = record_url; /* no file manager opens on the machine */
     assert(!strcmp(app.self, "/nonexistent/snx-gui-test/bin/scarletnx"));
     assert(!strcmp(app.drivers, "/nonexistent/snx-gui-test/bin"));
