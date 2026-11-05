@@ -12,6 +12,7 @@
 #include "common/filesystem/host.h"
 #include "common/utilities/common.h"
 #include "support/3ds_guest.h"
+#include "support/3ds_vk_path.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -123,6 +124,7 @@ int main(int argc, char** argv) {
     for (unsigned model = 0; model < 2; ++model) {
         SnxCtrProcess* p = snx_ctr_process_new(&image, (SnxCtrModel)model);
         assert(p);
+        SnxCtrVkPath path = test_ctr_vk_path();
         if (!snx_ctr_present_init(p->memory, argv[1])) {
             assert(!model);
             snx_ctr_process_free(p);
@@ -130,6 +132,7 @@ int main(int argc, char** argv) {
             printf("no Vulkan device: presentation checks skipped\n");
             return 77;
         }
+        test_ctr_vk_path_taken(path);
         uint32_t gsp;
         assert(!snx_ctr_session_create(p, SNX_CTR_SERVICE_GSP, &gsp));
         uint32_t event = 0;

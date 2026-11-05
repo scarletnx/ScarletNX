@@ -5,6 +5,7 @@
    out in another order than its own, as a heap's may be. The output's bytes the conversion skips keep their values. */
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_y2r.h"
+#include "support/3ds_vk_path.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,11 +46,13 @@ int main(void) {
     SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
     char why[256];
     assert(m);
+    SnxCtrVkPath path = test_ctr_vk_path();
     if (!snx_ctr_vk_init(m, why, sizeof why)) {
         printf("no Vulkan device (%s): GPU Y2R checks skipped\n", why);
         snx_ctr_memory_free(m);
         return 77;
     }
+    test_ctr_vk_path_taken(path);
     static unsigned char src[3][MAX_SPAN], expected[MAX_SPAN];
     unsigned checked = 0;
     for (unsigned input = 0; input <= SNX_CTR_Y2R_YUYV; ++input)

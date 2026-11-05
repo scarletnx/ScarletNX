@@ -8,6 +8,7 @@
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
 #include "3ds/gpu/vk/vk_transfer.h"
+#include "support/3ds_vk_path.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,11 +53,13 @@ int main(void) {
     SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
     char why[256];
     assert(m);
+    SnxCtrVkPath path = test_ctr_vk_path();
     if (!snx_ctr_vk_init(m, why, sizeof why)) {
         printf("no Vulkan device (%s): GPU transfer checks skipped\n", why);
         snx_ctr_memory_free(m);
         return 77;
     }
+    test_ctr_vk_path_taken(path);
     unsigned checked = 0;
     for (unsigned i = 0; i < 24; ++i) { /* fills: 16-, 24- and 32-bit, odd sizes */
         uint32_t control = i % 3 == 0 ? 0 : i % 3 == 1 ? SNX_CTR_FILL_24BIT : SNX_CTR_FILL_32BIT;
