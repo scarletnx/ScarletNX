@@ -4318,6 +4318,10 @@ msgid "The log could not be saved to %s: %s"
 msgstr "无法将日志保存到 %s：%s"
 
 #: src/gui/main.c
+msgid "the share sheet did not open"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "%s is in %s, opened"
 msgstr ""
