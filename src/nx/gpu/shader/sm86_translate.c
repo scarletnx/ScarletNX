@@ -473,6 +473,10 @@ static u32 input_var(Ctx* c, u32 i) {
             type = c->si->attr_sint_mask & (1u << i) ? spv_emit_type_vec4(&c->e, c->t_i32) : c->t_v4u;
         c->in_attr[i] = spv_emit_input_vec4(&c->e, type, i, interpolation);
         add_interface(c, c->in_attr[i]);
+        if (c->stage == ST_FS && (c->si->prim_mask >> i & 1)) { /* a mesh program's output per primitive */
+            mesh_capability(c);
+            spv_emit_decorate(&c->e, c->in_attr[i], 5271 /* PerPrimitiveEXT */, NULL, 0);
+        }
         c->si->in_mask |= 1u << i;
     }
     return c->in_attr[i];

@@ -133,8 +133,10 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
    - a task program launches the mesh groups with OpEmitMeshTasksEXT(count, 1, 1) and a payload of si->mesh.payload
      bytes. The draw gives the task count to vkCmdDrawMeshTasksEXT(count, 1, 1).
    - a mesh program writes max_vertices vertices and triangles: Position, each generic n at Location n (si->out_mask,
-     the per-vertex and the per-primitive ones), the per-primitive ones decorated PerPrimitiveEXT (si->prim_mask,
-     which sm86_mesh_primitive_mask gives from the key alone) */
+     the per-vertex and the per-primitive ones), the per-primitive ones decorated PerPrimitiveEXT (si->prim_mask).
+   A fragment program takes the generics that the draw's mesh program writes per primitive in si->prim_mask (its key):
+   the mesh program's translated si->prim_mask, which sm86_mesh_primitive_mask gives from its key alone. Its module
+   declares those inputs PerPrimitiveEXT */
 /* the generics with a component in the output map of a vertex, tessellation or geometry SPH (its words 0 to 19):
    generic i's four components at bits 432 + 4 i on */
 static inline u32 sm86_omap_generics(const u32* sph) {
