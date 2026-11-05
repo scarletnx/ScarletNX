@@ -2739,6 +2739,8 @@ if(WIN32 AND TARGET SDL3::SDL3)
         "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
     snx_test_target(snx-test-platform-win32 11)
     target_link_libraries(snx-test-platform-win32 PRIVATE SDL3::SDL3 synchronization powrprof)
+    # plat_win32.c names its threads and says the system's reasons (snx_thread_name, snx_os_error)
+    target_link_libraries(snx-test-platform-win32 PRIVATE scarletnx-common)
     # the protection's tracking has no Windows version: the watch tracks, said; and none, which the scan says. Each in a
     # folder of its own, as ctest may run them at once and each writes, reads and removes the same file
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/platform_win32" "${CMAKE_CURRENT_BINARY_DIR}/platform_win32_protection"
