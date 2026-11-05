@@ -511,6 +511,23 @@ static u32 attr_load(Ctx* c, u32 addr) {
     fail(c, "attribute load 0x%x", addr);
     return c->zero;
 }
+/* the vertex output a generic or position address names (a legacy varying's generic), made on its first use: 0 for
+   another address */
+static u32 output_var(Ctx* c, u32 addr) {
+    if (shader_legacy_group(addr) >= 0) addr = shader_legacy_address(addr);
+    if (addr >= 0x70 && addr < 0x80) {
+        position_var(c);
+        return c->position;
+    }
+    if (addr < 0x80 || addr >= 0x280) return 0;
+    u32 i = (addr - 0x80) >> 4;
+    if (!c->out_attr[i]) {
+        c->out_attr[i] = spv_emit_output_vec4(&c->e, c->t_v4f, i);
+        add_interface(c, c->out_attr[i]);
+        c->si->out_mask |= 1u << i;
+    }
+    return c->out_attr[i];
+}
 static void attr_store(Ctx* c, u32 addr, u32 bits) {
     if (shader_legacy_group(addr) >= 0) addr = shader_legacy_address(addr);
     u32 var = 0, k = (addr >> 2) & 3;
@@ -522,10 +539,7 @@ static void attr_store(Ctx* c, u32 addr, u32 bits) {
         fail(c, "attribute store of stage %d", c->stage);
         return;
     }
-    if (addr >= 0x70 && addr < 0x80) {
-        position_var(c);
-        var = c->position;
-    } else if (addr == 0x5c) {
+    if (addr == 0x5c) {
         /* NAK's NAK_ATTR_VPRS_TABLE_INDEX from SM86, the primitive's shading rate: the default rate, one fragment
            a pixel, is what the translation gives without it */
         return;
@@ -537,15 +551,9 @@ static void attr_store(Ctx* c, u32 addr, u32 bits) {
         spv_emit_store(&c->e, c->point_size, to_f(c, bits));
         c->si->writes_point_size = 1;
         return;
-    } else if (addr >= 0x80 && addr < 0x280) {
-        u32 i = (addr - 0x80) >> 4;
-        if (!c->out_attr[i]) {
-            c->out_attr[i] = spv_emit_output_vec4(&c->e, c->t_v4f, i);
-            add_interface(c, c->out_attr[i]);
-            c->si->out_mask |= 1u << i;
-        }
-        var = c->out_attr[i];
-    } else {
+    }
+    var = output_var(c, addr);
+    if (!var) {
         fail(c, "attribute store 0x%x", addr);
         return;
     }
@@ -1093,9 +1101,24 @@ static int tex_operands(const Sm86Insn* in, u32 n0, u32 n1, u32* regs) {
     return 1;
 }
 /* the components of a vec4 result that the channel mask selects, into dst and dst + 1, then dst1 and dst1 + 1 (or on
-   from dst when dst1 is RZ) */
+   from dst when dst1 is RZ). With .F16 (bit 79, NAK's note on TLD) a float result is two halves a register: the
+   first two components into dst (the first in the low half), the next two into dst1 (or dst + 1), a lone last one
+   with a zero high half. One game's text programs take an alpha that way (HADD2.F32 R, -RZ, R.H0_H0), and with each
+   component in a register of its own their glyphs read the low bits of a float */
 static void tex_results(Ctx* c, const Sm86Insn* in, u32 value, u32 scalar) {
     u32 mask = sm86_field(in, 72, 4), d0 = in->dst, d1 = sm86_field(in, 64, 8), written = 0;
+    if (scalar == c->t_f32 && sm86_field(in, 79, 1)) {
+        u32 half[4], n = 0;
+        for (u32 k = 0; k < 4; k++)
+            if (mask & (1u << k)) half[n++] = spv_emit_vec4_extract(&c->e, scalar, value, k);
+        for (u32 p = 0; 2 * p < n; p++) {
+            u32 pair =
+                spv_emit_vec2_construct(&c->e, c->t_v2f, half[2 * p], 2 * p + 1 < n ? half[2 * p + 1] : cf(c, 0.0f));
+            u32 r = p == 0 || d1 >= SM86_RZ ? (d0 >= SM86_RZ ? d0 : d0 + p) : d1;
+            wr(c, r, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, pair));
+        }
+        return;
+    }
     for (u32 k = 0; k < 4; k++) {
         if (!(mask & (1u << k))) continue;
         u32 v = spv_emit_vec4_extract(&c->e, scalar, value, k);
@@ -3112,11 +3135,14 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
             c->pred[p] = spv_emit_function_variable_init(e, pred_ptr, c->false_v);
             c->upred[p] = spv_emit_function_variable_init(e, pred_ptr, c->false_v);
         }
-        /* a vertex program's position, made before its code, so that every exit's depth fix sees it */
+        /* a vertex program's outputs, made before its code: every exit's depth fix sees the position, and each
+           starts as (0, 0, 0, 1), which the console gives the components a program doesn't write (spirv_translate.c
+           does the same for Maxwell's). One game's full screen passes write only the position's x and y, and with
+           an undefined w their triangles drew nothing */
         for (u32 i = 0; i < n && stage == ST_VS; i++)
-            if (insn[i].op == SM86_AST && sm86_field(&insn[i], 40, 10) < 0x80 &&
-                sm86_field(&insn[i], 40, 10) + 4 * (sm86_field(&insn[i], 74, 2) + 1) > 0x70)
-                position_var(c);
+            if (insn[i].op == SM86_AST)
+                for (u32 k = 0; k <= sm86_field(&insn[i], 74, 2); k++)
+                    output_var(c, sm86_field(&insn[i], 40, 10) + 4 * k);
         StructEmit se = {0};
         se.st = st;
         se.open = 1;
@@ -3124,6 +3150,13 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
         if (!se.label) abort();
         se.used = (u8*)(se.label + 4 * (size_t)st->nscopes + 2 * (size_t)st->ntokens + 1);
         if (st->uses_flag) se.flag = spv_emit_function_variable_init(e, reg_ptr, c->zero);
+        if (stage == ST_VS) {
+            u32 parts[4] = {cf(c, 0.0f), cf(c, 0.0f), cf(c, 0.0f), cf(c, 1.0f)};
+            u32 empty = spv_emit_constant_vec4(e, c->t_v4f, parts);
+            if (c->position) spv_emit_store(e, c->position, empty);
+            for (u32 i = 0; i < 32; i++)
+                if (c->out_attr[i]) spv_emit_store(e, c->out_attr[i], empty);
+        }
         while (!c->failed) {
             int step = structure_step(c, &se);
             if (step == SE_DONE) break;

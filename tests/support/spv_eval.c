@@ -162,8 +162,27 @@ static const char* ext_inst(Ev* e, uint32_t t, uint32_t fn, const uint32_t* args
     uint32_t n = components(e, t);
     int fl = is_float(e, t);
     *r = (Val){{0}};
-    if (fn == 58) return "GLSL PackHalf2x16"; /* not needed by the tests yet */
-    if (fn == 62) {                           /* UnpackHalf2x16: the low half into x, the high one into y */
+    if (fn == 58) { /* PackHalf2x16: x into the low half, y into the high one, each rounded to the nearest even */
+        for (uint32_t k = 0; k < 2; k++) {
+            uint32_t f = (uint32_t)e->ids[args[0]].v.c[k], sign = (f >> 16) & 0x8000u, h;
+            float a = fabsf(f32(f));
+            if (a != a)
+                h = 0x7e00u;
+            else if (a >= 65520.0f)
+                h = 0x7c00u;
+            else if (a < 6.103515625e-05f) /* a subnormal half: in units of 2^-24 */
+                h = (uint32_t)nearbyintf(ldexpf(a, 24));
+            else {
+                int ex;
+                float m = frexpf(a, &ex); /* a = m 2^ex, m in [0.5, 1) */
+                h = (uint32_t)(ex + 14) << 10;
+                h += (uint32_t)nearbyintf(ldexpf(m, 11)) - 0x400u; /* a carry into the exponent is the next binade */
+            }
+            r->c[0] |= (uint64_t)(sign | h) << (16 * k);
+        }
+        return NULL;
+    }
+    if (fn == 62) { /* UnpackHalf2x16: the low half into x, the high one into y */
         for (uint32_t k = 0; k < 2; k++) {
             uint32_t h = (uint32_t)(e->ids[args[0]].v.c[0] >> (16 * k)) & 0xffffu;
             uint32_t sign = (h >> 15) << 31, exp = (h >> 10) & 31, man = h & 0x3ffu;
@@ -334,6 +353,13 @@ static const char* run(Ev* e, uint32_t entry_at) {
             }
             case 61: { /* OpLoad */
                 Val v;
+                const Id* pt = &e->ids[t];
+                if (pt->kind == K_TYPE && (pt->op == 25 || pt->op == 27)) { /* an image: its binding */
+                    r->kind = K_VALUE;
+                    r->type = t;
+                    r->v = (Val){{e->ids[in[3]].binding}};
+                    break;
+                }
                 if (!load(e, t, e->ids[in[3]].v.c[0], &v)) return "load";
                 r->kind = K_VALUE;
                 r->type = t;
@@ -363,6 +389,23 @@ static const char* run(Ev* e, uint32_t entry_at) {
                 r->kind = K_VALUE;
                 r->type = t;
                 r->v.c[0] = ptr;
+                break;
+            }
+            case 86:  /* OpSampledImage */
+            case 100: /* OpImage */
+                r->kind = K_VALUE;
+                r->type = t;
+                r->v = e->ids[in[3]].v;
+                break;
+            case 87:   /* OpImageSampleImplicitLod */
+            case 88:   /* OpImageSampleExplicitLod */
+            case 95: { /* OpImageFetch */
+                uint64_t b = e->ids[in[3]].v.c[0];
+                if (!b || b > 64) return "a sample of an image with no binding";
+                r->kind = K_VALUE;
+                r->type = t;
+                r->v = (Val){{0}};
+                for (uint32_t k = 0; k < 4; k++) r->v.c[k] = e->env->texel[b - 1][k];
                 break;
             }
             case 12: { /* OpExtInst */
@@ -739,7 +782,7 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
     }
     if (!why && !entry_at) why = "no entry point";
     if (!why) why = run(e, entry_at);
-    /* the outputs, by location, and FragDepth (BuiltIn 22) */
+    /* the outputs, by location, FragDepth (BuiltIn 22) and Position (BuiltIn 0) */
     for (uint32_t id = 0; id < e->bound; id++) {
         Id* v = &e->ids[id];
         if (v->kind != K_VAR || v->sclass != 3) continue;
@@ -751,6 +794,8 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
             env->out_written[v->location - 1] = 1;
         }
         if (v->builtin == 22 + 1) env->frag_depth = m[0];
+        if (v->builtin == 0 + 1)
+            for (uint32_t k = 0; k < 4 && k < n; k++) env->position[k] = m[k];
     }
     for (uint32_t id = 0; id < e->bound; id++) {
         Id* v = &e->ids[id];

@@ -1639,6 +1639,102 @@ static void test_tld_multisample(const char* spirv_val, const char* dir) {
     free(spv);
 }
 
+/* TEX.F16 (bit 79) packs its components two halves a register, as one game's text programs read them with
+   HADD2.F32 R, -RZ, R.H0_H0: the texel (0.25, 0.5, 0.75, 0.625). Its alpha alone goes to R4's low half, with a zero
+   high half; all four to R8 (r low, g high) and R10 (b low, a high), dst1 at 64-71. Color 0 is R4.H0 + R8.H0 (0.875),
+   R8.H1 (0.5), R10.H0 (0.75), R4.H1 + R10.H1 (0.625) */
+static Word tex_f16(u32 dst, u32 dst1, u32 mask) {
+    Word x = fix(0xb60);
+    set(&x, 16, 8, dst);
+    set(&x, 24, 8, 0); /* x and y in R0 and R1 */
+    set(&x, 32, 8, 255);
+    set(&x, 40, 19, 2u << 14 | 0x20 >> 2);
+    set(&x, 61, 3, 1); /* 2D */
+    set(&x, 64, 8, dst1);
+    set(&x, 72, 4, mask);
+    set(&x, 79, 1, 1);
+    set(&x, 81, 3, 7);
+    return x;
+}
+/* HADD2.F32 dst, a.(swizzle sa), b.(swizzle sb): NAK's codes, 2 the low half twice, 3 the high one */
+static Word hadd2_f32(u32 dst, u32 a, u32 sa, u32 b, u32 sb) {
+    Word x = alu(0x030, 1, dst, a);
+    set(&x, 32, 8, b);
+    set(&x, 60, 2, sb);
+    set(&x, 74, 2, sa);
+    set(&x, 78, 1, 1);
+    return x;
+}
+static void test_tex_f16(const char* spirv_val, const char* dir) {
+    u8 code[16 * 8] = {0};
+    put(code, 0, tex_f16(4, 255, 0x8));
+    put(code, 1, tex_f16(8, 10, 0xf));
+    put(code, 2, hadd2_f32(0, 4, 2, 8, 2));
+    put(code, 3, hadd2_f32(1, 255, 0, 8, 3));
+    put(code, 4, hadd2_f32(2, 255, 0, 10, 2));
+    put(code, 5, hadd2_f32(3, 4, 3, 10, 3));
+    put(code, 6, exit_insn());
+    put(code, 7, bra(7, 7, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 8 * 16, ST_FS, fsph, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "tex f16: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(si.ntex == 1 && si.tex[0].cbuf_off == 0x20 / 4);
+    SpvEvalEnv env = {0};
+    const u32 texel[4] = {f2u(0.25f), f2u(0.5f), f2u(0.75f), f2u(0.625f)};
+    memcpy(env.texel[SNX_VKB_TEX], texel, sizeof texel);
+    const char* why = spv_eval(spv, count, &env);
+    if (why) fprintf(stderr, "tex f16: the evaluator stops at %s\n", why);
+    const u32* o = env.out[0];
+    int ok = !why && env.out_written[0] && o[0] == f2u(0.875f) && o[1] == f2u(0.5f) && o[2] == f2u(0.75f) &&
+             o[3] == f2u(0.625f);
+    CHECK(ok);
+    if (!ok) fprintf(stderr, "tex f16: %08x %08x %08x %08x\n", o[0], o[1], o[2], o[3]);
+    CHECK(validate(spirv_val, dir, "fs_tex_f16", spv, count));
+    free(spv);
+}
+
+/* A vertex program's outputs start as (0, 0, 0, 1), as the console gives the components a program doesn't write: one
+   that writes the position's x and y (0.5, 0.25) and generic 0's x (0.5) gets a w of 1 for both, which one game's
+   full screen passes leave to it */
+static Word ast(u32 addr, u32 data, u32 count) {
+    Word x = fix(0x322);
+    set(&x, 24, 8, 255);
+    set(&x, 32, 8, data);
+    set(&x, 40, 10, addr);
+    set(&x, 64, 8, 255);
+    set(&x, 74, 2, count - 1);
+    return x;
+}
+static void test_output_defaults(const char* spirv_val, const char* dir) {
+    u8 code[16 * 6] = {0};
+    put(code, 0, mov_imm(1, f2u(0.5f)));
+    put(code, 1, mov_imm(2, f2u(0.25f)));
+    put(code, 2, ast(0x70, 1, 2));
+    put(code, 3, ast(0x80, 1, 1));
+    put(code, 4, exit_insn());
+    put(code, 5, bra(5, 5, 7, 0));
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    SpvEvalEnv env = {0};
+    int ran = run_stage(ST_VS, code, 6, vsph, &env);
+    const u32 *p = env.position, *g = env.out[0];
+    int ok = ran && p[0] == f2u(0.5f) && p[1] == f2u(0.25f) && p[2] == 0 && p[3] == f2u(1.0f) && env.out_written[0] &&
+             g[0] == f2u(0.5f) && g[1] == 0 && g[2] == 0 && g[3] == f2u(1.0f);
+    CHECK(ok);
+    if (!ok)
+        fprintf(stderr, "output defaults: position %08x %08x %08x %08x, generic 0 %08x %08x %08x %08x\n", p[0], p[1],
+                p[2], p[3], g[0], g[1], g[2], g[3]);
+    (void)spirv_val, (void)dir;
+}
+
 int main(int argc, char** argv) {
     const char* spirv_val = argc > 2 ? argv[2] : NULL;
     const char* dir = argc > 1 ? argv[1] : ".";
@@ -1669,6 +1765,8 @@ int main(int argc, char** argv) {
     test_brxu(spirv_val, dir);
     test_ipa_uniform(spirv_val, dir);
     test_tld_multisample(spirv_val, dir);
+    test_tex_f16(spirv_val, dir);
+    test_output_defaults(spirv_val, dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
