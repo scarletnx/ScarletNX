@@ -8,8 +8,10 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* program stages; the values index tables and are stored in the corpus */
-enum { ST_VS = 0, ST_TCS = 1, ST_TES = 2, ST_GS = 3, ST_FS = 4, ST_CS = 5 };
+/* program stages; the values index tables and are stored in the corpus. ST_TS and ST_MS are the task and mesh
+   programs of an Ounce game (sm86.h), which only the SM86 translator takes: NVN's control section gives these stages,
+   as the SPH cannot */
+enum { ST_VS = 0, ST_TCS = 1, ST_TES = 2, ST_GS = 3, ST_FS = 4, ST_CS = 5, ST_TS = 6, ST_MS = 7 };
 #define SH_MAXTEX          64 /* texture slots per program */
 #define SH_INDEXED_TABLES  10 /* indexed texture tables per program */
 /* A 1D texture is bound as a 2D image, and a buffer texture longer than a row of one as rows of 2^SH_TEXEL_ROW_SHIFT
