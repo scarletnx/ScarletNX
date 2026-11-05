@@ -12389,7 +12389,6 @@ int main(int argc, char** argv) {
             free(text);
             assert(!snx_mkdirs(game) && !snx_write_file(log, crashed, strlen(crashed)));
             assert(!snx_set_file_time(log, (SnxU64)ran));
-            free(crashed);
             assert(!run_kept(app.run_log, game, log, 1)); /* the run that wrote it, which named it */
             snprintf(app.message, sizeof(app.message), "before the log");
             share_pick(&app, 0);
@@ -12494,6 +12493,7 @@ int main(int argc, char** argv) {
                 free(one);
             }
             assert(!snx_remove_tree(game));
+            free(crashed);
             free(log);
             free(game);
         }
