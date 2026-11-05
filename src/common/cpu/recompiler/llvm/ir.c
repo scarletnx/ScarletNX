@@ -390,10 +390,6 @@ void snx_ir_free(SnxIr* ir) {
    without touching r2 or the arguments. A declared callee's stub is a branch to it, which the linker points at its
    local entry (ELFv2) or code (ELFv1's descriptor); a pointer's stub repeats snx_lookup (cpu.h) and jumps through the
    count register, with r12 at the global entry as ELFv2 expects, or through the descriptor (ELFv1) */
-static int ppc_target(const SnxIr* ir) {
-    const char* target = LLVMGetTarget(ir->mod);
-    return !strncmp(target, "powerpc64", 9) || !strncmp(target, "ppc64", 5);
-}
 static LLVMValueRef ppc_stub(SnxIr* ir, LLVMTypeRef type, const char* name, const char* text) {
     LLVMValueRef stub = LLVMGetNamedFunction(ir->mod, name);
     if (stub) return stub;
@@ -682,7 +678,7 @@ int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned cha
     *size = 0;
     if (snx_ir_module_optimize(ir, module, opt, error, error_size)) return -1;
     declared_names(module, &declared);
-    if (ppc_target(ir)) {
+    if (ir->ppc) {
         ppc_tail_calls(ir);
         /* the pointer's load the stub repeats is dead now */
         options = LLVMCreatePassBuilderOptions();
