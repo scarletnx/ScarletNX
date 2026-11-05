@@ -8,6 +8,8 @@
 * [Measure descriptor submission](#measure-descriptor-submission)
 * [Search for faster GPU settings](#search-for-faster-gpu-settings)
 * [Rebuild / checks](#rebuild--checks)
+* [CI checks locally](#ci-checks-locally)
+  * [Local CI containers](#local-ci-containers)
 * [Run / diagnose](#run--diagnose)
 * [CPU sampling without perf](#cpu-sampling-without-perf)
 * [Profiling](#profiling)
@@ -149,6 +151,153 @@ of this repository draws them. The secrets: `NIGHTLY_TOKEN` (writes that reposit
 `DISCORD_WEBHOOK_RELEASES` (a version's message).
 Verify affected scenes manually, repeat intermittent failures, record evidence/scope.
 Test guest semantics + malformed IPC with synthetic cases.
+
+## CI checks locally
+
+A native build and `ctest` are less than CI runs. CI also builds Windows, Android and iOS, runs Linux x86-64 and AArch64,
+and runs the tests under ASan, UBSan and lavapipe. A check that only CI runs can pass locally for a long time and fail
+on its first CI run. `scripts/ci-local.py` runs the checks this machine can run, and says which ones it cannot.
+
+Before a pull request, run the preflight:
+
+| Command | Runs | Intensity |
+| --- | --- | --- |
+| `python3 scripts/ci-local.py preflight` | the merge, the docs and agent files, and the host build and tests when the change touches code | quick; docs-only changes skip the build |
+| `python3 scripts/ci-local.py preflight --static-only` | the merge and the static checks | the quickest pass |
+| `python3 scripts/ci-local.py preflight --containers` | the same, then the Linux job of this architecture | the first run builds, and later runs reuse the build and ccache |
+| `python3 scripts/ci-local.py preflight --both --sanitizers` | both architectures and the ASan and UBSan build | the full gate; long |
+
+`--jobs N` sets build and test parallelism, and `--cpus N` limits the container; both default to 4. `--dry-run`
+prints the changed classification, the plan and the container command without running them. On Apple silicon, the
+x86-64 job runs under Rosetta and is the slow one. Use `--both` for changes that touch x86-64 code or the toolchain.
+The merge check writes the working tree, uncommitted files included, as a temporary commit, so it changes no branch,
+index or file. It includes `docs/`, `CLAUDE.md` and `.claude/`. The container checks are recommended, not required:
+without an engine, `preflight` runs the host checks and names the checks that did not run. It never installs an engine.
+The rest of the commands:
+
+```sh
+python3 scripts/ci-local.py doctor              # what is installed, and what each missing tool covers
+python3 scripts/ci-local.py static              # tracked material, docs and the Python under tools/
+python3 scripts/ci-local.py native              # the host build and ctest, with CI's options
+python3 scripts/ci-local.py native --vulkan --sanitizers
+python3 scripts/ci-local.py linux --arch x86_64 # the Linux job in Docker or Podman
+python3 scripts/ci-local.py linux --sanitizers  # the linux-sanitizers job too
+python3 scripts/ci-local.py windows --test      # the Windows cross build, and ctest under Wine
+python3 scripts/ci-local.py android --install   # the APK, then the menu on a phone or emulator
+python3 scripts/ci-local.py ios --simulator     # the iOS build, then the menu in the Simulator
+```
+
+- `native` configures with `SNX_TEST_VP9_VECTORS=ON`. `--arm-diff` adds `SNX_TEST_ARM_DIFF=ON` with unicorn 2.1.4, as
+  the Linux job does. The headless Vulkan tests and the sanitizers are separate builds, as they are in CI. On a Mac it
+  also builds the platform tests against Homebrew's shared SDL3, as the apple job does (`--no-system-sdl3` skips it).
+- `--strict` makes a check that this machine cannot run a failure, for a pre-push check.
+- The menu's screen tests (`gui_sdl_events`, `gui_setup`) are registered on Linux and Windows only. `native --screen`
+  runs the macOS branch by hand; it has known failures from the Mac's long temporary paths, so it is not part of the
+  native parity check. `linux` runs the tests CI actually runs.
+- `linux` runs the Linux job in Podman or Docker; see [Local CI containers](#local-ci-containers) for the setup and
+  both architectures.
+- `windows` needs llvm-mingw on `PATH`, and Wine for the tests. It checks the code that only Windows compiles, which is
+  where most cross-platform breaks are.
+- `android` needs the SDK, the NDK and Gradle 9. It builds LLVM for an ABI that has none (about 10 minutes), then the
+  APK. `--install` needs `adb` and a device or emulator.
+- `ios` needs Xcode. `--simulator` builds the simulator slice and starts the app there; without it, the build is the
+  device build CI makes. `SNX_MOLTENVK` names an extracted MoltenVK release, as the CI passes it: without one the app
+  has no Vulkan driver, and a game or the menu's renderer may stop.
+
+### Local CI containers
+
+`linux` needs Podman or Docker already installed: it never installs an engine or changes a host setting. The
+container checks are optional before a pull request. Podman is preferred, because its machine is rootless and starts
+no root daemon. The container runs with `--rm` and
+`--security-opt=no-new-privileges`, and mounts only the checkout (with its common `.git` in a worktree) and
+`.cache/ci-pacman-<arch>`: no home folder, no Docker socket and no host network. Podman runs it rootless; Docker
+Desktop keeps it in its VM. On a Linux host, SELinux relabels the checkout (`:Z`), and a rootful Docker writes into it
+as root, so the command refuses one unless `--allow-rootful` is given.
+
+#### Podman on macOS
+
+```sh
+brew install podman
+# only for x86-64 containers on Apple silicon
+softwareupdate --install-rosetta --agree-to-license
+mkdir -p ~/.config/containers
+printf '[machine]\nrosetta = true\n' >> ~/.config/containers/containers.conf
+podman machine init --cpus 4 --memory 8192 --disk-size 100
+podman machine start
+```
+
+If `containers.conf` already has a `[machine]` section, add `rosetta = true` there instead of appending a second one.
+
+A machine made before the `rosetta = true` line must be removed and made again:
+
+```sh
+podman machine stop
+podman machine rm -f
+podman machine init --cpus 4 --memory 8192 --disk-size 100 --now
+```
+
+Check the machine and both architectures:
+
+```sh
+podman info --format '{{.Host.Security.Rootless}}'          # true
+podman machine inspect | grep -o '"Rosetta": [a-z]*'         # true
+podman run --rm --platform linux/amd64 archlinux:latest uname -m        # x86_64
+podman run --rm --platform linux/arm64 ghcr.io/pkgforge-dev/archlinux:latest uname -m  # aarch64
+```
+
+`archlinux:latest` is x86-64 only; the AArch64 job uses pkgforge's Arch Linux ARM image, which the script selects. On
+Apple silicon the x86-64 job runs through Rosetta. A `--provider libkrun` machine with a FEX image is the
+alternative; FEX is a Linux emulator, so it runs inside the machine, not on macOS itself.
+
+#### Run both architectures
+
+```sh
+python3 scripts/ci-local.py linux --arch aarch64 --quick
+python3 scripts/ci-local.py linux --arch x86_64 --quick
+```
+
+`--quick` runs the default build and its ctest, which includes the screen tests. Remove it for the headless Vulkan
+build, and add `--sanitizers` for the ASan and UBSan build. Use `--dry-run` to print the exact container command,
+`--engine` to choose Podman or Docker, `--image` or `SNX_CI_IMAGE` to pin an image, and `--cpus` or `--memory` to
+limit the container; by default it uses 4 CPUs and 4 build jobs, as a CI runner.
+
+The container installs `ccache` and keeps its cache in `.cache/ci-ccache-<arch>`. The first run fills the build,
+dependency and ccache folders, and later runs of the same architecture reuse them. The host cache is not reused: on a Mac the host compiler makes Mach-O objects,
+and the container makes Linux objects. A host `ccache` is optional for the native build. To see the container's hit
+rate:
+
+```sh
+CCACHE_DIR=$PWD/.cache/ci-ccache-aarch64 ccache --show-stats
+```
+
+A worktree is fine: the script mounts the worktree and its common `.git` at their absolute paths, so git and the build
+information see the same repository inside the container.
+
+#### Docker
+
+Docker works with the same command. On macOS, enable Rosetta for x86-64 containers in Docker Desktop. On Linux, use
+rootless Docker: the command refuses a rootful Docker because it writes the checkout as root. `doctor` prints these
+setup steps when it finds no engine.
+
+#### Troubleshooting
+
+- `podman info` fails: run `podman machine start`; a stopped machine is reported, not treated as a failed job.
+- `podman machine inspect` says `"Rosetta": false`: recreate the machine after the `[machine]` setting; a running
+  machine keeps the setting it was made with.
+- An x86-64 container on an ARM Mac turns pacman's download sandbox off. Pacman 7's seccomp check fails under
+  Rosetta. The container is rootless.
+- `--dry-run` prints the command when no engine is installed; this shows the mounts and flags before a first run.
+- The build writes host-owned files on macOS. If a Linux host used a rootful Docker, the checkout can hold root-owned
+  files; switch to rootless Podman or Docker, or pass `--allow-rootful` knowingly.
+- Stop the machine when you do not use it: `podman machine stop`. Start it again with `podman machine start`. The quick
+  preflight does not need the machine; start it only for the container checks.
+- To remove the machine and free its disk: `podman machine stop`, then `podman machine rm -f`. The images and build
+  caches stay under `~/.local/share/containers` and `.cache/` until removed.
+- To free one architecture's build and caches:
+  `rm -rf build/ci-linux-<arch> .cache/ci-ccache-<arch> .cache/ci-deps-<arch> .cache/ci-pacman-<arch>`.
+
+The device runs start the menu only: a game needs a dump, and the app prepares it itself. They catch an install, a
+library or a startup failure before CI, not a game's rendering.
 
 ## Run / diagnose
 
