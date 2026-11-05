@@ -352,6 +352,68 @@ int plat_power_watch(void) {
 #else
 int plat_power_watch(void) { return -1; } /* no watcher here: the caller polls */
 #endif
+#if defined(__linux__) && !defined(__ANDROID__)
+/* The kernel's pressure stall information for memory: the trigger wakes the thread when the system's tasks together
+   waited for memory past PSI_TRIGGER's share of a window, the thrashing before the OOM killer ends a process with no
+   signal it can catch. 2 s is the shortest window a process without privileges may ask; a kernel before 6.5 refuses
+   that, and one built without PSI has no file */
+#define PSI_FILE    "/proc/pressure/memory"
+#define PSI_TRIGGER "some 200000 2000000" /* 0.2 s of stall in a window of 2 s */
+static int (*g_psi_say)(const char* why);
+static void psi_thread(void* arg) {
+    int fd = (int)(intptr_t)arg;
+    SNX_THREAD_NAME("memory pressure");
+    for (;;) {
+        struct pollfd p = {fd, POLLPRI, 0};
+        char now[256], why[320];
+        ssize_t n;
+        if (poll(&p, 1, -1) < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (p.revents & (POLLERR | POLLNVAL)) break;
+        /* the file's first line, the pressure now: "some avg10=... avg60=... avg300=... total=..." */
+        n = pread(fd, now, sizeof now - 1, 0);
+        now[n > 0 ? n : 0] = 0;
+        now[strcspn(now, "\n")] = 0;
+        snprintf(why, sizeof why,
+                 "the system's tasks waited for memory 0.2 s of 2 s, Linux's pressure trigger \"" PSI_TRIGGER
+                 "\" (now %s)",
+                 now[0] ? now : "unread");
+        if (!g_psi_say(why)) break;
+    }
+    close(fd);
+}
+int plat_memory_watch(int (*say)(const char* why)) {
+    static const char trigger[] = PSI_TRIGGER;
+    static int started;
+    char why[256];
+    int fd;
+    if (started) return 0;
+    fd = open(PSI_FILE, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0 || write(fd, trigger, sizeof trigger) < 0) {
+        snx_os_error(why, sizeof why);
+        LOG("memory: no watch of the system's memory pressure: " PSI_FILE " %s: %s\n",
+            fd < 0 ? "does not open" : "refuses the trigger \"" PSI_TRIGGER "\"", why);
+        if (fd >= 0) close(fd);
+        return -1;
+    }
+    g_psi_say = say;
+    if (plat_thread(psi_thread, (void*)(intptr_t)fd, 0)) {
+        snx_os_error(why, sizeof why);
+        LOG("memory: no watch of the system's memory pressure: its thread does not start: %s\n", why);
+        close(fd);
+        return -1;
+    }
+    started = 1;
+    return 0;
+}
+#else
+int plat_memory_watch(int (*say)(const char* why)) {
+    (void)say;
+    return -1;
+}
+#endif
 /* Linux only: Android's CPUs differ in speed, so a fixed share of them would make a core slow */
 #if defined(__linux__) && !defined(__ANDROID__)
 int plat_cpus(int* ids, int max) {

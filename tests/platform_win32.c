@@ -41,6 +41,8 @@ void crash_report(void* host_pc, void* fault, int sig) {
     if (g_report_exit) _exit(42);
 }
 void plat_prof_add_thread(HANDLE h) { (void)h; }
+/* the system's name for a thread (common.c), which this test does not link */
+void snx_thread_name(const char* name) { (void)name; }
 
 static unsigned checks, failures;
 #define CHECK(c, what)                                                                                                 \

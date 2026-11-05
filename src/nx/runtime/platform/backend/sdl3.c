@@ -283,16 +283,19 @@ void backend_window_safe(int* x, int* y, int* w, int* h) {
    the log and the console to the files. At most MEMORY_LINES in a run, for a warning that comes again and again. Any
    thread: the renderer's part takes no lock of Vulkan (vk_memory_text) */
 #define MEMORY_LINES 6
-static void memory_line(const char* why) {
+/* 1 while more lines may come */
+static int memory_line(const char* why) {
     static u32 said;
     char stats[320], gpu[1024] = "";
+    u32 n;
     if (__atomic_load_n(&said, __ATOMIC_RELAXED) >= MEMORY_LINES ||
-        __atomic_fetch_add(&said, 1, __ATOMIC_RELAXED) >= MEMORY_LINES)
-        return;
+        (n = __atomic_fetch_add(&said, 1, __ATOMIC_RELAXED)) >= MEMORY_LINES)
+        return 0;
     resources_text(stats, sizeof stats);
     if (g_renderer && g_renderer->memory_text) g_renderer->memory_text(gpu, sizeof gpu);
     LOG("memory: %s: %s%s%s\n", why, stats, gpu[0] ? ", " : "", gpu);
     log_sync();
+    return n + 1 < MEMORY_LINES;
 }
 #ifdef SDL_PLATFORM_APPLE
 /* The system's memory pressure on iOS and macOS, on a queue of the system: SDL's low memory event (iOS's alone) comes
@@ -455,6 +458,8 @@ void video_init(const char* title, const char* addons) {
     SDL_AddEventWatch(lifecycle, NULL);
 #ifdef SDL_PLATFORM_APPLE
     pressure_watch();
+#else
+    plat_memory_watch(memory_line); /* Linux, Windows; its log line says why where it cannot */
 #endif
     /* a game runs for minutes with nobody touching the screen: a phone that locks it takes the GPU from the app */
     SDL_DisableScreenSaver();
