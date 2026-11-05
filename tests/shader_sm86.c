@@ -1434,6 +1434,55 @@ static void test_bmov(const char* spirv_val, const char* dir) {
     (void)spirv_val, (void)dir;
 }
 
+/* The prologue of the debug variants of the driver's programs: BMOV.32 B0, 0xffffffff, BMOV.32.CLEAR B1, B0 and
+   BMOV.32 B15, 0x0 write only convergence barriers, which change nothing the program computes. HFMA2.MMA R0, -RZ,
+   RZ, imm, imm loads its two halves: R0 is (-2.0, 1.0) as its immediate 0x3c00c000, and R1 with +RZ (+0 + -0) is
+   +0 in its low half. A BMOV into a state register is refused */
+static void test_debug_prologue(const char* spirv_val, const char* dir) {
+    u8 code[16 * 9] = {0};
+    Word bi = fix(0x956);
+    set(&bi, 32, 32, 0xffffffffu);
+    put(code, 0, bi);
+    Word bl = fix(0xf55);
+    set(&bl, 16, 8, 1);
+    set(&bl, 24, 8, 0);
+    set(&bl, 84, 1, 1);
+    put(code, 1, bl);
+    Word b15 = fix(0x956);
+    set(&b15, 24, 8, 15);
+    put(code, 2, b15);
+    Word h = alu(0x035, 2, 0, 255);
+    set(&h, 32, 32, 0x3c00c000u);
+    set(&h, 64, 8, 255);
+    set(&h, 72, 1, 1);
+    put(code, 3, h);
+    Word h2 = alu(0x035, 2, 1, 255);
+    set(&h2, 32, 32, 0x00008000u);
+    set(&h2, 64, 8, 255);
+    put(code, 4, h2);
+    put(code, 5, mov_imm(2, 0));
+    put(code, 6, mov_imm(3, 0));
+    put(code, 7, exit_insn());
+    put(code, 8, bra(8, 8, 7, 0));
+    u32 out[4];
+    int ran = run_fs_at(code, 9, 0, NULL, 0, out);
+    CHECK(ran && out[0] == 0x3c00c000u && out[1] == 0);
+    if (ran && (out[0] != 0x3c00c000u || out[1] != 0)) fprintf(stderr, "debug prologue: %08x %08x\n", out[0], out[1]);
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    set(&bi, 24, 8, 0x1a); /* MACTIVE */
+    put(code, 0, bi);
+    CHECK(!sm86_to_spirv(code, 9 * 16, ST_FS, fsph, &si, &count));
+    put(code, 0, fix(0x918));
+    set(&bl, 16, 8, 0x1a);
+    put(code, 1, bl);
+    CHECK(!sm86_to_spirv(code, 9 * 16, ST_FS, fsph, &si, &count));
+    (void)spirv_val, (void)dir;
+}
+
 /* The first texture coordinate (0x300-0x30f) moves to generic 22 (17 + its group, 5) in both stages: AST a[0x304]
    writes output 22's y, and IPA a[0x300] reads input 22's x, with the interpolation the header's texture coordinate
    map gives it (word 15, constant), not the FragCoord.w that a perspective input takes */
@@ -1761,6 +1810,7 @@ int main(int argc, char** argv) {
     test_shared_no_uniform(spirv_val, dir);
     test_hsetp2(spirv_val, dir);
     test_bmov(spirv_val, dir);
+    test_debug_prologue(spirv_val, dir);
     test_legacy_varyings(spirv_val, dir);
     test_brxu(spirv_val, dir);
     test_ipa_uniform(spirv_val, dir);
