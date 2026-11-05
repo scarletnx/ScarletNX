@@ -820,6 +820,14 @@ int64_t snx_tell(FILE* f) {
     return (int64_t)ftello(f);
 #endif
 }
+int snx_cut(FILE* f, SnxU64 size) {
+#ifdef _WIN32
+    return (size >> 63) != 0 || _chsize_s(_fileno(f), (long long)size) ? -1 : 0;
+#else
+    if ((SnxU64)(off_t)size != size || (off_t)size < 0) return -1;
+    return ftruncate(fileno(f), (off_t)size) ? -1 : 0;
+#endif
+}
 int snx_copy_file_range(const char* src, SnxU64 offset, SnxU64 size, const char* dst) {
     unsigned char buf[65536];
     FILE *in = snx_fopen(src, "rb"), *out;
