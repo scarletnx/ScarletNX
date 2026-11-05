@@ -72,6 +72,7 @@ typedef struct {
     u32 isbe_attr, isbe_map, payload, isbe_attr_words, isbe_map_words, payload_words, local_index;
     u32 vertex_words, primitive_words; /* the output words of a vertex and of a primitive (omap_words) */
     u32 prim_attr[32];                 /* a mesh program's per-primitive generic outputs */
+    int soft_ftz;                      /* FTZ instructions flush their operands and results here (sm86_to_spirv_ftz) */
     int failed;
 } Ctx;
 
@@ -301,9 +302,11 @@ static u32 term64(Ctx* c, const Sm86Src* s) {
 /* ---- FTZ and the rounding modes ---- */
 
 /* An FTZ instruction (bit 80) reads and writes a subnormal as the zero of its sign: per operand and result, as
-   spirv_translate.c's float_ftz does in SH_FTZ_EMULATE */
+   spirv_translate.c's float_ftz does in SH_FTZ_EMULATE, where the module's execution mode or the device does not do
+   it (soft_ftz). Each such flush is four instructions: one vertex program of a game was 3.8 MB of SPIR-V with them and
+   1.8 MB without, and the driver took 10 s to make its pipeline */
 static u32 ftz(Ctx* c, u32 v, int on) {
-    return on ? spv_emit_flush_subnormal(&c->e, c->t_f32, c->t_u32, c->t_bool, c->glsl, v, 1) : v;
+    return on && c->soft_ftz ? spv_emit_flush_subnormal(&c->e, c->t_f32, c->t_u32, c->t_bool, c->glsl, v, 1) : v;
 }
 static void note_ftz(Ctx* c, int on) {
     if (on)
@@ -4358,6 +4361,10 @@ static void mesh_layout(Ctx* c) {
 }
 
 u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count) {
+    return sm86_to_spirv_ftz(code, bytes, stage, sph, si, word_count, SH_FTZ_EMULATE);
+}
+u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count,
+                       int can_flush) {
     if (!code || !si || !word_count || stage < ST_VS || stage > ST_MS || bytes < 16) return NULL;
     if (stage != ST_CS && !sph) return NULL;
     if (stage == ST_TCS && sm86_tcs_empty(sph[2])) {
@@ -4402,6 +4409,18 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
         u32 r = max_register(&insn[i]);
         if (r > top) top = r;
     }
+    /* FTZ as spirv_translate.c decides it: per instruction without the execution mode, or with it where some FADD,
+       FMUL or FFMA keeps subnormals (the mode is the whole module's); never on a device that flushes by itself */
+    int ftz_flush = 0, ftz_keep = 0;
+    for (u32 i = 0; i < n; i++)
+        if (insn[i].op == SM86_FADD || insn[i].op == SM86_FMUL || insn[i].op == SM86_FFMA) {
+            if (sm86_field(&insn[i], 80, 1))
+                ftz_flush = 1;
+            else
+                ftz_keep = 1;
+        }
+    c->soft_ftz = can_flush != SH_FTZ_NATIVE && (can_flush == SH_FTZ_EMULATE || ftz_keep);
+    const int ftz_mode = ftz_flush && !ftz_keep && can_flush == SH_FTZ_MODE;
     /* The fixed function's varyings (colors, fog, texture coordinates) move to generics 17-31, as spirv_translate.c
        moves Maxwell's (shader_legacy_varyings), so that the stages of either ISA agree. A program that reads or
        writes a group and also its generic is refused */
@@ -4595,7 +4614,7 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
                 spv_emit_local_size(e, fn, x, y, z);
             }
             /* Maxwell's and Ampere's programs use infinities and NaNs (CLAUDE.md) */
-            spv_emit_float_controls(e, fn, 0, 1, 0);
+            spv_emit_float_controls(e, fn, ftz_mode, 1, 0);
             out = spv_emit_finish(e, word_count);
         }
         spv_emit_destroy(e);
