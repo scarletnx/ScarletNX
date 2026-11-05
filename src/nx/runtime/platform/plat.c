@@ -331,7 +331,13 @@ void log_sync(void) {
     pm_unlock(&g_log_lock);
     fflush(stdout); /* line buffered, so only a line not ended yet waits in it */
     fflush(stderr);
-#if !defined(_WIN32)
+#if defined(_WIN32)
+    {
+        /* FlushFileBuffers, outside the lock as below; the log stays open to the end of the run */
+        FILE* file = __atomic_load_n(&g_log, __ATOMIC_ACQUIRE);
+        if (file) (void)_commit(_fileno(file));
+    }
+#else
     {
         /* outside the lock, since the disk can take a while. A pipe or a terminal refuses, which is no matter */
         int fd = __atomic_load_n(&g_log_fd, __ATOMIC_ACQUIRE);
