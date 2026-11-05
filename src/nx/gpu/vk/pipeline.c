@@ -14,6 +14,7 @@
 #include "nx/gpu/shader/shader.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "common/gpu/vk/vk_common.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pipeline_file.h"
@@ -723,7 +724,7 @@ static VkShaderModule null_fs(void) {
 }
 
 /* ------------------------------------------------------------ pipelines */
-/* A draw's new pipeline is made on the worker threads (pipeline_threads, vk_pipeline_worker_count): the GPU thread hands
+/* A draw's new pipeline is made on the worker threads (pipeline_threads, snx_vk_pipeline_workers): the GPU thread hands
    the recording thread a stand-in for it and decodes on, and the recording thread waits for the pipeline at its bind
    (vk_pipeline_resolve; without that thread, vk_record=0, the draw waits on the GPU thread). The shader file's
    pipelines (pf_merge) are made on the workers from startup, and a draw that asks for one before then waits for it
@@ -1100,22 +1101,10 @@ void vk_pipeline_quiesce(void) {
     while (g_pj_threads && (g_pj_head || g_pw_head || g_pj_busy)) pc_wait(&g_pj_done, &g_pj_lock, -1);
     pm_unlock(&g_pj_lock);
 }
-int vk_pipeline_worker_count(int setting, int cpus) {
-    int n = cpus - 2;
-    if (setting > 0) return setting;
-    /* all the CPUs but two, two to twelve. A first run's burst of new pipelines goes to the workers side by side
-       (vk_pipeline_get_deferred), and the frame waits for them at its binds, so the game's threads have little to do
-       meanwhile, and an idle worker costs nothing. A quarter of 8 CPUs (two workers) froze one game's first scene for
-       4.6 s with its caches empty, where six took 1.7 s and eight 1.5 s: past six the CPUs the game's own threads use
-       take back what more would give */
-    if (n < 2) n = 2;
-    if (n > 12) n = 12;
-    return n;
-}
 /* the workers, started the first time one is needed: how many there are (g_pj_lock) */
 static int pipe_workers(void) {
     if (!g_pj_started) {
-        int ids[256], n = vk_pipeline_worker_count(g_settings.pipeline_threads, plat_cpus(ids, 256));
+        int ids[256], n = snx_vk_pipeline_workers(g_settings.pipeline_threads, plat_cpus(ids, 256));
         g_pj_started = 1;
         pc_init(&g_pj_work);
         pc_init(&g_pj_done);

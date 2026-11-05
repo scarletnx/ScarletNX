@@ -258,3 +258,14 @@ SnxVkMemoryModel snx_vk_memory_model(VkPhysicalDeviceType type, const VkPhysical
     if (local && visible >= local / 2) return SNX_VK_REBAR;
     return SNX_VK_SMALL_BAR;
 }
+int snx_vk_pipeline_workers(int setting, int cpus) {
+    int n = cpus - 2;
+    if (setting > 0) return setting;
+    /* A first run's burst of new pipelines goes to the workers side by side, and the frame waits for them (or skips
+       their draws), so the game's threads have little to do meanwhile, and an idle worker costs nothing. A quarter of
+       8 CPUs (two workers) froze one game's first scene for 4.6 s with its caches empty, where six took 1.7 s and
+       eight 1.5 s: past six the CPUs the game's own threads use take back what more would give */
+    if (n < 2) n = 2;
+    if (n > 12) n = 12;
+    return n;
+}
