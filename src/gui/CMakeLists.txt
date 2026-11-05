@@ -276,12 +276,17 @@ if(BUILD_TESTING)
     # the runtime's sections and pages, each of which has an icon in the Settings
     target_compile_definitions(snx-test-gui-sdl PRIVATE
                                SNX_GUI_SETTINGS_TXT="${PROJECT_SOURCE_DIR}/src/nx/runtime/settings.txt")
-    # TODO: fix this
-    if (NOT APPLE)
+    # the screens' tests: no file picker of the desktop's, as the portal would open one on the screen, DBus being there
+    # without a display. A Mac's TMPDIR, /var/folders/..., is long enough to wrap the paths the screens show, and /var
+    # and /tmp are links into /private, which the checks compare as text: /private/tmp is short and real
+    set(gui_screen_env SDL_VIDEO_DRIVER=dummy SDL_RENDER_DRIVER=software SDL_FILE_DIALOG_DRIVER=none
+        SDL_PREFERRED_LOCALES=en_US)
+    if(APPLE)
+        list(APPEND gui_screen_env "TMPDIR=/private/tmp")
+    endif()
+    if(NOT IOS)
         add_test(NAME gui_sdl_events COMMAND snx-test-gui-sdl)
-        # no file picker of the desktop's: the portal would open one on the screen, DBus being there without a display
-        set_tests_properties(gui_sdl_events PROPERTIES TIMEOUT 30
-                             ENVIRONMENT "SDL_VIDEO_DRIVER=dummy;SDL_RENDER_DRIVER=software;SDL_FILE_DIALOG_DRIVER=none;SDL_PREFERRED_LOCALES=en_US")
+        set_tests_properties(gui_sdl_events PROPERTIES TIMEOUT 30 ENVIRONMENT "${gui_screen_env}")
     endif()
     # the setup's pages (gui_setup.c), as gui_sdl's: the real renderer, a language of the tests' own, no picker
     add_executable(snx-test-gui-setup "${PROJECT_SOURCE_DIR}/tests/gui_setup.c")
@@ -294,10 +299,10 @@ if(BUILD_TESTING)
             target_link_libraries(snx-test-gui-setup PRIVATE "-framework UIKit")
         endif()
         set_target_properties(snx-test-gui-setup PROPERTIES LINKER_LANGUAGE CXX)
-    else()
+    endif()
+    if(NOT IOS)
         add_test(NAME gui_setup COMMAND snx-test-gui-setup)
-        set_tests_properties(gui_setup PROPERTIES TIMEOUT 30
-                             ENVIRONMENT "SDL_VIDEO_DRIVER=dummy;SDL_RENDER_DRIVER=software;SDL_FILE_DIALOG_DRIVER=none;SDL_PREFERRED_LOCALES=en_US")
+        set_tests_properties(gui_setup PROPERTIES TIMEOUT 30 ENVIRONMENT "${gui_screen_env}")
     endif()
     # every test here, as snx_test_target does: warnings are errors, the asserts stay in any build type, and the
     # sanitizers come with SNX_TEST_SANITIZERS
