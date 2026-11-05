@@ -36,6 +36,9 @@ SM86_OP(DSETP, 0x02a, SM86_K_ALU, SM86_F_B, "DSETP")
 SM86_OP(HADD2, 0x030, SM86_K_ALU, SM86_F_ALL, "HADD2")
 SM86_OP(HMUL2, 0x032, SM86_K_ALU, SM86_F_B, "HMUL2")
 SM86_OP(HFMA2, 0x031, SM86_K_ALU, SM86_F_ALL, "HFMA2")
+/* HFMA2.MMA (0x035), HFMA2 on the MMA pipe: CuAssembler's sm_86 records give forms 1 and 2 with HFMA2's fields,
+   "HFMA2.MMA R24, R12, R17, R24" and "HFMA2.MMA R4, -RZ, RZ, 0, 0" */
+SM86_OP(HFMA2_MMA, 0x035, SM86_K_ALU, 0x06u, "HFMA2.MMA")
 SM86_OP(HSET2, 0x033, SM86_K_ALU, SM86_F_B, "HSET2")
 /* HSETP2's forms are the 16-bit ALU's: b a register (1), two halves (2), a constant buffer (3), as CuAssembler's sm_86
    encodings 0x234, 0x434 and 0x634 show */
@@ -192,6 +195,12 @@ SM86_OP(BSYNC, 0x941, SM86_K_FIX, 0, "BSYNC")
 SM86_OP(BREAK, 0x942, SM86_K_FIX, 0, "BREAK")
 SM86_OP(BMOV_R, 0x355, SM86_K_FIX, 0, "BMOV (to register)")
 SM86_OP(BMOV_B, 0x356, SM86_K_FIX, 0, "BMOV (to barrier)")
+/* BMOV.32 B, imm (0x956): the barrier at 24-27, the immediate at 32-63, from the SM89 tables that nv_isa_solver made
+   with nvdisasm (github.com/kuterd/nv_isa_solver); the same code with 28-29 set names a state register. BMOV.32 B, B
+   or a state register (0xf55): the barrier written at 16-23, the source at 24-29, as CuAssembler's sm_86 record
+   "BMOV.32 B15, MACTIVE" (0x1a0f7f55) shows */
+SM86_OP(BMOV_BI, 0x956, SM86_K_FIX, 0, "BMOV (barrier from an immediate)")
+SM86_OP(BMOV_BL, 0xf55, SM86_K_FIX, 0, "BMOV (barrier from a barrier or state)")
 SM86_OP(WARPSYNC, 0x148, SM86_K_ALU, SM86_F_B, "WARPSYNC")
 SM86_OP(KILL, 0x95b, SM86_K_FIX, 0, "KILL")
 SM86_OP(BAR, 0xb1d, SM86_K_FIX, 0, "BAR")

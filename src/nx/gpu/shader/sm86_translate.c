@@ -617,6 +617,14 @@ static u32 global_address(Ctx* c, const Sm86Insn* in, int uniform_form, int writ
     *offset = spv_emit_isub_u32(&c->e, c->t_u32, at, base);
     return gbuf_slot(c, key, write);
 }
+/* An LDG or STG whose address is a pointer that the program loaded from memory, which no constant buffer word holds, as one
+   game's vertex program that clears the indirect draws a table of pointers names. As the Maxwell translator does
+   (shader_global_dynamic, after Eden's DefineGlobalMemoryFunctions), its 64-bit address is compared with each global
+   buffer of the program when it runs, and the first that holds it takes the access. A buffer is the 16 MiB that the
+   renderer binds from the address its word holds (vk_gbuf_desc). A load from none of them reads 0 and a store there
+   is dropped, where the console's GPU reaches all of its address space. The address: a register, a pair with bit 90
+   in the uniform form or bit 72 in the other, plus the uniform register (a pair with bit 72) of the uniform form,
+   plus the signed 24-bit offset */
 /* what track_globals follows at an instruction: each register's key, then the opcode that last wrote it (for the
    message of an address without one). The keys first: the flow settles on them */
 typedef struct {
@@ -922,7 +930,7 @@ static int may_write(const Sm86Insn* in, u32 r) {
         case SM86_RED: case SM86_AST: case SM86_SUST_P: case SM86_SUST_D: case SM86_SUST_P_B: case SM86_SUST_D_B:
         case SM86_ULDC: case SM86_ULDC_IDX: case SM86_ULDCG: case SM86_S2UR: case SM86_R2UR: case SM86_PLOP3:
         case SM86_UPLOP3: case SM86_UVOTE: case SM86_ISETP: case SM86_FSETP: case SM86_DSETP: case SM86_HSETP2:
-        case SM86_R2P: case SM86_BMOV_B:
+        case SM86_R2P: case SM86_BMOV_B: case SM86_BMOV_BI: case SM86_BMOV_BL:
             return 0;
         case SM86_TEX: case SM86_TEX_B: case SM86_TLD: case SM86_TLD_B: case SM86_TLD4: case SM86_TLD4_B:
         case SM86_TMML: case SM86_TMML_B: case SM86_TXD: case SM86_TXD_B: case SM86_TXQ: case SM86_TXQ_B: {
@@ -1552,6 +1560,17 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                BMOV.32.CLEAR RZ, B0 before the BSSY B0 of an NVN vertex program) it changes nothing computed */
             if (in->dst != SM86_RZ) fail(c, "BMOV (to register) into R%u", in->dst);
             return;
+        case SM86_BMOV_BI:
+        case SM86_BMOV_BL: {
+            /* A write of a convergence barrier, whose value the structured translation does not keep (BSSY's writes
+               neither), and which no translated instruction reads: BMOV into a register other than RZ is refused.
+               The debug variants of the driver's programs start with BMOV.32 B0, 0xffffffff, BMOV.32 B1, B0 to
+               BMOV.32 B15, B14 and BMOV.32 B15, 0x0. A state register (28-29 set, for BMOV.32 B, B at 16-23) is
+               refused */
+            u32 to = op == SM86_BMOV_BI ? sm86_field(in, 24, 8) : sm86_field(in, 16, 8);
+            if (to >= 16) fail(c, "%s into state register %u", sm86_ops[op].name, to);
+            return;
+        }
         case SM86_MOV: wr(c, in->dst, src_bits(c, &in->b)); return;
         case SM86_FADD:
         case SM86_FMUL:
@@ -2226,6 +2245,25 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                             spv_emit_shift_left_u32(&c->e, c->t_u32, byte, cu(c, 8 * k)));
             }
             dwr(c, in, v);
+            return;
+        }
+        case SM86_HFMA2_MMA: {
+            /* Only a product of RZ: it is a signed zero (the sign of a's and b's negations), and the sum with the
+               two halves of c, in floats, is exact. ptxas loads two halves with HFMA2.MMA R, -RZ, RZ, imm, imm. Other
+               modifiers (73-91 but b's negation at 75) are refused */
+            int zero = (in->a.kind == SM86_SRC_REG && in->a.reg == SM86_RZ) ||
+                       (in->b.kind == SM86_SRC_REG && in->b.reg == SM86_RZ);
+            if (!zero || (sm86_field(in, 73, 19) & ~(1u << 2))) {
+                fail(c, "HFMA2.MMA of a product other than RZ, or with modifiers 0x%x", sm86_field(in, 73, 19));
+                return;
+            }
+            u32 sign = in->a.neg ^ in->b.neg ? 0x80000000u : 0;
+            u32 p = spv_emit_vec2_construct(&c->e, c->t_v2f, to_f(c, cu(c, sign)), to_f(c, cu(c, sign)));
+            u32 cpair = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, src_bits(c, &in->c));
+            if (in->c.kind == SM86_SRC_REG && in->c.abs) cpair = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_F_ABS, cpair);
+            if (in->c.kind == SM86_SRC_REG && in->c.neg) cpair = SPV(&c->e, SPV_OP_F_NEGATE, c->t_v2f, cpair);
+            u32 sum = nocontract(c, op2(c, SPV_OP_F_ADD, c->t_v2f, p, cpair));
+            dwr(c, in, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, sum));
             return;
         }
         case SM86_HADD2: {
