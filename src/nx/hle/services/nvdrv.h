@@ -152,12 +152,11 @@ typedef struct {
     u32 nbound, query;
     int stale; /* the runs changed since the index was built */
 } GAlias;
-/* an nvhost-ctrl event slot. ev is made on first use and nvdrv keeps a reference. An armed slot is signaled once
-   syncpoint id reaches thresh; armed changes under nvev_lk */
+/* an nvhost-ctrl event slot. ev is made on first use and nvdrv keeps a reference. An armed slot (its bit in
+   HleNvdrv's armed_mask) is signaled once syncpoint id reaches thresh */
 typedef struct {
     u32 ev; /* its kernel object id */
     u32 id, thresh;
-    int armed;
 } NvEvent;
 /* a ctrl fd's event slots (ctrl_evt, a pool under nvev_lk) */
 typedef struct {

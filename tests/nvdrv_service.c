@@ -16,6 +16,10 @@
 
 /* a ctrl fd's 64 event slots: the table of ctrl_evt it took */
 #define CTRL_EV(fd) (g_hle.nvdrv.ctrl_evt[g_hle.nvdrv.ctrl_ev[fd] - 1].slot)
+/* a ctrl fd's slot is armed: its bit in the armed_mask of the table the fd took (0 without one) */
+static int slot_armed(u32 fd, u32 slot) {
+    return g_hle.nvdrv.ctrl_ev[fd] && g_hle.nvdrv.armed_mask[g_hle.nvdrv.ctrl_ev[fd] - 1] >> slot & 1;
+}
 
 u8* g_mem;
 u64 g_as_size = AS_MAX; /* the reservation's size, mem.c's, which this test does not link */
@@ -367,10 +371,10 @@ static void test_ctrl_syncpoints(u32 ctrl) {
     put(4, 2);
     put(8, 100);
     put(12, 9);
-    CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && CTRL_EV(ctrl)[9].armed);
+    CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && slot_armed(ctrl, 9));
     CHECK((gr32(OUT0 + 12) & 0xF000FFFFu) == 0x10000009u && ((gr32(OUT0 + 12) >> 16) & 0xFFF) == 40);
     put(0, 9);
-    CHECK(nv_ioctl1(ctrl, EVENT_UNREG, 4) == 0 && !CTRL_EV(ctrl)[9].armed);
+    CHECK(nv_ioctl1(ctrl, EVENT_UNREG, 4) == 0 && !slot_armed(ctrl, 9));
     put(0, 40);
     CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && !kev(CTRL_EV(ctrl)[9].ev)->signaled);
     /* Canceling a timed-out wait must not report an unfinished fence as complete. Reusing the event
@@ -381,10 +385,10 @@ static void test_ctrl_syncpoints(u32 ctrl) {
     put(4, 4);
     put(8, 100);
     put(12, 10);
-    CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && CTRL_EV(ctrl)[10].armed);
+    CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && slot_armed(ctrl, 10));
     put(0, 10);
     CHECK(nv_ioctl1(ctrl, 0xC004001Cu, 4) == 0);
-    CHECK(!CTRL_EV(ctrl)[10].armed && !kev(CTRL_EV(ctrl)[10].ev)->signaled && syncpt_read(40) == 2);
+    CHECK(!slot_armed(ctrl, 10) && !kev(CTRL_EV(ctrl)[10].ev)->signaled && syncpt_read(40) == 2);
     put(0, 40);
     CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && !kev(CTRL_EV(ctrl)[10].ev)->signaled);
     put(0, 40);
@@ -433,16 +437,17 @@ static void test_ctrl_event_fds(u32 ctrl) {
     NvEvent* b = &CTRL_EV(other)[0];
     CHECK(a->ev && b->ev && a->ev != b->ev);
     u32 base = syncpt_read(41);
-    CHECK(event_wait(ctrl, 41, base + 1, 100, 0) == 5 && a->armed && !b->armed);
-    CHECK(event_wait(other, 41, base + 2, 100, 0) == 5 && a->armed && b->armed && a->thresh == base + 1);
+    CHECK(event_wait(ctrl, 41, base + 1, 100, 0) == 5 && slot_armed(ctrl, 0) && !slot_armed(other, 0));
+    CHECK(event_wait(other, 41, base + 2, 100, 0) == 5 && slot_armed(ctrl, 0) && slot_armed(other, 0) &&
+          a->thresh == base + 1);
     put(0, 41);
-    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && kev(a->ev)->signaled && !a->armed && !kev(b->ev)->signaled &&
-          b->armed);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && kev(a->ev)->signaled && !slot_armed(ctrl, 0) &&
+          !kev(b->ev)->signaled && slot_armed(other, 0));
     /* polling the other fd's fence leaves its armed wait, and this fd's signal, as they were */
-    CHECK(event_wait(other, 41, base + 2, 0, 0) == 5 && b->armed && kev(a->ev)->signaled);
-    CHECK(event_wait(ctrl, 41, base + 2, 0, 0) == 5 && kev(a->ev)->signaled && !a->armed);
+    CHECK(event_wait(other, 41, base + 2, 0, 0) == 5 && slot_armed(other, 0) && kev(a->ev)->signaled);
+    CHECK(event_wait(ctrl, 41, base + 2, 0, 0) == 5 && kev(a->ev)->signaled && !slot_armed(ctrl, 0));
     put(0, 41);
-    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && kev(b->ev)->signaled && !b->armed);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && kev(b->ev)->signaled && !slot_armed(other, 0));
     CHECK(nv_close(other) == 0 && !g_hle.nvdrv.ctrl_ev[other]); /* its slots go with it */
 }
 
@@ -453,21 +458,21 @@ static void test_quiet_increments(u32 ctrl) {
     CHECK(nv_ioctl1(ctrl, EVENT_REG, 4) == 0);
     NvEvent* e = &CTRL_EV(ctrl)[11];
     u32 base = syncpt_read(42), kicks = test_gpu.kicks;
-    CHECK(event_wait(ctrl, 42, base + 1, 100, 11) == 5 && e->armed);
+    CHECK(event_wait(ctrl, 42, base + 1, 100, 11) == 5 && slot_armed(ctrl, 11));
     syncpt_add_quiet(42, 1);
-    CHECK(syncpt_read(42) == base + 1 && test_gpu.kicks == kicks + 1 && e->armed && !kev(e->ev)->signaled);
+    CHECK(syncpt_read(42) == base + 1 && test_gpu.kicks == kicks + 1 && slot_armed(ctrl, 11) && !kev(e->ev)->signaled);
     syncpt_events();
-    CHECK(!e->armed && kev(e->ev)->signaled);
+    CHECK(!slot_armed(ctrl, 11) && kev(e->ev)->signaled);
     /* armed again through the service, so only a check of the slots signals it: none is due */
     kevent_clear(kev(e->ev));
-    CHECK(event_wait(ctrl, 42, syncpt_read(42) + 1, 100, 11) == 5 && e->armed);
+    CHECK(event_wait(ctrl, 42, syncpt_read(42) + 1, 100, 11) == 5 && slot_armed(ctrl, 11));
     syncpt_events();
-    CHECK(e->armed && !kev(e->ev)->signaled);
+    CHECK(slot_armed(ctrl, 11) && !kev(e->ev)->signaled);
     syncpt_add_quiet(42, 0);
     syncpt_events();
-    CHECK(e->armed && !kev(e->ev)->signaled && syncpt_read(42) == base + 1 && test_gpu.kicks == kicks + 1);
+    CHECK(slot_armed(ctrl, 11) && !kev(e->ev)->signaled && syncpt_read(42) == base + 1 && test_gpu.kicks == kicks + 1);
     syncpt_add(42, 1); /* checks at once */
-    CHECK(!e->armed && kev(e->ev)->signaled);
+    CHECK(!slot_armed(ctrl, 11) && kev(e->ev)->signaled);
     put(0, 11);
     CHECK(nv_ioctl1(ctrl, EVENT_UNREG, 4) == 0);
 }
@@ -480,15 +485,15 @@ static void test_state_load_armed(u32 ctrl) {
     CHECK(nv_ioctl1(ctrl, EVENT_REG, 4) == 0);
     NvEvent* e = &CTRL_EV(ctrl)[13];
     u32 base = syncpt_read(44);
-    CHECK(event_wait(ctrl, 44, base + 1, 100, 13) == 5 && e->armed);
+    CHECK(event_wait(ctrl, 44, base + 1, 100, 13) == 5 && slot_armed(ctrl, 13));
     memcpy(&test_saved, &g_hle, sizeof g_hle);
     syncpt_add(44, 1); /* played on past the save */
-    CHECK(!e->armed && kev(e->ev)->signaled);
+    CHECK(!slot_armed(ctrl, 13) && kev(e->ev)->signaled);
     memcpy(&g_hle, &test_saved, sizeof g_hle);
     kevent_clear(kev(e->ev)); /* as it was saved: the test's events are outside g_hle */
-    CHECK(e->armed && syncpt_read(44) == base);
+    CHECK(slot_armed(ctrl, 13) && syncpt_read(44) == base);
     syncpt_add(44, 1);
-    CHECK(!e->armed && kev(e->ev)->signaled);
+    CHECK(!slot_armed(ctrl, 13) && kev(e->ev)->signaled);
     put(0, 13);
     CHECK(nv_ioctl1(ctrl, EVENT_UNREG, 4) == 0);
 }
