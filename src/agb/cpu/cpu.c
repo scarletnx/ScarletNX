@@ -172,17 +172,17 @@ static void soft_reset(AgbBoard* board, AgbCpu* cpu) {
     cpu->wait = cpu->irq_depth = 0;
 }
 
-static int handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb) {
+static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb) {
     AgbBoard* board = sink->board;
     uint32_t number = thumb ? syndrome & 0xFF : (syndrome >> 16) & 0xFF;
     board->bios_prefetch = AGB_BIOS_PREFETCH_SWI;
     if (number == AGB_SWI_SOFT_RESET) {
         soft_reset(board, cpu);
-        return 0;
+        return;
     }
     if (number == AGB_SWI_HALT || number == AGB_SWI_STOP) {
         board->cpu_halted = 1;
-        return 0;
+        return;
     }
     if (number == AGB_SWI_INTR_WAIT || number == AGB_SWI_VBLANK_INTR_WAIT) {
         /* the BIOS's way: the flags asked for, cleared first when r0 says so (VBlankIntrWait always), then halts with
@@ -194,9 +194,13 @@ static int handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb) 
         if (discard) agb_write16(board, AGB_BIOS_FLAGS, agb_read16(board, AGB_BIOS_FLAGS) & (uint16_t)~cpu->wait);
         board->irq_ime = 1;
         if (discard) board->cpu_halted = 1;
-        return 0;
+        return;
     }
-    return agb_bios_call(board, number, cpu->arm.r) < 0 ? -1 : 0;
+    if (agb_bios_call(board, number, cpu->arm.r) < 0) {
+        cpu->unknown_swi = number;
+        cpu->unknown_swi_at = cpu->arm.r[15] - (thumb ? 2u : 4u); /* the PC is past the instruction already */
+        ++cpu->unknown_swi_count;
+    }
 }
 
 /* The recompiler refuses the privileged instructions of the ARM7TDMI. The machine interprets them
@@ -562,12 +566,9 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
         cpu->arm.exit = SNX_ARM_OK;
         block->fn(&cpu->arm);
         advance(cpu, &sink, (uint32_t)block->instructions * AGB_CYCLES_PER_INSTRUCTION);
-        if (cpu->arm.exit == SNX_ARM_SVC) {
-            if (handle_swi(cpu, &sink, cpu->arm.syndrome, block->thumb)) {
-                snprintf(error, error_size, "unknown BIOS call 0x%02X at 0x%08X", cpu->arm.syndrome, cpu->arm.r[15]);
-                return -1;
-            }
-        } else if (cpu->arm.exit == SNX_ARM_UNDEFINED) {
+        if (cpu->arm.exit == SNX_ARM_SVC)
+            handle_swi(cpu, &sink, cpu->arm.syndrome, block->thumb);
+        else if (cpu->arm.exit == SNX_ARM_UNDEFINED) {
             if (interpret(board, cpu, cpu->arm.syndrome, block->thumb)) {
                 snprintf(error, error_size, "unimplemented instruction 0x%08X at 0x%08X", cpu->arm.syndrome,
                          cpu->arm.r[15]);

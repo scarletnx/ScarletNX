@@ -326,6 +326,23 @@ int main(void) {
         CHECK(cpu.arm.r[15] == 0x03000514 && !(cpu.arm.cpsr & SNX_ARM_T));
     }
     {
+        /* a software interrupt whose number the BIOS does not have returns at once, as mGBA's HLE BIOS answers it, and
+           the machine keeps which and where for the runner to say: here swi 0xFF0099, then 7 stored at 0x02000310 */
+        uint32_t written = 0;
+        agb_write32(&board, 0x03000600, 0xEFFF0099); /* swi 0xFF0099 */
+        agb_write32(&board, 0x03000604, 0xE3A00007); /* mov r0, #7 */
+        agb_write32(&board, 0x03000608, 0xE59F1004); /* ldr r1, [pc, #4]: 0x02000310 */
+        agb_write32(&board, 0x0300060C, 0xE5810000); /* str r0, [r1] */
+        agb_write32(&board, 0x03000610, 0xEAFFFFFE); /* b . */
+        agb_write32(&board, 0x03000614, 0x02000310);
+        cpu.arm.r[15] = 0x03000600;
+        cpu.arm.cpsr = 0x9F;
+        board.cpu_halted = cpu.wait = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2000, audio, AGB_APU_RATE, &written, error, sizeof error));
+        CHECK(agb_read32(&board, 0x02000310) == 7);
+        CHECK(cpu.unknown_swi == 0xFF && cpu.unknown_swi_at == 0x03000600 && cpu.unknown_swi_count == 1);
+    }
+    {
         /* a recompile (-r) builds every block of the map into the module, the hints too: here from a copy of the map
            under another name, as Windows keeps a module this process has loaded from being written */
         AgbRecomp made, after;
