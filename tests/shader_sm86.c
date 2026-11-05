@@ -2144,6 +2144,16 @@ static void test_fragment_per_primitive(const char* spirv_val, const char* dir) 
     }
 }
 
+/* the pass over the shipped programs leaves a task or mesh program to its draw: it finds their ISBE accesses */
+static void test_uses_isbe(void) {
+    u8 code[16 * 40] = {0};
+    u32 n = mesh_program(code);
+    CHECK(sm86_uses_isbe(code, n * 16));
+    CHECK(!sm86_uses_isbe(code + 16, 16 * 4)); /* the MOVs after its ISBERD */
+    n = vertex_program(code);
+    CHECK(!sm86_uses_isbe(code, n * 16));
+}
+
 static void test_tcs_empty(void) {
     u8 code[16 * 2] = {0};
     put(code, 0, exit_insn());
@@ -2199,6 +2209,7 @@ int main(int argc, char** argv) {
     test_mesh_after_task(spirv_val, dir);
     test_mesh_refused();
     test_fragment_per_primitive(spirv_val, dir);
+    test_uses_isbe();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

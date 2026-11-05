@@ -98,6 +98,9 @@ int sm86_sph_stage(u32 sph0);
    levels from the state. That is the renderer's passthrough (vk_tess_passthrough), which a draw takes in its place */
 static inline int sm86_tcs_empty(u32 sph2) { return (sph2 >> 24) == 0; }
 
+/* Whether bytes of program code (a multiple of 16) have an ISBERD or an ISBEWR: a task or mesh program, which has the
+   SPH of a vertex or tessellation evaluation program, or a geometry or tessellation program's ISBE access */
+int sm86_uses_isbe(const u8* code, u32 bytes);
 /* A program in a block of shader memory: where its header and its code are (byte offsets from the block's start),
    the bytes of code up to and with the BRA to itself that follows its last EXIT, and its stage (ST_CS without a
    header). complete is 0 for a program that the block ends before its end */
