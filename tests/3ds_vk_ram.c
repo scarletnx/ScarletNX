@@ -7,6 +7,7 @@
    device made again takes the RAM again. A host whose device starts, then cannot take the RAM, fails this test: on
    main, RADV did (#1116). No device at all is a skip. */
 #include "3ds/gpu/vk/vk.h"
+#include "support/3ds_vk_path.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,8 +53,11 @@ static void expect(const unsigned char* got, const unsigned char* want, size_t s
    RAM */
 static int start(void) {
     char why[1024];
-    if (snx_ctr_vk_init(g_m, why, sizeof why))
+    SnxCtrVkPath path = test_ctr_vk_path();
+    if (snx_ctr_vk_init(g_m, why, sizeof why)) {
+        test_ctr_vk_path_taken(path);
         return 0; /* how it took the RAM: device.c's line on the standard error */
+    }
     const char* reason = snx_ctr_vk_error();
     if (!strncmp(reason, "the driver cannot import", 24) || !strncmp(reason, "the device has no", 17)) {
         fprintf(stderr, "the device started and cannot take the RAM: %s\n", why);

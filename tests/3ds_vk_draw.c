@@ -16,6 +16,7 @@
 #include "3ds/gpu/vk/vk_y2r.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
+#include "support/3ds_vk_path.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -932,11 +933,13 @@ int main(int argc, char** argv) {
     SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
     char why[256];
     if (!m) return 1;
+    SnxCtrVkPath path = test_ctr_vk_path();
     if (!snx_ctr_vk_init(m, why, sizeof why)) {
         printf("no Vulkan device (%s): GPU draw checks skipped\n", why);
         snx_ctr_memory_free(m);
         return 77;
     }
+    test_ctr_vk_path_taken(path);
     mode->run(m);
     snx_ctr_vk_transfer_free();
     snx_ctr_vk_y2r_free();
