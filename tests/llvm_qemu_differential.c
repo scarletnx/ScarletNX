@@ -747,7 +747,7 @@ typedef struct {
 
 typedef struct {
     RefIn in;
-    size_t changes, change_cap, bytes, byte_cap;
+    size_t changes, bytes; /* the batch's so far, as ref_get_result counts or reads them */
 } Ref;
 
 static void ref_put64(RefOut* w, u64 v) {
@@ -841,23 +841,11 @@ static void ref_put_result(RefOut* w, const SnxQrefResult* r, const SnxQrefBatch
     }
 }
 
-static void ref_need_changes(Ref* r, SnxQrefBatch* b, size_t n) {
-    if (n <= r->change_cap) return;
-    while (r->change_cap < n) r->change_cap = r->change_cap ? r->change_cap * 2 : 64;
-    b->changes = (SnxQrefChange*)snx_realloc(b->changes, r->change_cap * sizeof(*b->changes));
-}
-
-static void ref_need_bytes(Ref* r, SnxQrefBatch* b, size_t n) {
-    if (n <= r->byte_cap) return;
-    while (r->byte_cap < n) r->byte_cap = r->byte_cap ? r->byte_cap * 2 : 0x1000;
-    b->bytes = (u8*)snx_realloc(b->bytes, r->byte_cap);
-}
-
-/* reads one case's result into batch, and its changes after the ones already there; -1 when the file is malformed */
+/* reads one case's result: with b NULL it counts the case's changes and bytes into r, else it reads them into b's
+   block (ref_get_batch) after the ones already there; -1 when the file is malformed */
 static int ref_get_result(Ref* r, SnxQrefBatch* b) {
-    SnxQrefResult* out = &b->results[b->cases];
+    SnxQrefResult counted, *out = b ? &b->results[b->cases] : &counted;
     u64 truncated, nchanges, i;
-    size_t bytes = r->bytes;
     memset(out, 0, sizeof(*out));
     out->outcome = (u32)ref_get64(&r->in);
     out->signo = (u32)ref_get64(&r->in);
@@ -874,27 +862,61 @@ static int ref_get_result(Ref* r, SnxQrefBatch* b) {
     if (r->in.failed || nchanges > SNX_QREF_MAX_CHANGED) return -1;
     out->truncated = truncated != 0;
     out->first_change = (u32)r->changes;
-    ref_need_changes(r, b, r->changes + nchanges);
     for (i = 0; i < nchanges; ++i) {
-        SnxQrefChange* ch;
         u64 address = ref_get64(&r->in), size = ref_get64(&r->in), k;
-        if (r->in.failed || size > SNX_QREF_MAX_CHANGED || bytes + size > 0xFFFFFFFFu - 0x10000) return -1;
-        ref_need_bytes(r, b, bytes + size);
-        ch = &b->changes[r->changes++];
-        ch->address = address;
-        ch->offset = (u32)bytes;
-        ch->size = (u32)size;
+        if (r->in.failed || size > SNX_QREF_MAX_CHANGED || r->bytes + size > 0xFFFFFFFFu - 0x10000) return -1;
+        if (b) {
+            SnxQrefChange* ch = &b->changes[r->changes];
+            ch->address = address;
+            ch->offset = (u32)r->bytes;
+            ch->size = (u32)size;
+        }
         for (k = 0; k < size; k += 8) {
             u64 v = ref_get64(&r->in);
             unsigned j;
-            for (j = 0; j < 8 && k + j < size; ++j) b->bytes[bytes + k + j] = (u8)(v >> (8 * j));
+            if (b)
+                for (j = 0; j < 8 && k + j < size; ++j) b->bytes[r->bytes + k + j] = (u8)(v >> (8 * j));
         }
-        bytes += size;
+        r->bytes += size;
+        ++r->changes;
     }
-    r->bytes = bytes;
     out->changes = (u32)nchanges;
-    ++b->cases;
+    if (b) ++b->cases;
     return r->in.failed ? -1 : 0;
+}
+
+/* a batch of items from the record: their start states into starts, index[item * states + state] the state's case
+   or -1, and QEMU's results into b, whose results, changes and bytes are one block as snx_qref_run makes it
+   (qemu_ref.h): a first pass counts them, a second reads them in. -1 when the record ends inside them */
+static int ref_get_batch(Ref* r, SnxQrefBatch* b, size_t items, size_t states, SnxQrefState* starts, int* index) {
+    const size_t at = r->in.at;
+    size_t cases = 0, changes = 0, bytes = 0, item, s;
+    int fill;
+    for (fill = 0; fill < 2; ++fill) {
+        r->in.at = at;
+        r->changes = r->bytes = 0;
+        if (fill) {
+            const size_t results_size = cases * sizeof(SnxQrefResult);
+            b->results = (SnxQrefResult*)snx_alloc(results_size + changes * sizeof(SnxQrefChange) + bytes);
+            b->changes = (SnxQrefChange*)((u8*)b->results + results_size);
+            b->bytes = (u8*)(b->changes + changes);
+            b->cases = 0;
+        }
+        for (item = 0; item < items; ++item) {
+            const size_t n = (size_t)ref_get64(&r->in);
+            if (r->in.failed || n > states) return -1;
+            for (s = 0; s < states; ++s) {
+                if (fill) index[item * states + s] = s < n ? (int)(b->cases + s) : -1;
+                if (s < n) ref_get_state(&r->in, &starts[item * states + s]);
+            }
+            for (s = 0; s < n; ++s)
+                if (ref_get_result(r, fill ? b : NULL)) return -1;
+            if (!fill) cases += n;
+        }
+        changes = r->changes;
+        bytes = r->bytes;
+    }
+    return 0;
 }
 
 static void ref_put_item(RefOut* w, const Item* it) {
@@ -1201,21 +1223,8 @@ int main(int argc, char** argv) {
         index = (int*)snx_alloc((end - first) * states * sizeof(*index));
         if (reference) {
             /* the record's start states and results, in the order the live run added them */
-            batch.results = (SnxQrefResult*)snx_alloc((end - first) * states * sizeof(*batch.results));
-            batch.cases = 0;
-            for (k = first; k < end; ++k) {
-                const size_t base = (k - first) * states;
-                size_t n = (size_t)ref_get64(&ref.in);
-                if (ref.in.failed || n > states) return snx_error("%s ends inside its cases", reference_path);
-                for (s = 0; s < states; ++s) {
-                    index[base + s] = -1;
-                    if (s < n) ref_get_state(&ref.in, &starts[base + s]);
-                }
-                for (s = 0; s < n; ++s) {
-                    index[base + s] = (int)batch.cases;
-                    if (ref_get_result(&ref, &batch)) return snx_error("%s ends inside its cases", reference_path);
-                }
-            }
+            if (ref_get_batch(&ref, &batch, end - first, states, starts, index))
+                return snx_error("%s ends inside its cases", reference_path);
         } else {
             u64 batch_seed = next_random();
             g_test.rng = batch_seed;
@@ -1334,15 +1343,7 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        if (reference) {
-            free(batch.results);
-            free(batch.changes);
-            free(batch.bytes);
-            memset(&batch, 0, sizeof(batch));
-            ref.changes = ref.change_cap = ref.bytes = ref.byte_cap = 0;
-        } else {
-            snx_qref_clear(&batch);
-        }
+        snx_qref_clear(&batch);
         free(starts);
         free(index);
         i = end;
