@@ -2564,6 +2564,7 @@ static void add_cheats(App* app, const char* temporary) {
     free(cheats);
     free(root);
 }
+#ifdef __ANDROID__ /* the Android driver pages and the game box rows */
 /* a GPU driver package's zip, as released: meta.json, an arm64 library (its ELF header) and its folder name's file */
 static char* driver_zip(const char* temporary, const char* name) {
     mz_zip_archive z = {0};
@@ -2863,6 +2864,7 @@ static void game_gpu_driver(App* app) {
     free(ini);
     free(game);
 }
+#endif
 #ifdef SNX_XDG
 /* the message an answer from a picker's own thread leaves, waited for up to 5 seconds */
 static void message_waited(App* app) {
@@ -4528,9 +4530,17 @@ int main(int argc, char** argv) {
     /* App: the theme and the letters, either way round, and the theme editor, which comes back here */
     app.editor.row = 0;
     key(&app, SDLK_RETURN);
+#ifdef __ANDROID__
     assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 13);
+#else /* the two Android pages are not App's rows */
+    assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 11);
+#endif
+#ifdef __ANDROID__
     gpu_drivers(&app, temporary); /* GPU Drivers and Freedreno Settings, then back to the App's first row */
+#endif
+#ifdef __ANDROID__
     download_driver(&app, temporary);
+#endif
     app.editor.row = GUI_APP_THEME;
     {
         char first[64], line[1024];
@@ -8729,7 +8739,9 @@ int main(int argc, char** argv) {
                 add_cheats(&app, temporary);
                 key(&app, SDLK_M);
                 assert(app.addons_shown && !app.mods_count && !app.cheats_count);
+#ifdef __ANDROID__
                 game_gpu_driver(&app);
+#endif
                 key(&app, SDLK_ESCAPE);
                 assert(!app.addons_shown && !app.menu.running && app.menu.view == GUI_LOAD_GAMES);
                 { /* and on its row of the recent games: the same box, named as the run named it */

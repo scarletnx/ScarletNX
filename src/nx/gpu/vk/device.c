@@ -288,7 +288,10 @@ static int create_device(void) {
     g_shader_quad = (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) &&
                     (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
     g_vk_preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32 != 0;
-    /* MoltenVK fails every pipeline that lists VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE (Metal's dynamic stride) */
+    /* Every feature comes from what the device reports, not from the driver under it: a driver that has one the other
+       lacks uses it, and one that lacks it takes the path of a device without it. The driver named below is one whose
+       bug makes a feature it claims unusable: MoltenVK fails every pipeline that lists
+       VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE (Metal's dynamic stride) */
     g_vk.has_dynamic_stride = p12.driverID != VK_DRIVER_ID_MOLTENVK;
     g_vk_preserve_infnan64 = p12.shaderSignedZeroInfNanPreserveFloat64 != 0;
     g_vk.has_minmax_swizzle = p12.filterMinmaxImageComponentMapping != 0;
