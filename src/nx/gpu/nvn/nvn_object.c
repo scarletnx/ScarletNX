@@ -1963,9 +1963,11 @@ int nvn_ProgramSetShadersExt(CPU* c, u64 p, i32 n, u64 sd) {
     i32 i;
     (void)c;
     if (n < 0 || n > 6) return 0;
+    /* a stage is NVNshaderData and the extension, so a stage's words are 0x18 apart and not 16: read at NVNshaderData's
+       size and the next stage's code area lands where its control section is named */
     for (i = 0; i < n; i++) {
-        st[i].data = gr64(sd + sizeof(NVNshaderData) * (u64)i);
-        st[i].control = nvn_gptr(sd + sizeof(NVNshaderData) * (u64)i + 8);
+        st[i].data = gr64(sd + (sizeof(NVNshaderData) + 8) * (u64)i);
+        st[i].control = nvn_gptr(sd + (sizeof(NVNshaderData) + 8) * (u64)i + 8);
     }
     return set_shaders(p, st, n);
 }
