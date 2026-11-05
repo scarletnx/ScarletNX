@@ -2706,12 +2706,15 @@ if(WIN32 AND TARGET SDL3::SDL3)
         "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
     snx_test_target(snx-test-platform-win32 11)
     target_link_libraries(snx-test-platform-win32 PRIVATE SDL3::SDL3 synchronization powrprof)
-    add_test(NAME platform_win32 COMMAND snx-test-platform-win32 "${CMAKE_CURRENT_BINARY_DIR}")
-    # the protection's tracking has no Windows version: the watch tracks, said; and none, which the scan says
-    add_test(NAME platform_win32_protection COMMAND snx-test-platform-win32 "${CMAKE_CURRENT_BINARY_DIR}"
-                                                    --write_tracking=1)
-    add_test(NAME platform_win32_no_tracking COMMAND snx-test-platform-win32 "${CMAKE_CURRENT_BINARY_DIR}"
-                                                     --write_tracking=2)
+    # the protection's tracking has no Windows version: the watch tracks, said; and none, which the scan says. Each in a
+    # folder of its own, as ctest may run them at once and each writes, reads and removes the same file
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/platform_win32" "${CMAKE_CURRENT_BINARY_DIR}/platform_win32_protection"
+         "${CMAKE_CURRENT_BINARY_DIR}/platform_win32_no_tracking")
+    add_test(NAME platform_win32 COMMAND snx-test-platform-win32 "${CMAKE_CURRENT_BINARY_DIR}/platform_win32")
+    add_test(NAME platform_win32_protection
+             COMMAND snx-test-platform-win32 "${CMAKE_CURRENT_BINARY_DIR}/platform_win32_protection" --write_tracking=1)
+    add_test(NAME platform_win32_no_tracking
+             COMMAND snx-test-platform-win32 "${CMAKE_CURRENT_BINARY_DIR}/platform_win32_no_tracking" --write_tracking=2)
 endif()
 if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-shader-brx shader_brx.c)
