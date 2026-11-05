@@ -139,13 +139,28 @@ static bool parse(CtrReader* r, const CtrSource* s, CtrNcch* n, bool overlay) {
     bool ok = stored && n->code ? ctr_read(r, files[code_index], 0, stored, stored_size)
                                 : ctr_fail(r, SNX_CTR_EXTRACT_LIMIT, "out of memory");
     size_t expanded = stored_size;
+    /* a .code the ExHeader marks compressed that is no BLZ stream is refused, as Azahar's NCCHContainer refuses it: a
+       dump tool may have expanded it and left the flag */
+    static const char expanded_hint[] = "(a dump tool may have expanded .code and left the flag set)";
     if (ok && (exheader[0xd] & 1)) {
-        if (stored_size < 8 || (uint64_t)stored_size + snx_ld_le32(stored + stored_size - 4) > expected)
-            ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "BLZ expansion exceeds segment sizes");
+        uint32_t more = stored_size < 8 ? 0 : snx_ld_le32(stored + stored_size - 4);
+        if (stored_size < 8)
+            ok = ctr_fail(
+                r, SNX_CTR_EXTRACT_FORMAT,
+                "the ExHeader marks .code compressed (byte 0x0d bit 0), but its %zu bytes hold no BLZ footer %s",
+                stored_size, expanded_hint);
+        else if ((uint64_t)stored_size + more > expected)
+            ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT,
+                          "the ExHeader marks .code compressed (byte 0x0d bit 0), but its BLZ footer expands its %zu "
+                          "bytes by %" PRIu32 ", past the %" PRIu64 " its segments take %s",
+                          stored_size, more, (uint64_t)expected, expanded_hint);
         else {
-            expanded += snx_ld_le32(stored + stored_size - 4);
+            expanded += more;
             if (!snx_ctr_blz(stored, stored_size, n->code, expanded))
-                ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid ExeFS BLZ stream");
+                ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT,
+                              "the ExHeader marks .code compressed (byte 0x0d bit 0), but its %zu bytes are no valid "
+                              "BLZ stream %s",
+                              stored_size, expanded_hint);
         }
     } else if (ok) {
         if (stored_size > expected)
