@@ -777,10 +777,12 @@ jobs:
             -DLLVM_DIR=/src/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm -DSNX_LLVM_CONFIG= -DSNX_A64_DISASM=OFF
           cmake --build --preset ${{ matrix.preset }} --parallel "$(getconf _NPROCESSORS_ONLN)" \
             --target snx-test-llvm-qemu-differential
-          # both forms run, and a failing one's examples go to the log: the container's /tmp goes with the job
+          # both forms run, and a failing one's examples go to the log: the container's /tmp goes with the job. A form
+          # takes minutes; at 20 its SIGBUS makes the test name the case it was in, where a hang would hold the job 3 hours
           failed=0
           for form in "" --generic; do
-            if ! qemu-${{ matrix.qemu }} -L /src/sysroot build/${{ matrix.preset }}/tests/snx-test-llvm-qemu-differential \
+            if ! timeout -s BUS -k 30 1200 \
+              qemu-${{ matrix.qemu }} -L /src/sysroot build/${{ matrix.preset }}/tests/snx-test-llvm-qemu-differential \
               /tmp/llvm_qemu_reference /src/tests/llvm_qemu_expected.txt \
               --reference /src/reference/llvm_qemu_reference.bin --quiet $form; then
               failed=1
