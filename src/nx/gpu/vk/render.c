@@ -2169,7 +2169,7 @@ static struct {
         }                                                                                                              \
     } while (0)
 void vk_render_forget_state(void) { g_dyn.cb = 0; }
-u64 g_vk_drawn, g_vk_skipped;
+u64 g_vk_drawn, g_vk_skipped, g_vk_mesh_draws, g_vk_mesh_drawn;
 
 /* The viewport's size with the transform off: the surface clip's, at most the device's viewport dimensions at the
    resolution scale (a game's driver leaves the clip at 16384 x 16384, past every target). The last stage divides
@@ -3028,6 +3028,13 @@ static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     VkDescriptorSet bset[3];
     if (!count || !instances) return;
     vk_frame_check();
+    /* an Ounce's mesh draw (DrawCall.mesh), which the renderer has no pipeline for yet */
+    if (dc->mesh) {
+        g_vk_mesh_draws++;
+        LOG_LIMIT(1, "vulkan: mesh draws are skipped: the renderer has no mesh pipeline\n");
+        g_vk_skipped++;
+        return;
+    }
     if (g_draw.check < 0) {
         g_draw.check = g_settings.draw_state_check != 0;
         if (g_draw.check)

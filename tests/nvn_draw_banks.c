@@ -54,6 +54,10 @@ int nvn_program_xfb(u64 serial, ShXfb* x) {
     (void)x;
     return 0;
 }
+/* the mesh fields of the one program the mesh cases set them for (nvn_object.c keeps them by its serial) */
+static u64 mesh_serial;
+static DsMeshKey mesh_fields;
+DsMeshKey nvn_program_mesh(u64 serial) { return serial && serial == mesh_serial ? mesh_fields : (DsMeshKey){0}; }
 void nvn_program_c0(u64 serial, u8 c0[NVN_C0_RECORD]) {
     (void)serial;
     memset(c0, 0, NVN_C0_RECORD);
@@ -330,7 +334,8 @@ static void test_vertex_formats(void) {
 
 /* OP_BIND_SSBO: storage buffer r of a graphics stage goes to that stage's bank 0, address then size, at its table's
    base + 16 r: the vertex stage's from 0x110, the geometry stage's from 0x410 (nxnative's dmsh_abi.h), the fragment
-   stage's from 0x510. A tessellation stage, whose table was never measured, writes no bank */
+   stage's from 0x510, an Ounce's task and mesh stages' from 0x670 and 0x770, each in its own bank (the driver's
+   BindStorageBuffer table). The tessellation stages use the tables between vertex and geometry */
 #define SSBO 0x4000u
 static void test_storage_tables(void) {
     static const struct {
@@ -340,7 +345,8 @@ static void test_storage_tables(void) {
     } cases[] = {
         {NVN_SHADER_STAGE_VERTEX, 0, 0x110},          {NVN_SHADER_STAGE_TESS_CONTROL, 1, 0x210},
         {NVN_SHADER_STAGE_TESS_EVALUATION, 2, 0x310}, {NVN_SHADER_STAGE_GEOMETRY, 3, 0x410},
-        {NVN_SHADER_STAGE_FRAGMENT, 4, 0x510},
+        {NVN_SHADER_STAGE_FRAGMENT, 4, 0x510},        {NVN_SHADER_STAGE_TASK, DS_TASK, 0x670},
+        {NVN_SHADER_STAGE_MESH, DS_MESH, 0x770},
     };
     memset(&d, 0, sizeof d);
     nvn_draw_init(&d, 0);
@@ -685,6 +691,101 @@ static void test_direct_instances(void) {
     g_none.draw = NULL;
 }
 
+/* An Ounce's mesh draws: BindProgram's stages 6 and 7 (bits 0x40 and 0x80) bind the task and mesh programs, their
+   constants and their fields (nvn_program_mesh, by the program's serial), and OP_DRAW_MESH draws them. Their uniform
+   buffers bind apart from the vertex stage's, as the driver's constant buffer groups 9 and 0xb are */
+static DsPrograms captured_prog;
+static DrawCall captured_call;
+static void capture_mesh_draw(const DsState* ds, const DrawCall* call, DrawOwner* owner) {
+    (void)owner;
+    instance_draws++;
+    captured_prog = ds->prog;
+    captured_call = *call;
+}
+static void test_mesh_draws(void) {
+    memset(&d, 0, sizeof d);
+    nvn_draw_init(&d, 0);
+    instance_draws = 0;
+    g_none.draw = capture_mesh_draw;
+    /* a vertex program bound first, whose uniform buffer and constants a mesh program's binds leave as they are */
+    NvnStage v = {.data = 0x40000, .cb = 5}, f = {.data = 0x50000, .cb = 7};
+    bind(&v, &f);
+    NvnPBindBuf u = {.stage = NVN_SHADER_STAGE_VERTEX, .index = 2, .address = 0x60000, .size = 0x100};
+    memcpy(g_mem + SSBO, &u, sizeof u);
+    nvn_draw_record(&d, OP_BIND_UBO, SSBO, sizeof u);
+    u.stage = NVN_SHADER_STAGE_MESH;
+    u.address = 0x61000;
+    memcpy(g_mem + SSBO, &u, sizeof u);
+    nvn_draw_record(&d, OP_BIND_UBO, SSBO, sizeof u);
+    u.stage = NVN_SHADER_STAGE_TASK;
+    u.address = 0x62000;
+    memcpy(g_mem + SSBO, &u, sizeof u);
+    nvn_draw_record(&d, OP_BIND_UBO, SSBO, sizeof u);
+    check(d.bind.cb_addr[0][5] == 0x60000 && d.bind.cb_addr[DS_MESH][5] == 0x61000 &&
+              d.bind.cb_addr[DS_TASK][5] == 0x62000,
+          "the vertex, mesh and task stages' uniform buffers bind apart");
+    /* a mesh program after a task program, bound with every stage as the game binds it */
+    NvnPBindProgram r;
+    memset(&r, 0, sizeof r);
+    r.stages = 0xff;
+    r.st[NVN_SHADER_STAGE_TASK] = (NvnStage){.data = 0x70000, .cb = 3};
+    r.st[NVN_SHADER_STAGE_MESH] = (NvnStage){.data = 0x71000, .cb = 14};
+    r.st[NVN_SHADER_STAGE_FRAGMENT] = f;
+    DsMeshKey k = {.task_threads = 32,
+                   .task_payload = 0x580,
+                   .mesh_threads = 8,
+                   .mesh_payload = 0x580,
+                   .max_vertices = 32,
+                   .max_primitives = 16,
+                   .has_task = 1,
+                   .primitive_vertices = 3,
+                   .prim_sph = 0xd00};
+    r.serial = mesh_serial = 77;
+    mesh_fields = k;
+    memcpy(g_mem + PROG, &r, sizeof r);
+    check(nvn_draw_record(&d, OP_BIND_PROGRAM, PROG, sizeof r) == 1, "a mesh program's bind is taken");
+    check(d.bind.cb_addr[DS_TASK][1] == 0x70000 + 256 * 3 && d.bind.cb_addr[DS_MESH][1] == 0x71000 + 256 * 14,
+          "the task and mesh programs' constants are their stages' bank 1");
+    check(d.bind.cb_addr[DS_MESH][5] == 0x61000 && d.bind.cb_addr[0][5] == 0x60000,
+          "a program's bind leaves the uniform buffers bound");
+    NvnPDrawMesh m = {.first = 2, .count = 30};
+    memcpy(GP(DRAW), &m, offsetof(NvnPDrawMesh, ind));
+    check(nvn_draw_record(&d, OP_DRAW_MESH, DRAW, offsetof(NvnPDrawMesh, ind)) && instance_draws == 1,
+          "a mesh draw reaches the renderer");
+    check(captured_call.mesh == 1 && captured_call.first == 2 && captured_call.count == 30 &&
+              captured_call.instances == 1 && captured_call.topology == 4 && !captured_call.indirect,
+          "a mesh draw's workgroups: first %u, count %u", captured_call.first, captured_call.count);
+    check(captured_prog.task == 0x70000 && captured_prog.mesh == 0x71000 &&
+              !memcmp(&captured_prog.mesh_key, &k, sizeof k) && captured_prog.code[5] == 0x50000,
+          "a mesh draw's programs and their fields");
+    /* another program for the vertex pipeline: the mesh stages keep theirs */
+    bind(&v, &f);
+    nvn_draw_record(&d, OP_DRAW_MESH, DRAW, offsetof(NvnPDrawMesh, ind));
+    check(captured_prog.mesh == 0x71000 && captured_prog.mesh_key.task_threads == 32,
+          "a bind of other stages keeps the mesh pipeline's programs");
+    /* a mesh program alone, its task stage unbound, takes no task program's fields */
+    r.st[NVN_SHADER_STAGE_TASK] = (NvnStage){0};
+    k.has_task = 0;
+    mesh_fields = k;
+    memcpy(g_mem + PROG, &r, sizeof r);
+    nvn_draw_record(&d, OP_BIND_PROGRAM, PROG, sizeof r);
+    nvn_draw_record(&d, OP_DRAW_MESH, DRAW, offsetof(NvnPDrawMesh, ind));
+    check(!captured_prog.task && !captured_prog.mesh_key.task_threads && !captured_prog.mesh_key.task_payload &&
+              !d.bind.cb_addr[DS_TASK][1],
+          "a mesh program alone has no task program");
+    /* no workgroups: no draw. An indirect one keeps its records where the GPU reads them */
+    m.count = 0;
+    memcpy(GP(DRAW), &m, offsetof(NvnPDrawMesh, ind));
+    nvn_draw_record(&d, OP_DRAW_MESH, DRAW, offsetof(NvnPDrawMesh, ind));
+    check(instance_draws == 3, "a mesh draw of no workgroups isn't drawn");
+    m = (NvnPDrawMesh){.ind = 0x90000, .form = NVN_MESH_3D};
+    memcpy(GP(DRAW), &m, sizeof m);
+    nvn_draw_record(&d, OP_DRAW_MESH, DRAW, sizeof m);
+    check(instance_draws == 4 && captured_call.mesh && captured_call.indirect == 0x90000 && captured_call.stride == 12,
+          "an indirect mesh draw keeps its records");
+    g_none.draw = NULL;
+}
+
 static void test_patch_size(void) {
     memset(&d, 0, sizeof d);
     nvn_draw_init(&d, 0);
@@ -1008,6 +1109,7 @@ int main(int argc, char** argv) {
     test_storage_tables();
     test_compute_uniform_ranges();
     test_direct_instances();
+    test_mesh_draws();
     test_patch_size();
     test_inline_updates();
     test_equal_bindings();

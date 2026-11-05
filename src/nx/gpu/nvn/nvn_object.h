@@ -4,6 +4,7 @@
    and state objects, and their builders. What the command buffer and queue files share with it */
 #ifndef SNX_NVN_OBJECT_H
 #define SNX_NVN_OBJECT_H
+#include "nx/gpu/draw_state.h"
 #include "nx/gpu/nvn/nvn_obj.h"
 #include "nx/memory/mem.h"
 #include "nx/gpu/shader/shader.h"
@@ -21,11 +22,11 @@ typedef struct {
     NvnTessStage stage[2]; /* control, evaluation */
 } NvnTessEntry;
 /* an Ounce program's records that its object has no room for (nvn_obj.h's NVN_C0_RECORD): its compute program's c[0]
-   record */
+   record, and its task and mesh programs' fields */
 typedef struct {
     u64 serial;
     u8 c0[NVN_C0_RECORD];
-    u8 pad[4];
+    DsMeshKey mesh;
 } NvnOunceEntry;
 /* the file's state, g_nvn.object (gpu/nvn/nvn_state.h): the serials handed out, and nvnDeviceGetInteger's answers
    once read from the game's driver (driver: 1; read_api: its API version among them); the transform feedback layouts
@@ -72,6 +73,8 @@ int nvn_program_xfb(u64 serial, ShXfb* x);
 int nvn_program_tess(u64 serial, NvnTessStage stages[2]);
 /* the c[0] record of the Ounce compute program SetShaders gave serial (NVN_C0_RECORD), all 0 for another program */
 void nvn_program_c0(u64 serial, u8 c0[NVN_C0_RECORD]);
+/* the task and mesh programs' fields of the Ounce program SetShaders gave serial, all 0 for another program */
+DsMeshKey nvn_program_mesh(u64 serial);
 /* the game's driver resolved nvnDeviceGetInteger to func: its answers are read from its code (gpu/nvn/nvn_driver.c)
    before the game can ask */
 void nvn_device_driver(u64 func);

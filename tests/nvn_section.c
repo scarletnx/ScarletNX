@@ -27,6 +27,17 @@ int main(void) {
     assert(m.has_task == 1 && m.primitive_vertices == 3);
     assert(m.max_vertices == 32 && m.max_primitives == 16);
     assert(m.gs_header == 0xd00 && m.gs_bytes == 0x80);
+    /* the mesh program's fields of a program's record, which keeps the task program's */
+    DsMeshKey k = {.task_threads = 32, .task_payload = 0x580};
+    nvn_section_mesh_key(s, NVN_SHADER_STAGE_MESH, &k);
+    assert(k.task_threads == 32 && k.task_payload == 0x580 && k.mesh_threads == 8 && k.mesh_payload == 0x580);
+    assert(k.has_task == 1 && k.primitive_vertices == 3 && k.max_vertices == 32 && k.max_primitives == 16);
+    assert(k.prim_sph == 0xd00);
+    /* a per-primitive SPH of fewer bytes than the translator reads of it is none */
+    const u32 short_sph[] = {0x70000, 0x5800008, 0x3010000, 0x100020, 0xd00, 0x40};
+    section(s, short_sph, 6);
+    nvn_section_mesh_key(s, NVN_SHADER_STAGE_MESH, &k);
+    assert(k.prim_sph == 0);
     /* a mesh program alone: no per-primitive outputs */
     const u32 alone[] = {0x70000, 0x800020, 0x3000000, 0xc00100};
     section(s, alone, 4);
@@ -39,6 +50,9 @@ int main(void) {
     assert(nvn_section_stage(s) == NVN_SHADER_STAGE_TASK);
     m = nvn_section_mesh(s);
     assert(m.threads == 32 && m.payload == 0x100 && !m.max_vertices && !m.max_primitives);
+    /* the task program's fields of a record, which keeps the mesh program's */
+    nvn_section_mesh_key(s, NVN_SHADER_STAGE_TASK, &k);
+    assert(k.task_threads == 32 && k.task_payload == 0x100 && k.mesh_threads == 8 && k.max_vertices == 32);
     /* the stages of the other programs, as the sections number them */
     const u32 fragment[] = {0x10000};
     section(s, fragment, 1);
