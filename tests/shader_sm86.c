@@ -2144,6 +2144,40 @@ static void test_fragment_per_primitive(const char* spirv_val, const char* dir) 
     }
 }
 
+/* A fragment program's input that no output of the stage before writes (ShaderInfo.in_unfed_mask) reads 0, 0, 0, 1,
+   as the Maxwell translator's does, and the module declares no Input for it, which the stage before would not match
+   (VUID-RuntimeSpirv-OpEntryPoint-08743: one game's mesh programs write fewer generics than their fragment programs
+   read) */
+static void test_fragment_unfed(const char* spirv_val, const char* dir) {
+    u8 code[16 * 8] = {0};
+    u32 n = fragment_program(code), fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[6] = 2;
+    fsph[18] = 0xf;
+    u32 inputs_of[2] = {0};
+    for (u32 unfed = 0; unfed < 2; unfed++) {
+        ShaderInfo si = {0};
+        si.in_unfed_mask = unfed;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) return;
+        u32 at[64], inputs = 0, found = spv_find(spv, count, 59 /* OpVariable */, at, 64);
+        for (u32 k = 0; k < found; k++) inputs += spv[at[k] + 3] == 1 /* Input */;
+        inputs_of[unfed] = inputs;
+        CHECK(si.in_mask == 1);
+        if (unfed) CHECK(validate(spirv_val, dir, "fs_unfed", spv, count));
+        SpvEvalEnv env = {0};
+        env.in[0][0] = f2u(0.75f);
+        env.builtin[15][3] = f2u(1.0f); /* FragCoord.w, which IPA's perspective divides by */
+        const char* why = spv_eval(spv, count, &env);
+        free(spv);
+        if (why) fprintf(stderr, "fragment unfed: the evaluator stops at %s\n", why);
+        CHECK(!why && env.out[0][0] == (unfed ? 0 : f2u(0.75f)));
+    }
+    CHECK(inputs_of[0] == inputs_of[1] + 1); /* the generic's Input, beside FragCoord */
+}
+
 /* the pass over the shipped programs leaves a task or mesh program to its draw: it finds their ISBE accesses */
 static void test_uses_isbe(void) {
     u8 code[16 * 40] = {0};
@@ -2209,6 +2243,7 @@ int main(int argc, char** argv) {
     test_mesh_after_task(spirv_val, dir);
     test_mesh_refused();
     test_fragment_per_primitive(spirv_val, dir);
+    test_fragment_unfed(spirv_val, dir);
     test_uses_isbe();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);

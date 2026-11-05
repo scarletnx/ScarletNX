@@ -483,8 +483,13 @@ static u32 input_var(Ctx* c, u32 i) {
     }
     return c->in_attr[i];
 }
-/* the bits of component k of generic input i */
+/* the bits of component k of generic input i. A fragment program's input that no output of the stage before writes
+   (in_unfed_mask) reads 0, 0, 0, 1, as the Maxwell translator reads it, with no Input for the stage before to match */
 static u32 input_load(Ctx* c, u32 i, u32 k) {
+    if (c->stage == ST_FS && (c->si->in_unfed_mask >> i & 1)) {
+        c->si->in_mask |= 1u << i;
+        return to_u(c, cf(c, k == 3 ? 1.0f : 0.0f));
+    }
     u32 var = input_var(c, i);
     int integer = c->stage == ST_VS && (c->si->attr_int_mask & (1u << i));
     u32 scalar = integer ? (c->si->attr_sint_mask & (1u << i) ? c->t_i32 : c->t_u32) : c->t_f32;
