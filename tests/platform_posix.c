@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The POSIX platform layer (platform/plat_posix.c, with plat_sdl.c): written-page tracking, decommit zeroing, pread,
-   file maps, replace, folders, timed waits and threads. Written-page tracking needs Linux 6.7 for userfaultfd's;
+   file maps, replace, folders, timed waits and threads, the watch of the system's memory pressure. Written-page tracking needs Linux 6.7 for userfaultfd's;
    write_tracking=1 (and every host without it) tracks by protection, and write_tracking=2 must make the scan say -1.
    The arguments: the folder for its files, then Debug settings as the runtime takes them, --key=value */
 #include "nx/runtime/platform/plat_posix.c"
@@ -617,6 +617,35 @@ static void test_host_page(void) {
     g_settings.host_page_size = given;
 }
 
+/* the system's warnings of low memory: on Linux the watch starts when this process may set the pressure trigger itself
+   (a kernel with PSI, from 6.5 for one without privileges), and the log says why it does not; elsewhere it does not
+   start here (macOS's comes from the backend, FreeBSD has none) */
+static int test_say(const char* why) {
+    (void)why;
+    return 1;
+}
+static void test_memory_watch(void) {
+    int can = 0;
+    printf("memory watch\n");
+#if defined(__linux__) && !defined(__ANDROID__)
+    {
+        int fd = open(PSI_FILE, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        can = fd >= 0 && write(fd, PSI_TRIGGER, sizeof PSI_TRIGGER) > 0;
+        if (fd >= 0) close(fd);
+    }
+#endif
+    g_log[0] = 0;
+    g_log_on = 1;
+    CHECK(plat_memory_watch(test_say) == (can ? 0 : -1), "the memory watch does not start as the trigger allows");
+#if defined(__linux__) && !defined(__ANDROID__)
+    CHECK(can ? !g_log[0] : strstr(g_log, "memory: no watch of the system's memory pressure: " PSI_FILE) != NULL,
+          "the memory watch's log line");
+    CHECK(plat_memory_watch(test_say) == (can ? 0 : -1), "a second start of the memory watch");
+#endif
+    printf("memory watch: %s\n", can ? "started" : "none here");
+    g_log_on = 0;
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     char path[1200], tmp[1200], sub[1200];
@@ -646,6 +675,7 @@ int main(int argc, char** argv) {
     }
     test_host_page();
     test_foreign();
+    test_memory_watch();
     if (sysconf(_SC_PAGESIZE) == 4096)
         test_guest_memory(dir);
     else /* plat_vm_reserve refuses the host: guest memory needs 4 KiB pages, and Apple silicon's are 16 KiB */
