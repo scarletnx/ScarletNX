@@ -10102,8 +10102,14 @@ int main(int argc, char** argv) {
         free(app.themes_dirs[0]);
         app.themes_dirs[0] = snx_strdup(themes);
         assert(!strcmp(app.theme.id, "default"));
-        app_select(&app, GUI_APP_THEME);
-        assert(!strcmp(app.theme.id, "yorha") && !app.editing && app.theme.panels == GUI_PANELS_FILL);
+        { /* the built-ins in their order, default first and the others by their folder's name; all on YoRHa's layout */
+            static const char* const next[] = {"fuddles", "fuddles-dark", "sepia-dark", "wimsy", "wimsy-dark", "yorha"};
+            size_t n;
+            for (n = 0; n < sizeof next / sizeof *next; ++n) {
+                app_select(&app, GUI_APP_THEME);
+                assert(!strcmp(app.theme.id, next[n]) && !app.editing && app.theme.panels == GUI_PANELS_FILL);
+            }
+        }
         app.menu.selected = GUI_SETTINGS;
         render(&app);
         page = rgb(app.theme.page);

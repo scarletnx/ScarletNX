@@ -396,8 +396,9 @@ int main(void) {
     dirs[2] = second;
     memset(&themes, 0, sizeof themes);
     gui_themes_scan(&themes, dirs, 3);
-    assert(themes.count == 4 && !strcmp(themes.ids[0], "default") && !strcmp(themes.ids[1], "yorha") &&
-           !strcmp(themes.ids[2], "alpha") && !strcmp(themes.ids[3], "gamma"));
+    /* the built-ins first, default first and the others by name; then the folders' */
+    assert(themes.count == 9 && !strcmp(themes.ids[0], "default") && !strcmp(themes.ids[1], "fuddles") &&
+           !strcmp(themes.ids[6], "yorha") && !strcmp(themes.ids[7], "alpha") && !strcmp(themes.ids[8], "gamma"));
     gui_theme_load(&theme, dirs, 3, "alpha", said, sizeof said);
     assert(!strcmp(theme.name, "Alpha") && same(theme.page, yorha->page) && !said[0]);
     gui_theme_load(&theme, dirs, 3, "gamma", said, sizeof said);
@@ -422,7 +423,7 @@ int main(void) {
     missing = snx_path_join(dir, "missing");
     none[0] = missing;
     gui_themes_scan(&themes, none, 1); /* no themes/ folder: the built-ins */
-    assert(themes.count == 2);
+    assert(themes.count == 7);
     gui_themes_free(&themes);
     free(missing);
     assert(!snx_remove_tree(dir) && !snx_remove_tree(second));
