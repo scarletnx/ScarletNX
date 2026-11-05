@@ -525,6 +525,9 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
                 uint32_t audio_capacity, uint32_t* audio_written, char* error, size_t error_size) {
     AgbSink sink = {board, audio, audio_capacity, 0, cpu->over};
     while (sink.elapsed < cycles) {
+        /* the ARM7TDMI holds R15's bits 1 and 0 at zero in ARM state: a jump there with bit 1 set (a Thumb BX PC two
+           bytes past a word) runs the word below */
+        if (!(cpu->arm.cpsr & SNX_ARM_T)) cpu->arm.r[15] &= ~(uint32_t)3;
         /* IntrWait, back where it was called once the handlers it ran returned: over once a handler flagged what it
            waits for, which it takes out of the flags; else it halts for the next interrupt */
         if (cpu->wait && !board->cpu_halted && cpu->irq_depth == cpu->wait_depth) {
