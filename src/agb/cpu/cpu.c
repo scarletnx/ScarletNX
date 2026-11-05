@@ -126,6 +126,7 @@ static int irq_enter(AgbBoard* board, AgbCpu* cpu) {
     agb_write32(board, sp + 16, cpu->arm.r[12]);
     agb_write32(board, sp + 20, cpu->arm.r[14]);
     cpu->arm.r[13] = sp;
+    cpu->arm.r[0] = 0x04000000;                                    /* the stub hands the handler the I/O base */
     cpu->arm.r[14] = AGB_IRQ_RETURN;                               /* the handler returns to the epilogue */
     cpu->arm.cpsr = (cpu->arm.cpsr & ~(uint32_t)SNX_ARM_T) | 0x80; /* ARM state, interrupts off */
     cpu->arm.cpsr = (cpu->arm.cpsr & ~(uint32_t)SNX_ARM_T) | (handler & 1 ? SNX_ARM_T : 0);
@@ -190,6 +191,11 @@ static int handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb) 
            hardware's IF is the handler's to acknowledge */
         int discard = number == AGB_SWI_VBLANK_INTR_WAIT || cpu->arm.r[0];
         cpu->wait = number == AGB_SWI_VBLANK_INTR_WAIT ? AGB_IRQ_VBLANK : (uint16_t)(cpu->arm.r[1] & 0x3FFF);
+        /* the BIOS's routine waits, and returns, with r0 = 0 and the I/O base in r12 (VBlankIntrWait with r1 = 1), which
+           an interrupt handler that runs meanwhile may use, as mGBA's HLE BIOS keeps them */
+        cpu->arm.r[0] = 0;
+        if (number == AGB_SWI_VBLANK_INTR_WAIT) cpu->arm.r[1] = 1;
+        cpu->arm.r[12] = 0x04000000;
         cpu->wait_depth = cpu->irq_depth;
         if (discard) agb_write16(board, AGB_BIOS_FLAGS, agb_read16(board, AGB_BIOS_FLAGS) & (uint16_t)~cpu->wait);
         board->irq_ime = 1;

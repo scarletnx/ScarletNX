@@ -412,6 +412,38 @@ int main(void) {
         }
     }
     {
+        /* the BIOS's IntrWait waits with the I/O base in r12 and returns with it there, and its interrupt stub calls the
+           game's handler with that base in r0: a handler that flags the vblank through r12 (0x03FFFFF8, the flags'
+           mirror) ends the wait. Here ARM code with r12 = 0 calls VBlankIntrWait, then stores 42 and its r12 at
+           0x02000320; the handler stores its r0 at 0x02000328 */
+        static const uint32_t code[] = {
+            0xE3A0C000, 0xEF050000, 0xE3A0502A, 0xE59F1008, 0xE5815000, 0xE581C004, 0xEAFFFFFE, 0x02000320,
+        };
+        static const uint32_t handler[] = {
+            0xE59F2014, 0xE5820000, 0xE3A01001, 0xE14C10B8, 0xE2802C02, 0xE1C210B2, 0xE12FFF1E, 0x02000328,
+        };
+        uint32_t written = 0;
+        for (uint32_t i = 0; i < 8; ++i) {
+            agb_write32(&board, 0x03000700 + i * 4, code[i]);
+            agb_write32(&board, 0x03000740 + i * 4, handler[i]);
+        }
+        agb_write32(&board, 0x03007FFC, 0x03000740);
+        agb_write16(&board, 0x03007FF8, 0);
+        agb_write16(&board, 0x04000004, 0x0008); /* the vblank interrupt on */
+        agb_write16(&board, 0x04000200, 0x0001);
+        agb_write16(&board, 0x04000208, 0x0001);
+        board.irq_if = 0;
+        board.cpu_halted = cpu.wait = 0;
+        cpu.arm.r[15] = 0x03000700;
+        cpu.arm.cpsr = 0x1F;
+        for (int frame = 0; frame < 2; ++frame)
+            CHECK(!agb_cpu_run(&board, &cpu, &recomp, AGB_SCANLINE_CYCLES * AGB_FRAME_LINES, audio, AGB_APU_RATE,
+                               &written, error, sizeof error));
+        CHECK(agb_read32(&board, 0x02000328) == 0x04000000);
+        CHECK(agb_read32(&board, 0x02000320) == 42 && agb_read32(&board, 0x02000324) == 0x04000000);
+        agb_write16(&board, 0x04000208, 0);
+    }
+    {
         /* the cache is the ROM's it was built from: another one's, named the same, recompiles and says why */
         AgbRecomp other;
         uint8_t* changed = make_rom(&size);
