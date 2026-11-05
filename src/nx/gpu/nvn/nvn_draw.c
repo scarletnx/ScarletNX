@@ -917,7 +917,7 @@ static void bind_program(NvnDraw* d, u64 payload, u32 size) {
         d->dx.code = st->data ? st->data + st->off : 0;
         d->dx.block[0] = r.block[0], d->dx.block[1] = r.block[1], d->dx.block[2] = r.block[2];
         d->dx.shared = r.off_a;
-        memcpy(d->c0rec, r.c0, sizeof d->c0rec);
+        nvn_program_c0(r.serial, d->c0rec);
         /* bank 1: the program's constants, after its code */
         d->dx.cb_addr[1] = st->data && st->cb_size ? st->data + 256 * (u64)st->cb : 0;
         d->dx.cb_size[1] = 256 * (u32)st->cb_size;
@@ -1061,7 +1061,7 @@ static void clear_texture(NvnDraw* d, u64 payload) {
 }
 
 /* a compute dispatch: its grid (or the GPU's words at ind) in bank 0 at 0x200, and the compute stage's state */
-/* An Ounce compute program's packed c[0] (NVN_PROG_C0), as the driver's macro 0xeac writes it into x's bank 0 from
+/* An Ounce compute program's packed c[0] (nvn_program_c0), as the driver's macro 0xeac writes it into x's bank 0 from
    the tables the binds keep: the buffers in bank 0 from 0x210 and 0x310, the handles in bank 2. A grid the GPU reads
    (indirect) is not in it yet */
 static void c0_packed(const NvnDraw* d, DispatchState* x) {

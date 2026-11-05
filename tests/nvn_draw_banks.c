@@ -54,6 +54,10 @@ int nvn_program_xfb(u64 serial, ShXfb* x) {
     (void)x;
     return 0;
 }
+void nvn_program_c0(u64 serial, u8 c0[NVN_C0_RECORD]) {
+    (void)serial;
+    memset(c0, 0, NVN_C0_RECORD);
+}
 int nvn_program_tess(u64 serial, NvnTessStage stages[2]) {
     (void)serial;
     (void)stages;
