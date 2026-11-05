@@ -434,7 +434,7 @@ static void both_modes(u32 bw, u32 bh) {
     free(srgb);
 }
 
-/* uploads random blocks into a BC7 image, as texture.c does where the GPU samples BCn but not ASTC (astc_bc), and
+/* uploads random blocks into a BC7 image, as texture.c does where the GPU samples BCn but not ASTC (astc_mode=0), and
    compares each level's blocks with the CPU decoder's texels encoded by the same encoder run on the CPU
    (tests/glsl/bc7_cpu.cpp): the strips that start on whole 4x4 blocks, the second dispatch and the copy of the
    blocks, byte for byte */
@@ -518,7 +518,7 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
 }
 
 /* --bench [file.astc]: one w x h level of ASTC blocks uploaded into an RGBA8 image and into a BC7 one, as texture.c
-   does without and with astc_bc, each runs times: the time from the upload's start to the GPU's end of it, and the
+   does as RGBA8 and as BC7, each runs times: the time from the upload's start to the GPU's end of it, and the
    texels a second. The blocks are random 8x8 ones, or a file's (astcenc's .astc) repeated over the level. A level of
    4096x4096 takes the BC7 encoder's fast build, one of 2040x2040 its full one. A game's sparse texture of 68 such
    layers takes seven of them */
@@ -799,25 +799,6 @@ static void bench_cache(u32 w, u32 h, int runs) {
     free(blocks);
     vk_bc7_cache_close();
     remove(CACHE_PATH);
-}
-
-/* vk_astc_as_bc7, texture.c's choice of exact RGBA8 or BC7 for an ASTC texture the GPU decodes: RGBA8 while memory
-   holds the working set, BC7 for textures of VK_BC7_AUTO_TEXELS or more once it has not (3D ones aside), and BC7
-   for a texture with holes in its mapping whatever memory says */
-static void policy_case(void) {
-    static const struct {
-        u64 texels;
-        int is3d, holes, pressed, bc7;
-    } cases[] = {
-        {VK_BC7_AUTO_TEXELS, 0, 0, 0, 0},       {8192ull * 8192 * 68, 0, 0, 0, 0}, {VK_BC7_AUTO_TEXELS, 0, 0, 1, 1},
-        {VK_BC7_AUTO_TEXELS - 1, 0, 0, 1, 0},   {8192ull * 8192, 0, 0, 1, 1},      {512ull * 512 * 512, 1, 0, 1, 0},
-        {16, 0, 1, 0, 1},                       {16, 1, 1, 1, 1},
-    };
-    for (u32 i = 0; i < sizeof cases / sizeof cases[0]; i++)
-        if (vk_astc_as_bc7(cases[i].texels, cases[i].is3d, cases[i].holes, cases[i].pressed) != cases[i].bc7)
-            fatal("vk_astc_as_bc7(%llu texels, 3d %d, holes %d, pressed %d) is not %d\n",
-                  (unsigned long long)cases[i].texels, cases[i].is3d, cases[i].holes, cases[i].pressed, cases[i].bc7);
-    puts("PASS ASTC textures become BC7 under memory pressure, from 256x256 texels, never 3D, always with holes");
 }
 
 /* block linear bytes deswizzled and swizzled on the GPU (vk/blocklinear.c), compared with ref_bl: a surface of
@@ -1201,7 +1182,6 @@ int main(int argc, char** argv) {
         puts("The 512 MiB ASTC textures decode as the CPU reference does");
         return 0;
     }
-    policy_case();
     /* block linear moves: whole GOBs, rows not a multiple of 16 or 64 bytes, partial GOB rows and blocks, bands that
        start inside a GOB, volumes whose depth isn't a multiple of their blocks' */
     for (u32 width = 1; width < 16; width++) bl_case(width, 3, 2, 0, 0, 2, 1);

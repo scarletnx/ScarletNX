@@ -99,7 +99,7 @@ typedef struct {
     /* optional features that were enabled */
     VkPhysicalDeviceFeatures feat;
     int has_divisor; /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
-    int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_bc=1 would hold its ASTC textures as BC7 */
+    int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_mode=0 holds its ASTC textures as BC7 */
     /* VK_EXT_vertex_input_dynamic_state in effect (vertex_input.h's choice): each draw sets its vertex layout, which
        pipelines leave out of their keys */
     int vertex_input_dynamic;
@@ -822,9 +822,6 @@ void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked);
    what is being released already, once a present */
 void vk_mem_trim(u64 extra, int force);
 u64 vk_mem_trimmed(void); /* statistics: the bytes vk_mem_trim freed */
-/* 1 once vk_mem_trim has had to free what the last second used, or an allocation found no memory: the working set
-   is bigger than the budget, and stays 1 for the run (vk_astc_as_bc7) */
-int vk_mem_pressed(void);
 /* vk_image_create for a surface of the caches, with room made for it first (vk_mem_trim). When no memory is found, a
    forced trim makes room for later, and images as big fail at once for the rest of the present. bytes: the device
    memory it takes */
@@ -1044,14 +1041,8 @@ int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
 void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size);
 /* hits, records stored, times it started over at its bound, and the file's bytes */
 void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
-/* Whether an ASTC texture the GPU decodes, where it samples BCn, is encoded again as BC7 rather than kept as exact
-   RGBA8 (astc_bc aside, which makes every one BC7: format.c TA). texels: its first level's, all layers; is3d: a 3D
-   texture (no 3D BC7 images on some devices); holes: holes in its mapping (a sparse texture: always BC7); pressed:
-   memory has run short of the working set (vk_mem_pressed). Under pressure every texture of VK_BC7_AUTO_TEXELS or
-   more is BC7: in one game's sample those were three quarters of the ASTC textures and 98% of their RGBA8 bytes */
-#define VK_BC7_AUTO_TEXELS (256u * 256u)
-int vk_astc_as_bc7(u64 texels, int is3d, int holes, int pressed);
-/* the bytes of the ASTC textures decoded to RGBA8 so far (astc_bc off, or a GPU without BCn) */
+/* the bytes of the ASTC textures decoded to RGBA8 so far (astc_mode=1, a 3D texture without 3D BC7 images, or a GPU
+   without BCn) */
 u64 vk_astc_rgba8_bytes(void);
 
 /* vic.c: the VIC composition as a compute shader, recorded in the frame's command buffer, its output planes

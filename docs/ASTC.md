@@ -172,8 +172,8 @@ is left out, the texture keeps its old hash, and the next check uploads it again
 ## Encoded again as BC7
 
 Most desktop GPUs sample BCn but not ASTC, and a decoded ASTC texture is four bytes a texel where the game's blocks
-take one (4x4) or less. With the `astc_bc` setting (a `startup` one, off by default: BC7 is close but not exact),
-`format.c`'s `TA()` gives such a texture a `VK_FORMAT_BC7_UNORM_BLOCK` or `_SRGB_BLOCK` image in place of RGBA8, and
+take one (4x4) or less. With the `astc_mode` setting at Auto (`0`, the default, a `startup` setting), `format.c`'s
+`TA()` gives such a texture a `VK_FORMAT_BC7_UNORM_BLOCK` or `_SRGB_BLOCK` image in place of RGBA8, and
 `vk_astc_upload` runs a second dispatch after the decode: `src/nx/gpu/texture/bc7.comp`, with its body in
 `bc7_encode.glsl`, encodes the decoded texels into BC7 blocks, an invocation a block, into a second scratch buffer of
 the same size, and the copy writes those blocks into the image. A BC7 strip starts on a row of whole 4x4 blocks, so
@@ -183,17 +183,16 @@ it whatever `native_bc` says, and `format.c` then samples BCn as it is only when
 keeps RGBA8 where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many
 levels went up as BC7 and their megabytes against RGBA8's.
 
-Without `astc_bc` the runtime chooses (`vk_astc_as_bc7`): an ASTC texture is exact RGBA8 while the memory budget holds
-the working set, and from the first time it does not, BC7 for the rest of the run for every texture of
-`VK_BC7_AUTO_TEXELS` (256x256 texels, all layers) or more, 3D ones aside. "Does not hold" is `vk_mem_trim` having to free
-what the last second used (any step past its first): one game's textures then took 5.7 GB of a 5.7 GB budget as RGBA8
-and were evicted and uploaded again every frame (600 to 1000 ms frames), where as BC7 they took 2.5 GB. The textures
-made before keep RGBA8 until the trimmer evicts them, and come back as BC7. In a sample of 1116 of another game's ASTC
-textures, those under 256x256 were a quarter of them and 1.5% of their RGBA8 bytes: small textures (often UI) stay
-exact for almost no memory. BC7 is not exact: on one game's 6x6 textures the full build gives 53.8 dB over RGBA, the
-fast build 50.7, both with a worst channel error of 50 (see the tables below).
+BC7 is the default because memory is what a desktop GPU runs short of. As RGBA8, one game's textures took 5.7 GB of a
+5.7 GB budget and were evicted and uploaded again every frame (600 to 1000 ms frames). As BC7 they took 2.5 GB. The
+encode costs most on the first run: the BC7 cache below keeps each level's blocks for the runs after it. BC7 is not
+exact: on one game's 6x6 textures the full build gives 53.8 dB over RGBA, the fast build 50.7, both with a worst
+channel error of 50 (see the tables below). `astc_mode=1` (Exact) decodes to RGBA8 instead, for a player who sees the
+difference, mostly in UI text. The runtime once kept RGBA8 until memory ran short and then took BC7 for the textures
+of 256x256 texels or more. That spent a whole budget before it changed, and the small textures it kept exact were
+1.5% of the bytes in one game's sample.
 
-A texture with holes in its mapping (a game's sparse texture, `texture.c`) is BC7 whatever `astc_bc` says, where the
+A texture with holes in its mapping (a game's sparse texture, `texture.c`) is BC7 whatever `astc_mode` says, where the
 GPU samples BCn: one game's are 68 layers of 8192x8192 ASTC 8x8 with seven of them mapped, 1.7 GB each as RGBA8 (16
 times the game's bytes), which took the GPU past its memory. `device.c` turns `textureCompressionBC` on wherever the
 device has it for this. A sparse texture's levels are decoded only in the strips that have memory bound
@@ -229,11 +228,10 @@ the invocations beside them. On the RTX 2080, beside a running game, a 4096x4096
 | astcenc 8x8 normal map | not measured | 256 to 267 ms | not measured |
 | Random 8x8 blocks | 21 to 29 ms | 189 to 196 ms | 260 ms |
 
-`astc_bc=1` goes further: every ASTC texture is BC7, the small ones too, from the start. Off, on a GPU that samples BCn
-but not ASTC, the log suggests it once a run, with the budget, the use and the megabytes of ASTC textures decoded to
-RGBA8, when the images run short (`surface.c`'s `astc_bc_suggest`): an image allocation finds no memory, a trim leaves
-the caches past their budget, or a trim takes what the last two presents used (the working set, which the next frames
-load again).
+With `astc_mode=1`, on a GPU that samples BCn but not ASTC, the log suggests Auto once a run, with the budget, the use
+and the megabytes of ASTC textures decoded to RGBA8, when the images run short (`surface.c`'s `astc_bc_suggest`): an
+image allocation finds no memory, a trim leaves the caches past their budget, or a trim takes what the last two
+presents used (the working set, which the next frames load again).
 
 The encoder tries each block in the modes that suit it and writes the one with the least squared error. Every
 block takes mode 6, one line through RGBA with 4-bit weights, which holds a block of one gradient closely. An opaque

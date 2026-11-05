@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* When the log suggests astc_bc=1 (gpu/texture/astc_bc.h): only with it off, on a GPU that samples BCn but not ASTC,
-   with ASTC textures decoded to RGBA8, and the images short of memory for one of its three reasons */
+/* When the log suggests astc_mode=0 (gpu/texture/astc_bc.h): only with BC7 off (astc_mode=1, Exact), on a GPU that
+   samples BCn but not ASTC, with ASTC textures decoded to RGBA8, and the images short of memory for one of its three
+   reasons */
 #include <assert.h>
 #include "nx/gpu/texture/astc_bc.h"
 #define MB (1ull << 20)
