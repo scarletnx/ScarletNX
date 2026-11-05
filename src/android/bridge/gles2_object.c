@@ -1323,8 +1323,9 @@ void gles2_memory_barrier(VkCommandBuffer cb) {
                                           VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
                                           VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
                                           VK_ACCESS_HOST_READ_BIT};
-    V.vk.vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &b, 0,
-                              NULL, 0, NULL);
+    /* the host's reads and writes are the HOST stage's, which ALL_COMMANDS leaves out */
+    VkPipelineStageFlags stages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT;
+    V.vk.vkCmdPipelineBarrier(cb, stages, stages, 0, 1, &b, 0, NULL, 0, NULL);
 }
 static void g_memory_barrier(CPU* c, Gles2Context* gl) {
     (void)c;
