@@ -1411,6 +1411,76 @@ static void test_hsetp2(const char* spirv_val, const char* dir) {
     (void)spirv_val, (void)dir;
 }
 
+/* BMOV.32.CLEAR RZ, B0 changes nothing the program computes; into a register it is refused */
+static void test_bmov(const char* spirv_val, const char* dir) {
+    u8 code[16 * 4] = {0};
+    Word x = fix(0x355);
+    set(&x, 16, 8, 255);
+    set(&x, 84, 1, 1);
+    put(code, 0, x);
+    put(code, 1, mov_imm(0, f2u(1.0f)));
+    put(code, 2, exit_insn());
+    put(code, 3, bra(3, 3, 7, 0));
+    u32 out[4];
+    CHECK(run_fs_at(code, 4, 0, NULL, 0, out) && out[0] == f2u(1.0f));
+    set(&x, 16, 8, 5);
+    put(code, 0, x);
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    CHECK(!sm86_to_spirv(code, 4 * 16, ST_FS, fsph, &si, &count));
+    (void)spirv_val, (void)dir;
+}
+
+/* The first texture coordinate (0x300-0x30f) moves to generic 22 (17 + its group, 5) in both stages: AST a[0x304]
+   writes output 22's y, and IPA a[0x300] reads input 22's x, with the interpolation the header's texture coordinate
+   map gives it (word 15, constant), not the FragCoord.w that a perspective input takes */
+static void test_legacy_varyings(const char* spirv_val, const char* dir) {
+    u8 code[16 * 4] = {0};
+    put(code, 0, mov_imm(1, 0x12345678u));
+    Word x = fix(0x322);
+    set(&x, 24, 8, 255);
+    set(&x, 32, 8, 1);
+    set(&x, 40, 10, 0x304);
+    set(&x, 64, 8, 255);
+    put(code, 1, x);
+    put(code, 2, exit_insn());
+    put(code, 3, bra(3, 3, 7, 0));
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    SpvEvalEnv env = {0};
+    CHECK(run_stage(ST_VS, code, 4, vsph, &env) && env.out_written[22] && env.out[22][1] == 0x12345678u);
+    x = fix(0x326);
+    set(&x, 16, 8, 0);
+    set(&x, 32, 8, 255);
+    set(&x, 64, 8, 0x300 >> 2);
+    put(code, 0, x);
+    put(code, 1, exit_insn());
+    put(code, 2, bra(2, 2, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[15] = 0x55; /* texture coordinate 0: constant */
+    fsph[18] = 0xf;
+    env = (SpvEvalEnv){0};
+    env.in[22][0] = f2u(3.0f);
+    env.builtin[15][3] = f2u(2.0f); /* FragCoord.w */
+    CHECK(run_stage(ST_FS, code, 3, fsph, &env) && env.out[0][0] == f2u(3.0f));
+    /* a program that reads texture coordinate 0 and generic 22 itself is refused */
+    x = fix(0x326);
+    set(&x, 16, 8, 1);
+    set(&x, 32, 8, 255);
+    set(&x, 64, 8, (0x80 + 22 * 16) >> 2);
+    put(code, 1, x);
+    put(code, 2, exit_insn());
+    put(code, 3, bra(3, 3, 7, 0));
+    ShaderInfo si = {0};
+    size_t count = 0;
+    CHECK(!sm86_to_spirv(code, 4 * 16, ST_FS, fsph, &si, &count));
+    (void)spirv_val, (void)dir;
+}
+
 /* BRXU UR3 with the table that ULDC.IDX reads at c[1][UR3 + 0x10], its index bounded on the uniform datapath:
    UISETP.LT.U32 UP0, UR1, 1; USEL UR2, UR1, 1, UP0; USHF.L.U32 UR3, UR2, 2. Two entries, then a word that names
    instruction 0, which the bound leaves out. UR1 is 1: the second case, R0 = 2.0 */
@@ -1594,6 +1664,8 @@ int main(int argc, char** argv) {
     test_local_memory(spirv_val, dir);
     test_shared_no_uniform(spirv_val, dir);
     test_hsetp2(spirv_val, dir);
+    test_bmov(spirv_val, dir);
+    test_legacy_varyings(spirv_val, dir);
     test_brxu(spirv_val, dir);
     test_ipa_uniform(spirv_val, dir);
     test_tld_multisample(spirv_val, dir);

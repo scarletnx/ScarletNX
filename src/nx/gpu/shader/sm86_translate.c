@@ -42,6 +42,7 @@ typedef struct {
     u32 vertex_index, instance_index, local_id, group_id, lane_id;
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
     u32 centroid_mask;  /* the inputs decorated Centroid */
+    u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
     u32 point_coord, front_facing;
     u32 tex[SH_MAXTEX], tex_sampled[SH_MAXTEX];
     u32 img[8], img_type[8];
@@ -437,9 +438,18 @@ static u32 bf16(Ctx* c, u32 f) {
 
 static u32 interp_mode(Ctx* c, u32 input) {
     /* the SPH's imap of a fragment program: 2 bits a component, 1 constant, 2 perspective, 3 screen linear, its first
-       used component's, and perspective for none, as spirv_translate.c reads Maxwell's (the same layout) */
+       used component's, and perspective for none, as spirv_translate.c reads Maxwell's (the same layout). A legacy
+       varying's generic takes the color map (word 14) or the texture coordinate map (bytes 0x3c-0x45) of its group,
+       as to_spirv gives Maxwell's */
+    u32 g = input - LEGACY_GENERIC, map = 0;
+    if (input >= LEGACY_GENERIC && (c->legacy_fs >> g & 1)) {
+        if (g < 2) map = c->sph[14] >> (8 * g) & 0xff;
+        if (g >= 5) map = c->sph[15 + (g - 5) / 4] >> ((g - 5) % 4 * 8) & 0xff;
+    }
     for (u32 k = 0; k < 4; k++) {
-        u32 mode = (c->sph[6 + input / 4] >> ((input % 4) * 8 + k * 2)) & 3;
+        u32 word =
+            input >= LEGACY_GENERIC && (c->legacy_fs >> g & 1) ? map : c->sph[6 + input / 4] >> ((input % 4) * 8);
+        u32 mode = (word >> (k * 2)) & 3;
         if (mode) return mode;
     }
     return 2;
@@ -502,6 +512,7 @@ static u32 attr_load(Ctx* c, u32 addr) {
     return c->zero;
 }
 static void attr_store(Ctx* c, u32 addr, u32 bits) {
+    if (shader_legacy_group(addr) >= 0) addr = shader_legacy_address(addr);
     u32 var = 0, k = (addr >> 2) & 3;
     if (c->stage == ST_FS || c->stage == ST_CS) {
         fail(c, "attribute store in a fragment or compute program");
@@ -1555,6 +1566,11 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_BSYNC:
         case SM86_BREAK: /* it takes its lanes out of a convergence barrier and goes on: the BRA after it leaves */
         case SM86_WARPSYNC: return;
+        case SM86_BMOV_R:
+            /* BMOV.32 R, B reads a convergence barrier, which the structured translation does not keep. Into RZ (a
+               BMOV.32.CLEAR RZ, B0 before the BSSY B0 of an NVN vertex program) it changes nothing computed */
+            if (in->dst != SM86_RZ) fail(c, "BMOV (to register) into R%u", in->dst);
+            return;
         case SM86_MOV: wr(c, in->dst, src_bits(c, &in->b)); return;
         case SM86_FADD:
         case SM86_FMUL:
@@ -2377,6 +2393,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         }
         case SM86_IPA: {
             u32 addr = sm86_field(in, 64, 8) * 4;
+            if (shader_legacy_group(addr) >= 0) addr = shader_legacy_address(addr);
             /* bits 76-77, NAK's InterpLoc: 0 the default, 1 the centroid, 2 at an offset */
             u32 loc = sm86_field(in, 76, 2);
             if (sm86_field(in, 32, 8) != SM86_RZ || sm86_field(in, 24, 8) != 0 || sm86_field(in, 78, 2) > 1 ||
@@ -3011,6 +3028,32 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
         u32 r = max_register(&insn[i]);
         if (r > top) top = r;
     }
+    /* The fixed function's varyings (colors, fog, texture coordinates) move to generics 17-31, as spirv_translate.c
+       moves Maxwell's (shader_legacy_varyings), so that the stages of either ISA agree. A program that reads or
+       writes a group and also its generic is refused */
+    u32 legacy[2] = {0}, generic[2] = {0};
+    for (u32 i = 0; i < n; i++) {
+        const Sm86Insn* in = &insn[i];
+        u32 addr, count, out;
+        if (in->op == SM86_IPA && stage == ST_FS)
+            addr = sm86_field(in, 64, 8) * 4, count = 1, out = 0;
+        else if ((in->op == SM86_AST && stage == ST_VS) || (in->op == SM86_ALD && stage == ST_FS))
+            addr = sm86_field(in, 40, 10), count = sm86_field(in, 74, 2) + 1, out = in->op == SM86_AST;
+        else
+            continue;
+        for (u32 k = 0; k < count; k++) {
+            int g = shader_legacy_group(addr + 4 * k);
+            if (g >= 0)
+                legacy[out] |= 1u << g;
+            else if (addr + 4 * k >= 0x80 && addr + 4 * k < 0x280)
+                generic[out] |= 1u << ((addr + 4 * k - 0x80) >> 4);
+        }
+    }
+    for (u32 d = 0; d < 2 && !c->failed; d++)
+        if (legacy[d] & generic[d] >> LEGACY_GENERIC)
+            fail(c, "a legacy varying %s its generic, which the program also %s", d ? "written as" : "read as",
+                 d ? "writes" : "reads");
+    c->legacy_fs = stage == ST_FS ? legacy[0] : 0;
     /* the CALLs inlined: the program as the translation sees it */
     for (u32 i = 0; i < n && !c->failed; i++)
         if (insn[i].op == SM86_CALL) {
