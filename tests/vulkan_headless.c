@@ -32,6 +32,7 @@
 #include "support/fermi2d_ref.h"
 #include "support/nvdec_ref.h"
 #include "support/vic_ref.h"
+#include "support/sm86_ref.h"
 #include <libavutil/buffer.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2934,6 +2935,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_nvn_tess.inc"
 #include "vulkan_nvn_blend.inc"
 #include "vulkan_nvn_coverage.inc"
+#include "vulkan_mesh_draw.inc"
 #include "vulkan_sparse_bench.inc"
 #include "vulkan_storage_lookup_bench.inc"
 
@@ -3161,6 +3163,7 @@ int main(int argc, char** argv) {
     CHECK(!check_nvn_fixed_state());
     CHECK(!check_nvn_default_tessellation());
     CHECK(!check_nvn_advanced_blend());
+    CHECK(!check_mesh_draws());
     CHECK(!check_nvn_coverage());
     CHECK(!check_storage_image_formats());
     CHECK(!check_volume_surface_atomics());

@@ -124,8 +124,9 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
    program for a mesh program after a task program. The interface of such a module:
    - si->mesh: the key, from the section (nvn_section_mesh) and the code area: threads, payload, has_task,
      primitive_vertices (3 only), max_vertices, max_primitives, and in prim_sph the first 80 bytes of the
-     per-primitive SPH at the section's offset 0x64 in the code area (all 0 when the offset is 0). A key outside the
-     limits of VK_EXT_mesh_shader, or a form that the game's programs do not show, is refused with its reason.
+     per-primitive SPH at the section's offset 0x64 from the program's code, after its SPH (all 0 when the offset
+     is 0). A key outside the limits of VK_EXT_mesh_shader, or a form that the game's programs do not show, is
+     refused with its reason.
    - descriptor sets (shader_vk_set): 0 for a mesh program and 2 for a task program, with the bindings of shader.h.
    - push constants: the vec4 of a vertex program at offset 0. Its x holds the bits of the draw's first workgroup,
      which a task program, and a mesh program without one, add to WorkgroupId.x for their workgroup index. Its y is

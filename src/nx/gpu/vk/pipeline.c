@@ -63,6 +63,10 @@ static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[20], u32 len, u64 qh,
 /* the draw state and stage whose bound constant buffers the translator reads, for the vk_shader_get call running */
 static const DsState* g_sh_ds;
 static int g_sh_bind;
+/* the bindings (DsBindings' stage) a program of stage reads: an Ounce's task and mesh programs have their own */
+static int sh_bind_stage(int stage) {
+    return stage == ST_TS ? DS_TASK : stage == ST_MS ? DS_MESH : stage <= ST_FS ? stage : 0;
+}
 
 static int sh_cb_read(u32 idx, u32 off, u32* out) {
     if (idx >= 18 || !g_sh_ds) return 0;
@@ -125,6 +129,7 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
         if (width == 2 && spv[at + 1] == 4427 && !g_vk.has_shader_draw_parameters)
             return "shaderDrawParameters is unavailable";
         if (width == 2 && spv[at + 1] == 5055 && !g_shader_clock_scopes) return "shaderClock is unavailable";
+        if (width == 2 && spv[at + 1] == 5283 && !g_vk.has_mesh) return "meshShader is unavailable";
         at += width;
     }
     return NULL;
@@ -304,6 +309,11 @@ void vk_pipeline_init(void) {
     for (int s = 0; s < 5; s++) {
         VkDescriptorSetLayoutBinding b[SNX_VKB_END];
         u32 count = 0;
+        /* a mesh program takes the vertex stage's set and a task program the tessellation control stage's
+           (shader_vk_set), where the device has them */
+        VkShaderStageFlags mesh_vis = s == shader_vk_set(ST_MS)   ? g_vk.mesh_stages & VK_SHADER_STAGE_MESH_BIT_EXT
+                                      : s == shader_vk_set(ST_TS) ? g_vk.mesh_stages & VK_SHADER_STAGE_TASK_BIT_EXT
+                                                                  : 0;
         u32 image_slots = g_vk.props.limits.maxPerStageDescriptorStorageImages;
         u32 buffer_slots;
         u32 i;
@@ -330,7 +340,7 @@ void vk_pipeline_init(void) {
                 .binding = i,
                 .descriptorType = binding_type(i),
                 .descriptorCount = (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? SNX_TEX_ARRAY : 1,
-                .stageFlags = vis[s]};
+                .stageFlags = vis[s] | mesh_vis};
         }
         for (int arrays = 0; arrays < 2; arrays++) {
             u32 n = count;
@@ -477,6 +487,17 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
         si->early_fragment_tests = mask[11];
         si->tex_rect_mask = mask[12] | (u64)mask[13] << 32;
         shader_query_hint_unpack(mask + 14, si->tex_query_hint);
+        si->prim_mask = mask[6]; /* the generics the draw's mesh program writes per primitive (vk_shader_mesh) */
+    } else if (stage == ST_TS || stage == ST_MS) {
+        /* vk_shader_mesh's words: the per-primitive SPH (word 3) is read from the code (sh_mesh_sph) */
+        si->mesh.threads = (u16)mask[0];
+        si->mesh.payload = (u16)(mask[0] >> 16);
+        si->mesh.max_vertices = (u16)mask[1];
+        si->mesh.max_primitives = (u16)(mask[1] >> 16);
+        si->mesh.has_task = (u8)mask[2];
+        si->mesh.primitive_vertices = (u8)(mask[2] >> 8);
+        si->tex_rect_mask = mask[12] | (u64)mask[13] << 32;
+        shader_query_hint_unpack(mask + 14, si->tex_query_hint);
     } else {
         si->attr_int_mask = ints;
         si->attr_sint_mask = sints;
@@ -493,6 +514,14 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
         }
         if (xfb) si->xfb = *xfb;
     }
+}
+/* a mesh program's per-primitive SPH, at the offset that its key's word 3 gives (vk_shader_mesh), into si. The offset
+   counts from the program's code, after its own SPH (a code area of 0xe00 bytes has it at 0xd00, its last 128 bytes),
+   and code holds the program from its SPH on */
+static void sh_mesh_sph(ShaderInfo* si, int stage, const u8* code, const u32 mask[20]) {
+    if (stage != ST_MS || !mask[3] || mask[3] > SH_CODE - SM86_SPH_BYTES - sizeof si->mesh.prim_sph) return;
+    const u8* at = code + SM86_SPH_BYTES + mask[3];
+    for (u32 i = 0; i < sizeof si->mesh.prim_sph / 4; i++) si->mesh.prim_sph[i] = snx_ld_le32(at + 4 * i);
 }
 /* s for its key, from code (SH_CODE bytes: the merged program, for VertexA and VertexB) whose whole code hashes to h,
    each part with its length and hash, translated: its SPIR-V (malloc'd, nw words), the constant buffers the
@@ -511,6 +540,7 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[2
     s->clen_a = len_a;
     s->qh_a = qh_a;
     sh_key_info(&s->si, stage, mask, xfb);
+    sh_mesh_sph(&s->si, stage, code, mask);
     *nw = 0;
     SNX_ZONE(z_translate, "shader translate");
     SNX_ZONE_TEXT(z_translate, "%s hash %08x",
@@ -575,7 +605,7 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
     const DsPrograms* p = ds ? &ds->prog : NULL;
     pf_merge();
     g_sh_ds = ds;
-    g_sh_bind = stage <= ST_FS ? stage : 0;
+    g_sh_bind = sh_bind_stage(stage);
     u32 mask[20] = {(u32)int_mask,
                     (u32)(int_mask >> 32),
                     (u32)sint_mask,
@@ -683,6 +713,7 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
         if (vk_corpus_dir()) { /* the key's words as sh_make takes them into si, which the corpus keeps */
             ShaderInfo si;
             sh_key_info(&si, stage, mask, xfb);
+            sh_mesh_sph(&si, stage, code, mask);
             shader_corpus_save(vk_corpus_dir(), code, mlen, SH_CODE, stage, &si, h ^ mix);
         }
         u64 t0 = plat_ns();
@@ -712,11 +743,18 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
     return s;
 }
 
+VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k) {
+    int mesh = stage == ST_MS;
+    u32 w0 = mesh ? k->mesh_threads | (u32)k->mesh_payload << 16 : k->task_threads | (u32)k->task_payload << 16;
+    u32 w1 = mesh ? k->max_vertices | (u32)k->max_primitives << 16 : 0;
+    u32 w2 = mesh ? k->has_task | (u32)k->primitive_vertices << 8 : 0, w3 = mesh ? k->prim_sph : 0;
+    return vk_shader_get(ds, gva, 0, stage, w0 | (u64)w1 << 32, w2 | (u64)w3 << 32, 0, 0, 0, 0, 0, 0, 0, NULL, NULL);
+}
 /* whether the constant buffer words s's translation read (BRX jump tables) still hold in ds's bound buffers, as
    vk_shader_get checks them on each hit */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s) {
     g_sh_ds = ds;
-    g_sh_bind = s->stage <= ST_FS ? s->stage : 0;
+    g_sh_bind = sh_bind_stage(s->stage);
     return vk_cb_reads_hold(&s->cbr, sh_cb_read);
 }
 
@@ -839,6 +877,13 @@ static VkPipeline pipe_create(const Pipe* e) {
     static const VkShaderStageFlagBits bits[5] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                                                   VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
                                                   VK_SHADER_STAGE_GEOMETRY_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
+    /* a mesh pipeline's mesh and task shaders, in the vertex and tessellation control slots: their programs' lanes
+       are a warp's, so their subgroups are 32 invocations, whole (sm86.h) */
+    static const VkShaderStageFlagBits mesh_bits[5] = {VK_SHADER_STAGE_MESH_BIT_EXT, VK_SHADER_STAGE_TASK_BIT_EXT, 0, 0,
+                                                       VK_SHADER_STAGE_FRAGMENT_BIT};
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo warp = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+        .requiredSubgroupSize = 32};
     VkPipelineTessellationStateCreateInfo ts;
     u32 nst = 0, s;
     modules[0] = k->vs;
@@ -850,7 +895,13 @@ static VkPipeline pipe_create(const Pipe* e) {
         if (!modules[s]) continue;
         memset(&st[nst], 0, sizeof st[nst]);
         st[nst].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        st[nst].stage = bits[s];
+        st[nst].stage = k->mesh ? mesh_bits[s] : bits[s];
+        if (k->mesh && s < 2) {
+            st[nst].pNext = &warp;
+            /* a workgroup of fewer invocations than a warp is one subgroup, its lanes the first ones */
+            if (k->mesh & PIPE_MESH_WHOLE(s ? ST_TS : ST_MS))
+                st[nst].flags = VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
+        }
         st[nst].module = modules[s];
         st[nst].pName = "main";
         nst++;
@@ -993,12 +1044,19 @@ static VkPipeline pipe_create(const Pipe* e) {
                                   VK_DYNAMIC_STATE_STENCIL_REFERENCE,
                                   VK_DYNAMIC_STATE_DEPTH_BOUNDS};
     u32 ndyn = 21; /* the states above, which every pipeline has */
+    if (k->mesh) { /* a mesh pipeline has no input assembly: its primitives are the mesh shader's */
+        u32 kept = 0;
+        for (u32 i = 0; i < ndyn; i++)
+            if (dyn[i] != VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY && dyn[i] != VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE)
+                dyn[kept++] = dyn[i];
+        ndyn = kept;
+    }
     /* without the feedback loop's dynamic state, a pipeline enables the loop with a flag (k->feedback) instead */
     if (g_vk.has_feedback_dynamic) dyn[ndyn++] = VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT;
     /* the stride is set by vkCmdBindVertexBuffers2, which a draw without vertex buffers never calls: a pipeline without
        bindings leaves it out. With dynamic vertex input the draw's layout holds its strides */
     if (l->nbind && g_vk.has_dynamic_stride) dyn[ndyn++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
-    if (g_vk.vertex_input_dynamic) dyn[ndyn++] = VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
+    if (g_vk.vertex_input_dynamic && !k->mesh) dyn[ndyn++] = VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = ndyn,
                                            .pDynamicStates = dyn};
@@ -1031,22 +1089,23 @@ static VkPipeline pipe_create(const Pipe* e) {
                                         .pColorAttachmentFormats = cf,
                                         .depthAttachmentFormat = (VkFormat)k->depth,
                                         .stencilAttachmentFormat = (VkFormat)k->stencil};
-    VkGraphicsPipelineCreateInfo gi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-                                       .pNext = &ri,
-                                       .flags = (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
-                                           (k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0),
-                                       .stageCount = nst,
-                                       .pStages = st,
-                                       .pVertexInputState = &vi,
-                                       .pInputAssemblyState = &ia,
-                                       .pTessellationState = k->tes ? &ts : NULL,
-                                       .pViewportState = &vp,
-                                       .pRasterizationState = &rs,
-                                       .pMultisampleState = &ms,
-                                       .pDepthStencilState = &ds,
-                                       .pColorBlendState = &cb,
-                                       .pDynamicState = &dy,
-                                       .layout = e->layout};
+    VkGraphicsPipelineCreateInfo gi = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext = &ri,
+        .flags = (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
+                 (k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0),
+        .stageCount = nst,
+        .pStages = st,
+        .pVertexInputState = k->mesh ? NULL : &vi,
+        .pInputAssemblyState = k->mesh ? NULL : &ia,
+        .pTessellationState = k->tes && !k->mesh ? &ts : NULL,
+        .pViewportState = &vp,
+        .pRasterizationState = &rs,
+        .pMultisampleState = &ms,
+        .pDepthStencilState = &ds,
+        .pColorBlendState = &cb,
+        .pDynamicState = &dy,
+        .layout = e->layout};
     VkPipeline p = VK_NULL_HANDLE;
     VK_OK(vkCreateGraphicsPipelines(g_vk.dev, g_pcache, 1, &gi, NULL, &p));
     if (made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT)

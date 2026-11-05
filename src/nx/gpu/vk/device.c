@@ -196,6 +196,38 @@ static void start_failure_devices(void) {
                  n ? ", and " : "No Vulkan device: ", g_opt_headless ? "graphics" : "graphics and presentation", hint);
 }
 
+/* An Ounce's mesh draws (render.c): VK_EXT_mesh_shader's mesh stage, and its task stage when the device has one. The
+   programs' lanes are a warp's (sm86.h), so both stages need a required subgroup size of 32 in full subgroups
+   (subgroupSizeControl, computeFullSubgroups, requiredSubgroupSizeStages). Without them, or with the experimental
+   mesh_draws setting off, the draws are skipped, and the log says why once */
+static void mesh_choose(int has_ext, const VkPhysicalDeviceMeshShaderFeaturesEXT* f,
+                        const VkPhysicalDeviceVulkan13Features* f13) {
+    VkPhysicalDeviceMeshShaderPropertiesEXT mp = {.sType =
+                                                      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT};
+    VkPhysicalDeviceVulkan13Properties p13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES,
+                                              .pNext = has_ext ? &mp : NULL};
+    VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p13};
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
+    const VkShaderStageFlags both = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT;
+    const char* why = !g_settings.mesh_draws                                    ? "mesh_draws off (experimental)"
+                      : !has_ext                                                ? "no VK_EXT_mesh_shader"
+                      : !f->meshShader                                          ? "no meshShader"
+                      : !f13->subgroupSizeControl || !f13->computeFullSubgroups ? "no subgroup size control"
+                      : p13.minSubgroupSize > 32 || p13.maxSubgroupSize < 32    ? "no subgroups of 32"
+                      : (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_MESH_BIT_EXT) == 0
+                          ? "no required subgroup size in the mesh stage"
+                          : NULL;
+    g_vk.has_mesh = why == NULL;
+    g_vk.has_task = g_vk.has_mesh && f->taskShader && (p13.requiredSubgroupSizeStages & both) == both;
+    g_vk.mesh_stages = g_vk.has_mesh ? VK_SHADER_STAGE_MESH_BIT_EXT | (g_vk.has_task ? both : 0) : 0;
+    u32 groups = g_vk.has_task ? mp.maxTaskWorkGroupCount[0] : mp.maxMeshWorkGroupCount[0];
+    g_vk.mesh_groups_max = g_vk.has_mesh ? groups : 0;
+    if (why)
+        LOG("vulkan: mesh draws are skipped: %s%s\n", g_settings.mesh_draws ? "this GPU has " : "", why);
+    else
+        LOG("vulkan: mesh draws use VK_EXT_mesh_shader%s\n",
+            g_vk.has_task ? " with task shaders" : ", without task shaders");
+}
 static int create_device(void) {
     g_vk.phys = snx_vk_best_device(g_vk.instance, VK_API_VERSION_1_3, device_rating, NULL);
     if (!g_vk.phys) {
@@ -342,6 +374,7 @@ static int create_device(void) {
     int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0, has_dmabuf = 0;
     int has_descriptor_buffer = 0;
     int has_vertex_input = 0;
+    int has_mesh = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     {
@@ -360,6 +393,7 @@ static int create_device(void) {
         g_vk.has_local_read = snx_vk_extensions_has(&e, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
         has_cond = snx_vk_extensions_has(&e, VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
         has_provoking = snx_vk_extensions_has(&e, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
+        has_mesh = snx_vk_extensions_has(&e, VK_EXT_MESH_SHADER_EXTENSION_NAME);
         g_vk.has_conservative = snx_vk_extensions_has(&e, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
         has_pipeline_robustness = snx_vk_extensions_has(&e, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
         has_robustness2 = snx_vk_extensions_has(&e, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
@@ -443,6 +477,8 @@ static int create_device(void) {
     VkPhysicalDeviceRobustness2FeaturesEXT qrobust = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
     VkPhysicalDeviceVulkan12Features q12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceVulkan13Features q13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceMeshShaderFeaturesEXT qmesh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
     VkPhysicalDeviceVulkan11Features q11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
@@ -478,6 +514,8 @@ static int create_device(void) {
                            has_descriptor_buffer ? &qdesc : NULL,
                            &q11,
                            &q12,
+                           &q13,
+                           has_mesh ? &qmesh : NULL,
                            g_vk.has_divisor ? &fdiv : NULL,
                            g_vk.has_border_color ? &fbc : NULL,
                            g_vk.has_xfb ? &fxfb : NULL,
@@ -508,6 +546,7 @@ static int create_device(void) {
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
     g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
+    mesh_choose(has_mesh, &qmesh, &q13);
     {
         /* each draw's vertex layout as dynamic state, or a pipeline per layout: the setting, then the device and the
            drivers known to draw it wrong (vertex_input.h). A value the setting doesn't take stops the game here, as
@@ -606,7 +645,10 @@ static int create_device(void) {
                                             .synchronization2 = VK_TRUE,
                                             .dynamicRendering = VK_TRUE,
                                             /* KIL demotes the lane; S2R queries its helper status */
-                                            .shaderDemoteToHelperInvocation = VK_TRUE};
+                                            .shaderDemoteToHelperInvocation = VK_TRUE,
+                                            /* the task and mesh stages' subgroups of 32, whole (mesh_choose) */
+                                            .subgroupSizeControl = g_vk.has_mesh,
+                                            .computeFullSubgroups = g_vk.has_mesh};
     void* chain = &f13;
     VkPhysicalDeviceDescriptorBufferFeaturesEXT fdesc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
@@ -781,6 +823,14 @@ static int create_device(void) {
         chain = &fpipeline;
         ext[next++] = VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME;
         ext[next++] = VK_EXT_ROBUSTNESS_2_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceMeshShaderFeaturesEXT fmesh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
+                                                   .pNext = chain,
+                                                   .meshShader = VK_TRUE,
+                                                   .taskShader = (VkBool32)g_vk.has_task};
+    if (g_vk.has_mesh) {
+        chain = &fmesh;
+        ext[next++] = VK_EXT_MESH_SHADER_EXTENSION_NAME;
     }
     u32 nq = g_vk.compute_family == g_vk.gfx_family ? 1 : 2;
     if (g_vk.video_family != ~0u)
