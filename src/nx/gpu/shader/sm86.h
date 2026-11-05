@@ -109,6 +109,11 @@ int sm86_find_programs(const u8* data, u32 size, Sm86Program* out, int max);
    textures, global buffers, attributes. Returns malloc'd words, their count in *word_count, or NULL with
    si->unsupported and si->first_unsupported set */
 u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count);
+/* sm86_to_spirv, with the device's FP32 flush to zero (can_flush, SH_FTZ_* of shader.h) as shader_to_spirv takes it:
+   the DenormFlushToZero execution mode where every FADD, FMUL and FFMA flushes and the device has the mode, nothing on
+   a device that flushes by itself, else a flush of each such operand and result. sm86_to_spirv is SH_FTZ_EMULATE */
+u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count,
+                       int can_flush);
 /* Debug: with g_shader_sm86_dump (the sm86_dump setting) naming a folder, the bytes (and the 32 SPH words, NULL for
    none) go to DIR/sm86_<kind>_<hash>.bin (and .sph), and why to DIR/sm86_<kind>_<hash>.txt. sm86_to_spirv writes each
    program it refuses, sm86_find_programs each block without a complete program. The files are game data: keep
