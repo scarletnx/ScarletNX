@@ -36,14 +36,18 @@ static inline void ir_fp_raise_ixc(SnxIr* ir, LLVMValueRef inexact) {
     ir_cpu_store(ir, LLVMBuildOr(ir->b, fpsr(ir), bit, ""), offsetof(CPU, fpsr));
 }
 
-/* x86-64 Windows returns a 16-byte structure through memory, the caller passing where as a hidden first argument
-   (sret), and Clang compiles the helpers so there: an LLVM structure would come back in RAX and RDX. The code runs
-   where it is built, so the host's architecture is the target's */
+/* x86-64 Windows, s390x and big-endian PowerPC64's ELFv1 return a 16-byte structure through memory, the caller
+   passing where as a hidden first argument (sret), and Clang compiles the helpers so there: an LLVM structure would
+   come back in two registers. The code runs where it is built, so the host's architecture is the target's */
 static inline int ir_fp_reply_in_memory(SnxIr* ir) {
-#ifdef __x86_64__
-    return ir->windows;
+#if defined(__s390x__)
+    (void)ir;
+    return 1;
 #else
-    return 0;
+#if defined(__x86_64__)
+    if (ir->windows) return 1;
+#endif
+    return ir->ppc && !ir->elfv2;
 #endif
 }
 
@@ -56,7 +60,10 @@ static inline int ir_fp_reply_in_memory(SnxIr* ir) {
    through memory it lands in a local, which keeps the call out of ir_promote_registers too. */
 static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count,
                                             int with_fpsr) {
-    LLVMTypeRef params[9], fields[2] = {ir->t_i64, ir->t_i32};
+    /* in registers, a big-endian host's ABI (PowerPC64's ELFv2, MIPS64's n64) loads the structure's second
+       doubleword whole, the flags in its high half */
+    const int in_memory = ir_fp_reply_in_memory(ir), high = !in_memory && ir->big_endian;
+    LLVMTypeRef params[9], fields[2] = {ir->t_i64, high ? ir->t_i64 : ir->t_i32};
     LLVMValueRef args[9];
     unsigned n = count;
     for (unsigned i = 0; i < count; ++i) {
@@ -71,7 +78,7 @@ static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMVal
     }
     LLVMTypeRef reply = LLVMStructTypeInContext(ir->ctx, fields, 2, 0);
     LLVMValueRef call;
-    if (ir_fp_reply_in_memory(ir)) {
+    if (in_memory) {
         LLVMTypeRef with[10] = {ir->t_ptr};
         LLVMValueRef pass[10] = {ir_local(ir, reply)};
         for (unsigned i = 0; i < n; ++i) {
@@ -91,7 +98,9 @@ static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMVal
         ir_pure(ir, function);
         call = LLVMBuildCall2(ir->b, LLVMFunctionType(reply, params, n, 0), function, args, n, "");
     }
-    ir_cpu_store(ir, LLVMBuildOr(ir->b, fpsr(ir), LLVMBuildExtractValue(ir->b, call, 1, ""), ""), offsetof(CPU, fpsr));
+    LLVMValueRef flags = LLVMBuildExtractValue(ir->b, call, 1, "");
+    if (high) flags = LLVMBuildTrunc(ir->b, LLVMBuildLShr(ir->b, flags, ir_i64(ir, 32), ""), ir->t_i32, "");
+    ir_cpu_store(ir, LLVMBuildOr(ir->b, fpsr(ir), flags, ""), offsetof(CPU, fpsr));
     return LLVMBuildExtractValue(ir->b, call, 0, "");
 }
 static inline LLVMValueRef ir_fp_call(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count) {
