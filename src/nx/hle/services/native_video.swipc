@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The Ounce's native video sessions (native_video.c), which the graphics supervisor opens (gsv.swipc 902, 905, 1002).
+# TIPC sessions. The layouts are the game's SDK's (nn::codec's Vp9Decoder functions and their holders'
+# Initialize, Configure and teardown), with closed PR #1009 as a reference.
+type nn::gsv::VideoImagePreference = struct { u32 reserved; u32 kind; u32 extent; u32[13] zero; };
+type nn::gsv::VideoDescriptor = u64[16];
+# nn::gs::NativeSyncHandle: the syncpoint's id, negated, and the value it waits for
+type nn::gsv::NativeSyncHandle = struct { u32 encoded_id; u32 mode; u64 value; };
+# what RegisterImage and ReleaseImage answer: the SDK keeps the first 16 bytes as the image's NativeSyncHandle
+type nn::gsv::VideoFence = struct { u32 encoded_id; u32 mode; u64 value; u64 reserved0; u64 reserved1; };
+# Configure's: the holder's width, height and frame rate, and its input buffer's size
+type nn::gsv::VideoConfiguration = struct {
+    u32 width; u32 height; u32 frame_rate; u32 input_capacity; u32[4] reserved;
+};
+
+@fallback(ipc_unknown)
+interface nn::gsv::INativeVideoContext {
+    [1] CreateCodec() -> handle<move, session> codec;
+}
+
+@fallback(ipc_unknown)
+interface nn::gsv::INativeVideoCodec {
+    [3] GetSubmissionEvent() -> handle<copy, event> event;
+    [6] Start();
+    [8] Flush();
+    # the MIME type ("video/vp9" with its NUL) and the configuration
+    [101] Configure(buffer<u8, 5> mime, nn::gsv::VideoConfiguration configuration) -> u64 reserved;
+    # the timestamp in microseconds. The SDK writes the end of the stream with one STRB
+    @unsorted [109] Submit(buffer<u8, 5> input, u64 timestamp, u8 eos) -> u64 consumed;
+    [115] Finalize();
+    # the work memory as a transfer memory (InitializeVp9Decoder with a buffer), or in the process (without one)
+    @unsorted [200] InitializeWithTransferMemory(handle<copy, transfer_memory> memory, u64 size, u32 codec,
+                                                 u32 input_format, u32 output_format);
+    [207] Stop();
+    @unsorted [210] InitializeWithProcess(handle<copy, process> process, u64 size, u32 codec, u32 input_format,
+                                          u32 output_format);
+    [212] UnregisterImage(u32 image, u32[7] reserved);
+    [213] GetOutputProperties() -> u32[16] properties;
+    [311] RegisterImage(u32 image, u32[3] reserved) -> nn::gsv::VideoFence fence;
+    # wait: the fence of the game's last use of the image, which the decoder waits for before it writes it again
+    [314] ReleaseImage(u32 image, u32 reserved, nn::gsv::NativeSyncHandle wait, u64 reserved2) -> nn::gsv::VideoFence fence;
+}
