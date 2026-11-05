@@ -254,6 +254,18 @@ int main(void) {
     board.timer[0].counter = 0xABCD;
     agb_write8(&board, 0x04000100, 0x56);
     CHECK(board.timer[0].reload == 0x1256);
+    /* timer 0 has no timer before it: its count-up bit does nothing and it counts the clock, as a game that sets that
+       bit and plays its sound FIFOs at timer 0's rate needs; timer 1's counts timer 0's overflows */
+    agb_write16(&board, 0x04000100, 0xFF00);
+    agb_write16(&board, 0x04000104, 0xFFFE);
+    agb_write16(&board, 0x04000106, 0x0084); /* timer 1 on, counting up */
+    agb_write16(&board, 0x04000102, 0x0084); /* timer 0 on, its count-up bit set */
+    agb_timer_step(&board, 0x100);
+    CHECK(board.timer[0].counter == 0xFF00 && board.timer[1].counter == 0xFFFF);
+    agb_timer_step(&board, 0x80);
+    CHECK(board.timer[0].counter == 0xFF80 && board.timer[1].counter == 0xFFFF);
+    agb_write16(&board, 0x04000102, 0x0000);
+    agb_write16(&board, 0x04000106, 0x0000);
     agb_write16(&board, 0x040000B0, 0x1234); /* DMA0SAD, write-only */
     agb_write8(&board, 0x040000B1, 0x56);
     CHECK((board.dma[0].source & 0xFFFF) == 0x5634);
