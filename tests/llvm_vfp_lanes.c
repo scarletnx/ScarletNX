@@ -164,11 +164,10 @@ static unsigned estimates(int portable) {
                 for (e = 0; e < sizeof exps / sizeof *exps; e++)
                     for (m = 0; m < 4; m++) {
                         CPU c, ref;
-                        RtAPI rt;
+                        RtAPI rt = {.cas128 = snx_runtime_cas128};
                         u64 want[4];
                         int lane;
                         memset(&c, 0, sizeof c);
-                        memset(&rt, 0, sizeof rt);
                         c.rt = &rt;
                         c.fpcr = m & 1 ? 1u << 24 : 0;
                         for (lane = 0; lane < lanes; lane++) {
@@ -223,12 +222,11 @@ int main(void) {
                 LlvmStep step = steps.steps[k * 2 + (size_t)dbl];
                 for (i = 0; i < 20000; i++) {
                     CPU c, ref;
-                    RtAPI rt;
+                    RtAPI rt = {.cas128 = snx_runtime_cas128};
                     u64 r = next(&seed), want[4];
                     u32 fpcr = 0, fpsr = r & 1 ? 0x10u : 0;
                     if (r % 3 == 0) fpsr |= (u32)next(&seed) & 0x9Fu; /* the other cumulative flags */
                     memset(&c, 0, sizeof c);
-                    memset(&rt, 0, sizeof rt);
                     c.rt = &rt;
                     if (r % 10 == 1) fpcr = (u32)(next(&seed) % 4) << 22; /* a rounding mode */
                     if (r % 10 == 2) fpcr = 1u << 24;                     /* FZ */
@@ -286,11 +284,10 @@ int main(void) {
                 LlvmStep step = steps.steps[k * 2 + (size_t)dbl];
                 for (i = 0; i < 20000; i++) {
                     CPU c, ref;
-                    RtAPI rt;
+                    RtAPI rt = {.cas128 = snx_runtime_cas128};
                     u64 r = next(&seed), want[4];
                     u32 fpcr = (u32)(r % 4) << 22, fpsr = r & 4 ? 0x10u : 0;
                     memset(&c, 0, sizeof c);
-                    memset(&rt, 0, sizeof rt);
                     c.rt = &rt;
                     if (r & 8) fpcr = 0;          /* mostly round to nearest */
                     if (r & 16) fpcr |= 1u << 24; /* FZ */
@@ -340,11 +337,10 @@ int main(void) {
                 LlvmStep step = steps.steps[k * 2 + (size_t)dbl];
                 for (i = 0; i < 20000; i++) {
                     CPU c, ref;
-                    RtAPI rt;
+                    RtAPI rt = {.cas128 = snx_runtime_cas128};
                     u64 r = next(&seed), want[4], got;
                     u32 fpcr = r & 16 ? 1u << 24 : 0, fpsr = r & 4 ? 0x10u : 0;
                     memset(&c, 0, sizeof c);
-                    memset(&rt, 0, sizeof rt);
                     c.rt = &rt;
                     if (r % 7 == 0) fpcr |= (u32)(next(&seed) % 4) << 22; /* FPCR's mode, which these ignore */
                     for (lane = 0; lane < lanes; lane++) {

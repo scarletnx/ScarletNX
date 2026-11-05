@@ -213,7 +213,7 @@ static u64 run(const char* output) {
     char* path = snx_absolute(output);
     const SnxModule* mod;
     ModuleFn get;
-    RtAPI rt = {0};
+    RtAPI rt = {.cas128 = snx_runtime_cas128};
     CPU cpu = {0};
     u64 x0 = 0;
     size_t i;

@@ -189,7 +189,7 @@ static int run(const char* path, const unsigned char* image, u64 watch_at, u64 s
     typedef const SnxModule* (*ModuleFn)(void);
     ModuleFn get;
     const SnxModule* mod;
-    RtAPI rt;
+    RtAPI rt = {.cas128 = snx_runtime_cas128};
     unsigned char* memory;
     size_t i;
 #ifdef _WIN32
@@ -205,7 +205,6 @@ static int run(const char* path, const unsigned char* image, u64 watch_at, u64 s
     g_running = mod;
     memset(out, 0, sizeof(*out));
     out->stale_when = stale_when;
-    memset(&rt, 0, sizeof(rt));
     rt.svc = svc;
     rt.undef = undefined;
     rt.poll = on_poll;
