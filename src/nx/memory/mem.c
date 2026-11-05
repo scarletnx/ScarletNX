@@ -1060,6 +1060,27 @@ void mem_place(const void* p, char* out, size_t size) {
         snprintf(out, size, "%#llx lies in the game's address space, %#llx to %#llx: game address %#llx",
                  (unsigned long long)a, (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)(a - game));
 }
+#if !defined(_WIN32)
+/* plat_vm_foreign's own under NCE, where the guest's addresses are the host's: [a, b) within the runs of guest memory
+   moved into a GPU's buffers (mem_migrate), whose files the maps name. Under the lock, which a crash report's thread
+   may hold already (t_mem.held) */
+static int foreign_own(u64 a, u64 b) {
+    int held = t_mem.held;
+    if (!held) mem_lock();
+    for (u32 i = 0; i < g_ext.n && a < b; i++) /* sorted and disjoint: each one that holds a takes it to its end */
+        if (g_ext.run[i].a <= a && a < g_ext.run[i].b) a = g_ext.run[i].b;
+    if (!held) mem_unlock();
+    return a >= b;
+}
+#endif
+int mem_foreign(char* out, size_t size) {
+#if !defined(_WIN32)
+    if (g_mem_identity) return plat_vm_foreign(IDENTITY_LO + g_mem_moved, g_as_size, foreign_own, out, size);
+#endif
+    if (size) out[0] = 0;
+    errno = ENOSYS;
+    return -1;
+}
 /* where the written-page tracking starts (plat_vm_track): g_mem, or under NCE the code region's base */
 static u8* tracked_base(void) { return g_mem_identity ? (u8*)(uintptr_t)(IDENTITY_LO + g_mem_moved) : g_mem; }
 int mem_ww_probe(void (*cb)(u8* p, u64 size)) { return plat_ww_scan(tracked_base(), 4096, cb); }

@@ -19,6 +19,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/rtapi.h"
 #include "snx_settings.h"
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -238,6 +239,24 @@ static void kicker(void* arg) {
     }
 }
 
+/* The guest's addresses are the host's, in the host's process with its other owners (ART's heap and JIT, the
+   allocator, the GPU's driver), whose own mmaps the reservation keeps out: one that maps at a fixed address of its own
+   over guest memory makes memory the game's code reads and writes as its own. What mem_foreign finds there is said;
+   it cannot see another owner's plain anonymous mapping, so it guards nothing, and a crash report says it again */
+static void guest_foreign(void) {
+    char found[1024];
+    int n = mem_foreign(found, sizeof found);
+    if (n < 0)
+        WARN("nce: what lies in the guest's addresses %#llx to %#llx cannot be read (%s), so it is not looked at\n",
+             (unsigned long long)AS_BASE, (unsigned long long)AS_END, strerror(errno));
+    else if (n)
+        WARN("nce: the guest's addresses %#llx to %#llx hold %d thing%s of the host's process, not the game's: %s\n",
+             (unsigned long long)AS_BASE, (unsigned long long)AS_END, n, n == 1 ? "" : "s", found);
+    else
+        LOG("nce: the guest's addresses %#llx to %#llx hold nothing of the host's process but the game's\n",
+            (unsigned long long)AS_BASE, (unsigned long long)AS_END);
+}
+
 /* The net under this guest thread (nce_host_net), as it starts the game's code: each one takes it, so the runtime's
    own threads make their system calls with no filter. The first that cannot says the system has no seccomp filters,
    once, and the game runs without the net; one that cannot where another took it ends the game */
@@ -367,6 +386,7 @@ void nce_init(void) {
         "follows the host's counter, at %llu Hz\n",
         sites.count, sites.proven, g_nce.pools, (unsigned long long)counter.freq);
     nce_sites_free(&sites);
+    guest_foreign();
     g_nce.on = 1;
     if (plat_thread(kicker, NULL, 64 << 10)) fatal("NCE: the thread of the kicks cannot start");
 }

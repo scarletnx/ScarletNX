@@ -83,6 +83,15 @@ Limits:
 - A crash report places the fault's address against the layout (`mem_place`): in it, below its base (an address the
   move left out) or past its end (one a layout smaller than the console's 512 GiB does not hold), and how far.
 
+The guest's addresses share the process with ART's heap and JIT, the allocator and the GPU's driver. The reservation
+holds them all, so none of those is given one by an mmap of its own; one that maps over guest memory at a fixed
+address of its own would make memory the game's code reads and writes as its own. As the game's code starts, the log
+names anything there that is not the game's (`mem_foreign`: a mapping with a name, or a run nothing maps; the alias
+pool and a GPU's buffer that guest memory moved into are the runtime's), and a crash report names it again. A plain
+anonymous mapping of another owner reads as the game's, so this diagnoses and guards nothing. The maps are read while
+other threads change them: a run they list as empty is asked again (`msync`) before it is named, and a failed read of
+them is no answer.
+
 The path for the 36-bit games is to run the runtime outside ART: an executable child of `GameActivity`, as the driver
 already is (`libscarletnx-run.so`), whose low addresses are free. The window would come from the app over a socket
 (`AHardwareBuffer`). Built for API 29, such an executable could also take static TLS.
@@ -166,6 +175,11 @@ run or a kick is a signal. Each thread adds to counters of its own, with no lock
 - `guest_stats`, any host: a window's SVCs, misses, outcalls and families, a thread's time read from another thread,
   and the lines that say them.
 - `memory_accounting`: the 128 GiB tier moved past a page held at 65 GiB, its regions, a mapping there, where a crash's
-  address lies against it, and a 36-bit layout refused (Linux, without ASan, whose shadow holds those addresses).
+  address lies against it, a named mapping over guest memory a GPU's buffer holds taken as the runtime's, and a 36-bit
+  layout refused (Linux, without ASan, whose shadow holds those addresses).
+- `platform_posix`, Linux: what of the process is not the guest's in a range (`plat_vm_foreign`), against the real
+  kernel: another owner's memfd over it, a run given back and a named anonymous mapping are named, the alias pool's
+  pages and a mapping the caller claims are not, a failed read of the maps is no answer, and a run they list as empty
+  that is mapped when asked again is no gap.
 
 No test runs on an Android device: the arm64 objects build, and the rest is the phone's to show.

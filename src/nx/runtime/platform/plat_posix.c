@@ -1338,6 +1338,108 @@ void plat_gpu_buffer_free(int fd, void* handle, u64 size) {
 #endif
 }
 
+#if defined(__linux__)
+/* the alias pool's memfd, whose name its mappings carry in /proc/self/maps */
+#define ALIAS_NAME "snx-alias"
+#define ALIAS_MAPS "/memfd:" ALIAS_NAME " (deleted)"
+/* Each whole line of the maps read from fd, to line(line, ctx), which stops the reading by returning nonzero. 0 at the
+   end of the file or when line stopped it; -1 when a read fails (errno), which says nothing of what follows: the
+   caller must not take the lines it did not get as unmapped. read(2) into a buffer of its own, so a crash handler may
+   call it */
+static int maps_lines(int fd, int (*line)(char*, void*), void* ctx) {
+    char buf[8192];
+    size_t have = 0;
+    for (;;) {
+        ssize_t n = read(fd, buf + have, sizeof buf - 1 - have);
+        char *at = buf, *nl;
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) return -1;
+        if (n == 0) return 0;
+        have += (size_t)n;
+        while ((nl = (char*)memchr(at, '\n', have - (size_t)(at - buf)))) {
+            *nl = 0;
+            if (line(at, ctx)) return 0;
+            at = nl + 1;
+        }
+        have -= (size_t)(at - buf);
+        memmove(buf, at, have);
+        if (have == sizeof buf - 1) have = 0; /* a line longer than the buffer, none of /proc/self/maps' */
+    }
+}
+/* plat_vm_foreign over one reading of the maps */
+typedef struct {
+    u64 lo, hi, cursor; /* the range, and how far the lines read so far reach into it */
+    int (*own)(u64 a, u64 b);
+    char* out;
+    size_t size, at;
+    int found;
+} Foreign;
+/* one more thing of the process in the range, said after the ones before as far as out holds it */
+static void foreign_add(Foreign* f, const char* what, u64 a, u64 b, const char* perms, const char* name) {
+    f->found++;
+    if (f->at < f->size) {
+        int n = snprintf(f->out + f->at, f->size - f->at, "%s%s %#llx-%#llx%s%s%s%s", f->at ? "; " : "", what,
+                         (unsigned long long)a, (unsigned long long)b, perms ? " " : "", perms ? perms : "",
+                         name ? " " : "", name ? name : "");
+        f->at += n > 0 ? (size_t)n : 0;
+        if (f->at >= f->size) f->at = f->size; /* cut: out ends where it was full */
+    }
+}
+/* A run the maps listed with nothing in it, unless it is mapped whole now. The maps are read in pieces while other
+   threads map and unmap, and a kernel that finds its place again by the mappings it listed may miss one that changed
+   between two pieces: msync, which fails with ENOMEM on a range with a hole, asks again. A system call, so a crash
+   handler may call it */
+static int unmapped(u64 a, u64 b) {
+    int err = errno, hole = msync((void*)(uintptr_t)a, (size_t)(b - a), MS_ASYNC) != 0;
+    errno = err;
+    return hole;
+}
+/* one line of /proc/self/maps: start-end perms offset dev inode [name] */
+static int foreign_line(char* line, void* ctx) {
+    Foreign* f = (Foreign*)ctx;
+    unsigned long long a, b;
+    char perms[8];
+    int name_at = 0;
+    const char* name;
+    if (sscanf(line, "%llx-%llx %7s %*s %*s %*s %n", &a, &b, perms, &name_at) < 3 || b <= f->lo) return 0;
+    if (a >= f->hi) return 1; /* the maps are in address order: the rest lies past the range */
+    if (a > f->cursor && unmapped(f->cursor, a)) foreign_add(f, "nothing mapped at", f->cursor, a, NULL, NULL);
+    if (b > f->cursor) f->cursor = b;
+    name = name_at ? line + name_at : "";
+    if (name[0] && strcmp(name, ALIAS_MAPS) && !(f->own && f->own(a > f->lo ? a : f->lo, b < f->hi ? b : f->hi)))
+        foreign_add(f, "mapped at", a, b, perms, name);
+    return 0;
+}
+/* plat_vm_foreign over the maps read from fd */
+static int foreign_scan(int fd, u64 lo, u64 hi, int (*own)(u64 a, u64 b), char* out, size_t size) {
+    Foreign f = {.lo = lo, .hi = hi, .cursor = lo, .own = own, .out = out, .size = size};
+    if (size) out[0] = 0;
+    if (maps_lines(fd, foreign_line, &f)) {
+        if (size) out[0] = 0;
+        return -1;
+    }
+    if (f.cursor < hi && unmapped(f.cursor, hi)) foreign_add(&f, "nothing mapped at", f.cursor, hi, NULL, NULL);
+    return f.found;
+}
+#endif
+int plat_vm_foreign(u64 lo, u64 hi, int (*own)(u64 a, u64 b), char* out, size_t size) {
+#if defined(__linux__)
+    int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC), found, err;
+    if (size) out[0] = 0;
+    if (fd < 0) return -1;
+    found = foreign_scan(fd, lo, hi, own, out, size);
+    err = errno;
+    close(fd);
+    errno = err;
+    return found;
+#else
+    (void)lo, (void)hi, (void)own;
+    if (size) out[0] = 0;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
 /* The alias pool (Linux and Android): one memfd, as large as asked and sparse, whose pages mem.c maps at guest
    addresses with MAP_SHARED, so two addresses of the reservation (and a service's mapping outside it) are the same
    pages, and a freed range is punched out so it reads zero when handed out again. The other systems here keep mem.c's
@@ -1348,7 +1450,7 @@ static u64 g_alias_size;
 
 int plat_alias_init(u64 size) {
 #if defined(__linux__) && defined(SYS_memfd_create) && defined(FALLOC_FL_PUNCH_HOLE)
-    long fd = syscall(SYS_memfd_create, "snx-alias", 1u /* MFD_CLOEXEC */);
+    long fd = syscall(SYS_memfd_create, ALIAS_NAME, 1u /* MFD_CLOEXEC */);
     if (fd < 0) return -1;
     if (ftruncate((int)fd, (off_t)size)) {
         close((int)fd);
