@@ -319,7 +319,9 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-vk-draw 11)
     target_link_libraries(snx-test-3ds-vk-draw PRIVATE snx_ctr_gpu_reference)
     add_test(NAME 3ds_vk_draw COMMAND snx-test-3ds-vk-draw)
-    set_tests_properties(3ds_vk_draw PROPERTIES SKIP_RETURN_CODE 77)
+    # async_pipelines: the draw skipped while its pipeline is made on a worker, then drawn
+    add_test(NAME 3ds_vk_draw_async COMMAND snx-test-3ds-vk-draw --async)
+    set_tests_properties(3ds_vk_draw 3ds_vk_draw_async PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's copy of the RAM, page by page: what is copied in and back, and when, and every byte where it belongs
     add_executable(snx-test-3ds-vk-copies 3ds_vk_copies.c)
     snx_test_target(snx-test-3ds-vk-copies 11)
@@ -331,8 +333,8 @@ if(TARGET snx_ctr_board)
         # reports fails the test, such as a missing barrier (a synchronization hazard), a dispatch, barrier or image
         # transition inside a draw's open rendering, or a command recorded into a buffer that a submission ended
         set(snx_vk_validation_tests 3ds_vk_draw_present_validation 3ds_vk_draw_after_draw_validation
-            3ds_vk_draw_texture_after_draw_validation 3ds_vk_draw_index_copy_validation)
-        set(snx_vk_validation_modes --present --after-draw --texture-after-draw --draw-after-index-copy)
+            3ds_vk_draw_texture_after_draw_validation 3ds_vk_draw_index_copy_validation 3ds_vk_draw_async_validation)
+        set(snx_vk_validation_modes --present --after-draw --texture-after-draw --draw-after-index-copy --async)
         foreach(snx_test snx_mode IN ZIP_LISTS snx_vk_validation_tests snx_vk_validation_modes)
             add_test(NAME ${snx_test}
                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"

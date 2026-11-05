@@ -50,4 +50,7 @@ void snx_ctr_vk_render_begin(unsigned slot);
 void snx_ctr_vk_render_close(void);
 void snx_ctr_vk_render_retire(unsigned slot, uint64_t serial);
 void snx_ctr_vk_render_free(void);
+/* async_pipelines: waits until the workers have made every pipeline asked for; the draws skipped meanwhile, since the
+   renderer started */
+uint64_t snx_ctr_vk_pipelines_wait(void);
 #endif
