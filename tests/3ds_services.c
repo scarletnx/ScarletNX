@@ -313,6 +313,11 @@ int main(void) {
         ctr_request(p, query, 1);
         ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 2) == model);
+        /* GetTargetPlatform: 0 the Old 3DS, 1 the New 3DS, as Azahar numbers them */
+        query[0] = 0x1010000;
+        ctr_request(p, query, 1);
+        ctr_send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x1010080 && !ctr_command_word(p, 1) && ctr_command_word(p, 2) == model);
         check_shared_font(p, srv, apt);
         uint32_t ptm = ctr_service_handle(p, srv, "ptm:sysm");
         query[0] = 0x40a0000;

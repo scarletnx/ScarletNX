@@ -152,6 +152,11 @@ void snx_ctr_apt_library_closed(struct SnxCtrProcess* p) { p->apt_library = 0; }
 static uint32_t snx_ctr_apt_wire_GetSharedFont(SnxCtrIpc* c, uint32_t* address, uint32_t* font) {
     return snx_ctr_font_shared(c->process, address, font) ? 0 : APT_NO_SHARED_FONT;
 }
+/* the console the application runs on, as Azahar's TargetPlatform numbers it: 0 the Old 3DS, 1 the New 3DS */
+static uint32_t snx_ctr_apt_wire_GetTargetPlatform(SnxCtrIpc* c, uint32_t* platform) {
+    *platform = snx_ctr_memory_profile(c->process->memory)->model == SNX_CTR_NEW;
+    return 0;
+}
 static uint32_t snx_ctr_apt_wire_IsNew3DS(SnxCtrIpc* c, uint32_t* is_new) {
     *is_new = snx_ctr_memory_profile(c->process->memory)->model == SNX_CTR_NEW;
     return 0;
