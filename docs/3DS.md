@@ -167,8 +167,8 @@ from then on. A page the GPU wrote is the GPU's until the CPU's first access, wh
 back with the pages the GPU wrote around it (up to 256 on each side) and waits for that. A
 write copies its stale pages in first even where it covers them, as one need not write a whole
 page and a page goes back whole; when the device goes, what the GPU wrote goes back. The copy
-is taken as the Switch's setting `vk_memory` says, with its meaning (`--vk_memory=N`): `0`, the
-default, the copy unless the device shares
+is taken as the Switch's setting `vk_memory` says, with its meaning (`--vk_memory=N`, which the
+launcher passes from its Debug settings): `0`, the default, the copy unless the device shares
 the system's memory (`snx_vk_memory_model`), `1` the copy, `2` the RAM in place. The device says
 on the standard error which it took and the value, and when its memory cannot hold the copy,
 what refused it and that the run takes `vk_memory=2`. Its cost is the
