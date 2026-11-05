@@ -35,6 +35,7 @@ typedef struct {
     u32 cbuf[18], cbuf_ptr, root;
     u32 gbuf[16], gbuf_ptr;
     u32 shared, shared_ptr, shared_words;
+    u32 local, local_ptr, local_words; /* LDL and STL's memory: a Function array, made at the start */
     u32 in_attr[32], out_attr[32], position, point_size, fragcoord, color[8], depth;
     u32 vertex_index, instance_index, local_id, group_id, lane_id;
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
@@ -762,10 +763,16 @@ static u32 shared_var(Ctx* c) {
     }
     return c->shared;
 }
-/* a word of global (buffer) or shared (buffer 0) memory at the byte address */
+/* the buffer that names local memory to mem_ptr, mem_load and mem_store */
+#define MEM_LOCAL 0xffffffffu
+/* a word of global (buffer), shared (buffer 0) or local (MEM_LOCAL) memory at the byte address. An address past
+   the local memory wraps in it, as spirv_translate.c keeps Maxwell's LDL and STL in theirs */
 static u32 mem_ptr(Ctx* c, u32 buffer, u32 address, u32 word) {
     u32 index =
         spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, address, cu(c, 2)), cu(c, word));
+    if (buffer == MEM_LOCAL)
+        return spv_emit_function_element_pointer(
+            &c->e, c->local_ptr, c->local, spv_emit_bitwise_and_u32(&c->e, c->t_u32, index, cu(c, c->local_words - 1)));
     if (buffer) return spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, buffer, c->zero, index);
     u32 last = cu(c, c->shared_words - 1);
     index = spv_emit_select(&c->e, c->t_u32, spv_emit_u_less(&c->e, c->t_bool, last, index), last, index);
@@ -804,7 +811,14 @@ static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data) {
         u32 bits = spv_emit_bitwise_and_u32(&c->e, c->t_u32,
                                             spv_emit_shift_left_u32(&c->e, c->t_u32, rd(c, data), shift), mask);
         u32 ptr = mem_ptr(c, buffer, address, 0);
-        if (buffer) {
+        if (buffer == MEM_LOCAL) /* the invocation's own: no other can store to the word */
+            spv_emit_store(
+                &c->e, ptr,
+                spv_emit_bitwise_or_u32(&c->e, c->t_u32,
+                                        spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_load(&c->e, c->t_u32, ptr),
+                                                                 spv_emit_not_u32(&c->e, c->t_u32, mask)),
+                                        bits));
+        else if (buffer) {
             spv_emit_atomic_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_AND, ptr, spv_emit_not_u32(&c->e, c->t_u32, mask));
             spv_emit_atomic_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_OR, ptr, bits);
         } else {
@@ -2193,10 +2207,15 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         }
         case SM86_LDS:
         case SM86_STS:
-        case SM86_STS_NOU: {
-            u32 ur = op == SM86_STS_NOU ? SM86_URZ : sm86_field(in, op == SM86_LDS ? 32 : 64, 6);
+        case SM86_STS_NOU:
+        case SM86_LDL:
+        case SM86_STL:
+        case SM86_STL_NOU: {
             /* the register times 1, 4, 8 or 16 (bits 78-79, NAK's OffsetStride), the uniform register and the
-               signed 24-bit offset */
+               signed 24-bit offset. The uniform register is there with bit 91 alone, as CuAssembler's sm_86
+               encodings show: at 32 for a load, at 64 for a store, whose data is at 32 */
+            int load = op == SM86_LDS || op == SM86_LDL;
+            u32 ur = sm86_field(in, 91, 1) ? sm86_field(in, load ? 32 : 64, 6) : SM86_URZ;
             static const u8 shifts[4] = {0, 2, 3, 4};
             u32 imm = sm86_field(in, 40, 24);
             u32 bias = imm & 0x800000u ? imm | 0xff000000u : imm;
@@ -2204,11 +2223,12 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             if (shift) base = spv_emit_shift_left_u32(&c->e, c->t_u32, base, cu(c, shift));
             u32 address = spv_emit_iadd_u32(&c->e, c->t_u32, base, cu(c, bias));
             if (ur < SM86_URZ) address = spv_emit_iadd_u32(&c->e, c->t_u32, address, urd(c, ur));
-            shared_var(c);
-            if (op == SM86_LDS)
-                mem_load(c, 0, address, sm86_field(in, 73, 3), in->dst, 0);
+            u32 buffer = op == SM86_LDL || op == SM86_STL || op == SM86_STL_NOU ? MEM_LOCAL : 0;
+            if (!buffer) shared_var(c);
+            if (load)
+                mem_load(c, buffer, address, sm86_field(in, 73, 3), in->dst, 0);
             else
-                mem_store(c, 0, address, sm86_field(in, 73, 3), sm86_field(in, 32, 8));
+                mem_store(c, buffer, address, sm86_field(in, 73, 3), sm86_field(in, 32, 8));
             return;
         }
         case SM86_ALD:
@@ -2842,6 +2862,17 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
         /* the registers up to the highest named and the next three (vector operands), and the predicates */
         for (u32 r = 0; r <= top + 3 && r < SM86_RZ; r++)
             c->reg[r] = spv_emit_function_variable_init(e, reg_ptr, c->zero);
+        /* the local memory of LDL and STL: the SPH's bytes (words 1 and 2, bits 0-23, as Maxwell's), a power of two
+           of words, or 4 KiB when the header gives none (compute), as spirv_translate.c makes Maxwell's */
+        for (u32 i = 0; i < n && !c->local; i++)
+            if (insn[i].op == SM86_LDL || insn[i].op == SM86_STL || insn[i].op == SM86_STL_NOU) {
+                u32 bytes = sph ? (sph[1] & 0xffffffu) + (sph[2] & 0xffffffu) : 0;
+                c->local_words = bytes ? 1 : 1024;
+                while (bytes && c->local_words < 65536 && c->local_words * 4 < bytes) c->local_words <<= 1;
+                c->local_ptr = spv_emit_type_function_pointer(e, c->t_u32);
+                c->local = spv_emit_function_variable(
+                    e, spv_emit_type_function_pointer(e, spv_emit_type_array_u32(e, c->t_u32, c->local_words)));
+            }
         for (u32 r = 0; r < SM86_URZ; r++) c->ureg[r] = spv_emit_function_variable_init(e, reg_ptr, c->zero);
         for (u32 p = 0; p < SM86_PT; p++) {
             c->pred[p] = spv_emit_function_variable_init(e, pred_ptr, c->false_v);

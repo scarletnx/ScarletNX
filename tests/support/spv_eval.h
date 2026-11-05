@@ -17,6 +17,8 @@ typedef struct {
     uint32_t out[16][4]; /* the outputs by location */
     uint32_t out_written[16];
     uint32_t frag_depth;
+    uint32_t shared[4096]; /* the first Workgroup variable's words when the invocation ends */
+    uint32_t shared_words;
     int killed;         /* the invocation ended with OpKill or OpTerminateInvocation */
     uint32_t steps_max; /* 0: 1000000 */
 } SpvEvalEnv;
