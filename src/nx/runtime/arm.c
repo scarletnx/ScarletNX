@@ -84,8 +84,9 @@ static SnxArmBlock* slot(u32 pc, int thumb) {
 }
 
 /* the block at pc that the recompiler didn't make: compiled from the game's memory when that is code (mapped
-   executable), else NULL */
-static SnxArmBlock compile(u32 pc, int thumb) {
+   executable), else NULL. Out of line: inlined into lookup, its error buffer gave every dispatch a frame and a stack
+   canary (tests/arm_dispatch_frame.py) */
+__attribute__((noinline, cold)) static SnxArmBlock compile(u32 pc, int thumb) {
     SnxArmBlock *s = slot(pc, thumb), b = NULL;
     u32 key = pc | (thumb ? 1u : 0u);
     pm_lock(&g_jit_lock);
