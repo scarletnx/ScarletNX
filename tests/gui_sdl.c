@@ -2178,8 +2178,11 @@ static void add_mod(App* app, const char* temporary) {
     char *to = snx_path_join(mods, "Better Fonts"), *to_first = snx_path_join(mods, "A first"), want[2048];
     const char* cloud = "content://com.example.cloud.documents/tree/abc%3Amods";
     static const int tail[] = {ROW_ADD_MOD,     ROW_MODS_FOLDER, ROW_ADD_CHEATS,  ROW_CHEATS_FOLDER,
-                               ROW_OPEN_FOLDER, ROW_STATES,      ROW_CLEAN_CACHE, ROW_GPU_DRIVER,
-                               ROW_FREEDRENO,   ROW_SAVE,        ROW_PLAY};
+                               ROW_OPEN_FOLDER, ROW_STATES,      ROW_CLEAN_CACHE,
+#ifdef __ANDROID__ /* the GPU driver package and Turnip's variables: no other platform has them */
+                               ROW_GPU_DRIVER,   ROW_FREEDRENO,
+#endif
+                               ROW_SAVE,        ROW_PLAY};
     size_t index = 0;
     int i, nx, ny;
     while (index < app->games.count &&
