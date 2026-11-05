@@ -1781,6 +1781,78 @@ static void test_output_defaults(const char* dir) {
     (void)dir;
 }
 
+/* LDG.E (no uniform) of type 4 (32 bits) or 5 (64 bits) into dst from [addr + imm], and STG.E of data */
+static Word ldg_nou(u32 dst, u32 addr, u32 imm, u32 type) {
+    Word x = fix(0x381);
+    set(&x, 16, 8, dst);
+    set(&x, 24, 8, addr);
+    set(&x, 40, 24, imm);
+    set(&x, 72, 1, 1);
+    set(&x, 73, 3, type);
+    return x;
+}
+static Word stg_nou(u32 addr, u32 imm, u32 data) {
+    Word x = fix(0x386);
+    set(&x, 24, 8, addr);
+    set(&x, 32, 8, data);
+    set(&x, 40, 24, imm);
+    set(&x, 72, 1, 1);
+    set(&x, 73, 3, 4);
+    return x;
+}
+/* Pointers from memory, as one game's vertex program that clears indirect draws: R2 is the buffer that c[0][0x110]
+   holds (0x1_0000_1000), whose words 0-5 are three pointers. The first, base + 0x40, is inside it: the STG through
+   it writes word 0x12 and the LDG reads word 0x10. The second, below the base, and the third, base + 0x1_0000_0040
+   (the same low word of the difference), are in no buffer: the STG is dropped and the LDG reads 0 */
+static void test_global_pointer(const char* dir) {
+    u8 code[16 * 16] = {0};
+    Word m = alu(0x002, 5, 2, 255);
+    cbuf(&m, 0, 0x110);
+    put(code, 0, m);
+    m = alu(0x002, 5, 3, 255);
+    cbuf(&m, 0, 0x114);
+    put(code, 1, m);
+    put(code, 2, ldg_nou(4, 2, 0, 5));
+    put(code, 3, ldg_nou(8, 2, 8, 5));
+    put(code, 4, ldg_nou(12, 2, 16, 5));
+    put(code, 5, mov_imm(6, 7));
+    put(code, 6, mov_imm(7, 9));
+    put(code, 7, mov_imm(11, 5));
+    put(code, 8, stg_nou(4, 8, 6));
+    put(code, 9, stg_nou(12, 0xc, 7));
+    put(code, 10, ldg_nou(10, 4, 0, 4));
+    put(code, 11, ldg_nou(11, 8, 0, 4));
+    put(code, 12, ast(0x70, 10, 2));
+    put(code, 13, exit_insn());
+    put(code, 14, bra(14, 14, 7, 0));
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    static u32 bank0[1024], buffer[64];
+    bank0[0x110 / 4] = 0x1000;
+    bank0[0x114 / 4] = 1;
+    buffer[0] = 0x1040, buffer[1] = 1;
+    buffer[2] = 0x0f00, buffer[3] = 1;
+    buffer[4] = 0x1040, buffer[5] = 2;
+    buffer[0x10] = 0x1234;
+    SpvEvalEnv env = {0};
+    env.ubo[SNX_VKB_CB] = bank0;
+    env.ubo_words[SNX_VKB_CB] = 1024;
+    env.ubo[SNX_VKB_SSBO] = buffer;
+    env.ubo_words[SNX_VKB_SSBO] = 64;
+    int ran = run_stage(ST_VS, code, 15, vsph, &env);
+    int ok = ran && buffer[0x12] == 7 && buffer[0x13] == 0 && env.position[0] == 0x1234 && env.position[1] == 0;
+    CHECK(ok);
+    if (!ok)
+        fprintf(stderr, "global pointer: words %x %x, position %x %x\n", buffer[0x12], buffer[0x13], env.position[0],
+                env.position[1]);
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 15 * 16, ST_VS, vsph, &si, &count);
+    CHECK(spv && si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x110 && (si.gbuf_wmask & 1));
+    if (spv) CHECK(keep_module(dir, "global_pointer", spv, count));
+    free(spv);
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     test_alu_forms();
@@ -1813,6 +1885,7 @@ int main(int argc, char** argv) {
     test_tld_multisample(dir);
     test_tex_f16(dir);
     test_output_defaults(dir);
+    test_global_pointer(dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
