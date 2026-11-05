@@ -64,6 +64,28 @@ static uint8_t rom8(const AgbBoard* board, uint32_t address) {
 static int is_rom(uint32_t address) { return (address >> 24 & 0x0F) >= 0x08 && (address >> 24 & 0x0F) < 0x0E; }
 static int is_bios(uint32_t address) { return (address & 0x0FFFFFFF) < AGB_BIOS_SIZE; }
 
+uint32_t agb_access_cycles(const AgbBoard* board, uint32_t address, unsigned width, int sequential) {
+    static const uint8_t first[4] = {4, 3, 2, 8}; /* WAITCNT's two bit field of the first access's wait states */
+    uint16_t waitcnt = board->io[0x204 >> 1];
+    uint32_t n, s;
+    switch (address >> 24 & 0xF) {
+        case 0x2: return width == 32 ? 6 : 3; /* EWRAM: 16 bits wide, 2 wait states */
+        case 0x5:
+        case 0x6: return width == 32 ? 2 : 1; /* palette RAM and VRAM: 16 bits wide */
+        case 0x8:
+        case 0x9: n = first[waitcnt >> 2 & 3], s = waitcnt >> 4 & 1 ? 1 : 2; break;
+        case 0xA:
+        case 0xB: n = first[waitcnt >> 5 & 3], s = waitcnt >> 7 & 1 ? 1 : 4; break;
+        case 0xC:
+        case 0xD: n = first[waitcnt >> 8 & 3], s = waitcnt >> 10 & 1 ? 1 : 8; break;
+        case 0xE:
+        case 0xF: return 1 + first[waitcnt & 3]; /* SRAM: 8 bits wide */
+        default: return 1;                       /* BIOS, IWRAM, I/O and OAM: 32 bits wide, no wait */
+    }
+    /* the cartridge bus is 16 bits wide: a word is two halfwords, the second in sequence */
+    return 1 + (sequential ? s : n) + (width == 32 ? 1 + s : 0);
+}
+
 uint8_t agb_read8(AgbBoard* board, uint32_t address) {
     if ((address >> 24) == 0x04) return (uint8_t)(agb_io_read16(board, address & 0x0FFFFFFE) >> ((address & 1) * 8));
     if ((address >> 24) >= 0x0E) return agb_save_read8(board, address);

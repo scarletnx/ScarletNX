@@ -39,6 +39,9 @@ uint32_t agb_read32(AgbBoard* board, uint32_t address);
 void agb_write8(AgbBoard* board, uint32_t address, uint8_t value);
 void agb_write16(AgbBoard* board, uint32_t address, uint16_t value);
 void agb_write32(AgbBoard* board, uint32_t address, uint32_t value);
+/* The cycles one access takes on the console's bus: by region, width (8, 16 or 32 bits), and whether it follows the
+   last access in sequence, with WAITCNT's cartridge and SRAM wait states (GBATEK's memory timings). */
+uint32_t agb_access_cycles(const AgbBoard* board, uint32_t address, unsigned width, int sequential);
 /* The byte a cartridge window read gets past the image: the cartridge drives no data, and the bus still
    holds the halfword address the cartridge latched, address / 2. */
 uint8_t agb_rom_open_bus8(uint32_t address);

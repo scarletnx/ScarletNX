@@ -56,6 +56,7 @@ typedef struct AgbBoard {
     AgbTimer timer[4];
     uint16_t irq_ie, irq_if, irq_ime;
     uint32_t cpu_halted;       /* the CPU waits for an interrupt (Halt) */
+    uint32_t held_cycles;      /* the cycles the bus was busy since the CPU last ran (a DMA's), which it waits out */
     uint16_t keys;             /* the keypad's keys held, KEYINPUT's bits set (the register reads them inverted) */
     uint32_t bios_prefetch;    /* the opcode the BIOS fetched last, what reads of the BIOS return */
     uint32_t open_bus;         /* the opcode the CPU fetched last, as its last read through the bus hook gave it */
