@@ -21,6 +21,7 @@
    The blocks of each encode also go into the BC7 cache (bc7_cache.c): copied into the readback ring strip by strip,
    and stored when their submission is done (vk_astc_frame_done). A later upload of the same ASTC bytes copies them
    from the cache into the image, with no decode and no encode (bc7_from_cache). */
+#include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
@@ -29,6 +30,14 @@
 #include "nx/gpu/texture/blocklinear_spv.h"
 #include "nx/runtime/platform/log.h"
 
+/* an encode's blocks in the readback ring, until its submission is done */
+typedef struct {
+    u64 key[2];
+    u64 sub; /* the submission that copies them: 0, a free slot */
+    u8* back;
+    VmaAllocation mem;
+    u64 off, size;
+} Bc7Capture;
 /* Kept for the device lifetime, like the other internal pipelines. All uses are on g_vk.gfx, under vk_lock(), even
    when uploads originate in compute */
 typedef struct {
@@ -52,14 +61,10 @@ typedef struct {
        (vk_astc_stats) */
     u64 bc7_levels, bc7_hits, bc7_bytes, bc7_rgba8_bytes;
     /* encodes' blocks copied into the readback ring, each until its submission is done (vk_astc_frame_done), and
-       their bytes: at most VK_BC7_CAPTURE_BYTES */
-    struct {
-        u64 key[2];
-        u64 sub; /* the submission that copies them: 0, a free slot */
-        u8* back;
-        VmaAllocation mem;
-        u64 off, size;
-    } captures[64];
+       their bytes: at most VK_BC7_CAPTURE_BYTES. As many as that holds: 64 at a time dropped two of three encodes in
+       one game's menus, whose textures come in bursts of hundreds of levels */
+    Bc7Capture* captures;
+    u32 ncaptures;
     u64 captured;
 } Astc;
 static Astc g_astc;
@@ -212,7 +217,7 @@ int vk_astc_cached(const Surf* t, u32 w, u32 h, u32 depth) {
 }
 
 void vk_astc_frame_done(u64 sub) {
-    for (u32 i = 0; g_astc.captured && i < sizeof g_astc.captures / sizeof g_astc.captures[0]; i++) {
+    for (u32 i = 0; g_astc.captured && i < g_astc.ncaptures; i++) {
         if (!g_astc.captures[i].sub || g_astc.captures[i].sub > sub) continue;
         vmaInvalidateAllocation(g_vk.vma, g_astc.captures[i].mem, g_astc.captures[i].off, g_astc.captures[i].size);
         vk_bc7_cache_put(g_astc.captures[i].key, g_astc.captures[i].back, g_astc.captures[i].size);
@@ -244,12 +249,20 @@ static int bc7_from_cache(VkCommandBuffer cb, Surf* t, const u64 key[2], u64 siz
 static int bc7_capture(const u64 key[2], u64 size, VkBuffer* buf) {
     int slot = -1;
     if (g_astc.captured + size > VK_BC7_CAPTURE_BYTES) return -1;
-    for (u32 i = 0; i < sizeof g_astc.captures / sizeof g_astc.captures[0]; i++)
+    for (u32 i = 0; i < g_astc.ncaptures; i++)
         if (!g_astc.captures[i].sub && slot < 0)
             slot = (int)i;
         else if (g_astc.captures[i].sub && g_astc.captures[i].key[0] == key[0] && g_astc.captures[i].key[1] == key[1])
             return -1;
-    if (slot < 0) return -1;
+    if (slot < 0) {
+        u32 n = g_astc.ncaptures ? g_astc.ncaptures * 2 : 64;
+        Bc7Capture* grown = realloc(g_astc.captures, (size_t)n * sizeof *grown);
+        if (!grown) return -1;
+        for (u32 i = g_astc.ncaptures; i < n; i++) grown[i] = (Bc7Capture){0};
+        slot = (int)g_astc.ncaptures;
+        g_astc.captures = grown;
+        g_astc.ncaptures = n;
+    }
     g_astc.captures[slot].back = vk_stage_back(size, buf, &g_astc.captures[slot].off, &g_astc.captures[slot].mem);
     return g_astc.captures[slot].back ? slot : -1;
 }
