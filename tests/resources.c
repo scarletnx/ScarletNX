@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* What the log's lines on the process's resources compute (runtime/platform/resources.c). The threads line: nothing at
+/* What the log's lines on the process's resources compute (runtime/platform/resources.c). The floors of free memory:
+   nothing above the first, then each floor once as the memory falls under it, the lowest of several crossed at once,
+   nothing again after a climb back, and nothing past the last. The threads line: nothing at
    the first call; then the three threads with the most time on the processors in the window, most first, a thread
    new in the window by all its time, one whose id came back with less time than the window had by all its time too,
    "?" for one with no name, "none ran" for a window where no thread ran, nothing for a thread that a full window did
@@ -31,8 +33,23 @@ static struct {
     SnxThreadInfo many[THREADS_SEEN + 2];
 } g_test;
 
+/* the floor that left MiB free says, after the floors before */
+static unsigned floor_at(unsigned mib, unsigned* next) { return memory_floor_crossed((SnxU64)mib << 20, next); }
+
 int main(void) {
     char line[512];
+    unsigned next = 0;
+    assert(floor_at(4096, &next) == 0 && next == 0);
+    assert(floor_at(1024, &next) == 0 && next == 0); /* at a floor is not under it */
+    assert(memory_floor_crossed(((SnxU64)1024 << 20) - 1, &next) == 1024 && next == 1);
+    assert(floor_at(1000, &next) == 0 && next == 1);  /* still under 1024, said already */
+    assert(floor_at(200, &next) == 256 && next == 3); /* past 512 and 256 at once: the lowest */
+    assert(floor_at(900, &next) == 0 && next == 3);   /* back up: once each in a run */
+    assert(floor_at(300, &next) == 0 && next == 3);
+    assert(floor_at(127, &next) == 128 && next == 4);
+    assert(floor_at(0, &next) == 0 && next == 4);
+    printf("resources: the floors are right\n");
+
     ThreadsWindow* w = &g_test.window;
     SnxThreadInfo first[] = {thread(1, 1.0, "GPU"), thread(2, 0.5, "audio"), thread(4, 5.0, "gone"),
                              thread(5, 0.25, "")};

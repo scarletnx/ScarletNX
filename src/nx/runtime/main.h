@@ -27,6 +27,10 @@ extern void (*snx_menu_run_theme)(const char* folder, SnxRunTheme* out);
    the main loop's, the unattended limit's, svcExitProcess. The first caller saves; one that comes while it does waits,
    then does nothing */
 void snx_save_before_exit(void);
+/* the log's "resources: " line, into out: iOS's from the frontend (with Metal and the thermal state), elsewhere the
+   footprint and what the system still gives the process (a ? where it tells none); then the renderer's memory blocks.
+   Any thread */
+void resources_text(char* out, size_t size);
 /* The game's folders, each ending in a separator (g_exedir may be empty), and its name: <g_exedir><g_exename>_code.so
    is its code, <g_exedir><g_exename>_data/ (g_datadir) its files */
 extern char g_datadir[1024], g_exename[256], g_exedir[1024];

@@ -614,24 +614,24 @@ static void report_lock_waits(void) {
              w[i].cond ? "waits on a condition with" : "waits for", (long long)((intptr_t)w[i].m - (intptr_t)pm_wait_base()),
              (long long)((intptr_t)w[i].at - (intptr_t)pm_lock));
 }
-/* the "resources: " line of the log: iOS's from the frontend (with Metal and the thermal state), else the footprint
-   and what the system still gives the process */
-static void resources_text(char* out, size_t size) {
+void resources_text(char* out, size_t size) {
+    size_t n;
 #ifdef MODULE_PACK
     gui_apple_stats(out, size);
-    /* the blocks of the renderer beside Metal's total: what Metal holds past them is MoltenVK's own (descriptor pools,
-       pipelines, argument buffers), not the game's textures and buffers */
-    size_t n = strlen(out);
-    if (g_renderer && g_renderer->memory_blocks && n < size)
-        snprintf(out + n, size - n, ", VMA blocks %llu MiB", (unsigned long long)(g_renderer->memory_blocks() >> 20));
 #else
     SnxU64 left = 0;
     if (snx_memory_available(&left))
         snprintf(out, size, "resources: footprint %llu MiB, the system has %llu MiB free",
                  (unsigned long long)(snx_footprint() >> 20), (unsigned long long)(left >> 20));
     else
-        snprintf(out, size, "resources: footprint %llu MiB", (unsigned long long)(snx_footprint() >> 20));
+        snprintf(out, size, "resources: footprint %llu MiB, the system has ? MiB free",
+                 (unsigned long long)(snx_footprint() >> 20));
 #endif
+    /* the blocks of the renderer: on iOS beside Metal's total, where what Metal holds past them is MoltenVK's own
+       (descriptor pools, pipelines, argument buffers), not the game's textures and buffers */
+    n = strlen(out);
+    if (g_renderer && g_renderer->memory_blocks && n < size)
+        snprintf(out + n, size - n, ", VMA blocks %llu MiB", (unsigned long long)(g_renderer->memory_blocks() >> 20));
 }
 /* log level 2: the three host threads with the most CPU time since the last line, by their names. iOS reported a CPU
    exception (90 s of CPU in 93 s) that named no thread */
@@ -646,22 +646,20 @@ static void threads_line(void) {
     }
     if (threads_line_text(&window, now, (unsigned)n, plat_ns(), line, sizeof line)) LOG("%s\n", line);
 }
-/* iOS: a "memory: " line, with the GPU heaps, the first time that what the system still gives the app falls under
-   each floor. Its warnings can come too late or not at all before it ends the app (one came 0.1 s before) */
+/* a "memory: " line, with the GPU heaps, the first time that what the system still gives the process falls under
+   each floor (resources.c): iOS's room for the app, whose warnings can come too late or not at all before it ends the
+   app (one came 0.1 s before); elsewhere the system's free memory, past which it takes memory back (Android's low
+   memory killer, Linux's OOM killer) or pages. Each frontend tick until the last floor */
 static void memory_floors(void) {
-#ifdef MODULE_PACK
-    static const unsigned floors[] = {1024, 512, 256, 128}; /* MiB */
-    static size_t next;
+    static unsigned next;
     SnxU64 left = 0;
-    if (next >= sizeof floors / sizeof *floors || !snx_memory_available(&left) || left >= (SnxU64)floors[next] << 20)
-        return;
-    while (next < sizeof floors / sizeof *floors && left < (SnxU64)floors[next] << 20) next++;
+    unsigned under;
+    if (next >= MEMORY_FLOORS || !snx_memory_available(&left) || !(under = memory_floor_crossed(left, &next))) return;
     char stats[320], gpu[1024] = "";
     resources_text(stats, sizeof stats);
     if (g_renderer && g_renderer->memory_text) g_renderer->memory_text(gpu, sizeof gpu);
-    LOG("memory: under %u MiB free: %s, %s\n", floors[next - 1], stats, gpu);
+    LOG("memory: under %u MiB free: %s, %s\n", under, stats, gpu);
     log_sync();
-#endif
 }
 static void frontend_loop(void) {
     const u64 period = 1000000000u / VI_REFRESH_HZ;
