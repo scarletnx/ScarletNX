@@ -8995,7 +8995,7 @@ int main(int argc, char** argv) {
                Mod, Open Mods Folder, Add Cheats, Open Cheats Folder, Open Folder, Save States, Clean Cache, GPU Driver,
                Freedreno Settings, Save, Play */
             assert(app.addons_shown && !app.menu.running && app.addons.count == 3 && app.mods_count == 2 &&
-                   app.cheats_count == 3 && addons_rows(&app) == 20);
+                   app.cheats_count == 3 && addons_rows(&app) == 9 + ADDONS_TAIL);
             assert(addons_row(&app, 9) == ROW_ADD_MOD && addons_row(&app, 10) == ROW_MODS_FOLDER &&
                    addons_row(&app, 11) == ROW_ADD_CHEATS && addons_row(&app, 12) == ROW_CHEATS_FOLDER &&
                    addons_row(&app, 13) == ROW_OPEN_FOLDER && addons_row(&app, 14) == ROW_STATES &&
