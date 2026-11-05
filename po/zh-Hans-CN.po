@@ -4023,6 +4023,11 @@ msgid "Use"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"
+msgstr "焦点到哪个主题就显示哪个：Enter 保留，ESC 回到 %s"
+
+#: src/gui/main.c
 msgid "How to share the logs?"
 msgstr ""
 
