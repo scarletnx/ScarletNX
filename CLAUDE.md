@@ -21,6 +21,16 @@ rules that sessions get wrong, and it points to the skills that hold the procedu
 - **A build is not a test.** To verify a runtime change, run the game (`snx-run` skill) through the scene that the
   change affects. The commit tells what you ran. If a change fixes a crash, run the game enough times to show that
   the game does not crash again. One good run does not prove the fix of an intermittent crash.
+- **Before a pull request, run the quick preflight.** Run `python3 scripts/ci-local.py preflight` first. It checks the
+  merge with the latest `origin/main`, and `docs/`, `CLAUDE.md` and `.claude/`. It runs the host build and tests when
+  the change needs them. Docs-only changes skip the build.
+- **Use the container checks when the change needs them.** With Podman or Docker and a code change, run
+  `python3 scripts/ci-local.py preflight --containers` for the Linux job of this architecture. Use
+  `--both --sanitizers` only for the full gate, which takes much longer.
+- **The container checks are optional.** If Podman and Docker are absent, preflight runs the host checks and names
+  the checks that did not run. Do not install an engine: the user installs it. The first container run is slow, and
+  later runs reuse the build and ccache. Resolve a conflict with `origin/main` in `docs/`, `CLAUDE.md` or `.claude/`
+  before the pull request.
 - **Find the mechanism.** A fix explains why the game does what it does. It tells what the game or SDK code expects
   (`tools/disasm.py`), and what the runtime gave it instead. Do not tune delays, add retries or add special cases for
   a title ID. Syncpoints above 127 "worked" for a whole session while they overwrote the heap of the game.

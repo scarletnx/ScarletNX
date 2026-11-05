@@ -1345,6 +1345,8 @@ if(Python3_Interpreter_FOUND)
     # then the checks on checkouts made to fail them
     add_test(NAME docs_check COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check-docs.py")
     add_test(NAME docs_check_script COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/docs_test.py")
+    # the local CI runner (scripts/ci-local.py): every command starts, and doctor names this machine's tools
+    add_test(NAME ci_local COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ci_local_test.py")
     # which GitHub Actions caches the cleanup workflow deletes (scripts/trim-caches.py)
     add_test(NAME trim_caches COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/trim_caches_test.py")
     # the runs a closed pull request left going, which pr-closed.yml cancels (scripts/cancel-pr-runs.py)

@@ -2,6 +2,15 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Contributing
 
+## Index
+
+* [Game data stays out](#game-data-stays-out)
+* [Build and check](#build-and-check)
+* [Commits](#commits)
+* [Pull requests](#pull-requests)
+* [C code](#c-code)
+* [License](#license)
+
 [Build](docs/BUILD.md) · [development](docs/DEVELOPMENT.md) · [architecture](docs/ARCHITECTURE.md) ·
 [agent rules](CLAUDE.md).
 
@@ -25,6 +34,31 @@ Nothing checks formatting. `.clang-format` (clang-format 23) has the style, and 
 lines a change touches. Configuring with `-DSNX_TEST_SANITIZERS=ON` builds the native
 regression tests, and the programs and libraries they run or link, with ASan and UBSan. That build is for tests only and
 is not deployed.
+
+Run the preflight before a pull request:
+
+```sh
+python3 scripts/ci-local.py preflight
+```
+
+It checks the merge with the latest `origin/main`, the docs and agent files included, and the build and tests that
+the change needs. Docs-only changes skip the build.
+
+When Podman or Docker is present and the change touches code, add the Linux job:
+
+```sh
+python3 scripts/ci-local.py preflight --containers
+```
+
+It runs the Linux job of this architecture with 4 CPUs and 4 build jobs. The first run fills the container build,
+dependency and ccache folders, and later runs reuse them. `--both --sanitizers` is the full gate for both
+architectures and ASan, and it
+takes much longer. The container checks are recommended, not required. Without an engine, `preflight` runs the host
+checks and names the checks that did not run. The command never installs an engine.
+[DEVELOPMENT.md](docs/DEVELOPMENT.md#local-ci-containers) gives the container setup.
+
+The container installs its own `ccache`, in `.cache/ci-ccache-<arch>`. A host `ccache` is optional for the native
+build.
 
 A build is not a test. A runtime change is verified by running the game through the scene it affects, and the commit
 says what was run. [DEVELOPMENT.md](docs/DEVELOPMENT.md) has the run and diagnose commands, and
