@@ -1736,9 +1736,11 @@ void vk_mem_trim(u64 extra, int force) {
     SNX_ZONE_V(z, "vk mem trim", force);
     /* What goes first is what can be had again without loss: textures (loaded again from memory), own buffers (copied
        again), then render targets memory holds. Those unused for a second go down to 80% of the budget, room for what
-       comes next. The working set itself (unused for two presents) goes only to stay under 95%: freeing it to 80%
+       comes next. The working set itself (unused for eight presents) goes only to stay under 95%: freeing it to 80%
        when it alone is bigger made one game load hundreds of textures and targets again every 600 presents under a
-       lowered budget, where staying near the budget costs nothing. Render targets whose pixels exist only here
+       lowered budget, where staying near the budget costs nothing. Two presents took textures a game uses every few
+       frames: of 3,000 it evicted in one game's menus, 2,358 had gone unused for three presents, and each came back
+       at once, a BC7 encode each (astc.c). Render targets whose pixels exist only here
        (memory has older ones: draws aren't written back, see vk_surf_reclaim) and textures that took such pixels lose
        them when they go, so they go only when the lossless steps leave the heap past 90%: those unused for five
        seconds, then, past 95%, those unused for a second and eight presents, the youngest a lossy entry can be. Every
@@ -1749,7 +1751,7 @@ void vk_mem_trim(u64 extra, int force) {
         u32 ms, presents;
         int lossy;
         u32 mark; /* percent of the budget the step frees down to */
-    } steps[] = {{1000, 8, 0, 80}, {0, 2, 0, 95}, {5000, 30, 1, 90}, {1000, 8, 1, 95}};
+    } steps[] = {{1000, 8, 0, 80}, {0, 8, 0, 95}, {5000, 30, 1, 90}, {1000, 8, 1, 95}};
     u64 freed = superseded, by[3] = {0, 0, superseded};
     int short_of = 0;
     for (u32 i = 0; i < sizeof steps / sizeof steps[0]; i++) {
