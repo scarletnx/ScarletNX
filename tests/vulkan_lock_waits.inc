@@ -33,31 +33,33 @@ static void lw_let_go(void) {
     while ((v = __atomic_load_n(&g_lw_hold, __ATOMIC_ACQUIRE)) != 0) plat_wait_word(&g_lw_hold, v, -1);
 }
 
-/* work on a thread of its own, which the test waits for at most a while: 0 running, 1 done */
-static u32 g_lw_done;
-static void (*g_lw_fn)(void);
+/* work on threads of their own, which the test waits for at most a while: 0 running, 1 done */
+static u32 g_lw_done[2];
+static void (*g_lw_fn[2])(void);
 static void lw_worker(void* arg) {
-    (void)arg;
-    g_lw_fn();
-    __atomic_store_n(&g_lw_done, 1, __ATOMIC_RELEASE);
-    plat_wake_word(&g_lw_done);
+    u32 slot = (u32)(uintptr_t)arg;
+    g_lw_fn[slot]();
+    __atomic_store_n(&g_lw_done[slot], 1, __ATOMIC_RELEASE);
+    plat_wake_word(&g_lw_done[slot]);
 }
-static int lw_start(void (*fn)(void)) {
-    g_lw_fn = fn;
-    __atomic_store_n(&g_lw_done, 0, __ATOMIC_RELEASE);
-    CHECK(plat_thread(lw_worker, NULL, 0) == 0);
+static int lw_start_on(u32 slot, void (*fn)(void)) {
+    g_lw_fn[slot] = fn;
+    __atomic_store_n(&g_lw_done[slot], 0, __ATOMIC_RELEASE);
+    CHECK(plat_thread(lw_worker, (void*)(uintptr_t)slot, 0) == 0);
     return 0;
 }
 /* 1 when the work is done within ms milliseconds (a negative ms: until it is) */
-static int lw_done_within(i64 ms) {
+static int lw_done_on(u32 slot, i64 ms) {
     u64 until = plat_ns() + (u64)(ms < 0 ? 0 : ms) * 1000000u;
-    while (!__atomic_load_n(&g_lw_done, __ATOMIC_ACQUIRE)) {
+    while (!__atomic_load_n(&g_lw_done[slot], __ATOMIC_ACQUIRE)) {
         u64 now = plat_ns();
         if (ms >= 0 && now >= until) return 0;
-        plat_wait_word(&g_lw_done, 0, ms < 0 ? -1 : (i64)(until - now));
+        plat_wait_word(&g_lw_done[slot], 0, ms < 0 ? -1 : (i64)(until - now));
     }
     return 1;
 }
+static int lw_start(void (*fn)(void)) { return lw_start_on(0, fn); }
+static int lw_done_within(i64 ms) { return lw_done_on(0, ms); }
 
 #define LW_CPU  (HEAP_BASE + 0x6800000)
 #define LW_SIZE 0x10000ull
@@ -181,6 +183,48 @@ static int check_landing_wait(void) {
     vkDestroySemaphore(g_vk.dev, gate, NULL);
     CHECK(mem_unmap(LW_OWN_CPU, 0x1000) == 0);
     puts("landing wait: a landing waits for the GPU with vk_lock free, then lands the result");
+    return 0;
+}
+
+#define LW_LAND_CPU (HEAP_BASE + 0x6a00000)
+#define LW_LAND_GVA 0x5d1000000ull
+static void lw_unmap_landing(void) { mem_unmap(LW_LAND_CPU, LW_SIZE); }
+static void lw_map_other(void) { mem_map(LW_CPU + 4 * LW_SIZE, LW_SIZE, MS_NORMAL, PERM_RW); }
+/* An unmap of guest memory a storage result is pending on lands it first, with vk_lock held, waiting for the GPU. A
+   change of other guest memory, which the renderer holds nothing of, goes on meanwhile: the landing holds no
+   pend_lock */
+static int check_mapping_landing(void) {
+    VkSemaphore gate;
+    VkBuffer output, upload;
+    u64 offset, at;
+    CHECK(mem_map(LW_LAND_CPU, LW_SIZE, MS_NORMAL, PERM_RW) == 0);
+    memset(GP(LW_LAND_CPU), 0x11, LW_SIZE);
+    gmmu_map(LW_LAND_GVA, LW_LAND_CPU, LW_SIZE);
+    vk_lock();
+    vk_finish();
+    CHECK(vk_buf_copy_writable(LW_LAND_GVA, 256, &output, &offset, 1));
+    u8* data = vk_stage_upload(256, 16, &upload, &at);
+    CHECK(data);
+    memset(data, 0x22, 256);
+    VkBufferCopy copy = {at, offset, 256};
+    rec_CmdCopyBuffer(vk_cmd(), upload, output, 1, &copy);
+    vk_buf_writable_commit();
+    CHECK(!lw_gate(&gate));
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    vk_unlock();
+    CHECK(!lw_start_on(0, lw_unmap_landing));
+    int lands = !lw_done_on(0, 300); /* its landing waits for the GPU */
+    CHECK(!lw_start_on(1, lw_map_other));
+    int other = lw_done_on(1, vk_uma() ? 300 : 5000) == !vk_uma(); /* in place: every change waits (its imports) */
+    CHECK(!lw_open(gate));
+    CHECK(lw_done_on(0, -1) && lw_done_on(1, -1));
+    CHECK(lands);
+    CHECK(other);
+    CHECK(mem_mapped_run(LW_LAND_CPU, LW_SIZE) == 0 && mem_mapped_run(LW_CPU + 4 * LW_SIZE, LW_SIZE) == LW_SIZE);
+    gmmu_space_unmap(LW_LAND_GVA, LW_SIZE);
+    CHECK(mem_unmap(LW_CPU + 4 * LW_SIZE, LW_SIZE) == 0);
+    vkDestroySemaphore(g_vk.dev, gate, NULL);
+    puts("mapping landing: an unmap's landing waits for the GPU while other guest memory changes go on");
     return 0;
 }
 

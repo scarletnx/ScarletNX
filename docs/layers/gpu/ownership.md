@@ -116,7 +116,7 @@ macOS have no alias pool yet, so no mirror and no traps.
   interval tree under a leaf lock, an atomic "anything owned" flag and a page bitmap keep the common path (nothing
   owned) a load and a branch in `gmem_*`.
 - Lock order: `vk_lock`, then the renderer's `pend_lock`, then mem.c's lock, then the trap lock, then the map's lock.
-  Every mapping change holds `pend_lock` from its begin to its end, and so does the renderer when it adds a pending
+  Every mapping change holds `pend_lock` while it changes memory, and so does the renderer when it adds a pending
   result or an owner. A change of guest memory alone (`GPU_MAPPING_GUEST_ONLY`: map, unmap, MapPhysicalMemory,
   UnmapPhysicalMemory) where the renderer has no pending result, no owner on its host pages and no GPU mapping of it
   takes no `vk_lock`. A landing first waits for the GPU's work on its entries with no lock held. Then it takes

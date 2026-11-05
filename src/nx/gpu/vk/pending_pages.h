@@ -30,8 +30,8 @@ struct PendPages {
     int listed; /* in pend_remap's tables: it has counted a guest page */
 };
 /* the lock of every table's changes (above): reentrant, taken after vk_lock and before mem.c's lock and the GMMU's.
-   A mapping change holds it from its begin to its end (gpu/vk/renderer.c), so nothing the renderer holds over guest
-   memory is added meanwhile (owned memory and storage images take it too) */
+   A mapping change holds it while it changes memory (gpu/vk/renderer.c), so nothing the renderer holds over guest
+   memory is added meanwhile (own_begin's caller takes it too) */
 void pend_lock(void);
 void pend_unlock(void);
 /* the guest pages pending compute results, graphics results and queued releases cover, all together: a read that meets
