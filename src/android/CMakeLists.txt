@@ -173,8 +173,14 @@ if(BUILD_TESTING)
     add_executable(snx-test-android-gles2 "${PROJECT_SOURCE_DIR}/tests/android_gles2.c" "${volk_SOURCE_DIR}/volk.c")
     set_source_files_properties("${volk_SOURCE_DIR}/volk.c" TARGET_DIRECTORY snx-test-android-gles2 PROPERTIES
                                 COMPILE_OPTIONS "${snx_third_party_flags}")
-    # the program and the bridge call each other: the program's archive again after the bridge's
-    target_link_libraries(snx-test-android-gles2 PRIVATE "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+    # the program and the bridge call each other: the program's archive again after the bridge's. Apple's linker goes
+    # back over the archives itself, and CMake has no RESCAN group for it
+    if(APPLE)
+        target_link_libraries(snx-test-android-gles2 PRIVATE snx_android_program snx_android_bridge)
+    else()
+        target_link_libraries(snx-test-android-gles2 PRIVATE
+                              "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+    endif()
     target_compile_definitions(snx-test-android-gles2 PRIVATE VK_NO_PROTOTYPES)
     set_target_properties(snx-test-android-gles2 PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
     target_compile_options(snx-test-android-gles2 PRIVATE -Wall -Wextra -Werror -UNDEBUG)
