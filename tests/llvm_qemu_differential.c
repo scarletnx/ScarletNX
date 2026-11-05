@@ -37,6 +37,7 @@
 #include "common/cpu/recompiler/llvm/ir_ldst.h"
 #include "common/cpu/recompiler/llvm/ir_fpu.h"
 #include "common/cpu/recompiler/llvm/ir_vec.h"
+#include "common/runtime/interface.h"
 #include "llvm_qemu_words.h"
 #include "llvm_steps.h"
 #include "qemu_ref/qemu_ref.h"
@@ -1148,6 +1149,9 @@ int main(int argc, char** argv) {
     rt.fpcr_changed = cb_fpcr;
     rt.sev = cb_sev;
     rt.wfe = cb_wfe;
+    /* the runtime's 16-byte compare-and-swap (snx_runtime_defaults'), which an STXP of doublewords calls on RISC-V,
+       LoongArch, MIPS64 and PowerPC64 before POWER8 (helpers/integer.c) */
+    rt.cas128 = snx_runtime_cas128;
 
     /* the record's header and items: the cases follow once QEMU has run each batch */
     if (record_path) {
