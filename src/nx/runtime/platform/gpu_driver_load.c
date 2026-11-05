@@ -46,6 +46,12 @@ static void turnip_sets(void) {
     if (failed) fatal("freedreno: %s=true could not be set", SNX_TURNIP_SETS_VAR);
     LOG("freedreno: %s=true, for the fifth descriptor set\n", SNX_TURNIP_SETS_VAR);
 }
+#if defined(__ANDROID__) && defined(__aarch64__)
+static void panvk_libhardware(void) {
+    const char* path = "/system/lib64/libhardware.so";
+    if (!dlopen(path, RTLD_NOW | RTLD_LOCAL)) LOG("vulkan: %s did not open by its path: %s\n", path, dlerror());
+}
+#endif
 /* freedreno_env's variables in the environment, before any driver reads them */
 static void freedreno_env(void) {
     SnxFreedrenoVar vars[SNX_FREEDRENO_MAX];
@@ -112,6 +118,7 @@ void* gpu_driver_open(void) {
         if (tmp && snx_mkdirs(tmp))
             fatal("GPU driver %s did not load: the folder %s, for a copy of Android's Vulkan loader, was not made", id,
                   tmp);
+        panvk_libhardware();
         loader = gpu_driver_android_open(hooks, g_gpu_driver_load.dir, meta.library, tmp, said, sizeof said);
         if (!loader) fatal("GPU driver %s did not load: %s", id, said);
         g_gpu_driver_load.gipa = dlsym(loader, "vkGetInstanceProcAddr");

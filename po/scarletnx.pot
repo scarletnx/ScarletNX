@@ -2520,7 +2520,7 @@ msgid "GPU Drivers"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Vulkan drivers for Adreno and Xclipse GPUs on Android (Turnip, RADV): add, remove, and the one games use"
+msgid "Vulkan drivers for Adreno, Mali and Xclipse GPUs on Android (Turnip, PanVK, RADV): add, remove, and the one games use"
 msgstr ""
 
 #: src/gui/main.c
@@ -3086,7 +3086,7 @@ msgid "Add Driver"
 msgstr ""
 
 #: src/gui/main.c
-msgid "A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's releases are: unpacked into gpu_drivers/ of the user's data folder"
+msgid "A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's and PanVK's releases are: unpacked into gpu_drivers/ of the user's data folder"
 msgstr ""
 
 #: src/gui/main.c

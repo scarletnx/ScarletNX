@@ -103,8 +103,8 @@ setting GPU driver
     in-game
     help The Vulkan driver the game runs with: empty = the system's, else a driver package the launcher's GPU Drivers
     help added, by its folder's name in gpu_drivers/ of the user's data folder. Packages load on Android 9 or newer,
-    help arm64, with an Adreno GPU. One that does not load stops the game, saying why. Left out, the launcher passes
-    help the one its GPU Drivers picked for every game
+    help arm64, with an Adreno GPU (/dev/kgsl-3d0) or a Mali GPU (/dev/mali0). One that does not load stops the game,
+    help saying why. Left out, the launcher passes the one its GPU Drivers picked for every game
 setting Freedreno variables
     key freedreno_env
     text 512

@@ -7920,8 +7920,8 @@ static const GuiThemeKey app_keys[] = {
      0, NULL},
     {"", SNX_TR_NOOP("GPU Drivers"), GUI_KEY_ACTION, offsetof(GuiAppForm, drivers), sizeof(((GuiAppForm*)0)->drivers),
      NULL, 0,
-     SNX_TR_NOOP("Vulkan drivers for Adreno and Xclipse GPUs on Android (Turnip, RADV): add, remove, and the one games "
-                 "use"),
+     SNX_TR_NOOP("Vulkan drivers for Adreno, Mali and Xclipse GPUs on Android (Turnip, PanVK, RADV): add, remove, and "
+                 "the one games use"),
      0, 0, 0, 0, NULL},
     {"", SNX_TR_NOOP("Freedreno Settings"), GUI_KEY_ACTION, offsetof(GuiAppForm, freedreno),
      sizeof(((GuiAppForm*)0)->freedreno), NULL, 0,
@@ -9579,8 +9579,8 @@ static int drivers_fill(App* app) {
         snx_gpu_driver_loads(drivers_host(app), app->drivers_about[r], sizeof app->drivers_about[r]);
     else
         snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
-                 snx_tr("A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's "
-                        "releases are: unpacked into gpu_drivers/ of the user's data folder"));
+                 snx_tr("A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's and "
+                        "PanVK's releases are: unpacked into gpu_drivers/ of the user's data folder"));
     snprintf(f->value[r], sizeof f->value[r], "%s", lack ? lack : "");
     app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
                                     sizeof f->value[0], app->drivers_about[r]);

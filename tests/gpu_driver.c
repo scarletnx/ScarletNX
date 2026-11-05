@@ -94,13 +94,23 @@ int main(void) {
     elf[18] = 40;
     assert(!snx_gpu_driver_elf(elf, sizeof elf, why, sizeof why) && has(why, "32-bit library for machine 40"));
     assert(!snx_gpu_driver_elf((const unsigned char*)"PK\3\4", 4, why, sizeof why) && has(why, "starts 50 4b 03 04"));
-    /* the devices that load packages: an Adreno's (its kgsl node) and an Xclipse's (a render node of amdgpu) */
-    host.system = "Android", host.arch = "arm64", host.api = 36, host.kgsl = 1, host.built = 1;
+    /* the devices that load packages: an Adreno's (kgsl), a Mali's (kbase's) and an Xclipse's (amdgpu) */
+    host.system = "Android", host.arch = "arm64", host.api = 36, host.kgsl = 1, host.mali = 0, host.built = 1;
     assert(snx_gpu_driver_loads(&host, why, sizeof why) && snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_LOADS &&
            !strcmp(why, "This device: Android API 36, arm64, Adreno GPU (/dev/kgsl-3d0): custom drivers load."));
     host.api = 27;
     assert(!snx_gpu_driver_loads(&host, why, sizeof why) && has(why, "Android API 27") &&
            has(why, "API 28) or newer") && snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_OLD_ANDROID);
+    /* a Mali's node loads a package as an Adreno's does, and the package and the GPU are said */
+    host.api = 36, host.kgsl = 0, host.mali = 1;
+    assert(snx_gpu_driver_loads(&host, why, sizeof why) && snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_LOADS &&
+           !strcmp(why, "This device: Android API 36, arm64, Mali GPU (/dev/mali0 or /dev/mali): custom drivers "
+                        "load."));
+    snx_gpu_driver_no_device("PanVK_v25", "PanVK test", &host, why, sizeof why);
+    assert(!strcmp(why, "GPU driver PanVK_v25 (PanVK test) lists no Vulkan device on this device's Mali GPU "
+                        "(/dev/mali0 or /dev/mali): the package is for another GPU, or does not drive this model. "
+                        "Pick the System driver, or a package for this GPU, in Settings > App > GPU Drivers"));
+    host.mali = 0;
     host.api = 34, host.kgsl = 0, host.amdgpu = 1;
     snprintf(host.render, sizeof host.render, "%s", "/dev/dri/renderD128, kernel driver amdgpu");
     assert(snx_gpu_driver_loads(&host, why, sizeof why) && snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_LOADS &&
@@ -122,10 +132,11 @@ int main(void) {
     host.api = 36, host.built = 1, host.amdgpu = 0;
     snprintf(host.render, sizeof host.render, "%s", "/dev/dri/renderD128, kernel driver panfrost");
     assert(!snx_gpu_driver_loads(&host, why, sizeof why) && snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_NO_GPU &&
-           !strcmp(why, "This device: Android API 36, arm64, no Adreno GPU (no /dev/kgsl-3d0) and no Xclipse GPU "
-                        "(/dev/dri/renderD128, kernel driver panfrost): custom drivers load on Android 9 (API 28) or "
-                        "newer, arm64, with an Adreno GPU (/dev/kgsl-3d0) or an Xclipse GPU (a render node of the "
-                        "amdgpu kernel driver). Games here use the system driver."));
+           !strcmp(why, "This device: Android API 36, arm64, no Adreno GPU (no /dev/kgsl-3d0), no Mali GPU "
+                        "(/dev/mali0) and no Xclipse GPU (/dev/dri/renderD128, kernel driver panfrost): custom drivers "
+                        "load on Android 9 (API 28) or newer, arm64, with an Adreno GPU (/dev/kgsl-3d0), a Mali GPU "
+                        "(/dev/mali0) or an Xclipse GPU (a render node of the amdgpu kernel driver). Games here use "
+                        "the system driver."));
     snprintf(host.render, sizeof host.render, "%s", "/dev/dri/renderD128 did not open: Permission denied");
     assert(!snx_gpu_driver_loads(&host, why, sizeof why) &&
            has(why, "no Xclipse GPU (/dev/dri/renderD128 did not open: Permission denied)"));

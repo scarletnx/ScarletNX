@@ -176,11 +176,12 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   - **Reset to Defaults**, last, which asks first.
 
   **GPU Drivers** lists the Vulkan driver packages added (a zip of a `meta.json` and the driver's libraries, as
-  Turnip's releases are, in libadrenotools' format) and picks the one every game runs with: **System driver**, the
-  system's own, its GPU, Vulkan version and driver version said, then a row a package, then **Add Driver**, the
-  system's file picker. A package is checked whole before anything is written (its `meta.json`, its files at the
-  zip's top, its library an arm64 one, its `minApi` at most the device's API level) and unpacked into a folder of
-  `gpu_drivers/` of the user's data folder named after the zip; a refusal says what is wrong, with the value. A
+  Turnip's and PanVK's releases are, in libadrenotools' format) and picks the one every game runs with: **System
+  driver**, the system's own, its GPU, Vulkan version and driver version said, then a row a package, then **Add
+  Driver**, the system's file picker. A package is checked whole before anything is written (its `meta.json`, its
+  files at the zip's top, its library an arm64 one, its `minApi` at most the device's API level) and unpacked into
+  a folder of `gpu_drivers/` of the user's data folder named after the zip; a refusal says what is wrong, with the
+  value. A
   package's box has **Use** and **Remove** (Del removes too), which asks first; one added is picked where packages
   load. **Download Driver** lists, from GitHub, the releases of the driver repositories Eden's driver fetcher lists
   (Mr. Purple Turnip, GameHub Adreno 8xx, KIMCHI Turnip, Weab-Chan Freedreno, Whitebelyash Turnip), fetched as it
@@ -188,13 +189,14 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   those Vulkan 1.0); a repository that failed says why, and Enter fetches the
   lists again. A release's box lists its downloads with their sizes, a GPU maker's own drivers (every GameHub one, and
   one named Qualcomm) marked *proprietary, no license*; the one picked is downloaded, its progress in the note, and
-  added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU (`/dev/kgsl-3d0`) or an
-  Xclipse GPU (a render node of the `amdgpu` kernel driver in `/dev/dri`, for [RADV's port to
+  added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU (`/dev/kgsl-3d0`), a Mali
+  GPU (`/dev/mali0`) or an Xclipse GPU (a render node of the `amdgpu` kernel driver in `/dev/dri`, for [RADV's port to
   it](https://github.com/JimVulkan/radv-xclipse), whose package asks Android 14): the page's first line says what this
   device is and, anywhere else, why games there use the system driver. There the packages, Download Driver and Add
   Driver are greyed, each row saying what the device lacks (*Android only*, *Unsupported GPU*...) and Enter
-  the whole line; a package's box still opens for its Remove, its Use refused with that line. On an Xclipse GPU
-  Download Driver alone is greyed, as those repositories hold Adreno's drivers: its package is added from its zip. A
+  the whole line; a package's box still opens for its Remove, its Use refused with that line. On an Xclipse or a
+  Mali GPU Download Driver alone is greyed, as those repositories hold Adreno's drivers: its package is added
+  from its zip. A
   game whose package does not load stops, saying why, and so does one whose package lists no Vulkan device, a driver
   for another GPU. Under them, **edenprobe Mode** (Quick, the default:
   `quick notime cpu graphics`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays

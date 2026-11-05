@@ -2795,9 +2795,10 @@ static void add_cheats(App* app, const char* temporary) {
     free(root);
 }
 /* the devices GPU Drivers is shown on, each as snx_gpu_driver_host finds it: a desktop, a phone with an Adreno GPU,
-   one with an Xclipse and one with another GPU */
+   one with a Mali, one with an Xclipse and one with another GPU */
 static const SnxGpuDriverHost host_desktop = {.system = "Linux", .arch = "x86_64"};
 static const SnxGpuDriverHost host_adreno = {.system = "Android", .arch = "arm64", .api = 36, .kgsl = 1, .built = 1};
+static const SnxGpuDriverHost host_mali = {.system = "Android", .arch = "arm64", .api = 36, .mali = 1, .built = 1};
 static const SnxGpuDriverHost host_xclipse = {.system = "Android",
                                               .arch = "arm64",
                                               .api = 34,
@@ -2832,8 +2833,9 @@ static char* driver_zip(const char* temporary, const char* name) {
 /* Settings > App > GPU Drivers. On a desktop: its rows, this device said, Download Driver and Add Driver greyed, each
    saying Android only on its row and why as its help and on Enter, with no page and no picker; a package left in the
    folder greyed too, its box's Use refused saying why, its Remove asked first. On a phone with an Xclipse GPU: the
-   page saying so, Download Driver greyed for its Adreno drivers, a package added and picked. On a phone with another
-   GPU: greyed as a desktop, saying which GPUs, the package removed by Del. Then Freedreno Settings: a preset applied,
+   page saying so, Download Driver greyed for its Adreno drivers, a package added and picked. On a phone with a Mali
+   GPU: the page naming its node, the same row greyed. On a phone with another GPU: greyed as a desktop, saying which
+   GPUs, the package removed by Del. Then Freedreno Settings: a preset applied,
    a variable Freedreno does not read refused, and Save keeping them in app.ini */
 static void gpu_drivers(App* app, const char* temporary) {
     char *dir = snx_path_join(temporary, "gpu_drivers"), *zip = driver_zip(temporary, "Turnip_v32.zip"), *kept;
@@ -2872,9 +2874,9 @@ static void gpu_drivers(App* app, const char* temporary) {
     assert(app->form == GUI_FORM_DRIVERS &&
            !strncmp(app->editor.note,
                     "This device: Linux x86_64: custom drivers load on Android 9 (API 28) or newer, "
-                    "arm64, with an Adreno GPU (/dev/kgsl-3d0) or an Xclipse GPU",
-                    strlen("This device: Linux x86_64: custom drivers load on Android 9 (API 28) or newer, arm64, "
-                           "with an Adreno GPU (/dev/kgsl-3d0) or an Xclipse GPU")));
+                    "arm64, with an Adreno GPU (/dev/kgsl-3d0), a Mali GPU (/dev/mali0) or an Xclipse GPU",
+                    strlen("This device: Linux x86_64: custom drivers load on Android 9 (API 28) or newer, arm64, with "
+                           "an Adreno GPU (/dev/kgsl-3d0), a Mali GPU (/dev/mali0) or an Xclipse GPU")));
     app->editor.note[0] = 0;
     app->editor.row = 2;
     key(app, SDLK_RETURN);
@@ -2927,12 +2929,25 @@ static void gpu_drivers(App* app, const char* temporary) {
                                      "every game: Turnip test"));
     render(app);
     shows(app, "Adreno only", rgb(app->theme.soft));
+    /* a phone with a Mali GPU: packages load, the page naming its node; Download Driver alone greyed, as its
+       repositories hold Adreno's drivers */
+    app->gpu_host = host_mali;
+    open_drivers(app, NULL, NULL, 0);
+    assert(!strcmp(app->editor.note, "This device: Android API 36, arm64, Mali GPU (/dev/mali0 or /dev/mali): "
+                                     "custom drivers load."));
+    assert(gui_editor_rows(&app->editor) == 6 && !strcmp(app->drivers_form.value[1], "(*)") &&
+           !strcmp(app->drivers_form.value[2], "Adreno only") && !app->drivers_form.value[3][0] &&
+           !form_row_off(app, &app->editor, 1) && form_row_off(app, &app->editor, 2) &&
+           !form_row_off(app, &app->editor, 3));
+    app->editor.row = 2; /* Download Driver */
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_DRIVERS && strstr(app->editor.note, "hold drivers for Adreno GPUs"));
     /* a phone with another GPU: the package, Download Driver and Add Driver greyed, saying which GPUs load one; Del
        still removes the package, the launcher's pick going back to the System driver */
     app->gpu_host = host_other;
     open_drivers(app, NULL, NULL, 0);
-    assert(strstr(app->editor.note, "no Adreno GPU (no /dev/kgsl-3d0) and no Xclipse GPU (/dev/dri/renderD128, kernel "
-                                    "driver panfrost)"));
+    assert(strstr(app->editor.note, "no Adreno GPU (no /dev/kgsl-3d0), no Mali GPU (/dev/mali0) and no Xclipse GPU "
+                                    "(/dev/dri/renderD128, kernel driver panfrost)"));
     assert(gui_editor_rows(&app->editor) == 6 && !strcmp(app->drivers_form.value[1], "(*) Unsupported GPU") &&
            !strcmp(app->drivers_form.value[2], "Unsupported GPU") &&
            !strcmp(app->drivers_form.value[3], "Unsupported GPU") && form_row_off(app, &app->editor, 1) &&
