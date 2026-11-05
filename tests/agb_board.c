@@ -304,6 +304,22 @@ int main(void) {
     CHECK(agb_read32(&board, 0x03000100) == agb_read32(&board, 0x08000000) &&
           agb_read32(&board, 0x03000104) == agb_read32(&board, 0x08000004));
     CHECK(board.dma[3].count == 2 && !(board.dma[3].control & 0x8000)); /* done: the enable bit clears */
+    /* a DMA holds the bus for 2N + 2(n-1)S + 2I: four words from the cartridge (WAITCNT 0x4317: a halfword's first
+       access 4 cycles, the next 2) to IWRAM 2 + (6 + 1) + 3 x (4 + 1) = 24, four halfwords EWRAM to EWRAM
+       2 + 4 x (3 + 3) = 26 */
+    agb_write16(&board, 0x04000204, 0x4317);
+    board.held_cycles = 0;
+    agb_write32(&board, 0x040000D4, 0x08000000);
+    agb_write32(&board, 0x040000D8, 0x03000200);
+    agb_write32(&board, 0x040000DC, 0x84000004);
+    CHECK(board.held_cycles == 24);
+    board.held_cycles = 0;
+    agb_write32(&board, 0x040000D4, 0x02000000);
+    agb_write32(&board, 0x040000D8, 0x02000100);
+    agb_write32(&board, 0x040000DC, 0x80000004);
+    CHECK(board.held_cycles == 26);
+    board.held_cycles = 0;
+    agb_write16(&board, 0x04000204, 0);
     agb_write16(&board, 0x040000C6, 0xB640); /* DMA1CNT_H: the sound FIFO's timing, repeat, 32 bits */
     CHECK(board.dma[1].control == 0xB640 && !board.dma[0].control && !board.dma[2].control);
     CHECK(agb_read16(&board, 0x040000C6) == 0xB640);

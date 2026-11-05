@@ -202,6 +202,21 @@ int main(void) {
             }
         }
     }
+    {
+        /* the CPU waits out the cycles a DMA held the bus for: a run as long as them runs none of its instructions */
+        agb_write32(&board, 0x03000800, 0xE2800001); /* add r0, r0, #1 */
+        agb_write32(&board, 0x03000804, 0xEAFFFFFD); /* b 0x03000800 */
+        cpu.arm.r[0] = 0;
+        cpu.arm.r[15] = 0x03000800;
+        cpu.arm.cpsr = 0x9F;
+        cpu.over = 0;
+        board.cpu_halted = cpu.wait = 0;
+        board.held_cycles = 1000;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 1000, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        CHECK(cpu.arm.r[0] == 0 && board.held_cycles == 0);
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 1000, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        CHECK(cpu.arm.r[0] > 0);
+    }
     /* the instructions after the interpreted ones start blocks the discovery step did not see: they were compiled as
        the run reached them, and saving the run keeps them, in the map as hints (the module as it was, at once) */
     CHECK(recomp.compiled > 0 && recomp.dirty);

@@ -30,7 +30,12 @@ static void dma_transfer(AgbBoard* board, int index, int fifo) {
         count = 4;
         destination_mode = 2;
     }
+    /* the bus is the DMA's until it ends: 2N + 2(n-1)S + 2I (4I when both ends are on the cartridge), which the CPU
+       waits out (agb_cpu_run) */
+    board->held_cycles += (source >> 27 & 1) && (destination >> 27 & 1) ? 4 : 2;
     for (uint32_t i = 0; i < count; ++i) {
+        board->held_cycles += agb_access_cycles(board, source, word ? 32 : 16, i > 0) +
+                              agb_access_cycles(board, destination, word ? 32 : 16, i > 0);
         if (word) {
             uint32_t value = agb_read32(board, source);
             agb_write32(board, destination, value);
