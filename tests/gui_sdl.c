@@ -12373,6 +12373,27 @@ int main(int argc, char** argv) {
         assert(!remove(path));
         free(path);
     }
+    /* a game's name in its own script, as UTF-8 has it, through Share Log's log_tail as it is, not a '?' a byte (an
+       accent, Japanese, a 4-byte character); each byte that is not UTF-8, and a NUL, one U+FFFD */
+    {
+        static const char log[] =
+            "[   0.10] ScarletNX - Caf\xc3\xa9 Racer\r\n"
+            "[   0.20] ScarletNX - \xe6\x9c\x88\xe3\x81\xae\xe6\x97\x85 the 1st \xf0\x9f\x98\x80\n"
+            "[   0.30] bad \xff\xc3( \xe6\x9c\n"
+            "[   0.40] nul \0 end\n";
+        static const char want[] =
+            "[   0.10] ScarletNX - Caf\xc3\xa9 Racer\n"
+            "[   0.20] ScarletNX - \xe6\x9c\x88\xe3\x81\xae\xe6\x97\x85 the 1st \xf0\x9f\x98\x80\n"
+            "[   0.30] bad \xef\xbf\xbd\xef\xbf\xbd( \xef\xbf\xbd\xef\xbf\xbd\n"
+            "[   0.40] nul \xef\xbf\xbd end\n";
+        char *path = snx_path_join(temporary, "names.log"), *tail;
+        assert(!snx_write_file(path, log, sizeof log - 1));
+        tail = log_tail(path, sizeof log);
+        assert(!strcmp(tail, want));
+        free(tail);
+        assert(!remove(path));
+        free(path);
+    }
     /* Share Log, on every system: share/ of Folders' Logs emptied of what was shared before, scarletnx-logs-<when>.zip
        in it (its summary.txt with the message and the last run's output), and that folder opened */
     {

@@ -15079,20 +15079,34 @@ static void open_picker(App* app) {
     if (app->picked) SDL_ShowOpenFileDialog(picker_done, &app->picked, app->window, NULL, 0, NULL, false);
 #endif
 }
-/* the last max bytes of a file from the first line that starts in them, as text with only ASCII (what Java takes as a
-   string from any log), or "". A home folder cut in two is no longer one to the tilde, so its account's name would
-   stay. A CR before an LF goes (a log on Windows has CRLF lines), so a line ends where its text does */
+/* the last max bytes of a file from the first line that starts in them, as text, or "". A home folder cut in two is no
+   longer one to the tilde, so its account's name would stay. A CR before an LF goes (a log on Windows has CRLF lines),
+   so a line ends where its text does. Valid UTF-8 stays as it is, a game's name in its own script with it; each byte
+   that is not, and a NUL, which the text cannot hold, becomes U+FFFD. The text goes into a file of share/, never into
+   a Java string, so modified UTF-8's limits (no NUL, no 4-byte sequence) are not its own */
 static char* log_tail(const char* path, size_t max) {
     size_t size = 0, at, n = 0;
     unsigned char* data = path ? snx_read_file(path, &size) : NULL;
     char* text;
     at = size > max ? size - max : 0;
     while (at > 0 && at < size && data[at - 1] != '\n') ++at;
-    text = (char*)snx_alloc(size - at + 1);
-    for (; at < size; ++at) {
+    text = (char*)snx_alloc((size - at) * 3 + 1); /* each byte at most U+FFFD's 3 */
+    while (at < size) {
         unsigned char c = data[at];
-        if (c == '\r' && at + 1 < size && data[at + 1] == '\n') continue;
-        text[n++] = c == '\n' || c == '\t' || (c >= 32 && c < 127) ? (char)c : '?';
+        size_t want = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 : (c & 0xf8) == 0xf0 ? 4 : 0;
+        if (c == '\r' && at + 1 < size && data[at + 1] == '\n') {
+            ++at;
+            continue;
+        }
+        if (c && want && want <= size - at && snx_utf8_valid((const char*)data + at, want, NULL, 0)) {
+            memcpy(text + n, data + at, want);
+            n += want;
+            at += want;
+        } else {
+            memcpy(text + n, "\xef\xbf\xbd", 3);
+            n += 3;
+            ++at;
+        }
     }
     text[n] = 0;
     free(data);
