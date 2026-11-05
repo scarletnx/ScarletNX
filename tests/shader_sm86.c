@@ -1856,6 +1856,24 @@ static void test_global_pointer(const char* spirv_val, const char* dir) {
     free(spv);
 }
 
+/* The driver's tessellation control programs: a header with 6 TessFactor words, no outputs and 0 threads for each
+   input primitive, and an EXIT. It runs no invocation: draws take the passthrough in its place, and the translator
+   gives no module for it. One with 3 threads is a program of its own, which the translator does not take yet */
+static void test_tcs_empty(void) {
+    u8 code[16 * 2] = {0};
+    put(code, 0, exit_insn());
+    put(code, 1, bra(1, 1, 7, 0));
+    u32 sph[32] = {0x000c0881u, 0x06000000u, 0, 0x60000000u, 0x000ff000u};
+    CHECK(sm86_sph_stage(sph[0]) == ST_TCS && sm86_tcs_empty(sph[2]));
+    ShaderInfo si = {0};
+    size_t count = 0;
+    CHECK(!sm86_to_spirv(code, 2 * 16, ST_TCS, sph, &si, &count) && strstr(si.first_unsupported, "no invocation"));
+    sph[2] = 3u << 24;
+    CHECK(!sm86_tcs_empty(sph[2]));
+    si = (ShaderInfo){0};
+    CHECK(!sm86_to_spirv(code, 2 * 16, ST_TCS, sph, &si, &count) && !strstr(si.first_unsupported, "no invocation"));
+}
+
 int main(int argc, char** argv) {
     const char* spirv_val = argc > 2 ? argv[2] : NULL;
     const char* dir = argc > 1 ? argv[1] : ".";
@@ -1864,6 +1882,7 @@ int main(int argc, char** argv) {
     test_flow();
     test_table();
     test_sph();
+    test_tcs_empty();
     test_programs(spirv_val, dir);
     test_game_forms(spirv_val, dir);
     test_brx(spirv_val, dir);

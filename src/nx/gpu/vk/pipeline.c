@@ -1955,6 +1955,8 @@ static int ship_program(void* ctx, const u8* sph, size_t avail, int stage, const
     /* an Ounce game's (SM86): its programs as a draw reads them, from their header. A VertexA, which no draw of the
        Ounce path pairs, is left to its draws */
     if (stage == SHIPPED_OUNCE_VERTEX_A) return SHIP_SKIPPED;
+    /* a tessellation control program that runs no invocation: draws take the passthrough in its place */
+    if (stage == (ST_TCS | SHIPPED_OUNCE) && sm86_tcs_empty(snx_ld_le32(sph + 8))) return SHIP_SKIPPED;
     stage &= ~SHIPPED_OUNCE;
     if (stage == SHIPPED_VERTEX_A) return ship_dual(sph, avail);
     /* their keys hold the draw's state (geometry's input primitive and passthrough words, the evaluation's domain), so
