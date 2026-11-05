@@ -28,8 +28,9 @@ printf '{"hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_p
     python3 "$CHECK" --hook 2>/dev/null
 [ $? -eq 2 ] || { echo "FAIL: the hook must stop an edit that adds a rule break"; fail=1; }
 rm -rf "$dir"
-# A report: the hook asks for it again with a block decision
-r=$(printf '%s' '{"hook_event_name":"SubagentStop","session_id":"t","agent_id":"t'$$'","last_assistant_message":"It is done."}' |
+# A report: the hook asks for it again with a block decision. printf's %s takes the agent's ID as an argument, because
+# bash 3.2, the sh of macOS, drops $$ that stands between quotes inside $( )
+r=$(printf '{"hook_event_name":"SubagentStop","session_id":"t","agent_id":"%s","last_assistant_message":"It is done."}' "t$$" |
     python3 "$CHECK" --hook)
 printf '%s' "$r" | grep -q '"decision": "block"' || { echo "FAIL: the hook must block a report with a rule break"; fail=1; }
 [ $fail -eq 0 ] && echo "check.py: each rule in flagged.md, none in clean.md, exit codes and hooks: passed"
