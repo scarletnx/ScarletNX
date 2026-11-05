@@ -64,6 +64,16 @@ typedef struct {
     u16 stride[4];
     u8 stream[4]; /* geometry output stream for each capture buffer, 0..3 */
 } ShXfb;
+/* The key of a task or mesh program (ShaderInfo.mesh): the fields of its NVN control section (nvn/nvn_section.h,
+   NvnSectionMesh) and its per-primitive outputs' header, which a draw gives and the SPH does not (sm86.h) */
+typedef struct {
+    u16 threads;                      /* the invocations of a workgroup (section 0x58), 1 to 32 */
+    u16 payload;                      /* the task payload's bytes, its 16-byte header included (0x5a) */
+    u16 max_vertices, max_primitives; /* a mesh program's (0x60, 0x62) */
+    u8 has_task, primitive_vertices;  /* a mesh program's: after a task program (0x5e), and 3 (0x5f) */
+    u16 reserved;                     /* 0 */
+    u32 prim_sph[20];                 /* the per-primitive SPH's first 80 bytes (0x64, 0x68), all 0 for none */
+} ShMesh;
 /* A program's key state (set by the renderer before translating) and what translation found. The corpus stores it
    whole, so a corpus file only loads into a build where this struct has the same size. */
 typedef struct {
@@ -154,6 +164,10 @@ typedef struct {
     u32 late_depth; /* key: ordered GPU depth/stencil shadow operations after guest fragment code */
     u32 capture_outputs; /* key: capture validity location2..7; zero retains the original location1 interface */
     int primitive_split_safe; /* proof: vertex values do not depend on subgroup/lane/clock invocation groups */
+    ShMesh mesh; /* key (task and mesh programs) */
+    /* the generics that go to the fragment program per primitive: of a mesh program, the per-primitive outputs that
+       translation found (in out_mask too) */
+    u32 prim_mask;
 } ShaderInfo;
 /* The graphics cache packs these explicit fragment-only fields above its eight image-format bits. */
 enum { SH_FS_LATE_DEPTH = 1u, SH_FS_CAPTURE_SHIFT = 1, SH_FS_CONFIG_MASK = 15u };

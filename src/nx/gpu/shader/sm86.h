@@ -115,6 +115,37 @@ int sm86_find_programs(const u8* data, u32 size, Sm86Program* out, int max);
    textures, global buffers, attributes. Returns malloc'd words, their count in *word_count, or NULL with
    si->unsupported and si->first_unsupported set */
 u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count);
+/* Task and mesh programs (docs/platforms/nx/ounce.md, "Mesh shaders") translate to the TaskEXT and MeshEXT execution
+   models of VK_EXT_mesh_shader. The caller gives the stage, ST_TS or ST_MS, from the program's NVN control section
+   (nvn_section_stage), as the SPH cannot tell it: sph is the SPH of a vertex program, or of a tessellation evaluation
+   program for a mesh program after a task program. The interface of such a module:
+   - si->mesh: the key, from the section (nvn_section_mesh) and the code area: threads, payload, has_task,
+     primitive_vertices (3 only), max_vertices, max_primitives, and in prim_sph the first 80 bytes of the
+     per-primitive SPH at the section's offset 0x64 in the code area (all 0 when the offset is 0). A key outside the
+     limits of VK_EXT_mesh_shader, or a form that the game's programs do not show, is refused with its reason.
+   - descriptor sets (shader_vk_set): 0 for a mesh program and 2 for a task program, with the bindings of shader.h.
+   - push constants: the vec4 of a vertex program at offset 0. Its x holds the bits of the draw's first workgroup,
+     which a task program, and a mesh program without one, add to WorkgroupId.x for their workgroup index. Its y is
+     the depth fix of a vertex program (a mesh program's positions), not 0 to take z from -w..w to 0..w.
+   - a workgroup is threads invocations, one warp: the program's lanes (SR_LANEID, its ballots and votes) are its
+     subgroup's. The pipeline must give it a subgroup of 32 (a required subgroup size with full subgroups), else the
+     lanes do not agree with the invocations.
+   - a task program launches the mesh groups with OpEmitMeshTasksEXT(count, 1, 1) and a payload of si->mesh.payload
+     bytes. The draw gives the task count to vkCmdDrawMeshTasksEXT(count, 1, 1).
+   - a mesh program writes max_vertices vertices and triangles: Position, each generic n at Location n (si->out_mask,
+     the per-vertex and the per-primitive ones), the per-primitive ones decorated PerPrimitiveEXT (si->prim_mask,
+     which sm86_mesh_primitive_mask gives from the key alone) */
+/* the generics with a component in the output map of a vertex, tessellation or geometry SPH (its words 0 to 19):
+   generic i's four components at bits 432 + 4 i on */
+static inline u32 sm86_omap_generics(const u32* sph) {
+    u32 mask = 0;
+    for (u32 i = 0; i < 32; i++)
+        if ((sph[(432 + 4 * i) >> 5] >> ((432 + 4 * i) & 31)) & 15) mask |= 1u << i;
+    return mask;
+}
+static inline u32 sm86_mesh_primitive_mask(const ShMesh* mesh) {
+    return mesh->prim_sph[0] ? sm86_omap_generics(mesh->prim_sph) : 0;
+}
 /* Debug: with g_shader_sm86_dump (the sm86_dump setting) naming a folder, the bytes (and the 32 SPH words, NULL for
    none) go to DIR/sm86_<kind>_<hash>.bin (and .sph), and why to DIR/sm86_<kind>_<hash>.txt. sm86_to_spirv writes each
    program it refuses, sm86_find_programs each block without a complete program. The files are game data: keep
