@@ -16,7 +16,8 @@ static size_t part(const u8* p, const u8* end, u32* v) {
     return *v > 255 || (p + n < end && p[n] >= '0' && p[n] <= '9') ? 0 : n;
 }
 
-/* "SDK MW+<vendor>+<vendor>SDK_<lib>-x_y_z" at p: its version, 0 when the text at p isn't one */
+/* "SDK MW+<vendor>+<vendor>SDK_<lib>-x_y_z" at p: its version, 0 when the text at p isn't one. An Ounce module's
+   label names the build's platform before the version ("VendorSdk_nnSdk-Generic_19_3_3", the vendor its own) */
 static u32 label(const u8* p, const u8* end, const char* lib) {
     static const char head[] = "SDK MW+";
     size_t libn = strlen(lib), n;
@@ -36,6 +37,9 @@ static u32 label(const u8* p, const u8* end, const char* lib) {
     q += n + 1;
     if ((size_t)(end - q) < libn + 1 || memcmp(q, lib, libn) || q[libn] != '-') return 0;
     q += libn + 1;
+    for (n = 0; q + n < end && letter(q[n]); n++) {
+    }
+    if (n && q + n < end && q[n] == '_') q += n + 1;
     for (i = 0; i < 3; i++) {
         size_t digits = part(q, end, &v[i]);
         if (!digits) return 0;
