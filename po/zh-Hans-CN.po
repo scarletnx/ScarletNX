@@ -5126,8 +5126,8 @@ msgstr "[theme] format = %s 不是 1 或更大的整数：保留 %lu"
 
 #: src/gui/theme.c
 #, c-format
-msgid "[theme] base = %s is not a built-in theme (default or yorha): it starts from %s"
-msgstr "[theme] base = %s 不是内置主题（default 或 yorha）：从 %s 开始"
+msgid "[theme] base = %s is not a built-in theme (%s): it starts from %s"
+msgstr "[theme] base = %s 不是内置主题（%s）：从 %s 开始"
 
 #: src/gui/theme.c
 #, c-format
