@@ -360,16 +360,21 @@ static void indirect_test(const NceSites* sites) {
 }
 
 /* which games NCE takes on a host that has it (nce_refused): on Linux each 64-bit one; on Android from API 29 (Android
-   10), whose app owns TLS_SLOT_APP, and the 39-bit address space only, as the guest's addresses move above 64 GiB. The
-   reason says the values */
+   10), whose app owns TLS_SLOT_APP, and the 39-bit address space only, as the guest's addresses move above 64 GiB. No
+   32-bit game anywhere: the recompile makes its code ahead of time and says so. The reason says the values */
 static void refused_test(void) {
     char why[240] = "";
-    check(!nce_refused(why, sizeof why, 3, 0, 0) && !nce_refused(why, sizeof why, 1, 0, 0), "Linux takes both spaces");
-    check(!nce_refused(why, sizeof why, 3, 1, NCE_ANDROID_API), "Android 10 takes a 39-bit game");
-    check(nce_refused(why, sizeof why, 3, 1, 28) == -1 && strstr(why, "level is 28") && strstr(why, "needs 29"),
+    check(!nce_refused(why, sizeof why, 1, 3, 0, 0) && !nce_refused(why, sizeof why, 1, 1, 0, 0),
+          "Linux takes both spaces");
+    check(!nce_refused(why, sizeof why, 1, 3, 1, NCE_ANDROID_API), "Android 10 takes a 39-bit game");
+    check(nce_refused(why, sizeof why, 1, 3, 1, 28) == -1 && strstr(why, "level is 28") && strstr(why, "needs 29"),
           "Android 9 does not, and says its level and the one needed");
-    check(nce_refused(why, sizeof why, 1, 1, 34) == -1 && strstr(why, "36-bit") && strstr(why, "64 GiB"),
+    check(nce_refused(why, sizeof why, 1, 1, 1, 34) == -1 && strstr(why, "36-bit") && strstr(why, "64 GiB"),
           "nor a 36-bit game on Android, which says why");
+    /* a 32-bit game's NPDM: is64 0 and the address space type 2, 32-bit without the alias region */
+    check(nce_refused(why, sizeof why, 0, 2, 0, 0) == -1 && strstr(why, "32-bit") && strstr(why, "is64 is 0"),
+          "Linux runs no 32-bit game natively, and says it is 32-bit by its NPDM's is64");
+    check(nce_refused(why, sizeof why, 0, 2, 1, NCE_ANDROID_API) == -1 && strstr(why, "32-bit"), "nor does Android 10");
 }
 
 /* x16 = v in four words at a (the stub's MOVZ and three MOVK) */
