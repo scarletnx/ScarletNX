@@ -549,18 +549,12 @@ bool gnu_spawn_syscall(GnuProcess* p, uint64_t number, const uint64_t a[6], int6
 
 /* ---- the options a program's own copy of the runtime is started with (Windows' execve) ---- */
 
-static char** forwarded;
-#ifdef _WIN32
-static int forwarded_count;
-#endif
+static char** forwarded; /* NULL-ended, as an argv */
 void gnu_spawn_set_options(int count, const char* const* options) {
     int i;
     forwarded = (char**)calloc((size_t)count + 1, sizeof *forwarded);
     if (!forwarded) return;
     for (i = 0; i < count; ++i) forwarded[i] = snx_strdup(options[i]);
-#ifdef _WIN32
-    forwarded_count = count;
-#endif
 }
 
 #ifdef _WIN32
@@ -706,7 +700,7 @@ int64_t gnu_spawn_win32_exec(GnuProcess* p, GnuExec* e) {
         if (narrow && n > 0 && WideCharToMultiByte(CP_UTF8, 0, self, -1, narrow, n, NULL, NULL)) quote(&line, &used, &capacity, narrow);
         free(narrow);
     }
-    for (i = 0; i < (size_t)forwarded_count; ++i) quote(&line, &used, &capacity, forwarded[i]);
+    for (i = 0; forwarded && forwarded[i]; ++i) quote(&line, &used, &capacity, forwarded[i]);
     /* the child's descriptors, as inheritable handles the new runtime adopts at the same numbers */
     for (fd = 0; fd < GNU_VFS_FD_MAX; ++fd) {
         int crt = gnu_vfs_host_descriptor(&p->vfs, fd);
