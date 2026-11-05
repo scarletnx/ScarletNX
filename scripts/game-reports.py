@@ -68,14 +68,34 @@ ATTACHMENT = re.compile(
 )
 
 
-class GitHub:
-    """The REST and GraphQL calls triage and index make, through gh"""
+class GhError(RuntimeError):
+    """A gh api call that failed: gh's message (its stderr), then GitHub's answer (its stdout), whose errors name
+    their reason by a code"""
 
-    def __init__(self, repo):
+    def __init__(self, what, result):
+        streams = (result.stderr.strip(), result.stdout.strip())
+        super().__init__(f'{what} exits {result.returncode}: ' + '\n'.join(part for part in streams if part))
+        self.answer = result.stdout
+
+    def codes(self):
+        """The codes of the answer's errors: already_exists, invalid..."""
+        try:
+            answer = json.loads(self.answer)
+        except ValueError:
+            return set()
+        errors = answer.get('errors') if isinstance(answer, dict) else None
+        return {error.get('code') for error in errors or [] if isinstance(error, dict)}
+
+
+class GitHub:
+    """The REST and GraphQL calls triage and index make, through gh (the program and its first arguments)"""
+
+    def __init__(self, repo, gh=('gh',)):
         self.repo = repo
+        self.gh = list(gh)
 
     def api(self, path, method='GET', data=None, paginate=False):
-        args = ['gh', 'api', '-H', 'Accept: application/vnd.github+json', '-X', method, path]
+        args = [*self.gh, 'api', '-H', 'Accept: application/vnd.github+json', '-X', method, path]
         if paginate:
             args += ['--paginate', '--slurp']
         if data is not None:
@@ -84,7 +104,7 @@ class GitHub:
             args, input=json.dumps(data) if data is not None else None, capture_output=True, text=True, check=False
         )
         if result.returncode:
-            raise RuntimeError(f'gh api {method} {path}: {result.stderr.strip() or result.stdout.strip()}')
+            raise GhError(f'gh api {method} {path}', result)
         value = json.loads(result.stdout) if result.stdout.strip() else None
         return [item for page in value for item in page] if paginate else value
 
@@ -103,8 +123,8 @@ class GitHub:
     def label(self, name, color, description):
         try:
             self.api(f'repos/{self.repo}/labels', 'POST', {'name': name, 'color': color, 'description': description})
-        except RuntimeError as error:
-            if 'already_exists' not in str(error):
+        except GhError as error:
+            if 'already_exists' not in error.codes():
                 raise
 
     def set_labels(self, number, add, remove):
@@ -134,9 +154,9 @@ class GitHub:
             after = page['pageInfo']['endCursor']
 
     def graphql(self, args):
-        result = subprocess.run(['gh', 'api', *args], capture_output=True, text=True, check=False)
+        result = subprocess.run([*self.gh, 'api', *args], capture_output=True, text=True, check=False)
         if result.returncode:
-            raise RuntimeError(f'gh api graphql: {result.stderr.strip()}')
+            raise GhError('gh api graphql', result)
         return json.loads(result.stdout)
 
 
