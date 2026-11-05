@@ -278,8 +278,19 @@ u32 shipped_ounce_programs(const u8* d, size_t n, ShippedEach each, void* ctx) {
         const u8* sph = d + s - 0x80;
         if (sph == last) continue; /* another branch to itself in the same program */
         last = sph;
+        /* Its constants, bank 1, with the compiler's jump tables of BRX: in its code area, at its code's bytes
+           rounded up to 256, which the control section's 0x40 gives (stage_of in gpu/nvn/nvn_object.c). The code's
+           bytes (the section's 0x38) run from the header to the end of the NOPs after the branch to itself, as
+           every code record of one game's BNSH containers says (12788 of them). The size is the section's alone:
+           all the bytes up to 64 KiB are handed, and a draw takes the translation only where the words it read
+           hold (vk_cb_reads_hold) */
+        size_t end = at + 16;
+        while (end <= n - 16 && (le64(d + end) & 0xFFFu) == 0x918u && insn_like(d + end)) end += 16;
+        size_t cb = (size_t)(sph - d) + ((end - (size_t)(sph - d) + 0xFF) & ~(size_t)0xFF);
+        const u8* consts = cb < n ? d + cb : NULL;
+        size_t nconsts = consts ? (n - cb < 0x10000 ? n - cb : 0x10000) : 0;
         if (each(ctx, sph, n - (size_t)(sph - d),
-                 stage == SHIPPED_VERTEX_A ? SHIPPED_OUNCE_VERTEX_A : stage | SHIPPED_OUNCE, NULL, 0))
+                 stage == SHIPPED_VERTEX_A ? SHIPPED_OUNCE_VERTEX_A : stage | SHIPPED_OUNCE, consts, nconsts))
             return handed;
         handed++;
     }
