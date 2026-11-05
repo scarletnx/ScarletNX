@@ -52,6 +52,26 @@ static void guest_done(u64 cpu, u64 len) {
     if (vk_uma()) vk_uma_mem_need_cpu(cpu, len);
 }
 
+/* The fatal path of a lost device runs on the recording thread: record.c's submit_run calls fatal(), whose window
+   release asks the ring to drain (vk_rec_sync). A wait there waits for the thread that runs it, so the process spun at
+   full speed instead of showing the error (Super Mario Bros. Wonder on MoltenVK). A call that the recording thread
+   makes into the ring must return at once, and the packet after it must still run */
+static void recorder_self_sync(void* arg) {
+    vk_rec_sync();
+    *(int*)arg = 1;
+}
+static int check_recorder_self_sync(void) {
+    int ran = 0;
+    if (!vk_rec_threaded()) {
+        puts("SKIP the recording thread's own sync: vk_record=0 runs the commands on the GPU thread");
+        return 0;
+    }
+    vk_rec_run(recorder_self_sync, &ran);
+    CHECK(ran == 1);
+    printf("The recording thread's own vk_rec_sync returns\n");
+    return 0;
+}
+
 /* Graphics descriptor tables fill the frame's descriptor memory. vk_frame_check, which runs before a draw's setup,
    moves on to the next frame while the tables of one more draw still fit: the setup itself never submits for room */
 static int check_descriptor_room(void) {
@@ -2911,6 +2931,14 @@ int main(int argc, char** argv) {
     g_settings.vulkan_video_decode = 1; /* a Vulkan Video decode queue where the device has one (lavapipe has none) */
     video_init("Headless Vulkan fixture", "");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
+    if (getenv("SNX_TEST_RECORDER_ONLY")) { /* the recording thread's own sync alone, on the driver the loader picks */
+        CHECK(!check_recorder_self_sync());
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan recorder only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    CHECK(!check_recorder_self_sync());
     viw_install();
     if (g_settings.descriptor_buffers && !g_vk.has_descriptor_buffers) {
         puts("SKIP descriptor-buffer checks: the device does not support this path");
