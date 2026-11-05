@@ -153,10 +153,14 @@ u8* gmem_host(u64 gva, u64 size) {
     if (!size) size = 1;
     return gmmu_run(gva, size, &cpu) == size ? GP(cpu) : NULL;
 }
+/* the results pending over the bytes land first: landing them can make them GPU-owned again (the GPU mirror's
+   pages, once their submit is done), which the CPU's access then lands */
 u8* gmem_ptr(u64 gva, u64 size) {
-    u8* p = gmem_ptr_untracked(gva, size);
-    if (p) gmem_need(gva, size ? size : 1);
-    return p;
+    u64 cpu = 0;
+    if (!size) size = 1;
+    if (gmmu_run(gva, size, &cpu) != size) return NULL;
+    gmem_need(gva, size);
+    return gmem_ptr_untracked(gva, size);
 }
 u32 gmem_r32(u64 gva) {
     u8 b[4] = {0};

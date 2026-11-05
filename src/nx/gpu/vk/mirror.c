@@ -215,16 +215,30 @@ static int up_end(Up* u) {
     return ok;
 }
 
-/* the owned bytes of [cpu, cpu + n), copied on the GPU from their owners, after the copies from host memory */
+/* whether the mirror owns a part of guest memory [cpu, cpu + n): its bytes there are the mirror's (own_entries) */
+static int mirror_owns(u64 cpu, u64 n) {
+    OwnRange o[16];
+    if (!own_any()) return 0;
+    u32 k = own_lookup(cpu, n, o, 16);
+    for (u32 i = 0; i < k && i < 16; i++)
+        if (((const VkOwnRes*)o[i].res)->buf == g_mir.buf) return 1;
+    return 0;
+}
+/* the owned bytes of [cpu, cpu + n), copied on the GPU from their owners, after the copies from host memory, sixteen
+   owners at a time. The mirror's own are where they belong */
 static void up_owned(u64 cpu, u64 n) {
     OwnRange o[16];
     if (!own_any()) return;
-    u32 k = own_lookup(cpu, n, o, 16);
-    if (k > 16) fatal("vulkan: more owners under a storage binding than the GPU mirror takes");
-    for (u32 i = 0; i < k; i++) {
-        VkBufferCopy c = {o[i].res_off, o[i].addr, o[i].size};
-        vk_render_end();
-        rec_CmdCopyBuffer(vk_cmd(), ((const VkOwnRes*)o[i].res)->buf, g_mir.buf, 1, &c);
+    for (u64 at = cpu, end = cpu + n; at < end;) {
+        u32 k = own_lookup(at, end - at, o, 16);
+        for (u32 i = 0; i < k && i < 16; i++) {
+            if (((const VkOwnRes*)o[i].res)->buf == g_mir.buf) continue;
+            VkBufferCopy c = {o[i].res_off, o[i].addr, o[i].size};
+            vk_render_end();
+            rec_CmdCopyBuffer(vk_cmd(), ((const VkOwnRes*)o[i].res)->buf, g_mir.buf, 1, &c);
+        }
+        if (k <= 16) break;
+        at = o[15].addr + o[15].size;
     }
 }
 
@@ -307,10 +321,12 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
                 diff_run(&d, 0, (hi - lo) * 4096);
         }
         for (u64 p = lo; p < hi; p++) r->synced[p] = now;
-        /* the binding's pages not given yet: whole, guest memory's bytes, an owned part's left for its owner */
+        /* the binding's pages not given yet: whole, guest memory's bytes, an owned part's left for its owner. One the
+           mirror owns has its bytes there already */
         for (u64 p = lo; p < hi; p++) {
             if (r->valid[p / 64] >> (p % 64) & 1) continue;
             u64 a = base + p * 4096;
+            if (mirror_owns(a, 4096)) continue;
             OwnRange o[16];
             u8* dst = up_bytes(&u, a, 4096);
             if (own_stage(a, 4096, dst, o, 16)) owners = 1;
@@ -342,7 +358,8 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
    wrote are copied into host memory with their masks (mirror_harvest.comp); once it is done they land, the bytes logged
    and no others, in guest memory and in the shadow (vk_mirror_done). The output's room is what the last submits wrote:
    pages past it are copied by a pass of their own then, which waits for the GPU, and the room grows */
-#define MIR_ENTRY 1156u /* an output entry's words: the page, 3 unused, 128 mask words, 1024 words of bytes */
+#define MIR_ENTRY      1156u /* an output entry's words: the page, 3 unused, 128 mask words, 1024 words of bytes */
+#define MIR_ENTRY_PAGE 132u  /* one without the bytes, for a page left GPU-owned in the mirror (own_traps) */
 #define MIR_HEAD  4u
 typedef struct {
     u64 first, end; /* pages [first, end) */
@@ -350,7 +367,7 @@ typedef struct {
 typedef struct {
     u64 submit;
     MirRange* r;
-    u32 n, room;
+    u32 n, room, entry;
     u64 pages;
     u32* out; /* in host memory, MIR_HEAD words then room entries then the pages left */
     VmaAllocation mem;
@@ -368,7 +385,7 @@ static u32 g_mir_nbatch, g_mir_capbatch;
 #define MIR_SPAN     64u
 static u32 g_mir_room = MIR_ROOM_MIN, g_mir_span_max, g_mir_span_n;
 static struct {
-    u64 harvests, pages, landed_bytes, overflows;
+    u64 harvests, pages, landed_bytes, overflows, owned_pages;
 } g_mir_stats;
 
 void vk_mirror_wrote(u64 cpu, u64 len) {
@@ -404,7 +421,7 @@ static u32 ranges_join(MirRange* r, u32 n) {
 
 #include "nx/gpu/vk/mirror_harvest_spv.h" /* compiled from mirror_harvest.comp by the build (cmake/glsl.cmake) */
 typedef struct {
-    u32 first, room, left;
+    u32 first, room, left, entry;
 } HarvestParams;
 static VkDescriptorSetLayout g_hv_ds;
 static VkPipelineLayout g_hv_layout;
@@ -444,7 +461,7 @@ static void barrier(VkCommandBuffer cb, VkPipelineStageFlags2 ss, VkAccessFlags2
 /* records into cb the harvest of the pages of ranges r (joined, sorted) into out (room entries, then the list of pages
    left, after the work that wrote them): 0 out of descriptors */
 static int harvest_record(VkCommandBuffer cb, const MirRange* r, u32 n, VkBuffer out, u64 out_at, u64 out_size,
-                          u32 room) {
+                          u32 room, u32 entry) {
     harvest_init();
     rec_CmdFillBuffer(cb, out, out_at, 16, 0);
     barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT,
@@ -467,7 +484,7 @@ static int harvest_record(VkCommandBuffer cb, const MirRange* r, u32 n, VkBuffer
                                           .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                           .pBufferInfo = &info[k]};
         vkUpdateDescriptorSets(g_vk.dev, 3, w, 0, NULL);
-        HarvestParams p = {(u32)r[i].first, room, MIR_HEAD + room * MIR_ENTRY};
+        HarvestParams p = {(u32)r[i].first, room, MIR_HEAD + room * entry, entry};
         rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_hv_layout, 0, 1, &set, 0, NULL);
         rec_CmdPushConstants(cb, g_hv_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
         rec_CmdDispatch(cb, (u32)pages, 1, 1);
@@ -478,7 +495,7 @@ static int harvest_record(VkCommandBuffer cb, const MirRange* r, u32 n, VkBuffer
             VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     return 1;
 }
-static u64 out_bytes(u32 room, u64 pages) { return ((u64)MIR_HEAD + (u64)room * MIR_ENTRY + pages) * 4; }
+static u64 out_bytes(u32 room, u64 pages, u32 entry) { return ((u64)MIR_HEAD + (u64)room * entry + pages) * 4; }
 
 void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) {
     if (!g_mir_nnow) return;
@@ -486,11 +503,13 @@ void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) {
     u64 pages = 0;
     for (u32 i = 0; i < n; i++) pages += g_mir_now[i].end - g_mir_now[i].first;
     u32 room = pages < g_mir_room ? (u32)pages : g_mir_room;
+    /* where the host traps guest memory, the pages stay GPU-owned in the mirror and only their masks come back */
+    u32 entry = own_traps() ? MIR_ENTRY_PAGE : MIR_ENTRY;
     VkBuffer out;
     u64 at;
     VmaAllocation mem;
-    u32* p = (u32*)(void*)vk_stage_back(out_bytes(room, pages), &out, &at, &mem);
-    if (!p || !harvest_record(cb, g_mir_now, n, out, at, out_bytes(room, pages), room))
+    u32* p = (u32*)(void*)vk_stage_back(out_bytes(room, pages, entry), &out, &at, &mem);
+    if (!p || !harvest_record(cb, g_mir_now, n, out, at, out_bytes(room, pages, entry), room, entry))
         fatal("vulkan: no memory to land the GPU mirror's writes in");
     if (g_mir_nbatch == g_mir_capbatch) {
         u32 cap = g_mir_capbatch ? g_mir_capbatch * 2 : 16;
@@ -502,7 +521,7 @@ void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) {
     MirRange* r = malloc((size_t)n * sizeof *r);
     if (!r) fatal("Out of memory recording the GPU mirror's writes");
     memcpy(r, g_mir_now, (size_t)n * sizeof *r);
-    g_mir_batch[g_mir_nbatch++] = (MirBatch){submit, r, n, room, pages, p, mem};
+    g_mir_batch[g_mir_nbatch++] = (MirBatch){submit, r, n, room, entry, pages, p, mem};
     g_mir_nnow = 0;
     g_mir_stats.harvests++;
 }
@@ -535,6 +554,147 @@ static void land_entry(const u32* e) {
     gpu_mem_written_cpu(cpu, 4096); /* caches built from the page take its new bytes */
 }
 
+static int u64_cmp(const void* a, const void* b) {
+    u64 x = *(const u64*)a, y = *(const u64*)b;
+    return (x > y) - (x < y);
+}
+/* the entries of the pages the mirror's programs wrote, once done, to be taken in and published (vk_mirror_publish):
+   MIR_ENTRY_PAGE words each, as the harvest wrote them */
+static u32* g_mir_q;
+static u32 g_mir_nq, g_mir_capq;
+/* The pages of an output of entries without bytes stay GPU-owned in the mirror (docs/platforms/nx/ounce.md), at the
+   next point where nothing is being recorded (vk_mirror_publish), pending until then as before. Taking them in records:
+   done here, in a landing, which runs where a command buffer is being begun (a frame's recycling, whose pool reset then
+   dropped the copies and began the buffer again), a draw set up or a submission made, it crashed in the driver. Landing
+   each page the programs wrote at every submit took most of the GPU thread in one game's menus, for pages the CPU
+   mostly never read */
+static void own_entries(const u32* out, u32 n) {
+    if (!n) return;
+    if (g_mir_nq + n > g_mir_capq) {
+        u32 cap = (g_mir_nq + n) * 2;
+        u32* grown = realloc(g_mir_q, (size_t)cap * MIR_ENTRY_PAGE * sizeof *grown);
+        if (!grown) fatal("Out of memory keeping the GPU mirror's writes");
+        g_mir_q = grown;
+        g_mir_capq = cap;
+    }
+    memcpy(g_mir_q + (size_t)g_mir_nq * MIR_ENTRY_PAGE, out + MIR_HEAD, (size_t)n * MIR_ENTRY_PAGE * sizeof *out);
+    g_mir_nq += n;
+    for (u32 i = 0; i < n; i++) {
+        u64 pg = out[MIR_HEAD + i * MIR_ENTRY_PAGE];
+        pend_add_pages(&g_mir_pend, pg, pg, 1);
+    }
+}
+/* First the CPU's changes to the pages since they were brought up to date, the bytes their programs didn't log, go
+   into the mirror: a byte both wrote keeps the program's, as a landing of the logged bytes keeps it. Then each run of
+   them is published over guest memory with the mirror as its owner, written by the submission holding those copies,
+   made first. The CPU's first touch lands a page whole, which is exact: none of its bytes can change in between.
+   Publishing can write a render target back, which can land again: the queue is taken first, and a publishing inside
+   takes none */
+void vk_mirror_publish(void) {
+    static int busy;
+    if (g_mir.on <= 0 || !g_mir_nq || busy || vk_rec_unsafe()) return;
+    busy = 1;
+    u32* q = g_mir_q;
+    u32 n = g_mir_nq;
+    g_mir_q = NULL;
+    g_mir_nq = g_mir_capq = 0;
+    u64* pages = malloc((size_t)n * sizeof *pages);
+    if (!pages) fatal("Out of memory keeping the GPU mirror's writes");
+    Up u = {0};
+    for (u32 i = 0; i < n; i++) {
+        const u32* e = q + i * MIR_ENTRY_PAGE;
+        const u32* mask = e + 4;
+        u64 cpu = (u64)e[0] << 12, p = (cpu % MIR_G) >> 12;
+        Gran* r = cpu / MIR_G < g_mir.granules ? g_mir.gran[cpu / MIR_G] : NULL;
+        pages[i] = cpu >> 12;
+        if (!r || mirror_owns(cpu, 4096)) continue; /* the mirror's already: the CPU couldn't change it */
+        static u8 page[4096];
+        OwnRange o[16];
+        /* a page landed since it was brought up to date has no shadow: every byte the program didn't log is guest
+           memory's (sh at the page's own bytes compares none equal) */
+        int valid = r->valid[p / 64] >> (p % 64) & 1;
+        const u8* sh = valid ? r->shadow + p * 4096 : NULL;
+        u32 owned = own_stage(cpu, 4096, page, o, 16);
+        if (owned > 16) continue; /* other owners' bytes all over it: theirs went into the mirror when it was bound */
+        if (!valid) {
+            for (u32 a = 0; a < 4096;) {
+                if (bit(mask, a)) {
+                    a++;
+                    continue;
+                }
+                u32 b = a + 1;
+                while (b < 4096 && !bit(mask, b)) b++;
+                memcpy(up_bytes(&u, cpu + a, b - a), page + a, b - a);
+                a = b;
+            }
+            /* owned parts: their owners' bytes, copied in after these (up_owned) */
+            if (owned) up_owned(cpu, 4096);
+            continue;
+        }
+        for (u32 k = 0; k < owned; k++) memcpy(page + (o[k].addr - cpu), sh + (o[k].addr - cpu), o[k].size);
+        for (u32 a = 0; a < 4096;) {
+            u64 x, y;
+            if (!(a & 7)) { /* eight at a time where they agree */
+                memcpy(&x, page + a, 8);
+                memcpy(&y, sh + a, 8);
+                if (x == y) {
+                    a += 8;
+                    continue;
+                }
+            }
+            if (page[a] == sh[a] || bit(mask, a)) {
+                a++;
+                continue;
+            }
+            u32 b = a + 1;
+            while (b < 4096 && page[b] != sh[b] && !bit(mask, b)) b++;
+            memcpy(up_bytes(&u, cpu + a, b - a), page + a, b - a);
+            memcpy(r->shadow + p * 4096 + a, page + a, b - a);
+            a = b;
+        }
+    }
+    if (!up_end(&u)) fatal("vulkan: no staging to bring the GPU mirror up to date");
+    /* those copies before whatever reads the mirror next */
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                           .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vk_render_end();
+    rec_CmdPipelineBarrier2(vk_cmd(), &d);
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    u64 submit = vk_last_submit();
+    free(q);
+    qsort(pages, n, sizeof *pages, u64_cmp);
+    VkOwnRes* res = vk_own_res_borrow(g_mir.buf);
+    if (!res) fatal("Out of memory keeping the GPU mirror's writes");
+    res->written = submit;
+    for (u32 i = 0; i < n;) {
+        u32 j = i + 1;
+        while (j < n && pages[j] <= pages[j - 1] + 1) j++;
+        u64 cpu = pages[i] << 12, len = (pages[j - 1] + 1 - pages[i]) << 12;
+        /* where it can't own them, they land whole from the mirror now. Their shadow stays (the CPU can't change them
+           while they are owned) until they land (vk_mirror_landed) */
+        vk_own_publish_submitted(cpu, len, res, cpu);
+        i = j;
+    }
+    for (u32 i = 0; i < n; i++) pend_add_pages(&g_mir_pend, pages[i], pages[i], -1);
+    vk_own_res_unref(res);
+    g_mir_stats.owned_pages += n;
+    free(pages);
+    busy = 0;
+}
+/* guest memory [cpu, cpu + size) landed from an owner, the mirror or another: its pages' shadow is let go of, and the
+   next binding brings them up to date from guest memory whole, which holds what landed */
+void vk_mirror_landed(u64 cpu, u64 size) {
+    if (g_mir.on <= 0 || !size) return;
+    for (u64 pg = cpu >> 12, e = (cpu + size - 1) >> 12; pg <= e; pg++) {
+        u64 g = (pg << 12) / MIR_G, p = ((pg << 12) % MIR_G) >> 12;
+        Gran* r = g < g_mir.granules ? g_mir.gran[g] : NULL;
+        if (r) r->valid[p / 64] &= ~(1ull << (p % 64));
+    }
+}
 /* the pages an output couldn't take, copied by a pass of their own on a command buffer of the mirror's, waited for,
    and landed: the work that wrote them is done, and so is all that was submitted before */
 static VkCommandPool g_mir_pool;
@@ -557,7 +717,7 @@ static void harvest_left(const u32* left, u32 n) {
         if (!VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &g_mir_cb)))
             fatal("vulkan: no command buffer for the GPU mirror");
     }
-    u64 size = out_bytes(n, n);
+    u64 size = out_bytes(n, n, MIR_ENTRY);
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                               .size = size,
                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -573,7 +733,7 @@ static void harvest_left(const u32* left, u32 n) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     VK_OK(vkBeginCommandBuffer(g_mir_cb, &bi));
-    if (!harvest_record(g_mir_cb, r, k, out, 0, size, n))
+    if (!harvest_record(g_mir_cb, r, k, out, 0, size, n, MIR_ENTRY))
         fatal("vulkan: no descriptor set left to land the GPU mirror's writes");
     VK_OK(vkEndCommandBuffer(g_mir_cb));
     VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -596,20 +756,28 @@ static void harvest_left(const u32* left, u32 n) {
 }
 
 void vk_mirror_done(u64 done) {
-    u32 kept = 0;
-    for (u32 b = 0; b < g_mir_nbatch; b++) {
-        MirBatch* m = &g_mir_batch[b];
-        if (m->submit > done) {
-            g_mir_batch[kept++] = *m;
-            continue;
-        }
+    /* publishing a page can write a render target back, which can finish the commands and land through here again:
+       a batch leaves the list before it is taken in, and a landing inside one takes none */
+    static int busy;
+    if (busy) return;
+    busy = 1;
+    for (;;) {
+        u32 b = 0;
+        while (b < g_mir_nbatch && g_mir_batch[b].submit > done) b++;
+        if (b == g_mir_nbatch) break;
+        MirBatch batch = g_mir_batch[b], *m = &batch;
+        memmove(g_mir_batch + b, g_mir_batch + b + 1, (size_t)(g_mir_nbatch - b - 1) * sizeof *g_mir_batch);
+        g_mir_nbatch--;
         if (!VK_OK(vmaInvalidateAllocation(g_vk.vma, m->mem, 0, VK_WHOLE_SIZE)))
             fatal("vulkan: could not read the GPU mirror's writes");
         u32 n = m->out[0], take = n < m->room ? n : m->room;
         vk_result_begin();
-        for (u32 i = 0; i < take; i++) land_entry(m->out + MIR_HEAD + i * MIR_ENTRY);
-        if (n > m->room) { /* the pages past its room: a pass of their own, and more room from now on */
-            harvest_left(m->out + MIR_HEAD + m->room * MIR_ENTRY, m->out[1]);
+        if (m->entry == MIR_ENTRY_PAGE)
+            own_entries(m->out, take);
+        else
+            for (u32 i = 0; i < take; i++) land_entry(m->out + MIR_HEAD + i * MIR_ENTRY);
+        if (n > m->room) { /* the pages past its room: a pass of their own, which lands them, and more room */
+            harvest_left(m->out + MIR_HEAD + m->room * m->entry, m->out[1]);
             while (g_mir_room < n * 2 && g_mir_room < (1u << 16)) g_mir_room *= 2;
             g_mir_stats.overflows++;
         }
@@ -625,7 +793,7 @@ void vk_mirror_done(u64 done) {
         for (u32 i = 0; i < m->n; i++) pend_add_pages(&g_mir_pend, m->r[i].first, m->r[i].end - 1, -1);
         free(m->r);
     }
-    g_mir_nbatch = kept;
+    busy = 0;
 }
 
 /* a read of guest memory over pending writes: they land first, as other results do (buffer.c's land_reason) */
@@ -635,7 +803,9 @@ static int mir_pending(u64 gva, u64 len) {
 void vk_mirror_mem_need(u64 gva, u64 len) {
     if (g_mir.on <= 0 || !len || !mir_pending(gva, len)) return;
     vk_lock();
+    /* a finish takes its pages in, and publishing them makes them the mirror's: the CPU's touch lands them */
     if (mir_pending(gva, len)) vk_finish();
+    vk_mirror_publish();
     vk_unlock();
 }
 
