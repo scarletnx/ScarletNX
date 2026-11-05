@@ -1872,6 +1872,15 @@ int snx_memory_available(SnxU64* bytes) {
     if (!GlobalMemoryStatusEx(&status)) return 0;
     *bytes = status.ullAvailPhys;
     return 1;
+#elif defined(__FreeBSD__)
+    /* free and inactive pages, as macOS counts; ZFS's cache, which the system shrinks under pressure, is wired */
+    u_int free_pages = 0, inactive = 0;
+    size_t size = sizeof free_pages;
+    if (sysctlbyname("vm.stats.vm.v_free_count", &free_pages, &size, NULL, 0) || size != sizeof free_pages) return 0;
+    size = sizeof inactive;
+    if (sysctlbyname("vm.stats.vm.v_inactive_count", &inactive, &size, NULL, 0) || size != sizeof inactive) return 0;
+    *bytes = ((SnxU64)free_pages + inactive) * snx_vm_page_size();
+    return 1;
 #else
     (void)bytes;
     return 0;

@@ -259,8 +259,8 @@ typedef struct {
    microseconds, the others finer. Any thread; it reads a file for each thread on Linux and Android */
 int snx_threads(SnxThreadInfo* out, int max);
 /* the memory the system can still give this process, in bytes, into *bytes: what iOS lets the app take before it ends
-   it, the memory available on Linux and Android (MemAvailable), on macOS (free, inactive and purgeable pages) and on
-   Windows (available physical memory); whether the system told it */
+   it, the memory available on Linux and Android (MemAvailable), on macOS (free, inactive and purgeable pages), on
+   FreeBSD (free and inactive pages) and on Windows (available physical memory); whether the system told it */
 int snx_memory_available(SnxU64* bytes);
 void* snx_vm_reserve(size_t size); /* NULL when the system refuses */
 int snx_vm_protect(void* p, size_t size, int access);
