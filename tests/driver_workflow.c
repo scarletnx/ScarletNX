@@ -423,7 +423,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
 }
 static void run(const char* exe, const char* repo, const char* dump, const char* log, int expected, const char* events,
                 const char* diagnostic) {
-    const char* args[32];
+    const char* args[40];
     const char *headless = getenv("SNX_WORKFLOW_HEADLESS"), *flags = getenv("SNX_WORKFLOW_FLAGS"),
                *keys = getenv("SNX_WORKFLOW_KEYS"), *title_keys = getenv("SNX_WORKFLOW_TITLE_KEYS");
     const char *outdir = getenv("SNX_WORKFLOW_OUTDIR"), *out = getenv("SNX_WORKFLOW_OUT");
@@ -477,12 +477,17 @@ static void run(const char* exe, const char* repo, const char* dump, const char*
         args[n++] = "--program";
         args[n++] = getenv("SNX_WORKFLOW_PROGRAM");
     }
+    /* the game's own arguments: it gets each as given, one named like a runtime option too */
     if (getenv("SNX_WORKFLOW_ARGS") && *getenv("SNX_WORKFLOW_ARGS")) {
         args[n++] = "--";
         args[n++] = "some arg";
         args[n++] = "";
         args[n++] = "-rx";
         args[n++] = "--headless=0";
+        args[n++] = "--log=1";
+        args[n++] = "--seconds=5";
+        args[n++] = "--game=foo";
+        args[n++] = "x";
     }
     args[n] = NULL;
     rc = snx_run(args, NULL, NULL, &output);
@@ -500,7 +505,8 @@ static void run(const char* exe, const char* repo, const char* dump, const char*
 }
 /* the runtime's settings (runtime/options.c): those this test gives */
 int snx_setting_known(const char* key) {
-    static const char* const known[] = {"touch", "controls", "resolution", "controls_a", "seconds", "slp_vectorizer"};
+    static const char* const known[] = {"touch",   "controls",       "resolution", "controls_a",
+                                        "seconds", "slp_vectorizer", "log"};
     size_t i;
     for (i = 0; i < sizeof known / sizeof *known; ++i)
         if (!strcmp(key, known[i])) return 1;
@@ -759,9 +765,11 @@ int main(int argc, char** argv) {
             CHECK(argc == 2 && !strcmp(argv[1], fullscreen));
         if (flag && *flag) CHECK(argc == 2 && !strcmp(argv[1], "-H"));
         if (getenv("SNX_WORKFLOW_ARGS") && *getenv("SNX_WORKFLOW_ARGS")) {
-            CHECK(argc == 6 && !strcmp(argv[1], "--"));
+            CHECK(argc == 10 && !strcmp(argv[1], "--"));
             CHECK(!strcmp(argv[2], "some arg") && !strcmp(argv[3], ""));
             CHECK(!strcmp(argv[4], "-rx") && !strcmp(argv[5], "--headless=0"));
+            CHECK(!strcmp(argv[6], "--log=1") && !strcmp(argv[7], "--seconds=5"));
+            CHECK(!strcmp(argv[8], "--game=foo") && !strcmp(argv[9], "x"));
         }
         /* All game invocations must chdir, including repeat launches. */
         cwd = snx_absolute(".");

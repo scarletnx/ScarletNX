@@ -46,6 +46,8 @@ static struct {
 static void usage(void) {
     puts("Usage: scarletnx [OPTIONS] INPUT [-- GAME_ARGUMENTS...]\n"
          "  INPUT                  Extract, recompile if needed, then play XCI/NSP/DXCI/DNSP/NRO\n"
+         "  -- GAME_ARGUMENTS...   Everything after the -- goes to the game as given; the options here go\n"
+         "                         before it\n"
          "  -x, --extract          Extract XCI/NSP/DXCI/DNSP\n"
          "  -r, --recompile        Recompile ExeFS/NRO, or prepare a dump, without playing\n"
          "  -H, --headless         Run without a window or swapchain");
@@ -1543,16 +1545,6 @@ int snx_driver(int argc, char** argv) {
             memmove(rest + i, rest + i + (joined ? 1 : 2), (size_t)(n - i - (joined ? 1 : 2)) * sizeof(*rest));
             n -= joined ? 1 : 2;
             --i;
-        }
-    /* A runtime option after the "--" is a game argument the runtime does not read, so a timed run given so never
-       ends: say where it belongs before the dump is prepared, not after it starts. -x and -r end their options there */
-    for (i = separator + 1; !(flags & (SNX_EXTRACT | SNX_RECOMP)) && i < argc; ++i)
-        if (!strncmp(argv[i], "--game=", 7) ||
-            (!strncmp(argv[i], "--", 2) && strchr(argv[i], '=') && setting_known(argv[i] + 2))) {
-            result = snx_error("%s comes after the \"--\": put the runtime's options before it, the game's own "
-                               "arguments after it",
-                               argv[i]);
-            goto done;
         }
     /* played, a --key=value that is not the driver's own is a setting of the recompile, passed on to it when the game is
        made, or of the game's .ini, passed on to the game when the runtime knows the key; any other is refused */
