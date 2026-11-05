@@ -88,10 +88,10 @@ holds them all, so none of those is given one by an mmap of its own; one that ma
 address of its own would make memory the game's code reads and writes as its own. As the game's code starts, the log
 names anything there that is not the game's (`mem_foreign`: a mapping with a name, or a run nothing maps; the alias
 pool and a GPU's buffer that guest memory moved into are the runtime's), and a crash report names it again. With
-`nce_foreign_scan=1` (Debug) the kicks' thread looks again every 10 s while the game runs and logs each new finding
-once; off, it reads the setting and nothing else (`nce_foreign_look`). A plain anonymous mapping of another owner
-reads as the game's, so this diagnoses and guards nothing. The maps are read while other threads change them: a run
-they list as empty is asked again (`msync`) before it is named, and a failed read of them is no answer.
+`nce_foreign_scan=N` (Debug, seconds) the kicks' thread looks again every N s while the game runs and logs each new
+finding once; off, it reads the setting and nothing else (`nce_foreign_look`). A plain anonymous mapping of another
+owner reads as the game's, so this diagnoses and guards nothing. The maps are read while other threads change them: a
+run they list as empty is asked again (`msync`) before it is named, and a failed read of them is no answer.
 
 The path for the 36-bit games is to run the runtime outside ART: an executable child of `GameActivity`, as the driver
 already is (`libscarletnx-run.so`), whose low addresses are free. The window would come from the app over a socket
@@ -174,7 +174,8 @@ run or a kick is a signal. Each thread adds to counters of its own, with no lock
 - `rtapi_miss`, any host: a pc with no code runs the game's native code under NCE and returns to the caller's link
   register, asking no JIT; without NCE the JIT's code runs.
 - `nce_module`, any host: the modules moved with the layout and the main thread's entry in them; and the kicks' look
-  at the guest's addresses, none with `nce_foreign_scan=0`, one every 10 s of rounds with 1, each finding said once.
+  at the guest's addresses, none with `nce_foreign_scan=0`, one every N seconds of rounds with N (1, 10 and 3600),
+  each finding said once.
 - `guest_stats`, any host: a window's SVCs, misses, outcalls and families, a thread's time read from another thread,
   and the lines that say them.
 - `memory_accounting`: the 128 GiB tier moved past a page held at 65 GiB, its regions, a mapping there, where a crash's

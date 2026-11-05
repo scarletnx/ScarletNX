@@ -63,22 +63,31 @@ static int looks(u64 from, u64 to) {
     return n;
 }
 
-/* The kicks' thread's look at the guest's addresses while the game runs (nce_foreign_scan): with the setting 0 a round
-   asks nothing; with 1, one round in NCE_FOREIGN_EVERY (10 s of them) asks mem_foreign, a finding is said once while it
-   stays, a new one said, one gone and back said again, and a failed read said once */
+/* The kicks' thread's look at the guest's addresses while the game runs (nce_foreign_scan, its seconds): with the
+   setting 0 a round asks nothing; with N, one round in N seconds of them asks mem_foreign, at 1 and 3600 as at 10; a
+   finding is said once while it stays, a new one said, one gone and back said again, and a failed read said once */
 static void test_foreign_look(void) {
-    const u64 every = NCE_FOREIGN_EVERY;
+    const u64 second = NCE_KICKS_PER_S, every = 10 * second;
     static const char jit[] = "mapped at 0x1000000000-0x1000002000 r-xs /memfd:jit-cache (deleted)";
     static const char more[] = "mapped at 0x1000000000-0x1000002000 r-xs /memfd:jit-cache (deleted); nothing mapped "
                                "at 0x1000010000-0x1000012000";
-    check(every == 5000, "a look every 10 s of 2 ms rounds");
+    check(second == 500, "500 rounds of 2 ms in a second");
     g_settings.nce_foreign_scan = 0;
     g_foreign.found = jit, g_foreign.n = 1;
     check(looks(1, 3 * every) == 0 && g_foreign.calls == 0, "nce_foreign_scan=0: no round looks");
     g_settings.nce_foreign_scan = 1;
+    g_foreign.n = 0; /* the bounds find nothing, so the finding below is new */
+    check(looks(1, second - 1) == 0 && looks(second, 3 * second) == 3 && g_foreign.calls == 3,
+          "nce_foreign_scan=1: a look every second of rounds, none before the first");
+    g_settings.nce_foreign_scan = 3600;
+    g_foreign.calls = 0;
+    check(looks(1, 3600 * second - 1) == 0 && looks(3600 * second, 3600 * second) == 1 && g_foreign.calls == 1,
+          "nce_foreign_scan=3600: the first look an hour of rounds in");
+    g_settings.nce_foreign_scan = 10;
+    g_foreign.calls = 0, g_foreign.n = 1;
     g_said[0] = 0;
-    check(looks(1, every - 1) == 0 && g_foreign.calls == 0, "nce_foreign_scan=1: no look before 10 s of rounds");
-    check(looks(every, 3 * every) == 3 && g_foreign.calls == 3, "nce_foreign_scan=1: a look every 10 s of rounds");
+    check(looks(1, every - 1) == 0 && g_foreign.calls == 0, "nce_foreign_scan=10: no look before 10 s of rounds");
+    check(looks(every, 3 * every) == 3 && g_foreign.calls == 3, "nce_foreign_scan=10: a look every 10 s of rounds");
     check(said("nce: while the game runs, 1 thing of the host's process lies in the guest's addresses") == 1 &&
               said(jit) == 1,
           "a finding said once while it stays");
@@ -91,7 +100,9 @@ static void test_foreign_look(void) {
     check(looks(6 * every, 6 * every) == 1 && said("while the game runs, 1 thing") == 2,
           "a finding gone and back said again");
     g_foreign.n = -1;
-    check(looks(7 * every, 8 * every) == 2 && said("cannot be read (") == 1, "a failed read said once");
+    check(looks(7 * every, 8 * every) == 2 && said("cannot be read (") == 1 &&
+              said("so nce_foreign_scan=10 finds nothing") == 1,
+          "a failed read said once, with the setting's value");
     g_settings.nce_foreign_scan = 0;
     g_foreign.calls = 0;
     check(looks(9 * every, 10 * every) == 0 && g_foreign.calls == 0, "nce_foreign_scan=0 again: no round looks");
