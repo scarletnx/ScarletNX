@@ -37,7 +37,9 @@ SM86_OP(HADD2, 0x030, SM86_K_ALU, SM86_F_ALL, "HADD2")
 SM86_OP(HMUL2, 0x032, SM86_K_ALU, SM86_F_B, "HMUL2")
 SM86_OP(HFMA2, 0x031, SM86_K_ALU, SM86_F_ALL, "HFMA2")
 SM86_OP(HSET2, 0x033, SM86_K_ALU, SM86_F_B, "HSET2")
-SM86_OP(HSETP2, 0x034, SM86_K_ALU, SM86_F_B, "HSETP2")
+/* HSETP2's forms are the 16-bit ALU's: b a register (1), two halves (2), a constant buffer (3), as CuAssembler's sm_86
+   encodings 0x234, 0x434 and 0x634 show */
+SM86_OP(HSETP2, 0x034, SM86_K_ALU, 0x0eu, "HSETP2")
 SM86_OP(HMNMX2, 0x040, SM86_K_ALU, SM86_F_B, "HMNMX2")
 /* conversions */
 SM86_OP(F2F, 0x104, SM86_K_ALU, SM86_F_B, "F2F")
@@ -141,6 +143,8 @@ SM86_OP(ALD, 0x321, SM86_K_FIX, 0, "ALD")
 SM86_OP(AST, 0x322, SM86_K_FIX, 0, "AST")
 SM86_OP(AL2P, 0x920, SM86_K_FIX, 0, "AL2P")
 SM86_OP(IPA, 0x326, SM86_K_FIX, 0, "IPA")
+/* IPA with a uniform register in its address (0x526, bit 91), as a game's fragment programs index an input array */
+SM86_OP(IPA_U, 0x526, SM86_K_FIX, 0, "IPA (uniform index)")
 SM86_OP(LDTRAM, 0x3ad, SM86_K_FIX, 0, "LDTRAM")
 SM86_OP(ISBERD, 0x923, SM86_K_FIX, 0, "ISBERD")
 SM86_OP(ISBEWR, 0x927, SM86_K_FIX, 0, "ISBEWR")
@@ -179,6 +183,8 @@ SM86_OP(BRA, 0x947, SM86_K_FIX, 0, "BRA")
 SM86_OP(CALL, 0x944, SM86_K_FIX, 0, "CALL")
 SM86_OP(RET, 0x950, SM86_K_FIX, 0, "RET")
 SM86_OP(BRX, 0x949, SM86_K_FIX, 0, "BRX")
+/* BRXU (0x958): BRX with the index in the uniform register at 24, CuAssembler's sm_86 encoding */
+SM86_OP(BRXU, 0x958, SM86_K_FIX, 0, "BRXU")
 SM86_OP(UBRA, 0x547, SM86_K_FIX, 0, "BRA.U")
 SM86_OP(EXIT, 0x94d, SM86_K_FIX, 0, "EXIT")
 SM86_OP(BSSY, 0x945, SM86_K_FIX, 0, "BSSY")

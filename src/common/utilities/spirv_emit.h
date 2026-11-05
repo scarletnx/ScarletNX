@@ -573,6 +573,7 @@ uint32_t spv_emit_sample2d(SpvEmitter* e, uint32_t result_type, uint32_t sampled
                            uint32_t coordinates, uint32_t depth_reference);
 uint32_t spv_emit_sample2d_lod(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
                                uint32_t coordinates, uint32_t depth_reference, uint32_t lod);
+/* the size of the image at level lod, or with lod 0 its size alone (OpImageQuerySize), as a multisampled image has */
 uint32_t spv_emit_image_query_size_lod(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
                                        uint32_t lod);
 uint32_t spv_emit_image_query_lod(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
