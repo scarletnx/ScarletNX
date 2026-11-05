@@ -77,23 +77,9 @@ VkOwnRes* vk_own_res_new(u64 size) {
     return r;
 }
 static void res_retain(void* res) { __atomic_add_fetch(&((VkOwnRes*)res)->refs, 1, __ATOMIC_RELAXED); }
-VkOwnRes* vk_own_res_borrow(VkBuffer buf) {
-    VkOwnRes* r = (VkOwnRes*)calloc(1, sizeof *r);
-    if (!r) return NULL;
-    r->buf = buf;
-    r->size = ~0ull;
-    r->refs = 1;
-    r->borrowed = 1;
-    r->serial = __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED);
-    return r;
-}
 static void res_release(void* res) {
     VkOwnRes* r = (VkOwnRes*)res;
     if (__atomic_sub_fetch(&r->refs, 1, __ATOMIC_ACQ_REL)) return;
-    if (r->borrowed) {
-        free(r);
-        return;
-    }
     vk_lock();
     vk_defer_buffer(r->buf, r->mem); /* the frame recording may still copy from it */
     vk_unlock();
@@ -266,11 +252,6 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
 }
 
 static u32 lock_owner(void) { return vk_lock_owner(); }
-/* a landing's bytes: the write tracking takes them as they were left, and the GPU mirror lets go of its copy's shadow */
-static void own_landed(u64 addr, u64 size, const u8* bytes) {
-    vk_ww_landed(addr, size, bytes);
-    vk_mirror_landed(addr, size);
-}
 
 int vk_own_init(void) {
     /* vk_lock and vk_unlock themselves, not g_vklock: the outermost unlock also signals what the hold's releases
@@ -281,7 +262,7 @@ int vk_own_init(void) {
                   .busy_tid = lock_owner,
                   .lock = vk_lock,
                   .unlock = vk_unlock,
-                  .landed = own_landed};
+                  .landed = vk_ww_landed};
     g_owned.traps = !own_init(&h);
     return g_owned.traps ? 0 : -1;
 }
