@@ -2456,6 +2456,12 @@ static int ship_dual(const u8* sph, size_t avail) {
     free(a);
     return rc;
 }
+/* whether the Ounce program from its header at sph reads or writes the ISBE (sm86_uses_isbe) */
+static int ship_isbe(const u8* sph, size_t avail) {
+    Sm86Program p;
+    u32 size = avail < SH_CODE ? (u32)avail : SH_CODE;
+    return sm86_find_programs(sph, size, &p, 1) == 1 && sm86_uses_isbe(sph + p.code, p.size);
+}
 static int ship_program(void* ctx, const u8* sph, size_t avail, int stage, const u8* consts, size_t nconsts) {
     u8* code;
     u32 len;
@@ -2470,6 +2476,10 @@ static int ship_program(void* ctx, const u8* sph, size_t avail, int stage, const
     if (stage == SHIPPED_OUNCE_VERTEX_A) return SHIP_SKIPPED;
     /* a tessellation control program that runs no invocation: draws take the passthrough in its place */
     if (stage == (ST_TCS | SHIPPED_OUNCE) && sm86_tcs_empty(snx_ld_le32(sph + 8))) return SHIP_SKIPPED;
+    /* a task or mesh program has the SPH of a vertex or evaluation program, and reads and writes the ISBE. Only its
+       draw's control section gives its stage and the fields of its translation (ShaderInfo.mesh) */
+    if ((stage == (ST_VS | SHIPPED_OUNCE) || stage == (ST_TES | SHIPPED_OUNCE)) && ship_isbe(sph, avail))
+        return SHIP_SKIPPED;
     stage &= ~SHIPPED_OUNCE;
     if (stage == SHIPPED_VERTEX_A) return ship_dual(sph, avail);
     /* their keys hold the draw's state (geometry's input primitive and passthrough words, the evaluation's domain), so
