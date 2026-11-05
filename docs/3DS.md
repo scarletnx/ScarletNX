@@ -297,9 +297,12 @@ Implemented:
   last thread.
 - Read-only configuration page at `0x1ff80000`, backed by board AXI WRAM rather
   than charged to application FCRAM. The limited kernel personality reports
-  version 2.58 and memory mode 0 (Old, 64 MiB application) or 6 (New, 124 MiB).
-  Other ExHeader memory modes, resource-limit capabilities and kernel/firmware
-  configuration fields are not fully modeled.
+  version 2.58 and the memory mode the title runs in, with its regions' sizes: an
+  Old 3DS takes the mode the ExHeader names (0, 64 MiB for the application; 2, 96;
+  3, 80; 4, 72; 5, 32) and a New 3DS mode 6 (124 MiB) for every title, as Azahar
+  launches them. An ExHeader naming mode 1 or one above 5 is refused. The New 3DS's
+  178 MiB mode, resource-limit capabilities and kernel/firmware configuration
+  fields are not modeled.
 - ControlMemory (`0x01`) validates page ranges/permissions and supports commit,
   free and protect of owned heap/linear allocations. Normal heap uses explicit
   VAs in `0x08000000..0x10000000` and may span discontiguous physical holes.

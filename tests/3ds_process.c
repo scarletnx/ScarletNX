@@ -225,6 +225,22 @@ int main(void) {
         assert(!snx_write_file(ex_path, changed, sizeof changed));
         assert(!snx_ctr_image_load(root, &other, error, sizeof error) && !other.code);
     }
+    /* the Old 3DS system mode is 0x20E's high four bits, beside the ideal processor and affinity mask in its low four;
+       a mode no Old 3DS has is refused by its number */
+    for (unsigned mode = 0; mode < 16; ++mode) {
+        unsigned char changed[sizeof ex];
+        memcpy(changed, ex, sizeof ex);
+        changed[0x20e] = (unsigned char)(mode << 4 | 0xd);
+        assert(!snx_write_file(ex_path, changed, sizeof changed));
+        if (mode == 0 || (mode >= 2 && mode <= 5)) {
+            assert(snx_ctr_image_load(root, &other, error, sizeof error) && other.system_mode == mode);
+            snx_ctr_image_free(&other);
+            continue;
+        }
+        char* said = snx_format("the ExHeader asks for system mode %u, which no Old 3DS has (0, 2, 3, 4 or 5)", mode);
+        assert(!snx_ctr_image_load(root, &other, error, sizeof error) && !other.code && !strcmp(error, said));
+        free(said);
+    }
     assert(!snx_write_file(ex_path, ex, sizeof ex));
 #ifndef _WIN32
     assert(!remove(code_path));

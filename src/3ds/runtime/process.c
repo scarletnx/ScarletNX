@@ -140,8 +140,18 @@ void snx_ctr_process_free(SnxCtrProcess* p) {
 }
 SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) {
     const SnxCtrProfile* profile = snx_ctr_profile(model);
-    if (!image || !image->code || !profile || !image->stack_size || image->stack_size > 0x800000) return NULL;
-    uint32_t app_limit = model == SNX_CTR_OLD ? 0x4000000 : 0x7c00000;
+    /* The APPLICATION, SYSTEM and BASE regions of FCRAM for each system mode, as Azahar lays them out
+       (kernel/memory.cpp, memory_region_sizes): an Old 3DS launches a title in the mode its ExHeader names, and a New
+       3DS in its mode 6 whatever Old 3DS mode the title names (core.cpp, Load). Mode 1 is none */
+    static const uint32_t old_modes[6][3] = {{0x4000000, 0x2c00000, 0x1400000}, {0, 0, 0},
+                                             {0x6000000, 0x0c00000, 0x1400000}, {0x5000000, 0x1c00000, 0x1400000},
+                                             {0x4800000, 0x2400000, 0x1400000}, {0x2000000, 0x4c00000, 0x1400000}};
+    static const uint32_t new_mode[3] = {0x7c00000, 0x6400000, 0x2000000};
+    if (!image || !image->code || !profile || !image->stack_size || image->stack_size > 0x800000 ||
+        image->system_mode > 5 || !old_modes[image->system_mode][0])
+        return NULL;
+    const uint32_t* regions = model == SNX_CTR_OLD ? old_modes[image->system_mode] : new_mode;
+    uint32_t app_limit = regions[0];
     SnxCtrProcess* p = calloc(1, sizeof *p + app_limit / 4096);
     if (!p) return NULL;
     p->app_limit = app_limit;
@@ -205,11 +215,9 @@ SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) 
     config[0x10] = config[0x64] = 2;
     config[0x18] = config[0x68] = 0x50;
     config[0x19] = config[0x69] = 0xf4;
-    uint32_t sizes[] = {p->app_limit, model == SNX_CTR_OLD ? 0x2c00000u : 0x6400000u,
-                        model == SNX_CTR_OLD ? 0x1400000u : 0x2000000u};
-    config[0x30] = model == SNX_CTR_OLD ? 0 : 6;
+    config[0x30] = model == SNX_CTR_OLD ? (unsigned char)image->system_mode : 6;
     for (unsigned i = 0; i < 3; ++i)
-        for (unsigned j = 0; j < 4; ++j) config[0x40 + i * 4 + j] = (unsigned char)(sizes[i] >> (j * 8));
+        for (unsigned j = 0; j < 4; ++j) config[0x40 + i * 4 + j] = (unsigned char)(regions[i] >> (j * 8));
     if (snx_ctr_write_ram(p->space, CTR_CONFIG, config, sizeof config) != SNX_CTR_MEM_OK ||
         snx_ctr_protect(p->space, CTR_CONFIG, 4096, SNX_CTR_READ) != SNX_CTR_MEM_OK)
         goto fail;
