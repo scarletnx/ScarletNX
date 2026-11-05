@@ -1472,6 +1472,12 @@ add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "
 # where cmake/cross.cmake puts -mabi=elfv2: PowerPC64's compiles and links, no other processor's
 add_test(NAME cross_flags COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" -P
          "${CMAKE_CURRENT_SOURCE_DIR}/cross_flags_test.cmake")
+# the compiler cmake/host_cc.cmake takes for a cross build's own programs, another clang first on PATH: Xcode's on a
+# Mac host, whose path the Mac case needs
+if(EXISTS /usr/bin/clang)
+    add_test(NAME host_cc COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+             "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/host-cc-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/host_cc_test.cmake")
+endif()
 # every SNX_ variable a preset of CMakePresets.json sets is one the build reads
 add_test(NAME preset_variables COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" -P
          "${CMAKE_CURRENT_SOURCE_DIR}/preset_variables_test.cmake")
