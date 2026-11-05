@@ -625,6 +625,58 @@ static u32 global_address(Ctx* c, const Sm86Insn* in, int uniform_form, int writ
    is dropped, where the console's GPU reaches all of its address space. The address: a register, a pair with bit 90
    in the uniform form or bit 72 in the other, plus the uniform register (a pair with bit 72) of the uniform form,
    plus the signed 24-bit offset */
+static void mem_load(Ctx* c, u32 buffer, u32 address, u32 type, u32 dst, int uniform_dst);
+static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data);
+static void global_dynamic(Ctx* c, const Sm86Insn* in, int uniform_form, int load) {
+    u32 type = sm86_field(in, 73, 3), words = type == 5 ? 2 : type == 6 ? 4 : 1;
+    u32 reg = sm86_field(in, 24, 8), imm = sm86_field(in, 40, 24);
+    u32 hi = sm86_field(in, uniform_form ? 90 : 72, 1) && reg < SM86_RZ ? rd(c, reg + 1) : c->zero;
+    u32 address = pair64(c, rd(c, reg), hi);
+    u64 bias = imm & 0x800000u ? (u64)imm | 0xffffffffff000000ull : imm;
+    address = op2(c, SPV_OP_I_ADD, u64_type(c), address, c64(c, bias));
+    if (uniform_form) {
+        u32 ur = sm86_field(in, in->op == SM86_LDG ? 32 : 64, 6);
+        if (ur < SM86_URZ) {
+            u32 uhi = sm86_field(in, 72, 1) && ur + 1 < SM86_URZ ? urd(c, ur + 1) : c->zero;
+            address = op2(c, SPV_OP_I_ADD, u64_type(c), address, pair64(c, urd(c, ur), uhi));
+        }
+    }
+    if (load)
+        for (u32 k = 0; k < words && in->dst + k < SM86_RZ; k++) wr(c, in->dst + k, c->zero);
+    /* the program's buffers, each key once, in the order of their first access */
+    u32 keys[16], nkeys = 0;
+    for (u32 i = 0; i < c->n; i++) {
+        u32 key = c->addr_key[i], seen = 0;
+        if (!key || SH_GBUF_BANK(key - 1) >= 18) continue;
+        for (u32 k = 0; k < nkeys; k++) seen |= keys[k] == key - 1;
+        if (!seen && nkeys < 16) keys[nkeys++] = key - 1;
+    }
+    u32 merges[16];
+    for (u32 k = 0; k < nkeys; k++) {
+        u32 buffer = gbuf_slot(c, keys[k], !load);
+        if (!buffer) return;
+        u32 base = pair64(c, cbuf_load(c, SH_GBUF_BANK(keys[k]), SH_GBUF_OFFSET(keys[k]), 0),
+                          cbuf_load(c, SH_GBUF_BANK(keys[k]), SH_GBUF_OFFSET(keys[k]) + 4, 0));
+        u32 relative = op2(c, SPV_OP_I_SUB, u64_type(c), address, base);
+        u32 inside = spv_emit_u_less(&c->e, c->t_bool, relative, c64(c, 16u << 20));
+        u32 then = spv_emit_id(&c->e), other = spv_emit_id(&c->e);
+        merges[k] = spv_emit_id(&c->e);
+        spv_emit_selection_merge(&c->e, merges[k]);
+        spv_emit_branch_conditional(&c->e, inside, then, other);
+        spv_emit_label(&c->e, then);
+        u32 offset = lo32(c, relative);
+        if (load)
+            mem_load(c, buffer, offset, type, in->dst, 0);
+        else
+            mem_store(c, buffer, offset, type, sm86_field(in, 32, 8));
+        spv_emit_branch(&c->e, merges[k]);
+        spv_emit_label(&c->e, other);
+    }
+    for (u32 k = nkeys; k-- > 0;) {
+        spv_emit_branch(&c->e, merges[k]);
+        spv_emit_label(&c->e, merges[k]);
+    }
+}
 /* what track_globals follows at an instruction: each register's key, then the opcode that last wrote it (for the
    message of an address without one). The keys first: the flow settles on them */
 typedef struct {
@@ -2353,6 +2405,12 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_LDG_NOU:
         case SM86_STG_NOU: {
             int load = op == SM86_LDG || op == SM86_LDG_NOU;
+            u32 from = c->addr_key[c->n + 1 + c->cur];
+            if (!c->addr_key[c->cur] && (from == SM86_LDG || from == SM86_LDG_NOU || from == SM86_LDS ||
+                                         from == SM86_LDL)) { /* a pointer from memory */
+                global_dynamic(c, in, op == SM86_LDG || op == SM86_STG, load);
+                return;
+            }
             u32 address, buffer = global_address(c, in, op == SM86_LDG || op == SM86_STG, !load, &address);
             if (!buffer) return;
             if (load)
