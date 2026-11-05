@@ -770,12 +770,17 @@ static void hwopus_filter(HwOpus* h) {
 
 /* the firmware keeps SNX_HWOPUS_MAX_DECODERS (services_int.h) decoders and refuses the next with OutOfOpusDecoders,
    which sends the SDK to its software decoder; a game that opens decoders until refused depends on that answer.
-   g_hle.audio.hwopus_live counts those open, across every hwopus session */
-
-static void hwopus_destroy(SvcObj* o) {
-    hwopus_free(o->data);
-    __atomic_sub_fetch(&g_hle.audio.hwopus_live, 1, __ATOMIC_RELAXED);
+   Those open, across every hwopus session, are the pool's slots taken, counted under ipc.c's lock, which guards the
+   pool */
+static u32 hwopus_count(void) {
+    u32 i, n = 0;
+    pm_lock(&g_host.ipc.lk);
+    for (i = 0; i < HWOPUS_POOL; i++) n += g_hle.audio.opus[i].obj != 0;
+    pm_unlock(&g_host.ipc.lk);
+    return n;
 }
+
+static void hwopus_destroy(SvcObj* o) { hwopus_free(o->data); }
 
 /* opens h for rate and channels: one stream (mapping NULL), or streams of them with stereo_streams coupled and
    mapping placing their channels. 0 when it can't be */
@@ -998,16 +1003,18 @@ static int work_size(u32 rate, u32 channels, u32 streams, u32 stereo_streams, in
 static int open_decoder(u32 rate, u32 channels, u32 streams, u32 stereo_streams, const u8* mapping,
                         SvcObj** decoder) {
     SvcObj* o;
-    if (__atomic_add_fetch(&g_hle.audio.hwopus_live, 1, __ATOMIC_RELAXED) > SNX_HWOPUS_MAX_DECODERS) {
-        __atomic_sub_fetch(&g_hle.audio.hwopus_live, 1, __ATOMIC_RELAXED);
+    /* the count and the take under the audio's lock, so two opens can't both take the last decoder */
+    pm_lock(&g_host.audio.lk);
+    if (hwopus_count() >= SNX_HWOPUS_MAX_DECODERS) {
+        pm_unlock(&g_host.audio.lk);
         R_THROW(OPUS_OUT_OF_DECODERS);
     }
     o = nn_codec_detail_IHardwareOpusDecoder_new_data(g_hle.audio.opus, g_hle.audio.opus_next, "hwopus decoders");
+    pm_unlock(&g_host.audio.lk);
     if (!hwopus_open(o->data, rate, channels, streams, stereo_streams, mapping)) {
         WARN_LIMIT(4, "hwopus: can't open a decoder of %lu channels at %lu Hz\n", (unsigned long)channels,
                    (unsigned long)rate);
         svcobj_unref(o);
-        __atomic_sub_fetch(&g_hle.audio.hwopus_live, 1, __ATOMIC_RELAXED);
         R_THROW(OPUS_OUT_OF_DECODERS);
     }
     o->destroy = hwopus_destroy;
