@@ -6263,7 +6263,20 @@ int main(int argc, char** argv) {
         render(&app);
         shows(&app, "FOLDERS", normal);
         shows(&app, "- Data", yellow);
-        shows(&app, "default", yellow);
+        { /* its row as the screen has it: default at its end where the row has room for it beside the folder whole,
+             as the rule above says; a Mac's data folder, under Library/Application Support, leaves none */
+            GuiFormBoxes boxes;
+            UiRowInfo drawn;
+            int entry = folder_entry(&app, FOLDER_ROW(GUI_ROW_PLACE, GUI_PLACE_DATA)), width, room;
+            int whole = gui_text_cols(app.theme.marker) + folder_labels(&app) + 1 + gui_text_cols(data);
+            form_boxes(&app, &boxes);
+            width = ui_form_side_row(boxes.right, app.scale, UI_FORM_SIDE_ROWS, entry).w;
+            room = form_room(&app, width);
+            assert(ui_form_side_rows_get_row_info(&app, (size_t)entry, width, &drawn));
+            assert(!strstr(drawn.label, "default") == (whole + 9 > room));
+            snprintf(line, sizeof line, "%s%s", app.theme.marker, drawn.label);
+            shows(&app, line, yellow);
+        }
         /* under the rows, the folder in use: its start, as a long one wraps (Windows' %APPDATA% does) */
         snprintf(line, sizeof line, "%.24s", data);
         shows_half(&app, line, rgb(app.theme.soft));
