@@ -51,6 +51,7 @@ static struct {
     unsigned dumps;
     uint64_t presents;     /* past the first dumps, two presents (one a screen) of every 120 are kept as the latest */
     unsigned bottom_alone; /* bottom screen frames since the window last showed, the top screen showing none */
+    uint64_t decoded[2];   /* each screen's frames decoded */
     unsigned up : 1, closed : 1, separate : 1;
 } g_present;
 
@@ -436,6 +437,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     vkCmdPushConstants(cb, g_present.decode.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
     unsigned columns = from_target ? width * scale : width, rows = from_target ? height * scale : height;
     vkCmdDispatch(cb, (columns + 7) / 8, (rows + 7) / 8, 1);
+    ++g_present.decoded[screen];
     /* both screens in one window, at each top screen frame: a game draws both every frame, and showing at each
        screen's would wait for two vblanks a frame. A bottom screen that changes while the top one stays still shows
        at its second frame. In separate windows each screen shows at its own */
@@ -488,6 +490,14 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
         if (dump) write_ppm(screen, width, height, rgba);
     }
     return true;
+}
+void snx_ctr_present_report(void) {
+    if (!g_present.up) return;
+    SnxCtrVkTraffic t = snx_ctr_vk_traffic();
+    printf("  gpu: %llu top and %llu bottom screen frames; its work read %.1f MiB and wrote %.1f MiB of the RAM; "
+           "%llu CPU accesses to its pages trapped\n",
+           (unsigned long long)g_present.decoded[0], (unsigned long long)g_present.decoded[1],
+           (double)t.read / 1048576.0, (double)t.written / 1048576.0, (unsigned long long)t.traps);
 }
 void snx_ctr_present_free(void) {
     if (!g_present.up) return;

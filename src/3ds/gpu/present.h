@@ -26,6 +26,9 @@ bool snx_ctr_present_separate(void);
    FNV-1a hash of the decoded RGBA pixels in the framebuffer's order (the tests'): that frame is read back */
 bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigned height, unsigned format,
                            unsigned pitch, uint64_t* hash);
+/* A line for the run's summary on the standard output: each screen's frames decoded, and what the GPU's work took of
+   the RAM (vk_render.h's snx_ctr_vk_traffic). Nothing before init */
+void snx_ctr_present_report(void);
 /* Pumps SDL's events: true once the player closed the window, or SIGINT or SIGTERM came */
 bool snx_ctr_present_closed(void);
 /* the presenter and the device */
