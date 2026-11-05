@@ -625,12 +625,9 @@ static void test_large_bss(void) {
     puts("PASS MOD0's BSS end on a module of several GiB");
 }
 
-/* A 32-bit program's module: an ELF32 dynamic table without a hash table, 16-byte symbols and REL relocations, code
-   addresses keeping their Thumb bit and those ending in binary 10 refused */
-static void test_elf32(void) {
-    SnxModuleImage m;
-    char error[256], *path;
-    size_t size;
+/* A 32-bit program's module in image_bytes: an ELF32 dynamic table without a hash table, 16-byte symbols and REL
+   relocations, its text 0x100 bytes, its rodata 0x100 from 0x100 and its data 0x80 from 0x200 */
+static void elf32_image(void) {
     unsigned i;
     static const SnxU32 tags[8][2] = {{6, 0x160}, {5, 0x1a0}, {10, 0x10}, {11, 16},
                                       {17, 0x1c0}, {18, 16}, {19, 8}, {0, 0}};
@@ -658,6 +655,14 @@ static void test_elf32(void) {
     put32(image_bytes + 0x1cc, 23);
     put32(image_bytes + 0x200, 0x81);
     put32(image_bytes + 0x204, 0x62);
+}
+
+/* A 32-bit program's module: code addresses keeping their Thumb bit and those ending in binary 10 refused */
+static void test_elf32(void) {
+    SnxModuleImage m;
+    char error[256], *path;
+    size_t size;
+    elf32_image();
     size = build_nso(0x100, 0x100, 0x100, 0x200, 0x80, 0);
     path = fixture("arm.nso", file_bytes, size);
     CHECK(!snx_load_nso32(path, "main", &m, error, sizeof error));
@@ -674,6 +679,77 @@ static void test_elf32(void) {
     CHECK(snx_load_nso32(path, "main", &m, error, sizeof error) == -1 && strstr(error, "symbol entry"));
     free(path);
     puts("PASS ELF32 symbols, REL relocations and Thumb code addresses");
+}
+
+/* An ExeFS in dir of the NPDM in scratch's npdm.bin (64-bit) with its flags byte set to flags (4: 32-bit), and each
+   names[i] the 64-bit module (wide[i]) or the 32-bit one */
+static void exefs_set(const char* dir, unsigned char flags, const char* const* names, const int* wide, unsigned n) {
+    unsigned char nso64[sizeof file_bytes], nso32[sizeof file_bytes];
+    size_t size64, size32, meta_size;
+    unsigned char* meta;
+    char* path;
+    unsigned i;
+    rich_image();
+    size64 = build_nso(0x100, 0x100, 0x280, 0x380, 0x80, 7);
+    memcpy(nso64, file_bytes, size64);
+    elf32_image();
+    size32 = build_nso(0x100, 0x100, 0x100, 0x200, 0x80, 7);
+    memcpy(nso32, file_bytes, size32);
+    CHECK(!snx_mkdirs(dir));
+    for (i = 0; i < n; i++) {
+        path = snx_path_join(dir, names[i]);
+        CHECK(!snx_write_file(path, wide[i] ? nso64 : nso32, wide[i] ? size64 : size32));
+        free(path);
+    }
+    path = snx_path_join(scratch, "npdm.bin");
+    meta = snx_read_file(path, &meta_size);
+    CHECK(meta != NULL && meta_size > 12);
+    free(path);
+    meta[12] = flags;
+    path = snx_path_join(dir, "main.npdm");
+    CHECK(!snx_write_file(path, meta, meta_size));
+    free(path);
+    free(meta);
+}
+
+/* A module whose code is not of the width its NPDM gives the program (its dynamic table of the other ELF class, as an
+   update's ExeFS copied over a base's of the other width leaves) is refused, naming it, its width and the NPDM's.
+   Loaded alone, it is refused the same with the width it was loaded as. The sets of one width load */
+static void test_widths(void) {
+    static const char* const names[4] = {"rtld", "main", "subsdk1", "sdk"};
+    static const int wide64[4] = {1, 1, 0, 1}, narrow[2] = {0, 0}, wide32[2] = {0, 1};
+    SnxProgram program;
+    SnxModuleImage m;
+    char error[1024], *dir, *path;
+    dir = snx_path_join(scratch, "mixed64");
+    exefs_set(dir, 7, names, wide64, 4);
+    CHECK(snx_load_program(dir, &program, error, sizeof error) == -1);
+    CHECK(strstr(error, "subsdk1 is 32-bit code (its dynamic table is ELF32's), but ") != NULL);
+    CHECK(strstr(error, "main.npdm says a 64-bit program: the ExeFS mixes two versions") != NULL);
+    CHECK(strstr(error, "Extract it again into an empty folder") != NULL);
+    path = snx_path_join(dir, "subsdk1"); /* alone, as 64-bit code */
+    CHECK(snx_load_nso(path, NULL, &m, error, sizeof error) == -1 && !m.image);
+    CHECK(strstr(error, "is 32-bit code (its dynamic table is ELF32's), but it is loaded as 64-bit code") != NULL);
+    free(path);
+    path = snx_path_join(dir, "main"); /* and the 64-bit one as 32-bit code */
+    CHECK(snx_load_nso32(path, NULL, &m, error, sizeof error) == -1 && !m.image);
+    CHECK(strstr(error, "is 64-bit code (its dynamic table is ELF64's), but it is loaded as 32-bit code") != NULL);
+    free(path);
+    free(dir);
+    dir = snx_path_join(scratch, "mixed32"); /* a 32-bit program with a 64-bit module */
+    exefs_set(dir, 4, names + 1, wide32, 2);
+    CHECK(snx_load_program(dir, &program, error, sizeof error) == -1);
+    CHECK(strstr(error, "subsdk1 is 64-bit code (its dynamic table is ELF64's), but ") != NULL);
+    CHECK(strstr(error, "main.npdm says a 32-bit program") != NULL);
+    free(dir);
+    dir = snx_path_join(scratch, "set32");
+    exefs_set(dir, 4, names + 1, narrow, 2);
+    CHECK(!snx_load_program(dir, &program, error, sizeof error));
+    CHECK(!program.npdm.is64 && program.module_count == 2 && !strcmp(program.modules[1].name, "subsdk1"));
+    CHECK(program.modules[0].symbol_count == 3 && program.modules[1].relptr_count == 1);
+    snx_free_program(&program);
+    free(dir);
+    puts("PASS a module of the other width than its NPDM's refused, by name; sets of one width load");
 }
 
 /* --dump-modules: the images and the index tools/moduledump.py reads */
@@ -790,6 +866,7 @@ int main(void) {
     test_program();
     test_large_bss();
     test_elf32();
+    test_widths();
     test_mutations();
     CHECK(!snx_remove_tree(scratch));
     free(scratch);
