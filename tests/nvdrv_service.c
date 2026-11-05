@@ -472,6 +472,27 @@ static void test_quiet_increments(u32 ctrl) {
     CHECK(nv_ioctl1(ctrl, EVENT_UNREG, 4) == 0);
 }
 
+/* a save state writes g_hle as it is and a load copies it back over the running one (state.c): a slot armed when the
+   game was saved is signaled once its syncpoint gets there after the load, as without the load */
+static Hle test_saved;
+static void test_state_load_armed(u32 ctrl) {
+    put(0, 13);
+    CHECK(nv_ioctl1(ctrl, EVENT_REG, 4) == 0);
+    NvEvent* e = &CTRL_EV(ctrl)[13];
+    u32 base = syncpt_read(44);
+    CHECK(event_wait(ctrl, 44, base + 1, 100, 13) == 5 && e->armed);
+    memcpy(&test_saved, &g_hle, sizeof g_hle);
+    syncpt_add(44, 1); /* played on past the save */
+    CHECK(!e->armed && kev(e->ev)->signaled);
+    memcpy(&g_hle, &test_saved, sizeof g_hle);
+    kevent_clear(kev(e->ev)); /* as it was saved: the test's events are outside g_hle */
+    CHECK(e->armed && syncpt_read(44) == base);
+    syncpt_add(44, 1);
+    CHECK(!e->armed && kev(e->ev)->signaled);
+    put(0, 13);
+    CHECK(nv_ioctl1(ctrl, EVENT_UNREG, 4) == 0);
+}
+
 /* Ioctl3 (12): ctrl-gpu's GET_CHARACTERISTICS writes the characteristics to the inline output, B1 or C1 */
 #define GET_CHARACTERISTICS 0xC0B04705u
 static void test_ioctl3(u32 ctrlgpu) {
@@ -982,6 +1003,7 @@ int main(void) {
     test_ctrl_get_config(ctrl);
     test_ctrl_event_fds(ctrl);
     test_quiet_increments(ctrl);
+    test_state_load_armed(ctrl);
 
     /* a channel's own events (1 to 3), made on first query and kept by the fd; the ctrl fd's ids name event slots */
     KEvent* sm = query_event(gpu, 1);
