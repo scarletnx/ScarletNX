@@ -257,8 +257,12 @@ static size_t ounce_program(u8* d, size_t at, u32 type, u32 shader, u32 n) {
 static void ounce_programs(void) {
     static u8 d[0x1000];
     memset(d, 0, sizeof d);
-    ounce_program(d, 0x100, 1, 1, 5); /* a vertex program */
-    ounce_program(d, 0x400, 2, 5, 9); /* a fragment program */
+    size_t end = ounce_program(d, 0x100, 1, 1, 5); /* a vertex program: 0x150 bytes of code */
+    for (u32 k = 0; k < 12; k++, end += 16) {     /* the NOPs after it, to 0x210 */
+        put64(d + end, 0x0000000000007918ull);
+        put64(d + end + 8, 0x000fc00000000000ull);
+    }
+    ounce_program(d, 0x400, 2, 5, 9); /* a fragment program: 0x130 bytes, no NOPs */
     /* an EXIT and a branch to itself with no header before the code: no program */
     put64(d + 0x800, 0x000000000000794dull);
     put64(d + 0x808, 0x000fea0003800000ull);
@@ -270,6 +274,9 @@ static void ounce_programs(void) {
     CHECK(s.n == 2);
     CHECK(s.at[0] == 0x100 && s.stage[0] == (SHIPPED_OUNCE | ST_VS));
     CHECK(s.at[1] == 0x400 && s.stage[1] == (SHIPPED_OUNCE | ST_FS));
+    /* their constants: at the code's bytes with the NOPs, rounded up to 256, to the end of the data */
+    CHECK(s.consts[0] == 0x300 && s.nconsts[0] == sizeof d - 0x300);
+    CHECK(s.consts[1] == 0x600 && s.nconsts[1] == sizeof d - 0x600);
     /* the Switch search finds none of them */
     Seen m = {0};
     m.base = d;

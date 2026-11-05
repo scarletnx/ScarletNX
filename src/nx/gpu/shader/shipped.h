@@ -62,7 +62,8 @@ u32 shipped_programs(const u8* d, size_t n, ShippedEach each, void* ctx);
 /* An Ounce game's programs in d[0, n), handed to each as shipped_programs does, with SHIPPED_OUNCE in
    their stage (ST_VS to ST_FS), and a VertexA as SHIPPED_OUNCE_VERTEX_A. Each one ends in an
    unconditional branch to itself after its EXIT, and starts after its 0x80-byte SPH of version 4: from that branch,
-   at every 8 bytes, back over the words that look like instructions to the nearest such SPH */
+   at every 8 bytes, back over the words that look like instructions to the nearest such SPH. Its constants are the
+   bytes from its code's end (the NOPs after that branch) rounded up to 256 from the SPH, at most 64 KiB of them */
 #define SHIPPED_OUNCE 0x100
 #define SHIPPED_OUNCE_VERTEX_A (SHIPPED_OUNCE | 0x80)
 /* the stage of the SPH (version 4) at sph, as shipped_sph_stage's of version 3 (SHIPPED_VERTEX_A for a VertexA) */
