@@ -278,9 +278,8 @@ void snx_game_update(const char* folder, const char* name, char update[32]) {
     free(text);
     free(ini);
 }
-int snx_program_played(const char* folder, const char* name, int index, char* out, size_t size) {
-    char update[32];
-    snx_game_update(folder, name, update);
+/* snx_program_played with the game's update already read */
+static int played_with(const char* folder, const char* name, const char* update, int index, char* out, size_t size) {
     if (update[0] && !snx_program_name(name, update, index, out, size) && program_made(folder, out)) return 1;
     if (snx_program_name(name, NULL, index, out, size)) {
         if (size) out[0] = 0;
@@ -288,11 +287,19 @@ int snx_program_played(const char* folder, const char* name, int index, char* ou
     }
     return program_made(folder, out);
 }
+int snx_program_played(const char* folder, const char* name, int index, char* out, size_t size) {
+    char update[32];
+    snx_game_update(folder, name, update);
+    return played_with(folder, name, update, index, out, size);
+}
 int snx_game_programs(const char* folder, const char* name, unsigned char made[SNX_PROGRAMS_MAX]) {
-    char program[SNX_PATH_SIZE];
+    char program[SNX_PATH_SIZE], update[32];
     int count = 0, i;
+    /* once for every index: reading it resolves the .ini's path through each folder above the game, which on
+       Windows opens each of them */
+    snx_game_update(folder, name, update);
     for (i = 0; i < SNX_PROGRAMS_MAX; i++) {
-        made[i] = (unsigned char)snx_program_played(folder, name, i, program, sizeof program);
+        made[i] = (unsigned char)played_with(folder, name, update, i, program, sizeof program);
         count += made[i];
     }
     return count;
