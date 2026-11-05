@@ -614,7 +614,8 @@ static int syncpt_bump(u32 id, u32 n) {
 }
 void syncpt_add(u32 id, u32 n) {
     if (!syncpt_bump(id, n)) return;
-    if (__atomic_load_n(&g_hle.nvdrv.armed_tables, __ATOMIC_ACQUIRE)) nv_events_check();
+    /* seq_cst, as the arm's fetch_or: an arm meanwhile is seen here or sees this increment in its own check */
+    if (__atomic_load_n(&g_hle.nvdrv.armed_tables, __ATOMIC_SEQ_CST)) nv_events_check();
     gpu_kick(); /* a GPU channel's stream may wait for it */
 }
 void syncpt_add_quiet(u32 id, u32 n) {
@@ -625,7 +626,7 @@ void syncpt_add_quiet(u32 id, u32 n) {
 void syncpt_events(void) {
     if (!t_hle.nvdrv.events_due) return;
     t_hle.nvdrv.events_due = 0;
-    if (__atomic_load_n(&g_hle.nvdrv.armed_tables, __ATOMIC_ACQUIRE)) nv_events_check();
+    if (__atomic_load_n(&g_hle.nvdrv.armed_tables, __ATOMIC_SEQ_CST)) nv_events_check();
 }
 void syncpt_incr(u32 id) { syncpt_add(id, 1); }
 /* raises the promised maximum by n, from at least the current value: what a fence handed back now will reach */
@@ -1285,7 +1286,7 @@ static u32 ctrl_event_wait(u32 fd, u8* d, int async) {
             u32 t = g_hle.nvdrv.ctrl_ev[fd] - 1;
             e->armed = 1;
             __atomic_fetch_or(&g_hle.nvdrv.armed_mask[t], 1ull << slot, __ATOMIC_RELEASE);
-            __atomic_fetch_or(&g_hle.nvdrv.armed_tables, 1ull << t, __ATOMIC_RELEASE);
+            __atomic_fetch_or(&g_hle.nvdrv.armed_tables, 1ull << t, __ATOMIC_SEQ_CST);
         }
     }
     nvev_unlock();
