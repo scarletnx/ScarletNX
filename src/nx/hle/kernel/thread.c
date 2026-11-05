@@ -628,6 +628,7 @@ int kernel_retire(int timeout_ms) {
 static void thread_resume_main(void* p) {
     KThread* t = (KThread*)p;
     int park = t->park;
+    SNX_THREAD_NAME(t->name[0] ? t->name : "guest");
     t_hle.thread.cur = t;
     __atomic_add_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
     kthread_hold_point(t, park);
