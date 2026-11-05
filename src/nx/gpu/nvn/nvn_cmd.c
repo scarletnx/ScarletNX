@@ -926,39 +926,43 @@ void nvn_CommandBufferSetGeometryProcessingMode(CPU* c, u64 cb, i32 mode) {
     if (mode) LOG_LIMIT(1, "nvn: geometry processing mode %d, and the runtime has the vertex pipeline only\n", mode);
 }
 /* The Ounce's mesh draws: the runtime has no mesh pipeline yet (VK_EXT_mesh_shader, and a translator for the
-   the Ounce's shaders), so it skips them, as it skips a draw whose shaders it can't translate */
-static void mesh_skipped(const char* name) { LOG_LIMIT(1, "nvn: the game draws with mesh shaders (%s): skipped\n", name); }
+   Ounce's mesh and task programs), so it skips them, as it skips a draw whose shaders it can't translate. The log
+   gives the first ones' group counts, or the address the GPU reads them from */
+static void mesh_skipped(const char* name, i64 a, i64 b, i64 c) {
+    LOG_LIMIT(4, "nvn: the game draws with mesh shaders (%s %lld, %lld, %lld): skipped\n", name, (long long)a,
+              (long long)b, (long long)c);
+}
 void nvn_CommandBufferDrawMeshTasks(CPU* c, u64 cb, i32 first, i32 count) {
-    (void)c, (void)cb, (void)first, (void)count;
-    mesh_skipped("DrawMeshTasks");
+    (void)c, (void)cb;
+    mesh_skipped("DrawMeshTasks", first, count, 0);
 }
 void nvn_CommandBufferDrawMeshTasks3D(CPU* c, u64 cb, i32 x, i32 y, i32 z) {
-    (void)c, (void)cb, (void)x, (void)y, (void)z;
-    mesh_skipped("DrawMeshTasks3D");
+    (void)c, (void)cb;
+    mesh_skipped("DrawMeshTasks3D", x, y, z);
 }
 void nvn_CommandBufferDrawMeshTasksIndirect(CPU* c, u64 cb, u64 ind) {
-    (void)c, (void)cb, (void)ind;
-    mesh_skipped("DrawMeshTasksIndirect");
+    (void)c, (void)cb;
+    mesh_skipped("DrawMeshTasksIndirect", (i64)ind, 0, 0);
 }
 void nvn_CommandBufferDrawMeshTasks3DIndirect(CPU* c, u64 cb, u64 ind) {
-    (void)c, (void)cb, (void)ind;
-    mesh_skipped("DrawMeshTasks3DIndirect");
+    (void)c, (void)cb;
+    mesh_skipped("DrawMeshTasks3DIndirect", (i64)ind, 0, 0);
 }
 void nvn_CommandBufferMultiDrawMeshTasksIndirect(CPU* c, u64 cb, u64 ind, i32 n, i64 stride) {
-    (void)c, (void)cb, (void)ind, (void)n, (void)stride;
-    mesh_skipped("MultiDrawMeshTasksIndirect");
+    (void)c, (void)cb;
+    mesh_skipped("MultiDrawMeshTasksIndirect", (i64)ind, n, stride);
 }
 void nvn_CommandBufferMultiDrawMeshTasks3DIndirect(CPU* c, u64 cb, u64 ind, i32 n, i64 stride) {
-    (void)c, (void)cb, (void)ind, (void)n, (void)stride;
-    mesh_skipped("MultiDrawMeshTasks3DIndirect");
+    (void)c, (void)cb;
+    mesh_skipped("MultiDrawMeshTasks3DIndirect", (i64)ind, n, stride);
 }
 void nvn_CommandBufferMultiDrawMeshTasksIndirectCount(CPU* c, u64 cb, u64 ind, u64 count, i32 max, i64 stride) {
-    (void)c, (void)cb, (void)ind, (void)count, (void)max, (void)stride;
-    mesh_skipped("MultiDrawMeshTasksIndirectCount");
+    (void)c, (void)cb, (void)count;
+    mesh_skipped("MultiDrawMeshTasksIndirectCount", (i64)ind, max, stride);
 }
 void nvn_CommandBufferMultiDrawMeshTasks3DIndirectCount(CPU* c, u64 cb, u64 ind, u64 count, i32 max, i64 stride) {
-    (void)c, (void)cb, (void)ind, (void)count, (void)max, (void)stride;
-    mesh_skipped("MultiDrawMeshTasks3DIndirectCount");
+    (void)c, (void)cb, (void)count;
+    mesh_skipped("MultiDrawMeshTasks3DIndirectCount", (i64)ind, max, stride);
 }
 /* a recording starts with its first command, as in NVN */
 void nvn_CommandBufferBeginRecording(CPU* c, u64 cb) {
@@ -1671,16 +1675,16 @@ void nvn_CommandBufferWaitSync(CPU* c, u64 cb, u64 sync) {
 /* ============================================================ binds */
 /* the program's stages as they are now: the game may set new shaders in it before it submits */
 void nvn_CommandBufferBindProgram(CPU* c, u64 cb, u64 program, i32 stages) {
-    /* an Ounce game's record ends with its program's c[0] record. Another's stops before it, in the 128 bytes the
-       driver writes, so that its records stay in the game's command memory */
+    /* an Ounce game's record ends with its task and mesh stages and its program's c[0] record. Another's stops before
+       them, in the 128 bytes the driver writes, so that its records stay in the game's command memory */
     const int ounce = g_nvn.loader.api >= 231u << 16;
     NvnPBindProgram* r = (NvnPBindProgram*)(void*)GP(
-        rec(c, cb, OP_BIND_PROGRAM, ounce ? sizeof(NvnPBindProgram) : offsetof(NvnPBindProgram, c0), 128));
+        rec(c, cb, OP_BIND_PROGRAM, ounce ? sizeof(NvnPBindProgram) : NVN_PBIND_SWITCH_BYTES, 128));
     const NvnProgram* p = program ? NVN_OBJ(const NvnProgram, program) : NULL;
     r->stages = stages;
     if (p && p->magic == NVN_MAGIC('P', 'R', 'O', 'G')) {
         r->off_a = p->off_a;
-        memcpy(r->st, p->st, sizeof r->st);
+        memcpy(r->st, p->st, (ounce ? NVN_STAGES : NVN_SHADER_STAGE_TASK) * sizeof r->st[0]);
         r->serial = p->serial;
         memcpy(r->block, p->block, sizeof r->block);
         r->sample_shading = p->sample_shading;

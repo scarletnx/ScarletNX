@@ -862,13 +862,15 @@ static void tf_buffers(NvnDraw* d) {
     }
     d->dirty |= D_BIND;
 }
-static void bind_program(NvnDraw* d, u64 payload) {
-    NvnPBindProgram r;
+/* size: the record's payload bytes, which stop after the first six stages for a game other than an Ounce one
+   (nvn_cmd.c) */
+static void bind_program(NvnDraw* d, u64 payload, u32 size) {
+    NvnPBindProgram r = {0};
     static const i32 nvn_stage[DS_PROGRAM_SLOTS] = {NVN_SHADER_STAGE_VERTEX,       NVN_SHADER_STAGE_VERTEX,
                                                     NVN_SHADER_STAGE_TESS_CONTROL, NVN_SHADER_STAGE_TESS_EVALUATION,
                                                     NVN_SHADER_STAGE_GEOMETRY,     NVN_SHADER_STAGE_FRAGMENT};
     u32 j;
-    memcpy(&r, GP(payload), sizeof r);
+    memcpy(&r, GP(payload), size < sizeof r ? size : sizeof r);
     for (j = 0; j < DS_PROGRAM_SLOTS; j++) {
         i32 n = nvn_stage[j];
         const NvnStage* st = &r.st[n];
@@ -1274,7 +1276,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             d->restart = NVN_OBJ(const NvnPPrimRestart, payload)->on != 0;
             d->restart_index = NVN_OBJ(const NvnPPrimRestart, payload)->index;
             return 1;
-        case OP_BIND_PROGRAM: bind_program(d, payload); return 1;
+        case OP_BIND_PROGRAM: bind_program(d, payload, size); return 1;
         case OP_BIND_STATE: bind_state(d, payload); return 1;
         case OP_BIND_VATTR: {
             const NvnPBindVAttr* r = NVN_OBJ(const NvnPBindVAttr, payload);

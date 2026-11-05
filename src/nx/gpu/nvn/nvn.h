@@ -504,6 +504,9 @@ typedef enum {
     NVN_SHADER_STAGE_TESS_CONTROL = 0x3,
     NVN_SHADER_STAGE_TESS_EVALUATION = 0x4,
     NVN_SHADER_STAGE_COMPUTE = 0x5,
+    /* the Ounce's (API 231), as its control sections number them (nvn_section.h) */
+    NVN_SHADER_STAGE_TASK = 0x6,
+    NVN_SHADER_STAGE_MESH = 0x7,
 
     NVN_SHADER_STAGE_LARGE = 0x7FFFFFFF
 } NVNshaderStage;
