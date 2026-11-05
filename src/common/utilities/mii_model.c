@@ -114,7 +114,7 @@ enum { FMT_BC4 = 3, FMT_BC5 = 4, FMT_ASTC = 6 };
 /* a texture part's geometry in a file of quality mid (0 Low, 1 Mid): every part a full mip chain, but glasses and
    noselines, which have one level */
 typedef struct {
-    u32 w, h, fmt, mips;
+    u32 w, h, fmt, levels;
 } TexGeom;
 static TexGeom tex_geom(u32 kind, u32 i, u32 mid) {
     static const struct {
@@ -138,8 +138,8 @@ static TexGeom tex_geom(u32 kind, u32 i, u32 mid) {
         g.w = 64;
         g.h = 16;
     }
-    for (g.mips = 1, big = g.w > g.h ? g.w : g.h; big > 1; big >>= 1) g.mips++;
-    if (kind == T_GLASS || kind == T_NOSELINE) g.mips = 1;
+    for (g.levels = 1, big = g.w > g.h ? g.w : g.h; big > 1; big >>= 1) g.levels++;
+    if (kind == T_GLASS || kind == T_NOSELINE) g.levels = 1;
     return g;
 }
 
@@ -1165,14 +1165,14 @@ static u32 level_size(const TexGeom* g, u32 l) {
 }
 static u32 tex_raw_size(const TexGeom* g) {
     u32 l, n = 0;
-    for (l = 0; l < g->mips; l++) n += level_size(g, l);
+    for (l = 0; l < g->levels; l++) n += level_size(g, l);
     return n;
 }
 /* a texture's levels into raw, each drawn at its own size and laid out block linear */
 static void tex_write(u32 kind, u32 v, const TexGeom* g, u8* raw) {
     float ar = (float)g->w / (float)g->h;
     u32 l, bpb = tex_bpb(g->fmt);
-    for (l = 0; l < g->mips; l++) {
+    for (l = 0; l < g->levels; l++) {
         u32 w = g->w >> l ? g->w >> l : 1, h = g->h >> l ? g->h >> l : 1;
         u32 bx = (w + 3) / 4, by = (h + 3) / 4, bh = level_bh((g->h + 3) / 4, by);
         u64 gobs_x = mii_gobs_x(bx * bpb);
@@ -1256,7 +1256,7 @@ static u32 texture_file(u32 mid, u8* b) {
                 snx_st_le16(t + 0x14, (u16)g.w);
                 snx_st_le16(t + 0x16, (u16)g.h);
                 t[0x18] = (u8)g.fmt;
-                t[0x19] = (u8)g.mips;
+                t[0x19] = (u8)g.levels;
             }
         }
     if (b) {
