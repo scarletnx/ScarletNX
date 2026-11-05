@@ -44,9 +44,8 @@
 #ifdef __ANDROID__
 #include <jni.h>
 #endif
-#ifdef SDL_PLATFORM_IOS
-#include <dispatch/dispatch.h>
-#include "gui/apple.h" /* gui_apple_stats */
+#ifdef SDL_PLATFORM_APPLE
+#include <dispatch/dispatch.h> /* the system's memory pressure */
 #endif
 
 static SDL_Window* g_win;
@@ -278,28 +277,27 @@ void backend_window_safe(int* x, int* y, int* w, int* h) {
         backend_window_size(w, h);
     }
 }
-/* What the memory holds, at a warning of low memory from the system: iOS ends a game past its memory limit with no
-   signal and no time to write more, so this line can be the last that the log has. The footprint where the system
-   gives it (iOS), each GPU heap and the descriptor pools, and then the log and the console to the files. At most
-   MEMORY_LINES in a run, for a warning that comes again and again. Any thread: the renderer's part takes no lock of
-   Vulkan (vk_memory_text) */
+/* What the memory holds, at a warning of low memory from the system: iOS and Android end a game past their memory
+   limit with no signal and no time to write more, so this line can be the last that the log has. The resources line's
+   (resources_text: the footprint and what the system still gives), each GPU heap and the descriptor pools, and then
+   the log and the console to the files. At most MEMORY_LINES in a run, for a warning that comes again and again. Any
+   thread: the renderer's part takes no lock of Vulkan (vk_memory_text) */
 #define MEMORY_LINES 6
 static void memory_line(const char* why) {
     static u32 said;
-    char stats[320] = "", gpu[1024] = "";
+    char stats[320], gpu[1024] = "";
     if (__atomic_load_n(&said, __ATOMIC_RELAXED) >= MEMORY_LINES ||
         __atomic_fetch_add(&said, 1, __ATOMIC_RELAXED) >= MEMORY_LINES)
         return;
-#ifdef SDL_PLATFORM_IOS
-    gui_apple_stats(stats, sizeof stats);
-#endif
+    resources_text(stats, sizeof stats);
     if (g_renderer && g_renderer->memory_text) g_renderer->memory_text(gpu, sizeof gpu);
-    LOG("memory: %s: %s%s%s\n", why, stats, stats[0] && gpu[0] ? ", " : "", gpu);
+    LOG("memory: %s: %s%s%s\n", why, stats, gpu[0] ? ", " : "", gpu);
     log_sync();
 }
-#ifdef SDL_PLATFORM_IOS
-/* The system's memory pressure, on a queue of the system: SDL's low memory event comes through the main thread's run
-   loop, which the game's frames can hold up (one came 0.1 s before the kill). The source is kept for the whole run */
+#ifdef SDL_PLATFORM_APPLE
+/* The system's memory pressure on iOS and macOS, on a queue of the system: SDL's low memory event (iOS's alone) comes
+   through the main thread's run loop, which the game's frames can hold up (one came 0.1 s before the kill). The source
+   is kept for the whole run */
 static dispatch_source_t g_pressure;
 static void pressure(void* unused) {
     unsigned long level = dispatch_source_get_data(g_pressure);
@@ -455,7 +453,7 @@ void video_init(const char* title, const char* addons) {
         SDL_VERSIONNUM_MICRO(SDL_GetVersion()), SDL_GetCurrentVideoDriver());
     unattended_start();
     SDL_AddEventWatch(lifecycle, NULL);
-#ifdef SDL_PLATFORM_IOS
+#ifdef SDL_PLATFORM_APPLE
     pressure_watch();
 #endif
     /* a game runs for minutes with nobody touching the screen: a phone that locks it takes the GPU from the app */
