@@ -166,7 +166,8 @@ channel 22 and a ring of 16 on channel 23. Their increments and decrements don't
 
 The game draws part of its frames with mesh shaders: about 14 `nvnCommandBufferDrawMeshTasks` calls a frame in the
 screens after the title, all from the programs of `Shader/Drive.Nin_Ounce_NVN2.release.sarc.zs`
-(`DrivePassShaderDefault.sharcb`, the 3D scene's passes). The runtime skips these draws. No font or UI program
+(`DrivePassShaderDefault.sharcb`, the 3D scene's passes). The renderer can draw them with `VK_EXT_mesh_shader`
+behind the experimental `mesh_draws` setting, off by default (see [Draws](#draws)). No font or UI program
 (`Lib/sead/nvn2_font`, the programs in `main`) is a mesh program, so the missing menu text has another cause. Of the
 programs that the shipped pass translates, about 500 fragment and vertex programs are refused (most with "BRX with no
 jump table"), which is a better lead for the text.
@@ -199,10 +200,20 @@ A mesh or task program's section also gives (`gpu/nvn/nvn_section.h`):
 | 0x5e (u8) | 1 when a task program launches the mesh program | |
 | 0x5f (u8) | vertices of a primitive | 3 |
 | 0x60, 0x62 (u16) | most vertices, most primitives | 32/16, 128/64, 256/192 |
-| 0x64, 0x68 | offset in the code area and bytes of the per-primitive SPH (0 for none) | 0xd00, 0x80 |
+| 0x64, 0x68 | offset from the program's code (after its own SPH) and bytes of the per-primitive SPH (0 for none) | 0xd00, 0x80 |
 
-The per-primitive SPH follows the code, in the 256-byte slot after it (0x44, the code area's bytes, includes it).
-Its OMAP gives the per-primitive output words, and the mesh SPH's OMAP the per-vertex ones.
+The per-primitive SPH is the last 128 bytes of the code area (0x44, the code area's bytes, includes it): a code area
+of 0xe00 bytes has its SPH at 0x80 + 0xd00, one of 0x4900 bytes at 0x80 + 0x4800, so the offset counts from the end
+of the program's own SPH. Read from the start of the code area, the offset gave words such as `00000205` and
+`0000ff00`, which no SPH has. Its OMAP gives the per-primitive output words, and the mesh SPH's OMAP the per-vertex
+ones.
+
+The fields do not go in the program object. The Ounce's program object is 0xa0 bytes: the driver's
+`nvnProgramInitialize` (sdk offset `0x5bf2c0`) zeroes that many and uses offsets up to 0x98. The runtime keeps them,
+and a compute program's c[0] record, in a table by the program's SetShaders serial (`nvn_program_mesh`,
+`nvn_program_c0`). Before, the c[0] record was at bytes 0x98 to 0xab of the object, and each SetShaders wrote 12 bytes
+of the game's memory after it. The game's own bytes there (0xc2 in one run) then took the place of the mesh
+programs' per-primitive SPH offset.
 
 ### The programs' I/O
 
@@ -256,6 +267,27 @@ POPC R0, UR5 ; ISBEWR.ATTR.O.B32 [RZ+0x4], R0 ; mesh groups to launch
 The game calls `DrawMeshTasks(first 0, count 1)`, and `(0, 6)` and `(0, 30)`. It calls no indirect mesh draw in the
 runs so far, and it binds its mesh programs with stages `0xff`. `SetGeometryProcessingMode(2)` comes before them.
 
+The driver binds the task and mesh stages apart from the others (sdk offsets of the functions:
+`BindUniformBuffer` `0x5db4c0`, `BindStorageBuffer` `0x5dd080`, `BindTexture` `0x5de120`, `BindProgram` `0x5daa80`).
+Every function takes stages 6 and 7 through the same path as the graphics stages, with a table for each stage:
+
+| Stage | `BindProgram` bit | uniform buffer group (method 0xe02) | storage buffers in c[0] | handle bank (method 0xe1c) |
+| --- | --- | --- | --- | --- |
+| vertex 0, fragment 1, geometry 2, control 3, evaluation 4 | bits 0 to 4 | 8, 4, 3, 1, 0xa | 0x110, 0x510, 0x410, 0x210, 0x310 | 0, 4, 3, 1, 2 |
+| task 6 | 0x40 | 9 | 0x670 + 16 i | 5 |
+| mesh 7 | 0x80 | 0xb | 0x770 + 16 i | 6 |
+
+The handles have the offsets of the other stages in their bank: textures at 0x20 + 8 r, images at 0x120 + 8 r,
+separate textures at 0x168 + 8 r, separate samplers at 0x568 + 8 r. One mesh program reads its textures' handles at
+`c[2][0x20]` and `c[2][0x28]`. The task programs read their storage buffer addresses at `c[0][0x670]` and
+`c[0][0x680]`, the mesh programs at `c[0][0x770]` to `c[0][0x7b0]`. A mesh stage's bindings thus never replace the
+vertex stage's: the draw state keeps them apart (`DS_TASK` and `DS_MESH` in `gpu/draw_state.h`), and bank 0 of each
+stage is 0x870 bytes.
+
+`DrawMeshTasksIndirect` gives the GPU two words of the indirect buffer (a GPFIFO entry of 2 words after macro 0x31).
+Vulkan's indirect mesh draw reads three, x, y and z, and has no first workgroup, so the renderer skips the indirect
+forms and logs it once.
+
 The driver writes Turing macro calls (method 0xe00 + 2 n is `CALL_MME_MACRO(n)`), not 3D methods:
 
 | Function (sdk offset from 0xbd0c000) | Push buffer |
@@ -277,11 +309,11 @@ lines, invocations) and `SET_MESH_INIT_SHADER` (0x456: invocations, local lines,
 The host (an RTX 2080) has `VK_EXT_mesh_shader` with 256 vertices and primitives and 128 task invocations, more than
 the game asks for.
 
-1. NVN (small, done in part). `NvnProgram` keeps stages 6 and 7 (`NVN_STAGES`, the c[0] record moves to 0x98).
-   Still to do: keep the section's mesh fields (`NvnSectionMesh`) and the per-primitive SPH address in the program
-   and in `NvnPBindProgram`. Record the draws as `OP_DRAW_MESH` {first, count} or {x, y, z}, and the indirect ones
-   with the buffer's address, count address and stride, as `OP_DISPATCH_INDIRECT` does. Replay them in
-   `nvn_draw.c` as a draw whose program slots are task, mesh and fragment.
+1. NVN (done). `NvnProgram` keeps stages 6 and 7 (`NVN_STAGES`). SetShaders keeps the sections' fields
+   (`DsMeshKey`) by the program's serial (`nvn_program_mesh`). `OP_DRAW_MESH` records {first, count}, a 3D draw as
+   x y z workgroups in a row from 0, and an indirect one with the buffer's address, count address and stride. The
+   replay (`nvn_draw.c`) makes it a `DrawCall` with `mesh` set, of `DsPrograms`' task and mesh programs and the
+   fragment program.
 2. Translator (done, `sm86_translate.c`, with its interface in `sm86.h`: `ShaderInfo.mesh` is the key, a task program
    takes descriptor set 2 and a mesh program set 0). New stages ST_TS and ST_MS, given by NVN, not by the SPH. Model the
    ISBE as Workgroup arrays: the output area (`u32 [V + primitive area]`), the map (`u32 [4 + 3 * most primitives]`, a
@@ -300,14 +332,25 @@ the game asks for.
    them `PerPrimitiveEXT`, so the fragment shader key gets a mask of per-primitive locations from the mesh program
    (`pipeline.c`'s key, `fs_variant` in `render.c`). The translator's half is done: a fragment program's
    `ShaderInfo.prim_mask` names those inputs, the mesh program's `prim_mask`.
-4. Vulkan (medium, `pipeline.c`, `render.c`, `vk.h`, `device.c`). Turn on `VK_EXT_mesh_shader` (`meshShader`,
-   `taskShader`), add the stage bits to the descriptor set layouts' visibility, and build pipelines without vertex
-   input and input assembly state from task, mesh and fragment modules. The key and the pipeline file need the two
-   new modules. Draw with `vkCmdDrawMeshTasksEXT(count, 1, 1)` and `first` in a push constant that the translator adds
-   to `WorkgroupId.x` (the hardware's index is the vertex ID, which starts at the draw's first vertex), or with
-   `(x * y * z, 1, 1)` for the 3D draws: the hardware draws one linear list of groups, and the program finds its
-   index. Indirect: `vkCmdDrawMeshTasksIndirectEXT` and `...IndirectCountEXT` on the guest buffer, with a pass that
-   multiplies x, y and z when the game uses the 3D forms. About 400 to 600 lines.
+4. Vulkan (done but the indirect forms). `device.c` turns on `meshShader` and `taskShader` with
+   `subgroupSizeControl` and `computeFullSubgroups`, when the device has a required subgroup size of 32 in the mesh
+   and task stages. Else the log says why once, and the mesh draws are skipped. The mesh and task bits join the
+   push constants' stages and the visibility of sets 0 and 2. A mesh pipeline (`PipeKey.mesh`) has its mesh shader
+   in the vertex slot and its task shader in the tessellation control slot, so the pipeline file needs no new
+   fields. It has no vertex input, input assembly or tessellation state, and no topology, restart or vertex input
+   dynamic state. Its stages require a subgroup of 32, and whole subgroups when the workgroup is 32 invocations (8
+   cannot be). `render.c` draws with `vkCmdDrawMeshTasksEXT(count, 1, 1)` and the first workgroup in push constant
+   x. The periodic `vulkan:` stats line counts the mesh draws and those skipped. The storage writes of the two
+   stages are in the barriers before their results land (`buffer.c`'s `out_stages`).
+
+With `mesh_draws=1` the draws translate and draw, with no `not translated` line and no validation message of their
+own, but 6 of 7 runs through the menus on an RTX 2080 (driver 615.78.08) ended in a GPU fault: Xid 109 (context switch
+timeout) and Xid 31 (MMU faults of `GPCCLIENT_GCC`, reads at addresses such as `0xfffff079_ad3f2000`), then
+`VK_ERROR_DEVICE_LOST`. Runs without mesh draws had none. GPU-assisted validation reported nothing about them. What
+did not remove the faults: the per-primitive SPH at the right offset, the fragment inputs no mesh output writes read
+as 0, 0, 0, 1, and storage buffers of the two stages bound to all the memory mapped from their addresses. A run that
+drew only the mesh programs alone without per-primitive outputs had no fault in 319 frames, which is too few to be
+sure. So the setting stays off.
 
 ### Open questions
 
@@ -316,4 +359,10 @@ the game asks for.
   does when no lane writes the count. The design starts it at 0.
 - Whether `first` reaches the index as the first vertex of the point draw does (the game passes 0, so the runs
   cannot show it).
-- The task and mesh stage bits of `BindProgram` (the game binds 0xff), probably 0x40 and 0x80.
+- The cause of the GPU faults with `mesh_draws=1`. Next checks: the per-primitive outputs and the fragment
+  program's `PerPrimitiveEXT` inputs (with their interpolation decorations), the primitive indices against the vertex
+  count, and a RenderDoc capture of the first faulting draw.
+- The record of `DrawMeshTasksIndirect` (two words, probably count and first) and the 3D forms' (x, y, z), for a
+  pass on the GPU that makes Vulkan's records of them. No run so far calls them.
+- The texture keys of task and mesh programs: their integer, rectangle and queried textures do not key a variant yet,
+  as the vertex program's do (`vs_tex_variant`).
