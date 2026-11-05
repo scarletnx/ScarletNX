@@ -1893,6 +1893,17 @@ snx_test_target(snx-test-arm-module-chain 11)
 target_link_libraries(snx-test-arm-module-chain PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
 add_test(NAME arm_module_chain COMMAND snx-test-arm-module-chain)
 set_tests_properties(arm_module_chain PROPERTIES TIMEOUT 120)
+# the AArch32 dispatch loop's lookup keeps no frame and no stack canary: compile(), its slow path, stays out of line
+# (arm_dispatch_frame.py reads arm.c's object with the build's llvm-objdump)
+# snx_core comes from src/nx, which the root CMakeLists adds after tests/ when the NX runtime is built
+if(Python3_Interpreter_FOUND AND SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND SNX_LLVM_CONFIG)
+    get_filename_component(snx_llvm_bin "${SNX_LLVM_CONFIG}" DIRECTORY)
+    find_program(SNX_LLVM_OBJDUMP llvm-objdump HINTS "${snx_llvm_bin}" NO_DEFAULT_PATH)
+    if(SNX_LLVM_OBJDUMP)
+        add_test(NAME arm_dispatch_frame COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm_dispatch_frame.py"
+                                                 --objdump "${SNX_LLVM_OBJDUMP}" "$<TARGET_OBJECTS:snx_core>")
+    endif()
+endif()
 # the runtime looking a pc up in the AOT variant table instead of compiling it
 add_executable(snx-test-runtime-variants runtime_variants.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/guest_jit.c")
 snx_test_target(snx-test-runtime-variants 11)
