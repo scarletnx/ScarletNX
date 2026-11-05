@@ -43,7 +43,7 @@ static uint32_t cas_native(uint64_t* p, uint64_t o0, uint64_t o1, uint64_t n0, u
                          : "memory");
     return lo == o0 && hi == o1;
 #elif defined(__powerpc64__) && !defined(_ARCH_PWR8)
-    /* A baseline before POWER8 (cmake/cross.cmake's SNX_PPC64_CPU) makes a 16-byte __atomic a libatomic call, so
+    /* A baseline before POWER8 (big-endian's, cmake/cross.cmake) makes a 16-byte __atomic a libatomic call, so
        POWER8's lqarx and stqcx. are written out, and run only where the machine has them (native_cas). They take an
        even-odd register pair, whose even register is the doubleword at p in big-endian mode and the one at p + 8 in
        little-endian mode */
