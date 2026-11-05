@@ -111,6 +111,7 @@ static void report_threads(SnxCtrProcess* p) {
         printf(" 0x%02x x%" PRIu64, best, p->svc_counts[best]);
     }
     putchar('\n');
+    snx_ctr_present_report();
 }
 /* The game folder's copy of the runtime, named after it, which plays the game as a Switch game's copy does
    (snx_place_runtime). Nothing when runtime is the copy itself */

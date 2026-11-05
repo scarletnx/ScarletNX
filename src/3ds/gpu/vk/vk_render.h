@@ -34,6 +34,13 @@ bool snx_ctr_vk_target_image(uint32_t pa, unsigned width, unsigned height, unsig
 /* write tracking's handler (snx_ctr_track_handler), which the device installs: an owned page's targets stored and
    its GPU writes waited for, a watched page's textures and targets dropped */
 void snx_ctr_vk_track(void* context, uint32_t pa, SnxCtrTrackLevel level);
+/* What the GPU's work took of the board's RAM since the device started: the bytes it read and wrote there (in place, a
+   discrete GPU reads and writes each of them across the bus), and the CPU's accesses that write tracking brought to
+   the renderer first (snx_ctr_vk_track) */
+typedef struct {
+    uint64_t read, written, traps;
+} SnxCtrVkTraffic;
+SnxCtrVkTraffic snx_ctr_vk_traffic(void);
 /* the device's: a recording begins in slot; the open rendering pass ends before a submission; a submission of slot,
    serial, is done (what it used is free again, what it wrote is in memory) */
 void snx_ctr_vk_render_begin(unsigned slot);

@@ -216,6 +216,7 @@ static struct {
     /* the triangles the CPU made for a draw with a geometry shader, waiting for their draw, from triangle_first on */
     SnxCtrVertex (*triangles)[3];
     size_t triangle_count, triangle_capacity, triangle_first;
+    SnxCtrVkTraffic traffic;
 } g;
 
 static VkDevice device(void) { return snx_ctr_vk()->device; }
@@ -546,6 +547,10 @@ static void gpu_uses(uint32_t pa, uint64_t size, bool write) {
     if (!size || !snx_ctr_vk()) return;
     snx_ctr_vk_commands(); /* the open recording's slot */
     uint64_t serial = snx_ctr_vk_serial();
+    if (write)
+        g.traffic.written += size;
+    else
+        g.traffic.read += size;
     for (uint64_t at = pa & ~4095u; at < (uint64_t)pa + size; at += 4096) {
         PageState* page = page_state((uint32_t)at);
         if (!page) continue;
@@ -826,6 +831,7 @@ void snx_ctr_vk_sync(uint32_t pa, uint32_t size, bool write) {
 }
 void snx_ctr_vk_track(void* context, uint32_t pa, SnxCtrTrackLevel level) {
     (void)context;
+    ++g.traffic.traps;
     if (level == SNX_CTR_TRACK_OWN) {
         /* the page's newer contents: its targets stored, then every GPU write to it waited for */
         if (g.made) (void)store_over(pa, 4096);
@@ -838,6 +844,7 @@ void snx_ctr_vk_track(void* context, uint32_t pa, SnxCtrTrackLevel level) {
     }
     levels(pa, 4096);
 }
+SnxCtrVkTraffic snx_ctr_vk_traffic(void) { return g.traffic; }
 
 /* ---- textures ---- */
 
