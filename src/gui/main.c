@@ -4563,8 +4563,11 @@ enum {
    folders), Save States (S's box, the way a finger has to it), Clean Cache, its own GPU Driver and Freedreno Settings
    (their pages), Save and Play; on every system, a phone's Files app showing the folders */
 static const int addons_tail[] = {ROW_ADD_MOD,     ROW_MODS_FOLDER, ROW_ADD_CHEATS,  ROW_CHEATS_FOLDER,
-                                  ROW_OPEN_FOLDER, ROW_STATES,      ROW_CLEAN_CACHE, ROW_GPU_DRIVER,
-                                  ROW_FREEDRENO,   ROW_SAVE,        ROW_PLAY};
+                                  ROW_OPEN_FOLDER, ROW_STATES,      ROW_CLEAN_CACHE,
+#ifdef __ANDROID__ /* the GPU driver package and Turnip's variables: no other platform has them */
+                                  ROW_GPU_DRIVER,   ROW_FREEDRENO,
+#endif
+                                  ROW_SAVE,        ROW_PLAY};
 #define ADDONS_TAIL ((int)SDL_arraysize(addons_tail))
 /* the box's rows; on Open Folder's page, a folder of the game's each */
 static int addons_rows(const App* app) {
@@ -7699,6 +7702,7 @@ static const GuiThemeKey app_keys[] = {
     {"", SNX_TR_NOOP("Folders"), GUI_KEY_ACTION, offsetof(GuiAppForm, places), sizeof(((GuiAppForm*)0)->places), NULL,
      0, SNX_TR_NOOP("The data and the extractions, and the libraries Games lists: recompiled games and dumps"), 0, 0, 0,
      0, NULL},
+#ifdef __ANDROID__ /* an Android driver package and Turnip's variables: no other platform has them */
     {"", SNX_TR_NOOP("GPU Drivers"), GUI_KEY_ACTION, offsetof(GuiAppForm, drivers), sizeof(((GuiAppForm*)0)->drivers),
      NULL, 0,
      SNX_TR_NOOP("Vulkan drivers for Adreno GPUs on Android, Turnip among them: add, remove, and the one games use"), 0,
@@ -7707,6 +7711,7 @@ static const GuiThemeKey app_keys[] = {
      sizeof(((GuiAppForm*)0)->freedreno), NULL, 0,
      SNX_TR_NOOP("Mesa's Freedreno and Turnip variables every game starts with (TU_DEBUG...), and their presets"), 0, 0,
      0, 0, NULL},
+#endif
     {"", SNX_TR_NOOP("Clean Old Settings"), GUI_KEY_ACTION, 0, 0, NULL, 0,
      SNX_TR_NOOP("Removes the settings this version no longer reads. Asks first"), 0, 0, 0, 0, NULL},
     {"", SNX_TR_NOOP("Move Old Files"), GUI_KEY_ACTION, offsetof(GuiAppForm, moves), sizeof(((GuiAppForm*)0)->moves),
@@ -7722,8 +7727,10 @@ enum {
     GUI_APP_BACKGROUND,
     GUI_APP_EDITOR,
     GUI_APP_PLACES,
+#ifdef __ANDROID__
     GUI_APP_DRIVERS,
     GUI_APP_FREEDRENO,
+#endif
     GUI_APP_CLEAN,
     GUI_APP_MOVE,
     GUI_APP_RESET,
@@ -10161,10 +10168,13 @@ static void leave_form(App* app) {
         drivers_show(app, 0);
         app->editor.row = gui_editor_rows(&app->editor) - 2;
         drivers_note(app);
-    } else if (form == GUI_FORM_DRIVERS)
+    }
+#ifdef __ANDROID__
+    else if (form == GUI_FORM_DRIVERS)
         open_app(app, GUI_APP_DRIVERS);
     else if (form == GUI_FORM_FREEDRENO)
         open_app(app, GUI_APP_FREEDRENO);
+#endif
     else if (form == GUI_FORM_THEME && app->theme_from_app) {
         app->theme_from_app = false;
         open_app(app, GUI_APP_EDITOR);
@@ -10433,13 +10443,17 @@ static void app_action(App* app, int row, int step) {
     } else if (row == GUI_APP_PLACES && !step) {
         open_folders(app, 0);
         return;
-    } else if (row == GUI_APP_DRIVERS) {
+    }
+#ifdef __ANDROID__
+    else if (row == GUI_APP_DRIVERS) {
         if (!step) open_drivers(app, NULL, NULL, 0);
         return;
     } else if (row == GUI_APP_FREEDRENO) {
         if (!step) open_freedreno(app, NULL, NULL);
         return;
-    } else if (row == GUI_APP_CLEAN) {
+    }
+#endif
+    else if (row == GUI_APP_CLEAN) {
         if (!step && !queue_waits(app, SNX_TR_NOOP("Clean Old Settings"))) clean_row(app);
         return;
     } else if (row == GUI_APP_MOVE) {
@@ -11383,8 +11397,10 @@ static unsigned form_icon(const App* app, const GuiEditor* e, int r) {
     if (e->keys == app_keys)
         return r == GUI_APP_EDITOR      ? GUI_ICON_PAINTBRUSH
                : r == GUI_APP_PLACES    ? GUI_ICON_FOLDER
+#ifdef __ANDROID__
                : r == GUI_APP_DRIVERS   ? GUI_ICON_CPU
                : r == GUI_APP_FREEDRENO ? GUI_ICON_SETTINGS
+#endif
                : r == GUI_APP_CLEAN     ? GUI_ICON_ERASER
                : r == GUI_APP_MOVE      ? GUI_ICON_FOLDER_INPUT
                : r == GUI_APP_RESET     ? GUI_ICON_ROTATE_CCW

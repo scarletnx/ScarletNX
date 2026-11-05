@@ -18,6 +18,10 @@ enum {
 /* the game's own, set in its menu (a control's place) or by the driver (its dump): the launcher's Settings leave it
    out */
 #define INI_IN_GAME 2
+/* the platform whose menus list a setting: no bits for every platform, a Mac's (not iOS) or Android's */
+#define INI_PLATFORM_MASK  12
+#define INI_PLATFORM_MACOS 4
+#define INI_PLATFORM_ANDROID 8
 
 typedef struct IniOpt IniOpt;
 struct IniOpt {

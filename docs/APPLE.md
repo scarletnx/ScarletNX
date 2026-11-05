@@ -6,6 +6,7 @@
 
 * [The frontend](#the-frontend)
   * [macOS](#macos)
+  * [KosmicKrisp (experimental)](#kosmickrisp-experimental)
   * [iOS](#ios)
   * [Running a game on iOS](#running-a-game-on-ios)
   * [Installing from a Mac](#installing-from-a-mac)
@@ -52,6 +53,63 @@ its own entry points from it. One process must hold one copy of MoltenVK: a seco
 different type, so the surface call hands one copy's instance to the other's `vkGetInstanceProcAddr` and the process
 segfaults. That is what a Mac with Homebrew's `molten-vk` in the loader's ICD folders saw when volk took the system
 loader and SDL took the bundle's library.
+
+### KosmicKrisp (experimental)
+
+A game can run on [KosmicKrisp](https://docs.mesa3d.org/drivers/kosmickrisp.html) instead, Mesa's Vulkan driver on
+Metal. Set `vulkan_driver = kosmickrisp` in the game's `.ini`, or start it with `--vulkan_driver=kosmickrisp`. The
+option is in Graphics in the launcher's Settings and in the game's menu. The setting also takes `moltenvk`, and `auto`
+keeps the MoltenVK the app carries.
+
+The support is experimental. A game may draw wrong or stop on KosmicKrisp, and MoltenVK stays the default until the
+support is stable. After that, KosmicKrisp becomes the default on a Mac and MoltenVK the fallback.
+
+Where KosmicKrisp lacks an extension or a feature that the renderer asks for, the runtime takes the path it has for a
+driver without it, as it does for the features MoltenVK lacks. The game keeps running on KosmicKrisp, and a run does not
+change driver half way. What that costs today: transform feedback is not captured, a sampler with a border colour of its
+own takes the nearest of black and white, wireframe draws solid, and the frame pacing falls back to its timer. One game's
+title screen has run on it, at the frames a second the game caps itself to.
+
+The app's default run loads its MoltenVK directly, as before, so `VK_DRIVER_FILES` has no effect on it. A checkout's run
+uses the system loader, where `VK_DRIVER_FILES` alone selects KosmicKrisp. The setting is the app's way to do the same:
+it gives SDL the Vulkan loader and sets the ICD. SDL and volk take that one library.
+
+KosmicKrisp needs an Apple silicon Mac with macOS 26 or later, and the Vulkan loader (`VK_DRIVER_FILES`).
+The runtime finds it:
+
+- beside the program, from an app built with `SNX_KOSMICKRISP` (its own folder holds the driver, its loader and the
+  ICD JSON, and a game's folder gets the same three from the deploy), else
+- in Homebrew's `mesa` (`/opt/homebrew/share/vulkan/icd.d`, or `/usr/local` on Intel), else
+- in a LunarG Vulkan SDK under `~/VulkanSDK`.
+
+The loader comes from the same folders, or from `/opt/homebrew/lib/libvulkan.1.dylib` or `/usr/local/lib` when the
+driver and the loader are installed apart. LunarG's build is self-contained, and Homebrew's links the prefix's
+libraries. Homebrew's build can also need a newer macOS than the SDK's, so the SDK's driver is the one to carry. Do not
+put Homebrew's driver in the app. A driver the setting names and the Mac does not have is said in the log, and the
+other driver plays instead, so a game still starts.
+
+The setting is the app's, for its Switch games. The 3DS and Vita frontends take the driver through the Vulkan
+loader, and a Mac without `VK_DRIVER_FILES` gives them MoltenVK. Their own settings do not name a driver yet.
+
+The app carries KosmicKrisp when the build gets the SDK's macOS folder:
+
+```sh
+cmake --preset macos -DLLVM_DIR=$HOME/apple-llvm/macos/lib/cmake/llvm \
+    -DSNX_MOLTENVK=$HOME/moltenvk-macos -DSNX_KOSMICKRISP=$HOME/VulkanSDK/1.4.363.0/macOS
+```
+
+The app then carries both drivers. The build takes the SDK's `lib/libvulkan_kosmickrisp.dylib`, its
+`lib/libvulkan.1.dylib` and the API version of its ICD JSON, and writes an ICD JSON whose library path is relative.
+
+The Vulkan tests run on the driver that the Vulkan loader picks. To run them on KosmicKrisp, name its ICD:
+
+```sh
+VK_DRIVER_FILES=/opt/homebrew/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json \
+    ctest --test-dir build/macos -R '^(3ds_vk_.*|vulkan_.*|vk_.*)$' --output-on-failure
+```
+
+They pass on both drivers on a Mac that has KosmicKrisp. The `vulkan_driver` test makes a device through the ICD where
+the Mac has one, and checks nothing where it has none, as a machine without mesa or the SDK does.
 
 ### iOS
 
