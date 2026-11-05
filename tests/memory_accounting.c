@@ -816,6 +816,25 @@ static void test_moved(void) {
        doesn't fit, there in the moved layout too */
     CHECK(mem_find_free(ALIAS_BASE, ALIAS_BASE + ALIAS_SIZE, 62ull << 30, 0x1000) == ALIAS_BASE);
     CHECK(mem_unmap(HEAP_BASE, 0x1000) == 0);
+    { /* a crash report's line on where a fault lies: below, in and past the moved layout, whose addresses are the
+         host's */
+        char out[256], want[256];
+        mem_place((void*)(uintptr_t)0x8000000ull, out, sizeof out);
+        snprintf(want, sizeof want, "0x8000000 lies below the game's address space, which starts at %#llx, by %#llx",
+                 (unsigned long long)(by + 0x8000000ull), (unsigned long long)by);
+        CHECK(!strcmp(out, want));
+        mem_place((void*)(uintptr_t)(by + (68ull << 30)), out, sizeof out);
+        snprintf(want, sizeof want, "%#llx lies in the game's address space, %#llx to %#llx: game address %#llx",
+                 (unsigned long long)(by + (68ull << 30)), (unsigned long long)(by + 0x8000000ull),
+                 (unsigned long long)(by + size), (unsigned long long)(by + (68ull << 30)));
+        CHECK(!strcmp(out, want));
+        mem_place((void*)(uintptr_t)(by + size + 0x5000), out, sizeof out);
+        snprintf(want, sizeof want,
+                 "%#llx lies past the end of the game's address space at %#llx, by 0x5000: its layout holds 128 GiB, "
+                 "the console's 512",
+                 (unsigned long long)(by + size + 0x5000), (unsigned long long)(by + size));
+        CHECK(!strcmp(out, want));
+    }
     fflush(stdout);
     child = fork();
     if (!child) {
@@ -843,6 +862,11 @@ int main(void) {
 #if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
     g_console = g_layout;
 #endif
+    { /* a crash before the reservation */
+        char out[96];
+        mem_place((void*)(uintptr_t)0x1234, out, sizeof out);
+        CHECK(!strcmp(out, "0x1234: no address space is reserved for the game yet"));
+    }
     hle_init();
     /* this host's pages, then those of hosts with larger ones (16 KiB: Apple silicon, some Android kernels; 64 KiB:
        PowerPC64 and some AArch64 distributions), which mem.c commits in whole */
@@ -882,6 +906,18 @@ int main(void) {
     refuse_above = 24ull << 30;
     mem_reserve();
     CHECK(g_mem && g_as_size == 24ull << 30 && g_layout.end == 24ull << 30);
+    { /* past a reservation smaller than the console's: a game address no layout here holds */
+        char out[256], want[256];
+        mem_place(g_mem + (24ull << 30) + 0x40, out, sizeof out);
+        snprintf(want, sizeof want,
+                 "%#llx lies past the end of the game's address space at %#llx, by 0x40: its layout holds 24 GiB, "
+                 "the console's 512",
+                 (unsigned long long)(uintptr_t)(g_mem + (24ull << 30) + 0x40),
+                 (unsigned long long)(uintptr_t)(g_mem + (24ull << 30)));
+        CHECK(!strcmp(out, want));
+        mem_place(g_mem + 0x1000, out, sizeof out);
+        CHECK(strstr(out, ": game address 0x1000") != NULL);
+    }
     CHECK(g_layout.alias == 4ull << 30 && g_layout.alias_size == 4ull << 30 && g_layout.heap == 8ull << 30 &&
           g_layout.heap_size == 8ull << 30 && g_layout.stack == 16ull << 30 && g_layout.stack_size == 2ull << 30 &&
           g_layout.kern == 23ull << 30 && g_layout.kern_end == 24ull << 30);

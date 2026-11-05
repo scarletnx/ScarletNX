@@ -108,6 +108,10 @@ void mem_reserve(void);
 int mem_reserved(void);
 /* 1 when the guest's addresses are the host's, for NCE: g_mem is 0 */
 int mem_identity(void);
+/* Where host address p lies against the guest's reservation, as a crash report says it: in it (with its game
+   address), below its start, or past its end (with the start or the end and how far, and the layout's size beside the
+   console's 512 GiB), or that none is reserved yet */
+void mem_place(const void* p, char* out, size_t size);
 /* 0 when the host tracks the writes to guest memory (plat_ww_scan), -1 when it can't: a scan, reported to cb, of the
    first page the tracking covers. Under NCE that is the code region's base at the guest's own addresses, as g_mem is
    0 there, below the tracked range */

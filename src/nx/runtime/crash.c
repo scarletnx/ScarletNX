@@ -151,6 +151,13 @@ void crash_report(void* host_pc, void* fault, int sig) {
     else
         WARN(" ***\n");
     WARN("  %s\n", kind);
+    /* the header gives a fault in the reservation its game address; past its end is a layout smaller than the
+       console's, and under NCE, where g_mem is 0, the guest's addresses are the host's and only this places them */
+    if (fault && !in_guest && mem_reserved()) {
+        char place[256];
+        mem_place(fault, place, sizeof place);
+        WARN("  %s\n", place);
+    }
     report_place(host_pc);
     /* the low pages are never mapped: a pointer the game failed to get (an allocation it ran out of memory for) plus
        a field's offset lands there */
