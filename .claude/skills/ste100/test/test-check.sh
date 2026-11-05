@@ -29,9 +29,12 @@ printf '{"hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_p
 [ $? -eq 2 ] || { echo "FAIL: the hook must stop an edit that adds a rule break"; fail=1; }
 rm -rf "$dir"
 # A report: the hook asks for it again with a block decision. printf's %s takes the agent's ID as an argument, because
-# bash 3.2, the sh of macOS, drops $$ that stands between quotes inside $( )
+# bash 3.2, the sh of macOS, drops $$ that stands between quotes inside $( ). The hook counts the rewrites of a report
+# in TMPDIR/snx-ste100, so the test gives it a folder of its own: a count left by an earlier run would pass the third
+dir=$(mktemp -d)
 r=$(printf '{"hook_event_name":"SubagentStop","session_id":"t","agent_id":"%s","last_assistant_message":"It is done."}' "t$$" |
-    python3 "$CHECK" --hook)
+    TMPDIR=$dir python3 "$CHECK" --hook)
+rm -rf "$dir"
 printf '%s' "$r" | grep -q '"decision": "block"' || { echo "FAIL: the hook must block a report with a rule break"; fail=1; }
 [ $fail -eq 0 ] && echo "check.py: each rule in flagged.md, none in clean.md, exit codes and hooks: passed"
 exit $fail

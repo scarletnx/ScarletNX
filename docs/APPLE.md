@@ -340,3 +340,6 @@ cpack --config build/ios/CPackConfig.cmake -B out     # out/ScarletNX-ios-arm64.
 `MACOS_VERSION` (default 13.0) and `IOS_VERSION` (default 16.0) are the oldest systems `apple-llvm.sh` builds for,
 as the presets' `CMAKE_OSX_DEPLOYMENT_TARGET` are the apps'. FFmpeg, OpenSSL and the recompiler's runtime library are built outside
 CMake's compiles and get the SDK, architecture and oldest version from `cmake/apple.cmake`.
+
+`python3 scripts/ci-local.py ios` builds the device app as CI does; `--simulator` builds the simulator slice and
+starts the menu in the Simulator ([CI checks locally](DEVELOPMENT.md#ci-checks-locally)).

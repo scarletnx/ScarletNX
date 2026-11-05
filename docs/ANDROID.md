@@ -113,6 +113,8 @@ adb install -r ~/android-build/stage/gradle/outputs/apk/debug/ScarletNX-debug.ap
 
 They need the NDK (`ANDROID_NDK_ROOT`, else the newest under `$ANDROID_HOME/ndk`), the SDK (`ANDROID_HOME`),
 Gradle 9 (`GRADLE`, default `gradle`) and a JDK 17 or newer (`JAVA_HOME`). Extra CMake arguments go after `--`.
+`python3 scripts/ci-local.py android --install` builds the same APK and starts its menu on the device or emulator that
+`adb` names, before CI ([CI checks locally](DEVELOPMENT.md#ci-checks-locally)).
 `ANDROID_API` (default 21) is the oldest Android both scripts build for, the app's `minSdk`.
 `android-apk.sh` installs each build into `<out>/stage` (the libraries, SDL's Java classes and the icon), which
 `dist/android/build.gradle` packs with the two activities; Gradle's own output goes there too. The CI does the same
