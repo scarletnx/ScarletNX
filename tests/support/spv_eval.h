@@ -19,6 +19,7 @@ typedef struct {
     uint32_t out[32][4]; /* the outputs by location */
     uint32_t out_written[32];
     uint32_t frag_depth;
+    uint32_t position[4];  /* the Position output (BuiltIn 0) when the invocation ends */
     uint32_t shared[4096]; /* the first Workgroup variable's words when the invocation ends */
     uint32_t shared_words;
     uint32_t texel[64][4]; /* what every sample or fetch of the sampled image at each binding returns */
