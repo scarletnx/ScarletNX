@@ -268,10 +268,10 @@ typedef struct {
 #define AUDOUT_BUFFERS 64 /* appended and released buffers an audio out holds */
 #define AUDOUT_MAX     32 /* the audio outs open at once: the console's audout:u has a dozen (Eden's 12 sessions) */
 #define AUDDEV_MAX     32 /* the IAudioDevices: one per GetAudioDeviceService, a few in a game's run */
-/* the firmware keeps 24 decoders (OutOfOpusDecoders after); a closing one is still in the pool after the count of
-   open ones dropped, which a decoder opened on another thread meanwhile may need room beside */
+/* the firmware keeps 24 decoders (OutOfOpusDecoders after), as many as the pool holds: audio.c counts the slots
+   taken, a closing decoder's among them, before an open takes one */
 #define SNX_HWOPUS_MAX_DECODERS 24
-#define HWOPUS_POOL             (2 * SNX_HWOPUS_MAX_DECODERS)
+#define HWOPUS_POOL             SNX_HWOPUS_MAX_DECODERS
 struct AVCodecContext;
 struct AVPacket;
 struct AVFrame;
@@ -328,7 +328,6 @@ typedef struct {
     u32 ev;              /* the renderers' system event, every frame */
     AudOut* outs;        /* every open audio out, for the clock */
     float device_volume; /* the output device's, as SetAudioDeviceOutputVolume set it */
-    u32 hwopus_live;     /* decoders open, across every hwopus session */
     AudOut outs_pool[AUDOUT_MAX];
     AudRen rens[SNX_AUDREN_MAX];
     AudDevice devices[AUDDEV_MAX];
@@ -338,7 +337,7 @@ typedef struct {
 } HleAudio;
 /* audio's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
 typedef struct {
-    PMutex lk; /* the audio outs, and the device's volume */
+    PMutex lk; /* the audio outs, the device's volume, and an hwopus open's count and take */
     /* a game pause: hold asks the clock's thread to stop at the top of its turn, held says it has, both under lk */
     PCond hold_cv;
 } HostAudio;
