@@ -292,9 +292,7 @@ static int classify(LLVMValueRef fn, Result* r) {
    Each function's instructions as llvm-objdump prints them, split by what they are: a call, an instruction that names
    a vector register, a shuffle (a lane or byte permutation), and a move between a general register and a vector
    register. The register names and the shuffle and move mnemonics are the target's, which is what the triple says. */
-typedef struct {
-    int x86, aarch64, ppc, riscv, loongarch, mips;
-} Target;
+typedef enum { ARCH_OTHER, ARCH_X86, ARCH_AARCH64, ARCH_PPC, ARCH_RISCV, ARCH_LOONGARCH, ARCH_MIPS } Arch;
 
 static int has_text(const char* text, const char* part) { return strstr(text, part) != NULL; }
 
@@ -349,98 +347,98 @@ static int ppc_vector(const char* mnemonic) {
            begins(mnemonic, "stxs") || begins(mnemonic, "mtvsr") || begins(mnemonic, "mfvsr");
 }
 
-static int vector_register(const Target* t, const char* mnemonic, const char* operands) {
-    if (t->x86) return has_text(operands, "%xmm") || has_text(operands, "%ymm") || has_text(operands, "%zmm");
-    if (t->aarch64) return reg_token(operands, "v", 1) || reg_token(operands, "q", 0);
-    if (t->ppc) return ppc_vector(mnemonic);
-    if (t->riscv) return reg_token(operands, "v", 0);
-    if (t->loongarch) return reg_token(operands, "$vr", 0);
-    if (t->mips) return reg_token(operands, "$w", 0);
+static int vector_register(Arch arch, const char* mnemonic, const char* operands) {
+    if (arch == ARCH_X86) return has_text(operands, "%xmm") || has_text(operands, "%ymm") || has_text(operands, "%zmm");
+    if (arch == ARCH_AARCH64) return reg_token(operands, "v", 1) || reg_token(operands, "q", 0);
+    if (arch == ARCH_PPC) return ppc_vector(mnemonic);
+    if (arch == ARCH_RISCV) return reg_token(operands, "v", 0);
+    if (arch == ARCH_LOONGARCH) return reg_token(operands, "$vr", 0);
+    if (arch == ARCH_MIPS) return reg_token(operands, "$w", 0);
     return 0;
 }
 
-static int call_instruction(const Target* t, const char* mnemonic) {
-    if (t->x86) return !strcmp(mnemonic, "call") || !strcmp(mnemonic, "callq") || !strcmp(mnemonic, "calll");
-    if (t->aarch64) return begins(mnemonic, "bl");
-    if (t->ppc) return !strcmp(mnemonic, "bl") || !strcmp(mnemonic, "bctrl") || !strcmp(mnemonic, "blrl");
-    if (t->riscv) return !strcmp(mnemonic, "jal") || !strcmp(mnemonic, "jalr");
-    if (t->loongarch) return !strcmp(mnemonic, "bl") || !strcmp(mnemonic, "jirl");
-    if (t->mips) return !strcmp(mnemonic, "jal") || !strcmp(mnemonic, "jalr") || !strcmp(mnemonic, "bal");
+static int call_instruction(Arch arch, const char* mnemonic) {
+    if (arch == ARCH_X86) return !strcmp(mnemonic, "call") || !strcmp(mnemonic, "callq") || !strcmp(mnemonic, "calll");
+    if (arch == ARCH_AARCH64) return begins(mnemonic, "bl");
+    if (arch == ARCH_PPC) return !strcmp(mnemonic, "bl") || !strcmp(mnemonic, "bctrl") || !strcmp(mnemonic, "blrl");
+    if (arch == ARCH_RISCV) return !strcmp(mnemonic, "jal") || !strcmp(mnemonic, "jalr");
+    if (arch == ARCH_LOONGARCH) return !strcmp(mnemonic, "bl") || !strcmp(mnemonic, "jirl");
+    if (arch == ARCH_MIPS) return !strcmp(mnemonic, "jal") || !strcmp(mnemonic, "jalr") || !strcmp(mnemonic, "bal");
     return 0;
 }
 
-static int shuffle_instruction(const Target* t, const char* mnemonic, const char* operands) {
-    if (t->x86)
+static int shuffle_instruction(Arch arch, const char* mnemonic, const char* operands) {
+    if (arch == ARCH_X86)
         return has_text(mnemonic, "shuf") || has_text(mnemonic, "perm") || has_text(mnemonic, "unpck") ||
                has_text(mnemonic, "palign") || has_text(mnemonic, "broadcast") || has_text(mnemonic, "ddup") ||
                has_text(mnemonic, "shdup") || has_text(mnemonic, "sldup");
-    if (t->aarch64)
-        return vector_register(t, mnemonic, operands) &&
+    if (arch == ARCH_AARCH64)
+        return vector_register(arch, mnemonic, operands) &&
                (begins(mnemonic, "tbl") || begins(mnemonic, "tbx") || begins(mnemonic, "zip") ||
                 begins(mnemonic, "uzp") || begins(mnemonic, "trn") || !strcmp(mnemonic, "ext") ||
                 begins(mnemonic, "rev") || begins(mnemonic, "dup"));
-    if (t->ppc)
+    if (arch == ARCH_PPC)
         return has_text(mnemonic, "perm") || has_text(mnemonic, "sldoi") || begins(mnemonic, "vsl") ||
                begins(mnemonic, "vsr");
-    if (t->riscv) return begins(mnemonic, "vrgather") || begins(mnemonic, "vslide");
-    if (t->loongarch)
+    if (arch == ARCH_RISCV) return begins(mnemonic, "vrgather") || begins(mnemonic, "vslide");
+    if (arch == ARCH_LOONGARCH)
         return begins(mnemonic, "vshuf") || begins(mnemonic, "vext") || begins(mnemonic, "vilv") ||
                begins(mnemonic, "vpick");
-    if (t->mips)
+    if (arch == ARCH_MIPS)
         return begins(mnemonic, "vshf") || begins(mnemonic, "vsldoi") || begins(mnemonic, "vinsve") ||
                begins(mnemonic, "vext");
     return 0;
 }
 
-static int move_instruction(const Target* t, const char* mnemonic, const char* operands) {
+static int move_instruction(Arch arch, const char* mnemonic, const char* operands) {
     static const char* const x86_moves[] = {"movd",  "movq",   "vmovd",  "vmovq",    "movss",
                                             "movsd", "vmovss", "vmovsd", "insertps", "extractps"};
-    if (t->x86) {
+    if (arch == ARCH_X86) {
         if (strchr(operands, '(')) return 0; /* the general register is an address, not the other operand */
-        if (!vector_register(t, mnemonic, operands) || !x86_gpr(operands)) return 0;
+        if (!vector_register(arch, mnemonic, operands) || !x86_gpr(operands)) return 0;
         for (size_t i = 0; i < sizeof(x86_moves) / sizeof(x86_moves[0]); ++i)
             if (!strcmp(mnemonic, x86_moves[i])) return 1;
         return begins(mnemonic, "pinsr") || begins(mnemonic, "pextr") || begins(mnemonic, "vpinsr") ||
                begins(mnemonic, "vpextr");
     }
-    if (t->aarch64)
+    if (arch == ARCH_AARCH64)
         return (!strcmp(mnemonic, "fmov") || !strcmp(mnemonic, "umov") || !strcmp(mnemonic, "smov") ||
                 !strcmp(mnemonic, "ins") || begins(mnemonic, "dup")) &&
                arm_gpr(operands) && arm_fp(operands);
-    if (t->ppc) return begins(mnemonic, "mtvsr") || begins(mnemonic, "mfvsr");
-    if (t->riscv) return !strcmp(mnemonic, "vmv.x.s") || !strcmp(mnemonic, "vmv.s.x");
-    if (t->loongarch) return begins(mnemonic, "movfr2gr") || begins(mnemonic, "movgr2fr");
-    if (t->mips) return begins(mnemonic, "insert.") || begins(mnemonic, "copy_s.") || begins(mnemonic, "copy_u.");
+    if (arch == ARCH_PPC) return begins(mnemonic, "mtvsr") || begins(mnemonic, "mfvsr");
+    if (arch == ARCH_RISCV) return !strcmp(mnemonic, "vmv.x.s") || !strcmp(mnemonic, "vmv.s.x");
+    if (arch == ARCH_LOONGARCH) return begins(mnemonic, "movfr2gr") || begins(mnemonic, "movgr2fr");
+    if (arch == ARCH_MIPS)
+        return begins(mnemonic, "insert.") || begins(mnemonic, "copy_s.") || begins(mnemonic, "copy_u.");
     return 0;
 }
 
-static void count_instruction(const Target* t, const char* mnemonic, const char* operands, ObjectCount* c) {
+static void count_instruction(Arch arch, const char* mnemonic, const char* operands, ObjectCount* c) {
     ++c->instructions;
-    if (call_instruction(t, mnemonic)) ++c->calls;
-    if (vector_register(t, mnemonic, operands)) ++c->vector;
-    if (shuffle_instruction(t, mnemonic, operands)) ++c->shuffles;
-    if (move_instruction(t, mnemonic, operands)) ++c->moves;
+    if (call_instruction(arch, mnemonic)) ++c->calls;
+    if (vector_register(arch, mnemonic, operands)) ++c->vector;
+    if (shuffle_instruction(arch, mnemonic, operands)) ++c->shuffles;
+    if (move_instruction(arch, mnemonic, operands)) ++c->moves;
 }
 
-static void target_of(Target* t, const char* triple) {
-    memset(t, 0, sizeof(*t));
-    t->x86 = !strncmp(triple, "x86_64", 6) || !strncmp(triple, "i386", 4) || !strncmp(triple, "i686", 4);
-    t->aarch64 = !strncmp(triple, "aarch64", 7) || !strncmp(triple, "arm64", 5);
-    t->ppc = !strncmp(triple, "powerpc64", 9) || !strncmp(triple, "ppc64", 5);
-    t->riscv = !strncmp(triple, "riscv64", 7);
-    t->loongarch = !strncmp(triple, "loongarch64", 11);
-    t->mips = !strncmp(triple, "mips64", 6);
+static Arch arch_of(const char* triple) {
+    if (!strncmp(triple, "x86_64", 6) || !strncmp(triple, "i386", 4) || !strncmp(triple, "i686", 4)) return ARCH_X86;
+    if (!strncmp(triple, "aarch64", 7) || !strncmp(triple, "arm64", 5)) return ARCH_AARCH64;
+    if (!strncmp(triple, "powerpc64", 9) || !strncmp(triple, "ppc64", 5)) return ARCH_PPC;
+    if (!strncmp(triple, "riscv64", 7)) return ARCH_RISCV;
+    if (!strncmp(triple, "loongarch64", 11)) return ARCH_LOONGARCH;
+    if (!strncmp(triple, "mips64", 6)) return ARCH_MIPS;
+    return ARCH_OTHER;
 }
 
 /* counts the object at path into words' at[p], from llvm-objdump's disassembly of its S_<n> functions */
 static int object_counts(const char* path, const char* objdump, const char* triple, Word* words, size_t count,
                          unsigned p) {
     const char* argv[] = {objdump, "-d", "--no-show-raw-insn", path, NULL};
-    Target target;
+    const Arch arch = arch_of(triple);
     char* text = NULL;
     long at = -1;
     size_t missing = 0;
-    target_of(&target, triple);
     if (snx_run_all(argv, NULL, NULL, &text) || !text) {
         fprintf(stderr, "cannot run %s on %s\n", objdump, path);
         free(text);
@@ -463,7 +461,7 @@ static int object_counts(const char* path, const char* objdump, const char* trip
             save = *operands;
             *operands = 0;
             if (at >= 0 && (size_t)at < count)
-                count_instruction(&target, mnemonic, save ? operands + 1 : "", &words[at].at[p].object);
+                count_instruction(arch, mnemonic, save ? operands + 1 : "", &words[at].at[p].object);
             *operands = save;
         } else if (q && *q == ' ' && !strncmp(q + 1, "<S_", 3)) {
             char* index = NULL;
@@ -827,11 +825,7 @@ int main(int argc, char** argv) {
     }
     if (triple && only != GENERIC) {
         /* the path's emitters use its architecture's intrinsics: another triple's must be the same architecture */
-        Target want, given;
-        target_of(&want, paths[only].triple);
-        target_of(&given, triple);
-        if (want.x86 != given.x86 || want.aarch64 != given.aarch64 || want.ppc != given.ppc ||
-            want.riscv != given.riscv || want.loongarch != given.loongarch || want.mips != given.mips) {
+        if (arch_of(paths[only].triple) != arch_of(triple)) {
             fprintf(stderr, "snx-test-llvm-lowering: path %s needs a --triple of %s's architecture, not %s\n",
                     path_name, paths[only].triple, triple);
             return 2;
