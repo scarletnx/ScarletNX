@@ -1462,7 +1462,10 @@ static int stage_ok(Ctx* c, const Sm86Insn* in) {
     int compute =
         op == SM86_S2R || op == SM86_S2UR || op == SM86_LDS || op == SM86_STS || op == SM86_STS_NOU || op == SM86_BAR;
     int fragment = op == SM86_IPA || op == SM86_KILL || op == SM86_TMML;
-    if (compute && (op == SM86_S2R || op == SM86_S2UR)) compute = sm86_field(in, 72, 8) != 0;
+    /* the thread and block ids (TID 0x21-0x23, CTAID 0x25-0x27) are a compute program's. The lane and its masks
+       (LANEID 0x00, EQMASK to GEMASK 0x38-0x3c) are every stage's, as a fragment program's LTMASK before a VOTE shows */
+    if (compute && (op == SM86_S2R || op == SM86_S2UR))
+        compute = sm86_field(in, 72, 8) >= 0x20 && sm86_field(in, 72, 8) <= 0x27;
     if (compute && c->stage != ST_CS) return 0;
     if (fragment && c->stage != ST_FS) return 0;
     return 1;
@@ -1495,6 +1498,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_DEPBAR:
         case SM86_BSSY:
         case SM86_BSYNC:
+        case SM86_BREAK: /* it takes its lanes out of a convergence barrier and goes on: the BRA after it leaves */
         case SM86_WARPSYNC: return;
         case SM86_MOV: wr(c, in->dst, src_bits(c, &in->b)); return;
         case SM86_FADD:
@@ -2195,11 +2199,24 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_LDC: {
             u32 type = sm86_field(in, 73, 3), bank = sm86_field(in, 54, 5), off = sm86_field(in, 38, 16);
             u32 r = sm86_field(in, 24, 8);
-            if (sm86_field(in, 78, 2) || (type != 4 && type != 5)) {
+            if (sm86_field(in, 78, 2) || type > 5) {
                 fail(c, "LDC of type %u, mode %u", type, sm86_field(in, 78, 2));
                 return;
             }
             u32 index = r < SM86_RZ ? rd(c, r) : 0;
+            if (type < 4) {
+                /* NAK's MemType U8 (0), I8 (1), U16 (2), I16 (3): a byte or a halfword of the word at the address,
+                   zero or sign extended, as mem_load takes one from memory */
+                u32 at = index ? spv_emit_iadd_u32(&c->e, c->t_u32, index, cu(c, off)) : cu(c, off);
+                u32 shift = spv_emit_shift_left_u32(
+                    &c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, at, cu(c, type < 2 ? 3 : 2)), cu(c, 3));
+                u32 word = cbuf_load(c, bank, off, index), bits = cu(c, type < 2 ? 8 : 16);
+                wr(c, in->dst,
+                   type & 1 ? to_u(c, spv_emit_bitfield_sextract(&c->e, c->t_i32,
+                                                                 spv_emit_bitcast(&c->e, c->t_i32, word), shift, bits))
+                            : spv_emit_bitfield_uextract(&c->e, c->t_u32, word, shift, bits));
+                return;
+            }
             wr(c, in->dst, cbuf_load(c, bank, off, index));
             if (type == 5 && in->dst < SM86_RZ) wr(c, in->dst + 1, cbuf_load(c, bank, off + 4, index));
             return;
