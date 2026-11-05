@@ -257,6 +257,16 @@ static void lanes(int width, int near, u32 fpcr, u32 fpsr) {
             }
         }
         for (i = count * bytes; i < 16; ++i) bad |= out[i] != 0xA5;
+        /* The emitter reuses x as out. Check read-before-write aliasing for every helper and mode. */
+        unsigned char inplace[16];
+        for (i = 0; i < 16; ++i) inplace[i] = 0xA5;
+        memcpy(inplace, x, count * bytes);
+        CPU aliased = state(fpcr, fpsr);
+        snx_fp_host_lanes_c(&aliased, inplace, inplace, y, z,
+                            kinds[k].helper | bytes << 4 | count << 8 | (u32)kinds[k].op << 12 |
+                                (u32)kinds[k].numeric << 16);
+        g_test.checks++;
+        bad |= memcmp(inplace, out, sizeof inplace) || aliased.fpsr != soft.fpsr;
         if (!bad && host.fpsr != soft.fpsr)
             report("lanes' FPSR", width, (int)k, a[0], b[0], d[0], fpcr, fpsr, 0, 0, host.fpsr, soft.fpsr);
         else if (bad && g_test.failures == 0)

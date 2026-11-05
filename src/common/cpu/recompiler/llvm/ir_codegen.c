@@ -53,6 +53,7 @@ void snx_ir_begin(SnxIr* ir, LLVMValueRef function) {
     ir->entry_mismatch = NULL;
     ir->dump_active = 0;
     ir->fn = function;
+    ir->fp_lanes_scratch = NULL;
     LLVMPositionBuilderAtEnd(B, LLVMAppendBasicBlockInContext(ir->ctx, function, "entry"));
     ir->c = LLVMGetParam(function, 0);
     ir->M = ir_cpu_load(ir, ir->t_ptr, ir_off_mem());

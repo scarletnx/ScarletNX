@@ -681,6 +681,19 @@ snx_test_target(snx-test-llvm-vfp-lanes 11)
 snx_cpu_helpers_flags(snx-test-llvm-vfp-lanes)
 target_link_libraries(snx-test-llvm-vfp-lanes PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_vfp_lanes COMMAND snx-test-llvm-vfp-lanes)
+add_executable(snx-test-llvm-vfp-batch llvm_vfp_batch.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-vfp-batch 11)
+snx_cpu_helpers_flags(snx-test-llvm-vfp-batch)
+target_link_libraries(snx-test-llvm-vfp-batch PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_vfp_batch COMMAND snx-test-llvm-vfp-batch)
+# exact vector comparisons, including NaN and flushed-denormal lanes
+add_executable(snx-test-llvm-vfp-compare llvm_vfp_compare.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-vfp-compare 11)
+snx_cpu_helpers_flags(snx-test-llvm-vfp-compare)
+target_link_libraries(snx-test-llvm-vfp-compare PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_vfp_compare COMMAND snx-test-llvm-vfp-compare)
 # the same fast paths taken for normal operands, with FPCR.FZ clear and set and without FPSR's flags: no helper call
 # left once LLVM folds the guards
 add_executable(snx-test-llvm-fp-fast llvm_fp_fast.c llvm_steps.c)
@@ -725,12 +738,43 @@ snx_cpu_helpers_flags(snx-test-llvm-simd-shift)
 target_link_libraries(snx-test-llvm-simd-shift PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_simd_shift COMMAND snx-test-llvm-simd-shift)
 
+add_executable(snx-test-llvm-fp-cold llvm_fp_cold.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-fp-cold 99)
+snx_cpu_helpers_flags(snx-test-llvm-fp-cold)
+target_link_libraries(snx-test-llvm-fp-cold PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_fp_cold COMMAND snx-test-llvm-fp-cold)
+set_tests_properties(llvm_fp_cold PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+
+add_executable(snx-test-llvm-fp-pointer-chain llvm_fp_pointer_chain.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-fp-pointer-chain 11)
+snx_cpu_helpers_flags(snx-test-llvm-fp-pointer-chain)
+target_link_libraries(snx-test-llvm-fp-pointer-chain PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_fp_pointer_chain COMMAND snx-test-llvm-fp-pointer-chain)
+set_tests_properties(llvm_fp_pointer_chain PROPERTIES TIMEOUT 120)
+
+add_executable(snx-test-llvm-vfp-minmax llvm_vfp_minmax.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-vfp-minmax 11)
+snx_cpu_helpers_flags(snx-test-llvm-vfp-minmax)
+target_link_libraries(snx-test-llvm-vfp-minmax PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_vfp_minmax COMMAND snx-test-llvm-vfp-minmax)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME llvm_half_order_math COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/llvm_perf/half_order_math.py")
+endif()
+
 add_executable(snx-test-llvm-round llvm_round.c llvm_steps.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
 snx_test_target(snx-test-llvm-round 11)
 snx_cpu_helpers_flags(snx-test-llvm-round)
 target_link_libraries(snx-test-llvm-round PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_round COMMAND snx-test-llvm-round)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME llvm_half_round_math COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/llvm_perf/half_round_math.py")
+endif()
 
 add_executable(snx-test-llvm-estimates llvm_estimates.c llvm_steps.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -752,6 +796,10 @@ snx_test_target(snx-test-llvm-half 11)
 snx_cpu_helpers_flags(snx-test-llvm-half)
 target_link_libraries(snx-test-llvm-half PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_half COMMAND snx-test-llvm-half)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME llvm_half_widen_math COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/llvm_perf/half_widen_math.py")
+endif()
 
 add_executable(snx-test-llvm-fma-residual llvm_fma_residual.c llvm_steps.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -767,6 +815,11 @@ snx_cpu_helpers_flags(snx-test-llvm-vfp-residual)
 target_link_libraries(snx-test-llvm-vfp-residual PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_vfp_residual COMMAND snx-test-llvm-vfp-residual)
 
+add_executable(snx-test-llvm-fp-env llvm_fp_env.c llvm_steps.c)
+snx_test_target(snx-test-llvm-fp-env 11)
+target_link_libraries(snx-test-llvm-fp-env PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_fp_env COMMAND snx-test-llvm-fp-env)
+
 add_executable(snx-test-llvm-fp-helper-effects llvm_fp_helper_effects.c)
 snx_test_target(snx-test-llvm-fp-helper-effects 11)
 target_link_libraries(snx-test-llvm-fp-helper-effects PRIVATE snx_llvm snx_driver)
@@ -774,6 +827,12 @@ add_test(NAME llvm_fp_helper_effects COMMAND snx-test-llvm-fp-helper-effects)
 
 # ir_promote_registers at every boundary (SVC, BL, BLR, poll, dispatch entry, stale code, each helper class, a
 # register left in the CPU structure) with every register kind, against a C model and the same program at O0
+add_executable(snx-test-llvm-promote-edges llvm_promote_edges.c)
+snx_test_target(snx-test-llvm-promote-edges 99)
+target_link_libraries(snx-test-llvm-promote-edges PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_promote_edges COMMAND snx-test-llvm-promote-edges)
+set_tests_properties(llvm_promote_edges PROPERTIES TIMEOUT 120)
+
 add_executable(snx-test-llvm-promote-sync llvm_promote_sync.c llvm_steps.c)
 snx_test_target(snx-test-llvm-promote-sync 99)
 target_link_libraries(snx-test-llvm-promote-sync PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
@@ -1322,6 +1381,7 @@ add_test(NAME result_macros COMMAND snx-test-result-macros)
 
 # generated and checked in (the controls' atlas, their shaders): their sources must still make them
 if(Python3_Interpreter_FOUND)
+    add_test(NAME cpu_sample_recovery COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/cpu_sample.py")
     add_test(NAME nvn_coverage COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/nvn_coverage.py")
     add_test(NAME gpu_tuner COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tune_gpu_test.py")
     add_test(NAME nvn_draw_benchmark COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/bench_nvn_draws_test.py")
@@ -1840,8 +1900,9 @@ if(NOT WIN32)
     snx_a64dec(snx-test-llvm-atomic-rmw)
     add_test(NAME llvm_atomic_rmw COMMAND snx-test-llvm-atomic-rmw)
     set_tests_properties(llvm_atomic_rmw PROPERTIES SKIP_RETURN_CODE 77)
-    add_executable(snx-test-llvm-block-fuzz llvm_block_fuzz.c llvm_steps.c qemu_ref/qemu_ref.c)
+    add_executable(snx-test-llvm-block-fuzz llvm_block_fuzz.c llvm_steps.c llvm_qemu_words.c qemu_ref/qemu_ref.c)
     snx_test_target(snx-test-llvm-block-fuzz 11)
+    snx_a64dec(snx-test-llvm-block-fuzz)
     target_link_libraries(snx-test-llvm-block-fuzz PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
     if(SNX_QEMU_REF)
         add_dependencies(snx-test-llvm-block-fuzz snx_qemu_ref_runner)
@@ -1864,6 +1925,12 @@ if(NOT WIN32)
                 "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/block_fuzz_${mode}" ${args})
             set_tests_properties(llvm_block_fuzz_${mode} PROPERTIES TIMEOUT 180)
         endforeach()
+        if(Python3_Interpreter_FOUND)
+            add_test(NAME llvm_block_fuzz_seed_matrix COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/llvm_block_fuzz_matrix.py" $<TARGET_FILE:snx-test-llvm-block-fuzz>
+                "${SNX_QEMU_AARCH64}" "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/block_fuzz_seed_matrix")
+            set_tests_properties(llvm_block_fuzz_seed_matrix PROPERTIES TIMEOUT 600)
+        endif()
     else()
         add_test(NAME llvm_block_fuzz COMMAND snx-test-llvm-block-fuzz --skip "${SNX_QEMU_REF_MISSING}")
         set_tests_properties(llvm_block_fuzz PROPERTIES SKIP_RETURN_CODE 77)

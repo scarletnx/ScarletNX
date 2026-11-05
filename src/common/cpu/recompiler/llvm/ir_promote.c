@@ -652,17 +652,55 @@ done:
    starts with PHIs (the FP fast paths' joins) keeps its stores: its edges are left as they are. 0, or -1 out of
    memory */
 static int edge_stores(SnxIr* ir, LLVMValueRef fn, LLVMBuilderRef b, const Block* blocks, size_t nblocks,
-                       const Event* events, Site* sites, LLVMValueRef* local) {
-    Set* out = (Set*)malloc((nblocks ? nblocks : 1) * sizeof(*out));
-    size_t i, e, p;
+                       const BlockKey* keys, const Event* events, Site* sites, LLVMValueRef* local) {
+    typedef struct {
+        size_t block, successor;
+    } Incoming;
+    size_t edges = 0;
+    for (size_t i = 0; i < nblocks; ++i) {
+        LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[i].block);
+        unsigned n = term ? LLVMGetNumSuccessors(term) : 0;
+        if (n > SIZE_MAX - edges) return -1;
+        edges += n;
+    }
+    if (nblocks > (SIZE_MAX - sizeof(size_t)) / (sizeof(Set) + 2 * sizeof(size_t))) return -1;
+    size_t bytes = nblocks * (sizeof(Set) + 2 * sizeof(size_t)) + sizeof(size_t);
+    if (edges > (SIZE_MAX - bytes) / sizeof(Incoming)) return -1;
+    /* One owner for the outgoing sets and a stable index of incoming edges. Each original successor keeps its
+       source/block order, including duplicate switch edges. A split changes that edge alone, so other targets'
+       lists remain valid. Scanning every block for every dirty register was quadratic on large FP functions. */
+    Set* out = (Set*)calloc(1, bytes + edges * sizeof(Incoming));
     if (!out) return -1;
-    for (i = 0; i < nblocks; ++i) out[i] = dirty_through(&blocks[i], events, sites, 0, blocks[i].dirty_in);
-    for (i = 1; i < nblocks; ++i) {
+    size_t* first = (size_t*)(out + nblocks);
+    size_t* fill = first + nblocks + 1;
+    Incoming* incoming = (Incoming*)(fill + nblocks);
+    for (size_t i = 0; i < nblocks; ++i) {
+        LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[i].block);
+        unsigned n = term ? LLVMGetNumSuccessors(term) : 0;
+        for (unsigned j = 0; j < n; ++j) {
+            size_t target = block_index(keys, nblocks, LLVMGetSuccessor(term, j));
+            if (target < nblocks) ++first[target + 1];
+        }
+    }
+    for (size_t i = 0; i < nblocks; ++i) {
+        first[i + 1] += first[i];
+        fill[i] = first[i];
+    }
+    for (size_t i = 0; i < nblocks; ++i) {
+        LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[i].block);
+        unsigned n = term ? LLVMGetNumSuccessors(term) : 0;
+        for (unsigned j = 0; j < n; ++j) {
+            size_t target = block_index(keys, nblocks, LLVMGetSuccessor(term, j));
+            if (target < nblocks) incoming[fill[target]++] = (Incoming){i, j};
+        }
+    }
+    for (size_t i = 0; i < nblocks; ++i) out[i] = dirty_through(&blocks[i], events, sites, 0, blocks[i].dirty_in);
+    for (size_t i = 1; i < nblocks; ++i) {
         Set written = {{0, 0}}, moved = {{0, 0}};
         size_t site = (size_t)-1;
-        LLVMValueRef first = LLVMGetFirstInstruction(blocks[i].block);
-        if (first && LLVMIsAPHINode(first)) continue;
-        for (e = blocks[i].first; e < blocks[i].first + blocks[i].count; ++e) {
+        LLVMValueRef first_inst = LLVMGetFirstInstruction(blocks[i].block);
+        if (first_inst && LLVMIsAPHINode(first_inst)) continue;
+        for (size_t e = blocks[i].first; e < blocks[i].first + blocks[i].count; ++e) {
             if (events[e].kind == WRITE || events[e].kind == PART) set_add(&written, events[e].index);
             if (events[e].kind == SITE) {
                 site = events[e].index;
@@ -672,43 +710,38 @@ static int edge_stores(SnxIr* ir, LLVMValueRef fn, LLVMBuilderRef b, const Block
         if (site == (size_t)-1) continue;
         for (unsigned slot = 0; slot < SLOTS; ++slot) {
             if (!local[slot] || !set_has(&sites[site].dirty, slot) || set_has(&written, slot)) continue;
-            for (p = 0; p < nblocks; ++p) {
-                LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[p].block);
-                unsigned n = term ? LLVMGetNumSuccessors(term) : 0, j;
-                for (j = 0; j < n; ++j)
-                    if (LLVMGetSuccessor(term, j) == blocks[i].block && !set_has(&out[p], slot)) break;
-                if (j < n) break;
-            }
-            if (p < nblocks) set_add(&moved, slot);
+            size_t edge = first[i];
+            for (; edge < first[i + 1]; ++edge)
+                if (!set_has(&out[incoming[edge].block], slot)) break;
+            if (edge < first[i + 1]) set_add(&moved, slot);
         }
         if (!moved.w[0] && !moved.w[1]) continue;
         sites[site].dirty.w[0] &= ~moved.w[0];
         sites[site].dirty.w[1] &= ~moved.w[1];
-        for (p = 0; p < nblocks; ++p) {
+        for (size_t edge = first[i]; edge < first[i + 1]; ++edge) {
+            size_t p = incoming[edge].block;
+            unsigned j = (unsigned)incoming[edge].successor;
             LLVMValueRef term = LLVMGetBasicBlockTerminator(blocks[p].block);
-            unsigned n = term ? LLVMGetNumSuccessors(term) : 0;
+            unsigned n = LLVMGetNumSuccessors(term);
             Set need = {{out[p].w[0] & moved.w[0], out[p].w[1] & moved.w[1]}};
-            if (!need.w[0] && !need.w[1]) continue;
-            for (unsigned j = 0; j < n; ++j) {
-                if (LLVMGetSuccessor(term, j) != blocks[i].block) continue;
-                if (n == 1) {
-                    LLVMPositionBuilderBefore(b, term);
-                } else {
-                    LLVMBasicBlockRef edge = LLVMAppendBasicBlockInContext(ir->ctx, fn, "edge");
-                    LLVMSetSuccessor(term, j, edge);
-                    LLVMPositionBuilderAtEnd(b, edge);
-                    LLVMPositionBuilderBefore(b, LLVMBuildBr(b, blocks[i].block));
-                }
-                for (unsigned slot = 0; slot < SLOTS; ++slot)
-                    if (set_has(&need, slot)) {
-                        copy(ir, b, slot, local[slot], cpu_pointer(ir, b, slot), 1);
-                        if (ir->stats.enabled) {
-                            ++ir->stats.sync_stores;
-                            ++ir->stats.edge_stores;
-                            ir->stats.store_bytes += slot_size(slot);
-                        }
-                    }
+            if ((!need.w[0] && !need.w[1]) || LLVMGetSuccessor(term, j) != blocks[i].block) continue;
+            if (n == 1) {
+                LLVMPositionBuilderBefore(b, term);
+            } else {
+                LLVMBasicBlockRef split = LLVMAppendBasicBlockInContext(ir->ctx, fn, "edge");
+                LLVMSetSuccessor(term, j, split);
+                LLVMPositionBuilderAtEnd(b, split);
+                LLVMPositionBuilderBefore(b, LLVMBuildBr(b, blocks[i].block));
             }
+            for (unsigned slot = 0; slot < SLOTS; ++slot)
+                if (set_has(&need, slot)) {
+                    copy(ir, b, slot, local[slot], cpu_pointer(ir, b, slot), 1);
+                    if (ir->stats.enabled) {
+                        ++ir->stats.sync_stores;
+                        ++ir->stats.edge_stores;
+                        ir->stats.store_bytes += slot_size(slot);
+                    }
+                }
         }
     }
     free(out);
@@ -949,7 +982,7 @@ void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
         if (LLVMGetAlignment(a->inst) > (unsigned)(a->delta ? a->delta & -a->delta : 16))
             LLVMSetAlignment(a->inst, a->delta & -a->delta);
     }
-    if (edge_stores(ir, fn, b, blocks, nblocks, events, sites, local)) {
+    if (edge_stores(ir, fn, b, blocks, nblocks, keys, events, sites, local)) {
         LLVMDisposeBuilder(b);
         goto done;
     }

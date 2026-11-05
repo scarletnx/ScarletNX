@@ -61,8 +61,10 @@ static inline int ir_fp_reply_in_memory(SnxIr* ir) {
 static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count,
                                             int with_fpsr) {
     /* in registers, a big-endian host's ABI (PowerPC64's ELFv2, MIPS64's n64) loads the structure's second
-       doubleword whole, the flags in its high half */
-    const int in_memory = ir_fp_reply_in_memory(ir), high = !in_memory && ir->big_endian;
+       doubleword whole, the flags in its high half. The byte order is the target machine's: llvm_vfp_compare sets
+       big_endian on a little-endian host to run the big-endian lane paths, and the helper's ABI stays the host's */
+    const int in_memory = ir_fp_reply_in_memory(ir);
+    const int high = !in_memory && LLVMByteOrder(LLVMGetModuleDataLayout(ir->mod)) == LLVMBigEndian;
     LLVMTypeRef params[9], fields[2] = {ir->t_i64, high ? ir->t_i64 : ir->t_i32};
     LLVMValueRef args[9];
     unsigned n = count;

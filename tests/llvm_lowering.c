@@ -58,7 +58,9 @@ typedef struct {
     const char* triple;
     SnxIrFeatures features;
     /* the target features the emitters' instructions need, as Clang writes them on a function for -mattr: the target
-       machine's own are its triple's baseline, which the x86 and AArch64 paths outgrow */
+       machine's own are its triple's baseline, which the x86 and AArch64 paths outgrow. The attribute replaces the
+       target machine's features, so the x86 paths repeat its +cx16 (new_ir): without it, the entry helper that
+       snx_ir_module_optimize imports has a feature its callers lack, and LLVM does not inline it */
     const char* target_features;
 } Path;
 
@@ -80,8 +82,8 @@ static const Path paths[PATHS] = {
       .avx512dq = 1,
       .avx512vl = 1,
       .avx512vbmi = 1},
-     "+ssse3,+sse4.2,+crc32,+pclmul,+aes,+sha,+gfni,+fma,+f16c,+avx2,+avx512f,+avx512dq,+avx512vl,+avx512bw,"
-     "+avx512vbmi"},
+     "+cx16,+ssse3,+sse4.2,+crc32,+pclmul,+aes,+sha,+gfni,+fma,+f16c,+avx2,+avx512f,+avx512dq,+avx512vl,"
+     "+avx512bw,+avx512vbmi"},
     {"x86-avx2",
      "x86_64-unknown-linux-gnu",
      {.x86 = 1,
@@ -95,7 +97,7 @@ static const Path paths[PATHS] = {
       .fma = 1,
       .f16c = 1,
       .avx2 = 1},
-     "+ssse3,+sse4.2,+crc32,+pclmul,+aes,+sha,+gfni,+fma,+f16c,+avx2"},
+     "+cx16,+ssse3,+sse4.2,+crc32,+pclmul,+aes,+sha,+gfni,+fma,+f16c,+avx2"},
     {"x86-base", "x86_64-unknown-linux-gnu", {.x86 = 1}, ""},
     {"aarch64",
      "aarch64-unknown-linux-gnu",
@@ -266,6 +268,7 @@ static int classify(LLVMValueRef fn, Result* r) {
             if (op == LLVMSIToFP) ++r->sitofp;
             if (op != LLVMCall) continue;
             LLVMValueRef callee = LLVMGetCalledValue(i);
+            if (LLVMIsAInlineAsm(callee)) continue; /* native instructions, not an indirect helper call */
             size_t length = 0;
             const char* name = LLVMIsAFunction(callee) ? LLVMGetValueName2(callee, &length) : "(indirect)";
             if (!LLVMIsAFunction(callee)) length = strlen(name);
@@ -313,6 +316,32 @@ static int classify(LLVMValueRef fn, Result* r) {
                                                             : SHAPE_SCALAR;
     free(blocks);
     return 0;
+}
+
+/* A native FP-environment helper uses inline assembly on AArch64. Keep that distinct from a real function-pointer
+   call, even when the census runs on another host. Both controls retain their calls through optimization. */
+static int classify_controls(void) {
+    char error[1024];
+    SnxIr* ir = snx_ir_new("lowering_controls", '2', error, sizeof error);
+    if (!ir) return snx_error("%s", error);
+    LLVMTypeRef plain = LLVMFunctionType(ir->t_void, NULL, 0, 0);
+    LLVMValueRef assembly = LLVMAddFunction(ir->mod, "assembly", plain);
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, assembly, "entry"));
+    LLVMValueRef body = LLVMGetInlineAsm(plain, "", 0, "", 0, 1, 0, LLVMInlineAsmDialectATT, 0);
+    LLVMBuildCall2(ir->b, plain, body, NULL, 0, "");
+    LLVMBuildRetVoid(ir->b);
+    LLVMValueRef indirect = LLVMAddFunction(ir->mod, "indirect", LLVMFunctionType(ir->t_void, &ir->t_ptr, 1, 0));
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, indirect, "entry"));
+    LLVMBuildCall2(ir->b, plain, LLVMGetParam(indirect, 0), NULL, 0, "");
+    LLVMBuildRetVoid(ir->b);
+    int failed = snx_ir_module_optimize(ir, ir->mod, '2', error, sizeof error);
+    Result a, b;
+    if (!failed) {
+        failed = classify(assembly, &a) || classify(indirect, &b) || a.cls != CLASS_INLINE || a.calls ||
+                 b.cls != CLASS_HELPER || b.calls != 1 || strcmp(b.helpers, "(indirect)");
+    }
+    snx_ir_free(ir);
+    return failed ? snx_error("inline-assembly and indirect-call census controls differ") : 0;
 }
 
 /* ---- the object's counts ----
@@ -951,6 +980,7 @@ int main(int argc, char** argv) {
     LLVMInitializeAllTargetMCs();
     LLVMInitializeAllAsmPrinters();
     snx_ir_slp_vectorizer(0);
+    if (classify_controls()) return 1;
 
     uint32_t* rows = NULL;
     size_t nrows = lqd_row_words(1, next_random, &rows), count = 0;
