@@ -2,8 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* A game read where it lies against its extraction (tests/3ds_container.py): snx_ctr_source_open accepts what the
    extraction accepts, and its ExeFS files, its image identity and every RomFS file read through the guest's view of
-   the mapped CIA's level 3 are the extraction's bytes. Usage: probe CIA [EXTRACTED]. Exit 0, or 20 + the open's
-   SnxCtrExtractResult when it refused the CIA */
+   the mapped CIA's level 3 are the extraction's bytes. Usage: probe CIA [EXTRACTED], or probe GAME --update UPDATE,
+   which prints what the game with the update laid over it reads. Exit 0, or 20 + the open's SnxCtrExtractResult
+   when it refused */
 #include "3ds/loader/ctr_loader.h"
 #include "3ds/loader/ctr_image.h"
 #include "3ds/services/romfs.h"
@@ -134,7 +135,7 @@ static void compare(const SnxCtrSource* game, const char* extracted) {
     /* the RomFS: the game's level 3 as the guest reads it, and the extraction's files */
     uint64_t level3_size, size;
     const unsigned char* level3 = snx_ctr_source_romfs(game, &level3_size);
-    SnxCtrRomfs *direct, *indexed;
+    SnxCtrRomfs *direct, *indexed = NULL;
     assert(snx_ctr_romfs_open_image(level3, level3_size, snx_ctr_source_mtime(game), &direct) && direct);
     FsTree tree;
     assert(fs_tree_init(&tree, extracted) == FS_TREE_OK && snx_ctr_romfs_open(&tree, &indexed) && indexed);
@@ -163,7 +164,39 @@ static void compare(const SnxCtrSource* game, const char* extracted) {
     fs_tree_destroy(&tree);
     pm_destroy(&tree.lock);
 }
+/* what the game with an update reads: its ExHeader name, the ExHeader's title, and whether the RomFS holds the file
+   the update names (UTF-16LE) and the one the base names */
+static bool has_name(const unsigned char* image, uint64_t size, const char* name) {
+    size_t n = strlen(name);
+    for (uint64_t at = 0; at + n * 2 <= size; ++at) {
+        size_t i = 0;
+        while (i < n && image[at + i * 2] == (unsigned char)name[i] && !image[at + i * 2 + 1]) ++i;
+        if (i == n) return true;
+    }
+    return false;
+}
+static int with_update(const char* game_path, const char* update_path) {
+    char error[512];
+    SnxCtrSource* game = NULL;
+    SnxCtrExtractResult result = snx_ctr_source_open_update(game_path, update_path, &game, error, sizeof error);
+    if (result != SNX_CTR_EXTRACT_OK) {
+        assert(!game && error[0]);
+        printf("refused: %s\n", error);
+        return 20 + (int)result;
+    }
+    uint64_t size;
+    const unsigned char* image = snx_ctr_source_romfs(game, &size);
+    const unsigned char* exheader = snx_ctr_source_exheader(game);
+    uint64_t icon;
+    printf("title %016llx name %.8s exheader %016llx update-file %d base-file %d icon %d\n",
+           (unsigned long long)snx_ctr_source_title(game), (const char*)exheader, (unsigned long long)le64(exheader + 0x200),
+           image && has_name(image, size, "patched.txt"), image && has_name(image, size, "hello.txt"),
+           snx_ctr_source_exefs(game, "icon", &icon) != NULL);
+    snx_ctr_source_close(game);
+    return 0;
+}
 int main(int argc, char** argv) {
+    if (argc == 4 && !strcmp(argv[2], "--update")) return with_update(argv[1], argv[3]);
     if (argc < 2 || argc > 3) return 2;
     char error[512];
     SnxCtrSource* game = NULL;

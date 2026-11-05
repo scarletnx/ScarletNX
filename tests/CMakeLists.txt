@@ -343,6 +343,21 @@ if(TARGET snx_ctr_board)
     target_link_libraries(snx-test-3ds-dsp PRIVATE snx_ctr_process)
     add_test(NAME 3ds_dsp COMMAND snx-test-3ds-dsp)
 
+    # the loader's probe of a game read where it lies, and a standalone update laid over its game
+    if(Python3_Interpreter_FOUND)
+        add_executable(snx-test-3ds-container 3ds_container.c)
+        snx_test_target(snx-test-3ds-container 11)
+        target_link_libraries(snx-test-3ds-container PRIVATE snx_ctr_process)
+        add_test(NAME 3ds_update COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_update.py"
+            $<TARGET_FILE:snx-test-3ds-container>)
+        # a game's DLC laid beside it, served by the NCCH archive and am:app
+        add_executable(snx-test-3ds-dlc 3ds_dlc.c support/3ds_guest.c)
+        snx_test_target(snx-test-3ds-dlc 11)
+        target_link_libraries(snx-test-3ds-dlc PRIVATE snx_ctr_process)
+        add_test(NAME 3ds_dlc COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_dlc.py"
+            $<TARGET_FILE:snx-test-3ds-dlc>)
+    endif()
+
     if(NOT WIN32)
         if(Python3_Interpreter_FOUND)
             add_executable(snx-test-3ds-fs 3ds_fs.c support/3ds_guest.c)
@@ -353,10 +368,6 @@ if(TARGET snx_ctr_board)
                 $<TARGET_FILE:snx-swipc>)
             add_test(NAME 3ds_driver COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_driver.py"
                 "${SNX_CTR_PROGRAM}")
-            # a CIA read where it lies (snx_ctr_cia_open) against its extraction, on the same fixtures and mutants
-            add_executable(snx-test-3ds-container 3ds_container.c)
-            snx_test_target(snx-test-3ds-container 11)
-            target_link_libraries(snx-test-3ds-container PRIVATE snx_ctr_process)
             add_test(NAME 3ds_container COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_container.py"
                 "${SNX_CTR_PROGRAM}" $<TARGET_FILE:snx-test-3ds-container>)
             # a cartridge image or a bare NCCH against its extraction, and the update partition played as the update

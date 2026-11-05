@@ -174,9 +174,25 @@ void ctr_source_free(CtrSource* s) {
     if (s->kind == CTR_KIND_CIA) ctr_cia_free(s);
     memset(s, 0, sizeof *s);
 }
+bool ctr_dlc_source_load(CtrReader* r, CtrSource* s, CtrDlc* d) {
+    memset(s, 0, sizeof *s);
+    if (container(r, s)) {
+        if (s->kind != CTR_KIND_CIA || (s->title_id >> 32) != 0x0004008c)
+            ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "the file is not a DLC CIA");
+        else if (ctr_dlc_load(r, s, d))
+            return r->result == SNX_CTR_EXTRACT_OK;
+    }
+    ctr_source_free(s);
+    return false;
+}
 bool ctr_source_load(CtrReader* r, CtrSource* s) {
     memset(s, 0, sizeof *s);
-    if (container(r, s) && ctr_ncch_parse(r, s, &s->base, false) &&
+    if (container(r, s) && s->kind == CTR_KIND_CIA && (s->title_id >> 32) == 0x0004008c) {
+        ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "a DLC is not a game: give it with --dlc beside the game it belongs to");
+        ctr_source_free(s);
+        return false;
+    }
+    if (r->result == SNX_CTR_EXTRACT_OK && ctr_ncch_parse(r, s, &s->base, false) &&
         (!s->overlay || ctr_ncch_parse(r, s, &s->over, true)))
         return r->result == SNX_CTR_EXTRACT_OK;
     ctr_source_free(s);

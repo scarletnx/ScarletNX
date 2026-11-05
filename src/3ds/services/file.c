@@ -10,12 +10,16 @@
 #include "services/file.swipc.inc"
 #include <stdlib.h>
 #include <string.h>
+/* the RomFS a view file reads: a DLC content's, else the game's own */
+static SnxCtrRomfs* view_of(const SnxCtrProcess* p, const CtrObject* object) {
+    return object->data.file.view ? (SnxCtrRomfs*)object->data.file.view : p->romfs;
+}
 static uint32_t snx_ctr_file_wire_GetSize(SnxCtrIpc* c, uint64_t* size) {
     CtrObject* object = &c->process->objects[c->object];
     if (object->data.file.closed) return SNX_CTR_IPC_INVALID_STATE;
     SnxCtrProcess* p = c->process;
     if (object->data.file.kind == CTR_FILE_VIEW) {
-        *size = snx_ctr_romfs_size(p->romfs);
+        *size = snx_ctr_romfs_size(view_of(p, object));
         return 0;
     }
     pm_lock(&p->tree->lock);
@@ -166,6 +170,7 @@ static void open_link(SnxCtrIpc* c, CtrObject* object) {
         return;
     }
     p->objects[snx_ctr_handle_object(p, c->out[3])].data.file.priority = priority;
+    p->objects[snx_ctr_handle_object(p, c->out[3])].data.file.view = object->data.file.view;
 }
 void snx_ctr_file_dispatch(SnxCtrIpc* c) {
     SnxCtrProcess* p = c->process;
@@ -253,7 +258,7 @@ void snx_ctr_file_dispatch(SnxCtrIpc* c) {
         c->transport_result = 0xe0e01bf5u;
         return;
     }
-    uint64_t total = object->data.file.kind == CTR_FILE_VIEW ? snx_ctr_romfs_size(p->romfs) : 0;
+    uint64_t total = object->data.file.kind == CTR_FILE_VIEW ? snx_ctr_romfs_size(view_of(p, object)) : 0;
     if (object->data.file.kind != CTR_FILE_VIEW) {
         pm_lock(&p->tree->lock);
         total = ((FsNode*)object->data.file.node)->size;
@@ -278,7 +283,7 @@ void snx_ctr_file_dispatch(SnxCtrIpc* c) {
     if (command == 0x802) { /* Read: stage the complete result before guest writes */
         bool ok;
         if (object->data.file.kind == CTR_FILE_VIEW) {
-            ok = !n || snx_ctr_romfs_read(p->romfs, offset, data, n);
+            ok = !n || snx_ctr_romfs_read(view_of(p, object), offset, data, n);
         } else {
             FILE* host = object->data.file.host;
             FsNode* node = object->data.file.node;
