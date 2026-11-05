@@ -49,8 +49,9 @@ An IT block's conditions are its block's, decided when the block compiles: an in
 
 ## Opt-in ARM11 profile and checked memory
 
-The existing APIs still select **A57 + flat memory**; `SnxArmCPU` (`SNX_ARM_ABI=4`: 3
-added `rt` after the register file, 4 the ARM7TDMI profile's `io` after `mem_size`) and its field offsets are shared by
+The existing APIs still select **A57 + flat memory**; `SnxArmCPU` (`SNX_ARM_ABI=5`: 3
+added `rt` after the register file, 4 the ARM7TDMI profile's `io` after `mem_size`, 5 the stores that keep the
+exclusive monitor) and its field offsets are shared by
 both. No board-specific compile definition
 changes shared code generation. Other boards opt in through the `_ex` APIs:
 
@@ -234,7 +235,7 @@ Thumb16 and Thumb32 are supported (see `thumb_decode.c`, `llvm_thumb.inc`): inte
 - Effective addresses wrap at 32 bits before host pointer construction. Transfers outside the supplied flat mapping, or crossing its end, abort. Unaligned ordinary scalar accesses are supported. Multiple transfers, doubleword transfers, PC loads and atomics enforce their alignment constraints.
 - LDM/STM and doubleword bounds are checked as a group before any transfer. This is a deterministic flat-memory fault policy, not emulation of partial transfers on an MMU abort.
 - Acquire/release accesses and exclusives use LLVM sequentially consistent atomics. Barrier scopes are conservatively strengthened to a full fence. Hints may complete without waiting.
-- The exclusive monitor is value-based CAS, like the existing A64 backend. It detects changed values but not ABA writes by another CPU. Local stores may clear it and STREX always clears it after an attempt. A globally invalidated architectural reservation monitor, device memory and concurrent self-modifying code need runtime integration. This is not a claim of complete multicore memory-model fidelity.
+- The exclusive monitor is value-based CAS, like the existing A64 backend. It detects changed values but not ABA writes by another CPU. A local store clears it where it overlaps the reserved bytes, and keeps it elsewhere; STREX always clears it after an attempt. A globally invalidated architectural reservation monitor, device memory and concurrent self-modifying code need runtime integration. This is not a claim of complete multicore memory-model fidelity.
 - Scalar loads/stores use LLVM integer accesses with explicit unaligned alignment, not typed C dereferences or byte-by-byte stores. LLVM arithmetic does not use signed-overflow promises. Dynamic shifts and signed division avoid LLVM poison on architectural edge cases.
 
 ## Tests
