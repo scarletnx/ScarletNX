@@ -10,6 +10,7 @@
   * [Running a game on iOS](#running-a-game-on-ios)
   * [Installing from a Mac](#installing-from-a-mac)
 * [What is missing](#what-is-missing)
+* [A GPU lockup on MoltenVK](#a-gpu-lockup-on-moltenvk)
 * [Building](#building)
 
 Both build on a Mac with Xcode, for Apple silicon (arm64), with Xcode's Clang, and the CI builds both on every push
