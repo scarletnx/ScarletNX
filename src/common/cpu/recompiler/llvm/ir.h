@@ -175,6 +175,7 @@ typedef struct SnxIr {
     LLVMTypeRef t_void, t_i1, t_i8, t_i16, t_i32, t_i64, t_i128, t_ptr, t_guest;
     /* the function being emitted: its CPU* and the guest memory base (u8* const M=c->mem) */
     LLVMValueRef fn, c, M;
+    LLVMValueRef fp_lanes_scratch; /* one lazy, non-escaping byte array for this function, at most 48 bytes */
     LLVMValueRef helpers[SNX_IR_HELPER_COUNT];
     SnxIrBlockState state;
     /* alias scopes: guest memory (through M) and the CPU structure never overlap */
@@ -265,7 +266,7 @@ int snx_ir_object(SnxIr* ir, char opt, unsigned char** data, size_t* size, char*
 /* What makes an object of a module besides its IR, LLVM, the target machine's triple, CPU and features, the -O letter
    and the tuning: new_ir's other target machine settings and what snx_ir_module_object does around LLVM's passes. The
    unit cache's key holds it (unit_cache.c), so a change there that changes the object of the same IR bumps it */
-#define SNX_IR_OBJECT_VERSION 4
+#define SNX_IR_OBJECT_VERSION 5
 /* The same for another module of the SnxIr's context, made with its target and data layout (the A32 executor's
    blocks, common/cpu/arm/exec.c): verified, optimized and compiled with its target machine. The module stays the
    caller's */

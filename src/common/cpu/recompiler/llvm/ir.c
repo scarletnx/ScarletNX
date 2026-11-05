@@ -8,6 +8,7 @@
 #endif
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitReader.h>
+#include <llvm-c/Linker.h>
 #include <llvm/Config/llvm-config.h>
 #include <llvm-c/Support.h>
 #include <llvm-c/Transforms/PassBuilder.h>
@@ -662,10 +663,124 @@ void ir_clean_function(SnxIr* ir, LLVMValueRef fn) {
     }
 }
 
+/* rtlib.c as LLVM bitcode (CMakeLists.txt, snx-rtlib-gen embed). Import only the audited entry environment helper.
+   Large arithmetic and exceptional paths stay out of line. The original object still supplies calls at O0. */
+extern const unsigned char snx_rtlib_bitcode[];
+extern const unsigned long snx_rtlib_bitcode_size;
+static int uses_host_fp(LLVMValueRef function) {
+    for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(function); block; block = LLVMGetNextBasicBlock(block))
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst; inst = LLVMGetNextInstruction(inst)) {
+            switch (LLVMGetInstructionOpcode(inst)) {
+                case LLVMFAdd: case LLVMFSub: case LLVMFMul: case LLVMFDiv: case LLVMFRem: case LLVMFNeg:
+                case LLVMFCmp: case LLVMFPTrunc: case LLVMFPExt: case LLVMFPToUI: case LLVMFPToSI:
+                case LLVMUIToFP: case LLVMSIToFP: return 1;
+                case LLVMCall: {
+                    LLVMTypeRef type = LLVMTypeOf(inst);
+                    if (LLVMGetTypeKind(type) == LLVMVectorTypeKind) type = LLVMGetElementType(type);
+                    LLVMTypeKind kind = LLVMGetTypeKind(type);
+                    if (kind == LLVMHalfTypeKind || kind == LLVMFloatTypeKind || kind == LLVMDoubleTypeKind) return 1;
+                    break;
+                }
+                default: break;
+            }
+        }
+    return 0;
+}
+static int inline_helpers(SnxIr* ir, LLVMModuleRef module, char* error, size_t error_size) {
+    LLVMValueRef call = LLVMGetNamedFunction(module, "snx_fp_env");
+    if (!call || LLVMCountBasicBlocks(call) || !LLVMGetFirstUse(call)) return 0;
+    int needed = 0;
+    for (LLVMUseRef use = LLVMGetFirstUse(call); use; use = LLVMGetNextUse(use)) {
+        LLVMValueRef inst = LLVMGetUser(use);
+        if (LLVMIsACallInst(inst) && uses_host_fp(LLVMGetBasicBlockParent(LLVMGetInstructionParent(inst)))) needed = 1;
+    }
+    if (!needed) return 0;
+    LLVMModuleRef library;
+    LLVMMemoryBufferRef buffer = LLVMCreateMemoryBufferWithMemoryRange((const char*)snx_rtlib_bitcode,
+                                                                      snx_rtlib_bitcode_size, "inline helpers", 0);
+    int failed = LLVMParseBitcodeInContext2(ir->ctx, buffer, &library);
+    LLVMDisposeMemoryBuffer(buffer);
+    if (failed) {
+        snprintf(error, error_size, "cannot read the runtime helper bitcode");
+        return -1;
+    }
+    /* Cross-target compiler tests can emit another architecture. Its native environment helper is unavailable. */
+    const char* target = LLVMGetTarget(module);
+    size_t arch = strcspn(target, "-");
+    if (strcspn(LLVMGetTarget(library), "-") != arch || strncmp(target, LLVMGetTarget(library), arch)) {
+        LLVMDisposeModule(library);
+        return 0;
+    }
+    LLVMValueRef helper = LLVMGetNamedFunction(library, "snx_fp_env");
+    if (!helper || !LLVMCountBasicBlocks(helper)) {
+        LLVMDisposeModule(library);
+        return 0;
+    }
+    /* The allowlist is deliberately a leaf helper. Refuse a changed dependency rather than importing an
+       unaudited arithmetic body or replacing a live callee with undef. Intrinsics and inline asm remain intact. */
+    for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(helper); block; block = LLVMGetNextBasicBlock(block))
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst; inst = LLVMGetNextInstruction(inst))
+            if (LLVMIsACallInst(inst)) {
+                LLVMValueRef callee = LLVMGetCalledValue(inst);
+                if ((!LLVMIsAFunction(callee) && !LLVMIsAInlineAsm(callee)) ||
+                    (LLVMIsAFunction(callee) && LLVMCountBasicBlocks(callee))) {
+                    LLVMDisposeModule(library);
+                    return 0;
+                }
+            }
+    for (LLVMValueRef fn = LLVMGetFirstFunction(library), next; fn; fn = next) {
+        next = LLVMGetNextFunction(fn);
+        if (fn != helper && LLVMCountBasicBlocks(fn)) {
+            LLVMReplaceAllUsesWith(fn, LLVMGetUndef(LLVMTypeOf(fn)));
+            LLVMDeleteFunction(fn);
+        }
+    }
+    for (LLVMValueRef value = LLVMGetFirstGlobal(library), next; value; value = next) {
+        next = LLVMGetNextGlobal(value);
+        if (!LLVMGetFirstUse(value)) LLVMDeleteGlobal(value);
+    }
+    for (LLVMValueRef fn = LLVMGetFirstFunction(library), next; fn; fn = next) {
+        next = LLVMGetNextFunction(fn);
+        if (fn != helper && !LLVMGetFirstUse(fn)) LLVMDeleteFunction(fn);
+    }
+    static const char* const attributes[] = {"target-cpu", "target-features", "tune-cpu", "probe-stack"};
+    for (unsigned i = 0; i < sizeof attributes / sizeof *attributes; i++)
+        LLVMRemoveStringAttributeAtIndex(helper, LLVMAttributeFunctionIndex, attributes[i], (unsigned)strlen(attributes[i]));
+    unsigned always_inline = LLVMGetEnumAttributeKindForName("alwaysinline", 12);
+    LLVMAddAttributeAtIndex(helper, LLVMAttributeFunctionIndex, LLVMCreateEnumAttribute(ir->ctx, always_inline, 0));
+    LLVMSetValueName2(helper, "snx_fp_env.inline", sizeof "snx_fp_env.inline" - 1);
+    LLVMSetLinkage(helper, LLVMExternalLinkage); /* keep it while the linker has no calls to it yet */
+    LLVMSetTarget(library, target);
+    LLVMSetDataLayout(library, LLVMGetDataLayoutStr(module));
+    if (LLVMLinkModules2(module, library)) {
+        snprintf(error, error_size, "cannot import the runtime entry helper");
+        return -1;
+    }
+    helper = LLVMGetNamedFunction(module, "snx_fp_env.inline");
+    call = LLVMGetNamedFunction(module, "snx_fp_env");
+    LLVMSetLinkage(helper, LLVMInternalLinkage);
+    LLVMBuilderRef builder = LLVMCreateBuilderInContext(ir->ctx);
+    for (LLVMValueRef fn = LLVMGetFirstFunction(module); fn; fn = LLVMGetNextFunction(fn)) {
+        if (fn == helper || !uses_host_fp(fn)) continue;
+        for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(fn); block; block = LLVMGetNextBasicBlock(block))
+            for (LLVMValueRef inst = LLVMGetFirstInstruction(block), next; inst; inst = next) {
+                next = LLVMGetNextInstruction(inst);
+                if (LLVMIsACallInst(inst) && LLVMGetCalledValue(inst) == call) {
+                    LLVMPositionBuilderBefore(builder, inst);
+                    LLVMBuildCall2(builder, LLVMGlobalGetValueType(helper), helper, NULL, 0, "");
+                    LLVMInstructionEraseFromParent(inst);
+                }
+            }
+    }
+    LLVMDisposeBuilder(builder);
+    return 0;
+}
+
 /* a change here or in snx_ir_module_object, or to new_ir's target machine, that changes the object of the same IR bumps
    SNX_IR_OBJECT_VERSION */
 int snx_ir_module_optimize(SnxIr* ir, LLVMModuleRef module, char opt, char* error, size_t error_size) {
     char pipeline[16], *message = NULL;
+    if (opt != '0' && inline_helpers(ir, module, error, error_size)) return -1;
     if (LLVMVerifyModule(module, LLVMReturnStatusAction, &message)) {
         snprintf(error, error_size, "invalid IR: %.900s", message ? message : "");
         LLVMDisposeMessage(message);
@@ -757,9 +872,7 @@ int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned cha
     return 0;
 }
 
-/* rtlib.c and armlib.c as LLVM bitcode (CMakeLists.txt, snx-rtlib-gen embed) */
-extern const unsigned char snx_rtlib_bitcode[];
-extern const unsigned long snx_rtlib_bitcode_size;
+/* armlib.c as LLVM bitcode (CMakeLists.txt, snx-rtlib-gen embed) */
 extern const unsigned char snx_armlib_bitcode[];
 extern const unsigned long snx_armlib_bitcode_size;
 

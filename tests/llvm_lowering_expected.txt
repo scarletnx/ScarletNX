@@ -470,42 +470,42 @@ FABS_v             riscv64-v inline
 FABS_v             x86       inline
 FABS_v             x86-avx2  inline
 FABS_v             x86-base  inline
-FACGE_s            aarch64   guarded  snx_fp_host_compare
-FACGE_s            generic   guarded  snx_fp_host_compare
-FACGE_s            la64-lsx  guarded  snx_fp_host_compare
-FACGE_s            mips-msa  guarded  snx_fp_host_compare
-FACGE_s            ppc64le   guarded  snx_fp_host_compare
-FACGE_s            riscv64-v guarded  snx_fp_host_compare
-FACGE_s            x86       guarded  snx_fp_host_compare
-FACGE_s            x86-avx2  guarded  snx_fp_host_compare
-FACGE_s            x86-base  guarded  snx_fp_host_compare
-FACGE_v            aarch64   guarded  snx_fp_host_compare
-FACGE_v            generic   guarded  snx_fp_host_compare
-FACGE_v            la64-lsx  guarded  snx_fp_host_compare
-FACGE_v            mips-msa  guarded  snx_fp_host_compare
-FACGE_v            ppc64le   guarded  snx_fp_host_compare
-FACGE_v            riscv64-v guarded  snx_fp_host_compare
-FACGE_v            x86       guarded  snx_fp_host_compare
-FACGE_v            x86-avx2  guarded  snx_fp_host_compare
-FACGE_v            x86-base  guarded  snx_fp_host_compare
-FACGT_s            aarch64   guarded  snx_fp_host_compare
-FACGT_s            generic   guarded  snx_fp_host_compare
-FACGT_s            la64-lsx  guarded  snx_fp_host_compare
-FACGT_s            mips-msa  guarded  snx_fp_host_compare
-FACGT_s            ppc64le   guarded  snx_fp_host_compare
-FACGT_s            riscv64-v guarded  snx_fp_host_compare
-FACGT_s            x86       guarded  snx_fp_host_compare
-FACGT_s            x86-avx2  guarded  snx_fp_host_compare
-FACGT_s            x86-base  guarded  snx_fp_host_compare
-FACGT_v            aarch64   guarded  snx_fp_host_compare
-FACGT_v            generic   guarded  snx_fp_host_compare
-FACGT_v            la64-lsx  guarded  snx_fp_host_compare
-FACGT_v            mips-msa  guarded  snx_fp_host_compare
-FACGT_v            ppc64le   guarded  snx_fp_host_compare
-FACGT_v            riscv64-v guarded  snx_fp_host_compare
-FACGT_v            x86       guarded  snx_fp_host_compare
-FACGT_v            x86-avx2  guarded  snx_fp_host_compare
-FACGT_v            x86-base  guarded  snx_fp_host_compare
+FACGE_s            aarch64   inline
+FACGE_s            generic   inline
+FACGE_s            la64-lsx  inline
+FACGE_s            mips-msa  inline
+FACGE_s            ppc64le   inline
+FACGE_s            riscv64-v inline
+FACGE_s            x86       inline
+FACGE_s            x86-avx2  inline
+FACGE_s            x86-base  inline
+FACGE_v            aarch64   inline
+FACGE_v            generic   inline
+FACGE_v            la64-lsx  inline
+FACGE_v            mips-msa  inline
+FACGE_v            ppc64le   inline
+FACGE_v            riscv64-v inline
+FACGE_v            x86       inline
+FACGE_v            x86-avx2  inline
+FACGE_v            x86-base  inline
+FACGT_s            aarch64   inline
+FACGT_s            generic   inline
+FACGT_s            la64-lsx  inline
+FACGT_s            mips-msa  inline
+FACGT_s            ppc64le   inline
+FACGT_s            riscv64-v inline
+FACGT_s            x86       inline
+FACGT_s            x86-avx2  inline
+FACGT_s            x86-base  inline
+FACGT_v            aarch64   inline
+FACGT_v            generic   inline
+FACGT_v            la64-lsx  inline
+FACGT_v            mips-msa  inline
+FACGT_v            ppc64le   inline
+FACGT_v            riscv64-v inline
+FACGT_v            x86       inline
+FACGT_v            x86-avx2  inline
+FACGT_v            x86-base  inline
 FADDP_s            aarch64   guarded  snx_fp_host_binary
 FADDP_s            generic   guarded  snx_fp_host_binary
 FADDP_s            la64-lsx  guarded  snx_fp_host_binary
@@ -551,150 +551,150 @@ FCCMP              riscv64-v guarded  snx_fp_host_compare
 FCCMP              x86       guarded  snx_fp_host_compare
 FCCMP              x86-avx2  guarded  snx_fp_host_compare
 FCCMP              x86-base  guarded  snx_fp_host_compare
-FCMEQ0_s           aarch64   guarded  snx_fp_host_compare
-FCMEQ0_s           generic   guarded  snx_fp_host_compare
-FCMEQ0_s           la64-lsx  guarded  snx_fp_host_compare
-FCMEQ0_s           mips-msa  guarded  snx_fp_host_compare
-FCMEQ0_s           ppc64le   guarded  snx_fp_host_compare
-FCMEQ0_s           riscv64-v guarded  snx_fp_host_compare
-FCMEQ0_s           x86       guarded  snx_fp_host_compare
-FCMEQ0_s           x86-avx2  guarded  snx_fp_host_compare
-FCMEQ0_s           x86-base  guarded  snx_fp_host_compare
-FCMEQ0_v           aarch64   guarded  snx_fp_host_compare
-FCMEQ0_v           generic   guarded  snx_fp_host_compare
-FCMEQ0_v           la64-lsx  guarded  snx_fp_host_compare
-FCMEQ0_v           mips-msa  guarded  snx_fp_host_compare
-FCMEQ0_v           ppc64le   guarded  snx_fp_host_compare
-FCMEQ0_v           riscv64-v guarded  snx_fp_host_compare
-FCMEQ0_v           x86       guarded  snx_fp_host_compare
-FCMEQ0_v           x86-avx2  guarded  snx_fp_host_compare
-FCMEQ0_v           x86-base  guarded  snx_fp_host_compare
-FCMEQ_s            aarch64   guarded  snx_fp_host_compare
-FCMEQ_s            generic   guarded  snx_fp_host_compare
-FCMEQ_s            la64-lsx  guarded  snx_fp_host_compare
-FCMEQ_s            mips-msa  guarded  snx_fp_host_compare
-FCMEQ_s            ppc64le   guarded  snx_fp_host_compare
-FCMEQ_s            riscv64-v guarded  snx_fp_host_compare
-FCMEQ_s            x86       guarded  snx_fp_host_compare
-FCMEQ_s            x86-avx2  guarded  snx_fp_host_compare
-FCMEQ_s            x86-base  guarded  snx_fp_host_compare
-FCMEQ_v            aarch64   guarded  snx_fp_host_compare
-FCMEQ_v            generic   guarded  snx_fp_host_compare
-FCMEQ_v            la64-lsx  guarded  snx_fp_host_compare
-FCMEQ_v            mips-msa  guarded  snx_fp_host_compare
-FCMEQ_v            ppc64le   guarded  snx_fp_host_compare
-FCMEQ_v            riscv64-v guarded  snx_fp_host_compare
-FCMEQ_v            x86       guarded  snx_fp_host_compare
-FCMEQ_v            x86-avx2  guarded  snx_fp_host_compare
-FCMEQ_v            x86-base  guarded  snx_fp_host_compare
-FCMGE0_s           aarch64   guarded  snx_fp_host_compare
-FCMGE0_s           generic   guarded  snx_fp_host_compare
-FCMGE0_s           la64-lsx  guarded  snx_fp_host_compare
-FCMGE0_s           mips-msa  guarded  snx_fp_host_compare
-FCMGE0_s           ppc64le   guarded  snx_fp_host_compare
-FCMGE0_s           riscv64-v guarded  snx_fp_host_compare
-FCMGE0_s           x86       guarded  snx_fp_host_compare
-FCMGE0_s           x86-avx2  guarded  snx_fp_host_compare
-FCMGE0_s           x86-base  guarded  snx_fp_host_compare
-FCMGE0_v           aarch64   guarded  snx_fp_host_compare
-FCMGE0_v           generic   guarded  snx_fp_host_compare
-FCMGE0_v           la64-lsx  guarded  snx_fp_host_compare
-FCMGE0_v           mips-msa  guarded  snx_fp_host_compare
-FCMGE0_v           ppc64le   guarded  snx_fp_host_compare
-FCMGE0_v           riscv64-v guarded  snx_fp_host_compare
-FCMGE0_v           x86       guarded  snx_fp_host_compare
-FCMGE0_v           x86-avx2  guarded  snx_fp_host_compare
-FCMGE0_v           x86-base  guarded  snx_fp_host_compare
-FCMGE_s            aarch64   guarded  snx_fp_host_compare
-FCMGE_s            generic   guarded  snx_fp_host_compare
-FCMGE_s            la64-lsx  guarded  snx_fp_host_compare
-FCMGE_s            mips-msa  guarded  snx_fp_host_compare
-FCMGE_s            ppc64le   guarded  snx_fp_host_compare
-FCMGE_s            riscv64-v guarded  snx_fp_host_compare
-FCMGE_s            x86       guarded  snx_fp_host_compare
-FCMGE_s            x86-avx2  guarded  snx_fp_host_compare
-FCMGE_s            x86-base  guarded  snx_fp_host_compare
-FCMGE_v            aarch64   guarded  snx_fp_host_compare
-FCMGE_v            generic   guarded  snx_fp_host_compare
-FCMGE_v            la64-lsx  guarded  snx_fp_host_compare
-FCMGE_v            mips-msa  guarded  snx_fp_host_compare
-FCMGE_v            ppc64le   guarded  snx_fp_host_compare
-FCMGE_v            riscv64-v guarded  snx_fp_host_compare
-FCMGE_v            x86       guarded  snx_fp_host_compare
-FCMGE_v            x86-avx2  guarded  snx_fp_host_compare
-FCMGE_v            x86-base  guarded  snx_fp_host_compare
-FCMGT0_s           aarch64   guarded  snx_fp_host_compare
-FCMGT0_s           generic   guarded  snx_fp_host_compare
-FCMGT0_s           la64-lsx  guarded  snx_fp_host_compare
-FCMGT0_s           mips-msa  guarded  snx_fp_host_compare
-FCMGT0_s           ppc64le   guarded  snx_fp_host_compare
-FCMGT0_s           riscv64-v guarded  snx_fp_host_compare
-FCMGT0_s           x86       guarded  snx_fp_host_compare
-FCMGT0_s           x86-avx2  guarded  snx_fp_host_compare
-FCMGT0_s           x86-base  guarded  snx_fp_host_compare
-FCMGT0_v           aarch64   guarded  snx_fp_host_compare
-FCMGT0_v           generic   guarded  snx_fp_host_compare
-FCMGT0_v           la64-lsx  guarded  snx_fp_host_compare
-FCMGT0_v           mips-msa  guarded  snx_fp_host_compare
-FCMGT0_v           ppc64le   guarded  snx_fp_host_compare
-FCMGT0_v           riscv64-v guarded  snx_fp_host_compare
-FCMGT0_v           x86       guarded  snx_fp_host_compare
-FCMGT0_v           x86-avx2  guarded  snx_fp_host_compare
-FCMGT0_v           x86-base  guarded  snx_fp_host_compare
-FCMGT_s            aarch64   guarded  snx_fp_host_compare
-FCMGT_s            generic   guarded  snx_fp_host_compare
-FCMGT_s            la64-lsx  guarded  snx_fp_host_compare
-FCMGT_s            mips-msa  guarded  snx_fp_host_compare
-FCMGT_s            ppc64le   guarded  snx_fp_host_compare
-FCMGT_s            riscv64-v guarded  snx_fp_host_compare
-FCMGT_s            x86       guarded  snx_fp_host_compare
-FCMGT_s            x86-avx2  guarded  snx_fp_host_compare
-FCMGT_s            x86-base  guarded  snx_fp_host_compare
-FCMGT_v            aarch64   guarded  snx_fp_host_compare
-FCMGT_v            generic   guarded  snx_fp_host_compare
-FCMGT_v            la64-lsx  guarded  snx_fp_host_compare
-FCMGT_v            mips-msa  guarded  snx_fp_host_compare
-FCMGT_v            ppc64le   guarded  snx_fp_host_compare
-FCMGT_v            riscv64-v guarded  snx_fp_host_compare
-FCMGT_v            x86       guarded  snx_fp_host_compare
-FCMGT_v            x86-avx2  guarded  snx_fp_host_compare
-FCMGT_v            x86-base  guarded  snx_fp_host_compare
-FCMLE0_s           aarch64   guarded  snx_fp_host_compare
-FCMLE0_s           generic   guarded  snx_fp_host_compare
-FCMLE0_s           la64-lsx  guarded  snx_fp_host_compare
-FCMLE0_s           mips-msa  guarded  snx_fp_host_compare
-FCMLE0_s           ppc64le   guarded  snx_fp_host_compare
-FCMLE0_s           riscv64-v guarded  snx_fp_host_compare
-FCMLE0_s           x86       guarded  snx_fp_host_compare
-FCMLE0_s           x86-avx2  guarded  snx_fp_host_compare
-FCMLE0_s           x86-base  guarded  snx_fp_host_compare
-FCMLE0_v           aarch64   guarded  snx_fp_host_compare
-FCMLE0_v           generic   guarded  snx_fp_host_compare
-FCMLE0_v           la64-lsx  guarded  snx_fp_host_compare
-FCMLE0_v           mips-msa  guarded  snx_fp_host_compare
-FCMLE0_v           ppc64le   guarded  snx_fp_host_compare
-FCMLE0_v           riscv64-v guarded  snx_fp_host_compare
-FCMLE0_v           x86       guarded  snx_fp_host_compare
-FCMLE0_v           x86-avx2  guarded  snx_fp_host_compare
-FCMLE0_v           x86-base  guarded  snx_fp_host_compare
-FCMLT0_s           aarch64   guarded  snx_fp_host_compare
-FCMLT0_s           generic   guarded  snx_fp_host_compare
-FCMLT0_s           la64-lsx  guarded  snx_fp_host_compare
-FCMLT0_s           mips-msa  guarded  snx_fp_host_compare
-FCMLT0_s           ppc64le   guarded  snx_fp_host_compare
-FCMLT0_s           riscv64-v guarded  snx_fp_host_compare
-FCMLT0_s           x86       guarded  snx_fp_host_compare
-FCMLT0_s           x86-avx2  guarded  snx_fp_host_compare
-FCMLT0_s           x86-base  guarded  snx_fp_host_compare
-FCMLT0_v           aarch64   guarded  snx_fp_host_compare
-FCMLT0_v           generic   guarded  snx_fp_host_compare
-FCMLT0_v           la64-lsx  guarded  snx_fp_host_compare
-FCMLT0_v           mips-msa  guarded  snx_fp_host_compare
-FCMLT0_v           ppc64le   guarded  snx_fp_host_compare
-FCMLT0_v           riscv64-v guarded  snx_fp_host_compare
-FCMLT0_v           x86       guarded  snx_fp_host_compare
-FCMLT0_v           x86-avx2  guarded  snx_fp_host_compare
-FCMLT0_v           x86-base  guarded  snx_fp_host_compare
+FCMEQ0_s           aarch64   inline
+FCMEQ0_s           generic   inline
+FCMEQ0_s           la64-lsx  inline
+FCMEQ0_s           mips-msa  inline
+FCMEQ0_s           ppc64le   inline
+FCMEQ0_s           riscv64-v inline
+FCMEQ0_s           x86       inline
+FCMEQ0_s           x86-avx2  inline
+FCMEQ0_s           x86-base  inline
+FCMEQ0_v           aarch64   inline
+FCMEQ0_v           generic   inline
+FCMEQ0_v           la64-lsx  inline
+FCMEQ0_v           mips-msa  inline
+FCMEQ0_v           ppc64le   inline
+FCMEQ0_v           riscv64-v inline
+FCMEQ0_v           x86       inline
+FCMEQ0_v           x86-avx2  inline
+FCMEQ0_v           x86-base  inline
+FCMEQ_s            aarch64   inline
+FCMEQ_s            generic   inline
+FCMEQ_s            la64-lsx  inline
+FCMEQ_s            mips-msa  inline
+FCMEQ_s            ppc64le   inline
+FCMEQ_s            riscv64-v inline
+FCMEQ_s            x86       inline
+FCMEQ_s            x86-avx2  inline
+FCMEQ_s            x86-base  inline
+FCMEQ_v            aarch64   inline
+FCMEQ_v            generic   inline
+FCMEQ_v            la64-lsx  inline
+FCMEQ_v            mips-msa  inline
+FCMEQ_v            ppc64le   inline
+FCMEQ_v            riscv64-v inline
+FCMEQ_v            x86       inline
+FCMEQ_v            x86-avx2  inline
+FCMEQ_v            x86-base  inline
+FCMGE0_s           aarch64   inline
+FCMGE0_s           generic   inline
+FCMGE0_s           la64-lsx  inline
+FCMGE0_s           mips-msa  inline
+FCMGE0_s           ppc64le   inline
+FCMGE0_s           riscv64-v inline
+FCMGE0_s           x86       inline
+FCMGE0_s           x86-avx2  inline
+FCMGE0_s           x86-base  inline
+FCMGE0_v           aarch64   inline
+FCMGE0_v           generic   inline
+FCMGE0_v           la64-lsx  inline
+FCMGE0_v           mips-msa  inline
+FCMGE0_v           ppc64le   inline
+FCMGE0_v           riscv64-v inline
+FCMGE0_v           x86       inline
+FCMGE0_v           x86-avx2  inline
+FCMGE0_v           x86-base  inline
+FCMGE_s            aarch64   inline
+FCMGE_s            generic   inline
+FCMGE_s            la64-lsx  inline
+FCMGE_s            mips-msa  inline
+FCMGE_s            ppc64le   inline
+FCMGE_s            riscv64-v inline
+FCMGE_s            x86       inline
+FCMGE_s            x86-avx2  inline
+FCMGE_s            x86-base  inline
+FCMGE_v            aarch64   inline
+FCMGE_v            generic   inline
+FCMGE_v            la64-lsx  inline
+FCMGE_v            mips-msa  inline
+FCMGE_v            ppc64le   inline
+FCMGE_v            riscv64-v inline
+FCMGE_v            x86       inline
+FCMGE_v            x86-avx2  inline
+FCMGE_v            x86-base  inline
+FCMGT0_s           aarch64   inline
+FCMGT0_s           generic   inline
+FCMGT0_s           la64-lsx  inline
+FCMGT0_s           mips-msa  inline
+FCMGT0_s           ppc64le   inline
+FCMGT0_s           riscv64-v inline
+FCMGT0_s           x86       inline
+FCMGT0_s           x86-avx2  inline
+FCMGT0_s           x86-base  inline
+FCMGT0_v           aarch64   inline
+FCMGT0_v           generic   inline
+FCMGT0_v           la64-lsx  inline
+FCMGT0_v           mips-msa  inline
+FCMGT0_v           ppc64le   inline
+FCMGT0_v           riscv64-v inline
+FCMGT0_v           x86       inline
+FCMGT0_v           x86-avx2  inline
+FCMGT0_v           x86-base  inline
+FCMGT_s            aarch64   inline
+FCMGT_s            generic   inline
+FCMGT_s            la64-lsx  inline
+FCMGT_s            mips-msa  inline
+FCMGT_s            ppc64le   inline
+FCMGT_s            riscv64-v inline
+FCMGT_s            x86       inline
+FCMGT_s            x86-avx2  inline
+FCMGT_s            x86-base  inline
+FCMGT_v            aarch64   inline
+FCMGT_v            generic   inline
+FCMGT_v            la64-lsx  inline
+FCMGT_v            mips-msa  inline
+FCMGT_v            ppc64le   inline
+FCMGT_v            riscv64-v inline
+FCMGT_v            x86       inline
+FCMGT_v            x86-avx2  inline
+FCMGT_v            x86-base  inline
+FCMLE0_s           aarch64   inline
+FCMLE0_s           generic   inline
+FCMLE0_s           la64-lsx  inline
+FCMLE0_s           mips-msa  inline
+FCMLE0_s           ppc64le   inline
+FCMLE0_s           riscv64-v inline
+FCMLE0_s           x86       inline
+FCMLE0_s           x86-avx2  inline
+FCMLE0_s           x86-base  inline
+FCMLE0_v           aarch64   inline
+FCMLE0_v           generic   inline
+FCMLE0_v           la64-lsx  inline
+FCMLE0_v           mips-msa  inline
+FCMLE0_v           ppc64le   inline
+FCMLE0_v           riscv64-v inline
+FCMLE0_v           x86       inline
+FCMLE0_v           x86-avx2  inline
+FCMLE0_v           x86-base  inline
+FCMLT0_s           aarch64   inline
+FCMLT0_s           generic   inline
+FCMLT0_s           la64-lsx  inline
+FCMLT0_s           mips-msa  inline
+FCMLT0_s           ppc64le   inline
+FCMLT0_s           riscv64-v inline
+FCMLT0_s           x86       inline
+FCMLT0_s           x86-avx2  inline
+FCMLT0_s           x86-base  inline
+FCMLT0_v           aarch64   inline
+FCMLT0_v           generic   inline
+FCMLT0_v           la64-lsx  inline
+FCMLT0_v           mips-msa  inline
+FCMLT0_v           ppc64le   inline
+FCMLT0_v           riscv64-v inline
+FCMLT0_v           x86       inline
+FCMLT0_v           x86-avx2  inline
+FCMLT0_v           x86-base  inline
 FCMP               aarch64   guarded  snx_fp_host_compare
 FCMP               generic   guarded  snx_fp_host_compare
 FCMP               la64-lsx  guarded  snx_fp_host_compare
@@ -767,15 +767,15 @@ FCVTAU_vi          riscv64-v guarded  snx_fp_to_int
 FCVTAU_vi          x86       guarded  snx_fp_to_int
 FCVTAU_vi          x86-avx2  guarded  snx_fp_to_int
 FCVTAU_vi          x86-base  helper   snx_fp_to_int
-FCVTL_v            aarch64   helper   snx_fp_convert
-FCVTL_v            generic   helper   snx_fp_convert
-FCVTL_v            la64-lsx  helper   snx_fp_convert
-FCVTL_v            mips-msa  helper   snx_fp_convert
-FCVTL_v            ppc64le   helper   snx_fp_convert
-FCVTL_v            riscv64-v helper   snx_fp_convert
+FCVTL_v            aarch64   guarded  snx_fp_convert
+FCVTL_v            generic   guarded  snx_fp_convert
+FCVTL_v            la64-lsx  guarded  snx_fp_convert
+FCVTL_v            mips-msa  guarded  snx_fp_convert
+FCVTL_v            ppc64le   guarded  snx_fp_convert
+FCVTL_v            riscv64-v guarded  snx_fp_convert
 FCVTL_v            x86       guarded  snx_fp_convert
 FCVTL_v            x86-avx2  guarded  snx_fp_convert
-FCVTL_v            x86-base  helper   snx_fp_convert
+FCVTL_v            x86-base  guarded  snx_fp_convert
 FCVTMS_f           aarch64   guarded  snx_fp_to_int
 FCVTMS_f           generic   helper   snx_fp_to_int
 FCVTMS_f           la64-lsx  guarded  snx_fp_to_int
@@ -884,15 +884,15 @@ FCVTNU_vi          riscv64-v guarded  snx_fp_to_int
 FCVTNU_vi          x86       guarded  snx_fp_to_int
 FCVTNU_vi          x86-avx2  guarded  snx_fp_to_int
 FCVTNU_vi          x86-base  helper   snx_fp_to_int
-FCVTN_v            aarch64   helper   snx_fp_convert
-FCVTN_v            generic   helper   snx_fp_convert
-FCVTN_v            la64-lsx  helper   snx_fp_convert
-FCVTN_v            mips-msa  helper   snx_fp_convert
-FCVTN_v            ppc64le   helper   snx_fp_convert
-FCVTN_v            riscv64-v helper   snx_fp_convert
+FCVTN_v            aarch64   guarded  snx_fp_convert
+FCVTN_v            generic   guarded  snx_fp_convert
+FCVTN_v            la64-lsx  guarded  snx_fp_convert
+FCVTN_v            mips-msa  guarded  snx_fp_convert
+FCVTN_v            ppc64le   guarded  snx_fp_convert
+FCVTN_v            riscv64-v guarded  snx_fp_convert
 FCVTN_v            x86       guarded  snx_fp_convert
 FCVTN_v            x86-avx2  guarded  snx_fp_convert
-FCVTN_v            x86-base  helper   snx_fp_convert
+FCVTN_v            x86-base  guarded  snx_fp_convert
 FCVTPS_f           aarch64   guarded  snx_fp_to_int
 FCVTPS_f           generic   helper   snx_fp_to_int
 FCVTPS_f           la64-lsx  guarded  snx_fp_to_int
@@ -1118,30 +1118,30 @@ FMADD              riscv64-v guarded  snx_fp_host_fma
 FMADD              x86       guarded  snx_fp_host_fma
 FMADD              x86-avx2  guarded  snx_fp_host_fma
 FMADD              x86-base  helper   snx_fp_host_fma
-FMAXNMP_s          aarch64   guarded  snx_fp_host_minmax
-FMAXNMP_s          generic   guarded  snx_fp_host_minmax
-FMAXNMP_s          la64-lsx  guarded  snx_fp_host_minmax
-FMAXNMP_s          mips-msa  guarded  snx_fp_host_minmax
-FMAXNMP_s          ppc64le   guarded  snx_fp_host_minmax
-FMAXNMP_s          riscv64-v guarded  snx_fp_host_minmax
+FMAXNMP_s          aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_1_1 snx_fp_cold_minmax_64_2_13_0_1_1
+FMAXNMP_s          generic   inline
+FMAXNMP_s          la64-lsx  inline
+FMAXNMP_s          mips-msa  inline
+FMAXNMP_s          ppc64le   inline
+FMAXNMP_s          riscv64-v inline
 FMAXNMP_s          x86       guarded  snx_fp_host_minmax
 FMAXNMP_s          x86-avx2  guarded  snx_fp_host_minmax
 FMAXNMP_s          x86-base  guarded  snx_fp_host_minmax
-FMAXNMP_v          aarch64   guarded  snx_fp_host_lanes
-FMAXNMP_v          generic   guarded  snx_fp_host_lanes
-FMAXNMP_v          la64-lsx  guarded  snx_fp_host_lanes
-FMAXNMP_v          mips-msa  guarded  snx_fp_host_lanes
-FMAXNMP_v          ppc64le   guarded  snx_fp_host_lanes
-FMAXNMP_v          riscv64-v guarded  snx_fp_host_lanes
-FMAXNMP_v          x86       guarded  snx_fp_host_lanes
-FMAXNMP_v          x86-avx2  guarded  snx_fp_host_lanes
-FMAXNMP_v          x86-base  guarded  snx_fp_host_lanes
-FMAXNMV_s          aarch64   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXNMV_s          generic   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXNMV_s          la64-lsx  guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXNMV_s          mips-msa  guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXNMV_s          ppc64le   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXNMV_s          riscv64-v guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMAXNMP_v          aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_1_1
+FMAXNMP_v          generic   inline
+FMAXNMP_v          la64-lsx  inline
+FMAXNMP_v          mips-msa  inline
+FMAXNMP_v          ppc64le   inline
+FMAXNMP_v          riscv64-v inline
+FMAXNMP_v          x86       guarded  snx_fp_cold_minmax_32_4_13_0_1_1 snx_fp_host_lanes
+FMAXNMP_v          x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_0_1_1 snx_fp_host_lanes
+FMAXNMP_v          x86-base  guarded  snx_fp_cold_minmax_32_4_13_0_1_1 snx_fp_host_lanes
+FMAXNMV_s          aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_1_1
+FMAXNMV_s          generic   inline
+FMAXNMV_s          la64-lsx  inline
+FMAXNMV_s          mips-msa  inline
+FMAXNMV_s          ppc64le   inline
+FMAXNMV_s          riscv64-v inline
 FMAXNMV_s          x86       guarded  snx_fp_host_lanes snx_fp_host_minmax
 FMAXNMV_s          x86-avx2  guarded  snx_fp_host_lanes snx_fp_host_minmax
 FMAXNMV_s          x86-base  guarded  snx_fp_host_lanes snx_fp_host_minmax
@@ -1154,39 +1154,39 @@ FMAXNM_s           riscv64-v guarded  snx_fp_host_minmax
 FMAXNM_s           x86       guarded  snx_fp_host_minmax
 FMAXNM_s           x86-avx2  guarded  snx_fp_host_minmax
 FMAXNM_s           x86-base  guarded  snx_fp_host_minmax
-FMAXNM_v           aarch64   guarded  snx_fp_host_lanes
-FMAXNM_v           generic   guarded  snx_fp_host_lanes
-FMAXNM_v           la64-lsx  guarded  snx_fp_host_lanes
-FMAXNM_v           mips-msa  guarded  snx_fp_host_lanes
-FMAXNM_v           ppc64le   guarded  snx_fp_host_lanes
-FMAXNM_v           riscv64-v guarded  snx_fp_host_lanes
-FMAXNM_v           x86       guarded  snx_fp_host_lanes
-FMAXNM_v           x86-avx2  guarded  snx_fp_host_lanes
-FMAXNM_v           x86-base  guarded  snx_fp_host_lanes
-FMAXP_s            aarch64   guarded  snx_fp_host_minmax
-FMAXP_s            generic   guarded  snx_fp_host_minmax
-FMAXP_s            la64-lsx  guarded  snx_fp_host_minmax
-FMAXP_s            mips-msa  guarded  snx_fp_host_minmax
-FMAXP_s            ppc64le   guarded  snx_fp_host_minmax
-FMAXP_s            riscv64-v guarded  snx_fp_host_minmax
+FMAXNM_v           aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_1_1
+FMAXNM_v           generic   inline
+FMAXNM_v           la64-lsx  inline
+FMAXNM_v           mips-msa  inline
+FMAXNM_v           ppc64le   inline
+FMAXNM_v           riscv64-v inline
+FMAXNM_v           x86       guarded  snx_fp_cold_minmax_32_4_13_0_1_1 snx_fp_host_lanes
+FMAXNM_v           x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_0_1_1 snx_fp_host_lanes
+FMAXNM_v           x86-base  guarded  snx_fp_cold_minmax_32_4_13_0_1_1 snx_fp_host_lanes
+FMAXP_s            aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_0_1 snx_fp_cold_minmax_64_2_13_0_0_1
+FMAXP_s            generic   inline
+FMAXP_s            la64-lsx  inline
+FMAXP_s            mips-msa  inline
+FMAXP_s            ppc64le   inline
+FMAXP_s            riscv64-v inline
 FMAXP_s            x86       guarded  snx_fp_host_minmax
 FMAXP_s            x86-avx2  guarded  snx_fp_host_minmax
 FMAXP_s            x86-base  guarded  snx_fp_host_minmax
-FMAXP_v            aarch64   guarded  snx_fp_host_lanes
-FMAXP_v            generic   guarded  snx_fp_host_lanes
-FMAXP_v            la64-lsx  guarded  snx_fp_host_lanes
-FMAXP_v            mips-msa  guarded  snx_fp_host_lanes
-FMAXP_v            ppc64le   guarded  snx_fp_host_lanes
-FMAXP_v            riscv64-v guarded  snx_fp_host_lanes
-FMAXP_v            x86       guarded  snx_fp_host_lanes
-FMAXP_v            x86-avx2  guarded  snx_fp_host_lanes
-FMAXP_v            x86-base  guarded  snx_fp_host_lanes
-FMAXV_s            aarch64   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXV_s            generic   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXV_s            la64-lsx  guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXV_s            mips-msa  guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXV_s            ppc64le   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMAXV_s            riscv64-v guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMAXP_v            aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_0_1
+FMAXP_v            generic   inline
+FMAXP_v            la64-lsx  inline
+FMAXP_v            mips-msa  inline
+FMAXP_v            ppc64le   inline
+FMAXP_v            riscv64-v inline
+FMAXP_v            x86       guarded  snx_fp_cold_minmax_32_4_13_0_0_1 snx_fp_host_lanes
+FMAXP_v            x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_0_0_1 snx_fp_host_lanes
+FMAXP_v            x86-base  guarded  snx_fp_cold_minmax_32_4_13_0_0_1 snx_fp_host_lanes
+FMAXV_s            aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_0_1
+FMAXV_s            generic   inline
+FMAXV_s            la64-lsx  inline
+FMAXV_s            mips-msa  inline
+FMAXV_s            ppc64le   inline
+FMAXV_s            riscv64-v inline
 FMAXV_s            x86       guarded  snx_fp_host_lanes snx_fp_host_minmax
 FMAXV_s            x86-avx2  guarded  snx_fp_host_lanes snx_fp_host_minmax
 FMAXV_s            x86-base  guarded  snx_fp_host_lanes snx_fp_host_minmax
@@ -1199,39 +1199,39 @@ FMAX_s             riscv64-v guarded  snx_fp_host_minmax
 FMAX_s             x86       guarded  snx_fp_host_minmax
 FMAX_s             x86-avx2  guarded  snx_fp_host_minmax
 FMAX_s             x86-base  guarded  snx_fp_host_minmax
-FMAX_v             aarch64   guarded  snx_fp_host_lanes
-FMAX_v             generic   guarded  snx_fp_host_lanes
-FMAX_v             la64-lsx  guarded  snx_fp_host_lanes
-FMAX_v             mips-msa  guarded  snx_fp_host_lanes
-FMAX_v             ppc64le   guarded  snx_fp_host_lanes
-FMAX_v             riscv64-v guarded  snx_fp_host_lanes
-FMAX_v             x86       guarded  snx_fp_host_lanes
-FMAX_v             x86-avx2  guarded  snx_fp_host_lanes
-FMAX_v             x86-base  guarded  snx_fp_host_lanes
-FMINNMP_s          aarch64   guarded  snx_fp_host_minmax
-FMINNMP_s          generic   guarded  snx_fp_host_minmax
-FMINNMP_s          la64-lsx  guarded  snx_fp_host_minmax
-FMINNMP_s          mips-msa  guarded  snx_fp_host_minmax
-FMINNMP_s          ppc64le   guarded  snx_fp_host_minmax
-FMINNMP_s          riscv64-v guarded  snx_fp_host_minmax
+FMAX_v             aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_0_1
+FMAX_v             generic   inline
+FMAX_v             la64-lsx  inline
+FMAX_v             mips-msa  inline
+FMAX_v             ppc64le   inline
+FMAX_v             riscv64-v inline
+FMAX_v             x86       guarded  snx_fp_cold_minmax_32_4_13_0_0_1 snx_fp_host_lanes
+FMAX_v             x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_0_0_1 snx_fp_host_lanes
+FMAX_v             x86-base  guarded  snx_fp_cold_minmax_32_4_13_0_0_1 snx_fp_host_lanes
+FMINNMP_s          aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_1_1 snx_fp_cold_minmax_64_2_13_1_1_1
+FMINNMP_s          generic   inline
+FMINNMP_s          la64-lsx  inline
+FMINNMP_s          mips-msa  inline
+FMINNMP_s          ppc64le   inline
+FMINNMP_s          riscv64-v inline
 FMINNMP_s          x86       guarded  snx_fp_host_minmax
 FMINNMP_s          x86-avx2  guarded  snx_fp_host_minmax
 FMINNMP_s          x86-base  guarded  snx_fp_host_minmax
-FMINNMP_v          aarch64   guarded  snx_fp_host_lanes
-FMINNMP_v          generic   guarded  snx_fp_host_lanes
-FMINNMP_v          la64-lsx  guarded  snx_fp_host_lanes
-FMINNMP_v          mips-msa  guarded  snx_fp_host_lanes
-FMINNMP_v          ppc64le   guarded  snx_fp_host_lanes
-FMINNMP_v          riscv64-v guarded  snx_fp_host_lanes
-FMINNMP_v          x86       guarded  snx_fp_host_lanes
-FMINNMP_v          x86-avx2  guarded  snx_fp_host_lanes
-FMINNMP_v          x86-base  guarded  snx_fp_host_lanes
-FMINNMV_s          aarch64   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINNMV_s          generic   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINNMV_s          la64-lsx  guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINNMV_s          mips-msa  guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINNMV_s          ppc64le   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINNMV_s          riscv64-v guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMINNMP_v          aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_1_1
+FMINNMP_v          generic   inline
+FMINNMP_v          la64-lsx  inline
+FMINNMP_v          mips-msa  inline
+FMINNMP_v          ppc64le   inline
+FMINNMP_v          riscv64-v inline
+FMINNMP_v          x86       guarded  snx_fp_cold_minmax_32_4_13_1_1_1 snx_fp_host_lanes
+FMINNMP_v          x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_1_1_1 snx_fp_host_lanes
+FMINNMP_v          x86-base  guarded  snx_fp_cold_minmax_32_4_13_1_1_1 snx_fp_host_lanes
+FMINNMV_s          aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_1_1
+FMINNMV_s          generic   inline
+FMINNMV_s          la64-lsx  inline
+FMINNMV_s          mips-msa  inline
+FMINNMV_s          ppc64le   inline
+FMINNMV_s          riscv64-v inline
 FMINNMV_s          x86       guarded  snx_fp_host_lanes snx_fp_host_minmax
 FMINNMV_s          x86-avx2  guarded  snx_fp_host_lanes snx_fp_host_minmax
 FMINNMV_s          x86-base  guarded  snx_fp_host_lanes snx_fp_host_minmax
@@ -1244,39 +1244,39 @@ FMINNM_s           riscv64-v guarded  snx_fp_host_minmax
 FMINNM_s           x86       guarded  snx_fp_host_minmax
 FMINNM_s           x86-avx2  guarded  snx_fp_host_minmax
 FMINNM_s           x86-base  guarded  snx_fp_host_minmax
-FMINNM_v           aarch64   guarded  snx_fp_host_lanes
-FMINNM_v           generic   guarded  snx_fp_host_lanes
-FMINNM_v           la64-lsx  guarded  snx_fp_host_lanes
-FMINNM_v           mips-msa  guarded  snx_fp_host_lanes
-FMINNM_v           ppc64le   guarded  snx_fp_host_lanes
-FMINNM_v           riscv64-v guarded  snx_fp_host_lanes
-FMINNM_v           x86       guarded  snx_fp_host_lanes
-FMINNM_v           x86-avx2  guarded  snx_fp_host_lanes
-FMINNM_v           x86-base  guarded  snx_fp_host_lanes
-FMINP_s            aarch64   guarded  snx_fp_host_minmax
-FMINP_s            generic   guarded  snx_fp_host_minmax
-FMINP_s            la64-lsx  guarded  snx_fp_host_minmax
-FMINP_s            mips-msa  guarded  snx_fp_host_minmax
-FMINP_s            ppc64le   guarded  snx_fp_host_minmax
-FMINP_s            riscv64-v guarded  snx_fp_host_minmax
+FMINNM_v           aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_1_1
+FMINNM_v           generic   inline
+FMINNM_v           la64-lsx  inline
+FMINNM_v           mips-msa  inline
+FMINNM_v           ppc64le   inline
+FMINNM_v           riscv64-v inline
+FMINNM_v           x86       guarded  snx_fp_cold_minmax_32_4_13_1_1_1 snx_fp_host_lanes
+FMINNM_v           x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_1_1_1 snx_fp_host_lanes
+FMINNM_v           x86-base  guarded  snx_fp_cold_minmax_32_4_13_1_1_1 snx_fp_host_lanes
+FMINP_s            aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_0_1 snx_fp_cold_minmax_64_2_13_1_0_1
+FMINP_s            generic   inline
+FMINP_s            la64-lsx  inline
+FMINP_s            mips-msa  inline
+FMINP_s            ppc64le   inline
+FMINP_s            riscv64-v inline
 FMINP_s            x86       guarded  snx_fp_host_minmax
 FMINP_s            x86-avx2  guarded  snx_fp_host_minmax
 FMINP_s            x86-base  guarded  snx_fp_host_minmax
-FMINP_v            aarch64   guarded  snx_fp_host_lanes
-FMINP_v            generic   guarded  snx_fp_host_lanes
-FMINP_v            la64-lsx  guarded  snx_fp_host_lanes
-FMINP_v            mips-msa  guarded  snx_fp_host_lanes
-FMINP_v            ppc64le   guarded  snx_fp_host_lanes
-FMINP_v            riscv64-v guarded  snx_fp_host_lanes
-FMINP_v            x86       guarded  snx_fp_host_lanes
-FMINP_v            x86-avx2  guarded  snx_fp_host_lanes
-FMINP_v            x86-base  guarded  snx_fp_host_lanes
-FMINV_s            aarch64   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINV_s            generic   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINV_s            la64-lsx  guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINV_s            mips-msa  guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINV_s            ppc64le   guarded  snx_fp_host_lanes snx_fp_host_minmax
-FMINV_s            riscv64-v guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMINP_v            aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_0_1
+FMINP_v            generic   inline
+FMINP_v            la64-lsx  inline
+FMINP_v            mips-msa  inline
+FMINP_v            ppc64le   inline
+FMINP_v            riscv64-v inline
+FMINP_v            x86       guarded  snx_fp_cold_minmax_32_4_13_1_0_1 snx_fp_host_lanes
+FMINP_v            x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_1_0_1 snx_fp_host_lanes
+FMINP_v            x86-base  guarded  snx_fp_cold_minmax_32_4_13_1_0_1 snx_fp_host_lanes
+FMINV_s            aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_0_1
+FMINV_s            generic   inline
+FMINV_s            la64-lsx  inline
+FMINV_s            mips-msa  inline
+FMINV_s            ppc64le   inline
+FMINV_s            riscv64-v inline
 FMINV_s            x86       guarded  snx_fp_host_lanes snx_fp_host_minmax
 FMINV_s            x86-avx2  guarded  snx_fp_host_lanes snx_fp_host_minmax
 FMINV_s            x86-base  guarded  snx_fp_host_lanes snx_fp_host_minmax
@@ -1289,15 +1289,15 @@ FMIN_s             riscv64-v guarded  snx_fp_host_minmax
 FMIN_s             x86       guarded  snx_fp_host_minmax
 FMIN_s             x86-avx2  guarded  snx_fp_host_minmax
 FMIN_s             x86-base  guarded  snx_fp_host_minmax
-FMIN_v             aarch64   guarded  snx_fp_host_lanes
-FMIN_v             generic   guarded  snx_fp_host_lanes
-FMIN_v             la64-lsx  guarded  snx_fp_host_lanes
-FMIN_v             mips-msa  guarded  snx_fp_host_lanes
-FMIN_v             ppc64le   guarded  snx_fp_host_lanes
-FMIN_v             riscv64-v guarded  snx_fp_host_lanes
-FMIN_v             x86       guarded  snx_fp_host_lanes
-FMIN_v             x86-avx2  guarded  snx_fp_host_lanes
-FMIN_v             x86-base  guarded  snx_fp_host_lanes
+FMIN_v             aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_0_1
+FMIN_v             generic   inline
+FMIN_v             la64-lsx  inline
+FMIN_v             mips-msa  inline
+FMIN_v             ppc64le   inline
+FMIN_v             riscv64-v inline
+FMIN_v             x86       guarded  snx_fp_cold_minmax_32_4_13_1_0_1 snx_fp_host_lanes
+FMIN_v             x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_1_0_1 snx_fp_host_lanes
+FMIN_v             x86-base  guarded  snx_fp_cold_minmax_32_4_13_1_0_1 snx_fp_host_lanes
 FMLA_si            aarch64   guarded  snx_fp_host_fma
 FMLA_si            generic   helper   snx_fp_host_fma
 FMLA_si            la64-lsx  guarded  snx_fp_host_fma
@@ -1550,7 +1550,7 @@ FNMUL_s            riscv64-v guarded  snx_fp_host_binary
 FNMUL_s            x86       guarded  snx_fp_host_binary
 FNMUL_s            x86-avx2  guarded  snx_fp_host_binary
 FNMUL_s            x86-base  guarded  snx_fp_host_binary
-FRECPE_s           aarch64   guarded  snx_fp_host_unary
+FRECPE_s           aarch64   inline
 FRECPE_s           generic   helper   snx_fp_host_unary
 FRECPE_s           la64-lsx  guarded  snx_fp_host_unary
 FRECPE_s           mips-msa  helper   snx_fp_host_unary
@@ -1558,8 +1558,8 @@ FRECPE_s           ppc64le   guarded  snx_fp_host_unary
 FRECPE_s           riscv64-v guarded  snx_fp_host_unary
 FRECPE_s           x86       inline
 FRECPE_s           x86-avx2  inline
-FRECPE_s           x86-base  guarded  snx_fp_host_unary
-FRECPE_v           aarch64   guarded  snx_fp_host_lanes
+FRECPE_s           x86-base  inline
+FRECPE_v           aarch64   inline
 FRECPE_v           generic   helper   snx_fp_host_lanes
 FRECPE_v           la64-lsx  guarded  snx_fp_host_lanes
 FRECPE_v           mips-msa  helper   snx_fp_host_lanes
@@ -1567,7 +1567,7 @@ FRECPE_v           ppc64le   guarded  snx_fp_host_lanes
 FRECPE_v           riscv64-v guarded  snx_fp_host_lanes
 FRECPE_v           x86       inline
 FRECPE_v           x86-avx2  inline
-FRECPE_v           x86-base  guarded  snx_fp_host_lanes
+FRECPE_v           x86-base  inline
 FRECPS_s           aarch64   guarded  snx_fp_host_binary
 FRECPS_s           generic   helper   snx_fp_host_binary
 FRECPS_s           la64-lsx  guarded  snx_fp_host_binary
@@ -1604,14 +1604,14 @@ FRINTA_s           riscv64-v guarded  snx_fp_round
 FRINTA_s           x86       guarded  snx_fp_round
 FRINTA_s           x86-avx2  guarded  snx_fp_round
 FRINTA_s           x86-base  helper   snx_fp_round
-FRINTA_v           aarch64   guarded  snx_fp_round
+FRINTA_v           aarch64   guarded  snx_fp_cold_round_32_4_13_4_0_1
 FRINTA_v           generic   helper   snx_fp_round
-FRINTA_v           la64-lsx  guarded  snx_fp_round
+FRINTA_v           la64-lsx  guarded  snx_fp_cold_round_32_4_13_4_0_1
 FRINTA_v           mips-msa  helper   snx_fp_round
-FRINTA_v           ppc64le   guarded  snx_fp_round
-FRINTA_v           riscv64-v guarded  snx_fp_round
-FRINTA_v           x86       guarded  snx_fp_round
-FRINTA_v           x86-avx2  guarded  snx_fp_round
+FRINTA_v           ppc64le   guarded  snx_fp_cold_round_32_4_13_4_0_1
+FRINTA_v           riscv64-v guarded  snx_fp_cold_round_32_4_13_4_0_1
+FRINTA_v           x86       guarded  snx_fp_cold_round_32_4_13_4_0_1 snx_fp_round
+FRINTA_v           x86-avx2  guarded  snx_fp_cold_round_32_4_13_4_0_1 snx_fp_round
 FRINTA_v           x86-base  helper   snx_fp_round
 FRINTI_s           aarch64   guarded  snx_fp_round
 FRINTI_s           generic   helper   snx_fp_round
@@ -1622,14 +1622,14 @@ FRINTI_s           riscv64-v guarded  snx_fp_round
 FRINTI_s           x86       guarded  snx_fp_round
 FRINTI_s           x86-avx2  guarded  snx_fp_round
 FRINTI_s           x86-base  helper   snx_fp_round
-FRINTI_v           aarch64   guarded  snx_fp_round
+FRINTI_v           aarch64   guarded  snx_fp_cold_round_32_4_13_5_0_1
 FRINTI_v           generic   helper   snx_fp_round
-FRINTI_v           la64-lsx  guarded  snx_fp_round
+FRINTI_v           la64-lsx  guarded  snx_fp_cold_round_32_4_13_5_0_1
 FRINTI_v           mips-msa  helper   snx_fp_round
 FRINTI_v           ppc64le   helper   snx_fp_round
-FRINTI_v           riscv64-v guarded  snx_fp_round
-FRINTI_v           x86       guarded  snx_fp_round
-FRINTI_v           x86-avx2  guarded  snx_fp_round
+FRINTI_v           riscv64-v guarded  snx_fp_cold_round_32_4_13_5_0_1
+FRINTI_v           x86       guarded  snx_fp_cold_round_32_4_13_5_0_1 snx_fp_round
+FRINTI_v           x86-avx2  guarded  snx_fp_cold_round_32_4_13_5_0_1 snx_fp_round
 FRINTI_v           x86-base  helper   snx_fp_round
 FRINTM_s           aarch64   guarded  snx_fp_round
 FRINTM_s           generic   helper   snx_fp_round
@@ -1640,14 +1640,14 @@ FRINTM_s           riscv64-v guarded  snx_fp_round
 FRINTM_s           x86       guarded  snx_fp_round
 FRINTM_s           x86-avx2  guarded  snx_fp_round
 FRINTM_s           x86-base  helper   snx_fp_round
-FRINTM_v           aarch64   guarded  snx_fp_round
+FRINTM_v           aarch64   guarded  snx_fp_cold_round_32_4_13_2_0_1
 FRINTM_v           generic   helper   snx_fp_round
-FRINTM_v           la64-lsx  guarded  snx_fp_round
+FRINTM_v           la64-lsx  guarded  snx_fp_cold_round_32_4_13_2_0_1
 FRINTM_v           mips-msa  helper   snx_fp_round
-FRINTM_v           ppc64le   guarded  snx_fp_round
-FRINTM_v           riscv64-v guarded  snx_fp_round
-FRINTM_v           x86       guarded  snx_fp_round
-FRINTM_v           x86-avx2  guarded  snx_fp_round
+FRINTM_v           ppc64le   guarded  snx_fp_cold_round_32_4_13_2_0_1
+FRINTM_v           riscv64-v guarded  snx_fp_cold_round_32_4_13_2_0_1
+FRINTM_v           x86       guarded  snx_fp_cold_round_32_4_13_2_0_1 snx_fp_round
+FRINTM_v           x86-avx2  guarded  snx_fp_cold_round_32_4_13_2_0_1 snx_fp_round
 FRINTM_v           x86-base  helper   snx_fp_round
 FRINTN_s           aarch64   guarded  snx_fp_round
 FRINTN_s           generic   helper   snx_fp_round
@@ -1658,14 +1658,14 @@ FRINTN_s           riscv64-v guarded  snx_fp_round
 FRINTN_s           x86       guarded  snx_fp_round
 FRINTN_s           x86-avx2  guarded  snx_fp_round
 FRINTN_s           x86-base  helper   snx_fp_round
-FRINTN_v           aarch64   guarded  snx_fp_round
+FRINTN_v           aarch64   guarded  snx_fp_cold_round_32_4_13_0_0_1
 FRINTN_v           generic   helper   snx_fp_round
-FRINTN_v           la64-lsx  guarded  snx_fp_round
+FRINTN_v           la64-lsx  guarded  snx_fp_cold_round_32_4_13_0_0_1
 FRINTN_v           mips-msa  helper   snx_fp_round
 FRINTN_v           ppc64le   helper   snx_fp_round
-FRINTN_v           riscv64-v guarded  snx_fp_round
-FRINTN_v           x86       guarded  snx_fp_round
-FRINTN_v           x86-avx2  guarded  snx_fp_round
+FRINTN_v           riscv64-v guarded  snx_fp_cold_round_32_4_13_0_0_1
+FRINTN_v           x86       guarded  snx_fp_cold_round_32_4_13_0_0_1 snx_fp_round
+FRINTN_v           x86-avx2  guarded  snx_fp_cold_round_32_4_13_0_0_1 snx_fp_round
 FRINTN_v           x86-base  helper   snx_fp_round
 FRINTP_s           aarch64   guarded  snx_fp_round
 FRINTP_s           generic   helper   snx_fp_round
@@ -1676,14 +1676,14 @@ FRINTP_s           riscv64-v guarded  snx_fp_round
 FRINTP_s           x86       guarded  snx_fp_round
 FRINTP_s           x86-avx2  guarded  snx_fp_round
 FRINTP_s           x86-base  helper   snx_fp_round
-FRINTP_v           aarch64   guarded  snx_fp_round
+FRINTP_v           aarch64   guarded  snx_fp_cold_round_32_4_13_1_0_1
 FRINTP_v           generic   helper   snx_fp_round
-FRINTP_v           la64-lsx  guarded  snx_fp_round
+FRINTP_v           la64-lsx  guarded  snx_fp_cold_round_32_4_13_1_0_1
 FRINTP_v           mips-msa  helper   snx_fp_round
-FRINTP_v           ppc64le   guarded  snx_fp_round
-FRINTP_v           riscv64-v guarded  snx_fp_round
-FRINTP_v           x86       guarded  snx_fp_round
-FRINTP_v           x86-avx2  guarded  snx_fp_round
+FRINTP_v           ppc64le   guarded  snx_fp_cold_round_32_4_13_1_0_1
+FRINTP_v           riscv64-v guarded  snx_fp_cold_round_32_4_13_1_0_1
+FRINTP_v           x86       guarded  snx_fp_cold_round_32_4_13_1_0_1 snx_fp_round
+FRINTP_v           x86-avx2  guarded  snx_fp_cold_round_32_4_13_1_0_1 snx_fp_round
 FRINTP_v           x86-base  helper   snx_fp_round
 FRINTX_s           aarch64   guarded  snx_fp_round
 FRINTX_s           generic   helper   snx_fp_round
@@ -1694,14 +1694,14 @@ FRINTX_s           riscv64-v guarded  snx_fp_round
 FRINTX_s           x86       guarded  snx_fp_round
 FRINTX_s           x86-avx2  guarded  snx_fp_round
 FRINTX_s           x86-base  helper   snx_fp_round
-FRINTX_v           aarch64   guarded  snx_fp_round
+FRINTX_v           aarch64   guarded  snx_fp_cold_round_32_4_13_5_1_1
 FRINTX_v           generic   helper   snx_fp_round
-FRINTX_v           la64-lsx  guarded  snx_fp_round
+FRINTX_v           la64-lsx  guarded  snx_fp_cold_round_32_4_13_5_1_1
 FRINTX_v           mips-msa  helper   snx_fp_round
 FRINTX_v           ppc64le   helper   snx_fp_round
-FRINTX_v           riscv64-v guarded  snx_fp_round
-FRINTX_v           x86       guarded  snx_fp_round
-FRINTX_v           x86-avx2  guarded  snx_fp_round
+FRINTX_v           riscv64-v guarded  snx_fp_cold_round_32_4_13_5_1_1
+FRINTX_v           x86       guarded  snx_fp_cold_round_32_4_13_5_1_1 snx_fp_round
+FRINTX_v           x86-avx2  guarded  snx_fp_cold_round_32_4_13_5_1_1 snx_fp_round
 FRINTX_v           x86-base  helper   snx_fp_round
 FRINTZ_s           aarch64   guarded  snx_fp_round
 FRINTZ_s           generic   helper   snx_fp_round
@@ -1712,16 +1712,16 @@ FRINTZ_s           riscv64-v guarded  snx_fp_round
 FRINTZ_s           x86       guarded  snx_fp_round
 FRINTZ_s           x86-avx2  guarded  snx_fp_round
 FRINTZ_s           x86-base  helper   snx_fp_round
-FRINTZ_v           aarch64   guarded  snx_fp_round
+FRINTZ_v           aarch64   guarded  snx_fp_cold_round_32_4_13_3_0_1
 FRINTZ_v           generic   helper   snx_fp_round
-FRINTZ_v           la64-lsx  guarded  snx_fp_round
+FRINTZ_v           la64-lsx  guarded  snx_fp_cold_round_32_4_13_3_0_1
 FRINTZ_v           mips-msa  helper   snx_fp_round
-FRINTZ_v           ppc64le   guarded  snx_fp_round
-FRINTZ_v           riscv64-v guarded  snx_fp_round
-FRINTZ_v           x86       guarded  snx_fp_round
-FRINTZ_v           x86-avx2  guarded  snx_fp_round
+FRINTZ_v           ppc64le   guarded  snx_fp_cold_round_32_4_13_3_0_1
+FRINTZ_v           riscv64-v guarded  snx_fp_cold_round_32_4_13_3_0_1
+FRINTZ_v           x86       guarded  snx_fp_cold_round_32_4_13_3_0_1 snx_fp_round
+FRINTZ_v           x86-avx2  guarded  snx_fp_cold_round_32_4_13_3_0_1 snx_fp_round
 FRINTZ_v           x86-base  helper   snx_fp_round
-FRSQRTE_s          aarch64   guarded  snx_fp_host_unary
+FRSQRTE_s          aarch64   inline
 FRSQRTE_s          generic   helper   snx_fp_host_unary
 FRSQRTE_s          la64-lsx  guarded  snx_fp_host_unary
 FRSQRTE_s          mips-msa  helper   snx_fp_host_unary
@@ -1729,8 +1729,8 @@ FRSQRTE_s          ppc64le   guarded  snx_fp_host_unary
 FRSQRTE_s          riscv64-v guarded  snx_fp_host_unary
 FRSQRTE_s          x86       inline
 FRSQRTE_s          x86-avx2  inline
-FRSQRTE_s          x86-base  guarded  snx_fp_host_unary
-FRSQRTE_v          aarch64   guarded  snx_fp_host_lanes
+FRSQRTE_s          x86-base  inline
+FRSQRTE_v          aarch64   inline
 FRSQRTE_v          generic   helper   snx_fp_host_lanes
 FRSQRTE_v          la64-lsx  guarded  snx_fp_host_lanes
 FRSQRTE_v          mips-msa  helper   snx_fp_host_lanes
@@ -1738,7 +1738,7 @@ FRSQRTE_v          ppc64le   guarded  snx_fp_host_lanes
 FRSQRTE_v          riscv64-v guarded  snx_fp_host_lanes
 FRSQRTE_v          x86       inline
 FRSQRTE_v          x86-avx2  inline
-FRSQRTE_v          x86-base  guarded  snx_fp_host_lanes
+FRSQRTE_v          x86-base  inline
 FRSQRTS_s          aarch64   guarded  snx_fp_host_binary
 FRSQRTS_s          generic   helper   snx_fp_host_binary
 FRSQRTS_s          la64-lsx  guarded  snx_fp_host_binary
@@ -2674,7 +2674,7 @@ SQRSHL_s           ppc64le   inline
 SQRSHL_s           riscv64-v inline
 SQRSHL_s           x86       inline
 SQRSHL_s           x86-avx2  inline
-SQRSHL_s           x86-base  helper   snx_vec_shl
+SQRSHL_s           x86-base  inline
 SQRSHL_v           aarch64   inline
 SQRSHL_v           generic   helper   snx_vec_shl
 SQRSHL_v           la64-lsx  inline
@@ -2683,7 +2683,7 @@ SQRSHL_v           ppc64le   inline
 SQRSHL_v           riscv64-v inline
 SQRSHL_v           x86       inline
 SQRSHL_v           x86-avx2  inline
-SQRSHL_v           x86-base  helper   snx_vec_shl
+SQRSHL_v           x86-base  inline
 SQRSHRN_si         aarch64   inline
 SQRSHRN_si         generic   inline
 SQRSHRN_si         la64-lsx  inline
@@ -2746,7 +2746,7 @@ SQSHL_s            ppc64le   inline
 SQSHL_s            riscv64-v inline
 SQSHL_s            x86       inline
 SQSHL_s            x86-avx2  inline
-SQSHL_s            x86-base  helper   snx_vec_shl
+SQSHL_s            x86-base  inline
 SQSHL_si           aarch64   inline
 SQSHL_si           generic   inline
 SQSHL_si           la64-lsx  inline
@@ -2764,7 +2764,7 @@ SQSHL_v            ppc64le   inline
 SQSHL_v            riscv64-v inline
 SQSHL_v            x86       inline
 SQSHL_v            x86-avx2  inline
-SQSHL_v            x86-base  helper   snx_vec_shl
+SQSHL_v            x86-base  inline
 SQSHL_vi           aarch64   inline
 SQSHL_vi           generic   inline
 SQSHL_vi           la64-lsx  inline
@@ -2899,7 +2899,7 @@ SRSHL_s            ppc64le   inline
 SRSHL_s            riscv64-v inline
 SRSHL_s            x86       inline
 SRSHL_s            x86-avx2  inline
-SRSHL_s            x86-base  helper   snx_vec_shl
+SRSHL_s            x86-base  inline
 SRSHL_v            aarch64   inline
 SRSHL_v            generic   helper   snx_vec_shl
 SRSHL_v            la64-lsx  inline
@@ -2908,7 +2908,7 @@ SRSHL_v            ppc64le   inline
 SRSHL_v            riscv64-v inline
 SRSHL_v            x86       inline
 SRSHL_v            x86-avx2  inline
-SRSHL_v            x86-base  helper   snx_vec_shl
+SRSHL_v            x86-base  inline
 SRSHR_s            aarch64   inline
 SRSHR_s            generic   inline
 SRSHR_s            la64-lsx  inline
@@ -3421,7 +3421,7 @@ UQRSHL_s           ppc64le   inline
 UQRSHL_s           riscv64-v inline
 UQRSHL_s           x86       inline
 UQRSHL_s           x86-avx2  inline
-UQRSHL_s           x86-base  helper   snx_vec_shl
+UQRSHL_s           x86-base  inline
 UQRSHL_v           aarch64   inline
 UQRSHL_v           generic   helper   snx_vec_shl
 UQRSHL_v           la64-lsx  inline
@@ -3430,7 +3430,7 @@ UQRSHL_v           ppc64le   inline
 UQRSHL_v           riscv64-v inline
 UQRSHL_v           x86       inline
 UQRSHL_v           x86-avx2  inline
-UQRSHL_v           x86-base  helper   snx_vec_shl
+UQRSHL_v           x86-base  inline
 UQRSHRN_si         aarch64   inline
 UQRSHRN_si         generic   inline
 UQRSHRN_si         la64-lsx  inline
@@ -3457,7 +3457,7 @@ UQSHL_s            ppc64le   inline
 UQSHL_s            riscv64-v inline
 UQSHL_s            x86       inline
 UQSHL_s            x86-avx2  inline
-UQSHL_s            x86-base  helper   snx_vec_shl
+UQSHL_s            x86-base  inline
 UQSHL_si           aarch64   inline
 UQSHL_si           generic   inline
 UQSHL_si           la64-lsx  inline
@@ -3475,7 +3475,7 @@ UQSHL_v            ppc64le   inline
 UQSHL_v            riscv64-v inline
 UQSHL_v            x86       inline
 UQSHL_v            x86-avx2  inline
-UQSHL_v            x86-base  helper   snx_vec_shl
+UQSHL_v            x86-base  inline
 UQSHL_vi           aarch64   inline
 UQSHL_vi           generic   inline
 UQSHL_vi           la64-lsx  inline
@@ -3565,7 +3565,7 @@ URSHL_s            ppc64le   inline
 URSHL_s            riscv64-v inline
 URSHL_s            x86       inline
 URSHL_s            x86-avx2  inline
-URSHL_s            x86-base  helper   snx_vec_shl
+URSHL_s            x86-base  inline
 URSHL_v            aarch64   inline
 URSHL_v            generic   helper   snx_vec_shl
 URSHL_v            la64-lsx  inline
@@ -3574,7 +3574,7 @@ URSHL_v            ppc64le   inline
 URSHL_v            riscv64-v inline
 URSHL_v            x86       inline
 URSHL_v            x86-avx2  inline
-URSHL_v            x86-base  helper   snx_vec_shl
+URSHL_v            x86-base  inline
 URSHR_s            aarch64   inline
 URSHR_s            generic   inline
 URSHR_s            la64-lsx  inline

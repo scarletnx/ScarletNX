@@ -9,6 +9,7 @@
 * [Search for faster GPU settings](#search-for-faster-gpu-settings)
 * [Rebuild / checks](#rebuild--checks)
 * [Run / diagnose](#run--diagnose)
+* [CPU sampling without perf](#cpu-sampling-without-perf)
 * [Profiling](#profiling)
 * [Shaders](#shaders)
 * [Vertex input](#vertex-input)
@@ -227,6 +228,38 @@ beside it:
 - The log names each NVN function the game resolves that the runtime does not implement (`nvn: the game resolved
   NAME, which nvn doesn't implement`), and the game stops with its name when it calls one. [NVN_HLE.md](NVN_HLE.md)
   has what the SDK does.
+
+## CPU sampling without perf
+
+On Linux x86-64 and AArch64, `tools/profile_cpu.py` can sample a process without perf permissions. It builds a
+local preload library and uses each thread's CPU clock. Sleeping threads generate no samples. The signal handler
+writes a per-thread ring, and one collector writes the trace. No sampler code enters the ordinary runtime.
+
+```sh
+python3 tools/profile_cpu.py tune --out /local/scratch/sample-search
+python3 tools/profile_cpu.py run --config /local/scratch/sample-search/winner.json \
+    --out /local/scratch/capture -- /absolute/path/to/program arguments
+python3 tests/cpu_sample.py
+```
+
+The search starts at one slot and doubles capacity until calibration passes. It then measures shuffled paired
+rounds and uses bootstrap confidence intervals to select the smallest aligned footprint within two percent of the
+fastest candidate. An overflow restarts the measurement batch with a larger buffer. A small native workload cannot
+establish a sufficient buffer for every game. Check `samples.bin.json` after each real capture and increase capacity
+if it reports drops. Keep the CPU interval separate from the collector's polling period.
+
+`samples.bin` contains little-endian records: monotonic timestamp and host PC as two 64-bit integers, then TID and
+sample weight as two 32-bit integers. Weight includes coalesced timer expirations. Report timer overruns separately
+from ring overflow. Weighted samples estimate CPU cost, not instruction counts or exact guest PCs. Resolve PCs
+against `capture/maps.txt` and the exact matching binaries. The wrapper also records per-thread scheduler CPU time,
+run-queue wait and context-switch counts in `sched.jsonl`.
+
+The parent recovers pending records after process exit, including `_exit`, and deduplicates a collector write whose
+tail publication was interrupted. Failed and timed-out commands retain their trace, and `capture.json` records the
+exit code. The wrapper still returns failure for those commands. One unpublished signal attempt per exiting thread
+is reported separately. Recovery tests cover partial writes, duplicate recovery and invalid accounting. The sampler
+uses SIGPROF and is intended for programs that do not install their own SIGPROF handler. Keep game captures and symbolized profiles local. Measure
+throughput with unprofiled runs of the same scene.
 
 ## Profiling
 

@@ -489,7 +489,8 @@ SnxFpReply snx_fp_host_compare(u64 a, u64 b, int width, int signal, u32 fpcr);
 SnxFpReply snx_fp_host_minmax(u64 a, u64 b, int width, int minimum, int numeric, u32 fpcr);
 /* a vector's lanes through one of them in one call: desc's nibbles the helper (0 binary, 1 fma x + y * z, 2 unary,
    3 minmax), the width in bytes, the lane count, the operation and minmax's numeric. It touches only the memory of
-   its pointers, and returns FPSR after the lanes (fpsr in, for snx_fp_host_binary's lanes) */
+   its pointers, and returns FPSR after the lanes (fpsr in, for snx_fp_host_binary's lanes). It does not retain the
+   pointers. out may alias x: each lane consumes its input before writing, and the vector path reads all inputs first. */
 u32 snx_fp_host_lanes(void* out, const void* x, const void* y, const void* z, u32 desc, u32 fpcr, u32 fpsr);
 
 /* the same against a CPU structure, for the tests that drive them directly */
