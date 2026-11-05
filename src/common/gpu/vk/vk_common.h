@@ -73,4 +73,12 @@ void* snx_vk_chain(void* const* links, size_t count);
 /* a memory type of the bits with the properties, UINT32_MAX for none */
 uint32_t snx_vk_memory_type(const VkPhysicalDeviceMemoryProperties* memory, uint32_t bits,
                             VkMemoryPropertyFlags properties);
+/* Where a device's memory is, which decides whether the GPU reads and writes guest memory in place or copies it:
+   - UMA, the system's memory: an integrated GPU, a CPU's, or a GPU neither discrete nor integrated whose biggest
+     device-local heap the CPU maps and holds most of the memory;
+   - REBAR, a discrete GPU's own, which the CPU maps all of (resizable BAR): device-local, host-visible memory is at
+     least half of its biggest device-local heap;
+   - SMALL_BAR, a discrete GPU's own, which the CPU maps a small window of (256 MiB without resizable BAR) */
+typedef enum { SNX_VK_SMALL_BAR, SNX_VK_REBAR, SNX_VK_UMA } SnxVkMemoryModel;
+SnxVkMemoryModel snx_vk_memory_model(VkPhysicalDeviceType type, const VkPhysicalDeviceMemoryProperties* memory);
 #endif
