@@ -61,16 +61,26 @@ enum {
 };
 
 /* Instruction set extensions the generated code may use. The host's are read once per process (snx_ir_init, from
-   LLVM's CPUID-based host detection) into snx_ir_host; an SnxIr for another triple (tests) gets none of them. The
-   x86 fields are only ever set when the target is x86-64 and the arm ones when it is AArch64, so an emitter gated
-   on them is gated on the architecture */
+   LLVM's host detection) into snx_ir_host; an SnxIr for another triple (tests) gets none of them. The x86 fields are
+   only ever set when the target is x86-64 and the arm ones when it is AArch64, so an emitter gated on them is gated
+   on the architecture; the others are set the same way, one group per host architecture */
 typedef struct {
     unsigned x86 : 1; /* x86-64 target: x86 intrinsics are available at all */
-    unsigned sse42 : 1, crc32 : 1, pclmul : 1, aes : 1, sha_ni : 1, gfni : 1, fma : 1, f16c : 1; /* x86 extensions */
-    unsigned avx2 : 1, avx512bw : 1, avx512vl : 1, avx512bitalg : 1;
+    unsigned ssse3 : 1, sse42 : 1, crc32 : 1, pclmul : 1, aes : 1, sha_ni : 1, gfni : 1, fma : 1, f16c : 1;
+    unsigned avx2 : 1;
+    /* AVX-512: F's unsigned scalar conversions, VL's on 128-bit vectors (DQ's of 64-bit lanes), VBMI's two-table byte
+       permute (VPERMI2B, VL for 128 bits). LLVM picks the rest of it (masks, VPTERNLOG, BW's per-lane word shifts,
+       BITALG's VPOPCNTB) from plain IR, since the target machine has the host's features */
+    unsigned avx512f : 1, avx512dq : 1, avx512vl : 1, avx512vbmi : 1;
     unsigned aarch64 : 1;                /* AArch64 target: AArch64 intrinsics are available at all */
     unsigned arm_aes : 1, arm_sha2 : 1; /* AArch64 crypto extensions (PMULL comes with AES) */
     unsigned arm_crc : 1;                /* AArch64 CRC32 extension */
+    unsigned ppc : 1, ppc_vsx : 1;       /* PowerPC64 target, and its VSX: AltiVec alone flushes single-precision
+                                            denormals and has no vector double arithmetic */
+    unsigned riscv : 1, riscv_v : 1;     /* RISC-V target, and the V extension: per-lane variable shifts, gathers */
+    unsigned loongarch : 1, la_lsx : 1;  /* LoongArch target, and LSX: 128-bit vectors */
+    unsigned mips64 : 1, mips_msa : 1;   /* MIPS64 target, and MSA: 128-bit vectors (not "mips", which GNU C on
+                                            MIPS predefines as 1) */
 } SnxIrFeatures;
 extern SnxIrFeatures snx_ir_host;
 
@@ -188,8 +198,9 @@ typedef struct SnxIr {
     /* the target stores values big-endian (ppc64): guest memory and the vector registers hold the guest's
        little-endian bytes, so the accesses that read them as numbers swap (ir_rd, ir_vd and their siblings) */
     int big_endian;
-    /* PowerPC64's ABI is ELFv2, else ELFv1 (new_ir): what a function pointer is, where the TOC is saved */
-    int elfv2;
+    /* the target is PowerPC64, whatever features says; its ABI is ELFv2, else ELFv1 (new_ir): what a function pointer
+       is, where the TOC is saved */
+    int ppc, elfv2;
     /* the guest's features (snx_a64_features) for the function being emitted: what its system registers keep */
     SnxU64 guest_features;
 } SnxIr;
@@ -207,6 +218,14 @@ LLVMValueRef ir_flags_cond(SnxIr* ir, unsigned cond);
 
 /* Once per process, before any other call; threads may then each own SnxIrs. 0, or -1 with the reason */
 int snx_ir_init(char* error, size_t error_size);
+/* Tests': takes every host feature whose name begins with prefix out of what snx_ir_init reads into snx_ir_host and
+   of the target machines snx_ir_new and snx_ir_new_jit make, so the host runs as one without them (prefix "avx512":
+   an x86-64 with AVX2 and no AVX-512). prefix names a whole family, as "avx512" does: a feature left in that needs
+   one taken out would keep it. Before snx_ir_init; -1 with the reason in error after it, or for an empty prefix */
+int snx_ir_host_drop(const char* prefix, char* error, size_t error_size);
+/* The host's CPU features as the target machines get them, LLVMGetHostCPUFeatures's less snx_ir_host_drop's, which
+   the caches' keys hold. LLVMDisposeMessage frees it */
+char* snx_ir_host_features(void);
 /* LLVM's SLP vectorizer on or off for every module this process makes (the setting slp_vectorizer): an option of
    LLVM's command line, so once per process, from one thread, before any module is made */
 void snx_ir_slp_vectorizer(int on);

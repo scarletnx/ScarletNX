@@ -1037,6 +1037,56 @@ int mem_reserve_identity(u64 from) {
 }
 #endif
 int mem_identity(void) { return g_mem_identity; }
+void mem_place(const void* p, char* out, size_t size) {
+    u64 a = (u64)(uintptr_t)p, lo, hi, game, origin; /* origin: where the console's address space would start */
+    if (g_mem_identity)
+        lo = IDENTITY_LO + g_mem_moved, hi = g_as_size, game = 0, origin = g_mem_moved;
+    else if (g_mem)
+        lo = game = origin = (u64)(uintptr_t)g_mem, hi = lo + g_as_size;
+    else {
+        snprintf(out, size, "%#llx: no address space is reserved for the game yet", (unsigned long long)a);
+        return;
+    }
+    if (a < lo)
+        snprintf(out, size, "%#llx lies below the game's address space, which starts at %#llx, by %#llx",
+                 (unsigned long long)a, (unsigned long long)lo, (unsigned long long)(lo - a));
+    else if (a >= hi && a - origin < AS_TOP) /* one the console's address space holds: the smaller layout's size */
+        snprintf(out, size,
+                 "%#llx lies past the end of the game's address space at %#llx, by %#llx: its layout holds %llu GiB, "
+                 "the console's %llu",
+                 (unsigned long long)a, (unsigned long long)hi, (unsigned long long)(a - hi),
+                 (unsigned long long)((g_as_size - g_mem_moved) >> 30), (unsigned long long)(AS_TOP >> 30));
+    else if (a >= hi) /* a host address no layout holds: the runtime's or a library's, not a game's */
+        snprintf(out, size,
+                 "%#llx lies past the end of the game's address space at %#llx, by %#llx, past the console's %llu GiB "
+                 "too",
+                 (unsigned long long)a, (unsigned long long)hi, (unsigned long long)(a - hi),
+                 (unsigned long long)(AS_TOP >> 30));
+    else
+        snprintf(out, size, "%#llx lies in the game's address space, %#llx to %#llx: game address %#llx",
+                 (unsigned long long)a, (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)(a - game));
+}
+#if !defined(_WIN32)
+/* plat_vm_foreign's own under NCE, where the guest's addresses are the host's: [a, b) within the runs of guest memory
+   moved into a GPU's buffers (mem_migrate), whose files the maps name. Under the lock, which a crash report's thread
+   may hold already (t_mem.held) */
+static int foreign_own(u64 a, u64 b) {
+    int held = t_mem.held;
+    if (!held) mem_lock();
+    for (u32 i = 0; i < g_ext.n && a < b; i++) /* sorted and disjoint: each one that holds a takes it to its end */
+        if (g_ext.run[i].a <= a && a < g_ext.run[i].b) a = g_ext.run[i].b;
+    if (!held) mem_unlock();
+    return a >= b;
+}
+#endif
+int mem_foreign(char* out, size_t size) {
+#if !defined(_WIN32)
+    if (g_mem_identity) return plat_vm_foreign(IDENTITY_LO + g_mem_moved, g_as_size, foreign_own, out, size);
+#endif
+    if (size) out[0] = 0;
+    errno = ENOSYS;
+    return -1;
+}
 /* where the written-page tracking starts (plat_vm_track): g_mem, or under NCE the code region's base */
 static u8* tracked_base(void) { return g_mem_identity ? (u8*)(uintptr_t)(IDENTITY_LO + g_mem_moved) : g_mem; }
 int mem_ww_probe(void (*cb)(u8* p, u64 size)) { return plat_ww_scan(tracked_base(), 4096, cb); }

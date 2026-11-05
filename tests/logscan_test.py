@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 """The log summary (src/common/utilities/logscan.c, as snx-logscan or scarletnx --scan-log, the program given) on
-made-up logs in the runtime's formats: the header lines, each kind of failure and the
-function it is pinned on (past the SDK's abort for svcBreak), the place a crash is put (the game, the runtime, a
-library), the older nightlies' svcBreak line and header, service commands counted, signatures that agree across runs,
-paths shortened and the dumps left out, invalid UTF-8, long lines, the markdown's escaping. Offline.
+made-up logs in the runtime's formats: the header lines (a build line with its commit's day, and one before it), each
+kind of failure and the function it is pinned on (past the SDK's abort for svcBreak), the place a crash is put (the
+game, the runtime, a library), the older nightlies' svcBreak line and header, service commands counted, signatures
+that agree across runs, paths shortened and the dumps left out, invalid UTF-8, long lines, the markdown's escaping.
+Offline.
 
     tests/logscan_test.py PROGRAM [ARGS...]   (build/snx-logscan, or build/scarletnx --scan-log)"""
 
@@ -319,6 +320,27 @@ def main():
 
     rt = scan(CRASH_IN_RUNTIME)
     check(rt['signature'] == 'crash (invalid memory access) in the runtime 1234abc +1a2b3c', rt['signature'])
+
+    # a build that says the day its commit was made: the commit is the hash still, the runtime's offsets keep their
+    # signature, and the markdown says the day; a log read as text has no run time, so no days before it (the Share
+    # Log's: tests/gui_sdl.c and tests/logscan_age.c)
+    dated = CRASH_IN_RUNTIME.replace('1234abc (clang', '1234abc, committed 2026-11-02 (clang')
+    d = scan(dated)
+    check(
+        (d['commit'], d['branch'], d['build'])
+        == ('1234abc', 'main', 'ScarletNX main 1234abc, committed 2026-11-02 (clang 23.1.3, Linux x86_64)'),
+        f'a dated build line: {d["commit"]!r} {d["branch"]!r} {d["build"]!r}',
+    )
+    check(d['signature'] == rt['signature'], f"a dated build's runtime crash: {d['signature']}")
+    md = run(['-', '--format', 'markdown'], dated.encode())
+    check('\n- **Build:** `main 1234abc`, committed 2026-11-02\n' in md, f'the markdown of a dated build:\n{md}')
+    md = run(['-', '--format', 'markdown'], CRASH_IN_RUNTIME.encode())
+    check(
+        '\n- **Build:** `ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)`\n' in md,
+        f'the markdown of a build before the day:\n{md}',
+    )
+    tarball = scan(HEADER.replace('main 1234abc (clang', 'unknown unknown, committed unknown (clang'))
+    check((tarball['commit'], tarball['branch']) == ('unknown', 'unknown'), f'no git: {tarball["commit"]!r}')
     lib = scan(CRASH_IN_LIBRARY)
     check(lib['signature'] == 'crash (invalid memory access) in libnvidia-glcore.so.580 ?', lib['signature'])
 
@@ -432,6 +454,8 @@ def main():
         la['build'] == 'ScarletNX main 9999fff (clang 23.1.3, Windows x86_64)' and la['commit'] == '9999fff',
         f"the launcher's build: {la['build']}",
     )
+    dated_launcher = scan(LAUNCHER.replace('9999fff (clang', '9999fff, committed 2026-11-02 (clang'))
+    check(dated_launcher['commit'] == '9999fff', f"the launcher's dated build: {dated_launcher['commit']!r}")
     check(la['signature'] == r['signature'] and la['ipc'] == [], "only the game log's section is scanned")
     t3 = scan(THREEDS)
     check(
@@ -440,6 +464,8 @@ def main():
         f"the 3DS's header: {t3['title']} {t3['title_id']} {t3['console']} {t3['commit']}",
     )
     check('- **Console:** 3DS' in run(['-', '--format', 'markdown'], THREEDS.encode()), "the 3DS's console in markdown")
+    t3d = scan(THREEDS.replace('d22bbab (clang', 'd22bbab, committed 2026-11-02 (clang'))
+    check((t3d['title'], t3d['commit']) == ('Some 3DS Game', 'd22bbab'), f"the 3DS's dated header: {t3d['commit']!r}")
     gb = scan(GBA)
     check(
         (gb['title'], gb['title_id'], gb['console'], gb['commit']) == ('SOME GBA GAME', 'BPEE', 'GBA', '1234abc'),

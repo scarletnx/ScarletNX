@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
-// The system's side of the iOS and macOS apps (docs/APPLE.md), for src/gui/apple.m: the document picker SDL lacks on
-// iOS. The menu and the runtime are SDL's window; this only presents over it.
+// The system's side of the iOS and macOS apps (docs/APPLE.md), for src/gui/apple.m: the document picker and the share
+// sheet SDL lacks on iOS. The menu and the runtime are SDL's window; this only presents over it.
 import Foundation
 
 #if os(iOS)
@@ -62,6 +62,23 @@ public func snxApplePick(_ window: UnsafeMutableRawPointer, _ folder: Bool, _ do
     return true
 }
 
+/// The system's share sheet for one file (Share Log's): AirDrop, Messages, Mail, Save to Files. An iPad shows it as a
+/// popover, which needs a place to point at: the middle of the window
+@_cdecl("snx_apple_share")
+public func snxAppleShare(_ window: UnsafeMutableRawPointer, _ path: UnsafePointer<CChar>) -> Bool {
+    // UIKit presents nothing, with no error, over a view controller that comes or goes (a second tap as a sheet closes)
+    guard let top = presenter(window), !top.isBeingDismissed, !top.isBeingPresented else { return false }
+    let sheet = UIActivityViewController(activityItems: [URL(fileURLWithPath: String(cString: path))],
+                                         applicationActivities: nil)
+    if let popover = sheet.popoverPresentationController, let view = top.view {
+        popover.sourceView = view
+        popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+        popover.permittedArrowDirections = []
+    }
+    top.present(sheet, animated: true)
+    return true
+}
+
 #elseif os(macOS)
 
 /// SDL has macOS's own file and folder dialogs: apple.m asks for none here
@@ -69,6 +86,12 @@ public func snxApplePick(_ window: UnsafeMutableRawPointer, _ folder: Bool, _ do
 public func snxApplePick(_ window: UnsafeMutableRawPointer, _ folder: Bool,
                          _ done: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Void,
                          _ data: UnsafeMutableRawPointer?) -> Bool {
+    false
+}
+
+/// Finder shares a file from its folder, which Share Log opens: apple.m asks for no sheet here
+@_cdecl("snx_apple_share")
+public func snxAppleShare(_ window: UnsafeMutableRawPointer, _ path: UnsafePointer<CChar>) -> Bool {
     false
 }
 

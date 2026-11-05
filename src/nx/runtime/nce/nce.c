@@ -19,6 +19,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/rtapi.h"
 #include "snx_settings.h"
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,8 +27,6 @@
 
 /* the functions whose entries branch to an outcall: a hook's, and NVN's, which take one function each */
 #define NCE_DIVERTS 4096
-/* how often a kick goes again to a thread whose CPU.poll is still set: one may land in the outcall's own code */
-#define NCE_KICK_AGAIN_NS 2000000
 
 static struct {
     int checked, file, wanted, on;
@@ -45,9 +44,30 @@ static struct {
        kick then stops it. By the thread's index (kt_ix) */
     int tid[KTHREAD_MAX + 1];
     u8 guest[KTHREAD_MAX + 1];
+    char foreign[1024]; /* what was last found that is not the game's in its addresses, so a finding is said once */
 } g_nce = {.lock = PMUTEX_INIT};
 
 int nce_on(void) { return g_nce.on; }
+
+int nce_foreign_look(u64 round) {
+    char found[sizeof g_nce.foreign];
+    int n, s = g_settings.nce_foreign_scan; /* startup, set before the kicks' thread starts: 0, a round costs this */
+    if (s <= 0 || round % ((u64)s * NCE_KICKS_PER_S)) return 0;
+    n = mem_foreign(found, sizeof found);
+    if (n < 0)
+        WARN_LIMIT(
+            1, "nce: what lies in the guest's addresses cannot be read (%s), so nce_foreign_scan=%d finds nothing\n",
+            strerror(errno), s);
+    else if (!n)
+        g_nce.foreign[0] = 0; /* gone: said again if it comes back */
+    else if (strcmp(found, g_nce.foreign)) {
+        memcpy(g_nce.foreign, found, strlen(found) + 1);
+        WARN("nce: while the game runs, %d thing%s of the host's process lie%s in the guest's addresses, not the "
+             "game's: %s\n",
+             n, n == 1 ? "" : "s", n == 1 ? "s" : "", found);
+    }
+    return 1;
+}
 
 const SnxModule* nce_module(const SnxModule* m, u64* entry) {
     u64 by = mem_moved();
@@ -225,17 +245,40 @@ void nce_kick(struct KThread* t) {
 }
 
 /* a kick that lands in the outcall's code, after its last look at CPU.poll and before the guest's code, stops nothing:
-   this goes again to each thread that runs guest code with its poll still set */
+   this goes again to each thread that runs guest code with its poll still set. With nce_foreign_scan=N it also looks
+   at the guest's addresses every N seconds */
 static void kicker(void* arg) {
     (void)arg;
     SNX_THREAD_NAME("nce kicks");
-    for (;;) {
+    for (u64 round = 1;; round++) {
         plat_sleep_ns(NCE_KICK_AGAIN_NS);
+        nce_foreign_look(round);
         for (u32 ix = 1; ix <= KTHREAD_MAX; ix++)
             if (__atomic_load_n(&g_nce.guest[ix], __ATOMIC_ACQUIRE) &&
                 __atomic_load_n(&kt_at(ix)->cpu.poll, __ATOMIC_RELAXED))
                 kick_tid(ix);
     }
+}
+
+/* The guest's addresses are the host's, in the host's process with its other owners (ART's heap and JIT, the
+   allocator, the GPU's driver), whose own mmaps the reservation keeps out: one that maps at a fixed address of its own
+   over guest memory makes memory the game's code reads and writes as its own. What mem_foreign finds there is said;
+   it cannot see another owner's plain anonymous mapping, so it guards nothing, and a crash report says it again */
+static void guest_foreign(void) {
+    char again[64] = "";
+    int n;
+    if (g_settings.nce_foreign_scan > 0) /* before the look, whose errno the line says */
+        snprintf(again, sizeof again, ", looked at again every %d s (nce_foreign_scan)", g_settings.nce_foreign_scan);
+    n = mem_foreign(g_nce.foreign, sizeof g_nce.foreign); /* nce_foreign_look's first finding to compare */
+    if (n < 0)
+        WARN("nce: what lies in the guest's addresses %#llx to %#llx cannot be read (%s), so it is not looked at\n",
+             (unsigned long long)AS_BASE, (unsigned long long)AS_END, strerror(errno));
+    else if (n)
+        WARN("nce: the guest's addresses %#llx to %#llx hold %d thing%s of the host's process, not the game's%s: %s\n",
+             (unsigned long long)AS_BASE, (unsigned long long)AS_END, n, n == 1 ? "" : "s", again, g_nce.foreign);
+    else
+        LOG("nce: the guest's addresses %#llx to %#llx hold nothing of the host's process but the game's%s\n",
+            (unsigned long long)AS_BASE, (unsigned long long)AS_END, again);
 }
 
 /* The net under this guest thread (nce_host_net), as it starts the game's code: each one takes it, so the runtime's
@@ -367,6 +410,7 @@ void nce_init(void) {
         "follows the host's counter, at %llu Hz\n",
         sites.count, sites.proven, g_nce.pools, (unsigned long long)counter.freq);
     nce_sites_free(&sites);
+    guest_foreign();
     g_nce.on = 1;
     if (plat_thread(kicker, NULL, 64 << 10)) fatal("NCE: the thread of the kicks cannot start");
 }

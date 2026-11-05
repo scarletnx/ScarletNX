@@ -1469,16 +1469,17 @@ void nvn_SamplerFinalize(CPU* c, u64 s) {
 }
 
 /* ============================================================ programs */
+/* a program's life at log level 2, with the game's call: which thread made or ended a program before another bound it */
 int nvn_ProgramInitialize(CPU* c, u64 p, u64 d) {
-    (void)c;
     (void)d;
     memset(GP(p), 0, sizeof(NvnProgram)); /* guest memory: every byte the game sees */
     NVN_OBJ(NvnProgram, p)->magic = NVN_MAGIC('P', 'R', 'O', 'G');
+    LOGV("nvn: program %llx initialized (called from %llx)\n", (unsigned long long)p, (unsigned long long)c->x[30]);
     return 1;
 }
 void nvn_ProgramFinalize(CPU* c, u64 p) {
-    (void)c;
     NVN_OBJ(NvnProgram, p)->magic = 0;
+    LOGV("nvn: program %llx finalized (called from %llx)\n", (unsigned long long)p, (unsigned long long)c->x[30]);
 }
 /* A stage's control section, as the game's driver reads it (its accessor for the newest format, which one game's
    format 8 sections share): 0x00 the magic, 0x04 1, 0x08 the format, 0x700 the constants' offset in the code area,
@@ -1607,14 +1608,18 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     return 1;
 }
 int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {
-    (void)c;
-    return set_shaders(p, n, sd, sizeof(NVNshaderData));
+    int ok = set_shaders(p, n, sd, sizeof(NVNshaderData));
+    LOGV("nvn: program %llx: %d stages set%s (called from %llx)\n", (unsigned long long)p, n, ok ? "" : ", refused",
+         (unsigned long long)c->x[30]);
+    return ok;
 }
 
 /* NVN 55's SetShaders: 0x18 bytes a stage, NVNshaderData and an 8-byte extension, which nxnative doesn't use either */
 int nvn_ProgramSetShadersExt(CPU* c, u64 p, i32 n, u64 sd) {
-    (void)c;
-    return set_shaders(p, n, sd, 0x18);
+    int ok = set_shaders(p, n, sd, 0x18);
+    LOGV("nvn: program %llx: %d stages set%s (called from %llx)\n", (unsigned long long)p, n, ok ? "" : ", refused",
+         (unsigned long long)c->x[30]);
+    return ok;
 }
 
 /* the sample shading of the program's next SetShaders: NVN_SAMPLE_SHADING_* (0 as the program says, 1 every sample, 2

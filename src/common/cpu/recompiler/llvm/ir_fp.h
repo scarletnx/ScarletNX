@@ -36,15 +36,18 @@ static inline void ir_fp_raise_ixc(SnxIr* ir, LLVMValueRef inexact) {
     ir_cpu_store(ir, LLVMBuildOr(ir->b, fpsr(ir), bit, ""), offsetof(CPU, fpsr));
 }
 
-/* x86-64 Windows returns a 16-byte structure through memory, the caller passing where as a hidden first argument
-   (sret), and Clang compiles the helpers so there: an LLVM structure would come back in RAX and RDX. The code runs
-   where it is built, so the host's architecture is the target's */
+/* x86-64 Windows, s390x and big-endian PowerPC64's ELFv1 return a 16-byte structure through memory, the caller
+   passing where as a hidden first argument (sret), and Clang compiles the helpers so there: an LLVM structure would
+   come back in two registers. The code runs where it is built, so the host's architecture is the target's */
 static inline int ir_fp_reply_in_memory(SnxIr* ir) {
-#ifdef __x86_64__
-    return ir->windows;
-#else
+#if defined(__s390x__)
     (void)ir;
-    return 0;
+    return 1;
+#else
+#if defined(__x86_64__)
+    if (ir->windows) return 1;
+#endif
+    return ir->ppc && !ir->elfv2;
 #endif
 }
 
@@ -57,7 +60,12 @@ static inline int ir_fp_reply_in_memory(SnxIr* ir) {
    through memory it lands in a local, which keeps the call out of ir_promote_registers too. */
 static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count,
                                             int with_fpsr) {
-    LLVMTypeRef params[9], fields[2] = {ir->t_i64, ir->t_i32};
+    /* in registers, a big-endian host's ABI (PowerPC64's ELFv2, MIPS64's n64) loads the structure's second
+       doubleword whole, the flags in its high half. The byte order is the target machine's: llvm_vfp_compare sets
+       big_endian on a little-endian host to run the big-endian lane paths, and the helper's ABI stays the host's */
+    const int in_memory = ir_fp_reply_in_memory(ir);
+    const int high = !in_memory && LLVMByteOrder(LLVMGetModuleDataLayout(ir->mod)) == LLVMBigEndian;
+    LLVMTypeRef params[9], fields[2] = {ir->t_i64, high ? ir->t_i64 : ir->t_i32};
     LLVMValueRef args[9];
     unsigned n = count;
     for (unsigned i = 0; i < count; ++i) {
@@ -72,7 +80,7 @@ static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMVal
     }
     LLVMTypeRef reply = LLVMStructTypeInContext(ir->ctx, fields, 2, 0);
     LLVMValueRef call;
-    if (ir_fp_reply_in_memory(ir)) {
+    if (in_memory) {
         LLVMTypeRef with[10] = {ir->t_ptr};
         LLVMValueRef pass[10] = {ir_local(ir, reply)};
         for (unsigned i = 0; i < n; ++i) {
@@ -92,7 +100,9 @@ static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMVal
         ir_pure(ir, function);
         call = LLVMBuildCall2(ir->b, LLVMFunctionType(reply, params, n, 0), function, args, n, "");
     }
-    ir_cpu_store(ir, LLVMBuildOr(ir->b, fpsr(ir), LLVMBuildExtractValue(ir->b, call, 1, ""), ""), offsetof(CPU, fpsr));
+    LLVMValueRef flags = LLVMBuildExtractValue(ir->b, call, 1, "");
+    if (high) flags = LLVMBuildTrunc(ir->b, LLVMBuildLShr(ir->b, flags, ir_i64(ir, 32), ""), ir->t_i32, "");
+    ir_cpu_store(ir, LLVMBuildOr(ir->b, fpsr(ir), flags, ""), offsetof(CPU, fpsr));
     return LLVMBuildExtractValue(ir->b, call, 0, "");
 }
 static inline LLVMValueRef ir_fp_call(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count) {
@@ -105,11 +115,53 @@ static inline LLVMValueRef ir_fp_call_fpsr(SnxIr* ir, const char* name, LLVMValu
 static inline LLVMValueRef both(SnxIr* ir, LLVMValueRef a, LLVMValueRef b) { return LLVMBuildAnd(ir->b, a, b, ""); }
 static inline LLVMValueRef either(SnxIr* ir, LLVMValueRef a, LLVMValueRef b) { return LLVMBuildOr(ir->b, a, b, ""); }
 
-static inline int host_native(SnxIr* ir) { return ir->features->x86 || ir->features->aarch64; }
-static inline int host_fma(SnxIr* ir) { return (ir->features->x86 && ir->features->fma) || ir->features->aarch64; }
-/* roundss/roundsd (SSE4.1) or FRINT*: the rounding intrinsics never become libm calls */
-static inline int host_round(SnxIr* ir) {
-    return (ir->features->x86 && ir->features->sse42) || ir->features->aarch64;
+/* The host's own scalar FP arithmetic: LLVM gives MIPS64's FP operations to libm, so every gate here leaves that one
+   on the helpers */
+static inline int host_fp(SnxIr* ir) {
+    return ir->features->x86 || ir->features->aarch64 || ir->features->ppc || ir->features->riscv ||
+           ir->features->loongarch;
+}
+/* The same over 128-bit vectors: PowerPC64 needs VSX (AltiVec alone has no vector double arithmetic and flushes
+   single-precision denormals), RISC-V the V extension, LoongArch LSX. MIPS64's MSA keeps the helpers too */
+static inline int host_fp_vec(SnxIr* ir) {
+    return ir->features->x86 || ir->features->aarch64 || (ir->features->ppc && ir->features->ppc_vsx) ||
+           (ir->features->riscv && ir->features->riscv_v) || (ir->features->loongarch && ir->features->la_lsx);
+}
+static inline int host_fma_scalar(SnxIr* ir) {
+    return (ir->features->x86 && ir->features->fma) || ir->features->aarch64 || ir->features->ppc ||
+           ir->features->riscv || ir->features->loongarch;
+}
+static inline int host_fma_vec(SnxIr* ir) {
+    return (ir->features->x86 && ir->features->fma) || ir->features->aarch64 ||
+           (ir->features->ppc && ir->features->ppc_vsx) || (ir->features->riscv && ir->features->riscv_v) ||
+           (ir->features->loongarch && ir->features->la_lsx);
+}
+/* The host's rounding instructions for mode rm (FPRounding: 0 TIEEVEN, 1 POSINF, 2 NEGINF, 3 ZERO, 4 TIEAWAY), never
+   a libm call: x86's need SSE4.2, PowerPC64's the FPU instructions of POWER5 and later (a 970's are libm), where
+   roundeven stays a call too, and LoongArch's round as well (host_rint does that one in arithmetic). A mode this
+   refuses uses the helper */
+static inline int host_round_mode(SnxIr* ir, unsigned rm) {
+    if (ir->features->x86) return ir->features->sse42;
+    if (ir->features->aarch64) return 1;
+    if (ir->features->ppc) return ir->features->ppc_vsx && rm != 0;
+    if (ir->features->riscv) return 1;
+    if (ir->features->loongarch) return 1;
+    return 0;
+}
+static inline int host_round_vec_mode(SnxIr* ir, unsigned rm) {
+    return host_fp_vec(ir) && host_round_mode(ir, rm);
+}
+/* FPCR's mode, which picks one of 0-3 at run time: every one of them must be an instruction */
+static inline int host_round_dynamic(SnxIr* ir) {
+    return host_round_mode(ir, 0) && host_round_mode(ir, 1) && host_round_mode(ir, 2) && host_round_mode(ir, 3);
+}
+static inline int host_round_vec_dynamic(SnxIr* ir) { return host_fp_vec(ir) && host_round_dynamic(ir); }
+/* An unsigned integer of integer bits (lanes when vector) to a float in one instruction, +0 for 0 in every rounding
+   mode: AVX-512's VCVTUSI2SS and VCVTUSI2SD, VCVTUDQ2PS on 128-bit vectors with VL, and VCVTUQQ2PD with DQ too. x86
+   without it gets LLVM's sum of two exact parts, which is -0 for 0 when the host rounds toward minus infinity */
+static inline int host_unsigned_to_float(SnxIr* ir, unsigned integer, int vector) {
+    if (!ir->features->x86 || !ir->features->avx512f) return 0;
+    return !vector || (ir->features->avx512vl && (integer == 32 || ir->features->avx512dq));
 }
 
 /* the constant v as a float like f (a scalar or a vector) */
@@ -122,11 +174,10 @@ static inline LLVMValueRef fp_like(LLVMValueRef f, double v) {
     return LLVMConstVector(all, lanes);
 }
 /* f (a float or a vector of them, neither a NaN) rounded to an integral value in rm (0-4: FPRounding's TIEEVEN,
-   POSINF, NEGINF, ZERO, TIEAWAY) by the host_round rounding instructions. x86 has none for ties away from zero
-   (LLVM's llvm.round there adds the half's predecessor, whose sum the host's rounding mode rounds): the truncation,
-   one more away from zero where the fraction it dropped is a half or more. Exact in every host rounding mode: the
-   fraction f - trunc(f) is f's own low bits, and trunc(f) + 1 or - 1 is taken only where a fraction was dropped,
-   so below 2^24 (2^53) */
+   POSINF, NEGINF, ZERO, TIEAWAY) by the host_round_mode instructions. x86 and PowerPC64 have none for ties away from
+   zero (and LLVM 23 makes a libm call of LoongArch's): the truncation, one more away from zero where the fraction it
+   dropped is a half or more. Exact in every host rounding mode: the fraction f - trunc(f) is f's own low bits, and
+   trunc(f) + 1 or - 1 is taken only where a fraction was dropped, so below 2^24 (2^53) */
 static inline LLVMValueRef host_rint(SnxIr* ir, LLVMValueRef f, unsigned rm) {
     static const char* const names[] = {"llvm.roundeven", "llvm.ceil", "llvm.floor", "llvm.trunc", "llvm.round"};
     LLVMTypeRef type = LLVMTypeOf(f);

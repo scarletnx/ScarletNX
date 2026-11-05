@@ -62,7 +62,9 @@ void own_drop(u64 addr, u64 size);
 /* landings so far (each a wait for the GPU: the statistics count them), and whether own_init found traps */
 u64 own_landings(void);
 int own_traps(void);
+/* the entries own.c holds, changed under its lock with __atomic_store_n */
+extern u32 g_nown;
 /* whether anything is owned: the common case's test, without a lock */
-extern int g_own_any;
+static inline int own_any(void) { return __atomic_load_n(&g_nown, __ATOMIC_ACQUIRE) != 0; }
 
 #endif

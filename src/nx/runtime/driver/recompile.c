@@ -658,7 +658,7 @@ static int make_program(const MakeArgs* a, int index) {
         char* stale = snx_format("%s.nce", base);
         int nce = 0;
 #if SNX_NCE_HOST /* where the runtime runs it: else its JIT would compile all of the code */
-        nce = !ios && program.npdm.is64 && g_settings.nce;
+        nce = !ios && g_settings.nce;
         if (nce) {
             char why[240];
 #if defined(__ANDROID__)
@@ -666,7 +666,7 @@ static int make_program(const MakeArgs* a, int index) {
 #else
             int android = 0, api = 0;
 #endif
-            if (nce_refused(why, sizeof why, program.npdm.aspace, android, api)) {
+            if (nce_refused(why, sizeof why, program.npdm.is64, program.npdm.aspace, android, api)) {
                 printf("NCE: nce=1, but %s: this recompile makes the code ahead of time (nce=0)\n", why);
                 nce = 0;
             }

@@ -33,6 +33,9 @@
 #include <time.h>
 #include "common/utilities/common.h"
 #include "common/utilities/window_icon.h"
+#ifdef SDL_PLATFORM_IOS
+#include "gui/apple.h" /* gui_apple_share: the share sheet of the app, which the iOS app links */
+#endif
 #include "nx/runtime/platform/controls_png.h"
 #include "common/utilities/build_info.h"
 #ifdef __APPLE__
@@ -604,16 +607,19 @@ static int android_share(const char* path) {
     return ok;
 }
 #endif
-/* Share Log, as the launcher's: scarletnx.log beside the game's log, sent to the app the player picks on Android; its
-   path in saved once written (else left as it was), what it did in said */
+/* Share Log, as the launcher's: scarletnx.log beside the game's log, sent to the app the player picks on Android and
+   iOS; its path in saved once written (else left as it was), what it did in said */
 static void fatal_share(const char* msg, const char* game_log, char* saved, size_t saved_size, char* said,
                         size_t size) {
     char made[1300], *folder = snx_dirname(game_log);
-    int ok = folder && !fatal_share_log(folder, snx_build_info(), msg, game_log, made, sizeof made);
+    int ok = folder && !fatal_share_log(folder, snx_build_log_line(), msg, game_log, made, sizeof made);
     if (!ok) snprintf(said, size, "The log could not be saved: %s", folder ? made : game_log);
 #ifdef __ANDROID__
     else if (!android_share(made))
         snprintf(said, size, "Log saved to %s, but nothing took it to share.", made);
+#elif defined(SDL_PLATFORM_IOS)
+    else if (!gui_apple_share(g_win, made))
+        snprintf(said, size, "Log saved to %s, but the share sheet did not open.", made);
 #endif
     else
         snprintf(said, size, "Log saved to %s.", made);

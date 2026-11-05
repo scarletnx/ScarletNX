@@ -1440,6 +1440,9 @@ if(Python3_Interpreter_FOUND)
                  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/publish_builds_test.py")
         # edenprobe's runs held against a baseline (scripts/edenprobe.py), with a fake runtime and game
         add_test(NAME edenprobe_script COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/edenprobe_test.py")
+        # a pull request made ready by someone without write access back to a draft, with one comment
+        # (scripts/pr-ready.py, pr-ready.yml), against the fake gh
+        add_test(NAME pr_ready COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/pr_ready_test.py")
         # the pull request's comment linking its builds (scripts/pr-builds.sh), against a fake gh; 77 without jq
         add_test(NAME pr_builds COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/pr_builds_test.py")
         set_tests_properties(pr_builds PROPERTIES SKIP_RETURN_CODE 77)
@@ -1452,6 +1455,9 @@ add_test(NAME patched_copy COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DI
 # the dependency cache's keys and how a build is published to it (cmake/deps_cache.cmake)
 add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/deps-cache-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/deps_cache_test.cmake")
+# where cmake/cross.cmake puts -mabi=elfv2: PowerPC64's compiles and links, no other processor's
+add_test(NAME cross_flags COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" -P
+         "${CMAKE_CURRENT_SOURCE_DIR}/cross_flags_test.cmake")
 # LLVM's revision for the unit cache's key, read by CMake from its C++ header (cmake/llvm_revision.cmake)
 add_test(NAME llvm_revision COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/llvm-revision-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/llvm_revision_test.cmake")
@@ -1481,6 +1487,20 @@ if(SNX_TRACY)
     target_compile_definitions(snx-test-startup PRIVATE SNX_TRACY=1)
 endif()
 add_test(NAME startup_options COMMAND snx-test-startup)
+if(SNX_TRACY)
+    # the Tracy client's lifetime (runtime/platform/tracy.c) over a stand-in client, Tracy's headers without its
+    # library: the gate shut before the start and for good after the stop, the client started and stopped once
+    add_executable(snx-test-tracy-state tracy_state.c)
+    snx_test_target(snx-test-tracy-state 23)
+    target_include_directories(snx-test-tracy-state PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_include_directories(snx-test-tracy-state SYSTEM PRIVATE
+        $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_INCLUDE_DIRECTORIES>
+        $<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>)
+    target_compile_definitions(snx-test-tracy-state PRIVATE SNX_TRACY=1
+        $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_COMPILE_DEFINITIONS>)
+    target_link_libraries(snx-test-tracy-state PRIVATE scarletnx-common scarletnx-filesystem snx_build_info)
+    add_test(NAME tracy_state COMMAND snx-test-tracy-state)
+endif()
 
 add_library(snx_test_common STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/common.c"
     "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/game_ini.c"
@@ -1508,6 +1528,11 @@ add_executable(snx-test-script script.c)
 snx_test_target(snx-test-script 99)
 target_link_libraries(snx-test-script PRIVATE snx_test_common)
 add_test(NAME script COMMAND snx-test-script)
+
+# the summary's build line: its commit's day, and the days from it to the run (common/utilities/logscan.c)
+add_executable(snx-test-logscan-age logscan_age.c "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
+snx_test_target(snx-test-logscan-age 99)
+add_test(NAME logscan_age COMMAND snx-test-logscan-age)
 
 add_executable(snx-test-driver driver_workflow.c
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/driver.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c"
@@ -1836,8 +1861,13 @@ if(NOT WIN32)
         add_test(NAME llvm_qemu_differential_generic COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
                  "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu_generic" "${snx_lqd_expected}"
                  --quiet --generic)
+        # an AVX-512 host as one with AVX2 alone (--without-avx512), skipped on a host without AVX-512
+        add_test(NAME llvm_qemu_differential_avx2 COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
+                 "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu_avx2" "${snx_lqd_expected}" --quiet
+                 --without-avx512)
         set_tests_properties(llvm_qemu_differential_jit llvm_qemu_differential_portable llvm_qemu_differential_generic
                              PROPERTIES TIMEOUT 600)
+        set_tests_properties(llvm_qemu_differential_avx2 PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
         if(SNX_TEST_LLVM_SWEEP)
             add_test(NAME llvm_qemu_differential_sweep COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
                      "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu_sweep" "${snx_lqd_expected}"
@@ -1848,7 +1878,7 @@ if(NOT WIN32)
         add_test(NAME llvm_qemu_differential COMMAND snx-test-llvm-qemu-differential --skip "${SNX_QEMU_REF_MISSING}")
     endif()
     set_tests_properties(llvm_qemu_differential PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
-    # The lowering census (llvm_lowering.c): each A64 SIMD, FP and crypto op's class on four emitter paths against
+    # The lowering census (llvm_lowering.c): each A64 SIMD, FP and crypto op's class on nine emitter paths against
     # llvm_lowering_expected.txt, which a change that moves an op updates in the same commit (--update)
     add_executable(snx-test-llvm-lowering llvm_lowering.c llvm_qemu_words.c)
     snx_test_target(snx-test-llvm-lowering 99)
@@ -1857,6 +1887,19 @@ if(NOT WIN32)
     snx_a64dec(snx-test-llvm-lowering)
     add_test(NAME llvm_lowering COMMAND snx-test-llvm-lowering "${CMAKE_CURRENT_SOURCE_DIR}/llvm_lowering_expected.txt")
     set_tests_properties(llvm_lowering PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+    # snx_ir_object's check of the symbols an object names (llvm_object_symbols.c)
+    add_executable(snx-test-llvm-object-symbols llvm_object_symbols.c)
+    snx_test_target(snx-test-llvm-object-symbols 99)
+    target_link_libraries(snx-test-llvm-object-symbols PRIVATE snx_llvm)
+    add_test(NAME llvm_object_symbols COMMAND snx-test-llvm-object-symbols)
+    set_tests_properties(llvm_object_symbols PROPERTIES SKIP_RETURN_CODE 77)
+    # the LSE atomics' read-modify-write as each target's LLVM lowers it right (llvm_atomic_rmw.c)
+    add_executable(snx-test-llvm-atomic-rmw llvm_atomic_rmw.c)
+    snx_test_target(snx-test-llvm-atomic-rmw 99)
+    target_link_libraries(snx-test-llvm-atomic-rmw PRIVATE snx_llvm)
+    snx_a64dec(snx-test-llvm-atomic-rmw)
+    add_test(NAME llvm_atomic_rmw COMMAND snx-test-llvm-atomic-rmw)
+    set_tests_properties(llvm_atomic_rmw PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(snx-test-llvm-block-fuzz llvm_block_fuzz.c llvm_steps.c llvm_qemu_words.c qemu_ref/qemu_ref.c)
     snx_test_target(snx-test-llvm-block-fuzz 11)
     snx_a64dec(snx-test-llvm-block-fuzz)
@@ -2696,6 +2739,14 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         add_test(NAME settingsgen COMMAND "${CMAKE_COMMAND}" "-DSETTINGSGEN=$<TARGET_FILE:snx-settingsgen>"
                  "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/settingsgen-test"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/settingsgen.cmake")
+        # its output where iOS compiles it: a default-if SNX_IOS value, which needs common.h. Not on Apple hosts, whose
+        # own headers read the TargetConditionals.h the test puts in their place
+        if(NOT APPLE)
+            add_test(NAME settingsgen_ios COMMAND "${CMAKE_COMMAND}" "-DSETTINGSGEN=$<TARGET_FILE:snx-settingsgen>"
+                     "-DCC=${CMAKE_C_COMPILER}" "-DSRC=${PROJECT_SOURCE_DIR}/src"
+                     "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/settingsgen-ios-test"
+                     -P "${CMAKE_CURRENT_SOURCE_DIR}/settingsgen_ios.cmake")
+        endif()
         if(UNIX) # the opts the test runs are shell scripts
             # cmake/llvm_opt.cmake: the pipelines of an opt of the LLVM's exact version, and what another opt gets
             add_test(NAME llvm_opt COMMAND "${CMAKE_COMMAND}"

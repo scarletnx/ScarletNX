@@ -2290,7 +2290,7 @@ static int written_since_gva(u64 gva, u64 len, u32 since) {
 /* whether GPU-owned bytes are on [gva, gva + len)'s pages (memory/own.c): reading them on the CPU lands them, a wait
    for the GPU (vk_lock held, as own_hash needs) */
 static int range_owned(u64 gva, u64 len) {
-    if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) return 0;
+    if (!own_any()) return 0;
     for (u64 o = 0; o < len;) {
         u64 cpu = 0, h = 0, n = gmmu_run(gva + o, len - o, &cpu);
         if (!n) {

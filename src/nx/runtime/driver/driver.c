@@ -1544,6 +1544,16 @@ int snx_driver(int argc, char** argv) {
             n -= joined ? 1 : 2;
             --i;
         }
+    /* A runtime option after the "--" is a game argument the runtime does not read, so a timed run given so never
+       ends: say where it belongs before the dump is prepared, not after it starts. -x and -r end their options there */
+    for (i = separator + 1; !(flags & (SNX_EXTRACT | SNX_RECOMP)) && i < argc; ++i)
+        if (!strncmp(argv[i], "--game=", 7) ||
+            (!strncmp(argv[i], "--", 2) && strchr(argv[i], '=') && setting_known(argv[i] + 2))) {
+            result = snx_error("%s comes after the \"--\": put the runtime's options before it, the game's own "
+                               "arguments after it",
+                               argv[i]);
+            goto done;
+        }
     /* played, a --key=value that is not the driver's own is a setting of the recompile, passed on to it when the game is
        made, or of the game's .ini, passed on to the game when the runtime knows the key; any other is refused */
     for (i = 0; automatic && i < n; ++i)

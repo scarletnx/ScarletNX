@@ -221,13 +221,17 @@ static V rmw_value(SnxIr* ir, LLVMAtomicRMWBinOp op, V old, V operand) {
 }
 
 /* the old value of an atomic read-modify-write of operand (iN) at address. Bitwise operations and exchanges commute
-   with the byte order; on a big-endian host the arithmetic ones are a compare-and-swap loop on the guest's value */
+   with the byte order; on a big-endian host the arithmetic ones are a compare-and-swap loop on the guest's value. So
+   are PowerPC64's byte and halfword UMAX and UMIN: its LLVM compares the operand in all 32 bits of its register
+   (cmplw after lbarx or lharx, the operand never zero-extended), which bits above the byte or halfword change */
 static V atomic_rmw(SnxIr* ir, LLVMAtomicRMWBinOp op, V address, V operand) {
     LLVMTypeRef type = LLVMTypeOf(operand);
     V pointer = ir_mp(ir, address);
     int bitwise = op == LLVMAtomicRMWBinOpXchg || op == LLVMAtomicRMWBinOpAnd || op == LLVMAtomicRMWBinOpOr ||
                   op == LLVMAtomicRMWBinOpXor;
-    if (!ir->big_endian || bitwise) {
+    int partword_unsigned =
+        ir->ppc && LLVMGetIntTypeWidth(type) < 32 && (op == LLVMAtomicRMWBinOpUMax || op == LLVMAtomicRMWBinOpUMin);
+    if ((!ir->big_endian || bitwise) && !partword_unsigned) {
         V rmw = LLVMBuildAtomicRMW(B, op, pointer, ir_guest_order(ir, operand), LLVMAtomicOrderingSequentiallyConsistent,
                                    0);
         return ir_guest_order(ir, atomic_tag(ir, rmw));
@@ -297,13 +301,13 @@ static void compare_swap128(SnxIr* ir, V address, V cmp_low, V cmp_high, V new_l
                            LLVMBuildICmp(B, LLVMIntEQ, hi, cmp_high, ""), "");
     V n0 = LLVMBuildSelect(B, equal, new_low, lo, "");
     V n1 = LLVMBuildSelect(B, equal, new_high, hi, "");
-    /* snx_cas128 takes the host's reads of the two doublewords */
+    /* snx_cas128 takes the doublewords' values, as STXP's (cpu.h), and a big-endian host's puts them in memory order */
     args[0] = ir->c;
     args[1] = ir_mp(ir, address);
-    args[2] = ir_guest_order(ir, lo);
-    args[3] = ir_guest_order(ir, hi);
-    args[4] = ir_guest_order(ir, n0);
-    args[5] = ir_guest_order(ir, n1);
+    args[2] = lo;
+    args[3] = hi;
+    args[4] = n0;
+    args[5] = n1;
     V ok = ir_call(ir, ir_extern(ir, "snx_cas128", ir->t_i32, params, 6), args, 6);
     LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntNE, ok, ir_i32(ir, 0), ""), done, loop);
     LLVMPositionBuilderAtEnd(B, done);

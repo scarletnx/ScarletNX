@@ -1566,8 +1566,13 @@ void nvn_CommandBufferBindProgram(CPU* c, u64 cb, u64 program, i32 stages) {
         r->serial = p->serial;
         memcpy(r->block, p->block, sizeof r->block);
         r->sample_shading = p->sample_shading;
-    } else if (program)
-        LOG_LIMIT(4, "nvn: program %llx isn't initialized as it is bound\n", (unsigned long long)program);
+    } else if (program &&
+               g_settings.log_level >= 2) /* every one: when they stop says whether the game binds it again */
+        LOGV("nvn: program %llx isn't initialized as it is bound (stages %#x, called from %llx)\n",
+             (unsigned long long)program, (unsigned)stages, (unsigned long long)c->x[30]);
+    else if (program)
+        LOG_LIMIT(4, "nvn: program %llx isn't initialized as it is bound (stages %#x, called from %llx)\n",
+                  (unsigned long long)program, (unsigned)stages, (unsigned long long)c->x[30]);
 }
 static void bind_state(CPU* c, u64 cb, i32 kind, u64 st, size_t n, u32 cost) {
     NvnPBindState* r = REC(c, cb, OP_BIND_STATE, NvnPBindState, cost);

@@ -31,6 +31,8 @@ and the game's menu's. No font files or localization packages are needed.
 The window's title tells which build it is, as `ScarletNX <branch> <commit> (<compiler>, <OS> <arch>)`, for example
 `ScarletNX main 43bf71a (clang 22.1.8, Linux x86_64)`; the commit ends in `-dirty` when the tree had changes, a
 build of a detached checkout outside CI says `detached`, and both read `unknown` outside a git checkout. A game's window carries the same line after the game's name.
+The logs' line adds the day that commit was made (UTC), `ScarletNX main 43bf71a, committed 2026-11-02 (clang 22.1.8,
+Linux x86_64)`, `committed unknown` outside a git checkout.
 
 It opens on a splash: Wimsy, or Fuddles (`dist/splash/`), picked at random each start, a third of the window's
 shorter side on the theme's `[splash] page` for its `ms`; a key, a click or a finger ends it. The drawings are SVGs
@@ -268,8 +270,11 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   the queue runs its tree's RAM and CPU are in the first line, and a last one says how it goes:
   `Background recompile: Full`, `Gentle`, `Gentle, a game plays` or `Gentle until it ends:` and why, the threads it
   was started with when they were halved, and when the taskbar cannot show its progress, SDL's reason.
-- Settings > App's **Theme** switches to the next theme, or the one before: the built-in Default
-  and YoRHa, then each folder of `themes/` (see [Themes](#themes)). The menu opens in YoRHa until one is picked.
+- Settings > App's **Theme** switches to the next theme, or the one before: the built-ins, Default first and the
+  others by their folder's name, then each folder of `themes/` (see [Themes](#themes)). Enter opens them in a box,
+  each by its name, the one shown in focus: the menu shows each theme the focus reaches, Enter keeps it and ESC goes
+  back to the one before. The setup's Appearance step has the same row and the same box. The menu opens in YoRHa until
+  one is picked.
   It is kept for the next start,
   as are UI scale and Language, in `app.ini` beside `settings.ini`: `[app]` with `theme` (a theme's folder
   name), `ui_scale` (1 to 4; a start without it takes twice the display's
@@ -321,7 +326,8 @@ two; left out, none) and `language` (`auto`, `en` or a
   `zh-SG` simplified, `zh-TW`, `zh-HK`, `zh-MO` traditional): a system in one never takes a catalog of the other. The
   words change at once; a phrase the language has not translated stays English.
 - **Share Log** asks how. **Share Zip** saves `scarletnx-logs-2026-10-28_14-05-33.zip`. Its `summary.txt` holds the message on the screen,
-  the summary of the last run's game log, the last run's output, the queue's recompiles' (`last-recompile.log`), the
+  the summary of the last run's game log (its build line says how many days before the run its commit was made, by
+  when the run wrote that log), the last run's output, the queue's recompiles' (`last-recompile.log`), the
   launcher's own log and its fatal errors (below) and that game log: the one the run's output names (`log: written to
   <path>`, which the runtime prints as it makes it), an update's named after its program. A run that names none (it
   ended before its game's code loaded) shares `== no game log ==` and why, never another game's log; with no run kept,
@@ -411,7 +417,7 @@ they are, Keep, Later, the nickname `Player`), writes `setup.ini` and opens the 
   as its View box has them (Icon size greyed in the list), a row each, and Next (with Skip, on the first page) under
   them. Up/Down go over the rows and Next; Left/Right (or a click, on the left arrow back) change the language among
   the menu's, the theme and the others, at once, the screen with them; UI scale opens App's dialog, the size taken
-  asked about for 15 s as App's is; Enter does as App's (the language or the theme a step on, UI scale's dialog), and on
+  asked about for 15 s as App's is; Enter does as App's (the language a step on, the box of themes, UI scale's dialog), and on
   Next goes on. What was changed is kept in `app.ini` once the setup is done, in the folders Install picks; Auto
   stays Auto while the language is the system's.
 - **Install**: Installed, or Portable, which makes `.scarletnx/` beside the program and moves the menu's own files
@@ -671,6 +677,12 @@ what hactool has written, the recompile by its blocks, shows how far it is on it
 `time`, what is left at its pace so far (`01:23 left`). With `layout = console` the
 driver's own row says it, `extracted 1229 of 4096 MB (30%)`, written over itself each second. The menu fades out to black as a run starts and the run fades in from it; ESC
 fades the run out and the menu back in.
+
+`sepia-dark`, `wimsy`, `wimsy-dark`, `fuddles` and `fuddles-dark` are YoRHa's layout in the colours of the sites'
+themes (SWS, wimsy-dist's `docs/SWS.md`), each palette's light and dark: Sepia, YoRHa's own colours with its menus
+dark too; Wimsy's, from `dist/wimsy.svg`; and Fuddles', from `dist/splash/wimsy-fuddles.svg`. Their run screen is
+dark in both. wimsy-dist's `themes/theme.py` writes their `theme.ini` from the same colours as the sites', each held
+to 4.5:1 for text: a colour changes there, not in the files.
 
 The runtime draws a loading screen of its own in the same look while it prepares the shaders before a game starts
 (`prepare_shaders = 2`, the default). It shows steps with their progress, the lines of the work scrolling under

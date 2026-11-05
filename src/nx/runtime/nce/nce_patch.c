@@ -665,7 +665,11 @@ size_t nce_net_filter(SnxU64 lo, SnxU64 hi, SnxU32 arch, NceBpf* out) {
 
 /* ---- the pools and the file ---- */
 
-int nce_refused(char* why, size_t size, unsigned aspace, int android, int api) {
+int nce_refused(char* why, size_t size, int is64, unsigned aspace, int android, int api) {
+    if (!is64) {
+        snprintf(why, size, "the game is 32-bit (its NPDM's is64 is 0), and NCE runs only 64-bit code");
+        return -1;
+    }
     if (android && api < NCE_ANDROID_API) {
         snprintf(why, size,
                  "Android's API level is %d, and NCE needs %d (Android 10), where the app owns the thread's "

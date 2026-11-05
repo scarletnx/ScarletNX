@@ -373,9 +373,13 @@ static void apply(GuiTheme* t, const char* section, const char* key, const char*
         return;
     }
     if (!strcmp(section, "theme") && !strcmp(key, "base")) { /* read before the rest */
-        if (!gui_theme_builtin(value))
-            say(to, snx_tr("[theme] base = %s is not a built-in theme (default or yorha): it starts from %s"), value,
-                to->from);
+        if (!gui_theme_builtin(value)) {
+            char ids[SNX_GUI_THEME_COUNT * 24] = "";
+            size_t i, used = 0;
+            for (i = 0; i < SNX_GUI_THEME_COUNT && used < sizeof ids; ++i)
+                used += (size_t)snprintf(ids + used, sizeof ids - used, "%s%s", i ? ", " : "", snx_gui_theme_ids[i]);
+            say(to, snx_tr("[theme] base = %s is not a built-in theme (%s): it starts from %s"), value, ids, to->from);
+        }
         return;
     }
     if (!strcmp(section, "theme") && !strcmp(key, "layout")) { /* ErET's, read before the rest */

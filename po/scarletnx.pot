@@ -4020,6 +4020,11 @@ msgid "Use"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"
+msgstr ""
+
+#: src/gui/main.c
 msgid "How to share the logs?"
 msgstr ""
 
@@ -4312,6 +4317,10 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "The log could not be saved to %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "the share sheet did not open"
 msgstr ""
 
 #: src/gui/main.c
@@ -5119,7 +5128,7 @@ msgstr ""
 
 #: src/gui/theme.c
 #, c-format
-msgid "[theme] base = %s is not a built-in theme (default or yorha): it starts from %s"
+msgid "[theme] base = %s is not a built-in theme (%s): it starts from %s"
 msgstr ""
 
 #: src/gui/theme.c

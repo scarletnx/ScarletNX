@@ -128,6 +128,29 @@ u8* plat_vm_reserve_at(u64 addr, u64 size) {
     reservation_size = size;
     return (u8*)p;
 }
+/* plat_posix.c's look at the maps (platform_posix tests it), which mem_foreign asks only of NCE's reservation: the
+   named mappings test_moved lists, each said by its start unless own claims it, and the range it was asked for */
+static struct {
+    u64 named[2][2], lo, hi;
+    int n, calls;
+} foreign;
+int plat_vm_foreign(u64 lo, u64 hi, int (*own)(u64 a, u64 b), char* out, size_t size) {
+    size_t at = 0;
+    int found = 0;
+    foreign.calls++;
+    foreign.lo = lo, foreign.hi = hi;
+    if (size) out[0] = 0;
+    for (int i = 0; i < foreign.n; i++) {
+        int k;
+        if (own(foreign.named[i][0], foreign.named[i][1])) continue;
+        k = at < size
+                ? snprintf(out + at, size - at, "%s%#llx", found ? "; " : "", (unsigned long long)foreign.named[i][0])
+                : 0;
+        at += k > 0 ? (size_t)k : 0;
+        found++;
+    }
+    return found;
+}
 /* nce.c, whose NCE no game here is of: mem.c's reservation asks it first */
 int nce_wanted(void) { return 0; }
 int plat_vm_commit(u8* p, u64 size) {
@@ -180,13 +203,15 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) { /* nothing is the G
     (void)addr, (void)size, (void)out, (void)max;
     return 0;
 }
+/* guest memory moved into a GPU's buffer and back (mem_migrate): refused, but for test_moved's, which maps nothing */
+static int share_ok;
 int plat_vm_share(u8* p, int fd, u64 size) {
     (void)p, (void)fd, (void)size;
-    return -1;
+    return share_ok ? 0 : -1;
 }
 int plat_vm_unshare(u8* p, u64 size) {
     (void)p, (void)size;
-    return -1;
+    return share_ok ? 0 : -1;
 }
 void plat_freeze(u8* p, u64 size) { (void)p, (void)size; }
 void plat_thaw(void) {}
@@ -815,7 +840,52 @@ static void test_moved(void) {
     /* the 62 GiB an engine reserves in the alias region at startup (AllocateAddressRegion), which ends the game when it
        doesn't fit, there in the moved layout too */
     CHECK(mem_find_free(ALIAS_BASE, ALIAS_BASE + ALIAS_SIZE, 62ull << 30, 0x1000) == ALIAS_BASE);
+    { /* what is not the game's in its addresses (mem_foreign), asked of the moved reservation: a named mapping over
+         guest memory moved into a GPU's buffer is the runtime's own, one beside it another owner's */
+        char out[64], want[64];
+        share_ok = 1;
+        CHECK(mem_migrate(HEAP_BASE, 0x1000, 7) == 0);
+        foreign.named[0][0] = HEAP_BASE, foreign.named[0][1] = HEAP_BASE + 0x1000;
+        foreign.named[1][0] = HEAP_BASE + 0x1000, foreign.named[1][1] = HEAP_BASE + 0x2000;
+        foreign.n = 2;
+        CHECK(mem_foreign(out, sizeof out) == 1 && foreign.lo == by + 0x8000000ull && foreign.hi == by + size);
+        snprintf(want, sizeof want, "%#llx", (unsigned long long)(HEAP_BASE + 0x1000));
+        CHECK(!strcmp(out, want));
+        CHECK(mem_unmigrate(HEAP_BASE, 0x1000) == 0);
+        CHECK(mem_foreign(out, sizeof out) == 2); /* moved back, it is no buffer's */
+        foreign.n = 0;
+        share_ok = 0;
+    }
     CHECK(mem_unmap(HEAP_BASE, 0x1000) == 0);
+    { /* a crash report's line on where a fault lies: below, in and past the moved layout, whose addresses are the
+         host's */
+        char out[256], want[256];
+        mem_place((void*)(uintptr_t)0x8000000ull, out, sizeof out);
+        snprintf(want, sizeof want, "0x8000000 lies below the game's address space, which starts at %#llx, by %#llx",
+                 (unsigned long long)(by + 0x8000000ull), (unsigned long long)by);
+        CHECK(!strcmp(out, want));
+        mem_place((void*)(uintptr_t)(by + (68ull << 30)), out, sizeof out);
+        snprintf(want, sizeof want, "%#llx lies in the game's address space, %#llx to %#llx: game address %#llx",
+                 (unsigned long long)(by + (68ull << 30)), (unsigned long long)(by + 0x8000000ull),
+                 (unsigned long long)(by + size), (unsigned long long)(by + (68ull << 30)));
+        CHECK(!strcmp(out, want));
+        mem_place((void*)(uintptr_t)(by + size + 0x5000), out, sizeof out);
+        snprintf(want, sizeof want,
+                 "%#llx lies past the end of the game's address space at %#llx, by 0x5000: its layout holds 128 GiB, "
+                 "the console's 512",
+                 (unsigned long long)(by + size + 0x5000), (unsigned long long)(by + size));
+        CHECK(!strcmp(out, want));
+        /* past the console's 512 GiB from the moved origin (the runtime's heap, a library): no layout's size to blame */
+        mem_place((void*)(uintptr_t)(by + AS_TOP), out, sizeof out);
+        snprintf(want, sizeof want,
+                 "%#llx lies past the end of the game's address space at %#llx, by %#llx, past the console's 512 GiB "
+                 "too",
+                 (unsigned long long)(by + AS_TOP), (unsigned long long)(by + size),
+                 (unsigned long long)(AS_TOP - size));
+        CHECK(!strcmp(out, want));
+        mem_place((void*)(uintptr_t)(by + AS_TOP - 1), out, sizeof out);
+        CHECK(strstr(out, ": its layout holds 128 GiB, the console's 512") != NULL);
+    }
     fflush(stdout);
     child = fork();
     if (!child) {
@@ -843,6 +913,11 @@ int main(void) {
 #if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
     g_console = g_layout;
 #endif
+    { /* a crash before the reservation */
+        char out[96];
+        mem_place((void*)(uintptr_t)0x1234, out, sizeof out);
+        CHECK(!strcmp(out, "0x1234: no address space is reserved for the game yet"));
+    }
     hle_init();
     /* this host's pages, then those of hosts with larger ones (16 KiB: Apple silicon, some Android kernels; 64 KiB:
        PowerPC64 and some AArch64 distributions), which mem.c commits in whole */
@@ -882,6 +957,20 @@ int main(void) {
     refuse_above = 24ull << 30;
     mem_reserve();
     CHECK(g_mem && g_as_size == 24ull << 30 && g_layout.end == 24ull << 30);
+    { /* past a reservation smaller than the console's: a game address no layout here holds */
+        char out[256], want[256];
+        mem_place(g_mem + (24ull << 30) + 0x40, out, sizeof out);
+        snprintf(want, sizeof want,
+                 "%#llx lies past the end of the game's address space at %#llx, by 0x40: its layout holds 24 GiB, "
+                 "the console's 512",
+                 (unsigned long long)(uintptr_t)(g_mem + (24ull << 30) + 0x40),
+                 (unsigned long long)(uintptr_t)(g_mem + (24ull << 30)));
+        CHECK(!strcmp(out, want));
+        mem_place(g_mem + 0x1000, out, sizeof out);
+        CHECK(strstr(out, ": game address 0x1000") != NULL);
+        /* a reservation the system placed: no other owner's fixed address lies there, and nothing is looked at */
+        CHECK(mem_foreign(out, sizeof out) == -1 && !out[0] && !foreign.calls);
+    }
     CHECK(g_layout.alias == 4ull << 30 && g_layout.alias_size == 4ull << 30 && g_layout.heap == 8ull << 30 &&
           g_layout.heap_size == 8ull << 30 && g_layout.stack == 16ull << 30 && g_layout.stack_size == 2ull << 30 &&
           g_layout.kern == 23ull << 30 && g_layout.kern_end == 24ull << 30);

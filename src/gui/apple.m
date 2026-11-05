@@ -24,6 +24,7 @@
 
 /* dist/apple/Frontend.swift. window is the SDL window's UIWindow or NSWindow; done gets the path picked, NULL for none */
 extern bool snx_apple_pick(void* window, bool folder, void (*done)(void* data, const char* path), void* data);
+extern bool snx_apple_share(void* window, const char* path);
 /* plat_posix.c: the runtime's power watcher marks a change, which its main thread takes */
 extern void plat_power_mark_changed(void);
 /* plat_posix.c's weak watcher entry, which this file fills on iOS */
@@ -221,6 +222,11 @@ int gui_apple_pick(SDL_Window* window, int folder, SDL_DialogFileCallback done, 
     snprintf(message, size, "%s",
              native ? snx_tr("The document picker did not open.") : snx_tr("No window to show the picker over."));
     return 0;
+}
+
+int gui_apple_share(SDL_Window* window, const char* path) {
+    void* native = native_window(window);
+    return native && snx_apple_share(native, path);
 }
 
 static char** played;

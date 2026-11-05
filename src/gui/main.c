@@ -125,7 +125,8 @@ typedef enum {
     GUI_CHOICES_PICKS
 } GuiChoicesOf;
 /* whose few choices the picks box shows (picks_open) */
-typedef enum { GUI_PICKS_SHARE, GUI_PICKS_FOLDER, GUI_PICKS_DRIVER, GUI_PICKS_ASSET } GuiPicksOf;
+typedef enum { GUI_PICKS_SHARE, GUI_PICKS_FOLDER, GUI_PICKS_DRIVER, GUI_PICKS_ASSET, GUI_PICKS_THEME } GuiPicksOf;
+#define GUI_THEME_PICKS 64 /* the themes the box of themes lists at most, built-ins first */
 /* the lists whose first row App's firsts keeps between frames: Choices' a GuiChoicesOf each, then the others */
 enum {
     GUI_LIST_USERS = GUI_CHOICES_PICKS + 1,
@@ -697,7 +698,11 @@ typedef struct App {
     bool picks_shown; /* a box of a few choices over the screen (picks_open): Share Log's, a Folders row's */
     GuiPicksOf picks_of;
     GuiChoice picks;
-    int pick_row;                      /* the Folders row the box is of */
+    int pick_row; /* the Folders row the box is of */
+    /* the box of themes (themes_open): each theme's name in app->themes' order, and the one shown as it opened */
+    const char* theme_picks[GUI_THEME_PICKS + 1];
+    char theme_names[GUI_THEME_PICKS][64];
+    char theme_was[64], theme_was_name[64];
     bool (*open_url)(const char* url); /* SDL_OpenURL, which a test takes the place of (show_folder) */
     char* dest_file; /* the run asked about, as room_file, and its load */
     int dest_item;
@@ -9208,6 +9213,8 @@ static void driver_take(App* app, const void* zip, size_t size, const char* name
 }
 /* Select on a GPU Drivers row: a package's box (Use, Remove), System driver or Global used, Add Driver's picker */
 static void picks_open(App* app, GuiPicksOf of);
+static void themes_open(App* app);
+static void picks_key(App* app, GuiKey key);
 static void open_fetch(App* app);
 static void driver_select(App* app, int r) {
     if (r == gui_editor_rows(&app->editor) - 1)
@@ -10108,9 +10115,13 @@ static bool queue_waits(App* app, const char* what) {
              gui_queue_name(&app->queue, run), SDL_max(app->queue.job[run].percent, 0), snx_tr(what));
     return true;
 }
-/* the App's rows: the theme and the language go round, either way, UI scale opens its dialog, and the editor opens */
+/* the App's rows: the theme and the language go round, either way, Enter opens the box of themes and UI scale's
+   dialog, and the editor opens */
 static void app_action(App* app, int row, int step) {
-    if (row == GUI_APP_THEME)
+    if (row == GUI_APP_THEME && !step) { /* Enter: the box of themes; Left/Right go round them */
+        themes_open(app);
+        return;
+    } else if (row == GUI_APP_THEME)
         next_theme(app, step < 0 ? -1 : 1);
     else if (row == GUI_APP_TEXT) { /* Enter its dialog; Left/Right too, its slider a step that way */
         sizes_open(app, step < 0 ? -1 : step > 0);
@@ -12017,6 +12028,7 @@ static void setup_key(App* app, GuiKey key) {
         switch (gui_appearance_key(&app->setup_row, key, &step)) {
             case GUI_APPEARANCE_CHANGE: appearance_change(app, app->setup_row, step); break;
             case GUI_APPEARANCE_SIZES: sizes_open(app, 0); break;
+            case GUI_APPEARANCE_THEMES: themes_open(app); break;
             case GUI_APPEARANCE_ON: setup_take(app); break;
             case GUI_APPEARANCE_BACK: setup_back(app); break;
             default: break;
@@ -12059,6 +12071,10 @@ static bool setup_event(App* app, const SDL_Event* e) {
     }
     if (app->sizes_shown) { /* UI scale's dialog, over the Appearance page */
         if (!e->key.repeat && menu_key_of(&e->key, &key)) sizes_key(app, key);
+        return true;
+    }
+    if (app->picks_shown) { /* the box of themes, over the Appearance page */
+        if (!e->key.repeat && menu_key_of(&e->key, &key)) picks_key(app, key);
         return true;
     }
     if (app->setup_typing && e->key.key == SDLK_BACKSPACE) {
@@ -12465,6 +12481,7 @@ static void draw_setup(App* app) {
                                : t->ink),
          snx_tr(setup_keys_said(app)));
     if (app->sizes_shown) render_sizes(app); /* UI scale's dialog, over the Appearance page */
+    if (app->picks_shown) render_picks(app); /* the box of themes */
     if (app->confirm.shown) render_ask(app);
 }
 /* the pointer on the page: a choice under it takes the focus, a click takes it (ui_choices_rows_row_action_cb), as
@@ -13574,6 +13591,7 @@ static const char* const* picks_list(const App* app) {
     if (app->picks_of == GUI_PICKS_SHARE) return share_picks;
     if (app->picks_of == GUI_PICKS_DRIVER) return driver_picks;
     if (app->picks_of == GUI_PICKS_ASSET) return app->asset_picks;
+    if (app->picks_of == GUI_PICKS_THEME) return app->theme_picks;
     kind = folder_row(app, app->pick_row, &at, &group);
     if (kind == GUI_ROW_DUMPS) return app->dumps_off ? main_off_picks : dumps_picks;
     if (kind == GUI_ROW_PLACE && at == GUI_PLACE_GAMES) return app->recompiled_off ? main_off_picks : recompiled_picks;
@@ -13585,7 +13603,7 @@ static const char* pick_label(App* app, int i) {
     int n = 0, at, group;
     while (picks[n]) ++n;
     if (i < 0 || i >= n) return NULL;
-    if (app->picks_of == GUI_PICKS_ASSET) return picks[i]; /* an asset's name, as it is */
+    if (app->picks_of == GUI_PICKS_ASSET || app->picks_of == GUI_PICKS_THEME) return picks[i]; /* names, as they are */
     if (strcmp(picks[i], SAY_SUBFOLDERS)) return snx_tr(picks[i]);
     snprintf(
         app->pick_text, sizeof app->pick_text, "%s %s",
@@ -13605,6 +13623,34 @@ static void picks_open_row(App* app, int row) {
     app->pick_row = row;
     picks_open(app, GUI_PICKS_FOLDER);
 }
+/* the box of themes, from Settings > App's Theme or the setup's on Enter: every theme by its name, the one shown in
+   focus; each one shows as the focus reaches it (picks_key, picks_pointer), Enter keeps it and ESC goes back to the
+   one shown before. A folder's theme past GUI_THEME_PICKS stays a Left/Right away */
+static void themes_open(App* app) {
+    const char* const* dirs = (const char* const*)app->themes_dirs;
+    GuiTheme one;
+    size_t i, n;
+    int focus = 0;
+    gui_themes_scan(&app->themes, dirs, 2);
+    n = SDL_min(app->themes.count, (size_t)GUI_THEME_PICKS);
+    for (i = 0; i < n; ++i) {
+        gui_theme_load(&one, dirs, 2, app->themes.ids[i], NULL, 0);
+        snprintf(app->theme_names[i], sizeof app->theme_names[i], "%s", one.name);
+        app->theme_picks[i] = app->theme_names[i];
+        if (!strcmp(app->themes.ids[i], app->theme.id)) focus = (int)i;
+    }
+    app->theme_picks[n] = NULL;
+    snprintf(app->theme_was, sizeof app->theme_was, "%s", app->theme.id);
+    snprintf(app->theme_was_name, sizeof app->theme_was_name, "%s", app->theme.name);
+    picks_open(app, GUI_PICKS_THEME);
+    app->picks.focus = focus;
+}
+/* the box of themes' focus moved from was: the theme it is on shown, kept only once Enter takes it */
+static void themes_moved(App* app, int was) {
+    if (app->picks_shown && app->picks_of == GUI_PICKS_THEME && app->picks.focus != was &&
+        (size_t)app->picks.focus < app->themes.count)
+        theme_load(app, app->themes.ids[app->picks.focus], false);
+}
 /* the box's question into out and its tab: how the logs go, or the Folders row's name and its folder from home */
 static void picks_question(App* app, char* out, size_t size, const char** tab) {
     char home[512];
@@ -13612,7 +13658,14 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
     *tab = app->picks_of == GUI_PICKS_SHARE    ? snx_tr("Share Log")
            : app->picks_of == GUI_PICKS_DRIVER ? snx_tr("GPU Drivers")
            : app->picks_of == GUI_PICKS_ASSET  ? snx_tr("Download Driver")
+           : app->picks_of == GUI_PICKS_THEME  ? (app->theme.dialog == GUI_DIALOG_YORHA ? snx_tr("Theme") : "")
                                                : snx_tr("Folders");
+    if (app->picks_of == GUI_PICKS_THEME) { /* the line says what the box is: YoRHa's tab names it, the default's
+                                               corner has no name beside the line */
+        snprintf(out, size, snx_tr("Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"),
+                 app->theme_was_name);
+        return;
+    }
     if (app->picks_of == GUI_PICKS_ASSET) {
         const GuiDriverReleases* list = &app->fetch_lists[app->fetch_repo[app->pick_row]];
         snprintf(out, size, "%s: %s", gui_driver_repos[app->fetch_repo[app->pick_row]].name,
@@ -13633,9 +13686,42 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
     snx_home_short(path ? path : "", home, sizeof home);
     snprintf(out, size, "%s: %s", snx_tr(app->folder_keys[app->pick_row].key), path ? home : snx_tr("none"));
 }
+/* the Theme row the box of themes was opened from, as drawn now: the setup's Appearance row, or Settings > App's;
+   an empty rectangle when it is out of sight */
+static GuiRect theme_row(App* app) {
+    if (app->setup_on) {
+        GuiSetupBoxes b;
+        GuiAppearanceBoxes a;
+        setup_boxes(app, &b);
+        appearance_boxes(app, b.content, &a);
+        if (a.lists[UI_APPEARANCE_ROWS].first > (size_t)GUI_APPEARANCE_THEME) return gui_rect(0, 0, 0, 0);
+        return ui_row_box(app, ui_appearance_row(a.rects, app->scale, UI_APPEARANCE_ROWS,
+                                                 (size_t)GUI_APPEARANCE_THEME - a.lists[UI_APPEARANCE_ROWS].first));
+    }
+    if (app->editing && app->form == GUI_FORM_APP) {
+        GuiFormBoxes f;
+        const UiList* l;
+        form_boxes(app, &f);
+        l = &f.right_lists[UI_FORM_SIDE_ROWS];
+        if (l->focus == SIZE_MAX || l->focus < l->first) return gui_rect(0, 0, 0, 0);
+        return ui_form_side_row(f.right, app->scale, UI_FORM_SIDE_ROWS, l->focus - l->first);
+    }
+    return gui_rect(0, 0, 0, 0);
+}
 static void picks_place(App* app, GuiChoices* c, char* question, size_t size, const char** tab) {
+    GuiRect area = choices_over(app);
     picks_question(app, question, size, tab);
-    choices_place(app, GUI_CHOICES_PICKS, choices_over(app), question, *tab, app->picks.focus, c);
+    if (app->picks_of == GUI_PICKS_THEME && app->theme.dialog != GUI_DIALOG_YORHA) {
+        /* the default's box goes in the middle of the screen: for the themes', in the middle of the room under the
+           Theme row, or over it where there is more, so the row it changes stays in sight */
+        GuiRect row = theme_row(app);
+        int gap = cell_h(app) / 2, under = area.y + area.h - (row.y + row.h + gap), over = row.y - gap - area.y;
+        if (row.h && under >= over && under > 0)
+            area = gui_rect(area.x, row.y + row.h + gap, area.w, under);
+        else if (row.h && over > 0)
+            area = gui_rect(area.x, area.y, area.w, over);
+    }
+    choices_place(app, GUI_CHOICES_PICKS, area, question, *tab, app->picks.focus, c);
 }
 static void render_picks(App* app) {
     GuiChoices c;
@@ -13680,6 +13766,17 @@ static void subfolders_switch(App* app, int kind, int at) {
 static void pick_take(App* app, int i) {
     int at, group, kind = folder_row(app, app->pick_row, &at, &group);
     app->picks_shown = false;
+    if (app->picks_of == GUI_PICKS_THEME) { /* the one in focus kept, as the App's Theme row keeps a theme, or the one
+                                               shown before back */
+        theme_load(app, i < 0 || (size_t)i >= app->themes.count ? app->theme_was : app->themes.ids[i], false);
+        if (app->setup_on)
+            app->setup_save = true;
+        else {
+            app_save(app);
+            app_values(app);
+        }
+        return;
+    }
     if (i < 0) return;
     if (app->picks_of == GUI_PICKS_ASSET) { /* the asset downloaded */
         fetch_download(app, i);
@@ -13728,10 +13825,11 @@ static void pick_take(App* app, int i) {
         folder_off_ask(app, kind == GUI_ROW_DUMPS ? -1 : at);
 }
 static void picks_key(App* app, GuiKey key) {
+    int was = app->picks.focus;
     switch (gui_choice_key(&app->picks, key)) {
         case GUI_CHOICE_TAKE: pick_take(app, app->picks.focus); break;
         case GUI_CHOICE_BACK: pick_take(app, -1); break;
-        default: break;
+        default: themes_moved(app, was); break;
     }
 }
 /* a choice under the pointer takes the focus, a click takes it (ui_choices_rows_row_action_cb); a click off the box is
@@ -13741,8 +13839,12 @@ static void picks_pointer(App* app, float x, float y, bool click) {
     char question[640];
     const char* tab;
     bool on;
+    int was = app->picks.focus;
     picks_place(app, &c, question, sizeof question, &tab);
-    if (!choices_pointer(app, &c, x, y, click, &on) && click && !on) pick_take(app, -1);
+    if (!choices_pointer(app, &c, x, y, click, &on) && click && !on)
+        pick_take(app, -1);
+    else
+        themes_moved(app, was);
 }
 static void job_add(App* app, const char* const* argv, const char* file, bool native, bool prepared, GuiJobKind kind);
 /* file, a dump whose game is made: asked whether that game plays or the dump recompiles (GUI_ASK_MADE), file kept */
@@ -15011,20 +15113,34 @@ static void open_picker(App* app) {
     if (app->picked) SDL_ShowOpenFileDialog(picker_done, &app->picked, app->window, NULL, 0, NULL, false);
 #endif
 }
-/* the last max bytes of a file from the first line that starts in them, as text with only ASCII (what Java takes as a
-   string from any log), or "". A home folder cut in two is no longer one to the tilde, so its account's name would
-   stay. A CR before an LF goes (a log on Windows has CRLF lines), so a line ends where its text does */
+/* the last max bytes of a file from the first line that starts in them, as text, or "". A home folder cut in two is no
+   longer one to the tilde, so its account's name would stay. A CR before an LF goes (a log on Windows has CRLF lines),
+   so a line ends where its text does. Valid UTF-8 stays as it is, a game's name in its own script with it; each byte
+   that is not, and a NUL, which the text cannot hold, becomes U+FFFD. The text goes into a file of share/, never into
+   a Java string, so modified UTF-8's limits (no NUL, no 4-byte sequence) are not its own */
 static char* log_tail(const char* path, size_t max) {
     size_t size = 0, at, n = 0;
     unsigned char* data = path ? snx_read_file(path, &size) : NULL;
     char* text;
     at = size > max ? size - max : 0;
     while (at > 0 && at < size && data[at - 1] != '\n') ++at;
-    text = (char*)snx_alloc(size - at + 1);
-    for (; at < size; ++at) {
+    text = (char*)snx_alloc((size - at) * 3 + 1); /* each byte at most U+FFFD's 3 */
+    while (at < size) {
         unsigned char c = data[at];
-        if (c == '\r' && at + 1 < size && data[at + 1] == '\n') continue;
-        text[n++] = c == '\n' || c == '\t' || (c >= 32 && c < 127) ? (char)c : '?';
+        size_t want = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 : (c & 0xf8) == 0xf0 ? 4 : 0;
+        if (c == '\r' && at + 1 < size && data[at + 1] == '\n') {
+            ++at;
+            continue;
+        }
+        if (c && want && want <= size - at && snx_utf8_valid((const char*)data + at, want, NULL, 0)) {
+            memcpy(text + n, data + at, want);
+            n += want;
+            at += want;
+        } else {
+            memcpy(text + n, "\xef\xbf\xbd", 3);
+            n += 3;
+            ++at;
+        }
     }
     text[n] = 0;
     free(data);
@@ -15158,6 +15274,7 @@ static char* log_summary(const char* path) {
         if (f) snx_logscan_free(&scan);
         return snx_strdup("");
     }
+    scan.written = (long long)snx_file_time(path); /* the run's own time, for how much older its build is */
     markdown = snx_logscan_markdown(&scan, "the game log", "###", 1, snx_demangle);
     snx_logscan_free(&scan);
     out = markdown ? snx_format("== summary ==\n%s\n", markdown) : snx_strdup("");
@@ -15365,7 +15482,7 @@ static void share_log(App* app, bool zip) {
     text = snx_format(
         "%s\nMessage: %s\n%s%s%s%s\n%s== the last run: %s ==\n%s\n\n== the last recompile of the queue: %s "
         "==\n%s\n\n== the launcher's log: %s ==\n%s\n\n== fatal errors: %s ==\n%s\n\n== %s ==\n%s\n",
-        snx_build_info(), app->message, app->left ? app->left : "", app->left_clear ? SAY_LEFT_CLEAR "\n" : "",
+        snx_build_log_line(), app->message, app->left ? app->left : "", app->left_clear ? SAY_LEFT_CLEAR "\n" : "",
         app->cleaned.count ? "Clean Old Settings:\n" : "", app->cleaned.text ? app->cleaned.text : "", summary,
         app->run_log ? app->run_log : "", run, app->job_log ? app->job_log : "", recompiled,
         console[0] ? console : "none", said, errors[0] ? errors : "none", fatal, game ? game : "no game log", played);
@@ -15414,7 +15531,16 @@ static void share_log(App* app, bool zip) {
         char said_open[sizeof app->message];
         while (leaf > saved && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
         app->log_due = false; /* the crash's log is out */
-        if (show_folder(app, share)) /* the system's file manager shares it from there, as it shares any file */
+#ifdef SDL_PLATFORM_IOS
+        /* the share sheet alone: a file:// URL of the app's own folder opens nothing there, though SDL_OpenURL says it
+           did once canOpenURL takes the scheme */
+        bool shown = gui_apple_share(app->window, saved);
+        if (!shown) snprintf(app->message, sizeof(app->message), "%s", snx_tr("the share sheet did not open"));
+#else
+        /* the system's file manager shares it from there, as it shares any file */
+        bool shown = show_folder(app, share);
+#endif
+        if (shown)
             snprintf(app->message, sizeof(app->message), snx_tr("%s is in %s, opened"), leaf, share);
         else {
             snprintf(said_open, sizeof said_open, "%s", app->message);
@@ -17309,7 +17435,7 @@ static void open_files(App* app) {
 #endif
     drivers_load(app);
     if (!app->look_only)
-        gui_log("%s starts, its data folder %s", snx_build_info(), app->data_dir ? app->data_dir : "(none)");
+        gui_log("%s starts, its data folder %s", snx_build_log_line(), app->data_dir ? app->data_dir : "(none)");
     if (prefs) run_log_follow(app);  /* in the Logs folder app.ini picked */
     if (prefs) recent_as_games(app); /* by the recompiled/ app.ini picked */
     app->users_dir = snx_users_dir(app->home_dir ? app->home_dir : app->data_dir);

@@ -26,7 +26,7 @@ uint8_t agb_save_detect(const uint8_t* image, uint64_t size) {
 void agb_save_reset(AgbBoard* board, uint8_t type) {
     board->save.type = type;
     board->save.phase = 0;
-    board->save.erase_armed = board->save.program_armed = board->save.bank_armed = 0;
+    board->save.cmd = AGB_FLASH_NONE;
     board->save.id_mode = 0;
     board->save.bank = 0;
     board->save.dirty = 0;
@@ -84,17 +84,18 @@ void agb_save_write8(AgbBoard* board, uint32_t address, uint8_t value) {
         *byte = value;
         return;
     }
-    /* flash: the command set is addressed by offsets inside the window */
-    if (save->program_armed) {
+    /* flash (GBATEK's "GBA Cart Backup Flash ROM"): the command set is addressed by offsets inside the window, each
+       command written after the unlock. The next command, or a write out of sequence, ends the one pending */
+    if (save->cmd == AGB_FLASH_PROGRAM) {
         board->memory.sram[save_offset(board, address)] &= value; /* programming can only clear bits */
         save->dirty = 1;
-        save->program_armed = 0;
+        save->cmd = AGB_FLASH_NONE;
         save->phase = 0;
         return;
     }
-    if (save->bank_armed) {
+    if (save->cmd == AGB_FLASH_BANK) {
         if ((address & 0xFFFF) == 0) save->bank = value & 1;
-        save->bank_armed = 0;
+        save->cmd = AGB_FLASH_NONE;
         save->phase = 0;
         return;
     }
@@ -106,25 +107,25 @@ void agb_save_write8(AgbBoard* board, uint32_t address, uint8_t value) {
         save->phase = 2;
         return;
     }
-    if (save->erase_armed && value == 0x30) {
-        flash_erase(board, address, 0);
-        save->erase_armed = 0;
-        save->phase = 0;
-        return;
-    }
-    if (save->phase == 2 && (address & 0xFFFF) == 0x5555) {
+    if (save->phase == 2 && value == 0x30) { /* a sector's erase, written at an address of the sector */
+        if (save->cmd == AGB_FLASH_ERASE) flash_erase(board, address, 0);
+        save->cmd = AGB_FLASH_NONE;
+    } else if (save->phase == 2 && (address & 0xFFFF) == 0x5555) {
+        int erase = save->cmd == AGB_FLASH_ERASE;
+        save->cmd = AGB_FLASH_NONE;
         switch (value) {
-            case 0x10: if (save->erase_armed) flash_erase(board, address, 1); save->erase_armed = 0; break;
-            case 0x80: save->erase_armed = 1; break;
+            case 0x10:
+                if (erase) flash_erase(board, address, 1);
+                break;
+            case 0x80: save->cmd = AGB_FLASH_ERASE; break;
             case 0x90: save->id_mode = 1; break;
             case 0xF0: save->id_mode = 0; break;
-            case 0xA0: save->program_armed = 1; break;
-            case 0xB0: save->bank_armed = 1; break;
+            case 0xA0: save->cmd = AGB_FLASH_PROGRAM; break;
+            case 0xB0: save->cmd = AGB_FLASH_BANK; break;
             default: break;
         }
-        save->phase = 0;
-        return;
-    }
+    } else
+        save->cmd = AGB_FLASH_NONE;
     save->phase = 0;
 }
 
