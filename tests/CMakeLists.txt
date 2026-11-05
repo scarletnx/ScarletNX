@@ -347,26 +347,29 @@ if(TARGET snx_ctr_board)
     # No Vulkan loader/ICD: presentation cannot run here; the probe skips, never fakes a frame.
     set_tests_properties(3ds_gsp_gpu PROPERTIES SKIP_RETURN_CODE 77)
     # The GPU tests again on each path the GPU's work can take to the RAM (gpu/vk/vk.h), whatever the device would
-    # choose: on a copy of the RAM in the device's memory, and on the RAM in place
-    foreach(snx_path copy in-place)
-        string(REPLACE "-" "_" snx_suffix "${snx_path}")
-        set(snx_tests 3ds_gsp_gpu_${snx_suffix})
+    # choose: the Switch's vk_memory, 1 on a copy of the RAM in the device's memory, 2 on the RAM in place
+    foreach(snx_path copy in_place)
+        set(snx_value 1)
+        if(snx_path STREQUAL "in_place")
+            set(snx_value 2)
+        endif()
+        set(snx_tests 3ds_gsp_gpu_${snx_path})
         foreach(snx_test 3ds_vk_transfer 3ds_vk_ram 3ds_vk_y2r 3ds_vk_draw 3ds_vk_copies)
             string(REPLACE "_" "-" snx_executable "snx-test-${snx_test}")
-            add_test(NAME ${snx_test}_${snx_suffix} COMMAND ${snx_executable})
-            list(APPEND snx_tests ${snx_test}_${snx_suffix})
+            add_test(NAME ${snx_test}_${snx_path} COMMAND ${snx_executable} --vk_memory=${snx_value})
+            list(APPEND snx_tests ${snx_test}_${snx_path})
         endforeach()
-        add_test(NAME 3ds_gsp_gpu_${snx_suffix} COMMAND snx-test-3ds-gsp
-                 "${CMAKE_CURRENT_BINARY_DIR}/gsp-frames-${snx_path}")
+        add_test(NAME 3ds_gsp_gpu_${snx_path} COMMAND snx-test-3ds-gsp
+                 "${CMAKE_CURRENT_BINARY_DIR}/gsp-frames-${snx_path}" --vk_memory=${snx_value})
         if(NOT WIN32 AND Python3_Interpreter_FOUND)
             foreach(snx_test snx_mode IN ZIP_LISTS snx_vk_validation_tests snx_vk_validation_modes)
-                add_test(NAME ${snx_test}_${snx_suffix}
+                add_test(NAME ${snx_test}_${snx_path}
                     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
-                        $<TARGET_FILE:snx-test-3ds-vk-draw> ${snx_mode})
-                list(APPEND snx_tests ${snx_test}_${snx_suffix})
+                        $<TARGET_FILE:snx-test-3ds-vk-draw> ${snx_mode} --vk_memory=${snx_value})
+                list(APPEND snx_tests ${snx_test}_${snx_path})
             endforeach()
         endif()
-        set_tests_properties(${snx_tests} PROPERTIES SKIP_RETURN_CODE 77 ENVIRONMENT "SNX_TEST_CTR_VK_PATH=${snx_path}")
+        set_tests_properties(${snx_tests} PROPERTIES SKIP_RETURN_CODE 77)
     endforeach()
     # the two windows and the per-screen render scales: one window always, Separate screens and a minimized window
     # when the host has a window; the dumps stay the framebuffer's own size whatever the scale

@@ -167,9 +167,11 @@ from then on. A page the GPU wrote is the GPU's until the CPU's first access, wh
 back with the pages the GPU wrote around it (up to 256 on each side) and waits for that. A
 write copies its stale pages in first even where it covers them, as one need not write a whole
 page and a page goes back whole; when the device goes, what the GPU wrote goes back. The copy
-is taken unless the device shares the system's memory (`snx_vk_memory_model`, the rule of the
-Switch's `vk_memory=0`), and the device says on the standard error which it took, or, when its
-memory cannot hold the copy, what refused it and that the GPU works in place. Its cost is the
+is taken as the Switch's setting `vk_memory` says, with its meaning (`--vk_memory=N`): `0`, the
+default, the copy unless the device shares
+the system's memory (`snx_vk_memory_model`), `1` the copy, `2` the RAM in place. The device says
+on the standard error which it took and the value, and when its memory cannot hold the copy,
+what refused it and that the run takes `vk_memory=2`. Its cost is the
 CPU's writes: a page the CPU rewrites after the GPU read it traps at each rewrite, where in
 place it traps only while a read is not done. The run's summary has a `gpu:` line: each
 screen's frames, what the GPU's work read and wrote, what was copied in and back, and the
@@ -179,7 +181,7 @@ frame, all of it copied in, from 76.6 in place (3018 KiB a frame: 36.8 MiB a sec
 written); amdgpu has the GPU busy 14.4 ms a second against 17.8; the CPU's time is the same,
 323 and 325 ms a second, though its writes trap 61 times a frame against 0.2.
 `tests/3ds_vk_copies.c` checks which pages are copied in and back and when, and every GPU
-test runs again on each path (`_copy`, `_in_place`: `SNX_TEST_CTR_VK_PATH`), so lavapipe
+test runs again on each path (`_copy`, `_in_place`: `--vk_memory=1` and `2`), so lavapipe
 checks the copy too.
 
 Compiled code addresses the guest flat: a 4 GiB host reservation where guest

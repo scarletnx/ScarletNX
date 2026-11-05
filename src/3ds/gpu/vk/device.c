@@ -13,14 +13,12 @@
 
 static struct {
     SnxCtrVk vk;
-    SnxCtrVkPath path; /* the next init's (snx_ctr_vk_path) */
     int up;
     char error[768];  /* why the last snx_ctr_vk_init failed (an import refused, then the device's memory's reason) */
     char device[512]; /* the device it chose and its driver, "" before one */
 } g_device;
 
 SnxCtrVk* snx_ctr_vk(void) { return g_device.up ? &g_device.vk : NULL; }
-void snx_ctr_vk_path(SnxCtrVkPath path) { g_device.path = path; }
 bool snx_ctr_vk_copies(void) { return g_device.up && g_device.vk.ram_count && g_device.vk.ram[0].copy; }
 const char* snx_ctr_vk_error(void) { return g_device.error; }
 
@@ -447,32 +445,38 @@ static bool make_copies(SnxCtrVk* v, const SnxCtrProfile* profile, uint64_t* byt
     }
     return true;
 }
-/* Where the GPU's work reads and writes the RAM (snx_ctr_vk_path), said on the standard error: on a copy, unless the
-   device shares the system's memory or the copy cannot be made, which says why the work is in place */
-static void choose_path(SnxCtrVk* v, SnxCtrMemory* memory) {
-    SnxVkMemoryModel model = snx_vk_memory_model(v->properties.deviceType, &v->memory_properties);
+void snx_ctr_vk_path_line(int asked, SnxVkMemoryModel model, bool copied, const char* refused, uint64_t bytes,
+                          uint32_t type, char* line, size_t line_size) {
     static const char* const models[] = {"is its own, a window of it mapped by the CPU",
                                          "is its own, all of it mapped by the CPU (resizable BAR)", "is the system's"};
-    const char* asked = g_device.path == SNX_CTR_VK_AUTO ? "" : ", as asked";
-    if (g_device.path == SNX_CTR_VK_IN_PLACE || (g_device.path == SNX_CTR_VK_AUTO && model == SNX_VK_UMA)) {
-        fprintf(stderr, "3ds gpu: the device's memory %s: the GPU works on the board's RAM in place%s%s\n",
-                models[model], asked, model == SNX_VK_UMA ? "" : ", across the bus");
-        return;
-    }
-    char why[256];
-    uint64_t bytes;
-    uint32_t type;
-    if (!make_copies(v, snx_ctr_memory_profile(memory), &bytes, &type, why, sizeof why)) {
-        fprintf(stderr,
-                "3ds gpu: the device's memory %s, and cannot hold a copy of the board's RAM: %s; the GPU works on the "
-                "RAM in place, across the bus\n",
-                models[model], why);
-        return;
-    }
-    fprintf(stderr,
-            "3ds gpu: the device's memory %s: the GPU works on a copy of the board's RAM there%s (0x%llx bytes of "
-            "memory type %u), copied in and back by page\n",
-            models[model], asked, (unsigned long long)bytes, type);
+    if (refused)
+        snprintf(line, line_size,
+                 "vk_memory=%d asks for a copy of the board's RAM in the device's memory, which %s and cannot hold it: "
+                 "%s; the run takes vk_memory=2, the RAM in place, across the bus",
+                 asked, models[model], refused);
+    else if (copied)
+        snprintf(line, line_size,
+                 "vk_memory=%d: the device's memory %s, and the GPU works on a copy of the board's RAM there (0x%llx "
+                 "bytes of memory type %u), copied in and back by page",
+                 asked, models[model], (unsigned long long)bytes, type);
+    else
+        snprintf(line, line_size,
+                 "vk_memory=%d: the device's memory %s, and the GPU works on the board's RAM in place%s", asked,
+                 models[model], model == SNX_VK_UMA ? "" : ", across the bus");
+}
+/* Where the GPU's work reads and writes the RAM, as vk_memory (g_settings.guest_memory) says, said on the standard
+   error with the value: 0 the copy unless the device shares the system's memory, 1 the copy, 2 in place. A copy the
+   device's memory cannot hold is refused, and the line names why and the value the run takes instead, 2 */
+static void choose_path(SnxCtrVk* v, SnxCtrMemory* memory) {
+    SnxVkMemoryModel model = snx_vk_memory_model(v->properties.deviceType, &v->memory_properties);
+    int asked = g_settings.guest_memory;
+    char why[256], line[640];
+    uint64_t bytes = 0;
+    uint32_t type = 0;
+    bool copy = asked == 1 || (asked == 0 && model != SNX_VK_UMA);
+    bool copied = copy && make_copies(v, snx_ctr_memory_profile(memory), &bytes, &type, why, sizeof why);
+    snx_ctr_vk_path_line(asked, model, copied, copy && !copied ? why : NULL, bytes, type, line, sizeof line);
+    fprintf(stderr, "3ds gpu: %s\n", line);
 }
 static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     SnxCtrVk* v = &g_device.vk;

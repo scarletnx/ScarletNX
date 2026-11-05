@@ -2,34 +2,37 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_TEST_3DS_VK_PATH_H
 #define SNX_TEST_3DS_VK_PATH_H
-/* Where a 3DS GPU test's work reads and writes the RAM (gpu/vk/vk.h's snx_ctr_vk_path), so the suite runs each path
-   on any device: SNX_TEST_CTR_VK_PATH is "copy" or "in-place"; unset or empty, the device's own choice. */
+/* Where a 3DS GPU test's work reads and writes the RAM, as the driver takes it: the Switch's setting vk_memory
+   (gpu/vk/vk.h), given as --vk_memory=N among the test's arguments, so the suite runs each path on any device. None
+   is the setting's default, the device's own choice. */
 #include "3ds/gpu/vk/vk.h"
+#include "nx/runtime/ini.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* the path asked for, before the device starts; any other value ends the test, status 2 */
-static inline SnxCtrVkPath test_ctr_vk_path(void) {
-    const char* asked = getenv("SNX_TEST_CTR_VK_PATH");
-    SnxCtrVkPath path = SNX_CTR_VK_AUTO;
-    if (asked && !strcmp(asked, "copy"))
-        path = SNX_CTR_VK_COPY;
-    else if (asked && !strcmp(asked, "in-place"))
-        path = SNX_CTR_VK_IN_PLACE;
-    else if (asked && *asked) {
-        fprintf(stderr, "SNX_TEST_CTR_VK_PATH=%s is neither copy nor in-place\n", asked);
-        exit(2);
+/* Each --vk_memory=N of argv read into the setting, through its row as the driver reads it, and taken out of argv: the
+   value it holds then, or -1 when none was given */
+static inline int test_ctr_vk_memory(int* argc, char** argv) {
+    int given = -1, kept = 1;
+    for (int i = 1; i < *argc; ++i) {
+        if (strncmp(argv[i], "--vk_memory=", 12)) {
+            argv[kept++] = argv[i];
+            continue;
+        }
+        ini_read(ini_find(g_debug_ini, "vk_memory"), argv[i] + 12);
+        given = g_settings.guest_memory;
     }
-    snx_ctr_vk_path(path);
-    return path;
+    *argc = kept;
+    argv[kept] = NULL;
+    return given;
 }
-/* once the device started: the path asked for is the one it took, else the test ends, status 1 */
-static inline void test_ctr_vk_path_taken(SnxCtrVkPath path) {
-    if (path == SNX_CTR_VK_AUTO || snx_ctr_vk_copies() == (path == SNX_CTR_VK_COPY)) return;
-    fprintf(stderr, "the device's work is %s, where SNX_TEST_CTR_VK_PATH asked for %s\n",
-            snx_ctr_vk_copies() ? "on a copy of the RAM" : "on the RAM in place",
-            path == SNX_CTR_VK_COPY ? "copy" : "in-place");
+/* once the device started: the path given (1 the copy, 2 in place) is the one it took, else the test ends, status 1 */
+static inline void test_ctr_vk_memory_taken(int given) {
+    if (given <= 0 || snx_ctr_vk_copies() == (given == 1)) return;
+    fprintf(stderr, "vk_memory=%d, and the device's work is %s\n", given,
+            snx_ctr_vk_copies() ? "on a copy of the RAM" : "on the RAM in place");
     exit(1);
 }
 #endif

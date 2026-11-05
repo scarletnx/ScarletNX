@@ -919,7 +919,8 @@ setting Guest memory
     help where they are in guest memory (VK_EXT_external_memory_host; on Android without it, guest memory moves into
     help AHardwareBuffers), as the console's GPU does: for a GPU that shares system memory. On a discrete GPU it goes
     help across the bus, which is slow, but it shows that the path is correct. 0 = 2 on a GPU that shares system memory,
-    help but never the moves into AHardwareBuffers, else 1
+    help but never the moves into AHardwareBuffers, else 1. A 3DS game takes it too, for the board's RAM: 1 = the GPU
+    help works on a copy of it in its own memory, 2 = on the RAM in place (docs/3DS.md)
 setting Buffer copy stats
     key vk_buffer_stats
     int 0 1
