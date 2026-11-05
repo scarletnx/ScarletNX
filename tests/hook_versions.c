@@ -123,6 +123,9 @@ int main(void) {
     assert(sdk_of("SDK MW+Vendor+VendorSdk_nnSdk-256_0_0") == 0);
     assert(sdk_of("SDK MW+Vendor+VendorSdk_nnSdk-0_12_16-Release") == 0x000C10);
     assert(sdk_of("") == 0);
+    /* an Ounce module's, which names its build's platform first; a platform part without its underscore isn't one */
+    assert(sdk_of("SDK MW+Vendor+VendorSdk_nnSdk-Generic_19_3_3-Release") == 0x130303);
+    assert(sdk_of("SDK MW+Vendor+VendorSdk_nnSdk-Generic19_3_3-Release") == 0);
     {
         u8 buf[128];
         static const char nvn[] = "SDK MW+Vendor+VendorSDK_NVN-13_3_13-Release";
