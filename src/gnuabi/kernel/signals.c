@@ -539,7 +539,13 @@ static int64_t other_process(GnuKernel* p, int32_t pid, int32_t tid, int sig, in
 #endif
     }
     if (code == SNX_SI_USER) return kill((pid_t)pid, host) ? gnu_host_errno(errno) : 0;
+#if defined(__APPLE__)
+    /* Darwin has no sigqueue: no call of its carries the value to another process */
+    (void)v;
+    return -GNU_ENOSYS;
+#else
     return sigqueue((pid_t)pid, host, v) ? gnu_host_errno(errno) : 0;
+#endif
 #endif
 }
 
