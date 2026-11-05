@@ -58,7 +58,8 @@ checks and names the checks that did not run. The command never installs an engi
 [DEVELOPMENT.md](docs/DEVELOPMENT.md#local-ci-containers) gives the container setup.
 
 The container installs its own `ccache`, in `.cache/ci-ccache-<arch>`. A host `ccache` is optional for the native
-build.
+build. Setup is one time. The first container build is the slow one, and later runs reuse its caches. Android and
+iOS LLVM builds are optional and only for local platform builds; the CI artifacts prove those builds.
 
 A build is not a test. A runtime change is verified by running the game through the scene it affects, and the commit
 says what was run. [DEVELOPMENT.md](docs/DEVELOPMENT.md) has the run and diagnose commands, and

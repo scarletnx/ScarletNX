@@ -9,6 +9,7 @@
 * [Search for faster GPU settings](#search-for-faster-gpu-settings)
 * [Rebuild / checks](#rebuild--checks)
 * [CI checks locally](#ci-checks-locally)
+  * [Setup and run time](#setup-and-run-time)
   * [Local CI containers](#local-ci-containers)
 * [Run / diagnose](#run--diagnose)
 * [CPU sampling without perf](#cpu-sampling-without-perf)
@@ -171,6 +172,20 @@ Before a pull request, run the preflight:
 `--jobs N` sets build and test parallelism, and `--cpus N` limits the container; both default to 4. `--dry-run`
 prints the changed classification, the plan and the container command without running them. On Apple silicon, the
 x86-64 job runs under Rosetta and is the slow one. Use `--both` for changes that touch x86-64 code or the toolchain.
+
+### Setup and run time
+
+Setup is one time and separate from a run. The normal setup is Podman or Docker and the host toolchain. It needs no
+Android or iOS LLVM. The first container run builds the project, about 10 to 20 minutes on four CPUs. Later runs
+reuse `build/ci-linux-<arch>`, `.cache/ci-deps-<arch>` and `.cache/ci-ccache-<arch>`, and usually stay under 10
+minutes. A code-change `preflight` runs the host build and tests, usually a few minutes after the first build.
+`preflight --static-only` and a docs-only `preflight` take seconds. `--both --sanitizers` is the full gate and is
+slower; use it only when the change needs it.
+
+Android and iOS build proof is a separate one-time cost. Each needs LLVM built for its target, about 10 minutes each,
+plus the app build. The CI builds both and keeps the APKs and the IPA. Use the CI artifacts unless you work on those
+platforms. The Android SDK, NDK, Gradle and JDK are only needed for a local APK. The iOS LLVM and Simulator runtime
+are only needed for a local iOS build or run.
 The merge check writes the working tree, uncommitted files included, as a temporary commit, so it changes no branch,
 index or file. It includes `docs/`, `CLAUDE.md` and `.claude/`. The container checks are recommended, not required:
 without an engine, `preflight` runs the host checks and names the checks that did not run. It never installs an engine.
