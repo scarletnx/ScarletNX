@@ -4,8 +4,12 @@
    it, and reports the opcodes the decoder knows and the ones it does not, with their counts. With --translate it
    also translates each complete program (sm86_to_spirv), and with --validate it runs spirv-val on the modules.
 
-   Usage: snx-sm86 DUMP [--sph HEADER] [--translate] [--validate] [--out DIR] [--verbose]
+   Usage: snx-sm86 DUMP [--sph HEADER] [--task T,P | --mesh T,P,A,V,R[,S]] [--translate] [--validate] [--out DIR]
+                   [--verbose]
    --sph: DUMP is one program that the sm86_dump setting wrote, HEADER its .sph file (a compute one has none)
+   --task, --mesh: with --sph, DUMP is a task or mesh program, with the fields of its NVN control section (ShMesh):
+   T invocations, P payload bytes, A 1 after a task program, V and R the most vertices and primitives, S the byte
+   offset in DUMP of the per-primitive SPH (none without it). The program ends at the BRA to itself after its code
    The dump is game data: keep it, and what --out writes, out of the repository. */
 #include "nx/gpu/shader/sm86.h"
 #include "common/utilities/endian.h"
@@ -70,7 +74,9 @@ static const char* stage_name(int stage) {
 
 int main(int argc, char** argv) {
     const char *path = NULL, *out = NULL, *sph_path = NULL;
-    int translate = 0, check = 0, verbose = 0, list = 0;
+    int translate = 0, check = 0, verbose = 0, list = 0, mesh_stage = -1;
+    ShMesh mesh = {0};
+    long prim_sph_at = -1;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--out") && i + 1 < argc)
             out = argv[++i];
@@ -84,7 +90,20 @@ int main(int argc, char** argv) {
             verbose = 1;
         else if (!strcmp(argv[i], "--list"))
             list = 1;
-        else if (argv[i][0] != '-' && !path)
+        else if (!strcmp(argv[i], "--task") && i + 1 < argc) {
+            unsigned t = 0, pl = 0;
+            if (sscanf(argv[++i], "%u,%i", &t, &pl) != 2) return 2;
+            mesh_stage = ST_TS;
+            mesh.threads = (u16)t;
+            mesh.payload = (u16)pl;
+        } else if (!strcmp(argv[i], "--mesh") && i + 1 < argc) {
+            unsigned t = 0, pl = 0, a = 0, v = 0, r = 0;
+            int got = sscanf(argv[++i], "%u,%i,%u,%u,%u,%li", &t, &pl, &a, &v, &r, &prim_sph_at);
+            if (got < 5) return 2;
+            if (got < 6) prim_sph_at = -1;
+            mesh_stage = ST_MS;
+            mesh = (ShMesh){(u16)t, (u16)pl, (u16)v, (u16)r, (u8)a, 3, 0, {0}};
+        } else if (argv[i][0] != '-' && !path)
             path = argv[i];
         else {
             fprintf(stderr, "usage: %s DUMP [--translate] [--validate] [--out DIR] [--verbose]\n", argv[0]);
@@ -122,6 +141,14 @@ int main(int argc, char** argv) {
         progs[0].stage = sm86_sph_stage(dumped_sph[0]);
         progs[0].complete = 1;
         count = progs[0].stage >= 0 ? 1 : 0;
+        if (mesh_stage >= 0) {
+            /* a task or mesh program's dump holds its code area: the code, then the per-primitive SPH */
+            Sm86Program code;
+            if (sm86_find_programs(data, size, &code, 1) == 1 && code.complete) progs[0].size = code.size;
+            progs[0].stage = mesh_stage;
+            if (prim_sph_at >= 0 && (unsigned long)prim_sph_at + 80 <= size)
+                for (int k = 0; k < 20; k++) mesh.prim_sph[k] = snx_ld_le32(data + prim_sph_at + 4 * k);
+        }
     } else
         count = sm86_find_programs(data, size, progs, MAX_PROGRAMS);
     int complete = 0, translated = 0, valid = 0;
@@ -159,6 +186,7 @@ int main(int argc, char** argv) {
                unknown_here ? ", with unknown opcodes" : "");
         if (!translate || !pr->complete) continue;
         ShaderInfo si = {0};
+        si.mesh = mesh;
         u32 sph[32] = {0};
         if (sph_path)
             memcpy(sph, dumped_sph, sizeof sph);

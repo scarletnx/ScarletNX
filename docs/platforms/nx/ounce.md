@@ -235,19 +235,20 @@ the game asks for.
    and in `NvnPBindProgram`. Record the draws as `OP_DRAW_MESH` {first, count} or {x, y, z}, and the indirect ones
    with the buffer's address, count address and stride, as `OP_DISPATCH_INDIRECT` does. Replay them in
    `nvn_draw.c` as a draw whose program slots are task, mesh and fragment.
-2. Translator (the large part, `sm86_translate.c`). New stages ST_TS and ST_MS, given by NVN, not by the SPH. Model
-   the ISBE as Workgroup arrays: the output area (`u32 [V + primitive area]`), the map (`u32 [4 + 3 * most
-   primitives]`, a byte to a word) and, for a task program, the payload as `TaskPayloadWorkgroupEXT`. `ISBEWR` and
-   `ISBERD` become stores and loads at their offsets, so the program's own addressing needs no decode. `EXIT` returns
-   from the program's function. An epilogue in `main` after a workgroup barrier then does the outputs:
+2. Translator (done, `sm86_translate.c`, with its interface in `sm86.h`: `ShaderInfo.mesh` is the key, a task program
+   takes descriptor set 2 and a mesh program set 0). New stages ST_TS and ST_MS, given by NVN, not by the SPH. Model the
+   ISBE as Workgroup arrays: the output area (`u32 [V + primitive area]`), the map (`u32 [4 + 3 * most primitives]`, a
+   byte to a word) and, for a task program, the payload as `TaskPayloadWorkgroupEXT`. `ISBEWR` and `ISBERD` become
+   stores and loads at their offsets, so the program's own addressing needs no decode. `EXIT` returns from the program's
+   function. An epilogue in `main` after a workgroup barrier then does the outputs:
    - mesh: `OpSetMeshOutputsEXT(most vertices, count)`, the count from map word 3 (0 at the start). Then a loop over
      vertices and primitives that writes `gl_Position`, the generic outputs (`Location` = generic n, per-primitive ones
      `PerPrimitiveEXT`), and `PrimitiveTriangleIndicesEXT` from the map. The skew offsets come from the OMAPs and
      the most vertices, at translation.
    - task: `OpEmitMeshTasksEXT(word 1, 1, 1)` with the payload.
    The workgroup index is `WorkgroupId.x`, from either kind of read at offset 0. `SR_LANEID` is the subgroup
-   invocation. Constant banks, textures and global buffers are as in the vertex stage. About 600 to 900 lines with
-   tests, and SPIR-V tests through `snx-shaderc` with `spirv-val`.
+   invocation. Constant banks, textures and global buffers are as in the vertex stage. The 7 task and 12 mesh programs
+   of one run translate and pass `spirv-val` (`snx-sm86 --task` and `--mesh`).
 3. Fragment linkage. A fragment program reads per-primitive generic n as a plain input. Its module must declare
    them `PerPrimitiveEXT`, so the fragment shader key gets a mask of per-primitive locations from the mesh program
    (`pipeline.c`'s key, `fs_variant` in `render.c`).
