@@ -107,7 +107,7 @@ static int run(const char* path, const unsigned char* image, size_t image_size, 
     typedef const SnxModule* (*ModuleFn)(void);
     ModuleFn get;
     const SnxModule* mod;
-    RtAPI rt;
+    RtAPI rt = {.cas128 = snx_runtime_cas128};
     unsigned char* memory;
     size_t i;
     double start;
@@ -122,7 +122,6 @@ static int run(const char* path, const unsigned char* image, size_t image_size, 
     if (!get) return -1;
     mod = get();
     memset(out, 0, sizeof(*out));
-    memset(&rt, 0, sizeof(rt));
     rt.miss = no_miss; /* every kernel is found whole */
     memory = (unsigned char*)calloc(1, (size_t)mod->mods[0].base + MEMORY);
     out->disp = (GuestFn*)calloc((size_t)(mod->code_hi - mod->code_lo) / 4, sizeof(GuestFn));

@@ -47,7 +47,7 @@ static void poll(CPU* c) {
     ((Events*)c->thread)->polls++;
     c->poll = 0;
 }
-static const RtAPI runtime = {.miss = missed, .undef = undefined, .poll = poll};
+static const RtAPI runtime = {.miss = missed, .undef = undefined, .poll = poll, .cas128 = snx_runtime_cas128};
 
 static SnxQrefState state_of(const CPU* c) {
     SnxQrefState s = {0};

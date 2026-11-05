@@ -30,7 +30,7 @@ static u32 word(int castagnoli, int size) {
 
 static u32 run(LlvmStep step, u32 acc, u64 val) {
     CPU c = {0};
-    RtAPI rt = {0};
+    RtAPI rt = {.cas128 = snx_runtime_cas128};
     c.rt = &rt;
     c.x[0] = ~0ull;
     c.x[1] = 0xDEADBEEF00000000ull | acc; /* the high half of Wn must not count */

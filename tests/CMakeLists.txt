@@ -79,6 +79,12 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME gnu_extensions COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/gnu_extensions.py"
                                          --repo "${PROJECT_SOURCE_DIR}")
 endif()
+# every RtAPI a test makes carries cas128, which an STXP of doublewords calls on RISC-V, LoongArch, MIPS64 and
+# PowerPC64 before POWER8 only
+if(Python3_Interpreter_FOUND)
+    add_test(NAME rtapi_cas128 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/rtapi_cas128.py"
+                                       --repo "${PROJECT_SOURCE_DIR}")
+endif()
 # CLAUDE.md and .claude/ in ASD-STE100 (.claude/skills/ste100), and the checker's own test
 if(Python3_Interpreter_FOUND)
     add_test(NAME claude_ste100 COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/.claude/skills/ste100/check.py" --all)
@@ -849,6 +855,7 @@ add_executable(snx-test-a64-fp-arithmetic a64_fp_arithmetic_test.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
 snx_test_target(snx-test-a64-fp-arithmetic 11)
 snx_cpu_helpers_flags(snx-test-a64-fp-arithmetic)
+target_link_libraries(snx-test-a64-fp-arithmetic PRIVATE scarletnx-common) # RtAPI.cas128 (runtime/cas128.c)
 if(NOT WIN32)
     target_link_libraries(snx-test-a64-fp-arithmetic PRIVATE m)
 endif()
@@ -2541,6 +2548,7 @@ if(UNIX)
         add_test(NAME kernel_wait COMMAND snx-test-kernel-wait)
     add_executable(snx-test-kernel-cores kernel_cores.c)
     snx_test_target(snx-test-kernel-cores 11)
+    target_link_libraries(snx-test-kernel-cores PRIVATE scarletnx-common) # its g_rtapi's cas128 (runtime/cas128.c)
         add_test(NAME kernel_cores COMMAND snx-test-kernel-cores)
     # g_hle holds no pointer and nothing of the host's, so a save state writes it as it is (hle_flat.c)
     add_executable(snx-test-hle-flat hle_flat.c)
