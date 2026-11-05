@@ -209,6 +209,20 @@ staging memory (`--vk_memory=1`).
 Earlier mutation checks deliberately broke the transform-feedback count, coverage coefficient index and tessellation
 input vertex index. Their respective tests failed. The sources were restored before that hardware matrix.
 
+The follow-up passed all 19 selected checks: 11 native fixtures and eight Vulkan runs across the same two GPUs,
+descriptor sets/buffers and synchronous/threaded recording. Validation was enabled. No VUID or threading errors were
+reported. AMD explicitly skipped native advanced blending and mixed-sample coverage; its ordered shader blend path
+passed. Source and per-run binary hashes stayed unchanged.
+
+Each Vulkan run checked 79,764 blend equation cases. All 276 generated equation modules passed
+`spirv-val --target-env vulkan1.3`. ASan/UBSan passed for queue lifetime, frontend/program metadata and copy formats.
+Four mutations broke retained texture pointers, absolute subroutine addresses, sRGB decoding and blend endpoints;
+the respective native or Vulkan checks rejected each mutation. The source bytes were restored and rebuilt.
+
+The full Clang build passed. Expanded warnings on 18 runtime files found the same four existing warnings. All 17
+Python harness tests and the documentation checks passed. The full 469-test run passed 463 tests and skipped three.
+The gamepad focus assertion and the two forced-UMA placed-view assertions listed above remained the three failures.
+
 ## Remaining gaps
 
 These rendering gaps need further work:
