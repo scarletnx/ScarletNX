@@ -6,16 +6,19 @@
    it through the pool's mirror, and the page is let go. Owned memory is always pool pages mapped at one address
    only (mem_own_prepare): a second mapping of them lands them first, so a fault has one entry to find.
 
-   Locks: the producer's (the renderer's vk_lock), then mem.c's, then g_trap_lk, then g_own_lk, which is never held
-   across landing, a resource's release or a wait for the GPU; the producer's lock is never taken under g_trap_lk or
-   g_own_lk. A landing takes the producer's lock before it marks its entries, and holds it until they are let go and
-   released: every thread that waits on g_own_cv for a mark (own_begin, own_drop, a landing) holds that lock too, so
-   the mark is its own, never one of a thread that waits for the lock in turn. The landing runs with no lock of ours
-   held, so a thread holding the kernel's lock may fault on owned memory, as long as no holder of the producer's lock
-   waits for the kernel's (nvdrv.c's syncpt_add_quiet). One holding mem.c's lock may not: holders of the producer's
-   lock wait for it (own_begin, every mapping change), so mem.c lands what it touches first (own_acquire). Nor may one
-   holding the producer's lock, on an owned page (its landing needs the lock): own_fault ends the process with the
-   address, as that is a bug in the runtime. Its fault on a page no entry is on any more goes on */
+   Locks: the producer's (the renderer's vk_lock), then the renderer's pend_lock, then mem.c's, then g_trap_lk, then
+   g_own_lk, which is never held across landing, a resource's release or a wait for the GPU; the producer's lock is
+   never taken under g_trap_lk or g_own_lk. A change of guest memory the renderer lets go on without its lock
+   (GPU_MAPPING_GUEST_ONLY) has no entry on its pages, and none comes while it runs (own_begin's caller holds pend_lock
+   too), so its own_drop and own_acquire find nothing to wait for. A landing takes the producer's lock before it marks
+   its entries, and holds it until they are let go and released: every thread that waits on g_own_cv for a mark
+   (own_begin, own_drop, a landing) holds that lock too, so the mark is its own, never one of a thread that waits for
+   the lock in turn. The landing runs with no lock of ours held, so a thread holding the kernel's lock may fault on
+   owned memory, as long as no holder of the producer's lock waits for the kernel's (nvdrv.c's syncpt_add_quiet). One
+   holding mem.c's lock may not: holders of the producer's lock wait for it (own_begin, every mapping change), so mem.c
+   lands what it touches first (own_acquire). Nor may one holding the producer's lock, on an owned page (its landing
+   needs the lock): own_fault ends the process with the address, as that is a bug in the runtime. Its fault on a page no
+   entry is on any more goes on */
 #include "common/utilities/bits.h"
 #include <stdlib.h>
 #include <string.h>
@@ -497,7 +500,8 @@ void own_drop(u64 addr, u64 size) {
         pm_unlock(&g_own_lk);
         return;
     }
-    /* The caller holds the producer's lock, so a landing cannot leave an entry removed but its trap still armed.
+    /* The caller holds the producer's lock (or, without it, there was no entry: see Locks above), so a landing cannot
+       leave an entry removed but its trap still armed.
        Only pages of entries cut here can need opening. Continuing an unrelated unmap faults its whole range into
        userfaultfd's mappings just before mem.c releases those pages again. */
     u64 lo = g_own[first].lo > addr ? g_own[first].lo : addr, hi = g_own[first].hi;

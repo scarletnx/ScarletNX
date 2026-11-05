@@ -736,6 +736,7 @@ void vk_gfx_image_record(Surf* s, u8* original, u32 size, u64 after);
 u64 vk_gfx_image_after(Surf* s, u32 size);
 int vk_gfx_image_unrecorded(const Surf* s); /* s has a write-back whose copy isn't recorded: a draw's writes join it */
 void vk_gfx_image_mem_need(u64 gva, u64 size);
+void vk_gfx_image_guest_need(u64 cpu, u64 size); /* by guest memory (size ~0: all of it) */
 int vk_gfx_image_pending(u64 gva, u64 size);
 void vk_gfx_image_land(void);
 /* at a release: the storage images' write-backs recorded, to land once their submit is done (vk_lock) */

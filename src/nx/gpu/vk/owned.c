@@ -11,6 +11,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/pending_pages.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/hle/services/nvdrv.h"
@@ -308,7 +309,12 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
         if (vk_uma_publish(cpu, size, r->buf, off)) return;
     }
     if (g_owned.traps) vk_uma_owning(cpu, size); /* what reads the pages in place runs and goes before the trap */
-    if (g_owned.traps && !own_begin(cpu, size, r, off)) return;
+    /* under pend_lock: a change of guest memory that skips vk_lock found no owner on its pages, and none comes until
+       it ends (vkr_mapping_begin) */
+    pend_lock();
+    int owned = g_owned.traps && !own_begin(cpu, size, r, off);
+    pend_unlock();
+    if (owned) return;
     /* not trapped here: older owners of the bytes let go of them, and the result lands now */
     own_drop(cpu, size);
     /* Other owned bytes can still trap the edge pages after this range is
