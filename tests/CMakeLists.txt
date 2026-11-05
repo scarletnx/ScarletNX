@@ -1421,6 +1421,20 @@ if(SNX_TRACY)
     target_compile_definitions(snx-test-startup PRIVATE SNX_TRACY=1)
 endif()
 add_test(NAME startup_options COMMAND snx-test-startup)
+if(SNX_TRACY)
+    # the Tracy client's lifetime (runtime/platform/tracy.c) over a stand-in client, Tracy's headers without its
+    # library: the gate shut before the start and for good after the stop, the client started and stopped once
+    add_executable(snx-test-tracy-state tracy_state.c)
+    snx_test_target(snx-test-tracy-state 23)
+    target_include_directories(snx-test-tracy-state PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_include_directories(snx-test-tracy-state SYSTEM PRIVATE
+        $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_INCLUDE_DIRECTORIES>
+        $<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>)
+    target_compile_definitions(snx-test-tracy-state PRIVATE SNX_TRACY=1
+        $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_COMPILE_DEFINITIONS>)
+    target_link_libraries(snx-test-tracy-state PRIVATE scarletnx-common scarletnx-filesystem snx_build_info)
+    add_test(NAME tracy_state COMMAND snx-test-tracy-state)
+endif()
 
 add_library(snx_test_common STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/common.c"
     "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/game_ini.c"
