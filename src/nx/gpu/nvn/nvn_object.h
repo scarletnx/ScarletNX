@@ -54,6 +54,13 @@ typedef struct {
     u32 bytes;
     u8 data[];
 } NvnSubLinkage;
+/* an Ounce program's records that its object has no room for (nvn_obj.h's NVN_C0_RECORD): its compute program's c[0]
+   record */
+typedef struct {
+    u64 serial;
+    u8 c0[NVN_C0_RECORD];
+    u8 pad[4];
+} NvnOunceEntry;
 /* the file's state, g_nvn.object (gpu/nvn/nvn_state.h): the serials handed out, and nvnDeviceGetInteger's answers
    once read from the game's driver (driver: 1; read_api: its API version among them); the transform feedback layouts
    of the programs that capture, by serial, under their lock: programs that capture are few, and their entries stay */
@@ -74,6 +81,8 @@ typedef struct {
     u32 nsubprogram, subprogram_capacity;
     NvnSubLinkage** sublinkage;
     u32 nsublinkage, sublinkage_capacity;
+    NvnOunceEntry* ounce; /* immutable records, sorted by serial and copied out under xfb_lock */
+    u32 nounce, ounce_capacity;
 } NvnObjectState;
 
 /* an NVN object of type T at guest address a, in place in the game's memory */
@@ -104,6 +113,8 @@ int nvn_subroutine_apply(u32 linkage, i32 first, i32 count, const i32* values);
 /* whether a linkage map's fields are what its bytes say, every offset and target inside them, as SetSubroutineLinkage
    checks a map before it keeps it: a save state's are checked again (gpu/nvn/nvn_save.c) */
 int nvn_sub_linkage_valid(const NvnSubLinkage* l);
+/* the c[0] record of the Ounce compute program SetShaders gave serial (NVN_C0_RECORD), all 0 for another program */
+void nvn_program_c0(u64 serial, u8 c0[NVN_C0_RECORD]);
 /* the game's driver resolved nvnDeviceGetInteger to func: its answers are read from its code (gpu/nvn/nvn_driver.c)
    before the game can ask */
 void nvn_device_driver(u64 func);

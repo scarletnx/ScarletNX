@@ -220,10 +220,9 @@ NVN_FITS(NvnProgram, 0x98);
    [13] separate samplers; [14] images; [15] addresses; [17] bit 0: 16 bytes more at the end; [18-19] c[0]'s bytes.
    The packed c[0]: its bytes rounded up to 16, the grid, the root tables' words (each table padded to 16 bytes),
    uniform and storage buffers {address, size, 0}, then the handles' low words {handle, 0} in the order above. Kept
-   in the guest's program past NvnProgram, for API 231 */
+   by the program's SetShaders (nvn_program_c0), not in its object: the Ounce's program object is 0xa0 bytes (the
+   driver's nvnProgramInitialize zeroes that many) and NvnProgram takes 0x98 of them */
 #define NVN_C0_RECORD 0x14
-#define NVN_PROG_C0(p) GP((p) + 0x98)
-typedef char nvn_fits_NvnProgramC0[0x98 + NVN_C0_RECORD <= sizeof(NVNprogram) ? 1 : -1];
 /* the Ounce's program builder (API 231+): a program is built with this, then nvnProgramInitializeFromBuilder
    turns it into a program. The shader list is the Ounce shader-data array (0x18-byte entries); its parsing is
    deferred to the mesh-shader work */
@@ -602,7 +601,6 @@ typedef struct {
     u64 serial; /* the program's SetShaders (nvn_program_xfb) */
     u16 block[3], sample_shading;
     NvnStage st[NVN_STAGES]; /* the Ounce's task and mesh stages last, not recorded for others */
-    u8 c0[NVN_C0_RECORD];    /* an Ounce compute program's c[0] record (NVN_PROG_C0), not recorded for others */
 } NvnPBindProgram;
 /* the stages that a game other than an Ounce one has: its record stops after them */
 #define NVN_PBIND_SWITCH_BYTES (offsetof(NvnPBindProgram, st) + NVN_SHADER_STAGE_TASK * sizeof(NvnStage))
