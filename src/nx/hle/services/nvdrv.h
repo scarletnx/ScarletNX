@@ -217,6 +217,10 @@ typedef struct {
     u32 ctrl_ev[NV_FDS];
     NvEventTable ctrl_evt[NV_CTRL_TABLES];
     u32 ctrl_evt_next;
+    /* the event slots armed now, a bit each under nvev_lk, and the tables that have one: syncpt_add skips the scan of
+       every slot while none is, which is the common case for a game that waits on none of them */
+    u64 armed_mask[NV_CTRL_TABLES];
+    u64 armed_tables;
     /* a game thread arms a slot while GPU and video threads run nv_events_check after their increments: syncpt_add's
        at once, syncpt_add_quiet's at the outermost vk_unlock, after vk_lock goes (syncpt_events). Arming clears the
        event first and does both in one hold: an increment between a separate arm and clear would signal and then

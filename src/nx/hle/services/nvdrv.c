@@ -612,13 +612,9 @@ static int syncpt_bump(u32 id, u32 n) {
     pm_unlock(&g_host.nvdrv.sync_lk);
     return 1;
 }
-/* the event slots armed now, a bit each under nvev_lk, and the tables that have one: syncpt_add skips the scan of
-   every slot while none is, which is the common case for a game that waits on none of them */
-static u64 armed_mask[NV_CTRL_TABLES];
-static u64 armed_tables;
 void syncpt_add(u32 id, u32 n) {
     if (!syncpt_bump(id, n)) return;
-    if (__atomic_load_n(&armed_tables, __ATOMIC_ACQUIRE)) nv_events_check();
+    if (__atomic_load_n(&g_hle.nvdrv.armed_tables, __ATOMIC_ACQUIRE)) nv_events_check();
     gpu_kick(); /* a GPU channel's stream may wait for it */
 }
 void syncpt_add_quiet(u32 id, u32 n) {
@@ -629,7 +625,7 @@ void syncpt_add_quiet(u32 id, u32 n) {
 void syncpt_events(void) {
     if (!t_hle.nvdrv.events_due) return;
     t_hle.nvdrv.events_due = 0;
-    if (__atomic_load_n(&armed_tables, __ATOMIC_ACQUIRE)) nv_events_check();
+    if (__atomic_load_n(&g_hle.nvdrv.armed_tables, __ATOMIC_ACQUIRE)) nv_events_check();
 }
 void syncpt_incr(u32 id) { syncpt_add(id, 1); }
 /* raises the promised maximum by n, from at least the current value: what a fence handed back now will reach */
@@ -790,8 +786,8 @@ static NvEvent* nvev_detach(u32 fd, NvEvent* out) {
     if (t) {
         u32 ti = (u32)(t - g_hle.nvdrv.ctrl_evt);
         memcpy(out, t->slot, sizeof t->slot);
-        __atomic_store_n(&armed_mask[ti], 0, __ATOMIC_RELEASE);
-        __atomic_fetch_and(&armed_tables, ~(1ull << ti), __ATOMIC_RELEASE);
+        __atomic_store_n(&g_hle.nvdrv.armed_mask[ti], 0, __ATOMIC_RELEASE);
+        __atomic_fetch_and(&g_hle.nvdrv.armed_tables, ~(1ull << ti), __ATOMIC_RELEASE);
         POOL_PUT(t);
     }
     g_hle.nvdrv.ctrl_ev[fd] = 0;
@@ -802,26 +798,26 @@ static NvEvent* nvev_detach(u32 fd, NvEvent* out) {
 static void nv_events_check(void) {
     u64 tables;
     nvev_lock();
-    tables = __atomic_load_n(&armed_tables, __ATOMIC_RELAXED);
+    tables = __atomic_load_n(&g_hle.nvdrv.armed_tables, __ATOMIC_RELAXED);
     while (tables) {
         u32 t = snx_ctz64(tables);
-        u64 mask = g_hle.nvdrv.ctrl_evt[t].fd ? __atomic_load_n(&armed_mask[t], __ATOMIC_RELAXED) : 0;
+        u64 mask = g_hle.nvdrv.ctrl_evt[t].fd ? __atomic_load_n(&g_hle.nvdrv.armed_mask[t], __ATOMIC_RELAXED) : 0;
         tables &= tables - 1;
         while (mask) {
             u32 bit = snx_ctz64(mask);
             NvEvent* e = &g_hle.nvdrv.ctrl_evt[t].slot[bit];
             mask &= mask - 1;
             if (!e->armed) {
-                __atomic_fetch_and(&armed_mask[t], ~(1ull << bit), __ATOMIC_RELEASE);
+                __atomic_fetch_and(&g_hle.nvdrv.armed_mask[t], ~(1ull << bit), __ATOMIC_RELEASE);
                 continue;
             }
             if (!syncpt_reached(e->id, e->thresh)) continue;
             e->armed = 0;
-            __atomic_fetch_and(&armed_mask[t], ~(1ull << bit), __ATOMIC_RELEASE);
+            __atomic_fetch_and(&g_hle.nvdrv.armed_mask[t], ~(1ull << bit), __ATOMIC_RELEASE);
             if (e->ev) kevent_signal(kev(e->ev));
         }
-        if (!g_hle.nvdrv.ctrl_evt[t].fd || !__atomic_load_n(&armed_mask[t], __ATOMIC_RELAXED))
-            __atomic_fetch_and(&armed_tables, ~(1ull << t), __ATOMIC_RELEASE);
+        if (!g_hle.nvdrv.ctrl_evt[t].fd || !__atomic_load_n(&g_hle.nvdrv.armed_mask[t], __ATOMIC_RELAXED))
+            __atomic_fetch_and(&g_hle.nvdrv.armed_tables, ~(1ull << t), __ATOMIC_RELEASE);
     }
     nvev_unlock();
 }
@@ -1251,8 +1247,8 @@ static void nvev_disarm(u32 fd, u32 slot) { /* under nvev_lk; the event stays un
         u32 t = g_hle.nvdrv.ctrl_ev[fd] - 1;
         u64 remain;
         e->armed = 0;
-        remain = __atomic_fetch_and(&armed_mask[t], ~(1ull << slot), __ATOMIC_RELEASE) & ~(1ull << slot);
-        if (!remain) __atomic_fetch_and(&armed_tables, ~(1ull << t), __ATOMIC_RELEASE);
+        remain = __atomic_fetch_and(&g_hle.nvdrv.armed_mask[t], ~(1ull << slot), __ATOMIC_RELEASE) & ~(1ull << slot);
+        if (!remain) __atomic_fetch_and(&g_hle.nvdrv.armed_tables, ~(1ull << t), __ATOMIC_RELEASE);
     }
     kevent_clear(kev(e->ev));
 }
@@ -1288,8 +1284,8 @@ static u32 ctrl_event_wait(u32 fd, u8* d, int async) {
         if (!e->armed) {
             u32 t = g_hle.nvdrv.ctrl_ev[fd] - 1;
             e->armed = 1;
-            __atomic_fetch_or(&armed_mask[t], 1ull << slot, __ATOMIC_RELEASE);
-            __atomic_fetch_or(&armed_tables, 1ull << t, __ATOMIC_RELEASE);
+            __atomic_fetch_or(&g_hle.nvdrv.armed_mask[t], 1ull << slot, __ATOMIC_RELEASE);
+            __atomic_fetch_or(&g_hle.nvdrv.armed_tables, 1ull << t, __ATOMIC_RELEASE);
         }
     }
     nvev_unlock();
