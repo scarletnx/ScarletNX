@@ -7,32 +7,42 @@ name: Game reports
 # where, the service commands the runtime doesn't implement, the shaders, macros, SVCs and guest code it missed, and the
 # other game reports that failed the same way. One comment, edited as logs are added, and the labels `game report` and
 # `log: <how it ended>`. A maintainer's `status: confirmed` label gets a comment once: ready for an edenprobe case.
-# Nothing of the issue reaches the shell: the script reads the event's file. The checkout is main's, so an issue never
-# runs code of a pull request.
+# A maintainer's run by hand (gh workflow run game-reports.yml -f issue=N) summarizes that issue as an event for it
+# would, and fails on a pull request or an issue without a log. Nothing of the issue reaches the shell: the script
+# reads the event's file, or the number a run by hand names. The checkout is main's, so an issue never runs code of a
+# pull request.
 on:
   issues:
     types: [opened, edited, reopened, labeled]
   issue_comment:
     types: [created, edited]
+  # an issue whose run failed, summarized again once the failure is fixed
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: The issue to summarize, by its number
+        required: true
+        type: number
 
 permissions:
   contents: read
   issues: write
 
 # one at a time per issue: of a burst of comments the newest waits and those before it are dropped, and the one that
-# runs reads every log of the issue anyway
+# runs reads every log of the issue anyway. A run by hand takes its issue's group, so runs for several issues all run
 concurrency:
-  group: game-reports-${{ github.event.issue.number }}
+  group: game-reports-${{ github.event.issue.number || inputs.issue }}
 
 jobs:
   triage:
     name: Summarize the logs
     # Only what can change a report: an issue opened or edited with an attachment or a fenced block in it, a comment
-    # with one, or the confirmed label. Every other event of every issue starts a run (issue_comment can't be filtered
-    # before), which ends here. The bot's own comment, edited, starts no run (GITHUB_TOKEN's events don't), and a pull
-    # request's comments aren't reports
+    # with one, the confirmed label, or a run by hand. Every other event of every issue starts a run (issue_comment
+    # can't be filtered before), which ends here. The bot's own comment, edited, starts no run (GITHUB_TOKEN's events
+    # don't), and a pull request's comments aren't reports
     if: >-
       ${{ !github.event.issue.pull_request && github.event.sender.type != 'Bot' && (
+        github.event_name == 'workflow_dispatch' ||
         (github.event.action == 'labeled' && github.event.label.name == 'status: confirmed') ||
         (github.event_name == 'issues' && github.event.action != 'labeled' && (
           contains(github.event.issue.body, '/files/') || contains(github.event.issue.body, '```') ||
@@ -62,9 +72,12 @@ jobs:
           cc -std=c99 -O2 -Isrc -c src/common/utilities/logscan.c src/common/utilities/logscan_main.c \
             src/common/utilities/demangle.c
           cc -o snx-logscan logscan.o logscan_main.o demangle.o -lstdc++
+      # a run by hand passes its number, which the script refuses unless it is an issue's with a log
       - name: Summarize
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          python3 scripts/game-reports.py triage --event "$GITHUB_EVENT_PATH" --repo "$GITHUB_REPOSITORY"
-          --logscan ./snx-logscan
+          ISSUE: ${{ inputs.issue }}
+        run: |
+          which=(--event "$GITHUB_EVENT_PATH")
+          [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || which=(--issue "$ISSUE")
+          python3 scripts/game-reports.py triage "${which[@]}" --repo "$GITHUB_REPOSITORY" --logscan ./snx-logscan

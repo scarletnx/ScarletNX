@@ -187,10 +187,12 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   each issue and comment. An issue with a log attached (`.log`, `.txt`, `.gz`, `.zip`) or pasted in a fenced block gets
   one comment with the summary of each, edited as logs are added, the labels `game report` and `log: <how it ended>`,
   and the other reports with the same signature named. `triage --issue N --dry-run --logscan build/snx-logscan` shows
-  what it would post. `scripts/game-reports.py index [--title-id ID] [--signature TEXT]` lists the reports and their
-  logs as JSON lines. A maintainer's `status: confirmed` label on a report gets one comment: ready for an edenprobe
-  case, with the steps. The ctest `game_reports_workflow` runs the workflow's build step on the files its sparse
-  checkout lists alone, so a file the log summary comes to include fails a pull request until the list has it.
+  what it would post, and `gh workflow run game-reports.yml -f issue=N` runs the workflow for that issue (one whose run
+  failed), failing on a pull request or an issue without a log. `scripts/game-reports.py index [--title-id ID]
+  [--signature TEXT]` lists the reports and their logs as JSON lines. A maintainer's `status: confirmed` label on a
+  report gets one comment: ready for an edenprobe case, with the steps. The ctest `game_reports_workflow` runs the
+  workflow's build step on the files its sparse checkout lists alone, so a file the log summary comes to include fails a
+  pull request until the list has it.
 
 - Runtime: `--seconds=N` / `--frames=N`, counted from the game's start, after the shader loading screen
   (`prepare_shaders=2`, which the first run after a rebuild spends translating the game's shaders again);
