@@ -1051,9 +1051,24 @@ static int tex_operands(const Sm86Insn* in, u32 n0, u32 n1, u32* regs) {
     return 1;
 }
 /* the components of a vec4 result that the channel mask selects, into dst and dst + 1, then dst1 and dst1 + 1 (or on
-   from dst when dst1 is RZ) */
+   from dst when dst1 is RZ). With .F16 (bit 79, NAK's note on TLD) a float result is two halves a register: the
+   first two components into dst (the first in the low half), the next two into dst1 (or dst + 1), a lone last one
+   with a zero high half. One game's text programs take an alpha that way (HADD2.F32 R, -RZ, R.H0_H0), and with each
+   component in a register of its own their glyphs read the low bits of a float */
 static void tex_results(Ctx* c, const Sm86Insn* in, u32 value, u32 scalar) {
     u32 mask = sm86_field(in, 72, 4), d0 = in->dst, d1 = sm86_field(in, 64, 8), written = 0;
+    if (scalar == c->t_f32 && sm86_field(in, 79, 1)) {
+        u32 half[4], n = 0;
+        for (u32 k = 0; k < 4; k++)
+            if (mask & (1u << k)) half[n++] = spv_emit_vec4_extract(&c->e, scalar, value, k);
+        for (u32 p = 0; 2 * p < n; p++) {
+            u32 pair =
+                spv_emit_vec2_construct(&c->e, c->t_v2f, half[2 * p], 2 * p + 1 < n ? half[2 * p + 1] : cf(c, 0.0f));
+            u32 r = p == 0 || d1 >= SM86_RZ ? (d0 >= SM86_RZ ? d0 : d0 + p) : d1;
+            wr(c, r, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, pair));
+        }
+        return;
+    }
     for (u32 k = 0; k < 4; k++) {
         if (!(mask & (1u << k))) continue;
         u32 v = spv_emit_vec4_extract(&c->e, scalar, value, k);
