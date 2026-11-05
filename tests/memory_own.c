@@ -582,7 +582,7 @@ int main(int argc, char** argv) {
     test_scan_owned();
     test_let_go_watched();
     test_stress();
-    CHECK(!g_own_any);
+    CHECK(!own_any());
     printf("memory_own: %u checks passed (%d landings, %d bytes)\n", checks, g_lands, g_landed_bytes);
     return 0;
 }
