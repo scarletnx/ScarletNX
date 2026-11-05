@@ -1716,6 +1716,79 @@ static Word hadd2_f32(u32 dst, u32 a, u32 sa, u32 b, u32 sb) {
     set(&x, 78, 1, 1);
     return x;
 }
+/* FTZ by the device's mode (sm86_to_spirv_ftz), as shader_to_spirv decides it. With every FADD, FMUL and FFMA FTZ
+   (bit 80): the DenormFlushToZero execution mode and no flush of its own under SH_FTZ_MODE, a flush of each operand
+   and result (FAbs and an FOrdLessThan) under SH_FTZ_EMULATE, neither under SH_FTZ_NATIVE. With one that keeps
+   subnormals, never the mode, which is the whole module's */
+static void spv_ftz_counts(const u32* w, size_t n, int* mode, int* tests) {
+    *mode = *tests = 0;
+    for (size_t i = 5; i < n;) {
+        u32 count = w[i] >> 16, op = w[i] & 0xffffu;
+        if (!count) break;
+        if (op == 16 && count >= 3 && w[i + 2] == 4460) *mode = 1; /* OpExecutionMode DenormFlushToZero */
+        if (op == 184) (*tests)++;                                 /* OpFOrdLessThan */
+        i += count;
+    }
+}
+static void test_ftz_modes(const char* dir) {
+    u8* code = calloc(1, 0x1000);
+    if (!code) abort();
+    u32 n = compute_program(code), fmul = n;
+    for (u32 i = 0; i < n; i++)
+        if ((code[16 * i] | (u32)(code[16 * i + 1] & 1) << 8) == 0x020) fmul = i;
+    CHECK(fmul < n);
+    static const struct {
+        int ftz, can_flush, mode, tests;
+    } cases[] = {{1, SH_FTZ_MODE, 1, 0},
+                 {1, SH_FTZ_EMULATE, 0, 1},
+                 {1, SH_FTZ_NATIVE, 0, 0},
+                 {0, SH_FTZ_MODE, 0, 0},
+                 {0, SH_FTZ_EMULATE, 0, 0}};
+    for (u32 k = 0; k < sizeof cases / sizeof cases[0] && fmul < n; k++) {
+        if (cases[k].ftz)
+            code[16 * fmul + 10] |= 1; /* bit 80 */
+        else
+            code[16 * fmul + 10] &= (u8)~1u;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        int mode, tests;
+        u32* spv = sm86_to_spirv_ftz(code, n * 16, ST_CS, NULL, &si, &count, cases[k].can_flush);
+        CHECK(spv != NULL);
+        if (!spv) continue;
+        spv_ftz_counts(spv, count, &mode, &tests);
+        CHECK(mode == cases[k].mode && (tests > 0) == cases[k].tests);
+        if (mode != cases[k].mode || (tests > 0) != cases[k].tests)
+            fprintf(stderr, "ftz %d, can_flush %d: mode %d, %d tests\n", cases[k].ftz, cases[k].can_flush, mode, tests);
+        char name[32];
+        snprintf(name, sizeof name, "ftz%u", k);
+        CHECK(keep_module(dir, name, spv, count));
+        free(spv);
+    }
+    /* mixed: the FMUL with FTZ, and a copy of it without before the EXIT. The copy keeps subnormals, so the module
+       takes no mode and the FTZ one flushes its own operands, where the device has the mode */
+    if (fmul < n) {
+        Word copy;
+        memcpy(copy.w, code + 16 * fmul, 8);
+        memcpy(copy.w + 1, code + 16 * fmul + 8, 8);
+        code[16 * fmul + 10] |= 1;
+        set(&copy, 80, 1, 0);
+        put(code, n - 2, copy);
+        put(code, n - 1, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        ShaderInfo si = {0};
+        size_t count = 0;
+        int mode, tests;
+        u32* spv = sm86_to_spirv_ftz(code, (n + 1) * 16, ST_CS, NULL, &si, &count, SH_FTZ_MODE);
+        CHECK(spv != NULL);
+        if (spv) {
+            spv_ftz_counts(spv, count, &mode, &tests);
+            CHECK(!mode && tests > 0);
+            CHECK(keep_module(dir, "ftz_mixed", spv, count));
+        }
+        free(spv);
+    }
+    free(code);
+}
 static void test_tex_f16(const char* dir) {
     u8 code[16 * 8] = {0};
     put(code, 0, tex_f16(4, 255, 0x8));
@@ -2567,6 +2640,7 @@ int main(int argc, char** argv) {
     test_uses_isbe();
     test_warp_matrix(dir);
     test_warp_matrix_coop(dir);
+    test_ftz_modes(dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

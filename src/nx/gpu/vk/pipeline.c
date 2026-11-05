@@ -176,7 +176,7 @@ static u32* sm86_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo*
         }
         for (u32 i = 0; i < SM86_SPH_BYTES / 4; i++) sph[i] = snx_ld_le32(code + p.header + 4 * i);
     }
-    return sm86_to_spirv(code + p.code, p.size, stage, stage == ST_CS ? NULL : sph, si, words);
+    return sm86_to_spirv_ftz(code + p.code, p.size, stage, stage == ST_CS ? NULL : sph, si, words, g_vk_ftz);
 }
 /* The translator's reader (g_shader_cb_read) and what rec_read records into are one for the process: the GPU thread's
    draws and dispatches and the pass over the programs the game ships, on the shader files' thread (ship_program),
