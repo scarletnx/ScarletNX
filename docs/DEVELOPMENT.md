@@ -178,7 +178,8 @@ Android or iOS LLVM. The first container run builds the project, about 10 to 20 
 reuse `build/ci-linux-<arch>`, `.cache/ci-deps-<arch>` and `.cache/ci-ccache-<arch>`, and usually stay under 10
 minutes. A code-change `preflight` runs the host build and tests, usually a few minutes after the first build.
 `preflight --static-only` and a docs-only `preflight` take seconds. `--both --sanitizers` is the full gate and is
-slower; use it only when the change needs it.
+slower; use it only when the change needs it. On battery, use `--static-only` or lower `--jobs` and `--cpus`, and
+connect power for the full gate.
 
 Android and iOS build proof is a separate one-time cost. Each needs LLVM built for its target, about 10 minutes each,
 plus the app build. The CI builds both and keeps the APKs and the IPA. Use the CI artifacts unless you work on those
