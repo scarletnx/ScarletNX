@@ -13658,9 +13658,10 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
     *tab = app->picks_of == GUI_PICKS_SHARE    ? snx_tr("Share Log")
            : app->picks_of == GUI_PICKS_DRIVER ? snx_tr("GPU Drivers")
            : app->picks_of == GUI_PICKS_ASSET  ? snx_tr("Download Driver")
-           : app->picks_of == GUI_PICKS_THEME  ? snx_tr("Theme")
+           : app->picks_of == GUI_PICKS_THEME  ? (app->theme.dialog == GUI_DIALOG_YORHA ? snx_tr("Theme") : "")
                                                : snx_tr("Folders");
-    if (app->picks_of == GUI_PICKS_THEME) {
+    if (app->picks_of == GUI_PICKS_THEME) { /* the line says what the box is: YoRHa's tab names it, the default's
+                                               corner has no name beside the line */
         snprintf(out, size, snx_tr("Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"),
                  app->theme_was_name);
         return;
