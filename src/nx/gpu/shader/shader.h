@@ -63,6 +63,16 @@ typedef struct {
     u8 count[4];
     u16 stride[4];
 } ShXfb;
+/* The key of a task or mesh program (ShaderInfo.mesh): the fields of its NVN control section (nvn/nvn_section.h,
+   NvnSectionMesh) and its per-primitive outputs' header, which a draw gives and the SPH does not (sm86.h) */
+typedef struct {
+    u16 threads;                      /* the invocations of a workgroup (section 0x58), 1 to 32 */
+    u16 payload;                      /* the task payload's bytes, its 16-byte header included (0x5a) */
+    u16 max_vertices, max_primitives; /* a mesh program's (0x60, 0x62) */
+    u8 has_task, primitive_vertices;  /* a mesh program's: after a task program (0x5e), and 3 (0x5f) */
+    u16 reserved;                     /* 0 */
+    u32 prim_sph[20];                 /* the per-primitive SPH's first 80 bytes (0x64, 0x68), all 0 for none */
+} ShMesh;
 /* A program's key state (set by the renderer before translating) and what translation found. The corpus stores it
    whole, so a corpus file only loads into a build where this struct has the same size. */
 typedef struct {
@@ -133,6 +143,10 @@ typedef struct {
        ShTex type (0 1D, 1 2D, 2 3D, 3 cube), + 4 for an array; 0 when nothing is known yet */
     u8 tex_query_hint[SH_MAXTEX];
     u64 tex_query_mask;
+    ShMesh mesh; /* key (task and mesh programs) */
+    /* the generics that go to the fragment program per primitive: of a mesh program, the per-primitive outputs that
+       translation found (in out_mask too) */
+    u32 prim_mask;
 } ShaderInfo;
 /* ShaderInfo.tex_query_hint in a graphics key's words (vk_shader_get's mask words 14 to 19: 3 bits a slot, the 64
    slots in 6 words), and back. A 1D header's hint (1) goes as none: its query is the 2D slot's, a texel high, as the

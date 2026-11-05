@@ -1862,6 +1862,267 @@ static void test_global_pointer(const char* spirv_val, const char* dir) {
 /* The driver's tessellation control programs: a header with 6 TessFactor words, no outputs and 0 threads for each
    input primitive, and an EXIT. It runs no invocation: draws take the passthrough in its place, and the translator
    gives no module for it. One with 3 threads is a program of its own, which the translator does not take yet */
+/* ---- task and mesh programs ---- */
+
+/* ISBERD (0x923) into reg, or ISBEWR (0x927) of reg, at [base + imm]: the size at 74-75 (U8 0, B32 2), the access
+   at 76-77 (MAP 0, PATCH 1, ATTR 3), SKEW at 78 and the output bit at 79, as NAK's sm70_encode.rs encodes them */
+enum { ISBE_MAP = 0, ISBE_PATCH = 1, ISBE_ATTR = 3, ISBE_U8 = 0, ISBE_B32 = 2 };
+static Word isbe_insn(int write, u32 reg, u32 base, u32 imm, u32 size, u32 access, u32 skew, u32 output) {
+    Word x = fix(write ? 0x927 : 0x923);
+    set(&x, write ? 32 : 16, 8, reg);
+    set(&x, 24, 8, base);
+    set(&x, 40, 16, imm);
+    set(&x, 74, 2, size);
+    set(&x, 76, 2, access);
+    set(&x, 78, 1, skew);
+    set(&x, 79, 1, output);
+    return x;
+}
+/* ISETP.GE.U32.AND P0, PT, R0, imm, PT */
+static Word setp_ge(u32 imm) {
+    Word x = alu(0x00c, 4, 255, 0);
+    set(&x, 32, 32, imm);
+    set(&x, 76, 3, 6);
+    set(&x, 81, 3, 0);
+    set(&x, 84, 3, 7);
+    set(&x, 87, 3, 7);
+    return x;
+}
+/* whether the module decorates an id with decoration, and declares capability */
+static int spv_decorates(const u32* words, size_t count, u32 decoration) {
+    u32 at[512];
+    u32 n = spv_find(words, count, 71 /* OpDecorate */, at, 512);
+    for (u32 k = 0; k < n; k++)
+        if (words[at[k] + 2] == decoration) return 1;
+    return 0;
+}
+static int spv_declares(const u32* words, size_t count, u32 capability) {
+    u32 at[64];
+    u32 n = spv_find(words, count, 17 /* OpCapability */, at, 64);
+    for (u32 k = 0; k < n; k++)
+        if (words[at[k] + 1] == capability) return 1;
+    return 0;
+}
+
+/* A mesh program alone, one invocation, 40 vertices of the position and generic 1.y (5 words: a vertex group of
+   G = 0x280 bytes) and 2 primitives of generic 0.x (after the two vertex groups, at 0x500). It writes vertex 0 and
+   vertex 33 (the second group), generic 1.y of vertex 0 as its workgroup index, primitive 1's generic, the indices of
+   two triangles and the count 2 */
+static u32 mesh_program(u8* code) {
+    u32 n = 0;
+    put(code, n++, isbe_insn(0, 0, 255, 0, ISBE_B32, ISBE_ATTR, 1, 0)); /* ISBERD.ATTR.SKEW R0, [RZ+0x0] */
+    put(code, n++, mov_imm(1, f2u(0.5f)));
+    put(code, n++, mov_imm(2, f2u(0.25f)));
+    put(code, n++, mov_imm(3, f2u(2.0f)));
+    put(code, n++, mov_imm(9, 0x280));
+    put(code, n++, isbe_insn(1, 1, 255, 0x000, ISBE_B32, ISBE_ATTR, 1, 1)); /* vertex 0: x */
+    put(code, n++, isbe_insn(1, 2, 255, 0x080, ISBE_B32, ISBE_ATTR, 1, 1)); /* y */
+    put(code, n++, isbe_insn(1, 3, 255, 0x180, ISBE_B32, ISBE_ATTR, 1, 1)); /* w */
+    put(code, n++, isbe_insn(1, 0, 255, 0x200, ISBE_B32, ISBE_ATTR, 1, 1)); /* generic 1.y */
+    put(code, n++, isbe_insn(1, 2, 9, 0x004, ISBE_B32, ISBE_ATTR, 1, 1));   /* vertex 33: x, at [R9 + 4] */
+    put(code, n++, isbe_insn(1, 1, 255, 0x384, ISBE_B32, ISBE_ATTR, 1, 1)); /* z */
+    put(code, n++, isbe_insn(1, 3, 255, 0x404, ISBE_B32, ISBE_ATTR, 1, 1)); /* w */
+    put(code, n++, mov_imm(4, 7));
+    put(code, n++, mov_imm(5, 9));
+    put(code, n++, mov_imm(6, 33));
+    put(code, n++, mov_imm(7, 0x105));
+    put(code, n++, mov_imm(8, 2));
+    static const u8 index_regs[6] = {255, 6, 4, 4, 6, 7}; /* (0, 33, 7) and (7, 33, 0x105 as a byte) */
+    for (u32 k = 0; k < 6; k++) put(code, n++, isbe_insn(1, index_regs[k], 255, 4 + k, ISBE_U8, ISBE_MAP, 0, 1));
+    put(code, n++, isbe_insn(1, 5, 255, 0x504, ISBE_B32, ISBE_ATTR, 1, 1)); /* primitive 1: generic 0.x */
+    put(code, n++, isbe_insn(1, 8, 255, 3, ISBE_B32, ISBE_MAP, 0, 1));      /* the primitive count */
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    return n + 1;
+}
+static ShaderInfo mesh_info(u32 sph[32]) {
+    ShaderInfo si = {0};
+    sph[0] = sph0(1, 1);
+    sph[13] = 0xfu << 12 | 1u << 21; /* the output map: the position (bits 428-431) and generic 1.y (bit 437) */
+    si.mesh = (ShMesh){1, 0x80, 40, 2, 0, 3, 0, {0}};
+    si.mesh.prim_sph[0] = 0x010c1081u; /* a geometry SPH with passthrough on, generic 0.x (bit 432) */
+    si.mesh.prim_sph[13] = 1u << 16;
+    return si;
+}
+static void test_mesh(const char* spirv_val, const char* dir) {
+    u8 code[16 * 40] = {0};
+    u32 n = mesh_program(code), sph[32] = {0};
+    for (int fix_depth = 0; fix_depth < 2; fix_depth++) {
+        ShaderInfo si = mesh_info(sph);
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_MS, sph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "mesh: %s\n", si.first_unsupported);
+            return;
+        }
+        CHECK(si.out_mask == 3 && si.prim_mask == 1 && sm86_mesh_primitive_mask(&si.mesh) == 1);
+        CHECK(spv_declares(spv, count, 5283 /* MeshShadingEXT */) && spv_decorates(spv, count, 5271));
+        if (!fix_depth) CHECK(validate(spirv_val, dir, "ms", spv, count));
+        static u32 position[40 * 4], generic1[40 * 4], generic0[2 * 4], indices[2 * 3];
+        memset(position, 0xee, sizeof position);
+        SpvEvalEnv env = {0};
+        env.builtin[26][0] = 2; /* WorkgroupId.x, after the draw's first group 5 */
+        env.push[0] = 5;
+        env.push[1] = fix_depth ? f2u(1.0f) : 0;
+        env.arrays[32] = position, env.array_words[32] = 40 * 4;
+        env.arrays[1] = generic1, env.array_words[1] = 40 * 4;
+        env.arrays[0] = generic0, env.array_words[0] = 2 * 4;
+        env.arrays[33] = indices, env.array_words[33] = 2 * 3;
+        const char* why = spv_eval(spv, count, &env);
+        free(spv);
+        if (why) fprintf(stderr, "mesh: the evaluator stops at %s\n", why);
+        CHECK(!why && env.set_outputs == 1 && env.mesh_outputs[0] == 40 && env.mesh_outputs[1] == 2);
+        const u32 *p0 = position, *p33 = position + 4 * 33, *g = generic1, *q = generic0 + 4;
+        u32 z0 = fix_depth ? f2u(1.0f) : 0, z33 = fix_depth ? f2u(1.25f) : f2u(0.5f); /* (z + w) / 2 */
+        int ok = p0[0] == f2u(0.5f) && p0[1] == f2u(0.25f) && p0[2] == z0 && p0[3] == f2u(2.0f) &&
+                 p33[0] == f2u(0.25f) && p33[1] == 0 && p33[2] == z33 && p33[3] == f2u(2.0f) && position[4] == 0;
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "mesh: vertex 0 %08x %08x %08x %08x, vertex 33 %08x %08x %08x %08x\n", p0[0], p0[1], p0[2],
+                    p0[3], p33[0], p33[1], p33[2], p33[3]);
+        /* generic 1: x, z and w as a vertex program's outputs start, y the workgroup index 2 + 5 */
+        CHECK(g[0] == 0 && g[1] == 7 && g[2] == 0 && g[3] == f2u(1.0f));
+        CHECK(q[0] == 9 && q[1] == 0 && q[3] == f2u(1.0f) && generic0[0] == 0);
+        CHECK(indices[0] == 0 && indices[1] == 33 && indices[2] == 7 && indices[3] == 7 && indices[4] == 33 &&
+              indices[5] == 5);
+    }
+}
+
+/* A task program, one invocation and a payload of 0x20 bytes: R0 the workgroup index, into the payload at 0x10; then
+   an EXIT when R0 >= 5, and else 3 mesh groups to launch. The count starts at 0, whatever the payload held */
+static void test_task(const char* spirv_val, const char* dir) {
+    u8 code[16 * 8] = {0};
+    u32 n = 0;
+    put(code, n++, isbe_insn(0, 0, 255, 0, ISBE_B32, ISBE_ATTR, 1, 0));
+    put(code, n++, isbe_insn(1, 0, 255, 0x10, ISBE_B32, ISBE_ATTR, 0, 1));
+    put(code, n++, setp_ge(5));
+    put(code, n++, predicated(exit_insn(), 0));
+    put(code, n++, mov_imm(1, 3));
+    put(code, n++, isbe_insn(1, 1, 255, 4, ISBE_B32, ISBE_ATTR, 0, 1));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    u32 sph[32] = {0};
+    sph[0] = sph0(1, 1);
+    for (u32 first = 0; first < 6; first += 5) {
+        ShaderInfo si = {0};
+        si.mesh.threads = 1;
+        si.mesh.payload = 0x20;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_TS, sph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "task: %s\n", si.first_unsupported);
+            return;
+        }
+        if (!first) CHECK(validate(spirv_val, dir, "ts", spv, count));
+        SpvEvalEnv env = {0};
+        env.builtin[26][0] = 2;
+        env.push[0] = first;
+        env.payload[1] = 77;
+        const char* why = spv_eval(spv, count, &env);
+        free(spv);
+        if (why) fprintf(stderr, "task: the evaluator stops at %s\n", why);
+        /* index 2: 3 groups; index 7: the EXIT leaves the count at 0 */
+        u32 groups = first ? 0 : 3;
+        CHECK(!why && env.emitted_tasks == 1 && env.mesh_tasks[0] == groups && env.mesh_tasks[1] == 1 &&
+              env.mesh_tasks[2] == 1);
+        CHECK(env.payload[4] == 2 + first && env.payload[1] == groups);
+    }
+}
+
+/* A mesh program after a task program: its workgroup index is ISBERD.ATTR [RZ+0x0] without the draw's first group,
+   and it reads the task's payload from 0x10 on: its one vertex's position.x from payload byte 0x14, its generic 0.x
+   the index. Its count of 9 primitives is more than its most (1), which the outputs keep to */
+static void test_mesh_after_task(const char* spirv_val, const char* dir) {
+    u8 code[16 * 10] = {0};
+    u32 n = 0;
+    put(code, n++, isbe_insn(0, 0, 255, 0, ISBE_B32, ISBE_ATTR, 0, 0));
+    put(code, n++, isbe_insn(0, 1, 255, 0x14, ISBE_B32, ISBE_ATTR, 0, 0));
+    put(code, n++, isbe_insn(1, 1, 255, 0, ISBE_B32, ISBE_ATTR, 1, 1));
+    put(code, n++, isbe_insn(1, 0, 255, 0x80, ISBE_B32, ISBE_ATTR, 1, 1));
+    put(code, n++, mov_imm(2, 9));
+    put(code, n++, isbe_insn(1, 2, 255, 3, ISBE_B32, ISBE_MAP, 0, 1));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    u32 sph[32] = {0};
+    sph[0] = 0x020c0c81u;          /* a tessellation evaluation SPH, as the hardware runs it */
+    sph[13] = 1u << 12 | 1u << 16; /* position.x and generic 0.x */
+    ShaderInfo si = {0};
+    si.mesh = (ShMesh){1, 0x20, 1, 1, 1, 3, 0, {0}};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_MS, sph, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "mesh after a task: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(validate(spirv_val, dir, "ms_task", spv, count));
+    static u32 position[4], generic0[4];
+    SpvEvalEnv env = {0};
+    env.builtin[26][0] = 2;
+    env.push[0] = 5;
+    env.payload[5] = f2u(3.0f);
+    env.arrays[32] = position, env.array_words[32] = 4;
+    env.arrays[0] = generic0, env.array_words[0] = 4;
+    const char* why = spv_eval(spv, count, &env);
+    free(spv);
+    if (why) fprintf(stderr, "mesh after a task: the evaluator stops at %s\n", why);
+    CHECK(!why && env.set_outputs == 1 && env.mesh_outputs[0] == 1 && env.mesh_outputs[1] == 1);
+    CHECK(position[0] == f2u(3.0f) && position[1] == 0 && position[2] == 0 && position[3] == f2u(1.0f));
+    CHECK(generic0[0] == 2);
+}
+
+/* the forms and keys that the facts of the game's programs do not cover are refused, with their reason */
+static void refused(const u8* code, u32 n, int stage, const u32* sph, ShaderInfo si, const char* reason) {
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, stage, sph, &si, &count);
+    int ok = !spv && si.unsupported && strstr(si.first_unsupported, reason);
+    CHECK(ok);
+    if (!ok) fprintf(stderr, "refused: \"%s\", not \"%s\"\n", si.first_unsupported, reason);
+    free(spv);
+}
+static void test_mesh_refused(void) {
+    u8 code[16 * 3] = {0};
+    u32 sph[32] = {0};
+    ShaderInfo si = mesh_info(sph);
+    put(code, 0, isbe_insn(1, 1, 255, 0x40, ISBE_B32, ISBE_PATCH, 1, 1));
+    put(code, 1, exit_insn());
+    put(code, 2, bra(2, 2, 7, 0));
+    refused(code, 3, ST_MS, sph, si, "ISBEWR.PATCH.SKEW.O.B32 [RZ+0x40] in a mesh program");
+    put(code, 0, isbe_insn(0, 1, 255, 0, ISBE_B32, ISBE_ATTR, 0, 0)); /* the index after a task, in a mesh alone */
+    refused(code, 3, ST_MS, sph, si, "ISBERD.ATTR.B32 [RZ+0x0] in a mesh program");
+    refused(code, 3, ST_VS, sph, (ShaderInfo){0}, "ISBERD outside a task or mesh program");
+    put(code, 0, isbe_insn(1, 1, 255, 0x6, ISBE_B32, ISBE_ATTR, 1, 1));
+    refused(code, 3, ST_MS, sph, si, "at the byte offset 0x6");
+    put(code, 0, fix(0x918)); /* NOP */
+    ShaderInfo k = si;
+    k.mesh.threads = 64;
+    refused(code, 3, ST_MS, sph, k, "workgroup of 64 invocations");
+    k = si;
+    k.mesh.primitive_vertices = 2;
+    refused(code, 3, ST_MS, sph, k, "primitives of 2 vertices");
+    k = si;
+    k.mesh.max_vertices = 257;
+    refused(code, 3, ST_MS, sph, k, "257 vertices");
+    k = si;
+    k.mesh.prim_sph[13] |= 1u << 21; /* generic 1.y per primitive too */
+    refused(code, 3, ST_MS, sph, k, "both per vertex and per primitive");
+    k = si;
+    k.mesh.prim_sph[13] |= 1u << 12; /* the position, per primitive */
+    refused(code, 3, ST_MS, sph, k, "per-primitive output of SPH output map bit 428");
+    u32 clip[32];
+    memcpy(clip, sph, sizeof clip);
+    clip[18] = 1; /* clip distance 0 (bit 576) */
+    refused(code, 3, ST_MS, clip, si, "per-vertex output of SPH output map bit 576");
+    k = (ShaderInfo){0};
+    k.mesh.threads = 32;
+    k.mesh.payload = 4;
+    refused(code, 3, ST_TS, sph, k, "task payload of 0x4 bytes");
+}
+
 static void test_tcs_empty(void) {
     u8 code[16 * 2] = {0};
     put(code, 0, exit_insn());
@@ -1912,6 +2173,10 @@ int main(int argc, char** argv) {
     test_tex_f16(spirv_val, dir);
     test_output_defaults(spirv_val, dir);
     test_global_pointer(spirv_val, dir);
+    test_mesh(spirv_val, dir);
+    test_task(spirv_val, dir);
+    test_mesh_after_task(spirv_val, dir);
+    test_mesh_refused();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
