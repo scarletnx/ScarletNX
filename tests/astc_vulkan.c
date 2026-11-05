@@ -287,7 +287,8 @@ static void upload_layers(Surf* t, u8** blocks, u32 w, u32 h, u32 layers, u32 le
         u8* all = malloc(one * layers);
         for (u32 layer = 0; layer < layers; layer++) memcpy(all + one * layer, blocks[layer * levels + l], one);
         Level lv = {all, nx, ny, NULL, 2, 0};
-        if (!vk_astc_upload(vk_cmd(), t, lw, lh, 1, l, 0, layers, level_rows, &lv)) fatal("layers upload failed\n");
+        if (!vk_astc_upload(vk_cmd(), t, lw, lh, 1, l, 0, layers, level_rows, &lv, NULL))
+            fatal("layers upload failed\n");
         free(all);
     }
 }
@@ -374,7 +375,7 @@ static void run(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layers, u
                                    b + (((size_t)z * lv.ny + y) * lv.nx + x) * 16, 16);
             }
             if (!(g_batch_layers && layers > 1 && depth == 1) &&
-                !vk_astc_upload(vk_cmd(), &t, lw, lh, ld, l, layer, 1, level_rows, &lv))
+                !vk_astc_upload(vk_cmd(), &t, lw, lh, ld, l, layer, 1, level_rows, &lv, NULL))
                 fatal("upload failed\n");
             free(bl); /* copied into staging already */
             bytes += (size_t)lw * lh * ld * 4;
@@ -465,7 +466,7 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
             u8* b = blocks[layer * levels + l] = blocks_new(lw, lh, ld, bw, bh);
             Level lv = {b, (lw + bw - 1) / bw, (lh + bh - 1) / bh, NULL, 2, ld > 1};
             if (!(g_batch_layers && layers > 1 && depth == 1) &&
-                !vk_astc_upload(vk_cmd(), &t, lw, lh, ld, l, layer, 1, level_rows, &lv))
+                !vk_astc_upload(vk_cmd(), &t, lw, lh, ld, l, layer, 1, level_rows, &lv, NULL))
                 fatal("BC7 upload failed\n");
         }
     if (g_batch_layers && layers > 1 && depth == 1) upload_layers(&t, blocks, w, h, layers, levels, bw, bh);
@@ -572,7 +573,7 @@ static void bench(u32 w, u32 h, int runs, BenchSource src) {
         for (int r = 0; r < runs; r++) {
             Level lv = {b, (w + src.bw - 1) / src.bw, (h + src.bh - 1) / src.bh, NULL, 2, 0};
             u64 t0 = plat_ns();
-            if (!vk_astc_upload(vk_cmd(), &t, w, h, 1, 0, 0, 1, level_rows, &lv)) fatal("bench upload failed\n");
+            if (!vk_astc_upload(vk_cmd(), &t, w, h, 1, 0, 0, 1, level_rows, &lv, NULL)) fatal("bench upload failed\n");
             vk_finish();
             double s = (plat_ns() - t0) / 1e9;
             printf("BENCH ASTC %ux%u as %s %ux%u: %.1f ms, %.0f Mtexels/s\n", src.bw, src.bh, fi ? "BC7" : "RGBA8", w,
@@ -582,6 +583,175 @@ static void bench(u32 w, u32 h, int runs, BenchSource src) {
         vk_image_destroy(t.img, t.mem);
     }
     free(b);
+}
+
+/* The BC7 cache (vk/bc7_cache.c through vk_astc_upload's content): one level of random blocks, all its layers or
+   slices at once, uploaded into a fresh BC7 image each time and read back whole. The first upload encodes, and its
+   blocks go into the cache when its submission is done; the second, and a third after the cache's file is opened again
+   as a later run does, encode nothing and come out byte for byte as the first; other blocks miss */
+#define CACHE_PATH "astc_vulkan_test.vkbc7"
+typedef struct {
+    u32 bw, bh, srgb, w, h, depth, layers;
+} CacheCase;
+/* the level's blocks uploaded into a new image with the cache's key made of them, its blocks read back (the caller
+   frees them); NULL when the device has no such image. *took: the time vk_astc_upload took, ns */
+static u8* cache_upload(const CacheCase* c, const u8* blocks, u64* took) {
+    const VkFormat format = c->srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
+    VkImageFormatProperties props;
+    if (!g_vk.feat.textureCompressionBC ||
+        vkGetPhysicalDeviceImageFormatProperties(
+            g_vk.phys, format, c->depth > 1 ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 0, &props) != VK_SUCCESS)
+        return NULL;
+    Surf t = {.w = c->w,
+              .h = c->h,
+              .layers = c->layers,
+              .levels = 1,
+              .depth3d = c->depth,
+              .f = {.vk = format, .bw = c->bw, .bh = c->bh}};
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = c->depth > 1 ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
+                            .format = format,
+                            .extent = {c->w, c->h, c->depth},
+                            .mipLevels = 1,
+                            .arrayLayers = c->layers,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+    if (!vk_image_create(&ii, &t.img, &t.mem)) fatal("cannot create a %ux%ux%u BC7 image\n", c->w, c->h, c->depth);
+    barrier(t.img, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    const u32 slices = c->depth * c->layers, nx = (c->w + c->bw - 1) / c->bw, ny = (c->h + c->bh - 1) / c->bh;
+    if (!vk_astc_cached(&t, c->w, c->h, slices)) { /* past the allocation cap (--vk_max_allocation_mb) */
+        vk_image_destroy(t.img, t.mem);
+        return NULL;
+    }
+    /* the key as texture.c makes it: its layout's words, then its bytes */
+    const u32 layout[8] = {0, nx * 16, nx * 16, ny, 0, 0, 0, c->layers};
+    u64 content[2] = {0, 0};
+    vk_bc7_content(content, layout, sizeof layout);
+    vk_bc7_content(content, blocks, (u64)nx * ny * slices * 16);
+    const u64 size = (u64)((c->w + 3) / 4) * ((c->h + 3) / 4) * 16 * slices;
+    /* blocks of noise first: an image whose memory an earlier one of the same bytes had shows what is not written */
+    VkBuffer noise_buf;
+    u64 noise_at;
+    u8* noise = vk_stage(size, 16, &noise_buf, &noise_at);
+    if (!noise) fatal("no staging for %llu bytes\n", (unsigned long long)size);
+    for (u64 i = 0; i < size; i += 4) {
+        u32 r = random_word();
+        memcpy(noise + i, &r, 4);
+    }
+    VkBufferImageCopy fill = {.bufferOffset = noise_at,
+                              .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, c->layers},
+                              .imageExtent = {c->w, c->h, c->depth}};
+    rec_CmdCopyBufferToImage(vk_cmd(), noise_buf, t.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &fill);
+    barrier(t.img, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    Level lv = {blocks, nx, ny, NULL, 2, 0};
+    u64 t0 = plat_ns();
+    if (!vk_astc_upload(vk_cmd(), &t, c->w, c->h, c->depth, 0, 0, c->layers, level_rows, &lv, content))
+        fatal("cached upload failed\n");
+    *took = plat_ns() - t0;
+    barrier(t.img, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkBuffer readback;
+    u8* actual = vk_readback_buffer(size, &readback);
+    if (!actual) fatal("no readback buffer of %llu bytes\n", (unsigned long long)size);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, c->layers},
+                              .imageExtent = {c->w, c->h, c->depth}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), t.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    u8* got = malloc((size_t)size);
+    memcpy(got, actual, (size_t)size);
+    vk_image_destroy(t.img, t.mem);
+    return got;
+}
+/* levels uploaded as BC7 so far, and those of them the cache gave */
+static void bc7_counts(u64* levels, u64* hits) {
+    u64 bytes, rgba8;
+    vk_astc_stats(levels, hits, &bytes, &rgba8);
+}
+static void cache_case(const CacheCase* c) {
+    const u32 slices = c->depth * c->layers;
+    u8* blocks = blocks_new(c->w, c->h, slices, c->bw, c->bh);
+    u64 levels, hits, levels2, hits2, took, stored, stored2, reads, restarts, bytes;
+    bc7_counts(&levels, &hits);
+    vk_bc7_cache_stats(&reads, &stored, &restarts, &bytes);
+    u8* first = cache_upload(c, blocks, &took);
+    if (!first) {
+        printf("SKIP the BC7 cache %ux%u image=%ux%ux%u: the device has no such BC7 image, or the cache does not take "
+               "the level\n",
+               c->bw, c->bh, c->w, c->h, c->depth);
+        free(blocks);
+        return;
+    }
+    bc7_counts(&levels2, &hits2);
+    vk_bc7_cache_stats(&reads, &stored2, &restarts, &bytes);
+    if (levels2 != levels + 1 || hits2 != hits || stored2 != stored + 1)
+        fatal("the BC7 cache %ux%u %ux%ux%u: the first upload took %llu levels, %llu hits, %llu stored\n", c->bw, c->bh,
+              c->w, c->h, slices, (unsigned long long)(levels2 - levels), (unsigned long long)(hits2 - hits),
+              (unsigned long long)(stored2 - stored));
+    for (int run = 0; run < 2; run++) {
+        if (run) vk_astc_cache_open(CACHE_PATH); /* a later run's */
+        u8* again = cache_upload(c, blocks, &took);
+        bc7_counts(&levels, &hits);
+        if (levels != levels2 + 1 || hits != hits2 + 1)
+            fatal("the BC7 cache %ux%u %ux%ux%u: upload %d encoded (%llu levels, %llu hits)\n", c->bw, c->bh, c->w,
+                  c->h, slices, run + 2, (unsigned long long)(levels - levels2), (unsigned long long)(hits - hits2));
+        const u64 size = (u64)((c->w + 3) / 4) * ((c->h + 3) / 4) * 16 * slices;
+        for (u64 i = 0; i < size; i++)
+            if (again[i] != first[i])
+                fatal("the BC7 cache %ux%u %ux%ux%u: upload %d's byte %llu is %u, the encode's %u\n", c->bw, c->bh,
+                      c->w, c->h, slices, run + 2, (unsigned long long)i, again[i], first[i]);
+        free(again);
+        levels2 = levels, hits2 = hits;
+    }
+    /* another block: another key, encoded */
+    blocks[16 * (slices > 1 ? 1 : 0) + 5] ^= 0x40;
+    free(cache_upload(c, blocks, &took));
+    bc7_counts(&levels, &hits);
+    if (levels != levels2 + 1 || hits != hits2)
+        fatal("the BC7 cache %ux%u %ux%ux%u: other blocks hit\n", c->bw, c->bh, c->w, c->h, slices);
+    free(first);
+    free(blocks);
+    printf("PASS the BC7 cache %ux%u srgb=%u image=%ux%ux%u layers=%u: hits copy the encode's blocks, no encode\n",
+           c->bw, c->bh, c->srgb, c->w, c->h, c->depth, c->layers);
+    fflush(stdout);
+}
+static void cache_cases(void) {
+    remove(CACHE_PATH);
+    vk_astc_cache_open(CACHE_PATH);
+    /* the full build; strips of 4, 2 and 1 block rows; layers and slices; many strips under --vk_max_allocation_mb=4,
+       and two strips without it (texels past the 16 MiB scratch); and the fast build */
+    static const CacheCase cases[] = {
+        {6, 6, 0, 97, 61, 1, 1},      {5, 5, 1, 131, 77, 1, 1},     {8, 6, 0, 17, 13, 1, 6},    {4, 4, 1, 61, 37, 9, 1},
+        {10, 5, 0, 2051, 1101, 1, 1}, {10, 5, 1, 4100, 1030, 1, 1}, {8, 8, 1, 2048, 2048, 1, 1}};
+    for (u32 i = 0; i < sizeof cases / sizeof cases[0]; i++) cache_case(&cases[i]);
+    vk_bc7_cache_close();
+    remove(CACHE_PATH);
+}
+
+/* --bench: the BC7 cache's costs for one w x h level of random 8x8 blocks: an encode with its blocks read back and
+   stored, then hits. The time vk_astc_upload takes on the CPU, and from its start to the GPU's end (the store's write
+   included for the encode) */
+static void bench_cache(u32 w, u32 h, int runs) {
+    if (!g_vk.feat.textureCompressionBC) return;
+    remove(CACHE_PATH);
+    vk_astc_cache_open(CACHE_PATH);
+    const CacheCase c = {8, 8, 1, w, h, 1, 1};
+    u8* blocks = blocks_new(w, h, 1, 8, 8);
+    for (int r = 0; r <= runs; r++) {
+        u64 took, t0 = plat_ns();
+        free(cache_upload(&c, blocks, &took));
+        double all = (plat_ns() - t0) / 1e6;
+        printf("BENCH BC7 cache %ux%u %s: vk_astc_upload %.2f ms on the CPU, %.1f ms to the GPU's end and a readback\n",
+               w, h, r ? "hit" : "encode and store", took / 1e6, all);
+        fflush(stdout);
+    }
+    free(blocks);
+    vk_bc7_cache_close();
+    remove(CACHE_PATH);
 }
 
 /* vk_astc_as_bc7, texture.c's choice of exact RGBA8 or BC7 for an ASTC texture the GPU decodes: RGBA8 while memory
@@ -969,6 +1139,9 @@ int main(int argc, char** argv) {
     if (large == 2) {
         bench(4096, 4096, 5, src);
         bench(2040, 2040, 5, src);
+        bench_cache(4096, 4096, 3);
+        bench_cache(2040, 2040, 3);
+        bench_cache(256, 256, 3);
         return 0;
     }
     if (large) {
@@ -1044,6 +1217,7 @@ int main(int argc, char** argv) {
     run_bc7(5, 5, 1, 97, 61, 1, 4, 2);
     run_bc7(8, 8, 0, 96, 96, 1, 144, 3);
     g_batch_layers = 0;
+    cache_cases();
     /* Multiple scratch chunks, staging-ring retirement, and frame reuse. */
     run(4, 4, 0, 2051, 1055, 1, 1, 1, 1, NULL, NULL);
     run(12, 12, 1, 2051, 1055, 1, 1, 1, 0, NULL, NULL);

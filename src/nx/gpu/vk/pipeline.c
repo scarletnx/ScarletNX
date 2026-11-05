@@ -395,6 +395,13 @@ void vk_pipeline_init(void) {
     }
     if (ci.initialDataSize) LOG("vulkan: pipeline cache loaded (%zu KB)\n", ci.initialDataSize >> 10);
     plat_file_unmap(&data); /* the cache copied it, and a mapped file can't be replaced on Windows */
+    /* the BC7 blocks of earlier ASTC encodes, where the GPU samples BCn but not ASTC (astc.c) */
+    if (g_vk.feat.textureCompressionBC && !g_vk.feat.textureCompressionASTC_LDR) {
+        char bc7[1200];
+        snprintf(bc7, sizeof bc7, "%s/%s.vkbc7", g_cache_dir, g_exename);
+        snx_path_native(bc7);
+        vk_astc_cache_open(bc7);
+    }
     /* how shaders get the console's FP32 flush to zero, settled before the reading thread translates any */
     if (g_vk_flush_denorm)
         g_vk_ftz = SH_FTZ_MODE;

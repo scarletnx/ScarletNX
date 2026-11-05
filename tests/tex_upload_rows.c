@@ -76,6 +76,18 @@ void gmmu_pieces(u64 gva, u64 size, void (*fn)(void* ctx, u64 gva, u64 cpu, u64 
             fn(ctx, g_map.gva[i], g_map.gva[i] - GVA, g_map.n[i]);
 }
 u8* gmem_host(u64 gva, u64 size) { return g_map.count ? NULL : gmem_ptr(gva, size); }
+/* the page table's run at gva for the BC7 key's hash (astc_content): the guest's bytes to their end, at most max */
+u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
+    if (gva < GVA || gva >= guest_end) return 0;
+    *cpu = gva - GVA;
+    return guest_end - gva < max ? guest_end - gva : max;
+}
+void gmem_need(u64 gva, u64 size) { (void)gva, (void)size; }
+static u32 g_owned; /* the owned ranges own_lookup finds, while g_own_any */
+u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
+    (void)addr, (void)size, (void)out, (void)max;
+    return g_owned;
+}
 #define STAGE (8u << 20)
 #define STAGE_BUF ((VkBuffer)(uintptr_t)0x5157)
 #define SCRATCH_BUF ((VkBuffer)(uintptr_t)0x5C2A)
@@ -175,9 +187,19 @@ VkImageAspectFlags vk_aspect(const VkFmt* f) {
 }
 /* the ASTC upload asks for its block rows in strips of 3: they land in astc_out, slice after slice */
 static u8 astc_out[128 << 10];
+/* the BC7 cache: whether it takes the levels, and the key's content of the last upload (given: not NULL) */
+static int g_cached, g_content_given;
+static u64 g_content[2];
+int vk_astc_cached(const Surf* t, u32 w, u32 h, u32 depth) { return (void)t, (void)w, (void)h, (void)depth, g_cached; }
+void vk_bc7_content(u64 content[2], const void* p, u64 n) {
+    content[0] = snx_fnv1a(content[0] ^ SNX_FNV_BASIS, p, (size_t)n);
+    content[1] += n;
+}
 int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, u32 layers,
-                   VkAstcRows rows, void* ctx) {
+                   VkAstcRows rows, void* ctx, const u64* content) {
     (void)level, (void)layer;
+    g_content_given = content != NULL;
+    if (content) memcpy(g_content, content, sizeof g_content);
     if (layers > 1 && depth == 1) depth = layers; /* a 2D array's layers, asked for as slices */
     u32 nx = (w + t->f.bw - 1) / t->f.bw, ny = (h + t->f.bh - 1) / t->f.bh;
     for (u32 z = 0; z < depth; z++)
@@ -755,6 +777,23 @@ int main(void) {
         for (u32 y = 0; y < 10; y++)
             for (u32 x = 0; x < 15 * 16; x++)
                 CHECK(astc_out[((z * 10 + y) * 15) * 16 + x] == guest[z * 0x10000 + bl_offset(x, y, 0, 15 * 16, 10, 1, 0)]);
+    /* the BC7 cache's key (astc_content): made where vk_astc_cached says, of every layer's bytes of the level, another
+       byte of any of them another key; none where the GPU holds any of the bytes */
+    CHECK(tex_upload(&ka) && !g_content_given);
+    g_cached = 1;
+    CHECK(tex_upload(&ka) && g_content_given);
+    const u64 c0[2] = {g_content[0], g_content[1]};
+    for (u32 z = 0; z < 3; z++) {
+        guest[z * 0x10000 + 100] ^= 1;
+        CHECK(tex_upload(&ka) && g_content_given && g_content[0] != c0[0]);
+        guest[z * 0x10000 + 100] ^= 1;
+    }
+    CHECK(tex_upload(&ka) && g_content_given && g_content[0] == c0[0] && g_content[1] == c0[1]);
+    g_own_any = 1;
+    CHECK(tex_upload(&ka) && g_content_given && g_content[0] == c0[0]);
+    g_owned = 1;
+    CHECK(tex_upload(&ka) && !g_content_given);
+    g_own_any = g_owned = g_cached = 0;
     /* a sparse texture's levels at least a tile in size have rows of whole tiles (tile_w). RGBA8 tiles of 128x128
        texels (8 GOBs across, blocks 16 high): 200 texels across (13 GOBs) take 16 at level 0, and levels 1 and 2 are
        narrower than a tile. Whole, in rows of blocks under 160 KiB (2 of them), and 8 GOB rows at a time under 64 KiB,
