@@ -1038,11 +1038,11 @@ int mem_reserve_identity(u64 from) {
 #endif
 int mem_identity(void) { return g_mem_identity; }
 void mem_place(const void* p, char* out, size_t size) {
-    u64 a = (u64)(uintptr_t)p, lo, hi, game;
+    u64 a = (u64)(uintptr_t)p, lo, hi, game, origin; /* origin: where the console's address space would start */
     if (g_mem_identity)
-        lo = IDENTITY_LO + g_mem_moved, hi = g_as_size, game = 0;
+        lo = IDENTITY_LO + g_mem_moved, hi = g_as_size, game = 0, origin = g_mem_moved;
     else if (g_mem)
-        lo = game = (u64)(uintptr_t)g_mem, hi = lo + g_as_size;
+        lo = game = origin = (u64)(uintptr_t)g_mem, hi = lo + g_as_size;
     else {
         snprintf(out, size, "%#llx: no address space is reserved for the game yet", (unsigned long long)a);
         return;
@@ -1050,12 +1050,18 @@ void mem_place(const void* p, char* out, size_t size) {
     if (a < lo)
         snprintf(out, size, "%#llx lies below the game's address space, which starts at %#llx, by %#llx",
                  (unsigned long long)a, (unsigned long long)lo, (unsigned long long)(lo - a));
-    else if (a >= hi)
+    else if (a >= hi && a - origin < AS_TOP) /* one the console's address space holds: the smaller layout's size */
         snprintf(out, size,
                  "%#llx lies past the end of the game's address space at %#llx, by %#llx: its layout holds %llu GiB, "
                  "the console's %llu",
                  (unsigned long long)a, (unsigned long long)hi, (unsigned long long)(a - hi),
                  (unsigned long long)((g_as_size - g_mem_moved) >> 30), (unsigned long long)(AS_TOP >> 30));
+    else if (a >= hi) /* a host address no layout holds: the runtime's or a library's, not a game's */
+        snprintf(out, size,
+                 "%#llx lies past the end of the game's address space at %#llx, by %#llx, past the console's %llu GiB "
+                 "too",
+                 (unsigned long long)a, (unsigned long long)hi, (unsigned long long)(a - hi),
+                 (unsigned long long)(AS_TOP >> 30));
     else
         snprintf(out, size, "%#llx lies in the game's address space, %#llx to %#llx: game address %#llx",
                  (unsigned long long)a, (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)(a - game));

@@ -875,6 +875,16 @@ static void test_moved(void) {
                  "the console's 512",
                  (unsigned long long)(by + size + 0x5000), (unsigned long long)(by + size));
         CHECK(!strcmp(out, want));
+        /* past the console's 512 GiB from the moved origin (the runtime's heap, a library): no layout's size to blame */
+        mem_place((void*)(uintptr_t)(by + AS_TOP), out, sizeof out);
+        snprintf(want, sizeof want,
+                 "%#llx lies past the end of the game's address space at %#llx, by %#llx, past the console's 512 GiB "
+                 "too",
+                 (unsigned long long)(by + AS_TOP), (unsigned long long)(by + size),
+                 (unsigned long long)(AS_TOP - size));
+        CHECK(!strcmp(out, want));
+        mem_place((void*)(uintptr_t)(by + AS_TOP - 1), out, sizeof out);
+        CHECK(strstr(out, ": its layout holds 128 GiB, the console's 512") != NULL);
     }
     fflush(stdout);
     child = fork();
