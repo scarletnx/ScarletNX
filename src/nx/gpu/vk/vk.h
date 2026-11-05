@@ -870,7 +870,20 @@ typedef struct VkOwnRes {
     u64 written; /* the graphics submission its last publish's writes were recorded in: a landing waits for that one */
     u64 serial;  /* new with each write: what its bytes hash as (vk_guest_peek), never its address, a freed one's */
     u32 refs;    /* the creator's, and one an owned range */
+    u8 borrowed; /* buf is another's (the GPU mirror's): letting go of the last reference frees only this record */
 } VkOwnRes;
+/* a resource whose bytes are in buf, at the guest address of each range it owns (the GPU mirror's): one reference */
+VkOwnRes* vk_own_res_borrow(VkBuffer buf);
+/* r's bytes over [cpu, cpu + size) from off on, published as vk_own_publish_owned does, written by the submission
+   r->written names (submitted already: a landing waits for it and nothing recorded since) */
+void vk_own_publish_submitted(u64 cpu, u64 size, VkOwnRes* r, u64 off);
+/* mirror.c: the pages the mirror took in once their programs were done, published GPU-owned. Where nothing is being
+   recorded (a draw being set up, a submission): at the end of a GPU job or a wait, and before the CPU reads them */
+void vk_mirror_publish(void);
+/* cmd.c: 1 inside a landing, a frame's recycling or a submission, where nothing may be recorded or submitted */
+int vk_rec_unsafe(void);
+/* mirror.c: guest memory [cpu, cpu + size) landed from an owner: the mirror's shadow of its pages goes */
+void vk_mirror_landed(u64 cpu, u64 size);
 int vk_own_init(void);
 /* whether the CPU made GPU-owned bytes of guest memory [cpu, cpu + size) land within the last presents presents */
 int vk_own_cpu_read(u64 cpu, u64 size, u32 presents);

@@ -158,6 +158,8 @@ static void release_through(u64 gate, u64 cgate) {
     vk_compute_land_through(cgate);
     vk_land_through(gate);
     vk_result_end();
+    /* the GPU mirror's pages those submits wrote: GPU-owned before the releases let the game read them */
+    vk_mirror_publish();
     for (;;) {
         Release r;
         pm_lock(&g_rlock);

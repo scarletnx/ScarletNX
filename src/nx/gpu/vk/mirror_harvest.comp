@@ -3,8 +3,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* The pages of the GPU mirror (vk/mirror.c) the programs wrote in a submit, into host memory for landing: a workgroup
    a page of a range the submit's programs had bound for writing. A page none of whose mask bits is set (most) returns.
-   A written one takes the next entry of the output, and copies there its page number, its mask words and its bytes,
-   and clears its mask. One past the output's room is left as it is, mask and all, and its page number is put in the
+   A written one takes the next entry of the output, and copies there its page number, its mask words and, in an entry
+   of 1156 words, its bytes (an entry of 132 words has none: the page stays GPU-owned in the mirror until the CPU
+   touches it), and clears its mask. One past the output's room is left as it is, mask and all, and its page number is put in the
    list of those left, for another pass. CMake compiles it into SPIR-V at build time (cmake/glsl.cmake). */
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
 
@@ -14,8 +15,9 @@ layout(std430, set = 0, binding = 0) buffer Mask {
 layout(std430, set = 0, binding = 1) readonly buffer Data {
     uint data[]; /* the range's bytes, from its first page's */
 };
-/* word 0: the entries taken (past room when some were left); word 1: the pages left. Then room entries of ENTRY words:
-   the page number, 3 words unused, its 128 mask words and its 1024 words of bytes; then the list of pages left */
+/* word 0: the entries taken (past room when some were left); word 1: the pages left. Then room entries of `entry`
+   words: the page number, 3 words unused, its 128 mask words and (1156) its 1024 words of bytes; then the list of
+   pages left */
 layout(std430, set = 0, binding = 2) buffer Out {
     uint words[];
 };
@@ -23,9 +25,9 @@ layout(push_constant) uniform Params {
     uint first; /* the range's first page number (its guest address >> 12) */
     uint room;  /* the entries the output has room for */
     uint left;  /* where the list of pages left starts, in words */
+    uint entry; /* an entry's words: 132, or 1156 with the page's bytes */
 };
-#define ENTRY 1156u
-#define HEAD  4u
+#define HEAD 4u
 shared uint written, slot;
 
 void main() {
@@ -42,9 +44,10 @@ void main() {
         if (t == 0u) words[left + atomicAdd(words[1], 1u)] = first + page;
         return;
     }
-    uint e = HEAD + slot * ENTRY;
+    uint e = HEAD + slot * entry;
     if (t == 0u) words[e] = first + page;
     words[e + 4u + t] = m;
     mask[page * 128u + t] = 0u;
-    for (uint k = t; k < 1024u; k += 128u) words[e + 132u + k] = data[page * 1024u + k];
+    if (entry > 132u)
+        for (uint k = t; k < 1024u; k += 128u) words[e + 132u + k] = data[page * 1024u + k];
 }

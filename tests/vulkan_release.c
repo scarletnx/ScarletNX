@@ -18,6 +18,7 @@ void vk_unlock(void);
 void vk_release_events(void);
 void vk_compute_land_through(u64);
 void vk_land_through(u64);
+void vk_mirror_publish(void);
 void vk_wait_submit(u64);
 void vk_compute_wait(u64);
 void vk_gfx_image_land(void);
@@ -139,8 +140,11 @@ void gmmu_pieces(u64 gva, u64 size, void (*fn)(void* ctx, u64 gva, u64 cpu, u64 
 }
 u32 syncpt_read(u32 id) { return id < 128 ? completed[id] : 0; }
 /* under vk_lock, so the events it reaches wait for vk_unlock (memory/own.c's traps are answered under vk_lock) */
+/* the GPU mirror's pages landed submits wrote, not yet GPU-owned: no release may let the game read them */
+static int mirror_unpublished;
 void syncpt_add_quiet(u32 id, u32 n) {
     assert(lock_depth && vk_result_landing());
+    assert(!mirror_unpublished);
     completed[id] += n;
     events_due = 1;
 }
@@ -153,6 +157,7 @@ void syncpt_events(void) {
 }
 int gmem_write(u64 address, const void* data, u64 size) {
     assert(lock_depth && vk_result_landing());
+    assert(!mirror_unpublished);
     vk_release_need(address, size); /* the real memory layer reenters here */
     u64 physical = gmmu_translate(address);
     assert(physical && physical + size <= sizeof memory);
@@ -192,7 +197,14 @@ void vk_compute_land_through(u64 gate) {
         assert(completed[3] == 0); /* release follows all output reconciliation */
     }
 }
-void vk_land_through(u64 gate) { assert(waited_graphics >= gate); }
+void vk_land_through(u64 gate) {
+    assert(waited_graphics >= gate);
+    mirror_unpublished = 1;
+}
+void vk_mirror_publish(void) {
+    assert(lock_depth);
+    mirror_unpublished = 0;
+}
 void vk_wait_submit(u64 gate) {
     if (gate > waited_graphics) waited_graphics = gate;
 }

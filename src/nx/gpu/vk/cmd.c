@@ -281,11 +281,17 @@ static void timeline_wait(u64 value, int kind) {
     }
 }
 /* the storage results of every submission up to value, which has finished, land in guest memory, in order */
+/* inside a landing, a frame's recycling or a submission: what records there goes into a command buffer being begun,
+   reset or submitted (vk_rec_unsafe) */
+static int g_rec_unsafe;
+int vk_rec_unsafe(void) { return g_rec_unsafe; }
 static void land_through(u64 value) {
+    g_rec_unsafe++;
     while (g_landed < value) {
         vk_buf_frame_done(++g_landed);
         vk_gfx_image_frame_done(g_landed);
     }
+    g_rec_unsafe--;
 }
 
 /* the frame's previous use is done, its results landed and what it held freed, before it records again */
@@ -328,7 +334,11 @@ static void frame_recycle(Frame* f) {
 VkCommandBuffer vk_cmd(void) {
     Frame* f = &g_fr[g_cur];
     if (!f->recording) {
-        if (f->fresh) frame_recycle(f);
+        if (f->fresh) {
+            g_rec_unsafe++;
+            frame_recycle(f);
+            g_rec_unsafe--;
+        }
         if (f->icb == f->ncb) {
             /* the pool's command buffers may still be recording on the recording thread, and a pool is used by one
                thread at a time. A frame's slot only grows to its most submissions, so this is rare */
@@ -532,6 +542,7 @@ int vk_stage_device(u64 size, u64 align, VkBuffer* buf, u64* off) {
 static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land, int why) {
     SNX_ZONE(z_submit, "vk submit");
     vk_render_end();
+    g_rec_unsafe++;
     Frame* f = &g_fr[g_cur];
     VkCommandBuffer cb = vk_cmd(); /* a submit with nothing recorded still has to wait and signal */
     vk_query_flush(cb);            /* the samples-passed counts of the passes ended (query.c) */
@@ -569,6 +580,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     f->icb++;
     SNX_ZONE_VALUE(z_submit, f->icb);
     f->last = g_gval;
+    g_rec_unsafe--;
     /* results of submissions the GPU has finished land now, so a later release doesn't find them pending */
     u64 done = 0;
     if (land && VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done)))

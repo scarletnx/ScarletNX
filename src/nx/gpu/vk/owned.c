@@ -77,9 +77,23 @@ VkOwnRes* vk_own_res_new(u64 size) {
     return r;
 }
 static void res_retain(void* res) { __atomic_add_fetch(&((VkOwnRes*)res)->refs, 1, __ATOMIC_RELAXED); }
+VkOwnRes* vk_own_res_borrow(VkBuffer buf) {
+    VkOwnRes* r = (VkOwnRes*)calloc(1, sizeof *r);
+    if (!r) return NULL;
+    r->buf = buf;
+    r->size = ~0ull;
+    r->refs = 1;
+    r->borrowed = 1;
+    r->serial = __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED);
+    return r;
+}
 static void res_release(void* res) {
     VkOwnRes* r = (VkOwnRes*)res;
     if (__atomic_sub_fetch(&r->refs, 1, __ATOMIC_ACQ_REL)) return;
+    if (r->borrowed) {
+        free(r);
+        return;
+    }
     vk_lock();
     vk_defer_buffer(r->buf, r->mem); /* the frame recording may still copy from it */
     vk_unlock();
@@ -252,6 +266,11 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
 }
 
 static u32 lock_owner(void) { return vk_lock_owner(); }
+/* a landing's bytes: the write tracking takes them as they were left, and the GPU mirror lets go of its copy's shadow */
+static void own_landed(u64 addr, u64 size, const u8* bytes) {
+    vk_ww_landed(addr, size, bytes);
+    vk_mirror_landed(addr, size);
+}
 
 int vk_own_init(void) {
     /* vk_lock and vk_unlock themselves, not g_vklock: the outermost unlock also signals what the hold's releases
@@ -262,7 +281,7 @@ int vk_own_init(void) {
                   .busy_tid = lock_owner,
                   .lock = vk_lock,
                   .unlock = vk_unlock,
-                  .landed = vk_ww_landed};
+                  .landed = own_landed};
     g_owned.traps = !own_init(&h);
     return g_owned.traps ? 0 : -1;
 }
@@ -276,7 +295,9 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     OwnRange o;
     u8* d;
     if (!size) return;
-    vk_own_res_wrote(r); /* every producer records its writes before it publishes them */
+    if (in_place >= 0) vk_own_res_wrote(r); /* every producer records its writes before it publishes them */
+    else __atomic_store_n(&r->serial, __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
+    in_place = in_place > 0;
     vk_rt_before_write_cpu(cpu, size);
     gpu_mem_written_cpu(cpu, size); /* what is built from the bytes (textures, buffers) takes the new ones */
     /* Unified memory, over memory an import holds: the result is copied there on the GPU, in stream order, with no
@@ -302,6 +323,7 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
 }
 void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) { own_publish(cpu, size, r, off, 1); }
 void vk_own_publish_owned(u64 cpu, u64 size, VkOwnRes* r, u64 off) { own_publish(cpu, size, r, off, 0); }
+void vk_own_publish_submitted(u64 cpu, u64 size, VkOwnRes* r, u64 off) { own_publish(cpu, size, r, off, -1); }
 
 /* ---------------------------------------------------------------- reading guest memory without landing it */
 /* GPU writes before reading what they wrote (before), the reads' copies before what consumes them (after) */
