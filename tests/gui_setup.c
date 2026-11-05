@@ -302,16 +302,16 @@ static void test_first(App* app) {
         key(app, SDLK_RETURN);
         key(app, SDLK_DOWN); /* Default, the first theme, round from YoRHa, the last */
         assert(app->picks_shown && !strcmp(app->theme.id, "default") && app->theme.dialog == GUI_DIALOG_DEFAULT);
-        for (k = 0; k < 2; ++k) {
+        for (k = 0; k < 3; ++k) {
             GuiChoices c;
             GuiSetupBoxes b;
             GuiAppearanceBoxes a;
             GuiRect row;
             char question[640];
             const char* tab;
-            if (k) {
+            if (k) { /* a phone held wide at 2x, and a desktop window of 1280 by 688 at 2x */
                 app->menu.text_size = 2;
-                assert(SDL_SetWindowSize(app->window, 2340, 1080));
+                assert(SDL_SetWindowSize(app->window, k == 1 ? 2340 : 1280, k == 1 ? 1080 : 688));
                 SDL_SyncWindow(app->window);
             }
             render(app);
@@ -321,6 +321,15 @@ static void test_first(App* app) {
             row = appearance_row_box(app, &a, GUI_APPEARANCE_THEME);
             assert(c.box.y >= row.y + row.h || c.box.y + c.box.h <= row.y);
             assert(c.at.h >= 3 * item_h(app) && c.at.y + c.at.h <= c.box.y + c.box.h);
+            { /* the box and every row it shows inside the window, the focused one among them */
+                int width, height, shown = (int)ui_choices_shown(c.rects, app->scale, UI_CHOICES_ROWS), i;
+                area(app, &width, &height);
+                assert(shown > 0 && c.box.y >= 0 && c.box.y + c.box.h <= height);
+                for (i = 0; i < shown; ++i) {
+                    GuiRect r = ui_choices_row(c.rects, app->scale, UI_CHOICES_ROWS, (size_t)i);
+                    assert(r.y >= c.at.y && r.y + r.h <= c.at.y + c.at.h && r.y + r.h <= height);
+                }
+            }
         }
         app->menu.text_size = 0;
         assert(SDL_SetWindowSize(app->window, was_w, was_h));
