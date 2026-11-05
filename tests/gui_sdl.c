@@ -10169,7 +10169,7 @@ int main(int argc, char** argv) {
             char question[640];
             const char* tab;
             picks_question(&app, question, sizeof question, &tab);
-            assert(!strcmp(tab, "Theme") &&
+            assert(!tab[0] && /* no name beside the line in the default's dialog: the line says what the box is */
                    !strcmp(question,
                            "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to Default"));
         }
