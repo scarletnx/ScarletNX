@@ -225,6 +225,9 @@ static void test_sph(void) {
     CHECK(sm86_sph_stage(sph0(2, 1)) == -1);
     CHECK(sm86_sph_stage(sph0(1, 1) & ~(31u << 5)) == -1);
     CHECK(sm86_sph_stage(3u << 5 | 1u | 1u << 10) == ST_VS); /* version 3, before SM 7.3 */
+    /* a mesh pipeline's programs take the sets of the stages that it does not have */
+    CHECK(shader_vk_set(ST_MS) == shader_vk_set(ST_VS) && shader_vk_set(ST_TS) == shader_vk_set(ST_TCS));
+    CHECK(shader_vk_set(ST_TS) != shader_vk_set(ST_FS) && shader_vk_set(ST_MS) != shader_vk_set(ST_FS));
 }
 
 /* ---- programs ---- */

@@ -65,7 +65,9 @@ typedef enum {
     SPV_STAGE_TESS_EVALUATION = 2,
     SPV_STAGE_GEOMETRY = 3,
     SPV_STAGE_FRAGMENT = 4,
-    SPV_STAGE_COMPUTE = 5
+    SPV_STAGE_COMPUTE = 5,
+    SPV_STAGE_TASK = 5364, /* TaskEXT and MeshEXT (SPV_EXT_mesh_shader) */
+    SPV_STAGE_MESH = 5365
 } SpvShaderStage;
 
 /* the opcodes, storage classes, decorations, built-ins, execution modes and capabilities, by the SPIR-V
