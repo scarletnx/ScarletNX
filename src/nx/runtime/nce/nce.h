@@ -41,6 +41,14 @@ void nce_code_added(u64 base, u64 text_size);
    place, so nothing reads an address from before the move; *entry: where the main thread starts, the first module's
    text, in it */
 const struct SnxModule* nce_module(const struct SnxModule* m, u64* entry);
+/* how often the kicks' thread goes again to a thread whose CPU.poll is still set (a kick may land in the outcall's own
+   code), and how many of its rounds lie between two of nce_foreign_look's looks: 10 s */
+#define NCE_KICK_AGAIN_NS 2000000ull
+#define NCE_FOREIGN_EVERY (10000000000ull / NCE_KICK_AGAIN_NS)
+/* The kicks' thread's round number round (from 1): with nce_foreign_scan=1, every NCE_FOREIGN_EVERY rounds, what lies
+   in the guest's addresses and is not the game's (mem_foreign), each new finding logged once. 1 when it looked; 0 when
+   not, with nothing read or called but the setting. Any host, so a test runs it */
+int nce_foreign_look(u64 round);
 /* How the game sees a pool of stubs in its memory (mem.h's state and permission): code it has no permission on, as
    Eden reprotects its patch sections to none. The host's pages stay executable. rtld walks the address space with
    QueryMemory and takes each region of code that is readable and executable for a module, whose word at +4 gives the

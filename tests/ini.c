@@ -220,6 +220,24 @@ int main(void) {
                strstr(list, "astc_bc=1 (default 0)"));
         g_settings.astc_bc = 0;
     }
+    /* NCE's look every 10 s is a Debug setting: nce_foreign_scan=1, read from a line as a .ini gives it, is said at the
+       top of the picture ("Debug on: ...") and in the log's header; at 0 it is not */
+    {
+        char list[2048];
+        const IniOpt* o = ini_find(g_debug_ini, "nce_foreign_scan");
+        assert(o && !g_settings.nce_foreign_scan);
+        ini_changed(g_debug_ini, INI_CHANGED_NO_TEXT, list, sizeof list);
+        assert(!strstr(list, "nce_foreign_scan"));
+        ini_read(o, "1");
+        assert(g_settings.nce_foreign_scan == 1);
+        assert(ini_changed(g_debug_ini, INI_CHANGED_NO_TEXT, list, sizeof list) >= 1 &&
+               strstr(list, "nce_foreign_scan=1"));
+        assert(ini_changed(g_debug_ini, INI_CHANGED_DEFAULT, list, sizeof list) >= 1 &&
+               strstr(list, "nce_foreign_scan=1 (default 0)"));
+        ini_read(o, "0");
+        ini_changed(g_debug_ini, INI_CHANGED_NO_TEXT, list, sizeof list);
+        assert(!g_settings.nce_foreign_scan && !strstr(list, "nce_foreign_scan"));
+    }
     puts("ini passed");
     return 0;
 }
