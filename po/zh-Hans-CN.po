@@ -2537,8 +2537,8 @@ msgid "GPU Drivers"
 msgstr "GPU 驱动"
 
 #: src/gui/main.c
-msgid "Vulkan drivers for Adreno and Xclipse GPUs on Android (Turnip, RADV): add, remove, and the one games use"
-msgstr "Android 上 Adreno 和 Xclipse GPU 的 Vulkan 驱动（Turnip、RADV）：添加、移除，以及游戏使用哪一个"
+msgid "Vulkan drivers for Adreno, Mali and Xclipse GPUs on Android (Turnip, PanVK, RADV): add, remove, and the one games use"
+msgstr "Android 上 Adreno、Mali 和 Xclipse GPU 的 Vulkan 驱动（Turnip、PanVK、RADV）：添加、移除，以及游戏使用哪一个"
 
 #: src/gui/main.c
 msgid "Mesa's Freedreno and Turnip variables every game starts with (TU_DEBUG...), and their presets"
@@ -3103,8 +3103,8 @@ msgid "Add Driver"
 msgstr "添加驱动"
 
 #: src/gui/main.c
-msgid "A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's releases are: unpacked into gpu_drivers/ of the user's data folder"
-msgstr "驱动包的 zip，顶层是 meta.json 和驱动的库，如 Turnip 的发布版本：解压到用户数据文件夹的 gpu_drivers/ 中"
+msgid "A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's and PanVK's releases are: unpacked into gpu_drivers/ of the user's data folder"
+msgstr "驱动包的 zip，顶层是 meta.json 和驱动的库，如 Turnip 和 PanVK 的发布版本：解压到用户数据文件夹的 gpu_drivers/ 中"
 
 #: src/gui/main.c
 msgid "edenprobe Mode"

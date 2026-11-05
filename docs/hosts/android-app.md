@@ -56,17 +56,19 @@ recompiles on the phone, then the game opens.
   game's menu over it, in the menu's look (a gamepad's Home does on every system): the on-screen controls'
   settings, the touch screen's, and *Exit*; back again returns to the game. Leaving it for the home screen keeps it:
   its window is made anew when it comes back.
-- **GPU drivers**: on arm64 with an Adreno or an Xclipse GPU, from Android 9, a game can run with a Vulkan driver
-  package the player added (Turnip's releases, as Eden takes them; [RADV's port to
-  Xclipse](https://github.com/JimVulkan/radv-xclipse), from Android 14) in place of the system's, picked for every
-  game or for one in Settings > App > GPU Drivers ([GUI](../user/gui.md)). An Adreno is known by `/dev/kgsl-3d0`, an
-  Xclipse by a render node of `/dev/dri` whose kernel driver DRM names `amdgpu`, the one RADV opens. The runtime loads
+- **GPU drivers**: on arm64 with an Adreno, a Mali or an Xclipse GPU, from Android 9, a game can run with a Vulkan
+  driver package the player added (Turnip's releases for an Adreno and PanVK's for a Mali, as Eden takes them;
+  [RADV's port to Xclipse](https://github.com/JimVulkan/radv-xclipse), from Android 14) in place of the system's,
+  picked for every game or for one in Settings > App > GPU Drivers ([GUI](../user/gui.md)). An Adreno is known by
+  `/dev/kgsl-3d0`, a Mali by `/dev/mali0` or `/dev/mali`, an Xclipse by a render node of `/dev/dri` whose kernel
+  driver DRM names `amdgpu`, the one RADV opens. The runtime loads
   either itself (`src/nx/runtime/platform/gpu_driver_android.c`, after libadrenotools): a game that picked a package
   opens a second copy of Android's Vulkan loader in a linker namespace of its own, where `libscarletnx-gpu-hook.so`,
   the one library this adds to the app's libraries folder, takes the two calls that copy opens its driver with, and
   the package's library is opened for whichever driver it asks for. The linker's functions for namespaces are found in
-  the linker's own symbol table, at the address the kernel gives the process (`AT_BASE`). The packages are unpacked
-  into the app's own storage (`gpu_drivers/` of the user's data folder), as the linker loads libraries from there
+  the linker's own symbol table, at the address the kernel gives the process (`AT_BASE`). `libhardware.so`, which
+  PanVK asks for, is not in an app's by-name search, so it is opened by its path before the driver. The packages are
+  unpacked into the app's own storage (`gpu_drivers/` of the user's data folder), as the linker loads libraries from
   alone. A game's log says the package it asked for and, after the Vulkan instance, the driver Android's loader asked
   for with the library it has, then `vulkan: GPU driver <name> runs: its libraries are mapped`; a package that did not
   open stops the game, saying why (the system's driver is opened in its place first, so that the instance is made and

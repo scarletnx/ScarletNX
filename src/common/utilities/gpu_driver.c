@@ -239,9 +239,10 @@ void snx_gpu_driver_host(SnxGpuDriverHost* host) {
 #endif
 #if defined(__unix__) || defined(__APPLE__)
     host->kgsl = access("/dev/kgsl-3d0", F_OK) == 0;
+    host->mali = access("/dev/mali0", F_OK) == 0 || access("/dev/mali", F_OK) == 0; /* panvk's kbase opens mali0 */
 #endif
 #ifdef __ANDROID__ /* elsewhere no package loads whatever the GPU is, and opening a node wakes a GPU that sleeps */
-    if (!host->kgsl) snx_gpu_driver_render_node(host);
+    if (!host->kgsl && !host->mali) snx_gpu_driver_render_node(host);
 #endif
 #if defined(__ANDROID__) && defined(__aarch64__)
     host->built = 1;
@@ -251,19 +252,21 @@ void snx_gpu_driver_host(SnxGpuDriverHost* host) {
 SnxGpuDriverLack snx_gpu_driver_lack(const SnxGpuDriverHost* host) {
     if (strcmp(host->system, "Android")) return SNX_GPU_DRIVER_NOT_ANDROID;
     if (strcmp(host->arch, "arm64")) return SNX_GPU_DRIVER_NOT_ARM64;
-    if (!host->kgsl && !host->amdgpu) return SNX_GPU_DRIVER_NO_GPU;
+    if (!host->kgsl && !host->mali && !host->amdgpu) return SNX_GPU_DRIVER_NO_GPU;
     if (host->api < SNX_GPU_DRIVER_MIN_API) return SNX_GPU_DRIVER_OLD_ANDROID;
     return host->built ? SNX_GPU_DRIVER_LOADS : SNX_GPU_DRIVER_NOT_BUILT;
 }
 
-/* host's GPU as a line names it: the kernel driver found, or what was found in place of the two a package drives */
+/* host's GPU as a line names it: the kernel driver found, or what was found in place of the three a package drives */
 static void gpu_text(const SnxGpuDriverHost* host, char* out, size_t size) {
     if (host->kgsl)
         snprintf(out, size, "Adreno GPU (/dev/kgsl-3d0)");
+    else if (host->mali)
+        snprintf(out, size, "Mali GPU (/dev/mali0 or /dev/mali)");
     else if (host->amdgpu)
         snprintf(out, size, "Xclipse GPU (%s)", host->render);
     else
-        snprintf(out, size, "no Adreno GPU (no /dev/kgsl-3d0) and no Xclipse GPU (%s)",
+        snprintf(out, size, "no Adreno GPU (no /dev/kgsl-3d0), no Mali GPU (/dev/mali0) and no Xclipse GPU (%s)",
                  host->render[0] ? host->render : "no render node in /dev/dri");
 }
 
@@ -286,8 +289,8 @@ int snx_gpu_driver_loads(const SnxGpuDriverHost* host, char* what, size_t size) 
     else
         snprintf(what, size,
                  "This device: %s: custom drivers load on Android 9 (API %d) or newer, arm64, with an Adreno GPU "
-                 "(/dev/kgsl-3d0) or an Xclipse GPU (a render node of the amdgpu kernel driver). Games here use the "
-                 "system driver.",
+                 "(/dev/kgsl-3d0), a Mali GPU (/dev/mali0) or an Xclipse GPU (a render node of the amdgpu kernel "
+                 "driver). Games here use the system driver.",
                  device, SNX_GPU_DRIVER_MIN_API);
     return lack == SNX_GPU_DRIVER_LOADS;
 }
