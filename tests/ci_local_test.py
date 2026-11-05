@@ -47,6 +47,7 @@ class CiLocal(unittest.TestCase):
         self.assertTrue(module.static_only(['docs/DEVELOPMENT.md', 'CLAUDE.md', 'scripts/ci-local.py']))
         self.assertFalse(module.static_only(['docs/DEVELOPMENT.md', 'src/nx/runtime/main.c']))
         self.assertFalse(module.static_only([]))
+        self.assertIn(module.power_state(), (None, 'ac', 'battery'))
 
 
 if __name__ == '__main__':

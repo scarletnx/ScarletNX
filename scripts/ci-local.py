@@ -121,6 +121,43 @@ def tool(*names: str) -> str | None:
     return None
 
 
+BATTERY_ANNOUNCED = False
+
+
+def battery_note() -> None:
+    """say once that the heavy checks are expensive on battery"""
+    global BATTERY_ANNOUNCED
+    if BATTERY_ANNOUNCED or power_state() != 'battery':
+        return
+    BATTERY_ANNOUNCED = True
+    print('warning: this machine runs on battery power. The build and container checks are expensive. '
+          'Use --static-only, or --jobs 2 --cpus 2, and connect power for the full gate.')
+
+
+def power_state() -> str | None:
+    """AC, battery, or None when the machine has no battery"""
+    if IS_MAC:
+        state = output(['pmset', '-g', 'batt'])
+        if 'Battery Power' in state:
+            return 'battery'
+        if 'AC Power' in state:
+            return 'ac'
+        return None
+    if IS_LINUX:
+        supplies = Path('/sys/class/power_supply')
+        statuses = list(supplies.glob('BAT*/status')) if supplies.is_dir() else []
+        if not statuses:
+            return None
+        for status in statuses:
+            try:
+                if status.read_text().strip().lower() == 'discharging':
+                    return 'battery'
+            except OSError:
+                continue
+        return 'ac'
+    return None
+
+
 def jobs() -> int:
     return max(1, os.cpu_count() or 2)
 
@@ -433,6 +470,7 @@ def native(args: argparse.Namespace, failures: Failures, *, static: bool = True)
         preset = 'macos' if IS_MAC else 'default'
         build_dir = (Path(args.build_dir).resolve() if args.build_dir
                      else preset_build_dir('sanitizers' if args.sanitizers else preset))
+    battery_note()
     print(f'\n== the native build and tests in {build_dir} ==')
     if not args.no_build:
         configure_native(args, build_dir)
@@ -577,6 +615,7 @@ fi
     cmd[3:3] = ['--cpus', f'{cpus:g}']
     if args.memory:
         cmd[3:3] = ['--memory', args.memory]
+    battery_note()
     state = 'incremental' if (ROOT / build).is_dir() else 'first run'
     print(f'\n== the Linux ({arch}) job in {os.path.basename(engine)}'
           f'{" (rootless)" if rootless else ""}: {build_jobs} jobs, {cpus:g} CPUs, {state} ==')
@@ -858,6 +897,8 @@ def preflight(args: argparse.Namespace, failures: Failures) -> None:
         else:
             print('  no container checks: add --containers, or --both --sanitizers')
         return
+    if not args.static_only:
+        battery_note()
     static_checks(failures)
     if not build_needed:
         if args.static_only:
@@ -905,6 +946,7 @@ def preflight(args: argparse.Namespace, failures: Failures) -> None:
 def doctor(_: argparse.Namespace) -> None:
     print(f'{platform.system()} {platform.release()} on {MACHINE}, {jobs()} CPUs')
     rosetta = IS_MAC and IS_ARM and quiet_ok(['arch', '-x86_64', '/usr/bin/true'])
+    power = power_state()
     engine = container_engine()
     rootless = rootless_engine(engine) if engine else None
     engine_name = (engine or '') + (' (rootless)' if rootless else ' (rootful)' if rootless is False else '')
@@ -934,6 +976,8 @@ def doctor(_: argparse.Namespace) -> None:
     ]
     if IS_MAC and IS_ARM:
         rows.append(('Rosetta (x86-64)', 'yes' if rosetta else None, 'x86-64 containers on Apple silicon'))
+    if power:
+        rows.append(('power', power, 'battery makes the full checks expensive'))
     width = max(len(row[0]) for row in rows)
     for name, found, why in rows:
         state = found or 'MISSING'
@@ -975,6 +1019,9 @@ def doctor(_: argparse.Namespace) -> None:
         if machines and not any(machine.get('Rosetta') for machine in machines):
             print('\nThis Podman machine has no Rosetta: x86-64 containers run under qemu, or not at all. Recreate it '
                   'with `[machine]`, `rosetta = true` in ~/.config/containers/containers.conf.')
+    if power == 'battery':
+        print('\nThis machine runs on battery. The full build and container checks drain it; connect power, or use '
+              '--static-only and lower --jobs and --cpus.')
     print('\nThe commands: preflight, static, native, linux, android, ios, windows. A check this machine cannot run is '
           'said, not failed; --strict makes it a failure.')
 

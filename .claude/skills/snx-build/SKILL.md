@@ -41,7 +41,8 @@ the host build and tests that the change needs.
 
 With Podman or Docker and a code change, run `python3 scripts/ci-local.py preflight --containers`. Use
 `--both --sanitizers` only for the full gate. Without an engine, `preflight` runs the host checks and names the checks
-that did not run.
+that did not run. On battery, use `preflight --static-only` or lower `--jobs` and `--cpus`. Connect power for the full
+gate.
 
 The preflight installs no engine. The container installs its own `ccache`, in `.cache/ci-ccache-<arch>`.
 
