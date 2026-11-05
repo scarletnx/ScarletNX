@@ -739,6 +739,12 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
         }
         if (v->builtin == 22 + 1) env->frag_depth = m[0];
     }
+    for (uint32_t id = 0; id < e->bound; id++) {
+        Id* v = &e->ids[id];
+        if (v->kind != K_VAR || v->sclass != 4 || env->shared_words || !e->blocks[v->block].words) continue;
+        env->shared_words = e->blocks[v->block].n < 4096 ? e->blocks[v->block].n : 4096;
+        memcpy(env->shared, e->blocks[v->block].words, env->shared_words * 4);
+    }
     for (uint32_t b = 0; b < e->nblocks; b++)
         if (e->blocks[b].owned) free(e->blocks[b].words);
     free(e->blocks);
