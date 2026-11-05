@@ -46,6 +46,8 @@ struct NvnDraw {
     u8 c0rec[NVN_C0_RECORD]; /* the bound Ounce compute program's c[0] record (nvn_program_c0) */
     u64 code[DS_PROGRAM_SLOTS];
     u32 prog_on;
+    u64 task, mesh;     /* the bound Ounce task and mesh programs (DsPrograms') */
+    DsMeshKey mesh_key; /* their fields (nvn_program_mesh) */
     NvnTessStage tess_stage[2];
     u32 tess_params;
     ShXfb xfb;            /* the bound program's capture layout (zero: none) */
