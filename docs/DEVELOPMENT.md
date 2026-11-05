@@ -189,7 +189,8 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   and the other reports with the same signature named. `triage --issue N --dry-run --logscan build/snx-logscan` shows
   what it would post. `scripts/game-reports.py index [--title-id ID] [--signature TEXT]` lists the reports and their
   logs as JSON lines. A maintainer's `status: confirmed` label on a report gets one comment: ready for an edenprobe
-  case, with the steps.
+  case, with the steps. The ctest `game_reports_workflow` runs the workflow's build step on the files its sparse
+  checkout lists alone, so a file the log summary comes to include fails a pull request until the list has it.
 
 - Runtime: `--seconds=N` / `--frames=N`, counted from the game's start, after the shader loading screen
   (`prepare_shaders=2`, which the first run after a rebuild spends translating the game's shaders again);

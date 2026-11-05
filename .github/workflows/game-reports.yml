@@ -55,7 +55,8 @@ jobs:
             src/common/utilities/demangle.c
             src/common/utilities/demangle.h
           sparse-checkout-cone-mode: false
-      # C on the C library, and the C++ runtime for its demangler: the runner's compiler builds it in seconds
+      # C on the C library, and the C++ runtime for its demangler: the runner's compiler builds it in seconds. The
+      # ctest game_reports_workflow runs this step on the files of the sparse list above alone
       - name: Build the log summary
         run: |
           cc -std=c99 -O2 -Isrc -c src/common/utilities/logscan.c src/common/utilities/logscan_main.c \
