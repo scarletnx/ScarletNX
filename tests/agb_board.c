@@ -39,6 +39,12 @@ static void dma3(AgbBoard* board, uint32_t source, uint32_t destination, unsigne
     agb_write16(board, 0x040000DC, (uint16_t)count);
     agb_write16(board, 0x040000DE, 0x8000);
 }
+/* the flash's unlock, 0xAA at 0x5555 and 0x55 at 0x2AAA, then a command's byte at address */
+static void flash_command(AgbBoard* board, uint32_t address, uint8_t command) {
+    agb_write8(board, 0x0E005555, 0xAA);
+    agb_write8(board, 0x0E002AAA, 0x55);
+    agb_write8(board, 0x0E000000 + address, command);
+}
 static void make_rom(uint8_t* rom) {
     memset(rom, 0, ROM_SIZE);
     rom[0] = 0x2E;
@@ -145,6 +151,27 @@ int main(void) {
         for (int i = 0; i < 6; ++i) agb_write8(&board, 0x0E000000 + addresses[i], values[i]);
     }
     CHECK(board.memory.sram[0x00005] == 0xFF && board.memory.sram[0x10005] == 0xFF && board.save.dirty);
+    /* one flash command waits at a time: a reset (0xF0) or another command ends an erase's setup, and a sector's
+       erase is its 0x30 after a new unlock, never a lone 0x30 */
+    agb_save_reset(&board, AGB_SAVE_FLASH64);
+    memset(board.memory.sram, 0x11, 0x10000);
+    flash_command(&board, 0x5555, 0x80);
+    flash_command(&board, 0x5555, 0xF0);
+    agb_write8(&board, 0x0E003000, 0x30);
+    CHECK(board.memory.sram[0x3000] == 0x11);
+    flash_command(&board, 0x5555, 0x80);
+    flash_command(&board, 0x5555, 0xA0);
+    agb_write8(&board, 0x0E001000, 0x10);
+    CHECK(board.memory.sram[0x1000] == 0x10);
+    agb_write8(&board, 0x0E003000, 0x30);
+    CHECK(board.memory.sram[0x3000] == 0x11);
+    flash_command(&board, 0x5555, 0x80);
+    agb_write8(&board, 0x0E003000, 0x30);
+    CHECK(board.memory.sram[0x3000] == 0x11);
+    flash_command(&board, 0x5555, 0x80);
+    flash_command(&board, 0x3000, 0x30);
+    CHECK(board.memory.sram[0x3000] == 0xFF && board.memory.sram[0x3FFF] == 0xFF);
+    CHECK(board.memory.sram[0x2FFF] == 0x11 && board.memory.sram[0x4000] == 0x11);
 
     /* the save kind a ROM's tag names, wherever it is, the image's last bytes too */
     {

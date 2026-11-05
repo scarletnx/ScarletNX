@@ -11,11 +11,15 @@ typedef struct AgbBoard AgbBoard;
 /* EEPROM is the 512 byte chip until the game names a block past it, then the 8 KiB one, as mGBA sizes it */
 enum { AGB_SAVE_NONE, AGB_SAVE_SRAM, AGB_SAVE_FLASH64, AGB_SAVE_FLASH128, AGB_SAVE_EEPROM, AGB_SAVE_EEPROM8K };
 #define AGB_SAVE_SRAM_SIZE 0x8000u /* the SRAM chips are 32 KiB */
+/* the flash command waiting for its next write: an erase's setup (0x80) for the 0x10 or 0x30 after a new unlock, a
+   byte's program (0xA0) or a bank's switch (0xB0) for the write itself */
+enum { AGB_FLASH_NONE, AGB_FLASH_ERASE, AGB_FLASH_PROGRAM, AGB_FLASH_BANK };
 
 typedef struct {
     uint8_t type;
-    uint8_t phase;        /* the unlock sequence: 0xAA, then 0x55 */
-    uint8_t erase_armed, program_armed, bank_armed, id_mode, bank;
+    uint8_t phase; /* the unlock sequence: 0xAA, then 0x55 */
+    uint8_t cmd;   /* AGB_FLASH_*: one at a time, as the chip has */
+    uint8_t id_mode, bank;
     uint8_t dirty; /* written since the runner last kept it on disk */
     /* EEPROM: the request it is reading (save.c's EEPROM_ states), the 64 bit block it names, the bits a read has left
        to give, and the CPU cycles a write still takes */
