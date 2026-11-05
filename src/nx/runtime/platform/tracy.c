@@ -14,9 +14,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#if defined(__APPLE__)
-#include <pthread.h> /* pthread_setname_np */
-#endif
 
 #if defined(SNX_TRACY)
 #include <SDL3/SDL_process.h>
@@ -405,9 +402,7 @@ void snx_tracy_zone_end(TracyCZoneCtx ctx) {
 /* Remembers the name for a later attach, and sends it now when a server can see it. */
 void snx_tracy_thread_name(const char* name) {
     if (!name || !*name) return;
-#if defined(__APPLE__)
-    pthread_setname_np(name); /* the system's name too, as the build without Tracy gives it (tracy.h) */
-#endif
+    snx_thread_name(name); /* the system's name too, as the build without Tracy gives it (tracy.h) */
     snprintf(t_tracy.name, sizeof t_tracy.name, "%s", name);
     if (!snx_tracy_enter()) return;
     if (TracyCIsConnected) TracyCSetThreadName(t_tracy.name);

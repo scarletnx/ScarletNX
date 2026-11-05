@@ -59,6 +59,8 @@ static void* start(void* p) {
     s.fn(s.arg);
     return NULL;
 }
+/* the system's name for a thread (common.c), which this test does not link */
+void snx_thread_name(const char* name) { (void)name; }
 int plat_thread(PThreadFn fn, void* arg, size_t stack) {
     pthread_t t;
     Start* s = malloc(sizeof *s);

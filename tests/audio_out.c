@@ -37,6 +37,8 @@ void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 u64 plat_ns(void) { return test_now; }
+/* the system's name for a thread (common.c), which this test does not link */
+void snx_thread_name(const char* name) { (void)name; }
 u64 guest_ns(void) { return test_now; } /* the outs play in guest time: no pause here */
 /* the audio clock's pause, whose thread never runs here */
 void pc_init(PCond* c) { (void)c; }

@@ -51,6 +51,10 @@
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #include <sys/user.h> /* struct kinfo_proc */
+#include <pthread_np.h> /* pthread_set_name_np */
+#endif
+#ifdef __linux__
+#include <sys/prctl.h> /* PR_SET_NAME: a thread's name, without _GNU_SOURCE's pthread_setname_np */
 #endif
 #ifdef __APPLE__
 #include <TargetConditionals.h>
@@ -1669,6 +1673,23 @@ void snx_thread_clock_close(SnxU64 clock) {
     if (clock) CloseHandle((HANDLE)(uintptr_t)clock);
 #else
     (void)clock;
+#endif
+}
+void snx_thread_name(const char* name) {
+    char cut[64]; /* Apple refuses a name past 63 bytes, where the others cut it */
+    snprintf(cut, sizeof cut, "%s", name);
+#if defined(_WIN32)
+    typedef HRESULT(WINAPI * DescribeFn)(HANDLE, PCWSTR);
+    DescribeFn describe =
+        (DescribeFn)(void (*)(void))GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription");
+    wchar_t wide[64];
+    if (describe && MultiByteToWideChar(CP_UTF8, 0, cut, -1, wide, 64)) describe(GetCurrentThread(), wide);
+#elif defined(__APPLE__)
+    pthread_setname_np(cut); /* the calling thread's alone */
+#elif defined(__linux__)
+    prctl(PR_SET_NAME, (unsigned long)cut, 0, 0, 0);
+#elif defined(__FreeBSD__)
+    pthread_set_name_np(pthread_self(), cut);
 #endif
 }
 int snx_threads(SnxThreadInfo* out, int max) {

@@ -243,6 +243,9 @@ SnxU64 snx_process_cpu_ns(void);
 SnxU64 snx_thread_clock(void);
 int snx_thread_cpu_ns(SnxU64 clock, SnxU64* ns);
 void snx_thread_clock_close(SnxU64 clock);
+/* names the calling thread for the system, which debuggers, crash reports, the system's tools and snx_threads show:
+   Linux and Android keep its first 15 bytes, FreeBSD 19, the others 63 (Windows from 10 1607; earlier ones none) */
+void snx_thread_name(const char* name);
 /* one of the process's threads, as snx_threads reads it */
 typedef struct {
     /* the system's id for it, with its start where the system gives an ended thread's id to a new one (Linux,
