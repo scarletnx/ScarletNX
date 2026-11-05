@@ -202,7 +202,14 @@ static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb)
         if (discard) board->cpu_halted = 1;
         return;
     }
-    if (agb_bios_call(board, number, cpu->arm.r) < 0) {
+    /* the BIOS's routine takes its time: its entry and return (45 cycles, as mGBA's HLE BIOS counts them) and the
+       memory it streams through, which the CPU spends before its next instruction */
+    board->counting = 1;
+    board->counted_cycles = 0;
+    int ran = agb_bios_call(board, number, cpu->arm.r);
+    board->counting = 0;
+    board->held_cycles += 45 + board->counted_cycles;
+    if (ran < 0) {
         cpu->unknown_swi = number;
         cpu->unknown_swi_at = cpu->arm.r[15] - (thumb ? 2u : 4u); /* the PC is past the instruction already */
         ++cpu->unknown_swi_count;

@@ -217,6 +217,26 @@ int main(void) {
         CHECK(!agb_cpu_run(&board, &cpu, &recomp, 1000, audio, AGB_APU_RATE, NULL, error, sizeof error));
         CHECK(cpu.arm.r[0] > 0);
     }
+    {
+        /* a BIOS call takes its entry and return, 45 cycles, and the memory it streams through: CpuSet of 64 words from
+           EWRAM to EWRAM, 64 reads and writes of 6 cycles, holds the CPU 813 cycles before the add after it runs */
+        agb_write32(&board, 0x03000900, 0xEF0B0000); /* swi 0x0B0000: CpuSet */
+        agb_write32(&board, 0x03000904, 0xE2855001); /* add r5, r5, #1 */
+        agb_write32(&board, 0x03000908, 0xEAFFFFFD); /* b 0x03000904 */
+        cpu.arm.r[0] = 0x02001000;
+        cpu.arm.r[1] = 0x02002000;
+        cpu.arm.r[2] = 64 | 1u << 26;
+        cpu.arm.r[5] = 0;
+        cpu.arm.r[15] = 0x03000900;
+        cpu.arm.cpsr = 0x9F;
+        cpu.over = 0;
+        board.cpu_halted = cpu.wait = 0;
+        board.held_cycles = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 800, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        CHECK(cpu.arm.r[5] == 0);
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 100, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        CHECK(cpu.arm.r[5] > 0);
+    }
     /* the instructions after the interpreted ones start blocks the discovery step did not see: they were compiled as
        the run reached them, and saving the run keeps them, in the map as hints (the module as it was, at once) */
     CHECK(recomp.compiled > 0 && recomp.dirty);
