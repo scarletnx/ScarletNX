@@ -11,18 +11,25 @@
    The board's RAM regions (FCRAM, VRAM, DSP RAM, the New 3DS's extra RAM) are the host memory the guest runs in, a
    buffer of the device's each: the host's memory imported (VK_EXT_external_memory_host), or, where the driver will
    not import it (RADV takes no shared memory), the device's own memory, host-visible and cached, whose dma-buf the RAM
-   moves into (VK_EXT_external_memory_dma_buf, snx_ctr_memory_adopt), every guest view of a page a map of it. Either
-   way vertex and index data, textures, render targets' load and store, transfers and the shown framebuffers are read
-   and written in place on the GPU, and nothing of them is copied by the CPU. Work is recorded into a command buffer
-   until it is submitted, a few submissions in flight
-   at once, each with a serial: nothing waits for the GPU but what needs its results. The guest's CPU finds them
-   through write tracking (memory/ctr_memory.h): the pages the GPU writes, or keeps newer in its render targets, trap
-   until they are in memory, and the GSP's interrupts come when the submission is done. */
+   moves into (VK_EXT_external_memory_dma_buf, snx_ctr_memory_adopt), every guest view of a page a map of it. On a GPU
+   that shares the system's memory, vertex and index data, textures, render targets' load and store, transfers and the
+   shown framebuffers are read and written there in place, and nothing of them is copied by the CPU. A discrete GPU
+   would read and write each of those bytes across the bus, every time: it works on a copy of the RAM in its own
+   memory instead, which the GPU keeps in step with the RAM by page (render.c): what the CPU wrote is copied in before
+   the GPU reads it, and what the GPU wrote back when the CPU touches it. Work is recorded into a command buffer
+   until it is submitted, a few submissions in flight at once, each with a serial: nothing waits for the GPU but what
+   needs its results. The guest's CPU finds them through write tracking (memory/ctr_memory.h): the pages the GPU writes,
+   or keeps newer in its render targets or its copy, trap until they are in memory, and the GSP's interrupts come when
+   the submission is done. */
 #define SNX_CTR_VK_SLOTS 4
 typedef struct {
-    VkBuffer buffer;
+    VkBuffer buffer;       /* the RAM itself */
     VkDeviceMemory memory; /* its import; VK_NULL_HANDLE when the RAM is the device's memory (SnxCtrVk's ram_memory) */
-    uint32_t base, size;   /* the physical range it holds */
+    /* the GPU's copy of it in the device's own memory, which its work reads and writes (snx_ctr_vk_work);
+       VK_NULL_HANDLE when the work reads and writes the RAM in place */
+    VkBuffer copy;
+    VkDeviceMemory copy_memory;
+    uint32_t base, size; /* the physical range it holds */
 } SnxCtrVkRam;
 typedef struct {
     SnxVkWindow host;   /* the window (none headless), the instance and the surface */
@@ -52,6 +59,14 @@ typedef struct {
 } SnxCtrVk;
 /* the device, once snx_ctr_vk_init made it; NULL before */
 SnxCtrVk* snx_ctr_vk(void);
+/* Where the GPU's work reads and writes the board's RAM, chosen by snx_ctr_vk_init: AUTO in place on a GPU that shares
+   the system's memory (vk_common.h's SNX_VK_UMA) and on a copy in the device's own memory on any other; COPY and
+   IN_PLACE take that one on any GPU, as the tests do to run both */
+typedef enum { SNX_CTR_VK_AUTO, SNX_CTR_VK_COPY, SNX_CTR_VK_IN_PLACE } SnxCtrVkPath;
+/* the path the next snx_ctr_vk_init takes, AUTO until a call sets another */
+void snx_ctr_vk_path(SnxCtrVkPath path);
+/* the device's work is on a copy of the RAM (the RAM's buffers have their copy) */
+bool snx_ctr_vk_copies(void);
 /* the 3D render scale of a screen of these framebuffer sizes: the CTR top or bottom resolution setting, as far as
    the device's largest image takes (1 before a device, or with none) */
 uint8_t snx_ctr_vk_target_scale(unsigned width, unsigned height);
@@ -137,9 +152,11 @@ unsigned snx_ctr_vk_slot(void);
 VkDescriptorSet snx_ctr_vk_set(VkDescriptorSetLayout layout);
 /* the imported region that holds [pa, pa + size), and pa's offset into it; NULL when no RAM region holds it whole */
 const SnxCtrVkRam* snx_ctr_vk_ram(uint32_t pa, uint32_t size, VkDeviceSize* offset);
-/* A storage-buffer window of the RAM holding [pa, pa + size): the descriptor's offset at the alignment the device
-   wants, and *inside where pa falls in it. False when no RAM region holds the span whole, or the window that holds it
-   is past the device's largest storage range */
+/* the buffer the GPU's work reads and writes of a RAM region: its copy, or the RAM in place */
+static inline VkBuffer snx_ctr_vk_work(const SnxCtrVkRam* ram) { return ram->copy ? ram->copy : ram->buffer; }
+/* A storage-buffer window of the RAM (its copy, where the work is on one) holding [pa, pa + size): the descriptor's
+   offset at the alignment the device wants, and *inside where pa falls in it. False when no RAM region holds the span
+   whole, or the window that holds it is past the device's largest storage range */
 typedef struct {
     VkBuffer buffer;
     VkDeviceSize offset, range;

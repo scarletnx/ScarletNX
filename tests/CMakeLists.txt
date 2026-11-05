@@ -320,6 +320,18 @@ if(TARGET snx_ctr_board)
     target_link_libraries(snx-test-3ds-vk-draw PRIVATE snx_ctr_gpu_reference)
     add_test(NAME 3ds_vk_draw COMMAND snx-test-3ds-vk-draw)
     set_tests_properties(3ds_vk_draw PROPERTIES SKIP_RETURN_CODE 77)
+    # the GPU's copy of the RAM, page by page: what is copied in and back, and when, and every byte where it belongs
+    add_executable(snx-test-3ds-vk-copies 3ds_vk_copies.c)
+    snx_test_target(snx-test-3ds-vk-copies 11)
+    target_link_libraries(snx-test-3ds-vk-copies PRIVATE snx_ctr_gpu)
+    add_test(NAME 3ds_vk_copies COMMAND snx-test-3ds-vk-copies)
+    set_tests_properties(3ds_vk_copies PROPERTIES SKIP_RETURN_CODE 77)
+    foreach(snx_path copy in-place)
+        string(REPLACE "-" "_" snx_suffix "${snx_path}")
+        add_test(NAME 3ds_vk_copies_${snx_suffix} COMMAND snx-test-3ds-vk-copies)
+        set_tests_properties(3ds_vk_copies_${snx_suffix} PROPERTIES SKIP_RETURN_CODE 77
+                             ENVIRONMENT "SNX_TEST_CTR_VK_PATH=${snx_path}")
+    endforeach()
     if(NOT WIN32 AND Python3_Interpreter_FOUND)
         # the draw test's modes that record only the commands under test, run under Khronos validation: any error it
         # reports fails the test, such as a missing barrier (a synchronization hazard), a dispatch, barrier or image

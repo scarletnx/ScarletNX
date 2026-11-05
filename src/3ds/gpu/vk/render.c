@@ -103,11 +103,17 @@ typedef struct {
     Image image;
     uint64_t used;
 } Texture;
+/* Where the GPU's work is on a copy of the RAM (vk.h), how a page's copy stands against the RAM: stale (the CPU wrote
+   the RAM since, or nothing was copied yet), the same, or newer (the GPU wrote the copy since). The work is only ever on
+   the copy: a stale page is copied in before the GPU reads or writes it, a newer one copied out before the CPU touches
+   it. A write copies its stale pages in too, as one need not cover all of a page, and a page goes back whole */
+enum { COPY_STALE, COPY_SAME, COPY_NEWER };
 /* What the GPU keeps of a RAM page and does with it: the submissions that last read and wrote it, the targets and
-   textures kept of it, the dirty targets over it. Its write-tracking level follows (levels()) */
+   textures kept of it, the dirty targets over it, its copy. Its write-tracking level follows (levels()) */
 typedef struct {
     uint64_t read, write;
     uint16_t kept, dirty;
+    uint8_t copy;
 } PageState;
 typedef struct {
     uint32_t pa, size;
@@ -516,17 +522,19 @@ static PageState* page_state(uint32_t pa) {
     }
     return NULL;
 }
-/* The level write tracking gives each page of [pa, pa + size): the GPU's (OWN) under a dirty target or a write not
-   done, watched under something kept or a read not done (a write waits for that read), the CPU's otherwise */
+/* The level write tracking gives each page of [pa, pa + size): the GPU's (OWN) under a dirty target, a write not
+   done or a newer copy, watched under something kept, a read not done (a write waits for that read) or a copy the
+   same as the RAM, the CPU's otherwise */
 static void levels(uint32_t pa, uint64_t size) {
     SnxCtrVk* v = snx_ctr_vk();
     if (!v || !v->memory || !size) return;
     for (uint64_t at = pa & ~4095u; at < (uint64_t)pa + size; at += 4096) {
         PageState* page = page_state((uint32_t)at);
         if (!page) continue;
-        SnxCtrTrackLevel l = page->dirty || page->write > v->ring.completed ? SNX_CTR_TRACK_OWN
-                             : page->kept || page->read > v->ring.completed ? SNX_CTR_TRACK_WATCH
-                                                                       : SNX_CTR_TRACK_NONE;
+        SnxCtrTrackLevel l =
+            page->dirty || page->write > v->ring.completed || page->copy == COPY_NEWER ? SNX_CTR_TRACK_OWN
+            : page->kept || page->read > v->ring.completed || page->copy == COPY_SAME  ? SNX_CTR_TRACK_WATCH
+                                                                                       : SNX_CTR_TRACK_NONE;
         snx_ctr_track_set(v->memory, (uint32_t)at, 4096, l);
     }
 }
@@ -541,22 +549,54 @@ static void count(uint32_t pa, uint64_t size, int kept, int dirty) {
     }
     levels(pa, size);
 }
+/* The pages of [pa, pa + size) whose copy is stale copied in from the RAM, in the open recording's uploads (which run
+   before every command it holds), the same from then on. The copy reads the RAM: a CPU write waits for serial. Nothing
+   recorded or in flight reads or writes a stale page's copy: it went stale on a CPU write, which waited for them */
+static void copy_in(uint32_t pa, uint64_t size, uint64_t serial) {
+    VkCommandBuffer uploads = VK_NULL_HANDLE;
+    uint64_t end = (uint64_t)pa + size;
+    for (uint64_t at = pa & ~4095u; at < end;) {
+        PageState* page = page_state((uint32_t)at);
+        if (!page || page->copy != COPY_STALE) {
+            at += 4096;
+            continue;
+        }
+        VkDeviceSize offset;
+        const SnxCtrVkRam* ram = snx_ctr_vk_ram((uint32_t)at, 4096, &offset);
+        uint64_t run = at; /* the stale pages from here on, in this region */
+        for (; run < end && run < (uint64_t)ram->base + ram->size; run += 4096) {
+            page = page_state((uint32_t)run);
+            if (page->copy != COPY_STALE) break;
+            page->copy = COPY_SAME;
+            page->read = serial;
+        }
+        if (!uploads) uploads = snx_vk_ring_uploads(&snx_ctr_vk()->ring);
+        VkBufferCopy c = {offset, offset, run - at};
+        vkCmdCopyBuffer(uploads, ram->buffer, ram->copy, 1, &c);
+        g.traffic.copied_in += run - at;
+        at = run;
+    }
+}
 /* the open recording reads [pa, pa + size), or writes it: its pages wait for its submission (a CPU write for a read, any
-   access for a write), and are levelled again when it is done */
+   access for a write), and are levelled again when it is done. On a copy of the RAM, its stale pages are copied in
+   first, and what it writes is newer than the RAM from then on */
 static void gpu_uses(uint32_t pa, uint64_t size, bool write) {
     if (!size || !snx_ctr_vk()) return;
     snx_ctr_vk_commands(); /* the open recording's slot */
     uint64_t serial = snx_ctr_vk_serial();
+    bool copies = snx_ctr_vk_copies();
     if (write)
         g.traffic.written += size;
     else
         g.traffic.read += size;
+    if (copies) copy_in(pa, size, serial);
     for (uint64_t at = pa & ~4095u; at < (uint64_t)pa + size; at += 4096) {
         PageState* page = page_state((uint32_t)at);
         if (!page) continue;
-        if (write)
+        if (write) {
             page->write = serial;
-        else
+            if (copies) page->copy = COPY_NEWER;
+        } else
             page->read = serial;
     }
     unsigned slot = g.slot;
@@ -823,6 +863,29 @@ bool snx_ctr_vk_target_image(uint32_t pa, unsigned width, unsigned height, unsig
     }
     return false;
 }
+/* The run of pages around pa (256 at most on each side, in its region) whose copy is newer than the RAM copied back to
+   it, and waited for: the same from then on. One CPU access to what the GPU wrote takes what is around it too, a frame
+   or a buffer, rather than a submission and a wait for each of its pages */
+static void copy_out(uint32_t pa) {
+    VkDeviceSize offset;
+    const SnxCtrVkRam* ram = snx_ctr_vk_ram(pa, 4096, &offset);
+    uint32_t first = pa, last = pa;
+    for (unsigned n = 0; n < 256 && first > ram->base && page_state(first - 4096)->copy == COPY_NEWER; ++n)
+        first -= 4096;
+    for (unsigned n = 0; n < 256 && (uint64_t)last + 4096 < (uint64_t)ram->base + ram->size &&
+                         page_state(last + 4096)->copy == COPY_NEWER;
+         ++n)
+        last += 4096;
+    VkCommandBuffer cb = snx_ctr_vk_commands();
+    end_rendering(); /* a copy is not recorded inside a target's pass */
+    snx_ctr_vk_barrier(cb);
+    VkBufferCopy c = {first - ram->base, first - ram->base, (VkDeviceSize)last + 4096 - first};
+    vkCmdCopyBuffer(cb, ram->copy, ram->buffer, 1, &c);
+    (void)snx_ctr_vk_finish();
+    g.traffic.copied_out += c.size;
+    for (uint64_t at = first; at <= last; at += 4096) page_state((uint32_t)at)->copy = COPY_SAME;
+    levels(first, c.size);
+}
 void snx_ctr_vk_sync(uint32_t pa, uint32_t size, bool write) {
     if (!size || !snx_ctr_vk()) return;
     if (g.made && !store_over(pa, size)) fprintf(stderr, "3ds gpu: a render target could not be stored\n");
@@ -833,14 +896,19 @@ void snx_ctr_vk_track(void* context, uint32_t pa, SnxCtrTrackLevel level) {
     (void)context;
     ++g.traffic.traps;
     if (level == SNX_CTR_TRACK_OWN) {
-        /* the page's newer contents: its targets stored, then every GPU write to it waited for */
+        /* the page's newer contents: its targets stored, then every GPU write to it waited for, or its copy copied
+           back with what the GPU wrote around it */
         if (g.made) (void)store_over(pa, 4096);
         PageState* page = page_state(pa);
-        if (page && page->write) (void)snx_ctr_vk_wait(page->write, UINT64_MAX);
-    } else { /* the CPU writes it: after the GPU's reads of it, and what the GPU made of it is stale */
+        if (page && page->copy == COPY_NEWER)
+            copy_out(pa);
+        else if (page && page->write)
+            (void)snx_ctr_vk_wait(page->write, UINT64_MAX);
+    } else { /* the CPU writes it: after the GPU's reads of it, and what the GPU made of it is stale, its copy too */
         PageState* page = page_state(pa);
         if (page && page->read) (void)snx_ctr_vk_wait(page->read, UINT64_MAX);
         stale(pa, 4096);
+        if (page && page->copy == COPY_SAME) page->copy = COPY_STALE;
     }
     levels(pa, 4096);
 }
@@ -1553,7 +1621,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
             if (k.binding_mask >> n & 1) {
                 const SnxCtrVkRam* ram = snx_ctr_vk_ram(binding_pa[n], 1, &offsets[n]);
                 if (!ram) return SNX_CTR_PICA_OK;
-                buffers[n] = ram->buffer;
+                buffers[n] = snx_ctr_vk_work(ram);
             }
     }
     SnxCtrPicaResult result = target_open(&key);
@@ -1610,7 +1678,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     if (indexed && source == ARRAYS) {
         VkDeviceSize at;
         const SnxCtrVkRam* ram = snx_ctr_vk_ram(index_pa, 1, &at);
-        vkCmdBindIndexBuffer(cb, ram->buffer, at, wide ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT8_EXT);
+        vkCmdBindIndexBuffer(cb, snx_ctr_vk_work(ram), at, wide ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT8_EXT);
         vkCmdDrawIndexed(cb, count, 1, 0, 0, 0);
     } else
         vkCmdDraw(cb, count, 1, source == ARRAYS ? r[VERTEX_OFFSET] : 0, 0);
@@ -1724,11 +1792,46 @@ void snx_ctr_vk_render_retire(unsigned slot, uint64_t serial) {
     for (size_t i = 0; i < g.span_count[slot]; ++i) levels(g.spans[slot][i].pa, g.spans[slot][i].size);
     g.span_count[slot] = 0;
 }
+/* every page whose copy is newer than the RAM copied back, and waited for: the RAM holds what the GPU wrote once the
+   device is gone */
+static void copy_every_page_back(void) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    if (!g.pages || !snx_ctr_vk_copies()) return;
+    uint32_t index = 0;
+    bool copied = false;
+    for (unsigned i = 0; i < v->ram_count; ++i) {
+        const SnxCtrVkRam* ram = &v->ram[i];
+        for (uint32_t at = 0; at < ram->size;) {
+            uint32_t run = at;
+            while (run < ram->size && g.pages[index + run / 4096].copy == COPY_NEWER) {
+                g.pages[index + run / 4096].copy = COPY_SAME;
+                run += 4096;
+            }
+            if (run == at) {
+                at += 4096;
+                continue;
+            }
+            VkCommandBuffer cb = snx_ctr_vk_commands();
+            if (!copied) {
+                end_rendering();
+                snx_ctr_vk_barrier(cb);
+            }
+            VkBufferCopy c = {at, at, run - at};
+            vkCmdCopyBuffer(cb, ram->copy, ram->buffer, 1, &c);
+            g.traffic.copied_out += run - at;
+            copied = true;
+            at = run;
+        }
+        index += ram->size / 4096;
+    }
+    if (copied) (void)snx_ctr_vk_finish();
+}
 void snx_ctr_vk_render_free(void) {
     if (!snx_ctr_vk()) {
         memset(&g, 0, sizeof g);
         return;
     }
+    copy_every_page_back();
     VkDevice d = device();
     vkDeviceWaitIdle(d);
     for (unsigned s = 0; s < SNX_CTR_VK_SLOTS; ++s) {

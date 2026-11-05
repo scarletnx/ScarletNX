@@ -13,12 +13,15 @@
 
 static struct {
     SnxCtrVk vk;
+    SnxCtrVkPath path; /* the next init's (snx_ctr_vk_path) */
     int up;
     char error[768];  /* why the last snx_ctr_vk_init failed (an import refused, then the device's memory's reason) */
     char device[512]; /* the device it chose and its driver, "" before one */
 } g_device;
 
 SnxCtrVk* snx_ctr_vk(void) { return g_device.up ? &g_device.vk : NULL; }
+void snx_ctr_vk_path(SnxCtrVkPath path) { g_device.path = path; }
+bool snx_ctr_vk_copies(void) { return g_device.up && g_device.vk.ram_count && g_device.vk.ram[0].copy; }
 const char* snx_ctr_vk_error(void) { return g_device.error; }
 
 bool snx_ctr_vk_window(uint32_t pa, uint64_t size, SnxCtrVkWindow* w, uint32_t* inside) {
@@ -32,7 +35,7 @@ bool snx_ctr_vk_window(uint32_t pa, uint64_t size, SnxCtrVkWindow* w, uint32_t* 
     VkDeviceSize range = ram->size - start;
     if (range > v->properties.limits.maxStorageBufferRange) range = v->properties.limits.maxStorageBufferRange;
     if (offset - start + size > range) return false;
-    *w = (SnxCtrVkWindow){ram->buffer, start, range};
+    *w = (SnxCtrVkWindow){snx_ctr_vk_work(ram), start, range};
     *inside = (uint32_t)(offset - start);
     return true;
 }
@@ -198,6 +201,8 @@ static void release_ram(SnxCtrVk* v) {
     for (unsigned i = 0; i < v->ram_count; ++i) {
         vkDestroyBuffer(v->device, v->ram[i].buffer, NULL);
         vkFreeMemory(v->device, v->ram[i].memory, NULL);
+        vkDestroyBuffer(v->device, v->ram[i].copy, NULL);
+        vkFreeMemory(v->device, v->ram[i].copy_memory, NULL);
     }
     vkFreeMemory(v->device, v->ram_memory, NULL);
     v->ram_count = 0;
@@ -377,6 +382,98 @@ fail:
     release_ram(v);
     return false;
 }
+/* every copy gone: the work is on the RAM in place */
+static void drop_copies(SnxCtrVk* v) {
+    for (unsigned i = 0; i < v->ram_count; ++i) {
+        vkDestroyBuffer(v->device, v->ram[i].copy, NULL);
+        vkFreeMemory(v->device, v->ram[i].copy_memory, NULL);
+        v->ram[i].copy = VK_NULL_HANDLE;
+        v->ram[i].copy_memory = VK_NULL_HANDLE;
+    }
+}
+/* Every RAM region's copy in the device's own memory, which the CPU does not map where the device has such (the
+   window it maps is the desktop's too): what it holds does not matter, as render.c copies each page in before the GPU
+   first reads it. False with why in error, and no copy left */
+static bool make_copies(SnxCtrVk* v, const SnxCtrProfile* profile, uint64_t* bytes, uint32_t* type, char* error,
+                        size_t error_size) {
+    *bytes = 0;
+    for (unsigned i = 0; i < v->ram_count; ++i) {
+        SnxCtrVkRam* r = &v->ram[i];
+        const char* region = snx_ctr_physical_region(profile, r->base, 1)->name;
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                 .size = r->size,
+                                 .usage = ram_usage,
+                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        VkResult result = vkCreateBuffer(v->device, &bi, NULL, &r->copy);
+        if (result != VK_SUCCESS) {
+            r->copy = VK_NULL_HANDLE;
+            snprintf(error, error_size, "vkCreateBuffer gave %s (%d) for the %s region's copy, 0x%x bytes",
+                     snx_vk_result_str(result), (int)result, region, r->size);
+            drop_copies(v);
+            return false;
+        }
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(v->device, r->copy, &req);
+        *type = UINT32_MAX;
+        for (uint32_t t = 0; t < v->memory_properties.memoryTypeCount && *type == UINT32_MAX; ++t) {
+            VkMemoryPropertyFlags f = v->memory_properties.memoryTypes[t].propertyFlags;
+            if ((req.memoryTypeBits >> t & 1) && (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
+                !(f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+                *type = t;
+        }
+        if (*type == UINT32_MAX)
+            *type = snx_ctr_vk_memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (*type == UINT32_MAX) {
+            snprintf(error, error_size, "no device-local memory type is one of the %s region's copy's (0x%x)", region,
+                     req.memoryTypeBits);
+            drop_copies(v);
+            return false;
+        }
+        VkMemoryAllocateInfo ai = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size, .memoryTypeIndex = *type};
+        bool allocated = (result = vkAllocateMemory(v->device, &ai, NULL, &r->copy_memory)) == VK_SUCCESS;
+        if (!allocated)
+            r->copy_memory = VK_NULL_HANDLE;
+        else
+            result = vkBindBufferMemory(v->device, r->copy, r->copy_memory, 0);
+        if (result != VK_SUCCESS) {
+            snprintf(error, error_size, "%s gave %s (%d) for the %s region's copy, 0x%llx bytes of memory type %u",
+                     allocated ? "vkBindBufferMemory" : "vkAllocateMemory", snx_vk_result_str(result), (int)result,
+                     region, (unsigned long long)req.size, *type);
+            drop_copies(v);
+            return false;
+        }
+        *bytes += req.size;
+    }
+    return true;
+}
+/* Where the GPU's work reads and writes the RAM (snx_ctr_vk_path), said on the standard error: on a copy, unless the
+   device shares the system's memory or the copy cannot be made, which says why the work is in place */
+static void choose_path(SnxCtrVk* v, SnxCtrMemory* memory) {
+    SnxVkMemoryModel model = snx_vk_memory_model(v->properties.deviceType, &v->memory_properties);
+    static const char* const models[] = {"is its own, a window of it mapped by the CPU",
+                                         "is its own, all of it mapped by the CPU (resizable BAR)", "is the system's"};
+    const char* asked = g_device.path == SNX_CTR_VK_AUTO ? "" : ", as asked";
+    if (g_device.path == SNX_CTR_VK_IN_PLACE || (g_device.path == SNX_CTR_VK_AUTO && model == SNX_VK_UMA)) {
+        fprintf(stderr, "3ds gpu: the device's memory %s: the GPU works on the board's RAM in place%s%s\n",
+                models[model], asked, model == SNX_VK_UMA ? "" : ", across the bus");
+        return;
+    }
+    char why[256];
+    uint64_t bytes;
+    uint32_t type;
+    if (!make_copies(v, snx_ctr_memory_profile(memory), &bytes, &type, why, sizeof why)) {
+        fprintf(stderr,
+                "3ds gpu: the device's memory %s, and cannot hold a copy of the board's RAM: %s; the GPU works on the "
+                "RAM in place, across the bus\n",
+                models[model], why);
+        return;
+    }
+    fprintf(stderr,
+            "3ds gpu: the device's memory %s: the GPU works on a copy of the board's RAM there%s (0x%llx bytes of "
+            "memory type %u), copied in and back by page\n",
+            models[model], asked, (unsigned long long)bytes, type);
+}
 static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     SnxCtrVk* v = &g_device.vk;
     memset(v, 0, sizeof *v);
@@ -459,6 +556,7 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
                 "(host-visible, coherent, cached), its dma-buf mapped at every guest view\n",
                 refused, (unsigned long long)f.allocation, f.type);
     }
+    choose_path(v, memory);
     /* the renderer answers for the pages the GPU keeps (memory/ctr_memory.h) */
     v->memory = memory;
     snx_ctr_track_handler(memory, snx_ctr_vk_track, NULL);

@@ -13,10 +13,12 @@
      on the GPU, for a GPU engine that reads that memory (snx_ctr_vk_sync), or for the CPU when it touches them.
    - Textures are decoded from memory on the GPU (shaders/texture.comp) and kept while their memory is unchanged:
      their pages are watched, and a write to them, the CPU's or a GPU engine's, drops them.
-   - Memory the GPU writes (stores, transfers, fills, Y2R) is the GPU's until the submission that writes it is done.
-   Vertex and index data are read in place from the imported RAM. A draw with a geometry shader runs its vertex and
-   geometry shaders on the CPU instead (draw.c), reading memory as the CPU does, and draws the triangles they make. */
-/* the renderer of SnxCtrPicaHost (memory is the device's, imported): the draw triggers, DrawArrays indexed or not;
+   - Memory the GPU writes (stores, transfers, fills, Y2R) is the GPU's until the submission that writes it is done,
+     or, where the work is on a copy of the RAM (vk.h), until the CPU touches it and it is copied back.
+   Vertex and index data are read where the work is: the RAM in place, or its copy. A draw with a geometry shader runs
+   its vertex and geometry shaders on the CPU instead (draw.c), reading memory as the CPU does, and draws the triangles
+   they make. */
+/* the renderer of SnxCtrPicaHost (memory is the device's): the draw triggers, DrawArrays indexed or not;
    one immediate-mode vertex, pica->immediate_vertex, kept until snx_ctr_vk_vertices_end draws the ones kept */
 SnxCtrPicaResult snx_ctr_vk_draw(SnxCtrPica* pica, SnxCtrMemory* memory, bool indexed);
 SnxCtrPicaResult snx_ctr_vk_vertex(SnxCtrPica* pica, SnxCtrMemory* memory);
@@ -32,13 +34,14 @@ void snx_ctr_vk_sync(uint32_t pa, uint32_t size, bool write);
 bool snx_ctr_vk_target_image(uint32_t pa, unsigned width, unsigned height, unsigned format, VkImageView* view,
                              unsigned* scale, unsigned* flip);
 /* write tracking's handler (snx_ctr_track_handler), which the device installs: an owned page's targets stored and
-   its GPU writes waited for, a watched page's textures and targets dropped */
+   its GPU writes waited for, or its copy copied back; a watched page's textures and targets dropped, and its copy
+   stale */
 void snx_ctr_vk_track(void* context, uint32_t pa, SnxCtrTrackLevel level);
-/* What the GPU's work took of the board's RAM since the device started: the bytes it read and wrote there (in place, a
-   discrete GPU reads and writes each of them across the bus), and the CPU's accesses that write tracking brought to
-   the renderer first (snx_ctr_vk_track) */
+/* What the GPU's work took of the board's RAM since the device started: the bytes it read and wrote there, or of its
+   copy (in place, a discrete GPU reads and writes each of them across the bus); the bytes copied in from the RAM to
+   the copy, and back; and the CPU's accesses that write tracking brought to the renderer first (snx_ctr_vk_track) */
 typedef struct {
-    uint64_t read, written, traps;
+    uint64_t read, written, copied_in, copied_out, traps;
 } SnxCtrVkTraffic;
 SnxCtrVkTraffic snx_ctr_vk_traffic(void);
 /* the device's: a recording begins in slot; the open rendering pass ends before a submission; a submission of slot,

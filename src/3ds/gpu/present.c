@@ -494,10 +494,15 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
 void snx_ctr_present_report(void) {
     if (!g_present.up) return;
     SnxCtrVkTraffic t = snx_ctr_vk_traffic();
-    printf("  gpu: %llu top and %llu bottom screen frames; its work read %.1f MiB and wrote %.1f MiB of the RAM; "
+    char copies[96] = "";
+    if (snx_ctr_vk_copies())
+        snprintf(copies, sizeof copies, "; %.1f MiB copied in from the RAM and %.1f MiB back",
+                 (double)t.copied_in / 1048576.0, (double)t.copied_out / 1048576.0);
+    printf("  gpu: %llu top and %llu bottom screen frames; its work read %.1f MiB and wrote %.1f MiB of %s%s; "
            "%llu CPU accesses to its pages trapped\n",
            (unsigned long long)g_present.decoded[0], (unsigned long long)g_present.decoded[1],
-           (double)t.read / 1048576.0, (double)t.written / 1048576.0, (unsigned long long)t.traps);
+           (double)t.read / 1048576.0, (double)t.written / 1048576.0,
+           snx_ctr_vk_copies() ? "its copy of the RAM" : "the RAM", copies, (unsigned long long)t.traps);
 }
 void snx_ctr_present_free(void) {
     if (!g_present.up) return;
