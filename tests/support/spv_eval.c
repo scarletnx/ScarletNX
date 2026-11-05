@@ -782,7 +782,7 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
     }
     if (!why && !entry_at) why = "no entry point";
     if (!why) why = run(e, entry_at);
-    /* the outputs, by location, and FragDepth (BuiltIn 22) */
+    /* the outputs, by location, FragDepth (BuiltIn 22) and Position (BuiltIn 0) */
     for (uint32_t id = 0; id < e->bound; id++) {
         Id* v = &e->ids[id];
         if (v->kind != K_VAR || v->sclass != 3) continue;
@@ -794,6 +794,8 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
             env->out_written[v->location - 1] = 1;
         }
         if (v->builtin == 22 + 1) env->frag_depth = m[0];
+        if (v->builtin == 0 + 1)
+            for (uint32_t k = 0; k < 4 && k < n; k++) env->position[k] = m[k];
     }
     for (uint32_t id = 0; id < e->bound; id++) {
         Id* v = &e->ids[id];

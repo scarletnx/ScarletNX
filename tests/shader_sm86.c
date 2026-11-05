@@ -1701,6 +1701,40 @@ static void test_tex_f16(const char* spirv_val, const char* dir) {
     free(spv);
 }
 
+/* A vertex program's outputs start as (0, 0, 0, 1), as the console gives the components a program doesn't write: one
+   that writes the position's x and y (0.5, 0.25) and generic 0's x (0.5) gets a w of 1 for both, which one game's
+   full screen passes leave to it */
+static Word ast(u32 addr, u32 data, u32 count) {
+    Word x = fix(0x322);
+    set(&x, 24, 8, 255);
+    set(&x, 32, 8, data);
+    set(&x, 40, 10, addr);
+    set(&x, 64, 8, 255);
+    set(&x, 74, 2, count - 1);
+    return x;
+}
+static void test_output_defaults(const char* spirv_val, const char* dir) {
+    u8 code[16 * 6] = {0};
+    put(code, 0, mov_imm(1, f2u(0.5f)));
+    put(code, 1, mov_imm(2, f2u(0.25f)));
+    put(code, 2, ast(0x70, 1, 2));
+    put(code, 3, ast(0x80, 1, 1));
+    put(code, 4, exit_insn());
+    put(code, 5, bra(5, 5, 7, 0));
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    SpvEvalEnv env = {0};
+    int ran = run_stage(ST_VS, code, 6, vsph, &env);
+    const u32 *p = env.position, *g = env.out[0];
+    int ok = ran && p[0] == f2u(0.5f) && p[1] == f2u(0.25f) && p[2] == 0 && p[3] == f2u(1.0f) && env.out_written[0] &&
+             g[0] == f2u(0.5f) && g[1] == 0 && g[2] == 0 && g[3] == f2u(1.0f);
+    CHECK(ok);
+    if (!ok)
+        fprintf(stderr, "output defaults: position %08x %08x %08x %08x, generic 0 %08x %08x %08x %08x\n", p[0], p[1],
+                p[2], p[3], g[0], g[1], g[2], g[3]);
+    (void)spirv_val, (void)dir;
+}
+
 int main(int argc, char** argv) {
     const char* spirv_val = argc > 2 ? argv[2] : NULL;
     const char* dir = argc > 1 ? argv[1] : ".";
@@ -1732,6 +1766,7 @@ int main(int argc, char** argv) {
     test_ipa_uniform(spirv_val, dir);
     test_tld_multisample(spirv_val, dir);
     test_tex_f16(spirv_val, dir);
+    test_output_defaults(spirv_val, dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
