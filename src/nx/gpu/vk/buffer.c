@@ -434,8 +434,8 @@ static void out_list_sort(OutList* l) {
     g_outx.inspected += n;
 }
 u64 vk_buf_pending_inspected(void) { return g_outx.inspected; }
-/* where and how pending results were written: shader stores, copies, and transform feedback's captures when the device
-   has it (its flags are invalid without the extension) */
+/* where and how pending results were written: shader stores (an Ounce's task and mesh programs' too), copies, and
+   transform feedback's captures when the device has it (its flags are invalid without the extension) */
 static VkPipelineStageFlags2 out_stages(void) {
     return VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT |
@@ -443,6 +443,8 @@ static VkPipelineStageFlags2 out_stages(void) {
                                         VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT
                                   : 0) |
            (g_shader_geometry ? VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT : 0) |
+           (g_vk.has_mesh ? VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT : 0) |
+           (g_vk.has_task ? VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT : 0) |
            (g_vk.has_xfb ? VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT : 0);
 }
 static VkAccessFlags2 out_access(void) {

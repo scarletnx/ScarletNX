@@ -36,5 +36,11 @@ Sm86Word sm86_alu(u32 opcode9, u32 form, u32 dst, u32 a);
 void sm86_cbuf(Sm86Word* x, u32 bank, u32 off);
 Sm86Word sm86_bra(u32 ip, u32 target, u32 pred, int negate);
 Sm86Word sm86_exit(void);
+/* MOV dst, value */
+Sm86Word sm86_mov_imm(u32 dst, u32 value);
+/* ISBERD (write 0) into reg, or ISBEWR (write 1) of reg, at [base + imm] of a task or mesh program's ISBE: the size
+   (SM86_ISBE_U8, _B32), the access (SM86_ISBE_MAP, _ATTR), SKEW and the output bit, as NAK's sm70_encode.rs has them */
+enum { SM86_ISBE_MAP = 0, SM86_ISBE_ATTR = 3, SM86_ISBE_U8 = 0, SM86_ISBE_B32 = 2 };
+Sm86Word sm86_isbe(int write, u32 reg, u32 base, u32 imm, u32 size, u32 access, u32 skew, u32 output);
 void sm86_put(u8* code, u32 index, Sm86Word x);
 #endif

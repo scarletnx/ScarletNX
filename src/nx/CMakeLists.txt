@@ -364,7 +364,8 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/spirv_emitter_fixture.c" "${PROJECT_SOURCE_DIR}/tests/support/nvdec_ref.c"
         "${PROJECT_SOURCE_DIR}/tests/support/vic_ref.c" "${PROJECT_SOURCE_DIR}/tests/support/dma_ref.c"
         "${PROJECT_SOURCE_DIR}/tests/support/fermi2d_ref.c" "${PROJECT_SOURCE_DIR}/tests/support/half.c"
-        "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp")
+        "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/support/sm86_ref.c")
+    target_include_directories(snx-test-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests")
     target_link_libraries(snx-test-vulkan PRIVATE snx_nx_flags ${components} snx_driver FFmpeg::avutil Threads::Threads
                                                   ${CMAKE_DL_LIBS})
     target_include_directories(snx-test-vulkan PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/hookgen/snx_gpu"
@@ -381,6 +382,10 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # comes back after the load (tests/vulkan_nvn_savestate.inc). Alone, as the load replaces the guest memory
     add_test(NAME vulkan_nvn_savestate COMMAND snx-test-vulkan -H)
     set_tests_properties(vulkan_nvn_savestate PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_NVN_CASE=savestate"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # an Ounce game's mesh draws, which the experimental mesh_draws setting turns on (check_mesh_draws)
+    add_test(NAME vulkan_headless_mesh COMMAND snx-test-vulkan -H --mesh_draws=1)
+    set_tests_properties(vulkan_headless_mesh PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     add_test(NAME vulkan_storage_lookup COMMAND snx-test-vulkan -H --vk_memory=1 --bench-storage-lookup)
     set_tests_properties(vulkan_storage_lookup PROPERTIES TIMEOUT 60
