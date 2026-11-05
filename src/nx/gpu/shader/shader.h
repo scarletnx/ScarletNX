@@ -166,7 +166,8 @@ typedef struct {
     int primitive_split_safe; /* proof: vertex values do not depend on subgroup/lane/clock invocation groups */
     ShMesh mesh; /* key (task and mesh programs) */
     /* the generics that go to the fragment program per primitive: of a mesh program, the per-primitive outputs that
-       translation found (in out_mask too) */
+       translation found (in out_mask too); and key (fragment programs), the inputs that the draw's mesh program
+       writes per primitive, which the module declares PerPrimitiveEXT */
     u32 prim_mask;
 } ShaderInfo;
 /* The graphics cache packs these explicit fragment-only fields above its eight image-format bits. */

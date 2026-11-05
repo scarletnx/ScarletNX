@@ -251,7 +251,8 @@ the game asks for.
    of one run translate and pass `spirv-val` (`snx-sm86 --task` and `--mesh`).
 3. Fragment linkage. A fragment program reads per-primitive generic n as a plain input. Its module must declare
    them `PerPrimitiveEXT`, so the fragment shader key gets a mask of per-primitive locations from the mesh program
-   (`pipeline.c`'s key, `fs_variant` in `render.c`).
+   (`pipeline.c`'s key, `fs_variant` in `render.c`). The translator's half is done: a fragment program's
+   `ShaderInfo.prim_mask` names those inputs, the mesh program's `prim_mask`.
 4. Vulkan (medium, `pipeline.c`, `render.c`, `vk.h`, `device.c`). Turn on `VK_EXT_mesh_shader` (`meshShader`,
    `taskShader`), add the stage bits to the descriptor set layouts' visibility, and build pipelines without vertex
    input and input assembly state from task, mesh and fragment modules. The key and the pipeline file need the two
