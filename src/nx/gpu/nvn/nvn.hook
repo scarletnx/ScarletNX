@@ -61,6 +61,7 @@ hook nvnDeviceCommandBufferSetDevice(NVNdeviceCommandBuffer* b, NVNdevice* d)
 hook nvnDeviceCommandBufferSetStorage(NVNdeviceCommandBuffer* b, NVNmemoryPool* pool, i64 offset, u64 size)
 hook nvnDeviceCommandBufferSetCommandMemorySize(NVNdeviceCommandBuffer* b, u64 size)
 hook nvnDeviceCommandBufferSetComputeMemorySize(NVNdeviceCommandBuffer* b, u64 size)
+hook nvnDeviceCommandBufferGetHandle(NVNdeviceCommandBuffer* b) -> u64
 hook nvnDeviceMessageBufferSetDefaults(NVNdeviceMessageBuffer* b)
 hook nvnDeviceMessageBufferSetDevice(NVNdeviceMessageBuffer* b, NVNdevice* d)
 hook nvnDeviceMessageBufferSetStorage(NVNdeviceMessageBuffer* b, NVNmemoryPool* pool, i32 offset, i32 size)
@@ -429,6 +430,14 @@ hook nvnCommandBufferSetGeometryProcessingMode(NVNcommandBuffer* cb, i32 mode)
 # the Ounce's push constants: words of a root table, for the graphics or the compute stages
 hook nvnCommandBufferPushGraphicsConstants(NVNcommandBuffer* cb, i32 table, i32 offset, i32 bytes, const void* data)
 hook nvnCommandBufferPushComputeConstants(NVNcommandBuffer* cb, i32 table, i32 offset, i32 bytes, const void* data)
+# the NVN2 device commands: recorded into a device command buffer, which SubmitDeviceCommands hands to the submission
+hook nvnCommandBufferBeginDeviceCommands(NVNcommandBuffer* cb, NVNdeviceCommandBuffer* device)
+hook nvnCommandBufferEndDeviceCommands(NVNcommandBuffer* cb, NVNdeviceCommandBuffer* device)
+hook nvnCommandBufferSubmitDeviceCommands(NVNcommandBuffer* cb, NVNdeviceCommandBuffer* device)
+hook nvnCommandBufferBindDeviceMessageBuffer(NVNcommandBuffer* cb, NVNdeviceMessageBuffer* mb)
+hook nvnCommandBufferBindDeviceMessageBufferDeferred(NVNcommandBuffer* cb, NVNdeviceMessageBuffer* mb, i32 offset, i32 count)
+hook nvnCommandBufferResetDeviceMessageBuffer(NVNcommandBuffer* cb, NVNdeviceMessageBuffer* mb, i32 offset, i32 count)
+hook nvnCommandBufferResetDeviceMessageBufferDeferred(NVNcommandBuffer* cb, NVNdeviceMessageBuffer* mb, i32 offset, i32 count)
 # the Ounce's mesh draws (API 231): skipped until the runtime has the mesh pipeline
 hook nvnCommandBufferDrawMeshTasks(NVNcommandBuffer* cb, i32 first, i32 count)
 hook nvnCommandBufferDrawMeshTasks3D(NVNcommandBuffer* cb, i32 x, i32 y, i32 z)

@@ -479,6 +479,18 @@ void nvn_DeviceCommandBufferSetCommandMemorySize(CPU* c, u64 b, u64 size) {
     (void)c;
     DCB(b)->command_size = size;
 }
+/* The handle of the device commands the game recorded into b, which is where its storage was given: the recording's
+   own handle, as nvnCommandBufferEndRecording hands back for the same commands */
+u64 nvn_DeviceCommandBufferGetHandle(CPU* c, u64 b) {
+    NvnDeviceCommandBuffer* o = DCB(b);
+    (void)c;
+    if (!o->memory) {
+        LOG_LIMIT(4, "nvn: the game asked the device command buffer %llx for a handle, but gave it no storage\n",
+                  (unsigned long long)b);
+        return 0;
+    }
+    return NVN_OBJ(NvnCmdBuf, o->memory)->begin;
+}
 void nvn_DeviceCommandBufferSetComputeMemorySize(CPU* c, u64 b, u64 size) {
     (void)c;
     DCB(b)->compute_size = size;

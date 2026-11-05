@@ -900,7 +900,57 @@ void nvn_CommandBufferSetGeometryProcessingMode(CPU* c, u64 cb, i32 mode) {
     (void)cb;
     if (mode) LOG_LIMIT(1, "nvn: geometry processing mode %d, and the runtime has the vertex pipeline only\n", mode);
 }
-/* The Ounce's mesh draws: the runtime has no mesh pipeline yet (VK_EXT_mesh_shader, and a translator for the
+/* The NVN2 device commands: the game records device commands into a device command buffer between
+   BeginDeviceCommands and EndDeviceCommands, and SubmitDeviceCommands hands the recording it made to the
+   submission. The runtime's records are the same either way, so the device command buffer records, flushes and
+   submits exactly as a command buffer does: the device's own handle is the recording's, which the game reads back
+   through nvnDeviceCommandBufferGetHandle */
+void nvn_CommandBufferBeginDeviceCommands(CPU* c, u64 cb, u64 device) {
+    (void)cb;
+    nvn_CommandBufferBeginRecording(c, device);
+}
+void nvn_CommandBufferEndDeviceCommands(CPU* c, u64 cb, u64 device) {
+    (void)cb;
+    nvn_CommandBufferEndRecording(c, device);
+}
+void nvn_CommandBufferSubmitDeviceCommands(CPU* c, u64 cb, u64 device) {
+    NvnCmdBuf* o = CB(device);
+    (void)cb;
+    if (o->recording) { /* still recording: the driver submits what it has */
+        nvn_CommandBufferEndRecording(c, device);
+        o->recording = 1;
+    }
+    ctl_flush(c, device);
+}
+/* The device commands the game binds device messages on, and resets: the runtime holds no device messages, so the
+   bind records nothing and the reset answers 0 */
+void nvn_CommandBufferBindDeviceMessageBuffer(CPU* c, u64 cb, u64 mb) {
+    (void)c;
+    (void)cb;
+    (void)mb;
+}
+void nvn_CommandBufferBindDeviceMessageBufferDeferred(CPU* c, u64 cb, u64 mb, i32 offset, i32 count) {
+    (void)c;
+    (void)cb;
+    (void)mb;
+    (void)offset;
+    (void)count;
+}
+void nvn_CommandBufferResetDeviceMessageBuffer(CPU* c, u64 cb, u64 mb, i32 offset, i32 count) {
+    (void)c;
+    (void)cb;
+    (void)mb;
+    (void)offset;
+    (void)count;
+}
+void nvn_CommandBufferResetDeviceMessageBufferDeferred(CPU* c, u64 cb, u64 mb, i32 offset, i32 count) {
+    (void)c;
+    (void)cb;
+    (void)mb;
+    (void)offset;
+    (void)count;
+}
+/* The ounce's mesh draws: the runtime has no mesh pipeline yet (VK_EXT_mesh_shader, and a translator for the
    the Ounce's shaders), so it skips them, as it skips a draw whose shaders it can't translate */
 static void mesh_skipped(const char* name) { LOG_LIMIT(1, "nvn: the game draws with mesh shaders (%s): skipped\n", name); }
 void nvn_CommandBufferDrawMeshTasks(CPU* c, u64 cb, i32 first, i32 count) {
