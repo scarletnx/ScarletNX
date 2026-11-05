@@ -1943,7 +1943,6 @@ int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {
         st[i].data = gr64(sd + sizeof(NVNshaderData) * (u64)i);
         st[i].control = nvn_gptr(sd + sizeof(NVNshaderData) * (u64)i + 8);
     }
-
     return set_shaders(p, st, n);
 }
 /* NVN 55's SetShaders: 0x18 bytes a stage, NVNshaderData and an 8-byte extension, which nxnative doesn't use either */
