@@ -61,8 +61,8 @@ option(SNX_BUILD_GNUABI "Build the CPU-only Linux AArch64 runtime" ON)
 option(SNX_BUILD_3DS "Build the 3DS driver: extraction, the ARM11 AOT compiler and the runtime" ON)
 option(SNX_BUILD_VITA "Build the PS Vita driver: VPK extraction, the AArch32 AOT compiler and the runtime" ON)
 option(SNX_BUILD_AGB "Build the Game Boy Advance AGB board runtime" ON)
-# the Android app driver runs apps on a desktop's JVM: not in ScarletNX's own Android app
-if(ANDROID)
+# the Android app driver runs apps on a desktop's JVM: not in ScarletNX's own Android and iOS apps, which have none
+if(ANDROID OR IOS)
     set(snx_android_default OFF)
 else()
     set(snx_android_default ON)
