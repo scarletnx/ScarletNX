@@ -2,7 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* What waits for vk_lock and what waits under it. A change of guest memory that nothing of the renderer covers goes on
    while another thread holds vk_lock (gpu/vk/renderer.c's mapping bracket); one over a GPU mapping or GPU-owned
-   memory waits for it. */
+   memory waits for it. A landing waits for the GPU's work on what it lands with no lock held (own.c's wait,
+   gpu/vk/owned.c), and so does the GPU thread for its next frame slot (vk_frame_ready). A gate semaphore holds the
+   GPU's work back until the test lets it go */
 
 /* a thread holding vk_lock until let go, as the GPU thread did while it waited for the GPU. 1: to take it, 2: held,
    3: to let it go, 0: let go */
@@ -104,5 +106,114 @@ static int check_mapping_lock(void) {
         vk_own_res_unref(owner);
     }
     puts("mapping lock: a change of guest memory the renderer holds nothing of waits for no vk_lock, others do");
+    return 0;
+}
+
+/* a timeline semaphore the next submission waits for (value 1, which the test signals) and signals (2) */
+static int lw_gate(VkSemaphore* gate) {
+    VkSemaphoreTypeCreateInfo type = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                      .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+    VkSemaphoreCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &type};
+    CHECK(VK_OK(vkCreateSemaphore(g_vk.dev, &ci, NULL, gate)));
+    vk_submit_after(*gate, 1, 2);
+    return 0;
+}
+static int lw_open(VkSemaphore gate) {
+    VkSemaphoreSignalInfo signal = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO, .semaphore = gate, .value = 1};
+    CHECK(VK_OK(vkSignalSemaphore(g_vk.dev, &signal)));
+    return 0;
+}
+/* vk_lock is free: taken and let go at once. Else who holds it is said */
+static int lw_lock_free(void) {
+    if (vk_trylock()) {
+        vk_unlock();
+        return 1;
+    }
+    char path[64], name[32] = "?";
+    u32 tid = vk_lock_owner();
+    snprintf(path, sizeof path, "/proc/self/task/%u/comm", tid);
+    FILE* f = fopen(path, "r");
+    if (f) {
+        if (!fgets(name, sizeof name, f)) name[0] = 0;
+        fclose(f);
+    }
+    fprintf(stderr, "lock waits: thread %u (%s) holds vk_lock\n", tid, name);
+    return 0;
+}
+
+#define LW_OWN_CPU (HEAP_BASE + 0x6900000)
+static void lw_acquire(void) { own_acquire(LW_OWN_CPU, 256); }
+/* A landing on a thread without vk_lock, of a result whose submission the GPU holds back: vk_lock stays free while it
+   waits, and the bytes land once the GPU ran it */
+static int check_landing_wait(void) {
+    VkSemaphore gate;
+    if (!own_traps()) return 0;
+    CHECK(mem_map(LW_OWN_CPU, 0x1000, MS_NORMAL, PERM_RW) == 0);
+    memset(GP(LW_OWN_CPU), 0x11, 0x1000);
+    VkOwnRes* owner = vk_own_res_new(256);
+    CHECK(owner);
+    vk_lock();
+    VkBuffer upload;
+    u64 at;
+    u8* data = vk_stage_upload(256, 16, &upload, &at);
+    CHECK(data);
+    memset(data, 0x5a, 256);
+    VkBufferCopy copy = {at, 0, 256};
+    rec_CmdCopyBuffer(vk_cmd(), upload, owner->buf, 1, &copy);
+    vk_own_publish_owned(LW_OWN_CPU, 256, owner, 0); /* written by the submission being recorded */
+    CHECK(!lw_gate(&gate));
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    u64 writer = vk_last_submit();
+    vk_unlock();
+    CHECK(own_lookup(LW_OWN_CPU, 256, NULL, 0) == 1);
+    CHECK(!lw_start(lw_acquire));
+    int waits = !lw_done_within(300); /* the GPU holds the writes back */
+    int lock_free = lw_lock_free();   /* and the landing waits for them without vk_lock */
+    CHECK(!lw_open(gate));            /* first: what holds the GPU's work back would keep the test from ending */
+    CHECK(lw_done_within(-1));
+    CHECK(waits);
+    CHECK(lock_free);
+    vk_wait_submit(writer);
+    for (u32 i = 0; i < 256; i++) CHECK(GP(LW_OWN_CPU)[i] == 0x5a);
+    for (u32 i = 256; i < 0x1000; i++) CHECK(GP(LW_OWN_CPU)[i] == 0x11);
+    CHECK(own_lookup(LW_OWN_CPU, 256, NULL, 0) == 0);
+    vk_own_res_unref(owner);
+    vkDestroySemaphore(g_vk.dev, gate, NULL);
+    CHECK(mem_unmap(LW_OWN_CPU, 0x1000) == 0);
+    puts("landing wait: a landing waits for the GPU with vk_lock free, then lands the result");
+    return 0;
+}
+
+/* The GPU thread's wait for the slot its next frame records in: with that slot's last submission held back on the GPU,
+   it waits with vk_lock free, and the slot's recycling then waits for nothing */
+static int check_frame_ready(void) {
+    VkSemaphore gate;
+    vk_lock();
+    vk_finish();
+    VkBuffer upload;
+    u64 at;
+    CHECK(vk_stage_upload(16, 16, &upload, &at));
+    vk_cmd(); /* something to submit in this slot */
+    CHECK(!lw_gate(&gate));
+    vk_frame_next(); /* submits it: this slot's last use, held back */
+    u64 held = vk_last_submit();
+    vk_frame_next(); /* back to it, fresh: its recycling waits for that submission */
+    vk_unlock();
+    CHECK(!lw_start(vk_frame_ready));
+    int waits = !lw_done_within(300);
+    int lock_free = lw_lock_free();
+    CHECK(!lw_open(gate));
+    CHECK(lw_done_within(-1));
+    CHECK(waits);
+    CHECK(lock_free);
+    u64 submitted = 0, done = 0;
+    vk_submit_progress(&submitted, &done);
+    CHECK(done >= held);
+    vk_lock();
+    vk_cmd(); /* recycles the slot with its work done */
+    vk_finish();
+    vk_unlock();
+    vkDestroySemaphore(g_vk.dev, gate, NULL);
+    puts("frame ready: the wait for the next frame slot holds no vk_lock");
     return 0;
 }

@@ -5871,6 +5871,8 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_owned_readback());
     CHECK(!check_guest_staging());
     CHECK(!check_mapping_lock());
+    CHECK(!check_landing_wait());
+    CHECK(!check_frame_ready());
     CHECK(!check_owned_writable());
     CHECK(!check_owned_in_place_write());
     CHECK(!check_owned_read_device());

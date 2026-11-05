@@ -40,6 +40,10 @@ typedef struct Renderer {
        before the submissions and wait ends so far (mem_may_have_changed), and from before those its own waits end,
        but not those a later submission makes meanwhile */
     void (*stream_run)(int on);
+    /* the GPU thread is about to run a call or a job, with no lock held: what its next command waits for anyway (the
+       GPU's work on the frame slot it records in next) is waited for here, not with the renderer's lock held.
+       Optional */
+    void (*ready)(void);
     /* the 3D engine (maxwell3d.c) */
     /* A draw, a clear and a texture draw (DRAW_TEXTURE: a texture's rectangle onto color target 0, NULL: not drawn)
        of the state ds (gpu/draw_state.h): everything they read but their own arguments, the resource bindings

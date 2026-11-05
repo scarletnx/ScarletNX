@@ -246,6 +246,7 @@ void vk_lock(void);
 void vk_unlock(void);
 int vk_trylock(void);    /* vk_lock unless another thread holds it: 1 when taken */
 u32 vk_lock_owner(void); /* the thread (plat_tid) holding vk_lock, 0 when none */
+int vk_lock_held(void);  /* this thread holds vk_lock */
 
 /* memory.c. vk_mem_init once the device exists, before the allocator (VMA's blocks are kept within the cap):
    sparse_queue is whether the graphics queue's family can bind sparse memory */
@@ -483,6 +484,11 @@ void vk_wait_submit(u64 value); /* until the GPU has done that submission (any t
 /* Flush recorded work without frame recycling or guest result callbacks, under
    vk_lock, before an ownership readback uses the graphics queue directly. */
 void vk_submit_for_readback(void);
+/* the same without waiting for the recording thread: the commands being recorded, if any, handed to it (vk_lock) */
+void vk_submit_open(void);
+/* the renderer's ready (renderer.h): the GPU's work on the slot the next frame records in, waited for without vk_lock
+   (none when this thread holds it) */
+void vk_frame_ready(void);
 void vk_land_through(u64 value); /* the results of the submissions up to value, done, into guest memory (vk_lock) */
 void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPipelineStageFlags2 src_stage,
                 VkAccessFlags2 src_access, VkImageLayout from, VkPipelineStageFlags2 dst_stage,

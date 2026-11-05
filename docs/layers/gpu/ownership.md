@@ -119,8 +119,8 @@ macOS have no alias pool yet, so no mirror and no traps.
   Every mapping change holds `pend_lock` from its begin to its end, and so does the renderer when it adds a pending
   result or an owner. A change of guest memory alone (`GPU_MAPPING_GUEST_ONLY`: map, unmap, MapPhysicalMemory,
   UnmapPhysicalMemory) where the renderer has no pending result, no owner on its host pages and no GPU mapping of it
-  takes no `vk_lock`. A landing takes `vk_lock`
-  before it marks its entries, lands them, lets their pages go and releases their resources, then lets
+  takes no `vk_lock`. A landing first waits for the GPU's work on its entries with no lock held. Then it takes
+  `vk_lock` before it marks its entries, lands them, lets their pages go and releases their resources, then lets
   `vk_lock` go. Every
   thread that waits for a mark (publishing, dropping or landing the same bytes) holds `vk_lock` too, so the mark it
   waits for is never another thread's that waits for `vk_lock` in turn.
