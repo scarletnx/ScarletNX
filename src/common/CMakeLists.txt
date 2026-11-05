@@ -100,5 +100,7 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
                                                  -Werror=missing-variable-declarations)
     target_compile_definitions(snx_vk_common PRIVATE VK_NO_PROTOTYPES)
     target_include_directories(snx_vk_common PUBLIC "${volk_SOURCE_DIR}")
-    target_link_libraries(snx_vk_common PUBLIC Vulkan::Headers SDL3::SDL3)
+    # scarletnx-common: on macOS the window names the Vulkan driver beside the program (snx_executable,
+    # snx_vulkan_driver)
+    target_link_libraries(snx_vk_common PUBLIC Vulkan::Headers SDL3::SDL3 scarletnx-common)
 endif()
