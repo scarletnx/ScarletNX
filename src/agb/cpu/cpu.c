@@ -10,7 +10,6 @@
 #define AGB_IRQ_RETURN             0x00000004u
 #define AGB_BIOS_FLAGS             0x03007FF8u /* the interrupt flags a game's handler sets for IntrWait */
 /* Recompiled blocks are charged two cycles per instruction, the ARM7TDMI's average. */
-#define AGB_CYCLES_PER_INSTRUCTION 2
 
 typedef struct {
     AgbBoard* board;
@@ -538,6 +537,16 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
     return -1;
 }
 
+/* The cycles a block takes: each instruction its fetch (GBATEK's memory timings by region; on the cartridge with
+   WAITCNT's prefetch buffer on, which fetches the next ones while the CPU works, a cycle a halfword), and the branch
+   that ends it a refill of the pipeline, two fetches */
+static uint32_t block_cycles(const AgbBoard* board, const AgbBlock* block) {
+    unsigned width = block->thumb ? 16 : 32, region = block->pc >> 24 & 0xF;
+    uint32_t fetch = agb_access_cycles(board, block->pc, width, 1), refill = 2 * fetch;
+    if (region >= 0x8 && region <= 0xD && (board->io[0x204 >> 1] & 0x4000)) fetch = block->thumb ? 1 : 2;
+    return (uint32_t)block->instructions * fetch + refill;
+}
+
 int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles, int16_t* audio,
                 uint32_t audio_capacity, uint32_t* audio_written, char* error, size_t error_size) {
     AgbSink sink = {board, audio, audio_capacity, 0, cpu->over};
@@ -588,7 +597,7 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
         if (!block) return -1;
         cpu->arm.exit = SNX_ARM_OK;
         block->fn(&cpu->arm);
-        advance(cpu, &sink, (uint32_t)block->instructions * AGB_CYCLES_PER_INSTRUCTION);
+        advance(cpu, &sink, block_cycles(board, block));
         if (cpu->arm.exit == SNX_ARM_SVC)
             handle_swi(cpu, &sink, cpu->arm.syndrome, block->thumb);
         else if (cpu->arm.exit == SNX_ARM_UNDEFINED) {
