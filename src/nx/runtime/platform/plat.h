@@ -197,6 +197,19 @@ void plat_trap_disarm(u8* p, u64 size);
 void plat_freeze(u8* p, u64 size);
 void plat_thaw(void);
 
+/* ---- tables read at scattered addresses, more than the TLB holds in small pages (arm.c's blocks by address).
+   plat_table_new gives size bytes of zeros, readable and writable for the rest of the run, or NULL with the reason in
+   errno: a table of one huge page or more aligned to one and rounded up to whole ones. Once it is filled,
+   plat_table_filled puts it on huge pages where the system gives them on request, each huge page's worth at least
+   half written: Linux and Android are asked for them (madvise MADV_HUGEPAGE, which transparent_hugepage=madvise, the
+   usual setting, waits for, and from Linux 6.1 MADV_COLLAPSE, now rather than when khugepaged gets to it). FreeBSD
+   makes superpages of an aligned range by itself once all of it is in memory. Windows and Apple systems keep their
+   pages: Windows' large pages need the "Lock pages in memory" privilege, and Apple's superpages are x86-64 only; both
+   are in memory, never paged out, from the start. Then it logs, under name, how much of the table is in memory and
+   how much of that on huge pages, and what the system refused */
+u8* plat_table_new(u64 size);
+void plat_table_filled(u8* p, u64 size, const char* name);
+
 /* ---- shared libraries */
 void* plat_dl_open(const char* path);
 void* plat_dl_sym(void* h, const char* name);

@@ -1136,21 +1136,196 @@ int plat_address_space(u64* mapped, u64* largest_free) {
     *largest_free = hole;
     return 1;
 }
-/* mmap aligns to the host's own page: the reservation takes SNX_PLAT_PAGE_MAX more and trims the rest, so guest
-   addresses sit at the same place in any page plat_vm_page may work in as their host addresses */
-u8* plat_vm_reserve(u64 size) {
-    u64 host = (u64)sysconf(_SC_PAGESIZE), align = SNX_PLAT_PAGE_MAX, extra = align > host ? align - host : 0, head;
-    u8* p = (u8*)mmap(NULL, (size_t)(size + extra), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+/* size bytes (whole host pages) mapped at a multiple of align, a power of two: mmap aligns to the host's own page, so
+   this takes align more and trims the rest. NULL on failure */
+static u8* map_aligned(u64 size, u64 align, int prot, int flags) {
+    u64 host = (u64)sysconf(_SC_PAGESIZE), extra = align > host ? align - host : 0, head;
+    u8* p = (u8*)mmap(NULL, (size_t)(size + extra), prot, flags, -1, 0);
     if (p == (u8*)MAP_FAILED) return NULL;
     head = (align - (u64)(uintptr_t)p % align) % align;
     if (head) munmap(p, (size_t)head);
     if (extra > head) munmap(p + head + size, (size_t)(extra - head));
     return p + head;
 }
+/* aligned to SNX_PLAT_PAGE_MAX, so guest addresses sit at the same place in any page plat_vm_page may work in as
+   their host addresses */
+u8* plat_vm_reserve(u64 size) {
+    return map_aligned(size, SNX_PLAT_PAGE_MAX, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE);
+}
 u8* plat_vm_reserve_unwatched(u64 size) {
     (void)size;
     errno = ENOSYS;
     return NULL;
+}
+
+/* "4 KiB", "2 MiB": a page's size, for the log */
+static const char* page_text(u64 bytes, char out[24]) {
+    if (bytes >= (1u << 20) && !(bytes & ((1u << 20) - 1)))
+        snprintf(out, 24, "%llu MiB", (unsigned long long)(bytes >> 20));
+    else
+        snprintf(out, 24, "%llu KiB", (unsigned long long)(bytes >> 10));
+    return out;
+}
+/* The huge page anonymous memory may be mapped in: Linux's transparent huge page of one page table's span (2 MiB on
+   x86-64 and on AArch64 with 4 KiB pages, 32 MiB with 16 KiB ones), FreeBSD's first superpage. 0 with the reason in
+   why where there is none */
+static u64 table_huge_page(char* why, size_t cap) {
+    u64 page = (u64)sysconf(_SC_PAGESIZE);
+#if defined(__linux__)
+    static const char path[] = "/sys/kernel/mm/transparent_hugepage/hpage_pmd_size";
+    unsigned long long size = 0;
+    FILE* f = fopen(path, "r");
+    int n;
+    if (!f) {
+        snprintf(why, cap, "%s: %s", path, strerror(errno));
+        return 0;
+    }
+    n = fscanf(f, "%llu", &size);
+    fclose(f);
+    if (n == 1 && size > page && !(size & (size - 1))) return size;
+    snprintf(why, cap, "%s holds no huge page size", path);
+    return 0;
+#elif defined(__FreeBSD__)
+    size_t sizes[2] = {0};
+    if (getpagesizes(sizes, 2) == 2 && sizes[1] > page) return sizes[1];
+    snprintf(why, cap, "the system names no superpage (getpagesizes)");
+    return 0;
+#elif defined(__APPLE__)
+    (void)page;
+    snprintf(why, cap, "Apple's superpages are x86-64 only, and wired");
+    return 0;
+#else
+    (void)page;
+    snprintf(why, cap, "this system is not asked for huge pages");
+    return 0;
+#endif
+}
+u8* plat_table_new(u64 size) {
+    char why[192];
+    u64 page = (u64)sysconf(_SC_PAGESIZE), huge = table_huge_page(why, sizeof why);
+    u64 unit = huge && size >= huge ? huge : page; /* aligned to a huge page when one fits in it */
+    if (size > ~0ull - unit) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    return map_aligned((size + unit - 1) / unit * unit, unit, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+}
+#if defined(__linux__)
+#ifndef MADV_COLLAPSE
+#define MADV_COLLAPSE 25 /* Linux 6.1's, which older headers lack */
+#endif
+typedef unsigned char MincoreVec;
+/* the AnonHugePages of the mappings over [p, p + size), from /proc/self/smaps: 0, or -1 with errno */
+static int table_smaps(const u8* p, u64 size, u64* on) {
+    char line[PATH_MAX + 128];
+    unsigned long long lo, hi, kib;
+    u64 a = (u64)(uintptr_t)p, b = a + size;
+    int over = 0;
+    FILE* f = fopen("/proc/self/smaps", "r");
+    if (!f) return -1;
+    while (fgets(line, sizeof line, f)) {
+        if (sscanf(line, "%llx-%llx ", &lo, &hi) == 2) {
+            if (lo >= b) break; /* the mappings come in address order */
+            over = hi > a;
+        } else if (over && sscanf(line, "AnonHugePages: %llu kB", &kib) == 1)
+            *on += (u64)kib << 10;
+    }
+    fclose(f);
+    return 0;
+}
+/* the first line of path, its newline cut, or "?" */
+static void first_line(const char* path, char* out, size_t cap) {
+    FILE* f = fopen(path, "r");
+    if (!f || !fgets(out, (int)cap, f)) snprintf(out, cap, "?");
+    if (f) fclose(f);
+    out[strcspn(out, "\n")] = 0;
+}
+/* what decides whether memory asked for huge pages gets them: the process's switch (prctl PR_SET_THP_DISABLE) and the
+   system's settings */
+static void thp_settings(char* out, size_t cap) {
+    char line[128], enabled[128], defrag[128];
+    int off = 0;
+    FILE* f = fopen("/proc/self/status", "r");
+    while (f && fgets(line, sizeof line, f))
+        if (!strncmp(line, "THP_enabled:", 12)) off = atoi(line + 12) == 0;
+    if (f) fclose(f);
+    first_line("/sys/kernel/mm/transparent_hugepage/enabled", enabled, sizeof enabled);
+    first_line("/sys/kernel/mm/transparent_hugepage/defrag", defrag, sizeof defrag);
+    snprintf(out, cap, "; %stransparent_hugepage enabled: %s, defrag: %s",
+             off ? "this process has them off (prctl PR_SET_THP_DISABLE), " : "", enabled, defrag);
+}
+#else
+typedef char MincoreVec;
+#endif
+/* Linux is asked only now, for each huge page's worth at least half written: asked before the writes, a host whose
+   memory has no free huge page stalls each first write on compaction, and a huge page over a range mostly unwritten
+   holds more memory than was written */
+void plat_table_filled(u8* p, u64 size, const char* name) {
+    char why[192], text[24];
+    u64 page = (u64)sysconf(_SC_PAGESIZE), huge = table_huge_page(why, sizeof why), n = (size + page - 1) / page;
+    u64 in = 0, on = 0, i;
+    double mib = (double)size / 1048576.0, one_mib = 1048576.0;
+    MincoreVec* v = (MincoreVec*)malloc((size_t)n);
+    if (huge && size < huge) {
+        snprintf(why, sizeof why, "smaller than one %s page", page_text(huge, text));
+        huge = 0;
+    }
+    if (!v || mincore(p, (size_t)size, v)) {
+        LOG("%s: %.1f MiB, its pages unknown: mincore: %s\n", name, mib, v ? strerror(errno) : "out of memory");
+        free(v);
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        if (v[i] & 1) in += page;
+#if defined(__FreeBSD__)
+        if (v[i] & MINCORE_SUPER) on += page;
+#endif
+    }
+#if defined(__linux__)
+    if (huge) {
+        char fail[256] = "", settings[384] = "";
+        u64 per = huge / page, ranges = (size + huge - 1) / huge, r, j, dense = 0, refused = 0;
+        int advice = 0, collapse = 0; /* the errno of the last refusal */
+        for (r = 0; r < ranges && !advice; r++) {
+            u64 k = 0;
+            for (j = r * per; j < (r + 1) * per && j < n; j++) k += v[j] & 1;
+            if (k * 2 < per) continue;
+            dense++;
+            if (madvise(p + r * huge, (size_t)huge, MADV_HUGEPAGE))
+                advice = errno; /* and so for every range */
+            else if (madvise(p + r * huge, (size_t)huge, MADV_COLLAPSE)) {
+                collapse = errno;
+                refused++;
+            }
+        }
+        if (advice)
+            snprintf(fail, sizeof fail, "; madvise(MADV_HUGEPAGE) failed: %s", strerror(advice));
+        else if (refused)
+            snprintf(fail, sizeof fail,
+                     "; madvise(MADV_COLLAPSE) failed on %llu of the %llu ranges at least half in "
+                     "memory: %s",
+                     (unsigned long long)refused, (unsigned long long)dense, strerror(collapse));
+        else if (!dense)
+            snprintf(fail, sizeof fail, "; no %s range of it is half in memory", page_text(huge, text));
+        if (table_smaps(p, ranges * huge, &on))
+            snprintf(fail + strlen(fail), sizeof fail - strlen(fail), "; AnonHugePages unknown: /proc/self/smaps: %s",
+                     strerror(errno));
+        else if (!on && dense)
+            thp_settings(settings, sizeof settings);
+        LOG("%s: %.1f MiB, %.1f MiB of it in memory, %.1f MiB of that on %s pages%s%s\n", name, mib,
+            (double)in / one_mib, (double)on / one_mib, page_text(huge, text), fail, settings);
+    }
+#elif defined(__FreeBSD__)
+    if (huge)
+        LOG("%s: %.1f MiB aligned to %s superpages, %.1f MiB of it in memory, %.1f MiB of that on them\n", name, mib,
+            page_text(huge, text), (double)in / one_mib, (double)on / one_mib);
+#else
+    (void)on;
+#endif
+    if (!huge)
+        LOG("%s: %.1f MiB on %s pages (%s), %.1f MiB of it in memory\n", name, mib, page_text(page, text), why,
+            (double)in / one_mib);
+    free(v);
 }
 u8* plat_vm_reserve_at(u64 addr, u64 size) {
 #if defined(MAP_FIXED_NOREPLACE)

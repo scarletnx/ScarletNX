@@ -7,8 +7,8 @@ code (with a Thumb thread) and once as Thumb code throughout.
 The program is compiled for AArch32 with Clang, linked here (no ARM linker is needed: the code is position
 independent, -fropi, and the few relocations between its sections are applied below), and packed into an ExeFS: an
 NSO with MOD0, an ELF32 dynamic table, a symbol and a REL relocation, and a 32-bit NPDM. The runtime must run it to
-its svcExitProcess, logging each step, and record the indirect call target the recompiler couldn't find in the hints
-file, which the next recompile then compiles ahead of time. No game assets.
+its svcExitProcess, logging each step and the pages its block tables are on, and record the indirect call target the
+recompiler couldn't find in the hints file, which the next recompile then compiles ahead of time. No game assets.
 
     nx_arm32_smoke.py --runtime build/scarletnx [--cc clang]
 """
@@ -293,6 +293,8 @@ def smoke(args, runtime, repo, source, scratch, mode):
         ):
             if f'[game] {line}' not in log:
                 raise RuntimeError(f'{mode}: run {attempt}: no "{line}" in the log')
+        if 'AArch32: the block tables: ' not in log:
+            raise RuntimeError(f"{mode}: run {attempt}: no line on the block tables' pages in the log")
         if result.returncode or 'The game exited (code 0)' not in log:
             raise RuntimeError(f'{mode}: run {attempt}: the runtime returned {result.returncode}')
         if attempt == 1 and late not in log:

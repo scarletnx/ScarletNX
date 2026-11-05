@@ -16,6 +16,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/cpu/arm/exec.h"
+#include <errno.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -64,9 +65,14 @@ void arm_dispatch_init(void) {
     if (lo >= hi || hi > 0x100000000ull) lo = hi = 0;
     g_lo = (u32)lo;
     g_hi = (u32)hi;
-    g_a32 = calloc((g_hi - g_lo) / 4 + 1, sizeof *g_a32);
-    g_t32 = calloc((g_hi - g_lo) / 2 + 1, sizeof *g_t32);
-    if (!g_a32 || !g_t32) fatal("Out of memory for the table of the game's code");
+    /* both in one allocation, on huge pages where the system gives them: every block the game goes to reads it, at
+       addresses spread over 6 bytes of table for each byte of code, more than the TLB holds in 4 KiB pages */
+    u64 na = (g_hi - g_lo) / 4 + 1, size = (na + (g_hi - g_lo) / 2 + 1) * sizeof *g_a32;
+    g_a32 = (SnxArmBlock*)(void*)plat_table_new(size);
+    if (!g_a32)
+        fatal("Out of memory for the table of the game's code (%llu MiB): %s", (unsigned long long)(size >> 20),
+              strerror(errno));
+    g_t32 = g_a32 + na;
     for (u32 i = 0; i < m->nentries; i++) {
         u32 key = m->entry_addr[i], a = key & ~1u;
         if (a < g_lo || a >= g_hi) continue;
@@ -76,6 +82,7 @@ void arm_dispatch_init(void) {
             g_a32[(a - g_lo) / 4] = m->entry_fn[i];
     }
     LOG("AArch32: %u recompiled blocks in %x-%x\n", m->nentries, g_lo, g_hi);
+    plat_table_filled((u8*)(void*)g_a32, size, "AArch32: the block tables");
 }
 
 static SnxArmBlock* slot(u32 pc, int thumb) {

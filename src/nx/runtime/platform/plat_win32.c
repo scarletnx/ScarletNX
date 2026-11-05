@@ -259,6 +259,16 @@ u8* plat_vm_reserve(u64 size) {
 u8* plat_vm_reserve_unwatched(u64 size) {
     return vm_reserved(VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE, PAGE_NOACCESS));
 }
+/* committed pages, in memory only once touched, as malloc's large blocks are: MEM_LARGE_PAGES needs the privilege, and
+   commits the whole table into memory at once */
+u8* plat_table_new(u64 size) {
+    return vm_reserved(VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+}
+void plat_table_filled(u8* p, u64 size, const char* name) {
+    (void)p;
+    LOG("%s: %.1f MiB on 4 KiB pages (large pages need the Lock pages in memory privilege)\n", name,
+        (double)size / 1048576.0);
+}
 void plat_vm_track(u8* p, u64 size) {
     if (g_settings.write_tracking == 1)
         WARN("memory: write_tracking=1 (page protection) has no Windows version: %s\n",

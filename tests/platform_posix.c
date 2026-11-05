@@ -1,16 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The POSIX platform layer (platform/plat_posix.c, with plat_sdl.c): written-page tracking, decommit zeroing, pread,
-   file maps, replace, folders, timed waits and threads. Written-page tracking needs Linux 6.7 for userfaultfd's;
-   write_tracking=1 (and every host without it) tracks by protection, and write_tracking=2 must make the scan say -1.
-   The arguments: the folder for its files, then Debug settings as the runtime takes them, --key=value */
+/* The POSIX platform layer (platform/plat_posix.c, with plat_sdl.c): written-page tracking, decommit zeroing, tables on
+   huge pages, pread, file maps, replace, folders, timed waits and threads. Written-page tracking needs Linux 6.7 for
+   userfaultfd's; write_tracking=1 (and every host without it) tracks by protection, and write_tracking=2 must make the
+   scan say -1. The arguments: the folder for its files, then Debug settings as the runtime takes them, --key=value */
 #include "nx/runtime/platform/plat_posix.c"
 #include "nx/runtime/ini.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <sys/wait.h>
 #if defined(__linux__)
-#include <sys/prctl.h> /* PR_SET_VMA_ANON_NAME, for test_foreign */
+#include <sys/prctl.h> /* PR_SET_VMA_ANON_NAME, for test_foreign; PR_SET_THP_DISABLE, for test_tables */
 #endif
 
 static char g_log[1024]; /* the log's lines while g_log_on, as far as they fit */
@@ -464,6 +464,169 @@ static void test_host_page(void) {
     g_settings.host_page_size = given;
 }
 
+/* ---- tables on huge pages (plat_table_new, plat_table_filled) */
+#if defined(__linux__)
+/* the mapping p is in, as /proc/self/smaps has it: where it starts and ends, and whether it was asked for huge pages
+   (VmFlags hg) */
+static int mapping_at(const u8* p, u64* start, u64* end, int* asked) {
+    char line[PATH_MAX + 128];
+    unsigned long long lo, hi, a = (unsigned long long)(uintptr_t)p;
+    int at = 0, found = 0;
+    FILE* f = fopen("/proc/self/smaps", "r");
+    if (!f) return 0;
+    while (fgets(line, sizeof line, f)) {
+        if (sscanf(line, "%llx-%llx ", &lo, &hi) == 2) {
+            at = lo <= a && a < hi;
+            if (at) *start = lo, *end = hi, found = 1;
+        } else if (at && !strncmp(line, "VmFlags:", 8))
+            *asked = strstr(line, " hg") != NULL;
+    }
+    fclose(f);
+    return found;
+}
+/* the AnonHugePages of the mappings in [p, p + size) */
+static u64 huge_in(const u8* p, u64 size) {
+    char line[PATH_MAX + 128];
+    unsigned long long lo, hi, kib;
+    u64 sum = 0;
+    int in = 0;
+    FILE* f = fopen("/proc/self/smaps", "r");
+    while (f && fgets(line, sizeof line, f)) {
+        if (sscanf(line, "%llx-%llx ", &lo, &hi) == 2)
+            in = lo >= (uintptr_t)p && hi <= (uintptr_t)p + size;
+        else if (in && sscanf(line, "AnonHugePages: %llu kB", &kib) == 1)
+            sum += (u64)kib << 10;
+    }
+    if (f) fclose(f);
+    return sum;
+}
+/* A table of three huge pages and a bit, its first written whole and its third once: aligned to the huge page and
+   rounded up to four, zeroed; the first asked for huge pages, the third not (one page of 512 written); the log line
+   gives what is in memory, and what smaps has on huge pages, before or after it (khugepaged may collapse between) */
+static int table_checks(u64 huge, int thp_off) {
+    char want[512], got[1024];
+    u64 page = (u64)sysconf(_SC_PAGESIZE), size = 3 * huge + 5 * page + 100, start = 0, end = 0, before, after;
+    int asked = 0, bad = 0;
+    u8* p = plat_table_new(size);
+    u64 a = (u64)(uintptr_t)p;
+#define TABLE_CHECK(c, what) (void)((c) || (bad++, printf("FAIL table: %s\n", what)))
+    TABLE_CHECK(p && a % huge == 0, "not aligned to the huge page");
+    if (!p) return bad;
+    TABLE_CHECK(mapping_at(p, &start, &end, &asked) && start == a && end == a + 4 * huge, "not four huge pages");
+    TABLE_CHECK(!asked, "asked for huge pages before it was filled");
+    TABLE_CHECK(!p[0] && !p[2 * huge + 77], "not zeros"); /* pages written next: a page only read is in memory */
+    memset(p, 1, (size_t)huge);
+    p[2 * huge + 77] = 1;
+    g_log[0] = 0;
+    g_log_on = 1;
+    before = huge_in(p, 4 * huge);
+    plat_table_filled(p, size, "test table");
+    after = huge_in(p, 4 * huge);
+    g_log_on = 0;
+    snprintf(got, sizeof got, "%s", g_log);
+    TABLE_CHECK(mapping_at(p, &start, &end, &asked) && asked && start == a && end == a + huge,
+                "the first huge page not asked");
+    asked = 1;
+    TABLE_CHECK(mapping_at(p + 2 * huge, &start, &end, &asked) && !asked && start == a + huge && end == a + 4 * huge,
+                "the mostly empty huge pages asked");
+    for (int i = 0; i < 2; i++) {
+        u64 on = i ? after : before;
+        snprintf(want, sizeof want,
+                 "test table: %.1f MiB, %.1f MiB of it in memory, %.1f MiB of that on %llu MiB pages",
+                 (double)size / 1048576.0, (double)(huge + page) / 1048576.0, (double)on / 1048576.0,
+                 (unsigned long long)(huge >> 20));
+        if (!strncmp(got, want, strlen(want))) break;
+        if (i) TABLE_CHECK(0, "the log line has not the table's sizes");
+    }
+    TABLE_CHECK(!p[size - 1] && !p[3 * huge], "not zeros past what was written");
+    snprintf(want, sizeof want, "of that on %llu MiB pages; madvise(MADV_COLLAPSE) failed on 1 of the 1 ranges",
+             (unsigned long long)(huge >> 20));
+    if (thp_off)
+        TABLE_CHECK(strstr(got, want) &&
+                        strstr(got, "; this process has them off (prctl PR_SET_THP_DISABLE), transparent_hugepage "),
+                    "with THP off for the process, the line does not say so");
+    printf("table: %s", got);
+#undef TABLE_CHECK
+    return bad;
+}
+#endif
+/* Tables read at scattered addresses go on huge pages where the system has them, each huge page's worth half written
+   or more, only once filled; one smaller than a huge page stays on the host's pages and says why. Linux without
+   transparent huge pages skips the huge page checks, with the reason; Apple systems have none to check */
+static void test_tables(void) {
+    char want[512];
+    u64 page = (u64)sysconf(_SC_PAGESIZE), huge = 0;
+    u8* small;
+    printf("tables\n");
+    small = plat_table_new(3 * page);
+    CHECK(small && !small[0] && !small[3 * page - 1], "a small table is not zeros");
+    if (small) small[page] = 1;
+#if defined(__linux__)
+    {
+        static const char path[] = "/sys/kernel/mm/transparent_hugepage/hpage_pmd_size";
+        unsigned long long n = 0;
+        FILE* f = fopen(path, "r");
+        if (f && fscanf(f, "%llu", &n) == 1) huge = n;
+        if (!huge) printf("tables on huge pages skipped: %s: %s\n", path, f ? "no size in it" : strerror(errno));
+        if (f) fclose(f);
+    }
+#elif defined(__FreeBSD__)
+    {
+        size_t sizes[2] = {0};
+        if (getpagesizes(sizes, 2) == 2) huge = sizes[1];
+        if (!huge) printf("tables on huge pages skipped: getpagesizes names no superpage\n");
+    }
+#else
+    printf("tables on huge pages skipped: this system gives a program's memory none on request\n");
+#endif
+    if (small && huge) {
+        snprintf(want, sizeof want,
+                 "small table: 0.0 MiB on %llu KiB pages (smaller than one %llu MiB page), 0.0 MiB of it in memory\n",
+                 (unsigned long long)(page >> 10), (unsigned long long)(huge >> 20));
+        g_log[0] = 0;
+        g_log_on = 1;
+        plat_table_filled(small, 3 * page, "small table");
+        g_log_on = 0;
+        CHECK(!strcmp(g_log, want), "a small table's line does not say its pages and why");
+    }
+#if defined(__linux__)
+    if (huge) {
+        pid_t child;
+        int status = 0;
+        CHECK(!table_checks(huge, 0), "a table on huge pages");
+        /* THP off for the process: asked, refused, and the line says why */
+        child = fork();
+        if (!child) _exit(prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0) ? 3 : table_checks(huge, 1) ? 1 : 0);
+        CHECK(child > 0 && waitpid(child, &status, 0) == child && WIFEXITED(status) && !WEXITSTATUS(status),
+              "a table with THP off for the process");
+    }
+#elif defined(__FreeBSD__)
+    if (huge) {
+        u64 size = 2 * huge, in = 0, on = 0, i;
+        u8* p = plat_table_new(size);
+        char v[1024]; /* a superpage's 4 KiB pages: 512 */
+        CHECK(p && (uintptr_t)p % huge == 0, "a table is not aligned to the superpage");
+        if (p && huge / page <= sizeof v) {
+            memset(p, 1, (size_t)huge);
+            g_log[0] = 0;
+            g_log_on = 1;
+            plat_table_filled(p, size, "test table");
+            g_log_on = 0;
+            CHECK(!mincore(p, (size_t)huge, v), "mincore");
+            for (i = 0; i < huge / page; i++)
+                in += v[i] & MINCORE_INCORE ? page : 0, on += v[i] & MINCORE_SUPER ? page : 0;
+            snprintf(want, sizeof want,
+                     "test table: %.1f MiB aligned to %llu MiB superpages, %.1f MiB of it in memory, "
+                     "%.1f MiB of that on them\n",
+                     (double)size / 1048576.0, (unsigned long long)(huge >> 20), (double)in / 1048576.0,
+                     (double)on / 1048576.0);
+            CHECK(!strcmp(g_log, want), "the table's line does not say what mincore has");
+            printf("table: %s", g_log);
+        }
+    }
+#endif
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     char path[1200], tmp[1200], sub[1200];
@@ -493,6 +656,7 @@ int main(int argc, char** argv) {
     }
     test_host_page();
     test_foreign();
+    test_tables();
     if (sysconf(_SC_PAGESIZE) == 4096)
         test_guest_memory(dir);
     else /* plat_vm_reserve refuses the host: guest memory needs 4 KiB pages, and Apple silicon's are 16 KiB */
