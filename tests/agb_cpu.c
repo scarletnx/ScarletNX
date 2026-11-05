@@ -216,6 +216,18 @@ int main(void) {
         CHECK(cpu.arm.r[0] == 0 && board.held_cycles == 0);
         CHECK(!agb_cpu_run(&board, &cpu, &recomp, 1000, audio, AGB_APU_RATE, NULL, error, sizeof error));
         CHECK(cpu.arm.r[0] > 0);
+        /* a hold longer than the run: the run ends at its own end, with no cycles over and a run's sound, 32 samples
+           of 512 cycles, and the rest of the hold waits in the next run */
+        {
+            uint32_t written = 0;
+            cpu.arm.r[0] = 0;
+            cpu.over = 0;
+            board.held_cycles = 30000;
+            CHECK(!agb_cpu_run(&board, &cpu, &recomp, 16384, audio, AGB_APU_RATE, &written, error, sizeof error));
+            CHECK(cpu.over == 0 && board.held_cycles == 30000 - 16384 && written == 32 && cpu.arm.r[0] == 0);
+            CHECK(!agb_cpu_run(&board, &cpu, &recomp, 16384, audio, AGB_APU_RATE, &written, error, sizeof error));
+            CHECK(board.held_cycles == 0 && cpu.arm.r[0] > 0);
+        }
     }
     {
         /* a BIOS call takes its entry and return, 45 cycles, and the memory it streams through: CpuSet of 64 words from
