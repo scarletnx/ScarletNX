@@ -8,6 +8,7 @@
 #include "nx/runtime/options.h"
 #include "nx/gpu/maxwell/draw_state.h"
 #include "nx/gpu/renderer.h"
+#include "common/gpu/vk/vk_common.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/shader/shader.h"
@@ -3187,12 +3188,12 @@ int main(int argc, char** argv) {
     CHECK(!check_uma_region_merge());
     CHECK(!check_write_tracking());
     CHECK(!check_descriptor_room());
-    /* the pipeline workers: pipeline_threads when given, else a quarter of the CPUs, two to six */
-    CHECK(vk_pipeline_worker_count(0, 8) == 6 && vk_pipeline_worker_count(0, 12) == 10 &&
-          vk_pipeline_worker_count(0, 4) == 2 && vk_pipeline_worker_count(0, 0) == 2 &&
-          vk_pipeline_worker_count(0, 64) == 12);
-    CHECK(vk_pipeline_worker_count(5, 12) == 5 && vk_pipeline_worker_count(32, 4) == 32 &&
-          vk_pipeline_worker_count(1, 64) == 1);
+    /* the pipeline workers: pipeline_threads when given, else all the CPUs but two, two to twelve */
+    CHECK(snx_vk_pipeline_workers(0, 8) == 6 && snx_vk_pipeline_workers(0, 12) == 10 &&
+          snx_vk_pipeline_workers(0, 4) == 2 && snx_vk_pipeline_workers(0, 0) == 2 &&
+          snx_vk_pipeline_workers(0, 64) == 12);
+    CHECK(snx_vk_pipeline_workers(5, 12) == 5 && snx_vk_pipeline_workers(32, 4) == 32 &&
+          snx_vk_pipeline_workers(1, 64) == 1);
     /* FFmpeg takes the device for Vulkan Video exactly when it has the decode queue */
     AVBufferRef* video_device = g_renderer->nvdec_hw_device();
     CHECK(!video_device == (g_vk.video_family == ~0u));

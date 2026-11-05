@@ -1323,9 +1323,6 @@ typedef struct {
 } PipeKey;
 /* the pipeline for k, made when new and waited for while a worker makes it: NULL only when it can't be made */
 VkPipeline vk_pipeline_get(const PipeKey* k);
-/* the threads making new pipelines: setting (pipeline_threads) when it is one or more, else a quarter of cpus, two
-   to six */
-int vk_pipeline_worker_count(int setting, int cpus);
 /* the key a file of earlier runs' shaders and pipelines must have to be read: the device, the build, and what changes
    what a pipeline key means (dynamic vertex input among them), into out; the length of its guest part, which the
    pipelines depend on, in *guest */

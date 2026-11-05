@@ -81,4 +81,8 @@ uint32_t snx_vk_memory_type(const VkPhysicalDeviceMemoryProperties* memory, uint
    - SMALL_BAR, a discrete GPU's own, which the CPU maps a small window of (256 MiB without resizable BAR) */
 typedef enum { SNX_VK_SMALL_BAR, SNX_VK_REBAR, SNX_VK_UMA } SnxVkMemoryModel;
 SnxVkMemoryModel snx_vk_memory_model(VkPhysicalDeviceType type, const VkPhysicalDeviceMemoryProperties* memory);
+
+/* The threads that make new pipelines (pipeline_threads): setting when it is one or more, else all of cpus but two,
+   two to twelve */
+int snx_vk_pipeline_workers(int setting, int cpus);
 #endif
