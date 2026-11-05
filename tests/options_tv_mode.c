@@ -296,11 +296,11 @@ static void test_memory_fit_old(void) {
 /* the log's settings line: the Display, Graphics and Performance settings off their default, each with its default */
 static void test_settings_line(void) {
     char list[2048];
-    g_settings.astc_bc = 1;
-    CHECK(options_settings(list, sizeof list) >= 1 && strstr(list, "astc_bc=1 (default 0)"));
-    g_settings.astc_bc = 0;
+    g_settings.astc_mode = 1;
+    CHECK(options_settings(list, sizeof list) >= 1 && strstr(list, "astc_mode=1 (default 0)"));
+    g_settings.astc_mode = 0;
     options_settings(list, sizeof list);
-    CHECK(!strstr(list, "astc_bc"));
+    CHECK(!strstr(list, "astc_mode"));
 }
 
 int main(void) {

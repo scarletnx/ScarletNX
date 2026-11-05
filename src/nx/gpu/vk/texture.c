@@ -1629,14 +1629,12 @@ texture_from_memory:
         gmmu_pieces(gva, sz, tex_run, &runs);
         holes = runs.mapped < sz;
     }
-    /* ASTC that the GPU decodes: encoded again as BC7, a quarter of RGBA8's memory, where the GPU samples BCn, astc_bc
-       or not, when its mapping has holes or memory has run short of the working set (vk_astc_as_bc7). The first is a
+    /* ASTC that the GPU decodes and format.c leaves RGBA8 (astc_mode=1, or a 3D texture where the device has no 3D
+       BC7 images): encoded again as BC7 all the same, where the GPU samples BCn, when its mapping has holes. That is a
        game's sparse texture, as big as 68 layers of 8192x8192 with seven of them mapped, which as RGBA8 took more
-       memory than the GPU had; in the second, one game's textures took the whole budget as RGBA8 and were evicted
-       and uploaded again every frame. Textures made before the shortage keep RGBA8 until they are evicted */
+       memory than the GPU had */
     if (f.conv == VKC_ASTC && g_vk.feat.textureCompressionBC &&
-        (f.vk == VK_FORMAT_R8G8B8A8_UNORM || f.vk == VK_FORMAT_R8G8B8A8_SRGB) &&
-        vk_astc_as_bc7((u64)w * h * layers, vt == VK_IMAGE_VIEW_TYPE_3D, holes, vk_mem_pressed()))
+        (f.vk == VK_FORMAT_R8G8B8A8_UNORM || f.vk == VK_FORMAT_R8G8B8A8_SRGB) && holes)
         f.vk = f.vk == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
     Surf* t = tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, tile_w, pitch, stride, msaa, holes);
     if (!t) return NULL;

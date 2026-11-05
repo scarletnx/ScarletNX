@@ -304,23 +304,25 @@ static int create_device(void) {
     WANT(sampleRateShading);
     WANT(alphaToOne); /* multisampled draws asking for it (pipeline.c) */
     /* BCn, ASTC and ETC2 sampled as they are (format.c) where the settings ask for it and the device has them, else
-       decoded on the GPU as they are uploaded; ASTC decoded so is encoded again as BC7 where the GPU samples BCn and
-       astc_bc asks for it, or the texture has holes in its mapping (texture.c). Thus BCn always where the device has
-       it, which native_bc decides the sampling of */
+       decoded on the GPU as they are uploaded; ASTC decoded so is encoded again as BC7 where the GPU samples BCn,
+       unless astc_mode asks for exact RGBA8 (then only a texture with holes in its mapping is BC7, texture.c). Thus
+       BCn always where the device has it, which native_bc decides the sampling of */
     WANT(textureCompressionBC);
     g_vk.astc_bc7_could = have.textureCompressionBC && !have.textureCompressionASTC_LDR;
     if (g_settings.native_astc) WANT(textureCompressionASTC_LDR);
     if (g_settings.native_etc2) WANT(textureCompressionETC2);
     if (g_settings.native_bc && !want->textureCompressionBC)
         WARN("vulkan: the GPU can't sample BCn textures: they are decoded on the GPU as they are loaded\n");
-    const int astc_bc7 = g_settings.astc_bc && want->textureCompressionBC && !want->textureCompressionASTC_LDR;
+    const int astc_bc7 = !g_settings.astc_mode && want->textureCompressionBC && !want->textureCompressionASTC_LDR;
     if (g_settings.native_astc && !want->textureCompressionASTC_LDR)
         WARN("vulkan: native ASTC textures were asked for, but the GPU can't sample ASTC: they are decoded to %s\n",
-             astc_bc7 ? "RGBA8 and encoded again as BC7 (astc_bc=1)" : "RGBA8");
-    if (g_settings.astc_bc && !want->textureCompressionASTC_LDR && !want->textureCompressionBC)
-        WARN("vulkan: astc_bc=1, but the GPU samples neither ASTC nor BCn: ASTC textures are decoded to RGBA8\n");
+             astc_bc7 ? "RGBA8 and encoded again as BC7" : "RGBA8");
+    if (!want->textureCompressionASTC_LDR && !want->textureCompressionBC)
+        WARN("vulkan: the GPU samples neither ASTC nor BCn: ASTC textures are decoded to RGBA8, four times BC7's "
+             "memory\n");
     if (astc_bc7 && !g_settings.native_astc)
-        LOG("vulkan: ASTC textures are decoded and encoded again as BC7 (astc_bc=1), a quarter of RGBA8's memory\n");
+        LOG("vulkan: ASTC textures are decoded and encoded again as BC7, a quarter of RGBA8's memory (astc_mode=1 "
+            "keeps them exact)\n");
     if (g_settings.native_etc2 && !want->textureCompressionETC2)
         WARN("vulkan: native ETC2 textures were asked for, but the GPU can't sample ETC2: they are decoded\n");
     WANT(vertexPipelineStoresAndAtomics);

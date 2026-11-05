@@ -26,7 +26,7 @@ Settings show a group for each section ([GUI launcher](GUI.md)).
 Restart for `docked` (`Auto` follows the host's power while the game runs), `fullscreen`, `language`, `resolution`,
 `anisotropy`, `memory_gb`, `memory_fit_mode`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
 `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `prepare_shaders`, `compress_shader_cache`,
-`compress_prepared_shaders`, `jit_threads`, `vertex_input_dynamic_state`, `astc_bc`, and
+`compress_prepared_shaders`, `jit_threads`, `vertex_input_dynamic_state`, `astc_mode`, and
 the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
 `scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
 type, range and help, tab-separated. Every setting, the recompiler's too, is described once in
@@ -70,7 +70,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `vulkan_video` | `0` | `1` decodes H.264 movies on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver have an H.264 decode queue. Experimental and untested. `0` decodes them on the CPU, as VP9 movies always are |
 | `mesh_draws` | `0` | `1` draws an Ounce game's mesh draws (`DrawMeshTasks`) with `VK_EXT_mesh_shader`, where the GPU has it. Experimental: on one NVIDIA GPU most runs with them ended in a GPU fault ([docs/OUNCE.md](OUNCE.md#draws)). `0` skips them |
 | `vertex_input_dynamic_state` | `auto` | How a draw gives the GPU its vertex layout. `auto` sets it as dynamic state (`VK_EXT_vertex_input_dynamic_state`) where the GPU's driver has the extension and its `vertexInputDynamicState` feature, but not on the drivers known to draw it wrong: NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0 (of whose four numbers the driver gives the last two: below 100.0), and not on Android, whatever the driver, as Eden: Qualcomm's 512.800.48 draws it wrong. `on` sets it as dynamic state wherever the driver has it, those too. `off` puts it in the pipeline: each layout a program is drawn with takes a pipeline of its own, where dynamic state has one serve them all. The log says which, with the device, its driver and version. `on` on a device without the extension says so and puts the layout in the pipeline; any value but `auto`, `on` and `off` stops the game, saying so. Pipelines kept for the next run (`.vkshaders`) are made again when the choice changes |
-| `astc_bc` | `0` | `1`, on a GPU that samples BCn but not ASTC (most desktop ones), decodes ASTC textures and encodes them again as BC7, in a quarter of RGBA8's memory, close to what the blocks decode to but not always the same. `0` decodes them to RGBA8 exactly. Where the GPU samples ASTC it does nothing |
+| `astc_mode` | `0` | `0` (Auto), on a GPU that samples BCn but not ASTC (most desktop ones), decodes ASTC textures and encodes them again as BC7, in a quarter of RGBA8's memory, close to what the blocks decode to but not always the same. A later run loads them from the BC7 cache. `1` (Exact) decodes them to RGBA8 exactly, in four times the memory. Where the GPU samples ASTC it does nothing. It takes the place of `astc_bc`, whose `1` was Auto ([DEPRECATIONS](DEPRECATIONS.md)) |
 
 ## Performance
 

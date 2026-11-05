@@ -10,7 +10,7 @@
    slice, or whole slices when they fit, so a 3D texture's thin slices share a
    dispatch and a copy instead of taking one each.
 
-   A BC7 image (format.c's TA, the astc_bc setting, on a GPU that samples BCn but not ASTC) takes a second
+   A BC7 image (format.c's TA, astc_mode's Auto, on a GPU that samples BCn but not ASTC) takes a second
    dispatch: bc7.comp encodes the decoded texels into BC7 blocks, a quarter of RGBA8's bytes, and those are what
    the copy writes. Its strips then start on whole 4x4 blocks. A level of VK_BC7_FAST_TEXELS or more takes the
    encoder's fast build, which tries every mode only on the blocks mode 6 does not hold closely (the full encoder on
@@ -176,10 +176,6 @@ static void bc7_init(void) {
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_astc.bc7_scratch, &g_astc.bc7_mem, NULL)))
         fatal("vulkan: cannot allocate the BC7 encoder's scratch memory");
     vk_mem_track(g_astc.bc7_mem);
-}
-
-int vk_astc_as_bc7(u64 texels, int is3d, int holes, int pressed) {
-    return holes || (pressed && !is3d && texels >= VK_BC7_AUTO_TEXELS);
 }
 
 void vk_astc_stats(u64* levels, u64* hits, u64* bytes, u64* rgba8_bytes) {

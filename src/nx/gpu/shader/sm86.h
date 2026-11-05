@@ -118,6 +118,11 @@ int sm86_find_programs(const u8* data, u32 size, Sm86Program* out, int max);
    textures, global buffers, attributes. Returns malloc'd words, their count in *word_count, or NULL with
    si->unsupported and si->first_unsupported set */
 u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count);
+/* sm86_to_spirv, with the device's FP32 flush to zero (can_flush, SH_FTZ_* of shader.h) as shader_to_spirv takes it:
+   the DenormFlushToZero execution mode where every FADD, FMUL and FFMA flushes and the device has the mode, nothing on
+   a device that flushes by itself, else a flush of each such operand and result. sm86_to_spirv is SH_FTZ_EMULATE */
+u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count,
+                       int can_flush);
 /* Task and mesh programs (docs/OUNCE.md, "Mesh shaders") translate to the TaskEXT and MeshEXT execution models of
    VK_EXT_mesh_shader. The caller gives the stage, ST_TS or ST_MS, from the program's NVN control section
    (nvn_section_stage), as the SPH cannot tell it: sph is the SPH of a vertex program, or of a tessellation evaluation

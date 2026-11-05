@@ -158,7 +158,7 @@ static u32* sm86_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo*
         }
         for (u32 i = 0; i < SM86_SPH_BYTES / 4; i++) sph[i] = snx_ld_le32(code + p.header + 4 * i);
     }
-    return sm86_to_spirv(code + p.code, p.size, stage, stage == ST_CS ? NULL : sph, si, words);
+    return sm86_to_spirv_ftz(code + p.code, p.size, stage, stage == ST_CS ? NULL : sph, si, words, g_vk_ftz);
 }
 /* The translator's reader (g_shader_cb_read) and what rec_read records into are one for the process: the GPU thread's
    draws and dispatches and the pass over the programs the game ships, on the shader files' thread (ship_program),
@@ -430,6 +430,46 @@ void vk_pipeline_init(void) {
 
 /* ------------------------------------------------------------ shaders */
 
+/* the shader of each module, for the log line of a pipeline slow to make (pipe_make): its program's hash, its stage
+   and its words of SPIR-V. A table of its own, under its own lock, as the workers that make pipelines do not read the
+   GPU thread's tables. Full, a module goes unnamed */
+#define MODINFO_N 16384u
+typedef struct {
+    u64 mod, hash;
+    u32 stage, words;
+} ModInfo;
+static ModInfo g_modinfo[MODINFO_N];
+static PMutex g_modinfo_lock = PMUTEX_INIT;
+static u64 modinfo_bits(VkShaderModule m) { /* mod_bits, which comes later */
+    u64 v = 0;
+    memcpy(&v, &m, sizeof m);
+    return v;
+}
+static u32 modinfo_slot(u64 bits) { return (u32)((bits * 0x9e3779b97f4a7c15ull) >> 50) & (MODINFO_N - 1); }
+static void modinfo_put(VkShaderModule m, u64 hash, int stage, size_t words) {
+    const u64 bits = modinfo_bits(m);
+    if (!bits) return;
+    pm_lock(&g_modinfo_lock);
+    for (u32 n = 0, i = modinfo_slot(bits); n < MODINFO_N; n++, i = (i + 1) & (MODINFO_N - 1))
+        if (!g_modinfo[i].mod || g_modinfo[i].mod == bits) {
+            g_modinfo[i] = (ModInfo){bits, hash, (u32)stage, words > 0xffffffffu ? 0xffffffffu : (u32)words};
+            break;
+        }
+    pm_unlock(&g_modinfo_lock);
+}
+static int modinfo_get(VkShaderModule m, ModInfo* out) {
+    const u64 bits = modinfo_bits(m);
+    int found = 0;
+    if (!bits) return 0;
+    pm_lock(&g_modinfo_lock);
+    for (u32 n = 0, i = modinfo_slot(bits); n < MODINFO_N && g_modinfo[i].mod && !found; n++, i = (i + 1) & (MODINFO_N - 1))
+        if (g_modinfo[i].mod == bits) {
+            *out = g_modinfo[i];
+            found = 1;
+        }
+    pm_unlock(&g_modinfo_lock);
+    return found;
+}
 static VkSh* g_shh[1024];
 /* the shader last found for an address and key, two per set. It is checked against memory once per submit: unchanged
    by write tracking since then, or else by the hash of its code */
@@ -592,8 +632,10 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
         if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &s->mod))) {
             s->failed = 1;
             snprintf(s->si.first_unsupported, sizeof s->si.first_unsupported, "vkCreateShaderModule failed");
-        } else
+        } else {
+            modinfo_put(s->mod, h, stage, nw);
             pf_shader_record(s, spv, nw, code, src_bytes(mlen), xfb);
+        }
         free(spv);
     } else
         s->failed = 1;
@@ -870,7 +912,7 @@ static struct {
 } g_pf;
 static void pf_pipe_record(const PipeKey* k);
 
-static VkPipeline pipe_create(const Pipe* e) {
+static VkPipeline pipe_create(const Pipe* e, int* hit) {
     const PipeKey* k = &e->k;
     VkPipelineShaderStageCreateInfo st[5];
     VkShaderModule modules[5];
@@ -1108,9 +1150,31 @@ static VkPipeline pipe_create(const Pipe* e) {
         .layout = e->layout};
     VkPipeline p = VK_NULL_HANDLE;
     VK_OK(vkCreateGraphicsPipelines(g_vk.dev, g_pcache, 1, &gi, NULL, &p));
-    if (made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT)
-        __atomic_add_fetch(e->prewarm ? &g_pf.hits : &g_pipe_hits, 1, __ATOMIC_RELAXED);
+    *hit = (made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
+    if (*hit) __atomic_add_fetch(e->prewarm ? &g_pf.hits : &g_pipe_hits, 1, __ATOMIC_RELAXED);
     return p;
+}
+/* a pipeline that took a second or more to make: its stages' programs and SPIR-V, to find the shaders the driver is
+   slow on (their programs are in the shader corpus, shader_corpus, by these hashes) */
+#define PIPE_SLOW_NS 1000000000ull
+static void pipe_slow_say(const Pipe* e, u64 ns, int hit) {
+    static const char* const names[5] = {"vs", "tcs", "tes", "gs", "fs"};
+    const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
+    char stages[320];
+    size_t at = 0;
+    if (ns < PIPE_SLOW_NS) return;
+    stages[0] = 0;
+    for (int s = 0; s < 5; s++) {
+        ModInfo mi;
+        if (!modules[s] || at >= sizeof stages) continue;
+        if (modinfo_get(modules[s], &mi))
+            at += (size_t)snprintf(stages + at, sizeof stages - at, ", %s %016llx (%u KB of SPIR-V)", names[s],
+                                   (unsigned long long)mi.hash, mi.words / 256);
+        else
+            at += (size_t)snprintf(stages + at, sizeof stages - at, ", %s (a runtime shader)", names[s]);
+    }
+    LOG_LIMIT(64, "vulkan: a pipeline took %llu ms to make (%s the pipeline cache)%s\n",
+              (unsigned long long)(ns / 1000000), hit ? "from" : "not in", stages);
 }
 /* e's pipeline, made here. One a draw asked for is kept in the file (pf_pipe_record): once made when the GPU thread
    makes it (record), and when it queues it for a worker otherwise, as the file's tables are the GPU thread's */
@@ -1118,8 +1182,10 @@ static VkPipeline pipe_make(const Pipe* e, int record) {
     SNX_ZONE_T(z_pipe, "pipeline make", "hash %016llx", (unsigned long long)e->h);
     u64 t0 = plat_ns();
     SNX_ZONE(z, "pipeline make");
-    VkPipeline p = pipe_create(e);
+    int hit = 0;
+    VkPipeline p = pipe_create(e, &hit);
     SNX_ZONE_END(z);
+    pipe_slow_say(e, plat_ns() - t0, hit);
     pcache_note();
     if (e->prewarm)
         __atomic_add_fetch(&g_pf.made, 1, __ATOMIC_RELAXED);
@@ -1535,6 +1601,7 @@ static VkSh* sh_from_record(const PfShader* r, const u32* cbr, const u32* spv) {
     s->qh_a = r->qh_a;
     for (int i = 0; i < s->si.ntex; i++) s->indexed |= (s->si.tex[i].flags & SNX_TEX_INDEXED) != 0;
     s->mod = vk_module_spv(spv, r->nspv);
+    modinfo_put(s->mod, s->hash, s->stage, r->nspv);
     if (!s->mod) {
         free(s->cbr.r);
         free(s);
@@ -1580,6 +1647,7 @@ static u64 pf_load_source(void* ctx, const PfSource* r, const u32* cbr, const u8
                    &nw);
     g_replay = NULL;
     if (!spv || vk_spirv_unavailable(spv, nw) || !(s->mod = vk_module_spv(spv, nw))) goto fail;
+    modinfo_put(s->mod, r->hash, (int)r->stage, nw);
     pf_shader_into(&g_pf.file, s, mod_bits(s->mod), spv, nw, window, r->ncode, xfb);
     free(spv);
     free(window);
