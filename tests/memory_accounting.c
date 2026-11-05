@@ -220,10 +220,12 @@ void gpu_mem_changed(u64 a, u64 size) {
     (void)size;
 }
 static u64 mapping_a, mapping_size; /* the guest range the last change named */
-static void mapping_begin(u64 a, u64 size, int full) {
-    CHECK(full == 1 && size != 0);
+static int mapping_kind;            /* and its kind (GPU_MAPPING_*) */
+static void mapping_begin(u64 a, u64 size, int kind) {
+    CHECK((kind == GPU_MAPPING_GUEST || kind == GPU_MAPPING_GUEST_ONLY) && size != 0);
     mapping_a = a;
     mapping_size = size;
+    mapping_kind = kind;
     CHECK(mapping_depth == 0);
     mapping_depth++;
     mapping_begins++;
@@ -520,15 +522,32 @@ static void test_mapping_boundary(void) {
     base_process();
     g_gpu_mapping_begin = mapping_begin;
     g_gpu_mapping_end = mapping_end;
+    /* the range it changes. Its own pages alone are landed or dropped there (GPU_MAPPING_GUEST_ONLY): the renderer
+       lets a change that nothing of it covers go on without its lock */
     CHECK(mem_map(ALIAS_BASE, 0x1000, MS_SHARED, PERM_RW) == 0);
-    CHECK(mapping_a == ALIAS_BASE && mapping_size == 0x1000); /* the range it changes */
+    CHECK(mapping_a == ALIAS_BASE && mapping_size == 0x1000 && mapping_kind == GPU_MAPPING_GUEST_ONLY);
     CHECK(mem_unmap(ALIAS_BASE, 0x1000) == 0);
-    CHECK(mapping_a == ALIAS_BASE && mapping_size == 0x1000);
+    CHECK(mapping_a == ALIAS_BASE && mapping_size == 0x1000 && mapping_kind == GPU_MAPPING_GUEST_ONLY);
+    CHECK(mem_map_physical(ALIAS_BASE, 0x2000, mem_total()) == 0);
+    CHECK(mapping_a == ALIAS_BASE && mapping_size == 0x2000 && mapping_kind == GPU_MAPPING_GUEST_ONLY);
+    CHECK(mem_unmap_physical(ALIAS_BASE, 0x2000) == 0);
+    CHECK(mapping_a == ALIAS_BASE && mapping_size == 0x2000 && mapping_kind == GPU_MAPPING_GUEST_ONLY);
+    /* the heap's change: any of it, and a view's source lands what the GPU holds of it, beyond the range */
     CHECK(mem_heap_set(0x2000, mem_total()) == 0);
-    CHECK(mapping_a == 0 && mapping_size == ~0ull); /* the heap's change: any of it */
+    CHECK(mapping_a == 0 && mapping_size == ~0ull && mapping_kind == GPU_MAPPING_GUEST);
     CHECK(mem_heap_set(0x2000, mem_total()) == 0);
+    CHECK(mem_map(ALIAS_BASE, 0x1000, MS_NORMAL, PERM_RW) == 0);
+    CHECK(mem_alias_begin(ALIAS_BASE, 0x1000) == 0);
+    CHECK(mapping_a == ALIAS_BASE && mapping_kind == GPU_MAPPING_GUEST);
+    CHECK(mem_alias_map(ALIAS_BASE + 0x10000, ALIAS_BASE, 0x1000, MS_STACK, PERM_RW) == 0);
+    CHECK(mapping_a == ALIAS_BASE + 0x10000 && mapping_kind == GPU_MAPPING_GUEST);
+    CHECK(mem_alias_unmap(ALIAS_BASE + 0x10000, 0x1000, ALIAS_BASE) == 0);
+    CHECK(mapping_a == ALIAS_BASE + 0x10000 && mapping_kind == GPU_MAPPING_GUEST);
+    mem_alias_end(ALIAS_BASE, 0x1000);
+    CHECK(mapping_a == ALIAS_BASE && mapping_kind == GPU_MAPPING_GUEST);
+    CHECK(mem_unmap(ALIAS_BASE, 0x1000) == 0);
     CHECK(mem_heap_set(0, mem_total()) == 0);
-    CHECK(mapping_begins == 4 && mapping_ends == 4 && mapping_depth == 0);
+    CHECK(mapping_begins == 12 && mapping_ends == 12 && mapping_depth == 0);
     g_gpu_mapping_begin = NULL;
     g_gpu_mapping_end = NULL;
 }

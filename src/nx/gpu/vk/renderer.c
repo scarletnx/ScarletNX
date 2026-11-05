@@ -57,9 +57,11 @@ static void vkr_before_write(u64 gva, u64 size) {
 static int vkr_mem_pending(u64 gva, u64 size) {
     int hit;
     if (g_gfx_img_any) return 1;
-    vk_lock();
+    /* the tables' lock, not vk_lock: the game's threads ask this of each read they make through the GPU's address
+       space (gmem_read), and waited here for vk_lock while the GPU thread held it across its waits for the GPU */
+    pend_lock();
     hit = pend_hit(&g_pend_any, gva, size);
-    vk_unlock();
+    pend_unlock();
     return hit;
 }
 static void vkr_gfx_mem_need(u64 gva, u64 size) {
@@ -70,25 +72,64 @@ static void vkr_gfx_mem_need(u64 gva, u64 size) {
 }
 /* the GPU range a mapping change is changing, from its begin to its end (size 0 for a change of guest memory) */
 static u64 g_mapping_gva, g_mapping_size;
-static void vkr_mapping_begin(u64 gva, u64 size, int full) {
+/* whether the renderer may hold anything over guest memory [a, a + size), with pend_lock held: pending results or
+   GPU-owned memory on its host pages, which land there, or a GPU mapping of it, through which the renderer reads and
+   writes it (gmmu_run, then the bytes, with vk_lock held). Storage images and render targets write back through their
+   GPU mapping too. Unified memory reads guest memory in place, and its imports aren't looked at here */
+static void alias_seen(void* ctx, u64 gva, u64 n) {
+    (void)gva;
+    (void)n;
+    *(int*)ctx = 1;
+}
+static int guest_covered(u64 a, u64 size) {
+    u64 page = plat_vm_page(), lo = a & ~(page - 1), hi;
+    int mapped = 0;
+    if (vk_uma() || size == ~0ull || a + size < a) return 1;
+    hi = (a + size + page - 1) & ~(page - 1);
+    if (pend_hit_guest(&g_pend_any, a, size) || own_lookup(lo, hi - lo, NULL, 0)) return 1;
+    gmmu_aliases(a, size, alias_seen, &mapped);
+    return mapped;
+}
+/* The brackets of this thread that skipped vk_lock, a bit each by depth: mem.c's brackets don't nest, the GMMU's
+   may run inside one of the renderer's own (vk_lock held there already) */
+static _Thread_local u32 t_mapping_depth, t_mapping_quick;
+/* Locks, in order: vk_lock, then pend_lock (pending_pages.h), then mem.c's (memory/own.c has the rest). Every change
+   holds pend_lock from its begin to its end, so nothing the renderer holds over guest memory comes meanwhile: pending
+   results (pend_add), GPU-owned memory (owned.c) and GPU mappings (this bracket, for a GMMU change). A change of guest
+   memory alone (GPU_MAPPING_GUEST_ONLY) that nothing covers takes no more. In one game's menus its memory thread's
+   MapPhysicalMemory and UnmapPhysicalMemory waited 59 s of 130 for vk_lock, up to 7.9 s at a time, while a landing held
+   it waiting for a pipeline */
+static void vkr_mapping_begin(u64 gva, u64 size, int kind) {
+    u32 bit = 1u << (t_mapping_depth++ & 31);
+    pend_lock();
+    if (kind == GPU_MAPPING_GUEST_ONLY && !guest_covered(gva, size)) {
+        t_mapping_quick |= bit;
+        return;
+    }
+    t_mapping_quick &= ~bit;
+    pend_unlock(); /* taken again after vk_lock, in order */
+    int full = kind != GPU_MAPPING_GMMU;
     vk_lock();
+    pend_lock();
     g_mapping_gva = full ? 0 : gva;
     g_mapping_size = full ? 0 : size;
-    vk_release_drain();
     if (full) {
         /* A change of guest memory changes only its own guest pages, and a result pending elsewhere lands there as
-           before. So the buffer and compute results land, all of them as before, only when one covers a page of the
-           change. svcMapPhysicalMemory maps fresh memory, where none is pending: landing every result made each map
+           before. So the queued releases (their payloads count in g_pend_any), the buffer and compute results land,
+           all of them as before, only when one covers a page of the change, and storage images when their bytes are
+           there. svcMapPhysicalMemory maps fresh memory, where none is pending: landing every result made each map
            wait for all of the GPU's work, and one game's memory thread waited so with its core held */
         int hit = pend_hit_guest(&g_pend_any, gva, size);
+        if (hit) vk_release_drain();
         if (hit) vk_buf_land_map();
         if (hit) vk_mirror_mem_need(0, ~0ull); /* the GPU mirror's programs' writes, all of them */
-        vk_gfx_image_land();
+        vk_gfx_image_guest_need(gva, size);
         if (hit) vk_compute_land();
         /* last, as the landings may submit: mem.c's change of guest memory [gva, gva + size), whose in-place readers
            run and reach the driver first */
         vk_uma_mapping_begin(gva, size);
     } else {
+        vk_release_drain(); /* before any translation changes: a payload loses the pages it gained */
         vk_buf_mem_need_map(gva, size);
         vk_mirror_mem_need(gva, size);
         vk_gfx_image_mem_need(gva, size);
@@ -100,10 +141,18 @@ static void vkr_mapping_begin(u64 gva, u64 size, int full) {
 /* the pages changed count what is pending at the guest pages they show now. A change of guest memory (full) leaves
    the GMMU as it was: pending pages are compared by address, and freed memory is landed first */
 static void vkr_mapping_end(void) {
+    u32 bit = 1u << (--t_mapping_depth & 31);
+    /* no GPU mapping shows the pages: no pending page count changes, and nothing the buffers keep describes them
+       (vk_buf_mapping_changed) */
+    if (t_mapping_quick & bit) {
+        pend_unlock();
+        return;
+    }
     vk_uma_mapping_end(); /* first: what follows may submit */
     vk_buf_mapping_changed();
     pend_remap(g_mapping_gva, g_mapping_size);
     g_mapping_size = 0;
+    pend_unlock();
     vk_unlock();
 }
 

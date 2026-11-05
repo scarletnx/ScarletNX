@@ -3046,6 +3046,7 @@ add_executable(snx-bench-write-pages EXCLUDE_FROM_ALL bench_write_pages.c
 snx_test_target(snx-bench-write-pages 11)
 add_executable(snx-test-pending-pages pending_pages.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c")
 snx_test_target(snx-test-pending-pages 23)
+target_link_libraries(snx-test-pending-pages PRIVATE scarletnx-filesystem Threads::Threads) # pend_lock's PMutex
 add_test(NAME pending_pages COMMAND snx-test-pending-pages)
 # indexed quads made into triangles on the CPU, in the order the GPU's conversion makes them
 add_executable(snx-test-quad-indices quad_indices.c)

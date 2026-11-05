@@ -4,6 +4,18 @@
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
+#include "common/platform/thread.h" /* PMutex */
+
+/* Changes take g_pend_lk as well as the vk_lock their callers hold: a thread without vk_lock (a change of guest memory
+   that skips the renderer, vk_mem_pending) reads the tables with g_pend_lk held. Reentrant on its thread */
+static PMutex g_pend_lk = PMUTEX_INIT;
+static _Thread_local u32 t_pend_depth;
+void pend_lock(void) {
+    if (!t_pend_depth++) pm_lock(&g_pend_lk);
+}
+void pend_unlock(void) {
+    if (!--t_pend_depth) pm_unlock(&g_pend_lk);
+}
 
 PendPages g_pend_any;
 #define LEAF_PAGES  4096u
@@ -132,8 +144,10 @@ static void count_add(PendPages* t, int delta) {
     if (t->also) t->also->adds++;
 }
 void pend_add(PendPages* t, u64 gva, u64 size, int delta) {
+    pend_lock();
     count_add(t, delta);
     each_run(gva, size, add_pages, t, delta);
+    pend_unlock();
 }
 /* whether a guest page of [first, last] has a count: pend_hit's answer before the GPU pages, for gpu_page_check */
 static int hit_pages(void* table, u64 first, u64 last, int delta) {
@@ -159,12 +173,15 @@ static int gpu_ranges(u64 gva, u64 size, u64 r[4]) {
     r[3] = last;
     return first <= last ? 1 : 2;
 }
+/* read by threads with vk_lock and by threads with g_pend_lk, so atomic */
 static int alias_check_on(void) {
-    if (g_pending_pages.check < 0) {
-        g_pending_pages.check = g_settings.gpu_page_check != 0;
-        if (g_pending_pages.check) LOG("vulkan: gpu_page_check=1: pending results are checked through the GMMU too\n");
+    int check = __atomic_load_n(&g_pending_pages.check, __ATOMIC_RELAXED);
+    if (check < 0) {
+        check = g_settings.gpu_page_check != 0;
+        if (__atomic_exchange_n(&g_pending_pages.check, check, __ATOMIC_RELAXED) < 0 && check)
+            LOG("vulkan: gpu_page_check=1: pending results are checked through the GMMU too\n");
     }
-    return g_pending_pages.check;
+    return check;
 }
 int pend_hit(const PendPages* t, u64 gva, u64 size) {
     u64 r[4];
@@ -201,6 +218,7 @@ void pend_remap(u64 gva, u64 size) {
     int n, i;
     if (!size) return;
     n = gpu_ranges(gva, size, r);
+    pend_lock();
     for (u32 k = 0; k < g_pending_pages.n; k++) {
         PendPages* t = g_pending_pages.table[k];
         if (!t->total) continue; /* no guest page counted, so no GPU page either */
@@ -216,16 +234,20 @@ void pend_remap(u64 gva, u64 size) {
             gmmu_pieces(first << 12, (last - first + 1) << 12, remap_piece, t);
         }
     }
+    pend_unlock();
 }
 void pend_add_pages(PendPages* t, u64 first, u64 last, int delta) {
+    pend_lock();
     count_add(t, delta);
     add_pages(t, first, last, delta);
+    pend_unlock();
 }
 void pend_add_va(PendPages* t, u64 gva, u64 size, int delta) {
+    pend_lock();
     count_add(t, delta);
-    if (!size) return;
-    for (PendPages* u = t; u; u = u->also)
+    for (PendPages* u = t; size && u; u = u->also)
         count_pages(u, gva >> 12, (gva + size - 1 < gva ? ~0ull : gva + size - 1) >> 12, delta);
+    pend_unlock();
 }
 int pend_hit_va(const PendPages* t, u64 gva, u64 size) {
     u64 first = gva >> 12, last = (gva + size - 1 < gva ? ~0ull : gva + size - 1) >> 12;

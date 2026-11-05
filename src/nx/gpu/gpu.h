@@ -416,10 +416,17 @@ extern void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len); /* the renderer's side 
    results overlap (size > 0), and before anything the game can observe (gpu_signal_point, size 0) */
 extern void (*g_gpu_before_write)(u64 gva, u64 size);
 extern int g_gpu_releases; /* the renderer holds releases waiting to happen (renderer.h release_need) */
-/* the renderer's memory lock held across a change of backing. full is for CPU guest pages, whose GPU aliases are
-   unknown: gva and size are then the guest range (size ~0: any of it). GPU address space changes give their GPU
-   range. Begin is taken before the memory manager's own lock */
-extern void (*g_gpu_mapping_begin)(u64 gva, u64 size, int full);
+/* what a change of backing changes (g_gpu_mapping_begin's kind) */
+enum {
+    GPU_MAPPING_GMMU = 0,  /* the GPU address space: gva and size are its GPU range */
+    GPU_MAPPING_GUEST = 1, /* guest pages, whose GPU aliases are unknown: gva and size the guest range (size ~0: any) */
+    /* guest pages as GPU_MAPPING_GUEST, where the change lands or drops GPU-owned memory only on the host pages of
+       [gva, gva + size): one that nothing of the renderer covers waits for no renderer work */
+    GPU_MAPPING_GUEST_ONLY = 2
+};
+/* the renderer's memory lock held across a change of backing, of the kind above. Begin is taken before the memory
+   manager's own lock */
+extern void (*g_gpu_mapping_begin)(u64 gva, u64 size, int kind);
 extern void (*g_gpu_mapping_end)(void);
 
 /* ---- engines.c: the 3D engine's methods and the report semaphores */

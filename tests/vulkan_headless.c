@@ -5202,6 +5202,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_rect_textures.inc"
 #include "vulkan_owned_readback.inc"
 #include "vulkan_guest_staging.inc"
+#include "vulkan_lock_waits.inc"
 #include "vulkan_storage_suffix.inc"
 #include "vulkan_pending_index.inc"
 #include "vulkan_draw_storage_stages.inc"
@@ -5869,6 +5870,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_stream_epoch());
     CHECK(!check_owned_readback());
     CHECK(!check_guest_staging());
+    CHECK(!check_mapping_lock());
     CHECK(!check_owned_writable());
     CHECK(!check_owned_in_place_write());
     CHECK(!check_owned_read_device());
