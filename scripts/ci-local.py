@@ -683,8 +683,12 @@ def android(args: argparse.Namespace, failures: Failures) -> None:
             return
         print('\n== the Android APK, as build.yml makes it ==')
         apk_cmd = ['scripts/android-apk.sh', str(out), str(prefix), *built]
-        if ccache_flag():
-            apk_cmd += ['--', *ccache_flag()]
+        extra = ccache_flag()
+        if IS_MAC:
+            # the NDK's clang can come first on PATH, and FFmpeg's host checks then find no libc headers
+            extra.append('-DSNX_HOST_CC=/usr/bin/clang')
+        if extra:
+            apk_cmd += ['--', *extra]
         status = run(apk_cmd, env=env, check=False)
         if status:
             failures.failed_check('android APK')
