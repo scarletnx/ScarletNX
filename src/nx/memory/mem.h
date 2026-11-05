@@ -112,6 +112,13 @@ int mem_identity(void);
    address), below its start, or past its end (with the start or the end and how far, and the layout's size beside the
    console's 512 GiB), or that none is reserved yet */
 void mem_place(const void* p, char* out, size_t size);
+/* Under NCE, what of the host's process lies in the guest's reservation and is not the guest's (plat_vm_foreign): their
+   count, each one named in out. The runtime gives none of the reservation's pages back, and what it maps there from a
+   file is its own (the alias pool, a GPU buffer guest memory moved into: mem_migrate), so anything else is another
+   owner's, mapped over guest memory at an address of its own choosing. 0 when there is none; -1 without NCE's
+   reservation (elsewhere the system placed it, where no other owner picks a fixed address), or where the system does
+   not say (errno) */
+int mem_foreign(char* out, size_t size);
 /* 0 when the host tracks the writes to guest memory (plat_ww_scan), -1 when it can't: a scan, reported to cb, of the
    first page the tracking covers. Under NCE that is the code region's base at the guest's own addresses, as g_mem is
    0 there, below the tracked range */

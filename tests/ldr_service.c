@@ -63,6 +63,13 @@ u8* plat_vm_reserve_at(u64 addr, u64 size) {
     errno = ENOSYS;
     return NULL;
 }
+/* plat_posix.c's look at the maps, which mem_foreign asks only of NCE's reservation (platform_posix tests it) */
+int plat_vm_foreign(u64 lo, u64 hi, int (*own)(u64 a, u64 b), char* out, size_t size) {
+    (void)lo, (void)hi, (void)own;
+    if (size) out[0] = 0;
+    errno = ENOSYS;
+    return -1;
+}
 /* nce.c, whose NCE no game here is of: mem.c's reservation asks it first, and ldr:ro gives it each NRO it maps */
 int nce_wanted(void) { return 0; }
 void nce_code_added(u64 base, u64 text_size) { (void)base, (void)text_size; }
