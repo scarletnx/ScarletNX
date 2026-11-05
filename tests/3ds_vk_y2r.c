@@ -42,17 +42,17 @@ static uint32_t* place(SnxCtrMemory* m, uint32_t first, uint64_t span, unsigned 
     *count = n;
     return pages;
 }
-int main(void) {
+int main(int argc, char** argv) {
+    int vk_memory = test_ctr_vk_memory(&argc, argv);
     SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
     char why[256];
     assert(m);
-    SnxCtrVkPath path = test_ctr_vk_path();
     if (!snx_ctr_vk_init(m, why, sizeof why)) {
         printf("no Vulkan device (%s): GPU Y2R checks skipped\n", why);
         snx_ctr_memory_free(m);
         return 77;
     }
-    test_ctr_vk_path_taken(path);
+    test_ctr_vk_memory_taken(vk_memory);
     static unsigned char src[3][MAX_SPAN], expected[MAX_SPAN];
     unsigned checked = 0;
     for (unsigned input = 0; input <= SNX_CTR_Y2R_YUYV; ++input)

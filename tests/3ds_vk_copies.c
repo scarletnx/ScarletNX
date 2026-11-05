@@ -5,7 +5,7 @@
    in once, before the GPU's first read, and only the pages it wrote; what the GPU wrote is copied back once, at the
    CPU's first access, with the pages the GPU wrote around it, and the CPU's next reads trap no more; a GPU write to
    part of a page keeps the CPU's bytes in the rest of it; and what the GPU wrote is in the RAM once the device is
-   gone, which nothing on the CPU read before. In place (SNX_TEST_CTR_VK_PATH=in-place) nothing is copied, and the
+   gone, which nothing on the CPU read before. In place (--vk_memory=2) nothing is copied, and the
    bytes are the same. */
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
@@ -57,18 +57,18 @@ static void gpu_copy(uint32_t from, uint32_t to, uint32_t size) {
         exit(1);
     }
 }
-int main(void) {
+int main(int argc, char** argv) {
+    int vk_memory = test_ctr_vk_memory(&argc, argv);
     uint32_t* pattern = g_copies.pattern;
     SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
     char why[512];
     if (!m) return 1;
-    SnxCtrVkPath path = test_ctr_vk_path();
     if (!snx_ctr_vk_init(m, why, sizeof why)) {
         printf("no Vulkan device (%s): the RAM's copy unchecked\n", why);
         snx_ctr_memory_free(m);
         return 77;
     }
-    test_ctr_vk_path_taken(path);
+    test_ctr_vk_memory_taken(vk_memory);
     g_copies.copies = snx_ctr_vk_copies();
     for (uint32_t i = 0; i < SPAN / 4; ++i) pattern[i] = 0x10000000u + i;
     if (snx_ctr_phys_write(m, SOURCE, pattern, SPAN) != SNX_CTR_MEM_OK) return 1;

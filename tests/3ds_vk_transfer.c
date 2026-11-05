@@ -48,18 +48,18 @@ static void same(SnxCtrMemory* m, const unsigned char* expected, const char* wha
             abort();
         }
 }
-int main(void) {
+int main(int argc, char** argv) {
+    int vk_memory = test_ctr_vk_memory(&argc, argv);
     static unsigned char in[SPAN], out[SPAN];
     SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
     char why[256];
     assert(m);
-    SnxCtrVkPath path = test_ctr_vk_path();
     if (!snx_ctr_vk_init(m, why, sizeof why)) {
         printf("no Vulkan device (%s): GPU transfer checks skipped\n", why);
         snx_ctr_memory_free(m);
         return 77;
     }
-    test_ctr_vk_path_taken(path);
+    test_ctr_vk_memory_taken(vk_memory);
     unsigned checked = 0;
     for (unsigned i = 0; i < 24; ++i) { /* fills: 16-, 24- and 32-bit, odd sizes */
         uint32_t control = i % 3 == 0 ? 0 : i % 3 == 1 ? SNX_CTR_FILL_24BIT : SNX_CTR_FILL_32BIT;

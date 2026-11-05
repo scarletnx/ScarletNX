@@ -57,7 +57,9 @@ static void usage(FILE* out) {
         "                  its own, --ctr_top_resolution=2 and --ctr_bottom_resolution=2 render them at twice the\n"
         "                  console's, --ctr_ipc_trace=1 logs each service request, --ctr_jit_trace=1 each block\n"
         "                  compiled while the game runs, --script=ms:buttons,... (ctr_script) presses buttons,\n"
-        "                  --ctr_auto_stub_ipc=0 stops at a service command the runtime lacks\n"
+        "                  --ctr_auto_stub_ipc=0 stops at a service command the runtime lacks. And the Switch's\n"
+        "                  --vk_memory=N, as it means there: 0 has the GPU work on a copy of the RAM in its own\n"
+        "                  memory unless it shares the system's, 1 on the copy, 2 on the RAM in place\n"
         "  --ipc-stubs L   With --ctr_auto_stub_ipc=0, still answer a service command the runtime lacks with\n"
         "                  success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid, gsp,\n"
         "                  cfg, dsp, system. Given more than once, the lists add up\n"
@@ -535,7 +537,8 @@ int snx_ctr_main(int argc, char** argv) {
             model_set = true;
         } else if (!positional && !strncmp(arg, "--", 2) && strchr(arg, '=')) {
             /* a setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini, in
-               src/nx/runtime/settings.txt), --key=value; --script= is ctr_script, a Switch game's name for it */
+               src/nx/runtime/settings.txt), or one of the Switch's the 3DS takes too (snx_ctr_shared_setting),
+               --key=value; --script= is ctr_script, a Switch game's name for it */
             char key[64];
             size_t length = (size_t)(strchr(arg, '=') - arg - 2);
             const IniOpt* o = NULL;
@@ -544,6 +547,7 @@ int snx_ctr_main(int argc, char** argv) {
                 key[length] = 0;
                 o = ini_find(g_ctr_display_ini, key);
                 if (!o) o = ini_find(g_ctr_debug_ini, !strcmp(key, "script") ? "ctr_script" : key);
+                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_debug_ini, key);
             }
             if (!o) {
                 fprintf(stderr, "scarletnx-3ds: unknown setting: %s\n", arg);

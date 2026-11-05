@@ -4,6 +4,7 @@
 #define SNX_CTR_VK_H
 #include "3ds/memory/ctr_memory.h"
 #include "common/gpu/vk/ring.h"
+#include "common/gpu/vk/vk_common.h"
 #include "common/gpu/vk/window.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -59,13 +60,9 @@ typedef struct {
 } SnxCtrVk;
 /* the device, once snx_ctr_vk_init made it; NULL before */
 SnxCtrVk* snx_ctr_vk(void);
-/* Where the GPU's work reads and writes the board's RAM, chosen by snx_ctr_vk_init: AUTO in place on a GPU that shares
-   the system's memory (vk_common.h's SNX_VK_UMA) and on a copy in the device's own memory on any other; COPY and
-   IN_PLACE take that one on any GPU, as the tests do to run both */
-typedef enum { SNX_CTR_VK_AUTO, SNX_CTR_VK_COPY, SNX_CTR_VK_IN_PLACE } SnxCtrVkPath;
-/* the path the next snx_ctr_vk_init takes, AUTO until a call sets another */
-void snx_ctr_vk_path(SnxCtrVkPath path);
-/* the device's work is on a copy of the RAM (the RAM's buffers have their copy) */
+/* the device's work is on a copy of the RAM (the RAM's buffers have their copy). snx_ctr_vk_init chooses by the
+   Switch's setting vk_memory (g_settings.guest_memory), with its meaning: 0 in place on a GPU that shares the system's
+   memory (vk_common.h's SNX_VK_UMA) and on the copy on any other, 1 the copy, 2 in place */
 bool snx_ctr_vk_copies(void);
 /* the 3D render scale of a screen of these framebuffer sizes: the CTR top or bottom resolution setting, as far as
    the device's largest image takes (1 before a device, or with none) */
@@ -128,6 +125,12 @@ typedef struct {
     uint32_t type;              /* the memory type allocated (ALLOCATE on) */
     int error;                  /* the system's reason the views did not map, an errno (VIEWS) */
 } SnxCtrVkDeviceRam;
+/* The line the device says of where the GPU's work is (snx_ctr_vk_init), without its "3ds gpu: " and its newline:
+   vk_memory's value asked, which the device's memory model (vk_common.h) took. With refused not NULL, the copy asked
+   for and refused for that reason, the run taking vk_memory=2; else on the copy (copied, bytes of memory type type),
+   or the RAM in place */
+void snx_ctr_vk_path_line(int asked, SnxVkMemoryModel model, bool copied, const char* refused, uint64_t bytes,
+                          uint32_t type, char* line, size_t line_size);
 /* the error the device's memory gives when it cannot hold the RAM, with the region's name (BUFFER, ALIGNMENT, BIND) */
 void snx_ctr_vk_device_ram_error(const SnxCtrVkDeviceRam* ram, const char* region, char* error, size_t error_size);
 /* the open command buffer, begun if none was (in a slot free again, which may wait for its submission) */
