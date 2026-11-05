@@ -65,9 +65,12 @@ typedef struct {
    whole, so a corpus file only loads into a build where this struct has the same size. */
 typedef struct {
     int stage;
-    u32 sph[20];      /* the shader program header, 80 bytes */
-    u32 cbuf_mask;    /* constant buffers read */
-    u32 cbuf_max[18]; /* bytes read of each, so only those are bound */
+    u32 flow_base;           /* key: low32 GPU address represented by word0, for absolute Maxwell call/jump targets */
+    u64 advanced_blend;      /* key: packed NVN advanced state for an ordered storage-image epilogue, zero when off */
+    u32 advanced_blend_mask; /* key: components the epilogue writes */
+    u32 sph[20];             /* the shader program header, 80 bytes */
+    u32 cbuf_mask;           /* constant buffers read */
+    u32 cbuf_max[18];        /* bytes read of each, so only those are bound */
     ShTex tex[SH_MAXTEX];
     int ntex;
     u32 in_mask;       /* generic attributes 0-31 read */
@@ -161,11 +164,12 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SNX_VKB_FMT      (SNX_VKB_RS + 1)          /* compute: the images' format classes (SNX_FMT) */
 #define SNX_VKB_SMAP     (SNX_VKB_FMT + 1)         /* graphics: storage buffer page indices for aliased bindings */
 #define SNX_VKB_IMGBUF   (SNX_VKB_SMAP + 1)        /* 8 buffer images (compute, vertex, fragment) */
-#define SNX_VKB_TEXARRAY (SNX_VKB_IMGBUF + 8)      /* up to SNX_TEX_ARRAY distinct indexed handles */
-#define SNX_VKB_TEXFUNCS (SNX_VKB_TEXARRAY + 1)    /* their depth compare functions */
-#define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1)    /* their depth views */
-#define SNX_VKB_TEXMAP   (SNX_VKB_TEXDEPTH + 1)    /* table and element to compact descriptor index */
-#define SNX_VKB_END      (SNX_VKB_TEXMAP + 1)      /* one past the last binding */
+#define SNX_VKB_BLEND    SNX_VKB_IMG            /* fragment: ordered blend uses image0 when no guest image is bound */
+#define SNX_VKB_TEXARRAY (SNX_VKB_IMGBUF + 8)   /* up to SNX_TEX_ARRAY distinct indexed handles */
+#define SNX_VKB_TEXFUNCS (SNX_VKB_TEXARRAY + 1) /* their depth compare functions */
+#define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1) /* their depth views */
+#define SNX_VKB_TEXMAP   (SNX_VKB_TEXDEPTH + 1) /* table and element to compact descriptor index */
+#define SNX_VKB_END      (SNX_VKB_TEXMAP + 1)   /* one past the last binding */
 /* An indexed texture loads its handle with an LDC whose address has a register in it: one of SNX_TEX_ARRAY handles
    from cbuf_off on, each (1 << shift) bytes after the last, with the shift in bits 4-7 of ShTex.flags. */
 #define SNX_TEX_ARRAY    256
@@ -244,6 +248,7 @@ extern int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
 int shader_brx_targets(const u64* words, u32 index, u32 count, u32* targets, int max_targets);
 /* the program's hash, and its length in bytes in out_len */
 u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len);
+int shader_absolute_flow(const u8* code, u32 bytes);
 /* The shader corpus (shader_corpus=dir): each translated program's code and ShaderInfo, so tools/snx_shaderc.c
    can translate it again offline. A file only loads into a build with the same ShaderInfo. */
 int shader_corpus_save(const char* dir, const u8* code, u32 len, u32 max_bytes, int stage, const ShaderInfo* si,

@@ -89,8 +89,14 @@ static u32 rt_format(u32 nvn) {
         case NVN_FORMAT_RGBA8: return 0xD5;
         case NVN_FORMAT_RGBA8_SRGB: return 0xD6;
         case NVN_FORMAT_R11G11B10F: return 0xE0;
+        case NVN_FORMAT_RGBA16F: return 0xCA;
+        case NVN_FORMAT_RGBA32F: return 0xC0;
     }
     return 0;
+}
+u32 nvn_rt_format(u32 format, int* depth) {
+    *depth = 0;
+    return rt_format(format);
 }
 int nvn_draw_surface(u64 snapshot, const NvnView* v, DsSurf* s, int* depth, u32* msaa) {
     const NvnTexture* t = NVN_OBJ(const NvnTexture, snapshot);
@@ -109,10 +115,12 @@ int nvn_draw_surface(u64 snapshot, const NvnView* v, DsSurf* s, int* depth, u32*
     *msaa = 0;
     return s->format != 0;
 }
-u32 gpu_color_bpp(u32 format) { return format ? 4 : 0; }
+u32 gpu_color_bpp(u32 format) { return format == 0xCA ? 8 : format == 0xC0 ? 16 : format ? 4 : 0; }
 int nvn_fmt_bpb(int format, int* bw, int* bh) {
     *bw = *bh = 1;
-    return rt_format((u32)format) ? 4 : 0;
+    return format == NVN_FORMAT_RGBA4 || format == NVN_FORMAT_RGB565 || format == NVN_FORMAT_RGB5A1
+               ? 2
+               : gpu_color_bpp(rt_format((u32)format));
 }
 void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
     memset(o, 0, sizeof *o);
@@ -416,11 +424,47 @@ static void check_volume_mirrors(void) {
     for (u32 i = 0; i < 6; i++) check(g_seen.rows[i] == 2 + i / 2, "nearest scaled volume row %u", i);
 }
 
+static void check_memory_conversions(void) {
+    const u32 source_formats[] = {NVN_FORMAT_RGBA32F, NVN_FORMAT_RGBA4, NVN_FORMAT_RGB5A1};
+    const u32 destination_formats[] = {NVN_FORMAT_RGBA16F, NVN_FORMAT_RGBA4, NVN_FORMAT_RGB565};
+    for (u32 kind = 0; kind < 3; kind++) {
+        texture(SRC_TEX, source_formats[kind], 0x10000);
+        texture(DST_TEX, destination_formats[kind], 0x20000);
+        if (!kind)
+            for (u32 i = 0; i < 2; i++) {
+                NvnTexture* t = NVN_OBJ(NvnTexture, i ? DST_TEX : SRC_TEX);
+                t->d.target = NVN_TEXTURE_TARGET_3D;
+                t->d.flags = 0;
+                t->d.depth = 3;
+            }
+        NvnPCopyT2T r = {.src = SRC_TEX,
+                         .dst = DST_TEX,
+                         .sr = {1, 2, 0, 4, 3, 1},
+                         .dr = {3, 4, 0, 8, 6, 1},
+                         .flags = NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT};
+        i64 stride[2] = {0};
+        memcpy(GP(RECORD), &r, sizeof r);
+        memset(&g_seen, 0, sizeof g_seen);
+        nvn_copy_record(OP_COPY_T2T, RECORD, sizeof r, stride);
+        check(g_seen.memory_blits == 1 && !g_seen.blits && !g_seen.copies,
+              "conversion/packed case %u uses one GPU gather without an attachment", kind);
+        check(g_seen.memory.x0 == 3 && g_seen.memory.y0 == 4 && g_seen.memory.x1 == 11 && g_seen.memory.y1 == 10,
+              "conversion/packed case %u retains the destination window", kind);
+        check(g_seen.columns[0] == 4 && g_seen.columns[7] == 1 && g_seen.rows[0] == 4 && g_seen.rows[5] == 2,
+              "conversion/packed case %u selects mirrored nearest samples", kind);
+        check(kind == 1 ? g_seen.memory.fmt == 0 : (g_seen.memory.fmt & GPU_BLIT_CONVERT_BIT) != 0,
+              "same-format packed bytes bypass conversion, distinct formats convert components (%u)", kind);
+        check(GPU_BLIT_DST_BPP(&g_seen.memory) == (kind ? 2u : 8u),
+              "conversion/packed case %u has the destination's byte width", kind);
+    }
+}
+
 int main(void) {
     check_array1d_copies();
     check_buffer_mirrors();
     check_texture_filters();
     check_volume_mirrors();
+    check_memory_conversions();
     /* a scene's R11G11B10F into an RGBA8 sRGB window texture: the engine converts each pixel, so the blit does it */
     copy(NVN_FORMAT_R11G11B10F, NVN_FORMAT_RGBA8_SRGB, 1);
     check(g_seen.blits == 1 && g_seen.copies == 0,
@@ -436,8 +480,9 @@ int main(void) {
           g_seen.copies);
     /* a source the renderer's blit can't take (no render target over it): the bytes go through memory */
     copy(NVN_FORMAT_R11G11B10F, NVN_FORMAT_RGBA8_SRGB, 0);
-    check(g_seen.blits == 1 && g_seen.copies == 1,
-          "R11G11B10F to RGBA8_SRGB, no target: expected 1 blit tried and 1 copy through memory, found %d and %d",
+    check(g_seen.blits == 1 && g_seen.copies == 0 && g_seen.memory_blits == 1 &&
+              (g_seen.memory.fmt & GPU_BLIT_CONVERT_BIT),
+          "R11G11B10F to RGBA8_SRGB, rejected image conversion uses component conversion, found %d and %d",
           g_seen.blits, g_seen.copies);
     if (failures) {
         fprintf(stderr, "%d failure(s)\n", failures);

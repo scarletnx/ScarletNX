@@ -57,6 +57,13 @@ int nvn_program_tess(u64 serial, NvnTessStage stages[2]) {
     (void)stages;
     return 0;
 }
+int nvn_subroutine_apply(u32 linkage, i32 first, i32 count, const i32* values) {
+    (void)linkage;
+    (void)first;
+    (void)count;
+    (void)values;
+    return 1;
+}
 /* the texture layout and formats: only the render target records use them */
 u32 nvn_rt_format(u32 format, int* depth) {
     (void)format;
@@ -943,18 +950,20 @@ static void test_barriers(void) {
     nvn_draw_init(&draw, 0x80000000u);
     g_none.method_barrier = capture_barrier;
     for (int mode = 0; mode <= 2; mode++)
-    for (u32 bits = 0; bits < 256; bits++) {
-        g_settings.nvn_storage_ordering = mode;
-        snx_st_le32(GP(0x9000), bits);
-        barrier_count = 0;
-        check(nvn_draw_record(&draw, OP_BARRIER, 0x9000, 4) == 1, "barrier record accepted");
-        int n = 0;
-        if (mode && (bits & 15u)) check(barrier_kinds[n++] == 6, "execution order precedes shader invalidation");
-        else if (mode && (bits & 32u)) check(barrier_kinds[n++] == 7, "shader-data visibility precedes invalidation");
-        if (bits & 32u) check(barrier_kinds[n++] == 5, "shader instructions are invalidated");
-        if (bits & 18u) check(barrier_kinds[n++] == 0, "upstream fragment and texture ordering is retained");
-        check(barrier_count == n, "barrier flags select only their required operations");
-    }
+        for (u32 bits = 0; bits < 256; bits++) {
+            g_settings.nvn_storage_ordering = mode;
+            snx_st_le32(GP(0x9000), bits);
+            barrier_count = 0;
+            check(nvn_draw_record(&draw, OP_BARRIER, 0x9000, 4) == 1, "barrier record accepted");
+            int n = 0;
+            if (mode && (bits & 15u))
+                check(barrier_kinds[n++] == 6, "execution order precedes shader invalidation");
+            else if (mode && (bits & 32u))
+                check(barrier_kinds[n++] == 7, "shader-data visibility precedes invalidation");
+            if (bits & 32u) check(barrier_kinds[n++] == 5, "shader instructions are invalidated");
+            if (bits & 18u) check(barrier_kinds[n++] == 0, "upstream fragment and texture ordering is retained");
+            check(barrier_count == n, "barrier flags select only their required operations");
+        }
     g_none.method_barrier = NULL;
 }
 

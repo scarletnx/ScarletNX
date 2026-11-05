@@ -29,28 +29,28 @@ u64 g_code_lo, g_code_hi;
 int g_frames, g_opt_fps;
 
 /* the memory: a pool's storage at POOL_MEM, objects below it */
-#define POOL       0x1000u
-#define POOL_B     0x1100u
-#define POOL_MEM   0x100000u
-#define CMDBUF     0x2000u
-#define TEX        0x3000u
-#define TEX_B      0x3100u
-#define VIEW_A     0x3200u
-#define VIEW_B     0x3210u
-#define SAMPLER    0x3400u
-#define SAMPLER_B  0x3480u
-#define SAMPLER_P  0x3500u
-#define EVENT      0x3600u
-#define EVENT_B    0x3640u
-#define PROGRAM    0x3700u
-#define DEVICE     0x4000u
-#define DEVICE_B   0x7000u
-#define QUEUE_B    0x7100u
-#define WINDOW     0x7200u
-#define WINDOW_B   0x7400u
-#define STATE      0x7500u
-#define SCRATCH    0x8000u
-#define SCRATCH2   0x8100u
+#define POOL      0x1000u
+#define POOL_B    0x1100u
+#define POOL_MEM  0x100000u
+#define CMDBUF    0x2000u
+#define TEX       0x3000u
+#define TEX_B     0x3100u
+#define VIEW_A    0x3200u
+#define VIEW_B    0x3210u
+#define SAMPLER   0x3400u
+#define SAMPLER_B 0x3480u
+#define SAMPLER_P 0x3500u
+#define EVENT     0x3600u
+#define EVENT_B   0x3640u
+#define PROGRAM   0x3700u
+#define DEVICE    0x4000u
+#define DEVICE_B  0x7000u
+#define QUEUE_B   0x7100u
+#define WINDOW    0x7200u
+#define WINDOW_B  0x7400u
+#define STATE     0x7500u
+#define SCRATCH   0x8000u
+#define SCRATCH2  0x8100u
 
 /* ---- what the files need of the runtime: guest memory as the GPU's too, and nothing that waits */
 u64 kmem_alloc(u64 size, u32 state, u32 perm) {
@@ -79,6 +79,7 @@ void arm_run(SnxArmCPU* c, SnxArmBlock first, u32 stop_at) {
     (void)first;
     (void)stop_at;
 }
+void gpu_kick(void) {}
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
@@ -165,7 +166,7 @@ int gmem_read(u64 gva, void* dst, u64 size) {
 }
 int gmem_write(u64 gva, const void* src, u64 size) {
     memcpy(GP(gva), src, size);
-    return 1;
+    return 0;
 }
 u64 ds_generation_next(void) {
     static u64 g;
@@ -214,6 +215,10 @@ u32 nvn_replay_syncpt(u32 queue) {
 }
 u32 nvn_replay_shown_syncpt(void) { return 0; }
 void nvn_replay_finish(u32 queue) { (void)queue; }
+void nvn_replay_wait(u32 queue, const NvnSync* sync) {
+    (void)queue;
+    (void)sync;
+}
 void nvn_replay_queue_free(u32 queue) { (void)queue; }
 void nvn_replay_fence(u32 queue, u64 sync, u64 ready, u32 shown) {
     (void)queue;
@@ -383,7 +388,8 @@ static void test_command_buffer(void) {
     /* an empty destination draws nothing */
     wrf(SCRATCH + 0x220, 5.0f), wrf(SCRATCH + 0x224, 5.0f), wrf(SCRATCH + 0x228, 5.0f), wrf(SCRATCH + 0x22c, 9.0f);
     nvn_CommandBufferDrawTexture(NULL, CMDBUF, 7u | 5u << 20, SCRATCH + 0x220, SCRATCH + 0x210);
-    check(nvn_CommandBufferInsertCheckpointStatic(NULL, CMDBUF, 0) && nvn_CommandBufferInsertCheckpointDynamic(NULL, CMDBUF, 0),
+    check(nvn_CommandBufferInsertCheckpointStatic(NULL, CMDBUF, 0) &&
+              nvn_CommandBufferInsertCheckpointDynamic(NULL, CMDBUF, 0),
           "checkpoints answer 1, as the release driver does");
     /* the hints with nothing to record */
     nvn_CommandBufferSetColorReductionEnable(NULL, CMDBUF, 1);
@@ -423,8 +429,7 @@ static void test_command_buffer(void) {
           "deferred uniform buffers: the ranges as the GPU reads them");
     check(g_ds.bind.cb_addr[0][3] == 0x333000 && g_ds.bind.cb_size[0][3] == 0x100,
           "a uniform buffer of 0xA0 bytes binds 0x100, as the driver's CB_SIZE");
-    check(g_ds.bind.cb_addr[0][3 + 6] == 0,
-          "a uniform buffer of size 0 unbinds its slot");
+    check(g_ds.bind.cb_addr[0][3 + 6] == 0, "a uniform buffer of size 0 unbinds its slot");
     check(snx_ld_le64(g_ds.inl.bank2[4] + 0x120 + 16) == 0x55, "deferred images: the handles as the GPU reads them");
     check(g_test_tex_draws == 1, "one texture draw, the empty one skipped");
     check(g_tex.handle == (7u | 5u << 20) && g_tex.x0 == 10.0f && g_tex.y0 == 20.0f && g_tex.w == 100.0f &&
@@ -587,10 +592,12 @@ static void test_device(void) {
     check(nvn_DeviceBuilderGetFlags(NULL, DEVICE_B) == 0x15, "the device builder's flags");
     check(nvn_DeviceInitialize(NULL, DEVICE, DEVICE_B), "the device");
     check(nvn_device() == DEVICE, "the runtime's device");
-    check(nvn_DeviceGenerateDebugDomainId(NULL, DEVICE, 0) == 0 && nvn_DeviceGenerateDebugDomainId(NULL, DEVICE, 0) == 1,
+    check(nvn_DeviceGenerateDebugDomainId(NULL, DEVICE, 0) == 0 &&
+              nvn_DeviceGenerateDebugDomainId(NULL, DEVICE, 0) == 1,
           "debug domains count from 0");
     check(!nvn_DeviceIsExternalDebuggerAttached(NULL, DEVICE), "no external debugger");
-    check(nvn_DeviceSetAutomaticCheckpointsEnable(NULL, DEVICE, 1) && nvn_DeviceSetCheckpointMaxCallStacksDepth(NULL, DEVICE, 4),
+    check(nvn_DeviceSetAutomaticCheckpointsEnable(NULL, DEVICE, 1) &&
+              nvn_DeviceSetCheckpointMaxCallStacksDepth(NULL, DEVICE, 4),
           "the checkpoint setters answer 1");
     check(nvn_DeviceRegisterFastClearColori(NULL, DEVICE, SCRATCH, NVN_FORMAT_RGBA8I) &&
               nvn_DeviceRegisterFastClearColorui(NULL, DEVICE, SCRATCH, NVN_FORMAT_RGBA8UI),
@@ -623,8 +630,7 @@ static void test_texture(void) {
     check(nvn_TextureBuilderGetPackagedTextureLayout(NULL, TEX_B, s + 8) && gr32(s + 8) == 0x9a3,
           "the packaged layout's getter");
     nvn_TextureBuilderSetPackagedTextureLayout(NULL, TEX_B, 0);
-    check(!nvn_TextureBuilderGetPackagedTextureLayout(NULL, TEX_B, s + 8) && gr32(s + 8) == 0,
-          "no packaged layout");
+    check(!nvn_TextureBuilderGetPackagedTextureLayout(NULL, TEX_B, s + 8) && gr32(s + 8) == 0, "no packaged layout");
     /* the raw storage classes, by the driver's table */
     check(nvn_TextureGetRawStorageClass(NULL, TEX) == 2, "a color texture: color and ZF32");
     nvn_TextureBuilderSetFormat(NULL, TEX_B, NVN_FORMAT_DEPTH16);
@@ -819,12 +825,28 @@ static void test_objects(void) {
     u64 s = SCRATCH;
     nvn_EventBuilderSetDefaults(NULL, EVENT_B);
     nvn_EventBuilderSetStorage(NULL, EVENT_B, POOL, 0x60);
-    check(nvn_EventBuilderGetMemoryPool(NULL, EVENT_B) == POOL && nvn_EventBuilderGetMemoryOffset(NULL, EVENT_B) == 0x60,
+    check(nvn_EventBuilderGetMemoryPool(NULL, EVENT_B) == POOL &&
+              nvn_EventBuilderGetMemoryOffset(NULL, EVENT_B) == 0x60,
           "the event builder's storage");
     check(nvn_EventBuilderGetStorage(NULL, EVENT_B, s) == POOL && gr64(s) == 0x60, "GetStorage: the pool and offset");
     check(nvn_EventInitialize(NULL, EVENT, EVENT_B), "an event");
     check(nvn_EventGetMemoryPool(NULL, EVENT) == POOL && nvn_EventGetMemoryOffset(NULL, EVENT) == 0x60,
           "the event's storage");
+    nvn_CommandBufferInitialize(NULL, CMDBUF, DEVICE);
+    nvn_CommandBufferAddCommandMemory(NULL, CMDBUF, POOL, 0x9000, 0x8000);
+    nvn_CommandBufferAddControlMemory(NULL, CMDBUF, SCRATCH + 0x1000, 0x400);
+    nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+    u64 event_gpu = NVN_OBJ(const NvnEvent, EVENT)->gpu;
+    nvn_CommandBufferWaitEvent(NULL, CMDBUF, EVENT, NVN_EVENT_WAIT_MODE_GEQUAL_WRAP, 0x11223344);
+    u64 wait_handle = nvn_CommandBufferEndRecording(NULL, CMDBUF);
+    NVN_OBJ(NvnEvent, EVENT)->gpu += 0x100;
+    const NvnPWaitEvent* waited = NVN_OBJ(const NvnPWaitEvent, wait_handle + 8);
+    check(waited->address == event_gpu && waited->mode == NVN_EVENT_WAIT_MODE_GEQUAL_WRAP &&
+              waited->value == 0x11223344,
+          "event wait records snapshot the GPU address, compare mode and value");
+    NVN_OBJ(NvnEvent, EVENT)->gpu = event_gpu;
+    nvn_CommandBufferFinalize(NULL, CMDBUF);
+
     check(nvn_ProgramInitialize(NULL, PROGRAM, DEVICE), "a program");
     check(nvn_ProgramGetSubtileSize(NULL, PROGRAM) == 0, "no subtile size");
     check(!nvn_ProgramSetSubroutineLinkage(NULL, PROGRAM, 1, s), "no subroutine linkage");
@@ -832,6 +854,105 @@ static void test_objects(void) {
     check(!nvn_SyncInitializeFromFencedGLSync(NULL, SCRATCH2, DEVICE, 5, s) && gr32(s) == 1,
           "no OpenGL sync: status 1");
     check(nvn_SyncCreateGLSync(NULL, SCRATCH2, s) == 4, "no OpenGL sync to make");
+}
+
+/* A synthetic map has two callsites: uniform3[2] and uniform9, each with two compatible target IDs.
+   Table order differs from uniform order. The replay must update only selected locations and retain snapshots. */
+static void sub_map(u64 map, u32 stage, u32 absolute) {
+    memset(GP(map), 0, 160);
+    const u32 header[20] = {0xfabffabc, stage, 1,  9,  80, 160, 1,   absolute, 0,   4,
+                            2,          80,    88, 96, 2,  104, 136, 144,      152, 3};
+    for (u32 i = 0; i < 20; i++) gw32(map + 4 * i, header[i]);
+    gw32(map + 88, 0x20);
+    gw32(map + 92, 0x48);
+    const u32 calls[8] = {2, 2, 0, 3, 2, 1, 0, 9};
+    for (u32 i = 0; i < 8; i++) gw32(map + 104 + 4 * i, calls[i]);
+    gw32(map + 136, 7);
+    gw32(map + 140, 19);
+    gw32(map + 144, 0);
+    gw32(map + 148, 1);
+}
+static void test_subroutines(void) {
+    static NvnDraw draw;
+    const u64 control = 0xa000, pairs = 0xc000, map = 0xd000, pointers = 0xe000, values = 0xe100;
+    const u64 code = 0x180000, constants = code + 0x200;
+    tess_control(control, NVN_SHADER_STAGE_FRAGMENT, 16, (const u32[4]){0}, 0);
+    GP(control)[0x7c0] = 1;
+    gw64(pairs, code);
+    gw64(pairs + 8, control);
+    nvn_ProgramInitialize(NULL, PROGRAM, DEVICE);
+    check(nvn_ProgramSetShaders(NULL, PROGRAM, 1, pairs), "a program with subroutine control metadata");
+    sub_map(map, NVN_SHADER_STAGE_FRAGMENT, 0);
+    gw64(pointers, map);
+    gw32(map + 144, 2);
+    check(!nvn_ProgramSetSubroutineLinkage(NULL, PROGRAM, 1, pointers), "invalid subroutine target label rejected");
+    gw32(map + 144, 0);
+    gw32(map + 60, 0xfffffff0);
+    check(!nvn_ProgramSetSubroutineLinkage(NULL, PROGRAM, 1, pointers), "out-of-range subroutine offset rejected");
+    gw32(map + 60, 104);
+    gw32(map + 88, 0xfffffff8u);
+    check(nvn_ProgramSetSubroutineLinkage(NULL, PROGRAM, 1, pointers), "negative relative function offsets are valid");
+    u32 backwards = nvn_program_subroutine(PROGRAM, NVN_SHADER_STAGE_FRAGMENT);
+    i32 backwards_value;
+    snx_st_le32(&backwards_value, 7);
+    check(nvn_subroutine_apply(backwards, 3, 1, &backwards_value) && gr32(constants + 16) == 0xfffffff8u,
+          "relative backwards calls retain their signed byte offsets");
+    gw32(map + 88, 0x20);
+    check(nvn_ProgramSetSubroutineLinkage(NULL, PROGRAM, 1, pointers), "subroutine maps install for required stages");
+    u32 linkage = nvn_program_subroutine(PROGRAM, NVN_SHADER_STAGE_FRAGMENT);
+    check(linkage && !nvn_program_subroutine(PROGRAM, NVN_SHADER_STAGE_VERTEX),
+          "linkage resolves by program serial and stage");
+    memset(GP(constants), 0x5a, 0x200);
+    i32 select[2], invalid[2];
+    snx_st_le32(select, 19);
+    snx_st_le32(select + 1, 7);
+    snx_st_le32(invalid, 7);
+    snx_st_le32(invalid + 1, 99);
+    check(nvn_subroutine_apply(linkage, 3, 2, select), "compatible function IDs resolve to call table entries");
+    check(gr32(constants + 16) == 0x48 && gr32(constants + 20) == 0x20 && gr32(constants + 24) == 0x5a5a5a5a,
+          "subroutine arrays update contiguous call entries and leave other uniforms alone");
+    check(!nvn_subroutine_apply(linkage, 3, 2, invalid) && gr32(constants + 16) == 0x48,
+          "invalid partial update cannot modify any preceding table entry");
+    check(nvn_subroutine_apply(linkage, 9, 1, select) && gr32(constants + 24) == 0x48,
+          "a later uniform maps by call order instead of uniform location");
+    nvn_CommandBufferInitialize(NULL, CMDBUF, DEVICE);
+    nvn_CommandBufferAddCommandMemory(NULL, CMDBUF, POOL, 0x9000, 0x8000);
+    nvn_CommandBufferAddControlMemory(NULL, CMDBUF, SCRATCH + 0x1000, 0x400);
+    nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+    gw32(values, 7);
+    nvn_CommandBufferSetProgramSubroutines(NULL, CMDBUF, PROGRAM, NVN_SHADER_STAGE_FRAGMENT, 3, 1, values);
+    u64 handle = nvn_CommandBufferEndRecording(NULL, CMDBUF);
+    gw32(values, 99);
+    memset(GP(map), 0, 160);
+    nvn_ProgramSetShaders(NULL, PROGRAM, 1, pairs);
+    nvn_draw_init(&draw, 0x80000001u);
+    check(replay(&draw, handle, OP_SUBROUTINES) == 1 && gr32(constants + 16) == 0x20,
+          "recorded selection owns its values and immutable linkage after map and program reuse");
+    sub_map(map, NVN_SHADER_STAGE_FRAGMENT, 1);
+    check(nvn_ProgramSetSubroutineLinkage(NULL, PROGRAM, 1, pointers), "absolute subroutine linkage installs");
+    linkage = nvn_program_subroutine(PROGRAM, NVN_SHADER_STAGE_FRAGMENT);
+    check(nvn_subroutine_apply(linkage, 3, 1, select) && gr32(constants + 16) == code + 0x30 + 80 + 0x48,
+          "absolute call table includes graphics SPH and the program-pool base");
+    nvn_CommandBufferFinalize(NULL, CMDBUF);
+    gw32(map + 136, 19);
+    gw32(map + 140, 7);
+    check(!nvn_ProgramSetSubroutineLinkage(NULL, PROGRAM, 1, pointers),
+          "new-format linkage rejects an unsorted function map before binary search");
+    gw32(map + 12, 8);
+    check(nvn_ProgramSetSubroutineLinkage(NULL, PROGRAM, 1, pointers),
+          "legacy linkage accepts an unsorted function map");
+    linkage = nvn_program_subroutine(PROGRAM, NVN_SHADER_STAGE_FRAGMENT);
+    check(nvn_subroutine_apply(linkage, 3, 1, select) && gr32(constants + 16) == code + 0x30 + 80 + 0x20,
+          "legacy function selection uses its original target order");
+    tess_control(control, NVN_SHADER_STAGE_VERTEX, 16, (const u32[4]){0}, 0);
+    GP(control)[0x7c0] = 1;
+    gw32(control + 0x748, 0x30);
+    gw32(control + 0x74c, 0x20);
+    gw32(control + 0x754, 0x80);
+    gw32(control + 0x758, 0x100);
+    check(nvn_ProgramSetShaders(NULL, PROGRAM, 1, pairs) && NVN_OBJ(NvnProgram, PROGRAM)->off_a == 0 &&
+              NVN_OBJ(NvnProgram, PROGRAM)->st[NVN_SHADER_STAGE_VERTEX].off == 0x80,
+          "subroutine vertex programs use the complete VertexB path without cull-before-fetch");
 }
 
 /* ---- state objects */
@@ -859,11 +980,13 @@ static void test_state(void) {
     check(gr32(xy) == 1 && gr32(xy + 4) == 2, "eight raster samples: a 1x2 grid");
     wrf(xy, 0.5f), wrf(xy + 4, 1.0f), wrf(xy + 8, -1.0f), wrf(xy + 12, 0.96f);
     nvn_MultisampleStateSetSampleLocations(NULL, s, 1, 2, xy);
-    check(NVN_OBJ(NvnMultisample, s)->location[1] == (8 | 15 << 4) && NVN_OBJ(NvnMultisample, s)->location[2] == (0 | 15 << 4),
+    check(NVN_OBJ(NvnMultisample, s)->location[1] == (8 | 15 << 4) &&
+              NVN_OBJ(NvnMultisample, s)->location[2] == (0 | 15 << 4),
           "sample locations in sixteenths, rounded and clamped");
     nvn_MultisampleStateSetSampleLocationsEnable(NULL, s, 1);
     nvn_MultisampleStateSetCoverageToColorEnable(NULL, s, 1);
-    check(nvn_MultisampleStateGetSampleLocationsEnable(NULL, s) && nvn_MultisampleStateGetCoverageToColorEnable(NULL, s) &&
+    check(nvn_MultisampleStateGetSampleLocationsEnable(NULL, s) &&
+              nvn_MultisampleStateGetCoverageToColorEnable(NULL, s) &&
               !nvn_MultisampleStateGetAlphaToCoverageDither(NULL, s),
           "the multisample state's flags");
 }
@@ -927,6 +1050,7 @@ int main(void) {
     pool_init();
     test_command_buffer();
     test_tessellation_metadata();
+    test_subroutines();
     test_texture();
     test_array_surface();
     test_sampler();

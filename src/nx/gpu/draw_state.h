@@ -15,8 +15,8 @@
 #define DS_ATTRS         32
 #define DS_STREAMS       32
 #define DS_TARGETS_MAX   8
-#define DS_GFX_STAGES    5     /* VS, TCS, TES, GS, FS: shader_vk_set's order */
-#define DS_CBUFS         18    /* constant buffer slots of a stage */
+#define DS_GFX_STAGES    5  /* VS, TCS, TES, GS, FS: shader_vk_set's order */
+#define DS_CBUFS         18 /* constant buffer slots of a stage */
 /* the bytes of the inline constant buffer blocks (DsInline), as NVN's driver lays out its banks: bank 0 holds the
    storage buffer tables (from 0x110 for the vertex stage, 0x310 compute, 0x510 fragment, 16 bytes an entry), the
    largest point size at 0x610 and the base instance at 0x644; bank 2 the handles of textures from 0x20, images from
@@ -104,7 +104,7 @@ typedef struct {
     u32 clip_height; /* the surface clip's height, which a lower-left origin measures from */
     /* the rest of the surface clip: the viewport while the viewport transform is off (DsViewports.transform_on) */
     u32 clip_x, clip_y, clip_width;
-    u32 depth_word;  /* the vertex stage's viewport and depth word, pushed as it is */
+    u32 depth_word; /* the vertex stage's viewport and depth word, pushed as it is */
 } DsDynamic;
 
 /* A draw's depth bias as vkCmdSetDepthBias takes it (constant, clamp, slope) for targets scale times the console's
@@ -268,7 +268,8 @@ typedef struct {
     u32 state_flags;
     float point_size, depth_bounds[2], tess_levels[6];
     u32 raster_samples, coverage_mode, coverage_table_enable;
-    u8 coverage_table[16]; /* normalized modulation coefficients in units of1/16, inclusive0..16 */
+    u8 coverage_table[16];              /* normalized modulation coefficients in units of1/16, inclusive0..16 */
+    u64 advanced_blend[DS_TARGETS_MAX]; /* active packed NVN advanced blend state, outside the serialized state */
 } DrawCall;
 
 /* DsState's groups, in its order */
@@ -406,11 +407,11 @@ typedef struct {
     u32 color_mask; /* the color components cleared, R in bit 0 to A in bit 3: 0 clears no color */
     u32 slot;       /* the color slot */
     u32 layer;
-    u32 color[4];  /* the clear color's words: floats, or an integer target's integers */
-    float depth;   /* as given (the renderer clamps it) */
-    u32 stencil;   /* its low 8 bits */
+    u32 color[4];         /* the clear color's words: floats, or an integer target's integers */
+    float depth;          /* as given (the renderer clamps it) */
+    u32 stencil;          /* its low 8 bits */
     u32 stencil_preserve; /* stencil bits retained by the clear; zero clears every bit */
-    u32 scissored; /* limited to viewport 0's scissor */
+    u32 scissored;        /* limited to viewport 0's scissor */
 } DrawClear;
 
 /* A texture's rectangle drawn onto color target 0 (the 3D engine's DRAW_TEXTURE), in pixels */

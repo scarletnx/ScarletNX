@@ -20,6 +20,8 @@
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
+#include "nx/gpu/nvn/nvn_replay.h"
+#include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/video/vic.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
@@ -63,8 +65,10 @@ static int check_descriptor_room(void) {
     u64 offset;
     CHECK(vk_stage(256, vk_stage_align(), &buffer, &offset));
     VkDescriptorBufferInfo info = {buffer, offset, 16};
-    VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0,
-                                  .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+    VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                  .dstBinding = 0,
+                                  .descriptorCount = 1,
+                                  .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                   .pBufferInfo = &info};
     u32 slot = vk_frame_slot();
     u64 submit = vk_submit_number(), tables = 0;
@@ -154,8 +158,13 @@ static int check_buffer_texture_rows(void) {
     const u32 row = 1u << SH_TEXEL_ROW_SHIFT, count = row + 3;
     const u32 samples[] = {row - 1, row, count - 1};
     u32 tic[8] = {0x08 | (2u << 7) | (2u << 10) | (2u << 13) | (2u << 16),
-                  (u32)gva, 0, (count - 1) >> 16,
-                  ((count - 1) & 0xffff) | (6u << 23), 0, 0, 0};
+                  (u32)gva,
+                  0,
+                  (count - 1) >> 16,
+                  ((count - 1) & 0xffff) | (6u << 23),
+                  0,
+                  0,
+                  0};
     gmmu_map(gva, cpu, (u64)row * 8);
     memset(GP(cpu), 0xcd, (size_t)row * 8);
     for (u32 i = 0; i < count; i++) snx_st_le32(GP(cpu) + (u64)i * 4, 0xff000000u | i);
@@ -166,8 +175,8 @@ static int check_buffer_texture_rows(void) {
     VkBuffer buffer;
     u8* result = vk_readback_buffer(sizeof samples, &buffer);
     CHECK(result);
-    vk_surf_use(vk_cmd(), texture, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    vk_surf_use(vk_cmd(), texture, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy copies[3] = {{0}};
     for (u32 i = 0; i < 3; i++) {
         copies[i].bufferOffset = i * 4;
@@ -210,7 +219,7 @@ static int check_uma(void) {
     vk_readback_ready();
     for (u32 i = 0; i < 256; i++) CHECK(result[i] == 0x5a);
     CHECK(vk_buf_get_input(gva + 0x100, 256, 4, &b2, &off2) && b2 == b && off2 == off); /* the same import */
-    CHECK(vk_buf_get_input(gva + 0x102, 8, 4, &b2, &off2) && b2 != b);                 /* off its alignment: copied */
+    CHECK(vk_buf_get_input(gva + 0x102, 8, 4, &b2, &off2) && b2 != b);                  /* off its alignment: copied */
     vk_unlock();
     /* the pages given back and mapped again: zero, then written */
     CHECK(mem_unmap(cpu, span) == 0 && mem_map(cpu, span, MS_NORMAL, PERM_RW) == 0);
@@ -229,61 +238,55 @@ static int check_uma(void) {
 }
 
 /* Overflow blocks remain live through submission, then return with their slot. */
-static int check_staging_overflow(void)
-{
-	VkBuffer seen[VK_FRAMES][3] = {{0}};
-	u64 saved_cap = g_vk.alloc_cap;
+static int check_staging_overflow(void) {
+    VkBuffer seen[VK_FRAMES][3] = {{0}};
+    u64 saved_cap = g_vk.alloc_cap;
 
-	g_vk.alloc_cap = 1u << 20;
-	for (u32 frame = 0; frame < VK_FRAMES * 3; frame++) {
-		VkBuffer rb, output, next_output;
-		VmaAllocation memory;
-		VkBufferCopy output_copy;
-		u64 output_offset, next_offset;
-		u8* result = vk_readback_buffer(80, &rb);
-		u8* writable = vk_stage_output(g_vk.alloc_cap, 16, &output, &output_offset, &memory);
-		u32 slot = vk_frame_slot();
+    g_vk.alloc_cap = 1u << 20;
+    for (u32 frame = 0; frame < VK_FRAMES * 3; frame++) {
+        VkBuffer rb, output, next_output;
+        VmaAllocation memory;
+        VkBufferCopy output_copy;
+        u64 output_offset, next_offset;
+        u8* result = vk_readback_buffer(80, &rb);
+        u8* writable = vk_stage_output(g_vk.alloc_cap, 16, &output, &output_offset, &memory);
+        u32 slot = vk_frame_slot();
 
-		CHECK(result && writable && memory);
-		memset(writable, 0xa0 + frame, 16);
-		output_copy = (VkBufferCopy){output_offset, 48, 16};
-		rec_CmdCopyBuffer(vk_cmd(), output, rb, 1, &output_copy);
-		for (u32 block = 0; block < 3; block++) {
-			VkBuffer buffer;
-			u64 offset;
-			u8* data = vk_stage_upload(g_vk.alloc_cap, 16, &buffer, &offset);
-			VkBufferCopy copy = {offset, block * 16, 16};
+        CHECK(result && writable && memory);
+        memset(writable, 0xa0 + frame, 16);
+        output_copy = (VkBufferCopy){output_offset, 48, 16};
+        rec_CmdCopyBuffer(vk_cmd(), output, rb, 1, &output_copy);
+        for (u32 block = 0; block < 3; block++) {
+            VkBuffer buffer;
+            u64 offset;
+            u8* data = vk_stage_upload(g_vk.alloc_cap, 16, &buffer, &offset);
+            VkBufferCopy copy = {offset, block * 16, 16};
 
-			CHECK(data);
-			CHECK(buffer != output);
-			memset(data, frame * 3 + block + 1, 16);
-			if (frame < VK_FRAMES) {
-				for (u32 before = 0; before < block; before++)
-					CHECK(seen[slot][before] != buffer);
-				seen[slot][block] = buffer;
-			} else {
-				CHECK(buffer == seen[slot][0] || buffer == seen[slot][1] ||
-				      buffer == seen[slot][2]);
-			}
-			rec_CmdCopyBuffer(vk_cmd(), buffer, rb, 1, &copy);
-		}
-		writable = vk_stage_output(16, 16, &next_output, &next_offset, &memory);
-		CHECK(writable && next_output != output);
-		memset(writable, 0xb0 + frame, 16);
-		output_copy = (VkBufferCopy){next_offset, 64, 16};
-		rec_CmdCopyBuffer(vk_cmd(), next_output, rb, 1, &output_copy);
-		vk_finish();
-		vk_readback_ready();
-		for (u32 i = 0; i < 48; i++)
-			CHECK(result[i] == frame * 3 + i / 16 + 1);
-		for (u32 i = 48; i < 64; i++)
-			CHECK(result[i] == 0xa0 + frame);
-		for (u32 i = 64; i < 80; i++)
-			CHECK(result[i] == 0xb0 + frame);
-		vk_frame_next();
-	}
-	g_vk.alloc_cap = saved_cap;
-	return 0;
+            CHECK(data);
+            CHECK(buffer != output);
+            memset(data, frame * 3 + block + 1, 16);
+            if (frame < VK_FRAMES) {
+                for (u32 before = 0; before < block; before++) CHECK(seen[slot][before] != buffer);
+                seen[slot][block] = buffer;
+            } else {
+                CHECK(buffer == seen[slot][0] || buffer == seen[slot][1] || buffer == seen[slot][2]);
+            }
+            rec_CmdCopyBuffer(vk_cmd(), buffer, rb, 1, &copy);
+        }
+        writable = vk_stage_output(16, 16, &next_output, &next_offset, &memory);
+        CHECK(writable && next_output != output);
+        memset(writable, 0xb0 + frame, 16);
+        output_copy = (VkBufferCopy){next_offset, 64, 16};
+        rec_CmdCopyBuffer(vk_cmd(), next_output, rb, 1, &output_copy);
+        vk_finish();
+        vk_readback_ready();
+        for (u32 i = 0; i < 48; i++) CHECK(result[i] == frame * 3 + i / 16 + 1);
+        for (u32 i = 48; i < 64; i++) CHECK(result[i] == 0xa0 + frame);
+        for (u32 i = 64; i < 80; i++) CHECK(result[i] == 0xb0 + frame);
+        vk_frame_next();
+    }
+    g_vk.alloc_cap = saved_cap;
+    return 0;
 }
 
 /* A load that draws without a present: each draw uploads an allocation's worth, and vk_frame_check, before each draw,
@@ -978,7 +981,7 @@ static int run_storage_compute(const u32* code, size_t words, u32* data, u32 cou
 
 static int check_direct_spirv(void) {
     size_t words = 0;
-    u32* code = snx_test_spirv_compute(&words), value = 0;
+    u32 *code = snx_test_spirv_compute(&words), value = 0;
     int r = run_storage_compute(code, words, &value, 1);
     free(code);
     CHECK(!r && value == 42);
@@ -1123,17 +1126,16 @@ static int check_sampler_reduction(void) {
    the zero of its sign, and zeros, normals, infinities and NaNs (their payloads too) keep their bits. The float test
    only where the device keeps signed zeros, as the translator uses it */
 static int check_flush_subnormal(void) {
-    static const u32 in[] = {0x00000000u, 0x80000000u, 0x00000001u, 0x80000001u, 0x007fffffu, 0x807fffffu,
-                             0x00400000u, 0x80400000u, 0x00000123u, 0x80654321u, 0x00800000u, 0x80800000u,
-                             0x00800001u, 0x3f800000u, 0xbf800000u, 0x7f7fffffu, 0xff7fffffu, 0x7f800000u,
-                             0xff800000u, 0x7fc00000u, 0xffc00000u, 0x7fa00001u, 0x7fc12345u, 0x0d000000u,
-                             0x8c000000u, 0x34000000u, 0x00012345u, 0x80000100u, 0x01000000u, 0x81000000u,
-                             0x3e800000u, 0x42f60000u};
+    static const u32 in[] = {0x00000000u, 0x80000000u, 0x00000001u, 0x80000001u, 0x007fffffu, 0x807fffffu, 0x00400000u,
+                             0x80400000u, 0x00000123u, 0x80654321u, 0x00800000u, 0x80800000u, 0x00800001u, 0x3f800000u,
+                             0xbf800000u, 0x7f7fffffu, 0xff7fffffu, 0x7f800000u, 0xff800000u, 0x7fc00000u, 0xffc00000u,
+                             0x7fa00001u, 0x7fc12345u, 0x0d000000u, 0x8c000000u, 0x34000000u, 0x00012345u, 0x80000100u,
+                             0x01000000u, 0x81000000u, 0x3e800000u, 0x42f60000u};
     enum { N = sizeof in / sizeof *in };
     for (int signed_zeros = 0; signed_zeros < 2; signed_zeros++) {
         if (signed_zeros && !g_vk_preserve_infnan) continue;
         size_t words = 0;
-        u32* code = snx_test_spirv_flush(N, signed_zeros, &words), data[2 * N] = {0};
+        u32 *code = snx_test_spirv_flush(N, signed_zeros, &words), data[2 * N] = {0};
         memcpy(data, in, sizeof in);
         int r = run_storage_compute(code, words, data, 2 * N);
         free(code);
@@ -1387,8 +1389,9 @@ static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh) {
         u8* base = GP(k ? NV_REF : NV_GPU);
         for (u64 i = 0; i < 0x40000; i++) base[i] = (u8)(i * 13 + 5);
     }
-    NvdecPic p = {{y, u, v}, {(int)w, (int)pairs, (int)pairs}, w, h, NV_GPU, NV_GPU + 0x10000, ext_y, ext_c,
-                  pitch, pitch, sh, bh};
+    NvdecPic p = {
+        {y, u, v}, {(int)w, (int)pairs, (int)pairs}, w, h, NV_GPU, NV_GPU + 0x10000, ext_y, ext_c, pitch, pitch, sh,
+        bh};
     NvdecPic q = p;
     q.luma = NV_REF;
     q.chroma = NV_REF + 0x10000;
@@ -1422,7 +1425,7 @@ static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh) {
 static int check_nvdec_vic(void) {
     u64 lands = own_landings();
     CHECK(!nvdec_vic_case(64, 32, 64, 32, 1));
-    CHECK(!nvdec_vic_case(33, 17, 64, 24, 0)); /* rows ending inside a run, padding rows, blocks of one GOB */
+    CHECK(!nvdec_vic_case(33, 17, 64, 24, 0));  /* rows ending inside a run, padding rows, blocks of one GOB */
     CHECK(!nvdec_vic_case(54, 40, 128, 48, 2)); /* a wider surface than the picture */
     /* each case lands its three ranges when read, nothing before */
     CHECK(!own_traps() || own_landings() <= lands + 9);
@@ -1432,10 +1435,10 @@ static int check_nvdec_vic(void) {
 /* The DMA copy engine on the GPU (vk/dma.c) against its CPU reference (dma_ref.c), each on one of two twin regions of
    guest memory mapped into the GPU's address space: pitch and block linear sides, origins not on 16 bytes, lines
    past the surface, the remap's shuffles, constants and kept bytes */
-#define DMA_A (HEAP_BASE + 0x400000) /* the GPU's twin, at GPU address DMA_GA */
-#define DMA_B (HEAP_BASE + 0x600000) /* the reference's, at DMA_GB */
-#define DMA_GA 0x200000000ull
-#define DMA_GB 0x300000000ull
+#define DMA_A    (HEAP_BASE + 0x400000) /* the GPU's twin, at GPU address DMA_GA */
+#define DMA_B    (HEAP_BASE + 0x600000) /* the reference's, at DMA_GB */
+#define DMA_GA   0x200000000ull
+#define DMA_GB   0x300000000ull
 #define DMA_SPAN 0x100000u
 static int dma_case(GpuDmaOp o) {
     GpuDmaOp g = o, c = o;
@@ -2260,17 +2263,19 @@ static GpuDmaSide pitch_plane(u64 addr, u32 pitch, u32 wb, u32 h) { /* as fermi2
 }
 static int check_blit(void) {
     /* block linear halved into block linear, an odd window */
-    CHECK(!blit_case(bl_side(0x1000, 128 * 4, 64, 2, 0, 0), bl_side(0x80000, 64 * 4, 32, 1, 0, 0), 4, 5, 3, 21, 9,
-                     42, 18, 0));
+    CHECK(!blit_case(bl_side(0x1000, 128 * 4, 64, 2, 0, 0), bl_side(0x80000, 64 * 4, 32, 1, 0, 0), 4, 5, 3, 21, 9, 42,
+                     18, 0));
     /* pitch scaled up into block linear, 2 bytes a pixel */
-    CHECK(!blit_case(pitch_plane(0x3000, 70, 31 * 2, 12), bl_side(0x80000, 100 * 2, 40, 0, 0, 0), 2, 7, 1, 90, 33, 31, 12, 0));
+    CHECK(!blit_case(pitch_plane(0x3000, 70, 31 * 2, 12), bl_side(0x80000, 100 * 2, 40, 0, 0, 0), 2, 7, 1, 90, 33, 31,
+                     12, 0));
     /* block linear into pitch, 16 bytes a pixel, a source whose rows end inside a 16 byte run */
-    CHECK(!blit_case(bl_side(0x1000, 37 * 16, 24, 1, 0, 0), pitch_plane(0x90003, 40 * 16, 40 * 16, 24), 16, 2, 2, 30, 20, 37, 24, 0));
+    CHECK(!blit_case(bl_side(0x1000, 37 * 16, 24, 1, 0, 0), pitch_plane(0x90003, 40 * 16, 40 * 16, 24), 16, 2, 2, 30,
+                     20, 37, 24, 0));
     /* pitch to pitch, a byte a pixel */
     CHECK(!blit_case(pitch_plane(0x101, 77, 77, 30), pitch_plane(0x90001, 99, 99, 15), 1, 3, 4, 95, 11, 77, 30, 0));
     /* 8 bytes a pixel, block linear 3 GOBs a block high */
-    CHECK(!blit_case(bl_side(0x2000, 50 * 8, 48, 3, 0, 0), bl_side(0xA0000, 40 * 8, 20, 1, 0, 0), 8, 1, 0, 39, 20,
-                     50, 48, 0));
+    CHECK(!blit_case(bl_side(0x2000, 50 * 8, 48, 3, 0, 0), bl_side(0xA0000, 40 * 8, 20, 1, 0, 0), 8, 1, 0, 39, 20, 50,
+                     48, 0));
     /* RGBA32F pitch into RGBA16F block linear, an odd window scaled down */
     CHECK(!blit_case(pitch_plane(0x3000, 40 * 16, 40 * 16, 20), bl_side(0x80000, 64 * 8, 32, 1, 0, 0), 16, 5, 3, 21, 9,
                      40, 20, GPU_BLIT_FLOAT(4, 4, 4, 2, 0)));
@@ -2278,10 +2283,10 @@ static int check_blit(void) {
     CHECK(!blit_case(bl_side(0x1000, 33 * 2, 24, 1, 0, 0), pitch_plane(0x90000, 40 * 16, 40 * 16, 24), 2, 2, 1, 37, 20,
                      33, 24, GPU_BLIT_FLOAT(1, 2, 4, 4, 0)));
     /* RGBX16F into RG32F, and R32F into R16F an odd number of pixels wide (half words left at the rows' ends) */
-    CHECK(!blit_case(bl_side(0x1000, 30 * 8, 16, 0, 0, 0), bl_side(0xA0000, 50 * 8, 20, 1, 0, 0), 8, 1, 2, 45, 17,
-                     30, 16, GPU_BLIT_FLOAT(4, 2, 2, 4, 1)));
-    CHECK(!blit_case(pitch_plane(0x101, 77 * 4, 77 * 4, 30), pitch_plane(0x90002, 99 * 2, 99 * 2, 15), 4, 3, 4, 95,
-                     11, 77, 30, GPU_BLIT_FLOAT(1, 4, 1, 2, 0)));
+    CHECK(!blit_case(bl_side(0x1000, 30 * 8, 16, 0, 0, 0), bl_side(0xA0000, 50 * 8, 20, 1, 0, 0), 8, 1, 2, 45, 17, 30,
+                     16, GPU_BLIT_FLOAT(4, 2, 2, 4, 1)));
+    CHECK(!blit_case(pitch_plane(0x101, 77 * 4, 77 * 4, 30), pitch_plane(0x90002, 99 * 2, 99 * 2, 15), 4, 3, 4, 95, 11,
+                     77, 30, GPU_BLIT_FLOAT(1, 4, 1, 2, 0)));
     return 0;
 }
 
@@ -2839,10 +2844,16 @@ static int check_uma_page_changes(void) {
 #include "vulkan_nvn_storage.inc"
 #include "vulkan_nvn_compat.inc"
 #include "vulkan_nvn_copy_flags.inc"
+#include "vulkan_nvn_copy_conversions.inc"
 #include "vulkan_nvn_xfb.inc"
 #include "vulkan_nvn_state.inc"
+#include "vulkan_nvn_events.inc"
+#include "vulkan_nvn_subroutines.inc"
 #include "vulkan_nvn_tess.inc"
 #include "vulkan_nvn_blend.inc"
+#include "vulkan_nvn_advanced_native.inc"
+#include "vulkan_nvn_advanced_shader.inc"
+#include "vulkan_nvn_blend_equations.inc"
 #include "vulkan_nvn_coverage.inc"
 #include "vulkan_sparse_bench.inc"
 #include "vulkan_storage_lookup_bench.inc"
@@ -2858,6 +2869,7 @@ static const IniOpt* setting_row(const char* key) {
 }
 
 int main(int argc, char** argv) {
+    nvn_init();
     const u32 w = 32, h = 16;
     const u64 address = HEAP_BASE;
     const i32 full[4] = {0, 0, 0, 0}, crop[4] = {4, 2, 20, 10};
@@ -2920,7 +2932,7 @@ int main(int argc, char** argv) {
     ppm = snx_format("%s.ppm", shot);
     mem_init(); /* the real reservation and alias pool: the renderer traps what the GPU owns where the host can */
     CHECK(mem_map(HEAP_BASE, 0x800000, MS_NORMAL, PERM_RW) == 0);
-    nv_init(); /* color targets may import guest memory through the GPU page table */
+    nv_init();                          /* color targets may import guest memory through the GPU page table */
     g_settings.vulkan_video_decode = 1; /* a Vulkan Video decode queue where the device has one (lavapipe has none) */
     video_init("Headless Vulkan fixture", "");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
@@ -2929,7 +2941,9 @@ int main(int argc, char** argv) {
         puts("SKIP descriptor-buffer checks: the device does not support this path");
         vk_pipeline_quiesce(); /* the earlier runs' pipelines, which workers still make, before the driver's exit */
         CHECK(!snx_remove_tree(root));
-        free(root); free(shot); free(ppm);
+        free(root);
+        free(shot);
+        free(ppm);
         return 77;
     }
     if (nvn_benchmark >= 0) {
@@ -2937,7 +2951,9 @@ int main(int argc, char** argv) {
         int result = bench_nvn_storage(nvn_benchmark, 256, 8);
         vk_pipeline_quiesce();
         CHECK(!snx_remove_tree(root));
-        free(root); free(shot); free(ppm);
+        free(root);
+        free(shot);
+        free(ppm);
         return result;
     }
     if (benchmark_storage) {
@@ -2953,11 +2969,42 @@ int main(int argc, char** argv) {
         int result = bench_descriptors(benchmark_sets, benchmark_count, benchmark_images);
         vk_pipeline_quiesce();
         CHECK(!snx_remove_tree(root));
-        free(root); free(shot); free(ppm);
+        free(root);
+        free(shot);
+        free(ppm);
         return result;
     }
     if (benchmark_sparse) {
         int result = bench_sparse_volumes();
+        vk_pipeline_quiesce();
+        CHECK(!snx_remove_tree(root));
+        free(root);
+        free(shot);
+        free(ppm);
+        return result;
+    }
+    if (getenv("SNX_TEST_NVN_CASE")) {
+        const char* name = getenv("SNX_TEST_NVN_CASE");
+        int result;
+        if (!strcmp(name, "events"))
+            result = check_nvn_event_order();
+        else if (!strcmp(name, "subroutines"))
+            result = check_nvn_subroutine_calls();
+        else if (!strcmp(name, "copies"))
+            result = check_nvn_copy_conversions();
+        else if (!strcmp(name, "advanced_blend"))
+            result = check_nvn_advanced_native();
+        else if (!strcmp(name, "advanced_shader"))
+            result = check_nvn_advanced_shader();
+        else if (!strcmp(name, "blend_equations"))
+            result = check_nvn_blend_equations();
+        else {
+            fprintf(stderr, "Unknown NVN case: %s\n", name);
+            return 2;
+        }
+        vk_lock();
+        vk_finish();
+        vk_unlock();
         vk_pipeline_quiesce();
         CHECK(!snx_remove_tree(root));
         free(root);
@@ -3069,6 +3116,12 @@ int main(int argc, char** argv) {
     CHECK(!check_nvn_default_tessellation());
     CHECK(!check_nvn_advanced_blend());
     CHECK(!check_nvn_coverage());
+    CHECK(!check_nvn_copy_conversions());
+    CHECK(!check_nvn_event_order());
+    CHECK(!check_nvn_subroutine_calls());
+    CHECK(!check_nvn_advanced_native());
+    CHECK(!check_nvn_advanced_shader());
+    CHECK(!check_nvn_blend_equations());
     CHECK(!check_storage_image_formats());
     CHECK(!check_volume_surface_atomics());
     CHECK(!check_layered_surface_loads());
@@ -3192,7 +3245,9 @@ int main(int argc, char** argv) {
     u64 before = vk_frame_id();
     g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 1, full, 0, 0, 0, 0);
     CHECK(vk_frame_id() == before + 1);
+    vk_lock();
     vk_finish();
+    vk_unlock();
     vk_pipeline_quiesce();
     CHECK(!viw_report());
     CHECK(!snx_remove_tree(root));

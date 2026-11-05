@@ -9,6 +9,7 @@
    Where nxnative and the game's own driver disagree, the driver wins: nvnDeviceGetInteger answers from the driver's
    table (its API version is the SDK's, 55.8 in one game) rather than nxnative's 55.15 */
 #include "nx/gpu/nvn/nvn_object.h"
+#include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/gpu/nvn/nvn_state.h"
@@ -65,24 +66,24 @@ void nvn_SetExternalDebuggerEnabledNVX(CPU* c, int enabled) {
    device's fields (0x17, 0x18, 0x2b, 0x2d, 0x37, 0x38, 0x3a, 0x3b, 0x3d-0x41). 0x62 reads device state nobody
    measured: 0, logged */
 static const i32 device_info[NVN_DEVICE_INFO_ITEMS] = {
-    [0x00] = 55,      [0x01] = 15,      [0x02] = 14,      [0x03] = 65536,   [0x04] = 256,     [0x05] = 8,
-    [0x06] = 16,      [0x07] = 4,       [0x08] = 16,      [0x09] = 32,      [0x0a] = 16,      [0x0b] = 4,
-    [0x0c] = 4,       [0x0d] = 4,       [0x0e] = 16,      [0x0f] = 32,      [0x10] = 32,      [0x11] = 256,
-    [0x12] = 256,     [0x13] = 4,       [0x14] = 8,       [0x15] = 512,     [0x16] = 256,     [0x17] = 2,
-    [0x18] = 256,     [0x19] = 4096,    [0x1a] = 131072,  [0x1b] = 16,      [0x1c] = 1536,    [0x1d] = 1024,
-    [0x1e] = 64,      [0x1f] = 1536,    [0x20] = 65535,   [0x21] = 65535,   [0x22] = 65535,   [0x23] = 8,
-    [0x24] = 1048576, [0x25] = 4096,    [0x26] = 16,      [0x27] = 4096,    [0x28] = 1,       [0x29] = 1,
-    [0x2a] = 1,       [0x2b] = 262144,  [0x2c] = 15,      [0x2d] = 2048,    [0x2e] = 1,       [0x2f] = 1,
-    [0x30] = 16,      [0x31] = 5,       [0x32] = 1,       [0x33] = 8,       [0x34] = 8,       [0x35] = 4,
-    [0x36] = 32,      [0x37] = 128,     [0x38] = 32,      [0x39] = 128,     [0x3a] = 65536,   [0x3b] = 1,
-    [0x3c] = 4,       [0x3d] = 16384,   [0x3e] = 134217728, [0x3f] = 2048,  [0x40] = 16384,   [0x41] = 16384,
-    [0x42] = 1,       [0x43] = 1,       [0x44] = 1,       [0x45] = 1,       [0x46] = 5,       [0x47] = 1,
-    [0x48] = 1,       [0x49] = 1,       [0x4a] = 1,       [0x4b] = 1,       [0x4c] = 1,       [0x4d] = 16,
-    [0x4e] = 1024,    [0x4f] = 32,      [0x50] = 4096,    [0x51] = 65536,   [0x52] = 65536,   [0x53] = 256,
-    [0x54] = 16384,   [0x55] = 262144,  [0x56] = 4096,    [0x57] = 1,       [0x58] = 4,       [0x59] = 2,
-    [0x5a] = 0,       [0x5b] = 4096,    [0x5c] = 16384,   [0x5d] = 4096,    [0x5e] = 128,     [0x5f] = 32,
-    [0x60] = 65535,   [0x61] = 1,       [0x62] = 0,       [0x63] = 256,     [0x64] = 16,      [0x65] = 65535,
-    [0x66] = 65535,   [0x67] = 256,     [0x68] = 16383,
+    [0x00] = 55,      [0x01] = 15,     [0x02] = 14,        [0x03] = 65536, [0x04] = 256,   [0x05] = 8,
+    [0x06] = 16,      [0x07] = 4,      [0x08] = 16,        [0x09] = 32,    [0x0a] = 16,    [0x0b] = 4,
+    [0x0c] = 4,       [0x0d] = 4,      [0x0e] = 16,        [0x0f] = 32,    [0x10] = 32,    [0x11] = 256,
+    [0x12] = 256,     [0x13] = 4,      [0x14] = 8,         [0x15] = 512,   [0x16] = 256,   [0x17] = 2,
+    [0x18] = 256,     [0x19] = 4096,   [0x1a] = 131072,    [0x1b] = 16,    [0x1c] = 1536,  [0x1d] = 1024,
+    [0x1e] = 64,      [0x1f] = 1536,   [0x20] = 65535,     [0x21] = 65535, [0x22] = 65535, [0x23] = 8,
+    [0x24] = 1048576, [0x25] = 4096,   [0x26] = 16,        [0x27] = 4096,  [0x28] = 1,     [0x29] = 1,
+    [0x2a] = 1,       [0x2b] = 262144, [0x2c] = 15,        [0x2d] = 2048,  [0x2e] = 1,     [0x2f] = 1,
+    [0x30] = 16,      [0x31] = 5,      [0x32] = 1,         [0x33] = 8,     [0x34] = 8,     [0x35] = 4,
+    [0x36] = 32,      [0x37] = 128,    [0x38] = 32,        [0x39] = 128,   [0x3a] = 65536, [0x3b] = 1,
+    [0x3c] = 4,       [0x3d] = 16384,  [0x3e] = 134217728, [0x3f] = 2048,  [0x40] = 16384, [0x41] = 16384,
+    [0x42] = 1,       [0x43] = 1,      [0x44] = 1,         [0x45] = 1,     [0x46] = 5,     [0x47] = 1,
+    [0x48] = 1,       [0x49] = 1,      [0x4a] = 1,         [0x4b] = 1,     [0x4c] = 1,     [0x4d] = 16,
+    [0x4e] = 1024,    [0x4f] = 32,     [0x50] = 4096,      [0x51] = 65536, [0x52] = 65536, [0x53] = 256,
+    [0x54] = 16384,   [0x55] = 262144, [0x56] = 4096,      [0x57] = 1,     [0x58] = 4,     [0x59] = 2,
+    [0x5a] = 0,       [0x5b] = 4096,   [0x5c] = 16384,     [0x5d] = 4096,  [0x5e] = 128,   [0x5f] = 32,
+    [0x60] = 65535,   [0x61] = 1,      [0x62] = 0,         [0x63] = 256,   [0x64] = 16,    [0x65] = 65535,
+    [0x66] = 65535,   [0x67] = 256,    [0x68] = 16383,
 };
 
 void nvn_DeviceBuilderSetDefaults(CPU* c, u64 b) {
@@ -242,7 +243,8 @@ void nvn_DeviceGetInteger(CPU* c, u64 d, i32 what, u64 out) {
     (void)c;
     (void)d;
     if (w >= NVN_DEVICE_INFO_ITEMS || w == 0x62)
-        LOG_LIMIT(16, "nvn: nvnDeviceGetInteger of item %#x, which the driver reads from state nobody measured: 0\n", w);
+        LOG_LIMIT(16, "nvn: nvnDeviceGetInteger of item %#x, which the driver reads from state nobody measured: 0\n",
+                  w);
     gw32(out, (u32)v);
 }
 void nvn_DeviceSetWindowOriginMode(CPU* c, u64 d, i32 mode) {
@@ -349,8 +351,7 @@ int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
         LOG_LIMIT(8, "nvn: memory pool %llx has no storage (flags %#x)\n", (unsigned long long)p, o.flags);
     lead = o.memory & 0xfff;
     va = gmmu_space_alloc(lead + o.size, NVN_POOL_ALIGN);
-    if (!va)
-        fatal("nvn: no GPU address space left for a memory pool of %llx bytes", (unsigned long long)o.size);
+    if (!va) fatal("nvn: no GPU address space left for a memory pool of %llx bytes", (unsigned long long)o.size);
     if (o.memory) gmmu_space_map(va, o.memory - lead, lead + o.size);
     o.gpu = va + lead;
     memcpy(GP(p), &o, sizeof o);
@@ -364,7 +365,8 @@ void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
     (void)c;
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) gmmu_space_free(o->gpu - lead, lead + o->size);
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->memory) nvn_cmd_memory_back(o->memory, o->size);
-    if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L')) nvmap_handle_drop(__atomic_exchange_n(&o->nvmap, 0, __ATOMIC_ACQ_REL));
+    if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L'))
+        nvmap_handle_drop(__atomic_exchange_n(&o->nvmap, 0, __ATOMIC_ACQ_REL));
     o->magic = 0;
     o->gpu = 0;
 }
@@ -571,8 +573,8 @@ static u64 desc_slot(u64 dp, i32 id, const char* kind) {
     const NvnDescPool* p = NVN_OBJ(NvnDescPool, dp);
     u64 memory = nvn_pool_memory(p->pool);
     if (id < 0 || id >= p->count || !memory) {
-        LOG_LIMIT(8, "nvn: %s %d registered outside its pool %llx (%d descriptors)\n", kind, id,
-                  (unsigned long long)dp, p->count);
+        LOG_LIMIT(8, "nvn: %s %d registered outside its pool %llx (%d descriptors)\n", kind, id, (unsigned long long)dp,
+                  p->count);
         return 0;
     }
     return memory + p->offset + (u64)id * NVN_DESCRIPTOR_SIZE;
@@ -654,7 +656,7 @@ static void register_texture(u64 tp, i32 id, u64 t, u64 v, int image) {
     NvnView view;
     u32 tic[8];
     if (!slot) return;
-    if (!t) { /* no texture: an empty descriptor */
+    if (!t) {                            /* no texture: an empty descriptor */
         memset(GP(slot), 0, sizeof tic); /* guest memory: every byte the game sees */
         return;
     }
@@ -742,7 +744,7 @@ void nvn_TextureBuilderSetStride(CPU* c, u64 b, i64 stride) {
 void nvn_TextureBuilderSetPackagedTextureLayout(CPU* c, u64 b, u64 layout) {
     NvnTexBuilder* o = TB(b);
     (void)c;
-    o->d.bits &= (u8)~(NVN_TEX_HAS_LAYOUT | NVN_TEX_BLOCK_H);
+    o->d.bits &= (u8) ~(NVN_TEX_HAS_LAYOUT | NVN_TEX_BLOCK_H);
     memset(o->layout, 0, sizeof o->layout); /* guest memory: every byte the game sees */
     if (!layout) return;
     memcpy(o->layout, GP(layout), sizeof o->layout);
@@ -859,8 +861,8 @@ u64 nvn_TextureBuilderGetStorageSize(CPU* c, u64 b) {
     NvnTexStorage st;
     (void)c;
     nvn_tex_storage(&TB(b)->d, &st);
-    if (!st.size) LOG_LIMIT(8, "nvn: the storage size of a texture of format %#x, which nvn doesn't know\n",
-                            TB(b)->d.format);
+    if (!st.size)
+        LOG_LIMIT(8, "nvn: the storage size of a texture of format %#x, which nvn doesn't know\n", TB(b)->d.format);
     return st.size;
 }
 u64 nvn_TextureBuilderGetStorageAlignment(CPU* c, u64 b) {
@@ -888,8 +890,7 @@ int nvn_TextureInitialize(CPU* c, u64 t, u64 b) {
     if (o.d.format < 256 &&
         !(__atomic_fetch_or(&g_nvn.object.formats[o.d.format >> 5], 1u << (o.d.format & 31), __ATOMIC_RELAXED) &
           1u << (o.d.format & 31)))
-        LOG("nvn: the first texture of format %#x (target %u, %ux%u)\n", o.d.format, o.d.target, o.d.width,
-            o.d.height);
+        LOG("nvn: the first texture of format %#x (target %u, %ux%u)\n", o.d.format, o.d.target, o.d.width, o.d.height);
     if (o.d.samples > 1)
         LOG_LIMIT(4, "nvn: a %u-sample texture of format %#x, %ux%u\n", (unsigned)o.d.samples, o.d.format, o.d.width,
                   o.d.height);
@@ -1010,7 +1011,9 @@ void nvn_TextureWriteTexels(CPU* c, u64 t, u64 v, u64 region, u64 src) {
     nvn_write_texels(t, v, region, src, 0, 0);
 }
 /* the channel mapping SetSwizzle gave the builder, R G B A when it gave none */
-static u32 tex_swizzle(const NvnTexDesc* d) { return d->swizzle & NVN_TEX_SWIZZLE_SET ? d->swizzle : 2u | 3u << 3 | 4u << 6 | 5u << 9; }
+static u32 tex_swizzle(const NvnTexDesc* d) {
+    return d->swizzle & NVN_TEX_SWIZZLE_SET ? d->swizzle : 2u | 3u << 3 | 4u << 6 | 5u << 9;
+}
 void nvn_TextureGetSwizzle(CPU* c, u64 t, u64 r, u64 g, u64 b, u64 a) {
     u32 w = tex_swizzle(&CT(t)->d);
     (void)c;
@@ -1282,7 +1285,7 @@ void nvn_TextureViewSetSwizzle(CPU* c, u64 v, i32 r, i32 g, i32 b, i32 a) {
 void nvn_SamplerBuilderSetDefaults(CPU* c, u64 b) {
     NvnSamplerPar* o = SB(b);
     (void)c;
-    memset(GP(b), 0, sizeof(NvnSamplerBuilder));          /* guest memory: every byte the game sees */
+    memset(GP(b), 0, sizeof(NvnSamplerBuilder)); /* guest memory: every byte the game sees */
     o->min_filter = NVN_MIN_FILTER_LINEAR;
     o->mag_filter = NVN_MAG_FILTER_LINEAR;
     o->wrap_s = o->wrap_t = o->wrap_r = NVN_WRAP_MODE_REPEAT;
@@ -1461,8 +1464,7 @@ int nvn_SamplerCompare(CPU* c, u64 a, u64 b) {
            x->wrap_t == y->wrap_t && x->wrap_r == y->wrap_r && x->compare_mode == y->compare_mode &&
            x->compare_func == y->compare_func && x->reduction == y->reduction && x->lod_min == y->lod_min &&
            x->lod_max == y->lod_max && x->lod_bias == y->lod_bias && x->anisotropy == y->anisotropy &&
-           x->lod_snap == y->lod_snap &&
-           !memcmp(x->border, y->border, sizeof x->border);
+           x->lod_snap == y->lod_snap && !memcmp(x->border, y->border, sizeof x->border);
 }
 void nvn_SamplerFinalize(CPU* c, u64 s) {
     (void)c;
@@ -1497,10 +1499,11 @@ static int stage_of(NvnProgram* o, u64 data, u64 control) {
        SetShaders failing, one game's effects system went on to read the program's interface table, which the
        failure left out, and crashed */
     if (magic != 0x98761234u || one != 1 || format < 5 || format > 16 || stage > 5 ||
-        (off < 0x30 && stage != NVN_SHADER_STAGE_COMPUTE) || cb < off ||
-        size < cb || (cb & 0xff) || (size & 0xff) || size >> 24 || !data) {
-        LOG_LIMIT(8, "nvn: a shader's control section at %llx isn't one the runtime reads (magic %x, format %u, stage %u, "
-                     "program at %#x, constants %#x of %#x)\n",
+        (off < 0x30 && stage != NVN_SHADER_STAGE_COMPUTE) || cb < off || size < cb || (cb & 0xff) || (size & 0xff) ||
+        size >> 24 || !data) {
+        LOG_LIMIT(8,
+                  "nvn: a shader's control section at %llx isn't one the runtime reads (magic %x, format %u, stage %u, "
+                  "program at %#x, constants %#x of %#x)\n",
                   (unsigned long long)control, magic, format, stage, off, cb, size);
         return 0;
     }
@@ -1518,7 +1521,9 @@ static int stage_of(NvnProgram* o, u64 data, u64 control) {
         o->off_a = gr32(control + 0x754);
         st->cb_size = (u16)((gr32(control + 0x6fc) + 0xff) >> 8);
     } else if (stage == NVN_SHADER_STAGE_VERTEX && gr32(control + 0x74c) && gr32(control + 0x758)) {
-        o->off_a = gr32(control + 0x748);
+        /* Subroutine-enabled vertex programs run their complete VertexB path. The optional cull-before-fetch
+           VertexA program cannot share its dynamically patched register/call state. */
+        o->off_a = format >= 7 && GP(control)[0x7c0] ? 0 : gr32(control + 0x748);
         st->off = gr32(control + 0x754);
     }
     return 1;
@@ -1645,11 +1650,34 @@ static void xfb_of(u64 control, u64 serial) {
     pm_unlock(&g_nvn.object.xfb_lock);
 }
 
+static void sub_program(u64 serial, u32 required) {
+    if (!required) return;
+    pm_lock(&g_nvn.object.xfb_lock);
+    if (g_nvn.object.nsubprogram == g_nvn.object.subprogram_capacity) {
+        u32 capacity = g_nvn.object.subprogram_capacity ? g_nvn.object.subprogram_capacity * 2 : 32;
+        if (capacity < g_nvn.object.subprogram_capacity ||
+            (size_t)capacity > SIZE_MAX / sizeof *g_nvn.object.subprogram)
+            fatal("nvn: subroutine program metadata exceeds the address space");
+        NvnSubProgram* grown = realloc(g_nvn.object.subprogram, (size_t)capacity * sizeof *grown);
+        if (!grown) fatal("nvn: no memory for %u subroutine programs", capacity);
+        g_nvn.object.subprogram = grown;
+        g_nvn.object.subprogram_capacity = capacity;
+    }
+    u32 at = program_metadata_index(g_nvn.object.subprogram, g_nvn.object.nsubprogram, sizeof *g_nvn.object.subprogram,
+                                    serial);
+    memmove(g_nvn.object.subprogram + at + 1, g_nvn.object.subprogram + at,
+            (size_t)(g_nvn.object.nsubprogram - at) * sizeof *g_nvn.object.subprogram);
+    g_nvn.object.subprogram[at] = (NvnSubProgram){.serial = serial, .required = required};
+    g_nvn.object.nsubprogram++;
+    pm_unlock(&g_nvn.object.xfb_lock);
+}
+
 /* the stages' {code, control} pairs, read from the control sections while they are the caller's */
 static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     NvnProgram* o = NVN_OBJ(NvnProgram, p);
     u64 last = 0; /* the control section of the last stage before rasterization */
     u64 tess_controls[2] = {0};
+    u32 subroutine_mask = 0;
     i32 i, last_rank = -1;
     if (n < 0 || n > 6) {
         LOG_LIMIT(8, "nvn: nvnProgramSetShaders with %d stages\n", n);
@@ -1666,6 +1694,7 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
         if (!stage_of(o, gr64(sd + stride * (u64)i), control)) return 0;
         /* geometry, else tessellation evaluation, else control, else vertex: the driver's order */
         stage = gr32(control + 0x714);
+        if (gr32(control + 8) >= 7 && GP(control)[0x7c0]) subroutine_mask |= 1u << stage;
         if (stage == NVN_SHADER_STAGE_TESS_CONTROL) tess_controls[0] = control;
         if (stage == NVN_SHADER_STAGE_TESS_EVALUATION) tess_controls[1] = control;
         rank = stage == NVN_SHADER_STAGE_GEOMETRY          ? 3
@@ -1683,6 +1712,7 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     o->sample_shading = (u16)((o->sample_shading & 0xff) | (o->sample_shading & 0xff) << 8);
     if (last) xfb_of(last, o->serial);
     tess_of(tess_controls, o->serial);
+    sub_program(o->serial, subroutine_mask);
     return 1;
 }
 int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {
@@ -1714,15 +1744,188 @@ i32 nvn_ProgramGetSubtileSize(CPU* c, u64 p) {
     (void)p;
     return 0;
 }
-/* Subroutine linkage maps the program's subroutine uniforms to their functions. The game's driver answers false for
-   a program whose stages have none, which is every program here: the translator runs no subroutines, so a program
-   with them couldn't draw as the game asks */
+/* A linkage map's fixed header is 80 bytes. Every payload offset is relative to its first byte. Bounds are
+   checked before the snapshot is installed, so malformed maps never become command-record handles. */
+static int sub_span(u32 bytes, u32 offset, u32 count, u32 width) {
+    return !(offset & 3) && offset >= 80 && offset <= bytes && count <= (bytes - offset) / width;
+}
+static NvnSubLinkage* sub_linkage(u64 address, const NvnProgram* program, u32* mask) {
+    if (address > ~0ull - 80 || mem_mapped_run(address, 80) < 80) return NULL;
+    const u8* data = GP(address);
+    u32 bytes = snx_ld_le32(data + 20), stage = snx_ld_le32(data + 4);
+    if (snx_ld_le32(data) != 0xfabffabcu || stage > 5 || (*mask & (1u << stage)) || bytes < 80 || bytes > 16u << 20)
+        return NULL;
+    if (address > ~0ull - bytes || mem_mapped_run(address, bytes) < bytes) return NULL;
+    const NvnStage* shader = &program->st[stage];
+    u32 absolute = snx_ld_le32(data + 28), table = snx_ld_le32(data + 36);
+    u32 labels = snx_ld_le32(data + 40), code = snx_ld_le32(data + 48), calls = snx_ld_le32(data + 56);
+    u32 call_offset = snx_ld_le32(data + 60), functions = snx_ld_le32(data + 64), targets = snx_ld_le32(data + 68);
+    u32 entries = snx_ld_le32(data + 76);
+    /* Compiler constants are bank1. Maxwell table entries are one32-bit byte offset each. */
+    u32 capacity = (u32)shader->cb_size * 64;
+    if (capacity > 16384) capacity = 16384; /* Maxwell constant banks contain at most64 KiB. */
+    if (!shader->data || ((u32)shader->cb << 8) < shader->off || absolute > 1 || !labels || !calls || !entries ||
+        table > capacity || entries > capacity - table || !sub_span(bytes, code, labels, 4) ||
+        !sub_span(bytes, call_offset, calls, 16))
+        return NULL;
+    u32 major = snx_ld_le32(data + 8), minor = snx_ld_le32(data + 12);
+    int sorted = major > 1 || (major == 1 && minor >= 9);
+    u32 summed = 0;
+    for (u32 i = 0; i < calls; i++) {
+        const u8* call = data + call_offset + (size_t)i * 16;
+        u32 n = snx_ld_le32(call), array = snx_ld_le32(call + 4), at = snx_ld_le32(call + 8);
+        u32 uniform = snx_ld_le32(call + 12);
+        if (!n || !array || array > entries - summed || uniform > 0x7fffffffu || array > 0x80000000u - uniform ||
+            at > 0x3fffffffu || n > 0x40000000u - at || !sub_span(bytes, functions, at + n, 4) ||
+            !sub_span(bytes, targets, at + n, 4))
+            return NULL;
+        for (u32 j = 0; j < n; j++) {
+            if (sorted && j &&
+                snx_ld_le32(data + functions + ((size_t)at + j - 1) * 4) >
+                    snx_ld_le32(data + functions + ((size_t)at + j) * 4))
+                return NULL;
+            u32 label = snx_ld_le32(data + targets + ((size_t)at + j) * 4);
+            if (label >= labels) return NULL;
+            u32 offset = snx_ld_le32(data + code + (size_t)label * 4);
+            u32 extent = ((u32)shader->cb << 8) - shader->off;
+            u32 magnitude = !absolute && (offset & 0x80000000u) ? 0u - offset : offset;
+            if (offset != ~0u && ((offset & 7) || magnitude >= extent)) return NULL;
+        }
+        summed += array;
+    }
+    if (summed != entries) return NULL;
+    NvnSubLinkage* result = malloc(sizeof *result + bytes);
+    if (!result) return NULL;
+    *result = (NvnSubLinkage){.shader = *shader,
+                              .stage = stage,
+                              .absolute = absolute,
+                              .table = table,
+                              .calls = calls,
+                              .entries = entries,
+                              .labels = labels,
+                              .call_offset = call_offset,
+                              .code_offset = code,
+                              .function_offset = functions,
+                              .label_offset = targets,
+                              .bytes = bytes};
+    memcpy(result->data, data, bytes);
+    *mask |= 1u << stage;
+    return result;
+}
 int nvn_ProgramSetSubroutineLinkage(CPU* c, u64 p, i32 n, u64 maps) {
     (void)c;
-    if (n > 0 && maps)
-        LOG_LIMIT(1, "nvn: program %llx's subroutine linkage (%d stages): the runtime's programs have no subroutines\n",
-                  (unsigned long long)p, n);
+    if (!p || !maps || n <= 0 || n > 6) return 0;
+    NvnProgram program = *NVN_OBJ(const NvnProgram, p);
+    if (program.magic != NVN_MAGIC('P', 'R', 'O', 'G')) return 0;
+    NvnSubLinkage* made[6] = {0};
+    u32 mask = 0;
+    for (i32 i = 0; i < n; i++) {
+        u64 address = nvn_gptr(maps + (g_nvn.loader.a32 ? 4 : 8) * (u64)i);
+        if (!address || !(made[i] = sub_linkage(address, &program, &mask))) goto fail;
+    }
+    pm_lock(&g_nvn.object.xfb_lock);
+    u32 at = program_metadata_index(g_nvn.object.subprogram, g_nvn.object.nsubprogram, sizeof *g_nvn.object.subprogram,
+                                    program.serial);
+    if (at == g_nvn.object.nsubprogram || g_nvn.object.subprogram[at].serial != program.serial ||
+        g_nvn.object.subprogram[at].required != mask) {
+        pm_unlock(&g_nvn.object.xfb_lock);
+        goto fail;
+    }
+    if ((u32)n > g_nvn.object.sublinkage_capacity - g_nvn.object.nsublinkage) {
+        u32 capacity = g_nvn.object.sublinkage_capacity ? g_nvn.object.sublinkage_capacity * 2 : 32;
+        if (capacity < g_nvn.object.sublinkage_capacity ||
+            (size_t)capacity > SIZE_MAX / sizeof *g_nvn.object.sublinkage)
+            fatal("nvn: subroutine linkage handles exceed the address space");
+        NvnSubLinkage** grown = realloc(g_nvn.object.sublinkage, (size_t)capacity * sizeof *grown);
+        if (!grown) fatal("nvn: no memory for %u subroutine linkage maps", capacity);
+        g_nvn.object.sublinkage = grown;
+        g_nvn.object.sublinkage_capacity = capacity;
+    }
+    for (i32 i = 0; i < n; i++) {
+        g_nvn.object.sublinkage[g_nvn.object.nsublinkage++] = made[i];
+        g_nvn.object.subprogram[at].linkage[made[i]->stage] = g_nvn.object.nsublinkage;
+    }
+    pm_unlock(&g_nvn.object.xfb_lock);
+    return 1;
+fail:
+    for (i32 i = 0; i < n; i++) free(made[i]);
     return 0;
+}
+u32 nvn_program_subroutine(u64 program, i32 stage) {
+    if (!program || (u32)stage > 5) return 0;
+    const NvnProgram* object = NVN_OBJ(const NvnProgram, program);
+    if (object->magic != NVN_MAGIC('P', 'R', 'O', 'G')) return 0;
+    u64 serial = object->serial;
+    pm_lock(&g_nvn.object.xfb_lock);
+    u32 at = program_metadata_index(g_nvn.object.subprogram, g_nvn.object.nsubprogram, sizeof *g_nvn.object.subprogram,
+                                    serial);
+    u32 result = at < g_nvn.object.nsubprogram && g_nvn.object.subprogram[at].serial == serial
+                     ? g_nvn.object.subprogram[at].linkage[stage]
+                     : 0;
+    pm_unlock(&g_nvn.object.xfb_lock);
+    return result;
+}
+int nvn_subroutine_apply(u32 handle, i32 first, i32 count, const i32* values) {
+    if (!handle || first < 0 || count < 0 || (u32)count > 0x80000000u - (u32)first || (count && !values)) return 0;
+    pm_lock(&g_nvn.object.xfb_lock);
+    const NvnSubLinkage* linkage = handle <= g_nvn.object.nsublinkage ? g_nvn.object.sublinkage[handle - 1] : NULL;
+    pm_unlock(&g_nvn.object.xfb_lock);
+    if (!linkage) return 0;
+    /* Validate the whole update before any write. Patches retain table order, so adjacent changed entries share
+       one write while untouched locations require no read of pending GPU constants. */
+    u32* patch = malloc((size_t)linkage->entries * 8);
+    if (!patch) fatal("nvn: no memory for subroutine table updates");
+    u32* index = patch + linkage->entries;
+    u32 major = snx_ld_le32(linkage->data + 8), minor = snx_ld_le32(linkage->data + 12);
+    int sorted = major > 1 || (major == 1 && minor >= 9);
+    u32 changed = 0, entry = 0;
+    for (u32 i = 0; i < linkage->calls; i++) {
+        const u8* call = linkage->data + linkage->call_offset + (size_t)i * 16;
+        u32 targets = snx_ld_le32(call), array = snx_ld_le32(call + 4), start = snx_ld_le32(call + 8);
+        u32 uniform = snx_ld_le32(call + 12);
+        for (u32 j = 0; j < array; j++, entry++) {
+            u32 location = uniform + j;
+            if (location < (u32)first || location - (u32)first >= (u32)count) continue;
+            u32 function = snx_ld_le32((const u8*)values + (size_t)(location - (u32)first) * 4);
+            u32 k = 0;
+            if (sorted) {
+                u32 end = targets;
+                while (k < end) {
+                    u32 middle = k + (end - k) / 2;
+                    u32 found = snx_ld_le32(linkage->data + linkage->function_offset + ((size_t)start + middle) * 4);
+                    if (found < function)
+                        k = middle + 1;
+                    else
+                        end = middle;
+                }
+            } else
+                for (; k < targets; k++)
+                    if (snx_ld_le32(linkage->data + linkage->function_offset + ((size_t)start + k) * 4) == function)
+                        break;
+            if (k == targets ||
+                snx_ld_le32(linkage->data + linkage->function_offset + ((size_t)start + k) * 4) != function) {
+                free(patch);
+                return 0;
+            }
+            u32 label = snx_ld_le32(linkage->data + linkage->label_offset + ((size_t)start + k) * 4);
+            u32 offset = snx_ld_le32(linkage->data + linkage->code_offset + (size_t)label * 4);
+            u32 base = linkage->absolute ? (u32)(linkage->shader.data + linkage->shader.off) +
+                                               (linkage->stage == NVN_SHADER_STAGE_COMPUTE ? 0 : 80)
+                                         : 0;
+            snx_st_le32((u8*)patch + (size_t)changed * 4, base + offset);
+            index[changed++] = entry;
+        }
+    }
+    int ok = 1;
+    for (u32 i = 0; i < changed;) {
+        u32 end = i + 1;
+        while (end < changed && index[end] == index[end - 1] + 1) end++;
+        u64 destination = linkage->shader.data + ((u64)linkage->shader.cb << 8) + ((u64)linkage->table + index[i]) * 4;
+        if (gmem_write(destination, patch + i, (u64)(end - i) * 4)) ok = 0;
+        i = end;
+    }
+    free(patch);
+    return ok;
 }
 
 /* ============================================================ syncs */
@@ -1858,7 +2061,9 @@ u32 nvn_EventGetValue(CPU* c, u64 e) {
 void nvn_EventSignal(CPU* c, u64 e, i32 mode, u32 value) {
     u64 a = NVN_OBJ(NvnEvent, e)->value;
     (void)c;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
     gw32(a, mode == NVN_EVENT_SIGNAL_MODE_ADD ? gr32(a) + value : value);
+    gpu_kick();
 }
 u64 nvn_EventBuilderGetMemoryPool(CPU* c, u64 b) {
     (void)c;

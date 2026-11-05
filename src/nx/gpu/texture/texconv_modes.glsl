@@ -77,5 +77,7 @@
    vertex's start on, read past its stride into the next vertex as the guest's attributes do. The stream starts at
    byte in_bias of the bound range, which holds every word its const_a bytes touch; bytes past them are 0 */
 #define TC_RESTRIDE 38u
+/* Nearest gather with normalized, packed or floating-point component conversion (pixel_format.h descriptors). */
+#define TC_BLIT_CONVERT 39u
 
 #endif

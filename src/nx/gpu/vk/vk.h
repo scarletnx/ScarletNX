@@ -36,6 +36,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/draw_state.h"
 #include "nx/gpu/vk/coverage.h"
+#include "nx/gpu/vk/advanced_blend.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "volk.h"
@@ -68,7 +69,7 @@ typedef struct {
        asks for it (experimental): FFmpeg's Vulkan decoder decodes on it (vk/nvdec.c), told of the device by the
        extensions and features enabled */
     u32 video_family;
-    const char* dev_ext[40];
+    const char* dev_ext[48];
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained */
     VkPhysicalDeviceVulkan11Features feat11;
@@ -97,7 +98,7 @@ typedef struct {
     VkSemaphore sc_done[VK_SC_MAX]; /* per swapchain image: rendering into it finished, it can be presented */
     /* optional features that were enabled */
     VkPhysicalDeviceFeatures feat;
-    int has_divisor; /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
+    int has_divisor;    /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
     int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_bc=1 would hold its ASTC textures as BC7 */
     /* VK_EXT_vertex_input_dynamic_state in effect (vertex_input.h's choice): each draw sets its vertex layout, which
        pipelines leave out of their keys */
@@ -108,6 +109,8 @@ typedef struct {
                                 the client's, one driver call (gpuprof.c's calibration) */
     int has_xfb;                /* VK_EXT_transform_feedback: draws capture their outputs into guest memory */
     int has_mixed_samples;      /* VK_NV_framebuffer_mixed_samples: coverage at more samples than color storage */
+    VkAdvancedBlendCaps advanced_blend_caps;
+    int has_fragment_interlock; /* ordered pixel storage-image read/modify/write */
     int has_border_color;       /* VK_EXT_custom_border_color */
     u32 border_color_max;       /* maxCustomBorderColorSamplers: past it, samplers take the nearest built-in color */
     int has_mirror_clamp;       /* samplerMirrorClampToEdge: VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE */
@@ -219,8 +222,8 @@ enum { VK_UMA_WITH_NONE, VK_UMA_WITH_HOST, VK_UMA_WITH_AHB };
 int vk_uma_choose(int has_import, int has_ahb, int has_placed);
 /* what vk_uma_choose takes for vk_memory want (0 auto, 1 copy, 2 UMA) on a device of model VK_MEM_*: VK_UMA_WITH_* */
 int vk_uma_way(int want, int model, int has_import, int has_ahb);
-void vk_uma_init(void);                            /* after it */
-int vk_uma(void);                                  /* guest ranges are read in place where they can be */
+void vk_uma_init(void); /* after it */
+int vk_uma(void);       /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
 void vk_uma_frame(void);
@@ -252,7 +255,7 @@ int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off);
    GPU in stream order, a write in place pending until its submit is done, with no trap and the import kept
    (vk_own_publish). 0 elsewhere: then it is published GPU-owned, as without UMA. vk_lock held */
 int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off);
-int vk_uma_held(u64 cpu, u64 len);     /* one import holds guest memory [cpu, cpu + len) now (vk_lock held) */
+int vk_uma_held(u64 cpu, u64 len); /* one import holds guest memory [cpu, cpu + len) now (vk_lock held) */
 /* placed maps (uma.c): whether the device can map the heap's windows as GPU memory where they are; turning it on
    (returning what it was), which takes the windows the heap and physical memory commit whole from then on; and
    whether one chunk of it holds [cpu, cpu + len) (vk_lock held) */
@@ -1219,7 +1222,7 @@ const char* vk_corpus_dir(void);
 int vk_cb_reads_hold(const VkCbReads* reads, VkCbReader read);
 typedef struct VkSh {
     u64 hash;
-    u32 mask[20]; /* vk_shader_get's masks, including the geometry passthrough skip mask */
+    u32 mask[24]; /* vk_shader_get's masks, including the geometry passthrough skip mask */
     int stage;
     VkCbReads cbr;
     ShaderInfo si;
@@ -1267,7 +1270,7 @@ void vk_pipeline_init(void);
    samples whose headers take unnormalized coordinates (ShaderInfo.tex_rect_mask) */
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                     u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
-                    const u8* query_hint);
+                    const u8* query_hint, u64 advanced_blend, u32 advanced_mask);
 /* whether the constant buffer words s's translation read still hold in ds's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s);
@@ -1301,11 +1304,12 @@ typedef struct {
     struct {
         u32 en, sc, dc, cop, sa, da, aop, mask;
     } blend[8];
+    VkAdvancedBlend advanced;
     u32 feedback; /* VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT, without the dynamic state for it */
-    u32 provoking_last; /* the last vertex provokes (has_provoking_last) */
-    u32 logic_op;       /* 0, or the VkLogicOp the color targets take in place of blending, plus 1 */
-    u32 arrays;         /* the sets with texture arrays: its layout, vk_playout(arrays) */
-    u32 samples;        /* the targets' VkSampleCountFlagBits (0 taken as 1) */
+    u32 provoking_last;  /* the last vertex provokes (has_provoking_last) */
+    u32 logic_op;        /* 0, or the VkLogicOp the color targets take in place of blending, plus 1 */
+    u32 arrays;          /* the sets with texture arrays: its layout, vk_playout(arrays) */
+    u32 samples;         /* the targets' VkSampleCountFlagBits (0 taken as 1) */
     VkCoverage coverage; /* color-only target-independent rasterization, all zero for ordinary multisampling */
     /* with several samples, DsRasterKey's: the samples the sample mask leaves out, alpha to coverage and to one */
     u32 sample_off, alpha_to_coverage, alpha_to_one;
@@ -1390,8 +1394,8 @@ extern u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns; /* statistics */
 extern u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because the CPU reads what they write */
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
 int vk_uma_choose(int has_import, int has_ahb, int has_placed);
-void vk_uma_init(void);                            /* after it */
-int vk_uma(void);                                  /* guest ranges are read in place where they can be */
+void vk_uma_init(void); /* after it */
+int vk_uma(void);       /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
 void vk_uma_frame(void);
@@ -1508,8 +1512,8 @@ extern u64 g_rec_xfer_kind[3], g_rec_buf_bytes; /* buffer, buffer-image, image c
 
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
 int vk_uma_choose(int has_import, int has_ahb, int has_placed);
-void vk_uma_init(void);                            /* after it */
-int vk_uma(void);                                  /* guest ranges are read in place where they can be */
+void vk_uma_init(void); /* after it */
+int vk_uma(void);       /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
 void vk_uma_frame(void);

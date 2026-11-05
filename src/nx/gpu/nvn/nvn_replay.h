@@ -23,6 +23,8 @@ void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64* ready, u32* shown);
 /* work that waits for sync s (if it is fenced) is done no earlier than s signals: *ready and *shown (as above) held
    behind s's */
 void nvn_sync_hold(u64* ready, u32* shown, const NvnSync* s);
+/* A queue wait captures the fence at the call, before the guest can reuse the sync object. */
+void nvn_replay_wait(u32 queue, const NvnSync* sync);
 /* the submissions made so far, and the ones whose records the GPU thread has read: a piece of the runtime's memory
    that came back is written again only once the second reaches the first as it was then (nvn_cmd.c) */
 u64 nvn_replay_submitted(void);
@@ -67,10 +69,21 @@ typedef struct {
     u64 gva;
     u8 data[16];
 } NvnEffect;
+typedef struct {
+    u32 syncpt, value;
+} NvnReplayWait;
 /* work for the GPU thread (nvn_replay.c's JOB_*): its queue (1 up, so a slot in use is never all zero), and a
    submission's n recordings or a present */
 typedef struct {
     u32 queue, kind, n;
+    u32 handle, depth, waiting, present_order;
+    u64 serial;
+    u8* snapshot; /* retained command bytes for a submission that can yield before its fences */
+    NvnReplayWait wait;
+    struct {
+        u64 pc, piece;
+        u32 previous;
+    } cursor[9];
     NvnReplayPresent present;
     u64 handles[NVN_JOB_HANDLES];
 } NvnJob;
@@ -86,7 +99,8 @@ typedef struct {
     u32 nfx;
     u64 unknown; /* the ops logged as not replayed (GPU thread) */
     u32 shown;   /* the presents' syncpoint: up by one as each reaches the display, 0 before the first queue */
-    u64 submitted, walked; /* nvn_replay_submitted and nvn_replay_walked */
+    u32 present_submitted, present_walked; /* the shared shown syncpoint requires global present order */
+    u64 submitted, walked;                 /* nvn_replay_submitted and nvn_replay_walked */
 } NvnReplayState;
 
 #endif

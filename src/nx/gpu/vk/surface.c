@@ -461,7 +461,7 @@ static void scale_blit(VkCommandBuffer cb, VkImage src, u32 sw, u32 sh, u32 src_
                      .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, dst_layer, 1},
                      .dstOffsets = {{0, 0, 0}, {(i32)dw, (i32)dh, 1}}};
     rec_CmdBlitImage(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b,
-                   is_int ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+                     is_int ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
 }
 
 /* the guest bytes of a render target: block linear, or pitch linear (its last row ends after the row's bytes, not
@@ -1491,8 +1491,7 @@ static u64 rt_mem_hash(const Surf* s) {
         while (cpu && o + n < size && gmmu_translate(a + n) == cpu + n) /* the next page follows in host memory */
             n += size - o - n < 0x1000 ? size - o - n : 0x1000;
         /* an unmapped page counts as its length, pages the GPU holds as their owners (they are trapped) */
-        if (!cpu || !own_hash(cpu, n, &h))
-            h = snx_fnv_step(h, cpu ? vk_hash(GP(cpu), n) : n);
+        if (!cpu || !own_hash(cpu, n, &h)) h = snx_fnv_step(h, cpu ? vk_hash(GP(cpu), n) : n);
         o += n;
     }
     return h;
@@ -1884,6 +1883,61 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
     return 0;
 }
 
+/* A nearest depth/stencil transform when the format has no image blit support. Copy each aspect into device rows,
+   gather through one column/row table, then copy the transformed aspect back. This retains D32FS8 values and stencil
+   bits without depending on color reinterpretation, host readback or one operation per pixel. */
+static int blit_depth_gather(Surf* source, Surf* destination, i32 x0, i32 y0, i32 x1, i32 y1, i32 dx, i32 dy, u32 width,
+                             u32 height) {
+    u64 table_size = 4ull * (width + height), cap;
+    VkBuffer table_buffer;
+    u64 table_offset;
+    u32* tables = (u32*)(void*)vk_stage(table_size, vk_stage_align(), &table_buffer, &table_offset);
+    if (!tables) return 0;
+    for (u32 i = 0; i < width; i++) {
+        double x = x0 + ((double)i + 0.5) * ((double)x1 - x0) / width;
+        tables[i] = x <= 0 ? 0 : x >= source->sw ? source->sw - 1 : (u32)x;
+    }
+    for (u32 i = 0; i < height; i++) {
+        double y = y0 + ((double)i + 0.5) * ((double)y1 - y0) / height;
+        tables[width + i] = y <= 0 ? 0 : y >= source->sh ? source->sh - 1 : (u32)y;
+    }
+    snx_le32_array(tables, (size_t)width + height);
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    vk_surf_use(cb, destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    for (u32 aspect = 0; aspect < (source->f.stencil ? 2u : 1u); aspect++) {
+        u32 bytes = aspect ? 1 : source->f.vk == VK_FORMAT_D16_UNORM ? 2 : 4;
+        u32 input_pitch = (source->sw * bytes + 3) & ~3u, output_pitch = (width * bytes + 3) & ~3u;
+        u64 table_at = ((u64)input_pitch * source->sh + 15) & ~15ull;
+        u64 output_at = (table_at + table_size + 15) & ~15ull;
+        u64 used = output_at + (u64)output_pitch * height;
+        VkBuffer scratch = vk_bl_scratch(used, &cap);
+        if (!scratch) return 0;
+        VkImageAspectFlags bit = aspect ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;
+        VkBufferImageCopy read = {.bufferRowLength = input_pitch / bytes,
+                                  .imageSubresource = {bit, 0, 0, 1},
+                                  .imageExtent = {source->sw, source->sh, 1}};
+        rec_CmdCopyImageToBuffer(cb, source->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scratch, 1, &read);
+        VkBufferCopy copy = {table_offset, table_at, table_size};
+        rec_CmdCopyBuffer(cb, table_buffer, scratch, 1, &copy);
+        vk_all_barrier(cb);
+        if (!vk_tc_blit(cb, bytes, 0, width * bytes, height, scratch, used, 0, input_pitch, table_at,
+                        table_at + 4ull * width, scratch, output_at, output_pitch))
+            return 0;
+        vk_all_barrier(cb);
+        VkBufferImageCopy write = {.bufferOffset = output_at,
+                                   .bufferRowLength = output_pitch / bytes,
+                                   .imageSubresource = {bit, 0, 0, 1},
+                                   .imageOffset = {dx, dy, 0},
+                                   .imageExtent = {width, height, 1}};
+        rec_CmdCopyBufferToImage(cb, scratch, destination->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &write);
+        vk_all_barrier(cb);
+    }
+    return 1;
+}
+
 /* A 2D blit whose source is a depth target: the game copies the depth buffer's texels as a color surface of their
    size (Pokemon Legends Z-A blits its D24S8 depth as BGRA8 into another depth buffer, which its lighting tests
    against, and halves it for half-size passes). The texels are copied whole on the console, so here the depth and
@@ -1896,12 +1950,14 @@ static int blit_depth(Surf* st, const Surf2D* s, const Surf2D* d, int dx, int dy
     Surf* dt;
     /* one to one it is a copy, which every depth format takes: RADV blits no D32_SFLOAT_S8_UINT */
     int same = sdx == 1.0 && sdy == 1.0;
-    if (vk_rt_format(s->format).bpp != vk_zt_format(fmt).bpp || s->format != d->format || s->width != st->w ||
-        s->height < st->h ||
-        (!same && !blit_ok(st->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT)))
+    if (vk_rt_format(s->format).bpp != vk_zt_format(fmt).bpp || s->format != d->format || s->height < st->h ||
+        !vk_rt_same_layout(st, s->width, st->h, !s->linear, s->bh, s->pitch))
         return 0;
     vk_surf_touch(st); /* used now: making the destination may evict what wasn't */
-    dt = vk_zt_array(d->addr, d->width, d->height, fmt, tile, 1, 0, DS_MSAA_1X1);
+    /* NVN copy descriptors keep logical widths. Block-linear attachment widths cover whole GOB rows, exactly as
+       nvn_draw_surface describes the same texture on its later bind. Keep its extra columns out of the copy. */
+    u32 target_width = d->linear ? d->width : ((d->width * st->f.bpp + 63) / 64 * 64) / st->f.bpp;
+    dt = vk_zt_array(d->addr, target_width, d->height, fmt, tile, 1, 0, DS_MSAA_1X1);
     if (!dt || dt == st || dt->f.vk != st->f.vk) return 0;
     float S = g_vk_scale;
     i32 x0 = (i32)(sx * S), y0 = (i32)(sy * S), x1 = (i32)((sx + sdx * dw) * S + 0.5),
@@ -1934,6 +1990,8 @@ static int blit_depth(Surf* st, const Surf2D* s, const Surf2D* d, int dx, int dy
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
         X1 = dx + (i32)w;
         Y1 = dy + (i32)h;
+    } else if (!blit_ok(st->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
+        if (!blit_depth_gather(st, dt, x0, y0, x1, y1, dx, dy, (u32)(X1 - dx), (u32)(Y1 - dy))) return 0;
     } else {
         /* one aspect a region; nearest, as filtering packed depth and stencil bits as color would only mix them */
         VkImageBlit b[2] = {{.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
@@ -2035,7 +2093,8 @@ static int resolve_depth(Surf* st, const Surf2D* d, int dx, int dy, int dw, int 
                           .pStencilAttachment = st->f.stencil ? &att : NULL};
     rec_CmdBeginRendering(cb, &ri);
     rec_CmdEndRendering(cb);
-    vk_barrier(cb, tmp, aspect, rs, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+    vk_barrier(cb, tmp, aspect, rs,
+               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     vk_surf_use(cb, dt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
@@ -2181,8 +2240,8 @@ static int blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int 
                          .dstOffsets = {{dx, dy, 0}, {X1, Y1, 1}}};
         int linear = (filter < 0 ? scaled : filter != 0) && !st->f.is_int &&
                      blit_ok(st->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
-        rec_CmdBlitImage(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                         &b, linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+        rec_CmdBlitImage(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         1, &b, linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     }
     vk_surf_wrote(dt);
     if (dx == 0 && dy == 0 && X1 == (i32)dt->sw && Y1 == (i32)dt->sh)
@@ -2267,10 +2326,10 @@ static void zt_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, int out) 
     u32 layer, a, aspects = zt_stencil(s->f.vk) ? 2 : 1;
     for (a = 0; a < aspects; a++)
         for (layer = 0; layer < s->layers; layer++) {
-            VkBufferImageCopy c = {.bufferOffset = at,
-                                   .imageSubresource = {a ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, 0,
-                                                        layer, 1},
-                                   .imageExtent = {s->sw, s->sh, 1}};
+            VkBufferImageCopy c = {
+                .bufferOffset = at,
+                .imageSubresource = {a ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, 0, layer, 1},
+                .imageExtent = {s->sw, s->sh, 1}};
             if (out)
                 rec_CmdCopyImageToBuffer(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
             else
@@ -2347,8 +2406,7 @@ int vk_zt_load(StateIo* io) {
         if (io_get64(io, &z->gva) || io_get32(io, &z->w) || io_get32(io, &z->h) || io_get32(io, &z->sw) ||
             io_get32(io, &z->sh) || io_get32(io, &z->fkey) || io_get32(io, &z->vk) || io_get32(io, &z->layers) ||
             io_get64(io, &z->dsize) || io_get64(io, &z->ssize) || z->dsize + z->ssize > (1ull << 32) ||
-            !(z->bytes = (u8*)malloc((size_t)(z->dsize + z->ssize + 1))) ||
-            io_get(io, z->bytes, z->dsize + z->ssize)) {
+            !(z->bytes = (u8*)malloc((size_t)(z->dsize + z->ssize + 1))) || io_get(io, z->bytes, z->dsize + z->ssize)) {
             zt_drop();
             return -1;
         }
