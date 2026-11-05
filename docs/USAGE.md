@@ -80,6 +80,8 @@ Pass arguments to the game executable after `--`, for example:
 ./build/scarletnx "Game.xci" -- some arg
 ```
 
+Everything after the `--` reaches the game executable as given, one named like a runtime option too (`-- --seconds=5`
+gives the game `--seconds=5`), so the runtime's own options go before the `--`.
 The argument boundary is retained when launching the deployed game, so game arguments
 cannot trigger launcher actions or overwrite runtime settings. This does not add a
 homebrew-loader guest argv block.
