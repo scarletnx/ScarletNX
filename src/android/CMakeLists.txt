@@ -187,3 +187,8 @@ if(BUILD_TESTING)
         set_tests_properties(android_gles2_validation PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
     endif()
 endif()
+
+if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
+    snx_test_sanitize(snx-test-bionic-sync snx-test-android-image snx-test-android-host-anon snx-test-android-gles2)
+    snx_sanitizer_path()
+endif()
