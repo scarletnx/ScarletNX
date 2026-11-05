@@ -39,6 +39,7 @@
 #include "support/fermi2d_ref.h"
 #include "support/nvdec_ref.h"
 #include "support/vic_ref.h"
+#include "support/sm86_ref.h"
 #include "support/thread_nice.h"
 #include <libavutil/buffer.h>
 #include <stdio.h>
@@ -5251,6 +5252,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_nvn_blend_capture.inc"
 #include "vulkan_late_depth_shadow.inc"
 #include "vulkan_capture_bench.inc"
+#include "vulkan_mesh_draw.inc"
 #include "vulkan_sparse_bench.inc"
 #include "vulkan_storage_lookup_bench.inc"
 #include "vulkan_storage_buffer_keep.inc"
@@ -5879,6 +5881,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_maxwell_viewport_swizzle());
     CHECK(!check_nvn_default_tessellation());
     CHECK(!check_nvn_advanced_blend());
+    CHECK(!check_mesh_draws());
     CHECK(!check_nvn_coverage());
     CHECK(!check_nvn_depth_coverage());
     CHECK(!check_nvn_copy_conversions());

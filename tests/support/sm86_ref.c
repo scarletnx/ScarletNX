@@ -56,6 +56,22 @@ Sm86Word sm86_exit(void) {
     sm86_set(&x, 87, 3, 7);
     return x;
 }
+Sm86Word sm86_mov_imm(u32 dst, u32 value) {
+    Sm86Word x = sm86_alu(0x002, 4, dst, 255);
+    sm86_set(&x, 32, 32, value);
+    return x;
+}
+Sm86Word sm86_isbe(int write, u32 reg, u32 base, u32 imm, u32 size, u32 access, u32 skew, u32 output) {
+    Sm86Word x = sm86_fix(write ? 0x927 : 0x923);
+    sm86_set(&x, write ? 32 : 16, 8, reg);
+    sm86_set(&x, 24, 8, base);
+    sm86_set(&x, 40, 16, imm);
+    sm86_set(&x, 74, 2, size);
+    sm86_set(&x, 76, 2, access);
+    sm86_set(&x, 78, 1, skew);
+    sm86_set(&x, 79, 1, output);
+    return x;
+}
 void sm86_put(u8* code, u32 index, Sm86Word x) {
     for (int k = 0; k < 8; k++) {
         code[16 * index + k] = (u8)(x.w[0] >> (8 * k));

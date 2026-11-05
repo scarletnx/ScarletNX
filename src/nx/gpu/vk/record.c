@@ -475,6 +475,24 @@ void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 indices, u32 instances, u32 firs
     *x = (DrawIndexedArgs){cb, indices, instances, first_index, vertex_offset, first_instance};
     rec_commit();
 }
+/* an Ounce's mesh draw: groups workgroups in a row (render.c) */
+typedef struct {
+    VkCommandBuffer cb;
+    u32 groups;
+} DrawMeshArgs;
+static void draw_mesh_run(const void* p) {
+    const DrawMeshArgs* x = p;
+    if (!rec_drop_draw()) vkCmdDrawMeshTasksEXT(x->cb, x->groups, 1, 1);
+}
+void rec_CmdDrawMeshTasks(VkCommandBuffer cb, u32 groups) {
+    if (!rec_on(cb)) {
+        vkCmdDrawMeshTasksEXT(cb, groups, 1, 1);
+        return;
+    }
+    DrawMeshArgs* x = rec_push(draw_mesh_run, sizeof *x);
+    *x = (DrawMeshArgs){cb, groups};
+    rec_commit();
+}
 /* the indirect draws: kind bit 0 indexed, bit 1 limited by the count at count_buf */
 typedef struct {
     VkCommandBuffer cb;

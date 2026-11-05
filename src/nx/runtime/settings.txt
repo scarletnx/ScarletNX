@@ -249,6 +249,15 @@ setting Vulkan driver
     help which driver runs and why. On every other system the game runs on the system's driver whatever the value (on
     help Android, gpu_driver's), and the log says so for moltenvk and kosmickrisp. Any other value stops the game,
     help saying so
+setting Mesh draws
+    key mesh_draws
+    label Mesh shader draws (experimental)
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = an Ounce game's mesh draws (DrawMeshTasks) draw with VK_EXT_mesh_shader, where the GPU has it.
+    help Experimental: on one NVIDIA GPU most runs with them ended in a GPU fault. 0 = they are skipped
 setting Vertex input dynamic state
     key vertex_input_dynamic_state
     text 16
