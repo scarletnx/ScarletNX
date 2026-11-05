@@ -216,6 +216,13 @@ static u64 narrow_edge(unsigned doubles) {
     return doubles ? lane[0] : lane[1] << 32 | lane[0];
 }
 
+/* a V register's two doublewords, numbers, as the CPU holds them: the guest's little-endian bytes, which a big-endian
+   host's generated code reads that way (ir.h's big_endian) */
+static void v_from_numbers(V128* v, u64 low, u64 high) {
+    snx_st_le64(v->b, low);
+    snx_st_le64(v->b + 8, high);
+}
+
 /* a starting state: with addresses, every X register and SP points into the window, 16-byte aligned, so that any
    base, index and offset the word combines stays in it */
 static void random_state(CPU* c, u32 word, int addresses) {
@@ -280,6 +287,8 @@ static void random_state(CPU* c, u32 word, int addresses) {
     }
     /* FPSR's cumulative flags and QC: its AArch32 NZCV bits are not A64 state */
     c->fpsr = next_random() % 4 ? (next_random() % 2 ? 0x10 : 0) : (u32)(next_random() & 0x0800009Fu);
+    /* the V registers, set as numbers above */
+    for (i = 0; i < 32; ++i) v_from_numbers(&c->v[i], c->v[i].d[0], c->v[i].d[1]);
 }
 
 /* directed() words, the encodings random fields rarely produce, unfiltered */
@@ -478,8 +487,8 @@ static void state_of(const CPU* c, SnxQrefState* s) {
     s->fpcr = c->fpcr;
     s->fpsr = c->fpsr;
     for (i = 0; i < 32; ++i) {
-        s->v[i][0] = c->v[i].d[0];
-        s->v[i][1] = c->v[i].d[1];
+        s->v[i][0] = snx_ld_le64(c->v[i].b);
+        s->v[i][1] = snx_ld_le64(c->v[i].b + 8);
     }
 }
 
@@ -972,10 +981,7 @@ static void cpu_from_state(CPU* c, const SnxQrefState* s) {
     c->vf = s->nzcv >> 28 & 1;
     c->fpcr = s->fpcr;
     c->fpsr = s->fpsr;
-    for (i = 0; i < 32; ++i) {
-        c->v[i].d[0] = s->v[i][0];
-        c->v[i].d[1] = s->v[i][1];
-    }
+    for (i = 0; i < 32; ++i) v_from_numbers(&c->v[i], s->v[i][0], s->v[i][1]);
 }
 
 int main(int argc, char** argv) {
