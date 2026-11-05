@@ -34,21 +34,31 @@ else()
     target_compile_options(snx-hookgen PRIVATE -pedantic-errors -Wall -Wextra -Werror)
 endif()
 
-# snx_hookgen(<target> [SPEC <file>] [PREFIX <name>] [NAME <path>] [A32]): generates NAME.h (the handlers' declarations,
+# snx_hook_patches(<var>): the game patches, src/nx/patches/*.hook in name order, each a family of address hooks for
+# one game's builds (docs/HOOKS.md) whose handlers are the .c files beside them. A new file reconfigures the build
+function(snx_hook_patches var)
+    file(GLOB found CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/nx/patches/*.hook")
+    list(SORT found)
+    set(${var} ${found} PARENT_SCOPE)
+endfunction()
+
+# snx_hookgen(<target> [SPEC <file>...] [PREFIX <name>] [NAME <path>] [A32]): generates NAME.h (the handlers' declarations,
 # and the hooked functions' PFN...PROC types for a spec with an include line, which hookgen finds under src/) and
 # NAME.inc (the adapters and the table, which hle/hook/hook.c includes for the hooks) into the build folder and
-# gives <target> their include root. SPEC is src/nx/hle/hook/hooks.hook unless a test names its own, NAME is
-# hle/hook/hooks.hook, and PREFIX (hook) names the tables: gpu/nvn/nvn.hook, the NVN functions the runtime implements,
-# is a second spec with its own. A32 adds the adapters for a 32-bit program (hookgen --a32)
+# gives <target> their include root. SPEC is src/nx/hle/hook/hooks.hook and the game patches' address hooks
+# (src/nx/patches/*.hook, snx_hook_patches) unless a test names its own, NAME is hle/hook/hooks.hook, and PREFIX (hook)
+# names the tables: gpu/nvn/nvn.hook, the NVN functions the runtime implements, is a second spec with its own. A32 adds
+# the adapters for a 32-bit program (hookgen --a32)
 function(snx_hookgen target)
-    cmake_parse_arguments(PARSE_ARGV 1 arg "A32" "SPEC;PREFIX;NAME" "")
+    cmake_parse_arguments(PARSE_ARGV 1 arg "A32" "PREFIX;NAME" "SPEC")
     set(a32)
     if(arg_A32)
         set(a32 --a32)
     endif()
-    set(spec "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    snx_hook_patches(patches)
+    set(spec "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook" ${patches})
     if(arg_SPEC)
-        set(spec "${arg_SPEC}")
+        set(spec ${arg_SPEC})
     endif()
     set(prefix hook)
     if(arg_PREFIX)
@@ -63,8 +73,8 @@ function(snx_hookgen target)
     add_custom_command(OUTPUT "${out}/${name}.h" "${out}/${name}.inc"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}/${dir}"
         COMMAND snx-hookgen --prefix "${prefix}" ${a32} -I "${PROJECT_SOURCE_DIR}/src" --header "${out}/${name}.h"
-                --out "${out}/${name}.inc" "${spec}"
-        DEPENDS snx-hookgen "${spec}"
+                --out "${out}/${name}.inc" ${spec}
+        DEPENDS snx-hookgen ${spec}
         COMMENT "Generating ${name}" VERBATIM)
     target_sources(${target} PRIVATE "${out}/${name}.h" "${out}/${name}.inc")
     target_include_directories(${target} PUBLIC "${out}")
@@ -72,10 +82,12 @@ endfunction()
 
 # snx_hook_routes(<target> [SPECS <file>...]): generates nx/loader/hook_routes.inc, the symbols that the specs name
 # (hookgen --routes), which nx/loader/hook_routes.c includes, and gives <target> its include root. The specs are
-# hle/hook/hooks.hook and gpu/nvn/nvn.hook unless a test names its own
+# hle/hook/hooks.hook, gpu/nvn/nvn.hook and the game patches unless a test names its own
 function(snx_hook_routes target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "SPECS")
-    set(specs "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook")
+    snx_hook_patches(patches)
+    set(specs "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook"
+              ${patches})
     if(arg_SPECS)
         set(specs ${arg_SPECS})
     endif()

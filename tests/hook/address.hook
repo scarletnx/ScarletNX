@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# address hooks, a game patch's (tests/hook_address.c, hook_routes.c): a build ID in capitals with zero bytes after it,
+# and a shorter one, each with its offset in hex
+family patch
+[0123456789ABCDEF0000:0x40] hook test_at(u64 a, f32 b) -> u64
+[0123456789abcdef:1000] hook test_at_other()

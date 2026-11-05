@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# the first of two specs read into one table (tests/hook_address.c), as hooks.hook is with the game patches
+family plain
+hook plain(u32 a) -> u32 = test_plain
