@@ -1443,6 +1443,13 @@ if(Python3_Interpreter_FOUND)
         add_test(NAME game_reports COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/game_reports_test.py"
                                            $<TARGET_FILE:snx-logscan>)
     endif()
+    # game-reports.yml's own build of snx-logscan, run on the files its sparse checkout lists alone: a file the log
+    # summary comes to include that the list lacks fails here, not on the next issue. Linux, where the workflow runs,
+    # with the cc and the C++ runtime its step links
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME game_reports_workflow COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/game_reports_workflow_test.py" "${PROJECT_SOURCE_DIR}")
+    endif()
     # the game tools/run_game.py finds by its name (recompiled/, else an older version's games/)
     add_test(NAME run_game COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run_game_test.py")
     # the nightly release's title and notes (scripts/nightly-notes.py)
