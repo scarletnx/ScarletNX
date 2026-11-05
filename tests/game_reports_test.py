@@ -16,6 +16,7 @@ import json
 import shlex
 import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -148,6 +149,58 @@ def check(cond, what):
 
 def event(number):
     return {'issue': {'number': number}}
+
+
+# gh as it fails: its message on stderr, GitHub's answer on stdout, exit 1. A label named "game report" exists already,
+# another is refused for its colour; a REST read finds nothing, and so does a GraphQL query
+FAKE_GH = r"""
+import json, sys
+args = sys.argv[1:]
+def fail(message, answer):
+    print(json.dumps(answer))
+    sys.stderr.write(f'gh: {message}\n')
+    sys.exit(1)
+if args[1] == 'graphql':
+    missing = "Could not resolve to a Repository with the name 'o/r'."
+    fail(missing, {'data': {'repository': None}, 'errors': [
+        {'type': 'NOT_FOUND', 'path': ['repository'], 'message': missing}]})
+method, path = args[args.index('-X') + 1], args[args.index('-X') + 2]
+if method == 'POST' and path == 'repos/o/r/labels':
+    exists = json.load(sys.stdin)['name'] == 'game report'
+    code, field = ('already_exists', 'name') if exists else ('invalid', 'color')
+    fail('Validation Failed (HTTP 422)', {'message': 'Validation Failed', 'errors': [
+        {'resource': 'Label', 'code': code, 'field': field}],
+        'documentation_url': 'https://docs.github.com/rest/issues/labels#create-a-label', 'status': '422'})
+fail('Not Found (HTTP 404)', {'message': 'Not Found',
+    'documentation_url': 'https://docs.github.com/rest/issues/issues#get-an-issue', 'status': '404'})
+"""
+
+
+def gh_errors():
+    """GitHub through a gh that fails as the real one does: an existing label is taken, and every other error says
+    gh's message, then GitHub's answer"""
+    with tempfile.TemporaryDirectory() as tmp:
+        fake = Path(tmp) / 'gh.py'
+        fake.write_text(FAKE_GH, encoding='utf-8')
+        github = reports.GitHub('o/r', gh=(sys.executable, str(fake)))
+        try:
+            github.label(reports.LABEL, reports.LABEL_COLOR, 'exists already')
+        except RuntimeError as error:
+            check(False, f'an existing label is taken, not refused: {error}')
+        for call, args, message, answer in (
+            (github.label, ('log: crash', 'nope', ''), 'gh: Validation Failed (HTTP 422)', '"code": "invalid"'),
+            (github.issue, (404,), 'gh: Not Found (HTTP 404)', 'get-an-issue'),
+            (github.reports, (), "gh: Could not resolve to a Repository with the name 'o/r'.", '"NOT_FOUND"'),
+        ):
+            try:
+                call(*args)
+                check(False, f'{call.__name__}{args} returns')
+            except RuntimeError as error:
+                text = str(error)
+                check(
+                    message in text and answer in text and text.index(message) < text.index(answer),
+                    f"{call.__name__}{args}: gh's message, then GitHub's answer: {text}",
+                )
 
 
 def refusal(call, *args):
@@ -298,6 +351,7 @@ def main():
     finally:
         reports.GitHub, sys.argv = github, argv
     check(len(bot_comments(gh, 8)) == 1, 'triage --issue 8 summarizes issue 8')
+    gh_errors()
     print('game_reports_test: ok')
 
 
