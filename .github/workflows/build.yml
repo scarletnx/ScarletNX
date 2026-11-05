@@ -75,12 +75,13 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-linux-${{ matrix.arch }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-linux-${{ matrix.arch }}-
+      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with
       # llvm: llvm-config and LLVM-C for the recompiler (llvm-libs alone has no headers). gdb: the gdbserver gdbstub_native drives. jq: scripts/pr-builds.sh, which pr_builds tests. Mirrors drop a connection now
       # and then (pkgforge's for aarch64 most), so each pacman install is tried 3 times, 5 s apart
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -318,7 +319,7 @@ jobs:
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -465,6 +466,7 @@ jobs:
           86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
           EOF
       # llvm: Clang's own, and the opt of the LLVM settings; the runtime links LLVM's libraries statically (below).
+      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with.
       # get-debloated-pkgs reads its release from api.github.com: unauthenticated, a runner's shared address gets
       # GitHub's 60 requests an hour and the script's 403, so it takes the job's token for those requests. Pinning its
       # release would still read api.github.com, and its own wait on a 403 ends after 5 tries
@@ -473,7 +475,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -739,15 +741,15 @@ jobs:
           EOF
       # The build machine's: Clang and LLD build for the target (cmake/cross.cmake) and LLVM's libraries for it
       # (scripts/linux-llvm.sh), ccache caches the compiles, glslang builds the shaders, qemu-user runs the target's
-      # own programs, wayland's wayland-scanner the protocols SDL3 builds. Each pacman is tried 3 times, as in the
-      # linux job
+      # own programs, wayland's wayland-scanner the protocols SDL3 builds, jdk21-openjdk the Android app driver's javac
+      # and jni.h. Each pacman is tried 3 times, as in the linux job
       - name: Install the build tools
         run: |
           docker exec -i build sh -s <<'EOF'
           set -eu
           retry() { for try in 1 2 3; do "$@" && return; [ "$try" = 3 ] && return 1; sleep 5; done; }
           retry pacman -Syu --noconfirm --needed cmake ninja make patch perl python clang lld llvm glslang qemu-user \
-            git pkgconf patchelf wayland ccache
+            git pkgconf patchelf wayland ccache jdk21-openjdk
           EOF
       # Saved once a week, as in the linux job. Every architecture's job installs the same, so one of them saves it
       - name: Keep the installed packages
@@ -1004,6 +1006,8 @@ jobs:
       - name: Build the runtime and pinned dependencies
         run: |
           set -euo pipefail
+          # the JDK the Android app driver (src/android) builds with: the runner's 21, as the android job's Gradle takes
+          export JAVA_HOME="${JAVA_HOME_21_X64:?the runner has no JDK 21}"
           cmake --preset default \
             -DSNX_LLVM_CONFIG="$(cygpath -m "$(command -v llvm-config)")" \
             -DSNX_FFMPEG_SH="$(cygpath -m /usr/bin/sh.exe)" \
@@ -1416,6 +1420,8 @@ jobs:
         id: macos-build
         if: ${{ !cancelled() && steps.macos-llvm-build.outcome != 'failure' }}
         run: |
+          # the JDK the Android app driver (src/android) builds with: the runner's 21
+          export JAVA_HOME="${JAVA_HOME_21_arm64:?the runner has no JDK 21}"
           # Keep the release's SDL3 static when the later shared-library check installs Homebrew's package.
           cmake --preset macos -DLLVM_DIR="$PWD/apple-llvm/lib/cmake/llvm" -DSNX_TEST_VP9_VECTORS=ON \
             -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON \
