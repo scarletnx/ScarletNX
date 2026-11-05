@@ -8999,9 +8999,14 @@ int main(int argc, char** argv) {
             assert(addons_row(&app, 9) == ROW_ADD_MOD && addons_row(&app, 10) == ROW_MODS_FOLDER &&
                    addons_row(&app, 11) == ROW_ADD_CHEATS && addons_row(&app, 12) == ROW_CHEATS_FOLDER &&
                    addons_row(&app, 13) == ROW_OPEN_FOLDER && addons_row(&app, 14) == ROW_STATES &&
-                   addons_row(&app, 15) == ROW_CLEAN_CACHE && addons_row(&app, 16) == ROW_GPU_DRIVER &&
-                   addons_row(&app, 17) == ROW_FREEDRENO && addons_row(&app, 18) == ROW_SAVE &&
-                   addons_row(&app, 19) == ROW_PLAY);
+                   addons_row(&app, 15) == ROW_CLEAN_CACHE
+#ifdef __ANDROID__ /* the GPU driver package and Turnip's variables: no other platform has them */
+                   && addons_row(&app, 16) == ROW_GPU_DRIVER && addons_row(&app, 17) == ROW_FREEDRENO &&
+                   addons_row(&app, 18) == ROW_SAVE && addons_row(&app, 19) == ROW_PLAY
+#else
+                   && addons_row(&app, 16) == ROW_SAVE && addons_row(&app, 17) == ROW_PLAY
+#endif
+                   );
             build_ids(&app, dirs);
             assert(!app.addons_checked[0] && !app.addons_checked[1] && app.addons_checked[2]);
             assert(app.mods_on[0] && !app.mods_on[1] && !strcmp(app.mods[0], "A mod"));
