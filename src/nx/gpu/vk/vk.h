@@ -980,18 +980,28 @@ typedef int (*VkAstcRows)(void* ctx, VkCommandBuffer* cb, u32 z, u32 nz, u32 y, 
    VK_BC7_MODE6_TEXELS or more its build of mode 6 alone (astc.c) */
 #define VK_BC7_FAST_TEXELS (2048u * 2048u)
 #define VK_BC7_MODE6_TEXELS (8192u * 8192u)
-/* layers: more than 1, that level of layers layers from layer on, a 2D array's (depth 1), which rows gives as slices */
+/* layers: more than 1, that level of layers layers from layer on, a 2D array's (depth 1), which rows gives as slices.
+   content: for a level vk_astc_cached says the BC7 cache takes, the hash of its blocks (vk_bc7_content), else NULL.
+   With it the level's blocks come from the cache when they are there, with no decode and no encode, and an encode's
+   blocks go into the cache once its submission is done (vk_astc_frame_done) */
 int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, u32 layers,
-                   VkAstcRows rows, void* ctx);
-/* the image levels uploaded as BC7 so far, their bytes, and the bytes they would have taken as RGBA8 */
-void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes);
-/* Whether an ASTC texture the GPU decodes, where it samples BCn, is encoded again as BC7 rather than kept as exact
-   RGBA8 (astc_bc aside, which makes every one BC7: format.c TA). texels: its first level's, all layers; is3d: a 3D
-   texture (no 3D BC7 images on some devices); holes: holes in its mapping (a sparse texture: always BC7); pressed:
-   memory has run short of the working set (vk_mem_pressed). Under pressure every texture of VK_BC7_AUTO_TEXELS or
-   more is BC7: in one game's sample those were three quarters of the ASTC textures and 98% of their RGBA8 bytes */
-#define VK_BC7_AUTO_TEXELS (256u * 256u)
-int vk_astc_as_bc7(u64 texels, int is3d, int holes, int pressed);
+                   VkAstcRows rows, void* ctx, const u64* content);
+/* whether a level of t of w x h texels and depth slices or layers goes through the BC7 cache: a BC7 image of a texture
+   mapped whole, the cache open, and blocks of VK_BC7_CAPTURE_BYTES or less */
+int vk_astc_cached(const Surf* t, u32 w, u32 h, u32 depth);
+/* the BC7 cache of this game and device in the file at path, its records' version made of the encoder's (and the
+   decoder's) SPIR-V, VK_BC7_ENCODER_VERSION and the GPU and its driver (pipeline.c, where the GPU samples BCn but not
+   ASTC) */
+void vk_astc_cache_open(const char* path);
+/* the submission sub is done: the BC7 blocks encodes in it read back go into the cache (cmd.c's landing) */
+void vk_astc_frame_done(u64 sub);
+/* the image levels uploaded as BC7 so far, those of them the cache gave, their bytes, and the bytes they would have
+   taken as RGBA8 */
+void vk_astc_stats(u64* levels, u64* hits, u64* bytes, u64* rgba8_bytes);
+/* the bound of the BC7 cache's file, after which it starts over; and of the blocks of encodes read back at once, which
+   bounds the readback ring's growth and is the most a level's blocks are to be cached */
+#define VK_BC7_CACHE_MAX     (4ull << 30)
+#define VK_BC7_CAPTURE_BYTES (32ull << 20)
 
 /* bc7_cache.c: the BC7 blocks of ASTC levels encoded before, kept across runs in one file, which only an index of
    points into (a hit reads its record from the file). VK_BC7_ENCODER_VERSION goes into every key: bump it when what
@@ -1016,6 +1026,13 @@ int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
 void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size);
 /* hits, records stored, times it started over at its bound, and the file's bytes */
 void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
+/* Whether an ASTC texture the GPU decodes, where it samples BCn, is encoded again as BC7 rather than kept as exact
+   RGBA8 (astc_bc aside, which makes every one BC7: format.c TA). texels: its first level's, all layers; is3d: a 3D
+   texture (no 3D BC7 images on some devices); holes: holes in its mapping (a sparse texture: always BC7); pressed:
+   memory has run short of the working set (vk_mem_pressed). Under pressure every texture of VK_BC7_AUTO_TEXELS or
+   more is BC7: in one game's sample those were three quarters of the ASTC textures and 98% of their RGBA8 bytes */
+#define VK_BC7_AUTO_TEXELS (256u * 256u)
+int vk_astc_as_bc7(u64 texels, int is3d, int holes, int pressed);
 
 /* vic.c: the VIC composition as a compute shader, recorded in the frame's command buffer, its output planes
    published (vk_own_publish): 1 when composed, 0 when the job exceeds the device (it is skipped). Takes vk_lock */

@@ -196,6 +196,28 @@ typedef struct {
     u32 layers;
     u64 layer_size;
 } LevelSource;
+/* The part of an ASTC level's BC7 key (vk_bc7_key) that its guest bytes make: the words that lay its blocks out in
+   guest memory, and those bytes as the CPU has them. 0 when the GPU holds any of them (they are not here to hash:
+   vk_guest_peek's pattern names their owner, not the bytes) or memory maps them not all. What is pending over them
+   lands first, as the change checks' hash (mem_hash) has it, which can submit the frame's command buffer */
+static int astc_content(const LevelSource* l, u64 content[2]) {
+    const u32 layout[8] = {(u32)l->t->bl, l->t->bl ? 0 : l->t->pitch, l->rowb, l->th, l->lbh, l->lbd, l->gobs_x,
+                           l->layers};
+    content[0] = content[1] = 0;
+    vk_bc7_content(content, layout, sizeof layout);
+    for (u32 k = 0; k < l->layers; k++) {
+        const u64 gva = l->gva + (u64)k * l->layer_size;
+        for (u64 o = 0; o < l->lsz;) {
+            u64 cpu = 0, n = gmmu_run(gva + o, l->lsz - o, &cpu);
+            OwnRange owned;
+            if (!n || (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE) && own_lookup(cpu, n, &owned, 1))) return 0;
+            gmem_need(gva + o, n);
+            vk_bc7_content(content, GP(cpu), n);
+            o += n;
+        }
+    }
+    return 1;
+}
 /* A guest read while staging lands GPU results, and landing can submit the frame's command buffer: the upload's
    commands then belong to the one recording after it, with the image's transfer use established there again */
 static VkCommandBuffer upload_cb(Surf* t, VkCommandBuffer cb) {
@@ -637,10 +659,14 @@ static int tex_upload_(Surf* t) {
                 continue;
             }
             if (f->conv == VKC_ASTC) { /* decoded on the GPU from its block rows, deswizzled on the GPU */
-                complete = up_flush(&u);
                 LevelSource ls = {t, t->gva + at, lsz, rowb, th, lbh, lbd, gobs_x, astc_layers ? layers : 1,
                                   t->layer_size};
-                complete = complete && vk_astc_upload(u.cb, t, lw, lh, ld, l, layer, ls.layers, astc_rows, &ls);
+                u64 content[2];
+                const int keyed =
+                    vk_astc_cached(t, lw, lh, ls.layers > 1 ? ls.layers : ld) && astc_content(&ls, content);
+                complete = up_flush(&u); /* after the hash, which can submit: the batch's buffer is the one recording */
+                complete = complete && vk_astc_upload(u.cb, t, lw, lh, ld, l, layer, ls.layers, astc_rows, &ls,
+                                                      keyed ? content : NULL);
                 u.scratch = VK_NULL_HANDLE; /* astc_rows may have grown the scratch buffer: asked for again */
                 u.cap = 0;
             } else {

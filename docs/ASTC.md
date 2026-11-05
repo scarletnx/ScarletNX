@@ -8,6 +8,7 @@
   * [Where it differs from Eden](#where-it-differs-from-eden)
 * [The upload path](#the-upload-path)
 * [Encoded again as BC7](#encoded-again-as-bc7)
+  * [The BC7 cache](#the-bc7-cache)
 * [Textures bigger than one allocation](#textures-bigger-than-one-allocation)
 * [Building the shader](#building-the-shader)
 * [Tests](#tests)
@@ -265,6 +266,44 @@ colours meet in a block, noise, and alpha) decoded from ASTC: 39.9 dB over the p
 edges 48.9, noise 34.2, alpha 50.9), 40.4 at 6x6, 46.2 at 8x8 and 45.2 at 12x12. Mode 6 alone gave 27.6 at 4x4,
 its edges 23.5. Noise is what BC7 holds worst: a block of independent texels is a line or two of them at best.
 
+### The BC7 cache
+
+The memory budget's trim evicts textures that the game uses again, and each comes back through the encoder: in one
+game 6,000 to 14,000 level encodes in a 150 second run, each 3 to 5 ms of GPU time (up to 149 ms in one frame). The
+same ASTC bytes always become the same BC7 blocks, so the blocks of each encode are kept, in memory as an index and on
+disk as `shader_cache/<game>.vkbc7`, next to the shader files (`gpu/vk/bc7_cache.c`). The file stays from run to run,
+so a later run hits from its start.
+
+- **The key** is XXH3-128 (`vk_hash128`) of the level's guest bytes and the words that place its blocks in them
+  (block linear or pitch, the GOB block's height and depth, GOBs across, the row's bytes and rows, the layers:
+  `texture.c`'s `astc_content`), then of that hash with the level's size, slices or layers, footprint, sRGB decode
+  mode, the encoder's build (full, fast or mode 6 alone) and `VK_BC7_ENCODER_VERSION` (`vk_bc7_key`). The bytes are
+  hashed as the CPU has them. A level of which the GPU holds any byte (an engine's result, `memory/own.c`) is not
+  keyed: `vk_guest_peek` gives a pattern that names the owner, not the bytes. A level that the page table does not
+  map whole is not keyed, and neither is a sparse texture's level (only its bound strips are decoded).
+- **The file's version** is XXH3-128 of the SPIR-V of the deswizzle, the decoder and the encoder's three builds (a
+  change to any shader changes it), `VK_BC7_ENCODER_VERSION`, the GPU's vendor and device, the driver's version and
+  its pipeline cache UUID (`vk_astc_cache_open`). A file of another version starts empty.
+- **A hit** (`vk_astc_upload` with the key): the record's blocks are read from the file 1 MiB at a time, checked
+  (XXH3 of each piece, folded) while they are copied into staging, and one copy writes the whole level, every layer or
+  slice, into the image. There is no decode, no encode and no read of the ASTC blocks. A record that does not check
+  out is dropped, and the level is encoded again.
+- **A miss** encodes as before, and also copies each strip's blocks into their place in the frame's readback ring
+  (`vk_stage_back`, host-cached memory), with a barrier to the host after the last strip. When that submission is
+  done, `cmd.c`'s landing (`vk_astc_frame_done`) appends the blocks to the file. The GPU thread never waits for
+  them. Blocks in flight are bounded to `VK_BC7_CAPTURE_BYTES` (32 MiB), which bounds the ring's growth. That is also
+  the largest level the cache takes (a 4096x4096 level is 16 MiB). A larger level is encoded each time, as before
+  (from 8192x8192, it is mode 6 alone).
+- **Memory:** only the index stays in RAM, 32 bytes a level, and one 1 MiB buffer for the reads. The blocks stay in
+  the file (and the system's page cache).
+- **Disk:** the file has a bound of `VK_BC7_CACHE_MAX` (4 GiB). A record that would go past it starts the file over.
+  A record that a crash cut short ends the reading, and the file is cut there. While the file is open, it is locked
+  (`snx_lock_file`). A second process of the same game runs without the cache, so it does not write the same file.
+
+RGBA8 levels are not cached. Their decode is the cheap part: an 8192x8192 level decoded in 15 ms on the RTX 2080,
+about 1 ms per 4096x4096 level. As RGBA8, a cached 4096x4096 level would be 64 MiB to read from the file and to
+copy through staging and across PCIe. That is several times what the decode costs.
+
 ## Textures bigger than one allocation
 
 Some drivers fail device memory allocations past 256 MiB even where `maxMemoryAllocationSize` is larger (NVIDIA's on
@@ -347,7 +386,19 @@ separate SPIRV-Tools is needed.
   CPU decoder's texels, byte for byte. `--bench [file.astc]` times a 4096x4096 level (the fast build) and a
   2040x2040 one (the full build) as RGBA8 and as BC7, of random 8x8 blocks or a file's repeated over the level.
 - `tex_upload_rows` checks what `texture.c` hands `vk_astc_upload`: an ASTC level's block rows, strip by strip,
-  against the block-linear layout walked byte by byte, and the bands other formats take past the cap.
+  against the block-linear layout walked byte by byte, and the bands other formats take past the cap. It also checks
+  the BC7 cache's key: the key is made only where `vk_astc_cached` says so, a byte of any layer changes it, and no key
+  is made where the GPU holds bytes.
+- `bc7_cache` (ctest, no GPU) checks `bc7_cache.c`. The key changes with each field of the level, its build, every
+  bit of its bytes and every word of its layout, and stays the same for the same inputs. Records come back as
+  written (one read piece or several), also after the file is opened again. A file of another version starts empty.
+  A changed byte on disk drops its record on the read. A record cut short is cut off, and the records before it stay.
+  The bound starts the file over. The index grows past 3,000 records, and the file stays locked while it is open.
+- `astc_vulkan` and `astc_vulkan_pieces` upload a level into a new BC7 image three times, with the cache's key: the
+  full and fast builds, strips of 4, 2 and 1 block rows, layers, slices and many strips. The first upload encodes. The
+  second, and the third after the file is opened again, encode nothing (`vk_astc_stats` counts the levels and the
+  hits), and their image bytes are the same as the first's, byte for byte. A changed block misses. `--bench` also
+  times the cache: an encode that stores, then hits.
 
 The CPU decoder was also compared with ARM's astcenc 5.7.0 (`astcenc -dl` and `-dH`, Apache-2.0, a release binary
 used only as a tool), on the same kind of random blocks for every footprint. Every texel agreed within one step of

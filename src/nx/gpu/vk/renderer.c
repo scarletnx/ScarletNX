@@ -587,11 +587,14 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                     (unsigned long long)(upload_bytes >> 20), (unsigned long long)slow_frames,
                     (unsigned long long)(slowest_ns / 1000000));
                 slow_frames = slowest_ns = 0;
-                u64 bc7_levels, bc7_bytes, bc7_rgba8;
-                vk_astc_stats(&bc7_levels, &bc7_bytes, &bc7_rgba8);
+                u64 bc7_levels, bc7_hits, bc7_bytes, bc7_rgba8, reads, stored, restarts, file;
+                vk_astc_stats(&bc7_levels, &bc7_hits, &bc7_bytes, &bc7_rgba8);
+                vk_bc7_cache_stats(&reads, &stored, &restarts, &file);
                 if (bc7_levels)
-                    LOG("vulkan: %llu ASTC texture levels uploaded as BC7, %llu MB where RGBA8 takes %llu MB\n",
-                        (unsigned long long)bc7_levels, (unsigned long long)(bc7_bytes >> 20),
+                    LOG("vulkan: %llu ASTC texture levels uploaded as BC7 (%llu of them from the BC7 cache, which "
+                        "took %llu new and holds %llu MB), %llu MB where RGBA8 takes %llu MB\n",
+                        (unsigned long long)bc7_levels, (unsigned long long)bc7_hits, (unsigned long long)stored,
+                        (unsigned long long)(file >> 20), (unsigned long long)(bc7_bytes >> 20),
                         (unsigned long long)(bc7_rgba8 >> 20));
                 u64 sparse_binds, sparse_ns;
                 vk_sparse_stats(&sparse_binds, &sparse_ns);
