@@ -14045,9 +14045,10 @@ static void launch(App* app, char* absolute, bool prepared) {
     if (make) argv[n++] = "-r";
     if (!direct) argv[n++] = game_option ? game_option : run ? run : absolute;
     /* Switch options only, never guest argv for the CPU-only Linux driver or the 3DS one; R's recompile takes no
-       option of a run. The drivers work in the menu's data folder, so they list the same games */
+       option of a run but the game's settings it recompiles with (NCE). The drivers work in the menu's data folder,
+       so they list the same games */
     if (make && app->menu.selected == GUI_SWITCH && gui_settings_tmpfs(s)) argv[n++] = gui_settings_tmpfs(s);
-    if (!direct && app->menu.selected == GUI_SWITCH) n += gui_settings_recompile(s, argv + n);
+    if (!direct && app->menu.selected == GUI_SWITCH) n += gui_settings_recompile(s, make, argv + n);
     /* B's pack: the cache the profile run left, and the level and hook its key was made with. -O after the
        settings' --opt= so the matched level is the one the build uses */
     if (app->aot_pack && app->aot_cache && app->menu.selected == GUI_SWITCH) {
@@ -14077,8 +14078,6 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     /* Play from a save state: the runtime loads it before the game's first frame */
     if (app->menu.selected == GUI_SWITCH && !make && app->state_load) argv[n++] = app->state_load;
-    /* Debug's SLP vectorizer, which R's recompile takes too: a run passes it with the game's settings */
-    if (app->menu.selected == GUI_SWITCH && make) n += gui_settings_one(s, "slp_vectorizer", argv + n);
     /* Extract dump, which both drivers take, for a run and for R's recompile: off, nothing is extracted */
     if ((app->menu.selected == GUI_3DS || (app->menu.selected == GUI_SWITCH && make)) && gui_settings_extract(s))
         argv[n++] = gui_settings_extract(s);

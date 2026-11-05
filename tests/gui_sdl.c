@@ -1236,6 +1236,13 @@ static char* debug_settings(void) {
     return snx_strdup("Display\tfullscreen\t0\tint\t0\t1\t1 = start in fullscreen\t\t0=0|1=1\n"
                       "Debug\tlog\t1\tint\t0\t2\tThe log's detail\tLog level\t0=0|1=1|2=2\n");
 }
+/* a runtime's list with two of the game's settings the recompile takes too (settings.txt's recompile) */
+static char* recompile_settings(void) {
+    return snx_strdup("Display\tfullscreen\t0\tint\t0\t1\t1 = start in fullscreen\t\t0=0|1=1\n"
+                      "Graphics\tresolution\t1\tfloat\t0.25\t16\tInternal 3D resolution\t\t\n"
+                      "Performance\tnce\t1\tint\t0\t1\tThe game's code runs natively\tNCE\t0=Off|1=On\n"
+                      "Debug\tslp_vectorizer\t0\tint\t0\t1\tLLVM's SLP vectorizer\tSLP vectorizer\t0=Off|1=On\n");
+}
 static int SDLCALL hang(void* unused) {
     (void)unused;
     for (;;) SDL_Delay(100);
@@ -6928,6 +6935,37 @@ int main(int argc, char** argv) {
         free(dump);
         free(work);
         free(games);
+    }
+    /* NCE Off and Debug's SLP vectorizer on in Settings, two of the game's settings the recompile takes too: a first
+       compile and R's recompile pass them, as -r reads them from its options alone; a setting of the run alone, never */
+    {
+        char *nro = snx_path_join(temporary, "recompile settings.nro"), *got = snx_path_join(temporary, "driver argv");
+        char* argv_got;
+        int r;
+        assert(!snx_write_file(nro, "fixture", 7));
+        snx_menu_settings = recompile_settings;
+        settings_forget(&app);
+        assert(settings_of(&app) && gui_settings_set(&app.settings, "nce", "0") &&
+               gui_settings_set(&app.settings, "slp_vectorizer", "1") &&
+               gui_settings_set(&app.settings, "resolution", "2"));
+        app.menu.selected = GUI_SWITCH;
+        driver_will(got, 0, "Recompiling recompile settings");
+        for (r = 0; r < 2; ++r) { /* not made: its first compile; then R on it */
+            app.recompile = r == 1;
+            launch(&app, snx_strdup(nro), false);
+            app.recompile = false;
+            argv_got = ran(&app, 0);
+            assert(has_arg(argv_got, "-r", nro) && has_arg(argv_got, "--nce=0", NULL) &&
+                   has_arg(argv_got, "--slp_vectorizer=1", NULL) && !has_arg(argv_got, "--resolution=2", NULL));
+            free(argv_got);
+        }
+        driver_will(NULL, 0, NULL);
+        snx_menu_settings = NULL;
+        settings_forget(&app);
+        app.menu.selected = GUI_LINUX;
+        assert(!remove(nro));
+        free(got);
+        free(nro);
     }
 
     /* a dump with more than one folder of the recompiled library that can take its game: asked which, its Main first

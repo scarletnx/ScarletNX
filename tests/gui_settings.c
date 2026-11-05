@@ -5,6 +5,7 @@
 #include "common/utilities/common.h"
 #include "gui/editor.h"
 #include "gui/settings.h"
+#include "snx_settings.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -98,40 +99,49 @@ int main(int argc, char** argv) {
        LLVM batch full or ipo, the AOT threads a number (0 the cores), the unit size a number of instructions, the unit
        cache limit a number of GB (0 none), and LLVM Internals is a page of its own */
     assert(!strcmp(s.keys[opt].section, "Launch") && !strcmp(s.keys[opt].key, "Optimization level") &&
-           !strcmp(s.values[opt].key, "opt") && words(&s.keys[opt]) == 6 && !gui_settings_recompile(&s, options));
-    assert(gui_settings_set(&s, "opt", "2") && !gui_settings_recompile(&s, options)); /* the default: no pick */
-    assert(gui_settings_set(&s, "opt", "z") && gui_settings_recompile(&s, options) == 1 && !strcmp(options[0], "--opt=z"));
+           !strcmp(s.values[opt].key, "opt") && words(&s.keys[opt]) == 6 && !gui_settings_recompile(&s, 0, options));
+    assert(gui_settings_set(&s, "opt", "2") && !gui_settings_recompile(&s, 0, options)); /* the default: no pick */
+    assert(gui_settings_set(&s, "opt", "z") && gui_settings_recompile(&s, 0, options) == 1 && !strcmp(options[0], "--opt=z"));
     assert(!gui_settings_set(&s, "opt", "q") && gui_settings_set(&s, "opt", "s") &&
            gui_settings_set(&s, "aot_threads", "4"));
-    assert(gui_settings_recompile(&s, options) == 2 && !strcmp(options[0], "--opt=s") &&
+    assert(gui_settings_recompile(&s, 0, options) == 2 && !strcmp(options[0], "--opt=s") &&
            !strcmp(options[1], "--aot_threads=4"));
     assert(!strcmp(s.keys[opt + 1].section, "Launch") && !strcmp(s.keys[opt + 1].key, "LLVM batch") &&
            !strcmp(s.values[opt + 1].key, "llvm_batch") && !strcmp(s.values[opt + 1].def, "full") &&
            words(&s.keys[opt + 1]) == 2); /* full, the default, which is not passed, and ipo */
     assert(!gui_settings_set(&s, "llvm_batch", "fast") && gui_settings_set(&s, "llvm_batch", "ipo") &&
-           gui_settings_recompile(&s, options) == 3 && !strcmp(options[1], "--llvm_batch=ipo") &&
+           gui_settings_recompile(&s, 0, options) == 3 && !strcmp(options[1], "--llvm_batch=ipo") &&
            !strcmp(options[2], "--aot_threads=4") && !gui_settings_set(&s, "llvm_batch", ".ini") &&
-           gui_settings_set(&s, "llvm_batch", "full") && gui_settings_recompile(&s, options) == 2);
+           gui_settings_set(&s, "llvm_batch", "full") && gui_settings_recompile(&s, 0, options) == 2);
     assert(!strcmp(s.keys[opt + 3].section, "Launch") && !strcmp(s.keys[opt + 3].key, "Unit size") &&
            !strcmp(s.values[opt + 3].key, "unit_instructions") && !strcmp(s.values[opt + 3].def, "90000"));
-    assert(gui_settings_set(&s, "unit_instructions", "20000") && gui_settings_recompile(&s, options) == 3 &&
+    assert(gui_settings_set(&s, "unit_instructions", "20000") && gui_settings_recompile(&s, 0, options) == 3 &&
            !strcmp(options[2], "--unit_instructions=20000") && gui_settings_set(&s, "unit_instructions", ""));
     assert(!strcmp(s.keys[opt + 4].section, "Launch") && !strcmp(s.keys[opt + 4].key, "Unit cache limit") &&
            !strcmp(s.values[opt + 4].key, "unit_cache_gb") && strstr(s.keys[opt + 4].about, "0 = no limit"));
     assert(!strcmp(s.values[opt + 4].def, "0") &&
            strstr(s.keys[opt + 4].about, "a tenth of its disk free, at most 10 GB")); /* no limit */
-    assert(gui_settings_set(&s, "unit_cache_gb", "50") && gui_settings_recompile(&s, options) == 3 &&
+    assert(gui_settings_set(&s, "unit_cache_gb", "50") && gui_settings_recompile(&s, 0, options) == 3 &&
            !strcmp(options[2], "--unit_cache_gb=50") && gui_settings_set(&s, "unit_cache_gb", ""));
     assert(!strcmp(s.keys[opt + 5].section, "Launch") && s.values[opt + 5].kind == GUI_SETTING_PAGE &&
            !strcmp(s.keys[opt + 5].key, "LLVM Internals"));
     assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "aot_threads", "") &&
-           !gui_settings_recompile(&s, options));
-    /* a game's setting alone, as R's recompile takes Debug's SLP vectorizer: once picked, and never a launcher's own */
+           !gui_settings_recompile(&s, 0, options));
+    /* a game's setting alone, as a GBA run takes fullscreen: once picked, and never a launcher's own */
     assert(!gui_settings_one(&s, "slp_vectorizer", options) && gui_settings_set(&s, "slp_vectorizer", "1"));
     assert(gui_settings_one(&s, "slp_vectorizer", options) == 1 && !strcmp(options[0], "--slp_vectorizer=1"));
     assert(gui_settings_set(&s, "opt", "z") && !gui_settings_one(&s, "opt", options) &&
            gui_settings_set(&s, "opt", "2"));
-    assert(gui_settings_set(&s, "slp_vectorizer", "0") && !gui_settings_one(&s, "slp_vectorizer", options));
+    /* a run that makes the game (-r) takes the game's settings the recompile takes too, after the recompiler's: Debug's
+       SLP vectorizer, not a setting of the game alone (docked); a run gets them with the game's options, never twice */
+    assert(gui_settings_set(&s, "opt", "z") && gui_settings_set(&s, "docked", "0"));
+    assert(gui_settings_recompile(&s, 1, options) == 2 && !strcmp(options[0], "--opt=z") &&
+           !strcmp(options[1], "--slp_vectorizer=1"));
+    assert(gui_settings_recompile(&s, 0, options) == 1 && !strcmp(options[0], "--opt=z"));
+    assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "docked", "1") &&
+           gui_settings_recompile(&s, 1, options) == 1 && !strcmp(options[0], "--slp_vectorizer=1"));
+    assert(gui_settings_set(&s, "slp_vectorizer", "0") && !gui_settings_one(&s, "slp_vectorizer", options) &&
+           !gui_settings_recompile(&s, 1, options));
     assert(!strcmp(s.keys[s.own].section, "Display") && !strcmp(s.keys[s.own].key, "docked"));
     assert(!strcmp(s.keys[s.own].about, "1 = TV mode") && !strcmp(key(&s, "fullscreen")->about, "1 = start in fullscreen"));
     assert(!strcmp(s.keys[s.count - 1].key, "log") && !strcmp(s.keys[s.count - 1].about, "Log detail"));
@@ -394,7 +404,7 @@ int main(int argc, char** argv) {
                     }
     /* the launcher's Tracy capture is passed to a run, never to the recompiler */
     if (tracy) {
-        assert(gui_settings_set(&s, "tracy_capture", "on") && !gui_settings_recompile(&s, options));
+        assert(gui_settings_set(&s, "tracy_capture", "on") && !gui_settings_recompile(&s, 0, options));
         tracy_n = gui_settings_options(&s, 1, options);
         assert(tracy_n && !strcmp(options[tracy_n - 1], "--tracy-capture"));
         assert(gui_settings_set(&s, "tracy_capture", "off"));
@@ -714,6 +724,26 @@ int main(int argc, char** argv) {
         assert(key(&s, "resolution")->lo == 0.25 && key(&s, "resolution")->hi == 16.0);
         page = at(&s, "Buttons");
         assert(page > 0 && s.values[page].count == 1 + 17 && !strcmp(s.keys[page + 2].key, "L"));
+        /* each game's setting the recompile takes too is a row, which a run that makes the game (-r) gets picked off its
+           default, NCE Off among them, and a run with the game's options alone */
+        {
+            const IniOpt* o;
+            int nce = 0;
+            for (o = g_recompile_game_ini; o->key; ++o) {
+                char value[32], want[96];
+                if (o->type == INI_TEXT)
+                    snprintf(value, sizeof value, "100000");
+                else
+                    snprintf(value, sizeof value, "%g", atof(o->def) == o->lo ? o->hi : o->lo);
+                snprintf(want, sizeof want, "--%s=%s", o->key, value);
+                assert(at(&s, o->key) >= s.own && gui_settings_set(&s, o->key, value));
+                assert(gui_settings_recompile(&s, 1, options) == 1 && !strcmp(options[0], want));
+                assert(!gui_settings_recompile(&s, 0, options) && gui_settings_set(&s, o->key, o->def) &&
+                       !gui_settings_recompile(&s, 1, options));
+                nce += !strcmp(want, "--nce=0");
+            }
+            assert(nce == 1);
+        }
         gui_settings_free(&s);
         free(output);
     }

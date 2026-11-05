@@ -98,9 +98,11 @@ const char* gui_settings_tmpfs(const GuiSettings* settings);
    Both drivers take it */
 const char* gui_settings_extract(const GuiSettings* settings);
 /* argv's --key=value for each of the recompiler's settings picked (the optimization level, the AOT threads, LLVM
-   Internals), which the Switch driver takes for a run (which recompiles when it must) and for R's recompile. Their
+   Internals), which the Switch driver takes for a run (which recompiles when it must) and for R's recompile; with
+   make, a run that makes the game and plays nothing (-r), each of the game's settings the recompile takes too
+   (settings.txt's recompile: NCE, Debug's SLP vectorizer) picked, which a run gets with the game's options. Their
    count */
-size_t gui_settings_recompile(GuiSettings* settings, const char** argv);
+size_t gui_settings_recompile(GuiSettings* settings, int make, const char** argv);
 /* argv's --key=value of the game's setting key when it is picked: its count, 1 or 0 */
 size_t gui_settings_one(GuiSettings* settings, const char* key, const char** argv);
 #endif
