@@ -408,6 +408,7 @@ typedef struct {
     u32 position;
     u32* output_attrs;
     u32 point_size;
+    u32 default_point_size;
     u32 layer_output;
     u32 layer_input;
     u32 viewport_output;

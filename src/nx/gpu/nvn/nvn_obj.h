@@ -197,6 +197,11 @@ typedef struct {
     u32 off;
     u16 cb, cb_size;
 } NvnStage;
+/* Decoded tessellation declarations kept outside the guest's fixed-size program object. value packs domain,
+   spacing, point mode and winding in successive nibbles; declared has one bit per independently declared field. */
+typedef struct {
+    u32 value, declared;
+} NvnTessStage;
 /* st: by NVN shader stage (NVN_SHADER_STAGE_*). off_a: a dual vertex program's VertexA (0 for none), or a compute
    program's shared memory bytes; block: a compute program's workgroup size */
 /* sample_shading: SetSampleShading's mode (NVN_SAMPLE_SHADING_*), which the program's draws take */
@@ -365,17 +370,82 @@ typedef struct {
 #define NVN_REC_COST(w)    (((w) >> NVN_REC_COST_SHIFT) & NVN_REC_COST_MAX)
 #define NVN_REC_LAST       0x80000000u
 enum {
-    OP_END, OP_JUMP, OP_BEGIN, OP_CALL, /* OP_BEGIN isn't recorded: a recording starts with its first command */
-    OP_SIGNAL_EVENT, OP_REPORT_COUNTER, OP_COPY_B2B, OP_UPDATE_UB, /* effects the CPU can see */
-    OP_SET_RT, OP_CLEAR_COLOR, OP_CLEAR_DS, OP_VIEWPORTS, OP_SCISSOR, OP_DEPTH_RANGE,
-    OP_BIND_PROGRAM, OP_BIND_STATE, OP_BIND_VATTR, OP_BIND_VSTREAM, OP_BIND_VBUF,
-    OP_BIND_UBO, OP_BIND_SSBO, OP_BIND_TEX, OP_BIND_SAMP,
-    OP_STENCIL, OP_POLY_OFFSET, OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BARRIER,
-    OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG,
-    OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_CLEAR_BUF, OP_DEPTH_CLAMP, OP_RENDER_COND, OP_FENCE_SYNC,
-    OP_TF_BIND, OP_TF_STATE, OP_RAST_DISCARD, OP_VP_SWIZZLE, OP_BIND_TEX1, OP_PRIM_RESTART, OP_WAIT_SYNC,
-    OP_SAMPLE_MASK, OP_LINE_WIDTH, OP_CONSERVATIVE, OP_PROVOKING, OP_DRAW_TEXTURE, OP_BIND_BUFS, OP_COUNT_
+    OP_END,
+    OP_JUMP,
+    OP_BEGIN,
+    OP_CALL, /* OP_BEGIN isn't recorded: a recording starts with its first command */
+    OP_SIGNAL_EVENT,
+    OP_REPORT_COUNTER,
+    OP_COPY_B2B,
+    OP_UPDATE_UB, /* effects the CPU can see */
+    OP_SET_RT,
+    OP_CLEAR_COLOR,
+    OP_CLEAR_DS,
+    OP_VIEWPORTS,
+    OP_SCISSOR,
+    OP_DEPTH_RANGE,
+    OP_BIND_PROGRAM,
+    OP_BIND_STATE,
+    OP_BIND_VATTR,
+    OP_BIND_VSTREAM,
+    OP_BIND_VBUF,
+    OP_BIND_UBO,
+    OP_BIND_SSBO,
+    OP_BIND_TEX,
+    OP_BIND_SAMP,
+    OP_STENCIL,
+    OP_POLY_OFFSET,
+    OP_DRAW,
+    OP_DRAW_IDX,
+    OP_DISPATCH,
+    OP_BARRIER,
+    OP_SET_TEX_POOL,
+    OP_SET_SAMP_POOL,
+    OP_COPY_B2T,
+    OP_COPY_STRIDE,
+    OP_BLEND_COLOR,
+    OP_COPY_T2B,
+    OP_BIND_IMG,
+    OP_COPY_T2T,
+    OP_RESET_COUNTER,
+    OP_CLEAR_TEX,
+    OP_CLEAR_BUF,
+    OP_DEPTH_CLAMP,
+    OP_RENDER_COND,
+    OP_FENCE_SYNC,
+    OP_TF_BIND,
+    OP_TF_STATE,
+    OP_RAST_DISCARD,
+    OP_VP_SWIZZLE,
+    OP_BIND_TEX1,
+    OP_PRIM_RESTART,
+    OP_WAIT_SYNC,
+    OP_SAMPLE_MASK,
+    OP_LINE_WIDTH,
+    OP_CONSERVATIVE,
+    OP_PROVOKING,
+    OP_DRAW_TEXTURE,
+    OP_BIND_BUFS,
+    OP_SCISSORS,
+    OP_DEPTH_RANGES,
+    OP_PATCH_SIZE,
+    OP_SET_STATE,
+    OP_COUNT_
 };
+typedef char NvnOpcodeMaskFits[(OP_COUNT_ <= 64) ? 1 : -1];
+/* Scalar and small-array fixed-function state share one opcode. This leaves opcode space for draw operations. */
+enum {
+    NVN_SET_ALPHA_REF,
+    NVN_SET_DEPTH_BOUNDS,
+    NVN_SET_POINT_SIZE,
+    NVN_SET_TESS_INNER,
+    NVN_SET_TESS_OUTER,
+    NVN_SET_COVERAGE_TABLE
+};
+typedef struct {
+    u32 kind, enable;
+    f32 value[16];
+} NvnPSetState;
 /* the payloads, right after the header. Where nxnative held a host pointer, these hold a guest address */
 /* OP_JUMP and OP_CALL: u64 target. OP_FENCE_SYNC and OP_WAIT_SYNC: u64 sync. OP_RESET_COUNTER: u64 type.
    OP_BARRIER: i32 bits */
@@ -415,6 +485,14 @@ typedef struct {
 typedef struct {
     f32 n, f;
 } NvnPDepthRange;
+typedef struct {
+    i32 first, count;
+    i32 rect[16][4];
+} NvnPScissors;
+typedef struct {
+    i32 first, count;
+    f32 range[16][2];
+} NvnPDepthRanges;
 /* the stages bound (NVN_SHADER_STAGE_*_BIT) and the program's as they were when recorded */
 typedef struct {
     i32 stages;
@@ -492,9 +570,9 @@ typedef struct {
     i32 index, pad;
     u64 address, size;
 } NvnPTfBind;
-/* what: 0 begin, 1 end, 2 pause, 3 resume; control: the game's 32-byte control buffer */
+/* what: 0 begin, 1 end, 2 pause, 3 resume, 4 draw; control: the game's 32-byte control buffer */
 typedef struct {
-    i32 what, pad;
+    i32 what, prim;
     u64 control;
 } NvnPTfState;
 typedef struct {

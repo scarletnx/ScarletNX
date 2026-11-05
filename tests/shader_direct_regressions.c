@@ -3272,13 +3272,13 @@ static void system_values(void) {
     code = translate(&pixld_sample, 1, ST_FS, &info, &words, 0);
     check_translated(code, &info, "PIXLD.MYINDEX translates");
     if (code)
-        check(has_builtin(code, words, 18) && !has_builtin(code, words, 20),
+        check(has_builtin(code, words, 18) && !has_builtin(code, words, 20) && info.uses_sample_id,
               "PIXLD.MYINDEX reads SampleId rather than SampleMask");
     free(code);
     code = translate(&pixld_coverage, 1, ST_FS, &info, &words, 0);
     check_translated(code, &info, "PIXLD.COVMASK translates");
     if (code)
-        check(has_builtin(code, words, 20) && !has_builtin(code, words, 18),
+        check(has_builtin(code, words, 20) && !has_builtin(code, words, 18) && !info.uses_sample_id,
               "PIXLD.COVMASK reads SampleMask rather than SampleId");
     free(code);
     static const u64 layer_primitive[] = {

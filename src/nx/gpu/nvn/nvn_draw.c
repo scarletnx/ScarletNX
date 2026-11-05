@@ -21,6 +21,7 @@
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
+#include "nx/gpu/nvn/nvn_blend.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/shader/shader.h"
@@ -51,7 +52,8 @@ enum {
     D_VIEWPORTS = 1u << DS_VIEWPORTS,
     D_VBUF = 1u << DS_VBUF,
     D_BIND = 1u << DS_BIND,
-    D_INLINE = 1u << DS_INLINE
+    D_INLINE = 1u << DS_INLINE,
+    D_CHANNEL_MASK = 1u << 30
 };
 
 void nvn_draw_device(u32 origin, u32 depth_mode) {
@@ -68,16 +70,19 @@ static void keep(void* kept, const void* made, size_t n, u64* gen) {
     new_gen(gen);
 }
 
-/* bytes [p, p + n) of inl written: the renderer's copy takes that span at the next draw. One draw after another
-   with only its base vertex changed compared and copied all 20 KB of the five stages' blocks: a twentieth of one
-   game's GPU thread */
+/* Bytes [p, p + n) within one inline bank written: the renderer's copy takes that bank's dirty span at the next
+   draw. A base vertex change touches four bytes in each stage's bank 0, not the unchanged bytes between stages. */
 static void inl_wrote(NvnDraw* d, const u8* p, u32 n) {
-    const u8* base = (const u8*)&d->inl;
+    uintptr_t at = (uintptr_t)p, base = (uintptr_t)&d->inl;
+    if (at < base || at - base >= sizeof d->inl) return; /* compute's blocks */
+    u32 off = (u32)(at - base);
+    u32 bank = off >= offsetof(DsInline, bank2);
+    u32 bytes = bank ? DS_INLINE_BANK2 : DS_INLINE_BANK0;
+    if (bank) off -= offsetof(DsInline, bank2);
+    u32 stage = off / bytes, lo = off % bytes, hi = lo + n;
     d->dirty |= D_INLINE;
-    if (p < base || p >= base + sizeof d->inl) return; /* compute's blocks */
-    u32 lo = (u32)(p - base), hi = lo + n;
-    if (lo < d->inl_lo) d->inl_lo = lo;
-    if (hi > d->inl_hi) d->inl_hi = hi;
+    if (lo < d->inl_lo[bank][stage]) d->inl_lo[bank][stage] = (u16)lo;
+    if (hi > d->inl_hi[bank][stage]) d->inl_hi[bank][stage] = (u16)hi;
 }
 
 void nvn_draw_free(NvnDraw* d) {
@@ -118,8 +123,13 @@ void nvn_draw_init(NvnDraw* d, u32 owner) {
     d->svalue[0] = d->svalue[1] = d->smask[0] = d->smask[1] = 0xff;
     d->provoking_last = 1; /* NVN's default, as GL's */
     d->line_width = 1.0f;
-    d->depth[1] = 1.0f;
-    d->scissor[2] = d->scissor[3] = 0x10000;
+    d->point_size = 1.0f;
+    d->depth_bounds[1] = 1.0f;
+    for (u32 j = 0; j < 6; j++) d->tess_levels[j] = 1.0f;
+    for (u32 j = 0; j < DS_VIEWPORTS_MAX; j++) {
+        d->depth[j][1] = 1.0f;
+        d->scissor[j][2] = d->scissor[j][3] = 0x10000;
+    }
     d->bind.tex_bank = 2;
     for (s = 0; s < DS_GFX_STAGES; s++) {
         /* Maxwell's largest point size (11.4 fixed point), which GLSLC clamps a written size to: the game's driver
@@ -138,8 +148,11 @@ void nvn_draw_init(NvnDraw* d, u32 owner) {
     d->dx.tex_bank = 2;
     for (s = 0; s < 8; s++) snx_st_le32(d->dx.bank2 + 4 * (u32)s, (u32)s);
     d->dirty = ~0u;
-    d->inl_lo = 0;
-    d->inl_hi = sizeof d->inl;
+    for (s = 0; s < DS_GFX_STAGES; s++) {
+        d->inl_lo[0][s] = d->inl_lo[1][s] = 0;
+        d->inl_hi[0][s] = DS_INLINE_BANK0;
+        d->inl_hi[1][s] = DS_INLINE_BANK2;
+    }
 }
 
 /* ---- conversions of NVN's enumerants */
@@ -255,9 +268,12 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
     NvnTexLayout l;
     nvn_tex_layout(&t.d, &l);
     u32 level = has_view && (v->set & NVN_VIEW_LEVELS) ? v->base_level : 0, layer = 0, layers = 1;
-    if (t.d.target == NVN_TEXTURE_TARGET_2D_ARRAY || t.d.target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY ||
-        t.d.target == NVN_TEXTURE_TARGET_CUBEMAP || t.d.target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY) {
-        layers = t.d.target == NVN_TEXTURE_TARGET_CUBEMAP ? 6 : t.d.depth;
+    if (t.d.target == NVN_TEXTURE_TARGET_1D_ARRAY || t.d.target == NVN_TEXTURE_TARGET_2D_ARRAY ||
+        t.d.target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY || t.d.target == NVN_TEXTURE_TARGET_CUBEMAP ||
+        t.d.target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY) {
+        layers = t.d.target == NVN_TEXTURE_TARGET_1D_ARRAY  ? t.d.height
+                 : t.d.target == NVN_TEXTURE_TARGET_CUBEMAP ? 6
+                                                            : t.d.depth;
         if (has_view && (v->set & NVN_VIEW_LAYERS)) {
             layer = v->min_layer;
             layers = v->layers ? v->layers : layers - layer;
@@ -267,7 +283,8 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
     u32 mode = nvn_tex_msaa(t.d.samples);
     *msaa = mode;
     s->width = (t.d.width >> level ? t.d.width >> level : 1) << ds_msaa_log2_x(mode);
-    s->height = (t.d.height >> level ? t.d.height >> level : 1) << ds_msaa_log2_y(mode);
+    s->height = (t.d.target == NVN_TEXTURE_TARGET_1D_ARRAY ? 1 : (t.d.height >> level ? t.d.height >> level : 1))
+                << ds_msaa_log2_y(mode);
     s->layers = layers;
     s->layer_stride = l.layer_size;
     if (t.d.flags & NVN_TEX_LINEAR) {
@@ -341,6 +358,7 @@ static void make_programs(NvnDraw* d) {
     memset(&p, 0, sizeof p); /* every byte: keep compares the bytes */
     memcpy(p.code, d->code, sizeof p.code);
     p.on = d->prog_on;
+    p.tess_params = d->tess_params;
     p.clip_enable = 0xff; /* NVN has no clip distance enables: those the program writes clip */
     p.xfb_on = d->tf_on;
     keep(&d->ds.prog, &p, sizeof p, &d->ds.gen[DS_PROGRAMS]);
@@ -388,13 +406,19 @@ static void make_blend(NvnDraw* d) {
         b.sa[i] = blend_factor((u32)nvn_field(w, NVN_BLEND_SRC_A));
         b.da[i] = blend_factor((u32)nvn_field(w, NVN_BLEND_DST_A));
         b.mask[i] = (u8)((d->chmask >> (4 * i)) & 15); /* r 1, g 2, b 4, a 8, as Vulkan's */
-        if (b.en[i] && nvn_field(w, NVN_BLEND_ADV))
+        if (b.en[i] && nvn_field(w, NVN_BLEND_ADV) && !nvn_blend_advanced(&b, i, w))
             LOG_LIMIT(1, "nvn: advanced blend mode %u is drawn as plain blending\n",
                       (unsigned)nvn_field(w, NVN_BLEND_ADV));
     }
     /* NVN's logic operations are Vulkan's; COPY is NVN's default, writing what the shader made */
     if (logic != NVN_LOGIC_OP_COPY) b.logic_op = (u8)(logic + 1);
     keep(&d->ds.blend, &b, sizeof b, &d->ds.gen[DS_BLEND]);
+}
+/* A channel-mask bind changes eight bytes, without changing the blend factors, equations or logic operation. */
+static void make_channel_mask(NvnDraw* d) {
+    u8 mask[DS_TARGETS_MAX];
+    for (u32 i = 0; i < DS_TARGETS_MAX; i++) mask[i] = (u8)((d->chmask >> (4 * i)) & 15);
+    keep(d->ds.blend.mask, mask, sizeof mask, &d->ds.gen[DS_BLEND]);
 }
 static void make_raster_key(NvnDraw* d) {
     u32 mode = (u32)nvn_field(d->poly, NVN_POLY_MODE);
@@ -407,6 +431,7 @@ static void make_raster_key(NvnDraw* d) {
     k.depth_clamp = d->depth_clamp;
     k.conservative = d->conservative ? (u8)(1 + d->dilate) : 0;
     k.sample_shading = d->sample_shading == 1; /* NVN_SAMPLE_SHADING_ENABLE: every sample */
+    k.patch_vertices = d->patch_size;
     k.alpha_to_coverage = d->ms.alpha_to_coverage;
     k.sample_mask = ~d->sample_off;
     keep(&d->ds.rkey, &k, sizeof k, &d->ds.gen[DS_RASTER_KEY]);
@@ -433,6 +458,7 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
     y.stencil_test = (u8)nvn_field(s, NVN_DS_STENCIL);
     y.alpha_test = alpha != NVN_ALPHA_FUNC_ALWAYS;
     y.alpha_func = from1(alpha, DS_CMP_ALWAYS, DS_CMP_ALWAYS);
+    y.alpha_ref = d->alpha_ref;
     /* the window origin register as the game's driver writes it: the flip the queue took when it was initialized
        (nvn_draw_init), and never the lower left bit, so y counts from the top of the targets as on the driver's */
     u32 depth_mode = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED);
@@ -473,6 +499,18 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
 }
 /* clamped to the 3D engine's 16-bit window coordinates */
 static u32 clamp16(i64 v) { return v < 0 ? 0 : v > 0xffff ? 0xffff : (u32)v; }
+/* Intersect the integer envelope with the hardware window before packing its origin and extent. Bound the doubles
+   before converting, so extreme or non-finite guest coordinates never produce an undefined integer conversion. */
+static u32 viewport_clip(float origin, float extent) {
+    double lo = floor((double)origin), hi = ceil((double)(origin + extent));
+    if (!isfinite(lo) || !isfinite(hi) || hi <= 0 || lo >= 65535 || hi <= lo) return 0;
+    u32 start = lo < 0 ? 0 : (u32)lo, end = hi > 65535 ? 65535 : (u32)hi;
+    return start | (end - start) << 16;
+}
+static u32 scissor_clip(i32 origin, i32 extent) {
+    u32 start = clamp16(origin), end = clamp16((i64)origin + extent);
+    return end > start ? start | end << 16 : 0;
+}
 static void make_viewports(NvnDraw* d) {
     int near_zero = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
     /* clip space's y points up in both origins: an upper-left window's rows count down, so its scale is negative */
@@ -481,10 +519,10 @@ static void make_viewports(NvnDraw* d) {
     memset(&v, 0, sizeof v); /* every byte: keep compares the bytes */
     /* NVN has no call that turns the viewport transform off */
     v.transform_on = 1;
-    v.scissor_on = 1; /* scissor 0, the only one recorded: NVN's covers everything until it is set */
+    v.scissor_on = (1u << DS_VIEWPORTS_MAX) - 1; /* NVN enables all scissors; untouched ones cover the window. */
     for (u32 j = 0; j < DS_VIEWPORTS_MAX; j++) {
         float x = d->vp[j][0], y = d->vp[j][1], w = d->vp[j][2], h = d->vp[j][3];
-        float n = j ? 0.0f : d->depth[0], f = j ? 1.0f : d->depth[1];
+        float n = d->depth[j][0], f = d->depth[j][1];
         v.scale[j][0] = w * 0.5f;
         v.scale[j][1] = upper_left ? -h * 0.5f : h * 0.5f;
         v.translate[j][0] = x + w * 0.5f;
@@ -492,13 +530,13 @@ static void make_viewports(NvnDraw* d) {
         v.scale[j][2] = near_zero ? f - n : (f - n) * 0.5f;
         v.translate[j][2] = near_zero ? n : (n + f) * 0.5f;
         for (u32 k = 0; k < 4; k++) v.swizzle[j] |= (u32)((d->swizzle[j][k] ^ (2 * k)) & 7) << (4 * k);
-        v.clip_x[j] = clamp16((i64)x) | clamp16((i64)w) << 16;
-        v.clip_y[j] = clamp16((i64)y) | clamp16((i64)h) << 16;
+        v.clip_x[j] = viewport_clip(x, w);
+        v.clip_y[j] = viewport_clip(y, h);
         v.z_near[j] = n;
         v.z_far[j] = f;
+        v.scissor_x[j] = scissor_clip(d->scissor[j][0], d->scissor[j][2]);
+        v.scissor_y[j] = scissor_clip(d->scissor[j][1], d->scissor[j][3]);
     }
-    v.scissor_x[0] = clamp16(d->scissor[0]) | clamp16((i64)d->scissor[0] + d->scissor[2]) << 16;
-    v.scissor_y[0] = clamp16(d->scissor[1]) | clamp16((i64)d->scissor[1] + d->scissor[3]) << 16;
     keep(&d->ds.vp, &v, sizeof v, &d->ds.gen[DS_VIEWPORTS]);
 }
 static void make_vertex_buffers(NvnDraw* d) {
@@ -527,23 +565,41 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
         }
     }
     if (d->ds.dyn.depth_word != base_instance) d->dirty |= D_DYNAMIC;
+    /* Device state can change without changing a packed depth/stencil object. Equal binds no longer rebuild
+       dynamic state incidentally, so refresh the depth convention at the draw that observes it. */
+    u32 near_zero = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
+    if (d->ds.dyn.depth_mode != near_zero) d->dirty |= D_DYNAMIC | D_VIEWPORTS;
+    if (!d->dirty) return;
     if (d->dirty & D_PROGRAMS) make_programs(d);
     if (d->dirty & D_VFORMAT) make_vertex_format(d);
     if (d->dirty & D_BLEND) make_blend(d);
+    else if (d->dirty & D_CHANNEL_MASK)
+        make_channel_mask(d);
     if (d->dirty & D_RASTER) make_raster_key(d);
     if (d->dirty & D_DYNAMIC) make_dynamic(d, base_instance);
     if (d->dirty & D_VIEWPORTS) make_viewports(d);
     if (d->dirty & D_VBUF) make_vertex_buffers(d);
     if (d->dirty & D_BIND) keep(&d->ds.bind, &d->bind, sizeof d->bind, &d->ds.gen[DS_BIND]);
-    if ((d->dirty & D_INLINE) && d->inl_lo < d->inl_hi) {
-        u8 *kept = (u8*)&d->ds.inl + d->inl_lo, *made = (u8*)&d->inl + d->inl_lo;
-        if (memcmp(kept, made, d->inl_hi - d->inl_lo)) {
-            memcpy(kept, made, d->inl_hi - d->inl_lo);
-            new_gen(&d->ds.gen[DS_INLINE]);
+    if (d->dirty & D_INLINE) {
+        int changed = 0;
+        for (u32 bank = 0; bank < 2; bank++) {
+            u32 bytes = bank ? DS_INLINE_BANK2 : DS_INLINE_BANK0;
+            for (s = 0; s < DS_GFX_STAGES; s++) {
+                u32 lo = d->inl_lo[bank][s], hi = d->inl_hi[bank][s];
+                if (lo < hi) {
+                    u8* kept = (bank ? d->ds.inl.bank2[s] : d->ds.inl.bank0[s]) + lo;
+                    const u8* made = (bank ? d->inl.bank2[s] : d->inl.bank0[s]) + lo;
+                    if (memcmp(kept, made, hi - lo)) {
+                        memcpy(kept, made, hi - lo);
+                        changed = 1;
+                    }
+                }
+                d->inl_lo[bank][s] = (u16)bytes;
+                d->inl_hi[bank][s] = 0;
+            }
         }
+        if (changed) new_gen(&d->ds.gen[DS_INLINE]);
     }
-    d->inl_lo = sizeof d->inl;
-    d->inl_hi = 0;
     d->dirty = 0;
 }
 /* An indirect draw's arguments stay in guest memory, which the GPU reads when it draws (DrawCall.indirect): NVN's
@@ -561,6 +617,18 @@ static void indirect(DrawCall* dc, u64 ind, u64 count, i32 max, i32 stride, u32 
     dc->stride = count && stride > 0 ? (u32)stride : record;
     dc->count = dc->instances = 1; /* the GPU's: these only say there is a draw */
 }
+static void draw_fixed_state(const NvnDraw* d, DrawCall* call) {
+    call->state_flags = d->fixed_flags;
+    if (d->fixed_flags & DS_DRAW_POINT_SIZE) call->point_size = d->point_size;
+    if (d->fixed_flags & DS_DRAW_DEPTH_BOUNDS) memcpy(call->depth_bounds, d->depth_bounds, sizeof call->depth_bounds);
+    if (d->fixed_flags & DS_DRAW_TESS_LEVELS) memcpy(call->tess_levels, d->tess_levels, sizeof call->tess_levels);
+    if (d->ms.raster_samples > d->ms.samples) {
+        call->raster_samples = d->ms.raster_samples;
+        call->coverage_mode = d->ms.coverage_mod;
+        call->coverage_table_enable = d->coverage_table_enable;
+        if (d->coverage_table_enable) memcpy(call->coverage_table, d->coverage_table, sizeof call->coverage_table);
+    }
+}
 static void draw_arrays(NvnDraw* d, u64 payload, u32 size) {
     NvnPDraw r = {0}; /* past the record's bytes */
     memcpy(&r, GP(payload), size < sizeof r ? size : sizeof r);
@@ -569,13 +637,14 @@ static void draw_arrays(NvnDraw* d, u64 payload, u32 size) {
     if (r.ind)
         indirect(&dc, r.ind, r.mdi_count, r.mdi_max, r.mdi_stride, 16);
     else {
-        if (r.count <= 0) return;
+        if (r.count <= 0 || r.instances <= 0) return;
         dc.first = (u32)r.first;
         dc.count = (u32)r.count;
         dc.base_instance = (u32)r.base_instance;
-        dc.instances = r.instances > 0 ? (u32)r.instances : 1;
+        dc.instances = (u32)r.instances;
     }
     if (d->render_off) return;
+    draw_fixed_state(d, &dc);
     sync(d, 0, dc.base_instance);
     if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
 }
@@ -586,7 +655,7 @@ static void draw_elements(NvnDraw* d, u64 payload, u32 size) {
     NvnPDrawIdx r = {0}; /* past the record's bytes */
     memcpy(&r, GP(payload), size < sizeof r ? size : sizeof r);
     DrawCall dc = {0};
-    if ((u32)r.index_type > NVN_INDEX_TYPE_UNSIGNED_INT || (!r.ind && r.count <= 0)) return;
+    if ((u32)r.index_type > NVN_INDEX_TYPE_UNSIGNED_INT || (!r.ind && (r.count <= 0 || r.instances <= 0))) return;
     u32 isz = 1u << r.index_type;
     DsIndex x;
     memset(&x, 0, sizeof x); /* every byte: keep compares the bytes */
@@ -613,9 +682,10 @@ static void draw_elements(NvnDraw* d, u64 payload, u32 size) {
         dc.count = (u32)r.count;
         dc.base_vertex = (u32)r.base_vertex;
         dc.base_instance = (u32)r.base_instance;
-        dc.instances = r.instances > 0 ? (u32)r.instances : 1;
+        dc.instances = (u32)r.instances;
     }
     if (d->render_off) return;
+    draw_fixed_state(d, &dc);
     sync(d, (i32)dc.base_vertex, dc.base_instance);
     if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
 }
@@ -627,6 +697,7 @@ static void put64(NvnDraw* d, u8* block, u32 size, u32 off, u64 v) {
         LOG_LIMIT(1, "nvn: a handle at %#x of a driver constant buffer, past its %#x bytes\n", off, size);
         return;
     }
+    if (snx_ld_le64(block + off) == v) return;
     snx_st_le64(block + off, v);
     inl_wrote(d, block + off, 8);
 }
@@ -642,7 +713,10 @@ static void bind_buffer(NvnDraw* d, u32 op, const NvnPBindBuf* r) {
         if (op == OP_BIND_UBO && 3 + r->index < DX_CBUFS) {
             u32 slot = 3 + (u32)r->index;
             d->dx.cb_addr[slot] = r->address;
-            d->dx.cb_size[slot] = r->size >= 0x10000 ? 0 : (u32)r->size;
+            /* The VPC descriptor above keeps the requested byte count. Direct QMD constant-buffer bindings round
+               it to 256 bytes, just as graphics bindings do; a zero size leaves the direct slot disabled. */
+            u64 rounded = r->size >= 0x10000 ? 0x10000 : snx_align_up(r->size, 256);
+            d->dx.cb_size[slot] = rounded >= 0x10000 ? 0 : (u32)rounded;
             d->dx.cb_on = r->size ? d->dx.cb_on | 1u << slot : d->dx.cb_on & ~(1u << slot);
         }
         return;
@@ -654,26 +728,23 @@ static void bind_buffer(NvnDraw* d, u32 op, const NvnPBindBuf* r) {
            (CB_BIND with its valid bit clear; BindUniformBuffer of NVN 55.15). A shader reads zeros only past the
            rounded size, as on the console */
         u64 size = r->size >= 0x10000 ? 0x10000 : snx_align_up(r->size, 256);
-        d->bind.cb_addr[s][3 + r->index] = size ? r->address : 0;
-        d->bind.cb_size[s][3 + r->index] = size >= 0x10000 ? 0 : (u32)size;
+        u64 address = size ? r->address : 0;
+        u32 encoded_size = size >= 0x10000 ? 0 : (u32)size;
+        if (d->bind.cb_addr[s][3 + r->index] == address && d->bind.cb_size[s][3 + r->index] == encoded_size) return;
+        d->bind.cb_addr[s][3 + r->index] = address;
+        d->bind.cb_size[s][3 + r->index] = encoded_size;
         d->dirty |= D_BIND;
     } else {
-        /* the storage buffer table's base in bank 0 by graphics stage; no game's tessellation programs were seen
-           reading one */
-        static const u32 table[DS_GFX_STAGES] = {0x110, 0, 0, 0x410, 0x510};
-        static const char* const name[DS_GFX_STAGES] = {"vertex", "tessellation control", "tessellation evaluation",
-                                                        "geometry", "fragment"};
+        /* Each graphics stage has sixteen 16-byte storage descriptors in bank 0. The tessellation stages use the
+           two tables between vertex and geometry, even when no game in the original trace used them. */
+        static const u32 table[DS_GFX_STAGES] = {0x110, 0x210, 0x310, 0x410, 0x510};
         u32 base = table[s];
-        if (!base) {
-            LOG_LIMIT(4,
-                      "nvn: storage buffer %d of the %s stage (%#llx, %llu bytes) is not bound: that stage's table "
-                      "in bank 0 was never measured, so its programs read address 0\n",
-                      r->index, name[s], (unsigned long long)r->address, (unsigned long long)r->size);
-            return;
+        u32 at = base + 16 * (u32)r->index;
+        put64(d, d->inl.bank0[s], DS_INLINE_BANK0, at, r->address);
+        if (snx_ld_le32(d->inl.bank0[s] + at + 8) != (u32)r->size) {
+            snx_st_le32(d->inl.bank0[s] + at + 8, (u32)r->size);
+            inl_wrote(d, d->inl.bank0[s] + at + 8, 4);
         }
-        put64(d, d->inl.bank0[s], DS_INLINE_BANK0, base + 16 * (u32)r->index, r->address);
-        snx_st_le32(d->inl.bank0[s] + base + 16 * (u32)r->index + 8, (u32)r->size);
-        inl_wrote(d, d->inl.bank0[s] + base + 16 * (u32)r->index + 8, 4);
     }
 }
 static void bind_handles(NvnDraw* d, u32 op, u64 payload) {
@@ -729,6 +800,26 @@ static void bind_program(NvnDraw* d, u64 payload) {
         d->bind.cb_addr[s][1] = st->data ? st->data + 256 * (u64)st->cb : 0;
         d->bind.cb_size[s][1] = st->data ? 0x10000 : 0;
     }
+    if ((u32)r.stages & (NVN_SHADER_STAGE_TESS_CONTROL_BIT | NVN_SHADER_STAGE_TESS_EVALUATION_BIT)) {
+        NvnTessStage stages[2] = {{0}};
+        if (r.serial) nvn_program_tess(r.serial, stages);
+        const u32 stage_id[2] = {NVN_SHADER_STAGE_TESS_CONTROL, NVN_SHADER_STAGE_TESS_EVALUATION};
+        for (u32 i = 0; i < 2; i++)
+            if ((u32)r.stages & (1u << stage_id[i]))
+                d->tess_stage[i] = r.st[stage_id[i]].data ? stages[i] : (NvnTessStage){0};
+        if (((d->tess_stage[0].declared | d->tess_stage[1].declared) & 1) || (d->prog_on & 12) == 12) {
+            u32 combined = 0x2001; /* triangle, equal spacing, filled counterclockwise source winding */
+            static const u32 mask[4] = {3, 0x30, 0x100, 0x3000};
+            for (u32 field = 0; field < 4; field++) {
+                const NvnTessStage* selected = (d->tess_stage[1].declared & (1u << field))   ? &d->tess_stage[1]
+                                               : (d->tess_stage[0].declared & (1u << field)) ? &d->tess_stage[0]
+                                                                                             : NULL;
+                if (selected) combined = (combined & ~mask[field]) | (selected->value & mask[field]);
+            }
+            u32 output = (combined & 0x100) ? 0 : (combined & 3) ? (combined >> 12) & 3 : 1;
+            d->tess_params = (combined & 0x33) | output << 8;
+        }
+    }
     if ((u32)r.stages & NVN_SHADER_STAGE_FRAGMENT_BIT) {
         d->sample_shading = (u8)(r.sample_shading >> 8); /* as its SetShaders applied it */
         d->dirty |= D_RASTER;
@@ -752,6 +843,8 @@ static void bind_program(NvnDraw* d, u64 payload) {
     }
     d->dirty |= D_PROGRAMS | D_BIND;
 }
+/* Binding the same packed bytes leaves every renderer group unchanged. Check before marking dirty: rebuilding
+   blend, raster and dynamic groups after each repeated bind costs more than checking these small state objects. */
 static void bind_state(NvnDraw* d, u64 payload) {
     const NvnPBindState* r = NVN_OBJ(const NvnPBindState, payload);
     u64 w;
@@ -759,12 +852,38 @@ static void bind_state(NvnDraw* d, u64 payload) {
     memcpy(&w, r->bytes, 8);
     memcpy(&v, r->bytes, 4);
     switch (r->kind) {
-        case 0: d->blend[nvn_field(w, NVN_BLEND_TARGET)] = w, d->dirty |= D_BLEND; break;
-        case 1: d->color = v, d->dirty |= D_BLEND | D_DYNAMIC; break;
-        case 2: d->chmask = v, d->dirty |= D_BLEND; break;
-        case 3: memcpy(&d->ms, r->bytes, sizeof d->ms), d->dirty |= D_DYNAMIC | D_RASTER; break;
-        case 4: d->poly = v, d->dirty |= D_DYNAMIC | D_RASTER; break;
-        case 5: d->dss = w, d->dirty |= D_DYNAMIC; break;
+        case 0: {
+            u32 target = (u32)nvn_field(w, NVN_BLEND_TARGET);
+            if (d->blend[target] == w) return;
+            d->blend[target] = w;
+            d->dirty |= D_BLEND;
+            break;
+        }
+        case 1:
+            if (d->color == v) return;
+            d->color = v;
+            d->dirty |= D_BLEND | D_DYNAMIC;
+            break;
+        case 2:
+            if (d->chmask == v) return;
+            d->chmask = v;
+            d->dirty |= D_CHANNEL_MASK;
+            break;
+        case 3:
+            if (!memcmp(&d->ms, r->bytes, sizeof d->ms)) return;
+            memcpy(&d->ms, r->bytes, sizeof d->ms);
+            d->dirty |= D_DYNAMIC | D_RASTER;
+            break;
+        case 4:
+            if (d->poly == v) return;
+            d->poly = v;
+            d->dirty |= D_DYNAMIC | D_RASTER;
+            break;
+        case 5:
+            if (d->dss == w) return;
+            d->dss = w;
+            d->dirty |= D_DYNAMIC;
+            break;
     }
 }
 
@@ -902,7 +1021,8 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             NvnPClearDS r;
             memcpy(&r, GP(payload), sizeof r);
             DrawClear c = {0};
-            c.aspects = (r.depth_mask ? 1u : 0) | (r.stencil_mask ? 2u : 0);
+            c.aspects = (r.depth_mask ? 1u : 0) | ((r.stencil_mask & 0xff) ? 2u : 0);
+            c.stencil_preserve = ~(u32)r.stencil_mask & 0xff;
             c.depth = r.depth;
             c.stencil = (u32)r.stencil;
             if (c.aspects && !d->render_off && g_renderer->clear) g_renderer->clear(&d->ds, &c, &d->own);
@@ -910,14 +1030,31 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
         }
         case OP_VIEWPORTS: {
             i32 first = NVN_OBJ(const NvnPViewports, payload)->first, n = NVN_OBJ(const NvnPViewports, payload)->count;
+            if (first < 0 || first >= DS_VIEWPORTS_MAX || n <= 0 || n > DS_VIEWPORTS_MAX - first) return 1;
             i32 i;
             for (i = 0; i < n && first + i < 16; i++)
                 memcpy(d->vp[first + i], GP(payload + offsetof(NvnPViewports, v) + 24 * (u64)i), 16);
             d->dirty |= D_VIEWPORTS;
             return 1;
         }
-        case OP_SCISSOR: memcpy(d->scissor, GP(payload), 16), d->dirty |= D_VIEWPORTS; return 1;
-        case OP_DEPTH_RANGE: memcpy(d->depth, GP(payload), 8), d->dirty |= D_VIEWPORTS; return 1;
+        case OP_SCISSOR: memcpy(d->scissor[0], GP(payload), 16), d->dirty |= D_VIEWPORTS; return 1;
+        case OP_DEPTH_RANGE: memcpy(d->depth[0], GP(payload), 8), d->dirty |= D_VIEWPORTS; return 1;
+        case OP_SCISSORS: {
+            const NvnPScissors* r = NVN_OBJ(const NvnPScissors, payload);
+            if (r->first < 0 || r->first >= DS_VIEWPORTS_MAX || r->count <= 0 || r->count > DS_VIEWPORTS_MAX - r->first)
+                return 1;
+            memcpy(d->scissor[r->first], r->rect, (size_t)r->count * sizeof r->rect[0]);
+            d->dirty |= D_VIEWPORTS;
+            return 1;
+        }
+        case OP_DEPTH_RANGES: {
+            const NvnPDepthRanges* r = NVN_OBJ(const NvnPDepthRanges, payload);
+            if (r->first < 0 || r->first >= DS_VIEWPORTS_MAX || r->count <= 0 || r->count > DS_VIEWPORTS_MAX - r->first)
+                return 1;
+            memcpy(d->depth[r->first], r->range, (size_t)r->count * sizeof r->range[0]);
+            d->dirty |= D_VIEWPORTS;
+            return 1;
+        }
         case OP_VP_SWIZZLE: {
             const NvnPVpSwizzle* r = NVN_OBJ(const NvnPVpSwizzle, payload);
             i32 i;
@@ -948,6 +1085,52 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
         case OP_SAMPLE_MASK:
             d->sample_off = ~(u32)NVN_OBJ(const NvnPSampleMask, payload)->mask, d->dirty |= D_RASTER;
             return 1;
+        case OP_PATCH_SIZE: d->patch_size = gr32(payload), d->dirty |= D_RASTER; return 1;
+        case OP_SET_STATE: {
+            const NvnPSetState* r = NVN_OBJ(const NvnPSetState, payload);
+            if (size < offsetof(NvnPSetState, value)) return 1;
+            u32 count = r->kind == NVN_SET_COVERAGE_TABLE                                  ? (r->enable ? 16 : 0)
+                        : r->kind == NVN_SET_DEPTH_BOUNDS || r->kind == NVN_SET_TESS_INNER ? 2
+                        : r->kind == NVN_SET_TESS_OUTER                                    ? 4
+                                                                                           : 1;
+            if (size < offsetof(NvnPSetState, value) + count * sizeof r->value[0]) return 1;
+            switch (r->kind) {
+                case NVN_SET_ALPHA_REF:
+                    if (memcmp(&d->alpha_ref, r->value, sizeof d->alpha_ref)) {
+                        memcpy(&d->alpha_ref, r->value, sizeof d->alpha_ref);
+                        d->dirty |= D_DYNAMIC;
+                    }
+                    break;
+                case NVN_SET_DEPTH_BOUNDS:
+                    if (r->enable) {
+                        memcpy(d->depth_bounds, r->value, sizeof d->depth_bounds);
+                        d->fixed_flags |= DS_DRAW_DEPTH_BOUNDS;
+                    } else
+                        d->fixed_flags &= ~DS_DRAW_DEPTH_BOUNDS;
+                    break;
+                case NVN_SET_POINT_SIZE:
+                    d->point_size = r->value[0];
+                    d->fixed_flags |= DS_DRAW_POINT_SIZE;
+                    break;
+                case NVN_SET_TESS_INNER:
+                    memcpy(d->tess_levels + 4, r->value, 2 * sizeof r->value[0]);
+                    d->fixed_flags |= DS_DRAW_TESS_LEVELS;
+                    break;
+                case NVN_SET_TESS_OUTER:
+                    memcpy(d->tess_levels, r->value, 4 * sizeof r->value[0]);
+                    d->fixed_flags |= DS_DRAW_TESS_LEVELS;
+                    break;
+                case NVN_SET_COVERAGE_TABLE:
+                    d->coverage_table_enable = r->enable != 0;
+                    if (r->enable)
+                        for (u32 i = 0; i < 16; i++) {
+                            float value = r->value[i];
+                            d->coverage_table[i] = !(value > 0) ? 0 : value >= 1 ? 16 : (u8)(value * 16 + 0.5f);
+                        }
+                    break;
+            }
+            return 1;
+        }
         case OP_PRIM_RESTART:
             d->restart = NVN_OBJ(const NvnPPrimRestart, payload)->on != 0;
             d->restart_index = NVN_OBJ(const NvnPPrimRestart, payload)->index;
@@ -1061,11 +1244,20 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             return 1;
         }
         case OP_TF_STATE: {
-            /* Begin: the capture starts over at each buffer's start (the driver's macro resets the counters); End and
-               Pause stop it, their counters kept where the renderer keeps them; Resume goes on from them. The driver
-               also writes the counters into the control memory at End and Pause (4 bytes each from + 4), which only
-               a DrawTransformFeedback reads, and the replay doesn't draw those yet */
-            i32 what = NVN_OBJ(const NvnPTfState, payload)->what;
+            const NvnPTfState* r = NVN_OBJ(const NvnPTfState, payload);
+            i32 what = r->what;
+            if (what == 4) {
+                if (!r->control || d->render_off) return 1;
+                DrawCall dc = {.topology = (u32)r->prim, .count = 1, .instances = 1, .xfb_control = r->control};
+                draw_fixed_state(d, &dc);
+                sync(d, 0, 0);
+                if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
+                return 1;
+            }
+            if (what < 0 || what > 3) return 1;
+            if (g_renderer->xfb_control &&
+                !g_renderer->xfb_control(d->ds.owner, r->control, (u32)what, d->xfb.stride[0], &d->own))
+                LOG_LIMIT(4, "nvn: transform-feedback control operation %d could not run\n", what);
             d->tf_on = what == 0 || what == 3;
             if (what == 0) d->own.xfb_reload = 15;
             d->dirty |= D_PROGRAMS;

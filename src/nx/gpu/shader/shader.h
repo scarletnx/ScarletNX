@@ -76,6 +76,7 @@ typedef struct {
     u32 clip_enable; /* key: the clip distances the 3D engine enables (SetUserClipEnable), the only ones written,
                         SNX_SH_NOT_LAST and SNX_SH_WINDOW_XY */
     int uses_position_in, uses_clip_mask, writes_layer, writes_point_size;
+    int uses_sample_id; /* SampleId requires sample shading, which native mixed-sample coverage cannot combine */
     /* FP32 arithmetic asking to flush denormals (FTZ/FMZ), and FP32 arithmetic that doesn't. Only flush in every
        FADD, FMUL and FFMA lets the module declare flushing, as Eden declares DenormFlushToZero */
     int fp32_flush, fp32_preserve;

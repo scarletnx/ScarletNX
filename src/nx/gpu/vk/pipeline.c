@@ -239,7 +239,7 @@ VkPipelineLayout vk_playout(u32 arrays) {
         for (u32 s = 0; s < g_vk_stage_sets; s++) sets[s] = g_vk_dslayout[(arrays >> s) & 1][s];
         /* push constants: viewport/depth pc[0..3], fragment alpha test pc[4..6], sprite T flip pc[7], scaled textures
            pc[8..9] */
-        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 48};
+        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 80};
         VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                          .setLayoutCount = g_vk_stage_sets,
                                          .pSetLayouts = sets,
@@ -332,7 +332,7 @@ void vk_pipeline_init(void) {
     g_vk_playout = vk_playout(0);
     g_vk.cs_playout = g_vk_playout;
     if (g_vk.has_descriptor_buffers) {
-        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 48};
+        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 80};
         VkPipelineLayoutCreateInfo compute = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = 1, .pSetLayouts = &g_vk.cs_dslayout,
             .pushConstantRangeCount = 1, .pPushConstantRanges = &pc};
@@ -862,10 +862,20 @@ static VkPipeline pipe_create(const Pipe* e) {
        A program that reads its sample (SampleId) or interpolates at it is shaded per sample, as the console shades
        it: SPIR-V's rules make that so whatever sampleShadingEnable says */
     VkSampleMask sample_mask = ~k->sample_off;
+    float coverage_table[16];
+    u32 coverage_count = k->coverage.raster_samples ? vk_coverage_table(&k->coverage, k->samples, coverage_table) : 0;
+    VkPipelineCoverageModulationStateCreateInfoNV coverage = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COVERAGE_MODULATION_STATE_CREATE_INFO_NV,
+        .coverageModulationMode = (VkCoverageModulationModeNV)k->coverage.mode,
+        .coverageModulationTableEnable = k->coverage.table_enable != 0,
+        .coverageModulationTableCount = k->coverage.table_enable ? coverage_count : 0,
+        .pCoverageModulationTable = coverage_table};
+    u32 raster_samples = k->coverage.raster_samples ? k->coverage.raster_samples : k->samples;
     VkPipelineMultisampleStateCreateInfo ms = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = k->samples ? (VkSampleCountFlagBits)k->samples : VK_SAMPLE_COUNT_1_BIT,
-        .pSampleMask = k->samples > 1 ? &sample_mask : NULL,
+        .pNext = k->coverage.raster_samples ? &coverage : NULL,
+        .rasterizationSamples = raster_samples ? (VkSampleCountFlagBits)raster_samples : VK_SAMPLE_COUNT_1_BIT,
+        .pSampleMask = raster_samples > 1 ? &sample_mask : NULL,
         .sampleShadingEnable = k->sample_shading != 0,
         .minSampleShading = k->sample_shading ? 1.0f : 0.0f,
         .alphaToCoverageEnable = k->alpha_to_coverage != 0,
@@ -957,8 +967,18 @@ static VkPipeline pipe_create(const Pipe* e) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO_EXT,
         .pNext = &fi,
         .vertexInputs = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT};
+    VkSampleCountFlagBits color_samples[8];
+    for (u32 i = 0; i < 8; i++) color_samples[i] = (VkSampleCountFlagBits)(k->samples ? k->samples : 1);
+    VkAttachmentSampleCountInfoNV attachment_samples = {.sType = VK_STRUCTURE_TYPE_ATTACHMENT_SAMPLE_COUNT_INFO_NV,
+                                                        .pNext = g_vk.has_vertex_robustness2 ? (void*)&robustness
+                                                                                             : (void*)&fi,
+                                                        .colorAttachmentCount = k->ncolor,
+                                                        .pColorAttachmentSamples = color_samples,
+                                                        .depthStencilAttachmentSamples = VK_SAMPLE_COUNT_1_BIT};
     VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-                                        .pNext = g_vk.has_vertex_robustness2 ? (void*)&robustness : (void*)&fi,
+                                        .pNext = k->coverage.raster_samples    ? (void*)&attachment_samples
+                                                 : g_vk.has_vertex_robustness2 ? (void*)&robustness
+                                                                               : (void*)&fi,
                                         .colorAttachmentCount = k->ncolor,
                                         .pColorAttachmentFormats = cf,
                                         .depthAttachmentFormat = (VkFormat)k->depth,
@@ -1571,6 +1591,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   g_vk_buffer_image_slots,
                   d->limits.maxPerStageDescriptorStorageImages,
                   d->limits.maxDescriptorSetStorageImages,
+                  (u32)g_vk.has_mixed_samples,
                   (u32)g_vk.vertex_input_dynamic};
     /* the last word, dynamic vertex input, only where it is on: its keys hold no vertex layout (PipeKey.vi), and the
        files of every device without it keep the key they have */

@@ -2837,7 +2837,15 @@ static int check_uma_page_changes(void) {
 
 #include "vulkan_descriptor_bench.inc"
 #include "vulkan_nvn_storage.inc"
+#include "vulkan_nvn_compat.inc"
+#include "vulkan_nvn_copy_flags.inc"
+#include "vulkan_nvn_xfb.inc"
+#include "vulkan_nvn_state.inc"
+#include "vulkan_nvn_tess.inc"
+#include "vulkan_nvn_blend.inc"
+#include "vulkan_nvn_coverage.inc"
 #include "vulkan_sparse_bench.inc"
+#include "vulkan_storage_lookup_bench.inc"
 
 /* key's row among the settings the runtime applies itself (options.c's), or NULL */
 static const IniOpt* setting_row(const char* key) {
@@ -2857,7 +2865,7 @@ int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 0); /* a CHECK's stderr line lands between whole lines in a log both go to */
     CHECK(!snx_startup_options(argc, argv));
     int nvn_benchmark = -1;
-    u32 benchmark_sets = 0, benchmark_count = 16, benchmark_images = 0, benchmark_sparse = 0;
+    u32 benchmark_sets = 0, benchmark_count = 16, benchmark_images = 0, benchmark_sparse = 0, benchmark_storage = 0;
     /* the runtime's startup flags (-H), its settings as it takes them (--vk_memory=2, --memory_traps=2,
        --vertex_input_dynamic_state=off), and the benchmarks'. Any other argument stops the run: one dropped unsaid ran
        the checks without it */
@@ -2887,15 +2895,20 @@ int main(int argc, char** argv) {
             benchmark_sparse = 1;
             continue;
         }
+        if (!strcmp(argv[i], "--bench-storage-lookup")) {
+            benchmark_storage = 1;
+            continue;
+        }
         if (!strncmp(argv[i], "--", 2) && eq && (size_t)(eq - argv[i] - 2) < sizeof key) {
             snprintf(key, sizeof key, "%.*s", (int)(eq - argv[i] - 2), argv[i] + 2);
             o = setting_row(key);
         }
         if (!o) {
-            fprintf(stderr,
-                    "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
-                    "--bench-descriptors=N, --descriptor-images=N, --descriptor-count=N, --bench-sparse-volume, --nvn-draw-bench=N\n",
-                    argv[i]);
+            fprintf(
+                stderr,
+                "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
+                "--bench-descriptors=N, --descriptor-images=N, --descriptor-count=N, --bench-sparse-volume, --bench-storage-lookup, --nvn-draw-bench=N\n",
+                argv[i]);
             return 2;
         }
         ini_read(o, eq + 1);
@@ -2925,6 +2938,15 @@ int main(int argc, char** argv) {
         vk_pipeline_quiesce();
         CHECK(!snx_remove_tree(root));
         free(root); free(shot); free(ppm);
+        return result;
+    }
+    if (benchmark_storage) {
+        int result = bench_storage_lookup();
+        vk_pipeline_quiesce();
+        CHECK(!snx_remove_tree(root));
+        free(root);
+        free(shot);
+        free(ppm);
         return result;
     }
     if (benchmark_sets) {
@@ -3039,6 +3061,14 @@ int main(int argc, char** argv) {
     CHECK(!bench_nvn_storage(1, 32, 1));
     CHECK(!bench_nvn_storage(2, 32, 1));
     CHECK(!check_buffer_texture_rows());
+    CHECK(!check_nvn_array_copies());
+    CHECK(!check_nvn_copy_flags());
+    CHECK(!check_nvn_stencil_masks());
+    CHECK(!check_nvn_xfb());
+    CHECK(!check_nvn_fixed_state());
+    CHECK(!check_nvn_default_tessellation());
+    CHECK(!check_nvn_advanced_blend());
+    CHECK(!check_nvn_coverage());
     CHECK(!check_storage_image_formats());
     CHECK(!check_volume_surface_atomics());
     CHECK(!check_layered_surface_loads());

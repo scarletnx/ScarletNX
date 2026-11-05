@@ -35,6 +35,7 @@
 #include "common/utilities/endian.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/draw_state.h"
+#include "nx/gpu/vk/coverage.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "volk.h"
@@ -106,6 +107,7 @@ typedef struct {
     int has_calibrated_host;    /* VK_EXT_calibrated_timestamps with CLOCK_MONOTONIC_RAW: the GPU's clock goes next to
                                 the client's, one driver call (gpuprof.c's calibration) */
     int has_xfb;                /* VK_EXT_transform_feedback: draws capture their outputs into guest memory */
+    int has_mixed_samples;      /* VK_NV_framebuffer_mixed_samples: coverage at more samples than color storage */
     int has_border_color;       /* VK_EXT_custom_border_color */
     u32 border_color_max;       /* maxCustomBorderColorSamplers: past it, samplers take the nearest built-in color */
     int has_mirror_clamp;       /* samplerMirrorClampToEdge: VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE */
@@ -796,6 +798,8 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
 void vk_surf_bytes(Surf* s, u64 bytes);
 int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
               double sdy);
+int vk_blit2d_filter(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
+                     double sdy, int linear);
 
 /* blocklinear.c: a block linear surface's rows moved between its layout and linear rows on the GPU
    (gpu/texture/blocklinear.comp). The surface is row_bytes wide (texels or compressed blocks times their bytes),
@@ -1302,6 +1306,7 @@ typedef struct {
     u32 logic_op;       /* 0, or the VkLogicOp the color targets take in place of blending, plus 1 */
     u32 arrays;         /* the sets with texture arrays: its layout, vk_playout(arrays) */
     u32 samples;        /* the targets' VkSampleCountFlagBits (0 taken as 1) */
+    VkCoverage coverage; /* color-only target-independent rasterization, all zero for ordinary multisampling */
     /* with several samples, DsRasterKey's: the samples the sample mask leaves out, alpha to coverage and to one */
     u32 sample_off, alpha_to_coverage, alpha_to_one;
     u32 sample_shading; /* every sample is shaded (sampleRateShading), with several samples */
@@ -1414,6 +1419,9 @@ VkFrontFace vk_render_front_face(const DsDynamic* d);
 void vk_render_draw_texture(const DsState* ds, const DrawTexture* t);
 void vk_render_discard(const DsState* ds, u32 targets);
 void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o);
+int vk_render_xfb_control(u32 owner, u64 control, u32 what, u32 stride, DrawOwner* o);
+int vk_xfb_control_buffer(VkBuffer counters, u64 counter_offset, u64 control, u32 what, u32 stride);
+int vk_xfb_indirect(u64 control, VkBuffer* arguments, u64* offset);
 /* a texture binding, for draws and compute: the view type a declaration takes, the view of t with the header's
    swizzle (VK_NULL_HANDLE when t is NULL or not of the number type num: 0 float, 1 unsigned, 2 signed integer), and
    the header's sampler with the declaration's comparison (integer textures unfiltered). The sampler's t and want,

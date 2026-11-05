@@ -394,8 +394,7 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 spv_emit_emit_vertex(&c->emit);
                 /* outputs are undefined after it: the next vertex gets the default point size, unless the
                    program writes its own */
-                if (point_size && !point_size_used)
-                    spv_emit_store(&c->emit, point_size, spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f));
+                if (point_size && !point_size_used) spv_emit_store(&c->emit, point_size, t->default_point_size);
             }
             if (B(w, 40, 1)) spv_emit_end_primitive(&c->emit);
         }

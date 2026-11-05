@@ -168,19 +168,14 @@ void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u
         if (stale)
             WARN_LIMIT(32, "gpu: draw_state_check=1: the draw state's groups %x differ from the registers\n", stale);
     }
-    DrawCall dc = {topology_of(ch->r3d, topology),
-                   (u32)indexed,
-                   first,
-                   count,
-                   base_vertex,
-                   base_instance,
-                   instances,
-                   ch->inline_indices,
-                   0,
-                   0,
-                   0,
-                   0,
-                   0};
+    DrawCall dc = {.topology = topology_of(ch->r3d, topology),
+                   .indexed = (u32)indexed,
+                   .first = first,
+                   .count = count,
+                   .base_vertex = base_vertex,
+                   .base_instance = base_instance,
+                   .instances = instances,
+                   .inline_indices = ch->inline_indices};
     if (verify)
         g_gpu_verify_draw(ch, &dc);
     else

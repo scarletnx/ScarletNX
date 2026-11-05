@@ -50,7 +50,7 @@ u32 nvn_replay_shown_syncpt(void) { return g_nvn.replay.shown; }
 typedef void (*RecordFn)(void* ctx, u32 op, u64 payload, u32 size);
 /* each record of the recording at p, in order: a JUMP continues in another segment, a CALL runs another recording,
    the recording's last record (or the empty recording's END) returns */
-static void walk(u64 p, RecordFn fn, void* ctx, int depth) {
+static void walk(u64 p, RecordFn fn, void* ctx, int depth, int sync_only) {
     if (depth > 8) fatal("nvn: recordings call each other more than 8 deep (at %llx)", (unsigned long long)p);
     u32 prev = OP_BEGIN;
     u64 start = p, piece = p; /* piece: where the records walked now start, its handle or the last JUMP's target */
@@ -85,8 +85,8 @@ static void walk(u64 p, RecordFn fn, void* ctx, int depth) {
                 p = piece = to;
                 continue;
             }
-            walk(to, fn, ctx, depth + 1);
-        } else
+            walk(to, fn, ctx, depth + 1, sync_only);
+        } else if (!sync_only || op == OP_WAIT_SYNC || op == OP_FENCE_SYNC)
             fn(ctx, op, p + 8, h.size - 8);
         if (h.op & NVN_REC_LAST) return;
         p += h.size;
@@ -219,7 +219,7 @@ static void run(void* arg) {
             u32 i;
             r.q = q;
             if (g_renderer->stream_run) g_renderer->stream_run(1);
-            for (i = 0; i < j->n; i++) walk(j->handles[i], replay, &r, 0);
+            for (i = 0; i < j->n; i++) walk(j->handles[i], replay, &r, 0, 0);
             effects(q);
             if (g_renderer->stream_run) g_renderer->stream_run(0);
             __atomic_add_fetch(&g_nvn.replay.walked, 1, __ATOMIC_RELEASE); /* its records are read */
@@ -282,7 +282,9 @@ void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64* ready, u32* shown) {
        again (gpu.c does the same before a GPFIFO job) */
     if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
     pm_lock(&g_nvn.replay.lock);
-    for (i = 0; i < n; i++) walk(j->handles[i], promise, &p, 0);
+    /* Every header and nested call is still read: the guest can rewrite command memory between submissions.
+       Only waits and fences affect promises, so ordinary records need no callback in this pass. */
+    for (i = 0; i < n; i++) walk(j->handles[i], promise, &p, 0, 1);
     __atomic_add_fetch(&g_nvn.replay.submitted, 1, __ATOMIC_RELEASE);
     gpu_call(run, j, NULL, 0);
     pm_unlock(&g_nvn.replay.lock);
