@@ -1357,6 +1357,218 @@ static void test_shared_no_uniform(const char* spirv_val, const char* dir) {
     free(spv);
 }
 
+/* the program code (n instructions) of stage, with header sph, translated and run once in env: 1 when it ran */
+static int run_stage(int stage, const u8* code, u32 n, const u32* sph, SpvEvalEnv* env) {
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, stage, sph, &si, &count);
+    if (!spv) {
+        fprintf(stderr, "run_stage: %s\n", si.first_unsupported);
+        return 0;
+    }
+    const char* why = spv_eval(spv, count, env);
+    free(spv);
+    if (why) fprintf(stderr, "run_stage: the evaluator stops at %s\n", why);
+    return !why;
+}
+static Word predicated(Word x, u32 pred) {
+    set(&x, 12, 3, pred);
+    return x;
+}
+
+/* HSETP2 compares the halves pair by pair: R1 is (low 2.0, high 1.0). Form 2, GT against two halves of 1.5: P0 the
+   low pair's, true, and P1 the high pair's, false. Form 3, LT of R1.H0_H0 against c[1][0].H1_H1 (3.0): P2 true */
+static void test_hsetp2(const char* spirv_val, const char* dir) {
+    u8 code[16 * 8] = {0};
+    put(code, 0, mov_imm(1, 0x3c004000u));
+    Word x = alu(0x034, 2, 0, 1);
+    set(&x, 32, 32, 0x3e003e00u);
+    set(&x, 76, 4, 4);
+    set(&x, 81, 3, 0);
+    set(&x, 84, 3, 1);
+    set(&x, 87, 3, 7);
+    put(code, 1, x);
+    x = alu(0x034, 3, 0, 1);
+    cbuf(&x, 1, 0x0);
+    set(&x, 60, 2, 3);
+    set(&x, 74, 2, 2);
+    set(&x, 76, 4, 1);
+    set(&x, 81, 3, 2);
+    set(&x, 84, 3, 7);
+    set(&x, 87, 3, 7);
+    put(code, 2, x);
+    put(code, 3, predicated(mov_imm(0, f2u(1.0f)), 2));
+    put(code, 4, predicated(mov_imm(2, f2u(1.0f)), 0));
+    put(code, 5, predicated(mov_imm(3, f2u(1.0f)), 1));
+    put(code, 6, exit_insn());
+    put(code, 7, bra(7, 7, 7, 0));
+    static const u32 cb1[1] = {0x42000000u}; /* the high half 3.0 */
+    u32 out[4];
+    CHECK(run_fs_at(code, 8, 0, cb1, 1, out));
+    CHECK(out[0] == f2u(1.0f) && out[2] == f2u(1.0f) && out[3] == 0);
+    if (out[0] != f2u(1.0f) || out[2] != f2u(1.0f) || out[3] != 0)
+        fprintf(stderr, "hsetp2: %08x %08x %08x\n", out[0], out[2], out[3]);
+    (void)spirv_val, (void)dir;
+}
+
+/* BRXU UR3 with the table that ULDC.IDX reads at c[1][UR3 + 0x10], its index bounded on the uniform datapath:
+   UISETP.LT.U32 UP0, UR1, 1; USEL UR2, UR1, 1, UP0; USHF.L.U32 UR3, UR2, 2. Two entries, then a word that names
+   instruction 0, which the bound leaves out. UR1 is 1: the second case, R0 = 2.0 */
+static Word ualu(u32 op9, u32 dst, u32 a, u32 imm) {
+    Word x = alu(op9, 4, dst, a);
+    set(&x, 32, 32, imm);
+    set(&x, 64, 6, 63);
+    set(&x, 91, 1, 1);
+    return x;
+}
+static int table3_read(u32 idx, u32 off, u32* out) {
+    static const u32 table[3] = {7 * 16, 9 * 16, 0};
+    if (idx != 1 || off < 0x10 || off >= 0x10 + sizeof table) return 0;
+    *out = table[(off - 0x10) / 4];
+    return 1;
+}
+static void test_brxu(const char* spirv_val, const char* dir) {
+    u8 code[16 * 12] = {0};
+    put(code, 0, ualu(0x082, 1, 0, 1)); /* UMOV UR1, 1 */
+    Word x = ualu(0x08c, 0, 1, 1);      /* UISETP.LT.U32.AND UP0, PT, UR1, 1, PT */
+    set(&x, 76, 3, 1);
+    set(&x, 81, 3, 0);
+    set(&x, 84, 3, 7);
+    set(&x, 87, 3, 7);
+    put(code, 1, x);
+    x = ualu(0x087, 2, 1, 1); /* USEL UR2, UR1, 1, UP0 */
+    set(&x, 87, 3, 0);
+    put(code, 2, x);
+    x = ualu(0x099, 3, 2, 2); /* USHF.L.U32 UR3, UR2, 2, URZ */
+    set(&x, 73, 2, 3);
+    put(code, 3, x);
+    x = fix(0xabb); /* ULDC.IDX UR3, c[1][UR3 + 0x10] */
+    set(&x, 16, 6, 3);
+    set(&x, 24, 6, 3);
+    cbuf(&x, 1, 0x10);
+    set(&x, 73, 3, 4);
+    put(code, 4, x);
+    x = fix(0x958); /* BRXU UR3, -(the next instruction's address) */
+    set(&x, 24, 6, 3);
+    set(&x, 34, 48, (u64)0 - 24);
+    set(&x, 87, 3, 7);
+    put(code, 5, x);
+    put(code, 6, exit_insn());
+    put(code, 7, mov_imm(0, f2u(1.0f)));
+    put(code, 8, exit_insn());
+    put(code, 9, mov_imm(0, f2u(2.0f)));
+    put(code, 10, exit_insn());
+    put(code, 11, bra(11, 11, 7, 0));
+    static const u32 cb1[7] = {0, 0, 0, 0, 7 * 16, 9 * 16, 0};
+    g_shader_cb_read = table3_read;
+    u32 out[4];
+    CHECK(run_fs_at(code, 12, 0, cb1, 7, out) && out[0] == f2u(2.0f));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 12 * 16, ST_FS, fsph, &si, &count);
+    g_shader_cb_read = NULL;
+    CHECK(spv != NULL);
+    if (spv) {
+        u32 at[4];
+        CHECK(spv_find(spv, count, 251 /* OpSwitch */, at, 4) == 1);
+        CHECK((spv[at[0]] >> 16) == 7); /* two cases: the bound's */
+        CHECK(validate(spirv_val, dir, "fs_brxu", spv, count));
+    }
+    free(spv);
+}
+
+/* IPA R0, a[UR4 + 0x80] with UR4 = 0x10: input 1's x. The header reads inputs 0 and 1 (constant) */
+static void test_ipa_uniform(const char* spirv_val, const char* dir) {
+    u8 code[16 * 4] = {0};
+    put(code, 0, ualu(0x082, 4, 0, 0x10)); /* UMOV UR4, 0x10 */
+    Word x = fix(0x526);
+    set(&x, 16, 8, 0);
+    set(&x, 24, 8, 4);
+    set(&x, 32, 8, 255);
+    set(&x, 64, 8, 0x80 >> 2);
+    set(&x, 91, 1, 1);
+    put(code, 1, x);
+    put(code, 2, exit_insn());
+    put(code, 3, bra(3, 3, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[6] = 0x0101;
+    fsph[18] = 0xf;
+    SpvEvalEnv env = {0};
+    env.in[0][0] = f2u(7.0f);
+    env.in[1][0] = f2u(5.0f);
+    CHECK(run_stage(ST_FS, code, 4, fsph, &env) && env.out[0][0] == f2u(5.0f));
+    (void)spirv_val, (void)dir;
+}
+
+/* TXQ R4, R5 of the handle c[2][0x20] before TLD.LZ.MS R0-R3, R4, R5, sample R9 of it, as a game's resolve programs
+   do: one multisampled 2D slot (ShTex.flags bit 1) for both, the sample fetched with the Sample operand from R9, and
+   the size queried without a level, as a multisampled image has none */
+static void test_tld_multisample(const char* spirv_val, const char* dir) {
+    u8 code[16 * 5] = {0};
+    Word x = fix(0xb6f);
+    set(&x, 16, 8, 4);
+    set(&x, 24, 8, 6);
+    set(&x, 40, 19, 2u << 14 | 0x20 >> 2);
+    set(&x, 64, 8, 255);
+    set(&x, 72, 4, 3);
+    put(code, 0, x);
+    put(code, 1, mov_imm(9, 1));
+    x = fix(0xb66);
+    set(&x, 16, 8, 0);
+    set(&x, 24, 8, 4);
+    set(&x, 32, 8, 9);
+    set(&x, 40, 19, 2u << 14 | 0x20 >> 2);
+    set(&x, 61, 3, 1);
+    set(&x, 64, 8, 255);
+    set(&x, 72, 4, 0xf);
+    set(&x, 78, 1, 1);
+    set(&x, 87, 3, 1);
+    put(code, 2, x);
+    put(code, 3, exit_insn());
+    put(code, 4, bra(4, 4, 7, 0));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 5 * 16, ST_FS, fsph, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "tld multisample: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(si.ntex == 1 && (si.tex[0].flags & 2) && si.tex[0].type == 1 && si.tex[0].cbuf_off == 0x20 / 4);
+    u32 at[4];
+    CHECK(spv_find(spv, count, 25 /* OpTypeImage */, at, 4) == 1 && spv[at[0] + 6] == 1); /* MS */
+    CHECK(spv_find(spv, count, 104 /* OpImageQuerySize */, at, 4) == 1);
+    CHECK(spv_find(spv, count, 103 /* OpImageQuerySizeLod */, at, 4) == 0);
+    /* the fetch's Sample operand (0x40) is R9 as an int: a bitcast of a load of R9's variable */
+    CHECK(spv_find(spv, count, 95 /* OpImageFetch */, at, 4) == 1);
+    const u32* f = spv + at[0];
+    u32 r9 = 0;
+    {
+        u32 vars[64], nv = spv_find(spv, count, 59 /* OpVariable */, vars, 64), k = 0;
+        for (u32 j = 0; j < nv; j++)
+            if (spv[vars[j] + 3] == 7 /* Function */ && k++ == 9) r9 = spv[vars[j] + 2];
+    }
+    int sample_r9 = 0;
+    if ((f[0] >> 16) == 7 && f[5] == 0x40) {
+        u32 casts[64], nc = spv_find(spv, count, 124 /* OpBitcast */, casts, 64), loads[256],
+                       nl = spv_find(spv, count, 61 /* OpLoad */, loads, 256);
+        for (u32 j = 0; j < nc; j++)
+            if (spv[casts[j] + 2] == f[6])
+                for (u32 l = 0; l < nl; l++)
+                    if (spv[loads[l] + 2] == spv[casts[j] + 3] && spv[loads[l] + 3] == r9) sample_r9 = 1;
+    }
+    CHECK(sample_r9);
+    CHECK(validate(spirv_val, dir, "fs_tld_ms", spv, count));
+    free(spv);
+}
+
 int main(int argc, char** argv) {
     const char* spirv_val = argc > 2 ? argv[2] : NULL;
     const char* dir = argc > 1 ? argv[1] : ".";
@@ -1381,6 +1593,10 @@ int main(int argc, char** argv) {
     test_break(spirv_val, dir);
     test_local_memory(spirv_val, dir);
     test_shared_no_uniform(spirv_val, dir);
+    test_hsetp2(spirv_val, dir);
+    test_brxu(spirv_val, dir);
+    test_ipa_uniform(spirv_val, dir);
+    test_tld_multisample(spirv_val, dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

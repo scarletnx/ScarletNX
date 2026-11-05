@@ -14,8 +14,9 @@ typedef struct {
     uint32_t builtin[64][4]; /* the value of each BuiltIn input, by its number (41 SubgroupLocalInvocationId) */
     uint32_t* ubo[64];       /* uniform and storage buffers by binding (any set): their words */
     uint32_t ubo_words[64];
-    uint32_t out[16][4]; /* the outputs by location */
-    uint32_t out_written[16];
+    uint32_t in[32][4];  /* the inputs that are no built-ins, by location */
+    uint32_t out[32][4]; /* the outputs by location */
+    uint32_t out_written[32];
     uint32_t frag_depth;
     uint32_t shared[4096]; /* the first Workgroup variable's words when the invocation ends */
     uint32_t shared_words;

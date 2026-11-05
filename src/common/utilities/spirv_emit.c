@@ -1515,11 +1515,11 @@ uint32_t spv_emit_image_query_size_lod(SpvEmitter* e, uint32_t result_type, uint
     put(&e->functions, sampled);
     if (e->nonuniform_count && is_nonuniform(e, sampled)) nonuniform(e, image);
     uint32_t id = spv_emit_id(e);
-    instruction(&e->functions, SPV_OP_IMAGE_QUERY_SIZE_LOD, 5);
+    instruction(&e->functions, lod ? SPV_OP_IMAGE_QUERY_SIZE_LOD : SPV_OP_IMAGE_QUERY_SIZE, lod ? 5 : 4);
     put(&e->functions, result_type);
     put(&e->functions, id);
     put(&e->functions, image);
-    put(&e->functions, lod);
+    if (lod) put(&e->functions, lod);
     return id;
 }
 
