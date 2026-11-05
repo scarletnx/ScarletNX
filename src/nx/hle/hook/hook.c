@@ -163,6 +163,61 @@ static void routes_say(void) {
             (unsigned)r->count, (unsigned long long)r->list, (unsigned long long)own, (unsigned)snx_hook_route_count());
 }
 
+/* the function at addr given entry k's adapter, or verify mode's check: 0, or -1 when every site is taken */
+static int hook_put(int k, u64 addr, const char* name, const unsigned char verify[]) {
+    HleHook* h = &g_hle.hook;
+    GuestFn* slot;
+    if (h->count == HOOK_SITES) {
+        WARN("hooks: more than %d functions to hook, so %s at %llx and those after it run their own code\n", HOOK_SITES,
+             name, (unsigned long long)addr);
+        return -1;
+    }
+    slot = &g_disp[(addr - g_code_lo) >> 2];
+    h->hook[h->count] = (u16)k;
+    h->addr[h->count] = addr;
+    h->orig[h->count] = nce_slot(*slot);
+    h->fn[h->count] = verify[hook_family[k]] && hook_verify[k].pure ? verify_fn : hook_fn[k];
+    __atomic_store_n(slot, h->fn[h->count], __ATOMIC_RELEASE);
+    nce_slot_taken(addr, hook_family_name[hook_family[k]]);
+    h->count++;
+    if (!hook_routed(hook_symbol[k]))
+        WARN("hooks: %s at %llx runs %s only for the calls through the PLT and function pointers: the module's "
+             "route list doesn't name it, so its direct calls run its own code. Recompile the game for them\n",
+             name, (unsigned long long)addr, hook_handler[k]);
+    return 0;
+}
+
+/* the address hooks (hookgen's [BUILDID:OFFSET]), each in the module built as its build ID, at its offset there */
+static void hook_put_addresses(const unsigned char off[], const unsigned char verify[]) {
+    int k;
+    u32 i;
+    for (k = 0; k < HOOK_COUNT; k++)
+        for (i = 0; i < g_mod->nmods; i++) {
+            const SnxModInfo* mi = &g_mod->mods[i];
+            u64 offset, addr;
+            if (!snx_hook_key_at(hook_symbol[k], mi->build_id, &offset)) continue;
+            addr = mi->base + offset;
+            if (offset < mi->text_off || offset - mi->text_off >= mi->text_size || addr < g_code_lo ||
+                addr >= g_code_hi) {
+                WARN("hooks: %s lies outside the code of %s, which its build ID names, so it isn't hooked\n",
+                     hook_symbol[k], mi->name);
+                continue;
+            }
+            if (off[hook_family[k]] || site_of(addr) >= 0) continue;
+            if (hook_put(k, addr, hook_symbol[k], verify)) return;
+            LOG("hook: %s at %llx (%s+%llx) runs %s\n", hook_symbol[k], (unsigned long long)addr, mi->name,
+                (unsigned long long)offset, hook_handler[k]);
+        }
+}
+
+u64 hook_site(const char* symbol) {
+    const HleHook* h = &g_hle.hook;
+    u32 i;
+    for (i = 0; i < h->count; i++)
+        if (!strcmp(hook_symbol[h->hook[i]], symbol)) return h->addr[i];
+    return 0;
+}
+
 void hook_install(void) {
     HleHook* h = &g_hle.hook;
     const char* name;
@@ -193,7 +248,6 @@ void hook_install(void) {
         u32 versions[HOOK_KEYS] = {0};
         int m, first, k;
         char range[96];
-        GuestFn* slot;
         if (!name || addr < g_code_lo || addr >= g_code_hi || (addr & 3) ||
             hook_select(&hook_table, name, versions, &first) == -1 || (m = module_of(addr)) < 0 || site_of(addr) >= 0)
             continue;
@@ -208,23 +262,7 @@ void hook_install(void) {
                 text);
         }
         if (k < 0 || off[hook_family[k]]) continue;
-        if (h->count == HOOK_SITES) {
-            WARN("hooks: more than %d functions to hook, so %s at %llx and those after it run their own code\n",
-                 HOOK_SITES, name, (unsigned long long)addr);
-            break;
-        }
-        slot = &g_disp[(addr - g_code_lo) >> 2];
-        h->hook[h->count] = (u16)k;
-        h->addr[h->count] = addr;
-        h->orig[h->count] = nce_slot(*slot);
-        h->fn[h->count] = verify[hook_family[k]] && hook_verify[k].pure ? verify_fn : hook_fn[k];
-        __atomic_store_n(slot, h->fn[h->count], __ATOMIC_RELEASE);
-        nce_slot_taken(addr, hook_family_name[hook_family[k]]);
-        h->count++;
-        if (!hook_routed(name))
-            WARN("hooks: %s at %llx runs %s only for the calls through the PLT and function pointers: the module's "
-                 "route list doesn't name it, so its direct calls run its own code. Recompile the game for them\n",
-                 name, (unsigned long long)addr, hook_handler[k]);
+        if (hook_put(k, addr, name, verify)) break;
         if (hook_key[k] == HOOK_ANY || said[k]) {
             LOG("hook: %s at %llx runs %s\n", name, (unsigned long long)addr, hook_handler[k]);
             continue;
@@ -234,6 +272,7 @@ void hook_install(void) {
         LOG("hook: %s at %llx runs %s, the hook for %s%s%s\n", name, (unsigned long long)addr, hook_handler[k], range,
             *hook_layouts[k] ? ", with the layouts " : "", hook_layouts[k]);
     }
+    hook_put_addresses(off, verify);
     LOG("hooks: %u of the game's functions run the runtime's handlers\n", h->count);
 }
 
@@ -253,4 +292,12 @@ void hook_restore(u64 addr, u64 size) {
 GuestFn hook_original(u64 addr) {
     int i = site_of(addr);
     return i < 0 ? NULL : g_hle.hook.orig[i];
+}
+
+void hook_run_original(CPU* c, u64 addr) {
+    GuestFn own = hook_original(addr);
+    u64 ret = c->x[30], sp = c->x[31];
+    if (!own) fatal("hook: no hook at %llx to run the code of", (unsigned long long)addr);
+    own(c, addr);
+    while (c->pc != ret || c->x[31] != sp) snx_lookup(c, c->pc)(c, c->pc);
 }

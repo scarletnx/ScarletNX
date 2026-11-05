@@ -7,6 +7,7 @@
   * [Function types](#function-types)
 * [Versions](#versions)
 * [Struct layouts](#struct-layouts)
+* [Game patches: hooks by address](#game-patches-hooks-by-address)
 * [Verify mode](#verify-mode)
 * [Checking a hook](#checking-a-hook)
 * [What the guest profile showed](#what-the-guest-profile-showed)
@@ -201,6 +202,43 @@ struct nn::os::MutexType @version(>= 9.0.0) { u8 state @0x0; u32 owner @0x8 } si
 `tests/hook_versions.c` checks the entries hookgen makes of `tests/hook/versions.hook`, the labels, the entry and
 layout picked for a module's version (none, below and between ranges, the bounds of each comparison), and the
 accessors.
+
+## Game patches: hooks by address
+
+A function that no symbol names, in one build of one game, is hooked by its module's build ID and its offset in that
+module. Each game's hooks are a spec of their own in `src/nx/patches/`, `<game>.hook`, with their handlers beside it
+in `<game>.c`:
+
+```
+family game_frame_rate
+[0123456789abcdef0123456789abcdef01234567:0x1a2b40] hook game_mode_set(u32 mode)
+```
+
+- The build ID is the module's, as an IPS patch is named and an IPSwitch patch's `@nsobid-` gives it: the hex of its
+  first 8 to 32 bytes, the rest of the ID zeros. The offset is the function's entry from the module's base, as a
+  symbol's value would be. A hook of an offset that isn't 4-aligned is refused.
+- The name after `hook` is the handler's, as the function has no other, so `= HANDLER` is refused.
+- The hook holds for the one build its ID names, so it has no `@version`. A game's other version has another ID: its
+  functions move, and it gets no hook until a line of its own names it.
+- Its key, `BUILDID:OFFSET` in lower case without the ID's ending zero bytes, `0x` or leading zeros
+  (`0123456789abcdef0123456789abcdef01234567:1a2b40`), stands for its symbol: in the table, in the log
+  (`hook: 0123...:1a2b40 at 81a7b40 (main+1a2b40) runs game_mode_set`), in `hooks_off` by its family, and in the
+  route list. The loader makes each key of a module's own build a function seed and a routed function
+  (`route_addresses`, `loader.c`), so the recompiler compiles the function at that entry and calls it through its slot
+  from every direct call. Under NCE the slot's stub at the function's first word takes the calls from native code, as
+  it does for any hook (`nce_slot_taken`).
+- A hook goes on a function's entry, never inside one: a call reaches only an entry's slot.
+
+hookgen reads `hooks.hook` and then each patch into one table, each spec with its own family lines (`cmake/hookgen.cmake`'s
+`snx_hook_patches`), so a patch file is added by creating it. Adding one changes the route list, and only a game whose
+build a key names compiles anything differently.
+
+A game patch's handler changes what the game does, as an IPS patch would, where `hooks.hook`'s handlers only do what
+their functions do. It is written from reading the function's code, works on the guest's data through `hook_host`,
+and keeps the game's own code doing the rest: `hook_run_original(c, addr)` runs the function's own code with the CPU as
+the call left it, through the dispatch loop until the function returns to the call's return address, so a handler can
+change an argument before it and a result after it. `hook_site(key)` gives the address the hook went to, from which a
+handler finds its module's base and data.
 
 ## Verify mode
 

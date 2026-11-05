@@ -852,13 +852,21 @@ snx_test_target(snx-test-hook-versions 99)
 target_include_directories(snx-test-hook-versions PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-hook-versions SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/versions.hook")
 add_test(NAME hook_versions COMMAND snx-test-hook-versions)
-# the route list (src/nx/loader/hook_routes.c): hookgen --routes over two specs (tests/hook/routes.hook and
-# versions.hook), and the runtime's own list, its lookup and the hashes a module carries
+# address hooks (tests/hook/address.hook), read as the second spec of one table after tests/hook/address_first.hook
+add_executable(snx-test-hook-address hook_address.c)
+snx_test_target(snx-test-hook-address 99)
+target_include_directories(snx-test-hook-address PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_hookgen(snx-test-hook-address SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/address_first.hook"
+            "${CMAKE_CURRENT_SOURCE_DIR}/hook/address.hook")
+add_test(NAME hook_address COMMAND snx-test-hook-address)
+# the route list (src/nx/loader/hook_routes.c): hookgen --routes over three specs (tests/hook/routes.hook,
+# versions.hook and address.hook), the runtime's own list, its lookup and the hashes a module carries, and the build
+# IDs an address hook's key names
 add_executable(snx-test-hook-routes hook_routes.c)
 snx_test_target(snx-test-hook-routes 99)
 target_link_libraries(snx-test-hook-routes PRIVATE snx_test_common snx_nx_module)
 snx_hook_routes(snx-test-hook-routes SPECS "${CMAKE_CURRENT_SOURCE_DIR}/hook/routes.hook"
-                "${CMAKE_CURRENT_SOURCE_DIR}/hook/versions.hook")
+                "${CMAKE_CURRENT_SOURCE_DIR}/hook/versions.hook" "${CMAKE_CURRENT_SOURCE_DIR}/hook/address.hook")
 add_test(NAME hook_routes COMMAND snx-test-hook-routes)
 # verify mode (src/nx/hle/hook/verify.c): pure hooks (tests/hook/verify.hook) checked against stand-ins for the
 # function's own code, on copies of their buffers, and each kind of difference it reports
@@ -871,7 +879,7 @@ add_test(NAME hook_verify COMMAND snx-test-hook-verify)
 add_executable(snx-test-diag-abort diag_abort.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/diag.c")
 snx_test_target(snx-test-diag-abort 11) # log.h has _Thread_local
 target_include_directories(snx-test-diag-abort PRIVATE "${PROJECT_SOURCE_DIR}/src")
-snx_hookgen(snx-test-diag-abort)
+snx_hookgen(snx-test-diag-abort SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
 add_test(NAME diag_abort COMMAND snx-test-diag-abort)
 # the hooks' NVN key (tests/hook/nvn_versions.hook): the API version read from a driver's nvnDeviceGetInteger
 # (src/nx/gpu/nvn/nvn_driver.c), the entry hook_select picks for it, and the versions the log calls described
@@ -976,7 +984,14 @@ foreach(bad IN ITEMS
         include_missing 2 "cannot find nx/none.h"
         function_type_versions 4 "nvnQueueFinish takes other types on line 3"
         handler_underived 2 "memcpy names no handler"
-        handler_derived 2 "nvn_DeviceFinalize is the handler that nvnDeviceFinalize names already")
+        handler_derived 2 "nvn_DeviceFinalize is the handler that nvnDeviceFinalize names already"
+        address_versioned 2 "an address hook is for one build of its module: it has no @version"
+        address_handler 2 "an address hook's name is its handler's"
+        address_unaligned 2 "offset 0x42 isn't a function's"
+        address_short 2 "a build ID is an even number of hex digits, 16 to 64"
+        address_zero 2 "a build ID of zeros names no build"
+        address_twice 4 "0123456789abcdef:40 is hooked on line 2 too"
+        address_keyword 2 "expected 'hook' after the address")
     if(NOT DEFINED bad_name)
         set(bad_name "${bad}")
     elseif(NOT DEFINED bad_line)

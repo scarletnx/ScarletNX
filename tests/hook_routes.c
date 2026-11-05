@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The route list. hookgen --routes over tests/hook/routes.hook and versions.hook: every symbol a hook or a route line
-   names, once, sorted by strcmp, however many versions declare it and however many specs name it. Then the runtime's
-   own list (src/nx/loader/hook_routes.c, from hooks.hook and nvn.hook): its lookup, which the loader keeps a module's
-   exported functions by, and the hashes a module carries in snx_routes for hook_install */
+/* The route list. hookgen --routes over tests/hook/routes.hook, versions.hook and address.hook: every symbol a hook or
+   a route line names and every address hook's key, once, sorted by strcmp, however many versions declare it and
+   however many specs name it. Then the runtime's own list (src/nx/loader/hook_routes.c, from hooks.hook, nvn.hook and
+   the game patches): its lookup, which the loader keeps a module's exported functions by, and the hashes a module
+   carries in snx_routes for hook_install. Then an address hook's key against the build IDs it is for */
 #include "nx/loader/hook_routes.h"
 #include "common/utilities/bits.h"
 #include "nx/loader/hook_routes.inc"
@@ -12,12 +13,20 @@
 #include <string.h>
 
 static void test_generated(void) {
-    static const char* const expected[] = {"_ZN2nn2os4WaitEv", "any",    "exact",  "gap", "lock",
-                                           "nvn_only",         "unlock", "wrapped"};
+    static const char* const expected[] = {"0123456789abcdef:1000",
+                                           "0123456789abcdef:40",
+                                           "_ZN2nn2os4WaitEv",
+                                           "any",
+                                           "exact",
+                                           "gap",
+                                           "lock",
+                                           "nvn_only",
+                                           "unlock",
+                                           "wrapped"};
     assert(HOOK_ROUTE_COUNT == sizeof expected / sizeof *expected);
     for (size_t i = 0; i < HOOK_ROUTE_COUNT; ++i) assert(!strcmp(hook_route_names[i], expected[i]));
     assert(hook_route_names[HOOK_ROUTE_COUNT] == NULL);
-    puts("PASS hookgen --routes: each symbol of two specs once, sorted, with the route lines");
+    puts("PASS hookgen --routes: each symbol of three specs once, sorted, with the route lines and address keys");
 }
 
 static void test_runtime_list(void) {
@@ -41,8 +50,29 @@ static void test_runtime_list(void) {
            (unsigned long long)list);
 }
 
+/* a key names its build by the build ID's first bytes, the rest of the ID zeros: never a symbol, another build or a
+   longer ID that only starts the same */
+static void test_keys(void) {
+    unsigned char id[32] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef}, other[32];
+    SnxU64 offset = 0;
+    assert(snx_hook_key_at("0123456789abcdef:40", id, &offset) && offset == 0x40);
+    assert(snx_hook_key_at("0123456789ABCDEF:d02de0", id, &offset) && offset == 0xd02de0);
+    memcpy(other, id, sizeof id);
+    other[8] = 1; /* an ID that goes on past the key's bytes is another build's */
+    assert(!snx_hook_key_at("0123456789abcdef:40", other, &offset));
+    assert(snx_hook_key_at("0123456789abcdef01:44", other, &offset) && offset == 0x44);
+    other[0] = 0x02;
+    assert(!snx_hook_key_at("0123456789abcdef01:44", other, &offset));
+    assert(!snx_hook_key_at("memcpy", id, &offset) && !snx_hook_key_at("", id, &offset));
+    assert(!snx_hook_key_at("0123456789abcdef", id, &offset) && !snx_hook_key_at("0123456789abcdef:", id, &offset));
+    assert(!snx_hook_key_at("0123456789abcde:40", id, &offset) && !snx_hook_key_at("0123456789abcdef:4x", id, &offset));
+    assert(!snx_hook_key_at("0123456789abcdef:40 ", id, &offset));
+    puts("PASS address keys: the build each names, and the names that are none");
+}
+
 int main(void) {
     test_generated();
     test_runtime_list();
+    test_keys();
     return 0;
 }

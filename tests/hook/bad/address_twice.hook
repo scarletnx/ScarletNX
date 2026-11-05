@@ -1,0 +1,4 @@
+family f
+[0123456789abcdef:40] hook h()
+# the same function, spelled with zero bytes after its build ID
+[0123456789ABCDEF00:0x0040] hook g()
