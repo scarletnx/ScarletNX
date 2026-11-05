@@ -851,7 +851,7 @@ void gsv_syncpt_changed(void) {
     for (i = 0; i < SYNC_WAITS; i++) {
         if (!sync_waits[i].armed) continue;
         if ((i32)(syncpt_read(sync_waits[i].id) - sync_waits[i].thresh) >= 0) {
-            LOG("gsv: syncpoint %u reached %u, signaling slot %u\n", sync_waits[i].id,
+            LOGV("gsv: syncpoint %u reached %u, signaling slot %u\n", sync_waits[i].id,
                 syncpt_read(sync_waits[i].id), i);
             sync_waits[i].armed = 0;
             if (sync_waits[i].event) ev_signal(sync_waits[i].event);
@@ -888,7 +888,7 @@ static int nn_gsv_SyncptSession_ArmWait(SvcObj* self, const u8* request) {
     sync_waits[slot].thresh = (u32)threshold;
     if (sync_waits[slot].event) ev_clear(sync_waits[slot].event); /* a re-arm clears the previous wait's signal */
     sync_waits[slot].armed = 1;
-    LOG("gsv: ArmWait slot %u sp %u thresh %u (now %u)\n", slot, ~id, (u32)threshold, syncpt_read(~id));
+    LOGV("gsv: ArmWait slot %u sp %u thresh %u (now %u)\n", slot, ~id, (u32)threshold, syncpt_read(~id));
     if ((i32)(syncpt_read(sync_waits[slot].id) - sync_waits[slot].thresh) >= 0) {
         /* already there: signal it now, as Eden's PollWaits does, so the game's wait on the event ends */
         sync_waits[slot].armed = 0;
@@ -896,10 +896,14 @@ static int nn_gsv_SyncptSession_ArmWait(SvcObj* self, const u8* request) {
     }
     R_SUCCEED();
 }
+/* The wait ends with the slot's event signaled, armed or not: the SDK's CancelSyncPointEvent (and
+   DestroySyncPointEvent) waits on the event after 202, also for a new slot that was never armed (the video decoder's
+   first wait on an image) */
 static int nn_gsv_SyncptSession_CancelWait(SvcObj* self, u32 slot) {
     (void)self;
     R_UNLESS(slot < SYNC_WAITS, SNX_RC_SVC_OUT_OF_HANDLES);
     sync_waits[slot].armed = 0;
+    if (sync_waits[slot].event) ev_signal(sync_waits[slot].event);
     R_SUCCEED();
 }
 static int nn_gsv_UserSession_CreateNvDrv2UserSessionWithRemoteMemory(SvcObj* self, u32* session) {
