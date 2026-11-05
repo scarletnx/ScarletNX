@@ -950,7 +950,7 @@ static bool program_arrays(G2Program* p, Link* l) {
     p->unit_count = unit;
     p->block_count = block_index;
     /* the uniforms, each element of the default block's and the samplers' with a location */
-    memcpy(p->uniforms, l->uniforms, l->uniform_count * sizeof *p->uniforms);
+    if (l->uniform_count) memcpy(p->uniforms, l->uniforms, l->uniform_count * sizeof *p->uniforms);
     p->uniform_count = l->uniform_count;
     uint32_t loc = 0;
     for (uint32_t i = 0; i < p->uniform_count; ++i) {
