@@ -24,7 +24,6 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
-#include <time.h>
 #if defined(__linux__)
 #include <sys/prctl.h>
 #endif
@@ -127,9 +126,8 @@ static void producer_unlock(void) {
     pthread_mutex_unlock(&g_producer);
     if (plat_tid() == g_reader || !__atomic_exchange_n(&g_hold_lander, 0, __ATOMIC_ACQ_REL)) return;
     for (int waited_ms = 0; !__atomic_load_n(&g_republished, __ATOMIC_ACQUIRE); waited_ms++) {
-        struct timespec ms = {0, 1000000};
         if (waited_ms == 10000) test_fail("the reader republished the page within 10 s", __LINE__);
-        nanosleep(&ms, NULL);
+        plat_sleep_ns(1000000);
     }
 }
 /* r's references once no landing is under way: a landing holds the producer's lock from before it cuts its entries
