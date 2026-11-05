@@ -118,7 +118,11 @@ from Azahar's. PICA draws run
 on the GPU too (`gpu/vk/render.c`). The vertex program is decompiled (`gpu/vk/vsgen.c`)
 and the fragment pipeline generated (`gpu/vk/fsgen.c`), both ported from Azahar's
 shader generators and both written as SPIR-V words directly (`src/common/utilities/spirv_emit.c`, shared with NX), with no
-shader compiler at run time. The output merger is the pipeline's fixed state. Vertex and
+shader compiler at run time. The output merger is the pipeline's fixed state. A new pipeline
+is made as its first draw needs it, which pauses the game while the driver compiles it; with the
+Switch's `async_pipelines=1` (`--async_pipelines=1`) workers make it instead
+(`pipeline_threads` of them) and the draws that need it are skipped until it is ready, so what
+they draw shows up a few frames late, and the run's end says how many were skipped. Vertex and
 index data are read where the GPU works (in place, or its copy), except in a draw with a geometry shader, whose vertex and
 geometry shaders run on the CPU (see below). `tests/3ds_vk_draw.c` holds the draws to the
 software renderer they replaced, which stays as their reference. The shown

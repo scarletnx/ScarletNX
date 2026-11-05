@@ -18,6 +18,9 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "snx_settings.h"
+#include <SDL3/SDL_cpuinfo.h>
+#include <SDL3/SDL_mutex.h>
+#include <SDL3/SDL_thread.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +35,8 @@
 #define TEXTURES  512 /* textures kept decoded */
 #define TARGETS   32  /* render targets kept */
 #define SPANS     4096 /* the memory spans a submission reads or writes, re-levelled when it is done */
+#define PIPE_JOBS         64   /* the pipelines the workers have in hand at once (async_pipelines) */
+#define WORKERS           32   /* pipeline_threads's most */
 
 enum {
     CULL_MODE = 0x040,
@@ -156,7 +161,16 @@ typedef struct {
     uint64_t hash;
     PipeKey key;
     VkPipeline pipeline;
+    uint32_t job; /* while a worker makes it (async_pipelines), its PipeJob's index plus 1; else 0 */
 } Pipe;
+/* a pipeline a worker makes: its key and the shader modules the draw found, then the pipeline */
+enum { JOB_FREE, JOB_QUEUED, JOB_MAKING, JOB_DONE };
+typedef struct {
+    PipeKey key;
+    VkShaderModule vs, fs;
+    VkPipeline made;
+    uint8_t state; /* under g.job_lock */
+} PipeJob;
 
 typedef struct {
     uint32_t lighting[24][256], fog[128], noise[128], color_map[128], alpha_map[128], color[256], diff[256];
@@ -223,6 +237,15 @@ static struct {
     SnxCtrVertex (*triangles)[3];
     size_t triangle_count, triangle_capacity, triangle_first;
     SnxCtrVkTraffic traffic;
+    /* async_pipelines: the threads that make the new pipelines while the draws that need them are skipped, started
+       at the first one and stopped with the renderer, their jobs, and the lock and conditions over those */
+    SDL_Thread* workers[WORKERS];
+    unsigned worker_count;
+    bool workers_tried, jobs_stop;
+    SDL_Mutex* job_lock;
+    SDL_Condition *job_queued, *job_done;
+    PipeJob jobs[PIPE_JOBS];
+    uint64_t skipped; /* the draws skipped while their pipeline was made */
 } g;
 
 static VkDevice device(void) { return snx_ctr_vk()->device; }
@@ -1164,16 +1187,18 @@ static const VkLogicOp logic_op[16] = {
     VK_LOGIC_OP_NAND,   VK_LOGIC_OP_OR,          VK_LOGIC_OP_NOR,         VK_LOGIC_OP_XOR,
     VK_LOGIC_OP_EQUIVALENT, VK_LOGIC_OP_AND_INVERTED, VK_LOGIC_OP_OR_REVERSE, VK_LOGIC_OP_OR_INVERTED};
 
-static VkPipeline make_pipeline(const PipeKey* k) {
+/* k's pipeline, of the shader modules vs and fs, which a worker passes as the draw found them: g.vs and g.fs move as
+   they grow. It reads only what made() set */
+static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderModule fs) {
     SnxCtrVk* v = snx_ctr_vk();
     VkPipelineShaderStageCreateInfo stages[2] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
          .stage = VK_SHADER_STAGE_VERTEX_BIT,
-         .module = g.vs[k->vs].module,
+         .module = vs,
          .pName = "main"},
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
          .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-         .module = g.fs[k->fs].module,
+         .module = fs,
          .pName = "main"}};
     VkVertexInputBindingDescription bindings[13];
     VkVertexInputAttributeDescription attributes[16];
@@ -1272,17 +1297,111 @@ static VkPipeline make_pipeline(const PipeKey* k) {
         return VK_NULL_HANDLE;
     return pipeline;
 }
-static VkPipeline pipeline(const PipeKey* k) {
+/* A worker: makes the queued pipelines one by one, until the renderer stops them */
+static int SDLCALL pipe_worker(void* unused) {
+    (void)unused;
+    SDL_LockMutex(g.job_lock);
+    while (!g.jobs_stop) {
+        PipeJob* j = NULL;
+        for (unsigned i = 0; i < PIPE_JOBS && !j; ++i)
+            if (g.jobs[i].state == JOB_QUEUED) j = &g.jobs[i];
+        if (!j) {
+            SDL_WaitCondition(g.job_queued, g.job_lock);
+            continue;
+        }
+        j->state = JOB_MAKING;
+        SDL_UnlockMutex(g.job_lock);
+        VkPipeline made_pipeline = make_pipeline(&j->key, j->vs, j->fs);
+        SDL_LockMutex(g.job_lock);
+        j->made = made_pipeline;
+        j->state = JOB_DONE;
+        SDL_BroadcastCondition(g.job_done);
+    }
+    SDL_UnlockMutex(g.job_lock);
+    return 0;
+}
+/* the workers, started at the first pipeline async_pipelines hands them: pipeline_threads of them, or the common count
+   (snx_vk_pipeline_workers). How many there are; with none the draws wait for their pipelines, as with
+   async_pipelines=0, which the log says once */
+static unsigned pipe_workers(void) {
+    if (g.workers_tried) return g.worker_count;
+    g.workers_tried = true;
+    unsigned n = (unsigned)snx_vk_pipeline_workers(g_settings.pipeline_threads, SDL_GetNumLogicalCPUCores());
+    if (n > WORKERS) n = WORKERS;
+    if ((g.job_lock = SDL_CreateMutex()) && (g.job_queued = SDL_CreateCondition()) &&
+        (g.job_done = SDL_CreateCondition()))
+        while (g.worker_count < n) {
+            SDL_Thread* t = SDL_CreateThread(pipe_worker, "3DS pipelines", NULL);
+            if (!t) break;
+            g.workers[g.worker_count++] = t;
+        }
+    if (!g.worker_count)
+        fprintf(stderr,
+                "3ds gpu: async_pipelines=1, but no pipeline worker could start (%s): the draws wait for "
+                "their pipelines, as with async_pipelines=0\n",
+                SDL_GetError());
+    return g.worker_count;
+}
+/* The pipeline for k. Without async_pipelines it is made now. With it a worker makes a new one while the draws that
+   need it are skipped: *pending, and VK_NULL_HANDLE, until it is done. VK_NULL_HANDLE alone when the device refuses
+   it */
+static VkPipeline pipeline(const PipeKey* k, bool* pending) {
+    *pending = false;
     uint64_t h = snx_fnv1a(SNX_FNV_BASIS, k, sizeof *k);
-    for (size_t i = 0; i < g.pipe_count; ++i)
-        if (g.pipes[i].hash == h && !memcmp(&g.pipes[i].key, k, sizeof *k)) return g.pipes[i].pipeline;
+    for (size_t i = 0; i < g.pipe_count; ++i) {
+        Pipe* e = &g.pipes[i];
+        if (e->hash != h || memcmp(&e->key, k, sizeof *k)) continue;
+        if (e->job) {
+            PipeJob* j = &g.jobs[e->job - 1];
+            SDL_LockMutex(g.job_lock);
+            if (j->state == JOB_DONE) {
+                e->pipeline = j->made;
+                *j = (PipeJob){0};
+                e->job = 0;
+            }
+            SDL_UnlockMutex(g.job_lock);
+            *pending = e->job != 0;
+        }
+        g.skipped += *pending;
+        return e->pipeline;
+    }
     if (!grow((void**)&g.pipes, &g.pipe_capacity, g.pipe_count, sizeof *g.pipes)) return VK_NULL_HANDLE;
-    VkPipeline made_pipeline = make_pipeline(k);
-    if (!made_pipeline) return VK_NULL_HANDLE;
-    g.pipes[g.pipe_count].hash = h;
-    g.pipes[g.pipe_count].key = *k;
-    g.pipes[g.pipe_count++].pipeline = made_pipeline;
-    return made_pipeline;
+    Pipe* e = &g.pipes[g.pipe_count];
+    *e = (Pipe){.hash = h, .key = *k};
+    if (g_settings.async_pipelines && pipe_workers()) {
+        /* with every job in hand the draw is skipped all the same, and its pipeline asked for again at the next */
+        *pending = true;
+        ++g.skipped;
+        SDL_LockMutex(g.job_lock);
+        for (unsigned i = 0; i < PIPE_JOBS && !e->job; ++i)
+            if (g.jobs[i].state == JOB_FREE) {
+                g.jobs[i] =
+                    (PipeJob){.key = *k, .vs = g.vs[k->vs].module, .fs = g.fs[k->fs].module, .state = JOB_QUEUED};
+                e->job = i + 1;
+                SDL_SignalCondition(g.job_queued);
+            }
+        SDL_UnlockMutex(g.job_lock);
+        if (e->job) ++g.pipe_count;
+        return VK_NULL_HANDLE;
+    }
+    e->pipeline = make_pipeline(k, g.vs[k->vs].module, g.fs[k->fs].module);
+    if (e->pipeline) ++g.pipe_count;
+    return e->pipeline;
+}
+/* async_pipelines: waits until every pipeline asked for is made. Stopping, the ones not yet begun are dropped first */
+static void pipes_wait(bool stopping) {
+    if (!g.worker_count) return;
+    SDL_LockMutex(g.job_lock);
+    for (unsigned i = 0; i < PIPE_JOBS; ++i) {
+        if (stopping && g.jobs[i].state == JOB_QUEUED) g.jobs[i].state = JOB_FREE;
+        while (g.jobs[i].state == JOB_QUEUED || g.jobs[i].state == JOB_MAKING)
+            SDL_WaitCondition(g.job_done, g.job_lock);
+    }
+    SDL_UnlockMutex(g.job_lock);
+}
+uint64_t snx_ctr_vk_pipelines_wait(void) {
+    pipes_wait(false);
+    return g.skipped;
 }
 
 /* ---- draws ---- */
@@ -1592,7 +1711,9 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     k.stencil_op = k.stencil_on ? r[OM_STENCIL_OP] & 0x777 : 0;
     k.topology = (uint8_t)(source == TRIANGLES ? 0 : r[SNX_PICA_TOPOLOGY] >> 8 & 3); /* the triangles made: a list */
     k.cull = (uint8_t)(r[CULL_MODE] & 3);
-    VkPipeline pipe = pipeline(&k);
+    bool pending;
+    VkPipeline pipe = pipeline(&k, &pending);
+    if (pending) return SNX_CTR_PICA_OK; /* async_pipelines: drawn once a worker has made its pipeline */
     if (!pipe) return stop(p, "the device refuses a draw's pipeline");
     /* the vertices: an index buffer, the loaders' bindings, the immediate vertices or the triangles made */
     uint32_t count = source == ARRAYS      ? r[NUM_VERTICES]
@@ -1833,6 +1954,22 @@ void snx_ctr_vk_render_free(void) {
     }
     copy_every_page_back();
     VkDevice d = device();
+    if (g.worker_count) {
+        pipes_wait(true);
+        SDL_LockMutex(g.job_lock);
+        g.jobs_stop = true;
+        SDL_BroadcastCondition(g.job_queued);
+        SDL_UnlockMutex(g.job_lock);
+        for (unsigned i = 0; i < g.worker_count; ++i) SDL_WaitThread(g.workers[i], NULL);
+        for (unsigned i = 0; i < PIPE_JOBS; ++i)
+            if (g.jobs[i].state == JOB_DONE) vkDestroyPipeline(d, g.jobs[i].made, NULL);
+    }
+    if (g.job_done) SDL_DestroyCondition(g.job_done);
+    if (g.job_queued) SDL_DestroyCondition(g.job_queued);
+    if (g.job_lock) SDL_DestroyMutex(g.job_lock);
+    if (g.skipped)
+        fprintf(stderr, "3ds gpu: async_pipelines=%d skipped %llu draw%s while their pipelines were made\n",
+                g_settings.async_pipelines, (unsigned long long)g.skipped, g.skipped == 1 ? "" : "s");
     vkDeviceWaitIdle(d);
     for (unsigned s = 0; s < SNX_CTR_VK_SLOTS; ++s) {
         for (size_t i = 0; i < g.view_count[s]; ++i) vkDestroyBufferView(d, g.views[s][i], NULL);

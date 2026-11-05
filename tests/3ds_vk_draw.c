@@ -17,6 +17,7 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "support/3ds_vk_path.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -624,6 +625,36 @@ static void commands_after_draw(SnxCtrMemory* m) {
     fill_over_draw_reload(m);
 }
 static void screens(SnxCtrMemory* m) { present_screens(m, false); }
+/* async_pipelines: a draw whose pipeline is new is skipped while a worker makes it, so its target keeps what it held;
+   once the pipeline is made the same list draws as the CPU reference does, and is not skipped again */
+static void async_pipelines(SnxCtrMemory* m) {
+    static unsigned char start[W * H * 4], none[W * H * 4], sw[W * H * 4], sw_depth[W * H * 4], gpu[W * H * 4],
+        gpu_depth[W * H * 4];
+    g_settings.async_pipelines = 1;
+    g_settings.pipeline_threads = 2;
+    Scene* s = triangle_scene("async, then made", 6);
+    random_fill(start, sizeof start);
+    setup(m, s, start, none);
+    bool recorded = draw(m, s, &vulkan, gpu, gpu_depth);
+    uint64_t skipped = snx_ctr_vk_pipelines_wait();
+    bool kept = recorded && skipped == 1 && !memcmp(gpu, start, sizeof gpu);
+    printf("%-24s %llu draws skipped while the pipeline was made, the target %s: %s\n", "async, first draw",
+           (unsigned long long)skipped, memcmp(gpu, start, sizeof gpu) ? "drawn on" : "as it was",
+           kept ? "ok" : "FAIL");
+    failures += !kept;
+    setup(m, s, start, none);
+    bool a = draw(m, s, &software, sw, sw_depth);
+    setup(m, s, start, none);
+    bool b = draw(m, s, &vulkan, gpu, gpu_depth);
+    if (drew(s, a, b)) compare(s, sw, gpu, sw_depth, gpu_depth);
+    skipped = snx_ctr_vk_pipelines_wait();
+    if (skipped != 1) {
+        printf("%-24s %llu draws skipped in all, where the pipeline made before skips none: FAIL\n", s->name,
+               (unsigned long long)skipped);
+        ++failures;
+    }
+    free(s);
+}
 static void presented_after_draw(SnxCtrMemory* m) {
     present_screens(m, true);
     commands_after_draw(m);
@@ -913,7 +944,8 @@ static const Mode scenes = {NULL, "the scenes", all_scenes};
 static const Mode modes[] = {{"--present", "the presented screens", screens},
                              {"--after-draw", "the commands after a draw", presented_after_draw},
                              {"--texture-after-draw", "the textures after a draw", texture_after_draw},
-                             {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy}};
+                             {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy},
+                             {"--async", "the draws with async_pipelines", async_pipelines}};
 
 int main(int argc, char** argv) {
     int vk_memory = test_ctr_vk_memory(&argc, argv);
