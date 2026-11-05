@@ -818,13 +818,14 @@ setting Host page size
 setting NCE foreign scan
     label NCE address scan
     key nce_foreign_scan
-    int 0 1
+    int 0 3600
     default 0
     startup
-    words Off|On
-    help 1 = under NCE, the game's addresses are looked at every 10 s for what of the host's process is not the
-    help game's (another owner's mapping over its memory, a run nothing maps), each new finding logged once. 0 = only
-    help as the game's code starts and in a crash report. Each look reads /proc/self/maps, a few milliseconds
+    words Off|# s
+    help Under NCE, the seconds between two looks at the game's addresses for what of the host's process is not the
+    help game's (another owner's mapping over its memory, a run nothing maps), 1 to 3600, each new finding logged once.
+    help 0 = off: only as the game's code starts and in a crash report. Each look reads /proc/self/maps, a few
+    help milliseconds
 setting GPU page check
     key gpu_page_check
     int 0 1

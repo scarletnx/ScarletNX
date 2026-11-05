@@ -51,14 +51,13 @@ int nce_on(void) { return g_nce.on; }
 
 int nce_foreign_look(u64 round) {
     char found[sizeof g_nce.foreign];
-    int n;
-    /* a startup setting, set before the kicks' thread starts: with it 0, a round costs this test */
-    if (!g_settings.nce_foreign_scan || round % NCE_FOREIGN_EVERY) return 0;
+    int n, s = g_settings.nce_foreign_scan; /* startup, set before the kicks' thread starts: 0, a round costs this */
+    if (s <= 0 || round % ((u64)s * NCE_KICKS_PER_S)) return 0;
     n = mem_foreign(found, sizeof found);
     if (n < 0)
-        WARN_LIMIT(1,
-                   "nce: what lies in the guest's addresses cannot be read (%s), so nce_foreign_scan=1 finds nothing\n",
-                   strerror(errno));
+        WARN_LIMIT(
+            1, "nce: what lies in the guest's addresses cannot be read (%s), so nce_foreign_scan=%d finds nothing\n",
+            strerror(errno), s);
     else if (!n)
         g_nce.foreign[0] = 0; /* gone: said again if it comes back */
     else if (strcmp(found, g_nce.foreign)) {
@@ -246,8 +245,8 @@ void nce_kick(struct KThread* t) {
 }
 
 /* a kick that lands in the outcall's code, after its last look at CPU.poll and before the guest's code, stops nothing:
-   this goes again to each thread that runs guest code with its poll still set. With nce_foreign_scan=1 it also looks
-   at the guest's addresses every 10 s */
+   this goes again to each thread that runs guest code with its poll still set. With nce_foreign_scan=N it also looks
+   at the guest's addresses every N seconds */
 static void kicker(void* arg) {
     (void)arg;
     SNX_THREAD_NAME("nce kicks");
@@ -266,8 +265,11 @@ static void kicker(void* arg) {
    over guest memory makes memory the game's code reads and writes as its own. What mem_foreign finds there is said;
    it cannot see another owner's plain anonymous mapping, so it guards nothing, and a crash report says it again */
 static void guest_foreign(void) {
-    const char* again = g_settings.nce_foreign_scan ? ", looked at again every 10 s (nce_foreign_scan=1)" : "";
-    int n = mem_foreign(g_nce.foreign, sizeof g_nce.foreign); /* nce_foreign_look's first finding to compare */
+    char again[64] = "";
+    int n;
+    if (g_settings.nce_foreign_scan > 0) /* before the look, whose errno the line says */
+        snprintf(again, sizeof again, ", looked at again every %d s (nce_foreign_scan)", g_settings.nce_foreign_scan);
+    n = mem_foreign(g_nce.foreign, sizeof g_nce.foreign); /* nce_foreign_look's first finding to compare */
     if (n < 0)
         WARN("nce: what lies in the guest's addresses %#llx to %#llx cannot be read (%s), so it is not looked at\n",
              (unsigned long long)AS_BASE, (unsigned long long)AS_END, strerror(errno));
