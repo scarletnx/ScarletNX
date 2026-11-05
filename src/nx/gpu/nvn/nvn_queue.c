@@ -193,7 +193,10 @@ void nvn_QueueFinish(CPU* c, u64 q) {
     nvn_wait_end();
 }
 /* the queue's later work waits on the GPU for the sync, so it is done no earlier than the sync signals */
-static void wait_sync(NvnQueue* o, const NvnSync* s) { nvn_sync_hold(&o->ready, &o->shown, s); }
+static void wait_sync(NvnQueue* o, const NvnSync* s) {
+    nvn_sync_hold(&o->ready, &o->shown, s);
+    nvn_replay_wait(o->replay, s);
+}
 int nvn_QueueWaitSync(CPU* c, u64 q, u64 sync) {
     (void)c;
     wait_sync(NVN_OBJ(NvnQueue, q), NVN_OBJ(const NvnSync, sync));
@@ -386,8 +389,8 @@ int nvn_WindowInitialize(CPU* c, u64 w, u64 b) {
     o.native = __atomic_load_n(&g_nvn.queue.native_window, __ATOMIC_RELAXED);
     memcpy(o.texture, s->texture, sizeof o.texture);
     memcpy(GP(w), &o, sizeof o);
-    LOG("nvn: window %llx: %d textures, first %dx%d format %#x, present interval %d\n", (unsigned long long)w,
-        o.count, o.count && o.texture[0] ? (int)NVN_OBJ(NvnTexture, o.texture[0])->d.width : 0,
+    LOG("nvn: window %llx: %d textures, first %dx%d format %#x, present interval %d\n", (unsigned long long)w, o.count,
+        o.count && o.texture[0] ? (int)NVN_OBJ(NvnTexture, o.texture[0])->d.width : 0,
         o.count && o.texture[0] ? (int)NVN_OBJ(NvnTexture, o.texture[0])->d.height : 0,
         o.count && o.texture[0] ? NVN_OBJ(NvnTexture, o.texture[0])->d.format : 0, o.interval);
     return 1;

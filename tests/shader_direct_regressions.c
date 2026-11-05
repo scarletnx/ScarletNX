@@ -1489,6 +1489,39 @@ static void structured_flow(void) {
     free(spv);
 }
 
+/* Indirect calls read compiler constants at execution time, so a changed selection can reuse the same module.
+   Absolute calls include their shader-pool base in the key. Hashing must retain functions past the main EXIT. */
+static void subroutine_calls(void) {
+    const u64 forms[] = {0xe26000100007002full, 0xe220001000070020ull, 0xe21000100007002full, 0xe20000000007040full};
+    for (u32 form = 0; form < sizeof forms / sizeof *forms; form++) {
+        const u64 instructions[] = {forms[form], EXIT, 0x010000001007f000ull, 0xe32000000007000full};
+        size_t slots, words = 0;
+        u64* program = guest_program(instructions, 4, NULL, &slots);
+        check(program != NULL, "allocate an indirect-call program");
+        if (!program) continue;
+        ShaderInfo info = {.flow_base = 0x400000};
+        u32* code = spirv_of(program, slots * 8, ST_FS, &info, &words, 0, 1, 1, 0);
+        check_translated(code, &info, "indirect call/jump translates to the dispatch loop");
+        if (code) {
+            check(info.flow_base == 0x400000, "absolute-flow base survives shader metadata output");
+            if (form < 3)
+                check((info.cbuf_mask & 2) && info.cbuf_max[1] == 16,
+                      "compiler jump-table word has a bounded integer constant-buffer binding");
+            check(count_opcode(code, words, 251, 0xffffffffu) != 0,
+                  "dynamic call/jump dispatch contains cases after the main EXIT");
+        }
+        u32 length = 0;
+        hash_of(program, slots * 8, &length);
+        check(length > 13 * 8, "indirect flow retains target functions after an early main EXIT");
+        u8* bytes = guest_bytes(program, slots * 8);
+        check(bytes && shader_absolute_flow(bytes, (u32)(slots * 8)) == (form != 0),
+              "absolute-flow cache key is required only for absolute call/jump opcodes");
+        free(bytes);
+        free(code);
+        free(program);
+    }
+}
+
 static void brx_length(void) {
     u64 code[64] = {0};
     code[10] = 0x001F8000FC0007E0ull;
@@ -2396,14 +2429,14 @@ static void eden_forms(void) {
     code = translate((const u64[]){0xe24000000007002full}, 1, ST_FS, &info, &words, 0); /* BRA through c[] */
     check_refused(code, &info, "BRA", "a branch to a constant buffer target is refused");
     free(code);
-    const u64 cbuf_flow[] = {0xe26000000007002full, 0xe27000000007002full, 0xe29000000007002full, 0xe2a000000007002full,
-                             0xe2b000000007002full}; /* CAL, PRET, SSY, PBK, PCNT */
+    const u64 cbuf_flow[] = {0xe27000000007002full, 0xe29000000007002full, 0xe2a000000007002full,
+                             0xe2b000000007002full}; /* PRET, SSY, PBK, PCNT */
     for (size_t i = 0; i < sizeof cbuf_flow / sizeof *cbuf_flow; i++) {
         code = translate(&cbuf_flow[i], 1, ST_FS, &info, &words, 0);
         check_refused(code, &info,
-                      i < 2    ? i ? "PRET" : "CAL"
-                      : i == 2 ? "SSY"
-                      : i == 3 ? "PBK"
+                      i == 0   ? "PRET"
+                      : i == 1 ? "SSY"
+                      : i == 2 ? "PBK"
                                : "PCNT",
                       "constant-buffer control target is refused");
         free(code);
@@ -4001,6 +4034,7 @@ int main(int argc, char** argv) {
     dc_color_compare();
     unfed_fragment_input();
     brx_length();
+    subroutine_calls();
     invalid_ldc_bank();
     cbuf_integer_loads();
     unsupported_names_word();

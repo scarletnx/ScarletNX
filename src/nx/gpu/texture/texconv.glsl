@@ -10,7 +10,8 @@
    An invocation owns whole output words: a pair of 2 byte texels, a 4 byte or RGB32F texel, four depth texels
    (whose four stencil bytes are one word) or a 4x4 block. Output rows are padded to that (vk/texconv.c gives the
    copies a bufferRowLength), so no invocation writes part of a word another one writes. Everything is integer arithmetic,
-   with the CPU's results to the bit: the one float, a 24 bit depth as a float, is built from its bits. */
+   with the CPU's results to the bit. The sRGB copy transfer alone uses native floating point and is checked with
+   its format conversion tolerance; 24-bit depth and other numeric conversions are built from their bits. */
 
 uint tc_bswap(uint w) {
     return (w << 24) | ((w & 0xFF00u) << 8) | ((w >> 8) & 0xFF00u) | (w >> 24);
@@ -550,6 +551,8 @@ uint tc_blit_component(uint p, uint k) {
     if (sb == 2u) return tc_half_float(v);
     return v | (tc_src_byte(at + 2u) << 16) | (tc_src_byte(at + 3u) << 24);
 }
+#include "pixel_format.h"
+#include "pixel_convert.glsl"
 /* TC_DMA_REMAP: byte ob of a line out, with the line in from byte in_line on and the byte now there in old */
 uint tc_remap_byte(uint ob, uint in_line, uint old) {
     uint cs = remap & 15u, ns = (remap >> 4) & 15u, nd = (remap >> 8) & 15u, eo = cs * nd;
@@ -625,6 +628,27 @@ void main() {
             r |= v << (8u * b);
         }
         dst[at] = r;
+        return;
+    }
+    if (mode == TC_BLIT_CONVERT) {
+        uint line = gl_GlobalInvocationID.y, at = out_bias + line * out_pitch + u, word = dst[at];
+        uint source = remap & 0x7FFFu, destination = (remap >> 16) & 0x7FFFu;
+        uint sb = GPU_PIXEL_BYTES(source), db = GPU_PIXEL_BYTES(destination);
+        uint row = in_bias + src[const_b + line] * in_pitch;
+        for (uint byte_index = 0u; byte_index < 4u; byte_index++) {
+            uint ob = 4u * u + byte_index;
+            if (ob >= line_out) continue;
+            uint pixel = ob / db, value;
+            if ((remap & GPU_BLIT_LINEAR_BIT) != 0u)
+                value = tc_pixel_linear_byte(pixel, line, source, destination, ob % db);
+            else {
+                uint source_at = row + src[const_a + pixel] * sb;
+                value = tc_pixel_byte(source_at, source, destination, ob % db);
+            }
+            uint shift = byte_index * 8u;
+            word = (word & ~(255u << shift)) | (value << shift);
+        }
+        dst[at] = word;
         return;
     }
     if (mode == TC_BLIT_FLOAT) {

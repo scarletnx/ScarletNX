@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Exact reductions of a subset of advanced blend equations to ordinary fixed-function blending. These follow
    the published NV_blend_equation_advanced equations, not the reference driver's implementation. All reductions
-   require normalized destination values. Artistic modes and correlated coverage remain unsupported here. */
+   require normalized destination values. Extra arithmetic and channel-copy operations do not depend on coverage. */
 #ifndef SNX_NVN_BLEND_H
 #define SNX_NVN_BLEND_H
 #include "nx/gpu/draw_state.h"
@@ -12,7 +12,22 @@ static inline int nvn_blend_advanced(DsBlend* blend, u32 target, u64 state) {
     u32 mode = (u32)nvn_field(state, NVN_BLEND_ADV);
     u32 overlap = (u32)nvn_field(state, NVN_BLEND_ADV_OVL);
     int premultiplied = nvn_field(state, NVN_BLEND_ADV_PMS) != 0;
-    if (target != 0 || overlap > NVN_BLEND_ADVANCED_OVERLAP_CONJOINT || !nvn_field(state, NVN_BLEND_ADV_NPM)) return 0;
+    if (target != 0 || overlap > NVN_BLEND_ADVANCED_OVERLAP_CONJOINT) return 0;
+    if (mode == NVN_BLEND_ADVANCED_MODE_PLUS || mode == NVN_BLEND_ADVANCED_MODE_MINUS ||
+        (mode >= NVN_BLEND_ADVANCED_MODE_RED && mode <= NVN_BLEND_ADVANCED_MODE_BLUE)) {
+        blend->en[target] = 1;
+        blend->cop[target] = blend->aop[target] =
+            mode == NVN_BLEND_ADVANCED_MODE_MINUS ? DS_BLEND_REVERSE_SUBTRACT : DS_BLEND_ADD;
+        blend->sc[target] = premultiplied ? DS_FACTOR_ONE : DS_FACTOR_SRC_ALPHA;
+        blend->sa[target] = DS_FACTOR_ONE;
+        blend->dc[target] = blend->da[target] = DS_FACTOR_ONE;
+        if (mode >= NVN_BLEND_ADVANCED_MODE_RED) {
+            blend->dc[target] = blend->da[target] = DS_FACTOR_ZERO;
+            blend->mask[target] &= (u8)(1u << (mode - NVN_BLEND_ADVANCED_MODE_RED));
+        }
+        return 1;
+    }
+    if (!nvn_field(state, NVN_BLEND_ADV_NPM)) return 0;
     u8 source = DS_FACTOR_ZERO, destination = DS_FACTOR_ZERO, alpha_source = DS_FACTOR_ZERO;
     switch (mode) {
         case NVN_BLEND_ADVANCED_MODE_ZERO: break;

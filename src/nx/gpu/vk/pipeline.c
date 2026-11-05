@@ -57,7 +57,7 @@ static void pf_merge(void);
 static void pf_shader_record(const VkSh* s, const u32* spv, size_t nw, const u8* code, u32 ncode, const ShXfb* xfb);
 static u32 src_bytes(u32 mlen);
 static void pf_ship_found(VkSh* s);
-static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[20], u32 len, u64 qh, u32 len_a, u64 qh_a);
+static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[24], u32 len, u64 qh, u32 len_a, u64 qh_a);
 /* the draw state and stage whose bound constant buffers the translator reads, for the vk_shader_get call running */
 static const DsState* g_sh_ds;
 static int g_sh_bind;
@@ -120,6 +120,10 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
         if (width == 2 && spv[at + 1] == 35 && !g_vk.feat.sampleRateShading) return "sampleRateShading is unavailable";
         if (width == 2 && spv[at + 1] == 55 && !g_vk.feat.shaderStorageImageReadWithoutFormat)
             return "shaderStorageImageReadWithoutFormat is unavailable";
+        if (width == 2 && spv[at + 1] == 56 && !g_vk.feat.shaderStorageImageWriteWithoutFormat)
+            return "shaderStorageImageWriteWithoutFormat is unavailable";
+        if (width == 2 && spv[at + 1] == 5378 && !g_vk.has_fragment_interlock)
+            return "fragmentShaderPixelInterlock is unavailable";
         if (width == 2 && spv[at + 1] == 4427 && !g_vk.has_shader_draw_parameters)
             return "shaderDrawParameters is unavailable";
         if (width == 2 && spv[at + 1] == 5055 && !g_shader_clock_scopes) return "shaderClock is unavailable";
@@ -301,7 +305,8 @@ void vk_pipeline_init(void) {
             VkDescriptorSetLayoutCreateInfo dl = {
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                 .flags = g_vk.has_descriptor_buffers ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0,
-                .bindingCount = n, .pBindings = b};
+                .bindingCount = n,
+                .pBindings = b};
             if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dl, NULL, &g_vk_dslayout[arrays][s])))
                 fatal("vulkan: cannot create shader descriptor layout");
             vk_descriptors_layout(g_vk_dslayout[arrays][s], b, n);
@@ -334,11 +339,14 @@ void vk_pipeline_init(void) {
     if (g_vk.has_descriptor_buffers) {
         VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 80};
         VkPipelineLayoutCreateInfo compute = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .setLayoutCount = 1, .pSetLayouts = &g_vk.cs_dslayout,
-            .pushConstantRangeCount = 1, .pPushConstantRanges = &pc};
+                                              .setLayoutCount = 1,
+                                              .pSetLayouts = &g_vk.cs_dslayout,
+                                              .pushConstantRangeCount = 1,
+                                              .pPushConstantRanges = &pc};
         if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &compute, NULL, &g_vk.cs_playout)))
             fatal("vulkan: cannot create compute pipeline layout");
-    } else g_vk.cs_dslayout = g_vk_dslayout[0][0];
+    } else
+        g_vk.cs_dslayout = g_vk_dslayout[0][0];
     if (!g_vk_playout) fatal("vulkan: cannot create shader pipeline layout");
     snprintf(g_cache_dir, sizeof g_cache_dir, "%sshader_cache", g_cachedir);
     plat_mkdir(g_cache_dir);
@@ -381,8 +389,8 @@ static VkSh* g_shh[1024];
    by write tracking since then, or else by the hash of its code */
 typedef struct {
     u64 gva, gva_a, gw;
-	u64 shader_generation;
-    u32 mask[20], epoch, wseen;
+    u64 shader_generation;
+    u32 mask[24], epoch, wseen;
     int stage;
     VkSh* s;
 } ShA;
@@ -419,9 +427,12 @@ static u64 g_pipe_wait_ns; /* the GPU thread's and the recording thread's waits,
 static u64 g_pipe_make_ns; /* the workers' time making pipelines, added atomically */
 static u64 g_pipe_hits;    /* pipelines the pipeline cache had */
 /* what a shader's key words (vk_shader_get's mask) tell its translation, into si zeroed */
-static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShXfb* xfb) {
+static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[24], const ShXfb* xfb) {
     u64 ints = mask[0] | (u64)mask[1] << 32, sints = mask[2] | (u64)mask[3] << 32;
     memset(si, 0, sizeof *si);
+    si->flow_base = mask[20];
+    si->advanced_blend = mask[21] | (u64)mask[22] << 32;
+    si->advanced_blend_mask = mask[23];
     if (stage == ST_FS) {
         si->tex_int_mask = ints;
         si->tex_sint_mask = sints;
@@ -456,7 +467,7 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
    the game ships, translated before any draw (ship_make), which fails when its translation read a constant buffer
    word that its own constants don't hold: a draw's lookup checks the reads against its own buffers, which a read
    that failed never matches */
-static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[20], u32 len, u64 qh, u32 len_a,
+static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[24], u32 len, u64 qh, u32 len_a,
                      u64 qh_a, const ShXfb* xfb, VkCbReader read, int shipped, size_t* nw) {
     s->shipped = shipped;
     s->hash = h;
@@ -501,7 +512,7 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[2
 /* A draw's shader (sh_spirv's arguments, and mlen, the bytes of code the translation reads): translated, its module
    made, kept in the shader file with its program. One that couldn't be translated comes back failed; NULL when out
    of memory */
-static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[20], u32 len, u64 qh, u32 len_a,
+static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[24], u32 len, u64 qh, u32 len_a,
                      u64 qh_a, const ShXfb* xfb, VkCbReader read) {
     size_t nw;
     VkSh* s = calloc(1, sizeof *s);
@@ -524,12 +535,12 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
 }
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                     u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
-                    const u8* query_hint) {
+                    const u8* query_hint, u64 advanced_blend, u32 advanced_mask) {
     const DsPrograms* p = ds ? &ds->prog : NULL;
     pf_merge();
     g_sh_ds = ds;
     g_sh_bind = stage <= ST_FS ? stage : 0;
-    u32 mask[20] = {(u32)int_mask,
+    u32 mask[24] = {(u32)int_mask,
                     (u32)(int_mask >> 32),
                     (u32)sint_mask,
                     (u32)(sint_mask >> 32),
@@ -541,6 +552,11 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
                     dc_funcs,
                     unfed};
     if (stage == ST_FS && p) mask[11] = p->early_z;
+    if (stage == ST_FS && advanced_blend) {
+        mask[21] = (u32)advanced_blend;
+        mask[22] = (u32)(advanced_blend >> 32);
+        mask[23] = advanced_mask & 15;
+    }
     if (stage == ST_GS && p) memcpy(mask + 12, p->gs_skip, 8 * sizeof(u32));
     /* the rectangle textures, and the dimensions of the textures only a TXQ names (ShaderInfo.tex_query_hint,
        3 bits a slot), in words only the geometry stage's key uses otherwise */
@@ -558,6 +574,7 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
         mask[8] = (u32)(xh >> 32);
     }
     u32 mix = (u32)vk_hash(mask, 12 * sizeof(u32));
+    if (advanced_blend) mix ^= (u32)vk_hash(mask + 21, 3 * sizeof(u32));
     if (stage == ST_GS) mix ^= (u32)vk_hash(mask + 12, 8 * sizeof(u32));
     if (stage != ST_GS && rect) mix ^= (u32)vk_hash(mask + 12, 2 * sizeof(u32));
     if (queried) mix ^= (u32)vk_hash(mask + 14, SH_QUERY_WORDS * sizeof(u32));
@@ -569,13 +586,12 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
     u32 epoch = vk_ww_epoch(); /* before the code is checked or read */
     for (int w = 0; w < 2 && !ca; w++)
         if (set[w].s && set[w].gva == gva && set[w].gva_a == gva_a && set[w].stage == stage &&
-            !memcmp(set[w].mask, mask, sizeof mask))
+            !memcmp(set[w].mask, mask, 20 * sizeof *mask) && !memcmp(set[w].mask + 21, mask + 21, 3 * sizeof *mask))
             ca = &set[w];
     if (ca) {
         VkSh* s = ca->s;
-	int same = (ca->epoch == epoch && ca->shader_generation == g_vk.shader_generation) ||
-		(code_same(ca, gva, s->clen, s->qh) &&
-		 (!gva_a || code_same(ca, gva_a, s->clen_a, s->qh_a)));
+        int same = (ca->epoch == epoch && ca->shader_generation == g_vk.shader_generation) ||
+                   (code_same(ca, gva, s->clen, s->qh) && (!gva_a || code_same(ca, gva_a, s->clen_a, s->qh_a)));
         if (same && (ca->epoch != epoch || ca->shader_generation != g_vk.shader_generation)) {
             ca->shader_generation = g_vk.shader_generation;
             ca->epoch = epoch;
@@ -619,13 +635,14 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
     }
     u32 mlen;
     u64 h = vk_shader_hash(code, SH_CODE, &mlen, sh_cb_read);
+    mask[20] = shader_absolute_flow(code, mlen) ? (u32)gva : 0;
     VkSh* s = NULL;
     /* one made for the same program: its whole code hashes the same (the merged program's, and each part's with its
        length, which ShA's checks compare memory with later), with the same key and constant buffer reads. Shaders of
        earlier runs (pf_merge) are found only so */
     for (VkSh* q = g_shh[h & 1023]; q && !s; q = q->next)
-        if (q->hash == h && q->stage == stage && !memcmp(q->mask, mask, sizeof mask) && q->clen == len &&
-            q->qh == qh && q->clen_a == len_a && q->qh_a == qh_a && vk_cb_reads_hold(&q->cbr, sh_cb_read))
+        if (q->hash == h && q->stage == stage && !memcmp(q->mask, mask, sizeof mask) && q->clen == len && q->qh == qh &&
+            q->clen_a == len_a && q->qh_a == qh_a && vk_cb_reads_hold(&q->cbr, sh_cb_read))
             s = q;
     if (s && s->shipped == 1) pf_ship_found(s);
     if (!s && (s = pf_ship_take(h, stage, mask, len, qh, len_a, qh_a)) != NULL) {
@@ -660,7 +677,7 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
     ca->epoch = epoch;
     ca->wseen = wseen;
     ca->gw = gw;
-	ca->shader_generation = g_vk.shader_generation;
+    ca->shader_generation = g_vk.shader_generation;
     ca->s = s;
     return s;
 }
@@ -718,8 +735,8 @@ static VkShaderModule null_fs(void) {
 typedef struct Pipe {
     PipeKey k;
     u64 h;
-    VkPipeline p;      /* once ready */
-    int ready;         /* set by the worker after p, with release order */
+    VkPipeline p; /* once ready */
+    int ready;    /* set by the worker after p, with release order */
     VkPipelineLayout layout;
     VkShaderModule fs; /* k.fs, or the empty fragment shader */
     int prewarm;       /* one of the file's, made before a draw asked for it */
@@ -745,11 +762,11 @@ typedef struct {
 static struct {
     PFile file;
     char path[1400];
-    int on;          /* the files are used (not when shaders are recorded, which wants every one translated) */
-    PMutex lock;     /* loaded, and done's */
+    int on;      /* the files are used (not when shaders are recorded, which wants every one translated) */
+    PMutex lock; /* loaded, and done's */
     PCond done;
-    int loaded;      /* the reading thread is done with the main file (lock) */
-    int merged;      /* what it made is in g_shh and g_pipeh (vk_lock) */
+    int loaded;         /* the reading thread is done with the main file (lock) */
+    int merged;         /* what it made is in g_shh and g_pipeh (vk_lock) */
     VkSh *sh, *sh_tail; /* its shaders, in the file's order, linked by next until merged */
     Pipe* pipes[PIPEH]; /* its pipelines by key hash, linked by next until merged */
     u32 nsh, npipe;
@@ -916,9 +933,21 @@ static VkPipeline pipe_create(const Pipe* e) {
         LOG_LIMIT(
             1, "vulkan: blending that needs dual-source or independent blend, which this GPU lacks, is simplified\n");
     }
+    VkPipelineColorBlendAdvancedStateCreateInfoEXT advanced = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_ADVANCED_STATE_CREATE_INFO_EXT,
+        .srcPremultiplied = k->advanced.src_premultiplied,
+        .dstPremultiplied = VK_TRUE,
+        .blendOverlap = (VkBlendOverlapEXT)k->advanced.overlap};
+    if (k->advanced.operation) {
+        /* NVN advanced modes select color output zero only. Other bound attachments must have no writes. */
+        for (u32 i = 0; i < k->ncolor; i++)
+            cba[i].colorBlendOp = cba[i].alphaBlendOp = (VkBlendOp)k->advanced.operation;
+        if (k->ncolor) cba[0].blendEnable = VK_TRUE;
+    }
     /* a logic operation takes the place of blending on integer and normalized targets; float and sRGB ones pass
        their color through, as the 3D engine's LOGIC_OP does */
     VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                              .pNext = k->advanced.operation ? &advanced : NULL,
                                               .logicOpEnable = k->logic_op != 0,
                                               .logicOp = k->logic_op ? (VkLogicOp)(k->logic_op - 1) : VK_LOGIC_OP_COPY,
                                               .attachmentCount = k->ncolor,
@@ -983,22 +1012,23 @@ static VkPipeline pipe_create(const Pipe* e) {
                                         .pColorAttachmentFormats = cf,
                                         .depthAttachmentFormat = (VkFormat)k->depth,
                                         .stencilAttachmentFormat = (VkFormat)k->stencil};
-    VkGraphicsPipelineCreateInfo gi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-                                       .pNext = &ri,
-                                       .flags = (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
-                                           (k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0),
-                                       .stageCount = nst,
-                                       .pStages = st,
-                                       .pVertexInputState = &vi,
-                                       .pInputAssemblyState = &ia,
-                                       .pTessellationState = k->tes ? &ts : NULL,
-                                       .pViewportState = &vp,
-                                       .pRasterizationState = &rs,
-                                       .pMultisampleState = &ms,
-                                       .pDepthStencilState = &ds,
-                                       .pColorBlendState = &cb,
-                                       .pDynamicState = &dy,
-                                       .layout = e->layout};
+    VkGraphicsPipelineCreateInfo gi = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext = &ri,
+        .flags = (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
+                 (k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0),
+        .stageCount = nst,
+        .pStages = st,
+        .pVertexInputState = &vi,
+        .pInputAssemblyState = &ia,
+        .pTessellationState = k->tes ? &ts : NULL,
+        .pViewportState = &vp,
+        .pRasterizationState = &rs,
+        .pMultisampleState = &ms,
+        .pDepthStencilState = &ds,
+        .pColorBlendState = &cb,
+        .pDynamicState = &dy,
+        .layout = e->layout};
     VkPipeline p = VK_NULL_HANDLE;
     VK_OK(vkCreateGraphicsPipelines(g_vk.dev, g_pcache, 1, &gi, NULL, &p));
     if (made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT)
@@ -1027,8 +1057,8 @@ static VkPipeline pipe_make(const Pipe* e, int record) {
    in the order asked for; the rest of the file's (pf_load_pipe) after */
 static PMutex g_pj_lock = PMUTEX_INIT;
 static PCond g_pj_work, g_pj_done;
-static Pipe *g_pj_head, *g_pj_tail; /* a draw's */
-static Pipe *g_pw_head, *g_pw_tail; /* the file's */
+static Pipe *g_pj_head, *g_pj_tail;               /* a draw's */
+static Pipe *g_pw_head, *g_pw_tail;               /* the file's */
 static int g_pj_started, g_pj_threads, g_pj_busy; /* g_pj_busy: the workers making a pipeline now */
 static void pipe_worker(void* arg) {
     (void)arg;
@@ -1142,8 +1172,8 @@ static VkPipeline pipe_wait(Pipe* e, i64 ns) {
    (vk_pipeline_get_deferred): PIPE_STANDIN in the top bits, which no handle has (record.c's REC_STANDIN tells the same
    of descriptor sets), and the pipeline's index in this table, pages the GPU thread adds before a stand-in naming
    them goes through the ring. Pipelines live as long as the run, so a stand-in does too */
-#define PIPE_STANDIN   0x5EC6000000000000ull
-#define PSTAND_PAGE    1024
+#define PIPE_STANDIN 0x5EC6000000000000ull
+#define PSTAND_PAGE  1024
 static Pipe** g_pstand[1024];
 static u32 g_npstand;
 static VkPipeline pipe_standin(Pipe* p) {
@@ -1557,7 +1587,7 @@ static void pf_load_pipe(void* ctx, const u64 m[5], const void* key, u32 keylen)
 /* PF_GUEST_VERSION: what a PF_SOURCE or PF_PIPE record means, beyond the sizes the key holds. Raised when a PipeKey
    field or a key word (vk_shader_get's mask) comes to mean something else, so that the records of an earlier build
    are dropped rather than made into pipelines and shaders of the wrong state */
-#define PF_GUEST_VERSION 1
+#define PF_GUEST_VERSION 3
 /* The file's key: whatever changes the SPIR-V translation makes or what a PipeKey means. First its guest part, which
    the PF_SOURCE and PF_PIPE records depend on (pf_open): the device; the features and limits the translator,
    vk_shader_get and pipe_create consult; the sizes of what those records hold whole. Then the rest, which only the
@@ -1574,6 +1604,13 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   (u32)g_vk.has_shader_draw_parameters,
                   (u32)g_vk.has_feedback,
                   (u32)g_vk.has_feedback_dynamic,
+                  g_vk.advanced_blend_caps.available,
+                  g_vk.advanced_blend_caps.coherent,
+                  g_vk.advanced_blend_caps.max_attachments,
+                  g_vk.advanced_blend_caps.nonpremultiplied_source,
+                  g_vk.advanced_blend_caps.correlated_overlap,
+                  g_vk.advanced_blend_caps.all_operations,
+                  (u32)g_vk.has_fragment_interlock,
                   (u32)g_shader_texture_arrays,
                   (u32)g_shader_stage_point_size,
                   (u32)g_shader_output_layer,
@@ -1707,8 +1744,8 @@ static void idx_add(u64 hash, int stage, u32 clip, u32 len, u64 qh, u32 len_a, u
    (docs/NVN_HLE.md); SNX_SH_NOT_LAST for tessellation control, which never is; none for fragment */
 static u32 ship_clip(int stage) { return stage == ST_TCS ? SNX_SH_NOT_LAST : stage == ST_FS ? 0 : 0xFFu; }
 /* a key whose words are all zero but the clip word: the keys the pass translates with */
-static int ship_key_only_clip(const u32 mask[20]) {
-    for (int i = 0; i < 20; i++)
+static int ship_key_only_clip(const u32 mask[24]) {
+    for (int i = 0; i < 24; i++)
         if (i != 6 && mask[i]) return 0;
     return 1;
 }
@@ -1776,7 +1813,7 @@ static u64 pf_load_shipref(void* ctx, u64 at, u64 check) {
    record is made into a module now, and named in the main file by a PF_SHIPREF, so that the pipelines made with it
    are kept too. One whose jump tables the pass read from the program's constants is taken only while the draw's
    constant buffer 1 holds the same words, as every shader with reads is. NULL when the file has none */
-static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[20], u32 len, u64 qh, u32 len_a, u64 qh_a) {
+static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[24], u32 len, u64 qh, u32 len_a, u64 qh_a) {
     const ShipIdx* e;
     const u32 *spv, *cbr;
     PfShader r;
@@ -1827,7 +1864,9 @@ static u8* ship_window(const u8* p, size_t avail) {
    Translated into the shipped file unless it has it: SHIP_NEW, SHIP_KNOWN, SHIP_FAILED, or SHIP_STOP when the file
    takes no more */
 static int ship_make(const u8* code, u64 h, int stage, u32 len, u64 qh, u32 len_a, u64 qh_a) {
-    u32 mask[20] = {0};
+    /* Absolute calls name the draw's loaded GPU address, which shipped source discovery does not yet know. */
+    if (shader_absolute_flow(code, len)) return SHIP_SKIPPED;
+    u32 mask[24] = {0};
     VkSh s = {0};
     size_t nw;
     u64 at = 0;

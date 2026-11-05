@@ -14,7 +14,7 @@
 #   pattern  the top 16 bits of the instruction, most significant first: 0 and 1 are fixed, - is either. Spaces are
 #            for reading. Two patterns may both match a word only when one fixes every bit the other does and more:
 #            the more specific one is then tried first.
-# Eden's opcodes the translator has no name for (IDP, IMADSP, VABSDIFF4, JCAL, JMX, LONGJMP, PLONGJMP, RAM, RTT, SAM,
+# Eden's opcodes the translator has no name for (IDP, IMADSP, VABSDIFF4, LONGJMP, PLONGJMP, RAM, RTT, SAM,
 # GETLMEMBASE, SETLMEMBASE) are left out and decode as unknown. Fork additions to the set this file started from
 # (DSET, ATOM.CAS, OUT immediate, SUATOM, CCTLT, STP, TLD.B, TLD4.B, TMML.B, TXD.B, VABSDIFF, VSET, VSHL, VSHR)
 # match Eden's encodings. Display names go into the translator's "unsupported" messages, which tests match by prefix.
@@ -207,6 +207,8 @@ PCNT         "PCNT"             "1110 0010 1011 ----"
 CONT         "CONT"             "1110 0011 0101 ----"
 EXIT         "EXIT"             "1110 0011 0000 ----"
 KIL          "KIL"              "1110 0011 0011 ----"
+JCAL         "JCAL"             "1110 0010 0010 ----"
+JMX          "JMX"              "1110 0010 0000 ----"
 JMP          "JMP"              "1110 0010 0001 ----"
 CAL          "CAL"              "1110 0010 0110 ----"
 RET          "RET"              "1110 0011 0010 ----"

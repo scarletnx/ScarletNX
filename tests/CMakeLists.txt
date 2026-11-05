@@ -2836,6 +2836,15 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-vk-coverage vk_coverage.c)
     snx_test_target(snx-test-vk-coverage 11)
     add_test(NAME vk_coverage COMMAND snx-test-vk-coverage)
+    add_executable(snx-test-vk-advanced-blend vk_advanced_blend.c)
+    snx_test_target(snx-test-vk-advanced-blend 11)
+    target_link_libraries(snx-test-vk-advanced-blend PRIVATE Vulkan::Headers)
+    add_test(NAME vk_advanced_blend COMMAND snx-test-vk-advanced-blend)
+    add_executable(snx-test-shader-advanced-blend shader_advanced_blend.c
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/advanced_blend_spirv.c"
+        "${PROJECT_SOURCE_DIR}/src/common/utilities/spirv_emit.c")
+    snx_test_target(snx-test-shader-advanced-blend 11)
+    add_test(NAME shader_advanced_blend COMMAND snx-test-shader-advanced-blend)
 endif()
 # these recompile with --repo of the checkout, which keeps the code units (nx/loader/unit_cache.c) in the user's cache
 # folder: a folder of the build tree's instead, where XDG names it

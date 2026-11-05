@@ -255,8 +255,8 @@ static int cc_valid(u32 code) {
     return code <= 14 || code == 15 || (code >= 16 && code <= 23) || code == 30 || code == 31;
 }
 int shader_flow_has_cc(int op) {
-    return op == O_BRA || op == O_BRX || op == O_SYNC || op == O_BRK || op == O_CONT || op == O_EXIT || op == O_RET ||
-           op == O_KIL;
+    return op == O_BRA || op == O_BRX || op == O_JMP || op == O_JMX || op == O_SYNC || op == O_BRK || op == O_CONT ||
+           op == O_EXIT || op == O_RET || op == O_KIL;
 }
 int shader_helper_side_effect(int op) {
     return op == O_STG || op == O_STL || op == O_STS || op == O_ST || op == O_STP || op == O_RED || op == O_ATOM ||
@@ -369,6 +369,8 @@ int shader_writes_reg(u64 w, int op, u32 reg) {
         case O_CONT:
         case O_EXIT:
         case O_KIL:
+        case O_JCAL:
+        case O_JMX:
         case O_JMP:
         case O_CAL:
         case O_RET:
@@ -720,7 +722,10 @@ int shader_supported(u64 w, int op) {
         /* BRA/CAL/PRET bit 5 selects a constant-buffer target; BRX bit 6 enables LMT. The other flow forms below
            also require bit 5 clear in their supported encoding. */
         case O_BRA: return cc_valid(B(w, 0, 5)) && !B(w, 5, 1);
-        case O_CAL: return !B(w, 5, 1);
+        case O_CAL: return 1;            /* relative immediate or cbuf call; preserve the existing CAL hint forms */
+        case O_JCAL: return !B(w, 6, 1); /* JCAL has a predicate but no flow-condition operand. */
+        case O_JMP: return cc_valid(B(w, 0, 5)) && !B(w, 6, 1); /* bit7 is the uniform-branch hint */
+        case O_JMX: return cc_valid(B(w, 0, 5)) && !B(w, 6, 1);
         case O_PRET: return !B(w, 5, 1);
         /* EXIT consumes a PEXIT token and branches to its target. */
         case O_PEXIT: return !B(w, 5, 1);

@@ -648,12 +648,13 @@ typedef struct {
     u8 query[SH_MAXTEX]; /* the dimension of each texture only a TXQ names (ShaderInfo.tex_query_hint) */
 } CsKey;
 static CsPipe g_cs_alloc_failed = {.failed = 1}; /* out of memory: not cached, retried */
-static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k) {
+static CsPipe* cs_pipe(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k) {
     u32 blen;
     u64 key = vk_shader_hash(code, 0x10000 + 80, &blen, cs_cb_read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^
               ((u64)lz << 56) ^ ((u64)shm << 20) ^ ((u64)k.image << 32) ^ (u64)k.tex_int * 0x9E3779B97F4A7C15ull ^
               (u64)k.tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k.image_sint * 0xA24BAED4963EE407ull ^
               (u64)k.tex_rect * 0x165667B19E3779F9ull;
+    if (shader_absolute_flow(code, 0x10000 + 80)) key ^= (u64)flow_base * 0xD6E8FEB86659FD93ull;
     for (u32 q = 0; q < SH_MAXTEX; q++) key ^= (u64)k.query[q] * (0x9E3779B97F4A7C15ull + 2 * q + 1) << (q & 15);
     CsPipe* p = g_csp[key & 255];
     while (p && (p->key != key || !vk_cb_reads_hold(&p->cbr, cs_cb_read))) p = p->next;
@@ -661,6 +662,7 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k)
     p = calloc(1, sizeof *p);
     if (!p) return &g_cs_alloc_failed;
     p->key = key;
+    p->si.flow_base = flow_base;
     p->next = g_csp[key & 255];
     g_csp[key & 255] = p;
     p->si.cs_local[0] = lx;
@@ -978,7 +980,7 @@ void vk_dispatch(const DispatchState* d) {
         /* same window and cbuf reads: same program, so skip vk_shader_hash's walk (5% of one game's GPU thread) */
         u64 h = vk_hash(code_buf, sizeof code_buf);
         if (!same || h != fe->code_hash) {
-            p = cs_pipe(code_buf, lx, ly, lz, shm, unkeyed);
+            p = cs_pipe(code_buf, (u32)(pa - 80), lx, ly, lz, shm, unkeyed);
             fe->code_hash = h;
         }
         fe->addr = pa;
@@ -1040,7 +1042,7 @@ void vk_dispatch(const DispatchState* d) {
             memcmp(p->keyed->si.tex_query_hint, ck.query, sizeof ck.query) != 0) {
             static u8 keyed_code[0x10000 + 80];
             cs_read_code(pa, keyed_code);
-            p->keyed = cs_pipe(keyed_code, lx, ly, lz, shm, ck);
+            p->keyed = cs_pipe(keyed_code, (u32)(pa - 80), lx, ly, lz, shm, ck);
         }
         p = p->keyed;
     }

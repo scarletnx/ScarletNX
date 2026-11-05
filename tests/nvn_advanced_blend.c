@@ -77,6 +77,38 @@ int main(void) {
         nvn_set_field(nvn_set_field(0, NVN_BLEND_ADV, NVN_BLEND_ADVANCED_MODE_OVERLAY), NVN_BLEND_ADV_NPM, 1);
     check(!nvn_blend_advanced(&sentinel, 0, unsupported) && !memcmp(&sentinel, &original, sizeof original),
           "artistic modes remain unsupported and preserve state");
+    const u32 additional[] = {NVN_BLEND_ADVANCED_MODE_PLUS, NVN_BLEND_ADVANCED_MODE_MINUS, NVN_BLEND_ADVANCED_MODE_RED,
+                              NVN_BLEND_ADVANCED_MODE_GREEN, NVN_BLEND_ADVANCED_MODE_BLUE};
+    for (u32 i = 0; i < sizeof additional / sizeof *additional; i++)
+        for (u32 pm = 0; pm < 2; pm++)
+            for (u32 overlap = 0; overlap < 3; overlap++)
+                for (u32 normalized = 0; normalized < 2; normalized++) {
+                    u32 mode = additional[i];
+                    u64 state = nvn_set_field(0, NVN_BLEND_ADV, mode);
+                    state = nvn_set_field(state, NVN_BLEND_ADV_PMS, pm);
+                    state = nvn_set_field(state, NVN_BLEND_ADV_OVL, overlap);
+                    state = nvn_set_field(state, NVN_BLEND_ADV_NPM, normalized);
+                    DsBlend blend = {0};
+                    blend.mask[0] = 15;
+                    check(nvn_blend_advanced(&blend, 0, state), "extra arithmetic/channel mode reduces exactly");
+                    for (u32 sample = 0; sample < 289; sample++) {
+                        float a = (float)(sample / 17) / 16, b = (float)(sample % 17) / 16;
+                        float source[4] = {0.25f, 0.75f, 0.5f, a}, destination[4] = {b * 0.75f, b * 0.25f, b * 0.5f, b};
+                        if (pm)
+                            for (u32 c = 0; c < 3; c++) source[c] *= a;
+                        float answer[4];
+                        nvn_advanced_blend_reference(mode, (int)pm, overlap, source, destination, answer);
+                        for (u32 c = 0; c < 4; c++) {
+                            float s = source[c] * factor(c == 3 ? blend.sa[0] : blend.sc[0], source, destination, c);
+                            float d =
+                                destination[c] * factor(c == 3 ? blend.da[0] : blend.dc[0], source, destination, c);
+                            float value = blend.cop[0] == DS_BLEND_REVERSE_SUBTRACT ? d - s : s + d;
+                            if (!(blend.mask[0] & (1u << c))) value = destination[c];
+                            check(fabsf(value - answer[c]) < 0.000001f,
+                                  "extra reduction agrees with independent equation");
+                        }
+                    }
+                }
     printf("nvn advanced blend: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

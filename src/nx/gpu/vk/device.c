@@ -343,6 +343,8 @@ static int create_device(void) {
         has_vertex_input = snx_vk_extensions_has(&e, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
+        g_vk.advanced_blend_caps.available = snx_vk_extensions_has(&e, VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
+        g_vk.has_fragment_interlock = snx_vk_extensions_has(&e, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
         has_shader_clock = snx_vk_extensions_has(&e, VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
         has_descriptor_buffer = snx_vk_extensions_has(&e, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
@@ -426,18 +428,23 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
     VkPhysicalDeviceTransformFeedbackFeaturesEXT fxfb = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
+    VkPhysicalDeviceBlendOperationAdvancedFeaturesEXT qadvanced = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BLEND_OPERATION_ADVANCED_FEATURES_EXT};
+    VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT qinterlock = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
     VkPhysicalDeviceShaderClockFeaturesKHR qclock = {.sType =
                                                          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR};
     VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR qreconv = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR};
     VkPhysicalDevicePipelineRobustnessFeaturesEXT qpipeline = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT};
-    VkPhysicalDeviceRobustness2FeaturesEXT qrobust = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
+    VkPhysicalDeviceRobustness2FeaturesEXT qrobust = {.sType =
+                                                          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
     VkPhysicalDeviceVulkan12Features q12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceVulkan11Features q11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT qloop = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT};
     VkPhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT qloop_dyn = {
@@ -473,6 +480,8 @@ static int create_device(void) {
                            g_vk.has_divisor ? &fdiv : NULL,
                            g_vk.has_border_color ? &fbc : NULL,
                            g_vk.has_xfb ? &fxfb : NULL,
+                           g_vk.advanced_blend_caps.available ? &qadvanced : NULL,
+                           g_vk.has_fragment_interlock ? &qinterlock : NULL,
                            g_vk.has_feedback ? &qloop : NULL,
                            has_feedback_dynamic ? &qloop_dyn : NULL,
                            g_vk.has_local_read ? &qlocal : NULL,
@@ -537,6 +546,19 @@ static int create_device(void) {
         has_shader_clock ? (qclock.shaderSubgroupClock ? 1 : 0) | (qclock.shaderDeviceClock ? 2 : 0) : 0;
     g_vk.has_divisor = g_vk.has_divisor && fdiv.vertexAttributeInstanceRateDivisor;
     g_vk.has_xfb = g_vk.has_xfb && fxfb.transformFeedback;
+    g_vk.has_fragment_interlock = g_vk.has_fragment_interlock && qinterlock.fragmentShaderPixelInterlock;
+    if (g_vk.advanced_blend_caps.available) {
+        VkPhysicalDeviceBlendOperationAdvancedPropertiesEXT advanced = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BLEND_OPERATION_ADVANCED_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                                  .pNext = &advanced};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &properties);
+        g_vk.advanced_blend_caps.coherent = qadvanced.advancedBlendCoherentOperations;
+        g_vk.advanced_blend_caps.max_attachments = advanced.advancedBlendMaxColorAttachments;
+        g_vk.advanced_blend_caps.nonpremultiplied_source = advanced.advancedBlendNonPremultipliedSrcColor;
+        g_vk.advanced_blend_caps.correlated_overlap = advanced.advancedBlendCorrelatedOverlap;
+        g_vk.advanced_blend_caps.all_operations = advanced.advancedBlendAllOperations;
+    }
     g_vk.has_border_color = g_vk.has_border_color && fbc.customBorderColors && fbc.customBorderColorWithoutFormat;
     if (g_vk.has_border_color) { /* how many samplers may have a custom border color: as few as 32 */
         VkPhysicalDeviceCustomBorderColorPropertiesEXT cbp = {
@@ -549,17 +571,19 @@ static int create_device(void) {
         g_vk.descriptor_props = (VkPhysicalDeviceDescriptorBufferPropertiesEXT){
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
         VkPhysicalDeviceProperties2 desc = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-                                             .pNext = &g_vk.descriptor_props};
+                                            .pNext = &g_vk.descriptor_props};
         vkGetPhysicalDeviceProperties2(g_vk.phys, &desc);
-        g_vk.has_descriptor_buffers = g_vk.descriptor_props.combinedImageSamplerDescriptorSingleArray &&
+        g_vk.has_descriptor_buffers =
+            g_vk.descriptor_props.combinedImageSamplerDescriptorSingleArray &&
             g_vk.descriptor_props.maxSamplerDescriptorBufferRange >= (64ull << 20) &&
             g_vk.descriptor_props.maxResourceDescriptorBufferRange >= (64ull << 20) &&
             g_vk.descriptor_props.samplerDescriptorBufferAddressSpaceSize >= (VK_FRAMES * (64ull << 20)) &&
             g_vk.descriptor_props.resourceDescriptorBufferAddressSpaceSize >= (VK_FRAMES * (64ull << 20)) &&
             g_vk.descriptor_props.descriptorBufferAddressSpaceSize >= (VK_FRAMES * (64ull << 20));
     }
-    LOG("vulkan: graphics descriptor buffers %s\n", g_vk.has_descriptor_buffers
-        ? (g_settings.descriptor_buffers ? "supported, enabled" : "supported, disabled") : "unavailable, using sets");
+    LOG("vulkan: graphics descriptor buffers %s\n",
+        g_vk.has_descriptor_buffers ? (g_settings.descriptor_buffers ? "supported, enabled" : "supported, disabled")
+                                    : "unavailable, using sets");
     g_vk.has_descriptor_buffers = g_vk.has_descriptor_buffers && g_settings.descriptor_buffers;
     if (g_vk.has_descriptor_buffers && !vk_descriptors_memory(g_vk.phys)) {
         WARN("vulkan: descriptor buffers need host-visible, coherent and cached memory, which this device has not: "
@@ -567,10 +591,10 @@ static int create_device(void) {
         g_vk.has_descriptor_buffers = 0;
     }
     /* FFmpeg's decoder makes views of its two plane pictures */
-    VkPhysicalDeviceVulkan11Features f11 = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-        .shaderDrawParameters = q11.shaderDrawParameters,
-        .samplerYcbcrConversion = g_vk.video_family != ~0u && q11.samplerYcbcrConversion};
+    VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+                                            .shaderDrawParameters = q11.shaderDrawParameters,
+                                            .samplerYcbcrConversion =
+                                                g_vk.video_family != ~0u && q11.samplerYcbcrConversion};
     g_vk.has_shader_draw_parameters = q11.shaderDrawParameters != 0;
     g_shader_draw_parameters = g_vk.has_shader_draw_parameters;
     g_vk.has_draw_indirect_count = q12.drawIndirectCount != 0;
@@ -602,7 +626,8 @@ static int create_device(void) {
     void* chain = &f13;
     VkPhysicalDeviceDescriptorBufferFeaturesEXT fdesc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
-        .pNext = chain, .descriptorBuffer = VK_TRUE};
+        .pNext = chain,
+        .descriptorBuffer = VK_TRUE};
     if (g_vk.has_descriptor_buffers) {
         chain = &fdesc;
         ext[next++] = VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME;
@@ -693,6 +718,22 @@ static int create_device(void) {
         chain = &flocal;
         ext[next++] = VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME;
     }
+    VkPhysicalDeviceBlendOperationAdvancedFeaturesEXT fadvanced = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BLEND_OPERATION_ADVANCED_FEATURES_EXT,
+        .pNext = chain,
+        .advancedBlendCoherentOperations = g_vk.advanced_blend_caps.coherent};
+    if (g_vk.advanced_blend_caps.available) {
+        chain = &fadvanced;
+        ext[next++] = VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT finterlock = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT,
+        .pNext = chain,
+        .fragmentShaderPixelInterlock = VK_TRUE};
+    if (g_vk.has_fragment_interlock) {
+        chain = &finterlock;
+        ext[next++] = VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME;
+    }
     /* the render enable's comparison of an occlusion query's count, made on the GPU (gpu/vk/query.c) */
     VkPhysicalDeviceConditionalRenderingFeaturesEXT fcond = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT,
@@ -730,7 +771,9 @@ static int create_device(void) {
         ext[next++] = VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME;
     }
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR findex8 = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR, .pNext = chain, .indexTypeUint8 = VK_TRUE};
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR,
+        .pNext = chain,
+        .indexTypeUint8 = VK_TRUE};
     if (g_vk.has_index8) {
         chain = &findex8;
         ext[next++] = index8_ext;
@@ -1108,8 +1151,10 @@ int vk_init(void) {
         /* Load libvulkan/vulkan-1 directly, or the driver the program's folders carry (an Apple app's MoltenVK): no SDL
            video driver or headless-surface extension is needed. */
         void* own = backend_vk_driver();
-        if (own) volkInitializeCustom((PFN_vkGetInstanceProcAddr)own);
-        else if (!VK_OK(volkInitialize())) return 0;
+        if (own)
+            volkInitializeCustom((PFN_vkGetInstanceProcAddr)own);
+        else if (!VK_OK(volkInitialize()))
+            return 0;
     } else {
         PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)backend_vk_loader();
         if (!gipa) {

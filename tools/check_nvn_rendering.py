@@ -12,7 +12,7 @@ import subprocess
 import time
 
 NATIVE = ('nvn-descriptors', 'nvn-tex-storage', 'nvn-commands', 'nvn-draw-banks', 'nvn-copy-formats', 'nvn-names',
-          'nvn-advanced-blend', 'vk-coverage', 'vk-tess-passthrough')
+          'nvn-advanced-blend', 'vk-coverage', 'vk-tess-passthrough', 'nvn-queue-lifetime', 'vk-advanced-blend')
 GPU_MARKER = 'PASS NVN array copies: image texels, mirrored layers, view offsets and output padding exact=1'
 GPU_FEATURES = (
     ('array_copies', 'PASS NVN array copies:', None),
@@ -23,6 +23,12 @@ GPU_FEATURES = (
     ('evaluation_only_tessellation', 'PASS NVN evaluation-only tessellation:', 'SKIP NVN evaluation-only tessellation:'),
     ('advanced_blend_subset', 'PASS NVN advanced blend:', None),
     ('mixed_sample_coverage', 'PASS NVN coverage modulation:', 'SKIP NVN coverage modulation:'),
+    ('native_advanced_blend', 'PASS NVN native advanced blend:', 'SKIP NVN native advanced blend:'),
+    ('event_waits', 'PASS NVN event waits:', None),
+    ('subroutine_calls', 'PASS NVN subroutine calls:', None),
+    ('copy_conversions', 'PASS NVN copy conversions:', None),
+    ('programmable_blend', 'PASS NVN shader advanced blend:', 'SKIP NVN shader advanced blend:'),
+    ('blend_equations', 'PASS NVN programmable blend equations:', None),
 )
 
 
@@ -59,6 +65,10 @@ def classify(output, code, stable=True, gpu=False):
             status = 'fail'
     if not stable:
         status = 'fail'
+    if any('vulkan validation:' in line.lower() and
+           any(error in line.lower() for error in ('vuid-', 'threading', 'validation error', 'unassigned-'))
+           for line in lines):
+        status = 'fail'
     return {'status': status, 'features': features,
             'skip_messages': [line for line in lines if line.startswith('SKIP NVN ')]}
 
@@ -68,6 +78,23 @@ def all_features_passed(checks):
                all(feature['status'] == 'pass' for feature in row['features']) for row in checks)
 
 
+def jobs(native, vulkan, drivers, validation=False, record='0'):
+    """Build the serial driver/descriptor/recording matrix without changing old default job names."""
+    if record not in ('0', '1', 'both'):
+        raise ValueError('record must be 0, 1, or both')
+    modes = (0, 1) if record == 'both' else (int(record),)
+    selected = [(path.name, [str(path)], None, None) for path in native]
+    for label, manifest in drivers:
+        for descriptors in (0, 1):
+            for mode in modes:
+                suffix = f'-record-{mode}' if mode else ''
+                selected.append((f'{label}-descriptors-{descriptors}{suffix}',
+                                 [str(vulkan), '-H', '--vk_memory=1', f'--vk_record={mode}',
+                                  f'--vk_descriptors={descriptors}', f'--vk_validation={int(validation)}'],
+                                 manifest, GPU_MARKER))
+    return selected
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
@@ -75,6 +102,9 @@ def main():
     parser.add_argument('--out', type=Path, default=Path('.cache/nvn-render-check'))
     parser.add_argument('--icd', type=Path, action='append', default=[],
                         help='also test this Vulkan ICD manifest, in addition to the default driver; repeatable')
+    parser.add_argument('--validation', action='store_true', help='enable Vulkan validation for every GPU run')
+    parser.add_argument('--record', choices=('0', '1', 'both'), default='0',
+                        help='Vulkan recording-thread mode; both tests each driver and descriptor mode twice')
     args = parser.parse_args()
     root = args.root.resolve()
     build, out = (root / args.build).resolve(), (root / args.out).resolve()
@@ -95,14 +125,9 @@ def main():
     out.mkdir(parents=True)
     (out / 'sources.json').write_text(json.dumps(sources, indent=2) + '\n', encoding='utf-8')
     report = {'format_version': 2, 'scope': 'Synthetic checks only; no game or native NVN image comparison.',
-              'sources_sha256': digest(out / 'sources.json'), 'runtime_source_files': len(sources), 'checks': []}
-    jobs = [(path.name, [str(path)], None, None) for path in native]
-    for label, manifest in drivers:
-        for descriptors in (0, 1):
-            jobs.append((f'{label}-descriptors-{descriptors}',
-                         [str(vulkan), '-H', '--vk_memory=1', '--vk_record=0', f'--vk_descriptors={descriptors}'],
-                         manifest, GPU_MARKER))
-    for name, command, manifest, marker in jobs:
+              'sources_sha256': digest(out / 'sources.json'), 'runtime_source_files': len(sources),
+              'record': args.record, 'checks': []}
+    for name, command, manifest, marker in jobs(native, vulkan, drivers, args.validation, args.record):
         environment = os.environ.copy()
         if manifest:
             environment['VK_ICD_FILENAMES'] = str(manifest)

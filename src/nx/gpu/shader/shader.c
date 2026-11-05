@@ -96,8 +96,8 @@ static int tokens_return(const RegionPath* p, u32 start, u32 use) {
 
 /* path p goes on at target: inside the region it's queued unless an equal path was, and leaving it ends the path,
    allowed unless a token it leaves on the stack leads back in. Returns 0 on what def_reaches can't follow. */
-static int region_go(RegionPath* paths, u32* npaths, u32* work, u32* nwork, const RegionPath* p, u32 target,
-                     u32 start, u32 use) {
+static int region_go(RegionPath* paths, u32* npaths, u32* work, u32* nwork, const RegionPath* p, u32 target, u32 start,
+                     u32 use) {
     u32 q;
     if (target < start || target > use) return !tokens_return(p, start, use);
     for (q = 0; q < *npaths; q++)
@@ -189,8 +189,7 @@ static int def_reaches(const u64* words, u32 count, u32 def, u32 use, u32 reg) {
                     case O_CONT: {
                         RegionPath popped = p;
                         kind = (u32)CRS_KIND(op->id);
-                        for (k = p.depth; k > 0 && (p.entry[k - 1] & 3) != kind; k--) {
-                        }
+                        for (k = p.depth; k > 0 && (p.entry[k - 1] & 3) != kind; k--) {}
                         /* with no token of its kind pushed here the pop takes one from before the region, and
                            drops every token pushed since: the path leaves the region */
                         popped.depth = k ? k - 1 : 0;
@@ -209,8 +208,7 @@ static int def_reaches(const u64* words, u32 count, u32 def, u32 use, u32 reg) {
                            ends the invocation, or goes to a PEXIT's from before the region with every token
                            pushed here still on the stack */
                         RegionPath popped = p;
-                        for (k = p.depth; k > 0 && (p.entry[k - 1] & 3) != 3; k--) {
-                        }
+                        for (k = p.depth; k > 0 && (p.entry[k - 1] & 3) != 3; k--) {}
                         popped.depth = k ? k - 1 : 0;
                         if (k)
                             ok = region_go(paths, &npaths, work, &nwork, &p, p.entry[k - 1] >> 2, start, use) &&
@@ -342,6 +340,11 @@ u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len) {
         last = i;
         op = decode(w);
         if (!op) continue;
+        if ((op->id == O_CAL && B(w, 5, 1)) || op->id == O_JCAL || op->id == O_JMP || op->id == O_JMX) {
+            resolved = 0;
+            if (op->id == O_CAL || op->id == O_JCAL) calls = 1;
+            continue; /* dynamic code addresses require the full compiler-delimited program */
+        }
         switch (op->id) {
             case O_CAL:
             case O_PRET: calls = 1; /* fall through */
@@ -386,6 +389,16 @@ done:
     }
     if (out_len) *out_len = len;
     return h;
+}
+
+/* Absolute calls/jumps need their shader-pool base in the module key. Relative-only programs keep a zero base. */
+int shader_absolute_flow(const u8* code, u32 bytes) {
+    for (u32 i = 11; i < bytes / 8; i++) {
+        if (!IDX_OK(i)) continue;
+        u32 top = (u32)(snx_ld_le64(code + (size_t)i * 8) >> 52);
+        if (top == 0xe20 || top == 0xe21 || top == 0xe22) return 1;
+    }
+    return 0;
 }
 
 /* One CRS stack entry: target << 2 | kind (CRS_KIND) */
@@ -455,8 +468,7 @@ static int crs_block(CrsWalk* c, u32 b, u32* pop_targets) {
             case O_CONT: {
                 CrsStack popped = s;
                 kind = (u32)CRS_KIND(op->id);
-                for (k = s.depth; k > 0 && (s.entry[k - 1] & 3) != kind; k--) {
-                }
+                for (k = s.depth; k > 0 && (s.entry[k - 1] & 3) != kind; k--) {}
                 if (!k) return 0;
                 /* the pop takes the nearest entry of its kind and drops the ones pushed after it */
                 t = s.entry[k - 1] >> 2;

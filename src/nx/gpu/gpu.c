@@ -54,7 +54,7 @@ void (*g_gpu_mapping_begin)(u64 gva, u64 size, int full);
 void (*g_gpu_mapping_end)(void);
 
 /* ------------------------------------------------------------ guest memory through the GPU's address space */
-#define GMEM_PAGE 0x1000u /* the granule unmapped memory and memory states are walked in: a 4 KiB page */
+#define GMEM_PAGE           0x1000u /* the granule unmapped memory and memory states are walked in: a 4 KiB page */
 /* a memory state's type, bits 7:0 (Switchbrew's MemoryState): the rest are its attribute flags */
 #define MEM_STATE_TYPE_MASK 0xFFu
 /* the runs of guest memory behind [gva, gva + size), copied in or out: 1 when every page was mapped. An unmapped
@@ -311,8 +311,8 @@ void i2m_launch(GpuChannel* ch, u32* regs, int base) {
     }
     u->line_length_in = r[UPLOAD_LINE_LENGTH_IN];
     u->line_count = r[UPLOAD_LINE_COUNT];
-    u->dest.address = ((u64)(r[UPLOAD_DEST_ADDRESS_HIGH] & UPLOAD_DEST_ADDRESS_HIGH_MASK) << 32) |
-                      r[UPLOAD_DEST_ADDRESS_LOW];
+    u->dest.address =
+        ((u64)(r[UPLOAD_DEST_ADDRESS_HIGH] & UPLOAD_DEST_ADDRESS_HIGH_MASK) << 32) | r[UPLOAD_DEST_ADDRESS_LOW];
     u->dest.pitch = r[UPLOAD_DEST_PITCH];
     u->dest.block_height = (block_size >> UPLOAD_BLOCK_HEIGHT_SHIFT) & UPLOAD_BLOCK_FIELD_MASK;
     u->dest.block_depth = (block_size >> UPLOAD_BLOCK_DEPTH_SHIFT) & UPLOAD_BLOCK_FIELD_MASK;
@@ -395,8 +395,8 @@ static void reset_3d(u32* r) {
     memcpy(&f1, &one, 4);
     for (i = 0; i < MAXWELL3D_NUM_VIEWPORTS; i++) {
         r[MAXWELL3D_VIEWPORTS + i * MAXWELL3D_VIEWPORT_STRIDE + MAXWELL3D_VIEWPORT_DEPTH_RANGE_FAR] = f1;
-        r[MAXWELL3D_VIEWPORT_TRANSFORM + i * MAXWELL3D_VIEWPORT_TRANSFORM_STRIDE + MAXWELL3D_VIEWPORT_TRANSFORM_SWIZZLE] =
-            MAXWELL3D_VIEWPORT_SWIZZLE_IDENTITY;
+        r[MAXWELL3D_VIEWPORT_TRANSFORM + i * MAXWELL3D_VIEWPORT_TRANSFORM_STRIDE +
+          MAXWELL3D_VIEWPORT_TRANSFORM_SWIZZLE] = MAXWELL3D_VIEWPORT_SWIZZLE_IDENTITY;
     }
     /* blending off in effect: dst = src * One + dst * Zero, the common state and each target's */
     r[MAXWELL3D_BLEND + MAXWELL3D_BLEND_COLOR_OP] = MAXWELL3D_BLEND_EQUATION_ADD_D3D;
@@ -519,11 +519,11 @@ int pb_decode(PbState* b, u32 w, u32* sub, u32* m, u32* v, int* last) {
 enum { ENG_NONE, ENG_3D, ENG_COMPUTE, ENG_I2M, ENG_2D, ENG_DMA };
 static int engine_of(u32 cls) {
     switch (cls & CLASS_ENGINE_MASK) {
-        case CLASS_MAXWELL_B & CLASS_ENGINE_MASK: return ENG_3D;
-        case CLASS_KEPLER_COMPUTE_B & CLASS_ENGINE_MASK: return ENG_COMPUTE;
-        case CLASS_KEPLER_INLINE_TO_MEMORY_B & CLASS_ENGINE_MASK: return ENG_I2M;
-        case CLASS_FERMI_TWOD_A & CLASS_ENGINE_MASK: return ENG_2D;
-        case CLASS_MAXWELL_DMA_COPY_A & CLASS_ENGINE_MASK: return ENG_DMA;
+        case CLASS_MAXWELL_B& CLASS_ENGINE_MASK: return ENG_3D;
+        case CLASS_KEPLER_COMPUTE_B& CLASS_ENGINE_MASK: return ENG_COMPUTE;
+        case CLASS_KEPLER_INLINE_TO_MEMORY_B& CLASS_ENGINE_MASK: return ENG_I2M;
+        case CLASS_FERMI_TWOD_A& CLASS_ENGINE_MASK: return ENG_2D;
+        case CLASS_MAXWELL_DMA_COPY_A& CLASS_ENGINE_MASK: return ENG_DMA;
         default: return ENG_NONE;
     }
 }
@@ -636,11 +636,11 @@ void gpu_verify_word(GpuChannel* ch, u32 w) {
 }
 
 /* ------------------------------------------------------------ waits */
-#define WAIT_POLL_NS 500000ull /* a release the CPU writes has no wake: semaphore waits look again this often */
+#define WAIT_POLL_NS         500000ull /* a release the CPU writes has no wake: semaphore waits look again this often */
 /* how long a wait nothing ends lasts before the stream goes on (the console raises an interrupt instead): a report
    semaphore's, and every other kind's. park_over's message names them in seconds */
 #define WAIT_LIMIT_REPORT_NS 1000000000ull
-#define WAIT_LIMIT_NS 2000000000ull
+#define WAIT_LIMIT_NS        2000000000ull
 static int park_met(const GpuChannel* ch) {
     if (ch->park == GPU_PARK_SYNCPOINT || ch->park == GPU_PARK_FENCE)
         return (i32)(syncpt_read((u32)ch->park_addr) - ch->park_val) >= 0;
@@ -686,10 +686,9 @@ static int park_over(GpuChannel* ch, i64* again) {
     if (now >= ch->park_end) {
         WARN_LIMIT(16, "gpu: channel %u waited %u s for %s %llx to %s %u (it is %u), and goes on\n", ch->id,
                    (u32)((ch->park == GPU_PARK_REPORT ? WAIT_LIMIT_REPORT_NS : WAIT_LIMIT_NS) / 1000000000ull),
-                   park_name(ch->park), (unsigned long long)ch->park_addr,
-                   ch->park_geq ? "reach" : "be", ch->park_val,
+                   park_name(ch->park), (unsigned long long)ch->park_addr, ch->park_geq ? "reach" : "be", ch->park_val,
                    ch->park == GPU_PARK_SYNCPOINT || ch->park == GPU_PARK_FENCE ? syncpt_read((u32)ch->park_addr)
-                                                                               : gmem_r32(ch->park_addr));
+                                                                                : gmem_r32(ch->park_addr));
         ch->park = 0;
         may_have_changed();
         return 1;
@@ -707,25 +706,27 @@ static int park_over(GpuChannel* ch, i64* again) {
 typedef struct GpuItem GpuItem;
 struct GpuItem {
     GpuItem* next;
-    void (*fn)(void*); /* set for a call */
+    void (*fn)(void*);  /* set for a call */
+    int (*poll)(void*); /* a cooperative call; zero yields without blocking another lane */
+    u32 lane;
     void* arg;
     u32 chans[4], nchans;
     u64 id; /* a job's */
     u32 chan, incs, wait_id, wait_val, expect;
-    u32 n, pf;        /* the entries, and those before the first SYNC entry, fetched at submission into words */
-    u32 entry, word;  /* where the stream goes on */
+    u32 n, pf;       /* the entries, and those before the first SYNC entry, fetched at submission into words */
+    u32 entry, word; /* where the stream goes on */
     int started;
-    u32* late;        /* the entries the GPU thread fetched: [late_first, late_end) */
+    u32* late; /* the entries the GPU thread fetched: [late_first, late_end) */
     u32 late_cap, late_first, late_end;
 };
-#define QUEUE_ROOM 256 /* runnable jobs at most: jobs of a waiting channel don't count */
+#define QUEUE_ROOM       256                /* runnable jobs at most: jobs of a waiting channel don't count */
 #define GPU_THREAD_STACK ((size_t)16 << 20) /* the GPU thread's stack: 16 MiB */
 static PMutex g_qlk = PMUTEX_INIT;
 static PCond g_qcv;
 static int g_qcv_ready, g_qthread;
 static GpuItem *g_qhead, *g_qtail;
-static u64 g_qgen;           /* bumped by each new item and kick: a pass that saw an older one looks again */
-static u32 g_qjobs[GPU_CHANNELS];     /* each channel's queued jobs */
+static u64 g_qgen;                /* bumped by each new item and kick: a pass that saw an older one looks again */
+static u32 g_qjobs[GPU_CHANNELS]; /* each channel's queued jobs */
 static u32 g_qtotal;
 static u8 g_qparked[GPU_CHANNELS];    /* the channel's oldest job waits (gpu_park) */
 static u8 g_scan_stale[GPU_CHANNELS]; /* the channel closed: its submission scan starts again from reset */
@@ -751,9 +752,7 @@ static u32* job_off(const GpuItem* j) { return (u32*)(void*)(job_ent(j) + j->n);
 static u32* job_prefetched(const GpuItem* j) { return job_off(j) + j->n; }
 static u32 entry_words(u64 e) { return gpfifo_size(e); }
 static u64 entry_addr(u64 e) { return gpfifo_addr(e); }
-static u32* job_words(GpuItem* j, u32 e) {
-    return (e < j->pf ? job_prefetched(j) : j->late) + job_off(j)[e];
-}
+static u32* job_words(GpuItem* j, u32 e) { return (e < j->pf ? job_prefetched(j) : j->late) + job_off(j)[e]; }
 /* Citron's Peach fix requires safe reads for KeplerCompute's inline data:
    an earlier GPU command may have produced the payload since submission.
    Resolve that result on the GPU thread, in stream order. Only payload words
@@ -902,11 +901,32 @@ static u32 runnable(void) {
 static int run_pass(i64* wake) {
     u8 blocked[GPU_CHANNELS]; /* an older job of the channel is still queued */
     int calls_blocked = 0;
+    u64 lanes_blocked = 0;
     GpuItem *it, *prev = NULL;
     memset(blocked, 0, sizeof blocked);
     for (it = g_qhead; it; prev = it, it = it->next) {
         GpuChannel* ch;
         int done;
+        if (it->poll) {
+            u64 lane = 1ull << it->lane;
+            if (calls_blocked || (lanes_blocked & lane)) continue;
+            pm_unlock(&g_qlk);
+            done = it->poll(it->arg);
+            pm_lock(&g_qlk);
+            if (!done) {
+                lanes_blocked |= lane;
+                if (*wake < 0 || *wake > (i64)WAIT_POLL_NS) *wake = WAIT_POLL_NS;
+                continue;
+            }
+            if (prev)
+                prev->next = it->next;
+            else
+                g_qhead = it->next;
+            if (g_qtail == it) g_qtail = prev;
+            item_free(it);
+            pc_broadcast(&g_qcv);
+            return 1;
+        }
         if (it->fn) {
             u32 k;
             int ok = !calls_blocked;
@@ -1000,8 +1020,11 @@ void gpu_report_stall(void) {
     else
         WARN("gpu: the GPU thread is between jobs\n");
     if (run) {
-        static const char* const at[] = {"between methods", "in a method", "fetching an entry's words",
-                                         "ending the submission", "stopping the stream at a wait",
+        static const char* const at[] = {"between methods",
+                                         "in a method",
+                                         "fetching an entry's words",
+                                         "ending the submission",
+                                         "stopping the stream at a wait",
                                          "before a stream's wait"};
         u32 ati = __atomic_load_n(&g_run_at, __ATOMIC_RELAXED);
         WARN("gpu: the job is at entry %u word %u, %s; its last method %x on subchannel %u (class %x)\n",
@@ -1094,6 +1117,18 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
     if (nchans > 4) nchans = 4;
     if (nchans) memcpy(it->chans, chans, nchans * sizeof *chans);
     it->nchans = nchans;
+    pm_lock(&g_qlk);
+    queue_init();
+    queue_append(it);
+    pm_unlock(&g_qlk);
+}
+void gpu_call_poll(int (*fn)(void*), void* arg, u32 lane) {
+    if (lane >= 64 || !fn) fatal("gpu: invalid cooperative call lane %u\n", lane);
+    GpuItem* it = calloc(1, sizeof *it);
+    if (!it) fatal("gpu: out of memory queueing a cooperative call\n");
+    it->poll = fn;
+    it->arg = arg;
+    it->lane = lane;
     pm_lock(&g_qlk);
     queue_init();
     queue_append(it);
@@ -1208,8 +1243,7 @@ static void scan_job(GpuScan* s, const GpuItem* j) {
         for (i = 0; i < len; i++) {
             u32 sub, m, v;
             int last;
-            if (pb_decode(&s->pb, w[i], &sub, &m, &v, &last) &&
-                !scan_method(s, j->chan, j->id, &launches, sub, m, v)) {
+            if (pb_decode(&s->pb, w[i], &sub, &m, &v, &last) && !scan_method(s, j->chan, j->id, &launches, sub, m, v)) {
                 s->stopped = 1;
                 break;
             }
@@ -1350,6 +1384,11 @@ int gpu_state_save(StateIo* io) {
     for (it = g_qhead; it; it = it->next) n++;
     r |= io_put32(io, n);
     for (it = g_qhead; it && !r; it = it->next) {
+        if (it->poll) {
+            WARN("gpu: a cooperative call is still pending and cannot be saved\n");
+            r = -1;
+            break;
+        }
         r |= io_put32(io, it->fn ? 1 : 0);
         if (it->fn) {
             const char* name = state_fn_name((StateFnPtr)it->fn);
@@ -1573,6 +1612,4 @@ void gpu_state_install(GpuStaged* s) {
     s->dma = NULL;
     free(s);
 }
-void gpu_state_schema(int (*dump)(u64* h, const char* fmt, ...), u64* h) {
-    __builtin_dump_struct(&g_scan[0], dump, h);
-}
+void gpu_state_schema(int (*dump)(u64* h, const char* fmt, ...), u64* h) { __builtin_dump_struct(&g_scan[0], dump, h); }
