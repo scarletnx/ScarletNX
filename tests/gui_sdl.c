@@ -452,6 +452,12 @@ static void app_select(App* app, int row) {
     key(app, SDLK_RETURN);
     if (app->editing && app->form == GUI_FORM_APP) leave_editor(app);
 }
+/* App's row stepped on with Right, as Theme goes round its themes (Enter opens their box) */
+static void app_step(App* app, int row) {
+    open_app(app, row);
+    key(app, SDLK_RIGHT);
+    if (app->editing && app->form == GUI_FORM_APP) leave_editor(app);
+}
 /* the theme editor's preview as last drawn, its pixels */
 static SDL_Surface* preview_pixels(App* app) {
     SDL_Surface* read;
@@ -10106,7 +10112,7 @@ int main(int argc, char** argv) {
             static const char* const next[] = {"fuddles", "fuddles-dark", "sepia-dark", "wimsy", "wimsy-dark", "yorha"};
             size_t n;
             for (n = 0; n < sizeof next / sizeof *next; ++n) {
-                app_select(&app, GUI_APP_THEME);
+                app_step(&app, GUI_APP_THEME);
                 assert(!strcmp(app.theme.id, next[n]) && !app.editing && app.theme.panels == GUI_PANELS_FILL);
             }
         }
@@ -10128,7 +10134,7 @@ int main(int argc, char** argv) {
                                      (float)(m.place.keys.y + m.place.keys.h / 2)),
                                page));
         }
-        app_select(&app, GUI_APP_THEME);
+        app_step(&app, GUI_APP_THEME);
         assert(!strcmp(app.theme.id, "custom") && !strcmp(app.theme.name, "Custom test"));
         assert(app.theme.panels == GUI_PANELS_FILL); /* its base's boxes */
         { /* its ink, no colour, said with the base's it keeps and the file */
@@ -10150,8 +10156,48 @@ int main(int argc, char** argv) {
         shows_big(&app, "TEST  /  MENU", ink, 2);
         shows(&app, "> " ICON_SETTINGS " Settings", page);
         shows(&app, "> " ICON_LOG_OUT " Exit", ink);
-        app_select(&app, GUI_APP_THEME);
+        app_step(&app, GUI_APP_THEME);
         assert(!strcmp(app.theme.id, "default") && !strcmp(app.app_form.theme, "Default"));
+        /* Enter on Theme: the box of themes, each by its name, the one shown in focus; the focus shows each theme it
+           reaches, ESC goes back to the one shown before and keeps nothing, Enter keeps the one in focus in app.ini */
+        open_app(&app, GUI_APP_THEME);
+        key(&app, SDLK_RETURN);
+        assert(app.picks_shown && app.picks_of == GUI_PICKS_THEME && app.picks.focus == 0 && app.picks.count == 8);
+        assert(!strcmp(app.theme_picks[0], "Default") && !strcmp(app.theme_picks[1], "Fuddles") &&
+               !strcmp(app.theme_picks[6], "YoRHa") && !strcmp(app.theme_picks[7], "Custom test"));
+        { /* the box's question names the theme ESC goes back to, under its tab */
+            char question[640];
+            const char* tab;
+            picks_question(&app, question, sizeof question, &tab);
+            assert(!strcmp(tab, "Theme") &&
+                   !strcmp(question,
+                           "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to Default"));
+        }
+        render(&app);
+        key(&app, SDLK_DOWN);
+        assert(app.picks_shown && !strcmp(app.theme.id, "fuddles") && app.picks.focus == 1);
+        render(&app);                               /* the box over the screen, both in the theme in focus */
+        hides(&app, "Wimsy", rgb(app.theme.focus)); /* the focus on Fuddles, in its colour */
+        key(&app, SDLK_ESCAPE);
+        assert(!app.picks_shown && !strcmp(app.theme.id, "default"));
+        app_load(&app);
+        assert(!strcmp(app.theme.id, "default"));
+        open_app(&app, GUI_APP_THEME);
+        key(&app, SDLK_RETURN);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_RETURN);
+        assert(!app.picks_shown && !strcmp(app.theme.id, "fuddles-dark"));
+        app.message[0] = 0;
+        app_load(&app); /* kept for the next start */
+        assert(!strcmp(app.theme.id, "fuddles-dark") && !app.message[0]);
+        key(&app, SDLK_RETURN);
+        assert(app.picks_shown && app.picks.focus == 2);
+        key(&app, SDLK_UP);
+        key(&app, SDLK_UP);
+        key(&app, SDLK_RETURN);
+        assert(!strcmp(app.theme.id, "default"));
+        if (app.editing && app.form == GUI_FORM_APP) leave_editor(&app);
         free(custom_ini);
         free(custom);
         free(themes);

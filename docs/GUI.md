@@ -271,7 +271,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   `Background recompile: Full`, `Gentle`, `Gentle, a game plays` or `Gentle until it ends:` and why, the threads it
   was started with when they were halved, and when the taskbar cannot show its progress, SDL's reason.
 - Settings > App's **Theme** switches to the next theme, or the one before: the built-ins, Default first and the
-  others by their folder's name, then each folder of `themes/` (see [Themes](#themes)). The menu opens in YoRHa until
+  others by their folder's name, then each folder of `themes/` (see [Themes](#themes)). Enter opens them in a box,
+  each by its name, the one shown in focus: the menu shows each theme the focus reaches, Enter keeps it and ESC goes
+  back to the one before. The setup's Appearance step has the same row and the same box. The menu opens in YoRHa until
   one is picked.
   It is kept for the next start,
   as are UI scale and Language, in `app.ini` beside `settings.ini`: `[app]` with `theme` (a theme's folder
@@ -415,7 +417,7 @@ they are, Keep, Later, the nickname `Player`), writes `setup.ini` and opens the 
   as its View box has them (Icon size greyed in the list), a row each, and Next (with Skip, on the first page) under
   them. Up/Down go over the rows and Next; Left/Right (or a click, on the left arrow back) change the language among
   the menu's, the theme and the others, at once, the screen with them; UI scale opens App's dialog, the size taken
-  asked about for 15 s as App's is; Enter does as App's (the language or the theme a step on, UI scale's dialog), and on
+  asked about for 15 s as App's is; Enter does as App's (the language a step on, the box of themes, UI scale's dialog), and on
   Next goes on. What was changed is kept in `app.ini` once the setup is done, in the folders Install picks; Auto
   stays Auto while the language is the system's.
 - **Install**: Installed, or Portable, which makes `.scarletnx/` beside the program and moves the menu's own files

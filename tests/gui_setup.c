@@ -285,6 +285,16 @@ static void test_first(App* app) {
         assert(appearance_whole_row(app, &a, GUI_APPEARANCE_TEXT).y + item_h(app) <= a.box.y + a.box.h);
         app->setup_row = GUI_APPEARANCE_THEME;
     }
+    /* Enter on Theme: the box of themes over the page, the one shown in focus; the focus shows the theme it reaches,
+       ESC goes back to the one before */
+    key(app, SDLK_RETURN);
+    assert(app->picks_shown && app->picks_of == GUI_PICKS_THEME &&
+           !strcmp(app->theme_picks[app->picks.focus], "YoRHa"));
+    render(app);
+    key(app, SDLK_UP);
+    assert(app->picks_shown && !strcmp(app->theme.id, "wimsy-dark"));
+    key(app, SDLK_ESCAPE);
+    assert(!app->picks_shown && !strcmp(app->theme.id, "yorha") && app->setup_row == GUI_APPEARANCE_THEME);
     key(app, SDLK_RIGHT); /* the next theme, the dialog's place with it */
     assert(!strcmp(app->theme.id, "default") && app->theme.dialog == GUI_DIALOG_DEFAULT);
     render(app);

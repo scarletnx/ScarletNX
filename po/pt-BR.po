@@ -4023,6 +4023,11 @@ msgid "Use"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"
+msgstr "Cada tema aparece quando o foco chega nele: Enter fica com ele, ESC volta para %s"
+
+#: src/gui/main.c
 msgid "How to share the logs?"
 msgstr ""
 
