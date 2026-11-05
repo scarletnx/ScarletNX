@@ -359,7 +359,7 @@ int plat_power_watch(void) { return -1; } /* no watcher here: the caller polls *
    that, and one built without PSI has no file */
 #define PSI_FILE    "/proc/pressure/memory"
 #define PSI_TRIGGER "some 200000 2000000" /* 0.2 s of stall in a window of 2 s */
-static int (*g_psi_say)(const char* why);
+static int (*g_psi_say)(const char* why); /* set while the watch runs */
 static void psi_thread(void* arg) {
     int fd = (int)(intptr_t)arg;
     SNX_THREAD_NAME("memory pressure");
@@ -386,10 +386,9 @@ static void psi_thread(void* arg) {
 }
 int plat_memory_watch(int (*say)(const char* why)) {
     static const char trigger[] = PSI_TRIGGER;
-    static int started;
     char why[256];
     int fd;
-    if (started) return 0;
+    if (g_psi_say) return 0;
     fd = open(PSI_FILE, O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0 || write(fd, trigger, sizeof trigger) < 0) {
         snx_os_error(why, sizeof why);
@@ -402,10 +401,10 @@ int plat_memory_watch(int (*say)(const char* why)) {
     if (plat_thread(psi_thread, (void*)(intptr_t)fd, 0)) {
         snx_os_error(why, sizeof why);
         LOG("memory: no watch of the system's memory pressure: its thread does not start: %s\n", why);
+        g_psi_say = NULL;
         close(fd);
         return -1;
     }
-    started = 1;
     return 0;
 }
 #else

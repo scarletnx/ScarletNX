@@ -9,6 +9,7 @@
 #include "nx/runtime/ini.h"
 #include <stdarg.h>
 #include <stdio.h>
+#include <sys/resource.h> /* RLIMIT_NPROC: a thread the system refuses */
 #include <sys/wait.h>
 #if defined(__linux__)
 #include <sys/prctl.h> /* PR_SET_VMA_ANON_NAME, for test_foreign */
@@ -620,11 +621,15 @@ static void test_host_page(void) {
 
 /* the system's warnings of low memory: on Linux the watch starts when this process may set the pressure trigger itself
    (a kernel with PSI, from 6.5 for one without privileges), and the log says why it does not; elsewhere it does not
-   start here (macOS's comes from the backend, FreeBSD has none) */
+   start here (macOS's comes from the backend, FreeBSD has none). A watch whose thread the system refused (past
+   RLIMIT_NPROC, which root does not have) says so and starts at the next call */
 static int test_say(const char* why) {
     (void)why;
     return 1;
 }
+#if defined(__linux__) && !defined(__ANDROID__)
+static void* test_no_op(void* unused) { return unused; } /* a thread for the refusal's probe */
+#endif
 static void test_memory_watch(void) {
     int can = 0;
     printf("memory watch\n");
@@ -637,11 +642,46 @@ static void test_memory_watch(void) {
 #endif
     g_log[0] = 0;
     g_log_on = 1;
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (can) {
+        struct rlimit was, none;
+        pthread_t probe;
+        int refused = 0;
+        CHECK(!getrlimit(RLIMIT_NPROC, &was), "RLIMIT_NPROC");
+        none = was;
+        none.rlim_cur = 0;
+        CHECK(!setrlimit(RLIMIT_NPROC, &none), "RLIMIT_NPROC down");
+        refused = pthread_create(&probe, NULL, test_no_op, NULL) != 0;
+        if (!refused) pthread_join(probe, NULL);
+        if (refused)
+            CHECK(plat_memory_watch(test_say) == -1 &&
+                      strstr(g_log, "memory: no watch of the system's memory pressure: its thread does not start: "),
+                  "a memory watch whose thread did not start");
+        CHECK(!setrlimit(RLIMIT_NPROC, &was), "RLIMIT_NPROC back");
+        printf("memory watch: %s\n", refused ? "a refused thread said" : "no thread refused here (root)");
+        g_log[0] = 0;
+    }
+#endif
     CHECK(plat_memory_watch(test_say) == (can ? 0 : -1), "the memory watch does not start as the trigger allows");
 #if defined(__linux__) && !defined(__ANDROID__)
     CHECK(can ? !g_log[0] : strstr(g_log, "memory: no watch of the system's memory pressure: " PSI_FILE) != NULL,
           "the memory watch's log line");
     CHECK(plat_memory_watch(test_say) == (can ? 0 : -1), "a second start of the memory watch");
+    if (can) {
+        /* one thread runs, by its name: a refused start before left nothing that keeps the watch from starting, and
+           the second start started none. Each names itself as it starts, so the count waits a little for them */
+        static SnxThreadInfo list[256];
+        struct timespec pause = {0, 10000000};
+        int running = 0;
+        for (int tries = 0; tries < 300 && (tries < 20 || !running); tries++) {
+            int n = snx_threads(list, 256);
+            running = 0;
+            for (int i = 0; i < n && i < 256; i++) running += !strcmp(list[i].name, "memory pressure");
+            nanosleep(&pause, NULL);
+        }
+        if (running != 1) printf("memory watch: %d threads named \"memory pressure\"\n", running);
+        CHECK(running == 1, "the memory watch does not run one thread");
+    }
 #endif
     printf("memory watch: %s\n", can ? "started" : "none here");
     g_log_on = 0;
