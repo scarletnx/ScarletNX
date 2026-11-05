@@ -1037,6 +1037,29 @@ int mem_reserve_identity(u64 from) {
 }
 #endif
 int mem_identity(void) { return g_mem_identity; }
+void mem_place(const void* p, char* out, size_t size) {
+    u64 a = (u64)(uintptr_t)p, lo, hi, game;
+    if (g_mem_identity)
+        lo = IDENTITY_LO + g_mem_moved, hi = g_as_size, game = 0;
+    else if (g_mem)
+        lo = game = (u64)(uintptr_t)g_mem, hi = lo + g_as_size;
+    else {
+        snprintf(out, size, "%#llx: no address space is reserved for the game yet", (unsigned long long)a);
+        return;
+    }
+    if (a < lo)
+        snprintf(out, size, "%#llx lies below the game's address space, which starts at %#llx, by %#llx",
+                 (unsigned long long)a, (unsigned long long)lo, (unsigned long long)(lo - a));
+    else if (a >= hi)
+        snprintf(out, size,
+                 "%#llx lies past the end of the game's address space at %#llx, by %#llx: its layout holds %llu GiB, "
+                 "the console's %llu",
+                 (unsigned long long)a, (unsigned long long)hi, (unsigned long long)(a - hi),
+                 (unsigned long long)((g_as_size - g_mem_moved) >> 30), (unsigned long long)(AS_TOP >> 30));
+    else
+        snprintf(out, size, "%#llx lies in the game's address space, %#llx to %#llx: game address %#llx",
+                 (unsigned long long)a, (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)(a - game));
+}
 /* where the written-page tracking starts (plat_vm_track): g_mem, or under NCE the code region's base */
 static u8* tracked_base(void) { return g_mem_identity ? (u8*)(uintptr_t)(IDENTITY_LO + g_mem_moved) : g_mem; }
 int mem_ww_probe(void (*cb)(u8* p, u64 size)) { return plat_ww_scan(tracked_base(), 4096, cb); }

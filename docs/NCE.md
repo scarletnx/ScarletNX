@@ -80,6 +80,8 @@ Limits:
   flags, the 64-bit bit and the address space type).
 - The base is the first free one, so a phone gives the same base run after run. A save state from a run of another
   base holds addresses of that base.
+- A crash report places the fault's address against the layout (`mem_place`): in it, below its base (an address the
+  move left out) or past its end (one a layout smaller than the console's 512 GiB does not hold), and how far.
 
 The path for the 36-bit games is to run the runtime outside ART: an executable child of `GameActivity`, as the driver
 already is (`libscarletnx-run.so`), whose low addresses are free. The window would come from the app over a socket
@@ -163,7 +165,7 @@ run or a kick is a signal. Each thread adds to counters of its own, with no lock
   register, asking no JIT; without NCE the JIT's code runs.
 - `guest_stats`, any host: a window's SVCs, misses, outcalls and families, a thread's time read from another thread,
   and the lines that say them.
-- `memory_accounting`: the 48 GiB tier moved past a page held at 65 GiB, its regions, a mapping there, and a 36-bit
-  layout refused (Linux, without ASan, whose shadow holds those addresses).
+- `memory_accounting`: the 128 GiB tier moved past a page held at 65 GiB, its regions, a mapping there, where a crash's
+  address lies against it, and a 36-bit layout refused (Linux, without ASan, whose shadow holds those addresses).
 
 No test runs on an Android device: the arm64 objects build, and the rest is the phone's to show.
