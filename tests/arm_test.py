@@ -338,6 +338,13 @@ def witnesses():
         'thumb32': program(0x0000F000),
         'monitor': program(0xE1940F9F, 0xE2800001, 0xE1841F90),
         'clrex': program(0xE1940F9F, 0xF57FF01F, 0xE1841F90),
+        # LDREX, an ordinary store, STREX: the store keeps the reservation unless it overlaps the reserved bytes
+        'monitor_spill': program(0xE1940F9F, 0xE58D5000, 0xE2800001, 0xE1841F90),
+        'monitor_inside': program(0xE1940F9F, 0xE5C45003, 0xE1841F90),
+        'monitor_after': program(0xE1940F9F, 0xE5C45004, 0xE1841F90),
+        'monitor_before': program(0xE1940F9F, 0xE5445001, 0xE1841F90),
+        'monitor_double_spill': program(0xE1B40F9F, 0xE58D5000, 0xE1A42F90),
+        'monitor_double_inside': program(0xE1B40F9F, 0xE5845004, 0xE1A42F90),
         'strex': program(0xE1841F90),
         'exclusive_byte': program(0xE1D40F9F, 0xE1C41F90),
         'exclusive_half': program(0xE1F40F9F, 0xE1E41F90),
@@ -435,6 +442,21 @@ def run_witnesses(functions, tests):
     cpu, mem = run('clrex', lambda c, m: word(m, 0x8000, 99))
     assert cpu.exit == 0 and cpu.r[1] == 1 and not cpu.exclusive_valid
     assert int.from_bytes(mem[0x8000:0x8004], 'little') == 99
+    # a store elsewhere (the stack at r13, or the bytes just before or after) keeps the reservation; one into the
+    # reserved bytes clears it. Clearing on every store failed each STREX after a spill, and the loop never ended
+    cpu, mem = run('monitor_spill', lambda c, m: word(m, 0x8000, 99))
+    assert cpu.exit == 0 and cpu.r[1] == 0 and int.from_bytes(mem[0x8000:0x8004], 'little') == 100
+    for name, kept, at in (
+        ('monitor_inside', False, 0x8003),
+        ('monitor_after', True, 0x8004),
+        ('monitor_before', True, 0x7FFF),
+    ):
+        cpu, mem = run(name, lambda c, m: word(m, 0x8000, 99))
+        assert cpu.exit == 0 and cpu.r[1] == (0 if kept else 1) and not cpu.exclusive_valid, name
+        assert mem[at] == cpu.r[5] & 0xFF, name
+    for name, kept in (('monitor_double_spill', True), ('monitor_double_inside', False)):
+        cpu, mem = run(name)
+        assert cpu.exit == 0 and cpu.r[2] == (0 if kept else 1) and not cpu.exclusive_valid, name
     cpu, _ = run('strex')
     assert cpu.exit == 0 and cpu.r[1] == 1
     for name in ('exclusive_byte', 'exclusive_half', 'exclusive_double', 'barriers'):
