@@ -73,7 +73,7 @@ static int copy_runs(u64 gva, u8* in, const u8* out, u64 size) {
             all = 0;
             goto next;
         }
-        if (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) {
+        if (own_any()) {
             /* a read none of whose bytes are the GPU's: own_stage copied them, through the mirror where a page is
                trapped */
             if (in && !own_stage(cpu, n, in, NULL, 0)) goto next;
@@ -145,7 +145,7 @@ u8* gmem_ptr_untracked(u64 gva, u64 size) {
     u64 cpu = 0;
     if (!size) size = 1;
     if (gmmu_run(gva, size, &cpu) != size) return NULL;
-    if (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) own_acquire(cpu, size);
+    if (own_any()) own_acquire(cpu, size);
     return GP(cpu);
 }
 u8* gmem_host(u64 gva, u64 size) {
@@ -209,7 +209,7 @@ u64 gmem_read_code_cpu(u64 gva, void* dst, u64 size) {
         u64 cpu = 0, n = gmmu_run(gva + at, done - at, &cpu), m;
         OwnRange o;
         if (!n) break;
-        if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) {
+        if (!own_any()) {
             memcpy((u8*)dst + at, GP(cpu), (size_t)n);
             at += n;
             continue;

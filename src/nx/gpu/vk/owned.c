@@ -332,7 +332,7 @@ static void cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at, int* any
         return;
     }
     vk_uma_mem_need_cpu(cpu, size); /* across imports: waited for */
-    if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) {
+    if (!own_any()) {
         memcpy(host, GP(cpu), (size_t)size);
         return;
     }
@@ -428,7 +428,7 @@ int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) {
             if (n > size - o) n = size - o;
             memset(p + o, 0, (size_t)n);
             dev_gap(&d, o, n);
-        } else if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) {
+        } else if (!own_any()) {
             memcpy(p + o, GP(cpu), (size_t)n);
             dev_gap(&d, o, n);
         } else if ((k = own_stage(cpu, n, p + o, r, sizeof r / sizeof *r)) > sizeof r / sizeof *r) {
@@ -477,7 +477,7 @@ void vk_guest_peek(u64 gva, void* dst, u64 size) {
             n = 0x1000 - ((gva + o) & 0xFFF);
             if (n > size - o) n = size - o;
             memset(d + o, 0, (size_t)n);
-        } else if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE))
+        } else if (!own_any())
             memcpy(d + o, GP(cpu), (size_t)n);
         else {
             OwnRange r[16];
@@ -509,7 +509,7 @@ void vk_guest_peek(u64 gva, void* dst, u64 size) {
 int vk_guest_owned_whole(u64 gva, u64 size, u64* tag) {
     OwnRange r[2];
     u64 cpu = 0;
-    if (!size || !__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) return 0;
+    if (!size || !own_any()) return 0;
     gmem_need(gva, size);
     if (gmmu_run(gva, size, &cpu) != size || own_lookup(cpu, size, r, 2) != 1 || r[0].addr != cpu || r[0].size != size)
         return 0;
