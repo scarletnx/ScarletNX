@@ -4,6 +4,13 @@
 #include <stdio.h>
 #include <string.h>
 
+const unsigned g_memory_floors[MEMORY_FLOORS] = {1024, 512, 256, 128};
+unsigned memory_floor_crossed(SnxU64 left, unsigned* next) {
+    unsigned under = 0;
+    while (*next < MEMORY_FLOORS && left < (SnxU64)g_memory_floors[*next] << 20) under = g_memory_floors[(*next)++];
+    return under;
+}
+
 int threads_line_text(ThreadsWindow* w, const SnxThreadInfo* now, unsigned n, SnxU64 now_ns, char* line, size_t size) {
     struct {
         SnxU64 ns;
