@@ -162,8 +162,19 @@ static const char* ext_inst(Ev* e, uint32_t t, uint32_t fn, const uint32_t* args
     uint32_t n = components(e, t);
     int fl = is_float(e, t);
     *r = (Val){{0}};
-    if (fn == 58) { /* PackHalf2x16: not needed by the tests yet */
-        return "GLSL PackHalf2x16";
+    if (fn == 58) return "GLSL PackHalf2x16"; /* not needed by the tests yet */
+    if (fn == 62) {                           /* UnpackHalf2x16: the low half into x, the high one into y */
+        for (uint32_t k = 0; k < 2; k++) {
+            uint32_t h = (uint32_t)(e->ids[args[0]].v.c[0] >> (16 * k)) & 0xffffu;
+            uint32_t sign = (h >> 15) << 31, exp = (h >> 10) & 31, man = h & 0x3ffu;
+            if (exp == 31)
+                r->c[k] = sign | 0x7f800000u | man << 13;
+            else {
+                float f = exp ? ldexpf((float)(man | 0x400u), (int)exp - 25) : ldexpf((float)man, -24);
+                r->c[k] = u_f32(sign ? -f : f);
+            }
+        }
+        return NULL;
     }
     for (uint32_t k = 0; k < n; k++) {
         uint64_t x = nargs > 0 ? e->ids[args[0]].v.c[k] : 0, y = nargs > 1 ? e->ids[args[1]].v.c[k] : 0,
@@ -714,6 +725,8 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
             }
             if (sc == 1 && v->builtin && v->builtin - 1 < 64)
                 memcpy(m, env->builtin[v->builtin - 1], (n < 4 ? n : 4) * 4);
+            if (sc == 1 && !v->builtin && v->location && v->location - 1 < 32)
+                memcpy(m, env->in[v->location - 1], (n < 4 ? n : 4) * 4);
             b = new_block(e, m, n, 1);
             if (b != 0xffffffffu && len > 4) {
                 Val init = e->ids[in[4]].v;
@@ -733,7 +746,7 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
         uint32_t* m = e->blocks[v->block].words;
         uint32_t n = e->blocks[v->block].n;
         if (!m) continue;
-        if (v->location && v->location - 1 < 16) {
+        if (v->location && v->location - 1 < 32) {
             for (uint32_t k = 0; k < 4 && k < n; k++) env->out[v->location - 1][k] = m[k];
             env->out_written[v->location - 1] = 1;
         }

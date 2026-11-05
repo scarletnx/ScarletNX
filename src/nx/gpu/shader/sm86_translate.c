@@ -679,6 +679,8 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
         if (wide && d + 1 < SM86_RZ) s->rkey[d + 1] = 0;
     }
 }
+/* BRX, and BRXU, which takes its index from a uniform register */
+static int is_brx(int op) { return op == SM86_BRX || op == SM86_BRXU; }
 static int falls_through(const Sm86Insn* in);
 static int flow_sources(Ctx* c);
 /* The constant buffer word that holds the base of each LDG's and STG's address: a register gets the word that
@@ -699,7 +701,7 @@ static int track_globals(Ctx* c) {
     for (u32 i = 0; ok && i < n; i++) {
         const Sm86Insn* prev = i ? &c->in[i - 1] : NULL;
         if (!i || c->jump_first[i] < c->jump_first[i + 1] || !falls_through(prev) || prev->op == SM86_BRA ||
-            prev->op == SM86_BRX)
+            is_brx(prev->op))
             start[nb++] = i;
         block_of[i] = nb - 1;
     }
@@ -838,7 +840,7 @@ static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data) {
 /* whether the instruction at k goes on to k + 1: not after a BRA, BRX or EXIT that always leaves, nor a RET */
 static int falls_through(const Sm86Insn* in) {
     int always = in->pred == SM86_PT && !in->pred_not;
-    return !((in->op == SM86_BRA || in->op == SM86_BRX || in->op == SM86_EXIT) && always) && in->op != SM86_RET;
+    return !((in->op == SM86_BRA || is_brx(in->op) || in->op == SM86_EXIT) && always) && in->op != SM86_RET;
 }
 static u32 brx_targets(Ctx* c, u32 i, u32* targets, u32 max);
 /* the instructions that jump to each one, build_structure's edges: a BRA's target, a BRX's cases. Returns 0 when it
@@ -850,7 +852,8 @@ static int flow_sources(Ctx* c) {
         const Sm86Insn* in = &c->in[i];
         if (in->pred == SM86_PT && in->pred_not) continue;
         if (in->op == SM86_BRA) total++;
-        else if (in->op == SM86_BRX) total += brx_targets(c, i, t, 64);
+        else if (is_brx(in->op))
+            total += brx_targets(c, i, t, 64);
     }
     u32* first = calloc((size_t)n + 1 + total + 1, sizeof *first);
     if (!first) return 0;
@@ -866,7 +869,8 @@ static int flow_sources(Ctx* c) {
             if (in->pred == SM86_PT && in->pred_not) continue;
             u32 count = 0;
             if (in->op == SM86_BRA) t[count++] = sm86_branch_target(in, i);
-            else if (in->op == SM86_BRX) count = brx_targets(c, i, t, 64);
+            else if (is_brx(in->op))
+                count = brx_targets(c, i, t, 64);
             for (u32 k = 0; k < count; k++) {
                 if (t[k] >= n) continue;
                 if (pass == 0) first[t[k] + 1]++;
@@ -886,7 +890,13 @@ static int may_write(const Sm86Insn* in, u32 r) {
     int op = in->op;
     if (sm86_ops[op].kind == SM86_K_UALU) return 0;
     switch (op) {
-        case SM86_BRA: case SM86_BRX: case SM86_EXIT: case SM86_RET: case SM86_CALL: case SM86_UBRA:
+        case SM86_BRA:
+        case SM86_BRX:
+        case SM86_BRXU:
+        case SM86_EXIT:
+        case SM86_RET:
+        case SM86_CALL:
+        case SM86_UBRA:
         case SM86_BSSY: case SM86_BSYNC: case SM86_BREAK: case SM86_WARPSYNC: case SM86_KILL: case SM86_BAR:
         case SM86_NOP: case SM86_ERRBAR: case SM86_DEPBAR: case SM86_NANOSLEEP: case SM86_MEMBAR: case SM86_CCTL:
         case SM86_STG: case SM86_STG_NOU: case SM86_STL: case SM86_STL_NOU: case SM86_STS: case SM86_STS_NOU:
@@ -973,11 +983,14 @@ static u32 offset_vector(Ctx* c, int known, u32 value, u32 x, u32 dims, u32 used
 }
 
 /* the texture slot of a handle at byte offset off of a bank */
-static int tex_slot(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 shadow) {
+/* the texture slot of the handle at c[bank][off] with that view: ms for a multisampled 2D texture (ShTex.flags bit 1,
+   which the renderer binds a multisampled view for) */
+static int tex_slot(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 shadow, u32 ms) {
     ShaderInfo* si = c->si;
     for (int i = 0; i < si->ntex; i++) {
         const ShTex* t = &si->tex[i];
-        if (t->bl_cbuf == bank && t->cbuf_off == off / 4 && t->type == type && t->array == array && t->shadow == shadow)
+        if (t->bl_cbuf == bank && t->cbuf_off == off / 4 && t->type == type && t->array == array &&
+            t->shadow == shadow && !!(t->flags & 2) == !!ms)
             return i;
     }
     if (si->ntex >= SH_MAXTEX) {
@@ -992,10 +1005,11 @@ static int tex_slot(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 shadow) 
     t.shadow = (u8)shadow;
     t.bindless = 1;
     t.bl_cbuf = (u8)bank;
+    t.flags = ms ? 2 : 0;
     si->tex[i] = t;
     /* a 1D texture is bound as a 2D one (shader.h) */
     c->tex[i] = spv_emit_sampler_image(&c->e, c->t_f32, (u32)shader_vk_set(c->stage), SNX_VKB_TEX + (u32)i,
-                                       type == 0 ? 1 : type, (int)array, (int)shadow, 0, &c->tex_sampled[i]);
+                                       type == 0 ? 1 : type, (int)array, (int)shadow, ms ? 1 : 0, &c->tex_sampled[i]);
     add_interface(c, c->tex[i]);
     return i;
 }
@@ -1069,7 +1083,7 @@ static void texture(Ctx* c, const Sm86Insn* in) {
         return;
     }
     u32 handle = sm86_field(in, 40, 19);
-    int slot = tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, shadow);
+    int slot = tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, shadow, 0);
     if (slot < 0) return;
     /* list1: the LOD or bias, the offset, the depth reference (nak_nir_lower_tex.c) */
     u32 n0 = array + coords, n1 = (lod_mode == 2 || lod_mode == 3) + offset + shadow, regs[8];
@@ -1196,16 +1210,17 @@ static void texel_fetch(Ctx* c, const Sm86Insn* in) {
         fail(c, "TLD dimension %u", sm86_field(in, 61, 3));
         return;
     }
-    u32 offset = sm86_field(in, 76, 1);
-    if (sm86_field(in, 78, 1) || (lod_mode != 1 && lod_mode != 3)) {
-        fail(c, "TLD of a multisample texture or LOD mode %u", lod_mode);
+    /* bit 78: a multisampled 2D texture, which has one level (LOD mode 1, zero), and the sample in list1 */
+    u32 offset = sm86_field(in, 76, 1), ms = sm86_field(in, 78, 1);
+    if ((lod_mode != 1 && lod_mode != 3) || (ms && (type != 1 || lod_mode != 1))) {
+        fail(c, "TLD of %s, LOD mode %u", ms ? "a multisampled texture" : "a texture", lod_mode);
         return;
     }
     u32 handle = sm86_field(in, 40, 19);
-    int slot = tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, 0);
+    int slot = tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, 0, ms);
     if (slot < 0) return;
-    /* list1: the level, then the offset, four bits a component (nak_nir_lower_tex.c) */
-    u32 n0 = array + coords, n1 = (lod_mode == 3) + offset, regs[8];
+    /* list1: the level, the offset (four bits a component), then the sample, as Maxwell's TLD orders them */
+    u32 n0 = array + coords, n1 = (lod_mode == 3) + offset + ms, regs[8];
     if (!tex_operands(in, n0, n1, regs)) {
         fail(c, "TLD with %u operands in the scalar form", n0 + n1);
         return;
@@ -1228,7 +1243,9 @@ static void texel_fetch(Ctx* c, const Sm86Insn* in) {
                                             : spv_emit_vec3_construct(&c->e, uvec, v[0], v[1], v[2]));
     u32 level =
         lod_mode == 3 ? spv_emit_bitcast(&c->e, c->t_i32, rd(c, regs[n0])) : spv_emit_bitcast(&c->e, c->t_i32, c->zero);
-    u32 texel = spv_emit_image_fetch(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, level);
+    u32 texel = ms ? spv_emit_image_fetch_sample(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord,
+                                                 spv_emit_bitcast(&c->e, c->t_i32, rd(c, regs[n0 + offset])))
+                   : spv_emit_image_fetch(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, level);
     tex_results(c, in, texel, c->t_f32);
 }
 /* TXQ of the dimensions (bits 62-63 = 0): width, height, depth or layers, and the levels, at the level in register
@@ -1242,19 +1259,25 @@ static void texture_query(Ctx* c, const Sm86Insn* in) {
     int slot = -1;
     for (int i = 0; i < c->si->ntex && slot < 0; i++)
         if (c->si->tex[i].bl_cbuf == bank && c->si->tex[i].cbuf_off == off) slot = i;
-    if (slot < 0) slot = tex_slot(c, bank, off * 4, 1, 0, 0);
+    /* a TLD of a multisampled 2D texture with the handle, anywhere in the program, names its view */
+    u32 ms = 0;
+    for (u32 k = 0; k < c->n && slot < 0 && !ms; k++)
+        ms = c->in[k].op == SM86_TLD && sm86_field(&c->in[k], 78, 1) && sm86_field(&c->in[k], 40, 19) == handle;
+    if (slot < 0) slot = tex_slot(c, bank, off * 4, 1, 0, 0, ms);
     if (slot < 0) return;
     const ShTex* t = &c->si->tex[slot];
+    ms = t->flags & 2;
     u32 dims = (t->type == 2 ? 3 : 2) + t->array; /* a 1D texture is a 2D one, a cube's size is its face's */
     if (t->type == 3) dims = 2 + t->array;
     spv_emit_capability(&c->e, SPV_CAPABILITY_IMAGE_QUERY);
-    u32 size =
-        spv_emit_image_query_size_lod(&c->e, spv_emit_type_vector(&c->e, c->t_u32, dims), c->tex_sampled[slot],
-                                      c->tex[slot], spv_emit_bitcast(&c->e, c->t_i32, rd(c, sm86_field(in, 24, 8))));
+    /* a multisampled texture has one level, and its size takes none */
+    u32 size = spv_emit_image_query_size_lod(&c->e, spv_emit_type_vector(&c->e, c->t_u32, dims), c->tex_sampled[slot],
+                                             c->tex[slot],
+                                             ms ? 0 : spv_emit_bitcast(&c->e, c->t_i32, rd(c, sm86_field(in, 24, 8))));
     u32 v[4];
     for (u32 k = 0; k < 3; k++) v[k] = k < dims ? SPV(&c->e, SPV_OP_COMPOSITE_EXTRACT, c->t_u32, size, k) : cu(c, 1);
     if (t->type == 0) v[1] = cu(c, 1);
-    v[3] = spv_emit_image_query_levels(&c->e, c->t_u32, c->tex_sampled[slot], c->tex[slot]);
+    v[3] = ms ? cu(c, 1) : spv_emit_image_query_levels(&c->e, c->t_u32, c->tex_sampled[slot], c->tex[slot]);
     tex_results(c, in, spv_emit_vec4_construct(&c->e, c->t_v4u, v), c->t_u32);
 }
 /* the sampled type of a storage image of a kind: float (0), unsigned (1, 2), signed (3) */
@@ -1371,6 +1394,24 @@ static u32 ballot32(Ctx* c, u32 pred) {
     return SPV(&c->e, 77 /* OpVectorExtractDynamic */, c->t_u32, all, half);
 }
 
+/* IPA of component k of generic input i: at the centroid (loc 1) or the default place, and with the program's
+   multiply by w taken back for a perspective input of frequency 0 */
+static u32 ipa_input(Ctx* c, u32 i, u32 k, u32 loc, u32 freq) {
+    u32 v = to_f(c, input_load(c, i, k));
+    if (loc == 1 && !(c->centroid_mask & (1u << i))) {
+        /* a variable has one location: centroid when any IPA of the input asks for it */
+        spv_emit_decorate(&c->e, c->in_attr[i], 16 /* Centroid */, NULL, 0);
+        c->centroid_mask |= 1u << i;
+    }
+    /* The hardware interpolates attr/w for a perspective input, and the program multiplies by w (the reciprocal of
+       a[0x7c]). Vulkan's input is attr itself: times the interpolated 1/w, FragCoord.w */
+    if (interp_mode(c, i) == 2 && freq == 0) {
+        v = spv_emit_fmul(&c->e, c->t_f32, v, frag_coord(c, 3));
+        spv_emit_no_contraction(&c->e, v);
+    }
+    return v;
+}
+
 /* ---- one instruction ---- */
 
 /* the fragment program's outputs from the registers when it ends: the colours of the render targets the SPH's omap
@@ -1433,7 +1474,7 @@ static int stage_ok(Ctx* c, const Sm86Insn* in) {
     int op = in->op;
     int compute =
         op == SM86_S2R || op == SM86_S2UR || op == SM86_LDS || op == SM86_STS || op == SM86_STS_NOU || op == SM86_BAR;
-    int fragment = op == SM86_IPA || op == SM86_KILL || op == SM86_TMML;
+    int fragment = op == SM86_IPA || op == SM86_IPA_U || op == SM86_KILL || op == SM86_TMML;
     /* the thread and block ids (TID 0x21-0x23, CTAID 0x25-0x27) are a compute program's. The lane and its masks
        (LANEID 0x00, EQMASK to GEMASK 0x38-0x3c) are every stage's, as a fragment program's LTMASK before a VOTE shows */
     if (compute && (op == SM86_S2R || op == SM86_S2UR))
@@ -1561,6 +1602,44 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 set_op = sm86_field(in, 74, 2);
             pwr(c, sm86_field(in, 81, 3), combine(c, set_op, cmp, acc), uniform);
             pwr(c, sm86_field(in, 84, 3), combine(c, set_op, spv_emit_bool_not(&c->e, c->t_bool, cmp), acc), uniform);
+            return;
+        }
+        case SM86_HSETP2: {
+            /* the halves of a and of b, each pair compared by the operation at 76-79 (spv_emit_fcompare's codes, as
+               FSETP's), then each with the predicate at 87-90 by the operation at 69-70: the low halves into the
+               predicate at 81-83, the high ones into 84-86. The forms of the 16-bit ALU, as CuAssembler's sm_86
+               encodings show them: b a register at 32 (1), two halves at 32-63 (2), a constant buffer (3). a's
+               swizzle is at 74-75 and b's at 60-61 (HADD2's codes). FTZ (80) and the other bits of 64-71, which no program
+               sets, are refused */
+            if (in->form > 3 || sm86_field(in, 80, 1) || sm86_field(in, 64, 5) || sm86_field(in, 71, 1)) {
+                fail(c, "HSETP2 of form %u with modifiers 0x%x", in->form, sm86_field(in, 64, 17));
+                return;
+            }
+            const Sm86Src* b = second(in);
+            u32 sw[2] = {sm86_field(in, 74, 2), b->kind == SM86_SRC_IMM ? 0 : sm86_field(in, 60, 2)};
+            const Sm86Src* src[2] = {&in->a, b};
+            u32 v[2];
+            for (u32 k = 0; k < 2; k++) {
+                if (sw[k] == 1) {
+                    fail(c, "HSETP2 with a float operand");
+                    return;
+                }
+                u32 pair = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, src_bits(c, src[k]));
+                if (sw[k] >= 2) {
+                    u32 h = spv_emit_vec4_extract(&c->e, c->t_f32, pair, sw[k] - 2);
+                    pair = spv_emit_vec2_construct(&c->e, c->t_v2f, h, h);
+                }
+                if (src[k]->kind != SM86_SRC_IMM && src[k]->abs) pair = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_F_ABS, pair);
+                if (src[k]->kind != SM86_SRC_IMM && src[k]->neg) pair = SPV(&c->e, SPV_OP_F_NEGATE, c->t_v2f, pair);
+                v[k] = pair;
+            }
+            u32 acc = prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), 0), set_op = sm86_field(in, 69, 2);
+            for (u32 k = 0; k < 2; k++) {
+                u32 cmp = spv_emit_fcompare(&c->e, c->t_bool, sm86_field(in, 76, 4),
+                                            spv_emit_vec4_extract(&c->e, c->t_f32, v[0], k),
+                                            spv_emit_vec4_extract(&c->e, c->t_f32, v[1], k));
+                pwr(c, sm86_field(in, 81 + 3 * k, 3), combine(c, set_op, cmp, acc), 0);
+            }
             return;
         }
         case SM86_FSEL:
@@ -2262,21 +2341,9 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 v;
             if (addr >= 0x70 && addr < 0x80)
                 v = frag_coord(c, (addr >> 2) & 3);
-            else if (addr >= 0x80 && addr < 0x280) {
-                u32 i = (addr - 0x80) >> 4;
-                v = to_f(c, input_load(c, i, (addr >> 2) & 3));
-                if (loc == 1 && !(c->centroid_mask & (1u << i))) {
-                    /* a variable has one location: centroid when any IPA of the input asks for it */
-                    spv_emit_decorate(&c->e, c->in_attr[i], 16 /* Centroid */, NULL, 0);
-                    c->centroid_mask |= 1u << i;
-                }
-                /* The hardware interpolates attr/w for a perspective input, and the program multiplies by w (the
-                   reciprocal of a[0x7c]). Vulkan's input is attr itself: times the interpolated 1/w, FragCoord.w */
-                if (interp_mode(c, i) == 2 && sm86_field(in, 78, 2) == 0) {
-                    v = spv_emit_fmul(&c->e, c->t_f32, v, frag_coord(c, 3));
-                    spv_emit_no_contraction(&c->e, v);
-                }
-            } else if (addr == 0x3fc) {
+            else if (addr >= 0x80 && addr < 0x280)
+                v = ipa_input(c, (addr - 0x80) >> 4, (addr >> 2) & 3, loc, sm86_field(in, 78, 2));
+            else if (addr == 0x3fc) {
                 /* NAK's NAK_ATTR_FRONT_FACE: all ones for a front face, as spirv_translate.c reads Maxwell's */
                 if (!c->front_facing) {
                     c->front_facing = spv_emit_builtin_input_u32(&c->e, c->t_bool, 17);
@@ -2298,6 +2365,27 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 return;
             }
             wr(c, in->dst, to_u(c, v));
+            return;
+        }
+        case SM86_IPA_U: {
+            /* IPA R, a[UR + addr]: the form with bit 91 and the uniform register at 24, which ptxas gives an input
+               array's index. The index is the same in every lane: the generic input whose address the sum is, of
+               those the SPH's imap reads, picked by its address (0 for none). The rest is IPA's */
+            u32 loc = sm86_field(in, 76, 2), freq = sm86_field(in, 78, 2);
+            if (!sm86_field(in, 91, 1) || sm86_field(in, 32, 8) != SM86_RZ || freq > 1 || loc > 1) {
+                fail(c, "IPA with a uniform index, at an offset or of frequency %u", freq);
+                return;
+            }
+            u32 at =
+                spv_emit_iadd_u32(&c->e, c->t_u32, urd(c, sm86_field(in, 24, 6)), cu(c, sm86_field(in, 64, 8) * 4));
+            u32 v = c->zero;
+            for (u32 i = 0; i < 32; i++)
+                for (u32 k = 0; k < 4; k++)
+                    if ((c->sph[6 + i / 4] >> ((i % 4) * 8 + k * 2)) & 3)
+                        v = spv_emit_select(&c->e, c->t_u32,
+                                            spv_emit_i_equal(&c->e, c->t_bool, at, cu(c, 0x80 + 16 * i + 4 * k)),
+                                            to_u(c, ipa_input(c, i, k, loc, freq)), v);
+            wr(c, in->dst, v);
             return;
         }
         case SM86_TEX:
@@ -2525,7 +2613,7 @@ static u32 brx_bias(const Sm86Insn* in, u32 i) {
 static int writer_before(Ctx* c, u32 k, u32 r) {
     for (u32 j = k; j-- > 0 && j + 16 > k;) {
         const Sm86Insn* w = &c->in[j];
-        if (w->op == SM86_BRA || w->op == SM86_EXIT || w->op == SM86_BRX) return -1;
+        if (w->op == SM86_BRA || w->op == SM86_EXIT || is_brx(w->op)) return -1;
         if (sm86_ops[w->op].kind != SM86_K_UALU && w->dst == r) return (int)j;
     }
     return -1;
@@ -2549,13 +2637,63 @@ static u32 jump_table_entries(Ctx* c, u32 k, u32 r) {
         return 0;
     return bound->b.value + 1;
 }
+/* whether the instruction writes uniform register r: the uniform ALU's, and the loads and moves into one */
+static int writes_uniform(const Sm86Insn* w, u32 r) {
+    if (w->op == SM86_UISETP) return 0; /* it writes predicates */
+    if (sm86_ops[w->op].kind == SM86_K_UALU) return w->dst == r;
+    return (w->op == SM86_ULDC || w->op == SM86_ULDC_IDX || w->op == SM86_ULDCG || w->op == SM86_S2UR ||
+            w->op == SM86_R2UR || w->op == SM86_UVOTE) &&
+           sm86_field(w, 16, 6) == r;
+}
+/* the instruction before k, back to the last branch, that writes uniform register r: its index, or -1 */
+static int uniform_writer_before(Ctx* c, u32 k, u32 r) {
+    for (u32 j = k; j-- > 0 && j + 16 > k;) {
+        const Sm86Insn* w = &c->in[j];
+        if (w->op == SM86_BRA || w->op == SM86_EXIT || is_brx(w->op)) return -1;
+        if (writes_uniform(w, r)) return (int)j;
+    }
+    return -1;
+}
+/* The entries of the table that the ULDC.IDX at k reads with uniform register r, as ptxas bounds a BRXU's index on
+   the uniform datapath: UISETP.LT.U32 UP, UR, imm, then USEL UR', UR, imm, UP (the smaller of the two), then
+   USHF.L.U32 by 2 into r (index = min(x, last) * 4). 0 when it isn't that */
+static u32 uniform_table_entries(Ctx* c, u32 k, u32 r) {
+    int m = uniform_writer_before(c, k, r);
+    if (m < 0) return 0;
+    const Sm86Insn* shf = &c->in[m];
+    if (shf->op != SM86_USHF || shf->pred != SM86_PT || shf->pred_not || shf->b.kind != SM86_SRC_IMM ||
+        shf->b.value != 2 || shf->c.reg != SM86_URZ || sm86_field(shf, 76, 1) || sm86_field(shf, 80, 1) ||
+        sm86_field(shf, 73, 2) < 2)
+        return 0;
+    int s = uniform_writer_before(c, (u32)m, shf->a.reg);
+    if (s < 0) return 0;
+    const Sm86Insn* sel = &c->in[s];
+    u32 up = sm86_field(sel, 87, 3);
+    if (sel->op != SM86_USEL || sel->pred != SM86_PT || sel->pred_not || sel->b.kind != SM86_SRC_IMM ||
+        sel->b.value >= 64 || sm86_field(sel, 90, 1) || up >= SM86_PT)
+        return 0;
+    u32 x = sel->a.reg, last = sel->b.value;
+    for (u32 j = (u32)s; j-- > 0 && j + 16 > (u32)s;) {
+        const Sm86Insn* w = &c->in[j];
+        if (w->op == SM86_BRA || w->op == SM86_EXIT || is_brx(w->op) || writes_uniform(w, x)) return 0;
+        if (w->op != SM86_UISETP || sm86_field(w, 81, 3) != up) continue;
+        int lt = sm86_field(w, 76, 3) == 1 && !sm86_field(w, 73, 1) && !sm86_field(w, 72, 1);
+        int alone = sm86_field(w, 87, 3) == SM86_PT && !sm86_field(w, 90, 1) && sm86_field(w, 74, 2) == 0;
+        return w->pred == SM86_PT && !w->pred_not && lt && alone && w->a.reg == x && w->b.kind == SM86_SRC_IMM &&
+                       w->b.value == last
+                   ? last + 1
+                   : 0;
+    }
+    return 0;
+}
 /* The targets of the BRX at i: the jump table of the LDC before it that writes its register, read through
    g_shader_cb_read as spirv_translate.c reads Maxwell's: as many entries as ptxas's bound on the index says, else up
    to the first word that is no target. Two tables one after the other were read as one, and gave a BRX the other's
    targets as its own. The count, or 0 */
 static u32 brx_targets(Ctx* c, u32 i, u32* targets, u32 max) {
     const Sm86Insn* in = &c->in[i];
-    u32 reg = sm86_field(in, 24, 8), bias = brx_bias(in, i);
+    int uniform = in->op == SM86_BRXU;
+    u32 reg = sm86_field(in, 24, uniform ? 6 : 8), bias = brx_bias(in, i);
     if (!(in->pred == SM86_PT && !in->pred_not)) {
         fail(c, "BRX on a predicate");
         return 0;
@@ -2566,11 +2704,18 @@ static u32 brx_targets(Ctx* c, u32 i, u32* targets, u32 max) {
     }
     for (u32 k = i; k-- > 0 && k + 32 > i;) {
         const Sm86Insn* w = &c->in[k];
-        if (w->op == SM86_BRA || w->op == SM86_EXIT || w->op == SM86_BRX) break;
-        if (w->dst != reg || sm86_ops[w->op].kind == SM86_K_UALU) continue;
-        if (w->op != SM86_LDC || sm86_field(w, 73, 3) != 4 || sm86_field(w, 78, 2)) break;
+        if (w->op == SM86_BRA || w->op == SM86_EXIT || is_brx(w->op)) break;
+        u32 entries;
+        if (uniform) { /* BRXU: the ULDC.IDX that writes its uniform register */
+            if (!writes_uniform(w, reg)) continue;
+            if (w->op != SM86_ULDC_IDX || sm86_field(w, 73, 3) != 4) break;
+            entries = uniform_table_entries(c, k, sm86_field(w, 24, 6));
+        } else {
+            if (w->dst != reg || sm86_ops[w->op].kind == SM86_K_UALU) continue;
+            if (w->op != SM86_LDC || sm86_field(w, 73, 3) != 4 || sm86_field(w, 78, 2)) break;
+            entries = jump_table_entries(c, k, sm86_field(w, 24, 8));
+        }
         u32 bank = sm86_field(w, 54, 5), off = sm86_field(w, 38, 16), count = 0;
-        u32 entries = jump_table_entries(c, k, sm86_field(w, 24, 8));
         if (entries > max) {
             fail(c, "BRX with a jump table of %u entries", entries);
             return 0;
@@ -2621,7 +2766,7 @@ static ShStructure* build_structure(Ctx* c) {
             }
             leader[t] = 1;
             leader[i + 1] = 1;
-        } else if (in->op == SM86_BRX && !never) {
+        } else if (is_brx(in->op) && !never) {
             if (ncases + 64 > 64 * 64) {
                 fail(c, "more than 64 BRX");
                 break;
@@ -2664,7 +2809,7 @@ static ShStructure* build_structure(Ctx* c) {
                     succ[2 * b + 1] = b + 1;
                 } else
                     term[b] = SHT_GOTO; /* a conditional branch off the end: the program can't run off it */
-            } else if (in->op == SM86_BRX && case_of[last]) {
+            } else if (is_brx(in->op) && case_of[last]) {
                 term[b] = SHT_SWITCH;
                 for (u32 k = 0; k < case_count[last]; k++) sw_targets[nsw++] = block_of[cases[case_of[last] - 1 + k]];
             } else if ((in->op == SM86_EXIT && always) || in->op == SM86_RET)
@@ -2903,10 +3048,10 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
                 const Sm86Insn* in = &insn[i];
                 int always = in->pred == SM86_PT && !in->pred_not, never = in->pred == SM86_PT && in->pred_not;
                 if (never) continue;
-                if (in->op == SM86_BRX) { /* the block's end: SHS_SWITCH takes the target's instruction */
+                if (is_brx(in->op)) { /* the block's end: SHS_SWITCH takes the target's instruction */
+                    u32 index = in->op == SM86_BRXU ? urd(c, sm86_field(in, 24, 6)) : rd(c, sm86_field(in, 24, 8));
                     c->branch_target = spv_emit_shift_right_u32(
-                        e, c->t_u32,
-                        spv_emit_iadd_u32(e, c->t_u32, rd(c, sm86_field(in, 24, 8)), cu(c, brx_bias(in, i))), cu(c, 4));
+                        e, c->t_u32, spv_emit_iadd_u32(e, c->t_u32, index, cu(c, brx_bias(in, i))), cu(c, 4));
                     continue;
                 }
                 if (in->op == SM86_BRA) { /* the block's end: SHS_IF takes its condition */
