@@ -243,6 +243,18 @@ SnxU64 snx_process_cpu_ns(void);
 SnxU64 snx_thread_clock(void);
 int snx_thread_cpu_ns(SnxU64 clock, SnxU64* ns);
 void snx_thread_clock_close(SnxU64 clock);
+/* one of the process's threads, as snx_threads reads it */
+typedef struct {
+    /* the system's id for it, with its start where the system gives an ended thread's id to a new one (Linux,
+       Android, Windows), so no later thread of the run has it; FreeBSD's alone */
+    SnxU64 id;
+    SnxU64 cpu_ns; /* its time on the processors so far */
+    char name[64]; /* its name for the system, "" for none */
+} SnxThreadInfo;
+/* the process's threads, into out up to max of them: how many the system listed (more than max when some did not
+   fit), or -1 where it lists none. Linux and Android count the time in the system's ticks (10 ms), FreeBSD in
+   microseconds, the others finer. Any thread; it reads a file for each thread on Linux and Android */
+int snx_threads(SnxThreadInfo* out, int max);
 /* the memory the system can still give this process, in bytes, into *bytes: what iOS lets the app take before it ends
    it, the memory available on Linux and Android (MemAvailable), on macOS (free, inactive and purgeable pages) and on
    Windows (available physical memory); whether the system told it */
