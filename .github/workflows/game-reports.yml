@@ -3,7 +3,7 @@
 name: Game reports
 
 # An issue with a ScarletNX log attached or pasted gets a summary of it (scripts/game-reports.py, with the runtime's
-# log summary, src/common/utilities/logscan.c, built here as snx-logscan from its five files): how the run ended,
+# log summary, src/common/utilities/logscan.c, built here as snx-logscan from its sources alone): how the run ended,
 # where, the service commands the runtime doesn't implement, the shaders, macros, SVCs and guest code it missed, and the
 # other game reports that failed the same way. One comment, edited as logs are added, and the labels `game report` and
 # `log: <how it ended>`. A maintainer's `status: confirmed` label gets a comment once: ready for an edenprobe case.
@@ -48,6 +48,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           sparse-checkout: |
             scripts/game-reports.py
+            src/common/utilities/ascii.h
             src/common/utilities/logscan.c
             src/common/utilities/logscan.h
             src/common/utilities/logscan_main.c
