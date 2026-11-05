@@ -74,7 +74,7 @@ static int want_shape_present(u32 k, u32 i) {
     }
 }
 /* a texture kind's format (3 BC4, 4 BC5, 6 ASTC 4x4) and size in a Low (mid 0) or Mid file */
-static void want_tex(u32 k, u32 i, int mid, u32* fmt, u32* w, u32* h, u32* mips) {
+static void want_tex(u32 k, u32 i, int mid, u32* fmt, u32* w, u32* h, u32* levels) {
     static const u16 t[11][5] = {{3, 8, 8, 8, 8},         {6, 76, 64, 152, 128},  {3, 144, 128, 144, 128},
                                  {3, 256, 512, 256, 512}, {3, 96, 192, 256, 512}, {6, 96, 192, 256, 512},
                                  {4, 128, 128, 256, 256}, {3, 32, 32, 128, 128},  {6, 88, 64, 176, 128},
@@ -91,8 +91,8 @@ static void want_tex(u32 k, u32 i, int mid, u32* fmt, u32* w, u32* h, u32* mips)
         *w = 64;
         *h = 16;
     }
-    for (*mips = 1, big = *w > *h ? *w : *h; big > 1; big >>= 1) (*mips)++;
-    if (k == 6 || k == 10) *mips = 1;
+    for (*levels = 1, big = *w > *h ? *w : *h; big > 1; big >>= 1) (*levels)++;
+    if (k == 6 || k == 10) *levels = 1;
 }
 
 /* ---- a part's zlib stream (a deflate window of 32 KiB, as the console's parts take): the n bytes inflated into out,
@@ -131,10 +131,10 @@ static void want_deswizzle(const u8* src, u32 fmt, u32 w, u32 h, u32 l, u8* dst)
 /* every level of a texture part decoded and set against what tex_texel draws at its texels: the mean difference of
    its channels (ASTC's four, BC5's two, BC4's one) within the encoders' error. A level in the wrong layout, a block
    the decoder reads otherwise, or a channel left out, is far from it */
-static void check_drawing(u32 k, u32 v, u32 fmt, u32 w, u32 h, u32 mips, int mid) {
+static void check_drawing(u32 k, u32 v, u32 fmt, u32 w, u32 h, u32 levels, int mid) {
     u32 l, at = 0, nch = fmt == 6 ? 4 : fmt == 4 ? 2 : 1;
     float ar = (float)w / (float)h;
-    for (l = 0; l < mips; l++) {
+    for (l = 0; l < levels; l++) {
         u32 lw = w >> l ? w >> l : 1, lh = h >> l ? h >> l : 1, bw = (lw + 3) / 4 * 4, x, y, c;
         float aa = 1.4f / (float)lh;
         double sum = 0, mean, limit;
@@ -188,15 +188,16 @@ static void check_textures(const u8* f, u32 size, int mid) {
     for (k = 0; k < 11; k++)
         for (i = 0; i < want_tex_counts[k]; i++, e++) {
             const u8* t = f + 0x64 + 0x1c * e;
-            u32 off = snx_ld_le32(t), raw = snx_ld_le32(t + 4), stored = snx_ld_le32(t + 8), fmt, w, h, mips, l, n = 0;
+            u32 off = snx_ld_le32(t), raw = snx_ld_le32(t + 4), stored = snx_ld_le32(t + 8), fmt, w, h, levels, l,
+                n = 0;
             if (!want_tex_present(k, i)) {
                 CHECK(raw == 0 && stored == 0);
                 continue;
             }
-            want_tex(k, i, mid, &fmt, &w, &h, &mips);
-            CHECK(snx_ld_le16(t + 0x14) == w && snx_ld_le16(t + 0x16) == h && t[0x18] == fmt && t[0x19] == mips);
+            want_tex(k, i, mid, &fmt, &w, &h, &levels);
+            CHECK(snx_ld_le16(t + 0x14) == w && snx_ld_le16(t + 0x16) == h && t[0x18] == fmt && t[0x19] == levels);
             CHECK(snx_ld_le32(t + 0xc) == 0x806 && snx_ld_le32(t + 0x10) == 0x200);
-            for (l = 0; l < mips; l++) n += want_level_bytes(fmt, w, h, l);
+            for (l = 0; l < levels; l++) n += want_level_bytes(fmt, w, h, l);
             CHECK(raw == n && raw <= sizeof g_mii_model.raw);
             CHECK(off >= 0x64 + 0x1c * 327 && off + stored <= size);
             if (raw != n || raw > sizeof g_mii_model.raw || off + stored > size) continue;
@@ -207,7 +208,7 @@ static void check_textures(const u8* f, u32 size, int mid) {
                 u32 v = tex_variant(k, i), p, sum = 0;
                 if (v >= 32 || (drawn[k] >> v & 1)) continue;
                 drawn[k] |= 1u << v;
-                check_drawing(k, v, fmt, w, h, mips, mid);
+                check_drawing(k, v, fmt, w, h, levels, mid);
                 want_deswizzle(g_mii_model.raw, fmt, w, h, 0, g_mii_model.lin);
                 if (fmt == 6)
                     astc_decode_image(g_mii_model.lin, (w + 3) / 4 * 4, (h + 3) / 4 * 4, 4, 4, g_mii_model.px, 0);
