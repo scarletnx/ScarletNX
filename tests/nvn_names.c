@@ -51,6 +51,7 @@ int g_frames, g_opt_fps;
 #define STATE     0x7500u
 #define SCRATCH   0x8000u
 #define SCRATCH2  0x8100u
+#define SYNC      0x8200u
 
 /* ---- what the files need of the runtime: guest memory as the GPU's too, and nothing that waits */
 u64 kmem_alloc(u64 size, u32 state, u32 perm) {
@@ -102,7 +103,8 @@ void core_enter(KThread* t) { (void)t; }
 void core_leave(KThread* t) { (void)t; }
 u64 guest_ticks(void) { return 0; }
 u64 plat_ns(void) { return 1; }
-void plat_sleep_ns(i64 ns) { (void)ns; }
+static i64 g_slept; /* what the runtime asked to sleep, in all */
+void plat_sleep_ns(i64 ns) { g_slept += ns; }
 u64 present_display_period(u64 period, u64 refresh) {
     (void)refresh;
     return period;
@@ -1044,6 +1046,20 @@ static void test_queue_window(void) {
           "all three in turn from then on");
 }
 
+/* a sync initialized and never fenced: the game's driver has nothing to wait for and fails the wait at once, whatever
+   the timeout. One game waits on such a sync every frame with a 4.3 s timeout */
+static void test_sync_never_fenced(void) {
+    static CPU c;
+    const u64 timeouts[] = {0, 0xffffffffull, ~0ull};
+    u32 i;
+    check(nvn_SyncInitialize(&c, SYNC, DEVICE), "a sync");
+    for (i = 0; i < 3; i++) {
+        i64 slept = g_slept;
+        check(nvn_SyncWait(&c, SYNC, timeouts[i]) == NVN_SYNC_WAIT_RESULT_FAILED, "a sync never fenced fails its wait");
+        check(g_slept == slept, "a sync never fenced is not waited for");
+    }
+}
+
 int main(void) {
     nvn_init();
     test_device();
@@ -1057,6 +1073,7 @@ int main(void) {
     test_objects();
     test_state();
     test_queue_window();
+    test_sync_never_fenced();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

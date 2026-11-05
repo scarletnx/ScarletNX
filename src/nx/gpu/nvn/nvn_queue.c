@@ -251,17 +251,19 @@ static int shown_wait(const NvnSync* s, u64 start, i64 left, int* waited) {
 }
 /* A fenced sync signals once its syncpoint reaches its value (the replay reached it), the present it waits for is on
    the display (shown_wait) and the pacer's clock reaches its ready time: the wait blocks until all three, or for the
-   timeout (nanoseconds, ~0 for good). One never fenced waits out its timeout, as on the console */
+   timeout (nanoseconds, ~0 for good). One never fenced has nothing to wait for: the wait fails at once, whatever
+   the timeout, as the game's driver answers it */
 static i32 sync_wait(CPU* c, u64 sync, u64 timeout) {
     const NvnSync* s = NVN_OBJ(const NvnSync, sync);
     u64 start = plat_ns(), now, ready;
     i64 left = timeout > (u64)INT64_MAX ? -1 : (i64)timeout;
     int waited = 0;
     if (!__atomic_load_n(&s->fenced, __ATOMIC_ACQUIRE)) {
-        LOG_LIMIT(8, "nvn: sync %llx waited on before anything fenced it (timeout %llx, called from %llx)\n",
+        LOG_LIMIT(8,
+                  "nvn: sync %llx waited on before anything fenced it (timeout %llx, called from %llx): the wait "
+                  "fails at once\n",
                   (unsigned long long)sync, (unsigned long long)timeout, (unsigned long long)c->x[30]);
-        if (left > 0) plat_sleep_ns(left);
-        return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+        return NVN_SYNC_WAIT_RESULT_FAILED;
     }
     if (s->syncpt && !syncpt_wait(s->syncpt, s->value, 0)) {
         if (!left || !syncpt_wait(s->syncpt, s->value, left)) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
