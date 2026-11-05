@@ -1519,6 +1519,32 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             dwr(c, in, to_u(c, saturate(c, ftz(c, v, on), (int)sm86_field(in, 77, 1))));
             return;
         }
+        case SM86_FSWZADD: {
+            /* a at 24, b at 64, the swizzle at 32-39. Each lane of a quad does the mode in its two bits of the
+               swizzle, lane L's at bits 6 - 2L (lane 0 the upper left), as Maxwell's FSWZADD (emit_float.c): a + b
+               (0), b - a (1), a - b (2) or b (3). CuAssembler's sm_86 names show the order: 0xcc is ZPPPZPPP, b
+               alone in lanes 0 and 2. Bit 77 is NDV, which changes nothing computed. The other bits are refused */
+            if (sm86_field(in, 72, 19) & ~(1u << 5)) {
+                fail(c, "FSWZADD with modifiers 0x%x", sm86_field(in, 72, 19));
+                return;
+            }
+            u32 swizzle = sm86_field(in, 32, 8);
+            u32 a = to_f(c, rd(c, sm86_field(in, 24, 8))), b = to_f(c, rd(c, sm86_field(in, 64, 8)));
+            spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
+            u32 lane = spv_emit_bitwise_and_u32(&c->e, c->t_u32, system_value(c, 0), cu(c, 3));
+            u32 shift =
+                spv_emit_isub_u32(&c->e, c->t_u32, cu(c, 6), spv_emit_shift_left_u32(&c->e, c->t_u32, lane, cu(c, 1)));
+            u32 mode = spv_emit_bitwise_and_u32(
+                &c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, cu(c, swizzle), shift), cu(c, 3));
+            u32 x = spv_emit_select(&c->e, c->t_f32, spv_emit_i_equal(&c->e, c->t_bool, mode, cu(c, 1)),
+                                    spv_emit_fnegate(&c->e, c->t_f32, a), a);
+            u32 y = spv_emit_select(&c->e, c->t_f32, spv_emit_i_equal(&c->e, c->t_bool, mode, cu(c, 2)),
+                                    spv_emit_fnegate(&c->e, c->t_f32, b), b);
+            u32 sum = nocontract(c, op2(c, SPV_OP_F_ADD, c->t_f32, x, y));
+            dwr(c, in,
+                to_u(c, spv_emit_select(&c->e, c->t_f32, spv_emit_i_equal(&c->e, c->t_bool, mode, cu(c, 3)), b, sum)));
+            return;
+        }
         case SM86_FMNMX: {
             u32 min = prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), 0);
             int on = (int)sm86_field(in, 80, 1);

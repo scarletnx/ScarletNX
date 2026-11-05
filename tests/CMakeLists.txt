@@ -2574,7 +2574,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     add_test(NAME shader_structure COMMAND snx-test-shader-structure)
     # the SM86 frontend (gpu/shader/sm86.h): the decoder on words made by NAK's encoding rules, the search for
     # programs, and small translations, which spirv-val checks when it is on PATH
-    add_executable(snx-test-shader-sm86 shader_sm86.c)
+    add_executable(snx-test-shader-sm86 shader_sm86.c support/spv_eval.c)
     snx_test_target(snx-test-shader-sm86 23)
     target_link_libraries(snx-test-shader-sm86 PRIVATE snx_shader)
     if(NOT WIN32)

@@ -6,6 +6,7 @@
    programs, which spirv-val checks when the test gets its path. No word here comes from a game. */
 #include "nx/gpu/shader/sm86.h"
 #include "common/utilities/endian.h"
+#include "support/spv_eval.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -554,6 +555,39 @@ static void test_game_forms(const char* spirv_val, const char* dir) {
     if (spv) CHECK(validate(spirv_val, dir, "fs_call", spv, count));
     free(spv);
     free(fs);
+}
+
+/* ---- programs run on the CPU (support/spv_eval.c) ---- */
+
+static u32 f2u(float f) {
+    u32 u;
+    memcpy(&u, &f, 4);
+    return u;
+}
+/* the fragment program code (n instructions, its SPH writing color 0 from R0-R3) translated and run at lane, with
+   bank 1 as cb1 (cb1_words of it, NULL for none): its color 0 into out, 1 when it ran */
+static int run_fs_at(const u8* code, u32 n, u32 lane, const u32* cb1, u32 cb1_words, u32 out[4]) {
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+    if (!spv) {
+        fprintf(stderr, "run_fs: %s\n", si.first_unsupported);
+        return 0;
+    }
+    SpvEvalEnv env = {0};
+    env.builtin[41][0] = lane;
+    u32 bank1[1024] = {0};
+    for (u32 k = 0; cb1 && k < cb1_words && k < 1024; k++) bank1[k] = cb1[k];
+    env.ubo[SNX_VKB_CB + 1] = bank1;
+    env.ubo_words[SNX_VKB_CB + 1] = 1024;
+    const char* why = spv_eval(spv, count, &env);
+    free(spv);
+    if (why) fprintf(stderr, "run_fs: the evaluator stops at %s\n", why);
+    for (u32 k = 0; k < 4; k++) out[k] = env.out[0][k];
+    return !why && env.out_written[0];
 }
 
 /* the jump table of the BRX test: c[1][0x10] on, the targets' byte addresses, then a word that is no target */
@@ -1126,6 +1160,44 @@ static void test_global_flow(const char* spirv_val, const char* dir) {
     free(spv);
 }
 
+/* FSWZADD R0, R1, R2 with swizzle 0x1b: lane 0 (the swizzle's top two bits) adds, lane 1 does b - a, lane 2 a - b
+   and lane 3 gives b, as Maxwell's (nouveau's QUADOP). R1 = 1.5, R2 = 4 */
+static void test_fswzadd(const char* spirv_val, const char* dir) {
+    u8 code[16 * 5] = {0};
+    put(code, 0, mov_imm(1, f2u(1.5f)));
+    put(code, 1, mov_imm(2, f2u(4.0f)));
+    Word x = fix(0x822);
+    set(&x, 16, 8, 0);
+    set(&x, 24, 8, 1);
+    set(&x, 32, 8, 0x1b);
+    set(&x, 64, 8, 2);
+    put(code, 2, x);
+    put(code, 3, exit_insn());
+    put(code, 4, bra(4, 4, 7, 0));
+    static const float want[4] = {5.5f, 2.5f, -2.5f, 4.0f};
+    for (u32 lane = 0; lane < 4; lane++) {
+        u32 out[4];
+        CHECK(run_fs_at(code, 5, lane, NULL, 0, out));
+        CHECK(out[0] == f2u(want[lane]));
+        if (out[0] != f2u(want[lane])) fprintf(stderr, "fswzadd: lane %u gives %08x\n", lane, out[0]);
+    }
+    /* a modifier the translation does not know is refused */
+    set(&x, 80, 1, 1);
+    put(code, 2, x);
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    CHECK(!sm86_to_spirv(code, 5 * 16, ST_FS, fsph, &si, &count));
+    set(&x, 80, 1, 0);
+    put(code, 2, x);
+    si = (ShaderInfo){0};
+    u32* spv = sm86_to_spirv(code, 5 * 16, ST_FS, fsph, &si, &count);
+    CHECK(spv && validate(spirv_val, dir, "fs_fswzadd", spv, count));
+    free(spv);
+}
+
 int main(int argc, char** argv) {
     const char* spirv_val = argc > 2 ? argv[2] : NULL;
     const char* dir = argc > 1 ? argv[1] : ".";
@@ -1144,6 +1216,7 @@ int main(int argc, char** argv) {
     test_root_tables(spirv_val, dir);
     test_texel_offsets(spirv_val, dir);
     test_global_flow(spirv_val, dir);
+    test_fswzadd(spirv_val, dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
