@@ -2928,6 +2928,9 @@ int main(int argc, char** argv) {
     root = snx_temp_dir(NULL);
     CHECK(root);
     snprintf(g_exedir, 1024, "%s/", root);
+    /* the shader files (pipeline.c's shader_cache) this run's alone: the working directory's are every test's run
+       there, whose pipelines the workers would make beside the checks, under the VIC test's validation layer too */
+    snprintf(g_cachedir, sizeof g_cachedir, "%s/", root);
     shot = snx_path_join(root, "frame");
     ppm = snx_format("%s.ppm", shot);
     mem_init(); /* the real reservation and alias pool: the renderer traps what the GPU owns where the host can */
@@ -2939,7 +2942,7 @@ int main(int argc, char** argv) {
     viw_install();
     if (g_settings.descriptor_buffers && !g_vk.has_descriptor_buffers) {
         puts("SKIP descriptor-buffer checks: the device does not support this path");
-        vk_pipeline_quiesce(); /* the earlier runs' pipelines, which workers still make, before the driver's exit */
+        vk_pipeline_quiesce(); /* the shader files' reading thread, before the driver's exit */
         CHECK(!snx_remove_tree(root));
         free(root);
         free(shot);
