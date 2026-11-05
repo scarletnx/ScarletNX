@@ -17,6 +17,7 @@
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/shader/advanced_blend_spirv.h"
+#include "nx/gpu/shader/sm86.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
@@ -2728,6 +2729,9 @@ static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
     /* the stages between: tessellation control and evaluation (program slots 2 and 3), geometry (slot 4) */
     tcs_on = p->on >> 2 & 1;
     tes_on = p->on >> 3 & 1;
+    /* an SM86 tessellation control program that runs no invocation is the driver's stand-in for none: the
+       passthrough below takes its place (sm86_tcs_empty) */
+    if (tcs_on && g_shader_sm86 && sm86_tcs_empty(gmem_r32(p->code[2] + 8))) tcs_on = 0;
     gs_on = p->on >> 4 & 1;
     if ((tcs_on || tes_on || gs_on) && g_vk_stage_sets < 5) {
         LOG_LIMIT(1, "vulkan: this GPU binds too few descriptor sets for tessellation and geometry (draw skipped)\n");
