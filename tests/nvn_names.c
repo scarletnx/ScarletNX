@@ -685,6 +685,43 @@ static void test_ounce_program_records(void) {
           "a replayed bind of the program takes its c[0] record");
     nvn_program_c0(0, c0);
     check(!memcmp(c0, (u8[NVN_C0_RECORD]){0}, sizeof c0), "a serial without a record has none");
+
+    /* a task program and a mesh program after it (docs/platforms/nx/ounce.md's sections): their fields by the program's
+       serial, and nothing past its object. BindProgram of every stage and DrawMeshTasks record a mesh draw of them */
+    const u64 task = 0xa400;
+    const u32 task_words[] = {(u32)NVN_SHADER_STAGE_TASK << 16, 0x5800020};
+    const u32 mesh_words[] = {(u32)NVN_SHADER_STAGE_MESH << 16, 0x5800008, 0x3010000, 0x100020, 0xd00, 0x80};
+    for (u32 k = 0; k < 2; k++) {
+        u64 at = k ? control : task;
+        memset(GP(at), 0, 0xd8);
+        gw32(at, 0x98761234);
+        gw32(at + 4, 0xc9);
+        gw32(at + 8, 11);
+        for (u32 i = 0; i < (k ? 6u : 2u); i++) gw32(at + 0x54 + 4 * i, k ? mesh_words[i] : task_words[i]);
+    }
+    gw64(pairs, 0x900000);
+    gw64(pairs + 8, task);
+    gw64(pairs + 16, 0x910000);
+    gw64(pairs + 24, control);
+    check(nvn_ProgramSetShaders(NULL, PROGRAM, 2, pairs), "a task and a mesh program's SetShaders");
+    check(!memcmp(GP(PROGRAM + 0xa0), game, sizeof game), "the mesh fields aren't past the program object");
+    DsMeshKey m = nvn_program_mesh(NVN_OBJ(NvnProgram, PROGRAM)->serial);
+    check(m.task_threads == 32 && m.task_payload == 0x580 && m.mesh_threads == 8 && m.mesh_payload == 0x580 &&
+              m.max_vertices == 32 && m.max_primitives == 16 && m.has_task && m.primitive_vertices == 3 &&
+              m.prim_sph == 0xd00,
+          "the task and mesh programs' fields are kept for the program's serial");
+    nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+    nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM, 0xff);
+    nvn_CommandBufferDrawMeshTasks(NULL, CMDBUF, 0, 6);
+    nvn_CommandBufferDrawMeshTasks3D(NULL, CMDBUF, 2, 3, 4);
+    handle = nvn_CommandBufferEndRecording(NULL, CMDBUF);
+    memset(GP(task), 0, 0xd8);
+    memset(GP(control), 0, 0xd8);
+    g_call = (DrawCall){0};
+    check(replay(&draw, handle, OP_DRAW_MESH) == 2, "the recording replays its two mesh draws");
+    check(g_call.mesh && !g_call.first && g_call.count == 24 && g_ds.prog.task == 0x900000 &&
+              g_ds.prog.mesh == 0x910000 && !memcmp(&g_ds.prog.mesh_key, &m, sizeof m),
+          "a 3D mesh draw's 2 x 3 x 4 workgroups in a row, of the bound task and mesh programs");
     g_nvn.loader.api = api;
 }
 static void test_device(void) {

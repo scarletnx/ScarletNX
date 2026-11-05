@@ -2463,7 +2463,7 @@ static struct {
         }                                                                                                              \
     } while (0)
 void vk_render_forget_state(void) { g_dyn.cb = 0; }
-u64 g_vk_drawn, g_vk_skipped;
+u64 g_vk_drawn, g_vk_skipped, g_vk_mesh_draws, g_vk_mesh_drawn;
 u64 g_vk_capture_draws, g_vk_capture_primitives, g_vk_capture_capped;
 
 /* The viewport's size with the transform off: the surface clip's, at most the device's viewport dimensions at the
@@ -3417,6 +3417,13 @@ static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o, con
     VkDescriptorSet bset[3];
     if (!count || !instances) return;
     vk_frame_check();
+    /* an Ounce's mesh draw (DrawCall.mesh), which the renderer has no pipeline for yet */
+    if (dc->mesh) {
+        g_vk_mesh_draws++;
+        LOG_LIMIT(1, "vulkan: mesh draws are skipped: the renderer has no mesh pipeline\n");
+        g_vk_skipped++;
+        return;
+    }
     if (g_draw.check < 0) {
         g_draw.check = g_settings.draw_state_check != 0;
         if (g_draw.check)

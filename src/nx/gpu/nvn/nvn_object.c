@@ -1822,23 +1822,29 @@ int nvn_program_tess(u64 serial, NvnTessStage stages[2]) {
     pm_unlock(&g_nvn.object.xfb_lock);
     return found;
 }
-void nvn_program_c0(u64 serial, u8 c0[NVN_C0_RECORD]) {
+/* the Ounce records of the program SetShaders gave serial, all 0 for none */
+static NvnOunceEntry ounce_find(u64 serial) {
+    NvnOunceEntry e = {0};
     pm_lock(&g_nvn.object.xfb_lock);
     u32 i = program_metadata_index(g_nvn.object.ounce, g_nvn.object.nounce, sizeof *g_nvn.object.ounce, serial);
-    if (i < g_nvn.object.nounce && g_nvn.object.ounce[i].serial == serial)
-        memcpy(c0, g_nvn.object.ounce[i].c0, NVN_C0_RECORD);
-    else
-        memset(c0, 0, NVN_C0_RECORD);
+    if (i < g_nvn.object.nounce && g_nvn.object.ounce[i].serial == serial) e = g_nvn.object.ounce[i];
     pm_unlock(&g_nvn.object.xfb_lock);
+    return e;
 }
+void nvn_program_c0(u64 serial, u8 c0[NVN_C0_RECORD]) {
+    NvnOunceEntry e = ounce_find(serial);
+    memcpy(c0, e.c0, NVN_C0_RECORD);
+}
+DsMeshKey nvn_program_mesh(u64 serial) { return ounce_find(serial).mesh; }
 /* an Ounce program's records, kept for its serial when it has any */
 static void ounce_of(NvnOunceEntry* e, u64 serial) {
     static const NvnOunceEntry none = {0};
-    if (!memcmp(e->c0, none.c0, sizeof e->c0)) return;
+    if (!memcmp(e->c0, none.c0, sizeof e->c0) && !memcmp(&e->mesh, &none.mesh, sizeof e->mesh)) return;
     e->serial = serial;
     pm_lock(&g_nvn.object.xfb_lock);
     void* entries = g_nvn.object.ounce;
-    program_metadata_insert(&entries, &g_nvn.object.nounce, &g_nvn.object.ounce_capacity, sizeof *e, e, "c[0] records");
+    program_metadata_insert(&entries, &g_nvn.object.nounce, &g_nvn.object.ounce_capacity, sizeof *e, e,
+                            "c[0] records and mesh fields");
     g_nvn.object.ounce = entries;
     pm_unlock(&g_nvn.object.xfb_lock);
 }
@@ -1955,10 +1961,14 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
         u32 stage;
         i32 rank;
         if (!stage_of(o, data, control)) return 0;
-        /* an Ounce compute program's c[0] record (nvn_program_c0) */
-        if (g_nvn.loader.api >= 231u << 16 && ounce_section(control) &&
-            stage11(data, control) == NVN_SHADER_STAGE_COMPUTE)
-            memcpy(ounce.c0, GP(control + 0xa8), NVN_C0_RECORD);
+        /* an Ounce compute program's c[0] record (nvn_program_c0), or its task and mesh programs' fields
+           (nvn_program_mesh) */
+        if (g_nvn.loader.api >= 231u << 16 && ounce_section(control)) {
+            u32 s11 = stage11(data, control);
+            if (s11 == NVN_SHADER_STAGE_COMPUTE) memcpy(ounce.c0, GP(control + 0xa8), NVN_C0_RECORD);
+            if (s11 == NVN_SHADER_STAGE_TASK || s11 == NVN_SHADER_STAGE_MESH)
+                nvn_section_mesh_key(GP(control), s11, &ounce.mesh);
+        }
         /* geometry, else tessellation evaluation, else control, else vertex: the driver's order */
         stage = ounce_section(control) ? stage11(data, control) : gr32(control + 0x714);
         if (gr32(control + 8) >= 7 && GP(control)[0x7c0]) subroutine_mask |= 1u << stage;

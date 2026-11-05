@@ -154,8 +154,9 @@ int main(void) {
         }
     }
     /* a constant buffer bound through the 3D engine (BIND_GROUP 0x904 + 8 * stage, of the buffer at 0x8E1-0x8E2 with the
-       size 0x8E0): its slot in the bindings, with a new generation, and unbound again */
-    for (u32 stage = 0; stage < DS_GFX_STAGES; stage++)
+       size 0x8E0): its slot in the bindings, with a new generation, and unbound again. The engine has the five stages
+       to the fragment one: the bindings' task and mesh stages are an Ounce's */
+    for (u32 stage = 0; stage <= ST_FS; stage++)
         for (u32 slot = 0; slot < DS_CBUFS; slot += 7) {
             u64 gen;
             maxwell3d_method(&ch, 0x8E0, 0x400 + slot, 0);
