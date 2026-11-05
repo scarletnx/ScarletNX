@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The Vulkan driver packages a player adds, in libadrenotools' format (its tools/ADPKG.md): a zip of a meta.json and the
    driver's libraries, each kept in a folder of its own under the drivers folder, which a game's run loads in place of
-   the system's driver on Android arm64 with an Adreno or an Xclipse GPU (nx/runtime/platform/gpu_driver_load.c). What
+   the system's driver on Android arm64 with an Adreno, a Mali or an Xclipse GPU (nx/runtime/platform/gpu_driver_load.c). What
    is read and checked the same way by the launcher, which adds them (gui/gpu_driver.c), and by a run, which loads one:
    their meta.json, their folder's name, whether this device loads them, whether a run's process mapped one, and the
    Freedreno variables a run sets for Mesa's Turnip. No SDL, no Android headers: the tests run them anywhere */
@@ -49,13 +49,14 @@ typedef struct {
     const char* arch;   /* "arm64", "x86_64"... */
     int api;            /* Android's API level, 0 elsewhere */
     int kgsl;           /* /dev/kgsl-3d0 is there: an Adreno GPU's kernel driver */
+    int mali;           /* /dev/mali0 or /dev/mali is there: a Mali GPU's (kbase's) */
     int amdgpu;         /* a render node's kernel driver is amdgpu, the name Mesa's RADV asks of it: on Android an
                            Xclipse GPU's (Samsung's sgpu answers by it) */
     char render[96];    /* that node and its driver, "/dev/dri/renderD128, kernel driver amdgpu"; without one, the
                            first render node there is with its driver, or with why it did not answer; "" for none */
     int built;          /* the build carries the packages' loader: Android arm64 */
 } SnxGpuDriverHost;
-/* this device's; on Android with no Adreno, its render nodes asked too (snx_gpu_driver_render_node) */
+/* this device's; on Android with no Adreno or Mali, its render nodes asked too (snx_gpu_driver_render_node) */
 void snx_gpu_driver_host(SnxGpuDriverHost* host);
 /* host's amdgpu and render from /dev/dri's render nodes, each opened to ask DRM its kernel driver's name; none where
    there is no DRM (a system other than Linux and Android) */
@@ -65,7 +66,7 @@ typedef enum {
     SNX_GPU_DRIVER_LOADS,
     SNX_GPU_DRIVER_NOT_ANDROID, /* another system: a package takes the place of Android's Vulkan loader's driver */
     SNX_GPU_DRIVER_NOT_ARM64,   /* the packages' only ABI */
-    SNX_GPU_DRIVER_NO_GPU,      /* neither an Adreno nor an Xclipse: no package drives the GPU */
+    SNX_GPU_DRIVER_NO_GPU,      /* no Adreno, no Mali and no Xclipse: no package drives the GPU */
     SNX_GPU_DRIVER_OLD_ANDROID, /* under SNX_GPU_DRIVER_MIN_API */
     SNX_GPU_DRIVER_NOT_BUILT    /* this build carries no loader for them */
 } SnxGpuDriverLack;
