@@ -719,6 +719,49 @@ static void cache_case(const CacheCase* c) {
            c->bw, c->bh, c->srgb, c->w, c->h, c->depth, c->layers);
     fflush(stdout);
 }
+/* a burst: more levels encoded in one submission than the 64 the captures once held, each its own image, one finish
+   after them all: every one is stored (a game's menus upload hundreds of levels at once, and the cache dropped two of
+   three) */
+static void cache_burst(void) {
+    enum { N = 100, W = 16, H = 16 };
+    const VkFormat format = VK_FORMAT_BC7_UNORM_BLOCK;
+    if (!g_vk.feat.textureCompressionBC) return;
+    Surf t[N];
+    u64 reads, stored, stored2, restarts, bytes;
+    vk_bc7_cache_stats(&reads, &stored, &restarts, &bytes);
+    for (u32 i = 0; i < N; i++) {
+        t[i] = (Surf){.w = W, .h = H, .layers = 1, .levels = 1, .depth3d = 1, .f = {.vk = format, .bw = 4, .bh = 4}};
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .imageType = VK_IMAGE_TYPE_2D,
+                                .format = format,
+                                .extent = {W, H, 1},
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+        if (!vk_image_create(&ii, &t[i].img, &t[i].mem)) fatal("cannot create a %ux%u BC7 image\n", W, H);
+        barrier(t[i].img, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        u8* blocks = blocks_new(W, H, 1, 4, 4);
+        const u32 layout[8] = {0, W / 4 * 16, W / 4 * 16, H / 4, 0, 0, 0, 1};
+        u64 content[2] = {0, 0};
+        vk_bc7_content(content, layout, sizeof layout);
+        vk_bc7_content(content, blocks, (u64)(W / 4) * (H / 4) * 16);
+        Level lv = {blocks, W / 4, H / 4, NULL, 2, 0};
+        if (!vk_astc_upload(vk_cmd(), &t[i], W, H, 1, 0, 0, 1, level_rows, &lv, content))
+            fatal("burst upload %u failed\n", i);
+        free(blocks);
+    }
+    vk_finish();
+    vk_finish(); /* the captures land once their submission is done */
+    vk_bc7_cache_stats(&reads, &stored2, &restarts, &bytes);
+    for (u32 i = 0; i < N; i++) vk_image_destroy(t[i].img, t[i].mem);
+    if (stored2 != stored + N)
+        fatal("the BC7 cache: a burst of %d encodes stored %llu\n", N, (unsigned long long)(stored2 - stored));
+    printf("PASS the BC7 cache: a burst of %d encodes in one submission, every one stored\n", N);
+    fflush(stdout);
+}
 static void cache_cases(void) {
     remove(CACHE_PATH);
     vk_astc_cache_open(CACHE_PATH);
@@ -728,6 +771,7 @@ static void cache_cases(void) {
         {6, 6, 0, 97, 61, 1, 1},      {5, 5, 1, 131, 77, 1, 1},     {8, 6, 0, 17, 13, 1, 6},    {4, 4, 1, 61, 37, 9, 1},
         {10, 5, 0, 2051, 1101, 1, 1}, {10, 5, 1, 4100, 1030, 1, 1}, {8, 8, 1, 2048, 2048, 1, 1}};
     for (u32 i = 0; i < sizeof cases / sizeof cases[0]; i++) cache_case(&cases[i]);
+    cache_burst();
     vk_bc7_cache_close();
     remove(CACHE_PATH);
 }
