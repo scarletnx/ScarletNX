@@ -3159,6 +3159,7 @@ int main(int argc, char** argv) {
     CHECK(!check_mapping_lock());
     CHECK(!check_landing_wait());
     CHECK(!check_frame_ready());
+    CHECK(!check_mapping_landing());
     CHECK(!check_owned_writable());
     CHECK(!check_owned_in_place_write());
     CHECK(!check_owned_peek_identity());

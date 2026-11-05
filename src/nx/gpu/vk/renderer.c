@@ -91,8 +91,9 @@ static int guest_covered(u64 a, u64 size) {
    may run inside one of the renderer's own (vk_lock held there already) */
 static _Thread_local u32 t_mapping_depth, t_mapping_quick;
 /* Locks, in order: vk_lock, then pend_lock (pending_pages.h), then mem.c's (memory/own.c has the rest). Every
-   change holds pend_lock from its begin to its end, so nothing the renderer holds over guest memory comes meanwhile:
-   pending results (pend_add), GPU-owned memory (owned.c) and GPU mappings (this bracket, for a GMMU change). A change of guest memory alone (GPU_MAPPING_GUEST_ONLY) that nothing covers takes no
+   change holds pend_lock while it changes memory, from the end of its begin to its end, so nothing the renderer
+   holds over guest memory comes meanwhile: pending results (pend_add), GPU-owned memory (owned.c) and GPU mappings
+   (this bracket, for a GMMU change). A change of guest memory alone (GPU_MAPPING_GUEST_ONLY) that nothing covers takes no
    more. In one game's menus its memory thread's MapPhysicalMemory and UnmapPhysicalMemory waited 59 s of 130 for
    vk_lock, up to 7.9 s at a time, while a landing held it waiting for a pipeline */
 static void vkr_mapping_begin(u64 gva, u64 size, int kind) {
@@ -103,10 +104,12 @@ static void vkr_mapping_begin(u64 gva, u64 size, int kind) {
         return;
     }
     t_mapping_quick &= ~bit;
-    pend_unlock(); /* taken again after vk_lock, in order */
+    /* taken again after vk_lock, in order, and once what lands here has landed: a landing may wait for the GPU, and
+       held pend_lock meanwhile, which the quick changes of other guest memory and the game's reads wait for. Each
+       change of the tables takes it on its own until then */
+    pend_unlock();
     int full = kind != GPU_MAPPING_GMMU;
     vk_lock();
-    pend_lock();
     g_mapping_gva = full ? 0 : gva;
     g_mapping_size = full ? 0 : size;
     if (full) {
@@ -133,6 +136,7 @@ static void vkr_mapping_begin(u64 gva, u64 size, int kind) {
         /* Images still describe the old backing until the page table changes. */
         vk_rt_before_write(gva, size);
     }
+    pend_lock();
 }
 /* the pages changed count what is pending at the guest pages they show now. A change of guest memory (full) leaves
    the GMMU as it was: pending pages are compared by address, and freed memory is landed first */
