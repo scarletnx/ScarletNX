@@ -278,6 +278,21 @@ void vk_gfx_image_mem_need(u64 gva, u64 size) {
     g_img_landing = 0;
     vk_unlock();
 }
+/* the same for guest memory [cpu, cpu + size) (size ~0: all of it), by the runs each entry's bytes are in */
+void vk_gfx_image_guest_need(u64 cpu, u64 size) {
+    if (!g_gfx_img_any || g_img_landing || !size) return;
+    SNX_ZONE(z, "vk image guest need");
+    vk_lock();
+    g_img_landing = 1;
+    for (size_t i = 0; i < g_image_out.count;)
+        if (size == ~0ull || cpu + size < cpu || image_meets(&g_image_out.out[i], cpu, size)) {
+            image_flush_at(i);
+            i = 0;
+        } else
+            i++;
+    g_img_landing = 0;
+    vk_unlock();
+}
 /* every entry holds its surface until it lands, its copy recorded or not (vk_gfx_image_unrecorded leaves those out) */
 int vk_gfx_image_holds(const Surf* s) {
     for (size_t i = 0; g_gfx_img_any && i < g_image_out.count; i++)

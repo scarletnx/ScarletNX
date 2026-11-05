@@ -50,7 +50,7 @@ volatile u64 g_gpu_submits;
 void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len);
 void (*g_gpu_before_write)(u64 gva, u64 size);
 int g_gpu_releases;
-void (*g_gpu_mapping_begin)(u64 gva, u64 size, int full);
+void (*g_gpu_mapping_begin)(u64 gva, u64 size, int kind);
 void (*g_gpu_mapping_end)(void);
 
 /* ------------------------------------------------------------ guest memory through the GPU's address space */
