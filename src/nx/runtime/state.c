@@ -673,6 +673,10 @@ static int savable(char* why, size_t whysize) {
                 snprintf(why, whysize, "the game has loaded code modules (NROs), which states don't hold yet");
                 return -1;
             }
+    if (native_video_busy()) {
+        snprintf(why, whysize, "the game is playing a movie, whose decoder states don't hold");
+        return -1;
+    }
     return 0;
 }
 

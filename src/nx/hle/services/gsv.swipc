@@ -11,7 +11,12 @@ interface nn::gsv::UserSession {
     [101] CreateContext();
     [111] CreateNativeMemory(bytes<0xc> request) -> u32 memory_handle;
     [112] DestroyNativeMemory(u32 memory_handle);
-    [115] BootNativeMemoryManagement(u32 mode);
+    # nn::gs::sdk::CreateNativeMemory's second step (after 111): the memory bound to the game's CPU pages. flags: 2
+    # when bit 1 of 115's answer is set (the SDK then marks the pages uncached first), else 0. offset: always 0
+    [114] BindNativeMemoryToCpu(u32 memory_handle, bytes<8, 4> address, bytes<8, 4> size, bytes<8, 4> flags,
+                                bytes<8, 4> offset);
+    # the SDK keeps the answer for CreateNativeMemory (114's flags above)
+    [115] BootNativeMemoryManagement(u64 mode) -> u64 attributes;
     [201] CreateSyncptContext();
     [202] InitializeSyncptContext() -> handle<copy, session> session;
     [204] BindSyncpointMemory(handle<copy, transfer_memory> rw, handle<copy, transfer_memory> ro, bytes<0x24> request)
@@ -23,10 +28,31 @@ interface nn::gsv::UserSession {
     [401] CreateGpuContext();
     [402] InitializeGpuContext();
     [423] BindNativeMemory(bytes<0x30> request);
+    # nn::gpu::sdk::MapNativeImage, UnmapNativeImage and QueryNativeImage, for the video images (native_video.c).
+    # mode: 1 for read-only, 3 for read-write. first and last: the GPU addresses of the mapping
+    @unsorted [426] MapNativeImage(u32 image, u32 one, u32 address_space, u8 mode)
+        -> (u64 first, u64 last, nn::gsv::VideoDescriptor descriptor, u32 flags);
+    [427] UnmapNativeImage(u32 image, u32 address_space, u64 first, u64 last);
+    @unsorted [428] QueryNativeImage(u32 image) -> (u64 first, u64 last, nn::gsv::VideoDescriptor descriptor, u32 flags);
     [429] CreateNativeImage(bytes<0x48> request) -> u32 image_handle;
     [434] ExistsAddressSpace(u32 address_space);
     [435] CalculateNativeImageSize(bytes<0x44> preference) -> u64 size;
     [497] CreateGpuSessionWithRemoteMemory(u64 version) -> handle<copy, session> session;
+    # nn::codec::video::detail::ipc::Initialize and Finalize (native_video.c): the decoder's and the encoder's contexts.
+    # 905 takes Initialize's bool (the unlimited resolution mode)
+    [901] InitializeVideoDecoder();
+    [902] OpenVideoDecoderContext() -> handle<move, session> context;
+    [903] FinalizeVideoDecoder();
+    [905] OpenVideoDecoderContextWithFlag(u8 flag) -> handle<move, session> context;
+    # the decoder's image pools: the images are native images, count of them numbered from image on
+    [911] CreateVideoImagePool(nn::gsv::VideoImagePreference preference, u32 count, u32 memory_handle) -> u32 image;
+    [912] DestroyVideoImagePool(u32 image);
+    [961] QueryVideoImage(u32 image) -> nn::gsv::VideoDescriptor descriptor;
+    [991] CalculateVideoImageRequirements(nn::gsv::VideoImagePreference preference, u32 count)
+        -> (u64 size, u64 alignment);
+    [1001] InitializeVideoEncoder();
+    [1002] OpenVideoEncoderContext() -> handle<move, session> context;
+    [1003] FinalizeVideoEncoder();
     [1101] CreateGraphicsFrameContext();
     [1102] InitializeGraphicsFrameContext();
     [1402] CreateNvDrv2UserSessionWithRemoteMemory() -> handle<copy, session> session;
