@@ -17,7 +17,7 @@ signature. An attachment that isn't a ScarletNX log is named as such. A maintain
 report gets a comment of its own, once: ready for an edenprobe case, and the MCP tools that write one.
 
 PROGRAM is snx-logscan, or scarletnx with --scan-log after it (SNX_LOGSCAN, else snx-logscan on PATH): the workflow
-builds it from its five files. --issue N triages that issue as an event for it would. --dry-run reads GitHub as triage does but writes nothing:
+builds it from its sources alone. --issue N triages that issue as an event for it would. --dry-run reads GitHub as triage does but writes nothing:
 the comment and the label changes are printed instead.
 
 index writes each game report as a JSON line: its number, title, state and URL, and each log's name, URL, signature,
