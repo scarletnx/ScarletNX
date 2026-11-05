@@ -1274,6 +1274,89 @@ static void test_break(const char* spirv_val, const char* dir) {
     (void)spirv_val, (void)dir;
 }
 
+/* LDL and STL: the address register at 24, the signed offset at 40-63, NAK's MemType at 73, STL's data at 32 */
+static Word local_op(u32 opcode, u32 reg, u32 addr, u32 off, u32 type) {
+    Word x = fix(opcode);
+    set(&x, opcode == 0x983 ? 16 : 32, 8, reg);
+    set(&x, 24, 8, addr);
+    set(&x, 40, 24, off);
+    set(&x, 73, 3, type);
+    return x;
+}
+/* STL.64 of R1:R2 at 8, a byte at 0xd, and LDL back: the words and the byte, sign extended */
+static void test_local_memory(const char* spirv_val, const char* dir) {
+    u8 code[16 * 11] = {0};
+    put(code, 0, mov_imm(1, 0x11111111u));
+    put(code, 1, mov_imm(2, 0x22222222u));
+    put(code, 2, local_op(0x387, 1, 255, 0x8, 5));
+    put(code, 3, mov_imm(5, 0x95));
+    put(code, 4, local_op(0x387, 5, 255, 0xd, 0));
+    put(code, 5, mov_imm(3, 4));
+    put(code, 6, local_op(0x983, 0, 3, 0x4, 4));
+    put(code, 7, local_op(0x983, 1, 3, 0x8, 4));
+    put(code, 8, local_op(0x983, 2, 255, 0xd, 1));
+    put(code, 9, exit_insn());
+    put(code, 10, bra(10, 10, 7, 0));
+    u32 out[4];
+    CHECK(run_fs_at(code, 11, 0, NULL, 0, out));
+    CHECK(out[0] == 0x11111111u && out[1] == 0x22229522u && out[2] == 0xffffff95u);
+    if (out[0] != 0x11111111u || out[1] != 0x22229522u || out[2] != 0xffffff95u)
+        fprintf(stderr, "local memory: %08x %08x %08x\n", out[0], out[1], out[2]);
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[1] = 0x10; /* the SPH's local memory: 16 bytes */
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 11 * 16, ST_FS, fsph, &si, &count);
+    CHECK(spv && validate(spirv_val, dir, "fs_local", spv, count));
+    free(spv);
+}
+
+/* LDS takes a uniform register with bit 91 alone: UR0 is 0x40, and LDS R2, [RZ + 0x10] without the bit reads the
+   word STS stored at 0x10 */
+static void test_shared_no_uniform(const char* spirv_val, const char* dir) {
+    u8 code[16 * 7] = {0};
+    Word x = alu(0x082, 4, 0, 0); /* UMOV UR0, 0x40 */
+    set(&x, 32, 32, 0x40);
+    set(&x, 91, 1, 1);
+    put(code, 0, x);
+    put(code, 1, mov_imm(1, 7));
+    x = fix(0x388); /* STS [RZ + 0x10], R1 */
+    set(&x, 24, 8, 255);
+    set(&x, 32, 8, 1);
+    set(&x, 40, 24, 0x10);
+    set(&x, 73, 3, 4);
+    put(code, 2, x);
+    x = fix(0x984); /* LDS R2, [RZ + 0x10] */
+    set(&x, 16, 8, 2);
+    set(&x, 24, 8, 255);
+    set(&x, 40, 24, 0x10);
+    set(&x, 73, 3, 4);
+    put(code, 3, x);
+    x = fix(0x388); /* STS [RZ + 0x20], R2 */
+    set(&x, 24, 8, 255);
+    set(&x, 32, 8, 2);
+    set(&x, 40, 24, 0x20);
+    set(&x, 73, 3, 4);
+    put(code, 4, x);
+    put(code, 5, exit_insn());
+    put(code, 6, bra(6, 6, 7, 0));
+    ShaderInfo si = {0};
+    si.cs_local[0] = si.cs_local[1] = si.cs_local[2] = 1;
+    si.shared_size = 256;
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 7 * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) return;
+    SpvEvalEnv env = {0};
+    const char* why = spv_eval(spv, count, &env);
+    if (why) fprintf(stderr, "shared: the evaluator stops at %s\n", why);
+    CHECK(!why && env.shared_words >= 9 && env.shared[8] == 7);
+    CHECK(validate(spirv_val, dir, "cs_shared", spv, count));
+    free(spv);
+}
+
 int main(int argc, char** argv) {
     const char* spirv_val = argc > 2 ? argv[2] : NULL;
     const char* dir = argc > 1 ? argv[1] : ".";
@@ -1296,6 +1379,8 @@ int main(int argc, char** argv) {
     test_lane_masks(spirv_val, dir);
     test_ldc_small(spirv_val, dir);
     test_break(spirv_val, dir);
+    test_local_memory(spirv_val, dir);
+    test_shared_no_uniform(spirv_val, dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
