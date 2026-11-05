@@ -1701,6 +1701,12 @@ snx_test_target(snx-test-hid-touch 11)
 target_link_libraries(snx-test-hid-touch PRIVATE scarletnx-common)
 add_test(NAME hid_touch COMMAND snx-test-hid-touch)
 
+# the Ounce's native video service: layouts, descriptors and a codec's queues (hle/services/native_video_core.c)
+add_executable(snx-test-native-video native_video.c "${PROJECT_SOURCE_DIR}/src/nx/hle/services/native_video_core.c")
+snx_test_target(snx-test-native-video 99)
+target_link_libraries(snx-test-native-video PRIVATE scarletnx-common)
+add_test(NAME native_video COMMAND snx-test-native-video)
+
 add_executable(snx-test-hid-motion hid_motion.c "${PROJECT_SOURCE_DIR}/src/nx/hle/services/hid_motion.c")
 snx_test_target(snx-test-hid-motion 11)
 target_link_libraries(snx-test-hid-motion PRIVATE scarletnx-common)
