@@ -4,6 +4,7 @@
 
 ## Index
 
+* [Six-item completion](#six-item-completion)
 * [SIMD continuation](#simd-continuation)
 * [Prepare the next implementation](#prepare-the-next-implementation)
 * [Search a bounded set of exact candidates](#search-a-bounded-set-of-exact-candidates)
@@ -21,7 +22,8 @@ python3 tools/cpu_plan.py show I15
 
 The earlier prerequisite started at upstream `34c0be36`. The O0 vector-arithmetic prerequisite moves residual calculations
 behind the sticky IXC check and removes a redundant O0 shortcut guard. Directed tests compare the complete CPU
-state across optimization levels and loaders. This does not complete I15's mixed-lane fallback replacement.
+state across optimization levels and loaders. This prerequisite alone did not establish a whole-vector replacement
+for mixed arithmetic lanes.
 I7 classifies the audited vector FP helpers at their first declaration. A fixture keeps a dirty X4 live across
 one batched helper call, verifies zero reloads of it and checks the emitted synchronization counts. This affects register
 promotion at O1 and above. It does not add promotion to O0.
@@ -48,7 +50,7 @@ use whole-vector exact fixups. Direct float64-to-half conversion retains the hel
 
 Native Linux AArch64 CI at `9a7cfd0d` passed the full QEMU sweep, rounding, half-conversion and scalar/vector
 residual tests. The x86-64 local sweep also passed. This completes I11's guarded-FP host checks for these native
-hosts. The newer I15 conversion changes still require their separate integration checks.
+hosts. The I15 continuation completed its separate integration checks as recorded above.
 
 Guarded FABD reuses exact subtraction followed by sign clearing. Directed tests cover all shift counts, every
 half encoding, estimate bins/exponents, mixed exceptional lanes, aliases, rounding modes and FPSR. They run through
@@ -69,6 +71,55 @@ Native Linux x86-64 and AArch64 CI passed the seed matrix and both planted-defec
 
 T6 corrects the stale documentation and source comments listed in the plan, preserving historical audit examples
 as historical evidence rather than current failure claims. Other items require their own implementation and proof.
+
+## Six-item completion
+
+The 2026-11-05 signoff completes the tested scope of I8, I10, I11, I15, T3 and T5. I15 keeps exact batched
+arithmetic and pure conversion helpers where no faster replacement passed the fixed gate. It does not claim that
+every AdvSIMD operation is helper-free, that all 41 plan items are complete, or that unmeasured weak hosts improve.
+
+The final emitter at `9485ad5b` passed 53 local CPU, tooling and documentation checks, including the full QEMU
+sweep. Native Linux x86-64, AArch64 and Windows CI passed their full suites of 694, 696 and 606 entries,
+with 5, 6 and 11 skipped entries respectively. No CPU test was skipped in those native Linux runs.
+The macOS job never acquired a hosted runner, so it provides no native macOS proof.
+
+The game comparison used an Intel Core i7-11800H, an NVIDIA RTX 3050 Laptop GPU and LLVM 21.1.8 on Linux.
+Both modules used the same current runtime and restored private save, unchanged quality settings, O1, exact FPSR,
+and disabled SLP. Two predefined warmups preceded five alternating pairs of 100-second runs. Every run exited
+successfully with positive frame counts. All twelve screenshots were inspected and show the same scene without
+obvious rendering errors. Natural animation and lighting vary, so the screenshots are not a pixel-equality proof.
+No builds or other test jobs ran during the comparison. One continuous NVIDIA telemetry process queried clocks,
+load, temperature and power once per second for both versions.
+
+| Pair | Baseline FPS | Candidate FPS | Baseline CPU ms/frame | Candidate CPU ms/frame |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 34.314 | 34.321 | 67.834 | 68.224 |
+| 2 | 34.592 | 34.421 | 67.013 | 68.418 |
+| 3 | 33.687 | 34.314 | 67.929 | 68.270 |
+| 4 | 34.435 | 33.943 | 68.741 | 69.544 |
+| 5 | 33.993 | 34.563 | 69.648 | 69.091 |
+
+The CPU score is the geometric ratio of baseline to candidate CPU time per frame, using process-wide user and
+system counters at the same frame-report boundaries. The final four report intervals form each observation.
+Its ratio is 0.9930, with a 95-percent paired-bootstrap interval of 0.9854 to 1.0015. The paired median FPS ratio
+is 1.0002, with interval 0.9857 to 1.0186. Both pass the unchanged 2-percent non-regression gate, using all five
+measured pairs and 20,000 bootstrap resamples. The CPU-time point estimate is about 0.7 percent higher, not an
+improvement. Median reported-window FPS is 34.314 versus 34.321. No game-FPS gain is established.
+These are five-second window measurements, not individual-frame median or p95 values.
+
+The full candidate module is 734.70 MiB versus 695.39 MiB, an increase of 5.65 percent. Shared cold fixups do not
+make this game module smaller than either the baseline or the rejected inline candidate. The smaller repeated
+sequence below is only a compiler fixture. The retained change is justified by exact vector coverage and measured
+focused gains within the scene's regression limits. Its module-size cost and lack of measurable FPS gain remain
+explicit limits. ABI 17 and object-pipeline version 5 remain unchanged from the preceding CPU continuation.
+Recompile a module to use the changed emitters. Keep game files and all raw captures local.
+
+Upstream through `b0b0ea5c` then merged without conflicts. It changes no CPU emitter or generated-code ABI files.
+The combined runtime builds and passes all 86 selected CPU, tooling, documentation and integration checks,
+including the full QEMU sweep and block-fuzzer seed matrix. Two additional 100-second scene checks exit cleanly
+with 12,603 and 12,588 presented frames. Both screenshots were inspected and render correctly. These last two
+runs verify integration, not performance. The paired performance figures above belong to the earlier matched
+runtime comparison at `9485ad5b`, before this later upstream integration.
 
 ## SIMD continuation
 
@@ -112,7 +163,7 @@ lane weights incorrectly, which full-state tests caught through missing exceptio
 corrected the defect, and the directed tests passed. Both timing searches still failed the fixed regression gate:
 the revised candidate improved mixed sticky-IXC kernels by about 29 to 35 percent, but several IXC-clear paths
 regressed by about 2 to 3 percent. The experiment was removed, including its helper descriptor extension. The
-original batched arithmetic fallback remains. This is an open part of I15, not a completed optimization.
+original batched arithmetic fallback remains. That masked arithmetic replacement is not a completed optimization.
 
 Half FRECPE/FRSQRTE use bounded integer-vector tables, and half FRECPX uses exponent operations on little-endian
 targets. FZ16 flushes input denormals without IDC. Reciprocal estimate output denormals remain unflushed, as the exact
@@ -171,7 +222,7 @@ the 16 distinct O1 kernels, each with 20,000 bootstrap resamples. Every workload
 regression bound. The aggregate ratio is 1.004 with a 95-percent interval of 0.999 to 1.011, so runtime improvement
 is inconclusive. This is a compiler-cost and stack-space change, not a demonstrated runtime speedup. All four O0
 arithmetic objects remain byte-identical. Each O1/O2 arithmetic object is 16 bytes smaller, and the corresponding
-O1 and O2 objects are byte-identical for both candidates. A fresh game rebuild remains required.
+O1 and O2 objects are byte-identical for both candidates. Subsequent game validation is recorded above.
 
 That rebuild exposed a separate scan in register promotion: each dirty register at a join searched every block for
 incoming edges. Some private functions contain about 40,000 blocks. The replacement indexes incoming edges once,
@@ -207,8 +258,8 @@ regression bound. The separate 35-round ordinary/infinity min/max check also pas
 synthetic kernels on the x86-64 host, not game-FPS gains. All 53 local CPU, tooling and documentation checks pass, including the full QEMU differential sweep.
 Under `qemu64`, the sharing fixture, 30,112,768 min/max cases and 19,970,048 rounding cases also pass.
 Forty-eight object checks confirm unchanged O0 code and matching O1/O2 objects for the selected forms.
-The changed C files pass additional warnings as errors. Native CI and a fresh game comparison remain pending.
-I15 stays open.
+The changed C files pass additional warnings as errors. Native CI and the final game comparison are recorded
+in the six-item completion above. The earlier inconclusive series remain here as rejected evidence.
 
 The earlier half-conversion and estimate continuation was recompiled and checked against its preceding module with the
 same current runtime and restored private save. Both 100-second scene runs completed without crashes, and both

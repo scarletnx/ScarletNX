@@ -89,7 +89,7 @@
       "note": "Audited raw-bit lane helpers are classified at first declaration. The fixture keeps X4 live across one batched vector helper call with zero reloads and checks static synchronization counts. O0 does not use register promotion."
     },
     "I15": {
-      "status": "in_progress",
+      "status": "implemented",
       "evidence": [
         "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
         "tests/llvm_vfp_residual.c",
@@ -110,9 +110,10 @@
         "tests/llvm_fp_pointer_chain.c",
         "tests/llvm_fp_helper_effects.c",
         "tests/llvm_promote_edges.c",
-        "tests/llvm_fp_cold.c"
+        "tests/llvm_fp_cold.c",
+        "docs/CPU_TRANSLATOR_PROGRESS.md"
       ],
-      "note": "Whole-vector comparisons, half conversions and estimates, min/max fixups and half rounding preserve exact results and FPSR. Conversion batching, broad helper imports and a masked arithmetic extension failed their gates and remain removed. Exact batched arithmetic and pure conversion helpers remain where no faster replacement was proven. The scratch and incoming-edge compiler fixes passed native Linux x86-64, AArch64 and Windows CI through 1a851232. Two final game series failed to establish the fixed 2-percent non-regression bound, and the expanded inline module grew 5.6 percent. A shared wide-vector fixup candidate preserves short x86 fallback paths after measured regressions. Its 35-round rounding search and ordinary/infinity min-max search pass the unchanged kernel gates. All 53 local CPU/tool/document checks pass, including the full QEMU sweep. Baseline-x86 QEMU also passes the sharing fixture, 30,112,768 min-max cases and 19,970,048 rounding cases. Native CI and a fresh game comparison remain pending. I15 is not complete. No synthetic kernel gain is a game-FPS claim."
+      "note": "The tested I15 scope is complete on 2026-11-05. Exact vector comparisons, half conversions and estimates, min-max fixups and rounding preserve CPU results and FPSR. Wide exceptional fixups share internal value-only vector functions. O0 and short x86 forms retain original fallbacks where candidates regressed. Batched arithmetic and pure conversion helpers remain wherever no faster exact replacement passed the fixed gate. Source 9485ad5b passes 53 local CPU/tool/document checks and native Linux x86-64, AArch64 and Windows CI, with full suites of 694, 696 and 606 entries and 5, 6 and 11 skipped entries respectively. Baseline-x86 QEMU passes the sharing fixture, 30,112,768 min-max cases and 19,970,048 rounding cases. The final two-warmup/five-pair game comparison passes the unchanged 2-percent CPU-time and FPS non-regression bounds. All twelve runs render without crashes. FPS improvement is unproven, and the full module grows 5.65 percent. Earlier failed gates and rejected candidates remain documented. This does not make all AdvSIMD paths helper-free or establish weak-host performance. macOS CI never acquired a runner. The subsequent upstream integration through b0b0ea5c changes no CPU emitters, passes all 86 selected integration checks including the QEMU sweep and fuzzer, and renders two additional 100-second scene checks without crashes. Those last two runs establish integration, not a new performance comparison."
     },
     "I8": {
       "status": "implemented",
@@ -153,7 +154,7 @@
         "tests/llvm_half.c",
         "tests/llvm_fma_residual.c"
       ],
-      "note": "Guarded scalar/dynamic rounding, F16C half conversions and exact FMA residuals preserve values and FPSR. Scalar O0 FMA retains the original sequence because its candidate failed the regression gate. Vector O0/O2 and scalar O2 residuals passed that gate. Native Linux AArch64 CI at 9a7cfd0d passed the full QEMU sweep plus rounding, half conversions and scalar/vector residual tests. Linux x86-64 passed the local full sweep. New whole-vector exceptional half conversions belong to the ongoing I15 continuation and need their own final integration checks."
+      "note": "Guarded scalar/dynamic rounding, F16C half conversions and exact FMA residuals preserve values and FPSR. Scalar O0 FMA retains the original sequence because its candidate failed the regression gate. Vector O0/O2 and scalar O2 residuals passed that gate. Native Linux AArch64 CI at 9a7cfd0d passed the full QEMU sweep plus rounding, half conversions and scalar/vector residual tests. Linux x86-64 passed the local full sweep. The I15 continuation completed its separate whole-vector conversion integration checks on 2026-11-05."
     },
     "I12": {
       "status": "unverified",
