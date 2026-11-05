@@ -221,6 +221,18 @@ beside it:
   64 KiB) and its last lines, half of `log_max` in all, with a line saying how much went between them
   (`log: reached log_max=16 MiB: 7.4 MiB of lines between the run's start and here cut`), and the first time the
   game's picture says so for 3 s. `--log=2` with a long run is what fills it.
+- `--log=2` also logs the process's resources, alike on every system. Each second a `resources:` line: the
+  footprint, what the system still gives the process (`?` where it tells none) and the renderer's VMA blocks; on iOS
+  Metal's memory, the thermal state and low power mode too. Every 5 s a `threads:` line: the three threads with the
+  most time on the processors, by the names the runtime gives them (Linux and Android keep 15 bytes of a name,
+  FreeBSD 19). A `memory: under N MiB free` line, with each GPU heap, the first time what the system still gives
+  falls under 1024, 512, 256 and 128 MiB: on iOS the app's own room, elsewhere the system's free memory.
+- On every log level, a warning of low memory from the system logs a `memory:` line with the same values and each
+  GPU heap, 6 in a run at most: the memory pressure of iOS and macOS, SDL's low memory event (iOS; Android up to 13,
+  and from 14 only as the app goes to the background), Linux's pressure stall trigger (tasks waiting for memory
+  0.2 s of 2 s; a kernel from 6.5 with PSI, else a line says why there is none) and Windows' low memory
+  notification. FreeBSD tells a process none. A Vulkan out-of-memory logs each heap and the descriptor pools, at
+  the first 3.
 - `--gpu_trace_target=0x5acf62e00[:bytes]`: logs (`gpu-trace-target:`, at most 64 lines of each kind) the clears
   and draws that write a render target starting in that GPU address range, with its size, vertex or index count and
   shader addresses. A color clear lists every bound target in the range. Write the address with `0x`; without a size
