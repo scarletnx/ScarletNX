@@ -838,14 +838,22 @@ jobs:
             --target snx-test-llvm-qemu-differential
           # both forms run, and a failing one's examples go to the log: the container's /tmp goes with the job. A form
           # takes minutes; at 20 its SIGBUS makes the test name the case it was in, where a hang would hold the job 3 hours
-          failed=0
-          for form in "" --generic; do
-            if ! timeout -s BUS -k 30 1200 \
+          # the two forms at once, each with one thread and its own folder
+          for form in host generic; do
+            flag=; [ "$form" = generic ] && flag=--generic
+            ( timeout -s BUS -k 30 1200 \
               qemu-${{ matrix.qemu }} -L /src/sysroot build/${{ matrix.preset }}/tests/snx-test-llvm-qemu-differential \
-              /tmp/llvm_qemu_reference /src/tests/llvm_qemu_expected.txt \
-              --reference /src/reference/llvm_qemu_reference.bin --quiet $form; then
+              /tmp/llvm_qemu_reference_$form /src/tests/llvm_qemu_expected.txt \
+              --reference /src/reference/llvm_qemu_reference.bin --quiet $flag > /tmp/differential_$form.log 2>&1 \
+              && echo 0 > /tmp/differential_$form.status || echo $? > /tmp/differential_$form.status ) &
+          done
+          wait
+          failed=0
+          for form in host generic; do
+            cat /tmp/differential_$form.log
+            if [ "$(cat /tmp/differential_$form.status)" != 0 ]; then
               failed=1
-              cat /tmp/llvm_qemu_reference/llvm_qemu_mismatches.txt || true
+              cat /tmp/llvm_qemu_reference_$form/llvm_qemu_mismatches.txt || true
             fi
           done
           exit $failed
