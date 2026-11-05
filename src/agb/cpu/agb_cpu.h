@@ -26,6 +26,9 @@ typedef struct {
     /* the cycles the last run went past its budget, which the next run's takes back: a run of a frame's cycles then
        ends where the machine's frame does, not later at each frame */
     uint32_t over;
+    /* the last software interrupt whose number the BIOS does not have, the address of that instruction, and how many
+       such calls ran: each returns at once, as mGBA's HLE BIOS answers them, for the runner to say */
+    uint32_t unknown_swi, unknown_swi_at, unknown_swi_count;
 } AgbCpu;
 
 void agb_cpu_init(AgbCpu* cpu, AgbBoard* board, uint8_t* map);
