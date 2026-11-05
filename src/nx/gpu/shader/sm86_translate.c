@@ -3067,6 +3067,12 @@ static u32 max_register(const Sm86Insn* in) {
 u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count) {
     if (!code || !si || !word_count || stage < ST_VS || stage > ST_CS || bytes < 16) return NULL;
     if (stage != ST_CS && !sph) return NULL;
+    if (stage == ST_TCS && sm86_tcs_empty(sph[2])) {
+        si->unsupported = 1;
+        snprintf(si->first_unsupported, sizeof si->first_unsupported,
+                 "a tessellation control program with no invocation (the passthrough takes its place)");
+        return NULL;
+    }
     if (stage != ST_VS && stage != ST_FS && stage != ST_CS) {
         si->unsupported++;
         snprintf(si->first_unsupported, sizeof si->first_unsupported, "stage %d", stage);

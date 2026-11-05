@@ -91,6 +91,12 @@ void sm86_load(const u8* code, u32 count, u64* words);
 /* the program stage (ST_VS to ST_FS) that an SPH word 0 names, or -1 when the word is not an SPH of version 3 or 4 */
 int sm86_sph_stage(u32 sph0);
 #define SM86_SPH_BYTES 128u
+/* Whether an SM86 tessellation control header's word 2 (sph2) asks for no invocation: 0 threads for each input
+   primitive in its top byte. The driver's own programs of this kind (6 TessFactor words, no outputs, an EXIT) are its
+   stand-in for no tessellation control stage. Mesa's nouveau binds such a program with the stage off (tcp_empty,
+   nvc0_tctlprog_validate): the control points go on as the vertex stage wrote them, and the tessellator takes its
+   levels from the state. That is the renderer's passthrough (vk_tess_passthrough), which a draw takes in its place */
+static inline int sm86_tcs_empty(u32 sph2) { return (sph2 >> 24) == 0; }
 
 /* A program in a block of shader memory: where its header and its code are (byte offsets from the block's start),
    the bytes of code up to and with the BRA to itself that follows its last EXIT, and its stage (ST_CS without a
