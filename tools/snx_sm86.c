@@ -64,8 +64,8 @@ static int validate(const char* path, char* msg, size_t size) {
     return pclose(proc) == 0;
 }
 static const char* stage_name(int stage) {
-    static const char* const names[] = {"VS", "TCS", "TES", "GS", "FS", "CS"};
-    return stage >= 0 && stage <= ST_CS ? names[stage] : "?";
+    static const char* const names[] = {"VS", "TCS", "TES", "GS", "FS", "CS", "TS", "MS"};
+    return stage >= 0 && stage <= ST_MS ? names[stage] : "?";
 }
 
 int main(int argc, char** argv) {

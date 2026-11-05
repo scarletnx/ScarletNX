@@ -48,7 +48,7 @@ static u64 g_pcache_used;  /* plat_ns when a pipeline last went into the cache (
 static void pcache_note(void);
 #if defined(SNX_TRACY)
 /* the stages' names, for the shader translate zone's text */
-static const char* const vk_tracy_stage[6] = {"vert", "tess ctrl", "tess eval", "geom", "frag", "comp"};
+static const char* const vk_tracy_stage[] = {"vert", "tess ctrl", "tess eval", "geom", "frag", "comp", "task", "mesh"};
 #endif
 
 VkPipelineLayout g_vk_playout;
@@ -186,7 +186,9 @@ u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si
                                             VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
                                             VK_SHADER_STAGE_GEOMETRY_BIT,
                                             VK_SHADER_STAGE_FRAGMENT_BIT,
-                                            VK_SHADER_STAGE_COMPUTE_BIT};
+                                            VK_SHADER_STAGE_COMPUTE_BIT,
+                                            VK_SHADER_STAGE_TASK_BIT_EXT,
+                                            VK_SHADER_STAGE_MESH_BIT_EXT};
     VkShaderStageFlagBits shader_stage = stages[stage];
     u32* result = g_shader_sm86 ? sm86_translate(code, max_bytes, stage, si, words)
                                 : shader_to_spirv(code, max_bytes, stage, si, words, g_vk_ftz, g_vk_preserve_infnan,
@@ -643,7 +645,10 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[2
     sh_key_info(&s->si, stage, mask, xfb);
     *nw = 0;
     SNX_ZONE(z_translate, "shader translate");
-    SNX_ZONE_TEXT(z_translate, "%s hash %08x", stage < 6 ? vk_tracy_stage[stage] : "stage?", (unsigned)h);
+    SNX_ZONE_TEXT(z_translate, "%s hash %08x",
+                  stage >= 0 && stage < (int)(sizeof vk_tracy_stage / sizeof *vk_tracy_stage) ? vk_tracy_stage[stage]
+                                                                                              : "stage?",
+                  (unsigned)h);
     u32* spv = vk_translate_spirv(code, SH_CODE, stage, &s->si, nw, read, &s->cbr);
     SNX_ZONE_VALUE(z_translate, *nw);
     SNX_ZONE_END(z_translate);
