@@ -270,6 +270,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     set_tests_properties(vulkan_headless PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the recording thread's own vk_rec_sync must return: the fatal path of a lost device calls it from that thread, and
+    # a wait there waits for the thread that runs it (record.c). This one needs no shaders, so it runs on any driver,
+    # and a run that hangs fails at the timeout
+    add_test(NAME vulkan_recorder COMMAND snx-test-vulkan -H)
+    set_tests_properties(vulkan_recorder PROPERTIES TIMEOUT 20 ENVIRONMENT "SNX_TEST_RECORDER_ONLY=1"
+        PASS_REGULAR_EXPRESSION "The recording thread's own vk_rec_sync returns")
     # every check again with graphics descriptors in descriptor buffers (gpu/vk/descriptors.c, vk_descriptors), also
     # with guest memory read in place, under the validation layer when it is installed. A device without
     # VK_EXT_descriptor_buffer skips them (77). The layer reports errors only: the targetless-stores check draws with

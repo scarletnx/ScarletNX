@@ -42,6 +42,7 @@ static u64 g_head;
 static char g_pad0[64];
 static u64 g_tail;
 static char g_pad1[64];
+static u32 g_rec_tid; /* the recording thread's plat_tid: a vk_rec_sync from it waits for no one */
 static int g_sleep; /* the consumer waits on g_cv for more */
 static PMutex g_m;
 static PCond g_cv;
@@ -49,6 +50,7 @@ static PCond g_cv;
 static void rec_thread(void* arg) {
     u64 tail = 0;
     (void)arg;
+    __atomic_store_n(&g_rec_tid, plat_tid(), __ATOMIC_RELEASE); /* other threads read it in vk_rec_sync */
     SNX_THREAD_NAME("Vulkan recorder");
     (void)g_pad0;
     (void)g_pad1;
@@ -157,10 +159,39 @@ static void rec_commit(void) {
 
 void vk_rec_sync(void) {
     if (g_rec <= 0) return;
+    /* The recording thread moves g_tail itself, after the packet it runs returns. A wait from one of its own packets
+       would wait for itself: a submit that found the device lost calls fatal(), which releases the window through
+       here, and the process then spins at full speed instead of showing the error (record.c's submit_run). Every
+       packet before this one is already recorded, and the packet after it is not part of what the caller asks for */
+    u32 self = plat_tid();
+    if (__atomic_load_n(&g_rec_tid, __ATOMIC_ACQUIRE) == self) return;
     vk_lock(); /* no command is added meanwhile */
     publish();
     while (__atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) != g_pending) plat_yield();
     vk_unlock();
+}
+
+typedef struct {
+    void (*fn)(void*);
+    void* arg;
+} RecCall;
+static void rec_call_run(const void* p) {
+    const RecCall* c = p;
+    c->fn(c->arg);
+}
+void vk_rec_run(void (*fn)(void*), void* arg) {
+    RecCall* c;
+    if (!rec_enabled()) {
+        fn(arg);
+        return;
+    }
+    vk_lock(); /* the ring has one producer at a time */
+    c = rec_push(rec_call_run, sizeof *c);
+    c->fn = fn;
+    c->arg = arg;
+    publish();
+    vk_unlock();
+    vk_rec_sync(); /* the packet, and the commands queued before it */
 }
 
 void vk_rec_queue(VkQueue q) {

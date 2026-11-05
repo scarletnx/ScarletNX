@@ -408,6 +408,11 @@ void vk_rec_begin(VkCommandBuffer cb); /* begins cb, the frame's command buffer 
 /* ends and submits cb with those semaphores (s[0] the graphics timeline's) */
 void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, const VkSemaphoreSubmitInfo* s, u32 ns);
 void vk_rec_sync(void);       /* until everything queued is recorded and submitted */
+/* Runs fn(arg) on the recording thread, after what the ring already holds, and returns when it has run. This is how a
+   check puts a call where the fatal path calls from (submit_run): vk_rec_sync there must not wait for the thread it
+   runs on (tests/vulkan_headless.c's check_recorder_self_sync). A call from the recording thread itself returns at
+   once (vk_rec_sync), so fn would run after it: the caller is another thread */
+void vk_rec_run(void (*fn)(void*), void* arg);
 void vk_rec_queue(VkQueue q); /* before submitting to or presenting on q outside the ring (vk_lock) */
 /* Around every call on the graphics or the compute queue: a submit, a sparse bind, a present, a device wait. Vulkan
    requires a queue's calls to be externally synchronized, and they come from more than one thread: the recording
