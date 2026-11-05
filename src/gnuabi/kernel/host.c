@@ -13,6 +13,9 @@
 #else
 #include <unistd.h>
 #endif
+#if defined(__APPLE__)
+#include <sys/random.h> /* Darwin's getentropy */
+#endif
 
 int gnu_random_bytes(void* destination, size_t size) {
     unsigned char* out = destination;
