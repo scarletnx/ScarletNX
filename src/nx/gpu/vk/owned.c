@@ -183,6 +183,9 @@ static void land_prepare(u64 size) {
     g_owned.cap = cap;
 }
 
+/* the submission a resource's writes are in (0: unstamped, everything submitted): own.c's writer, on a thread without
+   vk_lock too */
+static u64 own_writer(void* res) { return __atomic_load_n(&((const VkOwnRes*)res)->written, __ATOMIC_ACQUIRE); }
 /* own.c's land uses a private reusable command pool and host-cached buffer.
    Frame result callbacks run only once own.c has removed the landing marks. */
 static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
@@ -192,16 +195,22 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
     vk_lock();
     u64 writer = 0;
     for (u32 k = 0; k < n; k++) {
-        u64 w = ((const VkOwnRes*)r[k].res)->written;
+        u64 w = own_writer(r[k].res);
         cpu_read_note(r[k].addr, r[k].size);
         if (w > writer) writer = w;
     }
     int apart = land_apart();
     VkQueue queue = apart ? g_vk.compute : g_vk.gfx;
+    /* done on the GPU already (own_wait waited for it with no lock held): the copy waits for that submission's
+       signal, which is there, and for nothing of the recording thread, whose queue calls it takes the queue's lock
+       beside. Waiting for them held vk_lock while the recording thread waited for a draw's pipeline */
+    u64 gpu_done = 0;
+    int finished = writer && writer <= vk_last_submit() &&
+                   VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, vk_gfx_timeline(), &gpu_done)) && gpu_done >= writer;
     /* the open commands go only when the writes are among them: on the graphics queue the copy follows them anyway */
-    if (!apart || !writer || writer > vk_last_submit())
+    if (!finished && (!apart || !writer || writer > vk_last_submit()))
         vk_submit_for_readback();
-    else
+    else if (!finished)
         vk_rec_sync(); /* the recorder's calls on the queue (the compute one may be its too) before the copy's */
     /* unstamped: everything submitted. Past the last submission: nothing was recording, so nothing of it was written
        there, and a wait for a value never signaled would never end */
@@ -244,17 +253,17 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
                                     .value = writer,
                                     .stageMask = VK_PIPELINE_STAGE_2_COPY_BIT};
         VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-                            .waitSemaphoreInfoCount = apart && writer ? 1u : 0u,
+                            .waitSemaphoreInfoCount = (apart || finished) && writer ? 1u : 0u,
                             .pWaitSemaphoreInfos = &wi,
                             .commandBufferInfoCount = 1, .pCommandBufferInfos = &ci};
         if (!VK_OK(vkEndCommandBuffer(cb)) || !VK_OK(vkResetFences(g_vk.dev, 1, &g_owned.fence)))
             fatal("vulkan: could not submit ownership readback");
-        if (apart) {
-            vk_rec_queue(queue); /* after the recorder's compute submissions, as cs_submit's */
+        if (apart || finished) {
+            if (!finished) vk_rec_queue(queue); /* after the recorder's compute submissions, as cs_submit's */
             vk_queue_lock(queue);
         }
         VkResult sr = vkQueueSubmit2(queue, 1, &si, g_owned.fence);
-        if (apart) vk_queue_unlock(queue);
+        if (apart || finished) vk_queue_unlock(queue);
         if (!VK_OK(sr)) fatal("vulkan: could not submit ownership readback");
         gpu_wait_note("GPU-owned memory readback", 0);
         int ok = VK_OK(vkWaitForFences(g_vk.dev, 1, &g_owned.fence, VK_TRUE, UINT64_MAX));
@@ -267,6 +276,21 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
 }
 
 static u32 lock_owner(void) { return vk_lock_owner(); }
+/* own.c's, before a landing takes vk_lock: the wait for the largest of its entries' own_writer. The thread holds no vk_lock here but while it hands the commands being
+   recorded to the GPU, when the writes may be among them, as own_land would. A thread that holds vk_lock already (the
+   GPU thread reading guest memory) lands under it as before */
+static void own_wait(u64 writer) {
+    u64 submitted = 0, done = 0;
+    if (vk_lock_held()) return;
+    vk_submit_progress(&submitted, &done);
+    if (!writer || writer > submitted) {
+        vk_lock();
+        vk_submit_open();
+        if (!writer || writer > vk_last_submit()) writer = vk_last_submit();
+        vk_unlock();
+    }
+    if (writer > done) vk_wait_submit(writer); /* handed to the recording thread: it submits it */
+}
 /* a landing's bytes: the write tracking takes them as they were left, and the GPU mirror lets go of its copy's shadow */
 static void own_landed(u64 addr, u64 size, const u8* bytes) {
     vk_ww_landed(addr, size, bytes);
@@ -282,13 +306,16 @@ int vk_own_init(void) {
                   .busy_tid = lock_owner,
                   .lock = vk_lock,
                   .unlock = vk_unlock,
-                  .landed = own_landed};
+                  .landed = own_landed,
+                  .writer = own_writer,
+                  .wait = own_wait};
     g_owned.traps = !own_init(&h);
     return g_owned.traps ? 0 : -1;
 }
 
 void vk_own_res_wrote(VkOwnRes* r) {
-    if (r->written < vk_submit_number()) r->written = vk_submit_number();
+    /* atomic: own_writer reads it on a thread without vk_lock */
+    if (r->written < vk_submit_number()) __atomic_store_n(&r->written, vk_submit_number(), __ATOMIC_RELEASE);
     __atomic_store_n(&r->serial, __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
 }
 

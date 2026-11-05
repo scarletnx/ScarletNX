@@ -10,8 +10,9 @@
    g_own_lk, which is never held across landing, a resource's release or a wait for the GPU; the producer's lock is
    never taken under g_trap_lk or g_own_lk. A change of guest memory the renderer lets go on without its lock
    (GPU_MAPPING_GUEST_ONLY) has no entry on its pages, and none comes while it runs (own_begin's caller holds pend_lock
-   too), so its own_drop and own_acquire find nothing to wait for. A landing takes the producer's lock before it marks
-   its entries, and holds it until they are let go and released: every thread that waits on g_own_cv for a mark
+   too), so its own_drop and own_acquire find nothing to wait for. Before a landing takes the producer's lock it waits
+   for the GPU's work on its entries with no lock held (OwnHooks' wait). A landing takes the producer's lock before it
+   marks its entries, and holds it until they are let go and released: every thread that waits on g_own_cv for a mark
    (own_begin, own_drop, a landing) holds that lock too, so the mark is its own, never one of a thread that waits for
    the lock in turn. The landing runs with no lock of ours held, so a thread holding the kernel's lock may fault on
    owned memory, as long as no holder of the producer's lock waits for the kernel's (nvdrv.c's syncpt_add_quiet). One
@@ -215,19 +216,33 @@ static void producer_unlock(void) {
    when entries are there (a fault with none, the trap thread's, never waits for it), before any is marked, then the
    entries are looked for again: they may have landed or changed while it waited */
 static void land_pages(u64 lo, u64 hi) {
+    int waited = 0;
     for (;;) {
         OwnRange* r;
         u8** dst;
         u8* mirror = plat_alias_mirror();
-        u64 elo = lo, ehi = hi;
+        u64 elo = lo, ehi = hi, writer = 0;
         u32 i, first, n = 0;
         int any;
         ResList rel = {0};
         if (!region_owned(lo, hi)) return;
         pm_lock(&g_own_lk);
         any = owned_nl(lo, hi);
+        if (any && g_hooks.writer && !waited)
+            for (i = first_after_nl(lo); i < g_nown && g_own[i].lo < hi; i++) {
+                u64 w = g_hooks.writer(g_own[i].res);
+                if (w > writer) writer = w;
+            }
         pm_unlock(&g_own_lk);
         if (!any) return;
+        /* the GPU's work first, with no lock held: under the producer's lock, every thread that takes it waited too
+           (in one game's menus a landing held it 7.9 s, waiting for a draw's pipeline, and the GPU thread and the
+           game's memory thread with it). Once: an entry published again meanwhile lands under the lock, as before */
+        if (g_hooks.wait && !waited) {
+            waited = 1;
+            g_hooks.wait(writer);
+            continue;
+        }
         producer_lock();
         pm_lock(&g_own_lk);
         while (landing_nl(lo, hi)) pc_wait(&g_own_cv, &g_own_lk, -1);
