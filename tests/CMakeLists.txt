@@ -1667,6 +1667,13 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-pipeline-file 23)
     target_link_libraries(snx-test-pipeline-file PRIVATE snx_nx_flags snx_zstd scarletnx-common)
     add_test(NAME pipeline_file COMMAND snx-test-pipeline-file)
+    # the BC7 cache of ASTC levels (gpu/vk/bc7_cache.c), without a GPU: every input that changes a level's blocks
+    # changes its key, records come back as written and from the file in a later run, another version or a damaged
+    # record starts the file over or drops the record, a record cut short is cut off, and the bound starts it over
+    add_executable(snx-test-bc7-cache bc7_cache.c tracy_stubs.c)
+    snx_test_target(snx-test-bc7-cache 23)
+    target_link_libraries(snx-test-bc7-cache PRIVATE snx_nx_flags snx_xxhash scarletnx-common)
+    add_test(NAME bc7_cache COMMAND snx-test-bc7-cache)
     # graphics storage images' write-backs (gpu/vk/image_out.c) against a stand-in GPU: a draw over one whose copy is
     # recorded goes on from it with no read or wait, and they land in order, each over the bytes the last one left
     add_executable(snx-test-vk-image-out vk_image_out.c tracy_stubs.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/image_out.c")

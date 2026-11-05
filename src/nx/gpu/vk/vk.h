@@ -993,6 +993,30 @@ void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes);
 #define VK_BC7_AUTO_TEXELS (256u * 256u)
 int vk_astc_as_bc7(u64 texels, int is3d, int holes, int pressed);
 
+/* bc7_cache.c: the BC7 blocks of ASTC levels encoded before, kept across runs in one file, which only an index of
+   points into (a hit reads its record from the file). VK_BC7_ENCODER_VERSION goes into every key: bump it when what
+   the encoder writes changes other than through its SPIR-V (which the file's version holds), as a level's choice of
+   build does */
+#define VK_BC7_ENCODER_VERSION 1
+/* content (two words, zero to start) with n bytes at p mixed in: an ASTC level's guest bytes and its layout's words */
+void vk_bc7_content(u64 content[2], const void* p, u64 n);
+/* what else changes a level's blocks: its size, its slices (depth) or layers, the footprint, the sRGB decode mode and
+   the encoder's build (0 full, 1 fast, 2 mode 6 alone) */
+typedef struct {
+    u32 w, h, depth, layers, bw, bh, srgb, build;
+} VkBc7Level;
+void vk_bc7_key(const u64 content[2], const VkBc7Level* lv, u64 key[2]);
+/* the file at path as the cache, or a new one where it holds another version, bounded to max bytes: 0 when there is
+   no cache (another process holds the file, or it cannot be written) */
+int vk_bc7_cache_open(const char* path, const u64 version[2], u64 max);
+void vk_bc7_cache_close(void);
+u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't there */
+/* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped) */
+int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
+void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size);
+/* hits, records stored, times it started over at its bound, and the file's bytes */
+void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
+
 /* vic.c: the VIC composition as a compute shader, recorded in the frame's command buffer, its output planes
    published (vk_own_publish): 1 when composed, 0 when the job exceeds the device (it is skipped). Takes vk_lock */
 int vk_vic_compose(const VicJob* j);
