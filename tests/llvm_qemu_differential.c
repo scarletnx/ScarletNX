@@ -1157,10 +1157,9 @@ int main(int argc, char** argv) {
             }
         }
     }
-    if (!q.quiet) printf("%lu cases of %lu words; compiling %lu LLVM steps\n", (unsigned long)nitems,
-                         (unsigned long)nwords, (unsigned long)nsteps);
-    snprintf(g_test.running, sizeof(g_test.running), "the compile of %lu LLVM steps (%s emitters)",
-             (unsigned long)nsteps, forms[portable]);
+    if (!q.quiet) printf("%zu cases of %zu words; compiling %zu LLVM steps\n", nitems, nwords, nsteps);
+    snprintf(g_test.running, sizeof(g_test.running), "the compile of %zu LLVM steps (%s emitters)", nsteps,
+             forms[portable]);
     if (llvm_steps_load(&built, error, sizeof(error))) return snx_error("%s", error);
     steps = built.steps;
     rt.svc = cb_svc;
@@ -1291,8 +1290,8 @@ int main(int argc, char** argv) {
                 }
                 /* the LLVM side */
                 snprintf(g_test.running, sizeof(g_test.running),
-                         "the LLVM side of %s, word %08x, state %lu of %lu (%s emitters)", it->op,
-                         it->words[it->nwords - 1], (unsigned long)s, (unsigned long)states, forms[portable]);
+                         "the LLVM side of %s, word %08x, state %zu of %zu (%s emitters)", it->op,
+                         it->words[it->nwords - 1], s, states, forms[portable]);
                 cpu_from_state(&c, start);
                 c.rt = &rt;
                 c.mem = work - WINDOW;
@@ -1353,8 +1352,7 @@ int main(int argc, char** argv) {
     record.f = NULL;
     if (record.failed) return snx_error("cannot write %s", record_path);
     if (reference && ref.in.at != ref.in.size)
-        return snx_error("%s has %lu bytes after its cases", reference_path,
-                         (unsigned long)(ref.in.size - ref.in.at));
+        return snx_error("%s has %zu bytes after its cases", reference_path, ref.in.size - ref.in.at);
     free(reference_file);
     reference_file = NULL;
 
@@ -1377,11 +1375,10 @@ int main(int argc, char** argv) {
             g->listed = 1;
         }
     }
-    printf("LLVM against %sQEMU%s, %s emitters: %lu cases of %lu rows' and directed words, %lu runs compared, %lu "
-           "without an emitter yet, %lu differing in %lu groups\n",
-           reference ? "a recorded " : "", sweep ? " (sweep)" : "", forms[portable], (unsigned long)nitems,
-           (unsigned long)lqd_rows(), (unsigned long)compared, (unsigned long)no_emitter, (unsigned long)mismatched,
-           (unsigned long)groups.ngroups);
+    printf("LLVM against %sQEMU%s, %s emitters: %zu cases of %zu rows' and directed words, %zu runs compared, %zu "
+           "without an emitter yet, %zu differing in %zu groups\n",
+           reference ? "a recorded " : "", sweep ? " (sweep)" : "", forms[portable], nitems, lqd_rows(), compared,
+           no_emitter, mismatched, groups.ngroups);
     for (i = 0; i < groups.ngroups; ++i) {
         const Group* g = &groups.groups[i];
         if (!g->listed) failed = 1;
@@ -1425,10 +1422,9 @@ int main(int argc, char** argv) {
         }
         fclose(f);
     }
-    printf("%lu names without an emitter in %s/llvm_qemu_coverage.txt, examples in llvm_qemu_mismatches.txt; "
+    printf("%zu names without an emitter in %s/llvm_qemu_coverage.txt, examples in llvm_qemu_mismatches.txt; "
            "%.1f s: %s\n",
-           (unsigned long)missing.ngroups, q.dir, snx_seconds() - started,
-           failed ? "FAILED" : "passed");
+           missing.ngroups, q.dir, snx_seconds() - started, failed ? "FAILED" : "passed");
     free(path);
     llvm_steps_end(&built);
     free(initial);
