@@ -500,6 +500,32 @@ int main(void) {
         assert(snx_ctr_dispatch(&module, p, 10, &executed) == SNX_CTR_RUN_BLOCKED && !executed && r[15] == pc);
         snx_ctr_process_free(p);
     }
+    /* The system mode a title asks for: an Old 3DS gives its regions (APPLICATION, SYSTEM, BASE), a New 3DS mode 6's
+       whatever Old 3DS mode the title names. The configuration page names the mode and the regions, and the heap
+       commits the whole APPLICATION region and not a page more */
+    static const uint32_t regions[6][3] = {{0x4000000, 0x2c00000, 0x1400000}, {0, 0, 0},
+                                           {0x6000000, 0x0c00000, 0x1400000}, {0x5000000, 0x1c00000, 0x1400000},
+                                           {0x4800000, 0x2400000, 0x1400000}, {0x2000000, 0x4c00000, 0x1400000}};
+    static const uint32_t new_regions[3] = {0x7c00000, 0x6400000, 0x2000000};
+    for (unsigned mode = 0; mode < 6; ++mode) {
+        SnxCtrImage moded = image;
+        moded.system_mode = mode;
+        if (mode == 1) {
+            assert(!snx_ctr_process_new(&moded, SNX_CTR_OLD) && !snx_ctr_process_new(&moded, SNX_CTR_NEW));
+            continue;
+        }
+        for (unsigned model = 0; model < 2; ++model) {
+            SnxCtrProcess* p = snx_ctr_process_new(&moded, (SnxCtrModel)model);
+            assert(p);
+            const uint32_t* expected = model == SNX_CTR_OLD ? regions[mode] : new_regions;
+            assert((ctr_word(p, CTR_CONFIG + 0x30) & 0xff) == (model == SNX_CTR_OLD ? mode : 6));
+            for (unsigned i = 0; i < 3; ++i) assert(ctr_word(p, CTR_CONFIG + 0x40 + i * 4) == expected[i]);
+            uint32_t rest = expected[0] - used(p);
+            assert(memory(p, 3, CTR_HEAP, rest, 3, 0) == CTR_HEAP && used(p) == expected[0]);
+            memory(p, 3, CTR_HEAP + rest, 4096, 3, 0xc8601bf3u);
+            snx_ctr_process_free(p);
+        }
+    }
     puts(
         "CTR kernel objects, stale handles, resource exhaustion, checked memory and truthful arbitration/waits passed");
     return 0;

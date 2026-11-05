@@ -32,9 +32,17 @@ static bool image_parse(const unsigned char* ex, bool (*code)(const void*, unsig
     image->title_id = (uint64_t)snx_ld_le32(ex + 0x200) | (uint64_t)snx_ld_le32(ex + 0x204) << 32;
     memcpy(image->name, ex, sizeof image->name);
     image->main_priority = ex[0x20f];
+    image->system_mode = ex[0x20e] >> 4;
     for (unsigned i = 0; i < 28; ++i) image->kernel_caps[i] = snx_ld_le32(ex + 0x370 + i * 4);
     const char* reason = "invalid ExHeader main thread priority";
     if (image->main_priority > 63) goto fail;
+    char mode[96];
+    if (image->system_mode == 1 || image->system_mode > 5) {
+        snprintf(mode, sizeof mode, "the ExHeader asks for system mode %u, which no Old 3DS has (0, 2, 3, 4 or 5)",
+                 (unsigned)image->system_mode);
+        reason = mode;
+        goto fail;
+    }
     const unsigned offsets[] = {0x10, 0x20, 0x30};
     uint64_t sizes[3], total = 0;
     reason = "invalid extracted process segment/BSS/stack layout";
