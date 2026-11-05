@@ -13685,9 +13685,42 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
     snx_home_short(path ? path : "", home, sizeof home);
     snprintf(out, size, "%s: %s", snx_tr(app->folder_keys[app->pick_row].key), path ? home : snx_tr("none"));
 }
+/* the Theme row the box of themes was opened from, as drawn now: the setup's Appearance row, or Settings > App's;
+   an empty rectangle when it is out of sight */
+static GuiRect theme_row(App* app) {
+    if (app->setup_on) {
+        GuiSetupBoxes b;
+        GuiAppearanceBoxes a;
+        setup_boxes(app, &b);
+        appearance_boxes(app, b.content, &a);
+        if (a.lists[UI_APPEARANCE_ROWS].first > (size_t)GUI_APPEARANCE_THEME) return gui_rect(0, 0, 0, 0);
+        return ui_row_box(app, ui_appearance_row(a.rects, app->scale, UI_APPEARANCE_ROWS,
+                                                 (size_t)GUI_APPEARANCE_THEME - a.lists[UI_APPEARANCE_ROWS].first));
+    }
+    if (app->editing && app->form == GUI_FORM_APP) {
+        GuiFormBoxes f;
+        const UiList* l;
+        form_boxes(app, &f);
+        l = &f.right_lists[UI_FORM_SIDE_ROWS];
+        if (l->focus == SIZE_MAX || l->focus < l->first) return gui_rect(0, 0, 0, 0);
+        return ui_form_side_row(f.right, app->scale, UI_FORM_SIDE_ROWS, l->focus - l->first);
+    }
+    return gui_rect(0, 0, 0, 0);
+}
 static void picks_place(App* app, GuiChoices* c, char* question, size_t size, const char** tab) {
+    GuiRect area = choices_over(app);
     picks_question(app, question, size, tab);
-    choices_place(app, GUI_CHOICES_PICKS, choices_over(app), question, *tab, app->picks.focus, c);
+    if (app->picks_of == GUI_PICKS_THEME && app->theme.dialog != GUI_DIALOG_YORHA) {
+        /* the default's box goes in the middle of the screen: for the themes', in the middle of the room under the
+           Theme row, or over it where there is more, so the row it changes stays in sight */
+        GuiRect row = theme_row(app);
+        int gap = cell_h(app) / 2, under = area.y + area.h - (row.y + row.h + gap), over = row.y - gap - area.y;
+        if (row.h && under >= over && under > 0)
+            area = gui_rect(area.x, row.y + row.h + gap, area.w, under);
+        else if (row.h && over > 0)
+            area = gui_rect(area.x, area.y, area.w, over);
+    }
+    choices_place(app, GUI_CHOICES_PICKS, area, question, *tab, app->picks.focus, c);
 }
 static void render_picks(App* app) {
     GuiChoices c;

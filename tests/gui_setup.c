@@ -295,6 +295,39 @@ static void test_first(App* app) {
     assert(app->picks_shown && !strcmp(app->theme.id, "wimsy-dark"));
     key(app, SDLK_ESCAPE);
     assert(!app->picks_shown && !strcmp(app->theme.id, "yorha") && app->setup_row == GUI_APPEARANCE_THEME);
+    { /* in the default's dialog, a box in the middle of the screen, the box keeps out of the Theme row it changes,
+         its question and its rows in sight: at this window's size, and at a phone's held wide at 2x */
+        int was_w, was_h, k;
+        assert(SDL_GetWindowSize(app->window, &was_w, &was_h));
+        key(app, SDLK_RETURN);
+        key(app, SDLK_DOWN); /* Default, the first theme, round from YoRHa, the last */
+        assert(app->picks_shown && !strcmp(app->theme.id, "default") && app->theme.dialog == GUI_DIALOG_DEFAULT);
+        for (k = 0; k < 2; ++k) {
+            GuiChoices c;
+            GuiSetupBoxes b;
+            GuiAppearanceBoxes a;
+            GuiRect row;
+            char question[640];
+            const char* tab;
+            if (k) {
+                app->menu.text_size = 2;
+                assert(SDL_SetWindowSize(app->window, 2340, 1080));
+                SDL_SyncWindow(app->window);
+            }
+            render(app);
+            picks_place(app, &c, question, sizeof question, &tab);
+            setup_boxes(app, &b);
+            appearance_boxes(app, b.content, &a);
+            row = appearance_row_box(app, &a, GUI_APPEARANCE_THEME);
+            assert(c.box.y >= row.y + row.h || c.box.y + c.box.h <= row.y);
+            assert(c.at.h >= 3 * item_h(app) && c.at.y + c.at.h <= c.box.y + c.box.h);
+        }
+        app->menu.text_size = 0;
+        assert(SDL_SetWindowSize(app->window, was_w, was_h));
+        SDL_SyncWindow(app->window);
+        key(app, SDLK_ESCAPE);
+        assert(!app->picks_shown && !strcmp(app->theme.id, "yorha"));
+    }
     key(app, SDLK_RIGHT); /* the next theme, the dialog's place with it */
     assert(!strcmp(app->theme.id, "default") && app->theme.dialog == GUI_DIALOG_DEFAULT);
     render(app);
