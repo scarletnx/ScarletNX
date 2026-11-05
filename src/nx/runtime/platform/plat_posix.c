@@ -7,6 +7,7 @@
 #define _GNU_SOURCE /* REG_RIP, pipe2 */
 #endif
 #include "nx/runtime/platform/plat.h"
+#include "common/utilities/bits.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/runtime/platform/log.h"
@@ -620,13 +621,14 @@ static u8 *g_frz_lo, *g_frz_hi;
 static int g_frozen; /* a futex word: 1 while frozen */
 static void fault_handler_install(void);
 /* Ranges the kernel is writing now (plat_ww_open to plat_ww_close), which scans don't protect again. A slot is claimed
-   (busy 1), filled, then published (busy 2) before any of its pages is opened, so a scan that locks such a page finds
-   it published */
+   (busy), filled, then published (its bit in g_ww_open_live) before any of its pages is opened, so a scan that locks
+   such a page finds it published */
 #define WW_OPEN_N 32
-static int g_ww_open_busy[WW_OPEN_N]; /* atomic */
+static int g_ww_open_busy[WW_OPEN_N]; /* atomic: claimed */
 static u8* g_ww_open_lo[WW_OPEN_N];
 static u8* g_ww_open_hi[WW_OPEN_N];
-static int g_ww_open_n; /* atomic: slots claimed, to skip the search */
+static u32 g_ww_open_live; /* atomic: the published slots, a bit each, read in one load */
+typedef char snx_ww_open_in_a_word[WW_OPEN_N <= 32 ? 1 : -1];
 
 /* touches t_plat_posix, which the fault handlers use, before the thread can fault */
 static void wp_thread_start(void) {
@@ -695,11 +697,10 @@ static int frozen_at(const void* a) {
 static int wp_kernel_writing(u64 i) {
     u8* a = g_wp_base + (i << g_wp_shift);
     u8* e = a + ((u64)1 << g_wp_shift);
-    int k;
-    if (!__atomic_load_n(&g_ww_open_n, __ATOMIC_SEQ_CST)) return 0;
-    for (k = 0; k < WW_OPEN_N; k++)
-        if (__atomic_load_n(&g_ww_open_busy[k], __ATOMIC_SEQ_CST) == 2 && g_ww_open_lo[k] < e && g_ww_open_hi[k] > a)
-            return 1;
+    for (u32 live = __atomic_load_n(&g_ww_open_live, __ATOMIC_SEQ_CST); live; live &= live - 1) {
+        u32 k = snx_ctz32(live);
+        if (g_ww_open_lo[k] < e && g_ww_open_hi[k] > a) return 1;
+    }
     return 0;
 }
 /* a protection change failed for want of mappings: the budget comes down to half what is held, and every page the
@@ -978,8 +979,7 @@ void plat_ww_open(u8* p, u64 size) {
     }
     g_ww_open_lo[slot] = p;
     g_ww_open_hi[slot] = p + size;
-    __atomic_fetch_add(&g_ww_open_n, 1, __ATOMIC_SEQ_CST);
-    __atomic_store_n(&g_ww_open_busy[slot], 2, __ATOMIC_SEQ_CST);
+    __atomic_fetch_or(&g_ww_open_live, 1u << slot, __ATOMIC_SEQ_CST);
     /* a range being moved (plat_freeze) takes the write when the move is done: opened now, the kernel would write
        the old pages, which the move has copied already */
     frozen_until_thaw(p, p + size);
@@ -1008,15 +1008,16 @@ void plat_ww_open(u8* p, u64 size) {
     }
 }
 void plat_ww_close(u8* p, u64 size) {
-    int k;
     if (!g_wp_track || !g_wp) return;
-    for (k = 0; k < WW_OPEN_N; k++)
-        if (__atomic_load_n(&g_ww_open_busy[k], __ATOMIC_SEQ_CST) == 2 && g_ww_open_lo[k] == p &&
-            g_ww_open_hi[k] == p + size) {
-            __atomic_store_n(&g_ww_open_busy[k], 0, __ATOMIC_SEQ_CST);
-            __atomic_fetch_sub(&g_ww_open_n, 1, __ATOMIC_SEQ_CST);
+    for (u32 live = __atomic_load_n(&g_ww_open_live, __ATOMIC_SEQ_CST); live; live &= live - 1) {
+        u32 k = snx_ctz32(live);
+        /* the bit this close took, so two closes of one range free two slots */
+        if (g_ww_open_lo[k] == p && g_ww_open_hi[k] == p + size &&
+            __atomic_fetch_and(&g_ww_open_live, ~(1u << k), __ATOMIC_SEQ_CST) & 1u << k) {
+            __atomic_store_n(&g_ww_open_busy[k], 0, __ATOMIC_RELEASE);
             return;
         }
+    }
 }
 
 #if defined(__linux__) && defined(PAGEMAP_SCAN)
