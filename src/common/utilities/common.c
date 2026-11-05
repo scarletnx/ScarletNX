@@ -31,6 +31,7 @@
 #include <io.h>
 #include <wchar.h>
 #include <psapi.h>
+#include <tlhelp32.h> /* the process's threads (snx_threads) */
 #else
 #include <dirent.h>
 #include <dlfcn.h>
@@ -1668,6 +1669,153 @@ void snx_thread_clock_close(SnxU64 clock) {
     if (clock) CloseHandle((HANDLE)(uintptr_t)clock);
 #else
     (void)clock;
+#endif
+}
+int snx_threads(SnxThreadInfo* out, int max) {
+    int n = 0;
+#if defined(_WIN32)
+    /* the system's threads, of every process: those of this one. GetThreadDescription is Windows 10 1607's */
+    typedef HRESULT(WINAPI * DescriptionFn)(HANDLE, PWSTR*);
+    DescriptionFn description =
+        (DescriptionFn)(void (*)(void))GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription");
+    DWORD self = GetCurrentProcessId();
+    THREADENTRY32 e;
+    HANDLE all = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    BOOL more;
+    if (all == INVALID_HANDLE_VALUE) return -1;
+    e.dwSize = sizeof e;
+    for (more = Thread32First(all, &e); more; e.dwSize = sizeof e, more = Thread32Next(all, &e)) {
+        FILETIME created, exited, kernel, user;
+        HANDLE h;
+        if (e.th32OwnerProcessID != self) continue;
+        h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, e.th32ThreadID);
+        if (!h) continue; /* it ended since the snapshot */
+        if (GetThreadTimes(h, &created, &exited, &kernel, &user)) {
+            if (n < max) {
+                PWSTR wide = NULL;
+                /* the start in 100 ns ticks reaches bit 57; an id reused at another start differs in those */
+                SnxU64 start = (SnxU64)created.dwHighDateTime << 32 | created.dwLowDateTime;
+                out[n].id = start ^ (SnxU64)e.th32ThreadID << 40;
+                out[n].cpu_ns = (((SnxU64)kernel.dwHighDateTime << 32 | kernel.dwLowDateTime) +
+                                 ((SnxU64)user.dwHighDateTime << 32 | user.dwLowDateTime)) *
+                                100;
+                out[n].name[0] = 0;
+                if (description && SUCCEEDED(description(h, &wide)) && wide) {
+                    char full[256];
+                    size_t len = 0;
+                    if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, full, sizeof full, NULL, NULL)) len = strlen(full);
+                    /* cut to the room between two characters, not inside one */
+                    if (len >= sizeof out[n].name) {
+                        len = sizeof out[n].name - 1;
+                        while (len && (full[len] & 0xC0) == 0x80) len--;
+                    }
+                    memcpy(out[n].name, full, len);
+                    out[n].name[len] = 0;
+                    LocalFree(wide);
+                }
+            }
+            n++;
+        }
+        CloseHandle(h);
+    }
+    CloseHandle(all);
+    return n;
+#elif defined(__APPLE__)
+    thread_act_array_t list;
+    mach_msg_type_number_t count = 0;
+    if (task_threads(mach_task_self(), &list, &count) != KERN_SUCCESS) return -1;
+    for (mach_msg_type_number_t i = 0; i < count; i++) {
+        thread_basic_info_data_t b;
+        thread_identifier_info_data_t id;
+        mach_msg_type_number_t cb = THREAD_BASIC_INFO_COUNT, ci = THREAD_IDENTIFIER_INFO_COUNT;
+        if (thread_info(list[i], THREAD_BASIC_INFO, (thread_info_t)&b, &cb) == KERN_SUCCESS &&
+            thread_info(list[i], THREAD_IDENTIFIER_INFO, (thread_info_t)&id, &ci) == KERN_SUCCESS) {
+            if (n < max) {
+                pthread_t p = pthread_from_mach_thread_np(list[i]);
+                out[n].id = id.thread_id; /* a new thread never takes an old one's */
+                out[n].cpu_ns = ((SnxU64)b.user_time.seconds + (SnxU64)b.system_time.seconds) * 1000000000u +
+                                ((SnxU64)b.user_time.microseconds + (SnxU64)b.system_time.microseconds) * 1000u;
+                out[n].name[0] = 0;
+                if (p && pthread_getname_np(p, out[n].name, sizeof out[n].name)) out[n].name[0] = 0;
+            }
+            n++;
+        }
+        mach_port_deallocate(mach_task_self(), list[i]); /* each port in the list is a reference of ours */
+    }
+    vm_deallocate(mach_task_self(), (vm_address_t)list, count * sizeof *list);
+    return n;
+#elif defined(__linux__)
+    /* /proc/self/task/<tid>/stat: "tid (name) state ...", the times in ticks at fields 14 and 15 and the start at 22.
+       The name can hold spaces and ')', so the fields count from the last ')' */
+    long ticks = sysconf(_SC_CLK_TCK);
+    DIR* dir = opendir("/proc/self/task");
+    struct dirent* e;
+    if (!dir) return -1;
+    if (ticks <= 0) ticks = 100;
+    while ((e = readdir(dir))) {
+        char path[64], text[512], *name, *end;
+        unsigned long long user, system, start;
+        long tid = strtol(e->d_name, &end, 10);
+        int fd;
+        ssize_t got;
+        if (tid <= 0 || *end) continue; /* "." and ".." */
+        snprintf(path, sizeof path, "/proc/self/task/%ld/stat", tid);
+        fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) continue; /* it ended since the folder was read */
+        got = read(fd, text, sizeof text - 1);
+        close(fd);
+        if (got <= 0) continue;
+        text[got] = 0;
+        name = strchr(text, '(');
+        end = strrchr(text, ')');
+        if (!name || !end || end < name ||
+            sscanf(end + 1,
+                   " %*c %*d %*d %*d %*d %*d %*u %*lu %*lu %*lu %*lu %llu %llu %*ld %*ld %*ld %*ld %*ld %*ld %llu",
+                   &user, &system, &start) != 3)
+            continue;
+        if (n < max) {
+            size_t len = (size_t)(end - name - 1);
+            if (len >= sizeof out[n].name) len = sizeof out[n].name - 1;
+            /* a tid is under 2^22 (PID_MAX_LIMIT); the start in ticks keeps a reused one apart */
+            out[n].id = (SnxU64)start << 22 | (SnxU64)tid;
+            out[n].cpu_ns = (SnxU64)(user + system) * (1000000000u / (SnxU64)ticks);
+            memcpy(out[n].name, name + 1, len);
+            out[n].name[len] = 0;
+        }
+        n++;
+    }
+    closedir(dir);
+    return n;
+#elif defined(__FreeBSD__)
+    /* a kinfo_proc for each thread, with room for some that start between the size's call and the list's; more
+       than that asks again */
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID | KERN_PROC_INC_THREAD, (int)getpid()};
+    struct kinfo_proc* procs = NULL;
+    size_t size = 0;
+    for (int tries = 0; !procs; tries++) {
+        if (tries == 4 || sysctl(mib, 4, NULL, &size, NULL, 0)) return -1;
+        size += 16 * sizeof *procs;
+        if (!(procs = malloc(size))) return -1;
+        if (sysctl(mib, 4, procs, &size, NULL, 0)) {
+            int full = errno == ENOMEM;
+            free(procs);
+            procs = NULL;
+            if (!full) return -1;
+        }
+    }
+    n = (int)(size / sizeof *procs);
+    for (int i = 0; i < n && i < max; i++) {
+        out[i].id = (SnxU64)procs[i].ki_tid;
+        out[i].cpu_ns = (SnxU64)procs[i].ki_runtime * 1000u; /* microseconds */
+        snprintf(out[i].name, sizeof out[i].name, "%s%s", procs[i].ki_tdname, procs[i].ki_moretdname);
+    }
+    free(procs);
+    return n;
+#else
+    (void)out;
+    (void)max;
+    (void)n;
+    return -1;
 #endif
 }
 int snx_memory_available(SnxU64* bytes) {

@@ -38,6 +38,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/prepare_screen.h"
+#include "nx/runtime/platform/resources.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/platform/ui.h"
@@ -48,8 +49,6 @@
 
 #ifdef __APPLE__
 #include <TargetConditionals.h>
-#include <mach/mach.h> /* threads_line */
-#include <pthread.h>
 #endif
 /* iOS loads no code that was not shipped with the app: the game's code is a pack of objects (recompile --target ios)
    that the JIT loader places in memory a debugger made executable (load_pack) */
@@ -634,78 +633,19 @@ static void resources_text(char* out, size_t size) {
         snprintf(out, size, "resources: footprint %llu MiB", (unsigned long long)(snx_footprint() >> 20));
 #endif
 }
-#if defined(__APPLE__)
-/* Apple systems at log level 2: the three host threads with the most CPU time since the last line, by their names.
-   iOS reported a CPU exception (90 s of CPU in 93 s) that named no thread. A thread is known by its id, which a new
-   thread never takes again */
-#define THREADS_SEEN 512
+/* log level 2: the three host threads with the most CPU time since the last line, by their names. iOS reported a CPU
+   exception (90 s of CPU in 93 s) that named no thread */
 static void threads_line(void) {
-    static struct {
-        u64 id, us;
-    } was[THREADS_SEEN], now[THREADS_SEEN];
-    static u32 nwas;
-    static u64 was_ns;
-    struct {
-        u64 d;
-        thread_act_t port;
-    } top[3] = {{0}};
-    thread_act_array_t list;
-    mach_msg_type_number_t n = 0;
-    if (task_threads(mach_task_self(), &list, &n) != KERN_SUCCESS) return;
-    u64 at = plat_ns();
-    u32 nnow = 0;
-    for (mach_msg_type_number_t i = 0; i < n; i++) {
-        thread_basic_info_data_t b;
-        thread_identifier_info_data_t id;
-        mach_msg_type_number_t cb = THREAD_BASIC_INFO_COUNT, ci = THREAD_IDENTIFIER_INFO_COUNT;
-        if (thread_info(list[i], THREAD_BASIC_INFO, (thread_info_t)&b, &cb) != KERN_SUCCESS ||
-            thread_info(list[i], THREAD_IDENTIFIER_INFO, (thread_info_t)&id, &ci) != KERN_SUCCESS)
-            continue;
-        u64 us = (u64)b.user_time.seconds * 1000000u + (u64)b.user_time.microseconds +
-                 (u64)b.system_time.seconds * 1000000u + (u64)b.system_time.microseconds;
-        u64 before = 0;
-        int seen = 0;
-        for (u32 k = 0; k < nwas; k++)
-            if (was[k].id == id.thread_id) {
-                before = was[k].us;
-                seen = 1;
-                break;
-            }
-        /* a thread past a full table has no time from the last line: its whole CPU time is not of the last 5 s */
-        u64 d = !seen && nwas == THREADS_SEEN ? 0 : us > before ? us - before : 0;
-        if (nnow < THREADS_SEEN) {
-            now[nnow].id = id.thread_id;
-            now[nnow].us = us;
-            nnow++;
-        }
-        for (int t = 0; t < 3; t++)
-            if (d > top[t].d) {
-                memmove(&top[t + 1], &top[t], (size_t)(2 - t) * sizeof top[0]);
-                top[t].d = d;
-                top[t].port = list[i];
-                break;
-            }
+    static SnxThreadInfo now[THREADS_SEEN];
+    static ThreadsWindow window;
+    char line[512];
+    int n = snx_threads(now, THREADS_SEEN);
+    if (n < 0) {
+        LOG_LIMIT(1, "threads: the system lists none of the process's threads, so no threads line\n");
+        return;
     }
-    if (was_ns) {
-        char line[512];
-        size_t len = (size_t)snprintf(line, sizeof line, "threads: the most CPU in the last %.1f s, of %u threads:",
-                                      (double)(at - was_ns) / 1e9, (unsigned)n);
-        for (int t = 0; t < 3 && top[t].d && len < sizeof line; t++) {
-            char name[64] = "";
-            pthread_t p = pthread_from_mach_thread_np(top[t].port);
-            if (p) pthread_getname_np(p, name, sizeof name);
-            len += (size_t)snprintf(line + len, sizeof line - len, "%s %s %.2f s", t ? "," : "", name[0] ? name : "?",
-                                    (double)top[t].d / 1e6);
-        }
-        LOG("%s\n", line);
-    }
-    for (mach_msg_type_number_t i = 0; i < n; i++) mach_port_deallocate(mach_task_self(), list[i]);
-    vm_deallocate(mach_task_self(), (vm_address_t)list, n * sizeof *list);
-    memcpy(was, now, nnow * sizeof now[0]);
-    nwas = nnow;
-    was_ns = at;
+    if (threads_line_text(&window, now, (unsigned)n, plat_ns(), line, sizeof line)) LOG("%s\n", line);
 }
-#endif
 /* iOS: a "memory: " line, with the GPU heaps, the first time that what the system still gives the app falls under
    each floor. Its warnings can come too late or not at all before it ends the app (one came 0.1 s before) */
 static void memory_floors(void) {
@@ -778,9 +718,7 @@ static void frontend_loop(void) {
                 (double)(shown - rate_frames) * 1e9 / (double)(now - rate_at), (double)(now - rate_at) / 1e9, shown);
             rate_at = now;
             rate_frames = shown;
-#if defined(__APPLE__)
             if (g_settings.log_level >= 2) threads_line();
-#endif
         }
         /* log level 2: the memory each second, as a game can take 1 GiB in less than that, and the line at each floor
            of free memory */
