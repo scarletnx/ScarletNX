@@ -80,7 +80,7 @@ every AdvSIMD operation is helper-free, that all 41 plan items are complete, or 
 
 The final emitter at `9485ad5b` passed 53 local CPU, tooling and documentation checks, including the full QEMU
 sweep. Native Linux x86-64, AArch64 and Windows CI passed their full suites of 694, 696 and 606 entries,
-with 5, 6 and 11 skipped entries respectively. No CPU test was skipped in those native Linux runs.
+with 5, 6 and 11 skipped entries respectively.
 The macOS job never acquired a hosted runner, so it provides no native macOS proof.
 
 The game comparison used an Intel Core i7-11800H, an NVIDIA RTX 3050 Laptop GPU and LLVM 21.1.8 on Linux.
