@@ -585,6 +585,50 @@ static void test_tessellation_metadata(void) {
 }
 
 /* ---- the device and its debug API */
+/* An Ounce compute program's c[0] record (nvn_program_c0): kept for the program's SetShaders, and not in or past its
+   object, which is 0xa0 bytes on the Ounce (the driver's nvnProgramInitialize zeroes that many). A queue that
+   replays a bind of the program takes the record, after the control section went back to the game */
+static void test_ounce_program_records(void) {
+    static NvnDraw draw;
+    const u64 control = 0xa000, pairs = 0xc000;
+    u32 api = g_nvn.loader.api;
+    g_nvn.loader.api = 231u << 16;
+    nvn_draw_init(&draw, 0x80000002u);
+    nvn_CommandBufferInitialize(NULL, CMDBUF, DEVICE);
+    nvn_CommandBufferAddCommandMemory(NULL, CMDBUF, POOL, 0x9000, 0x8000);
+    nvn_CommandBufferAddControlMemory(NULL, CMDBUF, SCRATCH + 0x1000, 0x400);
+    check(nvn_ProgramInitialize(NULL, PROGRAM, DEVICE), "an Ounce program");
+    u8 game[0x20]; /* the game's bytes after the program object */
+    memset(game, 0xee, sizeof game);
+    memcpy(GP(PROGRAM + 0xa0), game, sizeof game);
+    memset(GP(control), 0, 0xd8);
+    gw32(control, 0x98761234);
+    gw32(control + 4, 0xc9);
+    gw32(control + 8, 11);
+    gw32(control + 0x54, (u32)NVN_SHADER_STAGE_COMPUTE << 16); /* the stage, the halfword at 0x56 */
+    gw32(control + 0x58, 64);
+    gw32(control + 0x5c, 1);
+    gw32(control + 0x60, 1);
+    u8 record[NVN_C0_RECORD];
+    for (u32 i = 0; i < NVN_C0_RECORD; i++) record[i] = (u8)(1 + i);
+    memcpy(GP(control + 0xa8), record, sizeof record);
+    gw64(pairs, 0x900000);
+    gw64(pairs + 8, control);
+    check(nvn_ProgramSetShaders(NULL, PROGRAM, 1, pairs), "an Ounce compute program's SetShaders");
+    check(!memcmp(GP(PROGRAM + 0xa0), game, sizeof game), "SetShaders writes nothing past the program object");
+    u8 c0[NVN_C0_RECORD];
+    nvn_program_c0(NVN_OBJ(NvnProgram, PROGRAM)->serial, c0);
+    check(!memcmp(c0, record, sizeof c0), "the c[0] record is kept for the program's serial");
+    nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+    nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM, NVN_SHADER_STAGE_COMPUTE_BIT);
+    u64 handle = nvn_CommandBufferEndRecording(NULL, CMDBUF);
+    memset(GP(control), 0, 0xd8);
+    check(replay(&draw, handle, OP_BIND_PROGRAM) == 1 && !memcmp(draw.c0rec, record, sizeof record),
+          "a replayed bind of the program takes its c[0] record");
+    nvn_program_c0(0, c0);
+    check(!memcmp(c0, (u8[NVN_C0_RECORD]){0}, sizeof c0), "a serial without a record has none");
+    g_nvn.loader.api = api;
+}
 static void test_device(void) {
     nvn_DeviceBuilderSetDefaults(NULL, DEVICE_B);
     nvn_DeviceBuilderSetFlags(NULL, DEVICE_B, 0x15);
@@ -931,6 +975,7 @@ int main(void) {
     pool_init();
     test_command_buffer();
     test_tessellation_metadata();
+    test_ounce_program_records();
     test_texture();
     test_array_surface();
     test_sampler();

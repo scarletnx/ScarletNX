@@ -1646,8 +1646,7 @@ void nvn_CommandBufferWaitSync(CPU* c, u64 cb, u64 sync) {
 /* ============================================================ binds */
 /* the program's stages as they are now: the game may set new shaders in it before it submits */
 void nvn_CommandBufferBindProgram(CPU* c, u64 cb, u64 program, i32 stages) {
-    /* an Ounce game's record ends with its task and mesh stages and its program's c[0] record. Another's stops before
-       them, in the 128 bytes the driver writes, so that its records stay in the game's command memory */
+    /* an Ounce game's record ends with its task and mesh stages. Another's stops before them, in the 128 bytes the driver writes, so that its records stay in the game's command memory */
     const int ounce = g_nvn.loader.api >= 231u << 16;
     NvnPBindProgram* r = (NvnPBindProgram*)(void*)GP(
         rec(c, cb, OP_BIND_PROGRAM, ounce ? sizeof(NvnPBindProgram) : NVN_PBIND_SWITCH_BYTES, 128));
@@ -1659,7 +1658,6 @@ void nvn_CommandBufferBindProgram(CPU* c, u64 cb, u64 program, i32 stages) {
         r->serial = p->serial;
         memcpy(r->block, p->block, sizeof r->block);
         r->sample_shading = p->sample_shading;
-        if (ounce) memcpy(r->c0, NVN_PROG_C0(program), NVN_C0_RECORD);
     } else if (program &&
                g_settings.log_level >= 2) /* every one: when they stop says whether the game binds it again */
         LOGV("nvn: program %llx isn't initialized as it is bound (stages %#x, called from %llx)\n",

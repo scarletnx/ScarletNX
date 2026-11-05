@@ -41,7 +41,7 @@ struct NvnDraw {
     NvnVertexStream stream[16];
     u32 nstream;
     NVNbufferRange vbuf[16];
-    u8 c0rec[NVN_C0_RECORD]; /* the bound Ounce compute program's c[0] record (NVN_PROG_C0) */
+    u8 c0rec[NVN_C0_RECORD]; /* the bound Ounce compute program's c[0] record (nvn_program_c0) */
     u64 code[DS_PROGRAM_SLOTS];
     u32 prog_on;
     NvnTessStage tess_stage[2];
