@@ -31,6 +31,11 @@ typedef struct {
        the pages are let go of: the write tracking, which takes pages it watches again for written, can tell a later
        write from them. Called with the producer's lock held. Optional */
     void (*landed)(u64 addr, u64 size, const u8* bytes);
+    /* before a landing takes the producer's lock: writer(res) of each entry it would land (called under own.c's
+       lock), and wait(the largest of them) with no lock held, which may wait for the GPU. The landing is done under
+       the producer's lock as before, and finds that work done. Optional */
+    u64 (*writer)(void* res);
+    void (*wait)(u64 writer);
 } OwnHooks;
 
 /* 0 when the host can trap guest memory (plat_trap_init): own_begin can work from then on. -1: producers land their

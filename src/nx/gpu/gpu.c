@@ -946,6 +946,7 @@ static int run_pass(i64* wake) {
                 g_qhead = it->next;
             if (g_qtail == it) g_qtail = prev;
             pm_unlock(&g_qlk);
+            if (g_renderer->ready) g_renderer->ready();
             SNX_ZONE(z_call, "gpu call");
             it->fn(it->arg);
             SNX_ZONE_END(z_call);
@@ -969,6 +970,7 @@ static int run_pass(i64* wake) {
             g_qparked[it->chan] = 0;
         }
         pm_unlock(&g_qlk);
+        if (g_renderer->ready) g_renderer->ready();
         __atomic_store_n(&g_run_since, plat_ns(), __ATOMIC_RELAXED);
         __atomic_store_n(&g_run_chan, it->chan + 1, __ATOMIC_RELEASE);
         {

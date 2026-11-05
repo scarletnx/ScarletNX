@@ -1080,6 +1080,7 @@ const Renderer vk_renderer = {
     .start_failure = vk_start_failure,
     .mem_may_have_changed = vkr_mem_may_have_changed,
     .stream_run = vk_ww_stream,
+    .ready = vk_frame_ready,
     .clear = vkr_clear,
     .draw_texture = vkr_draw_texture,
     .discard = vkr_discard,
