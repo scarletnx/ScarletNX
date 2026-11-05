@@ -85,9 +85,12 @@ static int nn_gsv_UserSession_DestroyNativeMemory(SvcObj* self, u32 memory_handl
         native_memory_size[memory_handle] = 0;
     R_SUCCEED();
 }
-static int nn_gsv_UserSession_BootNativeMemoryManagement(SvcObj* self, u32 mode) {
+/* attributes 0: the native memory stays cached, which the runtime's guest memory always is. The answer's word is
+   written, not left as the TLS's old bytes, which the SDK would read as attributes */
+static int nn_gsv_UserSession_BootNativeMemoryManagement(SvcObj* self, u64 mode, u64* attributes) {
     (void)self;
-    LOG("gsv: BootNativeMemoryManagement(mode %u)\n", mode);
+    *attributes = 0;
+    LOG("gsv: BootNativeMemoryManagement(mode %llu)\n", (unsigned long long)mode);
     R_SUCCEED();
 }
 static int nn_gsv_UserSession_CreateSyncptContext(SvcObj* self) {
@@ -175,6 +178,101 @@ static int nn_gsv_UserSession_BindNativeMemory(SvcObj* self, const u8* request) 
     LOG("gsv: BindNativeMemory(%u, %#llx, %#llx)\n", memory_handle, (unsigned long long)cpu,
         (unsigned long long)size);
     R_SUCCEED();
+}
+static int nn_gsv_UserSession_BindNativeMemoryToCpu(SvcObj* self, u32 memory_handle, const u8* address,
+                                                    const u8* size, const u8* flags, const u8* offset) {
+    u64 cpu = snx_ld_le64(address), bytes = snx_ld_le64(size);
+    (void)self;
+    R_UNLESS(memory_handle && memory_handle < sizeof native_memory_size / sizeof native_memory_size[0] &&
+                 native_memory_size[memory_handle] >= bytes && bytes && !(cpu & 0xfff) && !snx_ld_le64(offset) &&
+                 mem_mapped_run(cpu, bytes) == bytes,
+             R_BADMEMSTATE);
+    native_memory_cpu[memory_handle] = cpu;
+    LOG("gsv: BindNativeMemoryToCpu(%u, %#llx, %#llx, flags %#llx)\n", memory_handle, (unsigned long long)cpu,
+        (unsigned long long)bytes, (unsigned long long)snx_ld_le64(flags));
+    R_SUCCEED();
+}
+int gsv_native_memory_cpu(u32 memory, u64* cpu, u64* size) {
+    if (!memory || memory >= sizeof native_memory_size / sizeof native_memory_size[0] ||
+        !native_memory_size[memory] || !native_memory_cpu[memory])
+        return 0;
+    *cpu = native_memory_cpu[memory];
+    *size = native_memory_size[memory];
+    return 1;
+}
+u32 gsv_native_image_reserve(u32 count) {
+    u32 first = next_native_image_handle;
+    if (!count || count > sizeof native_images / sizeof native_images[0] - first) return 0;
+    next_native_image_handle += count;
+    return first;
+}
+/* ---- the video service's commands (native_video.c) */
+static int nn_gsv_UserSession_MapNativeImage(SvcObj* self, u32 image, u32 one, u32 address_space, u8 mode, u64* first,
+                                             u64* last, nn_gsv_VideoDescriptor* descriptor, u32* flags) {
+    (void)self, (void)flags;
+    R_UNLESS(one == 1 && (mode == 1 || mode == 3), R_BADSIZE);
+    return native_video_gpu_map(image, address_space, first, last, descriptor->v);
+}
+static int nn_gsv_UserSession_UnmapNativeImage(SvcObj* self, u32 image, u32 address_space, u64 first, u64 last) {
+    (void)self;
+    return native_video_gpu_unmap(image, address_space, first, last);
+}
+static int nn_gsv_UserSession_QueryNativeImage(SvcObj* self, u32 image, u64* first, u64* last,
+                                               nn_gsv_VideoDescriptor* descriptor, u32* flags) {
+    (void)self, (void)first, (void)last, (void)flags;
+    return native_video_gpu_query(image, descriptor->v);
+}
+static int nn_gsv_UserSession_InitializeVideoDecoder(SvcObj* self) {
+    (void)self;
+    return native_video_service(0, 1);
+}
+static int nn_gsv_UserSession_FinalizeVideoDecoder(SvcObj* self) {
+    (void)self;
+    return native_video_service(0, 0);
+}
+static int nn_gsv_UserSession_OpenVideoDecoderContext(SvcObj* self, u32* context) {
+    (void)self;
+    return native_video_open(0, context);
+}
+static int nn_gsv_UserSession_OpenVideoDecoderContextWithFlag(SvcObj* self, u8 flag, u32* context) {
+    (void)self;
+    LOG("gsv: OpenVideoDecoderContextWithFlag(%u)\n", flag);
+    return native_video_open(0, context);
+}
+static int nn_gsv_UserSession_InitializeVideoEncoder(SvcObj* self) {
+    (void)self;
+    return native_video_service(1, 1);
+}
+static int nn_gsv_UserSession_FinalizeVideoEncoder(SvcObj* self) {
+    (void)self;
+    return native_video_service(1, 0);
+}
+static int nn_gsv_UserSession_OpenVideoEncoderContext(SvcObj* self, u32* context) {
+    (void)self;
+    return native_video_open(1, context);
+}
+static int nn_gsv_UserSession_CreateVideoImagePool(SvcObj* self, const nn_gsv_VideoImagePreference* preference,
+                                                   u32 count, u32 memory_handle, u32* image) {
+    u32 words[16];
+    (void)self;
+    memcpy(words, preference, sizeof words);
+    return native_video_pool_create(words, count, memory_handle, image);
+}
+static int nn_gsv_UserSession_DestroyVideoImagePool(SvcObj* self, u32 image) {
+    (void)self;
+    return native_video_pool_destroy(image);
+}
+static int nn_gsv_UserSession_QueryVideoImage(SvcObj* self, u32 image, nn_gsv_VideoDescriptor* descriptor) {
+    (void)self;
+    return native_video_query(image, descriptor->v);
+}
+static int nn_gsv_UserSession_CalculateVideoImageRequirements(SvcObj* self,
+                                                              const nn_gsv_VideoImagePreference* preference,
+                                                              u32 count, u64* size, u64* alignment) {
+    u32 words[16];
+    (void)self;
+    memcpy(words, preference, sizeof words);
+    return native_video_requirements(words, count, size, alignment);
 }
 static int nn_gsv_UserSession_CreateNativeImage(SvcObj* self, const u8* request, u32* image_handle) {
     u32 memory_handle;
