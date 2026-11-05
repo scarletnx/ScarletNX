@@ -11,6 +11,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include "snx_settings.h"
 #include <SDL3/SDL_thread.h>
 #include <errno.h>
@@ -285,6 +286,7 @@ int plat_power_take_change(void) { return __atomic_exchange_n(&g_power_changed, 
 static void power_watch_thread(void* arg) {
     int fd = (int)(intptr_t)arg;
     char buf[4096];
+    SNX_THREAD_NAME("power watch");
     for (;;) {
         ssize_t n = recv(fd, buf, sizeof buf, 0);
         if (n <= 0) {
@@ -338,6 +340,7 @@ static void apple_power_changed(void* context) {
 static void apple_power_thread(void* arg) {
     CFRunLoopSourceRef source = IOPSNotificationCreateRunLoopSource(apple_power_changed, NULL);
     (void)arg;
+    SNX_THREAD_NAME("power watch");
     if (!source) return;
     CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopDefaultMode);
     CFRunLoopRun();
@@ -850,6 +853,7 @@ static void trap_wait(u64 i, int write) {
 }
 static void* trap_signal_thread(void* arg) {
     (void)arg;
+    SNX_THREAD_NAME("memory traps");
     for (;;) {
         u32 seen = __atomic_load_n(&g_trap_posted, __ATOMIC_SEQ_CST);
         for (;;) {
@@ -1823,6 +1827,7 @@ static void* trap_thread(void* arg) {
     struct uffd_msg msg[16];
     u64 page = (u64)sysconf(_SC_PAGESIZE);
     (void)arg;
+    SNX_THREAD_NAME("memory traps");
     for (;;) {
         struct pollfd pf;
         ssize_t n;

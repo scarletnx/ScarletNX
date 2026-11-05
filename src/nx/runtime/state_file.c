@@ -12,6 +12,7 @@
 #include "nx/runtime/state_file.h"
 #include "common/utilities/endian.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,6 +78,7 @@ static int out(StateWriter* w, const void* p, size_t n);
 static void worker(void* arg) {
     StateWriter* w = (StateWriter*)arg;
     ZSTD_CCtx* z = ZSTD_createCCtx();
+    SNX_THREAD_NAME("state compress");
     if (z) {
         ZSTD_CCtx_setParameter(z, ZSTD_c_compressionLevel, LEVEL);
         ZSTD_CCtx_setParameter(z, ZSTD_c_checksumFlag, 1);
