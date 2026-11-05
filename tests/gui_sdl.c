@@ -9096,8 +9096,8 @@ int main(int argc, char** argv) {
                    !strcmp(app.message,
                            "\"Speed x2|x4\" always runs: a | in its name, which cheats_off= puts between two"));
             /* past Open Folder, Save States, Clean Cache, GPU Driver and Freedreno Settings */
-            for (i = 0; i < 10; i++) key(&app, SDLK_DOWN);
-            assert(app.addons_focus == 18);
+            for (i = 0; i < addons_rows(&app) - 10; i++) key(&app, SDLK_DOWN);
+            assert(app.addons_focus == addons_rows(&app) - 2); /* Save */
             key(&app, SDLK_RETURN);
             assert(!app.addons_shown && !app.menu.running && strstr(app.message, "kept"));
             checked = snx_ini_value(ini, "addons");
@@ -9251,8 +9251,8 @@ int main(int argc, char** argv) {
             key(&app, SDLK_DOWN);
             key(&app, SDLK_DOWN);
             key(&app, SDLK_RETURN);
-            for (i = 0; i < 17; i++) key(&app, SDLK_DOWN); /* Recompile, the last row */
-            assert(app.addons_focus == 19);
+            for (i = 0; i < addons_rows(&app) - 3; i++) key(&app, SDLK_DOWN); /* Recompile, the last row */
+            assert(app.addons_focus == addons_rows(&app) - 1);
             key(&app, SDLK_RETURN);
             assert(!app.addons_shown && !app.menu.running && !app.recompile && gui_queue_running(&app.queue) == 0);
             {
