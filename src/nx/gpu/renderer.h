@@ -56,6 +56,8 @@ typedef struct Renderer {
        thread */
     void (*clear)(const DsState* ds, const DrawClear* c, const DrawOwner* o);
     void (*draw)(const DsState* ds, const DrawCall* dc, DrawOwner* o);
+    /* NVN capture control: Begin 0, End 1, Pause 2, Resume 3. Save/import the GPU byte counters without a host read. */
+    int (*xfb_control)(u32 owner, u64 control, u32 what, u32 stride, DrawOwner* o);
     void (*draw_texture)(const DsState* ds, const DrawTexture* t);
     /* the contents of the targets ds names in targets (bit i color slot i, bit 8 depth and stencil) no longer matter
        (NVN's DiscardColor and DiscardDepthStencil): the renderer may leave them undefined, at the latest when they are
@@ -68,6 +70,9 @@ typedef struct Renderer {
     /* the 2D engine: 1 when the renderer did the blit on the GPU, 0 to do it in guest memory */
     int (*blit)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
                 double sdy);
+    /* NVN copies choose their filter explicitly; source steps can be negative to mirror an axis. */
+    int (*blit_filter)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy,
+                       double sdx, double sdy, int linear);
     /* the VIC composition (gpu/video/vic.c), on the GPU, its picture kept there (docs/GPU_OWNERSHIP.md): 0 when
        the job exceeds the device (it is skipped) */
     int (*vic_compose)(const VicJob* j);

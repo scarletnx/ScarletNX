@@ -45,10 +45,17 @@ typedef struct {
 #define NVN_SPILL_PIECES  262144 /* one game keeps over 23,000 short recordings in the runtime's memory at once */
 #define NVN_SPILL_SMALL   NVN_SPILL_SEGS /* NvnSpillPiece.seg of a block of the small store's first class */
 #define NVN_SMALL_CLASSES 5              /* blocks of 64 to 1024 bytes */
-/* A class of the small store (nvn_cmd.c's spill_compact): the rest of its last slab [slab, end), and the blocks given
-   back, oldest first, each holding the next one's address and the submissions made when it came back (its quiet) */
+/* a block of the small store given back, and the submissions made when it came back (its quiet) */
 typedef struct {
-    u64 slab, end, head, tail;
+    u64 at, quiet;
+} NvnSmallFree;
+/* A class of the small store (nvn_cmd.c's spill_compact): the rest of its last slab [slab, end), and the blocks given
+   back, oldest first, given[first] to given[first + n - 1] of an array of cap that grows. Nothing is written in a block
+   while it waits there: a submission made before it came back may still walk the records it holds */
+typedef struct {
+    u64 slab, end;
+    NvnSmallFree* given;
+    u32 first, n, cap;
 } NvnSmallClass;
 #define NVN_SPILL_BUCKETS 4096 /* the pieces by the 4 KiB page of their anchor */
 /* the file's state, g_nvn.cmd (gpu/nvn/nvn_state.h), under the lock (the game's threads record into several command

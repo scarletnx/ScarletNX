@@ -219,7 +219,7 @@ static int up_end(Up* u) {
 /* whether the mirror owns a part of guest memory [cpu, cpu + n): its bytes there are the mirror's (own_entries) */
 static int mirror_owns(u64 cpu, u64 n) {
     OwnRange o[16];
-    if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) return 0;
+    if (!own_any()) return 0;
     u32 k = own_lookup(cpu, n, o, 16);
     for (u32 i = 0; i < k && i < 16; i++)
         if (((const VkOwnRes*)o[i].res)->buf == g_mir.buf) return 1;
@@ -229,7 +229,7 @@ static int mirror_owns(u64 cpu, u64 n) {
    owners at a time. The mirror's own are where they belong */
 static void up_owned(u64 cpu, u64 n) {
     OwnRange o[16];
-    if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) return;
+    if (!own_any()) return;
     for (u64 at = cpu, end = cpu + n; at < end;) {
         u32 k = own_lookup(at, end - at, o, 16);
         for (u32 i = 0; i < k && i < 16; i++) {

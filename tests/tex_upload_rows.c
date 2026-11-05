@@ -46,7 +46,7 @@ int gmem_read(u64 gva, void* dst, u64 size) {
     return 0;
 }
 /* nothing is GPU-owned here: vk_guest_read reads guest memory as gmem_read does, into staging */
-int g_own_any;
+u32 g_nown;
 void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     (void)buf, (void)at;
     gmem_read(gva, host, size);
@@ -83,7 +83,7 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
     return guest_end - gva < max ? guest_end - gva : max;
 }
 void gmem_need(u64 gva, u64 size) { (void)gva, (void)size; }
-static u32 g_owned; /* the owned ranges own_lookup finds, while g_own_any */
+static u32 g_owned; /* the owned ranges own_lookup finds, while g_nown */
 u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     (void)addr, (void)size, (void)out, (void)max;
     return g_owned;
@@ -789,11 +789,11 @@ int main(void) {
         guest[z * 0x10000 + 100] ^= 1;
     }
     CHECK(tex_upload(&ka) && g_content_given && g_content[0] == c0[0] && g_content[1] == c0[1]);
-    g_own_any = 1;
+    g_nown = 1;
     CHECK(tex_upload(&ka) && g_content_given && g_content[0] == c0[0]);
     g_owned = 1;
     CHECK(tex_upload(&ka) && !g_content_given);
-    g_own_any = g_owned = g_cached = 0;
+    g_nown = g_owned = g_cached = 0;
     /* a sparse texture's levels at least a tile in size have rows of whole tiles (tile_w). RGBA8 tiles of 128x128
        texels (8 GOBs across, blocks 16 high): 200 texels across (13 GOBs) take 16 at level 0, and levels 1 and 2 are
        narrower than a tile. Whole, in rows of blocks under 160 KiB (2 of them), and 8 GOB rows at a time under 64 KiB,
@@ -833,12 +833,12 @@ int main(void) {
             for (u32 x = 0; x < 75 * 16; x++)
                 CHECK(astc_out[(y * 75) * 16 + x] == guest[bl_offset_g(x, y, 0, 32, 64, 3, 0)]);
     }
-    /* the change check, mem_hash: the same hash whether the GPU holds bytes somewhere (g_own_any: the texture read
+    /* the change check, mem_hash: the same hash whether the GPU holds bytes somewhere (own_any: the texture read
        through vk_guest_peek) or not, and a byte past a page's first 64 changes it, as a row the CPU rewrites does */
     {
         const u64 at = GVA + 0x20000, size = 4 * 4096;
         u64 plain = mem_hash(at, size), owned;
-        g_own_any = 1;
+        g_nown = 1;
         owned = mem_hash(at, size);
         CHECK(owned == plain);
         guest[0x20000 + 4096 + 100] ^= 0x5A;
@@ -852,7 +852,7 @@ int main(void) {
         g_whole_tag = 0x1235;
         CHECK(mem_hash(at, size) != whole && g_peeks == 0);
         g_whole_tag = 0;
-        g_own_any = 0;
+        g_nown = 0;
     }
     /* A clean scan does not advance the write clock. Its cached texture must
        still notice the very next stamp, including after several clean epochs. */

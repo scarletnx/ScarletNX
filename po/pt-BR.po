@@ -1739,6 +1739,11 @@ msgid "Cheat %s"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "Play Program %d"
+msgstr "Jogar Programa %d"
+
+#: src/gui/main.c
 msgid "No update"
 msgstr ""
 
@@ -3823,6 +3828,11 @@ msgid "Nothing to keep: no file of the menu's"
 msgstr "Nada a guardar: nenhum arquivo do menu"
 
 #: src/gui/main.c
+#, c-format
+msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
+msgstr "O jogo inicia o seu programa %d, %s, que não foi compilado: Recompilar o jogo compila os programas dele"
+
+#: src/gui/main.c
 msgid "the game wrote no log"
 msgstr ""
 
@@ -4011,6 +4021,11 @@ msgstr ""
 #: src/gui/main.c
 msgid "Use"
 msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"
+msgstr "Cada tema aparece quando o foco chega nele: Enter fica com ele, ESC volta para %s"
 
 #: src/gui/main.c
 msgid "How to share the logs?"
@@ -4306,6 +4321,10 @@ msgstr ""
 #, c-format
 msgid "The log could not be saved to %s: %s"
 msgstr "Não foi possível salvar o log em %s: %s"
+
+#: src/gui/main.c
+msgid "the share sheet did not open"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -5112,8 +5131,8 @@ msgstr "[theme] format = %s não é um número inteiro a partir de 1: fica %lu"
 
 #: src/gui/theme.c
 #, c-format
-msgid "[theme] base = %s is not a built-in theme (default or yorha): it starts from %s"
-msgstr "[theme] base = %s não é um tema embutido (default ou yorha): parte de %s"
+msgid "[theme] base = %s is not a built-in theme (%s): it starts from %s"
+msgstr "[theme] base = %s não é um tema embutido (%s): parte de %s"
 
 #: src/gui/theme.c
 #, c-format

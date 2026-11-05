@@ -264,6 +264,9 @@ void plat_vm_track(u8* p, u64 size) {
         WARN("memory: write_tracking=1 (page protection) has no Windows version: %s\n",
              p == g_ww_watched ? "the reservation's write watch tracks writes, as write_tracking=0 does"
                                : "the reservation has no write watch, so the caches compare contents");
+    if (g_settings.write_tracking_hot_pages == 1)
+        WARN("memory: write_tracking_hot=1 leaves pages hot only where page protection tracks the writes, which has "
+             "no Windows version: no page is hot this run\n");
     if (p != g_ww_watched || g_settings.write_tracking == 2) return;
     g_ww_base = p; /* mem_init runs before any thread that scans */
     g_ww_size = size;
@@ -297,6 +300,17 @@ void plat_ww_open(u8* p, u64 size) {
 void plat_ww_close(u8* p, u64 size) {
     (void)p;
     (void)size;
+}
+/* no hot pages: the write watch takes no faults to spare */
+int plat_ww_hot_in(const u8* p, u64 size) {
+    (void)p;
+    (void)size;
+    return 0;
+}
+void plat_ww_cool(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
+    (void)p;
+    (void)size;
+    (void)cb;
 }
 
 int plat_vm_commit(u8* p, u64 size) {
@@ -490,18 +504,89 @@ void plat_file_unmap(PFileMap* m) {
 /* ================================================================ the crash handler */
 static LONG g_crash_reporting;
 static LONG g_shutdown_said;
+static LONG g_filter_said;
+/* the game's code module, [lo, hi): plat_crash_code_module's, read by the first-chance handler on any thread */
+static u8* g_code_lo;
+static u8* g_code_hi;
 
-static LONG WINAPI crash_filter(EXCEPTION_POINTERS* e) {
+/* the report, once: it ends the process, so another crashing thread waits for that */
+static void crash_once(EXCEPTION_POINTERS* e) {
     EXCEPTION_RECORD* r = e->ExceptionRecord;
     void* fault = NULL;
-    /* one report: it ends the process, so another crashing thread waits for that */
     if (InterlockedCompareExchange(&g_crash_reporting, 1, 0)) Sleep(INFINITE);
     log_crash_mode();
     if ((r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION || r->ExceptionCode == EXCEPTION_IN_PAGE_ERROR) &&
         r->NumberParameters >= 2)
         fault = (void*)r->ExceptionInformation[1];
     crash_report(r->ExceptionAddress, fault, (int)r->ExceptionCode);
+}
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS* e) {
+    crash_once(e);
     return EXCEPTION_EXECUTE_HANDLER;
+}
+
+/* The exceptions a crash report is made of; a stack overflow is shutdown_note's, as there is no stack left for one */
+static int crash_code(DWORD code) {
+    return code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR ||
+           code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_PRIV_INSTRUCTION ||
+           code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == EXCEPTION_INT_OVERFLOW;
+}
+/* A fault in the game's code module is reported before anything else sees it. The unhandled-exception filter alone is
+   not enough: the process has one, the last SetUnhandledExceptionFilter's, and a driver may set its own after ours
+   (Intel's igdumdim64 does, which hid Breakpad's reports). The runtime takes no exception in the game's code on
+   Windows (the write watch and the traps don't fault there), so nothing else would handle one */
+static LONG WINAPI code_fault(EXCEPTION_POINTERS* e) {
+    const u8* pc = (const u8*)e->ExceptionRecord->ExceptionAddress;
+    const u8* lo = __atomic_load_n(&g_code_lo, __ATOMIC_ACQUIRE);
+    const u8* hi = __atomic_load_n(&g_code_hi, __ATOMIC_ACQUIRE);
+    if (crash_code(e->ExceptionRecord->ExceptionCode) && pc >= lo && pc < hi) crash_once(e);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* a module's file name, as UTF-8 without its folder, into out: "?" when Windows doesn't say */
+static void module_name(HMODULE m, char* out, int size) {
+    wchar_t path[MAX_PATH];
+    const wchar_t* name = path;
+    DWORD n = m ? GetModuleFileNameW(m, path, MAX_PATH) : 0;
+    snprintf(out, (size_t)size, "?");
+    if (!n || n >= MAX_PATH) return;
+    for (DWORD i = 0; i < n; i++)
+        if (path[i] == L'\\' || path[i] == L'/') name = path + i + 1;
+    if (!WideCharToMultiByte(CP_UTF8, 0, name, -1, out, size, NULL, NULL)) snprintf(out, (size_t)size, "?");
+}
+
+void plat_crash_code_module(const void* inside) {
+    HMODULE m = NULL;
+    const IMAGE_DOS_HEADER* dos;
+    const IMAGE_NT_HEADERS* nt;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR)inside, &m) ||
+        !m) {
+        WARN("crash: no module holds the game's code at %p (Windows error %lu): a fault in it is reported only while "
+             "the crash filter is the runtime's\n",
+             inside, (unsigned long)GetLastError());
+        return;
+    }
+    if (m == GetModuleHandleW(NULL)) return; /* the code linked into the runtime itself: its faults are the filter's */
+    dos = (const IMAGE_DOS_HEADER*)(const void*)m;
+    nt = (const IMAGE_NT_HEADERS*)(const void*)((const u8*)m + dos->e_lfanew);
+    __atomic_store_n(&g_code_hi, (u8*)m + nt->OptionalHeader.SizeOfImage, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_code_lo, (u8*)m, __ATOMIC_RELEASE);
+}
+
+void plat_crash_handler_check(void) {
+    LPTOP_LEVEL_EXCEPTION_FILTER was = SetUnhandledExceptionFilter(crash_filter);
+    void* at;
+    HMODULE m = NULL;
+    char name[MAX_PATH * 3];
+    if (was == crash_filter || InterlockedExchange(&g_filter_said, 1)) return;
+    memcpy(&at, &was, sizeof at); /* ISO C has no conversion from a function pointer to an object's */
+    if (at)
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCWSTR)at, &m);
+    module_name(m, name, (int)sizeof name);
+    WARN("crash: the process's crash filter was %p (in %s), not the runtime's: the runtime's is back\n", at,
+         at ? name : "none, the system's default");
 }
 
 /* Failures that may never reach the filter (the CRT fails fast on a buffer overrun or heap corruption): say so in the
@@ -521,6 +606,7 @@ void plat_install_crash_handler(void) {
     ULONG g = STACK_GUARANTEE; /* the main thread's room for a report after a stack overflow */
     SetThreadStackGuarantee(&g);
     AddVectoredExceptionHandler(1, shutdown_note);
+    AddVectoredExceptionHandler(1, code_fault);
     SetUnhandledExceptionFilter(crash_filter);
 }
 

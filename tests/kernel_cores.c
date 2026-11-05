@@ -18,7 +18,7 @@ MemLayout g_layout = {0x08000000ull,   0x2000000000ull, 0x100000000ull, 0x200000
                       0x1000000000ull, 0x1300000000ull, 0x100000000ull, 0x1400000000ull, 0x1800000000ull};
 GuestFn* g_disp;
 u64 g_code_lo, g_code_hi, g_code_memory, g_main_stack_size;
-const RtAPI g_rtapi;
+const RtAPI g_rtapi = {.cas128 = snx_runtime_cas128};
 const SnxArmModule* g_arm_mod; /* a 64-bit game */
 const SnxArmRt g_arm_rt;
 void arm_thread_run(KThread* t) { (void)t; }

@@ -229,6 +229,12 @@ the invocations beside them. On the RTX 2080, beside a running game, a 4096x4096
 | astcenc 8x8 normal map | not measured | 256 to 267 ms | not measured |
 | Random 8x8 blocks | 21 to 29 ms | 189 to 196 ms | 260 ms |
 
+`astc_bc=1` goes further: every ASTC texture is BC7, the small ones too, from the start. Off, on a GPU that samples BCn
+but not ASTC, the log suggests it once a run, with the budget, the use and the megabytes of ASTC textures decoded to
+RGBA8, when the images run short (`surface.c`'s `astc_bc_suggest`): an image allocation finds no memory, a trim leaves
+the caches past their budget, or a trim takes what the last two presents used (the working set, which the next frames
+load again).
+
 The encoder tries each block in the modes that suit it and writes the one with the least squared error. Every
 block takes mode 6, one line through RGBA with 4-bit weights, which holds a block of one gradient closely. An opaque
 block (every alpha 255) also takes the modes that store no alpha and so keep it 255: modes 1 and 3, two subsets of

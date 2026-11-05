@@ -243,9 +243,20 @@ setting Vertex input dynamic state
     words auto=Auto|on=On|off=Off
     help How a draw gives the GPU its vertex layout. auto = as dynamic state (VK_EXT_vertex_input_dynamic_state) where
     help the GPU's driver has it, but NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0, which
-    help draw it wrong; on = as dynamic state wherever the driver has it, those too; off = in the pipeline. Dynamic,
+    help draw it wrong, and on Android, as Eden; on = as dynamic state wherever the driver has it, those too; off = in
+    help the pipeline. Dynamic,
     help one pipeline serves every layout a program is drawn with, so fewer pipelines are made; in the pipeline, each
     help layout takes one of its own. Any other value stops the game, saying so
+setting ASTC BC
+    label ASTC as BC7
+    key astc_bc
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 0 = ASTC textures are decoded to RGBA8, exactly as the game's blocks decode. 1 = on a GPU that samples BCn
+    help but not ASTC (most desktop ones), they are decoded and then encoded again as BC7, in a quarter of RGBA8's
+    help memory, close to what the blocks decode to but not always the same. Where the GPU samples ASTC it does nothing
 
 table g_performance_ini
 setting FPS limit
@@ -263,15 +274,17 @@ setting Memory (GB)
     help The memory the game sees: below 6 the console's 3.2 GB, 6 = 4.8 GB, 8 = 6.8 GB. A game that runs out on
     help the console's amount needs 6. 12 is experimental: it gives a 10 GiB application budget and a larger heap
     help region for newer games. It requires a host with enough available memory and address space
-setting Memory fit
-    key memory_fit
+setting Memory fit mode
+    label Memory fit
+    key memory_fit_mode
     int 0 1
     default 0
-    default-if SNX_IOS 1
     startup
-    words Off|On
-    help On = the game sees no more of Memory (GB) than the device can still give it, measured as it starts, less what
-    help the rest of ScarletNX takes: a device with less than the console's is not run out of memory. Off = all of it
+    words Auto|Off
+    help Auto = the game sees no more of Memory (GB) than the device can still give it, measured as it starts, less
+    help what the rest of ScarletNX takes: a device with less than the console's is not run out of memory, and one that
+    help can give it all shows the game all of it. Off = all of it, whatever the device can give. It takes the place of
+    help memory_fit, whose 0 was Off (docs/DEPRECATIONS.md)
 setting Heap limit (MB)
     key heap_max_mb
     text 32
@@ -676,16 +689,6 @@ setting Native ASTC
     help 1 = ASTC textures are sampled as the game's blocks where the GPU samples ASTC (most phone and tablet GPUs),
     help in a quarter to a 36th of the memory. 0 = they are decoded to RGBA8 on the GPU, as they are on GPUs without
     help ASTC (most desktop ones), to compare the two. On such a GPU 1 is a warning at start
-setting ASTC BC
-    label ASTC as BC7
-    key astc_bc
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    help 0 = ASTC textures are decoded to RGBA8, exactly as the game's blocks decode. 1 = on a GPU that samples BCn
-    help but not ASTC (most desktop ones), they are decoded and then encoded again as BC7, in a quarter of RGBA8's
-    help memory, close to what the blocks decode to but not always the same. Where the GPU samples ASTC it does nothing
 setting Native BC
     label Native BCn
     key native_bc
@@ -804,6 +807,17 @@ setting Write tracking
     help page protection on the other hosts. 1 = page protection and the fault handler, as macOS, FreeBSD, Android
     help and older Linux track (not on Windows, which says so at start). 2 = none: the caches compare guest memory's
     help contents, to measure and test that path
+setting Write tracking hot pages
+    key write_tracking_hot
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = with page protection (write_tracking=1, or the host's own on macOS, iOS, FreeBSD, Android and Linux
+    help before 6.7), a page the scans find written twice in a row stays writable, without its fault, and reads as
+    help written at each scan, for 32 scans; then it is protected again. A render target protects its pages again
+    help before each baseline, so its write-back keeps the GPU's pixels. 0 = every written page is protected again at
+    help each scan. Nothing where userfaultfd or Windows' write watch tracks the writes, which say so at start
 setting Memory traps
     key memory_traps
     int 0 2
@@ -823,6 +837,17 @@ setting Host page size
     help The page size the runtime works in, in bytes: a power of two larger than the host's own, up to 1 MiB.
     help 16384 or 65536 run as a host with 16 or 64 KiB pages does (views copy, a host page holds several guest
     help pages: docs/PPC64.md). 0 = the host's own. Any other value runs with the host's own, said at start
+setting NCE foreign scan
+    label NCE address scan
+    key nce_foreign_scan
+    int 0 3600
+    default 0
+    startup
+    words Off|# s
+    help Under NCE, the seconds between two looks at the game's addresses for what of the host's process is not the
+    help game's (another owner's mapping over its memory, a run nothing maps), 1 to 3600, each new finding logged once.
+    help 0 = off: only as the game's code starts and in a crash report. Each look reads /proc/self/maps, a few
+    help milliseconds
 setting GPU page check
     key gpu_page_check
     int 0 1

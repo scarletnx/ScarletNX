@@ -90,8 +90,11 @@ int nce_emit(NcePool* pools, size_t count, const NceEnv* env, const NceSite* sit
 
 /* the stubs of a hooked function at entry, whose first word is first. The outcall stub calls the runtime with
    NCE_OUTCALL(NCE_HOOK, index), and goes on at the pc that the runtime gives back. The original runs first, moved,
-   and then goes on at entry + 4: *original is its guest address. *patch: the word that goes at entry. 0, or -1 when
-   first cannot move (a PC-relative branch on a condition, or a literal load) or no pool is in reach */
+   and then goes on at entry + 4: *original is its guest address. A first word that reads the pc moves with its
+   target made the stub's: a branch on a condition (a function that checks an argument first) keeps its taken path,
+   a literal load loads from its address made absolute. *patch: the word that goes at entry. 0; -1 with no pool in
+   reach that has room; -2 when first cannot move (a B or BL whose target is out of the stub's reach, or an
+   unallocated literal load) */
 int nce_divert(NcePool* pools, size_t count, const NceEnv* env, SnxU64 entry, SnxU32 first, unsigned index,
                SnxU32* patch, SnxU64* original);
 
@@ -121,10 +124,11 @@ void nce_sites_move(NceSites* sites, SnxU64 lo, SnxU64 hi, SnxU64 delta);
 /* the oldest Android that NCE runs on: from API 29 (Android 10) the app owns bionic's TLS_SLOT_APP, the thread's word
    that the stubs read (nce_host.c); before, it is errno's */
 #define NCE_ANDROID_API 29
-/* why NCE does not run a 64-bit game on a host that has it: 0 when it does, else -1 with the reason, its values, in
-   why. aspace: the NPDM's address space type (1: the 36-bit one, which has to lie below 64 GiB, 3: 39-bit). android:
-   the host is Android, at API level api, which moves the guest's addresses above 64 GiB (mem.c) */
-int nce_refused(char* why, size_t size, unsigned aspace, int android, int api);
+/* why NCE does not run a game on a host that has it: 0 when it does, else -1 with the reason, its values, in why.
+   is64: the NPDM's flag, 0 for a 32-bit game, whose A32 and Thumb code the host's 64-bit process cannot run. aspace:
+   the NPDM's address space type (1: the 36-bit one, which has to lie below 64 GiB, 3: 39-bit). android: the host is
+   Android, at API level api, which moves the guest's addresses above 64 GiB (mem.c) */
+int nce_refused(char* why, size_t size, int is64, unsigned aspace, int android, int api);
 
 /* the file of an NCE recompile (<game>.nce, beside the module): the guest ranges of the pools, and the sites, each
    address kept as its distance from base, the first module's. The runtime reads them back from the base it loaded

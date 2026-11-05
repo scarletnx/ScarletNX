@@ -783,7 +783,10 @@ static void header(void) {
 static void write_h(const char* dir) {
     int i, t;
     header();
-    outs("#ifndef SNX_SETTINGS_H\n#define SNX_SETTINGS_H\n#include \"nx/runtime/ini.h\"\n#include <limits.h>\n\n");
+    /* common.h defines SNX_IOS, which the default-if lines of settings.c and of each table name: without it, iOS took
+       the other platforms' defaults */
+    outs("#ifndef SNX_SETTINGS_H\n#define SNX_SETTINGS_H\n#include \"common/utilities/common.h\"\n"
+         "#include \"nx/runtime/ini.h\"\n#include <limits.h>\n\n");
     outs("/* an LLVM option's value while LLVM's own is kept */\n#define SETTINGS_UNSET INT_MIN\n\n");
     for (i = 0, t = 0; i < nsettings; i++) t += settings[i].repeat ? settings[i].repeat : 1;
     out("/* the keys of every table, a repeated setting's once for each repeat: what a settings file the runtime "

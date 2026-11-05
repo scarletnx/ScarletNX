@@ -27,6 +27,7 @@
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -667,9 +668,38 @@ int nvn_TexturePoolInitialize(CPU* c, u64 tp, u64 pool, i64 offset, i32 count) {
     (void)c;
     return desc_pool_init(tp, pool, offset, count, "texture");
 }
+/* The driver's own samplers, which its nvnSamplerPoolInitialize writes into a new pool's descriptors 0 and 1 (read in
+   an API 53.313 driver): linear filters without mipmaps, every coordinate clamped to its edge, LODs 0 to 1000, no
+   compare, and an anisotropy of 1 in descriptor 0 and 2 in descriptor 1. Games sample with them by those IDs without
+   registering them; an empty descriptor reads the nearest texel and wraps */
+static void reserved_samplers(u64 sp) {
+    const NvnDescPool* p = NVN_OBJ(const NvnDescPool, sp);
+    u64 memory = nvn_pool_memory(p->pool);
+    NvnSamplerPar par = {0};
+    u32 tsc[8], i;
+    if (!memory || p->count < 2) {
+        LOG("nvn: sampler pool %llx has %d descriptors and memory %llx: the driver's samplers 0 and 1 aren't written\n",
+            (unsigned long long)sp, p->count, (unsigned long long)memory);
+        return;
+    }
+    par.min_filter = NVN_MIN_FILTER_LINEAR;
+    par.mag_filter = NVN_MAG_FILTER_LINEAR;
+    par.wrap_s = par.wrap_t = par.wrap_r = NVN_WRAP_MODE_CLAMP_TO_EDGE;
+    par.compare_mode = NVN_COMPARE_MODE_NONE;
+    par.compare_func = NVN_COMPARE_FUNC_LESS;
+    par.reduction = NVN_SAMPLER_REDUCTION_AVERAGE;
+    par.lod_max = 1000.0f;
+    for (i = 0; i < 2; i++) {
+        par.anisotropy = (f32)(i + 1);
+        nvn_tsc_encode(&par, tsc);
+        memcpy(GP(memory + p->offset + i * NVN_DESCRIPTOR_SIZE), tsc, sizeof tsc);
+    }
+}
 int nvn_SamplerPoolInitialize(CPU* c, u64 sp, u64 pool, i64 offset, i32 count) {
     (void)c;
-    return desc_pool_init(sp, pool, offset, count, "sampler");
+    if (!desc_pool_init(sp, pool, offset, count, "sampler")) return 0;
+    reserved_samplers(sp);
+    return 1;
 }
 /* what a descriptor pool was initialized with */
 u64 nvn_TexturePoolGetMemoryPool(CPU* c, u64 tp) {
@@ -1334,11 +1364,11 @@ void nvn_SamplerBuilderSetDefaults(CPU* c, u64 b) {
     NvnSamplerPar* o = SB(b);
     (void)c;
     memset(GP(b), 0, sizeof(NvnSamplerBuilder));          /* guest memory: every byte the game sees */
-    o->min_filter = NVN_MIN_FILTER_NEAREST_MIPMAP_LINEAR; /* GL's defaults */
+    o->min_filter = NVN_MIN_FILTER_LINEAR;
     o->mag_filter = NVN_MAG_FILTER_LINEAR;
     o->wrap_s = o->wrap_t = o->wrap_r = NVN_WRAP_MODE_REPEAT;
     o->compare_func = NVN_COMPARE_FUNC_LESS;
-    o->lod_min = -1000.f;
+    o->lod_min = 0.f;
     o->lod_max = 1000.f;
     o->anisotropy = 1.f;
 }
@@ -1521,16 +1551,17 @@ void nvn_SamplerFinalize(CPU* c, u64 s) {
 }
 
 /* ============================================================ programs */
+/* a program's life at log level 2, with the game's call: which thread made or ended a program before another bound it */
 int nvn_ProgramInitialize(CPU* c, u64 p, u64 d) {
-    (void)c;
     (void)d;
     memset(GP(p), 0, sizeof(NvnProgram)); /* guest memory: every byte the game sees */
     NVN_OBJ(NvnProgram, p)->magic = NVN_MAGIC('P', 'R', 'O', 'G');
+    LOGV("nvn: program %llx initialized (called from %llx)\n", (unsigned long long)p, (unsigned long long)c->x[30]);
     return 1;
 }
 void nvn_ProgramFinalize(CPU* c, u64 p) {
-    (void)c;
     NVN_OBJ(NvnProgram, p)->magic = 0;
+    LOGV("nvn: program %llx finalized (called from %llx)\n", (unsigned long long)p, (unsigned long long)c->x[30]);
 }
 /* ---- the Ounce's program builder (API 231+) ---- */
 #define PB(b) NVN_OBJ(NvnProgramBuilder, b)
@@ -1694,19 +1725,81 @@ static int stage_of(NvnProgram* o, u64 data, u64 control) {
     }
     return 1;
 }
-/* ---- transform feedback layouts: the programs whose last stage before rasterization captures, by serial (their
-   128-byte layouts don't fit the program object). Programs that capture are few, and their entries stay */
+/* Under xfb_lock, find a serial or its insertion point. Both metadata entry types start with their serial.
+   Shader creation can finish out of serial order. Callers receive copies, so the arrays can grow or move. */
+static u32 program_metadata_index(const void* entries, u32 count, size_t stride, u64 serial) {
+    u32 lo = 0, hi = count;
+    while (lo < hi) {
+        u32 mid = lo + (hi - lo) / 2;
+        u64 found;
+        memcpy(&found, (const u8*)entries + (size_t)mid * stride, sizeof found);
+        if (found < serial)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo;
+}
+/* Layouts stay immutable after SetShaders because recorded commands can retain any earlier program serial. */
 int nvn_program_xfb(u64 serial, ShXfb* x) {
-    u32 i;
-    int found = 0;
     pm_lock(&g_nvn.object.xfb_lock);
-    for (i = g_nvn.object.nxfb; i-- > 0 && !found;)
-        if (g_nvn.object.xfb[i].serial == serial) {
-            *x = g_nvn.object.xfb[i].x;
-            found = 1;
-        }
+    u32 i = program_metadata_index(g_nvn.object.xfb, g_nvn.object.nxfb, sizeof *g_nvn.object.xfb, serial);
+    int found = i < g_nvn.object.nxfb && g_nvn.object.xfb[i].serial == serial;
+    if (found) *x = g_nvn.object.xfb[i].x;
     pm_unlock(&g_nvn.object.xfb_lock);
     return found;
+}
+int nvn_program_tess(u64 serial, NvnTessStage stages[2]) {
+    pm_lock(&g_nvn.object.xfb_lock);
+    u32 i = program_metadata_index(g_nvn.object.tess, g_nvn.object.ntess, sizeof *g_nvn.object.tess, serial);
+    int found = i < g_nvn.object.ntess && g_nvn.object.tess[i].serial == serial;
+    if (found) {
+        stages[0] = g_nvn.object.tess[i].stage[0];
+        stages[1] = g_nvn.object.tess[i].stage[1];
+    }
+    pm_unlock(&g_nvn.object.xfb_lock);
+    return found;
+}
+/* The control-section ABI has fixed evaluation values at0x738..744. Format16 adds control values at0x848 and
+   independent declaration flags at0x858/868. Earlier evaluation binaries declare all four fields implicitly. */
+static void tess_of(const u64 controls[2], u64 serial) {
+    if (!controls[0] && !controls[1]) return;
+    NvnTessEntry entry = {.serial = serial};
+    for (u32 stage = 0; stage < 2; stage++) {
+        u64 control = controls[stage];
+        if (!control) continue;
+        u32 format = gr32(control + 8);
+        if (!stage && format < 16) continue;
+        u32 base = stage ? 0x738 : 0x848, flags = stage ? 0x868 : 0x858;
+        u32 raw[4], declared = format < 16 ? 15 : 0;
+        for (u32 field = 0; field < 4; field++) {
+            raw[field] = gr32(control + base + 4 * field);
+            if (format >= 16 && gr32(control + flags + 4 * field)) declared |= 1u << field;
+        }
+        u32 domain = raw[0] == 4 ? 1 : raw[0] == 7 ? 2 : 0;
+        u32 spacing = raw[1] == 0x8e7b ? 1 : raw[1] == 0x8e7c ? 2 : 0;
+        u32 winding = raw[3] == 0x900 ? 3 : 2;
+        if (raw[0] != 4 && raw[0] != 7 && raw[0] != 0x8e7a) declared &= ~1u;
+        if (raw[1] != 0x202 && raw[1] != 0x8e7b && raw[1] != 0x8e7c) declared &= ~2u;
+        if (raw[3] != 0x900 && raw[3] != 0x901) declared &= ~8u;
+        entry.stage[stage] = (NvnTessStage){domain | spacing << 4 | (u32)(raw[2] != 0) << 8 | winding << 12, declared};
+    }
+    pm_lock(&g_nvn.object.xfb_lock);
+    if (g_nvn.object.ntess == g_nvn.object.tess_capacity) {
+        u32 capacity = g_nvn.object.tess_capacity ? g_nvn.object.tess_capacity * 2 : 32;
+        if (capacity < g_nvn.object.tess_capacity || (size_t)capacity > SIZE_MAX / sizeof *g_nvn.object.tess)
+            fatal("nvn: tessellation program declarations exceed the address space");
+        NvnTessEntry* grown = realloc(g_nvn.object.tess, (size_t)capacity * sizeof *grown);
+        if (!grown) fatal("nvn: no memory for %u tessellation program declarations", capacity);
+        g_nvn.object.tess = grown;
+        g_nvn.object.tess_capacity = capacity;
+    }
+    u32 at = program_metadata_index(g_nvn.object.tess, g_nvn.object.ntess, sizeof *g_nvn.object.tess, serial);
+    memmove(g_nvn.object.tess + at + 1, g_nvn.object.tess + at,
+            (size_t)(g_nvn.object.ntess - at) * sizeof *g_nvn.object.tess);
+    g_nvn.object.tess[at] = entry;
+    g_nvn.object.ntess++;
+    pm_unlock(&g_nvn.object.xfb_lock);
 }
 /* The capture layout a stage's control section gives, as the game's driver reads it into the 3D engine's
    transform feedback registers: 0x6ec set when it captures; per buffer i, its stream at 0x6e4 + i, its stride
@@ -1740,9 +1833,20 @@ static void xfb_of(u64 control, u64 serial) {
         }
     }
     pm_lock(&g_nvn.object.xfb_lock);
-    if (g_nvn.object.nxfb == NVN_XFB_MAX)
-        fatal("nvn: more than %u programs that capture transform feedback, the layouts nvn holds", NVN_XFB_MAX);
-    g_nvn.object.xfb[g_nvn.object.nxfb++] = e;
+    if (g_nvn.object.nxfb == g_nvn.object.xfb_capacity) {
+        u32 capacity = g_nvn.object.xfb_capacity ? g_nvn.object.xfb_capacity * 2 : 32;
+        if (capacity < g_nvn.object.xfb_capacity || (size_t)capacity > SIZE_MAX / sizeof *g_nvn.object.xfb)
+            fatal("nvn: transform feedback program layouts exceed the address space");
+        NvnXfbEntry* grown = realloc(g_nvn.object.xfb, (size_t)capacity * sizeof *grown);
+        if (!grown) fatal("nvn: no memory for %u transform feedback program layouts", capacity);
+        g_nvn.object.xfb = grown;
+        g_nvn.object.xfb_capacity = capacity;
+    }
+    u32 at = program_metadata_index(g_nvn.object.xfb, g_nvn.object.nxfb, sizeof *g_nvn.object.xfb, serial);
+    memmove(g_nvn.object.xfb + at + 1, g_nvn.object.xfb + at,
+            (size_t)(g_nvn.object.nxfb - at) * sizeof *g_nvn.object.xfb);
+    g_nvn.object.xfb[at] = e;
+    g_nvn.object.nxfb++;
     pm_unlock(&g_nvn.object.xfb_lock);
 }
 
@@ -1750,6 +1854,7 @@ static void xfb_of(u64 control, u64 serial) {
 static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     NvnProgram* o = NVN_OBJ(NvnProgram, p);
     u64 last = 0; /* the control section of the last stage before rasterization */
+    u64 tess_controls[2] = {0};
     i32 i, last_rank = -1;
     if (n < 0 || n > 6) {
         LOG_LIMIT(8, "nvn: nvnProgramSetShaders with %d stages\n", n);
@@ -1772,6 +1877,8 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
             memcpy(NVN_PROG_C0(p), GP(control + 0xa8), NVN_C0_RECORD);
         /* geometry, else tessellation evaluation, else control, else vertex: the driver's order */
         stage = ounce_section(control) ? stage11(data) : gr32(control + 0x714);
+        if (stage == NVN_SHADER_STAGE_TESS_CONTROL) tess_controls[0] = control;
+        if (stage == NVN_SHADER_STAGE_TESS_EVALUATION) tess_controls[1] = control;
         rank = stage == NVN_SHADER_STAGE_GEOMETRY          ? 3
                : stage == NVN_SHADER_STAGE_TESS_EVALUATION ? 2
                : stage == NVN_SHADER_STAGE_TESS_CONTROL    ? 1
@@ -1786,17 +1893,22 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     /* the sample shading SetSampleShading asked for takes effect here, as the game's driver applies it in SetShaders */
     o->sample_shading = (u16)((o->sample_shading & 0xff) | (o->sample_shading & 0xff) << 8);
     if (last) xfb_of(last, o->serial);
+    tess_of(tess_controls, o->serial);
     return 1;
 }
 int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {
-    (void)c;
-    return set_shaders(p, n, sd, sizeof(NVNshaderData));
+    int ok = set_shaders(p, n, sd, sizeof(NVNshaderData));
+    LOGV("nvn: program %llx: %d stages set%s (called from %llx)\n", (unsigned long long)p, n, ok ? "" : ", refused",
+         (unsigned long long)c->x[30]);
+    return ok;
 }
 
 /* NVN 55's SetShaders: 0x18 bytes a stage, NVNshaderData and an 8-byte extension, which nxnative doesn't use either */
 int nvn_ProgramSetShadersExt(CPU* c, u64 p, i32 n, u64 sd) {
-    (void)c;
-    return set_shaders(p, n, sd, 0x18);
+    int ok = set_shaders(p, n, sd, 0x18);
+    LOGV("nvn: program %llx: %d stages set%s (called from %llx)\n", (unsigned long long)p, n, ok ? "" : ", refused",
+         (unsigned long long)c->x[30]);
+    return ok;
 }
 /* The Ounce's program from a builder: its stages from the builder's shader data (NVNshaderData entries, which the
    builder points to), with the builder's sample shading, as SetShaders takes them */

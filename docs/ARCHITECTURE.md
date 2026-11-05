@@ -158,7 +158,8 @@ Shared CPU ABI (`src/common/cpu/aarch64/`): guest functions take `CPU*`; `snx_lo
 through `CPU.disp` (relaxed loads: slots go from NULL to a function while threads run), and a pc without a function
 goes to `RtAPI.miss`. `CPU.rt` supplies `RtAPI` callbacks: SVC (and NX's table of SVCs by number), UNDEF, BRK, hints, CNTVCT, FPCR, SEV/WFE, poll,
 miss, and the 16-byte compare-and-swap of STXP on RISC-V, LoongArch and MIPS64 hosts; no named runtime imports. NX's miss (`src/nx/runtime/rtapi.c`) runs the runtime JIT's code
-(`src/nx/runtime/guest_jit.c` over `src/common/cpu/recompiler/llvm/jit_service.c`). There is no interpreter: a pc
+(`src/nx/runtime/guest_jit.c` over `src/common/cpu/recompiler/llvm/jit_service.c`), and under NCE the game's native code
+(`nce_slot`). There is no interpreter: a pc
 without code yet is queued in the live misses' queue and its thread waits for the compile off its guest core, and a pc
 the JIT can't compile (or a host where it can't start: Windows before 10 1803) ends the game with the reason. Compile
 threads (host threads, not guest threads) take the queued pcs in batches: the functions at them and their callees
@@ -269,8 +270,11 @@ runs on the host's CPU. The recompile makes no code ahead of time. It finds the 
 (`nce_patch.c`): SVC, the TLS registers, the counter registers, and the exclusives, which become their ordered forms.
 Each module moves up to leave a pool for its stubs after it, in the reach of a B (128 MiB); a module whose first
 words that pool would not reach gets one before it too, as Eden splits its patch section, and a word that neither
-reaches (a module past about 256 MiB) makes the recompile make the code ahead of time, saying which (`nce_layout`).
-The pools and the sites go in `<game>.nce`. With that file, the runtime reserves the guest's address space at the guest's own addresses (`g_mem` is
+reaches (a module past about 256 MiB) ends the recompile, naming the word, the module and its size, with NCE to set
+off for the game (`nce_layout`).
+The pools and the sites go in `<game>.nce`. The game sees a pool as code it has no permission on (QueryMemory), as
+Eden reprotects its patch sections, while the host's pages run it: the game's rtld takes each readable and executable
+region of code for a module and reads its MOD0 header from the offset at +4. With that file, the runtime reserves the guest's address space at the guest's own addresses (`g_mem` is
 0, and all of it is executable; on Android the whole layout first moves above 64 GiB), and patches the code after
 the load (`nce.c`). A stub calls the outcall of `nce_host.c`. The outcall
 puts the guest's state in its `CPU`, and calls the runtime on the host's stack through `RtAPI` (svcs, poll). A read
@@ -327,7 +331,11 @@ as written at the next cache check. Write tracking (`plat_ww_scan`) is userfault
 with `PAGEMAP_SCAN` on Linux 6.7 and later, and the reservation's write watch on Windows. Every other POSIX host
 (macOS, FreeBSD, Android, older Linux; `write_tracking=1` on any Linux) protects the pages a scan reported and takes the
 first write to each in the fault handler, which opens the page again. A system call can't fault into the handler, so
-the runtime opens what the kernel will write before the call (`plat_ww_open`, next to `own_acquire`).
+the runtime opens what the kernel will write before the call (`plat_ww_open`, next to `own_acquire`). With
+`write_tracking_hot=1` a page the scans find written twice in a row stays writable and reads as written at each scan,
+for 32 scans, without its fault. A cache takes a page reported so as one more check of its bytes, but a render
+target's write-back keeps memory's bytes on the pages written since its baseline: each baseline protects the
+target's hot pages again first, at every address of them (`vk_ww_cool`, after the writes so far were taken in).
 
 `Renderer.save`: optional pipeline-cache persistence every 300 frontend ticks (~5s) + exit, concurrent with execution.
 Exit skips renderer teardown and guest-thread joins.

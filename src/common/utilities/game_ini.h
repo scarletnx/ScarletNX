@@ -55,4 +55,49 @@ typedef struct {
 size_t snx_addons_parse(const char* text, const char* game, SnxAddon* list, size_t max);
 /* list as addons= writes it, malloc'd */
 char* snx_addons_text(const SnxAddon* list, size_t count);
+
+/* ---- A collection's programs (common.h's snx_program_index), each made beside its game in the game's folder: its
+   code and its stamp, <game>_<its ID>_code.so and .abi, and its data folder, which lies over the game's; it runs on the
+   game's copy of the runtime (--game=), with the game's settings and saves */
+/* the code of the program name in folder, <name>_code.so (.dll on Windows, .snxobj on iOS), owned: what says the
+   program is made */
+char* snx_program_code(const char* folder, const char* name);
+/* the update the game name in folder plays with, its entry in its addons= ("" for none), into update */
+void snx_game_update(const char* folder, const char* name, char update[32]);
+/* the program of index that plays for the game name in folder: its checked update's of that index when it is made, else
+   its own, into out. 1 when that one is made, else 0 */
+int snx_program_played(const char* folder, const char* name, int index, char* out, size_t size);
+/* which programs the game name in folder has made, made[i] for each index (snx_program_played), and their count */
+int snx_game_programs(const char* folder, const char* name, unsigned char made[SNX_PROGRAMS_MAX]);
+/* the program that plays for index (snx_program_played) into out, and its index: index's when it is made, else
+   program 0, the collection's menu, with why saying both into why ("program 5 is not one of this application's
+   programs 0-3: it starts program 0"), "" when the one asked plays */
+int snx_program_pick(const char* folder, const char* name, int index, char* out, size_t size, char* why,
+                     size_t why_size);
+
+/* What a program a collection's program starts (am's ExecuteProgram) takes from the one that ends: the program, by
+   its name in the game's folder (snx_program_played) and index, the index of the one that started it (am's
+   GetPreviousProgramIndex), whether that one stored its open user (acc's StoreOpenContext) and the storages it left in
+   the user channel, the first the bottom one. The one that ends writes it in <game>.next in the game's folder; its
+   launcher starts the program it names, which takes the file away as it starts. serial counts the hand-overs since the
+   program the player started, from 1: a launcher that finds the one it started a program with still there after it
+   (the same serial) knows it never started */
+#define SNX_NEXT_STORAGES    8         /* am's user channel holds as many */
+#define SNX_NEXT_STORAGE_MAX 0x1000000 /* the bytes of a storage at most: 16 MiB */
+typedef struct {
+    char program[256];
+    int index, previous, context;
+    unsigned long serial;
+    size_t count;
+    unsigned char* storage[SNX_NEXT_STORAGES]; /* owned, size[i] bytes each */
+    size_t size[SNX_NEXT_STORAGES];
+} SnxNext;
+/* <folder>/<name>.next, the hand-over of the game name in folder, owned */
+char* snx_next_path(const char* folder, const char* name);
+/* next into path, through a temporary file: 0, or nonzero with a line saying why */
+int snx_next_write(const char* path, const SnxNext* next);
+/* path into next: 1, 0 when there is none, -1 with why (its line, the value) for one that is not what snx_next_write
+   writes; snx_next_free either way */
+int snx_next_read(const char* path, SnxNext* next, char* why, size_t why_size);
+void snx_next_free(SnxNext* next);
 #endif

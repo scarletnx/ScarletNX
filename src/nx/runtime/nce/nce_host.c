@@ -545,10 +545,18 @@ void nce_host_run(CPU* c) {
 
 void nce_host_leave(void) { nce_host_jump(nce_tls()->host); }
 
-int nce_host_context(const void* context, CPU* c) {
+int nce_host_context(const void* context, const void* fault, CPU* c) {
     ucontext_t* uc = (ucontext_t*)(uintptr_t)context;
     const NceTls* n = nce_tls();
-    if (!n || !n->cpu || !in_guest(uc->uc_mcontext.pc)) return 0;
+    u64 pc = uc->uc_mcontext.pc;
+    if (!n || !n->cpu) return 0;
+    /* a fetch where nothing of the guest is (its pc the fault's address), from a call in the guest's code: a branch
+       through an empty pointer, which the recompiled code ends in rt_miss */
+    if (!in_guest(pc) && pc == (u64)(uintptr_t)fault && in_guest(uc->uc_mcontext.regs[30])) {
+        context_load(uc, c);
+        return 2;
+    }
+    if (!in_guest(pc)) return 0;
     context_load(uc, c);
     return 1;
 }

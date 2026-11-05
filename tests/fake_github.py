@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""A fake gh (a small GitHub kept in a JSON file: releases and tags, pull requests, issues and their comments, Build
-runs and their jobs, files of a branch) and a fake Discord (a local HTTP server keeping each webhook's messages), for
-tests/publish_builds_test.py. Offline."""
+"""A fake gh (a small GitHub kept in a JSON file: releases and tags, pull requests and their turn into a draft, issues
+and their comments, the users' permissions, Build runs, their jobs and their cancel, files of a branch) and a fake
+Discord (a local HTTP server keeping each webhook's messages), for tests/publish_builds_test.py,
+tests/cancel_pr_runs_test.py and tests/pr_ready_test.py. Offline."""
 
 import http.server
 import json
@@ -43,6 +44,17 @@ method = args[args.index('-X') + 1] if '-X' in args else 'GET'
 target = [a for a in args[1:] if not a.startswith('-') and a not in ('GET', 'POST', 'PATCH', 'PUT', 'DELETE')][0]
 if target == 'graphql':  # the links of a pull request or an issue, as GitHub's GraphQL gives them
     asked = next(a for a in args if a.startswith('query='))
+    if 'convertPullRequestToDraft' in asked:  # a pull request turned into a draft, by its node id
+        if s.pop('fail_convert_once', None):
+            save()
+            stop('GraphQL: Resource not accessible by integration (convertPullRequestToDraft)')
+        node = next(a for a in args if a.startswith('id='))[len('id='):]
+        pull = (next((p for p in s['pulls'] if p.get('node_id') == node), None)
+                or stop(f"GraphQL: Could not resolve to a node with the global id of '{node}'"))
+        pull['draft'] = True
+        save()
+        out({'data': {'convertPullRequestToDraft': {'pullRequest': {'isDraft': True}}}})
+        sys.exit(0)
     number = re.search(r'number:(\d+)', asked).group(1)
     field, refs = (('pullRequest', 'closingIssuesReferences') if 'pullRequest(' in asked
                    else ('issue', 'closedByPullRequestsReferences'))
@@ -102,7 +114,14 @@ elif re.fullmatch(r'pulls/\d+/commits', rest):
 elif re.fullmatch(r'compare/[0-9a-f]+\.\.\.[0-9a-f]+', rest):
     out({'merge_base_commit': {'sha': s['merge_base']}})
 elif re.fullmatch(r'pulls/\d+', rest):
-    out(next(p for p in s['pulls'] if p['number'] == int(rest.split('/')[1])))
+    if rest.split('/')[1] in s.get('pull_errors', {}):  # what gh says when GitHub can't answer for it
+        stop(s['pull_errors'][rest.split('/')[1]])
+    pull = next(p for p in s['pulls'] if p['number'] == int(rest.split('/')[1]))
+    out(pull)
+    if s.get('reopen_after_read'):  # reopened right after this read, which starts that run
+        pull['state'] = 'open'
+        s['runs'].append(s.pop('reopen_after_read'))
+        save()
 elif re.fullmatch(r'issues/\d+/events', rest):
     listing(s['events'].get(rest.split('/')[1], []))
 elif re.fullmatch(r'issues/\d+/labels/.+', rest) and method == 'DELETE':
@@ -111,7 +130,10 @@ elif re.fullmatch(r'issues/\d+/labels/.+', rest) and method == 'DELETE':
     pull['labels'] = [l for l in pull['labels'] if l['name'] != label]
     save()
 elif re.fullmatch(r'collaborators/[^/]+/permission', rest):
-    out({'permission': s['permissions'].get(rest.split('/')[1], 'read')})
+    login = rest.split('/')[1]
+    if login in s.get('permission_errors', {}):  # what gh says when GitHub can't answer for that login
+        stop(s['permission_errors'][login])
+    out({'permission': s['permissions'].get(login, 'read')})
 elif rest == 'actions/workflows/build.yml/runs':
     out({'workflow_runs': [r for r in s['runs'] if r['head_sha'] == query.get('head_sha')]})
 elif rest == '' and method == 'GET':
@@ -159,6 +181,13 @@ elif rest.startswith('contents/'):
         out({'content': files[key]})
 elif re.fullmatch(r'issues/\d+', rest):
     out(s['issues'][rest.split('/')[1]])
+elif re.fullmatch(r'issues/\d+/comments', rest) and method == 'POST':  # made with the job's token
+    s['next'] += 1
+    comment = {'id': s['next'], 'user': {'login': 'github-actions[bot]'}, 'body': data['body'],
+               'html_url': f'https://github.com/{repo}/pull/{rest.split("/")[1]}#issuecomment-{s["next"]}'}
+    s.setdefault('comments', {}).setdefault(rest.split('/')[1], []).append(comment)
+    save()
+    out(comment)
 elif re.fullmatch(r'issues/\d+/comments', rest):
     listing(s.get('comments', {}).get(rest.split('/')[1], []))
 elif re.fullmatch(r'pulls/\d+/reviews', rest):
@@ -175,6 +204,18 @@ elif re.fullmatch(r'actions/runs/\d+', rest):
 elif re.fullmatch(r'actions/runs/\d+/jobs', rest):
     run = next(r for r in s['runs'] if r['id'] == int(rest.split('/')[2]))
     out({'jobs': run.get('jobs', [])})
+elif rest == 'actions/runs' and method == 'GET':  # a branch's runs of one event, newest first
+    from urllib.parse import unquote
+    picked = [r for r in s['runs'] if r.get('head_branch') == unquote(query.get('branch', ''))
+              and r.get('event') == query.get('event')]
+    out({'total_count': len(picked), 'workflow_runs': picked[(page - 1) * per:page * per]})
+elif re.fullmatch(r'actions/runs/\d+/cancel', rest) and method == 'POST':
+    run = next(r for r in s['runs'] if r['id'] == int(rest.split('/')[2]))
+    if run['status'] == 'completed':
+        stop('gh: Cannot cancel a workflow run that is completed. (HTTP 409)')
+    run.update(status='completed', conclusion='cancelled')
+    save()
+    out({})
 else:
     stop(f'fake gh: {method} {target}')
 """

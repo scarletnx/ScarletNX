@@ -172,11 +172,10 @@ int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 api, u3
         out[7] |= nvn_tex_msaa(t->d.samples) << 8;
         /* the layers: an array's count is its depth (a 1D array's its height, a cube array's in faces) */
         if (orig == NVN_TEXTURE_TARGET_1D_ARRAY) d = h;
-        if (orig == NVN_TEXTURE_TARGET_1D_ARRAY || orig == NVN_TEXTURE_TARGET_2D_ARRAY ||
-            orig == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY || orig == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY) {
-            if (v && (v->set & NVN_VIEW_LAYERS)) layer = v->min_layer;
-            address += (u64)layer * l.layer_size;
-        }
+        /* Layer selection also applies when a cube face is viewed as a non-array 2D texture. The underlying
+           allocation's layer pitch chooses its face regardless of the view target. */
+        if (v && (v->set & NVN_VIEW_LAYERS)) layer = v->min_layer;
+        address += (u64)layer * l.layer_size;
         if (target == NVN_TEXTURE_TARGET_1D || target == NVN_TEXTURE_TARGET_1D_ARRAY) h = 1;
         if (target == NVN_TEXTURE_TARGET_1D_ARRAY || target == NVN_TEXTURE_TARGET_2D_ARRAY ||
             target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY || target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY) {

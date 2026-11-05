@@ -51,7 +51,8 @@ uint16_t agb_timer_read(AgbBoard* board, uint32_t offset) {
 void agb_timer_step(AgbBoard* board, uint32_t cycles) {
     for (int index = 0; index < 4; ++index) {
         AgbTimer* timer = &board->timer[index];
-        if (!(timer->control & AGB_TIMER_ENABLE) || (timer->control & AGB_TIMER_CASCADE)) continue;
+        /* timer 0 has no timer before it: its count-up bit does nothing */
+        if (!(timer->control & AGB_TIMER_ENABLE) || (index && (timer->control & AGB_TIMER_CASCADE))) continue;
         uint32_t step = prescalers[timer->control & 3];
         timer->cycles += cycles;
         while (timer->cycles >= step) {

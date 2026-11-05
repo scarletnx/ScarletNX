@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# snx_build_info: the line the window titles carry, "ScarletNX <branch> <commit> (<compiler>, <OS> <arch>)". The branch
-# and commit are read at every build (cmake/commit.cmake), the rest is the compiler's own macros
+# snx_build_info: the line the window titles carry, "ScarletNX <branch> <commit> (<compiler>, <OS> <arch>)", and
+# snx_build_log_line the logs', with ", committed <YYYY-MM-DD>" after the commit. The branch, the commit and its day are
+# read at every build (cmake/commit.cmake), the rest is the compiler's own macros
 include_guard(GLOBAL)
 set(snx_commit_header "${PROJECT_BINARY_DIR}/generated/snx_commit.h")
 add_custom_target(snx_commit
@@ -21,4 +22,6 @@ if(BUILD_TESTING)
     add_test(NAME build_info COMMAND snx-test-build-info)
     add_test(NAME build_info_commit COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
              "-DOUT=${snx_commit_header}" -DCHECK=1 -P "${PROJECT_SOURCE_DIR}/cmake/commit.cmake")
+    add_test(NAME build_info_no_git COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+             "-DOUT=${PROJECT_BINARY_DIR}/build_info_no_git.h" -P "${PROJECT_SOURCE_DIR}/tests/build_info_no_git.cmake")
 endif()

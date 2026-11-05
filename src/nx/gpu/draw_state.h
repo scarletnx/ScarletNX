@@ -103,6 +103,8 @@ typedef struct {
     float blend_const[4];
     float alpha_ref;
     u32 clip_height; /* the surface clip's height, which a lower-left origin measures from */
+    /* the rest of the surface clip: the viewport while the viewport transform is off (DsViewports.transform_on) */
+    u32 clip_x, clip_y, clip_width;
     u32 depth_word;  /* the vertex stage's viewport and depth word, pushed as it is */
 } DsDynamic;
 
@@ -118,7 +120,7 @@ static inline void ds_depth_bias(const DsDynamic* d, float scale, float out[3]) 
 
 /* The viewports, struct of arrays (a program that writes the viewport index selects among them) */
 typedef struct {
-    u32 transform_on; /* the guest's viewport transform enable (the renderer picks by the scale, and logs a mismatch) */
+    u32 transform_on; /* the guest's viewport transform enable: off, positions are pixels of the surface clip */
     u32 scissor_on;   /* bit j: viewport j's scissor */
     float scale[DS_VIEWPORTS_MAX][3], translate[DS_VIEWPORTS_MAX][3];
     u32 swizzle[DS_VIEWPORTS_MAX]; /* a 3-bit code per component at bits 0, 4, 8, 12 (x, y, z, w): y's 3 negates y */
@@ -244,6 +246,7 @@ typedef struct {
 } DsIndex;
 
 /* A draw's own arguments */
+enum { DS_DRAW_DEPTH_BOUNDS = 1u << 0, DS_DRAW_POINT_SIZE = 1u << 1, DS_DRAW_TESS_LEVELS = 1u << 2 };
 typedef struct {
     u32 topology;     /* the 3D engine's primitive numbers (14 a patch list) */
     u32 indexed;      /* 0 not, 1 from the index buffer, 3 the channel's inline indices */
@@ -256,10 +259,17 @@ typedef struct {
        and indices are read from anywhere in the streams and up to the index buffer's end (DsIndex.end). 0: a direct
        draw, which ignores the rest */
     u64 indirect, indirect_count;
+    u64 xfb_control; /* NVN transform-feedback control buffer; the GPU derives the indirect vertex count */
     u32 draw_count, stride;
     /* an indirect draw's record values that the vertex program reads where NVN's driver writes them in constant buffer
        0 (shader.h SH_CB0_): bit 0 the base vertex, bit 1 the base instance (SH_PUSH_GPU_). 0 for none */
     u32 params;
+    /* Fixed-function NVN state that accompanies a draw, outside the serialized DsState ABI. Zero flags keep the
+       existing Maxwell/default behavior. Tessellation levels are outer[4], then inner[2]. */
+    u32 state_flags;
+    float point_size, depth_bounds[2], tess_levels[6];
+    u32 raster_samples, coverage_mode, coverage_table_enable;
+    u8 coverage_table[16]; /* normalized modulation coefficients in units of1/16, inclusive0..16 */
 } DrawCall;
 
 /* DsState's groups, in its order */
@@ -403,6 +413,7 @@ typedef struct {
     u32 color[4];  /* the clear color's words: floats, or an integer target's integers */
     float depth;   /* as given (the renderer clamps it) */
     u32 stencil;   /* its low 8 bits */
+    u32 stencil_preserve; /* stencil bits retained by the clear; zero clears every bit */
     u32 scissored; /* limited to viewport 0's scissor */
 } DrawClear;
 

@@ -26,11 +26,16 @@ struct NvnDraw {
     u8 provoking_last, conservative, dilate; /* SetProvokingVertexMode's last vertex, conservative rasterization */
     u8 sample_shading;                       /* the bound fragment program's SetSampleShading mode */
     u8 flip;                                 /* the window origin's flip, taken as the queue was initialized */
-    float line_width;
+    float line_width, alpha_ref;
+    u32 fixed_flags;
+    float point_size, depth_bounds[2], tess_levels[6];
+    u32 coverage_table_enable;
+    u8 coverage_table[16];
     u8 samples; /* the samples-passed counter was reset: the renderer counts it */
     u32 restart_index;
-    float vp[16][4], depth[2]; /* x, y, w, h; depth range 0 */
-    i32 scissor[4];
+    u32 patch_size;                /* control points per tessellation patch, 0 until explicitly set */
+    float vp[16][4], depth[16][2]; /* x, y, w, h and near/far for each viewport */
+    i32 scissor[16][4];
     u8 swizzle[16][4]; /* XOR the identity, as recorded */
     u32 attr[16], nattr;
     NvnVertexStream stream[16];
@@ -39,11 +44,15 @@ struct NvnDraw {
     u8 c0rec[NVN_C0_RECORD]; /* the bound Ounce compute program's c[0] record (NVN_PROG_C0) */
     u64 code[DS_PROGRAM_SLOTS];
     u32 prog_on;
+    NvnTessStage tess_stage[2];
+    u32 tess_params;
     ShXfb xfb;            /* the bound program's capture layout (zero: none) */
     NVNbufferRange tf[4]; /* the transform feedback buffers */
     u8 tf_on;             /* between Begin (or Resume) and End (or Pause) */
     u32 dirty;
-    u32 inl_lo, inl_hi; /* the bytes of inl written since the renderer's copy was last made the same (D_INLINE) */
+    /* The dirty span of each stage's bank 0 and bank 2. Separate spans leave the unchanged banks between writes
+       out of the compare and copy at a draw. */
+    u16 inl_lo[2][DS_GFX_STAGES], inl_hi[2][DS_GFX_STAGES];
     DsState scratch;  /* a texture's clear, as a target of its own (OP_CLEAR_TEX) */
     DispatchState dx; /* the compute stage's program and bindings, a dispatch's state */
 };

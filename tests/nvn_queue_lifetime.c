@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static u8 memory[4096];
 u8* g_mem = memory;
@@ -28,6 +29,7 @@ static struct {
     u32 used[32], current[32], promised[32], pending[32], npending;
     struct { void (*fn)(void*); void* arg; } jobs[64];
     u32 head, count, allocated, freed, draws, in_gpu, zero_strides;
+    u64 unfinished;
 } fixture;
 
 void pm_init(PMutex* m) { (void)m; }
@@ -113,10 +115,7 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
     return 1;
 }
 int nvn_draw_samples(NvnDraw* d, u64 at, u64 ticks) { (void)d; (void)at; (void)ticks; return 0; }
-int nvn_cmd_unfinished(u64 p) {
-    (void)p;
-    return 0;
-}
+int nvn_cmd_unfinished(u64 p) { return p == fixture.unfinished; }
 void nvn_cmd_describe(u64 p, char* out, size_t n) {
     (void)p;
     if (n) out[0] = 0;
@@ -162,7 +161,98 @@ static void freed_sync(void) {
     assert((i32)(fixture.current[id] - first) >= 0); /* the live sync signals once the submission is replayed */
     nvn_replay_queue_free(queue);
 }
-int main(void) {
+/* The promise pass must see current sync records inside calls and jumps, while replay still sees ordinary draws.
+   The guest can change a nested record between submissions; no prior scan may hide the new sync or opcode. */
+static void nested_promises(void) {
+    const NvnRecHdr call = {OP_CALL, 16}, jump = {OP_JUMP, 16}, draw = {OP_DRAW, 8}, fence = {OP_FENCE_SYNC, 16},
+                    wait = {OP_WAIT_SYNC, 16}, last_fence = {OP_FENCE_SYNC | NVN_REC_LAST, 16}, end = {OP_END, 8};
+    memcpy(GP(0x500), &call, sizeof call);
+    snx_st_le64(GP(0x508), 0x600);
+    memcpy(GP(0x510), &draw, sizeof draw);
+    memcpy(GP(0x518), &jump, sizeof jump);
+    snx_st_le64(GP(0x520), 0x700);
+    memcpy(GP(0x600), &fence, sizeof fence);
+    snx_st_le64(GP(0x608), 0x800);
+    memcpy(GP(0x610), &wait, sizeof wait);
+    snx_st_le64(GP(0x618), 0x880);
+    memcpy(GP(0x620), &end, sizeof end);
+    memcpy(GP(0x700), &last_fence, sizeof last_fence);
+    snx_st_le64(GP(0x708), 0x840);
+    NvnSync external = {.fenced = 1, .ready = 200, .shown = 9};
+    memcpy(GP(0x880), &external, sizeof external);
+    snx_st_le64(GP(0x110), 0x500);
+    u32 queue = nvn_replay_queue(), id = nvn_replay_syncpt(queue);
+    u64 ready = 13;
+    u32 shown = 3, draws_before = fixture.draws;
+    nvn_replay_submit(queue, 1, 0x110, &ready, &shown);
+    const NvnSync* before = NVN_OBJ(const NvnSync, 0x800);
+    const NvnSync* after = NVN_OBJ(const NvnSync, 0x840);
+    assert(before->syncpt == id && before->fenced && before->ready == 13 && before->shown == 3);
+    assert(after->syncpt == id && after->fenced && after->ready == 200 && after->shown == 9);
+    assert(after->value == before->value + 1 && ready == 200 && shown == 9);
+    nvn_replay_finish(queue);
+    assert(fixture.draws == draws_before + 1);
+
+    external.ready = 400;
+    external.shown = 15;
+    memcpy(GP(0x8c0), &external, sizeof external);
+    snx_st_le64(GP(0x618), 0x8c0);
+    ready = 0;
+    shown = 0;
+    nvn_replay_submit(queue, 1, 0x110, &ready, &shown);
+    assert(after->ready == 400 && after->shown == 15 && ready == 400 && shown == 15);
+    nvn_replay_finish(queue);
+
+    NvnRecHdr changed = {OP_DRAW, 16};
+    memcpy(GP(0x610), &changed, sizeof changed);
+    ready = 0;
+    shown = 0;
+    nvn_replay_submit(queue, 1, 0x110, &ready, &shown);
+    assert(after->ready == 0 && after->shown == 0 && !ready && !shown);
+    nvn_replay_finish(queue);
+    assert(fixture.draws == draws_before + 4); /* one draw, one draw, then the changed record and outer draw */
+
+    u32 value = after->value;
+    fixture.unfinished = 0x700;
+    nvn_replay_submit(queue, 1, 0x110, &ready, &shown);
+    nvn_replay_finish(queue);
+    assert(after->value == value); /* the unfinished jump target has no fence yet */
+    fixture.unfinished = 0;
+    nvn_replay_queue_free(queue);
+}
+static void drain(void) {
+    while (fixture.count) {
+        u32 i = fixture.head++ % 64;
+        fixture.count--;
+        fixture.in_gpu = 1;
+        fixture.jobs[i].fn(fixture.jobs[i].arg);
+        fixture.in_gpu = 0;
+    }
+}
+static void bench_replay(void) {
+    static const u32 record_counts[] = {1, 32, 256};
+    const u32 operations = 50000;
+    for (u32 workload = 0; workload < 3; workload++) {
+        u32 records = record_counts[workload], queue = nvn_replay_queue(), before = fixture.draws;
+        for (u32 i = 0; i < records; i++) {
+            NvnRecHdr draw = {OP_DRAW | (i + 1 == records ? NVN_REC_LAST : 0), 8};
+            memcpy(GP(0x200 + i * 8), &draw, sizeof draw);
+        }
+        snx_st_le64(GP(0x100), 0x200);
+        clock_t start = clock();
+        for (u32 i = 0; i < operations; i++) {
+            submit(queue);
+            drain();
+        }
+        clock_t ticks = clock() - start;
+        int exact = fixture.draws - before == operations * records && !fixture.count && !fixture.npending;
+        assert(exact);
+        printf("GPU_HOTPATH_BENCH workload=replay-%u operations=%u ns=%llu exact=%d records=%u\n", records, operations,
+               (unsigned long long)((u64)ticks * 1000000000ull / CLOCKS_PER_SEC), exact, records);
+        nvn_replay_queue_free(queue);
+    }
+}
+int main(int argc, char** argv) {
     NvnRecHdr draw = {OP_DRAW, 8}, stride = {OP_COPY_STRIDE, 24}, end = {OP_END, 8};
     memcpy(GP(0x200), &draw, sizeof draw);
     memcpy(GP(0x208), &stride, sizeof stride);
@@ -204,6 +294,8 @@ int main(void) {
     for (u32 i = 1; i < 32; i++) live_syncpoints += fixture.used[i];
     assert(live_syncpoints == 1); /* one display syncpoint shared by the lifetime of the process */
     freed_sync();
+    nested_promises();
+    if (argc == 2 && !strcmp(argv[1], "--bench-replay")) bench_replay();
     puts("nvn_queue_lifetime: ok");
     return 0;
 }

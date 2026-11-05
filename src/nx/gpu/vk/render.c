@@ -21,9 +21,11 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/descriptor_key.h"
+#include "nx/gpu/vk/indexed_handles.h"
 #include "nx/gpu/texture/texconv_modes.glsl"
 #include "nx/gpu/vk/draw_texture.h"
 #include "nx/gpu/vk/pending_pages.h"
+#include "nx/gpu/vk/tess_passthrough.h"
 #include "nx/gpu/vk/quad_indices.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/internal_spv.h"
@@ -356,12 +358,27 @@ static struct {
 static int xfb_counters(void) {
     if (g_xfb.buf) return 1;
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                              .size = 16,
-                              .usage = VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT,
+                              .size = GPU_CHANNELS * 2 * 16,
+                              .usage = VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT |
+                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &g_xfb.buf, &g_xfb.mem, NULL))) return 0;
     vk_mem_track(g_xfb.mem);
+    return 1;
+}
+static u64 xfb_counter_offset(u32 owner) { return ((u64)(owner & 0x7fffffff) + (owner >> 31 ? GPU_CHANNELS : 0)) * 16; }
+int vk_render_xfb_control(u32 owner_id, u64 control, u32 what, u32 stride, DrawOwner* owner) {
+    if ((owner_id & 0x7fffffff) >= GPU_CHANNELS || !g_vk.has_xfb || !xfb_counters()) return 0;
+    vk_render_end(); /* counter transfers occur outside rendering */
+    if (!vk_xfb_control_buffer(g_xfb.buf, xfb_counter_offset(owner_id), control, what, stride)) return 0;
+    if (!what) {
+        owner->xfb_started = 0;
+        owner->xfb_reload = 15;
+    } else if (what == 3 && control) {
+        owner->xfb_started = 15;
+        owner->xfb_reload = 0;
+    }
     return 1;
 }
 
@@ -468,26 +485,29 @@ static void pred_end(VkCommandBuffer cb, u32 pred) {
     if (pred) rec_CmdEndConditionalRenderingEXT(cb);
 }
 
+static struct {
+    VkShaderModule vs, fs[8][3];
+} g_clear;
+
 /* a clear of some color components only: a full-screen triangle with that write mask, whose fragment shader writes
    the cleared slot alone, in the target's number type, run on pred */
 static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect, u32 layer, u32 pred) {
-    static VkShaderModule vs, fs[8][3];
     rp_record();
     const VkFmt* f = &g_rp.rt[slot]->f;
     int num = f->is_int ? (f->sint ? 2 : 1) : 0;
-    if (!vs) vs = vk_module_spv(snx_clear_vs_spv, sizeof snx_clear_vs_spv / sizeof *snx_clear_vs_spv);
-    if (!fs[slot][num]) {
+    if (!g_clear.vs) g_clear.vs = vk_module_spv(snx_clear_vs_spv, sizeof snx_clear_vs_spv / sizeof *snx_clear_vs_spv);
+    if (!g_clear.fs[slot][num]) {
         static const u32* words[3] = {snx_clear_fs_float_spv, snx_clear_fs_uint_spv, snx_clear_fs_sint_spv};
         static const size_t count[3] = {sizeof snx_clear_fs_float_spv / sizeof *snx_clear_fs_float_spv,
                                         sizeof snx_clear_fs_uint_spv / sizeof *snx_clear_fs_uint_spv,
                                         sizeof snx_clear_fs_sint_spv / sizeof *snx_clear_fs_sint_spv};
-        fs[slot][num] = vk_module_spv_location(words[num], count[num], slot);
+        g_clear.fs[slot][num] = vk_module_spv_location(words[num], count[num], slot);
     }
-    if (!vs || !fs[slot][num]) return 0;
+    if (!g_clear.vs || !g_clear.fs[slot][num]) return 0;
     PipeKey k;
     memset(&k, 0, sizeof k);
-    k.vs = vs;
-    k.fs = fs[slot][num];
+    k.vs = g_clear.vs;
+    k.fs = g_clear.fs[slot][num];
     k.topo_class = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     k.polygon = VK_POLYGON_MODE_FILL;
     k.ncolor = g_rp.n;
@@ -511,6 +531,44 @@ static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect, u32 
     memcpy(&pc[4], cc, 16); /* the register bits, read as the shader's vec4, uvec4 or ivec4 */
     rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, 32, pc);
     vk_query_pass_end(cb); /* a clear passes no samples on the console: its draw here isn't counted */
+    pred_begin(cb, pred);
+    rec_CmdDraw(cb, 3, 1, 0, 0);
+    pred_end(cb, pred);
+    return 1;
+}
+
+/* Preserve unselected stencil bits with fixed-function REPLACE and a write mask. The triangle has no fragment
+   output, color writes or depth writes. It covers only the requested rectangle and layer, under the GPU predicate. */
+static int clear_stencil_masked(u32 mask, u32 value, VkRect2D rect, u32 layer, u32 pred) {
+    rp_record();
+    if (!g_clear.vs) g_clear.vs = vk_module_spv(snx_clear_vs_spv, sizeof snx_clear_vs_spv / sizeof *snx_clear_vs_spv);
+    if (!g_clear.vs) return 0;
+    PipeKey k;
+    memset(&k, 0, sizeof k); /* pipeline keys compare every byte */
+    k.vs = g_clear.vs;
+    k.topo_class = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    k.polygon = VK_POLYGON_MODE_FILL;
+    k.ncolor = g_rp.n;
+    for (u32 i = 0; i < g_rp.n; i++)
+        k.color[i] =
+            g_rp.rt[i] ? (g_rp.srgb_write ? g_rp.rt[i]->f.vk : vk_srgb_as(g_rp.rt[i]->f.vk, 0)) : VK_FORMAT_UNDEFINED;
+    k.samples = vk_surf_samples(g_rp.zt);
+    k.depth = k.stencil = g_rp.zt->f.vk;
+    VkPipeline pipeline = vk_pipeline_get(&k);
+    if (!pipeline) return 0;
+    VkCommandBuffer cb = vk_cmd();
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    plain_state(cb, rect);
+    rec_CmdSetStencilTestEnable(cb, VK_TRUE);
+    rec_CmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_REPLACE,
+                        VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS);
+    rec_CmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, value & 0xff);
+    rec_CmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xff);
+    rec_CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, mask & 0xff);
+    u32 pc[8] = {0};
+    pc[0] = layer;
+    rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof pc, pc);
+    vk_query_pass_end(cb);
     pred_begin(cb, pred);
     rec_CmdDraw(cb, 3, 1, 0, 0);
     pred_end(cb, pred);
@@ -592,6 +650,9 @@ void vk_render_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) 
     VkImageAspectFlags za = 0; /* the depth target's aspects it clears */
     if ((v & 3) && zt)
         za = ((v & 1) ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | ((v & 2) && zt->f.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+    u32 stencil_mask = ~c->stencil_preserve & 0xff;
+    int masked_stencil = (za & VK_IMAGE_ASPECT_STENCIL_BIT) && stencil_mask && stencil_mask != 0xff;
+    if (!stencil_mask || masked_stencil) za &= ~VK_IMAGE_ASPECT_STENCIL_BIT;
     /* Whole attachments before anything else of the pass: the load ops it begins with clear them (rp_record), in place
        of a load and vkCmdClearAttachments. Not a clear of one layer of several (a load op clears every layer the pass
        renders), of less than the render area (its scissor: one game scissors every clear, to the whole target in most)
@@ -654,9 +715,11 @@ void vk_render_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) 
         else
             vk_rt_drawn(s);
     }
+    if (masked_stencil && clear_stencil_masked(stencil_mask, c->stencil, rect.rect, layer, o->pred))
+        za |= VK_IMAGE_ASPECT_STENCIL_BIT;
     if (za && zt_written(zt, o->pred, zt_undefined)) {
         vk_surf_wrote(zt);
-        int all_aspects = (v & 1) && (!zt->f.stencil || (v & 2));
+        int all_aspects = (v & 1) && (!zt->f.stencil || ((v & 2) && stencil_mask == 0xff));
         if (!o->pred && all_aspects && zt->layers == 1 && rect.rect.offset.x == 0 && rect.rect.offset.y == 0 &&
             rect.rect.extent.width == zt->sw && rect.rect.extent.height == zt->sh)
             vk_rt_drawn_full(zt);
@@ -1163,6 +1226,32 @@ static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) 
     return vk_shader_get(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, fk->rect,
                          NULL, fk->queried ? fk->query : NULL);
 }
+/* whether slots a and b read their handles from the same words (tex_handle) */
+static int tex_same_handle(const ShTex* a, const ShTex* b) {
+    return a->cbuf_off == b->cbuf_off && a->bindless == b->bindless && a->bl_cbuf == b->bl_cbuf && a->bl2 == b->bl2 &&
+           a->bl2_cbuf == b->bl2_cbuf && a->bl2_off == b->bl2_off &&
+           (a->flags & SNX_TEX_INDEXED) == (b->flags & SNX_TEX_INDEXED);
+}
+/* the resolutions of s's texture slots, from res0, which fs_key filled for s0's: res0 itself when s numbers its slots
+   as s0 does, else out, each slot taking the resolution of the slot of s0 that reads its handle, or its own. A variant
+   may number them otherwise: a texture only a TXQ names takes the dimension of its header there, and its slot is then
+   the one that samples the texture as that dimension, which moves the slots after it down by one */
+static TexRes* fs_slot_res(const DsState* ds, const VkSh* s0, TexRes* res0, const VkSh* s, TexRes* out) {
+    int n0 = s0->si.ntex > SH_MAXTEX ? SH_MAXTEX : s0->si.ntex, n = s->si.ntex > SH_MAXTEX ? SH_MAXTEX : s->si.ntex;
+    int same = n == n0;
+    for (int i = 0; same && i < n; i++) same = tex_same_handle(&s->si.tex[i], &s0->si.tex[i]);
+    if (same) return res0;
+    for (int i = 0; i < n; i++) {
+        const ShTex* st = &s->si.tex[i];
+        int j = 0;
+        while (j < n0 && !tex_same_handle(st, &s0->si.tex[j])) j++;
+        if (j < n0)
+            out[i] = res0[j];
+        else
+            tex_resolve(ds, tex_handle(ds, 4, ds->bind.tex_bank, st), &out[i]);
+    }
+    return out;
+}
 
 VkImageViewType vk_tex_view_type(const ShTex* st) {
     return st->type == 2   ? VK_IMAGE_VIEW_TYPE_3D
@@ -1579,6 +1668,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
     }
     u32 handles[SNX_TEX_ARRAY] = {0};
     u8 element_kind[SNX_TEX_ARRAY] = {0}; /* the table that names the element's kind, 255 for a null element */
+    u16 handle_slots[2 * SNX_TEX_ARRAY] = {0};
     u32 funcs[SNX_TEX_ARRAY] = {0};
     /* each element's entry: the null texture is given an entry only when an element needs it, so a table of
        SNX_TEX_ARRAY real handles fits (edenprobe's bindless suite samples 256) */
@@ -1617,8 +1707,10 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                 continue;
             }
             u32 handle = in.bytes ? ds_inline_word(in, at) : gmem_r32(cba + at);
-            u32 id = 0;
-            while (id < used && (handles[id] != handle || element_kind[id] != kind_of[table])) id++;
+            /* Small tables keep their cheap linear hits. Beyond eight entries a slot index avoids the scan of all
+               earlier handles; measured against 1-, 16- and 256-key synthetic tables. */
+            u32 id = vk_indexed_handle_find(handle_slots, SNX_TEX_ARRAY, handles, element_kind, used, handle,
+                                            (u8)kind_of[table], 8);
             if (id == used) {
                 if (used == SNX_TEX_ARRAY) {
                     LOG_LIMIT(4, "vulkan: indexed texture tables exceed %u unique handles\n", SNX_TEX_ARRAY);
@@ -1706,12 +1798,13 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
     return 1;
 }
 
-static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* vs, VkSh* fs) {
-    VkSh* sh[2] = {vs, fs};
+/* the global memory each stage of the draw reads or writes, sh[] by stage (vertex, the tessellation stages, geometry,
+   fragment) */
+static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* const sh[VK_DRAW_STAGES]) {
     memset(draw, 0, sizeof *draw);
-    for (int s = 0; s < 2; s++) {
+    for (int s = 0; s < VK_DRAW_STAGES; s++) {
         if (!sh[s]) continue;
-        int stage = s ? 4 : 0;
+        int stage = s;
         u64 cb0 = ds_cb_inline(ds, stage, 0).bytes ? 0 : ds->bind.cb_addr[stage][0];
         draw->n[s] = sh[s]->si.ngbuf < 16 ? sh[s]->si.ngbuf : 16;
         if (cb0 && draw->n[s]) vk_buf_mem_need(cb0, 0x610);
@@ -1807,7 +1900,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     }
     int ordered = !(ds->owner & 0x80000000u) || !g_settings.nvn_storage_ordering;
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
-        const VkDrawGbuf* gb = &draw->b[stage ? 1 : 0][i];
+        const VkDrawGbuf* gb = &draw->b[stage][i];
         u64 addr = gb->addr;
         u32 size = gb->size;
         u64 sa = g_vk.props.limits.minStorageBufferOffsetAlignment; /* an earlier draw's result is read in place */
@@ -1822,8 +1915,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o, gb->aliased ? gb->range : size);
     }
     if (s->si.ngbuf)
-        dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, draw->map_buf[stage ? 1 : 0],
-                  draw->map_off[stage ? 1 : 0], draw->map_size[stage ? 1 : 0]);
+        dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, draw->map_buf[stage], draw->map_off[stage],
+                  draw->map_size[stage]);
     VkBuffer cb;
     u64 co;
     if (stage == 4 && frame_consts(&cb, &co))
@@ -2053,7 +2146,7 @@ static struct {
     VkViewport vp[GUEST_VIEWPORTS];
     VkRect2D sc[GUEST_VIEWPORTS];
     u32 viewports;
-    float lw, bias[3], bc[4];
+    float lw, bias[3], bc[4], depth_bounds[2];
     u32 sfront[7], sback[7];
     /* the vertex layout set as dynamic state, with its bindings' strides (vertex_input_set): vi_set once one is */
     int vi_set;
@@ -2077,21 +2170,36 @@ static struct {
 void vk_render_forget_state(void) { g_dyn.cb = 0; }
 u64 g_vk_drawn, g_vk_skipped;
 
+/* The viewport's size with the transform off: the surface clip's, at most the device's viewport dimensions at the
+   resolution scale (a game's driver leaves the clip at 16384 x 16384, past every target). The last stage divides
+   the position by the same size (the push constant's w), so every pixel stays where it is */
+static void window_size(const DsDynamic* d, u32* width, u32* height) {
+    const u32* most = g_vk.props.limits.maxViewportDimensions;
+    u32 w = (u32)((float)most[0] / g_vk_scale), h = (u32)((float)most[1] / g_vk_scale);
+    *width = d->clip_width < w ? d->clip_width : w;
+    *height = d->clip_height < h ? d->clip_height : h;
+}
 /* NVB197_SET_VIEWPORT_COORDINATE_SWIZZLE (0x0A18) can negate Y before the scale and offset. A negative Vulkan
    height implements the same mapping without changing texture coordinates or guest render-target contents.
-   Reference: NVIDIA open-gpu-doc/classes/3d/clb197.h. */
+   Reference: NVIDIA open-gpu-doc/classes/3d/clb197.h. With the transform off (0x64B) the program's x and y are
+   pixels, which its last stage takes to clip space by the surface clip's size (SNX_SH_WINDOW_XY): every viewport is
+   the surface clip then, depth 0 to 1, the scale, offset and swizzle left to the transform, as Eden's
+   UpdateViewportsState has it. */
 VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index) {
     if (index >= DS_VIEWPORTS_MAX) fatal("vulkan: viewport %u of the %u the GPU has", index, DS_VIEWPORTS_MAX);
     const float* vs = v->scale[index];
     const float* vt = v->translate[index];
-    float sx = vs[0], sy = vs[1], tx = vt[0], ty = vt[1], ax = sx < 0 ? -sx : sx, ay = sy < 0 ? -sy : sy;
+    float sx = vs[0], sy = vs[1], tx = vt[0], ty = vt[1], ax = sx < 0 ? -sx : sx;
     VkViewport vp;
-    int small = 2 * ax < 1 || 2 * ay < 1;
-    if (small != !v->transform_on)
-        LOG_LIMIT(1, "vulkan: viewport scale %g x %g with transform enable %x\n", sx, sy, v->transform_on);
-    if (small) {
-        u32 vx = v->clip_x[index], vy = v->clip_y[index];
-        vp = (VkViewport){vk_scf(vx & 0xFFFF), vk_scf(vy & 0xFFFF), vk_scf(vx >> 16), vk_scf(vy >> 16), 0, 1};
+    if (!v->transform_on) {
+        u32 w, h;
+        window_size(d, &w, &h);
+        LOG_LIMIT(1,
+                  "vulkan: viewport transform off: positions are pixels of the %ux%u surface clip at (%u, %u), "
+                  "the viewport %ux%u of it\n",
+                  d->clip_width, d->clip_height, d->clip_x, d->clip_y, w, h);
+        float x = vk_scf((float)d->clip_x), y = vk_scf((float)d->clip_y);
+        vp = (VkViewport){x, y, vk_scf((float)w), vk_scf((float)h), 0, 1};
     } else
         vp = (VkViewport){vk_scf(tx - ax), vk_scf(ty - sy), vk_scf(2 * ax), vk_scf(2 * sy), 0, 1};
     /* A lower-left window measures y from the surface clip's bottom. Match the 3D blit path's conversion. */
@@ -2099,6 +2207,7 @@ VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index)
         vp.y += vk_scf((float)d->clip_height);
         vp.height = -vp.height;
     }
+    if (!v->transform_on) return vp;
     if (((v->swizzle[index] >> 4) & 7) == 3) {
         vp.y += vp.height;
         vp.height = -vp.height;
@@ -2163,6 +2272,7 @@ typedef struct {
     u32 rt_int, rt_sint;       /* the integer color targets the registers name (rt_int_targets) */
     u32 topology;              /* the draw's, every primitive a patch with tessellation */
     int xfb_on;                /* transform feedback captures */
+    int window_xy;             /* the viewport transform is off: the last stage keyed SNX_SH_WINDOW_XY */
 } DrawShaders;
 /* a draw's vertex layout (vi, which the pipeline key holds too without dynamic vertex input) and its bindings, for
    finding their buffers each draw: binding b reads guest stream key[b] & 31 from its base offset key[b] >> 5 on, with
@@ -2282,6 +2392,7 @@ static int draw_kept(const DsState* ds, u32 topology, u32 epoch) {
             g_draw.gen[DS_VFORMAT] = ds->gen[DS_VFORMAT];
         }
     if (s->xfb_on != (g_vk.has_xfb && ds->prog.xfb_on && xfb_counters())) return 0; /* the counters were made since */
+    if (s->window_xy != !ds->vp.transform_on) return 0; /* the viewports' group keys no shader otherwise */
     const VkSh* used[6] = {s->vs, s->tcs, s->tes, s->gs, s->fs0, g_draw.fs};
     for (int i = 0; i < 6; i++)
         if (used[i] && used[i]->cbr.n && !vk_shader_cb_hold(ds, used[i])) return 0;
@@ -2289,7 +2400,9 @@ static int draw_kept(const DsState* ds, u32 topology, u32 epoch) {
 }
 static int draw_shaders_same(const DrawShaders* a, const DrawShaders* b) {
     return a->vs == b->vs && a->tcs == b->tcs && a->tes == b->tes && a->gs == b->gs && a->fs0 == b->fs0 &&
-           a->attr_int == b->attr_int && a->attr_sint == b->attr_sint && a->rt_int == b->rt_int && a->rt_sint == b->rt_sint && a->topology == b->topology && a->xfb_on == b->xfb_on;
+           a->attr_int == b->attr_int && a->attr_sint == b->attr_sint && a->rt_int == b->rt_int &&
+           a->rt_sint == b->rt_sint && a->topology == b->topology && a->xfb_on == b->xfb_on &&
+           a->window_xy == b->window_xy;
 }
 /* the shaders of the programs, the vertex format and the targets of ds for a draw of topology: 0 when the draw is
    skipped */
@@ -2307,22 +2420,22 @@ static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
         LOG_LIMIT(1, "vulkan: this GPU binds too few descriptor sets for tessellation and geometry (draw skipped)\n");
         return 0;
     }
-    if (tcs_on != tes_on) {
-        /* the hardware tessellates with the levels of registers 0xC9-0xCE without a control program, which
-           Vulkan can't: no game is known to */
-        LOG_LIMIT(1, "vulkan: tessellation with only one of its two programs (draw skipped)\n");
+    if (tcs_on && !tes_on) {
+        LOG_LIMIT(1, "vulkan: tessellation control without an evaluation program (draw skipped)\n");
         return 0;
     }
     if ((topology == 14 && !tes_on) || (topology >= 10 && topology <= 13 && !gs_on))
         return 0; /* patches and adjacency need the stages above */
     if (tes_on) topology = 14; /* every primitive is a patch with tessellation, as Vulkan requires */
-    /* a clip distance the program writes clips only when its bit is set, in the last stage before rasterization */
-    clip = p->clip_enable;
+    /* a clip distance the program writes clips only when its bit is set, in the last stage before rasterization,
+       which takes its position from pixels with the viewport transform off */
+    clip = p->clip_enable | (ds->vp.transform_on ? 0 : SNX_SH_WINDOW_XY);
     /* transform feedback: what the last stage before rasterization captures */
     const ShXfb* xfb = &ds->xfb;
     int xfb_on = g_vk.has_xfb && p->xfb_on && xfb_counters();
     o->topology = topology;
     o->xfb_on = xfb_on;
+    o->window_xy = !ds->vp.transform_on;
     o->attr_int = attr_int;
     o->attr_sint = attr_sint;
     o->vs = vk_shader_get(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint, 0, 0,
@@ -2346,12 +2459,37 @@ static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
     o->tes = tes_on ? vk_shader_get(ds, p->code[3], 0, ST_TES, 0, 0, p->tess_params & 0x333, 0,
                                     gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, 0, xfb_on && !gs_on ? xfb : NULL, NULL)
                     : NULL;
+    if (tes_on && !tcs_on)
+        o->tcs = vk_tess_passthrough(ds->rkey.patch_vertices ? ds->rkey.patch_vertices : 1, o->vs, o->tes);
     o->gs = gs_on ? vk_shader_get(ds, p->code[4], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, p->tess_params),
                                   0, clip, 0, 0, 0, 0, xfb_on ? xfb : NULL, NULL)
                   : NULL;
-    if ((tcs_on && (!o->tcs || o->tcs->failed)) || (tes_on && (!o->tes || o->tes->failed)) ||
-        (gs_on && (!o->gs || o->gs->failed)) || !o->vs || o->vs->failed)
-        return 0;
+    {
+        /* the first stage that has no shader to run: the draw is left out, and the log says which program and why */
+        int bad = !o->vs || o->vs->failed                 ? 1
+                  : tes_on && (!o->tcs || o->tcs->failed) ? 2
+                  : tes_on && (!o->tes || o->tes->failed) ? 3
+                  : gs_on && (!o->gs || o->gs->failed)    ? 4
+                                                          : 0;
+        static const char* const names[5] = {"", "vertex", "tessellation control", "tessellation evaluation",
+                                             "geometry"};
+        const VkSh* s = bad == 1 ? o->vs : bad == 2 ? o->tcs : bad == 3 ? o->tes : o->gs;
+        /* each stage and address once, for the first 32: a run's skips can come from one program or from many */
+        static u64 said[32];
+        static u32 nsaid;
+        u64 key = p->code[bad] << 3 | (u64)bad;
+        u32 k;
+        for (k = 0; bad && k < nsaid && said[k] != key; k++) {}
+        if (bad && k == nsaid && nsaid < 32) {
+            said[nsaid++] = key;
+            LOG("vulkan: a draw skipped: its %s program at %llx %s%s\n", names[bad], (unsigned long long)p->code[bad],
+                s ? "isn't translated: " : "has no shader: out of memory",
+                !s                           ? ""
+                : s->si.first_unsupported[0] ? s->si.first_unsupported
+                                             : "unsupported feature or float controls");
+        }
+        if (bad) return 0;
+    }
     o->fs0 = (p->on >> 5 & 1) ? vk_shader_get(ds, p->code[5], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL) : NULL;
     rt_int_targets(&ds->tgt, &o->rt_int, &o->rt_sint);
     return 1;
@@ -2827,6 +2965,7 @@ static int index_convert(const DrawCall* dc, int inline_indices, u64 ia, u32 isz
 /* An indirect draw's arguments, and its count: guest memory as buffers the GPU reads (vk_buf_get), which hold a
    compute program's or an earlier draw's results where they are. 0 when they can't be had or drawn here */
 static int indirect_args(const DrawCall* dc, int indexed, VkBuffer* abuf, u64* aoff, VkBuffer* cbuf, u64* coff) {
+    if (dc->xfb_control) return !indexed && vk_xfb_indirect(dc->xfb_control, abuf, aoff);
     u32 rec = indexed ? 20 : 16, n = dc->draw_count ? dc->draw_count : 1, stride = dc->stride ? dc->stride : rec;
     if ((dc->indirect & 3) || (dc->indirect_count & 3) || (n > 1 && (stride < rec || (stride & 3)))) {
         LOG_LIMIT(1, "vulkan: an indirect draw at %llx with stride %u isn't drawn\n", (unsigned long long)dc->indirect,
@@ -2870,6 +3009,12 @@ void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     SNX_ZONE_END(z);
 }
 static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
+    DrawCall normalized;
+    if (dc->xfb_control) {
+        normalized = *dc;
+        normalized.indirect = dc->xfb_control;
+        dc = &normalized;
+    }
     int indexed = (int)dc->indexed;
     u32 topology = dc->topology, first = dc->first, count = dc->count, base_vertex = dc->base_vertex,
         base_instance = dc->base_instance, instances = dc->instances;
@@ -2925,7 +3070,8 @@ retry:
     /* the fragment shader's variant, keyed on its textures each draw: they are resolved for stage_set anyway. fres is
        filled for the fragment program's textures (each resolved, have set), and read only for them: a clear of all
        SH_MAXTEX (10 KiB) and a check of all of them against each target were per draw */
-    TexRes fres[SH_MAXTEX];
+    TexRes fres[SH_MAXTEX], vres[SH_MAXTEX];
+    TexRes* res = fres; /* the variant's slots, as stage_set reads them */
     VkSh* last = gs ? gs : tes ? tes : vs;
     VkSh* fs = NULL;
     FsKey fk = {0};
@@ -2947,6 +3093,7 @@ retry:
             g_vk_skipped++;
             return;
         }
+        if (fs && fs != sh.fs0) res = fs_slot_res(ds, sh.fs0, fres, fs, vres);
     }
     cb_prefetch(ds, 0, vs, 0);
     if (fs) cb_prefetch(ds, 4, fs, 0);
@@ -2973,14 +3120,15 @@ retry:
         for (u32 j = 0; j < n; j++) {
             if (!rt[j] || (((fs->si.sph[18] >> (j * 4)) & 15) && ds->blend.mask[j])) continue;
             for (int i = 0; i < (fs->si.ntex > SH_MAXTEX ? SH_MAXTEX : fs->si.ntex); i++)
-                if (fres[i].have && fres[i].t == rt[j]) {
+                if (res[i].have && res[i].t == rt[j]) {
                     rt[j] = NULL;
                     break;
                 }
         }
     /* nothing drawn to, captured or stored. A program's stores to memory or images still run in a pass without
        attachments: a per-pixel pass may set every target's format to 0 and keep only what it stores */
-    int stores = vs->si.gbuf_wmask || vs->si.nimg || (fs && (fs->si.gbuf_wmask || fs->si.nimg));
+    int stores = vs->si.gbuf_wmask || vs->si.nimg || (fs && (fs->si.gbuf_wmask || fs->si.nimg)) ||
+                 (tcs && tcs->si.gbuf_wmask) || (tes && tes->si.gbuf_wmask) || (gs && gs->si.gbuf_wmask);
     if (!n && !zt && !xfb_on && !stores) {
         g_vk_skipped++;
         return;
@@ -3020,6 +3168,15 @@ retry:
     if (kept && (memcmp(&tf, &g_draw.tf, sizeof tf) ||
                  attributes_empty(&ds->vbuf, &ds->vfmt, sh.vs->si.in_mask) != g_draw.plan.empty))
         kept = 0;
+    VkCoverage coverage;
+    if (!vk_coverage_key(&coverage, dc, tf.samples ? tf.samples : 1, n, zt != NULL, g_vk.has_mixed_samples,
+                         g_vk.props.limits.framebufferNoAttachmentsSampleCounts) ||
+        (coverage.raster_samples && (ds->rkey.sample_shading || (fs && fs->si.uses_sample_id)))) {
+        LOG_LIMIT(4, "vulkan: requested mixed-sample coverage is unsupported for these attachments or shaders\n");
+        g_vk_skipped++;
+        return;
+    }
+    if (kept && memcmp(&coverage, &g_draw.k.coverage, sizeof coverage)) kept = 0;
     PipeKey made_k;
     VertexPlan made_pl;
     const PipeKey* k = &g_draw.k;
@@ -3032,6 +3189,12 @@ retry:
             }
             g_vk_skipped++;
             return;
+        }
+        made_k.coverage = coverage;
+        if (coverage.raster_samples) {
+            made_k.sample_off = ~ds->rkey.sample_mask & ((1u << coverage.raster_samples) - 1);
+            made_k.alpha_to_coverage = ds->rkey.alpha_to_coverage && n && rt[0];
+            made_k.alpha_to_one = ds->rkey.alpha_to_one && n && rt[0] && g_vk.feat.alphaToOne;
         }
         if (kept && memcmp(&made_pl, pl, sizeof made_pl)) {
             draw_differs("vertex bindings");
@@ -3131,13 +3294,14 @@ retry:
     if (fs) cb_prefetch(ds, 4, fs, 1);
     if (!dc->indirect) draw_indices_prefetch(&ds->index, indexed, first, count, 1);
     VkDrawStorage storage;
-    draw_storage_read(ds, &storage, vs, fs);
-    int alias = storage.n[0] || storage.n[1] ? vk_buf_draw_has_alias(&storage) : 0;
+    VkSh* const staged[VK_DRAW_STAGES] = {vs, tcs, tes, gs, fs};
+    draw_storage_read(ds, &storage, staged);
+    int alias = vk_draw_storage_any(&storage) ? vk_buf_draw_has_alias(&storage) : 0;
     if (alias < 0) {
         g_vk_skipped++;
         return;
     }
-    if ((storage.n[0] || storage.n[1]) && !vk_buf_draw_prepare(&storage)) {
+    if (vk_draw_storage_any(&storage) && !vk_buf_draw_prepare(&storage)) {
         g_vk_skipped++;
         return;
     }
@@ -3147,7 +3311,7 @@ retry:
     DrawImages images = {0};
     VkDescriptorSet vset = stage_set(ds, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images);
     VkDescriptorSet fset =
-        fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, fres, &storage, &images) : VK_NULL_HANDLE;
+        fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, res, &storage, &images) : VK_NULL_HANDLE;
     /* the sets of the stages between, at their stage's index (shader_vk_set) */
     between[0] = tcs;
     between[1] = tes;
@@ -3156,8 +3320,12 @@ retry:
     for (b = 0; b < 3; b++) {
         bset[b] = VK_NULL_HANDLE;
         if (!between[b]) continue;
-        if (between[b]->si.ngbuf || between[b]->si.nimg) { /* global memory and images are read in VS and FS */
-            LOG_LIMIT(1, "vulkan: a tessellation or geometry program uses global memory or images (draw skipped)\n");
+        if (between[b]->si.nimg) { /* storage images are bound in the vertex and fragment stages' sets only */
+            static const char* const name[3] = {"tessellation control", "tessellation evaluation", "geometry"};
+            LOG_LIMIT(4,
+                      "vulkan: the %s program %016llx uses %d storage images, which only the vertex and fragment "
+                      "stages bind: its draws are skipped\n",
+                      name[b], (unsigned long long)between[b]->hash, between[b]->si.nimg);
             bset_ok = 0;
             break;
         }
@@ -3508,7 +3676,17 @@ retry:
         DYN(dt, dt, rec_CmdSetDepthTestEnable(cb, dt));
         DYN(dw, dw, rec_CmdSetDepthWriteEnable(cb, dw));
         DYN(dcmp, dcmp, rec_CmdSetDepthCompareOp(cb, dcmp));
-        DYN(dbounds, 1, (rec_CmdSetDepthBoundsTestEnable(cb, VK_FALSE), rec_CmdSetDepthBounds(cb, 0.0f, 1.0f)));
+        u32 bounds_on = zt && g_vk.feat.depthBounds && (dc->state_flags & DS_DRAW_DEPTH_BOUNDS);
+        if (zt && (dc->state_flags & DS_DRAW_DEPTH_BOUNDS) && !g_vk.feat.depthBounds)
+            LOG_LIMIT(1, "vulkan: depth bounds requested but unavailable on this device\n");
+        float bounds[2] = {0, 1};
+        if (bounds_on) {
+            bounds[0] = dc->depth_bounds[0];
+            bounds[1] = dc->depth_bounds[1];
+            for (u32 i = 0; i < 2; i++) bounds[i] = bounds[i] > 1 ? 1 : bounds[i] >= 0 ? bounds[i] : 0;
+        }
+        DYN(dbounds, bounds_on, rec_CmdSetDepthBoundsTestEnable(cb, bounds_on));
+        DYNV(depth_bounds, bounds, rec_CmdSetDepthBounds(cb, bounds[0], bounds[1]));
     }
     int stencil = zt && zt->f.stencil && ds->dyn.stencil_test;
     DYN(st, (u32)stencil, rec_CmdSetStencilTestEnable(cb, stencil));
@@ -3535,7 +3713,13 @@ retry:
        bottom: it flips when the sprite's origin (1 the top) is the other side. Then the fragment stage's scaled
        textures (stage_set), and whether the window is lower left and its surface clip's height, which the fragment's
        y counts up from there (shader/emit_io.c's shader_frag_y_origin) */
-    float pc[12] = {0, ds->dyn.depth_mode ? 0.0f : 1.0f, 0, 0};
+    float pc[20] = {0, ds->dyn.depth_mode ? 0.0f : 1.0f, 0, 0};
+    /* with the viewport transform off, the viewport's width and height (window_size), which the last stage before
+       rasterization takes the position's pixels to clip space by (SNX_SH_WINDOW_XY) */
+    u32 window_w = 0, window_h = 0;
+    if (!ds->vp.transform_on) window_size(&ds->dyn, &window_w, &window_h);
+    u32 window_words = window_w | window_h << 16;
+    memcpy(&pc[3], &window_words, sizeof(u32));
     /* the instance ID: InstanceIndex less the base instance pushed (depth_word, the 3D engine's base instance), or
        with draw parameters less BaseInstance plus what the draw's first instance adds to the base instance: the
        3D engine's instanced draws continue from an earlier draw's instances, and an indirect draw's base instance is
@@ -3555,12 +3739,24 @@ retry:
     memcpy(&pc[8], scaled_words, sizeof scaled_words);
     u32 origin_words[2] = {(ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0, ds->dyn.clip_height};
     memcpy(&pc[10], origin_words, sizeof origin_words);
+    float point_size = (dc->state_flags & DS_DRAW_POINT_SIZE) ? dc->point_size : 1.0f;
+    if (!g_vk.feat.largePoints || !(point_size > 0)) point_size = 1.0f;
+    if (point_size < g_vk.props.limits.pointSizeRange[0]) point_size = g_vk.props.limits.pointSizeRange[0];
+    if (point_size > g_vk.props.limits.pointSizeRange[1]) point_size = g_vk.props.limits.pointSizeRange[1];
+    pc[12] = point_size;
+    pc[14] = pc[15] = 1.0f;
+    for (u32 i = 16; i < 20; i++) pc[i] = 1.0f;
+    if (dc->state_flags & DS_DRAW_TESS_LEVELS) {
+        memcpy(pc + 16, dc->tess_levels, 4 * sizeof pc[0]);
+        memcpy(pc + 14, dc->tess_levels + 4, 2 * sizeof pc[0]);
+    }
     rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof pc, pc);
 
     /* counted by the channel's samples-passed counter when it runs: the targets' samples, which the guest's are */
     vk_query_draw(cb, ds->owner);
     VkBuffer counters[4] = {g_xfb.buf, g_xfb.buf, g_xfb.buf, g_xfb.buf};
-    VkDeviceSize counter_offs[4] = {0, 4, 8, 12};
+    u64 counter_base = xfb_counter_offset(ds->owner);
+    VkDeviceSize counter_offs[4] = {counter_base, counter_base + 4, counter_base + 8, counter_base + 12};
     /* the buffers from 0 to the last one bound, as begin and end take the counters of: one between that isn't bound
        gets another's memory for 4 bytes, which nothing captures into (its layout has no words) */
     u32 xcount = xbound & 8 ? 4 : xbound & 4 ? 3 : xbound & 2 ? 2 : xbound & 1 ? 1 : 0;

@@ -23,6 +23,11 @@
    Any other texture with holes in its mapping is an image with sparse residency in the device's own blocks, all its
    levels and layers, with memory only for the blocks that are mapped (vk_image_create_sparse, below). */
 #include <stdlib.h>
+#if defined(__ANDROID__)
+#include <unistd.h>
+#include "common/utilities/common.h"
+#include "nx/gpu/vk/uma_budget.h"
+#endif
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -721,6 +726,17 @@ int vk_image_resident(VkImage img, const u8* want, u32 n, u64* bytes) {
    device local too, holds the staging rings, which keep within its budget themselves (cmd.c ring_misplaced) */
 static int g_heap = -1;
 static u64 g_budget_cap; /* vk_budget_mb, 0 when unset */
+#if defined(__ANDROID__)
+/* where the GPU shares the system's memory, the budget vk_uma_budget gives, measured once a second and held between
+   measures: an eviction leaves a hole in a VMA block or waits for a frame in flight before the system gets its memory
+   back, and a budget measured again at every trim would take that for room still missing and evict again each
+   present */
+static struct {
+    u64 reserve; /* 0: the driver's budget alone */
+    u64 ns;      /* when it was measured, 0 never */
+    u64 budget;
+} g_uma_budget;
+#endif
 
 static void heap_find(void) {
     const VkPhysicalDeviceMemoryProperties* mp;
@@ -736,6 +752,24 @@ static void heap_find(void) {
         LOG("vulkan: the caches keep within %llu MB of heap %d (vk_budget_mb)\n",
             (unsigned long long)(g_budget_cap >> 20), g_heap);
     }
+#if defined(__ANDROID__)
+    if (g_vk.mem_model == VK_MEM_UMA) {
+        long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGESIZE);
+        VmaBudget b[VK_MAX_MEMORY_HEAPS];
+        vmaGetHeapBudgets(g_vk.vma, b);
+        if (pages > 0 && page > 0) {
+            u64 system = (u64)pages * (u64)page;
+            g_uma_budget.reserve = vk_uma_reserve(system);
+            LOG("vulkan: heap %d is the system's memory: the caches leave %llu MB of its %llu to the rest of the "
+                "system, within the driver's budget of %llu MB\n",
+                g_heap, (unsigned long long)(g_uma_budget.reserve >> 20), (unsigned long long)(system >> 20),
+                (unsigned long long)(b[g_heap].budget >> 20));
+        } else
+            WARN("vulkan: heap %d is the system's memory, of a size sysconf doesn't tell (%ld pages of %ld bytes): the "
+                 "caches keep within the driver's %llu MB\n",
+                 g_heap, pages, page, (unsigned long long)(b[g_heap].budget >> 20));
+    }
+#endif
 }
 
 int vk_mem_heap(void) {
@@ -755,6 +789,24 @@ void vk_mem_use(u64* usage, u64* budget) {
     u = u > holes ? u - holes : 0;
     *usage = u > gone ? u - gone : 0;
     *budget = g_budget_cap && g_budget_cap < b[g_heap].budget ? g_budget_cap : b[g_heap].budget;
+#if defined(__ANDROID__)
+    if (g_uma_budget.reserve) {
+        u64 now = plat_ns();
+        if (!g_uma_budget.ns || now - g_uma_budget.ns >= 1000000000ull) {
+            SnxU64 available;
+            if (!snx_memory_available(&available)) {
+                WARN("vulkan: the system no longer tells the memory it can still give: the caches keep within %llu "
+                     "MB, the driver's budget or vk_budget_mb\n",
+                     (unsigned long long)(*budget >> 20));
+                g_uma_budget.reserve = 0;
+                return;
+            }
+            g_uma_budget.ns = now;
+            g_uma_budget.budget = vk_uma_budget(b[g_heap].budget, *usage, available, g_uma_budget.reserve);
+        }
+        if (g_uma_budget.budget < *budget) *budget = g_uma_budget.budget;
+    }
+#endif
 }
 
 /* the present clock: a present and its time every quarter second at most, seventeen minutes back */

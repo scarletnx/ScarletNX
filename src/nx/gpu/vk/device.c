@@ -276,6 +276,7 @@ static int create_device(void) {
        astc_bc asks for it, or the texture has holes in its mapping (texture.c). Thus BCn always where the device has
        it, which native_bc decides the sampling of */
     WANT(textureCompressionBC);
+    g_vk.astc_bc7_could = have.textureCompressionBC && !have.textureCompressionASTC_LDR;
     if (g_settings.native_astc) WANT(textureCompressionASTC_LDR);
     if (g_settings.native_etc2) WANT(textureCompressionETC2);
     if (g_settings.native_bc && !want->textureCompressionBC)
@@ -349,6 +350,7 @@ static int create_device(void) {
         g_vk.has_divisor = snx_vk_extensions_has(&e, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
         has_vertex_input = snx_vk_extensions_has(&e, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
+        g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
         has_shader_clock = snx_vk_extensions_has(&e, VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
         has_descriptor_buffer = snx_vk_extensions_has(&e, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
@@ -399,6 +401,7 @@ static int create_device(void) {
     if (uma_with == VK_UMA_WITH_HOST) ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     if (uma_with == VK_UMA_WITH_AHB) ext[next++] = "VK_ANDROID_external_memory_android_hardware_buffer";
     if (has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+    if (g_vk.has_mixed_samples) ext[next++] = VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME;
     /* the extension only with a host time domain among the calibrateable ones: CLOCK_MONOTONIC_RAW is the clock
        the Tracy client keeps its own time in, so the two domains' pair maps the GPU's timestamps onto it */
     if (has_calibrated) {
@@ -514,10 +517,18 @@ static int create_device(void) {
         if (mode < 0)
             fatal("settings: vertex_input_dynamic_state=%s is not auto, on or off",
                   g_settings.vertex_input_dynamic_state);
-        VkViDevice vd = {
-            g_vk.props.deviceName,    p12.driverName,
-            p12.driverInfo,           (u32)p12.driverID,
-            g_vk.props.driverVersion, has_vertex_input ? (qvertex_input.vertexInputDynamicState ? 2 : 1) : 0};
+#if defined(__ANDROID__)
+        int android = 1;
+#else
+        int android = 0;
+#endif
+        VkViDevice vd = {g_vk.props.deviceName,
+                         p12.driverName,
+                         p12.driverInfo,
+                         (u32)p12.driverID,
+                         g_vk.props.driverVersion,
+                         has_vertex_input ? (qvertex_input.vertexInputDynamicState ? 2 : 1) : 0,
+                         android};
         g_vk.vertex_input_dynamic = vk_vi_choose(mode, &vd, line, sizeof line, &warn);
         if (warn)
             WARN("%s\n", line);

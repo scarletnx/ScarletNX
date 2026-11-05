@@ -77,8 +77,9 @@ typedef enum { GUI_CHOICE_STAY, GUI_CHOICE_TAKE, GUI_CHOICE_BACK } GuiChoiceDo;
 GuiChoiceDo gui_choice_key(GuiChoice* choice, GuiKey key);
 /* The setup's first step, Appearance: Language, Theme and UI scale a row each, as Settings > App has them, the Side
    panel, and Games' View and Icon size as its View box has them, then Next under them. Up and Down move round them all;
-   Left and Right change a row's value a step either way, UI scale's open its dialog; Select steps a row's value on and
-   opens UI scale's dialog, as Settings > App's Enter does, and goes on from Next; Cancel goes back */
+   Left and Right change a row's value a step either way, UI scale's open its dialog; Select steps a row's value on,
+   opens the box of themes on Theme and UI scale's dialog on UI scale, as Settings > App's Enter does, and goes on from
+   Next; Cancel goes back */
 enum {
     GUI_APPEARANCE_LANGUAGE,
     GUI_APPEARANCE_THEME,
@@ -93,6 +94,7 @@ typedef enum {
     GUI_APPEARANCE_STAY,
     GUI_APPEARANCE_CHANGE, /* the row's value, *step (-1 or 1) away */
     GUI_APPEARANCE_SIZES,  /* UI scale's dialog opened */
+    GUI_APPEARANCE_THEMES, /* the box of themes opened */
     GUI_APPEARANCE_ON,     /* the next step */
     GUI_APPEARANCE_BACK
 } GuiAppearanceDo;

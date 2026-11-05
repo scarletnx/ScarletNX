@@ -4,6 +4,7 @@
    The self-tests plant a stale flag or a wrong exclusive-loop update only in the translated copy. */
 #include "llvm_steps.h"
 #include "qemu_ref/qemu_ref.h"
+#include "llvm_qemu_words.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,7 +47,7 @@ static void poll(CPU* c) {
     ((Events*)c->thread)->polls++;
     c->poll = 0;
 }
-static const RtAPI runtime = {.miss = missed, .undef = undefined, .poll = poll};
+static const RtAPI runtime = {.miss = missed, .undef = undefined, .poll = poll, .cas128 = snx_runtime_cas128};
 
 static SnxQrefState state_of(const CPU* c) {
     SnxQrefState s = {0};
@@ -64,14 +65,97 @@ static int same_state(const SnxQrefState* a, const SnxQrefState* b) {
            a->fpcr == b->fpcr && a->fpsr == b->fpsr && !memcmp(a->v, b->v, sizeof a->v);
 }
 
-/* Base-A57 rows, with dependencies between randomly selected live registers. Never alter loop control or pointers. */
-static u32 random_integer(u64* rng) {
-    static const u32 rows[] = {0x8B000000u, 0xCB000000u, 0xCA000000u, 0x8A000000u, 0xAA000000u, 0x9B007C00u};
-    static const unsigned regs[] = {0, 1, 2, 6, 7};
-    unsigned op = (unsigned)(next(rng) % (sizeof rows / sizeof rows[0]));
-    unsigned d = regs[next(rng) % 5], n = regs[next(rng) % 5], m = regs[next(rng) % 5];
-    u32 word = rows[op] | m << 16 | n << 5 | d;
-    if (op != 5) word |= (u32)(next(rng) & 7) << 10;
+/* Sample the same generated decoder rows as the instruction differential test. Only bounded data operations
+   enter the pool. Rewriting operands cannot touch the stack, loop counter, memory pointer or saved return address.
+   Branches, calls and memory operations come from the bounded control-flow skeleton below. */
+#define RD 0x1fu
+#define RN (0x1fu << 5)
+#define RM (0x1fu << 16)
+#define RA (0x1fu << 10)
+typedef struct { const char* name; u32 registers; int fp; } Row;
+static const Row rows[] = {
+    {"ADD_i", RD | RN, 0}, {"SUB_i", RD | RN, 0}, {"ADDS_i", RD | RN, 0}, {"SUBS_i", RD | RN, 0},
+    {"AND_i", RD | RN, 0}, {"ORR_i", RD | RN, 0}, {"EOR_i", RD | RN, 0}, {"ANDS_i", RD | RN, 0},
+    {"MOVN", RD, 0}, {"MOVZ", RD, 0}, {"MOVK", RD, 0},
+    {"SBFM", RD | RN, 0}, {"UBFM", RD | RN, 0}, {"BFM", RD | RN, 0},
+    {"ADD_r", RD | RN | RM, 0}, {"SUB_r", RD | RN | RM, 0},
+    {"ADDS_r", RD | RN | RM, 0}, {"SUBS_r", RD | RN | RM, 0},
+    {"AND_r", RD | RN | RM, 0}, {"ORR_r", RD | RN | RM, 0},
+    {"EOR_r", RD | RN | RM, 0}, {"ANDS_r", RD | RN | RM, 0},
+    {"ADD_ext", RD | RN | RM, 0}, {"SUB_ext", RD | RN | RM, 0},
+    {"ADDS_ext", RD | RN | RM, 0}, {"SUBS_ext", RD | RN | RM, 0},
+    {"ADC", RD | RN | RM, 0}, {"ADCS", RD | RN | RM, 0},
+    {"SBC", RD | RN | RM, 0}, {"SBCS", RD | RN | RM, 0},
+    {"UDIV", RD | RN | RM, 0}, {"SDIV", RD | RN | RM, 0},
+    {"LSLV", RD | RN | RM, 0}, {"LSRV", RD | RN | RM, 0},
+    {"ASRV", RD | RN | RM, 0}, {"RORV", RD | RN | RM, 0},
+    {"CSEL", RD | RN | RM, 0}, {"CCMP", RN | RM, 0},
+    {"MADD_w", RD | RN | RM | RA, 0}, {"MSUB_w", RD | RN | RM | RA, 0},
+    {"MADD_x", RD | RN | RM | RA, 0}, {"MSUB_x", RD | RN | RM | RA, 0},
+    {"SMADDL", RD | RN | RM | RA, 0}, {"UMADDL", RD | RN | RM | RA, 0},
+    {"SMSUBL", RD | RN | RM | RA, 0}, {"UMSUBL", RD | RN | RM | RA, 0},
+    {"SMULH", RD | RN | RM, 0}, {"UMULH", RD | RN | RM, 0}, {"EXTR", RD | RN | RM, 0},
+    {"RBIT", RD | RN, 0}, {"REV16", RD | RN, 0}, {"REV32", RD | RN, 0},
+    {"REV64", RD | RN, 0}, {"CLZ", RD | RN, 0}, {"CLS", RD | RN, 0},
+    {"FADD_v", RD | RN | RM, 1}, {"FSUB_v", RD | RN | RM, 1},
+    {"FMUL_v", RD | RN | RM, 1}, {"FDIV_v", RD | RN | RM, 1},
+    {"FMAX_v", RD | RN | RM, 1}, {"FMIN_v", RD | RN | RM, 1},
+    {"FMAXNM_v", RD | RN | RM, 1}, {"FMINNM_v", RD | RN | RM, 1},
+    {"FCMEQ_v", RD | RN | RM, 1}, {"FCMGE_v", RD | RN | RM, 1}, {"FCMGT_v", RD | RN | RM, 1},
+    {"FABS_v", RD | RN, 1}, {"FNEG_v", RD | RN, 1}, {"FSQRT_v", RD | RN, 1},
+    {"FRINTN_v", RD | RN, 1}, {"FRINTM_v", RD | RN, 1}, {"FRINTP_v", RD | RN, 1},
+    {"FRINTZ_v", RD | RN, 1}, {"FRINTA_v", RD | RN, 1}, {"FRINTX_v", RD | RN, 1}, {"FRINTI_v", RD | RN, 1},
+    {"FRECPE_v", RD | RN, 1}, {"FRSQRTE_v", RD | RN, 1},
+    {"FCVTL_v", RD | RN, 1}, {"FCVTN_v", RD | RN, 1}, {"FCVTXN_v", RD | RN, 1}
+};
+#define ROWS (sizeof rows / sizeof *rows)
+static struct {
+    u64 random;
+    u32* words;
+    struct { size_t first, count; unsigned used; } row[ROWS];
+} g_corpus;
+static uint64_t corpus_random(void) { return next(&g_corpus.random); }
+static size_t row_of(u32 word) {
+    const char* name = lqd_switch_op_name(word);
+    if (name) for (size_t i = 0; i < ROWS; i++) if (!strcmp(name, rows[i].name)) return i;
+    return ROWS;
+}
+static int corpus_begin(u64 seed) {
+    g_corpus.random = seed ^ 0xc0de5eedull;
+    u32* words = NULL;
+    size_t count = lqd_row_words(4, corpus_random, &words), total = 0;
+    for (size_t i = 0; i < count; i++) {
+        size_t row = row_of(words[i]);
+        if (row != ROWS) g_corpus.row[row].count++;
+    }
+    for (size_t i = 0; i < ROWS; i++) {
+        if (!g_corpus.row[i].count) { free(words); return snx_error("no generated words for %s", rows[i].name); }
+        g_corpus.row[i].first = total;
+        total += g_corpus.row[i].count;
+    }
+    g_corpus.words = malloc(total * sizeof *g_corpus.words);
+    if (!g_corpus.words) { free(words); return snx_error("cannot allocate the decoder corpus"); }
+    size_t at[ROWS] = {0};
+    for (size_t i = 0; i < count; i++) {
+        size_t row = row_of(words[i]);
+        if (row != ROWS) g_corpus.words[g_corpus.row[row].first + at[row]++] = words[i];
+    }
+    free(words);
+    return 0;
+}
+static u32 random_data(u64* rng, int fp, unsigned serial) {
+    static const unsigned regs[] = {0, 1, 2, 4, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17};
+    size_t first = 0, count = 0;
+    while (first < ROWS && rows[first].fp != fp) first++;
+    while (first + count < ROWS && rows[first + count].fp == fp) count++;
+    size_t row = first + serial % count;
+    u32 word = g_corpus.words[g_corpus.row[row].first + next(rng) % g_corpus.row[row].count];
+    for (unsigned shift = 0; shift <= 16; shift += shift == 10 ? 6 : 5) {
+        if (!(rows[row].registers & (0x1fu << shift))) continue;
+        unsigned reg = fp ? (unsigned)(next(rng) & 31) : regs[next(rng) % (sizeof regs / sizeof *regs)];
+        word = (word & ~(0x1fu << shift)) | reg << shift;
+    }
+    if (row_of(word) != row) { fprintf(stderr, "operand rewrite changed %s (%08x)\n", rows[row].name, word); exit(1); }
     return word;
 }
 
@@ -97,13 +181,21 @@ static void generate(Program* p, unsigned index, u64* rng, int mutant, int hook)
     if (index) {
         const unsigned positions[] = {2, 3, 6, 15, HELPER_WORD, HELPER_WORD + 1};
         for (unsigned i = 0; i < sizeof positions / sizeof positions[0]; ++i)
-            p->words[positions[i]] = random_integer(rng);
-        static const u32 fp[] = {0x4E22D420u, 0x4EA2D420u, 0x6E22DC20u, 0x6E22FC20u};
-        p->words[11] = fp[next(rng) % (sizeof fp / sizeof fp[0])];
+            p->words[positions[i]] = random_data(rng, 0, (index - 1) * 6 + i);
+        p->words[11] = random_data(rng, 1, (index - 1) * 2);
+        p->words[12] = random_data(rng, 1, (index - 1) * 2 + 1);
         if (next(rng) & 1) {
             p->words[13] = root[14];
             p->words[14] = root[13];
         }
+    }
+    if (index) {
+        p->words[1] = 0xd2800005u | (2u + (unsigned)(next(rng) % 6)) << 5; /* a bounded 2..7-iteration loop */
+        p->words[5] = (p->words[5] & ~15u) | (u32)(next(rng) % 14);
+        p->words[8] = (p->words[8] & ~15u) | (u32)(next(rng) % 14);
+        p->words[9] = (p->words[9] & ~(15u << 12)) | (u32)(next(rng) % 14) << 12;
+        if (index % 4 == 2) p->words[10] = 0xd63f0360u; /* BLR X27 */
+        if (index % 4 == 3) p->words[19] = 0x14000000u | (HELPER_WORD - 19); /* tail B helper */
     }
     if (exclusive) {
         /* LDXR X8,[X3]; ADD X8,X8,X1; STXR W9,X8,[X3]; CBNZ W9,retry, followed by the helper's arithmetic.
@@ -116,7 +208,11 @@ static void generate(Program* p, unsigned index, u64* rng, int mutant, int hook)
             p->words[HELPER_WORD + 2] |= 0x8000u;
         }
     }
-    for (unsigned i = 0; i < WORDS; ++i) snx_st_le32(p->image + i * 4, p->words[i]);
+    for (unsigned i = 0; i < WORDS; ++i) {
+        size_t row = row_of(p->words[i]);
+        if (row != ROWS) g_corpus.row[row].used++;
+        snx_st_le32(p->image + i * 4, p->words[i]);
+    }
     /* The reference retains CMP. Only the translated copy sees the planted stale-flag defect. */
     if (mutant && !index)
         snx_st_le32(p->image + (mutant == 2 ? HELPER_WORD + 1 : 7) * 4, 0xD503201Fu);
@@ -139,13 +235,14 @@ static void generate(Program* p, unsigned index, u64* rng, int mutant, int hook)
         for (unsigned i = 0; i < 31; ++i) c->x[i] = next(rng);
         c->x[3] = 0x100 + (next(rng) & 63);
         if (exclusive) c->x[3] &= ~7ull;
+        if (index % 4 == 2) c->x[27] = base + HELPER_WORD * 4;
         c->x[30] = base + STOP_WORD * 4;
         c->x[31] = 0x1800;
         c->pc = base;
         c->n = n & 1;
         c->z = (n >> 1) & 1;
         c->cf = 1;
-        c->fpcr = (n & 3) << 22 | ((index >> 1) & 1) << 24 | (index & 1) << 25;
+        c->fpcr = (n & 3) << 22 | ((index >> 1) & 1) << 24 | (index & 1) << 25 | ((index >> 2) & 1) << 26;
         c->fpsr = n & 1 ? 0x0800009fu : 0;
         for (unsigned v = 0; v < 32; ++v)
             for (unsigned half = 0; half < 2; ++half) snx_st_le64(c->v[v].b + half * 8, next(rng));
@@ -155,13 +252,15 @@ static void generate(Program* p, unsigned index, u64* rng, int mutant, int hook)
 
 static int run(const char* qemu, const char* runner, const char* dir, unsigned count, u64 seed,
                int jit, int portable, char opt, int hook, int mutant) {
+    if (corpus_begin(seed)) return 1;
     Program* programs = calloc(count, sizeof *programs);
-    if (!programs) return snx_error("cannot allocate the block corpus");
+    if (!programs) { free(g_corpus.words); return snx_error("cannot allocate the block corpus"); }
     SnxQrefBatch batch = {0};
     LlvmSteps steps;
     char error[1024];
     if (llvm_steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) {
         free(programs);
+        free(g_corpus.words);
         return snx_error("%s", error);
     }
     u64 rng = seed ? seed : 1;
@@ -237,6 +336,11 @@ static int run(const char* qemu, const char* runner, const char* dir, unsigned c
     llvm_steps_end(&steps);
     snx_qref_free(&batch);
     free(programs);
+    unsigned families = 0;
+    for (size_t i = 0; i < ROWS; i++) families += g_corpus.row[i].used != 0;
+    free(g_corpus.words);
+    printf("Decoder families in the corpus: %u of %zu\n", families, (size_t)ROWS);
+    if (count >= 64 && families != ROWS) failed = 1;
     if (failed) return 1;
     if (mutant) {
         if (!mismatches) return snx_error("the planted %s defect was not detected", mutant == 2 ? "exclusive-loop" : "stale-flag");
@@ -254,7 +358,7 @@ int main(int argc, char** argv) {
                                   "[--hook] [--volatile] [--self-test|--self-test-exclusive] [--seed=N] [--programs=N]");
     int jit = 0, portable = 0, hook = 0, mutant = 0;
     char opt = '2';
-    unsigned count = 32;
+    unsigned count = 64;
     u64 seed = 0x5eed;
     for (int i = 4; i < argc; ++i) {
         if (!strcmp(argv[i], "--jit")) jit = 1;

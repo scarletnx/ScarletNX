@@ -71,7 +71,7 @@ static void execute_module(const char* path, const unsigned char* image, int int
     ModuleFn get;
     const SnxModule* mod;
     CPU cpu;
-    RtAPI rt;
+    RtAPI rt = {.cas128 = snx_runtime_cas128};
     size_t i;
 #ifdef _WIN32
     HMODULE handle = LoadLibraryA(path);
@@ -93,7 +93,6 @@ static void execute_module(const char* path, const unsigned char* image, int int
     check(!mod->interp, "no interpreter in the module");
     if (interp) goto done; /* nothing in it to run */
     memset(&cpu, 0, sizeof(cpu));
-    memset(&rt, 0, sizeof(rt));
     rt.undef = undefined;
     rt.miss = unexpected_miss;
     cpu.rt = &rt;

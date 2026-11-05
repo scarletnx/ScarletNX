@@ -103,9 +103,11 @@ generically), creates its save data and stops at its first prompt for the A
 button, drawn through the PICA renderer. Input is the next gap.
 
 The GPU's work runs on one Vulkan device (`src/3ds/gpu/vk/`), which needs Vulkan
-1.3, 8-bit storage buffers and `VK_EXT_external_memory_host`: the board's RAM
-regions are imported as buffers, so the GPU reads and writes the guest's memory
-in place and nothing of it is copied by the CPU. Memory fills, display transfers
+1.3, 8-bit storage buffers and `VK_EXT_external_memory_host` or
+`VK_EXT_external_memory_dma_buf`: the board's RAM regions are its buffers, imported
+or, where the driver will not import them, the device's own memory (below), so the
+GPU reads and writes the guest's memory in place and nothing of it is copied by the
+CPU. Memory fills, display transfers
 and texture copies are compute shaders (`gpu/vk/shaders/`), held byte for byte to
 the CPU reference `gpu/transfer.c` by `tests/3ds_vk_transfer.c`. The Y2R engine (`y2r:u`, `services/y2r.c`), which
 turns a video's YUV frames to RGB, converts on the GPU too (`gpu/vk/y2r.c`). Its streams
@@ -473,14 +475,34 @@ The separate windows and the two render resolutions are checked by `3ds_windows`
 screen takes its own setting's scale and no other's, both screens present, and the PPM
 dumps stay the framebuffer's own size whatever the scale. With Separate screens on, that
 test fails unless both windows present, and it skips where the host makes no window (CI).
-On a host whose Vulkan driver cannot import the board's RAM (`VK_EXT_external_memory_host`),
-the 3DS device does not start, and its error says which call refused which region, the
-`VkResult`, and the device and driver. The RAM is one shared mapping (a memfd on Linux), so
-that every guest view of a page is the same memory, and RADV imports a host pointer as an
-amdgpu user pointer of private anonymous memory only: its `vkAllocateMemory` gives
-`VK_ERROR_INVALID_EXTERNAL_HANDLE` for the first region, VRAM. The CPU side, the AOT modules
-and the settings still run; the game ends at its first GX command that needs the GPU (a
-command list, fill, display transfer or texture copy), with that error as the run's last line.
+A window minimized and restored gets its swapchain back, checked by `3ds_windows_minimized`
+(it skips where the host keeps the swapchain or does not minimize). On Windows a minimized
+window's surface is 0x0 and no swapchain can be made at that size, so the first frame after
+the restore makes one.
+The RAM is one shared mapping (a memfd on Linux), so that every guest view of a page is the
+same memory, and some drivers will not import it (`VK_EXT_external_memory_host`): RADV
+imports a host pointer as an amdgpu user pointer of private anonymous memory only, and its
+`vkAllocateMemory` gives `VK_ERROR_INVALID_EXTERNAL_HANDLE` for the first region, VRAM. There
+the RAM moves into the device's own memory, one allocation of a host-visible, coherent and
+cached type exported as a dma-buf (`VK_EXT_external_memory_dma_buf`), each region's buffer
+bound at the region's offset: before the guest runs, the RAM's bytes are copied into it, and
+the object's view and every flat view of a RAM page are mapped from the dma-buf at the same
+address and protection (`snx_ctr_memory_adopt`). The device says so on the standard error,
+with the import's refusal, the size and the memory type. On an RX 6700 XT the CPU reads that
+memory at 52.7 GB/s and the memfd at 51.0, and a page's first touch costs 0.31 us against
+1.95. A mapping of a dma-buf never merges with its neighbours, though, so each page that
+write tracking protects and opens again stays a mapping of its own: a host with few of them
+(`vm.max_map_count`, 65530 where systemd 256's 1048576 is not set) can run out, and write
+tracking then says, for each view it cannot protect, its address and the system's errno.
+
+When the device's memory cannot hold the RAM either, the 3DS device does not start, and its
+error gives both reasons (which call refused which region, the `VkResult`), then the device
+and driver. The CPU side, the AOT modules and the settings still run; the game ends at its
+first GX command that needs the GPU (a command list, fill, display transfer or texture copy),
+with that error as the run's last line. `3ds_vk_ram` checks the RAM on whatever device there
+is: what the guest wrote reaches the GPU, a GPU fill shows in every guest view, a store through
+the flat space reaches the GPU, and the RAM outlives the device; `3ds_memory_adopt` checks the
+move with a memfd standing in for the dma-buf, on every host.
 
 Audio runs on a high-level DSP (`src/3ds/audio/`, ported from Azahar's HLE audio core):
 dsp::DSP (`services/dsp.c`) takes the application's pipe writes, interrupt events, the
@@ -1042,6 +1064,9 @@ The backend implements discovery, host/join, node status, channel bindings, pack
 and disconnect. It uses a private protocol inside the room's datagram transport. It does
 not connect to physical consoles, Citra/Azahar rooms or Switch LDN sessions. With LAN mode
 (the default), Initialize succeeds, scans find no network and hosting works with no peer.
+Command 0x23, which some games send before a scan, answers 0x0421, the value libctru's
+udsScanBeacons puts in its scan input. Read as a mask with bit n for channel n + 1, that is
+channels 1, 6 and 11.
 The 3DS backend has no LAN transport, and ldn_mitm's protocol is for the Switch only. Nothing
 leaves the machine and no room is joined.
 

@@ -262,12 +262,21 @@ static void store_put(const char* key, const char* value) {
     }
     memcpy(e->value, value, n + 1);
 }
+/* a key the file gives twice takes its last line's value (sections only group the keys), and the file is written back
+   with that one line */
 static void store_parse(char* text) {
     SnxIni ini;
     char *key, *value;
     g_nstore = 0;
     snx_ini_start(&ini, text);
-    while (snx_ini_next(&ini, &key, &value)) store_put(key, value);
+    while (snx_ini_next(&ini, &key, &value)) {
+        const Entry* e = store_find(key);
+        if (e && strcmp(e->value, value))
+            WARN("settings: %s is in the file twice, %s=%s and then %s=%s: it takes %s, the last, and the file keeps "
+                 "that line only\n",
+                 key, key, e->value, key, value, value);
+        store_put(key, value);
+    }
 }
 static const char* value_of(const IniOpt* o) {
     const char* v = override_of(o->key);
@@ -482,6 +491,37 @@ static int write_file(void) {
 /* ini_read's line about a value clamped or left, in the log */
 static void say_setting(const char* line) { WARN("%s\n", line); }
 
+int options_memory_fit_old(const char* old, int ios) {
+    if (!strcmp(old, "1")) return 0;
+    if (!strcmp(old, "0")) return ios ? 1 : -1;
+    return -2;
+}
+/* memory_fit, deprecated for memory_fit_mode, read while the file and the command line give memory_fit_mode no value:
+   the value it maps to goes in the store, which the file is written with, so the next run reads memory_fit_mode */
+static void memory_fit_old(void) {
+    const char* old = ini_deprecated_value("memory_fit");
+    int now;
+    if (!old || override_of("memory_fit_mode") || store_find("memory_fit_mode")) return;
+#if defined(SNX_IOS)
+    now = options_memory_fit_old(old, 1);
+#else
+    now = options_memory_fit_old(old, 0);
+#endif
+    if (now == -2)
+        WARN("settings: memory_fit=%s, deprecated, is neither 0 nor 1: memory_fit_mode takes its default, 0 (Auto)\n",
+             old);
+    else if (now == -1)
+        WARN(
+            "settings: memory_fit=%s, deprecated, was its default: memory_fit_mode takes its own, 0 (Auto), which fits "
+            "the game to the device (docs/DEPRECATIONS.md)\n",
+            old);
+    else {
+        store_put("memory_fit_mode", now ? "1" : "0");
+        WARN("settings: memory_fit=%s, deprecated, is memory_fit_mode=%d (%s) now (docs/DEPRECATIONS.md)\n", old, now,
+             now ? "Off" : "Auto");
+    }
+}
+
 static void say_deprecated(void) {
     const char* keys[STORE_MAX];
     char line[2048];
@@ -496,6 +536,32 @@ int options_debug(int flags, char* out, size_t n) {
     size_t at = strlen(out);
     if (g_opt_gdb && at < n) snprintf(out + at, n - at, "%sgdbstub", count++ ? ", " : "");
     return count;
+}
+int options_settings(char* out, size_t n) {
+    const IniOpt* const tables[] = {g_display_ini, g_graphics_ini, g_performance_ini};
+    char part[1024];
+    size_t at = 0, t;
+    int count = 0;
+    if (n) out[0] = 0;
+    for (t = 0; t < sizeof tables / sizeof *tables; t++) {
+        int c = ini_changed(tables[t], INI_CHANGED_DEFAULT, part, sizeof part);
+        if (c && at < n) at += (size_t)snprintf(out + at, n - at, "%s%s", count ? ", " : "", part);
+        count += c;
+    }
+    return count;
+}
+/* the Display, Graphics and Performance settings as the log last said them */
+static char g_said[2048];
+/* after a reload, the Display, Graphics and Performance settings again when they changed */
+static void settings_reloaded(void) {
+    char now[sizeof g_said];
+    int n = options_settings(now, sizeof now);
+    if (!strcmp(now, g_said)) return;
+    if (n)
+        LOG("settings: after the reload, %s\n", now);
+    else
+        LOG("settings: after the reload, every Display, Graphics and Performance setting is at its default\n");
+    memcpy(g_said, now, sizeof g_said);
 }
 /* the Debug settings in effect at the top of the picture; after a reload that changes them, in the log too */
 static void debug_shown(int reloaded) {
@@ -527,6 +593,7 @@ void ini_open(const char* path) {
         apply_all();
         options_old_environment_say();
         debug_shown(0);
+        options_settings(g_said, sizeof g_said);
         g_started = 1;
         return;
     }
@@ -535,11 +602,13 @@ void ini_open(const char* path) {
         g_hash = g_seen = fnv1a(text, size);
         free(text);
     }
+    memory_fit_old();
     n = pending_take(taken);
     say_deprecated();
     apply_all();
     options_old_environment_say();
     debug_shown(0);
+    options_settings(g_said, sizeof g_said);
     if (!write_file()) pending_written(taken, n);
     g_started = 1;
 }
@@ -575,6 +644,7 @@ void ini_poll(int final) {
         apply_all();
         LOG("settings: %s reloaded\n", g_path);
         debug_shown(1);
+        settings_reloaded();
         if (!write_file()) pending_written(taken, n);
     } else if (h != g_hash)
         g_seen = h; /* changed: maybe still being saved, read at the next poll if it stays so */

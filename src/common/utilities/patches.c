@@ -25,8 +25,11 @@ static const char* leaf(const char* path) {
 }
 
 size_t snx_mods_patches(const char* folder, const char* off, char*** paths) {
+    return snx_mods_patches_of(folder, NULL, off, paths);
+}
+size_t snx_mods_patches_of(const char* folder, const char* own, const char* off, char*** paths) {
     char** exefs;
-    size_t count = snx_mods_played(folder, off, "exefs", &exefs), n = 0;
+    size_t count = snx_mods_played_of(folder, own, off, "exefs", &exefs), n = 0;
     *paths = NULL;
     for (size_t i = 0; i < count; ++i) {
         char** files = NULL;

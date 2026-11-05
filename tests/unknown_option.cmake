@@ -21,6 +21,20 @@ foreach(option --resoltion=2 --resolution=2 --seconds=5)
         message(FATAL_ERROR "scarletnx ${option} missing.nro ended with ${result}, not \"${expected}\":\n${out}")
     endif()
 endforeach()
+# a runtime option after the "--" is a game argument that nothing reads, so a timed run given there never ended: it is
+# refused as it was given, and the message says where it belongs; a game's own --key=value still reaches the game
+foreach(case "--seconds=5;--seconds=5 comes after the \"--\"" "--game=foo;--game=foo comes after the \"--\""
+             "--foo=bar;missing.nro is not a file")
+    list(POP_BACK case expected)
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY SDL_VIDEO_DRIVER=dummy
+                            "${RUNTIME}" missing.nro -- ${case}
+                    WORKING_DIRECTORY "${dir}" TIMEOUT 20 RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE out)
+    string(FIND "${out}" "${expected}" at)
+    if(result EQUAL 0 OR at LESS 0)
+        file(REMOVE_RECURSE "${dir}")
+        message(FATAL_ERROR "scarletnx missing.nro -- ${case} ended with ${result}, not \"${expected}\":\n${out}")
+    endif()
+endforeach()
 # an option nothing takes is refused by its name, with no game given too; an option's older name is said once, with
 # its name now, and taken as that
 foreach(case "--bogus;unknown option: --bogus (scarletnx --help lists them)"

@@ -825,6 +825,26 @@ static void test_hwopus(void) {
     for (u32 i = 0; i < 24; i++) svcobj_unref(live[i]);
     CHECK(open_opus(other, 48000, 2, &decoder) == 0);
     svcobj_unref(decoder);
+    /* the decoders a save state holds count once it is loaded: 24 saved with their host parts nil, as a save writes
+       them, then loaded over the running ones as state.c does (the host's parts let go of, then made again) */
+    static HleAudio saved;
+    for (u32 i = 0; i < 24; i++) CHECK(open_opus(i & 1 ? other : manager, 48000, 2, &live[i]) == 0);
+    saved = g_hle.audio;
+    for (u32 i = 0; i < HWOPUS_POOL; i++) {
+        saved.opus[i].dec = NULL;
+        saved.opus[i].pkt = NULL;
+        saved.opus[i].frame = NULL;
+        saved.opus[i].queue = NULL;
+        saved.opus[i].taps = saved.opus[i].hist = NULL;
+    }
+    audio_state_drop();
+    g_hle.audio = saved;
+    audio_state_rebuild();
+    CHECK(((HwOpus*)live[7]->data)->dec != NULL); /* made again */
+    CHECK(open_opus(manager, 48000, 2, &decoder) == RC(111, 385));
+    for (u32 i = 0; i < 24; i++) svcobj_unref(live[i]);
+    CHECK(open_opus(manager, 48000, 2, &decoder) == 0);
+    svcobj_unref(decoder);
     svcobj_unref(other);
     test_opus_decode();
 #else

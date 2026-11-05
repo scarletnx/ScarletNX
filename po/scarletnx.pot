@@ -1736,6 +1736,11 @@ msgid "Cheat %s"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "Play Program %d"
+msgstr ""
+
+#: src/gui/main.c
 msgid "No update"
 msgstr ""
 
@@ -3820,6 +3825,11 @@ msgid "Nothing to keep: no file of the menu's"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
+msgstr ""
+
+#: src/gui/main.c
 msgid "the game wrote no log"
 msgstr ""
 
@@ -4007,6 +4017,11 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Use"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -4302,6 +4317,10 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "The log could not be saved to %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "the share sheet did not open"
 msgstr ""
 
 #: src/gui/main.c
@@ -5109,7 +5128,7 @@ msgstr ""
 
 #: src/gui/theme.c
 #, c-format
-msgid "[theme] base = %s is not a built-in theme (default or yorha): it starts from %s"
+msgid "[theme] base = %s is not a built-in theme (%s): it starts from %s"
 msgstr ""
 
 #: src/gui/theme.c

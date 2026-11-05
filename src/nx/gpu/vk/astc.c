@@ -66,6 +66,8 @@ typedef struct {
     Bc7Capture* captures;
     u32 ncaptures;
     u64 captured;
+    /* the bytes of the ASTC levels decoded to RGBA8 (vk_astc_rgba8_bytes) */
+    u64 rgba8_bytes;
 } Astc;
 static Astc g_astc;
 
@@ -266,6 +268,7 @@ static int bc7_capture(const u64 key[2], u64 size, VkBuffer* buf) {
     g_astc.captures[slot].back = vk_stage_back(size, buf, &g_astc.captures[slot].off, &g_astc.captures[slot].mem);
     return g_astc.captures[slot].back ? slot : -1;
 }
+u64 vk_astc_rgba8_bytes(void) { return g_astc.rgba8_bytes; }
 
 static VkPipeline astc_pipeline(u32 bw, u32 bh) {
     VkPipeline* pipe = &g_astc.pipes[bw - 4][bh - 4];
@@ -462,6 +465,7 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 lev
                 g_astc.bc7_rgba8_bytes += texels;
             } else {
                 scratch_barrier(cb, g_astc.scratch, USE_WRITE, 0, USE_COPY);
+                g_astc.rgba8_bytes += texels;
             }
             VkBufferImageCopy copy = {
                 .bufferRowLength = row_texels,

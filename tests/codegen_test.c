@@ -674,11 +674,10 @@ static void semantics_test(void) {
         check(!fesetround(modes[m]), "set the host rounding mode");
         for (i = 0; i < WORDS; ++i) {
             CPU c;
-            RtAPI rt;
+            RtAPI rt = {.cas128 = snx_runtime_cas128};
             unsigned char memory[64];
             u64 pc;
             int ok;
-            memset(&rt, 0, sizeof(rt));
             rt.undef = undefined;
             memset(&c, 0, sizeof(c));
             memset(memory, 0xAA, sizeof(memory));
@@ -707,9 +706,8 @@ static void on_poll(CPU* c) {
 }
 static int run_loop(GuestFn f, u64 count, u32 flag) {
     CPU c;
-    RtAPI rt;
+    RtAPI rt = {.cas128 = snx_runtime_cas128};
     memset(&c, 0, sizeof(c));
-    memset(&rt, 0, sizeof(rt));
     rt.poll = on_poll;
     rt.undef = undefined;
     c.rt = &rt;
@@ -797,7 +795,7 @@ static void cpu_extensions_test(void) {
             return;
         }
         for (size_t i = 0; i < sizeof words / sizeof words[0]; ++i) {
-            RtAPI rt = {0};
+            RtAPI rt = {.cas128 = snx_runtime_cas128};
             CPU c = {0};
             rt.undef = undefined;
             c.rt = &rt;
@@ -819,7 +817,7 @@ static void cpu_extensions_test(void) {
             const u64 low = 0x1300001234ull;
             u64 pointer = low | 0x2505430000000000ull | (upper ? 1ull << 55 : 0);
             u64 expected = low | (upper ? 0xffffff8000000000ull : 0);
-            RtAPI rt = {0};
+            RtAPI rt = {.cas128 = snx_runtime_cas128};
             CPU c = {0};
             rt.undef = undefined;
             c.rt = &rt;
@@ -835,7 +833,7 @@ static void cpu_extensions_test(void) {
         for (int match = 0; match <= 1; ++match) {
             u32 memory = 0; /* aligned backing, stored and checked as guest bytes */
             put32((unsigned char*)&memory, 0, match ? 41 : 43);
-            RtAPI rt = {0};
+            RtAPI rt = {.cas128 = snx_runtime_cas128};
             CPU c = {0};
             rt.undef = undefined;
             c.rt = &rt;
@@ -1028,7 +1026,7 @@ static void zva_test(void) {
         if (!llvm_steps_load(&steps, error, sizeof(error))) {
             GuestFn f = (GuestFn)(void (*)(void))steps.steps[index];
             CPU c = {0};
-            RtAPI rt = {0};
+            RtAPI rt = {.cas128 = snx_runtime_cas128};
             u64 x1 = 0x1000, x5 = 3, x6 = 7, n;
             rt.poll = on_poll;
             rt.undef = undefined;

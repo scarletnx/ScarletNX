@@ -42,7 +42,7 @@ implementation in ScarletNX, not a port of Atmosphere's GPL-2.0-only code.
   region to 12 GiB when the host has at least 32 GiB of virtual address space for the guest. This setting is for
   diagnosis of newer applications. It does not implement their remote-memory or graphics services. An Ounce game
   (its NPDM, `docs/OUNCE.md`) gets the same budget and heap region without the setting.
-- With `memory_fit=1` (iOS's default), the pool the game is told is at most what
+- With `memory_fit_mode=0` (Auto, the default), the pool the game is told is at most what
   the host can still give the process as the game starts, plus what the process
   holds, less what the rest takes (the runtime then and 256 MiB for the graphics,
   700 MiB at least), never under 1 GiB (`mem_fit_budget`). Every GetInfo above and

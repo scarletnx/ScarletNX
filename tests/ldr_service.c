@@ -47,6 +47,10 @@ u8* plat_vm_reserve(u64 size) {
     return p == MAP_FAILED ? NULL : (u8*)(((uintptr_t)p + page - 1) & ~(uintptr_t)(page - 1));
 }
 void plat_vm_track(u8* p, u64 size) { (void)p, (void)size; } /* no tracking here */
+int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
+    (void)p, (void)size, (void)cb;
+    return -1;
+}
 /* the reservation without the write watch, which only Windows has: as plat_posix.c */
 u8* plat_vm_reserve_unwatched(u64 size) {
     (void)size;
@@ -58,6 +62,13 @@ u8* plat_vm_reserve_at(u64 addr, u64 size) {
     (void)addr, (void)size;
     errno = ENOSYS;
     return NULL;
+}
+/* plat_posix.c's look at the maps, which mem_foreign asks only of NCE's reservation (platform_posix tests it) */
+int plat_vm_foreign(u64 lo, u64 hi, int (*own)(u64 a, u64 b), char* out, size_t size) {
+    (void)lo, (void)hi, (void)own;
+    if (size) out[0] = 0;
+    errno = ENOSYS;
+    return -1;
 }
 /* nce.c, whose NCE no game here is of: mem.c's reservation asks it first, and ldr:ro gives it each NRO it maps */
 int nce_wanted(void) { return 0; }

@@ -246,10 +246,11 @@ void nvn_sync_hold(u64* ready, u32* shown, const NvnSync* s) {
 
 /* ---- a renderer that keeps what it was given */
 static DsState g_ds;
+static DrawCall g_call;
 static DrawTexture g_tex;
 static int g_test_draws, g_test_tex_draws;
 static void r_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
-    (void)dc;
+    g_call = *dc;
     (void)o;
     g_ds = *ds;
     g_test_draws++;
@@ -328,6 +329,34 @@ static void test_command_buffer(void) {
        (rounded up to 2 quarters), every sample shaded */
     nvn_CommandBufferSetLineWidth(NULL, CMDBUF, 3.0f);
     nvn_CommandBufferSetProvokingVertexMode(NULL, CMDBUF, 0);
+    nvn_CommandBufferSetPatchSize(NULL, CMDBUF, 3);
+    nvn_CommandBufferSetAlphaRef(NULL, CMDBUF, 0.375f);
+    nvn_CommandBufferSetPointSize(NULL, CMDBUF, 3.0f);
+    nvn_CommandBufferSetDepthBounds(NULL, CMDBUF, 1, 0.125f, 0.875f);
+    memcpy(GP(SCRATCH + 0x380), (const f32[2]){2, 3}, 8);
+    memcpy(GP(SCRATCH + 0x3a0), (const f32[4]){4, 5, 6, 7}, 16);
+    nvn_CommandBufferSetInnerTessellationLevels(NULL, CMDBUF, SCRATCH + 0x380);
+    nvn_CommandBufferSetOuterTessellationLevels(NULL, CMDBUF, SCRATCH + 0x3a0);
+    memset(GP(SCRATCH + 0x380), 0, 8);
+    memset(GP(SCRATCH + 0x3a0), 0, 16);
+    for (u32 i = 0; i < 16; i++) wrf(SCRATCH + 0x400 + 4 * i, (f32)i / 16);
+    nvn_CommandBufferBindCoverageModulationTable(NULL, CMDBUF, SCRATCH + 0x400);
+    memset(GP(SCRATCH + 0x400), 0, 64);
+    const i32 scissors[2][4] = {{1, 2, 10, 20}, {4, 5, 6, 7}};
+    const f32 depths[2][2] = {{0.25f, 0.75f}, {0.9f, 0.1f}};
+    memcpy(GP(SCRATCH + 0x300), scissors, sizeof scissors);
+    memcpy(GP(SCRATCH + 0x340), depths, sizeof depths);
+    u64 memory_before = nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF);
+    nvn_CommandBufferSetScissors(NULL, CMDBUF, 3, 2, SCRATCH + 0x300);
+    nvn_CommandBufferSetDepthRanges(NULL, CMDBUF, 3, 2, SCRATCH + 0x340);
+    check(memory_before - nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF) == 80,
+          "indexed scissor and depth range setters charge all selected viewports");
+    nvn_CommandBufferSetScissors(NULL, CMDBUF, 16, 1, SCRATCH + 0x300);
+    nvn_CommandBufferSetDepthRanges(NULL, CMDBUF, 0, 0, SCRATCH + 0x340);
+    check(memory_before - nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF) == 80,
+          "invalid or empty indexed ranges record nothing");
+    memset(GP(SCRATCH + 0x300), 0, sizeof scissors);
+    memset(GP(SCRATCH + 0x340), 0, sizeof depths);
     nvn_CommandBufferSetConservativeRasterEnable(NULL, CMDBUF, 1);
     nvn_CommandBufferSetConservativeRasterDilate(NULL, CMDBUF, 0.3f);
     check(nvn_ProgramInitialize(NULL, PROGRAM, DEVICE), "a program");
@@ -350,6 +379,7 @@ static void test_command_buffer(void) {
     gw64(images, 0x33);
     nvn_CommandBufferBindImagesDeferred(NULL, CMDBUF, NVN_SHADER_STAGE_FRAGMENT, 2, 1, images);
     nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3);
+    nvn_CommandBufferDrawTransformFeedback(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_TRIANGLES, 0x650000);
     /* a texture's rectangle: 100x50 pixels at (10, 20) from 50x25 texels */
     wrf(SCRATCH + 0x200, 10.0f), wrf(SCRATCH + 0x204, 20.0f), wrf(SCRATCH + 0x208, 110.0f), wrf(SCRATCH + 0x20c, 70.0f);
     wrf(SCRATCH + 0x210, 0.0f), wrf(SCRATCH + 0x214, 0.0f), wrf(SCRATCH + 0x218, 50.0f), wrf(SCRATCH + 0x21c, 25.0f);
@@ -373,11 +403,25 @@ static void test_command_buffer(void) {
     g_test_renderer.draw = r_draw;
     g_test_renderer.draw_texture = r_draw_texture;
     check(replay(d, h, OP_DRAW) == 2, "the recording replays its two draws");
-    check(g_test_draws == 2, "both draws reach the renderer");
+    check(g_test_draws == 3, "two direct draws and one transform-feedback draw reach the renderer");
     check(g_ds.dyn.line_width == 3.0f, "the line width reaches the draw state");
     check(g_ds.rkey.provoking_last == 0, "the first vertex provokes");
     check(g_ds.rkey.conservative == 3, "conservative rasterization with 2 quarter pixels of dilation");
     check(g_ds.rkey.sample_shading == 1, "the program's sample shading, as its SetShaders applied it");
+    check(g_ds.rkey.patch_vertices == 3, "the recorded patch size reaches the renderer key");
+    check(g_ds.dyn.alpha_ref == 0.375f &&
+              g_call.state_flags == (DS_DRAW_DEPTH_BOUNDS | DS_DRAW_POINT_SIZE | DS_DRAW_TESS_LEVELS) &&
+              g_call.point_size == 3.0f && g_call.depth_bounds[0] == 0.125f && g_call.depth_bounds[1] == 0.875f &&
+              !memcmp(g_call.tess_levels, (const f32[6]){4, 5, 6, 7, 2, 3}, sizeof g_call.tess_levels),
+          "fixed-function command records snapshot their values and reach the renderer");
+    check(g_call.xfb_control == 0x650000 && g_call.topology == NVN_DRAW_PRIMITIVE_TRIANGLES,
+          "transform-feedback draw records retain their GPU control address and topology");
+    for (u32 i = 0; i < 16; i++)
+        check(d->coverage_table_enable && d->coverage_table[i] == i,
+              "coverage modulation table records snapshot the caller's immediate coefficients");
+    check(g_ds.vp.scissor_x[3] == (1u | 11u << 16) && g_ds.vp.scissor_y[4] == (5u | 12u << 16) &&
+              g_ds.vp.z_near[3] == 0.25f && g_ds.vp.z_far[4] == 0.1f && g_ds.vp.z_far[0] == 1.0f,
+          "indexed command records snapshot their inputs and preserve other viewports");
     check(g_ds.bind.cb_addr[0][4] == 0x111000 && g_ds.bind.cb_addr[0][5] == 0x444000 &&
               g_ds.bind.cb_size[0][5] == 0x200,
           "deferred uniform buffers: the ranges as the GPU reads them");
@@ -390,6 +434,154 @@ static void test_command_buffer(void) {
     check(g_tex.handle == (7u | 5u << 20) && g_tex.x0 == 10.0f && g_tex.y0 == 20.0f && g_tex.w == 100.0f &&
               g_tex.h == 50.0f && g_tex.du == 0.5 && g_tex.dv == 0.5 && g_tex.sx0 == 0.0f && g_tex.sy0 == 0.0f,
           "the texture draw's rectangle and steps");
+}
+
+/* The real SetShaders -> immutable serial metadata -> BindProgram recording -> replay path. Control memory is
+   reused before replay, so the compiler declarations must have been read during SetShaders. */
+static void tess_control(u64 control, u32 stage, u32 format, const u32 values[4], u32 declared) {
+    memset(GP(control), 0, 0x900);
+    gw32(control, 0x98761234);
+    gw32(control + 4, 1);
+    gw32(control + 8, format);
+    gw32(control + 0x700, 0x200);
+    gw32(control + 0x704, 0x400);
+    gw32(control + 0x708, 0x30);
+    gw32(control + 0x714, stage);
+    u32 base = stage == NVN_SHADER_STAGE_TESS_EVALUATION ? 0x738 : 0x848;
+    u32 flags = stage == NVN_SHADER_STAGE_TESS_EVALUATION ? 0x868 : 0x858;
+    for (u32 i = 0; i < 4; i++) {
+        gw32(control + base + 4 * i, values[i]);
+        gw32(control + flags + 4 * i, (declared >> i) & 1);
+    }
+}
+static void test_tessellation_metadata(void) {
+    static NvnDraw draw;
+    nvn_draw_init(&draw, 0x80000001u);
+    const u64 control = 0xa000, evaluation = 0xb000, pairs = 0xc000;
+    const struct {
+        u32 format, control[4], evaluation[4], control_declared, evaluation_declared, count, expected;
+    } cases[] = {{8, {0}, {7, 0x8e7b, 0, 0x901}, 0, 0, 2, 0x212},
+                 {8, {0}, {4, 0x8e7c, 1, 0x900}, 0, 0, 2, 0x021},
+                 {16, {7, 0x8e7c, 1, 0x900}, {4, 0x8e7b, 0, 0x901}, 15, 15, 2, 0x211},
+                 {16, {7, 0x202, 1, 0x900}, {4, 0x8e7b, 0, 0x901}, 15, 10, 2, 0x012},
+                 {16, {0x8e7a, 0x202, 0, 0x900}, {4, 0x8e7b, 0, 0x901}, 15, 0, 2, 0x100},
+                 {16, {4, 0x202, 0, 0x900}, {4, 0x202, 0, 0x900}, 0, 0, 2, 0x201},
+                 {16, {0}, {4, 0x202, 0, 0x900}, 0, 0, 1, 0x201}};
+    nvn_CommandBufferInitialize(NULL, CMDBUF, DEVICE);
+    nvn_CommandBufferAddCommandMemory(NULL, CMDBUF, POOL, 0x9000, 0x8000);
+    nvn_CommandBufferAddControlMemory(NULL, CMDBUF, SCRATCH + 0x1000, 0x400);
+    check(nvn_ProgramInitialize(NULL, PROGRAM, DEVICE), "a tessellation program");
+    for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) {
+        tess_control(control, NVN_SHADER_STAGE_TESS_CONTROL, cases[i].format, cases[i].control,
+                     cases[i].control_declared);
+        tess_control(evaluation, NVN_SHADER_STAGE_TESS_EVALUATION, cases[i].format, cases[i].evaluation,
+                     cases[i].evaluation_declared);
+        gw64(pairs, 0x900000);
+        gw64(pairs + 8, control);
+        gw64(pairs + 16, 0xa00000);
+        gw64(pairs + 24, evaluation);
+        check(nvn_ProgramSetShaders(NULL, PROGRAM, (i32)cases[i].count, pairs + (cases[i].count == 1 ? 16 : 0)),
+              "tessellation compiler control sections decode");
+        nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+        nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM,
+                                     NVN_SHADER_STAGE_TESS_CONTROL_BIT | NVN_SHADER_STAGE_TESS_EVALUATION_BIT);
+        nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_PATCHES, 0, 3);
+        u64 handle = nvn_CommandBufferEndRecording(NULL, CMDBUF);
+        memset(GP(control), 0, 0x900);
+        memset(GP(evaluation), 0, 0x900);
+        check(replay(&draw, handle, OP_DRAW) == 1 && g_ds.prog.tess_params == cases[i].expected,
+              "decoded domain, spacing, point and winding declarations survive recording and control reuse");
+    }
+    /* A control-only rebind retains declarations of the previously bound evaluation program. */
+    const u32 eval_values[4] = {7, 0x8e7b, 0, 0x901}, control_values[4] = {4, 0x8e7c, 1, 0x900};
+    tess_control(evaluation, NVN_SHADER_STAGE_TESS_EVALUATION, 16, eval_values, 15);
+    gw64(pairs, 0xa00000);
+    gw64(pairs + 8, evaluation);
+    check(nvn_ProgramSetShaders(NULL, PROGRAM, 1, pairs), "an evaluation-only program");
+    nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+    nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM, NVN_SHADER_STAGE_TESS_EVALUATION_BIT);
+    nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_PATCHES, 0, 3);
+    check(replay(&draw, nvn_CommandBufferEndRecording(NULL, CMDBUF), OP_DRAW) == 1 && g_ds.prog.tess_params == 0x212,
+          "evaluation declarations take effect without a control stage");
+    tess_control(control, NVN_SHADER_STAGE_TESS_CONTROL, 16, control_values, 15);
+    gw64(pairs, 0x900000);
+    gw64(pairs + 8, control);
+    check(nvn_ProgramSetShaders(NULL, PROGRAM, 1, pairs), "a control-only separable program");
+    nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+    nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM, NVN_SHADER_STAGE_TESS_CONTROL_BIT);
+    nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_PATCHES, 0, 3);
+    check(replay(&draw, nvn_CommandBufferEndRecording(NULL, CMDBUF), OP_DRAW) == 1 && g_ds.prog.tess_params == 0x212,
+          "a separable control rebind preserves the evaluation stage's independently declared fields");
+    nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+    nvn_CommandBufferBindProgram(NULL, CMDBUF, 0, NVN_SHADER_STAGE_TESS_EVALUATION_BIT);
+    nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_PATCHES, 0, 3);
+    u64 handle = nvn_CommandBufferEndRecording(NULL, CMDBUF);
+    check(replay(&draw, handle, OP_DRAW) == 1 && g_ds.prog.tess_params == 0x021,
+          "unbinding evaluation restores independently declared control-stage state");
+
+    /* Keep one recorded serial across more updates than the old fixed metadata table could hold. SetShaders reuses
+       the same program and compiler-control storage, but the earlier recording still owns its declarations. */
+    tess_control(evaluation, NVN_SHADER_STAGE_TESS_EVALUATION, 16, eval_values, 15);
+    GP(evaluation)[0x6ec] = 1;
+    gw16(evaluation + 0x6dc, 16);
+    GP(evaluation)[0x6e8] = 1;
+    GP(evaluation)[0xdc] = 0x20;
+    GP(evaluation)[0x4dc] = 4;
+    gw64(pairs, 0xa00000);
+    gw64(pairs + 8, evaluation);
+    check(nvn_ProgramSetShaders(NULL, PROGRAM, 1, pairs), "an evaluation program before metadata growth");
+    nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+    nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM,
+                                 NVN_SHADER_STAGE_TESS_CONTROL_BIT | NVN_SHADER_STAGE_TESS_EVALUATION_BIT);
+    nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_PATCHES, 0, 3);
+    u64 saved_handle = nvn_CommandBufferEndRecording(NULL, CMDBUF);
+    tess_control(evaluation, NVN_SHADER_STAGE_TESS_EVALUATION, 16, control_values, 15);
+    GP(evaluation)[0x6ec] = 1;
+    gw16(evaluation + 0x6dc, 16);
+    GP(evaluation)[0x6e8] = 1;
+    GP(evaluation)[0xdc] = 0x21;
+    GP(evaluation)[0x4dc] = 4;
+    for (u32 i = 0; i < 1153; i++)
+        check(nvn_ProgramSetShaders(NULL, PROGRAM, 1, pairs), "a program update past the former metadata limit");
+    check(g_nvn.object.ntess > 1024 && g_nvn.object.ntess <= g_nvn.object.tess_capacity,
+          "tessellation metadata grows beyond1024 program updates");
+    check(g_nvn.object.nxfb > 1024 && g_nvn.object.nxfb <= g_nvn.object.xfb_capacity,
+          "transform feedback metadata grows beyond1024 program updates");
+    for (u32 i = 0; i < g_nvn.object.ntess; i++) {
+        NvnTessStage found[2] = {{0}};
+        const NvnTessEntry* entry = &g_nvn.object.tess[i];
+        check((!i || g_nvn.object.tess[i - 1].serial < entry->serial) && nvn_program_tess(entry->serial, found) &&
+                  !memcmp(found, entry->stage, sizeof found),
+              "every sorted tessellation serial resolves through the binary lookup");
+    }
+    NvnTessStage missing[2] = {{0}};
+    check(!nvn_program_tess(0, missing) && !nvn_program_tess(~0ull, missing),
+          "binary lookup rejects serials outside the tessellation table");
+    for (u32 i = 0; i < g_nvn.object.nxfb; i++) {
+        ShXfb found = {0};
+        const NvnXfbEntry* entry = &g_nvn.object.xfb[i];
+        check((!i || g_nvn.object.xfb[i - 1].serial < entry->serial) && nvn_program_xfb(entry->serial, &found) &&
+                  !memcmp(&found, &entry->x, sizeof found),
+              "every sorted transform feedback serial resolves through the binary lookup");
+    }
+    ShXfb missing_xfb = {0};
+    check(!nvn_program_xfb(0, &missing_xfb) && !nvn_program_xfb(~0ull, &missing_xfb),
+          "binary lookup rejects serials outside the transform feedback table");
+    memset(GP(evaluation), 0, 0x900);
+    check(replay(&draw, saved_handle, OP_DRAW) == 1 && g_ds.prog.tess_params == 0x212,
+          "a recorded tessellation serial retains its declarations across metadata growth and control reuse");
+    check(g_ds.xfb.count[0] == 4 && g_ds.xfb.stride[0] == 16 &&
+              !memcmp(g_ds.xfb.layout[0], (const u8[4]){32, 33, 34, 35}, 4),
+          "a recorded transform feedback layout survives metadata growth and compiler-control reuse");
+    nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+    nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM,
+                                 NVN_SHADER_STAGE_TESS_CONTROL_BIT | NVN_SHADER_STAGE_TESS_EVALUATION_BIT);
+    nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_PATCHES, 0, 3);
+    check(replay(&draw, nvn_CommandBufferEndRecording(NULL, CMDBUF), OP_DRAW) == 1 && g_ds.prog.tess_params == 0x021,
+          "the newest tessellation declarations remain available after metadata growth");
+    check(g_ds.xfb.count[0] == 4 && g_ds.xfb.stride[0] == 16 &&
+              !memcmp(g_ds.xfb.layout[0], (const u8[4]){36, 37, 38, 39}, 4),
+          "the newest transform feedback layout remains available after metadata growth");
 }
 
 /* ---- the device and its debug API */
@@ -537,11 +729,45 @@ static void test_texture(void) {
     pool_init();
 }
 
+/* 1D array render surfaces keep layer count separate from physical row count, including through a mip/layer view. */
+static void test_array_surface(void) {
+    NvnTexture t = {.magic = NVN_MAGIC('T', 'E', 'X', 0), .gpu = 0x900000};
+    t.d.target = NVN_TEXTURE_TARGET_1D_ARRAY;
+    t.d.format = NVN_FORMAT_RGBA8;
+    t.d.width = 64;
+    t.d.height = 7;
+    t.d.depth = 1;
+    t.d.levels = 3;
+    memcpy(GP(SCRATCH2), &t, NVN_TEX_SNAP);
+    NvnTexLayout layout;
+    nvn_tex_layout(&t.d, &layout);
+    DsSurf surface;
+    int depth;
+    u32 samples;
+    check(nvn_draw_surface(SCRATCH2, NULL, &surface, &depth, &samples) && surface.height == 1 && surface.layers == 7 &&
+              surface.layer_stride == layout.layer_size && surface.gva == t.gpu,
+          "a 1D array render target has one row and all seven layers");
+    NvnView view = {.set = NVN_VIEW_LEVELS | NVN_VIEW_LAYERS, .base_level = 1, .min_layer = 2, .layers = 3};
+    check(nvn_draw_surface(SCRATCH2, &view, &surface, &depth, &samples) && surface.height == 1 && surface.layers == 3 &&
+              surface.gva == t.gpu + nvn_tex_level_offset(&t.d, 1) + 2 * layout.layer_size,
+          "a 1D array render view applies its mip and layer offsets without turning layers into rows");
+}
+
 /* ---- samplers */
 static void test_sampler(void) {
     u64 s = SCRATCH;
     u32 i, tsc_b[8], tsc_s[8];
     nvn_SamplerBuilderSetDefaults(NULL, SAMPLER_B);
+    nvn_SamplerBuilderGetMinMagFilter(NULL, SAMPLER_B, s + 0x20, s + 0x24);
+    nvn_SamplerBuilderGetLodClamp(NULL, SAMPLER_B, s + 0x34, s + 0x38);
+    check(gr32(s + 0x20) == NVN_MIN_FILTER_LINEAR && gr32(s + 0x24) == NVN_MAG_FILTER_LINEAR && rdf(s + 0x34) == 0.0f &&
+              rdf(s + 0x38) == 1000.0f,
+          "NVN sampler defaults use linear filtering without mipmaps and a nonnegative minimum LOD");
+    u32 defaults[8];
+    nvn_tsc_encode(&NVN_OBJ(NvnSamplerBuilder, SAMPLER_B)->p, defaults);
+    check((defaults[1] & 0xff) == (2u | 2u << 4 | 1u << 6) && (defaults[2] & 0xfff) == 0 &&
+              (defaults[2] >> 12 & 0xfff) == 15u * 256,
+          "default sampler filters and LOD clamps reach the hardware descriptor");
     nvn_SamplerBuilderSetMinMagFilter(NULL, SAMPLER_B, NVN_MIN_FILTER_LINEAR, NVN_MAG_FILTER_NEAREST);
     nvn_SamplerBuilderSetWrapMode(NULL, SAMPLER_B, NVN_WRAP_MODE_CLAMP, NVN_WRAP_MODE_REPEAT,
                                   NVN_WRAP_MODE_MIRRORED_REPEAT);
@@ -573,7 +799,18 @@ static void test_sampler(void) {
     nvn_SamplerGetBorderColori(NULL, SAMPLER, s + 0x60);
     check(!memcmp(GP(s), GP(s + 0x60), 16), "the sampler's integer border color");
     /* a pool's descriptor from the builder: the sampler's */
+    memset(GP(POOL_MEM + 0x40000), 0, 2 * 32);
     check(nvn_SamplerPoolInitialize(NULL, SAMPLER_P, POOL, 0x40000, 16), "a sampler pool");
+    /* the driver's samplers 0 and 1, which the pool starts with: wrap 2 (clamp to edge) on u, v and p, linear
+       magnification and minification with no mip filter, LODs 0 to 15 (1000 clamped), anisotropy 1 then 2 */
+    for (i = 0; i < 2; i++) {
+        u32 w0 = gr32(POOL_MEM + 0x40000 + 32 * i), w1 = gr32(POOL_MEM + 0x40000 + 32 * i + 4),
+            w2 = gr32(POOL_MEM + 0x40000 + 32 * i + 8);
+        check((w0 & 0x1ff) == (2u | 2u << 3 | 2u << 6) && !(w0 >> 9 & 1) && (w0 >> 20 & 7) == i,
+              "a reserved sampler's wrap, compare and anisotropy");
+        check((w1 & 0xff) == (2u | 2u << 4 | 1u << 6) && !(w1 >> 10 & 3), "a reserved sampler's filters");
+        check((w2 & 0xfff) == 0 && (w2 >> 12 & 0xfff) == 15u * 256, "a reserved sampler's LOD range");
+    }
     nvn_SamplerPoolRegisterSamplerBuilder(NULL, SAMPLER_P, 3, SAMPLER_B);
     nvn_SamplerPoolRegisterSampler(NULL, SAMPLER_P, 4, SAMPLER);
     memcpy(tsc_b, GP(POOL_MEM + 0x40000 + 32 * 3), 32);
@@ -693,7 +930,9 @@ int main(void) {
     test_device();
     pool_init();
     test_command_buffer();
+    test_tessellation_metadata();
     test_texture();
+    test_array_surface();
     test_sampler();
     test_objects();
     test_state();

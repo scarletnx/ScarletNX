@@ -7,8 +7,8 @@ on:
     branches: [main]
     tags: ['v*'] # a version's release (publish.yml)
   pull_request:
-    # a draft builds less (each job that reads pull_request.draft says what), so leaving draft starts the whole build
-    types: [opened, synchronize, reopened, ready_for_review]
+    # a draft builds and tests as much as a pull request ready for review, so leaving draft starts nothing
+    types: [opened, synchronize, reopened]
     # skipped when the change is only in files that no build or test reads. tracked_material.py reads them all and runs
     # on its own (pr-checks.yml). docs/ARCHITECTURE.md, DEPRECATIONS.md and GUI.md are test inputs: they build
     paths:
@@ -40,10 +40,11 @@ concurrency:
 # recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
 # and LLVM's development libraries come from one compatible toolchain. FFmpeg, OpenSSL, Vulkan and SDL3 are built from
 # the pinned CPM sources, with MSYS2 providing the shell, GNU make and NASM needed by FFmpeg and the Perl OpenSSL's
-# Configure runs on. Downloads are cached in .cache/cpm, one cache per job since each job fetches a different set.
-# Compiles go through ccache, whose .cache/ccache each compiling job restores from its newest run and saves trimmed to
-# what the run used. The artifacts are what `cmake --install` puts in place: the binaries with the licenses that go
-# with them.
+# Configure runs on. Downloads are cached in .cache/cpm: one cache for the jobs that fetch the same sources (a Linux
+# architecture's jobs, the four cross builds, Windows, Apple, Android), named by cmake/dependencies.cmake's hash, with
+# the name before the hash as a restore key, so a bump downloads only the packages it changed. Compiles go through
+# ccache, whose .cache/ccache each compiling job restores from its newest run and saves trimmed to what the run used.
+# The artifacts are what `cmake --install` puts in place: the binaries with the licenses that go with them.
 jobs:
   linux:
     name: Linux (${{ matrix.arch }})
@@ -54,8 +55,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # a draft pull request builds x86-64 alone, whose install edenprobe runs; out of draft, both
-        arch: ${{ fromJSON(github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
+        arch: [x86_64, aarch64]
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -98,10 +98,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
+      # Each architecture's cache: x86-64 fetches glslang-tools, and AArch64 uses the system's glslangValidator
+      # (cmake/glsl.cmake), so the two sets differ. The appimage job of that host and the x86-64 sanitizer job restore
+      # it alone; a bump restores the cache before it, which downloads only the packages that changed
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpm-${{ github.job }}-${{ matrix.arch }}-${{ hashFiles('cmake/dependencies.cmake') }}
+          key: cpm-linux-${{ matrix.arch }}-${{ hashFiles('cmake/dependencies.cmake') }}
+          restore-keys: cpm-linux-${{ matrix.arch }}-
       # ccache under every compile, FFmpeg's and OpenSSL's too, from the newest cache of this job on this branch, else
       # on main. Each cmake gets it as its launcher: from the environment CMake would run its configure checks through
       # it, and they only miss
@@ -142,7 +146,7 @@ jobs:
           done
       - name: Build the runtime
         run: |
-          cmake --preset default -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_DIFF=ON \
+          cmake --preset default -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_DIFF=ON -DSNX_TEST_LLVM_SWEEP=ON \
             -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python" -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
@@ -202,6 +206,19 @@ jobs:
         run: clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
       - name: Test native tooling and indexed filesystems
         run: ctest --test-dir build/default --output-on-failure --parallel 4
+      # The cross jobs (appimage-cross) can't run qemu-aarch64 beside a host binary that qemu-user runs: record the
+      # QEMU side of the A64 differential here, once, and hand it over as an artifact
+      - name: Record the A64 differential's QEMU reference
+        if: matrix.arch == 'x86_64'
+        run: |
+          build/default/tests/snx-test-llvm-qemu-differential qemu-aarch64 build/default/qemu_ref_runner \
+            build/llvm_qemu_reference_dir tests/llvm_qemu_expected.txt --quiet \
+            --record build/llvm_qemu_reference.bin
+      - uses: actions/upload-artifact@v7
+        if: matrix.arch == 'x86_64'
+        with:
+          name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
+          path: build/llvm_qemu_reference.bin
       - name: Check optional Python diagnostics
         run: |
           python -m compileall -q tools
@@ -261,6 +278,7 @@ jobs:
         with:
           path: .cache/cpm
           key: cpm-linux-x86_64-${{ hashFiles('cmake/dependencies.cmake') }}
+          restore-keys: cpm-linux-x86_64-
       - uses: actions/cache/restore@v5
         with:
           path: .cache/deps
@@ -308,8 +326,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # x86-64's alone in a draft pull request, as the linux job
-        arch: ${{ fromJSON(github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
+        arch: [x86_64, aarch64]
     # pkgforge's Arch image and tools (https://github.com/pkgforge-dev/Anylinux-AppImages), see scripts/make-appimage.sh
     container: ghcr.io/pkgforge-dev/archlinux:latest
     steps:
@@ -342,10 +359,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/cache@v5
+      # The linux job's cache of this host's architecture, which this build's sources are a part of: it restores and
+      # never saves, so the same sources are not copied for each AppImage architecture
+      - uses: actions/cache/restore@v5
         with:
           path: .cache/cpm
-          key: cpm-${{ github.job }}-${{ matrix.arch }}-${{ hashFiles('cmake/dependencies.cmake') }}
+          key: cpm-linux-${{ matrix.arch }}-${{ hashFiles('cmake/dependencies.cmake') }}
+          restore-keys: cpm-linux-${{ matrix.arch }}-
       # ccache, set up as in the linux job
       - uses: actions/cache/restore@v5
         with:
@@ -385,8 +405,13 @@ jobs:
           c8880a7e2f0a47b68ed5ae34e1b7aeecc2e5b3a55f3583b0b43d9818a15dbe8b  /usr/local/bin/get-debloated-pkgs
           86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
           EOF
-      # llvm: Clang's own, and the opt of the LLVM settings; the runtime links LLVM's libraries statically (below)
+      # llvm: Clang's own, and the opt of the LLVM settings; the runtime links LLVM's libraries statically (below).
+      # get-debloated-pkgs reads its release from api.github.com: unauthenticated, a runner's shared address gets
+      # GitHub's 60 requests an hour and the script's 403, so it takes the job's token for those requests. Pinning its
+      # release would still read api.github.com, and its own wait on a 403 ends after 5 tries
       - name: Install the build tools and the debloated Mesa
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           for try in 1 2 3; do
             pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang && break
@@ -468,11 +493,10 @@ jobs:
   # LoongArch). Big-endian ppc64's has every runtime (the 3DS one builds there but isn't ported to a big-endian host):
   # Arch POWER's glibc there is ELFv2, not Debian ports' ELFv1, which the linux-ppc64 job tests. No POWER, RISC-V or
   # LoongArch machine has run the AppImages yet, so like the macOS and iOS jobs they may fail without failing the run
-  # (scripts/publish-builds.py, OPTIONAL). A pull request builds them once it is ready for review, as they are 4 of
-  # every 10 runner minutes of a run; appimage-cross-check, which needs them, goes with them
+  # (scripts/publish-builds.py, OPTIONAL)
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    needs: linux
     runs-on: ubuntu-26.04
     # LLVM's cross build (scripts/linux-llvm.sh) adds about half an hour where its cache misses
     timeout-minutes: 180
@@ -491,15 +515,19 @@ jobs:
           - arch: ppc64le
             platform: ppc64le
             preset: linux-ppc64le-cross
+            qemu: ppc64le
           - arch: riscv64
             platform: riscv64
             preset: linux-riscv64-cross
+            qemu: riscv64
           - arch: loongarch64
             platform: loong64
             preset: linux-loongarch64-cross
+            qemu: loongarch64
           - arch: ppc64
             platform: ppc64
             preset: linux-ppc64-elfv2-cross
+            qemu: ppc64
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -511,10 +539,22 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      # The linux job's recorded QEMU side of the A64 differential, run here against the cross-built test
+      - uses: actions/download-artifact@v8
+        with:
+          name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
+          path: reference
+      # The four cross builds run on x86-64 and fetch the same sources, SDL3's from the pinned archive among them
+      # (the linux job takes it from its package). ppc64 has no GUI, so no miniz: one cache either way only costs the
+      # others that package. The first to finish saves it, and the second restore key reads the caches from before
+      # this one
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpm-${{ github.job }}-${{ matrix.arch }}-${{ hashFiles('cmake/dependencies.cmake') }}
+          key: cpm-linux-cross-${{ hashFiles('cmake/dependencies.cmake') }}
+          restore-keys: |
+            cpm-linux-cross-
+            cpm-appimage-cross-
       # ccache and the dependency builds, as in the linux job. The container builds as root: what it makes in them
       # goes back to the runner's user before each is saved
       - uses: actions/cache/restore@v5
@@ -587,13 +627,15 @@ jobs:
           docker export "$(docker create --platform linux/${{ matrix.platform }} "$image")" | docker exec -i build tar -x -C /src/sysroot
       # The pinned Anylinux-AppImages tools and the target's libraries the runtime links and bundles: binutils and
       # patchelf are what quick-sharun needs on PATH. get-debloated-pkgs then replaces the full Mesa (its libgallium
-      # links libLLVM), ICU and Opus, so it runs last. Each pacman is tried 3 times, as in the linux job
+      # links libLLVM), ICU and Opus, so it runs last. Each pacman is tried 3 times, as in the linux job. The token is
+      # get-debloated-pkgs' api.github.com rate limit, the one the appimage job's copy is given
       - name: Install the target container's tools and libraries
         env:
           LINUX_ONLY: ${{ matrix.linux-only && '1' || '' }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           docker exec -i -e QUICK_SHARUN -e QUICK_SHARUN_SHA -e DEBLOATED_PACKAGES -e DEBLOATED_PACKAGES_SHA \
-            -e LINUX_ONLY target sh -s <<'EOF'
+            -e LINUX_ONLY -e GITHUB_TOKEN target sh -s <<'EOF'
           set -eu
           libraries="patchelf binutils"
           [ -n "$LINUX_ONLY" ] || libraries="$libraries libx11 mesa vulkan-icd-loader vulkan-radeon vulkan-swrast
@@ -721,6 +763,34 @@ jobs:
           mkdir -p /src/.cache/deps
           chown -R "$(stat -c %u:%g /src)" /src/.cache/ccache /src/.cache/deps
           EOF
+      # The A64 differential against the reference the linux job recorded: the cross build's tests are off, so the
+      # one test is configured and built alone, then run here through qemu-user, with and without the generic path
+      - name: Run the A64 differential against the recorded QEMU reference
+        run: |
+          docker exec -i -e CCACHE_DIR=/src/.cache/ccache -e CCACHE_BASEDIR=/src -e CCACHE_NOHASHDIR=true \
+            -e SNX_DEPS_CACHE=/src/.cache/deps build sh -s <<'EOF'
+          set -eu
+          git config --global --add safe.directory '*'
+          export SNX_SYSROOT=/src/sysroot
+          cmake --preset ${{ matrix.preset }} -DBUILD_TESTING=ON \
+            -DSNX_OPT_FLAGS="-O2 -g0" -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DLLVM_DIR=/src/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm -DSNX_LLVM_CONFIG= -DSNX_A64_DISASM=OFF
+          cmake --build --preset ${{ matrix.preset }} --parallel "$(getconf _NPROCESSORS_ONLN)" \
+            --target snx-test-llvm-qemu-differential
+          # both forms run, and a failing one's examples go to the log: the container's /tmp goes with the job. A form
+          # takes minutes; at 20 its SIGBUS makes the test name the case it was in, where a hang would hold the job 3 hours
+          failed=0
+          for form in "" --generic; do
+            if ! timeout -s BUS -k 30 1200 \
+              qemu-${{ matrix.qemu }} -L /src/sysroot build/${{ matrix.preset }}/tests/snx-test-llvm-qemu-differential \
+              /tmp/llvm_qemu_reference /src/tests/llvm_qemu_expected.txt \
+              --reference /src/reference/llvm_qemu_reference.bin --quiet $form; then
+              failed=1
+              cat /tmp/llvm_qemu_reference/llvm_qemu_mismatches.txt || true
+            fi
+          done
+          exit $failed
+          EOF
       - uses: actions/cache/save@v5
         with:
           path: .cache/ccache
@@ -791,10 +861,18 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
+      # Git for Windows checks out with the core.autocrlf of its own system config (true), which MSYS2's git, the
+      # build's, does not read: every text file would read as changed to it, and the build line say -dirty
+      - name: Keep the checkout's line ends for MSYS2's git
+        shell: bash
+        run: git config --local core.autocrlf "$(git config core.autocrlf || echo false)"
+      # Windows fetches SDL3's source, which Linux takes from its package, so this job's set is its own: one cache,
+      # and the restore key carries a dependencies.cmake bump over
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpm-${{ github.job }}-${{ hashFiles('cmake/dependencies.cmake') }}
+          key: cpm-windows-${{ hashFiles('cmake/dependencies.cmake') }}
+          restore-keys: cpm-windows-
       # ccache, set up as in the linux job
       - uses: actions/cache/restore@v5
         with:
@@ -869,6 +947,36 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
           cmake --install build/default --prefix stage
+      # "-dirty" in the build line means a tracked file changed on the runner: none did, so the line of the build just
+      # made has none, and a file changed now gets one
+      - name: Check the build line names the checkout as it is
+        run: |
+          set -euo pipefail
+          # the commit's define alone: a branch's name may end in -dirty too
+          dirty() { grep -q '^#define SNX_COMMIT "[^"]*-dirty"' "$1"; }
+          printf '#define SNX_BRANCH "a-dirty"\n#define SNX_COMMIT "abc1234"\n' > build/default/commit-check.h
+          if dirty build/default/commit-check.h; then
+            echo "a branch named a-dirty reads as a commit with changes" >&2
+            exit 1
+          fi
+          ctest --test-dir build/default -R '^build_info$' --verbose | grep -F 'ScarletNX '
+          if dirty build/default/generated/snx_commit.h; then
+            echo "the build line says -dirty; the tracked files MSYS2's git sees changed:" >&2
+            git status --porcelain --untracked-files=no | head -20 >&2
+            echo "$(git status --porcelain --untracked-files=no | wc -l) files; read with CR LF line ends:" \
+              "$(git -c core.autocrlf=true status --porcelain --untracked-files=no | wc -l)" >&2
+            for g in git '/c/Program Files/Git/bin/git.exe'; do # MSYS2's, and the checkout's
+              echo "core.autocrlf, $g: $("$g" config --show-origin core.autocrlf || echo unset)" >&2
+            done
+            exit 1
+          fi
+          echo >> README.md
+          cmake -DSRC=. -DOUT=build/default/commit-check.h -P cmake/commit.cmake
+          git checkout -- README.md
+          if ! dirty build/default/commit-check.h; then
+            echo "README.md changed, and the build line would say $(cat build/default/commit-check.h)" >&2
+            exit 1
+          fi
       - name: Trim the compiler cache
         run: |
           ccache --show-stats --verbose
@@ -970,10 +1078,13 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
+      # Android arm64 alone fetches libadrenotools and linkernsbypass: one cache for both ABIs, and the restore key
+      # carries a dependencies.cmake bump over
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpm-${{ github.job }}-${{ hashFiles('cmake/dependencies.cmake') }}
+          key: cpm-android-${{ hashFiles('cmake/dependencies.cmake') }}
+          restore-keys: cpm-android-
       - uses: actions/cache@v5
         id: llvm-x86_64
         with:
@@ -1137,17 +1248,19 @@ jobs:
           path: ScarletNX-android-arm64-v8a-${{ steps.commit.outputs.short }}.apk
           archive: false
           if-no-files-found: error
+      # The app's unit tests (docs/ANDROID.md), on the stage the APK was packed from: its classes build against SDL's
+      # Java and the icon there. Last, so a test that fails fails the job and still leaves the APKs to try
+      - name: Test the app's Java
+        run: JAVA_HOME=$JAVA_HOME_21_X64 gradle -p dist/android testDebugUnitTest -Pscarletnx.stage="$PWD/stage"
 
   # macOS and iOS (docs/APPLE.md), both on one Apple silicon runner with Xcode's Clang and SDKs; FFmpeg, OpenSSL and
   # SDL3 are built from the pinned sources as everywhere. Until both have built green once, a failure here does not
   # fail the run (continue-on-error), which would hold back the nightly: they are new, and no Mac checked them before
   # CI. iOS builds even when macOS failed, and each one's app is made from its own build alone. Each app carries
   # Ryujinx's MoltenVK (V380-Ori/Ryujinx.MoltenVK): mainline's lacks patches emulators' pipelines need. The release's
-  # tars, their SHA-256 the ones GitHub lists for them. A draft pull request skips it, as it skips the AArch64 builds:
-  # the organization runs 20 jobs at once
+  # tars, their SHA-256 the ones GitHub lists for them
   apple:
     name: macOS and iOS (arm64)
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: macos-26
     timeout-minutes: 240
     continue-on-error: true
@@ -1164,10 +1277,13 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
+      # macOS and iOS fetch the same sources (SDL3's among them, which Linux takes from its package): one cache, and
+      # the restore key carries a dependencies.cmake bump over
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpm-${{ github.job }}-${{ hashFiles('cmake/dependencies.cmake') }}
+          key: cpm-apple-${{ hashFiles('cmake/dependencies.cmake') }}
+          restore-keys: cpm-apple-
       # LLVM's libraries for each (scripts/apple-llvm.sh) with AArch64's code generator alone, the one the recompiler
       # uses, built once per script and Xcode. Saved as soon as they are built: actions/cache saves only a job that
       # succeeds, and a later step's failure would build them again next run. Xcode's Clang builds everything, as a
@@ -1334,7 +1450,7 @@ jobs:
       fail-fast: false
       matrix:
         # the AppImages the appimage job made
-        arch: ${{ fromJSON(github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
+        arch: [x86_64, aarch64]
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit

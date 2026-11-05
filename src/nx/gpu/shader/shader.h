@@ -74,9 +74,10 @@ typedef struct {
     u32 in_mask;       /* generic attributes 0-31 read */
     u32 attr_int_mask; /* key: vertex attributes of integer formats, and of those the signed ones */
     u32 attr_sint_mask;
-    u32 clip_enable; /* key: the clip distances the 3D engine enables (SetUserClipEnable), the only ones written, and
-                        SNX_SH_NOT_LAST */
+    u32 clip_enable; /* key: the clip distances the 3D engine enables (SetUserClipEnable), the only ones written,
+                        SNX_SH_NOT_LAST and SNX_SH_WINDOW_XY */
     int uses_position_in, uses_clip_mask, writes_layer, writes_point_size;
+    int uses_sample_id; /* SampleId requires sample shading, which native mixed-sample coverage cannot combine */
     /* FP32 arithmetic asking to flush denormals (FTZ/FMZ), and FP32 arithmetic that doesn't. Only flush in every
        FADD, FMUL and FFMA lets the module declare flushing, as Eden declares DenormFlushToZero */
     int fp32_flush, fp32_preserve;
@@ -229,7 +230,11 @@ extern int g_shader_clock_scopes;
 extern int g_shader_maximal_reconvergence;
 /* in clip_enable: a later stage before rasterization (tessellation or geometry) follows, and the last one applies
    the depth mode and the clip distances */
-#define SNX_SH_NOT_LAST (1u << 31)
+#define SNX_SH_NOT_LAST  (1u << 31)
+/* in clip_enable, the last stage's: the viewport transform is off (3D register 0x64B), so the position's x and y are
+   pixels of the surface clip, which the stage takes to clip space by its width and height (the push constant's w,
+   vk/render.c) */
+#define SNX_SH_WINDOW_XY (1u << 30)
 /* the descriptor set of a stage's bindings */
 int shader_vk_set(int stage);
 /* can_flush: how the module gets the console's FP32 flush to zero (FTZ on FADD, FMUL and FFMA). SH_FTZ_EMULATE: a

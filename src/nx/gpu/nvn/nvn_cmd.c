@@ -280,10 +280,9 @@ static u32 small_class(u64 bytes) {
 static u64 small_take(NvnCmdState* st, u32 k) {
     NvnSmallClass* c = &st->small[k];
     u64 size = 64u << k, at;
-    if (c->head && (i64)(nvn_replay_walked() - gr64(c->head + 8)) >= 0) {
-        at = c->head;
-        c->head = gr64(at);
-        if (!c->head) c->tail = 0;
+    if (c->n && (i64)(nvn_replay_walked() - c->given[c->first].quiet) >= 0) {
+        at = c->given[c->first].at;
+        c->first = --c->n ? c->first + 1 : 0;
         return at;
     }
     if (c->end - c->slab < size) {
@@ -295,16 +294,25 @@ static u64 small_take(NvnCmdState* st, u32 k) {
     c->slab += size;
     return at;
 }
-/* block at of class k comes back, after the others (under the lock) */
+/* block at of class k comes back, after the others (under the lock). Its records stay as they are until it is taken
+   again: a JUMP or a handle of a submission made before still reaches them, and one game's scene change walked into a
+   block whose first words held the store's list (a record of op 0 and size 0) */
 static void small_give(NvnCmdState* st, u32 k, u64 at) {
     NvnSmallClass* c = &st->small[k];
-    gw64(at, 0);
-    gw64(at + 8, nvn_replay_submitted());
-    if (c->tail)
-        gw64(c->tail, at);
-    else
-        c->head = at;
-    c->tail = at;
+    if (c->first + c->n == c->cap) { /* at the array's end: grown when half of it is in use, else moved down */
+        if (c->n >= c->cap / 2) {
+            u32 cap = c->cap ? c->cap * 2 : 256;
+            NvnSmallFree* given = (NvnSmallFree*)realloc(c->given, (size_t)cap * sizeof *given);
+            if (!given)
+                fatal("nvn: no memory for a list of %u blocks given back of the small store's %u-byte class", cap,
+                      64u << k);
+            c->given = given;
+            c->cap = cap;
+        }
+        memmove(c->given, c->given + c->first, (size_t)c->n * sizeof *c->given);
+        c->first = 0;
+    }
+    c->given[c->first + c->n++] = (NvnSmallFree){at, nvn_replay_submitted()};
 }
 /* piece slot, out of its chain by canchor (control) or by anchor, comes back */
 static void piece_free(NvnCmdState* st, u32 slot, int control) {
@@ -1291,7 +1299,7 @@ void nvn_CommandBufferSetViewport(CPU* c, u64 cb, i32 x, i32 y, i32 w, i32 h) {
 void nvn_CommandBufferSetViewports(CPU* c, u64 cb, i32 first, i32 n, u64 v) {
     NvnPViewports* r;
     i32 i;
-    if (n < 0 || first < 0 || first + n > 16) {
+    if (n <= 0 || first < 0 || first >= 16 || n > 16 - first) {
         LOG_LIMIT(4, "nvn: nvnCommandBufferSetViewports %d from %d\n", n, first);
         return;
     }
@@ -1300,21 +1308,20 @@ void nvn_CommandBufferSetViewports(CPU* c, u64 cb, i32 first, i32 n, u64 v) {
     r->count = n;
     for (i = 0; i < n; i++) memcpy(r->v[i], GP(v + 16 * (u64)i), 16);
 }
-/* nxnative keeps scissor and depth range 0 only, as its replay has one each */
+/* Indexed setters update only the selected viewports, including nonzero first indices. */
 void nvn_CommandBufferSetScissors(CPU* c, u64 cb, i32 first, i32 n, u64 rects) {
-    if (first == 0 && n >= 1)
-        nvn_CommandBufferSetScissor(c, cb, (i32)gr32(rects), (i32)gr32(rects + 4), (i32)gr32(rects + 8),
-                                    (i32)gr32(rects + 12));
-    if (first + n > 1) LOG_LIMIT(1, "nvn: scissors %d to %d: only scissor 0 is recorded\n", first, first + n - 1);
+    if (n <= 0 || first < 0 || first >= 16 || n > 16 - first) return;
+    NvnPScissors* r = RECN(c, cb, OP_SCISSORS, NvnPScissors, rect, n, 12u * (u32)n);
+    r->first = first;
+    r->count = n;
+    memcpy(r->rect, GP(rects), (size_t)n * sizeof r->rect[0]);
 }
 void nvn_CommandBufferSetDepthRanges(CPU* c, u64 cb, i32 first, i32 n, u64 ranges) {
-    if (first == 0 && n >= 1) {
-        f32 r[2];
-        memcpy(r, GP(ranges), sizeof r);
-        nvn_CommandBufferSetDepthRange(c, cb, r[0], r[1]);
-    }
-    if (first + n > 1)
-        LOG_LIMIT(1, "nvn: depth ranges %d to %d: only depth range 0 is recorded\n", first, first + n - 1);
+    if (n <= 0 || first < 0 || first >= 16 || n > 16 - first) return;
+    NvnPDepthRanges* r = RECN(c, cb, OP_DEPTH_RANGES, NvnPDepthRanges, range, n, 28u * (u32)n);
+    r->first = first;
+    r->count = n;
+    memcpy(r->range, GP(ranges), (size_t)n * sizeof r->range[0]);
 }
 void nvn_CommandBufferSetViewportSwizzles(CPU* c, u64 cb, i32 first, i32 n, u64 swizzles) {
     NvnPVpSwizzle* r;
@@ -1394,19 +1401,17 @@ void nvn_CommandBufferSetRenderEnableConditional(CPU* c, u64 cb, i32 mode, u64 a
     r->mode = mode & 1;
     r->address = address;
 }
-/* not recorded, as in nxnative: the depth bounds test has no counterpart there, and the point size comes from the
-   shader */
 void nvn_CommandBufferSetDepthBounds(CPU* c, u64 cb, int on, f32 min, f32 max) {
-    (void)c;
-    (void)cb;
-    (void)on;
-    (void)min;
-    (void)max;
+    NvnPSetState* r = RECN(c, cb, OP_SET_STATE, NvnPSetState, value, 2, on ? 16 : 4);
+    r->kind = NVN_SET_DEPTH_BOUNDS;
+    r->enable = on != 0;
+    r->value[0] = min;
+    r->value[1] = max;
 }
 void nvn_CommandBufferSetPointSize(CPU* c, u64 cb, f32 size) {
-    (void)c;
-    (void)cb;
-    (void)size;
+    NvnPSetState* r = RECN(c, cb, OP_SET_STATE, NvnPSetState, value, 1, 12);
+    r->kind = NVN_SET_POINT_SIZE;
+    r->value[0] = size;
 }
 /* the driver writes 12, 16 or 32 bytes by the bits: the fewest */
 void nvn_CommandBufferBarrier(CPU* c, u64 cb, i32 bits) { *(i32*)(void*)GP(rec(c, cb, OP_BARRIER, 4, 12)) = bits; }
@@ -1447,12 +1452,10 @@ void nvn_CommandBufferWaitEvent(CPU* c, u64 cb, u64 e, i32 mode, u32 value) {
     (void)mode;
     (void)value;
 }
-/* hints the replay has no use for, as nxnative: an alpha reference without an alpha test, discards (the contents are
-   undefined after, so keeping them is right), ZCull */
 void nvn_CommandBufferSetAlphaRef(CPU* c, u64 cb, f32 ref) {
-    (void)c;
-    (void)cb;
-    (void)ref;
+    NvnPSetState* r = RECN(c, cb, OP_SET_STATE, NvnPSetState, value, 1, 8);
+    r->kind = NVN_SET_ALPHA_REF;
+    r->value[0] = ref;
 }
 /* Conservative rasterization (CONSERVATIVE_RASTER, 0x452) and its dilation: the game's driver rounds the dilation up
    to quarter pixels, at most 3 (0.75 pixels), and gives it to the hardware through a macro, with the raster bounding
@@ -1478,10 +1481,6 @@ void nvn_CommandBufferSetConservativeRasterDilate(CPU* c, u64 cb, f32 dilate) {
    - ResolveDepthBuffer, the game's driver's DECOMPRESS_ZETA_SURFACE (0x47F): it writes a compressed depth buffer's
      plane equations out as values, which a depth texture read then sees. The renderer's depth images hold their
      values, so they read the same without it;
-   - the coverage modulation table (NV_framebuffer_mixed_samples): the renderer rasterizes at the targets' samples
-     (gpu/nvn/nvn_draw.c), so its coverage needs no modulation;
-   - the default tessellation levels (TESSELLATION_OUTER 0xC9, INNER 0xCD), which apply only to a program without a
-     tessellation control stage. The renderer's tessellation takes the levels from that stage, which Vulkan requires;
    - checkpoints, which only NVIDIA's tools read (the release driver answers 1 and records nothing) */
 void nvn_CommandBufferSetColorReductionEnable(CPU* c, u64 cb, int on) {
     (void)c;
@@ -1518,19 +1517,20 @@ void nvn_CommandBufferResolveDepthBuffer(CPU* c, u64 cb) {
     (void)cb;
 }
 void nvn_CommandBufferBindCoverageModulationTable(CPU* c, u64 cb, u64 entries) {
-    (void)c;
-    (void)cb;
-    (void)entries;
+    NvnPSetState* r = RECN(c, cb, OP_SET_STATE, NvnPSetState, value, entries ? 16 : 0, entries ? 24 : 4);
+    r->kind = NVN_SET_COVERAGE_TABLE;
+    r->enable = entries != 0;
+    if (entries) memcpy(r->value, GP(entries), 16 * sizeof r->value[0]);
 }
 void nvn_CommandBufferSetInnerTessellationLevels(CPU* c, u64 cb, u64 levels) {
-    (void)c;
-    (void)cb;
-    (void)levels;
+    NvnPSetState* r = RECN(c, cb, OP_SET_STATE, NvnPSetState, value, 2, 12);
+    r->kind = NVN_SET_TESS_INNER;
+    memcpy(r->value, GP(levels), 2 * sizeof r->value[0]);
 }
 void nvn_CommandBufferSetOuterTessellationLevels(CPU* c, u64 cb, u64 levels) {
-    (void)c;
-    (void)cb;
-    (void)levels;
+    NvnPSetState* r = RECN(c, cb, OP_SET_STATE, NvnPSetState, value, 4, 20);
+    r->kind = NVN_SET_TESS_OUTER;
+    memcpy(r->value, GP(levels), 4 * sizeof r->value[0]);
 }
 int nvn_CommandBufferInsertCheckpointStatic(CPU* c, u64 cb, u64 label) {
     (void)c;
@@ -1585,9 +1585,8 @@ void nvn_CommandBufferRestoreZCullData(CPU* c, u64 cb, u64 address, u64 size) {
     (void)size;
 }
 void nvn_CommandBufferSetPatchSize(CPU* c, u64 cb, i32 size) {
-    (void)c;
-    (void)cb;
-    (void)size;
+    i32* r = REC(c, cb, OP_PATCH_SIZE, i32, 4);
+    *r = size;
 }
 /* debug markers and groups name the work for NVIDIA's tools */
 void nvn_CommandBufferInsertDebugMarker(CPU* c, u64 cb, u64 text) {
@@ -1643,7 +1642,11 @@ void nvn_CommandBufferWaitSync(CPU* c, u64 cb, u64 sync) {
 /* ============================================================ binds */
 /* the program's stages as they are now: the game may set new shaders in it before it submits */
 void nvn_CommandBufferBindProgram(CPU* c, u64 cb, u64 program, i32 stages) {
-    NvnPBindProgram* r = REC(c, cb, OP_BIND_PROGRAM, NvnPBindProgram, 128);
+    /* an Ounce game's record ends with its program's c[0] record. Another's stops before it, in the 128 bytes the
+       driver writes, so that its records stay in the game's command memory */
+    const int ounce = g_nvn.loader.api >= 231u << 16;
+    NvnPBindProgram* r = (NvnPBindProgram*)(void*)GP(
+        rec(c, cb, OP_BIND_PROGRAM, ounce ? sizeof(NvnPBindProgram) : offsetof(NvnPBindProgram, c0), 128));
     const NvnProgram* p = program ? NVN_OBJ(const NvnProgram, program) : NULL;
     r->stages = stages;
     if (p && p->magic == NVN_MAGIC('P', 'R', 'O', 'G')) {
@@ -1652,9 +1655,14 @@ void nvn_CommandBufferBindProgram(CPU* c, u64 cb, u64 program, i32 stages) {
         r->serial = p->serial;
         memcpy(r->block, p->block, sizeof r->block);
         r->sample_shading = p->sample_shading;
-        if (g_nvn.loader.api >= 231u << 16) memcpy(r->c0, NVN_PROG_C0(program), NVN_C0_RECORD);
-    } else if (program)
-        LOG_LIMIT(4, "nvn: program %llx isn't initialized as it is bound\n", (unsigned long long)program);
+        if (ounce) memcpy(r->c0, NVN_PROG_C0(program), NVN_C0_RECORD);
+    } else if (program &&
+               g_settings.log_level >= 2) /* every one: when they stop says whether the game binds it again */
+        LOGV("nvn: program %llx isn't initialized as it is bound (stages %#x, called from %llx)\n",
+             (unsigned long long)program, (unsigned)stages, (unsigned long long)c->x[30]);
+    else if (program)
+        LOG_LIMIT(4, "nvn: program %llx isn't initialized as it is bound (stages %#x, called from %llx)\n",
+                  (unsigned long long)program, (unsigned)stages, (unsigned long long)c->x[30]);
 }
 static void bind_state(CPU* c, u64 cb, i32 kind, u64 st, size_t n, u32 cost) {
     NvnPBindState* r = REC(c, cb, OP_BIND_STATE, NvnPBindState, cost);
@@ -1997,11 +2005,10 @@ void nvn_CommandBufferDrawTexture(CPU* c, u64 cb, u64 handle, u64 dst, u64 src) 
 }
 /* drawing the vertex count transform feedback captured: nxnative records nothing, and neither does this */
 void nvn_CommandBufferDrawTransformFeedback(CPU* c, u64 cb, i32 prim, u64 control) {
-    (void)c;
-    (void)cb;
-    (void)prim;
-    (void)control;
-    LOG_LIMIT(1, "nvn: nvnCommandBufferDrawTransformFeedback isn't recorded\n");
+    NvnPTfState* r = REC(c, cb, OP_TF_STATE, NvnPTfState, COST_RECORD);
+    r->what = 4;
+    r->prim = prim;
+    r->control = control;
 }
 u64 nvn_CommandBufferGetMemoryCallback(CPU* c, u64 cb) {
     (void)c;

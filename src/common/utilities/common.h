@@ -262,6 +262,8 @@ char* snx_find_tool(const char* name);
 /* argv is NULL terminated. No shell. Captured output is heap-owned by caller.
    home isolates HOME/USERPROFILE and removes XDG_CONFIG_HOME in the child. */
 int snx_run(const char* const* argv, const char* cwd, const char* home, char** output);
+/* snx_run's, the whole output: snx_run keeps the last megabyte of a long one, a listing needs all of it */
+int snx_run_all(const char* const* argv, const char* cwd, const char* home, char** output);
 /* snx_run calling tick(data) about once a second while the child runs: a long tool can say how far it is */
 int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, char** output, void (*tick)(void*),
                     void* data);
@@ -336,12 +338,25 @@ SnxU64 snx_addon_version(const char* entry);
 /* a save's note, <its folder> and this beside the folder: which program and version committed the save last (fs.c's
    save_note). What moves a save's folder moves its note with it */
 #define SNX_SAVE_NOTE ".version"
-enum { SNX_ADDON_NONE, SNX_ADDON_UPDATE, SNX_ADDON_DLC };
+enum { SNX_ADDON_NONE, SNX_ADDON_UPDATE, SNX_ADDON_DLC, SNX_ADDON_PROGRAM };
 /* what the title id is to the game: SNX_ADDON_UPDATE for its patch (its ID with 0x800, as the console makes every
-   patch's), SNX_ADDON_DLC for any other, SNX_ADDON_NONE for the game's own (or 0) */
+   patch's), SNX_ADDON_PROGRAM for another program of its application or that program's patch (snx_program_index),
+   SNX_ADDON_DLC for any other, SNX_ADDON_NONE for the game's own (or 0) */
 int snx_addon_kind(SnxU64 game, SnxU64 id);
+/* An application of several programs (a collection whose menu starts each game, nn::oe::ExecuteProgram) numbers them
+   from its own ID, as the console does: program i is the application's ID plus i, and that program's patch the
+   update's ID plus i. The index is a byte (fs's ProgramIndexMapInfo), 0 the application's own program */
+#define SNX_PROGRAMS_MAX 256
+/* id's program index in the application game: 0 for the game or its update, i for its program i or that program's
+   patch, -1 for an ID that is none of its programs (a DLC's) */
+int snx_program_index(SnxU64 game, SnxU64 id);
+/* the program of index of the application game (its title ID as snx_title_text writes it) as the game's folder names
+   it, played with the update whose entry is update (snx_addon_entry, its version in it; NULL or "" for none) into
+   out: <game> or <game>_<update> for 0, <game>_<game + index> or <game>_<the update's ID + index>v<version> for
+   another. 0, or nonzero for an index past SNX_PROGRAMS_MAX or an out too short */
+int snx_program_name(const char* game, const char* update, int index, char* out, size_t size);
 /* the game an add-on's ID would belong to by the usual numbering, for a dump without a content meta to name it: a
-   patch's ID less 0x800, add-on content's below its 0x1000 */
+   patch's ID (a program's too) less its 0x800 and index, add-on content's below its 0x1000 */
 SnxU64 snx_addon_guess(SnxU64 id);
 /* the ID a game's add-on content is numbered from, its control.nacp's AddOnContentBaseId (aoc:u's base ID): a DLC's
    data ID is it plus the DLC's index, 1 to 2047. The SDK's default for application when nacp is NULL or sets none */

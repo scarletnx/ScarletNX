@@ -102,6 +102,13 @@ void plat_vm_track(u8* p, u64 size) { tracked = p, tracked_size = size; }
 #else
 void plat_vm_track(u8* p, u64 size) { (void)p, (void)size; }
 #endif
+/* mem_ww_probe's scan: where it looked */
+static u8* scanned;
+int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
+    (void)size, (void)cb;
+    scanned = p;
+    return -1;
+}
 /* mem.c's reservation at the guest's own addresses (NCE), which test_moved asks for: at addr or nowhere */
 static int reserve_at_on;
 u8* plat_vm_reserve_at(u64 addr, u64 size) {
@@ -120,6 +127,29 @@ u8* plat_vm_reserve_at(u64 addr, u64 size) {
     reservation = (u8*)p;
     reservation_size = size;
     return (u8*)p;
+}
+/* plat_posix.c's look at the maps (platform_posix tests it), which mem_foreign asks only of NCE's reservation: the
+   named mappings test_moved lists, each said by its start unless own claims it, and the range it was asked for */
+static struct {
+    u64 named[2][2], lo, hi;
+    int n, calls;
+} foreign;
+int plat_vm_foreign(u64 lo, u64 hi, int (*own)(u64 a, u64 b), char* out, size_t size) {
+    size_t at = 0;
+    int found = 0;
+    foreign.calls++;
+    foreign.lo = lo, foreign.hi = hi;
+    if (size) out[0] = 0;
+    for (int i = 0; i < foreign.n; i++) {
+        int k;
+        if (own(foreign.named[i][0], foreign.named[i][1])) continue;
+        k = at < size
+                ? snprintf(out + at, size - at, "%s%#llx", found ? "; " : "", (unsigned long long)foreign.named[i][0])
+                : 0;
+        at += k > 0 ? (size_t)k : 0;
+        found++;
+    }
+    return found;
 }
 /* nce.c, whose NCE no game here is of: mem.c's reservation asks it first */
 int nce_wanted(void) { return 0; }
@@ -173,13 +203,15 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) { /* nothing is the G
     (void)addr, (void)size, (void)out, (void)max;
     return 0;
 }
+/* guest memory moved into a GPU's buffer and back (mem_migrate): refused, but for test_moved's, which maps nothing */
+static int share_ok;
 int plat_vm_share(u8* p, int fd, u64 size) {
     (void)p, (void)fd, (void)size;
-    return -1;
+    return share_ok ? 0 : -1;
 }
 int plat_vm_unshare(u8* p, u64 size) {
     (void)p, (void)size;
-    return -1;
+    return share_ok ? 0 : -1;
 }
 void plat_freeze(u8* p, u64 size) { (void)p, (void)size; }
 void plat_thaw(void) {}
@@ -585,6 +617,55 @@ static void test_mapped_runs(void) {
     CHECK(mem_unmap(a, 0x1000) == 0 && mem_unmap(a + 0x2000, 0x1000) == 0);
     CHECK(mem_mapped_run(a, 0x3000) == 0);
 }
+/* rtld's walk of the modules (the game's own rtld: from address 0, QueryMemory on each region; a region of code that
+   is readable and executable is a module, the word at +4 the offset of its MOD0 header) over NCE's layout: rtld and a
+   pool of stubs after it, a pool before main and main, each module's header where its +4 says. The walk finds the two
+   modules and no pool, whose word at +4 is a stub's (STP x16, x17) and would send it past any mapping */
+static void map_module(u64 base, u32 mod0) {
+    CHECK(mem_map(base, 0x2000, MS_CODE, PERM_RX) == 0 && mem_map(base + 0x2000, 0x1000, MS_CODE, PERM_R) == 0 &&
+          mem_map(base + 0x3000, 0x1000, MS_CODEDATA, PERM_RW) == 0);
+    gw32(base, 0x14000000u | (0x24u >> 2)); /* B past the header, as a module begins */
+    gw32(base + 4, mod0);
+    gw32(base + mod0, 0x30444F4Du); /* "MOD0" */
+}
+static void map_pool(u64 base) {
+    CHECK(mem_map(base, 0x1000, NCE_POOL_STATE, NCE_POOL_PERM) == 0);
+    gw32(base, 0xD10083FFu);     /* SUB sp, sp, #32: a stub's first words */
+    gw32(base + 4, 0xA90047F0u); /* STP x16, x17, [sp] */
+}
+static void test_pool_walk(void) {
+    const u64 rtld = AS_BASE, main_mod = AS_BASE + 0x8000, info = STACK_BASE;
+    u64 addr = 0, found[4];
+    unsigned n = 0, bad = 0;
+    base_process();
+    CHECK(mem_map(info, 0x1000, MS_STACK, PERM_RW) == 0);
+    map_module(rtld, 0x100);
+    map_pool(rtld + 0x4000);     /* after rtld's image */
+    map_pool(main_mod - 0x2000); /* before main's, a guard page between */
+    map_module(main_mod, 0x80);
+    map_pool(main_mod + 0x4000);
+    for (;;) {
+        u64 base, size, end;
+        CHECK(svc_query(info, addr) == 0);
+        base = gr64(info);
+        size = gr64(info + 8);
+        if (gr32(info + 16) == 3 && gr32(info + 24) == PERM_RX) { /* CodeStatic and RX: rtld's test */
+            u64 mod0 = base + gr32(base + 4);
+            MemBlock b;
+            mem_query(mod0, &b);
+            if (mod0 + 4 > AS_END || b.state == MS_FREE || b.state == MS_INACCESSIBLE || mod0 + 4 > b.addr + b.size ||
+                gr32(mod0) != 0x30444F4Du)
+                bad++; /* where rtld faults, or finds no MOD0 */
+            else if (n < 4)
+                found[n++] = base;
+        }
+        end = base + size;
+        if (end <= addr || end <= base) break; /* the last block, to the end of the address space */
+        addr = end;
+    }
+    CHECK(bad == 0 && n == 2 && found[0] == rtld && found[1] == main_mod);
+    CHECK(mem_unmap(rtld, 0x5000) == 0 && mem_unmap(main_mod - 0x2000, 0x7000) == 0 && mem_unmap(info, 0x1000) == 0);
+}
 /* a service's shared memory: its host buffer until the game maps it, the guest's pages while mapped */
 static void test_shared_memory(void) {
     KShmem* s = kshmem_new(0x2000, "test");
@@ -704,14 +785,69 @@ static void test_ladder(void) {
     printf("address space ladder: 512, 256 and 128 GiB, the write watch's second pass, %u checks passed\n", checks);
 }
 
+/* The 32 and 48 GiB layouts (an iPhone app without the extended virtual addressing entitlement has about 52 GiB): a
+   game asks 12 GiB of the alias region at once (an allocator's heap reserved there, then backed page by page with
+   MapPhysicalMemory), so the region is 16 GiB. GetInfo names each region as the layout lays it out, a physical mapping
+   goes up to the alias region's last page and not past it, and the stack region keeps a free GiB before the kernel's
+   pages */
+static void test_alias_layouts(void) {
+    static const u64 sizes[] = {32, 48}; /* GiB */
+    for (unsigned i = 0; i < sizeof sizes / sizeof *sizes; i++) {
+        const u64 size = sizes[i] << 30, want = 12ull << 30;
+        base_process();
+        refuse_above = size;
+        mapping_begins = mapping_ends = 0;
+        mem_init();
+        CHECK(g_mem && g_as_size == size);
+        /* the 12 GiB the game reserves, as it finds room for it: GetInfo's alias region holds a free run of it from
+           the region's base, and its first and last pages map */
+        g_hle.kernel.sysres_size = 64 * MIB;
+        CHECK(info(3) >= want && mem_find_free(info(2), info(2) + info(3), want, 0x1000) == info(2));
+        CHECK(svc_map_physical(ALIAS_BASE, 0x1000) == 0);
+        CHECK(svc_map_physical(ALIAS_BASE + want - 0x1000, 0x1000) == 0);
+        /* the regions as GetInfo names them, apart, and a free GiB between the stack region and the kernel's pages */
+        CHECK(g_layout.alias == 4ull << 30 && g_layout.alias_size == 16ull << 30 && g_layout.heap == 20ull << 30 &&
+              g_layout.heap_size == 8ull << 30 && g_layout.stack == 28ull << 30 && g_layout.stack_size == 2ull << 30 &&
+              g_layout.kern == size - (1ull << 30) && g_layout.kern_end == size);
+        CHECK(info(2) == 4ull << 30 && info(3) == 16ull << 30 && info(4) == 20ull << 30 && info(5) == 8ull << 30);
+        CHECK(info(12) == 0x8000000ull && info(13) == size - 0x8000000ull);
+        CHECK(info(14) == 28ull << 30 && info(15) == 2ull << 30);
+        CHECK(STACK_BASE + STACK_SIZE + (1ull << 30) <= KERN_BASE);
+        /* the region's edges */
+        CHECK(svc_map_physical(ALIAS_BASE + ALIAS_SIZE - 0x1000, 0x1000) == 0);
+        CHECK(g_phys_mapped == 3 * 0x1000 && state(ALIAS_BASE + want - 0x1000) == MS_NORMAL);
+        CHECK(svc_map_physical(ALIAS_BASE + ALIAS_SIZE - 0x1000, 0x2000) == R_BADREGION);
+        CHECK(svc_map_physical(ALIAS_BASE - 0x1000, 0x1000) == R_BADREGION);
+        CHECK(svc_map_physical(HEAP_BASE, 0x1000) == R_BADREGION);
+        CHECK(svc_unmap_physical(ALIAS_BASE, ALIAS_SIZE) == 0 && g_phys_mapped == 0);
+        g_hle.kernel.sysres_size = 0;
+        CHECK(munmap(reservation, reservation_size) == 0);
+        g_mem = NULL;
+    }
+    refuse_above = 0;
+    printf("32 and 48 GiB layouts: a 16 GiB alias region with the game's 12 GiB in it, %u checks passed\n", checks);
+}
+
+/* a word GP reaches from a guest address, checked as the runtime checks an object it is handed: the address can be 0,
+   so a null host pointer stands for none. Not inlined, so the compiler sees only GP's own arithmetic */
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__) /* test_moved's hosts, the one caller */
+static __attribute__((noinline)) int gp_holds(u64 a, u32 want) {
+    const u32* p = a ? (const u32*)(void*)GP(a) : NULL;
+    return p && *p == want;
+}
+#endif
 /* NCE on Android (mem_reserve_identity from 64 GiB): the guest's addresses are the host's, above what the app's process
    holds, so the whole layout moves up to the first base from 64 GiB, in 2 MiB steps, where a tier is free. A page held
-   at 65 GiB takes the 64 GiB tier's one base and the 48 GiB tier's first 449; the 48 GiB layout then lies from 64 GiB
-   + 898 MiB, each region moved alike, and guest memory there is the host's. A layout of fixed addresses (36-bit) then
-   ends the game. Linux only, and not under ASan, whose shadow holds those addresses */
+   at 65 GiB takes the 128 GiB tier's first 449 bases; the console's layout then lies from 64 GiB + 898 MiB, each
+   region moved alike with its size kept (the 64 GiB alias region that an engine's 62 GB address region needs), and
+   guest memory there is the host's. A layout of fixed addresses (36-bit) then ends the game. Linux only, and not under
+   ASan, whose shadow holds those addresses */
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
+static MemLayout g_console; /* the layout a process starts with, which the scenarios before test_moved change */
+#endif
 static void test_moved(void) {
 #if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
-    const u64 from = 64ull << 30, held_at = 65ull << 30, by = from + 898 * MIB, size = 48ull << 30;
+    const u64 from = 64ull << 30, held_at = 65ull << 30, by = from + 898 * MIB, size = 128ull << 30;
     void* held = mmap((void*)(uintptr_t)held_at, 2 * MIB, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     pid_t child;
     int status = 0;
@@ -723,26 +859,83 @@ static void test_moved(void) {
     }
     mapping_begins = mapping_ends = 0; /* test_mapping_boundary's */
     reserve_at_on = 1;
+    g_layout = g_console; /* as at a process's start, where NCE reserves before anything else */
+    g_as_size = AS_MAX;
     CHECK(mem_reserve_identity(from) == 1);
     CHECK(mem_identity() && mem_moved() == by && g_mem == NULL);
     CHECK(g_layout.base == by + 0x8000000ull && g_layout.end == by + size && g_as_size == by + size);
-    CHECK(g_layout.alias == by + (4ull << 30) && g_layout.alias_size == 8ull << 30 &&
-          g_layout.heap == by + (12ull << 30) && g_layout.heap_size == 8ull << 30 &&
-          g_layout.stack == by + (20ull << 30) && g_layout.stack_size == 2ull << 30 &&
-          g_layout.kern == by + (47ull << 30) && g_layout.kern_end == by + size);
+    CHECK(g_layout.alias == by + (4ull << 30) && g_layout.alias_size == 64ull << 30 &&
+          g_layout.heap == by + (68ull << 30) && g_layout.heap_size == 8ull << 30 &&
+          g_layout.stack == by + (76ull << 30) && g_layout.stack_size == 2ull << 30 &&
+          g_layout.kern == by + (78ull << 30) && g_layout.kern_end == by + (79ull << 30));
+    CHECK(g_as_size <= AS_TOP); /* the tables indexed by guest address hold every one of them */
     CHECK((u64)(uintptr_t)reservation == g_layout.base && reservation_size == size - 0x8000000ull);
     mem_init();
     CHECK(tracked == reservation && tracked_size == reservation_size);
+    /* the tracking's probe scans the moved code base, not g_mem's 0, which no tracking covers */
+    CHECK(mem_ww_probe(NULL) == -1 && scanned == tracked && g_mem == NULL);
     CHECK(mem_map(HEAP_BASE, 0x1000, MS_NORMAL, PERM_RW) == 0 && state(HEAP_BASE) == MS_NORMAL);
     p = GP(HEAP_BASE);
     CHECK((u64)(uintptr_t)p == HEAP_BASE);
+    /* with g_mem 0, a pointer GP makes is not null for a nonzero address: as g_mem plus a it was undefined, and the
+       compiler took it for non-null only when g_mem is, which dropped every NVN program bind under NCE */
+    memcpy(p, "PROG", 4);
+    CHECK(gp_holds(HEAP_BASE, 0x474f5250));
     p[0] = 0x5A;
-    CHECK(*(volatile u8*)(uintptr_t)(by + (12ull << 30)) == 0x5A);
+    CHECK(*(volatile u8*)(uintptr_t)(by + (68ull << 30)) == 0x5A);
+    /* the 62 GiB an engine reserves in the alias region at startup (AllocateAddressRegion), which ends the game when it
+       doesn't fit, there in the moved layout too */
+    CHECK(mem_find_free(ALIAS_BASE, ALIAS_BASE + ALIAS_SIZE, 62ull << 30, 0x1000) == ALIAS_BASE);
+    { /* what is not the game's in its addresses (mem_foreign), asked of the moved reservation: a named mapping over
+         guest memory moved into a GPU's buffer is the runtime's own, one beside it another owner's */
+        char out[64], want[64];
+        share_ok = 1;
+        CHECK(mem_migrate(HEAP_BASE, 0x1000, 7) == 0);
+        foreign.named[0][0] = HEAP_BASE, foreign.named[0][1] = HEAP_BASE + 0x1000;
+        foreign.named[1][0] = HEAP_BASE + 0x1000, foreign.named[1][1] = HEAP_BASE + 0x2000;
+        foreign.n = 2;
+        CHECK(mem_foreign(out, sizeof out) == 1 && foreign.lo == by + 0x8000000ull && foreign.hi == by + size);
+        snprintf(want, sizeof want, "%#llx", (unsigned long long)(HEAP_BASE + 0x1000));
+        CHECK(!strcmp(out, want));
+        CHECK(mem_unmigrate(HEAP_BASE, 0x1000) == 0);
+        CHECK(mem_foreign(out, sizeof out) == 2); /* moved back, it is no buffer's */
+        foreign.n = 0;
+        share_ok = 0;
+    }
     CHECK(mem_unmap(HEAP_BASE, 0x1000) == 0);
+    { /* a crash report's line on where a fault lies: below, in and past the moved layout, whose addresses are the
+         host's */
+        char out[256], want[256];
+        mem_place((void*)(uintptr_t)0x8000000ull, out, sizeof out);
+        snprintf(want, sizeof want, "0x8000000 lies below the game's address space, which starts at %#llx, by %#llx",
+                 (unsigned long long)(by + 0x8000000ull), (unsigned long long)by);
+        CHECK(!strcmp(out, want));
+        mem_place((void*)(uintptr_t)(by + (68ull << 30)), out, sizeof out);
+        snprintf(want, sizeof want, "%#llx lies in the game's address space, %#llx to %#llx: game address %#llx",
+                 (unsigned long long)(by + (68ull << 30)), (unsigned long long)(by + 0x8000000ull),
+                 (unsigned long long)(by + size), (unsigned long long)(by + (68ull << 30)));
+        CHECK(!strcmp(out, want));
+        mem_place((void*)(uintptr_t)(by + size + 0x5000), out, sizeof out);
+        snprintf(want, sizeof want,
+                 "%#llx lies past the end of the game's address space at %#llx, by 0x5000: its layout holds 128 GiB, "
+                 "the console's 512",
+                 (unsigned long long)(by + size + 0x5000), (unsigned long long)(by + size));
+        CHECK(!strcmp(out, want));
+        /* past the console's 512 GiB from the moved origin (the runtime's heap, a library): no layout's size to blame */
+        mem_place((void*)(uintptr_t)(by + AS_TOP), out, sizeof out);
+        snprintf(want, sizeof want,
+                 "%#llx lies past the end of the game's address space at %#llx, by %#llx, past the console's 512 GiB "
+                 "too",
+                 (unsigned long long)(by + AS_TOP), (unsigned long long)(by + size),
+                 (unsigned long long)(AS_TOP - size));
+        CHECK(!strcmp(out, want));
+        mem_place((void*)(uintptr_t)(by + AS_TOP - 1), out, sizeof out);
+        CHECK(strstr(out, ": its layout holds 128 GiB, the console's 512") != NULL);
+    }
     fflush(stdout);
     child = fork();
     if (!child) {
-        /* no core of the abort it waits for: the child holds the 48 GiB reservation, which a core_pattern pipe
+        /* no core of the abort it waits for: the child holds the 128 GiB reservation, which a core_pattern pipe
            (systemd-coredump, apport) reads for minutes, as it cannot skip the holes a file seeks over; the limit for a
            file, not dumpable for a pipe. The alarm ends a child that hangs anyway, which the WTERMSIG check names */
         struct rlimit none = {0, 0};
@@ -756,13 +949,21 @@ static void test_moved(void) {
     CHECK(munmap(reservation, reservation_size) == 0);
     CHECK(munmap(held, 2 * MIB) == 0);
     reserve_at_on = 0;
-    printf("moved layout: the 48 GiB tier from %#llx, %u checks passed\n", (unsigned long long)by, checks);
+    printf("moved layout: the 128 GiB tier from %#llx, %u checks passed\n", (unsigned long long)by, checks);
 #else
     printf("moved layout: skipped, as it takes the host's addresses from 64 GiB (Linux, without ASan)\n");
 #endif
 }
 
 int main(void) {
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
+    g_console = g_layout;
+#endif
+    { /* a crash before the reservation */
+        char out[96];
+        mem_place((void*)(uintptr_t)0x1234, out, sizeof out);
+        CHECK(!strcmp(out, "0x1234: no address space is reserved for the game yet"));
+    }
     hle_init();
     /* this host's pages, then those of hosts with larger ones (16 KiB: Apple silicon, some Android kernels; 64 KiB:
        PowerPC64 and some AArch64 distributions), which mem.c commits in whole */
@@ -776,6 +977,7 @@ int main(void) {
         }
         mapping_begins = mapping_ends = 0; /* test_mapping_boundary's, from the round before */
         mem_init();
+        CHECK(mem_ww_probe(NULL) == -1 && scanned == g_mem && g_mem); /* the tracking starts at g_mem */
         test_heap();
         test_large_heap();
         test_heap32();
@@ -788,6 +990,7 @@ int main(void) {
         test_shared_memory();
         test_host_pages();
         test_mapped_runs();
+        test_pool_walk();
         test_mapping_boundary(); /* last: every commit after it must be inside a mapping */
         CHECK(munmap(reservation, reservation_size) == 0);
         g_mem = NULL; /* the next round reserves it again */
@@ -795,11 +998,26 @@ int main(void) {
                (unsigned long long)(host_page >> 10), checks);
     }
     test_ladder();
+    test_alias_layouts();
     /* a system that gives less than 128 GiB: the largest tier it gives, in a smaller layout of that size */
     host_page = (u64)sysconf(_SC_PAGESIZE);
     refuse_above = 24ull << 30;
     mem_reserve();
     CHECK(g_mem && g_as_size == 24ull << 30 && g_layout.end == 24ull << 30);
+    { /* past a reservation smaller than the console's: a game address no layout here holds */
+        char out[256], want[256];
+        mem_place(g_mem + (24ull << 30) + 0x40, out, sizeof out);
+        snprintf(want, sizeof want,
+                 "%#llx lies past the end of the game's address space at %#llx, by 0x40: its layout holds 24 GiB, "
+                 "the console's 512",
+                 (unsigned long long)(uintptr_t)(g_mem + (24ull << 30) + 0x40),
+                 (unsigned long long)(uintptr_t)(g_mem + (24ull << 30)));
+        CHECK(!strcmp(out, want));
+        mem_place(g_mem + 0x1000, out, sizeof out);
+        CHECK(strstr(out, ": game address 0x1000") != NULL);
+        /* a reservation the system placed: no other owner's fixed address lies there, and nothing is looked at */
+        CHECK(mem_foreign(out, sizeof out) == -1 && !out[0] && !foreign.calls);
+    }
     CHECK(g_layout.alias == 4ull << 30 && g_layout.alias_size == 4ull << 30 && g_layout.heap == 8ull << 30 &&
           g_layout.heap_size == 8ull << 30 && g_layout.stack == 16ull << 30 && g_layout.stack_size == 2ull << 30 &&
           g_layout.kern == 23ull << 30 && g_layout.kern_end == 24ull << 30);

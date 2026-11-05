@@ -33,7 +33,6 @@ typedef struct {
     int landing;  /* being landed by some thread: the others wait */
 } Own;
 
-int g_own_any;
 static u64 g_own_lands; /* landings so far, for the statistics */
 static OwnHooks g_hooks;
 static int g_traps;    /* own_init found traps */
@@ -44,7 +43,8 @@ static PMutex g_own_lk = PMUTEX_INIT;
 static PMutex g_trap_lk = PMUTEX_INIT;
 static PCond g_own_cv;
 static Own* g_own;     /* sorted by lo, under g_own_lk */
-static u32 g_nown, g_capown;
+u32 g_nown;            /* own.h's own_any reads it without the lock */
+static u32 g_capown;
 /* The entries on each 4 MB region of guest memory, changed with them under g_own_lk and read without it: the GPU
    thread reads guest memory through copy_runs, which asked under the lock whether any entry was on each run it read,
    and with storage buffers kept on the GPU there almost always is one somewhere. Those lock round trips were about 2%
@@ -90,14 +90,13 @@ static void insert_nl(u32 i, const Own* o) {
     }
     memmove(&g_own[i + 1], &g_own[i], sizeof *g_own * (size_t)(g_nown - i));
     g_own[i] = *o;
-    g_nown++;
     cover_nl(o, 1);
-    __atomic_store_n(&g_own_any, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_nown, g_nown + 1, __ATOMIC_RELEASE);
 }
 static void remove_nl(u32 i) {
     cover_nl(&g_own[i], (u32)-1);
     memmove(&g_own[i], &g_own[i + 1], sizeof *g_own * (size_t)(g_nown - i - 1));
-    if (!--g_nown) __atomic_store_n(&g_own_any, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_nown, g_nown - 1, __ATOMIC_RELEASE);
 }
 static int page_owned_nl(u64 page) {
     u32 i = first_after_nl(page);
@@ -402,7 +401,7 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off) {
 u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     u64 end = addr + size;
     u32 i, n = 0;
-    if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE) || !region_owned(addr, end)) return 0;
+    if (!own_any() || !region_owned(addr, end)) return 0;
     pm_lock(&g_own_lk);
     for (i = first_after_nl(addr); i < g_nown && g_own[i].lo < end; i++, n++)
         if (n < max) {
@@ -443,8 +442,7 @@ u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max) {
     trapped = region_owned(lo, hi);
     if (trapped) {
         pm_lock(&g_own_lk);
-        trapped = __atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE) && first_after_nl(lo) < g_nown &&
-                  g_own[first_after_nl(lo)].lo < hi;
+        trapped = first_after_nl(lo) < g_nown && g_own[first_after_nl(lo)].lo < hi;
         pm_unlock(&g_own_lk);
     }
     /* No owner on its pages: read as they are. One just landed may still be armed until its landing lets it go; the
@@ -468,7 +466,7 @@ int own_hash(u64 addr, u64 size, u64* h) {
     u64 lo = addr & ~(g_page - 1), hi = (addr + size + g_page - 1) & ~(g_page - 1);
     u32 i;
     int any = 0;
-    if (!size || !__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE) || !region_owned(lo, hi)) return 0;
+    if (!size || !own_any() || !region_owned(lo, hi)) return 0;
     pm_lock(&g_own_lk);
     for (i = first_after_nl(lo); i < g_nown && g_own[i].lo < hi; i++) {
         const Own* o = &g_own[i];
@@ -485,13 +483,13 @@ int own_hash(u64 addr, u64 size, u64* h) {
 }
 
 void own_acquire(u64 addr, u64 size) {
-    if (!size || !__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) return;
+    if (!size || !own_any()) return;
     land_pages(addr & ~(g_page - 1), (addr + size + g_page - 1) & ~(g_page - 1));
 }
 
 void own_drop(u64 addr, u64 size) {
     ResList rel = {0};
-    if (!size || !__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) return;
+    if (!size || !own_any()) return;
     pm_lock(&g_own_lk);
     while (landing_nl(addr, addr + size)) pc_wait(&g_own_cv, &g_own_lk, -1);
     u32 first = first_after_nl(addr);

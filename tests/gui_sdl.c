@@ -452,6 +452,12 @@ static void app_select(App* app, int row) {
     key(app, SDLK_RETURN);
     if (app->editing && app->form == GUI_FORM_APP) leave_editor(app);
 }
+/* App's row stepped on with Right, as Theme goes round its themes (Enter opens their box) */
+static void app_step(App* app, int row) {
+    open_app(app, row);
+    key(app, SDLK_RIGHT);
+    if (app->editing && app->form == GUI_FORM_APP) leave_editor(app);
+}
 /* the theme editor's preview as last drawn, its pixels */
 static SDL_Surface* preview_pixels(App* app) {
     SDL_Surface* read;
@@ -1229,6 +1235,13 @@ static char* built_in_settings(void) {
 static char* debug_settings(void) {
     return snx_strdup("Display\tfullscreen\t0\tint\t0\t1\t1 = start in fullscreen\t\t0=0|1=1\n"
                       "Debug\tlog\t1\tint\t0\t2\tThe log's detail\tLog level\t0=0|1=1|2=2\n");
+}
+/* a runtime's list with two of the game's settings the recompile takes too (settings.txt's recompile) */
+static char* recompile_settings(void) {
+    return snx_strdup("Display\tfullscreen\t0\tint\t0\t1\t1 = start in fullscreen\t\t0=0|1=1\n"
+                      "Graphics\tresolution\t1\tfloat\t0.25\t16\tInternal 3D resolution\t\t\n"
+                      "Performance\tnce\t1\tint\t0\t1\tThe game's code runs natively\tNCE\t0=Off|1=On\n"
+                      "Debug\tslp_vectorizer\t0\tint\t0\t1\tLLVM's SLP vectorizer\tSLP vectorizer\t0=Off|1=On\n");
 }
 static int SDLCALL hang(void* unused) {
     (void)unused;
@@ -3496,10 +3509,10 @@ static void recompile_queue(App* app) {
     }
     go_tab(app, GUI_TAB_MENU);
 }
-/* the fake driver's wait for the test: until path is there (taken), ten seconds at most */
+/* the fake driver's wait for the test: until path is there and taken away, ten seconds at most. Windows refuses the
+   removal while the test still has the file open, and a file left there would be the next wait's step too */
 static void wait_taken(const char* path) {
-    for (int n = 0; n < 2000 && !snx_is_file(path); ++n) SDL_Delay(5);
-    remove(path);
+    for (int n = 0; n < 2000 && (!snx_is_file(path) || remove(path)); ++n) SDL_Delay(5);
 }
 int main(int argc, char** argv) {
 #ifdef _WIN32
@@ -3687,6 +3700,9 @@ int main(int argc, char** argv) {
     set_env_path("XDG_CACHE_HOME", xdg_root, "cache");
     /* the menu runs Switch inputs with the runtime it is part of, the other drivers from beside it */
     assert(initialize(&app, "/nonexistent/snx-gui-test/bin/scarletnx"));
+    /* no screen shows the frames: the software renderer on the dummy video has no vsync of its own, and SDL's would
+       sleep to the next 60th of a second at each present */
+    assert(SDL_SetRenderVSync(app.renderer, 0));
     app.open_url = record_url; /* no file manager opens on the machine */
     assert(!strcmp(app.self, "/nonexistent/snx-gui-test/bin/scarletnx"));
     assert(!strcmp(app.drivers, "/nonexistent/snx-gui-test/bin"));
@@ -6920,6 +6936,37 @@ int main(int argc, char** argv) {
         free(work);
         free(games);
     }
+    /* NCE Off and Debug's SLP vectorizer on in Settings, two of the game's settings the recompile takes too: a first
+       compile and R's recompile pass them, as -r reads them from its options alone; a setting of the run alone, never */
+    {
+        char *nro = snx_path_join(temporary, "recompile settings.nro"), *got = snx_path_join(temporary, "driver argv");
+        char* argv_got;
+        int r;
+        assert(!snx_write_file(nro, "fixture", 7));
+        snx_menu_settings = recompile_settings;
+        settings_forget(&app);
+        assert(settings_of(&app) && gui_settings_set(&app.settings, "nce", "0") &&
+               gui_settings_set(&app.settings, "slp_vectorizer", "1") &&
+               gui_settings_set(&app.settings, "resolution", "2"));
+        app.menu.selected = GUI_SWITCH;
+        driver_will(got, 0, "Recompiling recompile settings");
+        for (r = 0; r < 2; ++r) { /* not made: its first compile; then R on it */
+            app.recompile = r == 1;
+            launch(&app, snx_strdup(nro), false);
+            app.recompile = false;
+            argv_got = ran(&app, 0);
+            assert(has_arg(argv_got, "-r", nro) && has_arg(argv_got, "--nce=0", NULL) &&
+                   has_arg(argv_got, "--slp_vectorizer=1", NULL) && !has_arg(argv_got, "--resolution=2", NULL));
+            free(argv_got);
+        }
+        driver_will(NULL, 0, NULL);
+        snx_menu_settings = NULL;
+        settings_forget(&app);
+        app.menu.selected = GUI_LINUX;
+        assert(!remove(nro));
+        free(got);
+        free(nro);
+    }
 
     /* a dump with more than one folder of the recompiled library that can take its game: asked which, its Main first
        with what it is and the room each has; the one taken is its first compile's --outdir; Back starts nothing; with
@@ -10099,8 +10146,14 @@ int main(int argc, char** argv) {
         free(app.themes_dirs[0]);
         app.themes_dirs[0] = snx_strdup(themes);
         assert(!strcmp(app.theme.id, "default"));
-        app_select(&app, GUI_APP_THEME);
-        assert(!strcmp(app.theme.id, "yorha") && !app.editing && app.theme.panels == GUI_PANELS_FILL);
+        { /* the built-ins in their order, default first and the others by their folder's name; all on YoRHa's layout */
+            static const char* const next[] = {"fuddles", "fuddles-dark", "sepia-dark", "wimsy", "wimsy-dark", "yorha"};
+            size_t n;
+            for (n = 0; n < sizeof next / sizeof *next; ++n) {
+                app_step(&app, GUI_APP_THEME);
+                assert(!strcmp(app.theme.id, next[n]) && !app.editing && app.theme.panels == GUI_PANELS_FILL);
+            }
+        }
         app.menu.selected = GUI_SETTINGS;
         render(&app);
         page = rgb(app.theme.page);
@@ -10119,7 +10172,7 @@ int main(int argc, char** argv) {
                                      (float)(m.place.keys.y + m.place.keys.h / 2)),
                                page));
         }
-        app_select(&app, GUI_APP_THEME);
+        app_step(&app, GUI_APP_THEME);
         assert(!strcmp(app.theme.id, "custom") && !strcmp(app.theme.name, "Custom test"));
         assert(app.theme.panels == GUI_PANELS_FILL); /* its base's boxes */
         { /* its ink, no colour, said with the base's it keeps and the file */
@@ -10141,8 +10194,48 @@ int main(int argc, char** argv) {
         shows_big(&app, "TEST  /  MENU", ink, 2);
         shows(&app, "> " ICON_SETTINGS " Settings", page);
         shows(&app, "> " ICON_LOG_OUT " Exit", ink);
-        app_select(&app, GUI_APP_THEME);
+        app_step(&app, GUI_APP_THEME);
         assert(!strcmp(app.theme.id, "default") && !strcmp(app.app_form.theme, "Default"));
+        /* Enter on Theme: the box of themes, each by its name, the one shown in focus; the focus shows each theme it
+           reaches, ESC goes back to the one shown before and keeps nothing, Enter keeps the one in focus in app.ini */
+        open_app(&app, GUI_APP_THEME);
+        key(&app, SDLK_RETURN);
+        assert(app.picks_shown && app.picks_of == GUI_PICKS_THEME && app.picks.focus == 0 && app.picks.count == 8);
+        assert(!strcmp(app.theme_picks[0], "Default") && !strcmp(app.theme_picks[1], "Fuddles") &&
+               !strcmp(app.theme_picks[6], "YoRHa") && !strcmp(app.theme_picks[7], "Custom test"));
+        { /* the box's question names the theme ESC goes back to, under its tab */
+            char question[640];
+            const char* tab;
+            picks_question(&app, question, sizeof question, &tab);
+            assert(!tab[0] && /* no name beside the line in the default's dialog: the line says what the box is */
+                   !strcmp(question,
+                           "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to Default"));
+        }
+        render(&app);
+        key(&app, SDLK_DOWN);
+        assert(app.picks_shown && !strcmp(app.theme.id, "fuddles") && app.picks.focus == 1);
+        render(&app);                               /* the box over the screen, both in the theme in focus */
+        hides(&app, "Wimsy", rgb(app.theme.focus)); /* the focus on Fuddles, in its colour */
+        key(&app, SDLK_ESCAPE);
+        assert(!app.picks_shown && !strcmp(app.theme.id, "default"));
+        app_load(&app);
+        assert(!strcmp(app.theme.id, "default"));
+        open_app(&app, GUI_APP_THEME);
+        key(&app, SDLK_RETURN);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_RETURN);
+        assert(!app.picks_shown && !strcmp(app.theme.id, "fuddles-dark"));
+        app.message[0] = 0;
+        app_load(&app); /* kept for the next start */
+        assert(!strcmp(app.theme.id, "fuddles-dark") && !app.message[0]);
+        key(&app, SDLK_RETURN);
+        assert(app.picks_shown && app.picks.focus == 2);
+        key(&app, SDLK_UP);
+        key(&app, SDLK_UP);
+        key(&app, SDLK_RETURN);
+        assert(!strcmp(app.theme.id, "default"));
+        if (app.editing && app.form == GUI_FORM_APP) leave_editor(&app);
         free(custom_ini);
         free(custom);
         free(themes);
@@ -12292,6 +12385,53 @@ int main(int argc, char** argv) {
         app.browser = (GuiBrowser){0};
         app.theme = *gui_theme_builtin("default");
     }
+    /* Share Log's logs from a line's start (log_tail): a cut inside one would leave part of a home folder's path, which
+       the tilde no longer knows as one, and the account's name with it. A log within max whole; past it, from the first
+       line that starts in its last max bytes to its end, nothing when none does; CRs before LFs gone */
+    {
+        static const char lines[] = "[   0.10] first\r\n"
+                                    "[   0.20] fs: sdmc in C:\\Users\\Some One\\AppData\\Roaming\r\n"
+                                    "[   0.30] last\r\n";
+        char *path = snx_path_join(temporary, "tail.log"), *tail;
+        size_t cut = (size_t)(strstr(lines, "sers\\") - lines), size = sizeof lines - 1;
+        assert(!snx_write_file(path, lines, size));
+        tail = log_tail(path, size);
+        assert(!strcmp(
+            tail, "[   0.10] first\n[   0.20] fs: sdmc in C:\\Users\\Some One\\AppData\\Roaming\n[   0.30] last\n"));
+        free(tail);
+        tail = log_tail(path, size - cut); /* cut after "C:\U": the next line on */
+        assert(!strcmp(tail, "[   0.30] last\n"));
+        free(tail);
+        tail = log_tail(path, sizeof "[   0.30] last\r\n" - 1); /* cut where a line starts: from it */
+        assert(!strcmp(tail, "[   0.30] last\n"));
+        free(tail);
+        tail = log_tail(path, 3); /* inside the last line */
+        assert(!strcmp(tail, ""));
+        free(tail);
+        assert(!remove(path));
+        free(path);
+    }
+    /* a game's name in its own script, as UTF-8 has it, through Share Log's log_tail as it is, not a '?' a byte (an
+       accent, Japanese, a 4-byte character); each byte that is not UTF-8, and a NUL, one U+FFFD */
+    {
+        static const char log[] =
+            "[   0.10] ScarletNX - Caf\xc3\xa9 Racer\r\n"
+            "[   0.20] ScarletNX - \xe6\x9c\x88\xe3\x81\xae\xe6\x97\x85 the 1st \xf0\x9f\x98\x80\n"
+            "[   0.30] bad \xff\xc3( \xe6\x9c\n"
+            "[   0.40] nul \0 end\n";
+        static const char want[] =
+            "[   0.10] ScarletNX - Caf\xc3\xa9 Racer\n"
+            "[   0.20] ScarletNX - \xe6\x9c\x88\xe3\x81\xae\xe6\x97\x85 the 1st \xf0\x9f\x98\x80\n"
+            "[   0.30] bad \xef\xbf\xbd\xef\xbf\xbd( \xef\xbf\xbd\xef\xbf\xbd\n"
+            "[   0.40] nul \xef\xbf\xbd end\n";
+        char *path = snx_path_join(temporary, "names.log"), *tail;
+        assert(!snx_write_file(path, log, sizeof log - 1));
+        tail = log_tail(path, sizeof log);
+        assert(!strcmp(tail, want));
+        free(tail);
+        assert(!remove(path));
+        free(path);
+    }
     /* Share Log, on every system: share/ of Folders' Logs emptied of what was shared before, scarletnx-logs-<when>.zip
        in it (its summary.txt with the message and the last run's output), and that folder opened */
     {
@@ -12329,14 +12469,21 @@ int main(int argc, char** argv) {
         run_was = (char*)snx_read_file(app.run_log, &run_was_size);
         {
             char *game = snx_path_join(app.games_dir, "Some Game"), *log = snx_path_join(game, "Some Game.log");
+            /* the run wrote its log at yesterday's noon (UTC), 2.32 s after it began, with a build of a commit made
+               two days before: the summary says how much older the build is than the run, by the run's own time */
+            time_t ran = (time(NULL) / 86400 - 1) * 86400 + 43200, made = ran - 2 * 86400;
+            char committed[16], *crashed, *built;
+            assert(strftime(committed, sizeof committed, "%Y-%m-%d", gmtime(&made)) == 10);
             /* with CRLF lines, as a game log is on Windows (plat.c writes it in text mode) */
-            static const char crashed[] =
-                "[   0.00] ScarletNX - Some Game\r\n"
-                "[   0.00] build: ScarletNX main 1234abc (clang 23.1.3, Windows x86_64)\r\n"
-                "[   2.25] \r\n*** The game called svcBreak (reason 0, info 1300100df8, 4 bytes) ***\r\n"
-                "[   2.25]    #0 163d18d8 <_ZN2nn4diag6detail10VAbortImplEv+d8>\r\n"
-                "[   2.25]    #1 1683a358 <_ZN2nn3hid18GetNpadJoyHoldTypeEv+38>\r\n"
-                "[   2.32] FATAL: The game stopped (svcBreak, reason 0). See the .log for details.\r\n";
+            crashed =
+                snx_format("[   0.00] ScarletNX - Some Game\r\n"
+                           "[   0.00] build: ScarletNX main 1234abc, committed %s (clang 23.1.3, Windows x86_64)\r\n"
+                           "[   2.25] \r\n*** The game called svcBreak (reason 0, info 1300100df8, 4 bytes) ***\r\n"
+                           "[   2.25]    #0 163d18d8 <_ZN2nn4diag6detail10VAbortImplEv+d8>\r\n"
+                           "[   2.25]    #1 1683a358 <_ZN2nn3hid18GetNpadJoyHoldTypeEv+38>\r\n"
+                           "[   2.32] FATAL: The game stopped (svcBreak, reason 0). See the .log for details.\r\n",
+                           committed);
+            built = snx_format("**Build:** `main 1234abc`, committed %s, 2 days before this run\n", committed);
             /* the launcher's log: a failure written once however often it is said, shown in its box or not; a fatal
                error in the other log too; both in the shared file under their paths, after the recompile's */
             char *logs = snx_path_join(temporary, "launcher logs"), *console = console_in(logs);
@@ -12354,7 +12501,8 @@ int main(int argc, char** argv) {
                    !strstr(line + 1, "] a failure the log"));
             assert(strstr(text, "] a fatal error the log keeps\n"));
             free(text);
-            assert(!snx_mkdirs(game) && !snx_write_file(log, crashed, sizeof crashed - 1));
+            assert(!snx_mkdirs(game) && !snx_write_file(log, crashed, strlen(crashed)));
+            assert(!snx_set_file_time(log, (SnxU64)ran));
             assert(!run_kept(app.run_log, game, log, 1)); /* the run that wrote it, which named it */
             snprintf(app.message, sizeof(app.message), "before the log");
             share_pick(&app, 0);
@@ -12392,8 +12540,7 @@ int main(int argc, char** argv) {
             free(errors);
             free(console);
             free(logs);
-            assert(strstr(text, "== summary ==\n### `Some Game`") &&
-                   strstr(text, "**Build:** `ScarletNX main 1234abc (clang 23.1.3, Windows x86_64)`") &&
+            assert(strstr(text, "== summary ==\n### `Some Game`") && strstr(text, built) &&
                    strstr(text, "**Signature:** `svcBreak in _ZN2nn3hid18GetNpadJoyHoldTypeEv`") &&
                    strstr(text, "**In:** `nn::hid::GetNpadJoyHoldType()+38`"));
             assert(strstr(text, "== summary ==") < strstr(text, "== the last run: ") &&
@@ -12401,9 +12548,17 @@ int main(int argc, char** argv) {
             /* the log's copy, CR gone: no line ends in the '?' a CR would have become */
             assert(strstr(text, "ScarletNX - Some Game\n") && !strstr(text, "?\n"));
             free(text);
+            free(built);
             { /* the box's other two: the one log of before, alone, the zip gone, and the logs' folder opened; Back does
-                 neither */
+                 neither. The one log has each home folder as ~, as the zip: the account's name, spaces and all, is the
+                 player's, Windows' and a POSIX system's alike */
+                static const char homes[] =
+                    "[   2.40] fs: sdmc in C:\\Users\\Some One\\AppData\\Roaming\\scarletnx\\sdmc\r\n"
+                    "[   2.40] fs: saves in /home/some one/.local/share/scarletnx/saves\r\n";
                 char *one = snx_path_join(share, "scarletnx.log"), *want, *url, *before = shared_path(&app);
+                char* homed = snx_format("%s%s", crashed, homes);
+                assert(!snx_write_file(log, homed, strlen(homed)));
+                free(homed);
                 snprintf(app.message, sizeof(app.message), "before the one log");
                 assert(before && snx_is_file(before));
                 share_pick(&app, 1);
@@ -12412,6 +12567,9 @@ int main(int argc, char** argv) {
                 free(before);
                 text = (char*)snx_read_file(one, &size);
                 assert(text && strstr(text, "Message: before the one log") && strstr(text, "== the last run: "));
+                assert(strstr(text, "] fs: sdmc in ~\\AppData\\Roaming\\scarletnx\\sdmc\n") &&
+                       strstr(text, "] fs: saves in ~/.local/share/scarletnx/saves\n") && !strstr(text, "Some One") &&
+                       !strstr(text, "some one"));
                 free(text);
                 free(want);
                 assert(!remove(one));
@@ -12449,6 +12607,7 @@ int main(int argc, char** argv) {
                 free(one);
             }
             assert(!snx_remove_tree(game));
+            free(crashed);
             free(log);
             free(game);
         }

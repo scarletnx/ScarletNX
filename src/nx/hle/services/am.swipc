@@ -182,7 +182,7 @@ interface nn::am::service::IApplicationFunctions {
                                              buffer<u8, 0x45> image);
     @stub [110] QueryApplicationPlayStatistics(array<nn::pdm::ApplicationPlayStatistics, 6> statistics,
                                                array<nn::ApplicationId, 5> application_ids) -> i32 count;
-    @stub [120] ExecuteProgram(u32 kind, u64 value);
+    [120] ExecuteProgram(u32 kind, u64 value);
     # 6.0.0+: what a program hands the next one it launches, popped as LaunchParameterKind UserChannel
     [121] ClearUserChannel();
     [122] UnpopToUserChannel(object<nn::am::service::IStorage> storage);

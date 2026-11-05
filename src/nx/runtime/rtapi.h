@@ -14,5 +14,16 @@ int hints_add(u64 pc);      /* records one nonzero address, returns 1 only when 
 void snx_fpcr_apply(CPU* c); /* the thread's FPCR as it starts and on each write */
 /* the hints so far, loaded and found, in the order they were found: malloc'd (the caller frees), NULL when none */
 u64* hints_copy(size_t* count);
+/* C11's _Noreturn, which C99 code (it includes this) has not: plat.h's SNX_NORETURN */
+#ifndef SNX_NORETURN
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define SNX_NORETURN _Noreturn
+#else
+#define SNX_NORETURN
+#endif
+#endif
+/* the end of a game that went to pc, where no code is (a call through an empty pointer comes at 0), why it has none
+   said: the report of c's thread and its caller, then the fatal. rt_miss's, and NCE's when native code branched there */
+SNX_NORETURN void rt_missed_report(CPU* c, u64 pc, const char* why);
 
 #endif

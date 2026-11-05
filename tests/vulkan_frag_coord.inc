@@ -90,6 +90,31 @@ static int frag_coord_expect(GpuChannel* channel, u64 target, int y_from_bottom,
     return 0;
 }
 
+/* The viewport transform off (0x64B 0): the program's position is in pixels of the surface clip, whatever the scale
+   and offset registers hold, as the console takes it (Eden's position_pass.cpp and UpdateViewportsState). A game that
+   turned it off and drew a full-screen quad in pixels with the scale and offset of its 1920x1080 window still set
+   got the quad in the top-right quarter, those registers taken for the transform. Here a triangle over the pixels
+   x < 2, y < 2 of the 4x4 target, with registers that would map all of clip space's [-1, 1] onto the target: only
+   those four pixels are drawn, counted from the top upper left and from the bottom lower left. Every pixel the draw
+   leaves keeps the clear's (1, 0) */
+static int window_position_expect(GpuChannel* channel, u64 target, int lower_left) {
+    float got[4][4][2];
+    CHECK(!frag_coord_draw(channel, target, got));
+    for (u32 row = 0; row < 4; row++)
+        for (u32 x = 0; x < 4; x++) {
+            float y = lower_left ? 4.0f - ((float)row + 0.5f) : (float)row + 0.5f; /* the pixel's window y */
+            int in = x < 2 && y < 2.0f;
+            float want_x = in ? (float)x + 0.5f : 1.0f, want_y = in ? y : 0.0f;
+            if (got[row][x][0] != want_x || got[row][x][1] != want_y) {
+                fprintf(stderr, "window position: %s, pixel (%u, %u) read (%g, %g), expected (%g, %g)\n",
+                        lower_left ? "lower left" : "upper left", x, row, got[row][x][0], got[row][x][1], want_x,
+                        want_y);
+                CHECK(0);
+            }
+        }
+    return 0;
+}
+
 /* A fragment program's position (IPA of a[0x70] and a[0x74]) with the window origin upper left and lower left
    (WINDOW_ORIGIN 0x4EB bit 0): in a lower-left window y counts up from the bottom of the surface clip (0x3FE's height),
    as the viewport and the scissor measure it. A game's GL driver leaves its gl_FragCoord transform (c0[0xF00]) the
@@ -152,6 +177,30 @@ static int check_frag_coord_origin(void) {
     r[0x4eb] = 1;
     CHECK(!frag_coord_expect(channel, target, 1, 8));
     printf("frag coord: the fragment's y from the first row upper left, from the surface clip's bottom lower left\n");
+    /* the viewport transform off, positions in pixels from a buffer of their own (window_position_expect), the scale
+       and offset an upper-left 4x4 transform's */
+    const float pixels[12] = {2, 2, 0, 1, -6, 2, 0, 1, 2, -6, 0, 1};
+    const u64 pixel_positions = address + 0x13000;
+    for (u32 i = 0; i < 12; i++) {
+        u32 word;
+        memcpy(&word, pixels + i, 4);
+        snx_st_le32(bytes + 4 * i, word);
+    }
+    CHECK(!gmem_write(pixel_positions, bytes, sizeof bytes));
+    r[0x701] = (u32)(pixel_positions >> 32);
+    r[0x702] = (u32)pixel_positions;
+    r[0x7c0] = (u32)((pixel_positions + sizeof bytes - 1) >> 32);
+    r[0x7c1] = (u32)(pixel_positions + sizeof bytes - 1);
+    const float upper_left[6] = {2, -2, 0.5f, 2, 2, 0.5f};
+    memcpy(r + 0x280, upper_left, sizeof upper_left);
+    r[0x3fe] = 4u << 16;
+    r[0x64b] = 0;
+    r[0x4eb] = 0;
+    CHECK(!window_position_expect(channel, target, 0));
+    r[0x4eb] = 1;
+    CHECK(!window_position_expect(channel, target, 1));
+    r[0x64b] = 1;
+    printf("window position: with the viewport transform off, positions are pixels of the surface clip\n");
     free(channel);
     return 0;
 }

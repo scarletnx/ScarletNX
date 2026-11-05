@@ -602,8 +602,13 @@ static void compile(Module* mod, const Program* p, SnxCodegen* codegen, char opt
 /* one run of the program on mod, a miss running ref's code: the records in r, the end in end, the memory in memory */
 static void run(const Program* p, Module* mod, Module* ref, SnxCodegen* codegen, Run* r, CPU* end,
                 unsigned char* memory) {
-    static const RtAPI rt = {
-        .svc = on_svc, .undef = on_undef, .brk = on_brk, .fpcr_changed = on_fpcr, .poll = on_poll, .miss = on_miss};
+    static const RtAPI rt = {.svc = on_svc,
+                             .undef = on_undef,
+                             .brk = on_brk,
+                             .fpcr_changed = on_fpcr,
+                             .poll = on_poll,
+                             .miss = on_miss,
+                             .cas128 = snx_runtime_cas128};
     GuestFn disp[WORDS] = {0};
     CPU c;
     size_t i;

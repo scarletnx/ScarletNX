@@ -7,6 +7,7 @@
 #define _GNU_SOURCE /* REG_RIP, pipe2 */
 #endif
 #include "nx/runtime/platform/plat.h"
+#include "common/utilities/bits.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/runtime/platform/log.h"
@@ -550,6 +551,9 @@ void plat_vm_track(u8* p, u64 size) {
             pm = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
             if (pm >= 0) {
                 g_pagemap = pm;
+                if (g_settings.write_tracking_hot_pages == 1)
+                    WARN("memory: write_tracking_hot=1 leaves pages hot only where page protection tracks the writes, "
+                         "and userfaultfd tracks them here (write_tracking=0): no page is hot this run\n");
                 if (traps_by_signal()) wp_init(p, size, 0); /* the states for the traps alone */
                 return;
             }
@@ -561,6 +565,9 @@ void plat_vm_track(u8* p, u64 size) {
     }
 #endif
     (void)by_signal;
+    if (no_ww && g_settings.write_tracking_hot_pages == 1)
+        WARN("memory: write_tracking_hot=1 leaves pages hot only where page protection tracks the writes, and "
+             "write_tracking=2 tracks none: no page is hot this run\n");
     /* the states also serve traps by protection, where userfaultfd's minor faults don't (plat_trap_init) */
     if (!no_ww || !g_uffd_minor_on() || traps_by_signal()) wp_init(p, size, !no_ww);
 }
@@ -603,6 +610,17 @@ static unsigned g_wp_shift; /* the host's page, log2 */
 static u64 g_wp_budget;     /* atomic: pages the tracking and the traps may hold at once */
 static u64 g_wp_held;       /* atomic: pages they hold now (WP_PROT or WP_TRAP) */
 static u32 g_wp_opened;     /* atomic: moves whenever pages become writable (a fault's, a mapping change's) */
+/* Hot pages (write_tracking_hot=1): a page the scans of its leaf report written WP_HOT_AFTER times in a row is left
+   writable, and reported written by every scan after without its fault, as a page written in every epoch would be;
+   at its WP_HOT_AFTER + WP_HOT_FOR-th report in a row it is protected again and counted from zero, so a page no longer
+   written goes quiet. A scan that finds it unwritten, a trap or a mapping change starts its count over. Reporting a
+   page written when it wasn't costs a cache a hash, but a render target's write-back a pixel: it keeps memory's bytes
+   on the pages written since its baseline, so it protects its hot pages again first (plat_ww_cool). The count, a byte
+   per host page, changes under the page's lock */
+#define WP_HOT_AFTER 2
+#define WP_HOT_FOR   32
+static u8* g_wp_hot;   /* the counts; NULL with write_tracking_hot=0 */
+static u64 g_wp_hot_n; /* atomic: pages hot now (counted WP_HOT_AFTER or more) */
 /* this thread's state. The fault handlers read it, so wp_thread_start touches it before the thread can fault: on
    Darwin a thread's first access to a _Thread_local variable may allocate, which a signal handler mustn't */
 static _Thread_local struct {
@@ -620,13 +638,14 @@ static u8 *g_frz_lo, *g_frz_hi;
 static int g_frozen; /* a futex word: 1 while frozen */
 static void fault_handler_install(void);
 /* Ranges the kernel is writing now (plat_ww_open to plat_ww_close), which scans don't protect again. A slot is claimed
-   (busy 1), filled, then published (busy 2) before any of its pages is opened, so a scan that locks such a page finds
-   it published */
+   (busy), filled, then published (its bit in g_ww_open_live) before any of its pages is opened, so a scan that locks
+   such a page finds it published */
 #define WW_OPEN_N 32
-static int g_ww_open_busy[WW_OPEN_N]; /* atomic */
+static int g_ww_open_busy[WW_OPEN_N]; /* atomic: claimed */
 static u8* g_ww_open_lo[WW_OPEN_N];
 static u8* g_ww_open_hi[WW_OPEN_N];
-static int g_ww_open_n; /* atomic: slots claimed, to skip the search */
+static u32 g_ww_open_live; /* atomic: the published slots, a bit each, read in one load */
+typedef char snx_ww_open_in_a_word[WW_OPEN_N <= 32 ? 1 : -1];
 
 /* touches t_plat_posix, which the fault handlers use, before the thread can fault */
 static void wp_thread_start(void) {
@@ -647,6 +666,26 @@ static u8 wp_lock(u64 i) {
     }
 }
 static void wp_unlock(u64 i, u8 s) { __atomic_store_n(&g_wp[i], s, __ATOMIC_RELEASE); }
+/* page i's count starts over (its lock held) */
+static void wp_hot_over(u64 i) {
+    u8 n = g_wp_hot ? __atomic_load_n(&g_wp_hot[i], __ATOMIC_RELAXED) : 0;
+    if (!n) return;
+    if (n >= WP_HOT_AFTER) __atomic_fetch_sub(&g_wp_hot_n, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_wp_hot[i], 0, __ATOMIC_RELAXED);
+}
+/* page i, locked, written and about to be reported by a scan: 1 when it stays writable, hot; 0 when it is protected */
+static int wp_hot_report(u64 i) {
+    unsigned n;
+    if (!g_wp_hot) return 0;
+    n = __atomic_load_n(&g_wp_hot[i], __ATOMIC_RELAXED) + 1u;
+    if (n == WP_HOT_AFTER + WP_HOT_FOR) { /* protected again, and hot again only after WP_HOT_AFTER reports */
+        wp_hot_over(i);
+        return 0;
+    }
+    if (n == WP_HOT_AFTER) __atomic_fetch_add(&g_wp_hot_n, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_wp_hot[i], (u8)n, __ATOMIC_RELAXED);
+    return n >= WP_HOT_AFTER;
+}
 /* the host pages [*lo, *hi) of [p, p + size), within the reservation: 0, or -1 when there are none */
 static int wp_pages(const u8* p, u64 size, u64* lo, u64* hi) {
     u64 mask = ((u64)1 << g_wp_shift) - 1, a, e, end = g_wp_pages << g_wp_shift;
@@ -680,6 +719,7 @@ static void wp_let(const u8* p, u64 size, u8 to, int changed) {
         if (!to && !s) continue;
         if (changed && (s & (WP_PROT | WP_TRAP))) freed++;
         if (changed && (s & WP_TRAP)) woken = 1;
+        if (changed) wp_hot_over(i);
         wp_unlock(i, changed ? to : (u8)(s & ~(WP_LOCK | WP_CLEAN)));
     }
     if (freed) __atomic_fetch_sub(&g_wp_held, freed, __ATOMIC_RELAXED);
@@ -695,11 +735,10 @@ static int frozen_at(const void* a) {
 static int wp_kernel_writing(u64 i) {
     u8* a = g_wp_base + (i << g_wp_shift);
     u8* e = a + ((u64)1 << g_wp_shift);
-    int k;
-    if (!__atomic_load_n(&g_ww_open_n, __ATOMIC_SEQ_CST)) return 0;
-    for (k = 0; k < WW_OPEN_N; k++)
-        if (__atomic_load_n(&g_ww_open_busy[k], __ATOMIC_SEQ_CST) == 2 && g_ww_open_lo[k] < e && g_ww_open_hi[k] > a)
-            return 1;
+    for (u32 live = __atomic_load_n(&g_ww_open_live, __ATOMIC_SEQ_CST); live; live &= live - 1) {
+        u32 k = snx_ctz32(live);
+        if (g_ww_open_lo[k] < e && g_ww_open_hi[k] > a) return 1;
+    }
     return 0;
 }
 /* a protection change failed for want of mappings: the budget comes down to half what is held, and every page the
@@ -889,7 +928,7 @@ static void wp_protect(u64 i, u64 n, void (*cb)(u8* p, u64 size)) {
     if (shed) wp_shed();
 }
 static int wp_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
-    u64 i, lo, hi, run = 0, n = 0;
+    u64 i, lo, hi, run = 0, n = 0, page = (u64)1 << g_wp_shift;
     if (wp_pages(p, size, &lo, &hi)) return size ? -1 : 0;
     for (i = lo; i < hi; i++) {
         u8 s = __atomic_load_n(&g_wp[i], __ATOMIC_RELAXED);
@@ -897,10 +936,21 @@ static int wp_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
             s = wp_lock(i);
             /* written, and no system call writing it: locked until its run is protected */
             if ((s & (WP_MAPPED | WP_CLEAN | WP_ARMED | WP_TRAP)) == WP_MAPPED && !wp_kernel_writing(i)) {
-                if (!n) run = i;
-                n++;
+                if (!wp_hot_report(i)) {
+                    if (!n) run = i;
+                    n++;
+                    continue;
+                }
+                if (n) wp_protect(run, n, cb);
+                n = 0;
+                wp_unlock(i, s); /* hot: written, and left writable */
+                cb(g_wp_base + (i << g_wp_shift), page);
                 continue;
             }
+            wp_unlock(i, s);
+        } else if (g_wp_hot && __atomic_load_n(&g_wp_hot[i], __ATOMIC_RELAXED)) {
+            s = wp_lock(i); /* not written since the last scan, or a trap's: its count starts over */
+            if ((s & (WP_MAPPED | WP_CLEAN | WP_ARMED | WP_TRAP)) != WP_MAPPED) wp_hot_over(i);
             wp_unlock(i, s);
         }
         if (n) wp_protect(run, n, cb);
@@ -945,6 +995,19 @@ static void wp_init(u8* p, u64 size, int track) {
     g_wp_shift = shift;
     __atomic_store_n(&g_wp_budget, budget, __ATOMIC_RELAXED);
     g_wp_track = track;
+    if (track && g_settings.write_tracking_hot_pages == 1) {
+        void* h = mmap(NULL, (size_t)(size >> shift), PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (h == MAP_FAILED)
+            WARN("memory: write_tracking_hot=1 needs %llu bytes for its counts, which mmap refused (error %d): no page "
+                 "is hot this run\n",
+                 (unsigned long long)(size >> shift), errno);
+        else {
+            g_wp_hot = (u8*)h;
+            LOG("memory: hot pages (write_tracking_hot=1): a page written in %d scans in a row stays writable for %d\n",
+                WP_HOT_AFTER, WP_HOT_FOR);
+        }
+    }
     wp_thread_start();
     __atomic_store_n(&g_wp, (u8*)s, __ATOMIC_RELEASE);
 }
@@ -978,8 +1041,7 @@ void plat_ww_open(u8* p, u64 size) {
     }
     g_ww_open_lo[slot] = p;
     g_ww_open_hi[slot] = p + size;
-    __atomic_fetch_add(&g_ww_open_n, 1, __ATOMIC_SEQ_CST);
-    __atomic_store_n(&g_ww_open_busy[slot], 2, __ATOMIC_SEQ_CST);
+    __atomic_fetch_or(&g_ww_open_live, 1u << slot, __ATOMIC_SEQ_CST);
     /* a range being moved (plat_freeze) takes the write when the move is done: opened now, the kernel would write
        the old pages, which the move has copied already */
     frozen_until_thaw(p, p + size);
@@ -1008,15 +1070,43 @@ void plat_ww_open(u8* p, u64 size) {
     }
 }
 void plat_ww_close(u8* p, u64 size) {
-    int k;
     if (!g_wp_track || !g_wp) return;
-    for (k = 0; k < WW_OPEN_N; k++)
-        if (__atomic_load_n(&g_ww_open_busy[k], __ATOMIC_SEQ_CST) == 2 && g_ww_open_lo[k] == p &&
-            g_ww_open_hi[k] == p + size) {
-            __atomic_store_n(&g_ww_open_busy[k], 0, __ATOMIC_SEQ_CST);
-            __atomic_fetch_sub(&g_ww_open_n, 1, __ATOMIC_SEQ_CST);
+    for (u32 live = __atomic_load_n(&g_ww_open_live, __ATOMIC_SEQ_CST); live; live &= live - 1) {
+        u32 k = snx_ctz32(live);
+        /* the bit this close took, so two closes of one range free two slots */
+        if (g_ww_open_lo[k] == p && g_ww_open_hi[k] == p + size &&
+            __atomic_fetch_and(&g_ww_open_live, ~(1u << k), __ATOMIC_SEQ_CST) & 1u << k) {
+            __atomic_store_n(&g_ww_open_busy[k], 0, __ATOMIC_RELEASE);
             return;
         }
+    }
+}
+int plat_ww_hot_in(const u8* p, u64 size) {
+    u64 i, lo, hi;
+    if (!g_wp_hot || !__atomic_load_n(&g_wp_hot_n, __ATOMIC_RELAXED) || wp_pages(p, size, &lo, &hi)) return 0;
+    for (i = lo; i < hi; i++)
+        if (__atomic_load_n(&g_wp_hot[i], __ATOMIC_RELAXED) >= WP_HOT_AFTER) return 1;
+    return 0;
+}
+void plat_ww_cool(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
+    u64 i, lo, hi, run = 0, n = 0;
+    if (!g_wp_hot || !__atomic_load_n(&g_wp_hot_n, __ATOMIC_RELAXED) || wp_pages(p, size, &lo, &hi)) return;
+    /* each hot page locked, its count over, and protected in runs and reported (wp_protect), as a scan does */
+    for (i = lo; i < hi; i++) {
+        if (__atomic_load_n(&g_wp_hot[i], __ATOMIC_RELAXED) >= WP_HOT_AFTER) {
+            u8 s = wp_lock(i);
+            wp_hot_over(i);
+            if ((s & (WP_MAPPED | WP_CLEAN | WP_ARMED | WP_TRAP)) == WP_MAPPED && !wp_kernel_writing(i)) {
+                if (!n) run = i;
+                n++;
+                continue;
+            }
+            wp_unlock(i, s);
+        }
+        if (n) wp_protect(run, n, cb);
+        n = 0;
+    }
+    if (n) wp_protect(run, n, cb);
 }
 
 #if defined(__linux__) && defined(PAGEMAP_SCAN)
@@ -1338,6 +1428,108 @@ void plat_gpu_buffer_free(int fd, void* handle, u64 size) {
 #endif
 }
 
+#if defined(__linux__)
+/* the alias pool's memfd, whose name its mappings carry in /proc/self/maps */
+#define ALIAS_NAME "snx-alias"
+#define ALIAS_MAPS "/memfd:" ALIAS_NAME " (deleted)"
+/* Each whole line of the maps read from fd, to line(line, ctx), which stops the reading by returning nonzero. 0 at the
+   end of the file or when line stopped it; -1 when a read fails (errno), which says nothing of what follows: the
+   caller must not take the lines it did not get as unmapped. read(2) into a buffer of its own, so a crash handler may
+   call it */
+static int maps_lines(int fd, int (*line)(char*, void*), void* ctx) {
+    char buf[8192];
+    size_t have = 0;
+    for (;;) {
+        ssize_t n = read(fd, buf + have, sizeof buf - 1 - have);
+        char *at = buf, *nl;
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) return -1;
+        if (n == 0) return 0;
+        have += (size_t)n;
+        while ((nl = (char*)memchr(at, '\n', have - (size_t)(at - buf)))) {
+            *nl = 0;
+            if (line(at, ctx)) return 0;
+            at = nl + 1;
+        }
+        have -= (size_t)(at - buf);
+        memmove(buf, at, have);
+        if (have == sizeof buf - 1) have = 0; /* a line longer than the buffer, none of /proc/self/maps' */
+    }
+}
+/* plat_vm_foreign over one reading of the maps */
+typedef struct {
+    u64 lo, hi, cursor; /* the range, and how far the lines read so far reach into it */
+    int (*own)(u64 a, u64 b);
+    char* out;
+    size_t size, at;
+    int found;
+} Foreign;
+/* one more thing of the process in the range, said after the ones before as far as out holds it */
+static void foreign_add(Foreign* f, const char* what, u64 a, u64 b, const char* perms, const char* name) {
+    f->found++;
+    if (f->at < f->size) {
+        int n = snprintf(f->out + f->at, f->size - f->at, "%s%s %#llx-%#llx%s%s%s%s", f->at ? "; " : "", what,
+                         (unsigned long long)a, (unsigned long long)b, perms ? " " : "", perms ? perms : "",
+                         name ? " " : "", name ? name : "");
+        f->at += n > 0 ? (size_t)n : 0;
+        if (f->at >= f->size) f->at = f->size; /* cut: out ends where it was full */
+    }
+}
+/* A run the maps listed with nothing in it, unless it is mapped whole now. The maps are read in pieces while other
+   threads map and unmap, and a kernel that finds its place again by the mappings it listed may miss one that changed
+   between two pieces: msync, which fails with ENOMEM on a range with a hole, asks again. A system call, so a crash
+   handler may call it */
+static int unmapped(u64 a, u64 b) {
+    int err = errno, hole = msync((void*)(uintptr_t)a, (size_t)(b - a), MS_ASYNC) != 0;
+    errno = err;
+    return hole;
+}
+/* one line of /proc/self/maps: start-end perms offset dev inode [name] */
+static int foreign_line(char* line, void* ctx) {
+    Foreign* f = (Foreign*)ctx;
+    unsigned long long a, b;
+    char perms[8];
+    int name_at = 0;
+    const char* name;
+    if (sscanf(line, "%llx-%llx %7s %*s %*s %*s %n", &a, &b, perms, &name_at) < 3 || b <= f->lo) return 0;
+    if (a >= f->hi) return 1; /* the maps are in address order: the rest lies past the range */
+    if (a > f->cursor && unmapped(f->cursor, a)) foreign_add(f, "nothing mapped at", f->cursor, a, NULL, NULL);
+    if (b > f->cursor) f->cursor = b;
+    name = name_at ? line + name_at : "";
+    if (name[0] && strcmp(name, ALIAS_MAPS) && !(f->own && f->own(a > f->lo ? a : f->lo, b < f->hi ? b : f->hi)))
+        foreign_add(f, "mapped at", a, b, perms, name);
+    return 0;
+}
+/* plat_vm_foreign over the maps read from fd */
+static int foreign_scan(int fd, u64 lo, u64 hi, int (*own)(u64 a, u64 b), char* out, size_t size) {
+    Foreign f = {.lo = lo, .hi = hi, .cursor = lo, .own = own, .out = out, .size = size};
+    if (size) out[0] = 0;
+    if (maps_lines(fd, foreign_line, &f)) {
+        if (size) out[0] = 0;
+        return -1;
+    }
+    if (f.cursor < hi && unmapped(f.cursor, hi)) foreign_add(&f, "nothing mapped at", f.cursor, hi, NULL, NULL);
+    return f.found;
+}
+#endif
+int plat_vm_foreign(u64 lo, u64 hi, int (*own)(u64 a, u64 b), char* out, size_t size) {
+#if defined(__linux__)
+    int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC), found, err;
+    if (size) out[0] = 0;
+    if (fd < 0) return -1;
+    found = foreign_scan(fd, lo, hi, own, out, size);
+    err = errno;
+    close(fd);
+    errno = err;
+    return found;
+#else
+    (void)lo, (void)hi, (void)own;
+    if (size) out[0] = 0;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
 /* The alias pool (Linux and Android): one memfd, as large as asked and sparse, whose pages mem.c maps at guest
    addresses with MAP_SHARED, so two addresses of the reservation (and a service's mapping outside it) are the same
    pages, and a freed range is punched out so it reads zero when handed out again. The other systems here keep mem.c's
@@ -1348,7 +1540,7 @@ static u64 g_alias_size;
 
 int plat_alias_init(u64 size) {
 #if defined(__linux__) && defined(SYS_memfd_create) && defined(FALLOC_FL_PUNCH_HOLE)
-    long fd = syscall(SYS_memfd_create, "snx-alias", 1u /* MFD_CLOEXEC */);
+    long fd = syscall(SYS_memfd_create, ALIAS_NAME, 1u /* MFD_CLOEXEC */);
     if (fd < 0) return -1;
     if (ftruncate((int)fd, (off_t)size)) {
         close((int)fd);
@@ -2120,7 +2312,7 @@ static void crash_signal(int sig, siginfo_t* si, void* ctx) {
     log_crash_mode();
     /* for SIGILL and SIGFPE si_addr is the instruction, not an address it touched */
     fault = sig == SIGSEGV || sig == SIGBUS ? si->si_addr : NULL;
-    nce_crash_context(ctx); /* the guest's registers, when the native code of the game crashed */
+    nce_crash_context(ctx, fault); /* the guest's registers, when the native code of the game crashed */
     crash_report(context_pc(ctx), fault, sig);
     _exit(1);
 }
@@ -2155,6 +2347,9 @@ void plat_install_crash_handler(void) {
     sa.sa_flags = SA_RESETHAND | SA_ONSTACK;
     sigaction(SIGABRT, &sa, NULL);
 }
+/* the fault signals' handler sees a fault in the game's code already: nothing to note, nothing to put back */
+void plat_crash_code_module(const void* inside) { (void)inside; }
+void plat_crash_handler_check(void) {}
 
 void plat_prof_start(void) {}
 

@@ -5,7 +5,7 @@
 #include "nx/memory/own.h"
 #include "nx/memory/mem.h"
 
-int g_own_any;
+u32 g_nown;
 void own_acquire(u64 addr, u64 size) {
     (void)addr;
     (void)size;

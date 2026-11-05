@@ -114,9 +114,10 @@ itself.
 - **A32 blocks call the 32-bit runtime library in their arena.** The executor (`common/cpu/arm/exec.c`) loads
   `armlib` into its code arena first, as `arena_load` does with `rtlib` for A64, so blocks share one TOC and reach
   the runtime only through `cpu->rt`. The Linux runtime runs 32-bit programs on PowerPC64 with it.
-- **Rounding stays on the slow path.** LLVM 19 lowers `llvm.roundeven` to a libm call on POWER8, and fails on its
-  vector form, so FRINTN and the rounding conversions use the software path. Fused multiply-add is a fast path, as
-  POWER always has it.
+- **Rounding mostly stays on the fast path.** LLVM 23 still lowers `llvm.roundeven` to a libm call on POWER8, and
+  fails on its vector form, so FRINTN and the conversions in that mode use the software path (FPCR's own mode, which
+  may select it, too). The other modes are instructions. Fused multiply-add and square root are fast paths on the
+  scalar FPU of every PowerPC64, and on the vectors where VSX is there.
 - **SDL3 is built without AltiVec** (`cmake/dependencies.cmake`): its blitters prefetch with `dstt`, which the ISA
   phased out and qemu traps.
 

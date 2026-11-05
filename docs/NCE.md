@@ -9,6 +9,7 @@
 * [The guest's addresses: moved above 64 GiB](#the-guests-addresses-moved-above-64-gib)
 * [The system counter: read in its stub](#the-system-counter-read-in-its-stub)
 * [An SVC outside the analysed code: the net](#an-svc-outside-the-analysed-code-the-net)
+* [The runtime's calls into the game's code](#the-runtimes-calls-into-the-games-code)
 * [Against the recompiled code](#against-the-recompiled-code)
 * [Tests](#tests)
 
@@ -69,14 +70,28 @@ base: `the code region from ...`.
 
 Limits:
 
-- The guest's addresses stay below `AS_MAX` (128 GiB), so they fit in 39 bits. That leaves Android 64 GiB of address
-  space at most (Linux has 128; without NCE the game gets 512).
+- The guest's addresses stay below `AS_TOP` (512 GiB), which the tables indexed by them are sized for, so they fit in
+  39 bits. NCE's address space is at most the console's 128 GiB layout (`AS_MAX`), its 64 GiB alias region among
+  them, which Android's moved layout keeps from any base up to 384 GiB; where none of those is free a smaller tier
+  takes it, with a smaller alias region (32 GiB in 64, 16 GiB in 48). Without NCE the game gets 512.
 - The 36-bit address space (NPDM type 1, games of SDKs before 2.0) has to lie below 64 GiB with its code at 128 MiB,
   where ART is. Android recompiles those games ahead of time and says so; a `.nce` brought from Linux ends the game
   with the base it found. The NPDM has no ASLR bit to ask for fixed code otherwise (Eden reads bits 0 to 3 of its
   flags, the 64-bit bit and the address space type).
 - The base is the first free one, so a phone gives the same base run after run. A save state from a run of another
   base holds addresses of that base.
+- A crash report places the fault's address against the layout (`mem_place`): in it, below its base (an address the
+  move left out) or past its end (one a layout smaller than the console's 512 GiB does not hold), and how far.
+
+The guest's addresses share the process with ART's heap and JIT, the allocator and the GPU's driver. The reservation
+holds them all, so none of those is given one by an mmap of its own; one that maps over guest memory at a fixed
+address of its own would make memory the game's code reads and writes as its own. As the game's code starts, the log
+names anything there that is not the game's (`mem_foreign`: a mapping with a name, or a run nothing maps; the alias
+pool and a GPU's buffer that guest memory moved into are the runtime's), and a crash report names it again. With
+`nce_foreign_scan=N` (Debug, seconds) the kicks' thread looks again every N s while the game runs and logs each new
+finding once; off, it reads the setting and nothing else (`nce_foreign_look`). A plain anonymous mapping of another
+owner reads as the game's, so this diagnoses and guards nothing. The maps are read while other threads change them: a
+run they list as empty is asked again (`msync`) before it is named, and a failed read of them is no answer.
 
 The path for the 36-bit games is to run the runtime outside ART: an executable child of `GameActivity`, as the driver
 already is (`libscarletnx-run.so`), whose low addresses are free. The window would come from the app over a socket
@@ -124,6 +139,14 @@ Limits:
 - A kernel without seccomp filters, and qemu-user, which has none, run without the net and say so in the log.
 - An app's process on Android has the system's filter already, and ours stacks on it: only a phone shows it does.
 
+## The runtime's calls into the game's code
+
+The runtime calls the game's code itself where the console's driver calls it back: an NVN command buffer's memory
+callback, when its memory runs out (`nvn_cmd.c`'s `guest_call`). No dispatch slot holds the game's code under NCE and
+no JIT runs, so `snx_lookup` misses; `RtAPI.miss` then runs the code natively from its pc, as an empty slot does
+(`nce_slot`), in a run nested in the outcall that called NVN. It returns to the caller's link register, and the
+runtime goes on from there.
+
 ## Against the recompiled code
 
 The renderer's first present and every 600 after log what the game's threads cost the host (`runtime/guest_stats.c`),
@@ -148,9 +171,19 @@ run or a kick is a signal. Each thread adds to counters of its own, with no lock
   stubs read between `guest_ticks` before and after them, keep their scratch registers, count each read, and read
   where a pause stopped the clock. Under the net, an SVC that no stub holds stops in the runtime with no system
   call made (a host with seccomp filters: qemu-user skips it).
+- `rtapi_miss`, any host: a pc with no code runs the game's native code under NCE and returns to the caller's link
+  register, asking no JIT; without NCE the JIT's code runs.
+- `nce_module`, any host: the modules moved with the layout and the main thread's entry in them; and the kicks' look
+  at the guest's addresses, none with `nce_foreign_scan=0`, one every N seconds of rounds with N (1, 10 and 3600),
+  each finding said once.
 - `guest_stats`, any host: a window's SVCs, misses, outcalls and families, a thread's time read from another thread,
   and the lines that say them.
-- `memory_accounting`: the 48 GiB tier moved past a page held at 65 GiB, its regions, a mapping there, and a 36-bit
+- `memory_accounting`: the 128 GiB tier moved past a page held at 65 GiB, its regions, a mapping there, where a crash's
+  address lies against it, a named mapping over guest memory a GPU's buffer holds taken as the runtime's, and a 36-bit
   layout refused (Linux, without ASan, whose shadow holds those addresses).
+- `platform_posix`, Linux: what of the process is not the guest's in a range (`plat_vm_foreign`), against the real
+  kernel: another owner's memfd over it, a run given back and a named anonymous mapping are named, the alias pool's
+  pages and a mapping the caller claims are not, a failed read of the maps is no answer, and a run they list as empty
+  that is mapped when asked again is no gap.
 
 No test runs on an Android device: the arm64 objects build, and the rest is the phone's to show.

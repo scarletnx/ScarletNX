@@ -8,8 +8,8 @@
 /* STXP of two doublewords: one atomic compare-and-swap of all 16 bytes. Swapping the halves one at a time let
    Tears of the Kingdom's lock-free lists pair one thread's pointer with another's counter. Clang emits
    lock cmpxchg16b with cx16 enabled (the builds also pass -mcx16: Clang 18 still called libatomic with the
-   attribute alone), LDAXP/STLXP on AArch64, and lqarx/stqcx. on PowerPC64 from POWER8 (cmake/cross.cmake's
-   -mcpu=power8); GCC makes it a libatomic call, which a module can't link. RISC-V and LoongArch machines have it
+   attribute alone), LDAXP/STLXP on AArch64, and lqarx/stqcx. on PowerPC64 from POWER8 (ppc64le's
+   baseline); GCC makes it a libatomic call, which a module can't link. RISC-V and LoongArch machines have it
    only with Zacas and from v1.1, and MIPS64 ones not at all: their modules call the runtime's RtAPI.cas128, the
    instruction where there is one, else a lock. */
 #ifndef __clang__
@@ -18,7 +18,7 @@
 #if defined(__riscv) || defined(__loongarch__)
 u32 snx_cas128(CPU* c, u64* p, u64 o0, u64 o1, u64 n0, u64 n1) { return c->rt->cas128(p, o0, o1, n0, n1); }
 #elif defined(__mips64) || (defined(__powerpc64__) && !defined(_ARCH_PWR8))
-/* MIPS64, and a PowerPC64 baseline before POWER8 (cmake/cross.cmake's SNX_PPC64_CPU, the PowerPC 970): RtAPI.cas128
+/* MIPS64, and a PowerPC64 baseline before POWER8 (big-endian's, cmake/cross.cmake): RtAPI.cas128
    too, which takes the doublewords as the host reads p[0] and p[1], each byte-reversed on a big-endian host */
 u32 snx_cas128(CPU* c, u64* p, u64 o0, u64 o1, u64 n0, u64 n1) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__

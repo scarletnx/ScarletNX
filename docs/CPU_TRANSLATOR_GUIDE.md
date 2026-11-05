@@ -186,6 +186,12 @@ test binary `--sweep` for more words and states. A group that newly differs fail
 `tests/llvm_qemu_expected.txt` that no longer differs. Update that file in the same change. A change that moves an op
 between inline, guarded and helper on an emitter path fails `llvm_lowering` until
 `build/tests/snx-test-llvm-lowering tests/llvm_lowering_expected.txt --update` rewrites its summary in the same change.
+`--objects DIR --counts FILE` adds each op's target object counts, which `--path NAME --triple TRIPLE` narrows to one
+path on another target: instructions, calls, vector instructions, shuffles and GPR to vector moves, static code with
+the cold paths included, which is code inspection and never a speed claim. An emitter that chooses by a host feature
+runs both ways on one machine: `llvm_qemu_differential_avx2` (`--without-avx512`) compiles for the host as one
+without AVX-512, and the choices table in `tests/llvm_lowering.c` checks the instruction each x86 path picks where
+the class does not show it.
 
 **Settings.** A new setting goes in `src/nx/runtime/settings.txt`, from which `tools/settingsgen` generates the code
 that reads it. A setting that changes generated code must also join the JIT cache key in `jit_cache.c`, as

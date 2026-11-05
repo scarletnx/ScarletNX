@@ -123,6 +123,14 @@ int plat_vm_unshare(u8* p, u64 size);
    memory (the tests' way). 0, or -1 with errno (ENOSYS elsewhere, and on Android before 8) */
 int plat_gpu_buffer(u64 size, int* fd, void** handle);
 void plat_gpu_buffer_free(int fd, void* handle, u64 size);
+/* What of the process lies in its address space's [lo, hi) and is not the guest's: a mapping with a name (a file, a
+   device, a named anonymous mapping such as ART's or the allocator's, a memfd other than the alias pool's) that own
+   does not claim (own(a, b): 1 when [a, b) is the caller's; NULL claims none), and a run that nothing maps, which any
+   mmap of the process may then be given. Their count, each one named in out (its range, permissions and name) as far
+   as it fits; 0 when the range is the guest's alone; -1 where the system does not say (errno: ENOSYS but on Linux and
+   Android, or the maps could not be read), which tells nothing of the range. A plain anonymous mapping of another
+   owner reads as the guest's. It reads with read(2) into a buffer of its own, so a crash handler may call it */
+int plat_vm_foreign(u64 lo, u64 hi, int (*own)(u64 a, u64 b), char* out, size_t size);
 /* Calls cb for each run of pages in [p, p + size) written since they were last scanned, and watches them again.
    -1 when the host can't tell (the caller then compares contents). Linux 6.7 and later use userfaultfd's asynchronous
    write protection with PAGEMAP_SCAN, Windows the write watch of the reservation. The other POSIX hosts (macOS,
@@ -136,6 +144,13 @@ int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size));
    Windows' write watch) */
 void plat_ww_open(u8* p, u64 size);
 void plat_ww_close(u8* p, u64 size);
+/* Hot pages (write_tracking_hot=1, with page protection only): a page the scans found written in a row is left
+   writable and reported written by every scan, so a scan may report one nothing wrote. plat_ww_hot_in says whether
+   [p, p + size) has one; plat_ww_cool protects its hot pages again and reports them to cb as written, as a scan
+   would, so from then on a report of one stands for a write. A consumer whose "written" must be exact (a render
+   target's baseline) cools its pages after it took their writes in. Nothing where no page is hot */
+int plat_ww_hot_in(const u8* p, u64 size);
+void plat_ww_cool(u8* p, u64 size, void (*cb)(u8* p, u64 size));
 /* The alias pool: one host memory object whose pages can be mapped at several addresses of the reservation at once,
    and outside it, so two guest addresses (MapMemory's view and its source, code memory's owner and slave, shared
    memory and its service) are the same pages. Linux and Android (a memfd); elsewhere plat_alias_init says -1 and
@@ -229,6 +244,11 @@ void plat_audio_volume(PAudio* a, float volume);
 
 /* ---- crash reports and profiling */
 void plat_install_crash_handler(void);
+/* The game's code module, by any address in it: a fault in its code is reported first, whatever else the process
+   installed since. Windows only; elsewhere the signal handler sees every fault, and this does nothing */
+void plat_crash_code_module(const void* inside);
+/* The runtime's crash filter back where another part of the process replaced it, said once. Windows only */
+void plat_crash_handler_check(void);
 void plat_prof_start(void); /* starts the sampling profiler (the profile option): Windows only */
 #if defined(_WIN32)
 void plat_prof_add_thread(HANDLE h); /* a thread to sample; the profiler keeps its own handle */

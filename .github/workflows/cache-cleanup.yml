@@ -5,8 +5,8 @@ name: Cache cleanup
 # The repository's caches share 10 GB, past which GitHub evicts the least recently used: deleting the ones no run will
 # read again (scripts/trim-caches.py) keeps that room for the ones builds restore, the Android LLVM's above all
 on:
-  # A closed pull request's caches. pull_request_target, so a fork's are deleted too: the job runs the base branch's
-  # copy of this file on its checkout, nothing of the pull request
+  # A closed pull request's caches. pull_request_target, so a fork's are deleted too: GitHub runs the default branch's
+  # copy of this file whatever the base, and the job checks out that branch, nothing of the pull request
   pull_request_target:
     types: [closed]
   # The entries a build's new caches replaced

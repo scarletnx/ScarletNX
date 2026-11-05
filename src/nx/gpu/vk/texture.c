@@ -210,7 +210,7 @@ static int astc_content(const LevelSource* l, u64 content[2]) {
         for (u64 o = 0; o < l->lsz;) {
             u64 cpu = 0, n = gmmu_run(gva + o, l->lsz - o, &cpu);
             OwnRange owned;
-            if (!n || (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE) && own_lookup(cpu, n, &owned, 1))) return 0;
+            if (!n || (own_any() && own_lookup(cpu, n, &owned, 1))) return 0;
             gmem_need(gva + o, n);
             vk_bc7_content(content, GP(cpu), n);
             o += n;
@@ -698,7 +698,7 @@ static u64 mem_hash(u64 gva, u64 size) {
     u64 h = 1469598103934665603ull;
     /* bytes the GPU holds are trapped: they hash as their owner (vk_guest_peek), so the texture is read in pieces.
        Every byte counts: the CPU rewrites part of a page (a row of a texture, half a GOB's rows) */
-    u8* p = __atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE) ? NULL : gmem_ptr(gva, size);
+    u8* p = own_any() ? NULL : gmem_ptr(gva, size);
     u64 tag;
     /* all of it one GPU-owned range (an engine's result: a video's picture from VIC, a copy's): its owner's identity
        there, the pattern vk_guest_peek writes over each piece, not that pattern hashed byte by byte, 0.7 ms a frame

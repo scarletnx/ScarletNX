@@ -48,6 +48,8 @@ void mem_query(u64 addr, MemBlock* out) {
 }
 char g_datadir[1024], g_exename[256], g_exedir[1024], g_confdir[1024], g_addondir[1024], g_gamename[256];
 u64 g_addon;
+int g_program; /* main.c's: the game's own program unless a test says another */
+char g_addonrec[256];
 const u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull}; /* am.c's: the first user */
 static jmp_buf* test_fatal_jump;                                   /* a fatal() the test waits for comes back here */
 static char test_fatal_text[1024];
@@ -1289,6 +1291,7 @@ static void addon_write(int update, int extracted) {
     if (update) {
         g_addon = 0x0100000000AB0800ULL;
         strcpy(g_exename, "0100000000AB0000_0100000000AB0800");
+        strcpy(g_addonrec, g_exename); /* main.c's addon_init: the update's own program, its own record */
         snprintf(g_addondir, sizeof g_addondir, "dump-data/%s_data/", g_exename);
         addon_dump("dump-data/Update.nsp", 1, g_addon, "asset.bin", addon_asset, g_exename);
     } else {
@@ -1912,6 +1915,12 @@ static void test_save_data(SvcObj* proxy) {
     CHECK(v == 0);
     v = snx_ld_le32(r.c.out + 4);
     CHECK(v == 1);
+    /* a collection's program 2, no dump read: its own index, of as many programs as reach it */
+    g_program = 2;
+    request(&r, 1011);
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.out_size == 8 && snx_ld_le32(r.c.out) == 2 && snx_ld_le32(r.c.out + 4) == 3);
+    g_program = 0;
     puts(
         "PASS SaveDataType folders, a folder per user, save/user and save/system played where they are, two saves of one "
         "user "
@@ -2046,6 +2055,53 @@ static void test_save_layout(SvcObj* proxy) {
     svcobj_unref(save);
     CHECK(tree_has("save/cache/homebrew.bin"));
     g_hle.kernel.title_id = 0x0100000000010000ull;
+    /* a collection's program 2: its saves are its application's, the owner its control.nacp names (SaveDataOwnerId),
+       the folder program 0 plays, not one of its own ID */
+    {
+        static u8 nacp[0x4000];
+        snx_st_le64(nacp + 0x3078, 0x0100000000010000ull);
+        pm_lock(&g_hle.fs.tree.lock);
+        fs_tree_forget(&g_hle.fs.tree, "control.nacp");
+        CHECK(!fs_tree_add_virtual(&g_hle.fs.tree, "control.nacp", nacp, sizeof nacp, NULL));
+        pm_unlock(&g_hle.fs.tree.lock);
+        g_program = 2;
+        g_hle.kernel.title_id = 0x0100000000010002ull;
+        pm_lock(&g_hle.fs.tree.lock); /* as a new process's: none of program 0's folders grafted */
+        fs_tree_forget(&g_hle.fs.tree, "global-user.0123456789abcdeffedcba9876543210");
+        pm_unlock(&g_hle.fs.tree.lock);
+        test_scans_allowed = 1;
+        fs_saves_init(root);
+        test_scans_allowed = 0;
+        CHECK(g_host.fs.save_title == 0x0100000000010000ull);
+        /* the application's folder grafted, the one program 0 wrote kept.bin into */
+        CHECK(tree_has("global-user.0123456789abcdeffedcba9876543210/kept.bin"));
+        save = open_user_save(proxy, g_user_id);
+        fs_command(save, 0, "/program2.bin", 4, 0);
+        svcobj_unref(save);
+        snprintf(path, sizeof path, "%s/user.0123456789abcdeffedcba9876543210/" TITLE "/program2.bin", root);
+        CHECK(host_file(path));
+        snprintf(path, sizeof path, "%s/user.0123456789abcdeffedcba9876543210/0100000000010002", root);
+        CHECK(!snx_is_dir(path));
+        /* its control.nacp naming no owner: its game's, the folder's name */
+        memset(nacp + 0x3078, 0, 8);
+        pm_lock(&g_hle.fs.tree.lock);
+        fs_tree_forget(&g_hle.fs.tree, "control.nacp");
+        CHECK(!fs_tree_add_virtual(&g_hle.fs.tree, "control.nacp", nacp, sizeof nacp, NULL));
+        pm_unlock(&g_hle.fs.tree.lock);
+        char was[sizeof g_gamename];
+        snprintf(was, sizeof was, "%s", g_gamename);
+        snprintf(g_gamename, sizeof g_gamename, "%s", "0100000000010000");
+        test_scans_allowed = 1;
+        fs_saves_init(root);
+        test_scans_allowed = 0;
+        CHECK(g_host.fs.save_title == 0x0100000000010000ull);
+        pm_lock(&g_hle.fs.tree.lock);
+        fs_tree_forget(&g_hle.fs.tree, "control.nacp");
+        pm_unlock(&g_hle.fs.tree.lock);
+        snprintf(g_gamename, sizeof g_gamename, "%s", was);
+        g_program = 0;
+        g_hle.kernel.title_id = 0x0100000000010000ull;
+    }
     /* fs_user_saves_take, DeleteUser's: the folders of a user's saves, out of the index and their host paths */
     {
         char paths[2][FS_TREE_PATH_MAX];
@@ -2072,6 +2128,7 @@ static void test_program(u64 update, unsigned long version, const char* display)
     else
         strcpy(g_exename, g_gamename);
     g_addon = update;
+    snprintf(g_addonrec, sizeof g_addonrec, "%s", update ? g_exename : "");
     snprintf(test_display, sizeof test_display, "%s", display);
 }
 /* IFileSystem's Commit */

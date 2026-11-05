@@ -182,9 +182,9 @@ static struct {
     size_t pipe_count, pipe_capacity;
     Target targets[TARGETS];
     unsigned target_count;
-    /* the target the draws go to, and whether its rendering pass is open */
+    /* the target the draws go to, its index plus 1 (0: none), and whether its rendering pass is open */
     unsigned open;
-    bool opened, rendering;
+    bool rendering;
     Texture textures[TEXTURES];
     unsigned texture_count;
     PageState* pages; /* every RAM page of the device's regions, in their order */
@@ -711,9 +711,9 @@ static void stale(uint32_t pa, uint64_t size) {
         bool depth = overlaps(pa, size, t->key.depth_pa, depth_span(&t->key));
         if (color) set_color(t, false, t->color_dirty);
         if (depth) set_depth(t, false, t->depth_dirty);
-        if ((color || depth) && g.opened && g.open == i) { /* the draws load it again first */
+        if ((color || depth) && g.open == i + 1) { /* the draws load it again first */
             end_rendering();
-            g.opened = false;
+            g.open = 0;
         }
     }
 }
@@ -756,7 +756,7 @@ static Target* target_find(const TargetKey* k) {
         t = &g.targets[g.target_count];
     else {
         for (unsigned i = 0; i < TARGETS; ++i)
-            if ((!g.opened || g.open != i) && (!t || g.targets[i].used < t->used)) t = &g.targets[i];
+            if (g.open != i + 1 && (!t || g.targets[i].used < t->used)) t = &g.targets[i];
         if (!target_store(t)) return NULL;
         set_color(t, false, false);
         set_depth(t, false, false);
@@ -773,9 +773,9 @@ static Target* target_find(const TargetKey* k) {
 /* the draw's target open: the one kept for key, loaded from memory unless its images hold what memory does. Other
    targets over the same memory are stored first, and are stale from now on */
 static SnxCtrPicaResult target_open(const TargetKey* k) {
-    if (g.opened && !memcmp(k, &g.targets[g.open].key, sizeof *k)) return SNX_CTR_PICA_OK;
+    if (g.open && !memcmp(k, &g.targets[g.open - 1].key, sizeof *k)) return SNX_CTR_PICA_OK;
     end_rendering();
-    g.opened = false;
+    g.open = 0;
     Target* t = target_find(k);
     if (!t) return SNX_CTR_PICA_UNSUPPORTED;
     for (unsigned i = 0; i < g.target_count; ++i) {
@@ -795,8 +795,7 @@ static SnxCtrPicaResult target_open(const TargetKey* k) {
     set_color(t, true, t->color_dirty);
     set_depth(t, true, t->depth_dirty);
     t->used = snx_ctr_vk_serial();
-    g.open = (unsigned)(t - g.targets);
-    g.opened = true;
+    g.open = (unsigned)(t - g.targets) + 1;
     return SNX_CTR_PICA_OK;
 }
 /* A dirty colour target kept over the shown framebuffer: the presenter draws from its image, at the render scale,
@@ -1567,7 +1566,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     offsets[DEFAULTS] = defaults;
     /* a texture decoded may have stored the target, which then needs loading no more: it is still open */
     VkCommandBuffer cb = snx_ctr_vk_commands();
-    Target* t = &g.targets[g.open];
+    Target* t = &g.targets[g.open - 1];
     if (!g.rendering) {
         VkRenderingAttachmentInfo color = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                            .imageView = t->color.view,

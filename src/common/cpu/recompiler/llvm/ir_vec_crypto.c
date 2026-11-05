@@ -4,9 +4,10 @@
    trans_XAR; gengvec.c's gen_gvec_rax1, gen_gvec_eor3, gen_gvec_bcax), LGPL-2.1-or-later:
    Copyright (c) 2013 Alexander Graf <agraf@suse.de> */
 /* The cryptographic extensions as LLVM IR, keyed on the generated decoder's ops: AES (on the host's AES instructions
-   where it has them, x86's AES-NI or AArch64's, else helpers/crypto.c's rounds), SHA-1 and SHA-256 (helpers/crypto.c),
-   PMULL of doublewords (PCLMULQDQ, AArch64's PMULL, else helpers/crypto.c), and FEAT_SHA512, FEAT_SHA3, FEAT_SM3 and
-   FEAT_SM4 (helpers/vector.c, the XOR and rotate ones inline). */
+   where it has them, x86's AES-NI or AArch64's, else helpers/crypto.c's rounds), SHA-1 and SHA-256 (AArch64's own
+   instructions where it has SHA2; SHA-256 through x86's SHA-NI; else helpers/crypto.c), PMULL of doublewords
+   (PCLMULQDQ, AArch64's PMULL, else helpers/crypto.c), and FEAT_SHA512, FEAT_SHA3, FEAT_SM3 and FEAT_SM4
+   (helpers/vector.c, the XOR and rotate ones inline). */
 #include "common/cpu/recompiler/llvm/ir_vec.h"
 #include "common/cpu/aarch64/cpu.h"
 
@@ -15,6 +16,7 @@ typedef LLVMValueRef V;
 
 static V bytes(SnxIr* ir, unsigned n) { return ir_vec_read(ir, n, 0, 0, 16); }
 static V doublewords(SnxIr* ir, unsigned n) { return ir_vec_read(ir, n, 3, 0, 2); }
+static V words(SnxIr* ir, unsigned n) { return ir_vec_read(ir, n, 2, 0, 4); }
 static V reg_pointer(SnxIr* ir, unsigned n) { return ir_cpu(ir, ir_off_v(n)); }
 
 /* helpers/crypto.c's v_aes(d, k, dec) and v_aesmc(d, s, inv), on the registers in the CPU structure */
@@ -84,6 +86,68 @@ static void sha(SnxIr* ir, const SnxA64Args* a, const char* name, unsigned op) {
     ops[2] = ir_i32(ir, (SnxU32)a->rn);
     ops[3] = ir_i32(ir, (SnxU32)a->rm);
     ir_vec_call(ir, name, ir->t_void, ops, 4);
+}
+
+/* SHA1C, SHA1P, SHA1M on AArch64: Vd's four state words, Vn.S[0] and Vm's message words in one instruction */
+static void sha1_round(SnxIr* ir, const SnxA64Args* a, const char* name) {
+    V args[3];
+    args[0] = words(ir, (unsigned)a->rd);
+    args[1] = LLVMBuildExtractElement(B, words(ir, (unsigned)a->rn), ir_i32(ir, 0), "");
+    args[2] = words(ir, (unsigned)a->rm);
+    ir_vec_write(ir, (unsigned)a->rd, ir_intrinsic(ir, name, NULL, args, 3));
+}
+
+/* SHA1H: the 32-bit hash of Vn.S[0], the rest of Vd zeroed */
+static void sha1h(SnxIr* ir, const SnxA64Args* a) {
+    V args[1], zero = LLVMConstNull(ir_vec_type(ir, 2, 4));
+    args[0] = LLVMBuildExtractElement(B, words(ir, (unsigned)a->rn), ir_i32(ir, 0), "");
+    V r = ir_intrinsic(ir, "llvm.aarch64.crypto.sha1h", NULL, args, 1);
+    ir_vec_write(ir, (unsigned)a->rd, LLVMBuildInsertElement(B, zero, r, ir_i32(ir, 0), ""));
+}
+
+/* SHA1SU0, SHA1SU1, SHA256H, SHA256H2, SHA256SU0, SHA256SU1: the instruction's own registers in its own order */
+static void sha2_intrinsic(SnxIr* ir, const SnxA64Args* a, const char* name, unsigned count) {
+    V args[3];
+    args[0] = words(ir, (unsigned)a->rd);
+    if (count > 1) args[1] = words(ir, (unsigned)a->rn);
+    if (count > 2) args[2] = words(ir, (unsigned)a->rm);
+    ir_vec_write(ir, (unsigned)a->rd, ir_intrinsic(ir, name, NULL, args, count));
+}
+
+/* SHA256H and SHA256H2 through SHA-NI (dynarmic's mapping): the state's two halves in the order the rounds take
+   them, two rounds twice, and the result's halves back in the guest's order */
+static V sha256_hash_x86(SnxIr* ir, unsigned d, unsigned n, unsigned m, int part1) {
+    static const unsigned cdgh[4] = {3, 2, 7, 6}, abef[4] = {1, 0, 5, 4}, high[4] = {2, 3, 2, 3};
+    V lo = words(ir, part1 ? n : d), hi = words(ir, part1 ? d : n), msg = words(ir, m), args[3];
+    V first = ir_vec_shuffle(ir, lo, hi, cdgh, 4), second = ir_vec_shuffle(ir, lo, hi, abef, 4);
+    args[0] = first;
+    args[1] = second;
+    args[2] = msg;
+    V r1 = ir_intrinsic(ir, "llvm.x86.sha256rnds2", NULL, args, 3), hi_msg = ir_vec_shuffle(ir, msg, msg, high, 4);
+    args[0] = second;
+    args[1] = r1;
+    args[2] = hi_msg;
+    V r2 = ir_intrinsic(ir, "llvm.x86.sha256rnds2", NULL, args, 3);
+    return ir_vec_shuffle(ir, r2, r1, part1 ? cdgh : abef, 4);
+}
+
+/* SHA256SU0 through SHA-NI */
+static V sha256_su0_x86(SnxIr* ir, unsigned d, unsigned n) {
+    V args[2];
+    args[0] = words(ir, d);
+    args[1] = words(ir, n);
+    return ir_intrinsic(ir, "llvm.x86.sha256msg1", NULL, args, 2);
+}
+
+/* SHA256SU1 through SHA-NI: Vd plus Vn's words shifted in at byte 4, then the schedule's second half */
+static V sha256_su1_x86(SnxIr* ir, unsigned d, unsigned n, unsigned m) {
+    static const unsigned palign[16] = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19};
+    LLVMTypeRef b16 = ir_vec_type(ir, 0, 16);
+    V n8 = LLVMBuildBitCast(B, words(ir, n), b16, ""), m8 = LLVMBuildBitCast(B, words(ir, m), b16, "");
+    V shifted = LLVMBuildBitCast(B, ir_vec_shuffle(ir, n8, m8, palign, 16), ir_vec_type(ir, 2, 4), ""), args[2];
+    args[0] = LLVMBuildAdd(B, words(ir, d), shifted, "");
+    args[1] = words(ir, m);
+    return ir_intrinsic(ir, "llvm.x86.sha256msg2", NULL, args, 2);
 }
 
 /* PMULL, PMULL2 of doublewords: the 128-bit carry-less product of the low (high) halves */
@@ -190,16 +254,74 @@ void ir_vec_crypto(SnxIr* ir, const SnxA64Insn* insn) {
         case SNX_A64_OP_AESD: aes(ir, a, 1); break;
         case SNX_A64_OP_AESMC: aesmc(ir, a, 0); break;
         case SNX_A64_OP_AESIMC: aesmc(ir, a, 1); break;
-        case SNX_A64_OP_SHA1C: sha(ir, a, "v_sha1", 0); break;
-        case SNX_A64_OP_SHA1P: sha(ir, a, "v_sha1", 1); break;
-        case SNX_A64_OP_SHA1M: sha(ir, a, "v_sha1", 2); break;
-        case SNX_A64_OP_SHA1SU0: sha(ir, a, "v_sha1", 3); break;
-        case SNX_A64_OP_SHA1H: sha(ir, a, "v_sha1", 0x10); break;
-        case SNX_A64_OP_SHA1SU1: sha(ir, a, "v_sha1", 0x11); break;
-        case SNX_A64_OP_SHA256H: sha(ir, a, "v_sha256", 4); break;
-        case SNX_A64_OP_SHA256H2: sha(ir, a, "v_sha256", 5); break;
-        case SNX_A64_OP_SHA256SU1: sha(ir, a, "v_sha256", 6); break;
-        case SNX_A64_OP_SHA256SU0: sha(ir, a, "v_sha256", 0x12); break;
+        case SNX_A64_OP_SHA1C:
+            if (ir->features->aarch64 && ir->features->arm_sha2)
+                sha1_round(ir, a, "llvm.aarch64.crypto.sha1c");
+            else
+                sha(ir, a, "v_sha1", 0);
+            break;
+        case SNX_A64_OP_SHA1P:
+            if (ir->features->aarch64 && ir->features->arm_sha2)
+                sha1_round(ir, a, "llvm.aarch64.crypto.sha1p");
+            else
+                sha(ir, a, "v_sha1", 1);
+            break;
+        case SNX_A64_OP_SHA1M:
+            if (ir->features->aarch64 && ir->features->arm_sha2)
+                sha1_round(ir, a, "llvm.aarch64.crypto.sha1m");
+            else
+                sha(ir, a, "v_sha1", 2);
+            break;
+        case SNX_A64_OP_SHA1SU0:
+            if (ir->features->aarch64 && ir->features->arm_sha2)
+                sha2_intrinsic(ir, a, "llvm.aarch64.crypto.sha1su0", 3);
+            else
+                sha(ir, a, "v_sha1", 3);
+            break;
+        case SNX_A64_OP_SHA1H:
+            if (ir->features->aarch64 && ir->features->arm_sha2)
+                sha1h(ir, a);
+            else
+                sha(ir, a, "v_sha1", 0x10);
+            break;
+        case SNX_A64_OP_SHA1SU1:
+            if (ir->features->aarch64 && ir->features->arm_sha2)
+                sha2_intrinsic(ir, a, "llvm.aarch64.crypto.sha1su1", 2);
+            else
+                sha(ir, a, "v_sha1", 0x11);
+            break;
+        case SNX_A64_OP_SHA256H:
+            if (ir->features->aarch64 && ir->features->arm_sha2)
+                sha2_intrinsic(ir, a, "llvm.aarch64.crypto.sha256h", 3);
+            else if (ir->features->x86 && ir->features->sha_ni)
+                ir_vec_write(ir, rd, sha256_hash_x86(ir, rd, rn, rm, 1));
+            else
+                sha(ir, a, "v_sha256", 4);
+            break;
+        case SNX_A64_OP_SHA256H2:
+            if (ir->features->aarch64 && ir->features->arm_sha2)
+                sha2_intrinsic(ir, a, "llvm.aarch64.crypto.sha256h2", 3);
+            else if (ir->features->x86 && ir->features->sha_ni)
+                ir_vec_write(ir, rd, sha256_hash_x86(ir, rd, rn, rm, 0));
+            else
+                sha(ir, a, "v_sha256", 5);
+            break;
+        case SNX_A64_OP_SHA256SU1:
+            if (ir->features->aarch64 && ir->features->arm_sha2)
+                sha2_intrinsic(ir, a, "llvm.aarch64.crypto.sha256su1", 3);
+            else if (ir->features->x86 && ir->features->sha_ni)
+                ir_vec_write(ir, rd, sha256_su1_x86(ir, rd, rn, rm));
+            else
+                sha(ir, a, "v_sha256", 6);
+            break;
+        case SNX_A64_OP_SHA256SU0:
+            if (ir->features->aarch64 && ir->features->arm_sha2)
+                sha2_intrinsic(ir, a, "llvm.aarch64.crypto.sha256su0", 2);
+            else if (ir->features->x86 && ir->features->sha_ni)
+                ir_vec_write(ir, rd, sha256_su0_x86(ir, rd, rn));
+            else
+                sha(ir, a, "v_sha256", 0x12);
+            break;
         case SNX_A64_OP_PMULL_p64: pmull64(ir, a); break;
         case SNX_A64_OP_SHA512H: call5(ir, "snx_vec_sha512", 0, rd, rn, rm, -1); break;
         case SNX_A64_OP_SHA512H2: call5(ir, "snx_vec_sha512", 1, rd, rn, rm, -1); break;

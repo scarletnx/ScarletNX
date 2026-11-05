@@ -41,6 +41,21 @@ void nce_code_added(u64 base, u64 text_size);
    place, so nothing reads an address from before the move; *entry: where the main thread starts, the first module's
    text, in it */
 const struct SnxModule* nce_module(const struct SnxModule* m, u64* entry);
-/* the crash handler's signal context: the guest's registers into the crashing thread's CPU, when it ran guest code */
-void nce_crash_context(const void* context);
+/* how often the kicks' thread goes again to a thread whose CPU.poll is still set (a kick may land in the outcall's own
+   code), and so its rounds in a second, which nce_foreign_look counts its seconds in */
+#define NCE_KICK_AGAIN_NS 2000000ull
+#define NCE_KICKS_PER_S   (1000000000ull / NCE_KICK_AGAIN_NS)
+/* The kicks' thread's round number round (from 1): with nce_foreign_scan=N (1 to 3600), every N seconds of rounds,
+   what lies in the guest's addresses and is not the game's (mem_foreign), each new finding logged once. 1 when it
+   looked; 0 when not, with nothing read but the setting when it is 0. Any host, so a test runs it */
+int nce_foreign_look(u64 round);
+/* How the game sees a pool of stubs in its memory (mem.h's state and permission): code it has no permission on, as
+   Eden reprotects its patch sections to none. The host's pages stay executable. rtld walks the address space with
+   QueryMemory and takes each region of code that is readable and executable for a module, whose word at +4 gives the
+   offset of its MOD0 header: a pool seen so would be read as one */
+#define NCE_POOL_STATE MS_CODE
+#define NCE_POOL_PERM  PERM_NONE
+/* the crash handler's signal context and the address that faulted: the guest's registers into the crashing thread's
+   CPU, when it ran guest code. A branch of the guest's to where nothing is ends there, reported as rt_miss reports it */
+void nce_crash_context(const void* context, const void* fault);
 #endif

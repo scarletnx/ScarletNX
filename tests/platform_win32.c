@@ -3,7 +3,10 @@
 /* The Windows platform layer's written-page tracking (platform/plat_win32.c): the reservation's write watch reports
    the pages written since the last scan, the kernel's writes (ReadFile into guest memory) among them, and
    write_tracking=2 must make the scan say -1. write_tracking=1 has no Windows version: the watch tracks, said once.
-   The arguments: the folder for its files, then Debug settings as the runtime takes them, --key=value */
+   And the crash handler: a fault in the game's code module is reported even after a driver took the process's crash
+   filter, and the filter is taken back and said.
+   The arguments: the folder for its files, then Debug settings as the runtime takes them, --key=value; or
+   --crash-child=CASE, a child the test starts and reads the exit status of */
 #include "nx/runtime/platform/plat_win32.c"
 #include "nx/runtime/ini.h"
 #include <stdarg.h>
@@ -30,10 +33,12 @@ void fatal(const char* fmt, ...) {
 }
 
 void log_crash_mode(void) {}
+static int g_report_exit; /* a crash child's: a report ends it with 42, which its parent checks */
 void crash_report(void* host_pc, void* fault, int sig) {
     (void)host_pc;
     (void)fault;
     (void)sig;
+    if (g_report_exit) _exit(42);
 }
 void plat_prof_add_thread(HANDLE h) { (void)h; }
 
@@ -61,6 +66,60 @@ static u64 scan(void) {
     return status ? ~0ull : g_written;
 }
 
+/* ---- the crash handler. A child faults inside ntdll's RtlFillMemory, a module that isn't this test's, as the game's
+   code module isn't the runtime's, after a driver's filter (other_filter) took the process's: 42 is our report, 7 the
+   driver's filter */
+typedef void(WINAPI* FillFn)(void* at, SIZE_T size, BYTE value);
+static LONG WINAPI other_filter(EXCEPTION_POINTERS* e) {
+    (void)e;
+    _exit(7);
+}
+static int crash_child(const char* name) {
+    FARPROC fill_at = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlFillMemory");
+    FARPROC sleep_at = GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "Sleep");
+    FillFn fill;
+    void *in_ntdll, *in_kernel32;
+    if (!fill_at || !sleep_at) return 3;
+    memcpy(&fill, &fill_at, sizeof fill);
+    memcpy(&in_ntdll, &fill_at, sizeof in_ntdll); /* ISO C has no conversion from a function pointer to an object's */
+    memcpy(&in_kernel32, &sleep_at, sizeof in_kernel32);
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX); /* a real crash ends the child, no dialog */
+    g_report_exit = 1;
+    plat_install_crash_handler();
+    if (!strcmp(name, "code"))
+        plat_crash_code_module(in_ntdll); /* the module that faults is the game's */
+    else if (!strcmp(name, "other"))
+        plat_crash_code_module(in_kernel32);   /* another module is: the driver's filter has this fault */
+    SetUnhandledExceptionFilter(other_filter); /* a driver's, after the runtime's */
+    if (!strcmp(name, "filter")) {
+        g_log[0] = 0;
+        plat_crash_handler_check();
+        if (!strstr(g_log, "crash: the process's crash filter was ") || !strstr(g_log, ".exe)")) return 4;
+        g_log[0] = 0;
+        plat_crash_handler_check();
+        if (g_log[0]) return 6; /* said once */
+    }
+    fill((void*)(uintptr_t)16, 16, 1);
+    return 5;
+}
+/* the exit status of this test run as --crash-child=name, 99 when it could not be run */
+static DWORD crash_child_status(const char* name) {
+    char self[MAX_PATH], line[MAX_PATH + 64];
+    STARTUPINFOA si = {0};
+    PROCESS_INFORMATION pi;
+    DWORD status = 99, n = GetModuleFileNameA(NULL, self, MAX_PATH);
+    si.cb = sizeof si;
+    if (!n || n >= MAX_PATH) return 99;
+    snprintf(line, sizeof line, "\"%s\" --crash-child=%s", self, name);
+    if (!CreateProcessA(NULL, line, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) return 99;
+    if (WaitForSingleObject(pi.hProcess, 30000) != WAIT_OBJECT_0) TerminateProcess(pi.hProcess, 98);
+    GetExitCodeProcess(pi.hProcess, &status);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    printf("crash child %s: exit %lu\n", name, (unsigned long)status);
+    return status;
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     char path[1200];
@@ -68,6 +127,7 @@ int main(int argc, char** argv) {
     DWORD got = 0;
     FILE* f;
 
+    if (argc > 1 && !strncmp(argv[1], "--crash-child=", 14)) return crash_child(argv[1] + 14);
     setvbuf(stdout, NULL, _IONBF, 0);
     for (int i = 2; i < argc; i++) {
         const char* eq = strchr(argv[i], '=');
@@ -144,6 +204,10 @@ int main(int argc, char** argv) {
     g_base[9 * 4096] = 9;
     plat_vm_decommit(g_base, 64 * 4096);
     CHECK(!plat_vm_commit(g_base, 64 * 4096) && g_base[9 * 4096] == 0, "memory not zero after decommit");
+    printf("crash handler\n");
+    CHECK(crash_child_status("code") == 42, "a fault in the game's code went to the driver's filter, not the report");
+    CHECK(crash_child_status("other") == 7, "a fault outside the game's code was taken as the game's");
+    CHECK(crash_child_status("filter") == 42, "the crash filter was not taken back, or not said once with its module");
     printf("%u checks, %u failed\n", checks, failures);
     return failures != 0;
 }

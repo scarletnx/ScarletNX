@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 """The log summary (src/common/utilities/logscan.c, as snx-logscan or scarletnx --scan-log, the program given) on
-made-up logs in the runtime's formats: the header lines, each kind of failure and the
-function it is pinned on (past the SDK's abort for svcBreak), the place a crash is put (the game, the runtime, a
-library), the older nightlies' svcBreak line and header, service commands counted, signatures that agree across runs,
-paths shortened and the dumps left out, invalid UTF-8, long lines, the markdown's escaping. Offline.
+made-up logs in the runtime's formats: the header lines (a build line with its commit's day, and one before it), each
+kind of failure and the function it is pinned on (past the SDK's abort for svcBreak), the place a crash is put (the
+game, the runtime, a library), the older nightlies' svcBreak line and header, service commands counted, signatures
+that agree across runs, paths shortened and the dumps left out, invalid UTF-8, long lines, the markdown's escaping.
+Offline.
 
     tests/logscan_test.py PROGRAM [ARGS...]   (build/snx-logscan, or build/scarletnx --scan-log)"""
 
@@ -125,6 +126,23 @@ UNDEFINED = (
 [   4.00]   pc <main+40598>  lr <main+40568>
 [   4.00]    #0 8040568 <main+40568>
 [   4.01] FATAL: The game ran an instruction the recompiler cannot run (ce62c820 at 8040598). See the .log for details.
+"""
+)
+
+# a call through a pointer that holds 0 (runtime/rtapi.c's rt_miss): pinned on its caller, the code at lr kept out
+MISSED_CALL = (
+    HEADER
+    + """[   4.00]
+*** The game's thread 80 stopped at 0: code the recompiler missed (0) ***
+[   4.00]   the AOT pack has no code for it, and the JIT could not compile it
+[   4.00]   thread 80 (MainThread)
+[   4.00]   x8 = 0000000000000000  x9 = 0000000008000180  x10= 0000000000000000  x11= 0000000000000000
+[   4.00]   pc=0 lr=8012344 sp=1300101000 fp=1300100ff0 tls=1380000000
+[   4.00]   pc   lr <_ZN4Game4Boot4StepEv+44>
+[   4.00]    #0 8012344 <_ZN4Game4Boot4StepEv+44>
+[   4.00]   code at lr 8012324: 10000809  f9400128  d63f0100 [f9400be0] d4200000
+[   4.01] FATAL: The game reached code at 0 that the recompiler missed, and the AOT pack has no code for it, and the JIT \
+could not compile it. See the .log for details.
 """
 )
 
@@ -302,12 +320,43 @@ def main():
 
     rt = scan(CRASH_IN_RUNTIME)
     check(rt['signature'] == 'crash (invalid memory access) in the runtime 1234abc +1a2b3c', rt['signature'])
+
+    # a build that says the day its commit was made: the commit is the hash still, the runtime's offsets keep their
+    # signature, and the markdown says the day; a log read as text has no run time, so no days before it (the Share
+    # Log's: tests/gui_sdl.c and tests/logscan_age.c)
+    dated = CRASH_IN_RUNTIME.replace('1234abc (clang', '1234abc, committed 2026-11-02 (clang')
+    d = scan(dated)
+    check(
+        (d['commit'], d['branch'], d['build'])
+        == ('1234abc', 'main', 'ScarletNX main 1234abc, committed 2026-11-02 (clang 23.1.3, Linux x86_64)'),
+        f'a dated build line: {d["commit"]!r} {d["branch"]!r} {d["build"]!r}',
+    )
+    check(d['signature'] == rt['signature'], f"a dated build's runtime crash: {d['signature']}")
+    md = run(['-', '--format', 'markdown'], dated.encode())
+    check('\n- **Build:** `main 1234abc`, committed 2026-11-02\n' in md, f'the markdown of a dated build:\n{md}')
+    md = run(['-', '--format', 'markdown'], CRASH_IN_RUNTIME.encode())
+    check(
+        '\n- **Build:** `ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)`\n' in md,
+        f'the markdown of a build before the day:\n{md}',
+    )
+    tarball = scan(HEADER.replace('main 1234abc (clang', 'unknown unknown, committed unknown (clang'))
+    check((tarball['commit'], tarball['branch']) == ('unknown', 'unknown'), f'no git: {tarball["commit"]!r}')
     lib = scan(CRASH_IN_LIBRARY)
     check(lib['signature'] == 'crash (invalid memory access) in libnvidia-glcore.so.580 ?', lib['signature'])
 
     u = scan(UNDEFINED)
     check(u['outcome'] == 'unsupported instruction' and u['failure']['set'] == 'A64', 'A64 undefined instruction')
     check(u['signature'] == 'unsupported A64 instruction ce62c820', u['signature'])
+
+    m = scan(MISSED_CALL)
+    check(
+        m['outcome'] == 'thread stopped'
+        and m['failure']['what'] == 'code the recompiler missed'
+        and m['failure']['address'] == '0',
+        f'a call to 0: {m["failure"]}',
+    )
+    check(m['signature'] == 'code the recompiler missed in _ZN4Game4Boot4StepEv', m['signature'])
+    check('d63f0100' not in json.dumps(m), 'the code at lr is never copied out')
 
     f = scan(FATAL_ONLY)
     check(
@@ -405,6 +454,8 @@ def main():
         la['build'] == 'ScarletNX main 9999fff (clang 23.1.3, Windows x86_64)' and la['commit'] == '9999fff',
         f"the launcher's build: {la['build']}",
     )
+    dated_launcher = scan(LAUNCHER.replace('9999fff (clang', '9999fff, committed 2026-11-02 (clang'))
+    check(dated_launcher['commit'] == '9999fff', f"the launcher's dated build: {dated_launcher['commit']!r}")
     check(la['signature'] == r['signature'] and la['ipc'] == [], "only the game log's section is scanned")
     t3 = scan(THREEDS)
     check(
@@ -413,6 +464,8 @@ def main():
         f"the 3DS's header: {t3['title']} {t3['title_id']} {t3['console']} {t3['commit']}",
     )
     check('- **Console:** 3DS' in run(['-', '--format', 'markdown'], THREEDS.encode()), "the 3DS's console in markdown")
+    t3d = scan(THREEDS.replace('d22bbab (clang', 'd22bbab, committed 2026-11-02 (clang'))
+    check((t3d['title'], t3d['commit']) == ('Some 3DS Game', 'd22bbab'), f"the 3DS's dated header: {t3d['commit']!r}")
     gb = scan(GBA)
     check(
         (gb['title'], gb['title_id'], gb['console'], gb['commit']) == ('SOME GBA GAME', 'BPEE', 'GBA', '1234abc'),

@@ -190,6 +190,85 @@ static int file_is(const char* dir, const char* name, const void* content, size_
     return same;
 }
 
+/* an application's content meta (0x80) for title listing count contents, each its ID, type (1 Program, 3 Control)
+   and program index (id_offset), as a collection's lists its programs */
+static blob_t app_meta_nca(uint64_t title, const unsigned char (*ids)[16], const int* types, const int* indices,
+                           int count) {
+    blob_t cnmt = {zalloc(0x20 + 0x10 + 0x38 * (size_t)count), 0x20 + 0x10 + 0x38 * (size_t)count};
+    romfs_file_t files[1] = {{"Application_x.cnmt", cnmt}};
+    blob_t nca;
+    int i;
+    put64(cnmt.data, title);
+    cnmt.data[0xC] = 0x80;
+    cnmt.data[0xE] = 0x10;
+    cnmt.data[0x10] = (unsigned char)count;
+    for (i = 0; i < count; i++) {
+        unsigned char* r = cnmt.data + 0x30 + 0x38 * i;
+        memcpy(r + 0x20, ids[i], 16);
+        r[0x36] = (unsigned char)types[i];
+        r[0x37] = (unsigned char)indices[i];
+    }
+    nca = dnca_build(NCACONTENTTYPE_META, title, files, 1, NULL, 0);
+    free(cnmt.data);
+    return nca;
+}
+/* a Control NCA whose control.nacp names name */
+static blob_t control_named(uint64_t title, const char* name) {
+    blob_t file = nacp();
+    romfs_file_t romfs[1] = {{"control.nacp", file}};
+    blob_t nca;
+    strcpy((char*)file.data, name);
+    nca = dnca_build(NCACONTENTTYPE_CONTROL, title, NULL, 0, romfs, 1);
+    free(file.data);
+    return nca;
+}
+/* A collection's dump, two programs its content meta numbers 0 and 1 (each NCA named by its content ID), read in place
+   for each: its own Program and Control NCAs picked, the application's count of programs, and a program it lacks
+   refused with the count said */
+static void programs(const char* scratch) {
+    static const unsigned char ids[4][16] = {{0xa0}, {0xa1}, {0xc0}, {0xc1}};
+    static const int types[4] = {1, 1, 3, 3}, indices[4] = {1, 0, 1, 0}; /* program 1 listed first */
+    char *base = snx_path_join(scratch, "Collection.nsp"), *repo = snx_path_join(scratch, "collection repo");
+    Game game = {{{0}}, 0};
+    SnxDump dump;
+    size_t size = 0;
+    unsigned char* nacp_data;
+    const char* why;
+    CHECK(!snx_mkdirs(repo));
+    game_add(&game, "a1000000000000000000000000000000.nca", program(TITLE, 1));
+    game_add(&game, "a0000000000000000000000000000000.nca", program(TITLE + 1, 1));
+    game_add(&game, "c1000000000000000000000000000000.nca", control_named(TITLE, "Synthetic Collection"));
+    game_add(&game, "c0000000000000000000000000000000.nca", control_named(TITLE + 1, "Synthetic Program 1"));
+    game_add(&game, "f00d.cnmt.nca", app_meta_nca(TITLE, ids, types, indices, 4));
+    write_container(base, &game, "nsp");
+    CHECK(!snx_dump_open(&dump, base, NULL, 0, NULL, NULL, repo, 0));
+    CHECK(dump.programs == 2 && dump.program.found && dump.program.title_id == TITLE);
+    CHECK(dump.program.info.title_id == TITLE && dump.game == TITLE);
+    nacp_data = snx_dump_nacp(&dump, &size, &why);
+    CHECK(nacp_data && !strcmp((const char*)nacp_data, "Synthetic Collection"));
+    free(nacp_data);
+    snx_dump_close(&dump);
+    CHECK(!snx_dump_open(&dump, base, NULL, 1, NULL, NULL, repo, 0));
+    CHECK(dump.index == 1 && dump.programs == 2 && dump.program.info.title_id == TITLE + 1);
+    CHECK(dump.program.title_id == TITLE && dump.game == TITLE); /* the meta's: the application's */
+    nacp_data = snx_dump_nacp(&dump, &size, &why);
+    CHECK(nacp_data && !strcmp((const char*)nacp_data, "Synthetic Program 1"));
+    free(nacp_data);
+    snx_dump_close(&dump);
+    g_extract.said[0] = 0;
+    snx_error_sink(said_line);
+    CHECK(snx_dump_open(&dump, base, NULL, 2, NULL, NULL, repo, 0));
+    snx_error_sink(NULL);
+    snx_dump_close(&dump);
+    if (!strstr(g_extract.said,
+                "has the application 0100000000AB0000 of 2 programs, 0 to 1: program 2 is none of them"))
+        fprintf(stderr, "said: %s\n", g_extract.said);
+    CHECK(strstr(g_extract.said, "of 2 programs, 0 to 1: program 2 is none of them") != NULL);
+    free(base);
+    free(repo);
+    printf("PASS a collection's programs read in place by their index, each its own Control\n");
+}
+
 /* Extract dump off: the dump read in place, as the runtime and -r read it (container.h), mapped (here read
    into memory) for the file systems to read from: the ExeFS's files, a file of the RomFS and the control.nacp. Nothing
    is written. 0, or 1 after saying what differed */
@@ -201,7 +280,7 @@ static int in_place(const char* base, const SnxPaths* paths) {
     size_t map_size = 0, size = 0, count, i, found = 0;
     const char* why;
     blob_t meta = npdm(), want = nacp();
-    CHECK(!snx_dump_open(&dump, base, NULL, NULL, NULL, paths->repo, 0));
+    CHECK(!snx_dump_open(&dump, base, NULL, 0, NULL, NULL, paths->repo, 0));
     map = snx_read_file(base, &map_size);
     CHECK(map != NULL);
     CHECK(!snx_hac_map(dump.hac, dump.base, map, map_size));
@@ -501,6 +580,8 @@ int main(int argc, char** argv) {
     }
     self = snx_executable(argv[0]);
     scratch = snx_temp_dir(NULL);
+    CHECK(scratch != NULL);
+    programs(scratch);
     CHECK(self != NULL && scratch != NULL);
     for (i = 0; i < sizeof scenarios / sizeof scenarios[0]; i++) {
         directory = snx_path_join(scratch, scenarios[i].mode);

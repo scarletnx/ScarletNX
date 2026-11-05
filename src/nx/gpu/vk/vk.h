@@ -36,6 +36,7 @@
 #include "common/utilities/endian.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/draw_state.h"
+#include "nx/gpu/vk/coverage.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "volk.h"
@@ -98,6 +99,7 @@ typedef struct {
     /* optional features that were enabled */
     VkPhysicalDeviceFeatures feat;
     int has_divisor; /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
+    int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_bc=1 would hold its ASTC textures as BC7 */
     /* VK_EXT_vertex_input_dynamic_state in effect (vertex_input.h's choice): each draw sets its vertex layout, which
        pipelines leave out of their keys */
     int vertex_input_dynamic;
@@ -106,6 +108,7 @@ typedef struct {
     int has_calibrated_host;    /* VK_EXT_calibrated_timestamps with CLOCK_MONOTONIC_RAW: the GPU's clock goes next to
                                 the client's, one driver call (gpuprof.c's calibration) */
     int has_xfb;                /* VK_EXT_transform_feedback: draws capture their outputs into guest memory */
+    int has_mixed_samples;      /* VK_NV_framebuffer_mixed_samples: coverage at more samples than color storage */
     int has_border_color;       /* VK_EXT_custom_border_color */
     u32 border_color_max;       /* maxCustomBorderColorSamplers: past it, samplers take the nearest built-in color */
     int has_mirror_clamp;       /* samplerMirrorClampToEdge: VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE */
@@ -830,6 +833,8 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
 void vk_surf_bytes(Surf* s, u64 bytes);
 int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
               double sdy);
+int vk_blit2d_filter(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
+                     double sdy, int linear);
 
 /* blocklinear.c: a block linear surface's rows moved between its layout and linear rows on the GPU
    (gpu/texture/blocklinear.comp). The surface is row_bytes wide (texels or compressed blocks times their bytes),
@@ -1046,6 +1051,8 @@ void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
    more is BC7: in one game's sample those were three quarters of the ASTC textures and 98% of their RGBA8 bytes */
 #define VK_BC7_AUTO_TEXELS (256u * 256u)
 int vk_astc_as_bc7(u64 texels, int is3d, int holes, int pressed);
+/* the bytes of the ASTC textures decoded to RGBA8 so far (astc_bc off, or a GPU without BCn) */
+u64 vk_astc_rgba8_bytes(void);
 
 /* vic.c: the VIC composition as a compute shader, recorded in the frame's command buffer, its output planes
    published (vk_own_publish): 1 when composed, 0 when the job exceeds the device (it is skipped). Takes vk_lock */
@@ -1195,12 +1202,21 @@ typedef struct {
     VkBuffer buf;
     u64 off, range;
 } VkDrawGbuf;
+/* a draw's global memory, by the stage that reads it: vertex, the two tessellation stages, geometry, fragment (ST_VS
+   to ST_FS) */
+#define VK_DRAW_STAGES 5
 typedef struct {
-    VkDrawGbuf b[2][16];
-    int n[2];
-    VkBuffer map_buf[2];
-    u64 map_off[2], map_size[2];
+    VkDrawGbuf b[VK_DRAW_STAGES][16];
+    int n[VK_DRAW_STAGES];
+    VkBuffer map_buf[VK_DRAW_STAGES];
+    u64 map_off[VK_DRAW_STAGES], map_size[VK_DRAW_STAGES];
 } VkDrawStorage;
+/* whether any stage of the draw reads or writes global memory */
+static inline int vk_draw_storage_any(const VkDrawStorage* draw) {
+    for (int s = 0; s < VK_DRAW_STAGES; s++)
+        if (draw->n[s]) return 1;
+    return 0;
+}
 int vk_buf_draw_has_alias(const VkDrawStorage* draw);
 int vk_buf_draw_prepare(VkDrawStorage* draw);
 void vk_buf_writable_abort(void);
@@ -1310,6 +1326,12 @@ int vk_written_since(const u8* host, u64 len, u32 since);
    a range vk_written_since(host, len, since) has just found written, so its pages are marked */
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user);
 u32 vk_ww_now(void);
+/* [host, host + len)'s hot pages (write_tracking_hot, plat_ww_cool), and those at its pages' other addresses, protected
+   again and taken in as written, so the next vk_ww_now is a baseline after which "written" stands for a write: for a
+   render target, whose write-back keeps memory's bytes on the pages written since its baseline. A hot page reads as
+   written at every scan. Called after the range's writes were taken in (vk_written_since), whose scan may leave a page
+   hot itself. Under vk_lock */
+void vk_ww_cool(const u8* host, u64 len);
 void vk_ww_new_epoch(void); /* the CPU may have written what a GPU stream reads next: write tracking scans again */
 /* The epoch of the CPU's writes the calling thread's checks see: a cache that trusts a check for the rest of its epoch
    stamps this one, read before the check (or the read of memory) it stands for. A job's checks see the epoch it began
@@ -1442,6 +1464,7 @@ typedef struct {
     u32 logic_op;       /* 0, or the VkLogicOp the color targets take in place of blending, plus 1 */
     u32 arrays;         /* the sets with texture arrays: its layout, vk_playout(arrays) */
     u32 samples;        /* the targets' VkSampleCountFlagBits (0 taken as 1) */
+    VkCoverage coverage; /* color-only target-independent rasterization, all zero for ordinary multisampling */
     /* with several samples, DsRasterKey's: the samples the sample mask leaves out, alpha to coverage and to one */
     u32 sample_off, alpha_to_coverage, alpha_to_one;
     u32 sample_shading; /* every sample is shaded (sampleRateShading), with several samples */
@@ -1554,6 +1577,9 @@ VkFrontFace vk_render_front_face(const DsDynamic* d);
 void vk_render_draw_texture(const DsState* ds, const DrawTexture* t);
 void vk_render_discard(const DsState* ds, u32 targets);
 void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o);
+int vk_render_xfb_control(u32 owner, u64 control, u32 what, u32 stride, DrawOwner* o);
+int vk_xfb_control_buffer(VkBuffer counters, u64 counter_offset, u64 control, u32 what, u32 stride);
+int vk_xfb_indirect(u64 control, VkBuffer* arguments, u64* offset);
 /* a texture binding, for draws and compute: the view type a declaration takes, the view of t with the header's
    swizzle (VK_NULL_HANDLE when t is NULL or not of the number type num: 0 float, 1 unsigned, 2 signed integer), and
    the header's sampler with the declaration's comparison (integer textures unfiltered). The sampler's t and want,

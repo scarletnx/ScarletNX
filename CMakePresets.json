@@ -123,10 +123,7 @@
     {
       "name": "linux-ppc64-g5-cross",
       "displayName": "Linux ppc64 big-endian with glibc (ELFv2), for the PowerPC 970 (PowerMac G5) and POWER4 on, cross-built with Clang",
-      "inherits": "linux-ppc64-elfv2-cross",
-      "cacheVariables": {
-        "SNX_PPC64_CPU": "970"
-      }
+      "inherits": "linux-ppc64-elfv2-cross"
     },
     {
       "name": "linux-ppc64-musl-cross",

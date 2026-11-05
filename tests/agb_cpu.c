@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The whole machine: a hand assembled ROM goes through the AOT recompiler and runs on the board, through
    a BIOS call and an interrupt, and the board's memory shows what happened. */
+#include "agb/bios/bios.h"
 #include "agb/board/board.h"
 #include "agb/cpu/agb_cpu.h"
 #include "agb/cpu/memmap.h"
@@ -237,6 +238,25 @@ int main(void) {
         result = 1;
     }
     {
+        /* the ARM7TDMI's NV condition: an instruction with it never runs, which ARMv5 made BLX and later cores CPS */
+        const AgbBlock* block;
+        agb_write32(&board, 0x03000100, 0xE3A00001); /* mov r0, #1 */
+        agb_write32(&board, 0x03000104, 0xF1000000); /* cond NV */
+        agb_write32(&board, 0x03000108, 0xFA000003); /* cond NV: ARMv5's BLX */
+        agb_write32(&board, 0x0300010C, 0xE2800001); /* add r0, r0, #1 */
+        agb_write32(&board, 0x03000110, 0xE12FFF1E); /* bx lr */
+        block = agb_recomp_lookup(&recomp, &board, 0x03000100, 0, error, sizeof error);
+        CHECK(block);
+        cpu.arm.r[14] = 0x08000200;
+        CHECK(run_block(&cpu, block) == 2 && cpu.arm.r[15] == 0x08000200);
+        /* its Thumb BX takes no notice of the bits under the register, which should be zero */
+        agb_write16(&board, 0x03000120, 0x2003); /* movs r0, #3 */
+        agb_write16(&board, 0x03000122, 0x4775); /* bx lr, bits 2 to 0 set */
+        block = agb_recomp_lookup(&recomp, &board, 0x03000120, 1, error, sizeof error);
+        CHECK(block);
+        CHECK(run_block(&cpu, block) == 3 && cpu.arm.r[15] == 0x08000200);
+    }
+    {
         /* code the game puts in RAM runs as RAM holds it: a block built from it goes once the game writes over it,
            this run or the next one, which the cache hands it */
         const AgbBlock* block;
@@ -271,6 +291,39 @@ int main(void) {
         agb_recomp_free(&next);
         CHECK(!result);
         result = 1;
+    }
+    {
+        /* a sound driver function SoundDriverGetJumpList named returns at once, as the BIOS's bx lr: here to Thumb
+           code that puts 7 in r0 and spins, interrupts off */
+        uint32_t written = 0;
+        agb_write16(&board, 0x03000200, 0x2007); /* movs r0, #7 */
+        agb_write16(&board, 0x03000202, 0xE7FE); /* b . */
+        cpu.arm.r[0] = 0;
+        cpu.arm.r[14] = 0x03000201;
+        cpu.arm.r[15] = AGB_BIOS_NOP_CALL;
+        cpu.arm.cpsr = 0x9F;
+        board.cpu_halted = cpu.wait = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2000, audio, AGB_APU_RATE, &written, error, sizeof error));
+        CHECK(cpu.arm.r[0] == 7 && cpu.arm.r[15] == 0x03000202 && (cpu.arm.cpsr & SNX_ARM_T));
+    }
+    {
+        /* a Thumb BX PC two bytes past a word lands in ARM state at an address with bit 1 set, as a compiler's
+           interworking stub does: the ARM7TDMI holds R15's bits 1 and 0 at zero there, so the word below runs and
+           reads the PC from it. Here r0 = 42 and r2 = the first ARM word's address + 8, stored at 0x02000300 */
+        uint32_t written = 0;
+        agb_write16(&board, 0x03000502, 0x4778);     /* bx pc: ARM at 0x03000506 */
+        agb_write32(&board, 0x03000504, 0xE1A0200F); /* mov r2, pc */
+        agb_write32(&board, 0x03000508, 0xE3A0002A); /* mov r0, #42 */
+        agb_write32(&board, 0x0300050C, 0xE59F1004); /* ldr r1, [pc, #4]: 0x02000300 */
+        agb_write32(&board, 0x03000510, 0xE8810005); /* stmia r1, {r0, r2} */
+        agb_write32(&board, 0x03000514, 0xEAFFFFFE); /* b . */
+        agb_write32(&board, 0x03000518, 0x02000300);
+        cpu.arm.r[15] = 0x03000502;
+        cpu.arm.cpsr = 0x9F | SNX_ARM_T;
+        board.cpu_halted = cpu.wait = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2000, audio, AGB_APU_RATE, &written, error, sizeof error));
+        CHECK(agb_read32(&board, 0x02000300) == 42 && agb_read32(&board, 0x02000304) == 0x0300050C);
+        CHECK(cpu.arm.r[15] == 0x03000514 && !(cpu.arm.cpsr & SNX_ARM_T));
     }
     {
         /* a recompile (-r) builds every block of the map into the module, the hints too: here from a copy of the map
@@ -376,6 +429,38 @@ int main(void) {
                     (long)(took[1] * 1000 / CLOCKS_PER_SEC), (long)(took[0] * 1000 / CLOCKS_PER_SEC));
             goto done;
         }
+    }
+    {
+        /* the BIOS's IntrWait waits with the I/O base in r12 and returns with it there, and its interrupt stub calls the
+           game's handler with that base in r0: a handler that flags the vblank through r12 (0x03FFFFF8, the flags'
+           mirror) ends the wait. Here ARM code with r12 = 0 calls VBlankIntrWait, then stores 42 and its r12 at
+           0x02000320; the handler stores its r0 at 0x02000328 */
+        static const uint32_t code[] = {
+            0xE3A0C000, 0xEF050000, 0xE3A0502A, 0xE59F1008, 0xE5815000, 0xE581C004, 0xEAFFFFFE, 0x02000320,
+        };
+        static const uint32_t handler[] = {
+            0xE59F2014, 0xE5820000, 0xE3A01001, 0xE14C10B8, 0xE2802C02, 0xE1C210B2, 0xE12FFF1E, 0x02000328,
+        };
+        uint32_t written = 0;
+        for (uint32_t i = 0; i < 8; ++i) {
+            agb_write32(&board, 0x03000700 + i * 4, code[i]);
+            agb_write32(&board, 0x03000740 + i * 4, handler[i]);
+        }
+        agb_write32(&board, 0x03007FFC, 0x03000740);
+        agb_write16(&board, 0x03007FF8, 0);
+        agb_write16(&board, 0x04000004, 0x0008); /* the vblank interrupt on */
+        agb_write16(&board, 0x04000200, 0x0001);
+        agb_write16(&board, 0x04000208, 0x0001);
+        board.irq_if = 0;
+        board.cpu_halted = cpu.wait = 0;
+        cpu.arm.r[15] = 0x03000700;
+        cpu.arm.cpsr = 0x1F;
+        for (int frame = 0; frame < 2; ++frame)
+            CHECK(!agb_cpu_run(&board, &cpu, &recomp, AGB_SCANLINE_CYCLES * AGB_FRAME_LINES, audio, AGB_APU_RATE,
+                               &written, error, sizeof error));
+        CHECK(agb_read32(&board, 0x02000328) == 0x04000000);
+        CHECK(agb_read32(&board, 0x02000320) == 42 && agb_read32(&board, 0x02000324) == 0x04000000);
+        agb_write16(&board, 0x04000208, 0);
     }
     {
         /* the cache is the ROM's it was built from: another one's, named the same, recompiles and says why */

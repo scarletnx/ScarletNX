@@ -120,19 +120,20 @@ The console's BIOS is not shipped with the emulator. The software interrupts run
 as board routines (`bios/bios.c`), the way the Switch runtime turns SVC calls
 into HLE and the GNU ABI runtime turns `SVC #0` into Linux system calls. Div,
 Sqrt, ArcTan and ArcTan2 compute in fixed point, CpuSet and CpuFastSet move
-memory, the LZ77, run length and difference calls decompress, BitUnPack widens
-packed fields, and BgAffineSet and ObjAffineSet build the rotation matrices.
+memory, the LZ77, Huffman, run length and difference calls decompress,
+BitUnPack widens packed fields, and BgAffineSet and ObjAffineSet build the
+rotation matrices.
 RegisterRamReset clears the memories it is asked to and puts the registers back
 to the BIOS's values (RCNT 0x8000, SOUNDBIAS 0x200, the affine identities), and
 SoftReset starts the machine again from EWRAM or the cartridge, as the byte at
 0x03007FFA says. Halt and Stop halt the machine until an interrupt, and
 IntrWait and VBlankIntrWait until the game's handler flags it in the BIOS's
-flags at 0x03007FF8. HuffUnComp, SoundBias and the sound driver's calls are
-known stubs.
+flags at 0x03007FF8. SoundBias and the sound driver's calls are known stubs.
 
 Angles are turns in 16 bits, the way the BIOS counts them, and the affine matrix
 drops the low byte of the rotation angle, giving 256 steps around the circle.
-The trigonometry rounds to 1.14 fixed point like the BIOS's own tables.
+The trigonometry cuts its sines toward zero in 1.14 fixed point, as the BIOS's
+own table has them, and BgAffineSet's start point comes from that matrix.
 
 ## The recompiled ROM
 

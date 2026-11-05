@@ -755,7 +755,7 @@ static char* cache_path(struct snx_recompiler* r, SnxCodegen* codegen) {
     key_u64(&k, r->features);
     key_u64(&k, (uint64_t)codegen->hook_direct_calls);
     char* cpu = LLVMGetHostCPUName();
-    char* features = LLVMGetHostCPUFeatures();
+    char* features = snx_ir_host_features();
     key_bytes(&k, cpu, strlen(cpu) + 1);
     key_bytes(&k, features, strlen(features) + 1);
     LLVMDisposeMessage(cpu);
@@ -808,7 +808,7 @@ static char* rtlib_cache_path(const char* cache, char opt) {
     key_u64(&k, (uint64_t)(unsigned char)opt);
     key_bytes(&k, snx_rtlib_bitcode, snx_rtlib_bitcode_size);
     char* cpu = LLVMGetHostCPUName();
-    char* features = LLVMGetHostCPUFeatures();
+    char* features = snx_ir_host_features();
     key_bytes(&k, cpu, strlen(cpu) + 1);
     key_bytes(&k, features, strlen(features) + 1);
     LLVMDisposeMessage(cpu);

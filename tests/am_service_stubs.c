@@ -71,6 +71,11 @@ u8* fs_read_file(const char* path, u64* size) {
     return d;
 }
 
+/* main.c's end of the program, which ExecuteProgram asks for: how many times it was asked */
+extern unsigned g_test_program_ends;
+unsigned g_test_program_ends;
+void snx_program_end(void) { g_test_program_ends++; }
+
 /* the users' array, which am reads only through acc_playing, under acc's lock: an answer of Player or of the fixed uid
    says it read the array unlocked */
 const SnxUser* snx_users_selected(void) {

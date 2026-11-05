@@ -80,6 +80,11 @@ static SnxU64 addon_title(const char* dump) {
     return strstr(leaf, "Update") ? ADDON_GAME | 0x800 : strstr(leaf, "Dlc") ? ADDON_DLC : ADDON_GAME;
 }
 static int addon_mode(void) { return getenv("SNX_WORKFLOW_ADDON") && *getenv("SNX_WORKFLOW_ADDON"); }
+/* SNX_WORKFLOW_PROGRAMS: the game's dump is a collection's application of that many programs; 0 for one */
+static int collection(void) {
+    const char* programs = getenv("SNX_WORKFLOW_PROGRAMS");
+    return programs && *programs ? atoi(programs) : 0;
+}
 static void check_key_path(const char* path, const char* supplied) {
     char* expected = supplied && *supplied ? snx_absolute(supplied) : NULL;
     CHECK(expected ? path && !strcmp(path, expected) : !path);
@@ -113,7 +118,8 @@ static void check_runtime_keys(int* argc, char** argv) {
     free(expected_title_keys);
 }
 /* the title ID the extraction's NPDM gives (SNX_WORKFLOW_NPDM "id"), else none */
-int snx_extract_title(const char* dump, const SnxPaths* paths, SnxU64* title, SnxU64* game, SnxU64* version) {
+int snx_extract_title(const char* dump, const SnxPaths* paths, SnxU64* title, SnxU64* game, SnxU64* version,
+                      int* programs) {
     const char* kind = getenv("SNX_WORKFLOW_NPDM");
     check_key_paths(paths);
     CHECK(snx_is_file(dump));
@@ -121,6 +127,8 @@ int snx_extract_title(const char* dump, const SnxPaths* paths, SnxU64* title, Sn
     *game = addon_mode() ? ADDON_GAME : *title;
     /* an update's version from its name: "Update" 65536, "Update old" 0 */
     if (version) *version = strstr(dump, "Update old") ? 0 : strstr(dump, "Update") ? 65536 : SNX_NO_VERSION;
+    /* SNX_WORKFLOW_PROGRAMS: a collection's game dump, of that many programs */
+    if (programs) *programs = addon_mode() && *title == ADDON_GAME && collection() ? collection() : 1;
     return 0;
 }
 /* the icon alone, as -x keeps it: what a game made before it kept one gets from its dump */
@@ -230,7 +238,31 @@ const IniOpt* snx_recompile_setting(const char* key) {
 static int addon_recompile(int argc, char** argv, const SnxPaths* paths) {
     char of[17], own[32], *folder, *name, *game, *stamp, *code, *data;
     SnxU64 title;
+    int asked = -1, i;
+    if (argc > 4 && !strcmp(argv[2], "--program")) { /* one program of a collection's, which a hand-over named */
+        asked = atoi(argv[3]);
+        memmove(argv + 2, argv + 4, (size_t)(argc - 4) * sizeof *argv);
+        argc -= 2;
+    }
     CHECK((argc == 4 || argc == 5) && !strcmp(argv[0], "--outdir") && !strcmp(argv[2], "--"));
+    if (collection() && addon_title(argv[3]) == ADDON_GAME) { /* each program beside the game, its code alone */
+        snx_title_text(ADDON_GAME, of);
+        for (i = asked > 0 ? asked : 1; i < collection() && (asked < 0 || i == asked); i++) {
+            char program[64];
+            CHECK(!snx_program_name(of, NULL, i, program, sizeof program));
+            folder = snx_format("%s/%s", argv[1], of);
+            stamp = snx_format("%s/%s.abi", folder, program);
+            code = snx_program_code(folder, program);
+            data = snx_format("%s/%s_data", folder, program);
+            CHECK(!snx_mkdirs(data) && !snx_write_file(stamp, SNX_WORKFLOW_STAMP, strlen(SNX_WORKFLOW_STAMP)) &&
+                  !snx_write_file(code, "x", 1));
+            free(folder);
+            free(stamp);
+            free(code);
+            free(data);
+        }
+        if (asked > 0) return event('R');
+    }
     title = addon_title(argv[3]);
     snx_title_text(ADDON_GAME, of);
     snx_addon_entry(ADDON_GAME, title, strstr(argv[3], "Update old") ? 0 : 65536, own); /* each version its own */
@@ -441,6 +473,10 @@ static void run(const char* exe, const char* repo, const char* dump, const char*
             args[n++] = bar + 1;
         }
     }
+    if (getenv("SNX_WORKFLOW_PROGRAM") && *getenv("SNX_WORKFLOW_PROGRAM")) {
+        args[n++] = "--program";
+        args[n++] = getenv("SNX_WORKFLOW_PROGRAM");
+    }
     if (getenv("SNX_WORKFLOW_ARGS") && *getenv("SNX_WORKFLOW_ARGS")) {
         args[n++] = "--";
         args[n++] = "some arg";
@@ -608,12 +644,73 @@ static void record_folders(const char* root) {
     free(expected);
     free(other);
 }
+/* A collection's program, as the runtime is one (main.c's handover_take and handover_write): the one --game= names, else
+   the game's own; the hand-over that names it taken away (SNX_WORKFLOW_NO_TAKE: left, as a program that never
+   started leaves it), and then, as SNX_WORKFLOW_NEXT says, ExecuteProgram's to that program from a program the player
+   started, and back to program 0 from it. The game's own logs G, another P */
+static int collection_child(const char* named) {
+    const char *folder = getenv("SNX_WORKFLOW_GAMES"), *next = getenv("SNX_WORKFLOW_NEXT");
+    char *path = snx_path_join(folder, "0100ABCD12340000.next"), *program, why[256];
+    const char* leaf = named ? strrchr(named, '/') + 1 : "0100ABCD12340000";
+    SnxNext taken, out;
+    if (named && !strcmp(leaf, "0100ABCD12340000")) named = NULL; /* --game= the game's own, program 0 */
+    int read = snx_next_read(path, &taken, why, sizeof why), started = read > 0 && !strcmp(taken.program, leaf);
+    CHECK(read >= 0);
+    if (started && getenv("SNX_WORKFLOW_NO_TAKE") && *getenv("SNX_WORKFLOW_NO_TAKE")) { /* it never started */
+        snx_next_free(&taken);
+        free(path);
+        return event('P');
+    }
+    if (started) CHECK(!remove(path));
+    memset(&out, 0, sizeof out);
+    out.serial = started ? taken.serial + 1 : 1;
+    out.previous = named ? atoi(leaf + strlen(leaf) - 1) : 0; /* the test's programs are 1 to 9 */
+    if (next && *next && !named && !started) {                /* the player's program 0: to program NEXT */
+        out.index = atoi(next);
+        program = snx_format("0100ABCD12340000_0100ABCD1234000%d", out.index);
+        snprintf(out.program, sizeof out.program, "%s", program);
+        CHECK(!snx_next_write(path, &out));
+        free(program);
+    } else if (next && *next && named && started) { /* that program: back to program 0 */
+        snprintf(out.program, sizeof out.program, "%s", "0100ABCD12340000");
+        CHECK(!snx_next_write(path, &out));
+    }
+    if (read > 0) snx_next_free(&taken);
+    free(path);
+    return event(named ? 'P' : 'G');
+}
 static void reset(const char* repo, const char* dump) {
     CHECK(!snx_remove_tree(repo));
     CHECK(!snx_mkdirs(repo));
     CHECK(!snx_write_file(dump, "synthetic", 9));
     set_env("SNX_WORKFLOW_FAIL", "");
 }
+#if SNX_DRIVER_READY
+/* The driver as an app's child (driver.c's SNX_DRIVER_READY, as on Android and iOS), which plays nothing and names
+   after "Ready " the program the app plays: a collection of 3 programs made, then the one --program asks for, and
+   program 0 for one not made, said */
+static void ready_runs(const char* exe, const char* repo, const char* dump, const char* log) {
+    char *game_dump = snx_path_join(repo, "Game.nsp"), *folder = snx_path_join(repo, "recompiled/0100ABCD12340000");
+    set_env("SNX_WORKFLOW_ADDON", "1");
+    set_env("SNX_WORKFLOW_PROGRAMS", "3");
+    set_env("SNX_WORKFLOW_GAMES", folder);
+    set_env("SNX_WORKFLOW_EXTRACT", "");
+    reset(repo, dump);
+    CHECK(!snx_write_file(game_dump, "game", 4));
+    run(exe, repo, game_dump, log, 0, "R", "Ready 0100ABCD12340000\n");
+    CHECK(records_dump(folder, "0100ABCD12340000", game_dump)); /* what the app's Recompile makes it from again */
+    set_env("SNX_WORKFLOW_PROGRAM", "1");
+    run(exe, repo, game_dump, log, 0, "",
+        "Playing program 1 of the game, 0100ABCD12340000_0100ABCD12340001\nReady 0100ABCD12340000_0100ABCD12340001\n");
+    set_env("SNX_WORKFLOW_PROGRAM", "5");
+    run(exe, repo, game_dump, log, 0, "",
+        "--program 5: program 5 is not one of this application's programs 0-2: it starts program 0\nReady "
+        "0100ABCD12340000\n");
+    set_env("SNX_WORKFLOW_PROGRAM", "");
+    free(folder);
+    free(game_dump);
+}
+#endif
 int main(int argc, char** argv) {
     char *exe, *root, *repo, *dump, *log, *extracted, *extracting, *kept, *game, *cwd, *expected_cwd, *keys,
         *title_keys;
@@ -642,7 +739,14 @@ int main(int argc, char** argv) {
         if (rc >= 0) return rc;
     }
     if (getenv("SNX_WORKFLOW_CHILD")) {
+        const char* named = NULL; /* --game=, a collection's other program */
         check_runtime_keys(&argc, argv);
+        if (argc > 1 && !strncmp(argv[1], "--game=", 7)) {
+            named = argv[1] + 7;
+            memmove(argv + 1, argv + 2, (size_t)(argc - 1) * sizeof *argv);
+            --argc;
+        }
+        if (collection()) return collection_child(named);
         const char* flag = getenv("SNX_WORKFLOW_HEADLESS");
         const char* fullscreen = getenv("SNX_WORKFLOW_FLAGS");
         if (fullscreen &&
@@ -709,6 +813,15 @@ int main(int argc, char** argv) {
     set_env("SNX_WORKFLOW_DUMP", "");
     set_env("SNX_WORKFLOW_ADDON", "");
     set_env("SNX_WORKFLOW_UPDATE", "");
+#if SNX_DRIVER_READY /* an app's child plays nothing: what it names, and none of the runs below */
+    ready_runs(exe, repo, dump, log);
+    (void)output;
+#ifndef _WIN32
+    (void)modes;
+    (void)statuses;
+    (void)i;
+#endif
+#else
     /* Extract dump on: the dump extracted into its game's data folder, which the game is made from */
     set_env("SNX_WORKFLOW_EXTRACT", "1");
     reset(repo, dump);
@@ -1315,6 +1428,67 @@ int main(int argc, char** argv) {
         free(image);
         free(own);
     }
+    { /* A collection of 3 programs: each made beside the game, its code alone; ExecuteProgram's hand-over followed
+         to program 2 and back; --program picks one, one not made plays program 0, said; a hand-over left before a run
+         taken away; a program named that is not made recompiled from the game's dump; one that never takes its
+         hand-over stops the run */
+        char *game_dump = snx_path_join(repo, "Game.nsp"), *folder = snx_path_join(repo, "recompiled/0100ABCD12340000");
+        char *second = snx_path_join(folder, "0100ABCD12340000_0100ABCD12340002"), *code, *stamp, *data, *next;
+        char* program0 = snx_path_join(folder, "0100ABCD12340000");
+        set_env("SNX_WORKFLOW_ADDON", "1");
+        set_env("SNX_WORKFLOW_PROGRAMS", "3");
+        set_env("SNX_WORKFLOW_GAMES", folder);
+        set_env("SNX_WORKFLOW_EXTRACT", "");
+        reset(repo, dump);
+        CHECK(!snx_write_file(game_dump, "game", 4));
+        run(exe, repo, game_dump, log, 0, "RG", NULL);
+        code = snx_program_code(folder, "0100ABCD12340000_0100ABCD12340002");
+        stamp = snx_format("%s.abi", second);
+        data = snx_format("%s_data", second);
+        CHECK(snx_is_file(code) && snx_is_file(stamp) && snx_is_dir(data) && !snx_path_exists(second));
+        set_env("SNX_WORKFLOW_NEXT", "2");
+        run(exe, repo, game_dump, log, 0, "GPG",
+            "The game starts its program 2, 0100ABCD12340000_0100ABCD12340002 (ExecuteProgram from program 0)");
+        set_env("SNX_WORKFLOW_NEXT", "");
+        set_env("SNX_WORKFLOW_PROGRAM", "1");
+        run(exe, repo, game_dump, log, 0, "P", "Playing program 1 of the game, 0100ABCD12340000_0100ABCD12340001");
+        set_env("SNX_WORKFLOW_PROGRAM", "5");
+        run(exe, repo, game_dump, log, 0, "G",
+            "--program 5: program 5 is not one of this application's programs 0-2: it starts program 0");
+        set_env("SNX_WORKFLOW_PROGRAM", "x");
+        run(exe, repo, game_dump, log, 1, "", "--program x: not a whole number from 0 to 255");
+        set_env("SNX_WORKFLOW_PROGRAM", "");
+        next = snx_path_join(folder, "0100ABCD12340000.next");
+        {
+            static const char left[] = "program=0100ABCD12340000\nindex=0\nprevious=1\ncontext=0\nserial=3\n";
+            CHECK(!snx_write_file(next, left, sizeof left - 1));
+        }
+        run(exe, repo, game_dump, log, 0, "G", "a hand-over a run left, whose next program never started");
+        CHECK(!snx_path_exists(next));
+        /* program 2 gone, the game played by its folder, which knows no count: made when program 0 names it */
+        CHECK(!remove(code) && !remove(stamp) && !snx_remove_tree(data));
+        set_env("SNX_WORKFLOW_NEXT", "2");
+        run(exe, repo, program0, log, 0, "GRPG", "which program 0 starts, is not made: it is recompiled from");
+        CHECK(snx_is_file(code));
+        set_env("SNX_WORKFLOW_NO_TAKE", "1");
+        run(exe, repo, program0, log, 1, "GP", "did not start: its hand-over");
+        CHECK(!snx_path_exists(next));
+        set_env("SNX_WORKFLOW_NO_TAKE", "");
+        set_env("SNX_WORKFLOW_NEXT", "");
+        set_env("SNX_WORKFLOW_PROGRAMS", "");
+        set_env("SNX_WORKFLOW_ADDON", "");
+        cwd = snx_path_join(repo, "recompiled/Test game");
+        set_env("SNX_WORKFLOW_GAMES", cwd);
+        free(cwd);
+        free(next);
+        free(code);
+        free(stamp);
+        free(data);
+        free(second);
+        free(program0);
+        free(folder);
+        free(game_dump);
+    }
 #endif
     /* The probe takes a third argument, so use a separate, terminated vector. */
     {
@@ -1370,6 +1544,7 @@ int main(int argc, char** argv) {
         free(output);
         free(home);
     }
+#endif
 #endif
     set_env("SNX_WORKFLOW_KEYS", "");
     set_env("SNX_WORKFLOW_TITLE_KEYS", "");

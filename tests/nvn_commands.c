@@ -12,6 +12,7 @@
 #include "nx/gpu/nvn/nvn_state.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "common/filesystem/host.h" /* PMutex */
+#include "snx_settings.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +22,9 @@ static u8 memory[1 << 20];
 u8* g_mem = memory; /* guest address a is memory + a */
 
 /* the one pool: command memory from 0x10000 on */
-u64 nvn_pool_memory(u64 pool) { return pool ? 0x10000 : 0; }
+/* where the pool's command memory is: guest 0x10000, or a host address when g_mem is 0 (NCE's layout) */
+static u64 g_pool_memory = 0x10000;
+u64 nvn_pool_memory(u64 pool) { return pool ? g_pool_memory : 0; }
 u64 nvn_pool_gpu(u64 pool) { return pool ? 0x10000 : 0; }
 /* the runtime's own memory a command buffer is lent: from 0x80000 on */
 static u64 g_lent = 0x80000;
@@ -38,9 +41,12 @@ u64 mem_mapped_run(u64 addr, u64 size) {
     return size;
 }
 /* a 64-bit game's: no 32-bit thread runs the game's callbacks */
-/* no GPU thread: each submission is read at once */
-u64 nvn_replay_submitted(void) { return 0; }
-u64 nvn_replay_walked(void) { return 0; }
+/* no GPU thread: each submission is read at once, but where a test says it waits (submitted ahead of walked) */
+static struct {
+    u64 submitted, walked;
+} g_replay;
+u64 nvn_replay_submitted(void) { return g_replay.submitted; }
+u64 nvn_replay_walked(void) { return g_replay.walked; }
 SnxArmCPU* arm_cpu(CPU* c) {
     (void)c;
     return NULL;
@@ -53,9 +59,14 @@ void arm_run(SnxArmCPU* c, SnxArmBlock first, u32 stop_at) {
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
+/* the last line logged */
+static char g_log[256];
 void logf_(int lvl, const char* fmt, ...) {
+    va_list ap;
     (void)lvl;
-    (void)fmt;
+    va_start(ap, fmt);
+    vsnprintf(g_log, sizeof g_log, fmt, ap);
+    va_end(ap);
 }
 void fatal(const char* fmt, ...) {
     va_list ap;
@@ -657,6 +668,103 @@ int main(void) {
         nvn_CommandBufferEndRecording(&cpu, cbg);
         check(g_cb.calls == calls + 1 && g_cb.event == 1 && g_cb.size == 0x100 && g_cb.ctl_used == 0x48,
               "the last range in the open block asks the callback at 0x48 bytes, before the end mark");
+    }
+    /* A block of the small store given back keeps its records until it is taken again: a submission made before
+       still walks them (the GPU thread runs seconds late at loads), from a JUMP or a handle that reaches the block.
+       One game's scene change walked into a block whose first words held the store's list, a record of op 0 and size
+       0. The game builds a recording again in the range of one a submission waits on: the new one takes another block,
+       the last one's keeps its records, and once the GPU thread has read the submission, the next takes it */
+    {
+        const u64 cbh = 0x4b200, callee = 0x4b1f8;
+        u64 hh, b1, b2;
+        u8 kept[64];
+        gw64(callee, h);
+        nvn_CommandBufferInitialize(&cpu, cbh, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbh, 1, 0x2c000, 0x80);
+        nvn_CommandBufferBeginRecording(&cpu, cbh);
+        nvn_CommandBufferCallCommands(&cpu, cbh, 1, callee);
+        nvn_CommandBufferBindUniformBuffer(&cpu, cbh, 0, 1, 0x605640000ull, 0x100);
+        hh = nvn_CommandBufferEndRecording(&cpu, cbh);
+        b1 = gr64(hh + 8);
+        memcpy(kept, GP(b1), sizeof kept);
+        g_replay.submitted++; /* a submission of it waits for the GPU thread */
+        nvn_CommandBufferAddCommandMemory(&cpu, cbh, 1, 0x2c000, 0x80);
+        nvn_CommandBufferBeginRecording(&cpu, cbh);
+        nvn_CommandBufferCallCommands(&cpu, cbh, 1, callee);
+        nvn_CommandBufferBindUniformBuffer(&cpu, cbh, 0, 2, 0x605640000ull, 0x100);
+        check(nvn_CommandBufferEndRecording(&cpu, cbh) == hh && (b2 = gr64(hh + 8)) != b1,
+              "the new recording takes another block while the GPU thread hasn't read the last one's submission");
+        check(!memcmp(GP(b1), kept, sizeof kept), "the block given back keeps its records");
+        walk(b1, &a);
+        check(a.n == 2 && a.op[0] == OP_CALL && a.op[1] == OP_BIND_UBO &&
+                  gr32(a.at[1] + 8 + offsetof(NvnPBindBuf, index)) == 1,
+              "a walk that reached the block given back runs the recording it held");
+        g_replay.walked = g_replay.submitted; /* the GPU thread read it */
+        nvn_CommandBufferAddCommandMemory(&cpu, cbh, 1, 0x2c000, 0x80);
+        nvn_CommandBufferBeginRecording(&cpu, cbh);
+        nvn_CommandBufferCallCommands(&cpu, cbh, 1, callee);
+        nvn_CommandBufferBindUniformBuffer(&cpu, cbh, 0, 3, 0x605640000ull, 0x100);
+        check(nvn_CommandBufferEndRecording(&cpu, cbh) == hh && gr64(hh + 8) == b1 && b2 != b1,
+              "once the submission is read, the next recording takes the block given back first");
+    }
+    /* g_mem 0, as under NCE, where a guest address is the host's: a bind of a program that SetShaders gave stages records
+       them. GP as an addition to the null g_mem let the compiler take the program for null and drop the copy */
+    {
+        static _Alignas(16) u8 host[0x2000];
+        u8* base = g_mem;
+        const u64 cbn = (u64)(uintptr_t)host, prog = cbn + 0x200;
+        NvnProgram pr;
+        Walk w;
+        memset(&pr, 0, sizeof pr);
+        pr.magic = NVN_MAGIC('P', 'R', 'O', 'G');
+        pr.st[NVN_SHADER_STAGE_VERTEX].data = 0x41e0c0000ull;
+        pr.st[NVN_SHADER_STAGE_VERTEX].off = 0x30;
+        memcpy(host + 0x200, &pr, sizeof pr);
+        g_mem = NULL;
+        g_pool_memory = cbn + 0x1000;
+        nvn_CommandBufferInitialize(&cpu, cbn, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbn, 1, 0, 0x1000);
+        nvn_CommandBufferBeginRecording(&cpu, cbn);
+        nvn_CommandBufferBindProgram(&cpu, cbn, prog, 0x1f);
+        walk(nvn_CommandBufferEndRecording(&cpu, cbn), &w);
+        check(w.n == 1 && w.op[0] == OP_BIND_PROGRAM &&
+                  gr64(w.at[0] + 8 + offsetof(NvnPBindProgram, st) + NVN_SHADER_STAGE_VERTEX * sizeof(NvnStage)) ==
+                      0x41e0c0000ull,
+              "with g_mem 0 a bind records the program's stages");
+        g_mem = base;
+        g_pool_memory = 0x10000;
+    }
+    /* a program bound before the game initializes it: its record binds no stage of it, and the log says which program,
+       the stages the game asked for and where it called from */
+    {
+        const u64 cbp = 0x4c000, program = 0x4c400;
+        Walk w;
+        nvn_CommandBufferInitialize(&cpu, cbp, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbp, 1, 0x2d000, 0x400);
+        nvn_CommandBufferBeginRecording(&cpu, cbp);
+        cpu.x[30] = 0x1008a0251c;
+        g_log[0] = 0;
+        nvn_CommandBufferBindProgram(&cpu, cbp, program, 0x1f);
+        walk(nvn_CommandBufferEndRecording(&cpu, cbp), &w);
+        check(w.n == 1 && w.op[0] == OP_BIND_PROGRAM &&
+                  gr64(w.at[0] + 8 + offsetof(NvnPBindProgram, st) + NVN_SHADER_STAGE_VERTEX * sizeof(NvnStage)) == 0,
+              "a program not initialized yet is bound with no stage");
+        check(!strcmp(g_log,
+                      "nvn: program 4c400 isn't initialized as it is bound (stages 0x1f, called from 1008a0251c)\n"),
+              "the log names the program, its stages and the call's return");
+        /* at log level 2 every one, past the 4 the default level says: when they stop, the game binds it no more */
+        g_settings.log_level = 2;
+        nvn_CommandBufferBeginRecording(&cpu, cbp);
+        for (int i = 0; i < 6; i++) {
+            g_log[0] = 0;
+            nvn_CommandBufferBindProgram(&cpu, cbp, program + 0x100 * (u64)i, 0x1f);
+        }
+        nvn_CommandBufferEndRecording(&cpu, cbp);
+        check(!strcmp(g_log,
+                      "nvn: program 4c900 isn't initialized as it is bound (stages 0x1f, called from 1008a0251c)\n"),
+              "at log level 2 the sixth bind of a program not initialized yet is said too");
+        g_settings.log_level = 1;
+        cpu.x[30] = 0x1234;
     }
     if (failures) return 1;
     puts("nvn_commands: ok");

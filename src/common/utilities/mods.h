@@ -15,6 +15,13 @@
 char* snx_mods_folder(const char* data);
 /* the mods folder of the game name in its folder (games/<name>), and its mods_off= in *off (NULL for none), owned */
 char* snx_game_mods(const char* folder, const char* name, char** off);
+/* A collection's other programs (common.h's snx_program_index) play their application's mods and mods of their own, as
+   Eden lays a program's (patch_manager.cpp's GetModificationLoadRoot: load/<the program's ID>/ over
+   load/<its application's>/): the mods of both folders by their names, a program's own after its application's of the
+   same name, so its files win. Its own are in the data folder named by its own ID, <game>_<game + index>_data/mods,
+   whichever update it plays with; mods_off= is the game's for both. The program of index in the folder of the game
+   name: its own mods folder, owned; NULL for program 0 or a game named by no title ID */
+char* snx_program_own_mods(const char* folder, const char* name, int index);
 /* the mods in folder (snx_mods_folder), sorted by name, into *names (snx_free_strings): their count, 0 for none or no
    folder. A file or a hidden folder (.name) is none */
 size_t snx_mods_list(const char* folder, char*** names);
@@ -25,18 +32,22 @@ int snx_mods_exefs_file(const char* name);
 /* the part (exefs, romfs) of the mods played (off as mods_off= has it) that have it as a folder, in the order they are
    laid, into *paths (snx_free_strings): their count */
 size_t snx_mods_played(const char* folder, const char* off, const char* part, char*** paths);
+/* the same for a program with mods of its own in own (NULL for none), laid after the application's in folder */
+size_t snx_mods_played_of(const char* folder, const char* own, const char* off, const char* part, char*** paths);
 /* the files of the played mods' exefs/ that are part of the program (snx_mods_exefs_file), each from the last mod laid
    that has it: their names into *names, sorted, and their paths into *paths (each snx_free_strings). Their count */
 size_t snx_mods_exefs(const char* folder, const char* off, char*** names, char*** paths);
+size_t snx_mods_exefs_of(const char* folder, const char* own, const char* off, char*** names, char*** paths);
 /* what the program of a game with mods in folder is built from beyond its own ExeFS, the files snx_mods_exefs gives
    and then the patches snx_mods_patches gives (common/utilities/patches.h), by their names and bytes, as 16 hex digits,
    owned. "" when no mod played has any */
 char* snx_mods_stamp(const char* folder, const char* off);
+char* snx_mods_stamp_of(const char* folder, const char* own, const char* off);
 /* what a game's <name>.abi holds when the recompile made it for abi with mods, its mods' stamp (snx_mods_stamp): the
    ABI, and " mods " and that stamp unless it is "", owned */
 char* snx_game_stamp_for(unsigned abi, const char* mods);
-/* the stamp of the mods the game at base (<folder>/<name>, a game's or its update's) plays now, its game's (the folder's
-   name), owned */
+/* the stamp of the mods the game at base (<folder>/<name>, a game's, its update's or another program's) plays now, its
+   game's (the folder's name) and a program's own (snx_program_own_mods), owned */
 char* snx_game_mods_stamp(const char* base);
 /* 1 when the game at base was made as expected says (snx_game_stamp_for): its <base>.abi holds it, then its made line
    or nothing, a partial write or anything else after it being no completed build. The driver recompiles a game that

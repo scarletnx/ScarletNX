@@ -4,19 +4,17 @@
 # The target's flags for what is compiled outside CMake's own compiles (FFmpeg's and OpenSSL's builds and the
 # recompiler's runtime library), as cmake/apple.cmake gives them for Apple's: SNX_TARGET_FLAGS. It holds:
 #   - SNX_ARCH_FLAGS, the CPU baseline the whole build compiles for, which CMake's compiles get too (added here).
-#     PowerPC64 builds for SNX_PPC64_CPU, POWER8 unless the build names an older big-endian machine (970 for the
-#     PowerPC G5, power4 to power7). ppc64le starts at POWER8. Before it there is no lqarx/stqcx., and Clang would call
-#     libatomic's __atomic_compare_exchange_16 for snx_cas128 (helpers/integer.c), which a module links no library to
-#     have: such a build's modules call RtAPI.cas128 (common/runtime/cas128.c), which takes POWER8's instructions where
-#     the machine has them and a lock elsewhere. The recompiler builds modules for the same CPU when the host's name
-#     isn't known (SNX_PPC64_LLVM_CPU, LLVM's name for it). SNX_PPC64_ELFV2 builds big-endian glibc for ELFv2 (Arch
-#     POWER's), as Clang builds it for ELFv1 (Debian ports'). The flags go into CMAKE_C_FLAGS and CMAKE_CXX_FLAGS,
-#     so the configure checks (the libraries' among them) compile for the same CPU and ABI. RISC-V builds rv64gc and
-#     LoongArch LA64 v1.0, as the recompiler's modules are (ir.c), and both without linker relaxation: the runtime
-#     library is merged into each module with its functions' own target features, and the module's linker (link_elf.c)
-#     moves no code. MIPS64 builds MIPS64 Release 2 with the n64 ABI, in either byte order, and s390x z13: before
-#     it LLVM makes the runtime library's 128-bit shifts calls to libgcc's __ashlti3 and __lshrti3, which a module
-#     links no library to have.
+#     Big-endian PowerPC64 builds for Clang's default CPU (ppc64, the PowerPC 970's ISA with AltiVec), ppc64le for
+#     POWER8. Before POWER8 there is no lqarx/stqcx., and Clang would call libatomic's __atomic_compare_exchange_16 for
+#     snx_cas128 (helpers/integer.c), which a module links no library to have: such a build's modules call RtAPI.cas128
+#     (common/runtime/cas128.c), which takes POWER8's instructions where the machine has them and a lock elsewhere.
+#     SNX_PPC64_ELFV2 builds big-endian glibc for ELFv2 (Arch POWER's), as Clang builds it for ELFv1 (Debian ports').
+#     The flags go into CMAKE_C_FLAGS and CMAKE_CXX_FLAGS, so the configure checks (the libraries' among them) compile
+#     for the same CPU and ABI. RISC-V builds rv64gc and LoongArch LA64 v1.0, as the recompiler's modules are (ir.c),
+#     and both without linker relaxation: the runtime library is merged into each module with its functions' own target
+#     features, and the module's linker (link_elf.c) moves no code. MIPS64 builds MIPS64 Release 2 with the n64 ABI, in
+#     either byte order, and s390x z13: before it LLVM makes the runtime library's 128-bit shifts calls to libgcc's
+#     __ashlti3 and __lshrti3, which a module links no library to have.
 #   - for a Linux or NetBSD cross build with Clang (the linux-*-cross and netbsd-*-cross presets): the target triple
 #     and the sysroot, which CMake passes to its own compiles from CMAKE_C_COMPILER_TARGET and CMAKE_SYSROOT and the
 #     others don't get from the compiler's path, and the GCC toolchain whose runtime (crt files, libgcc, libstdc++) Clang links where it isn't
@@ -30,6 +28,11 @@ set(SNX_ARCH_FLAGS "")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64|ppc64le|powerpc64|powerpc64le)$")
     if(SNX_PPC64_ELFV2)
         list(APPEND SNX_ARCH_FLAGS -mabi=elfv2)
+        # the links' too: Clang names the program's loader by it (ELFv2's ld64.so.2, ELFv1's ld64.so.1), as it names
+        # RISC-V's and LoongArch's by theirs (ld-linux-riscv64-lp64d.so.1), so no other target's link gets it
+        foreach(kind EXE SHARED MODULE)
+            string(APPEND CMAKE_${kind}_LINKER_FLAGS " -mabi=elfv2")
+        endforeach()
     endif()
 elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "riscv64")
     set(SNX_ARCH_FLAGS -march=rv64gc -mno-relax)
@@ -45,12 +48,6 @@ endif()
 list(JOIN SNX_ARCH_FLAGS " " snx_arch_flags)
 string(APPEND CMAKE_C_FLAGS " ${snx_arch_flags}")
 string(APPEND CMAKE_CXX_FLAGS " ${snx_arch_flags}")
-# the links' too: Clang names the program's loader by it (ELFv2's ld64.so.2, ELFv1's ld64.so.1)
-if(SNX_PPC64_ELFV2)
-    foreach(kind EXE SHARED MODULE)
-        string(APPEND CMAKE_${kind}_LINKER_FLAGS " -mabi=elfv2")
-    endforeach()
-endif()
 
 set(SNX_TARGET_FLAGS "")
 set(SNX_TARGET_LDFLAGS "")

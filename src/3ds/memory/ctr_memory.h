@@ -28,9 +28,19 @@ const SnxCtrProfile* snx_ctr_memory_profile(const SnxCtrMemory* memory);
 /* Address spaces must be destroyed first. No internal locking: caller serializes
    mappings/accesses/devices. Physical RAM is shared by all spaces on this board. */
 void snx_ctr_memory_free(SnxCtrMemory* memory);
-/* The board's region index's RAM, as the host holds it (page-aligned, the region's size), which the GPU imports and
-   reads and writes in place; NULL for an MMIO region */
+/* The board's region index's RAM, as the host holds it (page-aligned, the region's size), which the GPU reads and
+   writes in place; NULL for an MMIO region */
 unsigned char* snx_ctr_memory_region(const SnxCtrMemory* memory, size_t index);
+/* All of the board's RAM as the host holds it: one object, the regions one after another, *size bytes */
+const unsigned char* snx_ctr_memory_ram(const SnxCtrMemory* memory, uint64_t* size);
+/* The RAM moved into handle's object, a file descriptor of the RAM's size that maps whole and at any page (the dma-buf
+   of a GPU's memory, gpu/vk/device.c): what the RAM holds copied there, then every view of it mapped from the new
+   object at the same address (the host's, the regions' above, each flat space's view of a RAM page at its guest
+   permissions less its tracking level's), and the old object closed. The handle is the memory's from then on, closed
+   by snx_ctr_memory_free. Nothing may write the RAM meanwhile: before the guest runs. False, with errno, when the new
+   object or one of the views does not map: every view is the old object's again, and the handle still the caller's.
+   Always false on Windows */
+bool snx_ctr_memory_adopt(SnxCtrMemory* memory, intptr_t handle);
 void snx_ctr_memory_mmio(SnxCtrMemory* memory, void* context, SnxCtrMmioRead read, SnxCtrMmioWrite write);
 SnxCtrAddressSpace* snx_ctr_space_new(SnxCtrMemory* memory);
 /* The flat space, on a host that has one (memory/host.h): guest address va is base + va for compiled code, which

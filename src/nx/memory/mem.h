@@ -9,7 +9,7 @@
 #include <string.h>
 
 /* The console's 64-bit layout lies below this (128 GiB): the code, alias, heap and stack regions and the kernel's
-   pages. NCE's reservation at the guest's own addresses goes no further (mem_reserve_identity) */
+   pages. NCE's reservation at the guest's own addresses is no larger (mem_reserve_identity) */
 #define AS_MAX 0x2000000000ull
 /* The console's 64-bit address space (512 GiB), the most host address space the guest gets: its addresses end below
    it, within the 39 bits an IPC buffer descriptor carries, and tables indexed by guest address are sized for it */
@@ -45,8 +45,10 @@ typedef struct {
 /* where a 32-bit process's first module goes */
 #define AS32_CODE_BASE 0x200000ull
 
-/* the host address of guest address a */
-#define GP(a) (g_mem + (u64)(a))
+/* the host address of guest address a. In integers: under NCE g_mem is 0, and a pointer made by adding to a null one
+   is undefined, which lets the compiler take any pointer GP makes for non-null exactly when g_mem is, and drop the
+   checks of it (one game's every program bind went empty that way) */
+#define GP(a) ((u8*)(uintptr_t)((uintptr_t)g_mem + (u64)(a)))
 
 /* a run of pages with one state, permission and attribute (QueryMemory's MemoryInfo, less the address width) */
 typedef struct {
@@ -112,6 +114,21 @@ void mem_reserve(void);
 int mem_reserved(void);
 /* 1 when the guest's addresses are the host's, for NCE: g_mem is 0 */
 int mem_identity(void);
+/* Where host address p lies against the guest's reservation, as a crash report says it: in it (with its game
+   address), below its start, or past its end (with the start or the end and how far, and the layout's size beside the
+   console's 512 GiB), or that none is reserved yet */
+void mem_place(const void* p, char* out, size_t size);
+/* Under NCE, what of the host's process lies in the guest's reservation and is not the guest's (plat_vm_foreign): their
+   count, each one named in out. The runtime gives none of the reservation's pages back, and what it maps there from a
+   file is its own (the alias pool, a GPU buffer guest memory moved into: mem_migrate), so anything else is another
+   owner's, mapped over guest memory at an address of its own choosing. 0 when there is none; -1 without NCE's
+   reservation (elsewhere the system placed it, where no other owner picks a fixed address), or where the system does
+   not say (errno) */
+int mem_foreign(char* out, size_t size);
+/* 0 when the host tracks the writes to guest memory (plat_ww_scan), -1 when it can't: a scan, reported to cb, of the
+   first page the tracking covers. Under NCE that is the code region's base at the guest's own addresses, as g_mem is
+   0 there, below the tracked range */
+int mem_ww_probe(void (*cb)(u8* p, u64 size));
 /* NCE's reservation at the guest's own addresses (mem.c says why), the layout moved up by from or more: 1, or 0 with
    the reason logged. POSIX only */
 int mem_reserve_identity(u64 from);
@@ -182,6 +199,12 @@ int mem_alias_unmap(u64 dst, u64 size, u64 back);
 void mem_alias_end(u64 src, u64 size);
 /* whether a view shares its source's pages: the alias pool is on (a view is a copy without it) */
 int mem_pool_active(void);
+/* Pages with two addresses (a view and its source, shared memory mapped twice, on a host with the pool): fn(user, at,
+   n) for each other guest range [at, at + n) that maps the pool pages behind [a, a + size), under the memory lock
+   (fn takes no lock of mem.c's). Nothing for a range no other address maps, and no lock for one whose 4 MiB grains
+   no such page is on. mem_alias_any: whether any page may have two addresses now, without the lock */
+void mem_alias_peers(u64 a, u64 size, void (*fn)(void* user, u64 at, u64 n), void* user);
+int mem_alias_any(void);
 /* Pool pages of their own (shared memory): size bytes mapped outside the reservation at the pointer returned, with
    their pool offset in off; NULL without a pool or when it is full */
 u8* mem_pool_host(u64 size, u64* off);
