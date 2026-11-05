@@ -237,3 +237,24 @@ uint32_t snx_vk_memory_type(const VkPhysicalDeviceMemoryProperties* memory, uint
         if ((bits >> i & 1) && (memory->memoryTypes[i].propertyFlags & properties) == properties) return i;
     return UINT32_MAX;
 }
+SnxVkMemoryModel snx_vk_memory_model(VkPhysicalDeviceType type, const VkPhysicalDeviceMemoryProperties* memory) {
+    /* all heaps, the biggest device-local one, the biggest the CPU maps */
+    uint64_t total = 0, local = 0, visible = 0;
+    for (uint32_t h = 0; h < memory->memoryHeapCount; ++h) {
+        total += memory->memoryHeaps[h].size;
+        if ((memory->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && memory->memoryHeaps[h].size > local)
+            local = memory->memoryHeaps[h].size;
+    }
+    for (uint32_t t = 0; t < memory->memoryTypeCount; ++t) {
+        VkMemoryPropertyFlags f = memory->memoryTypes[t].propertyFlags;
+        uint64_t size = memory->memoryHeaps[memory->memoryTypes[t].heapIndex].size;
+        if ((f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) && (f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && size > visible)
+            visible = size;
+    }
+    if (type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU || type == VK_PHYSICAL_DEVICE_TYPE_CPU) return SNX_VK_UMA;
+    /* not a discrete GPU with resizable BAR and more memory of its own than the system's */
+    if (type != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && local && visible == local && local > total / 2)
+        return SNX_VK_UMA;
+    if (local && visible >= local / 2) return SNX_VK_REBAR;
+    return SNX_VK_SMALL_BAR;
+}
