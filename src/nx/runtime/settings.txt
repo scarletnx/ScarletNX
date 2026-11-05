@@ -34,6 +34,7 @@
 #     label TEXT          the menus' name when it is not NAME (the game's menu shows a page's settings by it)
 #     startup             read when the game starts only
 #     in-game             the game's own (its menu's, or the driver's): the launcher's Settings leave it out
+#     platform MACOS       the menus that list it: a Mac's (not iOS) or Android's (ANDROID); left out, every one
 #     recompile           a game's setting the recompile takes too, as -r's --KEY=VALUE and from a played dump's
 #                         options: its row also in g_recompile_game_ini, which the driver links (one value, no set)
 #     set FUNCTION        called after each read (ini.h's set), declared by settings.h
@@ -95,6 +96,7 @@ setting GPU driver
     once
     startup
     in-game
+    platform ANDROID
     help The Vulkan driver the game runs with: empty = the system's, else a driver package the launcher's GPU Drivers
     help added, by its folder's name in gpu_drivers/ of the user's data folder. Packages load on Android 9 or newer,
     help arm64, with an Adreno GPU. One that does not load stops the game, saying why. Left out, the launcher passes
@@ -236,6 +238,16 @@ setting Vulkan Video decode
     help 1 = H.264 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver
     help have an H.264 decode queue. Experimental and untested. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
+setting Vulkan driver
+    key vulkan_driver
+    label Vulkan driver
+    text 16
+    default auto
+    startup
+    platform MACOS
+    words auto=Auto|moltenvk=MoltenVK|kosmickrisp=KosmicKrisp (experimental)
+    help The Vulkan driver a game runs on, on macOS: auto = the MoltenVK the app carries, moltenvk = a MoltenVK
+    help library, kosmickrisp = Mesa's KosmicKrisp through the Vulkan loader (experimental, macOS 26 or later)
 setting Vertex input dynamic state
     key vertex_input_dynamic_state
     text 16

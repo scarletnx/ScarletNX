@@ -31,6 +31,8 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | xxHash 0.8.4 (XXH3 and its x86 dispatcher, the renderer's content hashes: `src/nx/gpu/vk/xxh3.c`) | BSD-2-Clause |
 | Vulkan-Headers | Apache 2.0 |
 | volk / Vulkan Memory Allocator | MIT |
+| KosmicKrisp (Mesa's Vulkan driver on Metal, which the macOS app carries with `SNX_KOSMICKRISP`) | MIT |
+| The Vulkan Loader (the macOS app carries it for KosmicKrisp) | Apache 2.0 |
 | SDL3 | zlib |
 | The AppImage's runtime (uruntime) and launcher (sharun, with Anylinux-sharun's `anylinux.so` and cross-libc-dlopen) | MIT |
 | Tracy (the profiler client, built only with `SNX_TRACY`) | BSD-3-Clause |

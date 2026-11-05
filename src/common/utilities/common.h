@@ -91,8 +91,24 @@ int snx_symlink(const char* target, const char* link);
    MoltenVK beside it (a game's runtime copy), the app bundle's Frameworks, or the framework in an iOS app. NULL
    elsewhere, and when its folders have none (the system's loader, which the app's own bundle finds by itself) */
 char* snx_vulkan_driver(const char* program);
-/* put the Vulkan driver program carries in folder, beside the program a game runs there: its copy of the runtime is
-   outside the app's bundle, where neither SDL's search nor a system's loader reaches the library. 0, or 1 with the
+/* the KosmicKrisp ICD JSON that a program's folders carry, beside the driver and the Vulkan loader it names (an app
+   built with SNX_KOSMICKRISP, or a game's runtime copy of it). NULL when it carries none */
+char* snx_vulkan_kosmickrisp_icd(const char* program);
+/* the Vulkan driver a macOS run picks (the vulkan_driver setting of a game): the library to load, and the ICD JSON
+   when the Vulkan loader must choose the driver for it */
+typedef struct {
+    char* library;    /* the library to load: the driver's, or the loader's that takes icd; NULL for the system's */
+    char* icd;        /* the ICD JSON for the loader (VK_DRIVER_FILES), NULL when library is the driver itself */
+    const char* name; /* "MoltenVK", "KosmicKrisp", or "the system's", for the log */
+} SnxVulkanDriver;
+/* The pick's files, found. auto is the MoltenVK the program's folders carry, else the system's; moltenvk and
+   kosmickrisp are that one driver, carried or installed on the Mac, and are an error where the Mac has none. 1, else 0
+   with the reason in reason */
+int snx_vulkan_driver_choose(const char* program, const char* pick, SnxVulkanDriver* out, char* reason,
+                             size_t reason_size);
+void snx_vulkan_driver_free(SnxVulkanDriver* driver);
+/* put the Vulkan drivers program carries in folder, beside the program a game runs there: its copy of the runtime is
+   outside the app's bundle, where neither SDL's search nor a system's loader reaches the libraries. 0, or 1 with the
    reason said. Nothing to do, and 0, where the system's loader serves or the program carries none */
 int snx_deploy_vulkan_driver(const char* program, const char* folder);
 int snx_path_within(const char* path, const char* parent);

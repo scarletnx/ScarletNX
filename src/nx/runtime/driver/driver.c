@@ -173,15 +173,19 @@ static int same_bytes(const char* a, const char* b) {
     if (y) fclose(y);
     return same;
 }
-/* 1 when the runtime a game runs carries a Vulkan driver its folder has not (snx_vulkan_driver): the deploy puts it
-   there, and a folder that lost it gets it again (docs/APPLE.md) */
+/* 1 when the runtime a game runs carries a Vulkan driver its folder has not (snx_vulkan_driver, and KosmicKrisp's
+   ICD): the deploy puts them there, and a folder that lost one gets it again (docs/APPLE.md) */
 static int driver_missing(const char* run, const char* game) {
 #if defined(__APPLE__) && !defined(SNX_IOS)
     char* carried = snx_vulkan_driver(run);
     char* there = carried ? snx_vulkan_driver(game) : NULL;
-    int missing = carried && !there;
+    char* kosmic = snx_vulkan_kosmickrisp_icd(run);
+    char* kosmic_there = kosmic ? snx_vulkan_kosmickrisp_icd(game) : NULL;
+    int missing = (carried && !there) || (kosmic && !kosmic_there);
     free(carried);
     free(there);
+    free(kosmic);
+    free(kosmic_there);
     return missing;
 #else
     (void)run;
