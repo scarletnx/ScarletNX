@@ -374,6 +374,8 @@ static int nn_gsv_INativeVideoCodec_RegisterImage(SvcObj* self, u32 image, const
     }
     u32 value;
     R_TRY(nvideo_image_register(s, image, &value));
+    LOG("gsv: video codec %u: image %u registered, fence %u on syncpoint %u\n", codec_index(s), image, value,
+        s->syncpoint);
     video_fence(s, value, fence);
     codec_pump(s);
     R_SUCCEED();
@@ -393,12 +395,14 @@ static int nn_gsv_INativeVideoCodec_ReleaseImage(SvcObj* self, u32 image, u32 re
 }
 static int nn_gsv_INativeVideoCodec_UnregisterImage(SvcObj* self, u32 image, const u32* reserved) {
     (void)reserved;
+    LOG("gsv: video codec %u: image %u unregistered\n", codec_index(self->data), image);
     return nvideo_image_unregister(self->data, image);
 }
 static int nn_gsv_INativeVideoCodec_Start(SvcObj* self) {
     NativeVideoCodec* s = self->data;
     R_UNLESS(s->state == NVIDEO_CONFIGURED, NVIDEO_BAD_STATE);
     s->started = 1;
+    LOG("gsv: video codec %u started\n", codec_index(s));
     codec_pump(s);
     R_SUCCEED();
 }
@@ -424,6 +428,7 @@ static int nn_gsv_INativeVideoCodec_Stop(SvcObj* self) {
     s->started = 0;
     s->eos = 0;
     submission_event(s);
+    LOG("gsv: video codec %u stopped after %u outputs\n", codec_index(s), s->frames);
     R_SUCCEED();
 }
 static int nn_gsv_INativeVideoCodec_Submit(SvcObj* self, IpcBuf input, u64 timestamp, u8 eos, u64* consumed) {
@@ -466,6 +471,7 @@ static int nn_gsv_INativeVideoCodec_GetOutputProperties(SvcObj* self, u32* prope
     return rc;
 }
 static int nn_gsv_INativeVideoCodec_Finalize(SvcObj* self) {
+    LOG("gsv: video codec %u finalized\n", codec_index(self->data));
     codec_reset(self->data);
     R_SUCCEED();
 }
