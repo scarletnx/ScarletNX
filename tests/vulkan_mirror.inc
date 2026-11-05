@@ -89,23 +89,15 @@ static int check_mirror(void) {
     GP(cpu)[0x2003] = 0xa5;
     vk_ww_new_epoch();
     CHECK(vk_mirror_slice(gva, len, &buf, &off));
-    {
-        static u8 before_landing[0x3000];
-        memcpy(before_landing, GP(cpu), len);
-        CHECK(!mirror_read(cpu, len, got)); /* its finish takes the program's bytes too */
-        CHECK(!mirror_expect(got, before_landing, len, 0x100, 16, 0x77));
-        own_acquire(cpu, len); /* the page it wrote is the mirror's until the CPU touches it */
-    }
+    CHECK(!mirror_read(cpu, len, got));
+    CHECK(!mirror_expect(got, GP(cpu), len, 0x100, 16, 0x77));
     /* a range over the same guest memory at another GPU address is the same bytes */
     gmmu_map(gva + 0x100000, cpu + 0x1000, 0x1000);
     CHECK(vk_mirror_slice(gva + 0x100000, 0x1000, &buf, &off));
     CHECK(off == cpu + 0x1000);
 
-    /* written by a program: pending, then once its submit is done the page it wrote stays the mirror's, GPU-owned,
-       with the byte the CPU wrote beside the program's meanwhile taken into it; nothing lands until the CPU touches the
-       page (where the host traps guest memory), then the page lands whole. The bytes the program didn't log are guest
-       memory's either way (the 8 bytes at 0x400, changed without being logged, which no program's stores leave: the
-       page landed before, so they were taken from guest memory into the mirror) */
+    /* written by a program: pending, then at the submit its logged bytes land in guest memory, and no others (the 8
+       bytes at 0x400, changed without being logged), and the byte the CPU wrote beside them meanwhile stays */
     memcpy(got, GP(cpu), len);
     CHECK(!mirror_write(cpu + 0x200, 24, 0x66, 1));
     CHECK(!mirror_write(cpu + 0x400, 8, 0x99, 0));
@@ -113,31 +105,8 @@ static int check_mirror(void) {
     CHECK(vk_mirror_pending(gva, len) && !vk_mirror_pending(gva + 0x10000, 0x100));
     GP(cpu)[0x219] = 0x11;
     got[0x219] = 0x11;
-    u64 lands = own_landings();
     vk_finish();
     CHECK(!vk_mirror_pending(gva, len));
-    if (own_traps()) {
-        OwnRange o[4];
-        CHECK(own_lookup(cpu, len, o, 4) == 1 && o[0].addr == cpu && o[0].size == 0x1000 &&
-              ((const VkOwnRes*)o[0].res)->buf == vk_mirror_buffer());
-        CHECK(own_landings() == lands); /* not landed: the CPU hasn't touched it */
-        /* bound again while owned: the mirror keeps the program's bytes, guest memory under it isn't copied in */
-        vk_ww_new_epoch();
-        CHECK(vk_mirror_slice(gva, len, &buf, &off));
-        {
-            static u8 m[0x3000];
-            CHECK(!mirror_read(cpu, 0x1000, m));
-            for (u32 i = 0; i < 0x1000; i++) {
-                u8 want = i >= 0x200 && i < 0x218 ? 0x66 : got[i];
-                if (m[i] != want) {
-                    fprintf(stderr, "vulkan_headless: mirror: owned byte %#x is %#x, not %#x\n", i, m[i], want);
-                    CHECK(0);
-                }
-            }
-        }
-        own_acquire(cpu, len); /* the CPU's touch: it lands */
-        CHECK(own_landings() > lands && !own_lookup(cpu, len, o, 4));
-    }
     for (u32 i = 0; i < len; i++) {
         u8 want = i >= 0x200 && i < 0x218 ? 0x66 : got[i];
         if (GP(cpu)[i] != want) {
@@ -170,7 +139,6 @@ static int check_mirror(void) {
         vk_finish();
         vk_mirror_stats(&gr, &hv, &pages, &landed, &overflows, &room);
         CHECK(overflows == overflows0 + 1 && room >= 128); /* past its room once, and more room from then on */
-        own_acquire(c2, l2); /* those the output took are the mirror's until the CPU touches them */
         for (u32 i = 0; i < l2; i++) {
             u32 pg = i / 4096;
             u8 want = pg < 100 && i % 4096 == pg ? (u8)(0xe0 | (pg & 15)) : (u8)(i * 5);
