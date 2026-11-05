@@ -107,13 +107,6 @@ typedef struct {
 
 enum { SE_DONE, SE_BODY, SE_END };
 
-/* The fixed function's varyings: the front and back colors (0x280-0x2bf), the fog coordinate (0x2e8) and the 10
-   texture coordinates (0x300-0x39f). SPIR-V has none of them, so each group (a color, the fog, a coordinate: 15 of
-   them) takes generic 17 + its index in every stage. Eden and Ryujinx give each one of the generics a program leaves
-   unused, matched to the previous stage's choice; a program here is translated without the other stages, so the
-   choice is fixed, the last 15 generics, and a program that uses one of those itself as well is refused. A group's
-   index, or -1 for an address of none */
-#define LEGACY_GENERIC 17u
 
 /* registers.c */
 void shader_var_flush(void* user);
@@ -155,9 +148,6 @@ u32 shader_texs_level(u32 encoding, u32 b);
 u32 shader_texs_dref(u32 encoding, u32 b);
 int shader_half_arithmetic(int op);
 u32 shader_sparse_predicate(u64 w, int op);
-int shader_legacy_group(u32 addr);
-u32 shader_legacy_address(u32 addr);
-u32 shader_legacy_base(u32 g);
 /* dataflow.c */
 int shader_direct_own_pixel_fetch(const u64* insn, u32 n, u32 index);
 int shader_direct_screen_uv(const u64* insn, u32 n, u32 index, u32 x, u32 y);
