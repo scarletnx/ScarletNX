@@ -31,6 +31,9 @@ rules that sessions get wrong, and it points to the skills that hold the procedu
   the checks that did not run. Do not install an engine: the user installs it. The first container run is slow, and
   later runs reuse the build and ccache. Resolve a conflict with `origin/main` in `docs/`, `CLAUDE.md` or `.claude/`
   before the pull request.
+- **On battery, run the light checks.** A full build or container run drains the battery and heats the machine. Use
+  `preflight --static-only`, or lower `--jobs` and `--cpus`, and connect power for the full gate. Say when a check
+  did not run for power.
 - **Find the mechanism.** A fix explains why the game does what it does. It tells what the game or SDK code expects
   (`tools/disasm.py`), and what the runtime gave it instead. Do not tune delays, add retries or add special cases for
   a title ID. Syncpoints above 127 "worked" for a whole session while they overwrote the heap of the game.
