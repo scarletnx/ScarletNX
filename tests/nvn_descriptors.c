@@ -195,6 +195,19 @@ static void check_targets(void) {
     nvn_tic_encode(&t, NULL, 1, 0, tic);
     tic_decode(tic, &d);
     check(d.type == 5 && d.depth == 6, "a cube map as an image: its 6 layers", 0x29);
+    /* A single cube face selected through a 2D view still advances the underlying allocation's layer pitch. */
+    nvn_tex_layout(&t.d, &l);
+    v = (NvnView){0};
+    v.set = NVN_VIEW_TARGET | NVN_VIEW_LAYERS;
+    v.target = NVN_TEXTURE_TARGET_2D;
+    v.layers = 1;
+    for (u32 face = 0; face < 6; face++) {
+        v.min_layer = face;
+        nvn_tic_encode(&t, &v, 0, 0, tic);
+        tic_decode(tic, &d);
+        check(d.type == 1 && d.depth == 1 && d.address == t.gpu + (u64)face * l.layer_size,
+              "a cube face selected as a 2D texture", face);
+    }
     t = texture(0x29, NVN_TEXTURE_TARGET_CUBEMAP_ARRAY, 64, 64, 12, 1);
     nvn_tic_encode(&t, NULL, 0, 0, tic);
     tic_decode(tic, &d);

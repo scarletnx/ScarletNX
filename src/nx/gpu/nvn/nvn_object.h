@@ -10,13 +10,16 @@
 #include "common/filesystem/host.h"
 
 #define NVN_DEVICE_INFO_ITEMS 0x69
-#define NVN_XFB_MAX           1024
 /* a program whose last stage before rasterization captures: its serial and its transform feedback layout (128 bytes,
    which don't fit the program object) */
 typedef struct {
     u64 serial;
     ShXfb x;
 } NvnXfbEntry;
+typedef struct {
+    u64 serial;
+    NvnTessStage stage[2]; /* control, evaluation */
+} NvnTessEntry;
 /* the file's state, g_nvn.object (gpu/nvn/nvn_state.h): the serials handed out, and nvnDeviceGetInteger's answers
    once read from the game's driver (driver: 1; read_api: its API version among them); the transform feedback layouts
    of the programs that capture, by serial, under their lock: programs that capture are few, and their entries stay */
@@ -29,8 +32,10 @@ typedef struct {
     u32 debug_domain; /* the debug domains generated (atomic) */
     u32 device_flags; /* the flags of that device (atomic) */
     PMutex xfb_lock;
-    NvnXfbEntry xfb[NVN_XFB_MAX]; /* append only */
-    u32 nxfb;
+    NvnXfbEntry* xfb; /* immutable layouts, sorted by serial and copied out under xfb_lock */
+    u32 nxfb, xfb_capacity;
+    NvnTessEntry* tess; /* immutable declarations, sorted by serial and copied out under xfb_lock */
+    u32 ntess, tess_capacity;
 } NvnObjectState;
 
 /* an NVN object of type T at guest address a, in place in the game's memory */
@@ -55,6 +60,7 @@ void nvn_wait_end(void);
 
 /* the transform feedback layout of the program SetShaders gave serial, 0 when it captures nothing */
 int nvn_program_xfb(u64 serial, ShXfb* x);
+int nvn_program_tess(u64 serial, NvnTessStage stages[2]);
 /* the game's driver resolved nvnDeviceGetInteger to func: its answers are read from its code (gpu/nvn/nvn_driver.c)
    before the game can ask */
 void nvn_device_driver(u64 func);

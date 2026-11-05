@@ -66,6 +66,8 @@ ScarletNX yourself, see [Build](./BUILD.md).
 ## GPU
 
 - [NVN reference](./NVN_HLE.md): how games draw through NVN, and what the traces showed
+- [NVN rendering audit](./GPU_RENDERING_AUDIT.md): corrected state and copy semantics, exact GPU checks, and open gaps
+- [GPU preparation benchmarks](./GPU_HOTPATH_BENCH.md): exact paired tests of CPU work before GPU submission
 - [GPU-owned guest memory](./GPU_OWNERSHIP.md): the design of memory the GPU keeps, and its phases
 - [Guest buffers on unified memory](./UMA_MEMORY.md)
 - [ASTC compute uploads](./ASTC.md)

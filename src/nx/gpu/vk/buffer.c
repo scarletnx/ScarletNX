@@ -1012,6 +1012,10 @@ static int gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, u8* host,
 
 /* whether the guest still holds o's original bytes in [gva, gva + len) (rmap: made on first use) */
 static int out_still_copyable(const GfxOut* o, u64 gva, u64 len, u64** rmap, u64 local[16]) {
+    /* A contained range in a contiguous result has the same byte offsets at this address. out_copyable checks its
+       host run and write history directly, without allocating and translating one entry per page for out_spans. */
+    if (o->cpu != ~0ull && gva >= o->addr && len <= o->size && gva - o->addr <= o->size - len)
+        return out_copyable(o, gva, gva + len);
     Copyable c = {o, gva, o->frame_id + 1 >= vk_frame_id()};
     if (c.ok && !*rmap && !(*rmap = range_map(gva, len, local))) c.ok = 0;
     if (c.ok) out_spans(o, gva, len, *rmap, copyable_span, &c);
@@ -1063,9 +1067,17 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     if (!g_gfx_any || t_buffer.out_landing || !gva || !len) return 0;
     if (g_cs_any) vk_compute_mem_need(gva, len);
     if (!pend_hit(&g_out_pages, gva, len)) return 0;
-    range_pages(gva, len, &q);
-    for (GfxOut* o = g_out; o; o = o->next)
-        if (out_meets(o, gva, len, &q, &rmap, local)) newest = o;
+    /* A range contained in the last result already has the newest writer. Rebinding its suffix is common for NVN
+       storage draws: do not translate all its pages and scan every older result only to select this same tail.
+       Other addresses still use the full alias-aware search below. */
+    if (g_out_tail && gva >= g_out_tail->addr && len <= g_out_tail->size &&
+        gva - g_out_tail->addr <= g_out_tail->size - len)
+        newest = g_out_tail;
+    else {
+        range_pages(gva, len, &q);
+        for (GfxOut* o = g_out; o; o = o->next)
+            if (out_meets(o, gva, len, &q, &rmap, local)) newest = o;
+    }
     if (!newest) {
         if (rmap && rmap != local) free(rmap);
         return 0;

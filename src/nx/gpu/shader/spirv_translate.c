@@ -1846,10 +1846,20 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     }
     u32 push = 0, push_pointer = 0;
     if ((stage == ST_FS && ((target & 15) || needs_point_coord || needs_texel_scale || needs_frag_y)) || position_fix ||
-        needs_instance || base_vertex) {
+        needs_instance || base_vertex || (point_size && !point_size_used)) {
         /* the fragment stage's uvec4: its scaled textures (shader_scaled_coords) and the window's origin (shader_frag_y_origin) */
-        push = spv_emit_push_vec4(&c->emit, vec4, c->f32_type, stage == ST_FS ? 16 : 0,
-                                  stage == ST_FS && (needs_texel_scale || needs_frag_y) ? vec4_u32 : 0, &push_pointer);
+        if (point_size && !point_size_used) {
+            /* The first vector retains the viewport/draw ABI. Fixed point size has a separate vector at byte48,
+               beyond the fragment-stage vectors, so every graphics stage can use one shared pipeline layout. */
+            u32 members[2] = {vec4, vec4}, offsets[2] = {0, 48};
+            u32 structure = spv_emit_type_struct(&c->emit, members, offsets, 2);
+            spv_emit_decorate(&c->emit, structure, 2, NULL, 0); /* Block */
+            push = spv_emit_variable(&c->emit, 9, structure);   /* PushConstant */
+            push_pointer = spv_emit_type_pointer(&c->emit, 9, c->f32_type);
+        } else
+            push =
+                spv_emit_push_vec4(&c->emit, vec4, c->f32_type, stage == ST_FS ? 16 : 0,
+                                   stage == ST_FS && (needs_texel_scale || needs_frag_y) ? vec4_u32 : 0, &push_pointer);
         interfaces[count++] = push;
     }
     if (base_vertex) {
@@ -1955,6 +1965,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         call_ptr = spv_emit_function_variable_init(&c->emit, reg_ptr, c->zero);
         for (u32 k = 0; k < 32; k++) call_stack[k] = spv_emit_function_variable_init(&c->emit, reg_ptr, c->zero);
     }
+    u32 default_point_size = 0;
     u32 pc = 0, loop_header = 0, loop_dispatch = 0, dispatch_default = 0, dispatch_merge = 0, loop_continue = 0,
         loop_merge = 0;
     u32 *case_labels = NULL, *case_literals = NULL;
@@ -2043,7 +2054,14 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         }
         if (stage == ST_VS || stage == ST_TES || stage == ST_GS) {
             u32 one_f = spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f);
-            if (point_size) spv_emit_store(&c->emit, point_size, one_f);
+            if (point_size) {
+                default_point_size = point_size_used
+                                         ? one_f
+                                         : spv_emit_push_component_f32(&c->emit, push_pointer, push,
+                                                                       spv_emit_constant_u32(&c->emit, c->u32_type, 1),
+                                                                       c->zero, c->f32_type);
+                spv_emit_store(&c->emit, point_size, default_point_size);
+            }
             u32 components[4] = {zero_f, zero_f, zero_f, one_f};
             u32 empty = spv_emit_constant_vec4(&c->emit, vec4, components);
             if (position) spv_emit_store(&c->emit, position, empty);
@@ -2074,7 +2092,14 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     }
     if ((stage == ST_VS || stage == ST_TES || stage == ST_GS) && (!has_flow || structure)) {
         u32 one_f = spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f);
-        if (point_size) spv_emit_store(&c->emit, point_size, one_f);
+        if (point_size) {
+            default_point_size = point_size_used
+                                     ? one_f
+                                     : spv_emit_push_component_f32(&c->emit, push_pointer, push,
+                                                                   spv_emit_constant_u32(&c->emit, c->u32_type, 1),
+                                                                   c->zero, c->f32_type);
+            spv_emit_store(&c->emit, point_size, default_point_size);
+        }
         u32 components[4] = {zero_f, zero_f, zero_f, one_f};
         u32 empty = spv_emit_constant_vec4(&c->emit, vec4, components);
         if (position) spv_emit_store(&c->emit, position, empty);
@@ -2132,6 +2157,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         .position = position,
         .output_attrs = output_attrs,
         .point_size = point_size,
+        .default_point_size = default_point_size,
         .layer_output = layer_output,
         .layer_input = layer_input,
         .viewport_output = viewport_output,
@@ -2355,6 +2381,10 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     next.fp32_flush = fp32_flush;
     next.fp32_preserve = fp32_preserve;
     next.uses_position_in = needs_fragcoord;
+    next.writes_layer = layer_output_used;
+    next.writes_point_size = point_size_used;
+    next.uses_sample_id = needs_sample_id;
+    next.writes_viewport = viewport_used;
     memcpy(next.tex, textures, (size_t)texture_count * sizeof textures[0]);
     for (u32 i = 0; i < 18; i++)
         if (cbuf_used[i]) {

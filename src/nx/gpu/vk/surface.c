@@ -1903,7 +1903,9 @@ static int blit_depth(Surf* st, const Surf2D* s, const Surf2D* d, int dx, int dy
     if (y1 > (i32)st->sh) y1 = (i32)st->sh;
     if (X1 > (i32)dt->sw) X1 = (i32)dt->sw;
     if (Y1 > (i32)dt->sh) Y1 = (i32)dt->sh;
-    if (x1 <= x0 || y1 <= y0 || X1 <= dx || Y1 <= dy || x0 < 0 || y0 < 0 || dx < 0 || dy < 0) return 0;
+    if (x1 == x0 || y1 == y0 || X1 <= dx || Y1 <= dy || x0 < 0 || y0 < 0 || x1 < 0 || y1 < 0 || x0 > (i32)st->sw ||
+        y0 > (i32)st->sh || dx < 0 || dy < 0)
+        return 0;
     vk_rt_note_read(st);
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, st, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
@@ -2053,9 +2055,15 @@ static int resolve_depth(Surf* st, const Surf2D* d, int dx, int dy, int dw, int 
    whole blocks of a pixel's samples, and its pixels are the samples' resolve, vkCmdResolveImage's: their average, or
    one sample's value for an integer format, as Eden resolves such a blit. A resolve of the destination's format and
    size goes straight into it; else into an image of the source's format, which the blit then reads */
-int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
-              double sdy) {
+static int blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
+                  double sdy, int filter) {
     Surf* st = vk_rt_find(s->addr);
+    /* Explicit NVN copies can sample ordinary guest memory as well as a prior render target. Load it through the
+       surface cache, whose GPU upload performs the layout and format conversion once, and reuse it thereafter. */
+    if (!st && filter >= 0) {
+        u32 tile = (s->linear ? 0x1000u : 0) | (s->bh << 4);
+        st = vk_rt(s->addr, s->width, s->height, s->format, tile, 0, s->pitch);
+    }
     if (st && st->msaa) { /* in the source's pixels */
         double bx = (double)(1u << ds_msaa_log2_x(st->msaa)), by = (double)(1u << ds_msaa_log2_y(st->msaa));
         sx /= bx;
@@ -2078,6 +2086,7 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
     if (!dt || dt == st || dt->f.depth || st->f.is_int != dt->f.is_int) return 0;
     if (!blit_ok(st->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !blit_ok(dt->f.vk, VK_FORMAT_FEATURE_BLIT_DST_BIT))
         return 0;
+    if (filter > 0 && !st->f.is_int && !blit_ok(st->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) return 0;
     /* in the images' pixels: targets are scaled */
     float S = g_vk_scale;
     i32 x0 = (i32)(sx * S), y0 = (i32)(sy * S), x1 = (i32)((sx + sdx * dw) * S + 0.5),
@@ -2089,15 +2098,24 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
     if (y1 > (i32)st->sh) y1 = (i32)st->sh;
     if (X1 > (i32)dt->sw) X1 = (i32)dt->sw;
     if (Y1 > (i32)dt->sh) Y1 = (i32)dt->sh;
-    /* a region starting outside either image (the source's corner can be negative): the front end copies it */
-    if (x1 <= x0 || y1 <= y0 || X1 <= dx || Y1 <= dy || x0 < 0 || y0 < 0 || dx < 0 || dy < 0) return 0;
-    int scaled = x1 - x0 != X1 - dx || y1 - y0 != Y1 - dy;
+    /* The explicit NVN path permits reversed source endpoints. Maxwell retains its earlier clipping contract. */
+    if (x1 == x0 || y1 == y0 || (filter < 0 && (x1 < x0 || y1 < y0)) || X1 <= dx || Y1 <= dy || x0 < 0 || y0 < 0 ||
+        x1 < 0 || y1 < 0 || x0 > (i32)st->sw || y0 > (i32)st->sh || dx < 0 || dy < 0)
+        return 0;
+    int scaled = abs(x1 - x0) != X1 - dx || abs(y1 - y0) != Y1 - dy;
+    u32 source_w = vk_sc(s->width >> ds_msaa_log2_x(st->msaa));
+    u32 source_h = vk_sc(s->height >> ds_msaa_log2_y(st->msaa));
+    int crop = filter > 0 && (source_w < st->sw || source_h < st->sh);
+    if (source_w > st->sw) source_w = st->sw;
+    if (source_h > st->sh) source_h = st->sh;
     vk_rt_note_read(st);
     if (st->layout == VK_IMAGE_LAYOUT_UNDEFINED) return 0;
     VkCommandBuffer cb = vk_cmd();
-    VkPipelineStageFlags2 reads = st->msaa ? VK_PIPELINE_STAGE_2_RESOLVE_BIT : VK_PIPELINE_STAGE_2_BLIT_BIT;
+    VkPipelineStageFlags2 reads = st->msaa ? VK_PIPELINE_STAGE_2_RESOLVE_BIT
+                                  : crop   ? VK_PIPELINE_STAGE_2_COPY_BIT
+                                           : VK_PIPELINE_STAGE_2_BLIT_BIT;
     vk_surf_use(cb, st, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, reads, VK_ACCESS_2_TRANSFER_READ_BIT);
-    if (st->msaa && !scaled && dt->f.vk == st->f.vk) {
+    if (st->msaa && !scaled && x1 > x0 && y1 > y0 && dt->f.vk == st->f.vk) {
         vk_surf_use(cb, dt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_RESOLVE_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
         VkImageResolve r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
@@ -2109,12 +2127,12 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
     } else {
         VkImage src = st->img;
-        if (st->msaa) { /* the rectangle resolved where it is, into an image of the source's size */
+        if (st->msaa || crop) { /* Resolve samples, or isolate logical texels from render-target row padding. */
             VmaAllocation tm;
             VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                                     .imageType = VK_IMAGE_TYPE_2D,
                                     .format = st->f.vk,
-                                    .extent = {st->sw, st->sh, 1},
+                                    .extent = {crop ? source_w : st->sw, crop ? source_h : st->sh, 1},
                                     .mipLevels = 1,
                                     .arrayLayers = 1,
                                     .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -2123,20 +2141,27 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
                                     .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
             if (!vk_image_create(&ii, &src, &tm)) return 0;
             vk_defer_image(src, tm, VK_NULL_HANDLE, VK_NULL_HANDLE);
-            vk_barrier(cb, src, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_RESOLVE_BIT, 0,
-                       VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_RESOLVE_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-            VkImageResolve r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                .srcOffset = {x0, y0, 0},
-                                .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                .dstOffset = {x0, y0, 0},
-                                .extent = {(u32)(x1 - x0), (u32)(y1 - y0), 1}};
-            rec_CmdResolveImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, src,
-                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
-            vk_barrier(cb, src, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_RESOLVE_BIT,
-                       VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            vk_barrier(cb, src, VK_IMAGE_ASPECT_COLOR_BIT, reads, 0, VK_IMAGE_LAYOUT_UNDEFINED, reads,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            if (st->msaa) {
+                i32 left = x0 < x1 ? x0 : x1, top = y0 < y1 ? y0 : y1;
+                VkImageResolve r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                    .srcOffset = {left, top, 0},
+                                    .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                    .dstOffset = {left, top, 0},
+                                    .extent = {(u32)abs(x1 - x0), (u32)abs(y1 - y0), 1}};
+                rec_CmdResolveImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, src,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+            } else {
+                VkImageCopy r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                 .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                 .extent = {source_w, source_h, 1}};
+                rec_CmdCopyImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, src,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+            }
+            vk_barrier(cb, src, VK_IMAGE_ASPECT_COLOR_BIT, reads, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                       VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         }
         vk_surf_use(cb, dt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -2144,7 +2169,8 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
                          .srcOffsets = {{x0, y0, 0}, {x1, y1, 1}},
                          .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                          .dstOffsets = {{dx, dy, 0}, {X1, Y1, 1}}};
-        int linear = scaled && !st->f.is_int && blit_ok(st->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
+        int linear = (filter < 0 ? scaled : filter != 0) && !st->f.is_int &&
+                     blit_ok(st->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
         rec_CmdBlitImage(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                          &b, linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     }
@@ -2155,6 +2181,15 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
         vk_rt_drawn(dt);
     vk_surf_touch(dt);
     return 1;
+}
+
+int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
+              double sdy) {
+    return blit2d(s, d, dx, dy, dw, dh, sx, sy, sdx, sdy, -1);
+}
+int vk_blit2d_filter(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
+                     double sdy, int linear) {
+    return blit2d(s, d, dx, dy, dw, dh, sx, sy, sdx, sdy, linear != 0);
 }
 
 /* a save state's load: every texture and render target goes, as guest memory under them is the state's now */

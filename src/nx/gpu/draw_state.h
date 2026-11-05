@@ -245,6 +245,7 @@ typedef struct {
 } DsIndex;
 
 /* A draw's own arguments */
+enum { DS_DRAW_DEPTH_BOUNDS = 1u << 0, DS_DRAW_POINT_SIZE = 1u << 1, DS_DRAW_TESS_LEVELS = 1u << 2 };
 typedef struct {
     u32 topology;     /* the 3D engine's primitive numbers (14 a patch list) */
     u32 indexed;      /* 0 not, 1 from the index buffer, 3 the channel's inline indices */
@@ -257,10 +258,17 @@ typedef struct {
        and indices are read from anywhere in the streams and up to the index buffer's end (DsIndex.end). 0: a direct
        draw, which ignores the rest */
     u64 indirect, indirect_count;
+    u64 xfb_control; /* NVN transform-feedback control buffer; the GPU derives the indirect vertex count */
     u32 draw_count, stride;
     /* an indirect draw's record values that the vertex program reads where NVN's driver writes them in constant buffer
        0 (shader.h SH_CB0_): bit 0 the base vertex, bit 1 the base instance (SH_PUSH_GPU_). 0 for none */
     u32 params;
+    /* Fixed-function NVN state that accompanies a draw, outside the serialized DsState ABI. Zero flags keep the
+       existing Maxwell/default behavior. Tessellation levels are outer[4], then inner[2]. */
+    u32 state_flags;
+    float point_size, depth_bounds[2], tess_levels[6];
+    u32 raster_samples, coverage_mode, coverage_table_enable;
+    u8 coverage_table[16]; /* normalized modulation coefficients in units of1/16, inclusive0..16 */
 } DrawCall;
 
 /* DsState's groups, in its order */
@@ -401,6 +409,7 @@ typedef struct {
     u32 color[4];  /* the clear color's words: floats, or an integer target's integers */
     float depth;   /* as given (the renderer clamps it) */
     u32 stencil;   /* its low 8 bits */
+    u32 stencil_preserve; /* stencil bits retained by the clear; zero clears every bit */
     u32 scissored; /* limited to viewport 0's scissor */
 } DrawClear;
 

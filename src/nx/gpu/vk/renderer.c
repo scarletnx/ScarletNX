@@ -151,6 +151,12 @@ static void vkr_samples_reset(u32 owner) {
     vk_query_reset(owner);
     vk_unlock();
 }
+static int vkr_xfb_control(u32 owner_id, u64 control, u32 what, u32 stride, DrawOwner* owner) {
+    vk_lock();
+    int result = vk_render_xfb_control(owner_id, control, what, stride, owner);
+    vk_unlock();
+    return result;
+}
 static void vkr_samples_enable(u32 owner, int on) {
     vk_lock();
     vk_query_enable(owner, on);
@@ -223,6 +229,13 @@ static int vkr_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, in
     int r = vk_blit2d(s, d, dx, dy, dw, dh, sx, sy, sdx, sdy);
     vk_unlock();
     return r; /* 0: the front end copies through memory, with the renderer's rt_flush and rt_reload around it */
+}
+static int vkr_blit_filter(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy,
+                           double sdx, double sdy, int linear) {
+    vk_lock();
+    int result = vk_blit2d_filter(s, d, dx, dy, dw, dh, sx, sy, sdx, sdy, linear);
+    vk_unlock();
+    return result;
 }
 static int vkr_vic_compose(const VicJob* j) { return vk_vic_compose(j); } /* it takes vk_lock */
 static int vkr_nvdec_write(const NvdecPic* p) { return vk_nvdec_write(p); }   /* it takes vk_lock */
@@ -901,8 +914,10 @@ const Renderer vk_renderer = {
     .draw_texture = vkr_draw_texture,
     .discard = vkr_discard,
     .draw = vkr_draw,
+    .xfb_control = vkr_xfb_control,
     .method_barrier = vkr_method_barrier,
     .blit = vkr_blit,
+    .blit_filter = vkr_blit_filter,
     .vic_compose = vkr_vic_compose,
     .nvdec_write = vkr_nvdec_write,
     .nvdec_hw_device = vkr_nvdec_hw_device,
