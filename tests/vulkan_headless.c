@@ -4206,10 +4206,25 @@ static int check_blit(void) {
    each reading the source rows its rows sample, against the CPU reference: block linear scaled down into block
    linear, bands of 16 rows sampling the source's rows of blocks of 32 anywhere in them; pitch linear scaled up into
    pitch linear; RGBA32F pitch linear into RGBA16F block linear from a row inside a row of blocks, a row of blocks
-   more than a quarter of the cap. They used to be refused, the destination left with the bytes it had */
+   more than a quarter of the cap. They used to be refused, the destination left with the bytes it had. A blit that
+   fits the cap but whose scratch needs more than a quarter of it goes in bands too, each asking for that quarter at
+   most, as the scratch buffer stays as big as the most asked of it: the first one under 512 KiB */
 static int check_blit_bands(void) {
     const u64 cap = g_vk.alloc_cap;
     int failed = 0;
+    g_vk.alloc_cap = 512 << 10;
+    vk_bl_scratch_asked();
+    failed |= blit_case(bl_side(0x1000, 128 * 4, 256, 2, 0, 0), bl_side(0x80000, 128 * 4, 256, 1, 0, 0), 4, 9, 30, 100,
+                        200, 128, 256, 0);
+    u64 asked = vk_bl_scratch_asked();
+    if (asked > (512 << 10) / VK_PART_SHARE) {
+        fprintf(
+            stderr,
+            "blit bands: a blit of 100x200 pixels under a cap of 524288 bytes asked for %llu bytes of scratch, %llu "
+            "at most may stay\n",
+            (unsigned long long)asked, (unsigned long long)((512 << 10) / VK_PART_SHARE));
+        failed = 1;
+    }
     g_vk.alloc_cap = 64 << 10;
     failed |= blit_case(bl_side(0x1000, 128 * 4, 256, 2, 0, 0), bl_side(0x80000, 128 * 4, 256, 1, 0, 0), 4, 9, 30, 100,
                         200, 128, 256, 0);

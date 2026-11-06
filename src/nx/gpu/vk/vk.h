@@ -1106,7 +1106,7 @@ void vk_dma_stats(u64* copies, u64* bands, u64* bytes);
    DMA's copies, the 2D engine's blits (blit.c), VIC's jobs (vic.c). need(user, y, n): the most bytes one of the
    buffers of lines [y, y + n) takes. A band ends where its end, counted from base, is a multiple of unit (a block
    linear side's rows of blocks). split: in bands even when all the lines fit the cap, for a transfer that would grow a
-   buffer which stays (the DMA's scratch) */
+   buffer which stays (the scratch of the DMA's copies and of the blits) */
 typedef struct {
     u64 cap;
     u32 unit, base;
