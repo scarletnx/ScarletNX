@@ -162,7 +162,13 @@ u32 vk_write_runs(u64 addr, const u8* res, const VkRun* runs, u32 n, u32 since) 
         else
             gmem_write(a, res + runs[i].from, len);
     }
-    /* other GPU virtual addresses can alias these guest pages: stamped once for each run of pages written */
+    /* other GPU virtual addresses can alias these guest pages: stamped once for each run of pages written. The runs
+       are sorted and apart, and nothing here changes them: a landing inside this one rewrote them once, and a run that
+       ended before it began was a stamp of 2^64 bytes, a walk of minutes under vk_lock (cmd.c's land_through) */
+    for (u32 i = 0; i < n; i++)
+        if (runs[i].to < runs[i].from || (i && runs[i].from < runs[i - 1].to))
+            fatal("vulkan: a storage result's write runs changed while they landed (run %u: %u to %u)", i, runs[i].from,
+                  runs[i].to);
     for (u32 i = 0; i < n;) {
         u64 a = addr + runs[i].from, b = addr + runs[i].to;
         for (i++; i < n && ((addr + runs[i].from) >> 12) <= ((b - 1) >> 12) + 1; i++) b = addr + runs[i].to;

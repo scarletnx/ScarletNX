@@ -285,7 +285,16 @@ static void timeline_wait(u64 value, int kind) {
    reset or submitted (vk_rec_unsafe) */
 static int g_rec_unsafe;
 int vk_rec_unsafe(void) { return g_rec_unsafe; }
+/* A landing's own read of guest memory can finish the GPU's work (a page the mirror holds: vk_mirror_mem_need's
+   vk_finish), whose land_through would land the next submissions' results inside this one. They landed before the
+   older results that this landing still writes, and their landing rewrote the runs this one was writing from
+   (buffer.c's g_chg): a run that ended before it began made a GPU-side write stamp of 2^64 bytes, which walked the
+   GPU address space page by page under vk_lock for minutes (the trap thread's landings, and the game's threads
+   faulting on results, waited). The landing in progress lands them, in order, or the next one does */
+static int g_landing;
 static void land_through(u64 value) {
+    if (g_landing) return;
+    g_landing = 1;
     g_rec_unsafe++;
     while (g_landed < value) {
         vk_buf_frame_done(++g_landed);
@@ -293,6 +302,7 @@ static void land_through(u64 value) {
         vk_astc_frame_done(g_landed);
     }
     g_rec_unsafe--;
+    g_landing = 0;
 }
 
 /* the submission the current slot's recycling waits for, set when the slot becomes the current one and fresh, 0 once
