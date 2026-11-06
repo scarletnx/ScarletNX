@@ -254,7 +254,7 @@ static int tex_partial(const TpCase* c, u32 index) {
     }
     return failed;
 }
-/* An ASTC texture decoded on the GPU (held as BC7 with astc_bc=1, else RGBA8) takes its changes as the runs of blocks
+/* An ASTC texture decoded on the GPU (held as BC7 with astc_mode=0, Auto, else RGBA8) takes its changes as the runs of blocks
    of their pages, decoded (and encoded) again: after each write its image is the one a whole upload of the same bytes
    makes, byte for byte (a texture of its own over the same memory at another GPU address, made then), and only those
    runs were loaded. The writes: an ASTC block astride BC7 blocks, a DMA copy, the mip tail */
@@ -263,7 +263,7 @@ typedef struct {
     int format; /* NVN's */
     u32 bw;     /* the footprint, square */
     u32 size;   /* level 0's texels across and down */
-    int bc7;    /* astc_bc */
+    int bc7;    /* held as BC7: astc_mode 0 (Auto) */
 } TaCase;
 /* every level of every layer of t's image, read back: the bytes, malloc'd (the caller frees them), and how many */
 static u8* ta_image(const TpTex* x, Surf* t, u64* size) {
@@ -353,7 +353,7 @@ static int ta_way(TpTex* x, const char* way, u32 step, u64 most) {
 static int tex_partial_astc(const TaCase* a, u32 index) {
     TpCase c = {a->name, a->format, 16, a->bw, VK_FORMAT_UNDEFINED, a->size, a->size, 0};
     TpTex x = {0};
-    const int had = g_settings.astc_bc;
+    const int had = g_settings.astc_mode;
     u32 rng = 0x9e3779b9u + index;
     x.c = &c;
     x.cpu = TP_CPU + index * TP_SPAN;
@@ -367,13 +367,13 @@ static int tex_partial_astc(const TaCase* a, u32 index) {
     x.tex.gpu = x.gva;
     nvn_tex_layout(&x.tex.d, &x.lay);
     CHECK(x.lay.size + 0x1000 <= TP_SPAN && nvn_tic_encode(&x.tex, NULL, 0, 0, x.tic));
-    g_settings.astc_bc = a->bc7;
+    g_settings.astc_mode = !a->bc7;
     VkFmt f = vk_tic_format(x.tic[0], 0);
     int bc7 = f.vk == VK_FORMAT_BC7_UNORM_BLOCK;
     if (f.conv != VKC_ASTC || bc7 != a->bc7) {
         printf("texture changes %s: the GPU %s, skipped\n", a->name,
                f.conv != VKC_ASTC ? "samples ASTC as it is" : "holds no ASTC texture as BC7");
-        g_settings.astc_bc = had;
+        g_settings.astc_mode = had;
         return 0;
     }
     CHECK(mem_map(x.cpu, TP_SPAN, MS_NORMAL, PERM_RW) == 0);
@@ -402,7 +402,7 @@ static int tex_partial_astc(const TaCase* a, u32 index) {
     /* (c) a byte of the last level of layer 0, in the page of the mip tail's levels */
     tp_cpu_write(&x, tp_level(&x, 0, x.tex.d.levels - 1), 1);
     failed |= ta_way(&x, "a byte of the mip tail", 2, 8192);
-    g_settings.astc_bc = had;
+    g_settings.astc_mode = had;
     return failed;
 }
 /* with_astc: the ASTC cases too */
