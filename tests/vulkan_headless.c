@@ -2927,6 +2927,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_surface_loads.inc"
 #include "vulkan_rect_textures.inc"
 #include "vulkan_owned_readback.inc"
+#include "vulkan_lock_waits.inc"
 #include "vulkan_storage_suffix.inc"
 #include "vulkan_storage_logged.inc"
 #include "vulkan_mirror.inc"
@@ -3157,6 +3158,10 @@ int main(int argc, char** argv) {
     CHECK(!check_fresh_frame_kept());
     CHECK(!check_stream_epoch());
     CHECK(!check_owned_readback());
+    CHECK(!check_mapping_lock());
+    CHECK(!check_landing_wait());
+    CHECK(!check_frame_ready());
+    CHECK(!check_mapping_landing());
     CHECK(!check_owned_writable());
     CHECK(!check_owned_in_place_write());
     CHECK(!check_owned_peek_identity());

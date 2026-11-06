@@ -143,7 +143,7 @@ static u64* gmmu_l2(u32 i) {
 }
 /* the renderer's caches may describe what was mapped at [gva, gva+size) before: they hear of every change */
 static void gmmu_change_begin(u64 gva, u64 size) {
-    if (g_gpu_mapping_begin) g_gpu_mapping_begin(gva, size, 0);
+    if (g_gpu_mapping_begin) g_gpu_mapping_begin(gva, size, GPU_MAPPING_GMMU);
 }
 static void gmmu_change_end(u64 gva, u64 size) {
     gpu_mem_remapped(gva, size);

@@ -10,7 +10,8 @@
 
 /* Every guest page under 2^40 in a two-level table: leaves of 4096 pages made when a result first covers one, each
    with a count per page, the pages of each group of 64 that have one, and its pages in all, so a lookup skips what no
-   result covers. Zeroed is empty. Not locked: the caller serializes (vk_lock).
+   result covers. Zeroed is empty. A change is made with vk_lock held, and takes pend_lock too; a lookup holds either
+   one (the renderer's threads vk_lock, a thread that must not wait for the renderer pend_lock).
    The same counts are kept again by GPU page, at every GPU page that shows a counted guest page: a page gains them when
    they are added, through the GMMU's index of mappings by guest address (gmmu_aliases), and when a mapping change
    points it at a counted guest page (pend_remap). Asking about a GPU range, hundreds of thousands of times a frame,
@@ -28,6 +29,11 @@ struct PendPages {
     PendPages* also;
     int listed; /* in pend_remap's tables: it has counted a guest page */
 };
+/* the lock of every table's changes (above): reentrant, taken after vk_lock and before mem.c's lock and the GMMU's.
+   A mapping change holds it while it changes memory (gpu/vk/renderer.c), so nothing the renderer holds over guest
+   memory is added meanwhile (own_begin's caller takes it too) */
+void pend_lock(void);
+void pend_unlock(void);
 /* the guest pages pending compute results, graphics results and queued releases cover, all together: a read that meets
    none of them needs none of their checks (vk_mem_pending) */
 extern PendPages g_pend_any;
