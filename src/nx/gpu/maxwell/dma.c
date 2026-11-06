@@ -232,10 +232,14 @@ static void dma_copy(const DmaOp* o, u8* from, u64 id) {
     op.snap = from;
     op.snap_id = id;
     if (!g_renderer_up || !g_renderer->dma_copy) {
-        WARN_LIMIT(4, "gpu: a DMA copy before the renderer started, skipped\n");
+        WARN_LIMIT(4,
+                   "gpu: a DMA copy of %u lines of %u bytes to %llx before the renderer started: nothing is copied\n",
+                   o->lines, o->line_out, (unsigned long long)o->dst.addr);
         return;
     }
-    if (!g_renderer->dma_copy(&op)) WARN_LIMIT(4, "gpu: the GPU could not do a DMA copy, skipped\n");
+    if (!g_renderer->dma_copy(&op))
+        WARN_LIMIT(4, "gpu: the GPU could not do a DMA copy of %u lines of %u bytes to %llx: nothing is copied\n",
+                   o->lines, o->line_out, (unsigned long long)o->dst.addr);
     if (g_renderer->rt_reload) g_renderer->rt_reload(o->dst.addr);
 }
 /* The copy of a launch (the first half of Eden's MaxwellDMA::Launch): a linear source's submission-time bytes when

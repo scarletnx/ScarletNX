@@ -46,6 +46,9 @@
 #define VK_FRAMES          2  /* frames in flight */
 #define VK_FRAME_RING_CAPS 4  /* a frame ends once it has written this many allocations to its rings (vk_frame_check) */
 #define VK_SC_MAX          16 /* swapchain images */
+/* a transfer bigger than one allocation (g_vk.alloc_cap) goes in parts of at most this share of it: the rows a DMA
+   band needs on both sides and in scratch fit the cap together (dma.c) */
+#define VK_PART_SHARE      4
 
 typedef struct {
     VkInstance instance;
@@ -984,8 +987,10 @@ int vk_vic_compose(const VicJob* j);
 int vk_nvdec_write(const NvdecPic* p);
 void* vk_nvdec_hw_device(void);
 /* dma.c: a launch of the DMA copy engine on the GPU (gpu.h's GpuDmaOp), its destination published: 1 when done, 0
-   past the device's limits (skipped). Takes vk_lock */
+   when it could not be (said, with the bytes it lacked). A launch bigger than one allocation goes in bands of lines.
+   Takes vk_lock. vk_dma_stats: the launches so far, the bands the big ones took, the bytes they read and wrote */
 int vk_dma_copy(const GpuDmaOp* o);
+void vk_dma_stats(u64* copies, u64* bands, u64* bytes);
 /* memory for the DMA engine's copies of sources at submission, which the copy reads in place (Renderer.snap_alloc and
    snap_free, from any thread), and the bytes it holds */
 u8* vk_snap_alloc(u64 len, u64* id);
