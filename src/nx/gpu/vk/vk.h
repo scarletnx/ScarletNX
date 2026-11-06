@@ -311,6 +311,14 @@ u32 vk_present_before(u64 ago_ns, u32 presents);
 /* cmd.c */
 void vk_cmd_init(void);
 VkCommandBuffer vk_cmd(void); /* the current frame's command buffer, begun on first use */
+/* The current submission's upload command buffer, begun on first use: the submission runs it before the frame's
+   (vk_cmd), and its copies before any command recorded there, the rendering pass open now and the draws before it
+   too, so they need not end that pass. For copies whose sources were written before the submission and whose
+   destinations nothing in it has used: the CPU's bytes in staging (flushed at the submit) into a new buffer, say. gpu:
+   their sources are also what earlier submissions wrote on the GPU, which they wait for. The submission's commands
+   wait for every copy recorded here */
+VkCommandBuffer vk_cmd_upload(int gpu);
+VkCommandBuffer vk_cmd_upload_recording(void); /* that command buffer while it is begun, else VK_NULL_HANDLE */
 /* size bytes of the current frame's mapped staging memory (flushed when the frame is submitted), valid until
    that frame's work is done. NULL past g_vk.alloc_cap: a big upload stages in parts */
 u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off);
@@ -428,8 +436,11 @@ void vk_rec_init(void);
 int vk_rec_threaded(void); /* the frame's commands go through the recording thread */
 u64 vk_rec_behind(void);   /* bytes of commands handed to the recording thread and not recorded yet (any thread) */
 void vk_rec_begin(VkCommandBuffer cb); /* begins cb, the frame's command buffer from now on */
-/* ends and submits cb with those semaphores (s[0] the graphics timeline's) */
-void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, const VkSemaphoreSubmitInfo* s, u32 ns);
+void vk_rec_begin_upload(VkCommandBuffer cb); /* begins cb, the submission's upload command buffer (vk_cmd_upload) */
+/* ends and submits up (the upload command buffer, VK_NULL_HANDLE for none) and then cb with those semaphores (s[0]
+   the graphics timeline's) */
+void vk_rec_submit(VkCommandBuffer up, VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw,
+                   const VkSemaphoreSubmitInfo* s, u32 ns);
 void vk_rec_sync(void);       /* until everything queued is recorded and submitted */
 /* Runs fn(arg) on the recording thread, after what the ring already holds, and returns when it has run. This is how a
    check puts a call where the fatal path calls from (submit_run): vk_rec_sync there must not wait for the thread it
@@ -1183,6 +1194,7 @@ void vk_buf_writable_stats(u64* copied, u64* read_back, u64* merged);
 /* guest memory checked by its contents so far: compared with a pending result's original bytes, hashed whole, and
    sampled (tests count them: write tracking's answers stand in for them) */
 void vk_buf_checks(u64* compares, u64* hashes, u64* samples);
+u64 vk_buf_ahead(void); /* buffers filled ahead of their submission's rendering passes (vk_cmd_upload) so far */
 int vk_buf_pending(u64 gva, u64 len); /* a pending graphics result overlaps the range */
 /* GPU-owned bytes are on the range's pages (memory/own.c): reading them on the CPU lands them, a wait for the GPU */
 int vk_buf_owned(u64 gva, u64 len);

@@ -44,6 +44,9 @@ typedef struct {
     VkCommandPool pool;
     VkCommandBuffer* cbs; /* one per submission in this use of the frame */
     u32 ncb, icb;         /* icb: the one recording, or the next to begin */
+    VkCommandBuffer* ups; /* each submission's upload command buffer (vk_cmd_upload), from the same pool */
+    u32 nup;
+    int up; /* the recording submission's: 0 not begun, 1 begun, 2 with its wait for earlier GPU writes recorded */
     u64 last;             /* the timeline value of the frame's last submission, 0 when it has none */
     u64 hold;             /* the next frame's submission that reads buffers in this one's rings (vk_frame_hold), or 0 */
     int recording, fresh; /* fresh: just ended up current, not yet reset for its new use */
@@ -527,6 +530,16 @@ int vk_stage_device(u64 size, u64 align, VkBuffer* buf, u64* off) {
                      0, RING_DEVICE, buf, off, NULL);
 }
 
+static void mem_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                        VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                          .srcStageMask = src_stage,
+                          .srcAccessMask = src_access,
+                          .dstStageMask = dst_stage,
+                          .dstAccessMask = dst_access};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
+    rec_CmdPipelineBarrier2(cb, &d);
+}
 /* the frame's commands submitted, waiting for xw and signaling xs besides the graphics timeline (one each at most), for
    why (VK_SUB_*: the statistics) */
 static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land, int why) {
@@ -536,6 +549,13 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     VkCommandBuffer cb = vk_cmd(); /* a submit with nothing recorded still has to wait and signal */
     vk_query_flush(cb);            /* the samples-passed counts of the passes ended (query.c) */
     vk_buf_host_barrier(cb, g_gval + 1);
+    VkCommandBuffer up = VK_NULL_HANDLE;
+    if (f->up) { /* the upload command buffer's copies before everything the frame's command buffer reads or writes */
+        up = f->ups[f->icb];
+        mem_barrier(up, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+        f->up = 0;
+    }
     /* staging memory may not be host coherent: the host writes are made visible to the GPU here */
     if (f->stage.mem) vmaFlushAllocation(g_vk.vma, f->stage.mem, 0, VK_WHOLE_SIZE);
     if (f->output.mem) vmaFlushAllocation(g_vk.vma, f->output.mem, 0, VK_WHOLE_SIZE);
@@ -562,7 +582,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     vk_gpuprof_cb_end(cb, why, g_gval + 1);
     /* ended and submitted after its commands, on the recording thread (a submission that fails signals the timeline
        from the host there, so waits for it end) */
-    vk_rec_submit(cb, w, nw, s, xs ? 2u : 1u);
+    vk_rec_submit(up, cb, w, nw, s, xs ? 2u : 1u);
     memset(g_after, 0, sizeof g_after);
     __atomic_store_n(&g_gval, g_gval + 1, __ATOMIC_RELAXED); /* read by the stall report too */
     g_sub_ns = plat_ns();
@@ -588,6 +608,40 @@ static void submit_why(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSem
 void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal) {
     submit_why(wait, wait_stage, signal, signal ? VK_SUB_PRESENT : VK_SUB_OTHER);
 }
+/* The upload command buffer runs first in its submission, so its copies need no rendering pass of the frame's command
+   buffer to end. A pool is used by one thread at a time: its commands go through the recording thread's ring like the
+   frame's, and it is made from the frame's pool with the ring drained, as vk_cmd makes its command buffers */
+VkCommandBuffer vk_cmd_upload(int gpu) {
+    Frame* f = &g_fr[g_cur];
+    vk_cmd(); /* the frame's command buffer recording too: every submit then takes this one with it */
+    if (!f->up) {
+        if (f->icb >= f->nup) { /* up to this submission's: the ones before it may have had none */
+            vk_rec_sync();
+            VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                              .commandPool = f->pool,
+                                              .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                              .commandBufferCount = f->icb + 1 - f->nup};
+            VkCommandBuffer* ups = realloc(f->ups, sizeof *ups * (f->icb + 1));
+            if (!ups) fatal("vulkan: out of memory for command buffers");
+            f->ups = ups;
+            VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &f->ups[f->nup]));
+            f->nup = f->icb + 1;
+        }
+        vk_rec_begin_upload(f->ups[f->icb]);
+        f->up = 1;
+    }
+    if (gpu && f->up == 1) { /* what earlier submissions wrote, before the copies read it */
+        mem_barrier(f->ups[f->icb], VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        f->up = 2;
+    }
+    return f->ups[f->icb];
+}
+VkCommandBuffer vk_cmd_upload_recording(void) {
+    const Frame* f = &g_fr[g_cur];
+    return f->up ? f->ups[f->icb] : VK_NULL_HANDLE;
+}
+
 /* Ownership readback runs while its ranges are marked landing. Flush only an
    open command buffer: starting/recycling a frame or landing completed results
    here could acquire those same ranges and wait for this thread itself. */

@@ -5,12 +5,12 @@
    rec_Cmd* functions copy a command's arguments into a ring, and the recording thread makes the Vulkan call. A
    command buffer is begun, ended and submitted from the ring too, in order with its commands.
 
-   Only the frame's command buffer (vk_cmd) goes through the ring. A command for any other one (compute's, VIC's)
-   is made at once, as are commands while vk_record=0. Whoever adds to the ring holds vk_lock, so there is one
-   producer at a time. A present goes through the ring too, after the submission whose semaphore it waits on. What
-   else has to happen after the queued commands are recorded and submitted waits for the ring to drain
-   (vk_rec_sync): a new command buffer from the frame's pool, a device wait. Waits on the graphics timeline need
-   none, as a timeline value can be waited for before its submission. */
+   Only the frame's command buffers (vk_cmd, and vk_cmd_upload's that runs before it) go through the ring. A command for
+   any other one (compute's, VIC's) is made at once, as are commands while vk_record=0. Whoever adds to the ring holds
+   vk_lock, so there is one producer at a time. A present goes through the ring too, after the submission whose
+   semaphore it waits on. What else has to happen after the queued commands are recorded and submitted waits for the
+   ring to drain (vk_rec_sync): a new command buffer from the frame's pool, a device wait. Waits on the graphics
+   timeline need none, as a timeline value can be waited for before its submission. */
 #include <stdlib.h>
 #include <string.h>
 #include "common/utilities/common.h"
@@ -108,7 +108,9 @@ u64 vk_rec_behind(void) {
 }
 
 /* a command for cb goes through the ring */
-static int rec_on(VkCommandBuffer cb) { return cb == g_rec_cb && g_rec > 0; }
+static int rec_on(VkCommandBuffer cb) {
+    return g_rec > 0 && (cb == g_rec_cb || (cb && cb == vk_cmd_upload_recording()));
+}
 
 static void wake(void) {
     if (__atomic_load_n(&g_sleep, __ATOMIC_SEQ_CST)) {
@@ -221,8 +223,16 @@ void vk_rec_begin(VkCommandBuffer cb) {
     *(VkCommandBuffer*)rec_push(begin_run, sizeof cb) = cb;
 }
 
+void vk_rec_begin_upload(VkCommandBuffer cb) {
+    if (!rec_enabled()) {
+        begin_run(&cb);
+        return;
+    }
+    *(VkCommandBuffer*)rec_push(begin_run, sizeof cb) = cb;
+}
+
 typedef struct {
-    VkCommandBuffer cb;
+    VkCommandBuffer up, cb;
     VkSemaphoreSubmitInfo w[3], s[2];
     u32 nw, ns;
     VkSemaphore timeline;
@@ -230,13 +240,15 @@ typedef struct {
 } Submit;
 static void submit_run(const void* p) {
     const Submit* x = p;
+    VkCommandBufferSubmitInfo c[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->up},
+                                      {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->cb}};
+    if (x->up) VK_OK(vkEndCommandBuffer(x->up));
     VK_OK(vkEndCommandBuffer(x->cb));
-    VkCommandBufferSubmitInfo c = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->cb};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                         .waitSemaphoreInfoCount = x->nw,
                         .pWaitSemaphoreInfos = x->w,
-                        .commandBufferInfoCount = 1,
-                        .pCommandBufferInfos = &c,
+                        .commandBufferInfoCount = x->up ? 2u : 1u,
+                        .pCommandBufferInfos = x->up ? c : c + 1,
                         .signalSemaphoreInfoCount = x->ns,
                         .pSignalSemaphoreInfos = x->s};
     vk_wait_foreground();
@@ -254,9 +266,9 @@ static void submit_run(const void* p) {
         VK_OK(vkSignalSemaphore(g_vk.dev, &ss));
     }
 }
-void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, const VkSemaphoreSubmitInfo* s,
-                   u32 ns) {
-    Submit x = {.cb = cb, .nw = nw, .ns = ns, .timeline = s[0].semaphore, .value = s[0].value};
+void vk_rec_submit(VkCommandBuffer up, VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw,
+                   const VkSemaphoreSubmitInfo* s, u32 ns) {
+    Submit x = {.up = up, .cb = cb, .nw = nw, .ns = ns, .timeline = s[0].semaphore, .value = s[0].value};
     memcpy(x.w, w, nw * sizeof *w);
     memcpy(x.s, s, ns * sizeof *s);
     g_rec_cb = VK_NULL_HANDLE;
