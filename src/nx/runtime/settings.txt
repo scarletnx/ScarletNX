@@ -758,6 +758,14 @@ setting RenderDoc capture shortcut
     set hotkey_set
     help The key that captures the next frame with RenderDoc while RenderDoc is in the game (renderdoc), as
     help hotkey_help's
+setting Mouse shortcut
+    key hotkey_mouse
+    text 64
+    default Ctrl+G
+    label Let the mouse go
+    set hotkey_set
+    help The key that lets the mouse go from a game that holds it (an Ounce game's Joy-Con mouse mode), and holds it
+    help again, as hotkey_help's
 setting Quit shortcut
     key hotkey_quit
     text 64

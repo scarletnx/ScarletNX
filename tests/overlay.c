@@ -267,7 +267,11 @@ static void keys_page(void) {
     overlay_scroll(-100);
     /* with RenderDoc in the process, the capture key's row right after F12's; a debugger, its paragraph; neither by
        default */
-    assert(!shows("capture a frame") && !shows("Debugger"));
+    assert(!shows("capture a frame") && !shows("Debugger") && !shows("let the mouse go, hold it"));
+    overlay_keys_mouse(1); /* a game holds the mouse: its key's row, Ctrl+G by default */
+    draw();
+    assert(shows_as("Ctrl+G", 0, light) && shows("let the mouse go, hold it"));
+    overlay_keys_mouse(0);
     overlay_keys_extra(1, "gdb");
     draw();
     assert(shows_as("Ctrl+Shift+F12", 0, light) && shows("capture a frame") && !shows("Debugger"));

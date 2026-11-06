@@ -35,6 +35,8 @@ void hid_update(void); /* the next samples in shared memory, touch screen includ
 void hid_mode_changed(void);
 /* the number of connected players, and the Npad id of the first in *first_id */
 int hid_connected_players(u32* first_id);
+/* whether the game plays with its Joy-Con as a mouse now */
+int hid_mouse_mode(void);
 /* ---- HLE state in g_hle (hle.h) */
 #define HID_PADS    8  /* the frontend's players */
 #define HID_ENTRIES 10 /* No1 to No8, Handheld, Other: the shared memory's Npads */
@@ -49,6 +51,16 @@ typedef struct {
 typedef struct {
     float amp_low, freq_low, amp_high, freq_high;
 } HidVibration;
+/* An Ounce's mouse mode: the game's memories (kernel objects and guest addresses, 0 for none) that its Joy-Cons' sensor
+   states (Jcms) and its mice (Nmouse) are written to, and the host's mouse as hid last took it */
+typedef struct {
+    u32 jcms_tmem, nmouse_tmem;
+    u64 jcms, nmouse;
+    u32 jcms_on;             /* the Jcms started, by index */
+    i32 width, height, x, y; /* the pointer's range and where it is */
+    float dx, dy, wheel;     /* the frontend's motion not yet taken, under input_lock */
+    u32 buttons;             /* nn::hid::MouseButton, under input_lock */
+} HidMouse;
 typedef struct {
     /* The frontend publishes these and hid samples them, both under input_lock */
     PadState pad1;          /* player 1 */
@@ -69,6 +81,7 @@ typedef struct {
     HidMotionState motion[HID_PADS][2];
     HidFingers fingers;
     HidVibration vibration[HID_PADS][2];
+    HidMouse mouse;
 } HleHid;
 /* hid's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
 typedef struct {

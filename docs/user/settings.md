@@ -150,6 +150,7 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 | `hotkey_fullscreen_2` | `Alt+Return` | A second key that switches fullscreen |
 | `hotkey_stats` | `F12` | Turns `stats` on and off |
 | `hotkey_capture` | `Ctrl+Shift+F12` | Captures the next frame with RenderDoc while RenderDoc is in the game (`renderdoc`) |
+| `hotkey_mouse` | `Ctrl+G` | Lets the mouse go from a game that holds it (an Ounce game's Joy-Con mouse mode), and holds it again |
 | `hotkey_quit` | `Escape` | Quits the game |
 
 ## Network
