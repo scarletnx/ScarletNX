@@ -69,6 +69,8 @@ ScarletNX yourself, see [Build](./BUILD.md).
 - [NVN rendering audit](./GPU_RENDERING_AUDIT.md): corrected state and copy semantics, exact GPU checks, and open gaps
 - [GPU preparation benchmarks](./GPU_HOTPATH_BENCH.md): exact paired tests of CPU work before GPU submission
 - [GPU-owned guest memory](./GPU_OWNERSHIP.md): the design of memory the GPU keeps, and its phases
+- [Graphics pipeline libraries](./PIPELINE_LIBRARIES.md): the design of pipelines linked from shader parts, and the
+  optimized pipeline made after them
 - [Guest buffers on unified memory](./UMA_MEMORY.md)
 - [ASTC compute uploads](./ASTC.md)
 - [Block linear surfaces and texture conversions on the GPU](./BLOCKLINEAR.md)
