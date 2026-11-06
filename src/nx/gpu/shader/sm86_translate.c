@@ -469,16 +469,17 @@ static void mesh_capability(Ctx* c) {
 static u32 input_var(Ctx* c, u32 i) {
     if (!c->in_attr[i]) {
         int interpolation = 0;
+        int per_primitive = c->stage == ST_FS && (c->si->prim_mask >> i & 1);
         if (c->stage == ST_FS) {
             u32 mode = interp_mode(c, i);
-            interpolation = mode == 1 ? 1 : mode == 3 ? 2 : 0;
+            interpolation = per_primitive ? 1 : (mode == 1 ? 1 : mode == 3 ? 2 : 0); /* a per-primitive input is Flat */
         }
         u32 type = c->t_v4f;
         if (c->stage == ST_VS && (c->si->attr_int_mask & (1u << i)))
             type = c->si->attr_sint_mask & (1u << i) ? spv_emit_type_vec4(&c->e, c->t_i32) : c->t_v4u;
         c->in_attr[i] = spv_emit_input_vec4(&c->e, type, i, interpolation);
         add_interface(c, c->in_attr[i]);
-        if (c->stage == ST_FS && (c->si->prim_mask >> i & 1)) { /* a mesh program's output per primitive */
+        if (per_primitive) { /* a mesh program's output per primitive */
             mesh_capability(c);
             spv_emit_decorate(&c->e, c->in_attr[i], 5271 /* PerPrimitiveEXT */, NULL, 0);
         }
@@ -1817,7 +1818,10 @@ static u32 mesh_outputs(Ctx* c, const u32* sph, u32 base, u32 element, u32 count
             if (!generic[i]) {
                 generic[i] = spv_emit_interface_variable(e, SPV_STORAGE_OUTPUT, c->t_v4f, c->t_u32, count,
                                                          SPV_NOT_BUILTIN, i, 0);
-                if (per_primitive) spv_emit_decorate(e, generic[i], 5271 /* PerPrimitiveEXT */, NULL, 0);
+                if (per_primitive) {
+                    spv_emit_decorate(e, generic[i], 5271 /* PerPrimitiveEXT */, NULL, 0);
+                    spv_emit_flat(e, generic[i]); /* a per-primitive output is not interpolated */
+                }
                 add_interface(c, generic[i]);
             }
             var = generic[i];
