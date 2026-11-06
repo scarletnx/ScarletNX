@@ -431,22 +431,26 @@ int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) {
         } else if (!own_any()) {
             memcpy(p + o, GP(cpu), (size_t)n);
             dev_gap(&d, o, n);
-        } else if ((k = own_stage(cpu, n, p + o, r, sizeof r / sizeof *r)) > sizeof r / sizeof *r) {
-            own_acquire(cpu, n); /* more owners than noted: they land, and the bytes are read as they are then */
-            memcpy(p + o, GP(cpu), (size_t)n);
-            dev_gap(&d, o, n);
-        } else {
-            u64 from = cpu; /* the CPU's bytes between the owners, which own_stage staged; the owners' from them */
-            for (i = 0; i < k; i++) {
-                VkBufferCopy c = {r[i].res_off, at + o + (r[i].addr - cpu), r[i].size};
-                dev_gap(&d, o + (from - cpu), r[i].addr - from);
-                from = r[i].addr + r[i].size;
-                if (!any) read_barrier(vk_cmd(), 1);
-                any = 1;
-                rec_CmdCopyBuffer(vk_cmd(), ((const VkOwnRes*)r[i].res)->buf, buf, 1, &c);
+        } else /* the owners as many at a time as r holds: landing the range when it had more waits for the GPU and
+                  reads all its results back (a copy engine's tiles cut a surface into many owners) */
+            for (u64 c = cpu, part; c < cpu + n; c += part) {
+                const u32 max = sizeof r / sizeof *r;
+                part = cpu + n - c;
+                if ((k = own_stage(c, part, p + o + (c - cpu), r, max)) > max) { /* to the last noted one's end */
+                    part = r[max - 1].addr + r[max - 1].size - c;
+                    k = own_stage(c, part, p + o + (c - cpu), r, max);
+                }
+                u64 from = c; /* the CPU's bytes between the owners, which own_stage staged; the owners' from them */
+                for (i = 0; i < k; i++) {
+                    VkBufferCopy cp = {r[i].res_off, at + o + (r[i].addr - cpu), r[i].size};
+                    dev_gap(&d, o + (from - cpu), r[i].addr - from);
+                    from = r[i].addr + r[i].size;
+                    if (!any) read_barrier(vk_cmd(), 1);
+                    any = 1;
+                    rec_CmdCopyBuffer(vk_cmd(), ((const VkOwnRes*)r[i].res)->buf, buf, 1, &cp);
+                }
+                dev_gap(&d, o + (from - cpu), c + part - from);
             }
-            dev_gap(&d, o + (from - cpu), cpu + n - from);
-        }
         o += n;
     }
     dev_flush(&d);

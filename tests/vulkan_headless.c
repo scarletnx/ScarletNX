@@ -2645,6 +2645,44 @@ static int check_dma(void) {
     return 0;
 }
 
+/* A copy over more GPU-owned ranges than a read of guest memory notes at once: 20 lines of 64 bytes, 128 apart, each
+   its own owner, then one line over them all from byte 32 of the first. Their bytes are copied on the GPU a batch at a
+   time and nothing lands; landing them waited for the GPU and read its results back */
+static int check_dma_owners(void) {
+    GpuDmaOp o = {0}, g, c;
+    u64 lands = 0;
+    for (int k = 0; k < 2; k++) {
+        u8* t = GP(k ? DMA_B : DMA_A);
+        for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 23 + (i >> 9) * 3 + 9);
+    }
+    o.width = o.line_in = o.line_out = 64;
+    o.lines = 1;
+    for (u32 i = 0; i <= 20; i++) {
+        if (i == 20) { /* over them all */
+            o.width = o.line_in = o.line_out = 20 * 128 - 32 - 64;
+            o.src = pitch_side(0x4000, 0);
+            o.dst = pitch_side(0x80020, 0);
+            lands = own_landings();
+        } else {
+            o.src = pitch_side(0x1000 + i * 64, 0);
+            o.dst = pitch_side(0x80000 + i * 128, 0);
+        }
+        g = c = o;
+        g.src.addr += DMA_GA, g.dst.addr += DMA_GA;
+        c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
+        CHECK(g_renderer->dma_copy(&g));
+        dma_copy_ref(&c);
+    }
+    if (own_traps() && own_landings() != lands) {
+        fprintf(stderr, "dma owners: the copy over 20 owners took %llu landings\n",
+                (unsigned long long)(own_landings() - lands));
+        return 1;
+    }
+    guest_done(DMA_A, DMA_SPAN);
+    CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN));
+    return 0;
+}
+
 /* Copies bigger than one allocation (g_vk.alloc_cap, lowered to 64 KiB here: 256 MiB on a real device, an 8K RGBA8
    texture's level 0) go in bands of lines, each within a quarter of the cap, against the CPU reference: pitch to block
    linear from a row inside a row of blocks, block linear to pitch with the source's rows of blocks cut by the bands
@@ -3821,6 +3859,7 @@ int main(int argc, char** argv) {
     CHECK(!check_vic_chain(shot));
     CHECK(!check_nvdec_vic());
     CHECK(!check_dma());
+    CHECK(!check_dma_owners());
     CHECK(!check_dma_bands());
     CHECK(!check_flush_parts());
     CHECK(!check_vic_bands());
