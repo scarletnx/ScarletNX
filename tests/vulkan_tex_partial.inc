@@ -2,12 +2,15 @@
    Copyright 2026 the ScarletNX contributors */
 /* Textures loaded whole that take their changes a block at a time (gpu/vk/texture.c tex_check_pieces, tex_patch): a
    write of some bytes of a big texture loads the blocks of the pages they are on (of a pitch linear one, the rows
-   they lie in), and every texel or block of every level and layer of the image is memory's after it. Each case writes the way a game does (the CPU, through the
-   texture's own address or a view of it; a DMA copy; both in one frame), then takes the texture in the next frame and
-   compares its image with memory, read in the layout NVN gives the texture, and counts what it loaded in vk_tex_stats'
-   bytes. Without write tracking (write_tracking=2) a change is found by hashing and loads the whole texture: the image
-   must still be memory's. Each case runs in leaves of the tracking's table of its own. SNX_TEST_TEX_PARTIAL_ONLY=1
-   runs them alone */
+   they lie in), and every texel or block of every level and layer of the image is memory's after it. Each case
+   writes the way a game does (the CPU, through the texture's own address or a view of it; a DMA copy; both in one
+   frame), then takes the texture in the next frame and compares its image with memory, read in the layout NVN gives
+   the texture, and counts what it loaded in vk_tex_stats' bytes. Without write tracking (write_tracking=2) a change
+   is found by hashing and loads the whole texture: the image must still be memory's. Each case runs in leaves of the
+   tracking's table of its own.
+   They run apart from the other checks (the vulkan_tex_partial entries): SNX_TEST_TEX_PARTIAL_ONLY=1 runs every case,
+   =no-astc all but the ASTC ones, which a software renderer (lavapipe) decodes and encodes as BC7 slowly and whose
+   decoding doesn't depend on how writes are tracked */
 #define TP_CPU    (HEAP_BASE + 0xA000000)
 #define TP_GVA    0x9A0000000ull
 #define TP_SPAN   0x1000000ull /* each case's memory: the texture, then a page for its copies' source */
@@ -402,7 +405,8 @@ static int tex_partial_astc(const TaCase* a, u32 index) {
     g_settings.astc_bc = had;
     return failed;
 }
-static int check_tex_partial(void) {
+/* with_astc: the ASTC cases too */
+static int check_tex_partial(int with_astc) {
     const TpCase cases[] = {
         {"RGBA8 1024x1024", NVN_FORMAT_RGBA8, 4, 1, VK_FORMAT_R8G8B8A8_UNORM, 1024, 1024, 0},
         {"BC1 2048x2048", NVN_FORMAT_RGBA_DXT1, 8, 4, VK_FORMAT_BC1_RGBA_UNORM_BLOCK, 2048, 2048, 0},
@@ -412,15 +416,15 @@ static int check_tex_partial(void) {
          8448},
     };
     const TaCase astc[] = {
-        {"ASTC 6x6 510x510 as BC7", NVN_FORMAT_RGBA_ASTC_6x6, 6, 510, 1},
-        {"ASTC 5x5 500x500 as BC7", NVN_FORMAT_RGBA_ASTC_5x5, 5, 500, 1},
-        {"ASTC 4x4 512x512 as BC7", NVN_FORMAT_RGBA_ASTC_4x4, 4, 512, 1},
-        {"ASTC 6x6 510x510 as RGBA8", NVN_FORMAT_RGBA_ASTC_6x6, 6, 510, 0},
+        {"ASTC 6x6 252x252 as BC7", NVN_FORMAT_RGBA_ASTC_6x6, 6, 252, 1},
+        {"ASTC 5x5 250x250 as BC7", NVN_FORMAT_RGBA_ASTC_5x5, 5, 250, 1},
+        {"ASTC 4x4 256x256 as BC7", NVN_FORMAT_RGBA_ASTC_4x4, 4, 256, 1},
+        {"ASTC 6x6 252x252 as RGBA8", NVN_FORMAT_RGBA_ASTC_6x6, 6, 252, 0},
     };
     const u32 n = sizeof cases / sizeof *cases;
     int failed = 0;
     for (u32 i = 0; i < n; i++) failed |= tex_partial(&cases[i], i);
-    for (u32 i = 0; i < sizeof astc / sizeof *astc; i++) failed |= tex_partial_astc(&astc[i], n + i);
+    for (u32 i = 0; with_astc && i < sizeof astc / sizeof *astc; i++) failed |= tex_partial_astc(&astc[i], n + i);
     CHECK(!failed);
     puts("texture changes: a write of some bytes of a texture loads the blocks of its pages, or the rows they lie in; an "
          "ASTC texture's are decoded as a whole upload decodes them");
