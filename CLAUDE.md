@@ -270,3 +270,7 @@ flourishes. This rule does not apply to code comments. The Claude files follow A
   before the next check reads the tips. CMake registers `gui_sdl_events` only when `NOT APPLE`, so the Mac builds
   `snx-test-gui-sdl` and runs it in no test. Run it by hand (`snx-build`, "The screen tests"). Then look at the frame
   that the check failed on.
+- A GPU lockup on MoltenVK is not a descriptor-limit problem. The `gpuEvent` report says `firmware-detected lockup`. A
+  set of each shader's own bindings did not stop it, and neither did `MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=0`
+  (`docs/APPLE.md` has the rates). Count the draws that a run skips before you trust a workaround. The runs that did
+  not lock up skipped the over-limit draws. Measure an intermittent GPU fault over 8 runs of one route on one save.

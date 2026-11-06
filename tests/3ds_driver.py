@@ -26,6 +26,8 @@ def main():
     assert '--recomp' in help_text and '--extract' in help_text and 'scarletnx-3ds-aot' not in help_text
     assert '--extract-container' in help_text and 'read where it lies' in help_text
     assert '--ctr_separate_windows=1' in help_text and '--ctr_top_resolution=2' in help_text
+    assert '--vk_memory=N' in help_text
+    assert '--async_pipelines=1' in help_text and '--pipeline_threads=N' in help_text
     run(['--board-info', '--extract-container'], 2, 'Usage:')
     run(['-x', '-r', 'game.cia'], 2, 'Usage:')
     run(['-r', '--max-blocks', '5', 'game.cia'], 2, 'Usage:')
@@ -43,6 +45,10 @@ def main():
     run(['--model', 'new', '--board-info'], 0, 'New 3DS\nARM11 cores: 4')
     run(['--board-info', 'game.cia'], 2, 'Usage:')
     run(['--backend=gcc'], 2, 'unknown setting: --backend=gcc')  # --key=value is the 3DS tables'
+    # and the Switch's the 3DS takes too (vk_memory), never another of the Switch's Debug table
+    run(['--board-info', '--vk_memory=1'], 0, 'Old 3DS')
+    run(['--board-info', '--async_pipelines=1', '--pipeline_threads=2'], 0, 'Old 3DS')
+    run(['--board-info', '--vk_budget_mb=64'], 2, 'unknown setting: --vk_budget_mb=64')
     # an older version's packet trace (docs/DEPRECATIONS.md): still ctr_uds_trace=1, under the command line's own
     old = 'SNX_3DS_UDS_PACKET_TRACE'
     run(

@@ -41,6 +41,7 @@
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/prepare_screen.h"
+#include "nx/runtime/platform/resources.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/platform/ui.h"
@@ -641,9 +642,56 @@ static void report_lock_waits(void) {
              (long long)((intptr_t)w[i].m - (intptr_t)pm_wait_base()), (long long)((intptr_t)w[i].at - (intptr_t)pm_lock));
     }
 }
+void resources_text(char* out, size_t size) {
+    size_t n;
+#ifdef MODULE_PACK
+    gui_apple_stats(out, size);
+#else
+    SnxU64 left = 0;
+    if (snx_memory_available(&left))
+        snprintf(out, size, "resources: footprint %llu MiB, the system has %llu MiB free",
+                 (unsigned long long)(snx_footprint() >> 20), (unsigned long long)(left >> 20));
+    else
+        snprintf(out, size, "resources: footprint %llu MiB, the system has ? MiB free",
+                 (unsigned long long)(snx_footprint() >> 20));
+#endif
+    /* the blocks of the renderer: on iOS beside Metal's total, where what Metal holds past them is MoltenVK's own
+       (descriptor pools, pipelines, argument buffers), not the game's textures and buffers */
+    n = strlen(out);
+    if (g_renderer && g_renderer->memory_blocks && n < size)
+        snprintf(out + n, size - n, ", VMA blocks %llu MiB", (unsigned long long)(g_renderer->memory_blocks() >> 20));
+}
+/* log level 2: the three host threads with the most CPU time since the last line, by their names. iOS reported a CPU
+   exception (90 s of CPU in 93 s) that named no thread */
+static void threads_line(void) {
+    static SnxThreadInfo now[THREADS_SEEN];
+    static ThreadsWindow window;
+    char line[512];
+    int n = snx_threads(now, THREADS_SEEN);
+    if (n < 0) {
+        LOG_LIMIT(1, "threads: the system lists none of the process's threads, so no threads line\n");
+        return;
+    }
+    if (threads_line_text(&window, now, (unsigned)n, plat_ns(), line, sizeof line)) LOG("%s\n", line);
+}
+/* a "memory: " line, with the GPU heaps, the first time that what the system still gives the process falls under
+   each floor (resources.c): iOS's room for the app, whose warnings can come too late or not at all before it ends the
+   app (one came 0.1 s before); elsewhere the system's free memory, past which it takes memory back (Android's low
+   memory killer, Linux's OOM killer) or pages. Each frontend tick until the last floor */
+static void memory_floors(void) {
+    static unsigned next;
+    SnxU64 left = 0;
+    unsigned under;
+    if (next >= MEMORY_FLOORS || !snx_memory_available(&left) || !(under = memory_floor_crossed(left, &next))) return;
+    char stats[320], gpu[1024] = "";
+    resources_text(stats, sizeof stats);
+    if (g_renderer && g_renderer->memory_text) g_renderer->memory_text(gpu, sizeof gpu);
+    LOG("memory: under %u MiB free: %s, %s\n", under, stats, gpu);
+    log_sync();
+}
 static void frontend_loop(void) {
     const u64 period = 1000000000u / VI_REFRESH_HZ;
-    u64 tick = 0, next = plat_ns(), now, changed = next, rate_at = next;
+    u64 tick = 0, next = plat_ns(), now, changed = next, rate_at = next, resources_at = next;
     int frames = 0, stalls = 0, rate_frames = 0;
     while (!g_quit) {
         int shown, paused;
@@ -697,13 +745,18 @@ static void frontend_loop(void) {
                 (double)(shown - rate_frames) * 1e9 / (double)(now - rate_at), (double)(now - rate_at) / 1e9, shown);
             rate_at = now;
             rate_frames = shown;
-#ifdef MODULE_PACK
-            {
+            if (g_settings.log_level >= 2) threads_line();
+        }
+        /* log level 2: the memory each second, as a game can take 1 GiB in less than that, and the line at each floor
+           of free memory */
+        if (g_settings.log_level >= 2) {
+            if (now - resources_at >= 1000000000u) {
                 char line[320];
-                gui_apple_stats(line, sizeof line);
+                resources_text(line, sizeof line);
                 LOG("%s\n", line);
+                resources_at = now;
             }
-#endif
+            memory_floors();
         }
         /* a paused game shows nothing new, and isn't stalled; nor is one that waits for the keyboard's box */
         if (shown != frames || paused || overlay_keyboard_shown()) {

@@ -68,9 +68,7 @@ static u32 tc_mode(const VkFmt* f) {
     return f->conv >= VKC_BC1 ? TC_BC1 + (f->conv - VKC_BC1) : TC_ETC2_RGB + (f->conv - VKC_ETC2);
 }
 
-int vk_tc_converts(const VkFmt* f) {
-    return f->conv == VKC_NONE ? f->depth && f->stencil : f->conv != VKC_ASTC;
-}
+int vk_tc_converts(const VkFmt* f) { return f->conv == VKC_NONE ? f->depth && f->stencil : f->conv != VKC_ASTC; }
 
 static VkTcShape tc_shape(u32 mode, u32 w) {
     VkTcShape s = {.out_bpp = 4, .out_rows = 1, .in_align = 16};
@@ -181,8 +179,8 @@ static int tc_record(VkCommandBuffer cb, u32 mode, u32 zfloat, u32 w, u32 rows, 
                        in_at + (u64)in_pitch * rows * slices - in_off, out, out_off,
                        out_at + vk_tc_out_size(&s, rows, slices) - out_off);
 }
-int vk_tc_nv12_uv(VkCommandBuffer cb, u32 pairs, u32 rows, VkBuffer in, u64 u_at, u64 v_at, u32 in_pitch,
-                  VkBuffer out, u64 out_at, u32 out_pitch) {
+int vk_tc_nv12_uv(VkCommandBuffer cb, u32 pairs, u32 rows, VkBuffer in, u64 u_at, u64 v_at, u32 in_pitch, VkBuffer out,
+                  u64 out_at, u32 out_pitch) {
     u64 align = storage_align(), lo = u_at < v_at ? u_at : v_at, hi = (u_at > v_at ? u_at : v_at);
     u64 in_off = lo & ~(align - 1), out_off = out_at & ~(align - 1);
     u32 units = (pairs + 3) / 4;
@@ -196,11 +194,11 @@ int vk_tc_nv12_uv(VkCommandBuffer cb, u32 pairs, u32 rows, VkBuffer in, u64 u_at
                   .in_bias = (u32)((u_at - in_off) / 4),
                   .out_bias = (u32)((out_at - out_off) / 4),
                   .st_bias = (u32)((v_at - in_off) / 4)};
-    return tc_dispatch(cb, &p, (units + 63) / 64, rows, 1, in, in_off, hi + (u64)in_pitch * rows - in_off, out,
-                       out_off, out_at + (u64)out_pitch * rows - out_off);
+    return tc_dispatch(cb, &p, (units + 63) / 64, rows, 1, in, in_off, hi + (u64)in_pitch * rows - in_off, out, out_off,
+                       out_at + (u64)out_pitch * rows - out_off);
 }
-int vk_tc_convert(VkCommandBuffer cb, const VkFmt* f, u32 w, u32 rows, u32 slices, VkBuffer in, u64 in_at,
-                  u32 in_pitch, VkBuffer out, u64 out_at) {
+int vk_tc_convert(VkCommandBuffer cb, const VkFmt* f, u32 w, u32 rows, u32 slices, VkBuffer in, u64 in_at, u32 in_pitch,
+                  VkBuffer out, u64 out_at) {
     u32 mode = tc_mode(f);
     /* 24 bit depth into D32_SFLOAT_S8_UINT, where D24S8 isn't supported, goes out as a float */
     u32 zfloat = f->vk == VK_FORMAT_D32_SFLOAT_S8_UINT && mode != TC_D32S8;
@@ -237,7 +235,9 @@ int vk_tc_blit(VkCommandBuffer cb, u32 bpp, u32 fmt, u32 nb, u32 rows, VkBuffer 
     u64 out_off = out_at & ~(storage_align() - 1);
     u32 units = (nb + 3) / 4;
     if ((col_at | row_at | out_at | out_pitch) & 3) return 0;
-    TcParams p = {.mode = fmt ? TC_BLIT_FLOAT : TC_BLIT,
+    TcParams p = {.mode = (fmt & GPU_BLIT_CONVERT_BIT) ? TC_BLIT_CONVERT
+                          : fmt                        ? TC_BLIT_FLOAT
+                                                       : TC_BLIT,
                   .units = units,
                   .rows = rows,
                   .in_pitch = in_pitch, /* bytes, for this mode */
@@ -267,8 +267,9 @@ int vk_tc_index(VkCommandBuffer cb, u32 mode, u32 remap, u32 restart, u32 n, VkB
                   .const_a = restart,
                   .line_out = n};
     /* a word of input still binds when there is none (vertex numbers made into quads) */
-    return tc_dispatch(cb, &p, (units + 63) / 64, rows, 1, in, in_off, (in_at + (in_size ? in_size : 4) - in_off + 3) & ~3ull,
-                       out, out_off, out_at + out_size - out_off);
+    return tc_dispatch(cb, &p, (units + 63) / 64, rows, 1, in, in_off,
+                       (in_at + (in_size ? in_size : 4) - in_off + 3) & ~3ull, out, out_off,
+                       out_at + out_size - out_off);
 }
 int vk_tc_restride(VkCommandBuffer cb, u32 in_stride, u32 out_stride, u32 nv, VkBuffer in, u64 in_at, u64 len,
                    VkBuffer out, u64 out_at) {

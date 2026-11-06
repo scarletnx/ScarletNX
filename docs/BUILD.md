@@ -481,7 +481,8 @@ the code the drivers share are in it once. `scarletnx-switch`, `scarletnx-3ds`, 
 and `scarletnx-agb` are links to it on Linux and macOS, made in the build folder and installed. Windows, whose zips
 keep no links, installs `scarletnx.exe` alone, which takes a driver's name as its first argument
 (`scarletnx.exe scarletnx-3ds ...`, how the launcher runs them); its build folder has hard links of those names, for
-the tests. Android's and iOS's apps start the program their own way.
+the tests. Android's and iOS's apps start the program their own way; Android's menu runs a driver as Windows' does,
+its name first, through `libscarletnx-run.so`.
 
 [Nightly AppImages](https://github.com/scarletnx/nightly/releases/latest), x86_64 and aarch64 · [Launch](USAGE.md).
 

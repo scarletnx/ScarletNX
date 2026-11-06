@@ -51,6 +51,8 @@ static struct {
     unsigned dumps;
     uint64_t presents;     /* past the first dumps, two presents (one a screen) of every 120 are kept as the latest */
     unsigned bottom_alone; /* bottom screen frames since the window last showed, the top screen showing none */
+    uint64_t decoded[2];   /* each screen's frames decoded */
+    uint64_t unshown;      /* the shows that found every image of their window on the display */
     unsigned up : 1, closed : 1, separate : 1;
 } g_present;
 
@@ -436,6 +438,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     vkCmdPushConstants(cb, g_present.decode.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
     unsigned columns = from_target ? width * scale : width, rows = from_target ? height * scale : height;
     vkCmdDispatch(cb, (columns + 7) / 8, (rows + 7) / 8, 1);
+    ++g_present.decoded[screen];
     /* both screens in one window, at each top screen frame: a game draws both every frame, and showing at each
        screen's would wait for two vblanks a frame. A bottom screen that changes while the top one stays still shows
        at its second frame. In separate windows each screen shows at its own */
@@ -447,10 +450,17 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     bool show = g_present.swap[window_index].swapchain || swap_create(window_index);
     if (!g_present.separate && screen == 1 && g_present.bottom_alone < 2) show = false;
     if (show) {
-        VkResult acquired = vkAcquireNextImageKHR(v->device, g_present.swap[window_index].swapchain, UINT64_MAX,
+        /* an image the window can take now, or none this frame, as the Switch's and the Vita's presenters ask: the
+           game's threads run on this one, and a wait stops them for as long as the display holds every image (FIFO
+           behind, or a locked or remote session that shows none). The screens keep the frame, and the next shown
+           has their latest */
+        VkResult acquired = vkAcquireNextImageKHR(v->device, g_present.swap[window_index].swapchain, 0,
                                                   g_present.acquire[window_index][slot], VK_NULL_HANDLE, &index);
         if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
             (void)swap_create(window_index);
+            show = false;
+        } else if (acquired == VK_NOT_READY || acquired == VK_TIMEOUT) {
+            ++g_present.unshown;
             show = false;
         } else if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
             show = false;
@@ -488,6 +498,22 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
         if (dump) write_ppm(screen, width, height, rgba);
     }
     return true;
+}
+void snx_ctr_present_report(void) {
+    if (!g_present.up) return;
+    SnxCtrVkTraffic t = snx_ctr_vk_traffic();
+    char copies[96] = "", unshown[80] = "";
+    if (snx_ctr_vk_copies())
+        snprintf(copies, sizeof copies, "; %.1f MiB copied in from the RAM and %.1f MiB back",
+                 (double)t.copied_in / 1048576.0, (double)t.copied_out / 1048576.0);
+    if (g_present.unshown)
+        snprintf(unshown, sizeof unshown, ", %llu not shown with every window image on the display",
+                 (unsigned long long)g_present.unshown);
+    printf("  gpu: %llu top and %llu bottom screen frames%s; its work read %.1f MiB and wrote %.1f MiB of %s%s; "
+           "%llu CPU accesses to its pages trapped\n",
+           (unsigned long long)g_present.decoded[0], (unsigned long long)g_present.decoded[1], unshown,
+           (double)t.read / 1048576.0, (double)t.written / 1048576.0,
+           snx_ctr_vk_copies() ? "its copy of the RAM" : "the RAM", copies, (unsigned long long)t.traps);
 }
 void snx_ctr_present_free(void) {
     if (!g_present.up) return;

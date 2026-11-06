@@ -288,6 +288,22 @@ static u64 wait_marks(u32 n) {
     return plat_ns() - t0;
 }
 static void called(void* arg) { see((u32)(uintptr_t)arg); }
+static u32 poll_ready, poll_visits;
+static int poll_wait(void* arg) {
+    __atomic_add_fetch(&poll_visits, 1, __ATOMIC_RELAXED);
+    if (!__atomic_load_n(&poll_ready, __ATOMIC_ACQUIRE)) return 0;
+    see((u32)(uintptr_t)arg);
+    return 1;
+}
+static int poll_mark(void* arg) {
+    see((u32)(uintptr_t)arg);
+    return 1;
+}
+static int poll_signal(void* arg) {
+    see((u32)(uintptr_t)arg);
+    __atomic_store_n(&poll_ready, 1, __ATOMIC_RELEASE);
+    return 1;
+}
 static pthread_mutex_t gate_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t gate_cv = PTHREAD_COND_INITIALIZER;
 static int gate_entered, gate_open;
@@ -313,6 +329,25 @@ static void expect(int ok, const char* what) {
 #define FAST 500000000ull /* a wait an event ends, well short of the 1 and 2 s timeouts */
 
 int main(void) {
+    /* A yielding call retains its lane's order without trapping the GPU thread. Another lane can signal it. */
+    gpu_call_poll(poll_wait, (void*)(uintptr_t)0x970, 0);
+    gpu_call_poll(poll_mark, (void*)(uintptr_t)0x971, 0);
+    gpu_call_poll(poll_signal, (void*)(uintptr_t)0x972, 1);
+    wait_marks(3);
+    expect(marks_are((u32[]){0x972, 0x970, 0x971}, 3), "cooperative lanes retain order and allow a later signal");
+    expect(__atomic_load_n(&poll_visits, __ATOMIC_RELAXED) >= 2, "an unmet cooperative wait resumes");
+    forget_marks();
+    __atomic_store_n(&poll_ready, 0, __ATOMIC_RELEASE);
+    gpu_call_poll(poll_wait, (void*)(uintptr_t)0x973, 0);
+    gpu_call_poll(poll_mark, (void*)(uintptr_t)0x974, 0);
+    gpu_call(called, (void*)(uintptr_t)0x975, NULL, 0);
+    wait_marks(1);
+    expect(marks_are((u32[]){0x975}, 1), "ordinary work runs while a cooperative lane waits");
+    __atomic_store_n(&poll_ready, 1, __ATOMIC_RELEASE);
+    gpu_kick();
+    wait_marks(3);
+    expect(marks_are((u32[]){0x975, 0x973, 0x974}, 3), "CPU signal resumes the lane and its later work");
+    forget_marks();
     struct timespec ms20 = {0, 20000000};
     gpu_init();
 
@@ -567,11 +602,13 @@ int main(void) {
         cpu_store(SEM + 64, 0);
         cpu_store(0x9000, 0x11223344);
         submit1(sem_then(SEM + 64, 1, 1, 0x910), 30);
-        u32 copy[] = {inc(0x100, 7) | (4u << 13), 0, 0x9000, 0, 0x9100, 4, 4, 4,
-                      imm(0xC0, 0x180) | (4u << 13), imm(CLEAR, 0x911)};
+        u32 copy[] = {inc(0x100, 7) | (4u << 13), 0, 0x9000, 0, 0x9100, 4, 4, 4, imm(0xC0, 0x180) | (4u << 13),
+                      imm(CLEAR, 0x911)};
         submit1(push(copy, sizeof copy / sizeof copy[0]), 30);
-        if (gpu_write) gmem_w32(0x9000, 0x55667788);
-        else cpu_store(0x9000, 0x55667788);
+        if (gpu_write)
+            gmem_w32(0x9000, 0x55667788);
+        else
+            cpu_store(0x9000, 0x55667788);
         cpu_store(SEM + 64, 1);
         wait_marks(2);
         expect(marks_are((u32[]){0x910, 0x911}, 2), "DMA follows the channel's earlier wait");
@@ -580,8 +617,8 @@ int main(void) {
     }
     for (int gpu_write = 0; gpu_write < 2; gpu_write++) {
         cpu_store(0x9000, 0x11223344);
-        u32 copy[] = {inc(0x100, 7) | (4u << 13), 0, 0x9000, 0, 0x9100, 4, 4, 4,
-                      imm(0xC0, 0x180) | (4u << 13), imm(CLEAR, 0x912)};
+        u32 copy[] = {inc(0x100, 7) | (4u << 13), 0, 0x9000, 0, 0x9100, 4, 4, 4, imm(0xC0, 0x180) | (4u << 13),
+                      imm(CLEAR, 0x912)};
         pthread_mutex_lock(&gate_lock);
         gate_entered = gate_open = 0;
         pthread_mutex_unlock(&gate_lock);
@@ -610,9 +647,21 @@ int main(void) {
     for (u32 sub = 0; sub < 2; sub++) {
         cpu_store(SEM + 80, 0);
         cpu_store(0x9000, 0x11223344);
-        u32 copy[] = {inc(0x6C0, 4) | (sub << 13), 0, SEM + 80, 1, 1,
-                      inc(0x100, 7) | (4u << 13), 0, 0x9000, 0, 0x9100, 4, 4, 4,
-                      imm(0xC0, 0x180) | (4u << 13), imm(CLEAR, 0x913)};
+        u32 copy[] = {inc(0x6C0, 4) | (sub << 13),
+                      0,
+                      SEM + 80,
+                      1,
+                      1,
+                      inc(0x100, 7) | (4u << 13),
+                      0,
+                      0x9000,
+                      0,
+                      0x9100,
+                      4,
+                      4,
+                      4,
+                      imm(0xC0, 0x180) | (4u << 13),
+                      imm(CLEAR, 0x913)};
         submit1(push(copy, sizeof copy / sizeof copy[0]), 32 + sub);
         cpu_store(0x9000, 0x55667788);
         cpu_store(SEM + 80, 1);
@@ -624,10 +673,19 @@ int main(void) {
        result, including a continuation entry and discontiguous source pages. */
     for (u32 layout = 0; layout < 3; layout++) {
         const u32 output = 0x9400;
-        u32 commands[] = {inc(0x60, 5) | (1u << 13), 16, 1, 0, output, 16,
+        u32 commands[] = {inc(0x60, 5) | (1u << 13),
+                          16,
+                          1,
+                          0,
+                          output,
+                          16,
                           imm(0x6C, 1) | (1u << 13),
                           (3u << 29) | (4u << 16) | (1u << 13) | 0x6D,
-                          0, 0, 0, 0, imm(CLEAR, 0x920 + layout)};
+                          0,
+                          0,
+                          0,
+                          0,
+                          imm(CLEAR, 0x920 + layout)};
         u64 entries[2];
         u32 count = layout ? 2 : 1;
         entries[0] = push(commands, layout ? 8 : 13);

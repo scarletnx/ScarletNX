@@ -10,6 +10,8 @@
    - the runtime's own writes: a system call's, a decommit's, a GPU engine's, a landing's
    - a range the GPU owns (memory traps) written by the CPU in the middle of an epoch
    - a render target's write-back and freshness over pages a scan reports written at every scan (hot pages)
+   - what the caches check by contents where the tracking answers for them: a texture over several pieces of guest
+     memory, a buffer rewritten with its own bytes, a pending result's original bytes
    Each case runs in a 4 MiB leaf of the tracking's table of its own. SNX_TEST_WW_ONLY=1 runs them alone */
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -978,6 +980,211 @@ static int check_wt_hot_rt_take_in(void) {
     return 0;
 }
 
+/* the texel (x, y) of tic's texture as its image holds it (vk_lock held); 0 without it */
+static u32 wt_texel_at(const u32 tic[8], u32 x, u32 y) {
+    Surf* t = vk_tex_from_tic(tic);
+    return t ? dma_texel(t, x, y) : 0;
+}
+/* A texture over two pieces of guest memory, its GPU pages mapping runs that don't follow each other: write tracking
+   answers for it piece by piece, as for one run. Untouched over epochs, its checks hash nothing; the CPU writing the
+   second piece, and a DMA copy over the first through another GPU address of it, each reach it in the next epoch.
+   Without write tracking its checks hash it instead (vulkan_write_tracking_off) */
+static int check_wt_pieces(void) {
+    const u64 cpu = WT_CPU + 24 * WT_LEAF, a = cpu, b = cpu + 0x8000, src = cpu + 0xC000;
+    const u64 gva = WT_GVA + 0x10000000, other = WT_GVA + 0x10100000, gsrc = WT_GVA + 0x10200000;
+    const int epochs = 8;
+    u32 tic[8];
+    CHECK(mem_map(cpu, 0x10000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, a, 0x2000);
+    gmmu_map(gva + 0x2000, b, 0x2000); /* 64 by 64 block linear, 16 KiB: rows 32 to 63 in the second piece */
+    gmmu_map(other, a, 0x2000);
+    gmmu_map(gsrc, src, 0x2000);
+    wt_tic(tic, gva, 64, 64);
+    memset(GP(a), 0x11, 0x2000);
+    memset(GP(b), 0x11, 0x2000);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    int tracking = wt_tracking(cpu);
+    u32 first = wt_texel_at(tic, 0, 0), last = wt_texel_at(tic, 0, 63);
+    vk_unlock();
+    CHECK(first == wt_fill(0x11) && last == wt_fill(0x11));
+    u64 hashes = vk_tex_hashes();
+    for (int k = 0; k < epochs; k++) {
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        last = wt_texel_at(tic, 0, 63);
+        vk_unlock();
+        CHECK(last == wt_fill(0x11));
+    }
+    u64 untouched = vk_tex_hashes() - hashes;
+    memset(GP(b), 0x22, 0x2000); /* the CPU writes the second piece */
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    u32 cpu_first = wt_texel_at(tic, 0, 0), cpu_last = wt_texel_at(tic, 0, 63);
+    vk_unlock();
+    /* a DMA copy of 0x33 over the first piece, through the other GPU address of its pages */
+    memset(GP(src), 0x33, 0x2000);
+    GpuDmaOp o = {0};
+    o.width = o.line_in = o.line_out = 0x1000;
+    o.lines = 2;
+    o.src = pitch_side(gsrc, 0x1000);
+    o.dst = pitch_side(other, 0x1000);
+    g_renderer->mem_may_have_changed();
+    CHECK(g_renderer->dma_copy(&o));
+    vk_lock();
+    u32 dma_first = wt_texel_at(tic, 0, 0), dma_last = wt_texel_at(tic, 0, 63);
+    vk_unlock();
+    guest_done(a, 0x2000);
+    own_acquire(a, 0x2000);
+    CHECK(mem_unmap(cpu, 0x10000) == 0);
+    int cpu_seen = cpu_first == wt_fill(0x11) && cpu_last == wt_fill(0x22);
+    int dma_seen = dma_first == wt_fill(0x33) && dma_last == wt_fill(0x22);
+    if (!cpu_seen || !dma_seen || (tracking ? untouched != 0 : !untouched))
+        fprintf(
+            stderr,
+            "pieces: untouched over %d epochs its checks hashed it %llu times (write tracking %s); after the CPU wrote "
+            "0x22 over the second piece rows 0 and 63 hold %08x %08x, after a DMA copy of 0x33 over the first "
+            "through another address %08x %08x\n",
+            epochs, (unsigned long long)untouched, tracking ? "on" : "off", cpu_first, cpu_last, dma_first, dma_last);
+    CHECK(cpu_seen && dma_seen && (tracking ? untouched == 0 : untouched > 0));
+    printf("write tracking: a texture over two pieces of guest memory, %llu hashes over %d untouched epochs (tracking "
+           "%s), the CPU's write and a DMA copy through another address each seen\n",
+           (unsigned long long)untouched, epochs, tracking ? "on" : "off");
+    return 0;
+}
+/* A buffer of its own the CPU rewrites with the same bytes in every epoch: write tracking calls it written each time,
+   each check hashes it whole and finds it unchanged, and none takes the samples' hash, which only the checks the
+   tracking can't answer use (they were taken from the 63rd unchanged check on, at every write). Untouched first, its
+   checks hash nothing; new bytes then reach it */
+static int check_wt_sampled(void) {
+    const u64 cpu = WT_CPU + 25 * WT_LEAF, gva = WT_GVA + 0x10400000, size = 0x10000; /* patched whole, not by page */
+    const u64 rounds = 80, idle = 8;
+    VkBuffer b;
+    u64 off, c, h0, s0, h1, s1, h2, s2;
+    u8 got = 0;
+    CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, size);
+    memset(GP(cpu), 0x11, size);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    if (!wt_tracking(cpu)) {
+        vk_unlock();
+        printf("skip: a buffer rewritten with its own bytes needs write tracking to call it written\n");
+        CHECK(mem_unmap(cpu, size) == 0);
+        return 0;
+    }
+    for (int k = 0; k < 3; k++) { /* new, then the same twice: a buffer of its own */
+        CHECK(vk_buf_get(gva, size, &b, &off));
+        vk_unlock();
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+    }
+    vk_buf_checks(&c, &h0, &s0);
+    for (u64 k = 0; k < idle; k++) { /* untouched */
+        CHECK(vk_buf_get(gva, size, &b, &off));
+        vk_unlock();
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+    }
+    vk_buf_checks(&c, &h1, &s1);
+    for (u64 k = 0; k < rounds; k++) { /* the same bytes written again */
+        vk_unlock();
+        memset(GP(cpu), 0x11, size);
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        CHECK(vk_buf_get(gva, size, &b, &off));
+    }
+    vk_buf_checks(&c, &h2, &s2);
+    vk_unlock();
+    memset(GP(cpu), 0x22, size);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    int seen = strict_bytes(gva, size, 0x22, &got);
+    vk_unlock();
+    CHECK(mem_unmap(cpu, size) == 0);
+    if (h1 != h0 || s1 != s0 || h2 - h1 != rounds || s2 != s1 || !seen)
+        fprintf(
+            stderr,
+            "sampled: untouched over %llu epochs %llu hashes and %llu samples; rewritten the same in %llu epochs %llu "
+            "hashes and %llu samples; new bytes 0x22 read as %#x\n",
+            (unsigned long long)idle, (unsigned long long)(h1 - h0), (unsigned long long)(s1 - s0),
+            (unsigned long long)rounds, (unsigned long long)(h2 - h1), (unsigned long long)(s2 - s1), got);
+    CHECK(h1 == h0 && s1 == s0 && h2 - h1 == rounds && s2 == s1 && seen);
+    printf("write tracking: a buffer rewritten with its own bytes %llu times, hashed each time and never sampled\n",
+           (unsigned long long)rounds);
+    return 0;
+}
+/* A storage result pending over a range, read again in later epochs while it is: while the CPU leaves the range
+   alone, write tracking stands in for comparing it with the result's original bytes; the CPU rewriting the same bytes
+   is compared, and the result is still read where it is; new bytes are compared, and the result lands before the read.
+   Without write tracking every read compares (vulkan_write_tracking_off) */
+static int check_wt_compares(void) {
+    /* the binding ends short of its page: copied, with its original bytes to compare, on every host, where a binding of
+       whole pages may stay on the GPU as their owner, with nothing to compare */
+    const u64 cpu = WT_CPU + 26 * WT_LEAF, gva = WT_GVA + 0x10800000, size = 0x1000, len = size - 16;
+    const int epochs = 4;
+    VkBuffer out, b;
+    u64 at, off, c0, c1, c2, c3, h, s;
+    if (vk_uma()) {
+        printf("skip: with unified memory a storage binding writes guest memory in place, with nothing to compare\n");
+        return 0;
+    }
+    CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, size);
+    memset(GP(cpu), 0x11, size);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    int tracking = wt_tracking(cpu);
+    CHECK(vk_buf_copy_writable(gva, len, &out, &at, 1));
+    vk_buf_writable_commit();
+    u32 owners = own_lookup(cpu, size, NULL, 0);
+    if (owners || !vk_buf_pending_any())
+        fprintf(stderr, "compares: the binding left %u owners over its page and %d pending results: 0 and 1 wanted\n",
+                owners, vk_buf_pending_any());
+    CHECK(!owners && vk_buf_pending_any());
+    CHECK(!owned_test_fill(out, at, 16, 0x22));
+    vk_buf_checks(&c0, &h, &s);
+    int kept = 1;
+    for (int k = 0; k < epochs; k++) { /* untouched */
+        vk_unlock();
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        kept &= vk_buf_get_input(gva, len, 1, &b, &off) && b == out && off == at;
+    }
+    vk_buf_checks(&c1, &h, &s);
+    vk_unlock();
+    memset(GP(cpu + 0x800), 0x11, 0x100); /* the same bytes again */
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    kept &= vk_buf_get_input(gva, len, 1, &b, &off) && b == out && off == at && vk_buf_pending_any();
+    vk_buf_checks(&c2, &h, &s);
+    vk_unlock();
+    memset(GP(cpu + 0x800), 0x44, 0x100); /* new bytes */
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    CHECK(vk_buf_get_input(gva, len, 1, &b, &off));
+    vk_buf_checks(&c3, &h, &s);
+    int landed = !vk_buf_pending_any();
+    vk_finish();
+    vk_unlock();
+    int bytes = 1;
+    for (u32 i = 0; i < size; i++) bytes &= GP(cpu)[i] == (i < 16 ? 0x22 : i >= 0x800 && i < 0x900 ? 0x44 : 0x11);
+    CHECK(mem_unmap(cpu, size) == 0);
+    u64 untouched = c1 - c0, same = c2 - c1, changed = c3 - c2;
+    int counts = (tracking ? untouched == 0 : untouched == (u64)epochs) && same == 1 && changed == 1;
+    if (!kept || !landed || !bytes || !counts)
+        fprintf(stderr,
+                "compares: untouched over %d epochs %llu compares, the same bytes again %llu, new bytes %llu (write "
+                "tracking %s); the result read where it is %d, landed for the new bytes %d, memory as expected %d\n",
+                epochs, (unsigned long long)untouched, (unsigned long long)same, (unsigned long long)changed,
+                tracking ? "on" : "off", kept, landed, bytes);
+    CHECK(kept && landed && bytes && counts);
+    printf("write tracking: a pending result compared %llu times over %d untouched epochs (tracking %s), once for the "
+           "same bytes written again, once for new ones\n",
+           (unsigned long long)untouched, epochs, tracking ? "on" : "off");
+    return 0;
+}
+
 /* the cases by name, for SNX_TEST_WW_ONLY=NAME */
 static const struct {
     const char* name;
@@ -997,6 +1204,9 @@ static const struct {
     {"hot_alias", check_wt_hot_alias},
     {"hot_same_frame", check_wt_hot_same_frame},
     {"hot_rt_take_in", check_wt_hot_rt_take_in},
+    {"pieces", check_wt_pieces},
+    {"sampled", check_wt_sampled},
+    {"compares", check_wt_compares},
 };
 /* whether the tracking answers, asked at a leaf no case maps */
 static int wt_on(void) {
@@ -1029,12 +1239,11 @@ static int check_write_tracking(void) {
         failed += r != 0;
     }
     if (!ran) {
-        fprintf(
-            stderr,
-            "SNX_TEST_WW_ONLY=%s names no case: 1, each, two_consumers, concurrent, record_submit, runtime_writes, "
-            "owned, alias, shared, mixed_leaf, hot_page, hot_rt_overlap, hot_rt_fresh, hot_alias, hot_same_frame or "
-            "hot_rt_take_in\n",
-            only);
+        fprintf(stderr,
+                "SNX_TEST_WW_ONLY=%s names no case: 1, each, two_consumers, concurrent, record_submit, runtime_writes, "
+                "owned, alias, shared, mixed_leaf, hot_page, hot_rt_overlap, hot_rt_fresh, hot_alias, hot_same_frame, "
+                "hot_rt_take_in, pieces, sampled or compares\n",
+                only);
         return 2;
     }
     return failed ? 1 : 0;

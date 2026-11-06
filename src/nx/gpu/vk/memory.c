@@ -9,20 +9,29 @@
    and an image whose memory is bigger is created with sparse binding and bound to several allocations, each at most
    the cap. Shaders and views see one ordinary image: only its memory is in pieces.
 
-   The pieces are dedicated allocations, so the cap is also what the driver is asked for. They are bound on the
-   graphics queue, and the bind is waited for on the host before the image is used: a bind is not ordered with
-   command buffers submitted after it, on that queue or on the compute queue, without a semaphore each of them would
-   have to wait on, and an image this big is made once.
+   The pieces are dedicated allocations, so the cap is also what the driver is asked for.
 
-   A 3D image may also have memory only where it is bound (sparse residency): a texture in a virtual pool the guest
+   An image may also have memory only where it is bound (sparse residency): a texture in a virtual pool the guest
    maps a 64 KiB tile at a time, whose holes read as zeros on the console as they do here (residencyNonResidentStrict).
-   Its blocks of the device's granularity are bound and released one by one, each to an allocation of its own, and
-   the memory it takes is that of its bound blocks alone: a 1664x448x1344 BC1 volume is 477 MB whole and 384 KiB with
-   the 6 tiles a game maps of it.
+   Its blocks of the device's granularity, in every level before its mip tail and every layer, are bound and released
+   one by one, each to an allocation of its own, and each mip tail as a whole; the memory it takes is that of its
+   bound blocks and tails alone: a 1664x448x1344 BC1 volume is 477 MB whole and 384 KiB with the 6 tiles a game maps
+   of it.
 
-   Any other texture with holes in its mapping is an image with sparse residency in the device's own blocks, all its
-   levels and layers, with memory only for the blocks that are mapped (vk_image_create_sparse, below). */
+   Both are bound on the graphics queue, in batches: the binds made since the last submission go in one
+   vkQueueBindSparse just before the next (vk_sparse_flush), and nothing waits for them on the host. A sparse bind is
+   not ordered with command buffers, even on its own queue (the Vulkan spec, "Binding Resource Memory"): a batch
+   signals a timeline semaphore of its own, and the submission after it waits for that value, which holds back every
+   later command of the queue too (vkQueueSubmit2's waits take the commands later in submission order). A batch that
+   changes blocks of an image in use waits for the last graphics submission, so no command reads a block while its
+   binding changes; the commands recorded before it are submitted first. The compute queue's batches read no image (a
+   dispatch with textures or images records into the frame's commands), so they neither wait for a batch nor a batch
+   for them. The memory a block lets go is freed with the frame of the submission after the batch (vk_defer_call),
+   once the GPU is past both. The bind is called on the recording thread, in order after the submission it waits
+   for: queued ahead of it on the same queue, its wait could hold that submission back where a driver takes a queue's
+   batches in order. */
 #include <stdlib.h>
+#include <string.h>
 #if defined(__ANDROID__)
 #include <unistd.h>
 #include "common/utilities/common.h"
@@ -36,18 +45,49 @@
 #define ALLOC_CAP_DEFAULT (256ull << 20)
 
 /* the images in pieces, each with its allocations. One with memory only where it is bound has a page for each of its
-   blocks, bx across and by down, of block texels (VK_NULL_HANDLE where none is bound) */
+   blocks of block texels, layer by layer, in a layer level by level up to its mip tail, in a level x first, then y,
+   then z; then one for each of its mip tails (VK_NULL_HANDLE where none is bound) */
 typedef struct {
     VkImage img;
     u32 n;
-    u32 bx, by; /* 0: an image in pieces */
+    u32 per_layer;          /* the blocks of a layer; 0: an image in pieces */
+    u32 layers, tail_first; /* tail_first: its levels in blocks, those before the mip tail */
+    u32 tails;              /* the last of its n pages: 0, 1 for all the layers, or one a layer */
     VkExtent3D block, extent;
     VkMemoryRequirements req;
-    u64 bound; /* the bytes of its bound blocks */
+    u64 tail_offset, tail_size, tail_stride;
+    u64 bound; /* the bytes of its bound blocks and tails */
+    u64 batch; /* the bind batch its last binds are in, 0 none */
     VmaAllocation pages[];
 } Pieces;
 static Pieces** g_pieces;
 static u32 g_npieces, g_cappieces;
+
+/* The batch as the recording thread takes it: its head, then each image's BindOne and binds, VkSparseMemoryBind for
+   an image in pieces, VkSparseImageMemoryBind for blocks */
+typedef struct {
+    u64 gfx;   /* the graphics timeline value it waits for, 0 none */
+    u64 after; /* the batch before it, 0 none */
+    u64 value; /* its own on the bind timeline */
+    u32 nimg, nopaque;
+} BindHead;
+typedef struct {
+    VkImage img;
+    u32 n, opaque;
+} BindOne;
+/* a batch's bytes at most, a quarter of the recording thread's ring: the 7644 blocks of a volume in one batch */
+#define BIND_CAP (1u << 20)
+#define GONE_CAP (BIND_CAP / sizeof(VkSparseImageMemoryBind)) /* at most one released block for each bind */
+static struct {
+    VkSemaphore sem; /* the bind timeline: batch n signals n */
+    u64 issued;      /* the last batch handed to the queue */
+    u64 waited;      /* the last batch a submission waits for */
+    u8* buf;         /* BIND_CAP bytes of the batch, then GONE_CAP allocations its blocks let go */
+    u64 used, last;  /* the batch's bytes, 0 none; where its last BindOne is */
+    u32 ngone;
+    u64 gone_bytes;
+    int readers; /* it changes blocks of an image in use: after the work submitted before it */
+} g_bind;
 
 /* VMA allocations as Tracy memory events. */
 #if defined(SNX_TRACY)
@@ -72,23 +112,180 @@ void vk_mem_init(int sparse_queue) {
     if (m3.maxMemoryAllocationSize && cap > m3.maxMemoryAllocationSize) cap = m3.maxMemoryAllocationSize;
     g_vk.alloc_cap = cap;
     g_vk.sparse = sparse_queue && g_vk.feat.sparseBinding;
-    g_vk.resident =
-        g_vk.sparse && g_vk.feat.sparseResidencyImage3D && g_vk.props.sparseProperties.residencyNonResidentStrict;
-    LOG("vulkan: allocations of at most %llu MiB, bigger images %s, a 3D texture with holes in its mapping %s\n",
+    if (g_vk.sparse) {
+        VkSemaphoreTypeCreateInfo tci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                         .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+        VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &tci};
+        g_vk.sparse = VK_OK(vkCreateSemaphore(g_vk.dev, &sci, NULL, &g_bind.sem));
+    }
+    const int r2 = g_vk.feat.sparseResidencyImage2D, r3 = g_vk.feat.sparseResidencyImage3D;
+    g_vk.resident = g_vk.sparse && (r2 || r3) && g_vk.props.sparseProperties.residencyNonResidentStrict;
+    LOG("vulkan: allocations of at most %llu MiB, bigger images %s, a texture with holes in its mapping %s\n",
         (unsigned long long)(cap >> 20),
         g_vk.sparse ? "in pieces (sparse binding)" : "in one allocation (no sparse binding)",
-        g_vk.resident                       ? "with memory where it is mapped (sparse residency)"
-        : !g_vk.feat.sparseResidencyImage3D ? "whole (no sparse residency of 3D images)"
-                                            : "whole (sparse residency, but holes don't read as zeros)");
-    LOG("vulkan: other textures with holes in their mapping %s\n",
-        g_vk.sparse && (g_vk.feat.sparseResidencyImage2D || g_vk.feat.sparseResidencyImage3D)
-            ? "take memory only where guest memory maps them (sparse residency)"
-            : "are made whole (no sparse residency)");
+        !g_vk.sparse     ? "whole (no sparse binding)"
+        : !(r2 || r3)    ? "whole (no sparse residency of 2D or 3D images)"
+        : !g_vk.resident ? "whole (sparse residency, but holes don't read as zeros)"
+        : r2 && r3       ? "with memory where it is mapped (sparse residency of 2D and 3D images)"
+        : r2             ? "with memory where it is mapped if 2D, whole if 3D (sparse residency of 2D images only)"
+                         : "with memory where it is mapped if 3D, whole if 2D (sparse residency of 3D images only)");
+}
+
+/* ------------------------------------------------------------ binds in batches */
+/* the batch, on the recording thread: one vkQueueBindSparse. A batch the driver refuses ends the run: the memory its
+   blocks let go is freed once the submission after it is done, and would still be the image's */
+static void bind_run(const void* arg) {
+    const BindHead* h = arg;
+    const u8* at = (const u8*)(h + 1);
+    VkSparseImageMemoryBindInfo* img = calloc(h->nimg + 1, sizeof *img);
+    VkSparseImageOpaqueMemoryBindInfo* opaque = calloc(h->nopaque + 1, sizeof *opaque);
+    u32 ni = 0, no = 0, binds = 0;
+    if (!img || !opaque) fatal("vulkan: out of memory for a batch of %u sparse binds", h->nimg + h->nopaque);
+    for (u32 k = 0; k < h->nimg + h->nopaque; k++) {
+        BindOne one;
+        memcpy(&one, at, sizeof one);
+        at += sizeof one;
+        if (one.opaque)
+            opaque[no++] = (VkSparseImageOpaqueMemoryBindInfo){one.img, one.n, (const VkSparseMemoryBind*)at};
+        else
+            img[ni++] = (VkSparseImageMemoryBindInfo){one.img, one.n, (const VkSparseImageMemoryBind*)at};
+        at += (u64)one.n * (one.opaque ? sizeof(VkSparseMemoryBind) : sizeof(VkSparseImageMemoryBind));
+        binds += one.n;
+    }
+    VkSemaphore wait[2];
+    u64 values[2];
+    u32 nw = 0;
+    if (h->gfx) wait[nw] = vk_gfx_timeline(), values[nw++] = h->gfx;
+    if (h->after) wait[nw] = g_bind.sem, values[nw++] = h->after;
+    VkTimelineSemaphoreSubmitInfo ts = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                        .waitSemaphoreValueCount = nw,
+                                        .pWaitSemaphoreValues = values,
+                                        .signalSemaphoreValueCount = 1,
+                                        .pSignalSemaphoreValues = &h->value};
+    VkBindSparseInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO,
+                           .pNext = &ts,
+                           .waitSemaphoreCount = nw,
+                           .pWaitSemaphores = wait,
+                           .imageOpaqueBindCount = no,
+                           .pImageOpaqueBinds = opaque,
+                           .imageBindCount = ni,
+                           .pImageBinds = img,
+                           .signalSemaphoreCount = 1,
+                           .pSignalSemaphores = &g_bind.sem};
+    vk_queue_lock(g_vk.gfx);
+    VkResult r = vkQueueBindSparse(g_vk.gfx, 1, &bi, VK_NULL_HANDLE);
+    vk_queue_unlock(g_vk.gfx);
+    free(img);
+    free(opaque);
+    if (!VK_OK(r))
+        fatal("vulkan: sparse bind batch %llu of %u binds failed (%d)", (unsigned long long)h->value, binds, (int)r);
+}
+
+static VmaAllocation* bind_gone(void) { return (VmaAllocation*)(void*)(g_bind.buf + BIND_CAP); }
+static void gone_free(void* a) {
+    vk_mem_untrack(a);
+    vmaFreeMemory(g_vk.vma, a);
+}
+
+/* the batch to the graphics queue, after the work submitted before it when it changes blocks of an image in use. The
+   memory its blocks let go waits in the frame being recorded, whose next submission waits for the batch */
+static void bind_flush(void) {
+    if (!g_bind.used && !g_bind.ngone) return; /* at every submission */
+    vk_cmd(); /* that frame begun first: beginning it may destroy images (vk_image_destroy), and their binds leave */
+    if (g_bind.used) {
+        BindHead* h = (BindHead*)(void*)g_bind.buf;
+        h->gfx = g_bind.readers ? vk_last_submit() : 0;
+        h->after = g_bind.issued;
+        h->value = ++g_bind.issued;
+        vk_rec_call(bind_run, g_bind.buf, g_bind.used);
+    }
+    for (u32 i = 0; i < g_bind.ngone; i++) vk_defer_call(gone_free, bind_gone()[i]);
+    vk_defer_bytes(g_bind.gone_bytes);
+    g_bind.used = g_bind.last = 0;
+    g_bind.ngone = 0;
+    g_bind.gone_bytes = 0;
+    g_bind.readers = 0;
+}
+
+int vk_sparse_flush(VkSemaphoreSubmitInfo* wait) {
+    bind_flush();
+    if (g_bind.waited == g_bind.issued) return 0;
+    g_bind.waited = g_bind.issued;
+    *wait = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                    .semaphore = g_bind.sem,
+                                    .value = g_bind.issued,
+                                    .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    return 1;
+}
+
+/* 0 when there is no memory for a batch */
+static int bind_ready(void) {
+    if (!g_bind.buf) g_bind.buf = malloc(BIND_CAP + GONE_CAP * sizeof(VmaAllocation));
+    return g_bind.buf != NULL;
+}
+/* one bind of img into the batch, after the others of img: a VkSparseMemoryBind when opaque, else a
+   VkSparseImageMemoryBind, each bytes. gone: the memory it lets go (VK_NULL_HANDLE none), size bytes, freed after
+   the batch. readers: the batch waits for the work submitted before it. The batch it went into */
+static u64 bind_add(VkImage img, int opaque, const void* bind, u64 each, VmaAllocation gone, u64 size, int readers) {
+    if (g_bind.used + sizeof(BindOne) + each > BIND_CAP || g_bind.ngone == GONE_CAP) bind_flush();
+    if (!g_bind.used) {
+        memset(g_bind.buf, 0, sizeof(BindHead));
+        g_bind.used = sizeof(BindHead);
+    }
+    BindHead* h = (BindHead*)(void*)g_bind.buf;
+    BindOne one;
+    if (g_bind.last) memcpy(&one, g_bind.buf + g_bind.last, sizeof one);
+    if (!g_bind.last || one.img != img || one.opaque != (u32)opaque) {
+        one = (BindOne){img, 0, (u32)opaque};
+        g_bind.last = g_bind.used;
+        g_bind.used += sizeof one;
+        if (opaque)
+            h->nopaque++;
+        else
+            h->nimg++;
+    }
+    one.n++;
+    memcpy(g_bind.buf + g_bind.last, &one, sizeof one);
+    memcpy(g_bind.buf + g_bind.used, bind, each);
+    g_bind.used += each;
+    if (gone) {
+        bind_gone()[g_bind.ngone++] = gone;
+        g_bind.gone_bytes += size;
+    }
+    g_bind.readers |= readers;
+    return g_bind.issued + 1;
+}
+
+/* an image going: its binds still in the batch leave it (the memory they let go is still freed after the batch). One
+   whose batch went to the queue is destroyed once the frames' work is done (vk_defer_image), the batch with it */
+static void bind_drop(const Pieces* p) {
+    if (p->batch <= g_bind.issued || !g_bind.used) return;
+    BindHead* h = (BindHead*)(void*)g_bind.buf;
+    u64 at = sizeof *h, to = at;
+    while (at < g_bind.used) {
+        BindOne one;
+        memcpy(&one, g_bind.buf + at, sizeof one);
+        u64 len = sizeof one + (u64)one.n * (one.opaque ? sizeof(VkSparseMemoryBind) : sizeof(VkSparseImageMemoryBind));
+        if (one.img != p->img) {
+            memmove(g_bind.buf + to, g_bind.buf + at, len);
+            to += len;
+        } else if (one.opaque)
+            h->nopaque--;
+        else
+            h->nimg--;
+        at += len;
+    }
+    g_bind.used = h->nimg + h->nopaque ? to : 0;
+    g_bind.last = 0; /* the next bind starts an entry of its own */
 }
 
 static int pieces_bind(VkImage img, const VkMemoryRequirements* req, Pieces* p, VkResult* res) {
     u64 chunk = g_vk.alloc_cap / req->alignment * req->alignment;
     if (!chunk) return 0;
+    if (!bind_ready()) {
+        *res = VK_ERROR_OUT_OF_HOST_MEMORY;
+        return 0;
+    }
     u32 n = (u32)((req->size + chunk - 1) / chunk);
     VkSparseMemoryBind* binds = calloc(n, sizeof *binds);
     if (!binds) return 0;
@@ -109,22 +306,8 @@ static int pieces_bind(VkImage img, const VkMemoryRequirements* req, Pieces* p, 
         binds[i] = (VkSparseMemoryBind){
             .resourceOffset = at, .size = size, .memory = info.deviceMemory, .memoryOffset = info.offset};
     }
-    if (ok) {
-        VkSparseImageOpaqueMemoryBindInfo opaque = {.image = img, .bindCount = n, .pBinds = binds};
-        VkBindSparseInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, .imageOpaqueBindCount = 1,
-                               .pImageOpaqueBinds = &opaque};
-        VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        VkFence fence;
-        ok = VK_OK(vkCreateFence(g_vk.dev, &fi, NULL, &fence));
-        if (ok) {
-            /* on the graphics queue, which the recording thread submits to meanwhile */
-            vk_queue_lock(g_vk.gfx);
-            ok = VK_OK(vkQueueBindSparse(g_vk.gfx, 1, &bi, fence));
-            vk_queue_unlock(g_vk.gfx);
-            ok = ok && VK_OK(vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, UINT64_MAX));
-            vkDestroyFence(g_vk.dev, fence, NULL);
-        }
-    }
+    /* a new image: nothing reads it yet, and its commands are recorded after this, so the batch waits for no work */
+    for (u32 i = 0; i < n && ok; i++) p->batch = bind_add(img, 1, &binds[i], sizeof *binds, VK_NULL_HANDLE, 0, 0);
     free(binds);
     return ok;
 }
@@ -152,6 +335,8 @@ static Pieces* pieces_of(VkImage img) {
         if (g_pieces[i]->img == img) return g_pieces[i];
     return NULL;
 }
+/* a level's texels along one dimension of v at level 0 */
+static u32 level_dim(u32 v, u32 level) { return v >> level ? v >> level : 1; }
 
 /* an image whose memory is more than one allocation may be: bound to pieces of at most g_vk.alloc_cap */
 static int image_in_pieces(const VkImageCreateInfo* ii, VkImage* img, VkResult* res) {
@@ -553,6 +738,7 @@ void vk_image_destroy(VkImage img, VmaAllocation mem) {
     }
     for (u32 i = 0; i < g_npieces; i++)
         if (g_pieces[i]->img == img) {
+            bind_drop(g_pieces[i]);
             vkDestroyImage(g_vk.dev, img, NULL);
             pieces_free(g_pieces[i]);
             g_pieces[i] = g_pieces[--g_npieces];
@@ -563,162 +749,186 @@ void vk_image_destroy(VkImage img, VmaAllocation mem) {
 }
 
 /* ------------------------------------------------------------ memory only where it is bound */
-int vk_resident_block(VkFormat f, VkImageUsageFlags usage, VkExtent3D* block) {
-    VkSparseImageFormatProperties p[2];
-    u32 n = 2;
-    if (!g_vk.resident) return 0;
-    vkGetPhysicalDeviceSparseImageFormatProperties(g_vk.phys, f, VK_IMAGE_TYPE_3D, VK_SAMPLE_COUNT_1_BIT, usage,
-                                                   VK_IMAGE_TILING_OPTIMAL, &n, p);
+int vk_resident_shape(const VkImageCreateInfo* ii, VkResidentShape* s) {
+    VkImageCreateInfo si = *ii;
+    VkImageFormatProperties ip;
+    VkSparseImageFormatProperties fp[2];
+    VkSparseImageMemoryRequirements2 sr[2] = {{.sType = VK_STRUCTURE_TYPE_SPARSE_IMAGE_MEMORY_REQUIREMENTS_2},
+                                              {.sType = VK_STRUCTURE_TYPE_SPARSE_IMAGE_MEMORY_REQUIREMENTS_2}};
+    u32 n = 2, nsr = 2;
+    const int can = ii->imageType == VK_IMAGE_TYPE_3D   ? g_vk.feat.sparseResidencyImage3D
+                    : ii->imageType == VK_IMAGE_TYPE_2D ? g_vk.feat.sparseResidencyImage2D
+                                                        : 0;
+    if (!g_vk.resident || !can || ii->samples != VK_SAMPLE_COUNT_1_BIT || ii->tiling != VK_IMAGE_TILING_OPTIMAL)
+        return 0;
+    si.flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
+    vkGetPhysicalDeviceSparseImageFormatProperties(g_vk.phys, ii->format, ii->imageType, ii->samples, ii->usage,
+                                                   ii->tiling, &n, fp);
     /* one aspect, color: a metadata aspect would be bound apart */
-    if (n != 1 || p[0].aspectMask != VK_IMAGE_ASPECT_COLOR_BIT) return 0;
-    *block = p[0].imageGranularity;
-    return 1;
+    if (n != 1 || fp[0].aspectMask != VK_IMAGE_ASPECT_COLOR_BIT ||
+        vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, ii->format, ii->imageType, ii->tiling, ii->usage, si.flags,
+                                                 &ip) != VK_SUCCESS ||
+        ip.maxMipLevels < ii->mipLevels || ip.maxArrayLayers < ii->arrayLayers ||
+        ip.maxExtent.width < ii->extent.width || ip.maxExtent.height < ii->extent.height ||
+        ip.maxExtent.depth < ii->extent.depth)
+        return 0;
+    VkDeviceImageMemoryRequirements q = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
+                                         .pCreateInfo = &si};
+    vkGetDeviceImageSparseMemoryRequirements(g_vk.dev, &q, &nsr, sr);
+    const VkSparseImageMemoryRequirements* r = &sr[0].memoryRequirements;
+    if (nsr != 1 || r->formatProperties.aspectMask != VK_IMAGE_ASPECT_COLOR_BIT) return 0;
+    s->block = r->formatProperties.imageGranularity;
+    s->tail_first = r->imageMipTailFirstLod < ii->mipLevels ? r->imageMipTailFirstLod : ii->mipLevels;
+    s->tails = s->tail_first == ii->mipLevels                                          ? 0
+               : r->formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT ? 1
+                                                                                       : ii->arrayLayers;
+    return s->block.width && s->block.height && s->block.depth;
 }
 
-int vk_image_create_resident(const VkImageCreateInfo* ii, const VkExtent3D* block, VkImage* img) {
+/* the blocks of one layer of an image of extent, in blocks of g texels, in its levels before tail_first */
+static u64 layer_blocks(VkExtent3D extent, VkExtent3D g, u32 tail_first) {
+    u64 n = 0;
+    for (u32 l = 0; l < tail_first; l++)
+        n += (u64)((level_dim(extent.width, l) + g.width - 1) / g.width) *
+             ((level_dim(extent.height, l) + g.height - 1) / g.height) *
+             ((level_dim(extent.depth, l) + g.depth - 1) / g.depth);
+    return n;
+}
+
+int vk_image_create_resident(const VkImageCreateInfo* ii, const VkResidentShape* s, VkImage* img) {
     VkImageCreateInfo si = *ii;
     VkMemoryRequirements req;
     VkSparseImageMemoryRequirements sr[2] = {0};
     u32 nsr = 2;
     *img = VK_NULL_HANDLE;
-    if (!g_vk.resident || ii->imageType != VK_IMAGE_TYPE_3D || ii->mipLevels != 1 || ii->arrayLayers != 1) return 0;
+    if (!g_vk.resident) return 0;
     si.flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
     if (!VK_OK(vkCreateImage(g_vk.dev, &si, NULL, img))) return 0;
     vkGetImageMemoryRequirements(g_vk.dev, *img, &req);
     vkGetImageSparseMemoryRequirements(g_vk.dev, *img, &nsr, sr);
-    /* its one level bound in blocks, none of it in a mip tail (which takes an opaque bind of its own) */
+    /* the shape it was asked for: its blocks, its levels in them, its mip tails */
     const VkExtent3D g = sr[0].formatProperties.imageGranularity;
-    u64 bx = g.width ? (ii->extent.width + g.width - 1) / g.width : 0,
-        by = g.height ? (ii->extent.height + g.height - 1) / g.height : 0,
-        bz = g.depth ? (ii->extent.depth + g.depth - 1) / g.depth : 0;
+    const u32 tail_first = sr[0].imageMipTailFirstLod < ii->mipLevels ? sr[0].imageMipTailFirstLod : ii->mipLevels;
+    const u32 tails = tail_first == ii->mipLevels                                                ? 0
+                      : sr[0].formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT ? 1
+                                                                                                 : ii->arrayLayers;
+    const u64 per_layer = g.width && g.height && g.depth ? layer_blocks(ii->extent, g, tail_first) : 0;
+    const u64 n = per_layer * ii->arrayLayers + tails;
     Pieces* p = NULL;
-    if (nsr == 1 && sr[0].formatProperties.aspectMask == VK_IMAGE_ASPECT_COLOR_BIT && sr[0].imageMipTailFirstLod >= 1 &&
-        g.width == block->width && g.height == block->height && g.depth == block->depth && req.alignment &&
-        bx * by * bz <= UINT32_MAX)
-        p = calloc(1, sizeof *p + bx * by * bz * sizeof p->pages[0]);
+    if (nsr == 1 && sr[0].formatProperties.aspectMask == VK_IMAGE_ASPECT_COLOR_BIT && g.width == s->block.width &&
+        g.height == s->block.height && g.depth == s->block.depth && tail_first == s->tail_first && tails == s->tails &&
+        per_layer && req.alignment && (!tails || sr[0].imageMipTailSize) && n <= UINT32_MAX)
+        p = calloc(1, sizeof *p + n * sizeof p->pages[0]);
     if (!p || !pieces_room()) {
-        WARN(
-            "vulkan: a %ux%ux%u image with memory where it is bound has %u aspects, blocks of %ux%ux%u texels (%ux%ux%u "
-            "asked for), its level in a mip tail from level %u: it is made whole\n",
-            ii->extent.width, ii->extent.height, ii->extent.depth, nsr, g.width, g.height, g.depth, block->width,
-            block->height, block->depth, nsr ? sr[0].imageMipTailFirstLod : 0);
+        WARN("vulkan: a %ux%ux%u image of %u levels and %u layers with memory where it is bound has %u aspects, blocks "
+             "of %ux%ux%u texels (%ux%ux%u asked for), its mip tail from level %u (%u asked for) and %u of them (%u "
+             "asked for): it is made whole\n",
+             ii->extent.width, ii->extent.height, ii->extent.depth, ii->mipLevels, ii->arrayLayers, nsr, g.width,
+             g.height, g.depth, s->block.width, s->block.height, s->block.depth, tail_first, s->tail_first, tails,
+             s->tails);
         vkDestroyImage(g_vk.dev, *img, NULL);
         *img = VK_NULL_HANDLE;
         free(p);
         return 0;
     }
     p->img = *img;
-    p->n = (u32)(bx * by * bz);
-    p->bx = (u32)bx;
-    p->by = (u32)by;
+    p->n = (u32)n;
+    p->per_layer = (u32)per_layer;
+    p->layers = ii->arrayLayers;
+    p->tail_first = tail_first;
+    p->tails = tails;
     p->block = g;
     p->extent = ii->extent;
     p->req = req;
+    p->tail_offset = sr[0].imageMipTailOffset;
+    p->tail_size = sr[0].imageMipTailSize;
+    p->tail_stride = sr[0].imageMipTailStride;
     g_pieces[g_npieces++] = p;
-    LOG_LIMIT(8, "vulkan: a %ux%ux%u image of %llu KiB with memory where it is bound, %u blocks of %ux%ux%u texels\n",
-              ii->extent.width, ii->extent.height, ii->extent.depth, (unsigned long long)(req.size >> 10), p->n,
-              g.width, g.height, g.depth);
+    LOG_LIMIT(8,
+              "vulkan: a %ux%ux%u image of %u levels and %u layers, %llu KiB, with memory where it is bound: %u blocks "
+              "of %ux%ux%u texels a layer, %u mip tails of %llu KiB from level %u\n",
+              ii->extent.width, ii->extent.height, ii->extent.depth, ii->mipLevels, ii->arrayLayers,
+              (unsigned long long)(req.size >> 10), p->per_layer, g.width, g.height, g.depth, tails,
+              (unsigned long long)(p->tail_size >> 10), tail_first);
     return 1;
 }
 
-/* the binds on the graphics queue, after everything recorded before them and the compute queue's batches submitted:
-   no command may read a block while its binding changes. Waited for on the host, so the commands recorded after it
-   see the new bindings, and released memory is no command's any more */
-static int resident_bind(VkImage img, const VkSparseImageMemoryBind* binds, u32 n) {
-    u64 cs = 0, cs_done = 0;
-    VkFence fence;
-    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
-    vk_rec_queue(g_vk.gfx);
-    if (g_vk_csem) vk_compute_progress(&cs, &cs_done);
-    VkSemaphore sems[2] = {vk_gfx_timeline(), g_vk_csem};
-    u64 values[2] = {vk_last_submit(), cs};
-    u32 nsem = cs > cs_done ? 2 : 1;
-    VkTimelineSemaphoreSubmitInfo ts = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-                                        .waitSemaphoreValueCount = nsem,
-                                        .pWaitSemaphoreValues = values};
-    VkSparseImageMemoryBindInfo ib = {.image = img, .bindCount = n, .pBinds = binds};
-    VkBindSparseInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO,
-                           .pNext = &ts,
-                           .waitSemaphoreCount = nsem,
-                           .pWaitSemaphores = sems,
-                           .imageBindCount = 1,
-                           .pImageBinds = &ib};
-    if (!VK_OK(vkCreateFence(g_vk.dev, &fi, NULL, &fence))) return 0;
-    vk_queue_lock(g_vk.gfx);
-    int ok = VK_OK(vkQueueBindSparse(g_vk.gfx, 1, &bi, fence));
-    vk_queue_unlock(g_vk.gfx);
-    ok = ok && VK_OK(vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, UINT64_MAX));
-    vkDestroyFence(g_vk.dev, fence, NULL);
-    return ok;
+/* page i of p bound to memory of mem's size where want[i] is set (then 2: the memory is new to it, its texels
+   undefined), released where it isn't; the memory it binds in *memory at *offset, the memory it lets go in *had */
+static VkResult page_change(Pieces* p, u32 i, u8* want, const VkMemoryRequirements* mem, VkDeviceMemory* memory,
+                            VkDeviceSize* offset, VmaAllocation* had) {
+    const VmaAllocationCreateInfo aci = {.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+    VmaAllocationInfo info;
+    *had = p->pages[i];
+    if (!want[i]) {
+        p->pages[i] = VK_NULL_HANDLE;
+        p->bound -= mem->size;
+        return VK_SUCCESS;
+    }
+    *had = VK_NULL_HANDLE;
+    VkResult res = vmaAllocateMemory(g_vk.vma, mem, &aci, &p->pages[i], &info);
+    if (!VK_OK(res)) return res;
+    vk_mem_track(p->pages[i]);
+    *memory = info.deviceMemory;
+    *offset = info.offset;
+    p->bound += mem->size;
+    want[i] = 2;
+    return VK_SUCCESS;
 }
 
-int vk_image_resident(VkImage img, const u8* want, u32 n, u64* bytes) {
+int vk_image_resident(VkImage img, u8* want, u32 n, u64* bytes) {
     Pieces* p = pieces_of(img);
     *bytes = p ? p->bound : 0;
-    if (!p || !p->bx || n != p->n) return 0;
+    if (!p || !p->per_layer || n != p->n) return 0;
     u32 changes = 0;
     for (u32 i = 0; i < n; i++) changes += !want[i] != !p->pages[i];
     if (!changes) return 1;
-    VkSparseImageMemoryBind* binds = calloc(changes, sizeof *binds);
-    u32* which = calloc(changes, sizeof *which);
-    VmaAllocation* had = calloc(changes, sizeof *had);
-    if (!binds || !which || !had) {
-        free(binds);
-        free(which);
-        free(had);
-        return 0;
-    }
+    if (!bind_ready()) return 0;
+    /* the commands recorded so far read the blocks as they are: submitted, so the batch can wait for them. One of
+       this image's binds still in the batch goes before, as a batch may bind a block only once */
+    vk_submit_recorded();
+    if (p->batch > g_bind.issued) bind_flush();
     const VkExtent3D g = p->block;
-    const VkMemoryRequirements one = {
-        .size = p->req.alignment, .alignment = p->req.alignment, .memoryTypeBits = p->req.memoryTypeBits};
-    const VmaAllocationCreateInfo aci = {.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+    const VkMemoryRequirements one = {p->req.alignment, p->req.alignment, p->req.memoryTypeBits},
+                               tail = {p->tail_size, p->req.alignment, p->req.memoryTypeBits};
     VkResult res = VK_SUCCESS;
-    u32 nb = 0;
-    for (u32 i = 0; i < n && VK_OK(res); i++) {
-        if (!want[i] == !p->pages[i]) continue;
-        u32 x = i % p->bx * g.width, y = i / p->bx % p->by * g.height, z = i / (p->bx * p->by) * g.depth;
-        VkSparseImageMemoryBind b = {.subresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0},
-                                     .offset = {(i32)x, (i32)y, (i32)z},
-                                     .extent = {p->extent.width - x < g.width ? p->extent.width - x : g.width,
-                                                p->extent.height - y < g.height ? p->extent.height - y : g.height,
-                                                p->extent.depth - z < g.depth ? p->extent.depth - z : g.depth}};
-        had[nb] = p->pages[i];
-        if (want[i]) {
-            VmaAllocationInfo info;
-            res = vmaAllocateMemory(g_vk.vma, &one, &aci, &p->pages[i], &info);
-            if (!VK_OK(res)) break;
-            vk_mem_track(p->pages[i]);
-            b.memory = info.deviceMemory;
-            b.memoryOffset = info.offset;
-        } else
-            p->pages[i] = VK_NULL_HANDLE;
-        which[nb] = i;
-        binds[nb++] = b;
-    }
-    int ok = nb && resident_bind(img, binds, nb);
-    /* bound: the released blocks' memory goes. Not bound: the blocks keep what they had */
-    for (u32 k = 0; k < nb; k++) {
-        VmaAllocation gone = ok ? had[k] : p->pages[which[k]];
-        if (!ok) p->pages[which[k]] = had[k];
-        if (gone) {
-            vk_mem_untrack(gone);
-            vmaFreeMemory(g_vk.vma, gone);
+    VmaAllocation had;
+    u32 nb = 0, i = 0;
+    for (u32 layer = 0; layer < p->layers && VK_OK(res); layer++)
+        for (u32 l = 0; l < p->tail_first && VK_OK(res); l++) {
+            const u32 w = level_dim(p->extent.width, l), h = level_dim(p->extent.height, l),
+                      d = level_dim(p->extent.depth, l);
+            for (u32 z = 0; z < d && VK_OK(res); z += g.depth)
+                for (u32 y = 0; y < h && VK_OK(res); y += g.height)
+                    for (u32 x = 0; x < w && VK_OK(res); x += g.width, i++) {
+                        if (!want[i] == !p->pages[i]) continue;
+                        VkSparseImageMemoryBind b = {.subresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, layer},
+                                                     .offset = {(i32)x, (i32)y, (i32)z},
+                                                     .extent = {w - x < g.width ? w - x : g.width,
+                                                                h - y < g.height ? h - y : g.height,
+                                                                d - z < g.depth ? d - z : g.depth}};
+                        res = page_change(p, i, want, &one, &b.memory, &b.memoryOffset, &had);
+                        if (!VK_OK(res)) break;
+                        p->batch = bind_add(img, 0, &b, sizeof b, had, one.size, 1);
+                        nb++;
+                    }
         }
-        if (ok && had[k])
-            p->bound -= one.size;
-        else if (ok)
-            p->bound += one.size;
+    /* the mip tails, each bound whole: one range of the image's memory a tail */
+    for (u32 t = 0; t < p->tails && VK_OK(res); t++, i++) {
+        if (!want[i] == !p->pages[i]) continue;
+        VkSparseMemoryBind b = {.resourceOffset = p->tail_offset + t * p->tail_stride, .size = p->tail_size};
+        res = page_change(p, i, want, &tail, &b.memory, &b.memoryOffset, &had);
+        if (!VK_OK(res)) break;
+        p->batch = bind_add(img, 1, &b, sizeof b, had, tail.size, 1);
+        nb++;
     }
-    if (!ok || !VK_OK(res))
-        WARN("vulkan: %u of %u blocks of a %ux%ux%u image with memory where it is bound changed (%s): %llu KiB bound\n",
-             ok ? nb : 0, changes, p->extent.width, p->extent.height, p->extent.depth,
-             !VK_OK(res) ? "out of memory" : "the bind failed", (unsigned long long)(p->bound >> 10));
+    if (res != VK_SUCCESS)
+        WARN("vulkan: %u of %u blocks and mip tails of a %ux%ux%u image of %u layers with memory where it is bound "
+             "changed (out of memory): %llu KiB bound\n",
+             nb, changes, p->extent.width, p->extent.height, p->extent.depth, p->layers,
+             (unsigned long long)(p->bound >> 10));
     *bytes = p->bound;
-    free(binds);
-    free(which);
-    free(had);
-    return ok && VK_OK(res);
+    return res == VK_SUCCESS;
 }
 
 /* ------------------------------------------------------------ the budget */
@@ -775,6 +985,18 @@ static void heap_find(void) {
 int vk_mem_heap(void) {
     if (g_heap < 0) heap_find();
     return g_heap;
+}
+
+/* Without the extension VMA's numbers are its own guess, not the driver's: its blocks for the use, 80% of the heap's
+   size for the budget. The stats box shows ? for them then, as for any value the device does not tell */
+void vk_mem_driver_use(u64* usage, u64* budget) {
+    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    int heap = vk_mem_heap();
+    *usage = *budget = 0;
+    if (!g_vk.has_budget) return;
+    vmaGetHeapBudgets(g_vk.vma, b); /* the driver's, asked at frame_recycle's vmaSetCurrentFrameIndex */
+    *usage = b[heap].usage;
+    *budget = b[heap].budget;
 }
 
 /* the heap's use as the caches see it, and its budget. The use leaves out the free space inside VMA's blocks, which

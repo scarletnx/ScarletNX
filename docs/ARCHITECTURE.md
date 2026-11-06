@@ -67,7 +67,8 @@ the driver its name says from the library of the driver's own folder (`snx_switc
 are in one program once. On Linux and macOS `scarletnx-switch`, `scarletnx-3ds`,
 `scarletnx-vita`, `scarletnx-gnuabi` and `scarletnx-agb` are symlinks to it. Windows has no
 links: the driver's name goes first (`scarletnx.exe scarletnx-3ds ...`), and the launcher runs
-the drivers that way (`snx_menu_has_driver`). A game's copy runs its driver too: a GBA game's by
+the drivers that way (`snx_menu_has_driver`), as Android's does through `libscarletnx-run.so`.
+A game's copy runs its driver too: a GBA game's by
 its `.ini` (`system=gba`), a 3DS or Vita game's by its title ID, any other the Switch's (or, in a
 build without it, the one driver there is). The 3DS and Vita
 drivers read what a module was compiled for from its file before loading it, and compile first

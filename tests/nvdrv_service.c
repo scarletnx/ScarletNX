@@ -151,10 +151,12 @@ static KObj* handle_object(u32 h) {
     return test_handles[h - 0x100];
 }
 
-/* the GPU: submissions, calls, kicks and retired channels, recorded */
+/* the GPU: submissions, calls, kicks, retired channels and the record of GPU-side writes, recorded */
 static struct {
     u64 entries[8];
     u32 n, channel, incs, wait_id, wait_val, expect, submits, closed_channel, calls, call_chans[4], ncall_chans, kicks;
+    u32 mem_written;           /* gpu_mem_written's calls */
+    u64 remap_gva, remap_size; /* gpu_mem_remapped's last range */
 } test_gpu;
 void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wait_val, u32 expect) {
     CHECK(n <= 8);
@@ -178,8 +180,14 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
 void gpu_channel_close(u32 channel) { test_gpu.closed_channel = channel; }
 void gpu_release_retire(u32 channel) { (void)channel; }
 void gpu_kick(void) { test_gpu.kicks++; }
-void gpu_mem_written(u64 gva, u64 size) { (void)gva, (void)size; }
-void gpu_mem_remapped(u64 gva, u64 size) { (void)gva, (void)size; }
+void gpu_mem_written(u64 gva, u64 size) {
+    (void)gva, (void)size;
+    test_gpu.mem_written++;
+}
+void gpu_mem_remapped(u64 gva, u64 size) {
+    test_gpu.remap_gva = gva;
+    test_gpu.remap_size = size;
+}
 
 /* host1x: one channel per NVDEC or VIC fd. Its ioctl can run a hook in the middle, as another guest thread would */
 struct H1Ch {
@@ -702,6 +710,8 @@ static void test_nvmap_as(void) {
     h = nvmap_new(0x1000, 0xC000);
     fixed = as_map(1, h, 0x1000, gva + 0x1000);
     CHECK(fixed == gva + 0x1000 && gmmu_translate(fixed) == 0xC000);
+    /* a mapping change writes no guest memory: it stamps the GPU pages it changed, not the guest memory behind them */
+    CHECK(test_gpu.remap_gva == fixed && test_gpu.remap_size == 0x1000 && !test_gpu.mem_written);
     memset(d, 0, sizeof d);
     snx_st_le64(d, gva);
     CHECK(as_call(0x05, d, 8) == 0);

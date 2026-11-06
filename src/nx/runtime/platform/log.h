@@ -28,6 +28,11 @@ void logf_(int lvl, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 #define LOG_LIMIT(n, ...)  SNX_LOG_AT_MOST_(log_limit_said_, n, 1, __VA_ARGS__)
 #define WARN_LIMIT(n, ...) SNX_LOG_AT_MOST_(warn_limit_said_, n, 0, __VA_ARGS__)
 
+/* The log and the console written through to the file system, for a moment the process may not live past (a low
+   memory warning). Each line is in the file at its end already (logf_ flushes it, and stderr has no buffer): this
+   also gives stdout's line not ended yet, and asks the system to put the files on the disk. Any thread */
+void log_sync(void);
+
 /* snx_error's sink (common.h) for the runtime: the line as a warning, in the log and on stderr */
 void log_error_line(const char* line);
 

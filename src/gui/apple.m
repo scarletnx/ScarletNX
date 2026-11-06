@@ -19,7 +19,9 @@
 #include <time.h>
 #import <Foundation/Foundation.h>
 #if TARGET_OS_IPHONE
+#import <Metal/Metal.h>
 #import <UIKit/UIKit.h>
+#import <MetricKit/MetricKit.h>
 #endif
 
 /* dist/apple/Frontend.swift. window is the SDL window's UIWindow or NSWindow; done gets the path picked, NULL for none */
@@ -93,10 +95,100 @@ static void entitlement_lines(void) {
     for (i = 0; i < sizeof keys / sizeof *keys; ++i)
         fprintf(stderr, "  %s: %s\n", keys[i], memmem(data.bytes, data.length, keys[i], strlen(keys[i])) ? "yes" : "no");
 }
+
+/* MetricKit's payloads: what the system saw of the app's runs, a crash, a hang or an exit for memory among them, which
+   the app itself cannot log. Each goes as JSON into logs/metrickit-YYYY-MM-DD_HHMMSS.json, named by the end of the time
+   it covers, with -2, -3 and on for a different payload of the same name. A payload that a file already holds (iOS
+   gives the past ones again at each start) is not written again. A line in the console log names the file, or the
+   file and why it was not written, and what it holds. The system calls the subscriber on a queue of its own, and it
+   can give the payloads of a run at a later start */
+static NSURL* metrics_folder;
+/* the file of json for the payload that ends at end, written when it is not there yet: its name for the payload's
+   line, or that it was not written, with the file and the system's reason, since the payload is the exit's only
+   record */
+static NSString* metrics_write_one(NSData* json, NSDate* end) {
+    NSDateFormatter* format = [[NSDateFormatter alloc] init];
+    format.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    format.dateFormat = @"yyyy-MM-dd_HHmmss";
+    NSString* stem = [@"metrickit-" stringByAppendingString:[format stringFromDate:end ? end : [NSDate date]]];
+    if (!json) return [stem stringByAppendingString:@" not written: the payload gave no JSON"];
+    if (!metrics_folder) return [stem stringByAppendingString:@" not written: no logs folder"];
+    for (int n = 1; n < 100; n++) {
+        NSString* name = n == 1 ? [stem stringByAppendingString:@".json"]
+                                : [stem stringByAppendingFormat:@"-%d.json", n];
+        NSURL* file = [metrics_folder URLByAppendingPathComponent:name];
+        NSData* there = [NSData dataWithContentsOfURL:file];
+        if ([there isEqualToData:json]) return name;
+        if (there) continue;
+        NSError* error = nil;
+        if ([json writeToURL:file options:NSDataWritingAtomic error:&error]) return name;
+        return [NSString stringWithFormat:@"not written to %@: %@", file.path,
+                                          error ? error.localizedDescription : @"the system gave no reason"];
+    }
+    return [NSString stringWithFormat:@"not written: %@.json to %@-99.json in %@ all hold other payloads", stem, stem,
+                                      metrics_folder.path];
+}
+static NSString* metrics_write(NSData* json, NSDate* end) {
+    @synchronized(NSFileManager.class) { /* the subscriber's queue and the past payloads of the main thread */
+        return metrics_write_one(json, end);
+    }
+}
+/* ", N type" for N diagnostics of type, nothing for none */
+static void metrics_count(NSMutableString* line, NSArray* diagnostics, const char* type) {
+    if (diagnostics.count) [line appendFormat:@", %lu %s", (unsigned long)diagnostics.count, type];
+}
+static void metrics_diagnostic(MXDiagnosticPayload* payload, const char* when) {
+    NSString* file = metrics_write(payload.JSONRepresentation, payload.timeStampEnd);
+    NSMutableString* line = [NSMutableString stringWithFormat:@"metrickit: %s diagnostic payload %@", when, file];
+    metrics_count(line, payload.crashDiagnostics, "crash");
+    metrics_count(line, payload.hangDiagnostics, "hang");
+    metrics_count(line, payload.cpuExceptionDiagnostics, "CPU exception");
+    metrics_count(line, payload.diskWriteExceptionDiagnostics, "disk write exception");
+    metrics_count(line, payload.appLaunchDiagnostics, "app launch");
+    fprintf(stderr, "%s\n", line.UTF8String);
+}
+/* MetricKit has no diagnostic for an exit for memory: its count is in a metric payload's exit metrics */
+static void metrics_metric(MXMetricPayload* payload, const char* when) {
+    NSString* file = metrics_write(payload.JSONRepresentation, payload.timeStampEnd);
+    MXAppExitMetric* exits = payload.applicationExitMetrics;
+    fprintf(stderr,
+            "metrickit: %s metric payload %s, memory exit: %lu at the memory limit in the foreground, %lu at the "
+            "memory limit and %lu for memory pressure in the background\n",
+            when, file.UTF8String,
+            (unsigned long)exits.foregroundExitData.cumulativeMemoryResourceLimitExitCount,
+            (unsigned long)exits.backgroundExitData.cumulativeMemoryResourceLimitExitCount,
+            (unsigned long)exits.backgroundExitData.cumulativeMemoryPressureExitCount);
+}
+@interface SnxMetrics : NSObject <MXMetricManagerSubscriber>
+@end
+@implementation SnxMetrics
+- (void)didReceiveMetricPayloads:(NSArray<MXMetricPayload*>*)payloads {
+    for (MXMetricPayload* payload in payloads) metrics_metric(payload, "new");
+}
+- (void)didReceiveDiagnosticPayloads:(NSArray<MXDiagnosticPayload*>*)payloads {
+    for (MXDiagnosticPayload* payload in payloads) metrics_diagnostic(payload, "new");
+}
+@end
+/* the subscriber, kept for the whole process (a static reference, so that the metric manager need not keep it); and
+   the payloads that the system gave before this start */
+static void metrics_start(NSURL* logs) {
+    static SnxMetrics* subscriber;
+    MXMetricManager* manager = MXMetricManager.sharedManager;
+    metrics_folder = logs;
+    subscriber = [[SnxMetrics alloc] init];
+    [manager addSubscriber:subscriber];
+    NSArray<MXDiagnosticPayload*>* diagnostics = manager.pastDiagnosticPayloads;
+    NSArray<MXMetricPayload*>* metrics = manager.pastPayloads;
+    fprintf(stderr, "metrickit: subscribed, %lu past diagnostic and %lu past metric payloads\n",
+            (unsigned long)diagnostics.count, (unsigned long)metrics.count);
+    for (MXDiagnosticPayload* payload in diagnostics) metrics_diagnostic(payload, "past");
+    for (MXMetricPayload* payload in metrics) metrics_metric(payload, "past");
+}
 #endif
 
 void gui_apple_stats(char* out, size_t size) {
 #if TARGET_OS_IPHONE
+    @autoreleasepool { /* the main loop calls this each second, and the memory pressure queue too */
     task_vm_info_data_t info;
     mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
     struct rusage usage;
@@ -104,16 +196,42 @@ void gui_apple_stats(char* out, size_t size) {
     if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) == KERN_SUCCESS)
         footprint = info.phys_footprint >> 20;
     if (getrusage(RUSAGE_SELF, &usage)) memset(&usage, 0, sizeof usage);
+    /* what Metal holds for the app, which MoltenVK's descriptor pools, pipelines and buffers take from too, and
+       VMA's heap budget does not count; past the working set Metal refuses allocations the footprint still has room
+       for. The system's default device is the one MoltenVK uses. The main loop and a memory warning's queue both
+       call this, so the device is got once for all */
+    static id<MTLDevice> metal;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        metal = MTLCreateSystemDefaultDevice();
+    });
     snprintf(out, size,
-             "resources: footprint %llu MiB, may still take %llu MiB, cpu %.1f s user %.1f s system, thermal %ld, "
-             "low power %d",
+             "resources: footprint %llu MiB, may still take %llu MiB, Metal %llu of %llu MiB, cpu %.1f s user %.1f s "
+             "system, thermal %ld, low power %d",
              footprint, (unsigned long long)(os_proc_available_memory() >> 20),
+             (unsigned long long)(metal.currentAllocatedSize >> 20),
+             (unsigned long long)(metal.recommendedMaxWorkingSetSize >> 20),
              usage.ru_utime.tv_sec + usage.ru_utime.tv_usec / 1e6, usage.ru_stime.tv_sec + usage.ru_stime.tv_usec / 1e6,
              (long)NSProcessInfo.processInfo.thermalState, (int)NSProcessInfo.processInfo.lowPowerModeEnabled);
+    }
 #else
     snprintf(out, size, "resources: (not iOS)");
 #endif
 }
+
+#if TARGET_OS_IPHONE
+/* An Objective-C exception that nothing catches: its name, reason and stack go to the console before the abort, and
+   then the handler that was there before runs. A crash report of MetricKit went through libobjc and libc++abi to
+   abort() with no reason. libc++abi writes the type and what() of a C++ exception to stderr itself */
+static NSUncaughtExceptionHandler* g_next_uncaught;
+static void uncaught(NSException* e) {
+    const char* name = e.name.UTF8String;
+    const char* reason = e.reason.UTF8String;
+    fprintf(stderr, "uncaught exception: %s: %s\n", name ? name : "?", reason ? reason : "(no reason)");
+    for (NSString* frame in e.callStackSymbols) fprintf(stderr, "  %s\n", frame.UTF8String);
+    if (g_next_uncaught) g_next_uncaught(e);
+}
+#endif
 
 void gui_apple_log_start(void) {
 #if TARGET_OS_IPHONE
@@ -134,6 +252,8 @@ void gui_apple_log_start(void) {
         setvbuf(stdout, NULL, _IONBF, 0);
         setvbuf(stderr, NULL, _IONBF, 0);
         fprintf(stderr, "\n===== ScarletNX starts, pid %ld, %s", (long)getpid(), ctime(&now));
+        g_next_uncaught = NSGetUncaughtExceptionHandler();
+        NSSetUncaughtExceptionHandler(uncaught);
         fprintf(stderr, "device:\n");
         sysctl_line("hw.machine");
         sysctl_line("hw.model");
@@ -171,6 +291,7 @@ void gui_apple_log_start(void) {
         entitlement_lines();
         fprintf(stderr, "app: %s\n", NSBundle.mainBundle.bundleIdentifier.UTF8String);
         fprintf(stderr, "documents: %s\n", documents.fileSystemRepresentation);
+        if (logs) metrics_start(logs);
     }
 #endif
 }

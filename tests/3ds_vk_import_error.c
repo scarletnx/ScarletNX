@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The error a RAM region's import gives when the driver refuses it (gpu/vk/device.c), at each step: the call that
-   failed and its VkResult, the region's range, host address and alignment, the memory types asked for. Then the error
-   the device's own memory gives when it cannot hold the RAM either, at each step. The values are made up, none of them
-   a default. Then the device of this host, if any: the error its start gave is the reason snx_ctr_vk_error keeps, then
+/* The line the device says of where the GPU's work is, by vk_memory (gpu/vk/device.c's snx_ctr_vk_path_line): the
+   value given, the device's memory, and a copy refused, the value the run takes then. The error a RAM region's import
+   gives when the driver refuses it (gpu/vk/device.c), at each step: the call that failed and its VkResult, the
+   region's range, host address and alignment, the memory types asked for. Then the error the device's own memory
+   gives when it cannot hold the RAM either, at each step. The values are made up, none of them a default. Then the device of this host, if any: the error its start gave is the reason snx_ctr_vk_error keeps, then
    the device and driver it chose; none is kept once it starts. */
 #include "3ds/gpu/vk/vk.h"
 #include "common/utilities/common.h"
@@ -29,7 +30,32 @@ static void expect_ram(const SnxCtrVkDeviceRam* f, const char* region, const cha
         abort();
     }
 }
+static void expect_path(int asked, SnxVkMemoryModel model, bool copied, const char* refused, const char* want) {
+    char got[640];
+    snx_ctr_vk_path_line(asked, model, copied, refused, 0x8700000, 3, got, sizeof got);
+    if (strcmp(got, want)) {
+        fprintf(stderr, "got:  %s\nwant: %s\n", got, want);
+        abort();
+    }
+}
 int main(void) {
+    /* where the GPU's work is, by vk_memory: the copy, in place, and the copy asked for and refused, which names the
+       value given and the value the run takes */
+    expect_path(1, SNX_VK_SMALL_BAR, true, NULL,
+                "vk_memory=1: the device's memory is its own, a window of it mapped by the CPU, and the GPU works on a "
+                "copy of the board's RAM there (0x8700000 bytes of memory type 3), copied in and back by page");
+    expect_path(2, SNX_VK_REBAR, false, NULL,
+                "vk_memory=2: the device's memory is its own, all of it mapped by the CPU (resizable BAR), and the GPU "
+                "works on the board's RAM in place, across the bus");
+    expect_path(0, SNX_VK_UMA, false, NULL,
+                "vk_memory=0: the device's memory is the system's, and the GPU works on the board's RAM in place");
+    expect_path(1, SNX_VK_SMALL_BAR, false,
+                "vkAllocateMemory gave VK_ERROR_OUT_OF_DEVICE_MEMORY (-2) for the FCRAM region's copy, 0x8000000 bytes "
+                "of memory type 3",
+                "vk_memory=1 asks for a copy of the board's RAM in the device's memory, which is its own, a window of "
+                "it mapped by the CPU and cannot hold it: vkAllocateMemory gave VK_ERROR_OUT_OF_DEVICE_MEMORY (-2) for "
+                "the FCRAM region's copy, 0x8000000 bytes of memory type 3; the run takes vk_memory=2, the RAM in "
+                "place, across the bus");
     const char* const where = "the driver cannot import the VRAM region (0x18000000, 0x600000 bytes at host "
                               "0x7f01db900000, alignment 4096): ";
     char want[512];

@@ -4,6 +4,53 @@
    (the prescan: what it uses, its resources, its flow), declares the module's types, interface and resources, and
    writes each instruction through the emit_ file of its family (translate.h's Tr carries what they read) */
 #include "nx/gpu/shader/translate.h"
+#include "nx/gpu/shader/advanced_blend_spirv.h"
+
+/* Only an ordered storage image owns the attachment here. The renderer detaches it from fixed-function color
+   output, and gates depth, multisampling and format support before requesting this variant. Every invocation
+   executes one begin/end pair, including a discarded/helper invocation, which cannot update the image. */
+static void advanced_blend_epilogue(DirectCtx* c, const ShaderInfo* si, u32 vec4, u32 i32, u32 fragcoord,
+                                    u32 source_variable, u32 image, u32 image_type) {
+    SpvEmitter* e = &c->emit;
+    spv_emit_label(e, c->blend_end);
+    spv_emit_void_op(e, 5364, NULL, 0); /* OpBeginInvocationInterlockEXT */
+    u32 write = spv_emit_id(e), done = spv_emit_id(e);
+    u32 kept = spv_emit_bool_not(e, c->bool_type, shader_lane_dead(c));
+    spv_emit_selection_merge(e, done);
+    spv_emit_branch_conditional(e, kept, write, done);
+    spv_emit_label(e, write);
+    u32 position = spv_emit_load(e, vec4, fragcoord), coordinate[2];
+    for (u32 i = 0; i < 2; i++)
+        coordinate[i] = spv_emit_convert_f_to_s(e, i32, spv_emit_vec4_extract(e, c->f32_type, position, i));
+    u32 ivec2 = spv_emit_type_vec2(e, i32);
+    u32 xy = SPV(e, SPV_OP_COMPOSITE_CONSTRUCT, ivec2, coordinate[0], coordinate[1]);
+    u32 destination = spv_emit_image_read(e, vec4, image_type, image, xy);
+    u32 source = spv_emit_load(e, vec4, source_variable);
+    /* NVN packed state fields: mode37..42, overlap44..45 and premultiplied source46. */
+    u32 result = shader_advanced_blend_spirv(e, c->f32_type, c->bool_type, vec4, source, destination,
+                                             (u32)(si->advanced_blend >> 37) & 63, (int)(si->advanced_blend >> 46 & 1),
+                                             (u32)(si->advanced_blend >> 44) & 3);
+    if (si->advanced_blend_mask != 15) {
+        u32 components[4];
+        for (u32 i = 0; i < 4; i++)
+            components[i] =
+                spv_emit_vec4_extract(e, c->f32_type, si->advanced_blend_mask & (1u << i) ? result : destination, i);
+        result = spv_emit_vec4_construct(e, vec4, components);
+    }
+    spv_emit_image_write(e, image_type, image, xy, result);
+    spv_emit_branch(e, done);
+    spv_emit_label(e, done);
+    spv_emit_void_op(e, 5365, NULL, 0); /* OpEndInvocationInterlockEXT; implicitly publishes coherent image writes */
+    /* Alpha/KIL rejection still removes the fragment from fixed-function query/sample accounting. */
+    u32 reject = spv_emit_id(e), finish = spv_emit_id(e);
+    u32 discarded = spv_emit_load(e, c->bool_type, c->discarded);
+    spv_emit_selection_merge(e, finish);
+    spv_emit_branch_conditional(e, discarded, reject, finish);
+    spv_emit_label(e, reject);
+    spv_emit_kill(e);
+    spv_emit_label(e, finish);
+    spv_emit_return(e);
+}
 
 int g_shader_texture_arrays;
 int g_shader_stage_point_size;
@@ -21,69 +68,69 @@ int g_shader_maximal_reconvergence;
    the prescan, or one that writes nothing): a family's function is the only one with branches for its opcodes */
 enum { FAM_NONE, FAM_FLOW, FAM_IO, FAM_THREAD, FAM_INT, FAM_FLOAT, FAM_MEMORY, FAM_TEXTURE };
 static const u8 op_family[O__COUNT] = {
-    [O_BRA] = FAM_FLOW,        [O_BRX] = FAM_FLOW,         [O_SSY] = FAM_FLOW,       [O_SYNC] = FAM_FLOW,
-    [O_PBK] = FAM_FLOW,        [O_BRK] = FAM_FLOW,         [O_PCNT] = FAM_FLOW,      [O_CONT] = FAM_FLOW,
-    [O_EXIT] = FAM_FLOW,       [O_KIL] = FAM_FLOW,         [O_CAL] = FAM_FLOW,       [O_RET] = FAM_FLOW,
-    [O_PRET] = FAM_FLOW,       [O_PEXIT] = FAM_FLOW,       [O_IDE] = FAM_FLOW,       [O_CCTL] = FAM_FLOW,
-    [O_CCTLL] = FAM_FLOW,      [O_BPT] = FAM_FLOW,         [O_IPA] = FAM_IO,         [O_ALD] = FAM_IO,
-    [O_AST] = FAM_IO,          [O_OUT_R] = FAM_IO,         [O_OUT_C] = FAM_IO,       [O_OUT_I] = FAM_IO,
-    [O_ISBERD] = FAM_IO,       [O_AL2P] = FAM_IO,          [O_PIXLD] = FAM_IO,       [O_S2R] = FAM_THREAD,
-    [O_CS2R] = FAM_THREAD,     [O_BAR] = FAM_THREAD,       [O_MEMBAR] = FAM_THREAD,  [O_VOTE] = FAM_THREAD,
-    [O_SHFL] = FAM_THREAD,     [O_I2I_R] = FAM_INT,        [O_I2I_C] = FAM_INT,      [O_I2I_I] = FAM_INT,
-    [O_MOV_R] = FAM_INT,       [O_MOV_C] = FAM_INT,        [O_MOV_I] = FAM_INT,      [O_MOV32I] = FAM_INT,
-    [O_IADD_R] = FAM_INT,      [O_IADD_C] = FAM_INT,       [O_IADD_I] = FAM_INT,     [O_IADD32I] = FAM_INT,
-    [O_IADD3_R] = FAM_INT,     [O_IADD3_C] = FAM_INT,      [O_IADD3_I] = FAM_INT,    [O_ISCADD_R] = FAM_INT,
-    [O_ISCADD_C] = FAM_INT,    [O_ISCADD_I] = FAM_INT,     [O_ISCADD32I] = FAM_INT,  [O_IMNMX_R] = FAM_INT,
-    [O_IMNMX_C] = FAM_INT,     [O_IMNMX_I] = FAM_INT,      [O_ISETP_R] = FAM_INT,    [O_ISETP_C] = FAM_INT,
-    [O_ISETP_I] = FAM_INT,     [O_ISET_R] = FAM_INT,       [O_ISET_C] = FAM_INT,     [O_ISET_I] = FAM_INT,
-    [O_ICMP_R] = FAM_INT,      [O_ICMP_RC] = FAM_INT,      [O_ICMP_CR] = FAM_INT,    [O_ICMP_I] = FAM_INT,
-    [O_LOP_R] = FAM_INT,       [O_LOP_C] = FAM_INT,        [O_LOP_I] = FAM_INT,      [O_LOP32I] = FAM_INT,
-    [O_LOP3_R] = FAM_INT,      [O_LOP3_C] = FAM_INT,       [O_LOP3_I] = FAM_INT,     [O_SHL_R] = FAM_INT,
-    [O_SHL_C] = FAM_INT,       [O_SHL_I] = FAM_INT,        [O_SHR_R] = FAM_INT,      [O_SHR_C] = FAM_INT,
-    [O_SHR_I] = FAM_INT,       [O_SHF_LR] = FAM_INT,       [O_SHF_LI] = FAM_INT,     [O_SHF_RR] = FAM_INT,
-    [O_SHF_RI] = FAM_INT,      [O_BFE_R] = FAM_INT,        [O_BFE_C] = FAM_INT,      [O_BFE_I] = FAM_INT,
-    [O_BFI_R] = FAM_INT,       [O_BFI_RC] = FAM_INT,       [O_BFI_CR] = FAM_INT,     [O_BFI_I] = FAM_INT,
-    [O_SEL_R] = FAM_INT,       [O_SEL_C] = FAM_INT,        [O_SEL_I] = FAM_INT,      [O_POPC_R] = FAM_INT,
-    [O_POPC_C] = FAM_INT,      [O_POPC_I] = FAM_INT,       [O_FLO_R] = FAM_INT,      [O_FLO_C] = FAM_INT,
-    [O_FLO_I] = FAM_INT,       [O_PRMT_R] = FAM_INT,       [O_PRMT_RC] = FAM_INT,    [O_PRMT_CR] = FAM_INT,
-    [O_PRMT_I] = FAM_INT,      [O_XMAD_R] = FAM_INT,       [O_XMAD_RC] = FAM_INT,    [O_XMAD_CR] = FAM_INT,
-    [O_XMAD_I] = FAM_INT,      [O_IMUL_R] = FAM_INT,       [O_IMUL_C] = FAM_INT,     [O_IMUL_I] = FAM_INT,
-    [O_IMUL32I] = FAM_INT,     [O_IMAD_R] = FAM_INT,       [O_IMAD_RC] = FAM_INT,    [O_IMAD_CR] = FAM_INT,
-    [O_IMAD_I] = FAM_INT,      [O_IMAD32I] = FAM_INT,      [O_LEA_HR] = FAM_INT,     [O_LEA_HC] = FAM_INT,
-    [O_LEA_LR] = FAM_INT,      [O_LEA_LC] = FAM_INT,       [O_LEA_LI] = FAM_INT,     [O_PSETP] = FAM_INT,
-    [O_PSET] = FAM_INT,        [O_P2R_R] = FAM_INT,        [O_P2R_C] = FAM_INT,      [O_P2R_I] = FAM_INT,
-    [O_R2P_R] = FAM_INT,       [O_R2P_C] = FAM_INT,        [O_R2P_I] = FAM_INT,      [O_CSET] = FAM_INT,
-    [O_CSETP] = FAM_INT,       [O_VMNMX] = FAM_INT,        [O_VMAD] = FAM_INT,       [O_VSETP] = FAM_INT,
-    [O_VADD] = FAM_INT,        [O_VABSDIFF] = FAM_INT,     [O_VSET] = FAM_INT,       [O_VSHL] = FAM_INT,
-    [O_VSHR] = FAM_INT,        [O_FADD_R] = FAM_FLOAT,     [O_FADD_C] = FAM_FLOAT,   [O_FADD_I] = FAM_FLOAT,
-    [O_FADD32I] = FAM_FLOAT,   [O_FMUL_R] = FAM_FLOAT,     [O_FMUL_C] = FAM_FLOAT,   [O_FMUL_I] = FAM_FLOAT,
-    [O_FMUL32I] = FAM_FLOAT,   [O_FFMA_R] = FAM_FLOAT,     [O_FFMA_RC] = FAM_FLOAT,  [O_FFMA_CR] = FAM_FLOAT,
-    [O_FFMA_I] = FAM_FLOAT,    [O_FFMA32I] = FAM_FLOAT,    [O_FMNMX_R] = FAM_FLOAT,  [O_FMNMX_C] = FAM_FLOAT,
-    [O_FMNMX_I] = FAM_FLOAT,   [O_FSETP_R] = FAM_FLOAT,    [O_FSETP_C] = FAM_FLOAT,  [O_FSETP_I] = FAM_FLOAT,
-    [O_FSET_R] = FAM_FLOAT,    [O_FSET_C] = FAM_FLOAT,     [O_FSET_I] = FAM_FLOAT,   [O_FCMP_R] = FAM_FLOAT,
-    [O_FCMP_RC] = FAM_FLOAT,   [O_FCMP_CR] = FAM_FLOAT,    [O_FCMP_I] = FAM_FLOAT,   [O_MUFU] = FAM_FLOAT,
-    [O_RRO_R] = FAM_FLOAT,     [O_RRO_C] = FAM_FLOAT,      [O_RRO_I] = FAM_FLOAT,    [O_F2F_R] = FAM_FLOAT,
-    [O_F2F_C] = FAM_FLOAT,     [O_F2F_I] = FAM_FLOAT,      [O_F2I_R] = FAM_FLOAT,    [O_F2I_C] = FAM_FLOAT,
-    [O_F2I_I] = FAM_FLOAT,     [O_I2F_R] = FAM_FLOAT,      [O_I2F_C] = FAM_FLOAT,    [O_I2F_I] = FAM_FLOAT,
-    [O_FSWZADD] = FAM_FLOAT,   [O_FCHK_R] = FAM_FLOAT,     [O_FCHK_C] = FAM_FLOAT,   [O_FCHK_I] = FAM_FLOAT,
-    [O_HADD2_R] = FAM_FLOAT,   [O_HADD2_C] = FAM_FLOAT,    [O_HADD2_I] = FAM_FLOAT,  [O_HADD2_32I] = FAM_FLOAT,
-    [O_HMUL2_R] = FAM_FLOAT,   [O_HMUL2_C] = FAM_FLOAT,    [O_HMUL2_I] = FAM_FLOAT,  [O_HMUL2_32I] = FAM_FLOAT,
-    [O_HFMA2_R] = FAM_FLOAT,   [O_HFMA2_RC] = FAM_FLOAT,   [O_HFMA2_CR] = FAM_FLOAT, [O_HFMA2_I] = FAM_FLOAT,
-    [O_HFMA2_32I] = FAM_FLOAT, [O_HSETP2_R] = FAM_FLOAT,   [O_HSETP2_C] = FAM_FLOAT, [O_HSETP2_I] = FAM_FLOAT,
-    [O_HSET2_R] = FAM_FLOAT,   [O_HSET2_C] = FAM_FLOAT,    [O_HSET2_I] = FAM_FLOAT,  [O_DADD_R] = FAM_FLOAT,
-    [O_DADD_C] = FAM_FLOAT,    [O_DADD_I] = FAM_FLOAT,     [O_DMUL_R] = FAM_FLOAT,   [O_DMUL_C] = FAM_FLOAT,
-    [O_DMUL_I] = FAM_FLOAT,    [O_DFMA_R] = FAM_FLOAT,     [O_DFMA_RC] = FAM_FLOAT,  [O_DFMA_CR] = FAM_FLOAT,
-    [O_DFMA_I] = FAM_FLOAT,    [O_DSET_R] = FAM_FLOAT,     [O_DSET_C] = FAM_FLOAT,   [O_DSET_I] = FAM_FLOAT,
-    [O_DSETP_R] = FAM_FLOAT,   [O_DSETP_C] = FAM_FLOAT,    [O_DSETP_I] = FAM_FLOAT,  [O_DMNMX_R] = FAM_FLOAT,
-    [O_DMNMX_C] = FAM_FLOAT,   [O_DMNMX_I] = FAM_FLOAT,    [O_LDC] = FAM_MEMORY,     [O_LDG] = FAM_MEMORY,
-    [O_STG] = FAM_MEMORY,      [O_LDS] = FAM_MEMORY,       [O_STS] = FAM_MEMORY,     [O_LDL] = FAM_MEMORY,
-    [O_STL] = FAM_MEMORY,      [O_ATOM] = FAM_MEMORY,      [O_ATOMS] = FAM_MEMORY,   [O_RED] = FAM_MEMORY,
-    [O_ATOM_CAS] = FAM_MEMORY, [O_ATOMS_CAS] = FAM_MEMORY, [O_TEX] = FAM_TEXTURE,    [O_TEX_B] = FAM_TEXTURE,
-    [O_TEXS] = FAM_TEXTURE,    [O_TLD] = FAM_TEXTURE,      [O_TLD_B] = FAM_TEXTURE,  [O_TLDS] = FAM_TEXTURE,
-    [O_TLD4] = FAM_TEXTURE,    [O_TLD4_B] = FAM_TEXTURE,   [O_TLD4S] = FAM_TEXTURE,  [O_TXQ] = FAM_TEXTURE,
-    [O_TXQ_B] = FAM_TEXTURE,   [O_TMML] = FAM_TEXTURE,     [O_TMML_B] = FAM_TEXTURE, [O_TXD] = FAM_TEXTURE,
-    [O_TXD_B] = FAM_TEXTURE,   [O_SULD] = FAM_TEXTURE,     [O_SUST] = FAM_TEXTURE,   [O_SURED] = FAM_TEXTURE,
-    [O_SUATOM] = FAM_TEXTURE};
+    [O_JCAL] = FAM_FLOW,        [O_JMP] = FAM_FLOW,       [O_JMX] = FAM_FLOW,        [O_BRA] = FAM_FLOW,
+    [O_BRX] = FAM_FLOW,         [O_SSY] = FAM_FLOW,       [O_SYNC] = FAM_FLOW,       [O_PBK] = FAM_FLOW,
+    [O_BRK] = FAM_FLOW,         [O_PCNT] = FAM_FLOW,      [O_CONT] = FAM_FLOW,       [O_EXIT] = FAM_FLOW,
+    [O_KIL] = FAM_FLOW,         [O_CAL] = FAM_FLOW,       [O_RET] = FAM_FLOW,        [O_PRET] = FAM_FLOW,
+    [O_PEXIT] = FAM_FLOW,       [O_IDE] = FAM_FLOW,       [O_CCTL] = FAM_FLOW,       [O_CCTLL] = FAM_FLOW,
+    [O_BPT] = FAM_FLOW,         [O_IPA] = FAM_IO,         [O_ALD] = FAM_IO,          [O_AST] = FAM_IO,
+    [O_OUT_R] = FAM_IO,         [O_OUT_C] = FAM_IO,       [O_OUT_I] = FAM_IO,        [O_ISBERD] = FAM_IO,
+    [O_AL2P] = FAM_IO,          [O_PIXLD] = FAM_IO,       [O_S2R] = FAM_THREAD,      [O_CS2R] = FAM_THREAD,
+    [O_BAR] = FAM_THREAD,       [O_MEMBAR] = FAM_THREAD,  [O_VOTE] = FAM_THREAD,     [O_SHFL] = FAM_THREAD,
+    [O_I2I_R] = FAM_INT,        [O_I2I_C] = FAM_INT,      [O_I2I_I] = FAM_INT,       [O_MOV_R] = FAM_INT,
+    [O_MOV_C] = FAM_INT,        [O_MOV_I] = FAM_INT,      [O_MOV32I] = FAM_INT,      [O_IADD_R] = FAM_INT,
+    [O_IADD_C] = FAM_INT,       [O_IADD_I] = FAM_INT,     [O_IADD32I] = FAM_INT,     [O_IADD3_R] = FAM_INT,
+    [O_IADD3_C] = FAM_INT,      [O_IADD3_I] = FAM_INT,    [O_ISCADD_R] = FAM_INT,    [O_ISCADD_C] = FAM_INT,
+    [O_ISCADD_I] = FAM_INT,     [O_ISCADD32I] = FAM_INT,  [O_IMNMX_R] = FAM_INT,     [O_IMNMX_C] = FAM_INT,
+    [O_IMNMX_I] = FAM_INT,      [O_ISETP_R] = FAM_INT,    [O_ISETP_C] = FAM_INT,     [O_ISETP_I] = FAM_INT,
+    [O_ISET_R] = FAM_INT,       [O_ISET_C] = FAM_INT,     [O_ISET_I] = FAM_INT,      [O_ICMP_R] = FAM_INT,
+    [O_ICMP_RC] = FAM_INT,      [O_ICMP_CR] = FAM_INT,    [O_ICMP_I] = FAM_INT,      [O_LOP_R] = FAM_INT,
+    [O_LOP_C] = FAM_INT,        [O_LOP_I] = FAM_INT,      [O_LOP32I] = FAM_INT,      [O_LOP3_R] = FAM_INT,
+    [O_LOP3_C] = FAM_INT,       [O_LOP3_I] = FAM_INT,     [O_SHL_R] = FAM_INT,       [O_SHL_C] = FAM_INT,
+    [O_SHL_I] = FAM_INT,        [O_SHR_R] = FAM_INT,      [O_SHR_C] = FAM_INT,       [O_SHR_I] = FAM_INT,
+    [O_SHF_LR] = FAM_INT,       [O_SHF_LI] = FAM_INT,     [O_SHF_RR] = FAM_INT,      [O_SHF_RI] = FAM_INT,
+    [O_BFE_R] = FAM_INT,        [O_BFE_C] = FAM_INT,      [O_BFE_I] = FAM_INT,       [O_BFI_R] = FAM_INT,
+    [O_BFI_RC] = FAM_INT,       [O_BFI_CR] = FAM_INT,     [O_BFI_I] = FAM_INT,       [O_SEL_R] = FAM_INT,
+    [O_SEL_C] = FAM_INT,        [O_SEL_I] = FAM_INT,      [O_POPC_R] = FAM_INT,      [O_POPC_C] = FAM_INT,
+    [O_POPC_I] = FAM_INT,       [O_FLO_R] = FAM_INT,      [O_FLO_C] = FAM_INT,       [O_FLO_I] = FAM_INT,
+    [O_PRMT_R] = FAM_INT,       [O_PRMT_RC] = FAM_INT,    [O_PRMT_CR] = FAM_INT,     [O_PRMT_I] = FAM_INT,
+    [O_XMAD_R] = FAM_INT,       [O_XMAD_RC] = FAM_INT,    [O_XMAD_CR] = FAM_INT,     [O_XMAD_I] = FAM_INT,
+    [O_IMUL_R] = FAM_INT,       [O_IMUL_C] = FAM_INT,     [O_IMUL_I] = FAM_INT,      [O_IMUL32I] = FAM_INT,
+    [O_IMAD_R] = FAM_INT,       [O_IMAD_RC] = FAM_INT,    [O_IMAD_CR] = FAM_INT,     [O_IMAD_I] = FAM_INT,
+    [O_IMAD32I] = FAM_INT,      [O_LEA_HR] = FAM_INT,     [O_LEA_HC] = FAM_INT,      [O_LEA_LR] = FAM_INT,
+    [O_LEA_LC] = FAM_INT,       [O_LEA_LI] = FAM_INT,     [O_PSETP] = FAM_INT,       [O_PSET] = FAM_INT,
+    [O_P2R_R] = FAM_INT,        [O_P2R_C] = FAM_INT,      [O_P2R_I] = FAM_INT,       [O_R2P_R] = FAM_INT,
+    [O_R2P_C] = FAM_INT,        [O_R2P_I] = FAM_INT,      [O_CSET] = FAM_INT,        [O_CSETP] = FAM_INT,
+    [O_VMNMX] = FAM_INT,        [O_VMAD] = FAM_INT,       [O_VSETP] = FAM_INT,       [O_VADD] = FAM_INT,
+    [O_VABSDIFF] = FAM_INT,     [O_VSET] = FAM_INT,       [O_VSHL] = FAM_INT,        [O_VSHR] = FAM_INT,
+    [O_FADD_R] = FAM_FLOAT,     [O_FADD_C] = FAM_FLOAT,   [O_FADD_I] = FAM_FLOAT,    [O_FADD32I] = FAM_FLOAT,
+    [O_FMUL_R] = FAM_FLOAT,     [O_FMUL_C] = FAM_FLOAT,   [O_FMUL_I] = FAM_FLOAT,    [O_FMUL32I] = FAM_FLOAT,
+    [O_FFMA_R] = FAM_FLOAT,     [O_FFMA_RC] = FAM_FLOAT,  [O_FFMA_CR] = FAM_FLOAT,   [O_FFMA_I] = FAM_FLOAT,
+    [O_FFMA32I] = FAM_FLOAT,    [O_FMNMX_R] = FAM_FLOAT,  [O_FMNMX_C] = FAM_FLOAT,   [O_FMNMX_I] = FAM_FLOAT,
+    [O_FSETP_R] = FAM_FLOAT,    [O_FSETP_C] = FAM_FLOAT,  [O_FSETP_I] = FAM_FLOAT,   [O_FSET_R] = FAM_FLOAT,
+    [O_FSET_C] = FAM_FLOAT,     [O_FSET_I] = FAM_FLOAT,   [O_FCMP_R] = FAM_FLOAT,    [O_FCMP_RC] = FAM_FLOAT,
+    [O_FCMP_CR] = FAM_FLOAT,    [O_FCMP_I] = FAM_FLOAT,   [O_MUFU] = FAM_FLOAT,      [O_RRO_R] = FAM_FLOAT,
+    [O_RRO_C] = FAM_FLOAT,      [O_RRO_I] = FAM_FLOAT,    [O_F2F_R] = FAM_FLOAT,     [O_F2F_C] = FAM_FLOAT,
+    [O_F2F_I] = FAM_FLOAT,      [O_F2I_R] = FAM_FLOAT,    [O_F2I_C] = FAM_FLOAT,     [O_F2I_I] = FAM_FLOAT,
+    [O_I2F_R] = FAM_FLOAT,      [O_I2F_C] = FAM_FLOAT,    [O_I2F_I] = FAM_FLOAT,     [O_FSWZADD] = FAM_FLOAT,
+    [O_FCHK_R] = FAM_FLOAT,     [O_FCHK_C] = FAM_FLOAT,   [O_FCHK_I] = FAM_FLOAT,    [O_HADD2_R] = FAM_FLOAT,
+    [O_HADD2_C] = FAM_FLOAT,    [O_HADD2_I] = FAM_FLOAT,  [O_HADD2_32I] = FAM_FLOAT, [O_HMUL2_R] = FAM_FLOAT,
+    [O_HMUL2_C] = FAM_FLOAT,    [O_HMUL2_I] = FAM_FLOAT,  [O_HMUL2_32I] = FAM_FLOAT, [O_HFMA2_R] = FAM_FLOAT,
+    [O_HFMA2_RC] = FAM_FLOAT,   [O_HFMA2_CR] = FAM_FLOAT, [O_HFMA2_I] = FAM_FLOAT,   [O_HFMA2_32I] = FAM_FLOAT,
+    [O_HSETP2_R] = FAM_FLOAT,   [O_HSETP2_C] = FAM_FLOAT, [O_HSETP2_I] = FAM_FLOAT,  [O_HSET2_R] = FAM_FLOAT,
+    [O_HSET2_C] = FAM_FLOAT,    [O_HSET2_I] = FAM_FLOAT,  [O_DADD_R] = FAM_FLOAT,    [O_DADD_C] = FAM_FLOAT,
+    [O_DADD_I] = FAM_FLOAT,     [O_DMUL_R] = FAM_FLOAT,   [O_DMUL_C] = FAM_FLOAT,    [O_DMUL_I] = FAM_FLOAT,
+    [O_DFMA_R] = FAM_FLOAT,     [O_DFMA_RC] = FAM_FLOAT,  [O_DFMA_CR] = FAM_FLOAT,   [O_DFMA_I] = FAM_FLOAT,
+    [O_DSET_R] = FAM_FLOAT,     [O_DSET_C] = FAM_FLOAT,   [O_DSET_I] = FAM_FLOAT,    [O_DSETP_R] = FAM_FLOAT,
+    [O_DSETP_C] = FAM_FLOAT,    [O_DSETP_I] = FAM_FLOAT,  [O_DMNMX_R] = FAM_FLOAT,   [O_DMNMX_C] = FAM_FLOAT,
+    [O_DMNMX_I] = FAM_FLOAT,    [O_LDC] = FAM_MEMORY,     [O_LDG] = FAM_MEMORY,      [O_STG] = FAM_MEMORY,
+    [O_LDS] = FAM_MEMORY,       [O_STS] = FAM_MEMORY,     [O_LDL] = FAM_MEMORY,      [O_STL] = FAM_MEMORY,
+    [O_ATOM] = FAM_MEMORY,      [O_ATOMS] = FAM_MEMORY,   [O_RED] = FAM_MEMORY,      [O_ATOM_CAS] = FAM_MEMORY,
+    [O_ATOMS_CAS] = FAM_MEMORY, [O_TEX] = FAM_TEXTURE,    [O_TEX_B] = FAM_TEXTURE,   [O_TEXS] = FAM_TEXTURE,
+    [O_TLD] = FAM_TEXTURE,      [O_TLD_B] = FAM_TEXTURE,  [O_TLDS] = FAM_TEXTURE,    [O_TLD4] = FAM_TEXTURE,
+    [O_TLD4_B] = FAM_TEXTURE,   [O_TLD4S] = FAM_TEXTURE,  [O_TXQ] = FAM_TEXTURE,     [O_TXQ_B] = FAM_TEXTURE,
+    [O_TMML] = FAM_TEXTURE,     [O_TMML_B] = FAM_TEXTURE, [O_TXD] = FAM_TEXTURE,     [O_TXD_B] = FAM_TEXTURE,
+    [O_SULD] = FAM_TEXTURE,     [O_SUST] = FAM_TEXTURE,   [O_SURED] = FAM_TEXTURE,   [O_SUATOM] = FAM_TEXTURE};
 
 static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, ShaderInfo* si, size_t* word_count,
                      int can_flush, int can_preserve, int can_preserve_f64, int can_subgroup, u32 legacy_fs) {
@@ -142,6 +189,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     int needs_frontface = 0;
     int needs_point_coord = 0, needs_sample_id = 0, needs_coverage = 0;
     int needs_demote = 0;
+    int advanced_blend = stage == ST_FS && si->advanced_blend != 0;
     int needs_image_query = 0, needs_derivatives = 0, needs_clock = 0;
     int needs_instance = 0;
     int needs_draw_params = 0; /* a vertex program reads NVN's draw parameters (shader.h SH_CB0_) */
@@ -296,11 +344,19 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             si->unsupported = 1;
             return NULL;
         }
-        if (op->id == O_BRA || op->id == O_CAL || op->id == O_PRET) {
+        if (op->id == O_BRA || (op->id == O_CAL && !B(insn[i], 5, 1)) || op->id == O_PRET) {
             u32 target_index = bra_target(insn[i], i);
             if (target_index >= n || !IDX_OK(target_index)) return direct_reject(si, "branch target");
             has_flow = 1;
             if (op->id != O_BRA) has_calls = 1;
+        }
+        if ((op->id == O_CAL && B(insn[i], 5, 1)) || op->id == O_JCAL) has_flow = has_calls = 1;
+        if (op->id == O_JMP || op->id == O_JMX) has_flow = 1;
+        if ((op->id == O_CAL || op->id == O_JCAL || op->id == O_JMP || op->id == O_JMX) && B(insn[i], 5, 1)) {
+            u32 bank = B(insn[i], 36, 5), off = B(insn[i], 20, 16);
+            if (bank >= 18 || (off & 3)) return direct_reject(si, "indirect branch constant buffer");
+            cbuf_used[bank] = 1;
+            cbuf_max[bank] = op->id == O_JMX ? 65536 : ((off | 15u) + 1);
         }
         if (op->id == O_RET) has_flow = has_calls = 1; /* a RET with no CAL pops an empty stack: it ends the program */
         if ((op->id == O_RED || op->id == O_ATOM) &&
@@ -362,16 +418,16 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         u32 d = B(insn[i], 0, 8), a = B(insn[i], 8, 8), b = B(insn[i], 20, 8);
         u32 guard = B(insn[i], 16, 3);
         if (guard < 7) pred_used[guard] = 1;
-        if (d < 255 && op->id != O_EXIT && op->id != O_KIL && op->id != O_BRA && op->id != O_BRX && op->id != O_SSY &&
-            op->id != O_PBK && op->id != O_PCNT && op->id != O_SYNC && op->id != O_BRK && op->id != O_CONT &&
-            op->id != O_AST && op->id != O_NOP && op->id != O_VOTE_VTG && op->id != O_DEPBAR && op->id != O_CAL &&
-            op->id != O_PRET && op->id != O_RET && op->id != O_FSETP_R && op->id != O_FSETP_C && op->id != O_FSETP_I &&
-            op->id != O_HSETP2_R && op->id != O_HSETP2_C && op->id != O_HSETP2_I && op->id != O_DSETP_R &&
-            op->id != O_DSETP_C && op->id != O_DSETP_I && op->id != O_ISETP_R && op->id != O_ISETP_C &&
-            op->id != O_ISETP_I && op->id != O_VSETP && op->id != O_PSETP && op->id != O_CSETP && op->id != O_R2P_R &&
-            op->id != O_R2P_C && op->id != O_R2P_I && op->id != O_FCHK_R && op->id != O_FCHK_C && op->id != O_FCHK_I &&
-            op->id != O_MEMBAR && op->id != O_CCTL && op->id != O_CCTLL && op->id != O_IDE && op->id != O_BPT &&
-            op->id != O_PEXIT)
+        if (d < 255 && op->id != O_JCAL && op->id != O_JMP && op->id != O_JMX && op->id != O_EXIT && op->id != O_KIL &&
+            op->id != O_BRA && op->id != O_BRX && op->id != O_SSY && op->id != O_PBK && op->id != O_PCNT &&
+            op->id != O_SYNC && op->id != O_BRK && op->id != O_CONT && op->id != O_AST && op->id != O_NOP &&
+            op->id != O_VOTE_VTG && op->id != O_DEPBAR && op->id != O_CAL && op->id != O_PRET && op->id != O_RET &&
+            op->id != O_FSETP_R && op->id != O_FSETP_C && op->id != O_FSETP_I && op->id != O_HSETP2_R &&
+            op->id != O_HSETP2_C && op->id != O_HSETP2_I && op->id != O_DSETP_R && op->id != O_DSETP_C &&
+            op->id != O_DSETP_I && op->id != O_ISETP_R && op->id != O_ISETP_C && op->id != O_ISETP_I &&
+            op->id != O_VSETP && op->id != O_PSETP && op->id != O_CSETP && op->id != O_R2P_R && op->id != O_R2P_C &&
+            op->id != O_R2P_I && op->id != O_FCHK_R && op->id != O_FCHK_C && op->id != O_FCHK_I && op->id != O_MEMBAR &&
+            op->id != O_CCTL && op->id != O_CCTLL && op->id != O_IDE && op->id != O_BPT && op->id != O_PEXIT)
             used[d] = 1;
         if (op->id == O_AL2P && !shader_al2p_predicate_unseen(insn, n, i))
             return direct_reject(si, "AL2P range predicate read");
@@ -466,20 +522,21 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
              op->id == O_FSET_R || op->id == O_FSET_C || op->id == O_FSET_I || op->id == O_MUFU) &&
             a < 255)
             used[a] = 1;
-        if ((op->id == O_AL2P || op->id == O_BRX || (op->id >= O_P2R_R && op->id <= O_R2P_I) || op->id == O_LOP3_R ||
-             op->id == O_LOP3_C || op->id == O_LOP3_I || op->id == O_IMNMX_R || op->id == O_IMNMX_C ||
-             op->id == O_IMNMX_I || op->id == O_XMAD_CR || op->id == O_XMAD_RC || op->id == O_XMAD_R ||
-             op->id == O_IADD3_R || op->id == O_IADD3_C || op->id == O_IADD3_I || op->id == O_ICMP_R ||
-             op->id == O_ICMP_RC || op->id == O_ICMP_CR || op->id == O_ICMP_I || op->id == O_FCMP_R ||
-             op->id == O_FCMP_RC || op->id == O_FCMP_CR || op->id == O_FCMP_I || op->id == O_BFI_R ||
-             op->id == O_BFI_RC || op->id == O_BFI_CR || op->id == O_BFI_I || op->id == O_IADD32I ||
-             op->id == O_LOP32I || op->id == O_XMAD_I || op->id == O_IADD_R || op->id == O_IADD_C ||
-             op->id == O_IADD_I || op->id == O_LDG || op->id == O_STG || op->id == O_RED || op->id == O_ATOM ||
-             op->id == O_ATOM_CAS || op->id == O_LOP_R || op->id == O_LOP_C || op->id == O_LOP_I || op->id == O_SEL_R ||
-             op->id == O_SEL_C || op->id == O_SEL_I || op->id == O_ISCADD_R || op->id == O_ISCADD_C ||
-             op->id == O_ISCADD_I || op->id == O_ISCADD32I || (op->id >= O_BFE_R && op->id <= O_BFE_I) ||
-             op->id == O_SHL_R || op->id == O_SHL_C || op->id == O_SHL_I || op->id == O_SHR_R || op->id == O_SHR_C ||
-             op->id == O_SHR_I || op->id == O_ISET_R || op->id == O_ISET_C || op->id == O_ISET_I) &&
+        if ((op->id == O_AL2P || op->id == O_BRX || op->id == O_JMX || (op->id >= O_P2R_R && op->id <= O_R2P_I) ||
+             op->id == O_LOP3_R || op->id == O_LOP3_C || op->id == O_LOP3_I || op->id == O_IMNMX_R ||
+             op->id == O_IMNMX_C || op->id == O_IMNMX_I || op->id == O_XMAD_CR || op->id == O_XMAD_RC ||
+             op->id == O_XMAD_R || op->id == O_IADD3_R || op->id == O_IADD3_C || op->id == O_IADD3_I ||
+             op->id == O_ICMP_R || op->id == O_ICMP_RC || op->id == O_ICMP_CR || op->id == O_ICMP_I ||
+             op->id == O_FCMP_R || op->id == O_FCMP_RC || op->id == O_FCMP_CR || op->id == O_FCMP_I ||
+             op->id == O_BFI_R || op->id == O_BFI_RC || op->id == O_BFI_CR || op->id == O_BFI_I ||
+             op->id == O_IADD32I || op->id == O_LOP32I || op->id == O_XMAD_I || op->id == O_IADD_R ||
+             op->id == O_IADD_C || op->id == O_IADD_I || op->id == O_LDG || op->id == O_STG || op->id == O_RED ||
+             op->id == O_ATOM || op->id == O_ATOM_CAS || op->id == O_LOP_R || op->id == O_LOP_C || op->id == O_LOP_I ||
+             op->id == O_SEL_R || op->id == O_SEL_C || op->id == O_SEL_I || op->id == O_ISCADD_R ||
+             op->id == O_ISCADD_C || op->id == O_ISCADD_I || op->id == O_ISCADD32I ||
+             (op->id >= O_BFE_R && op->id <= O_BFE_I) || op->id == O_SHL_R || op->id == O_SHL_C || op->id == O_SHL_I ||
+             op->id == O_SHR_R || op->id == O_SHR_C || op->id == O_SHR_I || op->id == O_ISET_R || op->id == O_ISET_C ||
+             op->id == O_ISET_I) &&
             a < 255)
             used[a] = 1;
         if ((op->id == O_ISCADD_R || op->id == O_IADD_R || op->id == O_LOP_R || op->id == O_SEL_R ||
@@ -1417,6 +1474,13 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         needs_image_query = 1;
         if (stage == ST_FS) needs_texel_scale = 1; /* a scaled target's size is unscaled first */
     }
+    if (advanced_blend) {
+        if (!(target & 15) || (target & ~15u) || (sph[19] & 3u) || si->rt_int_mask ||
+            ((si->advanced_blend >> 37) & 63) < 5 || ((si->advanced_blend >> 37) & 63) > 50 ||
+            ((si->advanced_blend >> 44) & 3) > 2)
+            return direct_reject_with_buffers(si, "programmable blend interface", pop_targets, gb_at);
+        needs_fragcoord = needs_demote = 1;
+    }
     DirectCtx* c = calloc(1, sizeof *c);
     if (!c) {
         free(gb_at);
@@ -1427,6 +1491,12 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     c->soft_ftz_on = soft_ftz_on;
     spv_emit_init(&c->emit, (size_t)n * 20 + 128);
     spv_emit_shader_capability(&c->emit);
+    if (advanced_blend) {
+        spv_emit_extension(&c->emit, "SPV_EXT_fragment_shader_interlock");
+        spv_emit_capability(&c->emit, 5378); /* FragmentShaderPixelInterlockEXT */
+        spv_emit_capability(&c->emit, 55);   /* StorageImageReadWithoutFormat */
+        c->blend_end = spv_emit_id(&c->emit);
+    }
     if (stage == ST_TCS || stage == ST_TES) spv_emit_capability(&c->emit, 3); /* Tessellation */
     if (stage == ST_GS) spv_emit_capability(&c->emit, 2);                     /* Geometry */
     if (needs_demote || (converge && stage == ST_FS)) {
@@ -1510,7 +1580,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if ((target >> (rt * 4)) & 15) {
                 u32 color_type =
                     (si->rt_int_mask & (1u << rt)) ? (si->rt_sint_mask & (1u << rt)) ? vec4_i32 : vec4_u32 : vec4;
-                outputs[count] = spv_emit_output_vec4(&c->emit, color_type, rt);
+                outputs[count] = advanced_blend ? spv_emit_private_variable(&c->emit, color_type)
+                                                : spv_emit_output_vec4(&c->emit, color_type, rt);
                 interfaces[count] = outputs[count];
                 count++;
             }
@@ -1742,6 +1813,13 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         fragcoord = spv_emit_fragcoord_input(&c->emit, vec4);
         interfaces[count++] = fragcoord;
     }
+    u32 blend_image = 0, blend_image_type = 0;
+    if (advanced_blend) {
+        blend_image = spv_emit_storage_image(&c->emit, c->f32_type, shader_vk_set(ST_FS), SNX_VKB_BLEND, SPV_DIM_2D, 0,
+                                             0, &blend_image_type);
+        spv_emit_decorate(&c->emit, blend_image, 23, NULL, 0); /* Coherent */
+        interfaces[count++] = blend_image;
+    }
     if (needs_scale || needs_texel_scale) {
         c->scale_buffer =
             spv_emit_uniform_vec4_array(&c->emit, vec4, c->f32_type, c->u32_type, 1, SNX_VKB_RS, 1, &c->scale_pointer);
@@ -1908,6 +1986,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     }
     if (stage == ST_CS) spv_emit_local_size(&c->emit, fn, si->cs_local[0], si->cs_local[1], si->cs_local[2]);
     if (stage == ST_FS) spv_emit_fragment_origin_upper_left(&c->emit, fn);
+    if (advanced_blend) spv_emit_execution_mode(&c->emit, fn, 5366, 0, 0); /* PixelInterlockOrderedEXT */
     if (stage == ST_FS && si->early_fragment_tests)
         spv_emit_execution_mode(&c->emit, fn, 9, 0, 0); /* EarlyFragmentTests */
     if (depth_output) spv_emit_fragment_depth_replacing(&c->emit, fn);
@@ -1984,6 +2063,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         for (u32 i = 11; i < n; i++) {
             if (!IDX_OK(i)) continue;
             int id = decode(insn[i])->id;
+            if ((id == O_CAL && B(insn[i], 5, 1)) || id == O_JCAL || id == O_JMP || id == O_JMX) unknown_brx = 1;
             if (id == O_BRX) {
                 u32 targets[64];
                 int count = shader_brx_targets(insn, i, n, targets, 64);
@@ -1992,12 +2072,12 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 else
                     for (int k = 0; k < count; k++) block_start[targets[k]] = 1;
             }
-            if (id == O_BRA || id == O_CAL || id == O_PRET || id == O_PEXIT || id == O_SSY || id == O_PBK ||
-                id == O_PCNT)
+            if (id == O_BRA || (id == O_CAL && !B(insn[i], 5, 1)) || id == O_PRET || id == O_PEXIT || id == O_SSY ||
+                id == O_PBK || id == O_PCNT)
                 block_start[bra_target(insn[i], i)] = 1;
             if (!dynamic_stack && (id == O_SYNC || id == O_BRK || id == O_CONT)) block_start[pop_targets[i]] = 1;
-            if (id == O_BRA || id == O_CAL || id == O_RET || id == O_BRX || id == O_SYNC || id == O_BRK ||
-                id == O_CONT || id == O_EXIT) {
+            if (id == O_BRA || id == O_CAL || id == O_JCAL || id == O_JMP || id == O_JMX || id == O_RET ||
+                id == O_BRX || id == O_SYNC || id == O_BRK || id == O_CONT || id == O_EXIT) {
                 u32 next = shader_next_instruction(i, n);
                 if (next < n) block_start[next] = 1;
             }
@@ -2011,7 +2091,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
            again as the program's code. Lanes that must reconverge for subgroup operations, barriers or derivatives
            take them where the device reconverges them at each construct's merge (MaximallyReconvergesKHR), as the
            hardware does at its SYNC targets, and keep the loop otherwise, which runs the lowest pc first */
-        if (!dynamic_stack && !has_calls && (!converge || g_shader_maximal_reconvergence) && !unknown_brx)
+        if (!advanced_blend && !dynamic_stack && !has_calls && (!converge || g_shader_maximal_reconvergence) &&
+            !unknown_brx)
             structure = shader_structure(insn, n, block_start, pop_targets);
         if (structure && converge) { /* the guarantee those lanes need */
             spv_emit_extension(&c->emit, "SPV_KHR_maximal_reconvergence");
@@ -2029,7 +2110,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     if (has_flow && !structure)
         pc = spv_emit_function_variable_init(&c->emit, reg_ptr, spv_emit_constant_u32(&c->emit, c->u32_type, 11));
     if (structure && structure->uses_flag) se.flag = spv_emit_function_variable_init(&c->emit, reg_ptr, c->zero);
-    c->discarded = has_flow && stage == ST_FS ? spv_emit_function_variable_init(&c->emit, pred_ptr, c->false_value) : 0;
+    c->discarded = (has_flow && stage == ST_FS) || advanced_blend
+                       ? spv_emit_function_variable_init(&c->emit, pred_ptr, c->false_value)
+                       : 0;
     for (clip = 0; clip < clip_count; clip++) {
         u32 index = spv_emit_constant_u32(&c->emit, c->u32_type, clip);
         u32 ptr = spv_emit_output_element_pointer(&c->emit, c->f32_type, clip_output, index);
@@ -2235,7 +2318,10 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                                             primitive_id_out, position_fix, push, push_pointer);
             if (xfb_on && stage != ST_GS) shader_xfb_store(c, vec4, output_attrs, attr_private, xfb_components);
             if (position_fix && stage != ST_GS) shader_vertex_position_fix(c, position, push, push_pointer, vec4);
-            spv_emit_return(&c->emit);
+            if (c->blend_end)
+                spv_emit_branch(&c->emit, c->blend_end);
+            else
+                spv_emit_return(&c->emit);
             se.open = 0;
         }
         if (i >= n) break;
@@ -2323,7 +2409,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         spv_emit_label(&c->emit, loop_continue);
         spv_emit_branch(&c->emit, loop_header);
         spv_emit_label(&c->emit, loop_merge);
-        if (c->discarded) {
+        if (c->discarded && !advanced_blend) {
             u32 kill_label = spv_emit_id(&c->emit), kept = spv_emit_id(&c->emit);
             u32 discard = spv_emit_load(&c->emit, c->bool_type, c->discarded);
             spv_emit_selection_merge(&c->emit, kept);
@@ -2338,8 +2424,13 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                                         primitive_id_out, position_fix, push, push_pointer);
         if (xfb_on && stage != ST_GS) shader_xfb_store(c, vec4, output_attrs, attr_private, xfb_components);
         if (position_fix && stage != ST_GS) shader_vertex_position_fix(c, position, push, push_pointer, vec4);
-        spv_emit_return(&c->emit);
+        if (c->blend_end)
+            spv_emit_branch(&c->emit, c->blend_end);
+        else
+            spv_emit_return(&c->emit);
     }
+    if (advanced_blend)
+        advanced_blend_epilogue(c, si, vec4, i32_type, fragcoord, outputs[0], blend_image, blend_image_type);
     spv_emit_function_end(&c->emit);
     u32* result = spv_emit_finish(&c->emit, word_count);
     spv_emit_destroy(&c->emit);
@@ -2354,6 +2445,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     free(gb_at);
     ShaderInfo next = {0};
     next.stage = stage;
+    next.flow_base = si->flow_base;
+    next.advanced_blend = si->advanced_blend;
+    next.advanced_blend_mask = si->advanced_blend_mask;
     memcpy(next.cs_local, si->cs_local, sizeof next.cs_local);
     next.shared_size = si->shared_size;
     next.attr_int_mask = si->attr_int_mask;

@@ -188,6 +188,23 @@ def main():
         )
         run(cia(application=ncch(patch_exefs=lambda e: e.__setitem__(0x200, 0))), 1, 'SHA-256 mismatch')
         run(cia(application=ncch(compressed=True, code_blob=b'invalid!')), 1, 'BLZ')
+        # a .code the ExHeader marks compressed that is no BLZ stream: the error says what it found, by the numbers
+        flagged = 'the ExHeader marks .code compressed (byte 0x0d bit 0), but '
+        left = ' (a dump tool may have expanded .code and left the flag set)'
+        run(
+            cia(application=ncch(compressed=True, code_blob=b'tiny')),
+            1,
+            f'{flagged}its 4 bytes hold no BLZ footer{left}',
+        )
+        footer = f'{flagged}its BLZ footer expands its 8 bytes by 560228716, past the 12288 its segments take{left}'
+        run(cia(application=ncch(compressed=True, code_blob=b'invalid!')), 1, footer)
+        expanded_code = bytearray(0x3000)
+        put(expanded_code, 0, '<II', 0xE3A0002A, 0xEF000003)
+        run(
+            cia(application=ncch(compressed=True, code_blob=bytes(expanded_code))),
+            1,
+            f'{flagged}its 12288 bytes are no valid BLZ stream{left}',
+        )
         for name in [
             '..',
             '../escape',

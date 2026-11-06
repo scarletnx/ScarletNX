@@ -55,9 +55,75 @@ int vk_trylock(void) {
 u32 vk_lock_owner(void) { return __atomic_load_n(&g_vk_owner, __ATOMIC_RELAXED); }
 int vk_lock_held(void) { return t_vkdepth > 0; }
 
+/* What held the memory at an out-of-memory, at the first ones: each heap as VMA counts it, and the descriptor pools,
+   which MoltenVK backs with Metal memory that VMA's blocks do not hold (cmd.c). The heap's use less its blocks is
+   what the driver and the other allocations of the process took. Any thread can fail, and VMA's statistics take its
+   own lock */
+/* set once the allocator exists, which lives to the end of the process: vk_memory_text's threads read g_vk.vma only
+   after they see it, atomic */
+static int g_vma_ready;
+#define OOM_REPORTS 3
+static void oom_report(VkResult r) {
+    static u32 reports;
+    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    const VkPhysicalDeviceMemoryProperties* mp;
+    if (r != VK_ERROR_OUT_OF_DEVICE_MEMORY && r != VK_ERROR_OUT_OF_HOST_MEMORY) return;
+    if (!__atomic_load_n(&g_vma_ready, __ATOMIC_ACQUIRE) ||
+        __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) >= OOM_REPORTS)
+        return;
+    vmaGetHeapBudgets(g_vk.vma, b);
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    for (u32 h = 0; h < mp->memoryHeapCount; h++)
+        LOG("vulkan: out of memory, heap %u%s: use %llu MiB, budget %llu MiB, VMA blocks %u (%llu MiB), allocations "
+            "%u (%llu MiB), heap size %llu MiB\n",
+            h, mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? " (device local)" : "",
+            (unsigned long long)(b[h].usage >> 20), (unsigned long long)(b[h].budget >> 20), b[h].statistics.blockCount,
+            (unsigned long long)(b[h].statistics.blockBytes >> 20), b[h].statistics.allocationCount,
+            (unsigned long long)(b[h].statistics.allocationBytes >> 20),
+            (unsigned long long)(mp->memoryHeaps[h].size >> 20));
+    LOG("vulkan: out of memory with %u descriptor pools\n", vk_desc_pools());
+}
+
+/* Each heap and the descriptor pools in one part of a line, for a low memory warning from a thread that never calls
+   Vulkan. VMA's functions are safe on any thread (its own locks), and the budget it fetches again now and then comes
+   from vkGetPhysicalDeviceMemoryProperties2, which needs no external synchronization */
+u64 vk_memory_blocks(void) {
+    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    const VkPhysicalDeviceMemoryProperties* mp;
+    u64 sum = 0;
+    if (!__atomic_load_n(&g_vma_ready, __ATOMIC_ACQUIRE)) return 0;
+    vmaGetHeapBudgets(g_vk.vma, b);
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    for (u32 h = 0; h < mp->memoryHeapCount; h++) sum += b[h].statistics.blockBytes;
+    return sum;
+}
+void vk_memory_text(char* out, size_t size) {
+    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    const VkPhysicalDeviceMemoryProperties* mp;
+    size_t n = 0;
+    if (!size) return;
+    out[0] = 0;
+    if (!__atomic_load_n(&g_vma_ready, __ATOMIC_ACQUIRE)) {
+        snprintf(out, size, "no GPU heaps yet, %u descriptor pools", vk_desc_pools());
+        return;
+    }
+    vmaGetHeapBudgets(g_vk.vma, b);
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    for (u32 h = 0; h < mp->memoryHeapCount && n < size; h++) {
+        int w = snprintf(out + n, size - n, "GPU heap %u%s use %llu of %llu MiB (VMA blocks %llu MiB), ", h,
+                         mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? " (device local)" : "",
+                         (unsigned long long)(b[h].usage >> 20), (unsigned long long)(b[h].budget >> 20),
+                         (unsigned long long)(b[h].statistics.blockBytes >> 20));
+        if (w < 0) return;
+        n += (size_t)w;
+    }
+    if (n < size) snprintf(out + n, size - n, "%u descriptor pools", vk_desc_pools());
+}
+
 int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     if (r >= 0) return 1;
     WARN("vulkan: %s failed: %s (%d) at %s:%d\n", what, snx_vk_result_str(r), (int)r, file, line);
+    oom_report(r);
     return 0;
 }
 
@@ -354,6 +420,7 @@ static int create_device(void) {
         u32 nq = 0;
         VkQueueFamilyProperties* q = snx_vk_queue_families(g_vk.phys, &nq);
         sparse_queue = g_vk.gfx_family < nq && (q[g_vk.gfx_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT);
+        g_vk.gfx_timestamp_bits = g_vk.gfx_family < nq ? q[g_vk.gfx_family].timestampValidBits : 0;
         free(q);
     }
     if (sparse_queue) {
@@ -372,7 +439,6 @@ static int create_device(void) {
     g_shader_tessellation = want->tessellationShader != 0;
     const char** ext = g_vk.dev_ext;
     int has_pipeline_robustness = 0, has_robustness2 = 0;
-    int has_budget = 0;
     u32 next = 0;
     int has_shader_clock = 0, has_feedback_dynamic = 0, has_cond = 0, has_provoking = 0, video_exts = 0;
     int has_portability = 0, has_reconvergence = 0;
@@ -396,6 +462,8 @@ static int create_device(void) {
         has_eds3 = snx_vk_extensions_has(&e, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
+        g_vk.advanced_blend_caps.available = snx_vk_extensions_has(&e, VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
+        g_vk.has_fragment_interlock = snx_vk_extensions_has(&e, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
         has_shader_clock = snx_vk_extensions_has(&e, VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
         has_descriptor_buffer = snx_vk_extensions_has(&e, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
@@ -411,7 +479,7 @@ static int create_device(void) {
         has_robustness2 = snx_vk_extensions_has(&e, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
         /* the driver's budget for each heap, the other processes' use taken out, for VMA: without it VMA took
            80% of a heap's size as its budget, blind to what the desktop and other programs hold */
-        has_budget = snx_vk_extensions_has(&e, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+        g_vk.has_budget = snx_vk_extensions_has(&e, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
         /* the GPU's clock next to the client's, for the profiler's GPU track (gpuprof.c's calibration) */
         has_calibrated = snx_vk_extensions_has(&e, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
         /* a portability driver's subset must be enabled when it has one (MoltenVK) */
@@ -446,7 +514,7 @@ static int create_device(void) {
     int uma_with = vk_uma_choose(has_host_import, has_ahb, has_placed && has_map2);
     if (uma_with == VK_UMA_WITH_HOST) ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     if (uma_with == VK_UMA_WITH_AHB) ext[next++] = "VK_ANDROID_external_memory_android_hardware_buffer";
-    if (has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+    if (g_vk.has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
     if (g_vk.has_mixed_samples) ext[next++] = VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME;
     /* the extension only with a host time domain among the calibrateable ones: CLOCK_MONOTONIC_RAW is the clock
        the Tracy client keeps its own time in, so the two domains' pair maps the GPU's timestamps onto it */
@@ -480,20 +548,25 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
     VkPhysicalDeviceTransformFeedbackFeaturesEXT fxfb = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
+    VkPhysicalDeviceBlendOperationAdvancedFeaturesEXT qadvanced = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BLEND_OPERATION_ADVANCED_FEATURES_EXT};
+    VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT qinterlock = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
     VkPhysicalDeviceShaderClockFeaturesKHR qclock = {.sType =
                                                          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR};
     VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR qreconv = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR};
     VkPhysicalDevicePipelineRobustnessFeaturesEXT qpipeline = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT};
-    VkPhysicalDeviceRobustness2FeaturesEXT qrobust = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
+    VkPhysicalDeviceRobustness2FeaturesEXT qrobust = {.sType =
+                                                          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
     VkPhysicalDeviceVulkan12Features q12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceVulkan13Features q13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceMeshShaderFeaturesEXT qmesh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
     VkPhysicalDeviceVulkan11Features q11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT qloop = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT};
     VkPhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT qloop_dyn = {
@@ -537,6 +610,8 @@ static int create_device(void) {
                            g_vk.has_divisor ? &fdiv : NULL,
                            g_vk.has_border_color ? &fbc : NULL,
                            g_vk.has_xfb ? &fxfb : NULL,
+                           g_vk.advanced_blend_caps.available ? &qadvanced : NULL,
+                           g_vk.has_fragment_interlock ? &qinterlock : NULL,
                            g_vk.has_feedback ? &qloop : NULL,
                            has_feedback_dynamic ? &qloop_dyn : NULL,
                            g_vk.has_local_read ? &qlocal : NULL,
@@ -630,6 +705,19 @@ static int create_device(void) {
         LOG("%s\n", line);
     }
     g_vk.has_xfb = g_vk.has_xfb && fxfb.transformFeedback;
+    g_vk.has_fragment_interlock = g_vk.has_fragment_interlock && qinterlock.fragmentShaderPixelInterlock;
+    if (g_vk.advanced_blend_caps.available) {
+        VkPhysicalDeviceBlendOperationAdvancedPropertiesEXT advanced = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BLEND_OPERATION_ADVANCED_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                                  .pNext = &advanced};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &properties);
+        g_vk.advanced_blend_caps.coherent = qadvanced.advancedBlendCoherentOperations;
+        g_vk.advanced_blend_caps.max_attachments = advanced.advancedBlendMaxColorAttachments;
+        g_vk.advanced_blend_caps.nonpremultiplied_source = advanced.advancedBlendNonPremultipliedSrcColor;
+        g_vk.advanced_blend_caps.correlated_overlap = advanced.advancedBlendCorrelatedOverlap;
+        g_vk.advanced_blend_caps.all_operations = advanced.advancedBlendAllOperations;
+    }
     g_vk.has_border_color = g_vk.has_border_color && fbc.customBorderColors && fbc.customBorderColorWithoutFormat;
     if (g_vk.has_border_color) { /* how many samplers may have a custom border color: as few as 32 */
         VkPhysicalDeviceCustomBorderColorPropertiesEXT cbp = {
@@ -642,17 +730,19 @@ static int create_device(void) {
         g_vk.descriptor_props = (VkPhysicalDeviceDescriptorBufferPropertiesEXT){
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
         VkPhysicalDeviceProperties2 desc = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-                                             .pNext = &g_vk.descriptor_props};
+                                            .pNext = &g_vk.descriptor_props};
         vkGetPhysicalDeviceProperties2(g_vk.phys, &desc);
-        g_vk.has_descriptor_buffers = g_vk.descriptor_props.combinedImageSamplerDescriptorSingleArray &&
+        g_vk.has_descriptor_buffers =
+            g_vk.descriptor_props.combinedImageSamplerDescriptorSingleArray &&
             g_vk.descriptor_props.maxSamplerDescriptorBufferRange >= (64ull << 20) &&
             g_vk.descriptor_props.maxResourceDescriptorBufferRange >= (64ull << 20) &&
             g_vk.descriptor_props.samplerDescriptorBufferAddressSpaceSize >= (VK_FRAMES * (64ull << 20)) &&
             g_vk.descriptor_props.resourceDescriptorBufferAddressSpaceSize >= (VK_FRAMES * (64ull << 20)) &&
             g_vk.descriptor_props.descriptorBufferAddressSpaceSize >= (VK_FRAMES * (64ull << 20));
     }
-    LOG("vulkan: graphics descriptor buffers %s\n", g_vk.has_descriptor_buffers
-        ? (g_settings.descriptor_buffers ? "supported, enabled" : "supported, disabled") : "unavailable, using sets");
+    LOG("vulkan: graphics descriptor buffers %s\n",
+        g_vk.has_descriptor_buffers ? (g_settings.descriptor_buffers ? "supported, enabled" : "supported, disabled")
+                                    : "unavailable, using sets");
     g_vk.has_descriptor_buffers = g_vk.has_descriptor_buffers && g_settings.descriptor_buffers;
     if (g_vk.has_descriptor_buffers && !vk_descriptors_memory(g_vk.phys)) {
         WARN("vulkan: descriptor buffers need host-visible, coherent and cached memory, which this device has not: "
@@ -660,10 +750,10 @@ static int create_device(void) {
         g_vk.has_descriptor_buffers = 0;
     }
     /* FFmpeg's decoder makes views of its two plane pictures */
-    VkPhysicalDeviceVulkan11Features f11 = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-        .shaderDrawParameters = q11.shaderDrawParameters,
-        .samplerYcbcrConversion = g_vk.video_family != ~0u && q11.samplerYcbcrConversion};
+    VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+                                            .shaderDrawParameters = q11.shaderDrawParameters,
+                                            .samplerYcbcrConversion =
+                                                g_vk.video_family != ~0u && q11.samplerYcbcrConversion};
     g_vk.has_shader_draw_parameters = q11.shaderDrawParameters != 0;
     g_shader_draw_parameters = g_vk.has_shader_draw_parameters;
     g_vk.has_draw_indirect_count = q12.drawIndirectCount != 0;
@@ -698,7 +788,8 @@ static int create_device(void) {
     void* chain = &f13;
     VkPhysicalDeviceDescriptorBufferFeaturesEXT fdesc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
-        .pNext = chain, .descriptorBuffer = VK_TRUE};
+        .pNext = chain,
+        .descriptorBuffer = VK_TRUE};
     if (g_vk.has_descriptor_buffers) {
         chain = &fdesc;
         ext[next++] = VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME;
@@ -789,6 +880,22 @@ static int create_device(void) {
         chain = &flocal;
         ext[next++] = VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME;
     }
+    VkPhysicalDeviceBlendOperationAdvancedFeaturesEXT fadvanced = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BLEND_OPERATION_ADVANCED_FEATURES_EXT,
+        .pNext = chain,
+        .advancedBlendCoherentOperations = g_vk.advanced_blend_caps.coherent};
+    if (g_vk.advanced_blend_caps.available) {
+        chain = &fadvanced;
+        ext[next++] = VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT finterlock = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT,
+        .pNext = chain,
+        .fragmentShaderPixelInterlock = VK_TRUE};
+    if (g_vk.has_fragment_interlock) {
+        chain = &finterlock;
+        ext[next++] = VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME;
+    }
     /* the render enable's comparison of an occlusion query's count, made on the GPU (gpu/vk/query.c) */
     VkPhysicalDeviceConditionalRenderingFeaturesEXT fcond = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT,
@@ -855,7 +962,9 @@ static int create_device(void) {
         }
     }
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR findex8 = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR, .pNext = chain, .indexTypeUint8 = VK_TRUE};
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR,
+        .pNext = chain,
+        .indexTypeUint8 = VK_TRUE};
     if (g_vk.has_index8) {
         chain = &findex8;
         ext[next++] = index8_ext;
@@ -945,9 +1054,10 @@ static int create_device(void) {
                                   .preferredLargeHeapBlockSize = g_vk.alloc_cap < (256ull << 20) ? g_vk.alloc_cap : 0,
                                   .vulkanApiVersion = VK_API_VERSION_1_3,
                                   .pVulkanFunctions = &vf,
-                                  .flags = has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
+                                  .flags = g_vk.has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
     if (g_vk.has_descriptor_buffers) vai.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
+    __atomic_store_n(&g_vma_ready, 1, __ATOMIC_RELEASE);
     vk_uma_init();
     {
         /* which driver runs, by its own name: the system's, or a package's (gpu_driver) */
@@ -1241,8 +1351,10 @@ int vk_init(void) {
         /* Load libvulkan/vulkan-1 directly, or the driver the program's folders carry (an Apple app's MoltenVK): no SDL
            video driver or headless-surface extension is needed. */
         void* own = backend_vk_driver();
-        if (own) volkInitializeCustom((PFN_vkGetInstanceProcAddr)own);
-        else if (!VK_OK(volkInitialize())) return 0;
+        if (own)
+            volkInitializeCustom((PFN_vkGetInstanceProcAddr)own);
+        else if (!VK_OK(volkInitialize()))
+            return 0;
     } else {
         PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)backend_vk_loader();
         if (!gipa) {

@@ -125,9 +125,13 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
     u64 lo, hi;
     if (!m->rows || !m->slices || !m->row_bytes) return 1;
     vk_bl_range(m, &lo, &hi);
-    /* the bound ranges start on the device's alignment: the biases say where the data is in them */
+    /* the bound ranges start on the device's alignment: the biases say where the data is in them. The layout's range
+       ends at the last GOB column the move takes in its last row of blocks, short of hi by the columns of gobs_x past
+       row_bytes: a move of a row's columns from one further in (its bl_at that many blocks on) stays in the buffer */
     u64 bl_off = bl_at & ~(align - 1), lin_off = lin_at & ~(align - 1);
-    u64 bl_size = bl_at + (hi - lo) - bl_off, lin_size = lin_at + (u64)m->slices * m->rows * m->lin_pitch - lin_off;
+    u64 past = m->gobs_x ? ((u64)m->gobs_x - ((m->row_bytes + 63) >> 6)) << (9 + m->bh + m->bd) : 0;
+    u64 bl_size = bl_at + (hi - lo) - past - bl_off,
+        lin_size = lin_at + (u64)m->slices * m->rows * m->lin_pitch - lin_off;
     u32 runs = (m->row_bytes + 15) >> 4, gx = (runs + 7) >> 3, gy = ((m->y0 + m->rows + 7) >> 3) - (m->y0 >> 3);
     if ((bl_at | lin_at | m->lin_pitch) & 15 || m->lin_pitch < runs * 16 || bl_size > lim->maxStorageBufferRange ||
         lin_size > lim->maxStorageBufferRange || gx > lim->maxComputeWorkGroupCount[0] ||

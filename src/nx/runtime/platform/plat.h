@@ -81,6 +81,11 @@ int plat_power_on_charger(void);
 /* Starts the watcher of the host's power source, where the platform has one: a change marks the flag that
    plat_power_take_change reports. 0 when watching, -1 when this host has no watcher (the caller polls) */
 int plat_power_watch(void);
+/* Starts the watcher of the system's warnings of low memory where the platform has one, on a thread of its own: Linux's
+   pressure stall trigger, Windows' low memory notification. Each warning calls say with what the system said, until
+   say returns 0. 0 when watching; -1 when this system has none here (Android's comes as SDL's event, iOS's and macOS's
+   are the backend's) or it refused, with the reason in the log */
+int plat_memory_watch(int (*say)(const char* why));
 /* 1 when the watcher saw the host's power source change since the last call, and clears it */
 int plat_power_take_change(void);
 /* marks a change from a platform watcher's callback (Android's receiver, Apple's notification) */

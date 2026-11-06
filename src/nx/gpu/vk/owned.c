@@ -57,12 +57,14 @@ VkOwnRes* vk_own_res_new(u64 size) {
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = size ? size : 16,
                              /* bound where it is for whatever reads the bytes it holds: a draw's vertices, indices and
-                                buffers (buffer.c buf_get_owned), a dispatch's (compute.c res_bind), VIC's job words */
+                                buffers (buffer.c buf_get_owned), a dispatch's (compute.c res_bind), VIC's job words;
+                                and what draws write there, transform feedback's captures too (buffer.c keep_new) */
                              .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                       VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
                                       VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                      (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (!r) return NULL;
@@ -100,6 +102,7 @@ static void res_release(void* res) {
     vk_unlock();
     free(r);
 }
+void vk_own_res_ref(VkOwnRes* r) { res_retain(r); }
 void vk_own_res_unref(VkOwnRes* r) { res_release(r); }
 
 /* every write the GPU did so far visible to copies (before), the copies' writes to the host (after) */
@@ -136,6 +139,9 @@ static void cpu_read_note(u64 cpu, u64 size) {
         g_owned.cpu_read[slot].granule = g + 1;
         g_owned.cpu_read[slot].present = g_vk_present;
     }
+}
+void vk_own_cpu_touched(u64 cpu, u64 size) {
+    if (size) cpu_read_note(cpu, size);
 }
 int vk_own_cpu_read(u64 cpu, u64 size, u32 presents) {
     for (u64 g = cpu >> 16, e = (cpu + size - 1) >> 16, k = 0; g <= e && k < 256; g++, k++) {
@@ -432,15 +438,32 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
 /* Device memory's side of vk_guest_read: the guest bytes [gva, gva + size) into buf at at, which the CPU doesn't map.
    The CPU's bytes are staged and copied, the owned ones copied from their owners, unmapped pages read as zero. Staged
    into host memory and read there by the GPU, a copy engine's spans went over PCIe several times: the GPU copied its
-   own results and render targets out to host memory and read them back, about 34 MB a frame in one game's menu */
+   own results and render targets out to host memory and read them back, about 34 MB a frame in one game's menu.
+   Staging is taken at the range's first CPU byte, so a range its owners hold whole takes none: in a texture test 60% of
+   the copy engine's destinations were such, and the pooled staging chunks they took and never wrote cost the CPU a
+   page fault per page when it first wrote there, 7 ms for an 8 MiB copy source */
 typedef struct {
     VkBuffer sb, buf; /* the staging copied from, holding the range's byte o at so + o */
-    u64 so, at;
+    u64 so, at, size;
+    u8* p; /* the staging, NULL until a CPU byte needs it */
     VkBufferCopy r[64];
     u32 n;
+    int ahead; /* recorded in the submission's upload command buffer (vk_guest_read_ahead) */
 } DevRead;
+/* where a read's copies go: ahead of the submission's work, after the writes of earlier submissions, or here */
+static VkCommandBuffer dev_cmd(int ahead) { return ahead ? vk_cmd_upload(1) : vk_cmd(); }
+static u8* dev_staging(DevRead* d) {
+    if (!d->p) d->p = vk_stage_upload(d->size, 16, &d->sb, &d->so);
+    return d->p;
+}
+/* the bytes of a run own_lookup's k owners hold, sorted, apart and clipped to it */
+static u64 owned_bytes(const OwnRange* r, u32 k) {
+    u64 n = 0;
+    for (u32 i = 0; i < k; i++) n += r[i].size;
+    return n;
+}
 static void dev_flush(DevRead* d) {
-    if (d->n) rec_CmdCopyBuffer(vk_cmd(), d->sb, d->buf, d->n, d->r);
+    if (d->n) rec_CmdCopyBuffer(dev_cmd(d->ahead), d->sb, d->buf, d->n, d->r);
     d->n = 0;
 }
 /* the staged bytes [o, o + n) of the range go to buf */
@@ -453,14 +476,38 @@ static void dev_gap(DevRead* d, u64 o, u64 n) {
     if (d->n == sizeof d->r / sizeof *d->r) dev_flush(d);
     d->r[d->n++] = (VkBufferCopy){d->so + o, d->at + o, n};
 }
-int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) {
-    DevRead d = {.buf = buf, .at = at};
-    u8* p;
+/* whether every byte of guest [gva, gva + size) was written before the submission being recorded: none by an in-place
+   write of a submit not done yet (uma.c), and the owners' last writes recorded in earlier submissions
+   (VkOwnRes.written), no more of them than guest_read notes at a time */
+static int read_settled(u64 gva, u64 size) {
+    u64 now = vk_submit_number();
+    for (u64 o = 0; o < size;) {
+        u64 cpu = 0, n = gmmu_run(gva + o, size - o, &cpu);
+        OwnRange r[16];
+        u32 k;
+        if (!n) {
+            n = 0x1000 - ((gva + o) & 0xFFF);
+            if (n > size - o) n = size - o;
+        } else if (vk_uma_pending_cpu(cpu, n))
+            return 0;
+        else if (own_any() && (k = own_lookup(cpu, n, r, sizeof r / sizeof *r)) > 0) {
+            if (k > sizeof r / sizeof *r) return 0;
+            for (u32 i = 0; i < k; i++)
+                if (((const VkOwnRes*)r[i].res)->written >= now) return 0;
+        }
+        o += n;
+    }
+    return 1;
+}
+/* vk_guest_read_device, and with ahead its copies in the submission's upload command buffer: 0 then, with nothing
+   recorded, when a byte was written in this submission, which those copies would run before */
+static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead) {
+    DevRead d = {.buf = buf, .at = at, .size = size, .ahead = ahead};
     u64 o = 0;
-    int any = 0;
+    int any = ahead; /* the upload command buffer waits for earlier submissions' writes itself */
     if (!size) return 1;
-    if (!(p = vk_stage_upload(size, 16, &d.sb, &d.so))) return 0;
-    vk_render_end(); /* the copies happen outside rendering passes */
+    if (ahead && !read_settled(gva, size)) return 0;
+    if (!ahead) vk_render_end(); /* the copies happen outside rendering passes */
     vk_uma_gpu_reads(1);  /* the in-place writes there are copied below, not waited for */
     gmem_need(gva, size); /* results the renderer has pending there land first, as gmem_read has them */
     vk_uma_gpu_reads(0);
@@ -477,34 +524,46 @@ int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) {
             VkBufferCopy c = {io, at + o, n};
             if (!any) read_barrier(vk_cmd(), 1);
             any = 1;
-            rec_CmdCopyBuffer(vk_cmd(), ib, buf, 1, &c);
+            rec_CmdCopyBuffer(dev_cmd(ahead), ib, buf, 1, &c);
         } else if (!n) { /* an unmapped page reads as zero */
             n = 0x1000 - ((gva + o) & 0xFFF);
             if (n > size - o) n = size - o;
-            memset(p + o, 0, (size_t)n);
+            if (!dev_staging(&d)) return 0;
+            memset(d.p + o, 0, (size_t)n);
             dev_gap(&d, o, n);
         } else if (!own_any()) {
-            memcpy(p + o, GP(cpu), (size_t)n);
+            if (!dev_staging(&d)) return 0;
+            memcpy(d.p + o, GP(cpu), (size_t)n);
             dev_gap(&d, o, n);
-        } else if ((k = own_stage(cpu, n, p + o, r, sizeof r / sizeof *r)) > sizeof r / sizeof *r) {
-            own_acquire(cpu, n); /* more owners than noted: they land, and the bytes are read as they are then */
-            memcpy(p + o, GP(cpu), (size_t)n);
-            dev_gap(&d, o, n);
-        } else {
-            u64 from = cpu; /* the CPU's bytes between the owners, which own_stage staged; the owners' from them */
-            for (i = 0; i < k; i++) {
-                VkBufferCopy c = {r[i].res_off, at + o + (r[i].addr - cpu), r[i].size};
-                dev_gap(&d, o + (from - cpu), r[i].addr - from);
-                from = r[i].addr + r[i].size;
-                if (!any) read_barrier(vk_cmd(), 1);
-                any = 1;
-                rec_CmdCopyBuffer(vk_cmd(), ((const VkOwnRes*)r[i].res)->buf, buf, 1, &c);
+        } else /* the owners as many at a time as r holds: landing the range when it had more waits for the GPU and
+                  reads all its results back (a copy engine's tiles cut a surface into many owners). Staging only
+                  where CPU bytes lie among them: a part its owners hold whole is copied from them alone */
+            for (u64 c = cpu, part; c < cpu + n; c += part) {
+                const u32 max = sizeof r / sizeof *r;
+                part = cpu + n - c;
+                if ((k = own_lookup(c, part, r, max)) > max) { /* to the last noted one's end */
+                    part = r[max - 1].addr + r[max - 1].size - c;
+                    k = own_lookup(c, part, r, max);
+                }
+                if (owned_bytes(r, k) != part) { /* CPU bytes among the owners': staged */
+                    if (!dev_staging(&d)) return 0;
+                    k = own_stage(c, part, d.p + o + (c - cpu), r, max);
+                }
+                u64 from = c; /* the CPU's bytes between the owners, which own_stage staged; the owners' from them */
+                for (i = 0; i < k; i++) {
+                    VkBufferCopy cp = {r[i].res_off, at + o + (r[i].addr - cpu), r[i].size};
+                    dev_gap(&d, o + (from - cpu), r[i].addr - from);
+                    from = r[i].addr + r[i].size;
+                    if (!any) read_barrier(vk_cmd(), 1);
+                    any = 1;
+                    rec_CmdCopyBuffer(dev_cmd(ahead), ((const VkOwnRes*)r[i].res)->buf, buf, 1, &cp);
+                }
+                dev_gap(&d, o + (from - cpu), c + part - from);
             }
-            dev_gap(&d, o + (from - cpu), cpu + n - from);
-        }
         o += n;
     }
     dev_flush(&d);
+    if (ahead) return 1; /* the submission's work waits for the upload command buffer's copies (cmd.c submit) */
     /* before what reads the range, and what writes over it (render targets drawn over the bytes, vk_rt_overlay) */
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                           .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -515,6 +574,8 @@ int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) {
     rec_CmdPipelineBarrier2(vk_cmd(), &dep);
     return 1;
 }
+int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) { return guest_read(gva, size, buf, at, 0); }
+int vk_guest_read_ahead(u64 gva, u64 size, VkBuffer buf, u64 at) { return guest_read(gva, size, buf, at, 1); }
 int vk_guest_read_seen(u64 gva, u64 size, VkBuffer buf, u64 at) {
     if (!vk_guest_read_device(gva, size, buf, at)) return 0;
     vk_rt_overlay(gva, size, buf, at);

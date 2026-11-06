@@ -5,12 +5,12 @@
    rec_Cmd* functions copy a command's arguments into a ring, and the recording thread makes the Vulkan call. A
    command buffer is begun, ended and submitted from the ring too, in order with its commands.
 
-   Only the frame's command buffer (vk_cmd) goes through the ring. A command for any other one (compute's, VIC's)
-   is made at once, as are commands while vk_record=0. Whoever adds to the ring holds vk_lock, so there is one
-   producer at a time. A present goes through the ring too, after the submission whose semaphore it waits on. What
-   else has to happen after the queued commands are recorded and submitted waits for the ring to drain
-   (vk_rec_sync): a new command buffer from the frame's pool, a device wait. Waits on the graphics timeline need
-   none, as a timeline value can be waited for before its submission. */
+   Only the frame's command buffers (vk_cmd, and vk_cmd_upload's that runs before it) go through the ring. A command for
+   any other one (compute's, VIC's) is made at once, as are commands while vk_record=0. Whoever adds to the ring holds
+   vk_lock, so there is one producer at a time. A present goes through the ring too, after the submission whose
+   semaphore it waits on. What else has to happen after the queued commands are recorded and submitted waits for the
+   ring to drain (vk_rec_sync): a new command buffer from the frame's pool, a device wait. Waits on the graphics
+   timeline need none, as a timeline value can be waited for before its submission. */
 #include <stdlib.h>
 #include <string.h>
 #include "common/utilities/common.h"
@@ -42,6 +42,7 @@ static u64 g_head;
 static char g_pad0[64];
 static u64 g_tail;
 static char g_pad1[64];
+static u32 g_rec_tid; /* the recording thread's plat_tid: a vk_rec_sync from it waits for no one */
 static int g_sleep; /* the consumer waits on g_cv for more */
 static PMutex g_m;
 static PCond g_cv;
@@ -49,6 +50,7 @@ static PCond g_cv;
 static void rec_thread(void* arg) {
     u64 tail = 0;
     (void)arg;
+    __atomic_store_n(&g_rec_tid, plat_tid(), __ATOMIC_RELEASE); /* other threads read it in vk_rec_sync */
     SNX_THREAD_NAME("Vulkan recorder");
     (void)g_pad0;
     (void)g_pad1;
@@ -106,7 +108,9 @@ u64 vk_rec_behind(void) {
 }
 
 /* a command for cb goes through the ring */
-static int rec_on(VkCommandBuffer cb) { return cb == g_rec_cb && g_rec > 0; }
+static int rec_on(VkCommandBuffer cb) {
+    return g_rec > 0 && (cb == g_rec_cb || (cb && cb == vk_cmd_upload_recording()));
+}
 
 static void wake(void) {
     if (__atomic_load_n(&g_sleep, __ATOMIC_SEQ_CST)) {
@@ -159,19 +163,48 @@ static void rec_commit(void) {
 
 void vk_rec_sync(void) {
     if (g_rec <= 0) return;
+    /* The recording thread moves g_tail itself, after the packet it runs returns. A wait from one of its own packets
+       would wait for itself: a submit that found the device lost calls fatal(), which releases the window through
+       here, and the process then spins at full speed instead of showing the error (record.c's submit_run). Every
+       packet before this one is already recorded, and the packet after it is not part of what the caller asks for */
+    u32 self = plat_tid();
+    if (__atomic_load_n(&g_rec_tid, __ATOMIC_ACQUIRE) == self) return;
     vk_lock(); /* no command is added meanwhile */
     publish();
     while (__atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) != g_pending) plat_yield();
     vk_unlock();
 }
 
+typedef struct {
+    void (*fn)(void*);
+    void* arg;
+} RecCall;
+static void rec_call_run(const void* p) {
+    const RecCall* c = p;
+    c->fn(c->arg);
+}
+void vk_rec_run(void (*fn)(void*), void* arg) {
+    RecCall* c;
+    if (!rec_enabled()) {
+        fn(arg);
+        return;
+    }
+    vk_lock(); /* the ring has one producer at a time */
+    c = rec_push(rec_call_run, sizeof *c);
+    c->fn = fn;
+    c->arg = arg;
+    publish();
+    vk_unlock();
+    vk_rec_sync(); /* the packet, and the commands queued before it */
+}
+
 void vk_rec_queue(VkQueue q) {
     if (q == g_vk.gfx) vk_rec_sync();
 }
 
-/* The graphics and the compute queue's locks (vk_queue_lock): this thread submits and presents on the graphics queue
-   while the GPU thread may bind an image's pieces on it (memory.c). The compute queue's is the graphics queue's when
-   they are one queue */
+/* The graphics and the compute queue's locks (vk_queue_lock): this thread submits, presents and binds sparse memory
+   (memory.c) on the graphics queue while the GPU thread may submit compute on it. The compute queue's is the graphics
+   queue's when they are one queue */
 static PMutex g_gfx_qlock = PMUTEX_INIT, g_compute_qlock = PMUTEX_INIT;
 static PMutex* queue_mutex(VkQueue q) { return q == g_vk.gfx ? &g_gfx_qlock : &g_compute_qlock; }
 void vk_queue_lock(VkQueue q) { pm_lock(queue_mutex(q)); }
@@ -192,22 +225,32 @@ void vk_rec_begin(VkCommandBuffer cb) {
     *(VkCommandBuffer*)rec_push(begin_run, sizeof cb) = cb;
 }
 
+void vk_rec_begin_upload(VkCommandBuffer cb) {
+    if (!rec_enabled()) {
+        begin_run(&cb);
+        return;
+    }
+    *(VkCommandBuffer*)rec_push(begin_run, sizeof cb) = cb;
+}
+
 typedef struct {
-    VkCommandBuffer cb;
-    VkSemaphoreSubmitInfo w[2], s[2];
+    VkCommandBuffer up, cb;
+    VkSemaphoreSubmitInfo w[3], s[2];
     u32 nw, ns;
     VkSemaphore timeline;
     u64 value;
 } Submit;
 static void submit_run(const void* p) {
     const Submit* x = p;
+    VkCommandBufferSubmitInfo c[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->up},
+                                      {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->cb}};
+    if (x->up) VK_OK(vkEndCommandBuffer(x->up));
     VK_OK(vkEndCommandBuffer(x->cb));
-    VkCommandBufferSubmitInfo c = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->cb};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                         .waitSemaphoreInfoCount = x->nw,
                         .pWaitSemaphoreInfos = x->w,
-                        .commandBufferInfoCount = 1,
-                        .pCommandBufferInfos = &c,
+                        .commandBufferInfoCount = x->up ? 2u : 1u,
+                        .pCommandBufferInfos = x->up ? c : c + 1,
                         .signalSemaphoreInfoCount = x->ns,
                         .pSignalSemaphoreInfos = x->s};
     vk_wait_foreground();
@@ -225,9 +268,9 @@ static void submit_run(const void* p) {
         VK_OK(vkSignalSemaphore(g_vk.dev, &ss));
     }
 }
-void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, const VkSemaphoreSubmitInfo* s,
-                   u32 ns) {
-    Submit x = {.cb = cb, .nw = nw, .ns = ns, .timeline = s[0].semaphore, .value = s[0].value};
+void vk_rec_submit(VkCommandBuffer up, VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw,
+                   const VkSemaphoreSubmitInfo* s, u32 ns) {
+    Submit x = {.up = up, .cb = cb, .nw = nw, .ns = ns, .timeline = s[0].semaphore, .value = s[0].value};
     memcpy(x.w, w, nw * sizeof *w);
     memcpy(x.s, s, ns * sizeof *s);
     g_rec_cb = VK_NULL_HANDLE;
@@ -237,6 +280,15 @@ void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, c
     }
     *(Submit*)rec_push(submit_run, sizeof x) = x;
     publish(); /* the timeline value is waited for by whoever needs the work done */
+}
+
+void vk_rec_call(void (*fn)(const void* arg), const void* arg, u64 size) {
+    if (!rec_enabled()) {
+        fn(arg);
+        return;
+    }
+    memcpy(rec_push(fn, size), arg, size);
+    rec_commit();
 }
 
 /* A present, after the frame's submission. The GPU thread waited for the ring to drain before presenting, and so
@@ -625,8 +677,11 @@ static void sets_run(const void* p) {
         if (!(real[i] = rec_set_real(sets[i]))) return; /* a set the pools had no room for: not bound */
     vkCmdBindDescriptorSets(x->cb, x->bp, x->layout, x->first, x->n, real, x->ndyn, x->ndyn ? dyn : NULL);
 }
+static u64 g_set_binds;
+u64 vk_rec_set_binds(void) { return __atomic_load_n(&g_set_binds, __ATOMIC_RELAXED); }
 void rec_CmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout, u32 first, u32 n,
                                const VkDescriptorSet* sets, u32 ndyn, const u32* dyn) {
+    __atomic_add_fetch(&g_set_binds, 1, __ATOMIC_RELAXED);
     if (!rec_on(cb)) {
         vkCmdBindDescriptorSets(cb, bp, layout, first, n, sets, ndyn, dyn);
         return;

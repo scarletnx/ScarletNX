@@ -236,3 +236,48 @@ static int check_owned_in_place_write(void) {
     puts("Owned ranges written in place land the newest write");
     return 0;
 }
+
+/* A read into device memory (vk_guest_read_device: a copy engine's destination, a dispatch's input) of bytes an owner
+   holds whole copies them from the owner on the GPU and takes no staging: the upload after it is handed the bytes
+   right after the one before it. Staging taken for the whole range stayed unwritten, and a pooled staging chunk that
+   only such reads had taken cost the CPU a page fault per page when it first wrote there. A read of the owner's bytes
+   and the CPU's after them stages the CPU's, and both land, the owner's without landing it */
+static int check_owned_read_device(void) {
+    const u64 cpu = HEAP_BASE + 0x770000, gva = 0xa800000;
+    VkBuffer rb, first, next;
+    u64 at_first, at_next, lands;
+    u8* result;
+    if (!own_traps()) return 0;
+    gmmu_map(gva, cpu, 0x2000);
+    vk_lock();
+    vk_finish();
+    vk_frame_next();
+    memset(GP(cpu), 0x11, 0x2000);
+    VkOwnRes* owner = vk_own_res_new(0x1000);
+    VkOwnRes* dst = vk_own_res_new(0x2000);
+    result = vk_readback_buffer(0x2000, &rb);
+    CHECK(owner && dst && result);
+    CHECK(!owned_test_fill(owner->buf, 0, 0x1000, 0x22));
+    vk_own_publish_owned(cpu, 0x1000, owner, 0);
+    lands = own_landings();
+    CHECK(vk_stage_upload(64, 16, &first, &at_first));
+    CHECK(vk_guest_read_device(gva, 0x1000, dst->buf, 0)); /* the owner's bytes alone */
+    CHECK(vk_stage_upload(64, 16, &next, &at_next));
+    printf("a device read of 4096 bytes an owner holds: the next upload at %llu bytes after the one before it, in the "
+           "%s buffer\n",
+           (unsigned long long)(at_next - at_first), next == first ? "same" : "next");
+    CHECK(next == first && at_next == at_first + 64);
+    CHECK(vk_guest_read_device(gva, 0x2000, dst->buf, 0)); /* the owner's, then the CPU's */
+    VkBufferCopy copy = {0, 0, 0x2000};
+    rec_CmdCopyBuffer(vk_cmd(), dst->buf, rb, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 0x2000; i++) CHECK(result[i] == (i < 0x1000 ? 0x22 : 0x11));
+    CHECK(own_landings() == lands);
+    own_acquire(cpu, 0x1000);
+    vk_own_res_unref(dst);
+    vk_own_res_unref(owner);
+    vk_unlock();
+    puts("a device read stages the CPU's bytes alone, and copies an owner's from it");
+    return 0;
+}

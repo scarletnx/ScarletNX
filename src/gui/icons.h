@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The icons drawn beside a menu item's label, the launcher's and the game's menu's: each a letter of the menu's font
-   two columns wide at a code point of Unicode's private use area, U+E000 on in this order, named by the Lucide icon
-   (lucide.dev) whose symbol it shows. Their 16x16 glyphs are src/gui/icons.hex, a line each in this order, compiled in
-   by cmake/gui_icons.cmake, which refuses one missing, blank or out of its place, naming it */
+/* The icons drawn beside a menu item's label, the launcher's and the game's menu's, and before the stats box's lines:
+   each a letter of the menu's font two columns wide at a code point of Unicode's private use area, U+E000 on in this
+   order, named by the Lucide icon (lucide.dev) whose symbol it shows. Their 16x16 glyphs are src/gui/icons.hex, a line
+   each in this order, compiled in by cmake/gui_icons.cmake, which refuses one missing, blank or out of its place,
+   naming it */
 #ifndef SNX_GUI_ICONS_H
 #define SNX_GUI_ICONS_H
 #include <stdint.h>
@@ -48,6 +49,9 @@ enum {
     GUI_ICON_HARD_DRIVE_DOWNLOAD,
     GUI_ICON_ACTIVITY,
     GUI_ICON_INFO,
+    GUI_ICON_GPU,
+    GUI_ICON_MEMORY_STICK,
+    GUI_ICON_LAYERS,
     GUI_ICON_END
 };
 #define GUI_ICON_FIRST GUI_ICON_GAMEPAD_2

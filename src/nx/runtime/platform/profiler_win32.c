@@ -3,6 +3,7 @@
 /* The profile option on Windows: samples the program counter of the runtime's threads every millisecond, and writes
    the functions they spent their time in to profile.txt beside the game every 10 seconds */
 #include "common/utilities/common.h"
+#include "nx/runtime/platform/tracy.h"
 #include "nx/loader/module_abi.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
@@ -140,6 +141,7 @@ static void write_profile(u64 started) {
 static DWORD WINAPI sampler(LPVOID unused) {
     u64 started = plat_ns(), next_write = started + (u64)PROF_PERIOD_MS * 1000000u;
     (void)unused;
+    SNX_THREAD_NAME("profiler");
     fns_index();
     for (;;) {
         int i, used = __atomic_load_n(&g_threads_used, __ATOMIC_ACQUIRE);

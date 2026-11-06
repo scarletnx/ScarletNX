@@ -615,7 +615,15 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         memcpy(was, is, sizeof was);
         last_present_ns = now_ns;
         g_vk_present++;
-        stats_frame(now_ns);
+        {
+            SnxStatsGpu gpu = {0};
+            if (__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) { /* read only while the box shows */
+                gpu.busy_ns = vk_gpuprof_busy_ns();
+                gpu.timed = vk_gpuprof_timed();
+                vk_mem_driver_use(&gpu.vram, &gpu.vram_budget);
+            }
+            stats_frame(now_ns, &gpu);
+        }
         if (g_vk_present == 1 || g_vk_present % 600 == 0) guest_stats_log(now_ns, g_vk_present);
         vk_mem_present();
         if (g_last) vk_surf_touch(g_last); /* what screenshots read stays */
@@ -642,16 +650,18 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 (unsigned long long)g_vk_draw_kept, (unsigned long long)g_vk_draw_checked,
                 (unsigned long long)g_vk_targets_kept);
             {
-                u64 pipes, hits, make_ms, pipe_ms, shaders, shader_ms, uploads, upload_bytes;
+                u64 pipes, hits, make_ms, pipe_ms, shaders, shader_ms, uploads, upload_bytes, partial, partial_bytes;
                 vk_pipeline_stats(&pipes, &hits, &make_ms, &pipe_ms, &shaders, &shader_ms);
                 vk_tex_stats(&uploads, &upload_bytes);
+                vk_tex_partial_stats(&partial, &partial_bytes);
                 LOG("vulkan: %llu shaders translated (%llu ms), %llu pipelines made (%llu from the cache, %llu ms "
-                    "making, %llu ms waited for), %llu render targets made, %llu texture uploads (%llu MB); %llu "
-                    "frames over 50 ms in the last 600, the slowest %llu ms\n",
+                    "making, %llu ms waited for), %llu render targets made, %llu texture uploads (%llu MB), %llu of "
+                    "them some blocks alone (%llu MB); %llu frames over 50 ms in the last 600, the slowest %llu ms\n",
                     (unsigned long long)shaders, (unsigned long long)shader_ms, (unsigned long long)pipes,
                     (unsigned long long)hits, (unsigned long long)make_ms, (unsigned long long)pipe_ms,
                     (unsigned long long)vk_rt_made(), (unsigned long long)uploads,
-                    (unsigned long long)(upload_bytes >> 20), (unsigned long long)slow_frames,
+                    (unsigned long long)(upload_bytes >> 20), (unsigned long long)partial,
+                    (unsigned long long)(partial_bytes >> 20), (unsigned long long)slow_frames,
                     (unsigned long long)(slowest_ns / 1000000));
                 slow_frames = slowest_ns = 0;
                 if (g_vk.has_gpl) {
@@ -678,8 +688,8 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 vk_astc_stats(&bc7_levels, &bc7_hits, &bc7_bytes, &bc7_rgba8);
                 vk_bc7_cache_stats(&reads, &stored, &restarts, &file);
                 if (bc7_levels)
-                    LOG("vulkan: %llu ASTC texture levels uploaded as BC7 (%llu of them from the BC7 cache, which "
-                        "took %llu new and holds %llu MB), %llu MB where RGBA8 takes %llu MB\n",
+                    LOG("vulkan: %llu ASTC texture levels or regions uploaded as BC7 (%llu of them from the BC7 cache, "
+                        "which took %llu new and holds %llu MB), %llu MB where RGBA8 takes %llu MB\n",
                         (unsigned long long)bc7_levels, (unsigned long long)bc7_hits, (unsigned long long)stored,
                         (unsigned long long)(file >> 20), (unsigned long long)(bc7_bytes >> 20),
                         (unsigned long long)(bc7_rgba8 >> 20));
@@ -734,9 +744,10 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 (unsigned long long)g_vk_fb_draws, (unsigned long long)g_vk_fb_barriers,
                 (unsigned long long)g_vk_fb_restarts, (unsigned long long)g_vk_rt_copies);
             LOG("vulkan: %llu rendering passes, %llu clear commands, %llu attachments cleared and %llu left undefined "
-                "by their load op\n",
+                "by their load op; %llu buffers filled ahead of the passes\n",
                 (unsigned long long)g_vk_passes, (unsigned long long)g_vk_clear_cmds,
-                (unsigned long long)g_vk_clear_loads, (unsigned long long)g_vk_dontcare_loads);
+                (unsigned long long)g_vk_clear_loads, (unsigned long long)g_vk_dontcare_loads,
+                (unsigned long long)vk_buf_ahead());
             vk_pass_ends_log();
             vk_descriptors_stats();
             /* what the GPU engines keep on the GPU (docs/GPU_OWNERSHIP.md), and what the CPU had to wait for */
@@ -1032,6 +1043,8 @@ const Renderer vk_renderer = {
     .render_predicate_drop = vk_render_predicate_drop,
     .release_retire = vk_release_retire,
     .report_stall = vk_report_stall,
+    .memory_text = vk_memory_text,
+    .memory_blocks = vk_memory_blocks,
     .idle = vkr_idle,
     .reset = vkr_reset,
     .flush_targets = vkr_flush_targets,

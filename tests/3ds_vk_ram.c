@@ -7,6 +7,7 @@
    device made again takes the RAM again. A host whose device starts, then cannot take the RAM, fails this test: on
    main, RADV did (#1116). No device at all is a skip. */
 #include "3ds/gpu/vk/vk.h"
+#include "support/3ds_vk_path.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,10 +51,12 @@ static void expect(const unsigned char* got, const unsigned char* want, size_t s
 }
 /* the device started, with the RAM; 77 (a skip) when there is no device, 1 when it started and could not take the
    RAM */
-static int start(void) {
+static int start(int vk_memory) {
     char why[1024];
-    if (snx_ctr_vk_init(g_m, why, sizeof why))
+    if (snx_ctr_vk_init(g_m, why, sizeof why)) {
+        test_ctr_vk_memory_taken(vk_memory);
         return 0; /* how it took the RAM: device.c's line on the standard error */
+    }
     const char* reason = snx_ctr_vk_error();
     if (!strncmp(reason, "the driver cannot import", 24) || !strncmp(reason, "the device has no", 17)) {
         fprintf(stderr, "the device started and cannot take the RAM: %s\n", why);
@@ -62,7 +65,8 @@ static int start(void) {
     printf("no Vulkan device (%s): the RAM's checks skipped\n", why);
     return 77;
 }
-int main(void) {
+int main(int argc, char** argv) {
+    int vk_memory = test_ctr_vk_memory(&argc, argv);
     static unsigned char before[256], fill[64], stored[64], got[256];
     g_m = snx_ctr_memory_new(SNX_CTR_OLD);
     SnxCtrAddressSpace* s = snx_ctr_space_new(g_m);
@@ -72,7 +76,7 @@ int main(void) {
     assert(snx_ctr_map(s, 0x200000, PAGE, 4096, SNX_CTR_READ) == SNX_CTR_MEM_OK);
     for (unsigned i = 0; i < sizeof before; ++i) before[i] = (unsigned char)(i * 13 + 5);
     assert(snx_ctr_write(s, 0x100000, before, sizeof before) == SNX_CTR_MEM_OK);
-    int started = start();
+    int started = start(vk_memory);
     if (started) {
         snx_ctr_space_free(s);
         snx_ctr_memory_free(g_m);
@@ -112,7 +116,7 @@ int main(void) {
     memcpy(before, "again", 5);
     ++checks;
     /* a device made again takes the RAM again */
-    started = start();
+    started = start(vk_memory);
     assert(!started);
     gpu_copy(PAGE, OTHER + 0x800, sizeof before);
     assert(snx_ctr_phys_read(g_m, OTHER + 0x800, got, sizeof before) == SNX_CTR_MEM_OK);

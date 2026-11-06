@@ -522,6 +522,30 @@ static void memory_fit_old(void) {
     }
 }
 
+int options_astc_bc_old(const char* old) {
+    if (!strcmp(old, "1")) return 0;
+    if (!strcmp(old, "0")) return -1;
+    return -2;
+}
+/* astc_bc, deprecated for astc_mode, read while the file and the command line give astc_mode no value, as memory_fit
+   is */
+static void astc_bc_old(void) {
+    const char* old = ini_deprecated_value("astc_bc");
+    int now;
+    if (!old || override_of("astc_mode") || store_find("astc_mode")) return;
+    now = options_astc_bc_old(old);
+    if (now == -2)
+        WARN("settings: astc_bc=%s, deprecated, is neither 0 nor 1: astc_mode takes its default, 0 (Auto)\n", old);
+    else if (now == -1)
+        WARN("settings: astc_bc=%s, deprecated, was its default: astc_mode takes its own, 0 (Auto), which encodes ASTC "
+             "textures again as BC7 where the GPU samples BCn but not ASTC (docs/DEPRECATIONS.md)\n",
+             old);
+    else {
+        store_put("astc_mode", "0");
+        WARN("settings: astc_bc=%s, deprecated, is astc_mode=0 (Auto) now (docs/DEPRECATIONS.md)\n", old);
+    }
+}
+
 static void say_deprecated(void) {
     const char* keys[STORE_MAX];
     char line[2048];
@@ -603,6 +627,7 @@ void ini_open(const char* path) {
         free(text);
     }
     memory_fit_old();
+    astc_bc_old();
     n = pending_take(taken);
     say_deprecated();
     apply_all();

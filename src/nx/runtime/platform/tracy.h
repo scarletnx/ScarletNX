@@ -105,7 +105,10 @@ void snx_tracy_lock_try(SnxTracyLock* l, int acquired);
 #define SNX_FRAME_MARK()        ((void)0)
 #define SNX_FRAME_SCOPED(ctx, name)        [[maybe_unused]] int ctx = 0
 #define SNX_PLOT(name, value)   ((void)0)
-#define SNX_THREAD_NAME(name)   ((void)0)
+#include "common/utilities/common.h"
+/* the thread's name for the system: the "threads:" line of the log (main.c), a debugger and a crash report name the
+   threads by it */
+#define SNX_THREAD_NAME(name) snx_thread_name(name)
 static inline int snx_tracy_gpu_context(int ctx, int64_t gpu_time, float period, int calibrated,
                                         const char* name) {
     (void)ctx, (void)gpu_time, (void)period, (void)calibrated, (void)name;

@@ -402,6 +402,7 @@ void snx_tracy_zone_end(TracyCZoneCtx ctx) {
 /* Remembers the name for a later attach, and sends it now when a server can see it. */
 void snx_tracy_thread_name(const char* name) {
     if (!name || !*name) return;
+    snx_thread_name(name); /* the system's name too, as the build without Tracy gives it (tracy.h) */
     snprintf(t_tracy.name, sizeof t_tracy.name, "%s", name);
     if (!snx_tracy_enter()) return;
     if (TracyCIsConnected) TracyCSetThreadName(t_tracy.name);

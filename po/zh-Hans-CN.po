@@ -1615,11 +1615,6 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Cannot find %s beside ScarletNX or on PATH."
-msgstr "在 ScarletNX 旁边或 PATH 中找不到 %s。"
-
-#: src/gui/main.c
-#, c-format
 msgid "The dumps' icons are not asked for (%s)"
 msgstr "未能读取转储的图标（%s）"
 
@@ -2363,6 +2358,15 @@ msgstr "，队列中 %d 项"
 #: src/gui/main.c
 msgid "Queue"
 msgstr "队列"
+
+#: src/gui/main.c
+#, c-format
+msgid "Cannot find %s beside ScarletNX or on PATH."
+msgstr "在 ScarletNX 旁边或 PATH 中找不到 %s。"
+
+#: src/gui/main.c
+msgid "the selected driver"
+msgstr "所选的驱动程序"
 
 #: src/gui/main.c
 msgid "Theme"
@@ -4061,10 +4065,6 @@ msgid "%s is compiling (%d%%): the game plays once the queue ends"
 msgstr "%s 正在编译（%d%%）：队列结束后游戏即可运行"
 
 #: src/gui/main.c
-msgid "the selected driver"
-msgstr "所选的驱动程序"
-
-#: src/gui/main.c
 msgid "The Recompiled Library's Main is off and no Extra of it can take a game: Add to Library on its Main, or add a folder to it, in Settings > App > Folders"
 msgstr ""
 
@@ -4282,12 +4282,12 @@ msgstr "请从这台电脑的存储中选取文件（%s）。"
 
 #: src/gui/main.c
 #, c-format
-msgid "%s opens with %s: cannot find %s beside ScarletNX or on PATH."
+msgid "%s opens with %s, not %s."
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%s opens with %s, not %s."
+msgid "%s opens with %s: cannot find %s beside ScarletNX or on PATH."
 msgstr ""
 
 #: src/gui/main.c
@@ -4694,6 +4694,16 @@ msgstr "未显示用户：内存不足"
 #, c-format
 msgid "%d to move, %d staying: --migrate=yes moves them"
 msgstr "将移动 %d 项，%d 项保留：--migrate=yes 会移动它们"
+
+#: src/gui/model.c
+#, c-format
+msgid "%s opens with %s, whose driver %s this app does not include."
+msgstr ""
+
+#: src/gui/model.c
+#, c-format
+msgid "%s needs the driver %s, which this app does not include."
+msgstr ""
 
 #: src/gui/model.c
 msgid "RAM and CPU: unavailable"

@@ -17,8 +17,9 @@ signature. An attachment that isn't a ScarletNX log is named as such. A maintain
 report gets a comment of its own, once: ready for an edenprobe case, and the MCP tools that write one.
 
 PROGRAM is snx-logscan, or scarletnx with --scan-log after it (SNX_LOGSCAN, else snx-logscan on PATH): the workflow
-builds it from its five files. --issue N triages that issue as an event for it would. --dry-run reads GitHub as triage does but writes nothing:
-the comment and the label changes are printed instead.
+builds it from its sources alone. --issue N triages that issue as an event for it would, and fails on a number that
+isn't an issue's, a pull request or an issue without a log: the workflow's run by hand for one issue. --dry-run reads
+GitHub as triage does but writes nothing: the comment and the label changes are printed instead.
 
 index writes each game report as a JSON line: its number, title, state and URL, and each log's name, URL, signature,
 outcome, title ID and build, as the summary comments record them (a JSON comment at their end). The filters keep the
@@ -54,6 +55,8 @@ CONFIRMED_MARK = '<!-- game-reports:confirmed -->'
 DATA = re.compile(r'<!-- game-reports (\{.*?\}) -->', re.DOTALL)
 BOTS = ('github-actions[bot]', 'github-actions')
 MAX_LOGS = 3
+# triage's answer for an issue none of whose places holds a log
+NO_LOG = 'no log attached'
 MAX_BYTES = 64 << 20
 MAX_SAME = 10
 COMMENT_LIMIT = 65000  # GitHub refuses a comment over 65536 characters
@@ -65,14 +68,34 @@ ATTACHMENT = re.compile(
 )
 
 
-class GitHub:
-    """The REST and GraphQL calls triage and index make, through gh"""
+class GhError(RuntimeError):
+    """A gh api call that failed: gh's message (its stderr), then GitHub's answer (its stdout), whose errors name
+    their reason by a code"""
 
-    def __init__(self, repo):
+    def __init__(self, what, result):
+        streams = (result.stderr.strip(), result.stdout.strip())
+        super().__init__(f'{what} exits {result.returncode}: ' + '\n'.join(part for part in streams if part))
+        self.answer = result.stdout
+
+    def codes(self):
+        """The codes of the answer's errors: already_exists, invalid..."""
+        try:
+            answer = json.loads(self.answer)
+        except ValueError:
+            return set()
+        errors = answer.get('errors') if isinstance(answer, dict) else None
+        return {error.get('code') for error in errors or [] if isinstance(error, dict)}
+
+
+class GitHub:
+    """The REST and GraphQL calls triage and index make, through gh (the program and its first arguments)"""
+
+    def __init__(self, repo, gh=('gh',)):
         self.repo = repo
+        self.gh = list(gh)
 
     def api(self, path, method='GET', data=None, paginate=False):
-        args = ['gh', 'api', '-H', 'Accept: application/vnd.github+json', '-X', method, path]
+        args = [*self.gh, 'api', '-H', 'Accept: application/vnd.github+json', '-X', method, path]
         if paginate:
             args += ['--paginate', '--slurp']
         if data is not None:
@@ -81,7 +104,7 @@ class GitHub:
             args, input=json.dumps(data) if data is not None else None, capture_output=True, text=True, check=False
         )
         if result.returncode:
-            raise RuntimeError(f'gh api {method} {path}: {result.stderr.strip() or result.stdout.strip()}')
+            raise GhError(f'gh api {method} {path}', result)
         value = json.loads(result.stdout) if result.stdout.strip() else None
         return [item for page in value for item in page] if paginate else value
 
@@ -100,8 +123,8 @@ class GitHub:
     def label(self, name, color, description):
         try:
             self.api(f'repos/{self.repo}/labels', 'POST', {'name': name, 'color': color, 'description': description})
-        except RuntimeError as error:
-            if 'already_exists' not in str(error):
+        except GhError as error:
+            if 'already_exists' not in error.codes():
                 raise
 
     def set_labels(self, number, add, remove):
@@ -131,9 +154,9 @@ class GitHub:
             after = page['pageInfo']['endCursor']
 
     def graphql(self, args):
-        result = subprocess.run(['gh', 'api', *args], capture_output=True, text=True, check=False)
+        result = subprocess.run([*self.gh, 'api', *args], capture_output=True, text=True, check=False)
         if result.returncode:
-            raise RuntimeError(f'gh api graphql: {result.stderr.strip()}')
+            raise GhError('gh api graphql', result)
         return json.loads(result.stdout)
 
 
@@ -395,7 +418,7 @@ def triage(github, event, logscan, fetch=download):
                 continue
         found.append((name, link, url, pasted))
     if not found:
-        return 'no log attached'
+        return NO_LOG
     entries = []
     for name, link, url, pasted in found[-MAX_LOGS:]:
         entry = {'name': name, 'url': link, 'report': None}
@@ -427,13 +450,35 @@ def triage(github, event, logscan, fetch=download):
     return f'#{number}: {len(entries)} log(s), {", ".join(sorted(outcomes))}'
 
 
+def issue_number(text):
+    """--issue's value: an issue's number, a whole number from 1 as GitHub writes it"""
+    if not re.fullmatch(r'[1-9][0-9]*', text):
+        raise argparse.ArgumentTypeError(f'{text!r} is not an issue number (a whole number from 1)')
+    return int(text)
+
+
+def triage_issue(github, number, logscan, fetch=download):
+    """--issue N: the issue as an event for it would triage it. Asked for by its number, an issue that can't be read, a
+    pull request or an issue without a log is refused rather than left alone"""
+    try:
+        issue = github.issue(number)
+    except RuntimeError as error:
+        raise SystemExit(f'game-reports: issue #{number} cannot be read: {error}') from None
+    if 'pull_request' in issue:
+        raise SystemExit(f'game-reports: #{number} is a pull request, and its comments are no game reports')
+    result = triage(github, {'issue': issue}, logscan, fetch)
+    if result == NO_LOG:
+        raise SystemExit(f'game-reports: issue #{number} has no log attached or pasted, so nothing to summarize')
+    return result
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     sub = ap.add_subparsers(dest='command', required=True)
     t = sub.add_parser('triage')
     which = t.add_mutually_exclusive_group(required=True)
     which.add_argument('--event')
-    which.add_argument('--issue', type=int)
+    which.add_argument('--issue', type=issue_number)
     t.add_argument('--dry-run', action='store_true')
     t.add_argument('--repo', default=os.environ.get('GITHUB_REPOSITORY'))
     t.add_argument('--logscan', default=os.environ.get('SNX_LOGSCAN', 'snx-logscan'))
@@ -449,12 +494,13 @@ def main():
     if args.command == 'triage':
         if args.dry_run:
             github = DryRun(args.repo)
+        logscan = LogScan(shlex.split(args.logscan))
         if args.issue:
-            event = {'issue': {'number': args.issue}}
-        else:
-            with open(args.event, encoding='utf-8') as f:
-                event = json.load(f)
-        print(triage(github, event, LogScan(shlex.split(args.logscan))))
+            print(triage_issue(github, args.issue, logscan))
+            return
+        with open(args.event, encoding='utf-8') as f:
+            event = json.load(f)
+        print(triage(github, event, logscan))
         return
     for report in index(github):
         logs = [

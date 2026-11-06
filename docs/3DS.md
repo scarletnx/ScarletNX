@@ -105,9 +105,10 @@ button, drawn through the PICA renderer. Input is the next gap.
 The GPU's work runs on one Vulkan device (`src/3ds/gpu/vk/`), which needs Vulkan
 1.3, 8-bit storage buffers and `VK_EXT_external_memory_host` or
 `VK_EXT_external_memory_dma_buf`: the board's RAM regions are its buffers, imported
-or, where the driver will not import them, the device's own memory (below), so the
-GPU reads and writes the guest's memory in place and nothing of it is copied by the
-CPU. Memory fills, display transfers
+or, where the driver will not import them, the device's own memory (below), so a GPU
+that shares the system's memory reads and writes the guest's memory in place and nothing
+of it is copied by the CPU; a discrete GPU works on a copy of it in its own memory
+(below). Memory fills, display transfers
 and texture copies are compute shaders (`gpu/vk/shaders/`), held byte for byte to
 the CPU reference `gpu/transfer.c` by `tests/3ds_vk_transfer.c`. The Y2R engine (`y2r:u`, `services/y2r.c`), which
 turns a video's YUV frames to RGB, converts on the GPU too (`gpu/vk/y2r.c`). Its streams
@@ -117,8 +118,12 @@ from Azahar's. PICA draws run
 on the GPU too (`gpu/vk/render.c`). The vertex program is decompiled (`gpu/vk/vsgen.c`)
 and the fragment pipeline generated (`gpu/vk/fsgen.c`), both ported from Azahar's
 shader generators and both written as SPIR-V words directly (`src/common/utilities/spirv_emit.c`, shared with NX), with no
-shader compiler at run time. The output merger is the pipeline's fixed state. Vertex and
-index data are read in place, except in a draw with a geometry shader, whose vertex and
+shader compiler at run time. The output merger is the pipeline's fixed state. A new pipeline
+is made as its first draw needs it, which pauses the game while the driver compiles it; with the
+Switch's `async_pipelines=1` (`--async_pipelines=1`) workers make it instead
+(`pipeline_threads` of them) and the draws that need it are skipped until it is ready, so what
+they draw shows up a few frames late, and the run's end says how many were skipped. Vertex and
+index data are read where the GPU works (in place, or its copy), except in a draw with a geometry shader, whose vertex and
 geometry shaders run on the CPU (see below). `tests/3ds_vk_draw.c` holds the draws to the
 software renderer they replaced, which stays as their reference. The shown
 framebuffers are decoded and turned to the landscape screen by a compute shader
@@ -139,20 +144,50 @@ audio.
 
 Write tracking keeps the guest from seeing any of this unfinished
 (`snx_ctr_track_*` in `memory/ctr_memory.h`). Each physical page has a level:
-the CPU's; watched, when the GPU keeps something made from it or a submission not done
-reads it, so a write traps; or the GPU's, when a target there is newer or a submission
-not done writes it, so every access traps. Every guest view of the page is protected
+the CPU's; watched, when the GPU keeps something made from it, a submission not done
+reads it or the GPU's copy of it holds the same bytes, so a write traps; or the GPU's,
+when a target there is newer, a submission not done writes it or the GPU's copy of it
+is newer, so every access traps. Every guest view of the page is protected
 to its level, and so are the memory API's accesses and a bus master's by physical
 address. A trap is resolved by the renderer, on the faulting thread:
-- the GPU's page has its targets stored and its writes waited for, and is watched
-  after;
-- a watched page has the GPU's reads of it waited for and what was made of it dropped,
-  and is the CPU's after.
+- the GPU's page has its targets stored and its writes waited for, or its copy copied
+  back, and is watched after;
+- a watched page has the GPU's reads of it waited for, what was made of it dropped and
+  its copy stale, and is the CPU's after.
 
 A guest fault (`memory/host.h`) is taken by SIGSEGV or SIGBUS on Linux, FreeBSD and the
 other POSIX hosts, on an alternate stack large enough to wait for the GPU, and by a
 vectored exception handler on Windows. `tests/3ds_memory_track.c` checks the levels
 through the flat space and the API with a stand-in renderer.
+
+A discrete GPU reads and writes each byte of guest memory it works on in place across the
+bus, every time: a draw's vertices each frame, a target stored and the display transfer that
+reads it back, the framebuffer the presenter decodes. There the GPU works on a copy of the
+RAM in its own memory instead (`gpu/vk/device.c`), kept in step with the RAM by page
+(`gpu/vk/render.c`), and the bus carries only what changes hands. A page the CPU wrote since
+is copied in before the GPU reads or writes it, by uploads that run before everything their
+submission holds (`snx_vk_ring_uploads`, so no rendering pass ends for them), and is watched
+from then on. A page the GPU wrote is the GPU's until the CPU's first access, which copies it
+back with the pages the GPU wrote around it (up to 256 on each side) and waits for that. A
+write copies its stale pages in first even where it covers them, as one need not write a whole
+page and a page goes back whole; when the device goes, what the GPU wrote goes back. The copy
+is taken as the Switch's setting `vk_memory` says, with its meaning (`--vk_memory=N`, which the
+launcher passes from its Debug settings): `0`, the default, the copy unless the device shares
+the system's memory (`snx_vk_memory_model`), `1` the copy, `2` the RAM in place. The device says
+on the standard error which it took and the value, and when its memory cannot hold the copy,
+what refused it and that the run takes `vk_memory=2`. Its cost is the
+CPU's writes: a page the CPU rewrites after the GPU read it traps at each rewrite, where in
+place it traps only while a read is not done. The run's summary has a `gpu:` line: each
+screen's frames, what the GPU's work read and wrote, what was copied in and back, and the
+CPU's accesses that trapped. The pinned homebrew's title screen ([its target](3DS-SUPERTUX.md))
+on an RX 6700 XT (RADV, resizable BAR), three 60 s runs each, by that line: what crosses the bus
+falls to 6.1 MiB a second, 245 KiB a frame, all of it copied in, from 76.6 in place (3018 KiB a
+frame: 36.8 MiB a second read, 39.8 written); amdgpu has the GPU busy 14.4 ms a second against
+17.8; the CPU's time is the same, 323 and 325 ms a second, though its writes trap 61 times a
+frame against 0.2.
+`tests/3ds_vk_copies.c` checks which pages are copied in and back and when, and every GPU
+test runs again on each path (`_copy`, `_in_place`: `--vk_memory=1` and `2`), so lavapipe
+checks the copy too.
 
 Compiled code addresses the guest flat: a 4 GiB host reservation where guest
 address `va` is `base + va`, each mapping a view of the board's RAM held in one
@@ -297,9 +332,12 @@ Implemented:
   last thread.
 - Read-only configuration page at `0x1ff80000`, backed by board AXI WRAM rather
   than charged to application FCRAM. The limited kernel personality reports
-  version 2.58 and memory mode 0 (Old, 64 MiB application) or 6 (New, 124 MiB).
-  Other ExHeader memory modes, resource-limit capabilities and kernel/firmware
-  configuration fields are not fully modeled.
+  version 2.58 and the memory mode the title runs in, with its regions' sizes: an
+  Old 3DS takes the mode the ExHeader names (0, 64 MiB for the application; 2, 96;
+  3, 80; 4, 72; 5, 32) and a New 3DS mode 6 (124 MiB) for every title, as Azahar
+  launches them. An ExHeader naming mode 1 or one above 5 is refused. The New 3DS's
+  178 MiB mode, resource-limit capabilities and kernel/firmware configuration
+  fields are not modeled.
 - ControlMemory (`0x01`) validates page ranges/permissions and supports commit,
   free and protect of owned heap/linear allocations. Normal heap uses explicit
   VAs in `0x08000000..0x10000000` and may span discontiguous physical holes.
@@ -479,6 +517,11 @@ A window minimized and restored gets its swapchain back, checked by `3ds_windows
 (it skips where the host keeps the swapchain or does not minimize). On Windows a minimized
 window's surface is 0x0 and no swapchain can be made at that size, so the first frame after
 the restore makes one.
+A frame takes a window image only if one is free at once, as the Switch's and the Vita's
+presenters do: while the display holds them all (FIFO behind, a locked or remote session)
+the frame is not shown, the game runs on, and the run's report counts those frames.
+`3ds_windows_no_image` checks that no frame waits, that a held frame is still decoded and
+that frames show again once an image is free.
 The RAM is one shared mapping (a memfd on Linux), so that every guest view of a page is the
 same memory, and some drivers will not import it (`VK_EXT_external_memory_host`): RADV
 imports a host pointer as an amdgpu user pointer of private anonymous memory only, and its

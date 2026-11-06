@@ -42,9 +42,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CB(a) NVN_OBJ(NvnCmdBuf, a)
+#define CB(a)                   NVN_OBJ(NvnCmdBuf, a)
 /* room a piece of the runtime's memory keeps after every record: one JUMP to the next piece */
-#define OP_RESERVE 16
+#define OP_RESERVE              16
 /* the driver's bytes of a command nobody measured: its record's size */
 #define COST_RECORD             0xFFFFFFFFu
 /* the driver's bytes of a bind to the compute stage: the driver keeps compute binds in control memory (measured for
@@ -486,25 +486,6 @@ static u64 empty_recording(void) {
     return at;
 }
 
-/* A record's snapshot pointers (a texture object copied into the record, tex_snap) that point into the record at src,
-   moved to its copy at dst */
-static void relocate(u64 dst, u64 src, u32 op, u32 size) {
-    static const struct {
-        u32 op, off, n;
-    } snaps[] = {
-        {OP_SET_RT, offsetof(NvnPSetRT, color), 8},         {OP_SET_RT, offsetof(NvnPSetRT, depth), 1},
-        {OP_COPY_B2T, offsetof(NvnPCopyB2T, texture), 1},   {OP_COPY_T2B, offsetof(NvnPCopyB2T, texture), 1},
-        {OP_COPY_T2T, offsetof(NvnPCopyT2T, src), 1},       {OP_COPY_T2T, offsetof(NvnPCopyT2T, dst), 1},
-        {OP_CLEAR_TEX, offsetof(NvnPClearTex, texture), 1},
-    };
-    size_t i;
-    u32 k;
-    for (i = 0; i < sizeof snaps / sizeof *snaps; i++)
-        for (k = 0; snaps[i].op == op && k < snaps[i].n; k++) {
-            u64 at = dst + 8 + snaps[i].off + 8 * (u64)k, v = gr64(at);
-            if (v >= src && v < src + size) gw64(at, v - src + dst);
-        }
-}
 /* The recording goes on in a new piece of the runtime's memory, room for need bytes (a record's, and one moved): from
    the game's memory, its records there are linked to it by a JUMP after them, or, with no room for one in the bytes
    counted, the last record moves into the piece and the JUMP takes its place (every record is 16 bytes at least) */
@@ -528,7 +509,7 @@ static void divert(u64 cb, u32 need) {
     o->cur = at;
     if (h.size) {
         memcpy(GP(at), GP(from), h.size);
-        relocate(at, from, NVN_REC_OP(h.op), h.size);
+        nvn_record_relocate(at, from, NVN_REC_OP(h.op), h.size);
         o->last = at;
         o->cur += h.size;
     }
@@ -562,7 +543,7 @@ static void move_records(u64 dst, u64 src, u64 bytes) {
     for (u64 r = 0; r < bytes;) {
         NvnRecHdr h;
         memcpy(&h, GP(dst + r), sizeof h);
-        relocate(dst + r, src + r, NVN_REC_OP(h.op), h.size);
+        nvn_record_relocate(dst + r, src + r, NVN_REC_OP(h.op), h.size);
         r += h.size;
     }
 }
@@ -1024,7 +1005,7 @@ void nvn_CommandBufferCopyCommands(CPU* c, u64 cb, i32 n, u64 handles) {
             }
             at = alloc_rec(c, cb, op, h.size, NVN_REC_COST(h.op)); /* may run the game's memory callback */
             memcpy(GP(at + 8), GP(p + 8), h.size - 8);
-            relocate(at, p, op, h.size);
+            nvn_record_relocate(at, p, op, h.size);
             if (h.op & NVN_REC_LAST) break;
             p += h.size;
         }
@@ -1091,8 +1072,7 @@ void nvn_CommandBufferCopyBufferToBuffer(CPU* c, u64 cb, u64 src, u64 dst, u64 s
 }
 /* the bytes are copied into the record (the caller may change its own afterwards), and written when the GPU reaches
    them. The driver writes 36 bytes and the data's words */
-void nvn_CommandBufferUpdateUniformBuffer(CPU* c, u64 cb, u64 buffer, u64 buffer_size, i64 offset, u64 size,
-                                          u64 data) {
+void nvn_CommandBufferUpdateUniformBuffer(CPU* c, u64 cb, u64 buffer, u64 buffer_size, i64 offset, u64 size, u64 data) {
     u64 payload = rec(c, cb, OP_UPDATE_UB, sizeof(NvnPUpdateUB) + (size_t)size, (u32)(36 + ((size + 3) & ~3ull)));
     NvnPUpdateUB* r = (NvnPUpdateUB*)(void*)GP(payload);
     (void)buffer_size;
@@ -1450,11 +1430,10 @@ void nvn_CommandBufferSetTiledCacheTileSize(CPU* c, u64 cb, i32 w, i32 h) {
     (void)h;
 }
 void nvn_CommandBufferWaitEvent(CPU* c, u64 cb, u64 e, i32 mode, u32 value) {
-    (void)c;
-    (void)cb;
-    (void)e;
-    (void)mode;
-    (void)value;
+    NvnPWaitEvent* r = REC(c, cb, OP_WAIT_EVENT, NvnPWaitEvent, COST_RECORD);
+    r->address = NVN_OBJ(const NvnEvent, e)->gpu;
+    r->mode = (u32)mode;
+    r->value = value;
 }
 void nvn_CommandBufferSetAlphaRef(CPU* c, u64 cb, f32 ref) {
     NvnPSetState* r = RECN(c, cb, OP_SET_STATE, NvnPSetState, value, 1, 8);
@@ -1491,8 +1470,7 @@ void nvn_CommandBufferSetColorReductionEnable(CPU* c, u64 cb, int on) {
     (void)cb;
     (void)on;
 }
-void nvn_CommandBufferSetColorReductionThresholds(CPU* c, u64 cb, i32 format_class, i32 conservative,
-                                                  i32 aggressive) {
+void nvn_CommandBufferSetColorReductionThresholds(CPU* c, u64 cb, i32 format_class, i32 conservative, i32 aggressive) {
     (void)c;
     (void)cb;
     (void)format_class;
@@ -1548,16 +1526,21 @@ int nvn_CommandBufferInsertCheckpointDynamic(CPU* c, u64 cb, u64 label) {
     (void)label;
     return 1;
 }
-/* a program's subroutine uniforms: the translator runs no subroutines (nvn_ProgramSetSubroutineLinkage) */
+/* Linkage handles retain the program and map snapshot. Uniform values belong to the recording, not the caller. */
 void nvn_CommandBufferSetProgramSubroutines(CPU* c, u64 cb, u64 program, i32 stage, i32 first, i32 n, u64 values) {
-    (void)c;
-    (void)cb;
-    (void)stage;
-    (void)first;
-    (void)values;
-    LOG_LIMIT(1, "nvn: %d subroutine uniforms of program %llx: the runtime's programs have no subroutines\n", n,
-              (unsigned long long)program);
+    if (first < 0 || n <= 0 || n > 16384 || !values || (u32)n > 0x80000000u - (u32)first) return;
+    u32 linkage = nvn_program_subroutine(program, stage);
+    if (!linkage) {
+        LOG_LIMIT(4, "nvn: no subroutine linkage for program %llx stage %d\n", (unsigned long long)program, stage);
+        return;
+    }
+    NvnPSubroutines* r = RECN(c, cb, OP_SUBROUTINES, NvnPSubroutines, values, (u32)n, COST_RECORD);
+    r->linkage = linkage;
+    r->first = first;
+    r->count = n;
+    memcpy(r->values, GP(values), (size_t)n * sizeof *r->values);
 }
+
 void nvn_CommandBufferDiscardColor(CPU* c, u64 cb, i32 index) {
     (void)c;
     (void)cb;
@@ -1943,8 +1926,7 @@ void nvn_CommandBufferMultiDrawElementsIndirectCount(CPU* c, u64 cb, i32 prim, i
     d.mdi_stride = (i32)stride;
     memcpy(GP(rec(c, cb, OP_DRAW_IDX, sizeof d, COST_RECORD)), &d, sizeof d);
 }
-void nvn_CommandBufferMultiDrawArraysIndirectCount(CPU* c, u64 cb, i32 prim, u64 ind, u64 count, i32 max,
-                                                   i64 stride) {
+void nvn_CommandBufferMultiDrawArraysIndirectCount(CPU* c, u64 cb, i32 prim, u64 ind, u64 count, i32 max, i64 stride) {
     NvnPDraw d = {0};
     LOG_LIMIT(1, "nvn: the game records indirect multi-draws (MultiDrawArraysIndirectCount)\n");
     if (max <= 0) return;

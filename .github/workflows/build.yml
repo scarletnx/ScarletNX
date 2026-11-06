@@ -200,25 +200,12 @@ jobs:
           path: .cache/deps
           key: ${{ steps.deps-used.outputs.key }}
       - name: Test headless Vulkan and NX runtime
-        run: ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages)$' --output-on-failure
+        run: ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_recorder|vulkan_tex_partial|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep)$' --output-on-failure
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
         run: clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
       - name: Test native tooling and indexed filesystems
         run: ctest --test-dir build/default --output-on-failure --parallel 4
-      # The cross jobs (appimage-cross) can't run qemu-aarch64 beside a host binary that qemu-user runs: record the
-      # QEMU side of the A64 differential here, once, and hand it over as an artifact
-      - name: Record the A64 differential's QEMU reference
-        if: matrix.arch == 'x86_64'
-        run: |
-          build/default/tests/snx-test-llvm-qemu-differential qemu-aarch64 build/default/qemu_ref_runner \
-            build/llvm_qemu_reference_dir tests/llvm_qemu_expected.txt --quiet \
-            --record build/llvm_qemu_reference.bin
-      - uses: actions/upload-artifact@v7
-        if: matrix.arch == 'x86_64'
-        with:
-          name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
-          path: build/llvm_qemu_reference.bin
       - name: Check optional Python diagnostics
         run: |
           python -m compileall -q tools
@@ -227,6 +214,78 @@ jobs:
         with:
           name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}-install
           path: stage
+
+  # The cross jobs (appimage-cross) can't run qemu-aarch64 beside a host binary that qemu-user runs: the QEMU side of
+  # the A64 differential is recorded here, once, and handed over as an artifact. A job of its own, so the cross jobs
+  # wait for these two targets and not for the linux job's tests. The caches are the linux job's, restored and not saved
+  qemu-reference:
+    name: A64 differential's QEMU reference
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    container: archlinux:latest
+    steps:
+      - name: Name the commit
+        id: commit
+        shell: bash
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Name the week
+        id: week
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v5
+        with:
+          path: /var/cache/pacman/pkg
+          key: pacman-linux-x86_64-${{ steps.week.outputs.week }}
+          restore-keys: pacman-linux-x86_64-
+      - name: Install tools
+        run: |
+          for try in 1 2 3; do
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang && break
+            [ "$try" = 3 ] && exit 1
+            sleep 5
+          done
+      - uses: actions/checkout@v7
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/cpm
+          key: cpm-linux-x86_64-${{ hashFiles('cmake/dependencies.cmake') }}
+          restore-keys: cpm-linux-x86_64-
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/deps
+          key: deps-linux-x86_64-${{ github.run_id }}
+          restore-keys: deps-linux-x86_64-
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/ccache
+          key: ccache-linux-x86_64-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-linux-x86_64-
+      - name: Set up the caches
+        shell: bash
+        run: |
+          ws=${GITHUB_WORKSPACE//\\//}
+          {
+            echo "CCACHE_DIR=$ws/.cache/ccache"
+            echo "CCACHE_BASEDIR=$ws"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "SNX_DEPS_CACHE=$ws/.cache/deps"
+          } >> "$GITHUB_ENV"
+      - name: Build the differential and its runner
+        run: |
+          cmake --preset default -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)" \
+            --target snx-test-llvm-qemu-differential snx_qemu_ref_runner
+          ccache --show-stats
+      - name: Record the A64 differential's QEMU reference
+        run: |
+          build/default/tests/snx-test-llvm-qemu-differential qemu-aarch64 build/default/qemu_ref_runner \
+            build/llvm_qemu_reference_dir tests/llvm_qemu_expected.txt --quiet \
+            --record build/llvm_qemu_reference.bin
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
+          path: build/llvm_qemu_reference.bin
 
   # x86-64 with ASan and UBSan (SNX_TEST_SANITIZERS): every test, and the programs and libraries of ours it runs or
   # links, built with them (runtime_architecture names any left out), so our code reading memory after it was freed or
@@ -496,7 +555,7 @@ jobs:
   # (scripts/publish-builds.py, OPTIONAL)
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
-    needs: linux
+    needs: qemu-reference
     runs-on: ubuntu-26.04
     # LLVM's cross build (scripts/linux-llvm.sh) adds about half an hour where its cache misses
     timeout-minutes: 180
@@ -539,7 +598,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      # The linux job's recorded QEMU side of the A64 differential, run here against the cross-built test
+      # The qemu-reference job's recorded QEMU side of the A64 differential, run here against the cross-built test
       - uses: actions/download-artifact@v8
         with:
           name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
@@ -763,7 +822,7 @@ jobs:
           mkdir -p /src/.cache/deps
           chown -R "$(stat -c %u:%g /src)" /src/.cache/ccache /src/.cache/deps
           EOF
-      # The A64 differential against the reference the linux job recorded: the cross build's tests are off, so the
+      # The A64 differential against the qemu-reference job's recording: the cross build's tests are off, so the
       # one test is configured and built alone, then run here through qemu-user, with and without the generic path
       - name: Run the A64 differential against the recorded QEMU reference
         run: |
@@ -779,14 +838,22 @@ jobs:
             --target snx-test-llvm-qemu-differential
           # both forms run, and a failing one's examples go to the log: the container's /tmp goes with the job. A form
           # takes minutes; at 20 its SIGBUS makes the test name the case it was in, where a hang would hold the job 3 hours
-          failed=0
-          for form in "" --generic; do
-            if ! timeout -s BUS -k 30 1200 \
+          # the two forms at once, each with one thread and its own folder
+          for form in host generic; do
+            flag=; [ "$form" = generic ] && flag=--generic
+            ( timeout -s BUS -k 30 1200 \
               qemu-${{ matrix.qemu }} -L /src/sysroot build/${{ matrix.preset }}/tests/snx-test-llvm-qemu-differential \
-              /tmp/llvm_qemu_reference /src/tests/llvm_qemu_expected.txt \
-              --reference /src/reference/llvm_qemu_reference.bin --quiet $form; then
+              /tmp/llvm_qemu_reference_$form /src/tests/llvm_qemu_expected.txt \
+              --reference /src/reference/llvm_qemu_reference.bin --quiet $flag > /tmp/differential_$form.log 2>&1 \
+              && echo 0 > /tmp/differential_$form.status || echo $? > /tmp/differential_$form.status ) &
+          done
+          wait
+          failed=0
+          for form in host generic; do
+            cat /tmp/differential_$form.log
+            if [ "$(cat /tmp/differential_$form.status)" != 0 ]; then
               failed=1
-              cat /tmp/llvm_qemu_reference/llvm_qemu_mismatches.txt || true
+              cat /tmp/llvm_qemu_reference_$form/llvm_qemu_mismatches.txt || true
             fi
           done
           exit $failed
@@ -1590,8 +1657,8 @@ jobs:
     timeout-minutes: 30
     container: archlinux:latest
     env:
-      EDENPROBE_VERSION: v0.7.1
-      EDENPROBE_SHA256: 006b5c962166834403ea0ca0d48bb6680eac231444b4390d312d05225393f5a2
+      EDENPROBE_VERSION: v0.9.0
+      EDENPROBE_SHA256: 20f2c2b78457a774f957e4debcc6fc9de8046507302a84a9e275ca0d20cc92b5
       # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
       # its suites write their own GPU command buffers, which draw nothing now that NVN is the GPU path (docs/EDENPROBE.md)
       EDENPROBE_MODE: quick notime fatal cpu fs video display kernel audio

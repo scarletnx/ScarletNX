@@ -44,6 +44,9 @@
 #ifdef __ANDROID__
 #include <jni.h>
 #endif
+#ifdef SDL_PLATFORM_APPLE
+#include <dispatch/dispatch.h> /* the system's memory pressure */
+#endif
 
 static SDL_Window* g_win;
 /* the window's size in pixels, width | height << 32: the renderer reads it on its own thread, and one atomic keeps
@@ -274,6 +277,52 @@ void backend_window_safe(int* x, int* y, int* w, int* h) {
         backend_window_size(w, h);
     }
 }
+/* What the memory holds, at a warning of low memory from the system: iOS and Android end a game past their memory
+   limit with no signal and no time to write more, so this line can be the last that the log has. The resources line's
+   (resources_text: the footprint and what the system still gives), each GPU heap and the descriptor pools, and then
+   the log and the console to the files. At most MEMORY_LINES in a run, for a warning that comes again and again. Any
+   thread: the renderer's part takes no lock of Vulkan (vk_memory_text) */
+#define MEMORY_LINES 6
+/* 1 while more lines may come */
+static int memory_line(const char* why) {
+    static u32 said;
+    char stats[320], gpu[1024] = "";
+    u32 n;
+    if (__atomic_load_n(&said, __ATOMIC_RELAXED) >= MEMORY_LINES ||
+        (n = __atomic_fetch_add(&said, 1, __ATOMIC_RELAXED)) >= MEMORY_LINES)
+        return 0;
+    resources_text(stats, sizeof stats);
+    if (g_renderer && g_renderer->memory_text) g_renderer->memory_text(gpu, sizeof gpu);
+    LOG("memory: %s: %s%s%s\n", why, stats, gpu[0] ? ", " : "", gpu);
+    log_sync();
+    return n + 1 < MEMORY_LINES;
+}
+#ifdef SDL_PLATFORM_APPLE
+/* The system's memory pressure on iOS and macOS, on a queue of the system: SDL's low memory event (iOS's alone) comes
+   through the main thread's run loop, which the game's frames can hold up (one came 0.1 s before the kill). The source
+   is kept for the whole run */
+static dispatch_source_t g_pressure;
+static void pressure(void* unused) {
+    unsigned long level = dispatch_source_get_data(g_pressure);
+    (void)unused;
+    if (level & DISPATCH_MEMORYPRESSURE_CRITICAL)
+        memory_line("the system's memory pressure is critical");
+    else if (level & DISPATCH_MEMORYPRESSURE_WARN)
+        memory_line("the system's memory pressure is at its warning level");
+}
+static void pressure_watch(void) {
+    if (g_pressure) return; /* a second game of the menu's */
+    g_pressure = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0,
+                                        DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL,
+                                        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+    if (!g_pressure) {
+        WARN("memory: no source for the system's memory pressure\n");
+        return;
+    }
+    dispatch_source_set_event_handler_f(g_pressure, pressure);
+    dispatch_resume(g_pressure);
+}
+#endif
 /* as SDL queues each event, from its own thread: on Android the main loop is held while the app is in the
    background, and presenting must stop before that */
 static bool SDLCALL lifecycle(void* unused, SDL_Event* e) {
@@ -285,7 +334,10 @@ static bool SDLCALL lifecycle(void* unused, SDL_Event* e) {
         case SDL_EVENT_DID_ENTER_BACKGROUND: LOG("lifecycle: the app is in the background\n"); break;
         case SDL_EVENT_WILL_ENTER_FOREGROUND: LOG("lifecycle: the app will enter the foreground\n"); break;
         case SDL_EVENT_DID_ENTER_FOREGROUND: LOG("lifecycle: the app is in the foreground\n"); break;
-        case SDL_EVENT_LOW_MEMORY: LOG("lifecycle: the system warns of low memory\n"); break;
+        case SDL_EVENT_LOW_MEMORY:
+            LOG("lifecycle: the system warns of low memory\n");
+            memory_line("SDL's low memory event");
+            break;
         case SDL_EVENT_TERMINATING: LOG("lifecycle: the system is ending the app\n"); break;
         default: break;
     }
@@ -404,6 +456,11 @@ void video_init(const char* title, const char* addons) {
         SDL_VERSIONNUM_MICRO(SDL_GetVersion()), SDL_GetCurrentVideoDriver());
     unattended_start();
     SDL_AddEventWatch(lifecycle, NULL);
+#ifdef SDL_PLATFORM_APPLE
+    pressure_watch();
+#else
+    plat_memory_watch(memory_line); /* Linux, Windows; its log line says why where it cannot */
+#endif
     /* a game runs for minutes with nobody touching the screen: a phone that locks it takes the GPU from the app */
     SDL_DisableScreenSaver();
     int w, h;
@@ -1533,17 +1590,20 @@ void video_poll(void) {
             g_hle.hid.pad_extra[i].buttons &= ~g_menu_held_extra[i];
         }
     }
+    st[0] = lx;
+    st[1] = ly;
+    st[2] = rx;
+    st[3] = ry;
+    /* a paused game takes no input (main.c's hid_update): a record holds none of it, and a replay waits */
+    if (!game_paused()) unattended_pad(&b, st);
     g_hle.hid.pad1.buttons = b;
-    g_hle.hid.pad1.lx = lx;
-    g_hle.hid.pad1.ly = ly;
-    g_hle.hid.pad1.rx = rx;
-    g_hle.hid.pad1.ry = ry;
-    {
-        i32 shown[4] = {lx, ly, rx, ry};
-        ui_lock();
-        vpad_showcase_input(b, shown);
-        ui_unlock();
-    }
+    g_hle.hid.pad1.lx = st[0];
+    g_hle.hid.pad1.ly = st[1];
+    g_hle.hid.pad1.rx = st[2];
+    g_hle.hid.pad1.ry = st[3];
+    ui_lock();
+    vpad_showcase_input(b, st); /* what the game takes, a replay's included */
+    ui_unlock();
     pm_unlock(&g_host.hid.input_lock);
     keyboard_sync();
 }

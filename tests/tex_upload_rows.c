@@ -8,6 +8,8 @@
    whose rows are whole tiles. No level takes a buffer of its size on the CPU. Levels past the allocation cap go in
    strips, each region checked where it lands, and an ASTC level's block rows reach vk_astc_upload strip by strip,
    deswizzled */
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 static size_t g_watch, g_big; /* allocations of g_watch bytes or more, while watched */
@@ -70,7 +72,9 @@ static struct {
     u64 gva[8], n[8];
     u32 count;
 } g_map;
+static u32 g_walks; /* gmmu_pieces' calls */
 void gmmu_pieces(u64 gva, u64 size, void (*fn)(void* ctx, u64 gva, u64 cpu, u64 n), void* ctx) {
+    g_walks++;
     for (u32 i = 0; i < g_map.count; i++)
         if (g_map.gva[i] < gva + size && g_map.gva[i] + g_map.n[i] > gva)
             fn(ctx, g_map.gva[i], g_map.gva[i] - GVA, g_map.n[i]);
@@ -168,7 +172,14 @@ void rec_CmdClearDepthStencilImage(VkCommandBuffer cb, VkImage img, VkImageLayou
 VkState g_vk;
 _Atomic int g_cs_any;
 u32 g_vk_present;
-void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+static char g_log[1024]; /* the last line logged */
+void logf_(int lvl, const char* fmt, ...) {
+    va_list ap;
+    (void)lvl;
+    va_start(ap, fmt);
+    vsnprintf(g_log, sizeof g_log, fmt, ap);
+    va_end(ap);
+}
 int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     (void)what, (void)file, (void)line;
     return r == VK_SUCCESS;
@@ -185,8 +196,18 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
 VkImageAspectFlags vk_aspect(const VkFmt* f) {
     return f->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
 }
-/* the ASTC upload asks for its block rows in strips of 3: they land in astc_out, slice after slice */
-static u8 astc_out[128 << 10];
+/* the ASTC upload asks for its block rows in strips of 3: they land in astc_out, slice after slice. While astc_append
+   is set, each call's after the last one's, from astc_used on, its region and where its blocks start in astc_calls
+   (the first ASTC_CALLS of them) */
+static u8 astc_out[256 << 10];
+#define ASTC_CALLS 16
+static struct {
+    u32 x, y, w, h, level, layer;
+    u64 at;
+} astc_calls[ASTC_CALLS];
+static u32 nastc;
+static u64 astc_used;
+static int astc_append;
 /* the BC7 cache: whether it takes the levels, and the key's content of the last upload (given: not NULL) */
 static int g_cached, g_content_given;
 static u64 g_content[2];
@@ -195,13 +216,31 @@ void vk_bc7_content(u64 content[2], const void* p, u64 n) {
     content[0] = snx_fnv1a(content[0] ^ SNX_FNV_BASIS, p, (size_t)n);
     content[1] += n;
 }
-int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, u32 layers,
-                   VkAstcRows rows, void* ctx, const u64* content) {
+int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32 depth, u32 level, u32 layer,
+                   u32 layers, VkAstcRows rows, void* ctx, const u64* content) {
     (void)level, (void)layer;
     g_content_given = content != NULL;
     if (content) memcpy(g_content, content, sizeof g_content);
     if (layers > 1 && depth == 1) depth = layers; /* a 2D array's layers, asked for as slices */
     u32 nx = (w + t->f.bw - 1) / t->f.bw, ny = (h + t->f.bh - 1) / t->f.bh;
+    if (nastc < ASTC_CALLS) {
+        astc_calls[nastc].x = x, astc_calls[nastc].y = y0, astc_calls[nastc].w = w, astc_calls[nastc].h = h;
+        astc_calls[nastc].level = level, astc_calls[nastc].layer = layer, astc_calls[nastc].at = astc_used;
+        nastc++;
+    }
+    if (astc_append) {
+        for (u32 z = 0; z < depth; z++)
+            for (u32 y = 0; y < ny; y += 3) {
+                u32 n = ny - y < 3 ? ny - y : 3;
+                VkBuffer b;
+                u64 off;
+                CHECK(rows(ctx, &cb, z, 1, y, n, &b, &off) && mem_of(b));
+                CHECK(astc_used + ((u64)z * ny + y + n) * nx * 16 <= sizeof astc_out);
+                memcpy(astc_out + astc_used + ((u64)z * ny + y) * nx * 16, mem_of(b) + off, (u64)n * nx * 16);
+            }
+        astc_used += (u64)depth * ny * nx * 16;
+        return 1;
+    }
     for (u32 z = 0; z < depth; z++)
         for (u32 y = 0; y < ny; y += 3) {
             u32 n = ny - y < 3 ? ny - y : 3;
@@ -283,8 +322,10 @@ void vk_compute_mem_need(u64 a, u64 n) { (void)a, (void)n; }
 void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2) {
     (void)img, (void)a, (void)v1, (void)v2;
 }
+static u64 g_hashes;                   /* vk_hash's calls */
 u64 vk_hash(const void* p, u64 size) { /* FNV-1a over the bytes: mem_hash's check below tells contents apart */
     const u8* b = (const u8*)p;
+    g_hashes++;
     u64 h = 1469598103934665603ull;
     for (u64 i = 0; i < size; i++) h = (h ^ b[i]) * 1099511628211ull;
     return h;
@@ -372,23 +413,33 @@ int vk_ms_load(Surf* s) {
     (void)s;
     return 0;
 }
-VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer) {
-    (void)cb, (void)s, (void)layer;
+VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer, u32 y0, u32 rows) {
+    (void)cb, (void)s, (void)layer, (void)y0, (void)rows;
     return VK_NULL_HANDLE;
 }
-/* write tracking: the stamp is on guest's bytes [at, at + len), all of them when len is 0. As buffer.c's, it answers
-   only for a host range */
+/* write tracking: the stamp is on guest's bytes [at, at + len), all of them when len is 0, or on the runs listed in
+   run (nruns of them, in order, on pages apart) when there are any. As buffer.c's, it answers only for a host range */
 static struct {
-    int on;
+    int on, pending; /* pending: written, and taken in by the next check, which marks it with the clock's next value */
     u32 clock, stamp, epoch;
     u64 at, len;
+    u32 nruns;
+    struct {
+        u64 at, len;
+    } run[320];
 } g_tracking;
 static int stamped(u64 o, u64 n, u32 since) {
-    return g_tracking.stamp > since &&
-           (!g_tracking.len || (o < g_tracking.at + g_tracking.len && g_tracking.at < o + n));
+    if (g_tracking.stamp <= since) return 0;
+    for (u32 i = 0; i < g_tracking.nruns; i++)
+        if (o < g_tracking.run[i].at + g_tracking.run[i].len && g_tracking.run[i].at < o + n) return 1;
+    return !g_tracking.nruns && (!g_tracking.len || (o < g_tracking.at + g_tracking.len && g_tracking.at < o + n));
 }
 int vk_written_since(const u8* host, u64 len, u32 since) {
     if (!g_tracking.on || !host || !len) return -1;
+    if (g_tracking.pending) { /* buffer.c's ww_take_scanned: what scans found, marked as the check takes it in */
+        g_tracking.stamp = ++g_tracking.clock;
+        g_tracking.pending = 0;
+    }
     return stamped((u64)(host - guest), len, since);
 }
 u32 vk_ww_now(void) { return g_tracking.clock; }
@@ -397,6 +448,13 @@ u32 vk_ww_epoch(void) { return g_tracking.epoch; }
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) {
     u64 o = (u64)(host - guest), lo = g_tracking.at & ~4095ull, hi = (g_tracking.at + g_tracking.len + 4095) & ~4095ull;
     if (!stamped(o, len, since)) return;
+    for (u32 i = 0; i < g_tracking.nruns; i++) {
+        lo = g_tracking.run[i].at & ~4095ull, hi = (g_tracking.run[i].at + g_tracking.run[i].len + 4095) & ~4095ull;
+        if (lo < o) lo = o;
+        if (hi > o + len) hi = o + len;
+        if (lo < hi) fn(user, lo - o, hi - lo);
+    }
+    if (g_tracking.nruns) return;
     if (!g_tracking.len || lo < o) lo = o;
     if (!g_tracking.len || hi > o + len) hi = o + len;
     fn(user, lo - o, hi - lo);
@@ -429,18 +487,35 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
     (void)ii, (void)img, (void)mem, (void)bytes;
     return 0;
 }
-/* images with memory only where it is bound: none here */
-int vk_resident_block(VkFormat f, VkImageUsageFlags usage, VkExtent3D* block) {
-    (void)f, (void)usage, (void)block;
-    return 0;
+/* images with memory only where it is bound: of the shape g_res.shape gives (none while its block is 0 texels), their
+   pages bound as vk_image_resident is asked, each 64 KiB, those it gives memory marked 2 as memory.c marks them */
+static struct {
+    VkResidentShape shape;
+    u8 bound[64];
+    u32 pages;
+} g_res;
+int vk_resident_shape(const VkImageCreateInfo* ii, VkResidentShape* s) {
+    (void)ii;
+    *s = g_res.shape;
+    return g_res.shape.block.width != 0;
 }
-int vk_image_create_resident(const VkImageCreateInfo* ii, const VkExtent3D* block, VkImage* img) {
-    (void)ii, (void)block, (void)img;
-    return 0;
+int vk_image_create_resident(const VkImageCreateInfo* ii, const VkResidentShape* s, VkImage* img) {
+    (void)ii, (void)s;
+    memset(g_res.bound, 0, sizeof g_res.bound);
+    *img = (VkImage)(uintptr_t)0x5E5;
+    return g_res.shape.block.width != 0;
 }
-int vk_image_resident(VkImage img, const u8* want, u32 n, u64* bytes) {
-    (void)img, (void)want, (void)n, (void)bytes;
-    return 0;
+int vk_image_resident(VkImage img, u8* want, u32 n, u64* bytes) {
+    (void)img;
+    *bytes = 0;
+    if (n > sizeof g_res.bound) return 0;
+    g_res.pages = n;
+    for (u32 i = 0; i < n; i++) {
+        if (want[i] && !g_res.bound[i]) want[i] = 2;
+        g_res.bound[i] = want[i] != 0;
+        *bytes += g_res.bound[i] ? 0x10000 : 0;
+    }
+    return 1;
 }
 /* sparse residency: none here either */
 int vk_image_create_sparse(const VkImageCreateInfo* ii, VkImage* img) {
@@ -675,6 +750,503 @@ static void check_take_skip(void) {
     g_drawn_target = NULL;
     g_drawn_fresh = 0;
     vkCmdCopyImage = NULL;
+}
+
+/* the regions recorded since nregs was cleared, each against memory: the texels or blocks of level l of layer
+   `layer` of t it holds, where it puts them, through the layout walked byte by byte. 1 when (layer, l, u, v), a texel
+   or block of a level, is in one of them */
+static int region_has(u32 layer, u32 l, u32 u, u32 v, u32 bw, u32 bh) {
+    for (u32 i = 0; i < nregs; i++) {
+        const VkBufferImageCopy* r = &regs[i];
+        u32 x0 = (u32)r->imageOffset.x / bw, y0 = (u32)r->imageOffset.y / bh;
+        if (r->imageSubresource.mipLevel == l && r->imageSubresource.baseArrayLayer == layer &&
+            u - x0 < (r->imageExtent.width + bw - 1) / bw && v - y0 < (r->imageExtent.height + bh - 1) / bh)
+            return 1;
+    }
+    return 0;
+}
+static void regions_match(const Surf* t) {
+    const VkFmt* f = &t->f;
+    u32 d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1;
+    for (u32 i = 0; i < nregs; i++) {
+        const VkBufferImageCopy* r = &regs[i];
+        u32 l = r->imageSubresource.mipLevel, layer = r->imageSubresource.baseArrayLayer, lbh = 0, lbd = 0;
+        u64 at = (u64)layer * t->layer_size;
+        for (u32 k = 0; k < l; k++) at += bl_level_size(t->w, t->h, d3, f, t->bh, t->bd, t->tile_w, k, NULL, NULL);
+        u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, ld = d3 >> l ? d3 >> l : 1;
+        u32 tw = (lw + f->bw - 1) / f->bw, th = (lh + f->bh - 1) / f->bh, rowb = tw * f->bpp;
+        if (t->bl) bl_level_size(t->w, t->h, d3, f, t->bh, t->bd, t->tile_w, l, &lbh, &lbd);
+        u32 gw = level_gobs(t, rowb, th, ld), u0 = (u32)r->imageOffset.x / f->bw, v0 = (u32)r->imageOffset.y / f->bh;
+        u32 z0 = (u32)r->imageOffset.z, uw = (r->imageExtent.width + f->bw - 1) / f->bw;
+        u32 uh = (r->imageExtent.height + f->bh - 1) / f->bh;
+        u64 rl = (u64)(r->bufferRowLength ? r->bufferRowLength : r->imageExtent.width) / f->bw * f->bpp;
+        u64 ih = (r->bufferImageHeight ? r->bufferImageHeight : r->imageExtent.height) / f->bh;
+        CHECK(layer < t->layers && u0 + uw <= tw && v0 + uh <= th && z0 + r->imageExtent.depth <= ld &&
+              rl >= uw * f->bpp);
+        for (u32 z = 0; z < r->imageExtent.depth; z++)
+            for (u32 y = 0; y < uh; y++)
+                for (u32 x = 0; x < uw * f->bpp; x++) {
+                    u64 o = t->bl ? bl_offset_g(u0 * f->bpp + x, v0 + y, z0 + z, gw, th, lbh, lbd)
+                                  : ((u64)(z0 + z) * th + v0 + y) * t->pitch + u0 * f->bpp + x;
+                    CHECK(copied[r->bufferOffset + ((u64)z * ih + y) * rl + x] == guest[at + o]);
+                }
+    }
+}
+/* the check that follows a write: a new frame and epoch, the regions recorded from none, and the loads it made
+   (vk_tex_stats, vk_tex_partial_stats) as bytes loaded, and how many of them some blocks alone */
+static void check_after(Surf* t, u64* bytes, u64* partial) {
+    u64 loads, b0, b1, p0, p1, pb;
+    g_vk_present++;
+    g_tracking.epoch++;
+    stage_used = copied_used = nregs = 0;
+    vk_tex_stats(&loads, &b0);
+    vk_tex_partial_stats(&p0, &pb);
+    CHECK(tex_check(t, t->gva) == t);
+    vk_tex_stats(&loads, &b1);
+    vk_tex_partial_stats(&p1, &pb);
+    *bytes = b1 - b0;
+    *partial = p1 - p0;
+    regions_match(t);
+}
+/* the CPU writes n bytes of guest at o (each xored with 0x5A), which the next check takes in */
+static void cpu_write(u64 o, u32 n) {
+    for (u32 i = 0; i < n; i++) guest[o + i] ^= 0x5A;
+    g_tracking.pending = 1;
+    g_tracking.at = o, g_tracking.len = n;
+    g_tracking.nruns = 0;
+}
+/* a check that finds nothing loads nothing */
+static void check_quiet(Surf* t) {
+    u64 bytes, partial;
+    check_after(t, &bytes, &partial);
+    CHECK(bytes == 0 && partial == 0 && nregs == 0);
+}
+/* a texture loaded whole: write tracking answers for it from its clock as it is now (40 when it starts) */
+static void loaded(Surf* t) {
+    copy_bpp = t->f.bpp, copy_bw = t->f.bw, copy_bh = t->f.bh;
+    stage_used = copied_used = nregs = 0;
+    CHECK(tex_upload(t) && t->upload_valid);
+    t->hash = mem_hash(t->gva, t->size);
+    t->checked = g_vk_present;
+    t->gw = gpu_mem_generation();
+    if (!g_tracking.on) g_tracking.clock = 40;
+    g_tracking.on = 1;
+    t->wseen = g_tracking.clock;
+    t->ww_epoch = g_tracking.epoch;
+}
+/* A block linear texture loaded whole takes the CPU's and the GPU's writes a block at a time (tex_check_pieces,
+   tex_patch): RGBA8 256x256 of 9 levels in 2 layers, its big levels in blocks 16 GOBs high (8 KiB, two pages). Each
+   write loads the blocks of its pages, which hold memory's bytes, and nothing else: 16 bytes in a block's second page
+   load the block (both pages); a write across levels 3 and 4 the blocks of both pages, levels 4 to 8 in the second (the
+   mip tail); the GPU's write and the CPU's in one check both. More pages than a check keeps load less than the whole
+   texture of 512x1536. Every page written with the bytes it had is more than half the texture: hashed while the hash
+   is the image's, which loads nothing, else loaded whole. Without write tracking a write loads all of it, found by
+   its hash */
+static void check_block_linear_changes(void) {
+    Surf t = tex(256, 256, 1, 9, 4, 4, 0, 1);
+    u64 lvl[10] = {0}, bytes, partial;
+    t.layers = 2;
+    t.type = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    t.layer_size = bl_layer_size(256, 256, 1, &t.f, 4, 0, 0, 9);
+    for (u32 l = 0; l < 9; l++) lvl[l + 1] = lvl[l] + bl_level_size(256, 256, 1, &t.f, 4, 0, 0, l, NULL, NULL);
+    t.size = t.layer_size + lvl[9];
+    CHECK(lvl[3] == 0x54000 && lvl[4] == 0x55000 && lvl[9] - lvl[4] == 3 * 1024 && t.layer_size == 0x56000);
+    loaded(&t);
+    /* every page written with the bytes it had: more than half the texture, which its hash finds unchanged */
+    g_tracking.pending = 1;
+    g_tracking.at = 0, g_tracking.len = t.size;
+    g_hashes = 0;
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 0 && partial == 0 && nregs == 0 && g_hashes);
+    /* 16 bytes of texel (100, 200) of level 0 of layer 1: GOB column 6, the second row of blocks, its second page */
+    const u64 a = t.layer_size + bl_offset(400, 200, 0, 1024, 256, 4, 0);
+    CHECK(a % 8192 >= 4096);
+    cpu_write(a, 16);
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 8192 && partial == 1 && nregs == 1 && region_has(1, 0, 100, 200, 1, 1));
+    CHECK(regs[0].imageOffset.x == 96 && regs[0].imageOffset.y == 128 && regs[0].imageExtent.width == 16 &&
+          regs[0].imageExtent.height == 128);
+    check_quiet(&t);
+    /* 32 bytes across levels 3 and 4 of layer 0: all of level 3 (its two blocks, a run of a row of blocks) and levels 4
+       to 8, each a region */
+    cpu_write(lvl[4] - 16, 32);
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 4096 + 3 * 1024 && partial == 1 && nregs == 6);
+    for (u32 l = 3; l < 9; l++) CHECK(region_has(0, l, 0, 0, 1, 1));
+    check_quiet(&t);
+    /* the GPU writes 64 bytes of level 1 of layer 1 and the CPU 4 of level 0 of layer 0 before one check */
+    g_gpu_writes.gen = gpu_mem_generation() + 1;
+    g_gpu_writes.at = GVA + t.layer_size + lvl[1] + bl_offset(64, 100, 0, 512, 128, 4, 0), g_gpu_writes.len = 64;
+    for (u32 i = 0; i < 64; i++) guest[g_gpu_writes.at - GVA + i] ^= 0x33;
+    cpu_write(bl_offset(1000, 3, 0, 1024, 256, 4, 0), 4);
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 2 * 8192 && partial == 1 && nregs == 2 && region_has(1, 1, 16, 100, 1, 1) &&
+          region_has(0, 0, 250, 3, 1, 1));
+    check_quiet(&t);
+    /* 260 pages apart, each a byte written: more than the 256 pieces a check keeps. The closest go as one, over the
+       pages between them (the first 5 written, a run of 5 blocks), the others a block each: less than the whole */
+    Surf big = tex(512, 1536, 1, 1, 4, 4, 0, 1);
+    big.size = bl_level_size(512, 1536, 1, &big.f, 4, 0, 0, 0, NULL, NULL);
+    CHECK(big.size == 3u << 20);
+    loaded(&big);
+    g_tracking.pending = 1;
+    g_tracking.nruns = 260;
+    for (u32 k = 0; k < 260; k++) {
+        guest[k * 0x2000 + 0x123] ^= 0x5A;
+        g_tracking.run[k].at = k * 0x2000 + 0x123, g_tracking.run[k].len = 1;
+    }
+    check_after(&big, &bytes, &partial);
+    CHECK(partial == 1 && bytes == 260 * 8192 && nregs == 256);
+    for (u32 k = 0; k < 260; k++) {
+        u32 b = k * 0x2000 / 8192; /* the block, a GOB across and 128 rows */
+        CHECK(region_has(0, 0, b % 32 * 16, b / 32 * 128, 1, 1));
+    }
+    check_quiet(&big);
+    /* every page written with the bytes it had again, with the hash no longer the image's: loaded whole, unhashed */
+    g_tracking.pending = 1;
+    g_tracking.at = 0, g_tracking.len = t.size;
+    g_hashes = 0;
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == t.size && partial == 0 && g_hashes == 0);
+    /* without write tracking the same texture's write is found by its hash, which loads all of it */
+    memset(&g_tracking, 0, sizeof g_tracking);
+    t.stable = 0;
+    guest[a] ^= 0x5A;
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == t.size && partial == 0);
+    memset(&g_gpu_writes, 0, sizeof g_gpu_writes);
+}
+/* A texture loaded whole in two runs of host memory and no holes, for which write tracking can't tell: one walk of its
+   runs finds that (tex_check_pieces), and its contents are checked, without a second walk to ask again */
+static void check_untracked_runs(void) {
+    Surf t = tex(64, 64, 1, 1, 4, 2, 0, 1);
+    u64 bytes, partial;
+    t.size = bl_level_size(64, 64, 1, &t.f, 2, 0, 0, 0, NULL, NULL);
+    loaded(&t);
+    g_map.count = 2;
+    g_map.gva[0] = GVA, g_map.n[0] = 8192;
+    g_map.gva[1] = GVA + 8192, g_map.n[1] = t.size - 8192;
+    g_walks = 0;
+    check_after(&t, &bytes, &partial);
+    CHECK(g_walks == 1 && bytes == 0);
+    g_map.count = 0;
+    memset(&g_tracking, 0, sizeof g_tracking);
+}
+
+/* A pitch linear texture loaded whole takes a write as the rows it lies in (tex_patch_pitch): of a row, the texels its
+   pages cover, and rows after one another that cover the same texels as one region. RGBA8 3000x300 in rows of 12288
+   bytes (three pages): a 64x64 region at (1100, 50), whose bytes are in the second page of each row, is one region of
+   texels 1024 to 2047 of its 64 rows. A byte in each of its 300 rows, more pieces than a check keeps: the closest
+   join, rows 0 to 44 whole, and the others' first page each as one region. 1000x100 in rows of 4352 bytes, which pages
+   cut: a byte of the second page loads rows 0 and 1 whole. 2000x200 in rows of 8448 bytes: a byte at the start of
+   each of rows 10 to 29, each in a page of its own that it shares with the row before, loads rows 9 to 29 once, in
+   three regions (row 16 starts a page). Without write tracking a write loads all of it */
+static void check_pitch_linear_changes(void) {
+    Surf t = tex(3000, 300, 1, 1, 4, 0, 0, 0), c = tex(1000, 100, 1, 1, 4, 0, 0, 0);
+    u64 bytes, partial;
+    t.pitch = 12288;
+    t.layer_size = t.size = 12288 * 300;
+    loaded(&t);
+    g_tracking.pending = 1;
+    g_tracking.nruns = 64;
+    for (u32 k = 0; k < 64; k++) {
+        u64 o = (u64)(50 + k) * 12288 + 1100 * 4;
+        for (u32 i = 0; i < 256; i++) guest[o + i] ^= 0x5A;
+        g_tracking.run[k].at = o, g_tracking.run[k].len = 256;
+    }
+    check_after(&t, &bytes, &partial);
+    CHECK(partial == 1 && nregs == 1 && bytes == 64 * 4096);
+    CHECK(regs[0].imageOffset.x == 1024 && regs[0].imageOffset.y == 50 && regs[0].imageExtent.width == 1024 &&
+          regs[0].imageExtent.height == 64);
+    check_quiet(&t);
+    g_tracking.pending = 1;
+    g_tracking.nruns = 300;
+    for (u32 k = 0; k < 300; k++) {
+        guest[k * 12288 + 100] ^= 0x5A;
+        g_tracking.run[k].at = k * 12288 + 100, g_tracking.run[k].len = 1;
+    }
+    check_after(&t, &bytes, &partial);
+    CHECK(partial == 1 && nregs == 2 && bytes == 45 * 12000 + 255 * 4096);
+    CHECK(regs[0].imageExtent.width == 3000 && regs[0].imageExtent.height == 45 && regs[1].imageOffset.y == 45 &&
+          regs[1].imageExtent.width == 1024 && regs[1].imageExtent.height == 255);
+    check_quiet(&t);
+    c.pitch = 4352;
+    c.layer_size = c.size = 4352 * 100;
+    loaded(&c);
+    cpu_write(4096 + 100, 1);
+    check_after(&c, &bytes, &partial);
+    CHECK(partial == 1 && nregs == 1 && bytes == 2 * 4000 && regs[0].imageOffset.y == 0 &&
+          regs[0].imageExtent.height == 2 && regs[0].imageExtent.width == 1000);
+    check_quiet(&c);
+    Surf d = tex(2000, 200, 1, 1, 4, 0, 0, 0);
+    d.pitch = 8448;
+    d.layer_size = d.size = 8448 * 200;
+    loaded(&d);
+    g_tracking.pending = 1;
+    g_tracking.nruns = 20;
+    for (u32 k = 0; k < 20; k++) {
+        guest[(10 + k) * 8448] ^= 0x5A;
+        g_tracking.run[k].at = (10 + k) * 8448, g_tracking.run[k].len = 1;
+    }
+    check_after(&d, &bytes, &partial);
+    CHECK(partial == 1 && nregs == 3 && bytes == 7 * 8000 + 4096 + 14 * 8000);
+    CHECK(regs[0].imageOffset.y == 9 && regs[0].imageExtent.height == 7 && regs[2].imageOffset.y == 16 &&
+          regs[2].imageExtent.height == 14);
+    check_quiet(&d);
+    memset(&g_tracking, 0, sizeof g_tracking);
+    t.stable = 0;
+    guest[100] ^= 0x5A;
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == t.size && partial == 0);
+}
+/* An ASTC texture loaded whole takes a write as the blocks of the runs of GOBs its pages are in, decoded again
+   (level_patch_astc): 6x6 blocks, 600x384 texels, 100x64 blocks in rows of 25 GOBs, blocks 8 GOBs high (4 KiB, a
+   page). A byte of GOB column 7 decodes its run, 4 ASTC blocks of 64 rows, 24x384 texels at (168, 0), on whole 4x4
+   blocks for BC7 (168 and 24 are multiples of 12); one of the last column, the level's edge, 24 texels at 576 */
+static void check_astc_changes(void) {
+    Surf t = tex(600, 384, 1, 1, 16, 3, 0, 1);
+    u64 bytes, partial;
+    t.f.bw = t.f.bh = 6;
+    t.f.conv = VKC_ASTC;
+    t.f.vk = VK_FORMAT_BC7_UNORM_BLOCK;
+    t.size = t.layer_size = bl_level_size(600, 384, 1, &t.f, 3, 0, 0, 0, NULL, NULL);
+    CHECK(t.size == 25 * 4096);
+    loaded(&t);
+    for (u32 column = 7; column < 32; column += 17) { /* 7, then 24 */
+        cpu_write(column * 4096 + 100, 1);
+        nastc = 0;
+        astc_used = 0;
+        astc_append = 1;
+        check_after(&t, &bytes, &partial);
+        CHECK(partial == 1 && bytes == 4096 && nastc == 1 && astc_calls[0].x == column * 24 && astc_calls[0].y == 0 &&
+              astc_calls[0].w == 24 && astc_calls[0].h == 384 && astc_calls[0].x % 12 == 0);
+        for (u32 y = 0; y < 64; y++)
+            for (u32 x = 0; x < 4 * 16; x++)
+                CHECK(astc_out[y * 64 + x] == guest[bl_offset_g(column * 64 + x, y, 0, 25, 64, 3, 0)]);
+        check_quiet(&t);
+    }
+    astc_append = 0;
+    memset(&g_tracking, 0, sizeof g_tracking);
+}
+
+/* the regions recorded into a texture of 4-byte texels with layers (rows of whole tiles where tile_w says) against
+   guest's layout: every texel each copies where the layout has it in its level and layer. The texels each copied of
+   each level of each layer go in covered */
+static void check_layer_regions(const Surf* t, u32 covered[2][16]) {
+    memset(covered, 0, 2 * 16 * sizeof(u32));
+    for (u32 i = 0; i < nregs; i++) {
+        const VkBufferImageCopy* r = &regs[i];
+        const u32 l = r->imageSubresource.mipLevel, k = r->imageSubresource.baseArrayLayer;
+        const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
+        const u32 rl = r->bufferRowLength ? r->bufferRowLength : r->imageExtent.width;
+        u32 lbh, lbd;
+        u64 at = k * t->layer_size;
+        CHECK(k < 2 && l < t->levels && r->imageExtent.depth == 1);
+        for (u32 j = 0; j < l; j++) at += bl_level_size(t->w, t->h, 1, &t->f, t->bh, t->bd, t->tile_w, j, NULL, NULL);
+        bl_level_blocks(t->h, 1, &t->f, t->bh, t->bd, l, &lbh, &lbd);
+        const u32 gobs = level_gobs(t, lw * 4, lh, 1);
+        for (u32 y = 0; y < r->imageExtent.height; y++)
+            for (u32 x = 0; x < r->imageExtent.width; x++) {
+                const u32 tx = (u32)r->imageOffset.x + x, ty = (u32)r->imageOffset.y + y;
+                CHECK(tx < lw && ty < lh);
+                CHECK(!memcmp(copied + r->bufferOffset + ((u64)y * rl + x) * 4,
+                              guest + at + bl_offset_g(tx * 4, ty, 0, gobs, lh, lbh, 0), 4));
+            }
+        covered[k][l] += r->imageExtent.width * r->imageExtent.height;
+    }
+}
+/* A texture with memory only where it is mapped, of 2 layers: 256x256 RGBA8 in tiles of 128x128 texels (8 GOBs
+   across, blocks 16 high), 9 levels, the device's blocks a tile, its mip tail from level 2 and one a layer. Each layer
+   is 4 bricks of level 0, 1 of level 1, then the tail's levels in a tile of their own: 6 tiles. Mapped: tile 1 of
+   level 0 of layer 0, level 1 of layer 1 and layer 1's mip tail, which take memory and are loaded, each texel in its
+   level and layer and nothing else. Then 4 KiB of layer 0's mip tail mapped: the tail gets memory and is loaded whole,
+   its texels undefined until then */
+static void check_resident_layers(void) {
+    Surf t = tex(256, 256, 1, 9, 4, 4, 0, 1);
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    u32 covered[2][16];
+    t.tile_w = 3;
+    t.layers = 2;
+    t.layer_size = bl_layer_size(256, 256, 1, &t.f, 4, 0, 3, 9);
+    CHECK(t.layer_size == 6 * 0x10000ull);
+    for (u32 l = 0; l < 9; l++) t.size += bl_level_size(256, 256, 1, &t.f, 4, 0, 3, l, NULL, NULL);
+    t.size += t.layer_size;
+    g_res.shape = (VkResidentShape){{128, 128, 1}, 2, 2};
+    CHECK(resident_image(&t, &ii) && t.bricks == 5 && t.tail_first == 2 && t.tails == 2 && t.brick_bytes == 0x10000);
+    g_map.count = 3;
+    g_map.gva[0] = GVA + 0x10000, g_map.n[0] = 0x10000;
+    g_map.gva[1] = GVA + 0xA0000, g_map.n[1] = 0x10000;
+    g_map.gva[2] = GVA + 0xB0000, g_map.n[2] = 0x10000;
+    copy_bpp = 4, copy_bw = copy_bh = 1;
+    stage_used = copied_used = nregs = 0;
+    CHECK(tex_upload(&t) && g_res.pages == 12);
+    static const u8 bound[12] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1};
+    CHECK(!memcmp(g_res.bound, bound, 12));
+    check_layer_regions(&t, covered);
+    CHECK(covered[0][0] == 128 * 128 && covered[1][1] == 128 * 128 && !covered[1][0] && !covered[0][1]);
+    for (u32 l = 2; l < 9; l++) CHECK(!covered[0][l] && covered[1][l] == (256u >> l) * (256u >> l));
+    /* layer 0's tail mapped by 4 KiB of it: a piece of 4 KiB, its tail bound and loaded whole */
+    TexPieces p = {.count = 1};
+    p.piece[0].at = 0x50000, p.piece[0].n = 0x1000;
+    g_map.count = 4;
+    g_map.gva[3] = GVA + 0x50000, g_map.n[3] = 0x1000;
+    t.upload_valid = 1;
+    stage_used = copied_used = nregs = 0;
+    CHECK(tex_patch(&t, &p) && g_res.bound[10] && g_res.bound[11]);
+    check_layer_regions(&t, covered);
+    for (u32 l = 0; l < 9; l++) CHECK(!covered[1][l] && covered[0][l] == (l < 2 ? 0 : (256u >> l) * (256u >> l)));
+    g_map.count = 0;
+    g_res.shape = (VkResidentShape){{0, 0, 0}, 0, 0};
+}
+/* call c of the ASTC upload (astc_calls) is the region w x h at (x, y) of level l of t, layer 0, and its blocks in
+   astc_out those of that region in guest memory, laid out as the level is */
+static void check_astc_call(const Surf* t, u32 c, u32 x, u32 y, u32 w, u32 h, u32 l) {
+    const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, th = (lh + 3) / 4, nx = (w + 3) / 4;
+    u32 lbh, lbd;
+    u64 at = 0;
+    CHECK(c < nastc && astc_calls[c].x == x && astc_calls[c].y == y && astc_calls[c].w == w && astc_calls[c].h == h &&
+          astc_calls[c].level == l && astc_calls[c].layer == 0);
+    for (u32 j = 0; j < l; j++) at += bl_level_size(t->w, t->h, 1, &t->f, t->bh, t->bd, t->tile_w, j, NULL, NULL);
+    bl_level_blocks(t->h, 1, &t->f, t->bh, t->bd, l, &lbh, &lbd);
+    const u32 gobs = level_gobs(t, (lw + 3) / 4 * 16, th, 1);
+    for (u32 by = 0; by < (h + 3) / 4; by++)
+        for (u32 b = 0; b < nx * 16; b++)
+            CHECK(astc_out[astc_calls[c].at + (u64)by * nx * 16 + b] ==
+                  guest[at + bl_offset_g(x / 4 * 16 + b, y / 4 + by, 0, gobs, th, lbh, 0)]);
+}
+/* An ASTC 4x4 texture held as BC7 with memory only where it is mapped: 1024x1024, 11 levels, in tiles of 64x64
+   blocks (16 GOBs across, blocks 8 high), the device's blocks BC7's 256x256 texels, a tile each, its mip tail from
+   level 3: 16 bricks of level 0, 4 of level 1, 1 of level 2, then the tail. Tile (1, 0) of level 0, (1, 1) of level 1
+   and the tail mapped: its whole upload decodes (and encodes) each bound tile's blocks into its 256x256 texels, and
+   the tail's levels, and copies none of their bytes into the image as they are. Then 16 bytes of tile (1, 0) written:
+   the run of blocks they lie in decoded again, and nothing for 16 of a hole; a tile of level 0 mapped: bound, and
+   decoded whole. An ASTC 8x8 one, the device's blocks 4 GOBs high in its layout where its blocks are 8, a 6x6 one,
+   whose blocks aren't whole in 256 texels, and one the device makes no sparse image of are made whole, the log line
+   saying the format and why */
+static void check_resident_astc(void) {
+    Surf t = tex(1024, 1024, 1, 11, 16, 3, 0, 1);
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    t.f.bw = t.f.bh = 4;
+    t.f.conv = VKC_ASTC;
+    t.f.vk = VK_FORMAT_BC7_UNORM_BLOCK;
+    t.tile_w = 4;
+    t.layer_size = bl_layer_size(1024, 1024, 1, &t.f, 3, 0, 4, 11);
+    for (u32 l = 0; l < 11; l++) t.size += bl_level_size(1024, 1024, 1, &t.f, 3, 0, 4, l, NULL, NULL);
+    CHECK(t.layer_size == 22 * 0x10000ull);
+    g_res.shape = (VkResidentShape){{256, 256, 1}, 3, 1};
+    CHECK(resident_image(&t, &ii) && t.bricks == 21 && t.tail_first == 3 && t.tails == 1 && t.brick_bytes == 0x10000);
+    g_map.count = 3;
+    g_map.gva[0] = GVA + 0x10000, g_map.n[0] = 0x10000;  /* tile (1, 0) of level 0 */
+    g_map.gva[1] = GVA + 0x130000, g_map.n[1] = 0x10000; /* (1, 1) of level 1, after level 0's 16 tiles */
+    g_map.gva[2] = GVA + 0x150000, g_map.n[2] = 0x10000; /* the tail */
+    copy_bpp = 16, copy_bw = copy_bh = 4;
+    stage_used = copied_used = nregs = 0;
+    nastc = 0, astc_used = 0, astc_append = 1;
+    CHECK(tex_upload(&t) && g_res.pages == 22);
+    for (u32 i = 0; i < 22; i++) CHECK(g_res.bound[i] == (i == 1 || i == 19 || i == 21));
+    CHECK(nregs == 0 && nastc == 2 + 8); /* the two tiles, then the tail's 8 levels */
+    check_astc_call(&t, 0, 256, 0, 256, 256, 0);
+    check_astc_call(&t, 1, 256, 256, 256, 256, 1);
+    for (u32 l = 3; l < 11; l++) check_astc_call(&t, 2 + l - 3, 0, 0, 1024 >> l, 1024 >> l, l);
+    /* 16 bytes of tile (1, 0), in its third column of GOBs, and 16 of tile (2, 0), a hole */
+    TexPieces p = {.count = 2};
+    p.piece[0].at = 0x12000, p.piece[0].n = 16;
+    p.piece[1].at = 0x20100, p.piece[1].n = 16;
+    t.upload_valid = 1;
+    stage_used = copied_used = nregs = 0;
+    nastc = 0, astc_used = 0;
+    CHECK(tex_patch(&t, &p) && nregs == 0 && nastc == 1);
+    check_astc_call(&t, 0, 288, 0, 16, 256, 0);
+    /* tile (2, 0) mapped, the GPU's records naming its 64 KiB */
+    g_map.count = 4;
+    g_map.gva[3] = GVA + 0x20000, g_map.n[3] = 0x10000;
+    p.count = 1, p.piece[0].at = 0x20000, p.piece[0].n = 0x10000;
+    stage_used = copied_used = nregs = 0;
+    nastc = 0, astc_used = 0;
+    CHECK(tex_patch(&t, &p) && g_res.bound[2] && nregs == 0 && nastc == 1);
+    check_astc_call(&t, 0, 512, 0, 256, 256, 0);
+    g_map.count = 0;
+    astc_append = 0;
+    /* made whole, saying why */
+    Surf e = tex(2048, 2048, 1, 12, 16, 3, 0, 1), s = tex(1536, 1536, 1, 11, 16, 3, 0, 1), n = t;
+    e.f = s.f = t.f;
+    e.f.bw = e.f.bh = 8;
+    s.f.bw = s.f.bh = 6;
+    e.tile_w = s.tile_w = 4;
+    e.layer_size = e.size = bl_layer_size(2048, 2048, 1, &e.f, 3, 0, 4, 12);
+    s.layer_size = s.size = bl_layer_size(1536, 1536, 1, &s.f, 3, 0, 4, 11);
+    g_res.shape = (VkResidentShape){{256, 256, 1}, 4, 1};
+    g_log[0] = 0;
+    CHECK(!resident_image(&e, &ii) && !e.bricks);
+    CHECK(
+        strstr(g_log, "2048x2048x1 texture of 12 levels in ASTC 8x8 as BC7 with holes in its mapping is made whole") &&
+        strstr(g_log,
+               "blocks of 256x256x1 texels, 8 GOBs across and 4 high in its layout, its mip tail from level 4") &&
+        strstr(g_log, "level 0 has blocks 8 GOBs high and 1 deep"));
+    g_log[0] = 0;
+    CHECK(!resident_image(&s, &ii) && !s.bricks);
+    CHECK(strstr(g_log, "in ASTC 6x6 as BC7 with holes") && strstr(g_log, "256x256x1 texels, not whole 6x6 blocks,"));
+    g_res.shape = (VkResidentShape){{0, 0, 0}, 0, 0};
+    g_vk.resident = 1;
+    g_vk.feat.sparseResidencyImage2D = VK_TRUE;
+    n.bricks = 0;
+    g_log[0] = 0;
+    CHECK(!resident_image(&n, &ii) && !n.bricks);
+    CHECK(strstr(g_log, "1024x1024x1 texture of 11 levels in ASTC 4x4 as BC7 with holes in its mapping is made whole: "
+                        "the device has no sparse images of format 145"));
+    g_vk.resident = 0;
+    g_vk.feat.sparseResidencyImage2D = VK_FALSE;
+    copy_bpp = 4, copy_bw = copy_bh = 1;
+}
+
+/* A texture with holes in its mapping, loaded a piece at a time, checked by its contents (where write tracking can't
+   tell): 512x512 RGBA8, 1 MiB, two runs of 64 KiB mapped. Its hash reads those runs a piece of 4 KiB at a time, 32
+   pieces, not its 1 MiB (256): unchanged, it loads nothing; a run mapped, a run unmapped, a byte of a run and a run
+   moved with its bytes (the same runs in the same order, one at another place) change it; a byte where nothing is
+   mapped (the stubs read guest memory there, a hole reads zeros) doesn't, nor its write-back by the GPU. Loaded whole,
+   its hash reads all of it */
+static void check_hash_runs(void) {
+    Surf t = tex(512, 512, 1, 1, 4, 4, 0, 1);
+    u8* moved = malloc(0x10000);
+    u64 h0;
+    CHECK(moved);
+    memcpy(moved, guest + 0x20000, 0x10000);
+    t.size = t.layer_size = bl_level_size(512, 512, 1, &t.f, 4, 0, 0, 0, NULL, NULL);
+    CHECK(t.size == 1u << 20);
+    t.piecewise = 1;
+    t.upload_valid = 1;
+    g_map.count = 2;
+    g_map.gva[0] = GVA + 0x10000, g_map.n[0] = 0x10000;
+    g_map.gva[1] = GVA + 0x80000, g_map.n[1] = 0x10000;
+    copy_bpp = 4, copy_bw = copy_bh = 1;
+    /* each check: the change before it, then whether it loads */
+    const u32 rehash[9][2] = {{0, 1}, {0, 0}, {1, 1}, {2, 1}, {0, 0}, {3, 1}, {4, 0}, {5, 1}, {0, 0}};
+    for (u32 i = 0; i < 9; i++) {
+        if (rehash[i][0] == 1) g_map.count = 3, g_map.gva[2] = GVA + 0xC0000, g_map.n[2] = 0x10000; /* mapped */
+        if (rehash[i][0] == 2) g_map.count = 2;                                                     /* unmapped */
+        if (rehash[i][0] == 3) guest[0x80005] ^= 0x5A;                                              /* in a run */
+        if (rehash[i][0] == 4) guest[0x40000] ^= 0x5A;                                              /* in a hole */
+        if (rehash[i][0] == 5) { /* run 0's bytes, mapped at 0x20000 instead */
+            memcpy(guest + 0x20000, guest + 0x10000, 0x10000);
+            g_map.gva[0] = GVA + 0x20000;
+        }
+        stage_used = copied_used = nregs = 0;
+        h0 = g_hashes;
+        CHECK(tex_rehash(&t) == (int)rehash[i][1] && g_hashes - h0 == 16u * g_map.count);
+    }
+    vk_tex_note_writeback(&t); /* its memory written by the GPU: the hash it keeps is its runs' */
+    stage_used = copied_used = nregs = 0;
+    CHECK(tex_rehash(&t) == 0);
+    guest[0x80005] ^= 0x5A;
+    guest[0x40000] ^= 0x5A;
+    memcpy(guest + 0x20000, moved, 0x10000);
+    free(moved);
+    t.piecewise = 0;
+    stage_used = copied_used = nregs = 0;
+    h0 = g_hashes;
+    tex_rehash(&t);
+    CHECK(g_hashes - h0 == 256);
+    g_map.count = 0;
 }
 
 int main(void) {
@@ -960,6 +1532,59 @@ int main(void) {
         memset(&g_tracking, 0, sizeof g_tracking);
         memset(&g_gpu_writes, 0, sizeof g_gpu_writes);
     }
+    /* What a check takes in is marked with the clock's next value (buffer.c ww_take_scanned), so a written texture's
+       baseline is the clock after its check. Taken before it, the next check takes the same write in again: a texture
+       checked by its hash hashes it once more for nothing, a texture with holes in its mapping loads its blocks again */
+    {
+        Surf t = tex(8, 2, 1, 1, 4, 0, 0, 0);
+        t.size = t.pitch * t.h;
+        copy_bpp = 4;
+        stage_used = copied_used = nregs = 0;
+        CHECK(tex_upload(&t));
+        t.hash = mem_hash(t.gva, t.size);
+        g_tracking.on = 1;
+        g_tracking.clock = t.wseen = 10;
+        for (u32 round = 0; round < 2; round++) {
+            guest[0] ^= 0x5A;
+            g_tracking.pending = 1;
+            g_tracking.at = 0, g_tracking.len = 1;
+            g_vk_present++;
+            g_tracking.epoch++;
+            stage_used = copied_used = nregs = 0;
+            CHECK(tex_check(&t, t.gva) == &t && nregs == 1 && copied[regs[0].bufferOffset] == guest[0]);
+            g_vk_present++;
+            g_tracking.epoch++;
+            stage_used = copied_used = nregs = 0;
+            g_hashes = 0;
+            CHECK(tex_check(&t, t.gva) == &t && nregs == 0 && g_hashes == 0);
+        }
+        Surf v = sparse_volume(1);
+        const u64 o = bl_offset((3 * 16 + 1) * 4, 9, 6, 832, 64, 0, 4); /* tile 2 */
+        v.piecewise = 1;
+        v.hash = 0;
+        CHECK(tex_load_pieces(&v) && v.upload_valid);
+        guest[o] ^= 0x5A;
+        g_tracking.pending = 1;
+        g_tracking.at = o, g_tracking.len = 1;
+        g_vk_present++;
+        g_tracking.epoch++;
+        stage_used = copied_used = nregs = 0;
+        CHECK(tex_check(&v, v.gva) == &v && nregs == 1);
+        g_vk_present++;
+        g_tracking.epoch++;
+        stage_used = copied_used = nregs = 0;
+        CHECK(tex_check(&v, v.gva) == &v && nregs == 0);
+        guest[o] ^= 0x5A;
+        g_map.count = 0;
+        memset(&g_tracking, 0, sizeof g_tracking);
+    }
+    check_block_linear_changes();
+    check_untracked_runs();
+    check_pitch_linear_changes();
+    check_astc_changes();
+    check_resident_layers();
+    check_resident_astc();
+    check_hash_runs();
     printf("tex_upload_rows: %u checks passed\n", checks);
     return 0;
 }

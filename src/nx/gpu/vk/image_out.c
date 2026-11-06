@@ -14,7 +14,11 @@
    aside: their copy is recorded into the frame's host-readable ring (sub, the submit it is in, back, wgen the write
    generation it copies), and they land once that submit is done (vk_gfx_image_frame_done), as storage buffers' results
    do. Before, each release copied and waited for the GPU: half of one game's frame time in vk_finish. Whatever needs
-   their memory sooner lands them at once, waiting for that submit when its copy is recorded */
+   their memory sooner lands them at once, waiting for that submit when its copy is recorded.
+   A kept entry (vk_surf_keep_begin at the bind) holds its span GPU-owned instead of its bytes from before the draw:
+   the release publishes its image over the span, and the bytes land when the CPU touches them. Only where the CPU
+   touched the span since the bind does it become a write-back, its bytes from before the draw read back from that
+   owner (vk_surf_keep_end) */
 typedef struct {
     u64 cpu, n;
 } MemRun;
@@ -30,11 +34,15 @@ typedef struct {
     /* id: its own, never 0. after: the entry whose landed bytes are its bytes from before the draw (original is NULL
        until that one lands), 0 for none. gw: guest memory's write generation when its copy was recorded */
     u64 id, after, gw;
+    VkImageKeep keep; /* kept: keep.held, the span's owner from the bind on, whose reference the entry holds */
 } GfxImageOut;
 static struct {
     GfxImageOut* out;
     size_t count, cap;
     u64 ids;
+    /* guest bytes copied on the CPU before draws, bytes copied back from the GPU, images published; and as of the
+       last report */
+    u64 copied, read_back, published, reported[3];
 } g_image_out;
 static _Thread_local int g_img_landing;
 _Atomic int g_gfx_img_any;
@@ -49,9 +57,12 @@ int vk_gfx_image_unrecorded(const Surf* surf) {
         if (g_image_out.out[i].surf == surf && !g_image_out.out[i].sub) return 1;
     return 0;
 }
-void vk_gfx_image_record(Surf* surf, u8* original, u32 size, u64 after) {
+void vk_gfx_image_record(Surf* surf, u8* original, u32 size, u64 after, const VkImageKeep* keep) {
+    VkImageKeep k = keep ? *keep : (VkImageKeep){0};
+    if (original || k.made) g_image_out.copied += size; /* read by the draw's setup, or staged by its bind */
     if (vk_gfx_image_unrecorded(surf)) {
         free(original);
+        if (k.held) vk_own_res_unref(k.held);
         return;
     }
     if (g_image_out.count == g_image_out.cap) {
@@ -91,7 +102,8 @@ void vk_gfx_image_record(Surf* surf, u8* original, u32 size, u64 after) {
                                                          .runs = runs,
                                                          .nruns = nruns,
                                                          .id = ++g_image_out.ids,
-                                                         .after = after};
+                                                         .after = after,
+                                                         .keep = k};
     g_gfx_img_any = 1;
 }
 /* [cpu, cpu + n) meets the image's bytes: the first run ending past cpu starts before cpu + n */
@@ -127,6 +139,7 @@ static int image_overlaps(const GfxImageOut* out, u64 gva, u64 size) {
     return 0;
 }
 static void image_remove(size_t index) {
+    if (g_image_out.out[index].keep.held) vk_own_res_unref(g_image_out.out[index].keep.held);
     free(g_image_out.out[index].original);
     free(g_image_out.out[index].runs);
     memmove(g_image_out.out + index, g_image_out.out + index + 1,
@@ -154,6 +167,7 @@ static void image_follow(u64 id, u8* bytes, u64 bytes_size) {
             f->original = malloc(f->size);
             if (!f->original) fatal("Out of memory recording graphics storage image");
             gmem_read(f->surf->gva, f->original, f->size);
+            g_image_out.copied += f->size;
         }
     }
     free(bytes);
@@ -201,9 +215,35 @@ u64 vk_gfx_image_after(Surf* surf, u32 size) {
     }
     return id;
 }
+/* a kept entry ended (vk_surf_keep_end): published and gone, 1; or a write-back from now on, the CPU having touched
+   its span, with its bytes from before the draw read back (or none, where they couldn't be), 0 */
+static int image_keep_end(u64 id) {
+    size_t index = image_find(id);
+    GfxImageOut* o = &g_image_out.out[index];
+    VkImageKeep k = o->keep;
+    u64 size = o->size;
+    u8* original;
+    o->keep.held = NULL; /* vk_surf_keep_end takes the reference */
+    if (vk_surf_keep_end(o->surf, &k, &original)) {
+        g_image_out.published++;
+        if ((index = image_find(id)) < g_image_out.count) image_remove(index);
+        return 1;
+    }
+    if (original) g_image_out.read_back += size;
+    if ((index = image_find(id)) >= g_image_out.count) { /* the wait for that read landed it: nothing is left */
+        free(original);
+        return 1;
+    }
+    g_image_out.out[index].original = original;
+    return 0;
+}
 static void image_flush_at(size_t index) {
     GfxImageOut out = g_image_out.out[index];
     SNX_ZONE(z, "vk image flush");
+    if (out.keep.held) { /* published (what needs its bytes lands them from there), or merged at once */
+        if (image_keep_end(out.id)) return;
+        out = g_image_out.out[index = image_find(out.id)];
+    }
     if (out.sub) { /* its copy is recorded: once its submit is done, from there */
         if (out.sub > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
         vk_wait_submit(out.sub);
@@ -217,6 +257,7 @@ static void image_flush_at(size_t index) {
         if ((index = image_ready(image_find(out.id))) >= g_image_out.count) return;
         out = g_image_out.out[index];
     }
+    g_image_out.read_back += vk_surf_flush_size(out.surf);
     vk_surf_flush(out.surf, out.original);
     if (out.surf->mem_wgen != out.surf->wgen) fatal("Cannot write back graphics storage image");
     index = image_find(out.id);
@@ -291,6 +332,15 @@ void vk_gfx_image_put_aside(void) {
             i++;
             continue;
         }
+        if (o->keep.held) { /* published, or a write-back from here on */
+            u64 id = o->id;
+            if (image_keep_end(id)) continue;
+            o = &g_image_out.out[i = image_find(id)];
+            if (!o->original) { /* its bytes from before the draw couldn't be read back */
+                image_flush_at(i);
+                continue;
+            }
+        }
         size = vk_surf_flush_size(o->surf);
         p = size ? vk_stage_back(size, &buf, &off, &mem) : NULL;
         if (!p) { /* nothing to copy, or no room in the ring: at once */
@@ -298,6 +348,7 @@ void vk_gfx_image_put_aside(void) {
             continue;
         }
         vk_surf_flush_record(o->surf, buf, off);
+        g_image_out.read_back += size;
         o->sub = vk_submit_number();
         o->back = p;
         o->back_mem = mem;
@@ -324,4 +375,19 @@ void vk_gfx_image_frame_done(u64 sub) {
         else
             i++;
     g_img_landing = landing;
+}
+void vk_gfx_image_stats(u64* copied, u64* read_back, u64* published) {
+    *copied = g_image_out.copied;
+    *read_back = g_image_out.read_back;
+    *published = g_image_out.published;
+}
+void vk_gfx_image_report(void) {
+    u64* was = g_image_out.reported;
+    LOG("vulkan: draws' storage images since the last report: %llu bytes copied before their draws, %llu copied back, "
+        "%llu images published\n",
+        (unsigned long long)(g_image_out.copied - was[0]), (unsigned long long)(g_image_out.read_back - was[1]),
+        (unsigned long long)(g_image_out.published - was[2]));
+    was[0] = g_image_out.copied;
+    was[1] = g_image_out.read_back;
+    was[2] = g_image_out.published;
 }

@@ -5,6 +5,7 @@
    out in another order than its own, as a heap's may be. The output's bytes the conversion skips keep their values. */
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_y2r.h"
+#include "support/3ds_vk_path.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,7 +42,8 @@ static uint32_t* place(SnxCtrMemory* m, uint32_t first, uint64_t span, unsigned 
     *count = n;
     return pages;
 }
-int main(void) {
+int main(int argc, char** argv) {
+    int vk_memory = test_ctr_vk_memory(&argc, argv);
     SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
     char why[256];
     assert(m);
@@ -50,6 +52,7 @@ int main(void) {
         snx_ctr_memory_free(m);
         return 77;
     }
+    test_ctr_vk_memory_taken(vk_memory);
     static unsigned char src[3][MAX_SPAN], expected[MAX_SPAN];
     unsigned checked = 0;
     for (unsigned input = 0; input <= SNX_CTR_Y2R_YUYV; ++input)

@@ -43,7 +43,7 @@ static int ms_read_samples(Surf* s, u8* out) {
     u8* data = vk_readback_buffer(256, &buffer);
     CHECK(data);
     VkCommandBuffer cb = vk_cmd();
-    VkImage grid = vk_ms_unpack(cb, s, 0);
+    VkImage grid = vk_ms_unpack(cb, s, 0, 0, 8);
     CHECK(grid);
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {8, 8, 1}};
     rec_CmdCopyImageToBuffer(cb, grid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);

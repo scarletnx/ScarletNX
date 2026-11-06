@@ -603,6 +603,8 @@ static void compiled_by(App* app, const char* driver, const char* file, int stat
            !has_arg(argv, "--fullscreen=1", NULL));
     free(argv);
 }
+/* snx_menu_has_driver of a program that has the 3DS driver alone */
+static int has_ctr(const char* name) { return !strcmp(name, "scarletnx-3ds"); }
 /* the stamp this build's driver leaves in the game name's folder (<folder>/<name>.abi), as a game it made with no mod has:
    the launcher plays that game as it is (made_here) */
 static void stamp_here(const char* folder, const char* name) {
@@ -6263,7 +6265,20 @@ int main(int argc, char** argv) {
         render(&app);
         shows(&app, "FOLDERS", normal);
         shows(&app, "- Data", yellow);
-        shows(&app, "default", yellow);
+        { /* its row as the screen has it: default at its end where the row has room for it beside the folder whole,
+             as the rule above says; a Mac's data folder, under Library/Application Support, leaves none */
+            GuiFormBoxes boxes;
+            UiRowInfo drawn;
+            int entry = folder_entry(&app, FOLDER_ROW(GUI_ROW_PLACE, GUI_PLACE_DATA)), width, room;
+            int whole = gui_text_cols(app.theme.marker) + folder_labels(&app) + 1 + gui_text_cols(data);
+            form_boxes(&app, &boxes);
+            width = ui_form_side_row(boxes.right, app.scale, UI_FORM_SIDE_ROWS, entry).w;
+            room = form_room(&app, width);
+            assert(ui_form_side_rows_get_row_info(&app, (size_t)entry, width, &drawn));
+            assert(!strstr(drawn.label, "default") == (whole + 9 > room));
+            snprintf(line, sizeof line, "%s%s", app.theme.marker, drawn.label);
+            shows(&app, line, yellow);
+        }
         /* under the rows, the folder in use: its start, as a long one wraps (Windows' %APPDATA% does) */
         snprintf(line, sizeof line, "%.24s", data);
         shows_half(&app, line, rgb(app.theme.soft));
@@ -7673,6 +7688,18 @@ int main(int argc, char** argv) {
         key(&app, SDLK_RETURN);
         assert(launched(&app) && !app.native && app.menu.selected == GUI_3DS);
         compiled_by(&app, "scarletnx-3ds", cia, 3);
+        /* a driver the program the menu is part of has: that program runs it, the driver's name right after it, as on
+           Windows (no links) and through Android's libscarletnx-run.so */
+        snx_menu_has_driver = has_ctr;
+        open_recent(&app, 0, false);
+        {
+            char *kept = ran(&app, 3), *end = strchr(kept, '\n');
+            assert(end && strstr(kept, "runtime") && strstr(kept, "runtime") < end); /* app.self */
+            assert(!strncmp(end, "\nscarletnx-3ds\n-r\n", 18) && has_arg(kept, "-r", cia));
+            assert(has_arg(kept, "--data", app.data_dir));
+            free(kept);
+        }
+        snx_menu_has_driver = NULL;
         driver_will(NULL, 0, NULL);
         free(got);
         app.recent = (GuiRecent){0};

@@ -187,14 +187,27 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   each issue and comment. An issue with a log attached (`.log`, `.txt`, `.gz`, `.zip`) or pasted in a fenced block gets
   one comment with the summary of each, edited as logs are added, the labels `game report` and `log: <how it ended>`,
   and the other reports with the same signature named. `triage --issue N --dry-run --logscan build/snx-logscan` shows
-  what it would post. `scripts/game-reports.py index [--title-id ID] [--signature TEXT]` lists the reports and their
-  logs as JSON lines. A maintainer's `status: confirmed` label on a report gets one comment: ready for an edenprobe
-  case, with the steps.
+  what it would post, and `gh workflow run game-reports.yml -f issue=N` runs the workflow for that issue (one whose run
+  failed), failing on a pull request or an issue without a log. `scripts/game-reports.py index [--title-id ID]
+  [--signature TEXT]` lists the reports and their logs as JSON lines. A maintainer's `status: confirmed` label on a
+  report gets one comment: ready for an edenprobe case, with the steps. The ctest `game_reports_workflow` runs the
+  workflow's build step on the files its sparse checkout lists alone, so a file the log summary comes to include fails a
+  pull request until the list has it.
 
 - Runtime: `--seconds=N` / `--frames=N`, counted from the game's start, after the shader loading screen
   (`prepare_shaders=2`, which the first run after a rebuild spends translating the game's shaders again);
   `--shot=out` → CWD `out.ppm`; `--shot_every=N` → every N frames.
   `--script=ms:hexbuttons,...` (or `Nf:hexbuttons` to press at present N), `--press_len=ms` (default 300).
+  `--input_record=FILE` writes player 1's input as the game takes it (the controls', the script's and the on-screen
+  controls' together) to FILE, a new file (one that exists is refused): a line `frame:buttons:lx,ly,rx,ry` each present
+  it changed, at most one a present, `frame` the presents since the game's start, `buttons` hex as the script's masks,
+  each stick axis -32767 to 32767. `--input_replay=FILE` plays such a file as player 1's input: each present takes the
+  last line at or before its frame, neutral before the first, and the controls come back at the present after the last
+  line's. `#` lines and empty ones are left for notes; a line not in that form, an axis out of range or a frame not past
+  the one before ends the run with its line number and text. Both together record what the replay gave. A paused game
+  takes no input, so neither writes nor plays there; touch and motion are not recorded. The run still ends at
+  `--seconds` or `--frames`. The replay goes by presents: where one build takes more presents than another to load a
+  scene, the route slides from there on.
   `--swkbd_text=TEXT`: the software keyboard answers TEXT instead of showing its box over the game.
   `--pause=at:length,...` pauses the whole game at `at` ms of the script's clock for `length` ms, and logs whether
   guest memory and guest time stayed unchanged while it held (`pause:` lines).
@@ -221,6 +234,18 @@ beside it:
   64 KiB) and its last lines, half of `log_max` in all, with a line saying how much went between them
   (`log: reached log_max=16 MiB: 7.4 MiB of lines between the run's start and here cut`), and the first time the
   game's picture says so for 3 s. `--log=2` with a long run is what fills it.
+- `--log=2` also logs the process's resources, alike on every system. Each second a `resources:` line: the
+  footprint, what the system still gives the process (`?` where it tells none) and the renderer's VMA blocks; on iOS
+  Metal's memory, the thermal state and low power mode too. Every 5 s a `threads:` line: the three threads with the
+  most time on the processors, by the names the runtime gives them (Linux and Android keep 15 bytes of a name,
+  FreeBSD 19). A `memory: under N MiB free` line, with each GPU heap, the first time what the system still gives
+  falls under 1024, 512, 256 and 128 MiB: on iOS the app's own room, elsewhere the system's free memory.
+- On every log level, a warning of low memory from the system logs a `memory:` line with the same values and each
+  GPU heap, 6 in a run at most: the memory pressure of iOS and macOS, SDL's low memory event (iOS; Android up to 13,
+  and from 14 only as the app goes to the background), Linux's pressure stall trigger (tasks waiting for memory
+  0.2 s of 2 s; a kernel from 6.5 with PSI, else a line says why there is none) and Windows' low memory
+  notification. FreeBSD tells a process none. A Vulkan out-of-memory logs each heap and the descriptor pools, at
+  the first 3.
 - `--gpu_trace_target=0x5acf62e00[:bytes]`: logs (`gpu-trace-target:`, at most 64 lines of each kind) the clears
   and draws that write a render target starting in that GPU address range, with its size, vertex or index count and
   shader addresses. A color clear lists every bound target in the range. Write the address with `0x`; without a size

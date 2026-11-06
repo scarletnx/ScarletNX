@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
-   Copyright 2026 the ScarletNX contributors */
+   Copyright 2026 the ScarletNX contributors
+   Command-record relocation from nxnative (MIT), Copyright (c) 2026 seedds: dm/gfx/nvn/hle_nvn.c */
 /* nvn's NVN objects (gpu/nvn/nvn_object.c): the device, memory pools, buffers, textures, samplers, programs
    and state objects, and their builders. What the command buffer and queue files share with it */
 #ifndef SNX_NVN_OBJECT_H
@@ -9,6 +10,26 @@
 #include "nx/memory/mem.h"
 #include "nx/gpu/shader/shader.h"
 #include "common/filesystem/host.h"
+
+/* A record's snapshot pointers (a texture object copied into the record, tex_snap) that point into the record at src,
+   moved to its copy at dst */
+static inline void nvn_record_relocate(u64 dst, u64 src, u32 op, u32 size) {
+    static const struct {
+        u32 op, off, n;
+    } snaps[] = {
+        {OP_SET_RT, offsetof(NvnPSetRT, color), 8},         {OP_SET_RT, offsetof(NvnPSetRT, depth), 1},
+        {OP_COPY_B2T, offsetof(NvnPCopyB2T, texture), 1},   {OP_COPY_T2B, offsetof(NvnPCopyB2T, texture), 1},
+        {OP_COPY_T2T, offsetof(NvnPCopyT2T, src), 1},       {OP_COPY_T2T, offsetof(NvnPCopyT2T, dst), 1},
+        {OP_CLEAR_TEX, offsetof(NvnPClearTex, texture), 1},
+    };
+    size_t i;
+    u32 k;
+    for (i = 0; i < sizeof snaps / sizeof *snaps; i++)
+        for (k = 0; snaps[i].op == op && k < snaps[i].n; k++) {
+            u64 at = dst + 8 + snaps[i].off + 8 * (u64)k, v = gr64(at);
+            if (v >= src && v < src + size) gw64(at, v - src + dst);
+        }
+}
 
 #define NVN_DEVICE_INFO_ITEMS 0x69
 /* a program whose last stage before rasterization captures: its serial and its transform feedback layout (128 bytes,
@@ -28,6 +49,19 @@ typedef struct {
     u8 c0[NVN_C0_RECORD];
     DsMeshKey mesh;
 } NvnOunceEntry;
+/* Immutable subroutine maps contain offsets into their own byte payload. Handles are one-based and survive
+   command recordings that retain an older program after SetShaders or control-memory reuse. */
+typedef struct {
+    u64 serial;
+    u32 required, linkage[6];
+} NvnSubProgram;
+typedef struct {
+    NvnStage shader;
+    u32 stage, absolute, table, calls, entries, labels;
+    u32 call_offset, code_offset, function_offset, label_offset;
+    u32 bytes;
+    u8 data[];
+} NvnSubLinkage;
 /* the file's state, g_nvn.object (gpu/nvn/nvn_state.h): the serials handed out, and nvnDeviceGetInteger's answers
    once read from the game's driver (driver: 1; read_api: its API version among them); the transform feedback layouts
    of the programs that capture, by serial, under their lock: programs that capture are few, and their entries stay */
@@ -46,6 +80,10 @@ typedef struct {
     u32 ntess, tess_capacity;
     NvnOunceEntry* ounce; /* immutable records, sorted by serial and copied out under xfb_lock */
     u32 nounce, ounce_capacity;
+    NvnSubProgram* subprogram;
+    u32 nsubprogram, subprogram_capacity;
+    NvnSubLinkage** sublinkage;
+    u32 nsublinkage, sublinkage_capacity;
 } NvnObjectState;
 
 /* an NVN object of type T at guest address a, in place in the game's memory */
@@ -75,6 +113,8 @@ int nvn_program_tess(u64 serial, NvnTessStage stages[2]);
 void nvn_program_c0(u64 serial, u8 c0[NVN_C0_RECORD]);
 /* the task and mesh programs' fields of the Ounce program SetShaders gave serial, all 0 for another program */
 DsMeshKey nvn_program_mesh(u64 serial);
+u32 nvn_program_subroutine(u64 program, i32 stage);
+int nvn_subroutine_apply(u32 linkage, i32 first, i32 count, const i32* values);
 /* the game's driver resolved nvnDeviceGetInteger to func: its answers are read from its code (gpu/nvn/nvn_driver.c)
    before the game can ask */
 void nvn_device_driver(u64 func);

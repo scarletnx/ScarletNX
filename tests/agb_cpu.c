@@ -180,13 +180,13 @@ int main(void) {
         CHECK(flat[0x06018004] == 0xA5 && flat[0x06038004] == 0xA5);
     }
     {
-        /* a block that ends past a frame's cycles, at each frame: 200 moves and the branch back, 402 cycles, run for
-           frames of 280896, 300 more than 698 of them. Each run ends where the machine's frame does, before line 0
-           is drawn, not 102 cycles later at each frame */
-        for (uint32_t i = 0; i < 200; ++i) agb_write32(&board, 0x02001000 + i * 4, 0xE1A00000); /* mov r0, r0 */
-        agb_write32(&board, 0x02001320, 0xEAFFFF36);                                            /* b 0x02001000 */
+        /* a block that ends past a frame's cycles, at each frame: 200 moves and the branch back in IWRAM, 203 cycles (a
+           cycle each and a refill of two), run for frames of 280896, 147 more than 1383 of them. Each run ends where the
+           machine's frame does, before line 0 is drawn, not 56 cycles later at each frame */
+        for (uint32_t i = 0; i < 200; ++i) agb_write32(&board, 0x03001000 + i * 4, 0xE1A00000); /* mov r0, r0 */
+        agb_write32(&board, 0x03001320, 0xEAFFFF36);                                            /* b 0x03001000 */
         agb_write16(&board, 0x04000208, 0);                                                     /* IME off */
-        cpu.arm.r[15] = 0x02001000;
+        cpu.arm.r[15] = 0x03001000;
         cpu.arm.cpsr = 0x1F;
         for (int frame = 0; frame < 20; ++frame) {
             uint32_t written = 0;
@@ -195,11 +195,76 @@ int main(void) {
                 fprintf(stderr, "agb_cpu: %s\n", error);
                 goto done;
             }
-            if (board.ppu.vcount || board.ppu.dot >= 402) {
+            if (board.ppu.vcount || board.ppu.dot >= 203) {
                 fprintf(stderr, "agb_cpu: frame %d ended at line %u, cycle %u of it\n", frame, board.ppu.vcount,
                         board.ppu.dot);
                 goto done;
             }
+        }
+    }
+    {
+        /* the CPU waits out the cycles a DMA held the bus for: a run as long as them runs none of its instructions */
+        agb_write32(&board, 0x03000800, 0xE2800001); /* add r0, r0, #1 */
+        agb_write32(&board, 0x03000804, 0xEAFFFFFD); /* b 0x03000800 */
+        cpu.arm.r[0] = 0;
+        cpu.arm.r[15] = 0x03000800;
+        cpu.arm.cpsr = 0x9F;
+        cpu.over = 0;
+        board.cpu_halted = cpu.wait = 0;
+        board.held_cycles = 1000;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 1000, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        CHECK(cpu.arm.r[0] == 0 && board.held_cycles == 0);
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 1000, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        CHECK(cpu.arm.r[0] > 0);
+        /* a hold longer than the run: the run ends at its own end, with no cycles over and a run's sound, 32 samples
+           of 512 cycles, and the rest of the hold waits in the next run */
+        {
+            uint32_t written = 0;
+            cpu.arm.r[0] = 0;
+            cpu.over = 0;
+            board.held_cycles = 30000;
+            CHECK(!agb_cpu_run(&board, &cpu, &recomp, 16384, audio, AGB_APU_RATE, &written, error, sizeof error));
+            CHECK(cpu.over == 0 && board.held_cycles == 30000 - 16384 && written == 32 && cpu.arm.r[0] == 0);
+            CHECK(!agb_cpu_run(&board, &cpu, &recomp, 16384, audio, AGB_APU_RATE, &written, error, sizeof error));
+            CHECK(board.held_cycles == 0 && cpu.arm.r[0] > 0);
+        }
+    }
+    {
+        /* a BIOS call takes its entry and return, 45 cycles, and the memory it streams through: CpuSet of 64 words from
+           EWRAM to EWRAM, 64 reads and writes of 6 cycles, holds the CPU 813 cycles before the add after it runs */
+        agb_write32(&board, 0x03000900, 0xEF0B0000); /* swi 0x0B0000: CpuSet */
+        agb_write32(&board, 0x03000904, 0xE2855001); /* add r5, r5, #1 */
+        agb_write32(&board, 0x03000908, 0xEAFFFFFD); /* b 0x03000904 */
+        cpu.arm.r[0] = 0x02001000;
+        cpu.arm.r[1] = 0x02002000;
+        cpu.arm.r[2] = 64 | 1u << 26;
+        cpu.arm.r[5] = 0;
+        cpu.arm.r[15] = 0x03000900;
+        cpu.arm.cpsr = 0x9F;
+        cpu.over = 0;
+        board.cpu_halted = cpu.wait = 0;
+        board.held_cycles = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 800, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        CHECK(cpu.arm.r[5] == 0);
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 100, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        CHECK(cpu.arm.r[5] > 0);
+    }
+    {
+        /* an instruction costs its fetch, by region: an add and the branch back are 2 + 2 cycles from IWRAM (32 bits,
+           no wait state) and 12 + 12 from EWRAM (16 bits, 2 wait states, a word two halfwords), so 2400 cycles run the
+           loop 600 times from IWRAM and 100 from EWRAM */
+        for (int ram = 0; ram < 2; ++ram) {
+            uint32_t base = ram ? 0x02003000 : 0x03000A00;
+            agb_write32(&board, base, 0xE2800001);     /* add r0, r0, #1 */
+            agb_write32(&board, base + 4, 0xEAFFFFFD); /* b base */
+            cpu.arm.r[0] = 0;
+            cpu.arm.r[15] = base;
+            cpu.arm.cpsr = 0x9F;
+            cpu.over = 0;
+            board.cpu_halted = cpu.wait = 0;
+            board.held_cycles = 0;
+            CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2400, audio, AGB_APU_RATE, NULL, error, sizeof error));
+            CHECK(cpu.arm.r[0] == (ram ? 100u : 600u));
         }
     }
     /* the instructions after the interpreted ones start blocks the discovery step did not see: they were compiled as
@@ -324,6 +389,23 @@ int main(void) {
         CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2000, audio, AGB_APU_RATE, &written, error, sizeof error));
         CHECK(agb_read32(&board, 0x02000300) == 42 && agb_read32(&board, 0x02000304) == 0x0300050C);
         CHECK(cpu.arm.r[15] == 0x03000514 && !(cpu.arm.cpsr & SNX_ARM_T));
+    }
+    {
+        /* a software interrupt whose number the BIOS does not have returns at once, as mGBA's HLE BIOS answers it, and
+           the machine keeps which and where for the runner to say: here swi 0xFF0099, then 7 stored at 0x02000310 */
+        uint32_t written = 0;
+        agb_write32(&board, 0x03000600, 0xEFFF0099); /* swi 0xFF0099 */
+        agb_write32(&board, 0x03000604, 0xE3A00007); /* mov r0, #7 */
+        agb_write32(&board, 0x03000608, 0xE59F1004); /* ldr r1, [pc, #4]: 0x02000310 */
+        agb_write32(&board, 0x0300060C, 0xE5810000); /* str r0, [r1] */
+        agb_write32(&board, 0x03000610, 0xEAFFFFFE); /* b . */
+        agb_write32(&board, 0x03000614, 0x02000310);
+        cpu.arm.r[15] = 0x03000600;
+        cpu.arm.cpsr = 0x9F;
+        board.cpu_halted = cpu.wait = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2000, audio, AGB_APU_RATE, &written, error, sizeof error));
+        CHECK(agb_read32(&board, 0x02000310) == 7);
+        CHECK(cpu.unknown_swi == 0xFF && cpu.unknown_swi_at == 0x03000600 && cpu.unknown_swi_count == 1);
     }
     {
         /* a recompile (-r) builds every block of the map into the module, the hints too: here from a copy of the map

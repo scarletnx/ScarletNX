@@ -18,6 +18,9 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "snx_settings.h"
+#include <SDL3/SDL_cpuinfo.h>
+#include <SDL3/SDL_mutex.h>
+#include <SDL3/SDL_thread.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +35,8 @@
 #define TEXTURES  512 /* textures kept decoded */
 #define TARGETS   32  /* render targets kept */
 #define SPANS     4096 /* the memory spans a submission reads or writes, re-levelled when it is done */
+#define PIPE_JOBS         64   /* the pipelines the workers have in hand at once (async_pipelines) */
+#define WORKERS           32   /* pipeline_threads's most */
 
 enum {
     CULL_MODE = 0x040,
@@ -103,11 +108,17 @@ typedef struct {
     Image image;
     uint64_t used;
 } Texture;
+/* Where the GPU's work is on a copy of the RAM (vk.h), how a page's copy stands against the RAM: stale (the CPU wrote
+   the RAM since, or nothing was copied yet), the same, or newer (the GPU wrote the copy since). The work is only ever on
+   the copy: a stale page is copied in before the GPU reads or writes it, a newer one copied out before the CPU touches
+   it. A write copies its stale pages in too, as one need not cover all of a page, and a page goes back whole */
+enum { COPY_STALE, COPY_SAME, COPY_NEWER };
 /* What the GPU keeps of a RAM page and does with it: the submissions that last read and wrote it, the targets and
-   textures kept of it, the dirty targets over it. Its write-tracking level follows (levels()) */
+   textures kept of it, the dirty targets over it, its copy. Its write-tracking level follows (levels()) */
 typedef struct {
     uint64_t read, write;
     uint16_t kept, dirty;
+    uint8_t copy;
 } PageState;
 typedef struct {
     uint32_t pa, size;
@@ -150,7 +161,16 @@ typedef struct {
     uint64_t hash;
     PipeKey key;
     VkPipeline pipeline;
+    uint32_t job; /* while a worker makes it (async_pipelines), its PipeJob's index plus 1; else 0 */
 } Pipe;
+/* a pipeline a worker makes: its key and the shader modules the draw found, then the pipeline */
+enum { JOB_FREE, JOB_QUEUED, JOB_MAKING, JOB_DONE };
+typedef struct {
+    PipeKey key;
+    VkShaderModule vs, fs;
+    VkPipeline made;
+    uint8_t state; /* under g.job_lock */
+} PipeJob;
 
 typedef struct {
     uint32_t lighting[24][256], fog[128], noise[128], color_map[128], alpha_map[128], color[256], diff[256];
@@ -216,6 +236,16 @@ static struct {
     /* the triangles the CPU made for a draw with a geometry shader, waiting for their draw, from triangle_first on */
     SnxCtrVertex (*triangles)[3];
     size_t triangle_count, triangle_capacity, triangle_first;
+    SnxCtrVkTraffic traffic;
+    /* async_pipelines: the threads that make the new pipelines while the draws that need them are skipped, started
+       at the first one and stopped with the renderer, their jobs, and the lock and conditions over those */
+    SDL_Thread* workers[WORKERS];
+    unsigned worker_count;
+    bool workers_tried, jobs_stop;
+    SDL_Mutex* job_lock;
+    SDL_Condition *job_queued, *job_done;
+    PipeJob jobs[PIPE_JOBS];
+    uint64_t skipped; /* the draws skipped while their pipeline was made */
 } g;
 
 static VkDevice device(void) { return snx_ctr_vk()->device; }
@@ -515,17 +545,19 @@ static PageState* page_state(uint32_t pa) {
     }
     return NULL;
 }
-/* The level write tracking gives each page of [pa, pa + size): the GPU's (OWN) under a dirty target or a write not
-   done, watched under something kept or a read not done (a write waits for that read), the CPU's otherwise */
+/* The level write tracking gives each page of [pa, pa + size): the GPU's (OWN) under a dirty target, a write not
+   done or a newer copy, watched under something kept, a read not done (a write waits for that read) or a copy the
+   same as the RAM, the CPU's otherwise */
 static void levels(uint32_t pa, uint64_t size) {
     SnxCtrVk* v = snx_ctr_vk();
     if (!v || !v->memory || !size) return;
     for (uint64_t at = pa & ~4095u; at < (uint64_t)pa + size; at += 4096) {
         PageState* page = page_state((uint32_t)at);
         if (!page) continue;
-        SnxCtrTrackLevel l = page->dirty || page->write > v->ring.completed ? SNX_CTR_TRACK_OWN
-                             : page->kept || page->read > v->ring.completed ? SNX_CTR_TRACK_WATCH
-                                                                       : SNX_CTR_TRACK_NONE;
+        SnxCtrTrackLevel l =
+            page->dirty || page->write > v->ring.completed || page->copy == COPY_NEWER ? SNX_CTR_TRACK_OWN
+            : page->kept || page->read > v->ring.completed || page->copy == COPY_SAME  ? SNX_CTR_TRACK_WATCH
+                                                                                       : SNX_CTR_TRACK_NONE;
         snx_ctr_track_set(v->memory, (uint32_t)at, 4096, l);
     }
 }
@@ -540,18 +572,54 @@ static void count(uint32_t pa, uint64_t size, int kept, int dirty) {
     }
     levels(pa, size);
 }
+/* The pages of [pa, pa + size) whose copy is stale copied in from the RAM, in the open recording's uploads (which run
+   before every command it holds), the same from then on. The copy reads the RAM: a CPU write waits for serial. Nothing
+   recorded or in flight reads or writes a stale page's copy: it went stale on a CPU write, which waited for them */
+static void copy_in(uint32_t pa, uint64_t size, uint64_t serial) {
+    VkCommandBuffer uploads = VK_NULL_HANDLE;
+    uint64_t end = (uint64_t)pa + size;
+    for (uint64_t at = pa & ~4095u; at < end;) {
+        PageState* page = page_state((uint32_t)at);
+        if (!page || page->copy != COPY_STALE) {
+            at += 4096;
+            continue;
+        }
+        VkDeviceSize offset;
+        const SnxCtrVkRam* ram = snx_ctr_vk_ram((uint32_t)at, 4096, &offset);
+        uint64_t run = at; /* the stale pages from here on, in this region */
+        for (; run < end && run < (uint64_t)ram->base + ram->size; run += 4096) {
+            page = page_state((uint32_t)run);
+            if (page->copy != COPY_STALE) break;
+            page->copy = COPY_SAME;
+            page->read = serial;
+        }
+        if (!uploads) uploads = snx_vk_ring_uploads(&snx_ctr_vk()->ring);
+        VkBufferCopy c = {offset, offset, run - at};
+        vkCmdCopyBuffer(uploads, ram->buffer, ram->copy, 1, &c);
+        g.traffic.copied_in += run - at;
+        at = run;
+    }
+}
 /* the open recording reads [pa, pa + size), or writes it: its pages wait for its submission (a CPU write for a read, any
-   access for a write), and are levelled again when it is done */
+   access for a write), and are levelled again when it is done. On a copy of the RAM, its stale pages are copied in
+   first, and what it writes is newer than the RAM from then on */
 static void gpu_uses(uint32_t pa, uint64_t size, bool write) {
     if (!size || !snx_ctr_vk()) return;
     snx_ctr_vk_commands(); /* the open recording's slot */
     uint64_t serial = snx_ctr_vk_serial();
+    bool copies = snx_ctr_vk_copies();
+    if (write)
+        g.traffic.written += size;
+    else
+        g.traffic.read += size;
+    if (copies) copy_in(pa, size, serial);
     for (uint64_t at = pa & ~4095u; at < (uint64_t)pa + size; at += 4096) {
         PageState* page = page_state((uint32_t)at);
         if (!page) continue;
-        if (write)
+        if (write) {
             page->write = serial;
-        else
+            if (copies) page->copy = COPY_NEWER;
+        } else
             page->read = serial;
     }
     unsigned slot = g.slot;
@@ -818,6 +886,29 @@ bool snx_ctr_vk_target_image(uint32_t pa, unsigned width, unsigned height, unsig
     }
     return false;
 }
+/* The run of pages around pa (256 at most on each side, in its region) whose copy is newer than the RAM copied back to
+   it, and waited for: the same from then on. One CPU access to what the GPU wrote takes what is around it too, a frame
+   or a buffer, rather than a submission and a wait for each of its pages */
+static void copy_out(uint32_t pa) {
+    VkDeviceSize offset;
+    const SnxCtrVkRam* ram = snx_ctr_vk_ram(pa, 4096, &offset);
+    uint32_t first = pa, last = pa;
+    for (unsigned n = 0; n < 256 && first > ram->base && page_state(first - 4096)->copy == COPY_NEWER; ++n)
+        first -= 4096;
+    for (unsigned n = 0; n < 256 && (uint64_t)last + 4096 < (uint64_t)ram->base + ram->size &&
+                         page_state(last + 4096)->copy == COPY_NEWER;
+         ++n)
+        last += 4096;
+    VkCommandBuffer cb = snx_ctr_vk_commands();
+    end_rendering(); /* a copy is not recorded inside a target's pass */
+    snx_ctr_vk_barrier(cb);
+    VkBufferCopy c = {first - ram->base, first - ram->base, (VkDeviceSize)last + 4096 - first};
+    vkCmdCopyBuffer(cb, ram->copy, ram->buffer, 1, &c);
+    (void)snx_ctr_vk_finish();
+    g.traffic.copied_out += c.size;
+    for (uint64_t at = first; at <= last; at += 4096) page_state((uint32_t)at)->copy = COPY_SAME;
+    levels(first, c.size);
+}
 void snx_ctr_vk_sync(uint32_t pa, uint32_t size, bool write) {
     if (!size || !snx_ctr_vk()) return;
     if (g.made && !store_over(pa, size)) fprintf(stderr, "3ds gpu: a render target could not be stored\n");
@@ -826,18 +917,25 @@ void snx_ctr_vk_sync(uint32_t pa, uint32_t size, bool write) {
 }
 void snx_ctr_vk_track(void* context, uint32_t pa, SnxCtrTrackLevel level) {
     (void)context;
+    ++g.traffic.traps;
     if (level == SNX_CTR_TRACK_OWN) {
-        /* the page's newer contents: its targets stored, then every GPU write to it waited for */
+        /* the page's newer contents: its targets stored, then every GPU write to it waited for, or its copy copied
+           back with what the GPU wrote around it */
         if (g.made) (void)store_over(pa, 4096);
         PageState* page = page_state(pa);
-        if (page && page->write) (void)snx_ctr_vk_wait(page->write, UINT64_MAX);
-    } else { /* the CPU writes it: after the GPU's reads of it, and what the GPU made of it is stale */
+        if (page && page->copy == COPY_NEWER)
+            copy_out(pa);
+        else if (page && page->write)
+            (void)snx_ctr_vk_wait(page->write, UINT64_MAX);
+    } else { /* the CPU writes it: after the GPU's reads of it, and what the GPU made of it is stale, its copy too */
         PageState* page = page_state(pa);
         if (page && page->read) (void)snx_ctr_vk_wait(page->read, UINT64_MAX);
         stale(pa, 4096);
+        if (page && page->copy == COPY_SAME) page->copy = COPY_STALE;
     }
     levels(pa, 4096);
 }
+SnxCtrVkTraffic snx_ctr_vk_traffic(void) { return g.traffic; }
 
 /* ---- textures ---- */
 
@@ -1089,16 +1187,18 @@ static const VkLogicOp logic_op[16] = {
     VK_LOGIC_OP_NAND,   VK_LOGIC_OP_OR,          VK_LOGIC_OP_NOR,         VK_LOGIC_OP_XOR,
     VK_LOGIC_OP_EQUIVALENT, VK_LOGIC_OP_AND_INVERTED, VK_LOGIC_OP_OR_REVERSE, VK_LOGIC_OP_OR_INVERTED};
 
-static VkPipeline make_pipeline(const PipeKey* k) {
+/* k's pipeline, of the shader modules vs and fs, which a worker passes as the draw found them: g.vs and g.fs move as
+   they grow. It reads only what made() set */
+static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderModule fs) {
     SnxCtrVk* v = snx_ctr_vk();
     VkPipelineShaderStageCreateInfo stages[2] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
          .stage = VK_SHADER_STAGE_VERTEX_BIT,
-         .module = g.vs[k->vs].module,
+         .module = vs,
          .pName = "main"},
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
          .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-         .module = g.fs[k->fs].module,
+         .module = fs,
          .pName = "main"}};
     VkVertexInputBindingDescription bindings[13];
     VkVertexInputAttributeDescription attributes[16];
@@ -1197,17 +1297,111 @@ static VkPipeline make_pipeline(const PipeKey* k) {
         return VK_NULL_HANDLE;
     return pipeline;
 }
-static VkPipeline pipeline(const PipeKey* k) {
+/* A worker: makes the queued pipelines one by one, until the renderer stops them */
+static int SDLCALL pipe_worker(void* unused) {
+    (void)unused;
+    SDL_LockMutex(g.job_lock);
+    while (!g.jobs_stop) {
+        PipeJob* j = NULL;
+        for (unsigned i = 0; i < PIPE_JOBS && !j; ++i)
+            if (g.jobs[i].state == JOB_QUEUED) j = &g.jobs[i];
+        if (!j) {
+            SDL_WaitCondition(g.job_queued, g.job_lock);
+            continue;
+        }
+        j->state = JOB_MAKING;
+        SDL_UnlockMutex(g.job_lock);
+        VkPipeline made_pipeline = make_pipeline(&j->key, j->vs, j->fs);
+        SDL_LockMutex(g.job_lock);
+        j->made = made_pipeline;
+        j->state = JOB_DONE;
+        SDL_BroadcastCondition(g.job_done);
+    }
+    SDL_UnlockMutex(g.job_lock);
+    return 0;
+}
+/* the workers, started at the first pipeline async_pipelines hands them: pipeline_threads of them, or the common count
+   (snx_vk_pipeline_workers). How many there are; with none the draws wait for their pipelines, as with
+   async_pipelines=0, which the log says once */
+static unsigned pipe_workers(void) {
+    if (g.workers_tried) return g.worker_count;
+    g.workers_tried = true;
+    unsigned n = (unsigned)snx_vk_pipeline_workers(g_settings.pipeline_threads, SDL_GetNumLogicalCPUCores());
+    if (n > WORKERS) n = WORKERS;
+    if ((g.job_lock = SDL_CreateMutex()) && (g.job_queued = SDL_CreateCondition()) &&
+        (g.job_done = SDL_CreateCondition()))
+        while (g.worker_count < n) {
+            SDL_Thread* t = SDL_CreateThread(pipe_worker, "3DS pipelines", NULL);
+            if (!t) break;
+            g.workers[g.worker_count++] = t;
+        }
+    if (!g.worker_count)
+        fprintf(stderr,
+                "3ds gpu: async_pipelines=1, but no pipeline worker could start (%s): the draws wait for "
+                "their pipelines, as with async_pipelines=0\n",
+                SDL_GetError());
+    return g.worker_count;
+}
+/* The pipeline for k. Without async_pipelines it is made now. With it a worker makes a new one while the draws that
+   need it are skipped: *pending, and VK_NULL_HANDLE, until it is done. VK_NULL_HANDLE alone when the device refuses
+   it */
+static VkPipeline pipeline(const PipeKey* k, bool* pending) {
+    *pending = false;
     uint64_t h = snx_fnv1a(SNX_FNV_BASIS, k, sizeof *k);
-    for (size_t i = 0; i < g.pipe_count; ++i)
-        if (g.pipes[i].hash == h && !memcmp(&g.pipes[i].key, k, sizeof *k)) return g.pipes[i].pipeline;
+    for (size_t i = 0; i < g.pipe_count; ++i) {
+        Pipe* e = &g.pipes[i];
+        if (e->hash != h || memcmp(&e->key, k, sizeof *k)) continue;
+        if (e->job) {
+            PipeJob* j = &g.jobs[e->job - 1];
+            SDL_LockMutex(g.job_lock);
+            if (j->state == JOB_DONE) {
+                e->pipeline = j->made;
+                *j = (PipeJob){0};
+                e->job = 0;
+            }
+            SDL_UnlockMutex(g.job_lock);
+            *pending = e->job != 0;
+        }
+        g.skipped += *pending;
+        return e->pipeline;
+    }
     if (!grow((void**)&g.pipes, &g.pipe_capacity, g.pipe_count, sizeof *g.pipes)) return VK_NULL_HANDLE;
-    VkPipeline made_pipeline = make_pipeline(k);
-    if (!made_pipeline) return VK_NULL_HANDLE;
-    g.pipes[g.pipe_count].hash = h;
-    g.pipes[g.pipe_count].key = *k;
-    g.pipes[g.pipe_count++].pipeline = made_pipeline;
-    return made_pipeline;
+    Pipe* e = &g.pipes[g.pipe_count];
+    *e = (Pipe){.hash = h, .key = *k};
+    if (g_settings.async_pipelines && pipe_workers()) {
+        /* with every job in hand the draw is skipped all the same, and its pipeline asked for again at the next */
+        *pending = true;
+        ++g.skipped;
+        SDL_LockMutex(g.job_lock);
+        for (unsigned i = 0; i < PIPE_JOBS && !e->job; ++i)
+            if (g.jobs[i].state == JOB_FREE) {
+                g.jobs[i] =
+                    (PipeJob){.key = *k, .vs = g.vs[k->vs].module, .fs = g.fs[k->fs].module, .state = JOB_QUEUED};
+                e->job = i + 1;
+                SDL_SignalCondition(g.job_queued);
+            }
+        SDL_UnlockMutex(g.job_lock);
+        if (e->job) ++g.pipe_count;
+        return VK_NULL_HANDLE;
+    }
+    e->pipeline = make_pipeline(k, g.vs[k->vs].module, g.fs[k->fs].module);
+    if (e->pipeline) ++g.pipe_count;
+    return e->pipeline;
+}
+/* async_pipelines: waits until every pipeline asked for is made. Stopping, the ones not yet begun are dropped first */
+static void pipes_wait(bool stopping) {
+    if (!g.worker_count) return;
+    SDL_LockMutex(g.job_lock);
+    for (unsigned i = 0; i < PIPE_JOBS; ++i) {
+        if (stopping && g.jobs[i].state == JOB_QUEUED) g.jobs[i].state = JOB_FREE;
+        while (g.jobs[i].state == JOB_QUEUED || g.jobs[i].state == JOB_MAKING)
+            SDL_WaitCondition(g.job_done, g.job_lock);
+    }
+    SDL_UnlockMutex(g.job_lock);
+}
+uint64_t snx_ctr_vk_pipelines_wait(void) {
+    pipes_wait(false);
+    return g.skipped;
 }
 
 /* ---- draws ---- */
@@ -1517,7 +1711,9 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     k.stencil_op = k.stencil_on ? r[OM_STENCIL_OP] & 0x777 : 0;
     k.topology = (uint8_t)(source == TRIANGLES ? 0 : r[SNX_PICA_TOPOLOGY] >> 8 & 3); /* the triangles made: a list */
     k.cull = (uint8_t)(r[CULL_MODE] & 3);
-    VkPipeline pipe = pipeline(&k);
+    bool pending;
+    VkPipeline pipe = pipeline(&k, &pending);
+    if (pending) return SNX_CTR_PICA_OK; /* async_pipelines: drawn once a worker has made its pipeline */
     if (!pipe) return stop(p, "the device refuses a draw's pipeline");
     /* the vertices: an index buffer, the loaders' bindings, the immediate vertices or the triangles made */
     uint32_t count = source == ARRAYS      ? r[NUM_VERTICES]
@@ -1546,7 +1742,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
             if (k.binding_mask >> n & 1) {
                 const SnxCtrVkRam* ram = snx_ctr_vk_ram(binding_pa[n], 1, &offsets[n]);
                 if (!ram) return SNX_CTR_PICA_OK;
-                buffers[n] = ram->buffer;
+                buffers[n] = snx_ctr_vk_work(ram);
             }
     }
     SnxCtrPicaResult result = target_open(&key);
@@ -1603,7 +1799,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     if (indexed && source == ARRAYS) {
         VkDeviceSize at;
         const SnxCtrVkRam* ram = snx_ctr_vk_ram(index_pa, 1, &at);
-        vkCmdBindIndexBuffer(cb, ram->buffer, at, wide ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT8_EXT);
+        vkCmdBindIndexBuffer(cb, snx_ctr_vk_work(ram), at, wide ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT8_EXT);
         vkCmdDrawIndexed(cb, count, 1, 0, 0, 0);
     } else
         vkCmdDraw(cb, count, 1, source == ARRAYS ? r[VERTEX_OFFSET] : 0, 0);
@@ -1717,12 +1913,63 @@ void snx_ctr_vk_render_retire(unsigned slot, uint64_t serial) {
     for (size_t i = 0; i < g.span_count[slot]; ++i) levels(g.spans[slot][i].pa, g.spans[slot][i].size);
     g.span_count[slot] = 0;
 }
+/* every page whose copy is newer than the RAM copied back, and waited for: the RAM holds what the GPU wrote once the
+   device is gone */
+static void copy_every_page_back(void) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    if (!g.pages || !snx_ctr_vk_copies()) return;
+    uint32_t index = 0;
+    bool copied = false;
+    for (unsigned i = 0; i < v->ram_count; ++i) {
+        const SnxCtrVkRam* ram = &v->ram[i];
+        for (uint32_t at = 0; at < ram->size;) {
+            uint32_t run = at;
+            while (run < ram->size && g.pages[index + run / 4096].copy == COPY_NEWER) {
+                g.pages[index + run / 4096].copy = COPY_SAME;
+                run += 4096;
+            }
+            if (run == at) {
+                at += 4096;
+                continue;
+            }
+            VkCommandBuffer cb = snx_ctr_vk_commands();
+            if (!copied) {
+                end_rendering();
+                snx_ctr_vk_barrier(cb);
+            }
+            VkBufferCopy c = {at, at, run - at};
+            vkCmdCopyBuffer(cb, ram->copy, ram->buffer, 1, &c);
+            g.traffic.copied_out += run - at;
+            copied = true;
+            at = run;
+        }
+        index += ram->size / 4096;
+    }
+    if (copied) (void)snx_ctr_vk_finish();
+}
 void snx_ctr_vk_render_free(void) {
     if (!snx_ctr_vk()) {
         memset(&g, 0, sizeof g);
         return;
     }
+    copy_every_page_back();
     VkDevice d = device();
+    if (g.worker_count) {
+        pipes_wait(true);
+        SDL_LockMutex(g.job_lock);
+        g.jobs_stop = true;
+        SDL_BroadcastCondition(g.job_queued);
+        SDL_UnlockMutex(g.job_lock);
+        for (unsigned i = 0; i < g.worker_count; ++i) SDL_WaitThread(g.workers[i], NULL);
+        for (unsigned i = 0; i < PIPE_JOBS; ++i)
+            if (g.jobs[i].state == JOB_DONE) vkDestroyPipeline(d, g.jobs[i].made, NULL);
+    }
+    if (g.job_done) SDL_DestroyCondition(g.job_done);
+    if (g.job_queued) SDL_DestroyCondition(g.job_queued);
+    if (g.job_lock) SDL_DestroyMutex(g.job_lock);
+    if (g.skipped)
+        fprintf(stderr, "3ds gpu: async_pipelines=%d skipped %llu draw%s while their pipelines were made\n",
+                g_settings.async_pipelines, (unsigned long long)g.skipped, g.skipped == 1 ? "" : "s");
     vkDeviceWaitIdle(d);
     for (unsigned s = 0; s < SNX_CTR_VK_SLOTS; ++s) {
         for (size_t i = 0; i < g.view_count[s]; ++i) vkDestroyBufferView(d, g.views[s][i], NULL);

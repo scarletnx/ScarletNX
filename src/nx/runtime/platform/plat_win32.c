@@ -8,6 +8,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include <SDL3/SDL_thread.h>
 #include <errno.h>
 #include <io.h>
@@ -115,6 +116,47 @@ int plat_thread(PThreadFn fn, void* arg, size_t stack) {
 void plat_thread_exit(void) {
     SDL_CleanupTLS();
     ExitThread(0);
+}
+
+/* ================================================================ the system's low memory */
+/* The memory resource notifications: low while the available physical memory is under the system's mark (32 MiB per
+   4 GiB, 64 MiB at most), high once it is about three times that. A line at each fall to the low mark, then a wait for
+   the high one, so memory that stays low makes one line */
+static struct {
+    HANDLE low, high;
+    int (*say)(const char* why);
+} g_memory_watch;
+static void memory_watch_thread(void* arg) {
+    (void)arg;
+    SNX_THREAD_NAME("memory pressure");
+    for (;;) {
+        if (WaitForSingleObject(g_memory_watch.low, INFINITE) != WAIT_OBJECT_0) return;
+        if (!g_memory_watch.say(
+                "the system's available memory fell to its low mark (Windows' low memory notification)"))
+            return;
+        if (WaitForSingleObject(g_memory_watch.high, INFINITE) != WAIT_OBJECT_0) return;
+    }
+}
+int plat_memory_watch(int (*say)(const char* why)) {
+    char why[256];
+    if (g_memory_watch.say) return 0;
+    g_memory_watch.low = CreateMemoryResourceNotification(LowMemoryResourceNotification);
+    g_memory_watch.high = g_memory_watch.low ? CreateMemoryResourceNotification(HighMemoryResourceNotification) : NULL;
+    if (!g_memory_watch.high) {
+        snx_os_error(why, sizeof why);
+        LOG("memory: no watch of the system's low memory: CreateMemoryResourceNotification: %s\n", why);
+        if (g_memory_watch.low) CloseHandle(g_memory_watch.low);
+        g_memory_watch.low = NULL;
+        return -1;
+    }
+    g_memory_watch.say = say;
+    if (plat_thread(memory_watch_thread, NULL, 0)) {
+        snx_os_error(why, sizeof why);
+        LOG("memory: no watch of the system's low memory: its thread does not start: %s\n", why);
+        g_memory_watch.say = NULL;
+        return -1;
+    }
+    return 0;
 }
 
 /* ================================================================ the host's power source */

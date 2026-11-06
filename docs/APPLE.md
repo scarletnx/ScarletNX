@@ -10,6 +10,7 @@
   * [Running a game on iOS](#running-a-game-on-ios)
   * [Installing from a Mac](#installing-from-a-mac)
 * [What is missing](#what-is-missing)
+* [A GPU lockup on MoltenVK](#a-gpu-lockup-on-moltenvk)
 * [Building](#building)
 
 Both build on a Mac with Xcode, for Apple silicon (arm64), with Xcode's Clang, and the CI builds both on every push
@@ -73,6 +74,12 @@ menu's driver:
   device, the system and the limits the app has, with the menu's own lines ([GUI](GUI.md)), and a fatal error, the
   menu's or a game's, is also written to `logs/scarletnx-error.log`. A phone shows no console, so these are what to read
   when a run fails; Share Log sends both.
+- **MetricKit.** The app subscribes to MetricKit at its start. Each payload that the system gives (a diagnostic
+  payload with crashes, hangs, CPU and disk write exceptions, or a metric payload with the counts of exits for memory)
+  goes as JSON to `logs/metrickit-<date>_<time>.json`, named by the end of the time that it covers. The console log
+  gets one line for each payload, with its file (or the file and why it was not written) and what it holds. The
+  payloads that the system gave before this start are read again at each start, and a file that already holds one is
+  not written again.
 
 The IPA is unsigned: AltStore, SideStore or a developer account signs it for the device (a Mac can too:
 [Installing from a Mac](#installing-from-a-mac)), with
@@ -154,8 +161,8 @@ games from running:
 
 - **A game's frame on a Mac.** The recompiler links an arm64 Mach-O dylib
   (`src/common/cpu/recompiler/llvm/link_macho.c`) with the ad hoc signature ld64 gives one, which Apple silicon
-  needs to run it. A Mac loads one and the game runs, but the frame stops at the title background. Which part of the
-  renderer on MoltenVK drops the rest is not known yet.
+  needs to run it. A Mac loads one and a game runs; MoltenVK still loses the GPU in some scenes (see
+  [A GPU lockup on MoltenVK](#a-gpu-lockup-on-moltenvk)).
 - **Game modules on iOS, one game checked.** iOS loads no code it did not ship with, so a game's code is a pack of
   objects (`scarletnx -r Game --target ios` writes `<id>_code.snxobj`, 64-bit games only) that the app loads into
   memory a debugger made executable (`load_pack` in `src/nx/runtime/main.c`, the JIT loader's iOS arena in
@@ -167,6 +174,55 @@ games from running:
 - **JIT without StikDebug.** The app still needs a debugger attached, which StikDebug gives ([#598](https://github.com/scarletnx/ScarletNX/issues/598)).
 - **The 3DS, Vita and Linux drivers** are not built for iOS (`SNX_BUILD_3DS`, `SNX_BUILD_VITA`, `SNX_BUILD_GNUABI`),
   nor the Linux one for macOS.
+
+## A GPU lockup on MoltenVK
+
+Super Mario Bros. Wonder's opening cutscene sometimes stops the GPU on macOS, and the device is lost. The screen stays
+black with the loading flower, and Metal reports `VK_TIMEOUT ... Caused GPU Hang Error`, or
+`VK_ERROR_OUT_OF_DEVICE_MEMORY`. The `gpuEvent` report that macOS writes for the process gives the mechanism:
+`restart_reason_desc` is `firmware-detected lockup`, and `guilty_dm` is 2 or 3. It is not a page fault, and it is not
+a shader that fails to compile.
+
+The route from a fresh save repeats it: L+R at the title, A at *Select a User*, A for one player, A on the character,
+then A to start. The game reads `OpeningDemo_*` and `Env_Grassland.bwav`, uploads about 80 MB of texture, and the
+first frame of the cutscene follows. The fault depends on timing, so a rate needs many runs:
+
+| build (M5, macOS 27.2, MoltenVK 1.4.1, headless, 45 s, same route) | runs that lost the device |
+| --- | --- |
+| `main` | 6 of 12 |
+| a set of 16 textures a stage | 1 of 8 |
+| that, and compute's set too | 2 of 8 |
+| a descriptor set for each shader, graphics and compute | 1 of 2 |
+| the same, with `MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=0` | 7 of 8 |
+| KosmicKrisp (Mesa 26.2.6) | 0 of 4 |
+
+The frames render correctly in every build above: no draw was skipped, and the screenshot shows the cutscene. The
+smaller sets only change the timing.
+
+What these measurements rule out:
+
+- **A set past Metal's limits, and MoltenVK's Metal argument buffers.** A set of only the shader's own bindings does
+  not help, and argument buffers off does not help once no draw is skipped. The earlier run with argument buffers off
+  that lost nothing was the one where about 2 800 draws were skipped: their pipelines could not be made with a set
+  past the limit.
+- **Guest compute.** `compute=0` still lost the device (4 of 8).
+- **The recording thread.** `vk_record=0` still lost it (#820).
+- **A memory barrier alone.** A full barrier after every draw, one at the end of every pass, and a wait at the present
+  all failed (#820).
+- **Memory pressure and fewer command buffers in flight** (#820).
+
+The evidence points at the order between draws, but no barrier test has removed the fault yet. #820 gives the likely
+place: the renderer's barriers name the `Surf` a descriptor came from, and a later draw can read or write the same
+image through a crop, another view or a guest alias, which is a different Metal resource than the one the barrier
+named. Metal then runs the two together. The missing order is not yet found.
+
+PR #1206 adds `vulkan_driver=kosmickrisp`, so the same route can be run on Mesa's KosmicKrisp, whose Vulkan side has
+none of these limits. It is the driver to compare against while this is open.
+
+A device loss from the recording thread also used to hang the process: `submit_run` called `fatal()`, and the window
+release waits for the recording thread in `vk_rec_sync`, so the thread waited for itself and the process spun at full
+speed instead of showing the error. `vk_rec_sync` now returns on the recording thread
+(`src/nx/gpu/vk/record.c`).
 
 ## Building
 

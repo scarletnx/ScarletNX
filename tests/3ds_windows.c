@@ -2,8 +2,9 @@
    Copyright 2026 the ScarletNX contributors
    The 3DS's two windows and its per-screen render scales (present.c, vk/device.c). A run whose window the
    host cannot make, as CI's, checks that the setting costs nothing and the dumps stay the framebuffer's own
-   size. A run with a window checks that Separate screens gives each screen its own swapchain (--separate), and that
-   a window minimized and restored gets its swapchain back (--minimize). */
+   size. A run with a window checks that Separate screens gives each screen its own swapchain (--separate), that
+   a window minimized and restored gets its swapchain back (--minimize), and that a frame never waits for an image of
+   the window while the display holds them all (--no-image). */
 #include "3ds/gpu/present.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/memory/ctr_memory.h"
@@ -17,6 +18,14 @@
 #define TOP (FCRAM + 0x00100000u)
 #define BOTTOM (FCRAM + 0x00400000u)
 #define PHASE_FRAMES 4 /* each screen's frames while the window is minimized, and again once it is restored */
+
+/* --no-image's stand-ins for the driver's acquire and present, and what they saw */
+static struct {
+    PFN_vkAcquireNextImageKHR acquire;
+    PFN_vkQueuePresentKHR present;
+    uint64_t longest; /* the longest wait for an image asked, in ns */
+    unsigned acquires, presents;
+} g_windows;
 
 /* an RGBA8 (A, B, G, R) framebuffer of one colour, with its top-left screen pixel white and the rest as given */
 static void fill(SnxCtrMemory* m, uint32_t at, unsigned width, unsigned height, unsigned char alpha)
@@ -87,11 +96,51 @@ static int minimize_restore(void) {
     return ok ? 0 : 1;
 }
 
+/* A driver's acquire while the display holds every image of the window (FIFO behind, a locked or remote session):
+   none now, at once to a call that asks not to wait, and to one that waits once its time is out. A real one stops the
+   game that long, for as long as the display keeps them with no limit */
+static VKAPI_ATTR VkResult VKAPI_CALL held_acquire(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
+                                                   VkSemaphore semaphore, VkFence fence, uint32_t* index) {
+    (void)device, (void)swapchain, (void)semaphore, (void)fence, (void)index;
+    ++g_windows.acquires;
+    if (timeout > g_windows.longest) g_windows.longest = timeout;
+    return timeout ? VK_TIMEOUT : VK_NOT_READY;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL counted_present(VkQueue queue, const VkPresentInfoKHR* info) {
+    ++g_windows.presents;
+    return g_windows.present(queue, info);
+}
+
+/* Frames while the display holds every image of the window: none waits for one or shows, and each is still decoded,
+   its hash the one it has when shown. Once an image is free the frames show again */
+static int no_image(void) {
+    uint64_t shown = 0, held = 0;
+    g_windows.present = vkQueuePresentKHR;
+    vkQueuePresentKHR = counted_present;
+    bool ok = snx_ctr_present_frame(0, TOP, 240, 400, 0, 240 * 4, &shown) && g_windows.presents == 1;
+    g_windows.acquire = vkAcquireNextImageKHR;
+    vkAcquireNextImageKHR = held_acquire;
+    for (unsigned i = 0; i < PHASE_FRAMES; ++i) ok = ok && present_pair();
+    ok = ok && snx_ctr_present_frame(0, TOP, 240, 400, 0, 240 * 4, &held);
+    unsigned acquires = g_windows.acquires, before = g_windows.presents;
+    vkAcquireNextImageKHR = g_windows.acquire;
+    ok = ok && present_pair() && g_windows.presents == before + 1;
+    vkQueuePresentKHR = g_windows.present;
+    bool waited = g_windows.longest != 0;
+    ok = ok && acquires == PHASE_FRAMES + 1 && before == 1 && held == shown && !waited;
+    printf("%-24s %s: %u frames found no image, asked to wait %llu ns at most, %u presented, hash %s, %u presented "
+           "after\n",
+           "no image free", ok ? "ok" : "FAIL", acquires, (unsigned long long)g_windows.longest, before - 1,
+           held == shown ? "the shown frame's" : "another", g_windows.presents - before);
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char** argv)
 {
     const char* dir = argc > 1 ? argv[1] : ".";
     bool separate = argc > 2 && !strcmp(argv[2], "--separate");
     bool minimized = argc > 2 && !strcmp(argv[2], "--minimize");
+    bool held = argc > 2 && !strcmp(argv[2], "--no-image");
     char stale[1024];
     if (snx_mkdirs(dir)) return 1;
     for (unsigned screen = 0; screen < 2; ++screen)
@@ -123,15 +172,16 @@ int main(int argc, char** argv)
         snx_ctr_memory_free(m);
         return 77;
     }
-    if ((separate || minimized) && !snx_ctr_present_windowed()) {
-        printf("no window on this host: %s cannot be checked here\n",
-               separate ? "the separate windows" : "a minimized window");
+    if ((separate || minimized || held) && !snx_ctr_present_windowed()) {
+        printf("no window on this host: %s cannot be checked here\n", separate    ? "the separate windows"
+                                                                      : minimized ? "a minimized window"
+                                                                                  : "a window with no image free");
         snx_ctr_present_free();
         snx_ctr_memory_free(m);
         return 77;
     }
-    if (minimized) {
-        int result = minimize_restore();
+    if (minimized || held) {
+        int result = minimized ? minimize_restore() : no_image();
         snx_ctr_present_free();
         snx_ctr_memory_free(m);
         return result;

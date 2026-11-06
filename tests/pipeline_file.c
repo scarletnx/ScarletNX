@@ -295,13 +295,12 @@ static void shiprefs(void) {
 }
 
 /* the compute pipeline records handed back (load_cspipe): how many, the last one's fields and bytes, and whether it
-   came in a rebuild. cspipe_off: the loader takes none (its cspipe NULL) */
+   came in a rebuild. off: the loader takes none (its cspipe NULL) */
 static struct {
-    int n, rebuild;
+    int n, rebuild, off;
     PfCsPipe c;
     u8 bytes[256];
 } cs_got;
-static int cspipe_off;
 static void load_cspipe(void* ctx, const PfCsPipe* c, const u32* cbr, const u8* key, const u8* code) {
     const PfLoad* load = ctx;
     cs_got.n++;
@@ -321,7 +320,7 @@ static void open_file(PFile* pf, const char* key, u64 first_module, int fail_fir
     load.source = load_source;
     load.ctx = &load;
     load.rebuild = 0;
-    load.cspipe = cspipe_off ? NULL : load_cspipe;
+    load.cspipe = cs_got.off ? NULL : load_cspipe;
     memset(&got, 0, sizeof got);
     got.next_module = first_module;
     got.fail_first = fail_first;
@@ -458,7 +457,7 @@ static void rebuilds(void) {
    shader and a pipeline: handed back as it was, the records after it read too; skipped by a loader that takes none;
    in a rebuild handed back as such and recorded in the new file, which the next run reads */
 static void add_cspipe(PFile* pf) {
-    PfCsPipe c = {0x1122334455667788ull, 64, 2, 1, 4096, 2, 13, 37, 0};
+    PfCsPipe c = {0x1122334455667788ull, 64, 2, 1, 4096, 0x1230, 2, 13, 37};
     u32 cbr[8];
     u8 key[13], code[37];
     for (int i = 0; i < 8; i++) cbr[i] = 0xC0DE0000u + (u32)i;
@@ -468,7 +467,8 @@ static void add_cspipe(PFile* pf) {
 }
 static void check_cspipe(void) {
     CHECK(cs_got.c.key == 0x1122334455667788ull && cs_got.c.lx == 64 && cs_got.c.ly == 2 && cs_got.c.lz == 1 &&
-          cs_got.c.shm == 4096 && cs_got.c.ncbr == 2 && cs_got.c.nkey == 13 && cs_got.c.ncode == 37);
+          cs_got.c.shm == 4096 && cs_got.c.flow_base == 0x1230 && cs_got.c.ncbr == 2 && cs_got.c.nkey == 13 &&
+          cs_got.c.ncode == 37);
     for (int i = 0; i < 8; i++) CHECK(snx_ld_le32(cs_got.bytes + 4 * i) == 0xC0DE0000u + (u32)i);
     for (int i = 0; i < 13; i++) CHECK(cs_got.bytes[32 + i] == 0xA0 + i);
     for (int i = 0; i < 37; i++) CHECK(cs_got.bytes[45 + i] == (u8)(3 * i + 1));
@@ -489,11 +489,11 @@ static void cspipes(void) {
     check_cspipe();
     close_file(&pf);
     memset(&cs_got, 0, sizeof cs_got);
-    cspipe_off = 1;
+    cs_got.off = 1;
     open_file(&pf, "guest;build one", 0x20, 0, loaded);
     CHECK(cs_got.n == 0 && loaded[0] == 1 && loaded[1] == 1);
     close_file(&pf);
-    cspipe_off = 0;
+    cs_got.off = 0;
     /* another build: the record handed back in the rebuild, recorded again, read by the next run */
     memset(&cs_got, 0, sizeof cs_got);
     memset(&source_got, 0, sizeof source_got);

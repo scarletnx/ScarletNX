@@ -29,7 +29,7 @@
 
 #define NVN_MAGIC(a, b, c, d) ((u32)(a) | (u32)(b) << 8 | (u32)(c) << 16 | (u32)(d) << 24)
 /* the fewest bytes any measured SDK's driver writes for the object (footprints: SetDefaults and Initialize) */
-#define NVN_FITS(T, n) typedef char nvn_fits_##T[sizeof(T) <= (n) ? 1 : -1]
+#define NVN_FITS(T, n)        typedef char nvn_fits_##T[sizeof(T) <= (n) ? 1 : -1]
 
 /* ---- device ---- */
 typedef struct {
@@ -169,7 +169,6 @@ NVN_FITS(NvnView, 0x10);
 #define NVN_VIEW_TARGET  0x08u
 #define NVN_VIEW_SWIZZLE 0x10u
 #define NVN_VIEW_DSMODE  0x20u /* the depth-stencil mode in bits 6-7 */
-
 
 /* ---- samplers ---- */
 typedef struct {
@@ -339,8 +338,8 @@ typedef struct {
     u64 texture[4];
     u64 presents, pace, available[4], released[4], shown_at[4];
     u32 syncpt[4], value[4], on_display[2], shown;
-    i32 active;           /* the textures acquired in turn: the first active ones (SetNumActiveTextures) */
-    u64 native;           /* the native window the builder named */
+    i32 active; /* the textures acquired in turn: the first active ones (SetNumActiveTextures) */
+    u64 native; /* the native window the builder named */
 } NvnWindow;
 NVN_FITS(NvnWindow, 0x148);
 /* the Ounce's window (API 231): the builder's color space and HDR metadata, past NvnWindow */
@@ -381,44 +380,44 @@ static inline u64 nvn_set_field(u64 w, unsigned lo, unsigned n, u64 v) {
     return (w & ~m) | ((v << lo) & m);
 }
 /* NVNblendState (8 bytes, one u64) */
-#define NVN_BLEND_TARGET  0, 3
-#define NVN_BLEND_SRC_RGB 3, 7
-#define NVN_BLEND_DST_RGB 10, 7
-#define NVN_BLEND_SRC_A   17, 7
-#define NVN_BLEND_DST_A   24, 7
-#define NVN_BLEND_EQ_RGB  31, 3
-#define NVN_BLEND_EQ_A    34, 3
-#define NVN_BLEND_ADV     37, 6 /* the advanced mode, 0 none */
-#define NVN_BLEND_ADV_NPM 43, 1 /* the advanced mode's destination is normalized */
-#define NVN_BLEND_ADV_OVL 44, 2
-#define NVN_BLEND_ADV_PMS 46, 1 /* the advanced mode's source is premultiplied */
+#define NVN_BLEND_TARGET     0, 3
+#define NVN_BLEND_SRC_RGB    3, 7
+#define NVN_BLEND_DST_RGB    10, 7
+#define NVN_BLEND_SRC_A      17, 7
+#define NVN_BLEND_DST_A      24, 7
+#define NVN_BLEND_EQ_RGB     31, 3
+#define NVN_BLEND_EQ_A       34, 3
+#define NVN_BLEND_ADV        37, 6 /* the advanced mode, 0 none */
+#define NVN_BLEND_ADV_NPM    43, 1 /* the advanced mode's destination is normalized */
+#define NVN_BLEND_ADV_OVL    44, 2
+#define NVN_BLEND_ADV_PMS    46, 1 /* the advanced mode's source is premultiplied */
 /* NVNcolorState (4 bytes, one u32) */
 #define NVN_COLOR_BLEND_EN   0, 8
 #define NVN_COLOR_LOGIC_OP   8, 4
 #define NVN_COLOR_ALPHA_FUNC 12, 4
 /* NVNchannelMaskState (one u32): 4 bits per target, r 1 g 2 b 4 a 8, set = written */
 /* NVNpolygonState (one u32) */
-#define NVN_POLY_CULL      0, 2
-#define NVN_POLY_FRONT     2, 1
-#define NVN_POLY_MODE      3, 2
-#define NVN_POLY_OFFSET_EN 5, 3
+#define NVN_POLY_CULL        0, 2
+#define NVN_POLY_FRONT       2, 1
+#define NVN_POLY_MODE        3, 2
+#define NVN_POLY_OFFSET_EN   5, 3
 /* NVNdepthStencilState (8 bytes, one u64) */
-#define NVN_DS_TEST       0, 1
-#define NVN_DS_WRITE      1, 1
-#define NVN_DS_FUNC       2, 4
-#define NVN_DS_STENCIL    6, 1
-#define NVN_DS_SFUNC_F    7, 4
-#define NVN_DS_SFUNC_B    11, 4
-#define NVN_DS_FAIL_F     15, 4
-#define NVN_DS_ZFAIL_F    19, 4
-#define NVN_DS_ZPASS_F    23, 4
-#define NVN_DS_FAIL_B     27, 4
-#define NVN_DS_ZFAIL_B    31, 4
-#define NVN_DS_ZPASS_B    35, 4
+#define NVN_DS_TEST          0, 1
+#define NVN_DS_WRITE         1, 1
+#define NVN_DS_FUNC          2, 4
+#define NVN_DS_STENCIL       6, 1
+#define NVN_DS_SFUNC_F       7, 4
+#define NVN_DS_SFUNC_B       11, 4
+#define NVN_DS_FAIL_F        15, 4
+#define NVN_DS_ZFAIL_F       19, 4
+#define NVN_DS_ZPASS_F       23, 4
+#define NVN_DS_FAIL_B        27, 4
+#define NVN_DS_ZFAIL_B       31, 4
+#define NVN_DS_ZPASS_B       35, 4
 /* NVNvertexAttribState (one u32) */
-#define NVN_VA_FORMAT 0, 8
-#define NVN_VA_OFFSET 8, 19
-#define NVN_VA_STREAM 27, 5
+#define NVN_VA_FORMAT        0, 8
+#define NVN_VA_OFFSET        8, 19
+#define NVN_VA_STREAM        27, 5
 /* NVNmultisampleState (0x18 bytes). flags: NVN_MS_*. location[i]: sample i's position in its pixel (or in the grid's
    pixels), x in bits 0-3 and y in 4-7 in sixteenths, as the game's driver keeps them (SetSampleLocations) */
 typedef struct {
@@ -512,6 +511,8 @@ enum {
     OP_SET_STATE,
     OP_PUSH_CONSTANTS,
     OP_DRAW_MESH,
+    OP_WAIT_EVENT,
+    OP_SUBROUTINES,
     OP_COUNT_
 };
 typedef char NvnOpcodeMaskFits[(OP_COUNT_ <= 64) ? 1 : -1];
@@ -538,6 +539,15 @@ typedef struct {
     u64 value; /* the u32's GPU address */
     u32 mode, v;
 } NvnPSignalEvent;
+typedef struct {
+    u64 address;
+    u32 mode, value;
+} NvnPWaitEvent;
+typedef struct {
+    u32 linkage;
+    i32 first, count;
+    i32 values[1];
+} NvnPSubroutines;
 /* color[i] and depth: the texture snapshots after the payload (the game may finalize or reuse an object before it
    submits), or the game's object when it wasn't a live texture as recorded */
 typedef struct {

@@ -137,8 +137,9 @@ typedef struct {
     u64 agreed[HOOK_SITES], differed[HOOK_SITES], skipped[HOOK_SITES];
 } HleHook;
 
-/* hooks the functions the game exports that hooks.hook names (unless hooks=0), once the game's executables are
-   loaded and their symbols read (kernel_load_symbols), before the JIT starts */
+/* hooks the functions the game exports that hooks.hook names, and those of the game's builds that the address hooks
+   of src/nx/patches/ name (unless hooks=0), once the game's executables are loaded and their symbols read
+   (kernel_load_symbols), before the JIT starts */
 void hook_install(void);
 /* whether the module calls the function of symbol name through its dispatch slot: its route list (main.h's g_routes)
    names it, or the module has no list (it routes every function it exports) or routes every call (--hook-direct-calls).
@@ -150,6 +151,13 @@ void hook_restore(u64 addr, u64 size);
 /* the recompiled code of the function at addr when it is hooked, for a handler that hands a case back to it with the
    CPU as the function's call left it; NULL when addr isn't hooked */
 GuestFn hook_original(u64 addr);
+/* where the hook of symbol (a symbol, or an address hook's key as hookgen writes it, BUILDID:OFFSET) was installed:
+   the function's guest address, the first one for a symbol several modules export; 0 when it wasn't */
+u64 hook_site(const char* symbol);
+/* runs the hooked function at addr's own code, with the CPU as the call to it left it, until it returns to the call's
+   return address (x30) with the call's stack, through the dispatch loop when its code leaves for code compiled apart:
+   for a handler that does its work around the function's, as the function's own code then sees every call */
+void hook_run_original(CPU* c, u64 addr);
 
 /* the float arguments and results of the generated adapters: lane 0 of a vector register, the guest's bytes */
 static inline f32 hook_f32(const CPU* c, int r) {

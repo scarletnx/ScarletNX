@@ -122,7 +122,8 @@ int main(void) {
     /* past the table's 2^40 bytes of guest pages: read as everywhere until removed */
     map(0x200000, 0x20000000000ull, 0x1000);
     pend_add(t, 0x200000, 0x1000, 1);
-    check(pend_hit(t, 0x600000, 0x1000) && pend_hit_guest(t, 0x90000000ull, 0x1000), "a page past 2^40 covers every page");
+    check(pend_hit(t, 0x600000, 0x1000) && pend_hit_guest(t, 0x90000000ull, 0x1000),
+          "a page past 2^40 covers every page");
     pend_add(t, 0x200000, 0x1000, -1);
     check(pend_empty(t) && !pend_hit(t, 0x600000, 0x1000), "until it is removed");
 

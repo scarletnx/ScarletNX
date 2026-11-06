@@ -4,6 +4,7 @@
    in its own layout (kind at 0x08, fence count at 0x0c, fences {syncpoint, value} from 0x10, 0x40 bytes). The driver's
    code is a stub that sees the sync nvn_object.c built in guest memory */
 #include "nx/gpu/nvn/nvn_object.h"
+#include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_draw.h"
@@ -23,6 +24,18 @@
 
 static u8 memory[1 << 16];
 u8* g_mem = memory; /* guest address a is memory + a */
+u64 mem_mapped_run(u64 address, u64 size) {
+    (void)address;
+    (void)size;
+    abort();
+}
+int gmem_write(u64 address, const void* data, u64 size) {
+    (void)address;
+    (void)data;
+    (void)size;
+    abort();
+}
+void gpu_kick(void) { abort(); }
 
 /* ---- the driver stub: what it was called with, the sync it saw, and what it answers */
 static struct {

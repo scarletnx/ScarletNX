@@ -54,9 +54,12 @@ snx_component(hle hle/services/services.c hle/services/audren.c hle/services/aud
               hle/hook/hook.c hle/hook/libc.c hle/hook/diag.c hle/hook/verify.c hle/hook/version.c)
 # the shared fonts' stand-ins (cmake/shared_fonts.cmake), which hle/services/pl.c hands out
 target_sources(snx_hle PRIVATE "${PROJECT_BINARY_DIR}/generated/shared_fonts.c")
-# the hooks' adapters and table, generated from hle/hook/hooks.hook
+# the hooks' adapters and table, generated from hle/hook/hooks.hook and the game patches' address hooks
+# (patches/*.hook), whose handlers are the .c files beside them
 include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
 snx_hookgen(snx_hle)
+file(GLOB snx_patch_handlers CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.c")
+target_sources(snx_hle PRIVATE ${snx_patch_handlers})
 # the IPC interfaces of the services (docs/IPC.md): their dispatchers are generated, the handlers are in the services'
 # files. A type is defined before the files that use it
 include("${PROJECT_SOURCE_DIR}/cmake/swipc.cmake")
@@ -90,7 +93,7 @@ set(platform runtime/platform/plat.c runtime/platform/plat_sdl.c runtime/platfor
              runtime/platform/backend/gamepad.c runtime/platform/tracy.c
              runtime/platform/hud.c runtime/platform/overlay.c runtime/platform/stats.c runtime/platform/touch.c
              runtime/platform/ui.c runtime/platform/vpad.c runtime/platform/fatal_screen.c
-             runtime/platform/prepare_screen.c runtime/platform/gpu_driver_load.c
+             runtime/platform/prepare_screen.c runtime/platform/gpu_driver_load.c runtime/platform/resources.c
              "${PROJECT_BINARY_DIR}/generated/controls_png.c")
 if(WIN32)
     list(APPEND platform runtime/platform/plat_win32.c runtime/platform/profiler_win32.c)
@@ -108,7 +111,7 @@ snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c
                      gpu/shader/shared_reach.c gpu/shader/registers.c gpu/shader/forms.c gpu/shader/dataflow.c
                      gpu/shader/emit_int.c gpu/shader/emit_float.c gpu/shader/emit_memory.c gpu/shader/emit_texture.c
                      gpu/shader/emit_io.c gpu/shader/emit_flow.c gpu/shader/emit_thread.c
-                     gpu/shader/sm86_decode.c gpu/shader/sm86_translate.c)
+                     gpu/shader/sm86_decode.c gpu/shader/sm86_translate.c gpu/shader/advanced_blend_spirv.c)
 # the opcode enum and decoder, generated from gpu/shader/maxwell_opcodes.def
 include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
@@ -280,6 +283,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     target_include_directories(snx-test-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests")
     target_link_libraries(snx-test-vulkan PRIVATE snx_nx_flags ${components} snx_driver FFmpeg::avutil Threads::Threads
                                                   ${CMAKE_DL_LIBS})
+    target_include_directories(snx-test-vulkan PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/hookgen/snx_gpu")
     set_target_properties(snx-test-vulkan PROPERTIES LINKER_LANGUAGE CXX)
     if(WIN32)
         target_link_libraries(snx-test-vulkan PRIVATE user32)
@@ -296,6 +300,18 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_tests_properties(vulkan_storage_lookup PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     set_tests_properties(vulkan_headless PROPERTIES TIMEOUT 60
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the recording thread's own vk_rec_sync must return: the fatal path of a lost device calls it from that thread, and
+    # a wait there waits for the thread that runs it (record.c). This one needs no shaders, so it runs on any driver,
+    # and a run that hangs fails at the timeout
+    add_test(NAME vulkan_recorder COMMAND snx-test-vulkan -H)
+    set_tests_properties(vulkan_recorder PROPERTIES TIMEOUT 20 ENVIRONMENT "SNX_TEST_RECORDER_ONLY=1"
+        PASS_REGULAR_EXPRESSION "The recording thread's own vk_rec_sync returns")
+    # the writable storage buffers' check (tests/vulkan_storage_buffer_keep.inc) with guest buffers copied: the default
+    # run takes unified memory on an integrated device and on lavapipe, which writes them in guest memory instead of
+    # keeping them on the GPU. A run that hangs fails at the timeout
+    add_test(NAME vulkan_storage_buffer_keep COMMAND snx-test-vulkan -H --vk_memory=1)
+    set_tests_properties(vulkan_storage_buffer_keep PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_BUFFER_KEEP_ONLY=1"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with graphics descriptors in descriptor buffers (gpu/vk/descriptors.c, vk_descriptors), also
     # with guest memory read in place, under the validation layer when it is installed. A device without
@@ -329,15 +345,28 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the write tracking's contract alone (tests/vulkan_write_tracking.inc), with each way the host tracks: its own
     # (userfaultfd on Linux), page protection and the fault handler for the tracking and the traps (macOS, FreeBSD,
-    # Android, older Linux), with its hot pages (write_tracking_hot), and unified memory's reads in place
+    # Android, older Linux), with its hot pages (write_tracking_hot), unified memory's reads in place, and none (the
+    # caches compare contents: the cases that need the tracking skip, the others check the comparisons)
     add_test(NAME vulkan_write_tracking COMMAND snx-test-vulkan -H)
     add_test(NAME vulkan_write_tracking_protection COMMAND snx-test-vulkan -H --write_tracking=1 --memory_traps=1)
     add_test(NAME vulkan_write_tracking_hot
         COMMAND snx-test-vulkan -H --write_tracking=1 --memory_traps=1 --write_tracking_hot=1)
     add_test(NAME vulkan_write_tracking_uma COMMAND snx-test-vulkan -H --vk_memory=2)
+    add_test(NAME vulkan_write_tracking_off COMMAND snx-test-vulkan -H --write_tracking=2)
     set_tests_properties(vulkan_write_tracking vulkan_write_tracking_protection vulkan_write_tracking_hot
-        vulkan_write_tracking_uma PROPERTIES
+        vulkan_write_tracking_uma vulkan_write_tracking_off PROPERTIES
         TIMEOUT 120 ENVIRONMENT "SNX_TEST_WW_ONLY=1" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # a texture's changes loaded a block at a time (tests/vulkan_tex_partial.inc), apart from vulkan_headless: with
+    # each way the host tracks writes, and without write tracking, where they load the whole texture. The ASTC cases,
+    # which lavapipe decodes and encodes as BC7 in software, run with the host's own tracking, as long as astc_vulkan
+    add_test(NAME vulkan_tex_partial COMMAND snx-test-vulkan -H)
+    add_test(NAME vulkan_tex_partial_protection COMMAND snx-test-vulkan -H --write_tracking=1 --memory_traps=1)
+    add_test(NAME vulkan_tex_partial_untracked COMMAND snx-test-vulkan -H --write_tracking=2)
+    set_tests_properties(vulkan_tex_partial PROPERTIES TIMEOUT 300 ENVIRONMENT "SNX_TEST_TEX_PARTIAL_ONLY=1"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    set_tests_properties(vulkan_tex_partial_protection vulkan_tex_partial_untracked PROPERTIES
+        TIMEOUT 120 ENVIRONMENT "SNX_TEST_TEX_PARTIAL_ONLY=no-astc"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # an argument the test doesn't take stops it, named, before any device is made; the setting before it, as
     # the runtime takes it, goes through
     add_test(NAME vulkan_headless_options COMMAND snx-test-vulkan -H --memory_traps=2 --memory_trap=2)

@@ -210,7 +210,10 @@ void nvn_QueueFinish(CPU* c, u64 q) {
     nvn_wait_end();
 }
 /* the queue's later work waits on the GPU for the sync, so it is done no earlier than the sync signals */
-static void wait_sync(NvnQueue* o, const NvnSync* s) { nvn_sync_hold(&o->ready, &o->shown, s); }
+static void wait_sync(NvnQueue* o, const NvnSync* s) {
+    nvn_sync_hold(&o->ready, &o->shown, s);
+    nvn_replay_wait(o->replay, s);
+}
 int nvn_QueueWaitSync(CPU* c, u64 q, u64 sync) {
     (void)c;
     wait_sync(NVN_OBJ(NvnQueue, q), NVN_OBJ(const NvnSync, sync));
@@ -265,17 +268,19 @@ static int shown_wait(const NvnSync* s, u64 start, i64 left, int* waited) {
 }
 /* A fenced sync signals once its syncpoint reaches its value (the replay reached it), the present it waits for is on
    the display (shown_wait) and the pacer's clock reaches its ready time: the wait blocks until all three, or for the
-   timeout (nanoseconds, ~0 for good). One never fenced waits out its timeout, as on the console */
+   timeout (nanoseconds, ~0 for good). One never fenced has nothing to wait for: the wait fails at once, whatever
+   the timeout, as the game's driver answers it */
 static i32 sync_wait(CPU* c, u64 sync, u64 timeout) {
     const NvnSync* s = NVN_OBJ(const NvnSync, sync);
     u64 start = plat_ns(), now, ready;
     i64 left = timeout > (u64)INT64_MAX ? -1 : (i64)timeout;
     int waited = 0;
     if (!__atomic_load_n(&s->fenced, __ATOMIC_ACQUIRE)) {
-        LOG_LIMIT(8, "nvn: sync %llx waited on before anything fenced it (timeout %llx, called from %llx)\n",
+        LOG_LIMIT(8,
+                  "nvn: sync %llx waited on before anything fenced it (timeout %llx, called from %llx): the wait "
+                  "fails at once\n",
                   (unsigned long long)sync, (unsigned long long)timeout, (unsigned long long)c->x[30]);
-        if (left > 0) plat_sleep_ns(left);
-        return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+        return NVN_SYNC_WAIT_RESULT_FAILED;
     }
     if (s->syncpt && !syncpt_wait(s->syncpt, s->value, 0)) {
         if (!left || !syncpt_wait(s->syncpt, s->value, left)) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
@@ -411,8 +416,8 @@ int nvn_WindowInitialize(CPU* c, u64 w, u64 b) {
     memcpy(o.texture, s->texture, sizeof o.texture);
     memcpy(GP(w), &o, sizeof o);
     if (g_nvn.loader.api >= 231u << 16) *NVN_WIN_HDR(w) = *NVN_WB_HDR(b);
-    LOG("nvn: window %llx: %d textures, first %dx%d format %#x, present interval %d\n", (unsigned long long)w,
-        o.count, o.count && o.texture[0] ? (int)NVN_OBJ(NvnTexture, o.texture[0])->d.width : 0,
+    LOG("nvn: window %llx: %d textures, first %dx%d format %#x, present interval %d\n", (unsigned long long)w, o.count,
+        o.count && o.texture[0] ? (int)NVN_OBJ(NvnTexture, o.texture[0])->d.width : 0,
         o.count && o.texture[0] ? (int)NVN_OBJ(NvnTexture, o.texture[0])->d.height : 0,
         o.count && o.texture[0] ? NVN_OBJ(NvnTexture, o.texture[0])->d.format : 0, o.interval);
     return 1;

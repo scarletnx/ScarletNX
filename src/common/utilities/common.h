@@ -243,10 +243,28 @@ SnxU64 snx_process_cpu_ns(void);
 SnxU64 snx_thread_clock(void);
 int snx_thread_cpu_ns(SnxU64 clock, SnxU64* ns);
 void snx_thread_clock_close(SnxU64 clock);
+/* names the calling thread for the system, which debuggers, crash reports, the system's tools and snx_threads show:
+   Linux and Android keep its first 15 bytes, FreeBSD 19, the others 63 (Windows from 10 1607; earlier ones none) */
+void snx_thread_name(const char* name);
+/* one of the process's threads, as snx_threads reads it */
+typedef struct {
+    /* the system's id for it, with its start where the system gives an ended thread's id to a new one (Linux,
+       Android, Windows), so no later thread of the run has it; FreeBSD's alone */
+    SnxU64 id;
+    SnxU64 cpu_ns; /* its time on the processors so far */
+    char name[64]; /* its name for the system, "" for none */
+} SnxThreadInfo;
+/* the process's threads, into out up to max of them: how many the system listed (more than max when some did not
+   fit), or -1 where it lists none. Linux and Android count the time in the system's ticks (10 ms), FreeBSD in
+   microseconds, the others finer. Any thread; it reads a file for each thread on Linux and Android */
+int snx_threads(SnxThreadInfo* out, int max);
 /* the memory the system can still give this process, in bytes, into *bytes: what iOS lets the app take before it ends
-   it, the memory available on Linux and Android (MemAvailable), on macOS (free, inactive and purgeable pages) and on
-   Windows (available physical memory); whether the system told it */
+   it, the memory available on Linux and Android (MemAvailable), on macOS (free, inactive and purgeable pages), on
+   FreeBSD (free and inactive pages) and on Windows (available physical memory); whether the system told it */
 int snx_memory_available(SnxU64* bytes);
+/* the machine's physical memory, in bytes, into *bytes: what the system counts as installed (sysconf's _SC_PHYS_PAGES
+   on Linux, Android, FreeBSD, macOS and iOS, GlobalMemoryStatusEx on Windows); whether the system told it */
+int snx_memory_total(SnxU64* bytes);
 void* snx_vm_reserve(size_t size); /* NULL when the system refuses */
 int snx_vm_protect(void* p, size_t size, int access);
 void snx_vm_release(void* p, size_t size);

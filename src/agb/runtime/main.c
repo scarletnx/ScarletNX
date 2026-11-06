@@ -335,6 +335,8 @@ int snx_agb_main(int argc, char** argv) {
         printf("build: %s\n", snx_build_log_line());
         if (board.cartridge.game_code[0]) printf("cartridge: %s\n", board.cartridge.game_code);
         press_count = snx_script_parse("scarletnx-agb", script, SCRIPT_KEYS, &presses);
+        int told_swi = 0; /* the last BIOS function the BIOS does not have that the run said, to say each once */
+        uint32_t told_swi_number = 0;
         for (long frame = 0; frames < 0 || frame < frames; ++frame) {
             uint32_t written = 0;
             uint16_t keys = 0;
@@ -345,6 +347,14 @@ int snx_agb_main(int argc, char** argv) {
                             error, sizeof error)) {
                 fprintf(stderr, "scarletnx-agb: %s\n", error);
                 goto done;
+            }
+            if (cpu.unknown_swi_count && (!told_swi || cpu.unknown_swi != told_swi_number)) {
+                printf(
+                    "The game called BIOS function 0x%02X at 0x%08X, which the BIOS does not have: it returned at once, "
+                    "as mGBA's HLE BIOS answers it\n",
+                    cpu.unknown_swi, cpu.unknown_swi_at);
+                told_swi = 1;
+                told_swi_number = cpu.unknown_swi;
             }
             if (host) agb_host_frame(host, board.ppu.framebuffer, audio, written);
             if (board.save.dirty && written_at < 0) written_at = frame;

@@ -18,6 +18,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+u32 nvn_program_subroutine(u64 program, i32 stage) {
+    (void)program;
+    (void)stage;
+    return 0;
+}
+
 static u8 memory[1 << 20];
 u8* g_mem = memory; /* guest address a is memory + a */
 

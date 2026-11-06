@@ -558,6 +558,31 @@ static void shapes() {
     std::puts("PASS a 13x7 image of 3 slices encodes slice by slice as each alone");
 }
 
+// The encoder's blocks for the picture, random texels with alpha and opaque ones, with and without modes 4 and 5,
+// against a digest of the bytes the encoder wrote before it was laid out for the GPU's compiler (a partition read once
+// a shape, each body called from one place in a loop): that layout changes no byte it writes
+static uint64_t fnv1a(uint64_t h, const void* p, size_t n) {
+    const uint8_t* b = static_cast<const uint8_t*>(p);
+    for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 0x100000001B3ull;
+    return h;
+}
+static void same_blocks() {
+    std::vector<glsl::leuint> pic((size_t)128 * 128), any((size_t)64 * 64), opaque((size_t)64 * 64);
+    for (uint32_t y = 0; y < 128; y++)
+        for (uint32_t x = 0; x < 128; x++) pic[(size_t)y * 128 + x] = picture(x, y);
+    uint32_t s = 0x2545F491u;
+    for (auto& t : any) t = xorshift(s);
+    for (auto& t : opaque) t = xorshift(s) | 0xFF000000u;
+    const std::vector<glsl::leuvec4> runs[4] = {encode(pic, 128, 128, 1), encode(any, 64, 64, 1),
+                                                encode(opaque, 64, 64, 1), encode_without_45(any, 64, 64)};
+    uint64_t h = 0xCBF29CE484222325ull;
+    for (const auto& r : runs) h = fnv1a(h, r.data(), r.size() * sizeof r[0]);
+    const uint64_t want = 0x97987257CCF58CADull;
+    std::printf("%s the encoder's blocks: digest %016llx, %016llx expected\n", h == want ? "PASS" : "FAIL",
+                (unsigned long long)h, (unsigned long long)want);
+    if (h != want) failures++;
+}
+
 int main() {
     tables();
     weights();
@@ -573,6 +598,7 @@ int main() {
     picture_psnr();
     alpha_kept();
     shapes();
+    same_blocks();
     if (failures) std::fprintf(stderr, "%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

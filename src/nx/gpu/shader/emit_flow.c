@@ -30,6 +30,32 @@ void shader_dynamic_pop(DirectCtx* c, u32 stack_ptr, const u32 stack[32], u32 ki
     }
 }
 
+/* Relative CAL through cbuf counts bytes from the next instruction. Absolute JCAL/JMP/JMX count from the
+   shader pool. flow_base is the GPU address represented by the translator's word0, including compute's fake SPH. */
+static u32 indirect_target(const Tr* t, u32 i, u64 w, int op, u32 a) {
+    DirectCtx* c = t->c;
+    u32 value;
+    if (B(w, 5, 1)) {
+        u32 offset = spv_emit_constant_u32(&c->emit, c->u32_type, B(w, 20, 16));
+        if (op == O_JMX) offset = spv_emit_iadd_u32(&c->emit, c->u32_type, offset, reg_read(c, a));
+        value = shader_cbuf_read_dynamic(c, B(w, 36, 5), offset);
+    } else
+        value = spv_emit_constant_u32(&c->emit, c->u32_type, B(w, 20, 32));
+    if (op == O_JMX) value = spv_emit_iadd_u32(&c->emit, c->u32_type, value, reg_read(c, a));
+    u32 base = spv_emit_constant_u32(&c->emit, c->u32_type, op == O_CAL ? (i + 1) * 8 : t->si->flow_base);
+    value = op == O_CAL ? spv_emit_iadd_u32(&c->emit, c->u32_type, value, base)
+                        : spv_emit_isub_u32(&c->emit, c->u32_type, value, base);
+    u32 target =
+        spv_emit_shift_right_u32(&c->emit, c->u32_type, value, spv_emit_constant_u32(&c->emit, c->u32_type, 3));
+    u32 schedule = spv_emit_i_equal(
+        &c->emit, c->bool_type,
+        spv_emit_bitwise_and_u32(&c->emit, c->u32_type, target, spv_emit_constant_u32(&c->emit, c->u32_type, 3)),
+        spv_emit_constant_u32(&c->emit, c->u32_type, 2));
+    return spv_emit_iadd_u32(
+        &c->emit, c->u32_type, target,
+        spv_emit_select(&c->emit, c->u32_type, schedule, spv_emit_constant_u32(&c->emit, c->u32_type, 1), c->zero));
+}
+
 static void se_branch(DirectCtx* c, StructEmit* se, u32 label) {
     spv_emit_branch(&c->emit, label);
     se->open = 0;
@@ -255,7 +281,7 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     u32* call_stack = t->call_stack;
     u32 pc = t->pc;
     ShStructure* structure = t->structure;
-    if (op == O_CAL || op == O_PRET) {
+    if (op == O_CAL || op == O_JCAL || op == O_PRET) {
         /* CAL pushes the instruction after it and jumps. PRET only pushes its target, where a later RET returns */
         u32 sp = spv_emit_load(&c->emit, c->u32_type, call_ptr);
         u32 room = spv_emit_u_less(&c->emit, c->bool_type, sp, spv_emit_constant_u32(&c->emit, c->u32_type, 32));
@@ -270,10 +296,12 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                        spv_emit_iadd_u32(&c->emit, c->u32_type, sp,
                                          spv_emit_select(&c->emit, c->u32_type, room,
                                                          spv_emit_constant_u32(&c->emit, c->u32_type, 1), c->zero)));
-        if (op == O_CAL)
+        if (op == O_CAL || op == O_JCAL)
             spv_emit_store(&c->emit, pc,
                            spv_emit_select(&c->emit, c->u32_type, room,
-                                           spv_emit_constant_u32(&c->emit, c->u32_type, bra_target(w, i)),
+                                           op == O_JCAL || B(w, 5, 1)
+                                               ? indirect_target(t, i, w, op, a)
+                                               : spv_emit_constant_u32(&c->emit, c->u32_type, bra_target(w, i)),
                                            spv_emit_constant_u32(&c->emit, c->u32_type, UINT32_MAX)));
     } else if (op == O_RET) {
         u32 sp = spv_emit_load(&c->emit, c->u32_type, call_ptr);
@@ -309,6 +337,8 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 target_index = op == O_BRA ? bra_target(w, i) : pop_targets ? pop_targets[i] : 0;
         u32 destination = spv_emit_constant_u32(&c->emit, c->u32_type, target_index);
         spv_emit_store(&c->emit, pc, destination);
+    } else if (op == O_JMP || op == O_JMX) {
+        spv_emit_store(&c->emit, pc, indirect_target(t, i, w, op, a));
     } else if (op == O_BRX) {
         u32 offset = spv_emit_constant_u32(&c->emit, i32_type, (u32)((i32)(B(w, 20, 24) << 8) >> 8));
         u32 signed_index = spv_emit_iadd_u32(&c->emit, i32_type, reg_read_as(c, a, i32_type), offset);
@@ -391,11 +421,12 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             if (depth_output) spv_emit_store(&c->emit, depth_output, reg_read_as(c, reg + 1, c->f32_type));
             if (push && (target & 15)) shader_alpha_test(c, push, push_pointer, alpha);
         }
-        if (c->discarded && !structure) { /* the lane leaves the flow loop, and a discarded one is discarded after it */
+        if (c->discarded && !structure &&
+            pc) { /* the lane leaves the flow loop, and a discarded one is discarded after it */
             spv_emit_store(&c->emit, pc, spv_emit_constant_u32(&c->emit, c->u32_type, UINT32_MAX));
             if (has_pexit) spv_emit_branch(&c->emit, pexit_merge);
         } else {
-            if (c->discarded) { /* structured: a discarded lane is discarded as it ends */
+            if (c->discarded && !c->blend_end) { /* structured: a discarded lane is discarded as it ends */
                 u32 kill_label = spv_emit_id(&c->emit), kept = spv_emit_id(&c->emit);
                 u32 discard = spv_emit_load(&c->emit, c->bool_type, c->discarded);
                 spv_emit_selection_merge(&c->emit, kept);
@@ -404,7 +435,10 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 spv_emit_kill(&c->emit);
                 spv_emit_label(&c->emit, kept);
             }
-            spv_emit_return(&c->emit);
+            if (c->blend_end)
+                spv_emit_branch(&c->emit, c->blend_end);
+            else
+                spv_emit_return(&c->emit);
         }
         if (has_pexit) spv_emit_label(&c->emit, pexit_merge);
     }

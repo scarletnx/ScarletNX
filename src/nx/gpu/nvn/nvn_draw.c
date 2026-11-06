@@ -424,9 +424,7 @@ static void make_blend(NvnDraw* d) {
         b.sa[i] = blend_factor((u32)nvn_field(w, NVN_BLEND_SRC_A));
         b.da[i] = blend_factor((u32)nvn_field(w, NVN_BLEND_DST_A));
         b.mask[i] = (u8)((d->chmask >> (4 * i)) & 15); /* r 1, g 2, b 4, a 8, as Vulkan's */
-        if (b.en[i] && nvn_field(w, NVN_BLEND_ADV) && !nvn_blend_advanced(&b, i, w))
-            LOG_LIMIT(1, "nvn: advanced blend mode %u is drawn as plain blending\n",
-                      (unsigned)nvn_field(w, NVN_BLEND_ADV));
+        if (b.en[i] && nvn_field(w, NVN_BLEND_ADV)) nvn_blend_advanced(&b, i, w);
     }
     /* NVN's logic operations are Vulkan's; COPY is NVN's default, writing what the shader made */
     if (logic != NVN_LOGIC_OP_COPY) b.logic_op = (u8)(logic + 1);
@@ -483,7 +481,7 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
     y.window_origin = d->flip ? DS_ORIGIN_FLIP_Y : 0;
     y.depth_mode = depth_mode == NVN_DEPTH_MODE_NEAR_IS_ZERO;
     y.sprite_origin = 1; /* the game's driver's sprite origin bit, set whatever the window origin */
-    y.point_nudge = 1; /* the game's driver leaves the OpenGL point center and half-integer pixel centers on (0x597
+    y.point_nudge = 1;   /* the game's driver leaves the OpenGL point center and half-integer pixel centers on (0x597
                           and 0x649 zero) */
     for (int f = 0; f < 2; f++) {
         /* a field macro is two arguments: chosen by ?: inside nvn_field, the comma operator made them `f ? 4 : 15`
@@ -590,7 +588,8 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
     if (!d->dirty) return;
     if (d->dirty & D_PROGRAMS) make_programs(d);
     if (d->dirty & D_VFORMAT) make_vertex_format(d);
-    if (d->dirty & D_BLEND) make_blend(d);
+    if (d->dirty & D_BLEND)
+        make_blend(d);
     else if (d->dirty & D_CHANNEL_MASK)
         make_channel_mask(d);
     if (d->dirty & D_RASTER) make_raster_key(d);
@@ -637,6 +636,8 @@ static void indirect(DrawCall* dc, u64 ind, u64 count, i32 max, i32 stride, u32 
 }
 static void draw_fixed_state(const NvnDraw* d, DrawCall* call) {
     call->state_flags = d->fixed_flags;
+    for (u32 i = 0; i < DS_TARGETS_MAX; i++)
+        call->advanced_blend[i] = ((d->color >> i) & 1) && nvn_field(d->blend[i], NVN_BLEND_ADV) ? d->blend[i] : 0;
     if (d->fixed_flags & DS_DRAW_POINT_SIZE) call->point_size = d->point_size;
     if (d->fixed_flags & DS_DRAW_DEPTH_BOUNDS) memcpy(call->depth_bounds, d->depth_bounds, sizeof call->depth_bounds);
     if (d->fixed_flags & DS_DRAW_TESS_LEVELS) memcpy(call->tess_levels, d->tess_levels, sizeof call->tess_levels);
@@ -1309,6 +1310,14 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             else
                 d->bind.smp_pool = d->dx.smp_pool = r->descriptors, d->bind.smp_max = d->dx.smp_max = max;
             d->dirty |= D_BIND;
+            return 1;
+        }
+        case OP_SUBROUTINES: {
+            const NvnPSubroutines* r = NVN_OBJ(const NvnPSubroutines, payload);
+            if (size >= offsetof(NvnPSubroutines, values) && r->count >= 0 &&
+                (u32)r->count <= (size - offsetof(NvnPSubroutines, values)) / sizeof *r->values &&
+                !nvn_subroutine_apply(r->linkage, r->first, r->count, r->values))
+                LOG_LIMIT(4, "nvn: invalid subroutine uniform update\n");
             return 1;
         }
         case OP_UPDATE_UB: { /* the bytes land in the buffer in order with the draws around them: the command's own

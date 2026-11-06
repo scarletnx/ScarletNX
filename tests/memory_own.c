@@ -99,12 +99,21 @@ typedef struct {
 } Res;
 static int g_lands, g_landed_bytes;
 static u32 g_busy_tid;
+/* test_republish_after_landing's order: the thread that lands g_hold_res (once) waits in producer_unlock, after it lets
+   go of the producer's lock, until g_republished. Its own unlock alone: the thread's unlock of a landing begun before,
+   seen after the hold is set, would wait with the reader's fault behind it, which nothing then lands */
+static void* g_hold_res;  /* atomic */
+static u32 g_hold_tid;    /* atomic: the thread that landed it, until that unlock */
+static int g_republished; /* atomic */
 static void land(const OwnRange* r, u8* const* dst, u32 n) {
     u32 i;
     for (i = 0; i < n; i++) {
         const Res* res = (const Res*)r[i].res;
+        void* held = r[i].res;
         memcpy(dst[i], res->data + r[i].res_off, r[i].size);
         __atomic_add_fetch(&g_landed_bytes, (int)r[i].size, __ATOMIC_RELAXED);
+        if (__atomic_compare_exchange_n(&g_hold_res, &held, NULL, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            __atomic_store_n(&g_hold_tid, plat_tid(), __ATOMIC_RELEASE);
     }
     __atomic_add_fetch(&g_lands, 1, __ATOMIC_RELAXED);
 }
@@ -119,7 +128,15 @@ static u32 busy_tid(void) { return g_busy_tid; }
 /* the producer's lock: recursive, as the renderer's */
 static pthread_mutex_t g_producer;
 static void producer_lock(void) { pthread_mutex_lock(&g_producer); }
-static void producer_unlock(void) { pthread_mutex_unlock(&g_producer); }
+static void producer_unlock(void) {
+    u32 self = plat_tid();
+    pthread_mutex_unlock(&g_producer);
+    if (!__atomic_compare_exchange_n(&g_hold_tid, &self, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return;
+    for (int waited_ms = 0; !__atomic_load_n(&g_republished, __ATOMIC_ACQUIRE); waited_ms++) {
+        if (waited_ms == 10000) test_fail("the reader republished the page within 10 s", __LINE__);
+        plat_sleep_ns(1000000);
+    }
+}
 /* r's references once no landing is under way: a landing holds the producer's lock from before it cuts its entries
    until it has released them, so a thread it let go, or an own_acquire that found the entries cut already, can come
    back before the release */
@@ -415,6 +432,36 @@ static void test_release_order(void) {
     res_free(r);
 }
 
+/* A landing lands what is on its pages once. Its let_go wakes the reader, which may publish over the page again
+   before the trap's thread is done with the fault (a VIC job over the picture just read): that owner stays until
+   something touches its bytes. The lander is held after it lets go of the producer's lock until the new owner is in;
+   a read of another owned page then faults after the first fault is done (the trap's thread takes them in order), and
+   lands that page alone */
+static void test_republish_after_landing(void) {
+    u64 a = region(R0 + 0xC00000, 0x4000);
+    Res *r1 = res_new(0x1000, 0x20), *r2 = res_new(0x1000, 0x80), *r3 = res_new(0x1000, 0xC0);
+    OwnRange o;
+    int lands = g_lands;
+    CHECK(own_begin(a, 0x1000, r1, 0) == 0 && own_begin(a + 0x2000, 0x1000, r3, 0) == 0);
+    __atomic_store_n(&g_republished, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_hold_res, r1, __ATOMIC_RELEASE);
+    CHECK(GP(a)[5] == 0x25); /* r1 lands on the trap's thread, which then waits in producer_unlock */
+    producer_lock();
+    CHECK(own_begin(a, 0x1000, r2, 0) == 0); /* its caller holds the producer's lock, as the renderer's do */
+    producer_unlock();
+    __atomic_store_n(&g_republished, 1, __ATOMIC_RELEASE);
+    CHECK(GP(a + 0x2000)[7] == 0xC7);
+    CHECK(g_lands == lands + 2 && refs(r1) == 0 && refs(r3) == 0);
+    /* r1's lander was the one held, and has let go */
+    CHECK(!__atomic_load_n(&g_hold_res, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_hold_tid, __ATOMIC_ACQUIRE));
+    CHECK(own_lookup(a, 0x1000, &o, 1) == 1 && o.res == r2 && refs(r2) == 1); /* nothing touched r2's bytes */
+    CHECK(GP(a)[9] == (u8)(0x80 + 9) && g_lands == lands + 3 && refs(r2) == 0);
+    CHECK(mem_unmap(a, 0x4000) == 0);
+    res_free(r1);
+    res_free(r2);
+    res_free(r3);
+}
+
 /* the producer's lock holder faulting on a page that is armed with no entry on it (a landing's, cut and not let go
    yet) goes on: nothing has to land there */
 static void test_busy_unowned(void) {
@@ -578,6 +625,7 @@ int main(int argc, char** argv) {
     test_busy("/proc/self/exe", 1, 0);
     test_busy("/proc/self/exe", 0, 1);
     test_release_order();
+    test_republish_after_landing();
     test_busy_unowned();
     test_scan_owned();
     test_let_go_watched();

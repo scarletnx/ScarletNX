@@ -395,6 +395,17 @@ static int read_symbols(Parse* p, const Dynamic* d) {
     return 0;
 }
 
+/* the functions of this build that address hooks name (hook_routes.h's keys): seeds, called through their slots */
+static void route_addresses(Parse* p) {
+    size_t i, n = snx_hook_route_count();
+    for (i = 0; i < n; ++i) {
+        SnxU64 offset;
+        if (!snx_hook_key_at(snx_hook_route_name(i), p->m->build_id, &offset) || !code_address(p, offset)) continue;
+        push(&p->functions, offset);
+        push(&p->routed, offset);
+    }
+}
+
 /* A relative relocation of the word at target: its addend, explicit or (REL, RELR) the word already there, or 0 for
    a word in the BSS. A code address among them is a seed: vtables and callbacks point at functions nothing calls */
 static int relocate(Parse* p, SnxU64 target, int explicit_addend, SnxU64 addend) {
@@ -678,7 +689,10 @@ static int read_metadata(SnxModuleImage* m, int is64, const char* npdm, char* er
              read_relocations(&p, &d, DT_RELA, DT_RELASZ, DT_RELAENT, 3, "RELA") ||
              read_relocations(&p, &d, DT_REL, DT_RELSZ, DT_RELENT, 2, "REL") || read_relr(&p, &d);
     /* ELF32 modules unwind with .ARM.exidx, which MOD0 doesn't point at */
-    if (!rc && is64) read_unwind(&p);
+    if (!rc && is64) {
+        read_unwind(&p);
+        route_addresses(&p); /* AArch64 only: a 32-bit program's code is blocks, which no hook replaces */
+    }
     if (!rc) {
         sort_unique(&p.functions);
         sort_unique(&p.relptrs);

@@ -214,7 +214,9 @@ static void producer_unlock(void) {
 
 /* every entry on the host pages [lo, hi) landed and let go, the pages with them. The producer's lock is taken only
    when entries are there (a fault with none, the trap thread's, never waits for it), before any is marked, then the
-   entries are looked for again: they may have landed or changed while it waited */
+   entries are looked for again: they may have landed or changed while it waited. No owner can come while it is held
+   (own_begin's callers hold it), so every page lands and is let go; an owner that publishes over them after the lock
+   is let go lands on the next pass */
 static void land_pages(u64 lo, u64 hi) {
     int waited = 0;
     for (;;) {
@@ -328,39 +330,36 @@ static void report_owned_fault(u64 a, int write, u32 tid, int fault_state) {
 
 static void own_fault(u8* p, int write, u32 tid) {
     u64 a = (u64)(p - g_mem), page = a & ~(g_page - 1);
+    int owned;
     if (p < g_mem || a >= AS_SIZE) { /* not the guest's memory: nothing of ours, let it go */
         plat_trap_continue(p, g_page);
         return;
     }
-    for (;;) {
-        int owned;
-        /* A page no entry is on goes on: landed meanwhile (the message is late), or cut and not let go yet. Checked
-           and let go under g_trap_lk, so an owner can't arm it between the two: own_begin arms under it */
-        pm_lock(&g_trap_lk);
-        pm_lock(&g_own_lk);
-        owned = page_owned_nl(page);
-        pm_unlock(&g_own_lk);
-        if (!owned) plat_trap_continue(p, g_page);
-        pm_unlock(&g_trap_lk);
-        if (!owned) return;
-        /* An owned page faulted by the producer's lock holder: nothing can land it while that thread waits here. The
-           holder is asked now, not when it faulted: a late message's thread may have taken the lock since, and
-           republished the page, so it ends the process only when that thread is waiting in a fault (or it can't be
-           told); otherwise the landing waits for the lock as any other */
-        if (tid && g_hooks.busy_tid && tid == g_hooks.busy_tid()) {
-            int fault_state = plat_thread_in_fault(tid);
-            if (fault_state != 0) {
-                report_owned_fault(a, write, tid, fault_state);
-                fatal(
-                    "Thread %u touched GPU-owned guest memory at %llx while it held the renderer: the runtime must call "
-                    "own_acquire first",
-                    tid, (unsigned long long)a);
-            }
+    /* A page no entry is on goes on: landed meanwhile (the message is late), or cut and not let go yet. Checked and
+       let go under g_trap_lk, so an owner can't arm it between the two: own_begin arms under it */
+    pm_lock(&g_trap_lk);
+    pm_lock(&g_own_lk);
+    owned = page_owned_nl(page);
+    pm_unlock(&g_own_lk);
+    if (!owned) plat_trap_continue(p, g_page);
+    pm_unlock(&g_trap_lk);
+    if (!owned) return;
+    /* An owned page faulted by the producer's lock holder: nothing can land it while that thread waits here. The holder
+       is asked now, not when it faulted: a late message's thread may have taken the lock since, and republished the
+       page, so it ends the process only when that thread is waiting in a fault (or it can't be told); otherwise the
+       landing waits for the lock as any other */
+    if (tid && g_hooks.busy_tid && tid == g_hooks.busy_tid()) {
+        int fault_state = plat_thread_in_fault(tid);
+        if (fault_state != 0) {
+            report_owned_fault(a, write, tid, fault_state);
+            fatal("Thread %u touched GPU-owned guest memory at %llx while it held the renderer: the runtime must call "
+                  "own_acquire first",
+                  tid, (unsigned long long)a);
         }
-        /* never under g_trap_lk: the landing takes the producer's lock. A page owned again by the time it is done (a
-           republish) lands again */
-        land_pages(page, page + g_page);
     }
+    /* never under g_trap_lk: the landing takes the producer's lock. A page owned again by the time it is done (a
+       republish) lands again */
+    land_pages(page, page + g_page);
 }
 
 int own_init(const OwnHooks* h) {

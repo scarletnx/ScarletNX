@@ -93,6 +93,16 @@ Repeated invalidations flush any held draw before advancing the generation. The 
 from are documented in NVIDIA's public [3D class](https://github.com/NVIDIA/open-gpu-doc/blob/master/classes/3d/clb197.h)
 and [compute class](https://github.com/NVIDIA/open-gpu-doc/blob/master/classes/compute/clb1c0.h) headers.
 
+GPU event waits yield only their queue's replay job until EQUAL or GEQUAL_WRAP succeeds. Other queues can release
+the event. Recorded shader subroutine selections update validated compiler-constant linkage tables, with relative
+and absolute calls in the shader translator. Copy conversions include supported volume color formats, sRGB transfer
+and GPU depth/stencil gathers when native image blits are unavailable.
+
+Advanced blending uses exact ordinary-blend reductions, coherent native advanced operations or a fragment-interlock
+shader path. Each path has explicit format, attachment and device restrictions. These features do not imply full
+NVN compatibility. [The rendering audit](GPU_RENDERING_AUDIT.md#follow-up-support-and-restrictions) lists their current
+behavior, restrictions and synthetic checks.
+
 | File | What it is | Built into |
 | --- | --- | --- |
 | `tests/support/nvn_control.c` | decoders for the 12-word macro 38 indexed draw and the macro 12 program bind | `tests/nvn_control.c` |

@@ -93,9 +93,22 @@
    wraps with C code of its own, with no adapter, is named on a line of its own, `route SYMBOL`
    (gpu/nvn/nvn.hook's nvnBootstrapLoader).
 
-   Usage: hookgen [--prefix NAME] [--a32] [-I DIR]... --header OUT.h --out OUT.inc SPEC (NAME, hook by default,
+   Address hooks. A function of one build of a game, which no symbol names, is hooked by its module's build ID and
+   its offset in that module:
+
+     [0123456789abcdef0123456789abcdef01234567:0x1a2b40] hook game_mode_set(u32 mode)
+
+   The build ID is the hex of the module's first 8 to 32 bytes, as an IPS patch is named and an IPSwitch patch's
+   @nsobid- gives it (zeros after it), and the offset is the function's entry from the module's base, as a symbol's
+   value would be. The name after hook is the handler's, as the function has no other. Its key, BUILDID:OFFSET in
+   lower case without the build ID's ending zero bytes, 0x or leading zeros (0123...67:1a2b40), stands for its symbol in
+   the table and the route list, so that the recompiler routes the direct calls to it. It holds for the one build, so
+   it has no @version.
+
+   Usage: hookgen [--prefix NAME] [--a32] [-I DIR]... --header OUT.h --out OUT.inc SPEC... (NAME, hook by default,
           names the tables; --a32 adds the adapters for a 32-bit program, <prefix>_a32; each -I DIR a folder to find
-          the include line's header in)
+          the include line's header in; the specs are read one after another into one table, each with its own
+          family lines, as hooks.hook and the game patches of src/nx/patches/ are)
           hookgen [-I DIR]... --routes OUT.inc SPEC... (the symbols that the hooks and route lines of every SPEC
           name, sorted by strcmp and without duplicates, as hook_route_names and HOOK_ROUTE_COUNT, for
           nx/loader/hook_routes.c)
@@ -115,7 +128,7 @@
 #define MAX_FIELDS   64
 #define MAX_NAME     256
 #define MAX_ROUTES   64
-#define MAX_SPECS    8
+#define MAX_SPECS    64 /* hooks.hook, nvn.hook and the game patches */
 #define MAX_DIRS     8
 #define MAX_TYPES    1024 /* the include line's header's typedefs: nvn.h has about 110 */
 #define NREGS        8
@@ -188,9 +201,9 @@ typedef struct {
 } Arg;
 
 typedef struct {
-    char symbol[MAX_NAME], handler[MAX_NAME];
+    char symbol[MAX_NAME], handler[MAX_NAME]; /* an address hook's symbol is its key, BUILDID:OFFSET */
     Arg args[MAX_ARGS];
-    int nargs, line, family, nuses, pure, nbufs;
+    int nargs, line, family, nuses, pure, nbufs, at;
     Kind ret;
     char ret_cname[MAX_NAME];
     Range range;
@@ -235,6 +248,13 @@ static char routes[MAX_ROUTES][MAX_NAME]; /* the route lines' symbols */
 static int route_lines[MAX_ROUTES];
 static int nroutes;
 static const char* spec_path;
+/* the specs read, each one's lines numbered after those of the specs before it, so that a line's number names its
+   spec too; the families of the specs before the one being read; and the include line, 0 while there is none */
+static struct {
+    const char* path;
+    int base;
+} spec_read[MAX_SPECS];
+static int nspec_read, lines_read, spec_families, include_line;
 /* the include line's header (the spec's at most one), and the names its typedefs declare */
 enum { H_OTHER, H_ENUM, H_POINTER };
 static char include_name[MAX_NAME];
@@ -249,9 +269,31 @@ static int ninclude_dirs;
 static char* obuf;
 static size_t olen, ocap;
 
+/* the spec that line is in */
+static int spec_of(int line) {
+    int s = nspec_read - 1;
+    while (s > 0 && spec_read[s].base >= line) s--;
+    return s;
+}
+/* line's number in its spec */
+static int local(int line) { return nspec_read ? line - spec_read[spec_of(line)].base : line; }
+/* line a as a message about line b names it: "line N" in b's spec, "PATH:N" in another */
+static const char* ref(int a, int b) {
+    static char buf[2][MAX_NAME + 32];
+    static int k;
+    char* r = buf[k ^= 1];
+    if (spec_of(a) == spec_of(b))
+        snprintf(r, sizeof buf[0], "line %d", local(a));
+    else
+        snprintf(r, sizeof buf[0], "%s:%d", spec_read[spec_of(a)].path, local(a));
+    return r;
+}
+
 static void fail(int line, const char* fmt, ...) {
     va_list ap;
-    if (line)
+    if (line && nspec_read)
+        fprintf(stderr, "%s:%d: ", spec_read[spec_of(line)].path, local(line));
+    else if (line)
         fprintf(stderr, "%s:%d: ", spec_path, line);
     else
         fprintf(stderr, "hookgen: ");
@@ -449,9 +491,10 @@ static void read_header(int line) {
 }
 
 /* include "PATH": the header that declares the types the hooks' pointers name, which the generated header includes */
-static void parse_include(const char* p, int line, int first_line) {
+static void parse_include(const char* p, int line) {
     size_t n = 0;
-    if (include_name[0]) fail(line, "a spec has one include line, on line %d", first_line);
+    if (include_name[0]) fail(line, "a spec has one include line, on %s", ref(include_line, line));
+    include_line = line;
     p = expect(p, "\"", line);
     while (*p && *p != '"') {
         if (n + 1 >= MAX_NAME) fail(line, "the header's name is too long");
@@ -718,19 +761,28 @@ static void assign_a32(Hook* h) {
     }
 }
 
-/* hook SYMBOL(TYPE NAME, ...) [-> TYPE] [= HANDLER] [uses STRUCT, ...] [pure] */
-static void parse_hook(const char* p, int line, const Range* range) {
+/* hook SYMBOL(TYPE NAME, ...) [-> TYPE] [= HANDLER] [uses STRUCT, ...] [pure], or for an address hook (at, its key
+   BUILDID:OFFSET) hook HANDLER(TYPE NAME, ...) [-> TYPE] [uses STRUCT, ...] [pure]: a function without a symbol has
+   only the name its handler gives it */
+static void parse_hook(const char* p, int line, const Range* range, const char* at) {
     Hook* h;
     char derived[MAX_NAME];
     int x = 0, v = 0, nstack = 0;
     if (nhooks == MAX_HOOKS) fail(line, "more than %d hooks", MAX_HOOKS);
-    if (!nfamilies) fail(line, "a hook comes after a family line, which names its family");
+    if (nfamilies == spec_families) fail(line, "a hook comes after a family line, which names its family");
     h = &hooks[nhooks++];
     memset(h, 0, sizeof *h);
     h->line = line;
     h->family = nfamilies - 1;
     h->range = *range;
-    p = word(p, h->symbol, line, "symbol");
+    h->at = at != NULL;
+    if (at) {
+        strcpy(h->symbol, at);
+        p = word(p, h->handler, line, "handler");
+        if (!is_identifier(h->handler)) fail(line, "'%s' can't name a handler", h->handler);
+    } else {
+        p = word(p, h->symbol, line, "symbol");
+    }
     p = expect(p, "(", line);
     p = skip_space(p);
     while (*p != ')') {
@@ -759,7 +811,9 @@ static void parse_hook(const char* p, int line, const Range* range) {
     strcpy(h->ret_cname, "void");
     if (!strncmp(p, "->", 2)) p = parse_type(p + 2, &h->ret, h->ret_cname, line, "result's type");
     p = skip_space(p);
-    if (*p == '=') {
+    if (at) {
+        if (*p == '=') fail(line, "an address hook's name is its handler's: drop '='");
+    } else if (*p == '=') {
         p = word(p + 1, h->handler, line, "handler");
         if (!is_identifier(h->handler)) fail(line, "'%s' can't name a handler", h->handler);
         if (derived_handler(h->symbol, derived) && !strcmp(derived, h->handler))
@@ -796,6 +850,41 @@ static void parse_hook(const char* p, int line, const Range* range) {
     }
     if (*p) fail(line, "unexpected text after the hook's handler");
     resolve_buffers(h, line);
+}
+
+/* an address hook's [BUILDID:OFFSET], p after its '[': its key into key (MAX_NAME bytes), the text after the ']'.
+   BUILDID is the module's build ID as an IPS patch's name or an IPSwitch patch's @nsobid- gives it, the hex of its
+   first 8 to 32 bytes with zeros after them, and the key has its digits in lower case without the zero bytes that end
+   it; OFFSET is the function's offset in its module, as a symbol's value would be, and the key has it in hex without
+   0x or leading zeros */
+static const char* parse_at(const char* p, char* key, int line) {
+    char id[65];
+    size_t n = 0;
+    unsigned long long offset = 0;
+    int digits = 0;
+    p = skip_space(p);
+    while (isxdigit((unsigned char)*p)) {
+        if (n == 64) fail(line, "a build ID is at most 64 hex digits");
+        id[n++] = (char)tolower((unsigned char)*p++);
+    }
+    if (n < 16 || n % 2) fail(line, "a build ID is an even number of hex digits, 16 to 64, before the ':'");
+    while (n >= 2 && id[n - 1] == '0' && id[n - 2] == '0') n -= 2;
+    if (!n) fail(line, "a build ID of zeros names no build");
+    id[n] = 0;
+    p = expect(p, ":", line);
+    p = skip_space(p);
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    while (isxdigit((unsigned char)*p)) {
+        unsigned d = (unsigned)(isdigit((unsigned char)*p) ? *p - '0' : tolower((unsigned char)*p) - 'a' + 10);
+        if (offset >> 60) fail(line, "the offset is too large");
+        offset = offset << 4 | d;
+        p++, digits++;
+    }
+    if (!digits) fail(line, "expected the function's offset in hex after the build ID");
+    if (offset & 3) fail(line, "offset 0x%llx isn't a function's: AArch64 code is 4-aligned", offset);
+    p = expect(p, "]", line);
+    snprintf(key, MAX_NAME, "%s:%llx", id, offset);
+    return skip_space(p);
 }
 
 /* family NAME: the hooks after it, until the next */
@@ -893,10 +982,15 @@ static int parse_fields(const char* p, int line) {
 
 static void read_spec(const char* path) {
     char buf[2048];
-    int line = 0, versioned = 0, version_line = 0, open = 0, include_line = 0;
+    int line = lines_read, versioned = 0, version_line = 0, open = 0;
     Range range = {K_ANY, 0, UNBOUNDED}, any = {K_ANY, 0, UNBOUNDED};
     FILE* f = fopen(path, "r");
     if (!f) fail(0, "cannot open %s", path);
+    if (nspec_read == MAX_SPECS) fail(0, "more than %d specs", MAX_SPECS);
+    spec_path = path;
+    spec_read[nspec_read].path = path;
+    spec_read[nspec_read++].base = lines_read;
+    spec_families = nfamilies;
     while (fgets(buf, sizeof buf, f)) {
         const char* p = skip_space(buf);
         size_t n = strlen(buf);
@@ -914,8 +1008,14 @@ static void read_spec(const char* path) {
             versioned = 1, version_line = line;
             if (!*p) continue;
         }
-        if (keyword(p, "hook")) {
-            parse_hook(p + 4, line, versioned ? &range : &any);
+        if (*p == '[') {
+            char key[MAX_NAME];
+            if (versioned) fail(version_line, "an address hook is for one build of its module: it has no @version");
+            p = parse_at(p + 1, key, line);
+            if (!keyword(p, "hook")) fail(line, "expected 'hook' after the address");
+            parse_hook(p + 4, line, &any, key);
+        } else if (keyword(p, "hook")) {
+            parse_hook(p + 4, line, versioned ? &range : &any, NULL);
         } else if (keyword(p, "struct")) {
             open = !parse_fields(parse_struct(p + 6, line, versioned ? &range : &any, versioned), line);
         } else if (keyword(p, "family")) {
@@ -926,14 +1026,14 @@ static void read_spec(const char* path) {
             parse_route(p + 5, line);
         } else if (keyword(p, "include")) {
             if (versioned) fail(version_line, "@version goes before a hook or a struct");
-            parse_include(p + 7, line, include_line);
-            include_line = line;
+            parse_include(p + 7, line);
         } else {
-            fail(line, "expected a family, a hook, a struct, a route, an include or a comment");
+            fail(line, "expected a family, a hook, an address hook, a struct, a route, an include or a comment");
         }
         versioned = 0;
     }
     fclose(f);
+    lines_read = line;
     if (open) fail(variants[nvariants - 1].line, "struct %s isn't closed", variants[nvariants - 1].name);
     if (versioned) fail(version_line, "@version goes before a hook or a struct");
 }
@@ -968,12 +1068,13 @@ static void range_text(const Range* r, char* buf, size_t n) {
 /* two declarations of one hook's symbol or one struct (what), b after a: refused unless both are versioned, by one
    key, for versions that don't overlap */
 static void check_ranges(const char* what, const Range* a, int a_line, const Range* b, int b_line) {
-    if (a->key == K_ANY && b->key == K_ANY) fail(b_line, "%s is declared on line %d too", what, a_line);
+    const char* at = ref(a_line, b_line);
+    if (a->key == K_ANY && b->key == K_ANY) fail(b_line, "%s is declared on %s too", what, at);
     if (a->key == K_ANY)
-        fail(b_line, "%s is declared without @version on line %d, so it has no other declaration", what, a_line);
-    if (b->key == K_ANY) fail(b_line, "%s is versioned on line %d, so every declaration of it is", what, a_line);
-    if (a->key != b->key) fail(b_line, "%s is versioned by %s on line %d", what, key_name[a->key], a_line);
-    if (a->lo < b->hi && b->lo < a->hi) fail(b_line, "%s's versions overlap line %d's", what, a_line);
+        fail(b_line, "%s is declared without @version on %s, so it has no other declaration", what, at);
+    if (b->key == K_ANY) fail(b_line, "%s is versioned on %s, so every declaration of it is", what, at);
+    if (a->key != b->key) fail(b_line, "%s is versioned by %s on %s", what, key_name[a->key], at);
+    if (a->lo < b->hi && b->lo < a->hi) fail(b_line, "%s's versions overlap %s's", what, at);
 }
 
 static int by_range(const Range* a, const Range* b) { return a->lo < b->lo ? -1 : a->lo > b->lo; }
@@ -996,7 +1097,7 @@ static void check_structs(void) {
             const Variant* a = &variants[j];
             if (strcmp(a->name, b->name)) {
                 if (!strcmp(a->cname, b->cname))
-                    fail(b->line, "struct %s's C name is struct %s's (line %d)", b->name, a->name, a->line);
+                    fail(b->line, "struct %s's C name is struct %s's (%s)", b->name, a->name, ref(a->line, b->line));
                 continue;
             }
             if (b->first == i) b->first = j;
@@ -1007,10 +1108,11 @@ static void check_structs(void) {
                 for (m = 0; m < a->nfields && strcmp(a->fields[m].name, b->fields[k].name); m++) {
                 }
                 if (m == a->nfields)
-                    fail(b->line, "%s has a field %s, which line %d's hasn't", what, b->fields[k].name, a->line);
+                    fail(b->line, "%s has a field %s, which %s's hasn't", what, b->fields[k].name,
+                         ref(a->line, b->line));
                 if (a->fields[m].kind != b->fields[k].kind)
-                    fail(b->line, "%s's field %s is a %s, and a %s on line %d", what, b->fields[k].name,
-                         kinds[b->fields[k].kind].name, kinds[a->fields[m].kind].name, a->line);
+                    fail(b->line, "%s's field %s is a %s, and a %s on %s", what, b->fields[k].name,
+                         kinds[b->fields[k].kind].name, kinds[a->fields[m].kind].name, ref(a->line, b->line));
             }
             if (a->nfields != b->nfields) {
                 for (k = 0; k < a->nfields; k++) {
@@ -1018,7 +1120,8 @@ static void check_structs(void) {
                     for (m = 0; m < b->nfields && strcmp(a->fields[k].name, b->fields[m].name); m++) {
                     }
                     if (m == b->nfields)
-                        fail(b->line, "%s has no field %s, which line %d's has", what, a->fields[k].name, a->line);
+                        fail(b->line, "%s has no field %s, which %s's has", what, a->fields[k].name,
+                             ref(a->line, b->line));
                 }
             }
         }
@@ -1047,16 +1150,17 @@ static void check_hooks(void) {
                 const Hook *a = hooks[i].line < hooks[j].line ? &hooks[i] : &hooks[j],
                            *b = a == &hooks[i] ? &hooks[j] : &hooks[i];
                 if (a->range.key == K_ANY && b->range.key == K_ANY)
-                    fail(b->line, "%s is hooked on line %d too", b->symbol, a->line);
+                    fail(b->line, "%s is hooked on %s too", b->symbol, ref(a->line, b->line));
                 check_ranges(b->symbol, &a->range, a->line, &b->range, b->line);
             }
     for (i = 0; i < nroutes; i++) {
         for (j = 0; j < i; j++)
             if (!strcmp(routes[i], routes[j]))
-                fail(route_lines[i], "%s is routed on line %d too", routes[i], route_lines[j]);
+                fail(route_lines[i], "%s is routed on %s too", routes[i], ref(route_lines[j], route_lines[i]));
         for (j = 0; j < nhooks; j++)
             if (!strcmp(routes[i], hooks[j].symbol))
-                fail(route_lines[i], "%s is hooked on line %d, which routes it already", routes[i], hooks[j].line);
+                fail(route_lines[i], "%s is hooked on %s, which routes it already", routes[i],
+                     ref(hooks[j].line, route_lines[i]));
     }
     qsort(hooks, (size_t)nhooks, sizeof *hooks, by_symbol);
     for (i = 0; i < nhooks; i++) {
@@ -1082,8 +1186,8 @@ static void check_hooks(void) {
                     const Range *a = &entries[j].range, *b = &variants[v].range;
                     Range r;
                     if (a->key != K_ANY && b->key != K_ANY && a->key != b->key)
-                        fail(h->line, "%s's versions are %s's and struct %s's (line %d) %s's", h->symbol,
-                             key_name[a->key], h->use_name[u], variants[v].line, key_name[b->key]);
+                        fail(h->line, "%s's versions are %s's and struct %s's (%s) %s's", h->symbol, key_name[a->key],
+                             h->use_name[u], ref(variants[v].line, h->line), key_name[b->key]);
                     r.key = a->key != K_ANY ? a->key : b->key;
                     r.lo = a->lo > b->lo ? a->lo : b->lo;
                     r.hi = a->hi < b->hi ? a->hi : b->hi;
@@ -1116,8 +1220,8 @@ static void check_handlers(void) {
                 same = !strcmp(kinds[a->args[k].kind].ctype, kinds[b->args[k].kind].ctype);
             for (k = 0; same && k < a->nuses; k++) same = !strcmp(a->use_name[k], b->use_name[k]);
             if (!same)
-                fail(a->line > b->line ? a->line : b->line, "%s takes other arguments on line %d", a->handler,
-                     a->line > b->line ? b->line : a->line);
+                fail(a->line > b->line ? a->line : b->line, "%s takes other arguments on %s", a->handler,
+                     a->line > b->line ? ref(b->line, a->line) : ref(a->line, b->line));
         }
 }
 
@@ -1128,14 +1232,15 @@ static void check_function_types(void) {
     for (i = 0; i < nhooks; i++) {
         const Hook *a = &hooks[i], *b = i ? &hooks[i - 1] : NULL; /* sorted by symbol */
         int same;
+        if (a->at) continue; /* no symbol to name its type after */
         if (!is_identifier(a->symbol)) fail(a->line, "%s can't name a function type", a->symbol);
         if (!b || strcmp(a->symbol, b->symbol)) continue;
         same = !strcmp(a->ret_cname, b->ret_cname) && a->nargs == b->nargs;
         for (k = 0; same && k < a->nargs; k++) same = !strcmp(a->args[k].cname, b->args[k].cname);
         if (!same)
             fail(a->line > b->line ? a->line : b->line,
-                 "%s takes other types on line %d: its function type is one for every version", a->symbol,
-                 a->line > b->line ? b->line : a->line);
+                 "%s takes other types on %s: its function type is one for every version", a->symbol,
+                 a->line > b->line ? ref(b->line, a->line) : ref(a->line, b->line));
     }
 }
 
@@ -1313,6 +1418,7 @@ static void function_types(void) {
         const Hook* h = &hooks[i];
         char name[MAX_NAME];
         if (i && !strcmp(hooks[i - 1].symbol, h->symbol)) continue; /* its other versions take the same types */
+        if (h->at) continue;
         for (k = 0; h->symbol[k]; k++) name[k] = (char)toupper((unsigned char)h->symbol[k]);
         name[k] = 0;
         out("typedef %s (*PFN%sPROC)(", h->ret_cname, name);
@@ -1373,7 +1479,7 @@ static void write_table(const char* path) {
                 }
                 out(", {0x%lx}", v->fields[m].offset);
             }
-            out("}, /* line %d: %s */\n", v->line, range);
+            out("}, /* line %d: %s */\n", local(v->line), range);
         }
         out("};\n");
     }
@@ -1407,7 +1513,7 @@ static void write_table(const char* path) {
         out("    \"");
         for (k = 0; k < h->nuses; k++) {
             const Variant* v = &variants[entries[i].variant[k]];
-            out("%s%s of line %d", k ? ", " : "", v->name, v->line);
+            out("%s%s of line %d", k ? ", " : "", v->name, local(v->line));
         }
         out("\",\n");
     }
@@ -1506,12 +1612,11 @@ int main(int argc, char** argv) {
         free(obuf);
         return 0;
     }
-    if (nspecs != 1 || (!header && !table)) {
-        fprintf(stderr, "usage: hookgen [--prefix NAME] [--a32] [-I DIR]... --header OUT.h --out OUT.inc SPEC\n"
+    if (!nspecs || (!header && !table)) {
+        fprintf(stderr, "usage: hookgen [--prefix NAME] [--a32] [-I DIR]... --header OUT.h --out OUT.inc SPEC...\n"
                         "       hookgen [-I DIR]... --routes OUT.inc SPEC...\n");
         return 2;
     }
-    spec_path = specs[0];
     for (i = 0; prefix[i]; i++) { /* an identifier, its macros' prefix the same in capitals */
         char ch = prefix[i];
         if (i == MAX_NAME - 1 || !(ch == '_' || (ch >= 'a' && ch <= 'z') || (i && ch >= '0' && ch <= '9'))) {
@@ -1521,7 +1626,8 @@ int main(int argc, char** argv) {
         upper[i] = ch >= 'a' && ch <= 'z' ? (char)(ch - 'a' + 'A') : ch;
         capital[i] = i ? ch : upper[i];
     }
-    read_spec(spec_path);
+    for (i = 0; i < nspecs; i++) read_spec(specs[i]);
+    spec_path = specs[0];
     check_structs();
     check_hooks();
     check_handlers();

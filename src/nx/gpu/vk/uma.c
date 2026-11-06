@@ -218,36 +218,12 @@ static const char* model_name(int m) {
            : m == VK_MEM_REBAR ? "discrete, the CPU maps all of its memory (resizable BAR)"
                                : "discrete, the CPU maps a small window of its memory";
 }
-/* Which memory the device has: an integrated GPU, or one that isn't discrete whose biggest device-local heap the CPU
-   maps and holds most of the memory, shares the CPU's. A discrete GPU whose device-local and host-visible memory is at
-   least half of its biggest device-local heap has resizable BAR. Else the window is small (256 MiB without resizable
-   BAR). */
+/* Which memory the device has (vk_common.h's snx_vk_memory_model, which the 3DS's device asks too) */
 static int mem_model(void) {
     VkPhysicalDeviceMemoryProperties mp;
-    u64 total = 0, dl = 0, dlhv = 0;
-    int dl_heap = -1;
     vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
-    for (u32 h = 0; h < mp.memoryHeapCount; h++) {
-        total += mp.memoryHeaps[h].size;
-        if ((mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && mp.memoryHeaps[h].size > dl) {
-            dl = mp.memoryHeaps[h].size;
-            dl_heap = (int)h;
-        }
-    }
-    for (u32 t = 0; t < mp.memoryTypeCount; t++) {
-        VkMemoryPropertyFlags f = mp.memoryTypes[t].propertyFlags;
-        u64 size = mp.memoryHeaps[mp.memoryTypes[t].heapIndex].size;
-        if ((f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) && (f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && size > dlhv)
-            dlhv = size;
-    }
-    if (g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ||
-        g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU)
-        return VK_MEM_UMA;
-    /* not a discrete GPU with resizable BAR and more memory of its own than the system's */
-    if (g_vk.props.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && dl_heap >= 0 && dlhv == dl && dl > total / 2)
-        return VK_MEM_UMA;
-    if (dl && dlhv >= dl / 2) return VK_MEM_REBAR;
-    return VK_MEM_SMALL_BAR;
+    SnxVkMemoryModel model = snx_vk_memory_model(g_vk.props.deviceType, &mp);
+    return model == SNX_VK_UMA ? VK_MEM_UMA : model == SNX_VK_REBAR ? VK_MEM_REBAR : VK_MEM_SMALL_BAR;
 }
 /* before the device is made: the model, and the path that vk_memory (0 auto, 1 copy, 2 UMA) and the device's
    extensions give: guest memory imported where it is, else (Android) moved into AHardwareBuffers. The extension to

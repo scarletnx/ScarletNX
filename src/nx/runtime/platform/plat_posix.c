@@ -11,6 +11,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include "snx_settings.h"
 #include <SDL3/SDL_thread.h>
 #include <errno.h>
@@ -285,6 +286,7 @@ int plat_power_take_change(void) { return __atomic_exchange_n(&g_power_changed, 
 static void power_watch_thread(void* arg) {
     int fd = (int)(intptr_t)arg;
     char buf[4096];
+    SNX_THREAD_NAME("power watch");
     for (;;) {
         ssize_t n = recv(fd, buf, sizeof buf, 0);
         if (n <= 0) {
@@ -338,6 +340,7 @@ static void apple_power_changed(void* context) {
 static void apple_power_thread(void* arg) {
     CFRunLoopSourceRef source = IOPSNotificationCreateRunLoopSource(apple_power_changed, NULL);
     (void)arg;
+    SNX_THREAD_NAME("power watch");
     if (!source) return;
     CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopDefaultMode);
     CFRunLoopRun();
@@ -348,6 +351,67 @@ int plat_power_watch(void) {
 }
 #else
 int plat_power_watch(void) { return -1; } /* no watcher here: the caller polls */
+#endif
+#if defined(__linux__) && !defined(__ANDROID__)
+/* The kernel's pressure stall information for memory: the trigger wakes the thread when the system's tasks together
+   waited for memory past PSI_TRIGGER's share of a window, the thrashing before the OOM killer ends a process with no
+   signal it can catch. 2 s is the shortest window a process without privileges may ask; a kernel before 6.5 refuses
+   that, and one built without PSI has no file */
+#define PSI_FILE    "/proc/pressure/memory"
+#define PSI_TRIGGER "some 200000 2000000" /* 0.2 s of stall in a window of 2 s */
+static int (*g_psi_say)(const char* why); /* set while the watch runs */
+static void psi_thread(void* arg) {
+    int fd = (int)(intptr_t)arg;
+    SNX_THREAD_NAME("memory pressure");
+    for (;;) {
+        struct pollfd p = {fd, POLLPRI, 0};
+        char now[256], why[320];
+        ssize_t n;
+        if (poll(&p, 1, -1) < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (p.revents & (POLLERR | POLLNVAL)) break;
+        /* the file's first line, the pressure now: "some avg10=... avg60=... avg300=... total=..." */
+        n = pread(fd, now, sizeof now - 1, 0);
+        now[n > 0 ? n : 0] = 0;
+        now[strcspn(now, "\n")] = 0;
+        snprintf(why, sizeof why,
+                 "the system's tasks waited for memory 0.2 s of 2 s, Linux's pressure trigger \"" PSI_TRIGGER
+                 "\" (now %s)",
+                 now[0] ? now : "unread");
+        if (!g_psi_say(why)) break;
+    }
+    close(fd);
+}
+int plat_memory_watch(int (*say)(const char* why)) {
+    static const char trigger[] = PSI_TRIGGER;
+    char why[256];
+    int fd;
+    if (g_psi_say) return 0;
+    fd = open(PSI_FILE, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0 || write(fd, trigger, sizeof trigger) < 0) {
+        snx_os_error(why, sizeof why);
+        LOG("memory: no watch of the system's memory pressure: " PSI_FILE " %s: %s\n",
+            fd < 0 ? "does not open" : "refuses the trigger \"" PSI_TRIGGER "\"", why);
+        if (fd >= 0) close(fd);
+        return -1;
+    }
+    g_psi_say = say;
+    if (plat_thread(psi_thread, (void*)(intptr_t)fd, 0)) {
+        snx_os_error(why, sizeof why);
+        LOG("memory: no watch of the system's memory pressure: its thread does not start: %s\n", why);
+        g_psi_say = NULL;
+        close(fd);
+        return -1;
+    }
+    return 0;
+}
+#else
+int plat_memory_watch(int (*say)(const char* why)) {
+    (void)say;
+    return -1;
+}
 #endif
 /* Linux only: Android's CPUs differ in speed, so a fixed share of them would make a core slow */
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -851,6 +915,7 @@ static void trap_wait(u64 i, int write) {
 }
 static void* trap_signal_thread(void* arg) {
     (void)arg;
+    SNX_THREAD_NAME("memory traps");
     for (;;) {
         u32 seen = __atomic_load_n(&g_trap_posted, __ATOMIC_SEQ_CST);
         for (;;) {
@@ -1865,6 +1930,7 @@ static void* trap_thread(void* arg) {
     struct uffd_msg msg[16];
     u64 page = (u64)sysconf(_SC_PAGESIZE);
     (void)arg;
+    SNX_THREAD_NAME("memory traps");
     for (;;) {
         struct pollfd pf;
         ssize_t n;

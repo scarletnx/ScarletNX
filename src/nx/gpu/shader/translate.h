@@ -71,6 +71,7 @@ typedef struct {
        driver drop a quad's remaining helpers from execution while they still hold the loop open: AMD's Windows
        compiler then repeats the loop with no lane left to end it, until the GPU is reset. */
     u32 discarded;
+    u32 blend_end;     /* one final fragment epilogue, reached after all guest control flow and alpha tests */
     u32 branch_cond;   /* with structured flow, the condition of the branch that ends the block, 0 for always */
     u32 branch_target; /* and the word a BRX that ends it goes to */
 } DirectCtx;

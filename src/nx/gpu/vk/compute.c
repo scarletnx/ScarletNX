@@ -19,7 +19,6 @@
 #include "nx/gpu/shader/shader.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
-#include "common/utilities/bits.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/renderer.h"
@@ -49,8 +48,6 @@ typedef struct {
     u64 addr;
     u64 off;
     u32 size;
-    VkWriteLog* log; /* the write log whose part gives the bytes its dispatch wrote, with a reference; NULL: compared */
-    u32 part, wseen; /* and the write tracking clock before its input was read */
 } CsOut;
 static CsOut g_out[256];
 static int g_nout;
@@ -81,8 +78,6 @@ typedef struct {
     u64 ar_cap, org_cap, cval;
     CsOut out[256];
     int nout, gfx;
-    VkWriteLog** logs; /* its dispatches' own references to their logs, dropped once it is done */
-    u32 nlogs, caplogs;
 #if defined(SNX_TRACY)
     VkQueryPool qpool; /* the batch's span on the GPU track, its two timestamps read back when it lands */
     u16 q0, q1;
@@ -91,15 +86,6 @@ typedef struct {
 } CsBatch;
 #define CS_PENDING 3
 static CsBatch g_pend[CS_PENDING];
-/* the current batch's dispatches' references to their logs (CsBatch.logs), and a log taken for a dispatch whose setup
-   was abandoned: no work used it, and the next dispatch takes it */
-static VkWriteLog** g_logs;
-static u32 g_nlogs, g_caplogs;
-static VkWriteLog* g_cs_spare;
-static void logs_unref(VkWriteLog** logs, u32* n) {
-    for (u32 i = 0; i < *n; i++) vk_wlog_unref(logs[i]);
-    *n = 0;
-}
 static u32 g_phead, g_ptail; /* batches put aside, landed */
 /* draws can read results on the GPU before they land (vk_compute_gpu_src): the batch signals g_vk_csem, the next
    graphics submit waits for g_vk_cs_wait_value, and the arena they read stays alive until that frame is done */
@@ -155,8 +141,6 @@ u64 vk_cs_skipped(char* why, size_t size) {
     return total;
 }
 
-/* a compute program's bytes at most: an Ounce game's run to 250 KB */
-#define CS_CODE 0x80000u
 static u8 g_cb[QMD_NUM_CONST_BUFFERS][MAX_CONST_BUFFER_BYTES];
 static u32 g_cbn[QMD_NUM_CONST_BUFFERS];
 static int cs_cb_read(u32 idx, u32 off, u32* out) {
@@ -168,8 +152,6 @@ static int cs_cb_read(u32 idx, u32 off, u32* out) {
 }
 
 static void cs_init(void) {
-    VkDescriptorPoolSize sz[VK_POOL_TYPES];
-    VkDescriptorPoolCreateInfo dci = {0};
     if (g_cpool) return;
     VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                    .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -185,12 +167,7 @@ static void cs_init(void) {
     VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &st};
     VK_OK(vkCreateSemaphore(g_vk.dev, &sci, NULL, &g_vk_csem));
     /* the dispatches of a batch: a batch that runs out lands, which resets the pool */
-    vk_pool_sizes(sz, 1024);
-    dci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dci.maxSets = 1024;
-    dci.poolSizeCount = VK_POOL_TYPES;
-    dci.pPoolSizes = sz;
-    VK_OK(vkCreateDescriptorPool(g_vk.dev, &dci, NULL, &g_dpool));
+    g_dpool = vk_desc_pool_new();
 }
 
 /* a bigger arena; only between batches, nothing points into it then */
@@ -366,34 +343,10 @@ static void cs_wait(u64 value) {
     gpu_wait_note(NULL, 0);
     __atomic_add_fetch(&g_vk_cs_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
 }
-/* a logged result's runs, gathered for vk_write_runs */
-static VkRun* g_runs;
-static u32 g_nruns, g_capruns;
-static void run_add(void* user, u32 from, u32 to) {
-    (void)user;
-    if (g_nruns == g_capruns) {
-        u32 cap = g_capruns ? g_capruns * 2 : 256;
-        VkRun* grown = realloc(g_runs, (size_t)cap * sizeof *grown);
-        if (!grown) fatal("Out of memory landing a compute result");
-        g_runs = grown;
-        g_capruns = cap;
-    }
-    g_runs[g_nruns++] = (VkRun){from, to};
-}
-/* the arena's results into guest memory, after its batch is done: of a logged one the bytes its dispatch wrote, each
-   of them and no other, its reference to the log dropped then; of another, the bytes that changed */
+/* the arena's results that changed, into guest memory, after its batch is done */
 static void cs_write_back(VmaAllocation mem, const u8* ar, const u8* org, const CsOut* out, int nout) {
     vmaInvalidateAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE);
-    for (int i = 0; i < nout; i++) {
-        if (!out[i].log) {
-            vk_write_changed(out[i].addr, ar + out[i].off, org + out[i].off, out[i].size);
-            continue;
-        }
-        g_nruns = 0;
-        vk_wlog_runs(out[i].log, out[i].part, out[i].size, run_add, NULL);
-        vk_write_runs(out[i].addr, ar + out[i].off, g_runs, g_nruns, out[i].wseen);
-        vk_wlog_unref(out[i].log);
-    }
+    for (int i = 0; i < nout; i++) vk_write_changed(out[i].addr, ar + out[i].off, org + out[i].off, out[i].size);
 }
 /* an arena whose batch has landed: draws that read it may still run (gfx), so it waits for their frame like the
    arenas draws read; one they didn't read is free now */
@@ -423,7 +376,6 @@ static void cs_land_oldest(void) {
     cs_times(b->qpool, b->q0, b->q1, b->ep);
 #endif
     cs_write_back(b->ar_mem, b->ar_ptr, b->org, b->out, b->nout);
-    logs_unref(b->logs, &b->nlogs);
     g_landing = was;
     outs_pages(b->out, b->nout, -1);
     vkResetDescriptorPool(g_vk.dev, b->dpool, 0);
@@ -455,20 +407,13 @@ static void cs_put_aside(void) {
                                           .commandPool = g_cpool,
                                           .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
                                           .commandBufferCount = 1};
-        VkDescriptorPoolSize sz[VK_POOL_TYPES];
-        VkDescriptorPoolCreateInfo dci = {0};
         VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &b->cb));
 #if defined(SNX_TRACY)
         VkQueryPoolCreateInfo qi = {
             .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 2};
         VK_OK(vkCreateQueryPool(g_vk.dev, &qi, NULL, &b->qpool));
 #endif
-        vk_pool_sizes(sz, 1024);
-        dci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        dci.maxSets = 1024;
-        dci.poolSizeCount = VK_POOL_TYPES;
-        dci.pPoolSizes = sz;
-        VK_OK(vkCreateDescriptorPool(g_vk.dev, &dci, NULL, &b->dpool));
+        b->dpool = vk_desc_pool_new();
     }
     cb = b->cb;
     dp = b->dpool;
@@ -498,16 +443,6 @@ static void cs_put_aside(void) {
 #endif
     memcpy(b->out, g_out, (size_t)g_nout * sizeof g_out[0]);
     b->nout = g_nout;
-    { /* the logs' references swap lists too: the batch's, empty since it landed, is the next one's */
-        VkWriteLog** l = b->logs;
-        u32 cap = b->caplogs;
-        b->logs = g_logs;
-        b->nlogs = g_nlogs;
-        b->caplogs = g_caplogs;
-        g_logs = l;
-        g_nlogs = 0;
-        g_caplogs = cap;
-    }
     g_phead++;
     g_ccb = cb;
     g_dpool = dp;
@@ -535,7 +470,6 @@ static void cs_land(void) {
     g_cq0 = g_cq1 = 0;
 #endif
     cs_write_back(g_ar_mem, g_ar_ptr, g_org, g_out, g_nout);
-    logs_unref(g_logs, &g_nlogs);
     outs_pages(g_out, g_nout, -1);
     /* only now: until the results are in memory, readers on other threads wait for this landing in
        vk_compute_mem_need */
@@ -702,42 +636,48 @@ typedef struct {
 static CsPipe g_cs_alloc_failed = {.failed = 1}; /* out of memory: not cached, retried */
 /* the key of a program (code, its window as cs_read_code makes it), its launch parameters and its variant, its BRX
    tables read through read; *blen: the bytes of the window the program takes */
-static u64 cs_key(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, const CsKey* k, VkCbReader read, u32* blen) {
-    u64 key = vk_shader_hash(code, CS_CODE + 80, blen, read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^ ((u64)lz << 56) ^
+static u64 cs_key(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, const CsKey* k, VkCbReader read,
+                  u32* blen) {
+    u64 key = vk_shader_hash(code, 0x10000 + 80, blen, read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^ ((u64)lz << 56) ^
               ((u64)shm << 20) ^ ((u64)k->image << 32) ^ (u64)k->tex_int * 0x9E3779B97F4A7C15ull ^
               (u64)k->tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k->image_sint * 0xA24BAED4963EE407ull ^
               (u64)k->tex_rect * 0x165667B19E3779F9ull;
+    if (shader_absolute_flow(code, 0x10000 + 80)) key ^= (u64)flow_base * 0xD6E8FEB86659FD93ull;
     for (u32 q = 0; q < SH_MAXTEX; q++) key ^= (u64)k->query[q] * (0x9E3779B97F4A7C15ull + 2 * q + 1) << (q & 15);
     return key;
 }
-static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k, VkCbReader read);
+static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k,
+                       VkCbReader read);
 /* p, made from code (blen bytes of its window), kept in the pipeline file for the next run, which makes it before the
    game asks (vk_cs_pipe_load): the window's bytes the translation reads, with the words after them that a lookahead
    past its last instruction would read, as a graphics shader's source is kept (pipeline.c) */
-static void cs_keep(const CsPipe* p, const u8* code, u32 blen, u32 lx, u32 ly, u32 lz, u32 shm, const CsKey* k) {
-    const u32 launch[4] = {lx, ly, lz, shm};
+static void cs_keep(const CsPipe* p, const u8* code, u32 blen, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm,
+                    const CsKey* k) {
+    const u32 launch[5] = {lx, ly, lz, shm, flow_base};
     u32 n = ((blen + 7u) & ~7u) + 64u;
-    if (n > CS_CODE + 80) n = CS_CODE + 80;
+    if (n > 0x10000 + 80) n = 0x10000 + 80;
     vk_pf_cspipe(p->key, launch, &p->cbr, k, sizeof *k, code, n);
 }
-static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k) {
+static CsPipe* cs_pipe(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k) {
     u32 blen;
-    u64 key = cs_key(code, lx, ly, lz, shm, &k, cs_cb_read, &blen);
+    u64 key = cs_key(code, flow_base, lx, ly, lz, shm, &k, cs_cb_read, &blen);
     CsPipe* p = g_csp[key & 255];
     while (p && (p->key != key || !vk_cb_reads_hold(&p->cbr, cs_cb_read))) p = p->next;
     if (p) return p;
-    p = cs_make(code, blen, key, lx, ly, lz, shm, k, cs_cb_read);
+    p = cs_make(code, blen, key, flow_base, lx, ly, lz, shm, k, cs_cb_read);
     if (!p) return &g_cs_alloc_failed;
     p->next = g_csp[key & 255];
     g_csp[key & 255] = p;
-    if (!p->failed) cs_keep(p, code, blen, lx, ly, lz, shm, &k);
+    if (!p->failed) cs_keep(p, code, blen, flow_base, lx, ly, lz, shm, &k);
     return p;
 }
 /* the pipeline of a program, made but not in the table: NULL when out of memory */
-static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k, VkCbReader read) {
+static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k,
+                       VkCbReader read) {
     CsPipe* p = calloc(1, sizeof *p);
     if (!p) return NULL;
     p->key = key;
+    p->si.flow_base = flow_base;
     p->si.cs_local[0] = lx;
     p->si.cs_local[1] = ly;
     p->si.cs_local[2] = lz;
@@ -747,7 +687,7 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 lx, u32 ly, u32 lz
        otherwise: an access past the array would read and write another word */
     u32 shared_max = g_vk.props.limits.maxComputeSharedMemorySize, shared, reach;
     if (shm > shared_max) {
-        if (!shader_shared_fit(code, CS_CODE + 80, p->si.cs_local, shm, shared_max, &shared, &reach)) {
+        if (!shader_shared_fit(code, 0x10000 + 80, p->si.cs_local, shm, shared_max, &shared, &reach)) {
             char upto[48];
             if (reach == SH_SHARED_ANY)
                 snprintf(upto, sizeof upto, "an address it can't bound");
@@ -772,9 +712,9 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 lx, u32 ly, u32 lz
     p->si.tex_rect_mask = k.tex_rect;
     memcpy(p->si.tex_query_hint, k.query, sizeof p->si.tex_query_hint);
     const char* corpus = vk_corpus_dir();
-    if (corpus) shader_corpus_save(corpus, code, blen, CS_CODE + 80, ST_CS, &p->si, key);
+    if (corpus) shader_corpus_save(corpus, code, blen, 0x10000 + 80, ST_CS, &p->si, key);
     size_t nw = 0;
-    u32* spv = vk_translate_spirv(code, CS_CODE + 80, ST_CS, &p->si, &nw, read, &p->cbr);
+    u32* spv = vk_translate_spirv(code, 0x10000 + 80, ST_CS, &p->si, &nw, read, &p->cbr);
     if (!spv || p->si.unsupported) {
         p->failed = 1;
         LOG("vulkan: compute %016llx not translated: %s\n", (unsigned long long)key,
@@ -820,20 +760,23 @@ static void cs_free(CsPipe* p) {
     free(p->cbr.r);
     free(p);
 }
-/* the pipelines the pipeline file's reading thread made (vk_cs_pipe_load), for the next dispatch to put in the table */
 static int cs_reads_same(const VkCbReads* a, const VkCbReads* b);
-static PMutex g_cs_loaded_lock = PMUTEX_INIT;
-static CsPipe* g_cs_loaded;
-static int g_cs_any_loaded;
+/* the compute pipelines of the pipeline file, made on its reading thread (vk_cs_pipe_load) */
+static struct {
+    PMutex lock;             /* list's */
+    CsPipe* list;            /* made, for the next dispatch to put in the table (cs_take_loaded) */
+    int any;                 /* list holds one: read by every dispatch without the lock, written rarely */
+    const VkCbReads* replay; /* the reads of the one being made, which translating it again answers from */
+} g_cs_load = {.lock = PMUTEX_INIT};
 /* vk_lock held: the loaded pipelines in the table, but those a dispatch made meanwhile (a game started without waiting
    for the shaders) */
 static void cs_take_loaded(void) {
-    if (!__atomic_load_n(&g_cs_any_loaded, __ATOMIC_ACQUIRE)) return;
-    pm_lock(&g_cs_loaded_lock);
-    CsPipe* list = g_cs_loaded;
-    g_cs_loaded = NULL;
-    __atomic_store_n(&g_cs_any_loaded, 0, __ATOMIC_RELAXED);
-    pm_unlock(&g_cs_loaded_lock);
+    if (!__atomic_load_n(&g_cs_load.any, __ATOMIC_ACQUIRE)) return;
+    pm_lock(&g_cs_load.lock);
+    CsPipe* list = g_cs_load.list;
+    g_cs_load.list = NULL;
+    __atomic_store_n(&g_cs_load.any, 0, __ATOMIC_RELAXED);
+    pm_unlock(&g_cs_load.lock);
     while (list) {
         CsPipe *p = list, *q;
         list = p->next;
@@ -846,27 +789,27 @@ static void cs_take_loaded(void) {
         g_csp[p->key & 255] = p;
     }
 }
-/* the reads a kept pipeline was translated with, which translating it again answers from (vk_cs_pipe_load's thread
+/* a read of a kept pipeline's translation, answered from the reads it was translated with (vk_cs_pipe_load's thread
    alone). A read it didn't make answers that the buffer isn't bound; a dispatch whose buffers hold more then makes its
    own (cs_pipe checks every read) */
-static const VkCbReads* g_cs_replay;
 static int cs_replay_read(u32 idx, u32 off, u32* out) {
-    for (u32 i = 0; i < g_cs_replay->n; i++)
-        if (g_cs_replay->r[i].idx == idx && g_cs_replay->r[i].off == off) {
-            *out = g_cs_replay->r[i].v;
-            return (int)g_cs_replay->r[i].ok;
+    const VkCbReads* r = g_cs_load.replay;
+    for (u32 i = 0; i < r->n; i++)
+        if (r->r[i].idx == idx && r->r[i].off == off) {
+            *out = r->r[i].v;
+            return (int)r->r[i].ok;
         }
     return 0;
 }
 static int cs_reads_same(const VkCbReads* a, const VkCbReads* b) {
     return a->n == b->n && (!a->n || !memcmp(a->r, b->r, a->n * sizeof *a->r));
 }
-int vk_cs_pipe_load(const u32 launch[4], const u32* cbr, u32 ncbr, const u8* vkey, u32 nkey, const u8* code,
-                    u32 ncode, int record) {
+int vk_cs_pipe_load(const u32 launch[5], const u32* cbr, u32 ncbr, const u8* vkey, u32 nkey, const u8* code, u32 ncode,
+                    int record) {
     CsKey k;
-    if (nkey != sizeof k || ncode > CS_CODE + 80) return 0;
+    if (nkey != sizeof k || ncode > 0x10000 + 80) return 0;
     memcpy(&k, vkey, sizeof k);
-    u8* window = calloc(1, CS_CODE + 80);
+    u8* window = calloc(1, 0x10000 + 80);
     VkCbRead* reads = ncbr ? malloc(ncbr * sizeof *reads) : NULL;
     if (!window || (ncbr && !reads)) {
         free(window);
@@ -877,20 +820,20 @@ int vk_cs_pipe_load(const u32 launch[4], const u32* cbr, u32 ncbr, const u8* vke
     if (ncbr) memcpy(reads, cbr, ncbr * sizeof *reads);
     VkCbReads replay = {reads, ncbr};
     u32 blen;
-    g_cs_replay = &replay;
-    u64 key = cs_key(window, launch[0], launch[1], launch[2], launch[3], &k, cs_replay_read, &blen);
-    CsPipe* p = cs_make(window, blen, key, launch[0], launch[1], launch[2], launch[3], k, cs_replay_read);
-    g_cs_replay = NULL;
+    g_cs_load.replay = &replay;
+    u64 key = cs_key(window, launch[4], launch[0], launch[1], launch[2], launch[3], &k, cs_replay_read, &blen);
+    CsPipe* p = cs_make(window, blen, key, launch[4], launch[0], launch[1], launch[2], launch[3], k, cs_replay_read);
+    g_cs_load.replay = NULL;
     int made = p && !p->failed;
     if (made) {
-        if (record) cs_keep(p, window, blen, launch[0], launch[1], launch[2], launch[3], &k);
+        if (record) cs_keep(p, window, blen, launch[4], launch[0], launch[1], launch[2], launch[3], &k);
         /* queued for the next dispatch to put in the table (cs_take_loaded): this thread holds the file's lock, which
            a dispatch recording a pipeline takes under vk_lock, so it can't take vk_lock itself */
-        pm_lock(&g_cs_loaded_lock);
-        p->next = g_cs_loaded;
-        g_cs_loaded = p;
-        __atomic_store_n(&g_cs_any_loaded, 1, __ATOMIC_RELEASE);
-        pm_unlock(&g_cs_loaded_lock);
+        pm_lock(&g_cs_load.lock);
+        p->next = g_cs_load.list;
+        g_cs_load.list = p;
+        __atomic_store_n(&g_cs_load.any, 1, __ATOMIC_RELEASE);
+        pm_unlock(&g_cs_load.lock);
         p = NULL;
     }
     if (p) cs_free(p);
@@ -965,23 +908,23 @@ static int cs_code_unchanged(u64 pa, u32 len, u64 gw, u32 wseen) {
 /* Both the initial translation and format specialization use the same bounded program. Returns the bytes of guest
    memory it read from pa */
 static u32 cs_read_code(u64 pa, u8* dst) {
-    u32 code_size = CS_CODE;
+    u32 code_size = 0x10000;
     /* NVN puts a header with its program size 0x100 bytes before compute code. Bounded by it, a BRX whose
        targets aren't resolved can't scan into the unrelated programs that follow in the same window. Other
        clients keep the whole window. */
     u8 header[8];
     if (pa >= 0x100 && gmem_read_code_cpu(pa - 0x100, header, 8) == 8) {
         u32 magic = snx_ld_le32(header), declared = snx_ld_le32(header + 4);
-        if (magic == 0x12345679 && declared >= 0x80 && declared <= CS_CODE && !(declared & 7) &&
+        if (magic == 0x12345679 && declared >= 0x80 && declared <= 0x10000 && !(declared & 7) &&
             gmem_host(pa, declared))
             code_size = declared;
     }
-    memset(dst, 0, CS_CODE + 80);
+    memset(dst, 0, 0x10000 + 80);
     /* what the GPU holds in the window lands only when the program may reach it (gmem_code_cut) */
     u64 cpu = gmem_read_code_cpu(pa, dst + 80, code_size);
     if (cpu < code_size) {
         u32 len;
-        vk_shader_hash(dst, CS_CODE + 80, &len, cs_cb_read);
+        vk_shader_hash(dst, 0x10000 + 80, &len, cs_cb_read);
         if (gmem_code_cut(len, 80 + cpu, 80 + code_size)) gmem_read_code(pa, dst + 80, code_size);
     }
     return code_size;
@@ -1061,37 +1004,6 @@ static void res_unref_all(VkOwnRes** made, int n) {
         }
 }
 
-/* Whether a program that logs its writes reads and writes its storage buffers in the GPU mirror (mirror.c): each
-   one run of guest memory, at an offset the device binds a storage buffer at and a multiple of 16 (so a store's mask
-   bits are in one word), and the mask over all of them one binding. *c0: the guest address the mask's binding starts
-   at; *mrange: its bytes. cpu[i]: each buffer's guest address */
-static int mirror_plan(const CsPipe* p, int ng, const u64* sa, const u32* ss, u64* cpu, u64* c0, u64* mrange) {
-    u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment, lo = ~0ull, hi = 0;
-    if (!p->si.gbuf_marks || !vk_mirror_on()) return 0;
-    if (align < 16) align = 16;
-    for (int i = 0; i < ng; i++) {
-        cpu[i] = 0;
-        if (!sa[i]) continue;
-        if (gmmu_run(sa[i], ss[i], &cpu[i]) != ss[i] || (cpu[i] & (align - 1))) return 0;
-        if (!(p->si.gbuf_marks >> i & 1)) continue;
-        if (cpu[i] < lo) lo = cpu[i];
-        if (cpu[i] + ss[i] > hi) hi = cpu[i] + ss[i];
-    }
-    if (lo == ~0ull) lo = hi = 0;
-    *c0 = lo & ~(align * 8 - 1); /* the mask's binding at a byte the device binds at */
-    *mrange = ((hi - *c0 + 7) / 8 + 3) & ~3ull;
-    if (!*mrange) *mrange = 4;
-    return hi - *c0 <= 0xFFFFFFF0ull && *mrange <= g_vk.props.limits.maxStorageBufferRange;
-}
-/* the results other than the mirror's pending over [gva, gva + len) land, as a read of guest memory has them: the
-   mirror's own are where it reads them */
-static void mirror_need_others(u64 gva, u64 len) {
-    if (g_cs_any) vk_compute_mem_need(gva, len);
-    vk_buf_mem_need(gva, len);
-    vk_gfx_image_mem_need(gva, len);
-    vk_release_need(gva, len);
-}
-
 void vk_dispatch(const DispatchState* d) {
     u32 gx = d->grid[0], gy = d->grid[1], gz = d->grid[2], lx = d->block[0], ly = d->block[1], lz = d->block[2],
         shm = d->shared;
@@ -1159,7 +1071,7 @@ void vk_dispatch(const DispatchState* d) {
         }
     }
     if (!same || fe->shader_generation != g_vk.shader_generation || fe->epoch != epoch) {
-        static u8 code_buf[CS_CODE + 80]; /* compute programs have no header: 80 zero bytes stand in for one */
+        static u8 code_buf[0x10000 + 80]; /* compute programs have no header: 80 zero bytes stand in for one */
         CsKey unkeyed = {0};
         u32 wseen = vk_ww_now();
         u64 gw = gpu_mem_generation(); /* both before the bytes are read */
@@ -1170,7 +1082,7 @@ void vk_dispatch(const DispatchState* d) {
         /* same window and cbuf reads: same program, so skip vk_shader_hash's walk (5% of one game's GPU thread) */
         u64 h = vk_hash(code_buf, sizeof code_buf);
         if (!same || h != fe->code_hash) {
-            p = cs_pipe(code_buf, lx, ly, lz, shm, unkeyed);
+            p = cs_pipe(code_buf, (u32)(pa - 80), lx, ly, lz, shm, unkeyed);
             fe->code_hash = h;
         }
         fe->addr = pa;
@@ -1230,9 +1142,9 @@ void vk_dispatch(const DispatchState* d) {
             p->keyed->si.tex_sint_mask != ck.tex_sint || (p->keyed->si.rt_sint_mask >> 8) != ck.image_sint ||
             p->keyed->si.tex_rect_mask != ck.tex_rect ||
             memcmp(p->keyed->si.tex_query_hint, ck.query, sizeof ck.query) != 0) {
-            static u8 keyed_code[CS_CODE + 80];
+            static u8 keyed_code[0x10000 + 80];
             cs_read_code(pa, keyed_code);
-            p->keyed = cs_pipe(keyed_code, lx, ly, lz, shm, ck);
+            p->keyed = cs_pipe(keyed_code, (u32)(pa - 80), lx, ly, lz, shm, ck);
         }
         p = p->keyed;
     }
@@ -1247,21 +1159,21 @@ void vk_dispatch(const DispatchState* d) {
         g_cs_skips[CS_SKIP_FEATURE]++;
         return;
     }
-    /* storage buffers: {address, size} in constant buffer 0, or a bare address in the constant buffer the key names
-       (SH_GBUF_*) */
+    /* storage buffers: {address, size} in constant buffer 0 */
     u64 sa[16];
     u32 ss[16];
     int ng = p->si.ngbuf > 16 ? 16 : p->si.ngbuf;
     u64 need = 0;
     for (int i = 0; i < ng; i++) {
-        u32 v[3] = {0, 0, 0}, bank = SH_GBUF_BANK(p->si.gbuf_cbuf_off[i]), off = SH_GBUF_OFFSET(p->si.gbuf_cbuf_off[i]);
-        for (u32 w = 0; w < (bank ? 2u : 3u); w++) cs_cb_read(bank, off + 4 * w, &v[w]);
+        u32 v[3] = {0, 0, 0};
+        cs_cb_read(0, p->si.gbuf_cbuf_off[i], &v[0]);
+        cs_cb_read(0, p->si.gbuf_cbuf_off[i] + 4, &v[1]);
+        cs_cb_read(0, p->si.gbuf_cbuf_off[i] + 8, &v[2]);
         ss[i] = vk_gbuf_desc(ST_CS, p->si.gbuf_cbuf_off[i], v, &sa[i]);
         need += ss[i] + vk_stage_align();
     }
     for (int i = 0; i < 8; i++)
         if (p->si.cbuf_mask & (1u << i)) need += g_cbn[i] + vk_stage_align();
-    if (p->si.root_max) need += SH_ROOT_BYTES + vk_stage_align();
     /* buffer images: their headers from the compute engine's texture pool, handles from its texture bank */
     for (i = 0; i < p->si.nimg && i < 8; i++) {
         u64 tic_base;
@@ -1290,11 +1202,6 @@ void vk_dispatch(const DispatchState* d) {
     int gfx = vk_uma() || p->si.ntex > 0 || p->si.nimg > 0, overlap = 0, retries = 0;
     /* so does an indirect one: its grid is read where the graphics queue's buffers hold guest memory (vk_buf_get) */
     gfx = gfx || d->indirect != 0;
-    /* and one whose storage buffers are in the GPU mirror, which the graphics queue's submits bring up to date and
-       land (mirror.c): an Ounce program's, each all of the memory mapped from its address, up to 16 MiB */
-    u64 mcpu[16], mc0 = 0, mrange = 0;
-    const int mir = mirror_plan(p, ng, sa, ss, mcpu, &mc0, &mrange);
-    gfx = gfx || mir;
     VkBuffer grid_buf = VK_NULL_HANDLE, cb0_buf = VK_NULL_HANDLE;
     u64 grid_off = 0, cb0_off = 0;
     u32 cb0_range = 0;
@@ -1434,49 +1341,6 @@ rebind:
                                            .pBufferInfo = &bi[nw]};
             nw++;
         }
-    if (p->si.root_max) { /* an Ounce program's root tables, the bytes it reads (SNX_VKB_ROOT) */
-        u32 range = (p->si.root_max + 15u) & ~15u;
-        VkBuffer rbuf = g_ar;
-        u64 o;
-        u8* dst;
-        if (deferred) {
-            dst = vk_stage(range, vk_stage_align(), &rbuf, &o);
-            if (!dst) {
-                g_cs_skips[CS_SKIP_RESOURCES]++;
-                return;
-            }
-        } else {
-            o = arena_alloc(range);
-            dst = g_ar_ptr + o;
-        }
-        memcpy(dst, d->root, range);
-        bi[nw] = (VkDescriptorBufferInfo){rbuf, o, range};
-        w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                       .dstSet = set,
-                                       .dstBinding = SNX_VKB_ROOT,
-                                       .descriptorCount = 1,
-                                       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                       .pBufferInfo = &bi[nw]};
-        nw++;
-    }
-    /* without the mirror, the program's write log, from the pool, a mask for each global buffer to the last it logs:
-       each result it writes lands the bytes the log gives. One a setup abandoned is the next one's, unless its parts
-       don't fit */
-    VkWriteLog* log = NULL;
-    const u32 parts = p->si.gbuf_marks ? 32u - snx_clz32(p->si.gbuf_marks) : 0;
-    if (parts && !mir) {
-        if (g_cs_spare && vk_wlog_size(g_cs_spare) != (u64)parts * SH_WLOG_WORDS * 4) {
-            vk_wlog_put(g_cs_spare);
-            g_cs_spare = NULL;
-        }
-        if (!g_cs_spare) g_cs_spare = vk_wlog_get(parts);
-        if (!g_cs_spare) {
-            g_cs_skips[CS_SKIP_RESOURCES]++;
-            return;
-        }
-        log = g_cs_spare;
-    }
-    u32 wseen = vk_ww_now(); /* before the inputs are read */
     u64 so[16];
     VkBuffer bi_buf[16];
     int chained = 0;
@@ -1486,21 +1350,7 @@ rebind:
         int alias = -1;
         for (int k = 0; k < i && resident && alias < 0; k++)
             if (sa[k] && sa[k] == sa[i] && ss[k] == ss[i]) alias = k; /* one range bound twice names one buffer */
-        if (mir) {
-            /* in the mirror, brought up to date: what other work has pending there lands first */
-            int ok;
-            if (sa[i]) {
-                mirror_need_others(sa[i], ss[i]);
-                ok = vk_mirror_slice(sa[i], ss[i], &sbuf, &o);
-            } else
-                ok = vk_buf_copy(0, ss[i], &sbuf, &o);
-            if (!ok) {
-                vk_buf_writable_abort();
-                g_cs_skips[CS_SKIP_STORAGE_BUFFER]++;
-                return;
-            }
-            so[i] = o;
-        } else if (resident && alias >= 0) {
+        if (resident && alias >= 0) {
             sbuf = bi_buf[alias];
             o = so[alias];
             so[i] = o;
@@ -1514,12 +1364,9 @@ rebind:
         } else if (deferred) {
             /* written: a pending result of its own, from its original bytes; read: the bytes draws would read,
                which may be an earlier draw's or dispatch's result on the GPU */
-            int ok = (p->si.gbuf_wmask >> i) & 1
-                         ? log && (p->si.gbuf_marks >> i & 1)
-                               ? vk_buf_copy_writable_logged(sa[i], ss[i], &sbuf, &o, 1, log, (u32)i)
-                               : vk_buf_copy_writable(sa[i], ss[i], &sbuf, &o, 1)
-                     : sa[i] ? vk_buf_get_strict(sa[i], ss[i], &sbuf, &o)
-                             : vk_buf_copy(0, ss[i], &sbuf, &o);
+            int ok = (p->si.gbuf_wmask >> i) & 1 ? vk_buf_copy_writable(sa[i], ss[i], &sbuf, &o, 1)
+                     : sa[i]                     ? vk_buf_get_strict(sa[i], ss[i], &sbuf, &o)
+                                                 : vk_buf_copy(0, ss[i], &sbuf, &o);
             if (!ok) {
                 vk_buf_writable_abort();
                 g_cs_skips[CS_SKIP_STORAGE_BUFFER]++;
@@ -1541,47 +1388,6 @@ rebind:
         w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
                                        .dstBinding = SNX_VKB_SSBO + i,
-                                       .descriptorCount = 1,
-                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                       .pBufferInfo = &bi[nw]};
-        nw++;
-    }
-    if (log || mir) {
-        /* the mask its stores log their bytes in, and each logged buffer's base in it and length (SNX_VKB_MBASE) */
-        u32 mb[SH_MB_WORDS] = {0};
-        for (int i = 0; i < ng && i < 16; i++)
-            if ((p->si.gbuf_marks >> i & 1) && sa[i]) {
-                mb[i] = mir ? (u32)(mcpu[i] - mc0) : (u32)i * SH_WLOG_SLOT;
-                mb[16 + i] = ss[i];
-            }
-        VkBuffer ub = g_ar;
-        u64 uo;
-        u8* dst;
-        if (deferred) {
-            dst = vk_stage(sizeof mb, vk_stage_align(), &ub, &uo);
-            if (!dst) {
-                vk_buf_writable_abort();
-                g_cs_skips[CS_SKIP_RESOURCES]++;
-                return;
-            }
-        } else {
-            uo = arena_alloc(sizeof mb);
-            dst = g_ar_ptr + uo;
-        }
-        memcpy(dst, mb, sizeof mb);
-        bi[nw] = (VkDescriptorBufferInfo){ub, uo, sizeof mb};
-        w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                       .dstSet = set,
-                                       .dstBinding = SNX_VKB_MBASE,
-                                       .descriptorCount = 1,
-                                       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                       .pBufferInfo = &bi[nw]};
-        nw++;
-        bi[nw] = mir ? (VkDescriptorBufferInfo){vk_mirror_mask(), mc0 / 8, mrange}
-                     : (VkDescriptorBufferInfo){vk_wlog_buffer(log), 0, vk_wlog_size(log)};
-        w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                       .dstSet = set,
-                                       .dstBinding = SNX_VKB_WPAGES,
                                        .descriptorCount = 1,
                                        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                        .pBufferInfo = &bi[nw]};
@@ -1804,13 +1610,8 @@ rebind:
     /* the outputs, once every input is read (an input can alias another storage buffer's output) */
     for (int i = 0; i < ng && !deferred; i++)
         if (((p->si.gbuf_wmask >> i) & 1) && sa[i]) {
-            /* a logged result needs no original bytes: its log gives what its dispatch wrote */
-            VkWriteLog* l = log && (p->si.gbuf_marks >> i & 1) ? log : NULL;
-            if (l)
-                vk_wlog_ref(l);
-            else
-                memcpy(g_org + so[i], g_ar_ptr + so[i], ss[i]);
-            g_out[g_nout++] = (CsOut){sa[i], so[i], ss[i], l, l ? (u32)i : 0, wseen};
+            memcpy(g_org + so[i], g_ar_ptr + so[i], ss[i]);
+            g_out[g_nout++] = (CsOut){sa[i], so[i], ss[i]};
             pend_add(&g_pages, sa[i], ss[i], 1);
         }
     /* buffer images land like storage buffers: only the bytes the dispatch changed are written back */
@@ -1823,7 +1624,6 @@ rebind:
             g_out[g_nout].addr = bimg[i].gva;
             g_out[g_nout].off = bufimg_off[i];
             g_out[g_nout].size = bimg[i].bytes;
-            g_out[g_nout].log = NULL;
             g_nout++;
             pend_add(&g_pages, bimg[i].gva, bimg[i].bytes, 1);
         }
@@ -1876,41 +1676,12 @@ rebind:
         rec_CmdCopyBuffer(cb, grid_buf, cb0_buf, 1, &gc);
         vk_all_barrier(cb);
     }
-    if (mir) { /* after the earlier programs' writes of the mirror and its mask, which it may read or write again */
-        VkMemoryBarrier2 mmb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                                .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
-        VkDependencyInfo mdi = {
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mmb};
-        rec_CmdPipelineBarrier2(cb, &mdi);
-    }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk.cs_playout, 0, 1, &set, 0, NULL);
-    vk_gpuprof_tag(p->key > VK_PROF_BC7 ? p->key : VK_PROF_BC7 + 1); /* the program's, for the GPU profile */
     if (d->indirect)
         rec_CmdDispatchIndirect(cb, grid_buf, grid_off);
     else
         rec_CmdDispatch(cb, gx, gy, gz);
-    if (mir) /* its writes pending until the submit's harvest lands them */
-        for (int i = 0; i < ng; i++)
-            if ((p->si.gbuf_marks >> i & 1) && sa[i]) vk_mirror_wrote(mcpu[i], ss[i]);
-    if (log) { /* recorded: the dispatch's reference goes with the work that writes the log */
-        g_cs_spare = NULL;
-        if (gfx || resident)
-            vk_buf_log_retire(log);
-        else {
-            if (g_nlogs == g_caplogs) {
-                u32 cap = g_caplogs ? g_caplogs * 2 : 64;
-                VkWriteLog** grown = realloc(g_logs, (size_t)cap * sizeof *grown);
-                if (!grown) fatal("Out of memory keeping a write log");
-                g_logs = grown;
-                g_caplogs = cap;
-            }
-            g_logs[g_nlogs++] = log;
-        }
-    }
     if (resident) {
         vk_all_barrier(cb); /* its writes before what reads them next */
         for (int i = 0; i < ng; i++) {
@@ -1960,8 +1731,8 @@ rebind:
         vk_finish();
         vmaInvalidateAllocation(g_vk.vma, g_ar_mem, 0, VK_WHOLE_SIZE);
         g_landing = 1;
-        cs_write_back(g_ar_mem, g_ar_ptr, g_org, g_out, g_nout);
-        logs_unref(g_logs, &g_nlogs);
+        for (int i = 0; i < g_nout; i++)
+            vk_write_changed(g_out[i].addr, g_ar_ptr + g_out[i].off, g_org + g_out[i].off, g_out[i].size);
         outs_pages(g_out, g_nout, -1);
         for (i = 0; i < p->si.nimg && i < 8; i++)
             if (bufimg_view[i]) vkDestroyBufferView(g_vk.dev, bufimg_view[i], NULL);

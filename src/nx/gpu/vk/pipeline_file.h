@@ -5,7 +5,7 @@
 /* Not in vk.h: the lock below brings host.h, which includes <windows.h> on Windows, whose macros (far, near) break
    the renderer's other files */
 #include "common/cpu/aarch64/cpu.h"
-#include "common/filesystem/host.h" /* PMutex */
+#include "common/filesystem/host.h"   /* PMutex */
 #include "nx/runtime/platform/plat.h" /* PFileMap */
 #include "nx/gpu/shader/shader.h"
 #include <stdio.h>
@@ -46,15 +46,15 @@
 /* PFile.pack: pf_open's file packs its records into units, pf_open_mapped's each shader record alone; 0 for neither */
 #define PF_PACK_UNITS   1
 #define PF_PACK_SHADERS 2
-#define PF_MAX     (256u << 20) /* past this size nothing more is appended */
-#define PF_REC     16           /* a record's header: type, payload bytes, check */
+#define PF_MAX          (256u << 20) /* past this size nothing more is appended */
+#define PF_REC          16           /* a record's header: type, payload bytes, check */
 /* a shader record: this, then ncbr constant buffer reads ({idx, off, ok, v}, VkCbRead's words) and nspv SPIR-V
    words. Everything vk_shader_get keys a shader by and checks a found one with */
-#define PF_SHIPPED 1u /* a PfShader's flags: a program the game ships, translated before a draw asked for it */
+#define PF_SHIPPED      1u /* a PfShader's flags: a program the game ships, translated before a draw asked for it */
 typedef struct {
     u64 hash, qh, qh_a;
     u32 stage, clen, clen_a, ncbr, nspv, flags;
-    u32 mask[20];
+    u32 mask[24];
     ShaderInfo si;
 } PfShader;
 /* a source record: this, then ncbr constant buffer reads ({idx, off, ok, v}), ncode bytes of the program as the
@@ -64,7 +64,7 @@ typedef struct {
 typedef struct {
     u64 hash, qh, qh_a;
     u32 stage, clen, clen_a, ncbr, ncode, flags;
-    u32 mask[20];
+    u32 mask[24];
 } PfSource;
 /* a pipeline record: this, then keylen bytes of the PipeKey with its module handles zeroed. sh: the shaders' record
    numbers (from 1; 0 for none) in the order vs, tcs, tes, gs, fs, and check: those records' checks */
@@ -81,7 +81,8 @@ typedef struct {
 typedef struct {
     u64 key;             /* compute.c's, of the program, its launch parameters and the variant */
     u32 lx, ly, lz, shm; /* the block's threads, and its shared memory bytes */
-    u32 ncbr, nkey, ncode, pad;
+    u32 flow_base;       /* the program's address less 80, which a program of absolute branches is translated at */
+    u32 ncbr, nkey, ncode;
 } PfCsPipe;
 typedef struct {
     u64 module, check; /* module 0: a free slot */
@@ -92,14 +93,14 @@ typedef struct {
     FILE* f; /* appended to; NULL once nothing more is (an error, or the file reached max), and pf_open_mapped's file
                 but between pf_unseal and pf_seal */
     char path[1400]; /* f's: what a failed write names, and what pf_seal maps */
-    u64 size; /* the file's bytes */
-    u64 max;  /* past this size nothing more is appended: PF_MAX for 0 */
-    int kept; /* pf_open_mapped's file that is there but couldn't be mapped or rewritten: never appended to */
-    int pack; /* how what is appended is packed, set before the file is opened: PF_PACK_UNITS for pf_open's file,
+    u64 size;        /* the file's bytes */
+    u64 max;         /* past this size nothing more is appended: PF_MAX for 0 */
+    int kept;        /* pf_open_mapped's file that is there but couldn't be mapped or rewritten: never appended to */
+    int pack;        /* how what is appended is packed, set before the file is opened: PF_PACK_UNITS for pf_open's file,
                  PF_PACK_SHADERS for pf_open_mapped's, 0 for none */
-    u64 open; /* pf_open's file with PF_PACK_UNITS: where the open unit's records start, packed once they reach
+    u64 open;        /* pf_open's file with PF_PACK_UNITS: where the open unit's records start, packed once they reach
                  PF_UNIT_BYTES. 0 when nothing is packed into units */
-    PFileMap view; /* pf_open_mapped's: the file as it was mapped, its records read from there */
+    PFileMap view;   /* pf_open_mapped's: the file as it was mapped, its records read from there */
     /* pf_open's files only: the shader records in it, and each module with a record, its number and check, by open
        addressing on the handle (cap a power of two), for pf_pipe */
     u32 nsh;

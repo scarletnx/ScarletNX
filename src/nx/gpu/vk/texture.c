@@ -7,6 +7,7 @@
    they have stayed the same. */
 #include "common/utilities/bits.h"
 #include "nx/gpu/texture/descriptor.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
@@ -526,79 +527,131 @@ static int level_upload_pitch(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u6
    than g_vk.alloc_cap (memory.c) */
 #define TEX_BAND (64ull << 20)
 
-static u64 g_tex_uploads, g_tex_upload_bytes; /* for the stats line */
+/* for the stats line: every load and its bytes, and those of some blocks alone (tex_patch) */
+static struct {
+    u64 uploads, bytes, partial, partial_bytes;
+} g_tex_loads;
 void vk_tex_stats(u64* uploads, u64* bytes) {
-    *uploads = g_tex_uploads;
-    *bytes = g_tex_upload_bytes;
+    *uploads = g_tex_loads.uploads;
+    *bytes = g_tex_loads.bytes;
 }
-/* the bricks of a texture whose image has memory only where it is mapped (resident_image) that memory maps any byte of */
+void vk_tex_partial_stats(u64* loads, u64* bytes) {
+    *loads = g_tex_loads.partial;
+    *bytes = g_tex_loads.partial_bytes;
+}
+/* A texture whose image has memory only where it is mapped (resident_image): its pages, as vk_image_resident takes
+   them, are the bricks of each layer, then its mip tails */
+static u32 resident_pages(const Surf* t) { return t->layers * t->bricks + t->tails; }
+/* the bytes of a layer's bricks, and of all its levels */
+static u64 resident_bricks_end(const Surf* t) { return (u64)t->bricks * t->brick_bytes; }
+static u64 resident_levels_end(const Surf* t) { return t->size - (u64)(t->layers - 1) * t->layer_size; }
+/* the page byte o of such a texture lies in: a brick, or the mip tail of its layer's levels from tail_first on; -1 in
+   the padding after a layer's levels. *end gets where that page's bytes there end */
+static i64 resident_page(const Surf* t, u64 o, u64* end) {
+    const u64 layer = o / t->layer_size, in = o % t->layer_size, base = layer * t->layer_size;
+    if (in < resident_bricks_end(t)) {
+        *end = base + (in / t->brick_bytes + 1) * t->brick_bytes;
+        return (i64)(layer * t->bricks + in / t->brick_bytes);
+    }
+    if (in < resident_levels_end(t)) {
+        *end = base + resident_levels_end(t);
+        return (i64)((u64)t->layers * t->bricks + (t->tails == 1 ? 0 : layer));
+    }
+    *end = base + t->layer_size;
+    return -1;
+}
+/* the pages of such a texture that memory maps any byte of */
 typedef struct {
+    const Surf* t;
     u8* want;
-    u64 gva, brick_bytes;
-    u32 bricks;
 } Mapped;
-static void brick_mapped(void* ctx, u64 gva, u64 cpu, u64 n) {
+static void page_mapped(void* ctx, u64 gva, u64 cpu, u64 n) {
     Mapped* m = ctx;
+    u64 end;
     (void)cpu;
-    for (u64 b = (gva - m->gva) / m->brick_bytes; b <= (gva + n - 1 - m->gva) / m->brick_bytes && b < m->bricks; b++)
-        m->want[b] = 1;
+    for (u64 o = gva - m->t->gva; o < gva + n - m->t->gva; o = end) {
+        i64 k = resident_page(m->t, o, &end);
+        if (k >= 0) m->want[k] = 1;
+    }
 }
-/* such a texture's bricks bound where memory maps any of their bytes and released where it maps none
-   (vk_image_resident: what isn't bound reads as zeros, as the holes do), the ones bound set in want (t->bricks of
-   them, zeroed). 1 when they all are */
+/* such a texture's pages bound where memory maps any of their bytes and released where it maps none
+   (vk_image_resident: what isn't bound reads as zeros, as the holes do), the ones bound set in want (resident_pages of
+   them, zeroed; 2 where the memory is new). 1 when they all are */
 static int resident_bind_mapped(Surf* t, u8* want) {
-    Mapped m = {want, t->gva, t->brick_bytes, t->bricks};
-    u32 n = 0;
+    Mapped m = {t, want};
+    u32 n = 0, pages = resident_pages(t);
     u64 bytes;
-    gmmu_pieces(t->gva, t->size, brick_mapped, &m);
-    for (u32 i = 0; i < t->bricks; i++) n += want[i];
+    gmmu_pieces(t->gva, t->size, page_mapped, &m);
+    for (u32 i = 0; i < pages; i++) n += want[i];
+    /* room made under the budget, a mip tail counted as a brick */
     if ((u64)n * t->brick_bytes > t->bytes) vk_mem_trim((u64)n * t->brick_bytes - t->bytes, 0);
-    int ok = vk_image_resident(t->img, want, t->bricks, &bytes);
+    int ok = vk_image_resident(t->img, want, pages, &bytes);
     vk_surf_bytes(t, bytes);
     return ok;
 }
-/* such a texture's upload: its bricks bound where it is mapped (resident_bind_mapped), then each bound brick staged as
-   it is and deswizzled on the GPU as a surface of one row of blocks, into its place in the image */
+static int tex_patch_range(Upload* u, u64 a, u64 b);
+/* such a texture's upload: its pages bound where it is mapped (resident_bind_mapped), then each bound brick staged as
+   it is and deswizzled on the GPU as a surface of one row of blocks, into its place in its level and layer (an ASTC
+   one's blocks decoded there, as its pieces are), and the levels of each bound mip tail as a texture's pieces are
+   (tex_patch_range) */
 static int resident_upload(Surf* t) {
     const VkFmt* f = &t->f;
     const VkExtent3D g = t->grain;
-    u8* want = calloc(t->bricks, 1);
-    u32 lbh, lbd;
+    const u32 pages = resident_pages(t), d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1,
+              across = g.width / f->bw * f->bpp;
+    u8* want = calloc(pages, 1);
     if (!want) return 0;
     int ok = resident_bind_mapped(t, want);
-    bl_level_blocks(t->h, t->depth3d, f, t->bh, t->bd, 0, &lbh, &lbd);
-    const u32 across = g.width / f->bw * f->bpp, bx = (t->w + g.width - 1) / g.width,
-              by = (t->h + g.height - 1) / g.height;
     Upload u = {.cb = vk_cmd(), .t = t};
     vk_surf_use(u.cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    for (u32 i = 0; i < t->bricks && ok; i++) {
-        if (!want[i]) continue;
-        u32 x = i % bx * g.width, y = i / bx % by * g.height, z = i / (bx * by) * g.depth;
-        VkBlMove mv = {across, 8u << lbh, lbh, lbd, 0, 8u << lbh, 0, 1u << lbd, across};
-        u64 lin = (u64)mv.slices * mv.rows * mv.lin_pitch, staged_at, at;
-        VkBuffer staged;
-        ok =
-            stage_bl(&mv, t->gva + (u64)i * t->brick_bytes, t->brick_bytes, &staged, &staged_at) && up_reserve(&u, lin);
-        if (!ok) break;
-        at = up_space(&u, lin, bl_lin_align(f->bpp));
-        up_open(&u);
-        if (!(ok = vk_bl_move(u.cb, &mv, 0, staged, staged_at, u.scratch, at))) break;
-        u.moves++;
-        u.src[u.nreg] = u.scratch;
-        u.reg[u.nreg++] = (VkBufferImageCopy){.bufferOffset = at,
-                                              .bufferRowLength = g.width,
-                                              .bufferImageHeight = g.height,
-                                              .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                              .imageOffset = {(i32)x, (i32)y, (i32)z},
-                                              .imageExtent = {t->w - x < g.width ? t->w - x : g.width,
-                                                              t->h - y < g.height ? t->h - y : g.height,
-                                                              t->depth3d - z < g.depth ? t->depth3d - z : g.depth}};
-        g_tex_upload_bytes += t->brick_bytes;
-    }
+    u32 i = 0;
+    for (u32 layer = 0; layer < t->layers && ok; layer++)
+        for (u32 l = 0; l < t->tail_first && ok; l++) {
+            const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, ld = d3 >> l ? d3 >> l : 1;
+            u32 lbh, lbd;
+            bl_level_blocks(t->h, d3, f, t->bh, t->bd, l, &lbh, &lbd);
+            for (u32 z = 0; z < ld && ok; z += g.depth)
+                for (u32 y = 0; y < lh && ok; y += g.height)
+                    for (u32 x = 0; x < lw && ok; x += g.width, i++) {
+                        if (!want[i]) continue;
+                        const u64 from = layer * t->layer_size + (u64)(i - layer * t->bricks) * t->brick_bytes;
+                        if (f->conv == VKC_ASTC) {
+                            ok = tex_patch_range(&u, from, from + t->brick_bytes);
+                            continue;
+                        }
+                        VkBlMove mv = {across, 8u << lbh, lbh, lbd, 0, 8u << lbh, 0, 1u << lbd, across};
+                        const u64 lin = (u64)mv.slices * mv.rows * mv.lin_pitch;
+                        u64 staged_at, at;
+                        VkBuffer staged;
+                        ok = stage_bl(&mv, t->gva + from, t->brick_bytes, &staged, &staged_at) && up_reserve(&u, lin);
+                        if (!ok) break;
+                        at = up_space(&u, lin, bl_lin_align(f->bpp));
+                        up_open(&u);
+                        if (!(ok = vk_bl_move(u.cb, &mv, 0, staged, staged_at, u.scratch, at))) break;
+                        u.moves++;
+                        u.src[u.nreg] = u.scratch;
+                        u.reg[u.nreg++] = (VkBufferImageCopy){
+                            .bufferOffset = at,
+                            .bufferRowLength = g.width,
+                            .bufferImageHeight = g.height,
+                            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, layer, 1},
+                            .imageOffset = {(i32)x, (i32)y, (i32)z},
+                            .imageExtent = {lw - x < g.width ? lw - x : g.width, lh - y < g.height ? lh - y : g.height,
+                                            ld - z < g.depth ? ld - z : g.depth}};
+                        g_tex_loads.bytes += t->brick_bytes;
+                    }
+        }
+    for (u32 k = 0; k < t->tails && ok; k++)
+        if (want[t->layers * t->bricks + k])
+            for (u32 layer = 0; layer < t->layers && ok; layer++)
+                if (t->tails == 1 || layer == k)
+                    ok = tex_patch_range(&u, layer * t->layer_size + resident_bricks_end(t),
+                                         layer * t->layer_size + resident_levels_end(t));
     ok = up_flush(&u) && ok;
     if (!ok)
-        LOG_LIMIT(1, "vulkan: out of memory or staging loading a %ux%ux%u texture's bricks\n", t->w, t->h, t->depth3d);
+        LOG_LIMIT(1, "vulkan: out of memory or staging loading a %ux%ux%u texture's bricks\n", t->w, t->h,
+                  t->layers * d3);
     free(want);
     return ok;
 }
@@ -616,8 +669,8 @@ static int tex_upload_(Surf* t) {
     const VkFmt* f = &t->f;
     SNX_ZONE_T(z_up, "texture upload", "%ux%u", t->w, t->h);
     SNX_ZONE_VALUE(z_up, t->size);
-    g_tex_uploads++;
-    if (!t->bricks) g_tex_upload_bytes += t->size; /* a brick at a time for the others */
+    g_tex_loads.uploads++;
+    if (!t->bricks) g_tex_loads.bytes += t->size; /* a brick at a time for the others */
     t->upload_valid = 0;
     t->wgen = vk_surf_gen(); /* even a new texture at a reused address invalidates an old target's copy */
     t->took_drawn = 0;       /* memory's own texels again, until tex_take_drawn copies targets in */
@@ -665,7 +718,7 @@ static int tex_upload_(Surf* t) {
                 const int keyed =
                     vk_astc_cached(t, lw, lh, ls.layers > 1 ? ls.layers : ld) && astc_content(&ls, content);
                 complete = up_flush(&u); /* after the hash, which can submit: the batch's buffer is the one recording */
-                complete = complete && vk_astc_upload(u.cb, t, lw, lh, ld, l, layer, ls.layers, astc_rows, &ls,
+                complete = complete && vk_astc_upload(u.cb, t, 0, 0, lw, lh, ld, l, layer, ls.layers, astc_rows, &ls,
                                                       keyed ? content : NULL);
                 u.scratch = VK_NULL_HANDLE; /* astc_rows may have grown the scratch buffer: asked for again */
                 u.cap = 0;
@@ -693,9 +746,16 @@ static int tex_upload_(Surf* t) {
 /* change checks: a hash of the whole texture, 4 KiB at a time, the same whichever way its bytes are reached (the
    sampled check for big long-stable textures is vk_sample_hash) */
 #define MEM_HASH_PIECE 4096u
+static u64 g_tex_hashes; /* texture memory hashed to learn whether it changed, whole or sampled (vk_tex_hashes) */
+u64 vk_tex_hashes(void) { return g_tex_hashes; }
+static u64 tex_sample_hash(u64 gva, u64 size) {
+    g_tex_hashes++;
+    return vk_sample_hash(gva, size);
+}
 static u64 mem_hash(u64 gva, u64 size) {
     u64 piece[MEM_HASH_PIECE / 8];
     u64 h = 1469598103934665603ull;
+    g_tex_hashes++;
     /* bytes the GPU holds are trapped: they hash as their owner (vk_guest_peek), so the texture is read in pieces.
        Every byte counts: the CPU rewrites part of a page (a row of a texture, half a GOB's rows) */
     u8* p = own_any() ? NULL : gmem_ptr(gva, size);
@@ -828,33 +888,82 @@ static int format_samples(VkFormat f) {
     return r;
 }
 
-/* t's image with memory only where it is mapped (vk_image_create_resident), when the device binds 3D images of its
-   format in bricks that are each one range of the guest's layout: whole blocks of GOBs side by side in one row of
-   them, as a sparse texture's 64 KiB tile is (nvn_tex_layout), its rows a whole number of bricks. Then the brick the
-   guest's n-th range of brick_bytes holds is the device's n-th block, and tex_upload binds a brick where memory maps
-   any of its range */
+static int tex_can_piece(const Surf* t);
+/* t's format in a log line: an ASTC footprint and the format it is held in, decoded, else Vulkan's */
+static const char* tex_format_name(const Surf* t, char* s, size_t n) {
+    const VkFmt* f = &t->f;
+    if (f->conv == VKC_ASTC)
+        snprintf(s, n, "ASTC %ux%u as %s", f->bw, f->bh,
+                 f->vk == VK_FORMAT_BC7_UNORM_BLOCK || f->vk == VK_FORMAT_BC7_SRGB_BLOCK ? "BC7" : "RGBA8");
+    else
+        snprintf(s, n, "format %d", (int)f->vk);
+    return s;
+}
+/* level l of t's layout: the GOBs across its rows, and the block of GOBs it is laid out in (log2 high and deep) */
+static u32 level_layout(const Surf* t, u32 l, u32* lbh, u32* lbd) {
+    const VkFmt* f = &t->f;
+    const u32 d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1, lw = t->w >> l ? t->w >> l : 1,
+              lh = t->h >> l ? t->h >> l : 1, ld = d3 >> l ? d3 >> l : 1;
+    bl_level_blocks(t->h, d3, f, t->bh, t->bd, l, lbh, lbd);
+    return bl_level_gobs_x((lw + f->bw - 1) / f->bw * f->bpp, (lh + f->bh - 1) / f->bh, ld, t->bh, t->bd, t->tile_w);
+}
+/* t's image with memory only where it is mapped (vk_image_create_resident), when the device binds it in bricks that
+   are each one range of the guest's layout: whole blocks of GOBs side by side in one row of them, as a sparse
+   texture's 64 KiB tile is (nvn_tex_layout). Each level before the device's mip tail is then rows of whole bricks, the
+   n-th brick_bytes of a layer the device's n-th block of it, and the levels from the mip tail on the rest of the
+   layer. tex_upload binds a brick or a mip tail where memory maps any of its bytes. An ASTC one's tile is the
+   device's block where it is held as BC7 and its footprint is 4x4: 64x64 blocks of 16 bytes either way */
 static int resident_image(Surf* t, const VkImageCreateInfo* ii) {
     const VkFmt* f = &t->f;
-    VkExtent3D g;
-    u32 lbh, lbd;
-    if (t->type != VK_IMAGE_VIEW_TYPE_3D || t->levels != 1 || t->layers != 1 || t->msaa || !t->bl || f->depth ||
-        f->conv == VKC_ASTC || vk_tc_converts(f) || !vk_resident_block(ii->format, ii->usage, &g))
-        return 0;
-    bl_level_blocks(t->h, t->depth3d, f, t->bh, t->bd, 0, &lbh, &lbd);
-    u32 across = g.width % f->bw ? 0 : g.width / f->bw * f->bpp, rows = g.height % f->bh ? 0 : g.height / f->bh;
-    u32 row_gobs = ((t->w + f->bw - 1) / f->bw * f->bpp + 63) / 64;
-    if (!across || across % 64 || rows != 8u << lbh || g.depth != 1u << lbd || row_gobs % (across / 64)) {
-        LOG_LIMIT(4,
-                  "vulkan: a %ux%ux%u texture with holes in its mapping takes no bricks: the device binds blocks of "
-                  "%ux%ux%u texels, its layout's are %u GOBs high and %u deep, %u GOBs a row\n",
-                  t->w, t->h, t->depth3d, g.width, g.height, g.depth, 1u << lbh, 1u << lbd, row_gobs);
+    const u32 d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1;
+    VkResidentShape s;
+    char name[32], in[64];
+    if (!tex_can_piece(t)) return 0;
+    if (!vk_resident_shape(ii, &s)) {
+        if (g_vk.resident &&
+            (ii->imageType == VK_IMAGE_TYPE_3D ? g_vk.feat.sparseResidencyImage3D : g_vk.feat.sparseResidencyImage2D))
+            LOG_LIMIT(4,
+                      "vulkan: a %ux%ux%u texture of %u levels in %s with holes in its mapping is made whole: the "
+                      "device has no sparse images of format %d that size\n",
+                      t->w, t->h, t->layers * d3, t->levels, tex_format_name(t, name, sizeof name), (int)f->vk);
         return 0;
     }
-    if (!vk_image_create_resident(ii, &g, &t->img)) return 0;
+    const VkExtent3D g = s.block;
+    const u32 across = g.width % f->bw ? 0 : g.width / f->bw * f->bpp, rows = g.height % f->bh ? 0 : g.height / f->bh;
+    const u64 brick_bytes = (u64)across / 64 * (rows / 8) * g.depth * 512;
+    u32 l = 0, lbh, lbd, bricks = 0;
+    for (; l < s.tail_first; l++) {
+        const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, ld = d3 >> l ? d3 >> l : 1;
+        const u32 bx = (lw + g.width - 1) / g.width, gobs = level_layout(t, l, &lbh, &lbd);
+        if (!across || across % 64 || rows != 8u << lbh || g.depth != 1u << lbd || gobs != bx * (across / 64)) break;
+        bricks += bx * ((lh + g.height - 1) / g.height) * ((ld + g.depth - 1) / g.depth);
+    }
+    if (!s.tail_first || l < s.tail_first || (t->layers > 1 && t->layer_size % brick_bytes)) {
+        /* the level that isn't whole bricks, else the last one before the mip tail */
+        const u32 at = l < s.tail_first || !l ? l : l - 1, lw = t->w >> at ? t->w >> at : 1,
+                  gobs = level_layout(t, at, &lbh, &lbd);
+        /* the device's block in the layout's terms */
+        if (!across || !rows)
+            snprintf(in, sizeof in, "not whole %ux%u blocks", f->bw, f->bh);
+        else if (across % 64 || rows % 8)
+            snprintf(in, sizeof in, "%u bytes across and %u rows high in its layout", across, rows);
+        else
+            snprintf(in, sizeof in, "%u GOBs across and %u high in its layout", across / 64, rows / 8);
+        LOG_LIMIT(4,
+                  "vulkan: a %ux%ux%u texture of %u levels in %s with holes in its mapping is made whole: the device "
+                  "binds blocks of %ux%ux%u texels, %s, its mip tail from level %u; the layout's level %u has blocks "
+                  "%u GOBs high and %u deep, %u GOBs a row (%u in whole blocks), its layers %llu bytes apart\n",
+                  t->w, t->h, t->layers * d3, t->levels, tex_format_name(t, name, sizeof name), g.width, g.height,
+                  g.depth, in, s.tail_first, at, 1u << lbh, 1u << lbd, gobs,
+                  (lw + g.width - 1) / g.width * (across / 64), (unsigned long long)t->layer_size);
+        return 0;
+    }
+    if (!vk_image_create_resident(ii, &s, &t->img)) return 0;
     t->grain = g;
-    t->brick_bytes = across / 64 * (512u << (lbh + lbd));
-    t->bricks =
-        (t->w + g.width - 1) / g.width * ((t->h + g.height - 1) / g.height) * ((t->depth3d + g.depth - 1) / g.depth);
+    t->brick_bytes = (u32)brick_bytes;
+    t->bricks = bricks;
+    t->tail_first = s.tail_first;
+    t->tails = s.tails;
     t->bytes = 0;
     return 1;
 }
@@ -1048,22 +1157,25 @@ static VkImageViewType tic_view_type(u32 type, u32 d) {
     return VK_IMAGE_VIEW_TYPE_2D; /* 1D textures are 2D images one texel high */
 }
 
-/* ---- textures with holes in their mapping, loaded a piece at a time
+/* ---- textures loaded a piece at a time
 
    A virtual pool's texture is mapped a 64 KiB tile at a time, a few of its thousands of tiles (one game's light volumes
    are 477 MB with 384 KiB mapped). Loaded whole, such a texture had all its bytes hashed and staged, holes and all, when
    it was made and again whenever a tile was mapped. Instead its image is cleared, then the blocks its mapped runs lie
    in are loaded, and later only the blocks of the pages the GPU's records (a mapping, an engine's write) and write
-   tracking (the CPU's) name. A run of blocks of one row of blocks is the layout of a surface that row high and that
-   run wide, which the GPU deswizzles into its place in the image */
+   tracking (the CPU's) name. A texture loaded whole takes its changes the same way while write tracking answers for
+   its memory: a write of a page of an 8192x8192 texture loads the blocks of that page, not its 256 MiB. A run of
+   blocks of one row of blocks is the layout of a surface that row high and that run wide, which the GPU deswizzles
+   into its place in the image */
 #define TEX_PIECES 256
-/* bytes of a texture to load, in order, those that meet joined */
+/* bytes of a texture to load, in order, those that meet joined. Past TEX_PIECES of them the two closest are joined
+   over the bytes between them, which loads more than changed and never less */
 typedef struct {
     struct {
         u64 at, n;
-    } piece[TEX_PIECES];
+    } piece[TEX_PIECES + 1]; /* the one added before two are joined */
     u32 count;
-    int all; /* more pieces than that: the whole texture */
+    int all; /* the whole texture */
 } TexPieces;
 static void pieces_add(TexPieces* p, u64 at, u64 n) {
     u32 i = p->count, j;
@@ -1075,10 +1187,6 @@ static void pieces_add(TexPieces* p, u64 at, u64 n) {
         at = p->piece[i].at;
         if (p->piece[i].n > n) n = p->piece[i].n;
     } else {
-        if (p->count == TEX_PIECES) {
-            p->all = 1;
-            return;
-        }
         memmove(p->piece + i + 1, p->piece + i, (p->count - i) * sizeof *p->piece);
         p->count++;
     }
@@ -1087,6 +1195,28 @@ static void pieces_add(TexPieces* p, u64 at, u64 n) {
     p->piece[i].at = at, p->piece[i].n = n;
     memmove(p->piece + i + 1, p->piece + j, (p->count - j) * sizeof *p->piece);
     p->count -= j - i - 1;
+    if (p->count > TEX_PIECES) { /* the two with the fewest bytes between them */
+        u32 k = 0;
+        for (j = 1; j + 1 < p->count; j++)
+            if (p->piece[j + 1].at - p->piece[j].at - p->piece[j].n <
+                p->piece[k + 1].at - p->piece[k].at - p->piece[k].n)
+                k = j;
+        p->piece[k].n = p->piece[k + 1].at + p->piece[k + 1].n - p->piece[k].at;
+        memmove(p->piece + k + 1, p->piece + k + 2, (p->count - k - 2) * sizeof *p->piece);
+        p->count--;
+    }
+}
+
+/* page k of a texture with memory only where it is mapped (resident_page), all of it, in each layer it has bytes in */
+static void resident_page_add(const Surf* t, u32 k, TexPieces* p) {
+    if (k < t->layers * t->bricks) {
+        pieces_add(p, (u64)(k / t->bricks) * t->layer_size + (u64)(k % t->bricks) * t->brick_bytes, t->brick_bytes);
+        return;
+    }
+    for (u32 layer = 0; layer < t->layers; layer++)
+        if (t->tails == 1 || k - t->layers * t->bricks == layer)
+            pieces_add(p, layer * t->layer_size + resident_bricks_end(t),
+                       resident_levels_end(t) - resident_bricks_end(t));
 }
 
 /* a texture's memory where it isn't one host run, over the runs the GPU's page table maps of it (gmmu_pieces, which
@@ -1115,25 +1245,18 @@ static void tex_run(void* ctx, u64 gva, u64 cpu, u64 n) {
     r->off = gva - r->gva;
     if (w > 0 && r->p) vk_written_runs(GP(cpu), n, r->since, tex_written_piece, r);
 }
-/* vk_written_since for the texture's memory: its one host run, or each mapped run of a texture with holes in its
-   mapping (a virtual pool's, mapped a 64 KiB tile at a time), whose tiles the CPU writes in place, or of one loaded a
-   piece at a time. -1 for memory in several runs and no holes (hashed, as before), and where write tracking is off.
-   With p, the pages written go in it */
+/* vk_written_since for the texture's memory: its one host run, or each run the GPU's page table maps of it, with holes
+   in its mapping (a virtual pool's, mapped a 64 KiB tile at a time, whose tiles the CPU writes in place) or without
+   (several pieces of guest memory): the runs' answers are as good as one run's, and save hashing it. -1 where write
+   tracking is off. With p, the pages written go in it */
 static int tex_written_since(const Surf* t, u64 gva, TexPieces* p) {
     u8* host = gmem_host(gva, t->size);
-    TexRuns r = {0, gva, 0, t->wseen, 0, 0, NULL};
+    TexRuns r = {0, gva, 0, t->wseen, 1, 0, p};
     if (host) {
         int w = vk_written_since(host, t->size, t->wseen);
-        r.p = p;
         if (w > 0 && p) vk_written_runs(host, t->size, t->wseen, tex_written_piece, &r);
         return w;
     }
-    if (!t->piecewise) {
-        gmmu_pieces(gva, t->size, tex_run, &r);
-        if (r.mapped >= t->size) return -1;
-    }
-    r.ask = 1;
-    r.p = p;
     gmmu_pieces(gva, t->size, tex_run, &r);
     return r.written;
 }
@@ -1142,11 +1265,16 @@ static void tex_dirty_piece(void* ctx, u64 at, u64 n) {
     r->mapped += n;
     pieces_add(r->p, at - r->gva, n);
 }
-/* loaded a piece at a time: block linear, one sample, in a format the GPU takes as it is, whose texels or blocks lie
-   whole in a GOB's 64-byte rows. Not a sparse one, whose blocks are bound and loaded where they are mapped (tex_bind) */
+/* loaded a piece at a time: one sample, in a format the GPU takes as it is, block linear with texels or blocks whole
+   in a GOB's 64-byte rows, or pitch linear with texels or blocks of 1 to 16 bytes, a power of two (a row staged
+   anywhere in staging is where a copy can read it). Or ASTC, decoded (and encoded as BC7) a run of blocks at a time
+   (level_patch_astc): block linear and 2D, as a volume's ASTC levels are decoded whole. Not a sparse one, whose blocks
+   are bound and loaded where they are mapped (tex_bind) */
 static int tex_can_piece(const Surf* t) {
     const VkFmt* f = &t->f;
-    return t->bl && !t->msaa && !t->sparse && f->conv == VKC_NONE && !vk_tc_converts(f) && !f->depth && f->bpp && 64 % f->bpp == 0;
+    if (f->conv == VKC_ASTC) return t->bl && !t->msaa && !t->sparse && t->type != VK_IMAGE_VIEW_TYPE_3D;
+    return !t->msaa && !t->sparse && f->conv == VKC_NONE && !vk_tc_converts(f) && !f->depth && f->bpp &&
+           (t->bl ? 64 % f->bpp == 0 : 16 % f->bpp == 0);
 }
 
 /* the blocks of one level of one layer (lsz bytes at gva) that its bytes [a, b) lie in, loaded a run of blocks of one
@@ -1179,7 +1307,126 @@ static int level_patch_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 lb
             if (!stage_bl(&m, gva + k * block, lsz - k * block, &staged, &at) ||
                 !up_move(u, &run, &m, staged, at, z, y))
                 return 0;
-            g_tex_upload_bytes += (e - k) * block;
+            g_tex_loads.bytes += (e - k) * block;
+        }
+        k = e;
+    }
+    return 1;
+}
+/* rows r0 to r1 of a layer of a pitch linear texture (of texels, or of blocks; its slices' rows after one another),
+   bytes x0 to x1 of each */
+typedef struct {
+    u32 layer, x0, x1;
+    u64 r0, r1;
+} PitchRect;
+/* bytes [a, b) of a layer of a pitch linear texture as its rows: of one row, the texels or blocks they cover; of rows
+   they run across, all of each row. 0 when they are none of its texels (a row's pitch past them, or past its rows) */
+static int pitch_rect(const Surf* t, u32 layer, u64 a, u64 b, PitchRect* r) {
+    const VkFmt* f = &t->f;
+    u32 gp = t->pitch, rowb = (t->w + f->bw - 1) / f->bw * f->bpp;
+    u64 rows = (u64)((t->h + f->bh - 1) / f->bh) * (t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1);
+    if (b > rows * gp) b = rows * gp;
+    if (a >= b) return 0;
+    r->layer = layer;
+    r->r0 = a / gp;
+    r->r1 = (b - 1) / gp + 1;
+    r->x0 = 0;
+    r->x1 = rowb;
+    if (r->r1 - r->r0 == 1) {
+        r->x0 = (u32)(a % gp) / f->bpp * f->bpp;
+        r->x1 = ((u32)((b - 1) % gp) / f->bpp + 1) * f->bpp;
+        if (r->x0 >= rowb) return 0;
+        if (r->x1 > rowb) r->x1 = rowb;
+    }
+    return 1;
+}
+/* r loaded again: its rows staged as they are when they are whole (pitch and all), else their bytes a row at a time,
+   in strips of a slice that staging takes */
+static int pitch_patch(Upload* u, const PitchRect* r) {
+    const Surf* t = u->t;
+    const VkFmt* f = &t->f;
+    u32 gp = t->pitch, th = (t->h + f->bh - 1) / f->bh, rowb = (t->w + f->bw - 1) / f->bw * f->bpp, w = r->x1 - r->x0;
+    u32 d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1;
+    int as_is = r->x0 == 0 && w == rowb && gp % f->bpp == 0;
+    u32 in_pitch = as_is ? gp : w;
+    u64 band = g_vk.alloc_cap < TEX_BAND ? g_vk.alloc_cap : TEX_BAND, lsz = (u64)gp * th * d3;
+    u64 gva = t->gva + (u64)r->layer * t->layer_size;
+    UpLevel lv = {0, r->layer, t->w, t->h, d3, rowb, th, 0};
+    lv.x = r->x0 / f->bpp * f->bw;
+    lv.cols = w / f->bpp * f->bw;
+    for (u64 row = r->r0; row < r->r1;) {
+        u32 z = (u32)(row / th), y = (u32)(row % th);
+        u64 n = r->r1 - row < th - y ? r->r1 - row : th - y, first = row * gp + r->x0;
+        if (n * in_pitch > band) n = band / in_pitch ? band / in_pitch : 1;
+        VkBuffer staged;
+        u64 at;
+        u8* p = vk_stage(n * in_pitch, vk_stage_align(), &staged, &at);
+        if (!p) return 0;
+        if (as_is) { /* the rows are one range of guest memory */
+            u64 size = n * in_pitch, have = first + size <= lsz ? size : lsz - first;
+            vk_guest_read(gva + first, have, p, staged, at);
+            memset(p + have, 0, size - have);
+        } else
+            for (u64 k = 0; k < n; k++) vk_guest_read(gva + first + k * gp, w, p + k * w, staged, at + k * w);
+        if (!up_reserve(u, 0) || !up_rows(u, &lv, staged, at, in_pitch, z, 1, y, (u32)n)) return 0;
+        g_tex_loads.bytes += n * w;
+        row += n;
+    }
+    return 1;
+}
+/* a pitch linear texture's pieces p loaded again, as the rows they lie in (pitch_rect): rows after one another, or
+   the same rows, that cover the same texels go as one, so a region of a big texture's rows written a page a row is
+   one copy, and rows two pieces share (pages that cut rows) load once */
+static int tex_patch_pitch(Upload* u, const TexPieces* p) {
+    const Surf* t = u->t;
+    PitchRect run = {0}, next;
+    int have = 0;
+    for (u32 i = 0; i < p->count; i++)
+        for (u64 a = p->piece[i].at, b = a + p->piece[i].n; a < b;) {
+            u32 layer = (u32)(a / t->layer_size);
+            u64 lo = (u64)layer * t->layer_size, hi = lo + t->layer_size;
+            if (layer >= t->layers) break;
+            if (pitch_rect(t, layer, a - lo, (b < hi ? b : hi) - lo, &next)) {
+                if (have && run.layer == next.layer && run.x0 == next.x0 && run.x1 == next.x1 && next.r0 <= run.r1) {
+                    if (next.r1 > run.r1) run.r1 = next.r1;
+                } else {
+                    if (have && !pitch_patch(u, &run)) return 0;
+                    run = next;
+                    have = 1;
+                }
+            }
+            a = hi;
+        }
+    return !have || pitch_patch(u, &run);
+}
+/* the ASTC blocks of one level of one layer (lsz bytes at gva) that its bytes [a, b) lie in, decoded again a run of
+   blocks of one row of blocks at a time, as level_patch_bl loads them: the layout of a surface that row high and that
+   run wide, which astc_rows deswizzles. A run starts on a GOB, 4 ASTC blocks across, and is 8 << lbh block rows high
+   (or ends at the level's edge), so it holds whole the 4x4 blocks a texture held as BC7 (astc_bc) encodes from its
+   texels, whatever the footprint: 4 and 8 blocks are whole multiples of lcm(4, bw) / bw and lcm(4, bh) / bh, which
+   are 1, 2 or 4. Each BC7 block then takes the texels it takes in the whole level's upload, its neighbours' too */
+static int level_patch_astc(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 lbh, u32 lbd, u64 a, u64 b) {
+    Surf* t = u->t;
+    const VkFmt* f = &t->f;
+    u32 gobs_x = lv->gobs_x;
+    u64 block = 512ull << (lbh + lbd), rows_blocks = ((((u64)lv->th + 7) >> 3) + (1u << lbh) - 1) >> lbh;
+    u64 k = a / block, end = (b + block - 1) / block;
+    if (end > lsz / block) end = lsz / block;
+    while (k < end) {
+        u64 row = k / gobs_x, e = (row + 1) * gobs_x < end ? (row + 1) * gobs_x : end;
+        u32 x0 = (u32)(k % gobs_x), y = (u32)(row % rows_blocks) << (3 + lbh), z = (u32)(row / rows_blocks) << lbd;
+        if (y < lv->th && z < lv->ld && x0 * 64 < lv->rowb) { /* else the layout's padding past the level's blocks */
+            u32 rowb = lv->rowb - x0 * 64 < (e - k) * 64 ? lv->rowb - x0 * 64 : (u32)(e - k) * 64;
+            u32 tx = x0 * 4 * f->bw, ty = y * f->bh, rows = lv->th - y < 8u << lbh ? lv->th - y : 8u << lbh;
+            u32 w = rowb / 16 * f->bw, h = rows * f->bh;
+            LevelSource ls = {t, gva + k * block, lsz - k * block, rowb, 8u << lbh, lbh, lbd, 0};
+            if (w > lv->lw - tx) w = lv->lw - tx;
+            if (h > lv->lh - ty) h = lv->lh - ty;
+            if (!up_flush(u) || !vk_astc_upload(u->cb, t, tx, ty, w, h, 1, lv->level, lv->layer, 1, astc_rows, &ls, NULL))
+                return 0;
+            u->scratch = VK_NULL_HANDLE; /* astc_rows may have grown the scratch buffer: asked for again */
+            u->cap = 0;
+            g_tex_loads.bytes += (e - k) * block;
         }
         k = e;
     }
@@ -1204,8 +1451,8 @@ static int tex_patch_range(Upload* u, u64 a, u64 b) {
                               .rowb = (lw + f->bw - 1) / f->bw * f->bpp,
                               .th = (lh + f->bh - 1) / f->bh};
                 lv.gobs_x = bl_level_gobs_x(lv.rowb, lv.th, ld, t->bh, t->bd, t->tile_w);
-                if (!level_patch_bl(u, &lv, t->gva + at, lsz, lbh, lbd, a > at ? a - at : 0,
-                                    b - at < lsz ? b - at : lsz))
+                if (!(f->conv == VKC_ASTC ? level_patch_astc : level_patch_bl)(
+                        u, &lv, t->gva + at, lsz, lbh, lbd, a > at ? a - at : 0, b - at < lsz ? b - at : lsz))
                     return 0;
             }
             at += lsz;
@@ -1215,33 +1462,43 @@ static int tex_patch_range(Upload* u, u64 a, u64 b) {
 }
 /* the pieces p of t loaded again into its image; all of it when they are more than half of it (a whole upload reads
    at most twice their bytes, in fewer moves), or when render targets' pixels were copied into it (tex_take_drawn),
-   which a whole upload takes again. 1 when the image has them */
+   which a whole upload takes again. A texture loaded whole whose hash is still its image's (no blocks loaded alone
+   since) is hashed for that, as a change found by its hash is: its pages written with the bytes they had load
+   nothing. 1 when the image has them */
 static int tex_patch(Surf* t, const TexPieces* p) {
-    u64 sum = 0;
+    u64 sum = 0, bytes = g_tex_loads.bytes;
     for (u32 i = 0; i < p->count; i++) sum += p->piece[i].n;
-    if (p->all || t->took_drawn || sum > t->size / 2) return tex_upload(t);
+    if (p->all || t->took_drawn || sum > t->size / 2) {
+        if (t->piecewise || !t->hash) return tex_upload(t);
+        tex_rehash(t);
+        return t->upload_valid;
+    }
     if (!sum) return 1;
     vk_render_end(); /* copies, and a bind's submission, happen outside rendering passes */
     TexPieces bound;
     if (t->bricks) {
-        /* memory for the bricks mapped now, before their bytes go in, and only the pieces' parts in those: the others
-           read as zeros (a tile unmapped) */
-        u8* want = calloc(t->bricks, 1);
+        /* memory for the bricks and mip tails mapped now, before their bytes go in, and only the pieces' parts in
+           those: the others read as zeros (a tile unmapped). One given memory now is loaded whole: its texels are
+           undefined, and its bytes the pieces miss are zeros or what memory maps there */
+        const u32 pages = resident_pages(t);
+        u8* want = calloc(pages, 1);
         int ok = want && resident_bind_mapped(t, want);
         bound.count = 0, bound.all = 0;
         for (u32 i = 0; i < p->count && ok; i++) {
-            u64 at = p->piece[i].at, end = at + p->piece[i].n, bb = t->brick_bytes;
-            for (u64 b = at / bb; b < t->bricks && b * bb < end; b++)
-                if (want[b])
-                    pieces_add(&bound, b * bb > at ? b * bb : at,
-                               ((b + 1) * bb < end ? (b + 1) * bb : end) - (b * bb > at ? b * bb : at));
+            u64 end = p->piece[i].at + p->piece[i].n, e;
+            for (u64 o = p->piece[i].at; o < end; o = e) {
+                i64 k = resident_page(t, o, &e);
+                if (k >= 0 && want[k] == 1) pieces_add(&bound, o, (e < end ? e : end) - o);
+            }
         }
+        for (u32 k = 0; k < pages && ok; k++)
+            if (want[k] == 2) resident_page_add(t, k, &bound);
         free(want);
         if (!ok) {
             LOG_LIMIT(1,
                       "vulkan: no memory to bind a %ux%ux%u texture's mapped bricks: it loads again in the next "
                       "frame\n",
-                      t->w, t->h, t->depth3d);
+                      t->w, t->h, t->layers * t->depth3d);
             return t->upload_valid = 0;
         }
         if (bound.all) return tex_upload(t);
@@ -1251,7 +1508,7 @@ static int tex_patch(Surf* t, const TexPieces* p) {
         if (!sum) return 1;
     }
     SNX_ZONE_V(z, "texture pieces", sum);
-    g_tex_uploads++;
+    g_tex_loads.uploads++;
     t->wgen = vk_surf_gen(); /* an image that changed, as an upload's */
     t->hash = 0;             /* no longer the image's: a check by contents loads all of it */
     VkCommandBuffer cb = vk_cmd();
@@ -1259,8 +1516,12 @@ static int tex_patch(Surf* t, const TexPieces* p) {
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     Upload u = {.cb = cb, .t = t};
     int ok = 1;
-    for (u32 i = 0; i < p->count && ok; i++) ok = tex_patch_range(&u, p->piece[i].at, p->piece[i].at + p->piece[i].n);
+    if (!t->bl) ok = tex_patch_pitch(&u, p);
+    for (u32 i = 0; i < p->count && ok && t->bl; i++)
+        ok = tex_patch_range(&u, p->piece[i].at, p->piece[i].at + p->piece[i].n);
     ok = up_flush(&u) && ok;
+    g_tex_loads.partial++;
+    g_tex_loads.partial_bytes += g_tex_loads.bytes - bytes;
     if (!ok) {
         LOG_LIMIT(1,
                   "vulkan: out of memory or staging loading %llu KB of a %ux%ux%u texture: it loads again in the next "
@@ -1329,8 +1590,10 @@ static int tex_load_pieces(Surf* t) {
     t->upload_valid = 1;
     return tex_patch(t, &p);
 }
-/* a piecewise texture's checks: the pages the GPU's records and write tracking name since the last ones, loaded once
-   both were asked, so the image holds what either found. 0 when write tracking can't tell: checked by contents */
+/* the checks of a texture loaded a piece at a time (tex_can_piece; with holes, or loaded whole): the pages the GPU's
+   records and write tracking name since the last ones, loaded once both were asked, so the image holds what either
+   found. 0 when write tracking can't tell: checked by contents (an engine's write after that check in the same epoch
+   is loaded by its pages, and leaves the contents' check a hash that differs, so the next one loads it whole) */
 static int tex_check_pieces(Surf* t, u64 gva) {
     TexPieces p;
     TexRuns r = {0, gva, 0, 0, 0, 0, &p};
@@ -1338,12 +1601,11 @@ static int tex_check_pieces(Surf* t, u64 gva) {
     u32 ww_epoch = vk_ww_epoch();  /* before the check */
     p.count = 0, p.all = 0;        /* each bind checks: the 4 KiB of pieces are written before they are read */
     if (t->checked != g_vk_present || t->ww_epoch != ww_epoch) {
-        u32 wnow = vk_ww_now();
         int wr = tex_written_since(t, gva, &p);
         if (wr < 0) return 0;
         t->ww_epoch = ww_epoch;
         t->checked = g_vk_present;
-        if (wr) t->wseen = wnow;
+        if (wr) t->wseen = vk_ww_now(); /* as tex_check's: the clock after the scans it took in */
     }
     if (gpu_mem_dirty_since(t->gw, gva, t->size)) {
         gpu_mem_dirty_runs(t->gw, gva, t->size, tex_dirty_piece, &r);
@@ -1369,7 +1631,7 @@ static void tex_settle(Surf* t, u64 gva, int changed, int count) {
     else if (count && t->stable < 100000)
         t->stable++;
     if (count && t->stable >= 39 && t->size >= 16384) {
-        t->shash = vk_sample_hash(gva, t->size);
+        t->shash = tex_sample_hash(gva, t->size);
         t->tfull = g_vk_present;
     }
 }
@@ -1390,7 +1652,11 @@ static Surf* tex_check(Surf* t, u64 gva) {
         }
         if (!t->upload_valid) return NULL;
     }
-    if (t->piecewise && tex_check_pieces(t, gva)) return t->upload_valid ? t : NULL;
+    int untracked = 0; /* tex_check_pieces asked write tracking, which can't tell: not asked again below */
+    if (t->piecewise || tex_can_piece(t)) {
+        if (tex_check_pieces(t, gva)) return t->upload_valid ? t : NULL;
+        untracked = 1;
+    }
     /* the GPU front end wrote its memory (DMA, I2M, 2D, compute results): checked now, whatever the schedule
        below says, as writes within a frame have to show in the same frame. Not written: it still matches as of
        now, so the next check asks only about later writes */
@@ -1404,8 +1670,8 @@ static Surf* tex_check(Surf* t, u64 gva) {
        stream's to see (vk_ww_epoch): write tracking proves the memory unchanged without hashing its texels */
     u32 ww_epoch = vk_ww_epoch(); /* before the check */
     if (t->checked != g_vk_present || t->ww_epoch != ww_epoch) {
-        u32 wnow = vk_ww_now();
-        int wr = tex_written_since(t, gva, NULL);
+        int wr = untracked ? -1 : tex_written_since(t, gva, NULL);
+        u32 wnow = vk_ww_now(); /* after the check: the pages it took in are marked with this clock at most */
         int epoch = t->ww_epoch != ww_epoch;
         t->ww_epoch = ww_epoch;
         if (wr >= 0) {
@@ -1443,7 +1709,7 @@ static Surf* tex_check(Surf* t, u64 gva) {
         }
         if (tex_settled(t) && (i32)(g_vk_present - t->tfull) < 120) {
             t->checked = g_vk_present;
-            if (vk_sample_hash(gva, t->size) == t->shash) {
+            if (tex_sample_hash(gva, t->size) == t->shash) {
                 t->next_check = g_vk_present + 20 + ((u32)(gva >> 9) & 7);
                 return t->upload_valid ? t : NULL;
             }
@@ -1639,7 +1905,10 @@ texture_from_memory:
     Surf* t = tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, tile_w, pitch, stride, msaa, holes);
     if (!t) return NULL;
     t->size = sz;
-    t->piecewise = holes && tex_can_piece(t);
+    /* loaded whole, a pitch linear or an ASTC one takes its changes in pieces (an ASTC one's holes decode as memory's
+       zero bytes do, as in its whole upload). One with memory only where it is mapped reads zeros in its holes, an
+       ASTC one too: it is loaded a piece at a time */
+    t->piecewise = holes && t->bl && (f.conv == VKC_NONE || t->bricks) && tex_can_piece(t);
     t->ww_epoch = vk_ww_epoch(); /* checked in this epoch: read before the hash, or the piecewise one's load */
     t->wseen = vk_ww_now();
     tex_written_since(t, gva, NULL); /* starts tracking it */
@@ -2057,7 +2326,7 @@ static void tex_take_drawn(Surf* t) {
             vk_render_end();
             VkCommandBuffer cb = vk_cmd();
             for (u32 k = 0; k < count; k++) {
-                VkImage grid = vk_ms_unpack(cb, s, k);
+                VkImage grid = vk_ms_unpack(cb, s, k, 0, t->h);
                 if (!grid) {
                     settled = 0;
                     break;

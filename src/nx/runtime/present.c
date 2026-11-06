@@ -93,8 +93,10 @@ void present_pace(u32 interval, int slot) {
     pm_lock(&g_pace.lock);
     now = plat_ns();
     next = g_pace.last + period;
-    /* a schedule more than a refresh behind (a load, a pause) starts again from now: no burst to catch up */
-    if (!g_pace.last || now > next + refresh) next = now;
+    /* a schedule more than a refresh behind (a load, a pause) starts again from now: no burst to catch up. A numeric
+       fps_limit is a ceiling, so a frame already late starts it again at once too: the frames after it were let
+       through until the schedule caught up, and presents went above the limit */
+    if (!g_pace.last || now > next + refresh || (fps != SNX_FPS_GAME && now >= next)) next = now;
     g_pace.last = next;
     pm_unlock(&g_pace.lock);
     if (next > now) plat_sleep_ns((i64)(next - now));
