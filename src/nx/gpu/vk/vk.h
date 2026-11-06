@@ -1400,6 +1400,7 @@ typedef struct VkSh {
    (every layout has the same push constant range) */
 extern VkPipelineLayout g_vk_playout;
 VkPipelineLayout vk_playout(u32 arrays); /* arrays: a bit per set (shader_vk_set) that has them */
+VkShaderStageFlags vk_set_stages(int set); /* the stages that see descriptor set set (pipeline.c) */
 extern int g_vk_preserve_infnan;
 extern int g_vk_preserve_infnan64;
 extern int g_vk_flush_denorm;
