@@ -1288,6 +1288,7 @@ static void worker(SnxJitService* s, int misses) {
     unlock(&s->lock);
     thread_priority(&me);
     if (s->config.thread) s->config.thread(&me);
+    snx_thread_name(misses ? "jit miss" : "jit compile");
     lock(&s->lock);
     while (pcs && !s->stop) {
         SnxU64 taken = 0;
