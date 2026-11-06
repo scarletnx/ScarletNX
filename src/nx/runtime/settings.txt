@@ -1102,6 +1102,15 @@ setting GPU checkpoints
     words Off|On
     help 1 = records what the GPU is doing as it goes (VK_NV_device_diagnostic_checkpoints), and when the device is
     help lost logs the work each queue reached. Where the driver has no such extension it is only a warning
+setting GPU draw profile
+    key vk_gpu_draw_profile
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = a GPU zone for every draw and dispatch in the profiler's GPU track, named by pipeline, topology and count
+    help (Vulkan timestamps between them, which some GPUs run one draw at a time for). 256 draws a frame at most; the
+    help rest are counted in the trace. Off: the frame's passes alone are timed, as vk_gpu_profile's
 setting Guest memory
     key vk_memory
     int 0 2

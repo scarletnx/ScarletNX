@@ -1803,8 +1803,25 @@ extern u64 g_vk_passes, g_vk_clear_cmds, g_vk_clear_loads, g_vk_dontcare_loads;
 /* the Tracy GPU track's contexts, one per queue: the graphics queue's render passes, the compute queue's batches */
 #define VK_GPU_CTX_GRAPHICS 1
 #define VK_GPU_CTX_COMPUTE  2
+/* vk_gpu_draw_profile=1: a GPU zone per draw (gpuprof.c, the graphics slot's pool) and per dispatch (compute.c, the
+   batch's own), named by pipeline and counts. A timestamp between draws leaves the queue waiting for the one before
+   it on many devices, so both are capped: GP_DRAWS of them a frame or a batch, and the rest are counted in the trace */
+#define GP_DRAWS            256
+#define CS_DISPATCHES       128
+/* a draw or dispatch timed on the GPU track: the query ids its zone went out with, and where its two timestamps are
+   in the pool its queue reads back (the frame slot's, the batch's) */
+typedef struct {
+    u32 qi;     /* its begin's timestamp in that pool, its end's the one after */
+    u16 q0, q1; /* the query ids its begin and end went out with, 0 when the emission did not go out */
+    u64 ep;     /* the connection the begin went out on */
+} GpDraw;
 void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt);
 void vk_gpuprof_pass_end(VkCommandBuffer cb);
+/* one GPU zone per draw, around the draws the renderer records (vk_gpu_draw_profile=1): outside the predication,
+   whose region writes no timestamp */
+int vk_gpuprof_draws_on(void);
+void vk_gpuprof_draw_begin(VkCommandBuffer cb, u64 pipeline, u32 topology, u32 count, u32 instances);
+void vk_gpuprof_draw_end(VkCommandBuffer cb);
 /* why cmd.c submitted the frame's commands: a present, a vk_finish, the 1 ms of recording a submission holds at most
    (vk_frame_check), a readback of GPU-owned memory, the end of a frame's slot, or anything else */
 enum { VK_SUB_OTHER, VK_SUB_PRESENT, VK_SUB_FINISH, VK_SUB_PERIODIC, VK_SUB_READBACK, VK_SUB_FRAME, VK_SUB_N };
