@@ -2784,6 +2784,70 @@ static int check_flush_parts(void) {
     return 0;
 }
 
+/* A VIC job bigger than one buffer (g_vk.alloc_cap, lowered to 64 KiB here) composed in bands of the target's rows,
+   each staging the rows of every plane its rows read, against the CPU reference (vic_ref.c), on the DMA test's twin
+   regions: block linear NV12 in (blocks of 2 GOBs), two slots over a background, the later one through the matrix,
+   into RGBA pitch linear rows whose pitch isn't a multiple of 4 (the shader's unaligned build), from an odd row with
+   a slot from an odd row; and into NV12 block linear, luma blocks of 1 GOB and chroma of 2 (bands of 32 rows, more
+   than a quarter of the cap each). The twins are compared whole: the planes' other bytes keep theirs */
+static int vic_bands_case(int nv12) {
+    enum { W = 256, H = 192 };
+    static const int m601[3][4] = {{596, 0, 818, -(298 * 64 + 409 * 512)},
+                                   {596, -200, -416, -(298 * 64) + (100 + 208) * 512},
+                                   {596, 1032, 0, -(298 * 64 + 516 * 512)}};
+    static const u32 bg[4] = {1023, 512, 0, 1023};
+    for (int k = 0; k < 2; k++) {
+        u8* t = GP(k ? DMA_B : DMA_A);
+        VicJob j = {0};
+        for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 13 + (i >> 9) * 7 + 5);
+        j.fmt = nv12 ? 0x44 : 0x1F;
+        j.sw = W, j.sh = H;
+        j.tw = W, j.ty0 = nv12 ? 2 : 1, j.th = nv12 ? 188 : 190;
+        memcpy(j.bg, bg, sizeof j.bg);
+        if (nv12) {
+            j.oy = (VicPlane){t + 0x60000, 4 * 24 * 512, W, H, 1, 0};
+            j.oc = (VicPlane){t + 0x70000, 4 * 6 * 1024, W, H / 2, 1, 1};
+        } else
+            j.oy = (VicPlane){t + 0x20000, 1042ull * H, 1042, H, 0, 0};
+        for (u32 s = 0; s < 2; s++) {
+            VicSlot* sl = &j.slots[s];
+            sl->on = 1;
+            sl->alpha = 0x3FF, sl->clamp_lo = 64, sl->clamp_hi = 0x3FF - 64;
+            sl->mat_shift = 1;
+            memcpy(sl->mat, m601, sizeof m601);
+            sl->iy = (VicPlane){t, 4 * 12 * 1024, W, H, 1, 1};
+            sl->ic = (VicPlane){t + 0x10000, 4 * 6 * 1024, W, H / 2, 1, 1};
+        }
+        j.slots[0].dx0 = 4, j.slots[0].dy0 = 2, j.slots[0].w = 240, j.slots[0].h = 180;
+        j.slots[1].sx0 = 10, j.slots[1].sy0 = nv12 ? 6 : 5, j.slots[1].dx0 = 40, j.slots[1].dy0 = nv12 ? 34 : 33;
+        j.slots[1].w = 150, j.slots[1].h = 120, j.slots[1].mat_enable = 1;
+        if (k)
+            vic_compose_ref(&j);
+        else if (!g_renderer->vic_compose(&j)) {
+            fprintf(stderr, "vic bands: the %s job was refused\n", nv12 ? "NV12" : "RGBA");
+            return 1;
+        }
+    }
+    guest_done(DMA_A, DMA_SPAN);
+    if (memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN)) {
+        u32 i = 0;
+        while (GP(DMA_A)[i] == GP(DMA_B)[i]) i++;
+        fprintf(stderr, "vic bands: the %s job's byte %#x is %u, the reference's %u\n", nv12 ? "NV12" : "RGBA", i,
+                GP(DMA_A)[i], GP(DMA_B)[i]);
+        return 1;
+    }
+    return 0;
+}
+static int check_vic_bands(void) {
+    const u64 cap = g_vk.alloc_cap;
+    int failed;
+    g_vk.alloc_cap = 64 << 10;
+    failed = vic_bands_case(0) || vic_bands_case(1);
+    g_vk.alloc_cap = cap;
+    CHECK(!failed);
+    return 0;
+}
+
 /* The 2D engine's blit from memory on the GPU (vk/blit.c) against its CPU reference (fermi2d_ref.c), on the DMA
    test's twin regions: block linear and pitch planes, windows not on 16 bytes, scaled up and down, 1 to 16 bytes a
    pixel, and conversions between float formats (fmt), the regions' bytes holding NaNs, infinities and subnormals */
@@ -3746,6 +3810,7 @@ int main(int argc, char** argv) {
     CHECK(!check_dma());
     CHECK(!check_dma_bands());
     CHECK(!check_flush_parts());
+    CHECK(!check_vic_bands());
     CHECK(!check_dma_texture());
     CHECK(!check_sparse_volume());
     CHECK(!check_tex_partial());

@@ -287,5 +287,7 @@ void vic_execute(const u32* r) {
         WARN_LIMIT(4, "video: a VIC job before the renderer started, skipped\n");
         return;
     }
-    if (!g_renderer->vic_compose(&j)) WARN_LIMIT(4, "video: the GPU could not compose a VIC job, skipped\n");
+    if (!g_renderer->vic_compose(&j))
+        WARN_LIMIT(4, "video: the GPU could not compose a VIC job of %ux%u pixels: rows of it are not composed\n", j.tw,
+                   j.th);
 }

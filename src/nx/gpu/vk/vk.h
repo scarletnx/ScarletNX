@@ -979,7 +979,8 @@ void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes);
 u64 vk_astc_rgba8_bytes(void);
 
 /* vic.c: the VIC composition as a compute shader, recorded in the frame's command buffer, its output planes
-   published (vk_own_publish): 1 when composed, 0 when the job exceeds the device (it is skipped). Takes vk_lock */
+   published (vk_own_publish): 1 when composed, 0 when rows of it could not be (said, with the bytes they lacked). A
+   job bigger than one buffer goes in bands of rows. Takes vk_lock */
 int vk_vic_compose(const VicJob* j);
 /* nvdec.c: an NVDEC picture into its surfaces on the GPU (gpu.h's NvdecPic): staged rows (chroma interleaved there)
    or a Vulkan Video picture's planes copied out of its image, both planes swizzled there, the surfaces published
