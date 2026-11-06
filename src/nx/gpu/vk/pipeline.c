@@ -326,6 +326,21 @@ int vk_graphics_playout_is(VkPipelineLayout layout) {
         if (layout && __atomic_load_n(&g_playouts[i], __ATOMIC_ACQUIRE) == layout) return 1;
     return 0;
 }
+/* The stages that see set s: a layout for each set, the same bindings, each visible to the stage that uses the set
+   (shader_vk_set), within the per-stage limits a device has, which all stages seeing every set would multiply by
+   five. A mesh program takes the vertex stage's set and a task program the tessellation control stage's, and the two
+   mesh stages see both sets, where the device has them. With each mesh stage seeing only its own set, one game's task
+   programs on an RTX 2080 read constants at addresses that no memory backs (Xid 31, GPCCLIENT_GCC, at the same task
+   instruction in each run), and the GPU hung (Xid 109) in most runs. Eden's layouts give each binding the stage of
+   its program, in one set */
+VkShaderStageFlags vk_set_stages(int s) {
+    static const VkShaderStageFlags vis[5] = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
+                                              VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+                                              VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+                                              VK_SHADER_STAGE_GEOMETRY_BIT};
+    if (s < 0 || s >= 5) return 0;
+    return vis[s] | (s == shader_vk_set(ST_MS) || s == shader_vk_set(ST_TS) ? g_vk.mesh_stages : 0);
+}
 VkPipelineLayout vk_playout(u32 arrays) {
     VkPipelineLayout* l = &g_playouts[arrays & ((1u << 5) - 1)];
     VkPipelineLayout made = __atomic_load_n(l, __ATOMIC_ACQUIRE);
@@ -353,12 +368,6 @@ VkPipelineLayout vk_playout(u32 arrays) {
 void vk_pipeline_init(void) {
     pm_lock_announce(&g_playout_lock, "pipeline layout");
     pm_lock_announce(&g_xlate_lock, "shader translate");
-    /* a layout per set, the same bindings, each visible to the stage that uses the set (shader_vk_set): within the
-       per-stage limits a device has, which all stages seeing every set would multiply by five */
-    static const VkShaderStageFlags vis[5] = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
-                                              VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
-                                              VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
-                                              VK_SHADER_STAGE_GEOMETRY_BIT};
     /* the tessellation and geometry stages' sets come after the first two, where the device binds that many */
     g_vk_stage_sets = g_vk.props.limits.maxBoundDescriptorSets >= 5 ? 5 : 2;
     /* A compact array holds the unique handles selected by all indexed tables. */
@@ -371,11 +380,6 @@ void vk_pipeline_init(void) {
     for (int s = 0; s < 5; s++) {
         VkDescriptorSetLayoutBinding b[SNX_VKB_END];
         u32 count = 0;
-        /* a mesh program takes the vertex stage's set and a task program the tessellation control stage's
-           (shader_vk_set), where the device has them */
-        VkShaderStageFlags mesh_vis = s == shader_vk_set(ST_MS)   ? g_vk.mesh_stages & VK_SHADER_STAGE_MESH_BIT_EXT
-                                      : s == shader_vk_set(ST_TS) ? g_vk.mesh_stages & VK_SHADER_STAGE_TASK_BIT_EXT
-                                                                  : 0;
         u32 image_slots = g_vk.props.limits.maxPerStageDescriptorStorageImages;
         u32 buffer_slots;
         u32 i;
@@ -409,7 +413,7 @@ void vk_pipeline_init(void) {
                 .binding = i,
                 .descriptorType = binding_type(i),
                 .descriptorCount = (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? SNX_TEX_ARRAY : 1,
-                .stageFlags = vis[s] | mesh_vis};
+                .stageFlags = vk_set_stages(s)};
         }
         for (int arrays = 0; arrays < 2; arrays++) {
             u32 n = count;

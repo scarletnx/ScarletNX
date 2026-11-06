@@ -68,6 +68,10 @@ static int check_mesh_draws(void) {
         puts("SKIP mesh draws: mesh_draws is off, or the device has no mesh and task shaders with subgroups of 32");
         return 0;
     }
+    /* both mesh stages see the sets of both (vk_set_stages), and the other stages see only their own */
+    const VkShaderStageFlags both = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT;
+    CHECK((vk_set_stages(shader_vk_set(ST_MS)) & both) == both && (vk_set_stages(shader_vk_set(ST_TS)) & both) == both);
+    CHECK(!(vk_set_stages(shader_vk_set(ST_FS)) & both) && !(vk_set_stages(shader_vk_set(ST_GS)) & both));
     const u64 gpu = 0x4c8000000ull, cpu = HEAP_BASE + 0x6c0000, target = gpu + 0x8000;
     const u64 alone = gpu, task = gpu + 0x1000, after = gpu + 0x2000;
     gmmu_map(gpu, cpu, 0x10000);
@@ -170,7 +174,7 @@ static int check_mesh_draws(void) {
     vk_unlock();
     g_shader_sm86 = sm86;
     free(state);
-    puts("PASS mesh draws: a mesh program alone, task programs from their first workgroup, a per-primitive SPH, and "
-         "outputs past maxMeshOutputMemorySize exact=1");
+    puts("PASS mesh draws: a mesh program alone, task programs from their first workgroup, a per-primitive SPH, "
+         "outputs past maxMeshOutputMemorySize, and the sets of the mesh stages exact=1");
     return 0;
 }
