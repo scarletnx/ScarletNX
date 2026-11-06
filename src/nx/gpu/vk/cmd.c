@@ -457,19 +457,24 @@ static u64 big_size(u64 size) {
     while (s < size) s *= 2;
     return s < g_vk.alloc_cap ? s : g_vk.alloc_cap;
 }
-/* A chunk of size bytes for ring, or a big buffer of that size class (big), handed out to slot (a frame slot plus
-   one): the one of the pool given back last that suits, else a new one. bar: the output ring's first BAR_RING_MAX of
-   a frame, in device memory the CPU maps when it has room (bar_room): one there, or a new one there, else one in host
-   memory, which a new one there replaces only below the room a ring coming back from host memory needs. 0 when none
-   could be made */
+/* A chunk of size bytes for ring, or a big buffer of that size class or more (big), handed out to slot (a frame slot
+   plus one): the one of the pool given back last that suits, of big buffers the smallest, else a new one. Memory the
+   CPU wrote before takes its writes several times faster than a new buffer's: an 8192x8192 texture's copy engine
+   upload took 43 ms in a new 32 MiB buffer, 28 ms in a 256 MiB ring written before. bar: the output ring's first
+   BAR_RING_MAX of a frame, in device memory the CPU maps when it has room (bar_room): one there, or a new one there,
+   else one in host memory, which a new one there replaces only below the room a ring coming back from host memory
+   needs. 0 when none could be made */
 static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
     u32 here = 0, other = 0; /* the chunks of the pool in the memory wanted, and in the other memory */
     for (u32 i = 0; i < g_cmd.nchunk; i++) {
         const Chunk* c = &g_cmd.chunk[i];
         u32* pick;
-        if (!c->buf || c->slot || c->ring != ring || c->size != size || (int)c->big != big) continue;
+        if (!c->buf || c->slot || c->ring != ring || (int)c->big != big || (big ? c->size < size : c->size != size))
+            continue;
         pick = (int)c->bar == bar ? &here : &other;
-        if (!*pick || c->freed >= g_cmd.chunk[*pick - 1].freed) *pick = i + 1;
+        if (!*pick || c->size < g_cmd.chunk[*pick - 1].size ||
+            (c->size == g_cmd.chunk[*pick - 1].size && c->freed >= g_cmd.chunk[*pick - 1].freed))
+            *pick = i + 1;
     }
     if (!here && bar) {
         VmaBudget budget[VK_MAX_MEMORY_HEAPS];
