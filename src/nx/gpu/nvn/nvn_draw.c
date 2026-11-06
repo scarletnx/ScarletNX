@@ -71,11 +71,19 @@ static void keep(void* kept, const void* made, size_t n, u64* gen) {
 }
 
 /* Bytes [p, p + n) within one inline bank written: the renderer's copy takes that bank's dirty span at the next
-   draw. A base vertex change touches four bytes in each stage's bank 0, not the unchanged bytes between stages. */
+   draw. A base vertex change touches four bytes in each stage's bank 0, not the unchanged bytes between stages. The
+   root tables follow the banks and have a span of their own */
 static void inl_wrote(NvnDraw* d, const u8* p, u32 n) {
     uintptr_t at = (uintptr_t)p, base = (uintptr_t)&d->inl;
     if (at < base || at - base >= sizeof d->inl) return; /* compute's blocks */
     u32 off = (u32)(at - base);
+    if (off >= offsetof(DsInline, root)) {
+        u32 first = off - (u32)offsetof(DsInline, root);
+        d->dirty |= D_INLINE;
+        if (first < d->root_lo) d->root_lo = (u16)first;
+        if (first + n > d->root_hi) d->root_hi = (u16)(first + n);
+        return;
+    }
     u32 bank = off >= offsetof(DsInline, bank2);
     u32 bytes = bank ? DS_INLINE_BANK2 : DS_INLINE_BANK0;
     if (bank) off -= offsetof(DsInline, bank2);
@@ -153,6 +161,8 @@ void nvn_draw_init(NvnDraw* d, u32 owner) {
         d->inl_hi[0][s] = DS_INLINE_BANK0;
         d->inl_hi[1][s] = DS_INLINE_BANK2;
     }
+    d->root_lo = 0;
+    d->root_hi = DS_ROOT_BYTES;
 }
 
 /* ---- conversions of NVN's enumerants */
@@ -615,6 +625,16 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
                 d->inl_hi[bank][s] = 0;
             }
         }
+        if (d->root_lo < d->root_hi) {
+            u8* kept = d->ds.inl.root + d->root_lo;
+            const u8* made = d->inl.root + d->root_lo;
+            if (memcmp(kept, made, (u32)(d->root_hi - d->root_lo))) {
+                memcpy(kept, made, (u32)(d->root_hi - d->root_lo));
+                changed = 1;
+            }
+        }
+        d->root_lo = DS_ROOT_BYTES;
+        d->root_hi = 0;
         if (changed) new_gen(&d->ds.gen[DS_INLINE]);
     }
     d->dirty = 0;
