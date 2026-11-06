@@ -35,6 +35,7 @@ void pm_lock(PMutex* m) { CHECK(!pthread_mutex_lock(&m->l)); }
 void pm_unlock(PMutex* m) { CHECK(!pthread_mutex_unlock(&m->l)); }
 void pm_lock_announce(PMutex* m, const char* name) { (void)m, (void)name; }
 /* this host's pages, or the larger ones of --host_page=N (ldr_service_64k_pages), as plat_posix.c */
+int g_ounce; /* an Ounce game's (main.c): none here */
 static u64 g_host_page;
 u64 plat_vm_page(void) {
     u64 page = (u64)sysconf(_SC_PAGESIZE);

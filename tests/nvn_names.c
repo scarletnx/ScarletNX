@@ -81,6 +81,15 @@ void arm_run(SnxArmCPU* c, SnxArmBlock first, u32 stop_at) {
     (void)stop_at;
 }
 void gpu_kick(void) {}
+/* native memory pools (nvn_object.c's): none here */
+int gsv_native_memory_cpu(u32 memory, u64* cpu, u64* size) {
+    (void)memory, (void)cpu, (void)size;
+    return 0;
+}
+u32 native_video_memory_pitch(u32 memory) {
+    (void)memory;
+    return 0;
+}
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
