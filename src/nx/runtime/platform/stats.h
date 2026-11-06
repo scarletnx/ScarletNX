@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Stats (settings.txt's stats): the game's frames a second and its last frame's time, the processor and the memory
-   the process takes, the GPU's busy share and time a frame, and a graph of the times of its last STATS_FRAMES frames,
-   in stats_corner's corner over the game; in showcase's own corner beside showcase's box, toward the picture's middle.
-   On every system: a value it does not tell shows as ? */
+   the process takes, the GPU's busy share and time a frame, the video memory it uses of the driver's budget, and a
+   graph of the times of its last STATS_FRAMES frames, in stats_corner's corner over the game; in showcase's own corner
+   beside showcase's box, toward the picture's middle. On every system: a value it does not tell shows as ? */
 #ifndef SNX_STATS_H
 #define SNX_STATS_H
 #include "nx/runtime/platform/ui.h"
@@ -11,7 +11,7 @@
 
 #define STATS_FRAMES 120   /* the frames the graph shows */
 #define STATS_COLS   24    /* the box's width, in letters */
-#define STATS_LINES  3     /* its lines of text, above the graph */
+#define STATS_LINES  4     /* its lines of text, above the graph */
 #define STATS_TOP_MS 50.0f /* the graph's top; a longer frame reaches it */
 /* the graph's two guides, a frame of a 60 FPS game and of a 30 FPS one; a frame past the second draws in the failure
    colour */
@@ -19,18 +19,22 @@
 #define STATS_30_MS  (1000.0f / 30)
 
 /* what the renderer reads of the GPU at a frame while stats is on: the time its graphics queue was busy, summed from
-   any start (busy_ns), where it can time that queue (timed) */
+   any start (busy_ns), where it can time that queue (timed); the device-local heap's use by the process and the
+   driver's budget for it, in bytes, 0 where the driver does not tell them */
 typedef struct {
     u64 busy_ns;
     int timed;
+    u64 vram, vram_budget;
 } SnxStatsGpu;
 /* what the measured lines say. cpu: the processor's share of the machine in percent, -1 unknown; memory in bytes, 0
-   unknown. gpu: the graphics queue's busy share of the time in percent, -1 unknown; gpu_ns its busy time a frame */
+   unknown. gpu: the graphics queue's busy share of the time in percent, -1 unknown; gpu_ns its busy time a frame.
+   vram and vram_budget as SnxStatsGpu's */
 typedef struct {
     int cpu;
     u64 memory;
     int gpu;
     u64 gpu_ns;
+    u64 vram, vram_budget;
 } SnxStatsMeasure;
 
 /* stats_corner's: tl, tr, bl or br; another value keeps the corner it had, said in the log */

@@ -560,6 +560,18 @@ int vk_mem_heap(void) {
     return g_heap;
 }
 
+/* Without the extension VMA's numbers are its own guess, not the driver's: its blocks for the use, 80% of the heap's
+   size for the budget. The stats box shows ? for them then, as for any value the device does not tell */
+void vk_mem_driver_use(u64* usage, u64* budget) {
+    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    int heap = vk_mem_heap();
+    *usage = *budget = 0;
+    if (!g_vk.has_budget) return;
+    vmaGetHeapBudgets(g_vk.vma, b); /* the driver's, asked at frame_recycle's vmaSetCurrentFrameIndex */
+    *usage = b[heap].usage;
+    *budget = b[heap].budget;
+}
+
 /* the heap's use as the caches see it, and its budget. The use leaves out the free space inside VMA's blocks, which
    the next allocations fill before VMA asks the driver for more, and the memory of evicted entries the frames in
    flight still hold (vk_deferred_bytes): it goes once they are done */

@@ -152,6 +152,8 @@ typedef struct {
     int has_calibrated_mono; /* CLOCK_MONOTONIC among the calibrateable time domains */
     int has_surface_caps2;   /* the instance's VK_KHR_get_surface_capabilities2, which present timing is asked by */
     u32 gfx_timestamp_bits;  /* the graphics queue family's timestampValidBits: 0 where it writes no timestamps */
+    /* VK_EXT_memory_budget: the driver tells each heap's use and budget (VMA reads them, and guesses without it) */
+    int has_budget;
     /* VK_GOOGLE_display_timing, enabled without present waits (Android): presents carry ids and times to be shown at,
        and the swapchain tells when each was */
     int has_display_timing;
@@ -292,6 +294,9 @@ int vk_uma_migrate(int on);
    least ago_ns and at least `presents` presents (0: none has) */
 void vk_mem_use(u64* usage, u64* budget);
 int vk_mem_heap(void); /* that heap's index */
+/* that heap's use by this process and its budget as the driver tells them (VK_EXT_memory_budget), for the stats box;
+   0 and 0 without the extension */
+void vk_mem_driver_use(u64* usage, u64* budget);
 void vk_mem_present(void);
 u32 vk_present_before(u64 ago_ns, u32 presents);
 
