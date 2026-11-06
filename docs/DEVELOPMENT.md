@@ -198,16 +198,18 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   (`prepare_shaders=2`, which the first run after a rebuild spends translating the game's shaders again);
   `--shot=out` → CWD `out.ppm`; `--shot_every=N` → every N frames.
   `--script=ms:hexbuttons,...` (or `Nf:hexbuttons` to press at present N), `--press_len=ms` (default 300).
-  `--input_record=FILE` writes player 1's input as the game takes it (the controls', the script's and the on-screen
-  controls' together) to FILE, a new file (one that exists is refused): a line `frame:buttons:lx,ly,rx,ry` each present
-  it changed, at most one a present, `frame` the presents since the game's start, `buttons` hex as the script's masks,
-  each stick axis -32767 to 32767. `--input_replay=FILE` plays such a file as player 1's input: each present takes the
-  last line at or before its frame, neutral before the first, and the controls come back at the present after the last
-  line's. `#` lines and empty ones are left for notes; a line not in that form, an axis out of range or a frame not past
-  the one before ends the run with its line number and text. Both together record what the replay gave. A paused game
-  takes no input, so neither writes nor plays there; touch and motion are not recorded. The run still ends at
-  `--seconds` or `--frames`. The replay goes by presents: where one build takes more presents than another to load a
-  scene, the route slides from there on.
+  `--input_record=N` records player 1's input as the game takes it (the controls', the script's and the on-screen
+  controls' together) to the game's slot N, 1 to 9: `<game folder>/tas/<id>.<N>.snxtas`, as save states are
+  `states/<id>.<slot>.snxstate`. What the slot held is replaced, and the log says how many frames that was. The file
+  has a line `frame:buttons:lx,ly,rx,ry` each present the input changed, at most one a present: `frame` the presents
+  since the game's start, `buttons` hex as the script's masks, each stick axis -32767 to 32767. `--input_replay=N`
+  plays slot N's recording as player 1's input: each present takes the last line at or before its frame, neutral
+  before the first, and the controls come back at the present after the last line's. `#` lines and empty ones are
+  left for notes; a line not in that form, an axis out of range or a frame not past the one before ends the run with
+  the slot, its line number and its text, and so do a slot outside 0 to 9 and one slot both recorded and played. Both
+  on, on two slots, record what the replay gave. A paused game takes no input, so neither writes nor plays there;
+  touch and motion are not recorded. The run still ends at `--seconds` or `--frames`. The replay goes by presents:
+  where one build takes more presents than another to load a scene, the route slides from there on.
   `--swkbd_text=TEXT`: the software keyboard answers TEXT instead of showing its box over the game.
   `--pause=at:length,...` pauses the whole game at `at` ms of the script's clock for `length` ms, and logs whether
   guest memory and guest time stayed unchanged while it held (`pause:` lines).

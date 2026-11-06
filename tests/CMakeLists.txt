@@ -2783,7 +2783,8 @@ add_executable(snx-test-quad-indices quad_indices.c)
 snx_test_target(snx-test-quad-indices 99)
 target_include_directories(snx-test-quad-indices PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME quad_indices COMMAND snx-test-quad-indices)
-add_executable(snx-test-unattended-script unattended_script.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+add_executable(snx-test-unattended-script unattended_script.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c"
+    "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c") # plat_mkdir, the slots' folder
 snx_test_target(snx-test-unattended-script 11)
 target_link_libraries(snx-test-unattended-script PRIVATE m scarletnx-common) # snx_read_file, snx_fopen
 add_test(NAME unattended_script COMMAND snx-test-unattended-script "${CMAKE_CURRENT_BINARY_DIR}")
