@@ -24,6 +24,14 @@ the ownership map and copies it on the GPU. Only when the guest CPU (recompiled 
 touches an owned range is the data written back into guest memory, the one readback the rules allow, and the range
 is the CPU's again.
 
+A storage buffer a draw writes stays on the GPU the same way (`keep_new` in `vk/buffer.c`), as a dispatch's does
+(`res_bind` in `vk/compute.c`). Where the binding is whole pages of one run of guest memory that the CPU hasn't made
+land in the last 1200 presents, its bytes are GPU-owned from the bind on, by the owner holding them or by one made from
+memory, and the draws write that owner in place. The trap lands it after the submission that wrote it, so the CPU
+reads the draws' stores and writes after them, and nothing is compared. Any other binding is copied, read back at its
+fence and merged by the byte with what the CPU wrote meanwhile, but with unified memory, where the draws write guest
+memory in place (below).
+
 Render targets stay the renderer's: their pixels reach guest memory only when a consumer asks. Pitch-linear color
 targets are the exception, as a game draws into those to read the result on the CPU: each release publishes the ones
 drawn since the last (`vk_rt_publish_linear` in `vk/surface.c`), and storage images are published the same way

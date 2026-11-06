@@ -904,6 +904,7 @@ typedef struct VkOwnRes {
     u64 size;
     u64 written; /* the graphics submission its last publish's writes were recorded in: a landing waits for that one */
     u64 serial;  /* new with each write: what its bytes hash as (vk_guest_peek), never its address, a freed one's */
+    u64 read;    /* buffer.c's count of reads where it is when a draw or dispatch last read it there (buf_get_owned) */
     u32 refs;    /* the creator's, and one an owned range */
 } VkOwnRes;
 int vk_own_init(void);
@@ -919,7 +920,8 @@ void vk_own_res_unref(VkOwnRes* r);
    publish, calls it itself. Every writer of r records its writes outside rendering passes, after a barrier from what
    read r before (a new r has no readers), and a barrier to all later work before it calls this: what reads r later,
    inside a pass too, reads it where it is with no barrier of its own (buffer.c buf_get_owned, compute.c res_bind).
-   Under vk_lock */
+   The one exception, a draw writing r in place (buffer.c keep_new), stays a pending result until its submission is
+   done, and what reads r meanwhile reads that result, with the barriers it takes (gfx_gpu_src). Under vk_lock */
 void vk_own_res_wrote(VkOwnRes* r);
 /* the guest CPU bytes [cpu, cpu + size) hold r's bytes from off on once the work recorded so far is done: owned, or,
    where the host can't trap them, landed at once (the GPU waited for). With unified memory, copied there on the GPU

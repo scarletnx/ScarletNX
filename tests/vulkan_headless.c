@@ -4496,6 +4496,14 @@ int main(int argc, char** argv) {
         free(ppm);
         return result;
     }
+    if (getenv("SNX_TEST_BUFFER_KEEP_ONLY")) { /* the writable storage buffers' check alone, for its mutants */
+        CHECK(!check_storage_buffer_keep());
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan writable storage buffers only: %u validation messages\n",
+               g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_MSAA_ONLY")) { /* the multisample checks alone */
         CHECK(!check_multisample_shader_gate());
         CHECK(!check_msaa());
@@ -4635,6 +4643,7 @@ int main(int argc, char** argv) {
     CHECK(!check_vertex_input_file_key());
     CHECK(!check_targetless_stores());
     CHECK(!check_storage_image_keep());
+    CHECK(!check_storage_buffer_keep());
     CHECK(!check_packed_depth());
     CHECK(!check_astc_mode());
     CHECK(!check_depth_array());
