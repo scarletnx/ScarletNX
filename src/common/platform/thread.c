@@ -30,7 +30,7 @@
 
 /* The waits pm_lock and pc_wait note while they block: a slot per thread, taken the first time it waits, read by the
    hang report while the threads run (each field alone is atomic; a report may catch a wait as it changes) */
-#define PM_WAITS 128
+#define PM_WAITS 512 /* a game's guest threads and the runtime's own: one large game has over 200 */
 static struct {
     uint64_t tid;
     const void* m;
