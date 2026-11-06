@@ -381,12 +381,17 @@ static u32 round_sum(Ctx* c, u32 mode, u32 p, u32 q) {
 }
 /* FADD: x + y in mode */
 static u32 float_add(Ctx* c, u32 mode, u32 x, u32 y) {
-    if (mode == 0) return nocontract(c, spv_emit_fadd(&c->e, c->t_f32, x, y));
+    if (mode == 0 || !g_shader_float64) return nocontract(c, spv_emit_fadd(&c->e, c->t_f32, x, y));
     return round_sum(c, mode, widen(c, x), widen(c, y));
 }
 /* FMUL: x * y * 2^(scale - 4) in mode. The product of two floats is exact in a double */
 static u32 float_mul(Ctx* c, u32 mode, u32 scale, u32 x, u32 y) {
     if (mode == 0 && scale == 4) return nocontract(c, spv_emit_fmul(&c->e, c->t_f32, x, y));
+    if (!g_shader_float64) { /* to nearest in floats: the scale is a power of two, exact but at the range's ends */
+        u32 r = nocontract(c, spv_emit_fmul(&c->e, c->t_f32, x, y));
+        if (scale == 4) return r;
+        return nocontract(c, spv_emit_fmul(&c->e, c->t_f32, r, cf(c, (float)(1u << scale) / 16.0f)));
+    }
     u32 f64 = f64_type(c);
     u32 d = nocontract(c, op2(c, SPV_OP_F_MUL, f64, widen(c, x), widen(c, y)));
     if (scale != 4) {
@@ -398,7 +403,7 @@ static u32 float_mul(Ctx* c, u32 mode, u32 scale, u32 x, u32 y) {
 /* FFMA: x * y + z in mode. To nearest, a float FMA, as spirv_translate.c writes it. A directed mode rounds the
    exact sum of the product (exact in a double) and z */
 static u32 float_fma(Ctx* c, u32 mode, u32 x, u32 y, u32 z) {
-    if (mode == 0) return spv_emit_glsl_ternary(&c->e, c->t_f32, c->glsl, SPV_GLSL_FMA, x, y, z);
+    if (mode == 0 || !g_shader_float64) return spv_emit_glsl_ternary(&c->e, c->t_f32, c->glsl, SPV_GLSL_FMA, x, y, z);
     u32 product = nocontract(c, op2(c, SPV_OP_F_MUL, f64_type(c), widen(c, x), widen(c, y)));
     return round_sum(c, mode, product, widen(c, z));
 }
@@ -2394,6 +2399,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                             &c->e, c->t_i32, spv_emit_bitcast(&c->e, c->t_i32, x), at, cu(c, width)))
                               : spv_emit_bitfield_uextract(&c->e, c->t_u32, x, at, cu(c, width));
             }
+            if (!g_shader_float64) mode = 0; /* to nearest in floats, as FADD without doubles */
             u32 type = mode ? f64_type(c) : c->t_f32;
             u32 v = is_signed ? spv_emit_convert_s_to_f(&c->e, type, spv_emit_bitcast(&c->e, c->t_i32, x))
                               : spv_emit_convert_u_to_f(&c->e, type, x);
