@@ -72,6 +72,9 @@ static u64 g_draws_at_begin;
 /* the gaps between passes by what was recorded in them: dispatches, else copies, else barriers, else nothing (the
    GPU waiting for the next submission or a semaphore) */
 static const char* const g_gap_name[4] = {"with dispatches", "with copies", "with barriers only", "with nothing"};
+/* the same gaps and idle sums as plots, for a --tracy run whose vk_gpu_profile leaves the log lines out */
+static const char* const g_gap_plot[4] = {"gpu gap: dispatches", "gpu gap: copies", "gpu gap: barriers",
+                                          "gpu gap: nothing"};
 static u64 g_gap_ns[4], g_gaps[4];
 static u64 g_x_at_end, g_b_at_end, g_d_at_end, g_k_at_end[3], g_bytes_at_end;
 /* the copy gaps by their mix: buffer copies only, with buffer-image copies, with image copies or blits */
@@ -91,6 +94,8 @@ enum { IDLE_WAITED, IDLE_FRAME, IDLE_RECORDING, IDLE_QUEUED, IDLE_N };
 static const char* const g_idle_name[IDLE_N] = {
     "the CPU waited for the submission that ended (a round trip)", "the CPU between frames (after a present)",
     "the CPU still recording the next one", "submitted, not started (semaphores, the recording thread)"};
+static const char* const g_idle_plot[IDLE_N] = {"gpu idle: waited", "gpu idle: frame", "gpu idle: recording",
+                                                "gpu idle: queued"};
 static u64 g_idle_ns[IDLE_N], g_idles[IDLE_N], g_busy_ns, g_subs, g_sub_why[VK_SUB_N];
 static u64 g_round_ns[VK_WAIT_N]; /* IDLE_WAITED by the kind of the CPU's wait */
 static u64 g_last_end;            /* CLOCK_MONOTONIC of the last submission's end, 0 none */
@@ -495,9 +500,34 @@ static int key_cmp(const void* a, const void* b) {
     u64 x = ((const GpKey*)a)->ns, y = ((const GpKey*)b)->ns;
     return x < y ? 1 : x > y ? -1 : 0;
 }
+/* the window's gaps and idle time as plots: the log's sums, so a --tracy run whose setting is off still shows where
+   the GPU's time went. The gaps are per frame, the idle time per present, and the busy share of the window's wall */
+static void gp_plots(void) {
+    u64 now = plat_ns(), presents = (u32)(g_vk_present - g_present0), wall = now - g_t0;
+    double f = g_frames ? (double)g_frames : 1.0;
+    for (int c = 0; c < 4; c++) SNX_PLOT(g_gap_plot[c], (double)g_gap_ns[c] / 1e6 / f);
+    for (int c = 0; c < IDLE_N; c++)
+        SNX_PLOT(g_idle_plot[c], presents ? (double)g_idle_ns[c] / 1e6 / (double)presents : 0.0);
+    if (g_t0 && wall) SNX_PLOT("gpu busy", 100.0 * (double)g_busy_ns / (double)wall);
+    SNX_PLOT("gpu submissions/frame", (double)g_subs / f);
+}
 /* the targets that took the most GPU time, then a fresh sum */
 static void gp_report(void) {
-    if (g_on <= 0 || !g_frames) return;
+    if (!g_frames) return;
+    gp_plots();
+    if (g_on <= 0) {
+        /* the setting is off and the client asked for the sums: the plots have them, and the next window starts */
+        memset(g_mix_ns, 0, sizeof g_mix_ns);
+        memset(g_mixes, 0, sizeof g_mixes);
+        memset(g_mix_bytes, 0, sizeof g_mix_bytes);
+        memset(g_mix_n, 0, sizeof g_mix_n);
+        memset(g_gap_ns, 0, sizeof g_gap_ns);
+        memset(g_gaps, 0, sizeof g_gaps);
+        memset(g_key, 0, sizeof g_key);
+        g_pass_ns = g_span_ns = g_frames = g_lost = 0;
+        gp_idle_report();
+        return;
+    }
     static GpKey sorted[GP_KEYS];
     memcpy(sorted, g_key, sizeof sorted);
     qsort(sorted, GP_KEYS, sizeof *sorted, key_cmp);
