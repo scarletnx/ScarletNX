@@ -261,6 +261,16 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
     if (t.magic != NVN_MAGIC('T', 'E', 'X', 0) || !t.gpu) return 0;
     u32 format = has_view && (v->set & NVN_VIEW_FORMAT) ? v->format : t.d.format;
     s->format = nvn_rt_format(format, depth);
+    /* A compressed texture as a target: each texel of the target is one of its blocks, which the program writes as
+       integers (an encoder on the GPU: one game encodes the levels of its BC7 textures so). 16-byte blocks are
+       RGBA32UI texels, 8-byte ones RG32UI, the target as many texels across and down as the level has blocks */
+    int bw = 1, bh = 1, bpb = nvn_fmt_bpb((int)format, &bw, &bh);
+    if (!s->format && (bw > 1 || bh > 1) && (bpb == 16 || bpb == 8)) {
+        s->format = bpb == 16 ? 0xC2 : 0xCD; /* RGBA32UI, RG32UI */
+        *depth = 0;
+    } else {
+        bw = bh = 1;
+    }
     if (!s->format) {
         LOG_LIMIT(8, "nvn: a render target of format %#x, which no target takes\n", format);
         return 0;
@@ -282,21 +292,22 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
     s->gva = t.gpu + nvn_tex_level_offset(&t.d, level) + (u64)layer * l.layer_size;
     u32 mode = nvn_tex_msaa(t.d.samples);
     *msaa = mode;
-    s->width = (t.d.width >> level ? t.d.width >> level : 1) << ds_msaa_log2_x(mode);
-    s->height = (t.d.target == NVN_TEXTURE_TARGET_1D_ARRAY ? 1 : (t.d.height >> level ? t.d.height >> level : 1))
+    s->width = (((t.d.width >> level ? t.d.width >> level : 1) + (u32)bw - 1) / (u32)bw) << ds_msaa_log2_x(mode);
+    s->height = (t.d.target == NVN_TEXTURE_TARGET_1D_ARRAY
+                     ? 1
+                     : ((t.d.height >> level ? t.d.height >> level : 1) + (u32)bh - 1) / (u32)bh)
                 << ds_msaa_log2_y(mode);
     s->layers = layers;
     s->layer_stride = l.layer_size;
     if (t.d.flags & NVN_TEX_LINEAR) {
-        int bw, bh, bpb = nvn_fmt_bpb((int)t.d.format, &bw, &bh);
+        bpb = nvn_fmt_bpb((int)t.d.format, NULL, NULL);
         u32 align = (t.d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) ? 128 : 32;
         s->mem = 1u << 12;
         s->width = t.d.stride ? t.d.stride : ((u32)bpb * s->width + align - 1) & ~(align - 1);
     } else {
         /* the width a whole number of GOBs (64 bytes) across, as the game's driver gives a block-linear target: a
            sparse texture's level as many as its rows of whole tiles have */
-        int bw, bh, bpb = nvn_fmt_bpb((int)format, &bw, &bh);
-        if (bpb > 0 && bw == 1)
+        if (bpb > 0)
             s->width =
                 (l.tile_w ? nvn_tex_level_gobs(&t.d, level) * 64 : ((u32)bpb * s->width + 63) / 64 * 64) / (u32)bpb;
         unsigned th, td;

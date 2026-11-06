@@ -66,9 +66,8 @@ int nvn_subroutine_apply(u32 linkage, i32 first, i32 count, const i32* values) {
 }
 /* the texture layout and formats: only the render target records use them */
 u32 nvn_rt_format(u32 format, int* depth) {
-    (void)format;
-    (void)depth;
-    return 0;
+    *depth = 0;
+    return format == NVN_FORMAT_RGBA8 ? 0xD5 : 0; /* compressed formats: no target takes them */
 }
 void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
     (void)d;
@@ -100,9 +99,10 @@ u32 nvn_tex_msaa(int samples) {
     return 0;
 }
 int nvn_fmt_bpb(int format, int* bw, int* bh) {
-    (void)format;
-    *bw = *bh = 1;
-    return 0;
+    int bc7 = format == NVN_FORMAT_BPTC_UNORM_SRGB, bc1 = format == NVN_FORMAT_RGBA_DXT1;
+    if (bw) *bw = bc7 || bc1 ? 4 : 1;
+    if (bh) *bh = bc7 || bc1 ? 4 : 1;
+    return bc7 ? 16 : bc1 ? 8 : format == NVN_FORMAT_RGBA8 ? 4 : 0;
 }
 void logf_(int lvl, const char* fmt, ...) {
     (void)lvl;
@@ -967,8 +967,40 @@ static void test_barriers(void) {
     g_none.method_barrier = NULL;
 }
 
+/* a compressed texture bound as a render target (one game encodes its BC7 textures' levels so): an integer target
+   whose texels are its blocks, 16 bytes RGBA32UI and 8 RG32UI, as many across and down as the level has blocks */
+#define TEXSNAP 0x4000u
+static void test_compressed_targets(void) {
+    static const struct {
+        u32 format, rt, w, h;
+    } cases[] = {{NVN_FORMAT_BPTC_UNORM_SRGB, 0xC2, 16, 16},
+                 {NVN_FORMAT_RGBA_DXT1, 0xCD, 16, 16},
+                 {NVN_FORMAT_RGBA8, 0xD5, 64, 64}};
+    for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) {
+        NvnTexture t = {0};
+        t.magic = NVN_MAGIC('T', 'E', 'X', 0);
+        t.gpu = 0x100000;
+        t.d.format = (u16)cases[i].format;
+        t.d.target = NVN_TEXTURE_TARGET_2D;
+        t.d.width = t.d.height = 256;
+        t.d.depth = 1;
+        t.d.levels = 9;
+        memcpy(g_mem + TEXSNAP, &t, NVN_TEX_SNAP);
+        NvnView v = {0};
+        v.set = NVN_VIEW_LEVELS;
+        v.base_level = 2;
+        DsSurf ds;
+        int depth = 1;
+        u32 msaa;
+        check(nvn_draw_surface(TEXSNAP, &v, &ds, &depth, &msaa) && ds.format == cases[i].rt && !depth &&
+                  ds.width == cases[i].w && ds.height == cases[i].h,
+              "format %#x as a target: %#x, %ux%u", cases[i].format, ds.format, ds.width, ds.height);
+    }
+}
+
 int main(int argc, char** argv) {
     nvn_init();
+    test_compressed_targets();
     test_init();
     test_barriers();
     test_bind_program();
