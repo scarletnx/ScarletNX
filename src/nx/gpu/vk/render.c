@@ -1403,7 +1403,7 @@ static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) 
 /* whether slots a and b read their handles from the same words (tex_handle) */
 static int tex_same_handle(const ShTex* a, const ShTex* b) {
     return a->cbuf_off == b->cbuf_off && a->bindless == b->bindless && a->bl_cbuf == b->bl_cbuf && a->bl2 == b->bl2 &&
-           a->bl2_cbuf == b->bl2_cbuf && a->bl2_off == b->bl2_off &&
+           a->bl2_cbuf == b->bl2_cbuf && a->bl2_off == b->bl2_off && a->stride == b->stride &&
            (a->flags & SNX_TEX_INDEXED) == (b->flags & SNX_TEX_INDEXED);
 }
 /* the resolutions of s's texture slots, from res0, which fs_key filled for s0's: res0 itself when s numbers its slots
@@ -1868,11 +1868,11 @@ static int indexed_uniform(DescWrites* writes, VkDescriptorSet set, int stage, u
 }
 
 /* The elements of SNX_VKB_TEXARRAY, from an indexed texture slot: SNX_TEX_ARRAY handles from the slot's offset on,
-   (1 << shift) bytes apart. A handle past the constant buffer's size, or with a header or sampler index past its
-   pool's limit (no texture on hardware either), reads as its kind's null texture. So does a texture of another kind
-   than the slot's. Targets use snapshots refreshed after a draw changes them. Tables of different kinds share the
-   binding, each element viewed as the
-   kind of the table that names it: a handle that two kinds name has an element for each. */
+   (1 << shift) bytes apart, or as many as the slot says, its stride apart. A handle past the constant buffer's size, or
+   with a header or sampler index past its pool's limit (no texture on hardware either), reads as its kind's null
+   texture. So does a texture of another kind than the slot's. Targets use snapshots refreshed after a draw changes
+   them. Tables of different kinds share the binding, each element viewed as the kind of the table that names it: a
+   handle that two kinds name has an element for each. */
 static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int* first, int count, Surf** rt, Surf* zt,
                           u32 n, VkImageLayout layout, DescWrites* d, VkDescriptorSet set) {
     /* each table's kind, named by the first table of that kind; a non-shadow kind's elements fill the depth binding
@@ -1904,13 +1904,14 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
         const ShTex* kind = &s->si.tex[first[kind_of[table]]];
         ShTex plain = *kind;
         plain.shadow = 0;
-        u32 shift = (u32)st->flags >> 4, bank = st->bl_cbuf & 31;
+        u32 stride = st->stride ? st->stride : 1u << ((u32)st->flags >> 4), bank = st->bl_cbuf & 31;
+        u32 elements = st->count ? st->count : SNX_TEX_ARRAY;
         DsCbBlock in = ds_cb_inline(ds, stage, bank);
         u64 cba = bank < 18 ? ds->bind.cb_addr[stage][bank] : 0;
         u32 size = in.bytes ? in.size : cba ? ds->bind.cb_size[stage][bank] : 0;
         if (!in.bytes && (size > 65536 || !size)) size = 65536;
-        for (u32 k = 0; k < SNX_TEX_ARRAY; k++) {
-            u32 at = st->cbuf_off * 4 + (k << shift);
+        for (u32 k = 0; k < elements; k++) {
+            u32 at = st->cbuf_off * 4 + k * stride;
             /* past the constant buffer: the null texture. A handle of 0 is header 0 with sampler 0, a texture like any
                other (edenprobe's bindless case samples it) */
             if ((!cba && !in.bytes) || at + 4 > size) {

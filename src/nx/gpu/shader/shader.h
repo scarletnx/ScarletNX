@@ -30,12 +30,15 @@ typedef struct {
     u8 flags;    /* bit 0 raw integer surface load, bit 1 multisample fetch, bit 2 SNX_TEX_INDEXED; bits 4-7 the
                     indexed table's stride shift */
     u32 bl2_off; /* the second read's offset, in words */
+    /* an indexed table whose elements aren't a power of two apart (an Ounce's, by IMAD): the bytes between them, and
+       how many there are. 0: the shift in flags, and SNX_TEX_ARRAY */
+    u16 stride, count;
 } ShTex;
 #define SH_HANDLE_IMM 255 /* ShTex.bl2_cbuf of a handle's half that is a constant (the sampler's, from a MOV32I) */
 /* whether two indexed slots read the same handle table the same way */
 static inline int shader_same_indexed_table(const ShTex* a, const ShTex* b) {
     return a->bl_cbuf == b->bl_cbuf && a->cbuf_off == b->cbuf_off && a->flags == b->flags && a->type == b->type &&
-           a->array == b->array && a->shadow == b->shadow;
+           a->array == b->array && a->shadow == b->shadow && a->stride == b->stride && a->count == b->count;
 }
 /* Whether two indexed slots view their elements as the same kind of image, with the integer and signed integer
    texture masks. Each kind has its own SPIR-V array, all of them on SNX_VKB_TEXARRAY (and the shadow kinds' also on
