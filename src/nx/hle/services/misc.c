@@ -1325,6 +1325,20 @@ static int nn_streamplay_detail_IServiceCreator_CreateUserService(SvcObj* self, 
     *service = nn_streamplay_detail_IUserService_new();
     R_SUCCEED();
 }
+#define STPL_GUEST_HID_BYTES 0x9b000 /* Lichii's GuestHidMemorySize */
+static int nn_streamplay_detail_IUserService_GetGuestHidSharedMemory(SvcObj* self, u64* size, u64* offset,
+                                                                    u32* memory) {
+    (void)self;
+    if (!g_hle.misc.stpl_shm) {
+        KShmem* s = kshmem_new(STPL_GUEST_HID_BYTES, "stpl:u guest hid");
+        kobj_ref(&s->o); /* the service's, for as long as it runs: each request gets the same memory */
+        g_hle.misc.stpl_shm = kobj_id(&s->o);
+    }
+    *size = STPL_GUEST_HID_BYTES;
+    *offset = 0;
+    *memory = h_new(kobj_at(g_hle.misc.stpl_shm));
+    R_SUCCEED();
+}
 SvcObj* new_streamplay(void) { return nn_streamplay_detail_IServiceCreator_new(); }
 SvcObj* new_chat(void) { return nn_chat_IUserService_new(); }
 SvcObj* new_ns(void) { return nn_ns_detail_IServiceGetterInterface_new(); }

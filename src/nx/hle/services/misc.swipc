@@ -465,4 +465,8 @@ interface nn::streamplay::detail::IServiceCreator is stpl:u {
     [0] CreateUserService(u32 version) -> object<nn::streamplay::detail::IUserService> service;
 }
 interface nn::streamplay::detail::IUserService {
+    # GetGuestHidSharedMemory (Lichii's nx2_streamplay.h and ngc/guest_hid.h, GPL-3.0-or-later): the size and the
+    # offset of the GameShare guest HID memory, and the memory. nn::streamplay::detail::HidApplicationResourceHolder
+    # maps it. With no guests connected it stays zeroed
+    [300] GetGuestHidSharedMemory() -> (u64 size, u64 offset, handle<copy, shared_memory> memory);
 }

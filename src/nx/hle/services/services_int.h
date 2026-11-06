@@ -429,6 +429,7 @@ typedef struct {
     int aoc_scanned;
     i32 aoc_count, aoc_index[AOC_MAX];
     u32 irs_shm;
+    u32 stpl_shm; /* the GameShare guest HID memory of stpl:u's IUserService 300, made on first use (kobj id) */
 } HleMisc;
 /* misc's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
 typedef struct {
