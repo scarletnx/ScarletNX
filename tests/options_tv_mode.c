@@ -293,14 +293,46 @@ static void test_memory_fit_old(void) {
     g_test.write = 0;
 }
 
+/* astc_bc, deprecated for astc_mode, read from an old .ini while astc_mode has no value: 1 is astc_mode=0 (Auto),
+   written for the next run, and 0, the default every .ini had written, leaves astc_mode at its own */
+static void test_astc_bc_old(void) {
+    char *text, *again;
+    CHECK(options_astc_bc_old("1") == 0 && options_astc_bc_old("0") == -1);
+    CHECK(options_astc_bc_old("2") == -2 && options_astc_bc_old("") == -2);
+    g_test.write = 1;
+    text = open_ini("[Graphics]\nastc_bc=1\n");
+    CHECK(strstr(g_test.said, "settings: astc_bc=1, deprecated, is astc_mode=0 (Auto) now (docs/DEPRECATIONS.md)\n"));
+    CHECK(text && strstr(text, "\nastc_mode=0\n") && strstr(text, "\n[Deprecated]\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\nastc_bc=1\n"));
+    again = open_ini(text); /* the next run: astc_mode given, astc_bc not read again */
+    CHECK(!strstr(g_test.said, "settings: astc_bc=") && again && strstr(again, "\nastc_mode=0\n"));
+    free(again);
+    free(text);
+    text = open_ini("[Graphics]\nastc_bc=0\n");
+    CHECK(strstr(g_test.said, "settings: astc_bc=0, deprecated, was its default: astc_mode takes its own, 0 (Auto), "
+                              "which encodes ASTC textures again as BC7 where the GPU samples BCn but not ASTC "
+                              "(docs/DEPRECATIONS.md)\n"));
+    CHECK(text && strstr(text, "\nastc_mode=0\n"));
+    free(text);
+    text = open_ini("[Graphics]\nastc_bc=yes\n");
+    CHECK(strstr(g_test.said, "settings: astc_bc=yes, deprecated, is neither 0 nor 1: astc_mode takes its default, 0 "
+                              "(Auto)\n"));
+    free(text);
+    /* the new key given, the old one is not read */
+    text = open_ini("[Graphics]\nastc_bc=1\nastc_mode=1\n");
+    CHECK(!strstr(g_test.said, "settings: astc_bc=") && text && strstr(text, "\nastc_mode=1\n"));
+    free(text);
+    g_test.write = 0;
+}
+
 /* the log's settings line: the Display, Graphics and Performance settings off their default, each with its default */
 static void test_settings_line(void) {
     char list[2048];
-    g_settings.astc_bc = 1;
-    CHECK(options_settings(list, sizeof list) >= 1 && strstr(list, "astc_bc=1 (default 0)"));
-    g_settings.astc_bc = 0;
+    g_settings.astc_mode = 1;
+    CHECK(options_settings(list, sizeof list) >= 1 && strstr(list, "astc_mode=1 (default 0)"));
+    g_settings.astc_mode = 0;
     options_settings(list, sizeof list);
-    CHECK(!strstr(list, "astc_bc"));
+    CHECK(!strstr(list, "astc_mode"));
 }
 
 int main(void) {
@@ -310,6 +342,7 @@ int main(void) {
     test_key_twice(); /* after the TV mode tests: the file's every setting applied, which they count from nought */
     test_settings_line();
     test_memory_fit_old();
+    test_astc_bc_old();
     printf("options_tv_mode: ok\n");
     return 0;
 }

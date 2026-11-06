@@ -102,7 +102,7 @@ typedef struct {
     /* optional features that were enabled */
     VkPhysicalDeviceFeatures feat;
     int has_divisor;    /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
-    int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_bc=1 would hold its ASTC textures as BC7 */
+    int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_mode=0 holds its ASTC textures as BC7 */
     /* VK_EXT_vertex_input_dynamic_state in effect (vertex_input.h's choice): each draw sets its vertex layout, which
        pipelines leave out of their keys */
     int vertex_input_dynamic;
@@ -1006,7 +1006,7 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y, u32 w, u32 h, u32 
 /* the image levels (or regions of them) uploaded as BC7 so far, their bytes, and the bytes they would have taken as
    RGBA8 */
 void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes);
-/* the bytes of the ASTC textures decoded to RGBA8 so far (astc_bc off, or a GPU without BCn) */
+/* the bytes of the ASTC textures decoded to RGBA8 so far (astc_mode=1, or a GPU without BCn) */
 u64 vk_astc_rgba8_bytes(void);
 
 /* vic.c: the VIC composition as a compute shader, recorded in the frame's command buffer, its output planes

@@ -509,6 +509,20 @@ static int gpu_unpack(const VkFmt* f, const u32* src, u32 n, u32* depth, u8* ste
     return 0;
 }
 
+/* astc_mode: Auto (0, the default) gives an ASTC texture a BC7 image where the GPU samples BCn but not ASTC, Exact (1)
+   an RGBA8 one; where the GPU samples ASTC, both keep the game's blocks */
+static int check_astc_mode(void) {
+    for (int mode = 0; mode < 2; mode++) {
+        g_settings.astc_mode = mode;
+        const VkFormat want = g_vk.feat.textureCompressionASTC_LDR      ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
+                              : g_vk.feat.textureCompressionBC && !mode ? VK_FORMAT_BC7_UNORM_BLOCK
+                                                                        : VK_FORMAT_R8G8B8A8_UNORM;
+        CHECK(vk_tic_format(0x40, 0).vk == want);
+    }
+    g_settings.astc_mode = 0;
+    return 0;
+}
+
 static int check_packed_depth(void) {
     const u32 formats[] = {0x0D, 0x0E, 0x29, 0x2A, 0x2B, 0x30};
     for (u32 i = 0; i < sizeof formats / sizeof *formats; i++) {
@@ -4023,6 +4037,7 @@ int main(int argc, char** argv) {
     CHECK(!check_targetless_stores());
     CHECK(!check_storage_image_keep());
     CHECK(!check_packed_depth());
+    CHECK(!check_astc_mode());
     CHECK(!check_depth_array());
     CHECK(!check_depth_writeback());
     CHECK(!check_big_volume());

@@ -39,6 +39,7 @@ renderer=opengl
 | `.ini` key `gamepad_buttons` (A B X Y by position, by label or the map) | Swap A/B in place of the A B X Y presets | `gamepad_swap_ab`; `gamepad_map` always applies | the same |
 | `.ini` key `cpu_fallback` (the interpreter or the JIT for code the recompiler missed) | [recompiler] Replace the interpreter with the runtime JIT | nothing: the runtime JIT compiles that code | under `[Deprecated]`, named once a run |
 | `.ini` key `memory_fit` (`0` Off, `1` the game told no more than the device can give; `1` on iOS by default) | [runtime] memory_fit_mode, Auto by default, in place of memory_fit | `memory_fit_mode`: `0` Auto, `memory_fit`'s `1`, the default; `1` Off | read while `memory_fit_mode` has no value, the game's log and stderr saying once what it took: `1` is `0`; `0`, the default every `.ini` had written, leaves `memory_fit_mode` at its own (`0`); on iOS, whose default was `1`, `0` is `1` (Off) |
+| `.ini` key `astc_bc` (`0` ASTC decoded to RGBA8, the default; `1` encoded again as BC7) | [gpu] astc_mode, BC7 by default, in place of astc_bc | `astc_mode`: `0` Auto, `astc_bc`'s `1`, the default; `1` Exact, RGBA8 ([ASTC](ASTC.md#encoded-again-as-bc7)) | read while `astc_mode` has no value, the game's log and stderr saying once what it took: `1` is `0`; `0`, the default every `.ini` had written, leaves `astc_mode` at its own (`0`) |
 | `.ini` key `user` (the user's number in users.ini) and `--user=N` | [acc] the user plays by its uid: user_uid | `user_uid`, the uid of the user it named; `--user_uid=<uid>` | read while `user_uid` names none, the runtime's log and stderr saying once a run which uid replaces it; the launcher writes `user_uid` in its place once, said; under `[Deprecated]` |
 | `--keep-c` | Replace Python pipeline with a C90 driver | `--keep-ir` | still taken, said on stderr each time |
 | `--recomp` | [cli] the options' names | `--recompile` | still taken, said on stderr once a run |
@@ -69,10 +70,6 @@ renderer=opengl
 | Environment variables `SNX_GNU_STRACE`, `SNX_GNU_SAMPLE`, `SNX_HOST_PAGE`, `SNX_LINUX_SYSROOT` of `scarletnx-gnuabi` | [gnuabi] Trace, sampling and the host page are options | `--strace`, `--sample-pc`, `--host-page=N`, `-L DIR` or `--sysroot=DIR` | still read where they did something, under the command line's own, said on stderr |
 | `fullscreen=.ini` or `controls=.ini` in `settings.ini` (Settings' **Fullscreen** or **Show controls** left to each game's `.ini`, which showed as *Off [default]*) | [gui] Fullscreen and Show controls are Off or On, no third value | the launcher's own choice, passed to every run: Off on a computer, On on a phone | the launcher as it opens: `settings.ini` is written again without it, said once |
 | In `settings.ini`, `<key>=.ini` for any other setting whose default is one of its values (shown *On [default]* beside a picked *On*), or that default picked (`docked=1`), which every run was given over the game's `.ini` | [gui] A setting's values are its own, [default] on the default's | the default, which no run is given: each game's `.ini` keeps it | the launcher as it opens: `settings.ini` is written again without it, said once |
-
-To come: `astc_bc`, ASTC as BC7, is off unless a player turns it on, which the log suggests where the images run out
-of memory ([ASTC](ASTC.md#encoded-again-as-bc7)). It may become automatic later, depending on the players' reports; an
-Auto would then be a key of its own, as `astc_bc`'s `0` stays Off.
 
 Settings > App > Move Old Files in the launcher, or `scarletnx --migrate=yes`, moves the rest of these, an entry at a
 time, each to the folder its line names; `scarletnx --migrate` says first what would move ([USAGE](USAGE.md#folders)).

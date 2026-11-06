@@ -247,16 +247,17 @@ setting Vertex input dynamic state
     help the pipeline. Dynamic,
     help one pipeline serves every layout a program is drawn with, so fewer pipelines are made; in the pipeline, each
     help layout takes one of its own. Any other value stops the game, saying so
-setting ASTC BC
-    label ASTC as BC7
-    key astc_bc
+setting ASTC mode
+    label ASTC textures
+    key astc_mode
     int 0 1
     default 0
     startup
-    words Off|On
-    help 0 = ASTC textures are decoded to RGBA8, exactly as the game's blocks decode. 1 = on a GPU that samples BCn
-    help but not ASTC (most desktop ones), they are decoded and then encoded again as BC7, in a quarter of RGBA8's
-    help memory, close to what the blocks decode to but not always the same. Where the GPU samples ASTC it does nothing
+    words Auto|Exact
+    help Auto = on a GPU that samples BCn but not ASTC (most desktop ones), ASTC textures are decoded and then encoded
+    help again as BC7, in a quarter of RGBA8's memory, close to what the blocks decode to but not always the same.
+    help Exact = they are decoded to RGBA8, exactly as the game's blocks decode, in four times the memory. Where the GPU
+    help samples ASTC it does nothing. It takes the place of astc_bc, whose 1 was Auto
 
 table g_performance_ini
 setting FPS limit
