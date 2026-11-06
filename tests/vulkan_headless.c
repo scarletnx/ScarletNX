@@ -2648,8 +2648,9 @@ static int check_dma(void) {
 /* Copies bigger than one allocation (g_vk.alloc_cap, lowered to 64 KiB here: 256 MiB on a real device, an 8K RGBA8
    texture's level 0) go in bands of lines, each within a quarter of the cap, against the CPU reference: pitch to block
    linear from a row inside a row of blocks, block linear to pitch with the source's rows of blocks cut by the bands
-   and lines past it reading zero, between block heights 8 and 1 GOBs, the remap, a fill, a kept component, and the
-   source read at submission. They used to be dropped, the destination left with the bytes it had */
+   and lines past it reading zero, between block heights 8 and 1 GOBs, the remap, a fill, a kept component, the
+   source read at submission, and a slice of a volume. They used to be dropped, the destination left with the bytes
+   it had */
 static int check_dma_bands(void) {
     const u64 cap = g_vk.alloc_cap;
     u64 copies, bands, bytes, copies0, bands0, bytes0;
@@ -2707,6 +2708,16 @@ static int check_dma_bands(void) {
     o.src = pitch_side(0x3000, 310);
     o.dst = bl_side(0x80000, 512, 256, 0, 5, 3);
     failed |= dma_case(o);
+    /* into slice 3 of a volume, blocks 2 GOBs high and 2 slices deep: the second slab of blocks, its rows of blocks
+       (16 KiB, the quarter) one a band */
+    o = (GpuDmaOp){0};
+    o.multi = 1;
+    o.width = o.line_in = o.line_out = 400;
+    o.lines = 150;
+    o.src = pitch_side(0x1000, 416);
+    o.dst = bl_side(0x40000, 512, 160, 1, 48, 5);
+    o.dst.bd = 1, o.dst.z = 3;
+    failed |= dma_case(o);
     vk_dma_stats(&copies, &bands, &bytes);
     /* a copy that fits goes in one piece */
     o = (GpuDmaOp){0};
@@ -2718,21 +2729,22 @@ static int check_dma_bands(void) {
     u64 one_copies, one_bands, one_bytes;
     vk_dma_stats(&one_copies, &one_bands, &one_bytes);
     g_vk.alloc_cap = cap;
-    if (failed || copies - copies0 != 8 || bands - bands0 < 8 * 2 || one_copies != copies + 1 || one_bands != bands)
+    if (failed || copies - copies0 != 9 || bands - bands0 < 9 * 2 || one_copies != copies + 1 || one_bands != bands)
         fprintf(stderr, "dma bands: failed %d, %llu copies in %llu bands, then %llu copy in %llu bands\n", failed,
                 (unsigned long long)(copies - copies0), (unsigned long long)(bands - bands0),
                 (unsigned long long)(one_copies - copies), (unsigned long long)(one_bands - bands));
-    CHECK(!failed && copies - copies0 == 8 && bands - bands0 >= 8 * 2);
+    CHECK(!failed && copies - copies0 == 9 && bands - bands0 >= 9 * 2);
     CHECK(one_copies == copies + 1 && one_bands == bands && one_bytes > bytes);
     return 0;
 }
 
 /* Targets bigger than one allocation (g_vk.alloc_cap, lowered to 64 KiB for the write-back) read back in parts: a
-   block linear 256x128 RGBA8 one and a pitch linear one of the same size in bands of rows, and a pitch linear array of
-   12 layers of 64x32 two layers a part. Each is loaded from guest memory holding a pattern and drawn red only (a
-   masked clear), so memory gets red 128 in every pixel's first byte and keeps the pattern in the others, each where
-   the guest's layout has it. They used to stay on the GPU, memory unchanged */
-static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, u32 layers, u32 layer_bytes) {
+   block linear 256x128 RGBA8 one and a pitch linear one of the same size in bands of rows, a pitch linear array of
+   12 layers of 64x32 two layers a part, and a multisampled block linear one of 256x128 samples. Each is loaded from
+   guest memory holding a pattern and drawn red only (a masked clear), so memory gets red 128 in every pixel's first
+   byte and keeps the pattern in the others, each where the guest's layout has it. They used to stay on the GPU,
+   memory unchanged */
+static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, u32 layers, u32 layer_bytes, u32 msaa) {
     GpuChannel* ch = calloc(1, sizeof *ch);
     const u64 cap = g_vk.alloc_cap, size = (u64)layer_bytes * layers;
     CHECK(ch);
@@ -2741,6 +2753,7 @@ static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, 
     CHECK(got);
     for (u64 i = 0; i < size; i++) /* below 64 in the red bytes */
         GP(cpu)[i] = (u8)(i % 4 ? i * 7 + (i >> 10) * 3 + 1 : (i * 5 + (i >> 9)) & 0x3F);
+    r[0x574] = msaa;
     r[0x487] = 1;
     r[0x200] = (u32)(gva >> 32);
     r[0x201] = (u32)gva;
@@ -2754,7 +2767,7 @@ static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, 
     memcpy(&r[0x360], red, sizeof red);
     for (u32 l = 0; l < layers; l++) engine_clear(ch, (1 << 2) | (l << 10));
     vk_render_end();
-    CHECK(vk_rt_find(gva));
+    CHECK(vk_rt_find(gva) && vk_rt_find(gva)->msaa == msaa);
     g_vk.alloc_cap = 64 << 10;
     vk_rt_flush(gva);
     g_vk.alloc_cap = cap;
@@ -2762,8 +2775,8 @@ static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, 
     for (u64 i = 0; i < size; i++) {
         u8 want = (u8)(i % 4 ? i * 7 + (i >> 10) * 3 + 1 : 128);
         if (i % 4 ? got[i] != want : abs((int)got[i] - 128) > 1) {
-            fprintf(stderr, "write-back in parts of layout %#x, %u layers: byte %llu is %u, not %u\n", layout, layers,
-                    (unsigned long long)i, got[i], want);
+            fprintf(stderr, "write-back in parts of layout %#x, %u layers, msaa %u: byte %llu is %u, not %u\n", layout,
+                    layers, msaa, (unsigned long long)i, got[i], want);
             free(got);
             free(ch);
             return 1;
@@ -2777,9 +2790,11 @@ static int check_flush_parts(void) {
     const u64 cpu = HEAP_BASE + 0xC00000, gva = 0xB000000ull;
     CHECK(mem_map(cpu, 0x100000, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(gva, cpu, 0x100000);
-    CHECK(!flush_parts_case(gva, cpu, 256, 128, 0, 1, 256 * 128 * 4)); /* block linear, 1 GOB high */
-    CHECK(!flush_parts_case(gva + 0x40000, cpu + 0x40000, 1024, 128, 0x1000, 1, 1024 * 128)); /* pitch linear */
-    CHECK(!flush_parts_case(gva + 0x80000, cpu + 0x80000, 256, 32, 0x1000, 12, 256 * 32));    /* 12 layers */
+    CHECK(!flush_parts_case(gva, cpu, 256, 128, 0, 1, 256 * 128 * 4, 0)); /* block linear, 1 GOB high */
+    CHECK(!flush_parts_case(gva + 0x40000, cpu + 0x40000, 1024, 128, 0x1000, 1, 1024 * 128, 0)); /* pitch linear */
+    CHECK(!flush_parts_case(gva + 0x80000, cpu + 0x80000, 256, 32, 0x1000, 12, 256 * 32, 0));    /* 12 layers */
+    /* 2x2 samples a pixel (registers in samples): the samples drawn into the guest's layout of them, in bands of rows */
+    CHECK(!flush_parts_case(gva + 0xC0000, cpu + 0xC0000, 256, 128, 0, 1, 256 * 128 * 4, DS_MSAA_2X2));
     CHECK(mem_unmap(cpu, 0x100000) == 0);
     return 0;
 }
