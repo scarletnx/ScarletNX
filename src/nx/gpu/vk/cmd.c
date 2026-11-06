@@ -460,28 +460,28 @@ static u64 big_size(u64 size) {
    memory, which a new one there replaces only below the room a ring coming back from host memory needs. 0 when none
    could be made */
 static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
-    u32 near = 0, far = 0; /* the chunks of the pool in the memory wanted, and in the other memory */
+    u32 here = 0, other = 0; /* the chunks of the pool in the memory wanted, and in the other memory */
     for (u32 i = 0; i < g_cmd.nchunk; i++) {
         const Chunk* c = &g_cmd.chunk[i];
         u32* pick;
         if (!c->buf || c->slot || c->ring != ring || c->size != size || (int)c->big != big) continue;
-        pick = ring != XRING_OUTPUT || (c->in == XFER_MAPPED) == bar ? &near : &far;
+        pick = ring != XRING_OUTPUT || (c->in == XFER_MAPPED) == bar ? &here : &other;
         if (!*pick || c->freed >= g_cmd.chunk[*pick - 1].freed) *pick = i + 1;
     }
-    if (!near && bar) {
+    if (!here && bar) {
         VmaBudget budget[VK_MAX_MEMORY_HEAPS];
         vmaGetHeapBudgets(g_vk.vma, budget);
-        if (!bar_room(budget, size, far != 0)) {
-            near = far;
+        if (!bar_room(budget, size, other != 0)) {
+            here = other;
             bar = 0;
         }
     }
-    if (!near) {
-        if ((near = chunk_new(ring, size, bar, slot))) g_cmd.chunk[near - 1].big = (u32)big;
-        return near;
+    if (!here) {
+        if ((here = chunk_new(ring, size, bar, slot))) g_cmd.chunk[here - 1].big = (u32)big;
+        return here;
     }
-    g_cmd.chunk[near - 1].slot = slot;
-    return near;
+    g_cmd.chunk[here - 1].slot = slot;
+    return here;
 }
 /* The slot's chunks and big buffers back to the pool, once its work is done; the pool then keeps no more of a ring's
    chunks, and of its big buffers, than the most a frame of the last VK_POOL_FRAMES took (a chunk at least, as a ring
