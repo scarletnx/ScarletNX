@@ -373,8 +373,9 @@ if(TARGET snx_ctr_board)
         endif()
         set_tests_properties(${snx_tests} PROPERTIES SKIP_RETURN_CODE 77)
     endforeach()
-    # the two windows and the per-screen render scales: one window always, Separate screens and a minimized window
-    # when the host has a window; the dumps stay the framebuffer's own size whatever the scale
+    # the two windows and the per-screen render scales: one window always, Separate screens, a minimized window and a
+    # window whose images the display holds when the host has a window; the dumps stay the framebuffer's own size
+    # whatever the scale
     add_executable(snx-test-3ds-windows 3ds_windows.c)
     snx_test_target(snx-test-3ds-windows 11)
     target_link_libraries(snx-test-3ds-windows PRIVATE snx_ctr_gpu)
@@ -383,8 +384,10 @@ if(TARGET snx_ctr_board)
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-separate" --separate)
     add_test(NAME 3ds_windows_minimized
              COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-minimized" --minimize)
+    add_test(NAME 3ds_windows_no_image
+             COMMAND snx-test-3ds-windows "${CMAKE_CURRENT_BINARY_DIR}/window-frames-no-image" --no-image)
     set_tests_properties(3ds_windows 3ds_windows_separate PROPERTIES SKIP_RETURN_CODE 77)
-    set_tests_properties(3ds_windows_minimized PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    set_tests_properties(3ds_windows_minimized 3ds_windows_no_image PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
     # the transfer engine alone: fills, display transfers, texture copies against hand-written goldens
     add_executable(snx-test-3ds-transfer 3ds_transfer.c)
     snx_test_target(snx-test-3ds-transfer 11)

@@ -517,6 +517,11 @@ A window minimized and restored gets its swapchain back, checked by `3ds_windows
 (it skips where the host keeps the swapchain or does not minimize). On Windows a minimized
 window's surface is 0x0 and no swapchain can be made at that size, so the first frame after
 the restore makes one.
+A frame takes a window image only if one is free at once, as the Switch's and the Vita's
+presenters do: while the display holds them all (FIFO behind, a locked or remote session)
+the frame is not shown, the game runs on, and the run's report counts those frames.
+`3ds_windows_no_image` checks that no frame waits, that a held frame is still decoded and
+that frames show again once an image is free.
 The RAM is one shared mapping (a memfd on Linux), so that every guest view of a page is the
 same memory, and some drivers will not import it (`VK_EXT_external_memory_host`): RADV
 imports a host pointer as an amdgpu user pointer of private anonymous memory only, and its
