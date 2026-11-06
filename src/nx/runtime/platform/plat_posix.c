@@ -685,6 +685,15 @@ static u32 g_wp_opened;     /* atomic: moves whenever pages become writable (a f
 #define WP_HOT_FOR   32
 static u8* g_wp_hot;   /* the counts; NULL with write_tracking_hot=0 */
 static u64 g_wp_hot_n; /* atomic: pages hot now (counted WP_HOT_AFTER or more) */
+/* A mark per group of pages that a scan has something to do in: a page of it became written, or has a hot count. The
+   scans read a state for each page of the leaves checks need, thousands in a scan and hundreds of thousands of scans
+   a minute, with a few written pages in one group of twelve. The state of a page is stored before its mark, and a
+   scan that takes in a whole group takes the mark before it reads the states: a write that a scan misses left a mark
+   for the next one. A scan of a part of a group leaves the mark, for the pages it doesn't read. NULL: scans read
+   every page */
+#define WP_GROUP_SHIFT 6
+#define WP_GROUP_MASK  (((u64)1 << WP_GROUP_SHIFT) - 1)
+static u8* g_wp_marks;
 /* this thread's state. The fault handlers read it, so wp_thread_start touches it before the thread can fault: on
    Darwin a thread's first access to a _Thread_local variable may allocate, which a signal handler mustn't */
 static _Thread_local struct {
@@ -729,7 +738,15 @@ static u8 wp_lock(u64 i) {
             return s;
     }
 }
-static void wp_unlock(u64 i, u8 s) { __atomic_store_n(&g_wp[i], s, __ATOMIC_RELEASE); }
+/* page i has something for the next scan to do */
+static void wp_mark(u64 i) {
+    if (g_wp_marks) __atomic_store_n(&g_wp_marks[i >> WP_GROUP_SHIFT], 1, __ATOMIC_SEQ_CST);
+}
+/* Every state but the lock's comes through here, so a page that becomes written can't miss its mark */
+static void wp_unlock(u64 i, u8 s) {
+    __atomic_store_n(&g_wp[i], s, __ATOMIC_RELEASE);
+    if ((s & (WP_MAPPED | WP_CLEAN | WP_ARMED | WP_TRAP)) == WP_MAPPED) wp_mark(i);
+}
 /* page i's count starts over (its lock held) */
 static void wp_hot_over(u64 i) {
     u8 n = g_wp_hot ? __atomic_load_n(&g_wp_hot[i], __ATOMIC_RELAXED) : 0;
@@ -748,6 +765,7 @@ static int wp_hot_report(u64 i) {
     }
     if (n == WP_HOT_AFTER) __atomic_fetch_add(&g_wp_hot_n, 1, __ATOMIC_RELAXED);
     __atomic_store_n(&g_wp_hot[i], (u8)n, __ATOMIC_RELAXED);
+    wp_mark(i); /* the next scan must look: if the page isn't written then, its count starts over */
     return n >= WP_HOT_AFTER;
 }
 /* the host pages [*lo, *hi) of [p, p + size), within the reservation: 0, or -1 when there are none */
@@ -996,6 +1014,16 @@ static int wp_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
     u64 i, lo, hi, run = 0, n = 0, page = (u64)1 << g_wp_shift;
     if (wp_pages(p, size, &lo, &hi)) return size ? -1 : 0;
     for (i = lo; i < hi; i++) {
+        if (g_wp_marks && (i == lo || !(i & WP_GROUP_MASK))) { /* a group starts, or the first one's part of it */
+            u64 group = i >> WP_GROUP_SHIFT, next = (group + 1) << WP_GROUP_SHIFT;
+            if (!__atomic_load_n(&g_wp_marks[group], __ATOMIC_ACQUIRE)) {
+                if (n) wp_protect(run, n, cb);
+                n = 0;
+                i = (next < hi ? next : hi) - 1;
+                continue;
+            }
+            if (!(i & WP_GROUP_MASK) && next <= hi) (void)__atomic_exchange_n(&g_wp_marks[group], 0, __ATOMIC_SEQ_CST);
+        }
         u8 s = __atomic_load_n(&g_wp[i], __ATOMIC_RELAXED);
         if ((s & (WP_MAPPED | WP_CLEAN | WP_ARMED | WP_TRAP)) == WP_MAPPED) {
             s = wp_lock(i);
@@ -1072,6 +1100,11 @@ static void wp_init(u8* p, u64 size, int track) {
             LOG("memory: hot pages (write_tracking_hot=1): a page written in %d scans in a row stays writable for %d\n",
                 WP_HOT_AFTER, WP_HOT_FOR);
         }
+    }
+    if (track) {
+        void* m = mmap(NULL, (size_t)((size >> shift >> WP_GROUP_SHIFT) + 1), PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (m != MAP_FAILED) g_wp_marks = (u8*)m;
     }
     wp_thread_start();
     __atomic_store_n(&g_wp, (u8*)s, __ATOMIC_RELEASE);
