@@ -2722,6 +2722,8 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             }
             return;
         }
+        case SM86_ATOMS:
+        case SM86_ATOMS_NOU:
         case SM86_ATOMG:
         case SM86_ATOMG_NOU:
         case SM86_RED: {
@@ -2737,9 +2739,25 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 fail(c, "%s of type %u, operation %u", sm86_ops[op].name, type, how);
                 return;
             }
-            u32 address, buffer = global_address(c, in, op != SM86_ATOMG_NOU, 1, &address);
-            if (!buffer) return;
-            mark_written(c, c->gkey, address, 4);
+            u32 address, buffer;
+            if (op == SM86_ATOMS || op == SM86_ATOMS_NOU) {
+                /* NAK's OpAtom on shared memory: the address as STS has it, the register at 24 and the signed 24-bit
+                   offset at 40, and the uniform register at 64 for ATOMS */
+                if (sm86_field(in, 78, 2)) {
+                    fail(c, "%s with an offset stride", sm86_ops[op].name);
+                    return;
+                }
+                u32 imm = sm86_field(in, 40, 24), ur = op == SM86_ATOMS ? sm86_field(in, 64, 6) : SM86_URZ;
+                address = spv_emit_iadd_u32(&c->e, c->t_u32, rd(c, sm86_field(in, 24, 8)),
+                                            cu(c, imm & 0x800000u ? imm | 0xff000000u : imm));
+                if (ur < SM86_URZ) address = spv_emit_iadd_u32(&c->e, c->t_u32, address, urd(c, ur));
+                shared_var(c);
+                buffer = 0;
+            } else {
+                buffer = global_address(c, in, op != SM86_ATOMG_NOU, 1, &address);
+                if (!buffer) return;
+                mark_written(c, c->gkey, address, 4);
+            }
             u32 old = spv_emit_atomic_u32(&c->e, c->t_u32, ops[type][how], mem_ptr(c, buffer, address, 0),
                                           rd(c, sm86_field(in, 32, 8)));
             if (op != SM86_RED) wr(c, in->dst, old);
