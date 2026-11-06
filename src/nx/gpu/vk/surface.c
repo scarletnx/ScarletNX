@@ -687,36 +687,47 @@ static u64 flush_bytes(const Surf* s) {
     if (s->mem_wgen == s->wgen || !moves_scaled(s)) return 0;
     return s->bl ? rt_bytes(s) : (u64)guest_w(s) * s->f.bpp * guest_h(s) * s->layers;
 }
-/* s's pixels copied into buf at at, in rows of pitch bytes, a layer (or a 3D image's slice) after another, at the
-   guest's size */
-static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pitch) {
-    u64 slice = (u64)pitch * guest_h(s);
+/* What a readback copies: rows [y, y + rows) of layers [layer, layer + layers), at the guest's size. A target over
+   one allocation goes in parts (flush_parts), else all of it in one */
+typedef struct {
+    u32 layer, layers, y, rows;
+} FlushPart;
+static FlushPart flush_whole(const Surf* s) {
+    FlushPart w = {0, s->layers, 0, guest_h(s)};
+    return w;
+}
+/* part's pixels of s copied into buf at at, in rows of pitch bytes, a layer (or a 3D image's slice) after another. A
+   packed depth layer goes whole (flush_parts gives it whole rows) */
+static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pitch, const FlushPart* part) {
+    u64 slice = (u64)pitch * part->rows;
     u32 depth = s->type == VK_IMAGE_VIEW_TYPE_3D ? s->depth3d : 1; /* a 3D image's slices in one copy */
     if (s->msaa) { /* the samples drawn into the guest's layout of them a layer at a time, and copied from there */
-        for (u32 layer = 0; layer < s->layers; layer++) {
+        for (u32 layer = part->layer; layer < part->layer + part->layers; layer++) {
             VkImage grid = vk_ms_unpack(cb, s, layer);
             if (!grid) continue;
             VkBufferImageCopy c = {
-                .bufferOffset = at + (u64)layer * slice,
+                .bufferOffset = at + (u64)(layer - part->layer) * slice,
                 .bufferRowLength = pitch / s->f.bpp,
                 .imageSubresource = {s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                .imageExtent = {guest_w(s), guest_h(s), 1}};
+                .imageOffset = {0, (i32)part->y, 0},
+                .imageExtent = {guest_w(s), part->rows, 1}};
             rec_CmdCopyImageToBuffer(cb, grid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
         }
         return;
     }
     vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-    for (u32 layer = 0; layer < s->layers; layer++) {
+    for (u32 layer = part->layer; layer < part->layer + part->layers; layer++) {
         if (depth_packs(s)) { /* flush_bytes took it: it packs */
-            vk_depth_pack(cb, s, layer, buf, at + (u64)layer * slice, pitch);
+            vk_depth_pack(cb, s, layer, buf, at + (u64)(layer - part->layer) * slice, pitch);
             continue;
         }
         VkBufferImageCopy c = {
-            .bufferOffset = at + (u64)layer * slice,
+            .bufferOffset = at + (u64)(layer - part->layer) * slice,
             .bufferRowLength = pitch / s->f.bpp,
             .imageSubresource = {s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
-            .imageExtent = {s->w, s->h, depth}};
+            .imageOffset = {0, (i32)part->y, 0},
+            .imageExtent = {s->w, part->rows, depth}};
         VmaAllocation tm;
         VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : vk_unscaled_image(s, 1, &tm);
         if (!t)
@@ -735,23 +746,30 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
         }
     }
 }
-/* s's pixels into buf at at as flush_bytes says: tightly packed rows, or the guest's block linear layout, the image
-   copied into the scratch buffer and swizzled from there into buf. 0 when that can't be done */
-static int flush_record(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at) {
-    u32 row = guest_w(s) * s->f.bpp, h = guest_h(s);
+/* part of s's pixels into buf at at as flush_bytes says: tightly packed rows, or the guest's block linear layout, the
+   image copied into the scratch buffer and swizzled from there into buf, a layer at layer_size from the last (a band
+   of rows: its rows of blocks, from the first, vk_bl_range). 0 when that can't be done (said) */
+static int flush_record(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const FlushPart* part) {
+    u32 row = guest_w(s) * s->f.bpp;
     if (!s->bl) {
-        flush_copy(cb, s, buf, at, row);
+        flush_copy(cb, s, buf, at, row, part);
         return 1;
     }
-    u32 pitch = (row + 15) & ~15u, moves = surf_volume(s) ? 1 : s->layers;
-    u64 cap;
+    u32 pitch = (row + 15) & ~15u, moves = surf_volume(s) ? 1 : part->layers;
+    u64 cap, need = (u64)pitch * part->rows * (surf_volume(s) ? surf_slices(s) : part->layers);
     VkBlMove m = rt_bl_move(s, pitch);
-    VkBuffer scratch = vk_bl_scratch((u64)pitch * h * surf_slices(s), &cap);
-    if (!scratch) return 0;
-    flush_copy(cb, s, scratch, 0, pitch);
+    m.y0 = part->y;
+    m.rows = part->rows;
+    VkBuffer scratch = vk_bl_scratch(need, &cap);
+    if (!scratch) {
+        LOG_LIMIT(4, "vulkan: a target at %llx found no scratch buffer of %llu bytes for its readback: nothing lands\n",
+                  (unsigned long long)s->gva, (unsigned long long)need);
+        return 0;
+    }
+    flush_copy(cb, s, scratch, 0, pitch, part);
     vk_bl_barrier(cb, 1);
     for (u32 i = 0; i < moves; i++)
-        if (!vk_bl_move(cb, &m, 1, buf, at + (u64)i * s->layer_size, scratch, (u64)i * pitch * h)) return 0;
+        if (!vk_bl_move(cb, &m, 1, buf, at + (u64)i * s->layer_size, scratch, (u64)i * pitch * part->rows)) return 0;
     vk_bl_barrier(cb, 0);
     return 1;
 }
@@ -994,16 +1012,91 @@ static void rt_flush_older(const Surf* s) {
     for (i = 0; i < n && list[i]->wseq < s->wseq; i++) surf_flush(list[i], NULL);
     if (list != local) free(list);
 }
+/* part of s's pixels read back, bytes of them, to to */
+static int flush_part(Surf* s, const FlushPart* part, u8* to, u64 bytes) {
+    VkBuffer buf;
+    const u8* p = vk_readback_buffer(bytes, &buf);
+    if (!p) {
+        LOG_LIMIT(4, "vulkan: a target at %llx found no readback buffer of %llu bytes: nothing lands\n",
+                  (unsigned long long)s->gva, (unsigned long long)bytes);
+        return 0;
+    }
+    VkCommandBuffer cb = vk_cmd();
+    if (!flush_record(cb, s, buf, 0, part)) return 0;
+    flush_wait(cb);
+    memcpy(to, p, bytes);
+    return 1;
+}
+/* s's pixels, size bytes of them, when they are more than one allocation may be: read back a part at a time into one
+   host buffer, which lands as one. A part is whole layers, or a layer's band of rows (block linear: whole rows of
+   blocks) when one is more than VK_PART_SHARE of the cap. A 3D image goes whole, and a packed depth layer too */
+static void flush_parts(Surf* s, u64 size, const u8* original) {
+    u64 limit = g_vk.alloc_cap / VK_PART_SHARE;
+    u32 h = guest_h(s), row = guest_w(s) * s->f.bpp, pitch = (row + 15) & ~15u;
+    /* a layer's bytes as flush_land takes them: block linear layers layer_size apart, pitch linear rows packed */
+    u64 layer = !s->bl ? (u64)row * h : s->layers > 1 ? s->layer_size : rt_layer_bytes(s);
+    u64 per = layer <= limit ? limit / layer : 0;
+    u32 band = s->bl ? 8u << bl_height(h, s->bh) : 1, rows = (u32)(limit / (s->bl ? pitch : row)) / band * band;
+    if (!rows && (u64)band * pitch <= g_vk.alloc_cap) rows = band; /* a row of blocks is the least a band takes */
+    if (surf_volume(s) || (!per && (depth_packs(s) || !rows))) {
+        LOG_LIMIT(4,
+                  "vulkan: a target at %llx of %llu bytes, %llu a layer, is more than an allocation may be (%llu) and "
+                  "does not go in parts: nothing lands\n",
+                  (unsigned long long)s->gva, (unsigned long long)size, (unsigned long long)layer,
+                  (unsigned long long)g_vk.alloc_cap);
+        return;
+    }
+    u8* all = (u8*)malloc(size);
+    if (!all) {
+        LOG_LIMIT(4, "vulkan: a target at %llx found no %llu bytes of host memory for its readback: nothing lands\n",
+                  (unsigned long long)s->gva, (unsigned long long)size);
+        return;
+    }
+    int ok = 1;
+    for (u32 l = 0; ok && l < s->layers;) {
+        if (per) { /* whole layers */
+            FlushPart part = {l, s->layers - l < per ? s->layers - l : (u32)per, 0, h};
+            u64 at = (u64)l * layer, bytes = (u64)part.layers * layer;
+            ok = flush_part(s, &part, all + at, bytes < size - at ? bytes : size - at);
+            l += part.layers;
+            continue;
+        }
+        for (u32 y = 0; ok && y < h; y += rows) { /* a layer's bands of rows */
+            FlushPart part = {l, 1, y, h - y < rows ? h - y : rows};
+            u64 at = (u64)y * row, bytes = (u64)part.rows * row;
+            if (s->bl) { /* its rows of blocks, from the first */
+                VkBlMove m = rt_bl_move(s, pitch);
+                m.y0 = y;
+                m.rows = part.rows;
+                vk_bl_range(&m, &at, &bytes);
+                bytes -= at;
+            }
+            ok = flush_part(s, &part, all + (u64)l * layer + at, bytes);
+        }
+        l++;
+    }
+    if (ok) flush_land(s, all, original, s->wgen, NULL, NULL);
+    free(all);
+}
 static void surf_flush(Surf* s, const u8* original) {
     u64 size = flush_bytes(s);
     VkBuffer buf;
     if (!size) return;
     rt_flush_older(s);
     vk_render_end();
+    if (size > g_vk.alloc_cap) {
+        flush_parts(s, size, original);
+        return;
+    }
     const u8* p = vk_readback_buffer(size, &buf);
-    if (!p) return;
+    if (!p) {
+        LOG_LIMIT(4, "vulkan: a target at %llx found no readback buffer of %llu bytes: nothing lands\n",
+                  (unsigned long long)s->gva, (unsigned long long)size);
+        return;
+    }
     VkCommandBuffer cb = vk_cmd();
-    if (!flush_record(cb, s, buf, 0)) return;
+    FlushPart whole = flush_whole(s);
+    if (!flush_record(cb, s, buf, 0, &whole)) return;
     flush_wait(cb);
     flush_land(s, p, original, s->wgen, NULL, NULL);
 }
@@ -1012,8 +1105,9 @@ void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at) {
     VkCommandBuffer cb;
     rt_flush_older(s);
     vk_render_end();
+    FlushPart whole = flush_whole(s);
     cb = vk_cmd();
-    flush_record(cb, s, buf, at);
+    flush_record(cb, s, buf, at, &whole);
     /* the copy's writes made visible to the host reads that land it, once its submit is done */
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -1110,9 +1204,10 @@ int vk_surf_publish(Surf* s) {
     s->mem_wgen = mem_wgen;
     cb = vk_cmd();
     vk_all_barrier(cb);
+    FlushPart whole = flush_whole(s);
     if (!s->bl)
-        flush_copy(cb, s, r->buf, 0, s->pitch);
-    else if (!flush_record(cb, s, r->buf, 0)) {
+        flush_copy(cb, s, r->buf, 0, s->pitch, &whole);
+    else if (!flush_record(cb, s, r->buf, 0, &whole)) {
         vk_own_res_unref(r);
         return 0;
     }
@@ -1154,8 +1249,9 @@ int vk_rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at) {
     for (i = 0; i < count; i++) {
         Surf* s = list[i];
         if (s->gva >= gva && s->gva + rt_bytes(s) <= gva + size) {
+            FlushPart whole = flush_whole(s);
             vk_render_end();
-            if (flush_record(vk_cmd(), s, buf, at + (s->gva - gva))) {
+            if (flush_record(vk_cmd(), s, buf, at + (s->gva - gva), &whole)) {
                 n++;
                 continue;
             }

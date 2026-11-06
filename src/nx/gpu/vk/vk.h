@@ -47,7 +47,7 @@
 #define VK_FRAME_RING_CAPS 4  /* a frame ends once it has written this many allocations to its rings (vk_frame_check) */
 #define VK_SC_MAX          16 /* swapchain images */
 /* a transfer bigger than one allocation (g_vk.alloc_cap) goes in parts of at most this share of it: the rows a DMA
-   band needs on both sides and in scratch fit the cap together (dma.c) */
+   band or a readback part needs on both sides and in scratch fit the cap together (dma.c, surface.c) */
 #define VK_PART_SHARE      4
 
 typedef struct {

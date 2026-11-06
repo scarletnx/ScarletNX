@@ -2316,6 +2316,63 @@ static int check_dma_bands(void) {
     return 0;
 }
 
+/* Targets bigger than one allocation (g_vk.alloc_cap, lowered to 64 KiB for the write-back) read back in parts: a
+   block linear 256x128 RGBA8 one and a pitch linear one of the same size in bands of rows, and a pitch linear array of
+   12 layers of 64x32 two layers a part. Each is loaded from guest memory holding a pattern and drawn red only (a
+   masked clear), so memory gets red 128 in every pixel's first byte and keeps the pattern in the others, each where
+   the guest's layout has it. They used to stay on the GPU, memory unchanged */
+static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, u32 layers, u32 layer_bytes) {
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    const u64 cap = g_vk.alloc_cap, size = (u64)layer_bytes * layers;
+    CHECK(ch);
+    u32* r = ch->r3d;
+    u8* got = (u8*)malloc(size);
+    CHECK(got);
+    for (u64 i = 0; i < size; i++) /* below 64 in the red bytes */
+        GP(cpu)[i] = (u8)(i % 4 ? i * 7 + (i >> 10) * 3 + 1 : (i * 5 + (i >> 9)) & 0x3F);
+    r[0x487] = 1;
+    r[0x200] = (u32)(gva >> 32);
+    r[0x201] = (u32)gva;
+    r[0x202] = width_reg;
+    r[0x203] = h;
+    r[0x204] = 0xD5; /* A8B8G8R8 */
+    r[0x205] = layout;
+    r[0x206] = layers;
+    r[0x207] = layer_bytes >> 2;
+    float red[4] = {0.5f, 0, 0, 0};
+    memcpy(&r[0x360], red, sizeof red);
+    for (u32 l = 0; l < layers; l++) engine_clear(ch, (1 << 2) | (l << 10));
+    vk_render_end();
+    CHECK(vk_rt_find(gva));
+    g_vk.alloc_cap = 64 << 10;
+    vk_rt_flush(gva);
+    g_vk.alloc_cap = cap;
+    CHECK(!gmem_read(gva, got, size));
+    for (u64 i = 0; i < size; i++) {
+        u8 want = (u8)(i % 4 ? i * 7 + (i >> 10) * 3 + 1 : 128);
+        if (i % 4 ? got[i] != want : abs((int)got[i] - 128) > 1) {
+            fprintf(stderr, "write-back in parts of layout %#x, %u layers: byte %llu is %u, not %u\n", layout, layers,
+                    (unsigned long long)i, got[i], want);
+            free(got);
+            free(ch);
+            return 1;
+        }
+    }
+    free(got);
+    free(ch);
+    return 0;
+}
+static int check_flush_parts(void) {
+    const u64 cpu = HEAP_BASE + 0xC00000, gva = 0xB000000ull;
+    CHECK(mem_map(cpu, 0x100000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, 0x100000);
+    CHECK(!flush_parts_case(gva, cpu, 256, 128, 0, 1, 256 * 128 * 4)); /* block linear, 1 GOB high */
+    CHECK(!flush_parts_case(gva + 0x40000, cpu + 0x40000, 1024, 128, 0x1000, 1, 1024 * 128)); /* pitch linear */
+    CHECK(!flush_parts_case(gva + 0x80000, cpu + 0x80000, 256, 32, 0x1000, 12, 256 * 32));    /* 12 layers */
+    CHECK(mem_unmap(cpu, 0x100000) == 0);
+    return 0;
+}
+
 /* The 2D engine's blit from memory on the GPU (vk/blit.c) against its CPU reference (fermi2d_ref.c), on the DMA
    test's twin regions: block linear and pitch planes, windows not on 16 bytes, scaled up and down, 1 to 16 bytes a
    pixel, and conversions between float formats (fmt), the regions' bytes holding NaNs, infinities and subnormals */
@@ -3240,6 +3297,7 @@ int main(int argc, char** argv) {
     CHECK(!check_nvdec_vic());
     CHECK(!check_dma());
     CHECK(!check_dma_bands());
+    CHECK(!check_flush_parts());
     CHECK(!check_dma_texture());
     CHECK(!check_sparse_volume());
     CHECK(!check_sparse_view());
