@@ -1842,6 +1842,11 @@ static void test_global_pointer(const char* dir) {
     env.ubo_words[SNX_VKB_CB] = 1024;
     env.ubo[SNX_VKB_SSBO] = buffer;
     env.ubo_words[SNX_VKB_SSBO] = 64;
+    /* no atlas of pages: each buffer's first page entry ~0, so its words stay where it is bound (gbuf_word_index) */
+    static u32 smap[48];
+    memset(smap, 0xff, 16 * sizeof *smap);
+    env.ubo[SNX_VKB_SMAP] = smap;
+    env.ubo_words[SNX_VKB_SMAP] = 48;
     int ran = run_stage(ST_VS, code, 15, vsph, &env);
     int ok = ran && buffer[0x12] == 7 && buffer[0x13] == 0 && env.position[0] == 0x1234 && env.position[1] == 0;
     CHECK(ok);
