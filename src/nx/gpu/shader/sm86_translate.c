@@ -2888,10 +2888,14 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         }
         case SM86_HFMA2: {
             /* a * b + c by halves. a as HADD2's. The operand in the register at 64 keeps its swizzle at 81-82 and its
-               modifiers at 83 (abs) and 84 (neg), not where a three-source float's are. Bit 79 is .RELU, 86 .H0_NH1, and
-               none of one game's programs has them. A product of two halves is exact in a float of 32 bits */
-            if (sm86_field(in, 78, 2) || sm86_field(in, 85, 2)) {
-                fail(c, "HFMA2 with modes 0x%x, 0x%x", sm86_field(in, 78, 2), sm86_field(in, 85, 2));
+               modifiers at 83 (abs) and 84 (neg), not where a three-source float's are. Bit 79 is .RELU: a result at or
+               below zero becomes zero where the predicate at 87 holds, while infinity and NaN stay. Bit 86 is .H0_NH1: b's
+               halves swap and the new low one is negated, the second term of a complex product. Bits 78 and 85 are refused.
+               A product of two halves is exact in a float of 32 bits */
+            int relu = (int)sm86_field(in, 79, 1), h0_nh1 = (int)sm86_field(in, 86, 1);
+            if (sm86_field(in, 78, 1) || sm86_field(in, 85, 1) || (relu && sm86_field(in, 77, 1))) {
+                fail(c, "HFMA2 with modes 0x%x, 0x%x, saturate %u", sm86_field(in, 78, 2), sm86_field(in, 85, 2),
+                     sm86_field(in, 77, 1));
                 return;
             }
             int b_at_64 = in->form == 2 || in->form == 3 || in->form == 7;
@@ -2910,10 +2914,19 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                     fail(c, "HFMA2 with a float operand");
                     return;
                 }
+                if (k == 1 && h0_nh1 && (sw || abs)) {
+                    fail(c, "HFMA2.H0_NH1 of an operand with a swizzle or abs");
+                    return;
+                }
                 u32 pair = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, src_bits(c, s));
                 if (sw >= 2) {
                     u32 h = spv_emit_vec4_extract(&c->e, c->t_f32, pair, sw - 2);
                     pair = spv_emit_vec2_construct(&c->e, c->t_v2f, h, h);
+                }
+                if (k == 1 && h0_nh1) {
+                    u32 low = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 0),
+                        high = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 1);
+                    pair = spv_emit_vec2_construct(&c->e, c->t_v2f, SPV(&c->e, SPV_OP_F_NEGATE, c->t_f32, high), low);
                 }
                 if (abs) pair = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_F_ABS, pair);
                 if (neg) pair = SPV(&c->e, SPV_OP_F_NEGATE, c->t_v2f, pair);
@@ -2925,6 +2938,17 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 r = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_N_CLAMP, r,
                             spv_emit_vec2_construct(&c->e, c->t_v2f, cf(c, 0.0f), cf(c, 0.0f)),
                             spv_emit_vec2_construct(&c->e, c->t_v2f, cf(c, 1.0f), cf(c, 1.0f)));
+            if (relu) {
+                u32 holds = prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), 0), lane[2];
+                for (u32 k = 0; k < 2; k++) {
+                    /* a comparison NaN fails, and -0 passes on its way to +0 */
+                    u32 x = spv_emit_vec4_extract(&c->e, c->t_f32, r, k);
+                    u32 below = op2(c, SPV_OP_F_ORD_LESS_THAN_EQUAL, c->t_bool, x, cf(c, 0.0f));
+                    lane[k] = spv_emit_select(&c->e, c->t_f32, op2(c, SPV_OP_LOGICAL_AND, c->t_bool, holds, below),
+                                              cf(c, 0.0f), x);
+                }
+                r = spv_emit_vec2_construct(&c->e, c->t_v2f, lane[0], lane[1]);
+            }
             dwr(c, in, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, r));
             return;
         }
