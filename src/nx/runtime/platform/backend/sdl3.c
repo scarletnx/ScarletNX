@@ -813,6 +813,7 @@ static int fatal_screen(const char* msg) {
     } else
         snprintf(what, sizeof what, "%s%s", how, log_path);
 #endif
+    if (g_win) SDL_SetWindowRelativeMouseMode(g_win, false); /* the panel is clicked */
     since = SDL_GetTicks();
     while (!done) {
         SDL_Event e;
@@ -1013,6 +1014,7 @@ static int key_action(const SDL_KeyboardEvent* k) {
 }
 /* a runtime key's action, which the game's menu's F1 page lists (overlay.c's keys_row) with the game's buttons of
    keymap: a binding changed here changes there. The menu's is menu_event's */
+static void mouse_let_go(void);
 static void hotkey(int action) {
     switch (action) {
         case HOTKEY_HELP: /* the game's menu on its page of keys, over the game as the menu is, fullscreen or not */
@@ -1021,6 +1023,7 @@ static void hotkey(int action) {
             {
                 char debugger[SNX_DEBUGGER_NAME];
                 overlay_keys_extra(g_renderer->capture(0), snx_debugger(debugger, sizeof debugger) ? debugger : "");
+                overlay_keys_mouse(hid_mouse_mode());
             }
             overlay_keys();
             ui_unlock();
@@ -1080,6 +1083,7 @@ static void hotkey(int action) {
             title_paused(game_paused());
             break;
         case HOTKEY_CAPTURE: g_renderer->capture(1); break;
+        case HOTKEY_MOUSE: mouse_let_go(); break;
         case HOTKEY_QUIT: g_quit = 1; break;
         default: break;
     }
@@ -1282,6 +1286,51 @@ static void touch_finger(const SDL_Event* e) {
               : e->type == SDL_EVENT_FINGER_MOTION ? TOUCH_MOVE
                                                    : TOUCH_UP,
               finger_id(&e->tfinger), picture, px, py);
+}
+/* The mouse is held for the game while it plays with it: a Joy-Con on a table has no window's edge to stop at. The menu
+   takes it back, and hotkey_mouse (Ctrl+G) lets it go until the game's mouse mode ends or the key again */
+static int g_mouse_let_go, g_mouse_held;
+/* hotkey_mouse: the mouse let go, or held again; what it held comes up with it */
+static void mouse_let_go(void) {
+    g_mouse_let_go = !g_mouse_let_go;
+    pm_lock(&g_host.hid.input_lock);
+    g_hle.hid.mouse.buttons = 0;
+    pm_unlock(&g_host.hid.input_lock);
+}
+static void mouse_hold_update(void) {
+    int mode = g_win && hid_mouse_mode();
+    if (!mode) g_mouse_let_go = 0;
+    int want = mode && !g_mouse_let_go && !overlay_shown() && !vpad_editing() && !overlay_keyboard_shown();
+    if (want == g_mouse_held) return;
+    g_mouse_held = want;
+    if (!SDL_SetWindowRelativeMouseMode(g_win, want))
+        LOG("input: the mouse couldn't be %s: %s\n", want ? "held" : "let go", SDL_GetError());
+    else if (!want)
+        LOG("input: the mouse is let go\n");
+    else
+        LOG("input: the mouse is held for the game, and hotkey_mouse=%s lets it go\n", hotkey_text(HOTKEY_MOUSE));
+}
+/* the mouse as an Ounce game's Joy-Con in mouse mode (hid_mouse_update): what it moved, under input_lock */
+static void game_mouse(const SDL_Event* e) {
+    HidMouse* m = &g_hle.hid.mouse;
+    if (g_mouse_let_go) return;
+    pm_lock(&g_host.hid.input_lock);
+    if (e->type == SDL_EVENT_MOUSE_MOTION) {
+        if (e->motion.which != SDL_TOUCH_MOUSEID) {
+            m->dx += e->motion.xrel;
+            m->dy += e->motion.yrel;
+        }
+    } else if (e->type == SDL_EVENT_MOUSE_WHEEL) {
+        m->wheel += e->wheel.y;
+    } else if (e->button.which != SDL_TOUCH_MOUSEID) {
+        /* nn::hid::MouseButton: left, right, middle */
+        u32 bit = e->button.button == SDL_BUTTON_LEFT     ? 1u
+                  : e->button.button == SDL_BUTTON_RIGHT  ? 2u
+                  : e->button.button == SDL_BUTTON_MIDDLE ? 4u
+                                                          : 0;
+        m->buttons = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN ? m->buttons | bit : m->buttons & ~bit;
+    }
+    pm_unlock(&g_host.hid.input_lock);
 }
 /* the mouse's left button as one more finger: on the on-screen controls when they are on, and on the touch screen
    when the touch option asks for it; positions come in window points */
@@ -1492,6 +1541,7 @@ void video_poll(void) {
     /* the menu, or the keyboard's box, had the controls when this poll began: the press that closes it (B, or A that
        gives the box's line) is in this poll's state */
     int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown();
+    if (!g_opt_headless) mouse_hold_update();
     while (!g_opt_headless && SDL_PollEvent(&e)) {
         int action = e.type == SDL_EVENT_KEY_DOWN ? key_action(&e.key) : -1; /* the runtime key it is */
         if (press_event(&e, action)) continue;
@@ -1520,7 +1570,11 @@ void video_poll(void) {
             case SDL_EVENT_FINGER_CANCELED: touch_finger(&e); break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
             case SDL_EVENT_MOUSE_BUTTON_UP:
-            case SDL_EVENT_MOUSE_MOTION: touch_mouse(&e); break;
+            case SDL_EVENT_MOUSE_MOTION:
+                game_mouse(&e);
+                if (!g_mouse_held) touch_mouse(&e);
+                break;
+            case SDL_EVENT_MOUSE_WHEEL: game_mouse(&e); break;
             case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
                 g_fullscreen = 1;
                 wsafe_set();

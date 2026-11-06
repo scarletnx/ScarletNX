@@ -46,6 +46,8 @@ int overlay_back(void);        /* the page above; OVERLAY_CLOSE from the first, 
 /* what F1's page shows besides its rows: the capture key's row while RenderDoc is in the process, and the debugger
    tracing the process ("" for none) */
 void overlay_keys_extra(int capture, const char* debugger);
+/* whether a game holds the mouse (an Ounce game's Joy-Con mouse mode), which shows the mouse key's row */
+void overlay_keys_mouse(int on);
 int overlay_keys(void);
 int overlay_other(void);
 /* a button pressed, as the game reads it (one HidNpadButton bit): the D-pad and the left stick move, A selects, B goes
