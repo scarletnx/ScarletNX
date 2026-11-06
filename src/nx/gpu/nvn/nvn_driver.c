@@ -137,11 +137,19 @@ static int find_switch(const Image* m, u64 start, Switch* s) {
     }
     return 0;
 }
+/* whether x returns: ret, or the retaa and retab of a driver built with PAuth */
+static int returns(u32 x) { return (x & 0xfffffc1f) == 0xd65f0000 || x == 0xd65f0bff || x == 0xd65f0fff; }
+/* where the switch sends index: 1 and *target */
+static int case_target(const Image* m, const Switch* s, u32 index, u64* target) {
+    u32 entry;
+    if (index > s->bound || !load(m, s->table + (u64)index * s->size, s->size, &entry)) return 0;
+    *target = s->size == 4 ? s->table + (u64)snx_sext64(entry, 32) : s->base + (u64)entry * 4;
+    return 1;
+}
 static int case_value(const Image* m, const Switch* s, u32 item, i32* out) {
-    u32 entry, k;
+    u32 k;
     u64 target, v;
-    if (item > s->bound || !load(m, s->table + (u64)item * s->size, s->size, &entry)) return 0;
-    target = s->size == 4 ? s->table + (u64)snx_sext64(entry, 32) : s->base + (u64)entry * 4;
+    if (!case_target(m, s, item, &target)) return 0;
     for (k = 0; k < 8; k++) {
         u32 x, rd;
         if (!load(m, target + 4 * (u64)k, 4, &x)) return 0;
@@ -149,7 +157,7 @@ static int case_value(const Image* m, const Switch* s, u32 item, i32* out) {
             *out = (i32)v;
             return 1;
         }
-        if ((x & 0xfc000000) == 0x14000000 || (x & 0xfffffc1f) == 0xd65f0000) { /* b, ret: the default */
+        if ((x & 0xfc000000) == 0x14000000 || returns(x)) { /* b, ret: the default */
             if (!s->has_default) return 0;
             *out = (i32)s->fallback;
             return 1;
@@ -157,6 +165,60 @@ static int case_value(const Image* m, const Switch* s, u32 item, i32* out) {
         if (redefines(x, 0)) return 0;
     }
     return 0;
+}
+/* whether the case of item starts by loading w0 from the stack: the local that the function's first call filled */
+static int case_reads_local(const Image* m, const Switch* s, u32 item) {
+    u64 target;
+    u32 x;
+    if (!case_target(m, s, item, &target) || !load(m, target, 4, &x) || (x & 31) != 0) return 0;
+    if ((x & 0xffe00c00) == 0xb8400000) return ((x >> 5) & 31) == 29; /* ldur w0, [x29, #imm] */
+    return (x & 0xffc00000) == 0xb9400000 && ((x >> 5) & 31) == 31;   /* ldr w0, [sp, #imm] */
+}
+/* An API 231 driver's switch answers few items itself. The others are a local that its first call fills: a second
+   switch, on the item less a constant, whose cases set one register for the code they join to store. A case that
+   returns without storing leaves the local's 0. func is the function of the first switch */
+static int helper_value(const Image* m, u64 func, u32 item, i32* out) {
+    Switch s;
+    u64 helper = 0, target, v, value = 0;
+    u32 j, x, rd, bias = 0, reg = 32;
+    for (j = 0; j < 16 && !helper; j++) {
+        if (!load(m, func + 4 * (u64)j, 4, &x)) return 0;
+        if ((x & 0xfc000000) == 0x94000000) helper = func + 4 * (u64)j + (u64)(snx_sext64(x & 0x3ffffff, 26) * 4);
+    }
+    if (!helper || !find_switch(m, helper, &s)) return 0;
+    for (j = 0; j < 16; j++) {
+        if (!load(m, helper + 4 * (u64)j, 4, &x)) return 0;
+        if ((x & 0xffc00000) == 0x51000000) /* sub wd, wn, #imm */
+            bias = (x >> 10) & 0xfff;
+        else if (constant(x, &rd, &v) && rd != 0) { /* what the register holds at the jump */
+            reg = rd;
+            value = v;
+        } else if ((x & 0xfffffc1f) == 0xd61f0000)
+            break;
+    }
+    if (reg == 32 || item < bias || !case_target(m, &s, item - bias, &target)) return 0;
+    for (j = 0; j < 8; j++) {
+        if (!load(m, target + 4 * (u64)j, 4, &x)) return 0;
+        if (constant(x, &rd, &v)) {
+            if (rd == 0) break; /* the join: mov w0, #1 */
+            if (rd != reg) return 0;
+            value = v;
+        } else if ((x & 0x7f800000) == 0x72800000 && (x & 31) == reg) { /* movk */
+            unsigned shift = ((x >> 21) & 3) * 16;
+            value = (value & ~(0xffffull << shift)) | ((u64)((x >> 5) & 0xffff) << shift);
+        } else if (x == (0x2a1f03e0u | reg)) { /* mov wd, wzr */
+            value = 0;
+        } else if (returns(x)) {
+            value = 0;
+            break;
+        } else if ((x & 0xfc000000) == 0x14000000) { /* b: the join */
+            break;
+        } else if (redefines(x, reg))
+            return 0;
+    }
+    if (j == 8) return 0;
+    *out = (i32)value;
+    return 1;
 }
 
 /* ---- A32: a 32-bit program's driver (its code in A32 state, as the 32-bit SDK builds it) ----
@@ -349,7 +411,10 @@ int nvn_driver_info(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* out)
     }
     for (i = 0; i < n; i++) {
         Switch s;
-        if (find_switch(&m, starts[i], &s)) return case_value(&m, &s, item, out);
+        if (find_switch(&m, starts[i], &s)) {
+            if (case_value(&m, &s, item, out)) return 1;
+            return case_reads_local(&m, &s, item) && helper_value(&m, starts[i], item, out);
+        }
     }
     return 0;
 }
