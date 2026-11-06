@@ -173,6 +173,12 @@ static KObj* handle_object(u32 h) {
     CHECK(h >= 0x100 && h < test_next_handle);
     return test_handles[h - 0x100];
 }
+KObj* h_get_ref(u32 h, int t) { /* as kernel.c's, on the handles h_new made */
+    KObj* o = handle_object(h);
+    (void)t;
+    kobj_ref(o);
+    return o;
+}
 static void close_handles(void) {
     for (u32 h = 0x100; h < test_next_handle; h++) kobj_unref(test_handles[h - 0x100]);
     test_next_handle = 0x100;
