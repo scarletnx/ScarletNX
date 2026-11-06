@@ -177,6 +177,28 @@ static void writers_pause(void) {
     for (i = 0; i < WRITERS; i++)
         while (!__atomic_load_n(&g_writer_idle[i], __ATOMIC_SEQ_CST)) sched_yield();
 }
+/* the marks that let a scan skip a group of unwritten pages: a whole group's scan takes its mark, and a scan of a part
+   of it leaves the mark for the pages it didn't read. The first 64 pages are the reservation's first group */
+static void test_scan_marks(void) {
+    printf("written-page tracking by protection: the marks of groups of pages\n");
+    CHECK(g_wp_marks != NULL && g_base == g_wp_base, "no marks, or the test's pages are not the first group");
+    scan();
+    CHECK(!__atomic_load_n(&g_wp_marks[0], __ATOMIC_RELAXED), "a whole group's scan left its mark");
+    g_base[3 * 4096] = 1;
+    CHECK(__atomic_load_n(&g_wp_marks[0], __ATOMIC_RELAXED), "a written page left no mark");
+    __atomic_store_n(&g_seen, 0, __ATOMIC_RELAXED);
+    plat_ww_scan(g_base + 8 * 4096, 8 * 4096, on_seen);
+    CHECK(!__atomic_load_n(&g_seen, __ATOMIC_RELAXED), "a scan of other pages reported a page");
+    CHECK(__atomic_load_n(&g_wp_marks[0], __ATOMIC_RELAXED), "a scan of a part of a group took its mark");
+    CHECK(scan() == 1ull << 3, "the written page was lost to the scan of a part of its group");
+    CHECK(!__atomic_load_n(&g_wp_marks[0], __ATOMIC_RELAXED) && scan() == 0, "the page was reported twice");
+    /* a scan that starts inside a group takes the written page it reads, and the next finds nothing */
+    g_base[60 * 4096] = 2;
+    __atomic_store_n(&g_seen, 0, __ATOMIC_RELAXED);
+    plat_ww_scan(g_base + 56 * 4096, 8 * 4096, on_seen);
+    CHECK(__atomic_load_n(&g_seen, __ATOMIC_RELAXED) == 1ull << 60, "a scan of a part of a group missed its page");
+    CHECK(scan() == 0, "a page that a scan of a part of its group took was reported again");
+}
 /* system calls that write guest memory while another thread scans it: the pages plat_ww_open opened stay writable
    until plat_ww_close, so the kernel's write never meets a page a scan protected again (EFAULT, a short read) */
 static int g_kernel_fd = -1, g_kernel_stop;
@@ -498,6 +520,7 @@ static void test_guest_memory(const char* dir) {
         plat_ww_close(g_base + 7 * 4096, 10);
         close(fd);
         CHECK(scan() == 1ull << 7, "a read() into page 7 was not reported");
+        if (g_wp && g_wp_track) test_scan_marks();
         if (g_wp) {
             test_protection_tracking();
             test_kernel_writes(dir);
