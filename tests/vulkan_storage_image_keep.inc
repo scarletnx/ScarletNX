@@ -9,7 +9,7 @@
    store beside them on the same page both stay. The image's next draws take that write-back. Elsewhere every draw
    takes it, as before. No extracted shaders or game data are used */
 #define IMGKEEP_GVA  0x4c0000000ull
-#define IMGKEEP_CPU  (HEAP_BASE + 0x5800000)
+#define IMGKEEP_CPU  (HEAP_BASE + 0x5400000)
 #define IMGKEEP_SIZE 0x4000u
 
 /* texel (x, y)'s offset in a w x h R32 image of blocks 8 GOBs high */
