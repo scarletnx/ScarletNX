@@ -20,7 +20,6 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/lookup_ways.h"
-#include "common/utilities/bits.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/renderer.h"
@@ -50,8 +49,6 @@ typedef struct {
     u64 addr;
     u64 off;
     u32 size;
-    VkWriteLog* log; /* the write log whose part gives the bytes its dispatch wrote, with a reference; NULL: compared */
-    u32 part, wseen; /* and the write tracking clock before its input was read */
 } CsOut;
 static CsOut g_out[256];
 static int g_nout;
@@ -82,8 +79,6 @@ typedef struct {
     u64 ar_cap, org_cap, cval;
     CsOut out[256];
     int nout, gfx;
-    VkWriteLog** logs; /* its dispatches' own references to their logs, dropped once it is done */
-    u32 nlogs, caplogs;
 #if defined(SNX_TRACY)
     VkQueryPool qpool; /* the batch's span on the GPU track, its two timestamps read back when it lands */
     u16 q0, q1;
@@ -92,15 +87,6 @@ typedef struct {
 } CsBatch;
 #define CS_PENDING 3
 static CsBatch g_pend[CS_PENDING];
-/* the current batch's dispatches' references to their logs (CsBatch.logs), and a log taken for a dispatch whose setup
-   was abandoned: no work used it, and the next dispatch takes it */
-static VkWriteLog** g_logs;
-static u32 g_nlogs, g_caplogs;
-static VkWriteLog* g_cs_spare;
-static void logs_unref(VkWriteLog** logs, u32* n) {
-    for (u32 i = 0; i < *n; i++) vk_wlog_unref(logs[i]);
-    *n = 0;
-}
 static u32 g_phead, g_ptail; /* batches put aside, landed */
 /* draws can read results on the GPU before they land (vk_compute_gpu_src): the batch signals g_vk_csem, the next
    graphics submit waits for g_vk_cs_wait_value, and the arena they read stays alive until that frame is done */
@@ -378,34 +364,10 @@ static void cs_wait(u64 value) {
     gpu_wait_note(NULL, 0);
     __atomic_add_fetch(&g_vk_cs_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
 }
-/* a logged result's runs, gathered for vk_write_runs */
-static VkRun* g_runs;
-static u32 g_nruns, g_capruns;
-static void run_add(void* user, u32 from, u32 to) {
-    (void)user;
-    if (g_nruns == g_capruns) {
-        u32 cap = g_capruns ? g_capruns * 2 : 256;
-        VkRun* grown = realloc(g_runs, (size_t)cap * sizeof *grown);
-        if (!grown) fatal("Out of memory landing a compute result");
-        g_runs = grown;
-        g_capruns = cap;
-    }
-    g_runs[g_nruns++] = (VkRun){from, to};
-}
-/* the arena's results into guest memory, after its batch is done: of a logged one the bytes its dispatch wrote, each
-   of them and no other, its reference to the log dropped then; of another, the bytes that changed */
+/* the arena's results that changed, into guest memory, after its batch is done */
 static void cs_write_back(VmaAllocation mem, const u8* ar, const u8* org, const CsOut* out, int nout) {
     vmaInvalidateAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE);
-    for (int i = 0; i < nout; i++) {
-        if (!out[i].log) {
-            vk_write_changed(out[i].addr, ar + out[i].off, org + out[i].off, out[i].size);
-            continue;
-        }
-        g_nruns = 0;
-        vk_wlog_runs(out[i].log, out[i].part, out[i].size, run_add, NULL);
-        vk_write_runs(out[i].addr, ar + out[i].off, g_runs, g_nruns, out[i].wseen);
-        vk_wlog_unref(out[i].log);
-    }
+    for (int i = 0; i < nout; i++) vk_write_changed(out[i].addr, ar + out[i].off, org + out[i].off, out[i].size);
 }
 /* an arena whose batch has landed: draws that read it may still run (gfx), so it waits for their frame like the
    arenas draws read; one they didn't read is free now */
@@ -435,7 +397,6 @@ static void cs_land_oldest(void) {
     cs_times(b->qpool, b->q0, b->q1, b->ep);
 #endif
     cs_write_back(b->ar_mem, b->ar_ptr, b->org, b->out, b->nout);
-    logs_unref(b->logs, &b->nlogs);
     g_landing = was;
     outs_pages(b->out, b->nout, -1);
     vkResetDescriptorPool(g_vk.dev, b->dpool, 0);
@@ -503,16 +464,6 @@ static void cs_put_aside(void) {
 #endif
     memcpy(b->out, g_out, (size_t)g_nout * sizeof g_out[0]);
     b->nout = g_nout;
-    { /* the logs' references swap lists too: the batch's, empty since it landed, is the next one's */
-        VkWriteLog** l = b->logs;
-        u32 cap = b->caplogs;
-        b->logs = g_logs;
-        b->nlogs = g_nlogs;
-        b->caplogs = g_caplogs;
-        g_logs = l;
-        g_nlogs = 0;
-        g_caplogs = cap;
-    }
     g_phead++;
     g_ccb = cb;
     g_dpool = dp;
@@ -540,7 +491,6 @@ static void cs_land(void) {
     g_cq0 = g_cq1 = 0;
 #endif
     cs_write_back(g_ar_mem, g_ar_ptr, g_org, g_out, g_nout);
-    logs_unref(g_logs, &g_nlogs);
     outs_pages(g_out, g_nout, -1);
     /* only now: until the results are in memory, readers on other threads wait for this landing in
        vk_compute_mem_need */
@@ -1066,37 +1016,6 @@ static void res_unref_all(VkOwnRes** made, int n) {
         }
 }
 
-/* Whether a program that logs its writes reads and writes its storage buffers in the GPU mirror (mirror.c): each
-   one run of guest memory, at an offset the device binds a storage buffer at and a multiple of 16 (so a store's mask
-   bits are in one word), and the mask over all of them one binding. *c0: the guest address the mask's binding starts
-   at; *mrange: its bytes. cpu[i]: each buffer's guest address */
-static int mirror_plan(const CsPipe* p, int ng, const u64* sa, const u32* ss, u64* cpu, u64* c0, u64* mrange) {
-    u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment, lo = ~0ull, hi = 0;
-    if (!p->si.gbuf_marks || !vk_mirror_on()) return 0;
-    if (align < 16) align = 16;
-    for (int i = 0; i < ng; i++) {
-        cpu[i] = 0;
-        if (!sa[i]) continue;
-        if (gmmu_run(sa[i], ss[i], &cpu[i]) != ss[i] || (cpu[i] & (align - 1))) return 0;
-        if (!(p->si.gbuf_marks >> i & 1)) continue;
-        if (cpu[i] < lo) lo = cpu[i];
-        if (cpu[i] + ss[i] > hi) hi = cpu[i] + ss[i];
-    }
-    if (lo == ~0ull) lo = hi = 0;
-    *c0 = lo & ~(align * 8 - 1); /* the mask's binding at a byte the device binds at */
-    *mrange = ((hi - *c0 + 7) / 8 + 3) & ~3ull;
-    if (!*mrange) *mrange = 4;
-    return hi - *c0 <= 0xFFFFFFF0ull && *mrange <= g_vk.props.limits.maxStorageBufferRange;
-}
-/* the results other than the mirror's pending over [gva, gva + len) land, as a read of guest memory has them: the
-   mirror's own are where it reads them */
-static void mirror_need_others(u64 gva, u64 len) {
-    if (g_cs_any) vk_compute_mem_need(gva, len);
-    vk_buf_mem_need(gva, len);
-    vk_gfx_image_mem_need(gva, len);
-    vk_release_need(gva, len);
-}
-
 void vk_dispatch(const DispatchState* d) {
     u32 gx = d->grid[0], gy = d->grid[1], gz = d->grid[2], lx = d->block[0], ly = d->block[1], lz = d->block[2],
         shm = d->shared;
@@ -1313,11 +1232,6 @@ void vk_dispatch(const DispatchState* d) {
     int gfx = vk_uma() || p->si.ntex > 0 || p->si.nimg > 0, overlap = 0, retries = 0;
     /* so does an indirect one: its grid is read where the graphics queue's buffers hold guest memory (vk_buf_get) */
     gfx = gfx || d->indirect != 0;
-    /* and one whose storage buffers are in the GPU mirror, which the graphics queue's submits bring up to date and
-       land (mirror.c): an Ounce program's, each all of the memory mapped from its address, up to 16 MiB */
-    u64 mcpu[16], mc0 = 0, mrange = 0;
-    const int mir = mirror_plan(p, ng, sa, ss, mcpu, &mc0, &mrange);
-    gfx = gfx || mir;
     VkBuffer grid_buf = VK_NULL_HANDLE, cb0_buf = VK_NULL_HANDLE;
     u64 grid_off = 0, cb0_off = 0;
     u32 cb0_range = 0;
@@ -1489,24 +1403,6 @@ rebind:
                                        .pBufferInfo = &bi[nw]};
         nw++;
     }
-    /* without the mirror, the program's write log, from the pool, a mask for each global buffer to the last it logs:
-       each result it writes lands the bytes the log gives. One a setup abandoned is the next one's, unless its parts
-       don't fit */
-    VkWriteLog* log = NULL;
-    const u32 parts = p->si.gbuf_marks ? 32u - snx_clz32(p->si.gbuf_marks) : 0;
-    if (parts && !mir) {
-        if (g_cs_spare && vk_wlog_size(g_cs_spare) != (u64)parts * SH_WLOG_WORDS * 4) {
-            vk_wlog_put(g_cs_spare);
-            g_cs_spare = NULL;
-        }
-        if (!g_cs_spare) g_cs_spare = vk_wlog_get(parts);
-        if (!g_cs_spare) {
-            g_cs_skips[CS_SKIP_RESOURCES]++;
-            return;
-        }
-        log = g_cs_spare;
-    }
-    u32 wseen = vk_ww_now(); /* before the inputs are read */
     u64 so[16];
     VkBuffer bi_buf[16];
     int chained = 0;
@@ -1516,21 +1412,7 @@ rebind:
         int alias = -1;
         for (int k = 0; k < i && resident && alias < 0; k++)
             if (sa[k] && sa[k] == sa[i] && ss[k] == ss[i]) alias = k; /* one range bound twice names one buffer */
-        if (mir) {
-            /* in the mirror, brought up to date: what other work has pending there lands first */
-            int ok;
-            if (sa[i]) {
-                mirror_need_others(sa[i], ss[i]);
-                ok = vk_mirror_slice(sa[i], ss[i], &sbuf, &o);
-            } else
-                ok = vk_buf_copy(0, ss[i], &sbuf, &o);
-            if (!ok) {
-                vk_buf_writable_abort();
-                g_cs_skips[CS_SKIP_STORAGE_BUFFER]++;
-                return;
-            }
-            so[i] = o;
-        } else if (resident && alias >= 0) {
+        if (resident && alias >= 0) {
             sbuf = bi_buf[alias];
             o = so[alias];
             so[i] = o;
@@ -1544,12 +1426,9 @@ rebind:
         } else if (deferred) {
             /* written: a pending result of its own, from its original bytes; read: the bytes draws would read,
                which may be an earlier draw's or dispatch's result on the GPU */
-            int ok = (p->si.gbuf_wmask >> i) & 1
-                         ? log && (p->si.gbuf_marks >> i & 1)
-                               ? vk_buf_copy_writable_logged(sa[i], ss[i], &sbuf, &o, 1, log, (u32)i)
-                               : vk_buf_copy_writable(sa[i], ss[i], &sbuf, &o, 1)
-                     : sa[i] ? vk_buf_get_strict(sa[i], ss[i], &sbuf, &o)
-                             : vk_buf_copy(0, ss[i], &sbuf, &o);
+            int ok = (p->si.gbuf_wmask >> i) & 1 ? vk_buf_copy_writable(sa[i], ss[i], &sbuf, &o, 1)
+                     : sa[i]                     ? vk_buf_get_strict(sa[i], ss[i], &sbuf, &o)
+                                                 : vk_buf_copy(0, ss[i], &sbuf, &o);
             if (!ok) {
                 vk_buf_writable_abort();
                 g_cs_skips[CS_SKIP_STORAGE_BUFFER]++;
@@ -1571,47 +1450,6 @@ rebind:
         w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
                                        .dstBinding = SNX_VKB_SSBO + i,
-                                       .descriptorCount = 1,
-                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                       .pBufferInfo = &bi[nw]};
-        nw++;
-    }
-    if (log || mir) {
-        /* the mask its stores log their bytes in, and each logged buffer's base in it and length (SNX_VKB_MBASE) */
-        u32 mb[SH_MB_WORDS] = {0};
-        for (int i = 0; i < ng && i < 16; i++)
-            if ((p->si.gbuf_marks >> i & 1) && sa[i]) {
-                mb[i] = mir ? (u32)(mcpu[i] - mc0) : (u32)i * SH_WLOG_SLOT;
-                mb[16 + i] = ss[i];
-            }
-        VkBuffer ub = g_ar;
-        u64 uo;
-        u8* dst;
-        if (deferred) {
-            dst = vk_stage(sizeof mb, vk_stage_align(), &ub, &uo);
-            if (!dst) {
-                vk_buf_writable_abort();
-                g_cs_skips[CS_SKIP_RESOURCES]++;
-                return;
-            }
-        } else {
-            uo = arena_alloc(sizeof mb);
-            dst = g_ar_ptr + uo;
-        }
-        memcpy(dst, mb, sizeof mb);
-        bi[nw] = (VkDescriptorBufferInfo){ub, uo, sizeof mb};
-        w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                       .dstSet = set,
-                                       .dstBinding = SNX_VKB_MBASE,
-                                       .descriptorCount = 1,
-                                       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                       .pBufferInfo = &bi[nw]};
-        nw++;
-        bi[nw] = mir ? (VkDescriptorBufferInfo){vk_mirror_mask(), mc0 / 8, mrange}
-                     : (VkDescriptorBufferInfo){vk_wlog_buffer(log), 0, vk_wlog_size(log)};
-        w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                       .dstSet = set,
-                                       .dstBinding = SNX_VKB_WPAGES,
                                        .descriptorCount = 1,
                                        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                        .pBufferInfo = &bi[nw]};
@@ -1855,13 +1693,8 @@ rebind:
     /* the outputs, once every input is read (an input can alias another storage buffer's output) */
     for (int i = 0; i < ng && !deferred; i++)
         if (((p->si.gbuf_wmask >> i) & 1) && sa[i]) {
-            /* a logged result needs no original bytes: its log gives what its dispatch wrote */
-            VkWriteLog* l = log && (p->si.gbuf_marks >> i & 1) ? log : NULL;
-            if (l)
-                vk_wlog_ref(l);
-            else
-                memcpy(g_org + so[i], g_ar_ptr + so[i], ss[i]);
-            g_out[g_nout++] = (CsOut){sa[i], so[i], ss[i], l, l ? (u32)i : 0, wseen};
+            memcpy(g_org + so[i], g_ar_ptr + so[i], ss[i]);
+            g_out[g_nout++] = (CsOut){sa[i], so[i], ss[i]};
             pend_add(&g_pages, sa[i], ss[i], 1);
         }
     /* buffer images land like storage buffers: only the bytes the dispatch changed are written back */
@@ -1874,7 +1707,6 @@ rebind:
             g_out[g_nout].addr = bimg[i].gva;
             g_out[g_nout].off = bufimg_off[i];
             g_out[g_nout].size = bimg[i].bytes;
-            g_out[g_nout].log = NULL;
             g_nout++;
             pend_add(&g_pages, bimg[i].gva, bimg[i].bytes, 1);
         }
@@ -1927,17 +1759,6 @@ rebind:
         rec_CmdCopyBuffer(cb, grid_buf, cb0_buf, 1, &gc);
         vk_all_barrier(cb);
     }
-    if (mir) { /* after the earlier programs' writes of the mirror and its mask, which it may read or write again */
-        VkMemoryBarrier2 mmb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                                .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                .dstAccessMask =
-                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
-        VkDependencyInfo mdi = {
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mmb};
-        rec_CmdPipelineBarrier2(cb, &mdi);
-    }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk.cs_playout, 0, 1, &set, 0, NULL);
     if (d->indirect) {
@@ -1945,24 +1766,6 @@ rebind:
     } else {
         vk_ck(cb, VK_CK_DISPATCH, gx, gy, gz, 0);
         rec_CmdDispatch(cb, gx, gy, gz);
-    }
-    if (mir) /* its writes pending until the submit's harvest lands them */
-        for (int i = 0; i < ng; i++)
-            if ((p->si.gbuf_marks >> i & 1) && sa[i]) vk_mirror_wrote(mcpu[i], ss[i]);
-    if (log) { /* recorded: the dispatch's reference goes with the work that writes the log */
-        g_cs_spare = NULL;
-        if (gfx || resident)
-            vk_buf_log_retire(log);
-        else {
-            if (g_nlogs == g_caplogs) {
-                u32 cap = g_caplogs ? g_caplogs * 2 : 64;
-                VkWriteLog** grown = realloc(g_logs, (size_t)cap * sizeof *grown);
-                if (!grown) fatal("Out of memory keeping a write log");
-                g_logs = grown;
-                g_caplogs = cap;
-            }
-            g_logs[g_nlogs++] = log;
-        }
     }
     if (resident) {
         vk_all_barrier(cb); /* its writes before what reads them next */
@@ -2013,8 +1816,8 @@ rebind:
         vk_finish();
         vmaInvalidateAllocation(g_vk.vma, g_ar_mem, 0, VK_WHOLE_SIZE);
         g_landing = 1;
-        cs_write_back(g_ar_mem, g_ar_ptr, g_org, g_out, g_nout);
-        logs_unref(g_logs, &g_nlogs);
+        for (int i = 0; i < g_nout; i++)
+            vk_write_changed(g_out[i].addr, g_ar_ptr + g_out[i].off, g_org + g_out[i].off, g_out[i].size);
         outs_pages(g_out, g_nout, -1);
         for (i = 0; i < p->si.nimg && i < 8; i++)
             if (bufimg_view[i]) vkDestroyBufferView(g_vk.dev, bufimg_view[i], NULL);
