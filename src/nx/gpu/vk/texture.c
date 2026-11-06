@@ -506,7 +506,7 @@ static int tex_upload_(Surf* t) {
             if (f->conv == VKC_ASTC) { /* decoded on the GPU from its block rows, deswizzled on the GPU */
                 complete = up_flush(&u);
                 LevelSource ls = {t, t->gva + at, lsz, rowb, th, lbh, lbd, gobs_x};
-                complete = complete && vk_astc_upload(u.cb, t, lw, lh, ld, l, layer, astc_rows, &ls);
+                complete = complete && vk_astc_upload(u.cb, t, 0, 0, lw, lh, ld, l, layer, astc_rows, &ls);
                 u.scratch = VK_NULL_HANDLE; /* astc_rows may have grown the scratch buffer: asked for again */
                 u.cap = 0;
             } else {
@@ -944,9 +944,11 @@ static void tex_dirty_piece(void* ctx, u64 at, u64 n) {
 }
 /* loaded a piece at a time: one sample, in a format the GPU takes as it is, block linear with texels or blocks whole
    in a GOB's 64-byte rows, or pitch linear with texels or blocks of 1 to 16 bytes, a power of two (a row staged
-   anywhere in staging is where a copy can read it) */
+   anywhere in staging is where a copy can read it). Or ASTC, decoded (and encoded as BC7) a run of blocks at a time
+   (level_patch_astc): block linear and 2D, as a volume's ASTC levels are decoded whole */
 static int tex_can_piece(const Surf* t) {
     const VkFmt* f = &t->f;
+    if (f->conv == VKC_ASTC) return t->bl && !t->msaa && t->type != VK_IMAGE_VIEW_TYPE_3D;
     return !t->msaa && f->conv == VKC_NONE && !vk_tc_converts(f) && !f->depth && f->bpp &&
            (t->bl ? 64 % f->bpp == 0 : 16 % f->bpp == 0);
 }
@@ -1073,6 +1075,39 @@ static int tex_patch_pitch(Upload* u, const TexPieces* p) {
         }
     return !have || pitch_patch(u, &run);
 }
+/* the ASTC blocks of one level of one layer (lsz bytes at gva) that its bytes [a, b) lie in, decoded again a run of
+   blocks of one row of blocks at a time, as level_patch_bl loads them: the layout of a surface that row high and that
+   run wide, which astc_rows deswizzles. A run starts on a GOB, 4 ASTC blocks across, and is 8 << lbh block rows high
+   (or ends at the level's edge), so it holds whole the 4x4 blocks a texture held as BC7 (astc_bc) encodes from its
+   texels, whatever the footprint: 4 and 8 blocks are whole multiples of lcm(4, bw) / bw and lcm(4, bh) / bh, which
+   are 1, 2 or 4. Each BC7 block then takes the texels it takes in the whole level's upload, its neighbours' too */
+static int level_patch_astc(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 lbh, u32 lbd, u64 a, u64 b) {
+    Surf* t = u->t;
+    const VkFmt* f = &t->f;
+    u32 gobs_x = lv->gobs_x;
+    u64 block = 512ull << (lbh + lbd), rows_blocks = ((((u64)lv->th + 7) >> 3) + (1u << lbh) - 1) >> lbh;
+    u64 k = a / block, end = (b + block - 1) / block;
+    if (end > lsz / block) end = lsz / block;
+    while (k < end) {
+        u64 row = k / gobs_x, e = (row + 1) * gobs_x < end ? (row + 1) * gobs_x : end;
+        u32 x0 = (u32)(k % gobs_x), y = (u32)(row % rows_blocks) << (3 + lbh), z = (u32)(row / rows_blocks) << lbd;
+        if (y < lv->th && z < lv->ld && x0 * 64 < lv->rowb) { /* else the layout's padding past the level's blocks */
+            u32 rowb = lv->rowb - x0 * 64 < (e - k) * 64 ? lv->rowb - x0 * 64 : (u32)(e - k) * 64;
+            u32 tx = x0 * 4 * f->bw, ty = y * f->bh, rows = lv->th - y < 8u << lbh ? lv->th - y : 8u << lbh;
+            u32 w = rowb / 16 * f->bw, h = rows * f->bh;
+            LevelSource ls = {t, gva + k * block, lsz - k * block, rowb, 8u << lbh, lbh, lbd, 0};
+            if (w > lv->lw - tx) w = lv->lw - tx;
+            if (h > lv->lh - ty) h = lv->lh - ty;
+            if (!up_flush(u) || !vk_astc_upload(u->cb, t, tx, ty, w, h, 1, lv->level, lv->layer, astc_rows, &ls))
+                return 0;
+            u->scratch = VK_NULL_HANDLE; /* astc_rows may have grown the scratch buffer: asked for again */
+            u->cap = 0;
+            g_tex_loads.bytes += (e - k) * block;
+        }
+        k = e;
+    }
+    return 1;
+}
 /* bytes [a, b) of the texture loaded again: the blocks of each level of each layer they lie in */
 static int tex_patch_range(Upload* u, u64 a, u64 b) {
     Surf* t = u->t;
@@ -1092,8 +1127,8 @@ static int tex_patch_range(Upload* u, u64 a, u64 b) {
                               .rowb = (lw + f->bw - 1) / f->bw * f->bpp,
                               .th = (lh + f->bh - 1) / f->bh};
                 lv.gobs_x = bl_level_gobs_x(lv.rowb, lv.th, ld, t->bh, t->bd, t->tile_w);
-                if (!level_patch_bl(u, &lv, t->gva + at, lsz, lbh, lbd, a > at ? a - at : 0,
-                                    b - at < lsz ? b - at : lsz))
+                if (!(f->conv == VKC_ASTC ? level_patch_astc : level_patch_bl)(
+                        u, &lv, t->gva + at, lsz, lbh, lbd, a > at ? a - at : 0, b - at < lsz ? b - at : lsz))
                     return 0;
             }
             at += lsz;
@@ -1535,8 +1570,9 @@ texture_from_memory:
     Surf* t = tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, tile_w, pitch, stride, msaa, holes);
     if (!t) return NULL;
     t->size = sz;
-    /* loaded whole, a pitch linear one takes its changes in pieces */
-    t->piecewise = holes && t->bl && tex_can_piece(t);
+    /* loaded whole, a pitch linear or an ASTC one takes its changes in pieces (an ASTC one's holes decode as memory's
+       zero bytes do, as in its whole upload) */
+    t->piecewise = holes && t->bl && f.conv == VKC_NONE && tex_can_piece(t);
     t->ww_epoch = vk_ww_epoch(); /* checked in this epoch: read before the hash, or the piecewise one's load */
     t->wseen = vk_ww_now();
     tex_written_since(t, gva, NULL); /* starts tracking it */

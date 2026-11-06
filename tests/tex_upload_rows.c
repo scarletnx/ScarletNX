@@ -175,12 +175,39 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
 VkImageAspectFlags vk_aspect(const VkFmt* f) {
     return f->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
 }
-/* the ASTC upload asks for its block rows in strips of 3: they land in astc_out, slice after slice */
+/* the ASTC upload asks for its block rows in strips of 3: they land in astc_out, slice after slice. While astc_append
+   is set, each call's after the last one's, from astc_used on, its region and where its blocks start in astc_calls
+   (the first ASTC_CALLS of them) */
 static u8 astc_out[128 << 10];
-int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, VkAstcRows rows,
-                   void* ctx) {
-    (void)level, (void)layer;
+#define ASTC_CALLS 16
+static struct {
+    u32 x, y, w, h, level, layer;
+    u64 at;
+} astc_calls[ASTC_CALLS];
+static u32 nastc;
+static u64 astc_used;
+static int astc_append;
+int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32 depth, u32 level, u32 layer,
+                   VkAstcRows rows, void* ctx) {
     u32 nx = (w + t->f.bw - 1) / t->f.bw, ny = (h + t->f.bh - 1) / t->f.bh;
+    if (nastc < ASTC_CALLS) {
+        astc_calls[nastc].x = x, astc_calls[nastc].y = y0, astc_calls[nastc].w = w, astc_calls[nastc].h = h;
+        astc_calls[nastc].level = level, astc_calls[nastc].layer = layer, astc_calls[nastc].at = astc_used;
+        nastc++;
+    }
+    if (astc_append) {
+        for (u32 z = 0; z < depth; z++)
+            for (u32 y = 0; y < ny; y += 3) {
+                u32 n = ny - y < 3 ? ny - y : 3;
+                VkBuffer b;
+                u64 off;
+                CHECK(rows(ctx, &cb, z, 1, y, n, &b, &off) && mem_of(b));
+                CHECK(astc_used + ((u64)z * ny + y + n) * nx * 16 <= sizeof astc_out);
+                memcpy(astc_out + astc_used + ((u64)z * ny + y) * nx * 16, mem_of(b) + off, (u64)n * nx * 16);
+            }
+        astc_used += (u64)depth * ny * nx * 16;
+        return 1;
+    }
     for (u32 z = 0; z < depth; z++)
         for (u32 y = 0; y < ny; y += 3) {
             u32 n = ny - y < 3 ? ny - y : 3;
@@ -901,6 +928,35 @@ static void check_pitch_linear_changes(void) {
     check_after(&t, &bytes, &partial);
     CHECK(bytes == t.size && partial == 0);
 }
+/* An ASTC texture loaded whole takes a write as the blocks of the runs of GOBs its pages are in, decoded again
+   (level_patch_astc): 6x6 blocks, 600x384 texels, 100x64 blocks in rows of 25 GOBs, blocks 8 GOBs high (4 KiB, a
+   page). A byte of GOB column 7 decodes its run, 4 ASTC blocks of 64 rows, 24x384 texels at (168, 0), on whole 4x4
+   blocks for BC7 (168 and 24 are multiples of 12); one of the last column, the level's edge, 24 texels at 576 */
+static void check_astc_changes(void) {
+    Surf t = tex(600, 384, 1, 1, 16, 3, 0, 1);
+    u64 bytes, partial;
+    t.f.bw = t.f.bh = 6;
+    t.f.conv = VKC_ASTC;
+    t.f.vk = VK_FORMAT_BC7_UNORM_BLOCK;
+    t.size = t.layer_size = bl_level_size(600, 384, 1, &t.f, 3, 0, 0, 0, NULL, NULL);
+    CHECK(t.size == 25 * 4096);
+    loaded(&t);
+    for (u32 column = 7; column < 32; column += 17) { /* 7, then 24 */
+        cpu_write(column * 4096 + 100, 1);
+        nastc = 0;
+        astc_used = 0;
+        astc_append = 1;
+        check_after(&t, &bytes, &partial);
+        CHECK(partial == 1 && bytes == 4096 && nastc == 1 && astc_calls[0].x == column * 24 && astc_calls[0].y == 0 &&
+              astc_calls[0].w == 24 && astc_calls[0].h == 384 && astc_calls[0].x % 12 == 0);
+        for (u32 y = 0; y < 64; y++)
+            for (u32 x = 0; x < 4 * 16; x++)
+                CHECK(astc_out[y * 64 + x] == guest[bl_offset_g(column * 64 + x, y, 0, 25, 64, 3, 0)]);
+        check_quiet(&t);
+    }
+    astc_append = 0;
+    memset(&g_tracking, 0, sizeof g_tracking);
+}
 
 int main(void) {
     fill();
@@ -1202,6 +1258,7 @@ int main(void) {
     check_block_linear_changes();
     check_untracked_runs();
     check_pitch_linear_changes();
+    check_astc_changes();
     printf("tex_upload_rows: %u checks passed\n", checks);
     return 0;
 }
