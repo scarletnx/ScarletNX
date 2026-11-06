@@ -533,9 +533,16 @@ static int tex_upload_(Surf* t) {
 /* change checks: a hash of the whole texture, 4 KiB at a time, the same whichever way its bytes are reached (the
    sampled check for big long-stable textures is vk_sample_hash) */
 #define MEM_HASH_PIECE 4096u
+static u64 g_tex_hashes; /* texture memory hashed to learn whether it changed, whole or sampled (vk_tex_hashes) */
+u64 vk_tex_hashes(void) { return g_tex_hashes; }
+static u64 tex_sample_hash(u64 gva, u64 size) {
+    g_tex_hashes++;
+    return vk_sample_hash(gva, size);
+}
 static u64 mem_hash(u64 gva, u64 size) {
     u64 piece[MEM_HASH_PIECE / 8];
     u64 h = 1469598103934665603ull;
+    g_tex_hashes++;
     /* bytes the GPU holds are trapped: they hash as their owner (vk_guest_peek), so the texture is read in pieces.
        Every byte counts: the CPU rewrites part of a page (a row of a texture, half a GOB's rows) */
     u8* p = own_any() ? NULL : gmem_ptr(gva, size);
@@ -915,25 +922,18 @@ static void tex_run(void* ctx, u64 gva, u64 cpu, u64 n) {
     r->off = gva - r->gva;
     if (w > 0 && r->p) vk_written_runs(GP(cpu), n, r->since, tex_written_piece, r);
 }
-/* vk_written_since for the texture's memory: its one host run, or each mapped run of a texture with holes in its
-   mapping (a virtual pool's, mapped a 64 KiB tile at a time), whose tiles the CPU writes in place, or of one loaded a
-   piece at a time. -1 for memory in several runs and no holes (hashed, as before), and where write tracking is off.
-   With p, the pages written go in it */
+/* vk_written_since for the texture's memory: its one host run, or each run the GPU's page table maps of it, with holes
+   in its mapping (a virtual pool's, mapped a 64 KiB tile at a time, whose tiles the CPU writes in place) or without
+   (several pieces of guest memory): the runs' answers are as good as one run's, and save hashing it. -1 where write
+   tracking is off. With p, the pages written go in it */
 static int tex_written_since(const Surf* t, u64 gva, TexPieces* p) {
     u8* host = gmem_host(gva, t->size);
-    TexRuns r = {0, gva, 0, t->wseen, 0, 0, NULL};
+    TexRuns r = {0, gva, 0, t->wseen, 1, 0, p};
     if (host) {
         int w = vk_written_since(host, t->size, t->wseen);
-        r.p = p;
         if (w > 0 && p) vk_written_runs(host, t->size, t->wseen, tex_written_piece, &r);
         return w;
     }
-    if (!t->piecewise) {
-        gmmu_pieces(gva, t->size, tex_run, &r);
-        if (r.mapped >= t->size) return -1;
-    }
-    r.ask = 1;
-    r.p = p;
     gmmu_pieces(gva, t->size, tex_run, &r);
     return r.written;
 }
@@ -1178,7 +1178,7 @@ static void tex_settle(Surf* t, u64 gva, int changed, int count) {
     else if (count && t->stable < 100000)
         t->stable++;
     if (count && t->stable >= 39 && t->size >= 16384) {
-        t->shash = vk_sample_hash(gva, t->size);
+        t->shash = tex_sample_hash(gva, t->size);
         t->tfull = g_vk_present;
     }
 }
@@ -1256,7 +1256,7 @@ static Surf* tex_check(Surf* t, u64 gva) {
         }
         if (tex_settled(t) && (i32)(g_vk_present - t->tfull) < 120) {
             t->checked = g_vk_present;
-            if (vk_sample_hash(gva, t->size) == t->shash) {
+            if (tex_sample_hash(gva, t->size) == t->shash) {
                 t->next_check = g_vk_present + 20 + ((u32)(gva >> 9) & 7);
                 return t->upload_valid ? t : NULL;
             }
