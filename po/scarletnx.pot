@@ -1612,11 +1612,6 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Cannot find %s beside ScarletNX or on PATH."
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
 msgid "The dumps' icons are not asked for (%s)"
 msgstr ""
 
@@ -2359,6 +2354,15 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Queue"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Cannot find %s beside ScarletNX or on PATH."
+msgstr ""
+
+#: src/gui/main.c
+msgid "the selected driver"
 msgstr ""
 
 #: src/gui/main.c
@@ -4058,10 +4062,6 @@ msgid "%s is compiling (%d%%): the game plays once the queue ends"
 msgstr ""
 
 #: src/gui/main.c
-msgid "the selected driver"
-msgstr ""
-
-#: src/gui/main.c
 msgid "The Recompiled Library's Main is off and no Extra of it can take a game: Add to Library on its Main, or add a folder to it, in Settings > App > Folders"
 msgstr ""
 
@@ -4279,12 +4279,12 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%s opens with %s: cannot find %s beside ScarletNX or on PATH."
+msgid "%s opens with %s, not %s."
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%s opens with %s, not %s."
+msgid "%s opens with %s: cannot find %s beside ScarletNX or on PATH."
 msgstr ""
 
 #: src/gui/main.c
@@ -4690,6 +4690,16 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%d to move, %d staying: --migrate=yes moves them"
+msgstr ""
+
+#: src/gui/model.c
+#, c-format
+msgid "%s opens with %s, whose driver %s this app does not include."
+msgstr ""
+
+#: src/gui/model.c
+#, c-format
+msgid "%s needs the driver %s, which this app does not include."
 msgstr ""
 
 #: src/gui/model.c

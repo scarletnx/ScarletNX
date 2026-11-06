@@ -57,6 +57,8 @@ endif()
 if(SNX_BUILD_AGB AND NOT (SNX_TOOLS_ONLY AND SNX_BUILD_NX))
     snx_multicall_driver(AGB snx_agb_program scarletnx-agb AGB_RUNTIME)
 endif()
+# the drivers' names, for Android's menu (src/gui), a library of its own that runs them through libscarletnx-run.so
+set(SNX_PROGRAM_DRIVERS "${snx_names}" PARENT_SCOPE)
 
 if(WIN32)
     # Prefer static toolchain/SDL libraries. LLVM may still use a DLL import library, resolved by cmake/llvm.cmake and

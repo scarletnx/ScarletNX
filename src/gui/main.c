@@ -3704,7 +3704,7 @@ static int SDLCALL dump_icons_run(void* data) {
     return 0;
 }
 static char* find_driver(const App* app, int item);
-static const char* driver_name(int item);
+static void driver_missing(const App* app, int item, char* out, size_t size);
 static unsigned loads_off(App* app);
 /* a dump's icon to ask the driver for, once: false when it cannot be asked (the queue full, or no driver, kept as why
    it has none) */
@@ -3726,7 +3726,7 @@ static bool dump_icon_ask(App* app, const char* dump, const char* dir) {
 #endif
         if (!d->driver) {
             char why[256];
-            snprintf(why, sizeof why, snx_tr("Cannot find %s beside ScarletNX or on PATH."), driver_name(GUI_SWITCH));
+            driver_missing(app, GUI_SWITCH, why, sizeof why);
             icon_failed_keep(d, dump, dir, why, NULL);
             return false;
         }
@@ -7145,45 +7145,52 @@ static void draw_screen(App* app) {
     if (idle && app->left_shown && app->lefts) render_files(app, 0);
     overlay(app);
 }
-static const char* driver_name(int item) {
-    switch (item) {
-#ifdef SDL_PLATFORM_ANDROID
-        /* the app's libraries folder only takes lib*.so: the drivers go in as ones */
-        case GUI_SWITCH: return "libscarletnx-run.so";
-        case GUI_LINUX: return "libscarletnx-gnuabi.so";
-        case GUI_3DS: return "libscarletnx-3ds.so";
-        case GUI_VITA: return "libscarletnx-vita.so";
-        case GUI_GBA: return "libscarletnx-agb.so";
-#else
-        case GUI_SWITCH: return "scarletnx";
-        case GUI_LINUX: return "scarletnx-gnuabi";
-        case GUI_3DS: return "scarletnx-3ds";
-        case GUI_VITA: return "scarletnx-vita";
-        case GUI_GBA: return "scarletnx-agb";
-#endif
-        default: return NULL;
-    }
-}
 int (*snx_menu_has_driver)(const char* name) = NULL;
-/* whether item's driver is the menu's own program, run with the driver's name first (snx_menu_has_driver) */
-static bool driver_in_self(const App* app, int item) {
-    const char* name = driver_name(item);
-    return app->self && item != GUI_SWITCH && name && snx_menu_has_driver && snx_menu_has_driver(name);
+/* the loads whose driver the program that runs them has: on Android libscarletnx.so's, as its build lists them
+   (src/multicall); elsewhere the program the menu is part of says (snx_menu_has_driver, on Windows) */
+static unsigned drivers_held(void) {
+#ifdef SDL_PLATFORM_ANDROID
+    return gui_drivers_held(SNX_GUI_PROGRAM_DRIVERS);
+#else
+    unsigned held = 0;
+    for (int item = GUI_SWITCH; item <= GUI_GBA; ++item)
+        if (snx_menu_has_driver && snx_menu_has_driver(gui_driver_name(item))) held |= 1u << item;
+    return held;
+#endif
+}
+/* how item's driver runs here (gui_driver_run): false when the app's build has none */
+static bool driver_run(const App* app, int item, GuiDriverRun* run) {
+#ifdef SDL_PLATFORM_ANDROID
+    GuiDriversWay way = GUI_DRIVERS_APP;
+#else
+    GuiDriversWay way = GUI_DRIVERS_PROGRAMS;
+#endif
+    return gui_driver_run(way, item, app->self != NULL, drivers_held(), run);
 }
 static char* find_driver(const App* app, int item) {
-    const char* name = driver_name(item);
-    if (app->self && (item == GUI_SWITCH || driver_in_self(app, item))) return snx_strdup(app->self);
-    if (!name) return NULL;
+    GuiDriverRun run;
+    if (!driver_run(app, item, &run)) return NULL;
+    if (!run.file) return snx_strdup(app->self);
 #ifdef _WIN32
-    char* filename = snx_format("%s.exe", name);
+    char* filename = snx_format("%s.exe", run.file);
 #else
-    char* filename = snx_strdup(name);
+    char* filename = snx_strdup(run.file);
 #endif
     char* local = snx_path_join(app->drivers, filename);
     char* found = snx_find_tool(local);
     free(filename);
     free(local);
-    return found ? found : snx_find_tool(name);
+    return found ? found : snx_find_tool(run.file);
+}
+/* why item's driver cannot run, into out: the app's build has none, or its program is neither in the drivers' folder
+   nor on PATH */
+static void driver_missing(const App* app, int item, char* out, size_t size) {
+    GuiDriverRun run;
+    if (!driver_run(app, item, &run) && gui_driver_name(item))
+        gui_driver_absent(item, snx_tr(entry_text(item)), NULL, out, size);
+    else
+        snprintf(out, size, snx_tr("Cannot find %s beside ScarletNX or on PATH."),
+                 run.file ? run.file : snx_tr("the selected driver"));
 }
 /* a load's driver is there to run: on iOS the Switch's is the app's own, on a thread (launch) */
 static bool driver_there(const App* app, int item) {
@@ -13958,8 +13965,7 @@ static void launch(App* app, char* absolute, bool prepared) {
     if (!direct && !driver && app->menu.selected == GUI_SWITCH) driver = snx_strdup("scarletnx");
 #endif
     if (!direct && !driver) {
-        snprintf(app->message, sizeof(app->message), snx_tr("Cannot find %s beside ScarletNX or on PATH."),
-                 driver_name(app->menu.selected) ? driver_name(app->menu.selected) : snx_tr("the selected driver"));
+        driver_missing(app, app->menu.selected, app->message, sizeof app->message);
         say_failure(app, app->message);
         free(absolute);
         free(game_option);
@@ -14042,7 +14048,10 @@ static void launch(App* app, char* absolute, bool prepared) {
     char* run = run_program(app, absolute, prepared);
     size_t n = 1;
     argv[0] = direct ? (run ? run : absolute) : driver;
-    if (!direct && driver_in_self(app, app->menu.selected)) argv[n++] = driver_name(app->menu.selected);
+    if (!direct) { /* the driver's name, to a program that holds several */
+        GuiDriverRun how;
+        if (driver_run(app, app->menu.selected, &how) && how.first) argv[n++] = how.first;
+    }
     if (make) argv[n++] = "-r";
     if (!direct) argv[n++] = game_option ? game_option : run ? run : absolute;
     /* Switch options only, never guest argv for the CPU-only Linux driver or the 3DS one; R's recompile takes no
@@ -15057,15 +15066,18 @@ static void install_keys_document(App* app, const char* uri) {
    saying the load that opens it, or the driver it needs that is not there; true then */
 static bool drop_elsewhere(App* app, const char* path) {
     int named = named_driver(path);
+    GuiDriverRun run;
     if (named < 0 || named == app->menu.selected) return false;
     app->loads_at = 0; /* looked for again, as Enter on a load does */
-    if (loads_off(app) >> named & 1u)
-        snprintf(app->message, sizeof app->message,
-                 snx_tr("%s opens with %s: cannot find %s beside ScarletNX or on PATH."), last_part(path),
-                 snx_tr(entry_text(named)), driver_name(named));
-    else
+    if (!(loads_off(app) >> named & 1u))
         snprintf(app->message, sizeof app->message, snx_tr("%s opens with %s, not %s."), last_part(path),
                  snx_tr(entry_text(named)), snx_tr(entry_text(app->menu.selected)));
+    else if (!driver_run(app, named, &run))
+        gui_driver_absent(named, snx_tr(entry_text(named)), last_part(path), app->message, sizeof app->message);
+    else
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("%s opens with %s: cannot find %s beside ScarletNX or on PATH."), last_part(path),
+                 snx_tr(entry_text(named)), run.file ? run.file : gui_driver_name(named));
     say_failure(app, app->message);
     return true;
 }
@@ -15908,8 +15920,7 @@ static void menu_key(App* app, GuiKey key) {
     if (key == GUI_SELECT && app->menu.view == GUI_LOAD_NONE && !app->menu.running && app->menu.selected <= GUI_GBA) {
         app->loads_at = 0;
         if (loads_off(app) >> app->menu.selected & 1u) {
-            snprintf(app->message, sizeof(app->message), snx_tr("Cannot find %s beside ScarletNX or on PATH."),
-                     driver_name(app->menu.selected));
+            driver_missing(app, app->menu.selected, app->message, sizeof app->message);
             return;
         }
     }

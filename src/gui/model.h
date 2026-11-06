@@ -38,6 +38,31 @@ typedef struct {
 /* what a key on the menu asks of the GUI: nothing more, the Settings or the logs shared */
 typedef enum { GUI_MENU_STAY, GUI_MENU_SETTINGS, GUI_MENU_LOG, GUI_MENU_FOLDERS } GuiMenuDo;
 GuiMenuDo gui_menu_key(GuiMenu* menu, GuiKey key);
+/* How the menu runs a load's driver (main.c's find_driver and the argv of launch), by where a platform keeps them */
+typedef enum {
+    /* a computer's, and iOS's: each driver a program of its own name beside the menu or on PATH (a link to scarletnx);
+       on Windows, which has no links, the program the menu is part of, with the driver's name first, where it has it */
+    GUI_DRIVERS_PROGRAMS,
+    /* Android's app: libscarletnx-run.so, as the libraries folder takes lib*.so alone, runs libscarletnx.so (every
+       driver its build has, src/multicall), the driver's name first but for the Switch's, its name for any other */
+    GUI_DRIVERS_APP,
+} GuiDriversWay;
+typedef struct {
+    const char* file;  /* the program, looked for in the drivers' folder then on PATH; NULL: the menu's own (self) */
+    const char* first; /* the driver's name, the program's first argument (src/multicall); NULL: the program is it */
+} GuiDriverRun;
+/* the name src/multicall knows item's driver by (scarletnx-switch, scarletnx-3ds...); NULL for an item that is no load */
+const char* gui_driver_name(int item);
+/* the loads whose driver a program has, a bit an item (1u << GUI_3DS), from the drivers' names a space apart, as the
+   build lists them; a name no load runs adds none */
+unsigned gui_drivers_held(const char* names);
+/* How item's driver runs, the way's way: self, whether the menu is part of a program that runs drivers; held, the
+   loads whose driver that program has (gui_drivers_held). False, with run's members NULL, for an item that is no load
+   and, in the app, for a driver its build has not */
+bool gui_driver_run(GuiDriversWay way, int item, bool self, unsigned held, GuiDriverRun* run);
+/* why item's driver does not run when the app's build has not got it, into out: load is the item's text, translated,
+   and file the name of one dropped or picked that opens with it, NULL for none */
+void gui_driver_absent(int item, const char* load, const char* file, char* out, size_t size);
 /* The menu's questions, one box for all (main.c's render_ask): shown or not, which one, the choice in focus (the first
    stays first: it keeps things as they are), and whether its second choice takes a second press */
 enum { GUI_CONFIRM_KEEP, GUI_CONFIRM_ABORT };
