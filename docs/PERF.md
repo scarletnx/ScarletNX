@@ -2,6 +2,22 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Performance regression tests
 
+## Index
+
+* [The goal, and what is covered now](#the-goal-and-what-is-covered-now)
+* [In one minute](#in-one-minute)
+* [What they measure](#what-they-measure)
+* [What it can see, and what it cannot](#what-it-can-see-and-what-it-cannot)
+* [Why a ratio](#why-a-ratio)
+* [What can move the number without a ScarletNX regression](#what-can-move-the-number-without-a-scarletnx-regression)
+* [Pass, warn, retest, fail](#pass-warn-retest-fail)
+* [Platforms](#platforms)
+  * [Local-only device test](#local-only-device-test)
+* [Running them](#running-them)
+* [Where main's baseline comes from](#where-mains-baseline-comes-from)
+* [Cost and margin](#cost-and-margin)
+* [Changing a line](#changing-a-line)
+
 [Testing](TESTING.md) · [Building](BUILD.md) · [Development](DEVELOPMENT.md). Two small tests that time a CPU path
 and a GPU path, warn on a small regression, and fail on one that a second run confirms. Neither uses a game, a window
 or a frame.

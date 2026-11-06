@@ -29,6 +29,8 @@ files. The audit loop of the orchestrator applies the fixes.
 - Report format: one line for each finding, `file:line — description — suggested fix — severity`. The severity is
   one of CRITICAL/HIGH/MEDIUM/LOW/NIT. If a file is clean, say so clearly. Return the raw findings, not prose for a
   human.
+- Mark each finding as a handoff: the result, the evidence at `file:line`, and what you did not check. The
+  `snx-work-mark` skill gives the shape.
 - **Send the report with `SendMessage`, or the orchestrator never gets it.** You run as a background teammate, and
   the orchestrator does NOT get your plain-text output. When your analysis is complete, you MUST call the
   `SendMessage` tool with `to: "main"` and the full list of findings as `message`. If you end your turn without that

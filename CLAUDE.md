@@ -202,6 +202,8 @@ The skills in `.claude/skills/`:
   for C in `src/`.
 - `snx-gpu-shader`: how to write and optimize our compute shaders (constant tables, bit operations, uniform branches,
   fewer fetches, workgroup structure). It also tells how to prove that they give the bytes of the CPU reference.
+- `snx-work-mark`: the title, body, evidence and reply of a pull request or an issue, with the `[donotmerge needs #N]`
+  mark.
 - `record-lesson`: where a lesson goes, so that the next session finds it.
 - `code-audit`: the audit and fix loop in many passes, with the `snx-*-reviewer` agents in `.claude/agents/review/`.
 - `ste100`: the ASD-STE100 rules for the Claude files and for agent prompts and reports, and the checker that the
@@ -236,6 +238,10 @@ the agent can build and run. Only one agent at a time can build and run.
   diff.
 - A commit message says what a game did, not which game it was. Comments, docs and test data do the same. Examples
   are "one game's menus", "another's save load" and "a player's log". A title ID is no better than a name.
+- Mark the work as the contributors do. The title is `[area] an imperative sentence`. A pull request that needs
+  another one first holds `[donotmerge needs #N]` in the title and stays in draft. The body gives one bullet for each
+  commit, the exact tests, `Not tested:` and `Risks:`. The `snx-work-mark` skill gives the full shape. An agent says
+  that it is an agent in a reply.
 - Stage files by name. Run `git diff --cached --stat` just before the commit. A commit takes all the staged changes,
   also a `git mv` or `git rm` from earlier in the session. A commit ends with the `Co-Authored-By` line that the
   instructions of the session give.
