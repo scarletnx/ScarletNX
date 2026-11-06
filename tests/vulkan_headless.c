@@ -2851,6 +2851,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_rect_textures.inc"
 #include "vulkan_owned_readback.inc"
 #include "vulkan_storage_suffix.inc"
+#include "vulkan_pending_index.inc"
 #include "vulkan_draw_storage_stages.inc"
 #include "vulkan_mesh_inputs.inc"
 #include "vulkan_vertex_input.inc"
@@ -3135,6 +3136,7 @@ int main(int argc, char** argv) {
     CHECK(!check_owned_peek_identity());
     CHECK(!check_owned_whole_identity());
     CHECK(!check_storage_suffix());
+    CHECK(!check_pending_index());
     CHECK(!check_draw_storage_stages());
     CHECK(!bench_nvn_storage(0, 32, 1));
     CHECK(!bench_nvn_storage(1, 32, 1));

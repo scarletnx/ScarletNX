@@ -253,9 +253,30 @@ typedef struct GfxOut {
        guest memory without them until each lands (out_rebase) */
     int composed;
     u32 wseen; /* the write tracking clock before org was read (vk_ww_now): copyable_span skips comparing pages since */
+    u64 seq;   /* its place in g_out's order: higher is later (g_outx.seq when it went to the end) */
     struct GfxOut* next;
 } GfxOut;
 static GfxOut *g_prep, *g_prep_tail, *g_out, *g_out_tail;
+/* The results in g_out by the pages they cover, so a binding or a read compares (out_meets) the results over its range
+   alone, not each of the hundreds a frame keeps pending until it is done. Each run of a result's guest pages [lo, hi]
+   is an entry, in order of lo, as surface.c keeps the live render targets by address (g_rts); a search starts as far
+   back as the longest run there is, known from how many runs have each bit length, so it narrows again once a long
+   result lands. A range also meets a result at the same GPU address where both have no guest page (out_meets): a
+   result with an unmapped page has its GPU pages in a second index. Under vk_lock, as the lists */
+typedef struct {
+    u64 lo, hi;
+    GfxOut* o;
+} OutRun;
+typedef struct {
+    OutRun* v;
+    u32 n, cap;
+    u32 lens[65]; /* the entries whose page count is of each bit length */
+} OutIndex;
+static struct {
+    OutIndex guest, gpu;
+    u64 seq;       /* the last seq given */
+    u64 inspected; /* results that searches gave their callers to compare (vk_buf_pending_inspected) */
+} g_outx;
 /* the guest pages the results in g_out cover, so a read or write that meets none (almost all) skips the walk over
    them: each adds its own translated pages when it is committed and removes them when it lands. A range that meets a
    result only at the same GPU address through an unmapped page skips it too: nothing is read or written there. A GMMU
@@ -267,6 +288,121 @@ static void out_pages(const GfxOut* o, int delta) {
         pend_add_pages(&g_out_pages, o->pages[i], o->pages[j - 1], delta);
     }
 }
+static int bit_length(u64 x) {
+    int b = 0;
+    for (; x; x >>= 1) b++;
+    return b;
+}
+/* the first entry of t whose run starts at page lo or past it */
+static u32 outx_lower(const OutIndex* t, u64 lo) {
+    u32 a = 0, b = t->n;
+    while (a < b) {
+        u32 m = a + (b - a) / 2;
+        if (t->v[m].lo < lo)
+            a = m + 1;
+        else
+            b = m;
+    }
+    return a;
+}
+static void outx_add(OutIndex* t, u64 lo, u64 hi, GfxOut* o) {
+    if (t->n == t->cap) {
+        u32 cap = t->cap ? t->cap * 2 : 256;
+        OutRun* v = realloc(t->v, (size_t)cap * sizeof *v);
+        if (!v) fatal("Out of memory indexing %u pending storage results", t->n + 1);
+        t->v = v;
+        t->cap = cap;
+    }
+    u32 at = outx_lower(t, lo);
+    memmove(&t->v[at + 1], &t->v[at], (size_t)(t->n - at) * sizeof *t->v);
+    t->v[at] = (OutRun){lo, hi, o};
+    t->n++;
+    t->lens[bit_length(hi - lo + 1)]++;
+}
+static void outx_del(OutIndex* t, u64 lo, u64 hi, const GfxOut* o) {
+    for (u32 at = outx_lower(t, lo); at < t->n && t->v[at].lo == lo; at++)
+        if (t->v[at].o == o && t->v[at].hi == hi) {
+            memmove(&t->v[at], &t->v[at + 1], (size_t)(t->n - at - 1) * sizeof *t->v);
+            t->n--;
+            t->lens[bit_length(hi - lo + 1)]--;
+            return;
+        }
+    fatal("The pending storage result at GPU address %llx is not indexed at pages %llx to %llx",
+          (unsigned long long)o->addr, (unsigned long long)lo, (unsigned long long)hi);
+}
+/* the end of the run of o's guest pages that starts at its sorted page i: a page o has twice (two of its GPU pages over
+   it) stays in the run */
+static u32 out_run_end(const GfxOut* o, u32 i) {
+    u32 j = i + 1;
+    while (j < o->npages && o->pages[j] != ~0ull && o->pages[j] <= o->pages[j - 1] + 1) j++;
+    return j;
+}
+/* o in the indexes (delta 1) or out of them (-1), with the pages it has now: committed, and landed */
+static void outx_result(GfxOut* o, int delta) {
+    u32 i = 0, j;
+    for (; i < o->npages && o->pages[i] != ~0ull; i = j) {
+        j = out_run_end(o, i);
+        if (delta > 0)
+            outx_add(&g_outx.guest, o->pages[i], o->pages[j - 1], o);
+        else
+            outx_del(&g_outx.guest, o->pages[i], o->pages[j - 1], o);
+    }
+    if (i < o->npages && o->size) { /* an unmapped page (they sort last) */
+        u64 lo = o->addr >> 12, hi = (o->addr + o->size - 1) >> 12;
+        if (delta > 0)
+            outx_add(&g_outx.gpu, lo, hi, o);
+        else
+            outx_del(&g_outx.gpu, lo, hi, o);
+    }
+}
+/* Results a search found: each once, in g_out's order, in local while it holds them */
+typedef struct {
+    GfxOut** v;
+    u32 n, cap;
+    GfxOut* local[64];
+} OutList;
+static void out_list_init(OutList* l) {
+    l->v = l->local;
+    l->n = 0;
+    l->cap = sizeof l->local / sizeof *l->local;
+}
+static void out_list_free(OutList* l) {
+    if (l->v != l->local) free(l->v);
+}
+static void out_list_push(OutList* l, GfxOut* o) {
+    if (l->n == l->cap) {
+        u32 cap = l->cap * 2;
+        GfxOut** v = l->v == l->local ? malloc((size_t)cap * sizeof *v) : realloc(l->v, (size_t)cap * sizeof *v);
+        if (!v) fatal("Out of memory listing %u pending storage results", cap);
+        if (l->v == l->local) memcpy(v, l->local, sizeof l->local);
+        l->v = v;
+        l->cap = cap;
+    }
+    l->v[l->n++] = o;
+}
+/* every result with an entry of t that meets pages [lo, hi], into l */
+static void outx_find(OutList* l, const OutIndex* t, u64 lo, u64 hi) {
+    int top = 64;
+    while (top && !t->lens[top]) top--;
+    if (!top) return;
+    u64 reach = top == 64 ? ~0ull : (1ull << top) - 1; /* no run is longer */
+    for (u32 at = outx_lower(t, lo > reach ? lo - reach : 0); at < t->n && t->v[at].lo <= hi; at++)
+        if (t->v[at].hi >= lo) out_list_push(l, t->v[at].o);
+}
+static int out_seq_cmp(const void* a, const void* b) {
+    u64 x = (*(GfxOut* const*)a)->seq, y = (*(GfxOut* const*)b)->seq;
+    return (x > y) - (x < y);
+}
+/* l in g_out's order, each result once (a result's runs can each have met the pages asked about) */
+static void out_list_sort(OutList* l) {
+    u32 n = 0;
+    if (l->n > 1) qsort(l->v, l->n, sizeof *l->v, out_seq_cmp);
+    for (u32 i = 0; i < l->n; i++)
+        if (!n || l->v[n - 1] != l->v[i]) l->v[n++] = l->v[i];
+    l->n = n;
+    g_outx.inspected += n;
+}
+u64 vk_buf_pending_inspected(void) { return g_outx.inspected; }
 /* where and how pending results were written: shader stores, copies, and transform feedback's captures when the device
    has it (its flags are invalid without the extension) */
 static VkPipelineStageFlags2 out_stages(void) {
@@ -399,7 +535,9 @@ void vk_buf_writable_commit(void) {
     if (!g_prep) return;
     for (GfxOut* o = g_prep; o; o = o->next) {
         o->written = g_buffer.order.writes;
+        o->seq = ++g_outx.seq;
         out_pages(o, 1);
+        outx_result(o, 1);
     }
     if (g_out_tail)
         g_out_tail->next = g_prep;
@@ -503,14 +641,24 @@ static void out_rebase(const GfxOut* e, GfxOut* o) {
     Rebase r = {e, o};
     out_spans(e, o->addr, o->size, o->vmap, rebase_span, &r);
 }
-/* the composed results recorded after e, in this frame's landed list (rest), later frames' and the draw being set up,
-   from e's changed runs in g_chg, which its landing found */
+/* the composed results recorded after e that share its guest pages, in this frame's landed list (rest), later frames'
+   (the index) and the draw being set up, from e's changed runs in g_chg, which its landing found */
 static void out_rebase_later(const GfxOut* e, GfxOut* rest) {
-    GfxOut* lists[3] = {rest, g_out, g_prep};
+    OutList l;
     if (!g_nchg) return; /* it changed nothing: memory has what every later one took as original */
-    for (int l = 0; l < 3; l++)
-        for (GfxOut* o = lists[l]; o; o = o->next)
-            if (o->composed && pages_meet(e, o)) out_rebase(e, o);
+    for (GfxOut* o = rest; o; o = o->next)
+        if (o->composed && pages_meet(e, o)) out_rebase(e, o);
+    out_list_init(&l);
+    for (u32 i = 0, j; i < e->npages && e->pages[i] != ~0ull; i = j) {
+        j = out_run_end(e, i);
+        outx_find(&l, &g_outx.guest, e->pages[i], e->pages[j - 1]);
+    }
+    out_list_sort(&l);
+    for (u32 i = 0; i < l.n; i++)
+        if (l.v[i]->composed && pages_meet(e, l.v[i])) out_rebase(e, l.v[i]);
+    out_list_free(&l);
+    for (GfxOut* o = g_prep; o; o = o->next)
+        if (o->composed && pages_meet(e, o)) out_rebase(e, o);
 }
 
 /* The frame fence has signaled. Its stage allocations still exist here; cmd.c frees them only after this call. */
@@ -524,6 +672,7 @@ void vk_buf_frame_done(u64 frame) {
         }
         *pp = o->next;
         o->next = NULL;
+        outx_result(o, -1); /* the index holds g_out alone: a search while these land finds what the walk found */
         if (done_tail)
             done_tail->next = o;
         else
@@ -703,8 +852,22 @@ static int out_meets(const GfxOut* o, u64 gva, u64 len, const RangePages* q, u64
     out_spans(o, gva, len, *rmap, any_span, &hit);
     return hit;
 }
+/* Into l, in g_out's order, the pending results that can share bytes with [gva, gva + len) (q: its guest pages), for
+   the caller to compare as it did each result of the list: those on a guest page of the range (its pages one by one
+   when q lists them, else their bounds), and those with an unmapped page whose GPU range meets it. Any other result
+   has neither a guest page nor a GPU address in common with the range */
+static void out_near(OutList* l, u64 gva, u64 len, const RangePages* q) {
+    out_list_init(l);
+    if (q->run || q->n > 16) {
+        if (q->n) outx_find(l, &g_outx.guest, q->lo, q->hi);
+    } else
+        for (u32 i = 0; i < q->n; i++) outx_find(l, &g_outx.guest, q->page[i], q->page[i]);
+    if (g_outx.gpu.n && len) outx_find(l, &g_outx.gpu, gva >> 12, (gva + len - 1) >> 12);
+    out_list_sort(l);
+}
 static void mem_need_reason(u64 gva, u64 len, int reason) {
     RangePages q;
+    OutList l;
     u64 local[16], *rmap = NULL;
     if (!g_gfx_any || t_buffer.out_landing || !len) return;
     vk_lock();
@@ -713,16 +876,20 @@ static void mem_need_reason(u64 gva, u64 len, int reason) {
         return;
     }
     range_pages(gva, len, &q);
+    out_near(&l, gva, len, &q);
     /* the results over the range land: those of submits already made by waiting for the newest of them, the GPU
        going on with what came after, and only one in the commands being recorded by finishing them all */
     u64 newest = 0;
     int recording = 0;
-    for (GfxOut* o = g_out; o; o = o->next)
+    for (u32 i = 0; i < l.n; i++) {
+        const GfxOut* o = l.v[i];
         if (reason == WB_MAP ? (gva < o->addr + o->size && o->addr < gva + len) || backing_overlap(&q, o)
                              : out_meets(o, gva, len, &q, &rmap, local)) {
             if (o->frame > vk_last_submit()) recording = 1;
             if (o->frame > newest) newest = o->frame;
         }
+    }
+    out_list_free(&l);
     if (recording)
         wait_finish(reason);
     else if (newest) {
@@ -742,11 +909,15 @@ int vk_buf_pending_unsubmitted(void) {
 }
 int vk_buf_pending(u64 gva, u64 len) {
     RangePages q;
+    OutList l;
+    int hit = 0;
     if (!g_gfx_any || !len || !pend_hit(&g_out_pages, gva, len)) return 0;
     range_pages(gva, len, &q);
-    for (GfxOut* o = g_out; o; o = o->next)
-        if ((gva < o->addr + o->size && o->addr < gva + len) || backing_overlap(&q, o)) return 1;
-    return 0;
+    out_near(&l, gva, len, &q);
+    for (u32 i = 0; i < l.n && !hit; i++)
+        hit = (gva < l.v[i]->addr + l.v[i]->size && l.v[i]->addr < gva + len) || backing_overlap(&q, l.v[i]);
+    out_list_free(&l);
+    return hit;
 }
 void vk_buf_mem_need_map(u64 gva, u64 len) { mem_need_reason(gva, len, WB_MAP); }
 void vk_buf_before_write(u64 gva, u64 len) {
@@ -931,16 +1102,6 @@ static int cover_take(Covered* c, u64 a, u64 b, void (*fn)(void* user, u64 a, u6
     c->v[i] = (CoverRun){na, nb};
     return 1;
 }
-/* the pending results, newest first: their count, into *list (out when it is local and too small: allocated) */
-static GfxOut** out_newest_first(GfxOut** local, u32 nlocal, u32* count) {
-    u32 n = 0, i = 0;
-    for (GfxOut* o = g_out; o; o = o->next) n++;
-    GfxOut** v = n <= nlocal ? local : malloc((size_t)n * sizeof *v);
-    if (!v) return NULL;
-    for (GfxOut* o = g_out; o; o = o->next) v[n - 1 - i++] = o;
-    *count = n;
-    return v;
-}
 typedef struct {
     CopyBatch* c;
     const GfxOut* o;
@@ -985,17 +1146,20 @@ static int gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, u8* host,
                        void (*gap)(void* user, u8* to, u64 a, u64 b), void* user) {
     CopyBatch c;
     Covered cov;
-    GfxOut *nlocal[64], **newest;
-    u32 n = 0;
+    RangePages q;
+    OutList l;
     u64 local[16], *rmap = range_map(gva, len, local);
-    if (!rmap || !(newest = out_newest_first(nlocal, 64, &n))) fatal("Out of memory composing a draw's storage buffer");
+    if (!rmap) fatal("Out of memory composing a draw's storage buffer");
+    range_pages(gva, len, &q);
+    out_near(&l, gva, len, &q);
     memset(&c, 0, sizeof c);
     c.dst = dst;
     cover_init(&cov, len);
-    for (u32 i = 0; i < n && !cover_full(&cov); i++) {
-        Overlay v = {&c, newest[i], dst_off, 0, 0, &cov};
-        out_spans(newest[i], gva, len, rmap, overlay_span, &v);
+    for (u32 i = l.n; i-- && !cover_full(&cov);) { /* newest first */
+        Overlay v = {&c, l.v[i], dst_off, 0, 0, &cov};
+        out_spans(l.v[i], gva, len, rmap, overlay_span, &v);
     }
+    out_list_free(&l);
     u64 at = 0;
     int ok = 1;
     for (u32 i = 0; i <= cov.n && at < len && ok; i++) {
@@ -1005,7 +1169,6 @@ static int gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, u8* host,
     }
     copy_end(&c);
     cover_free(&cov);
-    if (newest != nlocal) free(newest);
     if (rmap != local) free(rmap);
     return ok;
 }
@@ -1029,13 +1192,16 @@ static int out_still_copyable(const GfxOut* o, u64 gva, u64 len, u64** rmap, u64
    for nearly every one: half a megabyte copied from guest memory and compared at landing each time */
 static int out_take_into_submit(GfxOut* m) {
     RangePages q;
+    OutList l;
     u64 local[16], *rmap = NULL;
     int later = 0;
     if (m->frame_id != vk_frame_id() || m->frame >= vk_submit_number()) return 0;
     range_pages(m->addr, m->size, &q);
-    GfxOut* lists[2] = {m->next, g_prep};
-    for (int l = 0; l < 2 && !later; l++)
-        for (GfxOut* o = lists[l]; o && !later; o = o->next) later = out_meets(o, m->addr, m->size, &q, &rmap, local);
+    out_near(&l, m->addr, m->size, &q);
+    for (u32 i = 0; i < l.n && !later; i++) /* recorded after m: later in g_out */
+        later = l.v[i]->seq > m->seq && out_meets(l.v[i], m->addr, m->size, &q, &rmap, local);
+    out_list_free(&l);
+    for (GfxOut* o = g_prep; o && !later; o = o->next) later = out_meets(o, m->addr, m->size, &q, &rmap, local);
     if (rmap && rmap != local) free(rmap);
     if (later) return 0;
     m->frame = vk_submit_number();
@@ -1046,6 +1212,7 @@ static int out_take_into_submit(GfxOut* m) {
         m->next = NULL;
         g_out_tail->next = m;
         g_out_tail = m;
+        m->seq = ++g_outx.seq;
     }
     return 1;
 }
@@ -1063,22 +1230,26 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     GfxOut *match = NULL, *newest = NULL;
     int count = 0, before = 0;
     RangePages q;
+    OutList l;
     u64 local[16], *rmap = NULL;
     if (!g_gfx_any || t_buffer.out_landing || !gva || !len) return 0;
     if (g_cs_any) vk_compute_mem_need(gva, len);
     if (!pend_hit(&g_out_pages, gva, len)) return 0;
+    out_list_init(&l);
     /* A range contained in the last result already has the newest writer. Rebinding its suffix is common for NVN
-       storage draws: do not translate all its pages and scan every older result only to select this same tail.
+       storage draws: do not translate all its pages and search the older results only to select this same tail.
        Other addresses still use the full alias-aware search below. */
     if (g_out_tail && gva >= g_out_tail->addr && len <= g_out_tail->size &&
         gva - g_out_tail->addr <= g_out_tail->size - len)
         newest = g_out_tail;
     else {
         range_pages(gva, len, &q);
-        for (GfxOut* o = g_out; o; o = o->next)
-            if (out_meets(o, gva, len, &q, &rmap, local)) newest = o;
+        out_near(&l, gva, len, &q);
+        for (u32 i = 0; i < l.n; i++)
+            if (out_meets(l.v[i], gva, len, &q, &rmap, local)) newest = l.v[i];
     }
     if (!newest) {
+        out_list_free(&l);
         if (rmap && rmap != local) free(rmap);
         return 0;
     }
@@ -1090,6 +1261,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     if (gva >= newest->addr && gva + len <= newest->addr + newest->size) {
         if (!out_still_copyable(newest, gva, len, &rmap, local)) {
             if (copy_stats_on()) g_wb_draw_miss[newest->frame_id != vk_frame_id() ? 0 : 2]++;
+            out_list_free(&l);
             if (rmap && rmap != local) free(rmap);
             land_reason(WB_DRAW);
             return 0;
@@ -1098,10 +1270,12 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
         count = 1;
         before = newest->frame_id != vk_frame_id();
     } else
-        for (GfxOut* o = g_out; o; o = o->next) {
+        for (u32 i = 0; i < l.n; i++) { /* not inside the tail: l holds what the search found */
+            GfxOut* o = l.v[i];
             if (!out_meets(o, gva, len, &q, &rmap, local)) continue;
             if (!out_still_copyable(o, gva, len, &rmap, local)) {
                 if (copy_stats_on()) g_wb_draw_miss[o->frame_id != vk_frame_id() ? 0 : 2]++;
+                out_list_free(&l);
                 if (rmap && rmap != local) free(rmap);
                 land_reason(WB_DRAW);
                 return 0;
@@ -1110,6 +1284,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
             count++;
             before |= o->frame_id != vk_frame_id();
         }
+    out_list_free(&l);
     if (rmap && rmap != local) free(rmap);
     if (!count) return 0;
     if (before) vk_frame_hold(vk_frame_id() - 1);
@@ -2000,15 +2175,34 @@ static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, V
    their original bytes until those results land (out_rebase). Compute results that haven't landed land for the
    atlas's pages alone. A result whose original bytes the guest has written since can't be copied whole: it lands
    first, as in gfx_gpu_src, which submits, and the draw starts its setup over. 1 when a result was copied in */
+/* into l, the pending results on the atlas's pages (p, sorted by key): on a run of its guest pages, or with an unmapped
+   page at a GPU page the atlas has unmapped (draw_page_key) */
+static void out_near_atlas(OutList* l, const DrawPage* p, size_t unique) {
+    out_list_init(l);
+    for (size_t i = 0, j; i < unique; i = j) {
+        j = i + 1;
+        if (p[i].key & (1ull << 63)) {
+            outx_find(l, &g_outx.gpu, p[i].gva >> 12, p[i].gva >> 12);
+            continue;
+        }
+        while (j < unique && p[j].key == p[j - 1].key + 1) j++;
+        outx_find(l, &g_outx.guest, p[i].key, p[j - 1].key);
+    }
+    out_list_sort(l);
+}
 static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas, u64 atlas_off) {
     CopyBatch c;
+    OutList l;
     size_t i;
     int landed = 0, composed = 0;
     if (g_cs_any)
         for (i = 0; i < unique; i++)
             if (!(p[i].key & (1ull << 63))) vk_compute_mem_need(p[i].gva, 4096);
-    /* first, so a landing comes before memory is read; it frees the list, and leaves nothing to copy */
-    for (GfxOut* o = g_out; o && !landed && !t_buffer.out_landing; o = o->next)
+    /* first, so a landing comes before memory is read; it frees the results, and leaves nothing to copy */
+    out_list_init(&l);
+    if (!t_buffer.out_landing) out_near_atlas(&l, p, unique);
+    for (u32 k = 0; k < l.n && !landed; k++) {
+        const GfxOut* o = l.v[k];
         for (u64 g = o->addr & ~4095ull, e = o->addr + o->size; g < e && !landed; g += 4096) {
             u64 key = draw_page_key(g), lo = g > o->addr ? g : o->addr, hi = g + 4096 < e ? g + 4096 : e;
             u32 at = draw_page_index(p, unique, key);
@@ -2017,6 +2211,8 @@ static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas,
                 landed = 1;
             }
         }
+    }
+    out_list_free(&l);
     for (i = 0; i < unique; i++) {
         const u8* page = p[i].key & (1ull << 63) ? NULL : gmem_ptr_untracked(p[i].gva, 4096);
         if (page)
@@ -2028,13 +2224,11 @@ static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas,
     c.dst = atlas;
     /* each byte from the newest result over it, as gfx_overlay takes them */
     Covered cov;
-    GfxOut *nlocal[64], **newest = NULL;
-    u32 n = 0;
-    if (!t_buffer.out_landing && !(newest = out_newest_first(nlocal, 64, &n)))
-        fatal("Out of memory composing a draw's atlas");
+    out_list_init(&l);
+    if (!t_buffer.out_landing) out_near_atlas(&l, p, unique); /* again: a landing above freed what it found */
     cover_init(&cov, (u64)unique * 4096);
-    for (u32 k = 0; k < n && !cover_full(&cov); k++) {
-        const GfxOut* o = newest[k];
+    for (u32 k = l.n; k-- && !cover_full(&cov);) { /* newest first */
+        const GfxOut* o = l.v[k];
         for (u64 g = o->addr & ~4095ull, e = o->addr + o->size; g < e; g += 4096) {
             u64 key = draw_page_key(g), lo = g > o->addr ? g : o->addr, hi = g + 4096 < e ? g + 4096 : e;
             u32 at = draw_page_index(p, unique, key);
@@ -2049,7 +2243,7 @@ static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas,
     }
     copy_end(&c);
     cover_free(&cov);
-    if (newest && newest != nlocal) free(newest);
+    out_list_free(&l);
     return composed;
 }
 
