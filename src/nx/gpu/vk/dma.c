@@ -181,7 +181,10 @@ static DmaNeeds dma_needs(const GpuDmaOp* o) {
     }
     n.at_b = up(o->src.bl ? (u64)n.sgobs * 64 * lines : 0, 16);
     n.at_c = n.at_b + up(o->dst.bl ? (u64)n.dgobs * 64 * lines : 0, 16);
-    n.scratch = n.at_c + (o->remap && (o->fill || o->shuffle) ? (u64)pc * lines : 0) + 16;
+    /* the remap's lines at at_c and 16 bytes past them (a fill's input binds a word there, texconv.c); without the
+       remap a copy needs its rows alone, so rows that fill the cap fit it, and one with no rows 16 bytes, as dma asks
+       for the buffer all the same */
+    n.scratch = n.at_c + (o->remap && (o->fill || o->shuffle) ? (u64)pc * lines + 16 : n.at_c ? 0 : 16);
     return n;
 }
 

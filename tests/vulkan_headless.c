@@ -3879,7 +3879,7 @@ static int check_dma_owners(void) {
    linear from a row inside a row of blocks, block linear to pitch with the source's rows of blocks cut by the bands
    and lines past it reading zero, between block heights 8 and 1 GOBs, the remap, a fill, a kept component, the
    source read at submission, and a slice of a volume. They used to be dropped, the destination left with the bytes
-   it had */
+   it had. Copies that fit the cap, up to the byte, take no bands */
 static int check_dma_bands(void) {
     const u64 cap = g_vk.alloc_cap;
     u64 copies, bands, bytes, copies0, bands0, bytes0;
@@ -3957,13 +3957,35 @@ static int check_dma_bands(void) {
     failed |= dma_case(o);
     u64 one_copies, one_bands, one_bytes;
     vk_dma_stats(&one_copies, &one_bands, &one_bytes);
+    /* lines that need the cap exactly (64 KiB of source lines, of the destination's tiles and of scratch rows) take
+       no bands either, also read at submission; twice as many go in bands of up to a quarter of the cap, 32 lines,
+       so fewer than 16 bands */
+    o.multi = 1;
+    o.width = o.line_in = o.line_out = 512;
+    o.lines = 128;
+    o.src = pitch_side(0x1000, 512);
+    o.dst = bl_side(0x40000, 512, 256, 1, 0, 0);
+    failed |= dma_case(o) || dma_snap_case(o);
+    u64 cap_copies, cap_bands, cap_bytes, twice_copies, twice_bands, twice_bytes;
+    vk_dma_stats(&cap_copies, &cap_bands, &cap_bytes);
+    o.lines = 256;
+    failed |= dma_case(o);
+    vk_dma_stats(&twice_copies, &twice_bands, &twice_bytes);
     g_vk.alloc_cap = cap;
-    if (failed || copies - copies0 != 9 || bands - bands0 < 9 * 2 || one_copies != copies + 1 || one_bands != bands)
-        fprintf(stderr, "dma bands: failed %d, %llu copies in %llu bands, then %llu copy in %llu bands\n", failed,
-                (unsigned long long)(copies - copies0), (unsigned long long)(bands - bands0),
-                (unsigned long long)(one_copies - copies), (unsigned long long)(one_bands - bands));
+    if (failed || copies - copies0 != 9 || bands - bands0 < 9 * 2 || one_copies != copies + 1 || one_bands != bands ||
+        cap_copies != one_copies + 2 || cap_bands != one_bands || twice_copies != cap_copies + 1 ||
+        twice_bands - cap_bands >= 16)
+        fprintf(stderr,
+                "dma bands: failed %d, %llu copies in %llu bands, then %llu copy in %llu bands, %llu copies of the "
+                "cap in %llu bands (0 expected), %llu of twice it in %llu bands (fewer than 16 expected)\n",
+                failed, (unsigned long long)(copies - copies0), (unsigned long long)(bands - bands0),
+                (unsigned long long)(one_copies - copies), (unsigned long long)(one_bands - bands),
+                (unsigned long long)(cap_copies - one_copies), (unsigned long long)(cap_bands - one_bands),
+                (unsigned long long)(twice_copies - cap_copies), (unsigned long long)(twice_bands - cap_bands));
     CHECK(!failed && copies - copies0 == 9 && bands - bands0 >= 9 * 2);
     CHECK(one_copies == copies + 1 && one_bands == bands && one_bytes > bytes);
+    CHECK(cap_copies == one_copies + 2 && cap_bands == one_bands);
+    CHECK(twice_copies == cap_copies + 1 && twice_bands - cap_bands < 16);
     return 0;
 }
 
