@@ -46,6 +46,10 @@ static void core_flag_nl(int k) {
                 (g_hle.thread.core_wait[k] && core_idle_nl(o) >= 0)
             ? 1u
             : 0u;
+    if (g_hle.thread.core_best[k] < o->prio) {
+        if (!g_host.thread.preempt_since[k]) __atomic_store_n(&g_host.thread.preempt_since[k], plat_ns(), __ATOMIC_RELAXED);
+    } else
+        __atomic_store_n(&g_host.thread.preempt_since[k], 0, __ATOMIC_RELAXED);
     if (__atomic_load_n(&o->cpu.poll, __ATOMIC_RELAXED) == v) return;
     __atomic_store_n(&o->cpu.poll, v, __ATOMIC_RELAXED);
     if (v) nce_kick(o); /* native code reads no poll: it is stopped */
@@ -71,9 +75,17 @@ static int core_before(const KThread* a, const KThread* b) {
 }
 /* t, which held core k since core_give_nl, lets go of it: the time goes to the report at exit (kernel_core_report) */
 static void core_held_nl(int k, KThread* t) {
-    u64 held = plat_ns() - g_host.thread.core_since[k];
+    u64 now = plat_ns(), held = now - g_host.thread.core_since[k], flagged = g_host.thread.preempt_since[k];
     g_host.thread.core_held_ns[k] += held;
     t->core_held_ns += held;
+    if (!flagged) return;
+    /* how late t let go for a waiter of better priority: on the console, at once */
+    if (now - flagged > 10000000u) g_host.thread.preempt_late[k]++;
+    if (now - flagged > g_host.thread.preempt_max_ns[k]) {
+        g_host.thread.preempt_max_ns[k] = now - flagged;
+        g_host.thread.preempt_max_by[k] = kt_ix(t);
+    }
+    __atomic_store_n(&g_host.thread.preempt_since[k], 0, __ATOMIC_RELAXED);
 }
 /* t holds core k from now on. A thread that waited for it in line is woken (its wait is counted for the report), when
    its waker lets go of the lock */
@@ -208,8 +220,10 @@ static void core_unlock(void) {
     kt_flush();
 }
 /* Only t's own thread lets go of a core t holds (another thread hands one only to a thread lined up for it), so a
-   thread that holds one sees it here without the lock: the path of nearly every SVC's entry and exit. One lined up
-   waits on its word, without the lock, until a holder hands it a core */
+   thread that holds one sees it here without the lock: the path of nearly every SVC's entry and exit. The one
+   exception is a fault on memory the GPU holds (kthread_fault_lend), which only makes on_core -1: a thread that read
+   its core here a moment before takes one again at its next poll. One lined up waits on its word, without the lock,
+   until a holder hands it a core */
 void core_enter(KThread* t) {
     int got = 1;
     if (!t || !g_settings.emulated_cores) return;
@@ -240,7 +254,10 @@ void core_preempt(KThread* t) {
         return;
     }
     k = t->on_core;
-    if (k >= 0 && g_hle.thread.core_best[k] < t->prio) {
+    if (k == -1) { /* its core was let go while it waited in a fault (kthread_fault_lend): it takes one again */
+        __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
+        got = core_take_nl(t);
+    } else if (k >= 0 && g_hle.thread.core_best[k] < t->prio) {
         core_release_nl(t);
         got = core_take_nl(t);
     } else if (k >= 0 && g_hle.thread.core_wait[k] && (j = core_idle_nl(t)) >= 0) {
@@ -253,8 +270,63 @@ void core_preempt(KThread* t) {
     core_pin(t);
 }
 void core_poll(KThread* t) {
+    if (t) { /* for the thread dump: only t's own thread writes its count */
+        u32* polls = &g_host.thread.polls[kt_ix(t) - 1];
+        __atomic_store_n(polls, __atomic_load_n(polls, __ATOMIC_RELAXED) + 1, __ATOMIC_RELAXED);
+    }
     core_preempt(t);
     if (kthread_hold_point(t, PARK_RUN)) core_enter(t);
+}
+/* The traps, as they learn that host thread tid waits in a fault on memory the GPU holds (plat_trap_waiting), before
+   its page lands, which can wait for the GPU for seconds: the guest thread blocked in that fault lets go of its core,
+   which goes to the core's next thread, and its poll is set. On the console the access takes no time, so a waiter of
+   better priority runs at once. The fault may be a late one, whose thread runs again already: it then runs without a
+   core only until its next poll, where it takes one again (core_preempt), or its next SVC (core_enter). core_owner
+   and on_core change together, under core_lk, as when a thread leaves its core */
+void kthread_fault_lend(u32 tid) {
+    KThread* t = NULL;
+    if (!g_settings.emulated_cores || !tid) return;
+    /* a slot keeps the host thread of a thread that exited, whose number the system may give another thread: only a
+       live one holds a core */
+    for (int i = 0; i < KTHREAD_MAX && !t; i++)
+        if (__atomic_load_n(&g_host.thread.host_tid[i], __ATOMIC_RELAXED) == tid &&
+            g_hle.thread.threads[i].o.type == KO_THREAD && g_hle.thread.threads[i].state == 1)
+            t = &g_hle.thread.threads[i];
+    if (!t) return; /* a thread of the runtime's own */
+    pm_lock(&g_host.thread.core_lk);
+    int k = t->on_core;
+    if (k >= 0 && g_hle.thread.core_owner[k] == kt_ix(t)) {
+        core_release_nl(t);
+        __atomic_store_n(&t->cpu.poll, 1u, __ATOMIC_RELAXED);
+    }
+    core_unlock();
+}
+/* Read without core_lk, as a thread dump is: a moment stale is all a report needs. The holder's state says where it
+   is: in game code that reaches no poll, or blocked off the CPU (a fault on memory the GPU holds) */
+#define CORE_WATCH_NS 250000000u
+#define CORE_WATCH_LINES 50u
+void kernel_core_watch(void) {
+    if (!g_settings.emulated_cores || g_host.thread.preempt_lines >= CORE_WATCH_LINES) return;
+    u64 now = plat_ns();
+    for (int k = 0; k < NCORES; k++) {
+        u64 since = __atomic_load_n(&g_host.thread.preempt_since[k], __ATOMIC_RELAXED);
+        const KThread* o = kt_at(__atomic_load_n(&g_hle.thread.core_owner[k], __ATOMIC_RELAXED));
+        if (!since || !o || since > now || now - since < CORE_WATCH_NS || g_host.thread.preempt_said[k] == since)
+            continue;
+        g_host.thread.preempt_said[k] = since;
+        g_host.thread.preempt_lines++;
+        u32 ix = kt_ix(o) - 1, tid = __atomic_load_n(&g_host.thread.host_tid[ix], __ATOMIC_RELAXED);
+        u64 left = __atomic_load_n(&g_host.thread.svc_ns[ix], __ATOMIC_RELAXED);
+        char where[96] = "?";
+        if (tid) plat_thread_where(tid, where, sizeof where);
+        LOG("kernel: thread %llu (prio %d) keeps core %d %llu ms after a waiter of priority %d came: %s, host thread %s, "
+            "poll %u, %u polls, out of an SVC for %llu ms, pc %llx lr %llx\n",
+            (unsigned long long)o->id, o->prio, k, (unsigned long long)((now - since) / 1000000u), g_hle.thread.core_best[k],
+            __atomic_load_n(&o->in_svc, __ATOMIC_RELAXED) ? "in an SVC" : "in game code", where,
+            __atomic_load_n(&o->cpu.poll, __ATOMIC_RELAXED), __atomic_load_n(&g_host.thread.polls[ix], __ATOMIC_RELAXED),
+            (unsigned long long)(left && now > left ? (now - left) / 1000000u : 0), (unsigned long long)o->cpu.pc,
+            (unsigned long long)o->cpu.x[30]);
+    }
 }
 /* the thread a yield with core migration moves to core k on the console (Mesosphère's
    KScheduler::YieldWithCoreMigration): one waiting for another core that core k is in the mask of, of the yielding
@@ -479,6 +551,7 @@ typedef char snx_check_guest_stats_slots[KTHREAD_MAX < GSTAT_SLOTS ? 1 : -1];
 static void thread_main(void* p) {
     KThread* t = (KThread*)p;
     t_hle.thread.cur = t;
+    __atomic_store_n(&g_host.thread.host_tid[kt_ix(t) - 1], plat_tid(), __ATOMIC_RELAXED);
     guest_stats_thread_start(kt_ix(t));
     SNX_THREAD_NAME(t->name[0] ? t->name : "guest");
     __atomic_add_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
@@ -630,6 +703,7 @@ static void thread_resume_main(void* p) {
     int park = t->park;
     SNX_THREAD_NAME(t->name[0] ? t->name : "guest");
     t_hle.thread.cur = t;
+    __atomic_store_n(&g_host.thread.host_tid[kt_ix(t) - 1], plat_tid(), __ATOMIC_RELAXED);
     __atomic_add_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
     kthread_hold_point(t, park);
     if (park == PARK_ENTER || park == PARK_SERVICE) {

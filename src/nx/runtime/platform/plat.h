@@ -166,8 +166,15 @@ u8* plat_alias_mirror(void);
    page) fails with EFAULT instead of waiting, so the runtime opens a range before it hands it to the kernel. tid is
    the faulting thread's plat_tid */
 int plat_trap_init(void (*fault)(u8* p, int write, u32 tid));
+/* waiting(tid) as soon as the traps learn that thread tid waits in a fault, before the fault callback of its page
+   runs: a landing may wait for the GPU for seconds, and the faults that come meanwhile wait behind it. The kernel
+   lets the thread's emulated core go there (kthread_fault_lend). Set at startup, before plat_trap_init. Optional */
+void plat_trap_waiting(void (*waiting)(u32 tid));
 /* whether this process's thread tid (plat_tid's) is waiting in a trap now: 1, 0, or -1 when that can't be told */
 int plat_thread_in_fault(u32 tid);
+/* for a report: what thread tid (plat_tid's) does, as the system sees it, such as "R" (on a CPU) or "S futex_wait"
+   (a sleep and the kernel function it sleeps in). "?" when that can't be told */
+void plat_thread_where(u32 tid, char* out, size_t n);
 /* Best-effort fatal diagnostics for the blocked thread, not the trap handler. Never resumes it. */
 void plat_dump_fault_thread(u32 tid);
 /* every page of [p, p + size), whole host pages of pool memory, armed / let go (0, or -1). A page let go reads as
