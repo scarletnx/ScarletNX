@@ -242,6 +242,156 @@ static int tex_partial(const TpCase* c, u32 index) {
     }
     return failed;
 }
+/* An ASTC texture decoded on the GPU (held as BC7 with astc_bc=1, else RGBA8) takes its changes as the runs of blocks
+   of their pages, decoded (and encoded) again: after each write its image is the one a whole upload of the same bytes
+   makes, byte for byte (a texture of its own over the same memory at another GPU address, made then), and only those
+   runs were loaded. The writes: an ASTC block astride BC7 blocks, a DMA copy, the mip tail */
+typedef struct {
+    const char* name;
+    int format; /* NVN's */
+    u32 bw;     /* the footprint, square */
+    u32 size;   /* level 0's texels across and down */
+    int bc7;    /* astc_bc */
+} TaCase;
+/* every level of every layer of t's image, read back: the bytes, malloc'd (the caller frees them), and how many */
+static u8* ta_image(const TpTex* x, Surf* t, u64* size) {
+    const int bc7 = t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK;
+    u64 total = 0, at = 0;
+    for (u32 l = 0; l < x->tex.d.levels; l++) {
+        u32 side = x->c->w >> l ? x->c->w >> l : 1;
+        total += (bc7 ? (u64)((side + 3) / 4) * ((side + 3) / 4) * 16 : (u64)side * side * 4) * x->layers;
+    }
+    u8* all = malloc(total);
+    if (!all) return NULL;
+    for (u32 layer = 0; layer < x->layers; layer++)
+        for (u32 l = 0; l < x->tex.d.levels; l++) {
+            u32 side = x->c->w >> l ? x->c->w >> l : 1;
+            u64 bytes = bc7 ? (u64)((side + 3) / 4) * ((side + 3) / 4) * 16 : (u64)side * side * 4;
+            VkBuffer buffer;
+            VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, layer, 1},
+                                      .imageExtent = {side, side, 1}};
+            vk_lock();
+            u8* image = vk_readback_buffer(bytes, &buffer);
+            if (image) {
+                vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                            VK_ACCESS_2_TRANSFER_READ_BIT);
+                rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+                vk_finish();
+                vk_readback_ready();
+                memcpy(all + at, image, bytes);
+            }
+            vk_unlock();
+            if (!image) {
+                free(all);
+                return NULL;
+            }
+            at += bytes;
+        }
+    *size = total;
+    return all;
+}
+/* the GPU address of the whole upload a step compares with: mapped with the texture's, as a mapping made later
+   stamps every GPU page that shows the same memory, the texture's too, which a check then loads whole */
+#define TA_STEPS 3
+static u64 ta_ref(const TpTex* x, u32 step) { return x->gva + 0x1000000000ull + (u64)step * TP_SPAN; }
+/* the next frame's texture after a write: the one made, its image a whole upload's of the same bytes (a texture made
+   now over them at another GPU address, the step's own), and with write tracking no more than most bytes of guest
+   memory decoded again, of some runs alone. 1 when not, said with the first byte that differs */
+static int ta_way(TpTex* x, const char* way, u32 step, u64 most) {
+    u64 loads, bytes, loads2, bytes2, partial, partial_bytes, partial2, partial_bytes2, size = 0, ref_size = 0;
+    vk_tex_stats(&loads, &bytes);
+    vk_tex_partial_stats(&partial, &partial_bytes);
+    Surf* now = tp_frame(x);
+    vk_tex_stats(&loads2, &bytes2);
+    vk_tex_partial_stats(&partial2, &partial_bytes2);
+    NvnTexture ref = x->tex;
+    u32 tic[8];
+    ref.gpu = ta_ref(x, step);
+    CHECK(step < TA_STEPS && nvn_tic_encode(&ref, NULL, 0, 0, tic));
+    vk_lock();
+    Surf* whole = vk_tex_from_tic(tic);
+    vk_unlock();
+    u8* got = now ? ta_image(x, now, &size) : NULL;
+    u8* want = whole ? ta_image(x, whole, &ref_size) : NULL;
+    u64 differ = 0, first = 0;
+    for (u64 i = 0; got && want && i < size && size == ref_size; i++)
+        if (got[i] != want[i] && !differ++) first = i;
+    u64 loaded = bytes2 - bytes;
+    int some = loaded <= most && partial2 > partial && partial_bytes2 - partial_bytes == loaded;
+    int same = got && want && size == ref_size && !differ;
+    if (now == x->t && whole && whole != now && same && (!x->tracked || some)) {
+        printf("texture changes %s, %s: its image a whole upload's, %llu bytes of memory decoded again%s\n",
+               x->c->name, way, (unsigned long long)loaded, x->tracked ? ", the runs of the pages written" : "");
+        free(got);
+        free(want);
+        return 0;
+    }
+    fprintf(stderr,
+            "texture changes %s, %s: the same texture %d, a whole upload %d, %llu bytes decoded again in %llu loads, "
+            "%llu of them some runs alone (at most %llu wanted); %llu of %llu bytes of the image differ from the whole "
+            "upload's, the first at %llu: %02x, the whole upload's %02x\n",
+            x->c->name, way, now == x->t, whole && whole != now, (unsigned long long)loaded,
+            (unsigned long long)(loads2 - loads), (unsigned long long)(partial2 - partial), (unsigned long long)most,
+            (unsigned long long)differ, (unsigned long long)size, (unsigned long long)first,
+            got && first < size ? got[first] : 0, want && first < ref_size ? want[first] : 0);
+    free(got);
+    free(want);
+    return 1;
+}
+static int tex_partial_astc(const TaCase* a, u32 index) {
+    TpCase c = {a->name, a->format, 16, a->bw, VK_FORMAT_UNDEFINED, a->size, a->size, 0};
+    TpTex x = {0};
+    const int had = g_settings.astc_bc;
+    u32 rng = 0x9e3779b9u + index;
+    x.c = &c;
+    x.cpu = TP_CPU + index * TP_SPAN;
+    x.gva = TP_GVA + index * TP_SPAN;
+    x.layers = TP_LAYERS;
+    x.tex.d.target = NVN_TEXTURE_TARGET_2D_ARRAY;
+    x.tex.d.format = (u16)a->format;
+    x.tex.d.levels = (u8)(32u - (u32)__builtin_clz(a->size));
+    x.tex.d.width = x.tex.d.height = a->size;
+    x.tex.d.depth = TP_LAYERS;
+    x.tex.gpu = x.gva;
+    nvn_tex_layout(&x.tex.d, &x.lay);
+    CHECK(x.lay.size + 0x1000 <= TP_SPAN && nvn_tic_encode(&x.tex, NULL, 0, 0, x.tic));
+    g_settings.astc_bc = a->bc7;
+    VkFmt f = vk_tic_format(x.tic[0], 0);
+    int bc7 = f.vk == VK_FORMAT_BC7_UNORM_BLOCK;
+    if (f.conv != VKC_ASTC || bc7 != a->bc7) {
+        printf("texture changes %s: the GPU %s, skipped\n", a->name,
+               f.conv != VKC_ASTC ? "samples ASTC as it is" : "holds no ASTC texture as BC7");
+        g_settings.astc_bc = had;
+        return 0;
+    }
+    CHECK(mem_map(x.cpu, TP_SPAN, MS_NORMAL, PERM_RW) == 0);
+    /* blocks of every mode, as random words with their mode bits stepped through (astc_vulkan's blocks_new) */
+    for (u64 i = 0; i < TP_SPAN / 4; i++) {
+        rng ^= rng << 13, rng ^= rng >> 17, rng ^= rng << 5;
+        snx_st_le32(GP(x.cpu) + i * 4, i % 4 ? rng : (rng & ~2047u) | (u32)(i / 4 & 2047));
+    }
+    gmmu_map(x.gva, x.cpu, TP_SPAN);
+    for (u32 step = 0; step < TA_STEPS; step++) gmmu_map(ta_ref(&x, step), x.cpu, TP_SPAN);
+    vk_lock();
+    x.tracked = vk_written_since(GP(x.cpu), x.lay.size, 0) >= 0;
+    x.t = vk_tex_from_tic(x.tic);
+    vk_unlock();
+    CHECK(x.t && x.t->f.conv == VKC_ASTC && x.t->levels == x.tex.d.levels && x.t->layers == TP_LAYERS);
+    for (int i = 0; i < 3; i++) CHECK(tp_frame(&x) == x.t);
+    int failed = 0;
+    /* (a) ASTC block 5 of row 7 of level 0 of layer 1, whose texels are astride BC7 blocks where the footprint isn't
+       a multiple of 4: its run of blocks, of a block of 16 GOBs at most */
+    tp_cpu_write(&x, tp_at(&x, 1, 0, 5, 7), 16);
+    failed |= ta_way(&x, "an ASTC block astride BC7 blocks", 0, 8192);
+    /* (b) a DMA copy of 64 bytes (4 ASTC blocks) into level 1 of layer 0 */
+    CHECK(tp_dma_write(&x, tp_level(&x, 0, 1) + 0x400));
+    failed |= ta_way(&x, "a DMA copy", 1, 8192);
+    /* (c) a byte of the last level of layer 0, in the page of the mip tail's levels */
+    tp_cpu_write(&x, tp_level(&x, 0, x.tex.d.levels - 1), 1);
+    failed |= ta_way(&x, "a byte of the mip tail", 2, 8192);
+    g_settings.astc_bc = had;
+    return failed;
+}
 static int check_tex_partial(void) {
     const TpCase cases[] = {
         {"RGBA8 1024x1024", NVN_FORMAT_RGBA8, 4, 1, VK_FORMAT_R8G8B8A8_UNORM, 1024, 1024, 0},
@@ -251,9 +401,18 @@ static int check_tex_partial(void) {
         {"RGBA8 2000x1200 pitch linear, rows pages cut", NVN_FORMAT_RGBA8, 4, 1, VK_FORMAT_R8G8B8A8_UNORM, 2000, 1200,
          8448},
     };
+    const TaCase astc[] = {
+        {"ASTC 6x6 510x510 as BC7", NVN_FORMAT_RGBA_ASTC_6x6, 6, 510, 1},
+        {"ASTC 5x5 500x500 as BC7", NVN_FORMAT_RGBA_ASTC_5x5, 5, 500, 1},
+        {"ASTC 4x4 512x512 as BC7", NVN_FORMAT_RGBA_ASTC_4x4, 4, 512, 1},
+        {"ASTC 6x6 510x510 as RGBA8", NVN_FORMAT_RGBA_ASTC_6x6, 6, 510, 0},
+    };
+    const u32 n = sizeof cases / sizeof *cases;
     int failed = 0;
-    for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) failed |= tex_partial(&cases[i], i);
+    for (u32 i = 0; i < n; i++) failed |= tex_partial(&cases[i], i);
+    for (u32 i = 0; i < sizeof astc / sizeof *astc; i++) failed |= tex_partial_astc(&astc[i], n + i);
     CHECK(!failed);
-    puts("texture changes: a write of some bytes of a texture loads the blocks of its pages, or the rows they lie in");
+    puts("texture changes: a write of some bytes of a texture loads the blocks of its pages, or the rows they lie in; an "
+         "ASTC texture's are decoded as a whole upload decodes them");
     return 0;
 }

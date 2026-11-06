@@ -12,7 +12,12 @@
 
    A BC7 image (format.c's TA, the astc_bc setting, on a GPU that samples BCn but not ASTC) takes a second
    dispatch: bc7.comp encodes the decoded texels into BC7 blocks, a quarter of RGBA8's bytes, and those are what
-   the copy writes. Its strips then start on whole 4x4 blocks. */
+   the copy writes. Its strips then start on whole 4x4 blocks.
+
+   A region of a level goes the same way (texture.c loads the blocks of the pages that changed): its texels from its
+   own blocks, at its place in the image. bc7.comp encodes a block from its 16 texels alone, repeating a strip's last
+   texel past its edge, so a region whose sides are on 4x4 blocks, or the level's own edges, encodes the blocks the
+   whole level's upload does. */
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
@@ -36,7 +41,8 @@ static VkShaderModule g_bc7_module;
 static VkPipeline g_bc7_pipe;
 static VkBuffer g_bc7_scratch;
 static VmaAllocation g_bc7_mem;
-/* image levels uploaded as BC7, their bytes, and what they would have taken as RGBA8 (vk_astc_stats) */
+/* image levels (or regions of them) uploaded as BC7, their bytes, and what they would have taken as RGBA8
+   (vk_astc_stats) */
 static u64 g_bc7_levels, g_bc7_bytes, g_bc7_rgba8_bytes;
 /* the bytes of the ASTC levels decoded to RGBA8 (vk_astc_rgba8_bytes) */
 static u64 g_rgba8_bytes;
@@ -202,13 +208,23 @@ static VkDescriptorSet two_buffers(VkBuffer in, u64 in_off, u64 in_size, VkBuffe
     return set;
 }
 
-int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, VkAstcRows rows,
-                   void* ctx) {
+int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32 depth, u32 level, u32 layer,
+                   VkAstcRows rows, void* ctx) {
     astc_init();
     const int bc7 = t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK;
     if (bc7) bc7_init();
     const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
     u32 bw = t->f.bw, bh = t->f.bh;
+    /* the region's origin on its blocks, and on BC7's too: on multiples of lcm(bw, 4) and lcm(bh, 4) */
+    const u32 mx = bc7 ? bw * 4 / (bw % 4 ? bw % 2 ? 1 : 2 : 4) : bw;
+    const u32 my = bc7 ? bh * 4 / (bh % 4 ? bh % 2 ? 1 : 2 : 4) : bh;
+    if (x % mx || y0 % my) {
+        LOG_LIMIT(1,
+                  "vulkan: a %ux%u region at (%u, %u) of a %ux%u ASTC texture held as %s is not decoded: a region "
+                  "starts on multiples of (%u, %u)\n",
+                  w, h, x, y0, bw, bh, bc7 ? "BC7" : "RGBA8", mx, my);
+        return 0;
+    }
     u32 nx = (w + bw - 1) / bw, ny = (h + bh - 1) / bh;
     u64 row_in = (u64)nx * 16, row_out = (u64)w * bh * 4;
     /* BC7: blocks a row, and the ASTC block rows a strip is a multiple of, so that each strip starts on a row of
@@ -297,7 +313,7 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 lev
             VkBufferImageCopy copy = {.bufferRowLength = row_texels,
                                       .bufferImageHeight = image_rows,
                                       .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1},
-                                      .imageOffset = {0, (i32)(y * bh), (i32)z},
+                                      .imageOffset = {(i32)x, (i32)(y0 + y * bh), (i32)z},
                                       .imageExtent = {w, height, nz}};
             rec_CmdCopyBufferToImage(cb, from, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
         }

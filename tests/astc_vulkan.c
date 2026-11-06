@@ -351,7 +351,7 @@ static void run(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layers, u
                             memcpy(bl + ref_bl(x * 16, y, z, lv.nx * 16, lv.ny, lv.bh, lv.bd),
                                    b + (((size_t)z * lv.ny + y) * lv.nx + x) * 16, 16);
             }
-            if (!vk_astc_upload(vk_cmd(), &t, lw, lh, ld, l, layer, level_rows, &lv)) fatal("upload failed\n");
+            if (!vk_astc_upload(vk_cmd(), &t, 0, 0, lw, lh, ld, l, layer, level_rows, &lv)) fatal("upload failed\n");
             free(bl); /* copied into staging already */
             bytes += (size_t)lw * lh * ld * 4;
         }
@@ -439,7 +439,8 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
             u32 lw = w >> l ? w >> l : 1, lh = h >> l ? h >> l : 1, ld = depth >> l ? depth >> l : 1;
             u8* b = blocks[layer * levels + l] = blocks_new(lw, lh, ld, bw, bh);
             Level lv = {b, (lw + bw - 1) / bw, (lh + bh - 1) / bh, NULL, 2, ld > 1};
-            if (!vk_astc_upload(vk_cmd(), &t, lw, lh, ld, l, layer, level_rows, &lv)) fatal("BC7 upload failed\n");
+            if (!vk_astc_upload(vk_cmd(), &t, 0, 0, lw, lh, ld, l, layer, level_rows, &lv))
+                fatal("BC7 upload failed\n");
         }
     barrier(t.img, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -476,6 +477,75 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
     vk_image_destroy(t.img, t.mem);
     printf("PASS ASTC as BC7 %ux%u srgb=%d image=%ux%ux%u layers=%u mips=%u\n", bw, bh, srgb, w, h, depth, layers,
            levels);
+    fflush(stdout);
+}
+
+/* A region of a level uploaded again over its whole upload, as texture.c loads the blocks of the pages that changed:
+   rnx by rny new blocks at block (rx, ry) of a w x h level, its sides on 4x4 blocks of a BC7 image or at the level's
+   edges. The image is then the CPU decoder's (and the encoder's, for BC7) of all the level's blocks as they are now,
+   byte for byte: the BC7 blocks at the region's sides take the texels of the blocks beside it as the whole upload's
+   do. A BC7 region whose side isn't on 4x4 blocks is refused (0), the image left as it was */
+static void run_region(u32 bw, u32 bh, int bc7, u32 w, u32 h, u32 rx, u32 ry, u32 rnx, u32 rny) {
+    const VkFormat format = bc7 ? VK_FORMAT_BC7_UNORM_BLOCK : VK_FORMAT_R8G8B8A8_UNORM;
+    if (bc7 && !g_vk.feat.textureCompressionBC) {
+        printf("SKIP ASTC region %ux%u as BC7: the device has no BC7 images\n", bw, bh);
+        return;
+    }
+    Surf t = {.w = w, .h = h, .layers = 1, .levels = 1, .depth3d = 1, .f = {.vk = format, .bw = bw, .bh = bh}};
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = format,
+                            .extent = {w, h, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+    if (!vk_image_create(&ii, &t.img, &t.mem)) fatal("cannot create a %ux%u image\n", w, h);
+    barrier(t.img, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    const u32 nx = (w + bw - 1) / bw, ny = (h + bh - 1) / bh, x0 = rx * bw, y0 = ry * bh;
+    const u32 rw = rnx * bw < w - x0 ? rnx * bw : w - x0, rh = rny * bh < h - y0 ? rny * bh : h - y0;
+    u8* b = blocks_new(w, h, 1, bw, bh);
+    Level lv = {b, nx, ny, NULL, 2, 0};
+    if (!vk_astc_upload(vk_cmd(), &t, 0, 0, w, h, 1, 0, 0, level_rows, &lv)) fatal("upload failed\n");
+    u8* fresh = blocks_new(rnx * bw, rny * bh, 1, bw, bh);
+    Level rv = {fresh, rnx, rny, NULL, 2, 0};
+    barrier(t.img, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    int aligned = !bc7 || (x0 % 4 == 0 && y0 % 4 == 0);
+    if (vk_astc_upload(vk_cmd(), &t, x0, y0, rw, rh, 1, 0, 0, level_rows, &rv) != aligned)
+        fatal("ASTC region %ux%u at block (%u, %u): the upload %s\n", bw, bh, rx, ry,
+              aligned ? "was refused" : "of a region off 4x4 blocks went through");
+    if (aligned)
+        for (u32 y = 0; y < rny && ry + y < ny; y++)
+            memcpy(b + ((size_t)(ry + y) * nx + rx) * 16, fresh + (size_t)y * rnx * 16,
+                   (size_t)(rnx < nx - rx ? rnx : nx - rx) * 16);
+    barrier(t.img, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    u64 size = bc7 ? (u64)((w + 3) / 4) * ((h + 3) / 4) * 16 : (u64)w * h * 4;
+    VkBuffer readback;
+    u8* actual = vk_readback_buffer(size, &readback);
+    if (!actual) fatal("no readback buffer of %llu bytes\n", (unsigned long long)size);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), t.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    u8* texels = malloc((size_t)w * h * 4);
+    u8* expected = bc7 ? malloc(size) : texels;
+    astc_decode_image(b, w, h, bw, bh, texels, 0);
+    if (bc7) bc7_encode_cpu(texels, w, h, 1, expected);
+    for (u64 i = 0; i < size; i++)
+        if (actual[i] != expected[i])
+            fatal("ASTC region %ux%u%s of %ux%u at block (%u, %u), %ux%u blocks: byte %llu expected %u got %u\n", bw,
+                  bh, bc7 ? " as BC7" : "", w, h, rx, ry, rnx, rny, (unsigned long long)i, expected[i], actual[i]);
+    if (bc7) free(expected);
+    free(texels);
+    free(fresh);
+    free(b);
+    vk_image_destroy(t.img, t.mem);
+    printf("PASS ASTC region %ux%u%s of %ux%u: %ux%u blocks at block (%u, %u) %s\n", bw, bh, bc7 ? " as BC7" : "", w, h,
+           rnx, rny, rx, ry, aligned ? "as a whole upload makes them" : "refused, off 4x4 blocks");
     fflush(stdout);
 }
 
@@ -898,6 +968,17 @@ int main(int argc, char** argv) {
     run_bc7(12, 12, 1, 97, 61, 1, 1, 1);
     run_bc7(6, 6, 0, 61, 37, 9, 1, 1);
     run_bc7(5, 5, 0, 2051, 1101, 1, 1, 1);
+    /* a region uploaded again: inside the level, at its right and bottom edges, as BC7 and as RGBA8, footprints that
+       step 1, 2 and 4 blocks to a 4x4 BC7 block, and a BC7 region off those blocks */
+    run_region(4, 4, 1, 97, 61, 2, 1, 3, 2);
+    run_region(5, 5, 1, 97, 61, 4, 4, 8, 4);
+    run_region(5, 5, 1, 97, 61, 16, 12, 4, 4);
+    run_region(6, 6, 1, 97, 61, 2, 2, 4, 2);
+    run_region(10, 6, 1, 97, 61, 2, 2, 2, 4);
+    run_region(12, 12, 1, 97, 61, 1, 1, 2, 1);
+    run_region(8, 8, 1, 2051, 1101, 64, 32, 64, 32);
+    run_region(6, 6, 0, 97, 61, 1, 1, 3, 2);
+    run_region(6, 6, 1, 97, 61, 1, 1, 3, 2);
     /* Multiple scratch chunks, staging-ring retirement, and frame reuse. */
     run(4, 4, 0, 2051, 1055, 1, 1, 1, 1, NULL, NULL);
     run(12, 12, 1, 2051, 1055, 1, 1, 1, 0, NULL, NULL);

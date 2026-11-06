@@ -989,18 +989,22 @@ VkTcShape vk_tc_vi_shape(u32 fmt, u32 w);
 int vk_tc_convert_vi(VkCommandBuffer cb, u32 fmt, u32 w, u32 rows, VkBuffer in, u64 in_at, u32 in_pitch, VkBuffer out,
                      u64 out_at);
 
-/* astc.c: decode a level of one layer of t, w x h x depth texels, into it. The blocks come from rows(ctx, cb, z, nz,
-   y, n, &buf, &off): block rows y to y + n of slices z to z + nz, tightly packed, 16 bytes a block, a slice's after
-   another's, in buf at off (aligned for a storage buffer) once what rows recorded into cb is done. They are asked for
+/* astc.c: decode a level of one layer of t, or a region of it, w x h x depth texels at (x, y) of it, into it: x and y
+   on its blocks, and on 4x4 ones for a BC7 image, whose region ends on them too or at the level's edge (bc7.comp
+   encodes a block from its own texels, the last one repeated past a strip's edge). The blocks come from rows(ctx, cb,
+   z, nz, y, n, &buf, &off): block rows y to y + n (of the region) of slices z to z + nz, tightly packed, 16 bytes a
+   block, a slice's after another's, in buf at off (aligned for a storage buffer) once what rows recorded into cb is
+   done. They are asked for
    a strip at a time, so a level is never all in memory at once. 0 when staging ran out (the level is left out, and
    the caller tries again later); rows returns 0 for that too. The caller ends rendering and moves t to
    TRANSFER_DST_OPTIMAL first. A guest read while staging lands GPU results, and landing can submit the frame's
    command buffer, which ends the one cb names: rows then stores the buffer recording now through cb, and the caller
    records the rest of the strip there */
 typedef int (*VkAstcRows)(void* ctx, VkCommandBuffer* cb, u32 z, u32 nz, u32 y, u32 n, VkBuffer* buf, u64* off);
-int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, VkAstcRows rows,
-                   void* ctx);
-/* the image levels uploaded as BC7 so far, their bytes, and the bytes they would have taken as RGBA8 */
+int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y, u32 w, u32 h, u32 depth, u32 level, u32 layer,
+                   VkAstcRows rows, void* ctx);
+/* the image levels (or regions of them) uploaded as BC7 so far, their bytes, and the bytes they would have taken as
+   RGBA8 */
 void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes);
 /* the bytes of the ASTC textures decoded to RGBA8 so far (astc_bc off, or a GPU without BCn) */
 u64 vk_astc_rgba8_bytes(void);
