@@ -5,6 +5,7 @@
 import argparse
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import sys
@@ -17,6 +18,85 @@ def disassemble(tool, fixture):
     except subprocess.CalledProcessError as error:
         print(error.stderr, file=sys.stderr)
         raise
+
+
+def check_1d_array_gradient(words):
+    """Route all16 packed offsets to native samples, with the array layer outside the dispatch."""
+    instructions, definitions, labels = [], {}, {}
+    at = 5
+    while at < len(words):
+        length, opcode = words[at] >> 16, words[at] & 0xffff
+        if not length or at + length > len(words):
+            raise AssertionError('invalid dynamic TXD module')
+        instruction = words[at:at + length]
+        instructions.append(instruction)
+        if opcode in (43, 44, 61, 80, 112, 124, 194, 199):
+            definitions[instruction[2]] = instruction
+        if opcode == 248:
+            labels[instruction[1]] = len(instructions)
+        at += length
+
+    def require(condition, reason):
+        if not condition:
+            raise AssertionError('dynamic 1D array TXD: ' + reason)
+
+    def constant(identifier):
+        value = definitions.get(identifier, ())
+        require(len(value) == 4 and value[0] & 0xffff == 43, 'offset and selector operands must be constants')
+        return value[3]
+
+    switches = [instruction for instruction in instructions if instruction[0] & 0xffff == 251]
+    samples = [instruction for instruction in instructions if instruction[0] & 0xffff == 88]
+    phis = [instruction for instruction in instructions if instruction[0] & 0xffff == 245]
+    require(len(switches) == 1 and len(samples) == 16 and len(phis) == 1, 'expected one16-way native sample dispatch')
+    require(not any(instruction[0] & 0xffff in (103, 136) for instruction in instructions),
+            'base-level size queries or coordinate division cannot replace mip-relative offsets')
+    switch, phi = switches[0], phis[0]
+    require(len(switch) == 33 and len(phi) == 35, 'every offset needs one branch and one result input')
+    selector = definitions.get(switch[1], ())
+    require(len(selector) == 5 and selector[0] & 0xffff == 199 and constant(selector[4]) == 15,
+            'the dispatch must select only the X-offset nibble')
+    shifted = definitions.get(selector[3], ())
+    require(len(shifted) == 5 and shifted[0] & 0xffff == 194 and constant(shifted[4]) == 16,
+            'the X offset starts at packed bit16')
+    targets = dict(zip(switch[3::2], switch[4::2]))
+    require(set(targets) == set(range(1, 16)), 'the selector must cover every nonzero signed nibble')
+    targets[0] = switch[2]
+    require(len(set(targets.values())) == 16 and all(target in labels for target in targets.values()),
+            'each selector must reach its own valid leaf')
+    merged = dict(zip(phi[4::2], phi[3::2]))
+    require(set(merged) == set(targets.values()), 'the result must include every real predecessor')
+    common = None
+    for nibble, target in targets.items():
+        body = instructions[labels[target]:]
+        branch = next((index for index, instruction in enumerate(body) if instruction[0] & 0xffff in (249, 250, 251)), None)
+        require(branch is not None and body[branch][0] & 0xffff == 249, 'each selected leaf must branch to the merge')
+        selected = [instruction for instruction in body[:branch] if instruction[0] & 0xffff == 88]
+        require(len(selected) == 1 and merged[target] == selected[0][2], 'the merge must return exactly the selected sample')
+        sample = selected[0]
+        require(len(sample) == 9 and sample[5] == 12, 'native sampling must retain Grad|ConstOffset')
+        offset = definitions.get(sample[8], ())
+        require(len(offset) == 5 and offset[0] & 0xffff == 44, 'the texel offset must be a constant two-vector')
+        require(constant(offset[3]) == (nibble if nibble < 8 else nibble - 16) & 0xffffffff and constant(offset[4]) == 0,
+                'the signed X offset or zero Y offset is wrong')
+        image = definitions.get(sample[3], ())
+        require(len(image) == 4 and image[0] & 0xffff == 61, 'every leaf must load the same sampled-image binding')
+        operands = (sample[1], image[3], sample[4], sample[6], sample[7], body[branch][1])
+        common = operands if common is None else common
+        require(operands == common, 'descriptor, coordinates, gradients and merge must be shared by every leaf')
+        require(common[-1] in labels and instructions[labels[common[-1]]] == phi, 'the selected value must reach the dispatch result')
+    coordinate = definitions.get(common[2], ())
+    require(len(coordinate) == 6 and coordinate[0] & 0xffff == 80 and constant(coordinate[4]) == 0x3f000000,
+            'the emulated 1D texture must keep Y=0.5 and a separate array layer')
+    layer = definitions.get(coordinate[5], ())
+    require(len(layer) == 4 and layer[0] & 0xffff == 112, 'the array layer must convert the packed low half')
+    low_half = definitions.get(layer[3], ())
+    require(len(low_half) == 5 and low_half[0] & 0xffff == 199 and low_half[3] == shifted[3] and
+            constant(low_half[4]) == 65535, 'offset selection must not change the packed array layer')
+    for gradient in common[3:5]:
+        vector = definitions.get(gradient, ())
+        require(len(vector) == 5 and vector[0] & 0xffff == 80 and constant(vector[4]) == 0,
+                'the emulated 1D texture must keep zero Y derivatives')
 
 
 def main():
@@ -123,8 +203,8 @@ def main():
             raise AssertionError('2D gradients must retain the constant texture offset')
         if not all(' Grad' in code for code in gradient_code):
             raise AssertionError('TXD must supply explicit gradients')
-        if 'OpImageQuerySizeLod' not in gradient_code[2]:
-            raise AssertionError('dynamic 1D array offset must query texture size')
+        packed_gradient = gradients[2].read_bytes()
+        check_1d_array_gradient(struct.unpack(f'<{len(packed_gradient) // 4}I', packed_gradient))
         texture_code = [disassemble(args.disassembler, fixture) for fixture in textures]
         if not all('OpImageSampleDrefExplicitLod' in code for code in texture_code[:3]):
             raise AssertionError('depth compare with explicit level must retain its reference')

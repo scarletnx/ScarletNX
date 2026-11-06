@@ -41,7 +41,7 @@ static inline int shader_same_indexed_table(const ShTex* a, const ShTex* b) {
    of the array that reads it. */
 static inline int shader_same_indexed_kind(const ShTex* tex, u64 int_mask, u64 sint_mask, int a, int b) {
     return tex[a].type == tex[b].type && tex[a].array == tex[b].array && tex[a].shadow == tex[b].shadow &&
-           ((int_mask >> a) & 1) == ((int_mask >> b) & 1) && ((sint_mask >> a) & 1) == ((sint_mask >> b) & 1);
+           (tex[a].flags & 3) == (tex[b].flags & 3) && ((int_mask >> a) & 1) == ((int_mask >> b) & 1) && ((sint_mask >> a) & 1) == ((sint_mask >> b) & 1);
 }
 /* A global buffer (ShaderInfo.gbuf_cbuf_off) is named by where its 64-bit address is: the constant buffer in bits 16-20,
    the byte offset in it in bits 0-15. NVN's storage buffer descriptors, in cbuf 0 from 0x110 to 0x410 (compute) or
@@ -60,6 +60,7 @@ typedef struct {
     u8 layout[4][128];
     u8 count[4];
     u16 stride[4];
+    u8 stream[4]; /* geometry output stream for each capture buffer, 0..3 */
 } ShXfb;
 /* A program's key state (set by the renderer before translating) and what translation found. The corpus stores it
    whole, so a corpus file only loads into a build where this struct has the same size. */
@@ -68,6 +69,10 @@ typedef struct {
     u32 flow_base;           /* key: low32 GPU address represented by word0, for absolute Maxwell call/jump targets */
     u64 advanced_blend;      /* key: packed NVN advanced state for an ordered storage-image epilogue, zero when off */
     u32 advanced_blend_mask; /* key: components the epilogue writes */
+    u32 coverage_to_color; /* key: 0 disables, otherwise the integer output location plus one */
+    u32 clip_input_mask;
+    int reads_point_size;
+    u32 coverage_early_tests;
     u32 sph[20];             /* the shader program header, 80 bytes */
     u32 cbuf_mask;           /* constant buffers read */
     u32 cbuf_max[18];        /* bytes read of each, so only those are bound */
@@ -80,6 +85,7 @@ typedef struct {
                         SNX_SH_NOT_LAST and SNX_SH_WINDOW_XY */
     int uses_position_in, uses_clip_mask, writes_layer, writes_point_size;
     int uses_sample_id; /* SampleId requires sample shading, which native mixed-sample coverage cannot combine */
+    int has_discard; /* guest KIL can remove a fragment after its shader starts */
     /* FP32 arithmetic asking to flush denormals (FTZ/FMZ), and FP32 arithmetic that doesn't. Only flush in every
        FADD, FMUL and FFMA lets the module declare flushing, as Eden declares DenormFlushToZero */
     int fp32_flush, fp32_preserve;
@@ -95,11 +101,12 @@ typedef struct {
         u8 type, bindless, bl_cbuf, kind; /* kind: 1 raw R32ui load/atomic; formatted: 0 float, 2 uint, 3 sint */
     } img[8];
     int nimg; /* storage images stored to or used atomically */
+    u32 img_int_mask, img_sint_mask; /* key: formatted storage images with unsigned/signed integer components */
     /* FS key: textures of integer formats and their signed ones. rt_int_mask and rt_sint_mask are FS's integer
        render targets; for TES rt_int_mask holds the tessellation parameters (register 0xC8), for GS the input
        primitive's vertex count */
     u64 tex_int_mask, tex_sint_mask;
-    u32 rt_int_mask, rt_sint_mask; /* FS/CS bits 8-15 also key storage image stores' integer and signed types */
+    u32 rt_int_mask, rt_sint_mask;
     u32 gp_skip_mask[8];           /* GS key: POST_VTG_SHADER_ATTRIB_SKIP_MASK, a bit per scalar attribute */
     /* FS key: color textures sampled with a depth compare (TEX.DC compares their first component, which a Vulkan
        compare sampler can't do on a color format): the slots, and their compare functions, 3 bits each in slot
@@ -131,6 +138,7 @@ typedef struct {
        ShTex type (0 1D, 1 2D, 2 3D, 3 cube), + 4 for an array; 0 when nothing is known yet */
     u8 tex_query_hint[SH_MAXTEX];
     u64 tex_query_mask;
+    int mixed_sample_invariant; /* proof: guest FS values and discard decisions do not depend on an invocation */
 } ShaderInfo;
 /* ShaderInfo.tex_query_hint in a graphics key's words (vk_shader_get's mask words 14 to 19: 3 bits a slot, the 64
    slots in 6 words), and back. A 1D header's hint (1) goes as none: its query is the 2D slot's, a texel high, as the
@@ -164,8 +172,9 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SNX_VKB_FMT      (SNX_VKB_RS + 1)          /* compute: the images' format classes (SNX_FMT) */
 #define SNX_VKB_SMAP     (SNX_VKB_FMT + 1)         /* graphics: storage buffer page indices for aliased bindings */
 #define SNX_VKB_IMGBUF   (SNX_VKB_SMAP + 1)        /* 8 buffer images (compute, vertex, fragment) */
-#define SNX_VKB_BLEND    SNX_VKB_IMG            /* fragment: ordered blend uses image0 when no guest image is bound */
-#define SNX_VKB_TEXARRAY (SNX_VKB_IMGBUF + 8)   /* up to SNX_TEX_ARRAY distinct indexed handles */
+#define SNX_VKB_BLEND    SNX_VKB_IMG            /* fragment: ordered blend uses IMG+nimg, after the guest images */
+#define SNX_VKB_CAPTURE  (SNX_VKB_IMGBUF + 8)   /* fragment: sparse capture tile flags and dispatch list */
+#define SNX_VKB_TEXARRAY (SNX_VKB_CAPTURE + 1)  /* up to SNX_TEX_ARRAY distinct indexed handles */
 #define SNX_VKB_TEXFUNCS (SNX_VKB_TEXARRAY + 1) /* their depth compare functions */
 #define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1) /* their depth views */
 #define SNX_VKB_TEXMAP   (SNX_VKB_TEXDEPTH + 1) /* table and element to compact descriptor index */
@@ -186,8 +195,16 @@ extern int g_shader_output_layer;
 extern int g_shader_viewport_index;
 /* the Geometry capability, for fragment programs reading Layer or PrimitiveId */
 extern int g_shader_geometry;
+extern int g_shader_geometry_streams;
+extern int g_shader_geometry_streams_lines_triangles;
 /* shaderFloat16, which fp16 texture results need. 1 offline */
 extern int g_shader_float16;
+/* shaderResourceMinLod: fragment TEX.LC uses the MinLod image operand. 1 offline. */
+extern int g_shader_resource_min_lod;
+/* maintenance8 permits a runtime Offset operand on texture samples. 0 for portable offline output. */
+extern int g_shader_dynamic_texture_offsets;
+/* Exact native half conversion: bit0 controls16, bit1 also controls64 for linked host modes. */
+extern int g_shader_half_rounding;
 /* shaderDrawParameters: a vertex program's instance ID is InstanceIndex less BaseInstance, which an indirect draw's
    arguments set on the GPU. 1 offline */
 extern int g_shader_draw_parameters;
@@ -249,6 +266,8 @@ int shader_brx_targets(const u64* words, u32 index, u32 count, u32* targets, int
 /* the program's hash, and its length in bytes in out_len */
 u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len);
 int shader_absolute_flow(const u8* code, u32 bytes);
+/* BRX reaching-definition proof inspects later incoming branches, requiring the complete code window. */
+int shader_code_full_window(const u8* code, u32 bytes);
 /* The shader corpus (shader_corpus=dir): each translated program's code and ShaderInfo, so tools/snx_shaderc.c
    can translate it again offline. A file only loads into a build with the same ShaderInfo. */
 int shader_corpus_save(const char* dir, const u8* code, u32 len, u32 max_bytes, int stage, const ShaderInfo* si,

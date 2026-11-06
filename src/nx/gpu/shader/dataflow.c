@@ -699,6 +699,160 @@ int shader_direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* v
     return 0;
 }
 
+typedef struct {
+    u32 known, value;
+} KnownBits;
+static KnownBits direct_known_bits(const u64* insn, u32 n, u32 index, u32 reg, int depth);
+/* The integer right operand's domain. Constant-buffer contents are deliberately not read: a proof about the
+   instruction word must hold for every draw sharing this module. A caller can still specialize a whole fixed word. */
+static KnownBits direct_known_right(const u64* insn, u32 n, u32 index, u64 w, int kind, int depth) {
+    if (!kind) return direct_known_bits(insn, n, index, B(w, 20, 8), depth + 1);
+    if (kind == 1) return (KnownBits){0};
+    u32 value = B(w, 20, 19);
+    return (KnownBits){~0u, B(w, 56, 1) ? value | 0xfff80000u : value};
+}
+static KnownBits direct_known_bits(const u64* insn, u32 n, u32 index, u32 reg, int depth) {
+    if (reg == 255) return (KnownBits){~0u, 0};
+    if (depth > 6 || index >= n) return (KnownBits){0};
+    int definition = direct_reaching_def(insn, n, index, reg);
+    if (definition < 0) return (KnownBits){0};
+    u32 at = (u32)definition;
+    u64 w = insn[at];
+    /* A skipped write preserves the old register. Even a matching use guard is left to the existing whole-value
+       trackers; this small domain analysis only propagates unconditional definitions proved to reach the use. */
+    if (B(w, 16, 4) != 7) return (KnownBits){0};
+    int op = decode(w)->id;
+    if (op == O_MOV32I) return (KnownBits){~0u, B(w, 20, 32)};
+    if (op == O_MOV_R) return direct_known_bits(insn, n, at, B(w, 20, 8), depth + 1);
+    u32 source = B(w, 8, 8);
+    if (op == O_LOP32I || op == O_LOP_R || op == O_LOP_C || op == O_LOP_I) {
+        KnownBits left = direct_known_bits(insn, n, at, source, depth + 1);
+        KnownBits right = op == O_LOP32I ? (KnownBits){~0u, B(w, 20, 32)}
+                                         : direct_known_right(insn, n, at, w, op - O_LOP_R, depth);
+        if (B(w, op == O_LOP32I ? 55 : 39, 1)) left.value ^= left.known;
+        if (B(w, op == O_LOP32I ? 56 : 40, 1)) right.value ^= right.known;
+        u32 mode = B(w, op == O_LOP32I ? 53 : 41, 2), ones, zeros;
+        switch (mode) {
+            case 0:
+                ones = left.value & right.value;
+                zeros = (left.known & ~left.value) | (right.known & ~right.value);
+                return (KnownBits){ones | zeros, ones};
+            case 1:
+                ones = left.value | right.value;
+                zeros = (left.known & ~left.value) & (right.known & ~right.value);
+                return (KnownBits){ones | zeros, ones};
+            case 2:
+                return (KnownBits){left.known & right.known, (left.value ^ right.value) & left.known & right.known};
+            default: return right;
+        }
+    }
+    if (op == O_SHL_R || op == O_SHL_C || op == O_SHL_I || op == O_SHR_R || op == O_SHR_C || op == O_SHR_I) {
+        int right_shift = op == O_SHR_R || op == O_SHR_C || op == O_SHR_I;
+        if ((right_shift ? B(w, 43, 2) || B(w, 40, 1) : B(w, 43, 1)) || B(w, 47, 1))
+            return (KnownBits){0};
+        KnownBits control = direct_known_right(insn, n, at, w, op - (right_shift ? O_SHR_R : O_SHL_R), depth);
+        if (control.known != ~0u) return (KnownBits){0};
+        u32 shift = control.value;
+        if (B(w, 39, 1)) shift &= 31;
+        else if (shift >= 32) {
+            if (!right_shift || !B(w, 48, 1)) return (KnownBits){~0u, 0};
+            shift = 31;
+        }
+        KnownBits input = direct_known_bits(insn, n, at, source, depth + 1);
+        if (!shift) return input;
+        if (!right_shift)
+            return (KnownBits){input.known << shift | ((1u << shift) - 1), input.value << shift};
+        u32 high = ~0u << (32 - shift), known = input.known >> shift, value = input.value >> shift;
+        if (!B(w, 48, 1)) known |= high;
+        else if (input.known & 0x80000000u) {
+            known |= high;
+            if (input.value & 0x80000000u) value |= high;
+        }
+        return (KnownBits){known, value};
+    }
+    if (op == O_BFE_R || op == O_BFE_C || op == O_BFE_I) {
+        if (B(w, 40, 1)) return (KnownBits){0}; /* reversed source */
+        KnownBits control = direct_known_right(insn, n, at, w, op - O_BFE_R, depth);
+        if ((control.known & 0xffffu) != 0xffffu) return (KnownBits){0};
+        u32 offset = control.value & 255, width = control.value >> 8 & 255;
+        int sign = B(w, 48, 1);
+        if (!sign && offset >= 32) return (KnownBits){~0u, 0};
+        if (offset > 31) offset = 31;
+        if (width > 32 - offset) width = 32 - offset;
+        if (!width) return (KnownBits){~0u, 0};
+        KnownBits input = direct_known_bits(insn, n, at, source, depth + 1);
+        u32 low = width == 32 ? ~0u : (1u << width) - 1;
+        u32 known = (input.known >> offset) & low, value = (input.value >> offset) & low;
+        if (!sign) known |= ~low;
+        else if (known & (1u << (width - 1))) {
+            known |= ~low;
+            if (value & (1u << (width - 1))) value |= ~low;
+        }
+        return (KnownBits){known, value};
+    }
+    if (op == O_BFI_R || op == O_BFI_I) {
+        KnownBits control = direct_known_right(insn, n, at, w, op == O_BFI_R ? 0 : 2, depth);
+        if ((control.known & 0xffffu) != 0xffffu) return (KnownBits){0};
+        KnownBits base = direct_known_bits(insn, n, at, B(w, 39, 8), depth + 1);
+        u32 offset = control.value & 255, width = control.value >> 8 & 255;
+        if (offset >= 32 || !width) return base;
+        if (width > 32 - offset) width = 32 - offset;
+        KnownBits input = direct_known_bits(insn, n, at, source, depth + 1);
+        u32 field = (width == 32 ? ~0u : (1u << width) - 1) << offset;
+        return (KnownBits){(base.known & ~field) | (input.known << offset & field),
+                            (base.value & ~field) | (input.value << offset & field)};
+    }
+    return (KnownBits){0};
+}
+int shader_direct_track_known_bits(const u64* insn, u32 n, u32 index, u32 reg, u32* known, u32* value, int depth) {
+    KnownBits bits = direct_known_bits(insn, n, index, reg, depth);
+    *known = bits.known;
+    *value = bits.value & bits.known;
+    return bits.known != 0;
+}
+
+/* A fixed constant-buffer word, for TXD's uniform offset specialization. Unlike the descriptor tracker below,
+   LDC must have a proven address: a varying table index cannot select a translation-time texture offset. */
+int shader_direct_track_cbuf_word(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, int depth) {
+    int j = depth > 6 ? -1 : direct_reaching_def(insn, n, index, reg);
+    if (j < 0 && depth <= 6 && reg && reg < 255) {
+        /* The general tracker accepts only an instruction's first destination. For LDC.B64's high word, prove
+           that its low-word definition dominates this use and that nothing has overwritten the high word. */
+        int low = direct_reaching_def(insn, n, index, reg - 1);
+        if (low >= 0 && decode(insn[low])->id == O_LDC && B(insn[low], 48, 3) == 5) {
+            int unchanged = 1;
+            for (u32 at = (u32)low + 1; at < index; at++) {
+                if (!IDX_OK(at)) continue;
+                const Op* op = decode(insn[at]);
+                if (!op || shader_writes_reg(insn[at], op->id, reg)) unchanged = 0;
+            }
+            if (unchanged) j = low;
+        }
+    }
+    if (j < 0) return 0;
+    u64 w = insn[j];
+    int op = decode(w)->id;
+    if (op == O_MOV_C) {
+        *bank = B(w, 34, 5);
+        *off = B(w, 20, 14);
+        return *bank < 18;
+    }
+    if (op == O_MOV_R) return shader_direct_track_cbuf_word(insn, n, (u32)j, B(w, 20, 8), bank, off, depth + 1);
+    if (op != O_LDC || B(w, 48, 3) < 4 || B(w, 48, 3) > 5) return 0;
+    u32 source = 0, address_reg = B(w, 8, 8);
+    if (address_reg != 255 && !shader_direct_track_const(insn, n, (u32)j, address_reg, &source, depth + 1)) return 0;
+    *bank = B(w, 36, 5);
+    if (B(w, 44, 1)) {
+        *bank += source >> 16;
+        source &= 0xffff;
+    }
+    u32 address = source + (u32)(i32)(i16)B(w, 20, 16);
+    if (B(w, 48, 3) == 5 && reg != B(w, 0, 8)) address += 4;
+    if (*bank >= 18 || address > 65532 || (address & 3)) return 0;
+    *off = address / 4;
+    return 1;
+}
+
 /* Resolve a register supplied image handle to the constant buffer word read in this basic block. */
 int shader_direct_track_image_handle(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, int depth) {
     int j = depth > 6 ? -1 : direct_reaching_def(insn, n, index, reg);
@@ -715,6 +869,12 @@ int shader_direct_track_image_handle(const u64* insn, u32 n, u32 index, u32 reg,
     if (op == O_LDC && B(w, 48, 3) >= 4 && B(w, 48, 3) <= 5) {
         i32 byte_off = (i16)B(w, 20, 16);
         *bank = B(w, 36, 5);
+        if (B(w, 44, 1)) {
+            u32 source;
+            if (!shader_direct_track_const(insn, n, (u32)j, B(w, 8, 8), &source, depth + 1)) return 0;
+            *bank += source >> 16;
+            byte_off += (i32)(source & 0xffff);
+        }
         *off = (u32)byte_off / 4;
         /* Keep the legacy first-descriptor behavior for indexed handles.
            Runtime descriptor selection for arbitrary indices needs a separate path. */
@@ -741,6 +901,12 @@ static int direct_handle_definition(const u64* insn, u32 n, u32 j, u32* bank, u3
     if (op == O_LDC && B(w, 48, 3) >= 4 && B(w, 48, 3) <= 5) {
         i32 byte_off = (i16)B(w, 20, 16);
         *bank = B(w, 36, 5);
+        if (B(w, 44, 1)) {
+            u32 source;
+            if (!shader_direct_track_const(insn, n, j, B(w, 8, 8), &source, depth + 1)) return 0;
+            *bank += source >> 16;
+            byte_off += (i32)(source & 0xffff);
+        }
         *off = (u32)byte_off / 4;
         return *bank < 18 && byte_off >= 0 && !(byte_off & 3);
     }
@@ -951,7 +1117,7 @@ u32 shader_direct_indexed_handle(const u64* insn, u32 n, u32 index, u32 reg, int
         index = (u32)j;
         reg = B(w, 20, 8);
     }
-    if (depth == 6 || op != O_LDC || B(w, 8, 8) == 255 || B(w, 48, 3) != 4) return 0;
+    if (depth == 6 || op != O_LDC || B(w, 8, 8) == 255 || B(w, 48, 3) != 4 || B(w, 44, 1)) return 0;
     k = direct_reaching_def(insn, n, (u32)j, B(w, 8, 8));
     if (k >= 0 && decode(insn[k])->id == O_SHL_I && B(insn[k], 20, 5) >= 2 && B(insn[k], 20, 5) <= 15)
         shift = B(insn[k], 20, 5);

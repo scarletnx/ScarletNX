@@ -679,9 +679,12 @@ static u64 area_end(const NvnCmdBuf* o) {
 static int count(CPU* c, u64 cb, u32 cost) {
     NvnCmdBuf* o = CB(cb);
     if (o->used + cost > o->game_end - o->origin && o->callback) {
-        LOG_LIMIT(4, "nvn: command buffer %llx is out of command memory: the game's callback %llx adds more\n",
-                  (unsigned long long)cb, (unsigned long long)o->callback);
-        guest_call(c, o->callback, cb, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY, cost, o->callback_data);
+        const NvnCtl* control = ctl_of(cb);
+        if (!control || control->command_callback) {
+            LOG_LIMIT(4, "nvn: command buffer %llx is out of command memory: the game's callback %llx adds more\n",
+                      (unsigned long long)cb, (unsigned long long)o->callback);
+            guest_call(c, o->callback, cb, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY, cost, o->callback_data);
+        }
     }
     if (o->used + cost > o->game_end - o->origin) return 0;
     o->used += cost;
@@ -745,6 +748,7 @@ int nvn_CommandBufferInitialize(CPU* c, u64 cb, u64 d) {
     g_nvn.cmd.ctl[k] = (NvnCtl){0};
     g_nvn.cmd.ctl[k].cb = cb;
     g_nvn.cmd.ctl[k].grow = 1;
+    g_nvn.cmd.ctl[k].command_callback = 1;
     o->ctl = k + 1;
     pm_unlock(&g_nvn.cmd.lock);
     return 1;
@@ -762,11 +766,11 @@ int nvn_CommandBufferIsRecording(CPU* c, u64 cb) {
     (void)c;
     return CB(cb)->recording != 0;
 }
-/* the driver's switch for its memory callback: the runtime calls it whenever command memory runs out */
+/* The two memory callback switches are independent and enabled when the command buffer is initialized. */
 void nvn_CommandBufferSetCommandMemoryCallbackEnabled(CPU* c, u64 cb, int on) {
+    NvnCtl* control = ctl_of(cb);
     (void)c;
-    (void)cb;
-    (void)on;
+    if (control) control->command_callback = on != 0;
 }
 void nvn_CommandBufferSetMemoryCallback(CPU* c, u64 cb, u64 fn) {
     (void)c;
@@ -1360,8 +1364,6 @@ void nvn_CommandBufferSetConservativeRasterDilate(CPU* c, u64 cb, f32 dilate) {
    - color reduction (SET_REDUCE_COLOR_THRESHOLDS_ENABLE, 0x367, and the thresholds of each format class): the ROP's
      shortcut that skips blending where the source alpha is past a threshold, which may change a pixel by little. The
      renderer blends exactly, as with it off;
-   - the subpixel precision bias (NV_conservative_raster's), the rasterizer's extra bits of subpixel precision, which
-     Vulkan has no counterpart of;
    - ZCull's compression of 32-bit float depth, and the tiled cache's subtile size: the renderer has neither;
    - ResolveDepthBuffer, the game's driver's DECOMPRESS_ZETA_SURFACE (0x47F): it writes a compressed depth buffer's
      plane equations out as values, which a depth texture read then sees. The renderer's depth images hold their
@@ -1380,10 +1382,11 @@ void nvn_CommandBufferSetColorReductionThresholds(CPU* c, u64 cb, i32 format_cla
     (void)aggressive;
 }
 void nvn_CommandBufferSetSubpixelPrecisionBias(CPU* c, u64 cb, i32 x, i32 y) {
-    (void)c;
-    (void)cb;
-    (void)x;
-    (void)y;
+    if ((u32)x > 8 || (u32)y > 8) return;
+    NvnPConservative* r = REC(c, cb, OP_CONSERVATIVE, NvnPConservative, 128);
+    r->which = 2;
+    r->on = x;
+    r->dilate = y;
 }
 void nvn_CommandBufferSetZCullZF32CompressionEnable(CPU* c, u64 cb, int on) {
     (void)c;
@@ -1444,13 +1447,13 @@ void nvn_CommandBufferSetProgramSubroutines(CPU* c, u64 cb, u64 program, i32 sta
 }
 
 void nvn_CommandBufferDiscardColor(CPU* c, u64 cb, i32 index) {
-    (void)c;
-    (void)cb;
-    (void)index;
+    if (index < 0 || index >= DS_TARGETS_MAX) return;
+    NvnPDiscard* r = REC(c, cb, OP_DISCARD, NvnPDiscard, COST_RECORD);
+    *r = (NvnPDiscard){1u << (u32)index, 0};
 }
 void nvn_CommandBufferDiscardDepthStencil(CPU* c, u64 cb) {
-    (void)c;
-    (void)cb;
+    NvnPDiscard* r = REC(c, cb, OP_DISCARD, NvnPDiscard, COST_RECORD);
+    *r = (NvnPDiscard){1u << 8, 0};
 }
 /* ZCull's stencil criteria: what the hardware's coarse culling may assume of the stencil test, which only speeds it
    up. The renderer has no ZCull, so the draws' tests give the same pixels without it */
@@ -1474,6 +1477,7 @@ void nvn_CommandBufferRestoreZCullData(CPU* c, u64 cb, u64 address, u64 size) {
     (void)size;
 }
 void nvn_CommandBufferSetPatchSize(CPU* c, u64 cb, i32 size) {
+    if (size <= 0 || size > 32) return;
     i32* r = REC(c, cb, OP_PATCH_SIZE, i32, 4);
     *r = size;
 }

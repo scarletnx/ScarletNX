@@ -100,8 +100,9 @@ static GpuChannel* bufkeep_channel(u64 address) {
         memcpy(&word, position + i, 4);
         snx_st_le32(bytes + 4 * i, word);
     }
+    /* The fragment stage declares no inputs or color outputs: it only stores through a constant-buffer address. */
     if (gmem_write(positions, bytes, sizeof bytes) || !mesh_program(address, vertex, 3, 0) ||
-        !mesh_program(address + 0x1000, store, 5, 1)) {
+        !mesh_program(address + 0x1000, store, 5, 0)) {
         free(channel);
         return NULL;
     }
