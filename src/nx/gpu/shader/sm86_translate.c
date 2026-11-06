@@ -1909,6 +1909,15 @@ static u32 system_value(Ctx* c, u32 sr) {
         default: fail(c, "S2R system register 0x%x", sr); return c->zero;
     }
 }
+/* A system register as a program reads it. A warp has 32 lanes, so its LANEID is below 32, and a program compares it
+   with a bit of its ballots. A GPU may run 64 lanes in a stage whose subgroup size can't be asked for (a vertex program
+   on RADV), each half a warp of its own here: its lane in that half. One game's culling programs let the highest lane
+   of a ballot add to a counter: the upper half's never matched, so no count, and their instances went over the first
+   slots of the list. Whole objects came and went, or jumped to where another's should be */
+static u32 program_sr(Ctx* c, u32 sr) {
+    u32 v = system_value(c, sr);
+    return sr == 0 ? spv_emit_bitwise_and_u32(&c->e, c->t_u32, v, cu(c, 31)) : v;
+}
 /* for (i = start; i < end; i += step) in a structured loop, i in the Function variable counter: loop_begin gives i in
    the loop's body, and loop_end closes it with the labels it set */
 typedef struct {
@@ -2607,7 +2616,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             if (sm86_field(in, 80, 1) && in->dst < SM86_RZ) wr(c, in->dst + 1, c->zero);
             return;
         }
-        case SM86_S2R: wr(c, in->dst, system_value(c, sm86_field(in, 72, 8))); return;
+        case SM86_S2R: wr(c, in->dst, program_sr(c, sm86_field(in, 72, 8))); return;
         case SM86_SHFL_II:
         case SM86_SHFL_RI:
         case SM86_SHFL_IR:
@@ -2751,7 +2760,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             return;
         case SM86_UMOV: uwr(c, in->dst, src_bits(c, &in->b)); return;
         case SM86_ERRBAR: return;
-        case SM86_S2UR: uwr(c, sm86_field(in, 16, 6), system_value(c, sm86_field(in, 72, 8))); return;
+        case SM86_S2UR: uwr(c, sm86_field(in, 16, 6), program_sr(c, sm86_field(in, 72, 8))); return;
         case SM86_IMAD_WIDE:
         case SM86_UIMAD_WIDE: {
             /* NAK's OpIMad64: a * b (bit 73 signed) + the pair at c, into the pair at the destination */
