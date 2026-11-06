@@ -677,6 +677,10 @@ static int create_device(void) {
     }
     g_shader_geometry_streams_lines_triangles = g_vk.geometry_streams_lines_triangles;
     g_vk.has_sample_interlock = g_vk.has_fragment_interlock && qinterlock.fragmentShaderSampleInterlock;
+    /* without the extension (MoltenVK) a capture's vertex program stores its words itself, which vertex stores allow */
+    g_shader_xfb_stores = !g_vk.has_xfb && want->vertexPipelineStoresAndAtomics;
+    if (g_shader_xfb_stores)
+        LOG("vulkan: no VK_EXT_transform_feedback: vertex programs store what transform feedback captures\n");
     g_vk.has_fragment_interlock = g_vk.has_fragment_interlock && qinterlock.fragmentShaderPixelInterlock;
     if (g_vk.advanced_blend_caps.available) {
         VkPhysicalDeviceBlendOperationAdvancedPropertiesEXT advanced = {

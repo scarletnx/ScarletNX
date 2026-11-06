@@ -118,14 +118,62 @@ void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_p
     spv_emit_label(&c->emit, merge);
 }
 
-/* Transform feedback: each captured output's private vec4 (ShaderInfo.xfb) copied into its component outputs, the
-   variables that carry the capture's offsets, before the program ends or emits a vertex */
-void shader_xfb_store(DirectCtx* c, u32 vec4, const u32* output_attrs, const u8* attr_private, u32 (*components)[4]) {
+/* a captured word's bits (ShXfb.layout), 0 for one with no output (left as it is, as the extension does) */
+static u32 xfb_word(DirectCtx* c, const XfbOut* x, u32 word) {
+    u32 var = 0, component = word & 3;
+    if (shader_legacy_group(word * 4) >= 0) word = shader_legacy_address(word * 4) / 4; /* where it moved */
+    if (word >= 28 && word < 32 && x->position_used)
+        var = x->position;
+    else if (word >= 32 && word < 160 && x->outputs_used[(word - 32) >> 2])
+        var = x->output_attrs[(word - 32) >> 2];
+    if (!var) return 0;
+    u32 value = spv_emit_vec4_extract(&c->emit, c->f32_type, spv_emit_load(&c->emit, x->vec4, var), component);
+    return spv_emit_bitcast(&c->emit, c->u32_type, value);
+}
+
+/* Transform feedback by stores: a vertex's place is VertexIndex - first + (InstanceIndex - first instance) * the
+   vertices an instance captures, and below the draw's count each layout word goes to place * stride / 4 + its index */
+static void xfb_write(DirectCtx* c, const XfbOut* x) {
+    SpvEmitter* e = &c->emit;
+    u32 u = c->u32_type, p[4];
+    for (u32 i = 0; i < 4; i++)
+        p[i] = spv_emit_load(
+            e, u, spv_emit_storage_access_u32(e, x->pointer, x->params, c->zero, spv_emit_constant_u32(e, u, i)));
+    u32 vertex = spv_emit_isub_u32(e, u, spv_emit_load(e, u, x->vertex_index), p[0]);
+    u32 instance = spv_emit_isub_u32(e, u, spv_emit_load(e, u, x->instance_index), p[1]);
+    u32 place = spv_emit_iadd_u32(e, u, vertex, spv_emit_imul_u32(e, u, instance, p[2]));
+    u32 in = spv_emit_bool_binary(e, c->bool_type, 0, spv_emit_u_less(e, c->bool_type, vertex, p[2]), /* and */
+                                  spv_emit_u_less(e, c->bool_type, place, p[3]));
+    u32 yes = spv_emit_id(e), done = spv_emit_id(e);
+    spv_emit_selection_merge(e, done);
+    spv_emit_branch_conditional(e, in, yes, done);
+    spv_emit_label(e, yes);
+    for (u32 b = 0; b < 4; b++) {
+        if (!x->buffer[b]) continue;
+        u32 base = spv_emit_imul_u32(e, u, place, spv_emit_constant_u32(e, u, x->key->stride[b] / 4u));
+        for (u32 w = 0; w < x->key->count[b] && w < 128; w++) {
+            u32 value = xfb_word(c, x, x->key->layout[b][w]);
+            if (!value) continue;
+            u32 at = spv_emit_iadd_u32(e, u, base, spv_emit_constant_u32(e, u, w));
+            spv_emit_store(e, spv_emit_storage_access_u32(e, x->pointer, x->buffer[b], c->zero, at), value);
+        }
+    }
+    spv_emit_branch(e, done);
+    spv_emit_label(e, done);
+}
+
+/* Transform feedback at an exit or emitted vertex: the stores, or each captured output's private vec4 copied into
+   its component outputs, the variables that carry the extension's offsets */
+void shader_xfb_store(DirectCtx* c, const XfbOut* x) {
+    if (x->stores) {
+        xfb_write(c, x);
+        return;
+    }
     for (u32 i = 0; i < 32; i++) {
-        if (!attr_private[i]) continue;
-        u32 value = spv_emit_load(&c->emit, vec4, output_attrs[i]);
+        if (!x->attr_private[i]) continue;
+        u32 value = spv_emit_load(&c->emit, x->vec4, x->output_attrs[i]);
         for (u32 k = 0; k < 4; k++)
-            spv_emit_store(&c->emit, components[i][k], spv_emit_vec4_extract(&c->emit, c->f32_type, value, k));
+            spv_emit_store(&c->emit, x->components[i][k], spv_emit_vec4_extract(&c->emit, c->f32_type, value, k));
     }
 }
 
@@ -210,7 +258,6 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     u32 layer_input = t->layer_input;
     u32 viewport_output = t->viewport_output;
     u8* attr_private = t->attr_private;
-    u32(*xfb_components)[4] = t->xfb_components;
     int xfb_on = t->xfb_on;
     u32 clip_output = t->clip_output;
     u32 position_in = t->position_in;
@@ -420,7 +467,7 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 if (!target) {
                     if (position_fix) shader_vertex_position_fix(c, position, push, push_pointer, vec4);
                     spv_emit_store(&c->emit, primitive_id_out, spv_emit_load(&c->emit, c->u32_type, primitive_id));
-                    if (xfb_on) shader_xfb_store(c, vec4, output_attrs, attr_private, xfb_components);
+                    if (xfb_on) shader_xfb_store(c, t->xfb_out);
                 } else {
                     for (u32 buffer = 0; buffer < 4; buffer++) {
                         if (t->si->xfb.stream[buffer] != target) continue;
