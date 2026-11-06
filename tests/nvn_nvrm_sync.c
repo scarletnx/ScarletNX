@@ -36,6 +36,15 @@ int gmem_write(u64 address, const void* data, u64 size) {
     abort();
 }
 void gpu_kick(void) { abort(); }
+/* native memory pools (nvn_object.c's): none here */
+int gsv_native_memory_cpu(u32 memory, u64* cpu, u64* size) {
+    (void)memory, (void)cpu, (void)size;
+    return 0;
+}
+u32 native_video_memory_pitch(u32 memory) {
+    (void)memory;
+    return 0;
+}
 
 /* ---- the driver stub: what it was called with, the sync it saw, and what it answers */
 static struct {
