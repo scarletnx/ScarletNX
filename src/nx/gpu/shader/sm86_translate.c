@@ -18,6 +18,11 @@
 
 #define MAX_INTERFACES 256
 
+/* What prepare_handles found, by instruction. A TEX.B: its slot + 1, and for an indexed handle its LDC + 1. That LDC:
+   the variable that keeps the element it picks, the table's first byte, the bytes between its elements */
+typedef struct {
+    u32 slot, ldc, var, first, stride;
+} TexHandle;
 typedef struct {
     SpvEmitter e;
     ShaderInfo* si;
@@ -45,6 +50,11 @@ typedef struct {
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
     u32 point_coord, front_facing;
     u32 tex[SH_MAXTEX], tex_sampled[SH_MAXTEX];
+    /* an indexed slot's arrays on SNX_VKB_TEXARRAY and SNX_VKB_TEXDEPTH, by kind (its tex[] is the element of the
+       instruction being written), and SNX_VKB_TEXMAP and SNX_VKB_TEXFUNCS */
+    u32 tex_array[SH_MAXTEX], tex_depth[SH_MAXTEX], tex_depth_type[SH_MAXTEX];
+    u32 tex_map, tex_map_ptr, tex_func, tex_func_ptr;
+    TexHandle* handle; /* by instruction, what prepare_handles found: NULL for a program without TEX.B */
     u32 img[8], img_type[8];
     u32 interfaces[MAX_INTERFACES], ninterfaces;
     /* the uniform register pair a ULDC.64 last loaded from a constant buffer: (bank << 16 | offset) + 1, 0 for none */
@@ -1190,6 +1200,14 @@ static int may_write(const Sm86Insn* in, u32 r) {
         default: return in->dst < SM86_RZ && r >= in->dst && r < in->dst + 2u;
     }
 }
+/* the instructions before k on each path, walked back: k - 1 when it goes on to k, and the jumps to k */
+#define FLOW_PREDS(k)                                                                                                  \
+    do {                                                                                                               \
+        if ((k) == 0) ok = 0; /* the program's start: r is not written on this path */                                 \
+        if ((k) > 0 && falls_through(&c->in[(k) - 1]) && !seen[(k) - 1]) seen[(k) - 1] = 1, stack[top++] = (k) - 1;    \
+        for (u32 j = c->jump_first[k]; j < c->jump_first[(k) + 1]; j++)                                                \
+            if (!seen[c->jump_from[j]]) seen[c->jump_from[j]] = 1, stack[top++] = c->jump_from[j];                     \
+    } while (0)
 /* Whether register r holds one constant at instruction i on every path there: the immediate that an unpredicated
    MOV wrote last on each, with no instruction that may write r after it. 0 when that can't be shown (another
    writer, a guard, a path from the program's start, or a jump the flow can't name) */
@@ -1202,20 +1220,12 @@ static int reg_const_at(Ctx* c, u32 i, u32 r, u32* value) {
     u32 n = c->n, *stack = malloc(((size_t)n + 1) * sizeof *stack), top = 0, found = 0, v = 0;
     u8* seen = calloc((size_t)n + 1, 1);
     int ok = stack && seen;
-    /* the instructions before i on each path, walked back from i: k - 1 when it goes on to k, and the jumps to k */
-#define PREDS(k)                                                                                                       \
-    do {                                                                                                               \
-        if ((k) == 0) ok = 0; /* the program's start: r is not written on this path */                               \
-        if ((k) > 0 && falls_through(&c->in[(k) - 1]) && !seen[(k) - 1]) seen[(k) - 1] = 1, stack[top++] = (k) - 1;  \
-        for (u32 j = c->jump_first[k]; j < c->jump_first[(k) + 1]; j++)                                              \
-            if (!seen[c->jump_from[j]]) seen[c->jump_from[j]] = 1, stack[top++] = c->jump_from[j];                   \
-    } while (0)
-    if (ok) PREDS(i);
+    if (ok) FLOW_PREDS(i);
     while (ok && top) {
         u32 k = stack[--top];
         const Sm86Insn* in = &c->in[k];
         if (!may_write(in, r)) {
-            PREDS(k);
+            FLOW_PREDS(k);
             continue;
         }
         if (in->op != SM86_MOV || in->dst != r || in->b.kind != SM86_SRC_IMM || in->pred != SM86_PT || in->pred_not ||
@@ -1226,13 +1236,53 @@ static int reg_const_at(Ctx* c, u32 i, u32 r, u32* value) {
         v = in->b.value;
         found = 1;
     }
-#undef PREDS
     free(stack);
     free(seen);
     if (!ok || !found) return 0;
     *value = v;
     return 1;
 }
+/* may_write, of the words an instruction really writes where its type tells: an ALU's result is one but for those of
+   64 bits, and an LDC's as its size says */
+static int writes_word(const Sm86Insn* in, u32 r) {
+    if (!may_write(in, r)) return 0;
+    if (in->op == SM86_LDC) return r < in->dst + (sm86_field(in, 73, 3) == 5 ? 2u : 1u);
+    if (sm86_ops[in->op].kind != SM86_K_ALU) return 1;
+    switch (in->op) {
+        case SM86_DADD:
+        case SM86_DMUL:
+        case SM86_DFMA:
+        case SM86_F2F64:
+        case SM86_F2I64:
+        case SM86_I2F64:
+        case SM86_FRND64:
+        case SM86_IMAD_WIDE: return 1;
+        default: return r == in->dst;
+    }
+}
+/* The one instruction whose write of register r reaches instruction i on every path there, without a guard, the word
+   its destination field names. -1 when that can't be shown */
+static int reaching_write(Ctx* c, u32 i, u32 r) {
+    if (r >= SM86_RZ || !flow_sources(c)) return -1;
+    u32 n = c->n, *stack = malloc(((size_t)n + 1) * sizeof *stack), top = 0;
+    u8* seen = calloc((size_t)n + 1, 1);
+    int ok = stack && seen, found = -1;
+    if (ok) FLOW_PREDS(i);
+    while (ok && top) {
+        u32 k = stack[--top];
+        const Sm86Insn* in = &c->in[k];
+        if (!writes_word(in, r)) {
+            FLOW_PREDS(k);
+            continue;
+        }
+        if (in->dst != r || in->pred != SM86_PT || in->pred_not || (found >= 0 && (u32)found != k)) ok = 0;
+        found = (int)k;
+    }
+    free(stack);
+    free(seen);
+    return ok ? found : -1;
+}
+#undef FLOW_PREDS
 /* a packed texel offset's component k, bits signed bits from k * bits: a constant, or read from x */
 static u32 offset_part(Ctx* c, int known, u32 value, u32 x, u32 k, u32 bits) {
     if (known) {
@@ -1261,7 +1311,7 @@ static int tex_slot(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 shadow, 
     for (int i = 0; i < si->ntex; i++) {
         const ShTex* t = &si->tex[i];
         if (t->bl_cbuf == bank && t->cbuf_off == off / 4 && t->type == type && t->array == array &&
-            t->shadow == shadow && !!(t->flags & 2) == !!ms)
+            t->shadow == shadow && !!(t->flags & 2) == !!ms && !(t->flags & SNX_TEX_INDEXED))
             return i;
     }
     if (si->ntex >= SH_MAXTEX) {
@@ -1283,6 +1333,118 @@ static int tex_slot(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 shadow, 
                                        type == 0 ? 1 : type, (int)array, (int)shadow, ms ? 1 : 0, &c->tex_sampled[i]);
     add_interface(c, c->tex[i]);
     return i;
+}
+/* The slot of a table of handles (SNX_TEX_INDEXED): count of them from byte off of a bank, stride bytes apart. Slots
+   of a kind share its arrays, and the map from a table's element to the arrays' is the renderer's (tex_tables_set),
+   as spirv_translate.c declares them for Maxwell's */
+static int tex_slot_indexed(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 shadow, u32 stride, u32 count) {
+    ShaderInfo* si = c->si;
+    for (int i = 0; i < si->ntex; i++) {
+        const ShTex* t = &si->tex[i];
+        if ((t->flags & SNX_TEX_INDEXED) && t->bl_cbuf == bank && t->cbuf_off == off / 4 && t->type == type &&
+            t->array == array && t->shadow == shadow && t->stride == stride && t->count == count)
+            return i;
+    }
+    if (si->ntex >= SH_MAXTEX) {
+        fail(c, "more than %d textures", SH_MAXTEX);
+        return -1;
+    }
+    int i = si->ntex++;
+    ShTex t = {0};
+    t.cbuf_off = off / 4;
+    t.type = (u8)type;
+    t.array = (u8)array;
+    t.shadow = (u8)shadow;
+    t.bindless = 1;
+    t.bl_cbuf = (u8)bank;
+    t.flags = SNX_TEX_INDEXED;
+    t.stride = (u16)stride;
+    t.count = (u16)count;
+    si->tex[i] = t;
+    u32 set = (u32)shader_vk_set(c->stage), dim = type == 0 ? 1 : type;
+    int same = 0;
+    while (same < i && !((si->tex[same].flags & SNX_TEX_INDEXED) &&
+                         shader_same_indexed_kind(si->tex, si->tex_int_mask, si->tex_sint_mask, same, i)))
+        same++;
+    if (same < i) {
+        c->tex_array[i] = c->tex_array[same];
+        c->tex_sampled[i] = c->tex_sampled[same];
+        c->tex_depth[i] = c->tex_depth[same];
+        c->tex_depth_type[i] = c->tex_depth_type[same];
+    } else {
+        c->tex_array[i] = spv_emit_sampler_image_array(&c->e, c->t_f32, c->t_u32, set, SNX_VKB_TEXARRAY, dim,
+                                                       (int)array, 0, SNX_TEX_ARRAY, &c->tex_sampled[i]);
+        add_interface(c, c->tex_array[i]);
+        if (shadow) {
+            c->tex_depth[i] = spv_emit_sampler_image_array(&c->e, c->t_f32, c->t_u32, set, SNX_VKB_TEXDEPTH, dim,
+                                                           (int)array, 1, SNX_TEX_ARRAY, &c->tex_depth_type[i]);
+            add_interface(c, c->tex_depth[i]);
+        }
+    }
+    if (shadow && !c->tex_func) {
+        c->tex_func = spv_emit_uniform_vec4_array(&c->e, c->t_v4u, c->t_u32, c->t_u32, set, SNX_VKB_TEXFUNCS,
+                                                  SNX_TEX_ARRAY / 4, &c->tex_func_ptr);
+        add_interface(c, c->tex_func);
+    }
+    if (!c->tex_map) {
+        c->tex_map = spv_emit_uniform_vec4_array(&c->e, c->t_v4u, c->t_u32, c->t_u32, set, SNX_VKB_TEXMAP,
+                                                 SH_INDEXED_TABLES * SNX_TEX_ARRAY / 4, &c->tex_map_ptr);
+        add_interface(c, c->tex_map);
+    }
+    return i;
+}
+/* a slot's table: the first slot of each table in their order, as the renderer numbers them (stage_set_) */
+static u32 indexed_table(const ShaderInfo* si, int slot) {
+    u32 table = 0;
+    for (int i = 0; i <= slot; i++) {
+        int seen = !(si->tex[i].flags & SNX_TEX_INDEXED);
+        for (int j = 0; j < i && !seen; j++)
+            seen = (si->tex[j].flags & SNX_TEX_INDEXED) && shader_same_indexed_table(&si->tex[j], &si->tex[i]);
+        if (seen) continue;
+        if (shader_same_indexed_table(&si->tex[i], &si->tex[slot])) return table;
+        table++;
+    }
+    return table;
+}
+/* the word at an index of a uniform array of vec4s */
+static u32 uniform_word(Ctx* c, u32 pointer, u32 buffer, u32 index) {
+    return spv_emit_uniform_component(&c->e, pointer, buffer, c->zero,
+                                      spv_emit_shift_right_u32(&c->e, c->t_u32, index, cu(c, 2)),
+                                      spv_emit_bitwise_and_u32(&c->e, c->t_u32, index, cu(c, 3)), c->t_u32);
+}
+/* For this instruction, an indexed slot's tex[] is the element its LDC chose, clamped to the array, as
+   shader_direct_swap_element does. Returns the array's element */
+static u32 indexed_element(Ctx* c, int slot, u32 var) {
+    u32 limit = cu(c, SNX_TEX_ARRAY - 1), index = spv_emit_load(&c->e, c->t_u32, var);
+    index = spv_emit_select(&c->e, c->t_u32, spv_emit_u_less(&c->e, c->t_bool, limit, index), limit, index);
+    index = spv_emit_iadd_u32(&c->e, c->t_u32, index, cu(c, indexed_table(c->si, slot) * SNX_TEX_ARRAY));
+    u32 element = uniform_word(c, c->tex_map_ptr, c->tex_map, index);
+    c->tex[slot] = spv_emit_sampler_array_element(&c->e, c->tex_sampled[slot], c->tex_array[slot], element);
+    return element;
+}
+/* A depth compare of an indexed texture, whose element may be a depth texture or a color one: both are sampled, the
+   color's first component compared here with the element's function, and SNX_VKB_TEXFUNCS says which holds. As
+   shader_dc_compare_indexed does */
+static u32 sample_indexed_shadow(Ctx* c, int slot, u32 element, u32 coord, u32 dref, u32 mode, u32 level, u32 offset) {
+    static const u32 condition[8] = {0, 1, 2, 3, 4, 5, 6, 15}; /* spv_emit_fcompare's codes for NEVER..ALWAYS */
+    u32 color = spv_emit_vec4_extract(
+        &c->e, c->t_f32,
+        spv_emit_sample_image(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, 0, mode, level, offset, 0),
+        0);
+    u32 meta = uniform_word(c, c->tex_func_ptr, c->tex_func, element);
+    u32 func = spv_emit_bitwise_and_u32(&c->e, c->t_u32, meta, cu(c, 7)), one = cf(c, 1.0f), none = cf(c, 0.0f);
+    u32 result = none;
+    for (u32 i = 0; i < 8; i++) {
+        u32 pass =
+            spv_emit_select(&c->e, c->t_f32, spv_emit_fcompare(&c->e, c->t_bool, condition[i], dref, color), one, none);
+        result = spv_emit_select(&c->e, c->t_f32, spv_emit_i_equal(&c->e, c->t_bool, func, cu(c, i)), pass, result);
+    }
+    u32 view = spv_emit_sampler_array_element(&c->e, c->tex_depth_type[slot], c->tex_depth[slot], element);
+    u32 depth =
+        spv_emit_sample_image(&c->e, c->t_f32, c->tex_depth_type[slot], view, coord, dref, mode, level, offset, 0);
+    u32 is_depth =
+        spv_emit_i_equal(&c->e, c->t_bool, spv_emit_bitwise_and_u32(&c->e, c->t_u32, meta, cu(c, 8)), cu(c, 8));
+    return spv_emit_select(&c->e, c->t_f32, is_depth, depth, result);
 }
 /* NAK's TexDim (bits 61-63): ShTex's type (0 1D, 1 2D, 2 3D, 3 cube), array, and the coordinates */
 static int tex_dim(u32 dim, u32* type, u32* array, u32* coords) {
@@ -1345,7 +1507,7 @@ static u32 coord_vector(Ctx* c, const u32* f, u32 count) {
     return spv_emit_vec4_construct(&c->e, c->t_v4f, f);
 }
 static void texture(Ctx* c, const Sm86Insn* in) {
-    int op = in->op;
+    int bindless = in->op == SM86_TEX_B, op = bindless ? SM86_TEX : in->op;
     u32 type, array, coords;
     if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) {
         fail(c, "%s dimension 6", sm86_ops[op].name);
@@ -1369,10 +1531,11 @@ static void texture(Ctx* c, const Sm86Insn* in) {
         return;
     }
     u32 handle = sm86_field(in, 40, 19);
-    int slot = tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, shadow, 0);
+    int slot = bindless ? (int)c->handle[c->cur].slot - 1
+                        : tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, shadow, 0);
     if (slot < 0) return;
-    /* list1: the LOD or bias, the offset, the depth reference (nak_nir_lower_tex.c) */
-    u32 n0 = array + coords, n1 = (lod_mode == 2 || lod_mode == 3) + offset + shadow, regs[8];
+    /* list1: a TEX.B's handle (prepare_handles), the LOD or bias, the offset, the depth reference (nak_nir_lower_tex.c) */
+    u32 n0 = array + coords, n1 = (u32)bindless + (lod_mode == 2 || lod_mode == 3) + offset + shadow, regs[8];
     if (!tex_operands(in, n0, n1, regs)) {
         fail(c, "%s with %u operands in the scalar form", sm86_ops[op].name, n0 + n1);
         return;
@@ -1385,7 +1548,9 @@ static void texture(Ctx* c, const Sm86Insn* in) {
         f[count++] = spv_emit_convert_u_to_f(&c->e, c->t_f32,
                                              spv_emit_bitwise_and_u32(&c->e, c->t_u32, rd(c, regs[0]), cu(c, 0xffff)));
     u32 coord = coord_vector(c, f, count);
-    u32 next = n0, level = 0, dref = 0, off_reg = SM86_RZ;
+    u32 next = n0 + (u32)bindless, level = 0, dref = 0, off_reg = SM86_RZ;
+    int indexed = (c->si->tex[slot].flags & SNX_TEX_INDEXED) != 0;
+    u32 element = indexed ? indexed_element(c, slot, c->handle[c->handle[c->cur].ldc - 1].var) : 0;
     if (lod_mode == 2 || lod_mode == 3) level = to_f(c, rd(c, regs[next++]));
     if (offset) {
         off_reg = regs[next];
@@ -1479,8 +1644,9 @@ static void texture(Ctx* c, const Sm86Insn* in) {
                 coord = coord_vector(c, moved, count);
             }
         }
-        result = spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord, dref, mode, level,
-                                       const_offset, 0);
+        result = indexed && shadow ? sample_indexed_shadow(c, slot, element, coord, dref, mode, level, const_offset)
+                                   : spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord,
+                                                           dref, mode, level, const_offset, 0);
         if (shadow) {
             u32 v[4] = {result, cf(c, 0.0f), cf(c, 0.0f), cf(c, 1.0f)};
             result = spv_emit_vec4_construct(&c->e, c->t_v4f, v);
@@ -1544,7 +1710,8 @@ static void texture_query(Ctx* c, const Sm86Insn* in) {
     u32 handle = sm86_field(in, 40, 19), bank = (handle >> 14) & 31, off = handle & 0x3fff;
     int slot = -1;
     for (int i = 0; i < c->si->ntex && slot < 0; i++)
-        if (c->si->tex[i].bl_cbuf == bank && c->si->tex[i].cbuf_off == off) slot = i;
+        if (c->si->tex[i].bl_cbuf == bank && c->si->tex[i].cbuf_off == off && !(c->si->tex[i].flags & SNX_TEX_INDEXED))
+            slot = i;
     /* a TLD of a multisampled 2D texture with the handle, anywhere in the program, names its view */
     u32 ms = 0;
     for (u32 k = 0; k < c->n && slot < 0 && !ms; k++)
@@ -2863,6 +3030,12 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 return;
             }
             u32 index = r < SM86_RZ ? rd(c, r) : 0;
+            if (c->handle && c->handle[c->cur].var) { /* the element of the table of handles this reads */
+                const TexHandle* h = &c->handle[c->cur];
+                u32 at = spv_emit_isub_u32(&c->e, c->t_u32, spv_emit_iadd_u32(&c->e, c->t_u32, index, cu(c, off)),
+                                           cu(c, h->first));
+                spv_emit_store(&c->e, h->var, op2(c, SPV_OP_U_DIV, c->t_u32, at, cu(c, h->stride)));
+            }
             if (type < 4) {
                 /* NAK's MemType U8 (0), I8 (1), U16 (2), I16 (3): a byte or a halfword of the word at the address,
                    zero or sign extended, as mem_load takes one from memory */
@@ -3008,6 +3181,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             return;
         }
         case SM86_TEX:
+        case SM86_TEX_B:
         case SM86_TLD4:
         case SM86_TMML: texture(c, in); return;
         case SM86_TLD: texel_fetch(c, in); return;
@@ -3538,6 +3712,86 @@ static Sm86Insn* inline_calls(Ctx* c, Sm86Insn* insn, u32* count) {
     return out;
 }
 
+/* the constant an operand holds at instruction at */
+static int src_const(Ctx* c, u32 at, const Sm86Src* s, u32* value) {
+    if (s->kind == SM86_SRC_IMM) {
+        *value = s->value;
+        return 1;
+    }
+    return s->kind == SM86_SRC_REG && reg_const_at(c, at, s->reg, value);
+}
+/* The handle of each TEX.B is in a register. A MOV or an LDC of a constant buffer word gives a slot as any other. An
+   LDC whose address has a register in it picks from a table: one game's lights keep 32 records each, in a constant
+   buffer, and a program finds the lights of a pixel with FLO on a mask, then an IMAD of that index by the record's
+   size makes the LDC's address, c[bank][x * stride + base + offset]. So the texture is chosen for each pixel, from
+   an array, and the table's elements are stride bytes apart, whatever the stride (they aren't a power of two) */
+static void prepare_handles(Ctx* c) {
+    for (u32 i = 0; i < c->n && !c->failed; i++) {
+        const Sm86Insn* in = &c->in[i];
+        if (in->op != SM86_TEX_B) continue;
+        u32 type, array, coords, regs[8], lod = sm86_field(in, 87, 3);
+        if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) {
+            fail(c, "TEX.B dimension 6");
+            return;
+        }
+        u32 shadow = sm86_field(in, 78, 1), n0 = array + coords;
+        u32 n1 = 1 + (lod == 2 || lod == 3) + sm86_field(in, 76, 1) + shadow;
+        if (!tex_operands(in, n0, n1, regs)) {
+            fail(c, "TEX.B with %u operands in the scalar form", n0 + n1);
+            return;
+        }
+        if (!c->handle) c->handle = calloc((size_t)c->n + 1, sizeof *c->handle);
+        if (!c->handle) {
+            fail(c, "out of memory");
+            return;
+        }
+        int k = reaching_write(c, i, regs[n0]);
+        for (u32 depth = 0; k >= 0 && depth < 8 && c->in[k].op == SM86_MOV && c->in[k].b.kind == SM86_SRC_REG; depth++)
+            k = reaching_write(c, (u32)k, c->in[k].b.reg);
+        const Sm86Insn* w = k >= 0 ? &c->in[k] : NULL;
+        int slot = -1;
+        if (!w) {
+            fail(c, "TEX.B whose handle R%u has no one writer", regs[n0]);
+        } else if (w->op == SM86_MOV && w->b.kind == SM86_SRC_CBUF && !w->b.bindless) {
+            slot = tex_slot(c, w->b.bank, w->b.value, type, array, shadow, 0);
+        } else if (w->op == SM86_LDC && sm86_field(w, 73, 3) == 4 && !sm86_field(w, 78, 2)) {
+            u32 bank = sm86_field(w, 54, 5), off = sm86_field(w, 38, 16), index = sm86_field(w, 24, 8);
+            if (index >= SM86_RZ) {
+                slot = tex_slot(c, bank, off, type, array, shadow, 0);
+            } else {
+                int m = reaching_write(c, (u32)k, index);
+                const Sm86Insn* mul = m >= 0 ? &c->in[m] : NULL;
+                u32 stride = 0, base = 0, count = SNX_TEX_ARRAY;
+                if (!g_shader_texture_arrays || c->stage == ST_CS) {
+                    fail(c, "TEX.B of a table of handles, without texture arrays");
+                } else if (!mul || mul->op != SM86_IMAD || sm86_field(mul, 74, 1) ||
+                           !src_const(c, (u32)m, &mul->b, &stride) || !src_const(c, (u32)m, &mul->c, &base) ||
+                           !stride || stride > 0xffff) {
+                    fail(c, "TEX.B of a table of handles, indexed by %s",
+                         mul ? sm86_ops[mul->op].name : "several writes");
+                } else {
+                    /* the index of a FLO on a 32-bit mask */
+                    int x = mul->a.kind == SM86_SRC_REG ? reaching_write(c, (u32)m, mul->a.reg) : -1;
+                    if (x >= 0 && c->in[x].op == SM86_FLO) count = 32;
+                    slot = tex_slot_indexed(c, bank, base + off, type, array, shadow, stride, count);
+                    if (slot >= 0) {
+                        TexHandle* h = &c->handle[k];
+                        if (!h->var)
+                            h->var = spv_emit_function_variable_init(
+                                &c->e, spv_emit_type_function_pointer(&c->e, c->t_u32), c->zero);
+                        h->first = base + off;
+                        h->stride = stride;
+                        c->handle[i].ldc = (u32)k + 1;
+                    }
+                }
+            }
+        } else {
+            fail(c, "TEX.B whose handle comes from %s", sm86_ops[w->op].name);
+        }
+        if (slot >= 0) c->handle[i].slot = (u32)slot + 1;
+    }
+}
+
 /* the highest register an instruction's fields can name, of the 8-bit register fields */
 static u32 max_register(const Sm86Insn* in) {
     static const u8 fields[] = {16, 24, 32, 64};
@@ -3739,6 +3993,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             c->pred[p] = spv_emit_function_variable_init(e, pred_ptr, c->false_v);
             c->upred[p] = spv_emit_function_variable_init(e, pred_ptr, c->false_v);
         }
+        prepare_handles(c);
         /* a vertex program's outputs, made before its code: every exit's depth fix sees the position, and each
            starts as (0, 0, 0, 1), which the console gives the components a program doesn't write (spirv_translate.c
            does the same for Maxwell's). One game's full screen passes write only the position's x and y, and with
@@ -3848,6 +4103,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     if (!out && si->unsupported) sm86_debug_dump("program", code, bytes, sph, si->first_unsupported);
     free(st);
     free(c->addr_key);
+    free(c->handle);
     free(c->jump_first);
     free(insn);
     free(words);
