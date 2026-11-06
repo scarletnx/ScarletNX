@@ -1119,7 +1119,9 @@ static int check_wt_sampled(void) {
    is compared, and the result is still read where it is; new bytes are compared, and the result lands before the read.
    Without write tracking every read compares (vulkan_write_tracking_off) */
 static int check_wt_compares(void) {
-    const u64 cpu = WT_CPU + 26 * WT_LEAF, gva = WT_GVA + 0x10800000, size = 0x1000;
+    /* the binding ends short of its page: copied, with its original bytes to compare, on every host, where a binding of
+       whole pages may stay on the GPU as their owner, with nothing to compare */
+    const u64 cpu = WT_CPU + 26 * WT_LEAF, gva = WT_GVA + 0x10800000, size = 0x1000, len = size - 16;
     const int epochs = 4;
     VkBuffer out, b;
     u64 at, off, c0, c1, c2, c3, h, s;
@@ -1133,8 +1135,13 @@ static int check_wt_compares(void) {
     g_renderer->mem_may_have_changed();
     vk_lock();
     int tracking = wt_tracking(cpu);
-    CHECK(vk_buf_copy_writable(gva, size, &out, &at, 1));
+    CHECK(vk_buf_copy_writable(gva, len, &out, &at, 1));
     vk_buf_writable_commit();
+    u32 owners = own_lookup(cpu, size, NULL, 0);
+    if (owners || !vk_buf_pending_any())
+        fprintf(stderr, "compares: the binding left %u owners over its page and %d pending results: 0 and 1 wanted\n",
+                owners, vk_buf_pending_any());
+    CHECK(!owners && vk_buf_pending_any());
     CHECK(!owned_test_fill(out, at, 16, 0x22));
     vk_buf_checks(&c0, &h, &s);
     int kept = 1;
@@ -1142,20 +1149,20 @@ static int check_wt_compares(void) {
         vk_unlock();
         g_renderer->mem_may_have_changed();
         vk_lock();
-        kept &= vk_buf_get_input(gva, size, 1, &b, &off) && b == out && off == at;
+        kept &= vk_buf_get_input(gva, len, 1, &b, &off) && b == out && off == at;
     }
     vk_buf_checks(&c1, &h, &s);
     vk_unlock();
     memset(GP(cpu + 0x800), 0x11, 0x100); /* the same bytes again */
     g_renderer->mem_may_have_changed();
     vk_lock();
-    kept &= vk_buf_get_input(gva, size, 1, &b, &off) && b == out && off == at && vk_buf_pending_any();
+    kept &= vk_buf_get_input(gva, len, 1, &b, &off) && b == out && off == at && vk_buf_pending_any();
     vk_buf_checks(&c2, &h, &s);
     vk_unlock();
     memset(GP(cpu + 0x800), 0x44, 0x100); /* new bytes */
     g_renderer->mem_may_have_changed();
     vk_lock();
-    CHECK(vk_buf_get_input(gva, size, 1, &b, &off));
+    CHECK(vk_buf_get_input(gva, len, 1, &b, &off));
     vk_buf_checks(&c3, &h, &s);
     int landed = !vk_buf_pending_any();
     vk_finish();
